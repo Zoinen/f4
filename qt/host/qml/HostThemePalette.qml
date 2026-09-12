@@ -57,7 +57,7 @@ Item {
     property color galleryFolderTextColor: "#ffffff"
     property bool galleryNeutralFileTextColors: true
     property bool galleryShowSelectionBorders: true
-    property color galleryQuickSearchMatchColor: "#e8edf2"
+    property color galleryQuickSearchMatchColor: "#c678dd"
     property color galleryDirectoryTextColor: "#98d8ff"
     property color galleryFolderIconColor: "#5ab2f1"
     property color galleryCursorColor: "#1d5888"
@@ -115,7 +115,7 @@ Item {
         { id: "galleryMutedTextColor", name: "Secondary File Text", group: "Panel Colors", defaultColor: "#9aa7b5" },
         { id: "galleryFileTextColor", name: "Neutral File Text", group: "Panel Colors", defaultColor: "#c4cbd3" },
         { id: "galleryFolderTextColor", name: "Neutral Folder Text", group: "Panel Colors", defaultColor: "#ffffff" },
-        { id: "galleryQuickSearchMatchColor", name: "Quick Search Match", group: "Panel Colors", defaultColor: "#e8edf2" },
+        { id: "galleryQuickSearchMatchColor", name: "Quick Search Match", group: "Panel Colors", defaultColor: "#c678dd" },
         { id: "galleryDirectoryTextColor", name: "Directory Text", group: "Panel Colors", defaultColor: "#98d8ff" },
         { id: "galleryFolderIconColor", name: "Folder Icon", group: "Panel Colors", defaultColor: "#5ab2f1" },
         { id: "galleryCursorColor", name: "Card Cursor Fill", group: "Panel Colors", defaultColor: "#1d5888" },

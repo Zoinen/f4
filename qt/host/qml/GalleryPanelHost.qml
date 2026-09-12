@@ -133,6 +133,9 @@ FocusScope {
         viewer: true
     })
     property bool panelActive: false
+    // Paint eligibility is independent of keyboard ownership while a menu
+    // covers the panel. Other embedders retain the existing default.
+    property bool panelCursorVisible: panelActive
     property bool commandLineHasText: false
     property bool fastFindActive: false
     property alias pendingCommanderInput: inputRouter.pendingCommanderInput
@@ -414,6 +417,8 @@ FocusScope {
                                || host.emptyQuickSearchMatches)
                             : host.emptyQuickSearchMatches
         quickSearchMatchColor: {
+            if (host.theme.neutralFileTextColors)
+                return host.theme.quickSearchMatch
             const supplied = String(host.panel.fastFindMatchColor || "")
             return supplied !== "" ? supplied : host.theme.quickSearchMatch
         }
@@ -422,7 +427,7 @@ FocusScope {
         devicePixelRatio: host.devicePixelRatio
         viewerTransitionActive: host.viewerTransitionActive
         viewerTransitionEntryId: host.viewerTransitionEntryId
-        showCursor: host.panelActive
+        showCursor: host.panelCursorVisible
                     || (host.pendingPointerActivation
                         && host.pendingPointerActivationPanelId
                            === panelAdapter.panelId(host.panel))

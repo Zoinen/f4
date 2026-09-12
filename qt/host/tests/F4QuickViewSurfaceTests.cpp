@@ -769,6 +769,10 @@ private slots:
     void menuKeyboardSelectionSurvivesStationaryPointerPatch();
     void pathBreadcrumbTextStaysFixedWhenNavigatingDeeper();
     void uriBreadcrumbKeepsSchemeTogetherAndNavigates();
+    void commandMenusKeepPanelCursorWhileBlockingInput();
+    void quickSearchPaletteDefaultAndResetArePink();
+    void deviceBreadcrumbLabelsPreserveCanonicalNavigationAt175Percent_data();
+    void deviceBreadcrumbLabelsPreserveCanonicalNavigationAt175Percent();
     void pluginPathIconFollowsPanelOnPhysicalGrid();
     void embeddedWheelCoalescesAndUsesQuickViewContract();
     void contentKeyChangeDropsOldGestureAndAnchor();
@@ -6047,6 +6051,57 @@ void F4QuickViewSurfaceTests::sortGroupLeavesStayOnPhysicalPixelGrid()
     QVERIFY(QMetaObject::invokeMethod(menu, "close"));
 }
 
+void F4QuickViewSurfaceTests::quickSearchPaletteDefaultAndResetArePink()
+{
+    QuickViewFixture fixture(shellScene(), true, true);
+    QVERIFY(fixture.window);
+    const QColor pink(QStringLiteral("#c678dd"));
+    const QColor initial = fixture.window->property("galleryQuickSearchMatchColor").value<QColor>();
+    QVERIFY(fixture.window->setProperty("galleryQuickSearchMatchColor", QColor("#25a244")));
+    QVERIFY(QMetaObject::invokeMethod(fixture.window, "resetThemeToDefaults"));
+    const QColor reset = fixture.window->property("galleryQuickSearchMatchColor").value<QColor>();
+    QCOMPARE(reset, pink);
+    QCOMPARE(initial, pink);
+}
+
+void F4QuickViewSurfaceTests::commandMenusKeepPanelCursorWhileBlockingInput()
+{
+    auto scene = shellScene({}, 0);
+    QuickViewFixture fixture(scene, true, true);
+    QVERIFY(fixture.window);
+    auto *loader = fixture.item("galleryPanelContent-0");
+    QVERIFY(loader);
+    QTRY_VERIFY(loader->property("item").value<QObject *>());
+    auto *host = loader->property("item").value<QObject *>();
+    QVERIFY(host->property("panelActive").toBool());
+    QVERIFY(host->property("showCursor").toBool());
+    const auto menu = titledUserMenu("Files", true);
+    fixture.shell.clearActions();
+    for (int cycle = 0; cycle < 2; ++cycle) {
+        fixture.shell.setCommandMenus({menu});
+        QTRY_VERIFY(visualItemWithObjectNamePrefix(fixture.window->contentItem(),
+            "semanticMenuPopup-user-menu"));
+        QVERIFY(!host->property("panelActive").toBool());
+        QVERIFY2(host->property("showCursor").toBool(),
+                 "command menu must suppress input without hiding the panel cursor");
+        fixture.shell.setCommandMenus({});
+        QTRY_VERIFY(host->property("panelActive").toBool());
+        QVERIFY(host->property("showCursor").toBool());
+        QCOMPARE(loader->property("item").value<QObject *>(), host);
+    }
+    // A dialog remains a paint blocker even when its combo menu is present.
+    scene.insert("dialogs", QVariantList{QVariantMap{
+        {"id", "cursor-blocking-dialog"}, {"kind", "dialog"},
+        {"title", "Dialog"}, {"modal", true},
+        {"x", 2}, {"y", 2}, {"w", 30}, {"h", 10}}});
+    scene.insert("menus", QVariantList{menu});
+    fixture.shell.setScene(scene);
+    QTRY_VERIFY(!host->property("panelActive").toBool());
+    QVERIFY(!host->property("showCursor").toBool());
+    for (const auto &action : fixture.shell.actions)
+        QVERIFY(action.value("action").toString() != "panel.cursor");
+}
+
 void F4QuickViewSurfaceTests::uriBreadcrumbKeepsSchemeTogetherAndNavigates()
 {
     QuickViewFixture fixture(shellScene({}, 0), true, true);
@@ -6099,6 +6154,122 @@ void F4QuickViewSurfaceTests::uriBreadcrumbKeepsSchemeTogetherAndNavigates()
         fixture.shell.clearActions();
         QVERIFY(QMetaObject::invokeMethod(control, "folderClicked", Q_ARG(QVariant, QVariant(""))));
         QCOMPARE(fixture.shell.actions.last().value("path").toString(), prefix);
+    }
+}
+
+void F4QuickViewSurfaceTests::deviceBreadcrumbLabelsPreserveCanonicalNavigationAt175Percent_data()
+{
+    QTest::addColumn<QString>("path");
+    QTest::addColumn<QString>("title");
+    QTest::addColumn<QString>("rootLabel");
+    QTest::addColumn<QString>("icon");
+    QTest::addColumn<QStringList>("children");
+    QTest::newRow("android-manager")
+        << QString("android://") << QString("Android devices")
+        << QString("Android") << QString("android-logo") << QStringList{};
+    QTest::newRow("ios-manager")
+        << QString("ios://") << QString("Apple mobile devices")
+        << QString("iOS") << QString("apple-logo") << QStringList{};
+    QTest::newRow("android-child")
+        << QString("android://Pixel 3/sdcard/DCIM")
+        << QString("android://Pixel 3/sdcard/DCIM")
+        << QString("Android") << QString("android-logo")
+        << QStringList{"Pixel 3", "sdcard", "DCIM"};
+    QTest::newRow("ios-child")
+        << QString::fromUtf8("ios://Alexander’s iPhone/DCIM/100APPLE")
+        << QString::fromUtf8("ios://Alexander’s iPhone/DCIM/100APPLE")
+        << QString("iOS") << QString("apple-logo")
+        << QStringList{QString::fromUtf8("Alexander’s iPhone"), "DCIM", "100APPLE"};
+}
+
+void F4QuickViewSurfaceTests::deviceBreadcrumbLabelsPreserveCanonicalNavigationAt175Percent()
+{
+    QFETCH(QString, path);
+    QFETCH(QString, title);
+    QFETCH(QString, rootLabel);
+    QFETCH(QString, icon);
+    QFETCH(QStringList, children);
+    auto scene = shellScene({}, 0);
+    auto shell = scene.value("shell").toMap();
+    auto panels = shell.value("panels").toList();
+    auto panel = panels[0].toMap();
+    panel.insert("path", path);
+    panel.insert("title", title);
+    panel.insert("pathIcon", icon);
+    panels[0] = panel;
+    shell.insert("panels", panels);
+    scene.insert("shell", shell);
+    QuickViewFixture fixture(scene, true, true);
+    QVERIFY(fixture.window);
+    fixture.window->resize(1800, 640);
+    const qreal dpr = fixture.window->devicePixelRatio();
+    QVERIFY2(qAbs(dpr - 1.75) < .001, "Run with QT_SCALE_FACTOR=1.75");
+    auto *control = fixture.item("panelPathTitle-0");
+    QVERIFY(control);
+    control->setProperty("breadcrumbMaskEnabled", false);
+    auto *content = fixture.window->contentItem();
+    QQuickItem *root = nullptr;
+    QTRY_VERIFY((root = visualItemWithObjectNamePrefix(control, "pathBreadcrumbRoot-text")));
+    QTest::qWait(100);
+    QImage capture;
+    QTRY_VERIFY_WITH_TIMEOUT(!(capture = fixture.window->grabWindow()).isNull(), 3000);
+    QVERIFY(capture.save("/tmp/f4-device-breadcrumb-175.png"));
+
+    const auto verifyLeaf = [content, dpr](QQuickItem *leaf) {
+        QVERIFY(leaf);
+        QVERIFY(leaf->isVisible());
+        const QPointF origin = leaf->mapToItem(content, QPointF());
+        const QPointF physical = origin * dpr;
+        QVERIFY2(qAbs(physical.x() - qRound64(physical.x())) < .001
+                     && qAbs(physical.y() - qRound64(physical.y())) < .001,
+                 qPrintable(QString("%1 scene origin = (%2, %3) physical px")
+                     .arg(leaf->objectName()).arg(physical.x(), 0, 'f', 6)
+                     .arg(physical.y(), 0, 'f', 6)));
+        QCOMPARE(leaf->mapToItem(content, QPointF(1, 0)) - origin, QPointF(1, 0));
+        QCOMPARE(leaf->mapToItem(content, QPointF(0, 1)) - origin, QPointF(0, 1));
+    };
+    auto *driveIcon = fixture.item("panelDriveButtonIcon-0");
+    QVERIFY(driveIcon);
+    QVERIFY2(driveIcon->property("source").toUrl().toString().contains(icon),
+             qPrintable(driveIcon->property("source").toUrl().toString()));
+    verifyLeaf(driveIcon);
+    QCOMPARE(control->property("navigationPath").toString(), path);
+    QCOMPARE(root->property("text").toString(), rootLabel);
+    const QString scheme = path.left(path.indexOf("://") + 3);
+    for (int index = -1; index < children.size(); ++index) {
+        const QString id = index < 0 ? "pathBreadcrumbRoot"
+                                     : QString("pathBreadcrumb-%1").arg(index);
+        auto *text = visualItemWithObjectNamePrefix(control, id + "-text");
+        QVERIFY(text);
+        QCOMPARE(text->property("text").toString(), index < 0 ? rootLabel : children[index]);
+        verifyLeaf(text);
+        auto *separator = visualItemWithObjectNamePrefix(control, id + "-separator");
+        QVERIFY(separator);
+        if (separator->isVisible())
+            verifyLeaf(separator);
+        fixture.shell.clearActions();
+        QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+            text->mapToItem(content, QPointF(text->width() / 2, text->height() / 2)).toPoint());
+        QTRY_COMPARE(fixture.shell.actions.size(), 1);
+        QCOMPARE(fixture.shell.actions[0].value("action").toString(), QString("panel.navigatePath"));
+        QCOMPARE(fixture.shell.actions[0].value("path").toString(),
+                 scheme + children.mid(0, index + 1).join('/'));
+    }
+    QVERIFY(!visualItemWithObjectNamePrefix(control,
+        QString("pathBreadcrumb-%1-text").arg(children.size())));
+    control->setProperty("editMode", true);
+    auto *field = visualItemWithObjectNamePrefix(control, "pathField");
+    QVERIFY(field);
+    QTRY_COMPARE(field->property("text").toString(), path);
+    verifyLeaf(field);
+    QTest::qWait(50);
+    const auto editCapture = fixture.window->grabWindow();
+    QVERIFY(!editCapture.isNull());
+    QVERIFY(editCapture.save("/tmp/f4-device-path-editor-175.png"));
+    QCOMPARE(control->property("navigationPath").toString(), path);
+    if (!QTest::currentTestFailed()) {
+        qInfo().noquote() << "[FIX:device-breadcrumb] scheme=" + scheme
+                         << "rootLabel=" + rootLabel << "dpr=" << dpr;
     }
 }
 

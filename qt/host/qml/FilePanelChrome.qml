@@ -147,6 +147,14 @@ Rectangle {
                     "network", 18, hostWindow.galleryPathTextColor)
             text: hostWindow.cleanText(panel.title || panel.path)
             navigationPath: String(panel.path || "")
+            rootBreadcrumbLabel: {
+                const prefix = panelPathControl.uriPrefix(navigationPath).toLowerCase()
+                if (prefix === "android://")
+                    return "Android"
+                if (prefix === "ios://")
+                    return "iOS"
+                return ""
+            }
             navigationHandler: function(path) {
                 hostWindow.action({
                     "action": "panel.navigatePath",

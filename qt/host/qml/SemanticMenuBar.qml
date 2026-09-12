@@ -98,10 +98,14 @@ Rectangle {
             menuBarHoverSyncTimer.stop()
             var closing = menu.active === true
                           && item.index === effectiveSelected
-            hostWindow.clearMenuPointerSelection()
-            hostWindow.menuBarOpenedByPointer = !closing
-            hostWindow.menuBarPointerHasSelectedItem = false
-            hostWindow.menuBarPreviewIndex = closing ? -1 : item.index
+            // A closing popup is still visible until Go acknowledges this
+            // request. Preserve its hovered row (including no selection).
+            if (!closing) {
+                hostWindow.clearMenuPointerSelection()
+                hostWindow.menuBarOpenedByPointer = true
+                hostWindow.menuBarPointerHasSelectedItem = false
+                hostWindow.menuBarPreviewIndex = item.index
+            }
             hostWindow.action({
                 "action": "menuBar.toggle",
                 "index": item.index
@@ -222,8 +226,6 @@ Rectangle {
         onPressed: (mouse) => {
             if (!parent.activateAt(mouse.x, false) && menu.active === true) {
                 menuBarHoverSyncTimer.stop()
-                hostWindow.menuBarPreviewIndex = -1
-                hostWindow.clearMenuPointerSelection()
                 hostWindow.action({
                     "action": "menuBar.toggle",
                     "index": menu.selected

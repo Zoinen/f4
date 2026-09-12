@@ -163,6 +163,9 @@ Item {
         dropdownAnchorIndicatorReady = true
     }
     readonly property bool fromMenuBar: frame.menuBarSubmenu === true
+    // Chrome may acknowledge closure before the command-menu model removes
+    // this popup. Do not paint its stale semantic selection in that interval.
+    visible: !fromMenuBar || menuBar.menu.active === true
     readonly property bool hasParentMenu:
         hostWindow.cleanText(frame.parentId) !== ""
     readonly property string menuTitleText:
@@ -800,10 +803,8 @@ Item {
             "target": menuOverlay.frame.id,
             "action": "menu.closeChain"
         })
-        onPressed: {
-            hostWindow.menuBarPreviewIndex = -1
-            hostWindow.clearMenuPointerSelection()
-        }
+        // Keep the displayed pointer selection until Go acknowledges close.
+        // Clearing it on press exposes the older semantic row while IPC runs.
         onWheel: (wheel) => { wheel.accepted = true }
     }
 

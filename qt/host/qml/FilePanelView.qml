@@ -431,6 +431,16 @@ Rectangle {
                       && !hostWindow.hasDocumentSurface()
                       && !hostWindow.hasOperationsQueueSurface()
                       && !hostWindow.hasBlockingOverlay())
+            if (typeof item.panelCursorVisible !== "undefined")
+                item.panelCursorVisible = Qt.binding(
+                    () => panelRoot.visible
+                          && panelRoot.panelIsActive
+                          && !galleryController.viewerVisible
+                          && !hostWindow.needsFallbackGrid()
+                          && !hostWindow.hasDocumentSurface()
+                          && !hostWindow.hasOperationsQueueSurface()
+                          && hostWindow.overlayFrames().every(
+                              frame => frame.kind === "menu"))
             item.commandLineHasText = Qt.binding(() => {
                 var commandLine = hostWindow.commandLineFrame()
                 return hostWindow.cleanText(commandLine.text).length > 0

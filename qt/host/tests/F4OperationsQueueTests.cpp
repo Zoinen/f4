@@ -781,6 +781,8 @@ private slots:
     void multilineDialogEditor();
     void menuBarPressDragReleaseActivatesItem();
     void menuBarPressDragReleaseActivatesItem_data();
+    void menuBarClosingDoesNotFlashFirstRow();
+    void menuBarClosingDoesNotFlashFirstRow_data();
     void settingsHoverExplainsWithoutFocus();
     void settingsRadiosExpandAndStayPixelAligned();
     void queueDropdownKeepsPanelsAndAlignsLeaves();
@@ -4875,6 +4877,79 @@ void F4OperationsQueueTests::menuBarPressDragReleaseActivatesItem_data()
     QTest::newRow("separator") << 3;
     QTest::newRow("outside") << -1;
     QTest::newRow("click-opens") << -2;
+}
+
+void F4OperationsQueueTests::menuBarClosingDoesNotFlashFirstRow_data()
+{
+    QTest::addColumn<QString>("closeRoute");
+    QTest::addColumn<int>("selectedIndex");
+    QTest::newRow("outside") << QStringLiteral("outside") << 1;
+    QTest::newRow("caption") << QStringLiteral("caption") << 1;
+    QTest::newRow("activate") << QStringLiteral("activate") << 1;
+    QTest::newRow("inactive-before-popup-removal") << QStringLiteral("inactive") << 1;
+    QTest::newRow("caption-without-hover") << QStringLiteral("caption") << -1;
+    QTest::newRow("inactive-without-hover") << QStringLiteral("inactive") << -1;
+}
+
+void F4OperationsQueueTests::menuBarClosingDoesNotFlashFirstRow()
+{
+    QFETCH(QString, closeRoute);
+    QFETCH(int, selectedIndex);
+    auto scene = panelScene();
+    QVariantMap bar{{"id", "main-menu"}, {"kind", "menu"}, {"active", true}, {"selected", 0},
+        {"items", QVariantList{QVariantMap{{"index", 0}, {"text", "Files"}}}}};
+    scene.insert("menuBar", bar);
+    scene.insert("menus", QVariantList{QVariantMap{{"id", "files-menu"}, {"kind", "menu"},
+        {"role", "vmenu"}, {"menuBarSubmenu", true}, {"selected", 0},
+        {"items", QVariantList{QVariantMap{{"index", 0}, {"text", "Open"}},
+            QVariantMap{{"index", 1}, {"text", "Edit"}}}}}});
+    QueueFixture fixture(scene);
+    QVERIFY(fixture.window);
+    auto *root = fixture.window->contentItem();
+    QQuickItem *popup = nullptr;
+    QQuickItem *row = nullptr;
+    QTRY_VERIFY((popup = visualItem(root, "semanticMenuPopup-files-menu")) && popup->isVisible());
+    QTRY_VERIFY((row = visualItem(root, "semanticMenuItem-files-menu-1")));
+    auto *overlay = popup->parentItem();
+    QVERIFY(overlay);
+    const auto rowPoint = row->mapToScene(QPointF(row->width()/2, row->height()/2)).toPoint();
+    QTest::mouseMove(fixture.window, QPoint(fixture.window->width()-12, fixture.window->height()-12));
+    QVERIFY(fixture.window->setProperty("menuBarOpenedByPointer", true));
+    if (selectedIndex >= 0) {
+        QTest::mouseMove(fixture.window, rowPoint);
+        QTest::qWait(20);
+        QTest::mouseMove(fixture.window, rowPoint + QPoint(3, 0));
+    }
+    QTRY_COMPARE_WITH_TIMEOUT(overlay->property("visualSelectedIndex").toInt(), selectedIndex, 1000);
+    QCOMPARE(overlay->property("semanticSelectedIndex").toInt(), 0);
+    fixture.shell.clearActions();
+
+    if (closeRoute == "inactive") {
+        // Chrome and command menus are separate publications. Go can mark
+        // the bar inactive before its popup is removed from the overlay model.
+        bar.insert("active", false);
+        scene.insert("menuBar", bar);
+        fixture.shell.setScene(scene);
+    } else {
+        QPoint clickPoint = rowPoint;
+        if (closeRoute == "outside")
+            clickPoint = QPoint(fixture.window->width()-12, fixture.window->height()-12);
+        if (closeRoute == "caption") {
+            auto *caption = visualItem(root, "semanticMenuBarItem-0");
+            QVERIFY(caption);
+            clickPoint = caption->mapToScene(QPointF(caption->width()/2, caption->height()/2)).toPoint();
+        }
+        QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, clickPoint);
+        QVERIFY(!fixture.shell.actions.isEmpty());
+    }
+    // Deliberately withhold Go's popup-removal acknowledgement. No visible
+    // frame may switch from the hovered row back to stale semantic row zero.
+    QCoreApplication::processEvents();
+    QVERIFY(!fixture.window->grabWindow().isNull());
+    QVERIFY2(!popup->isVisible() || overlay->property("visualSelectedIndex").toInt() == selectedIndex,
+             "Closing menu repainted stale semantic first-row selection");
+    fixture.shell.applyCommandMenus({});
+    QTRY_VERIFY(!visualItem(root, "semanticMenuPopup-files-menu"));
 }
 
 void F4OperationsQueueTests::helpDialogRendersAndRoutesNavigation()

@@ -325,8 +325,10 @@ Rectangle {
             hostWindow.action({"target": overlayController.frame.id,
                 "action": "menu.activate", "index": modelData.index}, true)
         }
-        hostWindow.menuBarPreviewIndex = -1
-        hostWindow.clearMenuPointerSelection()
+        if (!overlayController.fromMenuBar) {
+            hostWindow.menuBarPreviewIndex = -1
+            hostWindow.clearMenuPointerSelection()
+        }
     }
 
     Timer {

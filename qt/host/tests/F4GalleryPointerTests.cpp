@@ -285,6 +285,7 @@ private slots:
     void semanticGridForwardsConsolePointerEvents();
     void viewerCaptureSurvivesHiddenGridFocusSlip();
     void quickSearchMatchMarkupTracksPanelStateAndPalette();
+    void menuFocusKeepsNonzeroCursorWithoutIntents();
     void panelCapturesPointerAndAppliesSelectionModifiers();
     void folderDoubleClickSurvivesAcknowledgementTiming();
     void folderDoubleClickSurvivesStaleLoaderRevisionAndFocusStress();
@@ -807,7 +808,9 @@ void F4GalleryPointerTests::quickSearchMatchMarkupTracksPanelStateAndPalette()
             id: root
             width: 640
             height: 360
-            property color searchColor: "#c678dd"
+            property color searchColor: "#9aa7b5"
+            property color guiSearchColor: "#c678dd"
+            property bool neutralFileText: true
             property bool searchVisible: true
             property var panelState: ({
                 "catalogRevision": 5,
@@ -839,6 +842,12 @@ void F4GalleryPointerTests::quickSearchMatchMarkupTracksPanelStateAndPalette()
                     item.theme.text = "#e8edf2"
                     item.theme.cursor = "#285d8f"
                     item.theme.selection = "#ffd43b"
+                    item.theme.neutralFileTextColors = Qt.binding(function() {
+                        return root.neutralFileText
+                    })
+                    item.theme.quickSearchMatch = Qt.binding(function() {
+                        return root.guiSearchColor
+                    })
                 }
             }
         }
@@ -850,6 +859,7 @@ void F4GalleryPointerTests::quickSearchMatchMarkupTracksPanelStateAndPalette()
     QVERIFY2(rootObject, qPrintable(component.errorString()));
     view.setContent(QUrl(QStringLiteral("inline:F4GalleryQuickSearch.qml")),
                     &component, rootObject);
+    const auto cleanup = qScopeGuard([&] { delete rootObject; });
     view.show();
 
     QObject *loader = rootObject->findChild<QObject *>(
@@ -877,6 +887,51 @@ void F4GalleryPointerTests::quickSearchMatchMarkupTracksPanelStateAndPalette()
     QCOMPARE(labelForRow(0)->property("text").toString(),
              QStringLiteral(".."));
 
+    if (qAbs(view.devicePixelRatio() - 1.75) < .001) {
+        auto *label = qobject_cast<QQuickItem *>(labelForRow(1));
+        QVERIFY(label);
+        QImage capture;
+        const auto pinkPixelCount = [&] {
+            capture = view.grabWindow();
+            if (capture.isNull())
+                return 0;
+            const QRectF sceneRect = label->mapRectToItem(
+                view.contentItem(), label->boundingRect());
+            const qreal sx = qreal(capture.width()) / view.width();
+            const qreal sy = qreal(capture.height()) / view.height();
+            const QRect pixels = QRectF(sceneRect.x() * sx, sceneRect.y() * sy,
+                sceneRect.width() * sx, sceneRect.height() * sy)
+                .toAlignedRect().intersected(capture.rect());
+            int count = 0;
+            for (int y = pixels.top(); y <= pixels.bottom(); ++y) {
+                for (int x = pixels.left(); x <= pixels.right(); ++x) {
+                    const QColor color = capture.pixelColor(x, y);
+                    if (qAbs(color.red() - 198) < 30
+                        && qAbs(color.green() - 120) < 30
+                        && qAbs(color.blue() - 221) < 30)
+                        ++count;
+                }
+            }
+            return count;
+        };
+        QTRY_VERIFY_WITH_TIMEOUT(pinkPixelCount() >= 4, 3000);
+        QVERIFY(capture.save("/tmp/f4-quick-search-pink-175.png"));
+    }
+
+    // Neutral GUI colors must override the still-gray semantic match color,
+    // including live palette changes while quick search remains open.
+    rootObject->setProperty("guiSearchColor", QColor(QStringLiteral("#61afef")));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        labelForRow(1)->property("text").toString().contains(
+            QStringLiteral("<font color=\"#61afef\">lder</font>")),
+        3000);
+    rootObject->setProperty("neutralFileText", false);
+    rootObject->setProperty("searchColor", QColor(QStringLiteral("#c678dd")));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        labelForRow(1)->property("text").toString().contains(
+            QStringLiteral("<font color=\"#c678dd\">lder</font>")),
+        3000);
+
     const QString emoji = QString::fromUcs4(U"\U0001F600");
     const QString emojiName = QStringLiteral("a") + emoji
         + QStringLiteral("bc");
@@ -897,7 +952,105 @@ void F4GalleryPointerTests::quickSearchMatchMarkupTracksPanelStateAndPalette()
     rootObject->setProperty("searchVisible", false);
     QTRY_COMPARE_WITH_TIMEOUT(labelForRow(1)->property("text").toString(),
                               QStringLiteral("folder-01"), 3000);
-    delete rootObject;
+    if (!QTest::currentTestFailed()) {
+        qInfo().noquote() << "[FIX:quick-search-color] GUI pink and live palette;"
+                            " semantic colors preserved when neutral=false; dpr="
+                         << view.devicePixelRatio();
+    }
+}
+
+void F4GalleryPointerTests::menuFocusKeepsNonzeroCursorWithoutIntents()
+{
+    QQuickView view;
+    view.resize(900, 500);
+    F4GalleryBridge bridge(view.engine());
+    const auto scene = galleryScene(6, 3);
+    bridge.synchronizeScene(scene);
+    view.engine()->rootContext()->setContextProperty("menuCursorBridge", &bridge);
+    view.engine()->rootContext()->setContextProperty("menuCursorPanel",
+        scene.value("shell").toMap().value("panels").toList().first());
+    QQmlComponent component(view.engine());
+    component.setData(R"QML(
+        import QtQuick
+        Item {
+            width: 900; height: 500
+            Loader {
+                objectName: "menuCursorLoader"
+                anchors.fill: parent
+                source: menuCursorBridge.panelComponentUrl
+                onLoaded: {
+                    item.side = 0
+                    item.bridge = menuCursorBridge
+                    item.panel = menuCursorPanel
+                    item.panelActive = true
+                    item.panelCursorVisible = true
+                }
+            }
+            Item {
+                objectName: "menuFocus"
+                property int keyCount: 0
+                Keys.onPressed: event => { keyCount++; event.accepted = true }
+            }
+        }
+    )QML", QUrl("inline:MenuCursor.qml"));
+    QTRY_VERIFY_WITH_TIMEOUT(component.status() != QQmlComponent::Loading, 5000);
+    QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+    auto *root = component.create();
+    QVERIFY(root);
+    view.setContent(QUrl("inline:MenuCursor.qml"), &component, root);
+    const auto cleanup = qScopeGuard([&] { delete root; });
+    view.show();
+    auto *loader = root->findChild<QObject *>("menuCursorLoader");
+    QVERIFY(loader);
+    QTRY_VERIFY(loader->property("item").value<QObject *>());
+    auto *host = qobject_cast<QQuickItem *>(loader->property("item").value<QObject *>());
+    QVERIFY(host);
+    auto *panel = host->findChild<QObject *>("embeddedGalleryPanel");
+    QVERIFY(panel);
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(bridge.sessionForSide(0));
+    QVERIFY(session);
+    QTRY_COMPARE(session->currentIndex(), 3);
+    QTRY_COMPARE(panel->property("visualCursorIndex").toInt(), 3);
+    auto *controller = panel->property("controller").value<QObject *>();
+    QVERIFY(controller);
+    int sourceIndex = -1;
+    QVERIFY(QMetaObject::invokeMethod(controller, "sourceIndexAt",
+        Q_RETURN_ARG(int, sourceIndex), Q_ARG(int, 3)));
+    QCOMPARE(sourceIndex, 103);
+    QSignalSpy indexChanges(session, SIGNAL(currentIndexChanged()));
+    QSignalSpy visualChanges(panel, SIGNAL(visualCursorIndexChanged()));
+    QSignalSpy actions(&bridge, &F4GalleryBridge::uiActionRequested);
+    QVERIFY(indexChanges.isValid());
+    QVERIFY(visualChanges.isValid());
+    auto *menuFocus = root->findChild<QQuickItem *>("menuFocus");
+    QVERIFY(menuFocus);
+    for (int cycle = 0; cycle < 2; ++cycle) {
+        host->setProperty("panelActive", false);
+        menuFocus->forceActiveFocus();
+        QTest::keyClick(&view, Qt::Key_Down);
+        QCOMPARE(menuFocus->property("keyCount").toInt(), cycle + 1);
+        for (int frame = 0; frame < 3; ++frame) {
+            QVERIFY(panel->property("showCursor").toBool());
+            QVERIFY(!view.grabWindow().isNull());
+            QCOMPARE(session->currentIndex(), 3);
+            QCOMPARE(panel->property("visualCursorIndex").toInt(), 3);
+            QCoreApplication::processEvents();
+        }
+        host->setProperty("panelActive", true);
+        host->forceActiveFocus();
+        for (int frame = 0; frame < 3; ++frame) {
+            QVERIFY(panel->property("showCursor").toBool());
+            QVERIFY(!view.grabWindow().isNull());
+            QCOMPARE(session->currentIndex(), 3);
+            QCOMPARE(panel->property("visualCursorIndex").toInt(), 3);
+            QCoreApplication::processEvents();
+        }
+    }
+    QCOMPARE(indexChanges.size(), 0);
+    QCOMPARE(visualChanges.size(), 0);
+    QCOMPARE(actions.size(), 0);
+    qInfo() << "[FIX:menu-cursor] nonzero cursor survives menu focus without intents; DPR"
+            << view.devicePixelRatio();
 }
 
 void F4GalleryPointerTests::panelCapturesPointerAndAppliesSelectionModifiers()
