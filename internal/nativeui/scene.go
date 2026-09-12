@@ -2,6 +2,7 @@ package nativeui
 
 import (
 	"github.com/unxed/f4/internal/config"
+	"github.com/unxed/f4/internal/dialog"
 	"github.com/unxed/f4/internal/fileops"
 	"github.com/unxed/f4/internal/panel"
 	"github.com/unxed/f4/internal/plughost"
@@ -1238,6 +1239,7 @@ func appKeyBarFromLegacy(node map[string]any) extui.KeyBarModel {
 }
 
 func appDialogFromLegacy(node map[string]any) extui.DialogModel {
+	node = dialog.ProjectHelpSearch(node)
 	dlg := extui.DialogModel{
 		Layout:    semantic.String(node["layout"]),
 		ID:        semantic.String(node["id"]),

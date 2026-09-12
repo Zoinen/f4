@@ -426,6 +426,30 @@ QVariantMap shellScene(const QVariantList &quickViews = {}, int activeSide = 1)
     };
 }
 
+QVariantMap titledUserMenu(const QString &title, bool populated = false)
+{
+    return {
+        {QStringLiteral("id"), QStringLiteral("user-menu")},
+        {QStringLiteral("kind"), QStringLiteral("menu")},
+        {QStringLiteral("role"), QStringLiteral("vmenu")},
+        {QStringLiteral("title"), title},
+        {QStringLiteral("x"), 17},
+        {QStringLiteral("y"), 5},
+        {QStringLiteral("w"), 50},
+        {QStringLiteral("h"), populated ? 4 : 2},
+        {QStringLiteral("selected"), 0},
+        {QStringLiteral("top"), 0},
+        {QStringLiteral("bottomHint"), QStringLiteral(" Del Ins Ctrl+F4 Ctrl+Up/Down ")},
+        {QStringLiteral("items"), populated ? QVariantList{
+             QVariantMap{{QStringLiteral("index"), 0},
+                         {QStringLiteral("text"), QStringLiteral("Build")}},
+             QVariantMap{{QStringLiteral("index"), 1},
+                         {QStringLiteral("text"), QStringLiteral("Test")},
+                         {QStringLiteral("shortcut"), QStringLiteral("F3")}},
+         } : QVariantList{}},
+    };
+}
+
 void sendPixelWheel(QQuickWindow *window, const QPoint &position, int deltaY)
 {
     QWheelEvent event(position, window->mapToGlobal(position),
@@ -733,6 +757,10 @@ private slots:
     void chromeIconsUseMatchingPhysicalTargetSizes();
     void panelDriveButtonUsesPathIconAndRequestsDriveMenu();
     void driveMenuIconsUseSemanticModelAndLiveTheme();
+    void standaloneMenuTitleKeepsEmptyMenuAndActionsUsable();
+    void attachedMenusDoNotShowStandaloneTitles_data();
+    void attachedMenusDoNotShowStandaloneTitles();
+    void standaloneMenuTitleLeavesStaySharpAt175Percent();
     void menuScrollBarUsesNativeExtentAndCommitsMouseDrag();
     void menuBarPopupStartsUnderClickedItem();
     void nestedMenuAnchorsHeadersTagsAndChevronsOnPhysicalPixels();
@@ -4228,6 +4256,203 @@ void F4QuickViewSurfaceTests::driveMenuIconsUseSemanticModelAndLiveTheme()
     QTRY_VERIFY_WITH_TIMEOUT(
         !(rendered = fixture.window->grabWindow()).isNull(), 3000);
     QVERIFY(imageContainsColor(rendered, themedSelected));
+}
+
+void F4QuickViewSurfaceTests::standaloneMenuTitleKeepsEmptyMenuAndActionsUsable()
+{
+    QVariantMap menu = titledUserMenu(QStringLiteral(" Main menu "));
+    QVariantMap scene = shellScene({}, 0);
+    scene.insert(QStringLiteral("menus"), QVariantList{menu});
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    auto *root = fixture.window->contentItem();
+    QQuickItem *popup = nullptr;
+    QQuickItem *title = nullptr;
+    QQuickItem *hint = nullptr;
+    QQuickItem *list = nullptr;
+    QTRY_VERIFY((popup = visualItemWithObjectName(root, QStringLiteral("semanticMenuPopup-user-menu"))));
+    QTRY_VERIFY((title = visualItemWithObjectName(root, QStringLiteral("semanticMenuTitle-user-menu"))));
+    QTRY_VERIFY((hint = visualItemWithObjectName(root, QStringLiteral("semanticMenuBottomHint-user-menu"))));
+    QTRY_VERIFY((list = visualItemWithObjectName(root, QStringLiteral("semanticMenuList-user-menu"))));
+    QTRY_VERIFY(title->isVisible());
+    QTRY_VERIFY(hint->isVisible());
+    QCOMPARE(title->property("text").toString(), QStringLiteral("Main menu"));
+    QCOMPARE(title->property("textFormat").toInt(), int(Qt::PlainText));
+    QCOMPARE(list->property("count").toInt(), 0);
+    const auto titleBottom = [&] {
+        return title->mapToItem(popup, QPointF(0, title->height())).y();
+    };
+    QTRY_VERIFY(titleBottom() <= hint->mapToItem(popup, QPointF{}).y() + 0.01);
+    QVERIFY(title->width() > 0 && title->height() > 0);
+    QVERIFY(hint->mapToItem(popup, QPointF(0, hint->height())).y()
+            <= popup->height() + 0.01);
+
+    // Same-ID menu patches also carry the breadcrumb when F2 enters a level.
+    menu = titledUserMenu(QStringLiteral(" Local menu -> Tools <docs> "), true);
+    fixture.shell.setCommandMenus({menu});
+    QTRY_COMPARE(title->property("text").toString(), QStringLiteral("Local menu -> Tools <docs>"));
+    QTRY_COMPARE(list->property("count").toInt(), 2);
+    QQuickItem *first = nullptr;
+    QQuickItem *last = nullptr;
+    QTRY_VERIFY((first = visualItemWithObjectName(root, QStringLiteral("semanticMenuItem-user-menu-0"))));
+    QTRY_VERIFY((last = visualItemWithObjectName(root, QStringLiteral("semanticMenuItem-user-menu-1"))));
+    QTRY_VERIFY(first->mapToItem(popup, QPointF{}).y() >= titleBottom() - 0.01);
+    QVERIFY(last->mapToItem(popup, QPointF(0, last->height())).y()
+            <= hint->mapToItem(popup, QPointF{}).y() + 0.01);
+    const qreal titledHeight = popup->height();
+    const qreal titledListY = list->y();
+
+    fixture.shell.clearActions();
+    const QPoint firstCenter = first->mapToScene(
+        QPointF(first->width() / 2, first->height() / 2)).toPoint();
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, firstCenter);
+    QTRY_VERIFY(std::any_of(fixture.shell.actions.cbegin(), fixture.shell.actions.cend(),
+                           [](const QVariantMap &action) {
+        return action.value(QStringLiteral("action")) == QStringLiteral("menu.activate")
+            && action.value(QStringLiteral("target")) == QStringLiteral("user-menu")
+            && action.value(QStringLiteral("index")).toInt() == 0;
+    }));
+
+    menu.insert(QStringLiteral("title"), QStringLiteral("   "));
+    fixture.shell.setCommandMenus({menu});
+    QTRY_VERIFY(!title->isVisible());
+    QTRY_VERIFY(popup->height() < titledHeight);
+    QCOMPARE(list->property("count").toInt(), 2);
+    QTRY_VERIFY(list->y() < titledListY);
+}
+
+void F4QuickViewSurfaceTests::attachedMenusDoNotShowStandaloneTitles_data()
+{
+    QTest::addColumn<QVariantMap>("traits");
+    QTest::newRow("menu-bar") << QVariantMap{
+        {QStringLiteral("menuBarSubmenu"), true},
+    };
+    QTest::newRow("nested") << QVariantMap{
+        {QStringLiteral("parentId"), QStringLiteral("parent-menu")},
+        {QStringLiteral("anchorIndex"), 0},
+    };
+    QTest::newRow("dropdown") << QVariantMap{
+        {QStringLiteral("presentation"), QStringLiteral("dropdown")},
+        {QStringLiteral("ownerId"), QStringLiteral("menu-owner")},
+    };
+}
+
+void F4QuickViewSurfaceTests::attachedMenusDoNotShowStandaloneTitles()
+{
+    QFETCH(QVariantMap, traits);
+    QVariantMap menu = titledUserMenu(QString(), true);
+    menu.remove(QStringLiteral("bottomHint"));
+    for (auto it = traits.cbegin(); it != traits.cend(); ++it)
+        menu.insert(it.key(), it.value());
+    QVariantList menus;
+    if (traits.contains(QStringLiteral("parentId"))) {
+        QVariantMap parent = titledUserMenu(QString(), true);
+        parent.insert(QStringLiteral("id"), QStringLiteral("parent-menu"));
+        menus.append(parent);
+    }
+    menus.append(menu);
+    QVariantMap scene = shellScene({}, 0);
+    scene.insert(QStringLiteral("menus"), menus);
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    auto *root = fixture.window->contentItem();
+    QQuickItem *popup = nullptr;
+    QQuickItem *title = nullptr;
+    QQuickItem *list = nullptr;
+    QTRY_VERIFY((popup = visualItemWithObjectName(root, QStringLiteral("semanticMenuPopup-user-menu"))));
+    QTRY_VERIFY((title = visualItemWithObjectName(root, QStringLiteral("semanticMenuTitle-user-menu"))));
+    QTRY_VERIFY((list = visualItemWithObjectName(root, QStringLiteral("semanticMenuList-user-menu"))));
+    if (traits.contains(QStringLiteral("presentation")))
+        QTRY_VERIFY(popup->parentItem()->property("dropdownOpenSettled").toBool());
+    const QSizeF popupSize = popup->size();
+    const QRectF listGeometry(list->position(), list->size());
+
+    menu.insert(QStringLiteral("title"), QStringLiteral("Must not add a heading"));
+    menus.last() = menu;
+    fixture.shell.setCommandMenus(menus);
+    QTRY_COMPARE(title->property("text").toString(), QStringLiteral("Must not add a heading"));
+    QVERIFY(!title->isVisible());
+    QTRY_COMPARE(popup->size(), popupSize);
+    QTRY_COMPARE(QRectF(list->position(), list->size()), listGeometry);
+}
+
+void F4QuickViewSurfaceTests::standaloneMenuTitleLeavesStaySharpAt175Percent()
+{
+    QVariantMap scene = shellScene({}, 0);
+    scene.insert(QStringLiteral("menus"), QVariantList{titledUserMenu(QStringLiteral("Main menu"))});
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    const qreal dpr = fixture.window->devicePixelRatio();
+    if (qAbs(dpr - 1.75) > 0.001)
+        QSKIP("175% DPR invocation required for menu title and footer leaves");
+    auto *root = fixture.window->contentItem();
+
+    // Cover the reported empty F2 menu and the rows displaced by its title,
+    // including secondary shortcut/footer text, in two live palettes.
+    for (int state = 0; state < 2; ++state) {
+        const QColor background(state ? QStringLiteral("#213546") : QStringLiteral("#654321"));
+        const QColor foreground(state ? QStringLiteral("#f0d0a0") : QStringLiteral("#b8e2fa"));
+        const QColor secondary(state ? QStringLiteral("#9ab8d6") : QStringLiteral("#d8b0e0"));
+        QVERIFY(fixture.window->setProperty("dialogHeaderBg", background));
+        QVERIFY(fixture.window->setProperty("textColor", foreground));
+        QVERIFY(fixture.window->setProperty("mutedText", secondary));
+        fixture.shell.setCommandMenus({titledUserMenu(
+            state ? QStringLiteral("Local menu -> Tools") : QStringLiteral("Main menu"), state != 0)});
+        fixture.window->resize(state ? 937 : 900, 640);
+        QCoreApplication::processEvents();
+        QStringList leafNames{
+            QStringLiteral("semanticMenuTitle-user-menu"),
+            QStringLiteral("semanticMenuBottomHint-user-menu"),
+        };
+        if (state) {
+            leafNames.append({QStringLiteral("semanticMenuItemText-user-menu-0"),
+                              QStringLiteral("semanticMenuItemText-user-menu-1"),
+                              QStringLiteral("semanticMenuItemShortcut-user-menu-1")});
+        }
+        QList<QQuickItem *> leaves;
+        for (const QString &name : leafNames) {
+            QQuickItem *leaf = nullptr;
+            QTRY_VERIFY((leaf = visualItemWithObjectName(root, name)));
+            QTRY_VERIFY(leaf->isVisible());
+            QTRY_VERIFY(leaf->width() > 0 && leaf->height() > 0);
+            QTRY_VERIFY(qAbs(leaf->mapToItem(root, QPointF{}).x() * dpr
+                             - qRound(leaf->mapToItem(root, QPointF{}).x() * dpr)) < 0.001);
+            QTRY_VERIFY(qAbs(leaf->mapToItem(root, QPointF{}).y() * dpr
+                             - qRound(leaf->mapToItem(root, QPointF{}).y() * dpr)) < 0.001);
+            const QPointF origin = leaf->mapToItem(root, QPointF{});
+            const QPointF ux = leaf->mapToItem(root, QPointF(1, 0)) - origin;
+            const QPointF uy = leaf->mapToItem(root, QPointF(0, 1)) - origin;
+            QVERIFY((ux - QPointF(1, 0)).manhattanLength() < 0.001);
+            QVERIFY((uy - QPointF(0, 1)).manhattanLength() < 0.001);
+            if (name.contains(QStringLiteral("Title"))
+                || name.contains(QStringLiteral("BottomHint"))) {
+                QVERIFY(qAbs(leaf->width() * dpr - qRound(leaf->width() * dpr)) < 0.001);
+                QVERIFY(qAbs(leaf->height() * dpr - qRound(leaf->height() * dpr)) < 0.001);
+            }
+            QCOMPARE(leaf->property("renderType").toInt(), int(QQuickWindow::NativeTextRendering));
+            qInfo().noquote() << QStringLiteral("[FIX:menu-title] %1 physical=(%2,%3) DPR=%4")
+                .arg(name).arg(origin.x() * dpr).arg(origin.y() * dpr).arg(dpr);
+            leaves.append(leaf);
+        }
+        fixture.window->requestUpdate();
+        QImage frame;
+        QTRY_VERIFY_WITH_TIMEOUT(!(frame = fixture.window->grabWindow()).isNull(), 3000);
+        for (QQuickItem *leaf : leaves) {
+            const QPointF origin = leaf->mapToItem(root, QPointF{});
+            const QRect crop(qRound(origin.x() * dpr), qRound(origin.y() * dpr),
+                             qRound(leaf->width() * dpr), qRound(leaf->height() * dpr));
+            QVERIFY(frame.rect().contains(crop));
+            const QImage renderedLeaf = frame.copy(crop);
+            const QColor expected = leaf->objectName().contains(QStringLiteral("BottomHint"))
+                || leaf->objectName().contains(QStringLiteral("Shortcut")) ? secondary : foreground;
+            QVERIFY2(imageContainsColor(renderedLeaf, expected), qPrintable(leaf->objectName()));
+            if (leaf->objectName().contains(QStringLiteral("Title")))
+                QVERIFY(imageContainsColor(renderedLeaf, background));
+        }
+        const QString capture = qEnvironmentVariable("F4_MENU_TITLE_TEST_CAPTURE");
+        if (!capture.isEmpty())
+            QVERIFY(frame.save(capture + QStringLiteral("-%1.png").arg(state)));
+    }
 }
 
 void F4QuickViewSurfaceTests::menuScrollBarUsesNativeExtentAndCommitsMouseDrag()

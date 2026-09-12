@@ -449,6 +449,7 @@ void F4IconProviderTests::chromeLucideRoutesRenderNamedResources()
     const QColor tint(QStringLiteral("#4e9bd4"));
     const QStringList names{
         QStringLiteral("arrow-down"),
+        QStringLiteral("arrow-left"),
         QStringLiteral("arrow-down-a-z"),
         QStringLiteral("arrow-down-wide-narrow"),
         QStringLiteral("arrow-up"),

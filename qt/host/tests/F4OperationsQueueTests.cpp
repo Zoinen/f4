@@ -762,6 +762,7 @@ class F4OperationsQueueTests final : public QObject
     Q_OBJECT
 
 private slots:
+    void helpDialogRendersAndRoutesNavigation();
     void driveDetailsUseMeasuredColumnsOnPhysicalPixelGrid();
     void messageBodyWrapsToGuiWidth();
     void settingsSceneReplayProfile();
@@ -4874,6 +4875,165 @@ void F4OperationsQueueTests::menuBarPressDragReleaseActivatesItem_data()
     QTest::newRow("separator") << 3;
     QTest::newRow("outside") << -1;
     QTest::newRow("click-opens") << -2;
+}
+
+void F4OperationsQueueTests::helpDialogRendersAndRoutesNavigation()
+{
+    auto scene = panelScene();
+    auto dialog = QJsonDocument::fromJson(R"({"id":"help","kind":"dialog","layout":"help",
+      "title":"Help: Contents [topic]","searchHint":"Search: type  Next: F3  Previous: Shift+F3","topic":"Contents","w":76,"h":30,"canGoBack":true,"showClose":true,
+      "scrollTop":0,"pageRows":20,"totalRows":100,"stickyRows":1,"helpLines":[
+      {"index":0,"centered":true,"spans":[{"text":"Help heading","bold":true,"link":-1}]},
+      {"index":1,"centered":false,"spans":[{"text":"Next ","bold":false,"link":0,"selected":true,"searchMatch":true,"searchSelected":false},{"text":"topic","bold":false,"link":0,"selected":true,"searchMatch":true,"searchSelected":true}]},
+      {"index":2,"centered":false,"spans":[{"text":"<literal> & text","bold":false,"link":-1}]}
+    ]})").object().toVariantMap();
+    scene["dialogs"] = QVariantList{dialog};
+    QueueFixture fixture(scene, false, true);
+    QVERIFY(fixture.window);
+    auto *root = fixture.window->contentItem();
+    QTRY_VERIFY(visualItem(root, "semanticDialog-help"));
+    if (qEnvironmentVariable("QT_SCALE_FACTOR") == "1.75")
+        QCOMPARE(fixture.window->devicePixelRatio(), 1.75);
+    auto *title = visualItem(root, "semanticDialogTitle");
+    auto *link = visualItem(root, "semanticHelpLine-1");
+    QVERIFY(title && link);
+    QCOMPARE(title->property("text").toString(), QString("Help: Contents [topic]"));
+    auto *searchHint = visualItem(root, "semanticHelpSearchHint");
+    QVERIFY(searchHint && searchHint->isVisible());
+    QVERIFY(searchHint->property("text").toString().contains("Shift+F3"));
+    QVERIFY(link->property("text").toString().contains("#ffff00"));
+    QTest::mouseMove(fixture.window, QPoint(5,5));
+    QTest::qWait(60);
+    const auto backgroundCapture = fixture.window->grabWindow();
+    const auto backgroundPoint = link->mapToScene(QPointF(15,1)) * fixture.window->devicePixelRatio();
+    const QColor selectedBackground = fixture.window->property("selectedBg").value<QColor>();
+    QCOMPARE(backgroundCapture.pixelColor(backgroundPoint.toPoint()), selectedBackground);
+    QVERIFY(link->property("text").toString().contains("href"));
+    QVERIFY(visualItem(root, "semanticHelpLine-2")->property("text").toString().contains("&lt;literal&gt;"));
+    const auto normalLinkText = link->property("text").toString();
+    fixture.shell.clearActions();
+    QTest::mouseMove(fixture.window, link->mapToScene(QPointF(15,link->height()/2)).toPoint());
+    QTRY_VERIFY(link->property("text").toString() != normalLinkText);
+    const auto hoverCapture = fixture.window->grabWindow();
+    QVERIFY(!hoverCapture.isNull());
+    if (qEnvironmentVariableIsSet("F4_HELP_CAPTURE"))
+        QVERIFY(hoverCapture.save(qEnvironmentVariable("F4_HELP_CAPTURE") + ".hover.png"));
+    for (const auto &action : std::as_const(fixture.shell.actions))
+        QVERIFY2(!action.value("action").toString().startsWith("help.")
+                     || action.value("action") == "help.viewport",
+                 qPrintable(QJsonDocument::fromVariant(action).toJson()));
+    QTest::mouseMove(fixture.window, QPoint(5,5));
+    QTRY_COMPARE(link->property("text").toString(), normalLinkText);
+    for (const QSize size : {QSize(1024,720), QSize(853,617)}) {
+        fixture.window->resize(size);
+        QTest::qWait(100);
+        QVERIFY(!fixture.window->grabWindow().isNull());
+        for (const auto *name : {"semanticDialogTitle", "dialogBackButtonIcon", "semanticHelpSearchHint",
+                                "semanticHelpLine-0", "semanticHelpLine-1", "semanticHelpLine-2"}) {
+            auto *leaf = visualItem(root, name);
+            QVERIFY(leaf && leaf->isVisible());
+            const auto origin = leaf->mapToItem(root, QPointF());
+            const auto physical = origin * fixture.window->devicePixelRatio();
+            QVERIFY2(qAbs(physical.x()-qRound64(physical.x())) < .02 && qAbs(physical.y()-qRound64(physical.y())) < .02,
+                qPrintable(QString("%1 at %2,%3").arg(name).arg(physical.x()).arg(physical.y())));
+            const auto extent = QSizeF(leaf->width(), leaf->height()) * fixture.window->devicePixelRatio();
+            QVERIFY2(qAbs(extent.width()-qRound64(extent.width())) < .02 && qAbs(extent.height()-qRound64(extent.height())) < .02,
+                qPrintable(QString("%1 physical extent %2x%3").arg(name).arg(extent.width()).arg(extent.height())));
+            QVERIFY(QLineF(leaf->mapToItem(root,QPointF(1,0))-origin,QPointF(1,0)).length()<.001);
+            QVERIFY(QLineF(leaf->mapToItem(root,QPointF(0,1))-origin,QPointF(0,1)).length()<.001);
+        }
+        for (const auto *name : {"semanticDialog-help", "dialogMoveHandle", "dialogHeaderSeparator",
+                                "dialogHeaderFill", "dialogBackButtonBackground", "dialogCloseBackground",
+                                "semanticHelpBody", "semanticHelpScrollBarHandle"}) {
+            auto *item = visualItem(root, name);
+            QVERIFY(item);
+            const auto p = item->mapToItem(root, QPointF()) * fixture.window->devicePixelRatio();
+            QVERIFY2(qAbs(p.x()-qRound64(p.x())) < .02 && qAbs(p.y()-qRound64(p.y())) < .02,
+                qPrintable(QString("%1 at %2,%3").arg(name).arg(p.x()).arg(p.y())));
+            QVERIFY(qAbs(item->width()*fixture.window->devicePixelRatio()-qRound64(item->width()*fixture.window->devicePixelRatio())) < .02);
+            QVERIFY(qAbs(item->height()*fixture.window->devicePixelRatio()-qRound64(item->height()*fixture.window->devicePixelRatio())) < .02);
+        }
+        auto *closeButton = visualItem(root, "dialogCloseButton");
+        QVERIFY(closeButton);
+        auto *closeIcon = visualItem(closeButton, "titleBarButtonIcon");
+        QVERIFY(closeIcon);
+        const auto origin = closeIcon->mapToItem(root, QPointF());
+        const auto physical = origin * fixture.window->devicePixelRatio();
+        QVERIFY(qAbs(physical.x()-qRound64(physical.x())) < .02);
+        QVERIFY(qAbs(physical.y()-qRound64(physical.y())) < .02);
+        QVERIFY(QLineF(closeIcon->mapToItem(root,QPointF(1,0))-origin,QPointF(1,0)).length()<.001);
+        QVERIFY(QLineF(closeIcon->mapToItem(root,QPointF(0,1))-origin,QPointF(0,1)).length()<.001);
+    }
+    fixture.shell.clearActions();
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+                     link->mapToScene(QPointF(15, link->height()/2)).toPoint());
+    QTRY_VERIFY(!fixture.shell.actions.isEmpty());
+    QCOMPARE(fixture.shell.actions.last().value("action").toString(), QString("help.activate"));
+    QCOMPARE(fixture.shell.actions.last().value("index").toInt(), 0);
+    QCOMPARE(fixture.shell.actions.last().value("topic").toString(), QString("Contents"));
+    auto *back = visualItem(root, "dialogBackButton");
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+                     back->mapToScene(QPointF(back->width()/2,back->height()/2)).toPoint());
+    QCOMPARE(fixture.shell.actions.last().value("action").toString(), QString("help.back"));
+    auto *body = visualItem(root, "semanticHelpBody");
+    const auto wheelPoint = body->mapToScene(QPointF(20,30)).toPoint();
+    const auto scrollDelta = [&] {
+        int total = 0;
+        for (const auto &action : std::as_const(fixture.shell.actions))
+            if (action.value("action") == "help.scroll") total += action.value("delta").toInt();
+        return total;
+    };
+    fixture.shell.clearActions();
+    sendPixelWheel(fixture.window, wheelPoint, -40);
+    const int combinedDelta = scrollDelta();
+    QVERIFY(combinedDelta > 0);
+    sendPixelWheel(fixture.window, wheelPoint, 40);
+    fixture.shell.clearActions();
+    for (int i = 0; i < 40; ++i) sendPixelWheel(fixture.window, wheelPoint, -1);
+    QCOMPARE(scrollDelta(), combinedDelta);
+    sendPixelWheel(fixture.window, wheelPoint, -90);
+    QTRY_COMPARE(fixture.shell.actions.last().value("action").toString(), QString("help.scroll"));
+    QVERIFY(fixture.shell.actions.last().value("delta").toInt() > 0);
+    if (qEnvironmentVariableIsSet("F4_HELP_CAPTURE"))
+        QVERIFY(fixture.window->grabWindow().save(qEnvironmentVariable("F4_HELP_CAPTURE")));
+    auto *close = visualItem(root, "dialogCloseButton");
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+                     close->mapToScene(QPointF(close->width()/2,close->height()/2)).toPoint());
+    QCOMPARE(fixture.shell.actions.last().value("action").toString(), QString("dialog.close"));
+    // Back is a common-dialog capability, not another help-specific header.
+    dialog = QVariantMap{{"id", "ordinary"}, {"kind", "dialog"}, {"title", "Ordinary dialog"},
+                         {"showClose", true}, {"backAction", "navigation.back"}, {"canGoBack", true}};
+    scene["dialogs"] = QVariantList{dialog};
+    fixture.shell.setScene(scene);
+    QTRY_VERIFY(visualItem(root, "semanticDialog-ordinary"));
+    QTRY_VERIFY(!visualItem(root, "semanticDialog-help"));
+    auto *ordinary = visualItem(root, "semanticDialog-ordinary");
+    back = visualItem(ordinary, "dialogBackButton");
+    QVERIFY(back && back->isVisible());
+    // Let the newly loaded dialog complete its layout before mapping the click.
+    QTest::qWait(100);
+    QVERIFY(!fixture.window->grabWindow().isNull());
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+                     back->mapToScene(QPointF(back->width()/2,back->height()/2)).toPoint());
+    QCOMPARE(fixture.shell.actions.last().value("action").toString(), QString("navigation.back"));
+    title = visualItem(ordinary, "semanticDialogTitle");
+    const qreal titleWithBack = title->x();
+    dialog["canGoBack"] = false;
+    scene["dialogs"] = QVariantList{dialog};
+    fixture.shell.setScene(scene);
+    QTRY_VERIFY(!back->isVisible());
+    QVERIFY(title->x() < titleWithBack);
+    dialog["canGoBack"] = true;
+    scene["dialogs"] = QVariantList{dialog};
+    fixture.shell.setScene(scene);
+    QTRY_VERIFY(back->isVisible());
+    QTRY_COMPARE(title->x(), titleWithBack);
+    dialog.remove("backAction");
+    scene["dialogs"] = QVariantList{dialog};
+    fixture.shell.setScene(scene);
+    QTRY_VERIFY(!back->isVisible());
+    qInfo() << "[FIX:help-dialog] shared chrome, optional Back and hover checked at DPR"
+            << fixture.window->devicePixelRatio();
 }
 
 void F4OperationsQueueTests::adaptiveChoicesAndFilledFields()

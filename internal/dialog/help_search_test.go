@@ -2,6 +2,7 @@ package dialog
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/unxed/f4/internal/testutil"
@@ -112,6 +113,40 @@ func TestHelpSearchRendersHighlightAndHint(t *testing.T) {
 	}
 	if !foundHighlightedQuery {
 		t.Fatal("live query was not highlighted in the help title")
+	}
+}
+
+func TestHelpSearchNeverChangesRenderedCharacters(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		lines []string
+	}{
+		{name: "plain and links", lines: []string{"f4 Help Index", "~Viewer / Editor keys~Test@"}},
+		{name: "centered and wide", lines: []string{"^#Centered Help#", "界 Help 😀 needle"}},
+		{name: "clipped centered line", lines: []string{"^" + strings.Repeat("e", 90)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			view, scr := newSearchableHelpForTest(t, tc.lines)
+			HandleHelpSearchHotkey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, Char: 'e'})
+			view.Show(scr)
+			x1, y1, x2, y2 := view.GetPosition()
+			before := make([]uint64, 0)
+			for y := y1 + 1; y < y2; y++ {
+				for x := x1; x <= x2; x++ {
+					before = append(before, scr.GetCell(x, y).Char)
+				}
+			}
+			RenderHelpSearch(scr)
+			index := 0
+			for y := y1 + 1; y < y2; y++ {
+				for x := x1; x <= x2; x++ {
+					if got := scr.GetCell(x, y).Char; got != before[index] {
+						t.Fatalf("search overwrote character at %d,%d: %#x -> %#x", x, y, before[index], got)
+					}
+					index++
+				}
+			}
+		})
 	}
 }
 

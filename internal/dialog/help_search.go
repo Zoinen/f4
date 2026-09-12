@@ -154,6 +154,7 @@ func UpdateHelpSearch(frame vtui.Frame) {
 		CurrentHelpSearch.Selected = 0
 		CurrentHelpSearch.scrollTop = scrollHelpToLine(frame, topic, CurrentHelpSearch.Matches[0].line)
 	}
+	traceHelpSearch(CurrentHelpSearch)
 	vtui.FrameManager.Redraw()
 }
 
@@ -175,6 +176,7 @@ func MoveHelpSearch(frame vtui.Frame, reverse bool) bool {
 		}
 	}
 	CurrentHelpSearch.scrollTop = scrollHelpToLine(frame, topic, CurrentHelpSearch.Matches[CurrentHelpSearch.Selected].line)
+	traceHelpSearch(CurrentHelpSearch)
 	vtui.FrameManager.Redraw()
 	return true
 }
@@ -225,6 +227,9 @@ func visibleHelpLine(line string) (string, bool) {
 }
 
 func scrollHelpToLine(frame vtui.Frame, topic *vtui.HelpTopic, line int) int {
+	if native, ok := frame.(interface{ ScrollToHelpLine(int) int }); ok {
+		return native.ScrollToHelpLine(line)
+	}
 	_, y1, _, y2 := frame.GetPosition()
 	contentHeight := (y2 - y1 + 1) - 2 - topic.StickyRows
 	if contentHeight < 1 {
@@ -445,33 +450,39 @@ func RenderHelpSearch(scr *vtui.ScreenBuf) {
 	if actual, ok := helpViewScrollTop(frame); ok {
 		CurrentHelpSearch.scrollTop = actual
 	}
-	contentWidth := (x2 - x1 - 1) - 1 // inner width minus scrollbar
+	layout, ok := frame.(interface {
+		HelpLinePosition(int) (int, int, int, bool)
+	})
+	if !ok {
+		return
+	}
 	for matchIndex, match := range CurrentHelpSearch.Matches {
 		if match.line < 0 || match.line >= len(topic.Lines) {
 			continue
 		}
-		line, centered := visibleHelpLine(topic.Lines[match.line])
+		line, _ := visibleHelpLine(topic.Lines[match.line])
 		runes := []rune(line)
 		if match.start < 0 || match.end > len(runes) {
 			continue
 		}
-		lineX := x1 + 1
-		if centered {
-			lineX += (contentWidth - runewidth.StringWidth(line)) / 2
-		}
-		lineX += runewidth.StringWidth(string(runes[:match.start]))
-
-		lineY := y1 + 1
-		if match.line < topic.StickyRows {
-			lineY += match.line
-		} else {
-			lineY += topic.StickyRows + (match.line - topic.StickyRows - CurrentHelpSearch.scrollTop)
-		}
-		if lineY < y1+1 || lineY > y2-1 {
+		lineX, lineY, width, visible := layout.HelpLinePosition(match.line)
+		if !visible {
 			continue
 		}
+		// Match indices are runes; the console renderer allocates at least one
+		// cell per rune, plus filler cells for wide characters.
+		start, end := 0, 0
+		for i, r := range runes[:match.end] {
+			if i == match.start {
+				start = end
+			}
+			end += max(1, runewidth.RuneWidth(r))
+		}
 		foreground := vtui.GetRGBFore(vtui.Palette[vtui.ColHelpLink])
-		cells := vtui.StringToCharInfo(string(runes[match.start:match.end]), 0)
+		cells := make([]vtui.CharInfo, 0, max(0, min(width, end)-start))
+		for offset := start; offset < min(width, end); offset++ {
+			cells = append(cells, scr.GetCell(lineX+offset, lineY))
+		}
 		if matchIndex == CurrentHelpSearch.Selected {
 			selectedAttr := vtui.SetRGBFore(
 				vtui.Palette[vtui.ColHelpSelectedLink],
@@ -482,10 +493,10 @@ func RenderHelpSearch(scr *vtui.ScreenBuf) {
 			}
 		} else {
 			for i := range cells {
-				cells[i].Attributes = vtui.SetRGBFore(scr.GetCell(lineX+i, lineY).Attributes, foreground)
+				cells[i].Attributes = vtui.SetRGBFore(cells[i].Attributes, foreground)
 			}
 		}
-		scr.Write(lineX, lineY, cells)
+		scr.Write(lineX+start, lineY, cells)
 	}
 }
 

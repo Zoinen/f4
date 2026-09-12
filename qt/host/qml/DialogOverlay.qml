@@ -67,5 +67,15 @@ Item {
         hostWindow: dialogOverlay.hostWindow
         menuBar: dialogOverlay.menuBar
         frame: dialogOverlay.frame
+        contentComponent: frame.layout === "help" ? helpContentComponent : null
+        backAction: frame.layout === "help" ? "help.back" : hostWindow.cleanText(frame.backAction)
+    }
+
+    Component {
+        id: helpContentComponent
+        HelpContent {
+            hostWindow: dialogOverlay.hostWindow
+            frame: dialogOverlay.frame
+        }
     }
 }

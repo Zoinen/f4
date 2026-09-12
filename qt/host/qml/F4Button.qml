@@ -75,6 +75,8 @@ T.Button {
                 hostWindow: control.hostWindow
                 width: visible ? control.snap(control.iconSize) : 0
                 height: visible ? control.snap(control.iconSize) : 0
+                Layout.preferredWidth: control.snap(control.iconSize)
+                Layout.preferredHeight: control.snap(control.iconSize)
                 sourceSize: Qt.size(control.iconSize, control.iconSize)
                 source: control.iconSource
                 visible: control.iconSource.toString() !== ""

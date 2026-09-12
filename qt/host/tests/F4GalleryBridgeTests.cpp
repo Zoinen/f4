@@ -15,6 +15,7 @@
 #include <QQuickView>
 #include <QRectF>
 #include <QScopedPointer>
+#include <QScopeGuard>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QStringList>
@@ -158,6 +159,7 @@ private slots:
     void viewerIgnoresSemanticPresentation();
     void galleryPresentationStateCommitsSynchronouslyInOneLayoutPass();
     void catalogPathChangeAppliesPresentationBeforeSessionSignals();
+    void navigateParentReentryKeepsCursor();
     void equalGalleryColumnSchemaDoesNotResetLayout();
     void loadsTwoSessionsAndWindowlessQml();
 };
@@ -4717,6 +4719,236 @@ void F4GalleryBridgeTests::catalogPathChangeAppliesPresentationBeforeSessionSign
     QTest::qWait(20);
     QCOMPARE(layout->property("delegateCommitRevision").toULongLong(),
              delegateCommitBefore + 1);
+}
+
+void F4GalleryBridgeTests::navigateParentReentryKeepsCursor()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString parentPath = directory.path();
+    const QString childPath = directory.filePath(QStringLiteral("Photos"));
+    const auto catalog = [&](const QString &path, int count, int cursor,
+                             qulonglong revision) {
+        QVariantMap panel = longCatalogScene(count, cursor)
+                                .value(QStringLiteral("shell")).toMap()
+                                .value(QStringLiteral("panels")).toList()
+                                .constFirst().toMap();
+        QVariantList entries = panel.value(QStringLiteral("entries")).toList();
+        for (int row = 0; row < entries.size(); ++row) {
+            QVariantMap entry = entries.at(row).toMap();
+            const bool isDirectory = path == parentPath || row == 0;
+            const QString name = row == 0 ? QStringLiteral("..")
+                : path == parentPath
+                    ? (row == 46 ? QStringLiteral("Photos")
+                                 : QStringLiteral("folder-%1").arg(row))
+                    : QStringLiteral("image-%1.jpg").arg(row);
+            entry.insert(QStringLiteral("name"), name);
+            entry.insert(QStringLiteral("entryId"), path + QLatin1Char('/') + name);
+            entry.insert(QStringLiteral("isDir"), isDirectory);
+            entry.insert(QStringLiteral("isUp"), row == 0);
+            entry.insert(QStringLiteral("isImage"), !isDirectory);
+            entry.insert(QStringLiteral("size"), (count - row) * 1024);
+            // Identity-only catalogs must not depend on real image files.
+            entry.remove(QStringLiteral("localPath"));
+            entries[row] = entry;
+        }
+        panel.insert(QStringLiteral("path"), path);
+        panel.insert(QStringLiteral("entries"), entries);
+        panel.insert(QStringLiteral("totalCount"), count);
+        panel.insert(QStringLiteral("cursorEntryId"),
+                     entries.at(cursor).toMap().value(QStringLiteral("entryId")));
+        panel.insert(QStringLiteral("catalogRevision"), revision);
+        panel.insert(QStringLiteral("metadataDeferred"), true);
+        panel.insert(QStringLiteral("metadataRevision"), revision);
+        panel.insert(QStringLiteral("galleryLayoutMode"), QStringLiteral("masonry"));
+        panel.insert(QStringLiteral("galleryDensity"), 150);
+        panel.insert(QStringLiteral("sortMode"), QStringLiteral("size"));
+        panel.insert(QStringLiteral("sortReverse"), true);
+        return panel;
+    };
+    const auto sceneFor = [](const QVariantMap &panel) {
+        return QVariantMap{
+            {QStringLiteral("schema"), QStringLiteral("app")},
+            {QStringLiteral("shell"), QVariantMap{
+                 {QStringLiteral("panels"), QVariantList{panel}},
+             }},
+        };
+    };
+    const QVariantMap initialChild = catalog(childPath, 299, 0, 77);
+    const QVariantMap parent = catalog(parentPath, 60, 46, 78);
+    QVariantMap preview = catalog(childPath, 299, 0, 79);
+    preview.insert(QStringLiteral("entries"),
+                   preview.value(QStringLiteral("entries")).toList().mid(0, 48));
+    preview.insert(QStringLiteral("totalCount"), 48);
+    preview.insert(QStringLiteral("catalogRowsDeferred"), true);
+    preview.insert(QStringLiteral("catalogProvisional"), true);
+    preview.insert(QStringLiteral("loading"), true);
+    const QVariantMap fullChild = catalog(childPath, 299, 0, 80);
+
+    QQuickView view;
+    view.engine()->addImportPath(QStringLiteral(":"));
+    view.engine()->addImportPath(QStringLiteral("qrc:/qt/qml"));
+    F4GalleryBridge bridge(view.engine());
+    // Destroy the QML tree while its bridge/session are still alive, including
+    // early returns from failed assertions. The view owns the heap component.
+    const auto clearView = qScopeGuard([&view] { view.setSource(QUrl()); });
+    QVERIFY(bridge.available());
+    bridge.synchronizeScene(sceneFor(initialChild));
+
+    auto *component = new QQmlComponent(
+        view.engine(), bridge.panelComponentUrl(), &view);
+    QTRY_VERIFY_WITH_TIMEOUT(component->status() != QQmlComponent::Loading, 5000);
+    QVERIFY2(component->isReady(), qPrintable(component->errorString()));
+    QObject *host = component->create();
+    QVERIFY2(host, qPrintable(component->errorString()));
+    view.setContent(bridge.panelComponentUrl(), component, host);
+    QVERIFY(host->setProperty("width", 640));
+    QVERIFY(host->setProperty("height", 480));
+    QVERIFY(host->setProperty("side", 0));
+    QVERIFY(host->setProperty(
+        "bridge", QVariant::fromValue(static_cast<QObject *>(&bridge))));
+    QVERIFY(host->setProperty("panel", initialChild));
+    QVERIFY(host->setProperty("panelActive", true));
+    view.show();
+    QVERIFY(host->setProperty("devicePixelRatio", view.devicePixelRatio()));
+    view.requestActivate();
+    QVERIFY(QMetaObject::invokeMethod(host, "forceActiveFocus"));
+
+    QObject *panel = host->findChild<QObject *>(QStringLiteral("embeddedGalleryPanel"));
+    QObject *layout = host->findChild<QObject *>(QStringLiteral("galleryViewportItem"));
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(bridge.sessionForSide(0));
+    QVERIFY(panel);
+    QVERIFY(layout);
+    QVERIFY(session);
+    QObject *controller = panel->property("controller").value<QObject *>();
+    QVERIFY(controller);
+    QVERIFY(controller->property("currentIndex").isValid());
+    QVERIFY(controller->property("visualCursorIndex").isValid());
+    QVERIFY(panel->property("visualCursorIndex").isValid());
+    QVERIFY(layout->property("currentIndex").isValid());
+    QTRY_VERIFY(panel->property("activeFocus").toBool());
+    QTRY_COMPARE(layout->property("count").toInt(), 299);
+    QTRY_VERIFY(layout->property("contentHeight").toReal()
+                > layout->property("height").toReal());
+    QTRY_COMPARE(layout->property("contentY").toReal(), 0.0);
+    QRectF initialGeometry;
+    QVERIFY(QMetaObject::invokeMethod(
+        layout, "indexGeometry", Q_RETURN_ARG(QRectF, initialGeometry), Q_ARG(int, 0)));
+    QVERIFY(!initialGeometry.isEmpty());
+    QVERIFY(session->isDirectoryAt(0));
+    QCOMPARE(layout->property("paddingTop").toReal(), 6.0);
+    QCOMPARE(initialGeometry.top(), 0.0);
+
+    const auto childPlacementFailure = [&]() -> QString {
+        QRectF geometry;
+        const bool geometryAvailable = QMetaObject::invokeMethod(
+            layout, "indexGeometry", Q_RETURN_ARG(QRectF, geometry), Q_ARG(int, 0));
+        const int current = controller->property("currentIndex").toInt();
+        const int controllerVisual = controller->property("visualCursorIndex").toInt();
+        const int panelVisual = panel->property("visualCursorIndex").toInt();
+        const int nativeCurrent = layout->property("currentIndex").toInt();
+        const qreal offset = layout->property("contentY").toReal();
+        if (session->currentIndex() == 0 && current == 0
+            && controllerVisual == 0 && panelVisual == 0 && nativeCurrent == 0
+            && offset == 0.0 && geometryAvailable && !geometry.isEmpty()
+            && geometry.top() == initialGeometry.top()
+            && geometry.bottom() <= layout->property("height").toReal()) {
+            return {};
+        }
+        return QStringLiteral(
+            "session=%1 controller=%2 controllerVisual=%3 panelVisual=%4 "
+            "layoutCurrent=%5 offset=%6 geometry0=(%7,%8 %9x%10) initialTop=%11")
+            .arg(session->currentIndex()).arg(current).arg(controllerVisual)
+            .arg(panelVisual).arg(nativeCurrent).arg(offset, 0, 'g', 17)
+            .arg(geometry.x()).arg(geometry.y()).arg(geometry.width())
+            .arg(geometry.height()).arg(initialGeometry.top());
+    };
+    QString failure = childPlacementFailure();
+    QVERIFY2(failure.isEmpty(), qPrintable(QStringLiteral("initial child: ") + failure));
+
+    QSignalSpy actions(&bridge, &F4GalleryBridge::uiActionRequested);
+    QSignalSpy transactionsStarted(
+        &bridge, &F4GalleryBridge::panelPresentationTransactionStarted);
+    QSignalSpy transactionsFinished(
+        &bridge, &F4GalleryBridge::panelPresentationTransactionFinished);
+    QVERIFY(actions.isValid());
+    QVERIFY(transactionsStarted.isValid());
+    QVERIFY(transactionsFinished.isValid());
+
+    QTest::keyClick(&view, Qt::Key_Return);
+    QCOMPARE(actions.size(), 1);
+    QCOMPARE(actions.constLast().constFirst().toMap().value(QStringLiteral("action")),
+             QVariant(QStringLiteral("panel.open")));
+    QCOMPARE(actions.constLast().constFirst().toMap().value(QStringLiteral("entryId")),
+             initialChild.value(QStringLiteral("cursorEntryId")));
+    bridge.synchronizePanelCatalog(parent);
+    QCOMPARE(session->currentPath(), parentPath);
+    QCOMPARE(session->currentIndex(), 46);
+    QTRY_COMPARE(layout->property("count").toInt(), 60);
+    QTRY_COMPARE(layout->property("currentIndex").toInt(), 46);
+    QTRY_COMPARE(panel->property("visualCursorIndex").toInt(), 46);
+    QTRY_VERIFY(layout->property("contentY").toReal() > 0.0);
+    QCOMPARE(host->property("panel").toMap().value(QStringLiteral("path")).toString(),
+             childPath);
+
+    // The root projection catches up only after the direct path transaction.
+    bridge.synchronizeScene(sceneFor(parent));
+    QVERIFY(host->setProperty("panel", parent));
+    QTRY_VERIFY(panel->property("activeFocus").toBool());
+    actions.clear();
+    QTest::keyClick(&view, Qt::Key_Return);
+    QCOMPARE(actions.size(), 1);
+    QCOMPARE(actions.constLast().constFirst().toMap().value(QStringLiteral("action")),
+             QVariant(QStringLiteral("panel.open")));
+    QCOMPARE(actions.constLast().constFirst().toMap().value(QStringLiteral("entryId")),
+             parent.value(QStringLiteral("cursorEntryId")));
+    actions.clear();
+    transactionsStarted.clear();
+    transactionsFinished.clear();
+
+    // Size-sort delivery first publishes a 48-row provisional catalog, then
+    // inserts the remaining rows. Keep the root on parent/cursor 46 throughout
+    // both direct catalog transactions, as it may be in the live application.
+    bridge.synchronizePanelCatalog(preview);
+    QCOMPARE(session->currentPath(), childPath);
+    QCOMPARE(session->catalogRevision(), qulonglong(79));
+    QCOMPARE(session->model()->rowCount(), 48);
+    QCOMPARE(layout->property("count").toInt(), 48);
+    QVERIFY(!host->property("applyingRendererState").toBool());
+    failure = childPlacementFailure();
+    QVERIFY2(failure.isEmpty(), qPrintable(QStringLiteral("partial child: ") + failure));
+    QTest::qWait(250);
+    failure = childPlacementFailure();
+    QVERIFY2(failure.isEmpty(), qPrintable(QStringLiteral("settled partial child: ") + failure));
+
+    bridge.synchronizePanelCatalog(fullChild);
+    QCOMPARE(session->catalogRevision(), qulonglong(80));
+    QCOMPARE(session->model()->rowCount(), 299);
+    QCOMPARE(layout->property("count").toInt(), 299);
+    QVERIFY(!host->property("applyingRendererState").toBool());
+    failure = childPlacementFailure();
+    QVERIFY2(failure.isEmpty(), qPrintable(QStringLiteral("full child: ") + failure));
+    QTest::qWait(250);
+    failure = childPlacementFailure();
+    QVERIFY2(failure.isEmpty(), qPrintable(QStringLiteral("settled full child: ") + failure));
+    QCOMPARE(transactionsStarted.size(), 2);
+    QCOMPARE(transactionsFinished.size(), 2);
+    QCOMPARE(host->property("panel").toMap().value(QStringLiteral("path")).toString(),
+             parentPath);
+
+    // A delayed preview projection must not restore the parent's viewport or
+    // select a photo after the complete catalog already reached the session.
+    QVERIFY(host->setProperty("panel", preview));
+    QTest::qWait(250);
+    QCOMPARE(session->catalogRevision(), qulonglong(80));
+    failure = childPlacementFailure();
+    QVERIFY2(failure.isEmpty(), qPrintable(QStringLiteral("lagging root preview: ") + failure));
+    bridge.synchronizeScene(sceneFor(fullChild));
+    QVERIFY(host->setProperty("panel", fullChild));
+    QTest::qWait(250);
+    failure = childPlacementFailure();
+    QVERIFY2(failure.isEmpty(), qPrintable(QStringLiteral("root caught up: ") + failure));
+    QCOMPARE(actions.size(), 0);
 }
 
 void F4GalleryBridgeTests::equalGalleryColumnSchemaDoesNotResetLayout()

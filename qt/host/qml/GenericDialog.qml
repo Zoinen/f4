@@ -14,6 +14,12 @@ Rectangle {
     required property Item menuBar
     objectName: "semanticDialog-" + hostWindow.cleanText(frame.id)
     property var frame: ({})
+    // Optional native content uses the same chrome, geometry and resize path as
+    // semantic form controls. The content component owns only its body.
+    property Component contentComponent: null
+    readonly property bool customContent: contentComponent !== null
+    property string backAction: hostWindow.cleanText(frame.backAction)
+    property bool canGoBack: frame.canGoBack === true
     readonly property bool settingsLayout: frame.layout === "settings"
     property bool nativeLayout: hostWindow.isAppScene()
     property bool userGeometrySet: false
@@ -33,7 +39,7 @@ Rectangle {
     }
     readonly property real contentPadding: hostWindow.snapPx(24)
     readonly property var rowEdges: calculateRowEdges()
-    readonly property real bodyContentHeight: settingsLayout ? 0 : calculateBodyContentHeight()
+    readonly property real bodyContentHeight: settingsLayout || customContent ? 0 : calculateBodyContentHeight()
     readonly property real geometryLeft: 12
     readonly property real geometryTop: menuBar.height + 8
     readonly property real geometryRight: hostWindow.width - 12
@@ -44,11 +50,13 @@ Rectangle {
                                                 1, geometryBottom - geometryTop)
     readonly property real minimumDialogWidth: Math.min(320, availableWidth)
     readonly property real minimumDialogHeight: Math.min(160, availableHeight)
-    readonly property real preferredWidth: settingsLayout
+    readonly property real preferredWidth: customContent
+        ? Math.min(availableWidth, Math.max(320, (customBody.item ? customBody.item.implicitWidth : 0) + 2 * contentPadding)) : settingsLayout
         ? Math.min(availableWidth, Math.max(640, hostWindow.pxW(frame.w))) : nativeLayout
         ? Math.min(availableWidth, Math.max(320, hostWindow.pxW(contentRight - contentLeft) + 2 * contentPadding))
         : Math.min(availableWidth, hostWindow.pxW(frame.w))
-    readonly property real preferredHeight: settingsLayout
+    readonly property real preferredHeight: customContent
+        ? Math.min(availableHeight, Math.max(160, (customBody.item ? customBody.item.implicitHeight : 0) + dialogHeader.height + 2 * contentPadding)) : settingsLayout
         ? Math.min(availableHeight, Math.max(400, hostWindow.pxH(frame.h))) : nativeLayout
         ? Math.min(availableHeight, Math.max(100, bodyContentHeight + dialogHeader.height + contentPadding))
         : Math.min(availableHeight, hostWindow.pxH(frame.h))
@@ -56,7 +64,7 @@ Rectangle {
     SemanticDialogLayout {
         id: contentLayout
         hostWindow: dialogRoot.hostWindow
-        widgets: dialogRoot.settingsLayout ? [] : frame.children || []
+        widgets: dialogRoot.settingsLayout || dialogRoot.customContent ? [] : frame.children || []
         originX: dialogRoot.contentLeft
         originY: Number(frame.y || 0) + 1
         maximumWidth: Math.max(1, dialogRoot.width - 2 * dialogRoot.contentPadding)
@@ -169,7 +177,7 @@ Rectangle {
     }
 
     function ensureFocusedWidgetVisible() {
-        if (settingsLayout || !dialogBody || dialogBody.height <= 0)
+        if (settingsLayout || customContent || !dialogBody || dialogBody.height <= 0)
             return
         var widget = focusedWidget(frame.children || [])
         if (!widget)
@@ -186,17 +194,17 @@ Rectangle {
 
     onFrameChanged: Qt.callLater(ensureFocusedWidgetVisible)
 
-    width: maximized ? availableWidth
+    width: hostWindow.snapPx(maximized ? availableWidth
                      : userGeometrySet
                        ? clamped(userWidth, minimumDialogWidth,
                                  availableWidth)
-                       : preferredWidth
-    height: maximized ? availableHeight
+                       : preferredWidth)
+    height: hostWindow.snapPx(maximized ? availableHeight
                       : userGeometrySet
                         ? clamped(userHeight, minimumDialogHeight,
                                   availableHeight)
-                        : preferredHeight
-    x: maximized ? geometryLeft
+                        : preferredHeight)
+    x: hostWindow.snapPx(maximized ? geometryLeft
                  : userGeometrySet
                    ? clamped(userX, geometryLeft,
                              Math.max(geometryLeft, geometryRight - width))
@@ -204,8 +212,8 @@ Rectangle {
                              ? Math.round((hostWindow.width - width) / 2)
                              : hostWindow.pxX(frame.x),
                              geometryLeft,
-                             Math.max(geometryLeft, geometryRight - width))
-    y: maximized ? geometryTop
+                             Math.max(geometryLeft, geometryRight - width)))
+    y: hostWindow.snapPx(maximized ? geometryTop
                  : userGeometrySet
                    ? clamped(userY, geometryTop,
                              Math.max(geometryTop, geometryBottom - height))
@@ -213,11 +221,11 @@ Rectangle {
                              ? Math.round((hostWindow.height - height) / 2)
                              : hostWindow.pxY(frame.y),
                              geometryTop,
-                             Math.max(geometryTop, geometryBottom - height))
+                             Math.max(geometryTop, geometryBottom - height)))
     color: hostWindow.dialogBg
-    border.width: 1
+    border.width: hostWindow.snapPx(1)
     border.color: "#46586b"
-    radius: 9
+    radius: hostWindow.snapPx(9)
     clip: true
 
     MouseArea {
@@ -235,14 +243,15 @@ Rectangle {
     Rectangle {
         id: dialogHeader
         objectName: "dialogMoveHandle"
-        x: 1
-        y: 1
-        width: parent.width - 2
-        height: 43
+        x: hostWindow.snapPx(1)
+        y: hostWindow.snapPx(1)
+        width: parent.width - 2 * x
+        height: hostWindow.snapPx(43)
         color: hostWindow.dialogHeaderBg
-        radius: 8
+        radius: hostWindow.snapPx(8)
 
         Rectangle {
+            objectName: "dialogHeaderFill"
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.bottom: parent.bottom
@@ -251,10 +260,11 @@ Rectangle {
         }
 
         Rectangle {
+            objectName: "dialogHeaderSeparator"
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.bottom: parent.bottom
-            height: 1
+            height: hostWindow.snapPx(1)
             color: hostWindow.separatorColor
             opacity: 0.55
         }
@@ -304,14 +314,30 @@ Rectangle {
         anchors.left: parent.left
         anchors.right: dialogWindowButtons.left
         anchors.top: dialogHeader.top
-        height: dialogHeader.height
-        anchors.leftMargin: hostWindow.snapPx(18)
-        verticalAlignment: Text.AlignVCenter
+        height: Math.ceil(implicitHeight * hostWindow.dpr) / hostWindow.dpr
+        anchors.topMargin: hostWindow.snapPx((dialogHeader.height - height) / 2)
+        anchors.leftMargin: dialogBackButton.visible
+                            ? hostWindow.snapPx(dialogBackButton.x + dialogBackButton.width + 8)
+                            : hostWindow.snapPx(18)
         text: hostWindow.cleanText(frame.title)
         color: hostWindow.textColor
         font.pixelSize: 14
         font.weight: Font.DemiBold
         elide: Text.ElideMiddle
+    }
+
+    F4Button {
+        id: dialogBackButton
+        objectName: "dialogBackButton"
+        hostWindow: dialogRoot.hostWindow
+        visible: dialogRoot.canGoBack && dialogRoot.backAction !== ""
+        variant: "tool"
+        flat: true
+        x: hostWindow.snapPx(8)
+        y: hostWindow.snapPx(dialogHeader.y + (dialogHeader.height - height) / 2)
+        iconSource: hostWindow.semanticMenuIconSource("arrow-left", iconSize, hostWindow.textColor)
+        Accessible.name: "Back"
+        onClicked: hostWindow.action({ "target": frame.id, "action": dialogRoot.backAction }, true)
     }
 
     Row {
@@ -387,9 +413,20 @@ Rectangle {
         anchors.topMargin: dialogHeader.height + dialogRoot.contentPadding
     }
 
+    Loader {
+        id: customBody
+        objectName: "dialogCustomBody"
+        active: dialogRoot.customContent
+        sourceComponent: dialogRoot.contentComponent
+        x: dialogRoot.contentPadding
+        y: dialogHeader.height + dialogRoot.contentPadding
+        width: Math.max(0, dialogRoot.width - 2 * dialogRoot.contentPadding)
+        height: Math.max(0, dialogRoot.height - y - dialogRoot.contentPadding)
+    }
+
     Flickable {
         id: dialogBody
-        visible: !dialogRoot.settingsLayout
+        visible: !dialogRoot.settingsLayout && !dialogRoot.customContent
         objectName: "dialogBody"
         anchors.left: parent.left
         anchors.right: parent.right
@@ -419,7 +456,7 @@ Rectangle {
             height: dialogBody.contentHeight
 
             Repeater {
-                model: SemanticChildrenModel { widgets: dialogRoot.settingsLayout ? [] : frame.children || [] }
+                model: SemanticChildrenModel { widgets: dialogRoot.settingsLayout || dialogRoot.customContent ? [] : frame.children || [] }
                 delegate: SemanticWidgetDelegate {
                     required property var widgetData
                     required labelData

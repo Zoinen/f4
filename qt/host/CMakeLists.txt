@@ -283,6 +283,7 @@ endif()
 set(F4_LUCIDE_ICON_NAMES
   archive.svg
   arrow-down.svg
+  arrow-left.svg
   arrow-down-a-z.svg
   arrow-down-wide-narrow.svg
   arrow-up.svg

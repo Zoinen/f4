@@ -17,6 +17,7 @@ type HelpView struct {
 	scrollTop   int
 	selectedIdx int // Index of selected link in current.Links
 	scrollBar   *ScrollBar
+	nativeRows  int // Zero until a native help viewport reports its row capacity.
 }
 
 type helpHistoryEntry struct {
@@ -112,6 +113,7 @@ func (hv *HelpView) PopTopic() {
 	entry := hv.history[len(hv.history)-1]
 	hv.history = hv.history[:len(hv.history)-1]
 	hv.current = hv.engine.GetTopic(entry.topic)
+	hv.frame.SetTitle(" Help: " + entry.topic + " ")
 	if hv.current == nil {
 		return
 	}
@@ -191,86 +193,62 @@ func (hv *HelpView) layout() helpViewLayout {
 	return l
 }
 func (hv *HelpView) renderLine(scr *ScreenBuf, x, y int, line string, width int, lineIdx int) {
-	isCentered := strings.HasPrefix(line, "^")
-	if isCentered {
-		line = line[1:]
-	}
+	cells, offset := alignHelpCells(hv.lineCells(line, lineIdx), width, strings.HasPrefix(line, "^"))
+	scr.Write(x+offset, y, cells)
+}
 
-	var cells []CharInfo
-	currAttr := Palette[ColHelpText]
-
-	inBold := false
-	inLink := false
-
-	var lineLinks []int
-	for i, l := range hv.current.Links {
-		if l.Line == lineIdx {
-			lineLinks = append(lineLinks, i)
+func (hv *HelpView) lineCells(line string, lineIdx int) []CharInfo {
+	cells := []CharInfo{}
+	for _, span := range hv.lineSpans(line, lineIdx) {
+		attr := Palette[ColHelpText]
+		if span.bold {
+			attr = Palette[ColHelpBold]
 		}
-	}
-
-	runes := []rune(line)
-	linkTriggerCount := 0
-
-	for i := 0; i < len(runes); i++ {
-		r := runes[i]
-		switch r {
-		case '#':
-			inBold = !inBold
-			if inBold {
-				currAttr = Palette[ColHelpBold]
-			} else {
-				currAttr = Palette[ColHelpText]
+		if span.link >= 0 {
+			attr = Palette[ColHelpLink]
+			if span.link == hv.selectedIdx {
+				attr = Palette[ColHelpSelectedLink]
 			}
-			continue
-		case '~':
-			inLink = !inLink
-			if inLink {
-				if linkTriggerCount < len(lineLinks) {
-					linkIdx := lineLinks[linkTriggerCount]
-					if linkIdx == hv.selectedIdx {
-						currAttr = Palette[ColHelpSelectedLink]
-					} else {
-						currAttr = Palette[ColHelpLink]
-					}
-					linkTriggerCount++
-				} else {
-					inLink = false
-					w := runewidth.RuneWidth(r)
-					cells = append(cells, CharInfo{Char: uint64(r), Attributes: currAttr})
-					for j := 1; j < w; j++ {
-						cells = append(cells, CharInfo{Char: WideCharFiller, Attributes: currAttr})
-					}
-				}
-			} else {
-				for i+1 < len(runes) && runes[i] != '@' {
-					i++
-				}
-				currAttr = Palette[ColHelpText]
+		}
+		for _, r := range span.text {
+			cells = append(cells, CharInfo{Char: uint64(r), Attributes: attr})
+			for j := 1; j < runewidth.RuneWidth(r); j++ {
+				cells = append(cells, CharInfo{Char: WideCharFiller, Attributes: attr})
 			}
-			continue
-		}
-
-		w := runewidth.RuneWidth(r)
-		cells = append(cells, CharInfo{Char: uint64(r), Attributes: currAttr})
-		for j := 1; j < w; j++ {
-			cells = append(cells, CharInfo{Char: WideCharFiller, Attributes: currAttr})
 		}
 	}
 
-	offX := 0
-	if isCentered {
-		vLen := 0
-		vLen = len(cells)
-		if vLen > width {
-			cells = fitHelpCells(cells, width)
-			vLen = len(cells)
-		}
-		offX = (width - vLen) / 2
-	} else {
-		cells = fitHelpCells(cells, width)
+	return cells
+}
+
+func alignHelpCells(cells []CharInfo, width int, centered bool) ([]CharInfo, int) {
+	cells = fitHelpCells(cells, width)
+	offset := 0
+	if centered {
+		offset = (width - len(cells)) / 2
 	}
-	scr.Write(x+offX, y, cells)
+	return cells, offset
+}
+
+// HelpLinePosition exposes the exact painted console range for attribute overlays.
+func (hv *HelpView) HelpLinePosition(line int) (x, y, width int, visible bool) {
+	if hv.current == nil || line < 0 || line >= len(hv.current.Lines) {
+		return 0, 0, 0, false
+	}
+	layout := hv.layout()
+	y = layout.contentY1 + line
+	if line >= hv.current.StickyRows {
+		y -= hv.scrollTop
+		if y < layout.contentY1+hv.current.StickyRows {
+			return 0, 0, 0, false
+		}
+	}
+	if layout.contentWidth <= 0 || y > layout.contentY2 {
+		return 0, 0, 0, false
+	}
+	text := hv.current.Lines[line]
+	cells, offset := alignHelpCells(hv.lineCells(text, line), layout.contentWidth, strings.HasPrefix(text, "^"))
+	return layout.contentX1 + offset, y, len(cells), true
 }
 
 func fitHelpCells(cells []CharInfo, width int) []CharInfo {
@@ -365,7 +343,7 @@ func (hv *HelpView) ProcessKey(e *vtinput.InputEvent) bool {
 			hv.ensureLinkVisible()
 			return true
 		}
-		viewHeight := (hv.Y2 - hv.Y1 + 1) - 2 - hv.current.StickyRows
+		viewHeight := hv.scrollableRows()
 		if hv.scrollTop < (len(hv.current.Lines)-hv.current.StickyRows)-viewHeight {
 			hv.scrollTop++
 		}
@@ -392,7 +370,7 @@ func (hv *HelpView) ProcessKey(e *vtinput.InputEvent) bool {
 		}
 
 	case vtinput.VK_PRIOR: // PgUp
-		viewHeight := (hv.Y2 - hv.Y1 + 1) - 2 - hv.current.StickyRows
+		viewHeight := hv.scrollableRows()
 		hv.scrollTop -= viewHeight
 		if hv.scrollTop < 0 {
 			hv.scrollTop = 0
@@ -400,7 +378,7 @@ func (hv *HelpView) ProcessKey(e *vtinput.InputEvent) bool {
 		return true
 
 	case vtinput.VK_NEXT: // PgDn
-		viewHeight := (hv.Y2 - hv.Y1 + 1) - 2 - hv.current.StickyRows
+		viewHeight := hv.scrollableRows()
 		maxScroll := (len(hv.current.Lines) - hv.current.StickyRows) - viewHeight
 		if maxScroll < 0 {
 			maxScroll = 0
@@ -423,7 +401,7 @@ func (hv *HelpView) ensureLinkVisible() {
 		return
 	}
 	link := hv.current.Links[hv.selectedIdx]
-	height := hv.Y2 - hv.Y1 - 1 - hv.current.StickyRows
+	height := hv.scrollableRows()
 	if link.Line < hv.scrollTop+hv.current.StickyRows {
 		hv.scrollTop = link.Line - hv.current.StickyRows
 	} else if link.Line >= hv.scrollTop+hv.current.StickyRows+height {
@@ -434,10 +412,10 @@ func (hv *HelpView) ensureLinkVisible() {
 func (hv *HelpView) GetType() FrameType { return TypeUser }
 
 func (hv *HelpView) scrollBy(delta int) {
-	if hv.current == nil || delta == 0 {
+	if hv.current == nil {
 		return
 	}
-	viewHeight := (hv.Y2 - hv.Y1 + 1) - 2 - hv.current.StickyRows
+	viewHeight := hv.scrollableRows()
 	maxScroll := (len(hv.current.Lines) - hv.current.StickyRows) - viewHeight
 	if maxScroll < 0 {
 		maxScroll = 0

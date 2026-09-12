@@ -165,6 +165,14 @@ Item {
     readonly property bool fromMenuBar: frame.menuBarSubmenu === true
     readonly property bool hasParentMenu:
         hostWindow.cleanText(frame.parentId) !== ""
+    readonly property string menuTitleText:
+        hostWindow.cleanText(frame.title).trim()
+    readonly property bool showMenuTitle:
+        !dropdownMode && !fromMenuBar && !hasParentMenu
+        && menuTitleText !== ""
+    readonly property real menuTitleHeight: showMenuTitle
+        ? hostWindow.snapPx(Math.max(hostWindow.ch,
+                                    popupMenuTitle.implicitHeight) + 10) : 0
     readonly property int effectiveMenuIndex:
         fromMenuBar && hostWindow.menuBarPreviewIndex >= 0
         ? hostWindow.menuBarPreviewIndex
@@ -213,6 +221,9 @@ Item {
         + menuHeaderTopPadding
     readonly property real menuSeparatorHeight: hostWindow.snapPx(11)
     readonly property real menuEdgeInset: hostWindow.snapPx(5)
+    readonly property real menuFooterHeight:
+        hostWindow.cleanText(frame.bottomHint) !== ""
+        ? hostWindow.snapPx(hostWindow.ch) : menuEdgeInset
     readonly property real menuContentHeight: {
         var height = 0
         for (var i = 0; i < effectiveItems.length; ++i) {
@@ -693,9 +704,8 @@ Item {
     }
 
     function preferredMenuHeight() {
-        return menuContentHeight + menuEdgeInset
-               + (hostWindow.cleanText(frame.bottomHint) !== ""
-                  ? hostWindow.ch : menuEdgeInset)
+        return menuContentHeight + menuEdgeInset + menuTitleHeight
+               + menuFooterHeight
     }
 
     function popupWindowX() { return popupSurface.x }
@@ -832,6 +842,29 @@ Item {
         enabled: !menuOverlay.closing
         z: 160
 
+        Text {
+            id: popupMenuTitle
+            objectName: "semanticMenuTitle-"
+                        + hostWindow.cleanText(menuOverlay.frame.id)
+            visible: menuOverlay.showMenuTitle
+            x: hostWindow.snapPx(12)
+            y: hostWindow.snapPx(menuOverlay.menuEdgeInset
+                                + (menuOverlay.menuTitleHeight - height) / 2)
+            width: Math.max(0, parent.width - 2 * hostWindow.snapPx(12))
+            height: Math.ceil(implicitHeight * hostWindow.dpr) / hostWindow.dpr
+            text: menuOverlay.menuTitleText
+            textFormat: Text.PlainText
+            color: hostWindow.textColor
+            font.family: hostWindow.font.family
+            font.pixelSize: 14
+            font.weight: Font.DemiBold
+            elide: Text.ElideMiddle
+            transform: Translate {
+                x: hostWindow.dialogPixelOffsetX(popupMenuTitle, hostWindow.contentItem)
+                y: hostWindow.dialogPixelOffsetY(popupMenuTitle, hostWindow.contentItem)
+            }
+        }
+
         ListView {
             id: popupMenuList
             objectName: "semanticMenuList-"
@@ -841,7 +874,7 @@ Item {
             y: menuOverlay.dropdownMode
                ? menuOverlay.dropdownOpenTop + menuOverlay.menuEdgeInset
                  - popupSurface.y
-               : menuOverlay.menuEdgeInset
+               : menuOverlay.menuEdgeInset + menuOverlay.menuTitleHeight
             width: Math.max(1, popupSurface.width
                                - (menuOverlay.dropdownMode
                                   ? menuOverlay.dropdownListX
@@ -850,10 +883,8 @@ Item {
                     ? menuOverlay.dropdownViewportHeight
                     : Math.max(1, popupSurface.height
                                - menuOverlay.menuEdgeInset
-                               - (hostWindow.cleanText(
-                                      menuOverlay.frame.bottomHint) !== ""
-                                  ? hostWindow.ch
-                                  : menuOverlay.menuEdgeInset))
+                               - menuOverlay.menuTitleHeight
+                               - menuOverlay.menuFooterHeight)
             // The list reaches the popup edge so its attached scrollbar can
             // sit flush right. Delegates retain the visual five-pixel inset.
             anchors.rightMargin: 0
@@ -985,19 +1016,28 @@ Item {
         }
 
         Text {
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.bottom: parent.bottom
-            height: hostWindow.ch
-            anchors.leftMargin: 8
-            anchors.rightMargin: 8
+            id: popupMenuBottomHint
+            objectName: "semanticMenuBottomHint-"
+                        + hostWindow.cleanText(menuOverlay.frame.id)
+            // Center the leaf itself, not the glyphs inside an odd-width text
+            // box: both the origin and native glyph translation must be static.
+            width: Math.max(0, Math.min(
+                parent.width - 2 * hostWindow.snapPx(8),
+                Math.ceil(implicitWidth * hostWindow.dpr) / hostWindow.dpr))
+            height: Math.ceil(implicitHeight * hostWindow.dpr) / hostWindow.dpr
+            x: hostWindow.snapPx((parent.width - width) / 2)
+            y: hostWindow.snapPx(parent.height - menuOverlay.menuFooterHeight
+                                + (menuOverlay.menuFooterHeight - height) / 2)
             text: hostWindow.cleanText(menuOverlay.frame.bottomHint)
+            textFormat: Text.PlainText
             color: hostWindow.mutedText
             font.pixelSize: 11
-            horizontalAlignment: Text.AlignHCenter
-            verticalAlignment: Text.AlignVCenter
             elide: Text.ElideMiddle
             visible: text !== ""
+            transform: Translate {
+                x: hostWindow.dialogPixelOffsetX(popupMenuBottomHint, hostWindow.contentItem)
+                y: hostWindow.dialogPixelOffsetY(popupMenuBottomHint, hostWindow.contentItem)
+            }
         }
 
     }
