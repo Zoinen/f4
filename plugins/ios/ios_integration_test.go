@@ -93,19 +93,37 @@ func TestIOSDeviceIntegration(t *testing.T) {
 		_ = simplified.Close()
 		t.Fatalf("simplified root entries = %#v, want real DCIM and virtual %s directories", rootNames, ApplicationsSelector)
 	}
-	if titleProvider, ok := simplified.(vfs.PanelTitleProvider); !ok || titleProvider.PanelTitle("/DCIM") != deviceLabel(selected)+":/DCIM" {
+	if titleProvider, ok := simplified.(vfs.PanelTitleProvider); !ok || titleProvider.PanelTitle("/DCIM") != iosPaths(selected, "").Public("/DCIM") {
 		_ = simplified.Close()
 		t.Fatalf("simplified root title provider = %T", simplified)
 	}
 	if err := simplified.Close(); err != nil {
 		t.Fatalf("close simplified device root: %v", err)
 	}
+	address := iosPaths(selected, "").Public("/DCIM")
+	reopened, err := (&uriProvider{source: nativeDeviceSource{}, opener: backend}).OpenURI(ctx, nil, address)
+	if err != nil {
+		t.Fatalf("reopen qualified DCIM URI: %v", err)
+	}
+	if reopened.GetPath() != address {
+		_ = reopened.Close()
+		t.Fatalf("reopened path = %q, want %q", reopened.GetPath(), address)
+	}
+	listErr := reopened.ReadDir(ctx, reopened.GetPath(), nil)
+	closeErr := reopened.Close()
+	if err := errors.Join(listErr, closeErr); err != nil {
+		t.Fatalf("list reopened qualified DCIM URI: %v", err)
+	}
 
 	base := "/"
 	if downloads, statErr := media.Stat(ctx, "/Downloads"); statErr == nil && downloads.IsDir {
 		base = "/Downloads"
 	}
-	sandbox := path.Join(base, fmt.Sprintf(".f4-ios-test-%d-%d", os.Getpid(), time.Now().UnixNano()))
+	base, err = media.Abs(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sandbox := media.Join(base, fmt.Sprintf(".f4-ios-test-%d-%d", os.Getpid(), time.Now().UnixNano()))
 	cleaned := false
 	defer func() {
 		if cleaned {
@@ -121,8 +139,8 @@ func TestIOSDeviceIntegration(t *testing.T) {
 	if err := media.MkDir(ctx, sandbox); err != nil {
 		t.Fatalf("create sandbox %s: %v", sandbox, err)
 	}
-	source := path.Join(sandbox, "source file.txt")
-	renamed := path.Join(sandbox, "renamed file.txt")
+	source := media.Join(sandbox, "source file.txt")
+	renamed := media.Join(sandbox, "renamed file.txt")
 	payload := []byte("f4 iPhone integration\nsecond line\n")
 	writer, err := media.Create(ctx, source)
 	if err != nil {

@@ -213,7 +213,9 @@ func TestDeviceProviderIsNarrowAndOpensOnlyReadyPairedDevice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if opened != target || opener.calls != 1 || opener.parent != manager || opener.device != ready {
+	gotDevice := opener.device
+	gotDevice.pathName = ""
+	if opened != target || opener.calls != 1 || opener.parent != manager || gotDevice != ready {
 		t.Fatalf("opener delegation mismatch: opened=%T calls=%d parent=%T device=%#v", opened, opener.calls, opener.parent, opener.device)
 	}
 	if _, err := provider.Open(ctx, manager, DeviceDisplayName(locked)); !errors.Is(err, ErrDeviceUnavailable) {

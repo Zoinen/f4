@@ -36,6 +36,7 @@ var (
 // the iOS drive. UDID is the stable key; the remaining fields may be refreshed
 // whenever ReadDir discovers the device again.
 type DeviceInfo struct {
+	pathName       string // Discovery-resolved public identity; UDID owns transport sessions.
 	UDID           string
 	Name           string
 	Model          string
@@ -189,8 +190,16 @@ func (m *ManagerVFS) ReadDir(ctx context.Context, _ string, onChunk func([]vfs.V
 	})
 
 	byName := make(map[string]DeviceInfo, len(ordered))
+	nameCounts := make(map[string]int, len(ordered))
+	for _, device := range ordered {
+		nameCounts[deviceLabel(device)]++
+	}
 	items := make([]vfs.VFSItem, 0, len(ordered))
 	for _, device := range ordered {
+		device.pathName = deviceLabel(device)
+		if nameCounts[device.pathName] > 1 {
+			device.pathName += " [" + device.UDID + "]"
+		}
 		base := DeviceDisplayName(device)
 		name := base
 		for suffix := 2; ; suffix++ {

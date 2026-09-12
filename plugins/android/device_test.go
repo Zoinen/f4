@@ -173,14 +173,15 @@ func TestDeviceSessionTitleUsesOnlyDeviceName(t *testing.T) {
 	}
 }
 
-func TestAndroidPanelTitleUsesBackslashes(t *testing.T) {
+func TestAndroidPanelTitleUsesPublicURI(t *testing.T) {
 	for _, tc := range []struct {
 		path string
 		want string
 	}{
-		{path: "/", want: `Pixel:\`},
-		{path: "/sdcard", want: `Pixel:\sdcard`},
-		{path: "/sdcard/Download", want: `Pixel:\sdcard\Download`},
+		{path: "/", want: "android://Pixel/"},
+		{path: "/sdcard", want: "android://Pixel/sdcard"},
+		{path: "/sdcard/Download", want: "android://Pixel/sdcard/Download"},
+		{path: "android://Pixel/sdcard/Download", want: "android://Pixel/sdcard/Download"},
 	} {
 		if got := androidPanelTitle("Pixel", tc.path); got != tc.want {
 			t.Errorf("androidPanelTitle(%q) = %q, want %q", tc.path, got, tc.want)

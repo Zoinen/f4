@@ -267,6 +267,17 @@ func (pf *PanelsFrame) HandleSemanticAction(action map[string]any) bool {
 		if target == oldPath {
 			return true
 		}
+		if vfs.IsURIPath(target) {
+			// Editable public URIs may belong to another provider. Use the
+			// general lifecycle instead of treating them as known directories
+			// in the current filesystem.
+			if !pf.NavigateToPath(fsp, target) {
+				return false
+			}
+			pf.setActivePanelForAction(action)
+			fsp.clearFastFindForSemanticPointerIntent()
+			return true
+		}
 		if err := fsp.SetKnownDirectoryPath(target); err != nil {
 			fsp.showDirectoryError(" Error ", fmt.Sprintf("Cannot access folder:\n%v", err))
 			return true

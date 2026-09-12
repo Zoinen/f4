@@ -26,7 +26,11 @@ func NormalizedURIIdentity(raw string) (string, bool) {
 		authority = rest[:slash]
 		suffix = rest[slash:]
 	}
-	identity := scheme + "://" + strings.ToLower(authority) + suffix
+	// Device authorities are discovery names, not case-insensitive DNS hosts.
+	if scheme != "ios" && scheme != "android" {
+		authority = strings.ToLower(authority)
+	}
+	identity := scheme + "://" + authority + suffix
 	if len(suffix) > 1 {
 		identity = strings.TrimSuffix(identity, "/")
 	}

@@ -1095,6 +1095,11 @@ func (pf *PanelsFrame) BuildPrompt() []vtui.CharInfo {
 		displayPath = strings.TrimPrefix(displayPath, vfsTitle)
 		sepStr = ""
 	}
+	if deviceURIName(path) != "" {
+		// The public device address already identifies its source; GetTitle
+		// may contain a private transport identity used elsewhere as a key.
+		userHostStr, sepStr, displayPath = "", "", path
+	}
 
 	maxPromptLen := pf.LastW / 2
 	if maxPromptLen < 30 {
@@ -4967,6 +4972,20 @@ func (pf *PanelsFrame) interruptRemotePTY(expected *remotePTYInterruptTarget) bo
 	return true
 }
 
+// deviceURIName recognizes only public device addresses, whose authority is a
+// display name rather than a DNS host or a transport identity.
+func deviceURIName(path string) string {
+	scheme, ok := vfs.URIScheme(path)
+	if !ok || scheme != "ios" && scheme != "android" {
+		return ""
+	}
+	_, device, _, err := vfs.ParseDevicePath(path)
+	if err != nil {
+		return ""
+	}
+	return device
+}
+
 func (pf *PanelsFrame) GetTitle() string {
 	if !pf.ShowPanels {
 		if pf.Executing {
@@ -4981,7 +5000,7 @@ func (pf *PanelsFrame) GetTitle() string {
 	path := ""
 	if fsp, ok := pf.Active().(*FileSystemPanel); ok {
 		path = fsp.PersistentPath()
-		if fsp.ProviderOpenTask == nil {
+		if fsp.ProviderOpenTask == nil && deviceURIName(path) == "" {
 			if tp, ok := fsp.Vfs.(vfs.TitleProvider); ok {
 				if prefix := tp.GetTitle(); prefix != "" {
 					if !strings.HasPrefix(path, prefix+":") {
@@ -5017,6 +5036,9 @@ func (pf *PanelsFrame) GetWorkspaceTabTitle() string {
 			return "."
 		}
 		if fsp.ProviderOpenTask == nil && fsp.Vfs.IsAtRoot() {
+			if device := deviceURIName(path); device != "" {
+				return device
+			}
 			if provider, ok := fsp.Vfs.(vfs.TitleProvider); ok {
 				if title := provider.GetTitle(); title != "" {
 					return title

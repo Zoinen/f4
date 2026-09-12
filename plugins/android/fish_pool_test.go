@@ -97,6 +97,7 @@ func TestFishSessionPoolReusesConnectionAndReparentsView(t *testing.T) {
 		opens.Add(1)
 		var fish *netfox.FishVFS
 		fish, peer = newPoolTestFish(t, parent)
+		fish.SetDevicePath(vfs.DevicePath{Scheme: "android", Device: "Pixel 3"})
 		return fish, nil
 	}
 
@@ -105,6 +106,9 @@ func TestFishSessionPoolReusesConnectionAndReparentsView(t *testing.T) {
 		t.Fatalf("first pool open: %v", err)
 	}
 	firstKey := first.(vfs.SessionIdentity).SessionKey()
+	if first.GetPath() != "android://Pixel 3/" {
+		t.Fatalf("first path = %q", first.GetPath())
+	}
 	if err := first.Close(); err != nil {
 		t.Fatalf("close first view: %v", err)
 	}
@@ -112,6 +116,12 @@ func TestFishSessionPoolReusesConnectionAndReparentsView(t *testing.T) {
 	second, err := pool.Open(context.Background(), secondParent, device, open)
 	if err != nil {
 		t.Fatalf("second pool open: %v", err)
+	}
+	if second.GetPath() != "android://Pixel 3/" {
+		t.Fatalf("pooled path = %q", second.GetPath())
+	}
+	if got := second.(vfs.PanelIconProvider).PanelIcon(); got != "android-logo" {
+		t.Fatalf("pooled Android icon = %q", got)
 	}
 	if got := opens.Load(); got != 1 {
 		t.Fatalf("backend opens = %d, want 1", got)

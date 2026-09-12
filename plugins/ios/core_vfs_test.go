@@ -91,7 +91,7 @@ func TestCoreVFSKeepsDevicePanelInfoAndVirtualTitle(t *testing.T) {
 	device := DeviceInfo{UDID: "phone", Name: "iPhone", Model: "iPhone 13", OSVersion: "17.4"}
 	filesystem := newCoreVFS(nil, device, coreDomainAppData, "com.example.app",
 		iosDeviceTitle(device, ApplicationsSelector, "Example"), &fakeCoreService{})
-	if got := filesystem.PanelTitle("/Documents/cache"); got != "iPhone:/[Applications]/Example/Documents/cache" {
+	if got := filesystem.PanelTitle("/Documents/cache"); got != "ios://iPhone/[Applications]/Example/Documents/cache" {
 		t.Fatalf("PanelTitle = %q", got)
 	}
 	snapshot, fresh := filesystem.CachedPanelInfo(vfs.PanelInfoRequest{Path: "/Documents"})
@@ -116,7 +116,7 @@ func TestCoreVFSCloneHasIndependentPathAndSharedSession(t *testing.T) {
 	if err := clone.SetPathOptimistic("/second"); err != nil {
 		t.Fatal(err)
 	}
-	if fs.GetPath() != "/first" || clone.GetPath() != "/second" {
+	if fs.GetPath() != "ios://udid/first" || clone.GetPath() != "ios://udid/second" {
 		t.Fatalf("paths are not independent: original=%q clone=%q", fs.GetPath(), clone.GetPath())
 	}
 	if !vfs.SameSession(fs, clone) {

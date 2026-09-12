@@ -15,7 +15,8 @@ import (
 // (usbmuxd / Apple Mobile Device Support) is the only runtime prerequisite;
 // f4 never shells out to devicectl, go-ios, ifuse or idevice tools.
 type Plugin struct {
-	backend *nativeBackend
+	backend       *nativeBackend
+	uriRegistered bool
 }
 
 func NewPlugin() *Plugin {
@@ -28,6 +29,10 @@ func (p *Plugin) Init(api vfs.HostAPI) error {
 	if p.backend == nil {
 		return errors.New("ios: plugin backend is not configured")
 	}
+	if err := api.RegisterURIProvider(&uriProvider{source: nativeDeviceSource{}, opener: p.backend}); err != nil {
+		return err
+	}
+	p.uriRegistered = true
 	api.RegisterVFSProvider(&deviceProvider{})
 	api.RegisterVFSProvider(&SelectorProvider{})
 	api.RegisterVFSProvider(&ApplicationProvider{})
@@ -39,6 +44,10 @@ func (p *Plugin) Init(api vfs.HostAPI) error {
 }
 
 func (p *Plugin) Close() error {
+	if p.uriRegistered {
+		vfs.UnregisterURIProvider("ios")
+		p.uriRegistered = false
+	}
 	if p.backend == nil {
 		return nil
 	}

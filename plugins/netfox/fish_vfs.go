@@ -35,6 +35,7 @@ type FishVFS struct {
 	pathMu              sync.RWMutex
 	path                string
 	title               string
+	devicePath          vfs.DevicePath
 	once                sync.Once
 	panelTitleFormatter func(title, path string) string
 	host                string
@@ -652,6 +653,13 @@ func (v *FishVFS) SetPanelTitleFormatter(formatter func(title, path string) stri
 }
 
 func (v *FishVFS) PanelTitle(path string) string {
+	if v.devicePath.Scheme != "" {
+		public, err := v.Abs(path)
+		if err != nil {
+			return path
+		}
+		return public
+	}
 	if v.panelTitleFormatter == nil {
 		return ""
 	}
@@ -800,35 +808,75 @@ func (v *FishVFS) RefreshPanelInfo(ctx context.Context, req vfs.PanelInfoRequest
 	return vfs.PanelInfoSnapshot{}, nil
 }
 
+// SetDevicePath enables qualified public paths for a device-backed view.
+// Configure the view before publishing it; the connection always uses POSIX paths.
+func (v *FishVFS) SetDevicePath(p vfs.DevicePath) { v.devicePath = p }
+
 func (v *FishVFS) IsAtRoot() bool {
-	p := v.GetPath()
+	p := v.remotePath()
 	return p == "/" || p == ""
 }
-func (v *FishVFS) GetPath() string {
+func (v *FishVFS) remotePath() string {
 	v.pathMu.RLock()
 	defer v.pathMu.RUnlock()
 	return v.path
 }
-func (v *FishVFS) IsAbs(p string) bool { return path.IsAbs(p) }
-
-func (v *FishVFS) Join(e ...string) string { return path.Join(e...) }
-func (v *FishVFS) Base(p string) string    { return path.Base(p) }
-func (v *FishVFS) Dir(p string) string     { return path.Dir(p) }
-
-func (v *FishVFS) Abs(p string) (string, error) { return v.abs(p), nil }
-
-func (v *FishVFS) abs(p string) string {
+func (v *FishVFS) publicPath(p string) string {
+	if v.devicePath.Scheme != "" {
+		return v.devicePath.Public(p)
+	}
+	return p
+}
+func (v *FishVFS) GetPath() string { return v.publicPath(v.remotePath()) }
+func (v *FishVFS) IsAbs(p string) bool {
+	if v.devicePath.Scheme != "" {
+		return v.devicePath.IsAbs(p)
+	}
+	return path.IsAbs(p)
+}
+func (v *FishVFS) Join(e ...string) string {
+	if v.devicePath.Scheme != "" {
+		return v.devicePath.Join(e...)
+	}
+	return path.Join(e...)
+}
+func (v *FishVFS) Base(p string) string {
+	if v.devicePath.Scheme != "" {
+		return v.devicePath.Base(p)
+	}
+	return path.Base(p)
+}
+func (v *FishVFS) Dir(p string) string {
+	if v.devicePath.Scheme != "" {
+		return v.devicePath.Dir(p)
+	}
+	return path.Dir(p)
+}
+func (v *FishVFS) Abs(p string) (string, error) {
+	remote, err := v.abs(p)
+	if err != nil {
+		return "", err
+	}
+	return v.publicPath(remote), nil
+}
+func (v *FishVFS) abs(p string) (string, error) {
+	if v.devicePath.Scheme != "" {
+		return v.devicePath.Remote(v.remotePath(), p)
+	}
 	if p == "" {
-		return v.GetPath()
+		return v.remotePath(), nil
 	}
 	if path.IsAbs(p) {
-		return path.Clean(p)
+		return path.Clean(p), nil
 	}
-	return path.Join(v.GetPath(), p)
+	return path.Join(v.remotePath(), p), nil
 }
 
 func (v *FishVFS) SetPath(p string) error {
-	target := v.abs(p)
+	target, err := v.abs(p)
+	if err != nil {
+		return err
+	}
 	item, err := v.Stat(context.Background(), target)
 	if err != nil {
 		return err
@@ -848,7 +896,10 @@ func (v *FishVFS) SetPath(p string) error {
 // sends absolute paths with every command and has no server-side cwd, so no
 // protocol request is needed here.
 func (v *FishVFS) SetPathOptimistic(p string) error {
-	target := v.abs(p)
+	target, err := v.abs(p)
+	if err != nil {
+		return err
+	}
 	v.pathMu.Lock()
 	v.path = target
 	v.pathMu.Unlock()
@@ -879,7 +930,10 @@ func (v *FishVFS) entryToItem(e fishplus.Entry) vfs.VFSItem {
 }
 
 func (v *FishVFS) ReadDir(ctx context.Context, p string, onChunk func([]vfs.VFSItem)) error {
-	dir := v.abs(p)
+	dir, err := v.abs(p)
+	if err != nil {
+		return err
+	}
 	entries, err := v.client().Enum(ctx, dir)
 	if err != nil {
 		return err
@@ -951,7 +1005,10 @@ func validateFishEntryName(name string) error {
 // Stat reports the link itself rather than its target, so the panel can draw
 // a symlink as one, and only resolves it to answer the IsDir question.
 func (v *FishVFS) Stat(ctx context.Context, p string) (vfs.VFSItem, error) {
-	target := v.abs(p)
+	target, err := v.abs(p)
+	if err != nil {
+		return vfs.VFSItem{}, err
+	}
 	if provider := v.statProvider(); provider != nil {
 		return provider(ctx, target)
 	}
@@ -968,7 +1025,10 @@ func (v *FishVFS) Stat(ctx context.Context, p string) (vfs.VFSItem, error) {
 }
 
 func (v *FishVFS) Open(ctx context.Context, p string) (vfs.ReadAtCloser, error) {
-	target := v.abs(p)
+	target, err := v.abs(p)
+	if err != nil {
+		return nil, err
+	}
 	if provider := v.readProvider(); provider != nil {
 		return provider(ctx, target)
 	}
@@ -1002,13 +1062,17 @@ const fishSearchMax = 10000
 // the tools answers nil, and the caller falls back to reading the file,
 // exactly as it does with SFTP.
 func (v *FishVFS) Search(ctx context.Context, p, pattern string) (chan int64, error) {
+	target, err := v.abs(p)
+	if err != nil {
+		return nil, err
+	}
 	if pattern == "" || !v.client().CanGrep() {
 		return nil, nil
 	}
 	// Case is folded because the one caller, the viewer's search, has always
 	// folded it, and a search that starts matching differently depending on
 	// which panel the file is open in would be worse than a slow one.
-	offsets, err := v.client().Grep(ctx, v.abs(p), pattern,
+	offsets, err := v.client().Grep(ctx, target, pattern,
 		fishplus.GrepOptions{Fixed: true, IgnoreCase: true, Limit: fishSearchMax})
 	if err != nil {
 		return nil, err
@@ -1032,6 +1096,10 @@ func (v *FishVFS) Search(ctx context.Context, p, pattern string) (chan int64, er
 // A symlink is reported as found without resolving it: the alternative is a
 // round trip per hit, which would give back what the whole command saves.
 func (v *FishVFS) FindFiles(ctx context.Context, dir string, q vfs.FindQuery) ([]vfs.FoundEntry, error) {
+	target, err := v.abs(dir)
+	if err != nil {
+		return nil, err
+	}
 	// The ffind wire command can grep fixed strings or regular expressions,
 	// but it cannot express the richer local semantics without changing the
 	// helper protocol (folders, symlink leaves, whole words, and inverted
@@ -1057,11 +1125,11 @@ func (v *FishVFS) FindFiles(ctx context.Context, dir string, q vfs.FindQuery) ([
 			q.Progress(vfs.FindProgress{
 				Scanned: p.Scanned,
 				Found:   p.Found,
-				Path:    p.Path,
+				Path:    v.publicPath(p.Path),
 			})
 		}
 	}
-	entries, err := v.client().Find(ctx, v.abs(dir), opts)
+	entries, err := v.client().Find(ctx, target, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -1069,7 +1137,7 @@ func (v *FishVFS) FindFiles(ctx context.Context, dir string, q vfs.FindQuery) ([
 	for _, e := range entries {
 		name := path.Base(e.Name)
 		out = append(out, vfs.FoundEntry{
-			Path: e.Name,
+			Path: v.publicPath(e.Name),
 			Item: vfs.VFSItem{
 				Name:         name,
 				Size:         e.Size,
@@ -1100,6 +1168,13 @@ func (v *FishVFS) FindFiles(ctx context.Context, dir string, q vfs.FindQuery) ([
 // not a "#" comment, because stock zsh ships with interactive_comments
 // off and would feed the tail to cd as extra arguments.
 func (v *FishVFS) PtyChangeDirCommand(dir string) []byte {
+	if v.devicePath.Scheme != "" && dir != "" {
+		remote, err := v.abs(dir)
+		if err != nil {
+			return nil
+		}
+		dir = remote
+	}
 	if v.peerIsWindows() {
 		winDir := fishplus.WirePathToWindows(dir)
 		if winDir == "" {
@@ -1115,6 +1190,13 @@ func (v *FishVFS) PtyChangeDirCommand(dir string) []byte {
 // split as PtyChangeDirCommand: cmd wants "cd /d \"path\" & command",
 // POSIX wants "cd 'path' && command". An empty dir skips the cd.
 func (v *FishVFS) PtyRunCommand(dir, command string) []byte {
+	if v.devicePath.Scheme != "" && dir != "" {
+		remote, err := v.abs(dir)
+		if err != nil {
+			return nil
+		}
+		dir = remote
+	}
 	if command == "" {
 		return nil
 	}
@@ -1200,6 +1282,9 @@ func opStatsFromScan(s fishplus.ScanStats) vfs.OpStats {
 // the caller takes this answer as final: vfs.CalculateStats does not retry a
 // FastScanner that failed.
 func (v *FishVFS) Scan(ctx context.Context, basePath string, names []string, cb vfs.ScanCallback) (vfs.OpStats, error) {
+	if _, err := v.abs(basePath); err != nil {
+		return vfs.OpStats{}, err
+	}
 	if !v.client().CanScan() {
 		return vfs.GenericScan(ctx, v, basePath, names, cb)
 	}
@@ -1208,7 +1293,10 @@ func (v *FishVFS) Scan(ctx context.Context, basePath string, names []string, cb 
 		if err := ctx.Err(); err != nil {
 			return total, err
 		}
-		full := v.abs(path.Join(basePath, name))
+		full, err := v.abs(v.Join(basePath, name))
+		if err != nil {
+			return total, err
+		}
 		item, err := v.Stat(ctx, full)
 		if err != nil {
 			return total, err
@@ -1217,7 +1305,7 @@ func (v *FishVFS) Scan(ctx context.Context, basePath string, names []string, cb 
 			total.Files++
 			total.Bytes += item.Size
 			if cb != nil {
-				cb(full, total)
+				cb(v.publicPath(full), total)
 			}
 			continue
 		}
@@ -1231,7 +1319,7 @@ func (v *FishVFS) Scan(ctx context.Context, basePath string, names []string, cb 
 			}
 			running := base
 			running.Add(opStatsFromScan(p.ScanStats))
-			cb(p.Path, running)
+			cb(v.publicPath(p.Path), running)
 		})
 		if err != nil {
 			if ctx.Err() != nil {
@@ -1242,7 +1330,7 @@ func (v *FishVFS) Scan(ctx context.Context, basePath string, names []string, cb 
 		}
 		total.Add(opStatsFromScan(stats))
 		if cb != nil {
-			cb(full, total)
+			cb(v.publicPath(full), total)
 		}
 	}
 	return total, nil
@@ -1252,10 +1340,14 @@ func (v *FishVFS) Scan(ctx context.Context, basePath string, names []string, cb 
 // can read stdin, print for an hour or never end without any of that
 // reaching the request stream the panel is using.
 func (v *FishVFS) RunCommand(ctx context.Context, dir, command string, cb func(line string)) (int, error) {
+	target, err := v.abs(dir)
+	if err != nil {
+		return 0, err
+	}
 	if !v.CommandRunnerAvailable() {
 		return 0, fishplus.ErrNoJobs
 	}
-	return v.client().Run(ctx, v.abs(dir), command, cb)
+	return v.client().Run(ctx, target, command, cb)
 }
 
 func (v *FishVFS) CommandRunnerAvailable() bool {
@@ -1278,21 +1370,42 @@ func (v *FishVFS) CommandRunnerInfo() vfs.CommandRunnerInfo {
 // that turned out to be identical cross the network; the reading and the
 // hashing happen where the disk is.
 func (v *FishVFS) FindDuplicates(ctx context.Context, dir string, cb func(vfs.DuplicateProgress)) ([][]string, error) {
+	target, err := v.abs(dir)
+	if err != nil {
+		return nil, err
+	}
 	if !v.client().CanHash() {
 		return nil, fishplus.ErrNoJobs
 	}
 	var forward func(fishplus.HashProgress)
 	if cb != nil {
 		forward = func(p fishplus.HashProgress) {
-			cb(vfs.DuplicateProgress{Done: p.Done, Total: p.Total, Path: p.Path})
+			cb(vfs.DuplicateProgress{Done: p.Done, Total: p.Total, Path: v.publicPath(p.Path)})
 		}
 	}
-	return v.client().Duplicates(ctx, v.abs(dir), forward)
+	groups, err := v.client().Duplicates(ctx, target, forward)
+	if err != nil {
+		return nil, err
+	}
+	for i := range groups {
+		for j := range groups[i] {
+			groups[i][j] = v.publicPath(groups[i][j])
+		}
+	}
+	return groups, nil
 }
 
 // PatchFile implements vfs.DeltaWriter. The copying happens on the remote
 // host at local disk speed; only the new bytes cross the network.
 func (v *FishVFS) PatchFile(ctx context.Context, src, dst string, pieces []vfs.PatchPiece) error {
+	from, err := v.abs(src)
+	if err != nil {
+		return err
+	}
+	to, err := v.abs(dst)
+	if err != nil {
+		return err
+	}
 	if !v.client().CanPatch() {
 		return fishplus.ErrNoWrite
 	}
@@ -1304,20 +1417,28 @@ func (v *FishVFS) PatchFile(ctx context.Context, src, dst string, pieces []vfs.P
 		}
 		segs = append(segs, fishplus.Literal(p.Data))
 	}
-	return v.client().Patch(ctx, v.abs(src), v.abs(dst), segs)
+	return v.client().Patch(ctx, from, to, segs)
 }
 
 // LineIndex implements vfs.LineIndexer. A count of zero asks for nothing but
 // the total, which is one remote pass and three numbers on the wire.
 func (v *FishVFS) LineIndex(ctx context.Context, p string, first, count int64) (vfs.LineIndexResult, error) {
-	idx, err := v.client().Lines(ctx, v.abs(p), first, count)
+	target, err := v.abs(p)
+	if err != nil {
+		return vfs.LineIndexResult{}, err
+	}
+	idx, err := v.client().Lines(ctx, target, first, count)
 	if err != nil {
 		return vfs.LineIndexResult{}, err
 	}
 	return vfs.LineIndexResult{First: idx.First, Offsets: idx.Offsets, Total: idx.Total}, nil
 }
 func (v *FishVFS) MkDir(ctx context.Context, p string) error {
-	return v.client().MkDir(ctx, v.abs(p))
+	target, err := v.abs(p)
+	if err != nil {
+		return err
+	}
+	return v.client().MkDir(ctx, target)
 }
 
 // Remove deletes whatever is at the path. A directory is removed with
@@ -1325,7 +1446,10 @@ func (v *FishVFS) MkDir(ctx context.Context, p string) error {
 // of one per entry, which is the main reason a shell based file system is
 // worth having at all.
 func (v *FishVFS) Remove(ctx context.Context, p string) error {
-	target := v.abs(p)
+	target, err := v.abs(p)
+	if err != nil {
+		return err
+	}
 	e, err := v.client().Lstat(ctx, target)
 	if err != nil {
 		return err
@@ -1337,19 +1461,38 @@ func (v *FishVFS) Remove(ctx context.Context, p string) error {
 }
 
 func (v *FishVFS) Rename(ctx context.Context, o, n string) error {
-	return v.client().Rename(ctx, v.abs(o), v.abs(n))
+	from, err := v.abs(o)
+	if err != nil {
+		return err
+	}
+	to, err := v.abs(n)
+	if err != nil {
+		return err
+	}
+	return v.client().Rename(ctx, from, to)
 }
 
 // Copy implements vfs.ServerSideCopier.
 func (v *FishVFS) Copy(ctx context.Context, o, n string) error {
-	return v.client().Copy(ctx, v.abs(o), v.abs(n))
+	from, err := v.abs(o)
+	if err != nil {
+		return err
+	}
+	to, err := v.abs(n)
+	if err != nil {
+		return err
+	}
+	return v.client().Copy(ctx, from, to)
 }
 
 // Create truncates the file, or creates it, and hands back a handle that
 // streams from the beginning. The handle buffers up to one transfer chunk,
 // so the copier's small writes do not each become a round trip.
 func (v *FishVFS) Create(ctx context.Context, p string) (io.WriteCloser, error) {
-	target := v.abs(p)
+	target, err := v.abs(p)
+	if err != nil {
+		return nil, err
+	}
 	if provider := v.createProvider(); provider != nil {
 		return provider(ctx, target)
 	}
@@ -1366,7 +1509,10 @@ func (v *FishVFS) Create(ctx context.Context, p string) (io.WriteCloser, error) 
 // one, the same way the SFTP backend does it, so a file copied onto a FISH+
 // panel keeps the times it had.
 func (v *FishVFS) SetAttributes(ctx context.Context, p string, item vfs.VFSItem) error {
-	target := v.abs(p)
+	target, err := v.abs(p)
+	if err != nil {
+		return err
+	}
 	if item.UnixMode != 0 {
 		if err := v.client().Chmod(ctx, target, item.UnixMode); err != nil {
 			return err
@@ -1410,7 +1556,8 @@ func (v *FishVFS) CloneForParent(parent vfs.VFS) *FishVFS {
 	return &FishVFS{
 		parent:              parent,
 		conn:                v.conn,
-		path:                v.GetPath(),
+		path:                v.remotePath(),
+		devicePath:          v.devicePath,
 		title:               v.title,
 		panelTitleFormatter: v.panelTitleFormatter,
 		panelInfo:           v.panelInfoProvider(),
@@ -1517,4 +1664,9 @@ func init() {
 	RegisterProtocol(&fishProtocolHandler{})
 }
 
-func (*FishVFS) PanelIcon() string { return "network" }
+func (v *FishVFS) PanelIcon() string {
+	if strings.EqualFold(v.devicePath.Scheme, "android") {
+		return "android-logo"
+	}
+	return "network"
+}

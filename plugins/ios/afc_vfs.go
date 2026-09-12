@@ -427,7 +427,7 @@ func (v *AFCVFS) SetVirtualRoot(opener SelectorOpener, capabilities ...Capabilit
 }
 
 func (v *AFCVFS) rootCapabilityForPath(p string) (Capability, bool) {
-	clean, err := cleanIOSPath(p)
+	clean, err := v.resolve(p)
 	if err != nil || path.Dir(clean) != "/" {
 		return 0, false
 	}
@@ -465,15 +465,18 @@ func openAFCVFS(ctx context.Context, parent vfs.VFS, device DeviceInfo, registry
 	return &AFCVFS{parent: parent, device: device, registry: registry, session: session, key: key, title: title, readOnly: readOnly, path: "/"}, nil
 }
 
-func (v *AFCVFS) IsAtRoot() bool { return v.GetPath() == "/" }
+func (v *AFCVFS) IsAtRoot() bool { return v.remotePath() == "/" }
 func (v *AFCVFS) GetPath() string {
+	return iosPaths(v.device, v.title).Public(v.remotePath())
+}
+func (v *AFCVFS) remotePath() string {
 	v.pathMu.RLock()
 	defer v.pathMu.RUnlock()
 	return v.path
 }
-func (v *AFCVFS) IsAbs(p string) bool { return strings.HasPrefix(p, "/") }
+func (v *AFCVFS) IsAbs(p string) bool { return iosPaths(v.device, v.title).IsAbs(p) }
 func (v *AFCVFS) SetPath(p string) error {
-	clean, err := cleanIOSPath(p)
+	clean, err := v.resolve(p)
 	if err != nil {
 		return err
 	}
@@ -487,7 +490,7 @@ func (v *AFCVFS) SetPath(p string) error {
 	return v.SetPathOptimistic(clean)
 }
 func (v *AFCVFS) SetPathOptimistic(p string) error {
-	clean, err := cleanIOSPath(p)
+	clean, err := v.resolve(p)
 	if err != nil {
 		return err
 	}
@@ -496,15 +499,16 @@ func (v *AFCVFS) SetPathOptimistic(p string) error {
 	v.pathMu.Unlock()
 	return nil
 }
-func (*AFCVFS) Join(elem ...string) string { return path.Join(elem...) }
+func (v *AFCVFS) Join(elem ...string) string { return iosPaths(v.device, v.title).Join(elem...) }
 func (v *AFCVFS) Abs(p string) (string, error) {
-	if v.IsAbs(p) {
-		return cleanIOSPath(p)
+	remote, err := v.resolve(p)
+	if err != nil {
+		return "", err
 	}
-	return cleanIOSPath(path.Join(v.GetPath(), p))
+	return iosPaths(v.device, v.title).Public(remote), nil
 }
-func (*AFCVFS) Base(p string) string { return path.Base(p) }
-func (*AFCVFS) Dir(p string) string  { return path.Dir(p) }
+func (v *AFCVFS) Base(p string) string { return iosPaths(v.device, v.title).Base(p) }
+func (v *AFCVFS) Dir(p string) string  { return iosPaths(v.device, v.title).Dir(p) }
 
 func (v *AFCVFS) ReadDir(ctx context.Context, p string, onChunk func([]vfs.VFSItem)) error {
 	clean, err := v.resolve(p)
@@ -802,7 +806,7 @@ func (v *AFCVFS) Clone() vfs.VFS {
 	return &AFCVFS{
 		parent: v.parent, device: v.device, registry: v.registry, session: v.session,
 		key: v.key, title: v.title, readOnly: v.readOnly,
-		rootOpener: v.rootOpener, rootCapabilities: maps.Clone(v.rootCapabilities), path: v.GetPath(),
+		rootOpener: v.rootOpener, rootCapabilities: maps.Clone(v.rootCapabilities), path: v.remotePath(),
 	}
 }
 func (v *AFCVFS) Close() error {
@@ -810,7 +814,7 @@ func (v *AFCVFS) Close() error {
 	return nil
 }
 func (v *AFCVFS) GetTitle() string                    { return "ios:" + v.key }
-func (v *AFCVFS) PanelTitle(p string) string          { return iosPanelTitle(v.title, p) }
+func (v *AFCVFS) PanelTitle(p string) string          { title, _ := v.Abs(p); return title }
 func (v *AFCVFS) SessionKey() any                     { return v.session }
 func (v *AFCVFS) SessionLost(err error) bool          { return afcproto.IsConnectionLost(err) }
 func (v *AFCVFS) CanReconnect() bool                  { return v.session.dial != nil }
@@ -855,10 +859,7 @@ func (v *AFCVFS) RefreshPanelInfo(ctx context.Context, _ vfs.PanelInfoRequest) (
 }
 
 func (v *AFCVFS) resolve(p string) (string, error) {
-	if p == "" || p == "." {
-		return v.GetPath(), nil
-	}
-	return v.Abs(p)
+	return iosPaths(v.device, v.title).Remote(v.remotePath(), p)
 }
 func (v *AFCVFS) mutationPath(p string) (string, error) {
 	clean, err := v.resolve(p)

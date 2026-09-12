@@ -154,15 +154,18 @@ func (m *coreMount) remember(directory string, entries []coreEntry) {
 	m.mu.Unlock()
 }
 
-func (v *CoreVFS) IsAtRoot() bool { return v.GetPath() == "/" }
+func (v *CoreVFS) IsAtRoot() bool { return v.remotePath() == "/" }
 func (v *CoreVFS) GetPath() string {
+	return iosPaths(v.device, v.title).Public(v.remotePath())
+}
+func (v *CoreVFS) remotePath() string {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 	return v.path
 }
-func (v *CoreVFS) IsAbs(p string) bool { return strings.HasPrefix(p, "/") }
+func (v *CoreVFS) IsAbs(p string) bool { return iosPaths(v.device, v.title).IsAbs(p) }
 func (v *CoreVFS) SetPath(p string) error {
-	clean, err := cleanIOSPath(p)
+	clean, err := v.resolve(p)
 	if err != nil {
 		return err
 	}
@@ -179,7 +182,7 @@ func (v *CoreVFS) SetPath(p string) error {
 	return nil
 }
 func (v *CoreVFS) SetPathOptimistic(p string) error {
-	clean, err := cleanIOSPath(p)
+	clean, err := v.resolve(p)
 	if err != nil {
 		return err
 	}
@@ -188,15 +191,16 @@ func (v *CoreVFS) SetPathOptimistic(p string) error {
 	v.mu.Unlock()
 	return nil
 }
-func (*CoreVFS) Join(elem ...string) string { return path.Join(elem...) }
+func (v *CoreVFS) Join(elem ...string) string { return iosPaths(v.device, v.title).Join(elem...) }
 func (v *CoreVFS) Abs(p string) (string, error) {
-	if v.IsAbs(p) {
-		return cleanIOSPath(p)
+	remote, err := v.resolve(p)
+	if err != nil {
+		return "", err
 	}
-	return cleanIOSPath(path.Join(v.GetPath(), p))
+	return iosPaths(v.device, v.title).Public(remote), nil
 }
-func (*CoreVFS) Base(p string) string { return path.Base(p) }
-func (*CoreVFS) Dir(p string) string  { return path.Dir(p) }
+func (v *CoreVFS) Base(p string) string { return iosPaths(v.device, v.title).Base(p) }
+func (v *CoreVFS) Dir(p string) string  { return iosPaths(v.device, v.title).Dir(p) }
 
 func (v *CoreVFS) ReadDir(ctx context.Context, p string, onChunk func([]vfs.VFSItem)) error {
 	clean, err := v.resolve(p)
@@ -387,7 +391,7 @@ func (v *CoreVFS) Clone() vfs.VFS {
 	}
 	return &CoreVFS{
 		parent: v.parent, device: v.device, domain: v.domain,
-		identifier: v.identifier, title: v.title, panelInfo: v.panelInfo, mount: v.mount, path: v.GetPath(),
+		identifier: v.identifier, title: v.title, panelInfo: v.panelInfo, mount: v.mount, path: v.remotePath(),
 	}
 }
 func (v *CoreVFS) Close() error {
@@ -397,7 +401,7 @@ func (v *CoreVFS) Close() error {
 func (v *CoreVFS) GetTitle() string {
 	return fmt.Sprintf("ios:%s:core:%d:%s", v.device.UDID, v.domain, v.identifier)
 }
-func (v *CoreVFS) PanelTitle(p string) string { return iosPanelTitle(v.title, p) }
+func (v *CoreVFS) PanelTitle(p string) string { title, _ := v.Abs(p); return title }
 func (v *CoreVFS) PanelInfoKey(req vfs.PanelInfoRequest) string {
 	return v.panelInfo.PanelInfoKey(req)
 }
@@ -417,10 +421,7 @@ func (v *CoreVFS) CanReconnect() bool {
 func (v *CoreVFS) Reconnect(ctx context.Context) error { return v.mount.reconnect(ctx) }
 
 func (v *CoreVFS) resolve(p string) (string, error) {
-	if p == "" || p == "." {
-		return v.GetPath(), nil
-	}
-	return v.Abs(p)
+	return iosPaths(v.device, v.title).Remote(v.remotePath(), p)
 }
 
 func cleanIOSPath(p string) (string, error) {

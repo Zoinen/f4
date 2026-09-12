@@ -18,6 +18,20 @@ in order: `F4_ADB_PATH`, `PATH`, `ANDROID_SDK_ROOT/platform-tools`, then
 Wireless devices that have already been connected to the same ADB server are
 listed in exactly the same way as USB devices.
 
+Mounted item paths are public addresses, for example
+`android://Pixel 3/sdcard/DCIM/file.jpg`. The panel title uses the same address.
+The Android URI provider can reopen these addresses from another filesystem;
+an item address opens its containing directory and remains usable for file I/O.
+Names retain spaces and apostrophes, while URI delimiters are escaped. Relative
+paths and native `/sdcard/...` paths also work inside a mounted device.
+
+Discovery resolves the friendly name to an ADB serial. Duplicate model names
+use `Model (serial)` authorities (with URI escaping), independent of discovery
+order; an ambiguous unsuffixed name is rejected. Serial and manager-row aliases
+are also accepted when resolving a URI. Each mounted view accepts only its own
+case-sensitive public authority. ADB connections and the FISH+ pool continue
+to use serials, and transport requests contain device-local POSIX paths.
+
 ## Backend selection
 
 One backend is selected when a device row is opened and remains fixed for that

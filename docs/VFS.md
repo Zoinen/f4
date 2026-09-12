@@ -4,6 +4,16 @@
 
 The VFS in `f4` is designed to be fully non-blocking. This architecture ensures that the UI remains responsive even when performing operations on high-latency remote systems (SFTP, FTP) or slow storage devices.
 
+## Device-qualified paths
+
+Android and iOS publish `android://<device>/<path>` and
+`ios://<device>/<path>` addresses. `vfs.DevicePath` centralizes escaping and
+conversion to native POSIX paths. Use the mounted VFS's `Join`, `Base`, `Dir`,
+and `Abs` methods rather than filesystem path helpers on these addresses.
+Device names are case-sensitive; duplicate names are disambiguated using
+stable device identifiers. URI providers resolve current discovery results
+when reopening an address and reject missing or ambiguous devices.
+
 ## Core Design Principles
 
 ### 1. Context-Aware Operations

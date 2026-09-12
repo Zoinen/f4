@@ -44,6 +44,7 @@ const (
 // drive. It deliberately mirrors only stable fields from ADB's devices-l
 // response so the manager does not depend on a particular ADB implementation.
 type DeviceInfo struct {
+	publicName  string
 	Serial      string
 	State       string
 	Model       string
@@ -94,9 +95,15 @@ type Plugin struct {
 	Opener DeviceOpener
 	closer io.Closer
 	info   *deviceInfoService
+	uri    *androidURIProvider
 }
 
 func (p *Plugin) Init(api vfs.HostAPI) error {
+	provider := &androidURIProvider{plugin: p}
+	if err := api.RegisterURIProvider(provider); err != nil {
+		return fmt.Errorf("android: register URI provider: %w", err)
+	}
+	p.uri = provider
 	api.RegisterVFSProvider(&deviceProvider{})
 	api.RegisterDrive("Android", func() vfs.VFS {
 		return newManagerVFS(p.Source, p.Opener, p.info)
@@ -105,6 +112,10 @@ func (p *Plugin) Init(api vfs.HostAPI) error {
 }
 
 func (p *Plugin) Close() error {
+	if p.uri != nil && vfs.FindURIProvider(androidRoot) == p.uri {
+		vfs.UnregisterURIProvider("android")
+	}
+	p.uri = nil
 	if p.closer == nil {
 		return nil
 	}
@@ -141,9 +152,7 @@ func (m *ManagerVFS) IsAtRoot() bool   { return true }
 func (m *ManagerVFS) GetPath() string  { return androidRoot }
 func (m *ManagerVFS) GetTitle() string { return "Android" }
 
-// PanelTitle hides the manager's canonical android:// URI from the panel
-// border. It is an implementation detail; at this level the user is simply
-// looking at the list of connected Android devices.
+// PanelTitle names the device list while GetPath retains its canonical URI.
 func (m *ManagerVFS) PanelTitle(string) string { return "Android devices" }
 
 func (m *ManagerVFS) IsAbs(p string) bool {
@@ -200,7 +209,7 @@ func (m *ManagerVFS) ReadDir(ctx context.Context, _ string, onChunk func([]vfs.V
 
 	byName := make(map[string]DeviceInfo, len(devices))
 	items := make([]vfs.VFSItem, 0, len(devices))
-	for _, device := range devices {
+	for _, device := range qualifyDevices(devices) {
 		if strings.TrimSpace(device.Serial) == "" {
 			continue
 		}
@@ -235,10 +244,13 @@ func (m *ManagerVFS) replaceDevices(devices map[string]DeviceInfo) {
 }
 
 func (m *ManagerVFS) deviceForPath(p string) (DeviceInfo, bool) {
-	name := m.Base(p)
 	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if device, ok := m.devices[p]; ok {
+		return device, true
+	}
+	name := m.Base(p)
 	device, ok := m.devices[name]
-	m.mu.RUnlock()
 	return device, ok
 }
 
@@ -307,6 +319,13 @@ func (m *ManagerVFS) Join(elem ...string) string {
 	if !m.IsAbs(elem[0]) {
 		return path.Join(elem...)
 	}
+	if elem[0] == androidRoot && len(elem) > 1 {
+		root := vfs.DevicePath{Scheme: "android", Device: elem[1]}
+		if len(elem) == 2 {
+			return strings.TrimSuffix(root.Root(), "/")
+		}
+		return root.Join(append([]string{root.Root()}, elem[2:]...)...)
+	}
 	parts := append([]string{strings.TrimPrefix(elem[0], androidRoot)}, elem[1:]...)
 	joined := strings.TrimPrefix(path.Join(parts...), "/")
 	if joined == "" || joined == "." {
@@ -326,6 +345,12 @@ func (m *ManagerVFS) Abs(p string) (string, error) {
 }
 
 func (m *ManagerVFS) Base(p string) string {
+	if m.IsAbs(p) && p != androidRoot {
+		_, device, remote, err := vfs.ParseDevicePath(p)
+		if err == nil && remote == "/" {
+			return device
+		}
+	}
 	if m.IsAbs(p) {
 		p = strings.TrimPrefix(p, androidRoot)
 	}
@@ -421,6 +446,7 @@ func (m *ManagerVFS) authorizeDevice(ctx context.Context, device DeviceInfo) (De
 		if err == nil {
 			for _, current := range devices {
 				if current.Serial == device.Serial && current.State == DeviceStateOnline {
+					current.publicName = device.publicName
 					return current, nil
 				}
 			}
