@@ -1,0 +1,7 @@
+{
+  "windowFrameMargins": false,
+  "screens": [
+    { "name": "primary-175", "width": 3840, "height": 2160, "logicalDpi": 168, "logicalBaseDpi": 96, "dpr": 1 },
+    { "name": "secondary-200", "x": 3840, "width": 2560, "height": 1600, "logicalDpi": 192, "logicalBaseDpi": 96, "dpr": 1 }
+  ]
+}

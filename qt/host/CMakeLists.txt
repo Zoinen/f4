@@ -1464,6 +1464,12 @@ if(BUILD_TESTING)
   f4_link_static_test_platform(F4GalleryBridgeTests)
   f4_link_static_test_qml_plugins(F4GalleryBridgeTests)
   add_test(NAME F4GalleryBridgeTest COMMAND F4GalleryBridgeTests)
+  add_test(NAME F4GalleryMixedDpiPixelTest COMMAND F4GalleryBridgeTests
+    panelIconsKeepNativeRasterAtMixedDpi)
+  set_tests_properties(F4GalleryMixedDpiPixelTest PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen:configfile=tests/data/mixed-dpi-screens.json;QT_SCALE_FACTOR=1;QT_QUICK_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic"
+  )
   set_tests_properties(F4GalleryBridgeTest PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins;QML_IMPORT_PATH=${ZoinGallery_QML_IMPORT_PATH}"
   )

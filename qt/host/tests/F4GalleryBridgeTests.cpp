@@ -6,6 +6,8 @@
 #include <QElapsedTimer>
 #include <QFileInfo>
 #include <QImage>
+#include <QPainter>
+#include <QScreen>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QKeyEvent>
@@ -109,6 +111,7 @@ class F4GalleryBridgeTests final : public QObject
 
 private slots:
     void initTestCase();
+    void panelIconsKeepNativeRasterAtMixedDpi();
     void frameTraceUsesDirectSwapBoundaryAcrossQueuedDelivery();
     void documentWindowTraceWaitsForCommittedRenderSync();
     void stableActionsCarryRevisions();
@@ -402,6 +405,129 @@ void F4GalleryBridgeTests::initTestCase()
     // Enable it before constructing a bridge so frame-boundary tracing can be
     // verified deterministically.
     QVERIFY(qputenv("F4_NAV_BENCHMARK_TRACE", QByteArrayLiteral("1")));
+}
+
+void F4GalleryBridgeTests::panelIconsKeepNativeRasterAtMixedDpi()
+{
+    const auto previousRenderType = QQuickWindow::textRenderType();
+    QQuickWindow::setTextRenderType(QQuickWindow::NativeTextRendering);
+    const auto restoreRenderType = qScopeGuard([previousRenderType] {
+        QQuickWindow::setTextRenderType(previousRenderType);
+    });
+    QQuickView view;
+    view.setScreen(QGuiApplication::primaryScreen());
+    view.setColor(QColor("#191d23"));
+    view.resize(780, 530);
+    const qreal dpr = view.devicePixelRatio();
+    if (qAbs(dpr - 1.75) > .001 || qGuiApp->devicePixelRatio() <= dpr)
+        QSKIP("Run with mixed-dpi-screens.json: window DPR 1.75, maximum DPR 2");
+
+    F4IconSet icons;
+    auto *provider = new F4IconProvider;
+    view.engine()->addImageProvider(icons.providerId(), provider);
+    view.engine()->addImportPath(QStringLiteral(":"));
+    view.engine()->addImportPath(QStringLiteral("qrc:/qt/qml"));
+    F4GalleryBridge bridge(view.engine(), nullptr, &icons);
+    auto scene = longCatalogScene(80, 0);
+    auto shell = scene.value("shell").toMap();
+    auto panel = shell.value("panels").toList().first().toMap();
+    QVariantList entries;
+    for (int i = 0; i < 80; ++i) {
+        entries.append(QVariantMap{{"entryId", QString("entry:%1").arg(i)},
+            {"index", i}, {"name", QString("folder-%1").arg(i)},
+            {"isDir", true}, {"isImage", false}});
+    }
+    panel.insert("entries", entries);
+    panel.insert("galleryLayoutMode", "columns");
+    panel.insert("galleryColumnCount", 3);
+    panel.insert("galleryDensity", 25);
+    shell.insert("panels", QVariantList{panel});
+    scene.insert("shell", shell);
+    bridge.synchronizeScene(scene);
+
+    // The production Loader configures the populated host before attaching
+    // it to the window. Detached image items see the maximum screen DPR (2),
+    // not the target window's DPR (1.75).
+    QQmlComponent component(view.engine(), bridge.panelComponentUrl());
+    QTRY_VERIFY(component.status() != QQmlComponent::Loading);
+    QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+    auto *host = qobject_cast<QQuickItem *>(component.createWithInitialProperties({
+        {"bridge", QVariant::fromValue(static_cast<QObject *>(&bridge))},
+        {"panel", panel}, {"devicePixelRatio", dpr},
+        {"width", 750}, {"height", 480}}));
+    QVERIFY2(host, qPrintable(component.errorString()));
+    QTest::qWait(100);
+    view.setContent(bridge.panelComponentUrl(), &component, host);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+    auto *gallery = host->findChild<QQuickItem *>("embeddedGalleryPanel");
+    QVERIFY(gallery);
+
+    for (int columns : {3, 2, 3}) {
+        gallery->setProperty("columnCount", columns);
+        host->setPosition(QPointF(columns == 3 ? 8.25 : 9, 83.03571428571428));
+        host->setSize(QSizeF(columns == 3 ? 731.5 : 755, 419.25));
+        view.update();
+        QTest::qWait(150);
+        const auto frame = view.grabWindow().convertToFormat(QImage::Format_ARGB32_Premultiplied);
+        QVERIFY(!frame.isNull());
+        QVERIFY(qAbs(frame.width() - view.width()*dpr) < 1);
+        QVERIFY(qAbs(frame.height() - view.height()*dpr) < 1);
+        int checked = 0;
+        const auto visit = [&](auto &&self, QQuickItem *item) -> void {
+            if (!item->isVisible()) return;
+            const auto name = item->objectName();
+            const bool icon = name.startsWith("galleryFallbackIcon-");
+            if (icon || name.startsWith("galleryBaseName-")) {
+                const auto origin = item->mapToScene(QPointF());
+                const auto physical = origin * dpr;
+                QVERIFY2(qAbs(physical.x() - qRound64(physical.x())) < .001
+                    && qAbs(physical.y() - qRound64(physical.y())) < .001,
+                    qPrintable(QString("%1 origin %2,%3").arg(name).arg(physical.x()).arg(physical.y())));
+                QCOMPARE(item->mapToScene(QPointF(1, 0)) - origin, QPointF(1, 0));
+                QCOMPARE(item->mapToScene(QPointF(0, 1)) - origin, QPointF(0, 1));
+                if (icon) {
+                    const QSize size(qRound(item->width()*dpr), qRound(item->height()*dpr));
+                    const QRect rect(physical.toPoint(), size);
+                    if (frame.rect().contains(rect)) {
+                        const auto actual = frame.copy(rect);
+                        QSize returned;
+                        const auto raster = provider->requestImage(F4IconProvider::routeId(
+                            item->property("source").toUrl()), &returned, size);
+                        QVERIFY(!raster.isNull());
+                        QImage expected(size, QImage::Format_ARGB32_Premultiplied);
+                        expected.fill(actual.pixelColor(0, 0));
+                        QPainter painter(&expected);
+                        painter.drawImage(0, 0, raster);
+                        painter.end();
+                        if (qEnvironmentVariableIsSet("F4_PANEL_PIXEL_CAPTURE") && name == "galleryFallbackIcon-2") {
+                            const auto prefix = qEnvironmentVariable("F4_PANEL_PIXEL_CAPTURE");
+                            frame.save(prefix + "-frame.png");
+                            actual.save(prefix + "-actual.png");
+                            expected.save(prefix + "-expected.png");
+                            qInfo() << "Pixel sample" << item->property("source") << size << raster.size() << frame.size();
+                        }
+                        int badPixels = 0;
+                        for (int y = 0; y < size.height(); ++y) {
+                            for (int x = 0; x < size.width(); ++x) {
+                                const auto a = actual.pixelColor(x, y), b = expected.pixelColor(x, y);
+                                if (qAbs(a.red()-b.red()) > 2 || qAbs(a.green()-b.green()) > 2
+                                    || qAbs(a.blue()-b.blue()) > 2) ++badPixels;
+                            }
+                        }
+                        QVERIFY2(badPixels == 0, qPrintable(QString(
+                            "%1 at %2,%3: %4 pixels differ from its %5x%6 native raster")
+                            .arg(name).arg(physical.x()).arg(physical.y()).arg(badPixels)
+                            .arg(size.width()).arg(size.height())));
+                        ++checked;
+                    }
+                }
+            }
+            for (auto *child : item->childItems()) self(self, child);
+        };
+        visit(visit, gallery);
+        QVERIFY(checked >= 6);
+    }
 }
 
 void F4GalleryBridgeTests::documentWindowTraceWaitsForCommittedRenderSync()
