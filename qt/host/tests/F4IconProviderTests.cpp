@@ -331,6 +331,16 @@ void F4IconProviderTests::normalizationIsDeterministic()
 
 void F4IconProviderTests::lucideSourcesAndFileClassification()
 {
+    for (const QString &name : {QStringLiteral("smartphone"), QStringLiteral("tablet")}) {
+        QCOMPARE(F4IconProvider::normalizedIconName(name), name);
+        F4IconProvider provider(std::make_unique<NullBackend>());
+        F4IconSet icons(QStringLiteral("test-icons"));
+        const QUrl route = icons.rasterizedLucideSource(name, 16, 1.75, QColor(Qt::white));
+        const QImage actual = provider.requestImage(F4IconProvider::routeId(route), nullptr, {});
+        QCOMPARE(actual.size(), QSize(28, 28));
+        const QImage expected = renderTintedSvgReference(name, 16, QSize(28, 28), QColor(Qt::white));
+        QVERIFY2(exactImageDifference(actual, expected).isEmpty(), qPrintable(name));
+    }
     QCOMPARE(F4IconProvider::lucideFileIconName(u"anything", true),
              QStringLiteral("folder"));
     QCOMPARE(F4IconProvider::lucideFileIconName(u"..", true),

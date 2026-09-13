@@ -139,7 +139,7 @@ Rectangle {
     readonly property bool documentFileIconAvailable:
         documentFileIconSource.toString() !== ""
     readonly property real surfaceMenuInset:
-        embedded ? 0 : (menuBar.visible ? menuBar.height : 0)
+        embedded ? 0 : hostWindow.menuBarHeight
     readonly property real documentHeaderHeight:
         showsConsoleTopBar
         ? prospectiveHeaderHeight

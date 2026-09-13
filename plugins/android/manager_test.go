@@ -57,6 +57,23 @@ func readManagerItems(t *testing.T, manager *ManagerVFS) ([]vfs.VFSItem, error) 
 	return items, err
 }
 
+func TestManagerDeviceIcons(t *testing.T) {
+	manager := NewManagerVFS(&fakeDeviceSource{devices: []DeviceInfo{
+		{Serial: "pixel", Model: "Pixel 3", State: DeviceStateOnline},
+		{Serial: "offline", State: DeviceStateOffline},
+	}}, &fakeDeviceOpener{})
+	items, err := readManagerItems(t, manager)
+	if err != nil || len(items) != 2 {
+		t.Fatalf("listing: %v, %v", items, err)
+	}
+	for _, item := range items {
+		stat, err := manager.Stat(context.Background(), item.Name)
+		if err != nil || item.IconKey != "smartphone" || stat.IconKey != item.IconKey {
+			t.Errorf("device %q icons: listing=%q stat=%q error=%v", item.Name, item.IconKey, stat.IconKey, err)
+		}
+	}
+}
+
 func TestManagerReadDirDiscoversAndLabelsDevices(t *testing.T) {
 	source := &fakeDeviceSource{devices: []DeviceInfo{
 		{Serial: "serial-z", State: DeviceStateOnline, Model: "Pixel 9"},

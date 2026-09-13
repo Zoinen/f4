@@ -127,6 +127,7 @@ private slots:
     void staleSelectionIntentRetriesIdempotentlyAgainstNewCatalog();
     void galleryLayoutDensityAndSortActionsAreValidated();
     void galleryIconsFollowSharedIconSet();
+    void deviceIconsSurviveIconSetChanges();
     void deferredSystemCatalogSharesGenericFileAndFolderIcons();
     void hostRuntimeDefersBoundedDecodeWorkers();
     void initialCatalogAppliesAppearanceInsideReset();
@@ -671,6 +672,37 @@ void F4GalleryBridgeTests::deferredCatalogApplyStaysWithinKeyboardFrame()
              qPrintable(QStringLiteral(
                  "447-row deferred catalog took %1 ms")
                  .arg(elapsedNs / 1000000.0, 0, 'f', 3)));
+}
+
+void F4GalleryBridgeTests::deviceIconsSurviveIconSetChanges()
+{
+    QVariantMap scene = testScene();
+    QVariantMap shell = scene.value("shell").toMap();
+    QVariantMap panel = shell.value("panels").toList().first().toMap();
+    panel.insert("highlightStyles", QVariantMap{{"device", QVariantMap{{"iconKey", "smartphone"}}}});
+    panel.insert("entries", QVariantList{QVariantMap{
+        {"entryId", "phone"}, {"index", 0}, {"name", "Pixel 3"},
+        {"isDir", true}, {"highlightStyleId", "device"}}});
+    shell.insert("panels", QVariantList{panel});
+    scene.insert("shell", shell);
+    QQmlEngine engine;
+    F4IconSet icons(QStringLiteral("device-test-icons"));
+    F4GalleryBridge bridge(&engine, nullptr, &icons);
+    bridge.synchronizeScene(scene);
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(bridge.sessionForSide(0));
+    QVERIFY(session);
+    for (auto mode : {F4IconSet::Lucide, F4IconSet::System}) {
+        icons.setIconSet(mode);
+        const int role = session->model()->roleNames().key("imageFileRole", -1);
+        QVERIFY(role >= 0);
+        auto *item = session->model()->data(session->model()->index(0, 0), role).value<QObject *>();
+        QVERIFY(item);
+        QCOMPARE(item->property("highlightStyle").toMap().value("iconKey").toString(),
+                 mode == F4IconSet::System ? QString() : QStringLiteral("smartphone"));
+        QCOMPARE(item->property("iconPath").toString(),
+                 icons.iconSource(QStringLiteral("smartphone"), 128,
+                                  qGuiApp->devicePixelRatio()).toString());
+    }
 }
 
 void F4GalleryBridgeTests::galleryIconsFollowSharedIconSet()

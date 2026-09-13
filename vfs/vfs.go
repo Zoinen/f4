@@ -54,7 +54,10 @@ type VFSItem struct {
 	// the provider's stable path component, so duplicate search results can be
 	// disambiguated without changing transfer names or operations.
 	DisplayName string
-	Size        int64
+	// IconKey optionally supplies a semantic icon for synthetic entries such as
+	// device selectors. It is a glyph name, not a URL or filesystem path.
+	IconKey string
+	Size    int64
 	// SizeKnown distinguishes a real zero-byte file from a remote object whose
 	// length is unavailable until Open/materialization. Non-zero Size is always
 	// treated as known for backwards compatibility with existing VFS plugins.

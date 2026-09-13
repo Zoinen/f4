@@ -194,6 +194,29 @@ func TestSemanticAttrColorHonorsReverse(t *testing.T) {
 	}
 }
 
+func TestNativeMenuActivatesWithoutOpeningF9Bar(t *testing.T) {
+	oldFM := *vtui.FrameManager
+	defer func() { *vtui.FrameManager = oldFM }()
+	scr := vtui.NewScreenBuf()
+	scr.AllocBuf(80, 25)
+	vtui.FrameManager.Init(scr)
+	ev := editor.NewEditorView(piecetable.New([]byte("text\n")), nil, "native-menu.txt")
+	defer ev.Close()
+	ev.SetPosition(0, 1, 79, 23)
+	ev.SetVisible(true)
+	vtui.FrameManager.Push(ev)
+	if !HandleSemanticAction(map[string]any{
+		"action": "menuBar.itemActivate", "menuIndex": 0, "index": 3,
+	}) {
+		t.Fatal("native File > Exit was not handled without an F9 submenu")
+	}
+	for _, frame := range vtui.FrameManager.GetActiveFrames(vtui.FrameManager.ActiveIdx) {
+		if frame == ev {
+			t.Fatal("editor remained open after native File > Exit")
+		}
+	}
+}
+
 func TestEditorMenuBarSemanticClickOpensSubmenu(t *testing.T) {
 	oldFM := *vtui.FrameManager
 	defer func() { *vtui.FrameManager = oldFM }()

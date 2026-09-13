@@ -13,9 +13,9 @@ Rectangle {
     readonly property int side: Number(panel.side || 0)
 
     x: hostWindow.nativePanelX(side)
-    y: menuBar.height
+    y: hostWindow.menuBarHeight
     width: hostWindow.nativePanelWidth(side)
-    height: hostWindow.nativePanelHeight(side, menuBar.height)
+    height: hostWindow.nativePanelHeight(side, hostWindow.menuBarHeight)
     color: "transparent"
     border.width: 0
     clip: true

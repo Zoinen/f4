@@ -952,6 +952,7 @@ func (fh *FileHighlighter) SemanticStyle(item *vfs.VFSItem, metadataKnown bool) 
 	parentEntry := item.Name == ".."
 	matched := fh.semanticMatchedRuleIndices(item, metadataKnown)
 	cacheKey := semanticStyleCacheKey(matched, parentEntry)
+	cacheKey = item.IconKey + "\x00" + cacheKey
 	fh.semanticStyleCacheMu.RLock()
 	if fh.semanticStyleCacheRevision == fh.Revision {
 		if cached, ok := fh.semanticStyleCache[cacheKey]; ok {
@@ -986,6 +987,10 @@ func (fh *FileHighlighter) SemanticStyle(item *vfs.VFSItem, metadataKnown bool) 
 		if !rule.ContinueProcessing {
 			break
 		}
+	}
+	if item.IconKey != "" && !parentEntry {
+		style.IconKey = item.IconKey
+		style.Icon = ""
 	}
 	if highlightStyleEmpty(style) {
 		fh.rememberSemanticStyle(cacheKey, "", style)

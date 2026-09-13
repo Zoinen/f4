@@ -29,7 +29,7 @@ Item {
     readonly property real preferredX: Math.max(0, inputTextX - 12)
     readonly property real rowHeight: Math.max(22, hostWindow.ch * 1.15)
     readonly property real maxHeight: Math.max(rowHeight + 8,
-                                               commandLineY - menuBar.height)
+                                               commandLineY - hostWindow.menuBarHeight)
     readonly property real availableWidth: Math.max(1,
                                                      hostWindow.width - preferredX - 6)
     readonly property real contentWidth: {
@@ -67,7 +67,7 @@ Item {
 
     Rectangle {
         x: autocompleteOverlay.preferredX
-        y: Math.max(menuBar.height,
+        y: Math.max(hostWindow.menuBarHeight,
                     autocompleteOverlay.commandLineY - height)
         width: Math.min(autocompleteOverlay.availableWidth,
                         Math.max(80, autocompleteOverlay.contentWidth))

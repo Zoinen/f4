@@ -69,6 +69,14 @@ func TestManagerReadDirRefreshesAndLabelsAllDeviceStates(t *testing.T) {
 	for i, item := range items {
 		gotNames[i] = item.Name
 		gotExecutable[i] = item.IsExecutable
+		wantIcon := "smartphone"
+		if strings.HasPrefix(item.Name, "iPad") {
+			wantIcon = "tablet"
+		}
+		stat, statErr := manager.Stat(context.Background(), item.Name)
+		if statErr != nil || item.IconKey != wantIcon || stat.IconKey != wantIcon {
+			t.Errorf("device %q icons: listing=%q stat=%q error=%v", item.Name, item.IconKey, stat.IconKey, statErr)
+		}
 		if !item.IsDir {
 			t.Errorf("device row %q is not marked as directory", item.Name)
 		}

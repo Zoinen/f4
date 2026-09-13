@@ -1163,21 +1163,8 @@ func appMenuFromLegacy(node map[string]any, role string) extui.MenuModel {
 	for _, item := range semantic.AppMapSlice(node["items"]) {
 		menu.Items = append(menu.Items, appMenuItemFromLegacy(item))
 	}
-	if role == "menuBar" && !menu.Active {
-		// The closed native menu bar only paints its top-level labels. Shipping
-		// every submenu here made a panel layout shortcut resend the complete
-		// command tree merely because a hidden view-mode checkmark changed.
-		// Active menu-bar snapshots still retain all children so opening a menu
-		// and previewing adjacent submenus remains authoritative and immediate.
-		for index := range menu.Items {
-			menu.Items[index].Items = nil
-			if _, present := menu.Items[index].Legacy["items"]; present {
-				legacy := semantic.SemanticShallowMapCopy(menu.Items[index].Legacy)
-				delete(legacy, "items")
-				menu.Items[index].Legacy = legacy
-			}
-		}
-	}
+	// Native and app-icon menus remain available while the F9 bar is closed.
+	// Keep their commands and checkmarks authoritative in both states.
 	return menu
 }
 

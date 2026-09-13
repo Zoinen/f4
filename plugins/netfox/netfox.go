@@ -40,6 +40,19 @@ func (w *netFoxVFSWrapper) Clone() vfs.VFS {
 	return &netFoxVFSWrapper{w.NetFoxVFS.Clone().(*NetFoxVFS)}
 }
 
+func (w *netFoxVFSWrapper) HandlePanelAction(app vfs.App, action vfs.PanelAction, paths []string) bool {
+	if action == vfs.PanelActionCreate ||
+		(action == vfs.PanelActionActivate && len(paths) == 1 && w.Base(paths[0]) == "<Add connection>") {
+		addNetFoxConnection(app)
+		return true
+	}
+	if action == vfs.PanelActionEdit && len(paths) == 1 {
+		editNetFoxConnection(app)
+		return true
+	}
+	return false
+}
+
 // ctxReader wraps vfs.ReadAtCloser to implement standard io.Reader
 type ctxReader struct {
 	r   vfs.ReadAtCloser
@@ -116,7 +129,7 @@ func editNetFoxConnection(app vfs.App) {
 	if name == "" || name == ".." || name == "<Add connection>" {
 		return
 	}
-	if host, ok := app.(vfs.SettingsNavigationHost); ok && host.OpenSettings("network", "netfox.connections", name, false) {
+	if host, ok := app.(vfs.SettingsRecordHost); ok && host.OpenSettingsRecord("netfox.connections", name, false) {
 		return
 	}
 	showConnectionDialog(app, netFoxVFS, name)
@@ -127,7 +140,7 @@ func addNetFoxConnection(app vfs.App) {
 	if !ok {
 		return
 	}
-	if host, ok := app.(vfs.SettingsNavigationHost); ok && host.OpenSettings("network", "netfox.connections", "", true) {
+	if host, ok := app.(vfs.SettingsRecordHost); ok && host.OpenSettingsRecord("netfox.connections", "", true) {
 		return
 	}
 	showConnectionDialog(app, netFoxVFS, "")

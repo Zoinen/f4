@@ -207,6 +207,15 @@ QVariantMap resolveFileIconStyle(F4IconSet *iconSet, QVariantMap style,
     }
     const QString configuredIcon =
         style.value(QStringLiteral("icon")).toString();
+    const QString semanticIcon = style.value(QStringLiteral("iconKey")).toString();
+    if (configuredIcon.isEmpty() && !semanticIcon.isEmpty()) {
+        style.insert(QStringLiteral("icon"), iconSet->iconSource(
+            semanticIcon, GalleryIconLogicalSize, devicePixelRatio).toString());
+        if (iconSet->system()) {
+            style.remove(QStringLiteral("iconKey"));
+        }
+        return style;
+    }
     const bool replaceableIcon = configuredIcon.isEmpty()
         || isZoinGalleryDefaultIcon(configuredIcon)
         || isF4SystemFileIcon(configuredIcon, iconSet->providerId())

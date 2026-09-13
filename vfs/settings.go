@@ -14,3 +14,9 @@ type SettingsContributionHost interface {
 type SettingsNavigationHost interface {
 	OpenSettings(category, collection, record string, create bool) bool
 }
+
+// SettingsRecordHost opens an isolated record editor using the provider's
+// settings schema, validation and transaction, without global settings chrome.
+type SettingsRecordHost interface {
+	OpenSettingsRecord(collection, record string, create bool) bool
+}

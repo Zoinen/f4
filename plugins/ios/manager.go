@@ -211,6 +211,7 @@ func (m *ManagerVFS) ReadDir(ctx context.Context, _ string, onChunk func([]vfs.V
 		byName[name] = device
 		items = append(items, vfs.VFSItem{
 			Name:         name,
+			IconKey:      deviceIcon(device),
 			IsDir:        true,
 			IsExecutable: deviceReady(device),
 			NoExtension:  true,
@@ -383,7 +384,17 @@ func (m *ManagerVFS) Stat(_ context.Context, p string) (vfs.VFSItem, error) {
 		return vfs.VFSItem{}, os.ErrNotExist
 	}
 	name, _ := directManagerRowName(p)
-	return vfs.VFSItem{Name: name, IsDir: true, IsExecutable: deviceReady(device), NoExtension: true}, nil
+	return vfs.VFSItem{
+		Name: name, IconKey: deviceIcon(device), IsDir: true,
+		IsExecutable: deviceReady(device), NoExtension: true,
+	}, nil
+}
+
+func deviceIcon(device DeviceInfo) string {
+	if strings.HasPrefix(device.ProductType, "iPad") || strings.HasPrefix(device.Model, "iPad") {
+		return "tablet"
+	}
+	return "smartphone"
 }
 
 func (m *ManagerVFS) Join(elem ...string) string {

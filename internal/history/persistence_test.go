@@ -168,6 +168,7 @@ func TestAddFolderHistoryCoalescesAliasesAndPreservesLock(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = hp.Close() })
 
+	visitStart := time.Now()
 	before, after, _ := hp.addFolderHistory(canonical, nil)
 	if before != 1 || after != 1 {
 		t.Fatalf("alias-coalesced sizes = (%d, %d), want (1, 1)", before, after)
@@ -178,6 +179,23 @@ func TestAddFolderHistoryCoalescesAliasesAndPreservesLock(t *testing.T) {
 	records := hp.LoadRichHistory("folders")
 	if len(records) != 1 || records[0].Name != canonical || !records[0].Lock {
 		t.Fatalf("rich folder history = %#v, want one locked canonical record", records)
+	}
+	if records[0].Timestamp.Before(visitStart) || records[0].Timestamp.After(time.Now()) {
+		t.Fatalf("[FIX:folder-history-date] visit timestamp = %v, want current visit", records[0].Timestamp)
+	}
+	visitStart = time.Now()
+	hp.addFolderHistory(canonical, nil)
+	records = hp.LoadRichHistory("folders")
+	if records[0].Timestamp.Before(visitStart) || !records[0].Lock {
+		t.Fatalf("revisit did not update timestamp and preserve lock: %+v", records[0])
+	}
+	if err := hp.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened := NewProviderAtPath(hp.path)
+	t.Cleanup(func() { _ = reopened.Close() })
+	if got := reopened.LoadRichHistory("folders"); len(got) != 1 || !got[0].Timestamp.Equal(records[0].Timestamp) {
+		t.Fatalf("visit timestamp was not persisted: %+v", got)
 	}
 }
 

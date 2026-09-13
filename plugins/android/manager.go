@@ -217,6 +217,7 @@ func (m *ManagerVFS) ReadDir(ctx context.Context, _ string, onChunk func([]vfs.V
 		byName[name] = device
 		items = append(items, vfs.VFSItem{
 			Name:         name,
+			IconKey:      "smartphone",
 			IsDir:        true,
 			IsExecutable: device.State == DeviceStateOnline || device.State == DeviceStateUnauthorized,
 			NoExtension:  true,
@@ -306,6 +307,7 @@ func (m *ManagerVFS) Stat(_ context.Context, p string) (vfs.VFSItem, error) {
 	}
 	return vfs.VFSItem{
 		Name:         DeviceDisplayName(device),
+		IconKey:      "smartphone",
 		IsDir:        true,
 		IsExecutable: device.State == DeviceStateOnline || device.State == DeviceStateUnauthorized,
 		NoExtension:  true,

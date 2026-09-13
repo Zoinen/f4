@@ -310,7 +310,7 @@ Item {
         const item = effectiveItems[index]
         return item.separator ? menuSeparatorHeight
              : item.header === true ? menuHeaderHeight
-             : item.details ? driveRowHeight : effectiveMenuRowHeight
+             : item.details && item.details.kind !== "history" ? driveRowHeight : effectiveMenuRowHeight
     }
 
     function heightBeforeIndex(index) {
@@ -390,8 +390,11 @@ Item {
 
     function syncListSelection() {
         const wanted = Math.max(-1, Number(visualSelectedIndex))
-        if (popupMenuList.currentIndex !== wanted)
+        if (popupMenuList.currentIndex !== wanted) {
+            const top = popupMenuList.contentY
             popupMenuList.currentIndex = wanted
+            popupMenuList.contentY = top
+        }
     }
 
     function applyCommandMenuStates(states) {
@@ -399,6 +402,16 @@ Item {
         for (var i = 0; i < states.length; ++i) {
             if (String(states[i].id || "") !== frameId)
                 continue
+            const selectionChanged = semanticSelectedIndex !== Math.max(0,
+                Number(states[i].selected || 0))
+            const topChanged = semanticTopIndex !== Math.max(0,
+                Number(states[i].top || 0))
+            const pointerAcknowledgement = activePointerSelectedIndex >= 0
+                && activePointerSelectedIndex === Number(states[i].selected || 0)
+            // Initial/repeated state echoes are not scroll commands. Replaying
+            // the console top here would undo the native containment above.
+            if (!selectionChanged && !topChanged)
+                return
             semanticSelectedIndex = Math.max(0,
                 Number(states[i].selected || 0))
             semanticTopIndex = Math.max(0,
@@ -407,7 +420,10 @@ Item {
                 pointerSelectedIndex = -1
             else
                 Qt.callLater(reconcilePointerState)
-            Qt.callLater(popupMenuList.syncTopPosition)
+            if (!pointerAcknowledgement)
+                Qt.callLater(function() {
+                    popupMenuList.syncTopPosition(selectionChanged, !selectionChanged)
+                })
             return
         }
     }
@@ -679,7 +695,7 @@ Item {
         ? hostWindow.snapPx(108) + driveCapacityTextWidth : 0
 
     function preferredMenuWidth() {
-        if (effectiveItems.some(item => item.details !== undefined)) {
+        if (effectiveItems.some(item => item.details !== undefined && item.details.kind !== "history")) {
             let preferred = menuLabelInset + hostWindow.snapPx(16 + 16 + 24) + driveNameWidth + driveCapacityWidth + driveFilesystemWidth
             for (const item of effectiveItems) {
                 if (!isDriveDetails(item.details)) preferred = Math.max(preferred, popupMenuMetrics.advanceWidth(
@@ -788,7 +804,7 @@ Item {
         anchors.right: parent.right
         anchors.top: parent.top
         anchors.bottom: parent.bottom
-        anchors.topMargin: menuOverlay.fromMenuBar ? menuBar.height : 0
+        anchors.topMargin: menuOverlay.fromMenuBar ? menuBar.windowBottom() : 0
         // Only the root popup owns the chain-wide backdrop. A child Loader is
         // stacked above its parent and also fills the window, so an enabled
         // backdrop here would intercept every pointer event intended for the
@@ -890,6 +906,10 @@ Item {
             // sit flush right. Delegates retain the visual five-pixel inset.
             anchors.rightMargin: 0
             model: menuOverlay.effectiveItems
+            readonly property bool historyMenu: menuOverlay.effectiveItems.some(
+                item => item.details && item.details.kind === "history")
+            property bool initialPositionReady: false
+            opacity: historyMenu && !initialPositionReady ? 0 : 1
             clip: true
             // ListView resets currentIndex while installing a model. Keep the
             // visual cursor synchronized explicitly with the authoritative Go
@@ -901,24 +921,65 @@ Item {
                 y: menuOverlay.dropdownContentShift
             }
 
-            function syncTopPosition() {
+            function syncTopPosition(revealSelection = true, applyTopHint = true) {
                 if (menuOverlay.dropdownMode
                         && !menuOverlay.dropdownOpenSettled) {
                     menuOverlay.initializeDropdownPosition()
                     return
                 }
-                if (count > 0 && !popupMenuScrollBar.pressed)
-                    positionViewAtIndex(menuOverlay.semanticTopIndex,
-                                        ListView.Beginning)
+                if (count > 0 && !popupMenuScrollBar.pressed) {
+                    if (applyTopHint)
+                        positionViewAtIndex(menuOverlay.semanticTopIndex,
+                                            ListView.Beginning)
+                    // Console top/viewHeight do not include native title and
+                    // row metrics. Use its hint for opening/explicit scrolling,
+                    // but preserve the native viewport on keyboard selection.
+                    // Reveal the cursor only when it leaves that viewport.
+                    // Scroll-only acknowledgements must not pull the user back.
+                    if (revealSelection) {
+                        const visibleRow = itemAtIndex(menuOverlay.semanticSelectedIndex)
+                        if (visibleRow && visibleRow.y >= contentY - .01
+                                && visibleRow.y + visibleRow.height <= contentY + height + .01)
+                            return
+                        positionViewAtIndex(menuOverlay.semanticSelectedIndex,
+                                            ListView.Contain)
+                        // Qt's positioning can round contentY to logical
+                        // pixels. Round outward so a fractional-DPR last row
+                        // is not clipped by the remaining fraction of a pixel.
+                        const row = itemAtIndex(menuOverlay.semanticSelectedIndex)
+                        if (row && row.y + row.height > contentY + height)
+                            contentY = Math.ceil((row.y + row.height - height)
+                                                * hostWindow.dpr) / hostWindow.dpr
+                        else if (row && row.y < contentY)
+                            contentY = Math.floor(row.y * hostWindow.dpr) / hostWindow.dpr
+                    }
+                }
+            }
+
+            function prepareInitialPosition() {
+                if (!menuOverlay.componentReady || height <= 0)
+                    return
+                // Realize row geometry before positioning; never expose the
+                // default top-of-list viewport while waiting for ListView polish.
+                forceLayout()
+                menuOverlay.syncListSelection()
+                syncTopPosition()
+                initialPositionReady = true
+            }
+
+            onHeightChanged: {
+                if (!initialPositionReady)
+                    Qt.callLater(prepareInitialPosition)
+                else
+                    Qt.callLater(syncTopPosition)
             }
 
             Component.onCompleted: {
-                Qt.callLater(menuOverlay.syncListSelection)
-                Qt.callLater(syncTopPosition)
+                Qt.callLater(prepareInitialPosition)
             }
             onModelChanged: {
-                Qt.callLater(menuOverlay.syncListSelection)
-                Qt.callLater(syncTopPosition)
+                initialPositionReady = false
+                Qt.callLater(prepareInitialPosition)
             }
             onCountChanged: {
                 if (menuOverlay.dropdownMode

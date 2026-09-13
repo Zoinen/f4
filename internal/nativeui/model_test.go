@@ -8,7 +8,7 @@ import (
 	testing "testing"
 )
 
-func TestAppMenuFromLegacyDefersClosedMenuBarSubmenus(t *testing.T) {
+func TestAppMenuFromLegacyPreservesClosedMenuBarSubmenus(t *testing.T) {
 	node := map[string]any{
 		"id": "main-menu", "active": false, "selected": 0,
 		"items": []map[string]any{{
@@ -24,8 +24,10 @@ func TestAppMenuFromLegacyDefersClosedMenuBarSubmenus(t *testing.T) {
 	if len(closedItems) != 1 {
 		t.Fatalf("closed menu-bar items = %#v", closedItems)
 	}
-	if _, present := closedItems[0]["items"]; present {
-		t.Fatalf("closed menu bar leaked hidden submenu: %#v", closedItems[0])
+	closedChildren := semantic.AppMapSlice(closedItems[0]["items"])
+	if len(closedChildren) != 1 || closedChildren[0]["checked"] != true ||
+		closedChildren[0]["text"] != "&Details" {
+		t.Fatalf("closed menu bar lost native/app-icon commands: %#v", closedItems[0])
 	}
 	if len(semantic.AppMapSlice(node["items"])[0]["items"].([]map[string]any)) != 1 {
 		t.Fatal("closed menu compaction mutated the source semantic node")

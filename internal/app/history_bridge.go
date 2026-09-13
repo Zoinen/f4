@@ -212,6 +212,7 @@ func actionViewerEditorHistory(pf *panel.PanelsFrame) {
 	menu := vtui.NewVMenu(i18n.Msg("History.ViewEditTitle"))
 	menu.SetHelp("HistoryViewEdit")
 	search := newHistorySearch(menu, paths, i18n.Msg("History.ViewEditHint"))
+	search.dateColumn = true
 	search.supportsLocks = true
 	// Same timestamp column the command and folder histories use, with its
 	// own Ctrl+T mode remembered separately — far2l keeps one setting per

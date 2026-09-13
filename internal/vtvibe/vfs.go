@@ -31,7 +31,7 @@ func (v *AIVFS) Session() *Session { return v.s }
 func (v *AIVFS) SessionKey() any { return v.s }
 
 func (v *AIVFS) IsAtRoot() bool  { return v.cwd == "/" }
-func (v *AIVFS) GetPath() string { return v.cwd }
+func (v *AIVFS) GetPath() string { return aiPath(v.cwd) }
 func (v *AIVFS) IsAbs(p string) bool {
 	return strings.HasPrefix(p, "/") || strings.HasPrefix(p, "ai://")
 }
@@ -47,16 +47,23 @@ func (v *AIVFS) SetPath(p string) error {
 	return nil
 }
 
-// GetTitle and PanelTitle keep the panel header reading ai://ctx rather than
-// a bare /ctx that looks like a local folder.
+// GetTitle names the filesystem; paths remain qualified independently of titles.
 func (v *AIVFS) GetTitle() string { return "ai" }
 
+func (*AIVFS) PanelIcon() string { return "sparkles" }
+
 func (v *AIVFS) PanelTitle(p string) string {
-	return "ai://" + strings.TrimPrefix(CleanPath(p), "/")
+	return aiPath(p)
+}
+
+func aiPath(p string) string {
+	return "ai://" + strings.TrimPrefix(CleanPath(strings.TrimPrefix(p, "ai://")), "/")
 }
 
 func (v *AIVFS) normalize(p string) string {
-	p = strings.TrimPrefix(p, "ai://")
+	if strings.HasPrefix(p, "ai://") {
+		return CleanPath(strings.TrimPrefix(p, "ai://"))
+	}
 	if p != "" && !strings.HasPrefix(p, "/") && !strings.HasPrefix(p, "\\") {
 		p = path.Join(v.cwd, p)
 	}
@@ -123,22 +130,20 @@ func toItem(n memNode) vfs.VFSItem {
 }
 
 func (v *AIVFS) Join(elem ...string) string {
-	joined := path.Join(elem...)
-	if joined == "" {
-		return "/"
+	if len(elem) == 0 {
+		return "ai://"
 	}
-	return joined
+	parts := append([]string{v.normalize(elem[0])}, elem[1:]...)
+	return aiPath(path.Join(parts...))
 }
 
-func (v *AIVFS) Abs(p string) (string, error) { return v.normalize(p), nil }
-func (v *AIVFS) Base(p string) string         { return path.Base(CleanPath(p)) }
+func (v *AIVFS) Abs(p string) (string, error) { return aiPath(v.normalize(p)), nil }
+func (v *AIVFS) Base(p string) string {
+	return path.Base(CleanPath(strings.TrimPrefix(p, "ai://")))
+}
 
 func (v *AIVFS) Dir(p string) string {
-	d := path.Dir(CleanPath(p))
-	if d == "." {
-		return "/"
-	}
-	return d
+	return aiPath(path.Dir(CleanPath(strings.TrimPrefix(p, "ai://"))))
 }
 
 // writable marks the branches a human (or a copy operation) may change.

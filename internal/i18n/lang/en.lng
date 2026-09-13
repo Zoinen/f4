@@ -3164,18 +3164,20 @@ WindowsLocations.AccessErrorFmt=Cannot access folder:\n%s\n\n%v
 WindowsLocations.AccessUnavailable=This location is unavailable.
 WindowsLocations.AccessNotFolder=This location is not a folder.
 
-Panel.View.Columns2 = "Columns · &2"
+Panel.View.Columns2=Columns · &2
 
-Panel.View.Columns3 = "Columns · &3"
+Panel.View.Columns3=Columns · &3
 
-Panel.View.Details = "&Details"
+Panel.View.Details=&Details
 
-Panel.View.Masonry = "&Masonry"
+Panel.View.Masonry=&Masonry
+Panel.View.Icons=Icons
+Panel.View.Grid=Grid
 
-DiskMenu.MacOSLocations = "macOS &Locations"
+DiskMenu.MacOSLocations=macOS &Locations
 
-DiskMenu.MacOSLoading = "Loading macOS locations…"
+DiskMenu.MacOSLoading=Loading macOS locations…
 
-DiskMenu.ShellLoading = "◌ Loading…"
+DiskMenu.ShellLoading=◌ Loading…
 
-DiskMenu.ShellEmpty = "No Windows Shell locations"
+DiskMenu.ShellEmpty=No Windows Shell locations

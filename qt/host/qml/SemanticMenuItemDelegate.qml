@@ -12,6 +12,7 @@ Rectangle {
     required property Item popupList
     required property var scrollBar
     required property var modelData
+    readonly property bool historyRow: modelData.details && modelData.details.kind === "history"
     readonly property var dropdownTextLayout: overlayController.dropdownMode
         && overlayController.dropdownAnchor
         ? overlayController.dropdownAnchor.contentItem : null
@@ -25,7 +26,7 @@ Rectangle {
             ? overlayController.menuSeparatorHeight
             : modelData.header === true
               ? overlayController.menuHeaderHeight
-              : modelData.details ? overlayController.driveRowHeight : overlayController.effectiveMenuRowHeight
+              : modelData.details && !historyRow ? overlayController.driveRowHeight : overlayController.effectiveMenuRowHeight
     radius: 4
     color: modelData.index === overlayController.visualSelectedIndex
            && !modelData.separator
@@ -106,8 +107,63 @@ Rectangle {
     }
 
     Item {
+        id: historyContent
+        visible: menuItem.historyRow
+        readonly property var details: menuItem.modelData.details || ({})
+        readonly property bool commandColumns: details.columns === "command"
+        readonly property bool columns: commandColumns || details.columns === "dated"
+        readonly property font dateFont: {
+            const value = Qt.font(hostWindow.font)
+            value.family = hostWindow.guiMonospaceFontFamily
+            return value
+        }
+        readonly property real gap: hostWindow.snapPx(16)
+        readonly property real dateWidth: columns ? hostWindow.snapPx(Math.min(width * .28, dateMetrics.advanceWidth + 4)) : 0
+        readonly property real pathWidth: commandColumns ? hostWindow.snapPx(width * .32) : 0
+        readonly property real primaryWidth: Math.max(0, width - pathWidth - dateWidth - (columns ? gap : 0) - (commandColumns ? gap : 0))
+        x: overlayController.menuLabelInset
+        width: hostWindow.snapPx(Math.max(0, menuItem.width - x - 12))
+        height: menuItem.height
+        TextMetrics { id: dateMetrics; font: historyContent.dateFont; text: "2000-00-00 00:00:00" }
+        function markedText(key) {
+            const mask = String(details[key + "Matches"] || "")
+            return Array.from(String(details[key] || "")).map((letter, i) => {
+                const escaped = letter.replace(/&/g, "&amp;").replace(/</g, "&lt;")
+                    .replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/ /g, "&nbsp;")
+                return mask[i] === "1" ? '<font color="' + hostWindow.dialogAccent + '">' + escaped + '</font>' : escaped
+            }).join("")
+        }
+        Repeater {
+            model: !menuItem.historyRow ? [] : historyContent.commandColumns ? ["primary", "path", "date"]
+                : historyContent.columns ? ["primary", "date"] : ["primary"]
+            delegate: Text {
+                id: historyText
+                required property string modelData
+                objectName: "semanticHistory-" + hostWindow.cleanText(overlayController.frame.id)
+                    + "-" + Number(menuItem.modelData.index) + "-" + modelData
+                x: modelData === "primary" ? 0 : modelData === "path"
+                    ? historyContent.primaryWidth + historyContent.gap : historyContent.width - historyContent.dateWidth
+                y: hostWindow.snapPx((historyContent.height - height) / 2)
+                width: modelData === "primary" ? historyContent.primaryWidth
+                    : modelData === "path" ? historyContent.pathWidth : historyContent.dateWidth
+                height: Math.ceil(implicitHeight * hostWindow.dpr) / hostWindow.dpr
+                text: historyContent.markedText(modelData)
+                textFormat: Text.StyledText
+                font: modelData === "date" ? historyContent.dateFont : hostWindow.font
+                color: modelData === "primary" ? hostWindow.textColor : hostWindow.mutedText
+                horizontalAlignment: modelData === "date" ? Text.AlignRight : Text.AlignLeft
+                elide: modelData === "path" ? Text.ElideMiddle : Text.ElideRight
+                transform: Translate {
+                    x: hostWindow.dialogPixelOffsetX(historyText, hostWindow.contentItem)
+                    y: hostWindow.dialogPixelOffsetY(historyText, hostWindow.contentItem)
+                }
+            }
+        }
+    }
+
+    Item {
         id: driveContent
-        visible: !!menuItem.modelData.details
+        visible: !!menuItem.modelData.details && !menuItem.historyRow
         readonly property var details: menuItem.modelData.details || ({})
         readonly property real gap: hostWindow.snapPx(24)
         readonly property real captionGap: hostWindow.snapPx(16)
@@ -188,7 +244,7 @@ Rectangle {
                     + "-" + Number(modelData.index)
         readonly property string semanticIconName:
             modelData.checked === true ? "check"
-            : modelData.details ? String(modelData.details.icon || "hard-drive")
+            : modelData.details && !menuItem.historyRow ? String(modelData.details.icon || "hard-drive")
             : hostWindow.cleanText(modelData.icon)
         readonly property url semanticIconSource:
             semanticIconName === ""

@@ -16,7 +16,7 @@ Item {
     objectName: "workspaceBar"
     anchors.bottom: parent.bottom
     width: visible
-           ? hostWindow.snapPx(Math.min(availableWidth * 0.46,
+           ? hostWindow.snapPx(Math.min(availableWidth,
                                   workspaceItemsRow.width))
            : 0
     height: hostWindow.snapPx(36)
@@ -600,6 +600,7 @@ Item {
 
                 HostPixelAlignedImage {
                     hostWindow: workspaceBar.hostWindow
+                    objectName: "workspaceNewIcon"
                     x: hostWindow.snapPx((parent.width - width) / 2)
                     y: hostWindow.snapPx((parent.height - height) / 2)
                     width: hostWindow.snapPx(16)

@@ -775,6 +775,7 @@ private slots:
     void settingsCategoryListSelectsDuringMouseDrag_data();
     void settingsListScrollingAndTouch();
     void settingsCategoryIconsStayPixelAligned();
+    void settingsResizeKeepsChromeAndScrollsContent_data();
     void settingsResizeKeepsChromeAndScrollsContent();
     void overlayModelPreservesIdentityAndExitLifecycle();
     void adaptiveChoicesAndFilledFields();
@@ -4000,8 +4001,16 @@ void F4OperationsQueueTests::settingsDecorationsAndViewportStayPixelAligned()
 }
 
 
+void F4OperationsQueueTests::settingsResizeKeepsChromeAndScrollsContent_data()
+{
+    QTest::addColumn<bool>("recordOnly");
+    QTest::newRow("full-settings") << false;
+    QTest::newRow("single-connection") << true;
+}
+
 void F4OperationsQueueTests::settingsResizeKeepsChromeAndScrollsContent()
 {
+    QFETCH(bool, recordOnly);
     auto scene = panelScene();
     auto dialog = QJsonDocument::fromJson(R"({
         "id":"resizable-settings","kind":"dialog","layout":"settings","title":"Settings","x":0,"y":0,"w":110,"h":50,
@@ -4020,6 +4029,13 @@ void F4OperationsQueueTests::settingsResizeKeepsChromeAndScrollsContent()
           {"id":"cancel","kind":"button","layoutRole":"cancel","text":"Cancel","x":98,"y":48,"w":9,"h":1}
         ]})").toVariant().toMap();
     auto children = dialog.value("children").toList();
+    if (recordOnly) {
+        for (int index = 0; index < 4; ++index) {
+            auto child = children[index].toMap();
+            child.insert("visible", false);
+            children[index] = child;
+        }
+    }
     auto pageModel = children[4].toMap();
     auto settings = pageModel.value("children").toList();
     for (int row = 10; row < 65; row += 2)
@@ -4061,6 +4077,11 @@ void F4OperationsQueueTests::settingsResizeKeepsChromeAndScrollsContent()
                  qPrintable(QString("footer bottom=%1, dialog height=%2").arg(buttonRect.bottom()).arg(surface->height())));
         auto *body = visualItem(root, "settingsDialogBody");
         QVERIFY(body && body->isVisible());
+        QCOMPARE(body->property("hasNavigation").toBool(), !recordOnly);
+        if (recordOnly) {
+            QCOMPARE(body->property("mainX").toReal(), 0.0);
+            QCOMPARE(body->property("pageY").toReal(), 0.0);
+        }
         auto *page = visualItem(root, "dialogWidget-pageViewport");
         QVERIFY(page && page->height() > 50);
         QVERIFY(page->property("contentHeight").toReal() > page->height());
@@ -4082,7 +4103,8 @@ void F4OperationsQueueTests::settingsResizeKeepsChromeAndScrollsContent()
             const auto gap = helpRoot->mapToItem(root, QPointF()).x()
                 - box->mapToItem(root, QPointF(box->width(), 0)).x();
             QVERIFY2(gap >= 11 && gap <= 30, qPrintable(QString("page/help gap=%1").arg(gap)));
-            QVERIFY(qAbs(helpText->mapToItem(root, QPointF()).y() - title->mapToItem(root, QPointF()).y()) < 1);
+            if (!recordOnly)
+                QVERIFY(qAbs(helpText->mapToItem(root, QPointF()).y() - title->mapToItem(root, QPointF()).y()) < 1);
         }
         const auto footerOrigin = button->mapToItem(root, QPointF());
         auto *search = visualItem(root, "dialogWidget-searchEditTextInput");

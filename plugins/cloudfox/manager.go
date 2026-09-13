@@ -95,7 +95,7 @@ func (m *ManagerVFS) ReadDir(ctx context.Context, _ string, onChunk func([]vfs.V
 		return err
 	}
 	items := make([]vfs.VFSItem, 0, len(connections)+1)
-	items = append(items, vfs.VFSItem{Name: m.strings.AddConnection, IsExecutable: true, NoExtension: true})
+	items = append(items, vfs.VFSItem{Name: m.strings.AddConnection, IconKey: "plus", IsExecutable: true, NoExtension: true})
 	rows := make(map[string]Connection, len(connections))
 	for _, connection := range connections {
 		rows[connection.Name] = connection.Clone()
@@ -147,7 +147,7 @@ func (m *ManagerVFS) Stat(ctx context.Context, p string) (vfs.VFSItem, error) {
 		return vfs.VFSItem{Name: DriveName, IsDir: true, NoExtension: true}, nil
 	}
 	if m.Base(p) == m.strings.AddConnection {
-		return vfs.VFSItem{Name: m.strings.AddConnection, IsExecutable: true, NoExtension: true}, nil
+		return vfs.VFSItem{Name: m.strings.AddConnection, IconKey: "plus", IsExecutable: true, NoExtension: true}, nil
 	}
 	connection, ok := m.connectionForPath(ctx, p)
 	if !ok {

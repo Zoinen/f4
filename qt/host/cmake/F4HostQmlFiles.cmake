@@ -58,6 +58,7 @@ set(F4_HOST_QML_FILES
   qml/ThemeColorEditorPane.qml
   qml/ThemeEditorFooter.qml
   qml/SemanticMenuBar.qml
+  qml/ApplicationMenuPopup.qml
   qml/ShellTitleBar.qml
   qml/WorkspaceTabs.qml
   qml/DialogCheckBox.qml

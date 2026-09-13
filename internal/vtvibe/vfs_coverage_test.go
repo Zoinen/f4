@@ -12,7 +12,7 @@ import (
 func TestAIVFSNavigationAndPathRules(t *testing.T) {
 	s := NewSession()
 	v := NewVFS(s)
-	if v.Session() != s || v.SessionKey() != s || !v.IsAtRoot() || v.GetPath() != "/" {
+	if v.Session() != s || v.SessionKey() != s || !v.IsAtRoot() || v.GetPath() != "ai://" {
 		t.Fatal("new VFS did not expose its session and root")
 	}
 	if !v.IsAbs("/ctx") || !v.IsAbs("ai://ctx") || v.IsAbs("ctx") {
@@ -24,28 +24,28 @@ func TestAIVFSNavigationAndPathRules(t *testing.T) {
 	if err := v.SetPath("ai://ctx"); err != nil {
 		t.Fatal(err)
 	}
-	if v.GetPath() != "/ctx" || v.IsAtRoot() {
+	if v.GetPath() != "ai://ctx" || v.IsAtRoot() {
 		t.Fatalf("SetPath left cwd at %q", v.GetPath())
 	}
 	if err := v.SetPath("/missing"); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("SetPath missing = %v, want not-exist", err)
 	}
-	if got, err := v.Abs("child"); err != nil || got != "/ctx/child" {
+	if got, err := v.Abs("child"); err != nil || got != "ai://ctx/child" {
 		t.Fatalf("Abs(child) = %q, %v", got, err)
 	}
 	if got := v.Base("/ctx/child"); got != "child" {
 		t.Fatalf("Base = %q", got)
 	}
-	if got := v.Dir("child"); got != "/" {
+	if got := v.Dir("child"); got != "ai://" {
 		t.Fatalf("Dir = %q", got)
 	}
-	if got := v.Dir("/"); got != "/" {
+	if got := v.Dir("/"); got != "ai://" {
 		t.Fatalf("Dir(root) = %q", got)
 	}
-	if got := v.Join(); got != "/" {
+	if got := v.Join(); got != "ai://" {
 		t.Fatalf("Join() = %q", got)
 	}
-	if got := v.Join("/ctx", "file"); got != "/ctx/file" {
+	if got := v.Join("/ctx", "file"); got != "ai://ctx/file" {
 		t.Fatalf("Join = %q", got)
 	}
 	for _, tc := range []struct {
@@ -64,6 +64,69 @@ func TestAIVFSNavigationAndPathRules(t *testing.T) {
 			t.Errorf("writable(%q) = %t, want %t", tc.path, got, tc.want)
 		}
 	}
+}
+
+func TestAIVFSQualifiedPathsFromNestedDirectory(t *testing.T) {
+	v := NewVFS(NewSession())
+	if got := v.GetPath(); got != "ai://" {
+		t.Errorf("root path = %q, want ai://", got)
+	}
+	if err := v.SetPath("/ctx"); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.SetPath("ai://out"); err != nil {
+		t.Fatalf("qualified navigation from ctx: %v", err)
+	}
+	if got := v.Join(v.GetPath(), "result.txt"); got != "ai://out/result.txt" {
+		t.Errorf("item path = %q", got)
+	}
+	if got := v.Dir("ai://out/result.txt"); got != "ai://out" {
+		t.Errorf("parent path = %q", got)
+	}
+	if got, err := v.Abs("../ctx"); err != nil || got != "ai://ctx" {
+		t.Errorf("absolute path = %q, %v", got, err)
+	}
+	provider, ok := any(v).(vfs.PanelIconProvider)
+	if !ok || provider.PanelIcon() != "sparkles" {
+		t.Error("AI mount must expose the shared sparkles icon")
+	}
+	ctx := context.Background()
+	if err := v.MkDir(ctx, "ai://ctx/nested"); err != nil {
+		t.Fatal(err)
+	}
+	w, err := v.Create(ctx, "ai://ctx/nested/result.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte("hello")); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r, err := v.Open(ctx, "ai://ctx/nested/result.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 5)
+	n, err := r.ReadAt(ctx, buf, 0)
+	_ = r.Close()
+	if err != nil || n != 5 || string(buf) != "hello" {
+		t.Fatalf("qualified read: %q, %v", buf, err)
+	}
+	if err := v.Rename(ctx, "ai://ctx/nested/result.txt", "ai://out/renamed.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.Stat(ctx, "ai://out/renamed.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Remove(ctx, "ai://out/renamed.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.SetPath("ai://"); err != nil || !v.IsAtRoot() {
+		t.Fatalf("return to root: %v", err)
+	}
+	t.Log("[FIX:ai-path] qualified navigation and file operations passed")
 }
 
 func TestAIVFSReadDirStatAndOpenUseSharedTree(t *testing.T) {

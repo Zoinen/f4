@@ -47,7 +47,7 @@ Rectangle {
         "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"
     ]
     property bool nativeLayout: hostWindow.isAppScene()
-    property real topChromeOffset: nativeLayout ? 0 : ((panel.y || 0) <= 0 ? menuBar.height : 0)
+    property real topChromeOffset: nativeLayout ? 0 : ((panel.y || 0) <= 0 ? hostWindow.menuBarHeight : 0)
     readonly property bool panelIsActive:
         hostWindow.panelIsEffectivelyActive(panel)
     readonly property bool viewerVisible: galleryController.viewerVisible === true
@@ -228,11 +228,11 @@ Rectangle {
     x: nativeLayout
        ? hostWindow.nativePanelX(Number(panel.side || 0))
        : hostWindow.pxX(panel.x)
-    y: nativeLayout ? menuBar.height : hostWindow.pxY(panel.y) + topChromeOffset
+    y: nativeLayout ? hostWindow.menuBarHeight : hostWindow.pxY(panel.y) + topChromeOffset
     width: nativeLayout
            ? hostWindow.nativePanelWidth(Number(panel.side || 0))
            : hostWindow.pxW(panel.w)
-    height: nativeLayout ? hostWindow.nativePanelHeight(Number(panel.side || 0), menuBar.height) : Math.max(1, hostWindow.pxH(panel.h) - topChromeOffset)
+    height: nativeLayout ? hostWindow.nativePanelHeight(Number(panel.side || 0), hostWindow.menuBarHeight) : Math.max(1, hostWindow.pxH(panel.h) - topChromeOffset)
     color: "transparent"
     border.width: 0
     clip: true

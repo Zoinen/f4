@@ -83,6 +83,8 @@ const QSet<QString> &lucideIconNames()
 {
     static const QSet<QString> names{
         QStringLiteral("archive"),
+        QStringLiteral("smartphone"),
+        QStringLiteral("tablet"),
         QStringLiteral("arrow-down"),
         QStringLiteral("arrow-left"),
         QStringLiteral("arrow-down-a-z"),

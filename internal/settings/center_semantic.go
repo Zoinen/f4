@@ -16,6 +16,16 @@ func (c *settingsCenter) SemanticNode(ctx *vtui.SemanticContext) map[string]any 
 	node := c.Window.SemanticNode(ctx)
 	node["layout"] = "settings"
 	children, _ := node["children"].([]map[string]any)
+	if c.recordOnly {
+		children = nil
+		for _, item := range []vtui.UIElement{c.page, c.help, c.apply, c.ok, c.cancel} {
+			for _, child := range node["children"].([]map[string]any) {
+				if child["id"] == vtui.SemanticID(item) {
+					children = append(children, child)
+				}
+			}
+		}
+	}
 	for _, child := range children {
 		if child["id"] == vtui.SemanticID(c.sidebar) {
 			icons := make([]string, len(c.categories))
@@ -26,10 +36,12 @@ func (c *settingsCenter) SemanticNode(ctx *vtui.SemanticContext) map[string]any 
 			break
 		}
 	}
-	children = append(children,
-		settingsCaption("settings-search-label", settingsText("Search", "Search:"), c.search.X1, c.Y1+1, c.sidebar.X2-c.sidebar.X1+1, 1),
-		settingsCaption("settings-category-title", c.categoryLabel(c.category), c.page.X1, c.Y1+1, c.page.X2-c.page.X1+1, 1),
-	)
+	if !c.recordOnly {
+		children = append(children,
+			settingsCaption("settings-search-label", settingsText("Search", "Search:"), c.search.X1, c.Y1+1, c.sidebar.X2-c.sidebar.X1+1, 1),
+			settingsCaption("settings-category-title", c.categoryLabel(c.category), c.page.X1, c.Y1+1, c.page.X2-c.page.X1+1, 1),
+		)
+	}
 	if strings.TrimSpace(c.query) != "" {
 		count := 0
 		for _, category := range c.categories {

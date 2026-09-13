@@ -57,7 +57,7 @@ Item {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
-        anchors.topMargin: panels.menuBar.height
+        anchors.topMargin: panels.hostWindow.menuBarHeight
         anchors.bottom: parent.bottom
         anchors.bottomMargin: panels.hostWindow.keyBarHeight()
                               + panels.hostWindow.commandLineHeight(panels.frame)

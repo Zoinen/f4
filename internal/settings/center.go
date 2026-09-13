@@ -480,6 +480,9 @@ var lastSettingsCategory string
 var lastSettingsOffsets = map[string]int{}
 
 type settingsCenter struct {
+	recordOnly                            bool
+	onApplied                             func()
+	recordTitle                           string
 	searchCacheQuery, searchCacheLanguage string
 	categoryMatchCache                    map[string]int
 	recordMatchCache                      map[settingsRecordMatchKey]bool
@@ -564,8 +567,13 @@ func newSettingsCenter(sessions []*settingsSession) *settingsCenter {
 	c.apply = vtui.NewButton(0, 0, settingsText("Apply", "&Apply"))
 	c.ok = vtui.NewButton(0, 0, i18n.Msg("vtui.Ok"))
 	c.cancel = vtui.NewButton(0, 0, i18n.Msg("vtui.Cancel"))
+	c.apply.SetId("settings-apply")
+	c.ok.SetId("settings-accept")
+	c.cancel.SetId("settings-cancel")
 	c.previous = &settingsSearchButton{vtui.NewButton(0, 0, settingsText("Previous", "Previous match"))}
 	c.next = &settingsSearchButton{vtui.NewButton(0, 0, settingsText("Next", "Next match"))}
+	c.previous.SetId("settings-search-previous")
+	c.next.SetId("settings-search-next")
 	c.previous.ScreenObject.SetText("[←]")
 	c.next.ScreenObject.SetText("[→]")
 	c.clearSearch = &settingsClearButton{vtui.NewButton(0, 0, settingsText("ClearSearch", "Clear search"))}
@@ -592,11 +600,13 @@ func newSettingsCenter(sessions []*settingsSession) *settingsCenter {
 	c.OnResult = func(int) {
 		if !c.closed {
 			c.closed = true
-			lastSettingsCategory = c.category
-			c.offsets[c.category] = c.page.scroll
-			lastSettingsOffsets = map[string]int{}
-			for k, v := range c.offsets {
-				lastSettingsOffsets[k] = v
+			if !c.recordOnly {
+				lastSettingsCategory = c.category
+				c.offsets[c.category] = c.page.scroll
+				lastSettingsOffsets = map[string]int{}
+				for k, v := range c.offsets {
+					lastSettingsOffsets[k] = v
+				}
 			}
 			for _, s := range c.sessions {
 				if s.contributed && !settingsProviderAlive(s.provider) {
@@ -647,6 +657,18 @@ func (c *settingsCenter) layoutWindow() {
 	x0, y0 := c.X1, c.Y1
 	side := c.categorySidebarWidth() + 1
 	bottom := c.contentBottom()
+	if c.recordOnly {
+		c.page.SetPosition(x0+2, y0+1, c.X2-2, bottom-4)
+		c.help.SetPosition(x0+2, bottom-2, c.X2-2, bottom)
+		x := c.X2 - 1
+		for _, b := range []*vtui.Button{c.cancel, c.ok, c.apply} {
+			bw := vtui.StringWidth(b.GetCaption()) + 4
+			b.SetPosition(x-bw, y0+h-2, x-1, y0+h-2)
+			x -= bw + 1
+		}
+		c.layoutPage()
+		return
+	}
 	c.sidebar.SetPosition(x0+2, y0+4, x0+side, bottom)
 	c.layoutSearch()
 	px := x0 + side + 2
@@ -668,13 +690,22 @@ func (c *settingsCenter) layoutWindow() {
 	c.layoutPage()
 }
 func (c *settingsCenter) Show(scr *vtui.ScreenBuf) {
-	if c.sidebar.X2-c.sidebar.X1+1 != c.categorySidebarWidth() || c.sidebar.Y2 != c.contentBottom() {
+	if !c.recordOnly && (c.sidebar.X2-c.sidebar.X1+1 != c.categorySidebarWidth() || c.sidebar.Y2 != c.contentBottom()) {
 		c.layoutWindow()
 	}
 	c.refreshAvailability()
 	c.refreshChoiceHelp()
 	c.page.SetFocus(c.GetFocusedItem() == c.page)
 	c.BaseWindow.Show(scr)
+	if c.recordOnly {
+		c.paintContentBackground(scr)
+		if c.status != "" {
+			scr.Write(c.X1+2, c.apply.Y1, vtui.StringToCharInfo(
+				vtui.TruncateString(c.status, max(0, c.apply.X1-c.X1-3), "…"),
+				vtui.Palette[vtui.ColDialogHighlightText]))
+		}
+		return
+	}
 	attr := vtui.Palette[vtui.ColDialogBox]
 	for y := c.Y1 + 1; y <= c.help.Y2; y++ {
 		scr.Write(c.sidebar.X2+1, y, vtui.StringToCharInfo("│", attr))
@@ -735,6 +766,17 @@ func (c *settingsCenter) ProcessKey(e *vtinput.InputEvent) bool {
 	}
 	if c.running != nil {
 		return true
+	}
+	if c.recordOnly {
+		if e.KeyDown && e.VirtualKeyCode == vtinput.VK_TAB {
+			direction := 1
+			if e.ControlKeyState&vtinput.ShiftPressed != 0 {
+				direction = -1
+			}
+			c.movePaneFocus([]vtui.UIElement{c.page, c.apply, c.ok, c.cancel}, c.GetFocusedItem(), direction)
+			return true
+		}
+		return c.BaseWindow.ProcessKey(e)
 	}
 	if e.KeyDown && e.VirtualKeyCode == vtinput.VK_F && (e.ControlKeyState&(vtinput.LeftCtrlPressed|vtinput.RightCtrlPressed)) != 0 {
 		c.SetFocusedItem(c.search)
@@ -1135,6 +1177,9 @@ func (c *settingsCenter) commit(closeAfter bool) {
 			return
 		}
 		if index >= len(c.sessions) {
+			if c.onApplied != nil {
+				c.onApplied()
+			}
 			c.status = Phrase("Settings applied.")
 			c.rebuildCategory()
 			if closeAfter {

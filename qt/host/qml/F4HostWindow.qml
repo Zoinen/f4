@@ -111,7 +111,10 @@ ApplicationWindow {
     readonly property real separatorWidth: physicalSeparatorPixels / dpr
     property real cw: focusTarget ? Math.max(8, focusTarget.cellWidth) : 8
     property real ch: focusTarget ? Math.max(17, focusTarget.cellHeight) : 17
+    // Permanent title-bar reservation, independent of the transient F9 row.
     readonly property real menuBarHeight: snapPx(42)
+    readonly property real panelPathRowHeight: snapPx(Math.max(25, ch * 1.25)
+        + verticalContentSpacing + pathRowExtraHeight)
     readonly property real workspaceTabMinWidth: 92
     readonly property real workspaceTabMaxWidth: 280
     readonly property real contentSpacing: 16
