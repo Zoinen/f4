@@ -58,6 +58,15 @@ type historySearchEntry struct {
 }
 
 func newHistorySearch(menu *vtui.VMenu, items []history.HistoryRecord, hint string) *historySearch {
+	s := prepareHistorySearch(menu, items, hint)
+	s.applyFilter()
+	return s
+}
+
+// The three dialogs configure columns before doing their first list pass.
+func prepareHistorySearch(menu *vtui.VMenu, items []history.HistoryRecord, hint string) *historySearch {
+	menu.SemanticBottomHint = hint
+	menu.SemanticPresentation = "window"
 	menu.ColorTextIdx = vtui.ColDialogText
 	menu.ColorSelectedTextIdx = vtui.ColDialogSelectedButton
 	menu.ColorHighlightIdx = vtui.ColDialogHighlightText
@@ -73,21 +82,25 @@ func newHistorySearch(menu *vtui.VMenu, items []history.HistoryRecord, hint stri
 		hint:  hint,
 		all:   append([]history.HistoryRecord(nil), items...),
 	}
-	s.applyFilter()
 	s.installRenderer()
 	return s
 }
 
 func (s *historySearch) applyFilter() {
+	// The console's custom painter and the native menu share this title.
+	// Keep the query visible even when filtering produces no rows.
+	s.menu.SetTitle(s.displayTitle())
 	items := make([]vtui.MenuItem, 0, len(s.all))
 	var pinned []vtui.MenuItem
 	// History providers keep the newest entry first. Dialogs show chronological
 	// order instead: the oldest entry at the top and the newest at the bottom.
 	for i := len(s.all) - 1; i >= 0; i-- {
 		text := s.displayText(s.all[i])
-		matched, _ := historySearchMatch(text, s.query, s.prefixOnly)
-		if !matched {
-			continue
+		if len(s.query) != 0 {
+			matched, _ := historySearchMatch(text, s.query, s.prefixOnly)
+			if !matched {
+				continue
+			}
 		}
 		item := vtui.MenuItem{Text: text, UserData: historySearchEntry{index: i}}
 		item.Details = s.semanticDetails(s.all[i])
@@ -124,17 +137,21 @@ func (s *historySearch) applyFilter() {
 		if !ok || entry.index < 0 || entry.index >= len(s.all) {
 			continue
 		}
-		s.menu.Items[i].Text = s.defaultMenuText(s.displayText(s.all[entry.index]))
+		s.menu.Items[i].Text = s.defaultMenuText(s.menu.Items[i].Text)
 	}
 	// Open at the most recent visible entry. SetSelectPos also scrolls it into
 	// view, which places a long history at the bottom of the viewport.
 	s.menu.SetSelectPos(len(items) - 1)
+	s.menu.SemanticItemsRevision++
 	vtui.FrameManager.Redraw()
 }
 
 // Keep native columns and Unicode search masks separate from console labels.
 func (s *historySearch) semanticDetails(record history.HistoryRecord) map[string]string {
-	details := map[string]string{"kind": "history", "primary": s.displayText(record)}
+	details := map[string]string{"kind": "history"}
+	if !s.dateColumn && !s.showDirPrefix {
+		details["primary"] = s.displayText(record)
+	}
 	if s.dateColumn {
 		details["primary"] = record.Name
 		details["date"] = strings.TrimSpace(historyTimeColumn(record.Timestamp, s.timeMode))
@@ -145,6 +162,9 @@ func (s *historySearch) semanticDetails(record history.HistoryRecord) map[string
 		details["path"] = record.Directory()
 		details["date"] = strings.TrimSpace(historyTimeColumn(record.Timestamp, s.timeMode))
 		details["columns"] = "command"
+	}
+	if len(s.query) == 0 {
+		return details
 	}
 	for _, key := range []string{"primary", "path", "date"} {
 		_, mask := historySearchMatch(details[key], s.query, s.prefixOnly)
@@ -228,7 +248,24 @@ func (s *historySearch) defaultMenuText(text string) string {
 		// to clip against; preserve the logical item text until layout occurs.
 		return text
 	}
+	// Printable ASCII needs no grapheme segmentation. Histories contain
+	// thousands of mostly-ASCII paths; keep Unicode on the exact old path.
+	if historyPrintableASCII(text) {
+		if len(text) <= maxWidth {
+			return text
+		}
+		return text[:maxWidth-1] + "…"
+	}
 	return runewidth.Truncate(text, maxWidth, "…")
+}
+
+func historyPrintableASCII(text string) bool {
+	for i := 0; i < len(text); i++ {
+		if text[i] < 32 || text[i] >= 127 {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *historySearch) displayText(record history.HistoryRecord) string {
@@ -271,6 +308,13 @@ func historyDirectoryPrefix(dir string, width int) string {
 	}
 	if dir == "" {
 		return strings.Repeat(" ", width) + " "
+	}
+	if historyPrintableASCII(dir) {
+		if len(dir) > width {
+			budget := max(1, width-3)
+			dir = "..." + dir[len(dir)-budget:]
+		}
+		return strings.Repeat(" ", max(0, width-len(dir))) + dir + "/ "
 	}
 	if runewidth.StringWidth(dir) > width {
 		budget := width - 3
@@ -576,8 +620,15 @@ func (s *historySearch) draw(scr *vtui.ScreenBuf) {
 			continue
 		}
 		text := item.Text
+		commandStart, commandEnd := 0, 0
 		if entry, ok := item.UserData.(historySearchEntry); ok && entry.index >= 0 && entry.index < len(s.all) {
-			text = s.displayText(s.all[entry.index])
+			record := s.all[entry.index]
+			text = s.displayText(record)
+			if s.showDirPrefix {
+				commandStart = len([]rune(text)) - len([]rune(record.Name))
+				prefix, _, _ := strings.Cut(record.Name, " ")
+				commandEnd = commandStart + len([]rune(prefix))
+			}
 		}
 		_, highlights := historySearchMatch(text, s.query, s.prefixOnly)
 
@@ -613,6 +664,9 @@ func (s *historySearch) draw(scr *vtui.ScreenBuf) {
 		}
 		for i, r := range []rune(text) {
 			attr := baseAttr
+			if i >= commandStart && i < commandEnd {
+				attr = vtui.SetRGBFore(attr, 0x75d977)
+			}
 			if i < len(highlights) && highlights[i] {
 				attr = highlightAttr
 			}
@@ -642,6 +696,7 @@ func (s *historySearch) draw(scr *vtui.ScreenBuf) {
 	}
 	// Redrawing the rows above may cover the menu's scrollbar cell.
 	s.menu.DrawScrollBar(scr)
+	s.menu.DrawWindowControls(scr)
 }
 
 func (s *historySearch) secondaryColumnWidth(innerWidth int) int {

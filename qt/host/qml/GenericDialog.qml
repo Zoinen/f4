@@ -24,6 +24,10 @@ Rectangle {
     property bool nativeLayout: hostWindow.isAppScene()
     property bool userGeometrySet: false
     property bool maximized: false
+    // A virtualized menu can supply its own body beneath the shared chrome.
+    property bool externalBody: false
+    property string closeAction: "dialog.close"
+    property string geometryAction: "dialog.geometry"
     property real userX: 0
     property real userY: 0
     property real userWidth: 0
@@ -40,9 +44,9 @@ Rectangle {
     readonly property real contentPadding: hostWindow.snapPx(24)
     readonly property var rowEdges: calculateRowEdges()
     readonly property real bodyContentHeight: settingsLayout || customContent ? 0 : calculateBodyContentHeight()
-    readonly property real geometryLeft: 12
+    property real geometryLeft: 12
     readonly property real geometryTop: hostWindow.menuBarHeight + 8
-    readonly property real geometryRight: hostWindow.width - 12
+    property real geometryRight: hostWindow.width - 12
     readonly property real geometryBottom: hostWindow.height - 12
     readonly property real availableWidth: Math.max(
                                                1, geometryRight - geometryLeft)
@@ -50,12 +54,12 @@ Rectangle {
                                                 1, geometryBottom - geometryTop)
     readonly property real minimumDialogWidth: Math.min(320, availableWidth)
     readonly property real minimumDialogHeight: Math.min(160, availableHeight)
-    readonly property real preferredWidth: customContent
+    property real preferredWidth: customContent
         ? Math.min(availableWidth, Math.max(320, (customBody.item ? customBody.item.implicitWidth : 0) + 2 * contentPadding)) : settingsLayout
         ? Math.min(availableWidth, Math.max(640, hostWindow.pxW(frame.w))) : nativeLayout
         ? Math.min(availableWidth, Math.max(320, hostWindow.pxW(contentRight - contentLeft) + 2 * contentPadding))
         : Math.min(availableWidth, hostWindow.pxW(frame.w))
-    readonly property real preferredHeight: customContent
+    property real preferredHeight: customContent
         ? Math.min(availableHeight, Math.max(160, (customBody.item ? customBody.item.implicitHeight : 0) + dialogHeader.height + 2 * contentPadding)) : settingsLayout
         ? Math.min(availableHeight, Math.max(400, hostWindow.pxH(frame.h))) : nativeLayout
         ? Math.min(availableHeight, Math.max(100, bodyContentHeight + dialogHeader.height + contentPadding))
@@ -128,7 +132,7 @@ Rectangle {
             return
         hostWindow.action({
             "target": frame.id,
-            "action": "dialog.geometry",
+            "action": geometryAction,
             "x": Math.round(x / hostWindow.cw),
             "y": Math.round(y / hostWindow.ch),
             "w": Math.max(1, Math.round(width / hostWindow.cw)),
@@ -222,7 +226,7 @@ Rectangle {
                              : hostWindow.pxY(frame.y),
                              geometryTop,
                              Math.max(geometryTop, geometryBottom - height)))
-    color: hostWindow.dialogBg
+    color: externalBody ? "transparent" : hostWindow.dialogBg
     border.width: hostWindow.snapPx(1)
     border.color: "#46586b"
     radius: hostWindow.snapPx(9)
@@ -230,6 +234,7 @@ Rectangle {
 
     MouseArea {
         z: -1
+        enabled: !dialogRoot.externalBody
         anchors.fill: parent
         acceptedButtons: Qt.AllButtons
         hoverEnabled: true
@@ -350,8 +355,15 @@ Rectangle {
         ZG.TitleButton {
             id: dialogMaximizeButton
             objectName: "dialogMaximizeButton"
-            visible: false
-            implicitWidth: 42
+            visible: frame.showZoom === true
+            devicePixelRatio: hostWindow.iconDevicePixelRatio
+            function iconPixelOffsetX(item) {
+                return hostWindow.dialogPixelOffsetX(item, hostWindow.contentItem)
+            }
+            function iconPixelOffsetY(item) {
+                return hostWindow.dialogPixelOffsetY(item, hostWindow.contentItem)
+            }
+            implicitWidth: hostWindow.snapPx(42)
             implicitHeight: dialogHeader.height
             opacity: 1
             source: dialogRoot.maximized
@@ -399,7 +411,7 @@ Rectangle {
             }
             onClicked: hostWindow.action({
                 "target": frame.id,
-                "action": "dialog.close"
+                "action": dialogRoot.closeAction
             })
         }
     }
@@ -428,7 +440,7 @@ Rectangle {
 
     Flickable {
         id: dialogBody
-        visible: !dialogRoot.settingsLayout && !dialogRoot.customContent
+        visible: !dialogRoot.settingsLayout && !dialogRoot.customContent && !dialogRoot.externalBody
         objectName: "dialogBody"
         anchors.left: parent.left
         anchors.right: parent.right

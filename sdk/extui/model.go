@@ -1532,6 +1532,25 @@ func (i MenuItemModel) ToMap() M {
 	if len(i.Details) > 0 {
 		out["details"] = i.Details
 	}
+	if i.Details["kind"] == "history" {
+		// Structured history columns contain the complete label. Native rows
+		// do not render the console's truncated/mnemonic copies of that label.
+		delete(out, "text")
+		delete(out, "rawText")
+		for _, key := range []string{"hotkey", "shortcut"} {
+			if out[key] == "" {
+				delete(out, key)
+			}
+		}
+		for _, key := range []string{"separator", "disabled", "checked"} {
+			if out[key] == false {
+				delete(out, key)
+			}
+		}
+		if i.Command == 0 {
+			delete(out, "command")
+		}
+	}
 
 	return out
 }

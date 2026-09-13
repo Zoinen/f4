@@ -19,6 +19,9 @@ func (Adapter) Options() plughost.ExternalUIOptions {
 func (Adapter) MenuState(ctx *vtui.SemanticContext) (map[string]any, bool) {
 	return BuildAppMenuState(ctx)
 }
+func (Adapter) RetainedMenuState(ctx *vtui.SemanticContext, previous map[string]any) (map[string]any, bool) {
+	return BuildAppMenuState(ctx, previous)
+}
 func (Adapter) ProjectScene(ctx *vtui.SemanticContext) (plughost.SceneProjection, bool) {
 	return BuildAppIncrementalScene(ctx)
 }

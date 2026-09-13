@@ -493,13 +493,48 @@ bool applyScenePatch(const QVariantMap &message,
     next.presentationScene = currentPresentationScene;
     next.revision = revision;
     if (hasRoot) {
+        QVariantMap rootPatch = message.value(QStringLiteral("root")).toMap();
+        QVariantMap rootSet = rootPatch.value(QStringLiteral("set")).toMap();
+        if (rootSet.value(QStringLiteral("menus")).metaType().id() == QMetaType::QVariantList) {
+            QVariantList menus = rootSet.value(QStringLiteral("menus")).toList();
+            const QVariantList previousMenus = currentScene.value(QStringLiteral("menus")).toList();
+            for (QVariant &value : menus) {
+                QVariantMap menu = value.toMap();
+                if (!menu.value(QStringLiteral("itemsUnchanged")).toBool())
+                    continue;
+                qulonglong itemsRevision = 0;
+                bool found = false;
+                if (!menu.contains(QStringLiteral("items"))
+                    && nonNegativeInteger(menu.value(QStringLiteral("itemsRevision")), &itemsRevision)
+                    && itemsRevision > 0) {
+                    for (const QVariant &previousValue : previousMenus) {
+                        const QVariantMap previous = previousValue.toMap();
+                        if (previous.value(QStringLiteral("id")) == menu.value(QStringLiteral("id"))
+                            && previous.value(QStringLiteral("itemsRevision")).toULongLong() == itemsRevision
+                            && previous.contains(QStringLiteral("items"))) {
+                            menu.insert(QStringLiteral("items"), previous.value(QStringLiteral("items")));
+                            menu.remove(QStringLiteral("itemsUnchanged"));
+                            value = menu;
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+                if (!found) {
+                    *error = QStringLiteral("Scene menu rows have no matching retained revision");
+                    return false;
+                }
+            }
+            rootSet.insert(QStringLiteral("menus"), menus);
+            rootPatch.insert(QStringLiteral("set"), rootSet);
+        }
         if (!applyValidatedMapPatch(next.scene,
-                                    message.value(QStringLiteral("root")),
+                                    rootPatch,
                                     rootKeys, validRootPatchValue,
                                     &next.rootKeys, error)
             || !applyValidatedMapPatch(
                 next.presentationScene,
-                message.value(QStringLiteral("root")), rootKeys,
+                rootPatch, rootKeys,
                 validRootPatchValue, nullptr, error)) {
             return false;
         }

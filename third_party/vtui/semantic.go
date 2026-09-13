@@ -917,6 +917,16 @@ func (m *VMenu) HandleSemanticAction(action map[string]any) bool {
 	target := semanticString(action["target"])
 	if SemanticID(m) == target {
 		switch semanticString(action["action"]) {
+		case "menu.geometry":
+			w := m.windowControl()
+			if w == nil || semanticInt(action["w"]) < 1 || semanticInt(action["h"]) < 1 {
+				return false
+			}
+			w.ChangeSize(semanticInt(action["w"]), semanticInt(action["h"]))
+			w.MoveRelative(semanticInt(action["x"])-w.X1, semanticInt(action["y"])-w.Y1)
+			m.SetPosition(w.X1, w.Y1, w.X2, w.Y2)
+			m.SetSelectPos(m.SelectPos)
+			return true
 		case "close", "menu.close":
 			m.Close()
 			return true

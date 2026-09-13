@@ -4,6 +4,24 @@ import (
 	"testing"
 )
 
+func TestHistoryRowsSerializeColumnsWithoutDuplicateConsoleLabels(t *testing.T) {
+	item := MenuItemModel{Index: 4, Text: "truncated…", RawText: "truncated…",
+		Details: map[string]string{"kind": "history", "primary": "complete command --argument"}}
+	row := item.ToMap()
+	if len(row) != 2 || row["index"] != 4 {
+		t.Fatalf("history row contains unused fields: %#v", row)
+	}
+	if row["details"].(map[string]string)["primary"] != item.Details["primary"] {
+		t.Fatal("complete command was lost")
+	}
+	item.Disabled, item.Checked = true, true
+	item.Shortcut = "Ctrl1"
+	row = item.ToMap()
+	if row["disabled"] != true || row["checked"] != true || row["shortcut"] != "Ctrl1" {
+		t.Fatal("non-default behavior was lost")
+	}
+}
+
 func TestMenuItemToMapKeepsIconOptional(t *testing.T) {
 	withIcon := (MenuItemModel{Index: 1, Text: "Drive", Icon: "hard-drive"}).ToMap()
 	if withIcon["icon"] != "hard-drive" {

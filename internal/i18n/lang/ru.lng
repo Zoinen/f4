@@ -3117,3 +3117,13 @@ SettingsCenter.CommandLineMultiline.Label=Многострочный ввод к
 SettingsCenter.CommandLineMultiline.Description=Сохранять переводы строк и расширять поле команды вверх в консоли и GUI. Shift+Enter вставляет перевод строки.
 SettingsCenter.CommandLineWordWrap.Label=Переносить аргументы команды
 SettingsCenter.CommandLineWordWrap.Description=Показывать каждый аргумент с дефисом вне кавычек на новой визуальной строке и выделять дефис цветом. Перенос не меняет текст команды.
+
+Action.History.ImportFar3=Импорт истории Far3
+Action.History.ImportFar3.Desc=Объединить историю команд, просмотра, редактора и папок из Far Manager 3
+History.Far3.Title=Импорт истории Far3
+History.Far3.Path=Папка Far3 или history.db:
+History.Far3.Merge=Объединить историю без повторов.
+History.Far3.Import=&Импорт
+History.Far3.EmptyPath=Укажите папку Far3, профиль или путь к history.db.
+History.Far3.Result=Добавлено команд: %d, файлов: %d, папок: %d.\nПропущено неподдерживаемых записей: %d (пути плагинов или внешние запуски).
+History.Far3.NotFound=В этой папке не найдена установка Far3 или файл history.db.

@@ -18,29 +18,16 @@ import (
 	"github.com/unxed/vtui"
 )
 
-const viewerEditorHistoryID = "viewer-editor"
+const viewerEditorHistoryID = history.ViewerEditorHistoryID
 
-type viewerEditorHistoryMode string
+type viewerEditorHistoryMode = history.ViewerEditorMode
 
 const (
-	historyModeView viewerEditorHistoryMode = "view"
-	HistoryModeEdit viewerEditorHistoryMode = "edit"
+	historyModeView = history.HistoryModeView
+	HistoryModeEdit = history.HistoryModeEdit
 )
 
-type viewerEditorHistoryEntry struct {
-	Path     string                  `json:"path"`
-	Display  string                  `json:"display"`
-	Mode     viewerEditorHistoryMode `json:"mode"`
-	Local    bool                    `json:"local,omitempty"`
-	VFSType  string                  `json:"vfs_type,omitempty"`
-	VFSTitle string                  `json:"vfs_title,omitempty"`
-	Lock     bool                    `json:"lock,omitempty"`
-	// Timestamp is when the file was last opened. far2l stamps every
-	// history record it stores; the dialog shows the stamp so a file can be
-	// found by when it was opened rather than by its name (#408). Records
-	// written before this existed have a zero timestamp and keep working.
-	Timestamp time.Time `json:"timestamp,omitempty"`
-}
+type viewerEditorHistoryEntry = history.ViewerEditorRecord
 
 func loadViewerEditorHistory() []viewerEditorHistoryEntry {
 	if vtui.GlobalHistoryProvider == nil {
@@ -118,7 +105,7 @@ func RememberViewerEditorHistory(fs vfs.VFS, path string, mode viewerEditorHisto
 		}
 		filtered = append(filtered, old)
 	}
-	filtered = limitViewerEditorHistory(filtered, 100)
+	filtered = limitViewerEditorHistory(filtered, max(100, len(entries)))
 	saveViewerEditorHistory(filtered)
 }
 
@@ -211,7 +198,7 @@ func actionViewerEditorHistory(pf *panel.PanelsFrame) {
 
 	menu := vtui.NewVMenu(i18n.Msg("History.ViewEditTitle"))
 	menu.SetHelp("HistoryViewEdit")
-	search := newHistorySearch(menu, paths, i18n.Msg("History.ViewEditHint"))
+	search := prepareHistorySearch(menu, paths, i18n.Msg("History.ViewEditHint"))
 	search.dateColumn = true
 	search.supportsLocks = true
 	// Same timestamp column the command and folder histories use, with its

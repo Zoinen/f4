@@ -762,6 +762,9 @@ private slots:
     void themeDialogFontRenderingControlIsLiveAndThemeAware();
     void themeColorListHoverAndPressFlashHaveExplicitLifetimes();
     void themeDialogControlsStayOnPhysicalPixelGridAt175Percent();
+    void far3ImportDialogLeavesStaySharpAt175Percent();
+    void largeHistoryLatencyProfile();
+    void historyHeldUpKeepsRowsOnPhysicalPixels();
     void rendererChoicesUseProductOrderAndShortcuts();
     void rendererZoomControlsFollowLayoutCapability();
     void coverUncoverPreservesFilePanelAndRendererObjects();
@@ -2472,6 +2475,198 @@ void F4QuickViewSurfaceTests::themeColorListHoverAndPressFlashHaveExplicitLifeti
     QTest::qWait(220);
     QCOMPARE(fixture.window->property(colorId.toUtf8().constData())
                  .value<QColor>(), original);
+}
+
+void F4QuickViewSurfaceTests::historyHeldUpKeepsRowsOnPhysicalPixels()
+{
+    QVariantList rows;
+    for (int index = 0; index < 240; ++index)
+        rows.append(QVariantMap{{"index", index}, {"details", QVariantMap{
+            {"kind", "history"}, {"columns", "command"}, {"primary", "command text"},
+            {"path", "C:/work"}, {"date", "2026-09-14 00:00:00"}}}});
+    QVariantMap menu{{"id", "history-scroll"}, {"kind", "menu"}, {"role", "vmenu"}, {"title", "History [query]"},
+        {"w", 90}, {"h", 32}, {"x", 3}, {"y", 2}, {"selected", 239}, {"top", 210}, {"items", rows}};
+    auto scene = shellScene(); scene["menus"] = QVariantList{menu};
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    fixture.window->resize(1001, 643);
+    QTest::qWait(60);
+    auto *root = fixture.window->contentItem();
+    const qreal dpr = fixture.window->devicePixelRatio();
+    QCOMPARE(dpr, 1.75);
+    auto *title = visualItemWithObjectName(root, "semanticMenuTitle-history-scroll");
+    QVERIFY(title && title->isVisible());
+    QCOMPARE(title->property("text").toString(), QString("History [query]"));
+    const auto titleOrigin = title->mapToItem(root, QPointF());
+    QVERIFY(qAbs(titleOrigin.x()*dpr-qRound64(titleOrigin.x()*dpr)) < .001);
+    QVERIFY(qAbs(titleOrigin.y()*dpr-qRound64(titleOrigin.y()*dpr)) < .001);
+    QCOMPARE(title->mapToItem(root,QPointF(1,0))-titleOrigin,QPointF(1,0));
+    QCOMPARE(title->mapToItem(root,QPointF(0,1))-titleOrigin,QPointF(0,1));
+    qreal scrollingTop = -1;
+    QList<int> positions;
+    for (int index = 238; index >= 158; --index) positions.append(index);
+    for (int index = 159; index <= 238; ++index) positions.append(index);
+    for (int step = 0; step < positions.size(); ++step) {
+        const int index = positions[step];
+        if (step == 81) scrollingTop = -1;
+        menu["selected"] = index; menu["top"] = qMax(0, index - 10);
+        fixture.shell.applyCommandMenus({menu}, true);
+        fixture.shell.deliverCommandMenuStates(fixture.shell.overlayState()->commandMenuStates());
+        QTest::qWait(4);
+        const auto capture = fixture.window->grabWindow();
+        QVERIFY(!capture.isNull());
+        QQuickItem *row = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((row = visualItemWithObjectName(root, "semanticMenuItem-history-scroll-" + QString::number(index))), 1000);
+        if ((step < 81 && index <= 218) || (step >= 81 && index >= 181)) {
+            const qreal top = row->mapToItem(root, QPointF()).y() * dpr;
+            if (scrollingTop >= 0)
+                QVERIFY2(qAbs(top - scrollingTop) < .001,
+                    qPrintable(QString("top row jumped from %1 to %2 physical px at row %3").arg(scrollingTop).arg(top).arg(index)));
+            scrollingTop = top;
+        }
+        for (const auto &column : {QString("primary"), QString("path"), QString("date")}) {
+            auto *leaf = visualItemWithObjectName(row, "semanticHistory-history-scroll-" + QString::number(index) + "-" + column);
+            QVERIFY(leaf && leaf->isVisible());
+            const auto origin = leaf->mapToItem(root, QPointF());
+            for (const qreal coordinate : {origin.x(), origin.y(), row->mapToItem(root, QPointF()).y()}) {
+                const qreal physical = coordinate * dpr;
+                QVERIFY2(qAbs(physical - qRound64(physical)) < .001,
+                    qPrintable(QString("row %1 %2: %3 physical px").arg(index).arg(column).arg(physical, 0, 'f', 6)));
+            }
+            QCOMPARE(leaf->mapToItem(root,QPointF(1,0))-origin,QPointF(1,0));
+            QCOMPARE(leaf->mapToItem(root,QPointF(0,1))-origin,QPointF(0,1));
+        }
+        if (index == 158 && qEnvironmentVariableIsSet("F4_HISTORY_SCROLL_CAPTURE"))
+            QVERIFY(capture.save(qEnvironmentVariable("F4_HISTORY_SCROLL_CAPTURE")));
+    }
+}
+
+void F4QuickViewSurfaceTests::largeHistoryLatencyProfile()
+{
+    if (!qEnvironmentVariableIsSet("F4_HISTORY_PROFILE")) QSKIP("opt-in latency profile");
+    for (const auto &kind : {QString("commands"), QString("files"), QString("folders")}) {
+        const int count = kind == "commands" ? 2432 : kind == "files" ? 999 : 1294;
+        QVariantList items;
+        for (int i=0; i<count; ++i) {
+            const auto path = QString("C:/Projects/folder-%1/long filename with spaces %1.txt").arg(i);
+            QVariantMap details{{"kind","history"},{"columns",kind=="commands"?"command":"dated"},
+                {"primary",kind=="commands"?"app --input "+path+" --check":path},
+                {"path","C:/Projects"},{"date","2026-09-13 12:34:56"}};
+            items.append(QVariantMap{{"index",i},{"details",details}});
+        }
+        QVariantMap menu{{"id","profile-history"},{"kind","menu"},{"role","vmenu"},
+            {"title",kind+" history"},{"x",4},{"y",3},{"w",120},{"h",42},
+            {"selected",count-1},{"top",count-39},{"viewHeight",38},{"items",items}};
+        QuickViewFixture fixture(shellScene());
+        QVERIFY(fixture.window);
+        fixture.window->resize(1400,900);
+        QTest::qWait(40);
+        qInfo() << "HISTORY window" << fixture.window->isVisible() << fixture.window->isExposed()
+                << fixture.window->size();
+        QList<double> openTimes, pageTimes, applyTimes;
+        QVariantList retainedMenus;
+        const auto present = [&](const QVariantList &menus, QList<double> &samples, bool stateOnly = false) {
+            QVariantList wireMenus = menus;
+            if (stateOnly) {
+                auto wireMenu = wireMenus.first().toMap();
+                wireMenu.remove("items");
+                wireMenus[0] = wireMenu;
+            }
+            const auto packet=QJsonDocument::fromVariant(wireMenus).toJson(QJsonDocument::Compact);
+            QSignalSpy swapped(fixture.window,&QQuickWindow::frameSwapped);
+            QElapsedTimer timer; timer.start();
+            auto decoded = QJsonDocument::fromJson(packet).toVariant().toList();
+            if (stateOnly) {
+                // The protocol reducer validates the revision and shares this
+                // accepted QVariantList. Its rejection paths have controller tests.
+                auto header = decoded.first().toMap();
+                header["items"] = retainedMenus.first().toMap().value("items");
+                decoded[0] = header;
+            }
+            fixture.shell.applyCommandMenus(decoded,true);
+            fixture.shell.deliverCommandMenuStates(fixture.shell.overlayState()->commandMenuStates());
+            retainedMenus = decoded;
+            const double apply=timer.nsecsElapsed()/1e6;
+            fixture.window->requestUpdate();
+            while(swapped.isEmpty() && timer.elapsed()<5000) {
+                QCoreApplication::processEvents(QEventLoop::AllEvents,1);
+                if(swapped.isEmpty()) QTest::qWait(1);
+            }
+            QVERIFY(!swapped.isEmpty());
+            samples.append(timer.nsecsElapsed()/1e6);
+            applyTimes.append(apply);
+        };
+        for(int i=0;i<5;++i) {
+            present(QVariantList{menu},openTimes);
+            if (QTest::currentTestFailed()) return;
+            fixture.shell.applyCommandMenus({},true);
+            QCoreApplication::processEvents();
+        }
+        fixture.shell.applyCommandMenus(QVariantList{menu},true);
+        QTest::qWait(30);
+        for(int i=1;i<=40;++i) {
+            const int selected=count-1-(i*30)%(count-1);
+            menu["selected"]=selected; menu["top"]=qMax(0,selected-10);
+            present(QVariantList{menu},pageTimes,true);
+            if (QTest::currentTestFailed()) return;
+        }
+        const auto report=[&](const QString &phase,QList<double> values) {
+            std::sort(values.begin(),values.end());
+            qInfo().noquote()<<QString("HISTORY %1 %2 p50=%3ms p95=%4ms")
+                .arg(kind,phase).arg(values[values.size()/2],0,'f',3)
+                .arg(values[qMin(values.size()-1,values.size()*95/100)],0,'f',3);
+        };
+        report("open",openTimes);report("page",pageTimes);report("apply",applyTimes);
+    }
+}
+
+void F4QuickViewSurfaceTests::far3ImportDialogLeavesStaySharpAt175Percent()
+{
+    auto scene = shellScene();
+    scene.insert("dialogs", QVariantList{QVariantMap{{"id", "far3-import"}, {"kind", "dialog"},
+        {"title", "Import Far3 history"}, {"x", 20}, {"y", 10}, {"w", 60}, {"h", 11},
+        {"modal", true}, {"showClose", true}, {"children", QVariantList{
+            QVariantMap{{"id","far3-label"},{"kind","text"},{"text","Far3 folder or history.db:"},{"x",22},{"y",12},{"w",25},{"h",1}},
+            QVariantMap{{"id","far3-path"},{"kind","edit"},{"text",R"(C:\Programs\Far3)"},{"focused",true},{"x",22},{"y",14},{"w",56},{"h",1}},
+            QVariantMap{{"id","far3-note"},{"kind","text"},{"text","Merge histories; skip duplicates."},{"x",22},{"y",16},{"w",32},{"h",1}},
+            QVariantMap{{"id","far3-import-button"},{"kind","button"},{"text","Import"},{"x",40},{"y",18},{"w",10},{"h",1}},
+            QVariantMap{{"id","far3-cancel"},{"kind","button"},{"text","Cancel"},{"x",52},{"y",18},{"w",10},{"h",1}}
+        }}}});
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    auto *root = fixture.window->contentItem();
+    const auto dpr = fixture.window->devicePixelRatio();
+    QCOMPARE(dpr, 1.75);
+    const QStringList names{"semanticDialogTitle", "titleBarButtonIcon", "dialogWidget-far3-labelText",
+        "dialogWidget-far3-noteText", "dialogWidget-far3-pathEditTextInput",
+        "dialogWidget-far3-import-buttonButtonText", "dialogWidget-far3-cancelButtonText"};
+    for (const QSize size : {QSize(1101, 803), QSize(801, 601)}) {
+        fixture.window->resize(size);
+        QTest::qWait(60);
+        auto *dialog = visualItemWithObjectName(root, "semanticDialog-far3-import");
+        QVERIFY(dialog && dialog->isVisible());
+        const auto bounds = dialog->mapRectToItem(root, dialog->boundingRect());
+        for (const auto &name : names) {
+            auto *scope = name == "titleBarButtonIcon"
+                ? visualItemWithObjectName(dialog, "dialogCloseButton") : dialog;
+            QVERIFY(scope);
+            auto *leaf = visualItemWithObjectName(scope, name);
+            QVERIFY2(leaf && leaf->isVisible(), qPrintable(name));
+            const auto origin = leaf->mapToItem(root, QPointF());
+            for (qreal coordinate : {origin.x(), origin.y()}) {
+                const qreal physical = coordinate*dpr;
+                QVERIFY2(qAbs(physical-qRound(physical)) < .001,
+                    qPrintable(QStringLiteral("%1: %2 physical px").arg(name).arg(physical,0,'f',6)));
+            }
+            QCOMPARE(leaf->mapToItem(root,QPointF(1,0))-origin,QPointF(1,0));
+            QCOMPARE(leaf->mapToItem(root,QPointF(0,1))-origin,QPointF(0,1));
+            QVERIFY(bounds.contains(origin));
+        }
+    }
+    const QImage capture = fixture.window->grabWindow();
+    QVERIFY(!capture.isNull());
+    const QString path = qEnvironmentVariable("F4_FAR3_DIALOG_CAPTURE");
+    if (!path.isEmpty()) QVERIFY(capture.save(path));
 }
 
 void F4QuickViewSurfaceTests::themeDialogControlsStayOnPhysicalPixelGridAt175Percent()
@@ -4769,31 +4964,65 @@ void F4QuickViewSurfaceTests::historyFirstVisibleFrameHasFinalPosition()
 void F4QuickViewSurfaceTests::historyLastRowFitsNativeViewport_data()
 {
     QTest::addColumn<QString>("columns");
-    QTest::newRow("command") << QString("command");
-    QTest::newRow("viewer-editor") << QString("dated");
+    QTest::addColumn<bool>("highlighted");
+    QTest::newRow("command") << QString("command") << true;
+    QTest::newRow("viewer-editor") << QString("dated") << true;
+    QTest::newRow("command-plain") << QString("command") << false;
+    QTest::newRow("folders-plain") << QString("dated") << false;
 }
 
 void F4QuickViewSurfaceTests::historyLastRowFitsNativeViewport()
 {
     QFETCH(QString, columns);
+    QFETCH(bool, highlighted);
     auto scene = shellScene({}, 0);
     QVariantList items;
     for (int i = 0; i < 100; ++i)
-        items.append(QVariantMap{{"index", i}, {"text", QString("History entry %1").arg(i)},
+        items.append(QVariantMap{{"index", i},
             {"details", QVariantMap{{"kind", "history"}, {"columns", columns},
                 {"primary", QString("echo <item> %1").arg(i)}, {"path", "/work/example"},
-                {"date", "2026-09-13 12:34:56"}, {"primaryMatches", "1111"}}}});
+                {"date", "2026-09-13 12:34:56"}, {"primaryMatches", highlighted ? "1111" : ""}}}});
     QVariantMap menu{{"id", "history-fit"}, {"kind", "menu"}, {"role", "vmenu"},
+        {"presentation", columns == "command" ? "fullWidth" : "window"},
         {"title", "Commands History"}, {"x", 4}, {"y", 1}, {"w", 70}, {"h", 28},
+        {"bottomHint", "Enter Esc Ins Ctrl+T F3 Ctrl+F10 Ctrl+Left/Right F2 Ctrl+F2 Ctrl+Shift+Enter Ctrl+PgDn Shift+Del Del Ctrl+C/Ins"},
         {"selected", 99}, {"top", 70}, {"viewHeight", 30}, {"items", items}};
     scene.insert("menus", QVariantList{menu});
     QuickViewFixture fixture(scene);
     QVERIFY(fixture.window);
+#ifdef Q_OS_WIN
+    // Monaco is the fixture's macOS default; use an installed Windows face.
+    fixture.engine.rootContext()->setContextProperty("f4GuiFontFamily", "Consolas");
+#endif
     fixture.window->resize(1000, 640);
     auto *root = fixture.window->contentItem();
     QQuickItem *list = nullptr;
     QTRY_VERIFY((list = visualItemWithObjectName(root, "semanticMenuList-history-fit")));
     QTest::qWait(100);
+    if (columns == "command") {
+        auto *popup = visualItemWithObjectName(root, "semanticMenuPopup-history-fit");
+        QVERIFY(popup);
+        QCOMPARE(popup->mapToItem(root, QPointF()).x(), 0.0);
+        QCOMPARE(popup->width(), qreal(fixture.window->width()));
+    }
+    auto *hint = visualItemWithObjectName(root, "semanticMenuBottomHint-history-fit");
+    auto *scrollBar = visualItemWithObjectName(root, "semanticMenuScrollBar-history-fit");
+    QVERIFY(scrollBar && scrollBar->isVisible());
+    QCOMPARE(scrollBar->property("thickness").toReal(), 16.0);
+    auto *handle = visualItemWithObjectName(root, "semanticMenuScrollBar-history-fitHandle");
+    QVERIFY(handle && handle->isVisible());
+    const auto handlePhysical = handle->mapToItem(root, QPointF()) * fixture.window->devicePixelRatio();
+    QVERIFY(qAbs(handlePhysical.x() - qRound64(handlePhysical.x())) < .02);
+    QVERIFY(qAbs(handlePhysical.y() - qRound64(handlePhysical.y())) < .02);
+    QVERIFY(hint && hint->isVisible());
+    QCOMPARE(hint->property("text").toString(), menu.value("bottomHint").toString());
+    const auto hintOrigin = hint->mapToItem(root, QPointF());
+    const auto hintPhysical = hintOrigin * fixture.window->devicePixelRatio();
+    QVERIFY(qAbs(hintPhysical.x() - qRound64(hintPhysical.x())) < .02);
+    QVERIFY(qAbs(hintPhysical.y() - qRound64(hintPhysical.y())) < .02);
+    QVERIFY(QLineF(hint->mapToItem(root, QPointF(1,0))-hintOrigin, QPointF(1,0)).length() < .0001);
+    QVERIFY(QLineF(hint->mapToItem(root, QPointF(0,1))-hintOrigin, QPointF(0,1)).length() < .0001);
+    QVERIFY(hintOrigin.y() >= list->mapToItem(root, QPointF(0,list->height())).y());
     QQuickItem *last = nullptr;
     QTRY_VERIFY((last = visualItemWithObjectName(root, "semanticMenuItem-history-fit-99")));
     const auto rowRect = last->mapRectToItem(list, QRectF(0, 0, last->width(), last->height()));
@@ -4808,8 +5037,10 @@ void F4QuickViewSurfaceTests::historyLastRowFitsNativeViewport()
     QVERIFY(qAbs(physical.y()-qRound64(physical.y())) < .02);
     QVERIFY(QLineF(text->mapToItem(root, QPointF(1,0))-origin, QPointF(1,0)).length() < .0001);
     QVERIFY(QLineF(text->mapToItem(root, QPointF(0,1))-origin, QPointF(0,1)).length() < .0001);
-    QVERIFY(text->property("text").toString().contains("<font color="));
-    QVERIFY(text->property("text").toString().contains("&lt;item&gt;"));
+    const bool styled = highlighted || columns == "command";
+    QCOMPARE(text->property("text").toString().contains("<font color="), styled);
+    QVERIFY(text->property("text").toString().contains(styled ? "&lt;item&gt;" : "<item>"));
+    QCOMPARE(text->property("text").toString().contains("#75d977"), columns == "command" && !highlighted);
     qreal previousRight = text->mapToItem(root, QPointF(text->width(),0)).x();
     for (const auto &column : {QString("path"), QString("date")}) {
         auto *leaf = visualItemWithObjectName(root, "semanticHistory-history-fit-99-" + column);
@@ -4825,6 +5056,7 @@ void F4QuickViewSurfaceTests::historyLastRowFitsNativeViewport()
         const auto p = leaf->mapToItem(root, QPointF());
         QVERIFY(p.x() > previousRight);
         previousRight = p.x() + leaf->width();
+        QVERIFY(previousRight <= scrollBar->mapToItem(root, QPointF()).x());
         const auto physical = p * fixture.window->devicePixelRatio();
         QVERIFY(qAbs(physical.x()-qRound64(physical.x())) < .02);
         QVERIFY(qAbs(physical.y()-qRound64(physical.y())) < .02);
@@ -4864,14 +5096,62 @@ void F4QuickViewSurfaceTests::historyLastRowFitsNativeViewport()
     auto *hoveredRow = visualItemWithObjectName(root, "semanticMenuItem-history-fit-90");
     QVERIFY(hoveredRow);
     const QPoint pointer = hoveredRow->mapToItem(root, QPointF(80,hoveredRow->height()/2)).toPoint();
-    QTest::mouseMove(fixture.window, pointer, 10);
-    QTest::mouseMove(fixture.window, pointer + QPoint(5,0), 10);
+    moveNativePointer(fixture.window, pointer, 10);
+    moveNativePointer(fixture.window, pointer + QPoint(5,0), 10);
     QTRY_COMPARE(overlay->property("pointerSelectedIndex").toInt(), 90);
     QTest::qWait(20);
     QCOMPARE(list->property("contentY").toReal(), hoverOffset);
     fixture.shell.deliverCommandMenuStates({QVariantMap{{"id","history-fit"},{"selected",90},{"top",69}}});
     QTest::qWait(30);
     QCOMPARE(list->property("contentY").toReal(), hoverOffset);
+
+    auto *dialog = visualItemWithObjectName(root, "semanticDialog-history-fit");
+    QVERIFY(dialog);
+    auto *maximize = visualItemWithObjectName(dialog, "dialogMaximizeButton");
+    auto *close = visualItemWithObjectName(dialog, "dialogCloseButton");
+    QVERIFY(maximize && maximize->isVisible() && close && close->isVisible());
+    const auto checkChrome = [&]() {
+        for (auto *leaf : {visualItemWithObjectName(dialog, "semanticDialogTitle"),
+                          visualItemWithObjectName(maximize, "titleBarButtonIcon"),
+                          visualItemWithObjectName(close, "titleBarButtonIcon")}) {
+            QVERIFY(leaf && leaf->isVisible());
+            const auto origin = leaf->mapToItem(root, QPointF());
+            for (qreal value : {origin.x(), origin.y()}) {
+                const auto physical = value * fixture.window->devicePixelRatio();
+                QVERIFY2(qAbs(physical-qRound64(physical)) < .02,
+                    qPrintable(QString("%1: %2 physical px").arg(leaf->objectName()).arg(physical,0,'f',6)));
+            }
+            QCOMPARE(leaf->mapToItem(root,QPointF(1,0))-origin, QPointF(1,0));
+            QCOMPARE(leaf->mapToItem(root,QPointF(0,1))-origin, QPointF(0,1));
+        }
+    };
+    checkChrome();
+    const auto clickControl = [&](QQuickItem *item) {
+        const auto point = item->mapToItem(root, QPointF(item->width()/2,item->height()/2)).toPoint();
+        QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, point);
+    };
+    const QSizeF restored(dialog->width(), dialog->height());
+    clickControl(maximize);
+    QTRY_VERIFY(dialog->property("maximized").toBool());
+    QTest::qWait(30);
+    checkChrome();
+    clickControl(maximize);
+    QTRY_VERIFY(!dialog->property("maximized").toBool());
+    QCOMPARE(QSizeF(dialog->width(), dialog->height()), restored);
+    auto *resize = visualItemWithObjectName(dialog, "dialogResizeBottomRight");
+    QVERIFY(resize && resize->isVisible());
+    const auto corner = resize->mapToItem(root, QPointF(resize->width()/2,resize->height()/2)).toPoint();
+    QTest::mousePress(fixture.window, Qt::LeftButton, Qt::NoModifier, corner);
+    moveNativePointer(fixture.window, corner-QPoint(70,50), 20);
+    QTest::mouseRelease(fixture.window, Qt::LeftButton, Qt::NoModifier, corner-QPoint(70,50));
+    QTRY_VERIFY(dialog->width() < restored.width() && dialog->height() < restored.height());
+    QTest::qWait(30);
+    checkChrome();
+    fixture.shell.clearActions();
+    clickControl(close);
+    QTRY_VERIFY(!fixture.shell.actions.isEmpty());
+    QCOMPARE(fixture.shell.actions.last().value("action").toString(), "menu.close");
+    QCOMPARE(fixture.shell.actions.last().value("target").toString(), "history-fit");
 }
 
 void F4QuickViewSurfaceTests::menuScrollBarUsesNativeExtentAndCommitsMouseDrag()
