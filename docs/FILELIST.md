@@ -2175,6 +2175,8 @@ Every file tracked in the repository. Regenerate with
     ./qt/host/qml/ThemeColorEditorPane.qml
     ./qt/host/qml/ThemeColorWheel.qml
     ./qt/host/qml/ThemeDraftModel.qml
+    ./qt/host/qml/NativeSettingsPage.qml
+    ./qt/host/qml/ThemeEditorContent.qml
     ./qt/host/qml/ThemeEditor.qml
     ./qt/host/qml/ThemeEditorFooter.qml
     ./qt/host/qml/ThemeRenderTypeComboBox.qml

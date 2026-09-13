@@ -52,6 +52,8 @@ set(F4_HOST_QML_FILES
   qml/ThemeRenderTypeComboBox.qml
   qml/ThemeBooleanOption.qml
   qml/ThemeEditor.qml
+  qml/ThemeEditorContent.qml
+  qml/NativeSettingsPage.qml
   qml/ThemeDraftModel.qml
   qml/HostThemePalette.qml
   qml/ThemeColorWheel.qml
@@ -74,6 +76,8 @@ set(F4_HOST_QML_FILES
   qml/SemanticGroupViewport.qml
   qml/GenericDialog.qml
   qml/SettingsDialogBody.qml
+  qml/TerminalPaletteModel.qml
+  qml/TerminalColorsPage.qml
   qml/DialogOverlay.qml
   qml/AutocompletePopup.qml
   qml/SemanticMenuItemDelegate.qml

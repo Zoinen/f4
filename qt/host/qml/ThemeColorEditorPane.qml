@@ -9,7 +9,7 @@ import QtQuick.Shapes
 ColumnLayout {
     id: themeColorEditor
     required property ApplicationWindow hostWindow
-    required property Window editorWindow
+    required property QtObject editorWindow
     required property ThemeDraftModel draft
     objectName: "themeColorEditor"
     Layout.preferredWidth: hostWindow.snapPx(320)
@@ -49,6 +49,12 @@ ColumnLayout {
         }
 
         Text {
+            id: themeColorEditorPaneLeaf0
+            objectName: "themeColorEditorPaneLeaf0"
+            transform: Translate {
+                x: hostWindow.dialogPixelOffsetX(themeColorEditorPaneLeaf0, hostWindow.contentItem)
+                y: hostWindow.dialogPixelOffsetY(themeColorEditorPaneLeaf0, hostWindow.contentItem)
+            }
             text: draft.currentItem ? draft.currentItem.name : ""
             color: hostWindow.textColor
             font.family: hostWindow.guiMonospaceFontFamily
@@ -80,6 +86,11 @@ ColumnLayout {
             }
 
             Text {
+                objectName: "groupText"
+                transform: Translate {
+                    x: hostWindow.dialogPixelOffsetX(groupText, hostWindow.contentItem)
+                    y: hostWindow.dialogPixelOffsetY(groupText, hostWindow.contentItem)
+                }
                 id: groupText
                 text: draft.currentItem ? draft.currentItem.group : ""
                 color: hostWindow.mutedText
@@ -155,7 +166,13 @@ ColumnLayout {
                 editorWindow.contentItem)
         }
 
-        Text { text: "H"; color: hostWindow.mutedText; font.family: hostWindow.guiMonospaceFontFamily; font.pixelSize: 11; font.weight: Font.DemiBold; Layout.preferredWidth: hostWindow.snapPx(12) }
+        Text {
+            id: themeColorEditorPaneLeaf2
+            objectName: "themeColorEditorPaneLeaf2"
+            transform: Translate {
+                x: hostWindow.dialogPixelOffsetX(themeColorEditorPaneLeaf2, hostWindow.contentItem)
+                y: hostWindow.dialogPixelOffsetY(themeColorEditorPaneLeaf2, hostWindow.contentItem)
+            } text: "H"; color: hostWindow.mutedText; font.family: hostWindow.guiMonospaceFontFamily; font.pixelSize: 11; font.weight: Font.DemiBold; Layout.preferredWidth: hostWindow.snapPx(12) }
         Slider {
             id: hueSlider
             objectName: "themeHueSlider"
@@ -258,6 +275,11 @@ ColumnLayout {
                     editorWindow.contentItem)
             }
             TextInput {
+                objectName: "hInput"
+                transform: Translate {
+                    x: hostWindow.dialogPixelOffsetX(hInput, hostWindow.contentItem)
+                    y: hostWindow.dialogPixelOffsetY(hInput, hostWindow.contentItem)
+                }
                 id: hInput
                 anchors.fill: parent; anchors.leftMargin: hostWindow.snapPx(2); anchors.rightMargin: hostWindow.snapPx(2); verticalAlignment: TextInput.AlignVCenter; horizontalAlignment: TextInput.AlignHCenter
                 font.family: hostWindow.guiMonospaceFontFamily; font.pixelSize: 10; color: hostWindow.textColor; selectByMouse: true; selectionColor: hostWindow.selectedBg; selectedTextColor: hostWindow.textColor
@@ -285,7 +307,13 @@ ColumnLayout {
                 editorWindow.contentItem)
         }
 
-        Text { text: "C"; color: hostWindow.mutedText; font.family: hostWindow.guiMonospaceFontFamily; font.pixelSize: 11; font.weight: Font.DemiBold; Layout.preferredWidth: hostWindow.snapPx(12) }
+        Text {
+            id: themeColorEditorPaneLeaf4
+            objectName: "themeColorEditorPaneLeaf4"
+            transform: Translate {
+                x: hostWindow.dialogPixelOffsetX(themeColorEditorPaneLeaf4, hostWindow.contentItem)
+                y: hostWindow.dialogPixelOffsetY(themeColorEditorPaneLeaf4, hostWindow.contentItem)
+            } text: "C"; color: hostWindow.mutedText; font.family: hostWindow.guiMonospaceFontFamily; font.pixelSize: 11; font.weight: Font.DemiBold; Layout.preferredWidth: hostWindow.snapPx(12) }
         Slider {
             id: chromaSlider
             objectName: "themeChromaSlider"
@@ -350,6 +378,11 @@ ColumnLayout {
                     editorWindow.contentItem)
             }
             TextInput {
+                objectName: "cInput"
+                transform: Translate {
+                    x: hostWindow.dialogPixelOffsetX(cInput, hostWindow.contentItem)
+                    y: hostWindow.dialogPixelOffsetY(cInput, hostWindow.contentItem)
+                }
                 id: cInput
                 anchors.fill: parent; anchors.leftMargin: hostWindow.snapPx(2); anchors.rightMargin: hostWindow.snapPx(2); verticalAlignment: TextInput.AlignVCenter; horizontalAlignment: TextInput.AlignHCenter
                 font.family: hostWindow.guiMonospaceFontFamily; font.pixelSize: 10; color: hostWindow.textColor; selectByMouse: true; selectionColor: hostWindow.selectedBg; selectedTextColor: hostWindow.textColor
@@ -391,7 +424,13 @@ ColumnLayout {
                 editorWindow.contentItem)
         }
 
-        Text { text: "L"; color: hostWindow.mutedText; font.family: hostWindow.guiMonospaceFontFamily; font.pixelSize: 11; font.weight: Font.DemiBold; Layout.preferredWidth: hostWindow.snapPx(12) }
+        Text {
+            id: themeColorEditorPaneLeaf6
+            objectName: "themeColorEditorPaneLeaf6"
+            transform: Translate {
+                x: hostWindow.dialogPixelOffsetX(themeColorEditorPaneLeaf6, hostWindow.contentItem)
+                y: hostWindow.dialogPixelOffsetY(themeColorEditorPaneLeaf6, hostWindow.contentItem)
+            } text: "L"; color: hostWindow.mutedText; font.family: hostWindow.guiMonospaceFontFamily; font.pixelSize: 11; font.weight: Font.DemiBold; Layout.preferredWidth: hostWindow.snapPx(12) }
         Slider {
             id: lightnessSlider
             objectName: "themeLightnessSlider"
@@ -448,6 +487,11 @@ ColumnLayout {
                     editorWindow.contentItem)
             }
             TextInput {
+                objectName: "lInput"
+                transform: Translate {
+                    x: hostWindow.dialogPixelOffsetX(lInput, hostWindow.contentItem)
+                    y: hostWindow.dialogPixelOffsetY(lInput, hostWindow.contentItem)
+                }
                 id: lInput
                 anchors.fill: parent; anchors.leftMargin: hostWindow.snapPx(2); anchors.rightMargin: hostWindow.snapPx(2); verticalAlignment: TextInput.AlignVCenter; horizontalAlignment: TextInput.AlignHCenter
                 font.family: hostWindow.guiMonospaceFontFamily; font.pixelSize: 10; color: hostWindow.textColor; selectByMouse: true; selectionColor: hostWindow.selectedBg; selectedTextColor: hostWindow.textColor
@@ -475,7 +519,13 @@ ColumnLayout {
                 editorWindow.contentItem)
         }
 
-        Text { text: "A"; color: hostWindow.mutedText; font.family: hostWindow.guiMonospaceFontFamily; font.pixelSize: 11; font.weight: Font.DemiBold; Layout.preferredWidth: hostWindow.snapPx(12) }
+        Text {
+            id: themeColorEditorPaneLeaf8
+            objectName: "themeColorEditorPaneLeaf8"
+            transform: Translate {
+                x: hostWindow.dialogPixelOffsetX(themeColorEditorPaneLeaf8, hostWindow.contentItem)
+                y: hostWindow.dialogPixelOffsetY(themeColorEditorPaneLeaf8, hostWindow.contentItem)
+            } text: "A"; color: hostWindow.mutedText; font.family: hostWindow.guiMonospaceFontFamily; font.pixelSize: 11; font.weight: Font.DemiBold; Layout.preferredWidth: hostWindow.snapPx(12) }
         Slider {
             id: alphaSlider
             objectName: "themeAlphaSlider"
@@ -558,6 +608,11 @@ ColumnLayout {
                     editorWindow.contentItem)
             }
             TextInput {
+                objectName: "aInput"
+                transform: Translate {
+                    x: hostWindow.dialogPixelOffsetX(aInput, hostWindow.contentItem)
+                    y: hostWindow.dialogPixelOffsetY(aInput, hostWindow.contentItem)
+                }
                 id: aInput
                 anchors.fill: parent; anchors.leftMargin: hostWindow.snapPx(2); anchors.rightMargin: hostWindow.snapPx(2); verticalAlignment: TextInput.AlignVCenter; horizontalAlignment: TextInput.AlignHCenter
                 font.family: hostWindow.guiMonospaceFontFamily; font.pixelSize: 10; color: hostWindow.textColor; selectByMouse: true; selectionColor: hostWindow.selectedBg; selectedTextColor: hostWindow.textColor
@@ -590,7 +645,13 @@ ColumnLayout {
         }
 
         // R
-        Text { id: themeRedLabel; text: "R:"; color: hostWindow.mutedText; font.pixelSize: 10 }
+        Text {
+            id: themeRedLabel
+            objectName: "themeRedLabel"
+            transform: Translate {
+                x: hostWindow.dialogPixelOffsetX(themeRedLabel, hostWindow.contentItem)
+                y: hostWindow.dialogPixelOffsetY(themeRedLabel, hostWindow.contentItem)
+            } text: "R:"; color: hostWindow.mutedText; font.pixelSize: 10 }
         Rectangle {
             id: themeRedInputBox
             objectName: "themeRedInputBox"
@@ -605,6 +666,11 @@ ColumnLayout {
                     editorWindow.contentItem)
             }
             TextInput {
+                objectName: "rInput"
+                transform: Translate {
+                    x: hostWindow.dialogPixelOffsetX(rInput, hostWindow.contentItem)
+                    y: hostWindow.dialogPixelOffsetY(rInput, hostWindow.contentItem)
+                }
                 id: rInput
                 anchors.fill: parent; anchors.leftMargin: hostWindow.snapPx(2); anchors.rightMargin: hostWindow.snapPx(2); verticalAlignment: TextInput.AlignVCenter; horizontalAlignment: TextInput.AlignHCenter
                 font.family: hostWindow.guiMonospaceFontFamily; font.pixelSize: 10; color: hostWindow.textColor; selectByMouse: true; selectionColor: hostWindow.selectedBg; selectedTextColor: hostWindow.textColor
@@ -621,7 +687,13 @@ ColumnLayout {
         }
 
         // G
-        Text { id: themeGreenLabel; text: "G:"; color: hostWindow.mutedText; font.pixelSize: 10 }
+        Text {
+            id: themeGreenLabel
+            objectName: "themeGreenLabel"
+            transform: Translate {
+                x: hostWindow.dialogPixelOffsetX(themeGreenLabel, hostWindow.contentItem)
+                y: hostWindow.dialogPixelOffsetY(themeGreenLabel, hostWindow.contentItem)
+            } text: "G:"; color: hostWindow.mutedText; font.pixelSize: 10 }
         Rectangle {
             id: themeGreenInputBox
             objectName: "themeGreenInputBox"
@@ -636,6 +708,11 @@ ColumnLayout {
                     editorWindow.contentItem)
             }
             TextInput {
+                objectName: "gInput"
+                transform: Translate {
+                    x: hostWindow.dialogPixelOffsetX(gInput, hostWindow.contentItem)
+                    y: hostWindow.dialogPixelOffsetY(gInput, hostWindow.contentItem)
+                }
                 id: gInput
                 anchors.fill: parent; anchors.leftMargin: hostWindow.snapPx(2); anchors.rightMargin: hostWindow.snapPx(2); verticalAlignment: TextInput.AlignVCenter; horizontalAlignment: TextInput.AlignHCenter
                 font.family: hostWindow.guiMonospaceFontFamily; font.pixelSize: 10; color: hostWindow.textColor; selectByMouse: true; selectionColor: hostWindow.selectedBg; selectedTextColor: hostWindow.textColor
@@ -652,7 +729,13 @@ ColumnLayout {
         }
 
         // B
-        Text { id: themeBlueLabel; text: "B:"; color: hostWindow.mutedText; font.pixelSize: 10 }
+        Text {
+            id: themeBlueLabel
+            objectName: "themeBlueLabel"
+            transform: Translate {
+                x: hostWindow.dialogPixelOffsetX(themeBlueLabel, hostWindow.contentItem)
+                y: hostWindow.dialogPixelOffsetY(themeBlueLabel, hostWindow.contentItem)
+            } text: "B:"; color: hostWindow.mutedText; font.pixelSize: 10 }
         Rectangle {
             id: themeBlueInputBox
             objectName: "themeBlueInputBox"
@@ -667,6 +750,11 @@ ColumnLayout {
                     editorWindow.contentItem)
             }
             TextInput {
+                objectName: "bInput"
+                transform: Translate {
+                    x: hostWindow.dialogPixelOffsetX(bInput, hostWindow.contentItem)
+                    y: hostWindow.dialogPixelOffsetY(bInput, hostWindow.contentItem)
+                }
                 id: bInput
                 anchors.fill: parent; anchors.leftMargin: hostWindow.snapPx(2); anchors.rightMargin: hostWindow.snapPx(2); verticalAlignment: TextInput.AlignVCenter; horizontalAlignment: TextInput.AlignHCenter
                 font.family: hostWindow.guiMonospaceFontFamily; font.pixelSize: 10; color: hostWindow.textColor; selectByMouse: true; selectionColor: hostWindow.selectedBg; selectedTextColor: hostWindow.textColor
@@ -683,7 +771,13 @@ ColumnLayout {
         }
 
         // HEX
-        Text { id: themeHexLabel; text: "HEX:"; color: hostWindow.mutedText; font.pixelSize: 10 }
+        Text {
+            id: themeHexLabel
+            objectName: "themeHexLabel"
+            transform: Translate {
+                x: hostWindow.dialogPixelOffsetX(themeHexLabel, hostWindow.contentItem)
+                y: hostWindow.dialogPixelOffsetY(themeHexLabel, hostWindow.contentItem)
+            } text: "HEX:"; color: hostWindow.mutedText; font.pixelSize: 10 }
         Rectangle {
             id: themeHexInputBox
             objectName: "themeHexInputBox"
@@ -698,6 +792,11 @@ ColumnLayout {
                     editorWindow.contentItem)
             }
             TextInput {
+                objectName: "hexInput"
+                transform: Translate {
+                    x: hostWindow.dialogPixelOffsetX(hexInput, hostWindow.contentItem)
+                    y: hostWindow.dialogPixelOffsetY(hexInput, hostWindow.contentItem)
+                }
                 id: hexInput
                 anchors.fill: parent; anchors.leftMargin: hostWindow.snapPx(4); anchors.rightMargin: hostWindow.snapPx(4); verticalAlignment: TextInput.AlignVCenter; horizontalAlignment: TextInput.AlignHCenter
                 font.family: hostWindow.guiMonospaceFontFamily; font.pixelSize: 10; color: hostWindow.textColor; selectByMouse: true; selectionColor: hostWindow.selectedBg; selectedTextColor: hostWindow.textColor

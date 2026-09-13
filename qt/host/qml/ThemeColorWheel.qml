@@ -7,7 +7,7 @@ import QtQuick.Layouts
 Canvas {
     id: colorWheel
     required property ApplicationWindow hostWindow
-    required property Window editorWindow
+    required property QtObject editorWindow
     required property ThemeDraftModel draft
     Connections {
         target: colorWheel.draft

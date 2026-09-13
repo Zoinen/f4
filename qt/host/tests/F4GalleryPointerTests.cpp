@@ -274,7 +274,9 @@ private slots:
     void sameFolderRefreshKeepsGalleryObjects();
     void sparseRefreshReachesGalleryAndCrossesPagingThreshold();
     void nativeDropUsesIdentityAndSnappedOutline();
+    void columnsLabelsStaySnappedDuringPanelResize();
     void nativeWorkspaceHoverAndDrop();
+    void commandLineAcceptsPathDrops();
     void dropTargetsRejectSourceAndOutlineActiveTab();
     void upstreamDragArtwork();
     void initTestCase();
@@ -903,6 +905,7 @@ void F4GalleryPointerTests::quickSearchMatchMarkupTracksPanelStateAndPalette()
 void F4GalleryPointerTests::panelCapturesPointerAndAppliesSelectionModifiers()
 {
     QQuickView view;
+    view.engine()->addImportPath(QStringLiteral(":/"));
     F4GalleryBridge bridge(view.engine());
     QVERIFY(bridge.available());
     bridge.synchronizeScene(galleryScene(18));
@@ -1046,6 +1049,15 @@ void F4GalleryPointerTests::panelCapturesPointerAndAppliesSelectionModifiers()
     QCOMPARE(firstActionSince(actions, 0, QStringLiteral("panel.cursor"))
                  .value(QStringLiteral("entryId")).toString(),
              QStringLiteral("entry-1"));
+
+    // Clicking the same cursor row must also return command-line ownership.
+    host->setProperty("commandLineOwnsNavigation", true);
+    const int focusStart = actions.size();
+    QTest::mouseClick(&view, Qt::LeftButton, Qt::NoModifier,
+                      itemCenter(rowOne));
+    QCOMPARE(firstActionSince(actions, focusStart, QStringLiteral("panel.activate"))
+                 .value(QStringLiteral("side"), -1).toInt(), 0);
+    host->setProperty("commandLineOwnsNavigation", false);
 
     int first = actions.size();
     QQuickItem *rowTwo = pointerForRow(2);
@@ -2671,6 +2683,63 @@ Item {
     QCOMPARE(panel->property("dropHoverIndex").toInt(),-2);
 }
 
+void F4GalleryPointerTests::commandLineAcceptsPathDrops()
+{
+    QQuickWindow window;
+    QQmlEngine engine;
+    F4GalleryBridge bridge(&engine);
+    QQuickItem input(window.contentItem());
+    input.setWidth(400);
+    input.setHeight(40);
+    input.setProperty("dropInputEnabled", true);
+    bridge.registerDragCommandLine(&input);
+    QSignalSpy actions(&bridge, &F4GalleryBridge::uiActionRequested);
+    QMimeData mime;
+    const auto path = QDir::temp().filePath("two words.txt");
+    mime.setUrls({QUrl::fromLocalFile(path)});
+    QDragEnterEvent enter(QPoint(20,20), Qt::CopyAction | Qt::MoveAction,
+                         &mime, Qt::LeftButton, Qt::ShiftModifier);
+    QCoreApplication::sendEvent(&window, &enter);
+    QVERIFY(enter.isAccepted());
+    QCOMPARE(enter.dropAction(), Qt::CopyAction);
+    QVERIFY(input.property("dropHovered").toBool());
+    QDropEvent drop(QPointF(20,20), Qt::CopyAction | Qt::MoveAction,
+                    &mime, Qt::LeftButton, Qt::ShiftModifier);
+    QCoreApplication::sendEvent(&window, &drop);
+    QVERIFY(drop.isAccepted());
+    QVERIFY(!input.property("dropHovered").toBool());
+    QCOMPARE(actions.size(), 1);
+    const auto request = actions.last().at(0).toMap();
+    QCOMPARE(request.value("action").toString(), QString("commandLine.dropPaths"));
+    QCOMPARE(request.value("paths").toStringList(), QStringList{path});
+    QVERIFY(!request.contains("operation"));
+    bridge.m_dragToken = "command-drop";
+    bridge.m_dragSource = {{"panelId", "source"}, {"entryIds", QStringList{"one", "two"}}};
+    QMimeData internal;
+    internal.setData("application/x-f4-drag-session", "command-drop");
+    QDragEnterEvent internalEnter(QPoint(20,20), Qt::CopyAction, &internal,
+                                  Qt::LeftButton, Qt::ShiftModifier);
+    QCoreApplication::sendEvent(&window, &internalEnter);
+    QVERIFY(internalEnter.isAccepted());
+    QVERIFY(input.property("dropHovered").toBool());
+    QDragLeaveEvent leave;
+    QCoreApplication::sendEvent(&window, &leave);
+    QVERIFY(!input.property("dropHovered").toBool());
+    QCoreApplication::sendEvent(&window, &internalEnter);
+    QDropEvent internalDrop(QPointF(20,20), Qt::CopyAction, &internal,
+                            Qt::LeftButton, Qt::ShiftModifier);
+    QCoreApplication::sendEvent(&window, &internalDrop);
+    QVERIFY(internalDrop.isAccepted());
+    QCOMPARE(internalDrop.dropAction(), Qt::CopyAction);
+    QCOMPARE(actions.size(), 2);
+    QCOMPARE(actions.last().at(0).toMap().value("source").toMap(), bridge.m_dragSource);
+    QVERIFY(!actions.last().at(0).toMap().contains("operation"));
+    input.setProperty("dropInputEnabled", false);
+    QDragEnterEvent blocked(QPoint(20,20), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(&window, &blocked);
+    QVERIFY(!blocked.isAccepted());
+}
+
 void F4GalleryPointerTests::nativeWorkspaceHoverAndDrop()
 {
     QQuickView view;
@@ -2730,6 +2799,59 @@ Item {
     QDragEnterEvent nonPanel(QPoint(250,20),Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);
     QCoreApplication::sendEvent(&view,&nonPanel);
     QVERIFY(!nonPanel.isAccepted());
+}
+
+void F4GalleryPointerTests::columnsLabelsStaySnappedDuringPanelResize()
+{
+    QQuickView view;
+    view.engine()->addImportPath(QStringLiteral(":/"));
+    view.resize(640, 360);
+    F4GalleryBridge bridge(view.engine());
+    bridge.synchronizeScene(galleryImageScene({QStringLiteral("/tmp/small caption.png"),
+                                              QStringLiteral("/tmp/another file.jpg")}));
+    QQmlComponent component(view.engine(), bridge.panelComponentUrl());
+    QTRY_VERIFY(component.status() != QQmlComponent::Loading);
+    QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+    auto *host = qobject_cast<QQuickItem *>(component.create());
+    QVERIFY(host);
+    host->setSize(QSizeF(640, 360));
+    host->setProperty("bridge", QVariant::fromValue(&bridge));
+    host->setProperty("panel", QVariantMap{{"id", "pointer-left"}, {"catalogRevision", 5}});
+    host->setProperty("devicePixelRatio", view.devicePixelRatio());
+    view.setContent(bridge.panelComponentUrl(), &component, host);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+    auto *panel = host->findChild<QObject *>("embeddedGalleryPanel");
+    QVERIFY(panel);
+    panel->setProperty("presentationMode", "columns");
+    panel->setProperty("separateFileExtensions", true);
+    QTRY_VERIFY(host->findChild<QQuickItem *>("galleryBaseName-0"));
+    const qreal dpr = view.devicePixelRatio();
+    qInfo() << "Columns resize pixel-grid DPR" << dpr;
+    for (int step = 0; step < 4; ++step) {
+        host->setHeight(360 - step * 16);
+        host->setPosition(QPointF(0.25 + step * 0.2, 0.25 + step * 0.3));
+        QTest::qWait(100);
+        for (int row = 0; row < 2; ++row) {
+            for (const auto &prefix : {"galleryBaseName-", "galleryExtension-", "galleryFallbackIcon-"}) {
+                auto *leaf = host->findChild<QQuickItem *>(QString::fromLatin1(prefix) + QString::number(row));
+                QVERIFY(leaf);
+                QVERIFY(leaf->isVisible());
+                const QPointF origin = leaf->mapToScene(QPointF());
+                const QPointF physical = origin * dpr;
+                QVERIFY2(qAbs(physical.x() - qRound(physical.x())) < 0.001,
+                         qPrintable(leaf->objectName() + " x=" + QString::number(physical.x())));
+                QVERIFY2(qAbs(physical.y() - qRound(physical.y())) < 0.001,
+                         qPrintable(leaf->objectName() + " y=" + QString::number(physical.y())));
+                QVERIFY(QLineF(leaf->mapToScene(QPointF(1, 0)) - origin, QPointF(1, 0)).length() < 0.001);
+                QVERIFY(QLineF(leaf->mapToScene(QPointF(0, 1)) - origin, QPointF(0, 1)).length() < 0.001);
+            }
+        }
+    }
+    QVERIFY(QDir::current().mkpath(QStringLiteral(".diagnostics")));
+    QVERIFY(view.grabWindow().save(QDir::current().filePath(".diagnostics/columns-resize-175.png")));
+    // Destroy bindings while their bridge is still alive.
+    delete host;
 }
 
 void F4GalleryPointerTests::nativeDropUsesIdentityAndSnappedOutline()

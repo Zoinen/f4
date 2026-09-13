@@ -75,7 +75,8 @@ Rectangle {
             // A new array value is not a new set of visual objects. Keep the
             // same run leaves while their count is stable; data/style bindings
             // update them in place.
-            model: documentRow.documentRoot.standaloneViewport
+            model: (documentRow.documentRoot.standaloneViewport
+                    || documentRow.documentRoot.terminalSurface)
                    ? (documentRow.loaded
                       ? (documentRow.rowData.runs || []).length : 0)
                    : (documentRow.loaded
@@ -91,8 +92,9 @@ Rectangle {
                 width: Math.max(runLabel.implicitWidth,
                                 Number((runSegment.runData.text || "").length)
                                 * Number(documentRow.documentRoot.terminalCellWidth || 0))
-                color: documentRow.documentRoot.runBackground(
-                           runData.background)
+                color: documentRow.documentRoot.terminalSurface
+                       ? documentRow.hostWindow.terminalPalette.resolve(runData, false, runData.background || "transparent")
+                       : documentRow.documentRoot.runBackground(runData.background)
 
                 Text {
                     id: runLabel
@@ -103,7 +105,10 @@ Rectangle {
                               runSegment.runData.text) : ""
                     textFormat: Text.PlainText
                     renderType: documentRow.hostWindow.fontRenderType
-                    color: documentRow.hostWindow.cleanText(
+                    color: documentRow.documentRoot.terminalSurface
+                           ? documentRow.hostWindow.terminalPalette.resolve(runSegment.runData, true,
+                                runSegment.runData.foreground || documentRow.hostWindow.textColor)
+                           : documentRow.hostWindow.cleanText(
                                runSegment.runData.foreground) !== ""
                            ? runSegment.runData.foreground
                            : documentRow.hostWindow.textColor

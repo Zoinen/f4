@@ -7,7 +7,7 @@ import QtQuick.Layouts
 RowLayout {
     id: themeColorFooter
     required property ApplicationWindow hostWindow
-    required property Window editorWindow
+    required property QtObject editorWindow
     required property ThemeDraftModel draft
     objectName: "themeColorFooter"
     // The five full-label buttons need slightly more than the default
@@ -116,6 +116,12 @@ RowLayout {
     }
 
     Text {
+        id: themeEditorFooterLeaf0
+        objectName: "themeEditorFooterLeaf0"
+        transform: Translate {
+            x: hostWindow.dialogPixelOffsetX(themeEditorFooterLeaf0, hostWindow.contentItem)
+            y: hostWindow.dialogPixelOffsetY(themeEditorFooterLeaf0, hostWindow.contentItem)
+        }
         text: draft.statusToast
         color: hostWindow.activeBorder
         font.pixelSize: 11
@@ -146,6 +152,7 @@ RowLayout {
         iconSource: hostWindow.lucideIconSource(
                         "save", 14, "#ffffff")
         onClicked: {
+            draft.stopAllFlashing()
             if (hostWindow.saveThemeToPersistence()) {
                 draft.statusToast = "Theme saved to gui_theme.ini!"
             } else {

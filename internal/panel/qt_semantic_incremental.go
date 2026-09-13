@@ -68,12 +68,13 @@ func (pf *PanelsFrame) SemanticIncrementalShell(ctx *vtui.SemanticContext) (extu
 	if pf.CmdLine != nil {
 		started = navtrace.SemanticIncrementalStageStart()
 		shell.CommandLine = pf.CmdLine.SemanticModel(ctx)
+		shell.CommandLine.OwnsNavigation = pf.SearchFirstMode() && pf.CommandLineFocused
 		navtrace.SemanticIncrementalStageDone("shell.command_line", started)
 	}
 	if pf.TermView != nil {
 		started = navtrace.SemanticIncrementalStageStart()
 		shell.Terminal = pf.TermView.SemanticModelWithBottomOverlay(
-			ctx, terminalCommandLineOverlayRows(shell.CommandLine))
+			ctx, terminalCommandLineOverlayRows(shell.CommandLine, shell.TerminalBusy))
 		navtrace.SemanticIncrementalStageDone("shell.terminal", started)
 	}
 	if macro.MacroMgr != nil && macro.MacroMgr.Recording {

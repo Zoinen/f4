@@ -1619,6 +1619,20 @@ void F4GalleryBridgeTests::galleryRoutesOwnedAndCommanderKeys()
         !host->property("pendingCommanderInput").toBool(), 1000);
     host->setProperty("pendingCommanderInputTimeoutMs", 2000);
 
+    // Explicit command focus survives an empty history buffer and the
+    // optimistic typing latch expiring. Both arrow presses and releases
+    // belong to f4, without moving the native panel cursor.
+    host->setProperty("commandLineOwnsNavigation", true);
+    const int historyCursor = session->currentIndex();
+    QVERIFY(verifyForwarded("Empty focused history Up", Qt::Key_Up));
+    QVERIFY(verifyForwarded("Empty focused history Down", Qt::Key_Down));
+    host->setProperty("commandLineHasText", true);
+    QVERIFY(verifyForwarded("History Up", Qt::Key_Up));
+    host->setProperty("commandLineHasText", false);
+    QVERIFY(verifyForwarded("History back to empty Down", Qt::Key_Down));
+    QCOMPARE(session->currentIndex(), historyCursor);
+    host->setProperty("commandLineOwnsNavigation", false);
+
     // Standard paste must use the controller's paste protocol. Sending the
     // literal shortcut would bypass bracketed/multiline paste handling that
     // VtuiGridItem normally performs while it owns focus.

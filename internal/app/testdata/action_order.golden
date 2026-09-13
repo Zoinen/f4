@@ -120,6 +120,7 @@ Panel.LeftDriveMenu
 Panel.RightDriveMenu
 Panel.EnterDirectory
 Panel.InsertFileName
+CommandLine.InsertLineBreak
 Panel.InsertLeftPath
 Panel.InsertRightPath
 App.Quit

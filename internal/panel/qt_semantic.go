@@ -68,10 +68,11 @@ func (pf *PanelsFrame) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 
 	if pf.CmdLine != nil {
 		shell.CommandLine = pf.CmdLine.SemanticModel(ctx)
+		shell.CommandLine.OwnsNavigation = pf.SearchFirstMode() && pf.CommandLineFocused
 	}
 	if pf.TermView != nil {
 		shell.Terminal = pf.TermView.SemanticModelWithBottomOverlay(
-			ctx, terminalCommandLineOverlayRows(shell.CommandLine))
+			ctx, terminalCommandLineOverlayRows(shell.CommandLine, shell.TerminalBusy))
 	}
 	if macro.MacroMgr != nil && macro.MacroMgr.Recording {
 		shell.MacroRecording = true
@@ -84,8 +85,11 @@ func (pf *PanelsFrame) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 	return shell.ToMap()
 }
 
-func terminalCommandLineOverlayRows(commandLine *extui.CommandLineModel) int {
-	if commandLine != nil && commandLine.Visible {
+func terminalCommandLineOverlayRows(commandLine *extui.CommandLineModel, busy bool) int {
+	// During execution the last grid row belongs to the child, including
+	// progress output without a newline. Qt lays the command line below its
+	// terminal viewport; only an idle shell prompt needs to be suppressed.
+	if !busy && commandLine != nil && commandLine.Visible {
 		return 1
 	}
 	return 0
@@ -239,6 +243,19 @@ func (pf *PanelsFrame) HandleSemanticAction(action map[string]any) bool {
 		return false
 	}
 	switch semantic.String(action["action"]) {
+	case "commandLine.focus":
+		if pf.Closed || pf.CmdLine == nil || !pf.CmdLine.IsVisible() {
+			return false
+		}
+		if pf.SearchFirstMode() && pf.ShowPanels {
+			if panel := pf.GetActivePanel(); panel != nil {
+				panel.clearFastFindForSemanticPointerIntent()
+			}
+			pf.SetCommandLineFocus(true)
+		}
+		return true
+	case "commandLine.dropPaths":
+		return pf.handleCommandLineDrop(action)
 	case "panel.dropFiles":
 		return pf.handleSemanticDrop(action)
 	case "activate_panel", "panel.activate":
@@ -541,7 +558,7 @@ func (pf *PanelsFrame) HandleSemanticAction(action map[string]any) bool {
 		}
 		cmdline.CloseActiveAutocompleteMenus()
 		return true
-	case "set_command_text", "command.setText":
+	case "command.preview", "set_command_text", "command.setText":
 		if pf.CmdLine != nil {
 			pf.CmdLine.Edit.SetText(semantic.String(action["text"]))
 			return true

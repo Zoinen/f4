@@ -234,8 +234,9 @@ type Panel interface {
 // PanelsFrame is the main frame of the f4 manager, containing left and right panels.
 type PanelsFrame struct {
 	vtui.BaseFrame
-	Panels  [2]Panel
-	DragOut dragOutState
+	Panels             [2]Panel
+	DragOut            dragOutState
+	commandLinePasting bool
 	// externalUIRunner is normally nil, which selects the real desktop
 	// launcher. Tests install a per-frame recorder instead of spawning native
 	// Explorer/association windows.
@@ -592,7 +593,9 @@ func publishPanelCatalogImmediate(fp *FileSystemPanel, benchmark *navtrace.Navig
 		var commandLine map[string]any
 		if owner.CmdLine != nil {
 			owner.CmdLine.SetRichPrompt(owner.BuildPrompt())
-			commandLine = owner.CmdLine.SemanticModel(nil).ToMap()
+			commandLineModel := owner.CmdLine.SemanticModel(nil)
+			commandLineModel.OwnsNavigation = owner.SearchFirstMode() && owner.CommandLineFocused
+			commandLine = commandLineModel.ToMap()
 		}
 		queued = typedCompleteRenderer.QueuePanelCatalogModelStateWithCommandLine(
 			side, model, strings.TrimSpace(owner.GetTitle()), commandLine,
@@ -648,6 +651,9 @@ func isCommandFocusToggleKey(e *vtinput.InputEvent) bool {
 func (pf *PanelsFrame) SetCommandLineFocus(focused bool) {
 	if !pf.SearchFirstMode() {
 		return
+	}
+	if !focused && pf.CommandLineFocused {
+		cmdline.CloseActiveAutocompleteMenus()
 	}
 	pf.CommandLineFocused = focused
 	pf.CmdLine.SetFocus(focused)
@@ -1736,6 +1742,8 @@ func (pf *PanelsFrame) ResizeConsole(w, h int) {
 	}
 
 	// 1. Terminal Area: Fills everything except KeyBar
+	pf.CmdLine.SetRichPrompt(pf.BuildPrompt())
+	commandRows := pf.CmdLine.RequiredRows(w, max(1, h/2))
 	termY2 := h - 1
 	if pf.ShellMode == terminal.ShellModeHost {
 		// The host console keeps its overlay rows below the mirrored grid, so
@@ -1770,6 +1778,9 @@ func (pf *PanelsFrame) ResizeConsole(w, h int) {
 		if pf.ShowKeyBar && !pf.TermView.UseAltScreen {
 			termY2 = h - 2
 		}
+		if !pf.TermView.UseAltScreen {
+			termY2 -= commandRows - 1
+		}
 		termH := termY2 - contentY1 + 1
 		if termH < 0 {
 			termH = 0
@@ -1800,6 +1811,7 @@ func (pf *PanelsFrame) ResizeConsole(w, h int) {
 	if pf.ShowKeyBar {
 		basePanelY2 = h - 3
 	}
+	basePanelY2 -= commandRows - 1
 	maxHD := h - 7
 	clampHD := func(hd int) int {
 		if hd < 0 {
@@ -1915,7 +1927,7 @@ func (pf *PanelsFrame) ResizeConsole(w, h int) {
 		// CommandLine takes the last line
 	}
 	// Set CommandLine's base position. Show() will override if in terminal prompt mode.
-	pf.CmdLine.SetPosition(0, cmdLineY, w-1, cmdLineY)
+	pf.CmdLine.SetPosition(0, cmdLineY-commandRows+1, w-1, cmdLineY)
 	pf.UpdateMenuCheckmarks()
 }
 
@@ -1996,7 +2008,9 @@ func (pf *PanelsFrame) Show(scr *vtui.ScreenBuf) {
 	isBusy := pf.IsPtyBusy()
 
 	// 1. Dynamic Layout Adjustment
-	if pf.TermView.OnAltScreen() != pf.lastAlt || isBusy != pf.lastBusy || pf.ShowPanels != pf.lastShowPanels {
+	pf.CmdLine.SetRichPrompt(pf.BuildPrompt())
+	commandRows := pf.CmdLine.RequiredRows(pf.LastW, max(1, pf.LastH/2))
+	if pf.TermView.OnAltScreen() != pf.lastAlt || isBusy != pf.lastBusy || pf.ShowPanels != pf.lastShowPanels || commandRows != pf.CmdLine.Y2-pf.CmdLine.Y1+1 {
 		pf.lastAlt = pf.TermView.OnAltScreen()
 		pf.lastBusy = isBusy
 		pf.lastShowPanels = pf.ShowPanels
@@ -2136,7 +2150,7 @@ func (pf *PanelsFrame) Show(scr *vtui.ScreenBuf) {
 			cmdLineY = pf.LastH - 2
 		}
 		pf.CmdLine.SetRichPrompt(pf.BuildPrompt())
-		pf.CmdLine.SetPosition(0, cmdLineY, pf.LastW-1, cmdLineY)
+		pf.CmdLine.SetPosition(0, cmdLineY-commandRows+1, pf.LastW-1, cmdLineY)
 		pf.CmdLine.Show(scr)
 	}
 	// Preserve callers that paint a panel frame directly; normal FrameManager
@@ -2338,6 +2352,9 @@ func (pf *PanelsFrame) VetoActionKey(e *vtinput.InputEvent) bool {
 func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 	if pf.pendingDocumentOpenOwnsKey(e) {
 		CancelDocumentOpen(pf)
+		return true
+	}
+	if pf.processCommandLinePaste(e) {
 		return true
 	}
 	// Do this before the raw AltScreen key path as well: a terminal app must
@@ -2767,21 +2784,10 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 
 	// Enter handling
 	if e.VirtualKeyCode == vtinput.VK_RETURN {
-		// The hotkey filter normally handles Ctrl+Enter and Shift+Enter.
-		// Keep in-frame fallbacks because platform input and injected events
-		// can bypass that filter; under no circumstances should a modified
-		// Enter become plain Enter and enter the selected directory or run
-		// the command line. Hidden panels are included: an AltScreen app or
-		// a busy term.PTY has already been served by the raw-forwarding returns
-		// at the top of this function, so reaching this point means f4
-		// itself owns the keyboard and the panel cursor is still live.
-		if ctrl && !alt && !shift {
-			pf.InsertSelectedFileName()
-			return true
-		}
-		if shift && !ctrl && !alt {
-			RunAction("Panel.SystemExplorer")
-			return true
+		// Modified Enter chords are configurable actions. Consume an unbound
+		// chord instead of treating it as plain Enter and submitting text.
+		if ctrl || shift || alt {
+			return pf.processModifiedEnter(e)
 		}
 		commandInputActive := !pf.SearchFirstMode() || pf.CommandLineFocused || !pf.ShowPanels
 		if commandInputActive && !pf.CmdLine.IsEmpty() {

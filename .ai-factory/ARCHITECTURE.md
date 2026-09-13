@@ -709,3 +709,10 @@ import the settings renderer. `sdk/f4settings` remains the frontend-neutral publ
 metadata and provider contract.
 
 `internal/settingstest` is layer-0 test scaffolding for provider localization audits, imported only by tests. It reads the resources owned by `internal/i18n`.
+
+
+Qt-only settings extensions use `NativeSettingsPage` components registered on the
+host window. Qt owns their navigation, controls, runtime and persistence. GUI
+preferences do not contribute a Go Provider or cross ExtUI as settings fields.
+The composition root handles the generic `settings.open` UI intent; all existing
+core/plugin settings providers and console presentation remain unchanged.

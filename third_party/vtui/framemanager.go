@@ -264,6 +264,8 @@ type frameManager struct {
 	// the render loop is reading this same flag -- so it cannot be a plain
 	// bool.
 	needsRender         atomic.Bool
+	pasteRenderDeadline time.Time
+	pendingPastes       sync.Map // *vtinput.InputEvent -> complete clipboard text
 	injectedEvents      []*vtinput.InputEvent
 	injectedMu          sync.Mutex
 	OnRender            func(scr *ScreenBuf)
@@ -823,6 +825,8 @@ func (fm *frameManager) Init(scr *ScreenBuf) {
 	fm.semanticMenuTailKey = 0
 	fm.semanticMenuTailModifiers = 0
 	fm.semanticMenuDeclared = false
+	fm.pasteRenderDeadline = time.Time{}
+	fm.pendingPastes.Clear()
 	fm.needsRender.Store(true)
 	fm.far2lEnabled.Store(Far2lEnabled || fm.far2lNegotiated.Load())
 	fm.far2lConfigured.Store(true)
@@ -1504,8 +1508,22 @@ func (fm *frameManager) stepWithSize(timeout time.Duration, getSize func() (int,
 		return false
 	}
 
-	if fm.needsRender.Swap(false) {
+	// Bracketed paste is one visible edit even though terminal readers deliver
+	// its characters separately. Keep dispatch/filter order unchanged, but do
+	// not export every intermediate buffer. Bound the delay so an interrupted
+	// stream without its closing marker cannot leave the UI frozen.
+	var pasteRemaining time.Duration
+	if !fm.pasteRenderDeadline.IsZero() {
+		pasteRemaining = time.Until(fm.pasteRenderDeadline)
+		if pasteRemaining <= 0 {
+			fm.pasteRenderDeadline = time.Time{}
+		}
+	}
+	if fm.pasteRenderDeadline.IsZero() && fm.needsRender.Swap(false) {
 		fm.renderPhase()
+	}
+	if pasteRemaining > 0 && (timeout < 0 || timeout > pasteRemaining) {
+		timeout = pasteRemaining
 	}
 
 	var e *vtinput.InputEvent
@@ -1613,6 +1631,20 @@ func (fm *frameManager) consumeEvent(ev *vtinput.InputEvent, injected bool, getS
 	if ev == nil {
 		return false
 	}
+	if value, ok := fm.pendingPastes.LoadAndDelete(ev); ok {
+		text := value.(string)
+		return fm.dispatchEventWithPaste(ev, injected, &text)
+	}
+	if ev.Type == vtinput.PasteEventType {
+		if ev.PasteStart {
+			fm.pasteRenderDeadline = time.Now().Add(100 * time.Millisecond)
+		} else {
+			fm.pasteRenderDeadline = time.Time{}
+		}
+	} else if ev.Type != vtinput.KeyEventType {
+		// Resizes, focus changes, and pointer input are separate interactions.
+		fm.pasteRenderDeadline = time.Time{}
+	}
 	if ev.Type == vtinput.ResizeEventType {
 		fm.handleResizeWith(getSize)
 		return true
@@ -1636,6 +1668,7 @@ func (fm *frameManager) handleResizeWith(getSize func() (int, int, error)) {
 // Shutdown clears all frames, stops the event loop, and cleanly restores the terminal state. Safe and idempotent.
 func (fm *frameManager) Shutdown() {
 	fm.shutdown.Store(true)
+	fm.pendingPastes.Clear()
 	fm.stopRequested.Store(true)
 	select {
 	case fm.RedrawChan <- struct{}{}:
@@ -3595,6 +3628,10 @@ func (fm *frameManager) isDuplicateMouseMove(ev *vtinput.InputEvent) bool {
 }
 
 func (fm *frameManager) dispatchEvent(ev *vtinput.InputEvent, is_injected bool) bool {
+	return fm.dispatchEventWithPaste(ev, is_injected, nil)
+}
+
+func (fm *frameManager) dispatchEventWithPaste(ev *vtinput.InputEvent, is_injected bool, pasteText *string) bool {
 	menuStateBefore := fm.semanticMenuInputState()
 	fm.semanticMenuDeclared = false
 	previousInputUpdateActive := fm.inputUpdateActive
@@ -3894,7 +3931,11 @@ func (fm *frameManager) dispatchEvent(ev *vtinput.InputEvent, is_injected bool) 
 	handled := false
 
 	if ev.Type == vtinput.KeyEventType || ev.Type == vtinput.PasteEventType || ev.Type == vtinput.FocusEventType {
-		handled = topFrame.ProcessKey(ev)
+		if pasteText != nil {
+			handled = dispatchFramePaste(topFrame, *pasteText)
+		} else {
+			handled = topFrame.ProcessKey(ev)
+		}
 		if handled && ev.Type == vtinput.KeyEventType && !ev.KeyDown {
 			// Custom key-up handlers are outside VMenu's bounded presentation
 			// contract even when this release followed a direct menu gesture.

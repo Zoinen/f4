@@ -182,6 +182,8 @@ func TestExtUiRendererClosesAfterSendFailure(t *testing.T) {
 }
 
 func TestExtUiHostHandleMessageEvents(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	defer vtui.FrameManager.Shutdown()
 	reader := &vtinput.Reader{EventChan: make(chan *vtinput.InputEvent, 16)}
 	host := &ExtUiHost{reader: reader, cols: 10, rows: 5}
 	host.handleMessage(map[string]any{"type": "resize", "cols": 12, "rows": 7})
@@ -200,8 +202,8 @@ func TestExtUiHostHandleMessageEvents(t *testing.T) {
 	for len(reader.EventChan) > 0 {
 		events = append(events, <-reader.EventChan)
 	}
-	if len(events) != 9 {
-		t.Fatalf("got %d events, want resize, key, 2 text, mouse, wheel, paste start, char, end", len(events))
+	if len(events) != 7 {
+		t.Fatalf("got %d events, want resize, key, 2 text, mouse, wheel, one complete paste", len(events))
 	}
 	if events[0].Type != vtinput.ResizeEventType || events[0].InputSource != "extui" {
 		t.Errorf("resize event = %+v", events[0])
@@ -218,8 +220,8 @@ func TestExtUiHostHandleMessageEvents(t *testing.T) {
 	if events[5].WheelDirection != -2 {
 		t.Errorf("wheel event = %+v", events[5])
 	}
-	if events[6].Type != vtinput.PasteEventType || !events[6].PasteStart || events[8].PasteStart {
-		t.Errorf("paste events = %+v, %+v, %+v", events[6], events[7], events[8])
+	if events[6].Type != vtinput.PasteEventType || !events[6].PasteStart {
+		t.Errorf("paste transaction = %+v", events[6])
 	}
 }
 

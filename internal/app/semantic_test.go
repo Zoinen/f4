@@ -301,6 +301,17 @@ func TestSettingsSemanticMenuActivationOwnsGoFocusAndScene(t *testing.T) {
 	}
 
 	dialog, ok := vtui.FrameManager.GetTopFrame().(*settings.Center)
+	if !HandleSemanticAction(map[string]any{"target": "app", "action": "settings.open"}) {
+		t.Fatal("native settings entry point was not handled")
+	}
+	if vtui.FrameManager.GetTopFrame() != dialog {
+		t.Fatal("native settings entry point created a second dialog")
+	}
+	for _, category := range settings.Categories {
+		if category.ID == "gui" {
+			t.Fatal("Qt-only preferences leaked into the console catalog")
+		}
+	}
 	if !ok || dialog.GetTitle() != i18n.Msg("SettingsCenter.Title") {
 		t.Fatalf("Go top frame = %T %q, want Settings dialog",
 			vtui.FrameManager.GetTopFrame(), vtui.FrameManager.GetTopFrame().GetTitle())
@@ -569,5 +580,30 @@ func TestSemanticMenuHoverNotifiesOwner(t *testing.T) {
 	}
 	if !HandleSemanticAction(action) || calls != 1 {
 		t.Fatal("unchanged hover repeated owner callback")
+	}
+}
+
+func TestCommandPreviewKeepsAutocompleteAndDoesNotExecute(t *testing.T) {
+	t.Cleanup(paneltest.SwapFrameManager(t))
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	pf := paneltest.SetupMockPanelsFrame(t)
+	defer pf.Close()
+	pf.CmdLine.Edit.SetText("git st")
+	pf.CmdLine.Edit.History = []string{"git status"}
+	vtui.FrameManager.Push(pf)
+	menu := vtui.NewAutoCompleteMenu(pf.CmdLine.Edit)
+	vtui.FrameManager.Push(menu)
+	pty := pf.Pty.(*paneltest.MockPty)
+	pty.Reset()
+	for _, text := range []string{"git status", "git st"} {
+		if !HandleSemanticAction(map[string]any{"target": vtui.SemanticID(pf), "action": "command.preview", "text": text}) {
+			t.Fatal("preview not handled")
+		}
+		if pf.CmdLine.Edit.GetText() != text || menu.Query() != "git st" || menu.IsDone() {
+			t.Fatal("preview lost prompt or menu")
+		}
+	}
+	if pty.String() != "" {
+		t.Fatal("preview executed a command")
 	}
 }

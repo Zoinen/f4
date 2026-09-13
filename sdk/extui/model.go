@@ -312,9 +312,13 @@ type HighlightStyleModel struct {
 }
 
 type CommandLineModel struct {
-	ID               string
-	Visible          bool
-	Focused          bool
+	ID      string
+	Visible bool
+	Focused bool
+	// OwnsNavigation routes panel navigation keys to the command line even when empty.
+	OwnsNavigation   bool
+	Multiline        bool
+	WordWrap         bool
 	Prompt           string
 	PromptRuns       []RunModel
 	Text             string
@@ -353,6 +357,7 @@ type TerminalModel struct {
 	WindowEnd          int64
 	ViewportStart      int64
 	ViewportSpan       int64
+	ContentStart       int64 // First content row; leading screen padding keeps its absolute IDs.
 	ContentExtent      int64
 	ContentExtentKnown bool
 	ViewportRow        int
@@ -1110,6 +1115,9 @@ func (c CommandLineModel) ToMap() M {
 		"kind":             "commandLine",
 		"visible":          c.Visible,
 		"focused":          c.Focused,
+		"ownsNavigation":   c.OwnsNavigation,
+		"multiline":        c.Multiline,
+		"wordWrap":         c.WordWrap,
 		"prompt":           c.Prompt,
 		"promptRuns":       runsToMaps(c.PromptRuns),
 		"text":             c.Text,
@@ -1151,6 +1159,7 @@ func (t TerminalModel) ToMap() M {
 		"windowEnd":          t.WindowEnd,
 		"viewportStart":      t.ViewportStart,
 		"viewportSpan":       t.ViewportSpan,
+		"contentStart":       t.ContentStart,
 		"contentExtent":      t.ContentExtent,
 		"contentExtentKnown": t.ContentExtentKnown,
 		"viewportRow":        t.ViewportRow,
@@ -1429,7 +1438,7 @@ func (r TextRowModel) ToMap() M {
 }
 
 func (r RunModel) ToMap() M {
-	return M{
+	out := M{
 		"text":       r.Text,
 		"attr":       r.Attr,
 		"foreground": r.Foreground,
@@ -1438,6 +1447,23 @@ func (r RunModel) ToMap() M {
 		"underline":  r.Underline,
 		"strikeout":  r.Strikeout,
 	}
+	// Carry small exact indices separately: QML numbers cannot preserve all
+	// flag bits of a 64-bit attribute containing a true-color background.
+	foreground, background := -1, -1
+	if r.Attr&0x0100 == 0 {
+		foreground = int((r.Attr >> 16) & 255)
+	}
+	if r.Attr&0x0200 == 0 {
+		background = int((r.Attr >> 40) & 255)
+	}
+	if r.Attr&0x4000 != 0 {
+		foreground, background = background, foreground
+	}
+	out["foregroundPaletteIndex"] = foreground
+	out["backgroundPaletteIndex"] = background
+	out["foregroundDim"] = r.Attr&0x1000 != 0 && r.Attr&0x4000 == 0
+	out["backgroundDim"] = r.Attr&0x1000 != 0 && r.Attr&0x4000 != 0
+	return out
 }
 
 func (m MenuModel) ToMap() M {

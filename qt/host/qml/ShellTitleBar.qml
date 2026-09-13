@@ -112,13 +112,7 @@ Item {
             }
         }
 
-        onClicked: {
-            if (themeEditor.visible) {
-                themeEditor.hide()
-            } else {
-                hostWindow.showApplicationSettings()
-            }
-        }
+        onClicked: hostWindow.showApplicationSettings()
     }
 
     SemanticMenuBar {

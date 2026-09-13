@@ -276,6 +276,7 @@ Item {
         spacing: control.snap(6)
 
         HostPixelAlignedImage {
+            objectName: control.objectName ? control.objectName + "LeadingIcon" : "textFieldLeadingIcon"
             id: leadIcon
             hostWindow: control.hostWindow
             visible: control.leadingIconSource.toString() !== ""

@@ -169,7 +169,8 @@ Rectangle {
     readonly property real textHorizontalInset: terminalSurface ? 0
         : standaloneViewport ? hostWindow.snapPx(10) : 10
     readonly property real terminalCellWidth:
-        Math.max(1, standaloneViewport ? documentCellProbe.implicitWidth / 64
+        Math.max(1, (standaloneViewport || terminalSurface)
+                                      ? documentCellProbe.implicitWidth / 64
                                       : documentFontMetrics.advanceWidth("M"))
     // Share the ancestor-to-window dependency chain once. Body text depends
     // only on this origin and its known local layout; repeating a 12-parent
@@ -344,7 +345,8 @@ Rectangle {
         viewportController.cancelPendingIntent()
     }
 
-    color: "transparent"
+    color: terminalSurface && hostWindow.terminalPalette.enabled
+           ? hostWindow.terminalPalette.colors[0] : "transparent"
 
     DocumentHeader {
         id: documentHeader
@@ -392,6 +394,7 @@ Rectangle {
         clip: true
         model: viewportController.rowsModel
         interactive: documentRoot.interactionActive
+                     && (!documentRoot.terminalSurface || viewportController.terminalOverflow)
         boundsBehavior: Flickable.StopAtBounds
         reuseItems: true
         cacheBuffer: documentRoot.rowHeight * 2
@@ -701,8 +704,8 @@ Rectangle {
         visible: documentRoot.hasWindowProtocol
                  && documentRoot.interactionActive
                  && documentRoot.contentExtentKnown
-                 && documentRoot.contentExtent
-                    > Math.max(0, Number(frame.viewportSpan || 0))
+                 && (documentRoot.terminalSurface ? viewportController.terminalOverflow
+                     : documentRoot.contentExtent > Math.max(0, Number(frame.viewportSpan || 0)))
         z: 10
 
         onPositionChanged: viewportController.scrollBarPositionChanged()

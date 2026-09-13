@@ -1,3 +1,4 @@
+#include "PointerRowAnchor.h"
 #include <QQmlProperty>
 #include "SemanticOverlayModel.h"
 #include "DummyQWK.h"
@@ -56,6 +57,11 @@ class TestGrid : public QQuickItem
                WRITE setRenderingEnabled)
 
 public:
+    Q_INVOKABLE QPoint pointerScreenPosition() const { return QCursor::pos(); }
+    Q_INVOKABLE bool pointerEventIsCurrent(QQuickItem *item, qreal x, qreal y) {
+        return F4PointerRowAnchor::eventIsCurrent(item, x, y);
+    }
+
     using QQuickItem::QQuickItem;
 
     QObject *controller() const { return m_controller; }

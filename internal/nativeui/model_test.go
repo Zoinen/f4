@@ -125,11 +125,12 @@ func TestBuildAppSceneFromLegacyPromotesShellAndKeepsFallback(t *testing.T) {
 					},
 				},
 				"commandLine": map[string]any{
-					"id":      "cmd",
-					"kind":    "commandLine",
-					"visible": true,
-					"prompt":  ">",
-					"text":    "ls",
+					"id":             "cmd",
+					"kind":           "commandLine",
+					"ownsNavigation": true,
+					"visible":        true,
+					"prompt":         ">",
+					"text":           "ls",
 				},
 			},
 		},
@@ -162,6 +163,9 @@ func TestBuildAppSceneFromLegacyPromotesShellAndKeepsFallback(t *testing.T) {
 	}
 	if shell["commandLine"].(map[string]any)["text"] != "ls" {
 		t.Fatalf("typed command line was not promoted: %#v", shell["commandLine"])
+	}
+	if shell["commandLine"].(map[string]any)["ownsNavigation"] != true {
+		t.Fatal("command-line navigation ownership was lost during scene conversion")
 	}
 	legacyFrames := scene["frames"].([]map[string]any)
 	if _, duplicated := legacyFrames[0]["commandLine"]; duplicated {
@@ -279,10 +283,11 @@ func TestBuildAppSceneFromLegacyKeepsShellTerminalInsideShell(t *testing.T) {
 				"showPanels":     false,
 				"terminalActive": true,
 				"terminal": map[string]any{
-					"id":    "shell-terminal",
-					"kind":  "terminal",
-					"title": "ls",
-					"busy":  false,
+					"id":           "shell-terminal",
+					"kind":         "terminal",
+					"title":        "ls",
+					"busy":         false,
+					"contentStart": int64(20),
 					"rows": []map[string]any{
 						{"index": 0, "text": "ls"},
 						{"index": 1, "text": "app_model.go"},
@@ -303,6 +308,9 @@ func TestBuildAppSceneFromLegacyKeepsShellTerminalInsideShell(t *testing.T) {
 	terminal := shell["terminal"].(map[string]any)
 	if terminal["id"] != "shell-terminal" || terminal["title"] != "ls" {
 		t.Fatalf("unexpected shell terminal: %#v", terminal)
+	}
+	if terminal["contentStart"] != int64(20) {
+		t.Fatalf("terminal leading-padding boundary was not preserved: %#v", terminal["contentStart"])
 	}
 	rows := terminal["rows"].([]map[string]any)
 	if len(rows) != 2 || rows[0]["text"] != "ls" || rows[1]["text"] != "app_model.go" {
@@ -717,5 +725,21 @@ func TestAppShellPreservesShortenedPanelLayout(t *testing.T) {
 	}
 	if !incrementalTestContainsString(incrementalShellPatchKeys, "panelLayout") {
 		t.Fatal("panel layout must also travel through incremental shell patches")
+	}
+}
+
+func TestAppAutocompleteOriginalRowAndPreviewQuery(t *testing.T) {
+	edit := vtui.NewEdit(0, 0, 40, "git st")
+	edit.AutoCompletePreview = true
+	edit.History = []string{"git status"}
+	menu := vtui.NewAutoCompleteMenu(edit)
+	menu.Preview(1)
+	model := (appAutocompleteMenu{menu: menu, id: "autocomplete"}).model().ToMap()
+	if model["selected"] != 0 || model["query"] != "git st" {
+		t.Fatalf("unstable preview model: %#v", model)
+	}
+	items := model["items"].([]map[string]any)
+	if len(items) != 2 || items[0]["text"] != "" || items[0]["rawText"] != "git st" {
+		t.Fatalf("missing original row: %#v", items)
 	}
 }

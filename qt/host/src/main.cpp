@@ -401,7 +401,11 @@ int main(int argc, char *argv[])
         iconSet.setName(controller.chromeState()->qmlIconSet());
     }
 
-    F4ThemePersistence themePersistence;
+    const QString guiSettingsPath = parser.value(windowGeometryFileOption).isEmpty()
+        ? QDir(QCoreApplication::applicationDirPath()).filePath("gui_theme.ini")
+        : QDir(QFileInfo(parser.value(windowGeometryFileOption)).absolutePath()).filePath("gui_theme.ini");
+    F4ThemePersistence themePersistence(guiSettingsPath,
+        QDir(QCoreApplication::applicationDirPath()).filePath("gui_theme.ini"));
     F4TextRenderingPolicy textRenderingPolicy;
     const QVariantMap savedTheme = themePersistence.loadTheme();
     const QString savedRenderType = savedTheme.value(
@@ -511,6 +515,19 @@ int main(int argc, char *argv[])
             // main.qml starts hidden. Restore its screen, normal geometry and
             // intended window state without presenting the empty shell.
             windowGeometry->restoreDeferred();
+            if (F4NavigationBenchmarkTrace::enabled()) {
+                const auto traceFrame = [rootWindow](auto signal, const QString &stage) {
+                    QObject::connect(rootWindow, signal, rootWindow, [stage]() {
+                        F4NavigationBenchmarkTrace::event(stage);
+                    }, Qt::DirectConnection);
+                };
+                traceFrame(&QQuickWindow::beforeFrameBegin, QStringLiteral("qt.frame.begin"));
+                traceFrame(&QQuickWindow::beforeSynchronizing, QStringLiteral("qt.frame.sync.begin"));
+                traceFrame(&QQuickWindow::afterSynchronizing, QStringLiteral("qt.frame.sync.end"));
+                traceFrame(&QQuickWindow::beforeRendering, QStringLiteral("qt.frame.render.begin"));
+                traceFrame(&QQuickWindow::afterRendering, QStringLiteral("qt.frame.render.end"));
+                traceFrame(&QQuickWindow::afterFrameEnd, QStringLiteral("qt.frame.end"));
+            }
             QObject::connect(rootWindow, &QQuickWindow::afterSynchronizing,
                              &galleryBridge,
                              &F4GalleryBridge::notifyRenderSynchronized,

@@ -45,6 +45,7 @@ class F4GalleryBridge final : public QObject
 public:
     Q_INVOKABLE void registerDragPanel(int side, QQuickItem *item);
     Q_INVOKABLE void registerDragWorkspaceBar(QQuickItem *item);
+    Q_INVOKABLE void registerDragCommandLine(QQuickItem *item);
     bool eventFilter(QObject *object, QEvent *event) override;
     explicit F4GalleryBridge(QQmlEngine *engine, QObject *parent = nullptr,
                              F4IconSet *iconSet = nullptr,
@@ -154,6 +155,8 @@ private:
     QVariantMap dragHit(QObject *window, const QPointF &position, int *side) const;
     QVariantMap dragWorkspaceHit(QObject *window, const QPointF &position) const;
     QPointer<QQuickItem> m_dragWorkspaceBar;
+    QPointer<QQuickItem> m_dragCommandLine;
+    bool dragCommandLineHit(QObject *window, const QPointF &position) const;
     QString m_dragHoveredWorkspace;
     QTimer *m_workspaceDropTimer = nullptr;
     bool m_workspaceDropInternal = false;

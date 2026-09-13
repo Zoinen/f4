@@ -350,7 +350,10 @@ func (pf *PanelsFrame) handleHostConsoleTab(e *vtinput.InputEvent) bool {
 		vtui.FrameManager.Push(ac)
 	} else {
 		// There is no safe ANSI readback for restoring the shell output under a
-		// popup. Complete the same selected item without painting the popup.
+		// popup. Tab explicitly requests the first completion in this mode.
+		if pf.CmdLine.Edit.AutoCompletePreview {
+			ac.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_DOWN})
+		}
 		ac.ProcessKey(e)
 	}
 	pf.drawHostConsoleOverlay()

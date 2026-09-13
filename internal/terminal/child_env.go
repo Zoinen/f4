@@ -95,11 +95,25 @@ var currentHostShellMode = func() ShellMode {
 // TerminalChildEnv builds the environment of a program started in the
 // built-in terminal.
 func TerminalChildEnv() []string {
-	if currentHostShellMode() == ShellModeHost {
-		return BuildChildEnv(os.Environ(), false, false)
+	mode := currentHostShellMode()
+	env := os.Environ()
+	if mode == ShellModeHost {
+		return BuildChildEnv(env, false, false)
+	}
+	if mode == ShellModeOwn && ProbeGUIBackend() != "" {
+		// A GUI launcher may have no terminal at all. Its dumb capability
+		// declaration must not disable live output in our actual PTY. Color
+		// preferences such as NO_COLOR still belong to the user and survive.
+		for index, entry := range env {
+			name, value, _ := strings.Cut(entry, "=")
+			if name == "TERM" && (strings.EqualFold(value, "dumb") || strings.EqualFold(value, "unknown")) {
+				env[index] = "TERM=xterm-256color"
+				vtui.DebugLog("[FIX] GUI terminal replaces launcher TERM=%q with xterm-256color", value)
+			}
+		}
 	}
 	graphics := terminalShowsImages()
-	return BuildChildEnv(os.Environ(), graphics, graphics && announceKittyTerm())
+	return BuildChildEnv(env, graphics, graphics && announceKittyTerm())
 }
 
 // BuildChildEnv is the half of TerminalChildEnv that depends on nothing but

@@ -57,6 +57,7 @@ Item {
     property color galleryFolderTextColor: "#ffffff"
     property bool galleryNeutralFileTextColors: true
     property bool galleryShowSelectionBorders: true
+    property bool commandLineGraphicalCursor: true
     property color galleryQuickSearchMatchColor: "#e8edf2"
     property color galleryDirectoryTextColor: "#98d8ff"
     property color galleryFolderIconColor: "#5ab2f1"
@@ -145,14 +146,19 @@ Item {
         { id: "galleryPathItemPressedColor", name: "Breadcrumb Pressed", group: "Panel Colors", defaultColor: "#10161e" }
     ]
 
+    function commandFocusCursorColor(value) {
+        return hostWindow.commandLineFrame().ownsNavigation === true
+                ? Qt.hsla(0, 0, value.hslLightness, value.a) : value
+    }
+
     readonly property ZG.GalleryThemePalette galleryTheme:
         ZG.GalleryThemePalette {
             panelBackground: palette.galleryPanelBackgroundColor
             viewerBackground: palette.galleryViewerBackgroundColor
-            cursor: palette.galleryCursorColor
-            cursorBackground: palette.galleryCursorBackgroundColor
-            cursorBorder: palette.galleryCursorBorderColor
-            cardCursorBorder: palette.galleryCardCursorBorderColor
+            cursor: palette.commandFocusCursorColor(palette.galleryCursorColor)
+            cursorBackground: palette.commandFocusCursorColor(palette.galleryCursorBackgroundColor)
+            cursorBorder: palette.commandFocusCursorColor(palette.galleryCursorBorderColor)
+            cardCursorBorder: palette.commandFocusCursorColor(palette.galleryCardCursorBorderColor)
             text: palette.galleryTextColor
             mutedText: palette.galleryMutedTextColor
             fileText: palette.galleryFileTextColor
@@ -221,6 +227,9 @@ Item {
             return false
         try {
             const saved = persistence.loadTheme()
+            commandLineGraphicalCursor = saved.commandLineGraphicalCursor === undefined
+                    || saved.commandLineGraphicalCursor === true
+                    || String(saved.commandLineGraphicalCursor).toLowerCase() === "true"
             const savedSchemaVersion = Number(saved.themeSchemaVersion || 0)
             let applied = false
             for (let index = 0; index < colorDefinitions.length; ++index) {
@@ -297,6 +306,7 @@ Item {
         values.mouseWheelMode = hostWindow.mouseWheelMode
         values.neutralFileTextColors = galleryNeutralFileTextColors
         values.showSelectionBorders = galleryShowSelectionBorders
+        values.commandLineGraphicalCursor = commandLineGraphicalCursor
         values.themeSchemaVersion = schemaVersion
         return persistence.saveTheme(values)
     }
@@ -311,6 +321,7 @@ Item {
         hostWindow.mouseWheelMode = "gui"
         galleryNeutralFileTextColors = true
         galleryShowSelectionBorders = true
+        commandLineGraphicalCursor = true
     }
 
     function formatColorHex(colorValue) {

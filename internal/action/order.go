@@ -141,6 +141,7 @@ var actionMenuOrder = []string{
 	"Panel.RightDriveMenu",
 	"Panel.EnterDirectory",
 	"Panel.InsertFileName",
+	"CommandLine.InsertLineBreak",
 	"Panel.InsertLeftPath",
 	"Panel.InsertRightPath",
 	"App.Quit",

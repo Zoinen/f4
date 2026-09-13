@@ -33,9 +33,7 @@ T.ComboBox {
     Layout.minimumHeight: implicitHeight
     Layout.maximumHeight: implicitHeight
 
-    readonly property string popupObjectNamePrefix:
-        control.objectName === "themeFontRenderTypeCombo"
-        ? "themeFontRenderType" : control.objectName
+    readonly property string popupObjectNamePrefix: control.objectName
 
     contentItem: Text {
         id: comboText
@@ -62,25 +60,21 @@ T.ComboBox {
 
     }
 
-    indicator: IconLabel {
+    indicator: Image {
         id: comboIndicator
         objectName: control.objectName ? (control.objectName + "Indicator") : ""
         readonly property url rasterizedIconSource:
             control.hostWindow
             ? control.hostWindow.lucideIconSource(
                 "chevron-down", 14,
-                control.enabled ? control.hostWindow.textColor : control.hostWindow.mutedText)
+                control.enabled && control.hovered ? control.hostWindow.textColor : control.hostWindow.mutedText)
             : ""
         x: control.snap(control.width - width - 10)
         y: control.snap((control.height - height) / 2)
         width: control.snap(14)
         height: control.snap(14)
-        icon.source: rasterizedIconSource
-        icon.width: control.snap(14)
-        icon.height: control.snap(14)
-        icon.color: control.hovered
-                    ? (control.hostWindow ? control.hostWindow.textColor : "#ffffff")
-                    : (control.hostWindow ? control.hostWindow.mutedText : "#888888")
+        source: rasterizedIconSource
+        smooth: false
         transform: Translate {
             x: control.hostWindow
                ? control.hostWindow.dialogPixelOffsetX(

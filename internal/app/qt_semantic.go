@@ -7,6 +7,7 @@ import (
 	"github.com/unxed/f4/internal/nativeui"
 	"github.com/unxed/f4/internal/panel"
 	"github.com/unxed/f4/internal/semantic"
+	"github.com/unxed/f4/internal/settings"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 	"strings"
@@ -25,6 +26,9 @@ func HandleSemanticAction(action map[string]any) bool {
 		return true
 	}
 	target := semantic.String(action["target"])
+	if target == "app" && actionName == "settings.open" {
+		return settings.Open("")
+	}
 	if actionName == "workspace.dragActivate" || actionName == "workspace.dropFiles" {
 		return panel.HandleSemanticWorkspaceDrag(action)
 	}
@@ -160,7 +164,7 @@ func HandleSemanticAction(action map[string]any) bool {
 	// semantic action. Route that action straight to the owning PanelsFrame:
 	// otherwise the modal overlay may consume it before the shell ever writes
 	// the command to its PTY.
-	if actionName == "command.submit" || actionName == "submit_command" ||
+	if actionName == "command.preview" || actionName == "command.submit" || actionName == "submit_command" ||
 		actionName == "command.complete" || actionName == "complete_command" {
 		for i := len(frames) - 1; i >= 0; i-- {
 			if panels, ok := frames[i].(*panel.PanelsFrame); ok {

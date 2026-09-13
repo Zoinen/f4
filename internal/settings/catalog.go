@@ -68,6 +68,8 @@ InfoPanelBytes|panels|Information panels|Show sizes in bytes|Display raw bytes i
 NavigationMode|panels|Typing and focus|Panel navigation|Classic types into the command line. Vim adds j/k and double dd/cc/mm actions. Search-first separates filename-search and command focus.|0:Classic;1:Vim;2:Search first|live
 SearchCommandStayFocused|panels|Typing and focus|Keep command input focused|In Search-first mode, keep command entry focused after executing a command rather than returning to the panel.||live
 CommandLineAutoComplete|terminal|Path suggestions|Enable filesystem suggestions|Enable filesystem path suggestions in the command line and path-enabled dialog fields.||live
+CommandLineMultiline|terminal|Command line|Multiline command input|Preserve line breaks and expand the command input upward as text wraps, in the console and GUI. Shift+Enter inserts a line break.||live
+CommandLineWordWrap|terminal|Command line|Wrap command arguments|Start each unquoted dash-prefixed argument on a new visual line and highlight its dash. Visual wrapping never changes the command.||live
 DialogAutoComplete|terminal|Path suggestions|Show dialog completion dropdowns|Show completion while typing in fields with history or path suggestions. Does not add sources to arbitrary fields.||live
 PathHintFullPath|terminal|Path suggestions|Show full suggestion paths|Display complete paths rather than only the final filename or folder component.||live
 PathHintSource|terminal|Path suggestions|Suggestion source|Resolve suggestions from the active panel, passive panel, or both. Both searches active first.|0:Active panel;1:Passive panel;2:Both panels|live

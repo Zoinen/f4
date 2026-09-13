@@ -552,10 +552,10 @@ func init() {
 		Description: "Open current file in the system file manager",
 		DescKey:     "Action.Panel.SystemExplorer.Desc",
 		// Same reasoning as Panel.InsertFileName: the panel cursor
-		// survives Ctrl+O, so Shift+Enter keeps working with the panels
+		// survives Ctrl+O, so Ctrl+Shift+Enter works with the panels
 		// hidden, but yields to a child process that is using the
 		// terminal (many REPLs read Shift+Enter themselves).
-		DefaultKeys:  []string{"ShiftEnter:NoTerminalApp"},
+		DefaultKeys:  []string{"CtrlShiftEnter:NoTerminalApp"},
 		DefaultAreas: []string{"Terminal"},
 		MenuPath:     "Files",
 		Handler: withPF(func(pf *panel.PanelsFrame) {
@@ -1964,6 +1964,15 @@ func init() {
 		Handler: withPF(func(pf *panel.PanelsFrame) {
 			pf.InsertSelectedFileName()
 		}),
+	})
+	RegisterAction(action.Action{
+		Name:         "CommandLine.InsertLineBreak",
+		Area:         "Shell",
+		Label:        "Insert command line break",
+		Description:  "Insert a newline in multiline command input",
+		DefaultKeys:  []string{"ShiftEnter:MultilineCommandInput"},
+		DefaultAreas: []string{"Terminal"},
+		Handler:      withPF(func(pf *panel.PanelsFrame) { pf.InsertCommandLineBreak() }),
 	})
 	RegisterAction(action.Action{
 		Name:        "Panel.InsertLeftPath",

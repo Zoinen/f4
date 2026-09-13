@@ -74,7 +74,9 @@ type AutoCompleteMenu struct {
 	items   []AutoCompleteItem
 	// hasPathItems marks that the leading group came from PathHintProvider;
 	// the menu then anchors to the trigger separator instead of the cursor.
-	hasPathItems bool
+	hasPathItems   bool
+	originalText   string
+	originalCursor int
 }
 
 func NewAutoCompleteMenu(edit *Edit) *AutoCompleteMenu {
@@ -95,10 +97,10 @@ func NewAutoCompleteMenu(edit *Edit) *AutoCompleteMenu {
 		return i >= 0 && i < len(ac.items) && !ac.items[i].Separator
 	}
 	ac.lb.OnAction = func(idx int) {
-		// A click on a path item only inserts it; a click on a history item
-		// (whole-text legacy) also executes, as before.
+		// Command-line clicks insert; other edit widgets retain legacy acceptance.
 		ac.accept(idx, true)
 	}
+	ac.lb.OnSelect = func(idx int) { ac.Preview(idx) }
 	ac.AddItem(ac.lb)
 
 	ac.UpdateMatches()
@@ -238,6 +240,8 @@ func (r acRow) GetCellAttr(col int, def uint64) uint64 {
 }
 
 func (ac *AutoCompleteMenu) UpdateMatches() {
+	ac.originalText = ac.Edit.GetText()
+	ac.originalCursor = ac.Edit.curPos
 	ac.items = nil
 	ac.Matches = nil
 
@@ -310,6 +314,12 @@ func (ac *AutoCompleteMenu) UpdateMatches() {
 
 	if len(ac.items) == 0 {
 		return
+	}
+
+	if ac.Edit.AutoCompletePreview {
+		ac.items = append([]AutoCompleteItem{{MatchStart: -1, MatchEnd: -1}}, ac.items...)
+		ac.Matches = append([]string{""}, ac.Matches...)
+		ac.lb.SelectPos = 0
 	}
 
 	rows := make([]TableRow, len(ac.items))
@@ -434,6 +444,15 @@ func (ac *AutoCompleteMenu) accept(idx int, injectEnter bool) {
 		return
 	}
 	e := ac.Edit
+	if e.AutoCompletePreview {
+		if idx == 0 {
+			ac.Preview(0)
+			ac.Close()
+			return
+		}
+		e.SetText(ac.originalText)
+		injectEnter = false
+	}
 	legacy := it.ReplaceTo <= it.ReplaceFrom
 	if !legacy && (it.ReplaceFrom < 0 || it.ReplaceFrom > len(e.text) ||
 		it.ReplaceTo > len(e.text)) {
@@ -532,6 +551,17 @@ func (ac *AutoCompleteMenu) Show(scr *ScreenBuf) {
 }
 
 func (ac *AutoCompleteMenu) ProcessKey(e *vtinput.InputEvent) bool {
+	if e.Type == vtinput.PasteEventType || ac.Edit.pasting {
+		handled := ac.Edit.ProcessKey(e)
+		if e.Type == vtinput.PasteEventType && !e.PasteStart {
+			ac.Edit.HistoryPos = -1
+			ac.UpdateMatches()
+			if !ac.HasMatches() {
+				ac.Close()
+			}
+		}
+		return handled
+	}
 	if e.Type == vtinput.FocusEventType {
 		return ac.Window.ProcessKey(e)
 	}
@@ -549,6 +579,15 @@ func (ac *AutoCompleteMenu) ProcessKey(e *vtinput.InputEvent) bool {
 		ac.accept(ac.lb.SelectPos, false)
 		return true
 	case vtinput.VK_RETURN:
+		modifiers := vtinput.ShiftPressed | vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed |
+			vtinput.LeftAltPressed | vtinput.RightAltPressed
+		if ac.Edit.AutoCompleteModifiedEnterPassthrough && e.ControlKeyState&modifiers != 0 {
+			ac.Close()
+			if FrameManager != nil {
+				FrameManager.PostEvent(*e)
+			}
+			return true
+		}
 		inject := (e.ControlKeyState & vtinput.ShiftPressed) == 0
 		ac.accept(ac.lb.SelectPos, inject)
 		return true
@@ -557,7 +596,7 @@ func (ac *AutoCompleteMenu) ProcessKey(e *vtinput.InputEvent) bool {
 			if ac.lb.SelectPos >= 0 && ac.lb.SelectPos < len(ac.items) {
 				it := ac.items[ac.lb.SelectPos]
 				// Only legacy history items can be removed from history.
-				if !it.Separator && it.ReplaceTo <= it.ReplaceFrom {
+				if !it.Separator && it.ReplaceTo <= it.ReplaceFrom && (!ac.Edit.AutoCompletePreview || ac.lb.SelectPos != 0) {
 					newHist := []string{}
 					for _, h := range ac.Edit.History {
 						if h != it.Text {
@@ -567,6 +606,9 @@ func (ac *AutoCompleteMenu) ProcessKey(e *vtinput.InputEvent) bool {
 					ac.Edit.History = newHist
 					if ac.Edit.HistoryID != "" && GlobalHistoryProvider != nil {
 						GlobalHistoryProvider.SaveHistory(ac.Edit.HistoryID, newHist)
+					}
+					if ac.Edit.AutoCompletePreview {
+						ac.Preview(0)
 					}
 					ac.UpdateMatches()
 					if !ac.HasMatches() {
@@ -603,4 +645,47 @@ func (ac *AutoCompleteMenu) ProcessMouse(e *vtinput.InputEvent) bool {
 	// Consume all mouse events within the menu bounds to prevent
 	// the parent Window class from initiating a drag or resize operation.
 	return true
+}
+
+// Query returns the typed text used to build this set of suggestions.
+func (ac *AutoCompleteMenu) Query() string {
+	if ac.Edit.AutoCompletePreview {
+		return ac.originalText
+	}
+	return ac.Edit.GetText()
+}
+
+// CompletionText applies a hint to the original input, never to a previous preview.
+func (ac *AutoCompleteMenu) CompletionText(idx int) string {
+	if idx < 0 || idx >= len(ac.items) {
+		return ac.Query()
+	}
+	if ac.Edit.AutoCompletePreview && idx == 0 {
+		return ac.originalText
+	}
+	it := ac.items[idx]
+	if it.Separator {
+		return ac.Query()
+	}
+	if it.ReplaceTo <= it.ReplaceFrom {
+		return it.Text
+	}
+	text := []rune(ac.Query())
+	if it.ReplaceFrom < 0 || it.ReplaceTo > len(text) {
+		return ac.Query()
+	}
+	return string(text[:it.ReplaceFrom]) + it.Text + string(text[it.ReplaceTo:])
+}
+
+// Preview updates the prompt without rebuilding or closing the suggestion list.
+func (ac *AutoCompleteMenu) Preview(idx int) {
+	if !ac.Edit.AutoCompletePreview || idx < 0 || idx >= len(ac.items) || ac.items[idx].Separator {
+		return
+	}
+	ac.Edit.SetText(ac.CompletionText(idx))
+	if idx == 0 {
+		ac.Edit.curPos = ac.originalCursor
+	}
+	ac.Edit.clearFlag = false
+	ac.Edit.HistoryPos = -1
 }

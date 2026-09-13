@@ -7,6 +7,8 @@ Item {
     id: themeDraft
     required property ApplicationWindow hostWindow
     property bool editorVisible: false
+    // Optional destination for editors that share the wheel but own a draft palette.
+    property var colorSink: null
     signal paintRequested()
     visible: false
     width: 0
@@ -389,6 +391,11 @@ Item {
     }
 
     function applyCurrentColor() {
+        if (colorSink) {
+            colorSink(oklchColorValue(selectedLightness, selectedChroma, selectedHue * 360, 1))
+            paintRequested()
+            return
+        }
         if (!editorVisible || !currentItem)
             return
         if (flashElementAnimation.targetProperty === currentItem.id) {

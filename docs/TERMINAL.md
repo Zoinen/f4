@@ -393,9 +393,78 @@ Read this list before concluding that something is broken.
     starts with the cursor at `(0, height-1)`, so a picture printed before
     anything else is placed on the bottom row and scrolls the screen.
 
+## Qt live output and scrollback
+
+The GUI-only Settings → Terminal colors page overrides the 16 indexed console
+colors for output beneath the panels. Modern uses the global Windows console
+registry palette (COLORREF values converted from BGR); Classic DOS colors uses
+the traditional 16-color VGA palette. Modern is the initial selection. Individual
+hex colors, enable/disable, and preset choice are saved in `gui_theme.ini` when
+Apply is pressed. Cancel changes restores the saved selection. True-color RGB
+and extended indexed colors retain their original values. Exact palette indices
+travel separately from 64-bit attributes so QML numeric precision cannot corrupt
+the override. Applying colors repaints existing bounded row delegates without
+reloading or rebuilding scrollback.
+
+The Qt terminal publishes bounded windows of styled rows from the active grid,
+staging history, and PieceTable. ANSI cursor movement and erase sequences update
+the active grid; text and style changes both invalidate row content keys. Qt uses
+the native document row store and reuses run text items while their count remains
+unchanged. This avoids stale nested JavaScript row bindings during live progress
+updates without allocating a visual item for every scrollback line. Scrolling away
+from the tail keeps the user's history position while output continues.
+Run spacing uses the actual native text glyph advance. The command-line overlay
+omits the idle shell prompt only; a busy command keeps its last progress row in
+both full and incremental terminal projections.
+`contentStart` identifies the first content row before scrollback exists, without
+renumbering grid rows or selection coordinates. Leading empty grid padding is
+excluded from the scroll range. Qt compares this range with its actual viewport
+height; fitting output has neither a scrollbar nor wheel/drag scrolling.
+
+An owned GUI terminal replaces an inherited `TERM=dumb` or `TERM=unknown` with
+`xterm-256color`, because the launcher's capabilities do not describe its PTY.
+Custom terminal declarations and explicit `NO_COLOR` preferences are preserved.
+Development launches from automation should remove harness-only `NO_COLOR` when
+checking colored applications such as Rich. `VTUI_DEBUG` records capability
+normalization with a `[FIX]` prefix.
+
+## Command-line clipboard paste
+
+Clipboard paste into the command line reaches the edit control as a bracketed
+transaction. It commits once, preserves selection replacement, and treats line
+breaks as spaces in the single-line input. Paste characters bypass shortcuts and
+autocomplete. The frame manager retains FIFO event/filter delivery while batching
+rendering through the closing marker, with a 100 ms rendering deadline for
+interrupted terminal streams. GUI clipboard text occupies one FIFO input slot
+and one global dispatch/semantic update; its literal contents go directly to the
+owning frame's bracketed-paste handler. Autocomplete commits and refreshes matches
+once. This avoids both per-character scene transactions and per-character renders.
+
+The Qt command input also accepts native path drops from file panels and the
+desktop. It inserts shell-quoted paths at the existing caret, replacing selected
+text in one update. Internal sources are revalidated by stable entry identity.
+Dropping only edits the command; Shift does not move files or execute the input.
+
 ## Windows: reflow verification
 
 Windows reflow changes must be validated with the native ConPTY test in
 [`CONPTY_NATIVE_TEST.md`](CONPTY_NATIVE_TEST.md). A copied console
 implementation, a captured transcript used as a substitute for the host, or a
 heuristic result from another console is not an acceptance oracle.
+
+### Multiline command input
+
+Terminal settings include **Multiline command input** and **Wrap command
+arguments**, both initially enabled. The settings apply to the console grid and
+the Qt command input. Shift+Enter inserts a real newline while the command line
+owns input; Enter submits it. Ctrl+Shift+Enter opens the system explorer. These actions can be rebound in the global Hotkey Configurator.
+Pasting preserves newlines in a single editing transaction.
+
+Multiline input wraps to the available width and grows upward, reducing panel
+height. Growth is capped at half the view; the caret remains visible in longer
+input. Disabling multiline restores a single scrolling row.
+
+Argument wrapping puts each unquoted argument starting with a dash on a new
+visual line and highlights the dash. Ordinary overflow wraps at word boundaries
+(with long words split as needed). Colored margin dashes identify soft breaks.
+Neither visual breaks nor margin markers enter the command buffer or history.

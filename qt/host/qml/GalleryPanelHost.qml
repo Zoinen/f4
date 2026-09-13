@@ -134,6 +134,7 @@ FocusScope {
     })
     property bool panelActive: false
     property bool commandLineHasText: false
+    property bool commandLineOwnsNavigation: false
     property bool fastFindActive: false
     property alias pendingCommanderInput: inputRouter.pendingCommanderInput
     property alias pendingCommanderInputTimeoutMs:
@@ -215,6 +216,7 @@ FocusScope {
         hostCapabilities: host.hostCapabilities
         panelActive: host.panelActive
         commandLineHasText: host.commandLineHasText
+        commandLineOwnsNavigation: host.commandLineOwnsNavigation
         fastFindActive: host.fastFindActive
         onPointerActivationPreviewRequested: (requestedSide) => {
             host.pointerActivationPreviewRequested(requestedSide)
@@ -432,7 +434,7 @@ FocusScope {
         benchmarkTracingEnabled: host.benchmarkTracingEnabled
 
         onActivateRequested: {
-            if (host.bridge && !host.panelActive)
+            if (host.bridge && (!host.panelActive || host.commandLineOwnsNavigation))
                 host.bridge.requestActivate(host.side)
         }
         onCursorRequested: (entryId, index, deferCommit) => {

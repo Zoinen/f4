@@ -1,6 +1,7 @@
 package vtui
 
 import (
+	"strings"
 	"unicode"
 
 	"github.com/unxed/vtinput"
@@ -8,36 +9,48 @@ import (
 
 type Edit struct {
 	ScreenObject
-	text               []rune
-	curPos             int // Logical position in the runes string
-	leftPos            int // Visual offset (scrolling)
-	selStart           int // -1 if no selection
-	selEnd             int
-	selAnchor          int // Position where selection started
-	overtype           bool
-	clearFlag          bool // If true, first input will clear the text
-	pasting            bool
-	pasteBuffer        []rune
-	PasswordMode       bool // Mask text with '*'
-	HideCursor         bool // If true, suppress blinking cursor even when focused
-	ShowHistoryButton  bool // Show a clickable [v] button
-	History            []string
-	HistoryPos         int
-	HistoryLimit       int
-	DeduplicateHistory bool
-	Command            int
-	OnAction           func()
-	ColorTextIdx       int
-	Validator          Validator
-	ColorUnchangedIdx  int
-	ColorSelectedIdx   int
-	HistoryID          string
+	text                   []rune
+	curPos                 int // Logical position in the runes string
+	leftPos                int // Visual offset (scrolling)
+	selStart               int // -1 if no selection
+	selEnd                 int
+	selAnchor              int // Position where selection started
+	overtype               bool
+	clearFlag              bool // If true, first input will clear the text
+	pasting                bool
+	pasteBuffer            []rune
+	PasswordMode           bool // Mask text with '*'
+	Multiline              bool // Preserve pasted line breaks and render wrapped rows.
+	WordWrap               bool // Prefer whitespace boundaries for visual wrapping.
+	WrapMarkerColorIdx     int
+	multilineTop           int
+	multilineCacheText     string
+	multilineCacheWidth    int
+	multilineCacheWordWrap bool
+	multilineCache         []editLine
+	HideCursor             bool // If true, suppress blinking cursor even when focused
+	ShowHistoryButton      bool // Show a clickable [v] button
+	History                []string
+	HistoryPos             int
+	HistoryLimit           int
+	DeduplicateHistory     bool
+	Command                int
+	OnAction               func()
+	ColorTextIdx           int
+	Validator              Validator
+	ColorUnchangedIdx      int
+	ColorSelectedIdx       int
+	HistoryID              string
 	// NoAutoComplete opts this field out of the completion menu, the
 	// equivalent of Far's DIF_NOAUTOCOMPLETE. Far uses it for the editor's
 	// go-to-line prompt, where a drop-down over a few digits is only in the
 	// way.
 	NoAutoComplete bool
-	OnTextChange   func(string)
+	// AutoCompleteModifiedEnterPassthrough keeps host command shortcuts out of the suggestion menu.
+	AutoCompleteModifiedEnterPassthrough bool
+	// AutoCompletePreview previews selection and provides a row restoring typed text.
+	AutoCompletePreview bool
+	OnTextChange        func(string)
 	// PathHintsEnabled lets the autocomplete menu ask PathHintProvider for
 	// file path suggestions in addition to history matches.
 	PathHintsEnabled  bool
@@ -124,6 +137,10 @@ func NewPasswordEdit(x, y, width int, defaultText string) *Edit {
 
 func (e *Edit) Show(scr *ScreenBuf) {
 	e.ScreenObject.Show(scr)
+	if e.Multiline {
+		e.showMultiline(scr)
+		return
+	}
 
 	visibleWidth := e.X2 - e.X1 + 1
 	if e.ShowHistoryButton {
@@ -467,6 +484,9 @@ func (e *Edit) ProcessKey(event *vtinput.InputEvent) bool {
 		} else {
 			e.pasting = false
 			if len(e.pasteBuffer) > 0 {
+				if e.Multiline {
+					e.pasteBuffer = []rune(strings.ReplaceAll(strings.ReplaceAll(string(e.pasteBuffer), "\r\n", "\n"), "\r", "\n"))
+				}
 				var newText []rune
 				var newCurPos int
 
@@ -518,7 +538,7 @@ func (e *Edit) ProcessKey(event *vtinput.InputEvent) bool {
 	if e.pasting {
 		if event.Type == vtinput.KeyEventType && event.KeyDown {
 			if event.Char != 0 {
-				if event.Char == '\r' || event.Char == '\n' {
+				if !e.Multiline && (event.Char == '\r' || event.Char == '\n') {
 					e.pasteBuffer = append(e.pasteBuffer, ' ')
 				} else {
 					e.pasteBuffer = append(e.pasteBuffer, event.Char)
@@ -1150,7 +1170,7 @@ func (e *Edit) ProcessMouse(ev *vtinput.InputEvent) bool {
 			return true
 		}
 		if ev.ButtonState&vtinput.FromLeft1stButtonPressed != 0 {
-			e.curPos = e.cursorPositionAtX(int(ev.MouseX))
+			e.curPos = e.cursorPositionAtPoint(int(ev.MouseX), int(ev.MouseY))
 			e.selAnchor = e.mouseSelectAnchor
 			if e.curPos < e.selAnchor {
 				e.selStart, e.selEnd = e.curPos, e.selAnchor
@@ -1170,7 +1190,7 @@ func (e *Edit) ProcessMouse(ev *vtinput.InputEvent) bool {
 				return true
 			}
 			if e.HitTest(int(ev.MouseX), int(ev.MouseY)) {
-				e.curPos = e.cursorPositionAtX(int(ev.MouseX))
+				e.curPos = e.cursorPositionAtPoint(int(ev.MouseX), int(ev.MouseY))
 				if ev.MouseEventFlags&TripleClick != 0 {
 					e.SelectAll()
 					return true

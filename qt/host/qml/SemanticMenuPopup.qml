@@ -281,9 +281,7 @@ Item {
     property int pointerSelectedIndex: -1
     property int semanticSelectedIndex: 0
     property int semanticTopIndex: 0
-    property bool pointerWindowPositionKnown: false
-    property real pointerWindowX: 0
-    property real pointerWindowY: 0
+    property point pointerSelectionPosition: hostWindow.focusTarget.pointerScreenPosition()
     readonly property int activePointerSelectedIndex:
         fromMenuBar
         && hostWindow.menuPointerMenuIndex === effectiveMenuIndex
@@ -439,21 +437,7 @@ Item {
     }
 
     function pointerActuallyMoved(area, mouse) {
-        // MouseArea.positionChanged is expressed in delegate-local
-        // coordinates. Qt also emits it when ListView moves that
-        // delegate underneath a completely stationary cursor (for
-        // example after keyboard selection scrolls the menu). Compare
-        // in the stable window coordinate space so only a real mouse
-        // move may take selection ownership away from the keyboard.
-        const point = area.mapToItem(hostWindow.contentItem,
-                                     mouse.x, mouse.y)
-        const moved = pointerWindowPositionKnown
-                && (Math.abs(point.x - pointerWindowX) >= 0.5
-                    || Math.abs(point.y - pointerWindowY) >= 0.5)
-        pointerWindowX = point.x
-        pointerWindowY = point.y
-        pointerWindowPositionKnown = true
-        return moved
+        return hostWindow.pointerSelectionMoved(menuOverlay, area, mouse.x, mouse.y)
     }
 
     function reconcilePointerSelection() {

@@ -11,6 +11,52 @@ Item {
     objectName: "settingsDialogBody"
     required property ApplicationWindow hostWindow
     property var widgets: []
+    property string selectedNativePage: ""
+    readonly property var nativePages: hostWindow.nativeSettingsPages || []
+    readonly property var nativePage: nativePages.find(page => page.pageId === selectedNativePage) || null
+    // Compose frontend pages into the category view only. Core row indices stay
+    // unchanged, and local rows never become semantic actions or Go providers.
+    function categoryWidget(core) {
+        const rows = core.rows || []
+        const localIndex = nativePages.findIndex(page => page.pageId === selectedNativePage)
+        return Object.assign({}, core, {
+            rows: rows.concat(nativePages.map(page => ({cells: [page.title]}))),
+            itemIcons: rows.map((row, index) => (core.itemIcons || [])[index] || "")
+                           .concat(nativePages.map(page => page.iconName)),
+            cursor: localIndex >= 0 ? rows.length + localIndex : core.cursor
+        })
+    }
+    function selectCategory(core, action, index) {
+        const coreCount = (core.rows || []).length
+        if (index >= coreCount) {
+            const page = nativePages[index - coreCount]
+            if (page) selectedNativePage = page.pageId
+            return
+        }
+        selectedNativePage = ""
+        hostWindow.action({target: core.id, action: action, index: index})
+    }
+    signal closeRequested()
+    Connections {
+        target: body.hostWindow
+        function onNativeSettingsPageRequested(pageId) {
+            if (!body.visible) return
+            body.selectedNativePage = pageId
+            body.hostWindow.requestedNativeSettingsPage = ""
+        }
+    }
+    onVisibleChanged: {
+        if (visible && hostWindow.requestedNativeSettingsPage !== "") {
+            selectedNativePage = hostWindow.requestedNativeSettingsPage
+            hostWindow.requestedNativeSettingsPage = ""
+        } else if (!visible) selectedNativePage = ""
+    }
+    Component.onCompleted: {
+        if (visible && hostWindow.requestedNativeSettingsPage !== "") {
+            selectedNativePage = hostWindow.requestedNativeSettingsPage
+            hostWindow.requestedNativeSettingsPage = ""
+        }
+    }
     readonly property real gap: hostWindow.snapPx(12)
     readonly property real lineHeight: hostWindow.snapPx(Math.max(22, hostWindow.font.pixelSize + 4))
     readonly property real controlHeight: hostWindow.snapPx(Math.max(32, hostWindow.font.pixelSize + 16))
@@ -61,13 +107,58 @@ Item {
             required property var labelData
             readonly property rect placement: body.rectangle(widgetData.layoutRole || "")
             hostWindow: body.hostWindow
-            widget: widgetData
+            widget: widgetData.layoutRole === "navigation" ? body.categoryWidget(widgetData) : widgetData
+            tableKeyboardNavigation: widgetData.layoutRole === "navigation"
+            tableRowAction: (action, index) => {
+                if (widgetData.layoutRole === "navigation") body.selectCategory(widgetData, action, index)
+                else hostWindow.action({target: widgetData.id, action: action, index: index})
+            }
             x: hostWindow.snapPx(placement.x)
             y: hostWindow.snapPx(placement.y)
             width: hostWindow.snapPx(placement.width)
             height: hostWindow.snapPx(placement.height)
             maximumWidth: width
             visible: widgetData.visible !== false && placement.width > 0
+                     && (!body.nativePage || ["search-label", "search", "search-clear", "search-previous", "search-next", "search-matches", "navigation"].includes(widgetData.layoutRole))
+        }
+    }
+    Flickable {
+        id: nativeViewport
+        objectName: "nativeSettingsViewport"
+        visible: !!body.nativePage
+        x: hostWindow.snapPx(body.mainX)
+        y: 0
+        width: hostWindow.snapPx(body.mainWidth)
+        height: hostWindow.snapPx(body.height)
+        clip: true
+        pixelAligned: true
+        contentWidth: nativeContent.width + hostWindow.snapPx(12)
+        contentHeight: nativeContent.height + hostWindow.snapPx(12)
+        boundsBehavior: Flickable.StopAtBounds
+        Loader {
+            id: nativeContent
+            objectName: "nativeSettingsContent"
+            sourceComponent: body.nativePage ? body.nativePage.content : null
+            onLoaded: { nativeViewport.contentX = 0; nativeViewport.contentY = 0; item.forceActiveFocus() }
+            width: hostWindow.snapPx(Math.max(nativeViewport.width - hostWindow.snapPx(12), item ? item.implicitWidth : 0))
+            height: hostWindow.snapPx(Math.max(nativeViewport.height - hostWindow.snapPx(12), item ? item.implicitHeight : 0))
+        }
+        Connections {
+            target: nativeContent.item
+            ignoreUnknownSignals: true
+            function onCloseRequested() { body.closeRequested() }
+        }
+        ScrollBar.vertical: F4ScrollBar {
+            objectName: "nativeSettingsVerticalScrollBar"
+            hostWindow: body.hostWindow
+            policy: ScrollBar.AsNeeded
+            visible: nativeViewport.contentHeight > nativeViewport.height + 0.5 / body.hostWindow.dpr
+        }
+        ScrollBar.horizontal: F4ScrollBar {
+            objectName: "nativeSettingsHorizontalScrollBar"
+            hostWindow: body.hostWindow
+            policy: ScrollBar.AsNeeded
+            visible: nativeViewport.contentWidth > nativeViewport.width + 0.5 / body.hostWindow.dpr
         }
     }
 }

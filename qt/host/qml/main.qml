@@ -175,6 +175,23 @@ F4HostWindow {
         }
     }
 
+    nativeSettingsPages: [NativeSettingsPage {
+        pageId: "gui"
+        title: qsTr("GUI")
+        iconName: "app-window"
+        content: Component {
+            ThemeEditorContent {
+                hostWindow: root
+                themePersistence: typeof qtTheme !== "undefined" ? qtTheme : null
+            }
+        }
+    }, NativeSettingsPage {
+        pageId: "terminal-colors"
+        title: qsTr("Terminal colors")
+        iconName: "square-terminal"
+        content: Component { TerminalColorsPage { hostWindow: root } }
+    }]
+
     ThemeEditor {
         id: themeColorConfigurator
         hostWindow: root

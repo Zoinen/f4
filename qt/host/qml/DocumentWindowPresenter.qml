@@ -14,6 +14,7 @@ Item {
     property bool terminalSurface: false
     property real rowHeight: 20
     property bool standaloneViewport: false
+    readonly property bool nativeRowStorage: standaloneViewport || terminalSurface
     property real geometryRevision: 0
     property bool kineticActive: false
 
@@ -56,6 +57,10 @@ Item {
         Math.max(0, Number(presentationFrame.contentExtent || 0))
     readonly property bool contentExtentKnown:
         presentationFrame.contentExtentKnown !== false
+    readonly property real contentStart: terminalSurface
+        ? Math.max(0, Math.min(contentExtent, Number(presentationFrame.contentStart || 0))) : 0
+    readonly property bool terminalOverflow: terminalSurface && rowHeight > 0
+        && contentExtent - contentStart > documentList.height / rowHeight + 0.000001
 
     visible: false
     width: 0
@@ -268,7 +273,7 @@ Item {
         ensurePoolCapacity(rowPoolController.capacityFor(source))
         const start = Math.max(0, Math.floor(
                      (rowPoolController.count - source.length) / 2))
-        if (standaloneViewport) {
+        if (nativeRowStorage) {
             // Replace occupied slots directly in this transaction. Clearing
             // them first tears down their text runs only to recreate them
             // immediately; only slots outside the new window become empty.
@@ -330,7 +335,7 @@ Item {
         const unionStart = Math.min(loadedSlotStart, nextStart)
         const unionEnd = Math.max(loadedSlotEnd, nextEnd)
         const unionRows = []
-        if (standaloneViewport)
+        if (nativeRowStorage)
             rowPoolController.replaceWindow(nextStart, nextRows,
                 loadedSlotStart, loadedSlotEnd, false,
                 retainLiveUnion !== true)
@@ -360,7 +365,7 @@ Item {
             return true
         }
 
-        if (!standaloneViewport) {
+        if (!nativeRowStorage) {
             for (let slot = loadedSlotStart; slot < loadedSlotEnd; ++slot) {
                 if (slot < nextStart || slot >= nextEnd)
                     clearPoolSlot(slot)
@@ -387,7 +392,14 @@ Item {
     }
 
     function minimumLoadedY() {
-        return modelCoordinateForIndex(loadedSlotStart)
+        const loadedTop = modelCoordinateForIndex(loadedSlotStart)
+        if (!terminalSurface || !windowInitialized)
+            return loadedTop
+        const index = indexForExtent(contentStart, displayedRows)
+        const contentTop = index >= 0
+            ? modelCoordinateForIndex(loadedSlotStart + index) : loadedTop
+        const tail = modelCoordinateForIndex(loadedSlotEnd) - documentList.height
+        return Math.max(loadedTop, Math.min(contentTop, tail))
     }
 
     function maximumLoadedY() {
@@ -472,12 +484,13 @@ Item {
     function syncScrollBar() {
         if (!documentScrollBar.visible || documentScrollBar.pressed)
             return
-        const extent = Math.max(1, contentExtent)
+        const extent = Math.max(1, contentExtent - contentStart)
         const state = topState()
-        const span = Math.max(0, visibleExtentSpan())
+        const span = terminalSurface ? documentList.height / rowHeight
+                                    : Math.max(0, visibleExtentSpan())
         documentScrollBar.size = clamp(span / extent, 0, 1)
         documentScrollBar.position = clamp(
-                    state.extent / extent, 0, 1 - documentScrollBar.size)
+                    (state.extent - contentStart) / extent, 0, 1 - documentScrollBar.size)
     }
 
     function resetDocumentTransientState() {
@@ -703,7 +716,7 @@ Item {
     DocumentRowPool {
         id: rowPoolController
         hostWindow: presenter.hostWindow
-        nativeRows: presenter.standaloneViewport
+        nativeRows: presenter.nativeRowStorage
         rowHeight: presenter.rowHeight
         viewportHeight: presenter.documentList.height
     }

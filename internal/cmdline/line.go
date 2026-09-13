@@ -31,9 +31,13 @@ func NewCommandLine(prompt string) *CommandLine {
 	// Leaving vtui's own trigger on would open the menu from inside
 	// Edit.ProcessKey, one call before any of that is consulted.
 	cl.Edit.NoAutoComplete = true
+	cl.Edit.AutoCompleteModifiedEnterPassthrough = true
+	cl.Edit.AutoCompletePreview = true
 	cl.Edit.ColorTextIdx = theme.ColCommandLineText
 	cl.Edit.ColorUnchangedIdx = theme.ColCommandLineText
 	cl.Edit.ColorSelectedIdx = theme.ColCommandLineSelectedText
+	cl.Edit.WrapMarkerColorIdx = vtui.ColDialogHighlightText
+	cl.SyncInputOptions()
 	cl.Edit.SetCanFocus(true)
 	cl.SetFocus(true)   // Ensure cursor is active from the start
 	cl.SetVisible(true) // Set visible by default so it can process keys in tests before the first render!
@@ -52,7 +56,21 @@ func (cl *CommandLine) SetPosition(x1, y1, x2, y2 int) {
 	} else {
 		promptLen = runewidth.StringWidth(cl.Prompt)
 	}
-	cl.Edit.SetPosition(x1+promptLen, y1, x2, y2)
+	cl.Edit.SetPosition(x1+min(promptLen, max(0, (x2-x1)/2)), y1, x2, y2)
+}
+
+// SyncInputOptions also runs before paste starts, so live setting changes do
+// not depend on a render happening before the next input transaction.
+func (cl *CommandLine) SyncInputOptions() {
+	cl.Edit.Multiline = config.App.CommandLineMultiline
+	cl.Edit.WordWrap = config.App.CommandLineWordWrap
+}
+
+// RequiredRows returns a bounded height, keeping room for the panels above.
+func (cl *CommandLine) RequiredRows(width, maxRows int) int {
+	cl.SyncInputOptions()
+	cl.SetPosition(cl.X1, cl.Y1, cl.X1+width-1, cl.Y2)
+	return max(1, min(maxRows, cl.Edit.MultilineRows(cl.Edit.X2-cl.Edit.X1+1)))
 }
 
 func (cl *CommandLine) SetFocus(f bool) {
@@ -84,6 +102,8 @@ func (cl *CommandLine) DisplayObject(scr *vtui.ScreenBuf) {
 	if !cl.IsVisible() {
 		return
 	}
+	cl.SyncInputOptions()
+	scr.FillRect(cl.X1, cl.Y1, cl.X2, cl.Y2, ' ', vtui.Palette[theme.ColCommandLineText])
 
 	// 1. Draw Prompt
 	if len(cl.RichPrompt) > 0 {
@@ -97,6 +117,7 @@ func (cl *CommandLine) DisplayObject(scr *vtui.ScreenBuf) {
 }
 
 func (cl *CommandLine) ProcessKey(e *vtinput.InputEvent) bool {
+	cl.SyncInputOptions()
 	handled := cl.Edit.ProcessKey(e)
 	if handled && cl.Edit.HistoryPos != -1 {
 		// If a key was handled by the edit control, it means the text was modified.

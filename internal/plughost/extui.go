@@ -4552,11 +4552,9 @@ func (h *ExtUiHost) handleMessageWithBenchmark(msg map[string]any, timing *navtr
 		})
 	case "paste":
 		text := extUiString(msg, "text")
-		h.sendEvent(&vtinput.InputEvent{Type: vtinput.PasteEventType, PasteStart: true, InputSource: "extui"})
-		for _, r := range text {
-			h.sendEvent(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, Char: r, InputSource: "extui_paste"})
+		if h.reader != nil {
+			vtui.FrameManager.QueuePaste(h.reader.EventChan, text)
 		}
-		h.sendEvent(&vtinput.InputEvent{Type: vtinput.PasteEventType, PasteStart: false, InputSource: "extui"})
 	case "clipboard_get":
 		_ = h.send.Send(map[string]any{
 			"type": "clipboard_data",

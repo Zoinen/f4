@@ -11,6 +11,7 @@
 #include <QKeySequence>
 #include <QPainter>
 #include <QQuickWindow>
+#include "PointerRowAnchor.h"
 #include <QSGSimpleTextureNode>
 #include <QSGTexture>
 #include <QWheelEvent>
@@ -1033,4 +1034,19 @@ void VtuiGridItem::maybeSendResize()
     m_lastSentCols = cols;
     m_lastSentRows = rows;
     m_controller->sendResize(cols, rows);
+}
+
+bool VtuiGridItem::preservePointerRowOffset(QQuickItem *row, qreal previousSceneY)
+{
+    return F4PointerRowAnchor::preserve(window(), row, previousSceneY);
+}
+
+bool VtuiGridItem::pointerEventIsCurrent(QQuickItem *item, qreal x, qreal y)
+{
+    return F4PointerRowAnchor::eventIsCurrent(item, x, y);
+}
+
+QPoint VtuiGridItem::pointerScreenPosition() const
+{
+    return QCursor::pos();
 }

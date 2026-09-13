@@ -20,6 +20,7 @@ Item {
     })
     property bool panelActive: false
     property bool commandLineHasText: false
+    property bool commandLineOwnsNavigation: false
     property bool fastFindActive: false
     property bool pendingCommanderInput: false
     property int pendingCommanderInputTimeoutMs: 2000
@@ -29,7 +30,8 @@ Item {
     property var forwardedKeysDown: ({})
 
     readonly property bool commanderInputActive:
-        commandLineHasText || fastFindActive || pendingCommanderInput
+        commandLineOwnsNavigation || commandLineHasText
+        || fastFindActive || pendingCommanderInput
     readonly property var effectiveHostCapabilities: ({
         cursor: hostCapabilities.cursor,
         open: hostCapabilities.open,

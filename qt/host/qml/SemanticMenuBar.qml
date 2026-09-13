@@ -6,6 +6,7 @@ import QtQuick.Controls
 
 Rectangle {
     id: menuBarRoot
+    property point pointerSelectionPosition: hostWindow.focusTarget.pointerScreenPosition()
     required property ApplicationWindow hostWindow
     required property Item semanticLayer
     required property QtObject nativeWindowAgent
@@ -215,6 +216,7 @@ Rectangle {
     }
 
     MouseArea {
+        id: menuBarPointerArea
         anchors.fill: parent
         acceptedButtons: Qt.LeftButton
         hoverEnabled: true
@@ -231,6 +233,8 @@ Rectangle {
             }
         }
         onPositionChanged: (mouse) => {
+            if (!hostWindow.pointerSelectionMoved(menuBarRoot, menuBarPointerArea, mouse.x, mouse.y))
+                return
             if (mouse.y >= 0 && mouse.y < height)
                 parent.activateAt(mouse.x, true)
             if (pressed) {

@@ -36,6 +36,8 @@ func TestConfig_SaveAndLoad(t *testing.T) {
 	App.EditorCrosshair = true
 	App.EditorColorerBackground = false
 	App.CommandLineAutoComplete = false
+	App.CommandLineMultiline = false
+	App.CommandLineWordWrap = false
 	App.SeparateFileExtensions = true
 	App.PanelScrollbarMode = PanelScrollbarMinimal
 	App.ShowPanelFileInfo = true
@@ -63,6 +65,8 @@ func TestConfig_SaveAndLoad(t *testing.T) {
 	SaveConfig()
 
 	// 3. Reset to defaults
+	App.CommandLineMultiline = true
+	App.CommandLineWordWrap = true
 	App.ShowHiddenFiles = true
 	App.ColorStyle = "Modern"
 	App.ShowDirPrefix = false
@@ -93,6 +97,9 @@ func TestConfig_SaveAndLoad(t *testing.T) {
 
 	// 4. Load
 	LoadConfig()
+	if App.CommandLineMultiline || App.CommandLineWordWrap {
+		t.Error("command line multiline/wrap settings were not restored")
+	}
 	if App.ColorStyle != "Classic" {
 		t.Errorf("LoadConfig failed to restore color style: %q", App.ColorStyle)
 	}

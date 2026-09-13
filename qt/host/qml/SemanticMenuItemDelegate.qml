@@ -385,12 +385,11 @@ Rectangle {
         onPositionChanged: (mouse) => {
             if (containsMouse
                     && overlayController.pointerActuallyMoved(
-                        itemMouse, mouse))
+                        itemMouse, mouse)) {
                 selectFromPointer()
-        }
-        onEntered: {
-            if (modelData.hasSubmenu === true)
-                submenuHoverTimer.restart()
+                if (modelData.hasSubmenu === true)
+                    submenuHoverTimer.restart()
+            }
         }
         onExited: submenuHoverTimer.stop()
         onPressed: {

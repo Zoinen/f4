@@ -8,6 +8,11 @@ import QWindowKit 1.0
 
 ApplicationWindow {
     id: host
+    property alias terminalPalette: terminalPaletteState
+    TerminalPaletteModel {
+        id: terminalPaletteState
+        persistence: typeof qtTheme !== "undefined" ? qtTheme : null
+    }
 
     property Item titleBarItem: null
     property Item appIconItem: null
@@ -27,6 +32,17 @@ ApplicationWindow {
         queueDropdownOpen = !queueDropdownOpen
         if (queueDropdownOpen) action({action: "queue.ensure"}, true)
     }
+    // Every hover-selection surface owns one baseline, shared by all its rows.
+    function pointerSelectionMoved(surface, area, x, y) {
+        if (!focusTarget.pointerEventIsCurrent(area, x, y))
+            return false
+        const point = focusTarget.pointerScreenPosition()
+        const moved = point.x !== surface.pointerSelectionPosition.x
+                   || point.y !== surface.pointerSelectionPosition.y
+        surface.pointerSelectionPosition = point
+        return moved
+    }
+
     property Item focusTarget: null
     property var sceneStoreApi: null
     property var interactionControllerApi: null
@@ -171,6 +187,7 @@ ApplicationWindow {
         themePalette.galleryNeutralFileTextColors
     property alias galleryShowSelectionBorders:
         themePalette.galleryShowSelectionBorders
+    property alias commandLineGraphicalCursor: themePalette.commandLineGraphicalCursor
     property alias galleryQuickSearchMatchColor:
         themePalette.galleryQuickSearchMatchColor
     property alias galleryDirectoryTextColor:
@@ -287,12 +304,13 @@ ApplicationWindow {
         return false
     }
 
+    property list<NativeSettingsPage> nativeSettingsPages: []
+    property string requestedNativeSettingsPage: ""
+    signal nativeSettingsPageRequested(string pageId)
     function showApplicationSettings() {
-        if (!themeEditor)
-            return
-        themeEditor.show()
-        themeEditor.requestActivate()
-        themeEditor.raise()
+        requestedNativeSettingsPage = "gui"
+        nativeSettingsPageRequested("gui")
+        action({target: "app", action: "settings.open"}, true)
     }
 
     function snapPx(value) {
@@ -474,10 +492,12 @@ ApplicationWindow {
                 && Object.keys(sceneStoreApi.keyBarModel).length > 0
                 ? ch + commandLineVerticalMargin * 2 + separatorWidth * 2 : 0
     }
+    property real commandLineContentHeight: 0
     function commandLineHeight(shell) {
         const commandLine = commandLineFrame()
         return commandLine && commandLine.visible !== false
-                ? ch + commandLineVerticalMargin * 2 + separatorWidth * 2 : 0
+                ? snapPx(Math.max(ch, commandLineContentHeight))
+                  + commandLineVerticalMargin * 2 + separatorWidth * 2 : 0
     }
 
     function pxX(value) { return presentationUtilities.pxX(value) }

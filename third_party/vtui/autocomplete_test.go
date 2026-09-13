@@ -579,3 +579,76 @@ func TestAutoComplete_MaxVisibleAndPerCategory(t *testing.T) {
 		t.Errorf("Per-category height: got %d, want 7", ay2-ay1+1)
 	}
 }
+
+func TestAutoCompleteModifiedEnterPassesThroughWithoutAccepting(t *testing.T) {
+	for _, modifiers := range []vtinput.ControlKeyState{vtinput.ShiftPressed, vtinput.LeftCtrlPressed | vtinput.ShiftPressed, vtinput.LeftAltPressed} {
+		SetDefaultPalette()
+		fm := FrameManager
+		fm.Init(NewSilentScreenBuf())
+		fm.injectedEvents = nil
+		edit := NewEdit(0, 10, 20, "g")
+		edit.History = []string{"go run ."}
+		edit.AutoCompleteModifiedEnterPassthrough = true
+		ac := NewAutoCompleteMenu(edit)
+		fm.Push(ac)
+		event := vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true,
+			VirtualKeyCode: vtinput.VK_RETURN, ControlKeyState: modifiers}
+		if !ac.ProcessKey(&event) {
+			t.Fatal("modified Enter was not handled")
+		}
+		if edit.GetText() != "g" {
+			t.Fatal("suggestion replaced command")
+		}
+		if !ac.IsDone() {
+			t.Fatal("suggestions stayed open")
+		}
+		if len(fm.injectedEvents) != 1 || fm.injectedEvents[0].ControlKeyState != event.ControlKeyState || fm.injectedEvents[0].VirtualKeyCode != event.VirtualKeyCode {
+			t.Fatal("original shortcut was not replayed")
+		}
+	}
+}
+
+func TestAutoCompletePreviewRestoresTypedText(t *testing.T) {
+	SetDefaultPalette()
+	edit := NewEdit(0, 0, 40, "git st")
+	edit.AutoCompletePreview = true
+	edit.History = []string{"git status", "git stash"}
+	ac := NewAutoCompleteMenu(edit)
+	if ac.SelectPos() != 0 || ac.Matches[0] != "" || edit.GetText() != "git st" {
+		t.Fatal("missing default original-text row")
+	}
+	ac.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_DOWN})
+	if edit.GetText() != "git status" {
+		t.Fatalf("preview = %q", edit.GetText())
+	}
+	ac.Preview(2)
+	if edit.GetText() != "git stash" || ac.Query() != "git st" {
+		t.Fatal("preview changed original query")
+	}
+	ac.Preview(0)
+	if edit.GetText() != "git st" {
+		t.Fatal("original text was not restored")
+	}
+}
+
+func TestAutoCompletePathPreviewUsesOriginalSpan(t *testing.T) {
+	SetDefaultPalette()
+	previous := PathHintProvider
+	defer func() { PathHintProvider = previous }()
+	PathHintProvider = func(*Edit, string, int, int) []AutoCompleteItem {
+		return []AutoCompleteItem{{Text: "short.txt", ReplaceFrom: 4, ReplaceTo: 7}, {Text: "longer-name.txt", ReplaceFrom: 4, ReplaceTo: 7}}
+	}
+	edit := NewEdit(0, 0, 80, "app abc --flag")
+	edit.AutoCompletePreview = true
+	edit.PathHintsEnabled = true
+	ac := NewAutoCompleteMenu(edit)
+	ac.Preview(1)
+	ac.Preview(2)
+	if edit.GetText() != "app longer-name.txt --flag" {
+		t.Fatalf("preview = %q", edit.GetText())
+	}
+	ac.Preview(0)
+	if edit.GetText() != "app abc --flag" {
+		t.Fatal("original arguments lost")
+	}
+}

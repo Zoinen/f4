@@ -5,10 +5,61 @@ import QtQuick.Controls
 
 Item {
     id: autocompleteOverlay
+    objectName: "autocompleteOverlay"
     required property ApplicationWindow hostWindow
     required property Item menuBar
     property var frame: ({})
     property var items: frame.items || []
+    property point pointerSelectionPosition: hostWindow.focusTarget.pointerScreenPosition()
+    onCommandLineChanged: pointerSelectionPosition = hostWindow.focusTarget.pointerScreenPosition()
+    property Item hoveredRow: null
+    property real hoveredSceneY: 0
+
+    property bool pointerWarpPending: false
+
+    function preserveHoveredRow() {
+        if (!hoveredRow)
+            return false
+        if (hoveredRow.index !== hostWindow.autocompleteSelectedIndex) {
+            hoveredRow = null
+            pointerWarpPending = false
+            return false
+        }
+        const sceneY = hoveredRow.mapToItem(null, 0, 0).y
+        if (Math.abs(sceneY - hoveredSceneY) < 0.001)
+            return false
+        // Freeze selection immediately, but move the native cursor only once
+        // the frame containing the popup's new position has been presented.
+        pointerWarpPending = true
+        return true
+    }
+
+    function hoverRow(row, x, y) {
+        if (pointerWarpPending || preserveHoveredRow())
+            return
+        // A callLater is not a mouse-event barrier. Discard events queued at
+        // the old position, even after the popup and pointer have settled.
+        if (!hostWindow.pointerSelectionMoved(autocompleteOverlay, row, x, y))
+            return
+        hoveredRow = row
+        hoveredSceneY = row.mapToItem(null, 0, 0).y
+        hostWindow.autocompleteSelectedIndex = row.index
+    }
+
+    Connections {
+        target: autocompleteOverlay.hostWindow
+        function onFrameSwapped() {
+            if (!autocompleteOverlay.pointerWarpPending || !autocompleteOverlay.hoveredRow)
+                return
+            const row = autocompleteOverlay.hoveredRow
+            const previousY = autocompleteOverlay.hoveredSceneY
+            autocompleteOverlay.hoveredSceneY = row.mapToItem(null, 0, 0).y
+            autocompleteOverlay.pointerWarpPending = false
+            autocompleteOverlay.hostWindow.focusTarget.preservePointerRowOffset(row, previousY)
+            autocompleteOverlay.pointerSelectionPosition = autocompleteOverlay.hostWindow.focusTarget.pointerScreenPosition()
+        }
+    }
+
     readonly property var commandLine: hostWindow.commandLineFrame()
     readonly property real commandLineX: hostWindow.isAppScene()
                                              ? 0 : hostWindow.pxX(commandLine.x || 0)
@@ -59,13 +110,25 @@ Item {
         acceptedButtons: Qt.AllButtons
         hoverEnabled: true
         preventStealing: true
-        onPressed: (mouse) => { mouse.accepted = true }
+        onPressed: (mouse) => {
+            const point = mapToItem(hintsPanel, mouse.x, mouse.y)
+            if (!hintsPanel.contains(point)) {
+                const shell = hostWindow.shellFrame()
+                hostWindow.action({
+                    "target": hostWindow.cleanText(shell.id) || frame.id,
+                    "action": "command.complete"
+                }, true)
+            }
+            mouse.accepted = true
+        }
         onReleased: (mouse) => { mouse.accepted = true }
         onPositionChanged: (mouse) => { mouse.accepted = true }
         onWheel: (wheel) => { wheel.accepted = false }
     }
 
     Rectangle {
+        id: hintsPanel
+        onYChanged: autocompleteOverlay.preserveHoveredRow()
         x: autocompleteOverlay.preferredX
         y: Math.max(menuBar.height,
                     autocompleteOverlay.commandLineY - height)
@@ -95,6 +158,8 @@ Item {
             }
 
             delegate: Rectangle {
+                id: hintRow
+                objectName: "autocompleteHint-" + index
                 required property int index
                 required property var modelData
                 width: ListView.view.width
@@ -144,13 +209,13 @@ Item {
                     acceptedButtons: Qt.LeftButton
                     onPositionChanged: (mouse) => {
                         if (containsMouse)
-                            hostWindow.autocompleteSelectedIndex = index
+                            autocompleteOverlay.hoverRow(hintRow, mouse.x, mouse.y)
                     }
                     onPressed: (mouse) => {
                         hostWindow.autocompleteSelectedIndex = index
                         mouse.accepted = true
                     }
-                    onClicked: hostWindow.submitAutocomplete()
+                    onClicked: hostWindow.completeAutocomplete()
                 }
             }
         }

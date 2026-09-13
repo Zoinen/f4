@@ -12,6 +12,18 @@ Russian labels, descriptions, choices, group names and operation messages are pr
 
 ## Semantic GUI presentation
 
+Qt also contributes a frontend-owned **Terminal colors** page alongside GUI.
+It offers Modern (the global Windows console palette), Classic DOS colors,
+individual hex overrides, a preview, and Apply/Cancel changes. Its values remain
+in `gui_theme.ini` and are absent from the TUI settings catalog. Only the
+16-color terminal output palette is affected; application theme colors and
+explicit RGB output retain their own colors.
+
+The GUI page also offers **Graphical command-line caret**, enabled by default.
+It uses a thin vertical insertion caret; disabling it restores the console
+underline. Overwrite mode retains its block caret. The preference is stored in
+`gui_theme.ini` as `commandLineGraphicalCursor` and supports Save/Restore/Reset.
+
 `internal/settings/center_semantic.go` exports the labels, category heading,
 search match count, status, group frames and contextual help that the terminal
 renderer paints directly. Text comes from the original translated descriptors;
@@ -609,3 +621,29 @@ selection replacement, and draft updates. The native view uses a plain TextEdit
 with independent horizontal/vertical scrollbars and the same disabled/focus colors
 as single-line inputs. Settings marks these fields `fillWidth`, preserving group
 padding while the dialog resizes.
+
+
+## Qt-only settings pages
+
+`NativeSettingsPage.qml` is the frontend extension contract: a stable page ID,
+caption, preferred size and QML Component. `F4HostWindow.nativeSettingsPages`
+registers these pages with `SettingsDialogBody`. Their rows are appended to the
+existing categories list, sharing its renderer, scrolling and mouse/keyboard
+navigation. Core row indices are preserved; local rows are selected without
+sending synthetic indices to Go. Native navigation and component
+selection remain in Qt; neither descriptors nor GUI values enter Go's settings
+catalog, drafts, semantic controls, search results or console dialog.
+
+The GUI page hosts `ThemeEditorContent.qml`, extracted from the original
+configurator without replacing its color list, OKLCH/RGB/hex editor, font/wheel
+controls, toggles or Reset/Restore/Save/Close buttons. `ThemeEditor.qml` is its
+standalone window wrapper. The app icon requests this native page and sends only
+the generic `settings.open` navigation action. Core pages keep their existing
+semantic rendering. Small windows scroll the intact native content.
+
+GUI Save uses atomic `F4ThemePersistence` storage in `gui_theme.ini` beside the
+active profile's window geometry. If absent, it imports the legacy Qt-adjacent
+file without removing the source; existing profile values take precedence.
+Legacy palette conversions remain in HostThemePalette. Identification highlights
+are stopped before saving. GUI preferences retain the configurator's live-edit
+and explicit Save/Restore behavior, independently of core Apply/OK/Cancel.

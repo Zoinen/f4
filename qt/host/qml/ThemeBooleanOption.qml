@@ -39,6 +39,10 @@ Rectangle {
         height: titleText.height + option.hostWindow.snapPx(1) + descriptionText.height
 
         Text {
+            transform: Translate {
+                x: hostWindow.dialogPixelOffsetX(titleText, hostWindow.contentItem)
+                y: hostWindow.dialogPixelOffsetY(titleText, hostWindow.contentItem)
+            }
             id: titleText
             objectName: option.namePrefix + "Title"
             width: parent.width
@@ -51,6 +55,10 @@ Rectangle {
             elide: Text.ElideRight
         }
         Text {
+            transform: Translate {
+                x: hostWindow.dialogPixelOffsetX(descriptionText, hostWindow.contentItem)
+                y: hostWindow.dialogPixelOffsetY(descriptionText, hostWindow.contentItem)
+            }
             id: descriptionText
             objectName: option.namePrefix + "Description"
             y: titleText.height + option.hostWindow.snapPx(1)

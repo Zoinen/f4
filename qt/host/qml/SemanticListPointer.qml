@@ -11,6 +11,29 @@ Item {
     required property ListView view
     required property var widget
     property bool activateOnDoubleClick: false
+    // A frontend may compose local rows while retaining the shared list renderer.
+    property var rowAction: (action, index) => hostWindow.action({target: widget.id, action: action, index: index})
+    property bool keyboardNavigation: false
+
+    function dispatch(action, index) {
+        rowAction(action, index)
+        if (keyboardNavigation) forceActiveFocus()
+    }
+    Keys.onPressed: event => {
+        if (!keyboardNavigation) return
+        let index = view.currentIndex
+        switch (event.key) {
+        case Qt.Key_Up: index = Math.max(0, index - 1); break
+        case Qt.Key_Down: index = Math.min(view.count - 1, index + 1); break
+        case Qt.Key_Home: index = 0; break
+        case Qt.Key_End: index = view.count - 1; break
+        case Qt.Key_Return:
+        case Qt.Key_Enter: dispatch("control.activate", index); event.accepted = true; return
+        default: return
+        }
+        if (index >= 0) dispatch("control.select", index)
+        event.accepted = true
+    }
     enabled: widget.disabled !== true && widget.readOnly !== true
     property int lastPointerIndex: -1
 
@@ -23,7 +46,7 @@ Item {
         if (index < 0 || index === lastPointerIndex)
             return
         lastPointerIndex = index
-        hostWindow.action({target: widget.id, action: "control.select", index: index})
+        dispatch("control.select", index)
     }
 
     TapHandler {
@@ -38,7 +61,7 @@ Item {
             }
         }
         onDoubleTapped: if (root.activateOnDoubleClick && root.lastPointerIndex >= 0)
-            root.hostWindow.action({target: root.widget.id, action: "control.activate", index: root.lastPointerIndex})
+            root.dispatch("control.activate", root.lastPointerIndex)
     }
     DragHandler {
         objectName: root.objectName + "Drag"

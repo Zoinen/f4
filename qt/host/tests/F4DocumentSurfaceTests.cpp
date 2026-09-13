@@ -1,3 +1,4 @@
+#include "PointerRowAnchor.h"
 #include "DummyQWK.h"
 #include "TestExtUiStateController.h"
 
@@ -46,6 +47,11 @@ class TestGrid : public QQuickItem
                WRITE setRenderingEnabled)
 
 public:
+    Q_INVOKABLE QPoint pointerScreenPosition() const { return QCursor::pos(); }
+    Q_INVOKABLE bool pointerEventIsCurrent(QQuickItem *item, qreal x, qreal y) {
+        return F4PointerRowAnchor::eventIsCurrent(item, x, y);
+    }
+
     using QQuickItem::QQuickItem;
 
     QObject *controller() const { return m_controller; }
@@ -221,6 +227,15 @@ QVariantList editorRows(int firstRow, int count)
 
 QVariantMap documentScene(const QVariantMap &frame)
 {
+    if (frame.value("kind").toString() == "terminal") {
+        return {{"schema", "app"},
+                {"workspaceTabs", QVariantMap{{"newTab", QVariantMap{}},
+                                               {"counter", QVariantMap{}}}},
+                {"shell", QVariantMap{{"terminalActive", true},
+                                       {"showLeftPanel", false},
+                                       {"showRightPanel", false},
+                                       {"terminal", frame}}}};
+    }
     return {
         {QStringLiteral("schema"), QStringLiteral("app")},
         {QStringLiteral("workspaceTabs"), QVariantMap{
@@ -423,7 +438,9 @@ struct DocumentFixture {
         window->show();
         window->requestActivate();
         QCoreApplication::processEvents();
-        surface = window->findChild<QQuickItem *>(QStringLiteral("documentSurface"));
+        const bool terminal = scene.value("shell").toMap().contains("terminal");
+        surface = window->findChild<QQuickItem *>(terminal
+            ? QStringLiteral("terminalDocumentSurface") : QStringLiteral("documentSurface"));
         if (!surface)
             return;
         list = surface->findChild<QQuickItem *>(QStringLiteral("documentList"));
@@ -494,6 +511,8 @@ private slots:
     void documentCursorBlinkSettles_data();
     void documentCursorBlinkSettles();
     void terminalScrollbackUsesBoundedWindowAndNativeViewport();
+    void terminalLiveStyledRowsUpdateInPlace();
+    void terminalShortOutputHasNoScrollRange();
     void terminalFractionalRestDoesNotRequestCurrentRow();
     void terminalCompleteWindowDoesNotPrefetchBeforeContentStart();
     void viewerFractionalRestDoesNotRequestCurrentOffset();
@@ -3476,6 +3495,158 @@ void F4DocumentSurfaceTests::documentCursorBlinkSettles()
     QVERIFY(cursor->property("blinkOn").toBool());
 }
 
+void F4DocumentSurfaceTests::terminalShortOutputHasNoScrollRange()
+{
+    auto frame = terminalFrame(0, 40, 20, 1, 40, true);
+    frame.insert("contentStart", 30);
+    auto rows = frame.value("windowRows").toList();
+    for (int i = 0; i < 30; ++i) {
+        auto row = rows[i].toMap();
+        row.insert("text", "");
+        rows[i] = row;
+    }
+    frame.insert("windowRows", rows);
+    DocumentFixture fixture(documentScene(frame));
+    QVERIFY(fixture.ready());
+    QTRY_VERIFY(fixture.surface->property("windowInitialized").toBool());
+    QTest::qWait(100);
+    QVERIFY2(!fixture.scrollBar->isVisible(), "short terminal output must not expose blank-grid scrollback");
+    const qreal before = fixture.list->property("contentY").toReal();
+    fixture.shell.clearActions();
+    const QPoint center = fixture.list->mapToScene(QPointF(100, 150)).toPoint();
+    sendPixelWheel(fixture.window, center, 100);
+    QTest::qWait(250);
+    QCOMPARE(fixture.list->property("contentY").toReal(), before);
+    QVERIFY(fixture.surface->property("terminalFollowTailIntent").toBool());
+    for (const auto &action : fixture.shell.actions)
+        QVERIFY(action.value("action").toString() != "terminal.scroll");
+    QList<QQuickItem *> pending{fixture.surface};
+    int checked = 0;
+    while (!pending.isEmpty()) {
+        auto *leaf = pending.takeLast();
+        pending.append(leaf->childItems());
+        if (!leaf->isVisible() || leaf->objectName() != "documentPlainText"
+                || leaf->property("text").toString().isEmpty())
+            continue;
+        const auto origin = leaf->mapToItem(fixture.window->contentItem(), QPointF());
+        const qreal dpr = fixture.window->devicePixelRatio();
+        QVERIFY(qAbs(origin.x() * dpr - qRound(origin.x() * dpr)) < 0.001);
+        QVERIFY(qAbs(origin.y() * dpr - qRound(origin.y() * dpr)) < 0.001);
+        const auto dx = leaf->mapToItem(fixture.window->contentItem(), QPointF(1, 0)) - origin;
+        const auto dy = leaf->mapToItem(fixture.window->contentItem(), QPointF(0, 1)) - origin;
+        QVERIFY(QLineF(dx, QPointF(1, 0)).length() < 0.001);
+        QVERIFY(QLineF(dy, QPointF(0, 1)).length() < 0.001);
+        ++checked;
+    }
+    QCOMPARE(checked, 10);
+    QVERIFY(fixture.window->grabWindow().save(".diagnostics/terminal-short-175.png"));
+    // A smaller viewport genuinely overflows: the same output must be scrollable.
+    fixture.window->resize(720, 200);
+    QTRY_VERIFY(fixture.scrollBar->isVisible());
+}
+
+void F4DocumentSurfaceTests::terminalLiveStyledRowsUpdateInPlace()
+{
+    auto frame = terminalFrame(970, 60, 1000, 1, 1030, true);
+    auto publishRows = [&](const QString &text, const QString &color) {
+        auto rows = frame.value("windowRows").toList();
+        for (int i = 0; i < rows.size(); ++i) {
+            auto row = rows[i].toMap();
+            row.remove("text");
+            row.insert("runs", QVariantList{
+                QVariantMap{{"text", text}, {"foreground", color}, {"bold", true}},
+                QVariantMap{{"text", " worker 01"}, {"foreground", "#00ffff"}}});
+            rows[i] = row;
+        }
+        frame.insert("windowRows", rows);
+    };
+    publishRows("Moving 10%", "#ff0000");
+    DocumentFixture fixture(documentScene(frame));
+    QVERIFY(fixture.ready());
+    QTRY_VERIFY(fixture.surface->property("windowInitialized").toBool());
+    auto matchingLeaves = [&](const QString &text, const QColor &color) {
+        int matches = 0;
+        QList<QQuickItem *> pending{fixture.surface};
+        while (!pending.isEmpty()) {
+            auto *leaf = pending.takeLast();
+            pending.append(leaf->childItems());
+            if (leaf->objectName() == "documentRunText" && leaf->isVisible()
+                    && leaf->property("text").toString() == text
+                    && leaf->property("color").value<QColor>() == color)
+                ++matches;
+        }
+        return matches;
+    };
+    QTRY_VERIFY_WITH_TIMEOUT(matchingLeaves("Moving 10%", QColor("#ff0000")) > 0, 1500);
+    const int initialWrites = fixture.surface->property("poolSlotWriteCount").toInt();
+    publishRows("Moving 75%", "#00ff00");
+    fixture.shell.setScene(documentScene(frame));
+    QTRY_VERIFY_WITH_TIMEOUT(matchingLeaves("Moving 75%", QColor("#00ff00")) > 0, 1500);
+    QCOMPARE(matchingLeaves("Moving 10%", QColor("#ff0000")), 0);
+    publishRows("Moving 75%", "#ffff00");
+    fixture.shell.setScene(documentScene(frame));
+    QTRY_VERIFY_WITH_TIMEOUT(matchingLeaves("Moving 75%", QColor("#ffff00")) > 0, 1500);
+    // Repainting a bounded window must not grow the row pool with history.
+    QCOMPARE(fixture.surface->property("poolSlotWriteCount").toInt() - initialWrites, 120);
+    fixture.shell.setScene(documentScene(frame));
+    QTest::qWait(30);
+    QCOMPARE(fixture.surface->property("poolSlotWriteCount").toInt() - initialWrites, 120);
+    QTRY_VERIFY(matchingLeaves(" worker 01", QColor("#00ffff")) > 0);
+    // Palette-only changes recolor existing delegates without loading history.
+    auto indexedRows = frame.value("windowRows").toList();
+    for (auto &value : indexedRows) {
+        auto row = value.toMap();
+        auto runs = row.value("runs").toList();
+        auto run = runs[0].toMap();
+        run.insert("foregroundPaletteIndex", 12);
+        runs[0] = run; row.insert("runs", runs); value = row;
+    }
+    frame.insert("windowRows", indexedRows);
+    fixture.shell.setScene(documentScene(frame));
+    QTRY_VERIFY(matchingLeaves("Moving 75%", QColor("#ff8c00")) > 0);
+    auto *palette = fixture.window->property("terminalPalette").value<QObject *>();
+    QVERIFY(palette);
+    const int beforePalette = fixture.surface->property("poolSlotWriteCount").toInt();
+    palette->setProperty("colors", palette->property("classic"));
+    QTRY_VERIFY(matchingLeaves("Moving 75%", QColor("#ff5555")) > 0);
+    palette->setProperty("enabled", false);
+    QTRY_VERIFY(matchingLeaves("Moving 75%", QColor("#ffff00")) > 0);
+    palette->setProperty("enabled", true);
+    QTRY_VERIFY(matchingLeaves("Moving 75%", QColor("#ff5555")) > 0);
+    QCOMPARE(fixture.surface->property("poolSlotWriteCount").toInt(), beforePalette);
+    QTRY_VERIFY(matchingLeaves(" worker 01", QColor("#00ffff")) > 0);
+    auto *probe = fixture.surface->findChild<QQuickItem *>("documentCellProbe");
+    QVERIFY(probe);
+    const qreal paintedAdvance = probe->property("implicitWidth").toReal() / 64;
+    const qreal runAdvance = fixture.surface->property("terminalCellWidth").toReal();
+    QVERIFY2(qAbs(paintedAdvance - runAdvance) < 0.05,
+             qPrintable(QString("Terminal run advance %1 differs from painted glyph %2")
+                        .arg(runAdvance).arg(paintedAdvance)));
+    const qreal dpr = fixture.window->devicePixelRatio();
+    QList<QQuickItem *> pending{fixture.surface};
+    int checked = 0;
+    while (!pending.isEmpty()) {
+        auto *leaf = pending.takeLast();
+        pending.append(leaf->childItems());
+        if (leaf->objectName() != "documentRunText" || !leaf->isVisible())
+            continue;
+        const auto origin = leaf->mapToItem(fixture.window->contentItem(), QPointF());
+        QVERIFY2(qAbs(origin.x() * dpr - qRound(origin.x() * dpr)) < 0.001,
+                 qPrintable(QString("text physical X=%1").arg(origin.x() * dpr)));
+        QVERIFY2(qAbs(origin.y() * dpr - qRound(origin.y() * dpr)) < 0.001,
+                 qPrintable(QString("text physical Y=%1").arg(origin.y() * dpr)));
+        const auto dx = leaf->mapToItem(fixture.window->contentItem(), QPointF(1, 0)) - origin;
+        const auto dy = leaf->mapToItem(fixture.window->contentItem(), QPointF(0, 1)) - origin;
+        QVERIFY(QLineF(dx, QPointF(1, 0)).length() < 0.001);
+        QVERIFY(QLineF(dy, QPointF(0, 1)).length() < 0.001);
+        ++checked;
+    }
+    QVERIFY(checked > 2);
+    const auto capture = fixture.window->grabWindow();
+    QVERIFY(!capture.isNull());
+    QVERIFY(capture.save(".diagnostics/terminal-live-styled-175.png"));
+}
+
 void F4DocumentSurfaceTests::terminalScrollbackUsesBoundedWindowAndNativeViewport()
 {
     DocumentFixture fixture(documentScene(
@@ -3534,6 +3705,9 @@ void F4DocumentSurfaceTests::terminalFractionalRestDoesNotRequestCurrentRow()
     fixture.surface->setProperty("windowRequestPending", false);
     fixture.surface->setProperty("terminalFollowTailIntent", true);
     fixture.surface->setProperty("terminalFollowTailInitialized", true);
+    // The real shell terminal reports viewport capacity after its first frame.
+    // Let that independent negotiation settle before observing scroll requests.
+    QTest::qWait(100);
     fixture.shell.clearActions();
 
     QVariant accepted;

@@ -1,6 +1,8 @@
 package app
 
 import (
+	"github.com/unxed/f4/internal/config"
+	"github.com/unxed/f4/internal/keymap"
 	"github.com/unxed/f4/internal/panel"
 	"github.com/unxed/f4/internal/paneltest"
 	"github.com/unxed/f4/internal/theme"
@@ -14,7 +16,57 @@ import (
 	"testing"
 )
 
+func TestMultilineShiftEnterThroughHotkeyDispatcher(t *testing.T) {
+	oldHotkeys := keymap.GlobalHotkeysMgr
+	keymap.GlobalHotkeysMgr = keymap.NewHotkeyManager("")
+	t.Cleanup(func() { keymap.GlobalHotkeysMgr = oldHotkeys })
+	oldConfig := config.App
+	t.Cleanup(func() { config.App = oldConfig })
+	config.App.CommandLineMultiline = true
+	config.App.NavigationMode = config.NavigationSearchFirst
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	pf := paneltest.SetupMockPanelsFrame(t)
+	defer pf.Close()
+	pf.CmdLine.SetVisible(true)
+	pf.SetCommandLineFocus(true)
+	pf.CmdLine.Edit.SetText("first")
+	pf.CmdLine.Edit.ClearSelection()
+	pressKey(pf, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true,
+		VirtualKeyCode: vtinput.VK_RETURN, ControlKeyState: vtinput.ShiftPressed})
+	if got := pf.CmdLine.Edit.GetText(); got != "first\n" {
+		t.Fatalf("Shift+Enter=%q", got)
+	}
+	pf.CmdLine.Edit.SetText("first")
+	pf.CmdLine.Edit.ClearSelection()
+	pf.CmdLine.Edit.History = []string{"first suggestion"}
+	vtui.FrameManager.Push(pf)
+	suggestions := vtui.NewAutoCompleteMenu(pf.CmdLine.Edit)
+	vtui.FrameManager.Push(suggestions)
+	vtui.FrameManager.InjectEvents([]*vtinput.InputEvent{{Type: vtinput.KeyEventType, KeyDown: true,
+		VirtualKeyCode: vtinput.VK_RETURN, ControlKeyState: vtinput.ShiftPressed}})
+	vtui.FrameManager.Step(0)
+	vtui.FrameManager.Step(0)
+	if !suggestions.IsDone() || pf.CmdLine.Edit.GetText() != "first\n" {
+		t.Fatalf("Shift+Enter with suggestions: text=%q closed=%v", pf.CmdLine.Edit.GetText(), suggestions.IsDone())
+	}
+	keymap.GlobalHotkeysMgr.Bind("Shell", "ShiftEnter", "None")
+	keymap.GlobalHotkeysMgr.Bind("Shell", "AltEnter", "CommandLine.InsertLineBreak")
+	pressKey(pf, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true,
+		VirtualKeyCode: vtinput.VK_RETURN, ControlKeyState: vtinput.ShiftPressed})
+	if got := pf.CmdLine.Edit.GetText(); got != "first\n" {
+		t.Fatalf("unbound Shift+Enter changed text: %q", got)
+	}
+	pressKey(pf, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true,
+		VirtualKeyCode: vtinput.VK_RETURN, ControlKeyState: vtinput.LeftAltPressed})
+	if got := pf.CmdLine.Edit.GetText(); got != "first\n\n" {
+		t.Fatalf("rebound Alt+Enter did not insert newline: %q", got)
+	}
+}
+
 func TestPanelsFrame_CtrlEnter_Escaping(t *testing.T) {
+	oldMultiline := config.App.CommandLineMultiline
+	config.App.CommandLineMultiline = false
+	t.Cleanup(func() { config.App.CommandLineMultiline = oldMultiline })
 	vtui.SetDefaultPalette()
 	theme.SetDefaultF4Palette()
 	pf := panel.NewPanelsFrame()
@@ -59,6 +111,9 @@ func TestPanelsFrame_CtrlEnter_Escaping(t *testing.T) {
 }
 
 func TestPanelsFrame_CtrlEnterOnDirectoryInsertsWithoutEntering(t *testing.T) {
+	oldMultiline := config.App.CommandLineMultiline
+	config.App.CommandLineMultiline = false
+	t.Cleanup(func() { config.App.CommandLineMultiline = oldMultiline })
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	pf := paneltest.SetupMockPanelsFrame(t)
 	defer pf.Close()

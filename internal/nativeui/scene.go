@@ -635,14 +635,17 @@ func (item appAutocompleteMenu) model() extui.MenuModel {
 			"y":     item.y,
 			"w":     item.w,
 			"h":     item.h,
-			"query": item.menu.Edit.GetText(),
+			"query": item.menu.Query(),
 		},
+	}
+	if item.menu.Edit.AutoCompletePreview {
+		menu.Selected = 0
 	}
 	for i, match := range item.menu.Matches {
 		menu.Items = append(menu.Items, extui.MenuItemModel{
 			Index:   i,
 			Text:    match,
-			RawText: match,
+			RawText: item.menu.CompletionText(i),
 		})
 	}
 	return menu
@@ -938,6 +941,9 @@ func appCommandLineFromLegacy(node map[string]any) extui.CommandLineModel {
 		ID:               semantic.String(node["id"]),
 		Visible:          semantic.AppBoolDefault(node["visible"], true),
 		Focused:          semantic.AppBool(node["focused"]),
+		OwnsNavigation:   semantic.AppBool(node["ownsNavigation"]),
+		Multiline:        semantic.AppBool(node["multiline"]),
+		WordWrap:         semantic.AppBool(node["wordWrap"]),
 		Prompt:           semantic.String(node["prompt"]),
 		PromptRuns:       appRunsFromLegacy(node["promptRuns"]),
 		Text:             semantic.String(node["text"]),
@@ -980,6 +986,7 @@ func appTerminalFromLegacy(node map[string]any) extui.TerminalModel {
 		WindowEnd:          semantic.AppInt64(node["windowEnd"]),
 		ViewportStart:      semantic.AppInt64(node["viewportStart"]),
 		ViewportSpan:       semantic.AppInt64(node["viewportSpan"]),
+		ContentStart:       semantic.AppInt64(node["contentStart"]),
 		ContentExtent:      semantic.AppInt64(node["contentExtent"]),
 		ContentExtentKnown: semantic.AppBool(node["contentExtentKnown"]),
 		ViewportRow:        semantic.Int(node["viewportRow"]),

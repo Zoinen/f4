@@ -405,12 +405,14 @@ Rectangle {
     }
 
     SettingsDialogBody {
+        id: settingsBody
         hostWindow: dialogRoot.hostWindow
         visible: dialogRoot.settingsLayout
         widgets: visible ? dialogRoot.frame.children || [] : []
         anchors.fill: parent
         anchors.margins: dialogRoot.contentPadding
         anchors.topMargin: dialogHeader.height + dialogRoot.contentPadding
+        onCloseRequested: hostWindow.action({target: dialogRoot.frame.id, action: "dialog.close"})
     }
 
     Loader {

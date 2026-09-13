@@ -83,6 +83,8 @@ Item {
     readonly property alias loadError: windowPresenter.loadError
     readonly property alias contentExtent: windowPresenter.contentExtent
     readonly property alias contentExtentKnown: windowPresenter.contentExtentKnown
+    readonly property alias contentStart: windowPresenter.contentStart
+    readonly property alias terminalOverflow: windowPresenter.terminalOverflow
 
     visible: false; width: 0; height: 0
 
@@ -259,6 +261,8 @@ Item {
     function sendWindowRequest(extent, fraction, velocity,
                                preserveLiveAnchor, forceRequest) {
         if (!interactionActive || !hasWindowProtocol)
+            return false
+        if (terminalSurface && contentExtentKnown && !terminalOverflow)
             return false
         if (standaloneViewport && (!windowInitialized
                 || documentKey !== appliedDocumentKey
@@ -444,6 +448,10 @@ Item {
             wheel.accepted = false
             return
         }
+        if (terminalSurface && contentExtentKnown && !terminalOverflow) {
+            wheel.accepted = true
+            return
+        }
         endMiddleAutoScroll(true)
         wheelGestureActive = true
         wheelCommitTimer.restart()
@@ -538,10 +546,14 @@ Item {
             return
         if (terminalSurface) {
             setTerminalFollowTailIntent(requestReachesContentEnd(
-                documentScrollBar.position * contentExtent), true)
+                scrollBarExtent(documentScrollBar.position)), true)
         }
         queuedScrollBarPosition = documentScrollBar.position
         scrollBarRequestTimer.restart()
+    }
+
+    function scrollBarExtent(position) {
+        return contentStart + position * (contentExtent - contentStart)
     }
 
     function scrollBarPressedChanged() {
@@ -673,7 +685,7 @@ Item {
             const position = controller.queuedScrollBarPosition
             controller.queuedScrollBarPosition = -1
             controller.sendWindowRequest(
-                        position * controller.contentExtent, 0, 0, false)
+                        controller.scrollBarExtent(position), 0, 0, false)
         }
     }
 }

@@ -9,6 +9,8 @@ Item {
     id: widgetRoot
     required property ApplicationWindow hostWindow
     property var widget: ({})
+    property var tableRowAction: (action, index) => hostWindow.action({target: widget.id, action: action, index: index})
+    property bool tableKeyboardNavigation: false
     property var dialogLayout: null
     property var labelData: ({})
     readonly property var inlineLabel: labelData && labelData.kind === "text" ? labelData : null
@@ -237,6 +239,8 @@ Item {
                 hostWindow: widgetRoot.hostWindow
                 widget: widgetRoot.widget
                 view: tableRows
+                rowAction: widgetRoot.tableRowAction
+                keyboardNavigation: widgetRoot.tableKeyboardNavigation
                 y: tableRows.y
                 width: tableControl.availableWidth
                 height: tableRows.height

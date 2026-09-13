@@ -11,6 +11,13 @@ Item {
     property bool ignoreRunBackground: false
     property real fallbackFontPixelSize: hostWindow.guiMonospaceFontPixelSize
     property real horizontalInset: 8
+    property bool pixelAligned: false
+    function alignedOffset(item, axis, value) {
+        const revision = width + height + x + y + hostWindow.width + hostWindow.height
+        const origin = item.parent.mapToItem(hostWindow.contentItem, 0, 0)
+        const offset = axis === "x" ? origin.x : origin.y
+        return hostWindow.snapPx(offset + value) - offset + revision * 0
+    }
 
     function runBackground(value) {
         if (ignoreRunBackground)
@@ -44,13 +51,17 @@ Item {
 
             delegate: Rectangle {
                 required property var modelData
+                required property int index
                 height: parent ? parent.height : hostWindow.ch
                 width: consoleRunLabel.implicitWidth
                 color: runBackground(modelData.background)
 
                 Text {
                     id: consoleRunLabel
-                    anchors.verticalCenter: parent.verticalCenter
+                    objectName: pixelAligned ? "commandLinePromptRun" + index : ""
+                    x: pixelAligned ? alignedOffset(consoleRunLabel, "x", 0) : 0
+                    y: pixelAligned ? alignedOffset(consoleRunLabel, "y", (parent.height-height)/2)
+                                    : (parent.height-height)/2
                     text: hostWindow.cleanText(modelData.text)
                     color: hostWindow.cleanText(modelData.foreground) !== ""
                            ? modelData.foreground : hostWindow.textColor
@@ -66,11 +77,13 @@ Item {
 
     Text {
         id: fallbackRunLabel
+        objectName: pixelAligned ? "commandLinePromptFallback" : ""
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.leftMargin: horizontalInset
         anchors.rightMargin: horizontalInset
-        anchors.verticalCenter: parent.verticalCenter
+        y: pixelAligned ? alignedOffset(fallbackRunLabel, "y", (parent.height-height)/2)
+                        : (parent.height-height)/2
         visible: !runs || runs.length === 0
         text: fallbackText
         color: hostWindow.textColor

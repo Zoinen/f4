@@ -3110,3 +3110,8 @@ DiskMenu.MacOSLoading = "Загрузка мест macOS…"
 DiskMenu.ShellLoading = "◌ Загрузка…"
 
 DiskMenu.ShellEmpty = "Нет мест Windows Shell"
+SettingsCenter.Text.c925a11891b84dfcf3a6a35ab8064b4ff807efc9c9afac7df8081e91e3af0116=Командная строка
+SettingsCenter.CommandLineMultiline.Label=Многострочный ввод команд
+SettingsCenter.CommandLineMultiline.Description=Сохранять переводы строк и расширять поле команды вверх в консоли и GUI. Shift+Enter вставляет перевод строки.
+SettingsCenter.CommandLineWordWrap.Label=Переносить аргументы команды
+SettingsCenter.CommandLineWordWrap.Description=Показывать каждый аргумент с дефисом вне кавычек на новой визуальной строке и выделять дефис цветом. Перенос не меняет текст команды.

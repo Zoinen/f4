@@ -73,6 +73,9 @@ public:
     // standard paste shortcuts must explicitly use the same clipboard path
     // as keyPressEvent instead of sending a literal Ctrl/Cmd+V to Go.
     Q_INVOKABLE void sendClipboardPaste();
+    Q_INVOKABLE QPoint pointerScreenPosition() const;
+    Q_INVOKABLE bool pointerEventIsCurrent(QQuickItem *item, qreal x, qreal y);
+    Q_INVOKABLE bool preservePointerRowOffset(QQuickItem *row, qreal previousSceneY);
     Q_INVOKABLE void sendQtText(const QString &text);
     // Semantic panels use these entry points when the user explicitly opts
     // into the classic F4 console wheel contract.  Coordinates are in this

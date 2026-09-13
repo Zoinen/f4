@@ -47,6 +47,20 @@ void F4GalleryBridge::registerDragWorkspaceBar(QQuickItem *item)
     qApp->installEventFilter(this);
 }
 
+void F4GalleryBridge::registerDragCommandLine(QQuickItem *item)
+{
+    m_dragCommandLine = item;
+    qApp->installEventFilter(this);
+}
+
+bool F4GalleryBridge::dragCommandLineHit(QObject *window, const QPointF &position) const
+{
+    const auto *item = m_dragCommandLine.data();
+    return item && item->window() == window && item->isVisible() && item->isEnabled()
+        && item->property("dropInputEnabled").toBool() && !QGuiApplication::modalWindow()
+        && item->contains(item->mapFromScene(position));
+}
+
 QVariantMap F4GalleryBridge::dragWorkspaceHit(QObject *window, const QPointF &position) const
 {
     auto *bar = m_dragWorkspaceBar.data();
@@ -173,6 +187,7 @@ void F4GalleryBridge::refreshWorkspaceDropHighlight()
 
 void F4GalleryBridge::clearDropHighlight()
 {
+    if (m_dragCommandLine) m_dragCommandLine->setProperty("dropHovered", false);
     for (auto &item : m_dragPanels) if (item) { item->setProperty("dropHoverIndex", -2); item->setProperty("dropTabHover",false); }
 }
 
@@ -192,6 +207,10 @@ bool F4GalleryBridge::finishInternalDrop(QObject *window, const QPointF &positio
             return false;
         }
     int targetSide = -1;
+    if (dragCommandLineHit(window, position)) {
+        emit uiActionRequested({{"action", "commandLine.dropPaths"}, {"source", m_dragSource}});
+        return true;
+    }
     auto target = dragWorkspaceHit(window, position);
     const bool workspace = !target.isEmpty();
     if (!workspace) target = dragHit(window, position, &targetSide);
@@ -211,6 +230,7 @@ bool F4GalleryBridge::eventFilter(QObject *object, QEvent *event)
 {
     if (!qobject_cast<QQuickWindow *>(object)) return QObject::eventFilter(object, event);
     bool ownsWindow = m_dragWorkspaceBar && m_dragWorkspaceBar->window() == object;
+    ownsWindow = ownsWindow || (m_dragCommandLine && m_dragCommandLine->window() == object);
     for (const auto &item : m_dragPanels)
         ownsWindow = ownsWindow || (item && item->window() == object);
     if (!ownsWindow) return QObject::eventFilter(object, event);
@@ -228,6 +248,27 @@ bool F4GalleryBridge::eventFilter(QObject *object, QEvent *event)
         || event->type() == QEvent::Drop) {
         auto *drop = static_cast<QDropEvent *>(event);
         const bool internal=!m_dragToken.isEmpty() && drop->mimeData()->data(sessionMime)==m_dragToken.toUtf8();
+        if (dragCommandLineHit(object, drop->position())) {
+            clearDropHighlight();
+            m_dragHoveredWorkspace.clear();
+            const auto accepted = acceptNativeDrop(drop->mimeData(), drop->possibleActions(), Qt::NoModifier);
+            if (accepted == Qt::IgnoreAction) { drop->ignore(); return true; }
+            m_dragCommandLine->setProperty("dropHovered", event->type() != QEvent::Drop);
+            if (event->type() == QEvent::Drop) {
+                QVariantMap request{{"action", "commandLine.dropPaths"}};
+                if (internal) request.insert("source", m_dragSource);
+                else {
+                    QStringList paths;
+                    for (const auto &url : drop->mimeData()->urls()) paths.append(url.toLocalFile());
+                    request.insert("paths", paths);
+                }
+                emit uiActionRequested(request);
+                m_dragCommandLine->forceActiveFocus();
+            }
+            drop->setDropAction(Qt::CopyAction);
+            drop->accept();
+            return true;
+        }
         const auto workspace = dragWorkspaceHit(object, drop->position());
         const auto action = acceptNativeDrop(drop->mimeData(), drop->possibleActions(), drop->modifiers());
         if (!workspace.isEmpty() && action != Qt::IgnoreAction) {

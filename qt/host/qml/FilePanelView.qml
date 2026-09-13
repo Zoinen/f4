@@ -50,6 +50,18 @@ Rectangle {
     property real topChromeOffset: nativeLayout ? 0 : ((panel.y || 0) <= 0 ? menuBar.height : 0)
     readonly property bool panelIsActive:
         hostWindow.panelIsEffectivelyActive(panel)
+    TapHandler {
+        objectName: "panelCommandFocusReturn-" + Number(panelRoot.panel.side || 0)
+        enabled: panelRoot.visible
+                 && hostWindow.commandLineFrame().ownsNavigation === true
+                 && !hostWindow.hasBlockingOverlay()
+                 && !panelRoot.viewerVisible
+        acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
+        onPressedChanged: {
+            if (pressed)
+                hostWindow.action({action: "panel.activate", side: Number(panelRoot.panel.side || 0)}, true)
+        }
+    }
     readonly property bool viewerVisible: galleryController.viewerVisible === true
     property var registeredGalleryPanelHost: null
     readonly property var rendererChoices: [
@@ -435,6 +447,9 @@ Rectangle {
                 var commandLine = hostWindow.commandLineFrame()
                 return hostWindow.cleanText(commandLine.text).length > 0
             })
+            if (typeof item.commandLineOwnsNavigation !== "undefined")
+                item.commandLineOwnsNavigation = Qt.binding(
+                    () => hostWindow.commandLineFrame().ownsNavigation === true)
             item.fastFindActive = Qt.binding(
                 () => panelRoot.panel.fastFind === true)
             if (item.panelActive)

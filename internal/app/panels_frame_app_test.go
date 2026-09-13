@@ -459,6 +459,9 @@ func TestLayout_F4ActionDialogs_Validity(t *testing.T) {
 }
 
 func TestPanelsFrame_KeyHandling(t *testing.T) {
+	oldMultiline := config.App.CommandLineMultiline
+	config.App.CommandLineMultiline = false
+	t.Cleanup(func() { config.App.CommandLineMultiline = oldMultiline })
 	pf := panel.NewPanelsFrame()
 	defer pf.Close()
 	pf.ResizeConsole(80, 25)
@@ -2024,7 +2027,7 @@ func TestPanelsFrame_CtrlPgDn_EntersDir(t *testing.T) {
 	}
 }
 
-func TestPanelsFrame_ShiftEnter_ExplorerLaunch(t *testing.T) {
+func TestPanelsFrame_CtrlShiftEnter_ExplorerLaunch(t *testing.T) {
 	if _, _, supported := panel.SystemFileManagerCommand("test", true); !supported {
 		t.Skipf("system file manager is unsupported on %s", runtime.GOOS)
 	}
@@ -2068,7 +2071,7 @@ func TestPanelsFrame_ShiftEnter_ExplorerLaunch(t *testing.T) {
 		Type:            vtinput.KeyEventType,
 		KeyDown:         true,
 		VirtualKeyCode:  vtinput.VK_RETURN,
-		ControlKeyState: vtinput.ShiftPressed,
+		ControlKeyState: vtinput.ShiftPressed | vtinput.LeftCtrlPressed,
 	})
 	if !handled {
 		t.Error("Expected Shift+Enter on file to be handled by PanelsFrame")
@@ -2080,7 +2083,7 @@ func TestPanelsFrame_ShiftEnter_ExplorerLaunch(t *testing.T) {
 		Type:            vtinput.KeyEventType,
 		KeyDown:         true,
 		VirtualKeyCode:  vtinput.VK_RETURN,
-		ControlKeyState: vtinput.ShiftPressed,
+		ControlKeyState: vtinput.ShiftPressed | vtinput.LeftCtrlPressed,
 	})
 	if !handled {
 		t.Error("Expected Shift+Enter on folder to be handled by PanelsFrame")
@@ -2092,7 +2095,7 @@ func TestPanelsFrame_ShiftEnter_ExplorerLaunch(t *testing.T) {
 		Type:            vtinput.KeyEventType,
 		KeyDown:         true,
 		VirtualKeyCode:  vtinput.VK_RETURN,
-		ControlKeyState: vtinput.ShiftPressed,
+		ControlKeyState: vtinput.ShiftPressed | vtinput.LeftCtrlPressed,
 	})
 	if !handled {
 		t.Error("Expected Shift+Enter on '..' to be handled by PanelsFrame")
@@ -2145,7 +2148,7 @@ func TestPanelsFrame_ShiftEnter_ExplorerLaunch(t *testing.T) {
 		Type:            vtinput.KeyEventType,
 		KeyDown:         true,
 		VirtualKeyCode:  vtinput.VK_RETURN,
-		ControlKeyState: vtinput.ShiftPressed,
+		ControlKeyState: vtinput.ShiftPressed | vtinput.LeftCtrlPressed,
 	})
 	if !handled {
 		t.Error("Expected Shift+Enter on non-local VFS to be handled (with warning dialog)")

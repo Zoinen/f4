@@ -34,6 +34,11 @@ Item {
     property string autocompleteQuery: ""
     property string autocompleteItemsSignature: ""
     property int autocompleteSelectedIndex: -1
+    property bool syncingAutocomplete: false
+    onAutocompleteSelectedIndexChanged: {
+        if (!syncingAutocomplete && autocompleteSelectedIndex >= 0)
+            submitAutocompleteAction("command.preview")
+    }
 
     visible: false
     width: 0
@@ -83,7 +88,9 @@ Item {
             autocompleteMenuId = id
             autocompleteQuery = query
             autocompleteItemsSignature = signature
-            autocompleteSelectedIndex = -1
+            syncingAutocomplete = true
+            autocompleteSelectedIndex = Number(frame.selected ?? -1)
+            syncingAutocomplete = false
         } else if (autocompleteSelectedIndex >= (frame.items || []).length) {
             autocompleteSelectedIndex = -1
         }
@@ -107,7 +114,7 @@ Item {
         const items = frame && frame.items ? frame.items : []
         const index = autocompleteSelectedIndex
         return index >= 0 && index < items.length
-                ? cleanText(items[index].text) : ""
+                ? cleanText(items[index].rawText ?? items[index].text) : ""
     }
 
     function submitAutocomplete() {

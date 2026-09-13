@@ -7,12 +7,15 @@ import (
 )
 
 func (cl *CommandLine) SemanticModel(ctx *vtui.SemanticContext) *extui.CommandLineModel {
+	cl.SyncInputOptions()
 	text := cl.Edit.GetText()
 	cursorPosition, selectionStart, selectionEnd := semantic.SemanticEditPositions(cl.Edit, text)
 	model := &extui.CommandLineModel{
 		ID:             vtui.SemanticID(cl),
 		Visible:        cl.IsVisible(),
 		Focused:        cl.IsFocused(),
+		Multiline:      cl.Edit.Multiline,
+		WordWrap:       cl.Edit.WordWrap,
 		Prompt:         cl.Prompt,
 		PromptRuns:     semantic.RunsFromCells(cl.RichPrompt),
 		Text:           text,

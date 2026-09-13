@@ -355,6 +355,7 @@ set(F4_LUCIDE_ICON_NAMES
   panel-left.svg
   panel-right.svg
   palette.svg
+  app-window.svg
   pencil.svg
   plug.svg
   plus.svg
@@ -1008,7 +1009,9 @@ if(BUILD_TESTING)
     ENVIRONMENT "${F4_HOST_QML_TEST_ENV}"
   )
   add_test(NAME F4DocumentSurfacePixelGridTest COMMAND F4DocumentSurfaceTests
-    documentLeavesStayOnPhysicalPixelGridAt175Percent)
+    documentLeavesStayOnPhysicalPixelGridAt175Percent
+    terminalLiveStyledRowsUpdateInPlace
+    terminalShortOutputHasNoScrollRange)
   set_tests_properties(F4DocumentSurfacePixelGridTest PROPERTIES
     ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
   )

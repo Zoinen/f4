@@ -17,6 +17,7 @@ type terminalSemanticLayout struct {
 	activeRows       int
 	sourceActiveRows int
 	totalRows        int
+	contentStart     int
 	buffer           [][]vtui.CharInfo
 	wraps            []bool
 	altScreen        bool
@@ -84,6 +85,19 @@ func (tv *TerminalView) semanticLayoutUnsafe() terminalSemanticLayout {
 		layout.historyRows = len(tv.GridHistory)
 	}
 	layout.totalRows = layout.pieceRows + layout.historyRows + layout.activeRows
+	if !layout.altScreen && layout.pieceRows == 0 && layout.historyRows == 0 {
+		// Keep the grid's absolute row coordinates for cursor/selection, but
+		// do not treat its leading empty space as scrollback. Once history
+		// exists every stored row, including explicit blank lines, is content.
+		layout.contentStart = layout.activeRows
+		includedRows := max(0, layout.activeRows-layout.activeOffset)
+		for row := 0; row < includedRows; row++ {
+			if row == tv.CursorY || tv.rowHasText(row) {
+				layout.contentStart = layout.activeOffset + row
+				break
+			}
+		}
+	}
 	return layout
 }
 
@@ -266,13 +280,14 @@ func (tv *TerminalView) SemanticModelWithBottomOverlay(
 		viewportRows = max(1, tv.Height)
 	}
 	maxTop := max(0, layout.totalRows-viewportRows)
+	minTop := min(layout.contentStart, maxTop)
 	if layout.altScreen {
 		tv.semanticFollowTail = true
 	}
 	if tv.semanticFollowTail {
 		tv.semanticScrollTop = maxTop
 	} else {
-		tv.semanticScrollTop = max(0, min(tv.semanticScrollTop, maxTop))
+		tv.semanticScrollTop = max(minTop, min(tv.semanticScrollTop, maxTop))
 	}
 
 	bufferRows := semantic.SemanticWindowBufferRows(viewportRows)
@@ -320,6 +335,7 @@ func (tv *TerminalView) SemanticModelWithBottomOverlay(
 		WindowEnd:          int64(windowEnd),
 		ViewportStart:      int64(tv.semanticScrollTop),
 		ViewportSpan:       int64(viewportSpan),
+		ContentStart:       int64(layout.contentStart),
 		ContentExtent:      int64(layout.totalRows),
 		ContentExtentKnown: true,
 		ViewportRow:        viewportRow,
@@ -364,7 +380,8 @@ func (tv *TerminalView) HandleSemanticAction(action map[string]any) bool {
 				viewportRows = max(1, tv.Height)
 			}
 			maxTop := max(0, layout.totalRows-viewportRows)
-			target := max(0, min(semantic.Int(action["visualRow"]), maxTop))
+			minTop := min(layout.contentStart, maxTop)
+			target := max(minTop, min(semantic.Int(action["visualRow"]), maxTop))
 			followTail := target >= maxTop
 			if requested, present := action["followTail"]; present &&
 				semantic.Bool(requested) {
