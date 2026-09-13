@@ -1945,11 +1945,39 @@ void F4GalleryPointerTests::sameFolderRefreshKeepsGalleryObjects()
     auto panels = shell.value("panels").toList();
     auto panel = panels[0].toMap();
     auto entries = panel.value("entries").toList();
+    // Sorting rereads the same folder: the stream-start snapshot only has
+    // a preview page. It must not replace a complete, already visible catalog.
+    auto provisionalPanel = panel;
+    provisionalPanel["entries"] = entries.mid(0, 1);
+    provisionalPanel["totalCount"] = entries.size();
+    provisionalPanel["catalogRevision"] = 6;
+    provisionalPanel["catalogProvisional"] = true;
+    provisionalPanel["metadataDeferred"] = true;
+    provisionalPanel["loading"] = true;
+    auto provisionalShell = shell;
+    provisionalShell["panels"] = QVariantList{provisionalPanel};
+    auto provisionalScene = scene;
+    provisionalScene["shell"] = provisionalShell;
+    bridge.synchronizeScene(provisionalScene);
+    QCOMPARE(resets.size(), 0);
+    QCOMPARE(model->rowCount(), 4);
+    QCOMPARE(model->data(model->index(2, 0), role), survivor);
+    QCOMPARE(session->panelScrollOffset(), 31.0);
+    // The rows-capable host also emits the retained old-order preview as an
+    // authoritative sparse catalog while ReadDirectory is still in progress.
+    provisionalPanel["catalogProvisional"] = false;
+    provisionalPanel["catalogRowsDeferred"] = true;
+    provisionalShell["panels"] = QVariantList{provisionalPanel};
+    provisionalScene["shell"] = provisionalShell;
+    bridge.synchronizeScene(provisionalScene);
+    QCOMPARE(resets.size(), 0);
+    QCOMPARE(model->rowCount(), 4);
+    QCOMPARE(model->data(model->index(2, 0), role), survivor);
     entries.removeAt(1);
     for (int row=0; row<entries.size(); ++row) {
         auto entry = entries[row].toMap(); entry["index"]=row; entries[row]=entry;
     }
-    panel["entries"]=entries; panel["totalCount"]=entries.size(); panel["catalogRevision"]=6;
+    panel["entries"]=entries; panel["totalCount"]=entries.size(); panel["catalogRevision"]=7;
     panels[0]=panel; shell["panels"]=panels; scene["shell"]=shell;
     bridge.synchronizeScene(scene);
     QCOMPARE(resets.size(),0);

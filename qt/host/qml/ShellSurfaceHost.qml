@@ -29,6 +29,8 @@ Item {
     required property ZG.GalleryThemePalette galleryTheme
     required property ZG.GalleryPresentationMetrics galleryMetrics
     property bool usesQwk: false
+    readonly property bool fullscreenGallery: galleryViewerLayer.visible
+        && surfaces.hostWindow.visibility === Window.FullScreen
 
     readonly property alias titleBarItem: titleBar
     readonly property alias menuBar: semanticMenu
@@ -57,6 +59,7 @@ Item {
         anchors.left: parent.left
         anchors.right: parent.right
         height: surfaces.hostWindow.menuBarHeight
+        visible: !surfaces.fullscreenGallery
         z: 20
         onApplicationMenuRequested: applicationMenu.popup(titleBar.appIconButton, 0,
                                                         titleBar.appIconButton.height)
@@ -195,7 +198,7 @@ Item {
         objectName: "galleryViewerLayer"
         anchors.left: parent.left
         anchors.right: parent.right
-        anchors.top: titleBar.bottom
+        anchors.top: surfaces.fullscreenGallery ? parent.top : titleBar.bottom
         anchors.bottom: parent.bottom
         clip: true
         active: surfaces.galleryController.viewerVisible

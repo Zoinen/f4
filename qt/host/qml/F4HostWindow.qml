@@ -85,8 +85,10 @@ ApplicationWindow {
     readonly property string macWindowFallbackBlurEffect:
         useMacNativeTitleBar ? "dark" : "none"
     readonly property int macTitleBarLeftPadding:
-        useMacNativeTitleBar && visibility !== Window.FullScreen
-        ? macSystemButtonAreaLeftMargin + 74 : 0
+        useMacNativeTitleBar && visibility !== Window.FullScreen && macSystemButtonAreaItem
+        // QWK centers the native buttons on QRect::center (inclusive right edge).
+        // Mirror the window's left edge around that center for equal outer gaps.
+        ? 2 * Math.floor(macSystemButtonAreaItem.x + (macSystemButtonAreaItem.width - 1) / 2) : 0
     readonly property int macSystemButtonAreaLeftMargin: panelTextInset
     readonly property real titleBarContentVerticalOffset: 1
 

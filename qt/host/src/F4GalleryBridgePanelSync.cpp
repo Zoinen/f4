@@ -139,12 +139,30 @@ F4GalleryBridge::PanelSyncContext F4GalleryBridge::makePanelSyncContext(
     context.catalogStreamStart = !context.catalogRowsDeferred
         && context.metadataDeferred && context.catalogProvisional
         && context.incomingTotalCount > context.incomingEntries.size();
+    if (qEnvironmentVariableIsSet("F4_NAV_BENCHMARK_TRACE")
+        && context.catalogRevision != state.catalogRevision)
+        qInfo() << "[FIX:sort-refresh]" << context.catalogRevision
+                << context.catalogProvisional << state.catalogProvisional
+                << context.loading << context.catalogRowsDeferred
+                << context.incomingEntries.size() << context.incomingTotalCount;
     context.identityChanged = state.initialized
         && context.panelId != state.panelId;
     context.provisionalReplacementDeferred = context.catalogProvisional
         && !context.catalogStreamStart && !context.usefulLocalPreview
         && state.initialized && context.panelId == state.panelId
         && context.currentPath != state.currentPath;
+    // A same-folder reread (including sort changes) may publish only the
+    // first preview page before its final catalog. Keep the complete model:
+    // replacing it with placeholders destroys the cursor's geometry/anchor.
+    const bool partialLoadingRefresh = context.loading
+        && context.incomingEntries.size() < context.incomingTotalCount
+        && !state.catalogRowsDeferred;
+    if ((context.catalogProvisional || partialLoadingRefresh) && state.initialized
+        && !state.catalogProvisional && context.panelId == state.panelId
+        && context.currentPath == state.currentPath
+        && context.sourceKind == state.sourceKind) {
+        context.provisionalReplacementDeferred = true;
+    }
     return context;
 }
 

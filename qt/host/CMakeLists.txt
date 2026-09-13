@@ -690,6 +690,14 @@ if(BUILD_TESTING)
   add_test(NAME PanelIntentControllerTest COMMAND PanelIntentControllerTests)
 
   if(APPLE)
+    if(USE_QWK)
+      add_executable(MacSystemButtonLayoutTests tests/MacSystemButtonLayoutTests.mm)
+      target_include_directories(MacSystemButtonLayoutTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+      target_link_libraries(MacSystemButtonLayoutTests PRIVATE
+        Qt6::Quick Qt6::Test QWindowKit::Quick "-framework AppKit")
+      add_test(NAME MacSystemButtonLayoutTest COMMAND MacSystemButtonLayoutTests)
+      set_tests_properties(MacSystemButtonLayoutTest PROPERTIES LABELS "native-macos")
+    endif()
     add_executable(MacApplicationIconTests
       tests/MacApplicationIconTests.mm
       src/F4ApplicationIcon.h

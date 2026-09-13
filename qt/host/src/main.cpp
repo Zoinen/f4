@@ -43,6 +43,9 @@
 
 #if defined(__USE_QWK)
 #include <QWKQuick/qwkquickglobal.h>
+#if defined(Q_OS_MACOS)
+#include "MacSystemButtonLayout.h"
+#endif
 #else
 #include "DummyQWK.h"
 #endif
@@ -108,22 +111,10 @@ int launchCoreShortcut(int argc, char *argv[])
     return 0;
 }
 
-void applyMacInitialShowWorkaround(QQuickWindow *window)
+void refreshMacSystemButtonsAfterShow(QQuickWindow *window)
 {
 #if defined(__USE_QWK) && defined(Q_OS_MACOS)
-    // Match ZoinGallery's initial-show workaround for transparent QWK windows.
-    // The native NSWindow/title-bar controls can otherwise keep their stale
-    // startup layout until the first resize. Re-applying the geometry over
-    // queued event-loop turns makes macOS refresh the title bar immediately.
-    if (window && window->visibility() == QWindow::Windowed) {
-        const QRect initialGeometry = window->geometry();
-        window->setGeometry(QRect(0, 0, 0, 0));
-        QTimer::singleShot(0, window, [window, initialGeometry]() {
-            window->setGeometry(initialGeometry.adjusted(1, 0, 0, 0));
-            window->setGeometry(initialGeometry);
-            window->requestUpdate();
-        });
-    }
+    scheduleMacSystemButtonLayout(window);
 #else
     Q_UNUSED(window);
 #endif
@@ -576,7 +567,7 @@ int main(int argc, char *argv[])
                 QGuiApplication::setQuitOnLastWindowClosed(true);
                 guardedWindow->requestUpdate();
                 guardedGeometry->showRestored();
-                applyMacInitialShowWorkaround(guardedWindow);
+                refreshMacSystemButtonsAfterShow(guardedWindow);
                 if (F4NavigationBenchmarkTrace::enabled()) {
                     F4NavigationBenchmarkTrace::event(
                         QStringLiteral("qt.startup.window.shown"), {}, {

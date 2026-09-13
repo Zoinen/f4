@@ -43,12 +43,14 @@ Rectangle {
                  positions: positions, softStarts: softStarts }
     }
     readonly property real rowHeight: hostWindow.snapPx(hostWindow.ch)
-    readonly property real textLineHeight: commandInput.lineCount > 0
-        ? Math.max(1, commandInput.contentHeight / commandInput.lineCount) : rowHeight
+    // Empty TextEdit documents round their content height differently from
+    // populated lines. Padding must depend on the font, not the document.
+    readonly property real textLineHeight: commandLineMetrics.contentHeight
     readonly property real textTopInset:
         hostWindow.snapPx(Math.max(0, (rowHeight - textLineHeight) / 2))
     readonly property real inputContentHeight: hostWindow.snapPx(Math.max(rowHeight,
-        Math.min(multiline ? commandInput.contentHeight + textTopInset * 2 : rowHeight,
+        Math.min(multiline ? Math.max(textLineHeight, commandInput.contentHeight)
+                            + textTopInset * 2 : rowHeight,
                  hostWindow.height / 2)))
     readonly property real scrollTop: multiline
         ? hostWindow.snapPx(Math.max(0, commandInput.cursorRectangle.y
@@ -217,6 +219,19 @@ Rectangle {
     FontMetrics {
         id: commandLineFontMetrics
         font: commandInput.font
+    }
+
+    // Use the same text engine as the input: FontMetrics omits the document's
+    // line-height rounding. This also keeps an empty rich-text paragraph from
+    // shrinking the command bar when its last character is removed.
+    TextEdit {
+        id: commandLineMetrics
+        objectName: "commandLineMetrics"
+        visible: false
+        text: "M"
+        font: commandInput.font
+        textFormat: TextEdit.PlainText
+        readOnly: true
     }
 
     Rectangle {

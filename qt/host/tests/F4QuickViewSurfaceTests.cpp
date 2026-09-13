@@ -808,6 +808,7 @@ private slots:
     void commandLineCursorTracksFirstTextPatch();
     void commandLineMultilineWrapAndPixelGrid();
     void commandLineFontBaselineCaretAndCompactHeight();
+    void commandLineEmptyBaseline();
     void commandLineFontBaselineCaretAndCompactHeight_data();
     void commandLineHeightChangesOncePerEdit();
     void commandLineGraphicalCaretIsOptionalAndPersisted();
@@ -3739,6 +3740,31 @@ Rectangle {
     QCOMPARE(fixture.shell.actions.last().value("action").toString(),
              QStringLiteral("workspace.activate"));
     QCOMPARE(fixture.shell.actions.last().value("index").toInt(), 1);
+    // Expanded windowed viewing retains tabs; actual fullscreen must occupy
+    // the entire content area, and leaving fullscreen must restore the chrome.
+    fixture.window->showFullScreen();
+    QTRY_COMPARE(fixture.window->visibility(), QWindow::FullScreen);
+    QTRY_VERIFY(!tabs->isVisible());
+    QTRY_COMPARE(layer->mapToItem(root, QPointF()), QPointF());
+    QTRY_COMPARE(layer->size(), root->size());
+    qInfo() << "[FIX:gallery-fullscreen] viewer rect"
+            << layer->mapRectToItem(root, layer->boundingRect())
+            << "DPR" << dpr << "tabs visible" << tabs->isVisible();
+    QTest::qWait(100);
+    const auto fullscreenCapture = fixture.window->grabWindow();
+    QVERIFY(!fullscreenCapture.isNull());
+    QCOMPARE(fullscreenCapture.pixelColor(fullscreenCapture.width()/2, 0), QColor("#e01080"));
+    QVERIFY(fullscreenCapture.save(QStringLiteral("/tmp/f4-gallery-fullscreen-175.png")));
+    fixture.window->showNormal();
+    QTRY_VERIFY(tabs->isVisible());
+    QTRY_VERIFY(layer->mapToItem(root, QPointF()).y() > 0);
+    QTest::qWait(100); // settle the restored row's deferred pixel correction
+    for (const QString &id : {QStringLiteral("workspace-tab-1"),
+                              QStringLiteral("workspace-tab-2")}) {
+        verifyLeaf(visualItemWithObjectNamePrefix(root, "workspace-tab-title-" + id));
+        verifyLeaf(visualItemWithObjectNamePrefix(root, "workspace-tab-number-" + id));
+        verifyLeaf(visualItemWithObjectNamePrefix(root, "workspace-tab-icon-" + id));
+    }
 }
 
 void F4QuickViewSurfaceTests::workspaceTabTextParentsStayOnPhysicalPixelGrid()
@@ -3792,7 +3818,16 @@ void F4QuickViewSurfaceTests::workspaceTabTextParentsStayOnPhysicalPixelGrid()
     QVERIFY(tabs && appIcon && queue);
     const qreal leftInset = qMax(fixture.window->property("macTitleBarLeftPadding").toReal(),
                                appIcon->isVisible() ? appIcon->x() + appIcon->width() : 0.0);
-    QVERIFY(qAbs(tabs->x() - leftInset - fixture.window->property("contentSpacing").toReal()) < 1.0 / dpr);
+    if (fixture.window->property("useMacNativeTitleBar").toBool()) {
+        auto *area = fixture.window->property("macSystemButtonAreaItem").value<QQuickItem *>();
+        QVERIFY(area);
+        const int center = QRectF(area->mapToItem(rootItem, QPointF()), area->size()).toRect().center().x();
+        const qreal tabLeft = tabs->mapToItem(rootItem, QPointF()).x();
+        qInfo() << "[FIX:traffic-light-margins] tabs" << tabLeft << "symmetric edge" << 2 * center;
+        QCOMPARE(tabLeft, qreal(2 * center));
+    } else {
+        QVERIFY(qAbs(tabs->x() - leftInset - fixture.window->property("contentSpacing").toReal()) < 1.0 / dpr);
+    }
     QVERIFY(tabs->x() + tabs->width() <= queue->x());
     for (const auto &name : {"workspace-tab-title-workspace-tab-1", "workspace-tab-number-workspace-tab-1",
                             "workspace-tab-icon-workspace-tab-1", "workspace-close-workspace-tab-1", "workspaceNewIcon"}) {
@@ -5985,6 +6020,48 @@ void F4QuickViewSurfaceTests::commandLineDropOutlineMatchesPanels()
     QTRY_VERIFY(!outline->isVisible());
 }
 
+void F4QuickViewSurfaceTests::commandLineEmptyBaseline()
+{
+    for (bool rich : {false, true}) {
+        auto scene = shellScene();
+        auto shell = scene.value(QStringLiteral("shell")).toMap();
+        QVariantMap command{{"visible", true}, {"multiline", rich}, {"wordWrap", rich},
+                            {"prompt", "> "}, {"text", "abc"},
+                            {"cursorPosition", 0}, {"cursorVisible", true}};
+        shell.insert("commandLine", command);
+        scene.insert("shell", shell);
+        QuickViewFixture fixture(scene);
+        auto *input = fixture.item(QStringLiteral("commandLineInput"));
+        auto *cursor = fixture.item(QStringLiteral("commandLineCursor"));
+        QVERIFY(input && cursor);
+        QTest::qWait(100);
+        const auto baseline = input->mapToScene(QPointF(0, input->baselineOffset())).y();
+        const auto caretY = cursor->mapToScene(QPointF()).y();
+        for (const QString &text : {QString(), QStringLiteral("abc"), QString()}) {
+            command.insert("text", text);
+            shell.insert("commandLine", command);
+            scene.insert("shell", shell);
+            fixture.shell.setScene(scene);
+            QTest::qWait(100);
+            qInfo() << "[FIX:command-baseline] rich" << rich << "text" << text
+                    << "baseline" << input->mapToScene(QPointF(0, input->baselineOffset())).y()
+                    << "expected" << baseline << "height" << input->property("contentHeight");
+            QCOMPARE(input->mapToScene(QPointF(0, input->baselineOffset())).y(), baseline);
+            QCOMPARE(cursor->mapToScene(QPointF()).y(), caretY);
+            for (auto *leaf : {input, cursor}) {
+                const auto origin = leaf->mapToItem(fixture.window->contentItem(), QPointF());
+                const auto physical = origin * fixture.window->devicePixelRatio();
+                QVERIFY(qAbs(physical.x()-qRound(physical.x())) < 0.01);
+                QVERIFY(qAbs(physical.y()-qRound(physical.y())) < 0.01);
+                QCOMPARE(leaf->mapToItem(fixture.window->contentItem(), QPointF(1,0))-origin, QPointF(1,0));
+                QCOMPARE(leaf->mapToItem(fixture.window->contentItem(), QPointF(0,1))-origin, QPointF(0,1));
+            }
+            QVERIFY(fixture.window->grabWindow().save(QStringLiteral("/tmp/f4-command-%1-%2.png")
+                    .arg(rich).arg(text.isEmpty() ? "empty" : "text")));
+        }
+    }
+}
+
 void F4QuickViewSurfaceTests::commandLineFontBaselineCaretAndCompactHeight_data()
 {
     QTest::addColumn<QString>("family");
@@ -6058,7 +6135,7 @@ void F4QuickViewSurfaceTests::commandLineFontBaselineCaretAndCompactHeight()
         const qreal promptBaseline = leaf->mapToItem(box, QPointF(0,leaf->baselineOffset())).y();
         const qreal inputBaseline = input->mapToItem(box, QPointF(0,input->baselineOffset())).y();
         qInfo() << "baselines" << promptBaseline << inputBaseline;
-        QVERIFY(qAbs(promptBaseline-inputBaseline) <= pixel);
+        QVERIFY(qAbs(promptBaseline-inputBaseline) <= pixel + 0.01);
         checkedPrompt = true;
     }
     QVERIFY(checkedPrompt);

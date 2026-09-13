@@ -128,9 +128,10 @@ Item {
         nativeWindowAgent: titleBar.nativeWindowAgent
         nativeWindowAgentReady: titleBar.nativeWindowAgentReady
         usesQwk: titleBar.usesQwk
-        x: hostWindow.snapPx(Math.max(hostWindow.macTitleBarLeftPadding,
-                                     appIcon.visible ? appIcon.x + appIcon.width : 0)
-                             + hostWindow.contentSpacing)
+        x: hostWindow.snapPx(hostWindow.macTitleBarLeftPadding > 0
+                             ? hostWindow.macTitleBarLeftPadding
+                             : (appIcon.visible ? appIcon.x + appIcon.width : 0)
+                               + hostWindow.contentSpacing)
     }
 
     ToolButton {
