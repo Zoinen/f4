@@ -367,7 +367,9 @@ set(F4_LUCIDE_ICON_NAMES
   search.svg
   sparkles.svg
   space.svg
+  smartphone.svg
   square-terminal.svg
+  tablet.svg
   text-wrap.svg
   trash-2.svg
   triangle-alert.svg

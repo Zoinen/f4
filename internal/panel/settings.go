@@ -7,6 +7,12 @@ import (
 // OpenSettingsAt is wired by the application to the canonical Settings Center.
 var OpenSettingsAt func(category, collection, record string, create bool) bool
 
+var OpenSettingsRecordAt func(collection, record string, create bool, applied func()) bool
+
+func (pf *PanelsFrame) OpenSettingsRecord(collection, record string, create bool) bool {
+	return OpenSettingsRecordAt != nil && OpenSettingsRecordAt(collection, record, create, pf.RefreshAll)
+}
+
 func (*PanelsFrame) OpenSettings(category, collection, record string, create bool) bool {
 	if OpenSettingsAt == nil {
 		return false

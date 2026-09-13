@@ -749,6 +749,25 @@ NormalColor = background:#778899
 	}
 }
 
+func TestSemanticDeviceIconsDoNotPolluteFolderStyleCache(t *testing.T) {
+	highlighter := &FileHighlighter{}
+	highlighter.LoadFromIni(ini.Parse(strings.NewReader(`[Highlight_0]
+Mask=*
+Icon=qrc:/F4QtHost/icons/lucide/folder.svg
+NormalColor=foreground:#112233
+`)))
+	for _, key := range []string{"", "smartphone", "tablet", "", "smartphone"} {
+		_, style := highlighter.SemanticStyle(&vfs.VFSItem{Name: "entry", IsDir: true, IconKey: key}, true)
+		want := key
+		if want == "" {
+			want = "folder"
+		}
+		if style.IconKey != want || style.Normal.Foreground != "#112233" {
+			t.Fatalf("key %q: unexpected style %+v", key, style)
+		}
+	}
+}
+
 func TestSemanticHighlightParentIconAndRejectedSchemes(t *testing.T) {
 	ini := ini.Parse(strings.NewReader(`
 [Highlight_0]

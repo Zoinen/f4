@@ -43,6 +43,7 @@ func init() {
 	registerSettingsRoutes()
 	redirectLegacySettingsActions()
 	panel.OpenSettingsAt = settings.OpenAt
+	panel.OpenSettingsRecordAt = settings.OpenRecord
 	panel.SetSettingsRecordDefault = settings.SetRecordDefault
 	panel.OpenUserMenuSettings = settings.OpenUserMenu
 	plughost.SettingsCommand = func(id string) bool {

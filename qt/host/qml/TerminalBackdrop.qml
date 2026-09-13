@@ -53,7 +53,7 @@ Rectangle {
         const panelSide = wide >= 0 ? wide : side
         if (!hostWindow.panelSideVisible(panelSide))
             return 0
-        return Math.min(height, hostWindow.nativePanelHeight(panelSide, menuBar.height))
+        return Math.min(height, hostWindow.nativePanelHeight(panelSide, hostWindow.menuBarHeight))
     }
 
     Item {

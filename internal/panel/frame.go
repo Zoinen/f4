@@ -746,7 +746,7 @@ func (pf *PanelsFrame) LeftMenu() vtui.MenuBarItem {
 			{Text: i18n.Msg("Menu.Exit"), Command: vtui.CmQuit},
 		}}
 	}
-	return vtui.MenuBarItem{Label: "&" + i18n.Msg("Menu.Left"), SubItems: []vtui.MenuItem{
+	return pf.withGalleryMenuItems(0, vtui.MenuBarItem{Label: "&" + i18n.Msg("Menu.Left"), SubItems: []vtui.MenuItem{
 		{Text: i18n.Msg("Panel.View.Columns2"), Command: appcmd.CmLeftMedium},
 		{Text: i18n.Msg("Panel.View.Columns3"), Command: appcmd.CmLeftBrief},
 		{Text: i18n.Msg("Panel.View.Details"), Command: appcmd.CmLeftDetailed},
@@ -767,7 +767,7 @@ func (pf *PanelsFrame) LeftMenu() vtui.MenuBarItem {
 		{Text: i18n.Msg("Action.Workspace.NewTerminal"), Command: appcmd.CmWorkspaceNewTerminal, Shortcut: "Ctrl+Shift+O"},
 		{Text: i18n.Msg("Action.Workspace.Close"), Command: appcmd.CmWorkspaceClose, Shortcut: "Ctrl+W"},
 		{Text: i18n.Msg("Menu.Exit"), Command: vtui.CmQuit},
-	}}
+	}})
 }
 
 // rightMenu builds the custom side menu for the right panel.
@@ -782,7 +782,7 @@ func (pf *PanelsFrame) RightMenu() vtui.MenuBarItem {
 			{Text: i18n.Msg("Menu.Right.DriveMenu"), Command: appcmd.CmRightDriveMenu, Shortcut: "Alt+F2"},
 		}}
 	}
-	return vtui.MenuBarItem{Label: "&" + i18n.Msg("Menu.Right"), SubItems: []vtui.MenuItem{
+	return pf.withGalleryMenuItems(1, vtui.MenuBarItem{Label: "&" + i18n.Msg("Menu.Right"), SubItems: []vtui.MenuItem{
 		{Text: i18n.Msg("Panel.View.Columns2"), Command: appcmd.CmRightMedium},
 		{Text: i18n.Msg("Panel.View.Columns3"), Command: appcmd.CmRightBrief},
 		{Text: i18n.Msg("Panel.View.Details"), Command: appcmd.CmRightDetailed},
@@ -797,7 +797,7 @@ func (pf *PanelsFrame) RightMenu() vtui.MenuBarItem {
 		{Text: "&" + i18n.Msg("Menu.SortUseGroups"), Command: appcmd.CmRightSortGroups},
 		{Separator: true},
 		{Text: i18n.Msg("Menu.Right.DriveMenu"), Command: appcmd.CmRightDriveMenu, Shortcut: "Alt+F2"},
-	}}
+	}})
 }
 
 // appendTerminalMenuItems keeps terminal-specific log commands reachable from
@@ -875,11 +875,15 @@ var CommandToActionName = map[int]string{
 	appcmd.CmLeftDetailed:          "Panel.Left.ViewDetailed",
 	appcmd.CmLeftWide:              "Panel.Left.ViewWide",
 	appcmd.CmLeftGallery:           "Panel.ViewGallery",
+	appcmd.CmLeftIcons:             "Panel.ViewIcons",
+	appcmd.CmLeftGrid:              "Panel.ViewGrid",
 	appcmd.CmRightBrief:            "Panel.Right.ViewBrief",
 	appcmd.CmRightMedium:           "Panel.Right.ViewMedium",
 	appcmd.CmRightDetailed:         "Panel.Right.ViewDetailed",
 	appcmd.CmRightWide:             "Panel.Right.ViewWide",
 	appcmd.CmRightGallery:          "Panel.ViewGallery",
+	appcmd.CmRightIcons:            "Panel.ViewIcons",
+	appcmd.CmRightGrid:             "Panel.ViewGrid",
 	appcmd.CmLeftSortName:          "Panel.Left.SortByName",
 	appcmd.CmLeftSortExt:           "Panel.Left.SortByExt",
 	appcmd.CmLeftSortTime:          "Panel.Left.SortByTime",
@@ -958,67 +962,8 @@ func (pf *PanelsFrame) UpdateMenuCheckmarks() {
 	if pf.Panels[0] == nil || pf.Panels[1] == nil || pf.MenuBar == nil || len(pf.MenuBar.Items) < 2 {
 		return
 	}
-	rightMenuIdx := len(pf.MenuBar.Items) - 1
-	if len(pf.MenuBar.Items[0].SubItems) < 11 || len(pf.MenuBar.Items[rightMenuIdx].SubItems) < 11 {
-		return
-	}
-
-	lSort, rSort := SortName, SortName
-	lGalleryMode, rGalleryMode := GalleryLayoutMasonry, GalleryLayoutMasonry
-	lGalleryColumns, rGalleryColumns := DefaultGalleryColumnCount, DefaultGalleryColumnCount
-	lGroups, rGroups := false, false
-	if fsp, ok := pf.Panels[0].(*FileSystemPanel); ok {
-		lSort = fsp.SortMode
-		lGalleryMode = fsp.effectiveGalleryLayoutMode()
-		lGalleryColumns = fsp.effectiveGalleryColumnCount()
-		lGroups = fsp.UseSortGroups
-	}
-	if fsp, ok := pf.Panels[1].(*FileSystemPanel); ok {
-		rSort = fsp.SortMode
-		rGalleryMode = fsp.effectiveGalleryLayoutMode()
-		rGalleryColumns = fsp.effectiveGalleryColumnCount()
-		rGroups = fsp.UseSortGroups
-	}
-
-	modeItems := []struct {
-		mode ViewMode
-		text string
-	}{{ViewModeBrief, i18n.Msg("Panel.View.Columns3")}, {ViewModeMedium, i18n.Msg("Panel.View.Columns2")}, {ViewModeDetailed, i18n.Msg("Panel.View.Details")}, {ViewModeWide, "&" + i18n.Msg("Menu.Left.Wide")}}
-	for i, item := range modeItems {
-		leftActive := (item.mode == ViewModeBrief && lGalleryMode == GalleryLayoutColumns && lGalleryColumns == 3) ||
-			(item.mode == ViewModeMedium && lGalleryMode == GalleryLayoutColumns && lGalleryColumns == 2) ||
-			(item.mode == ViewModeDetailed && lGalleryMode == GalleryLayoutDetails)
-		rightActive := (item.mode == ViewModeBrief && rGalleryMode == GalleryLayoutColumns && rGalleryColumns == 3) ||
-			(item.mode == ViewModeMedium && rGalleryMode == GalleryLayoutColumns && rGalleryColumns == 2) ||
-			(item.mode == ViewModeDetailed && rGalleryMode == GalleryLayoutDetails)
-		if item.mode == ViewModeWide {
-			leftActive = pf.Wide && pf.WidePanel == 0
-			rightActive = pf.Wide && pf.WidePanel == 1
-		}
-		pf.MenuBar.Items[0].SubItems[i].Text = menuCheckText(leftActive, item.text)
-		pf.MenuBar.Items[rightMenuIdx].SubItems[i].Text = menuCheckText(rightActive, item.text)
-	}
-	pf.MenuBar.Items[0].SubItems[4].Text = menuCheckText(lGalleryMode == GalleryLayoutMasonry, i18n.Msg("Panel.View.Masonry"))
-	pf.MenuBar.Items[rightMenuIdx].SubItems[4].Text = menuCheckText(rGalleryMode == GalleryLayoutMasonry, i18n.Msg("Panel.View.Masonry"))
-	for i, item := range []struct {
-		mode SortMode
-		key  string
-	}{{SortName, "SortName"}, {SortExt, "SortExt"}, {SortTime, "SortTime"}, {SortSize, "SortSize"}, {SortUnsorted, "SortUnsorted"}} {
-		pf.MenuBar.Items[0].SubItems[i+6].Text = getSortMenuText(lSort, item.mode, "&"+i18n.Msg("Menu."+item.key))
-		pf.MenuBar.Items[rightMenuIdx].SubItems[i+6].Text = getSortMenuText(rSort, item.mode, "&"+i18n.Msg("Menu."+item.key))
-	}
-
-	for _, side := range []struct {
-		index   int
-		enabled bool
-	}{{0, lGroups}, {rightMenuIdx, rGroups}} {
-		for i := range pf.MenuBar.Items[side.index].SubItems {
-			item := &pf.MenuBar.Items[side.index].SubItems[i]
-			if item.Command == appcmd.CmLeftSortGroups || item.Command == appcmd.CmRightSortGroups {
-				item.Text = getToggleMenuText(side.enabled, "&"+i18n.Msg("Menu.SortUseGroups"))
-			}
-		}
-	}
+	pf.updateSideMenuCheckmarks(0, pf.MenuBar.Items[0].SubItems)
+	pf.updateSideMenuCheckmarks(1, pf.MenuBar.Items[len(pf.MenuBar.Items)-1].SubItems)
 
 	// Update shortcuts dynamically from the action registry. Framework-owned
 	// native keys are intentionally absent from keymap.HotkeyManager defaults, but
@@ -1100,6 +1045,11 @@ func (pf *PanelsFrame) BuildPrompt() []vtui.CharInfo {
 	if vfsTitle != "" && strings.HasPrefix(displayPath, vfsTitle+":") {
 		displayPath = strings.TrimPrefix(displayPath, vfsTitle)
 		sepStr = ""
+	}
+	if deviceURIName(path) != "" {
+		// The public device address already identifies its source; GetTitle
+		// may contain a private transport identity used elsewhere as a key.
+		userHostStr, sepStr, displayPath = "", "", path
 	}
 
 	maxPromptLen := pf.LastW / 2
@@ -3984,6 +3934,20 @@ func (pf *PanelsFrame) HandleCommand(cmd int, args any) bool {
 	case appcmd.CmLeftWide:
 		pf.SetWidePanel(0)
 		return true
+	case appcmd.CmLeftIcons, appcmd.CmLeftGrid, appcmd.CmRightIcons, appcmd.CmRightGrid:
+		side, mode := 0, GalleryLayoutIcons
+		if cmd == appcmd.CmRightIcons || cmd == appcmd.CmRightGrid {
+			side = 1
+		}
+		if cmd == appcmd.CmLeftGrid || cmd == appcmd.CmRightGrid {
+			mode = GalleryLayoutGrid
+		}
+		if fsp, ok := pf.Panels[side].(*FileSystemPanel); ok && GUIViewModesAvailable() {
+			vtui.DebugLog("PANEL_VIEW_MENU: side=%d previous=%s next=%s", side, fsp.GalleryLayoutMode, mode)
+			fsp.SetGalleryLayout(mode, 0)
+		}
+		pf.UpdateMenuCheckmarks()
+		return true
 	case appcmd.CmLeftGallery:
 		if fsp, ok := pf.Panels[0].(*FileSystemPanel); ok {
 			fsp.SetGalleryLayout(GalleryLayoutMasonry, 0)
@@ -4973,6 +4937,20 @@ func (pf *PanelsFrame) interruptRemotePTY(expected *remotePTYInterruptTarget) bo
 	return true
 }
 
+// deviceURIName recognizes only public device addresses, whose authority is a
+// display name rather than a DNS host or a transport identity.
+func deviceURIName(path string) string {
+	scheme, ok := vfs.URIScheme(path)
+	if !ok || scheme != "ios" && scheme != "android" {
+		return ""
+	}
+	_, device, _, err := vfs.ParseDevicePath(path)
+	if err != nil {
+		return ""
+	}
+	return device
+}
+
 func (pf *PanelsFrame) GetTitle() string {
 	if !pf.ShowPanels {
 		if pf.Executing {
@@ -4987,7 +4965,7 @@ func (pf *PanelsFrame) GetTitle() string {
 	path := ""
 	if fsp, ok := pf.Active().(*FileSystemPanel); ok {
 		path = fsp.PersistentPath()
-		if fsp.ProviderOpenTask == nil {
+		if fsp.ProviderOpenTask == nil && deviceURIName(path) == "" {
 			if tp, ok := fsp.Vfs.(vfs.TitleProvider); ok {
 				if prefix := tp.GetTitle(); prefix != "" {
 					if !strings.HasPrefix(path, prefix+":") {
@@ -5023,6 +5001,9 @@ func (pf *PanelsFrame) GetWorkspaceTabTitle() string {
 			return "."
 		}
 		if fsp.ProviderOpenTask == nil && fsp.Vfs.IsAtRoot() {
+			if device := deviceURIName(path); device != "" {
+				return device
+			}
 			if provider, ok := fsp.Vfs.(vfs.TitleProvider); ok {
 				if title := provider.GetTitle(); title != "" {
 					return title

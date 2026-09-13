@@ -94,6 +94,7 @@ func (f GroupOpenerFunc) OpenGroup(ctx context.Context, parent vfs.VFS, device D
 }
 
 type selectorBase struct {
+	paths      vfs.DevicePath
 	parent     vfs.VFS
 	title      string
 	panelTitle string
@@ -102,17 +103,18 @@ type selectorBase struct {
 
 func newSelectorBase(parent vfs.VFS, device DeviceInfo, title, panelTitle, backend string) selectorBase {
 	return selectorBase{
+		paths:  iosPaths(device, panelTitle),
 		parent: parent, title: title, panelTitle: panelTitle,
 		panelInfo: newDevicePanelInfoProvider(device, backend),
 	}
 }
 
 func (s *selectorBase) IsAtRoot() bool  { return true }
-func (s *selectorBase) GetPath() string { return "/" }
+func (s *selectorBase) GetPath() string { return s.paths.Root() }
 func (s *selectorBase) GetTitle() string {
 	return s.title
 }
-func (s *selectorBase) PanelTitle(string) string { return s.panelTitle }
+func (s *selectorBase) PanelTitle(string) string { return s.GetPath() }
 func (s *selectorBase) PanelInfoKey(req vfs.PanelInfoRequest) string {
 	return s.panelInfo.PanelInfoKey(req)
 }
@@ -122,25 +124,34 @@ func (s *selectorBase) CachedPanelInfo(req vfs.PanelInfoRequest) (vfs.PanelInfoS
 func (s *selectorBase) RefreshPanelInfo(ctx context.Context, req vfs.PanelInfoRequest) (vfs.PanelInfoSnapshot, error) {
 	return s.panelInfo.RefreshPanelInfo(ctx, req)
 }
-func (s *selectorBase) IsAbs(p string) bool { return path.IsAbs(p) }
+func (s *selectorBase) IsAbs(p string) bool { return s.paths.IsAbs(p) }
 func (s *selectorBase) SetPath(p string) error {
-	if isSelectorRoot(p) {
+	if s.isRoot(p) {
 		return nil
 	}
 	return fmt.Errorf("ios: selector has no directory %q: %w", p, os.ErrNotExist)
 }
-func (s *selectorBase) Join(elem ...string) string { return path.Join(elem...) }
+func (s *selectorBase) Join(elem ...string) string { return s.paths.Join(elem...) }
 func (s *selectorBase) Abs(p string) (string, error) {
-	if isSelectorRoot(p) {
-		return "/", nil
+	remote, err := s.paths.Remote("/", p)
+	if err != nil {
+		return "", err
 	}
-	if path.IsAbs(p) {
-		return path.Clean(p), nil
-	}
-	return path.Join("/", p), nil
+	return s.paths.Public(remote), nil
 }
-func (s *selectorBase) Base(p string) string { return path.Base(p) }
-func (s *selectorBase) Dir(string) string    { return "/" }
+func (s *selectorBase) Base(p string) string { return s.paths.Base(p) }
+func (s *selectorBase) Dir(string) string    { return s.GetPath() }
+func (s *selectorBase) isRoot(p string) bool {
+	remote, err := s.paths.Remote("/", p)
+	return err == nil && remote == "/"
+}
+func (s *selectorBase) directName(p string) (string, bool) {
+	remote, err := s.paths.Remote("/", p)
+	if err != nil {
+		return "", false
+	}
+	return directSelectorName(remote)
+}
 func (s *selectorBase) MkDir(context.Context, string) error {
 	return ErrSelectorReadOnly
 }
@@ -226,7 +237,7 @@ func (d *DeviceRootVFS) ReadDir(ctx context.Context, p string, onChunk func([]vf
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if !isSelectorRoot(p) {
+	if !d.isRoot(p) {
 		return os.ErrNotExist
 	}
 	items := []vfs.VFSItem{
@@ -247,10 +258,10 @@ func (d *DeviceRootVFS) ReadDir(ctx context.Context, p string, onChunk func([]vf
 }
 
 func (d *DeviceRootVFS) Stat(_ context.Context, p string) (vfs.VFSItem, error) {
-	if isSelectorRoot(p) {
+	if d.isRoot(p) {
 		return vfs.VFSItem{Name: deviceLabel(d.device), IsDir: true}, nil
 	}
-	name, ok := directSelectorName(p)
+	name, ok := d.directName(p)
 	if !ok {
 		return vfs.VFSItem{}, os.ErrNotExist
 	}
@@ -269,7 +280,7 @@ func (d *DeviceRootVFS) Clone() vfs.VFS {
 }
 
 func (d *DeviceRootVFS) capabilityForPath(p string) (Capability, bool) {
-	name, ok := directSelectorName(p)
+	name, ok := d.directName(p)
 	if !ok {
 		return 0, false
 	}
@@ -323,7 +334,7 @@ func AppDisplayName(app AppInfo) string {
 }
 
 func (a *ApplicationsVFS) ReadDir(ctx context.Context, p string, onChunk func([]vfs.VFSItem)) error {
-	if !isSelectorRoot(p) {
+	if !a.isRoot(p) {
 		return os.ErrNotExist
 	}
 	if a.source == nil {
@@ -371,7 +382,7 @@ func (a *ApplicationsVFS) replaceApps(apps map[string]AppInfo) {
 }
 
 func (a *ApplicationsVFS) appForPath(p string) (AppInfo, bool) {
-	name, ok := directSelectorName(p)
+	name, ok := a.directName(p)
 	if !ok {
 		return AppInfo{}, false
 	}
@@ -382,7 +393,7 @@ func (a *ApplicationsVFS) appForPath(p string) (AppInfo, bool) {
 }
 
 func (a *ApplicationsVFS) Stat(_ context.Context, p string) (vfs.VFSItem, error) {
-	if isSelectorRoot(p) {
+	if a.isRoot(p) {
 		return vfs.VFSItem{Name: ApplicationsSelector, IsDir: true}, nil
 	}
 	app, ok := a.appForPath(p)
@@ -440,7 +451,7 @@ func (g *AppGroupsVFS) ReadDir(ctx context.Context, p string, onChunk func([]vfs
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if !isSelectorRoot(p) {
+	if !g.isRoot(p) {
 		return os.ErrNotExist
 	}
 	names := make([]string, 0, len(g.groups))
@@ -459,7 +470,7 @@ func (g *AppGroupsVFS) ReadDir(ctx context.Context, p string, onChunk func([]vfs
 }
 
 func (g *AppGroupsVFS) groupForPath(p string) (string, bool) {
-	name, ok := directSelectorName(p)
+	name, ok := g.directName(p)
 	if !ok {
 		return "", false
 	}
@@ -468,7 +479,7 @@ func (g *AppGroupsVFS) groupForPath(p string) (string, bool) {
 }
 
 func (g *AppGroupsVFS) Stat(_ context.Context, p string) (vfs.VFSItem, error) {
-	if isSelectorRoot(p) {
+	if g.isRoot(p) {
 		return vfs.VFSItem{Name: AppGroupsSelector, IsDir: true}, nil
 	}
 	groupID, ok := g.groupForPath(p)

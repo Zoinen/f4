@@ -136,6 +136,13 @@ func (s *deviceInfoService) provider(device DeviceInfo, backend, backendDetail s
 }
 
 func normalizeDeviceInfoPath(p string) string {
+	if vfs.IsURIPath(p) {
+		scheme, _, remote, err := vfs.ParseDevicePath(p)
+		if err != nil || scheme != "android" {
+			return "/"
+		}
+		p = remote
+	}
 	if !path.IsAbs(p) {
 		return "/"
 	}

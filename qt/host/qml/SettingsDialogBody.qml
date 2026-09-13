@@ -61,14 +61,15 @@ Item {
     readonly property real lineHeight: hostWindow.snapPx(Math.max(22, hostWindow.font.pixelSize + 4))
     readonly property real controlHeight: hostWindow.snapPx(Math.max(32, hostWindow.font.pixelSize + 16))
     readonly property real navigationWidth: hostWindow.snapPx(Math.min(260, Math.max(170, width * .26)))
-    readonly property real mainX: navigationWidth + gap
+    readonly property bool hasNavigation: widgets.some(w => w.layoutRole === "navigation" && w.visible !== false)
+    readonly property real mainX: hasNavigation ? navigationWidth + gap : 0
     readonly property real mainWidth: Math.max(1, width - mainX)
     readonly property real footerY: Math.max(0, height - controlHeight)
     readonly property real paneBottom: Math.max(0, footerY - gap)
     readonly property bool wideHelp: mainWidth >= 720
     readonly property real helpWidth: hostWindow.snapPx(Math.min(280, mainWidth * .3))
     readonly property real helpHeight: hostWindow.snapPx(Math.min(110, Math.max(50, paneBottom * .22)))
-    readonly property real pageY: lineHeight + gap
+    readonly property real pageY: hasNavigation ? lineHeight + gap : 0
     readonly property real pageWidth: Math.max(1, mainWidth - (wideHelp ? helpWidth + gap : 0))
     readonly property real pageHeight: Math.max(1, paneBottom - pageY - (wideHelp ? 0 : helpHeight + gap))
     readonly property real buttonWidth: hostWindow.snapPx(Math.min(104, (width - gap * 2) / 3))

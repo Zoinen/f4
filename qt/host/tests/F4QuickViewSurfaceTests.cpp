@@ -14,6 +14,7 @@
 #include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QFont>
+#include <QFontMetricsF>
 #include <QGuiApplication>
 #include <QImage>
 #include <QMetaProperty>
@@ -782,13 +783,22 @@ private slots:
     void attachedMenusDoNotShowStandaloneTitles();
     void standaloneMenuTitleLeavesStaySharpAt175Percent();
     void menuScrollBarUsesNativeExtentAndCommitsMouseDrag();
+    void historyLastRowFitsNativeViewport_data();
+    void historyFirstVisibleFrameHasFinalPosition();
+    void historyLastRowFitsNativeViewport();
     void menuBarPopupStartsUnderClickedItem();
+    void f9MenuOverlaysPathRowWithoutMovingContent();
+    void appIconMenuUsesSemanticCategoriesAndCommands();
     void nestedMenuAnchorsHeadersTagsAndChevronsOnPhysicalPixels();
     void nestedMenuHoverUsesDelayedSubmenuAction();
     void compactMenuStructureTransfersFocusWithoutSceneRebind();
     void menuKeyboardSelectionSurvivesStationaryPointerPatch();
     void pathBreadcrumbTextStaysFixedWhenNavigatingDeeper();
     void uriBreadcrumbKeepsSchemeTogetherAndNavigates();
+    void commandMenusKeepPanelCursorWhileBlockingInput();
+    void quickSearchPaletteDefaultAndResetArePink();
+    void deviceBreadcrumbLabelsPreserveCanonicalNavigationAt175Percent_data();
+    void deviceBreadcrumbLabelsPreserveCanonicalNavigationAt175Percent();
     void pluginPathIconFollowsPanelOnPhysicalGrid();
     void embeddedWheelCoalescesAndUsesQuickViewContract();
     void contentKeyChangeDropsOldGestureAndAnchor();
@@ -3776,6 +3786,26 @@ void F4QuickViewSurfaceTests::workspaceTabTextParentsStayOnPhysicalPixelGrid()
     QCOMPARE(title->parentItem(), label);
     QCOMPARE(number->parentItem(), label);
 
+    auto *tabs = fixture.item("workspaceBar");
+    auto *appIcon = fixture.item("appIconButton");
+    auto *queue = fixture.item("operationsQueueButton");
+    QVERIFY(tabs && appIcon && queue);
+    const qreal leftInset = qMax(fixture.window->property("macTitleBarLeftPadding").toReal(),
+                               appIcon->isVisible() ? appIcon->x() + appIcon->width() : 0.0);
+    QVERIFY(qAbs(tabs->x() - leftInset - fixture.window->property("contentSpacing").toReal()) < 1.0 / dpr);
+    QVERIFY(tabs->x() + tabs->width() <= queue->x());
+    for (const auto &name : {"workspace-tab-title-workspace-tab-1", "workspace-tab-number-workspace-tab-1",
+                            "workspace-tab-icon-workspace-tab-1", "workspace-close-workspace-tab-1", "workspaceNewIcon"}) {
+        auto *leaf = visualItemWithObjectNamePrefix(rootItem, QString::fromLatin1(name));
+        QVERIFY2(leaf && leaf->isVisible(), name);
+        const auto origin = leaf->mapToItem(rootItem, QPointF());
+        for (qreal coordinate : {origin.x(), origin.y()})
+            QVERIFY2(qAbs(coordinate * dpr - qRound64(coordinate * dpr)) < .001, name);
+        QCOMPARE(leaf->mapToItem(rootItem, QPointF(1,0)) - origin, QPointF(1,0));
+        QCOMPARE(leaf->mapToItem(rootItem, QPointF(0,1)) - origin, QPointF(0,1));
+    }
+    QVERIFY(fixture.window->grabWindow().save("/tmp/f4-left-tabs-175.png"));
+
     const auto verifyWholePhysicalCoordinate = [dpr](
             qreal logicalCoordinate, const QString &description) {
         const qreal physicalCoordinate = logicalCoordinate * dpr;
@@ -4650,6 +4680,165 @@ void F4QuickViewSurfaceTests::standaloneMenuTitleLeavesStaySharpAt175Percent()
     }
 }
 
+void F4QuickViewSurfaceTests::historyFirstVisibleFrameHasFinalPosition()
+{
+    QuickViewFixture fixture(shellScene({}, 0));
+    QVERIFY(fixture.window);
+    QTest::qWait(50);
+    auto *root = fixture.window->contentItem();
+    QVariantList items;
+    for (int i = 0; i < 100; ++i)
+        items.append(QVariantMap{{"index", i}, {"text", QString("entry %1").arg(i)},
+            {"details", QVariantMap{{"kind", "history"}, {"primary", QString("entry %1").arg(i)}}}});
+    QVariantMap menu{{"id", "history-first"}, {"kind", "menu"}, {"role", "vmenu"},
+        {"title", "History"}, {"x", 4}, {"y", 1}, {"w", 70}, {"h", 28},
+        {"selected", 99}, {"top", 70}, {"viewHeight", 30}, {"items", items}};
+    int frames = 0;
+    QStringList errors;
+    qreal firstOffset = 0;
+    const auto inspectVisiblePosition = [&] {
+        auto *list = visualItemWithObjectName(root, "semanticMenuList-history-first");
+        if (!list || !list->isVisible() || list->opacity() == 0)
+            return;
+        const auto offset = list->property("contentY").toReal();
+        if (frames++ == 0)
+            firstOffset = offset;
+        if (qAbs(offset - firstOffset) > .01)
+            errors.append(QString("visible offset changed: %1 -> %2").arg(firstOffset).arg(offset));
+        auto *last = visualItemWithObjectName(root, "semanticMenuItem-history-first-99");
+        if (!last) {
+            errors.append("selected row missing from visible frame");
+            return;
+        }
+        const auto rect = last->mapRectToItem(list, QRectF(0, 0, last->width(), last->height()));
+        if (rect.top() < -.01 || rect.bottom() > list->height() + .01)
+            errors.append(QString("selected row outside first viewport: %1 / %2").arg(rect.bottom()).arg(list->height()));
+    };
+    const auto connection = QObject::connect(fixture.window, &QQuickWindow::afterAnimating, fixture.window, inspectVisiblePosition);
+    fixture.shell.setCommandMenus({menu});
+    inspectVisiblePosition();
+    QTest::qWait(50);
+    // The full semantic scene can follow the direct menu-open publication.
+    fixture.shell.setScene([&] {
+        auto scene = shellScene({}, 0);
+        scene.insert("menus", QVariantList{menu});
+        return scene;
+    }());
+    QTest::qWait(200);
+    QObject::disconnect(connection);
+    QVERIFY(frames > 0);
+    qInfo() << "[FIX:history-first-frame]" << frames << "frames" << errors;
+    QVERIFY2(errors.isEmpty(), qPrintable(errors.join('\n')));
+}
+
+void F4QuickViewSurfaceTests::historyLastRowFitsNativeViewport_data()
+{
+    QTest::addColumn<QString>("columns");
+    QTest::newRow("command") << QString("command");
+    QTest::newRow("viewer-editor") << QString("dated");
+}
+
+void F4QuickViewSurfaceTests::historyLastRowFitsNativeViewport()
+{
+    QFETCH(QString, columns);
+    auto scene = shellScene({}, 0);
+    QVariantList items;
+    for (int i = 0; i < 100; ++i)
+        items.append(QVariantMap{{"index", i}, {"text", QString("History entry %1").arg(i)},
+            {"details", QVariantMap{{"kind", "history"}, {"columns", columns},
+                {"primary", QString("echo <item> %1").arg(i)}, {"path", "/work/example"},
+                {"date", "2026-09-13 12:34:56"}, {"primaryMatches", "1111"}}}});
+    QVariantMap menu{{"id", "history-fit"}, {"kind", "menu"}, {"role", "vmenu"},
+        {"title", "Commands History"}, {"x", 4}, {"y", 1}, {"w", 70}, {"h", 28},
+        {"selected", 99}, {"top", 70}, {"viewHeight", 30}, {"items", items}};
+    scene.insert("menus", QVariantList{menu});
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    fixture.window->resize(1000, 640);
+    auto *root = fixture.window->contentItem();
+    QQuickItem *list = nullptr;
+    QTRY_VERIFY((list = visualItemWithObjectName(root, "semanticMenuList-history-fit")));
+    QTest::qWait(100);
+    QQuickItem *last = nullptr;
+    QTRY_VERIFY((last = visualItemWithObjectName(root, "semanticMenuItem-history-fit-99")));
+    const auto rowRect = last->mapRectToItem(list, QRectF(0, 0, last->width(), last->height()));
+    qInfo() << "[FIX:history-viewport] last row" << rowRect << "viewport" << list->height();
+    QVERIFY2(rowRect.top() >= -.01 && rowRect.bottom() <= list->height()+.01,
+        qPrintable(QString("last bottom=%1 viewport=%2").arg(rowRect.bottom()).arg(list->height())));
+    auto *text = visualItemWithObjectName(root, "semanticHistory-history-fit-99-primary");
+    QVERIFY(text);
+    const QPointF origin = text->mapToItem(root, QPointF());
+    const QPointF physical = origin * fixture.window->devicePixelRatio();
+    QVERIFY(qAbs(physical.x()-qRound64(physical.x())) < .02);
+    QVERIFY(qAbs(physical.y()-qRound64(physical.y())) < .02);
+    QVERIFY(QLineF(text->mapToItem(root, QPointF(1,0))-origin, QPointF(1,0)).length() < .0001);
+    QVERIFY(QLineF(text->mapToItem(root, QPointF(0,1))-origin, QPointF(0,1)).length() < .0001);
+    QVERIFY(text->property("text").toString().contains("<font color="));
+    QVERIFY(text->property("text").toString().contains("&lt;item&gt;"));
+    qreal previousRight = text->mapToItem(root, QPointF(text->width(),0)).x();
+    for (const auto &column : {QString("path"), QString("date")}) {
+        auto *leaf = visualItemWithObjectName(root, "semanticHistory-history-fit-99-" + column);
+        if (column == "path" && columns == "dated") {
+            QVERIFY(!leaf);
+            continue;
+        }
+        QVERIFY(leaf && leaf->isVisible());
+        if (column == "date") {
+            const QFontMetricsF metrics(leaf->property("font").value<QFont>());
+            QVERIFY(qAbs(metrics.horizontalAdvance("i") - metrics.horizontalAdvance("W")) < .01);
+        }
+        const auto p = leaf->mapToItem(root, QPointF());
+        QVERIFY(p.x() > previousRight);
+        previousRight = p.x() + leaf->width();
+        const auto physical = p * fixture.window->devicePixelRatio();
+        QVERIFY(qAbs(physical.x()-qRound64(physical.x())) < .02);
+        QVERIFY(qAbs(physical.y()-qRound64(physical.y())) < .02);
+        QVERIFY(QLineF(leaf->mapToItem(root,QPointF(1,0))-p,QPointF(1,0)).length() < .0001);
+        QVERIFY(QLineF(leaf->mapToItem(root,QPointF(0,1))-p,QPointF(0,1)).length() < .0001);
+        QVERIFY(leaf->property("color") != text->property("color"));
+    }
+    if (qEnvironmentVariableIsSet("F4_HISTORY_CAPTURE"))
+        QVERIFY(fixture.window->grabWindow().save(qEnvironmentVariable("F4_HISTORY_CAPTURE") + "-" + columns + ".png"));
+    // A scroll acknowledgement keeps the cursor unchanged, intentionally off
+    // screen. A subsequent keyboard selection must become visible again.
+    const qreal bottomOffset = list->property("contentY").toReal();
+    fixture.shell.deliverCommandMenuStates({QVariantMap{{"id", "history-fit"}, {"selected",99}, {"top",70}}});
+    QTest::qWait(30);
+    QCOMPARE(list->property("contentY").toReal(), bottomOffset);
+    for (int index = 98; index >= 94; --index) {
+        fixture.shell.deliverCommandMenuStates({QVariantMap{{"id", "history-fit"}, {"selected",index}, {"top",70}}});
+        QTest::qWait(30);
+        qInfo() << "[FIX:history-keyboard-scroll] selected" << index
+                << "offset" << list->property("contentY").toReal() << "expected" << bottomOffset;
+        QCOMPARE(list->property("contentY").toReal(), bottomOffset);
+    }
+    fixture.shell.deliverCommandMenuStates({QVariantMap{{"id", "history-fit"}, {"selected",99}, {"top",70}}});
+    QTest::qWait(30);
+    QCOMPARE(list->property("contentY").toReal(), bottomOffset);
+    fixture.shell.deliverCommandMenuStates({QVariantMap{{"id", "history-fit"}, {"selected",99}, {"top",20}}});
+    QTRY_VERIFY(list->property("contentY").toReal() < bottomOffset - 100);
+    fixture.shell.deliverCommandMenuStates({QVariantMap{{"id", "history-fit"}, {"selected",98}, {"top",69}}});
+    QTest::qWait(50);
+    auto *selected = visualItemWithObjectName(root, "semanticMenuItem-history-fit-98");
+    QVERIFY(selected);
+    const auto selectedRect = selected->mapRectToItem(list, QRectF(0,0,selected->width(),selected->height()));
+    QVERIFY2(selectedRect.top() >= -.01 && selectedRect.bottom() <= list->height()+.01,
+        qPrintable(QString("selection bottom=%1 viewport=%2 contentY=%3").arg(selectedRect.bottom()).arg(list->height()).arg(list->property("contentY").toReal())));
+    const qreal hoverOffset = list->property("contentY").toReal();
+    auto *overlay = list->parentItem()->parentItem();
+    auto *hoveredRow = visualItemWithObjectName(root, "semanticMenuItem-history-fit-90");
+    QVERIFY(hoveredRow);
+    const QPoint pointer = hoveredRow->mapToItem(root, QPointF(80,hoveredRow->height()/2)).toPoint();
+    QTest::mouseMove(fixture.window, pointer, 10);
+    QTest::mouseMove(fixture.window, pointer + QPoint(5,0), 10);
+    QTRY_COMPARE(overlay->property("pointerSelectedIndex").toInt(), 90);
+    QTest::qWait(20);
+    QCOMPARE(list->property("contentY").toReal(), hoverOffset);
+    fixture.shell.deliverCommandMenuStates({QVariantMap{{"id","history-fit"},{"selected",90},{"top",69}}});
+    QTest::qWait(30);
+    QCOMPARE(list->property("contentY").toReal(), hoverOffset);
+}
+
 void F4QuickViewSurfaceTests::menuScrollBarUsesNativeExtentAndCommitsMouseDrag()
 {
     const auto menuWithRows = [](int count, bool withSeparators = false) {
@@ -4791,6 +4980,127 @@ void F4QuickViewSurfaceTests::menuScrollBarUsesNativeExtentAndCommitsMouseDrag()
     QTRY_VERIFY_WITH_TIMEOUT(
         !scrollBar->property("nativeOverflow").toBool(), 3000);
     QTRY_VERIFY_WITH_TIMEOUT(!scrollBar->isVisible(), 3000);
+}
+
+void F4QuickViewSurfaceTests::f9MenuOverlaysPathRowWithoutMovingContent()
+{
+    auto scene = shellScene({}, 0);
+    QVariantMap bar{{"active", false}, {"items", QVariantList{
+        QVariantMap{{"index", 0}, {"text", "Left"}},
+        QVariantMap{{"index", 1}, {"text", "Files"}},
+        QVariantMap{{"index", 2}, {"text", "Commands"}}}}};
+    scene.insert("menuBar", bar);
+    QuickViewFixture fixture(scene, true, true);
+    QVERIFY(fixture.window);
+    const qreal dpr = fixture.window->devicePixelRatio();
+    QVERIFY(qAbs(dpr - 1.75) < .001);
+    auto *menu = fixture.item("panelMenuBar");
+    auto *header = fixture.item("panelHeader-0");
+    auto *panel = fixture.item("galleryPanelContent-0");
+    auto *title = fixture.item("titleBar");
+    QVERIFY(menu && header && panel && title);
+    QVERIFY(!menu->isVisible());
+    const QPointF before = panel->mapToScene(QPointF());
+    const QSizeF sizeBefore = panel->size();
+    const QImage pathChrome = fixture.window->grabWindow();
+    const int chromeX = qRound(menu->width() * .7 * dpr);
+    const int chromeTop = qRound(header->mapToScene(QPointF()).y() * dpr);
+    const int chromeBottom = qRound((header->mapToScene(QPointF()).y() + header->height()) * dpr) - 1;
+    bar.insert("active", true);
+    scene.insert("menuBar", bar);
+    fixture.shell.setScene(scene);
+    QTRY_VERIFY(menu->isVisible());
+    QCOMPARE(menu->mapToScene(QPointF()).y(), header->mapToScene(QPointF()).y());
+    QCOMPARE(menu->height(), header->height());
+    QCOMPARE(menu->width(), fixture.window->contentItem()->width());
+    QVERIFY(menu->parentItem() != title);
+    QCOMPARE(panel->mapToScene(QPointF()), before);
+    QCOMPARE(panel->size(), sizeBefore);
+    QTest::qWait(80);
+    const QImage menuChrome = fixture.window->grabWindow();
+    qInfo() << "[FIX:f9-path-chrome] background and separator pixels"
+            << menuChrome.pixelColor(chromeX, chromeTop + 2)
+            << menuChrome.pixelColor(chromeX, chromeBottom);
+    QCOMPARE(menuChrome.pixelColor(chromeX, chromeTop + 2), pathChrome.pixelColor(chromeX, chromeTop + 2));
+    QCOMPARE(menuChrome.pixelColor(chromeX, chromeBottom), pathChrome.pixelColor(chromeX, chromeBottom));
+    auto *separator = fixture.item("panelMenuBarSeparator");
+    QVERIFY(separator);
+    const auto separatorOrigin = separator->mapToScene(QPointF());
+    QCOMPARE(separatorOrigin.y() + separator->height(), header->mapToScene(QPointF()).y() + header->height());
+    QVERIFY(qAbs(separatorOrigin.y() * dpr - qRound64(separatorOrigin.y() * dpr)) < .001);
+    QVERIFY(qAbs(separator->height() * dpr - qRound64(separator->height() * dpr)) < .001);
+    for (int index = 0; index < 3; ++index) {
+        auto *text = visualItemWithObjectNamePrefix(menu, QString("semanticMenuBarLabel-%1").arg(index));
+        QVERIFY2(text && text->isVisible(), qPrintable(QString("missing/hidden menu label %1").arg(index)));
+        const auto origin = text->mapToScene(QPointF());
+        const auto physical = origin * dpr;
+        QVERIFY2(qAbs(physical.x() - qRound64(physical.x())) < .001
+            && qAbs(physical.y() - qRound64(physical.y())) < .001,
+            qPrintable(QString("menu leaf %1,%2 physical").arg(physical.x()).arg(physical.y())));
+        QCOMPARE(text->mapToScene(QPointF(1, 0)) - origin, QPointF(1, 0));
+        QCOMPARE(text->mapToScene(QPointF(0, 1)) - origin, QPointF(0, 1));
+    }
+    QVERIFY(fixture.window->grabWindow().save("/tmp/f4-f9-path-overlay-175.png"));
+    bar.insert("active", false);
+    scene.insert("menuBar", bar);
+    fixture.shell.setScene(scene);
+    QTRY_VERIFY(!menu->isVisible());
+    QCOMPARE(panel->mapToScene(QPointF()), before);
+    QCOMPARE(panel->size(), sizeBefore);
+}
+
+void F4QuickViewSurfaceTests::appIconMenuUsesSemanticCategoriesAndCommands()
+{
+    auto scene = shellScene({}, 0);
+    const QVariantList commands{
+        QVariantMap{{"index", 4}, {"text", "Inspect"}, {"shortcut", "F3"}, {"icon", "images"}},
+        QVariantMap{{"index", 5}, {"text", "Unavailable"}, {"disabled", true}}};
+    const QVariantList categories{
+        QVariantMap{{"index", 2}, {"text", "Files"}, {"items", commands}}};
+    scene.insert("menuBar", QVariantMap{{"active", false}, {"items", categories}});
+    QuickViewFixture fixture(scene, true, true);
+    QVERIFY(fixture.window);
+    auto *icon = fixture.item("appIconButton");
+    QVERIFY(icon);
+    // Exercise the non-macOS entrypoint with the shared QML on the macOS CI host.
+    icon->setVisible(true);
+    QCoreApplication::processEvents();
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+        icon->mapToScene(QPointF(icon->width()/2, icon->height()/2)).toPoint());
+    auto *popup = fixture.window->findChild<QObject *>("applicationMenuPopup");
+    QVERIFY(popup);
+    QTRY_VERIFY(popup->property("visible").toBool());
+    QCOMPARE(popup->property("count").toInt(), 1);
+    auto *submenu = fixture.window->findChild<QObject *>("applicationSubmenu-2");
+    QVERIFY(submenu);
+    QCOMPARE(submenu->property("count").toInt(), 2);
+    QVERIFY(QMetaObject::invokeMethod(submenu, "open"));
+    QTRY_VERIFY(submenu->property("visible").toBool());
+    QTest::qWait(100);
+    const qreal dpr = fixture.window->devicePixelRatio();
+    for (const auto &name : {"applicationMenuEntry-Files-text", "applicationMenuEntry-Files-marker",
+                            "applicationMenuEntry-Inspect-text", "applicationMenuEntry-Inspect-shortcut",
+                            "applicationMenuEntry-Inspect-icon",
+                            "applicationMenuEntry-Unavailable-text", "appIconImage"}) {
+        auto *leaf = fixture.item(name);
+        QVERIFY(leaf && leaf->isVisible());
+        const auto origin = leaf->mapToScene(QPointF());
+        const auto physical = origin * dpr;
+        QVERIFY(qAbs(physical.x() - qRound64(physical.x())) < .001);
+        QVERIFY(qAbs(physical.y() - qRound64(physical.y())) < .001);
+        QCOMPARE(leaf->mapToScene(QPointF(1, 0)) - origin, QPointF(1, 0));
+        QCOMPARE(leaf->mapToScene(QPointF(0, 1)) - origin, QPointF(0, 1));
+    }
+    QVERIFY(fixture.window->grabWindow().save("/tmp/f4-app-menu-175.png"));
+    auto *entry = fixture.item("applicationMenuEntry-Inspect");
+    QVERIFY(entry);
+    fixture.shell.clearActions();
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+        entry->mapToScene(QPointF(entry->width()/2, entry->height()/2)).toPoint());
+    QTRY_VERIFY(!fixture.shell.actions.isEmpty());
+    QCOMPARE(fixture.shell.actions.last().value("action").toString(), QString("menuBar.itemActivate"));
+    QCOMPARE(fixture.shell.actions.last().value("menuIndex").toInt(), 2);
+    QCOMPARE(fixture.shell.actions.last().value("index").toInt(), 4);
 }
 
 void F4QuickViewSurfaceTests::menuBarPopupStartsUnderClickedItem()
@@ -6679,6 +6989,57 @@ void F4QuickViewSurfaceTests::sortGroupLeavesStayOnPhysicalPixelGrid()
     QVERIFY(QMetaObject::invokeMethod(menu, "close"));
 }
 
+void F4QuickViewSurfaceTests::quickSearchPaletteDefaultAndResetArePink()
+{
+    QuickViewFixture fixture(shellScene(), true, true);
+    QVERIFY(fixture.window);
+    const QColor pink(QStringLiteral("#c678dd"));
+    const QColor initial = fixture.window->property("galleryQuickSearchMatchColor").value<QColor>();
+    QVERIFY(fixture.window->setProperty("galleryQuickSearchMatchColor", QColor("#25a244")));
+    QVERIFY(QMetaObject::invokeMethod(fixture.window, "resetThemeToDefaults"));
+    const QColor reset = fixture.window->property("galleryQuickSearchMatchColor").value<QColor>();
+    QCOMPARE(reset, pink);
+    QCOMPARE(initial, pink);
+}
+
+void F4QuickViewSurfaceTests::commandMenusKeepPanelCursorWhileBlockingInput()
+{
+    auto scene = shellScene({}, 0);
+    QuickViewFixture fixture(scene, true, true);
+    QVERIFY(fixture.window);
+    auto *loader = fixture.item("galleryPanelContent-0");
+    QVERIFY(loader);
+    QTRY_VERIFY(loader->property("item").value<QObject *>());
+    auto *host = loader->property("item").value<QObject *>();
+    QVERIFY(host->property("panelActive").toBool());
+    QVERIFY(host->property("showCursor").toBool());
+    const auto menu = titledUserMenu("Files", true);
+    fixture.shell.clearActions();
+    for (int cycle = 0; cycle < 2; ++cycle) {
+        fixture.shell.setCommandMenus({menu});
+        QTRY_VERIFY(visualItemWithObjectNamePrefix(fixture.window->contentItem(),
+            "semanticMenuPopup-user-menu"));
+        QVERIFY(!host->property("panelActive").toBool());
+        QVERIFY2(host->property("showCursor").toBool(),
+                 "command menu must suppress input without hiding the panel cursor");
+        fixture.shell.setCommandMenus({});
+        QTRY_VERIFY(host->property("panelActive").toBool());
+        QVERIFY(host->property("showCursor").toBool());
+        QCOMPARE(loader->property("item").value<QObject *>(), host);
+    }
+    // A dialog remains a paint blocker even when its combo menu is present.
+    scene.insert("dialogs", QVariantList{QVariantMap{
+        {"id", "cursor-blocking-dialog"}, {"kind", "dialog"},
+        {"title", "Dialog"}, {"modal", true},
+        {"x", 2}, {"y", 2}, {"w", 30}, {"h", 10}}});
+    scene.insert("menus", QVariantList{menu});
+    fixture.shell.setScene(scene);
+    QTRY_VERIFY(!host->property("panelActive").toBool());
+    QVERIFY(!host->property("showCursor").toBool());
+    for (const auto &action : fixture.shell.actions)
+        QVERIFY(action.value("action").toString() != "panel.cursor");
+}
+
 void F4QuickViewSurfaceTests::uriBreadcrumbKeepsSchemeTogetherAndNavigates()
 {
     QuickViewFixture fixture(shellScene({}, 0), true, true);
@@ -6731,6 +7092,128 @@ void F4QuickViewSurfaceTests::uriBreadcrumbKeepsSchemeTogetherAndNavigates()
         fixture.shell.clearActions();
         QVERIFY(QMetaObject::invokeMethod(control, "folderClicked", Q_ARG(QVariant, QVariant(""))));
         QCOMPARE(fixture.shell.actions.last().value("path").toString(), prefix);
+    }
+}
+
+void F4QuickViewSurfaceTests::deviceBreadcrumbLabelsPreserveCanonicalNavigationAt175Percent_data()
+{
+    QTest::addColumn<QString>("path");
+    QTest::addColumn<QString>("title");
+    QTest::addColumn<QString>("rootLabel");
+    QTest::addColumn<QString>("icon");
+    QTest::addColumn<QStringList>("children");
+    QTest::newRow("ai-root")
+        << QString("ai://") << QString("ai://")
+        << QString("AI") << QString("sparkles") << QStringList{};
+    QTest::newRow("ai-child")
+        << QString("ai://ctx/nested") << QString("ai://ctx/nested")
+        << QString("AI") << QString("sparkles") << QStringList{"ctx", "nested"};
+    QTest::newRow("android-manager")
+        << QString("android://") << QString("Android devices")
+        << QString("Android") << QString("android-logo") << QStringList{};
+    QTest::newRow("ios-manager")
+        << QString("ios://") << QString("Apple mobile devices")
+        << QString("iOS") << QString("apple-logo") << QStringList{};
+    QTest::newRow("android-child")
+        << QString("android://Pixel 3/sdcard/DCIM")
+        << QString("android://Pixel 3/sdcard/DCIM")
+        << QString("Android") << QString("android-logo")
+        << QStringList{"Pixel 3", "sdcard", "DCIM"};
+    QTest::newRow("ios-child")
+        << QString::fromUtf8("ios://Alexander’s iPhone/DCIM/100APPLE")
+        << QString::fromUtf8("ios://Alexander’s iPhone/DCIM/100APPLE")
+        << QString("iOS") << QString("apple-logo")
+        << QStringList{QString::fromUtf8("Alexander’s iPhone"), "DCIM", "100APPLE"};
+}
+
+void F4QuickViewSurfaceTests::deviceBreadcrumbLabelsPreserveCanonicalNavigationAt175Percent()
+{
+    QFETCH(QString, path);
+    QFETCH(QString, title);
+    QFETCH(QString, rootLabel);
+    QFETCH(QString, icon);
+    QFETCH(QStringList, children);
+    auto scene = shellScene({}, 0);
+    auto shell = scene.value("shell").toMap();
+    auto panels = shell.value("panels").toList();
+    auto panel = panels[0].toMap();
+    panel.insert("path", path);
+    panel.insert("title", title);
+    panel.insert("pathIcon", icon);
+    panels[0] = panel;
+    shell.insert("panels", panels);
+    scene.insert("shell", shell);
+    QuickViewFixture fixture(scene, true, true);
+    QVERIFY(fixture.window);
+    fixture.window->resize(1800, 640);
+    const qreal dpr = fixture.window->devicePixelRatio();
+    QVERIFY2(qAbs(dpr - 1.75) < .001, "Run with QT_SCALE_FACTOR=1.75");
+    auto *control = fixture.item("panelPathTitle-0");
+    QVERIFY(control);
+    control->setProperty("breadcrumbMaskEnabled", false);
+    auto *content = fixture.window->contentItem();
+    QQuickItem *root = nullptr;
+    QTRY_VERIFY((root = visualItemWithObjectNamePrefix(control, "pathBreadcrumbRoot-text")));
+    QTest::qWait(100);
+    QImage capture;
+    QTRY_VERIFY_WITH_TIMEOUT(!(capture = fixture.window->grabWindow()).isNull(), 3000);
+    QVERIFY(capture.save("/tmp/f4-device-breadcrumb-175.png"));
+
+    const auto verifyLeaf = [content, dpr](QQuickItem *leaf) {
+        QVERIFY(leaf);
+        QVERIFY(leaf->isVisible());
+        const QPointF origin = leaf->mapToItem(content, QPointF());
+        const QPointF physical = origin * dpr;
+        QVERIFY2(qAbs(physical.x() - qRound64(physical.x())) < .001
+                     && qAbs(physical.y() - qRound64(physical.y())) < .001,
+                 qPrintable(QString("%1 scene origin = (%2, %3) physical px")
+                     .arg(leaf->objectName()).arg(physical.x(), 0, 'f', 6)
+                     .arg(physical.y(), 0, 'f', 6)));
+        QCOMPARE(leaf->mapToItem(content, QPointF(1, 0)) - origin, QPointF(1, 0));
+        QCOMPARE(leaf->mapToItem(content, QPointF(0, 1)) - origin, QPointF(0, 1));
+    };
+    auto *driveIcon = fixture.item("panelDriveButtonIcon-0");
+    QVERIFY(driveIcon);
+    QVERIFY2(driveIcon->property("source").toUrl().toString().contains(icon),
+             qPrintable(driveIcon->property("source").toUrl().toString()));
+    verifyLeaf(driveIcon);
+    QCOMPARE(control->property("navigationPath").toString(), path);
+    QCOMPARE(root->property("text").toString(), rootLabel);
+    const QString scheme = path.left(path.indexOf("://") + 3);
+    for (int index = -1; index < children.size(); ++index) {
+        const QString id = index < 0 ? "pathBreadcrumbRoot"
+                                     : QString("pathBreadcrumb-%1").arg(index);
+        auto *text = visualItemWithObjectNamePrefix(control, id + "-text");
+        QVERIFY(text);
+        QCOMPARE(text->property("text").toString(), index < 0 ? rootLabel : children[index]);
+        verifyLeaf(text);
+        auto *separator = visualItemWithObjectNamePrefix(control, id + "-separator");
+        QVERIFY(separator);
+        if (separator->isVisible())
+            verifyLeaf(separator);
+        fixture.shell.clearActions();
+        QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+            text->mapToItem(content, QPointF(text->width() / 2, text->height() / 2)).toPoint());
+        QTRY_COMPARE(fixture.shell.actions.size(), 1);
+        QCOMPARE(fixture.shell.actions[0].value("action").toString(), QString("panel.navigatePath"));
+        QCOMPARE(fixture.shell.actions[0].value("path").toString(),
+                 scheme + children.mid(0, index + 1).join('/'));
+    }
+    QVERIFY(!visualItemWithObjectNamePrefix(control,
+        QString("pathBreadcrumb-%1-text").arg(children.size())));
+    control->setProperty("editMode", true);
+    auto *field = visualItemWithObjectNamePrefix(control, "pathField");
+    QVERIFY(field);
+    QTRY_COMPARE(field->property("text").toString(), path);
+    verifyLeaf(field);
+    QTest::qWait(50);
+    const auto editCapture = fixture.window->grabWindow();
+    QVERIFY(!editCapture.isNull());
+    QVERIFY(editCapture.save("/tmp/f4-device-path-editor-175.png"));
+    QCOMPARE(control->property("navigationPath").toString(), path);
+    if (!QTest::currentTestFailed()) {
+        qInfo().noquote() << "[FIX:device-breadcrumb] scheme=" + scheme
+                         << "rootLabel=" + rootLabel << "dpr=" << dpr;
     }
 }
 

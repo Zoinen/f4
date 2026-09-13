@@ -75,26 +75,35 @@ type shellCommandStreamFunc func(context.Context, string, string, func([]byte)) 
 // the FISH+ helper. Sync connections are operation-scoped, while mutations that
 // ADB Sync does not express are executed by the ordinary unprivileged shell.
 type SyncVFS struct {
-	parent vfs.VFS
-	serial string
-	title  string
-	path   string
-	client syncFS
-	run    shellCommandFunc
-	stream shellCommandStreamFunc
+	parent     vfs.VFS
+	serial     string
+	title      string
+	devicePath vfs.DevicePath
+	path       string
+	client     syncFS
+	run        shellCommandFunc
+	stream     shellCommandStreamFunc
 
 	panelInfoMu sync.RWMutex
 	panelInfo   vfs.PanelInfoProvider
 }
 
 func newSyncVFS(parent vfs.VFS, serial, title string, client syncFS, run shellCommandFunc) *SyncVFS {
-	return &SyncVFS{parent: parent, serial: serial, title: title, path: "/", client: client, run: run}
+	return &SyncVFS{
+		parent: parent, serial: serial, title: title,
+		devicePath: vfs.DevicePath{Scheme: "android", Device: title},
+		path:       "/", client: client, run: run,
+	}
 }
 
 func (s *SyncVFS) GetTitle() string { return s.title }
 func (s *SyncVFS) SessionKey() any  { return "android:" + s.serial }
 func (s *SyncVFS) PanelTitle(p string) string {
-	return androidPanelTitle(s.title, p)
+	public, err := s.Abs(p)
+	if err != nil {
+		return p
+	}
+	return public
 }
 
 func (s *SyncVFS) SetPanelInfoProvider(provider vfs.PanelInfoProvider) {
@@ -129,26 +138,30 @@ func (s *SyncVFS) RefreshPanelInfo(ctx context.Context, req vfs.PanelInfoRequest
 	}
 	return vfs.PanelInfoSnapshot{}, nil
 }
-func (s *SyncVFS) IsAtRoot() bool  { return s.path == "/" || s.path == "" }
-func (s *SyncVFS) GetPath() string { return s.path }
-func (s *SyncVFS) IsAbs(p string) bool {
-	return path.IsAbs(p)
-}
-func (s *SyncVFS) Join(elem ...string) string { return path.Join(elem...) }
-func (s *SyncVFS) Base(p string) string       { return path.Base(p) }
-func (s *SyncVFS) Dir(p string) string        { return path.Dir(p) }
+func (s *SyncVFS) IsAtRoot() bool             { return s.path == "/" || s.path == "" }
+func (s *SyncVFS) GetPath() string            { return s.devicePath.Public(s.path) }
+func (s *SyncVFS) IsAbs(p string) bool        { return s.devicePath.IsAbs(p) }
+func (s *SyncVFS) Join(elem ...string) string { return s.devicePath.Join(elem...) }
+func (s *SyncVFS) Base(p string) string       { return s.devicePath.Base(p) }
+func (s *SyncVFS) Dir(p string) string        { return s.devicePath.Dir(p) }
 
-func (s *SyncVFS) abs(p string) string {
-	if p == "" {
-		return s.path
-	}
-	if path.IsAbs(p) {
-		return path.Clean(p)
-	}
-	return path.Join(s.path, p)
+func (s *SyncVFS) abs(p string) (string, error) {
+	return s.devicePath.Remote(s.path, p)
 }
 
 func (s *SyncVFS) mutationTarget(p string) (string, error) {
+	if vfs.IsURIPath(p) {
+		// Validate the decoded components before Remote normalizes them.
+		_, _, remote, err := vfs.ParseDevicePath(p)
+		if err != nil {
+			return "", err
+		}
+		for _, part := range strings.Split(remote, "/") {
+			if part == ".." {
+				return "", fmt.Errorf("android: mutation path %q contains a '..' component", p)
+			}
+		}
+	}
 	if strings.IndexByte(p, 0) >= 0 {
 		return "", fmt.Errorf("android: path contains NUL")
 	}
@@ -157,13 +170,26 @@ func (s *SyncVFS) mutationTarget(p string) (string, error) {
 			return "", fmt.Errorf("android: mutation path %q contains a '..' component", p)
 		}
 	}
-	return mutationPath(s.abs(p))
+	target, err := s.abs(p)
+	if err != nil {
+		return "", err
+	}
+	return mutationPath(target)
 }
 
-func (s *SyncVFS) Abs(p string) (string, error) { return s.abs(p), nil }
+func (s *SyncVFS) Abs(p string) (string, error) {
+	remote, err := s.abs(p)
+	if err != nil {
+		return "", err
+	}
+	return s.devicePath.Public(remote), nil
+}
 
 func (s *SyncVFS) SetPath(p string) error {
-	target := s.abs(p)
+	target, err := s.abs(p)
+	if err != nil {
+		return err
+	}
 	entry, err := s.client.Stat(context.Background(), target)
 	if err != nil {
 		return err
@@ -226,7 +252,10 @@ func (s *SyncVFS) resolveDirectory(ctx context.Context, dir string, entry SyncEn
 }
 
 func (s *SyncVFS) ReadDir(ctx context.Context, p string, onChunk func([]vfs.VFSItem)) error {
-	dir := s.abs(p)
+	dir, err := s.abs(p)
+	if err != nil {
+		return err
+	}
 	entries, err := s.client.List(ctx, dir)
 	if err != nil {
 		return err
@@ -264,7 +293,10 @@ func (s *SyncVFS) ReadDir(ctx context.Context, p string, onChunk func([]vfs.VFSI
 }
 
 func (s *SyncVFS) Stat(ctx context.Context, p string) (vfs.VFSItem, error) {
-	target := s.abs(p)
+	target, err := s.abs(p)
+	if err != nil {
+		return vfs.VFSItem{}, err
+	}
 	entry, err := s.client.Lstat(ctx, target)
 	if err != nil {
 		return vfs.VFSItem{}, err
@@ -310,7 +342,10 @@ func (s *SyncVFS) RunCommand(ctx context.Context, dir, command string, cb func(l
 	if strings.TrimSpace(command) == "" {
 		return 0, errors.New("android: empty shell command")
 	}
-	target := s.abs(dir)
+	target, err := s.abs(dir)
+	if err != nil {
+		return 0, err
+	}
 	// Keep the closing syntax on its own line so a valid trailing shell comment
 	// cannot comment it out. The whole group remains non-interactive.
 	wrapped := "cd " + quoteShellArg(target) + " && (\n" + command + "\n) </dev/null"
@@ -469,7 +504,10 @@ func (s *SyncVFS) Search(context.Context, string, string) (chan int64, error) {
 }
 
 func (s *SyncVFS) Open(ctx context.Context, p string) (vfs.ReadAtCloser, error) {
-	target := s.abs(p)
+	target, err := s.abs(p)
+	if err != nil {
+		return nil, err
+	}
 	entry, err := s.client.Stat(ctx, target)
 	if err != nil {
 		return nil, err
@@ -549,7 +587,7 @@ func (s *SyncVFS) SetAttributes(ctx context.Context, p string, item vfs.VFSItem)
 func (s *SyncVFS) ParentVFS() vfs.VFS { return s.parent }
 func (s *SyncVFS) Clone() vfs.VFS {
 	return &SyncVFS{
-		parent: s.parent, serial: s.serial, title: s.title, path: s.path,
+		parent: s.parent, serial: s.serial, title: s.title, devicePath: s.devicePath, path: s.path,
 		client: s.client, run: s.run, stream: s.stream, panelInfo: s.panelInfoProvider(),
 	}
 }

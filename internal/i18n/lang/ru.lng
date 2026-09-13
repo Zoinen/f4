@@ -3095,21 +3095,23 @@ WindowsLocations.AccessErrorFmt=Не удаётся открыть папку:\n
 WindowsLocations.AccessUnavailable=Это расположение недоступно.
 WindowsLocations.AccessNotFolder=Это расположение не является папкой.
 
-Panel.View.Columns2 = "Колонки · &2"
+Panel.View.Columns2=Колонки · &2
 
-Panel.View.Columns3 = "Колонки · &3"
+Panel.View.Columns3=Колонки · &3
 
-Panel.View.Details = "&Подробно"
+Panel.View.Details=&Подробно
 
-Panel.View.Masonry = "&Плитки"
+Panel.View.Masonry=&Плитки
+Panel.View.Icons=Значки
+Panel.View.Grid=Сетка
 
-DiskMenu.MacOSLocations = "&Места macOS"
+DiskMenu.MacOSLocations=&Места macOS
 
-DiskMenu.MacOSLoading = "Загрузка мест macOS…"
+DiskMenu.MacOSLoading=Загрузка мест macOS…
 
-DiskMenu.ShellLoading = "◌ Загрузка…"
+DiskMenu.ShellLoading=◌ Загрузка…
 
-DiskMenu.ShellEmpty = "Нет мест Windows Shell"
+DiskMenu.ShellEmpty=Нет мест Windows Shell
 SettingsCenter.Text.c925a11891b84dfcf3a6a35ab8064b4ff807efc9c9afac7df8081e91e3af0116=Командная строка
 SettingsCenter.CommandLineMultiline.Label=Многострочный ввод команд
 SettingsCenter.CommandLineMultiline.Description=Сохранять переводы строк и расширять поле команды вверх в консоли и GUI. Shift+Enter вставляет перевод строки.

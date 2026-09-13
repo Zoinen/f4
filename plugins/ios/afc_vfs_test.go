@@ -12,6 +12,27 @@ import (
 
 type poolTestConnection struct{ closes atomic.Int32 }
 
+func TestAFCDeviceQualifiedPublicPaths(t *testing.T) {
+	v := &AFCVFS{
+		device: DeviceInfo{UDID: "stable-id", Name: "Alexander's iPhone"},
+		title:  "Alexander's iPhone:/", path: "/DCIM/100APPLE",
+	}
+	want := "ios://Alexander's iPhone/DCIM/100APPLE"
+	if got := v.GetPath(); got != want {
+		t.Fatalf("GetPath() = %q, want %q", got, want)
+	}
+	file := v.Join(v.GetPath(), "IMG_0007.JPG")
+	if got, err := v.resolve(file); err != nil || got != "/DCIM/100APPLE/IMG_0007.JPG" {
+		t.Fatalf("transport path = %q, %v", got, err)
+	}
+	if got := v.Dir(file); got != want {
+		t.Fatalf("Dir() = %q, want %q", got, want)
+	}
+	if _, err := v.resolve("ios://Another iPhone/DCIM/file"); err == nil {
+		t.Fatal("foreign device path accepted")
+	}
+}
+
 func (*poolTestConnection) Read([]byte) (int, error)    { return 0, io.EOF }
 func (*poolTestConnection) Write(p []byte) (int, error) { return len(p), nil }
 func (c *poolTestConnection) Close() error {

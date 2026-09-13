@@ -23,6 +23,7 @@ Rectangle {
     readonly property int effectiveSelected:
         hostWindow.menuBarPreviewIndex >= 0
         ? hostWindow.menuBarPreviewIndex : Number(menu.selected || 0)
+    property color overlayColor: "transparent"
     color: "transparent"
     visible: menu.items !== undefined
 
@@ -99,10 +100,14 @@ Rectangle {
             menuBarHoverSyncTimer.stop()
             var closing = menu.active === true
                           && item.index === effectiveSelected
-            hostWindow.clearMenuPointerSelection()
-            hostWindow.menuBarOpenedByPointer = !closing
-            hostWindow.menuBarPointerHasSelectedItem = false
-            hostWindow.menuBarPreviewIndex = closing ? -1 : item.index
+            // A closing popup is still visible until Go acknowledges this
+            // request. Preserve its hovered row (including no selection).
+            if (!closing) {
+                hostWindow.clearMenuPointerSelection()
+                hostWindow.menuBarOpenedByPointer = true
+                hostWindow.menuBarPointerHasSelectedItem = false
+                hostWindow.menuBarPreviewIndex = item.index
+            }
             hostWindow.action({
                 "action": "menuBar.toggle",
                 "index": item.index
@@ -146,12 +151,18 @@ Rectangle {
         return mapToItem(semanticLayer, 0, height).y
     }
 
+    Rectangle {
+        objectName: "semanticMenuBarOverlay"
+        anchors.fill: parent
+        color: menuBarRoot.overlayColor
+    }
+
     Row {
         id: menuItemsRow
         anchors.left: parent.left
         anchors.top: parent.top
         anchors.bottom: parent.bottom
-        spacing: 2
+        spacing: hostWindow.snapPx(2)
 
         Repeater {
             id: menuItemRepeater
@@ -163,8 +174,8 @@ Rectangle {
                 readonly property int menuIndex: Number(modelData.index)
                 objectName: "semanticMenuBarItem-" + menuIndex
                 height: parent.height
-                width: label.implicitWidth
-                       + hostWindow.menuItemHorizontalPadding * 2
+                width: hostWindow.snapPx(label.implicitWidth
+                       + hostWindow.menuItemHorizontalPadding * 2)
 
                 onXChanged: menuBarRoot.layoutRevision += 1
                 onWidthChanged: menuBarRoot.layoutRevision += 1
@@ -184,13 +195,12 @@ Rectangle {
                 Component.onCompleted: registerNativeHitTarget()
 
                 Rectangle {
+                    objectName: "semanticMenuBarHighlight-" + menuItemHitTarget.menuIndex
                     anchors.fill: parent
-                    anchors.leftMargin: 2
-                    anchors.rightMargin: 2
-                    anchors.topMargin: 3
-                                       + hostWindow.titleBarContentVerticalOffset
-                    anchors.bottomMargin: 3
-                                          - hostWindow.titleBarContentVerticalOffset
+                    anchors.leftMargin: hostWindow.snapPx(2)
+                    anchors.rightMargin: hostWindow.snapPx(2)
+                    anchors.topMargin: hostWindow.snapPx(3)
+                    anchors.bottomMargin: hostWindow.snapPx(3)
                     radius: 5
                     color: modelData.index
                            === menuBarRoot.effectiveSelected
@@ -203,9 +213,15 @@ Rectangle {
 
                 Text {
                     id: label
+                    objectName: "semanticMenuBarLabel-" + menuItemHitTarget.menuIndex
                     anchors.centerIn: parent
-                    anchors.verticalCenterOffset:
-                        hostWindow.titleBarContentVerticalOffset
+                    anchors.alignWhenCentered: false
+                    font.pixelSize: hostWindow.semanticTextFontPixelSize
+                    renderType: hostWindow.fontRenderType
+                    transform: Translate {
+                        x: hostWindow.dialogPixelOffsetX(label, hostWindow.contentItem)
+                        y: hostWindow.dialogPixelOffsetY(label, hostWindow.contentItem)
+                    }
                     text: hostWindow.mnemonicText(modelData.text,
                                             modelData.hotkey)
                     textFormat: Text.StyledText
@@ -224,8 +240,6 @@ Rectangle {
         onPressed: (mouse) => {
             if (!parent.activateAt(mouse.x, false) && menu.active === true) {
                 menuBarHoverSyncTimer.stop()
-                hostWindow.menuBarPreviewIndex = -1
-                hostWindow.clearMenuPointerSelection()
                 hostWindow.action({
                     "action": "menuBar.toggle",
                     "index": menu.selected

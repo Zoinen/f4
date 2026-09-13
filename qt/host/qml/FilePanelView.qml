@@ -47,7 +47,7 @@ Rectangle {
         "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"
     ]
     property bool nativeLayout: hostWindow.isAppScene()
-    property real topChromeOffset: nativeLayout ? 0 : ((panel.y || 0) <= 0 ? menuBar.height : 0)
+    property real topChromeOffset: nativeLayout ? 0 : ((panel.y || 0) <= 0 ? hostWindow.menuBarHeight : 0)
     readonly property bool panelIsActive:
         hostWindow.panelIsEffectivelyActive(panel)
     TapHandler {
@@ -240,11 +240,11 @@ Rectangle {
     x: nativeLayout
        ? hostWindow.nativePanelX(Number(panel.side || 0))
        : hostWindow.pxX(panel.x)
-    y: nativeLayout ? menuBar.height : hostWindow.pxY(panel.y) + topChromeOffset
+    y: nativeLayout ? hostWindow.menuBarHeight : hostWindow.pxY(panel.y) + topChromeOffset
     width: nativeLayout
            ? hostWindow.nativePanelWidth(Number(panel.side || 0))
            : hostWindow.pxW(panel.w)
-    height: nativeLayout ? hostWindow.nativePanelHeight(Number(panel.side || 0), menuBar.height) : Math.max(1, hostWindow.pxH(panel.h) - topChromeOffset)
+    height: nativeLayout ? hostWindow.nativePanelHeight(Number(panel.side || 0), hostWindow.menuBarHeight) : Math.max(1, hostWindow.pxH(panel.h) - topChromeOffset)
     color: "transparent"
     border.width: 0
     clip: true
@@ -443,6 +443,16 @@ Rectangle {
                       && !hostWindow.hasDocumentSurface()
                       && !hostWindow.hasOperationsQueueSurface()
                       && !hostWindow.hasBlockingOverlay())
+            if (typeof item.panelCursorVisible !== "undefined")
+                item.panelCursorVisible = Qt.binding(
+                    () => panelRoot.visible
+                          && panelRoot.panelIsActive
+                          && !galleryController.viewerVisible
+                          && !hostWindow.needsFallbackGrid()
+                          && !hostWindow.hasDocumentSurface()
+                          && !hostWindow.hasOperationsQueueSurface()
+                          && hostWindow.overlayFrames().every(
+                              frame => frame.kind === "menu"))
             item.commandLineHasText = Qt.binding(() => {
                 var commandLine = hostWindow.commandLineFrame()
                 return hostWindow.cleanText(commandLine.text).length > 0

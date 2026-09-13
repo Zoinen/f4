@@ -16,7 +16,7 @@ Item {
     required property bool nativeWindowAgentReady
     required property bool usesQwk
     required property Window themeEditor
-    readonly property alias menuBar: semanticMenu
+    signal applicationMenuRequested()
     readonly property alias appIconButton: appIcon
     readonly property alias workspaceBarItem: workspaceBar
     readonly property alias macSystemButtonAreaItem: macSystemButtonArea
@@ -112,26 +112,9 @@ Item {
             }
         }
 
-        onClicked: hostWindow.showApplicationSettings()
-    }
-
-    SemanticMenuBar {
-        id: semanticMenu
-        hostWindow: titleBar.hostWindow
-        semanticLayer: titleBar.semanticLayer
-        nativeWindowAgent: titleBar.nativeWindowAgent
-        nativeWindowAgentReady: titleBar.nativeWindowAgentReady
-        usesQwk: titleBar.usesQwk
-        menu: hostWindow.menuBarModel
-        anchors.left: appIcon.right
-        anchors.leftMargin: hostWindow.macTitleBarLeftPadding
-        anchors.right: workspaceBar.visible
-                       ? workspaceBar.left : queueButton.left
-        anchors.rightMargin: workspaceBar.visible
-                             ? 8
-                             : hostWindow.useMacNativeTitleBar
-                               ? -windowButtons.width : 0
-        height: parent.height
+        onClicked: {
+            titleBar.applicationMenuRequested()
+        }
     }
 
 
@@ -139,11 +122,15 @@ Item {
     WorkspaceTabs {
         id: workspaceBar
         hostWindow: titleBar.hostWindow
-        availableWidth: titleBar.width
+        availableWidth: Math.max(0, (worktreeBranchLabel.visible
+                                    ? Math.min(queueButton.x, worktreeBranchLabel.x)
+                                    : queueButton.x) - x - hostWindow.contentSpacing)
         nativeWindowAgent: titleBar.nativeWindowAgent
         nativeWindowAgentReady: titleBar.nativeWindowAgentReady
         usesQwk: titleBar.usesQwk
-        x: hostWindow.snapPx(queueButton.x - width - hostWindow.snapPx(4))
+        x: hostWindow.snapPx(Math.max(hostWindow.macTitleBarLeftPadding,
+                                     appIcon.visible ? appIcon.x + appIcon.width : 0)
+                             + hostWindow.contentSpacing)
     }
 
     ToolButton {

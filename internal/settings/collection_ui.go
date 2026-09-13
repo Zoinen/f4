@@ -65,6 +65,9 @@ func (b *settingsButtonRow) SetPosition(x1, y1, x2, y2 int) {
 
 func (c *settingsCenter) rebuildCategory() {
 	c.SetTitle(settingsText("Title", "Settings"))
+	if c.recordOnly {
+		c.SetTitle(c.recordTitle)
+	}
 	c.apply.SetText(settingsText("Apply", "&Apply"))
 	c.ok.SetText(i18n.Msg("vtui.Ok"))
 	c.cancel.SetText(i18n.Msg("vtui.Cancel"))
@@ -117,8 +120,10 @@ func (c *settingsCenter) addCollections(category string) {
 			}
 			table.SetSelectPos(selected)
 			r := &settingsRow{field: meta, session: s, control: table, controlHeight: 5, match: true}
-			c.page.AddItem(table)
-			c.page.rows = append(c.page.rows, r)
+			if !c.recordOnly {
+				c.page.AddItem(table)
+				c.page.rows = append(c.page.rows, r)
+			}
 			table.OnSelect = func(i int) {
 				if c.offsets[key] != i {
 					c.offsets[key] = i
@@ -129,11 +134,12 @@ func (c *settingsCenter) addCollections(category string) {
 			bar.SetId("collection-actions:" + col.ID)
 			button := func(label string, run func()) {
 				b := vtui.NewButton(0, 0, Phrase(label))
+				b.SetId(fmt.Sprintf("collection-action:%s:%d", col.ID, len(bar.buttons)))
 				b.OnClick = run
 				bar.buttons = append(bar.buttons, b)
 				bar.AddItem(b)
 			}
-			if !col.Fixed {
+			if !col.Fixed && !c.recordOnly {
 				button("Add", func() {
 					values := map[string]string{}
 					for _, f := range col.Fields {
@@ -165,7 +171,7 @@ func (c *settingsCenter) addCollections(category string) {
 					}
 				})
 			}
-			if col.Ordered {
+			if col.Ordered && !c.recordOnly {
 				for _, direction := range []int{-1, 1} {
 					label := "Down"
 					if direction < 0 {

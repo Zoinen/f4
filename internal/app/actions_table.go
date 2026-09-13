@@ -1817,7 +1817,7 @@ func init() {
 		Label:       "Icons",
 		Description: "Show the active panel in unified icons mode",
 		DefaultKeys: []string{"Ctrl5"},
-		Visible:     func() bool { return !isAIPanelActive() },
+		Visible:     func() bool { return panel.GUIViewModesAvailable() && !isAIPanelActive() },
 		Handler: withPF(func(pf *panel.PanelsFrame) {
 			if fsp, ok := pf.Panels[pf.ActiveIdx].(*panel.FileSystemPanel); ok {
 				fsp.SetGalleryLayout(panel.GalleryLayoutIcons, 0)
@@ -1831,7 +1831,7 @@ func init() {
 		Label:       "Grid",
 		Description: "Show the active panel in unified grid mode",
 		DefaultKeys: []string{"Ctrl6"},
-		Visible:     func() bool { return !isAIPanelActive() },
+		Visible:     func() bool { return panel.GUIViewModesAvailable() && !isAIPanelActive() },
 		Handler: withPF(func(pf *panel.PanelsFrame) {
 			if fsp, ok := pf.Panels[pf.ActiveIdx].(*panel.FileSystemPanel); ok {
 				fsp.SetGalleryLayout(panel.GalleryLayoutGrid, 0)
@@ -1845,7 +1845,7 @@ func init() {
 		Label:       "Masonry",
 		Description: "Show the active panel in unified masonry mode",
 		DefaultKeys: []string{"Ctrl7"},
-		Visible:     func() bool { return !isAIPanelActive() },
+		Visible:     func() bool { return panel.GUIViewModesAvailable() && !isAIPanelActive() },
 		Handler: withPF(func(pf *panel.PanelsFrame) {
 			if fsp, ok := pf.Panels[pf.ActiveIdx].(*panel.FileSystemPanel); ok {
 				fsp.SetGalleryLayout(panel.GalleryLayoutMasonry, 0)

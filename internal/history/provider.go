@@ -672,7 +672,7 @@ func (hp *F4HistoryProvider) addFolderHistory(path string, benchmark *navtrace.N
 	hp.lockForMutation()
 	records := mergeFolderHistoryRecords(hp.data["folders"], hp.rich["folders"])
 	before = len(records)
-	current := HistoryRecord{Name: path}
+	current := HistoryRecord{Name: path, Timestamp: time.Now()}
 	newHistory := []HistoryRecord{current}
 	for _, record := range records {
 		if SamePath(record.Name, path) {

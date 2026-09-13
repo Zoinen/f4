@@ -36,6 +36,7 @@ var (
 // the iOS drive. UDID is the stable key; the remaining fields may be refreshed
 // whenever ReadDir discovers the device again.
 type DeviceInfo struct {
+	pathName       string // Discovery-resolved public identity; UDID owns transport sessions.
 	UDID           string
 	Name           string
 	Model          string
@@ -189,8 +190,16 @@ func (m *ManagerVFS) ReadDir(ctx context.Context, _ string, onChunk func([]vfs.V
 	})
 
 	byName := make(map[string]DeviceInfo, len(ordered))
+	nameCounts := make(map[string]int, len(ordered))
+	for _, device := range ordered {
+		nameCounts[deviceLabel(device)]++
+	}
 	items := make([]vfs.VFSItem, 0, len(ordered))
 	for _, device := range ordered {
+		device.pathName = deviceLabel(device)
+		if nameCounts[device.pathName] > 1 {
+			device.pathName += " [" + device.UDID + "]"
+		}
 		base := DeviceDisplayName(device)
 		name := base
 		for suffix := 2; ; suffix++ {
@@ -202,6 +211,7 @@ func (m *ManagerVFS) ReadDir(ctx context.Context, _ string, onChunk func([]vfs.V
 		byName[name] = device
 		items = append(items, vfs.VFSItem{
 			Name:         name,
+			IconKey:      deviceIcon(device),
 			IsDir:        true,
 			IsExecutable: deviceReady(device),
 			NoExtension:  true,
@@ -374,7 +384,17 @@ func (m *ManagerVFS) Stat(_ context.Context, p string) (vfs.VFSItem, error) {
 		return vfs.VFSItem{}, os.ErrNotExist
 	}
 	name, _ := directManagerRowName(p)
-	return vfs.VFSItem{Name: name, IsDir: true, IsExecutable: deviceReady(device), NoExtension: true}, nil
+	return vfs.VFSItem{
+		Name: name, IconKey: deviceIcon(device), IsDir: true,
+		IsExecutable: deviceReady(device), NoExtension: true,
+	}, nil
+}
+
+func deviceIcon(device DeviceInfo) string {
+	if strings.HasPrefix(device.ProductType, "iPad") || strings.HasPrefix(device.Model, "iPad") {
+		return "tablet"
+	}
+	return "smartphone"
 }
 
 func (m *ManagerVFS) Join(elem ...string) string {

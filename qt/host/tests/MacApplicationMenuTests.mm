@@ -85,6 +85,56 @@ class MacApplicationMenuTests : public QObject
     Q_OBJECT
 
 private slots:
+    void semanticMenusTrackModelAndDispatchWithoutF9()
+    {
+        ScopedApplicationMenu fixture;
+        QVariantMap received;
+        QString renderedIcon;
+        MacApplicationMenu menu([] {}, [&received](const QVariantMap &action) { received = action; },
+            [&renderedIcon](const QString &name) {
+                renderedIcon = name;
+                return QByteArray::fromBase64("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7");
+            });
+        QVERIFY(menu.install());
+        QVariantMap child{{"index", 7}, {"text", "Inspect"}, {"checked", true}, {"shortcut", "Ctrl+Shift+F3"}, {"icon", "images"}};
+        QVariantMap category{{"index", 2}, {"text", "Files"},
+            {"items", QVariantList{child, QVariantMap{{"separator", true}},
+                QVariantMap{{"index", 8}, {"text", "Unavailable"}, {"disabled", true}}}}};
+        QVariantMap model{{"items", QVariantList{category}}};
+        menu.synchronize(model);
+        NSMenuItem *root = [[NSApp mainMenu] itemWithTitle:@"Files"];
+        QVERIFY(root);
+        NSMenu *children = [root submenu];
+        QCOMPARE([children numberOfItems], NSInteger(3));
+        NSMenuItem *item = [children itemAtIndex:0];
+        QCOMPARE(renderedIcon, QString("images"));
+        QVERIFY([item image]);
+        QVERIFY([[item image] isTemplate]);
+        QCOMPARE([[item image] size].width, CGFloat(16));
+        QCOMPARE(QString::fromNSString([item keyEquivalent]), QString(QChar(ushort(NSF3FunctionKey))));
+        QCOMPARE([item keyEquivalentModifierMask], NSEventModifierFlagControl | NSEventModifierFlagShift);
+        NSEvent *key = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
+            modifierFlags:NSEventModifierFlagControl | NSEventModifierFlagShift timestamp:0 windowNumber:0
+            context:nil characters:[item keyEquivalent] charactersIgnoringModifiers:[item keyEquivalent]
+            isARepeat:NO keyCode:99];
+        QVERIFY(![children performKeyEquivalent:key]);
+        QVERIFY(![[NSApp mainMenu] performKeyEquivalent:key]);
+        QVERIFY(received.isEmpty());
+        QCOMPARE([item state], NSControlStateValueOn);
+        QVERIFY([[children itemAtIndex:1] isSeparatorItem]);
+        QVERIFY(![[children itemAtIndex:2] isEnabled]);
+        QVERIFY([NSApp sendAction:[item action] to:[item target] from:item]);
+        QCOMPARE(received.value("action").toString(), QString("menuBar.itemActivate"));
+        QCOMPARE(received.value("menuIndex").toInt(), 2);
+        QCOMPARE(received.value("index").toInt(), 7);
+        model.insert("active", true);
+        menu.synchronize(model);
+        QCOMPARE([[NSApp mainMenu] itemWithTitle:@"Files"], root);
+        menu.synchronize({});
+        QVERIFY([[NSApp mainMenu] itemWithTitle:@"Files"] == nil);
+        QVERIFY(menu.installed());
+    }
+
     void initTestCase()
     {
         [NSApplication sharedApplication];

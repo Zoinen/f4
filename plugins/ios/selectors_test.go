@@ -60,7 +60,7 @@ func TestDeviceRootVFSRowsProviderScopingAndParent(t *testing.T) {
 	if root.ParentVFS() != manager {
 		t.Fatal("device selector lost manager parent")
 	}
-	if got := root.PanelTitle("/"); got != "Alexander's iPhone:/" {
+	if got := root.PanelTitle("/"); got != "ios://Alexander's iPhone/" {
 		t.Fatalf("PanelTitle = %q", got)
 	}
 
@@ -89,13 +89,13 @@ func TestIOSVirtualTitlesAndDeviceInfoSurviveSelectorTransitions(t *testing.T) {
 	apps := NewApplicationsVFS(root, device, nil, nil)
 	groups := NewAppGroupsVFS(root, device, nil, nil)
 
-	if got := root.PanelTitle("/"); got != "Alexander's iPhone:/" {
+	if got := root.PanelTitle("/"); got != "ios://Alexander's iPhone/" {
 		t.Fatalf("device title = %q", got)
 	}
-	if got := apps.PanelTitle("/"); got != "Alexander's iPhone:/[Applications]/" {
+	if got := apps.PanelTitle("/"); got != "ios://Alexander's iPhone/[Applications]/" {
 		t.Fatalf("applications title = %q", got)
 	}
-	if got := groups.PanelTitle("/"); got != "Alexander's iPhone:/[App Groups]/" {
+	if got := groups.PanelTitle("/"); got != "ios://Alexander's iPhone/[App Groups]/" {
 		t.Fatalf("app-groups title = %q", got)
 	}
 	if got := iosPanelTitle(iosDeviceTitle(device, MediaSelector), "/DCIM/100APPLE"); got != "Alexander's iPhone:/Media/DCIM/100APPLE" {

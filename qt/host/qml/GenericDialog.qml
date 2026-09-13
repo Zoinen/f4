@@ -41,7 +41,7 @@ Rectangle {
     readonly property var rowEdges: calculateRowEdges()
     readonly property real bodyContentHeight: settingsLayout || customContent ? 0 : calculateBodyContentHeight()
     readonly property real geometryLeft: 12
-    readonly property real geometryTop: menuBar.height + 8
+    readonly property real geometryTop: hostWindow.menuBarHeight + 8
     readonly property real geometryRight: hostWindow.width - 12
     readonly property real geometryBottom: hostWindow.height - 12
     readonly property real availableWidth: Math.max(

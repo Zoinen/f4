@@ -16,6 +16,22 @@ func historyKey(char rune) *vtinput.InputEvent {
 	return &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, Char: char}
 }
 
+func TestHistorySemanticColumnsAndUnicodeMatches(t *testing.T) {
+	record := history.HistoryRecord{Name: "echo <écho>", Dir: "/work/écho", Timestamp: time.Date(2026, 9, 13, 12, 34, 56, 0, time.UTC)}
+	s := &historySearch{showDirPrefix: true, timeMode: config.HistoryShowDateTime, query: []rune("écho")}
+	details := s.semanticDetails(record)
+	if details["primary"] != record.Name || details["path"] != record.Dir || details["date"] != "2026-09-13 12:34:56" {
+		t.Fatalf("wrong columns: %#v", details)
+	}
+	if details["primaryMatches"] != "00000011110" || details["pathMatches"] != "0000001111" {
+		t.Fatalf("wrong Unicode masks: %#v", details)
+	}
+	s.showDirPrefix = false
+	if details = s.semanticDetails(record); details["columns"] != "" || !strings.Contains(details["primaryMatches"], "1111") {
+		t.Fatal("non-column history lost highlights")
+	}
+}
+
 func TestHistorySearchFiltersAndTogglesPrefixMode(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	menu := vtui.NewVMenu("History")
@@ -388,6 +404,34 @@ func TestHistorySearchShowsNewestAtBottomAndScrollsToIt(t *testing.T) {
 // TestHistorySearchPadsRowsWithoutTimestamp guards the alignment of a history
 // that mixes stamped and unstamped records — everything saved before the
 // timestamp column existed still has to line up with the rows around it.
+func TestHistorySemanticViewerEditorDateColumn(t *testing.T) {
+	record := history.HistoryRecord{
+		Name:      "/work/report.txt",
+		Timestamp: time.Date(2026, time.September, 13, 12, 34, 56, 0, time.UTC),
+	}
+	search := historySearch{showTimes: true, dateColumn: true, query: []rune("2026")}
+	for _, test := range []struct {
+		mode int
+		date string
+	}{
+		{mode: config.HistoryShowDateTime, date: "2026-09-13 12:34:56"},
+		{mode: config.HistoryShowDate, date: "2026-09-13"},
+		{mode: config.HistoryShowNone, date: ""},
+	} {
+		search.timeMode = test.mode
+		details := search.semanticDetails(record)
+		if details["columns"] != "dated" || details["primary"] != record.Name || details["path"] != "" {
+			t.Fatalf("incorrect viewer/editor columns: %v", details)
+		}
+		if details["date"] != test.date {
+			t.Fatalf("date = %q, want %q", details["date"], test.date)
+		}
+		if test.date != "" && !strings.HasPrefix(details["dateMatches"], "1111") {
+			t.Fatalf("date match missing: %v", details)
+		}
+	}
+}
+
 func TestHistorySearchPadsRowsWithoutTimestamp(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	menu := vtui.NewVMenu("History")
@@ -410,5 +454,10 @@ func TestHistorySearchPadsRowsWithoutTimestamp(t *testing.T) {
 	search.timeMode = config.HistoryShowNone
 	if got := search.displayText(search.all[0]); got != "legacy.txt" {
 		t.Fatalf("hidden time column still padded the row: %q", got)
+	}
+	search.dateColumn = true
+	search.timeMode = config.HistoryShowDateTime
+	if details := search.semanticDetails(search.all[0]); details["primary"] != "legacy.txt" || details["date"] != "" {
+		t.Fatalf("undated native history must not contain leading timestamp padding: %v", details)
 	}
 }

@@ -57,6 +57,23 @@ func readManagerItems(t *testing.T, manager *ManagerVFS) ([]vfs.VFSItem, error) 
 	return items, err
 }
 
+func TestManagerDeviceIcons(t *testing.T) {
+	manager := NewManagerVFS(&fakeDeviceSource{devices: []DeviceInfo{
+		{Serial: "pixel", Model: "Pixel 3", State: DeviceStateOnline},
+		{Serial: "offline", State: DeviceStateOffline},
+	}}, &fakeDeviceOpener{})
+	items, err := readManagerItems(t, manager)
+	if err != nil || len(items) != 2 {
+		t.Fatalf("listing: %v, %v", items, err)
+	}
+	for _, item := range items {
+		stat, err := manager.Stat(context.Background(), item.Name)
+		if err != nil || item.IconKey != "smartphone" || stat.IconKey != item.IconKey {
+			t.Errorf("device %q icons: listing=%q stat=%q error=%v", item.Name, item.IconKey, stat.IconKey, err)
+		}
+	}
+}
+
 func TestManagerReadDirDiscoversAndLabelsDevices(t *testing.T) {
 	source := &fakeDeviceSource{devices: []DeviceInfo{
 		{Serial: "serial-z", State: DeviceStateOnline, Model: "Pixel 9"},
@@ -229,6 +246,7 @@ func TestDeviceProviderIsNarrowAndDelegatesOnlineDevice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
+	device.publicName = "Pixel"
 	if opened != target || opener.calls != 1 || opener.parent != manager || opener.device != device {
 		t.Fatalf("opener delegation mismatch: opened=%T calls=%d parent=%T device=%#v", opened, opener.calls, opener.parent, opener.device)
 	}
@@ -264,6 +282,7 @@ func TestDeviceProviderReconnectsUnauthorizedDeviceAndOpensWhenAuthorized(t *tes
 	if err != nil {
 		t.Fatalf("Open unauthorized device: %v", err)
 	}
+	online.publicName = deviceSessionTitle(unauthorized)
 	if opened != target || source.reconnectCalls != 1 || opener.calls != 1 || opener.device != online {
 		t.Fatalf("authorization flow mismatch: opened=%T reconnects=%d opens=%d device=%#v", opened, source.reconnectCalls, opener.calls, opener.device)
 	}
@@ -293,15 +312,16 @@ func TestManagerVFSContract(t *testing.T) {
 		t.Fatalf("root identity mismatch: atRoot=%v path=%q title=%q", manager.IsAtRoot(), manager.GetPath(), manager.GetTitle())
 	}
 	if got := manager.PanelTitle(manager.GetPath()); got != "Android devices" {
-		t.Fatalf("panel title = %q, want %q", got, "Android devices")
+		t.Fatalf("panel title = %q, want Android devices", got)
 	}
 	if manager.ParentVFS() != nil {
 		t.Fatal("manager unexpectedly has a parent")
 	}
-	if got := manager.Join(androidRoot, "Pixel (serial)"); got != "android://Pixel (serial)" {
+	wantPath := strings.TrimSuffix((vfs.DevicePath{Scheme: "android", Device: "Pixel (serial)"}).Root(), "/")
+	if got := manager.Join(androidRoot, "Pixel (serial)"); got != wantPath {
 		t.Fatalf("Join = %q", got)
 	}
-	if got, err := manager.Abs("Pixel (serial)"); err != nil || got != "android://Pixel (serial)" {
+	if got, err := manager.Abs("Pixel (serial)"); err != nil || got != wantPath {
 		t.Fatalf("Abs = %q, %v", got, err)
 	}
 	if got := manager.Base("android://Pixel (serial)"); got != "Pixel (serial)" {
@@ -346,6 +366,10 @@ func (h *recordingHost) RegisterVFSProvider(provider vfs.VFSProvider) {
 	h.providers = append(h.providers, provider)
 }
 
+func (h *recordingHost) RegisterURIProvider(provider vfs.URIProvider) error {
+	return vfs.RegisterURIProvider(provider)
+}
+
 func TestPluginRegistersAndroidDriveAndProvider(t *testing.T) {
 	source := &fakeDeviceSource{}
 	opener := &fakeDeviceOpener{}
@@ -354,6 +378,14 @@ func TestPluginRegistersAndroidDriveAndProvider(t *testing.T) {
 
 	if err := plugin.Init(host); err != nil {
 		t.Fatalf("Init: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := plugin.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	if vfs.FindURIProvider("android://Pixel 3/sdcard") == nil {
+		t.Fatal("URI provider not registered")
 	}
 	if plugin.GetName() != "Android" {
 		t.Fatalf("GetName = %q", plugin.GetName())
@@ -371,5 +403,8 @@ func TestPluginRegistersAndroidDriveAndProvider(t *testing.T) {
 	}
 	if err := plugin.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
+	}
+	if vfs.FindURIProvider(androidRoot) != nil {
+		t.Fatal("URI provider retained after close")
 	}
 }

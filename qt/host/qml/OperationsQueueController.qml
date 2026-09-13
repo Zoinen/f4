@@ -24,7 +24,7 @@ Item {
     property int lastSemanticSelectedTaskId: -1
     property bool syncingModel: false
     property bool dropdown: false
-    readonly property real topInset: dropdown ? 0 : menuBar.visible ? menuBar.height : 0
+    readonly property real topInset: dropdown ? 0 : hostWindow.menuBarHeight
     readonly property real bottomInset:
                                          !dropdown && Object.keys(hostWindow.keyBarModel).length > 0
                                          ? hostWindow.keyBarHeight() : 0

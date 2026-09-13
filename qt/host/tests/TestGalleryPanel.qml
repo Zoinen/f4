@@ -13,9 +13,10 @@ FocusScope {
     property real devicePixelRatio: 1
     property real defaultListDensity: 22
     property bool panelActive: false
+    property bool panelCursorVisible: panelActive
     property bool commandLineHasText: false
     property bool fastFindActive: false
-    readonly property bool showCursor: panelActive
+    readonly property bool showCursor: panelCursorVisible
     signal pointerActivationPreviewRequested(int side)
     readonly property bool layoutStateMatchesPanel:
         layoutState !== null

@@ -17,6 +17,17 @@ This is not access to the device root filesystem. A stock iPhone exposes only
 Apple-defined service domains, and application access remains subject to code
 signing, File Sharing, pairing, and sandbox policy.
 
+## Device paths
+
+Public paths include the device name, for example
+`ios://Alexander's iPhone/DCIM/100APPLE/IMG_0007.JPG`. These paths can be
+reopened through f4's path input; directory navigation, clipboard paths, and
+file operations use the same address. Reserved filename delimiters are
+percent-escaped. Application and group exports retain their selector prefix.
+Duplicate device names include their UDID to avoid selecting the wrong device.
+Native AFC/CoreDevice requests still receive export-relative POSIX paths;
+connection pooling continues to use the stable device identity.
+
 ## Requirements
 
 - Go 1.26 or newer when building f4 from source;

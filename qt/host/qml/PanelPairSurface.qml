@@ -126,7 +126,7 @@ Item {
 
     PanelSplitter {
         objectName: "mainPanelSplitter"
-        y: pair.menuBar.height
+        y: pair.hostWindow.menuBarHeight
         height: Math.max(pair.hostWindow.nativePanelHeight(0, y),
                          pair.hostWindow.nativePanelHeight(1, y))
         availableWidth: parent.width

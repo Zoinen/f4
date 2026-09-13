@@ -74,7 +74,8 @@ func HandleSemanticAction(action map[string]any) bool {
 				// Click activation is atomic and may legitimately target a submenu
 				// which QML was previewing before Go had materialized it.
 				mb.Active = true
-				if mb.SelectPos != menuIndex {
+				if mb.SelectPos != menuIndex || activeMenuBarSubmenu(mb, "") == nil {
+					// Native/app-icon menus dispatch without first opening the F9 bar.
 					mb.ActivateSubMenu(menuIndex)
 				}
 				if menu := activeMenuBarSubmenu(mb, ""); menu != nil {

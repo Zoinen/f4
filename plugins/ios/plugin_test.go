@@ -8,8 +8,14 @@ import (
 
 type recordingHost struct {
 	vfs.HostAPI
-	drives    map[string]func() vfs.VFS
-	providers []vfs.VFSProvider
+	drives       map[string]func() vfs.VFS
+	providers    []vfs.VFSProvider
+	uriProviders []vfs.URIProvider
+}
+
+func (h *recordingHost) RegisterURIProvider(provider vfs.URIProvider) error {
+	h.uriProviders = append(h.uriProviders, provider)
+	return nil
 }
 
 func (h *recordingHost) RegisterDrive(name string, factory func() vfs.VFS) {
@@ -32,6 +38,9 @@ func TestPluginRegistersIOSDriveAndProviders(t *testing.T) {
 	}
 	if got := plugin.GetName(); got != "iOS" {
 		t.Fatalf("GetName = %q, want iOS", got)
+	}
+	if len(host.uriProviders) != 1 || host.uriProviders[0].Scheme() != "ios" {
+		t.Fatal("iOS URI provider was not registered")
 	}
 	factory := host.drives["iOS"]
 	if factory == nil {

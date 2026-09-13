@@ -72,6 +72,9 @@ func (o *hybridDeviceOpener) OpenDevice(ctx context.Context, parent vfs.VFS, dev
 			mounted, err = o.openFish(ctx, parent, device)
 		}
 		if err == nil {
+			if fish, ok := mounted.(*netfox.FishVFS); ok {
+				fish.SetDevicePath(vfs.DevicePath{Scheme: "android", Device: deviceSessionTitle(device)})
+			}
 			if fish, ok := mounted.(*netfox.FishVFS); ok && o.configureFish != nil {
 				o.configureFish(fish, device, features)
 			}
@@ -134,6 +137,9 @@ func fishBackendDetail(mounted vfs.VFS) string {
 }
 
 func deviceSessionTitle(device DeviceInfo) string {
+	if device.publicName != "" {
+		return device.publicName
+	}
 	if model := strings.TrimSpace(device.Model); model != "" {
 		return model
 	}
@@ -141,9 +147,12 @@ func deviceSessionTitle(device DeviceInfo) string {
 }
 
 func androidPanelTitle(title, canonicalPath string) string {
-	displayPath := strings.TrimPrefix(strings.TrimSpace(canonicalPath), "/")
-	displayPath = strings.ReplaceAll(displayPath, "/", `\`)
-	return title + `:\` + displayPath
+	paths := vfs.DevicePath{Scheme: "android", Device: title}
+	remote, err := paths.Remote("/", canonicalPath)
+	if err != nil {
+		return canonicalPath
+	}
+	return paths.Public(remote)
 }
 
 func openFishDevice(ctx context.Context, parent vfs.VFS, server *Server, device DeviceInfo) (vfs.VFS, error) {
@@ -194,6 +203,7 @@ func openFishDeviceAttempt(ctx context.Context, parent vfs.VFS, server *Server, 
 		return nil, err
 	}
 	fish.SetPanelTitleFormatter(androidPanelTitle)
+	fish.SetDevicePath(vfs.DevicePath{Scheme: "android", Device: deviceSessionTitle(device)})
 	return fish, nil
 }
 

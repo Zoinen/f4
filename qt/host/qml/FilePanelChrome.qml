@@ -18,9 +18,7 @@ Rectangle {
     anchors.left: parent.left
     anchors.right: parent.right
     anchors.top: parent.top
-    height: Math.max(25, hostWindow.ch * 1.25)
-            + hostWindow.verticalContentSpacing
-            + hostWindow.pathRowExtraHeight
+    height: hostWindow.panelPathRowHeight
     // Keep the panel header color as a translucent foreground over
     // the same chrome surface used by the title bar.
     color: hostWindow.titleBarBg
@@ -147,6 +145,16 @@ Rectangle {
                     "network", 18, hostWindow.galleryPathTextColor)
             text: hostWindow.cleanText(panel.title || panel.path)
             navigationPath: String(panel.path || "")
+            rootBreadcrumbLabel: {
+                const prefix = panelPathControl.uriPrefix(navigationPath).toLowerCase()
+                if (prefix === "android://")
+                    return "Android"
+                if (prefix === "ios://")
+                    return "iOS"
+                if (prefix === "ai://")
+                    return "AI"
+                return ""
+            }
             navigationHandler: function(path) {
                 hostWindow.action({
                     "action": "panel.navigatePath",

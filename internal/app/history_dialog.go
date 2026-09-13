@@ -31,6 +31,7 @@ type historySearch struct {
 	supportsLocks bool
 	showDetails   bool
 	showTimes     bool
+	dateColumn    bool
 	timeMode      int
 	showDirPrefix bool
 	dirPrefixLen  int
@@ -89,6 +90,7 @@ func (s *historySearch) applyFilter() {
 			continue
 		}
 		item := vtui.MenuItem{Text: text, UserData: historySearchEntry{index: i}}
+		item.Details = s.semanticDetails(s.all[i])
 		// Pinned folders get their own area above the chronological list, so
 		// they stay one glance away however long the history grows (#407).
 		if s.pinSlotOf != nil && s.isPinned(i) {
@@ -128,6 +130,35 @@ func (s *historySearch) applyFilter() {
 	// view, which places a long history at the bottom of the viewport.
 	s.menu.SetSelectPos(len(items) - 1)
 	vtui.FrameManager.Redraw()
+}
+
+// Keep native columns and Unicode search masks separate from console labels.
+func (s *historySearch) semanticDetails(record history.HistoryRecord) map[string]string {
+	details := map[string]string{"kind": "history", "primary": s.displayText(record)}
+	if s.dateColumn {
+		details["primary"] = record.Name
+		details["date"] = strings.TrimSpace(historyTimeColumn(record.Timestamp, s.timeMode))
+		details["columns"] = "dated"
+	}
+	if s.showDirPrefix {
+		details["primary"] = record.Name
+		details["path"] = record.Directory()
+		details["date"] = strings.TrimSpace(historyTimeColumn(record.Timestamp, s.timeMode))
+		details["columns"] = "command"
+	}
+	for _, key := range []string{"primary", "path", "date"} {
+		_, mask := historySearchMatch(details[key], s.query, s.prefixOnly)
+		var encoded strings.Builder
+		for _, matched := range mask {
+			if matched {
+				encoded.WriteByte('1')
+			} else {
+				encoded.WriteByte('0')
+			}
+		}
+		details[key+"Matches"] = encoded.String()
+	}
+	return details
 }
 
 // isPinned reports whether the record at index belongs in the pinned area:

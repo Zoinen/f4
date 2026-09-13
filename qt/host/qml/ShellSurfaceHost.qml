@@ -31,7 +31,7 @@ Item {
     property bool usesQwk: false
 
     readonly property alias titleBarItem: titleBar
-    readonly property alias menuBar: titleBar.menuBar
+    readonly property alias menuBar: semanticMenu
     readonly property alias appIconButton: titleBar.appIconButton
     readonly property alias workspaceBarItem: titleBar.workspaceBarItem
     readonly property alias macSystemButtonAreaItem:
@@ -58,6 +58,42 @@ Item {
         anchors.right: parent.right
         height: surfaces.hostWindow.menuBarHeight
         z: 20
+        onApplicationMenuRequested: applicationMenu.popup(titleBar.appIconButton, 0,
+                                                        titleBar.appIconButton.height)
+    }
+
+    SemanticMenuBar {
+        id: semanticMenu
+        objectName: "panelMenuBar"
+        hostWindow: surfaces.hostWindow
+        semanticLayer: surfaces
+        nativeWindowAgent: surfaces.nativeWindowAgent
+        nativeWindowAgentReady: surfaces.nativeWindowAgentReady
+        usesQwk: false
+        menu: surfaces.hostWindow.menuBarModel
+        visible: menu.active === true && (menu.items || []).length > 0
+        anchors.left: parent.left
+        anchors.right: parent.right
+        y: surfaces.hostWindow.menuBarHeight
+        height: surfaces.hostWindow.panelPathRowHeight
+        // Match the path row's translucent foreground over the title surface.
+        color: surfaces.hostWindow.titleBarBg
+        overlayColor: surfaces.hostWindow.panelPathBg
+        z: 90
+
+        Rectangle {
+            objectName: "panelMenuBarSeparator"
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            height: surfaces.hostWindow.separatorWidth
+            color: surfaces.hostWindow.separatorColor
+        }
+    }
+
+    ApplicationMenuPopup {
+        id: applicationMenu
+        hostWindow: surfaces.hostWindow
     }
 
     Item {
@@ -253,7 +289,7 @@ Item {
         hostWindow: surfaces.hostWindow
         toast: surfaces.hostWindow.toastModel
         anchors.horizontalCenter: parent.horizontalCenter
-        y: surfaces.menuBar.height + 8
+        y: surfaces.hostWindow.menuBarHeight + 8
         opacity: surfaces.hostWindow.normalSurfaceOpacity
         z: 200
 

@@ -1,6 +1,7 @@
 #include "F4ApplicationIcon.h"
 #include "F4GalleryBridge.h"
 #include "F4IconProvider.h"
+#include <QBuffer>
 #include "NavigationBenchmarkTrace.h"
 #include "QtMediaClient.h"
 #include "QtShellController.h"
@@ -325,9 +326,8 @@ int main(int argc, char *argv[])
     iconSet.setName(parser.value(iconSetOption));
     const bool iconTestPatternEnabled =
         qEnvironmentVariableIntValue("F4_QT_ICON_TEST_PATTERN") != 0;
-    engine.addImageProvider(
-        iconSet.providerId(),
-        new F4IconProvider({}, iconTestPatternEnabled));
+    auto *iconProvider = new F4IconProvider({}, iconTestPatternEnabled);
+    engine.addImageProvider(iconSet.providerId(), iconProvider);
 
 #if defined(__USE_QWK)
     qDebug() << "Using QWK";
@@ -484,17 +484,36 @@ int main(int argc, char *argv[])
                 }
             };
             macApplicationMenu = std::make_unique<MacApplicationMenu>(
-                showApplicationSettings);
+                showApplicationSettings, [&controller](const QVariantMap &action) {
+                    QTimer::singleShot(0, &controller, [&controller, action]() {
+                        controller.sendUiAction(action);
+                    });
+                }, [iconProvider, &iconSet](const QString &name) {
+                    // Use the same bundled glyph renderer as the path dropdown.
+                    const auto source = iconSet.rasterizedLucideSource(name, 16, 2.0);
+                    const auto image = iconProvider->requestImage(F4IconProvider::routeId(source), nullptr, {});
+                    QByteArray png;
+                    QBuffer buffer(&png);
+                    buffer.open(QIODevice::WriteOnly);
+                    image.save(&buffer, "PNG");
+                    return png;
+                });
+            const auto synchronizeMacMenus = [menu = macApplicationMenu.get(), &controller]() {
+                menu->synchronize(controller.overlayState()->menuBar());
+            };
+            QObject::connect(controller.overlayState(), &OverlayStateStore::menuBarChanged,
+                             rootWindow, synchronizeMacMenus);
             auto *settingsShortcut = new QShortcut(
                 QKeySequence::Preferences, rootWindow);
             QObject::connect(settingsShortcut, &QShortcut::activated,
                              rootWindow, showApplicationSettings);
             const auto installMacApplicationMenu =
-                [menu = macApplicationMenu.get()]() {
+                [menu = macApplicationMenu.get(), synchronizeMacMenus]() {
                     if (!menu->install()) {
                         qWarning()
                             << "Unable to install the macOS Settings menu item";
                     }
+                    synchronizeMacMenus();
                 };
             installMacApplicationMenu();
             // Qt's Cocoa integration finalizes the default application menu

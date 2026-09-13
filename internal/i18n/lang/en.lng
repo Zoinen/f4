@@ -3164,18 +3164,26 @@ WindowsLocations.AccessErrorFmt=Cannot access folder:\n%s\n\n%v
 WindowsLocations.AccessUnavailable=This location is unavailable.
 WindowsLocations.AccessNotFolder=This location is not a folder.
 
-Panel.View.Columns2 = "Columns · &2"
+Panel.View.Columns2=Columns · &2
 
-Panel.View.Columns3 = "Columns · &3"
+Panel.View.Columns3=Columns · &3
 
-Panel.View.Details = "&Details"
+Panel.View.Details=&Details
 
-Panel.View.Masonry = "&Masonry"
+Panel.View.Masonry=&Masonry
+Panel.View.Icons=Icons
+Panel.View.Grid=Grid
 
-DiskMenu.MacOSLocations = "macOS &Locations"
+DiskMenu.MacOSLocations=macOS &Locations
 
-DiskMenu.MacOSLoading = "Loading macOS locations…"
+DiskMenu.MacOSLoading=Loading macOS locations…
 
-DiskMenu.ShellLoading = "◌ Loading…"
+DiskMenu.ShellLoading=◌ Loading…
 
-DiskMenu.ShellEmpty = "No Windows Shell locations"
+DiskMenu.ShellEmpty=No Windows Shell locations
+
+SettingsCenter.Text.c925a11891b84dfcf3a6a35ab8064b4ff807efc9c9afac7df8081e91e3af0116=Command line
+SettingsCenter.CommandLineMultiline.Label=Multiline command input
+SettingsCenter.CommandLineMultiline.Description=Preserve line breaks and expand the command input upward as text wraps, in the console and GUI. Shift+Enter inserts a line break.
+SettingsCenter.CommandLineWordWrap.Label=Wrap command arguments
+SettingsCenter.CommandLineWordWrap.Description=Start each unquoted dash-prefixed argument on a new visual line and highlight its dash. Visual wrapping never changes the command.

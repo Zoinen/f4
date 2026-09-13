@@ -26,13 +26,11 @@ func (e *simpleProfileEditor) EditProfile(app vfs.App, manager *ManagerVFS, exis
 	if app == nil || e == nil || e.plugin == nil {
 		return
 	}
-	if host, ok := app.(vfs.SettingsNavigationHost); ok {
+	if host, ok := app.(vfs.SettingsRecordHost); ok {
 		if existing != nil {
-			if host.OpenSettings("network", "cloudfox."+string(existing.Provider), existing.ID, false) {
+			if host.OpenSettingsRecord("cloudfox."+string(existing.Provider), existing.ID, false) {
 				return
 			}
-		} else if host.OpenSettings("network", "", "", false) {
-			return
 		}
 	}
 	if existing != nil {
@@ -50,6 +48,10 @@ func (e *simpleProfileEditor) EditProfile(app vfs.App, manager *ManagerVFS, exis
 	}
 	app.Menu(manager.strings.ChooseType, labels, func(index int) {
 		if index >= 0 && index < len(providers) {
+			if host, ok := app.(vfs.SettingsRecordHost); ok &&
+				host.OpenSettingsRecord("cloudfox."+string(providers[index]), "", true) {
+				return
+			}
 			showCloudProfileDialog(app, manager, e.plugin, providers[index], nil)
 		}
 	})

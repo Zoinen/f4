@@ -103,6 +103,7 @@ func actionFoldersHistory(pf *panel.PanelsFrame) {
 	menu.SetHelp("HistoryFolders")
 
 	search := newHistorySearch(menu, richFolders, i18n.Msg("History.FoldersHint"))
+	search.dateColumn = true
 	search.supportsLocks = folderHP != nil
 	search.showTimes = true
 	search.timeMode = config.App.HistoryShowTimes[config.HistoryTypeFolders]
