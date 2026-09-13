@@ -369,7 +369,7 @@ func IsMenuBarSubmenu(frame vtui.Frame, menuBar *vtui.MenuBar) bool {
 func FrameVMenu(frame vtui.Frame) (*vtui.VMenu, string) {
 	switch item := frame.(type) {
 	case *vtui.VMenu:
-		return item, ""
+		return item, item.SemanticBottomHint
 	case interface{ SemanticMenuControl() (*vtui.VMenu, string) }:
 		return item.SemanticMenuControl()
 	case interface{ MenuControl() *vtui.VMenu }:
@@ -379,14 +379,15 @@ func FrameVMenu(frame vtui.Frame) (*vtui.VMenu, string) {
 	}
 }
 
-func (item appVMenu) model() extui.MenuModel {
+func (item appVMenu) model(omitItems ...bool) extui.MenuModel {
 	x1, y1, x2, y2 := item.frame.GetPosition()
 	menu := extui.MenuModel{
-		ID:       vtui.SemanticID(item.frame),
-		Role:     "vmenu",
-		Title:    item.frame.GetTitle(),
-		Active:   true,
-		Selected: item.menu.SelectPos,
+		ID:           vtui.SemanticID(item.frame),
+		Role:         "vmenu",
+		Title:        item.frame.GetTitle(),
+		Active:       true,
+		Selected:     item.menu.SelectPos,
+		Presentation: item.menu.SemanticPresentation,
 		Legacy: extui.M{
 			"x":              x1,
 			"y":              y1,
@@ -411,6 +412,12 @@ func (item appVMenu) model() extui.MenuModel {
 		// identity was recorded.
 		menu.ParentID = vtui.SemanticID(parent)
 		menu.AnchorIndex = item.menu.ParentIndex()
+	}
+	if item.menu.SemanticItemsRevision != 0 {
+		menu.Legacy["itemsRevision"] = item.menu.SemanticItemsRevision
+	}
+	if len(omitItems) != 0 && omitItems[0] {
+		return menu
 	}
 	for i, source := range item.menu.Items {
 		clean, hotkey, _ := vtui.ParseAmpersandString(source.Text)

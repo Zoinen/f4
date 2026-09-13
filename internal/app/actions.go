@@ -102,7 +102,7 @@ func actionFoldersHistory(pf *panel.PanelsFrame) {
 	menu := vtui.NewVMenu(i18n.Msg("History.FoldersTitle"))
 	menu.SetHelp("HistoryFolders")
 
-	search := newHistorySearch(menu, richFolders, i18n.Msg("History.FoldersHint"))
+	search := prepareHistorySearch(menu, richFolders, i18n.Msg("History.FoldersHint"))
 	search.dateColumn = true
 	search.supportsLocks = folderHP != nil
 	search.showTimes = true
@@ -292,12 +292,13 @@ func actionCommandHistory(pf *panel.PanelsFrame) {
 
 	menu := vtui.NewVMenu(i18n.Msg("History.CommandsTitle"))
 	menu.SetHelp("History")
-	search := newHistorySearch(menu, richCmds, i18n.Msg("History.CommandsHint"))
+	search := prepareHistorySearch(menu, richCmds, i18n.Msg("History.CommandsHint"))
 	search.supportsLocks = isF4
 	search.showDetails = true
 	search.showTimes = true
 	search.timeMode = config.App.HistoryShowTimes[config.HistoryTypeCommands]
 	search.showDirPrefix = true
+	menu.SemanticPresentation = "fullWidth"
 	search.dirPrefixLen = config.App.HistoryDirsPrefixLen
 	search.onTimesChanged = func(mode int) {
 		config.App.HistoryShowTimes[config.HistoryTypeCommands] = mode

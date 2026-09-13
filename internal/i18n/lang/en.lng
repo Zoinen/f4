@@ -3187,3 +3187,13 @@ SettingsCenter.CommandLineMultiline.Label=Multiline command input
 SettingsCenter.CommandLineMultiline.Description=Preserve line breaks and expand the command input upward as text wraps, in the console and GUI. Shift+Enter inserts a line break.
 SettingsCenter.CommandLineWordWrap.Label=Wrap command arguments
 SettingsCenter.CommandLineWordWrap.Description=Start each unquoted dash-prefixed argument on a new visual line and highlight its dash. Visual wrapping never changes the command.
+
+Action.History.ImportFar3=Import Far3 History
+Action.History.ImportFar3.Desc=Merge commands, viewer/editor and folder history from Far Manager 3
+History.Far3.Title=Import Far3 history
+History.Far3.Path=Far3 folder or history.db:
+History.Far3.Merge=Merge histories; skip duplicates.
+History.Far3.Import=&Import
+History.Far3.EmptyPath=Enter a Far3 folder, profile folder or history.db path.
+History.Far3.Result=Added %d commands, %d viewer/editor files and %d folders.\nSkipped %d unsupported records (plugin paths or external launches).
+History.Far3.NotFound=No Far3 installation or history.db found in this folder.

@@ -24,6 +24,9 @@ func NewCommandLine(prompt string) *CommandLine {
 	}
 	cl.Edit.DeduplicateHistory = true
 	cl.Edit.HistoryLimit = 100
+	if hp := vtui.GlobalHistoryProvider; hp != nil {
+		cl.Edit.HistoryLimit = max(cl.Edit.HistoryLimit, len(hp.LoadHistory("cmdline")))
+	}
 	cl.Edit.PathHintsEnabled = config.App.CommandLineAutoComplete
 	// CommandLine.ProcessKey drives the completion menu itself, under
 	// gating that vtui knows nothing about: CommandLineAutoComplete,

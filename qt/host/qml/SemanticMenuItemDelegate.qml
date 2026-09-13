@@ -12,7 +12,7 @@ Rectangle {
     required property Item popupList
     required property var scrollBar
     required property var modelData
-    readonly property bool historyRow: modelData.details && modelData.details.kind === "history"
+    readonly property bool historyRow: !!modelData.details && modelData.details.kind === "history"
     readonly property var dropdownTextLayout: overlayController.dropdownMode
         && overlayController.dropdownAnchor
         ? overlayController.dropdownAnchor.contentItem : null
@@ -28,6 +28,15 @@ Rectangle {
               ? overlayController.menuHeaderHeight
               : modelData.details && !historyRow ? overlayController.driveRowHeight : overlayController.effectiveMenuRowHeight
     radius: 4
+    // ListView can position recycled rows at fractional physical coordinates
+    // during polish, after the normal leaf alignment pass. Correct the shared
+    // row immediately as its scroll position changes, before drawing its text.
+    readonly property real alignmentRevision:
+        popupList.contentY + popupSurfaceItem.x + popupSurfaceItem.y + x + y
+    transform: Translate {
+        x: overlayController.historyMenu ? hostWindow.iconPixelOffsetX(menuItem) : 0
+        y: overlayController.historyMenu ? hostWindow.iconPixelOffsetY(menuItem) : 0
+    }
     color: modelData.index === overlayController.visualSelectedIndex
            && !modelData.separator
            && modelData.header !== true
@@ -45,6 +54,86 @@ Rectangle {
         visible: modelData.separator === true
     }
 
+    Item {
+        id: historyContent
+        visible: menuItem.historyRow
+        readonly property var details: menuItem.modelData.details || ({})
+        readonly property bool commandColumns: details.columns === "command"
+        readonly property bool columns: commandColumns || details.columns === "dated"
+        readonly property font dateFont: {
+            const value = Qt.font(hostWindow.font)
+            value.family = hostWindow.guiMonospaceFontFamily
+            return value
+        }
+        readonly property real gap: hostWindow.snapPx(16)
+        readonly property real dateWidth: columns ? hostWindow.snapPx(Math.min(width * .28, dateMetrics.advanceWidth + 4)) : 0
+        readonly property real pathWidth: commandColumns ? hostWindow.snapPx(width * .32) : 0
+        readonly property real primaryWidth: Math.max(0, width - pathWidth - dateWidth - (columns ? gap : 0) - (commandColumns ? gap : 0))
+        x: overlayController.menuLabelInset
+        width: hostWindow.snapPx(Math.max(0, menuItem.width - x
+            - Math.max(12, scrollBar.visible ? scrollBar.width + hostWindow.snapPx(4) : 0)))
+        height: menuItem.height
+        TextMetrics { id: dateMetrics; font: historyContent.dateFont; text: "2000-00-00 00:00:00" }
+        function escapeText(text) {
+            return text.replace(/&/g, "&amp;").replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/ /g, "&nbsp;")
+        }
+        function markedText(key) {
+            const mask = String(details[key + "Matches"] || "")
+            const value = String(details[key] || "")
+            // Unfiltered navigation needs only one colored span, even for long commands.
+            if (!mask && commandColumns && key === "primary") {
+                const space = value.indexOf(" ")
+                const end = space < 0 ? value.length : space
+                return '<font color="#75d977">' + escapeText(value.slice(0, end))
+                    + '</font>' + escapeText(value.slice(end))
+            }
+            const letters = Array.from(value)
+            const space = letters.indexOf(" ")
+            const prefixEnd = commandColumns && key === "primary" ? (space < 0 ? letters.length : space) : 0
+            return letters.map((letter, i) => {
+                const escaped = escapeText(letter)
+                const color = mask[i] === "1" ? hostWindow.dialogAccent : i < prefixEnd ? "#75d977" : ""
+                return color ? '<font color="' + color + '">' + escaped + '</font>' : escaped
+            }).join("")
+        }
+        Repeater {
+            model: !menuItem.historyRow ? [] : historyContent.commandColumns ? ["primary", "path", "date"]
+                : historyContent.columns ? ["primary", "date"] : ["primary"]
+            delegate: Text {
+                id: historyText
+                required property string modelData
+                objectName: "semanticHistory-" + hostWindow.cleanText(overlayController.frame.id)
+                    + "-" + Number(menuItem.modelData.index) + "-" + modelData
+                x: modelData === "primary" ? 0 : modelData === "path"
+                    ? historyContent.primaryWidth + historyContent.gap : historyContent.width - historyContent.dateWidth
+                y: hostWindow.snapPx((historyContent.height - height) / 2)
+                width: modelData === "primary" ? historyContent.primaryWidth
+                    : modelData === "path" ? historyContent.pathWidth : historyContent.dateWidth
+                height: Math.ceil(implicitHeight * hostWindow.dpr) / hostWindow.dpr
+                readonly property bool hasMatches: !!historyContent.details[modelData + "Matches"]
+                readonly property bool styled: hasMatches || (historyContent.commandColumns && modelData === "primary")
+                text: styled ? historyContent.markedText(modelData)
+                    : String(historyContent.details[modelData] || "")
+                textFormat: styled ? Text.StyledText : Text.PlainText
+                font: modelData === "date" ? historyContent.dateFont : hostWindow.font
+                color: modelData === "primary" ? hostWindow.textColor : hostWindow.mutedText
+                horizontalAlignment: modelData === "date" ? Text.AlignRight : Text.AlignLeft
+                elide: modelData === "path" ? Text.ElideMiddle : Text.ElideRight
+                transform: Translate {
+                    x: hostWindow.dialogPixelOffsetX(historyText, hostWindow.contentItem)
+                    y: hostWindow.dialogPixelOffsetY(historyText, hostWindow.contentItem)
+                }
+            }
+        }
+    }
+
+    Loader {
+        active: !menuItem.historyRow
+        anchors.fill: parent
+        sourceComponent: Item {
+            width: menuItem.width
+            height: menuItem.height
     Text {
         id: menuItemText
         objectName: "semanticMenuItemText-"
@@ -77,6 +166,7 @@ Rectangle {
                             : overlayController.menuLabelInset
         verticalAlignment: Text.AlignVCenter
         text: {
+            if (menuItem.historyRow) return ""
             var label = hostWindow.cleanText(modelData.text)
             if (overlayController.hasLeadingIndicator)
                 label = label.replace(/^\s+/, "")
@@ -106,62 +196,9 @@ Rectangle {
         }
     }
 
-    Item {
-        id: historyContent
-        visible: menuItem.historyRow
-        readonly property var details: menuItem.modelData.details || ({})
-        readonly property bool commandColumns: details.columns === "command"
-        readonly property bool columns: commandColumns || details.columns === "dated"
-        readonly property font dateFont: {
-            const value = Qt.font(hostWindow.font)
-            value.family = hostWindow.guiMonospaceFontFamily
-            return value
-        }
-        readonly property real gap: hostWindow.snapPx(16)
-        readonly property real dateWidth: columns ? hostWindow.snapPx(Math.min(width * .28, dateMetrics.advanceWidth + 4)) : 0
-        readonly property real pathWidth: commandColumns ? hostWindow.snapPx(width * .32) : 0
-        readonly property real primaryWidth: Math.max(0, width - pathWidth - dateWidth - (columns ? gap : 0) - (commandColumns ? gap : 0))
-        x: overlayController.menuLabelInset
-        width: hostWindow.snapPx(Math.max(0, menuItem.width - x - 12))
-        height: menuItem.height
-        TextMetrics { id: dateMetrics; font: historyContent.dateFont; text: "2000-00-00 00:00:00" }
-        function markedText(key) {
-            const mask = String(details[key + "Matches"] || "")
-            return Array.from(String(details[key] || "")).map((letter, i) => {
-                const escaped = letter.replace(/&/g, "&amp;").replace(/</g, "&lt;")
-                    .replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/ /g, "&nbsp;")
-                return mask[i] === "1" ? '<font color="' + hostWindow.dialogAccent + '">' + escaped + '</font>' : escaped
-            }).join("")
-        }
-        Repeater {
-            model: !menuItem.historyRow ? [] : historyContent.commandColumns ? ["primary", "path", "date"]
-                : historyContent.columns ? ["primary", "date"] : ["primary"]
-            delegate: Text {
-                id: historyText
-                required property string modelData
-                objectName: "semanticHistory-" + hostWindow.cleanText(overlayController.frame.id)
-                    + "-" + Number(menuItem.modelData.index) + "-" + modelData
-                x: modelData === "primary" ? 0 : modelData === "path"
-                    ? historyContent.primaryWidth + historyContent.gap : historyContent.width - historyContent.dateWidth
-                y: hostWindow.snapPx((historyContent.height - height) / 2)
-                width: modelData === "primary" ? historyContent.primaryWidth
-                    : modelData === "path" ? historyContent.pathWidth : historyContent.dateWidth
-                height: Math.ceil(implicitHeight * hostWindow.dpr) / hostWindow.dpr
-                text: historyContent.markedText(modelData)
-                textFormat: Text.StyledText
-                font: modelData === "date" ? historyContent.dateFont : hostWindow.font
-                color: modelData === "primary" ? hostWindow.textColor : hostWindow.mutedText
-                horizontalAlignment: modelData === "date" ? Text.AlignRight : Text.AlignLeft
-                elide: modelData === "path" ? Text.ElideMiddle : Text.ElideRight
-                transform: Translate {
-                    x: hostWindow.dialogPixelOffsetX(historyText, hostWindow.contentItem)
-                    y: hostWindow.dialogPixelOffsetY(historyText, hostWindow.contentItem)
-                }
-            }
-        }
-    }
-
-    Item {
+    Loader {
+        active: !!menuItem.modelData.details && !menuItem.historyRow
+        sourceComponent: Item {
         id: driveContent
         visible: !!menuItem.modelData.details && !menuItem.historyRow
         readonly property var details: menuItem.modelData.details || ({})
@@ -235,6 +272,8 @@ Rectangle {
                 color: hostWindow.dialogAccent
             }
         }
+    }
+
     }
 
     IconImage {
@@ -356,6 +395,9 @@ Rectangle {
         transform: Translate {
             x: hostWindow.dialogPixelOffsetX(shortcut, hostWindow.contentItem)
             y: hostWindow.dialogPixelOffsetY(shortcut, hostWindow.contentItem)
+        }
+    }
+
         }
     }
 

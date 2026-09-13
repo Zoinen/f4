@@ -60,10 +60,18 @@ type MenuFrameProvider interface {
 // VMenu implements a vertical menu with navigation support.
 type VMenu struct {
 	ScrollView
-	title    string
-	Items    []MenuItem
-	done     bool
-	exitCode int
+	title string
+	Items []MenuItem
+	// SemanticBottomHint exposes a custom renderer's footer to native frontends.
+	SemanticBottomHint string
+	// SemanticPresentation selects an optional native menu layout.
+	SemanticPresentation string
+	windowFrame          *Window
+	// SemanticItemsRevision opts into immutable native row snapshots. Owners
+	// must increment it after every row/content change; zero disables reuse.
+	SemanticItemsRevision uint64
+	done                  bool
+	exitCode              int
 	// selectAtOpen is SelectPos as of the last ClearDone. Browsing moves
 	// SelectPos live (arrows, mouse hover), so cancelling has to put it
 	// back: dialogs read SelectPos as the confirmed choice, and without the
@@ -679,6 +687,9 @@ func (m *VMenu) ResizeConsole(w, h int) {
 func (m *VMenu) GetTitle() string {
 	return m.title
 }
+func (m *VMenu) SetTitle(title string) {
+	m.title = title
+}
 func (m *VMenu) GetProgress() int {
 	return -1
 }
@@ -726,6 +737,9 @@ func (m *VMenu) BeginMouseSelection() { m.mouseSelecting = true }
 func (m *VMenu) ProcessMouse(e *vtinput.InputEvent) bool {
 	if m.IsDisabled() || e.Type != vtinput.MouseEventType {
 		return false
+	}
+	if m.processWindowMouse(e) {
+		return true
 	}
 	if m.mouseSelecting {
 		index := m.GetClickIndex(int(e.MouseY))
@@ -875,6 +889,7 @@ func (m *VMenu) scheduleSubmenuHover(index int) {
 func (m *VMenu) Show(scr *ScreenBuf) {
 	m.ScreenObject.Show(scr)
 	m.DisplayObject(scr)
+	m.DrawWindowControls(scr)
 }
 
 // DisplayObject renders the frame and menu items.

@@ -1364,7 +1364,18 @@ func (r *ExtUiRenderer) queuePanelActivation(side int, title string,
 // caches, so opening or moving in a menu can never fall back merely because a
 // directory with thousands of entries is between semantic revisions.
 func (r *ExtUiRenderer) SetSemanticMenuState(ctx *vtui.SemanticContext) bool {
-	current, supported := Presentation.MenuState(ctx)
+	r.mu.Lock()
+	previous := r.lastCompactScene
+	r.mu.Unlock()
+	var current map[string]any
+	var supported bool
+	if retained, ok := Presentation.(interface {
+		RetainedMenuState(*vtui.SemanticContext, map[string]any) (map[string]any, bool)
+	}); ok {
+		current, supported = retained.RetainedMenuState(ctx, previous)
+	} else {
+		current, supported = Presentation.MenuState(ctx)
+	}
 	if !supported {
 		r.mu.Lock()
 		if r.semanticUpdatePanelActivation {
@@ -1454,7 +1465,11 @@ func (r *ExtUiRenderer) SetSemanticMenuState(ctx *vtui.SemanticContext) bool {
 			Set: rootSet, Clear: rootClear,
 		},
 	}
-	wire := patch.ToMap()
+	wirePatch := patch
+	wirePatch.Root = &extui.MapPatch{
+		Set: semantic.CompactMenuRows(r.lastCompactScene, rootSet), Clear: rootClear,
+	}
+	wire := wirePatch.ToMap()
 	if trace := navtrace.NavigationBenchmarkCurrentUI(); trace != nil {
 		wire["benchmarkTraceId"] = trace.Id
 	}

@@ -12,6 +12,7 @@ Item {
     required property QtObject shellController
     anchors.fill: parent
     property var frame: ({})
+    readonly property bool windowMode: frame.presentation === "window" || frame.presentation === "fullWidth"
     property bool closing: false
     property bool componentReady: false
     property real revealProgress: 1
@@ -173,7 +174,7 @@ Item {
     readonly property bool showMenuTitle:
         !dropdownMode && !fromMenuBar && !hasParentMenu
         && menuTitleText !== ""
-    readonly property real menuTitleHeight: showMenuTitle
+    readonly property real menuTitleHeight: windowMode ? hostWindow.snapPx(44) : showMenuTitle
         ? hostWindow.snapPx(Math.max(hostWindow.ch,
                                     popupMenuTitle.implicitHeight) + 10) : 0
     readonly property int effectiveMenuIndex:
@@ -197,11 +198,14 @@ Item {
     readonly property var effectiveItems:
         previewMenuItem && previewMenuItem.items
         ? previewMenuItem.items : (frame.items || [])
+    readonly property bool historyMenu: effectiveItems.length > 0
+        && !!effectiveItems[0].details && effectiveItems[0].details.kind === "history"
     readonly property bool previewIsAhead:
         fromMenuBar && previewMenuItem
         && effectiveMenuIndex
            !== Number(hostWindow.menuBarModel.selected || 0)
     readonly property bool hasLeadingIndicator: {
+        if (historyMenu) return false
         for (var i = 0; i < effectiveItems.length; ++i) {
             if (effectiveItems[i].checked === true
                     || (effectiveItems[i].details && effectiveItems[i].details.icon)
@@ -229,9 +233,8 @@ Item {
         ? hostWindow.snapPx(hostWindow.ch) : menuEdgeInset
     readonly property real menuContentHeight: {
         var height = 0
-        for (var i = 0; i < effectiveItems.length; ++i) {
+        for (var i = 0; i < effectiveItems.length; ++i)
             height += itemHeightAt(i)
-        }
         return height
     }
     readonly property real dropdownMinimumY: hostWindow.snapPx(4)
@@ -639,7 +642,7 @@ Item {
     property int captionMetricsRevision: 0
     Repeater {
         id: driveCaptionMetrics
-        model: effectiveItems.filter(item => isDriveDetails(item.details))
+        model: historyMenu ? [] : effectiveItems.filter(item => isDriveDetails(item.details))
         onItemAdded: menuOverlay.captionMetricsRevision++
         onItemRemoved: menuOverlay.captionMetricsRevision++
         delegate: Text {
@@ -660,9 +663,9 @@ Item {
         }
         return hostWindow.snapPx(width + 2) + revision * 0
     }
-    readonly property real driveFilesystemWidth: hostWindow.snapPx(Math.max(0,
+    readonly property real driveFilesystemWidth: historyMenu ? 0 : hostWindow.snapPx(Math.max(0,
         ...effectiveItems.map(item => item.details ? popupMenuMetrics.advanceWidth(String(item.details.filesystem || "")) : 0)))
-    readonly property bool driveHasCapacity: effectiveItems.some(item => item.details && item.details.total)
+    readonly property bool driveHasCapacity: !historyMenu && effectiveItems.some(item => item.details && item.details.total)
     function driveCapacityText(details, styled = false) {
         const format = qsTr("%1 free of %2")
         if (!styled) return format.arg(details.free || "").arg(details.total || "")
@@ -672,14 +675,14 @@ Item {
         }
         return hostWindow.richTextEscape(format).arg(size(details.free)).arg(size(details.total))
     }
-    readonly property real driveCapacityTextWidth: hostWindow.snapPx(Math.max(0,
+    readonly property real driveCapacityTextWidth: historyMenu ? 0 : hostWindow.snapPx(Math.max(0,
         ...effectiveItems.map(item => item.details && item.details.total
             ? popupMenuMetrics.advanceWidth(driveCapacityText(item.details)) + 2 : 0)))
     readonly property real driveCapacityWidth: driveHasCapacity
         ? hostWindow.snapPx(108) + driveCapacityTextWidth : 0
 
     function preferredMenuWidth() {
-        if (effectiveItems.some(item => item.details !== undefined && item.details.kind !== "history")) {
+        if (!historyMenu && effectiveItems.some(item => item.details !== undefined && item.details.kind !== "history")) {
             let preferred = menuLabelInset + hostWindow.snapPx(16 + 16 + 24) + driveNameWidth + driveCapacityWidth + driveFilesystemWidth
             for (const item of effectiveItems) {
                 if (!isDriveDetails(item.details)) preferred = Math.max(preferred, popupMenuMetrics.advanceWidth(
@@ -723,10 +726,7 @@ Item {
         }
         var y = popupSurface.y + popupMenuList.y
                 - popupMenuList.contentY
-        for (var i = 0; i < effectiveItems.length && i < index; ++i) {
-            y += itemHeightAt(i)
-        }
-        return y
+        return y + heightBeforeIndex(index)
     }
 
     function nativeTopIndex() {
@@ -810,10 +810,11 @@ Item {
 
     Rectangle {
         id: popupSurface
-        width: menuOverlay.dropdownMode
+        width: windowChrome.item ? windowChrome.item.width : menuOverlay.dropdownMode
                ? menuOverlay.dropdownFrameWidth
+               : menuOverlay.frame.presentation === "fullWidth" ? hostWindow.snapPx(hostWindow.width)
                : hostWindow.snapPx(menuOverlay.preferredMenuWidth())
-        height: menuOverlay.dropdownMode
+        height: windowChrome.item ? windowChrome.item.height : menuOverlay.dropdownMode
                 ? menuOverlay.dropdownAnchorRect.height
                   + (menuOverlay.dropdownOpenHeight
                      - menuOverlay.dropdownAnchorRect.height)
@@ -822,10 +823,11 @@ Item {
                     hostWindow.height - hostWindow.keyBarHeight() - 8,
                     Math.max(hostWindow.ch + 10,
                              menuOverlay.preferredMenuHeight())))
-        x: menuOverlay.dropdownMode
+        x: windowChrome.item ? windowChrome.item.x : menuOverlay.dropdownMode
            ? menuOverlay.dropdownFrameX
+           : menuOverlay.frame.presentation === "fullWidth" ? 0
            : hostWindow.snapPx(menuOverlay.preferredPopupX(width))
-        y: menuOverlay.dropdownMode
+        y: windowChrome.item ? windowChrome.item.y : menuOverlay.dropdownMode
            ? menuOverlay.dropdownAnchorRect.y
              + (menuOverlay.dropdownOpenTop
                 - menuOverlay.dropdownAnchorRect.y)
@@ -847,7 +849,7 @@ Item {
             id: popupMenuTitle
             objectName: "semanticMenuTitle-"
                         + hostWindow.cleanText(menuOverlay.frame.id)
-            visible: menuOverlay.showMenuTitle
+            visible: menuOverlay.showMenuTitle && !menuOverlay.windowMode
             x: hostWindow.snapPx(12)
             y: hostWindow.snapPx(menuOverlay.menuEdgeInset
                                 + (menuOverlay.menuTitleHeight - height) / 2)
@@ -890,8 +892,11 @@ Item {
             // sit flush right. Delegates retain the visual five-pixel inset.
             anchors.rightMargin: 0
             model: menuOverlay.effectiveItems
-            readonly property bool historyMenu: menuOverlay.effectiveItems.some(
-                item => item.details && item.details.kind === "history")
+            reuseItems: historyMenu
+            // Flickable's pixelAligned means logical pixels, which is the
+            // wrong grid at fractional DPR. History rows use physical pixels.
+            pixelAligned: !historyMenu
+            readonly property bool historyMenu: menuOverlay.historyMenu
             property bool initialPositionReady: false
             opacity: historyMenu && !initialPositionReady ? 0 : 1
             clip: true
@@ -927,11 +932,21 @@ Item {
                             return
                         positionViewAtIndex(menuOverlay.semanticSelectedIndex,
                                             ListView.Contain)
+                        if (historyMenu)
+                            forceLayout()
                         // Qt's positioning can round contentY to logical
                         // pixels. Round outward so a fractional-DPR last row
                         // is not clipped by the remaining fraction of a pixel.
                         const row = itemAtIndex(menuOverlay.semanticSelectedIndex)
-                        if (row && row.y + row.height > contentY + height)
+                        // Contain rounds to logical pixels. At 175%, its
+                        // leading-edge remainder varies by row, making the
+                        // first line jump even after the glyphs are snapped.
+                        if (historyMenu && row && Math.abs(row.y - contentY) <= 1.01)
+                            contentY = row.y
+                        else if (historyMenu && row
+                                 && Math.abs(row.y + row.height - contentY - height) <= 1.01)
+                            contentY = row.y + row.height - height
+                        else if (row && row.y + row.height > contentY + height)
                             contentY = Math.ceil((row.y + row.height - height)
                                                 * hostWindow.dpr) / hostWindow.dpr
                         else if (row && row.y < contentY)
@@ -984,7 +999,7 @@ Item {
                 objectName: "semanticMenuScrollBar-"
                             + hostWindow.cleanText(menuOverlay.frame.id)
                 hostWindow: menuOverlay.hostWindow
-                thickness: 8
+                thickness: menuOverlay.historyMenu ? 16 : 8
                 readonly property bool nativeOverflow:
                     menuOverlay.menuContentHeight
                     > popupMenuList.height
@@ -1086,5 +1101,24 @@ Item {
             }
         }
 
+    }
+
+    Loader {
+        id: windowChrome
+        active: menuOverlay.windowMode
+        z: 161
+        sourceComponent: GenericDialog {
+            hostWindow: menuOverlay.hostWindow
+            menuBar: menuOverlay.menuBar
+            externalBody: true
+            frame: Object.assign({}, menuOverlay.frame, {showClose: true, showZoom: true})
+            closeAction: "menu.close"
+            geometryAction: "menu.geometry"
+            geometryLeft: 0
+            geometryRight: hostWindow.width
+            preferredWidth: menuOverlay.frame.presentation === "fullWidth"
+                ? availableWidth : Math.min(availableWidth, menuOverlay.preferredMenuWidth())
+            preferredHeight: Math.min(availableHeight, menuOverlay.preferredMenuHeight())
+        }
     }
 }

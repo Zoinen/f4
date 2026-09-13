@@ -681,7 +681,7 @@ func (hp *F4HistoryProvider) addFolderHistory(path string, benchmark *navtrace.N
 		}
 		newHistory = append(newHistory, record)
 	}
-	newHistory = LimitRichHistory(newHistory, 100)
+	newHistory = LimitRichHistory(newHistory, max(100, len(records)))
 	hp.rich["folders"] = append([]HistoryRecord(nil), newHistory...)
 	hp.data["folders"] = ExtractNames(newHistory)
 	revision = hp.markDirtyLocked("folder_combined", "folders", benchmark)

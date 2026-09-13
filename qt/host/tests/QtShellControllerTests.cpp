@@ -1,4 +1,5 @@
 #include "QtShellController.h"
+#include "ExtUiSceneReducer.h"
 
 #include "NavigationBenchmarkTrace.h"
 
@@ -498,6 +499,7 @@ private slots:
     void textGridPayloadsReachPresentationSignal();
     void commandLinePatchPreservesExistingScene();
     void scenePatchUpdatesMenusWithoutSceneProjectionSignal();
+    void retainedHistoryRowsRequireMatchingRevision();
     void scenePatchAppliesBoundedEditorCursorAndStructuralTransition();
     void scenePatchRejectsUnboundedEditorSurfaceState();
     void scenePatchAppliesSparseSelectionWithoutCatalogRewrite();
@@ -1494,6 +1496,33 @@ void QtShellControllerTests::qmlMetaObjectDoesNotExposeMasterScene()
     QVERIFY(meta.indexOfProperty("overlayState") >= 0);
     QVERIFY(meta.indexOfProperty("commandLineState") >= 0);
     QVERIFY(meta.indexOfProperty("surfaceRegistry") >= 0);
+}
+
+void QtShellControllerTests::retainedHistoryRowsRequireMatchingRevision()
+{
+    const QVariantList rows{QVariantMap{{"index", 0}, {"text", "original"}}};
+    const QVariantMap previousMenu{{"id", "history"}, {"itemsRevision", 7}, {"items", rows}};
+    const QVariantMap scene{{"schema", "app"}, {"menus", QVariantList{previousMenu}}};
+    for (const auto &mode : {QString("page"), QString("stale"), QString("other"), QString("missing")}) {
+        QVariantMap menu{{"id", mode == "other" ? "other" : "history"},
+            {"itemsRevision", mode == "stale" ? 6 : 7}, {"itemsUnchanged", true}, {"selected", 0}};
+        QVariantMap base = scene;
+        if (mode == "missing") base["menus"] = QVariantList{};
+        const QVariantMap patch{{"type", "scene_patch"}, {"schema", "app"}, {"version", 4},
+            {"baseRevision", 1}, {"revision", 2},
+            {"root", QVariantMap{{"set", QVariantMap{{"menus", QVariantList{menu}}}}}}};
+        ExtUiSceneReducer::AppliedScenePatch result;
+        QString error;
+        const bool applied = ExtUiSceneReducer::applyScenePatch(patch, base, base, 1, &result, &error);
+        QCOMPARE(applied, mode == "page");
+        if (applied) {
+            const auto retained = result.scene.value("menus").toList().first().toMap();
+            QCOMPARE(retained.value("items").toList(), rows);
+            QVERIFY(!retained.contains("itemsUnchanged"));
+            QCOMPARE(result.presentationScene.value("menus"), result.scene.value("menus"));
+        }
+        QCOMPARE(scene.value("menus").toList().first().toMap(), previousMenu);
+    }
 }
 
 void QtShellControllerTests::scenePatchUpdatesMenusWithoutSceneProjectionSignal()

@@ -126,7 +126,9 @@ func (pf *PanelsFrame) AddCommandHistory(cmd string) {
 	if limit <= 0 {
 		limit = 100
 	}
-	newRich = history.LimitRichHistory(newRich, limit)
+	// A bulk import can exceed the ordinary limit. Do not discard it on the
+	// first subsequent command.
+	newRich = history.LimitRichHistory(newRich, max(limit, len(rich)))
 	hp.SaveRichHistory("cmdline", newRich)
 
 	var strHist []string

@@ -169,7 +169,7 @@ var incrementalRootPatchKeys = []string{
 	"menus", "surface", "operationsQueue",
 }
 
-func BuildAppMenuState(_ *vtui.SemanticContext) (map[string]any, bool) {
+func BuildAppMenuState(_ *vtui.SemanticContext, previous ...map[string]any) (map[string]any, bool) {
 	if vtui.FrameManager == nil {
 		return nil, false
 	}
@@ -178,12 +178,33 @@ func BuildAppMenuState(_ *vtui.SemanticContext) (map[string]any, bool) {
 		return nil, false
 	}
 	scene := appSemanticRootFromHeader(header)
+	var previousMenus []map[string]any
+	if len(previous) != 0 {
+		previousMenus = semantic.AppMapSlice(previous[0]["menus"])
+	}
+	var menus []map[string]any
 	for _, menu := range appActiveVMenus() {
-		scene.Menus = append(scene.Menus, menu.model())
+		var retained map[string]any
+		for _, old := range previousMenus {
+			if menu.menu.SemanticItemsRevision != 0 && old["id"] == vtui.SemanticID(menu.frame) &&
+				old["itemsRevision"] == menu.menu.SemanticItemsRevision {
+				retained = old
+				break
+			}
+		}
+		model := menu.model(retained != nil).ToMap()
+		if retained != nil {
+			model["items"] = retained["items"]
+		}
+		menus = append(menus, model)
 	}
 	appAppendAutocompleteMenus(&scene, appActiveAutocompleteMenus())
 
 	complete := scene.ToMap()
+	menus = append(menus, semantic.AppMapSlice(complete["menus"])...)
+	if len(menus) != 0 {
+		complete["menus"] = menus
+	}
 	projection := make(map[string]any, len(semantic.SemanticMenuStateRootPatchKeys))
 	for _, key := range semantic.SemanticMenuStateRootPatchKeys {
 		if value, present := complete[key]; present {

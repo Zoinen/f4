@@ -852,6 +852,28 @@ func init() {
 		Handler:     withPF(func(pf *panel.PanelsFrame) { actionImportFar2lHistory(pf) }),
 	})
 	RegisterAction(action.Action{
+		Name:        "History.ImportFar3",
+		Area:        "Shell",
+		Label:       "Import Far3 History",
+		LabelKey:    "Action.History.ImportFar3",
+		Description: "Merge commands, viewer/editor and folder history from Far Manager 3",
+		DescKey:     "Action.History.ImportFar3.Desc",
+		MenuPath:    "Commands",
+		MenuSubPath: "History",
+		Handler: withPF(func(pf *panel.PanelsFrame) {
+			hp, ok := vtui.GlobalHistoryProvider.(*history.F4HistoryProvider)
+			if !ok {
+				return
+			}
+			dialog.ShowFar3HistoryImport(hp, func() {
+				if pf.CmdLine != nil && pf.CmdLine.Edit != nil {
+					pf.CmdLine.Edit.History = hp.LoadHistory("cmdline")
+					pf.CmdLine.Edit.HistoryLimit = max(100, len(pf.CmdLine.Edit.History))
+				}
+			})
+		}),
+	})
+	RegisterAction(action.Action{
 		Name:        "Panel.GoParent",
 		Area:        "Shell",
 		Label:       "Parent Folder",
