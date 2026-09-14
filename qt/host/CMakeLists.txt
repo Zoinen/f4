@@ -272,6 +272,9 @@ set(F4_QT_HOST_SOURCES
 )
 
 if(APPLE)
+  if(USE_QWK)
+    list(APPEND F4_QT_HOST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/MacSystemButtonLayout.mm")
+  endif()
   list(APPEND F4_QT_HOST_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/MacApplicationMenu.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/MacApplicationMenu.mm"
@@ -691,7 +694,7 @@ if(BUILD_TESTING)
 
   if(APPLE)
     if(USE_QWK)
-      add_executable(MacSystemButtonLayoutTests tests/MacSystemButtonLayoutTests.mm)
+      add_executable(MacSystemButtonLayoutTests tests/MacSystemButtonLayoutTests.mm src/MacSystemButtonLayout.mm)
       target_include_directories(MacSystemButtonLayoutTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
       target_link_libraries(MacSystemButtonLayoutTests PRIVATE
         Qt6::Quick Qt6::Test QWindowKit::Quick "-framework AppKit")

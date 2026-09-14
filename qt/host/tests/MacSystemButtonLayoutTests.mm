@@ -17,13 +17,17 @@ private slots:
 void MacSystemButtonLayoutTests::startupPositionsButtonsWithoutResizing_data()
 {
     QTest::addColumn<bool>("maximized");
-    QTest::newRow("windowed") << false;
-    QTest::newRow("maximized") << true;
+    QTest::addColumn<bool>("lateNativeLayout");
+    QTest::newRow("windowed") << false << false;
+    QTest::newRow("maximized") << true << false;
+    QTest::newRow("late-windowed") << false << true;
+    QTest::newRow("late-maximized") << true << true;
 }
 
 void MacSystemButtonLayoutTests::startupPositionsButtonsWithoutResizing()
 {
     QFETCH(bool, maximized);
+    QFETCH(bool, lateNativeLayout);
     QQuickWindow window;
     window.setGeometry(100, 100, 800, 600);
     QQuickItem title(window.contentItem());
@@ -57,6 +61,22 @@ void MacSystemButtonLayoutTests::startupPositionsButtonsWithoutResizing()
     QVERIFY(native);
     NSButton *middle = [native standardWindowButton:NSWindowMiniaturizeButton];
     QVERIFY(middle);
+    if (lateNativeLayout) {
+        // AppKit can lay out the titlebar again after the first Qt frame.
+        // No Qt resize or QML area geometry change accompanies this.
+        for (NSWindowButton kind : {NSWindowCloseButton, NSWindowMiniaturizeButton, NSWindowZoomButton}) {
+            NSButton *button = [native standardWindowButton:kind];
+            NSPoint origin = button.frame.origin;
+            origin.y -= 8;
+            [button setFrameOrigin:origin];
+        }
+        QTest::qWait(150);
+        if (!maximized) {
+            QCOMPARE(window.geometry(), geometry);
+            QCOMPARE(widths.count(), 0);
+            QCOMPARE(heights.count(), 0);
+        }
+    }
     const NSRect frame = middle.frame;
     const QPoint expected = QRectF(area.mapToScene(QPointF()), area.size()).toRect().center();
     const double actualX = NSMidX(frame);
