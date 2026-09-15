@@ -2345,18 +2345,19 @@ func actionRename(pf *panel.PanelsFrame) {
 		return
 	}
 
+	sourceVFS, sourceBase := fsp.Vfs, fsp.Vfs.GetPath()
 	dialog.FileInputBox(i18n.Msg("Dialog.RenameTitle"), fmt.Sprintf(i18n.Msg("Dialog.RenamePrompt"), name), name, func(newName string) {
 		if newName == "" || newName == name {
 			return
 		}
-		oldPath := fsp.Vfs.Join(fsp.Vfs.GetPath(), name)
-		newPath := fsp.Vfs.Join(fsp.Vfs.GetPath(), newName)
+		oldPath := sourceVFS.Join(sourceBase, name)
+		newPath := sourceVFS.Join(sourceBase, newName)
 
 		vtui.RunAsync(func(ctx *vtui.TaskContext) {
 			// The rename dialog never asks for overwrite confirmation. Carry an
 			// atomic no-replace decision so remote providers cannot silently
 			// destroy an entry that already has the requested name.
-			err := fsp.Vfs.Rename(vfs.WithDestinationOverwrite(ctx.Context, false), oldPath, newPath)
+			err := sourceVFS.Rename(vfs.WithDestinationOverwrite(ctx.Context, false), oldPath, newPath)
 			ctx.RunOnUI(func() {
 				if err != nil {
 					vtui.ShowMessage(" Error ", fmt.Sprintf("Failed to rename:\n%v", err), []string{"&Ok"})
@@ -4870,6 +4871,7 @@ func actionFileAttributes(pf *panel.PanelsFrame) {
 	if fsp == nil || fsp.Vfs == nil {
 		return
 	}
+	attributesVFS := fsp.Vfs
 
 	names := fsp.GetSelectedNames()
 	if len(names) == 0 {
@@ -4889,7 +4891,7 @@ func actionFileAttributes(pf *panel.PanelsFrame) {
 	vtui.RunAsync(func(ctx *vtui.TaskContext) {
 		targets := make([]dialog.AttributesTarget, 0, len(paths))
 		for _, path := range paths {
-			item, err := vfs.Lstat(ctx.Context, fsp.Vfs, path)
+			item, err := vfs.Lstat(ctx.Context, attributesVFS, path)
 			if err != nil {
 				ctx.RunOnUI(func() {
 					vtui.ShowMessage(" Error ", err.Error(), []string{"&Ok"})
@@ -4899,7 +4901,7 @@ func actionFileAttributes(pf *panel.PanelsFrame) {
 			targets = append(targets, dialog.AttributesTarget{Path: path, Item: item})
 		}
 		ctx.RunOnUI(func() {
-			dialog.ShowAttributesDialogForTargets(pf.RefreshAll, fsp.Vfs, targets)
+			dialog.ShowAttributesDialogForTargets(pf.RefreshAll, attributesVFS, targets)
 		})
 	})
 }

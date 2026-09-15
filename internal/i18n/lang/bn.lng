@@ -4,6 +4,8 @@ Code=bn
 Author=f4 Team
 
 [Strings]
+Action.File.ContextMenu=ফাইলের প্রসঙ্গ মেনু…
+Action.File.ContextMenu.Desc=নির্বাচিত ফাইলগুলির প্রসঙ্গ মেনু দেখান
 VisRen.Menu=ভিজ্যুয়াল ফাইল রিনেমার (&V)
 VisRen.Title=ভিজ্যুয়াল ফাইল রিনেমার
 VisRen.HostUnsupported=এই F4 হোস্ট VisRen UI ব্রিজ প্রদান করে না।

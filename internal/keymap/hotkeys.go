@@ -49,7 +49,7 @@ type HotkeyManager struct {
 
 // GetConditions returns the user-friendly names of all registered conditions.
 func GetConditions() []string {
-	return []string{"None", "SearchFirst", "EmptyCommandLine", "CommandLineNotEmpty", "EscToggle", "TerminalQuiet", "AltPanelVisible", "NoAltScreenApp", "NoTerminalApp"}
+	return []string{"None", "SearchFirst", "EmptyCommandLine", "CommandLineNotEmpty", "EscToggle", "TerminalQuiet", "AltPanelVisible", "NoAltScreenApp", "NoTerminalApp", "FilePanel"}
 }
 
 // RegisterCondition adds a dynamic boolean check accessible by hotkey bindings.

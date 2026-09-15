@@ -16,6 +16,7 @@ import (
 	"github.com/unxed/f4/internal/config"
 	"github.com/unxed/f4/internal/dialog"
 	"github.com/unxed/f4/internal/editor"
+	"github.com/unxed/f4/internal/filemenu"
 	"github.com/unxed/f4/internal/fileops"
 	"github.com/unxed/f4/internal/fusefs"
 	"github.com/unxed/f4/internal/gui"
@@ -199,6 +200,9 @@ func sudoStartupMode(args []string, askpassParent bool) (dispatcher string, askp
 // redesign of the startup path, not a move, and no test covers it; see the
 // deviation recorded for Task 36.
 func Main() {
+	if len(os.Args) == 2 && os.Args[1] == filemenu.HelperFlag {
+		os.Exit(filemenu.Serve(os.Stdin, os.Stdout))
+	}
 	vtui.AppName = "f4"
 	// Before anything asks where the configuration lives: internal/config is a
 	// layer-0 leaf and cannot reach internal/update for the answer.
@@ -266,9 +270,11 @@ func Main() {
 	redirectDetachedStdout()
 	vtui.DebugLog("MAIN: Starting with args: %v", os.Args)
 	config.LoadConfig() // Load config early to apply GUI font settings
+	filemenu.EnablePreparation()
 
 	defer func() {
 		SaveSession() // Гарантирует сохранение размеров и путей при любом выходе
+		filemenu.Close()
 		if plughost.GlobalPluginManager != nil {
 			plughost.GlobalPluginManager.CloseAll()
 		}

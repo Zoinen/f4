@@ -4,6 +4,8 @@ Code=ka
 Author=f4 Team
 
 [Strings]
+Action.File.ContextMenu=ფაილის კონტექსტური მენიუ…
+Action.File.ContextMenu.Desc=არჩეული ფაილების კონტექსტური მენიუს ჩვენება
 VisRen.Menu=&ვიზუალური გადარქმევა
 VisRen.Title=ფაილების ვიზუალური გადარქმევა
 VisRen.HostUnsupported=ეს F4 ჰოსტი არ უზრუნველყოფს VisRen UI ხიდს.

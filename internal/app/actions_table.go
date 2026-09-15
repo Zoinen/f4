@@ -513,6 +513,12 @@ func init() {
 		Handler:             withPF(func(pf *panel.PanelsFrame) { actionFileAttributes(pf) }),
 	})
 	registerAction(action.Action{
+		Name: "File.ContextMenu", Area: "Shell", Label: "File Context Menu…", LabelKey: "Action.File.ContextMenu",
+		Description: "Show the context menu for selected files", DescKey: "Action.File.ContextMenu.Desc",
+		DefaultKeys: []string{"Apps:FilePanel"}, MenuPath: "Files",
+		Handler: withPF(panel.ShowFileContextMenu),
+	})
+	registerAction(action.Action{
 		Name:        "File.Share",
 		Area:        "Shell",
 		Label:       "Share...",

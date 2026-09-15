@@ -4,6 +4,8 @@ Code=hy
 Author=f4 Team
 
 [Strings]
+Action.File.ContextMenu=Ֆայլի համատեքստային ընտրացանկ…
+Action.File.ContextMenu.Desc=Ցուցադրել ընտրված ֆայլերի համատեքստային ընտրացանկը
 VisRen.Menu=Ֆայլերի &վիզուալ անվանափոխում
 VisRen.Title=Ֆայլերի վիզուալ անվանափոխում
 VisRen.HostUnsupported=F4-ի այս հոսթը չի ապահովում VisRen UI կապը։

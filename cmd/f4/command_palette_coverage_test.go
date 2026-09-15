@@ -65,7 +65,7 @@ var commandPaletteAuditClasses = map[string]bool{
 // one package to another; it never removes one. A smaller number here means an
 // audit entry was dropped together with its subject, which the set comparison
 // below cannot see because both sides shrink at once.
-const commandPaletteF4Surfaces = 48
+const commandPaletteF4Surfaces = 50
 
 // commandPaletteTargetPackage named the package each audited cmd/f4 file would
 // end up in once the split reached it, so an audit key survived the move that
@@ -80,6 +80,7 @@ const commandPaletteF4Surfaces = 48
 var commandPaletteTargetPackage = map[string]string{}
 
 var commandPaletteProcessKeyAudit = map[string]commandPaletteSurfaceAudit{
+	"panel.(*fileMenuFrame).ProcessKey": {class: paletteAuditModalLocal, rationale: "native helper cancellation and popup navigation; File.ContextMenu is the registered entry point"},
 	"app.(*AIChatPanel).ProcessKey": {
 		class: paletteAuditPanelProvider, rationale: "focused AI panel commands are supplied by the panel-context palette provider; text and link navigation remain local",
 	},
@@ -194,6 +195,7 @@ var commandPaletteProcessKeyAudit = map[string]commandPaletteSurfaceAudit{
 }
 
 var commandPaletteNewVMenuAudit = map[string]commandPaletteSurfaceAudit{
+	"panel.ShowFileContextMenuAt#1": {class: paletteAuditDynamicAction, rationale: "File.ContextMenu exposes the popup; its selection-dependent actions reuse registered file commands and desktop application handlers"},
 	"app.actionFoldersHistory#1": {
 		class: paletteAuditDynamicAction, rationale: "the registered folder-history action opens a runtime history list",
 	},

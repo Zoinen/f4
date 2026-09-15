@@ -4,6 +4,8 @@ Code=hi
 Author=f4 Team
 
 [Strings]
+Action.File.ContextMenu=फ़ाइल संदर्भ मेनू…
+Action.File.ContextMenu.Desc=चुनी गई फ़ाइलों का संदर्भ मेनू दिखाएँ
 VisRen.Menu=&विज़ुअल फ़ाइल रीनेमर
 VisRen.Title=विज़ुअल फ़ाइल रीनेमर
 VisRen.HostUnsupported=यह F4 होस्ट VisRen UI ब्रिज प्रदान नहीं करता है।

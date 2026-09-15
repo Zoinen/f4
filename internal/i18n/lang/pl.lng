@@ -4,6 +4,8 @@ Code=pl
 Author=f4 Team
 
 [Strings]
+Action.File.ContextMenu=Menu kontekstowe plików…
+Action.File.ContextMenu.Desc=Pokaż menu kontekstowe zaznaczonych plików
 VisRen.Menu=&Wizualna zmiana nazw
 VisRen.Title=Wizualna zmiana nazw
 VisRen.HostUnsupported=Ten host F4 nie zapewnia interfejsu użytkownika VisRen.

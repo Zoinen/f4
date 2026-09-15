@@ -4,6 +4,8 @@ Code=lt
 Author=f4 Team
 
 [Strings]
+Action.File.ContextMenu=Failo kontekstinis meniu…
+Action.File.ContextMenu.Desc=Rodyti pasirinktų failų kontekstinį meniu
 VisRen.Menu=&Vizualusis failų pervardijimas
 VisRen.Title=Vizualusis failų pervardijimas
 VisRen.HostUnsupported=Ši F4 versija nepalaiko VisRen sąsajos.

@@ -305,9 +305,10 @@ type PanelsFrame struct {
 	lastKeyEvent       time.Time
 	CommandLineFocused bool
 
-	LastPtyPath string
-	LastPtyVFS  vfs.VFS
-	Closed      bool
+	LastPtyPath    string
+	LastPtyVFS     vfs.VFS
+	Closed         bool
+	fileMenuCancel context.CancelFunc
 
 	ShellMode         terminal.ShellMode
 	HostConsoleActive bool
@@ -1286,6 +1287,12 @@ func workspaceContainsPanelsFrame(screen *vtui.AppScreen, target *PanelsFrame) b
 }
 
 func (pf *PanelsFrame) Close() {
+	if pf.fileMenuCancel != nil {
+		pf.fileMenuCancel()
+	}
+	if activeFileMenuOwner == pf && activeFileMenu != nil {
+		activeFileMenu.Close()
+	}
 	if pf.terminalRedraw != nil {
 		pf.terminalRedraw.Stop()
 	}
@@ -1669,6 +1676,7 @@ func (pf *PanelsFrame) NoteLocalShellLineSent(pty terminal.PtyBackend) {
 }
 
 func (pf *PanelsFrame) Show(scr *vtui.ScreenBuf) {
+	pf.prepareFileMenu()
 	if pf.ShellMode == terminal.ShellModeHost && pf.IsHostConsoleActive() {
 		return
 	}

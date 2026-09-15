@@ -15,6 +15,13 @@ import (
 // ("Esc:EscToggle"). Every one of them asks this frame what is on screen, which
 // is why they live here and not with the hotkey manager.
 var hotkeyConditions = map[string]func() bool{
+	"filepanel": func() bool {
+		if vtui.FrameManager == nil {
+			return false
+		}
+		pf, ok := vtui.FrameManager.GetTopFrame().(*PanelsFrame)
+		return ok && !pf.Closed && pf.ShowPanels && pf.GetActivePanel() != nil
+	},
 	"searchfirst": func() bool {
 		return config.App.NavigationMode == config.NavigationSearchFirst
 	},

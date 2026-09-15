@@ -98,6 +98,7 @@ f4/
 │   │
 │   │  # layer 1
 │   ├── fileops/                   # copy/move/delete, background jobs, clipboard
+│   ├── filemenu/                  # isolated native desktop menus; no UI-layer dependencies
 │   ├── update/                    # self-update, elevation, helper args
 │   ├── fusefs/                    # FUSE mounting
 │   ├── textlayout/                # text layout and wrapping
