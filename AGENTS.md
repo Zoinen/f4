@@ -36,6 +36,7 @@ internal/        # everything the application is, in layers
   plughost/      #   layer 2: the plugin host and its registries
   gui/           #   layer 2: the GUI backends
   fileops/       #   layer 1: file operations and the operation queue
+  filemenu/      #   layer 1: isolated native desktop file menu helpers
   update/        #   layer 1: the updater
   fusefs/        #   layer 1: FUSE mounting
   textlayout/    #   layer 1: text layout and wrapping

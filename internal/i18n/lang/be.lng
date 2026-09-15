@@ -4,6 +4,8 @@ Code=be
 Author=f4 Team
 
 [Strings]
+Action.File.ContextMenu=Кантэкстнае меню файла…
+Action.File.ContextMenu.Desc=Паказаць кантэкстнае меню выбраных файлаў
 VisRen.Menu=&Візуальнае перайменаванне файлаў
 VisRen.Title=Візуальнае перайменаванне файлаў
 VisRen.HostUnsupported=Гэтая зборка F4 не забяспечвае інтэрфейс VisRen.

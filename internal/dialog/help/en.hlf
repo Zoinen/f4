@@ -5,10 +5,23 @@ f4 — efficient and cozy file manager in go
 ~Settings Center~SettingsCenter@
 ~Viewer / Editor keys~ViewerEditor@
 ~Panel navigation~PanelNav@
+~File context menu~FileContextMenu@
 ~Mouse wheel settings~MouseWheel@
 ~Portable mode~PortableSettings@
 ~Visual File Renamer (VisRen)~VisRen@
 ~View README.md~README@
+
+@FileContextMenu
+$File context menu
+Press Apps in a file panel, or choose File Context Menu from the Files menu
+or command palette. Marked items take precedence over the focused file.
+Windows opens the classic shell menu, including installed shell extensions.
+macOS offers a Cocoa menu with Finder-like actions. Linux uses F4's menu.
+Open With lists installed applications that support the entire selection.
+Virtual files use an existing verified mount when available; otherwise the
+menu uses F4 operations on the originals. No files are downloaded and no
+mounts are created by this command. Read-only mounts stay read-only.
+Escape dismisses the menu. Apps can be reassigned in the hotkey settings.
 
 @VisRen
 $Visual File Renamer (VisRen)
