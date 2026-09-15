@@ -1059,7 +1059,6 @@ func init() {
 		LabelKey:    "Action.File.SystemProperties",
 		Description: "Open the system properties of the item under the cursor",
 		DescKey:     "Action.File.SystemProperties.Desc",
-		DefaultKeys: []string{"Apps"},
 		MenuPath:    "Files",
 		Visible:     func() bool { return runtime.GOOS == "windows" },
 		Enabled:     activePanelHasSelectionTarget,
@@ -1076,6 +1075,12 @@ func init() {
 		Visible:     func() bool { return runtime.GOOS == "windows" },
 		Enabled:     activePanelHasSelectionTarget,
 		Handler:     withPF(func(pf *panel.PanelsFrame) { actionFileExplorerMenu(pf) }),
+	})
+	RegisterAction(action.Action{
+		Name: "File.ContextMenu", Area: "Shell", Label: "File Context Menu…", LabelKey: "Action.File.ContextMenu",
+		Description: "Show the context menu for selected files", DescKey: "Action.File.ContextMenu.Desc",
+		DefaultKeys: []string{"Apps:FilePanel"}, MenuPath: "Files",
+		Handler: withPF(panel.ShowFileContextMenu),
 	})
 	RegisterAction(action.Action{
 		Name:        "File.Share",

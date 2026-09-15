@@ -4,6 +4,8 @@ Code=de
 Author=f4 Team
 
 [Strings]
+Action.File.ContextMenu=Dateikontextmenü…
+Action.File.ContextMenu.Desc=Kontextmenü für ausgewählte Dateien anzeigen
 VisRen.Menu=&Visuelles Umbenennen
 VisRen.Title=Visuelles Umbenennen
 VisRen.HostUnsupported=Dieser F4-Host stellt die VisRen-UI-Schnittstelle nicht zur Verfügung.

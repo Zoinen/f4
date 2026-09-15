@@ -65,7 +65,7 @@ var commandPaletteAuditClasses = map[string]bool{
 // one package to another; it never removes one. A smaller number here means an
 // audit entry was dropped together with its subject, which the set comparison
 // below cannot see because both sides shrink at once.
-const commandPaletteF4Surfaces = 80
+const commandPaletteF4Surfaces = 82
 
 // commandPaletteTargetPackage named the package each audited cmd/f4 file would
 // end up in once the split reached it, so an audit key survived the move that
@@ -82,6 +82,7 @@ var commandPaletteTargetPackage = map[string]string{}
 var commandPaletteProcessKeyAudit = map[string]commandPaletteSurfaceAudit{
 	"panel.(*shellContextMenu).ProcessKey":     {class: paletteAuditModalLocal, rationale: "Windows Shell verbs come from the selected item native context menu; keyboard handling navigates and activates those dynamic verbs"},
 	"panel.(*windowsLocationsMenu).ProcessKey": {class: paletteAuditModalLocal, rationale: "Drive-menu Windows locations tree handles expansion, collapse, activation and dismissal inside the existing drive-selection action"},
+	"panel.(*fileMenuFrame).ProcessKey":        {class: paletteAuditModalLocal, rationale: "native helper cancellation and popup navigation; File.ContextMenu is the registered entry point"},
 	"app.(*AIChatPanel).ProcessKey": {
 		class: paletteAuditPanelProvider, rationale: "focused AI panel commands are supplied by the panel-context palette provider; Ctrl+Z (undo the last applied ap patch) is also the registered AI.UndoPatch action; text and link navigation remain local",
 	},
@@ -285,6 +286,7 @@ var commandPaletteNewVMenuAudit = map[string]commandPaletteSurfaceAudit{
 	"panel.showModeColumnsEditor#2": {
 		class: paletteAuditModalLocal, rationale: "the modifier picker after a column type in the same list (SC, SE, DMB..., f4#410); it only chooses which variant of that column the local list adds",
 	},
+	"panel.ShowFileContextMenuAt#1": {class: paletteAuditDynamicAction, rationale: "File.ContextMenu exposes the popup; its selection-dependent actions reuse registered file commands and desktop application handlers"},
 	"app.actionFoldersHistory#1": {
 		class: paletteAuditDynamicAction, rationale: "the registered folder-history action opens a runtime history list",
 	},

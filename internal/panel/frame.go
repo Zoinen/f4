@@ -477,6 +477,7 @@ type PanelsFrame struct {
 	hostConsoleMu         sync.Mutex
 	hostConsoleReplyState hostConsoleReplyState
 	lastOverlayDraw       time.Time
+	fileMenuCancel        context.CancelFunc
 
 	// Terminal mouse-selection state. Kept in PanelsFrame because
 	// mouse routing lives here; the highlight and text extraction
@@ -2241,6 +2242,12 @@ func (pf *PanelsFrame) Close() {
 	pf.clearCommandPayload()
 	CancelDocumentOpen(pf)
 	pf.closeTerminalOutputRedraw()
+	if pf.fileMenuCancel != nil {
+		pf.fileMenuCancel()
+	}
+	if activeFileMenuOwner == pf && activeFileMenu != nil {
+		activeFileMenu.Close()
+	}
 	if pf.terminalRedraw != nil {
 		pf.terminalRedraw.Stop()
 	}
@@ -2934,6 +2941,7 @@ func (pf *PanelsFrame) NoteLocalShellLineSent(pty terminal.PtyBackend) {
 }
 
 func (pf *PanelsFrame) Show(scr *vtui.ScreenBuf) {
+	pf.prepareFileMenu()
 	if pf.ShellMode == terminal.ShellModeHost && pf.IsHostConsoleActive() {
 		return
 	}

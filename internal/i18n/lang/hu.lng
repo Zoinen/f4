@@ -4,6 +4,8 @@ Code=hu
 Author=f4 Team
 
 [Strings]
+Action.File.ContextMenu=Fájl helyi menüje…
+Action.File.ContextMenu.Desc=A kijelölt fájlok helyi menüjének megjelenítése
 VisRen.Menu=&Vizuális csoportos átnevezés
 VisRen.Title=Vizuális csoportos átnevezés
 VisRen.HostUnsupported=Ez az F4 gazdagép nem biztosítja a VisRen UI-hidat.

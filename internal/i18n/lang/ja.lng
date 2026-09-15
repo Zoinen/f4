@@ -4,6 +4,8 @@ Code=ja
 Author=f4 Team
 
 [Strings]
+Action.File.ContextMenu=ファイルのコンテキストメニュー…
+Action.File.ContextMenu.Desc=選択したファイルのコンテキストメニューを表示
 VisRen.Menu=ビジュアル一括リネーム(&V)
 VisRen.Title=ビジュアル一括リネーム
 VisRen.HostUnsupported=このF4ホストはVisRen UIブリッジを提供していません。

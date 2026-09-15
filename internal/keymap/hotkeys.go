@@ -70,7 +70,7 @@ func GetConditions() []string {
 		"None", "SearchFirst", "EmptyCommandLine", "CommandLineNotEmpty",
 		"CommandLineReady", "MultilineCommandInput", "PanelsVisible",
 		"EscToggle", "TerminalQuiet", "AltPanelVisible", "AltPanelFocused", "NoAltScreenApp",
-		"NoTerminalApp",
+		"NoTerminalApp", "FilePanel",
 	}
 }
 

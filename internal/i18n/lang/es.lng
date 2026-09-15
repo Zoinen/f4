@@ -4,6 +4,8 @@ Code=es
 Author=f4 Team
 
 [Strings]
+Action.File.ContextMenu=Menú contextual de archivos…
+Action.File.ContextMenu.Desc=Mostrar el menú contextual de los archivos seleccionados
 VisRen.Menu=&Renombrador visual de archivos
 VisRen.Title=Renombrador visual de archivos
 VisRen.HostUnsupported=Este host F4 no proporciona el puente de interfaz de usuario de VisRen.

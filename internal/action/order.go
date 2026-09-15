@@ -58,6 +58,7 @@ var actionMenuOrder = []string{
 	"File.Attributes",
 	"File.SystemProperties",
 	"File.ExplorerMenu",
+	"File.ContextMenu",
 	"File.Share",
 	"Panel.SystemExplorer",
 	"Panel.OpenAssociated",

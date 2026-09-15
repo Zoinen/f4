@@ -4,6 +4,8 @@ Code=ko
 Author=f4 Team
 
 [Strings]
+Action.File.ContextMenu=파일 상황에 맞는 메뉴…
+Action.File.ContextMenu.Desc=선택한 파일의 상황에 맞는 메뉴 표시
 VisRen.Menu=비주얼 파일 이름 변경기(&V)
 VisRen.Title=비주얼 파일 이름 변경기
 VisRen.HostUnsupported=이 F4 호스트는 VisRen UI 브리지를 제공하지 않습니다.

@@ -4,6 +4,8 @@ Code=cs
 Author=f4 Team
 
 [Strings]
+Action.File.ContextMenu=Kontextová nabídka souboru…
+Action.File.ContextMenu.Desc=Zobrazit kontextovou nabídku vybraných souborů
 VisRen.Menu=&Vizuální přejmenování souborů
 VisRen.Title=Vizuální přejmenování souborů
 VisRen.HostUnsupported=Tento hostitel F4 neposkytuje rozhraní pro VisRen.
