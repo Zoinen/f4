@@ -82,7 +82,7 @@ Rectangle {
                    : (documentRow.loaded
                       ? documentRow.rowData.runs || [] : [])
 
-            delegate: Rectangle {
+            delegate: Item {
                 id: runSegment
                 required property int index
                 readonly property var runData:
@@ -92,9 +92,23 @@ Rectangle {
                 width: Math.max(runLabel.implicitWidth,
                                 Number((runSegment.runData.text || "").length)
                                 * Number(documentRow.documentRoot.terminalCellWidth || 0))
-                color: documentRow.documentRoot.terminalSurface
+                readonly property color color: documentRow.documentRoot.terminalSurface
                        ? documentRow.hostWindow.terminalPalette.resolve(runData, false, runData.background || "transparent")
                        : documentRow.documentRoot.runBackground(runData.background)
+
+                // Keep backgrounds below the row selection, independently of
+                // the text layer. A colored run must not cover mouse selection.
+                Rectangle {
+                    objectName: "documentRunBackground"
+                    parent: documentRow
+                    x: runRow.x + runSegment.x
+                    y: runRow.y + runSegment.y
+                    width: runSegment.width
+                    height: runSegment.height
+                    visible: runRow.visible
+                    color: runSegment.color
+                    z: -1
+                }
 
                 Text {
                     id: runLabel

@@ -552,10 +552,10 @@ func init() {
 		Description: "Open current file in the system file manager",
 		DescKey:     "Action.Panel.SystemExplorer.Desc",
 		// Same reasoning as Panel.InsertFileName: the panel cursor
-		// survives Ctrl+O, so Ctrl+Shift+Enter works with the panels
+		// survives Ctrl+O, so Alt+Shift+Enter works with the panels
 		// hidden, but yields to a child process that is using the
 		// terminal (many REPLs read Shift+Enter themselves).
-		DefaultKeys:  []string{"CtrlShiftEnter:NoTerminalApp"},
+		DefaultKeys:  []string{"AltShiftEnter:NoTerminalApp"},
 		DefaultAreas: []string{"Terminal"},
 		MenuPath:     "Files",
 		Handler: withPF(func(pf *panel.PanelsFrame) {
@@ -1995,6 +1995,21 @@ func init() {
 		DefaultKeys:  []string{"ShiftEnter:MultilineCommandInput"},
 		DefaultAreas: []string{"Terminal"},
 		Handler:      withPF(func(pf *panel.PanelsFrame) { pf.InsertCommandLineBreak() }),
+	})
+	RegisterAction(action.Action{
+		Name:         "CommandLine.RunInNewWorkspace",
+		Area:         "Shell",
+		Label:        "Run command in new workspace",
+		LabelKey:     "Action.CommandLine.RunInNewWorkspace",
+		Description:  "Clone the current panels and run the typed command in the new workspace",
+		DescKey:      "Action.CommandLine.RunInNewWorkspace.Desc",
+		DefaultKeys:  []string{"CtrlShiftEnter:CommandLineReady"},
+		DefaultAreas: []string{"Terminal"},
+		MenuPath:     "Commands",
+		Handler: func() bool {
+			pf := panel.FindPanelsFrameAnyScreen()
+			return pf != nil && pf.RunCommandInNewWorkspace()
+		},
 	})
 	RegisterAction(action.Action{
 		Name:        "Panel.InsertLeftPath",

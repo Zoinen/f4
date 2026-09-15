@@ -12,6 +12,14 @@ chord, or a laptop has no `F5`, running the command from the palette is usually
 faster than writing a rule, and it is the only thing needed when the key was
 never the point.
 
+With a nonempty command prompt, **Ctrl+Shift+Enter** runs
+`CommandLine.RunInNewWorkspace`: it clones the current panels, activates the
+new workspace, and submits the typed command there. The source panels and
+prompt are preserved. In search-first mode the command prompt must own focus.
+**Alt+Shift+Enter** invokes `Panel.SystemExplorer` (Open in Explorer), previously
+bound to Ctrl+Shift+Enter. Both actions appear in the command palette and Hotkey
+Configurator; user-defined bindings take precedence over these defaults.
+
 **A terminal multiplexer takes the chord first.** tmux, zellij, GNU screen and
 dvtm own their prefixes upstream of f4, so those keys never reach the
 application at all: `Ctrl+B` (tmux), `Ctrl+A` (screen), `Ctrl+P`, `Ctrl+T`,

@@ -775,6 +775,8 @@ private slots:
     void workspaceDragHitOnlyAcceptsPanelTabs();
     void workspaceSeparatorBreaksUnderActiveTab();
     void workspaceTabWheelActivatesAdjacentTabs();
+    void workspaceTabMiddleClickClosesClickedTab();
+    void workspaceCloseButtonHasTightHitAreaAndHoverFeedback();
     void workspaceTabTextParentsStayOnPhysicalPixelGrid();
     void worktreeBranchAppearsCenteredInTitleBar();
     void worktreeBranchIsCenteredInTitleBar();
@@ -3741,6 +3743,106 @@ void F4QuickViewSurfaceTests::workspaceSeparatorBreaksUnderActiveTab()
     QTRY_VERIFY_WITH_TIMEOUT(!rightInactiveDivider->isVisible(), 3000);
 }
 
+void F4QuickViewSurfaceTests::workspaceCloseButtonHasTightHitAreaAndHoverFeedback()
+{
+    QVariantMap scene = shellScene();
+    scene.insert("workspaceTabs", QVariantMap{{"visible", true}, {"tabs", QVariantList{
+        QVariantMap{{"id", "workspace-tab-close-test"}, {"text", "Workspace"},
+            {"index", 0}, {"active", true}, {"closable", true},
+            {"action", "workspace.activate"}, {"closeAction", "workspace.close"}}
+    }}});
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    auto *close = visualItemWithObjectNamePrefix(fixture.window->contentItem(),
+                                                "workspace-close-workspace-tab-close-test");
+    QVERIFY(close);
+    QTRY_VERIFY(close->isVisible());
+    QTest::qWait(100);
+    const QPoint outside = close->mapToScene(QPointF(-3, close->height() / 2)).toPoint();
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, outside);
+    QTRY_COMPARE(fixture.shell.actions.size(), 1);
+    QCOMPARE(fixture.shell.actions.first().value("action").toString(),
+             QString("workspace.activate"));
+    fixture.shell.clearActions();
+    QTest::mouseMove(fixture.window, outside);
+    QTest::qWait(50);
+    const qreal dpr = fixture.window->devicePixelRatio();
+    const QPointF origin = close->mapToScene(QPointF());
+    const QRect crop(qRound(origin.x() * dpr), qRound(origin.y() * dpr),
+                     qRound(close->width() * dpr), qRound(close->height() * dpr));
+    const QImage normal = fixture.window->grabWindow().copy(crop);
+    const QPoint center = close->mapToScene(QPointF(close->width() / 2,
+                                                   close->height() / 2)).toPoint();
+    QTest::mouseMove(fixture.window, center);
+    QTest::qWait(50);
+    const QImage hovered = fixture.window->grabWindow();
+    QVERIFY2(hovered.copy(crop) != normal, "close button has no visible hover feedback");
+    if (qAbs(dpr - 1.75) < .001) {
+        for (qreal coordinate : {origin.x(), origin.y(), close->width(), close->height()})
+            QVERIFY(qAbs(coordinate * dpr - qRound64(coordinate * dpr)) < .001);
+        QCOMPARE(close->mapToScene(QPointF(1, 0)) - origin, QPointF(1, 0));
+        QCOMPARE(close->mapToScene(QPointF(0, 1)) - origin, QPointF(0, 1));
+    }
+    const QString capture = qEnvironmentVariable("F4_CLOSE_HOVER_CAPTURE");
+    if (!capture.isEmpty())
+        QVERIFY(hovered.save(capture));
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, center);
+    QTRY_COMPARE(fixture.shell.actions.size(), 1);
+    QCOMPARE(fixture.shell.actions.first().value("action").toString(),
+             QString("workspace.close"));
+    auto tabModel = scene.value("workspaceTabs").toMap();
+    auto tabs = tabModel.value("tabs").toList();
+    auto tab = tabs.first().toMap();
+    tab["active"] = false;
+    tabs[0] = tab;
+    tabModel["tabs"] = tabs;
+    scene["workspaceTabs"] = tabModel;
+    fixture.shell.setScene(scene);
+    QTRY_VERIFY((close = visualItemWithObjectNamePrefix(fixture.window->contentItem(),
+        "workspace-close-workspace-tab-close-test")) && !close->isVisible());
+}
+
+void F4QuickViewSurfaceTests::workspaceTabMiddleClickClosesClickedTab()
+{
+    QVariantList tabs;
+    for (int index = 0; index < 3; ++index) {
+        tabs.append(QVariantMap{{"id", QString("workspace-tab-%1").arg(index)},
+            {"text", "Workspace"}, {"index", index}, {"active", index == 0},
+            {"closable", index != 2}, {"action", "workspace.activate"},
+            {"closeAction", "workspace.close"}});
+    }
+    QVariantMap scene = shellScene();
+    scene.insert("workspaceTabs", QVariantMap{{"visible", true}, {"tabs", tabs}});
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    for (int index = 0; index < 3; ++index) {
+        auto *tab = visualItemWithObjectNamePrefix(fixture.window->contentItem(),
+            QString("workspace-tab-%1").arg(index));
+        QVERIFY(tab);
+        QTRY_VERIFY(tab->isVisible());
+        fixture.shell.clearActions();
+        const QPoint point = tab->mapToScene(QPointF(tab->width() / 2,
+                                                      tab->height() / 2)).toPoint();
+        QTest::mouseClick(fixture.window, Qt::MiddleButton, Qt::NoModifier, point);
+        if (index == 2) {
+            QTest::qWait(50);
+            QCOMPARE(fixture.shell.actions.size(), 0);
+            continue;
+        }
+        QTRY_COMPARE(fixture.shell.actions.size(), 1);
+        QCOMPARE(fixture.shell.actions.first().value("action").toString(),
+                 QString("workspace.close"));
+        QCOMPARE(fixture.shell.actions.first().value("target").toString(),
+                 QString("workspace-tab-%1").arg(index));
+        QCOMPARE(fixture.shell.actions.first().value("index").toInt(), index);
+        fixture.shell.clearActions();
+        QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, point);
+        QTRY_COMPARE(fixture.shell.actions.size(), 1);
+        QCOMPARE(fixture.shell.actions.first().value("action").toString(),
+                 QString("workspace.activate"));
+    }
+}
+
 void F4QuickViewSurfaceTests::workspaceTabWheelActivatesAdjacentTabs()
 {
     const auto workspaceTabs = [](int activeIndex) {
@@ -4011,6 +4113,15 @@ void F4QuickViewSurfaceTests::workspaceTabTextParentsStayOnPhysicalPixelGrid()
     auto *appIcon = fixture.item("appIconButton");
     auto *queue = fixture.item("operationsQueueButton");
     QVERIFY(tabs && appIcon && queue);
+    int tabMouseAreas = 0;
+    for (auto *child : tabs->findChildren<QObject *>()) {
+        const QVariant cursor = child->property("cursorShape");
+        if (!cursor.isValid())
+            continue;
+        QCOMPARE(cursor.toInt(), int(Qt::ArrowCursor));
+        ++tabMouseAreas;
+    }
+    QVERIFY(tabMouseAreas >= 3); // tab body, close icon, and new-tab button
     const qreal leftInset = qMax(fixture.window->property("macTitleBarLeftPadding").toReal(),
                                appIcon->isVisible() ? appIcon->x() + appIcon->width() : 0.0);
     if (fixture.window->property("useMacNativeTitleBar").toBool()) {

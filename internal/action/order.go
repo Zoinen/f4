@@ -143,6 +143,7 @@ var actionMenuOrder = []string{
 	"Panel.EnterDirectory",
 	"Panel.InsertFileName",
 	"CommandLine.InsertLineBreak",
+	"CommandLine.RunInNewWorkspace",
 	"Panel.InsertLeftPath",
 	"Panel.InsertRightPath",
 	"App.Quit",

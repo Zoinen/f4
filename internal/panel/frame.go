@@ -248,16 +248,17 @@ type PanelsFrame struct {
 	// place of panels[i]; panels[i] stays alive underneath and is
 	// still the "logical" panel for command dispatch. Alt panels
 	// never take focus (see AltPanel in info_panel.go).
-	AltPanels             [2]AltPanel
-	ActiveIdx             int    // 0 for left, 1 for right
-	FolderHistoryPos      [2]int // position in provider's newest-first folder history
-	Executing             bool
-	afterExecution        func() // run once by endExecution; queues the next user-menu step
-	ShellPromptReady      bool
-	ignoreNextPrompt      bool
-	ReturnToPanels        bool
-	CmdSession            *cmdShellSession // local cmd.exe completion tracking (Windows)
-	workspaceCommandTitle string
+	AltPanels               [2]AltPanel
+	ActiveIdx               int    // 0 for left, 1 for right
+	FolderHistoryPos        [2]int // position in provider's newest-first folder history
+	Executing               bool
+	afterExecution          func() // run once by endExecution; queues the next user-menu step
+	ShellPromptReady        bool
+	ignoreNextPrompt        bool
+	ReturnToPanels          bool
+	CmdSession              *cmdShellSession // local cmd.exe completion tracking (Windows)
+	workspaceCommandTitle   string
+	pendingWorkspaceCommand string // UI-thread submission after asynchronous shell startup
 
 	MenuBar *vtui.MenuBar
 	CmdLine *cmdline.CommandLine
@@ -1315,8 +1316,12 @@ func (pf *PanelsFrame) InitPTY() {
 			pf.localShellStarted(inheritedEnvironmentGeneration)
 
 			uiFrames.PostTask(func() {
+				if pf.Closed {
+					return
+				}
 				pf.ResizeConsole(pf.LastW, pf.LastH)
 				pf.RefreshAll()
+				pf.submitPendingWorkspaceCommand()
 				uiFrames.Redraw()
 			})
 		}

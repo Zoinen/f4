@@ -3964,8 +3964,17 @@ void F4DocumentSurfaceTests::terminalFollowTailTracksVisibleEndAndUserScroll()
 
 void F4DocumentSurfaceTests::terminalDragSelectionSendsAbsoluteClipboardRange()
 {
-    DocumentFixture fixture(documentScene(
-        terminalFrame(970, 90, 1000, 1)));
+    auto frame = terminalFrame(970, 90, 1000, 1);
+    auto rows = frame.value("windowRows").toList();
+    for (int i = 0; i < rows.size(); ++i) {
+        auto row = rows[i].toMap();
+        row.remove("text");
+        row.insert("runs", QVariantList{QVariantMap{{"text", QString(90, ' ')},
+            {"foreground", "#eeeeee"}, {"background", "#123456"}}});
+        rows[i] = row;
+    }
+    frame.insert("windowRows", rows);
+    DocumentFixture fixture(documentScene(frame));
     QVERIFY(fixture.ready());
     QTRY_VERIFY_WITH_TIMEOUT(
         fixture.surface->property("windowInitialized").toBool(), 3000);
@@ -3976,6 +3985,10 @@ void F4DocumentSurfaceTests::terminalDragSelectionSendsAbsoluteClipboardRange()
         QPointF(24, rowHeight * 1.5)).toPoint();
     const QPoint end = fixture.list->mapToScene(
         QPointF(64, rowHeight * 3.5)).toPoint();
+    const auto sample = fixture.list->mapToScene(QPointF(40, rowHeight * 2.5));
+    const auto pixel = (sample * fixture.window->devicePixelRatio()).toPoint();
+    QTest::qWait(30);
+    const auto before = fixture.window->grabWindow().pixelColor(pixel);
     QTest::mousePress(fixture.window, Qt::LeftButton, Qt::NoModifier, start);
     QTest::mouseMove(fixture.window, end, 20);
     QTest::mouseRelease(fixture.window, Qt::LeftButton, Qt::NoModifier, end);
@@ -4000,6 +4013,11 @@ void F4DocumentSurfaceTests::terminalDragSelectionSendsAbsoluteClipboardRange()
     QVERIFY(copyAction.value(QStringLiteral("endExclusive")).toBool());
     QVERIFY(fixture.surface->property("terminalSelectionVisible").toBool());
     QVERIFY(!fixture.surface->property("terminalSelectionDragging").toBool());
+    QTest::qWait(30);
+    const auto capture = fixture.window->grabWindow();
+    QVERIFY2(capture.pixelColor(pixel) != before, "opaque output background hid the selection");
+    const auto path = qEnvironmentVariable("F4_TERMINAL_SELECTION_CAPTURE");
+    if (!path.isEmpty()) QVERIFY(capture.save(path));
 }
 
 void F4DocumentSurfaceTests::terminalSelectionUsesNearestInsertionBoundary()

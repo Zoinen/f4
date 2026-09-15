@@ -2027,7 +2027,7 @@ func TestPanelsFrame_CtrlPgDn_EntersDir(t *testing.T) {
 	}
 }
 
-func TestPanelsFrame_CtrlShiftEnter_ExplorerLaunch(t *testing.T) {
+func TestPanelsFrame_AltShiftEnter_ExplorerLaunch(t *testing.T) {
 	if _, _, supported := panel.SystemFileManagerCommand("test", true); !supported {
 		t.Skipf("system file manager is unsupported on %s", runtime.GOOS)
 	}
@@ -2065,40 +2065,40 @@ func TestPanelsFrame_CtrlShiftEnter_ExplorerLaunch(t *testing.T) {
 	lp.Refresh()
 	pf.ActiveIdx = 0
 
-	// 1. Test Shift+Enter on file "doc.txt"
+	// 1. Test Alt+Shift+Enter on file "doc.txt"
 	lp.SetCursorIndex(2)
 	handled := pressKey(pf, &vtinput.InputEvent{
 		Type:            vtinput.KeyEventType,
 		KeyDown:         true,
 		VirtualKeyCode:  vtinput.VK_RETURN,
-		ControlKeyState: vtinput.ShiftPressed | vtinput.LeftCtrlPressed,
+		ControlKeyState: vtinput.ShiftPressed | vtinput.LeftAltPressed,
 	})
 	if !handled {
-		t.Error("Expected Shift+Enter on file to be handled by PanelsFrame")
+		t.Error("Expected Alt+Shift+Enter on file to be handled by PanelsFrame")
 	}
 
-	// 2. Test Shift+Enter on folder "sub"
+	// 2. Test Alt+Shift+Enter on folder "sub"
 	lp.SetCursorIndex(1)
 	handled = pressKey(pf, &vtinput.InputEvent{
 		Type:            vtinput.KeyEventType,
 		KeyDown:         true,
 		VirtualKeyCode:  vtinput.VK_RETURN,
-		ControlKeyState: vtinput.ShiftPressed | vtinput.LeftCtrlPressed,
+		ControlKeyState: vtinput.ShiftPressed | vtinput.LeftAltPressed,
 	})
 	if !handled {
-		t.Error("Expected Shift+Enter on folder to be handled by PanelsFrame")
+		t.Error("Expected Alt+Shift+Enter on folder to be handled by PanelsFrame")
 	}
 
-	// 3. Test Shift+Enter on parent folder ".."
+	// 3. Test Alt+Shift+Enter on parent folder ".."
 	lp.SetCursorIndex(0)
 	handled = pressKey(pf, &vtinput.InputEvent{
 		Type:            vtinput.KeyEventType,
 		KeyDown:         true,
 		VirtualKeyCode:  vtinput.VK_RETURN,
-		ControlKeyState: vtinput.ShiftPressed | vtinput.LeftCtrlPressed,
+		ControlKeyState: vtinput.ShiftPressed | vtinput.LeftAltPressed,
 	})
 	if !handled {
-		t.Error("Expected Shift+Enter on '..' to be handled by PanelsFrame")
+		t.Error("Expected Alt+Shift+Enter on '..' to be handled by PanelsFrame")
 	}
 
 	expectedLaunches := make(map[string]int)
@@ -2148,10 +2148,10 @@ func TestPanelsFrame_CtrlShiftEnter_ExplorerLaunch(t *testing.T) {
 		Type:            vtinput.KeyEventType,
 		KeyDown:         true,
 		VirtualKeyCode:  vtinput.VK_RETURN,
-		ControlKeyState: vtinput.ShiftPressed | vtinput.LeftCtrlPressed,
+		ControlKeyState: vtinput.ShiftPressed | vtinput.LeftAltPressed,
 	})
 	if !handled {
-		t.Error("Expected Shift+Enter on non-local VFS to be handled (with warning dialog)")
+		t.Error("Expected Alt+Shift+Enter on non-local VFS to be handled (with warning dialog)")
 	}
 	select {
 	case launch := <-launches:

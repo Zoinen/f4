@@ -512,13 +512,25 @@ Item {
                         smooth: false
                         source: hostWindow.lucideIconSource(
                                     "x", 14,
-                                    workspaceTab.labelColor)
-                        visible: workspaceTab.closeEnabled
+                                    closeMouse.containsMouse
+                                    ? "#ffffff" : workspaceTab.labelColor)
+                        visible: workspaceTab.current && workspaceTab.closeEnabled
+
+                        Rectangle {
+                            objectName: "workspace-close-highlight-"
+                                        + hostWindow.cleanText(modelData.id)
+                            anchors.fill: parent
+                            z: -1
+                            radius: hostWindow.snapPx(2)
+                            color: hostWindow.dialogAccent
+                            visible: closeMouse.containsMouse
+                        }
 
                         MouseArea {
+                            id: closeMouse
                             anchors.fill: parent
-                            anchors.margins: -6
-                            cursorShape: Qt.PointingHandCursor
+                            hoverEnabled: true
+                            cursorShape: Qt.ArrowCursor
                             onClicked: function(mouse) {
                                 mouse.accepted = true
                                 hostWindow.action({
@@ -546,12 +558,20 @@ Item {
 
                     MouseArea {
                         anchors.fill: parent
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: hostWindow.action({
-                            "target": modelData.id,
-                            "action": modelData.action,
-                            "index": modelData.index
-                        }, true)
+                        cursorShape: Qt.ArrowCursor
+                        acceptedButtons: Qt.LeftButton | Qt.MiddleButton
+                        onClicked: function(mouse) {
+                            if (mouse.button === Qt.MiddleButton
+                                    && !workspaceTab.closeEnabled)
+                                return
+                            hostWindow.action({
+                                "target": modelData.id,
+                                "action": mouse.button === Qt.MiddleButton
+                                          ? modelData.closeAction
+                                          : modelData.action,
+                                "index": modelData.index
+                            }, true)
+                        }
                     }
                 }
             }
@@ -616,7 +636,7 @@ Item {
                 HoverHandler { id: newHover }
                 MouseArea {
                     anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
+                    cursorShape: Qt.ArrowCursor
                     onClicked: hostWindow.action({
                         "target": hostWindow.workspaceTabs.newTab.id,
                         "action": hostWindow.workspaceTabs.newTab.action

@@ -15,6 +15,10 @@ import (
 // ("Esc:EscToggle"). Every one of them asks this frame what is on screen, which
 // is why they live here and not with the hotkey manager.
 var hotkeyConditions = map[string]func() bool{
+	"commandlineready": func() bool {
+		pf := FindPanelsFrameAnyScreen()
+		return pf != nil && pf.CommandLineReady()
+	},
 	"multilinecommandinput": func() bool {
 		pf := FindPanelsFrameAnyScreen()
 		return pf != nil && pf.MultilineCommandInputActive()
