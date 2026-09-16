@@ -185,6 +185,7 @@ foreach(F4_ZOIN_QML_TEST_TARGET IN ITEMS
     ZoinGallerySessionTests
     ZoinGalleryQmlInteractionTests
     ZoinGalleryReusableViewerPrimitivesTests
+    ViewerResampleGpuTests
     ZoinGalleryEntryHoverTests
     ZoinGalleryPanelGestureTests
     ZoinGalleryMasonryLayoutModesTests
@@ -440,6 +441,7 @@ if(F4_QT_STATIC)
       ZoinGallerySessionTests
       ZoinGalleryQmlInteractionTests
       ZoinGalleryReusableViewerPrimitivesTests
+      ViewerResampleGpuTests
       ZoinGalleryEntryHoverTests
       ZoinGalleryPanelGestureTests
       ZoinGalleryMasonryLayoutModesTests
