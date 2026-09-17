@@ -31,6 +31,17 @@ constexpr int MaxOutstandingRequests = 256;
 constexpr qsizetype MaxPendingReleases = 1024;
 constexpr int HandshakeTimeoutMs = 5000;
 
+bool directoryOperation(const QString &operation)
+{
+    return operation == QStringLiteral("enumerateDirectoryPreview")
+        || operation == QStringLiteral("resolveDirectoryPreview");
+}
+
+bool leasedOperation(const QString &operation)
+{
+    return operation == QStringLiteral("materialize") || directoryOperation(operation);
+}
+
 QVariantMap mediaRequestFields(const QString &requestId,
                                const QString &traceId,
                                const QString &operation,
@@ -168,11 +179,11 @@ public:
     void submit(const QString &requestId, const QString &traceId,
                 const QString &operation,
                 const QString &resourceId, qint64 offset, qint64 length,
-                int timeoutMs, Completion completion)
+                int timeoutMs, Completion completion, const QVariantMap &arguments = {})
     {
         if (requestId.isEmpty() || resourceId.isEmpty()
             || (operation != QStringLiteral("readRange")
-                && operation != QStringLiteral("materialize"))) {
+                && !leasedOperation(operation))) {
             failDirect(requestId, operation, QStringLiteral("invalidRequest"),
                        QStringLiteral("invalid media request"),
                        std::move(completion));
@@ -199,6 +210,7 @@ public:
         }
 
         Pending pending;
+        pending.arguments = arguments;
         pending.traceId = traceId;
         pending.operation = operation;
         pending.resourceId = resourceId;
@@ -300,6 +312,7 @@ public:
 
 private:
     struct Pending {
+        QVariantMap arguments;
         QString traceId;
         QString operation;
         QString resourceId;
@@ -537,7 +550,7 @@ private:
 
     void releaseProvisional(const Pending &pending)
     {
-        if (pending.operation == QStringLiteral("materialize")
+        if (leasedOperation(pending.operation)
             && !pending.provisionalResult.leaseId.isEmpty()) {
             release(pending.resourceId,
                     pending.provisionalResult.leaseId,
@@ -565,6 +578,11 @@ private:
             {QStringLiteral("op"), it->operation},
             {QStringLiteral("resourceId"), it->resourceId},
         };
+        if (directoryOperation(it->operation)) {
+            for (auto arg = it->arguments.cbegin(); arg != it->arguments.cend(); ++arg)
+                if (arg.key() == QStringLiteral("names") || arg.key() == QStringLiteral("listingLeaseId"))
+                    message.insert(arg.key(), arg.value());
+        }
         if (it->operation == QStringLiteral("readRange")) {
             message.insert(QStringLiteral("offset"), it->offset);
             message.insert(QStringLiteral("length"), it->length);
@@ -752,6 +770,7 @@ private:
             result.data = message.value(QStringLiteral("data")).toByteArray();
             result.path = message.value(QStringLiteral("path")).toString();
             result.leaseId = message.value(QStringLiteral("leaseId")).toString();
+            result.entries = message.value(QStringLiteral("entries")).toList();
             result.size = message.value(QStringLiteral("size"), -1).toLongLong();
             result.endOfFile = message.value(QStringLiteral("endOfFile"),
                 it->operation == QStringLiteral("readRange")
@@ -768,6 +787,13 @@ private:
                 result.errorCode = QStringLiteral("protocolError");
                 result.error = QStringLiteral(
                     "materialize response has no path or lease id");
+            }
+            if (directoryOperation(it->operation)
+                && (result.leaseId.isEmpty() || !message.contains(QStringLiteral("entries"))
+                    || result.entries.size() > (it->operation == QStringLiteral("enumerateDirectoryPreview") ? 200 : 16))) {
+                result.ok = false;
+                result.errorCode = QStringLiteral("protocolError");
+                result.error = QStringLiteral("invalid directory preview response");
             }
         } else {
             result.errorCode = message.value(
@@ -793,13 +819,13 @@ private:
                     {QStringLiteral("error"), result.error},
                 }));
         if (result.ok
-            && it->operation == QStringLiteral("materialize")) {
+            && leasedOperation(it->operation)) {
             it->provisionalResult = result;
             it->awaitingMaterializeAck = true;
             sendMaterializeAck(requestId);
             return;
         }
-        if (!result.ok && it->operation == QStringLiteral("materialize")
+        if (!result.ok && leasedOperation(it->operation)
             && !result.leaseId.isEmpty()) {
             release(it->resourceId, result.leaseId, it->releaseScope);
         }
@@ -1324,7 +1350,7 @@ void QtMediaClient::transportErrorFromWorker(const QString &message)
 QtMediaResult QtMediaClient::requestBlocking(
     const QString &operation, const QString &resourceId,
     qint64 offset, qint64 length, int timeoutMs,
-    const std::function<bool()> &isCanceled, const QString &traceId)
+    const std::function<bool()> &isCanceled, const QString &traceId, const QVariantMap &arguments)
 {
     QtMediaResult immediateFailure;
     if (!m_worker) {
@@ -1347,7 +1373,7 @@ QtMediaResult QtMediaClient::requestBlocking(
                            offset, length));
     QMetaObject::invokeMethod(m_worker,
         [worker = m_worker, state, requestId, traceId, operation, resourceId,
-         offset, length, timeoutMs]() {
+         offset, length, timeoutMs, arguments]() {
             worker->submit(requestId, traceId, operation, resourceId, offset, length,
                 timeoutMs, [worker, state, operation, resourceId](
                                const QtMediaResult &result) {
@@ -1361,7 +1387,7 @@ QtMediaResult QtMediaClient::requestBlocking(
                                 state->result = result;
                             } else {
                                 releaseMaterialization = result.ok
-                                    && operation == QStringLiteral("materialize")
+                                    && leasedOperation(operation)
                                     && !result.leaseId.isEmpty();
                             }
                             state->done = true;
@@ -1373,7 +1399,7 @@ QtMediaResult QtMediaClient::requestBlocking(
                                         result.releaseScope);
                     }
                     return accepted;
-                });
+                }, arguments);
         });
 
     QDeadlineTimer deadline(std::max(timeoutMs, 1));
@@ -1411,4 +1437,12 @@ QtMediaResult QtMediaClient::requestBlocking(
     blockingSpan.set(QStringLiteral("materializedBytes"), state->result.size);
     blockingSpan.set(QStringLiteral("errorCode"), state->result.errorCode);
     return state->result;
+}
+
+QtMediaResult QtMediaClient::directoryPreviewBlocking(
+    const QString &operation, const QString &resourceId,
+    const QVariantMap &arguments, int timeoutMs,
+    const std::function<bool()> &isCanceled)
+{
+    return requestBlocking(operation, resourceId, 0, 0, timeoutMs, isCanceled, {}, arguments);
 }

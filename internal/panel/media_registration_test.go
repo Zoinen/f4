@@ -67,6 +67,44 @@ func newRegistrationMediaVFS(t *testing.T) vfs.VFS { return vfs.NewOSVFS(t.TempD
 type registrationRecorder struct {
 	registrations []plughost.MediaSourceRegistration
 	committed     []string
+	directories   []plughost.MediaSourceRegistration
+	directoryIDs  []string
+}
+
+func (r *registrationRecorder) RegisterDirectory(reg plughost.MediaSourceRegistration) plughost.DirectorySourceDescriptor {
+	r.directories = append(r.directories, reg)
+	return plughost.DirectorySourceDescriptor{ResourceID: "directory-resource", SourceKey: "directory-key", Version: "observation"}
+}
+func (r *registrationRecorder) CommitDirectoryPanel(_ string, _ int64, ids []string) {
+	r.directoryIDs = append([]string(nil), ids...)
+}
+
+func TestPagedDirectoryPreviewAuthorityIsNegotiated(t *testing.T) {
+	old := semantic.DirectoryPreviewsEnabled.Load()
+	t.Cleanup(func() { semantic.DirectoryPreviewsEnabled.Store(old) })
+	filesystem := newRegistrationMediaVFS(t)
+	broker := installRegistrationRecorder(t)
+	p := &FileSystemPanel{Vfs: filesystem, Entries: []*FileEntry{
+		{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}},
+		{VFSItem: vfs.VFSItem{Name: "album", IsDir: true}},
+	}}
+	p.updateSemanticRevisions()
+	semantic.DirectoryPreviewsEnabled.Store(false)
+	rows, _, ok := p.semanticPagedRows(0, 2)
+	if !ok || rows[1].DirectorySource != nil {
+		t.Fatal("older peer received directory authority")
+	}
+	semantic.DirectoryPreviewsEnabled.Store(true)
+	rows, _, ok = p.semanticPagedRows(0, 2)
+	if !ok || rows[0].DirectorySource != nil || rows[1].DirectorySource == nil {
+		t.Fatalf("directory rows: %#v", rows)
+	}
+	if len(broker.directories) != 1 || broker.directories[0].FS != filesystem || len(broker.directoryIDs) != 1 {
+		t.Fatal("directory authority was not committed")
+	}
+	if rows[1].Source != nil || rows[1].MinimalToMap()["directorySource"] == nil {
+		t.Fatal("directory authority confused with image source")
+	}
 }
 
 func (r *registrationRecorder) Register(reg plughost.MediaSourceRegistration) plughost.ImageSourceDescriptor {

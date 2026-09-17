@@ -48,6 +48,15 @@ void packVariant(msgpack::packer<msgpack::sbuffer> &packer,
                              static_cast<uint32_t>(bytes.size()));
         return;
     }
+    case QMetaType::QStringList:
+    case QMetaType::QVariantList: {
+        const QVariantList list = value.toList();
+        packer.pack_array(static_cast<uint32_t>(list.size()));
+        for (const auto &item : list) {
+            packVariant(packer, item);
+        }
+        return;
+    }
     case QMetaType::QVariantMap: {
         const QVariantMap map = value.toMap();
         packer.pack_map(static_cast<uint32_t>(map.size()));

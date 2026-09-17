@@ -1,5 +1,6 @@
 #include "F4GalleryBridge.h"
 #include "F4ImageSourceProvider.h"
+#include "F4DirectoryPreviewProvider.h"
 #include "F4IconProvider.h"
 #include "NavigationBenchmarkTrace.h"
 #include "ViewerCoordinator.h"
@@ -217,6 +218,7 @@ F4GalleryBridge::F4GalleryBridge(QQmlEngine *engine, QObject *parent,
     if (mediaClient) {
         options.imageSourceProvider =
             QSharedPointer<F4ImageSourceProvider>::create(mediaClient);
+        options.directoryPreviewProvider = QSharedPointer<F4DirectoryPreviewProvider>::create(mediaClient);
     }
     auto *runtime = ZoinGallery::GalleryRuntime::install(engine, options);
     m_runtime = runtime;
@@ -272,6 +274,11 @@ QObject *F4GalleryBridge::viewerSession() const
 {
     const int side = viewerSide();
     return m_panelSessions.session(side);
+}
+
+QObject *F4GalleryBridge::settings() const {
+    auto *runtime = qobject_cast<ZoinGallery::GalleryRuntime *>(m_runtime.data());
+    return runtime ? runtime->preferences() : nullptr;
 }
 
 QUrl F4GalleryBridge::panelComponentUrl() const

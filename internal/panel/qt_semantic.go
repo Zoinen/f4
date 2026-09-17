@@ -1804,6 +1804,7 @@ func (fp *FileSystemPanel) semanticPagedRows(offset, limit int) (
 	if fp.semanticPagedResourceRevision != fp.catalogRevision {
 		fp.semanticPagedResourceRevision = fp.catalogRevision
 		fp.semanticPagedResourceIDs = make(map[string]struct{})
+		fp.semanticPagedDirectoryIDs = make(map[string]struct{})
 	}
 	caps := fp.Vfs.GetCapabilities()
 	for index := offset; index < end; index++ {
@@ -1861,12 +1862,21 @@ func (fp *FileSystemPanel) semanticPagedRows(offset, limit int) (
 			}
 			sourceModel = &source
 		}
+		var directorySource *extui.DirectorySourceModel
+		if registry, ok := mediaBroker.(panelDirectoryRegistry); ok && semantic.DirectoryPreviewsEnabled.Load() && entry.IsDir && entry.Name != ".." && !entry.NoExtension {
+			d := registry.RegisterDirectory(plughost.MediaSourceRegistration{PanelID: panelID, CatalogVersion: fp.catalogRevision, SourceEpoch: fp.mediaSourceEpoch, FS: fp.Vfs, Path: logicalPath, Item: entry.VFSItem})
+			if d.ResourceID != "" {
+				directorySource = &extui.DirectorySourceModel{ResourceID: d.ResourceID, SourceKey: d.SourceKey, Version: d.Version}
+				fp.semanticPagedDirectoryIDs[d.ResourceID] = struct{}{}
+			}
+		}
 		rows = append(rows, extui.FileEntryModel{
 			Index: index, EntryID: entryID, Name: entry.Name,
 			DisplayBaseName: displayBaseName, DisplayExtension: displayExtension,
 			Path: logicalPath, IsDir: entry.IsDir, IsUp: entry.Name == "..",
 			IsHidden: entry.IsHidden, IsImage: isImage, Selected: entry.Selected,
 			Version: version, Source: sourceModel, HighlightStyleID: highlightStyleID,
+			DirectorySource: directorySource,
 		})
 	}
 	if mediaBroker != nil {
@@ -1875,6 +1885,13 @@ func (fp *FileSystemPanel) semanticPagedRows(offset, limit int) (
 			resourceIDs = append(resourceIDs, resourceID)
 		}
 		mediaBroker.CommitPanel(panelID, fp.catalogRevision, resourceIDs)
+		if registry, ok := mediaBroker.(panelDirectoryRegistry); ok {
+			ids := make([]string, 0, len(fp.semanticPagedDirectoryIDs))
+			for id := range fp.semanticPagedDirectoryIDs {
+				ids = append(ids, id)
+			}
+			registry.CommitDirectoryPanel(panelID, fp.catalogRevision, ids)
+		}
 	}
 	return rows, styles, true
 }

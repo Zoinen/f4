@@ -102,7 +102,103 @@ uploads an `f4-qt-<platform>-<arch>` artifact.
 `F4GalleryBridge` owns one external-catalog session for each panel. It applies
 catalog snapshots only when `catalogRevision` changes and applies cursor and
 selection state separately. Local and virtual panels share the same component;
-remote/VFS catalogs simply disable local preview decoding.
+local and VFS images use Go's media broker over an independent connection,
+with shared Gallery decode workers and versioned thumbnail caches.
+
+Masonry, Grid and Icon modes automatically preview visible directories when both peers negotiate
+`directoryPreviewsV1` together with `panelCatalogRowsV1`. Folder rows carry
+`directorySource` enumeration authority, separate from image byte authority.
+`enumerateDirectoryPreview` retains the first 200 non-directory files in VFS
+delivery order, including unsupported and hidden files. Gallery filters supported
+images, naturally sorts them, and evenly samples at most 16 names.
+`resolveDirectoryPreview` validates those names and their captured metadata before
+granting ordinary image descriptors under an independent preview lease. Neither
+operation recurses. Providers may internally buffer more than 200 entries.
+
+Directory work has a separate lane (two calls globally, one per non-local VFS
+session), a 30-second deadline, and keeps its worker and VFS lease until the
+underlying call returns. Listing and preview leases use the media connection's
+existing acknowledgement, release and reconnect protocol. Main-catalog commits
+do not release preview-owned image references.
+
+The native Settings category **Gallery & cache** controls the image and folder
+preview caches (Off / On / Cache only), layout resize animation and display-color
+conversion. It shows the detected target color space and enumerates the compiled
+decoder registry in priority order with each library and its supported formats.
+The page uses the shared settings fields, drop-downs and checkboxes. Disk usage
+is refreshed asynchronously while the page is open, without disabling actions
+or changing their labels. Explicit maintenance queues behind an outstanding
+usage poll on the cache worker. Clearing removes
+cached images and retained folder collages; currently visible images can refill
+the cache.
+
+`Cache/diskLimitMiB` defaults to 512 and accepts 64–65536 MiB, including 4096 MiB
+(4 GiB). It bounds the combined durable and session caches of derived images and
+their metadata. `Cache/location` is an optional absolute directory; changes take
+effect on restart and do not move or delete the previous location. An empty value
+uses the existing namespaced cache root shown on the page. Preferences are stored
+in the Qt host's QSettings, alongside its existing Gallery cache preferences.
+
+GalleryRuntime shares an 8 MiB RAM cache of compact folder snapshots across
+panels. Each snapshot stores Unknown / Empty / HasImages, up to 16 selected
+children, dimensions and thumbnail-cache keys; it contains no read authority or
+leases. Incoming folder states are restored in one RAM pass before catalog
+publication. The lightweight original folder frame and filename paint from the
+row snapshot in the first frame, independently of deferred ImageFile creation.
+The image grid is created separately after geometry is committed.
+The small frame is retained with a recycled viewport delegate; its grid is
+destroyed while the delegate displays a file or a mode without folder previews.
+Photo-to-folder reassignment commits the new identity and square geometry before
+activating the frame. Known previews also suppress hidden fallback icon/text work.
+
+Each panel retains at most 32 inactive child models, including previous paths.
+Eviction releases those models without discarding compact snapshots or shared
+pixels. Recreated models restore geometry and use ready RAM pixels while reads
+are suspended; fresh directory authority enables background revalidation.
+Leaving the viewport cancels work and releases preview leases. Directory
+admission resumes on completion of a worker, without polling. Disk image and
+metadata formats remain unchanged; folder snapshots last for the application
+session and are cleared by the existing cache maintenance action.
+
+Image dimensions, orientation and EXIF also have a shared 16 MiB memory cache.
+It uses the same source revision, byte size and weak-authority keys as disk
+metadata. Warm catalog rows receive these values before model publication,
+including deferred and sparse rows. A supplied image-source byte size is usable
+even while display metadata is deferred. Later path/timestamp enrichment of
+the same resource preserves its geometry and pixels. Cold disk lookups run on
+the bounded Gallery cache worker; they do not block the Qt event loop. Missing
+or invalid EXIF orientation is normalized to unrotated before caching.
+
+Folder appearance does not wait for new QML image-ready notifications. Clearing image
+caches also clears the memory metadata tier. The opt-in media trace reports
+`qt.gallery.metadata.restored`, `qt.gallery.metadata_cache_batch` (memory), and
+`qt.gallery.metadata_cache_disk` alongside thumbnail hit/admission events.
+
+Repeated metadata notifications with identical cell geometry preserve the
+Masonry row index and its revision. They must not cancel a PageUp/PageDown
+animation or discard its reversible page history. Actual geometry changes
+still invalidate that history. `F4_NAV_BENCHMARK_TRACE=1` also enables passive
+QML navigation diagnostics without configuring an automatic benchmark target:
+`navigation.page.planned`, `navigation.page.geometry-invalidated`, and
+`navigation.scroll.running-changed` include the cursor, viewport and destination.
+
+The outer folder tile keeps its mode's geometry (square in Masonry). Its decorative, aspect-fit grid uses 1, 4,
+9 or 16 cells at widths below 80, 150, 300 or at least 300 logical pixels.
+Only displayed cells request thumbnail pixels. Folder selection, activation,
+dragging and context menus remain owned by the outer panel. Empty results clear
+previews; failed refreshes keep the last successful display. Refresh, re-entry,
+navigation and existing file-operation refreshes drive freshness. Decoded image
+caches remain shared across panels.
+The existing opt-in media timing trace includes `directory.*` lease/admission
+events and `qt.directory.*` completion events.
+`qt.directory.snapshots.restored` records the batch RAM time and each folder's
+state. Requests, enumerate/resolve replies and state publications carry folder
+identity and navigation/catalog correlation. QML `directory.appearance.changed`
+events can be matched to the next `qt.frame.sync.begin` / `qt.frame.end` pair.
+Use separate `F4_MEDIA_TIMING_QT_OUTPUT` and `F4_NAV_BENCHMARK_QT_OUTPUT` paths to
+avoid mixing independently buffered writers. The automatic navigation runner
+accepts `F4_NAV_BENCHMARK_LAYOUT=masonry` and `F4_NAV_BENCHMARK_SETTLE_MS=1500`
+alongside its existing target, cycles and warmup options.
 
 The renderer button selects ZoinGallery strategies: Masonry, two- or
 three-column column-major layout, Details, uniform Grid, and large Icons.

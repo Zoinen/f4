@@ -4370,6 +4370,8 @@ func RunExternalUI(cols, rows int, execPath string, args []string) error {
 	previousPanelCatalogRows := semantic.SetPanelCatalogRowsEnabled(
 		panelCatalogRowsV1)
 	defer semantic.SetPanelCatalogRowsEnabled(previousPanelCatalogRows)
+	previousDirectoryPreviews := semantic.DirectoryPreviewsEnabled.Swap(panelCatalogRowsV1 && extUiHelloCapability(hello, "directoryPreviewsV1"))
+	defer semantic.DirectoryPreviewsEnabled.Store(previousDirectoryPreviews)
 	previousDelta := semantic.PanelCatalogDeltaEnabled.Swap(extUiHelloCapability(hello, "panelCatalogDeltaV1"))
 	defer semantic.PanelCatalogDeltaEnabled.Store(previousDelta)
 	endDocumentViewport := semantic.BeginNativeDocumentViewport(extUiHelloCapability(hello, "documentViewportV1"))

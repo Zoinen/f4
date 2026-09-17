@@ -34,6 +34,7 @@ class F4GalleryBridge final : public QObject
 {
     Q_OBJECT
     Q_PROPERTY(bool available READ available CONSTANT)
+    Q_PROPERTY(QObject *settings READ settings CONSTANT)
     Q_PROPERTY(QObject *viewerSession READ viewerSession NOTIFY viewerChanged)
     Q_PROPERTY(bool viewerVisible READ viewerVisible NOTIFY viewerChanged)
     Q_PROPERTY(int viewerSide READ viewerSide NOTIFY viewerChanged)
@@ -53,6 +54,7 @@ public:
     ~F4GalleryBridge() override;
 
     bool available() const;
+    QObject *settings() const;
     QObject *viewerSession() const;
     bool viewerVisible() const;
     int viewerSide() const;
@@ -271,6 +273,9 @@ private:
         QString targetPath;
         QString parentPath;
         QString targetName;
+        QString layoutMode = QStringLiteral("details");
+        int settleMs = 0;
+        qint64 nextDispatchNs = 0;
         int side = -1;
         int cycles = 50;
         int warmup = 10;

@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -167,6 +168,7 @@ type ExtUiMediaBroker struct {
 	globalSweepVisits       uint64 // diagnostics/tests: resources visited by threshold sweeps
 	operationWG             sync.WaitGroup
 	flightWG                sync.WaitGroup
+	directoryPreviews       *directoryPreviewRegistry
 }
 
 // NewExtUiMediaBroker creates an isolated resource and lease registry for a Qt session.
@@ -176,6 +178,7 @@ func NewExtUiMediaBroker() (*ExtUiMediaBroker, error) {
 		return nil, err
 	}
 	b := &ExtUiMediaBroker{
+		directoryPreviews:     newDirectoryPreviewRegistry(),
 		tempDir:               tempDir,
 		resources:             make(map[string]*ExtUiMediaResource),
 		panels:                make(map[string]extUiMediaPanelState),
@@ -341,6 +344,10 @@ func (b *ExtUiMediaBroker) vfsLeaseLocked(filesystem vfs.VFS) (string, *extUiMed
 }
 
 func (b *ExtUiMediaBroker) Register(reg MediaSourceRegistration) ImageSourceDescriptor {
+	return b.registerMediaSource(reg, false)
+}
+
+func (b *ExtUiMediaBroker) registerMediaSource(reg MediaSourceRegistration, previewReference bool) ImageSourceDescriptor {
 	if reg.FS == nil || reg.Item.IsDir {
 		return ImageSourceDescriptor{}
 	}
@@ -377,6 +384,11 @@ func (b *ExtUiMediaBroker) Register(reg MediaSourceRegistration) ImageSourceDesc
 			leaseIDs:     make(map[string]struct{}), vfsLeaseKey: leaseKey, lastUsed: time.Now(),
 		}
 		b.resources[id] = resource
+	}
+	if previewReference {
+		resource.mu.Lock()
+		resource.validRefs++
+		resource.mu.Unlock()
 	}
 	return ImageSourceDescriptor{
 		ResourceID: id, SourceKey: sourceKey, Version: version, VersionStrength: strength,
@@ -452,6 +464,7 @@ func (b *ExtUiMediaBroker) CommitPanel(panelID string, revision int64, ids []str
 // observed while a closed workspace releases its resource registry and VFS
 // clone/session leases promptly.
 func (b *ExtUiMediaBroker) CommitScenePanels(panelIDs []string) {
+	b.retainDirectoryPanels(panelIDs)
 	observed := make(map[string]struct{}, len(panelIDs))
 	for _, panelID := range panelIDs {
 		if panelID != "" {
@@ -1285,6 +1298,10 @@ func (b *ExtUiMediaBroker) newLease(resource *ExtUiMediaResource) (string, error
 func (b *ExtUiMediaBroker) hasLease(resourceID, leaseID string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if strings.HasPrefix(leaseID, "directory-lease-") {
+		lease := b.directoryPreviews.leases[leaseID]
+		return !b.closed && lease != nil && lease.source.valid && lease.source.id == resourceID
+	}
 	return leaseID != "" && b.leases[leaseID] == resourceID
 }
 
@@ -1321,6 +1338,9 @@ func (b *ExtUiMediaBroker) Materialize(ctx context.Context, id string) (path str
 }
 
 func (b *ExtUiMediaBroker) Release(resourceID, leaseID string) {
+	if b.releaseDirectoryPreview(resourceID, leaseID) {
+		return
+	}
 	b.mu.Lock()
 	resource := b.resources[resourceID]
 	if leaseID != "" {
@@ -1629,6 +1649,7 @@ func (b *ExtUiMediaBroker) Close() error {
 		return nil
 	}
 	b.closed = true
+	b.directoryPreviews.cancelAll()
 	resources := make([]*ExtUiMediaResource, 0, len(b.resources))
 	for _, resource := range b.resources {
 		resources = append(resources, resource)
@@ -1954,6 +1975,11 @@ func (c *extUiMediaConn) start(message map[string]any) {
 	}
 	go func() {
 		defer c.requestWG.Done()
+		if op == "enumerateDirectoryPreview" || op == "resolveDirectoryPreview" {
+			defer c.finishRequest(requestID, state)
+			c.handleDirectoryPreview(ctx, requestID, message)
+			return
+		}
 		select {
 		case c.sem <- struct{}{}:
 			startedNs := navtrace.NavigationBenchmarkMonotonicNs()
@@ -2116,7 +2142,7 @@ func (c *extUiMediaConn) ack(message map[string]any) {
 	}
 	c.mu.Unlock()
 
-	ok := provisional != nil || c.broker.hasLease(resourceID, leaseID)
+	ok := c.broker.hasLease(resourceID, leaseID)
 	response := map[string]any{"type": "ack", "requestId": requestID, "leaseId": leaseID, "ok": ok}
 	if !ok {
 		response["errorCode"] = "staleResource"

@@ -408,7 +408,8 @@ FocusScope {
         presentationDensities: ({})
         theme: host.theme
         metrics: host.metrics
-        animateLayoutChanges: false
+        animateLayoutChanges: host.bridge && host.bridge.settings
+            ? host.bridge.settings.animateResizing : false
         emptyStateEnabled: host.session !== null
                            && host.panel.loading !== true
                            && host.panel.catalogProvisional !== true

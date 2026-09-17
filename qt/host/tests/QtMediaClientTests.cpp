@@ -1,4 +1,6 @@
 #include "QtMediaClient.h"
+#include "QtMediaClientWire.h"
+#include "F4DirectoryPreviewProvider.h"
 #include "QtShellController.h"
 
 #include <QCoreApplication>
@@ -285,12 +287,96 @@ class QtMediaClientTests final : public QObject
     Q_OBJECT
 
 private slots:
+    void directoryPreviewUsesLeaseAcknowledgement();
     void handshakeRangeMaterializeCancelAndReconnect();
     void deadlineTimerSleepsWhenIdleAndTargetsOutstandingRequest();
     void blockingMaterializeTimeoutReleasesLateAcknowledgedLease();
     void releaseSurvivesBackpressureReconnectAndReconfiguration();
     void pendingMediaNeverBlocksControlScenes();
 };
+
+void QtMediaClientTests::directoryPreviewUsesLeaseAcknowledgement()
+{
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+    QtMediaClient client;
+    client.configure(advertisement(server.serverPort()));
+    F4DirectoryPreviewProvider provider(&client);
+    const ZoinGallery::DirectorySourceDescriptor directory{"directory-1", "folder-key", "1"};
+    const auto cancellation = QSharedPointer<ZoinGallery::ImageSourceCancellation>::create();
+    QTRY_VERIFY(server.hasPendingConnections());
+    QScopedPointer<QTcpSocket> peer(server.nextPendingConnection());
+    QByteArray payload;
+    QVERIFY(takeFrame(peer.data(), &payload));
+    sendFrame(peer.data(), mediaHello());
+    QTRY_VERIFY(client.ready());
+    auto pending = std::async(std::launch::async, [&] {
+        return provider.enumerate(directory, cancellation);
+    });
+    QVERIFY(takeFrame(peer.data(), &payload));
+    QCOMPARE(stringField(payload, "op"), QString("enumerateDirectoryPreview"));
+    const auto requestId = stringField(payload, "requestId");
+    sendFrame(peer.data(), frame([&](auto &packer) {
+        packer.pack_map(5);
+        packString(packer, "type"); packString(packer, "response");
+        packString(packer, "requestId"); packString(packer, requestId.toUtf8());
+        packString(packer, "ok"); packer.pack_true();
+        packString(packer, "leaseId"); packString(packer, "directory-lease-1");
+        packString(packer, "entries"); packer.pack_array(1); packer.pack_map(1);
+        packString(packer, "name"); packString(packer, "photo.jpg");
+    }));
+    QVERIFY(takeFrame(peer.data(), &payload));
+    QCOMPARE(stringField(payload, "type"), QString("ack"));
+    QVERIFY(pending.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready);
+    sendFrame(peer.data(), materializeAckResponse(requestId, "directory-lease-1"));
+    QTRY_VERIFY(pending.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready);
+    const auto result = pending.get();
+    QVERIFY2(result.error.isEmpty(), qPrintable(result.error));
+    QCOMPARE(result.names, QStringList{"photo.jpg"});
+    const QStringList selectedNames{QStringLiteral("photo.jpg"), QStringLiteral("снимок 2.dng")};
+    auto resolving = std::async(std::launch::async, [&] {
+        return provider.resolve(directory, result, selectedNames, cancellation);
+    });
+    QVERIFY(takeFrame(peer.data(), &payload));
+    QCOMPARE(stringField(payload, "op"), QString("resolveDirectoryPreview"));
+    const auto object = msgpack::unpack(payload.constData(), payload.size());
+    const auto request = QtMediaClientWire::unpackObject(object.get()).toMap();
+    QCOMPARE(request.value("listingLeaseId").toString(), QString("directory-lease-1"));
+    QCOMPARE(request.value("names").typeId(), int(QMetaType::QVariantList));
+    QCOMPARE(request.value("names").toStringList(), selectedNames);
+    const auto resolveId = stringField(payload, "requestId");
+    sendFrame(peer.data(), frame([&](auto &packer) {
+        packer.pack_map(5);
+        packString(packer, "type"); packString(packer, "response");
+        packString(packer, "requestId"); packString(packer, resolveId.toUtf8());
+        packString(packer, "ok"); packer.pack_true();
+        packString(packer, "leaseId"); packString(packer, "directory-lease-2");
+        packString(packer, "entries"); packer.pack_array(1); packer.pack_map(2);
+        packString(packer, "name"); packString(packer, "photo.jpg");
+        packString(packer, "source"); packer.pack_map(5);
+        packString(packer, "resourceId"); packString(packer, "child-resource");
+        packString(packer, "sourceKey"); packString(packer, "child-key");
+        packString(packer, "version"); packString(packer, "child-version");
+        packString(packer, "accessProfile"); packString(packer, "nativeRange");
+        packString(packer, "size"); packer.pack_int64(42);
+    }));
+    QVERIFY(takeFrame(peer.data(), &payload));
+    QCOMPARE(stringField(payload, "type"), QString("ack"));
+    sendFrame(peer.data(), materializeAckResponse(resolveId, "directory-lease-2"));
+    QTRY_VERIFY(resolving.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready);
+    auto resolved = resolving.get();
+    QVERIFY2(resolved.error.isEmpty(), qPrintable(resolved.error));
+    QCOMPARE(resolved.entries.size(), 1);
+    const auto child = resolved.entries.first().toMap();
+    QCOMPARE(child.value("resourceId").toString(), QString("child-resource"));
+    QCOMPARE(child.value("sourceKey").toString(), QString("child-key"));
+    QCOMPARE(child.value("contentVersion").toString(), QString("child-version"));
+    QCOMPARE(child.value("accessProfile").toString(), QString("nativeRange"));
+    QCOMPARE(child.value("size").toLongLong(), 42);
+    resolved.lease.reset();
+    QVERIFY(takeFrame(peer.data(), &payload));
+    QCOMPARE(stringField(payload, "type"), QString("release"));
+}
 
 void QtMediaClientTests::deadlineTimerSleepsWhenIdleAndTargetsOutstandingRequest()
 {

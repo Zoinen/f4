@@ -8,6 +8,11 @@ type panelMediaRegistry interface {
 	CommitPanel(string, int64, []string)
 }
 
+type panelDirectoryRegistry interface {
+	RegisterDirectory(plughost.MediaSourceRegistration) plughost.DirectorySourceDescriptor
+	CommitDirectoryPanel(string, int64, []string)
+}
+
 var currentPanelMediaRegistry = func() panelMediaRegistry {
 	if broker := plughost.CurrentExtUiMediaBroker(); broker != nil {
 		return broker

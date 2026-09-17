@@ -186,11 +186,22 @@ F4HostWindow {
             }
         }
     }, NativeSettingsPage {
+        pageId: "gallery"
+        title: qsTr("Gallery & cache")
+        iconName: "images"
+        content: Component { GallerySettingsPage { hostWindow: root; settings: qtGallery.settings } }
+    }, NativeSettingsPage {
         pageId: "terminal-colors"
         title: qsTr("Terminal colors")
         iconName: "square-terminal"
         content: Component { TerminalColorsPage { hostWindow: root } }
     }]
+
+    Connections {
+        target: root
+        function onScreenChanged() { if (qtGallery.settings) qtGallery.settings.updateDisplay(root) }
+        function onVisibleChanged() { if (root.visible && qtGallery.settings) qtGallery.settings.updateDisplay(root) }
+    }
 
     ThemeEditor {
         id: themeColorConfigurator

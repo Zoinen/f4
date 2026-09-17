@@ -77,6 +77,11 @@ void F4GalleryBridge::configureNavigationBenchmark()
         "F4_NAV_BENCHMARK_CYCLES", 50, 1, 10000);
     m_navigationBenchmark.warmup = benchmarkEnvironmentInteger(
         "F4_NAV_BENCHMARK_WARMUP", 10, 0, 10000);
+    const QString layout = qEnvironmentVariable("F4_NAV_BENCHMARK_LAYOUT");
+    if (QStringList{"details", "masonry", "grid", "icons", "columns"}.contains(layout))
+        m_navigationBenchmark.layoutMode = layout;
+    m_navigationBenchmark.settleMs = benchmarkEnvironmentInteger(
+        "F4_NAV_BENCHMARK_SETTLE_MS", 0, 0, 10000);
     m_navigationBenchmark.runId = QStringLiteral("qt-%1-nav")
         .arg(QCoreApplication::applicationPid());
 
@@ -425,7 +430,7 @@ void F4GalleryBridge::updateNavigationBenchmarkPlacement(
         benchmark.placementReady = false;
     }
     if (path == benchmark.expectedPath
-        && presentationMode == QStringLiteral("details")
+        && presentationMode == m_navigationBenchmark.layoutMode
         && !placementPending
         && (placementMatchesTarget || cursorFullyVisible)
         && (count == 0 || geometryValid)) {
@@ -508,7 +513,9 @@ void F4GalleryBridge::completeNavigationBenchmarkFrame()
     // Trace output is intentionally outside action-to-frame measurement. The
     // next transition is dispatched on a later event-loop turn.
     flushNavigationBenchmarkTrace();
-    scheduleNavigationBenchmarkAdvance();
+    benchmark.nextDispatchNs = F4NavigationBenchmarkTrace::monotonicNanoseconds()
+        + qint64(benchmark.settleMs) * 1000000;
+    QTimer::singleShot(benchmark.settleMs, this, [this] { scheduleNavigationBenchmarkAdvance(); });
 }
 
 void F4GalleryBridge::finishNavigationBenchmark()
@@ -651,13 +658,13 @@ void F4GalleryBridge::advanceBenchmarkWaitingForPanel(
     const SideState &state)
 {
     NavigationBenchmarkState &benchmark = m_navigationBenchmark;
-    if (state.galleryLayoutMode != QStringLiteral("details")) {
+    if (state.galleryLayoutMode != m_navigationBenchmark.layoutMode) {
         benchmark.phase = NavigationBenchmarkPhase::SettingDetails;
         sendNavigationBenchmarkAction({
             {QStringLiteral("action"),
              QStringLiteral("panel.setGalleryLayout")},
             {QStringLiteral("side"), benchmark.side},
-            {QStringLiteral("layoutMode"), QStringLiteral("details")},
+            {QStringLiteral("layoutMode"), benchmark.layoutMode},
         }, QStringLiteral("setup"), QStringLiteral("details"),
            state.currentPath, state.currentPath);
         return;
@@ -672,7 +679,7 @@ void F4GalleryBridge::advanceBenchmarkWaitingForPanel(
 void F4GalleryBridge::advanceBenchmarkSettingDetails(
     const SideState &state)
 {
-    if (state.galleryLayoutMode != QStringLiteral("details")) {
+    if (state.galleryLayoutMode != m_navigationBenchmark.layoutMode) {
         return;
     }
     NavigationBenchmarkState &benchmark = m_navigationBenchmark;
@@ -809,7 +816,7 @@ void F4GalleryBridge::advanceBenchmarkSetupReadiness(
         return;
     }
     const bool sceneReady = benchmark.sceneMatched
-        && state.galleryLayoutMode == QStringLiteral("details");
+        && state.galleryLayoutMode == m_navigationBenchmark.layoutMode;
     const bool placementReady = benchmark.placementReady
         && benchmark.placementPath == benchmark.parentPath
         && benchmark.placementCatalogRevision == state.catalogRevision;
@@ -822,6 +829,13 @@ void F4GalleryBridge::advanceBenchmarkReadyToDispatch(
     const SideState &state)
 {
     NavigationBenchmarkState &benchmark = m_navigationBenchmark;
+    const qint64 remainingNs = benchmark.nextDispatchNs
+        - F4NavigationBenchmarkTrace::monotonicNanoseconds();
+    if (remainingNs > 0) {
+        QTimer::singleShot(int((remainingNs + 999999) / 1000000), Qt::PreciseTimer,
+                          this, [this] { scheduleNavigationBenchmarkAdvance(); });
+        return;
+    }
     if (benchmark.completedCycles >= benchmark.warmup + benchmark.cycles) {
         finishNavigationBenchmark();
         return;
@@ -874,7 +888,7 @@ void F4GalleryBridge::advanceBenchmarkTransitionReadiness(
         && normalizedBenchmarkPath(state.currentPath) == benchmark.expectedPath
         && !state.loading
         && !state.catalogProvisional
-        && state.galleryLayoutMode == QStringLiteral("details");
+        && state.galleryLayoutMode == m_navigationBenchmark.layoutMode;
     const bool placementReady = benchmark.placementReady
         && benchmark.placementPath == benchmark.expectedPath
         && benchmark.placementCatalogRevision == state.catalogRevision;

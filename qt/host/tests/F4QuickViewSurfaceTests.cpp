@@ -2,6 +2,8 @@
 #include "DummyQWK.h"
 #include "F4TextRenderingPolicy.h"
 #include "TestExtUiStateController.h"
+#include <ZoinGallery/GalleryPreferences.h>
+#include <ZoinGallery/GalleryRuntime.h>
 
 #include <QCoreApplication>
 #include <QColor>
@@ -206,6 +208,7 @@ class TestGallery final : public QObject
 {
     Q_OBJECT
     Q_PROPERTY(bool available READ available CONSTANT)
+    Q_PROPERTY(QObject *settings MEMBER preferences CONSTANT)
     Q_PROPERTY(QObject *viewerSession READ nullObject CONSTANT)
     Q_PROPERTY(bool viewerVisible READ viewerVisible NOTIFY viewerChanged)
     Q_PROPERTY(int viewerSide READ viewerSide CONSTANT)
@@ -214,6 +217,7 @@ class TestGallery final : public QObject
 
 public:
     explicit TestGallery(bool available = false) : m_available(available) {}
+    QObject *preferences = nullptr;
 
     bool available() const { return m_available; }
     QObject *nullObject() const { return nullptr; }
@@ -932,7 +936,7 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
     QTRY_COMPARE(body->property("selectedNativePage").toString(),"gui");
     auto *categories = visualItemWithObjectName(body,"dialogWidget-categoriesTableRows");
     QVERIFY(categories);
-    QCOMPARE(categories->property("count").toInt(), 4);
+    QCOMPARE(categories->property("count").toInt(), 5);
     QCOMPARE(categories->property("currentIndex").toInt(), 2);
     auto *guiLabel = visualItemWithObjectName(body,"dialogWidget-categoriesTableCell-2-0");
     QVERIFY(guiLabel);
@@ -978,6 +982,102 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
     inspect(inspect,content);
     inspect(inspect,categories);
     QVERIFY(leaves>20);
+    ZoinGallery::RuntimeOptions galleryOptions;
+    galleryOptions.maxDecodeThreads = 4;
+    auto *galleryRuntime = ZoinGallery::GalleryRuntime::install(&fixture.engine, galleryOptions);
+    fixture.gallery.preferences = galleryRuntime->preferences();
+    body->setProperty("selectedNativePage", "gallery");
+    QQuickItem *galleryPage = nullptr;
+    QTRY_VERIFY((galleryPage = visualItemWithObjectName(body, "gallerySettingsPage")));
+    QTest::qWait(200);
+    auto *galleryPreferences = qobject_cast<ZoinGallery::GalleryPreferences *>(fixture.gallery.preferences);
+    QVERIFY(galleryPreferences);
+    QTRY_VERIFY(!galleryPreferences->busy());
+    auto *clearCache = visualItemWithObjectName(galleryPage, "galleryCacheClear");
+    auto *clearLabel = visualItemWithObjectName(galleryPage, "galleryCacheClearText");
+    QVERIFY(clearCache);
+    QVERIFY(clearLabel);
+    const QString clearText = clearLabel->property("text").toString();
+    const QPointF clearOrigin = clearCache->mapToScene({});
+    galleryPreferences->refresh();
+    QCOMPARE(clearLabel->property("text").toString(), clearText);
+    QVERIFY(clearCache->isEnabled());
+    QCOMPARE(clearCache->mapToScene({}), clearOrigin);
+    auto *imageMode = visualItemWithObjectName(galleryPage, "galleryImageMode");
+    auto *folderMode = visualItemWithObjectName(galleryPage, "galleryFolderMode");
+    auto *conversion = visualItemWithObjectName(galleryPage, "galleryColorConversion");
+    auto *animation = visualItemWithObjectName(galleryPage, "galleryAnimateResizing");
+    QVERIFY(imageMode);
+    QVERIFY(folderMode);
+    QVERIFY(conversion);
+    QVERIFY(animation);
+    QCOMPARE(imageMode->property("count").toInt(), 3);
+    QCOMPARE(folderMode->property("count").toInt(), 3);
+    QVERIFY(conversion->property("checkState").isValid());
+    QVERIFY(animation->property("checkState").isValid());
+    QVERIFY(visualItemWithObjectName(galleryPage, "galleryCacheLimitInputTextInput"));
+    QVERIFY(visualItemWithObjectName(galleryPage, "galleryCacheLocationInputTextInput"));
+    for (auto *combo : {imageMode, folderMode}) {
+        auto *popup = combo->property("popup").value<QObject *>();
+        QVERIFY(popup);
+        QVERIFY(QMetaObject::invokeMethod(popup, "open"));
+        QTRY_VERIFY(popup->property("visible").toBool());
+        const QStringList expectedChoices{"Off", "On", "Cache only"};
+        for (int i = 0; i < expectedChoices.size(); ++i) {
+            QQuickItem *choice = nullptr;
+            const auto name = combo->objectName() + "PopupItemText-" + QString::number(i);
+            QTRY_VERIFY((choice = visualItemWithObjectName(fixture.window->contentItem(), name)));
+            QCOMPARE(choice->property("text").toString(), expectedChoices[i]);
+            inspect(inspect, choice);
+        }
+        auto *popupContent = popup->property("contentItem").value<QQuickItem *>();
+        QVERIFY(popupContent);
+        inspect(inspect, popupContent);
+        QVERIFY(QMetaObject::invokeMethod(popup, "close"));
+    }
+    const auto draftValues = [&]() {
+        return galleryPage->property("draft").value<QJSValue>().toVariant().toMap();
+    };
+    imageMode->forceActiveFocus();
+    QTest::keyClick(fixture.window, Qt::Key_End);
+    QCOMPARE(imageMode->property("currentIndex").toInt(), 2);
+    QCOMPARE(draftValues().value("imageMode").toInt(), 2);
+    const bool wasChecked = conversion->property("checked").toBool();
+    conversion->forceActiveFocus();
+    QTest::keyClick(fixture.window, Qt::Key_Space);
+    QCOMPARE(conversion->property("checked").toBool(), !wasChecked);
+    QCOMPARE(draftValues().value("convertColors").toBool(), !wasChecked);
+    QTest::keyClick(fixture.window, Qt::Key_Space);
+    auto *limitInput = visualItemWithObjectName(galleryPage, "galleryCacheLimitInputTextInput");
+    limitInput->forceActiveFocus();
+    QTest::keyClick(fixture.window, Qt::Key_A, Qt::ControlModifier);
+    for (auto key : {Qt::Key_2, Qt::Key_0, Qt::Key_4, Qt::Key_8})
+        QTest::keyClick(fixture.window, key);
+    QCOMPARE(draftValues().value("diskLimitMiB").toInt(), 2048);
+    // The next usage update must preserve edits that have not been applied.
+    QSignalSpy usageRefreshed(galleryPreferences, &ZoinGallery::GalleryPreferences::changed);
+    galleryPreferences->refresh();
+    QTRY_VERIFY(!usageRefreshed.isEmpty());
+    QCOMPARE(draftValues().value("diskLimitMiB").toInt(), 2048);
+    QCOMPARE(clearLabel->property("text").toString(), clearText);
+    QVERIFY(clearCache->isEnabled());
+    QTest::qWait(150);
+    leaves = 0;
+    inspect(inspect, galleryPage);
+    QVERIFY(leaves > 40);
+    QVERIFY(visualItemWithObjectName(galleryPage, "galleryCacheLimitInput"));
+    QVERIFY(visualItemWithObjectName(galleryPage, "galleryDecoderFormats-0"));
+    const auto galleryCapture = qEnvironmentVariable("F4_GALLERY_SETTINGS_CAPTURE");
+    if (!galleryCapture.isEmpty()) QVERIFY(fixture.window->grabWindow().save(galleryCapture));
+    auto *galleryViewport = visualItemWithObjectName(body, "nativeSettingsViewport");
+    galleryViewport->setProperty("contentY", galleryViewport->property("contentHeight").toReal() - galleryViewport->height());
+    QTest::qWait(150);
+    inspect(inspect, galleryPage);
+    if (!galleryCapture.isEmpty()) QVERIFY(fixture.window->grabWindow().save(galleryCapture + "-decoders.png"));
+    body->setProperty("selectedNativePage", "gui");
+    QTest::qWait(100);
+    content = visualItemWithObjectName(body,"themeConfiguratorContent");
+    QVERIFY(content);
     const auto capture=qgetenv("F4_NATIVE_SETTINGS_CAPTURE");
     if(!capture.isEmpty()) QVERIFY(fixture.window->grabWindow().save(QString::fromLocal8Bit(capture)));
     auto *list = content->findChild<QQuickItem *>("themeItemsList");

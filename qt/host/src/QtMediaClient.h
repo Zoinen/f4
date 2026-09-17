@@ -4,6 +4,7 @@
 #include <QObject>
 #include <QThread>
 #include <QVariantMap>
+#include <QVariantList>
 
 #include <atomic>
 #include <functional>
@@ -12,6 +13,7 @@
 class QtMediaWorker;
 
 struct QtMediaResult {
+    QVariantList entries;
     bool ok = false;
     bool endOfFile = false;
     QByteArray data;
@@ -67,6 +69,11 @@ public:
         const std::function<bool()> &isCanceled = {},
         const QString &traceId = {});
 
+    QtMediaResult directoryPreviewBlocking(
+        const QString &operation, const QString &resourceId,
+        const QVariantMap &arguments = {}, int timeoutMs = 30000,
+        const std::function<bool()> &isCanceled = {});
+
 signals:
     void readyChanged();
     void rangeReady(const QString &requestId, const QByteArray &data,
@@ -90,7 +97,7 @@ private:
         const QString &operation, const QString &resourceId,
         qint64 offset, qint64 length, int timeoutMs,
         const std::function<bool()> &isCanceled,
-        const QString &traceId);
+        const QString &traceId, const QVariantMap &arguments = {});
 
     QThread m_thread;
     QtMediaWorker *m_worker = nullptr;

@@ -491,6 +491,9 @@ void F4GalleryBridge::applyPanelSessionData(PanelSyncContext *context)
             });
         context->catalogApplied = context->session->applyExternalCatalog(
             context->entries, context->catalogRevision, {
+                {QStringLiteral("benchmarkTraceId"), m_navigationBenchmark.enabled
+                    ? QVariant(m_navigationBenchmark.benchmarkTraceId)
+                    : F4NavigationBenchmarkTrace::benchmarkTraceId(context->panel)},
                 {QStringLiteral("currentPath"), context->currentPath},
                 {QStringLiteral("sourceKind"), context->sourceKind},
                 {QStringLiteral("previewCapable"), context->previewCapable},

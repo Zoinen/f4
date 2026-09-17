@@ -238,6 +238,7 @@ set(F4_QT_HOST_SOURCES
   "${CMAKE_CURRENT_SOURCE_DIR}/src/QtMediaClientWire.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4ImageSourceProvider.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4ImageSourceProvider.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/F4DirectoryPreviewProvider.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridge.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridge.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgeDragDrop.cpp"
@@ -473,11 +474,17 @@ if(F4_QT_STATIC)
       ZoinGalleryEmbeddedImageProbeTests
       ZoinGalleryDecodeSizePolicyTests
       ZoinGalleryPersistentDerivedImageCacheTests
-      ZoinGalleryDecodeLifecycleTests)
+      ZoinGalleryDecodeLifecycleTests
+      ZoinGalleryLayoutEngineTests
+      ZoinGalleryPanelControllerTests)
     if(TARGET ${F4_ZOIN_STATIC_CORE_TEST_TARGET})
       target_sources(${F4_ZOIN_STATIC_CORE_TEST_TARGET} PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/StaticQtTestPluginImports.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/StaticQtImagePluginImports.cpp")
+      if(WIN32)
+        target_link_libraries(${F4_ZOIN_STATIC_CORE_TEST_TARGET} PRIVATE
+          Qt6::QWindowsIntegrationPlugin)
+      endif()
       target_link_libraries(${F4_ZOIN_STATIC_CORE_TEST_TARGET} PRIVATE
         Qt6::QOffscreenIntegrationPlugin
         Qt6::QGifPlugin
@@ -1349,6 +1356,7 @@ if(BUILD_TESTING)
 
   add_executable(QtMediaClientTests
     tests/QtMediaClientTests.cpp
+    src/F4DirectoryPreviewProvider.cpp
     src/QtMediaClient.h
     src/QtMediaClient.cpp
     src/QtMediaClientWire.h
@@ -1423,6 +1431,7 @@ if(BUILD_TESTING)
     src/QtMediaClientWire.cpp
     src/F4ImageSourceProvider.h
     src/F4ImageSourceProvider.cpp
+    src/F4DirectoryPreviewProvider.cpp
     src/F4GalleryBridge.h
     src/F4GalleryBridgeDragDrop.cpp
     src/F4GalleryBridge.cpp
@@ -1498,6 +1507,7 @@ if(BUILD_TESTING)
     src/QtMediaClientWire.cpp
     src/F4ImageSourceProvider.h
     src/F4ImageSourceProvider.cpp
+    src/F4DirectoryPreviewProvider.cpp
     src/F4GalleryBridge.h
     src/F4GalleryBridgeDragDrop.cpp
     src/F4GalleryBridge.cpp

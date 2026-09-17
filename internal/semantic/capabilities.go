@@ -9,6 +9,7 @@ var extUiPanelCatalogMetadataEnabled atomic.Bool
 var extUiPanelCatalogRowsEnabled atomic.Bool
 
 var PanelCatalogDeltaEnabled atomic.Bool
+var DirectoryPreviewsEnabled atomic.Bool
 
 func SetPanelCatalogMetadataEnabled(enabled bool) bool {
 	return extUiPanelCatalogMetadataEnabled.Swap(enabled)

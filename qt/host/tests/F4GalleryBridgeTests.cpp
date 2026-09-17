@@ -30,6 +30,8 @@
 
 #include <ZoinGallery/GalleryRuntime.h>
 #include <ZoinGallery/GallerySession.h>
+#include <ZoinGallery/GalleryCatalogSource.h>
+#include "../../../third_party/ZoinGallery/tests/DirectoryPreviewFixture.h"
 
 class GalleryKeyRecorder final : public QObject
 {
@@ -110,6 +112,7 @@ class F4GalleryBridgeTests final : public QObject
     Q_OBJECT
 
 private slots:
+    void directoryAuthoritySurvivesBridgeAndOpenTargetsFolder();
     void initTestCase();
     void panelIconsKeepNativeRasterAtMixedDpi();
     void frameTraceUsesDirectSwapBoundaryAcrossQueuedDelivery();
@@ -146,6 +149,7 @@ private slots:
     void inactiveGalleryDoesNotStealFocus();
     void galleryRoutesOwnedAndCommanderKeys();
     void galleryKeepsAuthoritativeCursorVisible();
+    void galleryPageNavigationSurvivesCursorAcknowledgement();
     void viewerOwnsEscapeAndZoom();
     void bridgeShutdownStopsRuntimeDuringDecode();
     void stableCatalogSkipsRebuildAndKeepsDynamicState();
@@ -1868,6 +1872,92 @@ void F4GalleryBridgeTests::galleryKeepsAuthoritativeCursorVisible()
     QTRY_VERIFY(visible(47));
 
     delete rootObject;
+}
+
+void F4GalleryBridgeTests::galleryPageNavigationSurvivesCursorAcknowledgement()
+{
+    QQuickView view;
+    view.engine()->addImportPath(QStringLiteral(":"));
+    view.engine()->addImportPath(QStringLiteral("qrc:/qt/qml"));
+    F4GalleryBridge bridge(view.engine());
+    GalleryKeyRecorder keyRecorder;
+    auto scene = longCatalogScene(356, 0);
+    auto shell = scene.value("shell").toMap();
+    auto state = shell.value("panels").toList().first().toMap();
+    state["galleryLayoutMode"] = "masonry";
+    state["galleryDensity"] = 172;
+    shell["panels"] = QVariantList{state};
+    scene["shell"] = shell;
+    bridge.synchronizeScene(scene);
+    view.engine()->rootContext()->setContextProperty("pageBridge", &bridge);
+    view.engine()->rootContext()->setContextProperty("pageRecorder", &keyRecorder);
+    view.engine()->rootContext()->setContextProperty("pageState", state);
+    QQmlComponent component(view.engine());
+    component.setData(R"QML(
+        import QtQuick
+        Item {
+            width: 1200; height: 900
+            Loader {
+                objectName: "pageHostLoader"
+                anchors.fill: parent
+                source: pageBridge.panelComponentUrl
+                onLoaded: {
+                    item.side = 0
+                    item.bridge = pageBridge
+                    item.keySink = pageRecorder
+                    item.panel = pageState
+                    item.panelActive = true
+                }
+            }
+        }
+    )QML", QUrl("inline:F4GalleryPaging.qml"));
+    QTRY_VERIFY(component.status() != QQmlComponent::Loading);
+    QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+    auto *root = component.create();
+    QVERIFY(root);
+    view.setContent(QUrl("inline:F4GalleryPaging.qml"), &component, root);
+    view.show();
+    auto *loader = root->findChild<QObject *>("pageHostLoader");
+    QTRY_VERIFY(loader->property("item").value<QObject *>());
+    auto *host = loader->property("item").value<QObject *>();
+    host->setProperty("devicePixelRatio", view.devicePixelRatio());
+    QVERIFY(QMetaObject::invokeMethod(host, "forceActiveFocus"));
+    auto *panel = host->findChild<QObject *>("embeddedGalleryPanel");
+    auto *layout = panel->findChild<QObject *>("galleryViewportItem");
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(bridge.sessionForSide(0));
+    QVERIFY(panel && layout && session);
+    // The trace flag also enables passive QML diagnostics, without starting
+    // the automatic navigation benchmark runner.
+    QVERIFY(!bridge.navigationBenchmarkEnabled());
+    QVERIFY(panel->property("benchmarkTracingEnabled").toBool());
+    QSignalSpy actions(&bridge, &F4GalleryBridge::uiActionRequested);
+    QTest::qWait(500);
+    for (int cycle = 0; cycle < 4; ++cycle) {
+        for (const auto key : {Qt::Key_PageDown, Qt::Key_PageUp}) {
+            actions.clear();
+            QTest::keyClick(&view, key);
+            QTest::qWait(350);
+            const qreal contentY = layout->property("contentY").toReal();
+            if (key == Qt::Key_PageDown)
+                QVERIFY2(contentY >= layout->property("height").toReal() * .65,
+                    qPrintable(QStringLiteral("PageDown stopped at %1 in a %2-pixel viewport")
+                        .arg(contentY).arg(layout->property("height").toReal())));
+            else
+                QVERIFY(qAbs(contentY) < 1);
+            QVERIFY(!actions.isEmpty());
+            const auto action = actions.last().first().toMap();
+            QCOMPARE(action.value("action").toString(), QStringLiteral("panel.cursor"));
+            state["cursor"] = action.value("index");
+            state["cursorEntryId"] = action.value("entryId");
+            shell["panels"] = QVariantList{state};
+            scene["shell"] = shell;
+            bridge.synchronizeScene(scene);
+            host->setProperty("panel", state);
+            QTest::qWait(100);
+            QCOMPARE(layout->property("contentY").toReal(), contentY);
+        }
+    }
+    delete root;
 }
 
 void F4GalleryBridgeTests::viewerOwnsEscapeAndZoom()
@@ -4325,6 +4415,39 @@ void F4GalleryBridgeTests::stableActionsCarryRevisions()
     QCOMPARE(action.value(QStringLiteral("entryId")).toString(), QStringLiteral("left:two"));
     QCOMPARE(action.value(QStringLiteral("index")).toInt(), 9);
     QCOMPARE(action.value(QStringLiteral("catalogRevision")).toULongLong(), qulonglong(42));
+}
+
+void F4GalleryBridgeTests::directoryAuthoritySurvivesBridgeAndOpenTargetsFolder()
+{
+    QQmlEngine engine;
+    auto provider = QSharedPointer<DirectoryPreviewFixture>::create();
+    provider->names = {"one.jpg"};
+    ZoinGallery::RuntimeOptions options;
+    options.persistentCache = false;
+    options.directoryPreviewProvider = provider;
+    options.storageNamespace = QStringLiteral("f4-qt-host");
+    QVERIFY(ZoinGallery::GalleryRuntime::install(&engine, options));
+    F4GalleryBridge bridge(&engine);
+    QVariantMap panel = testScene().value("shell").toMap().value("panels").toList().first().toMap();
+    panel["entries"] = QVariantList{previewFolder(0)};
+    panel["totalCount"] = 1;
+    panel["cursor"] = 0;
+    panel["cursorEntryId"] = "folder-0";
+    bridge.synchronizePanelCatalog(panel);
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(bridge.sessionForSide(0));
+    QVERIFY(session);
+    QCOMPARE(session->model()->rowCount(), 1);
+    auto *source = dynamic_cast<ZoinGallery::GalleryCatalogSource *>(session->model());
+    QVERIFY(source);
+    QCOMPARE(provider->enumerations.load(), 0);
+    source->requestDirectoryPreviews({0});
+    QTRY_VERIFY(session->directoryPreviewModel(0));
+    QTRY_COMPARE(session->directoryPreviewModel(0)->rowCount(), 1);
+    QSignalSpy actions(&bridge, &F4GalleryBridge::uiActionRequested);
+    bridge.requestOpen(0, "folder-0", 0, false, 42);
+    QTRY_VERIFY(!actions.isEmpty());
+    QCOMPARE(actions.last().at(0).toMap().value("entryId").toString(), QStringLiteral("folder-0"));
+    QVERIFY(!bridge.viewerVisible());
 }
 
 void F4GalleryBridgeTests::deferredCursorCommitsOnlyLatest()

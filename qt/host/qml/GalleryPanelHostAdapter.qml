@@ -24,9 +24,10 @@ Item {
     signal rendererTransactionStateChanged(bool active)
 
     readonly property bool benchmarkTracingEnabled:
-        bridge
-        && typeof bridge.navigationBenchmarkEnabled !== "undefined"
-        && bridge.navigationBenchmarkEnabled === true
+        benchmarkTraceOutputEnabled
+        || (bridge
+            && typeof bridge.navigationBenchmarkEnabled !== "undefined"
+            && bridge.navigationBenchmarkEnabled === true)
     readonly property bool benchmarkTraceOutputEnabled:
         bridge
         && typeof bridge.benchmarkTraceEnabled !== "undefined"

@@ -791,6 +791,7 @@ type FileSystemPanel struct {
 	semanticPagedSignature        string
 	semanticPagedResourceRevision int64
 	semanticPagedResourceIDs      map[string]struct{}
+	semanticPagedDirectoryIDs     map[string]struct{}
 }
 
 var DisableLoadingAnimationInTests = true

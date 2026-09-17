@@ -209,8 +209,20 @@ type FileEntryModel struct {
 	MTimeNanos       int64
 	Version          string
 	Source           *ImageSourceModel
+	DirectorySource  *DirectorySourceModel
 	Mode             string
 	HighlightStyleID string
+}
+
+// DirectorySourceModel grants bounded enumeration of one observed VFS folder.
+type DirectorySourceModel struct {
+	ResourceID string
+	SourceKey  string
+	Version    string
+}
+
+func (s DirectorySourceModel) ToMap() M {
+	return M{"resourceId": s.ResourceID, "sourceKey": s.SourceKey, "version": s.Version}
 }
 
 // ImageSourceModel is an opaque, broker-backed source descriptor. Native
@@ -966,6 +978,9 @@ func (e FileEntryModel) ToMap() M {
 	if e.Source != nil {
 		out["source"] = e.Source.ToMap()
 	}
+	if e.DirectorySource != nil {
+		out["directorySource"] = e.DirectorySource.ToMap()
+	}
 	return out
 }
 
@@ -1006,6 +1021,9 @@ func (e FileEntryModel) MinimalToMap() M {
 	// descriptor virtual-panel images have no readable source for thumbnails.
 	if e.Source != nil {
 		out["source"] = e.Source.ToMap()
+	}
+	if e.DirectorySource != nil {
+		out["directorySource"] = e.DirectorySource.ToMap()
 	}
 	return out
 }
