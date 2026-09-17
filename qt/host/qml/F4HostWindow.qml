@@ -266,6 +266,24 @@ ApplicationWindow {
                 ? Math.max(0, Math.min(1,
                            Number(viewerHost.surfaceProgress || 0))) : 0
     }
+    readonly property string galleryViewerTabTitle: {
+        if (!galleryControllerApi || !galleryControllerApi.viewerVisible)
+            return ""
+        const loader = galleryViewerLayer ? galleryViewerLayer.item : null
+        const viewerHost = loader ? loader.item : null
+        return viewerHost ? String(viewerHost.tabTitle || "") : ""
+    }
+
+    function presentedWorkspaceTab(tab) {
+        if (!tab || tab.active !== true || galleryViewerTabTitle === ""
+                || (tab.surfaceKind && tab.surfaceKind !== "panels"))
+            return tab
+        return Object.assign({}, tab, {
+            text: galleryViewerTabTitle,
+            tooltipPrimary: galleryViewerTabTitle,
+            surfaceKind: "imageViewer"
+        })
+    }
     readonly property real normalSurfaceOpacity:
         hasDocumentSurface() || hasOperationsQueueSurface()
         ? 1 : 1 - galleryViewerProgress

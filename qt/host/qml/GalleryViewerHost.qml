@@ -31,6 +31,14 @@ FocusScope {
     // Expose the viewer's exact animation/gesture progress so the embedding
     // shell can fade its chrome in lockstep with the image transition.
     readonly property real surfaceProgress: galleryViewer.surfaceProgress
+    readonly property string tabTitle: {
+        const revision = session ? session.catalogRevision : 0
+        const index = galleryViewer.presentedIndex
+        const name = session && index >= 0 ? session.entryNameAt(index) : ""
+        const percent = galleryViewer.flickableArea.zoomScale * 100
+        const zoom = percent < 10 ? Number(percent.toFixed(1)) : Math.round(percent)
+        return name === "" ? "" : name + " — " + zoom + "%"
+    }
 
     onSurfaceActiveChanged: {
         if (surfaceActive)

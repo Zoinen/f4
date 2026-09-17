@@ -219,6 +219,12 @@ Item {
             onLoaded: {
                 if (!item)
                     return
+                // Cached sessions publish image dimensions synchronously.
+                // Set the screen scale before converting them to logical units.
+                item.devicePixelRatio = Qt.binding(
+                            () => surfaces.hostWindow.screen
+                                  ? surfaces.hostWindow.screen.devicePixelRatio
+                                  : 1.0)
                 item.session = Qt.binding(
                             () => surfaces.galleryController.viewerSession)
                 item.sourcePanel = Qt.binding(
@@ -233,10 +239,6 @@ Item {
                               && !surfaces.hostWindow.hasDocumentSurface()
                               && !surfaces.hostWindow.hasOperationsQueueSurface()
                               && !surfaces.hostWindow.needsFallbackGrid())
-                item.devicePixelRatio = Qt.binding(
-                            () => surfaces.hostWindow.screen
-                                  ? surfaces.hostWindow.screen.devicePixelRatio
-                                  : 1.0)
                 item.forceActiveFocus()
             }
         }

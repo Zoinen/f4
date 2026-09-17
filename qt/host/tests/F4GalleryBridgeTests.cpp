@@ -836,8 +836,8 @@ void F4GalleryBridgeTests::galleryIconsFollowSharedIconSet()
     const QVariantMap markerStyle = marker->property("highlightStyle").toMap();
     QCOMPARE(markerStyle.value(QStringLiteral("marker")).toString(),
              QStringLiteral("*"));
-    QCOMPARE(lucideRouteName(marker), QStringLiteral("file-code"));
-    QCOMPARE(lucideRouteName(defaulted), QStringLiteral("archive"));
+    QCOMPARE(lucideRouteName(marker), QStringLiteral("file-terminal"));
+    QCOMPARE(lucideRouteName(defaulted), QStringLiteral("file-archive"));
     QCOMPARE(lucideRouteName(up), QStringLiteral("folder-up"));
     QCOMPARE(bundled->property("iconPath").toString(), QStringLiteral(
         "qrc:/F4QtHost/icons/lucide/archive.svg"));

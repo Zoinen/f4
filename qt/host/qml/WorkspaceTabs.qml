@@ -227,19 +227,21 @@ Item {
 
             Repeater {
                 id: workspaceTabsRepeater
-                model: workspaceBar.panelTabs
+                // Keep delegates alive while viewer titles and zoom change.
+                model: workspaceBar.panelTabs.length
                 onItemAdded: workspaceBar.updateActiveWorkspaceTab()
                 onItemRemoved: workspaceBar.updateActiveWorkspaceTab()
 
                 delegate: Rectangle {
                     id: workspaceTab
-                    required property var modelData
                     required property int index
+                    readonly property var modelData: workspaceBar.panelTabs[index] || ({})
+                    readonly property var presentedTab: hostWindow.presentedWorkspaceTab(modelData)
                     readonly property bool current: modelData.active === true
                     readonly property bool closeEnabled:
                         hostWindow.workspaceTabCanClose(modelData)
                     readonly property string tabIconName:
-                        hostWindow.workspaceTabIconName(modelData)
+                        hostWindow.workspaceTabIconName(presentedTab)
                     readonly property string lucideName: tabIconName
                     readonly property color labelColor:
                         hostWindow.workspaceTabTextColor(current)
@@ -403,7 +405,7 @@ Item {
                         delay: 500
                         timeout: 5000
                         text: hostWindow.workspaceTabToolTip(
-                                  modelData, Qt.platform.os)
+                                  workspaceTab.presentedTab, Qt.platform.os)
                     }
 
                     HostPixelAlignedImage {
@@ -458,7 +460,7 @@ Item {
                                                  workspaceNumber.text === ""
                                                  ? 0 : 5
                             y: hostWindow.snapPx((parent.height - height) / 2)
-                            text: hostWindow.cleanText(modelData.text)
+                            text: hostWindow.cleanText(workspaceTab.presentedTab.text)
                             color: workspaceTab.labelColor
                             // Active state is conveyed only by text
                             // brightness; changing weight makes tabs

@@ -185,6 +185,7 @@ foreach(F4_ZOIN_QML_TEST_TARGET IN ITEMS
     ZoinGallerySessionTests
     ZoinGalleryQmlInteractionTests
     ZoinGalleryReusableViewerPrimitivesTests
+    ViewerResampleGpuTests
     ZoinGalleryEntryHoverTests
     ZoinGalleryPanelGestureTests
     ZoinGalleryMasonryLayoutModesTests
@@ -312,6 +313,8 @@ set(F4_LUCIDE_ICON_NAMES
   file.svg
   file-clock.svg
   file-code.svg
+  file-archive.svg
+  file-terminal.svg
   file-cog.svg
   file-lock.svg
   file-pen-line.svg
@@ -441,6 +444,7 @@ if(F4_QT_STATIC)
       ZoinGallerySessionTests
       ZoinGalleryQmlInteractionTests
       ZoinGalleryReusableViewerPrimitivesTests
+      ViewerResampleGpuTests
       ZoinGalleryEntryHoverTests
       ZoinGalleryPanelGestureTests
       ZoinGalleryMasonryLayoutModesTests

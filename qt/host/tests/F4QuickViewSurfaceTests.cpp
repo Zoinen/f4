@@ -4,11 +4,13 @@
 #include "TestExtUiStateController.h"
 #include <ZoinGallery/GalleryPreferences.h>
 #include <ZoinGallery/GalleryRuntime.h>
+#include <ZoinGallery/GallerySession.h>
 
 #include <QCoreApplication>
 #include <QColor>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QProcess>
@@ -209,7 +211,7 @@ class TestGallery final : public QObject
     Q_OBJECT
     Q_PROPERTY(bool available READ available CONSTANT)
     Q_PROPERTY(QObject *settings MEMBER preferences CONSTANT)
-    Q_PROPERTY(QObject *viewerSession READ nullObject CONSTANT)
+    Q_PROPERTY(QObject *viewerSession READ viewerSession NOTIFY viewerChanged)
     Q_PROPERTY(bool viewerVisible READ viewerVisible NOTIFY viewerChanged)
     Q_PROPERTY(int viewerSide READ viewerSide CONSTANT)
     Q_PROPERTY(QUrl panelComponentUrl READ panelComponentUrl CONSTANT)
@@ -220,10 +222,15 @@ public:
     QObject *preferences = nullptr;
 
     bool available() const { return m_available; }
-    QObject *nullObject() const { return nullptr; }
+    QObject *viewerSession() const { return m_viewerSession; }
     bool viewerVisible() const { return m_viewerUrl.isValid(); }
     QUrl viewerComponentUrl() const { return m_viewerUrl; }
-    void showViewer(const QUrl &url) { m_viewerUrl = url; emit viewerChanged(); }
+    void showViewer(const QUrl &url, QObject *session = nullptr)
+    {
+        m_viewerSession = session;
+        m_viewerUrl = url;
+        emit viewerChanged();
+    }
     int viewerSide() const { return 0; }
     QUrl emptyUrl() const { return {}; }
     QUrl panelComponentUrl() const
@@ -242,6 +249,7 @@ signals:
 private:
     bool m_available = false;
     QUrl m_viewerUrl;
+    QPointer<QObject> m_viewerSession;
 };
 
 class TestIcons final : public QObject
@@ -747,6 +755,7 @@ private slots:
     void qmlImportsWithoutInstalledQt();
     void compiledHostLoadsItsQmlModule();
     void expandedViewerKeepsWorkspaceChromeAccessible();
+    void cachedGalleryViewerCentersFirstNativeZoomAt175Percent();
     void semanticSceneGatesOnlyGridRendering();
     void semanticHorizontalSplitStaysOnNativeSurface();
     void functionBarShowsExplicitFunctionKeysAndForwardsMouseModifiers();
@@ -4030,6 +4039,119 @@ void F4QuickViewSurfaceTests::workspaceTabWheelActivatesAdjacentTabs()
     QCOMPARE(fixture.shell.actions.size(), 0);
 }
 
+void F4QuickViewSurfaceTests::cachedGalleryViewerCentersFirstNativeZoomAt175Percent()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QSize sourceSize(1396, 768);
+    const QString imagePath = directory.filePath(QStringLiteral("cached-viewer.png"));
+    QImage image(sourceSize, QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::cyan);
+    QVERIFY(image.save(imagePath));
+
+    QuickViewFixture fixture(shellScene(), false, true);
+    QVERIFY(fixture.window);
+    fixture.window->resize(2194, 1186);
+    QCoreApplication::processEvents();
+    const qreal dpr = fixture.window->devicePixelRatio();
+    QCOMPARE(dpr, qreal(1.75));
+    auto *layer = fixture.item(QStringLiteral("galleryViewerLayer"));
+    QVERIFY(layer);
+    QTRY_VERIFY(layer->width() > 2000 && layer->height() > 1000);
+
+    auto *runtime = ZoinGallery::GalleryRuntime::install(&fixture.engine);
+    QVERIFY(runtime);
+    auto *session = runtime->createExternalSession(
+        QStringLiteral("cached-host-viewer-dpr"));
+    QVERIFY(session);
+    const auto shutdown = qScopeGuard([&] { runtime->shutdown(); });
+    QVERIFY(session->applyExternalCatalog({QVariantMap{
+        {QStringLiteral("entryId"), QStringLiteral("cached-image")},
+        {QStringLiteral("index"), 0},
+        {QStringLiteral("name"), QStringLiteral("cached-viewer.png")},
+        {QStringLiteral("localPath"), imagePath},
+        {QStringLiteral("isDir"), false},
+        {QStringLiteral("isImage"), true},
+        {QStringLiteral("selected"), false},
+        {QStringLiteral("size"), QFileInfo(imagePath).size()},
+        {QStringLiteral("mtimeNs"), qint64(0)},
+    }}, 1));
+    QVERIFY(session->applyExternalState(QStringLiteral("cached-image"), 0, {}, 1));
+    session->setViewerOpen(true);
+    // Warm the exact fit request before the real shell Loader attaches the
+    // session. Its synchronous tier publication must see the final host DPR.
+    session->requestViewer(qCeil(layer->width() * dpr),
+                           qCeil(layer->height() * dpr));
+    QTRY_COMPARE_WITH_TIMEOUT(session->viewerSourceLevel(), 1, 5000);
+    QTRY_COMPARE_WITH_TIMEOUT(session->imageOriginalSizeAt(0), sourceSize, 5000);
+    const QUrl cachedFit = session->viewerSource();
+    QVERIFY(!cachedFit.isEmpty());
+
+    fixture.gallery.showViewer(
+        QUrl(QStringLiteral("qrc:/F4QtHost/qml/GalleryViewerHost.qml")), session);
+    QQuickItem *viewer = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT((viewer = fixture.item(
+        QStringLiteral("embeddedGalleryViewer"))), 5000);
+    QTRY_COMPARE_WITH_TIMEOUT(viewer->property("transitionProgress").toReal(), 1.0,
+                             5000);
+    QTRY_VERIFY_WITH_TIMEOUT(!viewer->property("transitioning").toBool(), 5000);
+    auto *viewport = viewer->property("flickableArea").value<QQuickItem *>();
+    QVERIFY(viewport);
+    QTRY_VERIFY(viewport->property("imageTextureReady").toBool());
+    QCOMPARE(viewport->property("devicePixelRatio").toReal(), dpr);
+    QCOMPARE(session->viewerSource(), cachedFit);
+    QCOMPARE(session->viewerSourceLevel(), 1);
+    const QSizeF initialLogicalSize = viewport->property("originalSize").toSizeF();
+
+    // Exercise the first actual '*' press; a second press would conceal the
+    // stale logical dimensions by recalculating the already-loaded native tier.
+    viewer->forceActiveFocus();
+    QTest::keyClick(fixture.window, Qt::Key_Asterisk);
+    QTRY_COMPARE_WITH_TIMEOUT(session->viewerSourceLevel(), 2, 5000);
+    QTRY_VERIFY_WITH_TIMEOUT(!viewport->property("viewportAnimationRunning").toBool(),
+                            5000);
+    QTRY_COMPARE_WITH_TIMEOUT(viewport->property("zoomScale").toReal(), 1.0, 5000);
+    auto *native = fixture.item(QStringLiteral("galleryViewerNativeImage"));
+    auto *shader = fixture.item(QStringLiteral("galleryViewerImageShader"));
+    QVERIFY(native);
+    QVERIFY(shader);
+    QTRY_COMPARE_WITH_TIMEOUT(native->property("status").toInt(), 1, 5000);
+    QCoreApplication::processEvents();
+
+    const QRectF imageRect = shader->mapRectToItem(viewport, shader->boundingRect());
+    const QPointF center = imageRect.center();
+    const QPointF expectedCenter(viewport->width() / 2, viewport->height() / 2);
+    const QPointF centerError = (center - expectedCenter) * dpr;
+    const QSizeF finalLogicalSize = viewport->property("originalSize").toSizeF();
+    const QString details = QStringLiteral(
+        "[FIX:viewer-first-native-center] dpr=%1 cachedLogical=%2x%3 "
+        "nativeLogical=%4x%5 imageCenter=(%6,%7) viewportCenter=(%8,%9) "
+        "physicalCenterError=(%10,%11)")
+        .arg(dpr).arg(initialLogicalSize.width()).arg(initialLogicalSize.height())
+        .arg(finalLogicalSize.width()).arg(finalLogicalSize.height())
+        .arg(center.x()).arg(center.y()).arg(expectedCenter.x()).arg(expectedCenter.y())
+        .arg(centerError.x()).arg(centerError.y());
+    qInfo().noquote() << details;
+    QVERIFY2(qAbs(centerError.x()) <= 0.501 && qAbs(centerError.y()) <= 0.501,
+             qPrintable(details));
+    QVERIFY2(qAbs(finalLogicalSize.width() * dpr - sourceSize.width()) < 0.001,
+             qPrintable(details));
+    QVERIFY2(qAbs(finalLogicalSize.height() * dpr - sourceSize.height()) < 0.001,
+             qPrintable(details));
+    QCOMPARE(initialLogicalSize, finalLogicalSize);
+    QVERIFY2(qAbs(imageRect.width() * dpr - sourceSize.width()) < 0.001,
+             qPrintable(details));
+    QVERIFY2(qAbs(imageRect.height() * dpr - sourceSize.height()) < 0.001,
+             qPrintable(details));
+    const QPointF origin = shader->mapToItem(fixture.window->contentItem(), QPointF());
+    for (qreal coordinate : {origin.x() * dpr, origin.y() * dpr})
+        QVERIFY2(qAbs(coordinate - qRound(coordinate)) < 0.001, qPrintable(details));
+    QCOMPARE(shader->mapToItem(fixture.window->contentItem(), QPointF(1, 0)) - origin,
+             QPointF(1, 0));
+    QCOMPARE(shader->mapToItem(fixture.window->contentItem(), QPointF(0, 1)) - origin,
+             QPointF(0, 1));
+}
+
 void F4QuickViewSurfaceTests::expandedViewerKeepsWorkspaceChromeAccessible()
 {
     QVariantMap scene = shellScene();
@@ -4060,11 +4182,56 @@ Rectangle {
     property bool surfaceActive
     property real devicePixelRatio
     property real surfaceProgress: 1
+    property string tabTitle: "roof.jpg — 25%"
     MouseArea { anchors.fill: parent }
 })QML");
     viewerFile.close();
     QuickViewFixture fixture(scene, true, true);
     QVERIFY(fixture.window);
+    auto *originalTab = visualItemWithObjectNamePrefix(fixture.window->contentItem(), "workspace-tab-1");
+    QVERIFY(originalTab);
+    const qreal folderWidth = originalTab->width();
+    fixture.gallery.showViewer(QUrl::fromLocalFile(viewerFile.fileName()));
+    QTRY_COMPARE(fixture.window->property("galleryViewerProgress").toReal(), 1.0);
+    auto *title = visualItemWithObjectNamePrefix(fixture.window->contentItem(),
+                                                "workspace-tab-title-workspace-tab-1");
+    QVERIFY(title);
+    QTRY_COMPARE(title->property("text").toString(), QString("roof.jpg — 25%"));
+    // Switching from panels to the viewer must update both title and width
+    // immediately, with no partially faded title or delayed width change.
+    QCOMPARE(title->opacity(), 1.0);
+    const qreal viewerWidth = originalTab->width();
+    QVERIFY(viewerWidth > folderWidth);
+    QTest::qWait(220);
+    QCOMPARE(originalTab->width(), viewerWidth);
+    QCOMPARE(title->opacity(), 1.0);
+    const auto *closeLeaf = visualItemWithObjectNamePrefix(fixture.window->contentItem(),
+                                                          "workspace-close-workspace-tab-1");
+    QVERIFY(closeLeaf);
+    const qreal closeInset = originalTab->width() - closeLeaf->x() - closeLeaf->width();
+    QVERIFY(qAbs(closeInset - 8) <= 1 / fixture.window->devicePixelRatio());
+    auto *outerLoader = fixture.item("galleryViewerLayer");
+    auto *innerLoader = outerLoader->property("item").value<QObject *>();
+    QVERIFY(innerLoader);
+    auto *viewer = innerLoader->property("item").value<QObject *>();
+    QVERIFY(viewer);
+    viewer->setProperty("tabTitle", "next.jpg — 100%");
+    QTRY_COMPARE(title->property("text").toString(), QString("next.jpg — 100%"));
+    QCOMPARE(title->opacity(), 1.0);
+    QTRY_VERIFY(visualItemWithText(fixture.window->contentItem(), "Other"));
+    QTest::qWait(50);
+    const auto origin = title->mapToItem(fixture.window->contentItem(), QPointF{});
+    const qreal titleDpr = fixture.window->devicePixelRatio();
+    for (qreal coordinate : {origin.x(), origin.y()})
+        QVERIFY(qAbs(coordinate * titleDpr - qRound64(coordinate * titleDpr)) < .001);
+    QCOMPARE(title->mapToItem(fixture.window->contentItem(), QPointF(1,0)) - origin, QPointF(1,0));
+    QCOMPARE(title->mapToItem(fixture.window->contentItem(), QPointF(0,1)) - origin, QPointF(0,1));
+    fixture.gallery.showViewer(QUrl{});
+    QTRY_COMPARE(title->property("text").toString(), QString("Photos"));
+    QCOMPARE(title->opacity(), 1.0);
+    QCOMPARE(originalTab->width(), folderWidth);
+    QTest::qWait(220);
+    QCOMPARE(originalTab->width(), folderWidth);
     fixture.gallery.showViewer(QUrl::fromLocalFile(viewerFile.fileName()));
     QTRY_COMPARE(fixture.window->property("galleryViewerProgress").toReal(), 1.0);
     auto *layer = fixture.item("galleryViewerLayer");
