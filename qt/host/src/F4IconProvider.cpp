@@ -109,6 +109,8 @@ const QSet<QString> &lucideIconNames()
         QStringLiteral("database"),
         QStringLiteral("eye"),
         QStringLiteral("file"),
+        QStringLiteral("file-archive"),
+        QStringLiteral("file-terminal"),
         QStringLiteral("file-clock"),
         QStringLiteral("file-code"),
         QStringLiteral("file-cog"),
@@ -836,7 +838,14 @@ QString F4IconProvider::lucideFileIconName(QStringView rawFileName,
         QStringLiteral("bak"), QStringLiteral("old"), QStringLiteral("tmp"),
     };
 
-    if (archiveExtensions.contains(suffix)) return QStringLiteral("archive");
+    static const QSet<QString> executableExtensions{
+        QStringLiteral("exe"), QStringLiteral("com"), QStringLiteral("bat"),
+        QStringLiteral("cmd"), QStringLiteral("msi"), QStringLiteral("appimage"),
+        QStringLiteral("run"), QStringLiteral("ps1"), QStringLiteral("sh"),
+        QStringLiteral("bash"), QStringLiteral("zsh"), QStringLiteral("fish"),
+    };
+    if (archiveExtensions.contains(suffix)) return QStringLiteral("file-archive");
+    if (executableExtensions.contains(suffix)) return QStringLiteral("file-terminal");
     if (imageExtensions.contains(suffix)) return QStringLiteral("image");
     if (audioExtensions.contains(suffix)) return QStringLiteral("music");
     if (videoExtensions.contains(suffix)) return QStringLiteral("video");

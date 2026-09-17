@@ -353,6 +353,21 @@ void F4IconProviderTests::lucideSourcesAndFileClassification()
              QStringLiteral("book-open"));
     QCOMPARE(F4IconProvider::lucideFileIconName(u"unknown.bin", false),
              QStringLiteral("file"));
+    QCOMPARE(F4IconProvider::lucideFileIconName(u"photos.ZIP", false),
+             QStringLiteral("file-archive"));
+    for (const auto name : {u"app.EXE", u"tool.com", u"build.cmd", u"start.bat",
+                           u"app.AppImage", u"setup.run", u"script.ps1", u"script.sh"}) {
+        QCOMPARE(F4IconProvider::lucideFileIconName(name, false),
+                 QStringLiteral("file-terminal"));
+    }
+    for (const auto name : {u"file-archive", u"file-terminal"}) {
+        QCOMPARE(F4IconProvider::normalizedIconName(name), QString(name));
+        for (int size : {20, 128}) {
+            const QUrl source = F4IconProvider::lucideSource(name, size);
+            QSvgRenderer renderer(QStringLiteral(":") + source.path());
+            QVERIFY(renderer.isValid());
+        }
+    }
 
     QCOMPARE(F4IconProvider::lucideSource(u"folder", 16).toString(),
              QStringLiteral("qrc:/F4QtHost/icons/lucide/folder.svg"));
@@ -790,7 +805,7 @@ void F4IconProviderTests::iconSetPropertiesAndRevision()
              QString::number(icons.revision()));
     QCOMPARE(query.queryItemValue(QStringLiteral("version")), QStringLiteral("77"));
     QCOMPARE(query.queryItemValue(QStringLiteral("fallback")),
-             QStringLiteral("archive"));
+             QStringLiteral("file-archive"));
 }
 
 void F4IconProviderTests::diagnosticPatternIsOptInAndDprAware()

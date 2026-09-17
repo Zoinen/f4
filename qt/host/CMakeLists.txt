@@ -312,6 +312,8 @@ set(F4_LUCIDE_ICON_NAMES
   file.svg
   file-clock.svg
   file-code.svg
+  file-archive.svg
+  file-terminal.svg
   file-cog.svg
   file-lock.svg
   file-pen-line.svg
