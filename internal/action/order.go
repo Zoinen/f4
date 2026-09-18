@@ -51,6 +51,8 @@ var actionMenuOrder = []string{
 	"Panel.SystemExplorer",
 	"Panel.SelectGroup",
 	"Panel.DeselectGroup",
+	"Panel.SelectCurrentExtension",
+	"Panel.DeselectCurrentExtension",
 	"Panel.InvertSelection",
 	"Panel.RestoreSelection",
 	"Panel.SelectNavigation",

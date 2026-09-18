@@ -649,6 +649,18 @@ $Panel Navigation Keys
   Ctrl+W        - Close workspace
   Ctrl+N        - Fork active panel to new workspace
 
+  Ctrl+Numpad + / Ctrl+=  - Select files with the current extension
+  Ctrl+Numpad - / Ctrl+-  - Deselect files with the current extension
+  Ctrl+Shift+= / Ctrl+Shift+- - Select / deselect by mask
+  Alt+=         - Invert selection
+  Numpad 5      - View file (also F3; Num Lock may be on or off)
+
+Extension selection is a standard Far Manager command. The main-keyboard
+aliases make it available without a numpad. Matching ignores case and uses
+the last extension. On a folder, folders are selected instead. The parent
+entry and autofilter-hidden rows are left alone. Ctrl+M restores the last
+selection; shortcuts can be changed in the Hotkey Configurator.
+
 @History
 $Commands History (Alt+F8)
     The commands history shows the list of previously executed commands.

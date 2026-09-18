@@ -136,6 +136,17 @@ func (hm *HotkeyManager) GetActiveBindings() map[string]map[string]string {
 // GetKeyForAction searches for a key combination bound to the given action in an area.
 func (hm *HotkeyManager) GetKeyForAction(area, actionName string) string {
 	find := func(binds map[string]string) string {
+		// Preserve the declared primary shortcut when an action has aliases:
+		// Add/Subtract/Multiply and F3 remain the menu hints, not laptop aliases.
+		if a, ok := LookupAction(actionName); ok {
+			for _, spec := range a.DefaultKeys {
+				key, _, _ := strings.Cut(spec, ":")
+				name, _, _ := strings.Cut(binds[key], ":")
+				if strings.EqualFold(name, actionName) {
+					return key
+				}
+			}
+		}
 		var keys []string
 		for key, binding := range binds {
 			parts := strings.SplitN(binding, ":", 2)

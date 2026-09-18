@@ -375,7 +375,7 @@ func init() {
 		LabelKey:    "Menu.Files.View",
 		Description: "Open file in viewer",
 		DescKey:     "Action.File.View.Desc",
-		DefaultKeys: []string{"F3"},
+		DefaultKeys: []string{"F3", "Num5"},
 		MenuPath:    "Files",
 		Handler:     withPF(func(pf *panel.PanelsFrame) { actionViewFile(pf) }),
 	})
@@ -607,7 +607,7 @@ func init() {
 		LabelKey:            "Action.Panel.SelectGroup",
 		Description:         "Select files by mask",
 		DescKey:             "Action.Panel.SelectGroup.Desc",
-		DefaultKeys:         []string{"Add"},
+		DefaultKeys:         []string{"Add", "CtrlShiftVK_BB"},
 		MenuPath:            "Files",
 		MenuSeparatorBefore: true,
 		Handler: withPF(func(pf *panel.PanelsFrame) {
@@ -630,7 +630,7 @@ func init() {
 		LabelKey:    "Action.Panel.DeselectGroup",
 		Description: "Deselect files by mask",
 		DescKey:     "Action.Panel.DeselectGroup.Desc",
-		DefaultKeys: []string{"Subtract"},
+		DefaultKeys: []string{"Subtract", "CtrlShiftVK_BD"},
 		MenuPath:    "Files",
 		Handler: withPF(func(pf *panel.PanelsFrame) {
 			if fsp := pf.GetActivePanel(); fsp != nil {
@@ -643,6 +643,40 @@ func init() {
 			}
 		}),
 	})
+	// Ctrl+Gray +/- is standard Far Manager extension selection, documented in
+	// FarEng.hlf's PanelCmd/SelectFiles topics. Keep Ctrl+=/- as aliases so this
+	// operation remains available on laptops and keyboards without a numpad.
+	// OEM aliases use the stable VK spelling expected by EventToHotkeyString.
+	registerAction(action.Action{
+		Name:        "Panel.SelectCurrentExtension",
+		Area:        "Shell",
+		Label:       "Select Current Extension",
+		LabelKey:    "Action.Panel.SelectCurrentExtension",
+		Description: "Select files with the current extension, or all folders",
+		DescKey:     "Action.Panel.SelectCurrentExtension.Desc",
+		DefaultKeys: []string{"CtrlAdd", "CtrlVK_BB"},
+		MenuPath:    "Files",
+		Handler: withPF(func(pf *panel.PanelsFrame) {
+			if fsp := pf.GetActivePanel(); fsp != nil {
+				fsp.ApplyCurrentExtensionSelection(true)
+			}
+		}),
+	})
+	registerAction(action.Action{
+		Name:        "Panel.DeselectCurrentExtension",
+		Area:        "Shell",
+		Label:       "Deselect Current Extension",
+		LabelKey:    "Action.Panel.DeselectCurrentExtension",
+		Description: "Deselect files with the current extension, or all folders",
+		DescKey:     "Action.Panel.DeselectCurrentExtension.Desc",
+		DefaultKeys: []string{"CtrlSubtract", "CtrlVK_BD"},
+		MenuPath:    "Files",
+		Handler: withPF(func(pf *panel.PanelsFrame) {
+			if fsp := pf.GetActivePanel(); fsp != nil {
+				fsp.ApplyCurrentExtensionSelection(false)
+			}
+		}),
+	})
 	registerAction(action.Action{
 		Name:        "Panel.InvertSelection",
 		Area:        "Shell",
@@ -650,7 +684,7 @@ func init() {
 		LabelKey:    "Action.Panel.InvertSelection",
 		Description: "Invert file selection",
 		DescKey:     "Action.Panel.InvertSelection.Desc",
-		DefaultKeys: []string{"Multiply"},
+		DefaultKeys: []string{"Multiply", "AltVK_BB"},
 		MenuPath:    "Files",
 		Handler: withPF(func(pf *panel.PanelsFrame) {
 			if fsp := pf.GetActivePanel(); fsp != nil {

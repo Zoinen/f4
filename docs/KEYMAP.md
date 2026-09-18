@@ -29,6 +29,25 @@ A rule solves both in one line, and it also covers keys `hotkeys.ini` cannot
 reach at all: framework shortcuts such as `Ctrl+Tab`, dialog and menu keys,
 and the editor's own bindings.
 
+## Panel selection without a numpad
+
+Far Manager's standard `Ctrl+Numpad +` and `Ctrl+Numpad -` commands select and
+deselect files with the same extension as the file under the cursor (see the
+[official panel-command help](https://github.com/FarGroup/FarManager/blob/master/far/FarEng.hlf.m4#L351-L367)).
+f4 also binds `Ctrl+=` and `Ctrl+-` on the main keyboard so this operation is
+available on laptops and compact keyboards without a numeric keypad.
+
+Extension matching ignores case and uses the last extension; virtual entries
+marked `NoExtension` join extensionless files. With a folder under the cursor,
+the command marks or unmarks folders instead. The parent entry is never marked,
+and autofilter-hidden rows are left alone. `Ctrl+M` restores the previous marks.
+
+`Ctrl+Shift+=` and `Ctrl+Shift+-` open the selection and deselection mask dialogs;
+`Alt+=` inverts selection. `Numpad 5` opens the viewer with Num Lock on or off,
+while `F3` remains the primary viewer shortcut. All of these are configurable
+panel actions. OEM keys use names such as `CtrlVK_BB` and `CtrlVK_BD` in
+`hotkeys.ini`, and the UI displays them as `Ctrl+=` and `Ctrl+-`.
+
 ## The file
 
 `keymap.ini` lives in the profile directory next to `hotkeys.ini`

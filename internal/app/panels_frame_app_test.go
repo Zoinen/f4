@@ -975,6 +975,56 @@ func TestPanelsFrame_BToggle_WithQuickView(t *testing.T) {
 	config.App.InfoPanelBytes = before
 }
 
+func TestPanelsFrame_CurrentExtensionShortcuts(t *testing.T) {
+	t.Cleanup(paneltest.SwapFrameManager(t))
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	old := keymap.GlobalHotkeysMgr
+	keymap.GlobalHotkeysMgr = keymap.NewHotkeyManager("")
+	t.Cleanup(func() { keymap.GlobalHotkeysMgr = old })
+	oldMacros := macro.MacroMgr
+	macro.MacroMgr = macro.NewMacroManager("")
+	t.Cleanup(func() { macro.MacroMgr = oldMacros })
+	pf := paneltest.SetupMockPanelsFrame(t)
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+	fp := pf.GetActivePanel()
+	fp.Entries = []*panel.FileEntry{
+		{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}},
+		{VFSItem: vfs.VFSItem{Name: "one.TXT"}},
+		{VFSItem: vfs.VFSItem{Name: "two.txt"}},
+		{VFSItem: vfs.VFSItem{Name: "three.go"}},
+		{VFSItem: vfs.VFSItem{Name: "folder.txt", IsDir: true}},
+	}
+	fp.SetCursorIndex(1)
+	fp.Refresh()
+	pf.CmdLine.Edit.SetText("unfinished command")
+	for _, ctrl := range []vtinput.ControlKeyState{vtinput.LeftCtrlPressed, vtinput.RightCtrlPressed} {
+		for _, pair := range [][2]string{{"CtrlAdd", "CtrlSubtract"}, {"Ctrl=", "Ctrl-"}} {
+			for _, noChar := range []bool{false, true} {
+				for i, key := range pair {
+					e := keymap.ParseFarKey(key)
+					e.ControlKeyState = ctrl
+					if noChar {
+						e.Char = 0
+					}
+					if !pressKey(pf, e) {
+						t.Errorf("%s (ctrl=%d noChar=%t) was not handled", key, ctrl, noChar)
+					}
+					for idx, entry := range fp.Entries {
+						want := i == 0 && (idx == 1 || idx == 2)
+						if entry.Selected != want {
+							t.Errorf("%s (ctrl=%d noChar=%t): %s selected=%t, want %t", key, ctrl, noChar, entry.Name, entry.Selected, want)
+						}
+					}
+					if fp.GetCursorIndex() != 1 || pf.CmdLine.Edit.GetText() != "unfinished command" {
+						t.Fatalf("%s: cursor=%d command=%q", key, fp.GetCursorIndex(), pf.CmdLine.Edit.GetText())
+					}
+				}
+			}
+		}
+	}
+}
+
 func TestPanelsFrame_SelectionByMask(t *testing.T) {
 	t.Cleanup(paneltest.SwapFrameManager(t))
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
