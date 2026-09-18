@@ -134,6 +134,12 @@ Rectangle {
         sourceComponent: Item {
             width: menuItem.width
             height: menuItem.height
+    TextMetrics {
+        id: menuLabelMetrics
+        font: menuItemText.font
+        // A common cap/descender sample keeps all rows on the same baseline.
+        text: "Ag"
+    }
     Text {
         id: menuItemText
         objectName: "semanticMenuItemText-"
@@ -144,8 +150,12 @@ Rectangle {
         anchors.rightMargin: menuItem.dropdownTextLayout
             ? parent.width - menuItem.dropdownTextLayout.x
               - menuItem.dropdownTextLayout.width : 0
-        anchors.top: parent.top
-        anchors.bottom: parent.bottom
+        readonly property bool centeredLabel: !overlayController.dropdownMode && modelData.header !== true
+        anchors.top: centeredLabel ? undefined : parent.top
+        anchors.bottom: centeredLabel ? undefined : parent.bottom
+        height: implicitHeight
+        y: hostWindow.snapPx((parent.height - menuLabelMetrics.tightBoundingRect.height) / 2
+                            - menuLabelMetrics.tightBoundingRect.y - baselineOffset)
         anchors.topMargin: menuItem.dropdownTextLayout
                            ? menuItem.dropdownTextLayout.y
                            : modelData.header === true
@@ -202,7 +212,7 @@ Rectangle {
         id: driveContent
         visible: !!menuItem.modelData.details && !menuItem.historyRow
         readonly property var details: menuItem.modelData.details || ({})
-        readonly property real gap: hostWindow.snapPx(24)
+        readonly property real gap: hostWindow.snapPx(12)
         readonly property real captionGap: hostWindow.snapPx(16)
         readonly property real nameX: overlayController.menuLabelInset
         readonly property real fsWidth: overlayController.driveFilesystemWidth
@@ -232,7 +242,8 @@ Rectangle {
                 x: modelData === "filesystem" ? driveContent.fsX
                    : capacity ? driveContent.barX + driveContent.barWidth + driveContent.barGap
                    : driveContent.nameX
-                y: hostWindow.snapPx((driveContent.height - height) / 2)
+                y: hostWindow.snapPx((driveContent.height - menuLabelMetrics.tightBoundingRect.height) / 2
+                                    - menuLabelMetrics.tightBoundingRect.y - baselineOffset)
                 width: modelData === "filesystem" ? driveContent.fsWidth
                        : capacity ? driveContent.capacityTextWidth : driveContent.nameWidth
                 text: modelData === "name" ? hostWindow.mnemonicText(overlayController.driveName(driveContent.details), menuItem.modelData.hotkey)

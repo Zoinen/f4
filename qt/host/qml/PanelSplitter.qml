@@ -40,6 +40,7 @@ Item {
         Math.min(Math.max(0, minimumPanelWidth), Math.max(0, availableWidth / 2))
     readonly property real splitPosition: clampedPosition(availableWidth * ratio)
     readonly property bool dragging: pointer.dragging
+    readonly property bool hovered: pointer.containsMouse
     readonly property bool accessibilityHidden: !surfaceActive
 
     signal ratioRequested(real ratio)

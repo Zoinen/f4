@@ -1011,6 +1011,7 @@ func (fp *FileSystemPanel) SetItemSelected(idx int, state bool) {
 			if e.Selected == state {
 				return
 			}
+			fp.updateNativeStatusSelection(e, state)
 			e.Selected = state
 			if fp.SelectedItems == nil {
 				fp.SelectedItems = make(map[string]bool)
@@ -5269,11 +5270,27 @@ func (fp *FileSystemPanel) ProcessMouse(e *vtinput.InputEvent) bool {
 	isMove := e.MouseEventFlags&vtinput.MouseMoved != 0
 	isRelease := !isMove && (e.ButtonState == 0 || !e.KeyDown)
 	if isRelease {
+		// A release may carry a newer position than the last delivered move.
+		// Resolve it while the original drag button and selection mode exist.
+		finishingRowDrag := fp.rowDragButton != 0
+		if finishingRowDrag {
+			if idx := fp.mouseEntryIndex(int(e.MouseX), int(e.MouseY)); idx >= 0 {
+				vtui.DebugLog("[FIX:drag-release] cursor %d -> %d", fp.GetCursorIndex(), idx)
+				fp.SetCursorIndex(idx)
+				if fp.rightDragActive {
+					fp.processRightDrag(idx)
+				}
+				fp.Refresh()
+			}
+		}
 		fp.lastRightClickedIdx = -1
 		fp.rightDragActive = false
 		fp.headerMouseActive = false
 		fp.rowDragButton = 0
 		fp.stopDragAutoScroll()
+		if finishingRowDrag {
+			return true
+		}
 	}
 
 	if e.WheelDirection == 0 && e.ButtonState&vtinput.FromLeft1stButtonPressed != 0 &&

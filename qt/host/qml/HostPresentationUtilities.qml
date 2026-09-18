@@ -67,7 +67,7 @@ QtObject {
     function nativePanelSplitPosition() {
         const minimum = Math.min(hostWindow.panelMinimumWidth,
                                  Math.max(0, hostWindow.width / 2))
-        return Math.round(Math.max(minimum,
+        return snapPx(Math.max(minimum,
                     Math.min(hostWindow.width - minimum,
                              hostWindow.width * hostWindow.panelSplitRatio)))
     }

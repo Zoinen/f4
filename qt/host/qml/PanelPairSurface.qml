@@ -15,6 +15,31 @@ Item {
     required property ZG.GalleryThemePalette galleryTheme
     required property ZG.GalleryPresentationMetrics galleryMetrics
 
+    property var pendingSplitUpdate: null
+    function flushSplitUpdate() {
+        splitUpdateTimer.stop()
+        if (!pendingSplitUpdate)
+            return
+        const update = pendingSplitUpdate
+        pendingSplitUpdate = null
+        hostWindow.action(update, true)
+    }
+    function publishSplitRatio(ratio) {
+        hostWindow.panelSplitRatio = ratio
+        pendingSplitUpdate = {
+            action: "panel.setSplit",
+            target: String(hostWindow.shellFrame().id || ""),
+            ratioMillionths: Math.round(ratio * 1000000)
+        }
+        if (!splitUpdateTimer.running)
+            splitUpdateTimer.start()
+    }
+    Timer {
+        id: splitUpdateTimer
+        interval: 16
+        onTriggered: pair.flushSplitUpdate()
+    }
+
     property bool leftInfoCreated: false
     property bool rightInfoCreated: false
     property bool leftQuickViewCreated: false
@@ -125,6 +150,7 @@ Item {
     }
 
     PanelSplitter {
+        id: panelSplitter
         objectName: "mainPanelSplitter"
         y: pair.hostWindow.menuBarHeight
         height: Math.max(pair.hostWindow.nativePanelHeight(0, y),
@@ -152,10 +178,101 @@ Item {
         z: 10
 
         onRatioRequested: (nextRatio) => {
-            pair.hostWindow.panelSplitRatio = nextRatio
+            pair.publishSplitRatio(nextRatio)
+        }
+        onDraggingChanged: {
+            if (!dragging)
+                pair.flushSplitUpdate()
         }
         onFocusReleaseRequested: {
             Qt.callLater(pair.hostWindow.restoreSurfaceFocus)
         }
     }
+    // Keep these hit areas above the divider, including while their visuals
+    // are hidden. They occupy only the existing inset after the View button.
+    property int expandButtonHoverMask: 0
+    readonly property bool expandButtonsHovered: expandButtonHoverMask !== 0
+
+    Repeater {
+        id: expandButtons
+        model: 2
+        delegate: ToolButton {
+            id: expandButton
+            required property int index
+            objectName: "panelExpandButton-" + index
+            readonly property bool expanded: pair.hostWindow.widePanelSide() === index
+            readonly property bool revealed: hovered || pair.expandButtonsHovered
+                                             || panelSplitter.hovered
+            readonly property string iconName: (index === 0) !== expanded
+                ? "arrow-right-from-line" : "arrow-left-from-line"
+            x: pair.hostWindow.nativePanelX(index)
+               + (index === 0 ? pair.hostWindow.nativePanelWidth(index) - width : 0)
+            y: pair.hostWindow.snapPx(pair.hostWindow.menuBarHeight
+               + (pair.hostWindow.panelPathRowHeight - height) / 2)
+            width: pair.hostWindow.snapPx(pair.hostWindow.panelTextInset)
+            height: Math.min(pair.hostWindow.panelPathRowHeight - 4, 28)
+            z: 11
+            padding: 0
+            hoverEnabled: true
+            onHoveredChanged: {
+                if (hovered)
+                    pair.expandButtonHoverMask |= (1 << index)
+                else
+                    pair.expandButtonHoverMask &= ~(1 << index)
+            }
+            focusPolicy: Qt.NoFocus
+            visible: pair.hostWindow.panelPathBarsVisible
+                     && pair.hostWindow.panelSideVisible(index)
+                     && !pair.panelsSurface.altPanelForSide(index)
+                     && pair.panelsSurface.hasPanelForSide(index)
+            enabled: pair.hostWindow.nativeTwoPanelSurfaceActive
+            Accessible.name: expanded ? qsTr("Restore split panels")
+                                     : qsTr("Expand panel to full size")
+            contentItem: Item {
+                HostPixelAlignedImage {
+                    hostWindow: pair.hostWindow
+                    objectName: "panelExpandIcon-" + expandButton.index
+                    width: pair.hostWindow.snapPx(12)
+                    height: width
+                    x: pair.hostWindow.snapPx((parent.width - width) / 2)
+                    y: pair.hostWindow.snapPx((parent.height - height) / 2)
+                    visible: expandButton.revealed
+                    smooth: false
+                    source: pair.hostWindow.lucideIconSource(
+                                expandButton.iconName,
+                                12, pair.hostWindow.galleryPathTextColor)
+                }
+            }
+            background: Rectangle {
+                objectName: "panelExpandBackground-" + expandButton.index
+                radius: 5
+                visible: expandButton.revealed
+                color: expandButton.down ? pair.hostWindow.controlPressedBg
+                     : expandButton.hovered ? pair.hostWindow.controlHoverBg
+                                            : "transparent"
+            }
+            ZG.ToolTip {
+                id: expandTip
+                objectName: "panelExpandToolTip-" + expandButton.index
+                visible: expandButton.hovered
+                delay: 600
+                text: expandButton.Accessible.name
+                contentItem: Text {
+                    id: expandTipText
+                    objectName: "panelExpandToolTipText-" + expandButton.index
+                    text: expandTip.text
+                    font: expandTip.font
+                    color: pair.hostWindow.chromeText
+                    transform: Translate {
+                        x: pair.hostWindow.dialogPixelOffsetX(expandTipText, pair.hostWindow.contentItem)
+                        y: pair.hostWindow.dialogPixelOffsetY(expandTipText, pair.hostWindow.contentItem)
+                    }
+                }
+            }
+            onClicked: pair.hostWindow.action({
+                action: "panel.setWide", side: index, enabled: !expanded
+            }, true)
+        }
+    }
+
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/unxed/f4/sdk/extui"
 	"github.com/unxed/vtui"
 	"maps"
+	"os"
 	"strings"
 )
 
@@ -56,7 +57,7 @@ func BuildAppSceneFromLegacy(ctx *vtui.SemanticContext, legacy map[string]any) m
 		scene.Toast = &extui.ToastModel{Message: semantic.String(toast["message"])}
 	}
 
-	for _, frame := range semantic.AppMapSlice(legacy["frames"]) {
+	for index, frame := range semantic.AppMapSlice(legacy["frames"]) {
 		if autocompletes.isLegacyFrame(frame) || vmenus.isLegacyFrame(frame) {
 			continue
 		}
@@ -65,10 +66,14 @@ func BuildAppSceneFromLegacy(ctx *vtui.SemanticContext, legacy map[string]any) m
 			shell := appShellFromLegacy(frame)
 			scene.Shell = &shell
 		case "menu":
-			scene.Menus = append(scene.Menus, appMenuFromLegacy(frame, "popup"))
+			menu := appMenuFromLegacy(frame, "popup")
+			menu.StackOrder = index + 1
+			scene.Menus = append(scene.Menus, menu)
 		case "dialog", "window":
 			appEnrichLegacyTextWidgets(frame, semanticElements)
-			scene.Dialogs = append(scene.Dialogs, appDialogFromLegacy(frame))
+			dialog := appDialogFromLegacy(frame)
+			dialog.StackOrder = index + 1
+			scene.Dialogs = append(scene.Dialogs, dialog)
 		case "viewer", "editor", "terminal":
 			surface := appSurfaceFromLegacy(frame)
 			scene.Surface = &surface
@@ -83,11 +88,26 @@ func BuildAppSceneFromLegacy(ctx *vtui.SemanticContext, legacy map[string]any) m
 		scene.Menus = append(scene.Menus, menu.model())
 	}
 	appAppendAutocompleteMenus(&scene, autocompletes)
+	traceOverlayOrder("complete", scene)
 	if scene.OperationsQueue == nil {
 		scene.OperationsQueue = fileops.BackgroundOperationsQueue()
 	}
 	commitMediaPanelsForSemanticScene(legacy)
 	return scene.ToMap()
+}
+
+func traceOverlayOrder(projection string, scene extui.Scene) {
+	if len(scene.Menus) == 0 || len(scene.Dialogs) == 0 || os.Getenv("VTUI_DEBUG") == "" {
+		return
+	}
+	for _, menu := range scene.Menus {
+		vtui.DebugLog("[FIX:overlay-order] projection=%s kind=menu id=%s stackOrder=%d",
+			projection, menu.ID, menu.StackOrder)
+	}
+	for _, dialog := range scene.Dialogs {
+		vtui.DebugLog("[FIX:overlay-order] projection=%s kind=dialog id=%s stackOrder=%d",
+			projection, dialog.ID, dialog.StackOrder)
+	}
 }
 
 func semanticMediaPanelIDs(legacy map[string]any) []string {
@@ -317,6 +337,7 @@ func appEnrichLegacyTextWidgets(node map[string]any, elements map[string]vtui.UI
 }
 
 type appVMenu struct {
+	stackOrder     int
 	frame          vtui.Frame
 	menu           *vtui.VMenu
 	bottomHint     string
@@ -340,10 +361,11 @@ func appActiveVMenus() appVMenus {
 	}
 	var out appVMenus
 	menuBar := vtui.FrameManager.GetActiveMenuBar()
-	for _, frame := range vtui.FrameManager.GetActiveFrames(vtui.FrameManager.ActiveIdx) {
+	for index, frame := range vtui.FrameManager.GetActiveFrames(vtui.FrameManager.ActiveIdx) {
 		menu, bottomHint := FrameVMenu(frame)
 		if menu != nil {
 			out = append(out, appVMenu{
+				stackOrder:     index + 1,
 				frame:          frame,
 				menu:           menu,
 				bottomHint:     bottomHint,
@@ -382,6 +404,7 @@ func FrameVMenu(frame vtui.Frame) (*vtui.VMenu, string) {
 func (item appVMenu) model(omitItems ...bool) extui.MenuModel {
 	x1, y1, x2, y2 := item.frame.GetPosition()
 	menu := extui.MenuModel{
+		StackOrder:   item.stackOrder,
 		ID:           vtui.SemanticID(item.frame),
 		Role:         "vmenu",
 		Title:        item.frame.GetTitle(),
@@ -560,13 +583,14 @@ func appLegacyForNativeScene(legacy map[string]any, menus appVMenus,
 }
 
 type appAutocompleteMenu struct {
-	menu     *vtui.AutoCompleteMenu
-	id       string
-	windowID string
-	x        int
-	y        int
-	w        int
-	h        int
+	stackOrder int
+	menu       *vtui.AutoCompleteMenu
+	id         string
+	windowID   string
+	x          int
+	y          int
+	w          int
+	h          int
 }
 
 type appAutocompleteMenus []appAutocompleteMenu
@@ -576,20 +600,21 @@ func appActiveAutocompleteMenus() appAutocompleteMenus {
 		return nil
 	}
 	var out appAutocompleteMenus
-	for _, frame := range vtui.FrameManager.GetActiveFrames(vtui.FrameManager.ActiveIdx) {
+	for index, frame := range vtui.FrameManager.GetActiveFrames(vtui.FrameManager.ActiveIdx) {
 		ac, ok := frame.(*vtui.AutoCompleteMenu)
 		if !ok || !ac.HasMatches() {
 			continue
 		}
 		x1, y1, x2, y2 := ac.GetPosition()
 		out = append(out, appAutocompleteMenu{
-			menu:     ac,
-			id:       vtui.SemanticID(ac),
-			windowID: vtui.SemanticID(&ac.Window),
-			x:        x1,
-			y:        y1,
-			w:        x2 - x1 + 1,
-			h:        y2 - y1 + 1,
+			stackOrder: index + 1,
+			menu:       ac,
+			id:         vtui.SemanticID(ac),
+			windowID:   vtui.SemanticID(&ac.Window),
+			x:          x1,
+			y:          y1,
+			w:          x2 - x1 + 1,
+			h:          y2 - y1 + 1,
 		})
 	}
 	return out
@@ -628,10 +653,11 @@ func appAppendAutocompleteMenus(scene *extui.Scene, autocompletes appAutocomplet
 
 func (item appAutocompleteMenu) model() extui.MenuModel {
 	menu := extui.MenuModel{
-		ID:     item.id,
-		Role:   "autocomplete",
-		Title:  "Autocomplete",
-		Active: true,
+		StackOrder: item.stackOrder,
+		ID:         item.id,
+		Role:       "autocomplete",
+		Title:      "Autocomplete",
+		Active:     true,
 		// Autocomplete is an offer, not an implicit edit.  In particular an
 		// exact prefix match must not replace what the user typed when Enter is
 		// pressed.  QML owns this transient selection and starts it only after
@@ -676,12 +702,13 @@ func appShellFromLegacy(node map[string]any) extui.ShellModel {
 			LeftBottomInsetRows:  semantic.Int(layout["leftBottomInsetRows"]),
 			RightBottomInsetRows: semantic.Int(layout["rightBottomInsetRows"]),
 		},
-		ShowKeyBar:     semantic.AppBoolDefault(node["showKeyBar"], true),
-		TerminalBusy:   semantic.AppBool(node["terminalBusy"]),
-		TerminalActive: semantic.AppBool(node["terminalActive"]),
-		MacroRecording: semantic.AppBool(node["macroRecording"]),
-		Fallback:       semantic.AppBool(node["fallback"]),
-		FallbackReason: semantic.String(node["reason"]),
+		ShowKeyBar:       semantic.AppBoolDefault(node["showKeyBar"], true),
+		HidePanelPathBar: semantic.AppBool(node["hidePanelPathBar"]),
+		TerminalBusy:     semantic.AppBool(node["terminalBusy"]),
+		TerminalActive:   semantic.AppBool(node["terminalActive"]),
+		MacroRecording:   semantic.AppBool(node["macroRecording"]),
+		Fallback:         semantic.AppBool(node["fallback"]),
+		FallbackReason:   semantic.String(node["reason"]),
 	}
 	if shell.TerminalActive {
 		shell.Mode = "terminal"
@@ -800,6 +827,9 @@ func appPanelFromLegacy(node map[string]any) extui.PanelModel {
 		UseSortGroups:       semantic.AppBool(node["useSortGroups"]),
 		SelectedFiles:       semantic.Int(node["selectedFiles"]),
 		SelectedDirectories: semantic.Int(node["selectedDirectories"]),
+		TotalFiles:          semantic.Int(node["totalFiles"]),
+		TotalDirectories:    semantic.Int(node["totalDirectories"]),
+		DiskTotalSpace:      uint64(semantic.AppInt64(node["diskTotalSpace"])),
 		FreeSpace:           uint64(semantic.AppInt64(node["freeSpace"])),
 		FreeSpaceKnown:      semantic.AppBool(node["freeSpaceKnown"]),
 		SymlinkTarget:       semantic.String(node["symlinkTarget"]),
@@ -1167,12 +1197,13 @@ func appTextRowFromLegacy(node map[string]any) extui.TextRowModel {
 
 func appMenuFromLegacy(node map[string]any, role string) extui.MenuModel {
 	menu := extui.MenuModel{
-		ID:       semantic.String(node["id"]),
-		Role:     role,
-		Title:    semantic.String(node["title"]),
-		Active:   semantic.AppBool(node["active"]),
-		Selected: semantic.Int(node["selected"]),
-		Legacy:   node,
+		StackOrder: semantic.Int(node["stackOrder"]),
+		ID:         semantic.String(node["id"]),
+		Role:       role,
+		Title:      semantic.String(node["title"]),
+		Active:     semantic.AppBool(node["active"]),
+		Selected:   semantic.Int(node["selected"]),
+		Legacy:     node,
 	}
 	for _, item := range semantic.AppMapSlice(node["items"]) {
 		menu.Items = append(menu.Items, appMenuItemFromLegacy(item))
@@ -1242,18 +1273,32 @@ func appKeyBarFromLegacy(node map[string]any) extui.KeyBarModel {
 func appDialogFromLegacy(node map[string]any) extui.DialogModel {
 	node = dialog.ProjectHelpSearch(node)
 	dlg := extui.DialogModel{
-		Layout:    semantic.String(node["layout"]),
-		ID:        semantic.String(node["id"]),
-		Kind:      semantic.String(node["kind"]),
-		Title:     semantic.String(node["title"]),
-		Modal:     semantic.AppBool(node["modal"]),
-		Busy:      semantic.AppBool(node["busy"]),
-		Progress:  semantic.Int(node["progress"]),
-		ShowClose: semantic.AppBool(node["showClose"]),
-		Legacy:    node,
+		StackOrder: semantic.Int(node["stackOrder"]),
+		Layout:     semantic.String(node["layout"]),
+		ID:         semantic.String(node["id"]),
+		Kind:       semantic.String(node["kind"]),
+		Title:      semantic.String(node["title"]),
+		Modal:      semantic.AppBool(node["modal"]),
+		Busy:       semantic.AppBool(node["busy"]),
+		Progress:   semantic.Int(node["progress"]),
+		ShowClose:  semantic.AppBool(node["showClose"]),
+		Legacy:     node,
 	}
 	for _, child := range semantic.AppMapSlice(node["children"]) {
 		dlg.Controls = append(dlg.Controls, appControlFromLegacy(child))
+	}
+	for _, hint := range semantic.AppMapSlice(node["keyHints"]) {
+		dlg.KeyHints = append(dlg.KeyHints, extui.DialogKeyHint{
+			Key: semantic.String(hint["key"]), Text: semantic.String(hint["text"]),
+			Action: semantic.String(hint["action"]), Disabled: semantic.AppBool(hint["disabled"]),
+			Icon: semantic.String(hint["icon"]),
+		})
+	}
+	if split, ok := node["paneSplit"].(map[string]any); ok {
+		dlg.PaneSplit = &extui.DialogPaneSplit{
+			X: semantic.Int(split["x"]), LeftTitle: semantic.String(split["leftTitle"]),
+			RightTitle: semantic.String(split["rightTitle"]), Active: semantic.String(split["active"]),
+		}
 	}
 	return dlg
 }
@@ -1299,6 +1344,12 @@ func appControlFromLegacy(node map[string]any) extui.ControlModel {
 	}
 	for _, child := range semantic.AppMapSlice(node["children"]) {
 		ctrl.Children = append(ctrl.Children, appControlFromLegacy(child))
+	}
+	for _, state := range semantic.AppMapSlice(node["itemStates"]) {
+		ctrl.ItemStates = append(ctrl.ItemStates, extui.ListItemState{
+			Checkable: semantic.AppBool(state["checkable"]),
+			Checked:   semantic.AppBool(state["checked"]), Dimmed: semantic.AppBool(state["dimmed"]),
+		})
 	}
 	return ctrl
 }

@@ -311,6 +311,7 @@ bool F4GalleryBridge::normalizeSelectionChanges(
         }
         const QVariantMap normalized = {
             {QStringLiteral("entryId"), entryId},
+            {QStringLiteral("index"), state.sourceIndexByEntryId.value(entryId, -1)},
             {QStringLiteral("selected"),
              change.value(QStringLiteral("selected")).toBool()},
         };

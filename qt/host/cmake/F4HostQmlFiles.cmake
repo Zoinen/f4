@@ -14,6 +14,8 @@ set(F4_HOST_QML_FILES
   qml/HostPixelAlignedImage.qml
   qml/HostPresentationUtilities.qml
   qml/FilePanelView.qml
+  qml/PanelStatusOverlay.qml
+  qml/PanelStatusMetric.qml
   qml/PanelPairSurface.qml
   qml/PanelsSurface.qml
   qml/ShellSurfaceHost.qml
@@ -78,6 +80,7 @@ set(F4_HOST_QML_FILES
   qml/SemanticGroupViewport.qml
   qml/GenericDialog.qml
   qml/SettingsDialogBody.qml
+  qml/EnvironmentProfilesBody.qml
   qml/TerminalPaletteModel.qml
   qml/TerminalColorsPage.qml
   qml/DialogOverlay.qml
@@ -85,6 +88,7 @@ set(F4_HOST_QML_FILES
   qml/SemanticMenuItemDelegate.qml
   qml/SemanticMenuPopup.qml
   qml/OverlayHost.qml
+  qml/KeyBarActionButton.qml
   qml/KeyBarView.qml
   qml/ToastView.qml
 )

@@ -7,13 +7,31 @@ class ExtUiSceneReducerTests final : public QObject
     Q_OBJECT
 
 private slots:
+    void pathBarVisibilitySurvivesStatePatch();
     void dropCapabilitySurvivesStatePatch();
+    void panelStatusSurvivesStatePatch();
     void presentationProjectionDropsNativeCatalogRows();
     void snapshotMutatesOnlyItsOwnedStream();
     void snapshotPayloadTypeMustMatchStream();
     void selectionPatchUsesLogicalCatalogRows_data();
     void selectionPatchUsesLogicalCatalogRows();
 };
+
+void ExtUiSceneReducerTests::pathBarVisibilitySurvivesStatePatch()
+{
+    const QVariantMap scene{{"schema","app"},{"version",4},
+        {"shell",QVariantMap{{"panels",QVariantList{}}}}};
+    for (bool hidden : {true, false}) {
+        const QVariantMap patch{{"type","scene_patch"},{"schema","app"},{"version",4},
+            {"baseRevision",1},{"revision",2},
+            {"shell",QVariantMap{{"set",QVariantMap{{"hidePanelPathBar",hidden}}}}}};
+        ExtUiSceneReducer::AppliedScenePatch result;
+        QString error;
+        QVERIFY2(ExtUiSceneReducer::applyScenePatch(patch,scene,
+            ExtUiSceneReducer::makePresentationScene(scene),1,&result,&error),qPrintable(error));
+        QCOMPARE(result.scene.value("shell").toMap().value("hidePanelPathBar"), QVariant(hidden));
+    }
+}
 
 void ExtUiSceneReducerTests::dropCapabilitySurvivesStatePatch()
 {
@@ -35,6 +53,29 @@ void ExtUiSceneReducerTests::dropCapabilitySurvivesStatePatch()
         ExtUiSceneReducer::makePresentationScene(scene),1,&result,&error),qPrintable(error));
     const auto updated = result.scene.value("shell").toMap().value("panels").toList().first().toMap();
     QCOMPARE(updated.value("dropAllowed"),QVariant(false));
+}
+
+void ExtUiSceneReducerTests::panelStatusSurvivesStatePatch()
+{
+    const QVariantMap panel{{"id","left"},{"side",0},{"catalogRevision",10}};
+    const QVariantMap scene{{"schema","app"},{"version",4},
+        {"shell",QVariantMap{{"panels",QVariantList{panel}}}}};
+    const QVariantMap state{{"totalFiles",12},{"totalDirectories",3},
+        {"id","left"},{"side",0},{"kind","filePanel"},{"catalogRevision",10},
+        {"metadataDeferred",true},{"metadataRevision",1},
+        {"diskTotalSpace",QVariant::fromValue<qlonglong>(1LL<<40)},
+        {"freeSpace",QVariant::fromValue<qlonglong>(1LL<<38)},{"freeSpaceKnown",true}};
+    const QVariantMap operation{{"op","state_update"},{"side",0},
+        {"panelId","left"},{"catalogRevision",10},{"state",state}};
+    const QVariantMap patch{{"type","scene_patch"},{"schema","app"},{"version",4},
+        {"baseRevision",1},{"revision",2},
+        {"shell",QVariantMap{{"panels",QVariantList{operation}}}}};
+    ExtUiSceneReducer::AppliedScenePatch result;
+    QString error;
+    QVERIFY2(ExtUiSceneReducer::applyScenePatch(patch,scene,
+        ExtUiSceneReducer::makePresentationScene(scene),1,&result,&error),qPrintable(error));
+    const auto updated = result.scene.value("shell").toMap().value("panels").toList().first().toMap();
+    for (auto it = state.begin(); it != state.end(); ++it) QCOMPARE(updated.value(it.key()),it.value());
 }
 
 void ExtUiSceneReducerTests::presentationProjectionDropsNativeCatalogRows()

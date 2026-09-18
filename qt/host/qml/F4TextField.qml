@@ -40,6 +40,8 @@ Item {
     // selection.  The surrounding semantic layer may ask Go to focus the
     // control, but it must not take the press away from TextInput itself.
     signal pointerFocusRequested()
+    signal pointerSelectionFinished()
+    signal remoteKeyEvent(var event, bool down)
 
     function snap(val) {
         return hostWindow ? hostWindow.snapPx(val) : Math.round(val)
@@ -179,6 +181,7 @@ Item {
             // the first click of a later double-click sequence.
             area.clickCount = 0
             area.lastClickAt = 0
+            control.pointerSelectionFinished()
             return
         }
 
@@ -202,6 +205,7 @@ Item {
             innerInput.selectAll()
             area.clickCount = 0
         }
+        control.pointerSelectionFinished()
     }
 
     function cancelMarginPress(area) {
@@ -318,6 +322,20 @@ Item {
 
             TextInput {
                 id: innerInput
+                Keys.priority: Keys.BeforeItem
+                Keys.onPressed: event => {
+                    if (control.remoteControlled) control.remoteKeyEvent(event, true)
+                }
+                Keys.onReleased: event => {
+                    if (control.remoteControlled) control.remoteKeyEvent(event, false)
+                }
+                PointHandler {
+                    acceptedButtons: Qt.LeftButton
+                    onActiveChanged: {
+                        if (!active && control.remoteControlled)
+                            Qt.callLater(control.pointerSelectionFinished)
+                    }
+                }
                 objectName: control.objectName
                             ? (control.objectName + "TextInput")
                             : "textFieldTextInput"

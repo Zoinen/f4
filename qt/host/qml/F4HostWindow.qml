@@ -131,6 +131,7 @@ ApplicationWindow {
     property real ch: focusTarget ? Math.max(17, focusTarget.cellHeight) : 17
     // Permanent title-bar reservation, independent of the transient F9 row.
     readonly property real menuBarHeight: snapPx(42)
+    readonly property bool panelPathBarsVisible: shellFrame().hidePanelPathBar !== true
     readonly property real panelPathRowHeight: snapPx(Math.max(25, ch * 1.25)
         + verticalContentSpacing + pathRowExtraHeight)
     readonly property real workspaceTabMinWidth: 92
@@ -516,11 +517,45 @@ ApplicationWindow {
                 ? ch + commandLineVerticalMargin * 2 + separatorWidth * 2 : 0
     }
     property real commandLineContentHeight: 0
+    property real commandLineReveal: commandLineFrame().visible !== false ? 1 : 0
+    readonly property var commandLineRevealRequest: ({
+        visible: commandLineFrame().visible !== false,
+        autoHide: commandLineFrame().autoHide === true,
+        panels: shellFrame().showPanels !== false && shellFrame().terminalActive !== true
+    })
+    property var previousCommandLineRevealRequest: null
+    // Shell and command-line bindings can settle separately in the same patch.
+    // Coalesce them before deciding whether this is a focus or surface change.
+    onCommandLineRevealRequestChanged: Qt.callLater(updateCommandLineReveal)
+    function updateCommandLineReveal() {
+        const next = commandLineRevealRequest
+        const previous = previousCommandLineRevealRequest
+        if (previous && previous.visible === next.visible
+                && previous.autoHide === next.autoHide && previous.panels === next.panels)
+            return
+        previousCommandLineRevealRequest = next
+        commandLineRevealAnimation.stop()
+        const target = next.visible ? 1 : 0
+        if (previous && previous.autoHide && next.autoHide
+                && previous.panels && next.panels) {
+            commandLineRevealAnimation.from = commandLineReveal
+            commandLineRevealAnimation.to = target
+            commandLineRevealAnimation.start()
+        } else {
+            commandLineReveal = target
+        }
+    }
+    NumberAnimation {
+        id: commandLineRevealAnimation
+        target: host
+        property: "commandLineReveal"
+        duration: 130
+        easing.type: Easing.OutCubic
+    }
     function commandLineHeight(shell) {
         const commandLine = commandLineFrame()
-        return commandLine && commandLine.visible !== false
-                ? snapPx(Math.max(ch, commandLineContentHeight))
-                  + commandLineVerticalMargin * 2 + separatorWidth * 2 : 0
+        return commandLine ? snapPx((snapPx(Math.max(ch, commandLineContentHeight))
+                  + commandLineVerticalMargin * 2 + separatorWidth * 2) * commandLineReveal) : 0
     }
 
     function pxX(value) { return presentationUtilities.pxX(value) }
@@ -674,6 +709,7 @@ ApplicationWindow {
     }
 
     Component.onCompleted: {
+        updateCommandLineReveal()
         ZG.Style.isDarkTheme = true
         loadThemeFromPersistence()
         captureRetainedSurfaces()

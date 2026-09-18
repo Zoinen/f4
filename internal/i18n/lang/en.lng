@@ -3199,3 +3199,7 @@ History.Far3.Import=&Import
 History.Far3.EmptyPath=Enter a Far3 folder, profile folder or history.db path.
 History.Far3.Result=Added %d commands, %d viewer/editor files and %d folders.\nSkipped %d unsupported records (plugin paths or external launches).
 History.Far3.NotFound=No Far3 installation or history.db found in this folder.
+
+PanelSettings.SearchHideUnfocused=Hide command input when unfocused
+SettingsCenter.SearchCommandHideUnfocused.Label=Hide command input when unfocused
+SettingsCenter.SearchCommandHideUnfocused.Description=In Search-first mode, hide the command line while the panel has focus. Press the tilde key to show it.

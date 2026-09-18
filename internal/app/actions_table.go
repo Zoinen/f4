@@ -1430,6 +1430,20 @@ func init() {
 		}),
 	})
 	RegisterAction(action.Action{
+		Name:        "Panel.TogglePathBar",
+		Area:        "Shell",
+		Label:       "Toggle Panel Path Bars",
+		Description: "Show or hide the graphical panel path bars",
+		DefaultKeys: []string{"CtrlShiftB"},
+		MenuPath:    "Options",
+		Checked:     func() bool { return !config.App.HidePanelPathBar },
+		Handler: withPF(func(pf *panel.PanelsFrame) {
+			config.App.HidePanelPathBar = !config.App.HidePanelPathBar
+			config.RequestSaveConfig()
+			vtui.FrameManager.HardRefresh()
+		}),
+	})
+	RegisterAction(action.Action{
 		Name:        "Panel.ToggleKeyBar",
 		Area:        "Shell",
 		Label:       "Toggle KeyBar",

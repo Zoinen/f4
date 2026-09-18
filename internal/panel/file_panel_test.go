@@ -5794,3 +5794,28 @@ func (v *hiddenEntriesVFS) ReadDir(_ context.Context, _ string, chunk func([]vfs
 	chunk(v.items)
 	return nil
 }
+
+func TestFileSystemPanel_RightDragReleaseUsesFinalPosition(t *testing.T) {
+	fp := NewFileSystemPanel(0, 0, 80, 24, vfs.NewOSVFS(t.TempDir()))
+	waitForLoad(t, fp)
+	fp.SetViewMode(ViewModeDetailed)
+	fp.Entries = []*FileEntry{
+		{VFSItem: vfs.VFSItem{Name: "a"}},
+		{VFSItem: vfs.VFSItem{Name: "b"}},
+		{VFSItem: vfs.VFSItem{Name: "c"}},
+	}
+	fp.Refresh()
+	y := fp.Table.Y1 + fp.Table.MarginTop
+	fp.ProcessMouse(&vtinput.InputEvent{Type: vtinput.MouseEventType, KeyDown: true,
+		ButtonState: vtinput.RightmostButtonPressed,
+		MouseX:      testutil.Int16(fp.Table.X1), MouseY: testutil.Int16(y)})
+	fp.ProcessMouse(&vtinput.InputEvent{Type: vtinput.MouseEventType, KeyDown: true,
+		ButtonState: vtinput.RightmostButtonPressed, MouseEventFlags: vtinput.MouseMoved,
+		MouseX: testutil.Int16(fp.Table.X1), MouseY: testutil.Int16(y + 1)})
+	// The release carries newer coordinates than the last move.
+	fp.ProcessMouse(&vtinput.InputEvent{Type: vtinput.MouseEventType,
+		MouseX: testutil.Int16(fp.Table.X1), MouseY: testutil.Int16(y + 2)})
+	if fp.GetCursorIndex() != 2 || !fp.Entries[2].Selected {
+		t.Fatalf("release left cursor=%d selected=%v; want final row 2 selected", fp.GetCursorIndex(), fp.Entries[2].Selected)
+	}
+}

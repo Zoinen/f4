@@ -158,3 +158,15 @@ rather than to a command.
 
 And reach for neither when you only need the command once: `Ctrl+Shift+P`
 runs it by name.
+
+In **Panels → Typing and focus**, Search first enables **Keep command input
+focused** and **Hide command input when unfocused**. Hiding is off by default.
+When enabled, returning focus to the panel hides the prompt and gives its space
+back to the panels without clearing command text. The tilde key restores command
+focus; Qt reveals the prompt upward over 130 ms, while the console shows it
+immediately. Other navigation modes and the terminal view retain their prompt.
+
+**Ctrl+Shift+B** toggles both graphical panel path bars (including their sort,
+view and expand controls). The file area uses the released space. The preference
+is saved; it is also available under Panels → File listing. **Ctrl+B** continues
+to toggle the bottom function-key bar.

@@ -22,6 +22,15 @@ func HandleSemanticAction(action map[string]any) bool {
 		return true
 	}
 	actionName := semantic.String(action["action"])
+	if actionName == "panel.setSplit" {
+		// Qt already rendered this geometry. Even a stale workspace request
+		// must not manufacture a scene response or disturb the current view.
+		vtui.FrameManager.DeclareCurrentInputUnchanged()
+		if pf := panel.FindPanelsFrame(); pf != nil {
+			return pf.HandleSemanticAction(action)
+		}
+		return false
+	}
 	if strings.HasPrefix(actionName, "queue.") && fileops.HandleQueueDropdownAction(action) {
 		return true
 	}

@@ -856,7 +856,18 @@ func (e *Edit) SemanticNode(ctx *SemanticContext) map[string]any {
 }
 
 func (e *Edit) HandleSemanticAction(action map[string]any) bool {
+	if e.IsDisabled() {
+		return false
+	}
 	switch semanticString(action["action"]) {
+	case "select", "control.select":
+		e.ClearSelection()
+		e.selAnchor = e.semanticCursor(semanticInt(action["anchor"]))
+		e.curPos = e.semanticCursor(semanticInt(action["cursor"]))
+		e.endSelection()
+		e.ScreenObject.NotifyChange()
+		DebugLog("[FIX:edit-native-selection] anchor=%d cursor=%d", e.selAnchor, e.curPos)
+		return true
 	case "set_text", "control.setText":
 		e.SetText(semanticString(action["text"]))
 		if e.OnTextChange != nil {
@@ -871,6 +882,16 @@ func (e *Edit) HandleSemanticAction(action map[string]any) bool {
 		return true
 	}
 	return false
+}
+
+// Native edit positions count runes, matching SemanticNode. Clamp malformed
+// offsets and keep pointers outside the interior of a rendered cluster.
+func (e *Edit) semanticCursor(offset int) int {
+	offset = max(0, min(offset, len(e.text)))
+	if offset > 0 && offset < len(e.text) {
+		offset = e.prevClusterBoundary(offset + 1)
+	}
+	return offset
 }
 
 func (pb *ProgressBar) SemanticNode(ctx *SemanticContext) map[string]any {

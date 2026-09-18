@@ -105,6 +105,7 @@ Hotkeys provide the fastest way to activate a specific function.
 *   `Esc`: Closes the window or dialog.
 *   `F1`: Opens the help topic associated with the currently focused element.
 *   **Mouse:** Click-and-drag on the top border moves the window. Click-and-drag on the bottom-right corner resizes it.
+*   Resizable windows declare a usable minimum independently of their opening size. Help can shrink to 20×5 cells; Environment Profiles keeps enough room for its two panes. Captured border drags take precedence over content hit tests until release.
 
 #### Groups (`RadioGroup`, `CheckGroup`)
 

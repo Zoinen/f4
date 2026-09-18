@@ -34,12 +34,14 @@ func TestPanelNavigationModeConfigRoundTripAndMigration(t *testing.T) {
 
 	config.App.NavigationMode = config.NavigationSearchFirst
 	config.App.SearchCommandStayFocused = true
+	config.App.SearchCommandHideUnfocused = true
+	config.App.HidePanelPathBar = true
 	config.SaveConfig()
 	body, err := os.ReadFile(iniPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"NavigationMode = search", "SearchCommandStayFocused = 1", "VimHotkeys = 0"} {
+	for _, want := range []string{"NavigationMode = search", "SearchCommandStayFocused = 1", "SearchCommandHideUnfocused = 1", "HidePanelPathBar = 1", "VimHotkeys = 0"} {
 		if !strings.Contains(string(body), want) {
 			t.Fatalf("saved config missing %q:\n%s", want, body)
 		}
@@ -47,8 +49,10 @@ func TestPanelNavigationModeConfigRoundTripAndMigration(t *testing.T) {
 
 	config.App.NavigationMode = config.NavigationClassic
 	config.App.SearchCommandStayFocused = false
+	config.App.SearchCommandHideUnfocused = false
+	config.App.HidePanelPathBar = false
 	config.LoadConfig()
-	if config.App.NavigationMode != config.NavigationSearchFirst || !config.App.SearchCommandStayFocused {
+	if config.App.NavigationMode != config.NavigationSearchFirst || !config.App.SearchCommandStayFocused || !config.App.SearchCommandHideUnfocused || !config.App.HidePanelPathBar {
 		t.Fatalf("round trip got mode=%v stay=%v", config.App.NavigationMode, config.App.SearchCommandStayFocused)
 	}
 
@@ -643,5 +647,25 @@ drained:
 	if pf.ActiveIdx != 0 || pf.CommandLineFocused || !left.IsFocused() || right.IsFocused() {
 		t.Fatalf("same-side activation changed focus: side=%d command=%v left=%v right=%v",
 			pf.ActiveIdx, pf.CommandLineFocused, left.IsFocused(), right.IsFocused())
+	}
+}
+
+func TestPanelPathBarShortcutAndSemanticState(t *testing.T) {
+	original := config.App
+	t.Cleanup(func() { config.App = original })
+	a, ok := GetAction("Panel.TogglePathBar")
+	if !ok || len(a.DefaultKeys) != 1 || a.DefaultKeys[0] != "CtrlShiftB" {
+		t.Fatalf("missing path bar shortcut: %#v", a)
+	}
+	pf, _, _ := newSearchFirstTestFrame(t)
+	for _, hidden := range []bool{false, true, false} {
+		config.App.HidePanelPathBar = hidden
+		full := pf.SemanticNode(nil)
+		if full["hidePanelPathBar"] != hidden {
+			t.Fatalf("path bar state lost (hidden=%v)", hidden)
+		}
+		if a.Checked() == hidden {
+			t.Fatal("menu check state is inverted")
+		}
 	}
 }

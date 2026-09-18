@@ -3129,3 +3129,10 @@ History.Far3.Import=&Импорт
 History.Far3.EmptyPath=Укажите папку Far3, профиль или путь к history.db.
 History.Far3.Result=Добавлено команд: %d, файлов: %d, папок: %d.\nПропущено неподдерживаемых записей: %d (пути плагинов или внешние запуски).
 History.Far3.NotFound=В этой папке не найдена установка Far3 или файл history.db.
+
+PanelSettings.SearchHideUnfocused=Скрывать командную строку без фокуса
+SettingsCenter.SearchCommandHideUnfocused.Label=Скрывать командную строку без фокуса
+SettingsCenter.SearchCommandHideUnfocused.Description=В режиме «Сначала поиск» скрывать командную строку, когда фокус на панели. Клавиша тильды открывает её.
+
+SettingsCenter.HidePanelPathBar.Label=Скрывать строки пути панелей (GUI)
+SettingsCenter.HidePanelPathBar.Description=Скрывать путь, сортировку и режим просмотра над графическими панелями. Ctrl+Shift+B переключает эту настройку.

@@ -400,6 +400,7 @@ FocusScope {
     }
 
     ZG.GalleryPanel {
+        liveSelectionUpdates: true
         id: embeddedGalleryPanel
         objectName: "embeddedGalleryPanel"
         anchors.fill: parent

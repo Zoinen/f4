@@ -82,7 +82,7 @@ func BuildAppIncrementalScene(ctx *vtui.SemanticContext) (*appIncrementalScene, 
 	started = navtrace.SemanticIncrementalStageStart()
 	frames := vtui.FrameManager.GetActiveFrames(vtui.FrameManager.ActiveIdx)
 	navtrace.SemanticIncrementalStageDone("projection.active_frames", started, "frameCount", len(frames))
-	for _, frame := range frames {
+	for index, frame := range frames {
 		// Every vtui screen owns a structural Desktop at the bottom of its
 		// stack. It is not an application surface when another frame covers it,
 		// and the complete exporter/app adapter likewise does not expose that
@@ -131,7 +131,9 @@ func BuildAppIncrementalScene(ctx *vtui.SemanticContext) (*appIncrementalScene, 
 				elements = appActiveSemanticElements()
 			}
 			appEnrichLegacyTextWidgets(node, elements)
-			scene.Dialogs = append(scene.Dialogs, appDialogFromLegacy(node))
+			dialog := appDialogFromLegacy(node)
+			dialog.StackOrder = index + 1
+			scene.Dialogs = append(scene.Dialogs, dialog)
 		case "viewer", "editor", "terminal":
 			model := appSurfaceFromLegacy(node)
 			scene.Surface = &model
@@ -152,6 +154,7 @@ func BuildAppIncrementalScene(ctx *vtui.SemanticContext) (*appIncrementalScene, 
 		scene.Menus = append(scene.Menus, menu.model())
 	}
 	appAppendAutocompleteMenus(&scene, autocompletes)
+	traceOverlayOrder("incremental", scene)
 	navtrace.SemanticIncrementalStageDone("projection.menu_models", started)
 	started = navtrace.SemanticIncrementalStageStart()
 	if scene.OperationsQueue == nil {
@@ -216,7 +219,7 @@ func BuildAppMenuState(_ *vtui.SemanticContext, previous ...map[string]any) (map
 
 var incrementalShellPatchKeys = []string{
 	"id", "kind", "title", "mode", "activePanel", "showPanels",
-	"showLeftPanel", "showRightPanel", "wide", "widePanel", "showKeyBar",
+	"showLeftPanel", "showRightPanel", "wide", "widePanel", "showKeyBar", "hidePanelPathBar",
 	"terminalBusy", "terminalActive", "macroRecording", "fallback", "reason",
 	"infoPanels", "quickViews", "commandLine", "terminal", "panelLayout",
 }

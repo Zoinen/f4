@@ -42,6 +42,24 @@ The manager supports inserting, editing, duplicating, deleting, toggling, and
 reordering profiles; separators; Unicode clipboard interchange; a multiline
 dialog; and editor-based profile or full-environment editing.
 
+The read-only preview does not intercept an ongoing window or child-control
+mouse gesture: held resizing, dragging, and release remain with their owner.
+
+The Qt profile dialog uses the `environmentProfiles` layout and stable control
+roles. Its profile list and variables editor stretch to a shared bottom edge
+as the dialog resizes. Scrolling belongs to the list and editor contents rather
+than an outer dialog viewport; Go continues to own values, selection and actions.
+
+The Qt profile dialog shows the same pane titles, vertical divider and bottom
+keyboard actions as the console. The bottom strip reuses the panel F-bar button
+component, with clickable labels, dividers and shortcuts on the right. Move Up
+and Move Down are separate actions. Unavailable actions are disabled.
+It switches from profile-list shortcuts to **Ctrl+Enter Save / Esc Cancel**
+while editing a profile inline.
+Profiles use native checkboxes in the Qt list. Clicking the checkbox toggles
+the profile; clicking its name only selects it. Unchecked profiles are dimmed
+but remain selectable and editable, matching the console presentation.
+
 ## Importing from Far Manager 3
 
 On Windows, open **Options -> Plugin configuration -> Environment Manager**

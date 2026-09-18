@@ -10,10 +10,53 @@ Item {
     id: body
     objectName: "settingsDialogBody"
     required property ApplicationWindow hostWindow
+    required property real rightGutter
     property var widgets: []
     property string selectedNativePage: ""
     readonly property var nativePages: hostWindow.nativeSettingsPages || []
     readonly property var nativePage: nativePages.find(page => page.pageId === selectedNativePage) || null
+    property var visitedNativePages: []
+    property int pageRevision: 0
+    onSelectedNativePageChanged: {
+        if (selectedNativePage && !visitedNativePages.includes(selectedNativePage))
+            visitedNativePages = visitedNativePages.concat([selectedNativePage])
+        nativeViewport.contentX = 0
+        nativeViewport.contentY = 0
+    }
+    function resetNativePages() {
+        for (let i = 0; i < pageLoaders.count; ++i) {
+            const loader = pageLoaders.itemAt(i)
+            if (loader && loader.item) loader.item.resetDraft()
+        }
+    }
+    function activateWidget(widget) {
+        const role = widget.layoutRole
+        if (role === "apply" || role === "accept") {
+            for (const operation of ["validateDraft", "applyDraft"]) {
+                for (let i = 0; i < pageLoaders.count; ++i) {
+                    const loader = pageLoaders.itemAt(i)
+                    if (loader && loader.item && typeof loader.item[operation] === "function"
+                            && !loader.item[operation]()) {
+                        selectedNativePage = nativePages[i].pageId
+                        return
+                    }
+                }
+            }
+        } else if (role === "cancel") {
+            resetNativePages()
+        }
+        hostWindow.action({target: widget.id, action: "control.activate"})
+    }
+    function displayWidget(widget) {
+        if (widget.layoutRole === "navigation") return categoryWidget(widget)
+        if (nativePage && widget.layoutRole === "content-title")
+            return Object.assign({}, widget, {text: nativePage.title, hotkey: "", dimmed: false})
+        if (nativePage && widget.layoutRole === "footer-status")
+            return Object.assign({}, widget, {text: nativeContent.item ? nativeContent.item.status : ""})
+        return widget
+    }
+    readonly property var displayedWidgets: !widgets.some(w => w.layoutRole === "footer-status")
+        ? widgets.concat([{id: "native-settings-status", kind: "text", text: "", layoutRole: "footer-status"}]) : widgets
     // Compose frontend pages into the category view only. Core row indices stay
     // unchanged, and local rows never become semantic actions or Go providers.
     function categoryWidget(core) {
@@ -49,7 +92,11 @@ Item {
         if (visible && hostWindow.requestedNativeSettingsPage !== "") {
             selectedNativePage = hostWindow.requestedNativeSettingsPage
             hostWindow.requestedNativeSettingsPage = ""
-        } else if (!visible) selectedNativePage = ""
+        } else if (!visible) {
+            resetNativePages()
+            selectedNativePage = ""
+            visitedNativePages = []
+        }
     }
     Component.onCompleted: {
         if (visible && hostWindow.requestedNativeSettingsPage !== "") {
@@ -88,7 +135,7 @@ Item {
         case "search-next": return Qt.rect(navigationWidth - controlHeight, searchY, controlHeight, controlHeight)
         case "search-matches": return Qt.rect(0, searchY + controlHeight + gap, navigationWidth, lineHeight)
         case "navigation": return Qt.rect(0, navigationY, navigationWidth, Math.max(1, paneBottom - navigationY))
-        case "content-title": return Qt.rect(mainX, 0, pageWidth, lineHeight)
+        case "content-title": return Qt.rect(mainX, 0, nativePage ? mainWidth : pageWidth, lineHeight)
         case "content": return Qt.rect(mainX, pageY, pageWidth, pageHeight)
         case "description": return wideHelp
             ? Qt.rect(mainX + pageWidth + gap, 0, helpWidth, paneBottom)
@@ -102,13 +149,14 @@ Item {
     }
 
     Repeater {
-        model: SemanticChildrenModel { widgets: body.widgets }
+        model: SemanticChildrenModel { widgets: body.displayedWidgets }
         delegate: SemanticWidgetDelegate {
             required property var widgetData
             required property var labelData
             readonly property rect placement: body.rectangle(widgetData.layoutRole || "")
             hostWindow: body.hostWindow
-            widget: widgetData.layoutRole === "navigation" ? body.categoryWidget(widgetData) : widgetData
+            widget: body.displayWidget(widgetData)
+            buttonAction: () => body.activateWidget(widgetData)
             tableKeyboardNavigation: widgetData.layoutRole === "navigation"
             tableRowAction: (action, index) => {
                 if (widgetData.layoutRole === "navigation") body.selectCategory(widgetData, action, index)
@@ -120,7 +168,7 @@ Item {
             height: hostWindow.snapPx(placement.height)
             maximumWidth: width
             visible: widgetData.visible !== false && placement.width > 0
-                     && (!body.nativePage || ["search-label", "search", "search-clear", "search-previous", "search-next", "search-matches", "navigation"].includes(widgetData.layoutRole))
+                     && (!body.nativePage || !["content", "description"].includes(widgetData.layoutRole))
         }
     }
     Flickable {
@@ -128,32 +176,55 @@ Item {
         objectName: "nativeSettingsViewport"
         visible: !!body.nativePage
         x: hostWindow.snapPx(body.mainX)
-        y: 0
+        y: hostWindow.snapPx(body.pageY)
         width: hostWindow.snapPx(body.mainWidth)
-        height: hostWindow.snapPx(body.height)
+        height: hostWindow.snapPx(Math.max(1, body.paneBottom - body.pageY))
         clip: true
         pixelAligned: true
-        contentWidth: nativeContent.width + hostWindow.snapPx(12)
-        contentHeight: nativeContent.height + hostWindow.snapPx(12)
+        contentWidth: nativeContent.width
+        contentHeight: nativeContent.height
         boundsBehavior: Flickable.StopAtBounds
-        Loader {
+        Item {
             id: nativeContent
             objectName: "nativeSettingsContent"
-            sourceComponent: body.nativePage ? body.nativePage.content : null
-            onLoaded: { nativeViewport.contentX = 0; nativeViewport.contentY = 0; item.forceActiveFocus() }
-            width: hostWindow.snapPx(Math.max(nativeViewport.width - hostWindow.snapPx(12), item ? item.implicitWidth : 0))
-            height: hostWindow.snapPx(Math.max(nativeViewport.height - hostWindow.snapPx(12), item ? item.implicitHeight : 0))
-        }
-        Connections {
-            target: nativeContent.item
-            ignoreUnknownSignals: true
-            function onCloseRequested() { body.closeRequested() }
+            readonly property var item: {
+                const revision = body.pageRevision
+                const index = body.nativePages.findIndex(page => page.pageId === body.selectedNativePage)
+                const loader = pageLoaders.itemAt(index)
+                return loader ? loader.item : null
+            }
+            width: hostWindow.snapPx(Math.max(nativeViewport.width, item ? item.implicitWidth : 0))
+            height: hostWindow.snapPx(Math.max(nativeViewport.height, item ? item.implicitHeight : 0))
+            Repeater {
+                id: pageLoaders
+                model: body.nativePages
+                delegate: Loader {
+                    id: pageLoader
+                    required property var modelData
+                    anchors.fill: parent
+                    active: body.visitedNativePages.includes(modelData.pageId)
+                    visible: body.selectedNativePage === modelData.pageId
+                    sourceComponent: modelData.content
+                    onLoaded: { ++body.pageRevision; if (visible) item.forceActiveFocus() }
+                    Connections {
+                        target: pageLoader.item
+                        ignoreUnknownSignals: true
+                        function onCloseRequested() { body.resetNativePages(); body.closeRequested() }
+                    }
+                }
+            }
         }
         ScrollBar.vertical: F4ScrollBar {
             objectName: "nativeSettingsVerticalScrollBar"
+            // Keep the attached scroll ratios, but place the control outside
+            // the clipped viewport in the dialog's existing right gutter.
+            parent: body
+            x: body.hostWindow.snapPx(body.width + body.rightGutter - width - 4)
+            y: nativeViewport.y
+            height: nativeViewport.height
             hostWindow: body.hostWindow
             policy: ScrollBar.AsNeeded
-            visible: nativeViewport.contentHeight > nativeViewport.height + 0.5 / body.hostWindow.dpr
+            visible: nativeViewport.visible && nativeViewport.contentHeight > nativeViewport.height + 0.5 / body.hostWindow.dpr
         }
         ScrollBar.horizontal: F4ScrollBar {
             objectName: "nativeSettingsHorizontalScrollBar"

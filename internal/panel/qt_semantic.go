@@ -28,19 +28,20 @@ import (
 
 func (pf *PanelsFrame) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 	shell := extui.ShellModel{
-		ID:             vtui.SemanticID(pf),
-		Title:          strings.TrimSpace(pf.GetTitle()),
-		Mode:           "panels",
-		ActivePanel:    pf.ActiveIdx,
-		ShowPanels:     pf.ShowPanels,
-		ShowLeftPanel:  pf.ShowLeftPanel,
-		ShowRightPanel: pf.ShowRightPanel,
-		Wide:           pf.Wide,
-		WidePanel:      pf.WidePanel,
-		PanelLayout:    pf.semanticPanelLayoutModel(ctx),
-		ShowKeyBar:     pf.ShowKeyBar,
-		TerminalBusy:   pf.IsPtyBusy(),
-		TerminalActive: !pf.ShowPanels,
+		HidePanelPathBar: config.App.HidePanelPathBar,
+		ID:               vtui.SemanticID(pf),
+		Title:            strings.TrimSpace(pf.GetTitle()),
+		Mode:             "panels",
+		ActivePanel:      pf.ActiveIdx,
+		ShowPanels:       pf.ShowPanels,
+		ShowLeftPanel:    pf.ShowLeftPanel,
+		ShowRightPanel:   pf.ShowRightPanel,
+		Wide:             pf.Wide,
+		WidePanel:        pf.WidePanel,
+		PanelLayout:      pf.semanticPanelLayoutModel(ctx),
+		ShowKeyBar:       pf.ShowKeyBar,
+		TerminalBusy:     pf.IsPtyBusy(),
+		TerminalActive:   !pf.ShowPanels,
 	}
 	if !pf.ShowPanels {
 		shell.Mode = "terminal"
@@ -67,8 +68,7 @@ func (pf *PanelsFrame) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 	}
 
 	if pf.CmdLine != nil {
-		shell.CommandLine = pf.CmdLine.SemanticModel(ctx)
-		shell.CommandLine.OwnsNavigation = pf.SearchFirstMode() && pf.CommandLineFocused
+		shell.CommandLine = pf.commandLineSemanticModel(ctx)
 	}
 	if pf.TermView != nil {
 		shell.Terminal = pf.TermView.SemanticModelWithBottomOverlay(
@@ -243,6 +243,8 @@ func (pf *PanelsFrame) HandleSemanticAction(action map[string]any) bool {
 		return false
 	}
 	switch semantic.String(action["action"]) {
+	case "panel.setSplit":
+		return pf.setSemanticSplit(action)
 	case "commandLine.focus":
 		if pf.Closed || pf.CmdLine == nil || !pf.CmdLine.IsVisible() {
 			return false
@@ -742,13 +744,42 @@ func (fp *FileSystemPanel) applySemanticSelection(action map[string]any) bool {
 	}
 	wanted := make(map[int]struct{}, len(entryIDs))
 	sourceKind, _ := fp.semanticSourceInfo()
-	byID := make(map[string]int, len(fp.Entries))
-	for idx, entry := range fp.Entries {
-		id, _ := fp.semanticEntryMetadata(entry, sourceKind)
-		byID[id] = idx
+	// Current clients include source indices for sparse transactions. Validate
+	// each hint against the stable identity instead of hashing the directory.
+	// Older clients retain the ID-only fallback, built lazily once per action.
+	var byID map[string]int
+	resolve := func(id string, rawIndex any) (int, bool) {
+		if id == "" {
+			return 0, false
+		}
+		if rawIndex != nil {
+			index := semantic.Int(rawIndex)
+			if index < 0 || index >= len(fp.Entries) || fp.Entries[index] == nil {
+				return 0, false
+			}
+			actualID, _ := fp.semanticEntryMetadata(fp.Entries[index], sourceKind)
+			return index, actualID == id
+		}
+		if byID == nil {
+			if cache := fp.semanticStaticCache; cache != nil && cache.catalogRevision == fp.catalogRevision && len(cache.entries) == len(fp.Entries) {
+				byID = cache.entryIndexByID
+			} else {
+				byID = make(map[string]int, len(fp.Entries))
+				for idx, entry := range fp.Entries {
+					if entry == nil {
+						continue
+					}
+					entryID, _ := fp.semanticEntryMetadata(entry, sourceKind)
+					byID[entryID] = idx
+				}
+			}
+		}
+		index, found := byID[id]
+		return index, found
 	}
+
 	for _, id := range entryIDs {
-		idx, ok := byID[id]
+		idx, ok := resolve(id, nil)
 		if !ok {
 			return false
 		}
@@ -770,7 +801,7 @@ func (fp *FileSystemPanel) applySemanticSelection(action map[string]any) bool {
 		for _, change := range changes {
 			id := semantic.String(change["entryId"])
 			selected, hasSelected := change["selected"]
-			idx, found := byID[id]
+			idx, found := resolve(id, change["index"])
 			if id == "" || !hasSelected || !found {
 				return false
 			}
@@ -782,7 +813,7 @@ func (fp *FileSystemPanel) applySemanticSelection(action map[string]any) bool {
 	hasCursor := false
 	if cursorID := semantic.String(action["cursorEntryId"]); cursorID != "" {
 		var found bool
-		cursorIndex, found = byID[cursorID]
+		cursorIndex, found = resolve(cursorID, action["cursorIndex"])
 		if !found {
 			return false
 		}
