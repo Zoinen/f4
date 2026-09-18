@@ -664,7 +664,18 @@ func afcVFSItem(name string, info afcproto.FileInfo) vfs.VFSItem {
 	} else if info.IsSymlink() {
 		modeText = "lrwxrwxrwx"
 	}
+	known := vfs.MetadataExplicit | vfs.MetadataHidden
+	if info.Values["st_mode"] != "" || info.Mode != 0 {
+		known |= vfs.MetadataPermissions | vfs.MetadataExecutable
+	}
+	if !info.ModTime.IsZero() {
+		known |= vfs.MetadataMTime
+	}
+	if !info.BirthTime.IsZero() {
+		known |= vfs.MetadataCTime
+	}
 	return vfs.VFSItem{
+		KnownMetadata: known, SizeKnown: info.Values["st_size"] != "" || info.Size != 0, CTime: info.BirthTime,
 		Name: name, Size: info.Size, IsDir: isDir, MTime: info.ModTime, Mode: modeText,
 		IsExecutable: info.Mode&0111 != 0, IsHidden: strings.HasPrefix(name, "."),
 		IsSymlink: info.IsSymlink(), UnixMode: info.Mode,

@@ -68,6 +68,9 @@ SyncPanelLoad|panels|Directory loading|Wait for complete directory listing|Repla
 InfoPanelCPUGPU|panels|Information panels|Show CPU and GPU information|Include locally collected CPU and GPU sections when the information provider does not supply authoritative information.||live
 InfoPanelBytes|panels|Information panels|Show sizes in bytes|Display raw bytes instead of human-readable sizes in information and quick-view panels.||live
 NavigationMode|panels|Typing and focus|Panel navigation|Classic types into the command line. Vim adds j/k and double dd/cc/mm actions. Search-first separates filename-search and command focus.|0:Classic;1:Vim;2:Search first|live
+PanelGroupSmallMiB|panels|Grouping|Small group limit (MiB)|Inclusive upper size bound for Small. The three group limits must be positive and strictly increasing.||live
+PanelGroupMediumMiB|panels|Grouping|Medium group limit (MiB)|Inclusive upper size bound for Medium. Applies to logical size and size on disk.||live
+PanelGroupLargeMiB|panels|Grouping|Large group limit (MiB)|Inclusive upper size bound for Large. Larger files belong to Extra large.||live
 PanelAutoFilter|panels|Typing and focus|Autofilter instead of quick search|Typing a name in a panel hides the rows that do not match instead of moving the cursor to the first match. Esc or Enter brings the hidden rows back.||live
 SearchCommandStayFocused|panels|Typing and focus|Keep command input focused|In Search-first mode, keep command entry focused after executing a command rather than returning to the panel.||live
 CommandLineAutoComplete|terminal|Path suggestions|Enable filesystem suggestions|Enable filesystem path suggestions in the command line and path-enabled dialog fields.||live

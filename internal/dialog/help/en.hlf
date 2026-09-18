@@ -12,6 +12,8 @@ f4 — efficient and cozy file manager in go
 ~Command line~CmdLine@
 ~View README.md~README@
 
+  ~Group by~@PanelGrouping@
+
 @VisRen
 $Visual File Renamer (VisRen)
 
@@ -907,3 +909,22 @@ Paths come before the switches, or after a "--" separator.
 When f4 already runs in the background (Unix), the files named on the
 command line open in that session, and relative names mean the directory
 the command was typed in.
+
+@PanelGrouping
+$ #Group by#
+ F9 → Left/Right → Group by selects grouping independently of sorting.
+ Sort modes also links to this menu. No default shortcut is assigned.
+
+ Group by name, extension, size, size on disk, modification/access/creation or
+ metadata-change time, owner, permissions, attributes, VFS mode, object kind,
+ hidden or executable status. Sorting continues to work inside each group.
+ Headings scroll with files but never receive focus or selection.
+
+ Sizes: Small ≤5 MiB, Medium ≤10 MiB, Large ≤100 MiB, then Extra large.
+ Change these increasing limits in Settings Center → Panels → Grouping.
+ Dates: future days, today, yesterday, two days ago, then month and year.
+ Missing metadata stays in No data. Folder size is unknown until calculated.
+
+ Folders separately keeps a first Folders group. Turn it off to include folders
+ in ordinary groups, before files. Reverse group order affects ordinary groups
+ only: the parent row, separate folders and No data keep their positions.

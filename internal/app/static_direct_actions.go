@@ -221,6 +221,16 @@ func actionEditorGoTo() bool {
 
 func init() {
 	for _, side := range fixedPanelSideActionSpecs {
+		registerAction(action.Action{Name: "Panel." + side.id + ".GroupMenu", Area: "Shell", Label: "Group by...", LabelKey: "Group.Menu", Description: "Show panel grouping modes", DescKey: "Group.Menu.Desc", MenuPath: side.menuPath, HideFromMenu: true, Handler: func() bool {
+			_, fp, ok := fixedRegularPanel(side.index)
+			if ok {
+				fp.ShowGroupMenu()
+			}
+			return ok
+		}})
+	}
+
+	for _, side := range fixedPanelSideActionSpecs {
 		side := side
 		for _, view := range fixedPanelViewActionSpecs {
 			view := view

@@ -65,6 +65,11 @@ func (settingsHost) ApplyRuntime(before config.F4Config, changed []string) {
 					}
 					pf.ResizeConsole(pf.LastW, pf.LastH)
 					pf.RefreshAll()
+					for _, p := range pf.Panels {
+						if fp, ok := p.(*panel.FileSystemPanel); ok {
+							fp.SetGrouping(fp.GroupBy, fp.GroupReverse, fp.GroupFoldersSeparately)
+						}
+					}
 				}
 			}
 		}

@@ -2074,3 +2074,10 @@ SettingsCenter.Text.51aafa6b808c6073718374cbebb2dd08e3e7451e18cb25f1f7e994612729
 SettingsCenter.Text.13c46abe3e03c526b3a6345862e13b5368cd79ce28b359ce50c9ac54047cf8a6=Według typu pliku (Colorer)
 SettingsCenter.Text.5038545982e83d1bde3dd3abcb2d2c99a90ad1d80e6d3b40c0ed5d36d19e2025=Tylko szybki podgląd
 SettingsCenter.Text.d55ad82d4c8ee4402af14678871e97d843b89fea59b47b0530f61cf125475b99=We wszystkich przeglądarkach
+SettingsCenter.PanelGroupSmallMiB.Label=Limit Small (MiB)
+SettingsCenter.PanelGroupSmallMiB.Description=Górna granica włącznie. Dodatnie, ściśle rosnące limity dotyczą rozmiaru i rozmiaru na dysku.
+SettingsCenter.PanelGroupMediumMiB.Label=Limit Medium (MiB)
+SettingsCenter.PanelGroupMediumMiB.Description=Górna granica włącznie. Dodatnie, ściśle rosnące limity dotyczą rozmiaru i rozmiaru na dysku.
+SettingsCenter.PanelGroupLargeMiB.Label=Limit Large (MiB)
+SettingsCenter.PanelGroupLargeMiB.Description=Górna granica włącznie. Dodatnie, ściśle rosnące limity dotyczą rozmiaru i rozmiaru na dysku.
+SettingsCenter.Text.b3c6e63fa9679a23c1d76910f6fc574d71dcd6ffb6079b757a4a9d8c85398e86=Grupowanie

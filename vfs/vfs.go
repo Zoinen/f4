@@ -49,8 +49,9 @@ type HostAPI interface {
 
 // VFSItem represents a generic file or directory entry.
 type VFSItem struct {
-	Name string
-	Size int64
+	KnownMetadata MetadataFields
+	Name          string
+	Size          int64
 	// SizeKnown distinguishes a real zero-byte file from a remote object whose
 	// length is unavailable until Open/materialization. Non-zero Size is always
 	// treated as known for backwards compatibility with existing VFS plugins.

@@ -490,6 +490,9 @@ type F4Config struct {
 	PromptFormat             string
 	NavigationMode           PanelNavigationMode
 	PanelAutoFilter          bool // panel quick search hides non-matching rows instead of moving the cursor
+	PanelGroupSmallMiB       int
+	PanelGroupMediumMiB      int
+	PanelGroupLargeMiB       int
 	SearchCommandStayFocused bool
 	SyncPanelLoad            bool
 	SearchExactOnHit         bool // QuickSearch keeps only exact matches when at least one exists
@@ -681,6 +684,9 @@ var App = F4Config{
 	PromptFormat:             "$u@$n:$p$# ",
 	NavigationMode:           NavigationClassic,
 	PanelAutoFilter:          false,
+	PanelGroupSmallMiB:       5,
+	PanelGroupMediumMiB:      10,
+	PanelGroupLargeMiB:       100,
 	SearchCommandStayFocused: false,
 	SyncPanelLoad:            false,
 	SearchExactOnHit:         false,
@@ -921,6 +927,12 @@ func parseConfigInto(cfg *F4Config, merged *ini.File) {
 		cfg.NavigationMode = NavigationClassic
 	}
 	cfg.PanelAutoFilter = merged.GetString("Panel", "PanelAutoFilter", "0") == "1"
+	cfg.PanelGroupSmallMiB = parseGroupLimit(merged.GetString("Panel", "PanelGroupSmallMiB", "5"))
+	cfg.PanelGroupMediumMiB = parseGroupLimit(merged.GetString("Panel", "PanelGroupMediumMiB", "10"))
+	cfg.PanelGroupLargeMiB = parseGroupLimit(merged.GetString("Panel", "PanelGroupLargeMiB", "100"))
+	if !ValidPanelGroupLimits(cfg.PanelGroupSmallMiB, cfg.PanelGroupMediumMiB, cfg.PanelGroupLargeMiB) {
+		cfg.PanelGroupSmallMiB, cfg.PanelGroupMediumMiB, cfg.PanelGroupLargeMiB = 5, 10, 100
+	}
 	cfg.SearchCommandStayFocused = merged.GetString("Panel", "SearchCommandStayFocused", "0") == "1"
 	cfg.SyncPanelLoad = merged.GetString("Panel", "SyncPanelLoad", "0") == "1"
 	cfg.SearchExactOnHit = merged.GetString("Panel", "SearchExactOnHit", "0") == "1"
@@ -1230,6 +1242,7 @@ func SerializeSettingsConfig(cfg F4Config) []byte {
 	fmt.Fprintf(&sb, "PromptFormat = %s\n", cfg.PromptFormat)
 	fmt.Fprintf(&sb, "NavigationMode = %s\n", cfg.NavigationMode.String())
 	fmt.Fprintf(&sb, "PanelAutoFilter = %d\n", map[bool]int{true: 1, false: 0}[cfg.PanelAutoFilter])
+	fmt.Fprintf(&sb, "PanelGroupSmallMiB = %d\nPanelGroupMediumMiB = %d\nPanelGroupLargeMiB = %d\n", cfg.PanelGroupSmallMiB, cfg.PanelGroupMediumMiB, cfg.PanelGroupLargeMiB)
 	fmt.Fprintf(&sb, "SearchCommandStayFocused = %d\n", map[bool]int{true: 1, false: 0}[cfg.SearchCommandStayFocused])
 	// Keep the legacy key synchronized for older f4 versions and shared configs.
 	fmt.Fprintf(&sb, "VimHotkeys = %d\n", map[bool]int{true: 1, false: 0}[cfg.NavigationMode == NavigationVim])

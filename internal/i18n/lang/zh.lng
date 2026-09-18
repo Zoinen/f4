@@ -1992,3 +1992,10 @@ SettingsCenter.Text.51aafa6b808c6073718374cbebb2dd08e3e7451e18cb25f1f7e994612729
 SettingsCenter.Text.13c46abe3e03c526b3a6345862e13b5368cd79ce28b359ce50c9ac54047cf8a6=按文件类型 (Colorer)
 SettingsCenter.Text.5038545982e83d1bde3dd3abcb2d2c99a90ad1d80e6d3b40c0ed5d36d19e2025=仅快速查看
 SettingsCenter.Text.d55ad82d4c8ee4402af14678871e97d843b89fea59b47b0530f61cf125475b99=所有查看器
+SettingsCenter.PanelGroupSmallMiB.Label=Small 上限 (MiB)
+SettingsCenter.PanelGroupSmallMiB.Description=包含上限。必须为严格递增的正数，同时适用于大小和占用磁盘空间。
+SettingsCenter.PanelGroupMediumMiB.Label=Medium 上限 (MiB)
+SettingsCenter.PanelGroupMediumMiB.Description=包含上限。必须为严格递增的正数，同时适用于大小和占用磁盘空间。
+SettingsCenter.PanelGroupLargeMiB.Label=Large 上限 (MiB)
+SettingsCenter.PanelGroupLargeMiB.Description=包含上限。必须为严格递增的正数，同时适用于大小和占用磁盘空间。
+SettingsCenter.Text.b3c6e63fa9679a23c1d76910f6fc574d71dcd6ffb6079b757a4a9d8c85398e86=分组

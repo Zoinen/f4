@@ -598,11 +598,14 @@ func actionSortMenuForPanel(pf *panel.PanelsFrame, fsp *panel.FileSystemPanel) {
 		Shortcut: keymap.MenuShortcutsForAction("Shell", "Panel.SortUseGroups"),
 	})
 
+	menu.AddItem(vtui.MenuItem{Text: i18n.Msg("Group.Menu")})
 	menu.SetSelectPos(selected)
 	menu.OnAction = func(idx int) {
 		switch {
 		case idx >= 0 && idx < len(entries):
 			fsp.SetSortMode(entries[idx].mode)
+		case idx == len(entries)+1:
+			fsp.ShowGroupMenu()
 		case idx == len(entries):
 			fsp.ToggleSortGroups()
 		default:
@@ -612,7 +615,7 @@ func actionSortMenuForPanel(pf *panel.PanelsFrame, fsp *panel.FileSystemPanel) {
 		vtui.FrameManager.Redraw()
 	}
 
-	w, h := 36, len(entries)+3
+	w, h := 36, len(entries)+4
 	panelX1, panelY1, panelX2, panelY2 := fsp.GetPosition()
 	panelW := panelX2 - panelX1 + 1
 	panelH := panelY2 - panelY1 + 1
@@ -2068,7 +2071,7 @@ func actionCalcDirSize(pf *panel.PanelsFrame, fsp *panel.FileSystemPanel, idx in
 			if ctx.Err() == nil {
 				entry.Size = totalStats.Bytes
 				entry.SizeCalculated = true
-				if fsp.SortMode == panel.SortSize {
+				if fsp.SortMode == panel.SortSize || fsp.GroupBy == panel.GroupSize {
 					fsp.SortEntries()
 					// Keep cursor on the same item after re-sorting
 					for i, e := range fsp.Entries {

@@ -1589,6 +1589,18 @@ func (c *settingsCenter) navigate(category, collection, record string, create bo
 			}
 		}
 	}
+	if collection == "" && record != "" {
+		for _, row := range c.page.rows {
+			if row.control != nil && row.control.GetId() == "setting:"+record {
+				c.page.scroll = row.y
+				c.page.positionRows()
+				c.SetFocusedItem(c.page)
+				c.page.SetFocusedItem(row.control)
+				c.describe(row)
+				break
+			}
+		}
+	}
 	if collection != "" {
 		for _, session := range c.sessions {
 			for _, col := range session.catalog.Collections {

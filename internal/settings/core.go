@@ -275,6 +275,16 @@ func (p coreSettingsProvider) Begin(context.Context) (*f4settings.Draft, error) 
 				errors[f.ID] = settingsError("this setting changed outside Settings Center; reopen to load its current value")
 			}
 		}
+		if d.Dirty("PanelGroupSmallMiB") || d.Dirty("PanelGroupMediumMiB") || d.Dirty("PanelGroupLargeMiB") {
+			small, e1 := strconv.Atoi(d.Values["PanelGroupSmallMiB"])
+			medium, e2 := strconv.Atoi(d.Values["PanelGroupMediumMiB"])
+			large, e3 := strconv.Atoi(d.Values["PanelGroupLargeMiB"])
+			if e1 != nil || e2 != nil || e3 != nil || !config.ValidPanelGroupLimits(small, medium, large) {
+				for _, id := range []string{"PanelGroupSmallMiB", "PanelGroupMediumMiB", "PanelGroupLargeMiB"} {
+					errors[id] = fmt.Errorf("%s", i18n.Msg("Group.InvalidLimits"))
+				}
+			}
+		}
 		return errors
 	}
 	d.CommitFunc = func(ctx context.Context, d *f4settings.Draft) f4settings.Result {

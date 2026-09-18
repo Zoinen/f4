@@ -1256,9 +1256,9 @@ func TestPanelsFrame_CtrlF12SortMenu(t *testing.T) {
 	if !ok {
 		t.Fatalf("Ctrl+F12 top frame = %T, want *vtui.VMenu", vtui.FrameManager.GetTopFrame())
 	}
-	// Five sort modes plus the sort-group toggle on the last row.
-	if len(menu.Items) != 6 {
-		t.Fatalf("sort menu has %d items, want 6", len(menu.Items))
+	// Five sort modes, the legacy sort-group toggle and the grouping menu.
+	if len(menu.Items) != 7 {
+		t.Fatalf("sort menu has %d items, want 7", len(menu.Items))
 	}
 	if !strings.Contains(menu.Items[5].Text, i18n.Msg("Menu.SortUseGroups")) {
 		t.Fatalf("last sort menu row = %q, want the sort-group toggle", menu.Items[5].Text)

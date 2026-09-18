@@ -38,25 +38,35 @@ type ShellModel struct {
 	Terminal       *TerminalModel
 }
 
+type PanelGroupModel struct {
+	Key, Title        string
+	StartIndex, Count int
+}
+
 type PanelModel struct {
-	ID            string
-	Side          int
-	Active        bool
-	Path          string
-	Title         string
-	ViewMode      string
-	SortMode      string
-	SortReverse   bool
-	Cursor        int
-	Top           int
-	Loading       bool
-	FastFind      bool
-	FastFindText  string
-	SelectedCount int
-	SelectedSize  int64
-	TotalCount    int
-	TotalSize     int64
-	Entries       []FileEntryModel
+	GroupBy                string
+	GroupReverse           bool
+	GroupFoldersSeparately bool
+	DisplayTop             int
+	Groups                 []PanelGroupModel
+	ID                     string
+	Side                   int
+	Active                 bool
+	Path                   string
+	Title                  string
+	ViewMode               string
+	SortMode               string
+	SortReverse            bool
+	Cursor                 int
+	Top                    int
+	Loading                bool
+	FastFind               bool
+	FastFindText           string
+	SelectedCount          int
+	SelectedSize           int64
+	TotalCount             int
+	TotalSize              int64
+	Entries                []FileEntryModel
 }
 
 type FileEntryModel struct {
@@ -279,7 +289,13 @@ func (s ShellModel) ToMap() M {
 }
 
 func (p PanelModel) ToMap() M {
+	groups := make([]M, len(p.Groups))
+	for i, g := range p.Groups {
+		groups[i] = M{"key": g.Key, "title": g.Title, "startIndex": g.StartIndex, "count": g.Count}
+	}
 	return M{
+		"groupBy": p.GroupBy, "groupReverse": p.GroupReverse, "groupFoldersSeparately": p.GroupFoldersSeparately,
+		"displayTop": p.DisplayTop, "groups": groups,
 		"id":            p.ID,
 		"kind":          "filePanel",
 		"side":          p.Side,

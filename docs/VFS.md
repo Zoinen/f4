@@ -30,3 +30,20 @@ To support features like word wrapping and fast navigation in the Editor, `f4` p
 
 ## Why this matters for FISH+
 This architecture was specifically chosen to support the **FISH+** protocol (see [FISH+.md](FISH+.md)). By allowing operations to be partial, cancellable, and asynchronous, we can offload heavy computations (like searching or indexing) to the remote server while keeping the local `f4` instance lightweight and fast.
+
+## Metadata availability and panel grouping
+
+`VFSItem.KnownMetadata` is an additive `MetadataFields` bit mask. Providers should
+set `MetadataExplicit` plus bits for values actually returned by their listing.
+An absent bit is then authoritative even if a compatibility field contains a
+synthetic value. Bits cover physical size, Unix permissions, UID/GID, Windows
+attributes, hidden/executable status and MTime/ATime/CTime. Logical size uses
+`SizeKnown`. Known UID/GID 0, permissions 0000 and physical size 0 remain valid.
+Without `MetadataExplicit`, legacy nonzero values are inferred conservatively;
+ambiguous zero values remain unknown. No link-count field is defined.
+
+The host groups the metadata already in `ReadDir` chunks. It never issues a Stat
+per file for grouping. Native listings enrich from the FileInfo already obtained;
+on native Windows physical allocation size is unavailable from this listing.
+Providers must not mark substitute access/creation dates as real. CTime means
+creation on some filesystems and metadata change on others.

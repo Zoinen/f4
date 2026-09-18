@@ -583,6 +583,7 @@ func (pf *PanelsFrame) LeftMenu() vtui.MenuBarItem {
 		{Text: "&" + i18n.Msg("Menu.SortSize"), Command: appcmd.CmLeftSortSize},
 		{Text: "&" + i18n.Msg("Menu.SortUnsorted"), Command: appcmd.CmLeftSortUnsorted},
 		{Text: "&" + i18n.Msg("Menu.SortUseGroups"), Command: appcmd.CmLeftSortGroups},
+		{Text: i18n.Msg("Group.Menu"), Command: appcmd.CmLeftGroupMenu},
 		{Separator: true},
 		{Text: i18n.Msg("Menu.Left.DriveMenu"), Command: appcmd.CmLeftDriveMenu, Shortcut: "Alt+F1"},
 		{Separator: true},
@@ -618,6 +619,7 @@ func (pf *PanelsFrame) RightMenu() vtui.MenuBarItem {
 		{Text: "&" + i18n.Msg("Menu.SortSize"), Command: appcmd.CmRightSortSize},
 		{Text: "&" + i18n.Msg("Menu.SortUnsorted"), Command: appcmd.CmRightSortUnsorted},
 		{Text: "&" + i18n.Msg("Menu.SortUseGroups"), Command: appcmd.CmRightSortGroups},
+		{Text: i18n.Msg("Group.Menu"), Command: appcmd.CmRightGroupMenu},
 		{Separator: true},
 		{Text: i18n.Msg("Menu.Right.DriveMenu"), Command: appcmd.CmRightDriveMenu, Shortcut: "Alt+F2"},
 	}}
@@ -716,12 +718,14 @@ var CommandToActionName = map[int]string{
 	appcmd.CmLeftSortSize:          "Panel.Left.SortBySize",
 	appcmd.CmLeftSortUnsorted:      "Panel.Left.SortUnsorted",
 	appcmd.CmLeftSortGroups:        "Panel.Left.SortUseGroups",
+	appcmd.CmLeftGroupMenu:         "Panel.Left.GroupMenu",
 	appcmd.CmRightSortName:         "Panel.Right.SortByName",
 	appcmd.CmRightSortExt:          "Panel.Right.SortByExt",
 	appcmd.CmRightSortTime:         "Panel.Right.SortByTime",
 	appcmd.CmRightSortSize:         "Panel.Right.SortBySize",
 	appcmd.CmRightSortUnsorted:     "Panel.Right.SortUnsorted",
 	appcmd.CmRightSortGroups:       "Panel.Right.SortUseGroups",
+	appcmd.CmRightGroupMenu:        "Panel.Right.GroupMenu",
 	appcmd.CmLeftAIContext:         "AI.Left.ViewContext",
 	appcmd.CmLeftAIChat:            "AI.Left.ViewChat",
 	appcmd.CmLeftAIOut:             "AI.Left.ViewOut",
@@ -774,12 +778,14 @@ var commandShortcutActionName = map[int]string{
 	appcmd.CmLeftSortSize:      "Panel.SortBySize",
 	appcmd.CmLeftSortUnsorted:  "Panel.SortUnsorted",
 	appcmd.CmLeftSortGroups:    "Panel.SortUseGroups",
+	appcmd.CmLeftGroupMenu:     "Panel.GroupMenu",
 	appcmd.CmRightSortName:     "Panel.SortByName",
 	appcmd.CmRightSortExt:      "Panel.SortByExt",
 	appcmd.CmRightSortTime:     "Panel.SortByTime",
 	appcmd.CmRightSortSize:     "Panel.SortBySize",
 	appcmd.CmRightSortUnsorted: "Panel.SortUnsorted",
 	appcmd.CmRightSortGroups:   "Panel.SortUseGroups",
+	appcmd.CmRightGroupMenu:    "Panel.GroupMenu",
 }
 
 func (pf *PanelsFrame) UpdateMenuCheckmarks() {
@@ -1801,6 +1807,15 @@ func (pf *PanelsFrame) Show(scr *vtui.ScreenBuf) {
 	if pf.ShowPanels && now.Sub(pf.LastAutoRefresh) > 2*time.Second {
 		pf.LastAutoRefresh = now
 		for _, p := range pf.Panels {
+			if fsp, ok := p.(*FileSystemPanel); ok && fsp.groupingNeedsRefresh(now) {
+				frames := vtui.FrameManager
+				frames.PostTask(func() {
+					if !pf.Closed {
+						fsp.RefreshGrouping(time.Now())
+						frames.Redraw()
+					}
+				})
+			}
 			if fsp, ok := p.(*FileSystemPanel); ok && !fsp.IsLoading && !fsp.isCheckingRefresh {
 				fsp.isCheckingRefresh = true
 				vfsPath := fsp.Vfs.GetPath()
@@ -3262,6 +3277,20 @@ func (pf *PanelsFrame) ProcessMouse(e *vtinput.InputEvent) bool {
 		return true
 	}
 
+	// A heading must not activate a panel or synthesize Enter. Captures still
+	// process releases below so dragging cannot remain armed.
+	if e.WheelDirection == 0 && e.ButtonState != 0 && e.KeyDown &&
+		pf.PanelMouseCapture == nil && !pf.middleMouseDown && pf.hitAltPanel(mx, my) < 0 {
+		for i, p := range pf.Panels {
+			if pf.Wide && i != pf.WidePanel || !pf.Wide && ((i == 0 && !pf.ShowLeftPanel) || (i == 1 && !pf.ShowRightPanel)) {
+				continue
+			}
+			if fp, ok := p.(*FileSystemPanel); ok && fp.groupHeadingAt(mx, my) {
+				return true
+			}
+		}
+	}
+
 	// A middle-button gesture that already emitted Enter owns its remaining
 	// motion/release events and must not fall through to panels or scrollbars.
 	if pf.middleMouseDown && e.WheelDirection == 0 {
@@ -3669,6 +3698,15 @@ func (pf *PanelsFrame) HandleCommand(cmd int, args any) bool {
 		}
 		return true
 
+	case appcmd.CmLeftGroupMenu, appcmd.CmRightGroupMenu:
+		index := 0
+		if cmd == appcmd.CmRightGroupMenu {
+			index = 1
+		}
+		if fsp, ok := pf.Panels[index].(*FileSystemPanel); ok {
+			fsp.ShowGroupMenu()
+		}
+		return true
 	case appcmd.CmLeftSortName:
 		if fsp, ok := pf.Panels[0].(*FileSystemPanel); ok {
 			fsp.SetSortMode(SortName)
@@ -4824,6 +4862,9 @@ func (pf *PanelsFrame) Clone() *PanelsFrame {
 			cloneFsp.CursorIdx = fsp.CursorIdx
 			cloneFsp.SortMode = fsp.SortMode
 			cloneFsp.SortReverse = fsp.SortReverse
+			cloneFsp.UseSortGroups = fsp.UseSortGroups
+			cloneFsp.GroupBy, cloneFsp.GroupReverse, cloneFsp.GroupFoldersSeparately = fsp.GroupBy, fsp.GroupReverse, fsp.GroupFoldersSeparately
+			cloneFsp.nextSourceOrder = fsp.nextSourceOrder
 
 			cloneFsp.DirCache = make(map[dirCacheKey]DirCacheEntry)
 			for k, v := range fsp.DirCache {
@@ -4846,11 +4887,10 @@ func (pf *PanelsFrame) Clone() *PanelsFrame {
 			// Copy entries immediately so the visual state is valid before async reload
 			cloneFsp.Entries = make([]*FileEntry, len(fsp.Entries))
 			for j, e := range fsp.Entries {
-				cloneFsp.Entries[j] = &FileEntry{
-					VFSItem:  e.VFSItem,
-					Selected: e.Selected,
-				}
+				copyEntry := *e
+				cloneFsp.Entries[j] = &copyEntry
 			}
+			cloneFsp.SortEntries()
 			cloneFsp.Refresh() // Populate table rows from copied entries
 
 			cloneFsp.readDirectoryEx(true) // ВАЖНО: не удалять скопированные записи при первом чтении

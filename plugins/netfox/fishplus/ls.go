@@ -84,7 +84,7 @@ func parseLsEntry(line, variant string, keepPath bool) (Entry, error) {
 	}
 
 	return Entry{
-		Name:  name,
+		SyntheticTimes: true, Name: name,
 		Size:  size,
 		Mode:  mode,
 		MTime: when,

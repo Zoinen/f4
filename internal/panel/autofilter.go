@@ -77,6 +77,7 @@ func (fp *FileSystemPanel) autoFilterWanted() bool {
 // string: it takes the complete list over when the filter starts, gives it
 // back when the filter ends, and otherwise rebuilds the matching subset.
 func (fp *FileSystemPanel) refilterEntries() {
+	defer fp.rebuildDisplayRows()
 	switch want := fp.autoFilterWanted(); {
 	case want && !fp.autoFilterOn:
 		fp.autoFilterOn = true

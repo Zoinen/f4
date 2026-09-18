@@ -729,7 +729,13 @@ func (v *FishVFS) entryToItem(e fishplus.Entry) vfs.VFSItem {
 	if e.IsSymlink() && e.TargetIsDir {
 		isDir = true
 	}
+	known := vfs.MetadataExplicit | vfs.MetadataPermissions | vfs.MetadataUID | vfs.MetadataGID | vfs.MetadataHidden | vfs.MetadataExecutable | vfs.MetadataMTime
+	if !e.SyntheticTimes {
+		known |= vfs.MetadataATime | vfs.MetadataCTime
+	}
 	return vfs.VFSItem{
+		KnownMetadata: known, SizeKnown: true,
+		CTime:        e.CTime,
 		Name:         e.Name,
 		Size:         e.Size,
 		IsDir:        isDir,
@@ -920,23 +926,10 @@ func (v *FishVFS) FindFiles(ctx context.Context, dir string, q vfs.FindQuery) ([
 	}
 	out := make([]vfs.FoundEntry, 0, len(entries))
 	for _, e := range entries {
-		name := path.Base(e.Name)
-		out = append(out, vfs.FoundEntry{
-			Path: e.Name,
-			Item: vfs.VFSItem{
-				Name:         name,
-				Size:         e.Size,
-				IsDir:        e.IsDir(),
-				MTime:        e.MTime,
-				ATime:        e.ATime,
-				IsExecutable: e.IsExecutable(),
-				IsHidden:     strings.HasPrefix(name, "."),
-				IsSymlink:    e.IsSymlink(),
-				UnixMode:     e.Mode,
-				Uid:          e.Uid,
-				Gid:          e.Gid,
-			},
-		})
+		item := v.entryToItem(e)
+		item.Name = path.Base(e.Name)
+		item.IsHidden = strings.HasPrefix(item.Name, ".")
+		out = append(out, vfs.FoundEntry{Path: e.Name, Item: item})
 	}
 	return out, nil
 }

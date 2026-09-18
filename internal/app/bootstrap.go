@@ -1238,6 +1238,12 @@ func LoadSession() {
 	_, _ = fmt.Sscanf(ini.GetString("Panel/Left", "SortMode", "0"), "%d", &panel.LastLeftSortMode)
 	panel.LastLeftSortRev = ini.GetString("Panel/Left", "SortReverse", "0") == "1"
 	panel.LastLeftSortGroups = ini.GetString("Panel/Left", "UseSortGroups", "0") == "1"
+	if _, err := fmt.Sscanf(ini.GetString("Panel/Left", "GroupBy", "0"), "%d", &panel.LastLeftGroupBy); err != nil {
+		panel.LastLeftGroupBy = panel.GroupNone
+	}
+	panel.LastLeftGroupBy = panel.ValidGroupMode(panel.LastLeftGroupBy)
+	panel.LastLeftGroupReverse = ini.GetString("Panel/Left", "GroupReverse", "0") == "1"
+	panel.LastLeftGroupFoldersSeparately = ini.GetString("Panel/Left", "GroupFoldersSeparately", "1") == "1"
 
 	// Восстанавливаем состояние правой панели
 	panel.LastRightPath = ini.GetString("Panel/Right", "Folder", "")
@@ -1246,6 +1252,12 @@ func LoadSession() {
 	_, _ = fmt.Sscanf(ini.GetString("Panel/Right", "SortMode", "0"), "%d", &panel.LastRightSortMode)
 	panel.LastRightSortRev = ini.GetString("Panel/Right", "SortReverse", "0") == "1"
 	panel.LastRightSortGroups = ini.GetString("Panel/Right", "UseSortGroups", "0") == "1"
+	if _, err := fmt.Sscanf(ini.GetString("Panel/Right", "GroupBy", "0"), "%d", &panel.LastRightGroupBy); err != nil {
+		panel.LastRightGroupBy = panel.GroupNone
+	}
+	panel.LastRightGroupBy = panel.ValidGroupMode(panel.LastRightGroupBy)
+	panel.LastRightGroupReverse = ini.GetString("Panel/Right", "GroupReverse", "0") == "1"
+	panel.LastRightGroupFoldersSeparately = ini.GetString("Panel/Right", "GroupFoldersSeparately", "1") == "1"
 
 	// Восстанавливаем глобальное состояние сессии
 	activeStr := ini.GetString("Session", "ActivePanel", "1")
@@ -1437,6 +1449,7 @@ func saveSessionFileError(path string, savePanelSettings, saveCurrentPanel bool)
 	fmt.Fprintf(&sb, "SortMode = %d\n", panel.LastLeftSortMode)
 	fmt.Fprintf(&sb, "SortReverse = %d\n", map[bool]int{true: 1, false: 0}[panel.LastLeftSortRev])
 	fmt.Fprintf(&sb, "UseSortGroups = %d\n", map[bool]int{true: 1, false: 0}[panel.LastLeftSortGroups])
+	fmt.Fprintf(&sb, "GroupBy = %d\nGroupReverse = %d\nGroupFoldersSeparately = %d\n", panel.LastLeftGroupBy, map[bool]int{true: 1}[panel.LastLeftGroupReverse], map[bool]int{true: 1}[panel.LastLeftGroupFoldersSeparately])
 
 	sb.WriteString("\n[Panel/Right]\n")
 	fmt.Fprintf(&sb, "Folder = %s\n", panel.LastRightPath)
@@ -1445,6 +1458,7 @@ func saveSessionFileError(path string, savePanelSettings, saveCurrentPanel bool)
 	fmt.Fprintf(&sb, "SortMode = %d\n", panel.LastRightSortMode)
 	fmt.Fprintf(&sb, "SortReverse = %d\n", map[bool]int{true: 1, false: 0}[panel.LastRightSortRev])
 	fmt.Fprintf(&sb, "UseSortGroups = %d\n", map[bool]int{true: 1, false: 0}[panel.LastRightSortGroups])
+	fmt.Fprintf(&sb, "GroupBy = %d\nGroupReverse = %d\nGroupFoldersSeparately = %d\n", panel.LastRightGroupBy, map[bool]int{true: 1}[panel.LastRightGroupReverse], map[bool]int{true: 1}[panel.LastRightGroupFoldersSeparately])
 	panel.WriteWorkspaceSessions(&sb, panel.LastWorkspaceSessions, panel.LastActiveWorkspace)
 
 	return config.WriteUserFileAtomically(path, []byte(sb.String()), 0600)

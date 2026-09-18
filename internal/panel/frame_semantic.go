@@ -168,7 +168,13 @@ func (fp *FileSystemPanel) SemanticPanelModel(ctx *vtui.SemanticContext, side in
 		})
 	}
 
+	groups := make([]extui.PanelGroupModel, len(fp.Groups()))
+	for i, g := range fp.Groups() {
+		groups[i] = extui.PanelGroupModel{Key: g.Key, Title: g.Title, StartIndex: g.StartIndex, Count: g.Count}
+	}
 	return extui.PanelModel{
+		GroupBy: GroupModes[ValidGroupMode(fp.GroupBy)].ID, GroupReverse: fp.GroupReverse, GroupFoldersSeparately: fp.GroupFoldersSeparately,
+		DisplayTop: fp.Table.TopPos, Groups: groups,
 		ID:            vtui.SemanticID(fp),
 		Side:          side,
 		Active:        active,
@@ -178,7 +184,7 @@ func (fp *FileSystemPanel) SemanticPanelModel(ctx *vtui.SemanticContext, side in
 		SortMode:      sortModeName(fp.SortMode),
 		SortReverse:   fp.SortReverse,
 		Cursor:        fp.GetCursorIndex(),
-		Top:           fp.Table.TopPos,
+		Top:           fp.FileTop(),
 		Loading:       fp.IsLoading,
 		FastFind:      fp.FastFindMode,
 		FastFindText:  fp.FastFindStr,

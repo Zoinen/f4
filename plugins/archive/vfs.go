@@ -569,6 +569,7 @@ func (v *ArchiveVFS) ReadDir(ctx context.Context, path string, onChunk func([]vf
 		}
 
 		items = append(items, vfs.VFSItem{
+			KnownMetadata: vfs.MetadataExplicit | vfs.MetadataHidden | vfs.MetadataMTime, SizeKnown: true,
 			Name:     name,
 			IsDir:    e.IsDir(),
 			Size:     info.Size(),
@@ -630,6 +631,7 @@ func (v *ArchiveVFS) Stat(ctx context.Context, path string) (vfs.VFSItem, error)
 	}
 
 	item := vfs.VFSItem{
+		KnownMetadata: vfs.MetadataExplicit | vfs.MetadataHidden | vfs.MetadataMTime, SizeKnown: true,
 		Name:     info.Name(),
 		IsDir:    info.IsDir(),
 		Size:     info.Size(),

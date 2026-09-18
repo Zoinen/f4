@@ -170,3 +170,15 @@ While `vtui` is keyboard-first, mouse interaction is designed to be consistent a
 *   **Wheel:** Scrolls the component under the cursor, regardless of focus.
 
 By adhering to these rules, we aim to build TUI applications that are powerful, efficient, and a pleasure to use for both novice and expert users.
+### Panel group headings
+
+Group by adds decorative `──── Title ────` rows with a centered title in the
+column-title color and lines in the panel column-separator color. The file
+model contains only files: cursor, marks and file operations never see headings.
+Keyboard movement skips them, and mouse clicks (including double and middle
+clicks) cannot focus or activate them. When the first visible group's heading
+scrolls out, it stays pinned at the start of the list until that group's last
+file scrolls out. The pinned row reserves a cell without obscuring files or the
+cursor. A one-row viewport prioritizes the file and does not pin a heading.
+Medium/Brief flow through file columns without repeating a heading at column
+boundaries. Detailed/Wide headings span the list.

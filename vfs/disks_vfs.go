@@ -88,7 +88,7 @@ func (v *DisksVFS) Stat(ctx context.Context, path string) (VFSItem, error) {
 	if err != nil {
 		return VFSItem{}, err
 	}
-	return VFSItem{Name: name, Size: size, SizeKnown: true, MTime: time.Now()}, nil
+	return VFSItem{KnownMetadata: MetadataExplicit, Name: name, Size: size, SizeKnown: true, MTime: time.Now()}, nil
 }
 
 func (v *DisksVFS) Open(ctx context.Context, path string) (ReadAtCloser, error) {

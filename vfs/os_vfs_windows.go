@@ -11,11 +11,21 @@ import (
 	"unicode/utf16"
 	"unsafe"
 
+	winescape "github.com/unxed/libwinescape/go"
 	"golang.org/x/sys/windows"
 )
 
 func fillPlatformTimes(item *VFSItem, info os.FileInfo) {
+	if stat, ok := info.Sys().(*winescape.Stat_t); ok {
+		item.KnownMetadata |= MetadataATime | MetadataCTime | MetadataUID | MetadataGID | MetadataPermissions
+		item.UnixMode = stat.Mode & 07777
+		item.Uid, item.Gid = int(stat.Uid), int(stat.Gid)
+		item.ATime = time.Unix(stat.Atim.Sec, stat.Atim.Nsec)
+		item.CTime = time.Unix(stat.Ctim.Sec, stat.Ctim.Nsec)
+	}
 	if stat, ok := info.Sys().(*syscall.Win32FileAttributeData); ok {
+		item.KnownMetadata &^= MetadataPermissions
+		item.KnownMetadata |= MetadataATime | MetadataCTime | MetadataWinAttrs
 		item.ATime = time.Unix(0, stat.LastAccessTime.Nanoseconds())
 		item.CTime = time.Unix(0, stat.CreationTime.Nanoseconds())
 		item.WinAttrs = stat.FileAttributes

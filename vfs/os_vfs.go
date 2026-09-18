@@ -193,15 +193,21 @@ func (v *OSVFS) ReadDir(ctx context.Context, path string, onChunk func([]VFSItem
 
 			entryPath := hostpath.Join(dirPath, e.Name())
 			item := VFSItem{
-				Name:         e.Name(),
-				Size:         size,
-				SizeKnown:    true,
-				IsDir:        isDir,
-				IsSymlink:    isSymlink,
-				ReparseTag:   readReparseTag(entryPath, info),
-				MTime:        mtime,
-				IsExecutable: isExec,
-				IsHidden:     isHidden(entryPath, e.Name(), info),
+				KnownMetadata: MetadataExplicit | MetadataHidden,
+				Name:          e.Name(),
+				Size:          size,
+				SizeKnown:     info != nil,
+				IsDir:         isDir,
+				IsSymlink:     isSymlink,
+				ReparseTag:    readReparseTag(entryPath, info),
+				MTime:         mtime,
+				IsExecutable:  isExec,
+				IsHidden:      isHidden(entryPath, e.Name(), info),
+			}
+			if info != nil {
+				item.UnixMode = uint32(info.Mode().Perm())
+				item.KnownMetadata |= MetadataPermissions | MetadataExecutable | MetadataMTime
+				fillPlatformTimes(&item, info)
 			}
 			// Cheap variant: on Unix stat.Blocks is already loaded
 			// alongside FileInfo, so filling PhysicalSize here is free.
@@ -249,16 +255,17 @@ func (v *OSVFS) Stat(ctx context.Context, path string) (VFSItem, error) {
 	}
 
 	item := VFSItem{
-		Name:         info.Name(),
-		Size:         info.Size(),
-		SizeKnown:    true,
-		IsDir:        info.IsDir(),
-		IsSymlink:    isSymlink,
-		ReparseTag:   readReparseTag(path, linkInfo),
-		MTime:        info.ModTime(),
-		UnixMode:     uint32(info.Mode().Perm()),
-		IsExecutable: info.Mode().Perm()&0111 != 0,
-		IsHidden:     isHidden(path, info.Name(), info),
+		KnownMetadata: MetadataExplicit | MetadataPermissions | MetadataExecutable | MetadataHidden | MetadataMTime,
+		Name:          info.Name(),
+		Size:          info.Size(),
+		SizeKnown:     true,
+		IsDir:         info.IsDir(),
+		IsSymlink:     isSymlink,
+		ReparseTag:    readReparseTag(path, linkInfo),
+		MTime:         info.ModTime(),
+		UnixMode:      uint32(info.Mode().Perm()),
+		IsExecutable:  info.Mode().Perm()&0111 != 0,
+		IsHidden:      isHidden(path, info.Name(), info),
 	}
 
 	// Platform specific time extraction
@@ -297,16 +304,17 @@ func (v *OSVFS) Lstat(ctx context.Context, path string) (VFSItem, error) {
 	}
 
 	item := VFSItem{
-		Name:         info.Name(),
-		Size:         info.Size(),
-		SizeKnown:    true,
-		IsDir:        isDir,
-		IsSymlink:    isSymlink,
-		ReparseTag:   readReparseTag(absPath, info),
-		MTime:        info.ModTime(),
-		UnixMode:     uint32(info.Mode().Perm()),
-		IsExecutable: info.Mode().Perm()&0111 != 0,
-		IsHidden:     isHidden(path, info.Name(), info),
+		KnownMetadata: MetadataExplicit | MetadataPermissions | MetadataExecutable | MetadataHidden | MetadataMTime,
+		Name:          info.Name(),
+		Size:          info.Size(),
+		SizeKnown:     true,
+		IsDir:         isDir,
+		IsSymlink:     isSymlink,
+		ReparseTag:    readReparseTag(absPath, info),
+		MTime:         info.ModTime(),
+		UnixMode:      uint32(info.Mode().Perm()),
+		IsExecutable:  info.Mode().Perm()&0111 != 0,
+		IsHidden:      isHidden(path, info.Name(), info),
 	}
 
 	fillPlatformTimes(&item, info)

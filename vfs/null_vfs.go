@@ -57,10 +57,10 @@ func (v *NullVFS) ReadDir(ctx context.Context, p string, onChunk func([]VFSItem)
 	var items []VFSItem
 	if p == "/" {
 		for name, size := range nullFiles {
-			items = append(items, VFSItem{Name: name, Size: size, IsDir: false, MTime: time.Now()})
+			items = append(items, VFSItem{KnownMetadata: MetadataExplicit, Name: name, Size: size, IsDir: false, MTime: time.Now()})
 		}
-		items = append(items, VFSItem{Name: "upload", IsDir: true, MTime: time.Now()})
-		items = append(items, VFSItem{Name: "scenarios", IsDir: true, MTime: time.Now()})
+		items = append(items, VFSItem{KnownMetadata: MetadataExplicit, Name: "upload", IsDir: true, MTime: time.Now()})
+		items = append(items, VFSItem{KnownMetadata: MetadataExplicit, Name: "scenarios", IsDir: true, MTime: time.Now()})
 	} else if p == "/scenarios" {
 		items = append(items, VFSItem{Name: "bandwidth", IsDir: true}, VFSItem{Name: "iops", IsDir: true})
 		items = append(items, VFSItem{Name: "deep", IsDir: true}, VFSItem{Name: "slow", IsDir: true}, VFSItem{Name: "fast", IsDir: true})
@@ -120,13 +120,13 @@ func (v *NullVFS) Stat(ctx context.Context, p string) (VFSItem, error) {
 	if p == "/" || p == "/upload" || p == "/scenarios" ||
 		p == "/scenarios/bandwidth" || p == "/scenarios/iops" ||
 		p == "/scenarios/slow" || p == "/scenarios/fast" {
-		return VFSItem{Name: base, IsDir: true, MTime: time.Now()}, nil
+		return VFSItem{KnownMetadata: MetadataExplicit, Name: base, IsDir: true, MTime: time.Now()}, nil
 	}
 
 	// 2. Scenario-specific logic (Scoped to /scenarios prefix)
 	if strings.HasPrefix(p, "/scenarios/") {
 		if strings.HasPrefix(p, "/scenarios/deep") && (base == "next_level" || base == "deep") {
-			return VFSItem{Name: base, IsDir: true, MTime: time.Now()}, nil
+			return VFSItem{KnownMetadata: MetadataExplicit, Name: base, IsDir: true, MTime: time.Now()}, nil
 		}
 		if p == "/scenarios/bandwidth/huge.bin" {
 			return VFSItem{Name: base, Size: nullFiles["huge.bin"], IsDir: false}, nil
@@ -144,16 +144,16 @@ func (v *NullVFS) Stat(ctx context.Context, p string) (VFSItem, error) {
 
 	// 3. Root static files
 	if size, ok := nullFiles[base]; ok && path.Dir(p) == "/" {
-		return VFSItem{Name: base, Size: size, IsDir: false, MTime: time.Now()}, nil
+		return VFSItem{KnownMetadata: MetadataExplicit, Name: base, Size: size, IsDir: false, MTime: time.Now()}, nil
 	}
 
 	// 4. Upload zone logic: allow recursive directory creation
 	if strings.HasPrefix(p, "/upload/") {
 		ext := path.Ext(p)
 		if ext == ".bin" || ext == ".txt" {
-			return VFSItem{Name: base, Size: 0, IsDir: false, MTime: time.Now()}, nil
+			return VFSItem{KnownMetadata: MetadataExplicit, Name: base, Size: 0, IsDir: false, MTime: time.Now()}, nil
 		}
-		return VFSItem{Name: base, IsDir: true, MTime: time.Now()}, nil
+		return VFSItem{KnownMetadata: MetadataExplicit, Name: base, IsDir: true, MTime: time.Now()}, nil
 	}
 
 	return VFSItem{}, os.ErrNotExist

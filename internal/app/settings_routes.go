@@ -13,9 +13,13 @@ import (
 
 // The old action names remain bindable and become category deep links.
 var settingsDeepLinks = map[string]string{
-	"app.savesettings":  "workspaces",
-	"settings.language": "appearance", "settings.helplanguage": "appearance", "settings.panel": "panels", "settings.editor": "editor", "settings.viewer": "editor", "settings.colorer": "syntax", "settings.appearance": "appearance", "settings.startup": "startup", "settings.portable": "startup", "settings.confirmations": "operations", "settings.mousewheel": "keyboard", "settings.pathhints": "terminal", "settings.hotkeys": "hotkeys", "settings.autoupdate": "updates", "settings.proxy": "network", "settings.pluginconfiguration": "plugins", "settings.plugins": "plugins", "settings.mackeyboard": "keyboard", "editor.settings": "editor", "viewer.settings": "editor", "panel.fileassociations": "associations", "app.plugring": "plugins", "ai.setup": "ai",
+	"app.savesettings":    "workspaces",
+	"panel.groupsettings": "panels",
+	"settings.language":   "appearance", "settings.helplanguage": "appearance", "settings.panel": "panels", "settings.editor": "editor", "settings.viewer": "editor", "settings.colorer": "syntax", "settings.appearance": "appearance", "settings.startup": "startup", "settings.portable": "startup", "settings.confirmations": "operations", "settings.mousewheel": "keyboard", "settings.pathhints": "terminal", "settings.hotkeys": "hotkeys", "settings.autoupdate": "updates", "settings.proxy": "network", "settings.pluginconfiguration": "plugins", "settings.plugins": "plugins", "settings.mackeyboard": "keyboard", "editor.settings": "editor", "viewer.settings": "editor", "panel.fileassociations": "associations", "app.plugring": "plugins", "ai.setup": "ai",
 }
+
+// Scalar deep links use the same routing and scrolling viewport as categories.
+var settingsDeepLinkFields = map[string]string{"panel.groupsettings": "PanelGroupSmallMiB"}
 
 func registerSettingsRoutes() {
 	// Preserve custom bindings to the removed category.
@@ -31,7 +35,9 @@ func redirectLegacySettingsActions() {
 	for name, category := range settingsDeepLinks {
 		if a, ok := action.Lookup(name); ok {
 			a.HideFromMenu = true
-			a.Handler = func() bool { return settings.Open(category) }
+			a.Handler = func() bool {
+				return settings.OpenAt(category, "", settingsDeepLinkFields[strings.ToLower(a.Name)], false)
+			}
 			a.Checked = nil
 			registerAction(a)
 		}
@@ -64,7 +70,9 @@ func registerAction(a action.Action) {
 	if category, ok := settingsDeepLinks[strings.ToLower(a.Name)]; ok {
 		a.HideFromMenu = true
 		a.Checked = nil
-		a.Handler = func() bool { return settings.Open(category) }
+		a.Handler = func() bool {
+			return settings.OpenAt(category, "", settingsDeepLinkFields[strings.ToLower(a.Name)], false)
+		}
 	}
 	action.RegisterAction(a)
 }

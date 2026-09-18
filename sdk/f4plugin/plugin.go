@@ -38,13 +38,25 @@ func (h *Host) RunAction(name string) bool {
 
 // VFSItem mirrors the core's vfs.VFSItem format.
 type VFSItem struct {
-	Name         string
-	Size         int64
-	IsDir        bool
-	MTime        time.Time
-	Mode         string
-	IsExecutable bool
-	IsHidden     bool
+	KnownMetadata uint32
+	SizeKnown     bool
+	PhysicalSize  int64
+	ATime         time.Time
+	CTime         time.Time
+	UnixMode      uint32
+	Uid           int
+	Gid           int
+	WinAttrs      uint32
+	NoExtension   bool
+	IsSymlink     bool
+	ReparseTag    uint32
+	Name          string
+	Size          int64
+	IsDir         bool
+	MTime         time.Time
+	Mode          string
+	IsExecutable  bool
+	IsHidden      bool
 }
 
 type OpenReq struct{ Drive, Path string }

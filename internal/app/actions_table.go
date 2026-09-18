@@ -103,6 +103,59 @@ func init() {
 		}
 	}
 
+	for _, spec := range panel.GroupModes {
+		registerAction(action.Action{Name: "Panel.GroupBy" + spec.ID,
+			Area:        "Shell",
+			Label:       "Group by: " + spec.Label,
+			LabelKey:    "Action.Panel.GroupBy" + spec.ID,
+			Description: "Choose the grouping field independently of sorting",
+			DescKey:     "Group.Choose.Desc",
+			Handler: withPF(func(pf *panel.PanelsFrame) {
+				if fp := pf.GetActivePanel(); fp != nil {
+					fp.SetGrouping(spec.Mode, fp.GroupReverse, fp.GroupFoldersSeparately)
+				}
+			})})
+	}
+	registerAction(action.Action{Name: "Panel.GroupMenu",
+		Area:        "Shell",
+		Label:       "Group by...",
+		LabelKey:    "Group.Menu",
+		Description: "Show panel grouping modes",
+		DescKey:     "Group.Menu.Desc",
+		Handler: withPF(func(pf *panel.PanelsFrame) {
+			if fp := pf.GetActivePanel(); fp != nil {
+				fp.ShowGroupMenu()
+			}
+		})})
+	registerAction(action.Action{Name: "Panel.GroupReverse",
+		Area:        "Shell",
+		Label:       "Reverse group order",
+		LabelKey:    "Group.Reverse",
+		Description: "Reverse the order of groups",
+		DescKey:     "Group.Reverse.Desc",
+		Handler: withPF(func(pf *panel.PanelsFrame) {
+			if fp := pf.GetActivePanel(); fp != nil {
+				fp.SetGrouping(fp.GroupBy, !fp.GroupReverse, fp.GroupFoldersSeparately)
+			}
+		})})
+	registerAction(action.Action{Name: "Panel.GroupFoldersSeparately",
+		Area:        "Shell",
+		Label:       "Group folders separately",
+		LabelKey:    "Group.SeparateFolders",
+		Description: "Toggle a separate first group for folders",
+		DescKey:     "Group.SeparateFolders.Desc",
+		Handler: withPF(func(pf *panel.PanelsFrame) {
+			if fp := pf.GetActivePanel(); fp != nil {
+				fp.SetGrouping(fp.GroupBy, fp.GroupReverse, !fp.GroupFoldersSeparately)
+			}
+		})})
+	registerAction(action.Action{Name: "Panel.GroupSettings",
+		Area:        "Shell",
+		Label:       "Group size thresholds",
+		LabelKey:    "Group.Settings",
+		Description: "Configure the size boundaries for panel groups",
+		DescKey:     "Group.Settings.Desc"})
+
 	// withMultiEditor is for the handful of actions that know about the
 	// multi-caret set and act on it themselves.
 	withMultiEditor := func(fn func(ev *editor.EditorView)) func() bool {

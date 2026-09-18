@@ -37,6 +37,7 @@ type FileEntry struct {
 	PrevSelected   bool // snapshot of Selected taken by SaveSelection; swapped in by RestoreSelection (Ctrl+M)
 	SizeCalculated bool
 	IsCached       bool
+	sourceOrder    uint64
 }
 type mediumRow struct {
 	fp *FileSystemPanel
@@ -44,12 +45,8 @@ type mediumRow struct {
 }
 
 func (m *mediumRow) GetCellText(col int) string {
-	H := m.fp.Table.ViewHeight
-	if H <= 0 {
-		H = 1
-	}
-	idx := m.r + col*H
-	if idx >= len(m.fp.Entries) {
+	idx := m.fp.entryIndex(m.r, col)
+	if idx < 0 || idx >= len(m.fp.Entries) {
 		return ""
 	}
 	e := m.fp.Entries[idx]
@@ -66,29 +63,22 @@ type panelMatchSpan struct {
 }
 
 func (fp *FileSystemPanel) RowCount() int {
-	return len(fp.Entries)
+	return fp.displayCount() + fp.stickyGroupRows(fp.Table.TopPos)
 }
 
 func (fp *FileSystemPanel) GetCellText(row, col int) string {
+	idx := fp.entryIndex(row, col)
+	if idx < 0 || idx >= len(fp.Entries) {
+		return ""
+	}
 	if fp.gridColumnCount() == 1 {
-		if row < 0 || row >= len(fp.Entries) {
-			return ""
-		}
-		e := fp.Entries[row]
+		e := fp.Entries[idx]
 		if col == 0 && len(fp.Table.Columns) > 0 {
 			return formatPanelFileNameAt(e, fp.Table.Columns[0].Width, fp.nameLeftPos)
 		}
 		return e.GetCellText(col)
 	}
 
-	H := fp.Table.ViewHeight
-	if H <= 0 {
-		H = 1
-	}
-	idx := row + col*H
-	if idx < 0 || idx >= len(fp.Entries) {
-		return ""
-	}
 	e := fp.Entries[idx]
 	width := 0
 	if col >= 0 && col < len(fp.Table.Columns) {
@@ -113,14 +103,7 @@ func (fp *FileSystemPanel) IsCellSelected(row, col int) bool {
 // current view mode: a single file-column in Wide/Detailed, or several
 // file-columns of height ViewHeight in Medium/Brief.
 func (fp *FileSystemPanel) entryIndex(row, col int) int {
-	if fp.gridColumnCount() == 1 {
-		return row
-	}
-	H := fp.Table.ViewHeight
-	if H <= 0 {
-		H = 1
-	}
-	return row + col*H
+	return fp.entryAtDisplay(fp.viewportDisplayRow(row, col))
 }
 
 func (fp *FileSystemPanel) GetCellAttr(row, col int, defaultAttr uint64) uint64 {
@@ -390,23 +373,15 @@ func panelFileNameMatchSpansAt(entry *FileEntry, width, leftPos, matchStartRunes
 }
 
 func (m *mediumRow) IsColSelected(col int) bool {
-	H := m.fp.Table.ViewHeight
-	if H <= 0 {
-		H = 1
-	}
-	idx := m.r + col*H
-	if idx >= len(m.fp.Entries) {
+	idx := m.fp.entryIndex(m.r, col)
+	if idx < 0 || idx >= len(m.fp.Entries) {
 		return false
 	}
 	return m.fp.Entries[idx].Selected
 }
 func (m *mediumRow) GetCellAttr(col int, defaultAttr uint64) uint64 {
-	H := m.fp.Table.ViewHeight
-	if H <= 0 {
-		H = 1
-	}
-	idx := m.r + col*H
-	if idx >= len(m.fp.Entries) {
+	idx := m.fp.entryIndex(m.r, col)
+	if idx < 0 || idx >= len(m.fp.Entries) {
 		return defaultAttr
 	}
 	e := m.fp.Entries[idx]
@@ -498,6 +473,16 @@ type dirCacheKey struct {
 }
 
 type FileSystemPanel struct {
+	GroupBy                GroupMode
+	GroupReverse           bool
+	GroupFoldersSeparately bool
+	groupKeys              map[*FileEntry]groupKey
+	displayRows            []displayRow
+	entryRows              []int
+	visibleGroups          []PanelGroup
+	groupDate              string
+	groupLimits            [3]int64
+	nextSourceOrder        uint64
 	vtui.ScreenObject
 	Table                 *vtui.Table
 	scrollBar             *vtui.ScrollBar
@@ -603,14 +588,15 @@ func NewFileSystemPanel(x, y, w, h int, vfs vfs.VFS) *FileSystemPanel {
 	path := vfs.GetPath()
 
 	fp := &FileSystemPanel{
-		Vfs:                 vfs,
-		Frame:               vtui.NewBorderedFrame(x, y, x+w-1, y+h-1, vtui.SingleBox, path),
-		Table:               vtui.NewTable(x+1, y+1, w-2, h-2, nil),
-		ViewMode:            ViewModeMedium,
-		lastRightClickedIdx: -1,
-		DirCache:            make(map[dirCacheKey]DirCacheEntry),
-		SelectedItems:       make(map[string]bool),
-		selectionEpoch:      make(map[string]uint64),
+		Vfs:                    vfs,
+		Frame:                  vtui.NewBorderedFrame(x, y, x+w-1, y+h-1, vtui.SingleBox, path),
+		Table:                  vtui.NewTable(x+1, y+1, w-2, h-2, nil),
+		ViewMode:               ViewModeMedium,
+		GroupFoldersSeparately: true,
+		lastRightClickedIdx:    -1,
+		DirCache:               make(map[dirCacheKey]DirCacheEntry),
+		SelectedItems:          make(map[string]bool),
+		selectionEpoch:         make(map[string]uint64),
 		//entries:             []*FileEntry{{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}}},
 	}
 	fp.Frame.ColorBoxIdx = theme.ColPanelBox
@@ -831,6 +817,10 @@ func (fp *FileSystemPanel) SetSortMode(mode SortMode) {
 		fp.SortReverse = false
 	}
 	fp.updateSortColumnTitles()
+	if fp.GroupBy != GroupNone {
+		fp.SetGrouping(fp.GroupBy, fp.GroupReverse, fp.GroupFoldersSeparately)
+		return
+	}
 	fp.ReadDirectory()
 }
 
@@ -842,6 +832,10 @@ func (fp *FileSystemPanel) SetUseSortGroups(use bool) {
 		return
 	}
 	fp.UseSortGroups = use
+	if fp.GroupBy != GroupNone {
+		fp.SetGrouping(fp.GroupBy, fp.GroupReverse, fp.GroupFoldersSeparately)
+		return
+	}
 	fp.ReadDirectory()
 }
 
@@ -861,10 +855,19 @@ func (fp *FileSystemPanel) sortGroupsActive() bool {
 // SortEntries orders the panel's complete row list -- the rows an active
 // autofilter is hiding included, so a query cannot outlive the sort it was
 // typed under -- and then re-derives the visible one.
-func (fp *FileSystemPanel) SortEntries() {
+func (fp *FileSystemPanel) SortEntries() { fp.sortEntriesAt(time.Now()) }
+
+func (fp *FileSystemPanel) sortEntriesAt(now time.Time) {
 	entries := fp.AllEntries()
+	for _, entry := range entries {
+		if entry.sourceOrder == 0 {
+			fp.nextSourceOrder++
+			entry.sourceOrder = fp.nextSourceOrder
+		}
+	}
+	fp.prepareGrouping(entries, now)
 	grouped := fp.sortGroupsActive()
-	if (fp.SortMode == SortUnsorted && !grouped) || len(entries) <= 1 {
+	if (fp.SortMode == SortUnsorted && !grouped && fp.GroupBy == GroupNone) || len(entries) <= 1 {
 		fp.refilterEntries()
 		return
 	}
@@ -893,7 +896,7 @@ func (fp *FileSystemPanel) SortEntries() {
 
 		// ".." всегда сверху
 		if ei.Name == ".." {
-			return true
+			return ej.Name != ".."
 		}
 		if ej.Name == ".." {
 			return false
@@ -903,7 +906,12 @@ func (fp *FileSystemPanel) SortEntries() {
 		// group never pulls a directory down among the files. In unsorted
 		// mode nothing is reordered except the grouping itself, so the rule
 		// stays off there exactly as before.
-		if fp.SortMode != SortUnsorted && ei.IsDir != ej.IsDir {
+		if fp.GroupBy != GroupNone {
+			if n := fp.compareGroups(ei, ej, compareName); n != 0 {
+				return n < 0
+			}
+		}
+		if (fp.SortMode != SortUnsorted || fp.GroupBy != GroupNone) && ei.IsDir != ej.IsDir {
 			return ei.IsDir
 		}
 
@@ -917,10 +925,13 @@ func (fp *FileSystemPanel) SortEntries() {
 			if fp.SortMode == SortUnsorted {
 				// Grouping an unsorted panel only clusters the rows; the
 				// stable sort below keeps the filesystem order inside a group.
-				return false
+				return fp.GroupBy != GroupNone && ei.sourceOrder < ej.sourceOrder
 			}
 		}
 
+		if fp.SortMode == SortUnsorted {
+			return ei.sourceOrder < ej.sourceOrder
+		}
 		cmp := 0
 		switch fp.SortMode {
 		case SortName:
@@ -1007,11 +1018,7 @@ func (fp *FileSystemPanel) mouseEntryIndex(mouseX, mouseY int) int {
 		}
 	}
 
-	idx := fp.Table.TopPos + row + column*fp.Table.ViewHeight
-	if idx < 0 || idx >= len(fp.Entries) {
-		return -1
-	}
-	return idx
+	return fp.entryIndex(fp.Table.TopPos+row, column)
 }
 
 func (fp *FileSystemPanel) processRightDrag(idx int) {
@@ -1317,13 +1324,17 @@ func (fp *FileSystemPanel) panelScrollMetrics() (height, visibleItems, maxTop, v
 
 	columns := fp.gridColumnCount()
 	visibleItems = height * columns
-	maxTop = len(fp.Entries) - visibleItems
+	maxTop = fp.displayCount() - visibleItems
+	if maxTop > 0 {
+		maxTop += fp.stickyGroupRows(maxTop)
+	}
+	visibleItems -= fp.stickyGroupRows(fp.Table.TopPos)
 	if maxTop <= 0 {
 		maxTop = 0
 		return
 	}
 
-	virtualRows := (len(fp.Entries) + columns - 1) / columns
+	virtualRows := (fp.displayCount() + columns - 1) / columns
 	virtualMax = virtualRows - height
 	if virtualMax <= 0 {
 		virtualMax = 1
@@ -1398,7 +1409,11 @@ func (fp *FileSystemPanel) setPanelScrollTop(top int) {
 	if delta == 0 {
 		return
 	}
-	idx := fp.GetCursorIndex() + delta
+	direction := 1
+	if delta < 0 {
+		direction = -1
+	}
+	idx := fp.nearestDisplayEntry(fp.displayOfEntry(fp.GetCursorIndex())+delta, direction)
 	if idx < 0 {
 		idx = 0
 	}
@@ -1512,10 +1527,7 @@ func (fp *FileSystemPanel) visibleNameCells(fn func(entry *FileEntry, x, y, widt
 		x := fp.Table.X1
 		for column := 0; column < columns && column < len(fp.Table.Columns); column++ {
 			width := fp.Table.Columns[column].Width
-			entryIndex := row
-			if columns > 1 {
-				entryIndex += column * height
-			}
+			entryIndex := fp.entryIndex(row, column)
 			if entryIndex >= 0 && entryIndex < len(fp.Entries) {
 				fn(fp.Entries[entryIndex], x, y, width)
 			}
@@ -1714,14 +1726,19 @@ func (fp *FileSystemPanel) SetCursorIndex(idx int) {
 	}
 	fp.CursorIdx = idx
 
+	visual := fp.displayOfEntry(idx)
+	if fp.GroupBy != GroupNone {
+		fp.syncGroupedCursor(visual)
+		return
+	}
 	// Sync table visual state
 	if fp.gridColumnCount() == 1 {
-		fp.Table.SetSelectPos(fp.CursorIdx)
+		fp.Table.SetSelectPos(visual)
 		fp.Table.SelectCol = 0
 		if fp.FastFindMode {
 			H := fp.Table.ViewHeight
-			if H > 2 && fp.CursorIdx >= fp.Table.TopPos+H-2 {
-				fp.Table.TopPos = fp.CursorIdx - H + 3
+			if H > 2 && visual >= fp.Table.TopPos+H-2 {
+				fp.Table.TopPos = visual - H + 3
 				if fp.Table.TopPos < 0 {
 					fp.Table.TopPos = 0
 				}
@@ -1734,21 +1751,21 @@ func (fp *FileSystemPanel) SetCursorIndex(idx int) {
 		}
 
 		// 1. Ensure TopPos is sane for the current cursor
-		if fp.CursorIdx < fp.Table.TopPos {
-			fp.Table.TopPos = fp.CursorIdx
-		} else if fp.CursorIdx >= fp.Table.TopPos+fp.gridColumnCount()*H {
-			fp.Table.TopPos = fp.CursorIdx - fp.gridColumnCount()*H + 1
+		if visual < fp.Table.TopPos {
+			fp.Table.TopPos = visual
+		} else if visual >= fp.Table.TopPos+fp.gridColumnCount()*H {
+			fp.Table.TopPos = visual - fp.gridColumnCount()*H + 1
 		}
 
 		// Far-style 2-column scrolling: ensure cursorIdx is in [TopPos, TopPos + 2*H)
-		if fp.CursorIdx < fp.Table.TopPos {
-			fp.Table.TopPos = fp.CursorIdx
-		} else if fp.CursorIdx >= fp.Table.TopPos+fp.gridColumnCount()*H {
-			fp.Table.TopPos = fp.CursorIdx - fp.gridColumnCount()*H + 1
+		if visual < fp.Table.TopPos {
+			fp.Table.TopPos = visual
+		} else if visual >= fp.Table.TopPos+fp.gridColumnCount()*H {
+			fp.Table.TopPos = visual - fp.gridColumnCount()*H + 1
 		}
 
 		if fp.FastFindMode && H > 2 {
-			rel := fp.CursorIdx - fp.Table.TopPos
+			rel := visual - fp.Table.TopPos
 			row := rel % H
 			if row >= H-2 {
 				shift := row - (H - 3)
@@ -1760,7 +1777,7 @@ func (fp *FileSystemPanel) SetCursorIndex(idx int) {
 			fp.Table.TopPos = 0
 		}
 
-		rel := fp.CursorIdx - fp.Table.TopPos
+		rel := visual - fp.Table.TopPos
 		fp.Table.SelectCol = rel / H
 		// Table internal rendering expects SelectPos to be absolute index in its row space
 		// to correctly calculate vertical offset: y = Y1 + (SelectPos - TopPos)
@@ -2347,6 +2364,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				}
 
 				currentSelected := fp.GetRawSelectedName()
+				currentOffset := fp.displayOfEntry(fp.GetCursorIndex()) - fp.Table.TopPos
 				if fp.PendingSelection == "" {
 					if currentSelected != "" && currentSelected != ".." {
 						fp.PendingSelection = currentSelected
@@ -2395,6 +2413,9 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 					fp.SetCursorIndex(0)
 				}
 
+				if fp.GroupBy != GroupNone && fp.GetRawSelectedName() == currentSelected {
+					fp.Table.TopPos = max(0, fp.displayOfEntry(fp.GetCursorIndex())-currentOffset)
+				}
 				fp.Refresh()
 
 				loadFrames.Redraw() // Рисуем каждый чанк!
@@ -2449,7 +2470,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				// done in the UI task rather than when the load was started.
 				liveCursorName := fp.GetRawSelectedName()
 				liveCursorIndex := fp.GetCursorIndex()
-				liveCursorOffset := liveCursorIndex - fp.Table.TopPos
+				liveCursorOffset := fp.displayOfEntry(liveCursorIndex) - fp.Table.TopPos
 				cursorMoved := liveCursorName != cacheInitialCursorName || liveCursorIndex != cacheInitialCursorIndex
 
 				if fp.SelectedItems == nil {
@@ -2517,7 +2538,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 					newCursorIndex = 0
 				}
 
-				newTop := newCursorIndex - liveCursorOffset
+				newTop := fp.displayOfEntry(newCursorIndex) - liveCursorOffset
 				if newTop < 0 {
 					newTop = 0
 				}
@@ -2655,7 +2676,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 func (fp *FileSystemPanel) Refresh() {
 	idx := fp.GetCursorIndex()
 	fp.updateSortColumnTitles()
-	n := len(fp.Entries)
+	n := fp.displayCount()
 	fp.Table.SetCellProvider(fp)
 	fp.Table.SetRowCount(n)
 	fp.SetCursorIndex(idx)
@@ -2697,6 +2718,7 @@ func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 	}
 	fp.clampNameLeftPos()
 	fp.Table.Show(scr)
+	fp.drawGroupHeadings(scr)
 	fp.drawFastFindMatches(scr)
 	fp.drawCursorSeparators(scr)
 	fp.drawNameScrollBrackets(scr)
@@ -2995,10 +3017,7 @@ func (fp *FileSystemPanel) drawFastFindMatches(scr *vtui.ScreenBuf) {
 		y := fp.Table.Y1 + fp.Table.MarginTop + rowOffset
 		x := fp.Table.X1
 		for column := 0; column < columns && column < len(fp.Table.Columns); column++ {
-			entryIndex := row
-			if columns > 1 {
-				entryIndex += column * height
-			}
+			entryIndex := fp.entryIndex(row, column)
 			cellWidth := fp.Table.Columns[column].Width
 			if entryIndex >= 0 && entryIndex < len(fp.Entries) {
 				entry := fp.Entries[entryIndex]
@@ -3342,7 +3361,10 @@ func (fp *FileSystemPanel) processKey(e *vtinput.InputEvent, allowProviderPanelE
 		}
 
 		handled := false
-		if columns := fp.gridColumnCount(); columns > 1 {
+		if fp.GroupBy != GroupNone {
+			fp.SetCursorIndex(fp.groupNavigationTarget(e.VirtualKeyCode))
+			handled = true
+		} else if columns := fp.gridColumnCount(); columns > 1 {
 			switch e.VirtualKeyCode {
 			case vtinput.VK_UP:
 				idx--
@@ -3524,6 +3546,9 @@ func (fp *FileSystemPanel) ProcessMouse(e *vtinput.InputEvent) bool {
 		fp.stopDragAutoScroll()
 	}
 
+	if e.WheelDirection == 0 && fp.groupHeadingAt(int(e.MouseX), int(e.MouseY)) {
+		return true
+	}
 	if e.WheelDirection == 0 && e.ButtonState&vtinput.FromLeft1stButtonPressed != 0 &&
 		e.KeyDown && e.MouseEventFlags&vtinput.MouseMoved == 0 {
 		if mode, ok := fp.headerSortModeAt(int(e.MouseX), int(e.MouseY)); ok {
@@ -3562,6 +3587,13 @@ func (fp *FileSystemPanel) ProcessMouse(e *vtinput.InputEvent) bool {
 			speed = config.App.WheelPanelUp
 		}
 		step := direction * config.WheelScrollLines(speed)
+		if fp.GroupBy != GroupNone {
+			target := fp.nearestDisplayEntry(fp.displayOfEntry(fp.GetCursorIndex())+step, direction)
+			fp.setPanelScrollTop(fp.Table.TopPos + step)
+			fp.SetCursorIndex(target)
+			fp.Refresh()
+			return true
+		}
 
 		H := fp.Table.ViewHeight
 		if H <= 0 {
@@ -3657,6 +3689,14 @@ func (fp *FileSystemPanel) ProcessMouse(e *vtinput.InputEvent) bool {
 		return fp.rightDragActive
 	}
 
+	if fp.GroupBy != GroupNone {
+		if idx := fp.mouseEntryIndex(int(e.MouseX), int(e.MouseY)); idx >= 0 && e.ButtonState&vtinput.FromLeft1stButtonPressed != 0 {
+			fp.SetCursorIndex(idx)
+			fp.rowDragButton = vtinput.FromLeft1stButtonPressed
+			return true
+		}
+		return false
+	}
 	handled := fp.Table.ProcessMouse(e)
 	if handled {
 		if e.KeyDown && !isMove && e.ButtonState&vtinput.FromLeft1stButtonPressed != 0 {

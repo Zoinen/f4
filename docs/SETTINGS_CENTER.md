@@ -456,3 +456,29 @@ or replacing the Settings inline editors. Global drive options, plugin
 configuration (including Environment Manager), and application preference actions
 still open the Center. Environment Manager's contextual profile editor was not
 redirected and needs no rollback.
+
+## Panel grouping
+
+F9 → Left/Right → Group by, or the link in Sort modes, opens independent grouping.
+Actions `Panel.GroupMenu`, `Panel.GroupBy<mode>`, `Panel.GroupReverse`,
+`Panel.GroupFoldersSeparately` and `Panel.GroupSettings` are available to the
+command palette, macros and hotkey configuration, with no new default keys.
+The canonical mode IDs are in `panel.GroupModes`.
+
+Group by defaults to Off. Each panel remembers its mode, reverse order and folder
+placement in the session, subject to AutoSavePanelSettings. Folder placement
+defaults to a separate first group. Unknown modes in old/newer sessions load as
+Off; workspace cloning carries grouping settings. Sorting applies within groups.
+
+Panels → Grouping configures `PanelGroupSmallMiB`, `PanelGroupMediumMiB`, and
+`PanelGroupLargeMiB` under `[Panel]` in settings.ini, initially 5, 10 and 100.
+These are inclusive upper bounds for Small, Medium and Large, followed by Extra
+large. They apply to logical and physical size. Apply requires positive, strictly
+increasing integers whose byte values fit int64. Cancel changes nothing; invalid
+saved tuples load the defaults. Settings changes immediately regroup open panels.
+
+Date groups use the local calendar: future days, today, yesterday, two days ago,
+then month/year newest first. Groups are refreshed on the first panel timer tick
+after midnight. Unknown metadata stays last; the parent row stays first outside
+groups. Reverse leaves both anchors and the separate Folders group in place.
+Folder sizes join size buckets only after explicit size calculation.
