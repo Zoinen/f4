@@ -117,6 +117,8 @@ Item {
             visible: !surfaces.hostWindow.hasOperationsQueueSurface()
             opacity: surfaces.hostWindow.hasStandaloneDocumentSurface() ? 0 : 1
             sourceComponent: PanelsSurface {
+                panelChromeLayer: surfaces
+                splitterHovered: mainPanelSplitter.hovered
                 enabled: !surfaces.hostWindow.queueDropdownOpen
                 hostWindow: surfaces.hostWindow
                 menuBar: surfaces.menuBar
@@ -251,6 +253,7 @@ Item {
     // Docked Quick View sits above the panels, including their overlapping
     // gutter. Keep the divider at shell level so it owns that pointer region.
     PanelSplitter {
+        id: mainPanelSplitter
         objectName: "mainPanelSplitter"
         devicePixelRatio: surfaces.hostWindow.dpr
         x: surfaces.hostWindow.snapPx(splitPosition - width / 2)
@@ -277,12 +280,17 @@ Item {
         separatorColor: surfaces.hostWindow.separatorColor
         separatorWidth: surfaces.hostWindow.separatorWidth
         gutterWidth: surfaces.hostWindow.panelContentSpacing * 2
-        leadingHitInset: surfaces.hostWindow.panelContentSpacing
+        leadingHitInset: Math.max(0, surfaces.hostWindow.panelContentSpacing - surfaces.hostWindow.separatorWidth)
         opacity: surfaces.hostWindow.normalSurfaceOpacity
         z: 61
 
         onRatioRequested: (nextRatio) => {
-            surfaces.hostWindow.panelSplitRatio = nextRatio
+            if (panelsLayer.item && panelsLayer.item.panelPair)
+                panelsLayer.item.panelPair.publishSplitRatio(nextRatio)
+        }
+        onDraggingChanged: {
+            if (!dragging && panelsLayer.item && panelsLayer.item.panelPair)
+                panelsLayer.item.panelPair.flushSplitUpdate()
         }
         onFocusReleaseRequested: {
             Qt.callLater(surfaces.hostWindow.restoreSurfaceFocus)

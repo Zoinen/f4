@@ -3143,3 +3143,10 @@ SettingsCenter.Text.09c4464a863191a292d14cb10ea4ae0a37dd34d7864363125ee5920194a0
 SettingsCenter.Text.2cff9baabf56ca002610e113bc94deb6ededddfc3c130365b6e88ed5195bf774=Импорт
 UserMenu.Far3.Keep=Существующие пункты сохраняются.
 UserMenu.Far3.Apply=Сохранение кнопкой «Применить».
+
+PanelSettings.SearchHideUnfocused=Скрывать командную строку без фокуса
+SettingsCenter.SearchCommandHideUnfocused.Label=Скрывать командную строку без фокуса
+SettingsCenter.SearchCommandHideUnfocused.Description=В режиме «Сначала поиск» скрывать командную строку, когда фокус на панели. Клавиша тильды открывает её.
+
+SettingsCenter.HidePanelPathBar.Label=Скрывать строки пути панелей (GUI)
+SettingsCenter.HidePanelPathBar.Description=Скрывать путь, сортировку и режим просмотра над графическими панелями. Ctrl+Shift+B переключает эту настройку.

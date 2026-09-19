@@ -3213,3 +3213,7 @@ SettingsCenter.Text.09c4464a863191a292d14cb10ea4ae0a37dd34d7864363125ee5920194a0
 SettingsCenter.Text.2cff9baabf56ca002610e113bc94deb6ededddfc3c130365b6e88ed5195bf774=Import
 UserMenu.Far3.Keep=Existing entries are kept.
 UserMenu.Far3.Apply=Apply saves the imported entries.
+
+PanelSettings.SearchHideUnfocused=Hide command input when unfocused
+SettingsCenter.SearchCommandHideUnfocused.Label=Hide command input when unfocused
+SettingsCenter.SearchCommandHideUnfocused.Description=In Search-first mode, hide the command line while the panel has focus. Press the tilde key to show it.

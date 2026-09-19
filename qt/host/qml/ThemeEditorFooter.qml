@@ -9,6 +9,7 @@ RowLayout {
     required property ApplicationWindow hostWindow
     required property QtObject editorWindow
     required property ThemeDraftModel draft
+    property bool sharedSettingsFooter: false
     objectName: "themeColorFooter"
     // The five full-label buttons need slightly more than the default
     // 720-pixel window's content width after icon/text rounding. Switch to
@@ -129,13 +130,14 @@ RowLayout {
         Layout.minimumWidth: 0
         horizontalAlignment: Text.AlignHCenter
         elide: Text.ElideRight
-        visible: draft.statusToast !== ""
+        visible: !themeColorFooter.sharedSettingsFooter && draft.statusToast !== ""
     }
 
-    Item { Layout.fillWidth: true; visible: draft.statusToast === "" }
+    Item { Layout.fillWidth: true; visible: themeColorFooter.sharedSettingsFooter || draft.statusToast === "" }
 
     ConfigDialogButton {
         id: themeSaveButton
+        visible: !themeColorFooter.sharedSettingsFooter
         hostWindow: themeColorFooter.hostWindow
         objectName: "themeSaveButton"
         transform: Translate {
@@ -163,6 +165,7 @@ RowLayout {
 
     ConfigDialogButton {
         id: themeCloseButton
+        visible: !themeColorFooter.sharedSettingsFooter
         hostWindow: themeColorFooter.hostWindow
         objectName: "themeCloseButton"
         transform: Translate {

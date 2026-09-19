@@ -88,6 +88,13 @@ public:
     void setRenderingEnabled(bool value) { m_renderingEnabled = value; }
 
     Q_INVOKABLE void sendQtKey(int, const QString &, bool, int) {}
+    Q_INVOKABLE void sendQtKeyEvent(int key, const QString &text, bool down,
+                                    int modifiers, int, bool repeat)
+    {
+        forwardedKeys.append({{"key", key}, {"text", text}, {"down", down},
+                              {"modifiers", modifiers}, {"repeat", repeat}});
+    }
+    QVector<QVariantMap> forwardedKeys;
     Q_INVOKABLE void sendClipboardPaste() {}
     Q_INVOKABLE void sendQtText(const QString &) {}
 
@@ -778,8 +785,10 @@ private slots:
     void settingsDecorationsAndViewportStayPixelAligned();
     void settingsListsAndDisabledInputs();
     void settingsCategoryListSelectsDuringMouseDrag();
+    void settingsCategoryWheelMovesOneRow();
     void settingsCategoryListSelectsDuringMouseDrag_data();
     void settingsListScrollingAndTouch();
+    void semanticTableWheelPreservesMagnitude();
     void settingsCategoryIconsStayPixelAligned();
     void settingsResizeKeepsChromeAndScrollsContent_data();
     void settingsResizeKeepsChromeAndScrollsContent();
@@ -811,8 +820,14 @@ private slots:
     void semanticDialogComboBoxFollowsGoOwnedMenuState();
     void semanticOverlayMenuStreamClearsWhileFallbackSurfaceIsHidden();
     void semanticOverlayDialogStreamClearsWithoutStaleOverlay();
+    void menuChildDialogFollowsGoStackOrder();
     void semanticDialogRowsExpandForNativeControls();
     void environmentManagerDialogUsesExpandedRows();
+    void semanticListCheckboxesAndDimming();
+    void semanticListRepeatPreservesRowsAndImmediateCursor();
+    void semanticDialogKeyHintsStayVisibleAndPixelAligned();
+    void environmentProfilesFitDuringResize();
+    void environmentProfilesHeldResizeKeepsMouseGrab();
     void semanticInlineLabelsKeepControlsClose();
     void semanticDialogControlsUseWindowFontAndStayPixelAligned();
     void errorMessagesWrapToNativeWidth();
@@ -2666,6 +2681,570 @@ void F4OperationsQueueTests::semanticInlineLabelsKeepControlsClose()
         QVERIFY(capture.save(qEnvironmentVariable("F4_DIALOG_CAPTURE")));
 }
 
+void F4OperationsQueueTests::menuChildDialogFollowsGoStackOrder()
+{
+    auto scene = dialogScene();
+    auto dialog = scene.value("dialogs").toList().first().toMap();
+    dialog["stackOrder"] = 2;
+    dialog["title"] = "Plugin hotkey";
+    dialog["children"] = QVariantList{};
+    auto menu = dialogComboMenu(0);
+    menu["id"] = "plugins-menu";
+    menu["title"] = "Plugins";
+    menu["presentation"] = "window";
+    menu["ownerId"] = "";
+    menu["stackOrder"] = 1;
+    scene["dialogs"] = QVariantList{dialog};
+    scene["menus"] = QVariantList{menu};
+    QueueFixture fixture(scene);
+    QVERIFY(fixture.window);
+    QVariant result;
+    QVERIFY(QMetaObject::invokeMethod(fixture.window, "overlayFrames",
+                                      Q_RETURN_ARG(QVariant, result)));
+    QCOMPARE(result.toList().last().toMap().value("id"), dialog.value("id"));
+    auto *repeater = fixture.item("semanticOverlayHost")
+                         ->findChild<QObject *>("semanticOverlayRepeater");
+    QVERIFY(repeater);
+    QQuickItem *lower = nullptr;
+    QQuickItem *upper = nullptr;
+    QVERIFY(QMetaObject::invokeMethod(repeater, "itemAt", Q_RETURN_ARG(QQuickItem *, lower), Q_ARG(int, 0)));
+    QVERIFY(QMetaObject::invokeMethod(repeater, "itemAt", Q_RETURN_ARG(QQuickItem *, upper), Q_ARG(int, 1)));
+    QVERIFY(lower && upper);
+    QVERIFY(upper->z() > lower->z());
+    auto *surface = visualItem(upper, "semanticDialog-" + dialog.value("id").toString());
+    QVERIFY(surface);
+    auto *title = visualItem(surface, "semanticDialogTitle");
+    QVERIFY(title);
+    auto *closeButton = visualItem(surface, "dialogCloseButton");
+    QVERIFY(closeButton);
+    fixture.shell.clearActions();
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, itemCenter(closeButton));
+    QTRY_VERIFY(std::any_of(fixture.shell.actions.cbegin(), fixture.shell.actions.cend(),
+        [&dialog](const QVariantMap &action) {
+            return action.value("target") == dialog.value("id")
+                && action.value("action").toString() == QStringLiteral("dialog.close");
+        }));
+    const auto origin = title->mapToScene(QPointF{});
+    const auto dpr = fixture.window->devicePixelRatio();
+    QVERIFY(qAbs(origin.x() * dpr - qRound(origin.x() * dpr)) < 0.001);
+    QVERIFY(qAbs(origin.y() * dpr - qRound(origin.y() * dpr)) < 0.001);
+    QCOMPARE(title->mapToScene(QPointF(1, 0)) - origin, QPointF(1, 0));
+    QCOMPARE(title->mapToScene(QPointF(0, 1)) - origin, QPointF(0, 1));
+    const auto capture = fixture.window->grabWindow();
+    QVERIFY(!capture.isNull());
+    if (qEnvironmentVariableIsSet("F4_DIALOG_CAPTURE"))
+        QVERIFY(capture.save(qEnvironmentVariable("F4_DIALOG_CAPTURE")));
+
+    // A menu subsequently opened by that dialog must become the top layer.
+    menu["stackOrder"] = 3;
+    scene["menus"] = QVariantList{menu};
+    fixture.shell.setScene(scene);
+    QVERIFY(QMetaObject::invokeMethod(fixture.window, "overlayFrames",
+                                      Q_RETURN_ARG(QVariant, result)));
+    QCOMPARE(result.toList().last().toMap().value("id"), menu.value("id"));
+    // Closing the child restores the retained menu, without recreating it.
+    scene["dialogs"] = QVariantList{};
+    fixture.shell.setScene(scene);
+    QVERIFY(QMetaObject::invokeMethod(fixture.window, "overlayFrames",
+                                      Q_RETURN_ARG(QVariant, result)));
+    QCOMPARE(result.toList().size(), 1);
+}
+
+void F4OperationsQueueTests::environmentProfilesHeldResizeKeepsMouseGrab()
+{
+    auto scene = dialogScene();
+    auto dialogs = scene.value("dialogs").toList();
+    auto dialog = dialogs.first().toMap();
+    dialog["title"] = "Environment profiles";
+    dialog["paneSplit"] = QVariantMap{{"x", 45}, {"leftTitle", "Profiles"},
+        {"rightTitle", "Profile details"}, {"active", "left"}};
+    dialog["children"] = QVariantList{
+        QVariantMap{{"id", "env-profiles"}, {"kind", "listBox"}, {"x", 20}, {"y", 6},
+            {"w", 24}, {"h", 8}, {"items", QVariantList{"Default", "Development"}}, {"selected", 0}},
+        QVariantMap{{"id", "env-details"}, {"kind", "edit"}, {"x", 47}, {"y", 6},
+            {"w", 30}, {"h", 1}, {"text", "PATH=C:\\Tools"}, {"readOnly", true}}};
+    dialog["keyHints"] = QVariantList{
+        QVariantMap{{"action", "envman.add"}, {"key", "Ins"}, {"text", "Add"}},
+        QVariantMap{{"action", "envman.delete"}, {"key", "Del"}, {"text", "Delete"}},
+        QVariantMap{{"action", "envman.edit"}, {"key", "F4"}, {"text", "Edit"}},
+        QVariantMap{{"action", "envman.copy"}, {"key", "F5"}, {"text", "Copy"}},
+        QVariantMap{{"action", "envman.toggle"}, {"key", "Space"}, {"text", "Toggle"}},
+        QVariantMap{{"action", "envman.moveUp"}, {"key", "Ctrl+Up"}, {"text", "Move"}},
+        QVariantMap{{"action", "envman.moveDown"}, {"key", "Ctrl+Down"}, {"text", "Move"}},
+        QVariantMap{{"action", "envman.settings"}, {"key", "F2"}, {"text", "Settings"}}};
+    dialogs[0] = dialog;
+    scene["dialogs"] = dialogs;
+    QueueFixture fixture(scene);
+    QVERIFY(fixture.window);
+    if (qEnvironmentVariable("QT_SCALE_FACTOR") == "1.75")
+        QCOMPARE(fixture.window->devicePixelRatio(), 1.75);
+    auto *root = fixture.window->contentItem();
+    QQuickItem *surface = nullptr;
+    QTRY_VERIFY((surface = visualItem(root, "semanticDialog-appearance-dialog")));
+    const QStringList corners{"dialogResizeBottomRight", "dialogResizeTopLeft",
+        "dialogResizeTopRight", "dialogResizeBottomLeft"};
+    for (int cornerIndex = 0; cornerIndex < corners.size(); ++cornerIndex) {
+        QVERIFY(QMetaObject::invokeMethod(surface, "setUserGeometry",
+            Q_ARG(QVariant, QVariant(120.0)), Q_ARG(QVariant, QVariant(100.0)),
+            Q_ARG(QVariant, QVariant(700.0)), Q_ARG(QVariant, QVariant(500.0))));
+        QTest::qWait(40);
+        auto *handle = visualItem(surface, corners[cornerIndex]);
+        QVERIFY(handle);
+        const auto press = handle->mapToScene(QPointF(handle->width()/2, handle->height()/2)).toPoint();
+        const qreal initialWidth = surface->width();
+        const qreal initialHeight = surface->height();
+        const int horizontal = (cornerIndex == 1 || cornerIndex == 3) ? 1 : -1;
+        const int vertical = (cornerIndex == 1 || cornerIndex == 2) ? 1 : -1;
+        fixture.shell.clearActions();
+        QTest::mousePress(fixture.window, Qt::LeftButton, Qt::NoModifier, press);
+        QVERIFY(handle->property("pressed").toBool());
+        QPoint lastPoint = press;
+        // Large inward steps cross the read-only pane and footer while held.
+        // Reverse direction without releasing to catch stale drag ownership.
+        for (int step : {1, 2, 3, 4, 5, 6, 5, 4}) {
+            lastPoint = press + QPoint(horizontal * step * 25, vertical * step * 20);
+            QTest::mouseMove(fixture.window, lastPoint, 10);
+            QTRY_VERIFY(qAbs(surface->width() - (initialWidth - step * 25)) < 1.0);
+            QTRY_VERIFY(qAbs(surface->height() - (initialHeight - step * 20)) < 1.0);
+            QVERIFY(handle->property("pressed").toBool());
+            for (const auto &action : std::as_const(fixture.shell.actions))
+                QVERIFY(action.value("action").toString() != "dialog.geometry");
+        }
+        QTest::mouseRelease(fixture.window, Qt::LeftButton, Qt::NoModifier, lastPoint);
+        QVERIFY(!handle->property("pressed").toBool());
+        int commits = 0;
+        for (const auto &action : std::as_const(fixture.shell.actions))
+            if (action.value("action").toString() == "dialog.geometry") ++commits;
+        QCOMPARE(commits, 1);
+        const QSizeF releasedSize(surface->width(), surface->height());
+        QTest::mouseMove(fixture.window, lastPoint + QPoint(30, 30), 10);
+        QCOMPARE(QSizeF(surface->width(), surface->height()), releasedSize);
+    }
+}
+
+void F4OperationsQueueTests::semanticListRepeatPreservesRowsAndImmediateCursor()
+{
+    auto scene = panelScene();
+    QVariantList items, states;
+    for (int i = 0; i < 40; ++i) {
+        items.append(QString("Profile %1").arg(i));
+        states.append(QVariantMap{{"checkable", true}, {"checked", i % 2 == 0}});
+    }
+    QVariantMap list{{"id", "repeat-list"}, {"kind", "listBox"}, {"x", 2}, {"y", 3},
+        {"w", 50}, {"h", 15}, {"items", items}, {"itemStates", states}, {"cursor", 0}, {"focused", true}};
+    QVariantMap dialog{{"id", "repeat-dialog"}, {"kind", "dialog"}, {"title", "Profiles"},
+        {"x", 1}, {"y", 1}, {"w", 60}, {"h", 22}, {"children", QVariantList{list}},
+        {"keyHints", QVariantList{QVariantMap{{"key", "F4"}, {"text", "Edit"},
+            {"action", "envman.edit"}, {"icon", "pencil"}}}}};
+    scene["dialogs"] = QVariantList{dialog};
+    QueueFixture fixture(scene, false, true);
+    QVERIFY(fixture.window);
+    auto *root = fixture.window->contentItem();
+    QTRY_VERIFY(visualItem(root, "dialogWidget-repeat-listListItemText-0"));
+    QTest::qWait(100);
+    QPointer<QQuickItem> first = visualItem(root, "dialogWidget-repeat-listListItemText-0");
+    QPointer<QQuickItem> hint = visualItem(root, "semanticDialogHintButton-0");
+    QElapsedTimer timer; timer.start();
+    int invisibleCursorFrames = 0;
+    for (int step = 0; step < 60; ++step) {
+        const int cursor = 1 + step % 5;
+        list["cursor"] = cursor;
+        dialog["children"] = QVariantList{list};
+        scene["dialogs"] = QVariantList{dialog};
+        fixture.shell.setScene(scene);
+        QCoreApplication::processEvents();
+        QVERIFY2(first && first == visualItem(root, "dialogWidget-repeat-listListItemText-0"),
+            "Cursor-only snapshots recreated unchanged list rows");
+        QVERIFY2(hint && hint == visualItem(root, "semanticDialogHintButton-0"),
+            "Cursor-only snapshots recreated unchanged footer buttons");
+        auto *text = visualItem(root, QString("dialogWidget-repeat-listListItemText-%1").arg(cursor));
+        QVERIFY(text);
+        if (text->parentItem()->property("color").value<QColor>()
+            != fixture.window->property("selectedBg").value<QColor>())
+            ++invisibleCursorFrames;
+    }
+    qInfo() << "60 cursor snapshots, retained rows/footer, immediate highlight:" << timer.elapsed() << "ms";
+    QCOMPARE(invisibleCursorFrames, 0);
+    QVERIFY(!fixture.window->grabWindow().isNull());
+    if (qEnvironmentVariableIsSet("F4_LIST_REPEAT_CAPTURE"))
+        QVERIFY(fixture.window->grabWindow().save(qEnvironmentVariable("F4_LIST_REPEAT_CAPTURE")));
+}
+
+void F4OperationsQueueTests::environmentProfilesFitDuringResize()
+{
+    auto scene = panelScene();
+    auto dialog = QJsonDocument::fromJson(R"({
+      "id":"env-resize","kind":"dialog","layout":"environmentProfiles","title":"Environment profiles","x":8,"y":3,"w":96,"h":30,
+      "paneSplit":{"x":40,"leftTitle":"Profiles","rightTitle":"Profile details","active":"left"},
+      "keyHints":[{"key":"Ins","text":"Add","icon":"plus","action":"envman.add"},{"key":"Del","text":"Delete","icon":"trash-2","action":"envman.delete"},
+        {"key":"F4","text":"Edit","icon":"pencil","action":"envman.edit"},{"key":"F5","text":"Copy","icon":"copy","action":"envman.copy"},
+        {"key":"Space","text":"Toggle","icon":"circle-check","action":"envman.toggle"},{"key":"Ctrl+Up","text":"Move","icon":"arrow-up","action":"envman.moveUp"},
+        {"key":"Ctrl+Down","text":"Move","icon":"arrow-down","action":"envman.moveDown"},{"key":"F2","text":"Settings","icon":"file-cog","action":"envman.settings"}],
+      "children":[
+        {"id":"profiles","layoutRole":"profiles","kind":"listBox","x":10,"y":5,"w":28,"h":24,"items":["Default","Development"],"selected":0,
+         "itemStates":[{"checkable":true,"checked":true},{"checkable":true,"checked":false,"dimmed":true}]},
+        {"id":"name-label","layoutRole":"name-label","kind":"text","x":42,"y":5,"w":8,"h":1,"text":"Name:"},
+        {"id":"name","layoutRole":"name","kind":"edit","x":42,"y":6,"w":60,"h":1,"text":"Development"},
+        {"id":"enabled","layoutRole":"enabled","kind":"checkbox","x":42,"y":8,"w":20,"h":1,"text":"Enabled","checked":true},
+        {"id":"variables-label","layoutRole":"variables-label","kind":"text","x":42,"y":10,"w":40,"h":1,"text":"Variables (NAME=value):"},
+        {"id":"variables","layoutRole":"variables","kind":"multiLineEdit","x":42,"y":11,"w":60,"h":18,"text":"PATH=C:\\Tools\nBUILD=debug","readOnly":true},
+        {"id":"add","layoutRole":"add","kind":"button","x":10,"y":31,"w":18,"h":1,"text":"Add profile"},
+        {"id":"save","layoutRole":"save","kind":"button","x":65,"y":31,"w":18,"h":1,"text":"Save","visible":false},
+        {"id":"cancel","layoutRole":"cancel","kind":"button","x":84,"y":31,"w":18,"h":1,"text":"Cancel","visible":false}
+      ]})").toVariant().toMap();
+    scene["dialogs"] = QVariantList{dialog};
+    QueueFixture fixture(scene, false, true);
+    QVERIFY(fixture.window);
+    fixture.window->resize(1300, 950);
+    auto *root = fixture.window->contentItem();
+    QQuickItem *surface = nullptr;
+    QTRY_VERIFY((surface = visualItem(root, "semanticDialog-env-resize")));
+    const auto dpr = fixture.window->devicePixelRatio();
+    if (qEnvironmentVariable("QT_SCALE_FACTOR") == "1.75")
+        QCOMPARE(dpr, 1.75);
+    for (const bool editing : {false, true}) {
+        if (editing) dialog["keyHints"] = QVariantList{
+            QVariantMap{{"key","Ctrl+Enter"},{"text","Save"},{"icon","save"},{"action","envman.save"}},
+            QVariantMap{{"key","Esc"},{"text","Cancel"},{"icon","x"},{"action","envman.cancel"}}};
+        auto children = dialog["children"].toList();
+        for (auto &value : children) {
+            auto child = value.toMap();
+            const auto role = child["layoutRole"].toString();
+            if (role == "add") child["visible"] = !editing;
+            if (role == "save" || role == "cancel") child["visible"] = editing;
+            value = child;
+        }
+        dialog["children"] = children;
+        scene["dialogs"] = QVariantList{dialog};
+        fixture.shell.setScene(scene);
+        for (const auto size : {QSize(850, 700), QSize(600, 420), QSize(320, 160), QSize(950, 760)}) {
+            QVERIFY(QMetaObject::invokeMethod(surface, "setUserGeometry", Q_ARG(QVariant, 30), Q_ARG(QVariant, 50),
+                Q_ARG(QVariant, size.width()), Q_ARG(QVariant, size.height())));
+            QTest::qWait(100);
+            QVERIFY(!fixture.window->grabWindow().isNull());
+            auto *scroll = visualItem(surface, "dialogBodyScrollBar");
+            QVERIFY(!scroll || !scroll->isVisible());
+            auto *left = visualItem(surface, "dialogWidget-profilesRoot");
+            auto *right = visualItem(surface, "dialogWidget-variablesRoot");
+            QVERIFY(left && right);
+            auto *nameLabel = visualItem(surface, "dialogWidget-name-labelRoot");
+            auto *name = visualItem(surface, "dialogWidget-nameRoot");
+            auto *enabled = visualItem(surface, "dialogWidget-enabledRoot");
+            QVERIFY(nameLabel && name && enabled);
+            auto *nameText = visualItem(nameLabel, "dialogWidget-name-labelText");
+            QVERIFY(nameText);
+            QVERIFY2(!nameText->property("truncated").toBool(), qPrintable(QString("Name caption truncated: width=%1 implicit=%2 font=%3 measure=%4")
+                .arg(nameText->width()).arg(nameText->implicitWidth()).arg(nameText->property("font").value<QFont>().toString())
+                .arg(visualItem(surface, "environmentNameMeasure")->implicitWidth())));
+            const auto labelCenter = nameLabel->mapToScene(QPointF(0, nameLabel->height()/2));
+            const auto nameCenter = name->mapToScene(QPointF(0, name->height()/2));
+            const auto enabledCenter = enabled->mapToScene(QPointF(0, enabled->height()/2));
+            QVERIFY2(qAbs(labelCenter.y()-nameCenter.y())*dpr <= 1
+                     && qAbs(enabledCenter.y()-nameCenter.y())*dpr <= 1,
+                qPrintable(QString("name row physical centers: label=%1 input=%2 enabled=%3")
+                    .arg(labelCenter.y()*dpr).arg(nameCenter.y()*dpr).arg(enabledCenter.y()*dpr)));
+            QVERIFY(labelCenter.x()+nameLabel->width() <= nameCenter.x());
+            QVERIFY(nameCenter.x()+name->width() <= enabledCenter.x());
+            QVERIFY(name->width() >= 32);
+            const auto leftBottom = left->mapToScene(QPointF(0,left->height())).y();
+            const auto rightBottom = right->mapToScene(QPointF(0,right->height())).y();
+            QVERIFY2(qAbs(leftBottom-rightBottom) < .001,
+                qPrintable(QString("pane bottoms %1 / %2").arg(leftBottom).arg(rightBottom)));
+            QVERIFY2(right->height() >= 31, qPrintable(QString("requested=%1x%2 actual=%3x%4 rightHeight=%5 minimum=%6")
+                .arg(size.width()).arg(size.height()).arg(surface->width()).arg(surface->height()).arg(right->height()).arg(surface->property("minimumDialogHeight").toReal())));
+            auto *action = visualItem(surface, editing ? "dialogWidget-saveRoot" : "dialogWidget-addRoot");
+            QVERIFY(action && action->isVisible());
+            QVERIFY(action->mapToScene(QPointF()).y() >= leftBottom);
+            const auto checkLeaves = [&](auto &&self, QQuickItem *item) -> void {
+                if (item->isVisible() && (item->inherits("QQuickText") || item->inherits("QQuickTextInput")
+                    || item->inherits("QQuickTextEdit") || item->inherits("QQuickImage"))) {
+                    QVERIFY2(!item->objectName().isEmpty(), item->metaObject()->className());
+                    const auto origin = item->mapToItem(root, QPointF());
+                    const auto physical = origin*dpr;
+                    QVERIFY2(qAbs(physical.x()-qRound64(physical.x())) < .02 && qAbs(physical.y()-qRound64(physical.y())) < .02,
+                        qPrintable(QString("%1 physical=(%2,%3)").arg(item->objectName()).arg(physical.x()).arg(physical.y())));
+                    QVERIFY(QLineF(item->mapToItem(root,QPointF(1,0))-origin,QPointF(1,0)).length() < .0001);
+                    QVERIFY(QLineF(item->mapToItem(root,QPointF(0,1))-origin,QPointF(0,1)).length() < .0001);
+                }
+                for (auto *child : item->childItems()) self(self,child);
+            };
+            checkLeaves(checkLeaves,surface);
+            if (qEnvironmentVariableIsSet("F4_ENVMAN_RESIZE_CAPTURE"))
+                QVERIFY(fixture.window->grabWindow().save(qEnvironmentVariable("F4_ENVMAN_RESIZE_CAPTURE")
+                    + QString("-%1-%2.png").arg(editing).arg(size.width())));
+            const auto previous = right->height();
+            // A source-cell geometry acknowledgement must not reset native allocation.
+            dialog["h"] = size.height()/20;
+            scene["dialogs"] = QVariantList{dialog}; fixture.shell.setScene(scene);
+            QTest::qWait(40);
+            QCOMPARE(right->height(),previous);
+        }
+    }
+}
+
+void F4OperationsQueueTests::semanticDialogKeyHintsStayVisibleAndPixelAligned()
+{
+    auto scene = dialogScene();
+    auto dialogs = scene.value("dialogs").toList();
+    auto dialog = dialogs.first().toMap();
+    const QVariantList hints{
+        QVariantMap{{"icon", "file-cog"}, {"action", "envman.settings"}, {"key", "F2"}, {"text", "Settings"}},
+        QVariantMap{{"icon", "pencil"}, {"action", "envman.edit"}, {"key", "F4"}, {"text", "Edit"}},
+        QVariantMap{{"icon", "plus"}, {"action", "envman.new"}, {"key", "Insert"}, {"text", "New profile"}},
+        QVariantMap{{"icon", "trash-2"}, {"action", "envman.remove"}, {"key", "Delete"}, {"text", "Remove"}},
+        QVariantMap{{"icon", "check"}, {"action", "envman.apply"}, {"key", "Enter"}, {"text", "Apply"}},
+        QVariantMap{{"icon", "x"}, {"action", "dialog.close"}, {"key", "Escape"}, {"text", "Close"}},
+        QVariantMap{{"icon", "arrow-up"}, {"action", "envman.move-up"}, {"key", QString::fromUtf8("Ctrl+↑")}, {"text", "Move"}},
+        QVariantMap{{"icon", "arrow-down"}, {"action", "envman.move-down"}, {"key", QString::fromUtf8("Ctrl+↓")}, {"text", "Move"}}};
+    dialog["title"] = "Environment Manager";
+    dialog["children"] = QVariantList{
+        QVariantMap{{"id", "env-profiles"}, {"kind", "listBox"}, {"x", 20}, {"y", 6}, {"w", 24}, {"h", 8},
+                    {"items", QVariantList{"Default", "Development"}}, {"selected", 0}},
+        QVariantMap{{"id", "env-details"}, {"kind", "edit"}, {"x", 47}, {"y", 6}, {"w", 30}, {"h", 1},
+                    {"text", "PATH=C:\\Tools"}}
+    };
+    dialog["keyHints"] = hints;
+    dialog["paneSplit"] = QVariantMap{{"x", 45}, {"leftTitle", "Profiles"}, {"rightTitle", "Profile details"}, {"active", "left"}};
+    dialogs[0] = dialog;
+    scene["dialogs"] = dialogs;
+    QueueFixture fixture(scene);
+    QVERIFY(fixture.window);
+    auto *root = fixture.window->contentItem();
+    QQuickItem *footer = nullptr;
+    QTRY_VERIFY((footer = visualItem(root, "semanticDialogKeyHints")));
+    auto *surface = visualItem(root, "semanticDialog-appearance-dialog");
+    auto *body = visualItem(surface, "dialogBody");
+    QVERIFY(surface); QVERIFY(body);
+    auto *leftTitle = visualItem(root, "semanticDialogLeftPaneTitle");
+    auto *rightTitle = visualItem(root, "semanticDialogRightPaneTitle");
+    auto *divider = visualItem(root, "semanticDialogPaneDivider");
+    QVERIFY(leftTitle); QVERIFY(rightTitle); QVERIFY(divider);
+    const qreal dpr = fixture.window->devicePixelRatio();
+    for (const int width : {640, 320}) {
+        surface->setProperty("userGeometrySet", true);
+        surface->setProperty("userWidth", width);
+        surface->setProperty("userHeight", 260);
+        QTest::qWait(100);
+        QVERIFY(!fixture.window->grabWindow().isNull());
+        QTest::qWait(50);
+        QVERIFY(footer->isVisible());
+        const auto bodyBottom = body->mapToScene(QPointF(0, body->height())).y();
+        const auto footerTop = footer->mapToScene(QPointF{}).y();
+        QVERIFY2(bodyBottom <= footerTop + .001,
+                 qPrintable(QString("bodyBottom=%1 footerTop=%2").arg(bodyBottom, 0, 'f', 6).arg(footerTop, 0, 'f', 6)));
+        const auto footerOrigin = footer->mapToScene(QPointF{});
+        body->setProperty("contentY", 50);
+        QCOMPARE(footer->mapToScene(QPointF{}), footerOrigin);
+        QVERIFY(!fixture.window->grabWindow().isNull());
+        QTest::qWait(50);
+        for (int i = 0; i < hints.size(); ++i) {
+            auto *button = visualItem(root, QString("semanticDialogHintButton-%1").arg(i));
+            QVERIFY2(button, "Footer hints must reuse clickable F-bar buttons");
+            auto *key = visualItem(root, QString("semanticDialogHintKey-%1").arg(i));
+            auto *label = visualItem(root, QString("semanticDialogHintLabel-%1").arg(i));
+            QVERIFY(key && label);
+            QVERIFY(key->mapToScene(QPointF{}).x() > label->mapToScene(QPointF{}).x());
+            auto *separator = visualItem(root, QString("semanticDialogHintSeparator-%1").arg(i));
+            QVERIFY(separator);
+            const auto buttonOrigin = button->mapToScene(QPointF{}) * dpr;
+            const auto separatorOrigin = separator->mapToScene(QPointF{}) * dpr;
+            for (const auto value : {buttonOrigin.x(), buttonOrigin.y(), button->width()*dpr,
+                                     button->height()*dpr, separatorOrigin.x(), separatorOrigin.y(),
+                                     separator->width()*dpr, separator->height()*dpr})
+                QVERIFY2(qAbs(value-qRound(value)) < .001,
+                         qPrintable(QString("button %1 physical=%2").arg(i).arg(value, 0, 'f', 6)));
+            fixture.shell.clearActions();
+            const auto center = button->mapToScene(QPointF(button->width()/2, button->height()/2)).toPoint();
+            QTest::mouseMove(fixture.window, center);
+            QCOMPARE(key->property("color").value<QColor>(), fixture.window->property("dialogAccent").value<QColor>());
+            QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, center);
+            QTRY_COMPARE(fixture.shell.actions.size(), 1);
+            QCOMPARE(fixture.shell.actions.last().value("action"), hints[i].toMap().value("action"));
+            QCOMPARE(fixture.shell.actions.last().value("target").toString(), QString("appearance-dialog"));
+            for (const auto *kind : {"Key", "Label", "Icon"}) {
+                const auto name = QString("semanticDialogHint%1-%2").arg(kind).arg(i);
+                auto *leaf = visualItem(root, name);
+                QVERIFY2(leaf, qPrintable(name));
+                QVERIFY(leaf->isVisible());
+                if (QString(kind) == "Icon")
+                    QTRY_COMPARE(leaf->property("status").toInt(), 1);
+                QVERIFY2(!leaf->property("truncated").toBool(), qPrintable(name));
+                const auto origin = leaf->mapToItem(root, QPointF{});
+                const auto physical = origin * dpr;
+                const auto details = QString("%1 physical origin=(%2,%3)").arg(name).arg(physical.x(), 0, 'f', 6).arg(physical.y(), 0, 'f', 6);
+                QVERIFY2(qAbs(physical.x()-qRound(physical.x())) < .001, qPrintable(details));
+                QVERIFY2(qAbs(physical.y()-qRound(physical.y())) < .001, qPrintable(details));
+                QCOMPARE(leaf->mapToItem(root, QPointF(1,0))-origin, QPointF(1,0));
+                QCOMPARE(leaf->mapToItem(root, QPointF(0,1))-origin, QPointF(0,1));
+                const auto local = leaf->mapToItem(footer, QPointF{});
+                QVERIFY(local.x() >= 0 && local.y() >= 0);
+                QVERIFY(local.x()+leaf->width() <= footer->width()+.001);
+                QVERIFY(local.y()+leaf->height() <= footer->height()+.001);
+            }
+        }
+        for (auto *leaf : {leftTitle, rightTitle, visualItem(root, "dialogWidget-env-detailsEditTextInput"),
+                           visualItem(root, "dialogWidget-env-profilesListItemText-0"),
+                           visualItem(root, "dialogWidget-env-profilesListItemText-1")}) {
+            QVERIFY(leaf);
+            const auto origin = leaf->mapToScene(QPointF{});
+            for (const auto value : {origin.x()*dpr, origin.y()*dpr})
+                QVERIFY2(qAbs(value-qRound(value)) < .001, qPrintable(QString("%1 physical=%2").arg(leaf->objectName()).arg(value, 0, 'f', 6)));
+            QCOMPARE(leaf->mapToScene(QPointF(1,0))-origin, QPointF(1,0));
+            QCOMPARE(leaf->mapToScene(QPointF(0,1))-origin, QPointF(0,1));
+        }
+        QVERIFY(divider->mapToScene(QPointF(0, divider->height())).y() <= footer->mapToScene(QPointF{}).y());
+        for (auto *item : {footer, visualItem(root, "semanticDialogKeyHintsSeparator"), divider}) {
+            QVERIFY(item);
+            const auto origin = item->mapToScene(QPointF{}) * dpr;
+            for (const auto value : {origin.x(), origin.y(), item->width()*dpr, item->height()*dpr})
+                QVERIFY2(qAbs(value-qRound(value)) < .001, qPrintable(QString::number(value, 'f', 6)));
+        }
+    }
+    surface->setProperty("userWidth", 640);
+    body->setProperty("contentY", 0);
+    QTest::qWait(100);
+    auto capture = fixture.window->grabWindow();
+    QVERIFY(!capture.isNull());
+    if (qEnvironmentVariableIsSet("F4_DIALOG_HINTS_CAPTURE"))
+        QVERIFY(capture.save(qEnvironmentVariable("F4_DIALOG_HINTS_CAPTURE")));
+    dialog["paneSplit"] = QVariantMap{{"x", 45}, {"leftTitle", "Profiles"}, {"rightTitle", "Editing profile"}, {"active", "right"}};
+    dialog["keyHints"] = QVariantList{
+        QVariantMap{{"icon", "save"}, {"action", "envman.save"}, {"key", "Ctrl+Enter"}, {"text", "Save"}},
+        QVariantMap{{"icon", "x"}, {"action", "envman.cancel"}, {"key", "Esc"}, {"text", "Cancel"}, {"disabled", true}}};
+    dialogs[0] = dialog; scene["dialogs"] = dialogs; fixture.shell.setScene(scene);
+    QTRY_COMPARE(visualItem(root, "semanticDialogHintLabel-0")->property("text").toString(), QString("Save"));
+    QTRY_COMPARE(visualItem(root, "semanticDialogHintLabel-1")->property("text").toString(), QString("Cancel"));
+    QTRY_VERIFY(!visualItem(root, "semanticDialogHintLabel-2"));
+    QVERIFY(!fixture.window->grabWindow().isNull());
+    for (int i = 0; i < 2; ++i) {
+        for (const auto *kind : {"Key", "Label", "Icon"}) {
+            auto *leaf = visualItem(root, QString("semanticDialogHint%1-%2").arg(kind).arg(i));
+            QVERIFY(leaf);
+            const auto origin = leaf->mapToItem(root, QPointF{});
+            for (const auto value : {origin.x()*dpr, origin.y()*dpr})
+                QVERIFY2(qAbs(value-qRound(value)) < .001,
+                         qPrintable(QString("%1 physical=%2").arg(leaf->objectName()).arg(value, 0, 'f', 6)));
+            QCOMPARE(leaf->mapToItem(root, QPointF(1,0))-origin, QPointF(1,0));
+            QCOMPARE(leaf->mapToItem(root, QPointF(0,1))-origin, QPointF(0,1));
+        }
+    }
+    auto *disabledButton = visualItem(root, "semanticDialogHintButton-1");
+    QVERIFY(disabledButton);
+    QVERIFY(!disabledButton->isEnabled());
+    fixture.shell.clearActions();
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+                     disabledButton->mapToScene(QPointF(disabledButton->width()/2, disabledButton->height()/2)).toPoint());
+    for (const auto &action : fixture.shell.actions)
+        QVERIFY(action.value("action").toString() != QString("envman.cancel"));
+    QTRY_COMPARE(rightTitle->property("text").toString(), QString("Editing profile"));
+    QTRY_COMPARE(rightTitle->property("color").value<QColor>(), fixture.window->property("dialogAccent").value<QColor>());
+    dialog.remove("keyHints"); dialogs[0] = dialog; scene["dialogs"] = dialogs; fixture.shell.setScene(scene);
+    QTRY_VERIFY(!footer->isVisible());
+    QTRY_COMPARE(footer->height(), 0);
+}
+
+void F4OperationsQueueTests::semanticListCheckboxesAndDimming()
+{
+    auto scene = dialogScene();
+    auto dialog = scene.value("dialogs").toList().first().toMap();
+    QVariantMap list{{"id", "profiles"}, {"kind", "listBox"}, {"x", 20}, {"y", 6},
+                     {"w", 35}, {"h", 8}, {"cursor", 1}, {"focused", true},
+                     {"items", QVariantList{"Enabled & profile", "Inactive profile", "--------", "[x] literal name"}},
+                     {"itemStates", QVariantList{
+                         QVariantMap{{"checkable", true}, {"checked", true}},
+                         QVariantMap{{"checkable", true}, {"checked", false}, {"dimmed", true}},
+                         QVariantMap{}, QVariantMap{{"checkable", true}, {"checked", true}}}}};
+    const auto publish = [&] {
+        dialog["children"] = QVariantList{list};
+        scene["dialogs"] = QVariantList{dialog};
+    };
+    publish();
+    QueueFixture fixture(scene);
+    QVERIFY(fixture.window);
+    auto *root = fixture.window->contentItem();
+    QQuickItem *checked = nullptr;
+    QTRY_VERIFY((checked = visualItem(root, "dialogWidget-profilesListCheck-0")));
+    auto *unchecked = visualItem(root, "dialogWidget-profilesListCheck-1");
+    auto *separator = visualItem(root, "dialogWidget-profilesListCheck-2");
+    QVERIFY(unchecked); QVERIFY(separator);
+    QVERIFY(checked->property("checked").toBool());
+    QVERIFY(!unchecked->property("checked").toBool());
+    QVERIFY(!separator->isVisible());
+    auto *dimText = visualItem(root, "dialogWidget-profilesListItemText-1");
+    QCOMPARE(visualItem(root, "dialogWidget-profilesListItemText-0")->property("text").toString(), QString("Enabled & profile"));
+    QCOMPARE(visualItem(root, "dialogWidget-profilesListItemText-3")->property("text").toString(), QString("[x] literal name"));
+    QCOMPARE(dimText->opacity(), .75);
+    QCOMPARE(unchecked->opacity(), .75);
+    QCOMPARE(dimText->parentItem()->opacity(), 1.0);
+    QTest::qWait(150);
+    QCOMPARE(dimText->parentItem()->property("color").value<QColor>(), fixture.window->property("selectedBg").value<QColor>());
+    QVERIFY(!fixture.window->grabWindow().isNull());
+    const qreal dpr = fixture.window->devicePixelRatio();
+    for (int row : {0, 1, 2, 3}) {
+        QStringList leaves{QString("dialogWidget-profilesListItemText-%1").arg(row)};
+        if (row != 2) {
+            const auto base = QString("dialogWidget-profilesListCheck-%1").arg(row);
+            leaves << base + "Indicator" << base + "CheckMark";
+        }
+        for (const auto &name : leaves) {
+            auto *leaf = visualItem(root, name);
+            QVERIFY2(leaf, qPrintable(name));
+            const auto origin = leaf->mapToItem(root, QPointF{});
+            const auto physical = origin * dpr;
+            QVERIFY2(qAbs(physical.x()-qRound64(physical.x())) < .001 && qAbs(physical.y()-qRound64(physical.y())) < .001,
+                     qPrintable(QString("%1 physical=(%2,%3)").arg(name).arg(physical.x()).arg(physical.y())));
+            QCOMPARE(leaf->mapToItem(root, QPointF(1, 0))-origin, QPointF(1, 0));
+            QCOMPARE(leaf->mapToItem(root, QPointF(0, 1))-origin, QPointF(0, 1));
+            if (name.endsWith("Indicator")) {
+                QVERIFY(qAbs(leaf->width()*dpr-qRound64(leaf->width()*dpr)) < .001);
+                QVERIFY(qAbs(leaf->height()*dpr-qRound64(leaf->height()*dpr)) < .001);
+                const auto bounds = leaf->mapRectToItem(dimText->parentItem()->parentItem(), leaf->boundingRect());
+                QVERIFY(bounds.top() >= 0);
+                QVERIFY(bounds.bottom() <= dimText->parentItem()->parentItem()->height());
+            }
+        }
+    }
+    const auto toggleCount = [&] {
+        int count = 0;
+        for (const auto &action : fixture.shell.actions)
+            if (action.value("action") == "control.toggle") ++count;
+        return count;
+    };
+    const auto checkboxPoint = itemCenter(unchecked);
+    fixture.shell.clearActions();
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, checkboxPoint);
+    QTRY_COMPARE(toggleCount(), 1);
+    QCOMPARE(fixture.shell.actions.size(), 1);
+    QCOMPARE(fixture.shell.actions.last().value("index").toInt(), 1);
+    QVERIFY(!unchecked->property("checked").toBool()); // Go acknowledges state changes.
+    fixture.shell.clearActions();
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, itemCenter(dimText));
+    QCOMPARE(toggleCount(), 0);
+    QCOMPARE(fixture.shell.actions.last().value("action").toString(), QString("control.select"));
+    fixture.shell.clearActions();
+    QTest::mousePress(fixture.window, Qt::LeftButton, Qt::NoModifier, checkboxPoint);
+    QTest::mouseMove(fixture.window, checkboxPoint + QPoint(0, 35), 30);
+    QTest::mouseRelease(fixture.window, Qt::LeftButton, Qt::NoModifier, checkboxPoint + QPoint(0, 35));
+    QCOMPARE(toggleCount(), 0);
+    if (qEnvironmentVariableIsSet("F4_LIST_CHECK_CAPTURE"))
+        QVERIFY(fixture.window->grabWindow().save(qEnvironmentVariable("F4_LIST_CHECK_CAPTURE")));
+    auto states = list.value("itemStates").toList();
+    states[1] = QVariantMap{{"checkable", true}, {"checked", true}, {"dimmed", false}};
+    list["itemStates"] = states;
+    publish(); fixture.shell.setScene(scene);
+    QTRY_VERIFY(visualItem(root, "dialogWidget-profilesListCheck-1")->property("checked").toBool());
+    QCOMPARE(visualItem(root, "dialogWidget-profilesListItemText-1")->opacity(), 1.0);
+    for (const auto &flag : {"disabled", "readOnly"}) {
+        list[flag] = true;
+        publish(); fixture.shell.setScene(scene);
+        QCoreApplication::processEvents();
+        fixture.shell.clearActions();
+        QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, checkboxPoint);
+        QVERIFY(fixture.shell.actions.isEmpty());
+        list.remove(flag);
+    }
+}
+
 void F4OperationsQueueTests::environmentManagerDialogUsesExpandedRows()
 {
     QVariantMap scene = dialogScene();
@@ -3574,6 +4153,49 @@ void F4OperationsQueueTests::semanticDialogEditShowsRemoteAndNativeSelection()
                         endPoint);
     QVERIFY2(editInput->property("selectedText").toString().size() > 0,
              "native TextInput drag did not produce a visible selection");
+    QTRY_VERIFY_WITH_TIMEOUT(!fixture.shell.actions.isEmpty()
+        && fixture.shell.actions.constLast().value("action") == "control.select", 1000);
+    const QVariantMap selectionAction = fixture.shell.actions.constLast();
+    QCOMPARE(selectionAction.value("target").toString(), QString("appearance-edit"));
+    const QString selectedValue = editInput->property("text").toString();
+    QCOMPARE(selectionAction.value("cursor").toInt(), selectedValue.left(
+        editInput->property("cursorPosition").toInt()).toUcs4().size());
+
+    auto *keySink = qobject_cast<TestGrid *>(fixture.window->property("focusTarget").value<QQuickItem *>());
+    QVERIFY(keySink);
+    for (const auto &[key, modifiers] : QList<QPair<Qt::Key, Qt::KeyboardModifiers>>{
+             {Qt::Key_Delete, Qt::ControlModifier},
+             {Qt::Key_Backspace, Qt::ControlModifier},
+             {Qt::Key_Left, Qt::ControlModifier | Qt::ShiftModifier},
+             {Qt::Key_Backspace, Qt::NoModifier}}) {
+        editInput->forceActiveFocus();
+        const int firstKey = keySink->forwardedKeys.size();
+        QTest::keyClick(fixture.window, key, modifiers);
+        QVERIFY(keySink->forwardedKeys.size() >= firstKey + 2);
+        bool found = false;
+        for (int i = firstKey; i < keySink->forwardedKeys.size(); ++i) {
+            const auto &message = keySink->forwardedKeys[i];
+            if (message.value("key").toInt() == key && message.value("down").toBool()) {
+                QCOMPARE(message.value("modifiers").toInt(), int(modifiers));
+                found = true;
+            }
+        }
+        QVERIFY(found);
+        QCOMPARE(editInput->property("text").toString(), selectedValue);
+    }
+    fixture.shell.clearActions();
+    const QPoint wordPoint = fixture.window->mapFromGlobal(editInput->mapToGlobal(
+        QPointF(45, editInput->height() / 2))).toPoint();
+    QTest::mouseDClick(fixture.window, Qt::LeftButton, Qt::NoModifier, wordPoint);
+    QTest::mouseRelease(fixture.window, Qt::LeftButton, Qt::NoModifier, wordPoint);
+    QTRY_VERIFY(!fixture.shell.actions.isEmpty()
+        && fixture.shell.actions.constLast().value("action") == "control.select");
+    QVERIFY(!editInput->property("selectedText").toString().isEmpty());
+    const auto wordSelection = fixture.shell.actions.constLast();
+    QVERIFY(wordSelection.value("anchor") != wordSelection.value("cursor"));
+    const int beforeBackspace = keySink->forwardedKeys.size();
+    QTest::keyClick(fixture.window, Qt::Key_Backspace);
+    QVERIFY(keySink->forwardedKeys.size() >= beforeBackspace + 2);
 
     // A press in the field's visual margin must behave like a press on the
     // text itself.  The native TextInput is inset by the control's padding,
@@ -4161,6 +4783,68 @@ static QVariantMap settingsControlsScene()
     auto scene = panelScene();
     scene.insert("dialogs", QVariantList{dialog});
     return scene;
+}
+
+void F4OperationsQueueTests::semanticTableWheelPreservesMagnitude()
+{
+    QueueFixture fixture(settingsControlsScene());
+    QVERIFY(fixture.window);
+    auto *view = visualItem(fixture.window->contentItem(), "dialogWidget-tableTableRows");
+    QVERIFY(view);
+    const QPoint position = itemCenter(view);
+    fixture.shell.clearActions();
+    const auto sendWheel = [&](int angle) {
+        QWheelEvent wheel(position, fixture.window->mapToGlobal(position), {}, QPoint(0, angle),
+                          Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+        QCoreApplication::sendEvent(fixture.window, &wheel);
+    };
+    sendWheel(-360);
+    QCOMPARE(fixture.shell.actions.size(), 1);
+    QCOMPARE(fixture.shell.actions.constLast().value("action").toString(), QString("control.scroll"));
+    QCOMPARE(fixture.shell.actions.constLast().value("target").toString(), QString("table"));
+    const int lines = qMax(1, QGuiApplication::styleHints()->wheelScrollLines());
+    QCOMPARE(fixture.shell.actions.constLast().value("delta").toInt(), 3 * lines);
+    fixture.shell.clearActions();
+    for (int i = 0; i < 12; ++i) sendWheel(10);
+    int total = 0;
+    for (const auto &action : fixture.shell.actions) total += action.value("delta").toInt();
+    QCOMPARE(total, -lines);
+}
+
+void F4OperationsQueueTests::settingsCategoryWheelMovesOneRow()
+{
+    auto scene = settingsControlsScene();
+    auto dialog = scene.value("dialogs").toList().first().toMap();
+    auto table = dialog.value("children").toList()[1].toMap();
+    table.insert("layoutRole", "navigation");
+    table.insert("cursor", 2);
+    dialog.insert("layout", "settings");
+    dialog.insert("children", QVariantList{table});
+    scene.insert("dialogs", QVariantList{dialog});
+    QueueFixture fixture(scene);
+    QVERIFY(fixture.window);
+    auto *view = visualItem(fixture.window->contentItem(), "dialogWidget-tableTableRows");
+    QVERIFY(view);
+    QTest::qWait(100);
+    const QPoint position = itemCenter(view);
+    const auto sendWheel = [&](int angle) {
+        QWheelEvent wheel(position, fixture.window->mapToGlobal(position), {}, QPoint(0, angle),
+                          Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+        QCoreApplication::sendEvent(fixture.window, &wheel);
+    };
+    for (int direction : {-1, 1}) {
+        fixture.shell.clearActions();
+        sendWheel(direction * 120);
+        QCOMPARE(fixture.shell.actions.size(), 1);
+        QCOMPARE(fixture.shell.actions.last().value("action").toString(), QString("control.select"));
+        QCOMPARE(fixture.shell.actions.last().value("index").toInt(), 2 - direction);
+    }
+    fixture.shell.clearActions();
+    sendWheel(-60);
+    QVERIFY(fixture.shell.actions.isEmpty());
+    sendWheel(-60);
+    QCOMPARE(fixture.shell.actions.size(), 1);
+    QCOMPARE(fixture.shell.actions.last().value("index").toInt(), 3);
 }
 
 void F4OperationsQueueTests::settingsCategoryListSelectsDuringMouseDrag_data()

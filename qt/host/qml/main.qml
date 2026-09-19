@@ -181,6 +181,7 @@ F4HostWindow {
         iconName: "app-window"
         content: Component {
             ThemeEditorContent {
+                embeddedSettings: true
                 hostWindow: root
                 themePersistence: typeof qtTheme !== "undefined" ? qtTheme : null
             }

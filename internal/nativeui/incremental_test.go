@@ -496,6 +496,8 @@ func TestAppScenePatchSeparatesSparseSelectionFromPanelState(t *testing.T) {
 	currentPanel := semantic.SemanticShallowMapCopy(basePanel)
 	currentPanel["selectionRevision"] = int64(6)
 	currentPanel["selectedCount"] = 1
+	currentPanel["selectedFiles"] = 1
+	currentPanel["selectedSize"] = int64(1234)
 	previous := map[string]any{
 		"type": "scene", "schema": "app", "version": 4,
 		"shell": map[string]any{
@@ -525,6 +527,14 @@ func TestAppScenePatchSeparatesSparseSelectionFromPanelState(t *testing.T) {
 	state, selection := patch.Shell.Panels[0], patch.Shell.Panels[1]
 	if state.Op != "state_update" || selection.Op != "selection_delta" {
 		t.Fatalf("panel operation order = %q, %q", state.Op, selection.Op)
+	}
+	if state.State["selectedFiles"] != 1 || state.State["selectedSize"] != int64(1234) {
+		t.Fatalf("missing live totals: %#v", state.State)
+	}
+	for _, operation := range patch.Shell.Panels {
+		if len(operation.Entries) != 0 {
+			t.Fatal("selection update resent catalog rows")
+		}
 	}
 	if _, leaked := state.State["selectionRevision"]; leaked {
 		t.Fatal("state_update advanced selection revision before its delta")

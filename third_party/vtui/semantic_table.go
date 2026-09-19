@@ -50,6 +50,15 @@ func (t *Table) HandleSemanticAction(action map[string]any) bool {
 			t.SetSort(col, t.SortColumn != col || !t.SortAscending)
 			return true
 		}
+	case "scroll", "control.scroll":
+		delta := max(-t.ItemCount, min(t.ItemCount, semanticInt(action["delta"])))
+		previous := t.SelectPos
+		t.ScrollBy(delta)
+		if previous != t.SelectPos && t.OnSelect != nil {
+			t.OnSelect(t.SelectPos)
+		}
+		DebugLog("[FIX:table-scroll] delta=%d cursor=%d top=%d", delta, t.SelectPos, t.TopPos)
+		return true
 	case "select", "control.select", "control.activate":
 		idx := semanticInt(action["index"])
 		if idx < 0 || idx >= t.ItemCount {

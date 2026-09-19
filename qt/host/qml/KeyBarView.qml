@@ -63,151 +63,46 @@ Rectangle {
         z: 2
     }
 
-    Row {
+    Item {
         anchors.fill: parent
-        anchors.leftMargin: 0
-        anchors.rightMargin: 0
-        anchors.topMargin: hostWindow.actionBarVerticalMargin
-        anchors.bottomMargin: hostWindow.actionBarVerticalMargin
+        anchors.topMargin: hostWindow.snapPx(hostWindow.actionBarVerticalMargin)
+        anchors.bottomMargin: hostWindow.snapPx(hostWindow.actionBarVerticalMargin)
         Repeater {
-            // The slots are stable while only their labels/actions change.
-            // A list-valued model recreates every visual delegate on each
-            // viewer/editor transition, even when its size is unchanged.
             model: (keyBar.items || []).length
-            delegate: Rectangle {
+            delegate: KeyBarActionButton {
                 id: actionButton
                 required property int index
-                readonly property var modelData:
-                    (keyBarRoot.keyBar.items || [])[index] || ({})
-                readonly property string functionKey:
-                    hostWindow.cleanText(modelData.key) !== ""
-                    ? hostWindow.cleanText(modelData.key)
-                    : "F" + String(index + 1)
-                readonly property int functionIndex:
-                    hostWindow.keyBarFunctionIndex(
-                        { "key": actionButton.functionKey }, index)
-                readonly property string iconName:
-                    hostWindow.cleanText(modelData.icon)
+                readonly property var modelData: (keyBarRoot.keyBar.items || [])[index] || ({})
+                readonly property string functionKey: hostWindow.cleanText(modelData.key) !== ""
+                    ? hostWindow.cleanText(modelData.key) : "F" + String(index + 1)
+                readonly property int functionIndex: hostWindow.keyBarFunctionIndex({ "key": functionKey }, index)
+                hostWindow: keyBarRoot.hostWindow
                 objectName: "key-bar-action-" + (functionIndex + 1)
-                width: parent.width / 12
+                labelObjectName: "key-bar-label-" + (functionIndex + 1)
+                shortcutObjectName: "key-bar-shortcut-" + (functionIndex + 1)
+                iconObjectName: "key-bar-icon-" + (functionIndex + 1)
+                separatorObjectName: "key-bar-separator-" + (functionIndex + 1)
+                x: hostWindow.snapPx(index * parent.width / 12)
+                width: hostWindow.snapPx((index + 1) * parent.width / 12) - x
                 height: parent.height
-                radius: hostWindow.snapPx(5)
-                color: actionButtonMouse.pressed
-                       ? hostWindow.panelSelectionBorder
-                       : actionButtonMouse.containsMouse
-                         || (keyBarAlternativeMenu.opened
-                             && keyBarAlternativeMenu.functionIndex
-                                === actionButton.functionIndex)
-                         ? hostWindow.panelSelectionBg : "transparent"
-
-                HostPixelAlignedImage {
-                    hostWindow: keyBarRoot.hostWindow
-                    id: actionIcon
-                    objectName: "key-bar-icon-"
-                                + (actionButton.functionIndex + 1)
-                    anchors.left: parent.left
-                    anchors.verticalCenter: parent.verticalCenter
-                    anchors.leftMargin: hostWindow.actionButtonHorizontalMargin
-                    width: visible ? hostWindow.snapPx(14) : 0
-                    height: visible ? hostWindow.snapPx(14) : 0
-                    visible: actionButton.iconName !== ""
-                    smooth: false
-                    mipmap: false
-                    alignmentRevision: actionButton.x + actionButton.y
-                                       + actionButton.width
-                                       + actionButton.height
-                    source: hostWindow.lucideIconSource(
-                                actionButton.iconName, 14,
-                                actionButtonMouse.containsMouse
-                                ? hostWindow.textColor : hostWindow.chromeText)
-                }
-
-                Text {
-                    id: actionTextLabel
-                    transform: Translate {
-                        x: hostWindow.dialogPixelOffsetX(actionTextLabel,
-                                                         hostWindow.contentItem)
-                        y: hostWindow.dialogPixelOffsetY(actionTextLabel,
-                                                         hostWindow.contentItem)
+                label: hostWindow.mnemonicText(modelData.text, modelData.hotkey)
+                shortcut: functionKey
+                iconName: hostWindow.cleanText(modelData.icon)
+                separatorVisible: index < (keyBarRoot.keyBar.items || []).length - 1
+                highlighted: keyBarAlternativeMenu.opened && keyBarAlternativeMenu.functionIndex === functionIndex
+                onClicked: function(mouse) {
+                    if (mouse.button === Qt.RightButton) {
+                        keyBarRoot.openAlternativeMenu(actionButton, modelData, functionKey, functionIndex)
+                        return
                     }
-                    objectName: "key-bar-label-"
-                                + (actionButton.functionIndex + 1)
-                    anchors.left: actionIcon.visible
-                                  ? actionIcon.right : parent.left
-                    anchors.leftMargin: actionIcon.visible
-                                        ? 7
-                                        : hostWindow.actionButtonHorizontalMargin
-                    anchors.right: functionKeyLabel.left
-                    anchors.rightMargin: 7
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: hostWindow.mnemonicText(modelData.text,
-                                            modelData.hotkey)
-                    textFormat: Text.StyledText
-                    color: hostWindow.chromeText
-                    font.pixelSize: 11
-                    elide: Text.ElideRight
-                }
-
-                Text {
-                    id: functionKeyLabel
-                    transform: Translate {
-                        x: hostWindow.dialogPixelOffsetX(functionKeyLabel,
-                                                         hostWindow.contentItem)
-                        y: hostWindow.dialogPixelOffsetY(functionKeyLabel,
-                                                         hostWindow.contentItem)
-                    }
-                    objectName: "key-bar-shortcut-"
-                                + (actionButton.functionIndex + 1)
-                    anchors.right: parent.right
-                    anchors.verticalCenter: parent.verticalCenter
-                    anchors.rightMargin: hostWindow.actionButtonHorizontalMargin
-                    text: actionButton.functionKey
-                    color: actionButtonMouse.containsMouse
-                           ? hostWindow.textColor : hostWindow.mutedText
-                    font.pixelSize: 11
-                }
-
-                Rectangle {
-                    anchors.right: parent.right
-                    anchors.top: parent.top
-                    anchors.bottom: parent.bottom
-                    anchors.topMargin: hostWindow.actionSeparatorVerticalMargin
-                    anchors.bottomMargin: hostWindow.actionSeparatorVerticalMargin
-                    width: hostWindow.separatorWidth
-                    color: hostWindow.separatorColor
-                    visible: index < (keyBar.items || []).length - 1
-                }
-
-                MouseArea {
-                    id: actionButtonMouse
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    acceptedButtons: Qt.LeftButton | Qt.RightButton
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: function(mouse) {
-                        if (mouse.button === Qt.RightButton) {
-                            keyBarRoot.openAlternativeMenu(
-                                actionButton, modelData,
-                                actionButton.functionKey,
-                                actionButton.functionIndex)
-                            return
-                        }
-                        // Dispatch the same semantic F-key that is
-                        // visibly labelled. Repeater's injected `index`
-                        // can transiently shadow a map field while a
-                        // delegate is being created.
-                        var keyNumber = Number(
-                                    parent.functionKey
-                                        .replace(/^F/i, ""))
-                        var clickedIndex = !isNaN(keyNumber)
-                                && keyNumber >= 1 && keyNumber <= 24
-                                ? keyNumber - 1 : parent.functionIndex
-                        var vk = 0x70 + clickedIndex
-                        var mods = hostWindow.vtuiKeyModifiers(mouse.modifiers)
-                        shellController.sendKey(vk, 0, true, mods)
-                        shellController.sendKey(vk, 0, false, mods)
-                        focusTarget.forceActiveFocus()
-                    }
+                    const keyNumber = Number(functionKey.replace(/^F/i, ""))
+                    const clickedIndex = !isNaN(keyNumber) && keyNumber >= 1 && keyNumber <= 24
+                        ? keyNumber - 1 : functionIndex
+                    const vk = 0x70 + clickedIndex
+                    const mods = hostWindow.vtuiKeyModifiers(mouse.modifiers)
+                    shellController.sendKey(vk, 0, true, mods)
+                    shellController.sendKey(vk, 0, false, mods)
+                    focusTarget.forceActiveFocus()
                 }
             }
         }

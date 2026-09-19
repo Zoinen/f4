@@ -14,6 +14,9 @@ Item {
     required property ZG.GalleryThemePalette galleryTheme
     required property ZG.GalleryPresentationMetrics galleryMetrics
 
+    property Item panelChromeLayer: panels
+    property bool splitterHovered: false
+    readonly property alias panelPair: panelPairLoader.item
     property var frame: hostWindow.shellFrame()
     property var panelList: frame.panels || []
 
@@ -74,6 +77,7 @@ Item {
     }
 
     Loader {
+        id: panelPairLoader
         objectName: "persistentPanelPair"
         anchors.fill: parent
         active: true

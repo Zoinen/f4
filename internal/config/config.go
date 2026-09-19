@@ -386,65 +386,67 @@ func ParsePanelScrollbarMode(value string) PanelScrollbarMode {
 }
 
 type F4Config struct {
-	ColorStyle               string
-	Language                 string
-	FallbackLanguage         string
-	HelpLanguage             string
-	UseLocalLanguageFiles    bool
-	AlwaysShowMenuBar        bool
-	WorkspaceTabMode         int
-	WorkspaceTabsOverlay     bool
-	CtrlTabShowsMenu         bool
-	AltNumberSwitchesTabs    bool
-	RestoreWorkspaceTabs     bool
-	WorkspaceTabNumbering    WorkspaceTabNumberingMode
-	MacKeyboard              string
-	ShowHiddenFiles          bool
-	ShowDirPrefix            bool
-	ShowHighlightMarks       bool
-	SeparateFileExtensions   bool
-	PanelScrollbarMode       PanelScrollbarMode
-	ShowPanelFileInfo        bool
-	SavePanelPaths           bool
-	DriveMenuOptions         uint32 // display/filter flags for the Alt+F1/Alt+F2 menu
-	InfoPanelBytes           bool   // Ctrl+L info panel: true = raw bytes, false = human (GiB/MiB…)
-	InfoPanelCPUGPU          bool   // Ctrl+L info panel: show CPU and GPU sections (off by default)
-	EscTogglePanels          bool   // ESC toggles panels visibility (Far ships this as a macro; on by default)
-	TerminalCtrlNWorkspace   bool   // reserve Ctrl+N in terminal views for cloning panels to a workspace
-	KeepTerminalCursor       bool
-	ConsoleMode              string // "own" | "host" (default "own")
-	ConsoleOverlayUI         bool   // Show f4 command line and keybar overlay on top of host console (default false)
-	AnnounceKittyTerm        bool   // introduce the built-in terminal as kitty, so that image tools use the graphics protocol
-	CommandLineAutoComplete  bool
-	CommandLineMultiline     bool
-	CommandLineWordWrap      bool
-	NavigationMode           PanelNavigationMode
-	SearchCommandStayFocused bool
-	SyncPanelLoad            bool
-	SearchExactOnHit         bool // QuickSearch keeps only exact matches when at least one exists
-	ApplyCommandParallelism  int  // 0 = unlimited; absent config defaults to runtime.NumCPU()
-	EditorAutoComplete       bool
-	EditorAutoCompleteMask   string
-	EditorExpandTabs         int
-	EditorAutoIndent         bool
-	EditorCursorBeyondEOL    bool
-	EditorTabSize            int
-	EditorUseEditorConfig    bool
-	EditorCrosshair          bool
-	EditorMarkOccurrences    bool
-	UseExternalEditor        bool
-	ExternalEditorCommand    string
-	ExternalEditorConsole    string
-	ExternalEditorGUI        string
-	EditorAutodetectCodePage bool
-	EditorHighlighter        string
-	EditorSyntaxAnimation    bool
-	EditorColorerScheme      string
-	EditorColorerBackground  bool
-	EditorColorerSyntax      bool
-	EditorColorerCatalog     string
-	EditorCrossMode          int
-	EditorDefaultCodePage    int
+	ColorStyle                 string
+	Language                   string
+	FallbackLanguage           string
+	HelpLanguage               string
+	UseLocalLanguageFiles      bool
+	AlwaysShowMenuBar          bool
+	WorkspaceTabMode           int
+	WorkspaceTabsOverlay       bool
+	CtrlTabShowsMenu           bool
+	AltNumberSwitchesTabs      bool
+	RestoreWorkspaceTabs       bool
+	WorkspaceTabNumbering      WorkspaceTabNumberingMode
+	MacKeyboard                string
+	ShowHiddenFiles            bool
+	ShowDirPrefix              bool
+	ShowHighlightMarks         bool
+	SeparateFileExtensions     bool
+	PanelScrollbarMode         PanelScrollbarMode
+	ShowPanelFileInfo          bool
+	HidePanelPathBar           bool
+	SavePanelPaths             bool
+	DriveMenuOptions           uint32 // display/filter flags for the Alt+F1/Alt+F2 menu
+	InfoPanelBytes             bool   // Ctrl+L info panel: true = raw bytes, false = human (GiB/MiB…)
+	InfoPanelCPUGPU            bool   // Ctrl+L info panel: show CPU and GPU sections (off by default)
+	EscTogglePanels            bool   // ESC toggles panels visibility (Far ships this as a macro; on by default)
+	TerminalCtrlNWorkspace     bool   // reserve Ctrl+N in terminal views for cloning panels to a workspace
+	KeepTerminalCursor         bool
+	ConsoleMode                string // "own" | "host" (default "own")
+	ConsoleOverlayUI           bool   // Show f4 command line and keybar overlay on top of host console (default false)
+	AnnounceKittyTerm          bool   // introduce the built-in terminal as kitty, so that image tools use the graphics protocol
+	CommandLineAutoComplete    bool
+	CommandLineMultiline       bool
+	CommandLineWordWrap        bool
+	NavigationMode             PanelNavigationMode
+	SearchCommandStayFocused   bool
+	SearchCommandHideUnfocused bool
+	SyncPanelLoad              bool
+	SearchExactOnHit           bool // QuickSearch keeps only exact matches when at least one exists
+	ApplyCommandParallelism    int  // 0 = unlimited; absent config defaults to runtime.NumCPU()
+	EditorAutoComplete         bool
+	EditorAutoCompleteMask     string
+	EditorExpandTabs           int
+	EditorAutoIndent           bool
+	EditorCursorBeyondEOL      bool
+	EditorTabSize              int
+	EditorUseEditorConfig      bool
+	EditorCrosshair            bool
+	EditorMarkOccurrences      bool
+	UseExternalEditor          bool
+	ExternalEditorCommand      string
+	ExternalEditorConsole      string
+	ExternalEditorGUI          string
+	EditorAutodetectCodePage   bool
+	EditorHighlighter          string
+	EditorSyntaxAnimation      bool
+	EditorColorerScheme        string
+	EditorColorerBackground    bool
+	EditorColorerSyntax        bool
+	EditorColorerCatalog       string
+	EditorCrossMode            int
+	EditorDefaultCodePage      int
 	// EditorMemoryMap lets the editor map a local file instead of reading it
 	// in chunks. Off means every buffer takes the lazily fetched path, which
 	// is the escape hatch for a file system where mapping misbehaves.
@@ -595,128 +597,129 @@ func ParseQmlIconSetMode(value string) QmlIconSetMode {
 }
 
 var App = F4Config{
-	ColorStyle:               "Modern",
-	Language:                 "en",
-	FallbackLanguage:         "",
-	HelpLanguage:             "en",
-	UseLocalLanguageFiles:    false,
-	AlwaysShowMenuBar:        false,
-	WorkspaceTabMode:         int(vtui.WorkspaceTabsAlways),
-	WorkspaceTabsOverlay:     true,
-	CtrlTabShowsMenu:         false,
-	AltNumberSwitchesTabs:    true,
-	RestoreWorkspaceTabs:     true,
-	WorkspaceTabNumbering:    WorkspaceTabNumbersAlways,
-	MacKeyboard:              MacKeysAuto,
-	ShowHiddenFiles:          true,
-	ShowDirPrefix:            false,
-	ShowHighlightMarks:       false,
-	SeparateFileExtensions:   false,
-	PanelScrollbarMode:       PanelScrollbarMinimal,
-	ShowPanelFileInfo:        false,
-	SavePanelPaths:           true,
-	DriveMenuOptions:         DefaultDriveMenuOptions,
-	InfoPanelBytes:           false,
-	InfoPanelCPUGPU:          false,
-	EscTogglePanels:          true,
-	TerminalCtrlNWorkspace:   true,
-	KeepTerminalCursor:       false,
-	ConsoleMode:              "own",
-	ConsoleOverlayUI:         false,
-	AnnounceKittyTerm:        true,
-	CommandLineAutoComplete:  true,
-	CommandLineMultiline:     true,
-	CommandLineWordWrap:      true,
-	NavigationMode:           NavigationClassic,
-	SearchCommandStayFocused: false,
-	SyncPanelLoad:            false,
-	SearchExactOnHit:         false,
-	ApplyCommandParallelism:  runtime.NumCPU(),
-	EditorAutoComplete:       true,
-	EditorAutoCompleteMask:   "*.go;*.c;*.cpp;*.h;*.hpp;*.py;*.js;*.ts;*.rs;*.java;*.sh;*.txt;*.md;*.html;*.css;*.json",
-	EditorExpandTabs:         0,
-	EditorAutoIndent:         true,
-	EditorCursorBeyondEOL:    false,
-	EditorTabSize:            4,
-	EditorUseEditorConfig:    true,
-	EditorCrosshair:          false,
-	EditorMarkOccurrences:    true,
-	UseExternalEditor:        false,
-	ExternalEditorCommand:    "",
-	ExternalEditorConsole:    "",
-	ExternalEditorGUI:        "",
-	EditorAutodetectCodePage: true,
-	EditorHighlighter:        "Chroma",
-	EditorSyntaxAnimation:    false,
-	EditorColorerScheme:      "",
-	EditorColorerBackground:  true,
-	EditorColorerSyntax:      true,
-	EditorColorerCatalog:     "",
-	EditorCrossMode:          ColorerCrossBoth,
-	EditorDefaultCodePage:    65001,
-	EditorMemoryMap:          true,
-	ViewerAutodetectCodePage: true,
-	ViewerDefaultCodePage:    65001,
-	WheelPanelUp:             0,
-	WheelPanelDown:           0,
-	WheelEditorUp:            0,
-	WheelEditorDown:          0,
-	WheelViewerUp:            0,
-	WheelViewerDown:          0,
-	WheelMenuUp:              0,
-	WheelMenuDown:            0,
-	WheelTableUp:             0,
-	WheelTableDown:           0,
-	PathHintTimeout:          2,
-	PathHintFullPath:         false,
-	PathHintSource:           2,
-	PathHintMaxVisible:       5,
-	PathHintPerCategory:      true,
-	DialogAutoComplete:       true,
-	HistoryShowTimes:         [HistoryTypeCount]int{HistoryShowDateTime, HistoryShowDateTime, HistoryShowDateTime},
-	HistoryDirsPrefixLen:     24,
-	SlideShowDelay:           DefaultSlideShowDelay,
-	ImageOverlay:             true,
-	TTYXKeys:                 true,
-	TTYXKeyList:              DefaultTTYXKeyList,
-	ImageExternalTimeout:     DefaultImageExternalTimeout,
-	ImageDecoderPriority:     "",
-	ConfirmCopy:              true,
-	ConfirmMove:              true,
-	ConfirmDelete:            true,
-	UseTrash:                 false,
-	ConfirmExit:              true,
-	DeleteCancelFocused:      false,
-	AutoSaveSettings:         true,
-	AutoSaveDialogSettings:   true,
-	AutoSavePanelSettings:    true,
-	AutoSaveCurrentPanel:     true,
-	AutoSaveGUIWindow:        true,
-	DefaultFileOpMode:        0,
-	FileOpPathDisplay:        0,
-	GuiFont:                  "",
-	GuiUseSystemMonospace:    true,
-	GuiFontSize:              DefaultGuiFontSize(runtime.GOOS),
-	GuiCols:                  100,
-	GuiRows:                  30,
-	GuiPosX:                  0,
-	GuiPosY:                  0,
-	GuiPositionSaved:         false,
-	StartupMode:              StartupModeAuto,
-	GuiBackend:               "",
-	TTYBackend:               "",
-	GuiPresentation:          GuiPresentationGUI,
-	QmlIconSet:               QmlIconSetLucide,
-	ConsoleTitleTemplate:     "f4 %Ver %Platform %Admin - %State",
-	DisplayFullPathInTitle:   false,
-	UpdateChannel:            0,
-	ProxyMode:                netproxy.ModeSystem,
-	UpdateInterval:           3, // Default to Weekly
-	EnforceColorCorrection:   true,
-	HighlightPriority:        0,
-	LastUpdateCheck:          0,
-	LastUpdateVersion:        "",
-	Compare:                  DefaultCompareOptions(),
+	ColorStyle:                 "Modern",
+	Language:                   "en",
+	FallbackLanguage:           "",
+	HelpLanguage:               "en",
+	UseLocalLanguageFiles:      false,
+	AlwaysShowMenuBar:          false,
+	WorkspaceTabMode:           int(vtui.WorkspaceTabsAlways),
+	WorkspaceTabsOverlay:       true,
+	CtrlTabShowsMenu:           false,
+	AltNumberSwitchesTabs:      true,
+	RestoreWorkspaceTabs:       true,
+	WorkspaceTabNumbering:      WorkspaceTabNumbersAlways,
+	MacKeyboard:                MacKeysAuto,
+	ShowHiddenFiles:            true,
+	ShowDirPrefix:              false,
+	ShowHighlightMarks:         false,
+	SeparateFileExtensions:     false,
+	PanelScrollbarMode:         PanelScrollbarMinimal,
+	ShowPanelFileInfo:          false,
+	SavePanelPaths:             true,
+	DriveMenuOptions:           DefaultDriveMenuOptions,
+	InfoPanelBytes:             false,
+	InfoPanelCPUGPU:            false,
+	EscTogglePanels:            true,
+	TerminalCtrlNWorkspace:     true,
+	KeepTerminalCursor:         false,
+	ConsoleMode:                "own",
+	ConsoleOverlayUI:           false,
+	AnnounceKittyTerm:          true,
+	CommandLineAutoComplete:    true,
+	CommandLineMultiline:       true,
+	CommandLineWordWrap:        true,
+	NavigationMode:             NavigationClassic,
+	SearchCommandStayFocused:   false,
+	SearchCommandHideUnfocused: false,
+	SyncPanelLoad:              false,
+	SearchExactOnHit:           false,
+	ApplyCommandParallelism:    runtime.NumCPU(),
+	EditorAutoComplete:         true,
+	EditorAutoCompleteMask:     "*.go;*.c;*.cpp;*.h;*.hpp;*.py;*.js;*.ts;*.rs;*.java;*.sh;*.txt;*.md;*.html;*.css;*.json",
+	EditorExpandTabs:           0,
+	EditorAutoIndent:           true,
+	EditorCursorBeyondEOL:      false,
+	EditorTabSize:              4,
+	EditorUseEditorConfig:      true,
+	EditorCrosshair:            false,
+	EditorMarkOccurrences:      true,
+	UseExternalEditor:          false,
+	ExternalEditorCommand:      "",
+	ExternalEditorConsole:      "",
+	ExternalEditorGUI:          "",
+	EditorAutodetectCodePage:   true,
+	EditorHighlighter:          "Chroma",
+	EditorSyntaxAnimation:      false,
+	EditorColorerScheme:        "",
+	EditorColorerBackground:    true,
+	EditorColorerSyntax:        true,
+	EditorColorerCatalog:       "",
+	EditorCrossMode:            ColorerCrossBoth,
+	EditorDefaultCodePage:      65001,
+	EditorMemoryMap:            true,
+	ViewerAutodetectCodePage:   true,
+	ViewerDefaultCodePage:      65001,
+	WheelPanelUp:               0,
+	WheelPanelDown:             0,
+	WheelEditorUp:              0,
+	WheelEditorDown:            0,
+	WheelViewerUp:              0,
+	WheelViewerDown:            0,
+	WheelMenuUp:                0,
+	WheelMenuDown:              0,
+	WheelTableUp:               0,
+	WheelTableDown:             0,
+	PathHintTimeout:            2,
+	PathHintFullPath:           false,
+	PathHintSource:             2,
+	PathHintMaxVisible:         5,
+	PathHintPerCategory:        true,
+	DialogAutoComplete:         true,
+	HistoryShowTimes:           [HistoryTypeCount]int{HistoryShowDateTime, HistoryShowDateTime, HistoryShowDateTime},
+	HistoryDirsPrefixLen:       24,
+	SlideShowDelay:             DefaultSlideShowDelay,
+	ImageOverlay:               true,
+	TTYXKeys:                   true,
+	TTYXKeyList:                DefaultTTYXKeyList,
+	ImageExternalTimeout:       DefaultImageExternalTimeout,
+	ImageDecoderPriority:       "",
+	ConfirmCopy:                true,
+	ConfirmMove:                true,
+	ConfirmDelete:              true,
+	UseTrash:                   false,
+	ConfirmExit:                true,
+	DeleteCancelFocused:        false,
+	AutoSaveSettings:           true,
+	AutoSaveDialogSettings:     true,
+	AutoSavePanelSettings:      true,
+	AutoSaveCurrentPanel:       true,
+	AutoSaveGUIWindow:          true,
+	DefaultFileOpMode:          0,
+	FileOpPathDisplay:          0,
+	GuiFont:                    "",
+	GuiUseSystemMonospace:      true,
+	GuiFontSize:                DefaultGuiFontSize(runtime.GOOS),
+	GuiCols:                    100,
+	GuiRows:                    30,
+	GuiPosX:                    0,
+	GuiPosY:                    0,
+	GuiPositionSaved:           false,
+	StartupMode:                StartupModeAuto,
+	GuiBackend:                 "",
+	TTYBackend:                 "",
+	GuiPresentation:            GuiPresentationGUI,
+	QmlIconSet:                 QmlIconSetLucide,
+	ConsoleTitleTemplate:       "f4 %Ver %Platform %Admin - %State",
+	DisplayFullPathInTitle:     false,
+	UpdateChannel:              0,
+	ProxyMode:                  netproxy.ModeSystem,
+	UpdateInterval:             3, // Default to Weekly
+	EnforceColorCorrection:     true,
+	HighlightPriority:          0,
+	LastUpdateCheck:            0,
+	LastUpdateVersion:          "",
+	Compare:                    DefaultCompareOptions(),
 }
 
 var GetUserConfigIniPath = func() string {
@@ -816,6 +819,7 @@ func LoadConfig() {
 		}
 	}
 	App.ShowPanelFileInfo = merged.GetString("Panel", "ShowPanelFileInfo", "0") == "1"
+	App.HidePanelPathBar = merged.GetString("Panel", "HidePanelPathBar", "0") == "1"
 	App.SavePanelPaths = merged.GetString("Panel", "SavePanelPaths", "1") == "1"
 	App.DriveMenuOptions = ParseDriveMenuOptions(merged.GetString("Panel", "DriveMenuOptions", ""))
 	App.InfoPanelBytes = merged.GetString("Panel", "InfoPanelBytes", "0") == "1"
@@ -837,6 +841,7 @@ func LoadConfig() {
 		App.NavigationMode = NavigationClassic
 	}
 	App.SearchCommandStayFocused = merged.GetString("Panel", "SearchCommandStayFocused", "0") == "1"
+	App.SearchCommandHideUnfocused = merged.GetString("Panel", "SearchCommandHideUnfocused", "0") == "1"
 	App.SyncPanelLoad = merged.GetString("Panel", "SyncPanelLoad", "0") == "1"
 	App.SearchExactOnHit = merged.GetString("Panel", "SearchExactOnHit", "0") == "1"
 	App.ApplyCommandParallelism = runtime.NumCPU()
@@ -1115,6 +1120,7 @@ func SerializeSettingsConfig(cfg F4Config) []byte {
 	fmt.Fprintf(&sb, "SeparateFileExtensions = %d\n", map[bool]int{true: 1, false: 0}[cfg.SeparateFileExtensions])
 	fmt.Fprintf(&sb, "PanelScrollbarMode = %s\n", cfg.PanelScrollbarMode.String())
 	fmt.Fprintf(&sb, "ShowPanelFileInfo = %d\n", map[bool]int{true: 1, false: 0}[cfg.ShowPanelFileInfo])
+	fmt.Fprintf(&sb, "HidePanelPathBar = %d\n", map[bool]int{true: 1, false: 0}[cfg.HidePanelPathBar])
 	fmt.Fprintf(&sb, "SavePanelPaths = %d\n", map[bool]int{true: 1, false: 0}[cfg.SavePanelPaths])
 	fmt.Fprintf(&sb, "DriveMenuOptions = %d\n", cfg.DriveMenuOptions)
 	fmt.Fprintf(&sb, "InfoPanelBytes = %d\n", map[bool]int{true: 1, false: 0}[cfg.InfoPanelBytes])
@@ -1129,6 +1135,7 @@ func SerializeSettingsConfig(cfg F4Config) []byte {
 	fmt.Fprintf(&sb, "CommandLineWordWrap = %d\n", map[bool]int{true: 1, false: 0}[cfg.CommandLineWordWrap])
 	fmt.Fprintf(&sb, "NavigationMode = %s\n", cfg.NavigationMode.String())
 	fmt.Fprintf(&sb, "SearchCommandStayFocused = %d\n", map[bool]int{true: 1, false: 0}[cfg.SearchCommandStayFocused])
+	fmt.Fprintf(&sb, "SearchCommandHideUnfocused = %d\n", map[bool]int{true: 1, false: 0}[cfg.SearchCommandHideUnfocused])
 	// Keep the legacy key synchronized for older f4 versions and shared configs.
 	fmt.Fprintf(&sb, "VimHotkeys = %d\n", map[bool]int{true: 1, false: 0}[cfg.NavigationMode == NavigationVim])
 	fmt.Fprintf(&sb, "SyncPanelLoad = %d\n", map[bool]int{true: 1, false: 0}[cfg.SyncPanelLoad])
@@ -1451,10 +1458,11 @@ func RequestSaveConfig() {
 		if frames == nil {
 			return
 		}
-		frames.PostTask(func() {
+		frames.PostTaskWithRedrawDecision(func() bool {
 			if App.AutoSaveSettings && App.AutoSaveDialogSettings {
 				SaveConfig()
 			}
+			return false
 		})
 	})
 }

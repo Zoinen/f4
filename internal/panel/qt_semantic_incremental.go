@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"github.com/unxed/f4/internal/config"
 	"github.com/unxed/f4/internal/macro"
 	"github.com/unxed/f4/internal/navtrace"
 	"github.com/unxed/f4/sdk/extui"
@@ -20,19 +21,20 @@ func (pf *PanelsFrame) SemanticIncrementalShell(ctx *vtui.SemanticContext) (extu
 	panelLayout := pf.semanticPanelLayoutModel(ctx)
 	navtrace.SemanticIncrementalStageDone("shell.panel_layout", started)
 	shell := extui.ShellModel{
-		ID:             vtui.SemanticID(pf),
-		Title:          title,
-		Mode:           "panels",
-		ActivePanel:    pf.ActiveIdx,
-		ShowPanels:     pf.ShowPanels,
-		ShowLeftPanel:  pf.ShowLeftPanel,
-		ShowRightPanel: pf.ShowRightPanel,
-		Wide:           pf.Wide,
-		WidePanel:      pf.WidePanel,
-		PanelLayout:    panelLayout,
-		ShowKeyBar:     pf.ShowKeyBar,
-		TerminalBusy:   terminalBusy,
-		TerminalActive: !pf.ShowPanels,
+		HidePanelPathBar: config.App.HidePanelPathBar,
+		ID:               vtui.SemanticID(pf),
+		Title:            title,
+		Mode:             "panels",
+		ActivePanel:      pf.ActiveIdx,
+		ShowPanels:       pf.ShowPanels,
+		ShowLeftPanel:    pf.ShowLeftPanel,
+		ShowRightPanel:   pf.ShowRightPanel,
+		Wide:             pf.Wide,
+		WidePanel:        pf.WidePanel,
+		PanelLayout:      panelLayout,
+		ShowKeyBar:       pf.ShowKeyBar,
+		TerminalBusy:     terminalBusy,
+		TerminalActive:   !pf.ShowPanels,
 	}
 	if !pf.ShowPanels {
 		shell.Mode = "terminal"
@@ -67,8 +69,7 @@ func (pf *PanelsFrame) SemanticIncrementalShell(ctx *vtui.SemanticContext) (extu
 	}
 	if pf.CmdLine != nil {
 		started = navtrace.SemanticIncrementalStageStart()
-		shell.CommandLine = pf.CmdLine.SemanticModel(ctx)
-		shell.CommandLine.OwnsNavigation = pf.SearchFirstMode() && pf.CommandLineFocused
+		shell.CommandLine = pf.commandLineSemanticModel(ctx)
 		navtrace.SemanticIncrementalStageDone("shell.command_line", started)
 	}
 	if pf.TermView != nil {

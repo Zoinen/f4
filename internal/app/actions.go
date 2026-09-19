@@ -3772,8 +3772,14 @@ func ActionPanelSettings(pf *panel.PanelsFrame) {
 	if config.App.SearchCommandStayFocused {
 		chkStayFocused.State = 1
 	}
+	chkHideUnfocused := vtui.NewCheckbox(0, 0, i18n.Msg("PanelSettings.SearchHideUnfocused"), false)
+	if config.App.SearchCommandHideUnfocused {
+		chkHideUnfocused.State = 1
+	}
+	chkHideUnfocused.SetDisabled(config.App.NavigationMode != config.NavigationSearchFirst)
 	chkStayFocused.SetDisabled(config.App.NavigationMode != config.NavigationSearchFirst)
 	navigation.OnChange = func(selected int) {
+		chkHideUnfocused.SetDisabled(config.PanelNavigationMode(selected) != config.NavigationSearchFirst)
 		chkStayFocused.SetDisabled(config.PanelNavigationMode(selected) != config.NavigationSearchFirst)
 	}
 
@@ -3797,6 +3803,7 @@ func ActionPanelSettings(pf *panel.PanelsFrame) {
 	dlg.AddItem(lblNavigation)
 	dlg.AddItem(navigation)
 	dlg.AddItem(chkStayFocused)
+	dlg.AddItem(chkHideUnfocused)
 	dlg.AddItem(btnAdditional)
 	dlg.AddItem(btnOk)
 	dlg.AddItem(btnCancel)
@@ -3819,13 +3826,14 @@ func ActionPanelSettings(pf *panel.PanelsFrame) {
 	autoSaveRow := vtui.NewHBoxLayout(0, 0, 56, 1)
 	autoSaveRow.Add(chkAutoSave, vtui.Margins{}, vtui.AlignLeft)
 	vbox.Add(autoSaveRow, vtui.Margins{}, vtui.AlignFill)
-	vbox.Add(btnAutoSaveDetails, vtui.Margins{Top: 1, Left: 2}, vtui.AlignLeft)
+	vbox.Add(btnAutoSaveDetails, vtui.Margins{Left: 2}, vtui.AlignLeft)
 	vbox.Add(chkUseTrash, vtui.Margins{Top: 1}, vtui.AlignLeft)
 	vbox.Add(chkCmdAc, vtui.Margins{}, vtui.AlignLeft)
 	// Navigation radio group — its own visual island.
 	vbox.Add(lblNavigation, vtui.Margins{}, vtui.AlignLeft)
 	vbox.Add(navigation, vtui.Margins{}, vtui.AlignLeft)
 	vbox.Add(chkStayFocused, vtui.Margins{Left: 2}, vtui.AlignLeft)
+	vbox.Add(chkHideUnfocused, vtui.Margins{Left: 2}, vtui.AlignLeft)
 	hbox := vtui.NewHBoxLayout(0, 0, 56, 1)
 	hbox.HorizontalAlign = vtui.AlignCenter
 	hbox.Spacing = 1
@@ -3863,6 +3871,7 @@ func ActionPanelSettings(pf *panel.PanelsFrame) {
 		pf.CmdLine.Edit.PathHintsEnabled = config.App.CommandLineAutoComplete
 		config.App.NavigationMode = config.PanelNavigationMode(navigation.Selected)
 		config.App.SearchCommandStayFocused = chkStayFocused.State == 1
+		config.App.SearchCommandHideUnfocused = chkHideUnfocused.State == 1
 		pf.ApplyNavigationMode()
 		config.SaveConfig()
 		dlg.Close()

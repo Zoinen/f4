@@ -1,4 +1,5 @@
 #include "F4GalleryBridge.h"
+#include "NavigationBenchmarkTrace.h"
 
 #include <ZoinGallery/GallerySession.h>
 
@@ -16,6 +17,8 @@ struct F4GalleryBridge::PanelStatePatchContext
 
     QString cursorEntryId;
     int cursorIndex = -1;
+    QString appliedCursorEntryId;
+    int appliedCursorIndex = -1;
     QString nextCurrentPath;
     QString nextSourceKind;
     bool nextPreviewCapable = false;
@@ -112,6 +115,10 @@ void F4GalleryBridge::derivePanelStateValues(
         QStringLiteral("cursorEntryId"), state.cursorEntryId).toString();
     context->cursorIndex = context->panel.value(
         QStringLiteral("cursor"), state.cursorIndex).toInt();
+    // Keep Go's observation separate from the cursor painted optimistically.
+    // Reconciliation must only acknowledge the former, as in full panel sync.
+    context->appliedCursorEntryId = context->cursorEntryId;
+    context->appliedCursorIndex = context->cursorIndex;
     const PendingCursor &pending = m_pendingCursors[context->sideIndex];
     const int pendingSourceIndex =
         state.sourceIndexByEntryId.value(pending.entryId, -1);
@@ -120,8 +127,17 @@ void F4GalleryBridge::derivePanelStateValues(
             || pending.maskAcrossCatalog)
         && pending.entryId != context->cursorEntryId
         && pendingSourceIndex >= 0) {
-        context->cursorEntryId = pending.entryId;
-        context->cursorIndex = pendingSourceIndex;
+        context->appliedCursorEntryId = pending.entryId;
+        context->appliedCursorIndex = pendingSourceIndex;
+        if (F4NavigationBenchmarkTrace::enabled()) {
+            F4NavigationBenchmarkTrace::event(
+                QStringLiteral("qt.gallery.cursor.patch.masked"), m_lastInputSceneTraceId, {
+                    {QStringLiteral("side"), context->side},
+                    {QStringLiteral("op"), context->op},
+                    {QStringLiteral("authoritativeIndex"), context->cursorIndex},
+                    {QStringLiteral("displayedIndex"), pendingSourceIndex},
+                });
+        }
     }
     context->nextCurrentPath = context->panel.value(
         QStringLiteral("path"), state.currentPath).toString();
@@ -194,7 +210,7 @@ bool F4GalleryBridge::applyPanelSelectionDelta(
     const QVariantList changes = changesValue.toList();
     const bool applied = !context->session
         || context->session->applyExternalStateDelta(
-            context->cursorEntryId, context->cursorIndex, changes,
+            context->appliedCursorEntryId, context->appliedCursorIndex, changes,
             baseRevision, context->nextSelectionRevision);
     if (!applied) {
         return false;
@@ -235,7 +251,7 @@ bool F4GalleryBridge::applyPanelSelectionReplacement(
     }
     const bool applied = !context->session
         || context->session->applyExternalState(
-            context->cursorEntryId, context->cursorIndex,
+            context->appliedCursorEntryId, context->appliedCursorIndex,
             context->nextSelectedIds, context->nextSelectionRevision);
     if (applied) {
         context->nextSelectedSet = QSet<QString>(
@@ -251,7 +267,7 @@ bool F4GalleryBridge::applyPanelStateOperation(
     if (context->op == QStringLiteral("state_update")) {
         return !context->session
             || context->session->applyExternalStateDelta(
-                context->cursorEntryId, context->cursorIndex, {},
+                context->appliedCursorEntryId, context->appliedCursorIndex, {},
                 context->state->selectionRevision,
                 context->state->selectionRevision);
     }
@@ -359,7 +375,7 @@ void F4GalleryBridge::finalizePanelStatePatch(
         state.metadataUrgentBudget = 1;
     }
     prioritizePanelCatalogMetadataRow(
-        context->side, context->cursorIndex);
+        context->side, context->appliedCursorIndex);
     schedulePanelCatalogMetadataRequest();
 }
 

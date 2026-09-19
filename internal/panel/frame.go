@@ -287,9 +287,10 @@ type PanelsFrame struct {
 	// above it. Ctrl+Up/Down bumps both symmetrically for now — the
 	// asymmetric Ctrl+Shift+Up/Down handler will come as a follow-up
 	// PR, which is why the fields are split already.
-	WidthDecrement       int
-	LeftHeightDecrement  int
-	RightHeightDecrement int
+	WidthDecrement           int
+	nativeSplitLayoutPending bool
+	LeftHeightDecrement      int
+	RightHeightDecrement     int
 
 	// Integrated Terminal
 	Pty        terminal.PtyBackend
@@ -597,8 +598,7 @@ func publishPanelCatalogImmediate(fp *FileSystemPanel, benchmark *navtrace.Navig
 		var commandLine map[string]any
 		if owner.CmdLine != nil {
 			owner.CmdLine.SetRichPrompt(owner.BuildPrompt())
-			commandLineModel := owner.CmdLine.SemanticModel(nil)
-			commandLineModel.OwnsNavigation = owner.SearchFirstMode() && owner.CommandLineFocused
+			commandLineModel := owner.commandLineSemanticModel(nil)
 			commandLine = commandLineModel.ToMap()
 		}
 		queued = typedCompleteRenderer.QueuePanelCatalogModelStateWithCommandLine(
@@ -659,7 +659,12 @@ func (pf *PanelsFrame) SetCommandLineFocus(focused bool) {
 	if !focused && pf.CommandLineFocused {
 		cmdline.CloseActiveAutocompleteMenus()
 	}
+	wasHidden := pf.commandLineHiddenByFocus()
 	pf.CommandLineFocused = focused
+	if wasHidden != pf.commandLineHiddenByFocus() {
+		pf.CmdLine.SetVisible(!pf.commandLineHiddenByFocus())
+		pf.ResizeConsole(pf.LastW, pf.LastH)
+	}
 	pf.CmdLine.SetFocus(focused)
 	for i, panel := range pf.Panels {
 		if panel == nil {
@@ -1684,6 +1689,7 @@ func (pf *PanelsFrame) SetPanelViewMode(idx int, mode ViewMode) {
 }
 
 func (pf *PanelsFrame) ResizeConsole(w, h int) {
+	pf.nativeSplitLayoutPending = false
 	pf.LastW, pf.LastH = w, h
 	pf.SetPosition(0, 0, w-1, h-1) // Update hit-box for FrameManager hit-testing
 	topInset := vtui.FrameManager.WorkspaceTopInset()
@@ -1701,7 +1707,10 @@ func (pf *PanelsFrame) ResizeConsole(w, h int) {
 
 	// 1. Terminal Area: Fills everything except KeyBar
 	pf.CmdLine.SetRichPrompt(pf.BuildPrompt())
-	commandRows := pf.CmdLine.RequiredRows(w, max(1, h/2))
+	commandRows := pf.commandLineRows(w, max(1, h/2))
+	if pf.ShowPanels {
+		pf.CmdLine.SetVisible(!pf.commandLineHiddenByFocus())
+	}
 	termY2 := h - 1
 	if pf.ShellMode == terminal.ShellModeHost {
 		// The host console keeps its overlay rows below the mirrored grid, so
@@ -1967,8 +1976,8 @@ func (pf *PanelsFrame) Show(scr *vtui.ScreenBuf) {
 
 	// 1. Dynamic Layout Adjustment
 	pf.CmdLine.SetRichPrompt(pf.BuildPrompt())
-	commandRows := pf.CmdLine.RequiredRows(pf.LastW, max(1, pf.LastH/2))
-	if pf.TermView.OnAltScreen() != pf.lastAlt || isBusy != pf.lastBusy || pf.ShowPanels != pf.lastShowPanels || commandRows != pf.CmdLine.Y2-pf.CmdLine.Y1+1 {
+	commandRows := pf.commandLineRows(pf.LastW, max(1, pf.LastH/2))
+	if pf.nativeSplitLayoutPending || pf.TermView.OnAltScreen() != pf.lastAlt || isBusy != pf.lastBusy || pf.ShowPanels != pf.lastShowPanels || commandRows != pf.CmdLine.Y2-pf.CmdLine.Y1+1 {
 		pf.lastAlt = pf.TermView.OnAltScreen()
 		pf.lastBusy = isBusy
 		pf.lastShowPanels = pf.ShowPanels
@@ -2092,7 +2101,7 @@ func (pf *PanelsFrame) Show(scr *vtui.ScreenBuf) {
 		isFastFind = true
 	}
 
-	if (!pf.ShowPanels && pf.TermView.UseAltScreen) || topType == vtui.TypeUser+2 {
+	if pf.commandLineHiddenByFocus() || (!pf.ShowPanels && pf.TermView.UseAltScreen) || topType == vtui.TypeUser+2 {
 		pf.CmdLine.SetVisible(false)
 	} else {
 		isChatFocused := false
@@ -2484,7 +2493,7 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 		// internal focus notifications from closing documents or dialogs.
 		// Propagate application focus without losing the explicit search-first target.
 		if pf.SearchFirstMode() {
-			pf.CmdLine.SetFocus(e.SetFocus && pf.CommandLineFocused)
+			pf.CmdLine.SetFocus(e.SetFocus && (!pf.ShowPanels || pf.CommandLineFocused))
 		} else {
 			pf.CmdLine.SetFocus(e.SetFocus)
 		}
@@ -3061,13 +3070,15 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 	// command line. The gray numpad keys are bound to the corresponding
 	// actions (Panel.SelectGroup / DeselectGroup / InvertSelection);
 	// both paths are suspended while fast find is active.
-	if pf.ShowPanels && config.App.NavigationMode != config.NavigationSearchFirst && !alt && !ctrl && pf.CmdLine.IsEmpty() {
+	if pf.ShowPanels && (!pf.SearchFirstMode() || !pf.CommandLineFocused) &&
+		!alt && !ctrl && pf.CmdLine.IsEmpty() {
 		if e.Char == '+' || e.Char == '-' || e.Char == '*' {
 			isFastFind := false
 			if fsp := pf.GetActivePanel(); fsp != nil && fsp.FastFindMode {
 				isFastFind = true
 			}
 			if !isFastFind {
+				vtui.DebugLog("[FIX:selection-shortcuts] panel selection char=%q navigation=%v", e.Char, config.App.NavigationMode)
 				switch e.Char {
 				case '+':
 					RunAction("Panel.SelectGroup")
@@ -3704,7 +3715,7 @@ func (pf *PanelsFrame) notifyPanelActivation() {
 		var commandLine map[string]any
 		if pf.CmdLine != nil {
 			pf.CmdLine.SetRichPrompt(pf.BuildPrompt())
-			if model := pf.CmdLine.SemanticModel(nil); model != nil {
+			if model := pf.commandLineSemanticModel(nil); model != nil {
 				commandLine = model.ToMap()
 			}
 		}

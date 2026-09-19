@@ -24,6 +24,7 @@ type managerWindow struct {
 }
 
 func (window *managerWindow) Show(screen *vtui.ScreenBuf) {
+	window.layoutPaneButtons()
 	window.Window.Show(screen)
 	x1, y1, x2, y2 := window.GetPosition()
 	painter := vtui.NewPainter(screen)
@@ -47,6 +48,27 @@ func (window *managerWindow) Show(screen *vtui.ScreenBuf) {
 	if window.bottomHint != "" {
 		drawManagerHint(screen, x1, x2, y2, window.bottomHint)
 	}
+}
+
+// Pane buttons stay centered in their own pane as the outer window changes.
+// GrowAll cannot do that: it moves even the fixed-width left pane's button.
+func (window *managerWindow) layoutPaneButtons() {
+	controller := window.controller
+	if controller == nil || controller.addButton == nil || controller.variablesEdit == nil {
+		return
+	}
+	left, _, right, _ := controller.list.GetPosition()
+	addLayout := vtui.NewHBoxLayout(left, window.Y2-2, right-left+1, 1)
+	addLayout.HorizontalAlign = vtui.AlignCenter
+	addLayout.Add(controller.addButton, vtui.Margins{}, vtui.AlignTop)
+	addLayout.Apply()
+	rightX, _, _, _ := controller.variablesEdit.GetPosition()
+	buttons := vtui.NewHBoxLayout(rightX, window.Y2-2, window.X2-rightX-1, 1)
+	buttons.HorizontalAlign = vtui.AlignCenter
+	buttons.Spacing = 2
+	buttons.Add(controller.saveButton, vtui.Margins{}, vtui.AlignTop)
+	buttons.Add(controller.cancelButton, vtui.Margins{}, vtui.AlignTop)
+	buttons.Apply()
 }
 
 func (window *managerWindow) redrawReadablePreview(screen *vtui.ScreenBuf) {
@@ -304,22 +326,29 @@ func (window *managerWindow) ProcessKey(event *vtinput.InputEvent) bool {
 func (window *managerWindow) ProcessMouse(event *vtinput.InputEvent) bool {
 	oldSelection := -1
 	toggleIndex := -1
+	captured := window.IsMouseCaptured()
 	if window.controller != nil && window.controller.list != nil {
 		oldSelection = window.controller.list.SelectPos
 		list := window.controller.list
-		x1, y1, _, y2 := window.GetPosition()
+		x1, y1, x2, y2 := window.GetPosition()
 		splitX := x1 + window.splitOffset
-		if !window.controller.editing && event != nil && event.Type == vtinput.MouseEventType &&
-			int(event.MouseX) > splitX && int(event.MouseY) >= y1+2 && int(event.MouseY) < y2 {
+		if !captured && !window.controller.editing && event != nil && event.Type == vtinput.MouseEventType &&
+			int(event.MouseX) > splitX && int(event.MouseX) < x2 &&
+			int(event.MouseY) >= y1+2 && int(event.MouseY) < y2 {
 			return true
 		}
-		if !window.controller.editing && event != nil && event.Type == vtinput.MouseEventType && event.KeyDown &&
+		if !captured && !window.controller.editing && event != nil && event.Type == vtinput.MouseEventType && event.KeyDown &&
 			event.ButtonState == vtinput.FromLeft1stButtonPressed && event.MouseEventFlags&vtinput.MouseMoved == 0 &&
 			int(event.MouseX) >= list.X1 && int(event.MouseX) <= list.X1+2 {
 			toggleIndex = list.GetClickIndex(int(event.MouseY))
 		}
 	}
+	if captured && event != nil {
+		vtui.DebugLog("[FIX:envman-resize] captured mouse x=%d y=%d buttons=%d flags=%d",
+			event.MouseX, event.MouseY, event.ButtonState, event.MouseEventFlags)
+	}
 	handled := window.Window.ProcessMouse(event)
+	window.layoutPaneButtons()
 	if toggleIndex >= 0 && toggleIndex < len(window.controller.config.Entries) {
 		window.controller.toggle(toggleIndex, true, false)
 		handled = true

@@ -61,12 +61,14 @@ ShowDirPrefix|panels|File listing|Prefix folder names|Prefix folder names with a
 ShowHighlightMarks|panels|File listing|Show highlight marks|Show markers from matching file-highlight rules. Also affects path suggestions; symlinks retain their fallback arrow.||live
 SeparateFileExtensions|panels|File listing|Separate filename extensions|Align the final extension separately in the name column. Excludes folders, extensionless names and leading dots alone.||live
 ShowPanelFileInfo|panels|File listing|Focused-file status row|Reserve a bottom row for the focused name, size and modification time. Short panels suppress this row.||live
+HidePanelPathBar|panels|File listing|Hide panel path bars (GUI)|Hide the path, sorting and view controls above both graphical file panels. Ctrl+Shift+B toggles this setting.||live
 PanelScrollbarMode|panels|File listing|Panel scrollbar|Hide the scrollbar, show a minimal one, or show the full scrollbar with arrows.|0:Off;1:Minimal;2:Full|live
 SyncPanelLoad|panels|Directory loading|Wait for complete directory listing|Replace the listing only when all directory results are ready and bypass cached previews. Off permits incremental results. It does not block all UI work.||next directory load
 InfoPanelCPUGPU|panels|Information panels|Show CPU and GPU information|Include locally collected CPU and GPU sections when the information provider does not supply authoritative information.||live
 InfoPanelBytes|panels|Information panels|Show sizes in bytes|Display raw bytes instead of human-readable sizes in information and quick-view panels.||live
 NavigationMode|panels|Typing and focus|Panel navigation|Classic types into the command line. Vim adds j/k and double dd/cc/mm actions. Search-first separates filename-search and command focus.|0:Classic;1:Vim;2:Search first|live
 SearchCommandStayFocused|panels|Typing and focus|Keep command input focused|In Search-first mode, keep command entry focused after executing a command rather than returning to the panel.||live
+SearchCommandHideUnfocused|panels|Typing and focus|Hide command input when unfocused|In Search-first mode, hide the command line while the panel has focus. Press the tilde key to show it.||live
 CommandLineAutoComplete|terminal|Path suggestions|Enable filesystem suggestions|Enable filesystem path suggestions in the command line and path-enabled dialog fields.||live
 CommandLineMultiline|terminal|Command line|Multiline command input|Preserve line breaks and expand the command input upward as text wraps, in the console and GUI. Shift+Enter inserts a line break.||live
 CommandLineWordWrap|terminal|Command line|Wrap command arguments|Start each unquoted dash-prefixed argument on a new visual line and highlight its dash. Visual wrapping never changes the command.||live
@@ -156,6 +158,14 @@ func coreSettingsFields() []f4settings.Field {
 			for _, item := range strings.Split(p[5], ";") {
 				pair := strings.SplitN(item, ":", 2)
 				f.Choices = append(f.Choices, f4settings.Choice{Value: pair[0], Label: f4settings.Text{English: pair[1]}})
+			}
+		}
+		if f.ID == "SearchCommandStayFocused" || f.ID == "SearchCommandHideUnfocused" {
+			f.Enabled = func(values map[string]string) string {
+				if values["NavigationMode"] != "2" {
+					return "Select Search first to use this option."
+				}
+				return ""
 			}
 		}
 		if f.ID == "ProxyPass" {

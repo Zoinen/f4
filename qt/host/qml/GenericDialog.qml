@@ -20,7 +20,14 @@ Rectangle {
     readonly property bool customContent: contentComponent !== null
     property string backAction: hostWindow.cleanText(frame.backAction)
     property bool canGoBack: frame.canGoBack === true
+    readonly property var paneSplit: frame.paneSplit || null
+    readonly property real paneHeaderHeight: paneSplit ? hostWindow.snapPx(28) : 0
+    readonly property real paneDividerX: environmentProfilesLayout
+        ? environmentBody.x + environmentBody.splitX
+        : hostWindow.snapPx(contentPadding + hostWindow.pxX(Number(paneSplit ? paneSplit.x : 0) - contentLeft))
+    readonly property var keyHints: frame.keyHints || []
     readonly property bool settingsLayout: frame.layout === "settings"
+    readonly property bool environmentProfilesLayout: frame.layout === "environmentProfiles"
     property bool nativeLayout: hostWindow.isAppScene()
     property bool userGeometrySet: false
     property bool maximized: false
@@ -43,7 +50,7 @@ Rectangle {
     }
     readonly property real contentPadding: hostWindow.snapPx(24)
     readonly property var rowEdges: calculateRowEdges()
-    readonly property real bodyContentHeight: settingsLayout || customContent ? 0 : calculateBodyContentHeight()
+    readonly property real bodyContentHeight: settingsLayout || environmentProfilesLayout || customContent ? 0 : calculateBodyContentHeight()
     property real geometryLeft: 12
     readonly property real geometryTop: hostWindow.menuBarHeight + 8
     property real geometryRight: hostWindow.width - 12
@@ -52,23 +59,28 @@ Rectangle {
                                                1, geometryRight - geometryLeft)
     readonly property real availableHeight: Math.max(
                                                 1, geometryBottom - geometryTop)
-    readonly property real minimumDialogWidth: Math.min(320, availableWidth)
-    readonly property real minimumDialogHeight: Math.min(160, availableHeight)
+    readonly property real minimumDialogWidth: Math.min(availableWidth,
+        Math.max(320, environmentProfilesLayout ? environmentBody.minimumBodyWidth + 2 * contentPadding : 0))
+    readonly property real minimumDialogHeight: Math.min(availableHeight,
+        Math.max(160, dialogHeader.height + contentPadding + paneHeaderHeight
+                 + dialogKeyHints.height + (environmentProfilesLayout
+                    ? environmentBody.minimumBodyHeight + contentPadding + hostWindow.snapPx(1) : hostWindow.snapPx(32))))
     property real preferredWidth: customContent
         ? Math.min(availableWidth, Math.max(320, (customBody.item ? customBody.item.implicitWidth : 0) + 2 * contentPadding)) : settingsLayout
         ? Math.min(availableWidth, Math.max(640, hostWindow.pxW(frame.w))) : nativeLayout
         ? Math.min(availableWidth, Math.max(320, hostWindow.pxW(contentRight - contentLeft) + 2 * contentPadding))
         : Math.min(availableWidth, hostWindow.pxW(frame.w))
-    property real preferredHeight: customContent
-        ? Math.min(availableHeight, Math.max(160, (customBody.item ? customBody.item.implicitHeight : 0) + dialogHeader.height + 2 * contentPadding)) : settingsLayout
+    property real preferredHeight: environmentProfilesLayout
+        ? Math.min(availableHeight, Math.max(minimumDialogHeight, hostWindow.pxH(frame.h))) : customContent
+        ? Math.min(availableHeight, Math.max(160, (customBody.item ? customBody.item.implicitHeight : 0) + dialogHeader.height + 2 * contentPadding + dialogKeyHints.height + paneHeaderHeight)) : settingsLayout
         ? Math.min(availableHeight, Math.max(400, hostWindow.pxH(frame.h))) : nativeLayout
-        ? Math.min(availableHeight, Math.max(100, bodyContentHeight + dialogHeader.height + contentPadding))
+        ? Math.min(availableHeight, Math.max(100, bodyContentHeight + dialogHeader.height + contentPadding + dialogKeyHints.height + paneHeaderHeight))
         : Math.min(availableHeight, hostWindow.pxH(frame.h))
 
     SemanticDialogLayout {
         id: contentLayout
         hostWindow: dialogRoot.hostWindow
-        widgets: dialogRoot.settingsLayout || dialogRoot.customContent ? [] : frame.children || []
+        widgets: dialogRoot.settingsLayout || dialogRoot.environmentProfilesLayout || dialogRoot.customContent ? [] : frame.children || []
         originX: dialogRoot.contentLeft
         originY: Number(frame.y || 0) + 1
         maximumWidth: Math.max(1, dialogRoot.width - 2 * dialogRoot.contentPadding)
@@ -181,7 +193,7 @@ Rectangle {
     }
 
     function ensureFocusedWidgetVisible() {
-        if (settingsLayout || customContent || !dialogBody || dialogBody.height <= 0)
+        if (settingsLayout || environmentProfilesLayout || customContent || !dialogBody || dialogBody.height <= 0)
             return
         var widget = focusedWidget(frame.children || [])
         if (!widget)
@@ -419,11 +431,13 @@ Rectangle {
     SettingsDialogBody {
         id: settingsBody
         hostWindow: dialogRoot.hostWindow
+        rightGutter: dialogRoot.contentPadding
         visible: dialogRoot.settingsLayout
         widgets: visible ? dialogRoot.frame.children || [] : []
         anchors.fill: parent
         anchors.margins: dialogRoot.contentPadding
-        anchors.topMargin: dialogHeader.height + dialogRoot.contentPadding
+        anchors.topMargin: dialogHeader.height + dialogRoot.contentPadding + dialogRoot.paneHeaderHeight
+        anchors.bottomMargin: dialogRoot.contentPadding + dialogKeyHints.height
         onCloseRequested: hostWindow.action({target: dialogRoot.frame.id, action: "dialog.close"})
     }
 
@@ -433,20 +447,32 @@ Rectangle {
         active: dialogRoot.customContent
         sourceComponent: dialogRoot.contentComponent
         x: dialogRoot.contentPadding
-        y: dialogHeader.height + dialogRoot.contentPadding
+        y: dialogHeader.height + dialogRoot.contentPadding + dialogRoot.paneHeaderHeight
         width: Math.max(0, dialogRoot.width - 2 * dialogRoot.contentPadding)
-        height: Math.max(0, dialogRoot.height - y - dialogRoot.contentPadding)
+        height: Math.max(0, dialogRoot.height - y - dialogRoot.contentPadding - dialogKeyHints.height)
+    }
+
+    EnvironmentProfilesBody {
+        id: environmentBody
+        hostWindow: dialogRoot.hostWindow
+        visible: dialogRoot.environmentProfilesLayout
+        widgets: visible ? dialogRoot.frame.children || [] : []
+        x: dialogRoot.contentPadding
+        y: dialogHeader.height + dialogRoot.contentPadding + dialogRoot.paneHeaderHeight
+        width: Math.max(0, dialogRoot.width - 2 * x)
+        height: Math.max(0, dialogKeyHints.y - y - dialogRoot.contentPadding)
     }
 
     Flickable {
         id: dialogBody
-        visible: !dialogRoot.settingsLayout && !dialogRoot.customContent && !dialogRoot.externalBody
+        visible: !dialogRoot.settingsLayout && !dialogRoot.environmentProfilesLayout && !dialogRoot.customContent && !dialogRoot.externalBody
         objectName: "dialogBody"
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
-        anchors.topMargin: dialogHeader.height + dialogRoot.contentPadding
+        anchors.topMargin: dialogHeader.height + dialogRoot.contentPadding + dialogRoot.paneHeaderHeight
         anchors.bottom: parent.bottom
+        anchors.bottomMargin: dialogKeyHints.visible ? dialogKeyHints.height + hostWindow.snapPx(1) : 0
         clip: true
         contentWidth: width
         contentHeight: Math.max(height, dialogRoot.bodyContentHeight)
@@ -470,7 +496,7 @@ Rectangle {
             height: dialogBody.contentHeight
 
             Repeater {
-                model: SemanticChildrenModel { widgets: dialogRoot.settingsLayout || dialogRoot.customContent ? [] : frame.children || [] }
+                model: SemanticChildrenModel { widgets: dialogRoot.settingsLayout || dialogRoot.environmentProfilesLayout || dialogRoot.customContent ? [] : frame.children || [] }
                 delegate: SemanticWidgetDelegate {
                     required property var widgetData
                     required labelData
@@ -482,6 +508,119 @@ Rectangle {
                     originY: frame.y || 0
                     x: dialogRoot.contentPadding + horizontalPosition
                     maximumWidth: Math.max(1, dialogBody.width - x - dialogRoot.contentPadding)
+                }
+            }
+        }
+    }
+
+    Item {
+        id: paneHeaders
+        visible: dialogRoot.paneSplit !== null
+        x: dialogRoot.contentPadding
+        y: dialogHeader.height + dialogRoot.contentPadding
+        width: dialogRoot.width - 2 * x
+        height: dialogRoot.paneHeaderHeight
+
+        Text {
+            id: leftPaneTitle
+            objectName: "semanticDialogLeftPaneTitle"
+            text: hostWindow.cleanText(dialogRoot.paneSplit ? dialogRoot.paneSplit.leftTitle : "")
+            width: Math.max(0, Math.min(paneHeaders.width, dialogRoot.paneDividerX - paneHeaders.x - hostWindow.snapPx(12)))
+            height: Math.ceil(implicitHeight * hostWindow.dpr) / hostWindow.dpr
+            color: dialogRoot.paneSplit && dialogRoot.paneSplit.active === "left" ? hostWindow.dialogAccent : hostWindow.textColor
+            font.family: hostWindow.font.family
+            font.pixelSize: hostWindow.font.pixelSize
+            font.weight: Font.DemiBold
+            elide: Text.ElideRight
+            transform: Translate {
+                x: hostWindow.dialogPixelOffsetX(leftPaneTitle, hostWindow.contentItem)
+                y: hostWindow.dialogPixelOffsetY(leftPaneTitle, hostWindow.contentItem)
+            }
+        }
+        Text {
+            id: rightPaneTitle
+            objectName: "semanticDialogRightPaneTitle"
+            x: dialogRoot.paneDividerX - paneHeaders.x + hostWindow.snapPx(12)
+            width: Math.max(0, paneHeaders.width - x)
+            height: Math.ceil(implicitHeight * hostWindow.dpr) / hostWindow.dpr
+            text: hostWindow.cleanText(dialogRoot.paneSplit ? dialogRoot.paneSplit.rightTitle : "")
+            color: dialogRoot.paneSplit && dialogRoot.paneSplit.active === "right" ? hostWindow.dialogAccent : hostWindow.textColor
+            font.family: hostWindow.font.family
+            font.pixelSize: hostWindow.font.pixelSize
+            font.weight: Font.DemiBold
+            elide: Text.ElideRight
+            transform: Translate {
+                x: hostWindow.dialogPixelOffsetX(rightPaneTitle, hostWindow.contentItem)
+                y: hostWindow.dialogPixelOffsetY(rightPaneTitle, hostWindow.contentItem)
+            }
+        }
+    }
+    Rectangle {
+        objectName: "semanticDialogPaneDivider"
+        visible: paneHeaders.visible
+        x: dialogRoot.paneDividerX
+        y: paneHeaders.y
+        width: hostWindow.separatorWidth
+        height: Math.max(0, dialogKeyHints.y - y)
+        color: hostWindow.separatorColor
+        opacity: 0.55
+    }
+
+    Rectangle {
+        id: dialogKeyHints
+        objectName: "semanticDialogKeyHints"
+        visible: dialogRoot.keyHints.length > 0
+        x: hostWindow.snapPx(1)
+        y: dialogRoot.height - height - hostWindow.snapPx(1)
+        width: dialogRoot.width - 2 * x
+        height: visible ? hintFlow.height + 2 * hostWindow.snapPx(hostWindow.actionBarVerticalMargin) : 0
+        color: hostWindow.dialogHeaderBg
+
+        Rectangle {
+            objectName: "semanticDialogKeyHintsSeparator"
+            width: parent.width
+            height: hostWindow.separatorWidth
+            color: hostWindow.separatorColor
+            opacity: 0.55
+        }
+
+        Flow {
+            id: hintFlow
+            x: hostWindow.snapPx(16)
+            y: hostWindow.snapPx(hostWindow.actionBarVerticalMargin)
+            width: Math.max(1, parent.width - 2 * x)
+            spacing: 0
+
+            Repeater {
+                model: dialogRoot.keyHints
+                delegate: KeyBarActionButton {
+                    id: hintItem
+                    required property int index
+                    required property var modelData
+                    hostWindow: dialogRoot.hostWindow
+                    objectName: "semanticDialogHintButton-" + index
+                    labelObjectName: "semanticDialogHintLabel-" + index
+                    shortcutObjectName: "semanticDialogHintKey-" + index
+                    iconObjectName: "semanticDialogHintIcon-" + index
+                    separatorObjectName: "semanticDialogHintSeparator-" + index
+                    width: Math.min(hintFlow.width, naturalWidth)
+                    height: hostWindow.snapPx(32)
+                    label: hostWindow.cleanText(modelData.text)
+                    labelFormat: Text.PlainText
+                    shortcut: hostWindow.cleanText(modelData.key)
+                    iconName: hostWindow.cleanText(modelData.icon)
+                    labelColor: hostWindow.textColor
+                    shortcutColor: hostWindow.dialogAccent
+                    shortcutHoverColor: hostWindow.dialogAccent
+                    labelFont: hostWindow.font
+                    shortcutFont: Qt.font({family: hostWindow.font.family,
+                        pixelSize: hostWindow.font.pixelSize, weight: Font.DemiBold})
+                    enabled: modelData.disabled !== true && hostWindow.cleanText(modelData.action) !== ""
+                    separatorVisible: index < dialogRoot.keyHints.length - 1
+                    onClicked: function(mouse) {
+                        if (mouse.button === Qt.LeftButton)
+                            hostWindow.action({target: dialogRoot.frame.id, action: modelData.action})
+                    }
                 }
             }
         }

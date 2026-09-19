@@ -12,20 +12,22 @@ import (
 )
 
 type managerController struct {
-	plugin        *Plugin
-	app           vfs.App
-	dialog        *managerWindow
-	list          *vtui.ListBox
-	nameEdit      *vtui.Edit
-	enabledEdit   *vtui.Checkbox
-	variablesEdit *vtui.MultiLineEdit
-	addButton     *managerModeButton
-	saveButton    *managerModeButton
-	cancelButton  *managerModeButton
-	config        Config
-	closed        bool
-	editing       bool
-	editorIndex   int
+	plugin         *Plugin
+	app            vfs.App
+	dialog         *managerWindow
+	list           *vtui.ListBox
+	nameEdit       *vtui.Edit
+	nameLabel      *vtui.Text
+	enabledEdit    *vtui.Checkbox
+	variablesEdit  *vtui.MultiLineEdit
+	variablesLabel *vtui.Text
+	addButton      *managerModeButton
+	saveButton     *managerModeButton
+	cancelButton   *managerModeButton
+	config         Config
+	closed         bool
+	editing        bool
+	editorIndex    int
 }
 
 func (plugin *Plugin) openFromMenu(app vfs.App) {
@@ -179,6 +181,7 @@ func (plugin *Plugin) openManagerDialog(app vfs.App) *managerWindow {
 	y := dialog.Y1 + 3
 	nameLabelText := plugin.text("EnvMan.ProfileName", "&Name:", "&Имя:")
 	nameLabel := vtui.NewText(rightX, y, nameLabelText, 0)
+	controller.nameLabel = nameLabel
 	dialog.AddItem(nameLabel)
 	cleanNameLabel, _, _ := vtui.ParseAmpersandString(nameLabelText)
 	nameEditX := rightX + runewidth.StringWidth(cleanNameLabel) + 1
@@ -192,6 +195,7 @@ func (plugin *Plugin) openManagerDialog(app vfs.App) *managerWindow {
 	dialog.AddItem(nameEdit)
 
 	enabled := vtui.NewCheckbox(enabledX, y, enabledText, false)
+	enabled.SetGrowMode(vtui.GrowLoX | vtui.GrowHiX)
 	dialog.AddItem(enabled)
 	y += 2
 
@@ -200,7 +204,11 @@ func (plugin *Plugin) openManagerDialog(app vfs.App) *managerWindow {
 		rightWidth,
 		"…",
 	)
-	dialog.AddItem(vtui.NewText(rightX, y, variablesLabel, 0))
+	variablesCaption := vtui.NewText(rightX, y, variablesLabel, 0)
+	controller.variablesLabel = variablesCaption
+	variablesCaption.SetPosition(rightX, y, rightX+rightWidth-1, y)
+	variablesCaption.SetGrowMode(vtui.GrowHiX)
+	dialog.AddItem(variablesCaption)
 	y++
 	variablesHeight := dialog.Y2 - y - 3
 	if variablesHeight < 4 {
@@ -236,6 +244,10 @@ func (plugin *Plugin) openManagerDialog(app vfs.App) *managerWindow {
 	addButton.SetGrowMode(vtui.GrowAll)
 	saveButton.SetGrowMode(vtui.GrowAll)
 	cancelButton.SetGrowMode(vtui.GrowAll)
+	// The initial size follows the screen, but it must not become the resize
+	// minimum. The two panes and their controls still fit this compact size.
+	dialog.MinW = min(width, managerMinimumWidth)
+	dialog.MinH = min(height, managerMinimumHeight)
 
 	controller.nameEdit = nameEdit
 	controller.enabledEdit = enabled
@@ -260,9 +272,10 @@ func (plugin *Plugin) openManagerDialog(app vfs.App) *managerWindow {
 	return dialog
 }
 
+const managerMinimumWidth, managerMinimumHeight = 78, 23
+
 func managerDialogSize(screenWidth, screenHeight int) (int, int) {
-	const minimumWidth, minimumHeight = 78, 23
-	width, height := minimumWidth, minimumHeight
+	width, height := managerMinimumWidth, managerMinimumHeight
 	if candidate := screenWidth * 70 / 100; candidate > width {
 		width = candidate
 	}

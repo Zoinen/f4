@@ -355,6 +355,8 @@ set(F4_LUCIDE_ICON_NAMES
   loader-circle.svg
   locate-fixed.svg
   log-out.svg
+  arrow-right-from-line.svg
+  arrow-left-from-line.svg
   maximize-2.svg
   menu.svg
   monitor.svg
@@ -1030,6 +1032,17 @@ if(BUILD_TESTING)
     list(APPEND F4_HOST_QML_TEST_ENV "QT_QPA_FONTDIR=$ENV{WINDIR}/Fonts")
     list(APPEND F4_HOST_QML_DPR_TEST_ENV "QT_QPA_FONTDIR=$ENV{WINDIR}/Fonts")
   endif()
+  add_test(NAME F4PanelExpandPixelGridTest COMMAND F4QuickViewSurfaceTests
+    panelExpandButtonsShareHoverAndRestore
+    panelPathBarsToggleWithoutLosingContent
+    panelSplitterCoalescesGoUpdates)
+  set_tests_properties(F4PanelExpandPixelGridTest PROPERTIES
+    ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}")
+  add_test(NAME F4CommandLineAutoHidePixelGridTest COMMAND F4QuickViewSurfaceTests
+    commandLineAutoHideRevealsUpward
+    commandLinePanelToggleIsImmediate)
+  set_tests_properties(F4CommandLineAutoHidePixelGridTest PROPERTIES
+    ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}")
   add_test(NAME F4DocumentSurfaceTest COMMAND F4DocumentSurfaceTests)
   set_tests_properties(F4DocumentSurfaceTest PROPERTIES
     ENVIRONMENT "${F4_HOST_QML_TEST_ENV}"
@@ -1102,6 +1115,12 @@ if(BUILD_TESTING)
   set_tests_properties(F4OperationsQueueTest PROPERTIES
     ENVIRONMENT "${F4_HOST_QML_TEST_ENV}"
   )
+  add_test(NAME F4EnvironmentProfilesPixelGridTest COMMAND F4OperationsQueueTests
+    environmentProfilesFitDuringResize environmentProfilesHeldResizeKeepsMouseGrab
+    semanticDialogKeyHintsStayVisibleAndPixelAligned semanticListCheckboxesAndDimming)
+  set_tests_properties(F4EnvironmentProfilesPixelGridTest PROPERTIES
+    ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
+  )
   add_test(NAME F4SemanticDialogControlsPixelGridTest
     COMMAND F4OperationsQueueTests
       semanticDialogControlsUseWindowFontAndStayPixelAligned
@@ -1167,6 +1186,16 @@ if(BUILD_TESTING)
   set_tests_properties(F4QuickViewIconPixelGridTest PROPERTIES
     ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
   )
+  add_test(NAME F4PanelStatusOverlayTest COMMAND F4QuickViewSurfaceTests
+    panelStatusFitsLongestRowWithoutWrapping
+    liveSelectionStatusUsesCompactPatches
+    panelStatusLeavesStayOnPhysicalPixelGrid
+    panelFileInfoSettingKeepsStatusOverlayAndContentGeometry
+    fastFindOverlayIsIndependentFromPanelFooter
+    fastFindOverlayAvoidsStatusAndStaysPixelAligned)
+  set_tests_properties(F4PanelStatusOverlayTest PROPERTIES
+    ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
+  )
   add_test(NAME F4KeyBarPixelGridTest
     COMMAND F4QuickViewSurfaceTests
       functionBarSameCountUpdatesPreserveDelegates
@@ -1222,6 +1251,12 @@ if(BUILD_TESTING)
       pathBreadcrumbTextStaysFixedWhenNavigatingDeeper)
   set_tests_properties(F4QuickViewPathBreadcrumbPixelGridTest PROPERTIES
     ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
+  )
+  add_test(NAME F4NativeSettingsPixelGridTest
+    COMMAND F4QuickViewSurfaceTests nativeSettingsPagePreservesConfigurator)
+  set_tests_properties(F4NativeSettingsPixelGridTest PROPERTIES
+    ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../.."
   )
   add_test(NAME F4QuickViewThemeDialogPixelGridTest
     COMMAND F4QuickViewSurfaceTests
