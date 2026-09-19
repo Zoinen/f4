@@ -3786,14 +3786,24 @@ func (pf *PanelsFrame) switchActivePanel(side int) bool {
 // back after Tab, a panel swap, or an overlay closes.
 func (pf *PanelsFrame) CancelFastFind() bool {
 	cancelled := false
+	clearedPanels := 0
 	for _, panel := range pf.Panels {
 		fsp, ok := panel.(*FileSystemPanel)
-		if !ok || !fsp.FastFindMode {
+		if !ok || (!fsp.FastFindMode && fsp.FastFindStr == "") {
 			continue
 		}
 		fsp.FastFindMode = false
 		fsp.FastFindStr = ""
 		cancelled = true
+		clearedPanels++
+	}
+	if cancelled {
+		// Fast Find is part of the native panel descriptor. A focus change or
+		// action can replace the active frame before the next redraw; without an
+		// explicit invalidation, a compact cursor/activation update may retain
+		// the old QML overlay even though the Go-side input mode is already off.
+		invalidateSemanticSceneUpdate()
+		vtui.DebugLog("[FIX:fast-find-dismiss] cleared panel state count=%d", clearedPanels)
 	}
 	return cancelled
 }

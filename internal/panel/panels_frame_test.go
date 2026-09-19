@@ -4159,6 +4159,30 @@ func TestPanelsFrame_PanelActivationFastPathEligibility(t *testing.T) {
 	}
 }
 
+func TestPanelsFrame_CancelFastFindInvalidatesSemanticScene(t *testing.T) {
+	screen := vtui.NewSilentScreenBuf()
+	screen.AllocBuf(80, 25)
+	renderer := &searchFirstActivationRenderer{side: -1}
+	screen.Renderer = renderer
+	vtui.FrameManager.Init(screen)
+	t.Cleanup(func() { vtui.FrameManager.Init(vtui.NewSilentScreenBuf()) })
+
+	left := &FileSystemPanel{FastFindMode: true, FastFindStr: "needle"}
+	right := &FileSystemPanel{FastFindStr: "stale"}
+	pf := &PanelsFrame{Panels: [2]Panel{left, right}}
+
+	if !pf.CancelFastFind() {
+		t.Fatal("Fast Find cancellation reported no state change")
+	}
+	if left.FastFindMode || left.FastFindStr != "" || right.FastFindStr != "" {
+		t.Fatalf("Fast Find state survived cancellation: left=%v/%q right=%q",
+			left.FastFindMode, left.FastFindStr, right.FastFindStr)
+	}
+	if renderer.invalidations == 0 {
+		t.Fatal("Fast Find cancellation did not invalidate the semantic scene")
+	}
+}
+
 func TestPanelsFrame_SemanticSwitchInvalidatesUnsafeCompactActivation(t *testing.T) {
 	oldMode := config.App.NavigationMode
 	defer func() { config.App.NavigationMode = oldMode }()
