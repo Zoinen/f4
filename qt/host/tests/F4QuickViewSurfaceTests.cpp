@@ -691,7 +691,12 @@ struct QuickViewFixture
     explicit QuickViewFixture(const QVariantMap &scene,
                               bool galleryAvailable = false,
                               bool usesQwk = false,
-                              QString worktreeBranch = {})
+                              QString worktreeBranch = {},
+                              QString guiFontFamily = QStringLiteral("Monaco"),
+                              QString systemUiFontFamily =
+                                  QStringLiteral("Sans Serif"),
+                              QString systemMonospaceFontFamily =
+                                  QStringLiteral("monospace"))
         : gallery(galleryAvailable)
     {
         shell.setScene(scene);
@@ -707,7 +712,13 @@ struct QuickViewFixture
         engine.rootContext()->setContextProperty(
             QStringLiteral("qtTextRendering"), &textRenderingPolicy);
         engine.rootContext()->setContextProperty(
-            QStringLiteral("f4GuiFontFamily"), QStringLiteral("Monaco"));
+            QStringLiteral("f4GuiFontFamily"), guiFontFamily);
+        engine.rootContext()->setContextProperty(
+            QStringLiteral("f4SystemUiFontFamily"),
+            systemUiFontFamily);
+        engine.rootContext()->setContextProperty(
+            QStringLiteral("f4SystemMonospaceFontFamily"),
+            systemMonospaceFontFamily);
         engine.rootContext()->setContextProperty(
             QStringLiteral("f4GuiFontPixelSize"), 13);
         engine.rootContext()->setContextProperty(
@@ -766,6 +777,7 @@ private slots:
     void panelStatusLeavesStayOnPhysicalPixelGrid();
     void sortGroupLeavesStayOnPhysicalPixelGrid();
     void fastFindOverlayIsIndependentFromPanelFooter();
+    void nativeFontRolesUsePlatformDefaultsAt175Percent();
     void galleryPanelColorsAreGroupedAndRemainLive();
     void themeConfiguratorExposesOnlyLiveColorProperties();
     void themeColorEditorUsesOklchCoordinates();
@@ -1659,6 +1671,116 @@ void F4QuickViewSurfaceTests::fastFindOverlayIsIndependentFromPanelFooter()
         qAbs(loader->height() - contentHeightWithoutFooter) < 0.01, 3000);
     QCOMPARE(fixture.item(QStringLiteral("filePanel-0")), leftPanel);
     QCOMPARE(loader->property("item").value<QObject *>(), galleryHost);
+}
+
+void F4QuickViewSurfaceTests::nativeFontRolesUsePlatformDefaultsAt175Percent()
+{
+    const QString uiFontFamily = QStringLiteral("F4 Platform UI Test");
+    const QString fixedFontFamily = QStringLiteral("F4 Platform Fixed Test");
+
+    QVariantMap scene = shellScene({}, 0);
+    QVariantMap shell = scene.value(QStringLiteral("shell")).toMap();
+    QVariantList panels = shell.value(QStringLiteral("panels")).toList();
+    QVariantMap leftPanel = panels.at(0).toMap();
+    leftPanel.insert(QStringLiteral("fastFind"), true);
+    leftPanel.insert(QStringLiteral("fastFindText"),
+                     QStringLiteral("Native UI"));
+    panels[0] = leftPanel;
+    shell.insert(QStringLiteral("panels"), panels);
+    shell.insert(QStringLiteral("commandLine"), QVariantMap{
+        {QStringLiteral("visible"), true},
+        {QStringLiteral("prompt"), QStringLiteral("zoin$ ")},
+        {QStringLiteral("text"), QStringLiteral("echo fixed-width")},
+        {QStringLiteral("cursorPosition"), 16},
+    });
+    scene.insert(QStringLiteral("shell"), shell);
+
+    QuickViewFixture fixture(scene, true, true, {}, {}, uiFontFamily,
+                             fixedFontFamily);
+    QVERIFY(fixture.window);
+    const qreal dpr = fixture.window->devicePixelRatio();
+    QVERIFY2(qAbs(dpr - 1.75) < 0.001,
+             "Run this regression with QT_SCALE_FACTOR=1.75");
+    fixture.window->resize(1200, 700);
+    QCoreApplication::processEvents();
+
+    QCOMPARE(fixture.window->property("uiFontFamily").toString(),
+             uiFontFamily);
+    QCOMPARE(fixture.window->property("guiMonospaceFontFamily").toString(),
+             fixedFontFamily);
+
+    QQuickItem *const grid = fixture.item(QStringLiteral("vtuiGrid"));
+    QQuickItem *const uiLeaf = fixture.item(
+        QStringLiteral("panelFastFindText-0"));
+    QQuickItem *const fixedLeaf = fixture.item(
+        QStringLiteral("commandLineInput"));
+    QVERIFY(grid);
+    QVERIFY(uiLeaf);
+    QVERIFY(fixedLeaf);
+    QTRY_VERIFY_WITH_TIMEOUT(uiLeaf->isVisible(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(fixedLeaf->isVisible(), 3000);
+    QCOMPARE(grid->property("fontFamily").toString(), fixedFontFamily);
+    QCOMPARE(uiLeaf->property("font").value<QFont>().family(), uiFontFamily);
+    QCOMPARE(fixedLeaf->property("font").value<QFont>().family(),
+             fixedFontFamily);
+
+    QQuickItem *const content = fixture.window->contentItem();
+    const auto verifyLeaf = [content, dpr](QQuickItem *leaf) {
+        const QPointF origin = leaf->mapToItem(content, QPointF{});
+        const QPointF physical = origin * dpr;
+        const QString details = QStringLiteral(
+            "%1 origin is (%2, %3) physical px")
+                                    .arg(leaf->objectName())
+                                    .arg(physical.x(), 0, 'f', 6)
+                                    .arg(physical.y(), 0, 'f', 6);
+        QVERIFY2(qAbs(physical.x() - qRound64(physical.x())) < 0.001,
+                 qPrintable(details));
+        QVERIFY2(qAbs(physical.y() - qRound64(physical.y())) < 0.001,
+                 qPrintable(details));
+        QCOMPARE(leaf->mapToItem(content, QPointF(1, 0)) - origin,
+                 QPointF(1, 0));
+        QCOMPARE(leaf->mapToItem(content, QPointF(0, 1)) - origin,
+                 QPointF(0, 1));
+    };
+    verifyLeaf(uiLeaf);
+    verifyLeaf(fixedLeaf);
+
+    QImage frame;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !(frame = fixture.window->grabWindow()).isNull(), 3000);
+    QVERIFY(frame.save(QStringLiteral(
+        "/tmp/f4-native-font-policy-175.png")));
+    const qreal scaleX = qreal(frame.width()) / fixture.window->width();
+    const qreal scaleY = qreal(frame.height()) / fixture.window->height();
+    const auto verifyRenderedText = [content, &frame, scaleX, scaleY](
+                                        QQuickItem *leaf) {
+        const QPointF origin = leaf->mapToItem(content, QPointF{});
+        const QRect cropRect(
+            qFloor(origin.x() * scaleX), qFloor(origin.y() * scaleY),
+            qCeil(leaf->width() * scaleX),
+            qCeil(leaf->height() * scaleY));
+        const QImage crop = frame.copy(cropRect.intersected(frame.rect()));
+        QVERIFY2(!crop.isNull(), qPrintable(leaf->objectName()));
+        const QColor foreground = leaf->property("color").value<QColor>();
+        int foregroundPixels = 0;
+        for (int y = 0; y < crop.height(); ++y) {
+            for (int x = 0; x < crop.width(); ++x) {
+                const QColor pixel = crop.pixelColor(x, y);
+                const int distance = qAbs(pixel.red() - foreground.red())
+                                   + qAbs(pixel.green() - foreground.green())
+                                   + qAbs(pixel.blue() - foreground.blue());
+                if (pixel.alpha() > 0 && distance <= 36)
+                    ++foregroundPixels;
+            }
+        }
+        QVERIFY2(foregroundPixels >= 4,
+                 qPrintable(QStringLiteral(
+                     "%1 rendered only %2 foreground-like pixels")
+                                .arg(leaf->objectName())
+                                .arg(foregroundPixels)));
+    };
+    verifyRenderedText(uiLeaf);
+    verifyRenderedText(fixedLeaf);
 }
 
 void F4QuickViewSurfaceTests::semanticHorizontalSplitStaysOnNativeSurface()

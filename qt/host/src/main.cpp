@@ -20,7 +20,9 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
+#include <QFont>
 #include <QFontDatabase>
+#include <QFontInfo>
 #include <QGuiApplication>
 #include <QKeySequence>
 #include <QProcess>
@@ -52,6 +54,34 @@
 
 namespace
 {
+void configurePortableLinuxFontconfig()
+{
+#if defined(F4_PORTABLE_STATIC_LINUX)
+    // Conan's static Fontconfig library remembers its build prefix. That
+    // prefix does not exist after the host is extracted from the portable f4
+    // binary, so explicitly select the Linux installation's standard config
+    // before QGuiApplication initializes the font database. Preserve any
+    // caller-supplied Fontconfig configuration.
+    const QByteArray systemConfig = QByteArrayLiteral("/etc/fonts/fonts.conf");
+    if (!qEnvironmentVariableIsSet("FONTCONFIG_FILE")
+        && !qEnvironmentVariableIsSet("FONTCONFIG_PATH")
+        && QFileInfo(QString::fromLatin1(systemConfig)).isFile()) {
+        qputenv("FONTCONFIG_FILE", systemConfig);
+        qputenv("FONTCONFIG_PATH", QByteArrayLiteral("/etc/fonts"));
+    }
+#endif
+}
+
+QString renderedFontFamily(const QFont &font, const QString &fallback)
+{
+    const QString renderedFamily = QFontInfo(font).family().trimmed();
+    if (!renderedFamily.isEmpty()) {
+        return renderedFamily;
+    }
+    const QString requestedFamily = font.family().trimmed();
+    return requestedFamily.isEmpty() ? fallback : requestedFamily;
+}
+
 int launchCoreShortcut(int argc, char *argv[])
 {
     // Resolving the executable directory through QCoreApplication keeps this
@@ -130,6 +160,8 @@ int main(int argc, char *argv[])
     if (argc == 1) {
         return launchCoreShortcut(argc, argv);
     }
+
+    configurePortableLinuxFontconfig();
 
 #if defined(F4_PORTABLE_STATIC_LINUX)
     // Prefer the session-native Wayland plugin and retain XCB as a fallback.
@@ -252,6 +284,20 @@ int main(int argc, char *argv[])
         } else {
             guiFontFamily = families.constFirst();
         }
+    }
+    const QString systemUiFontFamily = renderedFontFamily(
+        QGuiApplication::font(), QStringLiteral("sans-serif"));
+    const QString systemMonospaceFontFamily = renderedFontFamily(
+        QFontDatabase::systemFont(QFontDatabase::FixedFont),
+        QStringLiteral("monospace"));
+    if (qEnvironmentVariableIsSet("VTUI_DEBUG")) {
+        qInfo().noquote()
+            << "[FIX:native-font-policy]"
+            << "configured="
+            << (guiFontFamily.isEmpty() ? QStringLiteral("<system>")
+                                        : guiFontFamily)
+            << "ui=" << systemUiFontFamily
+            << "fixed=" << systemMonospaceFontFamily;
     }
 
     QQuickStyle::setStyle(QStringLiteral("Basic"));
@@ -411,6 +457,11 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty(QStringLiteral("qtGallery"), &galleryBridge);
     engine.rootContext()->setContextProperty(QStringLiteral("qtIcons"), &iconSet);
     engine.rootContext()->setContextProperty(QStringLiteral("f4GuiFontFamily"), guiFontFamily);
+    engine.rootContext()->setContextProperty(
+        QStringLiteral("f4SystemUiFontFamily"), systemUiFontFamily);
+    engine.rootContext()->setContextProperty(
+        QStringLiteral("f4SystemMonospaceFontFamily"),
+        systemMonospaceFontFamily);
     engine.rootContext()->setContextProperty(QStringLiteral("f4GuiFontPixelSize"), guiFontSize);
     engine.rootContext()->setContextProperty(
         QStringLiteral("f4WorktreeBranchName"),

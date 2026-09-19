@@ -70,7 +70,7 @@ Item {
 
     FontMetrics {
         id: bodyMetrics
-        font.family: f4GuiFontFamily
+        font.family: hostWindow.guiMonospaceFontFamily
         font.pixelSize: f4GuiFontPixelSize
     }
     Item {

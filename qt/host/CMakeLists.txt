@@ -1213,6 +1213,12 @@ if(BUILD_TESTING)
   set_tests_properties(F4QuickViewTextPixelGridTest PROPERTIES
     ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
   )
+  add_test(NAME F4NativeFontPolicyPixelGridTest
+    COMMAND F4QuickViewSurfaceTests
+      nativeFontRolesUsePlatformDefaultsAt175Percent)
+  set_tests_properties(F4NativeFontPolicyPixelGridTest PROPERTIES
+    ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
+  )
   add_test(NAME F4QuickViewWorktreeBranchTitleTest
     COMMAND F4QuickViewSurfaceTests worktreeBranchAppearsCenteredInTitleBar)
   set_tests_properties(F4QuickViewWorktreeBranchTitleTest PROPERTIES

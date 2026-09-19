@@ -572,7 +572,7 @@ Rectangle {
 
         FontMetrics {
             id: fastFindFontMetrics
-            font.family: hostWindow.guiMonospaceFontFamily
+            font.family: hostWindow.uiFontFamily
             font.pixelSize: 13
         }
 
@@ -602,10 +602,16 @@ Rectangle {
             anchors.verticalCenter: parent.verticalCenter
             text: hostWindow.cleanText(panel.fastFindText)
             color: hostWindow.textColor
-            font.family: hostWindow.guiMonospaceFontFamily
+            font.family: hostWindow.uiFontFamily
             font.pixelSize: 13
             elide: Text.ElideLeft
             verticalAlignment: Text.AlignVCenter
+            transform: Translate {
+                x: hostWindow.dialogPixelOffsetX(
+                       fastFindQuery, hostWindow.contentItem)
+                y: hostWindow.dialogPixelOffsetY(
+                       fastFindQuery, hostWindow.contentItem)
+            }
         }
 
         Rectangle {

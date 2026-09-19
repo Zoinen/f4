@@ -151,7 +151,7 @@ F4HostWindow {
                            && root.useMacNativeTitleBar
                            ? root.menuBarHeight : 0
         controller: qtShell
-        fontFamily: f4GuiFontFamily
+        fontFamily: root.guiMonospaceFontFamily
         fontPixelSize: root.guiMonospaceFontPixelSize
         focus: true
         pointerInputEnabled: root.needsFallbackGrid()
