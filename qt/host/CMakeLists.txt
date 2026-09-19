@@ -833,7 +833,9 @@ if(BUILD_TESTING)
         Qt6::QGifPlugin
         Qt6::QIcoPlugin
         Qt6::QJpegPlugin
-        Qt6::QSvgPlugin)
+        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:$<LINK_GROUP:RESCAN,CONAN_LIB::qt_Qt6_Svg_Qt6Svg_RELEASE,CONAN_LIB::qt_Qt6_QSvgPlugin_qsvg_RELEASE>>
+        $<$<CXX_COMPILER_ID:MSVC>:CONAN_LIB::qt_Qt6_Svg_Qt6Svg_RELEASE>
+        $<$<CXX_COMPILER_ID:MSVC>:CONAN_LIB::qt_Qt6_QSvgPlugin_qsvg_RELEASE>)
     endif()
   endfunction()
 
@@ -1008,6 +1010,7 @@ if(BUILD_TESTING)
   target_link_libraries(F4DocumentSurfaceTests PRIVATE
     Qt6::Core
     Qt6::Gui
+    Qt6::Svg
     Qt6::Qml
     Qt6::Quick
     Qt6::QuickControls2
