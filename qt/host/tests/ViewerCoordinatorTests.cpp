@@ -9,6 +9,7 @@ class ViewerCoordinatorTests final : public QObject
 
 private slots:
     void ownsPendingAndVisibleViewerState();
+    void dockTransitionsKeepOwnership();
 };
 
 void ViewerCoordinatorTests::ownsPendingAndVisibleViewerState()
@@ -38,6 +39,36 @@ void ViewerCoordinatorTests::ownsPendingAndVisibleViewerState()
     QCOMPARE(coordinator.visible(), false);
     QCOMPARE(coordinator.side(), -1);
     QCOMPARE(changed.size(), 2);
+}
+
+void ViewerCoordinatorTests::dockTransitionsKeepOwnership()
+{
+    for (int side : {0, 1}) {
+        ViewerCoordinator coordinator;
+        coordinator.dock(side, 1 - side);
+        QVERIFY(coordinator.mounted());
+        QVERIFY(!coordinator.visible());
+        QCOMPARE(coordinator.side(), side);
+        QCOMPARE(coordinator.dockSide(), 1 - side);
+        coordinator.show(side);
+        QCOMPARE(coordinator.state(), ViewerCoordinator::Expanding);
+        coordinator.collapse(); // An interrupted expansion reverses in place.
+        QCOMPARE(coordinator.state(), ViewerCoordinator::Collapsing);
+        coordinator.settle();
+        QCOMPARE(coordinator.state(), ViewerCoordinator::Docked);
+        coordinator.show(side);
+        coordinator.settle();
+        QCOMPARE(coordinator.state(), ViewerCoordinator::Full);
+        coordinator.collapse();
+        coordinator.removeDock(); // Disabling Quick View cancels the return.
+        QCOMPARE(coordinator.state(), ViewerCoordinator::Full);
+        QCOMPARE(coordinator.dockSide(), -1);
+        coordinator.hide();
+        QVERIFY(!coordinator.mounted());
+        coordinator.dock(side, 1 - side);
+        coordinator.removeDock();
+        QVERIFY(!coordinator.mounted());
+    }
 }
 
 QTEST_GUILESS_MAIN(ViewerCoordinatorTests)

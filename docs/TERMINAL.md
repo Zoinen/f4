@@ -468,3 +468,19 @@ Argument wrapping puts each unquoted argument starting with a dash on a new
 visual line and highlights the dash. Ordinary overflow wraps at word boundaries
 (with long words split as needed). Colored margin dashes identify soft breaks.
 Neither visual breaks nor margin markers enter the command buffer or history.
+
+## Selection and GUI launch environment
+
+Terminal selection anchors use document rows (scrollback followed by the active
+screen), without the visual offset that places short output at the bottom.
+The Qt projection publishes `selectionActiveStart` and `selectionActiveOffset`
+to map those anchors into displayed rows. `terminal.copySelection` accepts
+`unshiftedRows: true` so output arriving before the copy action does not change
+its selected text. Console selection uses the same document coordinates and
+keeps selected text available after it enters scrollback.
+
+When launching a GUI development build from an automation runner, remove the
+runner's `NO_COLOR` setting from that launch environment if it is not a user
+preference. Codex may supply `NO_COLOR=1`, which Rich honors even inside a real
+ConPTY. F4 intentionally preserves an explicit user `NO_COLOR` preference;
+changing ANSI decoding or forcing colors in child programs is not the remedy.

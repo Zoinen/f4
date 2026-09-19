@@ -520,6 +520,7 @@ private slots:
     void terminalDragSelectionSendsAbsoluteClipboardRange();
     void terminalDragSelectionAutoScrollsBeyondViewportByDistance();
     void terminalSelectionUsesNearestInsertionBoundary();
+    void terminalSelectionFollowsOutputGravity();
     void terminalDoubleAndTripleClickSelectWordAndParagraph();
     void legacyRowsRemainScrollableWithoutWindowProtocol();
 };
@@ -4452,4 +4453,39 @@ void F4DocumentSurfaceTests::shortEditorSelectionDoesNotScroll()
         QVERIFY(visibleClips > 0);
     }
     QVERIFY(fixture.window->grabWindow().save(".diagnostics/short-editor-selection-175.png"));
+}
+
+void F4DocumentSurfaceTests::terminalSelectionFollowsOutputGravity()
+{
+    QVariantMap frame = terminalFrame(0, 24, 0, 1);
+    frame.insert(QStringLiteral("selectionActiveStart"), 0);
+    frame.insert(QStringLiteral("selectionActiveOffset"), 20);
+    DocumentFixture fixture(documentScene(frame));
+    QVERIFY(fixture.ready());
+    QTRY_VERIFY(fixture.surface->property("windowInitialized").toBool());
+    QVERIFY(QMetaObject::invokeMethod(fixture.surface, "beginTerminalSelectionAt",
+        Q_ARG(QVariant, QVariant(20)), Q_ARG(QVariant, QVariant(1))));
+    QVERIFY(QMetaObject::invokeMethod(fixture.surface, "extendTerminalSelectionTo",
+        Q_ARG(QVariant, QVariant(20)), Q_ARG(QVariant, QVariant(5))));
+    for (const int offset : {19, 10, 0}) {
+        frame.insert(QStringLiteral("selectionActiveOffset"), offset);
+        fixture.shell.setScene(documentScene(frame));
+        QCoreApplication::processEvents();
+        QVariant range;
+        QVERIFY(QMetaObject::invokeMethod(fixture.surface, "terminalSelectionRangeForRow",
+            Q_RETURN_ARG(QVariant, range), Q_ARG(QVariant, QVariant(offset)),
+            Q_ARG(QVariant, QVariant(fixture.list->width()))));
+        QVERIFY2(range.toMap().value(QStringLiteral("valid")).toBool(), "selection left its text during gravity scroll");
+        QCOMPARE(range.toMap().value(QStringLiteral("start")).toInt(), 1);
+        QCOMPARE(range.toMap().value(QStringLiteral("end")).toInt(), 5);
+    }
+    frame.insert(QStringLiteral("selectionActiveStart"), 30);
+    fixture.shell.setScene(documentScene(frame));
+    QCoreApplication::processEvents();
+    fixture.shell.clearActions();
+    QVERIFY(QMetaObject::invokeMethod(fixture.surface, "commitTerminalSelection"));
+    QTRY_VERIFY(!fixture.shell.actions.isEmpty());
+    const auto action = fixture.shell.actions.constLast();
+    QCOMPARE(action.value(QStringLiteral("startRow")).toInt(), 0);
+    QVERIFY(action.value(QStringLiteral("unshiftedRows")).toBool());
 }

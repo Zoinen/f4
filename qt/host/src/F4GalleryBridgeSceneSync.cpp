@@ -161,11 +161,11 @@ void F4GalleryBridge::traceSkippedScenePanel(
 void F4GalleryBridge::reconcileSceneOwnedState(
     const SceneSyncContext &context)
 {
-    if (viewerVisible()
+    if (viewerMounted()
         && (!validSide(viewerSide())
             || !context.found[static_cast<size_t>(viewerSide())]
             || !m_panelSessions.catalog(viewerSide()).previewCapable
-            || !m_panelSessions.catalog(viewerSide()).active)) {
+            || (quickViewSide() < 0 && !m_panelSessions.catalog(viewerSide()).active))) {
         closeViewer();
     }
     const auto &viewerIntent = m_viewerCoordinator->pendingIntent();
@@ -263,6 +263,13 @@ void F4GalleryBridge::synchronizeScene(const QVariantMap &scene)
     beginSceneSyncTrace(&context);
     synchronizeScenePanels(&context);
     reconcileSceneOwnedState(context);
+    const QVariantMap shell = scene.value("shell").toMap();
+    const QVariantList quickViews = shell.value("quickViews").toList();
+    QVariantMap quickView = quickViews.isEmpty() ? QVariantMap{} : quickViews.first().toMap();
+    const char *visibility = quickView.value("side").toInt() == 0 ? "showLeftPanel" : "showRightPanel";
+    if (!shell.value("showPanels", true).toBool() || !shell.value(visibility, true).toBool()
+        || shell.value("terminalActive").toBool()) quickView.clear();
+    synchronizeQuickView(quickView);
     finishBenchmarkSceneTrace(context);
     finishGenericSceneTrace(&context);
     schedulePanelCatalogMetadataRequest();

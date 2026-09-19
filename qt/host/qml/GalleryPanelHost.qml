@@ -185,6 +185,7 @@ FocusScope {
         panelAdapter.appliedRendererConfigSignature
     property bool applyingRendererState: false
 
+    signal keyboardInput()
     signal pointerActivationPreviewRequested(int side)
 
     // Host resource URLs terminate at this adapter boundary. ZoinGallery only
@@ -315,7 +316,7 @@ FocusScope {
     }
 
     Keys.priority: Keys.BeforeItem
-    Keys.onPressed: (event) => inputRouter.handlePressed(event)
+    Keys.onPressed: (event) => { host.keyboardInput(); inputRouter.handlePressed(event) }
     Keys.onReleased: (event) => inputRouter.handleReleased(event)
 
     onPanelChanged: {

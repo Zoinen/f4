@@ -21,23 +21,46 @@ void ViewerCoordinator::clearPending()
 
 void ViewerCoordinator::show(int side)
 {
-    setVisibleState(side == 0 || side == 1, side);
+    if (side < 0 || side > 1) { hide(); return; }
+    setState(m_state == Docked && side == m_side ? Expanding : Full, side);
 }
-
+void ViewerCoordinator::dock(int sourceSide, int destinationSide)
+{
+    if (sourceSide < 0 || sourceSide > 1 || destinationSide < 0 || destinationSide > 1) return;
+    const bool changedDock = m_dockSide != destinationSide;
+    m_dockSide = destinationSide;
+    if (!visible()) {
+        if (m_state == Docked && m_side == sourceSide && changedDock) emit changed();
+        else setState(Docked, sourceSide);
+    }
+    else if (changedDock) emit changed();
+}
+void ViewerCoordinator::removeDock()
+{
+    if (m_dockSide < 0) return;
+    m_dockSide = -1;
+    if (m_state == Docked) hide();
+    else if (m_state == Collapsing) setState(Full, m_side);
+    else emit changed();
+}
+void ViewerCoordinator::collapse()
+{
+    if (m_dockSide >= 0 && visible()) setState(Collapsing, m_side);
+}
+void ViewerCoordinator::settle()
+{
+    if (m_state == Expanding) setState(Full, m_side);
+    else if (m_state == Collapsing) setState(Docked, m_side);
+}
 void ViewerCoordinator::hide()
 {
-    setVisibleState(false, -1);
+    m_dockSide = -1;
+    setState(Closed, -1);
 }
-
-void ViewerCoordinator::setVisibleState(bool visible, int side)
+void ViewerCoordinator::setState(State state, int side)
 {
-    const int normalizedSide = visible && (side == 0 || side == 1)
-        ? side : -1;
-    const bool normalizedVisible = normalizedSide >= 0;
-    if (m_visible == normalizedVisible && m_side == normalizedSide) {
-        return;
-    }
-    m_visible = normalizedVisible;
-    m_side = normalizedSide;
+    if (m_state == state && m_side == side) return;
+    m_state = state;
+    m_side = side;
     emit changed();
 }

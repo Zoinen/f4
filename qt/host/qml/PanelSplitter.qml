@@ -28,6 +28,7 @@ Item {
     property color separatorColor: "#3a495b"
     property real gutterWidth: 16
     property real separatorWidth: 1
+    property real devicePixelRatio: 1
     // A panel can paint an interactive overlay (e.g. a scrollbar) into its
     // own reserved lane of this gutter. Keep the visual track/divider at the
     // full gutter width, but narrow the pointer hit area so a press there
@@ -159,14 +160,17 @@ Item {
     }
 
     Rectangle {
+        objectName: "panelSplitterTrack"
         anchors.fill: parent
         color: splitter.trackColor
     }
 
     Rectangle {
+        objectName: "panelSplitterLine"
         anchors.top: parent.top
         anchors.bottom: parent.bottom
-        anchors.horizontalCenter: parent.horizontalCenter
+        x: Math.round((splitter.width - width) / 2 * splitter.devicePixelRatio)
+           / splitter.devicePixelRatio
         width: splitter.separatorWidth
         color: splitter.dragging || splitter.activeFocus
                ? splitter.activeLineColor

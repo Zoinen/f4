@@ -139,6 +139,40 @@ effect on restart and do not move or delete the previous location. An empty valu
 uses the existing namespaced cache root shown on the page. Preferences are stored
 in the Qt host's QSettings, alongside its existing Gallery cache preferences.
 
+### Image Quick View
+
+Ctrl+Q uses the same `GalleryViewerHost` / `ZG.GalleryViewer` as Enter for images.
+`ViewerCoordinator` keeps its source panel separate from its Quick View destination
+and tracks closed, docked, expanding, full, and collapsing presentation states.
+The Loader, session, decode requests and caches survive dock/full transitions.
+Only full-view progress fades shell controls and substitutes the workspace title.
+Docked geometry is clipped to the complete alternate-panel slot, with no opening
+animation. Fit responds to the viewport; custom zoom retains its absolute scale
+and center image point subject to viewport bounds and physical-pixel rounding.
+
+The **Quick View** group in **Gallery & Cache** stores F4-owned Qt preferences
+`QuickView/useBuiltinF4Viewer` (false) and `QuickView/previewOnHover` (true).
+Apply takes effect immediately. The built-in choice restores Go image decoding,
+bounded PNG serialization and the QML Image. Native image presentation bypasses
+that work and uses the source catalog's authenticated media descriptors. Errors
+stay in the selected renderer. Text, hex, directories and provider previews
+continue to use the existing F4 surfaces.
+
+`QuickViewController` configures each shell with `quickView.configure` before
+new alternate panels load. `quickView.preview` carries Quick View and source
+panel identities, catalog revision, stable entry ID and increasing generation.
+Hover changes the presented entry without cursor, selection or focus changes.
+Leaving the list and keyboard input clear the override; pointer movement can
+establish it again. Dragging, blocking overlays and full presentation suppress
+hover. Non-image hover work is cancellable and obsolete results are discarded.
+
+Click or Tab focuses the docked viewer. Its navigation commits the source cursor
+without activating the source panel. Enter expands, Escape focuses the source
+list, and Ctrl+Q closes Quick View. Enter on the source list always opens its real
+cursor item, even when another image is hovered. Full-view close gestures return
+to Quick View while its gallery destination exists; changing the renderer or
+removing that destination restores the ordinary full-view lifecycle.
+
 GalleryRuntime shares an 8 MiB RAM cache of compact folder snapshots across
 panels. Each snapshot stores Unknown / Empty / HasImages, up to 16 selected
 children, dimensions and thumbnail-cache keys; it contains no read authority or

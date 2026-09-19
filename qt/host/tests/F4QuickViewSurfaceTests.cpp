@@ -1,3 +1,4 @@
+#include <QSGRendererInterface>
 #include "PointerRowAnchor.h"
 #include "DummyQWK.h"
 #include "F4TextRenderingPolicy.h"
@@ -213,7 +214,11 @@ class TestGallery final : public QObject
     Q_PROPERTY(QObject *settings MEMBER preferences CONSTANT)
     Q_PROPERTY(QObject *viewerSession READ viewerSession NOTIFY viewerChanged)
     Q_PROPERTY(bool viewerVisible READ viewerVisible NOTIFY viewerChanged)
-    Q_PROPERTY(int viewerSide READ viewerSide CONSTANT)
+    Q_PROPERTY(bool viewerMounted READ viewerMounted NOTIFY viewerChanged)
+    Q_PROPERTY(int viewerState MEMBER presentationState NOTIFY viewerChanged)
+    Q_PROPERTY(int quickViewSide MEMBER destinationSide NOTIFY viewerChanged)
+    Q_PROPERTY(QVariantMap quickView MEMBER quickView NOTIFY viewerChanged)
+    Q_PROPERTY(int viewerSide READ viewerSide NOTIFY viewerChanged)
     Q_PROPERTY(QUrl panelComponentUrl READ panelComponentUrl CONSTANT)
     Q_PROPERTY(QUrl viewerComponentUrl READ viewerComponentUrl NOTIFY viewerChanged)
 
@@ -223,7 +228,15 @@ public:
 
     bool available() const { return m_available; }
     QObject *viewerSession() const { return m_viewerSession; }
-    bool viewerVisible() const { return m_viewerUrl.isValid(); }
+    bool viewerVisible() const { return m_viewerUrl.isValid() && presentationState != 1; }
+    bool viewerMounted() const { return m_viewerUrl.isValid(); }
+    int presentationState = 3;
+    int destinationSide = -1;
+    QVariantMap quickView;
+    Q_INVOKABLE void expandQuickView() { presentationState = 2; emit viewerChanged(); }
+    Q_INVOKABLE void collapseQuickView() { presentationState = 4; emit viewerChanged(); }
+    Q_INVOKABLE void settleViewer() { presentationState = presentationState == 4 ? 1 : 3; emit viewerChanged(); }
+    Q_INVOKABLE void requestActivate(int side) { quickView["active"] = side == destinationSide; emit viewerChanged(); }
     QUrl viewerComponentUrl() const { return m_viewerUrl; }
     void showViewer(const QUrl &url, QObject *session = nullptr)
     {
@@ -231,7 +244,7 @@ public:
         m_viewerUrl = url;
         emit viewerChanged();
     }
-    int viewerSide() const { return 0; }
+    int viewerSide() const { return destinationSide < 0 ? 0 : 1 - destinationSide; }
     QUrl emptyUrl() const { return {}; }
     QUrl panelComponentUrl() const
     {
@@ -756,6 +769,7 @@ private slots:
     void compiledHostLoadsItsQmlModule();
     void expandedViewerKeepsWorkspaceChromeAccessible();
     void cachedGalleryViewerCentersFirstNativeZoomAt175Percent();
+    void quickViewRetainsViewerAcrossPresentationChanges();
     void semanticSceneGatesOnlyGridRendering();
     void semanticHorizontalSplitStaysOnNativeSurface();
     void functionBarShowsExplicitFunctionKeysAndForwardsMouseModifiers();
@@ -775,6 +789,8 @@ private slots:
     void themeDialogFontRenderingControlIsLiveAndThemeAware();
     void themeColorListHoverAndPressFlashHaveExplicitLifetimes();
     void themeDialogControlsStayOnPhysicalPixelGridAt175Percent();
+    void userMenuRecordDialogLeavesStaySharpAt175Percent();
+    void far3ImportDialogLeavesStaySharpAt175Percent_data();
     void far3ImportDialogLeavesStaySharpAt175Percent();
     void largeHistoryLatencyProfile();
     void historyHeldUpKeepsRowsOnPhysicalPixels();
@@ -1079,6 +1095,16 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
     const auto galleryCapture = qEnvironmentVariable("F4_GALLERY_SETTINGS_CAPTURE");
     if (!galleryCapture.isEmpty()) QVERIFY(fixture.window->grabWindow().save(galleryCapture));
     auto *galleryViewport = visualItemWithObjectName(body, "nativeSettingsViewport");
+    auto *quickHeading = visualItemWithObjectName(galleryPage, "galleryQuickViewTitle");
+    auto *builtin = visualItemWithObjectName(galleryPage, "galleryBuiltinQuickView");
+    auto *hover = visualItemWithObjectName(galleryPage, "galleryHoverQuickView");
+    QVERIFY(quickHeading && builtin && hover);
+    QVERIFY(!builtin->property("checked").toBool());
+    QVERIFY(hover->property("checked").toBool());
+    galleryViewport->setProperty("contentY", qMax(0.0, quickHeading->y() - 120));
+    QTest::qWait(150);
+    inspect(inspect, galleryPage);
+    if (!galleryCapture.isEmpty()) QVERIFY(fixture.window->grabWindow().save(galleryCapture + "-quickview.png"));
     galleryViewport->setProperty("contentY", galleryViewport->property("contentHeight").toReal() - galleryViewport->height());
     QTest::qWait(150);
     inspect(inspect, galleryPage);
@@ -2731,26 +2757,84 @@ void F4QuickViewSurfaceTests::largeHistoryLatencyProfile()
     }
 }
 
+void F4QuickViewSurfaceTests::userMenuRecordDialogLeavesStaySharpAt175Percent()
+{
+    const QString path = qEnvironmentVariable("F4_USERMENU_EDITOR_SCENE");
+    if (path.isEmpty()) QSKIP("Generate the Go editor scene with F4_USERMENU_EDITOR_SCENE first");
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    const auto node = QJsonDocument::fromJson(file.readAll()).toVariant().toMap();
+    QVERIFY(!node.isEmpty());
+    auto scene = shellScene();
+    scene["dialogs"] = QVariantList{node};
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    fixture.window->resize(1300, 1100);
+    QTest::qWait(150);
+    auto *root = fixture.window->contentItem();
+    auto *dialog = visualItemWithObjectName(root, "semanticDialog-id:settings-record-dialog");
+    QVERIFY(dialog && dialog->isVisible());
+    const qreal dpr = fixture.window->devicePixelRatio();
+    QCOMPARE(dpr, 1.75);
+    int leaves = 0;
+    const auto inspect = [&](auto &&self, QQuickItem *item) -> void {
+        if (item->isVisible() && (item->property("renderType").isValid() || item->inherits("QQuickImage"))) {
+            ++leaves;
+            const auto origin = item->mapToItem(root, QPointF{});
+            const QString detail = QString("%1 physical=(%2,%3)").arg(item->objectName())
+                .arg(origin.x()*dpr,0,'f',6).arg(origin.y()*dpr,0,'f',6);
+            QVERIFY2(!item->objectName().isEmpty(), qPrintable(detail));
+            QVERIFY2(qAbs(origin.x()*dpr-qRound(origin.x()*dpr))<.001, qPrintable(detail));
+            QVERIFY2(qAbs(origin.y()*dpr-qRound(origin.y()*dpr))<.001, qPrintable(detail));
+            QCOMPARE(item->mapToItem(root,QPointF(1,0))-origin,QPointF(1,0));
+            QCOMPARE(item->mapToItem(root,QPointF(0,1))-origin,QPointF(0,1));
+        }
+        for (auto *child : item->childItems()) self(self,child);
+    };
+    inspect(inspect,dialog);
+    QVERIFY(leaves >= 10);
+    QVERIFY(fixture.window->grabWindow().save(path + ".png"));
+}
+
+void F4QuickViewSurfaceTests::far3ImportDialogLeavesStaySharpAt175Percent_data()
+{
+    QTest::addColumn<bool>("userMenu");
+    QTest::newRow("history") << false;
+    QTest::newRow("user-menu") << true;
+}
+
 void F4QuickViewSurfaceTests::far3ImportDialogLeavesStaySharpAt175Percent()
 {
+    QFETCH(bool, userMenu);
     auto scene = shellScene();
     scene.insert("dialogs", QVariantList{QVariantMap{{"id", "far3-import"}, {"kind", "dialog"},
-        {"title", "Import Far3 history"}, {"x", 20}, {"y", 10}, {"w", 60}, {"h", 11},
+        {"title", userMenu ? "Import Far3 user menu" : "Import Far3 history"}, {"x", 20}, {"y", 10}, {"w", 60}, {"h", 11},
         {"modal", true}, {"showClose", true}, {"children", QVariantList{
-            QVariantMap{{"id","far3-label"},{"kind","text"},{"text","Far3 folder or history.db:"},{"x",22},{"y",12},{"w",25},{"h",1}},
+            QVariantMap{{"id","far3-label"},{"kind","text"},{"text",userMenu ? "FarMenu.ini or Far folder:" : "Far3 folder or history.db:"},{"x",22},{"y",12},{"w",25},{"h",1}},
             QVariantMap{{"id","far3-path"},{"kind","edit"},{"text",R"(C:\Programs\Far3)"},{"focused",true},{"x",22},{"y",14},{"w",56},{"h",1}},
-            QVariantMap{{"id","far3-note"},{"kind","text"},{"text","Merge histories; skip duplicates."},{"x",22},{"y",16},{"w",32},{"h",1}},
+            QVariantMap{{"id","far3-note"},{"kind","text"},{"text",userMenu ? "Import into the global menu draft." : "Merge histories; skip duplicates."},{"x",22},{"y",16},{"w",32},{"h",1}},
             QVariantMap{{"id","far3-import-button"},{"kind","button"},{"text","Import"},{"x",40},{"y",18},{"w",10},{"h",1}},
             QVariantMap{{"id","far3-cancel"},{"kind","button"},{"text","Cancel"},{"x",52},{"y",18},{"w",10},{"h",1}}
         }}}});
+    if (userMenu) {
+        auto dialogs = scene.value("dialogs").toList();
+        auto dialog = dialogs[0].toMap();
+        auto children = dialog.value("children").toList();
+        children.append(QVariantMap{{"id","far3-detail"},{"kind","text"},
+            {"text","Apply saves the imported entries."},{"x",22},{"y",17},{"w",34},{"h",1}});
+        dialog["children"] = children;
+        dialogs[0] = dialog;
+        scene["dialogs"] = dialogs;
+    }
     QuickViewFixture fixture(scene);
     QVERIFY(fixture.window);
     auto *root = fixture.window->contentItem();
     const auto dpr = fixture.window->devicePixelRatio();
     QCOMPARE(dpr, 1.75);
-    const QStringList names{"semanticDialogTitle", "titleBarButtonIcon", "dialogWidget-far3-labelText",
+    QStringList names{"semanticDialogTitle", "titleBarButtonIcon", "dialogWidget-far3-labelText",
         "dialogWidget-far3-noteText", "dialogWidget-far3-pathEditTextInput",
         "dialogWidget-far3-import-buttonButtonText", "dialogWidget-far3-cancelButtonText"};
+    if (userMenu) names.append("dialogWidget-far3-detailText");
     for (const QSize size : {QSize(1101, 803), QSize(801, 601)}) {
         fixture.window->resize(size);
         QTest::qWait(60);
@@ -2777,7 +2861,7 @@ void F4QuickViewSurfaceTests::far3ImportDialogLeavesStaySharpAt175Percent()
     const QImage capture = fixture.window->grabWindow();
     QVERIFY(!capture.isNull());
     const QString path = qEnvironmentVariable("F4_FAR3_DIALOG_CAPTURE");
-    if (!path.isEmpty()) QVERIFY(capture.save(path));
+    if (!path.isEmpty()) QVERIFY(capture.save(path + (userMenu ? "-usermenu.png" : "-history.png")));
 }
 
 void F4QuickViewSurfaceTests::themeDialogControlsStayOnPhysicalPixelGridAt175Percent()
@@ -4039,6 +4123,175 @@ void F4QuickViewSurfaceTests::workspaceTabWheelActivatesAdjacentTabs()
     QCOMPARE(fixture.shell.actions.size(), 0);
 }
 
+void F4QuickViewSurfaceTests::quickViewRetainsViewerAcrossPresentationChanges()
+{
+    QTemporaryDir directory;
+    const QString imagePath = directory.filePath("docked.png");
+    QImage image(QSize(2400, 1600), QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::cyan);
+    QVERIFY(image.save(imagePath));
+    QVariantMap dockView{{"id", "quick"}, {"side", 1}, {"sourceSide", 0},
+        {"previewKind", "image"}, {"imageRenderer", "gallery"}, {"entryId", "image"},
+        {"title", "Quick View"}, {"bottomHint", "legacy footer"}};
+    QuickViewFixture fixture(shellScene({dockView}, 0), false, true);
+    QVERIFY(fixture.window);
+    QCOMPARE(fixture.window->devicePixelRatio(), qreal(1.75));
+    auto *runtime = ZoinGallery::GalleryRuntime::install(&fixture.engine);
+    auto *session = runtime->createExternalSession("docked-presentation");
+    const auto shutdown = qScopeGuard([&] { runtime->shutdown(); });
+    QVERIFY(session->applyExternalCatalog({QVariantMap{
+        {"entryId", "image"}, {"index", 0}, {"name", "docked.png"},
+        {"localPath", imagePath}, {"isDir", false}, {"isImage", true},
+        {"size", QFileInfo(imagePath).size()}, {"mtimeNs", qint64(0)}
+    }}, 1));
+    QVERIFY(session->applyExternalState("image", 0, {}, 1));
+    session->setViewerOpen(true);
+    fixture.gallery.presentationState = 1;
+    fixture.gallery.destinationSide = 1;
+    fixture.gallery.quickView = {{"entryId", "image"}, {"active", false}};
+    fixture.gallery.showViewer(QUrl("qrc:/F4QtHost/qml/GalleryViewerHost.qml"), session);
+    QQuickItem *viewer = nullptr;
+    QTRY_VERIFY((viewer = fixture.item("embeddedGalleryViewer")));
+    auto *viewport = viewer->property("flickableArea").value<QQuickItem *>();
+    QVERIFY(viewport);
+    QTRY_VERIFY(viewport->property("imageTextureReady").toBool());
+    QTRY_COMPARE(viewer->property("transitionProgress").toReal(), 1.0);
+    auto *layer = fixture.item("galleryViewerLayer");
+    QVERIFY(layer);
+    QTRY_COMPARE(layer->property("fullProgress").toReal(), 0.0);
+    auto *legacyTitle = fixture.item("quickViewTitle-1");
+    QVERIFY(legacyTitle);
+    QVERIFY(!legacyTitle->isVisible());
+    QVERIFY(!fixture.item("quickViewFooterText-1")->isVisible());
+    QCOMPARE(fixture.window->property("normalSurfaceOpacity").toReal(), 1.0);
+    QVERIFY(!viewer->hasActiveFocus());
+    const auto validateEndpoint = [&] {
+        QCOMPARE(fixture.item("embeddedGalleryViewer"), viewer);
+        QVERIFY(session->viewerOpen());
+        QVERIFY(layer->isVisible());
+        QVERIFY(viewer->isVisible());
+        QVERIFY(viewer->width() > 100 && viewer->height() > 100);
+        QCOMPARE(viewer->property("transitionProgress").toReal(), 1.0);
+        QCOMPARE(viewer->property("viewerContentVisible").toBool(), true);
+        const auto origin = layer->mapToItem(fixture.window->contentItem(), QPointF());
+        for (qreal value : {origin.x(), origin.y(), layer->width(), layer->height()})
+            QVERIFY(qAbs(value * 1.75 - qRound(value * 1.75)) < 0.001);
+        QCOMPARE(layer->mapToItem(fixture.window->contentItem(), QPointF(1, 0)) - origin, QPointF(1, 0));
+        QCOMPARE(layer->mapToItem(fixture.window->contentItem(), QPointF(0, 1)) - origin, QPointF(0, 1));
+        // Include every visible text/image leaf, not just the clip wrapper.
+        const auto inspect = [&](auto &&self, QQuickItem *item) -> void {
+            if (item->isVisible() && (item->property("renderType").isValid() || item->inherits("QQuickImage"))) {
+                const auto p = item->mapToItem(fixture.window->contentItem(), QPointF());
+                const auto details = QString("%1 physical=(%2,%3)").arg(item->objectName()).arg(p.x()*1.75).arg(p.y()*1.75);
+                QVERIFY2(!item->objectName().isEmpty(), qPrintable(details));
+                QVERIFY2(qAbs(p.x()*1.75-qRound(p.x()*1.75))<0.001, qPrintable(details));
+                QVERIFY2(qAbs(p.y()*1.75-qRound(p.y()*1.75))<0.001, qPrintable(details));
+                QCOMPARE(item->mapToItem(fixture.window->contentItem(), QPointF(1,0))-p, QPointF(1,0));
+                QCOMPARE(item->mapToItem(fixture.window->contentItem(), QPointF(0,1))-p, QPointF(0,1));
+            }
+            for (auto *child : item->childItems()) self(self, child);
+        };
+        inspect(inspect, viewer);
+    };
+    validateEndpoint();
+    for (int side : {0, 1}) {
+        dockView["side"] = side;
+        dockView["sourceSide"] = 1 - side;
+        fixture.shell.setScene(shellScene({dockView}, 1 - side));
+        fixture.gallery.destinationSide = side;
+        if (side == 1) viewport->setProperty("rotationMode", 1);
+        QTRY_VERIFY(!viewport->property("isRotating").toBool());
+        emit fixture.gallery.viewerChanged();
+        QCoreApplication::processEvents();
+        auto *splitter = fixture.item("mainPanelSplitter");
+        QVERIFY(splitter);
+        QVERIFY(splitter->isEnabled());
+        // The trailing half of the gutter overlaps the right Quick View.
+        // Exercise the real mouse grab, including movement across the viewer.
+        const QPoint grab = splitter->mapToScene(QPointF(
+            splitter->width() * 0.75, splitter->height() / 2)).toPoint();
+        const qreal beforeRatio = fixture.window->property("panelSplitRatio").toReal();
+        QTest::mousePress(fixture.window, Qt::LeftButton, Qt::NoModifier, grab);
+        QVERIFY2(splitter->property("dragging").toBool(), "docked viewer intercepted the panel splitter press");
+        QTest::mouseMove(fixture.window, grab + QPoint(70, 0));
+        QTest::mouseRelease(fixture.window, Qt::LeftButton, Qt::NoModifier, grab + QPoint(70, 0));
+        QTRY_VERIFY(fixture.window->property("panelSplitRatio").toReal() > beforeRatio + 0.03);
+        QVERIFY(!splitter->property("dragging").toBool());
+        for (const auto &name : {"panelSplitterTrack", "panelSplitterLine"}) {
+            auto *leaf = visualItemWithObjectName(splitter, name);
+            QVERIFY(leaf);
+            const auto origin = leaf->mapToItem(fixture.window->contentItem(), QPointF());
+            for (const qreal physical : {origin.x()*1.75, origin.y()*1.75,
+                                         leaf->width()*1.75, leaf->height()*1.75})
+                QVERIFY2(qAbs(physical-qRound(physical)) < 0.001,
+                         qPrintable(QString("%1 physical coordinate %2").arg(name).arg(physical)));
+            QCOMPARE(leaf->mapToItem(fixture.window->contentItem(), QPointF(1,0))-origin, QPointF(1,0));
+            QCOMPARE(leaf->mapToItem(fixture.window->contentItem(), QPointF(0,1))-origin, QPointF(0,1));
+        }
+        QVERIFY(fixture.window->grabWindow().save(QString(".diagnostics/quick-view-splitter-%1-175.png").arg(side)));
+        QTest::mouseDClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+            splitter->mapToScene(QPointF(splitter->width() * 0.75, splitter->height()/2)).toPoint());
+        QTRY_VERIFY(qAbs(fixture.window->property("panelSplitRatio").toReal()-0.5) < 0.001);
+        validateEndpoint();
+        QTest::mouseDClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+            viewport->mapToScene(QPointF(viewport->width()/2, viewport->height()/2)).toPoint());
+        QTRY_COMPARE(fixture.gallery.presentationState, 3);
+        QTRY_COMPARE(layer->property("fullProgress").toReal(), 1.0);
+        validateEndpoint();
+        // A custom absolute zoom survives both directions of the geometry change.
+        QVERIFY(QMetaObject::invokeMethod(viewport, "zoomTo100", Q_ARG(QVariant, true)));
+        QTRY_VERIFY(!viewport->property("viewportAnimationRunning").toBool());
+        const qreal zoom = viewport->property("zoomScale").toReal();
+        auto *imageItem = viewport->property("image").value<QQuickItem *>();
+        QVERIFY(imageItem);
+        const QPointF centerBefore((viewport->width()/2 - imageItem->x())/zoom,
+                                   (viewport->height()/2 - imageItem->y())/zoom);
+        QTest::mouseDClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+            viewport->mapToScene(QPointF(viewport->width()/2, viewport->height()/2)).toPoint());
+        QTRY_COMPARE(fixture.gallery.presentationState, 1);
+        QTRY_COMPARE(layer->property("fullProgress").toReal(), 0.0);
+        QTRY_COMPARE(viewport->property("zoomScale").toReal(), zoom);
+        const QPointF centerAfter((viewport->width()/2 - imageItem->x())/zoom,
+                                  (viewport->height()/2 - imageItem->y())/zoom);
+        const auto centerError = (centerAfter - centerBefore) * zoom * 1.75;
+        qInfo() << "presentation physical center drift" << centerError;
+        QVERIFY(qAbs(centerError.x()) <= 1.01 && qAbs(centerError.y()) <= 1.01);
+        validateEndpoint();
+        const QString capture = qEnvironmentVariable("F4_QUICKVIEW_TEST_CAPTURE");
+        QImage rendered;
+        if (fixture.window->rendererInterface()->graphicsApi() != QSGRendererInterface::Software)
+            QTRY_VERIFY(imageContainsColor(rendered = fixture.window->grabWindow(), Qt::cyan));
+        else
+            rendered = fixture.window->grabWindow();
+        if (!capture.isEmpty()) QVERIFY(rendered.save(capture + QString("-%1.png").arg(side)));
+    }
+    fixture.gallery.expandQuickView();
+    QTest::qWait(40);
+    fixture.gallery.collapseQuickView();
+    QTRY_COMPARE(fixture.gallery.presentationState, 1);
+    validateEndpoint();
+    fixture.window->resize(937, 677);
+    QTest::qWait(80);
+    validateEndpoint();
+    QVERIFY(session->applyExternalCatalog({QVariantMap{
+        {"entryId", "missing"}, {"index", 0}, {"name", "missing.png"},
+        {"localPath", directory.filePath("missing.png")}, {"isDir", false}, {"isImage", true}
+    }}, 2));
+    QVERIFY(session->applyExternalState("missing", 0, {}, 2));
+    fixture.gallery.quickView["entryId"] = "missing";
+    emit fixture.gallery.viewerChanged();
+    auto *failure = fixture.item("galleryViewerLoadFailure");
+    QVERIFY(failure);
+    QTRY_VERIFY(failure->isVisible());
+    QTest::qWait(300);
+    validateEndpoint();
+    const QString failureCapture = qEnvironmentVariable("F4_QUICKVIEW_TEST_CAPTURE");
+    const auto failureFrame = fixture.window->grabWindow();
+    if (fixture.window->rendererInterface()->graphicsApi() != QSGRendererInterface::Software)
+        QVERIFY2(!imageContainsColor(failureFrame, Qt::cyan), "Failed preview retained the previous image");
+    if (!failureCapture.isEmpty()) QVERIFY(failureFrame.save(failureCapture + "-error.png"));
+}
+
 void F4QuickViewSurfaceTests::cachedGalleryViewerCentersFirstNativeZoomAt175Percent()
 {
     QTemporaryDir directory;
@@ -4310,7 +4563,8 @@ Rectangle {
     QTRY_COMPARE(fixture.window->visibility(), QWindow::FullScreen);
     QTRY_VERIFY(!tabs->isVisible());
     QTRY_COMPARE(layer->mapToItem(root, QPointF()), QPointF());
-    QTRY_COMPARE(layer->size(), root->size());
+    QTRY_COMPARE(layer->size(), QSizeF(qRound(root->width() * dpr) / dpr,
+                                         qRound(root->height() * dpr) / dpr));
     qInfo() << "[FIX:gallery-fullscreen] viewer rect"
             << layer->mapRectToItem(root, layer->boundingRect())
             << "DPR" << dpr << "tabs visible" << tabs->isVisible();

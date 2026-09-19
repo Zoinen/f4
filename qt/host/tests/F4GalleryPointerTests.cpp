@@ -280,6 +280,7 @@ private slots:
     void dropTargetsRejectSourceAndOutlineActiveTab();
     void upstreamDragArtwork();
     void initTestCase();
+    void quickViewHoverDoesNotMoveCursorOrFocus();
     void semanticGridPointerGatePreservesKeyboardFocus();
     void hiddenSemanticGridDefersRenderingUntilFallbackEnabled();
     void semanticImeCommitUsesTextProtocol();
@@ -301,6 +302,95 @@ private slots:
 void F4GalleryPointerTests::initTestCase()
 {
     QStandardPaths::setTestModeEnabled(true);
+}
+
+void F4GalleryPointerTests::quickViewHoverDoesNotMoveCursorOrFocus()
+{
+    QQmlEngine engine;
+    engine.addImportPath(":");
+    F4GalleryBridge bridge(&engine);
+    bridge.synchronizeScene(galleryScene(4));
+    engine.rootContext()->setContextProperty("testBridge", &bridge);
+    QQmlComponent component(&engine);
+    component.setData(R"QML(
+        import QtQuick
+        import QtQuick.Controls
+        import "qrc:/F4QtHost/qml" as F4
+        ApplicationWindow {
+            id: root
+            width: 640; height: 900; visible: true
+            property bool overlay: false
+            property bool nativeTwoPanelSurfaceActive: true
+            signal recorded(var request)
+            function action(request, preserve) { recorded(request) }
+            function shellFrame() { return {id:"shell", quickViews:[{id:"quick", side:1, sourceSide:0,
+                sourcePanelId:"pointer-left", catalogRevision:5, previewKind:"directory", entryId:"entry-0"}]} }
+            function galleryPanelHost(side) { return panelLoader.item }
+            function hasBlockingOverlay() { return overlay }
+            function hasDocumentSurface() { return false }
+            function hasOperationsQueueSurface() { return false }
+            function needsFallbackGrid() { return false }
+            Loader {
+                id: panelLoader; objectName: "hoverSource"
+                width: 320; height: 900
+                source: testBridge.panelComponentUrl
+                onLoaded: {
+                    item.side = 0; item.bridge = testBridge
+                    item.panel = {catalogRevision:5}; item.panelActive = true
+                }
+            }
+            F4.QuickViewController { objectName: "previewController"; hostWindow: root; bridge: testBridge }
+        }
+    )QML", QUrl("inline:QuickViewHover.qml"));
+    QTRY_VERIFY(component.status() != QQmlComponent::Loading);
+    QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+    QScopedPointer<QObject> root(component.create());
+    QVERIFY2(root, qPrintable(component.errorString()));
+    auto *window = qobject_cast<QQuickWindow *>(root.data());
+    QVERIFY(window);
+    QSignalSpy previews(root.data(), SIGNAL(recorded(QVariant)));
+    QSignalSpy actions(&bridge, &F4GalleryBridge::uiActionRequested);
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(bridge.sessionForSide(0));
+    QVERIFY(session);
+    auto *loader = root->findChild<QObject *>("hoverSource");
+    QObject *host = nullptr;
+    QTRY_VERIFY((host = loader->property("item").value<QObject *>()));
+    QQuickItem *label = nullptr;
+    QTRY_VERIFY((label = host->findChild<QQuickItem *>("galleryMasonryLabel-2")));
+    QTest::qWait(100);
+    auto *focusBefore = window->activeFocusItem();
+    const auto cursorBefore = session->cursorEntryId();
+    previews.clear(); actions.clear();
+    const QPoint target = label->mapToScene(QPointF(label->width()/2, label->height()/2)).toPoint();
+    QTest::mouseMove(window, target);
+    QTRY_VERIFY(!previews.isEmpty() && previews.last().first().toMap().value("entryId").toString() == "entry-2");
+    auto request = previews.last().first().toMap();
+    QCOMPARE(request.value("action").toString(), QString("quickView.preview"));
+    QCOMPARE(request.value("entryId").toString(), QString("entry-2"));
+    QCOMPARE(request.value("catalogRevision").toInt(), 5);
+    QCOMPARE(request.value("index").toInt(), 102);
+    QCOMPARE(session->cursorEntryId(), cursorBefore);
+    QCOMPARE(window->activeFocusItem(), focusBefore);
+    QVERIFY(actions.isEmpty());
+    const int count = previews.size();
+    QTest::mouseMove(window, target + QPoint(1, 0));
+    QCOMPARE(previews.size(), count); // Same entry is deduplicated.
+    QVERIFY(QMetaObject::invokeMethod(host, "keyboardInput"));
+    QTRY_COMPARE(previews.last().first().toMap().value("entryId").toString(), QString());
+    QTest::mouseMove(window, target + QPoint(2, 0));
+    QTRY_COMPARE(previews.last().first().toMap().value("entryId").toString(), QString("entry-2"));
+    root->setProperty("overlay", true);
+    QTRY_COMPARE(previews.last().first().toMap().value("entryId").toString(), QString());
+    const int blockedCount = previews.size();
+    QTest::mouseMove(window, target + QPoint(3, 0));
+    QCOMPARE(previews.size(), blockedCount);
+    root->setProperty("overlay", false);
+    QTest::mouseMove(window, target + QPoint(4, 0));
+    QTRY_COMPARE(previews.last().first().toMap().value("entryId").toString(), QString("entry-2"));
+    QTest::mouseMove(window, QPoint(550, 300));
+    QTRY_COMPARE(previews.last().first().toMap().value("entryId").toString(), QString());
+    QCOMPARE(session->cursorEntryId(), cursorBefore);
+    QVERIFY(actions.isEmpty());
 }
 
 void F4GalleryPointerTests::semanticGridPointerGatePreservesKeyboardFocus()

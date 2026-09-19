@@ -295,6 +295,10 @@ func (c *settingsCenter) addCommands(category string) {
 					c.status = Phrase("Provider is no longer loaded.")
 					return
 				}
+				if cmd.ID == "usermenu.importFar3" {
+					c.importFar3UserMenu()
+					return
+				}
 				if cmd.Background {
 					c.runBackground(cmd.Run, func(err error) {
 						if err == nil && cmd.ID == "syntax.download" {

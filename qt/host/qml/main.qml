@@ -189,7 +189,7 @@ F4HostWindow {
         pageId: "gallery"
         title: qsTr("Gallery & cache")
         iconName: "images"
-        content: Component { GallerySettingsPage { hostWindow: root; settings: qtGallery.settings } }
+        content: Component { GallerySettingsPage { hostWindow: root; settings: qtGallery.settings; quickViewPreferences: qtGallery.quickViewPreferences !== undefined ? qtGallery.quickViewPreferences : null } }
     }, NativeSettingsPage {
         pageId: "terminal-colors"
         title: qsTr("Terminal colors")

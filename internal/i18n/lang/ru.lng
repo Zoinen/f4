@@ -3129,3 +3129,17 @@ History.Far3.Import=&Импорт
 History.Far3.EmptyPath=Укажите папку Far3, профиль или путь к history.db.
 History.Far3.Result=Добавлено команд: %d, файлов: %d, папок: %d.\nПропущено неподдерживаемых записей: %d (пути плагинов или внешние запуски).
 History.Far3.NotFound=В этой папке не найдена установка Far3 или файл history.db.
+
+UserMenu.Far3.Title=Импорт меню пользователя Far3
+UserMenu.Far3.Path=FarMenu.ini или папка Far:
+UserMenu.Far3.Merge=Добавить в главное меню.
+UserMenu.Far3.Draft=Импорт в черновик главного меню.
+UserMenu.Far3.Empty=В этом файле не найдены пункты меню пользователя.
+UserMenu.Far3.Result=В главное меню добавлено пунктов верхнего уровня: %d.
+Action.UserMenu.ImportFar3=Импорт меню пользователя Far Manager 3
+Action.UserMenu.ImportFar3.Desc=Добавить меню пользователя Far Manager 3 в главное меню F4
+SettingsCenter.Text.2c3ddb3c1528cff83c63ad44c6c129d966a6dc63da9fdab8f8080dfeaa1354e3=Импорт меню пользователя Far Manager 3
+SettingsCenter.Text.09c4464a863191a292d14cb10ea4ae0a37dd34d7864363125ee5920194a08eb2=Добавить FarMenu.ini в черновик главного меню. Существующие пункты сохраняются; «Применить» сохранит импорт.
+SettingsCenter.Text.2cff9baabf56ca002610e113bc94deb6ededddfc3c130365b6e88ed5195bf774=Импорт
+UserMenu.Far3.Keep=Существующие пункты сохраняются.
+UserMenu.Far3.Apply=Сохранение кнопкой «Применить».

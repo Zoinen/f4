@@ -250,6 +250,8 @@ set(F4_QT_HOST_SOURCES
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgeCatalog.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgePanelSync.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgeIntents.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/F4QuickViewPreferences.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgeQuickView.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgeProtocol.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgeRowsResponse.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgeMetadataResponse.cpp"
@@ -1445,6 +1447,8 @@ if(BUILD_TESTING)
     src/F4GalleryBridgeBenchmark.cpp
     src/F4GalleryBridgeCatalog.cpp
     src/F4GalleryBridgePanelSync.cpp
+    src/F4GalleryBridgeQuickView.cpp
+    src/F4QuickViewPreferences.h
     src/F4GalleryBridgeIntents.cpp
     src/F4GalleryBridgeProtocol.cpp
     src/F4GalleryBridgeRowsResponse.cpp
@@ -1521,6 +1525,8 @@ if(BUILD_TESTING)
     src/F4GalleryBridgeBenchmark.cpp
     src/F4GalleryBridgeCatalog.cpp
     src/F4GalleryBridgePanelSync.cpp
+    src/F4GalleryBridgeQuickView.cpp
+    src/F4QuickViewPreferences.h
     src/F4GalleryBridgeIntents.cpp
     src/F4GalleryBridgeProtocol.cpp
     src/F4GalleryBridgeRowsResponse.cpp
@@ -1565,6 +1571,7 @@ if(BUILD_TESTING)
   qt6_add_resources(F4GalleryPointerTests f4_gallery_pointer_test_qml
     PREFIX "/F4QtHost"
     FILES
+      qml/QuickViewController.qml
       qml/GalleryPanelHost.qml
       qml/GalleryPanelHostAdapter.qml
       qml/GalleryPanelInputRouter.qml

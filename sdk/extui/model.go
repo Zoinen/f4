@@ -90,26 +90,31 @@ type InfoPanelRowModel struct {
 // reuse the same smooth-scrolling viewport as Viewer and Editor without
 // mistaking the preview for a standalone document frame.
 type QuickViewModel struct {
-	ID          string
-	Side        int
-	SourceSide  int
-	Active      bool
-	Title       string
-	BottomHint  string
-	ContentKey  string
-	Name        string
-	Path        string
-	SizeText    string
-	PreviewKind string
-	Label       string
-	Error       string
-	Loading     bool
-	Wrap        bool
-	HeaderRows  []TextRowModel
-	ImageSource string
-	ImageWidth  int
-	ImageHeight int
-	Surface     SurfaceModel
+	SourcePanelID     string
+	EntryID           string
+	CatalogRevision   int64
+	PreviewGeneration int64
+	ImageRenderer     string
+	ID                string
+	Side              int
+	SourceSide        int
+	Active            bool
+	Title             string
+	BottomHint        string
+	ContentKey        string
+	Name              string
+	Path              string
+	SizeText          string
+	PreviewKind       string
+	Label             string
+	Error             string
+	Loading           bool
+	Wrap              bool
+	HeaderRows        []TextRowModel
+	ImageSource       string
+	ImageWidth        int
+	ImageHeight       int
+	Surface           SurfaceModel
 }
 
 type PanelModel struct {
@@ -347,37 +352,39 @@ type CommandLineModel struct {
 }
 
 type TerminalModel struct {
-	ID                 string
-	Title              string
-	Columns            int
-	DefaultBackground  string
-	Visible            bool
-	Focused            bool
-	AltScreen          bool
-	Busy               bool
-	FollowTail         bool
-	CursorX            int
-	CursorY            int
-	CursorAbsoluteRow  int64
-	CursorVisible      bool
-	CursorShape        string
-	SelectionEnabled   bool
-	DocumentKey        string
-	ScrollAction       string
-	ScrollUnit         string
-	WindowStart        int64
-	WindowEnd          int64
-	ViewportStart      int64
-	ViewportSpan       int64
-	ContentStart       int64 // First content row; leading screen padding keeps its absolute IDs.
-	ContentExtent      int64
-	ContentExtentKnown bool
-	ViewportRow        int
-	ViewportRows       int
-	WindowGeneration   uint64
-	WindowContentKey   string
-	Rows               []TextRowModel
-	WindowRows         []TextRowModel
+	ID                    string
+	Title                 string
+	Columns               int
+	DefaultBackground     string
+	Visible               bool
+	Focused               bool
+	AltScreen             bool
+	Busy                  bool
+	FollowTail            bool
+	CursorX               int
+	CursorY               int
+	CursorAbsoluteRow     int64
+	CursorVisible         bool
+	CursorShape           string
+	SelectionEnabled      bool
+	SelectionActiveStart  int64
+	SelectionActiveOffset int
+	DocumentKey           string
+	ScrollAction          string
+	ScrollUnit            string
+	WindowStart           int64
+	WindowEnd             int64
+	ViewportStart         int64
+	ViewportSpan          int64
+	ContentStart          int64 // First content row; leading screen padding keeps its absolute IDs.
+	ContentExtent         int64
+	ContentExtentKnown    bool
+	ViewportRow           int
+	ViewportRows          int
+	WindowGeneration      uint64
+	WindowContentKey      string
+	Rows                  []TextRowModel
+	WindowRows            []TextRowModel
 }
 
 // CaretModel carries a secondary editor caret and its independent selection.
@@ -823,27 +830,30 @@ func (p InfoPanelModel) ToMap() M {
 
 func (q QuickViewModel) ToMap() M {
 	return M{
-		"id":          q.ID,
-		"kind":        "quickViewPanel",
-		"side":        q.Side,
-		"sourceSide":  q.SourceSide,
-		"active":      q.Active,
-		"title":       q.Title,
-		"bottomHint":  q.BottomHint,
-		"contentKey":  q.ContentKey,
-		"name":        q.Name,
-		"path":        q.Path,
-		"sizeText":    q.SizeText,
-		"previewKind": q.PreviewKind,
-		"label":       q.Label,
-		"error":       q.Error,
-		"loading":     q.Loading,
-		"wrap":        q.Wrap,
-		"headerRows":  rowsToMaps(q.HeaderRows),
-		"imageSource": q.ImageSource,
-		"imageWidth":  q.ImageWidth,
-		"imageHeight": q.ImageHeight,
-		"surface":     q.Surface.ToMap(),
+		"sourcePanelId": q.SourcePanelID, "entryId": q.EntryID,
+		"catalogRevision": q.CatalogRevision, "previewGeneration": q.PreviewGeneration,
+		"imageRenderer": q.ImageRenderer,
+		"id":            q.ID,
+		"kind":          "quickViewPanel",
+		"side":          q.Side,
+		"sourceSide":    q.SourceSide,
+		"active":        q.Active,
+		"title":         q.Title,
+		"bottomHint":    q.BottomHint,
+		"contentKey":    q.ContentKey,
+		"name":          q.Name,
+		"path":          q.Path,
+		"sizeText":      q.SizeText,
+		"previewKind":   q.PreviewKind,
+		"label":         q.Label,
+		"error":         q.Error,
+		"loading":       q.Loading,
+		"wrap":          q.Wrap,
+		"headerRows":    rowsToMaps(q.HeaderRows),
+		"imageSource":   q.ImageSource,
+		"imageWidth":    q.ImageWidth,
+		"imageHeight":   q.ImageHeight,
+		"surface":       q.Surface.ToMap(),
 	}
 }
 
@@ -1154,35 +1164,37 @@ func (c CommandLineModel) ToMap() M {
 
 func (t TerminalModel) ToMap() M {
 	out := M{
-		"id":                 t.ID,
-		"kind":               "terminal",
-		"title":              t.Title,
-		"columns":            t.Columns,
-		"defaultBackground":  t.DefaultBackground,
-		"visible":            t.Visible,
-		"focused":            t.Focused,
-		"altScreen":          t.AltScreen,
-		"busy":               t.Busy,
-		"followTail":         t.FollowTail,
-		"cursorX":            t.CursorX,
-		"cursorY":            t.CursorY,
-		"cursorAbsoluteRow":  t.CursorAbsoluteRow,
-		"cursorVisible":      t.CursorVisible,
-		"cursorShape":        t.CursorShape,
-		"selectionEnabled":   t.SelectionEnabled,
-		"documentKey":        t.DocumentKey,
-		"scrollAction":       t.ScrollAction,
-		"scrollUnit":         t.ScrollUnit,
-		"windowStart":        t.WindowStart,
-		"windowEnd":          t.WindowEnd,
-		"viewportStart":      t.ViewportStart,
-		"viewportSpan":       t.ViewportSpan,
-		"contentStart":       t.ContentStart,
-		"contentExtent":      t.ContentExtent,
-		"contentExtentKnown": t.ContentExtentKnown,
-		"viewportRow":        t.ViewportRow,
-		"viewportRows":       t.ViewportRows,
-		"windowGeneration":   t.WindowGeneration,
+		"id":                    t.ID,
+		"kind":                  "terminal",
+		"title":                 t.Title,
+		"columns":               t.Columns,
+		"defaultBackground":     t.DefaultBackground,
+		"visible":               t.Visible,
+		"focused":               t.Focused,
+		"altScreen":             t.AltScreen,
+		"busy":                  t.Busy,
+		"followTail":            t.FollowTail,
+		"cursorX":               t.CursorX,
+		"cursorY":               t.CursorY,
+		"cursorAbsoluteRow":     t.CursorAbsoluteRow,
+		"cursorVisible":         t.CursorVisible,
+		"cursorShape":           t.CursorShape,
+		"selectionEnabled":      t.SelectionEnabled,
+		"selectionActiveStart":  t.SelectionActiveStart,
+		"selectionActiveOffset": t.SelectionActiveOffset,
+		"documentKey":           t.DocumentKey,
+		"scrollAction":          t.ScrollAction,
+		"scrollUnit":            t.ScrollUnit,
+		"windowStart":           t.WindowStart,
+		"windowEnd":             t.WindowEnd,
+		"viewportStart":         t.ViewportStart,
+		"viewportSpan":          t.ViewportSpan,
+		"contentStart":          t.ContentStart,
+		"contentExtent":         t.ContentExtent,
+		"contentExtentKnown":    t.ContentExtentKnown,
+		"viewportRow":           t.ViewportRow,
+		"viewportRows":          t.ViewportRows,
+		"windowGeneration":      t.WindowGeneration,
 	}
 	if len(t.WindowRows) > 0 || t.ScrollUnit != "" {
 		key := t.WindowContentKey

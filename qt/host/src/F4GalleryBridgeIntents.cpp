@@ -71,6 +71,10 @@ void F4GalleryBridge::requestCursor(int side,
         clearPendingCursor(side);
     }
     m_stateReconciliationPending[static_cast<size_t>(side)] = true;
+    if (m_quickView.value("sourceSide", -1).toInt() == side && !viewerVisible()) {
+        synchronizeQuickView(m_quickView);
+        emit viewerChanged();
+    }
     if (deferCommit) {
         // Gallery already moved optimistically. Keep the latest stable ID in
         // pending state so older scenes cannot snap it backward, but avoid
@@ -152,7 +156,7 @@ void F4GalleryBridge::requestOpen(int side,
     }
     if (isImage && available() && sideState.previewCapable) {
         clearPendingPanelOpen();
-        closeViewer();
+        if (!viewerMounted() || viewerSide() != side) closeViewer();
         m_viewerCoordinator->beginPending(
             side, m_panelSessions.catalog(side).panelId, entryId,
             effectiveCatalogRevision(side, catalogRevision));
@@ -494,7 +498,7 @@ void F4GalleryBridge::requestSort(int side, const QString &sortMode,
 void F4GalleryBridge::closeViewer()
 {
     clearPendingViewer();
-    if (!viewerVisible()) {
+    if (!viewerMounted()) {
         return;
     }
     if (auto *session = qobject_cast<ZoinGallery::GallerySession *>(viewerSession())) {

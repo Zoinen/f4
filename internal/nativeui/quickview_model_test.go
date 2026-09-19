@@ -15,19 +15,24 @@ func TestQuickViewSemanticQMLContract_AppScenePreservesNestedInt64Surface(t *tes
 			"kind":       "panels",
 			"showPanels": true,
 			"quickViews": []map[string]any{{
-				"id":          "quick-contract",
-				"kind":        "quickViewPanel",
-				"side":        1,
-				"sourceSide":  0,
-				"active":      true,
-				"title":       "Quick View",
-				"bottomHint":  "B",
-				"contentKey":  "content-42",
-				"name":        "huge.txt",
-				"path":        "/virtual/huge.txt",
-				"sizeText":    "10 GiB",
-				"previewKind": "text",
-				"wrap":        true,
+				"id":                "quick-contract",
+				"kind":              "quickViewPanel",
+				"side":              1,
+				"sourceSide":        0,
+				"sourcePanelId":     "source-panel",
+				"entryId":           "stable-entry",
+				"catalogRevision":   int64(5_000_000_000),
+				"previewGeneration": int64(6_000_000_000),
+				"imageRenderer":     "gallery",
+				"active":            true,
+				"title":             "Quick View",
+				"bottomHint":        "B",
+				"contentKey":        "content-42",
+				"name":              "huge.txt",
+				"path":              "/virtual/huge.txt",
+				"sizeText":          "10 GiB",
+				"previewKind":       "text",
+				"wrap":              true,
 				"headerRows": []map[string]any{{
 					"visualRow": 0, "text": "huge.txt",
 				}},
@@ -69,6 +74,9 @@ func TestQuickViewSemanticQMLContract_AppScenePreservesNestedInt64Surface(t *tes
 	if quick["contentKey"] != "content-42" || quick["sourceSide"] != 0 ||
 		quick["previewKind"] != "text" {
 		t.Fatalf("Quick View chrome was not promoted: %#v", quick)
+	}
+	if quick["sourcePanelId"] != "source-panel" || quick["entryId"] != "stable-entry" || quick["catalogRevision"] != int64(5_000_000_000) || quick["previewGeneration"] != int64(6_000_000_000) || quick["imageRenderer"] != "gallery" {
+		t.Fatalf("preview identity was truncated or lost: %#v", quick)
 	}
 	surface := quick["surface"].(map[string]any)
 	if surface["documentKey"] != "content-42" || surface["scrollAction"] != "quickView.scroll" ||

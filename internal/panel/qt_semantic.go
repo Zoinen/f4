@@ -231,6 +231,9 @@ func (ip *InfoPanel) semanticModel(side int, active bool) extui.InfoPanelModel {
 }
 
 func (pf *PanelsFrame) HandleSemanticAction(action map[string]any) bool {
+	if name := semantic.String(action["action"]); name == "quickView.configure" || name == "quickView.preview" {
+		return pf.handleQuickViewPresentation(action)
+	}
 	if pf.TermView != nil && pf.TermView.HandleSemanticAction(action) {
 		return true
 	}

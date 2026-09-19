@@ -36,6 +36,18 @@ Item {
     width: 0
     height: 0
 
+    // Store rows before bottom gravity. History rows already use document
+    // coordinates and remain stable when more output enters scrollback.
+    function documentRow(row) {
+        const start = Number(frame.selectionActiveStart || 0)
+        return row >= start ? row - Number(frame.selectionActiveOffset || 0) : row
+    }
+
+    function presentedRow(row) {
+        const start = Number(frame.selectionActiveStart || 0)
+        return row >= start ? row + Number(frame.selectionActiveOffset || 0) : row
+    }
+
     function pointAt(pointX, pointY) {
         const windowIndex = viewportController.windowIndexAtViewportY(pointY)
         const rows = viewportController.displayedRows
@@ -144,7 +156,7 @@ Item {
             --first
         while (last + 1 < cells.length && cells[last + 1].word)
             ++last
-        anchorRow = Math.floor(absoluteRow)
+        anchorRow = documentRow(Math.floor(absoluteRow))
         anchorColumn = cells[first].start
         focusRow = anchorRow
         focusColumn = cells[last].end
@@ -163,9 +175,9 @@ Item {
                 ? Number(rowData.logicalRowEnd) : Number(absoluteRow) + 1
         start = Math.max(0, Math.min(totalRows - 1, Math.floor(start)))
         end = Math.max(start + 1, Math.min(totalRows, Math.floor(end)))
-        anchorRow = start
+        anchorRow = documentRow(start)
         anchorColumn = 0
-        focusRow = end - 1
+        focusRow = documentRow(end - 1)
         focusColumn = columnCount(documentList.width)
         selectionVisible = true
         selectionDragging = false
@@ -276,7 +288,7 @@ Item {
     }
 
     function beginAt(row, column) {
-        anchorRow = Math.max(0, Math.floor(row))
+        anchorRow = documentRow(Math.max(0, Math.floor(row)))
         anchorColumn = Math.max(0, Math.floor(column))
         focusRow = anchorRow
         focusColumn = anchorColumn
@@ -287,7 +299,7 @@ Item {
     function extendTo(row, column) {
         if (!selectionDragging)
             return
-        focusRow = Math.max(0, Math.floor(row))
+        focusRow = documentRow(Math.max(0, Math.floor(row)))
         focusColumn = Math.max(0, Math.floor(column))
     }
 
@@ -307,14 +319,15 @@ Item {
             "startColumn": anchorColumn,
             "endRow": focusRow,
             "endColumn": focusColumn,
-            "endExclusive": true
+            "endExclusive": true,
+            "unshiftedRows": true
         }, true)
     }
 
     function normalizedSelection() {
-        let startRow = anchorRow
+        let startRow = presentedRow(anchorRow)
         let startColumn = anchorColumn
-        let endRow = focusRow
+        let endRow = presentedRow(focusRow)
         let endColumn = focusColumn
         if (startRow > endRow
                 || (startRow === endRow && startColumn > endColumn)) {

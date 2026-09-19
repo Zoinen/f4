@@ -29,7 +29,7 @@ Item {
     required property ZG.GalleryThemePalette galleryTheme
     required property ZG.GalleryPresentationMetrics galleryMetrics
     property bool usesQwk: false
-    readonly property bool fullscreenGallery: galleryViewerLayer.visible
+    readonly property bool fullscreenGallery: surfaces.galleryController.viewerVisible && galleryViewerLayer.visible
         && surfaces.hostWindow.visibility === Window.FullScreen
 
     readonly property alias titleBarItem: titleBar
@@ -41,6 +41,12 @@ Item {
     readonly property alias galleryViewerLoader: galleryViewerLayer
     readonly property alias operationsQueueLoader: operationsQueueLayer
     readonly property alias overlayController: overlayHost
+
+    QuickViewController {
+        id: quickViewController
+        hostWindow: surfaces.hostWindow
+        bridge: surfaces.galleryController
+    }
 
     Rectangle {
         anchors.fill: parent
@@ -104,6 +110,7 @@ Item {
         opacity: surfaces.hostWindow.normalSurfaceOpacity
 
         Loader {
+            id: panelsLayer
             objectName: "persistentPanelsLayer"
             anchors.fill: parent
             active: surfaces.hostWindow.retainedShellSurfaceCreated
@@ -196,17 +203,90 @@ Item {
     Loader {
         id: galleryViewerLayer
         objectName: "galleryViewerLayer"
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.top: surfaces.fullscreenGallery ? parent.top : titleBar.bottom
-        anchors.bottom: parent.bottom
+        readonly property int presentationState: surfaces.galleryController.viewerState === undefined ? 3 : surfaces.galleryController.viewerState
+        readonly property int dockSide: surfaces.galleryController.quickViewSide === undefined ? -1 : surfaces.galleryController.quickViewSide
+        property real fullProgress: 1
+        function updatePresentation() {
+            const target = dockSide < 0 || presentationState === 2 || presentationState === 3 ? 1 : 0
+            presentationAnimation.stop()
+            if (dockSide >= 0 && (presentationState === 2 || presentationState === 4)) {
+                presentationAnimation.to = target
+                presentationAnimation.start()
+            } else {
+                fullProgress = target
+            }
+        }
+        onPresentationStateChanged: updatePresentation()
+        onDockSideChanged: updatePresentation()
+        Component.onCompleted: updatePresentation()
+        NumberAnimation {
+            id: presentationAnimation
+            target: galleryViewerLayer
+            property: "fullProgress"
+            duration: 150
+            onFinished: {
+                surfaces.galleryController.settleViewer()
+                if (galleryViewerLayer.presentationState === 1 && galleryViewerLayer.item && galleryViewerLayer.item.item)
+                    galleryViewerLayer.item.item.focusSource()
+            }
+        }
+        readonly property real dockX: dockSide < 0 ? 0 : surfaces.hostWindow.nativePanelX(dockSide)
+        readonly property real dockY: surfaces.hostWindow.menuBarHeight
+        readonly property real dockWidth: dockSide < 0 ? parent.width : surfaces.hostWindow.nativePanelWidth(dockSide)
+        readonly property real dockHeight: dockSide < 0 ? parent.height - dockY : surfaces.hostWindow.nativePanelHeight(dockSide, dockY)
+        readonly property real fullY: surfaces.fullscreenGallery ? 0 : titleBar.height
+        x: surfaces.hostWindow.snapPx(dockX * (1 - fullProgress))
+        y: surfaces.hostWindow.snapPx(dockY + (fullY - dockY) * fullProgress)
+        width: surfaces.hostWindow.snapPx(dockWidth + (parent.width - dockWidth) * fullProgress)
+        height: surfaces.hostWindow.snapPx(dockHeight + (parent.height - fullY - dockHeight) * fullProgress)
         clip: true
-        active: surfaces.galleryController.viewerVisible
+        active: (surfaces.galleryController.viewerMounted === undefined ? surfaces.galleryController.viewerVisible : surfaces.galleryController.viewerMounted)
                 && !surfaces.hostWindow.hasDocumentSurface()
                 && !surfaces.hostWindow.needsFallbackGrid()
         visible: active && !surfaces.hostWindow.hasOperationsQueueSurface()
         sourceComponent: active ? galleryViewerSurface : undefined
         z: 60
+    }
+
+    // Docked Quick View sits above the panels, including their overlapping
+    // gutter. Keep the divider at shell level so it owns that pointer region.
+    PanelSplitter {
+        objectName: "mainPanelSplitter"
+        devicePixelRatio: surfaces.hostWindow.dpr
+        x: surfaces.hostWindow.snapPx(splitPosition - width / 2)
+        y: surfaces.hostWindow.menuBarHeight
+        height: Math.max(surfaces.hostWindow.nativePanelHeight(0, y),
+                         surfaces.hostWindow.nativePanelHeight(1, y))
+        availableWidth: parent.width
+        minimumPanelWidth: surfaces.hostWindow.panelMinimumWidth
+        ratio: surfaces.hostWindow.panelSplitRatio
+        defaultRatio: 0.5
+        keySink: surfaces.focusTarget
+        surfaceActive: panelsLayer.item !== null && surfaces.hostWindow.nativeTwoPanelSurfaceActive
+                       && !surfaces.hostWindow.queueDropdownOpen
+                       && surfaces.hostWindow.widePanelSide() < 0
+                       && panelsLayer.item.hasPanelForSide(0)
+                       && panelsLayer.item.hasPanelForSide(1)
+        surfaceVisible: panelsLayer.item !== null && surfaces.hostWindow.nativeTwoPanelSurfaceVisible
+                        && surfaces.hostWindow.widePanelSide() < 0
+                        && panelsLayer.item.hasPanelForSide(0)
+                        && panelsLayer.item.hasPanelForSide(1)
+        hoverLineColor: surfaces.hostWindow.separatorHoverColor
+        activeLineColor: surfaces.hostWindow.separatorActiveColor
+        trackColor: "transparent"
+        separatorColor: surfaces.hostWindow.separatorColor
+        separatorWidth: surfaces.hostWindow.separatorWidth
+        gutterWidth: surfaces.hostWindow.panelContentSpacing * 2
+        leadingHitInset: surfaces.hostWindow.panelContentSpacing
+        opacity: surfaces.hostWindow.normalSurfaceOpacity
+        z: 61
+
+        onRatioRequested: (nextRatio) => {
+            surfaces.hostWindow.panelSplitRatio = nextRatio
+        }
+        onFocusReleaseRequested: {
+            Qt.callLater(surfaces.hostWindow.restoreSurfaceFocus)
+        }
     }
 
     Component {
@@ -230,16 +310,19 @@ Item {
                 item.sourcePanel = Qt.binding(
                             () => surfaces.hostWindow.galleryPanelHost(
                                 surfaces.galleryController.viewerSide))
+                if (item.hostWindow !== undefined) item.hostWindow = surfaces.hostWindow
+                if (item.fullViewProgress !== undefined) item.fullViewProgress = Qt.binding(() => galleryViewerLayer.fullProgress)
                 item.bridge = surfaces.galleryController
                 item.keySink = surfaces.focusTarget
                 item.theme = surfaces.galleryTheme
                 item.surfaceActive = Qt.binding(
-                            () => surfaces.galleryController.viewerVisible
+                            () => (surfaces.galleryController.viewerVisible
+                                   || (surfaces.galleryController.quickView && surfaces.galleryController.quickView.active === true))
                               && !surfaces.hostWindow.hasBlockingOverlay()
                               && !surfaces.hostWindow.hasDocumentSurface()
                               && !surfaces.hostWindow.hasOperationsQueueSurface()
                               && !surfaces.hostWindow.needsFallbackGrid())
-                item.forceActiveFocus()
+                if (item.surfaceActive) item.forceActiveFocus()
             }
         }
     }

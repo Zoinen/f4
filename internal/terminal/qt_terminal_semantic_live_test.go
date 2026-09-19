@@ -117,3 +117,21 @@ func TestTerminalSemanticShortOutputHasNoScrollablePadding(t *testing.T) {
 		t.Fatalf("stored history was excluded from scrolling: contentStart=%d", got)
 	}
 }
+
+func TestTerminalSelectionDocumentCoordinatesSurviveGravityAndScroll(t *testing.T) {
+	tv := newSelectableTV(20, 4)
+	defer tv.Close()
+	tv.CursorY = 0
+	parser := NewAnsiParser(tv, nil)
+	parser.Process([]byte("selected"))
+	model := tv.SemanticModel(nil)
+	if model.SelectionActiveStart != 0 || model.SelectionActiveOffset != 3 {
+		t.Fatalf("selection mapping = %d + %d", model.SelectionActiveStart, model.SelectionActiveOffset)
+	}
+	for i := 0; i < 12; i++ {
+		parser.Process([]byte("\r\nnext"))
+		if got := tv.semanticSelectionTextWithEndpoints(0, 0, 0, 8, true, true); got != "selected" {
+			t.Fatalf("scroll %d: selected %q", i, got)
+		}
+	}
+}

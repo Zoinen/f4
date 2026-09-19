@@ -118,6 +118,8 @@ private slots:
     void frameTraceUsesDirectSwapBoundaryAcrossQueuedDelivery();
     void documentWindowTraceWaitsForCommittedRenderSync();
     void stableActionsCarryRevisions();
+    void quickViewPreservesSessionAndSourceFocus();
+    void quickViewPreferencesPersist();
     void deferredCursorCommitsOnlyLatest();
     void staleCursorIntentRetriesAgainstNewCatalog();
     void activationSceneDoesNotSnapPendingCursorBackward();
@@ -4398,6 +4400,101 @@ void F4GalleryBridgeTests::rejectedPanelCatalogRowsRetryWhileSourceLoads()
     QTRY_COMPARE_WITH_TIMEOUT(requests.size(), 2, 1000);
     QCOMPARE(state.catalogRowsRequestOffset, 48);
     QCOMPARE(state.catalogRowsRequestLimit, 64);
+}
+
+void F4GalleryBridgeTests::quickViewPreferencesPersist()
+{
+    const auto previousOrganization = QCoreApplication::organizationName();
+    QCoreApplication::setOrganizationName("f4-quickview-tests");
+    const auto restoreOrganization = qScopeGuard([&] { QCoreApplication::setOrganizationName(previousOrganization); });
+    QSettings settings;
+    const auto oldBuiltin = settings.value("QuickView/useBuiltinF4Viewer");
+    const auto oldHover = settings.value("QuickView/previewOnHover");
+    const auto restore = qScopeGuard([&] {
+        for (auto pair : {qMakePair(QString("QuickView/useBuiltinF4Viewer"), oldBuiltin), qMakePair(QString("QuickView/previewOnHover"), oldHover)}) {
+            if (pair.second.isValid()) settings.setValue(pair.first, pair.second);
+            else settings.remove(pair.first);
+        }
+    });
+    settings.remove("QuickView");
+    F4QuickViewPreferences defaults;
+    QVERIFY(!defaults.builtin());
+    QVERIFY(defaults.hover());
+    QVERIFY(defaults.apply({{"useBuiltinF4Viewer", true}, {"previewOnHover", false}}));
+    F4QuickViewPreferences restored;
+    QVERIFY(restored.builtin());
+    QVERIFY(!restored.hover());
+}
+
+void F4GalleryBridgeTests::quickViewPreservesSessionAndSourceFocus()
+{
+    const auto previousOrganization = QCoreApplication::organizationName();
+    QCoreApplication::setOrganizationName("f4-quickview-tests");
+    const auto restoreOrganization = qScopeGuard([&] { QCoreApplication::setOrganizationName(previousOrganization); });
+    QQmlEngine engine;
+    F4GalleryBridge bridge(&engine);
+    auto *preferences = qobject_cast<F4QuickViewPreferences *>(bridge.quickViewPreferences());
+    QVERIFY(preferences);
+    const auto oldValues = preferences->values();
+    const auto restore = qScopeGuard([&] { preferences->apply(oldValues); });
+    QVERIFY(preferences->apply({{"useBuiltinF4Viewer", false}, {"previewOnHover", true}}));
+    auto scene = testScene();
+    bridge.synchronizeScene(scene);
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(bridge.sessionForSide(0));
+    QVERIFY(session);
+    QVariantMap view{{"id", "quick-right"}, {"side", 1}, {"sourceSide", 0},
+        {"sourcePanelId", "panel-left-a"}, {"catalogRevision", 42},
+        {"entryId", "left:two"}, {"previewKind", "image"}, {"imageRenderer", "gallery"}};
+    bridge.synchronizeQuickView(view);
+    QVERIFY(bridge.viewerMounted());
+    QVERIFY(!bridge.viewerVisible());
+    QVERIFY(session->viewerOpen());
+    QCOMPARE(bridge.viewerSession(), session);
+    QCOMPARE(session->cursorEntryId(), QString("left:one"));
+    QSignalSpy actions(&bridge, &F4GalleryBridge::uiActionRequested);
+    QSignalSpy presentationChanges(&bridge, &F4GalleryBridge::viewerChanged);
+    // The panel cursor moves before key release commits it to Go. Quick View
+    // must present that image immediately, even while the shell still names
+    // the previously hovered image.
+    bridge.requestCursor(0, "left:one", 7, 42, true);
+    QCOMPARE(actions.count(), 0);
+    QCOMPARE(bridge.quickView().value("entryId").toString(), QString("left:one"));
+    QVERIFY(!presentationChanges.isEmpty());
+    bridge.synchronizeQuickView(view); // an old shell frame cannot undo it
+    QCOMPARE(bridge.quickView().value("entryId").toString(), QString("left:one"));
+    bridge.requestCursor(0, "left:two", 9, 42, true);
+    QCOMPARE(bridge.quickView().value("entryId").toString(), QString("left:two"));
+    bridge.requestViewerCursor("left:two", 9);
+    QVERIFY(!actions.isEmpty());
+    const auto action = actions.last().first().toMap();
+    QVERIFY(!action.value("activate").toBool());
+    bridge.requestOpen(0, "left:one", 7, true, 42);
+    QVERIFY(bridge.viewerVisible());
+    QCOMPARE(bridge.viewerSession(), session);
+    bridge.settleViewer();
+    QVERIFY(preferences->apply({{"useBuiltinF4Viewer", true}, {"previewOnHover", true}}));
+    bridge.synchronizeQuickView(view);
+    QCOMPARE(bridge.quickViewSide(), -1);
+    QVERIFY(bridge.viewerVisible());
+    QCOMPARE(bridge.viewerSession(), session);
+    QVERIFY(preferences->apply({{"useBuiltinF4Viewer", false}, {"previewOnHover", true}}));
+    bridge.synchronizeQuickView(view);
+    QCOMPARE(bridge.quickViewSide(), 1);
+    bridge.collapseQuickView();
+    bridge.settleViewer();
+    QVERIFY(!bridge.viewerVisible());
+    QVERIFY(bridge.viewerMounted());
+    QVERIFY(session->viewerOpen());
+    auto stale = view;
+    stale["catalogRevision"] = 41;
+    bridge.synchronizeQuickView(stale);
+    QVERIFY(!bridge.viewerMounted());
+    QVERIFY(!session->viewerOpen());
+    bridge.synchronizeQuickView(view);
+    QVERIFY(bridge.viewerMounted());
+    bridge.synchronizeQuickView({});
+    QVERIFY(!bridge.viewerMounted());
+    QVERIFY(!session->viewerOpen());
 }
 
 void F4GalleryBridgeTests::stableActionsCarryRevisions()

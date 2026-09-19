@@ -124,38 +124,5 @@ Item {
         }
     }
 
-    PanelSplitter {
-        objectName: "mainPanelSplitter"
-        y: pair.hostWindow.menuBarHeight
-        height: Math.max(pair.hostWindow.nativePanelHeight(0, y),
-                         pair.hostWindow.nativePanelHeight(1, y))
-        availableWidth: parent.width
-        minimumPanelWidth: pair.hostWindow.panelMinimumWidth
-        ratio: pair.hostWindow.panelSplitRatio
-        defaultRatio: 0.5
-        keySink: pair.focusTarget
-        surfaceActive: pair.hostWindow.nativeTwoPanelSurfaceActive
-                       && pair.hostWindow.widePanelSide() < 0
-                       && pair.panelsSurface.hasPanelForSide(0)
-                       && pair.panelsSurface.hasPanelForSide(1)
-        surfaceVisible: pair.hostWindow.nativeTwoPanelSurfaceVisible
-                        && pair.hostWindow.widePanelSide() < 0
-                        && pair.panelsSurface.hasPanelForSide(0)
-                        && pair.panelsSurface.hasPanelForSide(1)
-        hoverLineColor: pair.hostWindow.separatorHoverColor
-        activeLineColor: pair.hostWindow.separatorActiveColor
-        trackColor: "transparent"
-        separatorColor: pair.hostWindow.separatorColor
-        separatorWidth: pair.hostWindow.separatorWidth
-        gutterWidth: pair.hostWindow.panelContentSpacing * 2
-        leadingHitInset: pair.hostWindow.panelContentSpacing
-        z: 10
 
-        onRatioRequested: (nextRatio) => {
-            pair.hostWindow.panelSplitRatio = nextRatio
-        }
-        onFocusReleaseRequested: {
-            Qt.callLater(pair.hostWindow.restoreSurfaceFocus)
-        }
-    }
 }

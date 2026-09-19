@@ -203,6 +203,9 @@ func (p *farMenuParser) parseLevel() []UserMenuItem {
 			p.pos++
 			continue
 		}
+		if colon+1 < len(line) && line[colon+1] == ':' {
+			colon++ // Far supports a literal colon activation key.
+		}
 		item := UserMenuItem{
 			HotKey: line[:colon],
 			Label:  strings.TrimLeft(line[colon+1:], " \t"),

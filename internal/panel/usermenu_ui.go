@@ -1184,6 +1184,10 @@ func (pf *PanelsFrame) runMenuCommandSteps(steps []string) {
 			return
 		}
 		pf.CmdLine.Edit.SetText(step)
+		// Menu activation is an explicit command submission. In search-first
+		// mode Enter otherwise belongs to the file panel, even with text in
+		// the prompt. Repeat for each step: a preceding cd may return focus.
+		pf.SetCommandLineFocus(true)
 		pf.ProcessKey(&vtinput.InputEvent{
 			Type: vtinput.KeyEventType, KeyDown: true,
 			VirtualKeyCode: vtinput.VK_RETURN,

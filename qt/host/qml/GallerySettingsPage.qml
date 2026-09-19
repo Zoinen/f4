@@ -6,6 +6,8 @@ Item {
     id: page
     required property ApplicationWindow hostWindow
     required property var settings
+    property var quickViewPreferences: null
+    property var quickViewDraft: quickViewPreferences ? Object.assign({}, quickViewPreferences.values) : ({})
     objectName: "gallerySettingsPage"
     signal closeRequested()
     property var draft: settings ? Object.assign({}, settings.values) : ({})
@@ -27,10 +29,10 @@ Item {
         status = ""
     }
     function apply() {
-        if (settings.apply(draft))
+        if (settings.apply(draft) && (!quickViewPreferences || quickViewPreferences.apply(quickViewDraft)))
             status = qsTr("Saved. A changed cache location takes effect after restart.")
         else
-            status = settings.error
+            status = settings.error || (quickViewPreferences ? quickViewPreferences.error : "")
     }
     Component.onCompleted: {
         if (settings) {
@@ -197,12 +199,33 @@ Item {
         checked: page.draft.animateResizing === true
         onToggled: page.change("animateResizing", checked)
     }
+    Copy { id: quickViewTitle; identity: "galleryQuickViewTitle"; x: page.gap; y: animation.y + animation.height + page.gap; width: page.innerWidth; text: qsTr("Quick View"); font.bold: true }
+    F4CheckBox {
+        id: builtinQuickView
+        objectName: "galleryBuiltinQuickView"
+        hostWindow: page.hostWindow
+        x: page.gap; y: quickViewTitle.y + quickViewTitle.height + page.px(6); width: page.innerWidth
+        focusPolicy: Qt.StrongFocus
+        text: qsTr("Use built-in F4 viewer for Quick View")
+        checked: page.quickViewDraft.useBuiltinF4Viewer === true
+        onToggled: page.quickViewDraft = Object.assign({}, page.quickViewDraft, {useBuiltinF4Viewer: checked})
+    }
+    F4CheckBox {
+        id: hoverQuickView
+        objectName: "galleryHoverQuickView"
+        hostWindow: page.hostWindow
+        x: page.gap; y: builtinQuickView.y + builtinQuickView.height + page.gap; width: page.innerWidth
+        focusPolicy: Qt.StrongFocus
+        text: qsTr("Preview hovered items in Quick View")
+        checked: page.quickViewDraft.previewOnHover !== false
+        onToggled: page.quickViewDraft = Object.assign({}, page.quickViewDraft, {previewOnHover: checked})
+    }
     F4Button {
         id: save
         objectName: "gallerySettingsApply"
         hostWindow: page.hostWindow
         focusPolicy: Qt.StrongFocus
-        x: page.gap; y: animation.y + animation.height + page.gap; width: page.px((page.innerWidth - page.gap) / 2)
+        x: page.gap; y: hoverQuickView.y + hoverQuickView.height + page.gap; width: page.px((page.innerWidth - page.gap) / 2)
         text: qsTr("Apply settings")
         enabled: page.settings && !page.settings.busy
         onClicked: page.apply()
