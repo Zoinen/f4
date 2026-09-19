@@ -49,53 +49,84 @@ func OpenUserMenu(state panel.MenuSettingsSource, current *vtui.VMenu, index int
 	store.load = func() ([]f4settings.Record, error) { return rows, nil }
 	store.afterSave = func(rows []f4settings.Record) {
 		if items, err := settingsMenuTree(rows, prefix); err == nil {
-			state.Saved(items)
+			if state.Saved != nil {
+				state.Saved(items)
+			}
 		}
 	}
-	sessions, err := beginSettingsSessions(context.Background())
+	provider := coreRecordSettingsProvider{stores: []settingsRecordStore{store}}
+	draft, err := provider.Begin(context.Background())
 	if err != nil {
-		vtui.ShowMessage("Settings", err.Error(), []string{i18n.Msg("vtui.Ok")})
+		vtui.ShowMessage(i18n.Msg("UserMenu.EditTitle"), err.Error(), []string{i18n.Msg("vtui.Ok")})
 		return true
 	}
-	for i, s := range sessions {
-		p, ok := s.provider.(coreRecordSettingsProvider)
-		if !ok {
-			continue
+	session := &settingsSession{provider: provider, catalog: provider.Catalog(), draft: draft}
+	center := newSettingsCenter([]*settingsSession{session})
+	center.navigate("menus", collection, target, create)
+	if create {
+		records := draft.Records[collection]
+		if len(records) > 0 {
+			record := records[len(records)-1]
+			record.Values[prefix+"Submenu"] = strconv.FormatBool(submenu)
+			record.Values[prefix+"Parent"] = parent
 		}
-		s.draft.Close()
-		for j, old := range p.stores {
-			if old.collection.ID == collection {
-				p.stores[j] = store
-			}
-		}
-		d, err := p.Begin(context.Background())
-		if err != nil {
-			for _, s := range sessions {
-				s.draft.Close()
-			}
-			vtui.ShowMessage("Settings", err.Error(), []string{i18n.Msg("vtui.Ok")})
-			return true
-		}
-		sessions[i] = &settingsSession{provider: p, catalog: p.Catalog(), draft: d}
 	}
-	showSettingsCenter(sessions, "menus", collection, target, create)
-	if center, ok := vtui.FrameManager.GetTopFrame().(*settingsCenter); ok && state.Closed != nil {
+	title := i18n.Msg("UserMenu.EditTitle")
+	if create {
+		title = i18n.Msg("UserMenu.CreateTitle")
+		if submenu {
+			title = i18n.Msg("UserMenu.CreateSubmenuTitle")
+		}
+	}
+	center.configureRecordDialog(title)
+	if state.Closed != nil {
 		closed := center.OnResult
 		center.OnResult = func(result int) { closed(result); state.Closed(index) }
 	}
+	vtui.FrameManager.Push(center)
+	return true
+}
 
-	if create {
-		if c, ok := vtui.FrameManager.GetTopFrame().(*settingsCenter); ok {
-			for _, s := range c.sessions {
-				records := s.draft.Records[collection]
-				if len(records) > 0 {
-					r := records[len(records)-1]
-					r.Values[prefix+"Submenu"] = strconv.FormatBool(submenu)
-					r.Values[prefix+"Parent"] = parent
-				}
+func (c *settingsCenter) importFar3UserMenu() {
+	panel.ShowFar3UserMenuImport(func(items []panel.UserMenuItem) error {
+		for _, session := range c.sessions {
+			if _, exists := session.draft.Records["usermenu.main"]; !exists {
+				continue
+			}
+			if err := stageFar3UserMenu(session.draft, items); err != nil {
+				return err
 			}
 			c.rebuildCategory()
+			return nil
+		}
+		return fmt.Errorf("global user menu is unavailable")
+	})
+}
+
+func stageFar3UserMenu(draft *f4settings.Draft, items []panel.UserMenuItem) error {
+	const prefix = "menu.main."
+	existing, err := settingsMenuTree(draft.Records["usermenu.main"], prefix)
+	if err != nil {
+		return err
+	}
+	merged, added := panel.MergeUserMenus(existing, items)
+	if added == 0 {
+		return nil
+	}
+	var rows []f4settings.Record
+	var walk func([]panel.UserMenuItem, string)
+	walk = func(items []panel.UserMenuItem, parent string) {
+		for _, item := range items {
+			id := fmt.Sprintf("main:%d", len(rows))
+			rows = append(rows, f4settings.Record{ID: id, Values: map[string]string{
+				prefix + "Label": item.Label, prefix + "HotKey": item.HotKey,
+				prefix + "Commands": strings.Join(item.Commands, "\n"),
+				prefix + "Submenu":  strconv.FormatBool(item.Submenu != nil), prefix + "Parent": parent,
+			}})
+			walk(item.Submenu, id)
 		}
 	}
-	return true
+	walk(merged, "")
+	draft.Records["usermenu.main"] = rows
+	return nil
 }

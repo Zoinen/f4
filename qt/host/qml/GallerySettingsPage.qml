@@ -6,14 +6,20 @@ Item {
     id: page
     required property ApplicationWindow hostWindow
     required property var settings
+    property var quickViewPreferences: null
+    property var quickViewDraft: quickViewPreferences ? Object.assign({}, quickViewPreferences.values) : ({})
+    property var savedQuickViewDraft: quickViewPreferences ? Object.assign({}, quickViewPreferences.values) : ({})
     objectName: "gallerySettingsPage"
     signal closeRequested()
     property var draft: settings ? Object.assign({}, settings.values) : ({})
+    property var savedDraft: settings ? Object.assign({}, settings.values) : ({})
+    readonly property bool dirty: JSON.stringify(draft) !== JSON.stringify(savedDraft)
+        || JSON.stringify(quickViewDraft) !== JSON.stringify(savedQuickViewDraft)
     property string status: ""
     readonly property real gap: hostWindow.snapPx(12)
-    readonly property real innerWidth: width - gap * 2
+    readonly property real innerWidth: width
     implicitWidth: hostWindow.snapPx(420)
-    implicitHeight: decoderColumn.y + decoderColumn.height + gap
+    implicitHeight: decoderColumn.y + decoderColumn.height
 
     function px(value) { return hostWindow.snapPx(value) }
     function bytes(value) {
@@ -26,11 +32,40 @@ Item {
         draft = next
         status = ""
     }
-    function apply() {
-        if (settings.apply(draft))
-            status = qsTr("Saved. A changed cache location takes effect after restart.")
-        else
+    function resetDraft() {
+        quickViewDraft = quickViewPreferences ? Object.assign({}, quickViewPreferences.values) : ({})
+        savedQuickViewDraft = Object.assign({}, quickViewDraft)
+        draft = settings ? Object.assign({}, settings.values) : ({})
+        savedDraft = Object.assign({}, draft)
+        status = ""
+    }
+    function validateDraft() {
+        if (!dirty) return true
+        if (!settings || settings.busy) {
+            status = qsTr("Wait for the cache operation to finish.")
+            return false
+        }
+        if (!Number.isInteger(draft.diskLimitMiB) || draft.diskLimitMiB < 64 || draft.diskLimitMiB > 65536) {
+            status = qsTr("Disk cache size must be between 64 and 65536 MiB.")
+            return false
+        }
+        return true
+    }
+    function applyDraft() {
+        if (!dirty) return true
+        if (!validateDraft()) return false
+        if (!settings.apply(draft)) {
             status = settings.error
+            return false
+        }
+        if (quickViewPreferences && !quickViewPreferences.apply(quickViewDraft)) {
+            status = quickViewPreferences.error
+            return false
+        }
+        savedQuickViewDraft = Object.assign({}, quickViewDraft)
+        savedDraft = Object.assign({}, draft)
+        status = qsTr("Saved. A changed cache location takes effect after restart.")
+        return true
     }
     Component.onCompleted: {
         if (settings) {
@@ -69,21 +104,15 @@ Item {
     }
 
     Copy {
-        id: heading
-        identity: "gallerySettingsTitle"; text: qsTr("Gallery & cache")
-        x: page.gap; y: page.gap; width: page.innerWidth
-        font.pixelSize: 23; font.bold: true
-    }
-    Copy {
         id: intro
         identity: "gallerySettingsIntro"
-        x: page.gap; y: heading.y + heading.height + page.px(6); width: page.innerWidth
+        x: 0; y: 0; width: page.innerWidth
         text: qsTr("Folder collages, image rendering and the decoders available in this build.")
         color: page.hostWindow.mutedText
     }
     Rectangle {
         id: usage
-        x: page.gap; y: intro.y + intro.height + page.gap; width: page.innerWidth; height: page.px(102)
+        x: 0; y: intro.y + intro.height + page.gap; width: page.innerWidth; height: page.px(102)
         radius: page.px(8); color: page.hostWindow.dialogHeaderBg
         Copy { identity: "galleryCacheUsageTitle"; x: page.gap; y: page.px(10); text: qsTr("DISK CACHE"); font.pixelSize: 11; font.bold: true }
         Copy {
@@ -105,14 +134,14 @@ Item {
     Copy {
         id: imageModeTitle
         identity: "galleryImageModeTitle"; text: qsTr("Image cache"); font.bold: true
-        x: page.gap; y: usage.y + usage.height + page.gap; width: page.innerWidth
+        x: 0; y: usage.y + usage.height + page.gap; width: page.innerWidth
     }
     F4ComboBox {
         id: imageMode
         objectName: "galleryImageMode"
         hostWindow: page.hostWindow
         focusPolicy: Qt.StrongFocus
-        x: page.gap; y: imageModeTitle.y + imageModeTitle.height + page.px(6); width: page.innerWidth
+        x: 0; y: imageModeTitle.y + imageModeTitle.height + page.px(6); width: page.innerWidth
         model: [{text: qsTr("Off")}, {text: qsTr("On")}, {text: qsTr("Cache only")}]
         textRole: "text"
         currentIndex: Number(page.draft.imageMode || 0)
@@ -121,14 +150,14 @@ Item {
     Copy {
         id: folderModeTitle
         identity: "galleryFolderModeTitle"; text: qsTr("Folder preview cache"); font.bold: true
-        x: page.gap; y: imageMode.y + imageMode.height + page.gap; width: page.innerWidth
+        x: 0; y: imageMode.y + imageMode.height + page.gap; width: page.innerWidth
     }
     F4ComboBox {
         id: folderMode
         objectName: "galleryFolderMode"
         hostWindow: page.hostWindow
         focusPolicy: Qt.StrongFocus
-        x: page.gap; y: folderModeTitle.y + folderModeTitle.height + page.px(6); width: page.innerWidth
+        x: 0; y: folderModeTitle.y + folderModeTitle.height + page.px(6); width: page.innerWidth
         model: [{text: qsTr("Off")}, {text: qsTr("On")}, {text: qsTr("Cache only")}]
         textRole: "text"
         currentIndex: Number(page.draft.folderMode || 0)
@@ -137,38 +166,38 @@ Item {
     Copy {
         id: policy
         identity: "galleryCachePolicy"
-        x: page.gap; y: folderMode.y + folderMode.height + page.px(6); width: page.innerWidth
+        x: 0; y: folderMode.y + folderMode.height + page.px(6); width: page.innerWidth
         color: page.hostWindow.mutedText; font.pixelSize: 11
         text: qsTr("On reuses cached data and refreshes it in the background. Cache only prevents new source reads; missing images remain empty.")
     }
-    Copy { id: limitTitle; identity: "galleryCacheLimitTitle"; x: page.gap; y: policy.y + policy.height + page.gap; width: page.innerWidth; text: qsTr("Disk limit (MiB) · default 512"); font.bold: true }
+    Copy { id: limitTitle; identity: "galleryCacheLimitTitle"; x: 0; y: policy.y + policy.height + page.gap; width: page.innerWidth; text: qsTr("Disk limit (MiB) · default 512"); font.bold: true }
     F4TextField {
         id: limit
         objectName: "galleryCacheLimitInput"
         hostWindow: page.hostWindow
-        x: page.gap; y: limitTitle.y + limitTitle.height + page.px(6); width: page.innerWidth
+        x: 0; y: limitTitle.y + limitTitle.height + page.px(6); width: page.innerWidth
         text: String(page.draft.diskLimitMiB || 512)
         validator: IntValidator { bottom: 64; top: 65536 }
         inputMethodHints: Qt.ImhDigitsOnly
         onTextEdited: page.change("diskLimitMiB", Number(text))
     }
-    Copy { id: locationTitle; identity: "galleryCacheLocationTitle"; x: page.gap; y: limit.y + limit.height + page.gap; width: page.innerWidth; text: qsTr("Cache location · empty uses the default"); font.bold: true }
+    Copy { id: locationTitle; identity: "galleryCacheLocationTitle"; x: 0; y: limit.y + limit.height + page.gap; width: page.innerWidth; text: qsTr("Cache location · empty uses the default"); font.bold: true }
     F4TextField {
         id: location
         objectName: "galleryCacheLocationInput"
         hostWindow: page.hostWindow
-        x: page.gap; y: locationTitle.y + locationTitle.height + page.px(6); width: page.innerWidth
+        x: 0; y: locationTitle.y + locationTitle.height + page.px(6); width: page.innerWidth
         text: page.draft.location || ""
         placeholderText: qsTr("Default cache location")
         onTextEdited: page.change("location", text)
     }
-    Copy { id: activeLocation; identity: "galleryCacheActiveLocation"; x: page.gap; y: location.y + location.height + page.px(6); width: page.innerWidth; font.pixelSize: 11; color: page.hostWindow.mutedText; text: qsTr("Active: ") + (page.settings ? page.settings.values.activeLocation : "") }
+    Copy { id: activeLocation; identity: "galleryCacheActiveLocation"; x: 0; y: location.y + location.height + page.px(6); width: page.innerWidth; font.pixelSize: 11; color: page.hostWindow.mutedText; text: qsTr("Active: ") + (page.settings ? page.settings.values.activeLocation : "") }
     F4Button {
         id: clear
         objectName: "galleryCacheClear"
         hostWindow: page.hostWindow
         focusPolicy: Qt.StrongFocus
-        x: page.gap; y: activeLocation.y + activeLocation.height + page.gap; width: page.innerWidth
+        x: 0; y: activeLocation.y + activeLocation.height + page.gap; width: page.innerWidth
         text: qsTr("Clear image and folder caches")
         enabled: page.settings && !page.settings.busy
         onClicked: {
@@ -176,13 +205,13 @@ Item {
             page.settings.clearCache()
         }
     }
-    Copy { id: colorTitle; identity: "galleryTargetColorSpace"; x: page.gap; y: clear.y + clear.height + page.gap * 2; width: page.innerWidth; font.bold: true; text: qsTr("Target color space: ") + (page.settings ? page.settings.targetColorSpace : "") }
+    Copy { id: colorTitle; identity: "galleryTargetColorSpace"; x: 0; y: clear.y + clear.height + page.gap * 2; width: page.innerWidth; font.bold: true; text: qsTr("Target color space: ") + (page.settings ? page.settings.targetColorSpace : "") }
     F4CheckBox {
         id: colors
         objectName: "galleryColorConversion"
         hostWindow: page.hostWindow
         focusPolicy: Qt.StrongFocus
-        x: page.gap; y: colorTitle.y + colorTitle.height + page.px(6); width: page.innerWidth
+        x: 0; y: colorTitle.y + colorTitle.height + page.px(6); width: page.innerWidth
         text: qsTr("Convert images to target color space")
         checked: page.draft.convertColors === true
         onToggled: page.change("convertColors", checked)
@@ -192,35 +221,37 @@ Item {
         objectName: "galleryAnimateResizing"
         hostWindow: page.hostWindow
         focusPolicy: Qt.StrongFocus
-        x: page.gap; y: colors.y + colors.height + page.gap; width: page.innerWidth
+        x: 0; y: colors.y + colors.height + page.gap; width: page.innerWidth
         text: qsTr("Animate resizing items in layout")
         checked: page.draft.animateResizing === true
         onToggled: page.change("animateResizing", checked)
     }
-    F4Button {
-        id: save
-        objectName: "gallerySettingsApply"
+    Copy { id: quickViewTitle; identity: "galleryQuickViewTitle"; x: 0; y: animation.y + animation.height + page.gap; width: page.innerWidth; text: qsTr("Quick View"); font.bold: true }
+    F4CheckBox {
+        id: builtinQuickView
+        objectName: "galleryBuiltinQuickView"
         hostWindow: page.hostWindow
+        x: 0; y: quickViewTitle.y + quickViewTitle.height + page.px(6); width: page.innerWidth
         focusPolicy: Qt.StrongFocus
-        x: page.gap; y: animation.y + animation.height + page.gap; width: page.px((page.innerWidth - page.gap) / 2)
-        text: qsTr("Apply settings")
-        enabled: page.settings && !page.settings.busy
-        onClicked: page.apply()
+        text: qsTr("Use built-in F4 viewer for Quick View")
+        checked: page.quickViewDraft.useBuiltinF4Viewer === true
+        onToggled: page.quickViewDraft = Object.assign({}, page.quickViewDraft, {useBuiltinF4Viewer: checked})
     }
-    F4Button {
-        objectName: "gallerySettingsClose"
+    F4CheckBox {
+        id: hoverQuickView
+        objectName: "galleryHoverQuickView"
         hostWindow: page.hostWindow
+        x: 0; y: builtinQuickView.y + builtinQuickView.height + page.gap; width: page.innerWidth
         focusPolicy: Qt.StrongFocus
-        x: save.x + save.width + page.gap; y: save.y; width: save.width
-        text: qsTr("Close")
-        onClicked: page.closeRequested()
+        text: qsTr("Preview hovered items in Quick View")
+        checked: page.quickViewDraft.previewOnHover !== false
+        onToggled: page.quickViewDraft = Object.assign({}, page.quickViewDraft, {previewOnHover: checked})
     }
-    Copy { id: status; identity: "gallerySettingsStatus"; x: page.gap; y: save.y + save.height + page.px(6); width: page.innerWidth; color: page.hostWindow.mutedText; text: page.status || qsTr("Changes are saved with Apply. Cache location changes require a restart."); font.pixelSize: 11 }
-    Copy { id: decoderHeading; identity: "galleryDecodersTitle"; x: page.gap; y: status.y + status.height + page.gap * 2; width: page.innerWidth; text: qsTr("Image decoders"); font.bold: true; font.pixelSize: 20 }
-    Copy { id: decoderHelp; identity: "galleryDecodersHelp"; x: page.gap; y: decoderHeading.y + decoderHeading.height + page.px(6); width: page.innerWidth; text: qsTr("Tried in this order. Higher priority wins; later decoders provide fallbacks."); color: page.hostWindow.mutedText; font.pixelSize: 11 }
+    Copy { id: decoderHeading; identity: "galleryDecodersTitle"; x: 0; y: hoverQuickView.y + hoverQuickView.height + page.gap * 2; width: page.innerWidth; text: qsTr("Image decoders"); font.bold: true; font.pixelSize: 13 }
+    Copy { id: decoderHelp; identity: "galleryDecodersHelp"; x: 0; y: decoderHeading.y + decoderHeading.height + page.px(6); width: page.innerWidth; text: qsTr("Tried in this order. Higher priority wins; later decoders provide fallbacks."); color: page.hostWindow.mutedText; font.pixelSize: 11 }
     Column {
         id: decoderColumn
-        x: page.gap; y: decoderHelp.y + decoderHelp.height + page.gap; width: page.innerWidth; spacing: page.px(8)
+        x: 0; y: decoderHelp.y + decoderHelp.height + page.gap; width: page.innerWidth; spacing: page.px(8)
         Repeater {
             model: page.settings ? page.settings.decoders : []
             delegate: Rectangle {

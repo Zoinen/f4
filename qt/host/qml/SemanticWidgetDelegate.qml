@@ -10,6 +10,7 @@ Item {
     required property ApplicationWindow hostWindow
     property var widget: ({})
     property var tableRowAction: (action, index) => hostWindow.action({target: widget.id, action: action, index: index})
+    property var buttonAction: () => hostWindow.action({target: widget.id, action: "control.activate"})
     property bool tableKeyboardNavigation: false
     property var dialogLayout: null
     property var labelData: ({})
@@ -241,6 +242,7 @@ Item {
                 view: tableRows
                 rowAction: widgetRoot.tableRowAction
                 keyboardNavigation: widgetRoot.tableKeyboardNavigation
+                semanticWheel: true
                 y: tableRows.y
                 width: tableControl.availableWidth
                 height: tableRows.height
@@ -320,7 +322,7 @@ Item {
             mnemonicHotkey: hostWindow.cleanText(widget.hotkey)
             enabled: widget.disabled !== true
             semanticFocus: widget.focused === true
-            onClicked: hostWindow.action({ "target": widget.id, "action": "control.activate" })
+            onClicked: widgetRoot.buttonAction()
         }
     }
 
@@ -394,6 +396,9 @@ Item {
                     required property var modelData
                     required property int index
                     readonly property string iconName: (widget.itemIcons || [])[index] || ""
+                    readonly property var itemState: (widget.itemStates || [])[index] || ({})
+                    readonly property bool checkable: itemState.checkable === true
+                    readonly property real contentOpacity: itemState.dimmed === true ? 0.75 : 1
                     width: listView.width - (listScrollBar.visible ? listScrollBar.width : 0)
                     height: widget.wrapText === true
                             ? hostWindow.snapPx(Math.max(21, listRowText.contentHeight) + 12)
@@ -404,11 +409,28 @@ Item {
                            ? hostWindow.selectedBg
                            : listHover.hovered
                              ? hostWindow.controlHoverBg : "transparent"
-                    Behavior on color { ColorAnimation { duration: 70 } }
+                    // Keyboard repeat can outrun a color fade. Show the Go-owned
+                    // cursor immediately, without fading the old and new rows.
+                    F4CheckBox {
+                        objectName: "dialogWidget-" + widget.id + "ListCheck-" + listRow.index
+                        hostWindow: widgetRoot.hostWindow
+                        x: hostWindow.snapPx(8)
+                        y: 0
+                        width: hostWindow.snapPx(18)
+                        height: listRow.height
+                        visible: listRow.checkable
+                        checked: listRow.itemState.checked === true
+                        opacity: listRow.contentOpacity
+                        // The viewport owns pointer gestures and sends intent to Go.
+                        // This control only presents the acknowledged row state.
+                        enabled: false
+                        contentItem: Item {}
+                    }
                     HostPixelAlignedImage {
                         objectName: "dialogWidget-" + widget.id + "ListItemIcon-" + listRow.index
                         hostWindow: widgetRoot.hostWindow
-                        x: hostWindow.snapPx(8)
+                        x: hostWindow.snapPx(listRow.checkable ? 34 : 8)
+                        opacity: listRow.contentOpacity
                         y: hostWindow.snapPx((listRow.height - height) / 2)
                         width: hostWindow.snapPx(16)
                         height: width
@@ -422,11 +444,13 @@ Item {
                                     + hostWindow.cleanText(widget.id)
                                     + "ListItemText-" + listRow.index
                         anchors.fill: parent
-                        anchors.leftMargin: hostWindow.snapPx(listRow.iconName !== "" ? 32 : 8)
+                        anchors.leftMargin: hostWindow.snapPx((listRow.iconName !== "" ? 32 : 8)
+                                                               + (listRow.checkable ? 26 : 0))
+                        opacity: listRow.contentOpacity
                         anchors.rightMargin: hostWindow.snapPx(8)
-                        text: widget.wrapText === true ? String(modelData)
+                        text: widget.wrapText === true || listRow.checkable ? String(modelData)
                               : hostWindow.mnemonicText(modelData, "")
-                        textFormat: widget.wrapText === true ? Text.PlainText : Text.StyledText
+                        textFormat: widget.wrapText === true || listRow.checkable ? Text.PlainText : Text.StyledText
                         wrapMode: widget.wrapText === true ? Text.Wrap : Text.NoWrap
                         color: hostWindow.textColor
                         font: hostWindow.font
@@ -451,6 +475,8 @@ Item {
                 hostWindow: widgetRoot.hostWindow
                 widget: widgetRoot.widget
                 view: listView
+                checkboxLeft: hostWindow.snapPx(8)
+                checkboxWidth: hostWindow.snapPx(18)
                 width: listView.width - (listScrollBar.visible ? listScrollBar.width : 0)
                 height: listView.height
             }

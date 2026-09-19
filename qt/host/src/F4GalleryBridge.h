@@ -1,4 +1,5 @@
 #pragma once
+#include "F4QuickViewPreferences.h"
 
 #include "PanelCatalogModel.h"
 #include "PanelIntentController.h"
@@ -35,6 +36,11 @@ class F4GalleryBridge final : public QObject
     Q_OBJECT
     Q_PROPERTY(bool available READ available CONSTANT)
     Q_PROPERTY(QObject *settings READ settings CONSTANT)
+    Q_PROPERTY(QObject *quickViewPreferences READ quickViewPreferences CONSTANT)
+    Q_PROPERTY(bool viewerMounted READ viewerMounted NOTIFY viewerChanged)
+    Q_PROPERTY(int viewerState READ viewerState NOTIFY viewerChanged)
+    Q_PROPERTY(int quickViewSide READ quickViewSide NOTIFY viewerChanged)
+    Q_PROPERTY(QVariantMap quickView READ quickView NOTIFY viewerChanged)
     Q_PROPERTY(QObject *viewerSession READ viewerSession NOTIFY viewerChanged)
     Q_PROPERTY(bool viewerVisible READ viewerVisible NOTIFY viewerChanged)
     Q_PROPERTY(int viewerSide READ viewerSide NOTIFY viewerChanged)
@@ -55,6 +61,16 @@ public:
 
     bool available() const;
     QObject *settings() const;
+    QObject *quickViewPreferences() const { return m_quickViewPreferences; }
+    bool viewerMounted() const;
+    int viewerState() const;
+    int quickViewSide() const;
+    QVariantMap quickView() const;
+    Q_INVOKABLE void synchronizeQuickView(const QVariantMap &view);
+    Q_INVOKABLE void expandQuickView();
+    Q_INVOKABLE void collapseQuickView();
+    Q_INVOKABLE void settleViewer();
+    Q_INVOKABLE void requestViewerCursor(const QString &entryId, int index);
     QObject *viewerSession() const;
     bool viewerVisible() const;
     int viewerSide() const;
@@ -498,6 +514,8 @@ private:
     QPointer<F4IconSet> m_iconSet;
     PanelIntentController *m_panelIntentController = nullptr;
     ViewerCoordinator *m_viewerCoordinator = nullptr;
+    F4QuickViewPreferences *m_quickViewPreferences = nullptr;
+    QVariantMap m_quickView;
     QPointer<QObject> m_runtime;
     PanelSessionRegistry m_panelSessions;
     std::array<DeferredCatalogFinalization, 2>

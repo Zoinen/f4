@@ -250,6 +250,8 @@ set(F4_QT_HOST_SOURCES
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgeCatalog.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgePanelSync.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgeIntents.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/F4QuickViewPreferences.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgeQuickView.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgeProtocol.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgeRowsResponse.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgeMetadataResponse.cpp"
@@ -353,6 +355,8 @@ set(F4_LUCIDE_ICON_NAMES
   loader-circle.svg
   locate-fixed.svg
   log-out.svg
+  arrow-right-from-line.svg
+  arrow-left-from-line.svg
   maximize-2.svg
   menu.svg
   monitor.svg
@@ -1031,6 +1035,17 @@ if(BUILD_TESTING)
     list(APPEND F4_HOST_QML_TEST_ENV "QT_QPA_FONTDIR=$ENV{WINDIR}/Fonts")
     list(APPEND F4_HOST_QML_DPR_TEST_ENV "QT_QPA_FONTDIR=$ENV{WINDIR}/Fonts")
   endif()
+  add_test(NAME F4PanelExpandPixelGridTest COMMAND F4QuickViewSurfaceTests
+    panelExpandButtonsShareHoverAndRestore
+    panelPathBarsToggleWithoutLosingContent
+    panelSplitterCoalescesGoUpdates)
+  set_tests_properties(F4PanelExpandPixelGridTest PROPERTIES
+    ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}")
+  add_test(NAME F4CommandLineAutoHidePixelGridTest COMMAND F4QuickViewSurfaceTests
+    commandLineAutoHideRevealsUpward
+    commandLinePanelToggleIsImmediate)
+  set_tests_properties(F4CommandLineAutoHidePixelGridTest PROPERTIES
+    ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}")
   add_test(NAME F4DocumentSurfaceTest COMMAND F4DocumentSurfaceTests)
   set_tests_properties(F4DocumentSurfaceTest PROPERTIES
     ENVIRONMENT "${F4_HOST_QML_TEST_ENV}"
@@ -1103,6 +1118,12 @@ if(BUILD_TESTING)
   set_tests_properties(F4OperationsQueueTest PROPERTIES
     ENVIRONMENT "${F4_HOST_QML_TEST_ENV}"
   )
+  add_test(NAME F4EnvironmentProfilesPixelGridTest COMMAND F4OperationsQueueTests
+    environmentProfilesFitDuringResize environmentProfilesHeldResizeKeepsMouseGrab
+    semanticDialogKeyHintsStayVisibleAndPixelAligned semanticListCheckboxesAndDimming)
+  set_tests_properties(F4EnvironmentProfilesPixelGridTest PROPERTIES
+    ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
+  )
   add_test(NAME F4SemanticDialogControlsPixelGridTest
     COMMAND F4OperationsQueueTests
       semanticDialogControlsUseWindowFontAndStayPixelAligned
@@ -1168,6 +1189,16 @@ if(BUILD_TESTING)
   set_tests_properties(F4QuickViewIconPixelGridTest PROPERTIES
     ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
   )
+  add_test(NAME F4PanelStatusOverlayTest COMMAND F4QuickViewSurfaceTests
+    panelStatusFitsLongestRowWithoutWrapping
+    liveSelectionStatusUsesCompactPatches
+    panelStatusLeavesStayOnPhysicalPixelGrid
+    panelFileInfoSettingKeepsStatusOverlayAndContentGeometry
+    fastFindOverlayIsIndependentFromPanelFooter
+    fastFindOverlayAvoidsStatusAndStaysPixelAligned)
+  set_tests_properties(F4PanelStatusOverlayTest PROPERTIES
+    ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
+  )
   add_test(NAME F4KeyBarPixelGridTest
     COMMAND F4QuickViewSurfaceTests
       functionBarSameCountUpdatesPreserveDelegates
@@ -1229,6 +1260,12 @@ if(BUILD_TESTING)
       pathBreadcrumbTextStaysFixedWhenNavigatingDeeper)
   set_tests_properties(F4QuickViewPathBreadcrumbPixelGridTest PROPERTIES
     ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
+  )
+  add_test(NAME F4NativeSettingsPixelGridTest
+    COMMAND F4QuickViewSurfaceTests nativeSettingsPagePreservesConfigurator)
+  set_tests_properties(F4NativeSettingsPixelGridTest PROPERTIES
+    ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../.."
   )
   add_test(NAME F4QuickViewThemeDialogPixelGridTest
     COMMAND F4QuickViewSurfaceTests
@@ -1454,6 +1491,8 @@ if(BUILD_TESTING)
     src/F4GalleryBridgeBenchmark.cpp
     src/F4GalleryBridgeCatalog.cpp
     src/F4GalleryBridgePanelSync.cpp
+    src/F4GalleryBridgeQuickView.cpp
+    src/F4QuickViewPreferences.h
     src/F4GalleryBridgeIntents.cpp
     src/F4GalleryBridgeProtocol.cpp
     src/F4GalleryBridgeRowsResponse.cpp
@@ -1530,6 +1569,8 @@ if(BUILD_TESTING)
     src/F4GalleryBridgeBenchmark.cpp
     src/F4GalleryBridgeCatalog.cpp
     src/F4GalleryBridgePanelSync.cpp
+    src/F4GalleryBridgeQuickView.cpp
+    src/F4QuickViewPreferences.h
     src/F4GalleryBridgeIntents.cpp
     src/F4GalleryBridgeProtocol.cpp
     src/F4GalleryBridgeRowsResponse.cpp
@@ -1574,6 +1615,7 @@ if(BUILD_TESTING)
   qt6_add_resources(F4GalleryPointerTests f4_gallery_pointer_test_qml
     PREFIX "/F4QtHost"
     FILES
+      qml/QuickViewController.qml
       qml/GalleryPanelHost.qml
       qml/GalleryPanelHostAdapter.qml
       qml/GalleryPanelInputRouter.qml

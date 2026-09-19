@@ -45,23 +45,29 @@ func OpenRecord(collection, record string, create bool, applied func()) bool {
 			session := &settingsSession{provider: provider, catalog: catalog, draft: draft, contributed: true}
 			c := newSettingsCenter([]*settingsSession{session})
 			c.navigate(col.Category, collection, record, create)
-			c.recordOnly = true
 			c.onApplied = applied
-			c.recordTitle = col.Label.Resolve(config.App.Language, i18n.Msg)
-			c.SetId("settings-record-dialog")
-			for _, item := range []vtui.UIElement{c.search, c.sidebar, c.clearSearch, c.previous, c.next} {
-				item.SetVisible(false)
-				item.SetDisabled(true)
-			}
-			c.rebuildCategory()
-			c.page.scroll = 0
-			c.page.positionRows()
-			c.ResizeConsole(vtui.FrameManager.GetScreenSize(), vtui.FrameManager.GetScreenHeight())
-			c.SetFocusedItem(c.page)
+			c.configureRecordDialog(col.Label.Resolve(config.App.Language, i18n.Msg))
 			vtui.FrameManager.Push(c)
 			vtui.DebugLog("[FIX:connection-dialog] opened collection=%s create=%v", collection, create)
 			return true
 		}
 	}
 	return false
+}
+
+// configureRecordDialog reuses the Settings fields and transaction lifecycle
+// while presenting only the selected record, without global navigation.
+func (c *settingsCenter) configureRecordDialog(title string) {
+	c.recordOnly = true
+	c.recordTitle = title
+	c.SetId("settings-record-dialog")
+	for _, item := range []vtui.UIElement{c.search, c.sidebar, c.clearSearch, c.previous, c.next} {
+		item.SetVisible(false)
+		item.SetDisabled(true)
+	}
+	c.rebuildCategory()
+	c.page.scroll = 0
+	c.page.positionRows()
+	c.ResizeConsole(vtui.FrameManager.GetScreenSize(), vtui.FrameManager.GetScreenHeight())
+	c.SetFocusedItem(c.page)
 }

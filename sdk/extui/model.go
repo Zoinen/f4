@@ -35,27 +35,28 @@ type Scene struct {
 }
 
 type ShellModel struct {
-	ID             string
-	Title          string
-	Mode           string
-	ActivePanel    int
-	ShowPanels     bool
-	ShowLeftPanel  bool
-	ShowRightPanel bool
-	Wide           bool
-	WidePanel      int
-	PanelLayout    PanelLayoutModel
-	ShowKeyBar     bool
-	TerminalBusy   bool
-	TerminalActive bool
-	MacroRecording bool
-	Fallback       bool
-	FallbackReason string
-	Panels         []PanelModel
-	InfoPanels     []InfoPanelModel
-	QuickViews     []QuickViewModel
-	CommandLine    *CommandLineModel
-	Terminal       *TerminalModel
+	HidePanelPathBar bool
+	ID               string
+	Title            string
+	Mode             string
+	ActivePanel      int
+	ShowPanels       bool
+	ShowLeftPanel    bool
+	ShowRightPanel   bool
+	Wide             bool
+	WidePanel        int
+	PanelLayout      PanelLayoutModel
+	ShowKeyBar       bool
+	TerminalBusy     bool
+	TerminalActive   bool
+	MacroRecording   bool
+	Fallback         bool
+	FallbackReason   string
+	Panels           []PanelModel
+	InfoPanels       []InfoPanelModel
+	QuickViews       []QuickViewModel
+	CommandLine      *CommandLineModel
+	Terminal         *TerminalModel
 }
 
 // PanelLayoutModel is the small, presentation-independent part of commander
@@ -90,26 +91,31 @@ type InfoPanelRowModel struct {
 // reuse the same smooth-scrolling viewport as Viewer and Editor without
 // mistaking the preview for a standalone document frame.
 type QuickViewModel struct {
-	ID          string
-	Side        int
-	SourceSide  int
-	Active      bool
-	Title       string
-	BottomHint  string
-	ContentKey  string
-	Name        string
-	Path        string
-	SizeText    string
-	PreviewKind string
-	Label       string
-	Error       string
-	Loading     bool
-	Wrap        bool
-	HeaderRows  []TextRowModel
-	ImageSource string
-	ImageWidth  int
-	ImageHeight int
-	Surface     SurfaceModel
+	SourcePanelID     string
+	EntryID           string
+	CatalogRevision   int64
+	PreviewGeneration int64
+	ImageRenderer     string
+	ID                string
+	Side              int
+	SourceSide        int
+	Active            bool
+	Title             string
+	BottomHint        string
+	ContentKey        string
+	Name              string
+	Path              string
+	SizeText          string
+	PreviewKind       string
+	Label             string
+	Error             string
+	Loading           bool
+	Wrap              bool
+	HeaderRows        []TextRowModel
+	ImageSource       string
+	ImageWidth        int
+	ImageHeight       int
+	Surface           SurfaceModel
 }
 
 type PanelModel struct {
@@ -117,6 +123,9 @@ type PanelModel struct {
 	UseSortGroups       bool
 	SelectedFiles       int
 	SelectedDirectories int
+	TotalFiles          int
+	TotalDirectories    int
+	DiskTotalSpace      uint64
 	FreeSpace           uint64
 	FreeSpaceKnown      bool
 	SymlinkTarget       string
@@ -329,6 +338,7 @@ type CommandLineModel struct {
 	Focused bool
 	// OwnsNavigation routes panel navigation keys to the command line even when empty.
 	OwnsNavigation   bool
+	AutoHide         bool
 	Multiline        bool
 	WordWrap         bool
 	Prompt           string
@@ -347,37 +357,39 @@ type CommandLineModel struct {
 }
 
 type TerminalModel struct {
-	ID                 string
-	Title              string
-	Columns            int
-	DefaultBackground  string
-	Visible            bool
-	Focused            bool
-	AltScreen          bool
-	Busy               bool
-	FollowTail         bool
-	CursorX            int
-	CursorY            int
-	CursorAbsoluteRow  int64
-	CursorVisible      bool
-	CursorShape        string
-	SelectionEnabled   bool
-	DocumentKey        string
-	ScrollAction       string
-	ScrollUnit         string
-	WindowStart        int64
-	WindowEnd          int64
-	ViewportStart      int64
-	ViewportSpan       int64
-	ContentStart       int64 // First content row; leading screen padding keeps its absolute IDs.
-	ContentExtent      int64
-	ContentExtentKnown bool
-	ViewportRow        int
-	ViewportRows       int
-	WindowGeneration   uint64
-	WindowContentKey   string
-	Rows               []TextRowModel
-	WindowRows         []TextRowModel
+	ID                    string
+	Title                 string
+	Columns               int
+	DefaultBackground     string
+	Visible               bool
+	Focused               bool
+	AltScreen             bool
+	Busy                  bool
+	FollowTail            bool
+	CursorX               int
+	CursorY               int
+	CursorAbsoluteRow     int64
+	CursorVisible         bool
+	CursorShape           string
+	SelectionEnabled      bool
+	SelectionActiveStart  int64
+	SelectionActiveOffset int
+	DocumentKey           string
+	ScrollAction          string
+	ScrollUnit            string
+	WindowStart           int64
+	WindowEnd             int64
+	ViewportStart         int64
+	ViewportSpan          int64
+	ContentStart          int64 // First content row; leading screen padding keeps its absolute IDs.
+	ContentExtent         int64
+	ContentExtentKnown    bool
+	ViewportRow           int
+	ViewportRows          int
+	WindowGeneration      uint64
+	WindowContentKey      string
+	Rows                  []TextRowModel
+	WindowRows            []TextRowModel
 }
 
 // CaretModel carries a secondary editor caret and its independent selection.
@@ -579,6 +591,9 @@ type RunModel struct {
 }
 
 type MenuModel struct {
+	// StackOrder is the one-based position in the shared menu/dialog frame stack.
+	// Zero means the sender did not provide stacking information.
+	StackOrder   int
 	ID           string
 	Role         string
 	Title        string
@@ -637,6 +652,8 @@ type KeyBarAlternativeModel struct {
 }
 
 type DialogModel struct {
+	// StackOrder shares the same bottom-to-top frame order as MenuModel.
+	StackOrder int
 	// Layout selects an owner-declared native layout instead of terminal rows.
 	Layout    string
 	ID        string
@@ -647,7 +664,26 @@ type DialogModel struct {
 	Progress  int
 	ShowClose bool
 	Controls  []ControlModel
+	KeyHints  []DialogKeyHint
+	PaneSplit *DialogPaneSplit
 	Legacy    M
+}
+
+// DialogPaneSplit describes two side-by-side panes in semantic column coordinates.
+type DialogPaneSplit struct {
+	X          int
+	LeftTitle  string
+	RightTitle string
+	Active     string
+}
+
+// DialogKeyHint is a localized keyboard legend supplied by the dialog owner.
+type DialogKeyHint struct {
+	Key      string
+	Text     string
+	Action   string
+	Icon     string
+	Disabled bool
 }
 
 type ControlModel struct {
@@ -683,9 +719,17 @@ type ControlModel struct {
 	// ItemIcons contains optional Lucide names in list-item or table-row display
 	// order. Empty entries have no icon; table icons precede the first cell.
 	ItemIcons []string
-	Rows      []M
-	Children  []ControlModel
-	Legacy    M
+	// ItemStates describes optional row decorations independently of row text.
+	ItemStates []ListItemState
+	Rows       []M
+	Children   []ControlModel
+	Legacy     M
+}
+
+type ListItemState struct {
+	Checkable bool
+	Checked   bool
+	Dimmed    bool
 }
 
 type ToastModel struct {
@@ -754,21 +798,22 @@ func (s Scene) ToMap() M {
 
 func (s ShellModel) ToMap() M {
 	out := M{
-		"id":             s.ID,
-		"kind":           "shell",
-		"title":          s.Title,
-		"mode":           s.Mode,
-		"activePanel":    s.ActivePanel,
-		"showPanels":     s.ShowPanels,
-		"showLeftPanel":  s.ShowLeftPanel,
-		"showRightPanel": s.ShowRightPanel,
-		"wide":           s.Wide,
-		"panelLayout":    s.PanelLayout.ToMap(),
-		"showKeyBar":     s.ShowKeyBar,
-		"terminalBusy":   s.TerminalBusy,
-		"terminalActive": s.TerminalActive,
-		"macroRecording": s.MacroRecording,
-		"panels":         panelsToMaps(s.Panels),
+		"id":               s.ID,
+		"kind":             "shell",
+		"title":            s.Title,
+		"mode":             s.Mode,
+		"activePanel":      s.ActivePanel,
+		"showPanels":       s.ShowPanels,
+		"showLeftPanel":    s.ShowLeftPanel,
+		"showRightPanel":   s.ShowRightPanel,
+		"wide":             s.Wide,
+		"panelLayout":      s.PanelLayout.ToMap(),
+		"showKeyBar":       s.ShowKeyBar,
+		"hidePanelPathBar": s.HidePanelPathBar,
+		"terminalBusy":     s.TerminalBusy,
+		"terminalActive":   s.TerminalActive,
+		"macroRecording":   s.MacroRecording,
+		"panels":           panelsToMaps(s.Panels),
 	}
 	if s.Wide {
 		out["widePanel"] = s.WidePanel
@@ -823,27 +868,30 @@ func (p InfoPanelModel) ToMap() M {
 
 func (q QuickViewModel) ToMap() M {
 	return M{
-		"id":          q.ID,
-		"kind":        "quickViewPanel",
-		"side":        q.Side,
-		"sourceSide":  q.SourceSide,
-		"active":      q.Active,
-		"title":       q.Title,
-		"bottomHint":  q.BottomHint,
-		"contentKey":  q.ContentKey,
-		"name":        q.Name,
-		"path":        q.Path,
-		"sizeText":    q.SizeText,
-		"previewKind": q.PreviewKind,
-		"label":       q.Label,
-		"error":       q.Error,
-		"loading":     q.Loading,
-		"wrap":        q.Wrap,
-		"headerRows":  rowsToMaps(q.HeaderRows),
-		"imageSource": q.ImageSource,
-		"imageWidth":  q.ImageWidth,
-		"imageHeight": q.ImageHeight,
-		"surface":     q.Surface.ToMap(),
+		"sourcePanelId": q.SourcePanelID, "entryId": q.EntryID,
+		"catalogRevision": q.CatalogRevision, "previewGeneration": q.PreviewGeneration,
+		"imageRenderer": q.ImageRenderer,
+		"id":            q.ID,
+		"kind":          "quickViewPanel",
+		"side":          q.Side,
+		"sourceSide":    q.SourceSide,
+		"active":        q.Active,
+		"title":         q.Title,
+		"bottomHint":    q.BottomHint,
+		"contentKey":    q.ContentKey,
+		"name":          q.Name,
+		"path":          q.Path,
+		"sizeText":      q.SizeText,
+		"previewKind":   q.PreviewKind,
+		"label":         q.Label,
+		"error":         q.Error,
+		"loading":       q.Loading,
+		"wrap":          q.Wrap,
+		"headerRows":    rowsToMaps(q.HeaderRows),
+		"imageSource":   q.ImageSource,
+		"imageWidth":    q.ImageWidth,
+		"imageHeight":   q.ImageHeight,
+		"surface":       q.Surface.ToMap(),
 	}
 }
 
@@ -881,6 +929,9 @@ func (p PanelModel) ToMap() M {
 		"useSortGroups":          p.UseSortGroups,
 		"selectedFiles":          p.SelectedFiles,
 		"selectedDirectories":    p.SelectedDirectories,
+		"totalFiles":             p.TotalFiles,
+		"totalDirectories":       p.TotalDirectories,
+		"diskTotalSpace":         p.DiskTotalSpace,
 		"freeSpace":              p.FreeSpace,
 		"freeSpaceKnown":         p.FreeSpaceKnown,
 		"symlinkTarget":          p.SymlinkTarget,
@@ -1134,6 +1185,7 @@ func (c CommandLineModel) ToMap() M {
 		"visible":          c.Visible,
 		"focused":          c.Focused,
 		"ownsNavigation":   c.OwnsNavigation,
+		"autoHide":         c.AutoHide,
 		"multiline":        c.Multiline,
 		"wordWrap":         c.WordWrap,
 		"prompt":           c.Prompt,
@@ -1154,35 +1206,37 @@ func (c CommandLineModel) ToMap() M {
 
 func (t TerminalModel) ToMap() M {
 	out := M{
-		"id":                 t.ID,
-		"kind":               "terminal",
-		"title":              t.Title,
-		"columns":            t.Columns,
-		"defaultBackground":  t.DefaultBackground,
-		"visible":            t.Visible,
-		"focused":            t.Focused,
-		"altScreen":          t.AltScreen,
-		"busy":               t.Busy,
-		"followTail":         t.FollowTail,
-		"cursorX":            t.CursorX,
-		"cursorY":            t.CursorY,
-		"cursorAbsoluteRow":  t.CursorAbsoluteRow,
-		"cursorVisible":      t.CursorVisible,
-		"cursorShape":        t.CursorShape,
-		"selectionEnabled":   t.SelectionEnabled,
-		"documentKey":        t.DocumentKey,
-		"scrollAction":       t.ScrollAction,
-		"scrollUnit":         t.ScrollUnit,
-		"windowStart":        t.WindowStart,
-		"windowEnd":          t.WindowEnd,
-		"viewportStart":      t.ViewportStart,
-		"viewportSpan":       t.ViewportSpan,
-		"contentStart":       t.ContentStart,
-		"contentExtent":      t.ContentExtent,
-		"contentExtentKnown": t.ContentExtentKnown,
-		"viewportRow":        t.ViewportRow,
-		"viewportRows":       t.ViewportRows,
-		"windowGeneration":   t.WindowGeneration,
+		"id":                    t.ID,
+		"kind":                  "terminal",
+		"title":                 t.Title,
+		"columns":               t.Columns,
+		"defaultBackground":     t.DefaultBackground,
+		"visible":               t.Visible,
+		"focused":               t.Focused,
+		"altScreen":             t.AltScreen,
+		"busy":                  t.Busy,
+		"followTail":            t.FollowTail,
+		"cursorX":               t.CursorX,
+		"cursorY":               t.CursorY,
+		"cursorAbsoluteRow":     t.CursorAbsoluteRow,
+		"cursorVisible":         t.CursorVisible,
+		"cursorShape":           t.CursorShape,
+		"selectionEnabled":      t.SelectionEnabled,
+		"selectionActiveStart":  t.SelectionActiveStart,
+		"selectionActiveOffset": t.SelectionActiveOffset,
+		"documentKey":           t.DocumentKey,
+		"scrollAction":          t.ScrollAction,
+		"scrollUnit":            t.ScrollUnit,
+		"windowStart":           t.WindowStart,
+		"windowEnd":             t.WindowEnd,
+		"viewportStart":         t.ViewportStart,
+		"viewportSpan":          t.ViewportSpan,
+		"contentStart":          t.ContentStart,
+		"contentExtent":         t.ContentExtent,
+		"contentExtentKnown":    t.ContentExtentKnown,
+		"viewportRow":           t.ViewportRow,
+		"viewportRows":          t.ViewportRows,
+		"windowGeneration":      t.WindowGeneration,
 	}
 	if len(t.WindowRows) > 0 || t.ScrollUnit != "" {
 		key := t.WindowContentKey
@@ -1494,6 +1548,9 @@ func (m MenuModel) ToMap() M {
 		"selected": m.Selected,
 		"items":    menuItemsToMaps(m.Items),
 	}
+	if m.StackOrder > 0 {
+		out["stackOrder"] = m.StackOrder
+	}
 	if m.OwnerID != "" {
 		out["ownerId"] = m.OwnerID
 	}
@@ -1616,6 +1673,9 @@ func (d DialogModel) ToMap() M {
 		"showClose": d.ShowClose,
 		"children":  controlsToMaps(d.Controls),
 	}
+	if d.StackOrder > 0 {
+		out["stackOrder"] = d.StackOrder
+	}
 	for k, v := range d.Legacy {
 		if _, exists := out[k]; !exists {
 			out[k] = v
@@ -1623,6 +1683,22 @@ func (d DialogModel) ToMap() M {
 	}
 	if d.Layout != "" {
 		out["layout"] = d.Layout
+	}
+	if len(d.KeyHints) > 0 {
+		hints := make([]M, 0, len(d.KeyHints))
+		for _, hint := range d.KeyHints {
+			hints = append(hints, M{
+				"key": hint.Key, "text": hint.Text, "action": hint.Action,
+				"icon": hint.Icon, "disabled": hint.Disabled,
+			})
+		}
+		out["keyHints"] = hints
+	}
+	if d.PaneSplit != nil {
+		out["paneSplit"] = M{
+			"x": d.PaneSplit.X, "leftTitle": d.PaneSplit.LeftTitle,
+			"rightTitle": d.PaneSplit.RightTitle, "active": d.PaneSplit.Active,
+		}
 	}
 	return out
 }
@@ -1666,6 +1742,13 @@ func (c ControlModel) ToMap() M {
 	}
 	if len(c.ItemIcons) > 0 {
 		out["itemIcons"] = c.ItemIcons
+	}
+	if len(c.ItemStates) > 0 {
+		states := make([]M, 0, len(c.ItemStates))
+		for _, state := range c.ItemStates {
+			states = append(states, M{"checkable": state.Checkable, "checked": state.Checked, "dimmed": state.Dimmed})
+		}
+		out["itemStates"] = states
 	}
 	if len(c.Rows) > 0 {
 		out["rows"] = c.Rows

@@ -852,6 +852,16 @@ func init() {
 		Handler:     withPF(func(pf *panel.PanelsFrame) { actionImportFar2lHistory(pf) }),
 	})
 	RegisterAction(action.Action{
+		Name:        "UserMenu.ImportFar3",
+		Area:        "Shell",
+		Label:       "Import Far Manager 3 User Menu",
+		LabelKey:    "Action.UserMenu.ImportFar3",
+		Description: "Merge a Far Manager 3 user menu into the global F4 user menu",
+		DescKey:     "Action.UserMenu.ImportFar3.Desc",
+		MenuPath:    "Commands",
+		Handler:     withPF(func(*panel.PanelsFrame) { panel.ShowFar3UserMenuImport(nil) }),
+	})
+	RegisterAction(action.Action{
 		Name:        "History.ImportFar3",
 		Area:        "Shell",
 		Label:       "Import Far3 History",
@@ -1427,6 +1437,20 @@ func init() {
 			if vtui.FrameManager != nil {
 				vtui.FrameManager.ResizeWindow(targetCols, targetRows)
 			}
+		}),
+	})
+	RegisterAction(action.Action{
+		Name:        "Panel.TogglePathBar",
+		Area:        "Shell",
+		Label:       "Toggle Panel Path Bars",
+		Description: "Show or hide the graphical panel path bars",
+		DefaultKeys: []string{"CtrlShiftB"},
+		MenuPath:    "Options",
+		Checked:     func() bool { return !config.App.HidePanelPathBar },
+		Handler: withPF(func(pf *panel.PanelsFrame) {
+			config.App.HidePanelPathBar = !config.App.HidePanelPathBar
+			config.RequestSaveConfig()
+			vtui.FrameManager.HardRefresh()
 		}),
 	})
 	RegisterAction(action.Action{

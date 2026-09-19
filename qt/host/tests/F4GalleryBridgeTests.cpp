@@ -118,6 +118,8 @@ private slots:
     void frameTraceUsesDirectSwapBoundaryAcrossQueuedDelivery();
     void documentWindowTraceWaitsForCommittedRenderSync();
     void stableActionsCarryRevisions();
+    void quickViewPreservesSessionAndSourceFocus();
+    void quickViewPreferencesPersist();
     void deferredCursorCommitsOnlyLatest();
     void staleCursorIntentRetriesAgainstNewCatalog();
     void activationSceneDoesNotSnapPendingCursorBackward();
@@ -143,6 +145,9 @@ private slots:
     void deferredMetadataWaitsForLoadingFalseFullScene();
     void panelCatalogPatchLeavesOtherSessionUntouched();
     void sparsePanelSelectionPatchKeepsCatalogImmutable();
+    void delayedSelectionPatchesKeepLatestDragCursor();
+    void rapidSwipeKeepsCursorAcrossDelayedReplies_data();
+    void rapidSwipeKeepsCursorAcrossDelayedReplies();
     void panelCatalogRowsRequestStartsAtFirstMissingRow();
     void rejectedPanelCatalogRowsRetryWhileSourceLoads();
     void deferredCatalogApplyStaysWithinKeyboardFrame();
@@ -1431,25 +1436,42 @@ void F4GalleryBridgeTests::galleryRoutesOwnedAndCommanderKeys()
                            QStringLiteral("entry:3")}));
     actions.clear();
 
-    // Gallery thumbnail zoom is local even though the shortcut includes the
-    // command modifier; neighbouring Ctrl+1/2/3 still route to f4.
+    // Only Alt zoom shortcuts belong to the gallery. Commander shortcuts
+    // retain both their press and release events, including Ctrl variants.
     keyRecorder.clear();
     QCOMPARE(panel->property("thumbnailHeight").toInt(), 150);
-    QTest::keyClick(&view, Qt::Key_Equal, Qt::ControlModifier);
+    QTest::keyClick(&view, Qt::Key_Equal, Qt::AltModifier);
     const int zoomedThumbnailHeight =
         panel->property("thumbnailHeight").toInt();
     QVERIFY(zoomedThumbnailHeight > 150);
     QCOMPARE(keyRecorder.count(Qt::Key_Equal, true), 0);
-    QTest::keyClick(&view, Qt::Key_0, Qt::ControlModifier);
+    QTest::keyClick(&view, Qt::Key_0, Qt::AltModifier);
     QCOMPARE(panel->property("thumbnailHeight").toInt(), 150);
     QCOMPARE(keyRecorder.count(Qt::Key_0, true), 0);
     QTest::keyClick(&view, Qt::Key_Equal,
-                    Qt::ControlModifier | Qt::ShiftModifier);
+                    Qt::AltModifier | Qt::ShiftModifier);
     QCOMPARE(panel->property("thumbnailHeight").toInt(),
              zoomedThumbnailHeight);
     QCOMPARE(keyRecorder.count(Qt::Key_Equal, true), 0);
-    QTest::keyClick(&view, Qt::Key_0, Qt::ControlModifier);
+    QTest::keyClick(&view, Qt::Key_0, Qt::AltModifier);
     QCOMPARE(panel->property("thumbnailHeight").toInt(), 150);
+
+    for (auto modifiers : {Qt::AltModifier | Qt::ShiftModifier,
+                           Qt::AltModifier | Qt::KeypadModifier}) {
+        keyRecorder.clear();
+        QTest::keyClick(&view, Qt::Key_Plus, modifiers);
+        QVERIFY(panel->property("thumbnailHeight").toInt() > 150);
+        const int beforeMinus = panel->property("thumbnailHeight").toInt();
+        QTest::keyClick(&view, Qt::Key_Minus,
+                        Qt::AltModifier | Qt::KeypadModifier);
+        QVERIFY(panel->property("thumbnailHeight").toInt() < beforeMinus);
+        QTest::keyClick(&view, Qt::Key_0, Qt::AltModifier);
+        QCOMPARE(panel->property("thumbnailHeight").toInt(), 150);
+        for (auto key : {Qt::Key_Plus, Qt::Key_Minus, Qt::Key_0}) {
+            QCOMPARE(keyRecorder.count(key, true), 0);
+            QCOMPARE(keyRecorder.count(key, false), 0);
+        }
+    }
 
     // Compact text layouts expose the same local hotkeys, use two-pixel row
     // steps, and persist the final value without leaking keys to f4.
@@ -1465,7 +1487,7 @@ void F4GalleryBridgeTests::galleryRoutesOwnedAndCommanderKeys()
     QTRY_COMPARE(panel->property("density").toReal(), qreal(61.0));
     actions.clear();
     keyRecorder.clear();
-    QTest::keyClick(&view, Qt::Key_Equal, Qt::ControlModifier);
+    QTest::keyClick(&view, Qt::Key_Equal, Qt::AltModifier);
     QTRY_COMPARE(panel->property("density").toReal(), qreal(63.0));
     QTRY_COMPARE_WITH_TIMEOUT(actions.size(), 1, 3000);
     QVariantMap compactDensityAction = actions.takeFirst().at(0).toMap();
@@ -1474,9 +1496,9 @@ void F4GalleryBridgeTests::galleryRoutesOwnedAndCommanderKeys()
     QCOMPARE(compactDensityAction.value(QStringLiteral("layoutMode")).toString(),
              QStringLiteral("details"));
     QCOMPARE(compactDensityAction.value(QStringLiteral("density")).toInt(), 63);
-    QTest::keyClick(&view, Qt::Key_Minus, Qt::ControlModifier);
+    QTest::keyClick(&view, Qt::Key_Minus, Qt::AltModifier);
     QTRY_COMPARE(panel->property("density").toReal(), qreal(61.0));
-    QTest::keyClick(&view, Qt::Key_0, Qt::ControlModifier);
+    QTest::keyClick(&view, Qt::Key_0, Qt::AltModifier);
     QTRY_VERIFY_WITH_TIMEOUT(
         qAbs(panel->property("density").toReal() - 22.0) < 0.001, 3000);
     QCOMPARE(keyRecorder.count(Qt::Key_Equal, true), 0);
@@ -1499,16 +1521,19 @@ void F4GalleryBridgeTests::galleryRoutesOwnedAndCommanderKeys()
     const auto verifyForwarded = [&](const char *label, Qt::Key key,
                                      Qt::KeyboardModifiers modifiers = Qt::NoModifier) {
         const int previousIndex = session->currentIndex();
+        const int previousHeight = panel->property("thumbnailHeight").toInt();
         actions.clear();
         keyRecorder.clear();
         QTest::keyClick(&view, key, modifiers);
         const bool passed = keyRecorder.count(key, true) == 1
             && keyRecorder.count(key, false) == 1
             && session->currentIndex() == previousIndex
+            && panel->property("thumbnailHeight").toInt() == previousHeight
             && actions.isEmpty()
             && panel->property("activeFocus").toBool();
         if (!passed) {
-            qWarning() << label << "presses" << keyRecorder.count(key, true)
+            qWarning() << label << key << modifiers
+                       << "presses" << keyRecorder.count(key, true)
                        << "releases" << keyRecorder.count(key, false)
                        << "index" << session->currentIndex()
                        << "actions" << actions.size()
@@ -1547,7 +1572,22 @@ void F4GalleryBridgeTests::galleryRoutesOwnedAndCommanderKeys()
     QVERIFY(verifyForwarded("Ctrl+1", Qt::Key_1, Qt::ControlModifier));
     QVERIFY(verifyForwarded("Ctrl+2", Qt::Key_2, Qt::ControlModifier));
     QVERIFY(verifyForwarded("Ctrl+3", Qt::Key_3, Qt::ControlModifier));
-    QVERIFY(verifyForwarded("Alt+0", Qt::Key_0, Qt::AltModifier));
+    QVERIFY(verifyForwarded("Ctrl+0", Qt::Key_0, Qt::ControlModifier));
+    for (auto key : {Qt::Key_Plus, Qt::Key_Equal, Qt::Key_Minus,
+                     Qt::Key_Asterisk}) {
+        for (auto modifiers : {Qt::KeyboardModifiers(Qt::NoModifier),
+                               Qt::KeyboardModifiers(Qt::ShiftModifier),
+                               Qt::KeyboardModifiers(Qt::ControlModifier),
+                               Qt::ControlModifier | Qt::ShiftModifier,
+                               Qt::ControlModifier | Qt::AltModifier,
+                               Qt::KeyboardModifiers(Qt::MetaModifier),
+                               Qt::KeyboardModifiers(Qt::KeypadModifier),
+                               Qt::ControlModifier | Qt::KeypadModifier}) {
+            // Prior text input must not mask built-in Gallery key handling.
+            host->setProperty("pendingCommanderInput", false);
+            QVERIFY(verifyForwarded("Commander selection operators", key, modifiers));
+        }
+    }
     QVERIFY(verifyForwarded("Ctrl+Alt+Minus", Qt::Key_Minus,
                             Qt::ControlModifier | Qt::AltModifier));
     QVERIFY(verifyForwarded("Ctrl+Shift+Minus", Qt::Key_Minus,
@@ -3736,6 +3776,151 @@ void F4GalleryBridgeTests::panelCatalogPatchLeavesOtherSessionUntouched()
     QCOMPARE(rightChanged.size(), 0);
 }
 
+void F4GalleryBridgeTests::rapidSwipeKeepsCursorAcrossDelayedReplies_data()
+{
+    QTest::addColumn<QString>("mode");
+    QTest::addColumn<bool>("upward");
+    for (const auto &mode : {QString("details"), QString("columns")})
+        for (bool upward : {false, true})
+            QTest::newRow(qPrintable(mode + (upward ? "-up" : "-down"))) << mode << upward;
+}
+
+void F4GalleryBridgeTests::rapidSwipeKeepsCursorAcrossDelayedReplies()
+{
+    QFETCH(QString, mode);
+    QFETCH(bool, upward);
+    QQuickView view;
+    view.engine()->addImportPath(QStringLiteral(":"));
+    view.engine()->addImportPath(QStringLiteral("qrc:/qt/qml"));
+    F4GalleryBridge bridge(view.engine());
+    auto scene = longCatalogScene(30, 0);
+    auto shell = scene.value("shell").toMap();
+    auto panel = shell.value("panels").toList().first().toMap();
+    panel["galleryLayoutMode"] = mode;
+    panel["galleryDensity"] = 25;
+    panel["galleryColumnCount"] = 2;
+    shell["panels"] = QVariantList{panel};
+    scene["shell"] = shell;
+    bridge.synchronizeScene(scene);
+    QQmlComponent component(view.engine(), bridge.panelComponentUrl());
+    QTRY_VERIFY(component.status() != QQmlComponent::Loading);
+    QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+    auto *host = qobject_cast<QQuickItem *>(component.createWithInitialProperties({
+        {"bridge", QVariant::fromValue(static_cast<QObject *>(&bridge))},
+        {"panel", panel}, {"panelActive", true}, {"devicePixelRatio", view.devicePixelRatio()},
+        {"width", 700}, {"height", 600}}));
+    QVERIFY2(host, qPrintable(component.errorString()));
+    view.setContent(bridge.panelComponentUrl(), &component, host);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+    auto *gallery = host->findChild<QQuickItem *>("embeddedGalleryPanel");
+    auto *layout = host->findChild<QQuickItem *>("galleryViewportItem");
+    QVERIFY(gallery && layout);
+    QTRY_COMPARE(layout->property("count").toInt(), 30);
+    const auto point = [&](int row) {
+        QRectF rect;
+        const bool ok = QMetaObject::invokeMethod(layout, "indexGeometry",
+            Q_RETURN_ARG(QRectF, rect), Q_ARG(int, row));
+        Q_ASSERT(ok);
+        return layout->mapToScene(QPointF(rect.center().x(),
+            rect.center().y() - layout->property("contentY").toReal()));
+    };
+    const int first = upward ? 12 : 1;
+    const int middle = upward ? 11 : 2;
+    const int last = upward ? 1 : 12;
+    QSignalSpy actions(&bridge, &F4GalleryBridge::uiActionRequested);
+    QTest::mousePress(&view, Qt::RightButton, Qt::NoModifier, point(first).toPoint());
+    QTest::mouseMove(&view, point(middle).toPoint());
+    QTest::qWait(30); // Middle transaction is in flight to Go.
+    QTest::mouseMove(&view, point(last).toPoint());
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(bridge.sessionForSide(0));
+    QCOMPARE(session->currentIndex(), last);
+    panel.remove("entries");
+    panel.remove("highlightStyles");
+    panel["cursor"] = middle;
+    panel["cursorEntryId"] = QString("entry:%1").arg(middle);
+    bridge.synchronizePanelState({{"op", "state_update"}, {"side", 0},
+        {"panelId", panel.value("id")}, {"catalogRevision", 77}, {"panel", panel}});
+    bridge.synchronizePanelState({{"op", "selection_delta"}, {"side", 0},
+        {"panelId", panel.value("id")}, {"catalogRevision", 77}, {"panel", panel},
+        {"baseSelectionRevision", 4}, {"selectionRevision", 5},
+        {"changes", QVariantList{QVariantMap{{"index", middle},
+            {"entryId", QString("entry:%1").arg(middle)}, {"selected", true}}}}});
+    QCOMPARE(session->currentIndex(), last);
+    QCOMPARE(gallery->property("visualCursorIndex").toInt(), last);
+    QTest::mouseRelease(&view, Qt::RightButton, Qt::NoModifier, point(last).toPoint());
+    QTest::qWait(50);
+    QVariantMap finalSelection;
+    for (const auto &event : actions) {
+        const auto action = event.first().toMap();
+        if (action.value("action") == "panel.setSelection" && action.value("mode") == "set")
+            finalSelection = action;
+    }
+    QCOMPARE(finalSelection.value("cursorEntryId").toString(), QString("entry:%1").arg(last));
+    bool finalRowSelected = false;
+    for (const auto &value : finalSelection.value("changes").toList()) {
+        const auto change = value.toMap();
+        if (change.value("entryId").toString() == QString("entry:%1").arg(last))
+            finalRowSelected = change.value("selected").toBool();
+    }
+    QVERIFY(finalRowSelected);
+    QCOMPARE(session->currentIndex(), last);
+    QCOMPARE(gallery->property("visualCursorIndex").toInt(), last);
+    if (qEnvironmentVariableIsSet("F4_DRAG_CURSOR_CAPTURE")) {
+        const auto path = qEnvironmentVariable("F4_DRAG_CURSOR_CAPTURE") + "-" + mode
+            + (upward ? "-up.png" : "-down.png");
+        QVERIFY(view.grabWindow().save(path));
+    }
+}
+
+void F4GalleryBridgeTests::delayedSelectionPatchesKeepLatestDragCursor()
+{
+    QQmlEngine engine;
+    F4GalleryBridge bridge(&engine);
+    const QVariantMap scene = testScene();
+    bridge.synchronizeScene(scene);
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(bridge.sessionForSide(0));
+    QVERIFY(session);
+    QSignalSpy resets(session->model(), &QAbstractItemModel::modelReset);
+    QSignalSpy actions(&bridge, &F4GalleryBridge::uiActionRequested);
+    session->activateIndex(1);
+    bridge.requestSelectionTransaction(0,
+        {QVariantMap{{"entryId", "left:two"}, {"selected", true}}},
+        "left:two", 9, 42);
+    QVariantMap panel = scene.value("shell").toMap().value("panels").toList().first().toMap();
+    panel.remove("entries");
+    panel.remove("highlightStyles");
+    const QString panelId = panel.value("id").toString();
+    // A previous swipe position returns in two separately delivered patches.
+    const auto statePatch = [&] {
+        bridge.synchronizePanelState({{"op", "state_update"}, {"side", 0},
+            {"panelId", panelId}, {"catalogRevision", 42}, {"panel", panel}});
+    };
+    statePatch();
+    QCOMPARE(session->cursorEntryId(), QString("left:two"));
+    bridge.synchronizePanelState({{"op", "selection_delta"}, {"side", 0},
+        {"panelId", panelId}, {"catalogRevision", 42}, {"panel", panel},
+        {"baseSelectionRevision", 11}, {"selectionRevision", 12},
+        {"changes", QVariantList{QVariantMap{{"index", 9}, {"entryId", "left:two"}, {"selected", true}}}}});
+    QVERIFY(session->isSelectedAt(1));
+    QCOMPARE(session->cursorEntryId(), QString("left:two"));
+    // More delayed scalar replies must not acknowledge our optimistic cursor.
+    for (int i = 0; i < 5; ++i) {
+        statePatch();
+        QCOMPARE(session->cursorEntryId(), QString("left:two"));
+    }
+    // The real acknowledgement releases the guard for later Go navigation.
+    panel["cursorEntryId"] = "left:two";
+    panel["cursor"] = 9;
+    statePatch();
+    panel["cursorEntryId"] = "left:one";
+    panel["cursor"] = 7;
+    statePatch();
+    QCOMPARE(session->cursorEntryId(), QString("left:one"));
+    QCOMPARE(resets.size(), 0);
+    QCOMPARE(actions.size(), 1);
+}
+
 void F4GalleryBridgeTests::sparsePanelSelectionPatchKeepsCatalogImmutable()
 {
     QVariantMap left = deferredPanel(
@@ -4398,6 +4583,101 @@ void F4GalleryBridgeTests::rejectedPanelCatalogRowsRetryWhileSourceLoads()
     QTRY_COMPARE_WITH_TIMEOUT(requests.size(), 2, 1000);
     QCOMPARE(state.catalogRowsRequestOffset, 48);
     QCOMPARE(state.catalogRowsRequestLimit, 64);
+}
+
+void F4GalleryBridgeTests::quickViewPreferencesPersist()
+{
+    const auto previousOrganization = QCoreApplication::organizationName();
+    QCoreApplication::setOrganizationName("f4-quickview-tests");
+    const auto restoreOrganization = qScopeGuard([&] { QCoreApplication::setOrganizationName(previousOrganization); });
+    QSettings settings;
+    const auto oldBuiltin = settings.value("QuickView/useBuiltinF4Viewer");
+    const auto oldHover = settings.value("QuickView/previewOnHover");
+    const auto restore = qScopeGuard([&] {
+        for (auto pair : {qMakePair(QString("QuickView/useBuiltinF4Viewer"), oldBuiltin), qMakePair(QString("QuickView/previewOnHover"), oldHover)}) {
+            if (pair.second.isValid()) settings.setValue(pair.first, pair.second);
+            else settings.remove(pair.first);
+        }
+    });
+    settings.remove("QuickView");
+    F4QuickViewPreferences defaults;
+    QVERIFY(!defaults.builtin());
+    QVERIFY(defaults.hover());
+    QVERIFY(defaults.apply({{"useBuiltinF4Viewer", true}, {"previewOnHover", false}}));
+    F4QuickViewPreferences restored;
+    QVERIFY(restored.builtin());
+    QVERIFY(!restored.hover());
+}
+
+void F4GalleryBridgeTests::quickViewPreservesSessionAndSourceFocus()
+{
+    const auto previousOrganization = QCoreApplication::organizationName();
+    QCoreApplication::setOrganizationName("f4-quickview-tests");
+    const auto restoreOrganization = qScopeGuard([&] { QCoreApplication::setOrganizationName(previousOrganization); });
+    QQmlEngine engine;
+    F4GalleryBridge bridge(&engine);
+    auto *preferences = qobject_cast<F4QuickViewPreferences *>(bridge.quickViewPreferences());
+    QVERIFY(preferences);
+    const auto oldValues = preferences->values();
+    const auto restore = qScopeGuard([&] { preferences->apply(oldValues); });
+    QVERIFY(preferences->apply({{"useBuiltinF4Viewer", false}, {"previewOnHover", true}}));
+    auto scene = testScene();
+    bridge.synchronizeScene(scene);
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(bridge.sessionForSide(0));
+    QVERIFY(session);
+    QVariantMap view{{"id", "quick-right"}, {"side", 1}, {"sourceSide", 0},
+        {"sourcePanelId", "panel-left-a"}, {"catalogRevision", 42},
+        {"entryId", "left:two"}, {"previewKind", "image"}, {"imageRenderer", "gallery"}};
+    bridge.synchronizeQuickView(view);
+    QVERIFY(bridge.viewerMounted());
+    QVERIFY(!bridge.viewerVisible());
+    QVERIFY(session->viewerOpen());
+    QCOMPARE(bridge.viewerSession(), session);
+    QCOMPARE(session->cursorEntryId(), QString("left:one"));
+    QSignalSpy actions(&bridge, &F4GalleryBridge::uiActionRequested);
+    QSignalSpy presentationChanges(&bridge, &F4GalleryBridge::viewerChanged);
+    // The panel cursor moves before key release commits it to Go. Quick View
+    // must present that image immediately, even while the shell still names
+    // the previously hovered image.
+    bridge.requestCursor(0, "left:one", 7, 42, true);
+    QCOMPARE(actions.count(), 0);
+    QCOMPARE(bridge.quickView().value("entryId").toString(), QString("left:one"));
+    QVERIFY(!presentationChanges.isEmpty());
+    bridge.synchronizeQuickView(view); // an old shell frame cannot undo it
+    QCOMPARE(bridge.quickView().value("entryId").toString(), QString("left:one"));
+    bridge.requestCursor(0, "left:two", 9, 42, true);
+    QCOMPARE(bridge.quickView().value("entryId").toString(), QString("left:two"));
+    bridge.requestViewerCursor("left:two", 9);
+    QVERIFY(!actions.isEmpty());
+    const auto action = actions.last().first().toMap();
+    QVERIFY(!action.value("activate").toBool());
+    bridge.requestOpen(0, "left:one", 7, true, 42);
+    QVERIFY(bridge.viewerVisible());
+    QCOMPARE(bridge.viewerSession(), session);
+    bridge.settleViewer();
+    QVERIFY(preferences->apply({{"useBuiltinF4Viewer", true}, {"previewOnHover", true}}));
+    bridge.synchronizeQuickView(view);
+    QCOMPARE(bridge.quickViewSide(), -1);
+    QVERIFY(bridge.viewerVisible());
+    QCOMPARE(bridge.viewerSession(), session);
+    QVERIFY(preferences->apply({{"useBuiltinF4Viewer", false}, {"previewOnHover", true}}));
+    bridge.synchronizeQuickView(view);
+    QCOMPARE(bridge.quickViewSide(), 1);
+    bridge.collapseQuickView();
+    bridge.settleViewer();
+    QVERIFY(!bridge.viewerVisible());
+    QVERIFY(bridge.viewerMounted());
+    QVERIFY(session->viewerOpen());
+    auto stale = view;
+    stale["catalogRevision"] = 41;
+    bridge.synchronizeQuickView(stale);
+    QVERIFY(!bridge.viewerMounted());
+    QVERIFY(!session->viewerOpen());
+    bridge.synchronizeQuickView(view);
+    QVERIFY(bridge.viewerMounted());
+    bridge.synchronizeQuickView({});
+    QVERIFY(!bridge.viewerMounted());
+    QVERIFY(!session->viewerOpen());
 }
 
 void F4GalleryBridgeTests::stableActionsCarryRevisions()

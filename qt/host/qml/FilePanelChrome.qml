@@ -18,7 +18,8 @@ Rectangle {
     anchors.left: parent.left
     anchors.right: parent.right
     anchors.top: parent.top
-    height: hostWindow.panelPathRowHeight
+    visible: hostWindow.panelPathBarsVisible
+    height: visible ? hostWindow.panelPathRowHeight : 0
     // Keep the panel header color as a translucent foreground over
     // the same chrome surface used by the title bar.
     color: hostWindow.titleBarBg

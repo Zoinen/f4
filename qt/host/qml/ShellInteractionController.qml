@@ -284,7 +284,7 @@ Item {
     }
 
     function galleryViewerOwnsKeyboard() {
-        return galleryController.viewerVisible
+        return (galleryController.viewerVisible || (galleryController.quickView && galleryController.quickView.active === true && galleryController.viewerMounted))
                 && !sceneStore.hasBlockingOverlay()
                 && !sceneStore.needsFallbackGrid()
                 && !sceneStore.hasDocumentSurface()
@@ -302,7 +302,7 @@ Item {
             focusTarget.forceActiveFocus()
             return
         }
-        if (galleryController.viewerVisible) {
+        if (galleryViewerOwnsKeyboard()) {
             const viewerLoader = galleryViewerLayer
                     ? galleryViewerLayer.item : null
             if (viewerLoader && viewerLoader.item)

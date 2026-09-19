@@ -800,6 +800,8 @@ func (e *Edit) ProcessKey(event *vtinput.InputEvent) bool {
 			e.ClearSelection()
 		} else if e.selStart != -1 {
 			e.DeleteBlock()
+		} else if ctrl {
+			e.deleteWordLeft()
 		} else if DefaultBidiMode == BidiFull {
 			cmap := e.caretMap()
 			vPos := cmap.LogicalToVisual[e.curPos]
@@ -832,6 +834,8 @@ func (e *Edit) ProcessKey(event *vtinput.InputEvent) bool {
 			e.ClearSelection()
 		} else if e.selStart != -1 {
 			e.DeleteBlock()
+		} else if ctrl {
+			e.deleteWordRight()
 		} else if DefaultBidiMode == BidiFull {
 			cmap := e.caretMap()
 			vPos := cmap.LogicalToVisual[e.curPos]

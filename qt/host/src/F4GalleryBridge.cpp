@@ -207,6 +207,7 @@ F4GalleryBridge::F4GalleryBridge(QQmlEngine *engine, QObject *parent,
         return;
     }
 
+    m_quickViewPreferences = new F4QuickViewPreferences(this);
     ZoinGallery::RuntimeOptions options;
     options.providerPrefix = QStringLiteral("f4-zoingallery");
     options.storageNamespace = QStringLiteral("f4-qt-host");
@@ -571,7 +572,7 @@ void F4GalleryBridge::synchronizePanelActivation(int activePanel,
         }
     }
 
-    if (viewerVisible() && viewerSide() != activePanel) {
+    if (viewerVisible() && quickViewSide() < 0 && viewerSide() != activePanel) {
         closeViewer();
     }
     // An inactive Gallery click can queue a stable viewer intent before Go

@@ -275,3 +275,70 @@ func TestTerminalSelection_InTerminalArea(t *testing.T) {
 // for the two motion-event shapes we've seen: Wayland-style with the
 // button code still in ButtonState, and X11-style where motion carries
 // only the MouseMoved flag.
+
+func TestTerminalSelectionFollowsOutputIntoHistory(t *testing.T) {
+	tv := newSelectableTV(20, 3)
+	defer tv.Close()
+	parser := NewAnsiParser(tv, nil)
+	parser.Process([]byte("first\r\nselected\r\nlast"))
+	tv.StartSelection(0, 1, false)
+	tv.ExtendSelection(7, 1)
+	for i := 0; i < 2100; i++ {
+		parser.Process([]byte("\r\nnext"))
+		if got := tv.ExtractSelection(); got != "selected" {
+			t.Fatalf("scroll %d selected %q", i, got)
+		}
+	}
+}
+
+func TestTerminalSelectionFollowsGravity(t *testing.T) {
+	tv := newSelectableTV(20, 4)
+	defer tv.Close()
+	tv.CursorY = 0
+	parser := NewAnsiParser(tv, nil)
+	parser.Process([]byte("selected"))
+	tv.showOffset = 3
+	tv.StartSelection(0, 3, false)
+	tv.ExtendSelection(7, 3)
+	parser.Process([]byte("\r\nnext"))
+	tv.showOffset = 2
+	if got := tv.ExtractSelection(); got != "selected" {
+		t.Fatalf("selection = %q", got)
+	}
+	_, top, _, bottom, ok := tv.selectionScreenRect()
+	if !ok || top != 2 || bottom != 2 {
+		t.Fatalf("highlight = %d..%d, %v", top, bottom, ok)
+	}
+}
+
+func TestTerminalSelectionTracksRegionScroll(t *testing.T) {
+	for _, delta := range []int{-1, 1} {
+		t.Run(string(rune('2'+delta)), func(t *testing.T) {
+			tv := newSelectableTV(20, 5)
+			defer tv.Close()
+			seedRow(tv, 2, "selected")
+			tv.StartSelection(0, 2, false)
+			tv.ExtendSelection(7, 2)
+			if delta < 0 {
+				tv.scrollUp(1, 3, 1)
+			} else {
+				tv.ScrollDown(1, 3, 1)
+			}
+			if got := tv.ExtractSelection(); got != "selected" {
+				t.Fatalf("selected %q", got)
+			}
+			_, y, _, _, ok := tv.selectionScreenRect()
+			if !ok || y != 2+delta {
+				t.Fatalf("highlight row %d", y)
+			}
+			if delta < 0 {
+				tv.scrollUp(1, 3, 1)
+			} else {
+				tv.ScrollDown(1, 3, 1)
+			}
+			if tv.HasSelection() {
+				t.Fatal("discarded text remained selected")
+			}
+		})
+	}
+}

@@ -313,36 +313,38 @@ func (tv *TerminalView) SemanticModelWithBottomOverlay(
 	id := vtui.SemanticID(tv)
 
 	return &extui.TerminalModel{
-		ID:                 id,
-		Title:              tv.Title,
-		Columns:            tv.Width,
-		DefaultBackground:  semantic.SemanticAttrColor(DefaultTermAttr, false),
-		Visible:            tv.IsVisible(),
-		Focused:            tv.IsFocused(),
-		AltScreen:          tv.UseAltScreen,
-		Busy:               tv.Muted,
-		FollowTail:         tv.semanticFollowTail,
-		CursorX:            tv.CursorX,
-		CursorY:            cursorAbsoluteRow - tv.semanticScrollTop,
-		CursorAbsoluteRow:  int64(cursorAbsoluteRow),
-		CursorVisible:      cursorVisible,
-		CursorShape:        "block",
-		SelectionEnabled:   !tv.UseAltScreen && tv.MouseTrackingMode == 0 && !tv.MouseSGRMode,
-		DocumentKey:        id,
-		ScrollAction:       "terminal.scroll",
-		ScrollUnit:         "rows",
-		WindowStart:        int64(windowStart),
-		WindowEnd:          int64(windowEnd),
-		ViewportStart:      int64(tv.semanticScrollTop),
-		ViewportSpan:       int64(viewportSpan),
-		ContentStart:       int64(layout.contentStart),
-		ContentExtent:      int64(layout.totalRows),
-		ContentExtentKnown: true,
-		ViewportRow:        viewportRow,
-		ViewportRows:       viewportRows,
-		WindowGeneration:   tv.semanticWindowGeneration,
-		Rows:               visibleRows,
-		WindowRows:         windowRows,
+		ID:                    id,
+		Title:                 tv.Title,
+		Columns:               tv.Width,
+		DefaultBackground:     semantic.SemanticAttrColor(DefaultTermAttr, false),
+		Visible:               tv.IsVisible(),
+		Focused:               tv.IsFocused(),
+		AltScreen:             tv.UseAltScreen,
+		Busy:                  tv.Muted,
+		FollowTail:            tv.semanticFollowTail,
+		CursorX:               tv.CursorX,
+		CursorY:               cursorAbsoluteRow - tv.semanticScrollTop,
+		CursorAbsoluteRow:     int64(cursorAbsoluteRow),
+		CursorVisible:         cursorVisible,
+		CursorShape:           "block",
+		SelectionEnabled:      !tv.UseAltScreen && tv.MouseTrackingMode == 0 && !tv.MouseSGRMode,
+		SelectionActiveStart:  int64(layout.pieceRows + layout.historyRows),
+		SelectionActiveOffset: layout.activeOffset,
+		DocumentKey:           id,
+		ScrollAction:          "terminal.scroll",
+		ScrollUnit:            "rows",
+		WindowStart:           int64(windowStart),
+		WindowEnd:             int64(windowEnd),
+		ViewportStart:         int64(tv.semanticScrollTop),
+		ViewportSpan:          int64(viewportSpan),
+		ContentStart:          int64(layout.contentStart),
+		ContentExtent:         int64(layout.totalRows),
+		ContentExtentKnown:    true,
+		ViewportRow:           viewportRow,
+		ViewportRows:          viewportRows,
+		WindowGeneration:      tv.semanticWindowGeneration,
+		Rows:                  visibleRows,
+		WindowRows:            windowRows,
 	}
 }
 
@@ -395,16 +397,10 @@ func (tv *TerminalView) HandleSemanticAction(action map[string]any) bool {
 		tv.mu.Unlock()
 		return true
 	case "terminal.copySelection":
-		var text string
-		if semantic.Bool(action["endExclusive"]) {
-			text = tv.semanticBoundarySelectionText(
-				semantic.Int(action["startRow"]), semantic.Int(action["startColumn"]),
-				semantic.Int(action["endRow"]), semantic.Int(action["endColumn"]))
-		} else {
-			text = tv.semanticSelectionText(
-				semantic.Int(action["startRow"]), semantic.Int(action["startColumn"]),
-				semantic.Int(action["endRow"]), semantic.Int(action["endColumn"]))
-		}
+		text := tv.semanticSelectionTextWithEndpoints(
+			semantic.Int(action["startRow"]), semantic.Int(action["startColumn"]),
+			semantic.Int(action["endRow"]), semantic.Int(action["endColumn"]),
+			semantic.Bool(action["endExclusive"]), semantic.Bool(action["unshiftedRows"]))
 		if text != "" {
 			go tv.writeClipboard(text)
 		}
@@ -537,23 +533,26 @@ func (tv *TerminalView) semanticSelectionText(startRow, startColumn,
 	endRow, endColumn int,
 ) string {
 	return tv.semanticSelectionTextWithEndpoints(startRow, startColumn,
-		endRow, endColumn, false)
+		endRow, endColumn, false, false)
 }
 
 func (tv *TerminalView) semanticBoundarySelectionText(startRow, startColumn,
 	endRow, endColumn int,
 ) string {
 	return tv.semanticSelectionTextWithEndpoints(startRow, startColumn,
-		endRow, endColumn, true)
+		endRow, endColumn, true, false)
 }
 
 func (tv *TerminalView) semanticSelectionTextWithEndpoints(
-	startRow, startColumn, endRow, endColumn int, endExclusive bool,
+	startRow, startColumn, endRow, endColumn int, endExclusive, unshiftedRows bool,
 ) string {
 	tv.mu.Lock()
 	defer tv.mu.Unlock()
 
 	layout := tv.semanticLayoutUnsafe()
+	if unshiftedRows {
+		layout.activeOffset = 0
+	}
 	if layout.totalRows <= 0 {
 		return ""
 	}

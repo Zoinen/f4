@@ -39,6 +39,11 @@ import (
 // dump depending on a simple binary heuristic. Full-file viewer
 // features (search, syntax highlighting, …) are deliberately deferred.
 type QuickViewPanel struct {
+	nativeImages             bool
+	previewEntryID           string
+	previewCatalogRevision   int64
+	previewRequestGeneration int64
+	previewCursorIndex       int
 	vtui.ScreenObject
 	src     *FileSystemPanel
 	Frame   *vtui.BorderedFrame
@@ -176,7 +181,7 @@ func (q *QuickViewPanel) prepareSelection() (quickViewPreparedSelection, bool) {
 		return quickViewPreparedSelection{}, false
 	}
 
-	idx := q.src.GetCursorIndex()
+	idx := q.previewIndex()
 	if idx < 0 || idx >= len(q.src.Entries) || q.src.Entries[idx] == nil {
 		if q.semanticHasSelection || q.semanticContentKey == "" {
 			q.cancelScan()
@@ -1140,6 +1145,15 @@ func (q *QuickViewPanel) semanticModel(side, sourceSide int, active bool) extui.
 		model.HeaderRows = quickViewRows([]string{" " + i18n.Msg("QuickView.NoSelection")})
 	} else {
 		item := selection.item
+		model.SourcePanelID = vtui.SemanticID(q.src)
+		model.CatalogRevision = q.src.catalogRevision
+		model.PreviewGeneration = q.previewRequestGeneration
+		sourceKind, _ := q.src.semanticSourceInfo()
+		model.EntryID, _ = q.src.semanticEntryMetadata(q.src.Entries[q.previewIndex()], sourceKind)
+		model.ImageRenderer = "builtin"
+		if q.nativeImages {
+			model.ImageRenderer = "gallery"
+		}
 		model.Name = item.Name
 		model.Path = selection.path
 		model.SizeText = formatBytes(uint64(item.Size))
@@ -1165,8 +1179,10 @@ func (q *QuickViewPanel) semanticModel(side, sourceSide int, active bool) extui.
 			model.Loading = true
 		case q.cacheImage:
 			model.PreviewKind = "image"
-			model.ImageSource, model.ImageWidth, model.ImageHeight = q.semanticImageDataURL()
-			model.Loading = model.ImageSource == ""
+			if !q.nativeImages {
+				model.ImageSource, model.ImageWidth, model.ImageHeight = q.semanticImageDataURL()
+				model.Loading = model.ImageSource == ""
+			}
 		case q.cacheBinary:
 			model.PreviewKind = "hex"
 			q.ensureDisplayLayout(innerW)
@@ -1359,6 +1375,9 @@ func (q *QuickViewPanel) refreshCache(key quickViewSelectionKey, path string, it
 
 	if media.IsImageFile(path) {
 		q.cacheImage = true
+		if q.nativeImages {
+			return
+		}
 		gen := q.imageLoadGen
 		source := q.src.Vfs
 
@@ -1385,7 +1404,7 @@ func (q *QuickViewPanel) refreshCache(key quickViewSelectionKey, path string, it
 
 	request := vfs.QuickViewRequest{VFS: q.src.Vfs, Path: path, Item: item.VFSItem}
 	providers := vfs.QuickViewProvidersFor(request)
-	if len(providers) != 0 {
+	if len(providers) != 0 || q.previewEntryID != "" {
 		q.startFilePreview(key, request, providers)
 		return
 	}

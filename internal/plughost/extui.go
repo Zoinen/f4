@@ -2635,6 +2635,7 @@ var semanticPanelCatalogMutableKeys = map[string]struct{}{
 	"fastFind": {}, "fastFindText": {}, "fastFindMatchColor": {},
 	"fastFindMatches": {}, "selectedCount": {}, "totalCount": {},
 	"selectedFiles": {}, "selectedDirectories": {}, "selectedSize": {}, "totalSize": {},
+	"totalFiles": {}, "totalDirectories": {}, "diskTotalSpace": {},
 	"freeSpace": {}, "freeSpaceKnown": {}, "symlinkTarget": {}, "useSortGroups": {},
 	"metadataRevision": {}, "entries": {}, "highlightStyles": {},
 }

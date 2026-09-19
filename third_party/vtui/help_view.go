@@ -46,6 +46,8 @@ func NewHelpView(engine *HelpEngine, startTopic string) *HelpView {
 	hv.ColorBoxIdx = ColHelpBox
 	hv.ColorTitleIdx = ColHelpBoxTitle
 	hv.ColorBackgroundIdx = ColHelpText
+	hv.MinW = 20
+	hv.MinH = 5
 
 	hv.rootGroup.SetOwner(hv)
 	hv.scrollBar = NewScrollBar(0, 0, 0)
@@ -432,6 +434,12 @@ func (hv *HelpView) ProcessMouse(e *vtinput.InputEvent) bool {
 	if e.Type != vtinput.MouseEventType {
 		return false
 	}
+	// A border gesture owns the pointer even after it enters a help link.
+	// Route its release here too, before link and scrollbar hit testing.
+	if hv.BaseWindow.IsMouseCaptured() {
+		DebugLog("[FIX:help-resize] captured mouse x=%d y=%d buttons=%d", e.MouseX, e.MouseY, e.ButtonState)
+		return hv.BaseWindow.ProcessMouse(e)
+	}
 
 	if hv.scrollBar != nil && hv.scrollBar.ProcessMouse(e) {
 		return true
@@ -491,12 +499,8 @@ func (hv *HelpView) ResizeConsole(w, h int) {
 	if height < 5 {
 		height = 5
 	}
-	hv.X1 = (w - width) / 2
-	hv.Y1 = (h - height) / 2
-	hv.X2 = hv.X1 + width - 1
-	hv.Y2 = hv.Y1 + height - 1
-	hv.frame.SetPosition(hv.X1, hv.Y1, hv.X2, hv.Y2)
-	hv.rootGroup.SetPosition(hv.X1+1, hv.Y1+1, hv.X2-1, hv.Y2-1)
+	x, y := (w-width)/2, (h-height)/2
+	hv.SetPosition(x, y, x+width-1, y+height-1)
 }
 
 func (hv *HelpView) findLinkAt(mx, my int) int {

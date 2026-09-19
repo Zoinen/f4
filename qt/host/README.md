@@ -8,6 +8,28 @@ contracts and their verification gates.
 This directory contains the optional Qt/QML sidecar renderer for `f4 --gui=qt`.
 The Go core does not link Qt; it starts `f4-qt-host` only when the Qt backend is requested.
 
+Native menus and dialogs carry optional `stackOrder`, a shared one-based,
+bottom-to-top position in Go's frame stack. Complete, incremental, and menu-only
+publications preserve it so dialogs opened by menus and menus opened by dialogs
+stack correctly. Older peers without this field retain the previous fallback.
+
+File panels show a bottom-right status overlay without reducing the content
+viewport. Lucide metrics display file/folder counts and total bytes; selection
+replaces those metrics and tints both icons and text with the panel selection color
+at 95% opacity. Disk free bytes remain visible,
+with a bar showing the occupied fraction when capacity is known. The occupied
+portion uses the muted control-border color, with a darker track for free space. `totalFiles`,
+`totalDirectories` and `diskTotalSpace` accompany the existing panel status fields
+through snapshots and incremental state patches. The Go aggregate cache excludes
+`..`; disk information uses the existing background query and source-bound cache.
+The overlay remains visible independently of the console file-info setting;
+that setting still controls its optional symlink target. Unknown capacity never
+produces a fabricated percentage. `F4PanelStatusOverlayTest` covers content
+geometry, selection/default states, capacity bounds and physical leaves at 175%.
+Quick search stays at the panel's bottom edge, centered when it fits beside the
+status overlay. Otherwise it moves to the left of the overlay with a gap and
+shrinks to the available width on narrow panels.
+
 Build after initializing the repository's pinned submodules:
 
 ```sh
@@ -121,6 +143,14 @@ underlying call returns. Listing and preview leases use the media connection's
 existing acknowledgement, release and reconnect protocol. Main-catalog commits
 do not release preview-owned image references.
 
+The GUI, Gallery & cache and Terminal colors categories reuse the settings
+body's semantic category heading and Apply / OK / Cancel footer. Native page
+drafts survive switching categories; Apply and OK validate all visited native
+pages before saving, while Cancel restores the GUI's live theme preview.
+Terminal colors are paired in two columns (normal and bright), with the preview
+using matching columns in two rows. These pages have no extra outer content
+inset. The standalone theme editor keeps its own window controls.
+
 The native Settings category **Gallery & cache** controls the image and folder
 preview caches (Off / On / Cache only), layout resize animation and display-color
 conversion. It shows the detected target color space and enumerates the compiled
@@ -138,6 +168,40 @@ their metadata. `Cache/location` is an optional absolute directory; changes take
 effect on restart and do not move or delete the previous location. An empty value
 uses the existing namespaced cache root shown on the page. Preferences are stored
 in the Qt host's QSettings, alongside its existing Gallery cache preferences.
+
+### Image Quick View
+
+Ctrl+Q uses the same `GalleryViewerHost` / `ZG.GalleryViewer` as Enter for images.
+`ViewerCoordinator` keeps its source panel separate from its Quick View destination
+and tracks closed, docked, expanding, full, and collapsing presentation states.
+The Loader, session, decode requests and caches survive dock/full transitions.
+Only full-view progress fades shell controls and substitutes the workspace title.
+Docked geometry is clipped to the complete alternate-panel slot, with no opening
+animation. Fit responds to the viewport; custom zoom retains its absolute scale
+and center image point subject to viewport bounds and physical-pixel rounding.
+
+The **Quick View** group in **Gallery & Cache** stores F4-owned Qt preferences
+`QuickView/useBuiltinF4Viewer` (false) and `QuickView/previewOnHover` (true).
+Apply takes effect immediately. The built-in choice restores Go image decoding,
+bounded PNG serialization and the QML Image. Native image presentation bypasses
+that work and uses the source catalog's authenticated media descriptors. Errors
+stay in the selected renderer. Text, hex, directories and provider previews
+continue to use the existing F4 surfaces.
+
+`QuickViewController` configures each shell with `quickView.configure` before
+new alternate panels load. `quickView.preview` carries Quick View and source
+panel identities, catalog revision, stable entry ID and increasing generation.
+Hover changes the presented entry without cursor, selection or focus changes.
+Leaving the list and keyboard input clear the override; pointer movement can
+establish it again. Dragging, blocking overlays and full presentation suppress
+hover. Non-image hover work is cancellable and obsolete results are discarded.
+
+Click or Tab focuses the docked viewer. Its navigation commits the source cursor
+without activating the source panel. Enter expands, Escape focuses the source
+list, and Ctrl+Q closes Quick View. Enter on the source list always opens its real
+cursor item, even when another image is hovered. Full-view close gestures return
+to Quick View while its gallery destination exists; changing the renderer or
+removing that destination restores the ordinary full-view lifecycle.
 
 GalleryRuntime shares an 8 MiB RAM cache of compact folder snapshots across
 panels. Each snapshot stores Unknown / Empty / HasImages, up to 16 selected
@@ -200,6 +264,13 @@ avoid mixing independently buffered writers. The automatic navigation runner
 accepts `F4_NAV_BENCHMARK_LAYOUT=masonry` and `F4_NAV_BENCHMARK_SETTLE_MS=1500`
 alongside its existing target, cycles and warmup options.
 
+Panel thumbnail/row sizing uses **Alt+Plus** (also Alt+Equal), **Alt+Minus**,
+and **Alt+0** to reset the current layout's density. Shift is accepted when
+typing Plus, and keypad operators work too. Plain and Ctrl/Meta-modified
+operators are forwarded to F4 with their matching key releases. Image-viewer
+shortcuts are unchanged. Opt-in navigation tracing records handled panel zoom
+shortcuts as `gallery.zoom.shortcut`.
+
 The renderer button selects ZoinGallery strategies: Masonry, two- or
 three-column column-major layout, Details, uniform Grid, and large Icons.
 Layout choice, column count and each strategy's density are saved independently
@@ -232,6 +303,31 @@ Runtime lookup order from Go:
 4. the equivalent app-bundle or bare paths below
    `qt/host/build/bin/<config>` for local development
 
+Semantic dialog edits keep text mutation in Go's `vtui.Edit`. QML forwards
+modified keys even while the native text input owns focus, and publishes pointer
+selection as `control.select` with rune-based `anchor` and `cursor` offsets.
+Go handles selection deletion and Ctrl+Backspace/Delete word deletion. Semantic
+tables send relative `control.scroll` row deltas, preserving wheel magnitude and
+fractional remainders without waiting for a scene acknowledgement between events.
+
+Dialogs may publish `keyHints` (`key`, localized `text`, optional `action`, Lucide
+`icon` and `disabled`). The shared dialog chrome renders them with the panel F-bar button
+component in a persistent bottom strip and reserves its height
+outside the scrolling body. Environment Manager supplies its current console
+actions here, including the inline editor's Save and Cancel shortcuts. Clicks
+dispatch the owner's semantic action; Go routes it through the keyboard handler.
+An optional `paneSplit` supplies the divider's semantic column, both pane titles
+and the active side. The Qt dialog reserves a header strip for those titles and
+keeps the divider outside the controls.
+The `environmentProfiles` layout uses control `layoutRole` values (`profiles`,
+`name-label`, `name`, `enabled`, `variables-label`, `variables`, `add`, `save`,
+`cancel`) to fit the body to the live native viewport. The list and variables
+editor share a bottom edge above their action row; only their contents scroll.
+This layout reuses the standard semantic controls and their Go-owned actions.
+Semantic lists can supply `itemStates` (`checkable`, `checked`, `dimmed`) in row
+order. Checkbox taps emit `control.toggle` with the row index; Go owns the state.
+Plain list selection and drag scrolling retain their existing behavior.
+
 The protocol is a 4-byte big-endian length prefix followed by a MessagePack map.
 The host accepts the upstream ExtUI `--f4-ext-*` startup arguments and keeps the older `--f4-qt-*` names as a compatibility fallback. It renders vtui cells in a custom `VtuiGridItem` while using semantic `sdk/extui` scenes for QML-native panels, menus, dialogs, document surfaces, and future sibling modules such as a possible editable-package integration with `ZoinGallery`.
 
@@ -254,3 +350,23 @@ the incremental path.
 Menu items may carry an optional semantic `icon` name. Empty icons are omitted
 from MessagePack; opening a drive menu therefore adds only its bounded menu rows
 and icon names to the `menus` root patch, never either file-panel catalog.
+
+### Live selection status
+
+F4 opts into Gallery's live selection transactions. Held Shift/Insert and drag
+selection coalesce changed rows for 16 ms without ending the local gesture.
+Each transaction carries stable IDs and source-index hints; Go validates the
+identities and updates warm status totals in O(changed rows). Its response uses
+panel-only `state_update` and `selection_delta` patches, without catalog rows or
+a full scene. The gesture retains its original baseline across acknowledgements,
+so shrinking a selection range restores the original selection correctly.
+### Panel splitter synchronization
+
+Qt applies splitter movement locally and sends `panel.setSplit` at most once
+per 16 ms, flushing the final position on release. Double-click centering uses
+the same path. Each update names its shell frame, so delayed requests cannot
+change another workspace. Go records the corresponding console split and
+schedules the existing debounced settings save without replying with a semantic
+scene or catalog update. File-table geometry is applied on the next ordinary
+console layout, outside the drag update path. The debounced save itself also
+declares that it needs no redraw.

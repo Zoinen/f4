@@ -87,6 +87,8 @@ const QSet<QString> &lucideIconNames()
         QStringLiteral("tablet"),
         QStringLiteral("arrow-down"),
         QStringLiteral("arrow-left"),
+        QStringLiteral("arrow-left-from-line"),
+        QStringLiteral("arrow-right-from-line"),
         QStringLiteral("arrow-down-a-z"),
         QStringLiteral("arrow-down-wide-narrow"),
         QStringLiteral("arrow-up"),

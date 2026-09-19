@@ -1,3 +1,4 @@
+#include <QSGRendererInterface>
 #include "PointerRowAnchor.h"
 #include "DummyQWK.h"
 #include "F4TextRenderingPolicy.h"
@@ -35,6 +36,7 @@
 #include <QQuickStyle>
 #include <QQuickWindow>
 #include <QScopeGuard>
+#include <QSettings>
 #include <QStyleHints>
 #include <QStringList>
 #include <QSvgRenderer>
@@ -213,7 +215,11 @@ class TestGallery final : public QObject
     Q_PROPERTY(QObject *settings MEMBER preferences CONSTANT)
     Q_PROPERTY(QObject *viewerSession READ viewerSession NOTIFY viewerChanged)
     Q_PROPERTY(bool viewerVisible READ viewerVisible NOTIFY viewerChanged)
-    Q_PROPERTY(int viewerSide READ viewerSide CONSTANT)
+    Q_PROPERTY(bool viewerMounted READ viewerMounted NOTIFY viewerChanged)
+    Q_PROPERTY(int viewerState MEMBER presentationState NOTIFY viewerChanged)
+    Q_PROPERTY(int quickViewSide MEMBER destinationSide NOTIFY viewerChanged)
+    Q_PROPERTY(QVariantMap quickView MEMBER quickView NOTIFY viewerChanged)
+    Q_PROPERTY(int viewerSide READ viewerSide NOTIFY viewerChanged)
     Q_PROPERTY(QUrl panelComponentUrl READ panelComponentUrl CONSTANT)
     Q_PROPERTY(QUrl viewerComponentUrl READ viewerComponentUrl NOTIFY viewerChanged)
 
@@ -223,7 +229,15 @@ public:
 
     bool available() const { return m_available; }
     QObject *viewerSession() const { return m_viewerSession; }
-    bool viewerVisible() const { return m_viewerUrl.isValid(); }
+    bool viewerVisible() const { return m_viewerUrl.isValid() && presentationState != 1; }
+    bool viewerMounted() const { return m_viewerUrl.isValid(); }
+    int presentationState = 3;
+    int destinationSide = -1;
+    QVariantMap quickView;
+    Q_INVOKABLE void expandQuickView() { presentationState = 2; emit viewerChanged(); }
+    Q_INVOKABLE void collapseQuickView() { presentationState = 4; emit viewerChanged(); }
+    Q_INVOKABLE void settleViewer() { presentationState = presentationState == 4 ? 1 : 3; emit viewerChanged(); }
+    Q_INVOKABLE void requestActivate(int side) { quickView["active"] = side == destinationSide; emit viewerChanged(); }
     QUrl viewerComponentUrl() const { return m_viewerUrl; }
     void showViewer(const QUrl &url, QObject *session = nullptr)
     {
@@ -231,7 +245,7 @@ public:
         m_viewerUrl = url;
         emit viewerChanged();
     }
-    int viewerSide() const { return 0; }
+    int viewerSide() const { return destinationSide < 0 ? 0 : 1 - destinationSide; }
     QUrl emptyUrl() const { return {}; }
     QUrl panelComponentUrl() const
     {
@@ -767,17 +781,21 @@ private slots:
     void compiledHostLoadsItsQmlModule();
     void expandedViewerKeepsWorkspaceChromeAccessible();
     void cachedGalleryViewerCentersFirstNativeZoomAt175Percent();
+    void quickViewRetainsViewerAcrossPresentationChanges();
     void semanticSceneGatesOnlyGridRendering();
     void semanticHorizontalSplitStaysOnNativeSurface();
     void functionBarShowsExplicitFunctionKeysAndForwardsMouseModifiers();
     void functionBarSameCountUpdatesPreserveDelegates();
     void functionBarLeavesStaySharpAndThemeLiveAt175Percent();
     void readyUnifiedRendererLoaderIsVisible();
-    void panelFileInfoSettingTogglesFooterWithoutRebuildingPanel();
+    void panelFileInfoSettingKeepsStatusOverlayAndContentGeometry();
     void panelStatusLeavesStayOnPhysicalPixelGrid();
+    void panelStatusFitsLongestRowWithoutWrapping();
+    void liveSelectionStatusUsesCompactPatches();
     void sortGroupLeavesStayOnPhysicalPixelGrid();
     void fastFindOverlayIsIndependentFromPanelFooter();
     void nativeFontRolesUsePlatformDefaultsAt175Percent();
+    void fastFindOverlayAvoidsStatusAndStaysPixelAligned();
     void galleryPanelColorsAreGroupedAndRemainLive();
     void themeConfiguratorExposesOnlyLiveColorProperties();
     void themeColorEditorUsesOklchCoordinates();
@@ -787,6 +805,8 @@ private slots:
     void themeDialogFontRenderingControlIsLiveAndThemeAware();
     void themeColorListHoverAndPressFlashHaveExplicitLifetimes();
     void themeDialogControlsStayOnPhysicalPixelGridAt175Percent();
+    void userMenuRecordDialogLeavesStaySharpAt175Percent();
+    void far3ImportDialogLeavesStaySharpAt175Percent_data();
     void far3ImportDialogLeavesStaySharpAt175Percent();
     void largeHistoryLatencyProfile();
     void historyHeldUpKeepsRowsOnPhysicalPixels();
@@ -797,6 +817,9 @@ private slots:
     void pointerActivationPreviewHandsOffBothPanelCursors();
     void compactCatalogUpdatesOnlyChangedPanelPresentation();
     void compactChromeUpdatesWorkspaceTabsWithoutRebuildingPanels();
+    void panelPathBarsToggleWithoutLosingContent();
+    void panelExpandButtonsShareHoverAndRestore();
+    void panelSplitterCoalescesGoUpdates();
     void workspaceDragHitOnlyAcceptsPanelTabs();
     void workspaceSeparatorBreaksUnderActiveTab();
     void workspaceTabWheelActivatesAdjacentTabs();
@@ -836,6 +859,8 @@ private slots:
     void previewKindsSelectExactlyOneNativeBody();
     void commandLineUsesOriginalSemanticRendererAndCursor();
     void commandLineCursorTracksFirstTextPatch();
+    void commandLineAutoHideRevealsUpward();
+    void commandLinePanelToggleIsImmediate();
     void commandLineMultilineWrapAndPixelGrid();
     void commandLineFontBaselineCaretAndCompactHeight();
     void commandLineEmptyBaseline();
@@ -933,6 +958,17 @@ void F4QuickViewSurfaceTests::compiledHostLoadsItsQmlModule()
 
 void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
 {
+    QTemporaryDir settingsDirectory;
+    QVERIFY(settingsDirectory.isValid());
+    const auto previousFormat = QSettings::defaultFormat();
+    const auto previousOrganization = QCoreApplication::organizationName();
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsDirectory.path());
+    QCoreApplication::setOrganizationName("F4NativeSettingsTest");
+    const auto restoreSettings = qScopeGuard([&] {
+        QSettings::setDefaultFormat(previousFormat);
+        QCoreApplication::setOrganizationName(previousOrganization);
+    });
     auto scene = shellScene();
     scene.insert("dialogs", QVariantList{QVariantMap{{"id","test-settings"}, {"kind","dialog"},
         {"layout","settings"}, {"title","Settings"}, {"x",2}, {"y",2}, {"w",100}, {"h",42}, {"modal",true}, {"showClose",true},
@@ -942,7 +978,11 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
             {"rows",QVariantList{QVariantMap{{"cells",QStringList{"Appearance"}}},
                                 QVariantMap{{"cells",QStringList{"Panels"}}}}}},
             QVariantMap{{"id","core-page"},{"kind","text"},
-            {"text","Core settings remain unchanged"},{"layoutRole","content"},{"w",50},{"h",1}}}}}});
+            {"text","Core settings remain unchanged"},{"layoutRole","content"},{"w",50},{"h",1}},
+            QVariantMap{{"id","category-title"},{"kind","text"},{"layoutRole","content-title"},{"text","Appearance"}},
+            QVariantMap{{"id","settings-apply"},{"kind","button"},{"layoutRole","apply"},{"text","Apply"}},
+            QVariantMap{{"id","settings-ok"},{"kind","button"},{"layoutRole","accept"},{"text","OK"}},
+            QVariantMap{{"id","settings-cancel"},{"kind","button"},{"layoutRole","cancel"},{"text","Cancel"}}}}}});
     QuickViewFixture fixture(shellScene());
     QVERIFY(fixture.window);
     QVERIFY(QMetaObject::invokeMethod(fixture.window,"showApplicationSettings"));
@@ -972,8 +1012,16 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
     QTRY_COMPARE(body->property("selectedNativePage").toString(),"gui");
     auto *content = visualItemWithObjectName(body,"themeConfiguratorContent");
     QTRY_VERIFY((content = visualItemWithObjectName(body,"themeConfiguratorContent")));
+    auto *sharedTitle = visualItemWithObjectName(body,"dialogWidget-category-titleText");
+    auto *sharedApply = visualItemWithObjectName(body,"dialogWidget-settings-applyButton");
+    auto *sharedOK = visualItemWithObjectName(body,"dialogWidget-settings-okButton");
+    auto *sharedCancel = visualItemWithObjectName(body,"dialogWidget-settings-cancelButton");
+    QVERIFY(sharedTitle && sharedApply && sharedOK && sharedCancel);
+    QVERIFY(sharedTitle->isVisible());
+    QCOMPARE(sharedTitle->property("text").toString(), "GUI");
+    QVERIFY(sharedApply->isVisible() && sharedOK->isVisible() && sharedCancel->isVisible());
     QVERIFY(content->findChild<QQuickItem *>("themeItemsList"));
-    QVERIFY(content->findChild<QQuickItem *>("themeSaveButton"));
+    QVERIFY(!content->findChild<QQuickItem *>("themeSaveButton")->isVisible());
     QVERIFY(content->findChild<QQuickItem *>("themeRestoreSavedButton"));
     QVERIFY(content->findChild<QQuickItem *>("themeColorEditor"));
     auto *caretOption = visualItemWithObjectName(content,"themeCommandLineCaretCheckBox");
@@ -1002,6 +1050,7 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
     };
     inspect(inspect,content);
     inspect(inspect,categories);
+    for (auto *shared : {sharedTitle, sharedApply, sharedOK, sharedCancel}) inspect(inspect, shared);
     QVERIFY(leaves>20);
     ZoinGallery::RuntimeOptions galleryOptions;
     galleryOptions.maxDecodeThreads = 4;
@@ -1091,6 +1140,63 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
     const auto galleryCapture = qEnvironmentVariable("F4_GALLERY_SETTINGS_CAPTURE");
     if (!galleryCapture.isEmpty()) QVERIFY(fixture.window->grabWindow().save(galleryCapture));
     auto *galleryViewport = visualItemWithObjectName(body, "nativeSettingsViewport");
+    auto *quickHeading = visualItemWithObjectName(galleryPage, "galleryQuickViewTitle");
+    auto *builtin = visualItemWithObjectName(galleryPage, "galleryBuiltinQuickView");
+    auto *hover = visualItemWithObjectName(galleryPage, "galleryHoverQuickView");
+    QVERIFY(quickHeading && builtin && hover);
+    QVERIFY(!builtin->property("checked").toBool());
+    QVERIFY(hover->property("checked").toBool());
+    const auto retainedGalleryDraft = draftValues();
+    QQmlComponent quickPreferencesComponent(&fixture.engine);
+    quickPreferencesComponent.setData(R"(
+        import QtQml
+        QtObject {
+            property var values: ({useBuiltinF4Viewer: false, previewOnHover: true})
+            property string error: ""
+            function apply(next) { values = Object.assign({}, next); return true }
+        }
+    )", QUrl());
+    QScopedPointer<QObject> quickPreferences(quickPreferencesComponent.create());
+    QVERIFY(quickPreferences);
+    galleryPage->setProperty("quickViewPreferences", QVariant::fromValue(quickPreferences.data()));
+    QVERIFY(QMetaObject::invokeMethod(galleryPage, "resetDraft"));
+    QVERIFY(!galleryPage->property("dirty").toBool());
+    const QVariantMap editedQuickView{{"useBuiltinF4Viewer", true}, {"previewOnHover", false}};
+    galleryPage->setProperty("quickViewDraft", editedQuickView);
+    QVERIFY(galleryPage->property("dirty").toBool());
+    QVERIFY(QMetaObject::invokeMethod(galleryPage, "resetDraft"));
+    QVERIFY(!galleryPage->property("dirty").toBool());
+    QVERIFY(!builtin->property("checked").toBool());
+    galleryPage->setProperty("quickViewDraft", editedQuickView);
+    QVERIFY(QMetaObject::invokeMethod(galleryPage, "applyDraft"));
+    QVERIFY(!galleryPage->property("dirty").toBool());
+    QVERIFY(builtin->property("checked").toBool());
+    QVERIFY(!hover->property("checked").toBool());
+    for (auto it = retainedGalleryDraft.cbegin(); it != retainedGalleryDraft.cend(); ++it)
+        QVERIFY(QMetaObject::invokeMethod(galleryPage, "change",
+            Q_ARG(QVariant, it.key()), Q_ARG(QVariant, it.value())));
+    galleryViewport->setProperty("contentY", qMax(0.0, quickHeading->y() - 120));
+    QTest::qWait(150);
+    inspect(inspect, galleryPage);
+    if (!galleryCapture.isEmpty()) QVERIFY(fixture.window->grabWindow().save(galleryCapture + "-quickview.png"));
+    auto *contentBar = visualItemWithObjectName(body, "nativeSettingsVerticalScrollBar");
+    QVERIFY(contentBar && contentBar->isVisible());
+    const qreal viewportRight = galleryViewport->mapToScene(QPointF(galleryViewport->width(), 0)).x();
+    const qreal barLeft = contentBar->mapToScene({}).x();
+    qInfo() << "Settings scrollbar physical edges:" << viewportRight * dpr << barLeft * dpr;
+    QVERIFY2(barLeft >= viewportRight + 3.5, "Settings scrollbar overlaps content instead of occupying the right gutter");
+    auto *outerDialog = visualItemWithObjectName(fixture.window->contentItem(), "semanticDialog-test-settings");
+    QVERIFY(outerDialog);
+    const qreal dialogRight = outerDialog->mapToScene(QPointF(outerDialog->width(), 0)).x();
+    const qreal barRight = contentBar->mapToScene(QPointF(contentBar->width(), 0)).x();
+    QVERIFY(qAbs((dialogRight - barRight) * dpr - qRound(4 * dpr)) < 0.001);
+    for (auto *part : {contentBar, visualItemWithObjectName(contentBar, "nativeSettingsVerticalScrollBarHandle")}) {
+        QVERIFY(part);
+        const QPointF origin = part->mapToScene({}) * dpr;
+        for (const qreal coordinate : {origin.x(), origin.y(), part->width() * dpr, part->height() * dpr})
+            QVERIFY2(qAbs(coordinate - qRound(coordinate)) < 0.001,
+                     qPrintable(QString("%1 physical=%2").arg(part->objectName()).arg(coordinate, 0, 'f', 6)));
+    }
     galleryViewport->setProperty("contentY", galleryViewport->property("contentHeight").toReal() - galleryViewport->height());
     QTest::qWait(150);
     inspect(inspect, galleryPage);
@@ -1114,7 +1220,7 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
     pointer->forceActiveFocus();
     fixture.shell.clearActions();
     QTest::keyClick(fixture.window, Qt::Key_Up);
-    QTRY_VERIFY(!visualItemWithObjectName(body,"themeConfiguratorContent"));
+    QTRY_VERIFY(!content->isVisible());
     auto *settingsDialog = visualItemWithObjectName(fixture.window->contentItem(), "semanticDialog-test-settings");
     QVERIFY(settingsDialog);
     const QSizeF settingsSize(settingsDialog->width(), settingsDialog->height());
@@ -1151,12 +1257,44 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
         QCOMPARE(terminalPage->width(), loader->width());
         QVERIFY(terminalPage->width() <= viewport->width());
         QVERIFY(!visualItemWithObjectName(body,"nativeSettingsHorizontalScrollBar")->isVisible());
-        QVERIFY(!visualItemWithObjectName(body,"nativeSettingsVerticalScrollBar")->isVisible());
+        QVERIFY(viewport->property("contentHeight").toReal() >= viewport->height());
         QVERIFY(qAbs(viewport->property("contentWidth").toReal() - viewport->width()) < 0.001);
-        QVERIFY(qAbs(viewport->property("contentHeight").toReal() - viewport->height()) < 0.001);
+        for (int i = 0; i < 8; ++i) {
+            auto *normal = visualItemWithObjectName(terminalPage, "terminalColorRow" + QString::number(i));
+            auto *bright = visualItemWithObjectName(terminalPage, "terminalColorRow" + QString::number(i + 8));
+            QVERIFY(normal && bright);
+            QCOMPARE(normal->mapToScene({}).y(), bright->mapToScene({}).y());
+            QVERIFY(normal->mapToScene({}).x() < bright->mapToScene({}).x());
+            for (auto *frame : {normal, bright,
+                    visualItemWithObjectName(terminalPage, "terminalColorSwatch" + QString::number(i)),
+                    visualItemWithObjectName(terminalPage, "terminalColorSwatch" + QString::number(i + 8))}) {
+                QVERIFY(frame);
+                const QPointF origin = frame->mapToScene({}) * dpr;
+                for (const auto value : {origin.x(), origin.y(), frame->width() * dpr, frame->height() * dpr})
+                    QVERIFY2(qAbs(value - qRound(value)) < 0.001,
+                             qPrintable(QString("%1 physical coordinate=%2").arg(frame->objectName()).arg(value, 0, 'f', 6)));
+            }
+            normal = visualItemWithObjectName(terminalPage, "terminalColorPreview" + QString::number(i));
+            bright = visualItemWithObjectName(terminalPage, "terminalColorPreview" + QString::number(i + 8));
+            QVERIFY(normal && bright);
+            QCOMPARE(normal->mapToScene({}).x(), bright->mapToScene({}).x());
+            QVERIFY(normal->mapToScene({}).y() < bright->mapToScene({}).y());
+        }
+        for (auto *shared : {sharedTitle, sharedApply, sharedOK, sharedCancel}) inspect(inspect, shared);
+        viewport->setProperty("contentY", viewport->property("contentHeight").toReal() - viewport->height());
+        QTest::qWait(50);
+        inspect(inspect, terminalPage);
+        viewport->setProperty("contentY", 0);
         QVERIFY(wheel->mapToItem(terminalPage,QPointF(wheel->width(),0)).x() <= terminalPage->width());
         if (size.width() == 700) QVERIFY(fixture.window->grabWindow().save(".diagnostics/terminal-colors-narrow-175.png"));
     }
+    auto *overrides = visualItemWithObjectName(terminalPage, "terminalColorsEnabled");
+    QVERIFY(overrides && overrides->property("checkState").isValid());
+    const bool overridesBefore = overrides->property("checked").toBool();
+    overrides->forceActiveFocus();
+    QTest::keyClick(fixture.window, Qt::Key_Space);
+    QCOMPARE(overrides->property("checked").toBool(), !overridesBefore);
+    QVERIFY(QMetaObject::invokeMethod(terminalPage, "resetDraft"));
     QVERIFY(visualItemWithObjectName(terminalPage,"terminalColorName15"));
     QVERIFY(visualItemWithObjectName(terminalPage,"terminalColorPreview15"));
     auto *palette = fixture.window->property("terminalPalette").value<QObject *>();
@@ -1188,6 +1326,32 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
                      coreLabel->mapToScene(QPointF(10, coreLabel->height()/2)).toPoint());
     QTRY_COMPARE(body->property("selectedNativePage").toString(), "");
     QCOMPARE(fixture.shell.actions.last().value("index").toInt(), 0);
+    // Pending native drafts survive category changes and use the core footer.
+    QCOMPARE(draftValues().value("diskLimitMiB").toInt(), 2048);
+    fixture.shell.clearActions();
+    QVERIFY(QMetaObject::invokeMethod(sharedApply, "clicked"));
+    QCOMPARE(fixture.shell.actions.size(), 1);
+    QCOMPARE(fixture.shell.actions.last().value("target").toString(), "settings-apply");
+    QCOMPARE(galleryPreferences->values().value("diskLimitMiB").toInt(), 2048);
+    QCOMPARE(palette->property("preset").toString(), "modern");
+    QTRY_VERIFY(!galleryPreferences->busy());
+    const auto baselineColor = fixture.window->property("textColor");
+    fixture.window->setProperty("textColor", QColor("#aabbcc"));
+    QVERIFY(QMetaObject::invokeMethod(terminalPage, "setColor", Q_ARG(QVariant, 12), Q_ARG(QVariant, "invalid")));
+    fixture.shell.clearActions();
+    QVERIFY(QMetaObject::invokeMethod(sharedOK, "clicked"));
+    QVERIFY(fixture.shell.actions.isEmpty());
+    QCOMPARE(body->property("selectedNativePage").toString(), "terminal-colors");
+    QVERIFY(QMetaObject::invokeMethod(sharedCancel, "clicked"));
+    QCOMPARE(fixture.shell.actions.last().value("target").toString(), "settings-cancel");
+    QCOMPARE(fixture.window->property("textColor"), baselineColor);
+    QCOMPARE(terminalPage->property("draftPreset").toString(), "modern");
+    fixture.shell.clearActions();
+    QVERIFY(QMetaObject::invokeMethod(sharedOK, "clicked"));
+    QCOMPARE(fixture.shell.actions.last().value("target").toString(), "settings-ok");
+    fixture.window->setProperty("textColor", QColor("#abcdef"));
+    fixture.shell.setScene(shellScene());
+    QTRY_COMPARE(fixture.window->property("textColor"), baselineColor);
 }
 
 void F4QuickViewSurfaceTests::initTestCase()
@@ -1504,7 +1668,7 @@ void F4QuickViewSurfaceTests::rendererZoomControlsFollowLayoutCapability()
     QVERIFY(QMetaObject::invokeMethod(menu, "close"));
 }
 
-void F4QuickViewSurfaceTests::panelFileInfoSettingTogglesFooterWithoutRebuildingPanel()
+void F4QuickViewSurfaceTests::panelFileInfoSettingKeepsStatusOverlayAndContentGeometry()
 {
     QuickViewFixture fixture(shellScene({}, 0), true);
     QVERIFY(fixture.window);
@@ -1532,9 +1696,9 @@ void F4QuickViewSurfaceTests::panelFileInfoSettingTogglesFooterWithoutRebuilding
         {QStringLiteral("panel"), projectedPanel},
     });
 
-    QTRY_VERIFY_WITH_TIMEOUT(!footer->isVisible(), 3000);
-    QTRY_VERIFY_WITH_TIMEOUT(qAbs(footer->height()) < 0.01, 3000);
-    QTRY_VERIFY_WITH_TIMEOUT(loader->height() >= contentHeightWithFooter + footerHeight - 1.0, 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(footer->isVisible(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(footer->height() - footerHeight) < 0.01, 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(loader->height() - contentHeightWithFooter) < 0.01, 3000);
     QCOMPARE(sceneChanged.size(), 0);
     QCOMPARE(fixture.item(QStringLiteral("filePanel-0")), leftPanel);
     QCOMPARE(fixture.item(QStringLiteral("galleryPanelContent-0")), loader);
@@ -1558,10 +1722,11 @@ void F4QuickViewSurfaceTests::fastFindOverlayIsIndependentFromPanelFooter()
 {
     QuickViewFixture fixture(shellScene({}, 0), true);
     QVERIFY(fixture.window);
+    fixture.window->resize(1900, 900);
     QQuickItem *const leftPanel = fixture.item(QStringLiteral("filePanel-0"));
     QQuickItem *const footer = fixture.item(QStringLiteral("panelStatus-0"));
     QQuickItem *const footerSelection = fixture.item(
-        QStringLiteral("panelStatusSelection-0"));
+        QStringLiteral("panelStatusFiles-0"));
     QQuickItem *const overlay = fixture.item(
         QStringLiteral("panelFastFindOverlay-0"));
     QQuickItem *const overlayText = fixture.item(
@@ -1597,7 +1762,7 @@ void F4QuickViewSurfaceTests::fastFindOverlayIsIndependentFromPanelFooter()
         {QStringLiteral("panel"), projectedPanel},
     });
 
-    QTRY_VERIFY_WITH_TIMEOUT(!footer->isVisible(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(footer->isVisible(), 3000);
     QTRY_VERIFY_WITH_TIMEOUT(!overlay->isVisible(), 3000);
     const qreal contentHeightWithoutFooter = loader->height();
 
@@ -1621,11 +1786,11 @@ void F4QuickViewSurfaceTests::fastFindOverlayIsIndependentFromPanelFooter()
     QCOMPARE(overlayCursor->width(), expectedCursorWidth);
     QVERIFY(overlayCursor->height() > 0.0);
     QCOMPARE(footerSelection->property("text").toString(),
-             QStringLiteral("7 files, 0 folders · 0 B selected"));
-    QVERIFY(!footer->isVisible());
+             QStringLiteral("7"));
+    QVERIFY(footer->isVisible());
     QTRY_VERIFY_WITH_TIMEOUT(
         qAbs(overlay->x() + overlay->width() / 2.0
-             - leftPanel->width() / 2.0) < 0.01,
+             - leftPanel->width() / 2.0) * dpr <= 1,
         1000);
     QVERIFY(overlay->property("radius").toReal() > 0.0);
     QVERIFY(qAbs(loader->height() - contentHeightWithoutFooter) < 0.01);
@@ -1653,8 +1818,8 @@ void F4QuickViewSurfaceTests::fastFindOverlayIsIndependentFromPanelFooter()
     });
     QTRY_VERIFY_WITH_TIMEOUT(footer->isVisible(), 3000);
     QTRY_VERIFY_WITH_TIMEOUT(overlay->isVisible(), 3000);
-    QVERIFY(overlay->y() + overlay->height() <= footer->y() + 0.01);
-    QVERIFY(loader->height() < contentHeightWithoutFooter);
+    QVERIFY(qAbs(overlay->y() + overlay->height() - footer->y() - footer->height()) < 0.01);
+    QVERIFY(qAbs(loader->height() - contentHeightWithoutFooter) < 0.01);
 
     projectedPanel.insert(QStringLiteral("showFileInfo"), false);
     projectedPanel.insert(QStringLiteral("fastFind"), false);
@@ -1664,7 +1829,7 @@ void F4QuickViewSurfaceTests::fastFindOverlayIsIndependentFromPanelFooter()
         {QStringLiteral("side"), 0},
         {QStringLiteral("panel"), projectedPanel},
     });
-    QTRY_VERIFY_WITH_TIMEOUT(!footer->isVisible(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(footer->isVisible(), 3000);
     QTRY_VERIFY_WITH_TIMEOUT(!overlay->isVisible(), 3000);
     QTRY_VERIFY_WITH_TIMEOUT(!overlayCursor->isVisible(), 1000);
     QTRY_VERIFY_WITH_TIMEOUT(
@@ -1781,6 +1946,90 @@ void F4QuickViewSurfaceTests::nativeFontRolesUsePlatformDefaultsAt175Percent()
     };
     verifyRenderedText(uiLeaf);
     verifyRenderedText(fixedLeaf);
+}
+
+void F4QuickViewSurfaceTests::fastFindOverlayAvoidsStatusAndStaysPixelAligned()
+{
+    QuickViewFixture fixture(shellScene({}, 0), true);
+    QVERIFY(fixture.window);
+    const auto dpr = fixture.window->devicePixelRatio();
+    if (qEnvironmentVariable("QT_SCALE_FACTOR") == "1.75") QCOMPARE(dpr, 1.75);
+    int centered = 0;
+    int shifted = 0;
+    for (const int windowWidth : {1901, 1103, 741, 1901}) {
+        fixture.window->resize(windowWidth, 900);
+        for (int scenario = 0; scenario < 3; ++scenario) {
+            for (int side = 0; side < 2; ++side) {
+                auto state = panel(side, side == 0);
+                state.remove("entries");
+                state.remove("highlightStyles");
+                state["fastFind"] = true;
+                state["fastFindText"] = scenario == 2
+                    ? "a-long-search-query-that-needs-to-be-elided-in-a-narrow-panel" : "needle";
+                state["selectedCount"] = scenario == 1 ? 1358023 : 0;
+                state["selectedFiles"] = 1234567;
+                state["selectedDirectories"] = 123456;
+                state["selectedSize"] = 999.9 * (1LL << 30);
+                state["totalFiles"] = 3279;
+                state["totalDirectories"] = 112;
+                state["totalSize"] = 59.4 * (1LL << 30);
+                state["freeSpaceKnown"] = true;
+                state["freeSpace"] = 135.0 * (1LL << 30);
+                state["diskTotalSpace"] = 12.7 * (1LL << 40);
+                fixture.shell.deliverCompactPresentation({
+                    {"type", "scene_patch"}, {"side", side}, {"panel", state}});
+            }
+            QTest::qWait(80);
+            for (int side = 0; side < 2; ++side) {
+                const QString suffix = "-" + QString::number(side);
+                auto *panelItem = fixture.item("filePanel" + suffix);
+                auto *overlay = fixture.item("panelFastFindOverlay" + suffix);
+                auto *status = fixture.item("panelStatus" + suffix);
+                QVERIFY(panelItem && overlay && status);
+                QVERIFY(overlay->isVisible() && status->isVisible());
+                for (const auto *prefix : {"panelFastFindText", "panelFastFindIcon",
+                                           "panelFastFindCursor", "panelFastFindOverlay"}) {
+                    auto *item = fixture.item(prefix + suffix);
+                    QVERIFY(item);
+                    const auto origin = item->mapToItem(fixture.window->contentItem(), QPointF());
+                    const auto physical = origin*dpr;
+                    qInfo() << item->objectName() << "physical origin" << physical;
+                    QVERIFY2(qAbs(physical.x()-qRound64(physical.x())) < .01
+                             && qAbs(physical.y()-qRound64(physical.y())) < .01,
+                        qPrintable(QString("%1 physical %2,%3").arg(item->objectName())
+                            .arg(physical.x()).arg(physical.y())));
+                    QCOMPARE(item->mapToItem(fixture.window->contentItem(), QPointF(1,0))-origin, QPointF(1,0));
+                    QCOMPARE(item->mapToItem(fixture.window->contentItem(), QPointF(0,1))-origin, QPointF(0,1));
+                    QVERIFY(qAbs(item->width()*dpr-qRound64(item->width()*dpr)) < .01);
+                    QVERIFY(qAbs(item->height()*dpr-qRound64(item->height()*dpr)) < .01);
+                    const auto local = item->mapToItem(overlay, QPointF());
+                    QVERIFY(local.x() >= -.01 && local.y() >= -.01);
+                    QVERIFY(local.x()+item->width() <= overlay->width()+.01);
+                    QVERIFY(local.y()+item->height() <= overlay->height()+.01);
+                }
+                const auto searchOrigin = overlay->mapToItem(panelItem, QPointF());
+                const auto statusOrigin = status->mapToItem(panelItem, QPointF());
+                const qreal gap = fixture.window->property("panelContentSpacing").toReal();
+                QVERIFY(qAbs(searchOrigin.y()+overlay->height() - panelItem->height()+gap)*dpr <= 1);
+                QVERIFY(searchOrigin.x()*dpr >= gap*dpr-1);
+                QVERIFY((statusOrigin.x()-searchOrigin.x()-overlay->width())*dpr >= gap*dpr-1);
+                const qreal centeredX = (panelItem->width()-overlay->width())/2;
+                if (centeredX+overlay->width()+gap <= statusOrigin.x()) {
+                    QVERIFY(qAbs(searchOrigin.x()-centeredX)*dpr <= 1);
+                    ++centered;
+                } else {
+                    QVERIFY(qAbs(searchOrigin.x()+overlay->width()+gap-statusOrigin.x())*dpr <= 1);
+                    ++shifted;
+                }
+            }
+            const auto capture = fixture.window->grabWindow();
+            QVERIFY(!capture.isNull());
+            if (qEnvironmentVariableIsSet("F4_FAST_FIND_CAPTURE"))
+                QVERIFY(capture.save(qEnvironmentVariable("F4_FAST_FIND_CAPTURE")
+                    + QString("-%1-%2.png").arg(windowWidth).arg(scenario)));
+        }
+    }
+    QVERIFY(centered > 0 && shifted > 0);
 }
 
 void F4QuickViewSurfaceTests::semanticHorizontalSplitStaysOnNativeSurface()
@@ -2530,6 +2779,14 @@ void F4QuickViewSurfaceTests::functionBarLeavesStaySharpAndThemeLiveAt175Percent
         QCOMPARE(keyBar->property("color").value<QColor>(), background);
 
         for (int index = 1; index <= 12; ++index) {
+            for (const auto &prefix : {QStringLiteral("key-bar-action-"), QStringLiteral("key-bar-separator-")}) {
+                auto *edge = visualItemWithObjectName(root, prefix + QString::number(index));
+                QVERIFY(edge);
+                const auto physical = edge->mapToItem(root, QPointF{}) * dpr;
+                for (const auto value : {physical.x(), physical.y(), edge->width()*dpr, edge->height()*dpr})
+                    QVERIFY2(qAbs(value-qRound(value)) < .001,
+                             qPrintable(QString("%1 physical=%2").arg(edge->objectName()).arg(value, 0, 'f', 6)));
+            }
             for (const QString &prefix : {QStringLiteral("key-bar-label-"),
                                           QStringLiteral("key-bar-shortcut-"),
                                           QStringLiteral("key-bar-icon-")}) {
@@ -2853,26 +3110,84 @@ void F4QuickViewSurfaceTests::largeHistoryLatencyProfile()
     }
 }
 
+void F4QuickViewSurfaceTests::userMenuRecordDialogLeavesStaySharpAt175Percent()
+{
+    const QString path = qEnvironmentVariable("F4_USERMENU_EDITOR_SCENE");
+    if (path.isEmpty()) QSKIP("Generate the Go editor scene with F4_USERMENU_EDITOR_SCENE first");
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    const auto node = QJsonDocument::fromJson(file.readAll()).toVariant().toMap();
+    QVERIFY(!node.isEmpty());
+    auto scene = shellScene();
+    scene["dialogs"] = QVariantList{node};
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    fixture.window->resize(1300, 1100);
+    QTest::qWait(150);
+    auto *root = fixture.window->contentItem();
+    auto *dialog = visualItemWithObjectName(root, "semanticDialog-id:settings-record-dialog");
+    QVERIFY(dialog && dialog->isVisible());
+    const qreal dpr = fixture.window->devicePixelRatio();
+    QCOMPARE(dpr, 1.75);
+    int leaves = 0;
+    const auto inspect = [&](auto &&self, QQuickItem *item) -> void {
+        if (item->isVisible() && (item->property("renderType").isValid() || item->inherits("QQuickImage"))) {
+            ++leaves;
+            const auto origin = item->mapToItem(root, QPointF{});
+            const QString detail = QString("%1 physical=(%2,%3)").arg(item->objectName())
+                .arg(origin.x()*dpr,0,'f',6).arg(origin.y()*dpr,0,'f',6);
+            QVERIFY2(!item->objectName().isEmpty(), qPrintable(detail));
+            QVERIFY2(qAbs(origin.x()*dpr-qRound(origin.x()*dpr))<.001, qPrintable(detail));
+            QVERIFY2(qAbs(origin.y()*dpr-qRound(origin.y()*dpr))<.001, qPrintable(detail));
+            QCOMPARE(item->mapToItem(root,QPointF(1,0))-origin,QPointF(1,0));
+            QCOMPARE(item->mapToItem(root,QPointF(0,1))-origin,QPointF(0,1));
+        }
+        for (auto *child : item->childItems()) self(self,child);
+    };
+    inspect(inspect,dialog);
+    QVERIFY(leaves >= 10);
+    QVERIFY(fixture.window->grabWindow().save(path + ".png"));
+}
+
+void F4QuickViewSurfaceTests::far3ImportDialogLeavesStaySharpAt175Percent_data()
+{
+    QTest::addColumn<bool>("userMenu");
+    QTest::newRow("history") << false;
+    QTest::newRow("user-menu") << true;
+}
+
 void F4QuickViewSurfaceTests::far3ImportDialogLeavesStaySharpAt175Percent()
 {
+    QFETCH(bool, userMenu);
     auto scene = shellScene();
     scene.insert("dialogs", QVariantList{QVariantMap{{"id", "far3-import"}, {"kind", "dialog"},
-        {"title", "Import Far3 history"}, {"x", 20}, {"y", 10}, {"w", 60}, {"h", 11},
+        {"title", userMenu ? "Import Far3 user menu" : "Import Far3 history"}, {"x", 20}, {"y", 10}, {"w", 60}, {"h", 11},
         {"modal", true}, {"showClose", true}, {"children", QVariantList{
-            QVariantMap{{"id","far3-label"},{"kind","text"},{"text","Far3 folder or history.db:"},{"x",22},{"y",12},{"w",25},{"h",1}},
+            QVariantMap{{"id","far3-label"},{"kind","text"},{"text",userMenu ? "FarMenu.ini or Far folder:" : "Far3 folder or history.db:"},{"x",22},{"y",12},{"w",25},{"h",1}},
             QVariantMap{{"id","far3-path"},{"kind","edit"},{"text",R"(C:\Programs\Far3)"},{"focused",true},{"x",22},{"y",14},{"w",56},{"h",1}},
-            QVariantMap{{"id","far3-note"},{"kind","text"},{"text","Merge histories; skip duplicates."},{"x",22},{"y",16},{"w",32},{"h",1}},
+            QVariantMap{{"id","far3-note"},{"kind","text"},{"text",userMenu ? "Import into the global menu draft." : "Merge histories; skip duplicates."},{"x",22},{"y",16},{"w",32},{"h",1}},
             QVariantMap{{"id","far3-import-button"},{"kind","button"},{"text","Import"},{"x",40},{"y",18},{"w",10},{"h",1}},
             QVariantMap{{"id","far3-cancel"},{"kind","button"},{"text","Cancel"},{"x",52},{"y",18},{"w",10},{"h",1}}
         }}}});
+    if (userMenu) {
+        auto dialogs = scene.value("dialogs").toList();
+        auto dialog = dialogs[0].toMap();
+        auto children = dialog.value("children").toList();
+        children.append(QVariantMap{{"id","far3-detail"},{"kind","text"},
+            {"text","Apply saves the imported entries."},{"x",22},{"y",17},{"w",34},{"h",1}});
+        dialog["children"] = children;
+        dialogs[0] = dialog;
+        scene["dialogs"] = dialogs;
+    }
     QuickViewFixture fixture(scene);
     QVERIFY(fixture.window);
     auto *root = fixture.window->contentItem();
     const auto dpr = fixture.window->devicePixelRatio();
     QCOMPARE(dpr, 1.75);
-    const QStringList names{"semanticDialogTitle", "titleBarButtonIcon", "dialogWidget-far3-labelText",
+    QStringList names{"semanticDialogTitle", "titleBarButtonIcon", "dialogWidget-far3-labelText",
         "dialogWidget-far3-noteText", "dialogWidget-far3-pathEditTextInput",
         "dialogWidget-far3-import-buttonButtonText", "dialogWidget-far3-cancelButtonText"};
+    if (userMenu) names.append("dialogWidget-far3-detailText");
     for (const QSize size : {QSize(1101, 803), QSize(801, 601)}) {
         fixture.window->resize(size);
         QTest::qWait(60);
@@ -2899,7 +3214,7 @@ void F4QuickViewSurfaceTests::far3ImportDialogLeavesStaySharpAt175Percent()
     const QImage capture = fixture.window->grabWindow();
     QVERIFY(!capture.isNull());
     const QString path = qEnvironmentVariable("F4_FAR3_DIALOG_CAPTURE");
-    if (!path.isEmpty()) QVERIFY(capture.save(path));
+    if (!path.isEmpty()) QVERIFY(capture.save(path + (userMenu ? "-usermenu.png" : "-history.png")));
 }
 
 void F4QuickViewSurfaceTests::themeDialogControlsStayOnPhysicalPixelGridAt175Percent()
@@ -3622,6 +3937,186 @@ void F4QuickViewSurfaceTests::compactCatalogUpdatesOnlyChangedPanelPresentation(
     QCOMPARE(rightLoader->property("item").value<QObject *>(), rightHost);
 }
 
+void F4QuickViewSurfaceTests::panelPathBarsToggleWithoutLosingContent()
+{
+    QVariantMap scene = shellScene();
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    QQuickItem *headers[2];
+    QQuickItem *contents[2];
+    qreal initialY[2], initialHeight[2];
+    for (int side=0; side<2; ++side) {
+        headers[side] = fixture.item(QString("panelHeader-%1").arg(side));
+        contents[side] = fixture.item(QString("galleryPanelContent-%1").arg(side));
+        QVERIFY(headers[side]);
+        QVERIFY(contents[side]);
+        initialY[side] = contents[side]->y();
+        initialHeight[side] = contents[side]->height();
+    }
+    for (bool hidden : {true, false, true, false}) {
+        auto shell = scene.value("shell").toMap();
+        shell["hidePanelPathBar"] = hidden;
+        scene["shell"] = shell;
+        fixture.shell.setScene(scene);
+        QTest::qWait(40);
+        for (int side=0; side<2; ++side) {
+            QCOMPARE(headers[side]->isVisible(), !hidden);
+            auto *expand = visualItemWithObjectNamePrefix(fixture.window->contentItem(), QString("panelExpandButton-%1").arg(side));
+            QVERIFY(expand);
+            QCOMPARE(expand->isVisible(), !hidden);
+            QVERIFY(fixture.item(QString("galleryPanelContent-%1").arg(side)) == contents[side]);
+            if (hidden) {
+                QCOMPARE(headers[side]->height(), 0.0);
+                QCOMPARE(contents[side]->y(), 0.0);
+                QCOMPARE(contents[side]->height(), initialHeight[side]+initialY[side]);
+            } else {
+                QCOMPARE(contents[side]->y(), initialY[side]);
+                QCOMPARE(contents[side]->height(), initialHeight[side]);
+            }
+        }
+    }
+}
+
+void F4QuickViewSurfaceTests::panelSplitterCoalescesGoUpdates()
+{
+    QVariantMap scene = shellScene();
+    auto shell = scene.value("shell").toMap();
+    shell["id"] = "split-test";
+    scene["shell"] = shell;
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    auto *splitter = fixture.item("mainPanelSplitter");
+    QVERIFY(splitter);
+    fixture.shell.clearActions();
+    for (int i=0; i<100; ++i)
+        QVERIFY(QMetaObject::invokeMethod(splitter, "ratioRequested", Q_ARG(double, 0.4+i*0.001)));
+    QCOMPARE(fixture.shell.actions.size(), 0);
+    QTest::qWait(40);
+    QCOMPARE(fixture.shell.actions.size(), 1);
+    auto action = fixture.shell.actions.last();
+    QCOMPARE(action.value("action").toString(), QString("panel.setSplit"));
+    QCOMPARE(action.value("target").toString(), QString("split-test"));
+    QCOMPARE(action.value("ratioMillionths").toInt(), 499000);
+    fixture.shell.clearActions();
+    const QPoint center = splitter->mapToScene(QPointF(splitter->width()/2+1, splitter->height()/2)).toPoint();
+    QTest::mousePress(fixture.window, Qt::LeftButton, Qt::NoModifier, center);
+    QTest::mouseMove(fixture.window, center+QPoint(70,0));
+    QTest::mouseRelease(fixture.window, Qt::LeftButton, Qt::NoModifier, center+QPoint(70,0));
+    QVERIFY(!fixture.shell.actions.isEmpty());
+    QCOMPARE(fixture.shell.actions.last().value("ratioMillionths").toInt(),
+        qRound(fixture.window->property("panelSplitRatio").toReal()*1000000));
+    fixture.shell.clearActions();
+    const QPoint moved = splitter->mapToScene(QPointF(splitter->width()/2+1, splitter->height()/2)).toPoint();
+    QTest::mouseDClick(fixture.window, Qt::LeftButton, Qt::NoModifier, moved);
+    QTest::qWait(40);
+    QVERIFY(!fixture.shell.actions.isEmpty());
+    QCOMPARE(fixture.shell.actions.last().value("ratioMillionths").toInt(), 500000);
+    QVERIFY(fixture.shell.actions.size() <= 2);
+}
+
+void F4QuickViewSurfaceTests::panelExpandButtonsShareHoverAndRestore()
+{
+    QVariantMap scene = shellScene();
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    auto *left = visualItemWithObjectNamePrefix(fixture.window->contentItem(), "panelExpandButton-0");
+    auto *right = visualItemWithObjectNamePrefix(fixture.window->contentItem(), "panelExpandButton-1");
+    auto *splitter = fixture.item("mainPanelSplitter");
+    QVERIFY(left);
+    QVERIFY(right);
+    QVERIFY(splitter);
+    auto center = [](QQuickItem *item) {
+        return item->mapToScene(QPointF(item->width()/2, item->height()/2)).toPoint();
+    };
+    QTest::mouseMove(fixture.window, QPoint(40, 300));
+    QTRY_COMPARE(left->property("revealed").toBool(), false);
+    QCOMPARE(right->property("revealed").toBool(), false);
+    for (auto *target : {left, right, splitter}) {
+        QTest::mouseMove(fixture.window, center(target));
+        QTRY_VERIFY2(left->property("revealed").toBool(), qPrintable(target->objectName()));
+        QVERIFY(right->property("revealed").toBool());
+    }
+    const qreal dpr = fixture.window->devicePixelRatio();
+    for (int side = 0; side < 2; ++side) {
+        auto *button = side == 0 ? left : right;
+        auto *view = fixture.item(QString("panelRendererButton-%1").arg(side));
+        auto *icon = visualItemWithObjectNamePrefix(fixture.window->contentItem(), QString("panelExpandIcon-%1").arg(side));
+        QVERIFY(view);
+        QVERIFY(icon);
+        const QPointF origin = button->mapToScene(QPointF());
+        QCOMPARE(button->height(), view->height());
+        QCOMPARE(button->property("iconName").toString(), side == 0
+            ? QString("arrow-right-from-line") : QString("arrow-left-from-line"));
+        auto *background = visualItemWithObjectNamePrefix(fixture.window->contentItem(), QString("panelExpandBackground-%1").arg(side));
+        QVERIFY(background);
+        QCOMPARE(background->property("radius").toReal(), 5.0);
+        if (side == 0) {
+            const QPointF edge = view->mapToScene(QPointF(view->width(), 0));
+            QVERIFY(qAbs(edge.x() - origin.x()) < 0.01);
+            QVERIFY(qAbs(origin.x() + button->width() - fixture.item("filePanel-1")->x()) < 0.01);
+        } else {
+            auto *drive = fixture.item("panelDriveButton-1");
+            QVERIFY(drive);
+            QCOMPARE(origin.x(), fixture.item("filePanel-1")->x());
+            QVERIFY(qAbs(origin.x() + button->width() - drive->mapToScene(QPointF()).x()) < 0.01);
+        }
+        for (auto *item : {button, icon}) {
+            const QPointF sceneOrigin = item->mapToScene(QPointF());
+            const QPointF physical = sceneOrigin * dpr;
+            qInfo() << item->objectName() << physical;
+            QVERIFY(qAbs(physical.x()-qRound(physical.x())) < 0.01);
+            QVERIFY(qAbs(physical.y()-qRound(physical.y())) < 0.01);
+            QVERIFY(qAbs(item->width()*dpr-qRound(item->width()*dpr)) < 0.01);
+            QVERIFY(qAbs(item->height()*dpr-qRound(item->height()*dpr)) < 0.01);
+            QCOMPARE(item->mapToScene(QPointF(1,0))-sceneOrigin, QPointF(1,0));
+            QCOMPARE(item->mapToScene(QPointF(0,1))-sceneOrigin, QPointF(0,1));
+        }
+        fixture.shell.clearActions();
+        // Include the divider's hit lane, not just the center of the button.
+        const QPoint hit = button->mapToScene(QPointF(side == 0 ? button->width()-1 : 1,
+            button->height()/2)).toPoint();
+        QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, hit);
+        QTRY_COMPARE(fixture.shell.actions.size(), 1);
+        const auto action = fixture.shell.actions.first();
+        QCOMPARE(action.value("action").toString(), QString("panel.setWide"));
+        QCOMPARE(action.value("side").toInt(), side);
+        QCOMPARE(action.value("enabled").toBool(), true);
+        QVERIFY(!splitter->property("dragging").toBool());
+    }
+    QTest::mouseMove(fixture.window, center(right));
+    QTest::qWait(750);
+    auto *tip = visualItemWithObjectNamePrefix(fixture.window->contentItem(), "panelExpandToolTipText-1");
+    QVERIFY(tip);
+    QVERIFY(tip->isVisible());
+    const QPointF tipOrigin = tip->mapToScene(QPointF());
+    qInfo() << tip->objectName() << tipOrigin * dpr;
+    QVERIFY(qAbs(tipOrigin.x()*dpr-qRound(tipOrigin.x()*dpr)) < 0.01);
+    QVERIFY(qAbs(tipOrigin.y()*dpr-qRound(tipOrigin.y()*dpr)) < 0.01);
+    QCOMPARE(tip->mapToScene(QPointF(1,0))-tipOrigin, QPointF(1,0));
+    QCOMPARE(tip->mapToScene(QPointF(0,1))-tipOrigin, QPointF(0,1));
+    const auto capture = qEnvironmentVariable("F4_PANEL_EXPAND_CAPTURE");
+    if (!capture.isEmpty())
+        QVERIFY(fixture.window->grabWindow().save(capture));
+    QVariantMap shell = scene.value("shell").toMap();
+    shell["wide"] = true;
+    shell["widePanel"] = 1;
+    scene["shell"] = shell;
+    fixture.shell.setScene(scene);
+    QTRY_VERIFY(!left->isVisible());
+    QVERIFY(right->isVisible());
+    QCOMPARE(right->property("iconName").toString(), QString("arrow-right-from-line"));
+    QTRY_VERIFY(!splitter->isVisible());
+    fixture.shell.clearActions();
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, center(right));
+    QTRY_COMPARE(fixture.shell.actions.size(), 1);
+    QCOMPARE(fixture.shell.actions.first().value("enabled").toBool(), false);
+    shell["widePanel"] = 0;
+    scene["shell"] = shell;
+    fixture.shell.setScene(scene);
+    QTRY_VERIFY(left->isVisible());
+    QCOMPARE(left->property("iconName").toString(), QString("arrow-left-from-line"));
+}
+
 void F4QuickViewSurfaceTests::workspaceDragHitOnlyAcceptsPanelTabs()
 {
     QVariantList tabs;
@@ -4067,10 +4562,13 @@ void F4QuickViewSurfaceTests::workspaceTabMiddleClickClosesClickedTab()
                  QString("workspace-tab-%1").arg(index));
         QCOMPARE(fixture.shell.actions.first().value("index").toInt(), index);
         fixture.shell.clearActions();
-        QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, point);
+        QTest::mousePress(fixture.window, Qt::LeftButton, Qt::NoModifier, point);
         QTRY_COMPARE(fixture.shell.actions.size(), 1);
         QCOMPARE(fixture.shell.actions.first().value("action").toString(),
                  QString("workspace.activate"));
+        QTest::mouseRelease(fixture.window, Qt::LeftButton, Qt::NoModifier, point);
+        QTest::qWait(30);
+        QCOMPARE(fixture.shell.actions.size(), 1);
     }
 }
 
@@ -4159,6 +4657,175 @@ void F4QuickViewSurfaceTests::workspaceTabWheelActivatesAdjacentTabs()
     sendAngleWheel(fixture.window, position, -120);
     QTest::qWait(50);
     QCOMPARE(fixture.shell.actions.size(), 0);
+}
+
+void F4QuickViewSurfaceTests::quickViewRetainsViewerAcrossPresentationChanges()
+{
+    QTemporaryDir directory;
+    const QString imagePath = directory.filePath("docked.png");
+    QImage image(QSize(2400, 1600), QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::cyan);
+    QVERIFY(image.save(imagePath));
+    QVariantMap dockView{{"id", "quick"}, {"side", 1}, {"sourceSide", 0},
+        {"previewKind", "image"}, {"imageRenderer", "gallery"}, {"entryId", "image"},
+        {"title", "Quick View"}, {"bottomHint", "legacy footer"}};
+    QuickViewFixture fixture(shellScene({dockView}, 0), false, true);
+    QVERIFY(fixture.window);
+    QCOMPARE(fixture.window->devicePixelRatio(), qreal(1.75));
+    auto *runtime = ZoinGallery::GalleryRuntime::install(&fixture.engine);
+    auto *session = runtime->createExternalSession("docked-presentation");
+    const auto shutdown = qScopeGuard([&] { runtime->shutdown(); });
+    QVERIFY(session->applyExternalCatalog({QVariantMap{
+        {"entryId", "image"}, {"index", 0}, {"name", "docked.png"},
+        {"localPath", imagePath}, {"isDir", false}, {"isImage", true},
+        {"size", QFileInfo(imagePath).size()}, {"mtimeNs", qint64(0)}
+    }}, 1));
+    QVERIFY(session->applyExternalState("image", 0, {}, 1));
+    session->setViewerOpen(true);
+    fixture.gallery.presentationState = 1;
+    fixture.gallery.destinationSide = 1;
+    fixture.gallery.quickView = {{"entryId", "image"}, {"active", false}};
+    fixture.gallery.showViewer(QUrl("qrc:/F4QtHost/qml/GalleryViewerHost.qml"), session);
+    QQuickItem *viewer = nullptr;
+    QTRY_VERIFY((viewer = fixture.item("embeddedGalleryViewer")));
+    auto *viewport = viewer->property("flickableArea").value<QQuickItem *>();
+    QVERIFY(viewport);
+    QTRY_VERIFY(viewport->property("imageTextureReady").toBool());
+    QTRY_COMPARE(viewer->property("transitionProgress").toReal(), 1.0);
+    auto *layer = fixture.item("galleryViewerLayer");
+    QVERIFY(layer);
+    QTRY_COMPARE(layer->property("fullProgress").toReal(), 0.0);
+    auto *legacyTitle = fixture.item("quickViewTitle-1");
+    QVERIFY(legacyTitle);
+    QVERIFY(!legacyTitle->isVisible());
+    QVERIFY(!fixture.item("quickViewFooterText-1")->isVisible());
+    QCOMPARE(fixture.window->property("normalSurfaceOpacity").toReal(), 1.0);
+    QVERIFY(!viewer->hasActiveFocus());
+    const auto validateEndpoint = [&] {
+        QCOMPARE(fixture.item("embeddedGalleryViewer"), viewer);
+        QVERIFY(session->viewerOpen());
+        QVERIFY(layer->isVisible());
+        QVERIFY(viewer->isVisible());
+        QVERIFY(viewer->width() > 100 && viewer->height() > 100);
+        QCOMPARE(viewer->property("transitionProgress").toReal(), 1.0);
+        QCOMPARE(viewer->property("viewerContentVisible").toBool(), true);
+        const auto origin = layer->mapToItem(fixture.window->contentItem(), QPointF());
+        for (qreal value : {origin.x(), origin.y(), layer->width(), layer->height()})
+            QVERIFY(qAbs(value * 1.75 - qRound(value * 1.75)) < 0.001);
+        QCOMPARE(layer->mapToItem(fixture.window->contentItem(), QPointF(1, 0)) - origin, QPointF(1, 0));
+        QCOMPARE(layer->mapToItem(fixture.window->contentItem(), QPointF(0, 1)) - origin, QPointF(0, 1));
+        // Include every visible text/image leaf, not just the clip wrapper.
+        const auto inspect = [&](auto &&self, QQuickItem *item) -> void {
+            if (item->isVisible() && (item->property("renderType").isValid() || item->inherits("QQuickImage"))) {
+                const auto p = item->mapToItem(fixture.window->contentItem(), QPointF());
+                const auto details = QString("%1 physical=(%2,%3)").arg(item->objectName()).arg(p.x()*1.75).arg(p.y()*1.75);
+                QVERIFY2(!item->objectName().isEmpty(), qPrintable(details));
+                QVERIFY2(qAbs(p.x()*1.75-qRound(p.x()*1.75))<0.001, qPrintable(details));
+                QVERIFY2(qAbs(p.y()*1.75-qRound(p.y()*1.75))<0.001, qPrintable(details));
+                QCOMPARE(item->mapToItem(fixture.window->contentItem(), QPointF(1,0))-p, QPointF(1,0));
+                QCOMPARE(item->mapToItem(fixture.window->contentItem(), QPointF(0,1))-p, QPointF(0,1));
+            }
+            for (auto *child : item->childItems()) self(self, child);
+        };
+        inspect(inspect, viewer);
+    };
+    validateEndpoint();
+    for (int side : {0, 1}) {
+        dockView["side"] = side;
+        dockView["sourceSide"] = 1 - side;
+        fixture.shell.setScene(shellScene({dockView}, 1 - side));
+        fixture.gallery.destinationSide = side;
+        if (side == 1) viewport->setProperty("rotationMode", 1);
+        QTRY_VERIFY(!viewport->property("isRotating").toBool());
+        emit fixture.gallery.viewerChanged();
+        QCoreApplication::processEvents();
+        auto *splitter = fixture.item("mainPanelSplitter");
+        QVERIFY(splitter);
+        QVERIFY(splitter->isEnabled());
+        // The trailing half of the gutter overlaps the right Quick View.
+        // Exercise the real mouse grab, including movement across the viewer.
+        const QPoint grab = splitter->mapToScene(QPointF(
+            splitter->width() * 0.75, splitter->height() / 2)).toPoint();
+        const qreal beforeRatio = fixture.window->property("panelSplitRatio").toReal();
+        QTest::mousePress(fixture.window, Qt::LeftButton, Qt::NoModifier, grab);
+        QVERIFY2(splitter->property("dragging").toBool(), "docked viewer intercepted the panel splitter press");
+        QTest::mouseMove(fixture.window, grab + QPoint(70, 0));
+        QTest::mouseRelease(fixture.window, Qt::LeftButton, Qt::NoModifier, grab + QPoint(70, 0));
+        QTRY_VERIFY(fixture.window->property("panelSplitRatio").toReal() > beforeRatio + 0.03);
+        QVERIFY(!splitter->property("dragging").toBool());
+        for (const auto &name : {"panelSplitterTrack", "panelSplitterLine"}) {
+            auto *leaf = visualItemWithObjectName(splitter, name);
+            QVERIFY(leaf);
+            const auto origin = leaf->mapToItem(fixture.window->contentItem(), QPointF());
+            for (const qreal physical : {origin.x()*1.75, origin.y()*1.75,
+                                         leaf->width()*1.75, leaf->height()*1.75})
+                QVERIFY2(qAbs(physical-qRound(physical)) < 0.001,
+                         qPrintable(QString("%1 physical coordinate %2").arg(name).arg(physical)));
+            QCOMPARE(leaf->mapToItem(fixture.window->contentItem(), QPointF(1,0))-origin, QPointF(1,0));
+            QCOMPARE(leaf->mapToItem(fixture.window->contentItem(), QPointF(0,1))-origin, QPointF(0,1));
+        }
+        QVERIFY(fixture.window->grabWindow().save(QString(".diagnostics/quick-view-splitter-%1-175.png").arg(side)));
+        QTest::mouseDClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+            splitter->mapToScene(QPointF(splitter->width() * 0.75, splitter->height()/2)).toPoint());
+        QTRY_VERIFY(qAbs(fixture.window->property("panelSplitRatio").toReal()-0.5) < 0.001);
+        validateEndpoint();
+        QTest::mouseDClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+            viewport->mapToScene(QPointF(viewport->width()/2, viewport->height()/2)).toPoint());
+        QTRY_COMPARE(fixture.gallery.presentationState, 3);
+        QTRY_COMPARE(layer->property("fullProgress").toReal(), 1.0);
+        validateEndpoint();
+        // A custom absolute zoom survives both directions of the geometry change.
+        QVERIFY(QMetaObject::invokeMethod(viewport, "zoomTo100", Q_ARG(QVariant, true)));
+        QTRY_VERIFY(!viewport->property("viewportAnimationRunning").toBool());
+        const qreal zoom = viewport->property("zoomScale").toReal();
+        auto *imageItem = viewport->property("image").value<QQuickItem *>();
+        QVERIFY(imageItem);
+        const QPointF centerBefore((viewport->width()/2 - imageItem->x())/zoom,
+                                   (viewport->height()/2 - imageItem->y())/zoom);
+        QTest::mouseDClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+            viewport->mapToScene(QPointF(viewport->width()/2, viewport->height()/2)).toPoint());
+        QTRY_COMPARE(fixture.gallery.presentationState, 1);
+        QTRY_COMPARE(layer->property("fullProgress").toReal(), 0.0);
+        QTRY_COMPARE(viewport->property("zoomScale").toReal(), zoom);
+        const QPointF centerAfter((viewport->width()/2 - imageItem->x())/zoom,
+                                  (viewport->height()/2 - imageItem->y())/zoom);
+        const auto centerError = (centerAfter - centerBefore) * zoom * 1.75;
+        qInfo() << "presentation physical center drift" << centerError;
+        QVERIFY(qAbs(centerError.x()) <= 1.01 && qAbs(centerError.y()) <= 1.01);
+        validateEndpoint();
+        const QString capture = qEnvironmentVariable("F4_QUICKVIEW_TEST_CAPTURE");
+        QImage rendered;
+        if (fixture.window->rendererInterface()->graphicsApi() != QSGRendererInterface::Software)
+            QTRY_VERIFY(imageContainsColor(rendered = fixture.window->grabWindow(), Qt::cyan));
+        else
+            rendered = fixture.window->grabWindow();
+        if (!capture.isEmpty()) QVERIFY(rendered.save(capture + QString("-%1.png").arg(side)));
+    }
+    fixture.gallery.expandQuickView();
+    QTest::qWait(40);
+    fixture.gallery.collapseQuickView();
+    QTRY_COMPARE(fixture.gallery.presentationState, 1);
+    validateEndpoint();
+    fixture.window->resize(937, 677);
+    QTest::qWait(80);
+    validateEndpoint();
+    QVERIFY(session->applyExternalCatalog({QVariantMap{
+        {"entryId", "missing"}, {"index", 0}, {"name", "missing.png"},
+        {"localPath", directory.filePath("missing.png")}, {"isDir", false}, {"isImage", true}
+    }}, 2));
+    QVERIFY(session->applyExternalState("missing", 0, {}, 2));
+    fixture.gallery.quickView["entryId"] = "missing";
+    emit fixture.gallery.viewerChanged();
+    auto *failure = fixture.item("galleryViewerLoadFailure");
+    QVERIFY(failure);
+    QTRY_VERIFY(failure->isVisible());
+    QTest::qWait(300);
+    validateEndpoint();
+    const QString failureCapture = qEnvironmentVariable("F4_QUICKVIEW_TEST_CAPTURE");
+    const auto failureFrame = fixture.window->grabWindow();
+    if (fixture.window->rendererInterface()->graphicsApi() != QSGRendererInterface::Software)
+        QVERIFY2(!imageContainsColor(failureFrame, Qt::cyan), "Failed preview retained the previous image");
+    if (!failureCapture.isEmpty()) QVERIFY(failureFrame.save(failureCapture + "-error.png"));
 }
 
 void F4QuickViewSurfaceTests::cachedGalleryViewerCentersFirstNativeZoomAt175Percent()
@@ -4432,7 +5099,8 @@ Rectangle {
     QTRY_COMPARE(fixture.window->visibility(), QWindow::FullScreen);
     QTRY_VERIFY(!tabs->isVisible());
     QTRY_COMPARE(layer->mapToItem(root, QPointF()), QPointF());
-    QTRY_COMPARE(layer->size(), root->size());
+    QTRY_COMPARE(layer->size(), QSizeF(qRound(root->width() * dpr) / dpr,
+                                         qRound(root->height() * dpr) / dpr));
     qInfo() << "[FIX:gallery-fullscreen] viewer rect"
             << layer->mapRectToItem(root, layer->boundingRect())
             << "DPR" << dpr << "tabs visible" << tabs->isVisible();
@@ -5098,7 +5766,7 @@ void F4QuickViewSurfaceTests::driveMenuIconsUseSemanticModelAndLiveTheme()
         {QStringLiteral("w"), 30},
         {QStringLiteral("h"), 6},
         {QStringLiteral("selected"), 0},
-        {QStringLiteral("viewHeight"), 3},
+        {QStringLiteral("viewHeight"), 4},
         {QStringLiteral("items"), QVariantList{
              QVariantMap{
                  {QStringLiteral("index"), 0},
@@ -5123,11 +5791,18 @@ void F4QuickViewSurfaceTests::driveMenuIconsUseSemanticModelAndLiveTheme()
                  {QStringLiteral("disabled"), false},
                  {QStringLiteral("checked"), false},
              },
+             QVariantMap{{"index", 3}, {"text", "D: Data"}, {"details", QVariantMap{
+                 {"isDrive", "true"}, {"name", "D:"}, {"label", "Data"}, {"filesystem", "NTFS"},
+                 {"free", "152.4 MiB"}, {"total", "931.4 GiB"}, {"usedFraction", 0.99}}}},
          }},
     }});
 
     QuickViewFixture fixture(scene);
     QVERIFY(fixture.window);
+    QFont menuFont("Segoe UI");
+    menuFont.setPixelSize(14);
+    fixture.window->setProperty("font", menuFont);
+    QTest::qWait(100);
     QQuickItem *popup = nullptr;
     QQuickItem *selectedRow = nullptr;
     QQuickItem *normalIcon = nullptr;
@@ -5170,6 +5845,45 @@ void F4QuickViewSurfaceTests::driveMenuIconsUseSemanticModelAndLiveTheme()
              "menu icon must not mipmap a DPR-sized texture");
     QCOMPARE(normalIcon->property("sourceSize").toSize(), QSize(15, 15));
     QCOMPARE(iconRowText->x(), plainRowText->x());
+    auto *filesystem = visualItemWithObjectName(visualRoot, "semanticMenuDetail-drive-menu-3-filesystem");
+    QVERIFY(filesystem);
+    qInfo() << "Filesystem column" << filesystem->width() << filesystem->implicitWidth();
+    QVERIFY2(filesystem->width() >= filesystem->implicitWidth(), "NTFS must fit without elision");
+    const auto ink = QFontMetricsF(iconRowText->property("font").value<QFont>()).tightBoundingRect("Other panel");
+    const qreal inkCenter = iconRowText->mapToScene(QPointF(0,
+        iconRowText->property("baselineOffset").toReal() + ink.center().y())).y();
+    const qreal rowCenter = selectedRow->mapToScene(QPointF(0, selectedRow->height() / 2)).y();
+    qInfo() << "Menu text physical center" << inkCenter * fixture.window->devicePixelRatio()
+            << "row center" << rowCenter * fixture.window->devicePixelRatio();
+    QVERIFY2(qAbs(inkCenter - rowCenter) * fixture.window->devicePixelRatio() <= 1.0,
+             "Menu label ink must be vertically centered with its icon");
+    const qreal menuDpr = fixture.window->devicePixelRatio();
+    for (const auto &name : QStringList{
+             "semanticMenuItemText-drive-menu-0", "semanticMenuItemText-drive-menu-1",
+             "semanticMenuItemText-drive-menu-2", "semanticMenuItemIcon-drive-menu-0",
+             "semanticMenuItemIcon-drive-menu-1", "semanticMenuItemIcon-drive-menu-3",
+             "semanticMenuDetail-drive-menu-3-name", "semanticMenuDetail-drive-menu-3-capacity",
+             "semanticMenuDetail-drive-menu-3-filesystem"}) {
+        auto *leaf = visualItemWithObjectName(visualRoot, name);
+        QVERIFY(leaf);
+        const QPointF origin = leaf->mapToItem(visualRoot, QPointF{});
+        const auto detail = QString("%1 physical=(%2,%3)").arg(name)
+            .arg(origin.x() * menuDpr, 0, 'f', 6).arg(origin.y() * menuDpr, 0, 'f', 6);
+        QVERIFY2(qAbs(origin.x() * menuDpr - qRound(origin.x() * menuDpr)) < 0.001, qPrintable(detail));
+        QVERIFY2(qAbs(origin.y() * menuDpr - qRound(origin.y() * menuDpr)) < 0.001, qPrintable(detail));
+        QCOMPARE(leaf->mapToItem(visualRoot, QPointF(1, 0)) - origin, QPointF(1, 0));
+        QCOMPARE(leaf->mapToItem(visualRoot, QPointF(0, 1)) - origin, QPointF(0, 1));
+    }
+    auto *capacity = visualItemWithObjectName(visualRoot, "semanticMenuDetail-drive-menu-3-capacity");
+    QVERIFY(capacity);
+    QVERIFY(capacity->width() >= capacity->implicitWidth());
+    const qreal columnGap = filesystem->mapToScene({}).x()
+        - capacity->mapToScene(QPointF(capacity->width(), 0)).x();
+    QVERIFY(columnGap >= 11 && columnGap <= 13);
+    QTest::qWait(50);
+    const auto menuCapture = qEnvironmentVariable("F4_DRIVE_MENU_CAPTURE");
+    if (!menuCapture.isEmpty()) QVERIFY(fixture.window->grabWindow().save(menuCapture));
+
 
     const QColor themedText(QStringLiteral("#ff31c48d"));
     const QColor themedMuted(QStringLiteral("#ff8a5cf5"));
@@ -6922,6 +7636,119 @@ void F4QuickViewSurfaceTests::commandLineFontBaselineCaretAndCompactHeight()
     QVERIFY(fixture.window->grabWindow().save(QStringLiteral(".diagnostics/command-line-metrics-175.png")));
 }
 
+void F4QuickViewSurfaceTests::commandLinePanelToggleIsImmediate()
+{
+    QVariantMap scene = shellScene();
+    QVariantMap shell = scene.value("shell").toMap();
+    QVariantMap command{{"visible",false},{"autoHide",true},{"prompt","> "},{"text","retained"}};
+    shell["commandLine"] = command;
+    scene["shell"] = shell;
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    auto *box = fixture.item("commandLineView");
+    QVERIFY(box);
+    QTest::qWait(180);
+    for (int cycle=0; cycle<3; ++cycle) {
+        command["visible"] = true;
+        command["autoHide"] = false;
+        shell["commandLine"] = command;
+        shell["showPanels"] = false;
+        shell["terminalActive"] = true;
+        scene["shell"] = shell;
+        fixture.shell.setScene(scene);
+        QCoreApplication::processEvents();
+        QCOMPARE(fixture.window->property("commandLineReveal").toReal(), 1.0);
+        QVERIFY(box->height() > 0);
+        command["visible"] = false;
+        command["autoHide"] = true;
+        shell["commandLine"] = command;
+        shell["showPanels"] = true;
+        shell["terminalActive"] = false;
+        scene["shell"] = shell;
+        fixture.shell.setScene(scene);
+        QCoreApplication::processEvents();
+        QCOMPARE(fixture.window->property("commandLineReveal").toReal(), 0.0);
+        QCOMPARE(box->height(), 0.0);
+    }
+}
+
+void F4QuickViewSurfaceTests::commandLineAutoHideRevealsUpward()
+{
+    QVariantMap scene = shellScene();
+    QVariantMap shell = scene.value(QStringLiteral("shell")).toMap();
+    QVariantMap command{
+        {QStringLiteral("visible"), false}, {QStringLiteral("autoHide"), true},
+        {QStringLiteral("prompt"), QStringLiteral("> ")},
+        {QStringLiteral("text"), QStringLiteral("retained command")},
+        {QStringLiteral("cursorPosition"), 16},
+        {QStringLiteral("cursorVisible"), true}
+    };
+    shell.insert(QStringLiteral("commandLine"), command);
+    scene.insert(QStringLiteral("shell"), shell);
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    auto *box = fixture.item(QStringLiteral("commandLineView"));
+    auto *input = fixture.item(QStringLiteral("commandLineInput"));
+    QVERIFY(box);
+    QVERIFY(input);
+    QTRY_COMPARE(box->height(), 0.0);
+    QVERIFY(!box->isVisible());
+    const qreal bottom = box->y();
+    QSignalSpy heights(box, &QQuickItem::heightChanged);
+    command.insert(QStringLiteral("visible"), true);
+    command.insert(QStringLiteral("ownsNavigation"), true);
+    fixture.shell.setCommandLine(command);
+    QTest::qWait(220);
+    QVERIFY(box->isVisible());
+    QVERIFY(box->height() > 0);
+    QVERIFY(heights.count() > 2);
+    QVERIFY(box->y() < bottom);
+    QVERIFY(qAbs(box->y() + box->height() - bottom) < 0.01);
+    QCOMPARE(input->property("text").toString(), QStringLiteral("retained command"));
+    const qreal dpr = fixture.window->devicePixelRatio();
+    QList<QQuickItem *> leaves = box->childItems();
+    int checked = 0;
+    for (qsizetype i = 0; i < leaves.size(); ++i) {
+        auto *leaf = leaves.at(i);
+        leaves.append(leaf->childItems());
+        if (!leaf->isVisible() || !(leaf->objectName() == QStringLiteral("commandLineInput")
+            || leaf->objectName().startsWith(QStringLiteral("commandLinePromptRun"))
+            || leaf->objectName() == QStringLiteral("commandLinePromptFallback")
+            || leaf->objectName().startsWith(QStringLiteral("commandLineWrapMarker"))))
+            continue;
+        ++checked;
+        const QPointF origin = leaf->mapToItem(fixture.window->contentItem(), QPointF());
+        const QPointF physical = origin * dpr;
+        qInfo() << leaf->objectName() << "physical origin" << physical;
+        QVERIFY(qAbs(physical.x() - qRound(physical.x())) < 0.01);
+        QVERIFY(qAbs(physical.y() - qRound(physical.y())) < 0.01);
+        QCOMPARE(leaf->mapToItem(fixture.window->contentItem(), QPointF(1,0))-origin, QPointF(1,0));
+        QCOMPARE(leaf->mapToItem(fixture.window->contentItem(), QPointF(0,1))-origin, QPointF(0,1));
+    }
+    QVERIFY(checked >= 2);
+    const auto capture = qEnvironmentVariable("F4_COMMAND_REVEAL_CAPTURE");
+    if (!capture.isEmpty())
+        QVERIFY(fixture.window->grabWindow().save(capture));
+    command.insert(QStringLiteral("visible"), false);
+    fixture.shell.setCommandLine(command);
+    QTest::qWait(220);
+    QCOMPARE(box->height(), 0.0);
+    QVERIFY(!box->isVisible());
+    QCOMPARE(input->property("text").toString(), QStringLiteral("retained command"));
+    // An interrupted transition must settle at the latest focus state.
+    command.insert(QStringLiteral("visible"), true);
+    fixture.shell.setCommandLine(command);
+    QTest::qWait(30);
+    command.insert(QStringLiteral("visible"), false);
+    fixture.shell.setCommandLine(command);
+    QTest::qWait(220);
+    QCOMPARE(box->height(), 0.0);
+    command.insert(QStringLiteral("autoHide"), false);
+    command.insert(QStringLiteral("visible"), true);
+    fixture.shell.setCommandLine(command);
+    QTRY_VERIFY(box->height() > 0);
+}
+
 void F4QuickViewSurfaceTests::commandLineMultilineWrapAndPixelGrid()
 {
     QVariantMap scene = shellScene();
@@ -7776,42 +8603,122 @@ void F4QuickViewSurfaceTests::panelStatusLeavesStayOnPhysicalPixelGrid()
     auto shell = scene.value("shell").toMap();
     auto panels = shell.value("panels").toList();
     auto status = panels[0].toMap();
-    status.insert("selectedCount", 3);
     status.insert("selectedFiles", 2);
     status.insert("selectedDirectories", 1);
     status.insert("selectedSize", 1536);
-    status.insert("totalCount", 12);
+    status.insert("totalFiles", 10);
+    status.insert("totalDirectories", 2);
     status.insert("totalSize", 4096);
-    status.insert("freeSpaceKnown", true);
     status.insert("freeSpace", 1048576);
-    panels[0] = status;
-    shell.insert("panels", panels);
-    scene.insert("shell", shell);
+    status.insert("diskTotalSpace", 4194304);
+    status.insert("symlinkTarget", "D:/long/symlink/target/example.txt");
     QuickViewFixture fixture(scene, true);
     QVERIFY(fixture.window);
+    const auto dpr = fixture.window->devicePixelRatio();
+    if (qEnvironmentVariable("QT_SCALE_FACTOR") == "1.75") QCOMPARE(dpr, 1.75);
     auto *footer = fixture.item("panelStatus-0");
-    QVERIFY(footer);
-    QTest::qWait(80);
-    int leaves = 0;
-    QList<QQuickItem *> pending{footer};
-    while (!pending.isEmpty()) {
-        auto *item = pending.takeLast();
-        pending.append(item->childItems());
-        if (!QByteArray(item->metaObject()->className()).startsWith("QQuickText")) continue;
-        const auto origin = item->mapToItem(fixture.window->contentItem(), QPointF());
-        const auto physical = origin * fixture.window->devicePixelRatio();
-        qInfo() << "panel status leaf" << item->objectName() << physical;
-        QVERIFY2(qAbs(physical.x() - qRound64(physical.x())) < .001
-             && qAbs(physical.y() - qRound64(physical.y())) < .001,
-             qPrintable(QString("%1 origin %2,%3").arg(item->objectName()).arg(physical.x()).arg(physical.y())));
-        QVERIFY(!item->objectName().isEmpty());
-        QCOMPARE(item->mapToItem(fixture.window->contentItem(), QPointF(1,0)) - origin, QPointF(1,0));
-        QCOMPARE(item->mapToItem(fixture.window->contentItem(), QPointF(0,1)) - origin, QPointF(0,1));
-        ++leaves;
+    auto *panelItem = fixture.item("filePanel-0");
+    auto *loader = fixture.item("galleryPanelContent-0");
+    QVERIFY(footer && panelItem && loader);
+    for (const int windowWidth : {1300, 720}) {
+        fixture.window->resize(windowWidth, 900);
+        for (const bool selected : {false, true}) {
+            for (const bool known : {false, true}) {
+                status["selectedCount"] = selected ? 3 : 0;
+                status["freeSpaceKnown"] = known;
+                status["showFileInfo"] = !selected;
+                panels[0] = status; shell["panels"] = panels; scene["shell"] = shell;
+                fixture.shell.setScene(scene);
+                QTest::qWait(80);
+                QVERIFY(footer->isVisible());
+                QCOMPARE(footer->property("selectionActive").toBool(), selected);
+                QVERIFY(!fixture.item("panelStatusSelection-0"));
+                for (const auto *metric : {"Files", "Folders", "Size"}) {
+                    const auto name = QString("panelStatus%1-0").arg(metric);
+                    const auto expected = fixture.window->property(selected ? "gallerySelectionColor" : "mutedText").value<QColor>();
+                    QCOMPARE(fixture.item(name)->property("iconColor").value<QColor>(), expected);
+                    const auto iconSource = fixture.item(name + "Icon")->property("source").toUrl();
+                    QCOMPARE(QColor(QUrlQuery(iconSource).queryItemValue("color")), expected);
+                    QCOMPARE(fixture.item(name + "Text")->property("color").value<QColor>(), expected);
+                    for (const auto *suffix : {"Icon", "Text"}) {
+                        qreal opacity = 1;
+                        for (auto *item = fixture.item(name + suffix); item; item = item->parentItem())
+                            opacity *= item->opacity();
+                        QCOMPARE(opacity, selected ? 0.95 : 1.0);
+                    }
+                }
+                QCOMPARE(fixture.item("panelStatusFiles-0")->property("text").toString(), selected ? "2" : "10");
+                QCOMPARE(fixture.item("panelStatusFolders-0")->property("text").toString(), selected ? "1" : "2");
+                QVERIFY(qAbs(loader->y()+loader->height()-panelItem->height()) < .01);
+                QVERIFY(footer->y()+footer->height() <= panelItem->height());
+                QVERIFY(footer->x()+footer->width() <= panelItem->width());
+                QVERIFY(footer->x() >= 0 && footer->y() >= loader->y());
+                auto *track = fixture.item("panelStatusSpaceTrack-0");
+                auto *fill = fixture.item("panelStatusSpaceFill-0");
+                QVERIFY(track && fill);
+                QCOMPARE(track->isVisible(), known);
+                if (known) {
+                    QVERIFY(qAbs(fill->width()-track->width()*3/4)*dpr <= 1);
+                    const auto occupiedColor = fixture.window->property("controlBorder").value<QColor>();
+                    QCOMPARE(fill->property("color").value<QColor>(), occupiedColor);
+                    QCOMPARE(track->property("color").value<QColor>(), occupiedColor.darker(160));
+                }
+                QList<QQuickItem *> pending{footer};
+                int leaves = 0;
+                while (!pending.isEmpty()) {
+                    auto *item = pending.takeLast();
+                    pending.append(item->childItems());
+                    if (!item->isVisible()) continue;
+                    const bool leaf = item->inherits("QQuickText") || item->inherits("QQuickImage");
+                    if (!leaf && item != footer && item != track && item != fill) continue;
+                    QVERIFY(!item->objectName().isEmpty());
+                    const auto origin = item->mapToItem(fixture.window->contentItem(), QPointF());
+                    const auto physical = origin*dpr;
+                    QVERIFY2(qAbs(physical.x()-qRound64(physical.x())) < .01 && qAbs(physical.y()-qRound64(physical.y())) < .01,
+                        qPrintable(QString("%1 physical %2,%3").arg(item->objectName()).arg(physical.x()).arg(physical.y())));
+                    QCOMPARE(item->mapToItem(fixture.window->contentItem(), QPointF(1,0))-origin, QPointF(1,0));
+                    QCOMPARE(item->mapToItem(fixture.window->contentItem(), QPointF(0,1))-origin, QPointF(0,1));
+                    if (leaf) {
+                        const auto local = item->mapToItem(footer, QPointF());
+                        QVERIFY(local.x() >= 0 && local.y() >= 0);
+                        QVERIFY(local.x()+item->width() <= footer->width()+1/dpr);
+                        QVERIFY(local.y()+item->height() <= footer->height()+1/dpr);
+                        if (item->inherits("QQuickImage")) QTRY_COMPARE(item->property("status").toInt(), 1);
+                        ++leaves;
+                    } else {
+                        QVERIFY(qAbs(item->width()*dpr-qRound64(item->width()*dpr)) < .01);
+                        QVERIFY(qAbs(item->height()*dpr-qRound64(item->height()*dpr)) < .01);
+                    }
+                }
+                QVERIFY(leaves >= 6);
+                const auto capture = fixture.window->grabWindow();
+                QVERIFY(!capture.isNull());
+                if (known) {
+                    const auto origin = track->mapToItem(fixture.window->contentItem(), QPointF()) * dpr;
+                    const int y = qFloor(origin.y() + track->height()*dpr/2);
+                    QCOMPARE(capture.pixelColor(qFloor(origin.x() + track->width()*dpr/4), y).rgba(),
+                        fill->property("color").value<QColor>().rgba());
+                    QCOMPARE(capture.pixelColor(qFloor(origin.x() + track->width()*dpr*0.9), y).rgba(),
+                        track->property("color").value<QColor>().rgba());
+                }
+                if (qEnvironmentVariableIsSet("F4_PANEL_STATUS_CAPTURE"))
+                    QVERIFY(capture.save(qEnvironmentVariable("F4_PANEL_STATUS_CAPTURE")
+                        + QString("-%1-%2-%3.png").arg(windowWidth).arg(selected).arg(known)));
+            }
+        }
     }
-    QCOMPARE(leaves, 2);
-    QVERIFY(!fixture.window->grabWindow().isNull());
-    fixture.window->grabWindow().save("D:/Code/f4-zoin/.diagnostics/qt-upstream-panel-status.png");
+    // Empty/full and missing capacity must be safe without a fabricated ratio.
+    for (const int free : {-1048576, 0, 4194304, 8388608}) {
+        status["freeSpace"] = free; status["freeSpaceKnown"] = true;
+        panels[0] = status; shell["panels"] = panels; scene["shell"] = shell; fixture.shell.setScene(scene);
+        QTRY_COMPARE(footer->property("usedFraction").toDouble(), free <= 0 ? 1.0 : 0.0);
+        const auto trackWidth = fixture.item("panelStatusSpaceTrack-0")->width();
+        QTRY_COMPARE(fixture.item("panelStatusSpaceFill-0")->width(), free <= 0 ? trackWidth : 0.0);
+    }
+    status["diskTotalSpace"] = 0;
+    panels[0] = status; shell["panels"] = panels; scene["shell"] = shell; fixture.shell.setScene(scene);
+    QTRY_VERIFY(!fixture.item("panelStatusSpaceTrack-0")->isVisible());
+    QCOMPARE(footer->property("usedFraction").toDouble(), 0.0);
 }
 
 void F4QuickViewSurfaceTests::sortGroupLeavesStayOnPhysicalPixelGrid()
@@ -8161,4 +9068,124 @@ void F4QuickViewSurfaceTests::semanticTableDialog()
     }
     QVERIFY(leaves>=7);
     QVERIFY(fixture.window->grabWindow().save(".diagnostics/hotkey-table-175.png"));
+}
+
+void F4QuickViewSurfaceTests::liveSelectionStatusUsesCompactPatches()
+{
+    QuickViewFixture fixture(shellScene({}, 0), true);
+    QVERIFY(fixture.window);
+    auto *footer = fixture.item("panelStatus-0");
+    auto *files = fixture.item("panelStatusFiles-0Text");
+    auto *loader = fixture.item("galleryPanelContent-0");
+    QVERIFY(footer && files && loader);
+    QObject *content = loader->property("item").value<QObject *>();
+    QVERIFY(content);
+    auto *panel = fixture.item("filePanel-0");
+    QVERIFY(panel);
+    QVariantMap state = panel->property("panel").toMap();
+    state.remove("entries");
+    state.remove("highlightStyles");
+    QSignalSpy scenes(&fixture.shell, &TestShell::sceneChanged);
+    const QSizeF contentSize = loader->size();
+    QList<qint64> durations;
+    for (int selected = 1; selected <= 100; ++selected) {
+        state["selectedCount"] = selected;
+        state["selectedFiles"] = selected;
+        state["selectedSize"] = selected * 1024;
+        QElapsedTimer elapsed;
+        elapsed.start();
+        fixture.shell.deliverCompactPresentation({
+            {"type", "scene_patch"}, {"side", 0}, {"panel", state}});
+        QCOMPARE(files->property("text").toString(), QString::number(selected));
+        QVERIFY(footer->property("selectionActive").toBool());
+        QCOMPARE(loader->property("item").value<QObject *>(), content);
+        QCOMPARE(loader->size(), contentSize);
+        QCOMPARE(scenes.size(), 0);
+        durations.append(elapsed.nsecsElapsed());
+    }
+    std::sort(durations.begin(), durations.end());
+    qInfo() << "100 compact status updates, p95 microseconds" << durations.at(94) / 1000.0;
+}
+
+void F4QuickViewSurfaceTests::panelStatusFitsLongestRowWithoutWrapping()
+{
+    QuickViewFixture fixture(shellScene({}, 0), true);
+    QVERIFY(fixture.window);
+    fixture.window->resize(1300, 900);
+    auto *footer = fixture.item("panelStatus-0");
+    auto *files = fixture.item("panelStatusFiles-0");
+    auto *folders = fixture.item("panelStatusFolders-0");
+    auto *size = fixture.item("panelStatusSize-0");
+    auto *disk = fixture.item("panelStatusDisk-0");
+    QVERIFY(footer && files && folders && size && disk);
+    const qreal dpr = fixture.window->devicePixelRatio();
+    if (qAbs(dpr-1.75) > .001) QSKIP("Run with QT_SCALE_FACTOR=1.75");
+    QVariantMap state = fixture.item("filePanel-0")->property("panel").toMap();
+    state.remove("entries");
+    state.remove("highlightStyles");
+    state["freeSpaceKnown"] = true;
+    state["diskTotalSpace"] = 12.7 * (1LL << 40);
+    state["freeSpace"] = 135.0 * (1LL << 30);
+    state["totalFiles"] = 3279;
+    state["totalDirectories"] = 112;
+    state["totalSize"] = 59.4 * (1LL << 30);
+    state["selectedFiles"] = 1234567;
+    state["selectedDirectories"] = 123456;
+    state["selectedSize"] = 999.9 * (1LL << 30);
+    QList<qreal> widths;
+    for (int scenario = 0; scenario < 3; ++scenario) {
+        state["selectedCount"] = scenario == 1 ? 1358023 : 0;
+        if (scenario == 2) {
+            state["totalFiles"] = 1;
+            state["totalDirectories"] = 0;
+            state["totalSize"] = 0;
+        }
+        fixture.shell.deliverCompactPresentation({{"type", "scene_patch"}, {"side", 0}, {"panel", state}});
+        QTest::qWait(80);
+        const auto origin = files->mapToItem(footer, QPointF());
+        const auto sizeOrigin = size->mapToItem(footer, QPointF());
+        qInfo() << "status scenario" << scenario << "width" << footer->width()
+                << "files physical y" << files->mapToScene(QPointF()).y()*dpr
+                << "size physical y" << size->mapToScene(QPointF()).y()*dpr;
+        QCOMPARE(sizeOrigin.y(), origin.y());
+        QCOMPARE(folders->mapToItem(footer, QPointF()).y(), origin.y());
+        QVERIFY(sizeOrigin.x() > folders->mapToItem(footer, QPointF()).x());
+        const auto padding = footer->property("padding").toReal();
+        const auto summaryWidth = files->property("naturalWidth").toReal()
+            + folders->property("naturalWidth").toReal() + size->property("naturalWidth").toReal()
+            + 2*footer->property("gap").toReal();
+        const auto expectedWidth = 2*padding + qMax(summaryWidth, disk->property("naturalWidth").toReal());
+        QVERIFY(qAbs(footer->width()-expectedWidth)*dpr < 1.01);
+        widths.append(footer->width());
+        for (auto *metric : {files, folders, size, disk}) {
+            QVERIFY(metric->width()+.001 >= metric->property("naturalWidth").toReal());
+            for (auto *leaf : metric->childItems()) {
+                if (!leaf->inherits("QQuickText") && !leaf->inherits("QQuickImage")) continue;
+                QVERIFY(!leaf->objectName().isEmpty());
+                const auto scene = leaf->mapToItem(fixture.window->contentItem(), QPointF());
+                const auto physical = scene*dpr;
+                QVERIFY2(qAbs(physical.x()-qRound64(physical.x())) < .01 && qAbs(physical.y()-qRound64(physical.y())) < .01,
+                    qPrintable(QString("%1 physical %2,%3").arg(leaf->objectName()).arg(physical.x()).arg(physical.y())));
+                QCOMPARE(leaf->mapToItem(fixture.window->contentItem(), QPointF(1,0))-scene, QPointF(1,0));
+                QCOMPARE(leaf->mapToItem(fixture.window->contentItem(), QPointF(0,1))-scene, QPointF(0,1));
+                if (leaf->inherits("QQuickText")) QVERIFY(!leaf->property("truncated").toBool());
+            }
+        }
+        if (qEnvironmentVariableIsSet("F4_PANEL_STATUS_CAPTURE"))
+            QVERIFY(fixture.window->grabWindow().save(qEnvironmentVariable("F4_PANEL_STATUS_CAPTURE")+QString("-width-%1.png").arg(scenario)));
+    }
+    QVERIFY(widths[1] > widths[2]);
+    // Exercise sizes that land on different fractions of a logical pixel.
+    state["freeSpaceKnown"] = false;
+    for (int count = 1; count <= 200; ++count) {
+        state["totalFiles"] = count * 3279;
+        state["totalDirectories"] = count * 112;
+        state["totalSize"] = count * (1LL << 30);
+        fixture.shell.deliverCompactPresentation({{"type", "scene_patch"}, {"side", 0}, {"panel", state}});
+        QTest::qWait(1);
+        const auto fileY = files->mapToScene(QPointF()).y()*dpr;
+        const auto sizeY = size->mapToScene(QPointF()).y()*dpr;
+        QVERIFY2(qAbs(fileY-sizeY) < .01, qPrintable(QString("count %1: files physical y %2, size physical y %3, width %4")
+            .arg(count).arg(fileY).arg(sizeY).arg(footer->width())));
+    }
 }

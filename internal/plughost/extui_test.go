@@ -2,6 +2,7 @@ package plughost
 
 import (
 	"bytes"
+	"encoding/json"
 	"github.com/unxed/f4/internal/config"
 	"github.com/unxed/f4/internal/semantic"
 	"github.com/unxed/f4/sdk/extui"
@@ -2312,4 +2313,42 @@ func TestExtUiChangedSceneSnapshotMessagesAreStrictlyStreamLocal(t *testing.T) {
 		bytes.Contains(encoded, []byte("old-menu")) {
 		t.Fatalf("panel snapshot crossed stream boundaries: %q", encoded)
 	}
+}
+
+func TestLiveSelectionStatusDispatchIsSmallAndPanelOnly(t *testing.T) {
+	patch := extui.ScenePatch{BaseRevision: 10, Revision: 11,
+		Shell: &extui.ShellPatch{Panels: []extui.PanelPatch{
+			{Op: "state_update", Side: 0, PanelID: "left", CatalogRevision: 42,
+				State: extui.M{"selectedCount": 2, "selectedFiles": 2, "selectedSize": 1234}},
+			{Op: "selection_delta", Side: 0, PanelID: "left", CatalogRevision: 42,
+				BaseSelection: 5, SelectionRevision: 6,
+				SelectionChanges: []extui.M{{"entryId": "entry-1", "index": 1, "selected": true}}},
+		}},
+	}
+	dispatches := extUiSemanticDispatches(patch.ToMap())
+	if len(dispatches) != 2 {
+		t.Fatalf("unexpected dispatches: %#v", dispatches)
+	}
+	total := 0
+	for _, dispatch := range dispatches {
+		if dispatch.streamID != "panel/0" {
+			t.Fatalf("selection escaped its panel stream: %#v", dispatch)
+		}
+		payload := dispatch.payload
+		if payload["type"] != "scene_patch" {
+			t.Fatalf("full scene sent: %#v", payload)
+		}
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		total += len(encoded)
+		if bytes.Contains(encoded, []byte(`"entries"`)) || bytes.Contains(encoded, []byte(`"root"`)) {
+			t.Fatalf("unexpectedly broad selection payload: %s", encoded)
+		}
+	}
+	if total > 1024 {
+		t.Fatalf("oversized selection payload: %d", total)
+	}
+	t.Logf("selection + status payloads: %d bytes", total)
 }

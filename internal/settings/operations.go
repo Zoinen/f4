@@ -29,6 +29,10 @@ func (settingsOperationsProvider) Catalog() f4settings.Catalog {
 	add := func(id, category, group, label, desc string, background bool, run func(context.Context) error) {
 		cat.Commands = append(cat.Commands, f4settings.Command{ID: id, Category: category, Group: group, Label: f4settings.Text{English: label}, Description: f4settings.Text{English: desc}, Background: background, Run: run})
 	}
+	add("usermenu.importFar3", "menus", "Import", "Import Far Manager 3 user menu", "Merge a FarMenu.ini into the global user menu draft. Existing entries are preserved; Apply saves the import.", false, func(context.Context) error {
+		panel.ShowFar3UserMenuImport(nil)
+		return nil
+	})
 	add("save.preferences", "workspaces", "Manual saving", "Save applied preferences", "Write the applied configuration even when automatic saving is disabled.", false, func(context.Context) error { return config.SaveAppliedConfiguration() })
 	add("save.session", "workspaces", "Manual saving", "Save session", "Save workspaces, panel state and remembered operation inputs using the applied path-restoration policy.", false, func(context.Context) error { return host.SaveSession() })
 	add("save.geometry", "workspaces", "Manual saving", "Save window geometry", "Capture and save the current graphical window dimensions and position independently of other settings.", false, func(context.Context) error {

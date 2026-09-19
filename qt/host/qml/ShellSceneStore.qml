@@ -199,14 +199,16 @@ Item {
         const result = []
         const menus = overlayState.commandMenus || []
         const dialogs = overlayState.dialogs || []
-        // Command menus belong to the currently focused Go frame. A ComboBox
-        // inside a dialog therefore pushes its VMenu after the dialog. Keep
-        // that input-stack order in QML: DialogOverlay fills the window and
-        // would otherwise paint over (and intercept input from) the dropdown.
+        // Older peers omit stackOrder; retain their dialog-before-menu fallback.
         for (let index = 0; index < dialogs.length; ++index)
             result.push(dialogs[index])
         for (let index = 0; index < menus.length; ++index)
             result.push(menus[index])
+        // Go owns the shared frame stack. A menu can open a dialog (F11/F4)
+        // just as a dialog can open a menu (ComboBox); kind is not a z-order.
+        if (result.every(frame => typeof frame.stackOrder === "number"
+                         && isFinite(frame.stackOrder) && frame.stackOrder > 0))
+            result.sort((left, right) => left.stackOrder - right.stackOrder)
         return result
     }
 

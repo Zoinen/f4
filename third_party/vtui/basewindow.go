@@ -321,6 +321,12 @@ func (bw *BaseWindow) ToggleZoom() {
 	}
 }
 
+// IsMouseCaptured reports a held window or child gesture. Wrappers must route
+// its moves and release before applying their own pointer hit tests.
+func (bw *BaseWindow) IsMouseCaptured() bool {
+	return bw.isDragging || bw.isResizing || bw.rootGroup.IsMouseCaptured()
+}
+
 func (bw *BaseWindow) ProcessMouse(e *vtinput.InputEvent) bool {
 	// 1. Во время драга дети не должны перехватывать события
 	if bw.isDragging || bw.isResizing {

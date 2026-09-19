@@ -38,6 +38,7 @@ Item {
         selection: hostCapabilities.selection,
         viewer: hostCapabilities.viewer,
         galleryOwnsPanelInput: !commanderInputActive,
+        galleryOwnsZoomShortcuts: false,
         galleryOwnsReturn: !commanderInputActive
     })
 
@@ -132,9 +133,10 @@ Item {
         const modifiers = event.modifiers
                 & (Qt.ShiftModifier | Qt.ControlModifier
                    | Qt.AltModifier | Qt.MetaModifier)
-        const control = Boolean(modifiers & Qt.ControlModifier)
-        const meta = Boolean(modifiers & Qt.MetaModifier)
-        if (control === meta || (modifiers & Qt.AltModifier))
+        // Reserve only Alt for panel sizing; Ctrl/Meta and plain keypad
+        // operators must reach the commander's selection and hotkey handling.
+        if (!(modifiers & Qt.AltModifier)
+                || (modifiers & (Qt.ControlModifier | Qt.MetaModifier)))
             return false
         if (modifiers & Qt.ShiftModifier)
             return event.key === Qt.Key_Plus || event.key === Qt.Key_Equal
@@ -287,6 +289,15 @@ Item {
                 keySink.sendClipboardPaste()
             event.accepted = true
         } else if (handleZoom(event)) {
+            if (adapter.benchmarkTraceOutputEnabled && bridge
+                    && typeof bridge.recordBenchmarkStage === "function") {
+                bridge.recordBenchmarkStage(side, "gallery.zoom.shortcut", {
+                    "fix": "[FIX:panel-alt-zoom]",
+                    "key": event.key,
+                    "modifiers": event.modifiers,
+                    "density": galleryPanel.density
+                })
+            }
             event.accepted = true
         } else if (commanderOwnsKey(event)) {
             forwardQtKey(event, true)

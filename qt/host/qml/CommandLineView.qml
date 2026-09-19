@@ -95,7 +95,8 @@ Rectangle {
     width: nativeLayout ? hostWindow.width : hostWindow.pxW(commandLine.w)
     height: nativeLayout ? hostWindow.commandLineHeight(shell)
                          : Math.max(hostWindow.ch, hostWindow.pxH(commandLine.h))
-    visible: commandLine.visible !== false
+    visible: commandLine.visible !== false || (nativeLayout && hostWindow.commandLineReveal > 0)
+    clip: true
     color: hostWindow.commandLineBg
 
     Item {

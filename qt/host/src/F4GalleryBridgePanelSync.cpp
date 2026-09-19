@@ -310,7 +310,7 @@ void F4GalleryBridge::handlePanelIdentityChange(PanelSyncContext *context)
     if (!context->identityChanged) {
         return;
     }
-    if (viewerVisible() && viewerSide() == context->side) {
+    if (viewerMounted() && viewerSide() == context->side) {
         closeViewer();
     }
     if (m_pendingPanelOpen.active

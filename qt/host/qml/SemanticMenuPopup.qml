@@ -652,6 +652,22 @@ Item {
             font: hostWindow.font
             textFormat: Text.StyledText
             text: hostWindow.mnemonicText(menuOverlay.driveName(modelData.details), modelData.hotkey)
+            readonly property real filesystemWidth: filesystemMeasurement.implicitWidth
+            readonly property real capacityWidth: capacityMeasurement.implicitWidth
+            Text {
+                id: capacityMeasurement
+                visible: false
+                font: hostWindow.font
+                textFormat: Text.StyledText
+                text: parent.modelData.details.total
+                    ? menuOverlay.driveCapacityText(parent.modelData.details, true) : ""
+            }
+            Text {
+                id: filesystemMeasurement
+                visible: false
+                font: hostWindow.font
+                text: String(parent.modelData.details.filesystem || "")
+            }
         }
     }
     readonly property real driveNameWidth: {
@@ -663,8 +679,16 @@ Item {
         }
         return hostWindow.snapPx(width + 2) + revision * 0
     }
-    readonly property real driveFilesystemWidth: historyMenu ? 0 : hostWindow.snapPx(Math.max(0,
-        ...effectiveItems.map(item => item.details ? popupMenuMetrics.advanceWidth(String(item.details.filesystem || "")) : 0)))
+    readonly property real driveFilesystemWidth: {
+        const revision = captionMetricsRevision
+        let width = 0
+        for (let i = 0; i < driveCaptionMetrics.count; ++i) {
+            const item = driveCaptionMetrics.itemAt(i)
+            if (item) width = Math.max(width, item.filesystemWidth)
+        }
+        // Measure the same Text layout that renders the column, and round out.
+        return Math.ceil(width * hostWindow.dpr) / hostWindow.dpr + revision * 0
+    }
     readonly property bool driveHasCapacity: !historyMenu && effectiveItems.some(item => item.details && item.details.total)
     function driveCapacityText(details, styled = false) {
         const format = qsTr("%1 free of %2")
@@ -675,15 +699,21 @@ Item {
         }
         return hostWindow.richTextEscape(format).arg(size(details.free)).arg(size(details.total))
     }
-    readonly property real driveCapacityTextWidth: historyMenu ? 0 : hostWindow.snapPx(Math.max(0,
-        ...effectiveItems.map(item => item.details && item.details.total
-            ? popupMenuMetrics.advanceWidth(driveCapacityText(item.details)) + 2 : 0)))
+    readonly property real driveCapacityTextWidth: {
+        const revision = captionMetricsRevision
+        let width = 0
+        for (let i = 0; i < driveCaptionMetrics.count; ++i) {
+            const item = driveCaptionMetrics.itemAt(i)
+            if (item) width = Math.max(width, item.capacityWidth)
+        }
+        return Math.ceil(width * hostWindow.dpr) / hostWindow.dpr + revision * 0
+    }
     readonly property real driveCapacityWidth: driveHasCapacity
         ? hostWindow.snapPx(108) + driveCapacityTextWidth : 0
 
     function preferredMenuWidth() {
         if (!historyMenu && effectiveItems.some(item => item.details !== undefined && item.details.kind !== "history")) {
-            let preferred = menuLabelInset + hostWindow.snapPx(16 + 16 + 24) + driveNameWidth + driveCapacityWidth + driveFilesystemWidth
+            let preferred = menuLabelInset + hostWindow.snapPx(16 + 16 + 12) + driveNameWidth + driveCapacityWidth + driveFilesystemWidth + 2 * menuEdgeInset
             for (const item of effectiveItems) {
                 if (!isDriveDetails(item.details)) preferred = Math.max(preferred, popupMenuMetrics.advanceWidth(
                     item.details ? driveName(item.details) : String(item.text || ""))

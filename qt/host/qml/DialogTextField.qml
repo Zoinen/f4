@@ -47,18 +47,36 @@ F4TextField {
             dialogEdit.deselect()
             return
         }
-        dialogEdit.select(utf16IndexForRuneIndex(start),
-                          utf16IndexForRuneIndex(end))
+        const cursorAtStart = Number(widget.cursor) === start
+        dialogEdit.select(utf16IndexForRuneIndex(cursorAtStart ? end : start),
+                          utf16IndexForRuneIndex(cursorAtStart ? start : end))
     }
 
     remoteCursorPosition: utf16IndexForRuneIndex(Number(widget.cursor || 0))
     remoteCursorVisible: widget.focused === true
     semanticFocus: widget.focused === true
 
+    function publishPointerSelection() {
+        const cursor = Array.from(text.slice(0, cursorPosition)).length
+        const anchorOffset = cursorPosition === selectionStart
+                           ? selectionEnd : selectionStart
+        hostWindow.action({target: widget.id, action: "control.select",
+                           anchor: Array.from(text.slice(0, anchorOffset)).length,
+                           cursor: cursor}, true)
+    }
+    onPointerSelectionFinished: publishPointerSelection()
+    onRemoteKeyEvent: (event, down) => {
+        const sink = hostWindow.focusTarget
+        if (!sink || typeof sink.sendQtKeyEvent !== "function") return
+        sink.sendQtKeyEvent(event.key, event.text, down, event.modifiers,
+                            event.nativeScanCode || 0, event.isAutoRepeat === true)
+        event.accepted = true
+    }
+
     onPointerFocusRequested: dialogEdit.hostWindow.action({
             "target": dialogEdit.widget.id,
             "action": "control.focus"
-        })
+        }, true)
     onRemoteSelectionActivatedChanged: Qt.callLater(syncRemoteSelection)
     onWidgetChanged: Qt.callLater(syncRemoteSelection)
     onTextChanged: Qt.callLater(syncRemoteSelection)

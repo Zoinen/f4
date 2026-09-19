@@ -331,7 +331,8 @@ void F4IconProviderTests::normalizationIsDeterministic()
 
 void F4IconProviderTests::lucideSourcesAndFileClassification()
 {
-    for (const QString &name : {QStringLiteral("smartphone"), QStringLiteral("tablet")}) {
+    for (const QString &name : {QStringLiteral("smartphone"), QStringLiteral("tablet"),
+                                QStringLiteral("arrow-right-from-line"), QStringLiteral("arrow-left-from-line")}) {
         QCOMPARE(F4IconProvider::normalizedIconName(name), name);
         F4IconProvider provider(std::make_unique<NullBackend>());
         F4IconSet icons(QStringLiteral("test-icons"));

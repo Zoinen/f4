@@ -562,15 +562,22 @@ Item {
                         anchors.fill: parent
                         cursorShape: Qt.ArrowCursor
                         acceptedButtons: Qt.LeftButton | Qt.MiddleButton
-                        onClicked: function(mouse) {
-                            if (mouse.button === Qt.MiddleButton
-                                    && !workspaceTab.closeEnabled)
+                        onPressed: function(mouse) {
+                            if (mouse.button !== Qt.LeftButton)
                                 return
                             hostWindow.action({
                                 "target": modelData.id,
-                                "action": mouse.button === Qt.MiddleButton
-                                          ? modelData.closeAction
-                                          : modelData.action,
+                                "action": modelData.action,
+                                "index": modelData.index
+                            }, true)
+                        }
+                        onClicked: function(mouse) {
+                            if (mouse.button !== Qt.MiddleButton
+                                    || !workspaceTab.closeEnabled)
+                                return
+                            hostWindow.action({
+                                "target": modelData.id,
+                                "action": modelData.closeAction,
                                 "index": modelData.index
                             }, true)
                         }

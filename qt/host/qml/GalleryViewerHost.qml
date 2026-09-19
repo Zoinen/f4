@@ -8,6 +8,46 @@ FocusScope {
     id: host
 
     property var session: null
+    property var hostWindow: null
+    property bool managedPresentation: bridge && bridge.quickViewSide !== undefined && bridge.quickViewSide >= 0
+    property real fullViewProgress: 1
+    readonly property bool docked: managedPresentation && bridge.viewerState === 1
+    function focusSource() {
+        if (!bridge) return
+        bridge.requestActivate(bridge.viewerSide)
+        const panel = hostWindow ? hostWindow.galleryPanelHost(bridge.viewerSide) : null
+        if (panel) panel.forceActiveFocus()
+    }
+    function closePresentation() {
+        if (docked) focusSource()
+        else if (managedPresentation) bridge.collapseQuickView()
+    }
+    function handleKey(event, down) {
+        if (managedPresentation && event.key === Qt.Key_Q && (event.modifiers & Qt.ControlModifier)) {
+            event.accepted = true
+            if (keySink) keySink.sendQtKeyEvent(event.key, event.text, down, event.modifiers, event.nativeScanCode, event.isAutoRepeat)
+            return true
+        }
+        if (!docked) return false
+        if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+            event.accepted = true
+            if (down && !event.isAutoRepeat) bridge.expandQuickView()
+            return true
+        }
+        if (event.key === Qt.Key_Escape || event.key === Qt.Key_Tab) {
+            event.accepted = true
+            if (down) focusSource()
+            return true
+        }
+        return false
+    }
+    TapHandler {
+        enabled: host.docked
+        onPressedChanged: if (pressed) {
+            host.bridge.requestActivate(host.bridge.quickViewSide)
+            host.forceActiveFocus()
+        }
+    }
     // The persistent panel host remains loaded below the full-area viewer and
     // supplies the thumbnail geometry/source for both halves of the shared
     // expand/collapse transition.
@@ -30,7 +70,7 @@ FocusScope {
     property int nonFullscreenVisibility: Window.Windowed
     // Expose the viewer's exact animation/gesture progress so the embedding
     // shell can fade its chrome in lockstep with the image transition.
-    readonly property real surfaceProgress: galleryViewer.surfaceProgress
+    readonly property real surfaceProgress: managedPresentation ? fullViewProgress : galleryViewer.surfaceProgress
     readonly property string tabTitle: {
         const revision = session ? session.catalogRevision : 0
         const index = galleryViewer.presentedIndex
@@ -49,6 +89,7 @@ FocusScope {
         const targetWindow = host.Window.window
         if (!targetWindow)
             return
+        if (docked) bridge.expandQuickView()
         if (targetWindow.visibility === Window.FullScreen) {
             const restoreVisibility =
                     host.nonFullscreenVisibility === Window.Maximized
@@ -81,13 +122,26 @@ FocusScope {
         focus: host.surfaceActive
         autoFocus: host.surfaceActive
         session: host.session
-        sourcePanel: host.sourcePanel
+        sourcePanel: host.managedPresentation ? null : host.sourcePanel
+        managedPresentation: host.managedPresentation
+        previewEntryId: host.docked ? String(host.bridge.quickView.entryId || "") : ""
+        hostKeyHandler: host.handleKey
+        hostDoubleClickHandler: () => {
+            if (!host.docked) return false
+            host.bridge.expandQuickView()
+            return true
+        }
+        onPresentationCloseRequested: host.closePresentation()
         theme: host.theme
         hostCapabilities: host.hostCapabilities
         devicePixelRatio: host.devicePixelRatio
         onNavigationRequested: (entryId, sourceIndex) => {
             if (!host.bridge || !host.session || entryId === "")
                 return
+            if (typeof host.bridge.requestViewerCursor === "function") {
+                host.bridge.requestViewerCursor(entryId, sourceIndex)
+                return
+            }
             host.bridge.requestCursor(host.bridge.viewerSide, entryId,
                                       sourceIndex,
                                       Number(host.session.catalogRevision || 0))

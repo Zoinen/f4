@@ -14,14 +14,46 @@ FocusScope {
     required property QtObject themePersistence
     objectName: "themeConfiguratorContent"
     readonly property Item contentItem: themeColorConfigurator
+    property bool embeddedSettings: false
+    property var draftBaseline: ({})
+    readonly property string status: statusToast
+    function captureDraftBaseline() {
+        let values = {}
+        for (const definition of hostWindow.themeColorDefinitions)
+            values[definition.id] = hostWindow[definition.id].toString()
+        for (const key of ["fontRenderType", "mouseWheelMode", "galleryNeutralFileTextColors",
+                           "galleryShowSelectionBorders", "commandLineGraphicalCursor"])
+            values[key] = hostWindow[key]
+        draftBaseline = values
+    }
+    function applyDraft() {
+        stopAllFlashing()
+        if (!hostWindow.saveThemeToPersistence()) {
+            statusToast = "Failed to save theme"
+            return false
+        }
+        captureDraftBaseline()
+        statusToast = "Theme saved"
+        return true
+    }
+    function resetDraft() {
+        stopAllFlashing()
+        for (const key of Object.keys(draftBaseline)) {
+            if (key === "fontRenderType") hostWindow.setFontRenderType(draftBaseline[key])
+            else hostWindow[key] = draftBaseline[key]
+        }
+        if (currentItem) setFromColor(hostWindow[currentItem.id])
+        statusToast = ""
+    }
+    Component.onCompleted: captureDraftBaseline()
     signal closeRequested()
     function close() { stopAllFlashing(); closeRequested() }
     Keys.onPressed: event => {
         if (event.key === Qt.Key_Escape) close()
         event.accepted = true
     }
-    implicitWidth: hostWindow.snapPx(720)
-    implicitHeight: hostWindow.snapPx(824)
+    implicitWidth: hostWindow.snapPx(embeddedSettings ? 535 : 720)
+    implicitHeight: hostWindow.snapPx(embeddedSettings ? 760 : 824)
 
 
     ThemeDraftModel {
@@ -70,7 +102,10 @@ FocusScope {
     function stopAllFlashing() { themeDraft.stopAllFlashing() }
 
 
-    Component.onDestruction: themeColorConfigurator.stopAllFlashing()
+    Component.onDestruction: {
+        if (embeddedSettings && hostWindow && typeof hostWindow.setFontRenderType === "function") resetDraft()
+        else stopAllFlashing()
+    }
 
     onVisibleChanged: {
         if (visible) {
@@ -87,12 +122,13 @@ FocusScope {
 
         ColumnLayout {
             anchors.fill: parent
-            anchors.margins: hostWindow.snapPx(14)
+            anchors.margins: embeddedSettings ? 0 : hostWindow.snapPx(14)
             spacing: hostWindow.snapPx(10)
 
             // Header
             RowLayout {
                 id: themeDialogHeader
+                visible: !themeColorConfigurator.embeddedSettings
                 objectName: "themeDialogHeader"
                 Layout.fillWidth: true
                 Layout.preferredHeight: hostWindow.snapPx(18)
@@ -158,6 +194,7 @@ FocusScope {
 
             Rectangle {
                 id: themeHeaderDivider
+                visible: !themeColorConfigurator.embeddedSettings
                 objectName: "themeHeaderDivider"
                 Layout.fillWidth: true
                 Layout.preferredHeight: hostWindow.separatorWidth
@@ -416,7 +453,7 @@ FocusScope {
                 // Left Column: Items List (Takes remaining width)
                 ColumnLayout {
                     Layout.fillWidth: true
-                    Layout.minimumWidth: 200
+                    Layout.minimumWidth: hostWindow.snapPx(embeddedSettings ? 190 : 200)
                     Layout.fillHeight: true
                     spacing: hostWindow.snapPx(6)
 
@@ -674,6 +711,7 @@ FocusScope {
 
             // Footer Actions
             ThemeEditorFooter {
+                sharedSettingsFooter: themeColorConfigurator.embeddedSettings
                 hostWindow: themeColorConfigurator.hostWindow
                 editorWindow: themeColorConfigurator
                 draft: themeDraft

@@ -83,13 +83,6 @@ Rectangle {
         { "label": "Use sort groups", "mode": "groups", "icon": "list", "shortcut": "" }
     ]
 
-    function statusBytes(value) {
-        const bytes = Math.max(0, Number(value || 0))
-        const units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"]
-        const unit = bytes > 0 ? Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024))) : 0
-        return (bytes / Math.pow(1024, unit)).toLocaleString(Qt.locale(), 'f', unit > 0 ? 1 : 0) + " " + units[unit]
-    }
-
     function rendererChoiceEnabled(choice) {
         if (!choice || choice.heading === true)
             return false
@@ -393,7 +386,7 @@ Rectangle {
         anchors.rightMargin: hostWindow.panelContentSpacing
         anchors.top: parent.top
         anchors.topMargin: panelHeader.height + columnHeader.height
-        anchors.bottom: status.top
+        anchors.bottom: parent.bottom
         z: 1
         // Each side owns one persistent instance of the unified renderer.
         // Covering a panel, hiding it with Ctrl+O, or switching layout mode
@@ -485,7 +478,7 @@ Rectangle {
         anchors.rightMargin: hostWindow.panelContentSpacing
         anchors.top: parent.top
         anchors.topMargin: panelHeader.height + columnHeader.height
-        anchors.bottom: status.top
+        anchors.bottom: parent.bottom
         z: 2
         visible: panelRoot.visible
                  && (!galleryController.available
@@ -551,16 +544,18 @@ Rectangle {
         id: fastFindOverlay
         objectName: "panelFastFindOverlay-"
                     + Number(panel.side || 0)
-        anchors.horizontalCenter: parent.horizontalCenter
-        anchors.bottom: status.top
-        anchors.bottomMargin: hostWindow.panelContentSpacing
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: margin
+        readonly property real margin: hostWindow.snapPx(hostWindow.panelContentSpacing)
+        readonly property real availableRight: status.visible
+            ? status.x - margin : parent.width - margin
         readonly property real desiredWidth:
             Math.max(hostWindow.snapPx(220),
                      fastFindQuery.implicitWidth + hostWindow.snapPx(64))
-        width: Math.max(1,
-                        Math.min(parent.width
-                                 - hostWindow.panelContentSpacing * 2,
-                                 desiredWidth))
+        width: Math.max(1, Math.floor(Math.min(availableRight - margin, desiredWidth)
+                                     * hostWindow.dpr)) / hostWindow.dpr
+        x: hostWindow.snapPx(Math.max(margin,
+                            Math.min((parent.width - width) / 2, availableRight - width)))
         height: hostWindow.snapPx(36)
         visible: panel.fastFind === true
         z: 4
@@ -569,6 +564,10 @@ Rectangle {
         color: hostWindow.dialogBg
         border.width: hostWindow.separatorWidth
         border.color: hostWindow.controlBorder
+        transform: Translate {
+            x: hostWindow.dialogPixelOffsetX(fastFindOverlay, hostWindow.contentItem)
+            y: hostWindow.dialogPixelOffsetY(fastFindOverlay, hostWindow.contentItem)
+        }
 
         FontMetrics {
             id: fastFindFontMetrics
@@ -577,7 +576,7 @@ Rectangle {
         }
 
         HostPixelAlignedImage {
-                    hostWindow: panelRoot.hostWindow
+            hostWindow: panelRoot.hostWindow
             id: fastFindIcon
             objectName: "panelFastFindIcon-"
                         + Number(panel.side || 0)
@@ -595,11 +594,10 @@ Rectangle {
             id: fastFindQuery
             objectName: "panelFastFindText-"
                         + Number(panel.side || 0)
-            anchors.left: fastFindIcon.right
-            anchors.leftMargin: hostWindow.snapPx(8)
-            anchors.right: parent.right
-            anchors.rightMargin: hostWindow.snapPx(10)
-            anchors.verticalCenter: parent.verticalCenter
+            x: fastFindIcon.x + fastFindIcon.width + hostWindow.snapPx(8)
+            y: hostWindow.snapPx((parent.height - height) / 2)
+            width: Math.max(0, parent.width - x - hostWindow.snapPx(10))
+            height: Math.ceil(implicitHeight * hostWindow.dpr) / hostWindow.dpr
             text: hostWindow.cleanText(panel.fastFindText)
             color: hostWindow.textColor
             font.family: hostWindow.uiFontFamily
@@ -625,8 +623,8 @@ Rectangle {
                 fastFindCursorBlinkController.running
             readonly property real textAdvance:
                 fastFindFontMetrics.advanceWidth(fastFindQuery.text)
-            x: fastFindQuery.x
-               + Math.min(fastFindQuery.width, textAdvance)
+            x: hostWindow.snapPx(fastFindQuery.x
+                                + Math.min(fastFindQuery.width, textAdvance))
             y: fastFindQuery.y + hostWindow.snapPx(2)
             width: hostWindow.snapPx(2)
             height: Math.max(hostWindow.snapPx(1),
@@ -635,6 +633,10 @@ Rectangle {
             visible: panel.fastFind === true
             opacity: blinkOn ? 1 : 0
             z: 2
+            transform: Translate {
+                x: hostWindow.dialogPixelOffsetX(fastFindCursor, hostWindow.contentItem)
+                y: hostWindow.dialogPixelOffsetY(fastFindCursor, hostWindow.contentItem)
+            }
 
             function restartBlink() {
                 fastFindCursorBlinkController.restart()
@@ -655,68 +657,17 @@ Rectangle {
         }
     }
 
-    Rectangle {
+    PanelStatusOverlay {
         id: status
         objectName: "panelStatus-" + Number(panel.side || 0)
-        anchors.left: parent.left
+        hostWindow: panelRoot.hostWindow
+        panel: panelRoot.panel
         anchors.right: parent.right
         anchors.bottom: parent.bottom
-        visible: panel.showFileInfo === true
-        height: visible
-                ? Math.max(24, hostWindow.ch * 1.15)
-                  + hostWindow.verticalContentSpacing
-                : 0
-        color: "transparent"
-        // Keep the footer above dynamically loaded semantic content even
-        // while Loader/anchor geometry is settling after scene changes.
+        anchors.margins: hostWindow.snapPx(8)
+        width: Math.min(implicitWidth, Math.max(1, parent.width - 2 * anchors.margins))
+        height: implicitHeight
+        visible: !panelRoot.viewerVisible
         z: 3
-
-        Rectangle {
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.top: parent.top
-            height: hostWindow.separatorWidth
-            color: hostWindow.separatorColor
-        }
-
-        Text {
-            id: statusSelection
-            objectName: "panelStatusSelection-"
-                        + Number(panel.side || 0)
-            anchors.left: parent.left
-            anchors.verticalCenter: parent.verticalCenter
-            anchors.leftMargin: hostWindow.panelTextInset
-            width: Math.max(0, statusTotals.x - x - hostWindow.panelTextInset)
-            elide: Text.ElideMiddle
-            text: Number(panel.selectedCount || 0) > 0
-                ? (Number(panel.selectedFiles || 0) + (Number(panel.selectedFiles || 0) === 1 ? " file, " : " files, ")
-                   + Number(panel.selectedDirectories || 0) + (Number(panel.selectedDirectories || 0) === 1 ? " folder · " : " folders · ")
-                   + panelRoot.statusBytes(panel.selectedSize) + " selected")
-                : String(panel.symlinkTarget || "") !== ""
-                  ? "→ " + String(panel.symlinkTarget) : ""
-            transform: Translate {
-                x: hostWindow.dialogPixelOffsetX(statusSelection, hostWindow.contentItem)
-                y: hostWindow.dialogPixelOffsetY(statusSelection, hostWindow.contentItem)
-            }
-            color: hostWindow.mutedText
-            font.pixelSize: 12
-        }
-
-        Text {
-            id: statusTotals
-            objectName: "panelStatusTotals-" + Number(panel.side || 0)
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-            anchors.rightMargin: hostWindow.panelTextInset
-            text: String(Number(panel.totalCount || 0)) + " items · "
-                  + panelRoot.statusBytes(panel.totalSize)
-                  + (panel.freeSpaceKnown === true ? " · " + panelRoot.statusBytes(panel.freeSpace) + " free" : "")
-            transform: Translate {
-                x: hostWindow.dialogPixelOffsetX(statusTotals, hostWindow.contentItem)
-                y: hostWindow.dialogPixelOffsetY(statusTotals, hostWindow.contentItem)
-            }
-            color: hostWindow.mutedText
-            font.pixelSize: 12
-        }
     }
 }

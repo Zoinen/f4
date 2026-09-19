@@ -117,10 +117,7 @@ type TerminalView struct {
 	// OnCursorShown fires on DECTCEM set (ESC[?25h), the end of a ConPTY frame.
 	OnCursorShown func()
 
-	// --- Mouse-driven text selection over the visible viewport ---
-	// Coordinates are absolute (screen) columns/rows, chosen so the
-	// highlight stays visually anchored while PTY output scrolls the
-	// underlying grid — matches xterm-style selection semantics.
+	// Selection rows address the document (history followed by grid), without visual gravity.
 	SelActive  bool
 	selStartX  int
 	selStartY  int
@@ -685,6 +682,9 @@ func (tv *TerminalView) scrollUp(top, bottom, n int) {
 	}
 
 	for i := 0; i < n; i++ {
+		if tv.UseAltScreen || top != 0 || (len(tv.GridHistory) == 0 && tv.Pt.Size() == 0 && !tv.rowHasText(top)) {
+			tv.scrollSelection(top, bottom, -1)
+		}
 		if !tv.UseAltScreen && top == 0 {
 			// Не пушим пустые строки в лог, если он еще девственно чист
 			// Это предотвращает появление 23 пустых строк при старте bash
@@ -730,6 +730,7 @@ func (tv *TerminalView) scrollDown(top, bottom, n int) {
 	}
 
 	for i := 0; i < n; i++ {
+		tv.scrollSelection(top, bottom, 1)
 		recycledLine := buf[bottom]
 		for y := bottom; y > top; y-- {
 			buf[y] = buf[y-1]
@@ -1145,7 +1146,7 @@ func (tv *TerminalView) selectionScreenRect() (x1, y1, x2, y2 int, ok bool) {
 	if x1 > x2 {
 		x1, x2 = x2, x1
 	}
-	y1, y2 = tv.selStartY, tv.selEndY
+	y1, y2 = tv.selectionScreenY(tv.selStartY), tv.selectionScreenY(tv.selEndY)
 	if y1 > y2 {
 		y1, y2 = y2, y1
 	}
@@ -1180,10 +1181,10 @@ func (tv *TerminalView) paintSelectionHighlight(scr *vtui.ScreenBuf) {
 		if tv.SelBlock {
 			return x1
 		}
-		if y == y1 && !singleRow(y1, y2) {
+		if y == tv.selectionScreenY(min(tv.selStartY, tv.selEndY)) && tv.selStartY != tv.selEndY {
 			return normalizedStart(tv.selStartX, tv.selStartY, tv.selEndX, tv.selEndY, true)
 		}
-		if y == y1 && singleRow(y1, y2) {
+		if tv.selStartY == tv.selEndY {
 			return x1
 		}
 		return tv.X1
@@ -1192,10 +1193,10 @@ func (tv *TerminalView) paintSelectionHighlight(scr *vtui.ScreenBuf) {
 		if tv.SelBlock {
 			return x2
 		}
-		if y == y2 && !singleRow(y1, y2) {
+		if y == tv.selectionScreenY(max(tv.selStartY, tv.selEndY)) && tv.selStartY != tv.selEndY {
 			return normalizedStart(tv.selStartX, tv.selStartY, tv.selEndX, tv.selEndY, false)
 		}
-		if y == y2 && singleRow(y1, y2) {
+		if tv.selStartY == tv.selEndY {
 			return x2
 		}
 		return tv.X1 + tv.Width - 1
@@ -1215,8 +1216,6 @@ func (tv *TerminalView) paintSelectionHighlight(scr *vtui.ScreenBuf) {
 		}
 	}
 }
-
-func singleRow(y1, y2 int) bool { return y1 == y2 }
 
 // normalizedStart returns the column that starts / ends a stream
 // selection across multiple rows. When returnStart is true it returns
@@ -1248,8 +1247,8 @@ func (tv *TerminalView) StartSelection(x, y int, block bool) {
 	defer tv.mu.Unlock()
 	tv.SelActive = true
 	tv.SelBlock = block
-	tv.selStartX, tv.selStartY = x, y
-	tv.selEndX, tv.selEndY = x, y
+	tv.selStartX, tv.selStartY = x, tv.selectionDocumentY(y)
+	tv.selEndX, tv.selEndY = x, tv.selectionDocumentY(y)
 }
 
 // ExtendSelection moves the loose end of an active selection.
@@ -1259,7 +1258,7 @@ func (tv *TerminalView) ExtendSelection(x, y int) {
 	if !tv.SelActive {
 		return
 	}
-	tv.selEndX, tv.selEndY = x, y
+	tv.selEndX, tv.selEndY = x, tv.selectionDocumentY(y)
 }
 
 // ClearSelection drops the highlight without touching the clipboard.
@@ -1293,7 +1292,7 @@ func (tv *TerminalView) gridRowForScreenY(y int) int {
 }
 
 // ExtractSelection returns the plain-text content of the current
-// selection, read from the terminal's own grid. Trailing spaces on
+// selection, read from the terminal's grid and scrollback. Trailing spaces on
 // stream-selected rows are trimmed; block selections keep alignment.
 // WideCharFiller cells are skipped so wide glyphs don't emit stray
 // runes.
@@ -1303,27 +1302,13 @@ func (tv *TerminalView) ExtractSelection() string {
 	if !tv.SelActive {
 		return ""
 	}
-	x1, y1, x2, y2, ok := tv.selectionScreenRect()
-	if !ok {
-		return ""
-	}
-
-	buf := tv.Lines
-	if tv.UseAltScreen {
-		buf = tv.AltLines
-	}
+	x1, x2 := min(tv.selStartX, tv.selEndX), max(tv.selStartX, tv.selEndX)
+	y1, y2 := min(tv.selStartY, tv.selEndY), max(tv.selStartY, tv.selEndY)
+	layout := tv.semanticLayoutUnsafe()
+	layout.activeOffset = 0
 
 	var sb strings.Builder
 	for y := y1; y <= y2; y++ {
-		gy := tv.gridRowForScreenY(y)
-		if gy < 0 || gy >= len(buf) {
-			if y < y2 {
-				sb.WriteByte('\n')
-			}
-			continue
-		}
-		row := buf[gy]
-
 		var l, r int
 		if tv.SelBlock {
 			l, r = x1, x2
@@ -1346,15 +1331,11 @@ func (tv *TerminalView) ExtractSelection() string {
 			r = tv.X1 + tv.Width - 1
 		}
 
-		var line strings.Builder
-		for x := l; x <= r; x++ {
-			line.WriteString(vtui.CellString(row[x-tv.X1].Char))
+		text, _ := tv.semanticSelectionRowRangeUnsafe(layout, y, l-tv.X1, r-tv.X1+1)
+		if tv.SelBlock {
+			text += strings.Repeat(" ", max(0, r-l+1-runewidth.StringWidth(text)))
 		}
-		if !tv.SelBlock {
-			sb.WriteString(strings.TrimRight(line.String(), " "))
-		} else {
-			sb.WriteString(line.String())
-		}
+		sb.WriteString(text)
 		if y < y2 {
 			sb.WriteByte('\n')
 		}
@@ -1403,8 +1384,8 @@ func (tv *TerminalView) SelectWordAt(x, y int) {
 	}
 	tv.SelActive = true
 	tv.SelBlock = false
-	tv.selStartX, tv.selStartY = tv.X1+left, y
-	tv.selEndX, tv.selEndY = tv.X1+right, y
+	tv.selStartX, tv.selStartY = tv.X1+left, tv.selectionDocumentY(y)
+	tv.selEndX, tv.selEndY = tv.X1+right, tv.selectionDocumentY(y)
 }
 
 // SelectLineAt selects the whole visible row at the given screen Y.
@@ -1416,8 +1397,8 @@ func (tv *TerminalView) SelectLineAt(y int) {
 	}
 	tv.SelActive = true
 	tv.SelBlock = false
-	tv.selStartX, tv.selStartY = tv.X1, y
-	tv.selEndX, tv.selEndY = tv.X1+tv.Width-1, y
+	tv.selStartX, tv.selStartY = tv.X1, tv.selectionDocumentY(y)
+	tv.selEndX, tv.selEndY = tv.X1+tv.Width-1, tv.selectionDocumentY(y)
 }
 
 // InTerminalArea reports whether a screen cell falls inside the
