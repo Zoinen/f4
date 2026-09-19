@@ -36,7 +36,7 @@ if(F4_PORTABLE_STATIC)
   find_package(libjpeg-turbo REQUIRED)
 endif()
 
-find_package(Qt6 COMPONENTS Core Concurrent Gui Qml Quick QuickControls2 Network Svg REQUIRED)
+find_package(Qt6 COMPONENTS Core Concurrent Gui Qml Quick QuickControls2 Network Svg Multimedia REQUIRED)
 find_package(msgpack-cxx REQUIRED)
 if(USE_QWK)
   find_package(QWindowKit REQUIRED)

@@ -127,6 +127,7 @@ void insertCatalogDisplayFields(QVariantMap *entry,
     }
     for (const QString &key : {QStringLiteral("isHidden"),
                                QStringLiteral("isImage"),
+                               QStringLiteral("thumbnailKind"),
                                QStringLiteral("sizeText"),
                                QStringLiteral("sizeCalculated"),
                                QStringLiteral("highlightStyleId")}) {

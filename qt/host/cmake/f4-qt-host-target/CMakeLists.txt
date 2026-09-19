@@ -187,6 +187,7 @@ target_link_libraries(f4-qt-host PRIVATE
   Qt6::QuickControls2
   Qt6::Network
   Qt6::Svg
+  Qt6::Multimedia
 )
 if(WIN32 AND F4_QT_STATIC)
   target_link_libraries(f4-qt-host PRIVATE Rpcrt4 Usp10)
@@ -394,6 +395,58 @@ if(F4_QT_STATIC)
         "Required static Qt plugin target is missing: ${plugin_target}")
     endif()
   endforeach()
+  # Conan's Qt 6.11 recipe does not currently expose the FFmpeg backend
+  # archive as a CMake component, even though qtmultimedia builds it. Locate
+  # the archive from the Qt package and link it explicitly; the source-level
+  # Q_IMPORT_PLUGIN below then registers the backend in the static host.
+  set(F4_QFFMPEG_PLUGIN_TARGET "")
+  set(F4_QFFMPEG_PLUGIN_IMPL_TARGET "")
+  if(TARGET Qt6::QFFmpegMediaPlugin)
+    set(F4_QFFMPEG_PLUGIN_TARGET Qt6::QFFmpegMediaPlugin)
+  else()
+    if(NOT TARGET Qt6::MultimediaPrivate)
+      add_library(Qt6::MultimediaPrivate INTERFACE IMPORTED GLOBAL)
+      set_target_properties(Qt6::MultimediaPrivate PROPERTIES
+        INTERFACE_LINK_LIBRARIES "Qt6::Multimedia;Qt6::Core;Qt6::Gui")
+    endif()
+    if(NOT TARGET Qt6::FFmpegMediaPluginImplPrivate)
+      find_library(_f4_ffmpeg_impl_archive
+        NAMES Qt6FFmpegMediaPluginImplPrivate
+        PATHS "${_f4_conan_qt_package_folder}/lib"
+        NO_DEFAULT_PATH REQUIRED)
+      add_library(Qt6::FFmpegMediaPluginImplPrivate STATIC IMPORTED GLOBAL)
+      set_target_properties(Qt6::FFmpegMediaPluginImplPrivate PROPERTIES
+        IMPORTED_LOCATION "${_f4_ffmpeg_impl_archive}"
+        INTERFACE_LINK_LIBRARIES "Qt6::MultimediaPrivate")
+      unset(_f4_ffmpeg_impl_archive CACHE)
+    endif()
+    set(F4_QFFMPEG_PLUGIN_IMPL_TARGET Qt6::FFmpegMediaPluginImplPrivate)
+    find_library(F4_QFFMPEG_PLUGIN_LIBRARY
+      NAMES ffmpegmediaplugin
+      PATHS
+        "${_f4_conan_qt_package_folder}/plugins/multimedia"
+        "${qt_PACKAGE_FOLDER_RELWITHDEBINFO}/plugins/multimedia"
+        "${qt_PACKAGE_FOLDER_RELEASE}/plugins/multimedia"
+        NO_DEFAULT_PATH)
+    if(NOT F4_QFFMPEG_PLUGIN_LIBRARY)
+      message(FATAL_ERROR
+        "Static Qt Multimedia was enabled, but the FFmpeg backend archive "
+        "was not found in the Qt package")
+    endif()
+  endif()
+  find_package(ffmpeg CONFIG REQUIRED)
+  set(F4_FFMPEG_TARGETS)
+  foreach(ffmpeg_component IN ITEMS avcodec avformat avutil swresample swscale)
+    if(TARGET ffmpeg::${ffmpeg_component})
+      list(APPEND F4_FFMPEG_TARGETS ffmpeg::${ffmpeg_component})
+    elseif(TARGET FFmpeg::${ffmpeg_component})
+      list(APPEND F4_FFMPEG_TARGETS FFmpeg::${ffmpeg_component})
+    endif()
+  endforeach()
+  if(NOT F4_FFMPEG_TARGETS)
+    message(FATAL_ERROR
+      "FFmpeg was found, but no avcodec/avformat component targets were exported")
+  endif()
   target_sources(f4-qt-host PRIVATE
     "${F4_QT_HOST_ROOT}/src/StaticQtPluginImports.cpp"
     "${F4_QT_HOST_ROOT}/src/StaticQmlPluginImports.cpp")
@@ -404,6 +457,10 @@ if(F4_QT_STATIC)
   target_link_libraries(f4-qt-host PRIVATE
     ${F4_REQUIRED_STATIC_QML_PLUGINS}
     ${F4_REQUIRED_STATIC_QT_PLUGINS}
+    ${F4_QFFMPEG_PLUGIN_TARGET}
+    ${F4_QFFMPEG_PLUGIN_IMPL_TARGET}
+    ${F4_QFFMPEG_PLUGIN_LIBRARY}
+    ${F4_FFMPEG_TARGETS}
     "$<LINK_LIBRARY:WHOLE_ARCHIVE,Qt6::QuickControls2Basic>"
     Qt6::QuickControls2BasicStyleImpl
     Qt6::QuickControls2Impl

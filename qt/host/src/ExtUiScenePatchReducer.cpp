@@ -818,6 +818,7 @@ bool applyScenePatch(const QVariantMap &message,
                         QStringLiteral("displayExtension"),
                         QStringLiteral("isDir"), QStringLiteral("isUp"),
                         QStringLiteral("isImage"),
+                        QStringLiteral("thumbnailKind"),
                         QStringLiteral("isHidden"),
                         QStringLiteral("selected"),
                         QStringLiteral("highlightStyleId"),
@@ -873,6 +874,17 @@ bool applyScenePatch(const QVariantMap &message,
                             || (entry.contains(QStringLiteral("isHidden"))
                                 && entry.value(QStringLiteral("isHidden"))
                                        .metaType().id() != QMetaType::Bool)
+                            || (entry.contains(
+                                    QStringLiteral("thumbnailKind"))
+                                && (entry.value(QStringLiteral(
+                                         "thumbnailKind")).metaType().id()
+                                        != QMetaType::QString
+                                    || (entry.value(QStringLiteral(
+                                           "thumbnailKind")).toString()
+                                            != QStringLiteral("image")
+                                        && entry.value(QStringLiteral(
+                                               "thumbnailKind")).toString()
+                                                != QStringLiteral("video"))))
                             || (entry.contains(
                                     QStringLiteral("displayBaseName"))
                                 && entry.value(QStringLiteral(

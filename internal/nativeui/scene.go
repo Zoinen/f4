@@ -929,6 +929,7 @@ func appEntryFromLegacy(node map[string]any) extui.FileEntryModel {
 		IsHidden:         semantic.AppBool(node["isHidden"]),
 		IsExecutable:     semantic.AppBool(node["isExecutable"]),
 		IsImage:          semantic.AppBool(node["isImage"]),
+		ThumbnailKind:    semantic.String(node["thumbnailKind"]),
 		Selected:         semantic.AppBool(node["selected"]),
 		SizeCalculated:   semantic.AppBool(node["sizeCalculated"]),
 		MTime:            semantic.String(node["mtime"]),

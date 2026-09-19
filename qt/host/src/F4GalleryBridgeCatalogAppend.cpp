@@ -13,6 +13,7 @@ const QSet<QString> &catalogAppendEntryKeys()
         QStringLiteral("name"), QStringLiteral("displayBaseName"),
         QStringLiteral("displayExtension"), QStringLiteral("isDir"),
         QStringLiteral("isUp"), QStringLiteral("isImage"),
+        QStringLiteral("thumbnailKind"),
         QStringLiteral("isHidden"), QStringLiteral("selected"),
         QStringLiteral("highlightStyleId"), QStringLiteral("source"),
     };
@@ -107,6 +108,14 @@ bool validCatalogAppendEntry(
         && entry.value(QStringLiteral("isHidden")).metaType().id()
             != QMetaType::Bool) {
         return false;
+    }
+    if (entry.contains(QStringLiteral("thumbnailKind"))) {
+        const QVariant value = entry.value(QStringLiteral("thumbnailKind"));
+        if (value.metaType().id() != QMetaType::QString
+            || (value.toString() != QStringLiteral("image")
+                && value.toString() != QStringLiteral("video"))) {
+            return false;
+        }
     }
     for (const QString &key : {QStringLiteral("displayBaseName"),
                                QStringLiteral("displayExtension")}) {

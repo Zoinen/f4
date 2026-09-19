@@ -12,6 +12,7 @@ class F4QtHostConan(ConanFile):
         "qt/*:shared": True,
         "qt/*:qtdeclarative": True,
         "qt/*:qtsvg": True,
+        "qt/*:qtmultimedia": True,
         "qt/*:qtshadertools": True,
         "qt/*:with_pq": False,
         "qt/*:with_odbc": False,
@@ -20,11 +21,26 @@ class F4QtHostConan(ConanFile):
         "libraw/*:shared": True,
         "libraw/*:with_jpeg": "libjpeg-turbo",
         "libwebp/*:shared": False,
+        "libjpeg-turbo/*:shared": False,
         "jasper/*:with_libjpeg": "libjpeg-turbo",
+        "ffmpeg/*:shared": False,
+        "ffmpeg/*:with_programs": False,
+        # Qt only consumes decoder libraries. Avoid pulling optional encoder
+        # stacks (and their GPL/size-heavy transitive graph) into the host.
+        "ffmpeg/*:with_libx264": False,
+        "ffmpeg/*:with_libx265": False,
+        "ffmpeg/*:with_libfdk_aac": False,
+        "ffmpeg/*:with_libsvtav1": False,
+        "ffmpeg/*:with_libaom": False,
+        "ffmpeg/*:with_libwebp": False,
     }
 
     def requirements(self):
         self.requires("qt/6.11.1")
+        # Qt Multimedia's desktop backend is FFmpeg. Keep the codec runtime
+        # in the same Conan graph so static portable builds link it instead of
+        # depending on a machine-local ffmpeg executable or DLL set.
+        self.requires("ffmpeg/7.1.5")
         self.requires("msgpack-cxx/7.0.0")
         # ZoinGallery is built from the pinned Git submodule. Keep its native
         # dependencies in this single Conan graph so the host and module share
@@ -32,9 +48,9 @@ class F4QtHostConan(ConanFile):
         self.requires("libtiff/4.7.0")
         self.requires("libraw/0.21.3")
         self.requires("libpng/1.6.45")
-        self.requires("libwebp/1.6.0")
+        self.requires("libwebp/1.6.0", override=True)
         self.requires("libheif/1.20.1")
-        self.requires("libjpeg-turbo/3.0.2")
+        self.requires("libjpeg-turbo/3.0.2", override=True)
         self.requires("jasper/4.2.0", override=True)
 
     def validate(self):
