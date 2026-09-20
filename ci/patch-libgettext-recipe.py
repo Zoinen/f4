@@ -8,13 +8,13 @@ from pathlib import Path
 
 
 _ANCHOR = '            env.define("LD", link)\n'
-_MARKER = 'env.define("CPP", "cl -nologo -EP")'
+_MARKER = 'env.define("CPP", "cl -nologo -E")'
 _PATCH = _ANCHOR + (
     '            if is_msvc(self):\n'
     '                # Gnulib needs preprocessor output to find absolute MSVC\n'
     '                # header names when #include_next is unavailable.\n'
-    '                env.define("CXXCPP", "cl -nologo -EP")\n'
-    '                env.define("CPP", "cl -nologo -EP")\n'
+    '                env.define("CXXCPP", "cl -nologo -E")\n'
+    '                env.define("CPP", "cl -nologo -E")\n'
 )
 
 

@@ -17,5 +17,5 @@ if ! command -v "${python_command}" >/dev/null 2>&1; then
     python_command=python3
 fi
 "${python_command}" ci/patch-libgettext-recipe.py "${libgettext_recipe_copy}/conanfile.py"
-grep -Fq 'env.define("CPP", "cl -nologo -EP")' "${libgettext_recipe_copy}/conanfile.py"
+grep -Fq 'env.define("CPP", "cl -nologo -E")' "${libgettext_recipe_copy}/conanfile.py"
 conan export "${libgettext_recipe_copy}" --name=libgettext --version=0.22
