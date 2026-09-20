@@ -399,12 +399,6 @@ jobs:
         python -m pip install "conan==2.29.1" "cmake==3.31.6" "ninja==1.13.0"
         conan profile detect --force
 
-    - name: Configure Conan binary remote
-      shell: bash
-      env:
-        F4_CONAN_TOKEN: ${{ secrets.F4_CONAN_REMOTE_TOKEN }}
-      run: bash ci/configure-conan-remote.sh
-
     - name: Cache the macOS native dependency graph
       uses: actions/cache@v4
       with:
@@ -414,6 +408,12 @@ jobs:
         key: qt-host-6.11.1-darwin-${{ runner.arch }}-v1
         restore-keys: |
           qt-host-6.11.1-darwin-${{ runner.arch }}-v1
+
+    - name: Configure Conan binary remote
+      shell: bash
+      env:
+        F4_CONAN_TOKEN: ${{ secrets.F4_CONAN_REMOTE_TOKEN }}
+      run: bash ci/configure-conan-remote.sh
 
     - name: Build and test the Qt host
       shell: bash
