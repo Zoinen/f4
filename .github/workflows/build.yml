@@ -405,9 +405,9 @@ jobs:
         path: |
           .conan2
           build/qwindowkit-install
-        key: qt-host-6.11.1-darwin-${{ runner.arch }}-v2
+        key: qt-host-6.11.1-darwin-${{ runner.arch }}-v3
         restore-keys: |
-          qt-host-6.11.1-darwin-${{ runner.arch }}-v2
+          qt-host-6.11.1-darwin-${{ runner.arch }}-v3
 
     - name: Configure Conan binary remote
       shell: bash
@@ -418,6 +418,10 @@ jobs:
     - name: Patch legacy bzip2 Conan recipe
       shell: bash
       run: bash ci/patch-bzip2-recipe.sh
+
+    - name: Patch Qt Conan recipe dependencies
+      shell: bash
+      run: bash ci/patch-qt-recipe.sh
 
     - name: Build and test the Qt host
       shell: bash
@@ -514,7 +518,7 @@ jobs:
         path: |
           .conan2
           build/qwindowkit-install
-        key: qt-host-6.11.1-darwin-${{ runner.arch }}-v2
+        key: qt-host-6.11.1-darwin-${{ runner.arch }}-v3
 
     - name: Validate and smoke-test the installed tree
       shell: bash
@@ -675,7 +679,7 @@ jobs:
         # source and object trees are not. Keep this deliberately narrow so
         # an ARM Qt build can checkpoint within GitHub's cache quota.
         path: ${{ env.CONAN_HOME }}/p
-        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-complete-${{ hashFiles('.github/workflows/build.yml', 'qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1', 'ci/patches/qwindowkit-default-maximize-hint.patch', 'ci/patch-qt-qmltools-recipe.py', 'ci/patch-bzip2-recipe.py', 'ci/patch-bzip2-recipe.sh') }}
+        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-complete-${{ hashFiles('.github/workflows/build.yml', 'qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1', 'ci/patches/qwindowkit-default-maximize-hint.patch', 'ci/configure-conan-remote.sh', 'ci/patch-qt-recipe.sh', 'ci/patch-qt-dependencies.py', 'ci/patch-qt-qmltools-recipe.py', 'ci/patch-bzip2-recipe.py', 'ci/patch-bzip2-recipe.sh') }}
         restore-keys: |
           portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-complete-
           portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-checkpoint-
@@ -745,6 +749,11 @@ jobs:
       shell: bash
       run: bash ci/patch-bzip2-recipe.sh
 
+    - name: Patch Qt Conan recipe dependencies (Windows)
+      if: runner.os == 'Windows'
+      shell: bash
+      run: bash ci/patch-qt-recipe.sh "${{ matrix.arch }}"
+
     - name: Build the portable Windows executable
       if: runner.os == 'Windows'
       shell: pwsh
@@ -773,32 +782,6 @@ jobs:
         }
         conan export $xzRecipeCopy --name=xz_utils --version=5.8.3
         if ($LASTEXITCODE -ne 0) { throw "Unable to export the mirrored xz recipe" }
-
-        # Qt 6.11's ARM64 cross-build invokes the native qmldom tool. Conan
-        # Qt 6.11's ARM64 cross-build needs the native qmldom executable.  A
-        # small, target-only CMake config avoids importing all native QML tool
-        # targets into the target build, which CMake rejects as duplicates.
-        if ("${{ matrix.arch }}" -eq "arm64") {
-          conan download qt/6.11.1 --only-recipe --remote=conancenter
-          if ($LASTEXITCODE -ne 0) { throw "Unable to download the Qt recipe" }
-          $qtRecipe = (conan cache path qt/6.11.1 | Select-Object -Last 1).Trim()
-          if ($LASTEXITCODE -ne 0) { throw "Unable to locate the Qt recipe" }
-          $qtRecipeCopy = Join-Path $env:RUNNER_TEMP "f4-qt-recipe"
-          Remove-Item -Recurse -Force $qtRecipeCopy -ErrorAction SilentlyContinue
-          New-Item -ItemType Directory -Force $qtRecipeCopy | Out-Null
-          Copy-Item "$qtRecipe/conanfile.py", "$qtRecipe/conandata.yml", `
-            "$qtRecipe/qtmodules6.11.1.conf" $qtRecipeCopy
-          $qtRecipeFile = Join-Path $qtRecipeCopy "conanfile.py"
-          python ci/patch-qt-qmltools-recipe.py $qtRecipeFile
-          if ($LASTEXITCODE -ne 0) { throw "Unable to patch Qt QmlTools recipe" }
-          if (!(Select-String -Quiet -Path $qtRecipeFile -SimpleMatch `
-            'set(Qt6QmlTools_FOUND TRUE)') -or !(Select-String -Quiet `
-            -Path $qtRecipeFile -SimpleMatch 'add_executable(Qt6::qmldom IMPORTED GLOBAL)')) {
-            throw "The Qt QmlTools recipe patch was not installed"
-          }
-          conan export $qtRecipeCopy --name=qt --version=6.11.1
-          if ($LASTEXITCODE -ne 0) { throw "Unable to export the patched Qt recipe" }
-        }
 
         $conanInstalled = $false
         $buildDir = "qt/host/build-portable-windows-${{ matrix.arch }}"
@@ -912,14 +895,14 @@ jobs:
       uses: actions/cache/save@v4
       with:
         path: ${{ env.CONAN_HOME }}/p
-        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-checkpoint-${{ hashFiles('.github/workflows/build.yml', 'qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1', 'ci/patches/qwindowkit-default-maximize-hint.patch', 'ci/patch-qt-qmltools-recipe.py') }}-${{ github.run_id }}-${{ github.run_attempt }}
+        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-checkpoint-${{ hashFiles('.github/workflows/build.yml', 'qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1', 'ci/patches/qwindowkit-default-maximize-hint.patch', 'ci/configure-conan-remote.sh', 'ci/patch-qt-recipe.sh', 'ci/patch-qt-dependencies.py', 'ci/patch-qt-qmltools-recipe.py', 'ci/patch-bzip2-recipe.py', 'ci/patch-bzip2-recipe.sh') }}-${{ github.run_id }}-${{ github.run_attempt }}
 
     - name: Save complete Conan package graph
       if: always() && !cancelled() && steps.portable-conan-cache.outputs.cache-hit != 'true' && hashFiles(format('.conan2-portable-{0}-{1}/p/.f4-package-cache-ready', matrix.platform, matrix.arch)) != '' && hashFiles(format('qt/host/build-portable-{0}-{1}/.f4-conan-ready', matrix.platform, matrix.arch)) != ''
       uses: actions/cache/save@v4
       with:
         path: ${{ env.CONAN_HOME }}/p
-        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-complete-${{ hashFiles('.github/workflows/build.yml', 'qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1', 'ci/patches/qwindowkit-default-maximize-hint.patch', 'ci/patch-qt-qmltools-recipe.py') }}
+        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-complete-${{ hashFiles('.github/workflows/build.yml', 'qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1', 'ci/patches/qwindowkit-default-maximize-hint.patch', 'ci/configure-conan-remote.sh', 'ci/patch-qt-recipe.sh', 'ci/patch-qt-dependencies.py', 'ci/patch-qt-qmltools-recipe.py', 'ci/patch-bzip2-recipe.py', 'ci/patch-bzip2-recipe.sh') }}
 
     - name: Upload portable single-file artifact
       uses: actions/upload-artifact@v4

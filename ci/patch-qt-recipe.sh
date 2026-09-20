@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Start from ConanCenter's recipe on every run so an interrupted build cannot
+# accumulate local edits.  The freetype pin applies to both the target and
+# native build contexts of Qt's cross-build graph.  ARM64 additionally needs
+# the deliberately minimal native qmldom export used by the target build.
+target_arch="${1:-}"
+conan download qt/6.11.1 --only-recipe --remote=conancenter
+qt_recipe="$(conan cache path qt/6.11.1 | tail -1)"
+qt_recipe_copy="$(mktemp -d "${TMPDIR:-/tmp}/f4-qt-recipe.XXXXXX")"
+cp "${qt_recipe}/conanfile.py" \
+    "${qt_recipe}/conandata.yml" \
+    "${qt_recipe}/qtmodules6.11.1.conf" \
+    "${qt_recipe_copy}/"
+
+python_command=python
+if ! command -v "${python_command}" >/dev/null 2>&1; then
+    python_command=python3
+fi
+"${python_command}" ci/patch-qt-dependencies.py "${qt_recipe_copy}/conanfile.py"
+
+if [[ "${target_arch}" == "arm64" ]]; then
+    "${python_command}" ci/patch-qt-qmltools-recipe.py "${qt_recipe_copy}/conanfile.py"
+    grep -Fq 'set(Qt6QmlTools_FOUND TRUE)' "${qt_recipe_copy}/conanfile.py"
+    grep -Fq 'add_executable(Qt6::qmldom IMPORTED GLOBAL)' "${qt_recipe_copy}/conanfile.py"
+fi
+
+grep -Fq 'self.requires("freetype/2.13.2", override=True)' \
+    "${qt_recipe_copy}/conanfile.py"
+conan export "${qt_recipe_copy}" --name=qt --version=6.11.1
