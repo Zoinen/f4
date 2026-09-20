@@ -135,6 +135,7 @@ fi
 git config --global --add safe.directory "$PWD"
 conan profile detect --force
 bash ci/configure-conan-remote.sh
+bash ci/patch-bzip2-recipe.sh
 
 # www.freedesktop.org rejects GitHub-hosted runners with HTTP 418 for this
 # release URL. MacPorts mirrors the byte-identical upstream archive (the

@@ -405,15 +405,19 @@ jobs:
         path: |
           .conan2
           build/qwindowkit-install
-        key: qt-host-6.11.1-darwin-${{ runner.arch }}-v1
+        key: qt-host-6.11.1-darwin-${{ runner.arch }}-v2
         restore-keys: |
-          qt-host-6.11.1-darwin-${{ runner.arch }}-v1
+          qt-host-6.11.1-darwin-${{ runner.arch }}-v2
 
     - name: Configure Conan binary remote
       shell: bash
       env:
         F4_CONAN_TOKEN: ${{ secrets.F4_CONAN_REMOTE_TOKEN }}
       run: bash ci/configure-conan-remote.sh
+
+    - name: Patch legacy bzip2 Conan recipe
+      shell: bash
+      run: bash ci/patch-bzip2-recipe.sh
 
     - name: Build and test the Qt host
       shell: bash
@@ -510,7 +514,7 @@ jobs:
         path: |
           .conan2
           build/qwindowkit-install
-        key: qt-host-6.11.1-darwin-${{ runner.arch }}-v1
+        key: qt-host-6.11.1-darwin-${{ runner.arch }}-v2
 
     - name: Validate and smoke-test the installed tree
       shell: bash
@@ -671,7 +675,7 @@ jobs:
         # source and object trees are not. Keep this deliberately narrow so
         # an ARM Qt build can checkpoint within GitHub's cache quota.
         path: ${{ env.CONAN_HOME }}/p
-        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-complete-${{ hashFiles('.github/workflows/build.yml', 'qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1', 'ci/patches/qwindowkit-default-maximize-hint.patch', 'ci/patch-qt-qmltools-recipe.py') }}
+        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-complete-${{ hashFiles('.github/workflows/build.yml', 'qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1', 'ci/patches/qwindowkit-default-maximize-hint.patch', 'ci/patch-qt-qmltools-recipe.py', 'ci/patch-bzip2-recipe.py', 'ci/patch-bzip2-recipe.sh') }}
         restore-keys: |
           portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-complete-
           portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-checkpoint-
@@ -735,6 +739,11 @@ jobs:
       env:
         F4_CONAN_TOKEN: ${{ secrets.F4_CONAN_REMOTE_TOKEN }}
       run: bash ci/configure-conan-remote.sh
+
+    - name: Patch legacy bzip2 Conan recipe (Windows)
+      if: runner.os == 'Windows'
+      shell: bash
+      run: bash ci/patch-bzip2-recipe.sh
 
     - name: Build the portable Windows executable
       if: runner.os == 'Windows'
