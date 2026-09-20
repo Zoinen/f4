@@ -21,6 +21,16 @@ _VERSION_CONFIG = r'''        save(self, os.path.join(qml_tools_dir, "Qt6QmlTool
 _CUSTOM_CONFIG_BEGIN = "        # QtDeclarative's ARM64 cross-build needs the native qmldom executable.\n"
 _QML_TOOLS_CONFIG_MARKER = "add_executable(Qt6::${_qt_qml_tool} IMPORTED GLOBAL)"
 _SHADER_TOOLS_CONFIG_MARKER = "set(Qt6ShaderToolsTools_FOUND TRUE)"
+_SHADER_TOOLS_VERSION_CONFIG = r'''        save(self, os.path.join(shader_tools_dir, "Qt6ShaderToolsToolsConfigVersion.cmake"), textwrap.dedent("""
+            set(PACKAGE_VERSION "6.11.1")
+            if(PACKAGE_FIND_VERSION VERSION_EQUAL PACKAGE_VERSION)
+              set(PACKAGE_VERSION_COMPATIBLE TRUE)
+              set(PACKAGE_VERSION_EXACT TRUE)
+            elseif(PACKAGE_FIND_VERSION VERSION_LESS PACKAGE_VERSION)
+              set(PACKAGE_VERSION_COMPATIBLE TRUE)
+            endif()
+            """))
+'''
 _QML_TOOLS_CONFIG = r'''        # QtDeclarative's ARM64 cross-build needs the native qmldom executable.
         # Conan Center intentionally strips Qt6QmlToolsConfig.cmake because it
         # otherwise exposes every QML build tool to consumers. Recreate only
@@ -70,6 +80,7 @@ _QML_TOOLS_CONFIG = r'''        # QtDeclarative's ARM64 cross-build needs the na
             set(Qt6ShaderToolsTools_FOUND TRUE)
             include("${CMAKE_CURRENT_LIST_DIR}/Qt6ShaderToolsToolsTargets.cmake")
             """))
+''' + _SHADER_TOOLS_VERSION_CONFIG + r'''
 
         extension = ""
 '''
@@ -105,6 +116,7 @@ def main() -> None:
             _VERSION_CONFIG in text
             and _QML_TOOLS_CONFIG_MARKER in text
             and _SHADER_TOOLS_CONFIG_MARKER in text
+            and _SHADER_TOOLS_VERSION_CONFIG in text
         ):
             return
         custom_start = text.find(_CUSTOM_CONFIG_BEGIN)

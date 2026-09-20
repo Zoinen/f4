@@ -28,6 +28,7 @@ if [[ "${target_arch}" == "arm64" ]]; then
     grep -Fq 'Qt6QmlToolsConfigVersion.cmake' "${qt_recipe_copy}/conanfile.py"
     grep -Fq 'set(PACKAGE_VERSION "6.11.1")' "${qt_recipe_copy}/conanfile.py"
     grep -Fq 'Qt6ShaderToolsToolsConfig.cmake' "${qt_recipe_copy}/conanfile.py"
+    grep -Fq 'Qt6ShaderToolsToolsConfigVersion.cmake' "${qt_recipe_copy}/conanfile.py"
     grep -Fq 'set(Qt6ShaderToolsTools_FOUND TRUE)' "${qt_recipe_copy}/conanfile.py"
 fi
 
