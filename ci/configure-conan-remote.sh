@@ -9,10 +9,13 @@ set -euo pipefail
 conan_home="${CONAN_HOME:-$(conan config home)}"
 global_conf="${conan_home}/global.conf"
 cmake_policy_conf='*/*:tools.cmake.cmaketoolchain:extra_variables={"CMAKE_POLICY_VERSION_MINIMUM":{"cache":True,"type":"STRING","value":"3.5"}}'
+cmake_configure_args='*/*:tools.cmake:configure_args=["-DCMAKE_POLICY_VERSION_MINIMUM=3.5"]'
 mkdir -p "${conan_home}"
-if [[ ! -f "${global_conf}" ]] || ! grep -Fqx "${cmake_policy_conf}" "${global_conf}"; then
-    printf '%s\n' "${cmake_policy_conf}" >> "${global_conf}"
-fi
+for conan_conf in "${cmake_policy_conf}" "${cmake_configure_args}"; do
+    if [[ ! -f "${global_conf}" ]] || ! grep -Fqx "${conan_conf}" "${global_conf}"; then
+        printf '%s\n' "${conan_conf}" >> "${global_conf}"
+    fi
+done
 
 remote_url="${F4_CONAN_REMOTE_URL:-}"
 if [[ -z "${remote_url}" ]]; then
