@@ -20,6 +20,7 @@ _VERSION_CONFIG = r'''        save(self, os.path.join(qml_tools_dir, "Qt6QmlTool
 '''
 _CUSTOM_CONFIG_BEGIN = "        # QtDeclarative's ARM64 cross-build needs the native qmldom executable.\n"
 _QML_TOOLS_CONFIG_MARKER = "add_executable(Qt6::${_qt_qml_tool} IMPORTED GLOBAL)"
+_SHADER_TOOLS_CONFIG_MARKER = "set(Qt6ShaderToolsTools_FOUND TRUE)"
 _QML_TOOLS_CONFIG = r'''        # QtDeclarative's ARM64 cross-build needs the native qmldom executable.
         # Conan Center intentionally strips Qt6QmlToolsConfig.cmake because it
         # otherwise exposes every QML build tool to consumers. Recreate only
@@ -59,6 +60,16 @@ _QML_TOOLS_CONFIG = r'''        # QtDeclarative's ARM64 cross-build needs the na
             endforeach()
             """))
 ''' + _VERSION_CONFIG + r'''
+        # QtDeclarative's cross-build also needs the native qsb executable.
+        # Conan Center removes the generated Qt6ShaderToolsToolsConfig.cmake
+        # during package cleanup, so recreate a small config that imports the
+        # native qsb target from the package's generated export file.
+        shader_tools_dir = os.path.join(self.package_folder, "lib", "cmake", "Qt6ShaderToolsTools")
+        os.makedirs(shader_tools_dir, exist_ok=True)
+        save(self, os.path.join(shader_tools_dir, "Qt6ShaderToolsToolsConfig.cmake"), textwrap.dedent("""
+            set(Qt6ShaderToolsTools_FOUND TRUE)
+            include("${CMAKE_CURRENT_LIST_DIR}/Qt6ShaderToolsToolsTargets.cmake")
+            """))
 
         extension = ""
 '''
@@ -90,7 +101,11 @@ def main() -> None:
             and any(marker in text for marker in required_markers[1])
         ):
             raise SystemExit("unexpected Qt recipe: Qt6QmlTools config is already customized")
-        if _VERSION_CONFIG in text and _QML_TOOLS_CONFIG_MARKER in text:
+        if (
+            _VERSION_CONFIG in text
+            and _QML_TOOLS_CONFIG_MARKER in text
+            and _SHADER_TOOLS_CONFIG_MARKER in text
+        ):
             return
         custom_start = text.find(_CUSTOM_CONFIG_BEGIN)
         custom_end = text.find(_ANCHOR, custom_start)

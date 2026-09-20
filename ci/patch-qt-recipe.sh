@@ -4,7 +4,7 @@ set -euo pipefail
 # Start from ConanCenter's recipe on every run so an interrupted build cannot
 # accumulate local edits.  The freetype pin applies to both the target and
 # native build contexts of Qt's cross-build graph.  ARM64 additionally needs
-# the deliberately minimal native qmldom export used by the target build.
+# the deliberately small native QML and shader-tool exports used by the target build.
 target_arch="${1:-}"
 conan download qt/6.11.1 --only-recipe --remote=conancenter
 qt_recipe="$(conan cache path qt/6.11.1 | tail -1)"
@@ -27,6 +27,8 @@ if [[ "${target_arch}" == "arm64" ]]; then
     grep -Fq 'qmljsrootgen' "${qt_recipe_copy}/conanfile.py"
     grep -Fq 'Qt6QmlToolsConfigVersion.cmake' "${qt_recipe_copy}/conanfile.py"
     grep -Fq 'set(PACKAGE_VERSION "6.11.1")' "${qt_recipe_copy}/conanfile.py"
+    grep -Fq 'Qt6ShaderToolsToolsConfig.cmake' "${qt_recipe_copy}/conanfile.py"
+    grep -Fq 'set(Qt6ShaderToolsTools_FOUND TRUE)' "${qt_recipe_copy}/conanfile.py"
 fi
 
 grep -Fq 'self.requires("freetype/2.13.2")' \
