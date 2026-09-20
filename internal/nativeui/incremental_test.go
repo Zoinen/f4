@@ -335,6 +335,58 @@ func TestAppScenePatchFileInfoSettingUsesCatalogFreePanelState(t *testing.T) {
 	}
 }
 
+func TestAppScenePatchFiltersUnsupportedPanelStateFields(t *testing.T) {
+	basePanel := incrementalTestPanel(0, nil)
+	basePanel["groupBy"] = "None"
+	basePanel["groupFoldersSeparately"] = true
+	basePanel["groupReverse"] = false
+	basePanel["displayTop"] = 2
+	basePanel["groups"] = []map[string]any{{"key": "folders", "count": 1}}
+	previous := semantic.CompactAppSemanticScene(map[string]any{
+		"type": "scene", "schema": "app", "version": 4,
+		"shell": map[string]any{
+			"id": "shell", "kind": "shell", "activePanel": 0,
+			"panels": []map[string]any{basePanel},
+		},
+	})
+	currentPanel := semantic.SemanticShallowMapCopy(
+		semantic.SemanticPanelsBySide(previous)[0])
+	currentPanel["groupBy"] = "Size"
+	currentPanel["groupFoldersSeparately"] = false
+	currentPanel["groupReverse"] = true
+	currentPanel["displayTop"] = 4
+	currentPanel["groups"] = []map[string]any{{"key": "size", "count": 2}}
+	currentPanel["showFileInfo"] = true
+	currentPanel["totalFiles"] = 4
+	currentPanel["totalDirectories"] = 1
+	currentScene := semantic.SemanticShallowMapCopy(previous)
+	currentShell := semantic.SemanticShallowMapCopy(previous["shell"].(map[string]any))
+	currentShell["panels"] = []map[string]any{currentPanel}
+	currentScene["shell"] = currentShell
+
+	patch, _, ok := BuildAppScenePatch(previous,
+		&appIncrementalScene{Scene: currentScene})
+	if !ok || patch.Shell == nil || len(patch.Shell.Panels) != 1 {
+		t.Fatalf("unsupported panel-state transition rejected: ok=%v patch=%#v",
+			ok, patch)
+	}
+	state := patch.Shell.Panels[0].State
+	if state["showFileInfo"] != true {
+		t.Fatalf("valid panel state was dropped: %#v", state)
+	}
+	if state["totalFiles"] != 4 || state["totalDirectories"] != 1 {
+		t.Fatalf("valid panel totals were dropped: %#v", state)
+	}
+	for _, unsupported := range []string{
+		"groupBy", "groupFoldersSeparately", "groupReverse", "displayTop", "groups",
+	} {
+		if _, present := state[unsupported]; present {
+			t.Fatalf("unsupported panel state field %q leaked into state_update: %#v",
+				unsupported, state)
+		}
+	}
+}
+
 func TestAppScenePatchGalleryLayoutUsesSmallStateDelta(t *testing.T) {
 	basePanel := incrementalTestPanel(0, nil)
 	basePanel["path"] = "C:/WINDOWS/system32"
