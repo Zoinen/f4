@@ -23,7 +23,8 @@ fi
 if [[ "${target_arch}" == "arm64" ]]; then
     "${python_command}" ci/patch-qt-qmltools-recipe.py "${qt_recipe_copy}/conanfile.py"
     grep -Fq 'set(Qt6QmlTools_FOUND TRUE)' "${qt_recipe_copy}/conanfile.py"
-    grep -Fq 'add_executable(Qt6::qmldom IMPORTED GLOBAL)' "${qt_recipe_copy}/conanfile.py"
+    grep -Fq 'add_executable(Qt6::${_qt_qml_tool} IMPORTED GLOBAL)' "${qt_recipe_copy}/conanfile.py"
+    grep -Fq 'qmljsrootgen' "${qt_recipe_copy}/conanfile.py"
     grep -Fq 'Qt6QmlToolsConfigVersion.cmake' "${qt_recipe_copy}/conanfile.py"
     grep -Fq 'set(PACKAGE_VERSION "6.11.1")' "${qt_recipe_copy}/conanfile.py"
 fi
