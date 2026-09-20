@@ -528,7 +528,7 @@ jobs:
           CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' \
             -o "../../qt/host/stage-ci/bin/plugins/dummy_internal/f4-internal-dummy-plugin${executable_suffix}" .
         )
-        cp -R lang help qt/host/stage-ci/bin/
+        cp -R internal/i18n/lang internal/dialog/help qt/host/stage-ci/bin/
 
     - name: Prune macOS Conan build trees before cache save
       if: success()
