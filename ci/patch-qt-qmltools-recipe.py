@@ -26,6 +26,15 @@ _QML_TOOLS_CONFIG = r'''        # QtDeclarative's ARM64 cross-build needs the na
             endif()
             set(Qt6QmlTools_TARGETS "Qt6::qmldom")
             """))
+        save(self, os.path.join(qml_tools_dir, "Qt6QmlToolsConfigVersion.cmake"), textwrap.dedent("""
+            set(PACKAGE_VERSION "6.11.1")
+            if(PACKAGE_FIND_VERSION VERSION_EQUAL PACKAGE_VERSION)
+              set(PACKAGE_VERSION_COMPATIBLE TRUE)
+              set(PACKAGE_VERSION_EXACT TRUE)
+            elseif(PACKAGE_FIND_VERSION VERSION_LESS PACKAGE_VERSION)
+              set(PACKAGE_VERSION_COMPATIBLE TRUE)
+            endif()
+            """))
 
         extension = ""
 '''
@@ -48,6 +57,7 @@ def main() -> None:
         required_markers = (
             "set(Qt6QmlTools_FOUND TRUE)",
             "add_executable(Qt6::qmldom IMPORTED GLOBAL)",
+            'set(PACKAGE_VERSION "6.11.1")',
         )
         if all(marker in text for marker in required_markers):
             return
