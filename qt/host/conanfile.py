@@ -36,7 +36,7 @@ class F4QtHostConan(ConanFile):
         self.requires("libtiff/4.7.0")
         self.requires("libraw/0.21.3")
         self.requires("libpng/1.6.45")
-        self.requires("libwebp/1.6.0", override=True)
+        self.requires("libwebp/1.6.0")
         self.requires("libheif/1.20.1")
         self.requires("libjpeg-turbo/3.0.2", override=True)
         self.requires("jasper/4.2.0", override=True)
