@@ -833,6 +833,10 @@ jobs:
             -o:b "qt/*:qtshadertools=True" `
             -o:h "qt/*:with_libjpeg=libjpeg-turbo" `
             -o:b "qt/*:with_libjpeg=libjpeg-turbo" `
+            # OpenSSL's optional zlib provider is not linkable in the
+            # ConanCenter ARM64/MSVC package; f4 does not use it.
+            -o:h "openssl/*:no_zlib=True" `
+            -o:b "openssl/*:no_zlib=True" `
             -o:b "qt/*:with_pq=False" `
             -o:b "qt/*:with_odbc=False" `
             -o:h "qt/*:disabled_features=quickcontrols2_fusion quickcontrols2_imagine quickcontrols2_material quickcontrols2_universal quickcontrols2_fluentwinui3 quickcontrols2_stylekit quickcontrols2_windows" `
