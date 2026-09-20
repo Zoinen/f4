@@ -37,6 +37,12 @@ if(F4_PORTABLE_STATIC)
 endif()
 
 find_package(Qt6 COMPONENTS Core Concurrent Gui Qml Quick QuickControls2 Network Svg Multimedia REQUIRED)
+# Qt 6.11 exports the ICO image plugin as QICOPlugin (matching its class
+# name), while the older Conan facade used QIcoPlugin. Keep one compatibility
+# alias for the test and host link helpers below.
+if(TARGET Qt6::QICOPlugin AND NOT TARGET Qt6::QIcoPlugin)
+  add_library(Qt6::QIcoPlugin ALIAS Qt6::QICOPlugin)
+endif()
 find_package(msgpack-cxx REQUIRED)
 if(USE_QWK)
   find_package(QWindowKit REQUIRED)
@@ -461,10 +467,9 @@ if(F4_QT_STATIC)
       target_link_libraries(${F4_ZOIN_STATIC_QML_TEST_TARGET} PRIVATE
         ${F4_REQUIRED_STATIC_QT_PLUGINS}
         ${F4_REQUIRED_STATIC_QML_PLUGINS}
-        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:$<LINK_GROUP:RESCAN,CONAN_LIB::qt_Qt6_Svg_Qt6Svg_RELEASE,CONAN_LIB::qt_Qt6_QSvgPlugin_qsvg_RELEASE>>
-        $<$<CXX_COMPILER_ID:MSVC>:CONAN_LIB::qt_Qt6_Svg_Qt6Svg_RELEASE>
-        $<$<CXX_COMPILER_ID:MSVC>:CONAN_LIB::qt_Qt6_QSvgPlugin_qsvg_RELEASE>
-        "$<LINK_LIBRARY:WHOLE_ARCHIVE,Qt6::QuickControls2Basic>")
+        Qt6::Svg
+        Qt6::QSvgPlugin
+        Qt6::QuickControls2Basic)
     endif()
   endforeach()
 endif()
@@ -498,9 +503,8 @@ if(F4_QT_STATIC)
         Qt6::QGifPlugin
         Qt6::QIcoPlugin
         Qt6::QJpegPlugin
-        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:$<LINK_GROUP:RESCAN,CONAN_LIB::qt_Qt6_Svg_Qt6Svg_RELEASE,CONAN_LIB::qt_Qt6_QSvgPlugin_qsvg_RELEASE>>
-        $<$<CXX_COMPILER_ID:MSVC>:CONAN_LIB::qt_Qt6_Svg_Qt6Svg_RELEASE>
-        $<$<CXX_COMPILER_ID:MSVC>:CONAN_LIB::qt_Qt6_QSvgPlugin_qsvg_RELEASE>)
+        Qt6::Svg
+        Qt6::QSvgPlugin)
     endif()
   endforeach()
 endif()
@@ -823,7 +827,7 @@ if(BUILD_TESTING)
       target_link_libraries(${target} PRIVATE
         ${F4_REQUIRED_STATIC_QML_PLUGINS}
         "$<LINK_LIBRARY:WHOLE_ARCHIVE,Qt6::QuickEffects>"
-        "$<LINK_LIBRARY:WHOLE_ARCHIVE,Qt6::QuickControls2Basic>")
+        Qt6::QuickControls2Basic)
       set_property(TARGET ${target} APPEND PROPERTY LINK_LIBRARY_OVERRIDE
         "WHOLE_ARCHIVE,Qt6::QuickEffects")
     endif()

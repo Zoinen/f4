@@ -14,9 +14,16 @@ class F4QtHostConan(ConanFile):
         "qt/*:qtsvg": True,
         "qt/*:qtmultimedia": True,
         "qt/*:qtshadertools": True,
+        # The portable host excludes Qt's TLS plugin and does not make
+        # network requests.  Disable OpenSSL so the static Windows package
+        # stays self-contained without pulling a large crypto toolchain.
+        "qt/*:openssl": False,
         "qt/*:with_pq": False,
         "qt/*:with_odbc": False,
         "msgpack-cxx/*:use_boost": False,
+        # HarfBuzz does not need GLib on Windows; disabling this integration
+        # avoids the legacy gettext/GLib toolchain that is not MSVC portable.
+        "harfbuzz/*:with_glib": False,
         "libtiff/*:jpeg": "libjpeg-turbo",
         "libraw/*:shared": True,
         "libraw/*:with_jpeg": "libjpeg-turbo",
@@ -24,6 +31,7 @@ class F4QtHostConan(ConanFile):
         "libjpeg-turbo/*:shared": False,
         "jasper/*:with_libjpeg": "libjpeg-turbo",
         "ffmpeg/*:shared": False,
+        "ffmpeg/*:with_ssl": False,
         "ffmpeg/*:with_programs": False,
         # Qt only consumes decoder libraries. Avoid pulling optional encoder
         # stacks (and their GPL/size-heavy transitive graph) into the host.
@@ -32,14 +40,19 @@ class F4QtHostConan(ConanFile):
         "ffmpeg/*:with_libfdk_aac": False,
         "ffmpeg/*:with_libsvtav1": False,
         "ffmpeg/*:with_libaom": False,
+        # Keep the codec set broad without requiring a separate dav1d source
+        # download; FFmpeg still retains its native AV1 decoder.
+        "ffmpeg/*:with_libdav1d": False,
+        "ffmpeg/*:with_openh264": False,
         "ffmpeg/*:with_libwebp": False,
     }
 
     def requirements(self):
         self.requires("qt/6.11.1")
-        # Qt Multimedia's desktop backend is FFmpeg. Keep the codec runtime
-        # in the same Conan graph so static portable builds link it instead of
-        # depending on a machine-local ffmpeg executable or DLL set.
+        # Keep FFmpeg in the same static graph as Qt Multimedia on every
+        # desktop target. Qt's FFmpeg backend supplies the built-in H.264 and
+        # AV1 decoders used by video thumbnails; the optional dav1d/openh264
+        # accelerators remain disabled to avoid a second codec toolchain.
         self.requires("ffmpeg/7.1.5")
         self.requires("msgpack-cxx/7.0.0")
         # ZoinGallery is built from the pinned Git submodule. Keep its native

@@ -15,6 +15,12 @@ Q_IMPORT_PLUGIN(QWaylandXdgShellIntegrationPlugin)
 
 Q_IMPORT_PLUGIN(QGifPlugin)
 Q_IMPORT_PLUGIN(QICOPlugin)
+#if defined(F4_QT_HAS_JPEG_PLUGIN)
 Q_IMPORT_PLUGIN(QJpegPlugin)
+#endif
 Q_IMPORT_PLUGIN(QSvgPlugin)
+#if defined(F4_QT_USE_WINDOWS_MEDIA_PLUGIN)
+Q_IMPORT_PLUGIN(QWindowsMediaPlugin)
+#else
 Q_IMPORT_PLUGIN(QFFmpegMediaPlugin)
+#endif
