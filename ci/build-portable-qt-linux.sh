@@ -134,6 +134,7 @@ fi
 
 git config --global --add safe.directory "$PWD"
 conan profile detect --force
+bash ci/configure-conan-remote.sh
 
 # www.freedesktop.org rejects GitHub-hosted runners with HTTP 418 for this
 # release URL. MacPorts mirrors the byte-identical upstream archive (the
@@ -220,6 +221,15 @@ done
 touch "${build_dir}/.f4-conan-ready"
 touch "$baseline_marker"
 
+# Qt's host tools (notably qsb) must resolve the Conan-built Wayland and
+# related libraries before Ubuntu 18.04's system copies.  This affects only
+# the build process; the final static launcher is audited and carries no
+# runtime library search path.
+conan_lib_dirs="$(find "${CONAN_HOME}/p" -type d -path '*/p/lib' -print | paste -sd: -)"
+if [[ -n "${conan_lib_dirs}" ]]; then
+    export LD_LIBRARY_PATH="${conan_lib_dirs}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+fi
+
 bash ci/build-qwindowkit.sh "$PWD/${build_dir}" Release static
 "${cmake_executable}" -S qt/host -B "${build_dir}" -G Ninja \
     -DCMAKE_TOOLCHAIN_FILE="$PWD/${build_dir}/conan_toolchain.cmake" \
@@ -289,6 +299,7 @@ echo "Embedded Qt payload generated"
 go test -tags f4_embedded_qt_host \
     -run 'TestMaterializeEmbeddedQtHost|TestGeneratedEmbeddedQtHostPayload' ./internal/plughost
 echo "Embedded Qt payload tests passed"
+python ci/upload-conan-packages.py
 mkdir -p "$(dirname "${launcher_output}")"
 echo "Building static Go launcher"
 # The Qt-only launcher does not use the optional GPU FFI path.  Build goffi in

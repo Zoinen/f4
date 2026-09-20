@@ -357,6 +357,9 @@ jobs:
             platform: darwin
     env:
       CONAN_HOME: ${{ github.workspace }}/.conan2
+      F4_CONAN_REMOTE_URL: ${{ vars.F4_CONAN_REMOTE_URL }}
+      F4_CONAN_UPLOAD_URL: ${{ vars.F4_CONAN_UPLOAD_URL }}
+      F4_CONAN_USERNAME: ${{ vars.F4_CONAN_USERNAME }}
 
     steps:
     - name: Checkout f4
@@ -395,6 +398,12 @@ jobs:
         python -m pip install --upgrade pip
         python -m pip install "conan==2.29.1" "cmake==3.31.6" "ninja==1.13.0"
         conan profile detect --force
+
+    - name: Configure Conan binary remote
+      shell: bash
+      env:
+        F4_CONAN_TOKEN: ${{ secrets.F4_CONAN_REMOTE_TOKEN }}
+      run: bash ci/configure-conan-remote.sh
 
     - name: Cache the macOS native dependency graph
       uses: actions/cache@v4
@@ -456,6 +465,13 @@ jobs:
           ctest --test-dir qt/host/build-ci -C Release --output-on-failure \
             -R '^(F4|QtShellController|WindowGeometryPersistence)'
         fi
+
+    - name: Publish successful Conan package graph
+      if: success()
+      shell: bash
+      env:
+        F4_CONAN_UPLOAD_TOKEN: ${{ secrets.F4_CONAN_UPLOAD_TOKEN }}
+      run: python ci/upload-conan-packages.py
 
     - name: Install the integrated sidecar tree
       shell: bash
@@ -624,6 +640,9 @@ jobs:
             cache_contract: msvc-v143-static
     env:
       CONAN_HOME: ${{ github.workspace }}/.conan2-portable-${{ matrix.platform }}-${{ matrix.arch }}
+      F4_CONAN_REMOTE_URL: ${{ vars.F4_CONAN_REMOTE_URL }}
+      F4_CONAN_UPLOAD_URL: ${{ vars.F4_CONAN_UPLOAD_URL }}
+      F4_CONAN_USERNAME: ${{ vars.F4_CONAN_USERNAME }}
 
     steps:
     - name: Checkout f4
@@ -667,12 +686,20 @@ jobs:
     - name: Build the glibc 2.27 portable executable
       if: runner.os == 'Linux'
       shell: bash
+      env:
+        F4_CONAN_TOKEN: ${{ secrets.F4_CONAN_REMOTE_TOKEN }}
+        F4_CONAN_UPLOAD_TOKEN: ${{ secrets.F4_CONAN_UPLOAD_TOKEN }}
       run: |
         go_root="$(go env GOROOT)"
         set +e
         docker run --rm \
           -e CONAN_HOME=/workspace/.conan2-portable-linux-${{ matrix.arch }} \
           -e TARGET_ARCH=${{ matrix.goarch }} \
+          -e F4_CONAN_REMOTE_URL \
+          -e F4_CONAN_UPLOAD_URL \
+          -e F4_CONAN_USERNAME \
+          -e F4_CONAN_TOKEN \
+          -e F4_CONAN_UPLOAD_TOKEN \
           -v "$PWD:/workspace" \
           -v "$go_root:/opt/go:ro" \
           -w /workspace \
@@ -701,6 +728,13 @@ jobs:
         python -m pip install --upgrade pip
         python -m pip install "conan==2.29.1" "cmake==3.31.6" "ninja==1.13.0"
         conan profile detect --force
+
+    - name: Configure Conan binary remote (Windows)
+      if: runner.os == 'Windows'
+      shell: bash
+      env:
+        F4_CONAN_TOKEN: ${{ secrets.F4_CONAN_REMOTE_TOKEN }}
+      run: bash ci/configure-conan-remote.sh
 
     - name: Build the portable Windows executable
       if: runner.os == 'Windows'
@@ -842,6 +876,13 @@ jobs:
         if ($files.Count -ne 1 -or $files[0].Name -ne "f4.exe") {
           throw "Portable Windows artifact must contain only f4.exe"
         }
+
+    - name: Publish successful Conan package graph (Windows)
+      if: success() && runner.os == 'Windows'
+      shell: bash
+      env:
+        F4_CONAN_UPLOAD_TOKEN: ${{ secrets.F4_CONAN_UPLOAD_TOKEN }}
+      run: python ci/upload-conan-packages.py
 
     - name: Prune Windows Conan cache to reusable packages
       if: always() && !cancelled() && runner.os == 'Windows'

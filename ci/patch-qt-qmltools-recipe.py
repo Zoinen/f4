@@ -42,6 +42,15 @@ def main() -> None:
     if "def package(self):" not in text or "Qt6HostInfoConfig.cmake" not in text:
         raise SystemExit("unexpected Qt recipe: required Conan Center package cleanup is absent")
     if "Qt6QmlToolsConfig.cmake" in text:
+        # Conan exports are reused by interrupted CI jobs.  Keep the patch
+        # idempotent so a recipe copied from an already customized cache does
+        # not make the ARM64 job fail before the actual build starts.
+        required_markers = (
+            "set(Qt6QmlTools_FOUND TRUE)",
+            "add_executable(Qt6::qmldom IMPORTED GLOBAL)",
+        )
+        if all(marker in text for marker in required_markers):
+            return
         raise SystemExit("unexpected Qt recipe: Qt6QmlTools config is already customized")
 
     args.recipe.write_text(text.replace(_ANCHOR, _QML_TOOLS_CONFIG), encoding="utf-8")
