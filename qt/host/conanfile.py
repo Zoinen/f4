@@ -29,12 +29,16 @@ class F4QtHostConan(ConanFile):
         # ZoinGallery is built from the pinned Git submodule. Keep its native
         # dependencies in this single Conan graph so the host and module share
         # one Qt runtime and one deployment ABI.
+        # harfbuzz/8.3.0 still pins freetype/2.13.2 while Qt exposes a
+        # compatible version range that otherwise resolves to 2.13.3. Keep
+        # the graph deterministic until Conan Center removes that mismatch.
+        self.requires("freetype/2.13.2", override=True)
         self.requires("libtiff/4.7.0")
         self.requires("libraw/0.21.3")
         self.requires("libpng/1.6.45")
-        self.requires("libwebp/1.6.0")
+        self.requires("libwebp/1.6.0", override=True)
         self.requires("libheif/1.20.1")
-        self.requires("libjpeg-turbo/3.0.2")
+        self.requires("libjpeg-turbo/3.0.2", override=True)
         self.requires("jasper/4.2.0", override=True)
 
     def validate(self):
