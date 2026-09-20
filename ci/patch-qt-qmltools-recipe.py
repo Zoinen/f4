@@ -8,6 +8,16 @@ from pathlib import Path
 
 
 _ANCHOR = '        extension = ""\n'
+_VERSION_CONFIG = r'''        save(self, os.path.join(qml_tools_dir, "Qt6QmlToolsConfigVersion.cmake"), textwrap.dedent("""
+            set(PACKAGE_VERSION "6.11.1")
+            if(PACKAGE_FIND_VERSION VERSION_EQUAL PACKAGE_VERSION)
+              set(PACKAGE_VERSION_COMPATIBLE TRUE)
+              set(PACKAGE_VERSION_EXACT TRUE)
+            elseif(PACKAGE_FIND_VERSION VERSION_LESS PACKAGE_VERSION)
+              set(PACKAGE_VERSION_COMPATIBLE TRUE)
+            endif()
+            """))
+'''
 _QML_TOOLS_CONFIG = r'''        # QtDeclarative's ARM64 cross-build needs the native qmldom executable.
         # Conan Center intentionally strips Qt6QmlToolsConfig.cmake because it
         # otherwise exposes every QML build tool to consumers.  Recreate a
@@ -26,15 +36,7 @@ _QML_TOOLS_CONFIG = r'''        # QtDeclarative's ARM64 cross-build needs the na
             endif()
             set(Qt6QmlTools_TARGETS "Qt6::qmldom")
             """))
-        save(self, os.path.join(qml_tools_dir, "Qt6QmlToolsConfigVersion.cmake"), textwrap.dedent("""
-            set(PACKAGE_VERSION "6.11.1")
-            if(PACKAGE_FIND_VERSION VERSION_EQUAL PACKAGE_VERSION)
-              set(PACKAGE_VERSION_COMPATIBLE TRUE)
-              set(PACKAGE_VERSION_EXACT TRUE)
-            elseif(PACKAGE_FIND_VERSION VERSION_LESS PACKAGE_VERSION)
-              set(PACKAGE_VERSION_COMPATIBLE TRUE)
-            endif()
-            """))
+''' + _VERSION_CONFIG + r'''
 
         extension = ""
 '''
@@ -57,11 +59,15 @@ def main() -> None:
         required_markers = (
             "set(Qt6QmlTools_FOUND TRUE)",
             "add_executable(Qt6::qmldom IMPORTED GLOBAL)",
-            'set(PACKAGE_VERSION "6.11.1")',
         )
-        if all(marker in text for marker in required_markers):
+        if not all(marker in text for marker in required_markers):
+            raise SystemExit("unexpected Qt recipe: Qt6QmlTools config is already customized")
+        if _VERSION_CONFIG in text:
             return
-        raise SystemExit("unexpected Qt recipe: Qt6QmlTools config is already customized")
+        if "Qt6QmlToolsConfigVersion.cmake" in text or 'set(PACKAGE_VERSION "6.11.1")' in text:
+            raise SystemExit("unexpected Qt recipe: Qt6QmlTools version config is already customized")
+        args.recipe.write_text(text.replace(_ANCHOR, _VERSION_CONFIG + _ANCHOR, 1), encoding="utf-8")
+        return
 
     args.recipe.write_text(text.replace(_ANCHOR, _QML_TOOLS_CONFIG), encoding="utf-8")
 
