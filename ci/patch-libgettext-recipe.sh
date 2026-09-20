@@ -3,8 +3,9 @@ set -euo pipefail
 
 # Conan Center's libgettext/0.22 recipe leaves CPP at Conan's default for the
 # MSVC/Autotools graph.  Gnulib then cannot discover the absolute names of
-# MSVC system headers and generates #include <> wrappers.  Use cl's explicit
-# preprocessor-output mode; this changes only the generated recipe revision.
+# MSVC system headers and generates #include <> wrappers.  Use cl's /E mode,
+# which preserves #line markers; /EP suppresses them.  Normalize an older
+# cached export in place before exporting the patched recipe revision.
 conan download libgettext/0.22 --only-recipe --remote=conancenter
 libgettext_recipe="$(conan cache path libgettext/0.22 | tail -1)"
 libgettext_recipe_copy="$(mktemp -d "${TMPDIR:-/tmp}/f4-libgettext-recipe.XXXXXX")"
@@ -18,4 +19,5 @@ if ! command -v "${python_command}" >/dev/null 2>&1; then
 fi
 "${python_command}" ci/patch-libgettext-recipe.py "${libgettext_recipe_copy}/conanfile.py"
 grep -Fq 'env.define("CPP", "cl -nologo -E")' "${libgettext_recipe_copy}/conanfile.py"
+grep -Fq 'env.define("CXXCPP", "cl -nologo -E")' "${libgettext_recipe_copy}/conanfile.py"
 conan export "${libgettext_recipe_copy}" --name=libgettext --version=0.22
