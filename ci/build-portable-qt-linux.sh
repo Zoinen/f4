@@ -202,7 +202,7 @@ for attempt in 1 2 3; do
         -o:h 'libraw/*:shared=False' \
         -c 'tools.build:compiler_executables={"c":"gcc-11","cpp":"g++-11"}' \
         -c "tools.cmake:cmake_program=${cmake_executable}" \
-        -c:a '*:tools.cmake.cmaketoolchain:extra_variables={"CMAKE_POLICY_VERSION_MINIMUM":{"cache":True,"type":"STRING","value":"3.5"}}' \
+        -c:a '*/*:tools.cmake.cmaketoolchain:extra_variables={"CMAKE_POLICY_VERSION_MINIMUM":{"cache":True,"type":"STRING","value":"3.5"}}' \
         -c tools.system.package_manager:mode=install \
         -c tools.system.package_manager:sudo=False \
         --output-folder="${build_dir}"

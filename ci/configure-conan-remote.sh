@@ -7,7 +7,7 @@ set -euo pipefail
 # the CI jobs that have it configured.
 conan_home="${CONAN_HOME:-$(conan config home)}"
 global_conf="${conan_home}/global.conf"
-cmake_policy_conf='*:tools.cmake.cmaketoolchain:extra_variables={"CMAKE_POLICY_VERSION_MINIMUM":{"cache":True,"type":"STRING","value":"3.5"}}'
+cmake_policy_conf='*/*:tools.cmake.cmaketoolchain:extra_variables={"CMAKE_POLICY_VERSION_MINIMUM":{"cache":True,"type":"STRING","value":"3.5"}}'
 mkdir -p "${conan_home}"
 if [[ ! -f "${global_conf}" ]] || ! grep -Fqx "${cmake_policy_conf}" "${global_conf}"; then
     printf '%s\n' "${cmake_policy_conf}" >> "${global_conf}"
