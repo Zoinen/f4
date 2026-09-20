@@ -1072,6 +1072,18 @@ func mediaHandleSize(handle vfs.ReadAtCloser, fallback int64) int64 {
 	return fallback
 }
 
+// materializationLimitApplies reports whether a source would require an owned
+// full-file copy before Qt can open it. Direct-local resources are expected to
+// expose their native path through LocalBackingReader, but keep the policy
+// unbounded for that profile as a fallback for local VFS implementations that
+// only provide a readable handle.
+func (r *ExtUiMediaResource) materializationLimitApplies() bool {
+	r.mu.Lock()
+	storage, profile := r.StorageClass, r.AccessProfile
+	r.mu.Unlock()
+	return storage != vfs.StorageClassLocal && profile != vfs.ReadAccessDirectLocal
+}
+
 func (r *ExtUiMediaResource) cachedContiguousPrefix() []byte {
 	type segment struct {
 		offset int64
@@ -1185,15 +1197,21 @@ func (r *ExtUiMediaResource) performMaterialization(ctx context.Context, tempDir
 }
 
 func (r *ExtUiMediaResource) materializeOnce(ctx context.Context, tempDir string) (string, int64, bool, error) {
-	if r.SizeKnown && r.Size > extUiMediaMaxMaterializeSize {
-		return "", 0, false, errMediaTooLarge
-	}
 	handle, err := r.ensureHandle(ctx)
 	if err != nil {
 		return "", 0, false, err
 	}
 	if path, ok := localBackingPath(handle); ok {
 		return path, mediaHandleSize(handle, r.Size), false, nil
+	}
+	// A non-local source must be copied into a seekable file for the current
+	// materialization path. Keep the guard after opening the handle so a local
+	// provider can advertise a direct path through LocalBackingReader even when
+	// its catalog entry is large.
+	if r.materializationLimitApplies() &&
+		((r.SizeKnown && r.Size > extUiMediaMaxMaterializeSize) ||
+			mediaHandleSize(handle, r.Size) > extUiMediaMaxMaterializeSize) {
+		return "", 0, false, errMediaTooLarge
 	}
 	tmp, err := os.CreateTemp(tempDir, "source-*")
 	if err != nil {
@@ -1243,7 +1261,8 @@ func (r *ExtUiMediaResource) materializeOnce(ctx context.Context, tempDir string
 			}
 		}
 		if n > 0 {
-			if offset+int64(n) > extUiMediaMaxMaterializeSize {
+			if r.materializationLimitApplies() &&
+				offset+int64(n) > extUiMediaMaxMaterializeSize {
 				return "", 0, false, errMediaTooLarge
 			}
 			if _, err := tmp.Write(buffer[:n]); err != nil {
