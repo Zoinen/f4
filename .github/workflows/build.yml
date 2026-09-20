@@ -818,6 +818,8 @@ jobs:
         $conanInstalled = $false
         $buildDir = "qt/host/build-portable-windows-${{ matrix.arch }}"
         $distDir = "dist/f4-windows-${{ matrix.arch }}"
+        # OpenSSL's optional zlib provider is not linkable in the
+        # ConanCenter ARM64/MSVC package; f4 does not use it.
         # Qt's cross-build recipe needs native qsb and QML tools. Configure
         # its build-context Qt tool requirement with the same modules so
         # Qt6ShaderToolsTools and qmlcachegen exist for the ARM64 target.
@@ -833,8 +835,6 @@ jobs:
             -o:b "qt/*:qtshadertools=True" `
             -o:h "qt/*:with_libjpeg=libjpeg-turbo" `
             -o:b "qt/*:with_libjpeg=libjpeg-turbo" `
-            # OpenSSL's optional zlib provider is not linkable in the
-            # ConanCenter ARM64/MSVC package; f4 does not use it.
             -o:h "openssl/*:no_zlib=True" `
             -o:b "openssl/*:no_zlib=True" `
             -o:b "qt/*:with_pq=False" `
