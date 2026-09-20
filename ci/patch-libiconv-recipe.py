@@ -27,8 +27,12 @@ _RESOURCE_BLOCK = (
     "\n"
 )
 _MARKER = "Skipping the Windows ARM64 resource object for a static package"
-_LIB_RESOURCE_ENTRY = '                ("lib/Makefile.in", "libiconv.res.lo"),\n'
 _SRC_RESOURCE_ENTRY = '                ("src/Makefile.in", "iconv.res"),\n'
+_ARM_RESOURCE_CONDITION = (
+    '        if self.settings.os == "Windows" and self.settings.arch == "armv8" '
+    'and not self.options.shared:\n'
+)
+_X86_RESOURCE_CONDITION = '        if self.settings.arch == "x86":\n'
 
 
 def main() -> None:
@@ -40,10 +44,12 @@ def main() -> None:
     if _SRC_RESOURCE_ENTRY in text:
         return
     if _MARKER in text:
-        if text.count(_LIB_RESOURCE_ENTRY) != 1:
-            raise SystemExit("unexpected libiconv recipe: legacy resource patch is ambiguous")
+        start = text.find(_ARM_RESOURCE_CONDITION)
+        end = text.find(_X86_RESOURCE_CONDITION, start)
+        if start < 0 or end < 0:
+            raise SystemExit("unexpected libiconv recipe: legacy resource patch block is absent")
         args.recipe.write_text(
-            text.replace(_LIB_RESOURCE_ENTRY, _LIB_RESOURCE_ENTRY + _SRC_RESOURCE_ENTRY, 1),
+            text[:start] + _RESOURCE_BLOCK + text[end:],
             encoding="utf-8",
         )
         return
