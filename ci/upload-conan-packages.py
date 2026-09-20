@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -31,18 +32,35 @@ def main() -> int:
     # that platform.  Uploading the complete local cache preserves all
     # transitive binaries (including native Qt build tools) and is safe to
     # repeat: Conan skips artifacts that already exist at the same revision.
-    subprocess.run(
-        [
-            "conan",
-            "upload",
-            "*",
-            "--remote",
-            remote_name,
-            "--confirm",
-            "--check",
-        ],
+    # Conan's MSYS2 package contains a dangling/special `etc/mtab` entry on
+    # GitHub's Windows runners.  `conan upload "*" --check` tries to hash that
+    # entry and aborts before it can publish any of the useful target graph.
+    # Enumerate recipe references first and omit only this build-tool package
+    # on Windows; the virtual remote still provides it from ConanCenter.
+    list_result = subprocess.run(
+        ["conan", "list", "*/*:*", "--format=json"],
         check=True,
+        capture_output=True,
+        text=True,
     )
+    local_cache = json.loads(list_result.stdout).get("Local Cache", {})
+    recipe_refs = sorted(local_cache)
+    if sys.platform == "win32" or os.environ.get("RUNNER_OS") == "Windows":
+        recipe_refs = [ref for ref in recipe_refs if not ref.startswith("msys2/")]
+
+    for recipe_ref in recipe_refs:
+        subprocess.run(
+            [
+                "conan",
+                "upload",
+                f"{recipe_ref}:*",
+                "--remote",
+                remote_name,
+                "--confirm",
+                "--check",
+            ],
+            check=True,
+        )
     print("Conan package graph uploaded")
     return 0
 
