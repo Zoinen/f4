@@ -12,9 +12,8 @@ cp "${libiconv_recipe}/conanfile.py" \
     "${libiconv_recipe}/conandata.yml" \
     "${libiconv_recipe_copy}/"
 mkdir -p "${libiconv_recipe_copy}/patches"
-curl -fsSL \
-    "https://raw.githubusercontent.com/conan-io/conan-center-index/master/recipes/libiconv/all/patches/1.17-001-fix-error-function-declaration-without-prototype.patch" \
-    -o "${libiconv_recipe_copy}/patches/1.17-001-fix-error-function-declaration-without-prototype.patch"
+cp ci/patches/libiconv-1.17-fix-error-function-declaration-without-prototype.patch \
+    "${libiconv_recipe_copy}/patches/1.17-001-fix-error-function-declaration-without-prototype.patch"
 
 python_command=python
 if ! command -v "${python_command}" >/dev/null 2>&1; then
