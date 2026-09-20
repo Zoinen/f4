@@ -476,8 +476,11 @@ jobs:
             -R '^(F4|QtShellController|WindowGeometryPersistence)'
         fi
 
-    - name: Publish successful Conan package graph
-      if: success()
+    - name: Publish available Conan package graph
+      # Upload packages even when a later Qt packaging/smoke-test step fails.
+      # The per-job Conan cache contains only completed package binaries, so
+      # this preserves useful work for the next parallel attempt.
+      if: always() && !cancelled()
       shell: bash
       env:
         F4_CONAN_UPLOAD_TOKEN: ${{ secrets.F4_CONAN_UPLOAD_TOKEN }}
@@ -878,8 +881,10 @@ jobs:
           throw "Portable Windows artifact must contain only f4.exe"
         }
 
-    - name: Publish successful Conan package graph (Windows)
-      if: success() && runner.os == 'Windows'
+    - name: Publish available Conan package graph (Windows)
+      # Keep completed dependency binaries when the static executable or its
+      # smoke test fails after Conan has already built them.
+      if: always() && !cancelled() && runner.os == 'Windows'
       shell: bash
       env:
         F4_CONAN_UPLOAD_TOKEN: ${{ secrets.F4_CONAN_UPLOAD_TOKEN }}

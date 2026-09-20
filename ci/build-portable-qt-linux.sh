@@ -82,12 +82,22 @@ checkpoint_conan_packages() {
     build_status=$?
     trap - EXIT
     set +e
+    checkpoint_ready=0
     if [[ -d "${CONAN_HOME}/p" ]] && conan cache clean '*' \
         --source --build --temp --backup-sources
     then
         touch "${CONAN_HOME}/p/.f4-package-cache-ready"
+        checkpoint_ready=1
     else
         echo "warning: unable to prepare Conan package checkpoint" >&2
+    fi
+    if [[ "${build_status}" -ne 0 && "${checkpoint_ready}" -eq 1 && \
+        -n "${F4_CONAN_UPLOAD_URL:-}" && -n "${F4_CONAN_UPLOAD_TOKEN:-}" ]]; then
+        if python ci/upload-conan-packages.py; then
+            echo "Uploaded the completed Conan checkpoint after a failed build"
+        else
+            echo "warning: unable to upload the failed-build Conan checkpoint" >&2
+        fi
     fi
     exit "${build_status}"
 }
