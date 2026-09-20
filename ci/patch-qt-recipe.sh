@@ -26,6 +26,6 @@ if [[ "${target_arch}" == "arm64" ]]; then
     grep -Fq 'add_executable(Qt6::qmldom IMPORTED GLOBAL)' "${qt_recipe_copy}/conanfile.py"
 fi
 
-grep -Fq 'self.requires("freetype/2.13.2", override=True)' \
+grep -Fq 'self.requires("freetype/2.13.2")' \
     "${qt_recipe_copy}/conanfile.py"
 conan export "${qt_recipe_copy}" --name=qt --version=6.11.1

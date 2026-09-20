@@ -8,8 +8,8 @@ from pathlib import Path
 
 
 _ANCHOR = '            self.requires("freetype/[>=2.13 <3]")\n'
-_PATCH = _ANCHOR + '            self.requires("freetype/2.13.2", override=True)\n'
-_MARKER = 'self.requires("freetype/2.13.2", override=True)'
+_PATCH = '            self.requires("freetype/2.13.2")\n'
+_MARKER = 'self.requires("freetype/2.13.2")'
 
 
 def main() -> None:
