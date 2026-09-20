@@ -34,6 +34,12 @@ func ManageSessions() {
 	stopWindowAppearanceManager := gui.StartWindowsConsoleWindowAppearanceManager()
 	defer stopWindowAppearanceManager()
 
+	// Before InitCore: vtui's Init already sends OSC 104, and the table to
+	// hand back is the one the console had before anything of ours ran. The
+	// deferred restore runs after vtui's own (PrepareTerminal's below).
+	restoreColorTable := keepConsoleColorTable()
+	defer restoreColorTable()
+
 	scr := App.InitCore()
 	PreferCompatibleGraphicsProtocol(scr)
 
@@ -45,14 +51,6 @@ func ManageSessions() {
 	if restore != nil {
 		defer restore()
 	}
-
-	// Unlike the Unix build (session_unix.go's RunServer, attach time),
-	// there's no separate daemon/client split here to defer this past --
-	// this *is* the one and only session, already fully up (panels pushed
-	// inside InitCore(), terminal just prepared above), so opening right
-	// here is the direct equivalent of that hook. openDashEFileIfRequested
-	// itself no-ops when -e wasn't given.
-	App.OpenEditFile()
 
 	// Ask the terminal what it can draw, if the environment did not say.
 	// This must happen here: after PrepareTerminal, so VT output is on and
@@ -66,6 +64,18 @@ func ManageSessions() {
 	// renders sixel and is left alone. Before the first frame, because
 	// every gate on it is asked from inside one.
 	App.InstallImageOverlay()
+
+	// Unlike the Unix build (session_unix.go's RunServer, attach time),
+	// there's no separate daemon/client split here to defer this past --
+	// this *is* the one and only session, already fully up (panels pushed
+	// inside InitCore(), terminal prepared above), so opening right here is
+	// the direct equivalent of that hook. It comes after the graphics probe
+	// and the console overlay because a picture named on the command line is
+	// sent to the image viewer only when the screen supports graphics, and
+	// on conhost the overlay is that support; F3 asks the same question with
+	// both already in place. openStartupFilesIfRequested itself no-ops when
+	// the command line named no file.
+	App.OpenStartupFiles()
 
 	reader := vtinput.NewReader(os.Stdin, false)
 	vtui.FrameManager.Run(reader)

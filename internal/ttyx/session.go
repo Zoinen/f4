@@ -90,8 +90,9 @@ type Session struct {
 	depth  byte
 	visual xproto.Visualid
 
-	win    xproto.Window
-	source Source
+	win     xproto.Window
+	source  Source
+	display string
 
 	atoms map[string]xproto.Atom
 
@@ -115,11 +116,41 @@ func Open() (*Session, error) {
 	return open(os.Getenv, processAncestors())
 }
 
+// OpenFor is Open on behalf of another process on this machine: the one
+// whose terminal the session is for, named by its pid and read through env.
+//
+// A session daemon needs it. It is not running in any terminal: its
+// environment and its ancestors are those of whichever terminal started it,
+// and after a client attaches from another window they describe a window the
+// session is no longer shown in — or one that no longer exists. The attaching
+// client's own pid and environment describe the right one.
+//
+// env is asked for IdentityEnv and nothing else. A name the client did not
+// have must read as empty rather than fall back to the caller's own
+// environment, or a stale WINDOWID would name the old window as trusted.
+// XAUTHORITY is still read from the caller's environment, by xgb.
+func OpenFor(pid int, env func(string) string) (*Session, error) {
+	return open(env, ancestorPIDs(pid, parentPID))
+}
+
+// windowIDVars are the variables a terminal publishes its window id in.
+var windowIDVars = []string{"WINDOWID", "XTERM_WINDOWID"}
+
+// IdentityEnv lists the environment variables the terminal window is
+// identified by. Whoever hands OpenFor an environment has to carry these.
+func IdentityEnv() []string {
+	return append([]string{"DISPLAY"}, windowIDVars...)
+}
+
 func open(env func(string) string, ancestors []uint32) (*Session, error) {
-	if strings.TrimSpace(env("DISPLAY")) == "" {
+	display := strings.TrimSpace(env("DISPLAY"))
+	if display == "" {
 		return nil, ErrNoDisplay
 	}
-	conn, err := xgb.NewConn()
+	// The display named by env, not by this process's environment: the two
+	// differ for a daemon serving a client, and they are the same thing for
+	// everybody else.
+	conn, err := xgb.NewConnDisplay(display)
 	if err != nil {
 		return nil, fmt.Errorf("no connection to the X server: %w", err)
 	}
@@ -133,6 +164,7 @@ func open(env func(string) string, ancestors []uint32) (*Session, error) {
 		atoms:   make(map[string]xproto.Atom),
 		alive:   true,
 		changed: make(chan struct{}, 1),
+		display: display,
 	}
 
 	s.win, s.source = s.locate(env, ancestors)
@@ -162,6 +194,10 @@ func (s *Session) Window() xproto.Window { return s.win }
 
 // Source says how the terminal window was found.
 func (s *Session) Source() Source { return s.source }
+
+// Display is the X display the session is connected to. A window id means
+// nothing without it.
+func (s *Session) Display() string { return s.display }
 
 // Geometry reports where the terminal window is on the screen. The size is
 // the window's own, so it includes whatever padding the terminal leaves
@@ -382,7 +418,7 @@ func (s *Session) locate(env func(string) string, ancestors []uint32) (xproto.Wi
 
 // windowIDFromEnv reads the window id a terminal published for its children.
 func windowIDFromEnv(env func(string) string) (xproto.Window, bool) {
-	for _, name := range []string{"WINDOWID", "XTERM_WINDOWID"} {
+	for _, name := range windowIDVars {
 		v := strings.TrimSpace(env(name))
 		if v == "" {
 			continue

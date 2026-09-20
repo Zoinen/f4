@@ -14,8 +14,18 @@ func TestConsoleCtrlHandlerRoutineHandlesInterrupts(t *testing.T) {
 	}
 }
 
-func TestConsoleCtrlHandlerRoutineIgnoresOtherEvents(t *testing.T) {
-	if got := consoleCtrlHandlerRoutine(ctrlCloseEvent); got != 0 {
-		t.Fatalf("consoleCtrlHandlerRoutine(%d) = %d, want 0", ctrlCloseEvent, got)
+func TestConsoleCtrlHandlerRoutineSavesBeforeTermination(t *testing.T) {
+	oldSave := saveSessionOnConsoleTermination
+	t.Cleanup(func() { saveSessionOnConsoleTermination = oldSave })
+
+	for _, event := range []uintptr{ctrlCloseEvent, ctrlLogoffEvent, ctrlShutdownEvent} {
+		saved := false
+		saveSessionOnConsoleTermination = func() { saved = true }
+		if got := consoleCtrlHandlerRoutine(event); got != 0 {
+			t.Errorf("consoleCtrlHandlerRoutine(%d) = %d, want 0", event, got)
+		}
+		if !saved {
+			t.Errorf("consoleCtrlHandlerRoutine(%d) did not save before termination", event)
+		}
 	}
 }

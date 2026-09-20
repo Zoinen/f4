@@ -62,6 +62,36 @@ func FS(path string) (FSInfo, bool) {
 	}
 
 	// Volume label / serial / max filename length / flags / fs name.
+	readVolumeInformation(rootPtr, &info)
+	return info, true
+}
+
+// readVolumeInformation fills the label, serial, filename limit, flags and
+// filesystem name through a handle to the volume's root directory, using
+// GetVolumeInformationByHandleW rather than GetVolumeInformationW(root).
+//
+// Both report the same fields, but under Wine GetVolumeInformationW first
+// opens the volume device for reading, and when that is refused -- as it is
+// for the drive mapped to "/" -- it prints "wine: Read access denied for
+// device ..., FS volume label and serial are not available." straight to the
+// process's Unix stderr, past the Windows handles and past WINEDEBUG
+// (dlls/kernelbase/volume.c). The panels ask for this on every frame, so the
+// line landed in the terminal between frames of the console view, and a
+// detached GUI copy whose stderr still pointed at a terminal nobody read
+// filled that terminal's buffer until the frame thread blocked in write()
+// and the window stopped answering (issue #474). The by-handle call only
+// queries the open handle and prints nothing.
+//
+// Failure leaves the fields empty, as the old call did.
+func readVolumeInformation(rootPtr *uint16, info *FSInfo) {
+	h, err := windows.CreateFile(rootPtr, 0,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil, windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
+	if err != nil {
+		return
+	}
+	defer func() { _ = windows.CloseHandle(h) }()
+
 	var (
 		volumeName         [windows.MAX_PATH + 1]uint16
 		fsName             [windows.MAX_PATH + 1]uint16
@@ -69,21 +99,21 @@ func FS(path string) (FSInfo, bool) {
 		maxComponentLength uint32
 		fileSystemFlags    uint32
 	)
-	if err := windows.GetVolumeInformation(
-		rootPtr,
+	if err := windows.GetVolumeInformationByHandle(
+		h,
 		&volumeName[0], uint32(len(volumeName)),
 		&serialNumber,
 		&maxComponentLength,
 		&fileSystemFlags,
 		&fsName[0], uint32(len(fsName)),
-	); err == nil {
-		info.Label = windows.UTF16ToString(volumeName[:])
-		info.Type = windows.UTF16ToString(fsName[:])
-		info.MaxFilename = int(maxComponentLength)
-		info.Serial = fmt.Sprintf("%04X-%04X", serialNumber>>16, serialNumber&0xFFFF)
-		info.Flags = decodeVolumeFlags(fileSystemFlags)
+	); err != nil {
+		return
 	}
-	return info, true
+	info.Label = windows.UTF16ToString(volumeName[:])
+	info.Type = windows.UTF16ToString(fsName[:])
+	info.MaxFilename = int(maxComponentLength)
+	info.Serial = fmt.Sprintf("%04X-%04X", serialNumber>>16, serialNumber&0xFFFF)
+	info.Flags = decodeVolumeFlags(fileSystemFlags)
 }
 
 func decodeVolumeFlags(f uint32) string {

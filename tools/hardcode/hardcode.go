@@ -55,7 +55,8 @@ var uiListConstructors = map[string]int{
 // non-UI type are listed: SetText, for instance, also sets the *content* of an
 // editor, which is data and not a caption.
 var uiSetters = map[string]int{
-	"SetTitle": 0,
+	"SetTitle":       0,
+	"SetBottomTitle": 0,
 }
 
 // captionWrappers are helpers that only pad or decorate a caption they are

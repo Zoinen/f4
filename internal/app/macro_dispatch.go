@@ -23,6 +23,14 @@ func macroCurrentArea() string {
 	if top == nil {
 		return "Common"
 	}
+	if menuBarRaisedOver(top) {
+		// F9 over the panels raises the bar with no dropdown, so the panels
+		// stay on top. The keyboard is the bar's all the same, and a dropdown
+		// would have made this area "Menu"; without that, Shell's own
+		// bindings ran first and the bar never saw the key: Esc toggled the
+		// panels and F10 asked to quit while the bar stayed up (#1144).
+		return "Menu"
+	}
 	switch top.GetType() {
 	case vtui.TypeDialog:
 		return "Dialog"
@@ -46,6 +54,21 @@ func macroCurrentArea() string {
 		return "Viewer"
 	}
 	return "Other"
+}
+
+// menuBarRaisedOver reports a main menu bar that is up without a dropdown over
+// top, the frame that shows it. vtui's frame manager hands such a bar every key
+// the EventFilter lets through (the menu interception in dispatchEvent, under
+// the same condition), so for the key router the bar is on top, not the frame.
+func menuBarRaisedOver(top vtui.Frame) bool {
+	if top == nil || top.GetType() == vtui.TypeMenu || vtui.FrameManager == nil {
+		return false
+	}
+	menu := vtui.FrameManager.GetActiveMenuBar()
+	if menu == nil || !menu.Active {
+		return false
+	}
+	return !top.IsModal() || top.GetMenuBar() == menu
 }
 
 // isPanelFastFindToggleKey identifies contextual panel-toggle keys owned by
@@ -195,8 +218,10 @@ func macroFilter(m *macro.MacroManager, e *vtinput.InputEvent) bool {
 	// Plugin key interception: global plugin hotkeys and the active
 	// panel's PanelController may override built-in hotkeys, so they
 	// are consulted before the hotkey manager.
+	// Both this and the veto below belong to the frame on top, which has
+	// lost the keyboard to its own menu bar while that bar is raised.
 	if vtui.FrameManager != nil {
-		if top := vtui.FrameManager.GetTopFrame(); top != nil {
+		if top := vtui.FrameManager.GetTopFrame(); top != nil && !menuBarRaisedOver(top) {
 			if pi, ok := top.(interface {
 				InterceptPluginKey(*vtinput.InputEvent) bool
 			}); ok && pi.InterceptPluginKey(e) {
@@ -210,7 +235,7 @@ func macroFilter(m *macro.MacroManager, e *vtinput.InputEvent) bool {
 	// through to the frame's own ProcessKey, which handles such states
 	// before anything else.
 	if vtui.FrameManager != nil {
-		if top := vtui.FrameManager.GetTopFrame(); top != nil {
+		if top := vtui.FrameManager.GetTopFrame(); top != nil && !menuBarRaisedOver(top) {
 			if v, ok := top.(interface {
 				VetoActionKey(*vtinput.InputEvent) bool
 			}); ok && v.VetoActionKey(e) {

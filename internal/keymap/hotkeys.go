@@ -143,31 +143,33 @@ func (hm *HotkeyManager) GetKeyForAction(area, actionName string) string {
 	// actions deliberately list a conditional plain function key first and a
 	// modified always-available fallback second. Iterating the binding map made
 	// the menu shortcut alternate randomly on every semantic scene rebuild.
-	if action, ok := action.Lookup(actionName); ok {
-		for _, candidateArea := range areas {
-			binds := hm.Bindings[candidateArea]
-			for _, keySpec := range action.DefaultKeys {
-				key, _, _ := strings.Cut(keySpec, ":")
+	find := func(binds map[string]string) string {
+		if a, ok := LookupAction(actionName); ok {
+			for _, spec := range a.DefaultKeys {
+				key, _, _ := strings.Cut(spec, ":")
 				if key != "" && strings.EqualFold(activeBindingAction(binds[key]), actionName) {
 					return key
 				}
 			}
 		}
+		var keys []string
+		for key, binding := range binds {
+			if strings.EqualFold(activeBindingAction(binding), actionName) {
+				keys = append(keys, key)
+			}
+		}
+		sort.Strings(keys)
+		if len(keys) > 0 {
+			return keys[0]
+		}
+		return ""
 	}
 
 	// User-defined bindings have no registry order. Sort them so their menu
 	// representation is stable across rebuilds and process runs.
 	for _, candidateArea := range areas {
-		binds := hm.Bindings[candidateArea]
-		keys := make([]string, 0, len(binds))
-		for key := range binds {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		for _, key := range keys {
-			if strings.EqualFold(activeBindingAction(binds[key]), actionName) {
-				return key
-			}
+		if key := find(hm.Bindings[candidateArea]); key != "" {
+			return key
 		}
 	}
 	return ""

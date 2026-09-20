@@ -41,6 +41,7 @@ type FileEntry struct {
 	Selected       bool
 	PrevSelected   bool // snapshot of Selected taken by SaveSelection; swapped in by RestoreSelection (Ctrl+M)
 	SizeCalculated bool
+	sourceOrder    uint64
 }
 
 // directoryFileEntryWriter is the one authoritative source allocation used by
@@ -114,12 +115,8 @@ func (r *panelEntryRow) GetCellAttr(col int, defaultAttr uint64) uint64 {
 }
 
 func (m *mediumRow) GetCellText(col int) string {
-	h := m.fp.Table.ViewHeight
-	if h <= 0 {
-		h = 1
-	}
-	idx := m.r + col*h
-	if idx >= len(m.fp.Entries) {
+	idx := m.fp.entryIndex(m.r, col)
+	if idx < 0 || idx >= len(m.fp.Entries) {
 		return ""
 	}
 	e := m.fp.Entries[idx]
@@ -131,29 +128,22 @@ func (m *mediumRow) GetCellText(col int) string {
 }
 
 func (fp *FileSystemPanel) RowCount() int {
-	return len(fp.Entries)
+	return fp.displayCount() + fp.stickyGroupRows(fp.Table.TopPos)
 }
 
 func (fp *FileSystemPanel) GetCellText(row, col int) string {
+	idx := fp.entryIndex(row, col)
+	if idx < 0 || idx >= len(fp.Entries) {
+		return ""
+	}
 	if fp.gridColumnCount() == 1 {
-		if row < 0 || row >= len(fp.Entries) {
-			return ""
-		}
-		e := fp.Entries[row]
+		e := fp.Entries[idx]
 		if col == 0 && len(fp.Table.Columns) > 0 {
 			return formatPanelFileNameAt(e, fp.Table.Columns[0].Width, fp.nameLeftPos)
 		}
 		return e.GetCellText(col)
 	}
 
-	h := fp.Table.ViewHeight
-	if h <= 0 {
-		h = 1
-	}
-	idx := row + col*h
-	if idx < 0 || idx >= len(fp.Entries) {
-		return ""
-	}
 	e := fp.Entries[idx]
 	width := 0
 	if col >= 0 && col < len(fp.Table.Columns) {
@@ -178,14 +168,7 @@ func (fp *FileSystemPanel) IsCellSelected(row, col int) bool {
 // current view mode: a single file-column in Wide/Detailed, or several
 // file-columns of height ViewHeight in Medium/Brief.
 func (fp *FileSystemPanel) entryIndex(row, col int) int {
-	if fp.gridColumnCount() == 1 {
-		return row
-	}
-	h := fp.Table.ViewHeight
-	if h <= 0 {
-		h = 1
-	}
-	return row + col*h
+	return fp.entryAtDisplay(fp.viewportDisplayRow(row, col))
 }
 
 func (fp *FileSystemPanel) GetCellAttr(row, col int, defaultAttr uint64) uint64 {
@@ -207,7 +190,7 @@ func (f *FileEntry) displayName(name string) string {
 	if config.App.ShowHighlightMarks {
 		marker = theme.GlobalFileHighlighter.GetMarker(&f.VFSItem)
 	}
-	if marker == "" && f.IsSymlink {
+	if marker == "" && f.IsSymlink && config.App.ShowSymlinkArrow {
 		marker = "→"
 	}
 	prefix := ""
@@ -457,23 +440,15 @@ func panelFileNameMatchSpansAt(entry *FileEntry, width, leftPos, matchStartRunes
 }
 
 func (m *mediumRow) IsColSelected(col int) bool {
-	h := m.fp.Table.ViewHeight
-	if h <= 0 {
-		h = 1
-	}
-	idx := m.r + col*h
-	if idx >= len(m.fp.Entries) {
+	idx := m.fp.entryIndex(m.r, col)
+	if idx < 0 || idx >= len(m.fp.Entries) {
 		return false
 	}
 	return m.fp.Entries[idx].Selected
 }
 func (m *mediumRow) GetCellAttr(col int, defaultAttr uint64) uint64 {
-	h := m.fp.Table.ViewHeight
-	if h <= 0 {
-		h = 1
-	}
-	idx := m.r + col*h
-	if idx >= len(m.fp.Entries) {
+	idx := m.fp.entryIndex(m.r, col)
+	if idx < 0 || idx >= len(m.fp.Entries) {
 		return defaultAttr
 	}
 	e := m.fp.Entries[idx]
@@ -590,16 +565,7 @@ func (f *FileEntry) GetCellText(col int) string {
 	case 0:
 		return f.displayName(f.visibleName())
 	case 1:
-		if f.IsDir {
-			if f.SizeCalculated {
-				return fileops.FormatIntWithSpaces(f.Size)
-			}
-			if f.Name == ".." {
-				return i18n.Msg("Panel.UpDir")
-			}
-			return ""
-		}
-		return fileops.FormatIntWithSpaces(f.Size)
+		return entrySizeText(f)
 	case 2:
 		if f.MTime.IsZero() {
 			return ""
@@ -625,6 +591,19 @@ type directoryLoadRequest struct {
 }
 
 type FileSystemPanel struct {
+	// Grouping keeps the source entries in their normal sort order while the
+	// visible row map adds headings and records each group's catalog range.
+	GroupBy                GroupMode
+	GroupReverse           bool
+	GroupFoldersSeparately bool
+	groupKeys              map[*FileEntry]groupKey
+	displayRows            []displayRow
+	entryRows              []int
+	visibleGroups          []PanelGroup
+	groupDate              string
+	groupLimits            [3]int64
+	nextSourceOrder        uint64
+
 	nativeStatus nativePanelStatusCache
 	vtui.ScreenObject
 	Table                 *vtui.Table
@@ -713,9 +692,13 @@ type FileSystemPanel struct {
 	suppressFolderHistoryToken    uint64 // binds suppression to one specific asynchronous directory load
 	FastFindMode                  bool
 	FastFindStr                   string
-	fastFindMatcherKey            string
-	fastFindMatchers              []*vtui.FuzzyMatcher
-	fastFindMatcherQueries        []string
+	// autoFilterOn keeps the complete directory in unfilteredEntries while
+	// Entries contains only rows matching the current quick-search filter.
+	autoFilterOn           bool
+	unfilteredEntries      []*FileEntry
+	fastFindMatcherKey     string
+	fastFindMatchers       []*vtui.FuzzyMatcher
+	fastFindMatcherQueries []string
 	// Fast Find is evaluated lazily by row. A 30k-entry directory must not be
 	// re-matched in full merely because one character or the cursor changed;
 	// only rows touched by navigation or the bounded semantic viewport are
@@ -732,6 +715,12 @@ type FileSystemPanel struct {
 
 	SortMode    SortMode
 	SortReverse bool
+	// sortDirectionSetByAction distinguishes the current action-driven
+	// direction contract from legacy lightweight panels that assign the two
+	// public sort fields directly. The latter still use SortReverse=true for
+	// descending size/time order; real menu actions use the upstream default
+	// (largest/newest first when SortReverse is false).
+	sortDirectionSetByAction bool
 	// UseSortGroups clusters the panel by the Group-bearing highlight.ini
 	// rules before the sort mode is applied (far's Shift+F11).
 	UseSortGroups bool
@@ -805,19 +794,20 @@ func NewFileSystemPanel(x, y, w, h int, vfs vfs.VFS) *FileSystemPanel {
 	path := vfs.GetPath()
 
 	fp := &FileSystemPanel{
-		Vfs:                   vfs,
-		Frame:                 vtui.NewBorderedFrame(x, y, x+w-1, y+h-1, vtui.SingleBox, path),
-		Table:                 vtui.NewTable(x+1, y+1, w-2, h-2, nil),
-		ViewMode:              ViewModeMedium,
-		GalleryLayoutMode:     GalleryLayoutMasonry,
-		GalleryColumnCount:    DefaultGalleryColumnCount,
-		GalleryDensities:      make(map[GalleryLayoutMode]int),
-		GalleryLayoutRevision: 1,
-		lastRightClickedIdx:   -1,
-		semanticRightIndex:    -1,
-		semanticPriorIndex:    -1,
-		SelectedItems:         make(map[string]bool),
-		selectionEpoch:        make(map[string]uint64),
+		Vfs:                    vfs,
+		Frame:                  vtui.NewBorderedFrame(x, y, x+w-1, y+h-1, vtui.SingleBox, path),
+		Table:                  vtui.NewTable(x+1, y+1, w-2, h-2, nil),
+		ViewMode:               ViewModeMedium,
+		GroupFoldersSeparately: true,
+		GalleryLayoutMode:      GalleryLayoutMasonry,
+		GalleryColumnCount:     DefaultGalleryColumnCount,
+		GalleryDensities:       make(map[GalleryLayoutMode]int),
+		GalleryLayoutRevision:  1,
+		lastRightClickedIdx:    -1,
+		semanticRightIndex:     -1,
+		semanticPriorIndex:     -1,
+		SelectedItems:          make(map[string]bool),
+		selectionEpoch:         make(map[string]uint64),
 		//entries:             []*fileEntry{{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}}},
 	}
 	fp.Frame.ColorBoxIdx = theme.ColPanelBox
@@ -1108,11 +1098,11 @@ func (fp *FileSystemPanel) ToggleSelection(idx int) {
 func (fp *FileSystemPanel) SetFocus(f bool) {
 	fp.ScreenObject.SetFocus(f)
 	if !f && fp.FastFindMode {
-		fp.FastFindMode = false
-		fp.FastFindStr = ""
+		fp.ExitFastFind()
 	}
 }
 func (fp *FileSystemPanel) SetSortMode(mode SortMode) {
+	fp.sortDirectionSetByAction = true
 	if fp.SortMode == mode {
 		fp.SortReverse = !fp.SortReverse
 	} else {
@@ -1123,6 +1113,10 @@ func (fp *FileSystemPanel) SetSortMode(mode SortMode) {
 		fp.SortReverse = false
 	}
 	fp.updateSortColumnTitles()
+	if fp.GroupBy != GroupNone {
+		fp.SetGrouping(fp.GroupBy, fp.GroupReverse, fp.GroupFoldersSeparately)
+		return
+	}
 	fp.ReadDirectory()
 }
 
@@ -1150,8 +1144,112 @@ func (fp *FileSystemPanel) sortGroupsActive() bool {
 	return fp != nil && fp.UseSortGroups && GlobalSortGroups.Configured()
 }
 
-func (fp *FileSystemPanel) SortEntries() {
-	fp.sortEntrySlice(fp.Entries)
+func (fp *FileSystemPanel) SortEntries() { fp.sortEntriesAt(time.Now()) }
+
+func (fp *FileSystemPanel) sortEntriesAt(now time.Time) {
+	entries := fp.AllEntries()
+	for _, entry := range entries {
+		if entry.sourceOrder == 0 {
+			fp.nextSourceOrder++
+			entry.sourceOrder = fp.nextSourceOrder
+		}
+	}
+	fp.prepareGrouping(entries, now)
+	grouped := fp.sortGroupsActive()
+	if (fp.SortMode == SortUnsorted && !grouped && fp.GroupBy == GroupNone) || len(entries) <= 1 {
+		fp.refilterEntries()
+		fp.rebuildDisplayRows()
+		fp.markSemanticCatalogMutation()
+		return
+	}
+
+	nameCollator := collate.New(language.Und, collate.IgnoreCase, collate.Force)
+	compareName := func(left, right string) int { return nameCollator.CompareString(left, right) }
+	var groups map[*FileEntry]int
+	if grouped {
+		groups = make(map[*FileEntry]int, len(entries))
+		for _, entry := range entries {
+			groups[entry] = GlobalSortGroups.GroupOf(&entry.VFSItem)
+		}
+	}
+
+	less := func(i, j int) bool {
+		ei, ej := entries[i], entries[j]
+		if ei.Name == ".." {
+			return ej.Name != ".."
+		}
+		if ej.Name == ".." {
+			return false
+		}
+		if fp.GroupBy != GroupNone {
+			if n := fp.compareGroups(ei, ej, compareName); n != 0 {
+				return n < 0
+			}
+		}
+		if (fp.SortMode != SortUnsorted || fp.GroupBy != GroupNone) && ei.IsDir != ej.IsDir {
+			return ei.IsDir
+		}
+		if grouped {
+			if gi, gj := groups[ei], groups[ej]; gi != gj {
+				return gi < gj
+			}
+			if fp.SortMode == SortUnsorted {
+				return fp.GroupBy != GroupNone && ei.sourceOrder < ej.sourceOrder
+			}
+		}
+		if fp.SortMode == SortUnsorted {
+			return ei.sourceOrder < ej.sourceOrder
+		}
+		cmp := 0
+		legacyDirection := !fp.sortDirectionSetByAction && (fp.SortMode == SortTime || fp.SortMode == SortSize)
+		switch fp.SortMode {
+		case SortName:
+			cmp = compareName(ei.Name, ej.Name)
+		case SortExt:
+			cmp = compareName(filepath.Ext(ei.Name), filepath.Ext(ej.Name))
+			if cmp == 0 {
+				cmp = compareName(ei.Name, ej.Name)
+			}
+		case SortTime:
+			if legacyDirection {
+				if ei.MTime.Before(ej.MTime) {
+					cmp = -1
+				} else if ei.MTime.After(ej.MTime) {
+					cmp = 1
+				}
+			} else if ei.MTime.After(ej.MTime) {
+				cmp = -1
+			} else if ei.MTime.Before(ej.MTime) {
+				cmp = 1
+			}
+		case SortSize:
+			if legacyDirection {
+				if ei.Size < ej.Size {
+					cmp = -1
+				} else if ei.Size > ej.Size {
+					cmp = 1
+				}
+			} else if ei.Size > ej.Size {
+				cmp = -1
+			} else if ei.Size < ej.Size {
+				cmp = 1
+			}
+		default:
+			cmp = compareName(ei.Name, ej.Name)
+		}
+		if cmp == 0 {
+			cmp = compareName(ei.Name, ej.Name)
+		}
+		effectiveReverse := fp.SortReverse
+		if effectiveReverse {
+			cmp = -cmp
+		}
+		return cmp < 0
+	}
+
+	sort.SliceStable(entries, less)
+	fp.refilterEntries()
+	fp.rebuildDisplayRows()
 	fp.markSemanticCatalogMutation()
 }
 
@@ -1496,11 +1594,7 @@ func (fp *FileSystemPanel) mouseEntryIndex(mouseX, mouseY int) int {
 		}
 	}
 
-	idx := fp.Table.TopPos + row + column*fp.Table.ViewHeight
-	if idx < 0 || idx >= len(fp.Entries) {
-		return -1
-	}
-	return idx
+	return fp.entryIndex(fp.Table.TopPos+row, column)
 }
 
 func (fp *FileSystemPanel) processRightDrag(idx int) {
@@ -1718,6 +1812,9 @@ func (fp *FileSystemPanel) columnSortMode(column int) (SortMode, bool) {
 }
 
 func (fp *FileSystemPanel) SortIsAscending() bool {
+	if !fp.sortDirectionSetByAction && fp.Table == nil {
+		return !fp.SortReverse
+	}
 	switch fp.SortMode {
 	case SortTime, SortSize:
 		// Their base comparators are newest/largest first.
@@ -1867,13 +1964,17 @@ func (fp *FileSystemPanel) panelScrollMetrics() (height, visibleItems, maxTop, v
 
 	columns := fp.gridColumnCount()
 	visibleItems = height * columns
-	maxTop = len(fp.Entries) - visibleItems
+	maxTop = fp.displayCount() - visibleItems
+	if maxTop > 0 {
+		maxTop += fp.stickyGroupRows(maxTop)
+	}
+	visibleItems -= fp.stickyGroupRows(fp.Table.TopPos)
 	if maxTop <= 0 {
 		maxTop = 0
 		return
 	}
 
-	virtualRows := (len(fp.Entries) + columns - 1) / columns
+	virtualRows := (fp.displayCount() + columns - 1) / columns
 	virtualMax = virtualRows - height
 	if virtualMax <= 0 {
 		virtualMax = 1
@@ -1948,7 +2049,11 @@ func (fp *FileSystemPanel) setPanelScrollTop(top int) {
 	if delta == 0 {
 		return
 	}
-	idx := fp.GetCursorIndex() + delta
+	direction := 1
+	if delta < 0 {
+		direction = -1
+	}
+	idx := fp.nearestDisplayEntry(fp.displayOfEntry(fp.GetCursorIndex())+delta, direction)
 	if idx < 0 {
 		idx = 0
 	}
@@ -2427,14 +2532,20 @@ func (fp *FileSystemPanel) SetCursorIndex(idx int) {
 	}
 	fp.CursorIdx = idx
 
+	visual := fp.displayOfEntry(idx)
+	if fp.GroupBy != GroupNone {
+		fp.syncGroupedCursor(visual)
+		return
+	}
+
 	// Sync table visual state
 	if fp.gridColumnCount() == 1 {
-		fp.Table.SetSelectPos(fp.CursorIdx)
+		fp.Table.SetSelectPos(visual)
 		fp.Table.SelectCol = 0
 		if fp.FastFindMode {
 			h := fp.Table.ViewHeight
-			if h > 2 && fp.CursorIdx >= fp.Table.TopPos+h-2 {
-				fp.Table.TopPos = fp.CursorIdx - h + 3
+			if h > 2 && visual >= fp.Table.TopPos+h-2 {
+				fp.Table.TopPos = visual - h + 3
 				if fp.Table.TopPos < 0 {
 					fp.Table.TopPos = 0
 				}
@@ -2447,17 +2558,17 @@ func (fp *FileSystemPanel) SetCursorIndex(idx int) {
 		}
 
 		// 1. Ensure TopPos is sane for the current cursor
-		if fp.CursorIdx < fp.Table.TopPos {
-			fp.Table.TopPos = fp.CursorIdx
-		} else if fp.CursorIdx >= fp.Table.TopPos+fp.gridColumnCount()*h {
-			fp.Table.TopPos = fp.CursorIdx - fp.gridColumnCount()*h + 1
+		if visual < fp.Table.TopPos {
+			fp.Table.TopPos = visual
+		} else if visual >= fp.Table.TopPos+fp.gridColumnCount()*h {
+			fp.Table.TopPos = visual - fp.gridColumnCount()*h + 1
 		}
 
 		// Far-style 2-column scrolling: ensure cursorIdx is in [TopPos, TopPos + 2*H)
-		if fp.CursorIdx < fp.Table.TopPos {
-			fp.Table.TopPos = fp.CursorIdx
-		} else if fp.CursorIdx >= fp.Table.TopPos+fp.gridColumnCount()*h {
-			fp.Table.TopPos = fp.CursorIdx - fp.gridColumnCount()*h + 1
+		if visual < fp.Table.TopPos {
+			fp.Table.TopPos = visual
+		} else if visual >= fp.Table.TopPos+fp.gridColumnCount()*h {
+			fp.Table.TopPos = visual - fp.gridColumnCount()*h + 1
 		}
 
 		if fp.FastFindMode && h > 2 {
@@ -2473,7 +2584,7 @@ func (fp *FileSystemPanel) SetCursorIndex(idx int) {
 			fp.Table.TopPos = 0
 		}
 
-		rel := fp.CursorIdx - fp.Table.TopPos
+		rel := visual - fp.Table.TopPos
 		fp.Table.SelectCol = rel / h
 		// Table internal rendering expects SelectPos to be absolute index in its row space
 		// to correctly calculate vertical offset: y = Y1 + (SelectPos - TopPos)
@@ -3069,6 +3180,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 	directoryChanged := fp.lastLoadedPath != "" && !fileops.SameFolderHistoryPath(fp.lastLoadedPath, path)
 	suppressFolderHistory := hasFolderHistorySuppression && fp.ConsumeFolderHistorySuppression(path, suppressionToken)
 	if directoryChanged {
+		fp.ExitFastFind()
 		for k := range fp.SelectedItems {
 			delete(fp.SelectedItems, k)
 		}
@@ -3114,7 +3226,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 	}
 
 	isFirstChunk := true
-	if !keepEntries {
+	if !keepEntries && !fp.autoFilterOn {
 		fp.catalogProvisional = true
 		fp.Entries = nil
 		if showUpEntry {
@@ -3213,6 +3325,9 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				if !loadIsCurrent() || !isFirstChunk {
 					return false
 				}
+				if fp.autoFilterOn {
+					return false
+				}
 
 				target := fp.PendingSelection
 				if target != "" && target != ".." {
@@ -3302,6 +3417,9 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			}
 			loadFrames.PostPriorityTaskWithRedrawDecision(func() bool {
 				if !loadIsCurrent() || !isFirstChunk {
+					return false
+				}
+				if fp.autoFilterOn {
 					return false
 				}
 				advanceSourceEpoch()
@@ -3416,10 +3534,12 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 
 				if isFirstChunk {
 					advanceSourceEpoch()
-					fp.Entries = nil
-					if showUpEntry {
-						upItem := vfs.VFSItem{Name: "..", IsDir: true}
-						fp.Entries = []*FileEntry{{VFSItem: upItem}}
+					if !fp.autoFilterOn {
+						fp.Entries = nil
+						if showUpEntry {
+							upItem := vfs.VFSItem{Name: "..", IsDir: true}
+							fp.Entries = []*FileEntry{{VFSItem: upItem}}
+						}
 					}
 					isFirstChunk = false
 				}
@@ -3435,12 +3555,17 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				}
 
 				selectionFinishedNs := navtrace.NavigationBenchmarkMonotonicNs()
-				fp.Entries = append(fp.Entries, newEntries...)
+				if !fp.autoFilterOn {
+					fp.Entries = append(fp.Entries, newEntries...)
+				}
 				if authoritativeBase {
 					fp.clearSemanticPendingSource(loadGeneration)
 				}
 				appendFinishedNs := navtrace.NavigationBenchmarkMonotonicNs()
-				if preSorted && fp.SortMode == loadSortMode &&
+				if fp.autoFilterOn {
+					// The complete source is rebuilt by the final completion task;
+					// do not expose an unfiltered chunk while the query is active.
+				} else if preSorted && fp.SortMode == loadSortMode &&
 					fp.SortReverse == loadSortReverse && fp.UseSortGroups == loadSortGroups {
 					if !authoritativeWindowQueued {
 						fp.markSemanticCatalogMutation()
@@ -3785,6 +3910,13 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			benchmark.EventAt("model.final.queued", "go.worker", completionQueuedNs,
 				"path", path, "entries", directoryEntryCount, "chunks", chunkCount)
 		}
+		// Queue metadata before the final completion task. The base catalog task
+		// has already been queued by the phased reader; ordering enrichment ahead
+		// of the task that clears IsLoading makes the load-completion contract
+		// observable to callers that wait for that flag.
+		if usePhasedRead && !keepEntries && err == nil {
+			publishMetadata(pendingMetadata)
+		}
 		loadFrames.PostTaskWithRedrawDecision(func() (needsRedraw bool) {
 			completionPresentationChanged := false
 			if benchmark != nil {
@@ -3818,7 +3950,12 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 					newEntries = append(newEntries, entry)
 				}
 				fp.sortEntrySlice(newEntries)
-				if keepEntries {
+				if fp.autoFilterOn {
+					// A same-directory refresh keeps the filter open. Replace its
+					// complete source and derive the visible subset from the query.
+					fp.setEntries(newEntries)
+					refreshChanged = true
+				} else if keepEntries {
 					refreshChanged = fp.reconcileDirectoryEntries(newEntries)
 				} else {
 					fp.Entries = newEntries
@@ -3933,6 +4070,26 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				fp.committedListingPath = path
 				fp.watchDirectoryChanges(ctx, loadVFS, path, loadIsCurrent)
 			}
+			if err == nil && fp.autoFilterOn && !loadSyncPanel {
+				// A reload of the same directory must replace the complete source
+				// behind an active autofilter, not the already narrowed visible slice.
+				// Rebuild through setEntries so the query is applied again and rows
+				// that disappeared from the directory cannot survive in the filter.
+				fresh := make([]*FileEntry, 0, len(accumulated)+1)
+				if showUpEntry {
+					fresh = append(fresh, &FileEntry{VFSItem: upItem})
+				}
+				for _, item := range accumulated {
+					if !loadShowHidden && item.Name != ".." && item.IsHidden {
+						continue
+					}
+					entry := &FileEntry{VFSItem: item}
+					fp.applyPersistentSelection(entry, loadVFS, path)
+					fresh = append(fresh, entry)
+				}
+				fp.setEntries(fresh)
+				fp.SortEntries()
+			}
 
 			if isFirstChunk {
 				completionPresentationChanged = true
@@ -4001,12 +4158,6 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			}
 			return
 		})
-		// Publish enrichment only after the complete listing task has been queued.
-		// The base catalog is the interactive result; metadata is decoration and
-		// must never sit in front of the navigation commit in the UI queue.
-		if usePhasedRead && !keepEntries && err == nil {
-			publishMetadata(pendingMetadata)
-		}
 	})
 }
 
@@ -4039,45 +4190,9 @@ func (fp *FileSystemPanel) watchDirectoryChanges(
 func (fp *FileSystemPanel) Refresh() {
 	idx := fp.GetCursorIndex()
 	fp.updateSortColumnTitles()
-	virtualRows := false
-	if vtui.FrameManager != nil {
-		if screen := vtui.FrameManager.Screen(); screen != nil {
-			if renderer, ok := screen.Renderer.(interface {
-				VirtualizePanelTableRows() bool
-			}); ok {
-				virtualRows = renderer.VirtualizePanelTableRows()
-			}
-		}
-	}
-	if virtualRows {
-		if fp.gridColumnCount() == 1 {
-			fp.Table.SetTableRowProvider(len(fp.Entries), func(index int) vtui.TableRow {
-				if index < 0 || index >= len(fp.Entries) {
-					return nil
-				}
-				return &panelEntryRow{fp: fp, entry: fp.Entries[index]}
-			})
-		} else {
-			fp.Table.SetTableRowProvider(len(fp.Entries), func(index int) vtui.TableRow {
-				if index < 0 || index >= len(fp.Entries) {
-					return nil
-				}
-				return &mediumRow{fp: fp, r: index}
-			})
-		}
-	} else if fp.gridColumnCount() == 1 {
-		rows := make([]vtui.TableRow, len(fp.Entries))
-		for i, e := range fp.Entries {
-			rows[i] = &panelEntryRow{fp: fp, entry: e}
-		}
-		fp.Table.SetRows(rows)
-	} else {
-		rows := make([]vtui.TableRow, len(fp.Entries))
-		for i := 0; i < len(rows); i++ {
-			rows[i] = &mediumRow{fp: fp, r: i}
-		}
-		fp.Table.SetRows(rows)
-	}
+	n := fp.displayCount()
+	fp.Table.SetCellProvider(fp)
+	fp.Table.SetRowCount(n)
 	fp.SetCursorIndex(idx)
 	_, _, maxTop, _, _ := fp.panelScrollMetrics()
 	if fp.Table.TopPos > maxTop {
@@ -4117,6 +4232,7 @@ func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 	}
 	fp.clampNameLeftPos()
 	fp.Table.Show(scr)
+	fp.drawGroupHeadings(scr)
 	fp.drawFastFindMatches(scr)
 	fp.drawCursorSeparators(scr)
 	fp.drawNameScrollBrackets(scr)
@@ -4164,22 +4280,7 @@ func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 			e := fp.Entries[idx]
 
 			dateStr := e.MTime.Format("02.01.06 15:04")
-			sizeStr := ""
-			if e.IsDir {
-				if e.SizeCalculated {
-					sizeStr = fileops.FormatIntWithSpaces(e.Size)
-				} else if e.Name == ".." {
-					sizeStr = "UP-DIR"
-				} else if e.IsSymlink {
-					sizeStr = "<LNK-DIR>"
-				} else {
-					sizeStr = "<DIR>"
-				}
-			} else if e.IsSymlink {
-				sizeStr = "<LNK>"
-			} else {
-				sizeStr = fileops.FormatIntWithSpaces(e.Size)
-			}
+			sizeStr := entrySizeText(e)
 
 			nameStr := e.Name
 			if e.IsSymlink && fp.Vfs != nil {
@@ -4288,13 +4389,7 @@ func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 	if !config.App.ShowPanelFileInfo && fp.gridColumnCount() > 1 {
 		if idx := fp.GetCursorIndex(); idx >= 0 && idx < len(fp.Entries) {
 			e := fp.Entries[idx]
-			curStr := fileops.FormatIntWithSpaces(e.Size)
-			if e.IsDir && !e.SizeCalculated {
-				curStr = "<DIR>"
-				if e.Name == ".." {
-					curStr = "UP-DIR"
-				}
-			}
+			curStr := entrySizeText(e)
 			if e.IsSymlink && fp.Vfs != nil {
 				if target, err := vfs.Readlink(context.Background(), fp.Vfs, fp.Vfs.Join(fp.Vfs.GetPath(), e.Name)); err == nil && target != "" {
 					curStr = "→ " + target
@@ -4924,23 +5019,24 @@ func (fp *FileSystemPanel) processKey(e *vtinput.InputEvent, allowProviderPanelE
 	}
 
 	if fp.FastFindMode {
-		if e.VirtualKeyCode == vtinput.VK_UP || e.VirtualKeyCode == vtinput.VK_DOWN {
-			fp.FastFindMode = false
-			fp.FastFindStr = ""
+		// While the panel is narrowed every visible row is already a match, so
+		// navigation keys walk the result and the filter stays up. The
+		// cursor-moving search still gives navigation back to the panel.
+		filtering := fp.autoFilterOn
+		if !filtering && (e.VirtualKeyCode == vtinput.VK_UP || e.VirtualKeyCode == vtinput.VK_DOWN) {
+			fp.ExitFastFind()
 			vtui.FrameManager.Redraw()
-			// Reprocess the key as ordinary panel navigation now that Fast Find
-			// no longer owns it.
 			return fp.ProcessKey(e)
 		}
 		switch e.VirtualKeyCode {
 		case vtinput.VK_LEFT, vtinput.VK_RIGHT, vtinput.VK_PRIOR, vtinput.VK_NEXT, vtinput.VK_HOME, vtinput.VK_END:
-			fp.FastFindMode = false
-			fp.FastFindStr = ""
-			vtui.FrameManager.Redraw()
+			if !filtering {
+				fp.ExitFastFind()
+				vtui.FrameManager.Redraw()
+			}
 			// Проваливаемся дальше, чтобы обработать саму навигацию
 		case vtinput.VK_ESCAPE:
-			fp.FastFindMode = false
-			fp.FastFindStr = ""
+			fp.ExitFastFind()
 			vtui.FrameManager.Redraw()
 			return true
 		case vtinput.VK_DELETE:
@@ -4955,10 +5051,10 @@ func (fp *FileSystemPanel) processKey(e *vtinput.InputEvent, allowProviderPanelE
 			} else {
 				fp.FastFindStr = "*" + fp.FastFindStr
 			}
-			if fp.FastFindStr == "" {
-				fp.FastFindMode = false
+			if autoFilterQuery(fp.FastFindStr) == "" {
+				fp.ExitFastFind()
 			} else {
-				fp.doFastFind(0)
+				fp.applyFastFind()
 			}
 			vtui.FrameManager.Redraw()
 			return true
@@ -4967,10 +5063,10 @@ func (fp *FileSystemPanel) processKey(e *vtinput.InputEvent, allowProviderPanelE
 			if len(fp.FastFindStr) > 0 {
 				runes := []rune(fp.FastFindStr)
 				fp.FastFindStr = string(runes[:len(runes)-1])
-				if len(fp.FastFindStr) == 0 {
-					fp.FastFindMode = false
+				if autoFilterQuery(fp.FastFindStr) == "" {
+					fp.ExitFastFind()
 				} else {
-					fp.doFastFind(0)
+					fp.applyFastFind()
 				}
 			}
 			vtui.FrameManager.Redraw()
@@ -4996,22 +5092,26 @@ func (fp *FileSystemPanel) processKey(e *vtinput.InputEvent, allowProviderPanelE
 			return true
 		}
 		if e.VirtualKeyCode == vtinput.VK_RETURN {
-			fp.FastFindMode = false
-			fp.FastFindStr = ""
+			fp.ExitFastFind()
 			vtui.FrameManager.Redraw()
 			// Проваливаемся ниже, чтобы обработать Enter как вход в файл/директорию
-		} else if r := fastFindRune(e, alt); r != 0 && !ctrl && unicode.IsPrint(r) {
-			fp.FastFindStr += string(unicode.ToLower(r))
-			fp.doFastFind(0)
+		} else if e.Char != 0 && !ctrl && unicode.IsPrint(e.Char) {
+			fp.FastFindStr += string(unicode.ToLower(e.Char))
+			fp.applyFastFind()
 			vtui.FrameManager.Redraw()
 			return true
 		}
 	} else {
 		searchFirstInput := config.App.NavigationMode == config.NavigationSearchFirst && fp.IsFocused() && !alt
-		if r := fastFindRune(e, alt); r != 0 && (alt || searchFirstInput) && !ctrl && unicode.IsPrint(r) {
+		if e.Char != 0 && (alt || searchFirstInput) && !ctrl && unicode.IsPrint(e.Char) {
 			fp.FastFindMode = true
-			fp.FastFindStr = string(unicode.ToLower(r))
-			fp.doFastFind(0)
+			fp.FastFindStr = string(unicode.ToLower(e.Char))
+			if config.App.PanelAutoFilter {
+				// An autofilter is an unanchored search. Keep the marker in the
+				// query so F2 can still toggle it to an anchored search.
+				fp.FastFindStr = "*" + fp.FastFindStr
+			}
+			fp.applyFastFind()
 			vtui.FrameManager.Redraw()
 			return true
 		}
@@ -5091,7 +5191,10 @@ func (fp *FileSystemPanel) processKey(e *vtinput.InputEvent, allowProviderPanelE
 		}
 
 		handled := false
-		if columns := fp.gridColumnCount(); columns > 1 {
+		if fp.GroupBy != GroupNone {
+			fp.SetCursorIndex(fp.groupNavigationTarget(e.VirtualKeyCode))
+			handled = true
+		} else if columns := fp.gridColumnCount(); columns > 1 {
 			switch e.VirtualKeyCode {
 			case vtinput.VK_UP:
 				idx--
@@ -5190,7 +5293,11 @@ func (fp *FileSystemPanel) processKey(e *vtinput.InputEvent, allowProviderPanelE
 			if provider != nil && !allowProviderPanelEnter {
 				if policy, ok := provider.(vfs.PanelEnterPolicyProvider); ok &&
 					!policy.PanelEnterAllowed(context.Background(), fp.Vfs, fullPath) {
-					return true
+					// The provider reserves ordinary Enter for another action
+					// (for example, running an SFX executable). Decline the panel
+					// key so PanelsFrame can dispatch that action instead of
+					// swallowing the key.
+					provider = nil
 				}
 			}
 			if provider != nil {
@@ -5293,6 +5400,10 @@ func (fp *FileSystemPanel) ProcessMouse(e *vtinput.InputEvent) bool {
 		}
 	}
 
+	if e.WheelDirection == 0 && fp.groupHeadingAt(int(e.MouseX), int(e.MouseY)) {
+		return true
+	}
+
 	if e.WheelDirection == 0 && e.ButtonState&vtinput.FromLeft1stButtonPressed != 0 &&
 		e.KeyDown && e.MouseEventFlags&vtinput.MouseMoved == 0 {
 		if mode, ok := fp.headerSortModeAt(int(e.MouseX), int(e.MouseY)); ok {
@@ -5312,7 +5423,10 @@ func (fp *FileSystemPanel) ProcessMouse(e *vtinput.InputEvent) bool {
 		}
 	}
 
-	if fp.FastFindMode && e.ButtonState != 0 {
+	if fp.FastFindMode && e.ButtonState != 0 && !fp.autoFilterOn {
+		// Keep a narrowed panel in its filtered coordinate system while the
+		// pointer is being resolved; closing it first would make the same
+		// screen cell refer to a different file.
 		fp.FastFindMode = false
 		fp.FastFindStr = ""
 		vtui.FrameManager.Redraw()

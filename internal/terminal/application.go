@@ -21,17 +21,19 @@ type Application interface {
 	// inside one.
 	InstallImageOverlay()
 
-	// OpenEditFile opens the file named by -e, or does nothing when none was
-	// given. The Unix session folds this into ClientAttached, which has an
-	// attach to defer it past; the Windows session is already fully up by the
-	// time it can be called.
-	OpenEditFile()
+	// OpenStartupFiles opens the files named on the command line -- for
+	// viewing, and for editing by -e -- or does nothing when none was given.
+	// The Unix session folds this into ClientAttached, which has an attach to
+	// defer it past; the Windows session is already fully up by the time it
+	// can be called.
+	OpenStartupFiles()
 
 	// ClientAttached runs the application's part of a client attach, in order:
 	// give the host console back to a workspace that had its panels hidden,
 	// move that workspace to the directories the client started in, and open
-	// the file named by -e. Empty strings skip their step.
-	ClientAttached(startLeft, startRight, editPath string)
+	// the files the client named for viewing and by -e. Empty values skip their
+	// step.
+	ClientAttached(startLeft, startRight, editPath string, viewPaths []string)
 
 	// ClientDetached leaves every active host console before the terminal is
 	// restored, across all workspaces rather than only the visible one.
@@ -46,6 +48,10 @@ type Application interface {
 
 	// EditFilePath is the file named by -e, or "".
 	EditFilePath() string
+
+	// ViewFilePaths are the files named before the switches, which open in
+	// the viewer (issue #991); absolute paths.
+	ViewFilePaths() []string
 
 	// StartupDirs are the directories the process started in.
 	StartupDirs() (left, right string)

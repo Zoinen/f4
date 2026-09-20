@@ -18,6 +18,7 @@ import (
 
 const (
 	CommandPaletteActionName = "App.CommandPalette"
+	commandPaletteActionName  = CommandPaletteActionName
 	commandPaletteHistoryID  = "command-palette"
 	commandPaletteHistoryMax = 50
 	commandPaletteLegacyKey  = "CtrlAltP"
@@ -155,6 +156,12 @@ func CommandPaletteLegacyShortcut(area string, e *vtinput.InputEvent) bool {
 		return true
 	}
 	return keymap.ConfiguredHotkeyAction(keymap.GlobalHotkeysMgr, area, commandPaletteLegacyKey) == ""
+}
+
+// commandPaletteLegacyShortcut keeps the upstream package-private spelling
+// available to tests and merged package-local callers.
+func commandPaletteLegacyShortcut(area string, e *vtinput.InputEvent) bool {
+	return CommandPaletteLegacyShortcut(area, e)
 }
 
 func buildCommandPaletteEntries(area string, pf *panel.PanelsFrame) []commandPaletteEntry {

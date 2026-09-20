@@ -33,6 +33,8 @@ func TestHotkeys_ShellActionsBoundInTerminalArea_Issue354(t *testing.T) {
 		{"AltF1", "Panel.LeftDriveMenu"},
 		{"AltF2", "Panel.RightDriveMenu"},
 		{"CtrlP", "Panel.TogglePassivePanel"},
+		{"CtrlF1", "Panel.ToggleLeftPanel"},
+		{"CtrlF2", "Panel.ToggleRightPanel"},
 	}
 	for _, tc := range cases {
 		got, ok := hm.Bindings["Terminal"][tc.key]
@@ -44,6 +46,63 @@ func TestHotkeys_ShellActionsBoundInTerminalArea_Issue354(t *testing.T) {
 		if got != want {
 			t.Errorf("Terminal/%s = %q, want %q", tc.key, got, want)
 		}
+	}
+}
+
+// TestPanelsFrame_CtrlF1CtrlF2RestoreAfterBothHidden_Issue927 covers the
+// state reached after hiding both side panels. The side toggles must remain
+// available in the idle terminal area and showing either side must bring the
+// panels frame back on screen; an AltScreen application must keep both keys.
+func TestPanelsFrame_CtrlF1CtrlF2RestoreAfterBothHidden_Issue927(t *testing.T) {
+	t.Cleanup(paneltest.SwapFrameManager(t))
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	previousHotkeys := keymap.GlobalHotkeysMgr
+	previousMacros := macro.MacroMgr
+	keymap.GlobalHotkeysMgr = keymap.NewHotkeyManager("")
+	macro.MacroMgr = macro.NewMacroManager("")
+	t.Cleanup(func() {
+		keymap.GlobalHotkeysMgr = previousHotkeys
+		macro.MacroMgr = previousMacros
+	})
+
+	pf := paneltest.SetupMockPanelsFrame(t)
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+	pf.ShowLeftPanel = false
+	pf.ShowRightPanel = false
+	pf.ShowPanels = false
+	pf.TermView.UseAltScreen = false
+	vtui.FrameManager.Push(pf)
+
+	press := func(vk uint16) {
+		pressKey(pf, &vtinput.InputEvent{
+			Type:            vtinput.KeyEventType,
+			KeyDown:         true,
+			VirtualKeyCode:  vk,
+			ControlKeyState: vtinput.LeftCtrlPressed,
+		})
+	}
+
+	press(vtinput.VK_F1)
+	if !pf.ShowPanels || !pf.ShowLeftPanel || pf.ShowRightPanel {
+		t.Fatalf("Ctrl+F1 from both panels hidden: show=%v left=%v right=%v; want true,true,false",
+			pf.ShowPanels, pf.ShowLeftPanel, pf.ShowRightPanel)
+	}
+	press(vtinput.VK_F2)
+	if !pf.ShowPanels || !pf.ShowLeftPanel || !pf.ShowRightPanel {
+		t.Fatalf("Ctrl+F2 after Ctrl+F1: show=%v left=%v right=%v; want true,true,true",
+			pf.ShowPanels, pf.ShowLeftPanel, pf.ShowRightPanel)
+	}
+
+	pf.ShowPanels = false
+	pf.ShowLeftPanel = false
+	pf.ShowRightPanel = false
+	pf.TermView.UseAltScreen = true
+	if got := keymap.GlobalHotkeysMgr.GetAction("Terminal", "CtrlF1"); got != "" {
+		t.Fatalf("Terminal CtrlF1 with AltScreen active = %q, want empty", got)
+	}
+	if got := keymap.GlobalHotkeysMgr.GetAction("Terminal", "CtrlF2"); got != "" {
+		t.Fatalf("Terminal CtrlF2 with AltScreen active = %q, want empty", got)
 	}
 }
 

@@ -172,6 +172,10 @@ var ColorSlots = []ColorSlot{
 	{Canonical: "Menu.Highlight.Selected", Index: vtui.ColMenuSelectedHighlight, Group: "Menu", ConstantName: "ColMenuSelectedHighlight"},
 	{Canonical: "Menu.Box", Index: vtui.ColMenuBox, Group: "Menu", ConstantName: "ColMenuBox"},
 	{Canonical: "Menu.Title", Index: vtui.ColMenuTitle, Group: "Menu", ConstantName: "ColMenuTitle"},
+	// Menu.Scrollbar runs down the menu frame. Until the menus got a slot of
+	// their own they shared the old Scrollbar key with generic lists, so that
+	// key still feeds both Menu.Scrollbar and Table.Scrollbar.
+	{Canonical: "Menu.Scrollbar", Index: vtui.ColMenuScrollbar, Group: "Menu", ConstantName: "ColMenuScrollbar", Aliases: []string{"Scrollbar"}},
 
 	// Horizontal menu Group
 	{Canonical: "HMenu.Text", Index: vtui.ColMenuBarItem, Group: "Horizontal menu", ConstantName: "ColMenuBarItem", Aliases: []string{"MenuBar.Text"}},
@@ -211,10 +215,13 @@ var ColorSlots = []ColorSlot{
 	// view, which is why one key appeared to control unrelated elements; the
 	// tree lines now sit in a vtui slot of their own.
 	{Canonical: "Table.Separator", Index: vtui.ColTableBox, Group: "Lists and tables", ConstantName: "ColTableBox", Aliases: []string{"Table.Box"}},
-	// Scrollbar is the fallback for the scrollbars that have no semantic slot
-	// of their own: generic lists and menus. Panel, Viewer, Editor, Help and
-	// combo dropdowns all carry their own key and never read this one.
-	{Canonical: "Scrollbar", Index: vtui.ColScrollBar, Group: "Lists and tables", ConstantName: "ColScrollBar"},
+	// Table.Scrollbar is the scrollbar of generic lists and tables. It used to
+	// be called Scrollbar and also painted every menu, whose background is a
+	// different one, so no single value fitted both; menus now read
+	// Menu.Scrollbar. Panel, Viewer, Editor, Help and combo dropdowns carry
+	// their own keys too. The old name stays an alias of both keys, so an
+	// existing farcolors.ini still colours what it coloured before.
+	{Canonical: "Table.Scrollbar", Index: vtui.ColScrollBar, Group: "Lists and tables", ConstantName: "ColScrollBar", Aliases: []string{"Scrollbar"}},
 
 	// Dialog Group
 	{Canonical: "Dialog.Indicator.Background", Index: vtui.ColDialogIndicatorBackground, Group: "Dialog", ConstantName: "ColDialogIndicatorBackground"},
@@ -409,8 +416,8 @@ func ExportColors(path string) error {
 		fmt.Fprintf(&sb, "\n# %s\n", group)
 		if group == "Lists and tables" {
 			sb.WriteString("# Table.Separator colors the column separators of a table, not the outer frame.\n")
-			sb.WriteString("# Scrollbar is the shared fallback for generic lists and menus; panels, the\n")
-			sb.WriteString("# viewer, the editor, help and combo dropdowns have scrollbar keys of their own.\n")
+			sb.WriteString("# Table.Scrollbar is the scrollbar of generic lists and tables; menus, panels,\n")
+			sb.WriteString("# the viewer, the editor, help and combo dropdowns have scrollbar keys of their own.\n")
 		}
 		var slots []ColorSlot
 		for _, slot := range ColorSlots {
@@ -476,6 +483,15 @@ func CorrectContrast(fg, bg uint32) uint32 {
 	return toRGB24(newFg)
 }
 
+// isFrameLineSlot reports whether a slot colours frame lines, which far2l
+// leaves out of contrast correction: it skips every key ending in ".Box". The
+// table column separator is such a line too, but it lost the suffix when
+// Table.Box was renamed to Table.Separator, and the rename alone must not
+// start rewriting its foreground.
+func isFrameLineSlot(slot ColorSlot) bool {
+	return strings.HasSuffix(slot.Canonical, ".Box") || slot.Index == vtui.ColTableBox
+}
+
 func AdjustContrastLevels() {
 	if !config.App.EnforceColorCorrection {
 		return
@@ -490,7 +506,7 @@ func AdjustContrastLevels() {
 		if slot.Index == ColTerminalCursor || slot.Index == vtui.ColDialogIndicatorBackground || slot.Index == ColDialogSettingsBackground {
 			continue
 		}
-		if strings.HasSuffix(slot.Canonical, ".Box") || done[slot.Index] {
+		if isFrameLineSlot(slot) || done[slot.Index] {
 			continue
 		}
 		done[slot.Index] = true

@@ -9,6 +9,7 @@
 | :--- | :--- | :--- |
 | **Windows** | .zip | [amd64](https://github.com/unxed/f4/releases/download/nightly/f4-windows-amd64.zip) / [arm64](https://github.com/unxed/f4/releases/download/nightly/f4-windows-arm64.zip) |
 | **Windows 7/8/8.1** | .zip | [amd64](https://github.com/unxed/f4/releases/download/nightly/f4-windows7-amd64.zip) |
+| **ReactOS** ([details](#-reactos)) | .zip | [x86](https://github.com/unxed/f4/releases/download/nightly/f4-legacy-windows-386.zip) |
 | **macOS** | .tar.gz | [amd64](https://github.com/unxed/f4/releases/download/nightly/f4-darwin-amd64.tar.gz) / [arm64](https://github.com/unxed/f4/releases/download/nightly/f4-darwin-arm64.tar.gz) |
 | **Android (Termux)** | .tar.gz / .deb | [arm64 archive](https://github.com/unxed/f4/releases/download/nightly/f4-termux-arm64.tar.gz) / [arm64 package](https://github.com/unxed/f4/releases/download/nightly/f4-termux-arm64.deb) |
 | **Linux** | .tar.gz | [amd64](https://github.com/unxed/f4/releases/download/nightly/f4-linux-amd64.tar.gz) / [arm64](https://github.com/unxed/f4/releases/download/nightly/f4-linux-arm64.tar.gz) / [armv7l](https://github.com/unxed/f4/releases/download/nightly/f4-linux-arm.tar.gz) / [386](https://github.com/unxed/f4/releases/download/nightly/f4-linux-386.tar.gz) / [mips](https://github.com/unxed/f4/releases/download/nightly/f4-linux-mips.tar.gz) / [mipsle](https://github.com/unxed/f4/releases/download/nightly/f4-linux-mipsle.tar.gz) / [mips64](https://github.com/unxed/f4/releases/download/nightly/f4-linux-mips64.tar.gz) / [mips64le](https://github.com/unxed/f4/releases/download/nightly/f4-linux-mips64le.tar.gz) / [riscv64](https://github.com/unxed/f4/releases/download/nightly/f4-linux-riscv64.tar.gz) / [loong64](https://github.com/unxed/f4/releases/download/nightly/f4-linux-loong64.tar.gz) / [ppc64](https://github.com/unxed/f4/releases/download/nightly/f4-linux-ppc64.tar.gz) / [ppc64le](https://github.com/unxed/f4/releases/download/nightly/f4-linux-ppc64le.tar.gz) |
@@ -57,6 +58,27 @@ are linked against Termux's libraries and are intended to run inside Termux;
 they are not standalone Android APKs. Other Android architectures are not
 published yet.
 
+### 🪟 ReactOS
+
+The ReactOS build is tested on **ReactOS 0.4.16 (x86)**. Download
+[`f4-legacy-windows-386.zip`](https://github.com/unxed/f4/releases/download/nightly/f4-legacy-windows-386.zip),
+unpack it, and run `f4-legacy.exe` from a command prompt. `f4-legacy.exe --gui win32`
+opens f4 in a window of its own instead of the console.
+
+It is a 32-bit Windows build with its imports patched by
+[go2xp](https://github.com/unxed/go2xp): every Go release since 1.21 imports
+kernel32 functions that ReactOS, like any Windows before 10, does not have, and
+without the patch the loader refuses to start the program at all.
+
+Both the console and the window mode work: panels, viewer, editor, file
+operations, archives and running commands. One limitation in the window mode:
+ReactOS has no working pseudo-console (ConPTY), so a command's output goes to a
+scrollable output window instead of a live terminal, and interactive console
+programs cannot be given input there — run those from the console mode.
+
+Not tested on ReactOS: self-update (`f4 --update`). Not claimed for Windows XP:
+XP lacks a few functions ReactOS has.
+
 **The Core:** Creating an experimental, cross-platform TUI (Terminal User Interface) file manager that aims to fully replicate the features, UX, data structures, and rendering logic of `far2l` and Far Manager, but implemented entirely in Go.
 
 ### Philosophy & Goals
@@ -87,6 +109,8 @@ UI & input libraries are developed separately ([vtui](https://github.com/unxed/v
 `f4` can run either directly in your terminal or as a standalone graphical window. GUI mode is particularly useful on Windows to bypass console limitations or on Linux/macOS for high-performance hardware-accelerated rendering.
 
 **Command Line Options:**
+*   `f4 [path1 [path2]]`: Open the folders in the left and right panels. A path that names a file opens the file in the viewer, as F3 would, and its panel shows the file's folder with the cursor on it.
+*   `-e <file>`, `--edit <file>`: Open the file in the editor.
 *   `--gui`: Start in GUI mode using the best available backend for your OS.
 *   `--gui=win32`: Use native Win32/GDI graphical windowing (Windows and Wine).
 *   `--gui=gogpu`: Use the hardware-accelerated (GPU) renderer.

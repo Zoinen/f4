@@ -48,7 +48,19 @@ func preserveActionRegistry(t *testing.T) {
 	t.Cleanup(action.Snapshot())
 }
 
+// runAsF4Env makes this test binary run f4 itself rather than the tests. A test
+// that needs the whole startup path -- a terminal on stdin, the session daemon,
+// the restored session -- starts the binary it is already running as instead of
+// building ./cmd/f4 a second time. The daemon f4 spawns re-executes the same
+// binary with --server and inherits the variable, so it runs as f4 too. None of
+// the test seams below are installed there: that process is the application.
+const runAsF4Env = "F4_TEST_RUN_AS_F4"
+
 func TestMain(m *testing.M) {
+	if os.Getenv(runAsF4Env) != "" {
+		Main()
+		os.Exit(0)
+	}
 	os.Exit(testutil.Main(m, installTestSeams, unmountTestFilesystems))
 }
 

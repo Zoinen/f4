@@ -157,6 +157,7 @@ type mockAppForProgress struct {
 	passiveVfs  vfs.VFS
 	names       []string
 	inputBoxes  int
+	currentPct  []int
 	progressPct []int
 	progressMsg []string
 	done        chan struct{}
@@ -212,9 +213,67 @@ func (r *mockReporter) UpdateScan(currentPath string, files, dirs int64) {}
 func (r *mockReporter) IsCancelled() bool                                { return false }
 func (r *mockReporter) UpdateTransfer(action, filename string, currentPct int, totalText string, totalPct int, speedText string) {
 	r.m.mu.Lock()
+	r.m.currentPct = append(r.m.currentPct, currentPct)
 	r.m.progressPct = append(r.m.progressPct, totalPct)
 	r.m.progressMsg = append(r.m.progressMsg, fmt.Sprintf("%s: %s | %s | %s", action, filename, totalText, speedText))
 	r.m.mu.Unlock()
+}
+
+func TestTestArchiveOnce_ReportsCurrentAndTotalProgress(t *testing.T) {
+	tmpDir := t.TempDir()
+	archivePath := filepath.Join(tmpDir, "progress.zip")
+	f, err := os.Create(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(f)
+	fw, err := zw.Create("large.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fw.Write([]byte(strings.Repeat("payload", 64*1024))); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &mockAppForProgress{}
+	if err := testArchiveOnce(context.Background(), archivePath, archivePath, "", &mockReporter{m: app}); err != nil {
+		t.Fatalf("testArchiveOnce() error = %v", err)
+	}
+
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	hasCurrentProgress := false
+	for _, pct := range app.currentPct {
+		if pct >= 0 {
+			hasCurrentProgress = true
+			break
+		}
+	}
+	if !hasCurrentProgress {
+		t.Fatalf("current archive-member progress was never reported: %v", app.currentPct)
+	}
+	if app.currentPct[len(app.currentPct)-1] != 100 {
+		t.Fatalf("final current archive-member progress = %d, want 100", app.currentPct[len(app.currentPct)-1])
+	}
+	hasTotalProgress := false
+	for _, pct := range app.progressPct {
+		if pct >= 0 {
+			hasTotalProgress = true
+			break
+		}
+	}
+	if !hasTotalProgress {
+		t.Fatalf("total archive progress was never reported: %v", app.progressPct)
+	}
+	if app.progressPct[len(app.progressPct)-1] != 100 {
+		t.Fatalf("final total archive progress = %d, want 100", app.progressPct[len(app.progressPct)-1])
+	}
 }
 
 func (m *mockAppForProgress) RunAdvancedProgressTask(title string, forked bool, worker func(ctx context.Context, reporter vfs.TaskReporter) error, onComplete func(err error)) {

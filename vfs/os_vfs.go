@@ -195,7 +195,7 @@ func (v *OSVFS) SetPath(path string) error {
 	// Resolution runs on the PLAIN path (no \\?\ prefix): the prefix disables
 	// Win32's transparent reparse redirection, so "Documents and Settings"
 	// is opened directly and yields Access Denied.
-	if runtime.GOOS == "windows" {
+	if WindowsPersonality() {
 		for _, candidate := range resolveReparseCandidates(abs) {
 			vtui.DebugLog("VFS: SetPath: trying reparse candidate %q -> %q", abs, candidate)
 			if st, errStat := hostfs.Stat(prepareOSPath(candidate)); errStat == nil && st.IsDir() {
@@ -234,6 +234,10 @@ verify:
 		vtui.DebugLog("VFS: SetPath(%q) FAILED: not a directory", abs)
 		return os.ErrInvalid
 	}
+	if err := refuseNotListable(abs); err != nil {
+		vtui.DebugLog("VFS: SetPath(%q) FAILED: directory cannot be listed: %v", abs, err)
+		return err
+	}
 	vtui.DebugLog("VFS: Path changed to %q", abs)
 	v.currentPath = abs
 	return nil
@@ -242,7 +246,7 @@ verify:
 func (v *OSVFS) ReadDir(ctx context.Context, path string, onChunk func([]VFSItem)) error {
 	dirPath := path
 	entries, err := hostfs.ReadDir(prepareOSPath(dirPath))
-	if err != nil && os.IsPermission(err) && runtime.GOOS == "windows" {
+	if err != nil && os.IsPermission(err) && WindowsPersonality() {
 		// Resolve protected/per-user junctions (e.g. "Documents and
 		// Settings", "<user>\Application Data") the same way SetPath does.
 		for _, candidate := range resolveReparseCandidates(dirPath) {
@@ -324,14 +328,21 @@ func (v *OSVFS) ReadDir(ctx context.Context, path string, onChunk func([]VFSItem
 
 			entryPath := hostpath.Join(dirPath, e.Name())
 			item := VFSItem{
-				Name:         e.Name(),
-				Size:         size,
-				SizeKnown:    true,
-				IsDir:        isDir,
-				IsSymlink:    isSymlink,
-				MTime:        mtime,
-				IsExecutable: isExec,
-				IsHidden:     isHidden(entryPath, e.Name(), info),
+				KnownMetadata: MetadataExplicit | MetadataHidden,
+				Name:          e.Name(),
+				Size:          size,
+				SizeKnown:     info != nil,
+				IsDir:         isDir,
+				IsSymlink:     isSymlink,
+				ReparseTag:    readReparseTag(entryPath, info),
+				MTime:         mtime,
+				IsExecutable:  isExec,
+				IsHidden:      isHidden(entryPath, e.Name(), info),
+			}
+			if info != nil {
+				item.UnixMode = uint32(info.Mode().Perm())
+				item.KnownMetadata |= MetadataPermissions | MetadataExecutable | MetadataMTime
+				fillPlatformTimes(&item, info)
 			}
 			// Cheap variant: on Unix stat.Blocks is already loaded
 			// alongside FileInfo, so filling PhysicalSize here is free.
@@ -621,15 +632,17 @@ func (v *OSVFS) Stat(ctx context.Context, path string) (VFSItem, error) {
 	}
 
 	item := VFSItem{
-		Name:         info.Name(),
-		Size:         info.Size(),
-		SizeKnown:    true,
-		IsDir:        info.IsDir(),
-		IsSymlink:    isSymlink,
-		MTime:        info.ModTime(),
-		UnixMode:     uint32(info.Mode().Perm()),
-		IsExecutable: info.Mode().Perm()&0111 != 0,
-		IsHidden:     isHidden(path, info.Name(), info),
+		KnownMetadata: MetadataExplicit | MetadataPermissions | MetadataExecutable | MetadataHidden | MetadataMTime,
+		Name:          info.Name(),
+		Size:          info.Size(),
+		SizeKnown:     true,
+		IsDir:         info.IsDir(),
+		IsSymlink:     isSymlink,
+		ReparseTag:    readReparseTag(path, linkInfo),
+		MTime:         info.ModTime(),
+		UnixMode:      uint32(info.Mode().Perm()),
+		IsExecutable:  info.Mode().Perm()&0111 != 0,
+		IsHidden:      isHidden(path, info.Name(), info),
 	}
 
 	// Platform specific time extraction
@@ -676,15 +689,17 @@ func (v *OSVFS) Lstat(ctx context.Context, path string) (VFSItem, error) {
 	}
 
 	item := VFSItem{
-		Name:         info.Name(),
-		Size:         info.Size(),
-		SizeKnown:    true,
-		IsDir:        isDir,
-		IsSymlink:    isSymlink,
-		MTime:        info.ModTime(),
-		UnixMode:     uint32(info.Mode().Perm()),
-		IsExecutable: info.Mode().Perm()&0111 != 0,
-		IsHidden:     isHidden(path, info.Name(), info),
+		KnownMetadata: MetadataExplicit | MetadataPermissions | MetadataExecutable | MetadataHidden | MetadataMTime,
+		Name:          info.Name(),
+		Size:          info.Size(),
+		SizeKnown:     true,
+		IsDir:         isDir,
+		IsSymlink:     isSymlink,
+		ReparseTag:    readReparseTag(absPath, info),
+		MTime:         info.ModTime(),
+		UnixMode:      uint32(info.Mode().Perm()),
+		IsExecutable:  info.Mode().Perm()&0111 != 0,
+		IsHidden:      isHidden(path, info.Name(), info),
 	}
 
 	fillPlatformTimes(&item, info)
@@ -761,7 +776,7 @@ func (v *OSVFS) SetAttributes(ctx context.Context, path string, item VFSItem) er
 	}
 
 	var errOwn error
-	if runtime.GOOS != "windows" {
+	if !WindowsPersonality() {
 		if item.Uid != -1 && item.Gid != -1 {
 			if item.IsSymlink {
 				errOwn = hostfs.Lchown(prepareOSPath(path), item.Uid, item.Gid)
@@ -851,7 +866,7 @@ func (v *OSVFS) GetCapabilities() VFSCapabilities {
 		ReadAccess:               ReadAccessDirectLocal,
 		StorageClass:             StorageClassLocal,
 		HasSearch:                false,
-		HasUnixPermissions:       runtime.GOOS != "windows",
+		HasUnixPermissions:       !WindowsPersonality(),
 		HasAtomicNoReplaceRename: true,
 		HasWrite:                 true,
 	}
@@ -1026,7 +1041,7 @@ func (v *OSVFS) Close() error { return nil }
 // and returns its known target. This is a last-resort fallback when all other
 // reparse point resolution methods fail or are blocked by permissions.
 func wellKnownJunction(path string) (string, bool) {
-	if runtime.GOOS != "windows" {
+	if !WindowsPersonality() {
 		return "", false
 	}
 	parent := hostpath.Dir(path)
@@ -1065,7 +1080,7 @@ func wellKnownJunction(path string) (string, bool) {
 // reparse points): the hard-coded well-known junctions, Readlink on the
 // final component, and a raw DeviceIoControl reparse read.
 func resolveReparseCandidates(abs string) []string {
-	if runtime.GOOS != "windows" {
+	if !WindowsPersonality() {
 		return nil
 	}
 	var out []string

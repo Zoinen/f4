@@ -974,10 +974,7 @@ func TestPanelsFrame_AlwaysShowMenuBar(t *testing.T) {
 	if fspL.Y1 != 0 {
 		t.Errorf("Expected panels to start at row 0 by default, got %d", fspL.Y1)
 	}
-	_, menuY, _, _ := pf.MenuBar.GetPosition()
-	if menuY >= 0 || pf.MenuBar.IsVisible() {
-		t.Errorf("hidden menu bar occupies row %d (visible=%v), want off-screen and hidden", menuY, pf.MenuBar.IsVisible())
-	}
+	assertMenuBarHidden(t, pf, "panels without AlwaysShowMenuBar")
 
 	// 2. Test when AlwaysShowMenuBar is true (panels shifted down)
 	config.App.AlwaysShowMenuBar = true
@@ -986,27 +983,97 @@ func TestPanelsFrame_AlwaysShowMenuBar(t *testing.T) {
 	if fspL.Y1 != 1 {
 		t.Errorf("Expected panels to start at row 1 when AlwaysShowMenuBar is true, got %d", fspL.Y1)
 	}
-	_, menuY, _, _ = pf.MenuBar.GetPosition()
-	if menuY != 0 || !pf.MenuBar.IsVisible() {
-		t.Errorf("visible menu bar position/visibility = (%d, %v), want (0, true)", menuY, pf.MenuBar.IsVisible())
-	}
+	assertMenuBarPainted(t, pf, 0, "panels with AlwaysShowMenuBar")
 
-	// 3. Test that hiding panels collapses the menu bar space for terminal
+	// 3. The terminal keeps the pinned bar above it as well (issue #1153).
+	// The terminal view is only laid out while it has a PTY, and host console
+	// mode, which a terminal running the tests could select, never reserves a
+	// row above its grid.
+	pf.Pty = &mockPty{}
+	pf.ShellMode = terminal.ShellModeOwn
 	pf.ShowPanels = false
 	pf.ResizeConsole(80, 25)
 
-	if pf.TermView.Y1 != 0 {
-		t.Errorf("Expected terminal to start at row 0 when panels are hidden, got %d", pf.TermView.Y1)
+	if pf.TermView.Y1 != 1 {
+		t.Errorf("Expected terminal to start at row 1 below the pinned menu bar, got %d", pf.TermView.Y1)
 	}
-	_, menuY, _, _ = pf.MenuBar.GetPosition()
-	if menuY >= 0 || pf.MenuBar.IsVisible() {
-		t.Errorf("hidden terminal menu bar occupies row %d (visible=%v), want off-screen and hidden", menuY, pf.MenuBar.IsVisible())
+	assertMenuBarPainted(t, pf, 0, "terminal with AlwaysShowMenuBar")
+
+	// 4. A full-screen program on the alternate screen gets the bar's row, as
+	// it gets the keybar's (issues #1093 and #1153).
+	pf.TermView.UseAltScreen = true
+	pf.ResizeConsole(80, 25)
+
+	if pf.TermView.Y1 != 0 {
+		t.Errorf("Expected an alternate-screen terminal to start at row 0, got %d", pf.TermView.Y1)
+	}
+	assertMenuBarHidden(t, pf, "alternate-screen terminal without an active menu")
+	pf.TermView.UseAltScreen = false
+}
+
+func TestPanelsFrame_ActiveMenuBarAppearsAfterWorkspaceInset(t *testing.T) {
+	t.Cleanup(swapFrameManager(t))
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	theme.SetDefaultF4Palette()
+	oldAlways := config.App.AlwaysShowMenuBar
+	config.App.AlwaysShowMenuBar = false
+	t.Cleanup(func() { config.App.AlwaysShowMenuBar = oldAlways })
+
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+	vtui.FrameManager.Push(pf)
+	vtui.FrameManager.AddScreenBackground(vtui.NewDesktop())
+
+	if inset := vtui.FrameManager.WorkspaceTopInset(); inset != 1 {
+		t.Fatalf("workspace top inset = %d, want 1 with multiple workspaces", inset)
+	}
+	pf.MenuBar.Active = true
+	pf.Show(vtui.FrameManager.Screen())
+	assertMenuBarPainted(t, pf, 1, "active menu bar below the workspace tabs")
+
+	pf.MenuBar.Active = false
+	pf.Show(vtui.FrameManager.Screen())
+	assertMenuBarHidden(t, pf, "menu bar after the menu was closed")
+}
+
+// assertMenuBarPainted checks that the bar spans the screen on the given row
+// and is drawn there.
+func assertMenuBarPainted(t *testing.T, pf *PanelsFrame, wantRow int, context string) {
+	t.Helper()
+	x1, y1, x2, _ := pf.MenuBar.GetPosition()
+	if y1 != wantRow || x1 != 0 || x2 != pf.LastW-1 || !pf.MenuBar.IsVisible() {
+		t.Errorf("%s: menu bar = (row %d, cols %d..%d, visible %v), want (row %d, cols 0..%d, visible true)",
+			context, y1, x1, x2, pf.MenuBar.IsVisible(), wantRow, pf.LastW-1)
+	}
+}
+
+// assertMenuBarHidden checks that the bar is neither drawn nor able to consume
+// a click. It deliberately does not require the bar to sit off-screen: its row
+// is where vtui anchors a dropdown opened by F9, so the row has to stay live
+// (issues #1129 and #1149) while the empty column span keeps the bar out of
+// FrameManager's hit-testing (issue #1093).
+func assertMenuBarHidden(t *testing.T, pf *PanelsFrame, context string) {
+	t.Helper()
+	x1, y1, x2, _ := pf.MenuBar.GetPosition()
+	if pf.MenuBar.IsVisible() {
+		t.Errorf("%s: menu bar reports itself visible", context)
+	}
+	if x2 >= x1 {
+		t.Errorf("%s: hidden menu bar spans cols %d..%d, want an empty span", context, x1, x2)
+	}
+	for _, x := range []int{0, 1, 5, pf.LastW - 1} {
+		if pf.MenuBar.HitTest(x, y1) {
+			t.Errorf("%s: hidden menu bar still hit-tests at column %d of row %d", context, x, y1)
+		}
 	}
 }
 
 // TestPanelsFrame_HiddenTerminalFirstRowDoesNotOpenMenu covers issue #1093:
 // a click on the first line of micro (or far2l started from f4) used to hit
 // f4's stale menu-bar geometry and open the f4 menu over the terminal app.
+// Such programs run on the alternate screen, where even AlwaysShowMenuBar
+// leaves the first row to them (issue #1153).
 func TestPanelsFrame_HiddenTerminalFirstRowDoesNotOpenMenu(t *testing.T) {
 	t.Cleanup(swapFrameManager(t))
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
@@ -1021,6 +1088,7 @@ func TestPanelsFrame_HiddenTerminalFirstRowDoesNotOpenMenu(t *testing.T) {
 	waitForLoad(t, pf.Panels[0].(*FileSystemPanel))
 	waitForLoad(t, pf.Panels[1].(*FileSystemPanel))
 	pf.ShowPanels = false
+	pf.TermView.UseAltScreen = true
 	pf.ResizeConsole(80, 25)
 	vtui.FrameManager.Push(pf)
 
@@ -1314,10 +1382,21 @@ func TestPanelsFrame_AutoRefresh(t *testing.T) {
 			t.Fatal("AutoRefresh stat check did not finish")
 		}
 	}
-	if !fsp.IsLoading {
+	// The load the changed side starts can also finish in this loop, while it
+	// still waits for the other side's check: IsLoading is then false again,
+	// and asserting it failed a refresh that had already happened. What the
+	// refresh leaves behind is the new file in the listing, which only a
+	// reload of tmp can put there.
+	waitForLoad(t, fsp)
+	listed := false
+	for _, entry := range fsp.Entries {
+		if entry.Name == "test.txt" {
+			listed = true
+		}
+	}
+	if !listed {
 		t.Fatal("AutoRefresh failed to trigger ReadDirectory after MTime change")
 	}
-	waitForLoad(t, fsp)
 }
 func TestPanelsFrame_ResizingIntegration(t *testing.T) {
 	oldWidthDecrement := config.App.WidthDecrement
@@ -1509,7 +1588,11 @@ func TestPanelsFrame_VisualLeftRightFollowSwap(t *testing.T) {
 	}
 }
 
-func TestPanelsFrame_SingleVisiblePanelUsesFullWidth(t *testing.T) {
+// Issue #927: hiding one panel must not stretch the other one over the
+// whole width. far2l (FilePanels::SetPanelPositions) positions both panels
+// from the split alone, whatever is visible; the full-width single panel
+// is Wide mode, not a side effect of Ctrl+F1 / Ctrl+F2.
+func TestPanelsFrame_HiddenPanelKeepsSplitGeometry_Issue927(t *testing.T) {
 	t.Cleanup(swapFrameManager(t))
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	pf := setupMockPanelsFrame(t)
@@ -1518,23 +1601,35 @@ func TestPanelsFrame_SingleVisiblePanelUsesFullWidth(t *testing.T) {
 
 	left := pf.Panels[0]
 	right := pf.Panels[1]
+	lx1, _, lx2, _ := left.GetPosition()
+	rx1, _, rx2, _ := right.GetPosition()
+	if lx1 != 0 || lx2 != 39 || rx1 != 40 || rx2 != 79 {
+		t.Fatalf("baseline geometry = left %d..%d, right %d..%d; want 0..39, 40..79", lx1, lx2, rx1, rx2)
+	}
+
 	pf.ShowRightPanel = false
 	pf.ResizeConsole(80, 25)
-	if x1, _, x2, _ := left.GetPosition(); x1 != 0 || x2 != 79 {
-		t.Fatalf("left-only panel geometry = %d..%d, want 0..79", x1, x2)
+	if x1, _, x2, _ := left.GetPosition(); x1 != lx1 || x2 != lx2 {
+		t.Fatalf("left-only panel geometry = %d..%d, want %d..%d", x1, x2, lx1, lx2)
 	}
-	if got := pf.VisualLeftFSP(); got != left || pf.VisualRightFSP() != left {
-		t.Fatal("left-only layout did not resolve the visible panel on both visual sides")
+	if got := pf.VisualLeftFSP(); got != left {
+		t.Error("left-only layout: visual-left resolver did not return the left panel")
+	}
+	if got := pf.VisualRightFSP(); got != right {
+		t.Error("left-only layout: visual-right resolver did not return the hidden right panel")
 	}
 
 	pf.ShowLeftPanel = false
 	pf.ShowRightPanel = true
 	pf.ResizeConsole(80, 25)
-	if x1, _, x2, _ := right.GetPosition(); x1 != 0 || x2 != 79 {
-		t.Fatalf("right-only panel geometry = %d..%d, want 0..79", x1, x2)
+	if x1, _, x2, _ := right.GetPosition(); x1 != rx1 || x2 != rx2 {
+		t.Fatalf("right-only panel geometry = %d..%d, want %d..%d", x1, x2, rx1, rx2)
 	}
-	if got := pf.VisualLeftFSP(); got != right || pf.VisualRightFSP() != right {
-		t.Fatal("right-only layout did not resolve the visible panel on both visual sides")
+	if got := pf.VisualLeftFSP(); got != left {
+		t.Error("right-only layout: visual-left resolver did not return the hidden left panel")
+	}
+	if got := pf.VisualRightFSP(); got != right {
+		t.Error("right-only layout: visual-right resolver did not return the right panel")
 	}
 }
 
@@ -1878,50 +1973,103 @@ func TestTerminalRedrawSchedulerCoalescesBurst(t *testing.T) {
 		redraws++
 		mu.Unlock()
 	})
+	count := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return redraws
+	}
 
 	for i := 0; i < 100; i++ {
 		scheduler.Request()
 	}
 
-	time.Sleep(2 * time.Millisecond)
-	mu.Lock()
-	got := redraws
-	mu.Unlock()
-	if got != 1 {
-		t.Fatalf("burst triggered %d redraws, want 1", got)
+	// Checked with no sleep at all: the leading frame is drawn inside the
+	// first Request, so the count is exact here however loaded the machine
+	// is. A sleep would race the trailing frame the burst also earns.
+	if got := count(); got != 1 {
+		t.Fatalf("burst triggered %d leading redraws, want 1", got)
 	}
 
-	// The interval is cleared by a timer of its own, and a sleep of interval
-	// plus a fixed margin is not a guarantee that the timer has run: on a
-	// loaded machine, and under the race detector, it regularly has not. Ask
-	// again until it does. A request made while the burst is still suppressed
-	// is exactly what the first half of this test asserts costs nothing, so
-	// asking repeatedly cannot inflate the count.
+	// The 99 suppressed requests are worth exactly one more frame, drawn
+	// once the interval expires. The timer runs on a goroutine of its own
+	// and a fixed sleep is not a guarantee that it has fired -- on a loaded
+	// machine, and under the race detector, it regularly has not -- so poll
+	// for it instead.
 	deadline := time.Now().Add(5 * time.Second)
-	for {
-		scheduler.Request()
-		mu.Lock()
-		got = redraws
-		mu.Unlock()
-		if got == 2 || time.Now().After(deadline) {
-			break
-		}
+	for count() < 2 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	if got != 2 {
-		t.Fatalf("redraw after interval counted %d times, want 2", got)
+	if got := count(); got != 2 {
+		t.Fatalf("burst produced %d redraws, want leading + trailing = 2", got)
+	}
+
+	// An idle scheduler must then stay quiet: the trailing frame closes the
+	// burst, it does not start a timer that keeps redrawing forever.
+	time.Sleep(200 * time.Millisecond)
+	if got := count(); got != 2 {
+		t.Fatalf("idle scheduler drifted to %d redraws, want 2", got)
 	}
 
 	scheduler.Stop()
 	scheduler.Request()
-	time.Sleep(2 * time.Millisecond)
-	mu.Lock()
-	got = redraws
-	mu.Unlock()
-	if got != 2 {
+	time.Sleep(200 * time.Millisecond)
+	if got := count(); got != 2 {
 		t.Fatalf("stopped scheduler triggered %d redraws, want 2", got)
 	}
 }
+
+// TestTerminalRedrawSchedulerFlushesLastChunk_Issue249 is the regression test
+// for the invisible mc: a program writes its screen in several PTY reads a
+// millisecond apart and then falls silent. Only the first read fired a frame,
+// the rest were dropped with the interval, and nothing ever woke the renderer
+// again -- mc's panels never reached the screen until a key was pressed.
+func TestTerminalRedrawSchedulerFlushesLastChunk_Issue249(t *testing.T) {
+	var mu sync.Mutex
+	var frames []int
+	content := 0
+	scheduler := terminal.NewTerminalRedrawScheduler(func() {
+		mu.Lock()
+		frames = append(frames, content)
+		mu.Unlock()
+	})
+	defer scheduler.Stop()
+
+	// Chunk 1: the screen-switch sequence, nothing drawn yet.
+	mu.Lock()
+	content = 1
+	mu.Unlock()
+	scheduler.Request()
+
+	// Chunks 2..7: the actual paint, all inside the interval.
+	for i := 2; i <= 7; i++ {
+		mu.Lock()
+		content = i
+		mu.Unlock()
+		scheduler.Request()
+	}
+
+	lastFrame := func() (int, int) {
+		mu.Lock()
+		defer mu.Unlock()
+		if len(frames) == 0 {
+			return 0, 0
+		}
+		return frames[len(frames)-1], len(frames)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		last, n := lastFrame()
+		if last == 7 || time.Now().After(deadline) {
+			if last != 7 {
+				t.Fatalf("last rendered state %d after %d frames, want the final chunk 7", last, n)
+			}
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestPanelsFrame_Clone_Comprehensive(t *testing.T) {
 	vtui.SetDefaultPalette()
 	theme.SetDefaultF4Palette()
@@ -3262,7 +3410,7 @@ func TestPanelsFrame_NavigateToPath(t *testing.T) {
 	}
 }
 
-func TestFileSystemPanel_SFXRequiresCtrlPgDn(t *testing.T) {
+func TestFileSystemPanel_SFXEnterFallsThroughToExecute(t *testing.T) {
 	vfs.RegisterProvider(&archive.ArchiveProvider{})
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 
@@ -3281,6 +3429,9 @@ func TestFileSystemPanel_SFXRequiresCtrlPgDn(t *testing.T) {
 	fp := NewFileSystemPanel(0, 0, 80, 25, vfs.NewOSVFS(root))
 	t.Cleanup(func() {
 		fp.cancelProviderOpen()
+		if fp.Vfs != nil {
+			_ = fp.Vfs.Close()
+		}
 		if fp.CancelLoad != nil {
 			fp.CancelLoad()
 		}
@@ -3291,14 +3442,27 @@ func TestFileSystemPanel_SFXRequiresCtrlPgDn(t *testing.T) {
 	fp.SetCursorIndex(0)
 
 	enter := &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN}
-	if !fp.ProcessKey(enter) {
-		t.Fatal("ordinary Enter on an SFX row was not consumed")
+	if fp.ProcessKey(enter) {
+		t.Fatal("ordinary Enter on an SFX row was consumed instead of falling through to Execute")
 	}
 	if _, ok := fp.Vfs.(*vfs.OSVFS); !ok {
 		t.Fatalf("ordinary Enter changed VFS to %T", fp.Vfs)
 	}
 	if fp.ProviderOpenTask != nil {
 		t.Fatal("ordinary Enter started an SFX provider open")
+	}
+
+	pf := &PanelsFrame{ActiveIdx: 0, ShowPanels: true, CmdLine: cmdline.NewCommandLine(">")}
+	pf.Panels[0] = fp
+	called := 0
+	oldExecute := Execute
+	Execute = func(*PanelsFrame, vfs.VFS, string, string, string) { called++ }
+	t.Cleanup(func() { Execute = oldExecute })
+	if !pf.ProcessKey(enter) {
+		t.Fatal("PanelsFrame did not handle ordinary Enter")
+	}
+	if called != 1 {
+		t.Fatalf("ordinary Enter executed SFX %d times, want once", called)
 	}
 
 	if !fp.EnterSelectedFromAction() {
@@ -3598,9 +3762,6 @@ func TestPanelsFrame_CaptureCommands(t *testing.T) {
 	vtui.SetClipboard("")
 
 	cmdStr := "clip:<< echo f4_capture_test"
-	if runtime.GOOS == "windows" {
-		cmdStr = "clip:<< cmd.exe /c echo f4_capture_test"
-	}
 
 	pf.CmdLine.Edit.SetText(cmdStr)
 	pressKey(pf, &vtinput.InputEvent{

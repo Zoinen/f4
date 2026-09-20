@@ -90,6 +90,8 @@ func settingsCategoryIcon(id string) string {
 		return "file-code"
 	case "keyboard":
 		return "keyboard"
+	case "hotkeys":
+		return "key-round"
 	case "terminal":
 		return "square-terminal"
 	case "history":

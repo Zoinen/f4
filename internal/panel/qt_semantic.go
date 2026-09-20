@@ -2075,6 +2075,10 @@ func (fp *FileSystemPanel) semanticPagedPanelModel(
 		PathIcon: semanticPanelIcon(fp.Vfs),
 		ID:       panelID, Side: side, Active: active, Path: fp.Vfs.GetPath(),
 		Title: semanticTitle, ShowFileInfo: config.App.ShowPanelFileInfo,
+		ViewMode: viewModeName(fp.EffectiveViewMode()),
+		GroupBy: GroupModes[ValidGroupMode(fp.GroupBy)].ID,
+		GroupReverse: fp.GroupReverse, GroupFoldersSeparately: fp.GroupFoldersSeparately,
+		DisplayTop: fp.Table.TopPos, Groups: semanticPanelGroups(fp.Groups()),
 		GalleryLayoutMode:     string(galleryLayoutMode),
 		GalleryColumnCount:    fp.effectiveGalleryColumnCount(),
 		GalleryDensity:        fp.galleryDensity(galleryLayoutMode),
@@ -2235,6 +2239,12 @@ func (fp *FileSystemPanel) SemanticPanelModel(ctx *vtui.SemanticContext, side in
 		Active:                 active,
 		Path:                   fp.Vfs.GetPath(),
 		Title:                  semanticTitle,
+		ViewMode:               viewModeName(fp.EffectiveViewMode()),
+		GroupBy:                GroupModes[ValidGroupMode(fp.GroupBy)].ID,
+		GroupReverse:           fp.GroupReverse,
+		GroupFoldersSeparately: fp.GroupFoldersSeparately,
+		DisplayTop:             fp.Table.TopPos,
+		Groups:                 semanticPanelGroups(fp.Groups()),
 		ShowFileInfo:           config.App.ShowPanelFileInfo,
 		GalleryLayoutMode:      string(galleryLayoutMode),
 		GalleryColumnCount:     fp.effectiveGalleryColumnCount(),
@@ -2314,6 +2324,10 @@ func (fp *FileSystemPanel) semanticPagedPanelHeaderModel(
 		PathIcon: semanticPanelIcon(fp.Vfs),
 		ID:       panelID, Side: side, Active: active, Path: fp.Vfs.GetPath(),
 		Title: semanticTitle, ShowFileInfo: config.App.ShowPanelFileInfo,
+		ViewMode: viewModeName(fp.EffectiveViewMode()),
+		GroupBy: GroupModes[ValidGroupMode(fp.GroupBy)].ID,
+		GroupReverse: fp.GroupReverse, GroupFoldersSeparately: fp.GroupFoldersSeparately,
+		DisplayTop: fp.Table.TopPos, Groups: semanticPanelGroups(fp.Groups()),
 		GalleryLayoutMode:     string(galleryLayoutMode),
 		GalleryColumnCount:    fp.effectiveGalleryColumnCount(),
 		GalleryDensity:        fp.galleryDensity(galleryLayoutMode),
@@ -2400,6 +2414,12 @@ func (fp *FileSystemPanel) semanticPanelHeaderModel(ctx *vtui.SemanticContext, s
 		Active:                 active,
 		Path:                   fp.Vfs.GetPath(),
 		Title:                  semanticTitle,
+		ViewMode:               viewModeName(fp.EffectiveViewMode()),
+		GroupBy:                GroupModes[ValidGroupMode(fp.GroupBy)].ID,
+		GroupReverse:           fp.GroupReverse,
+		GroupFoldersSeparately: fp.GroupFoldersSeparately,
+		DisplayTop:             fp.Table.TopPos,
+		Groups:                 semanticPanelGroups(fp.Groups()),
 		ShowFileInfo:           config.App.ShowPanelFileInfo,
 		GalleryLayoutMode:      string(galleryLayoutMode),
 		GalleryColumnCount:     fp.effectiveGalleryColumnCount(),
@@ -2521,6 +2541,33 @@ func sortModeName(mode SortMode) string {
 	default:
 		return "name"
 	}
+}
+
+func viewModeName(mode ViewMode) string {
+	switch mode {
+	case ViewModeBrief:
+		return "brief"
+	case ViewModeDetailed:
+		return "detailed"
+	case ViewModeWide:
+		return "wide"
+	default:
+		return "medium"
+	}
+}
+
+func semanticPanelGroups(groups []PanelGroup) []extui.PanelGroupModel {
+	if len(groups) == 0 {
+		return nil
+	}
+	result := make([]extui.PanelGroupModel, len(groups))
+	for i, group := range groups {
+		result[i] = extui.PanelGroupModel{
+			Key: group.Key, Title: group.Title,
+			StartIndex: group.StartIndex, Count: group.Count,
+		}
+	}
+	return result
 }
 
 func parseSortModeName(name string) (SortMode, bool) {

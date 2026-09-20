@@ -115,14 +115,17 @@ Before finalizing the `f4` architecture, we analyzed the source code of the most
 
 ### Concrete Arguments for VTE Mirror:
 1.  **Domain-Specific Optimization:** `f4` is a file manager, not just a terminal emulator. It already possesses a highly optimized, zero-allocation `PieceTable` engine used for its Editor and Viewer. Extruding the terminal log directly into a `PieceTable` allows the internal Viewer (`F3`) to open a 10-gigabyte terminal log instantly without allocating memory for millions of `Cell` structs.
-2.  **Active Reflow on Unix, native validation on Windows:** on Unix a width
-    change re-wraps the live 2D grid (`reflowLocked` in
-    `internal/terminal/view.go`). On Windows, resize and reflow behavior is
-    changed only after a run through the native ConPTY test described in
-    [`CONPTY_NATIVE_TEST.md`](CONPTY_NATIVE_TEST.md). A height-only change
-    never reflows on either platform: it moves rows between the viewport and
-    `GridHistory`, which was never broken. The `PieceTable`'s `WrapEngine`
-    still reflows the scrollback when the user views it (e.g. via `Ctrl+O`).
+2.  **Active Reflow where the stream keeps lines whole:** a width change
+    re-wraps the primary screen and `GridHistory` (`reflowResizeLocked` in
+    `internal/terminal/view_reflow.go`) for the local shell on Unix, and on
+    Windows when the shell runs in the downloaded ConPTY package, which passes
+    long lines through (`CONPTY_LINE_WRAP_FINDINGS.md`). Only rows the view
+    wrapped itself are joined; a line the stream ended stays ended at every
+    width. Output of remote shells, the in-box ConPTY and the alternate screen
+    are not reflowed. A height-only change never reflows: it moves rows
+    between the viewport and `GridHistory`, which was never broken. The
+    `PieceTable`'s `WrapEngine` still reflows the scrollback when the user
+    views it (e.g. via `Ctrl+O`).
 
     This section used to claim that reflowing the live grid is *impossible* because the shell tracks its own cursor and would desync. That claim was wrong, and it talked people out of a design that works. `far2l` reflows exactly this live grid (`WinPort/src/ConsoleBuffer.cpp`, `SetSizeRecomposing`), on two decisions worth copying:
 
@@ -445,7 +448,7 @@ desktop. It inserts shell-quoted paths at the existing caret, replacing selected
 text in one update. Internal sources are revalidated by stable entry identity.
 Dropping only edits the command; Shift does not move files or execute the input.
 
-## Windows: reflow verification
+## Windows: which ConPTY, and reflow verification
 
 Windows reflow changes must be validated with the native ConPTY test in
 [`CONPTY_NATIVE_TEST.md`](CONPTY_NATIVE_TEST.md). A copied console
@@ -484,3 +487,27 @@ runner's `NO_COLOR` setting from that launch environment if it is not a user
 preference. Codex may supply `NO_COLOR=1`, which Rich honors even inside a real
 ConPTY. F4 intentionally preserves an explicit user `NO_COLOR` preference;
 changing ANSI decoding or forcing colors in child programs is not the remedy.
+The shell runs in the ConPTY redistributable named in
+`internal/terminal/conpty_package.go`. On first use f4 downloads the package
+into `<profile>/conpty/<version>/<runtime>/`, checks the package and both files
+against their SHA-256, and loads `conpty.dll` from there; `conpty.dll` starts
+`OpenConsole.exe` from the same directory. The first shell waits up to five
+seconds for the download, then starts in the in-box ConPTY without reflow
+while the download finishes for the next one. `F4_CONPTY_HOST=system` forces
+the in-box ConPTY for comparison.
+
+`inboxConhostPreservingLines` in `pty_windows.go` names in-box `conhost.exe`
+builds, by SHA-256, measured to deliver long lines whole; on such a system
+the shell runs in the in-box ConPTY with reflow and nothing is downloaded.
+Today that is 10.0.22000.2538 x64 (issue #425). Adding a build takes one
+line and a measurement, not an assumption.
+
+`TestConPTYPackageKeepsLongLinesWhole` (Windows CI, `F4_NATIVE_CONPTY_PACKAGE=1`)
+downloads the package, runs real programs in it and checks that a line longer
+than the window arrives whole, is one line in the log, and stays one line
+through reflows. A copied console implementation, a captured transcript used
+as a substitute for the host, or a heuristic result from another console is
+not an acceptance oracle. The pinned-host gate in `tools/conptyreconcile` and
+the documents around it (`PINNED_CONSOLE.md`, `CONPTY_GATE_REQUIREMENTS.md`)
+describe the 1.12 direction that was set aside; they stay as the record and
+as a fallback.

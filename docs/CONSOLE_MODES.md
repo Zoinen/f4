@@ -59,8 +59,15 @@ Unix.** Основной режим обязан сохранять PTY.
 
 ### 2.3. Wine
 
-`vtui.IsWine()` уже есть и используется в `main.go`. Под Wine ConPTY сырой → PTY считаем
-недоступным и **не пытаемся его создавать**.
+`vtui.IsWine()` уже есть и используется в `main.go`. Под Wine ConPTY сырой, поэтому его
+**не создаём**. С версии, где появился нативный терминал (WINE.md §18.3), у PTY под Wine есть
+второй путь: настоящий pty хоста через libwinescape (`Spawn`/`StartPTY`, `internal/terminal/pty_wine_windows.go`).
+Он включается тем же решением, что и весь posix-режим файлового слоя, `hostmode.Posix()`, то есть
+подчиняется настройке «использовать winescape» (`UseWinescape`), и только если выделение
+псевдотерминала на хосте действительно удалось (проба выполняется один раз). Оболочка тогда —
+`$SHELL` хоста, а не `cmd.exe`, и вся сборка текста для неё (кавычки, приглашение, `cd`)
+идёт через `terminal.WindowsShellSyntax()`. Если галка выключена или проба не удалась,
+остаётся прежнее поведение: PTY нет, режим — simple-inline или simple-captured.
 
 ## 3. Три режима исполнения команд
 
@@ -140,9 +147,10 @@ func resolveShellMode(cfg ShellModeConfig) ShellMode
 | Среда | конфиг `own` | конфиг `host` |
 |---|---|---|
 | TTY + PTY ок | own | **host** |
-| TTY, PTY нет (Wine в консоли) | simple-inline | simple-inline |
+| TTY, PTY нет (Wine в консоли; `UseWinescape` выключена или проба pty не удалась) | simple-inline | simple-inline |
 | GUI + PTY ок | own | own |
-| GUI, PTY нет (дефолт Wine) | simple-captured | simple-captured |
+| GUI, PTY нет (Wine; `UseWinescape` выключена или проба pty не удалась) | simple-captured | simple-captured |
+| Wine, нативный pty хоста доступен | own | host |
 
 Режим вычисляется **один раз при создании `PanelsFrame`** и хранится в `pf.shellMode`.
 Переключение на лету не поддерживается: `TERM` и прочее окружение шелла формируются при
@@ -270,9 +278,11 @@ keybar/menubar). Зеркало `termView.Resize()` — тем же размер
 
 ### 5.1. `ShellModeSimpleInline` (есть хостовый tty, PTY нет)
 
-Резидентного шелла нет. Каждая команда: `vtui.Suspend()` →
-`exec.Command(shell, "-c"/"/c", cmd)` с `Stdin/Stdout/Stderr = os.Stdin/os.Stdout/os.Stderr`
-и `cmd.Dir = <путь активной панели>` → `Wait()` → «Press any key» → `vtui.Resume()`.
+Резидентного шелла нет. Каждая команда: `vtui.Suspend()` → запуск с наследованием
+`stdio` и `cmd.Dir = <путь активной панели>` → `Wait()` → «Press any key» →
+`vtui.Resume()`. В Windows-персоне это `cmd.exe /c`; в POSIX-персоне Wine это
+`$SHELL -c` через `libwinescape.Spawn`. Деградация PTY не должна менять язык
+командной строки.
 Прототип уже есть — `runExternalEditor()` в `actions.go`. `cd` и смена диска перехватываются
 самим f4 до отправки в шелл, так что отсутствие резидентного шелла почти не заметно.
 
@@ -285,8 +295,10 @@ keybar/menubar). Зеркало `termView.Resize()` — тем же размер
 Код почти весь готов: `showRemoteCommandOutput(pf, NewLocalCommandRunner(), dir, cmd)`
 (`remote_command.go` + `command_runner.go`) — окно со стриминговым выводом, скроллом и
 отменой по закрытию. Плюс существующие `view:<<` / `edit:<<` / `clip:<<`
-(`executeCapturedCommand`). Интерактивные программы не поддерживаются — тост
-«terminal is not available in this environment».
+(`executeCapturedCommand`). В Windows-персоне используется `cmd.exe`; в POSIX-персоне
+Wine оба пути используют host shell и host pipes через `libwinescape.Spawn`.
+Интерактивные программы не поддерживаются — тост «terminal is not available in this
+environment».
 
 ## 6. Новое API в vtui
 

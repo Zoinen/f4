@@ -768,26 +768,21 @@ func (fh *FileHighlighter) GetColor(item *vfs.VFSItem, defaultAttr uint64, isSel
 	for _, ruleIndex := range fh.matchedRuleIndices(item, true) {
 		rule := fh.Rules[ruleIndex]
 		colorExpr := ""
+		// Each of the four states answers only to its own key, as in far2l.
 		if isCursor {
 			if isSelected {
 				if rule.SelectedCursorStr != "" {
 					colorExpr = rule.SelectedCursorStr
-				} else if rule.SelectedStr != "" {
-					colorExpr = rule.SelectedStr
 				}
-			} else {
-				if rule.CursorStr != "" {
-					colorExpr = rule.CursorStr
-				}
+			} else if rule.CursorStr != "" {
+				colorExpr = rule.CursorStr
 			}
 		} else if isSelected {
 			if rule.SelectedStr != "" {
 				colorExpr = rule.SelectedStr
 			}
-		} else {
-			if rule.NormalStr != "" {
-				colorExpr = rule.NormalStr
-			}
+		} else if rule.NormalStr != "" {
+			colorExpr = rule.NormalStr
 		}
 
 		if colorExpr != "" {

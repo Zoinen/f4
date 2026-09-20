@@ -49,15 +49,15 @@ func TestFileEntry_GetCellText(t *testing.T) {
 		t.Errorf("File size mismatch: %s", file.GetCellText(1))
 	}
 
-	// Regular directories should have an empty size column
-	if dir.GetCellText(1) != "" {
-		t.Errorf("Regular dir should have empty size column, got: %q", dir.GetCellText(1))
+	// Directories name their kind in the size column, as in far2l (#392)
+	if dir.GetCellText(1) != "Folder" {
+		t.Errorf("Regular dir should show Folder in the size column, got: %q", dir.GetCellText(1))
 	}
 
-	// Only ".." directory should have the UP-DIR placeholder
+	// ".." says Up
 	upDir := &FileEntry{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}}
-	if upDir.GetCellText(1) != "UP-DIR" {
-		t.Errorf("Parent dir (..) should have UP-DIR placeholder, got: %q", upDir.GetCellText(1))
+	if upDir.GetCellText(1) != "Up" {
+		t.Errorf("Parent dir (..) should show Up, got: %q", upDir.GetCellText(1))
 	}
 
 }
@@ -2095,6 +2095,68 @@ func TestFileSystemPanel_CursorColorsColumnSeparators(t *testing.T) {
 				x++
 			}
 		})
+	}
+}
+
+// With every file selected (Grey+ or Insert down to the last one), the
+// cursor sits on a selected file. A highlight group that sets only
+// SelectedColor, background included, must not paint that row: it keeps
+// Panel.Cursor.Selected, so the cursor stays distinguishable from the
+// selection around it (#1150).
+func TestFileSystemPanel_CursorVisibleOnSelectedFileWithSelectedColorGroup(t *testing.T) {
+	vtui.SetDefaultPalette()
+	theme.SetDefaultF4Palette()
+
+	oldCfg := config.App
+	defer func() { config.App = oldCfg }()
+	config.App.EnforceColorCorrection = false
+
+	oldRules := theme.GlobalFileHighlighter.Rules
+	oldUserRules := theme.GlobalFileHighlighter.UserRules
+	defer func() {
+		theme.GlobalFileHighlighter.Rules = oldRules
+		theme.GlobalFileHighlighter.UserRules = oldUserRules
+	}()
+	theme.GlobalFileHighlighter.LoadFromIni(ini.Parse(strings.NewReader(`[Highlight_0]
+Name = Directories
+IncludeAttributes = Directory
+SelectedColor = foreground:#FFFFFF | background:#0000A0
+`)))
+
+	fp := newPanelScrollTestFixture(ViewModeDetailed, 3)
+	for _, entry := range fp.Entries {
+		entry.IsDir = true
+		entry.Selected = true
+	}
+	fp.Table.Columns = []vtui.TableColumn{{Width: 20}, {Width: 12}}
+	fp.Table.ColorTextIdx = theme.ColPanelText
+	fp.Table.ColorSelectedTextIdx = theme.ColPanelCursor
+	fp.Table.ColorItemSelectTextIdx = theme.ColPanelSelectedText
+	fp.Table.ColorItemSelectCursorIdx = theme.ColPanelSelectedCursor
+	fp.Table.ColorTitleIdx = theme.ColPanelColumnTitle
+	fp.Table.ColorBoxIdx = theme.ColPanelBox
+	fp.Refresh()
+	fp.Table.SetFocus(true)
+	if fp.GetCursorIndex() != 0 {
+		t.Fatalf("cursor index = %d, want 0", fp.GetCursorIndex())
+	}
+
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(40, 12)
+	fp.Table.Show(scr)
+
+	y := fp.Table.Y1 + fp.Table.MarginTop
+	cursor := scr.GetCell(fp.Table.X1, y).Attributes
+	selected := scr.GetCell(fp.Table.X1, y+1).Attributes
+
+	if fg, bg := vtui.GetRGBFore(selected), vtui.GetRGBBack(selected); fg != 0xFFFFFF || bg != 0x0000A0 {
+		t.Fatalf("selected row off the cursor = #%06x on #%06x, want the group's SelectedColor #FFFFFF on #0000A0", fg, bg)
+	}
+	if cursor == selected {
+		t.Fatalf("cursor row on a selected file is painted like the selection (%#x): the cursor is invisible", cursor)
+	}
+	if want := vtui.Palette[theme.ColPanelSelectedCursor]; cursor != want {
+		t.Fatalf("cursor row on a selected file = %#x, want Panel.Cursor.Selected %#x", cursor, want)
 	}
 }
 
@@ -4148,6 +4210,10 @@ func TestFileEntry_SymlinkDisplayNameAndStatus(t *testing.T) {
 	vtui.SetDefaultPalette()
 	theme.SetDefaultF4Palette()
 
+	oldConfig := config.App
+	defer func() { config.App = oldConfig }()
+	config.App.ShowSymlinkArrow = true
+
 	entryFile := &FileEntry{VFSItem: vfs.VFSItem{Name: "link_file", IsSymlink: true}}
 	entryDir := &FileEntry{VFSItem: vfs.VFSItem{Name: "link_dir", IsDir: true, IsSymlink: true}}
 
@@ -4156,6 +4222,58 @@ func TestFileEntry_SymlinkDisplayNameAndStatus(t *testing.T) {
 	}
 	if got := entryDir.displayName(entryDir.Name); !strings.Contains(got, "→") {
 		t.Errorf("Symlink dir displayName = %q, want it to contain '→'", got)
+	}
+}
+
+// ShowSymlinkArrow=1 brings back the arrow for someone who wants symbolic
+// links called out in the name column; off is the default. The switch governs
+// only that fallback marker: a highlight rule that marks the link keeps its
+// own marker either way, and so does the folder slash.
+func TestFileEntry_SymlinkArrowSetting(t *testing.T) {
+	vtui.SetDefaultPalette()
+	theme.SetDefaultF4Palette()
+
+	oldRules := theme.GlobalFileHighlighter.Rules
+	defer func() { theme.GlobalFileHighlighter.Rules = oldRules }()
+	theme.GlobalFileHighlighter.Rules = nil
+
+	oldConfig := config.App
+	defer func() { config.App = oldConfig }()
+	config.App.ShowHighlightMarks = false
+	config.App.ShowDirPrefix = false
+
+	entryFile := &FileEntry{VFSItem: vfs.VFSItem{Name: "link_file", IsSymlink: true}}
+	entryDir := &FileEntry{VFSItem: vfs.VFSItem{Name: "link_dir", IsDir: true, IsSymlink: true}}
+
+	config.App.ShowSymlinkArrow = false
+	if got := entryFile.displayName(entryFile.Name); got != "link_file" {
+		t.Errorf("Symlink file displayName = %q, want the bare name", got)
+	}
+	if got := entryDir.displayName(entryDir.Name); got != "link_dir" {
+		t.Errorf("Symlink dir displayName = %q, want the bare name", got)
+	}
+
+	config.App.ShowDirPrefix = true
+	if got := entryDir.displayName(entryDir.Name); got != "/link_dir" {
+		t.Errorf("Symlink dir displayName = %q, want the folder slash kept", got)
+	}
+	config.App.ShowDirPrefix = false
+
+	iniData := `[Highlight_0]
+Name = Links
+Mask = link_file
+Mark = •
+`
+	theme.GlobalFileHighlighter.LoadFromIni(ini.Parse(strings.NewReader(iniData)))
+	config.App.ShowHighlightMarks = true
+	if got := entryFile.displayName(entryFile.Name); got != "• link_file" {
+		t.Errorf("Marked symlink displayName = %q, want the rule's marker", got)
+	}
+
+	config.App.ShowSymlinkArrow = true
+	config.App.ShowHighlightMarks = false
+	if got := entryFile.displayName(entryFile.Name); got != "→ link_file" {
+		t.Errorf("Symlink displayName = %q, want the arrow back", got)
 	}
 }
 
@@ -4236,12 +4354,12 @@ func TestFileSystemPanel_BottomFrameShowsCursorEntry(t *testing.T) {
 	// Directories say what they are instead of a size.
 	fp.SetCursorIndex(1)
 	fp.Show(scr)
-	if got := bottom(); !strings.Contains(got, "▸ <DIR>") {
+	if got := bottom(); !strings.Contains(got, "▸ Folder") {
 		t.Errorf("bottom frame for a dir: %q", got)
 	}
 	fp.SetCursorIndex(0)
 	fp.Show(scr)
-	if got := bottom(); !strings.Contains(got, "▸ UP-DIR") {
+	if got := bottom(); !strings.Contains(got, "▸ Up") {
 		t.Errorf("bottom frame for the up-dir: %q", got)
 	}
 	// With the far2l status line on, the marker steps aside.

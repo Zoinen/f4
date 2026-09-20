@@ -57,7 +57,7 @@ func getPlatformBlockDevices(ctx context.Context) []VFSItem {
 				}
 			}
 
-			items = append(items, VFSItem{
+			items = append(items, VFSItem{KnownMetadata: MetadataExplicit,
 				Name:      displayName,
 				Size:      size,
 				SizeKnown: true,

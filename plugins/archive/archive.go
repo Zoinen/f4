@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/unxed/archives"
@@ -17,6 +18,7 @@ import (
 	"github.com/unxed/sevenzip"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
+	"github.com/unxed/zip"
 	"github.com/unxed/zipper/archive"
 )
 
@@ -76,26 +78,12 @@ func (p *ArchivePlugin) Init(api vfs.HostAPI) error {
 	api.RegisterVFSProvider(&ArchiveProvider{})
 
 	// Keep far2l's Files-menu shortcuts: direct archive operations are
-	// Shift+F1/Shift+F2, while the legacy two-item archive command menu stays
-	// available on Shift+F3.
+	// Shift+F1/Shift+F2, while Shift+F3 tests the selected archive directly.
 	api.RegisterGlobalHotkey(vtinput.VK_F1, vtinput.ShiftPressed, actionAddArchive)
 	api.RegisterGlobalHotkey(vtinput.VK_F2, vtinput.ShiftPressed, actionExtractArchive)
-	api.RegisterGlobalHotkey(vtinput.VK_F3, vtinput.ShiftPressed, actionArchiveCommands)
+	api.RegisterGlobalHotkey(vtinput.VK_F3, vtinput.ShiftPressed, actionTestArchive)
 
 	return nil
-}
-
-func actionArchiveCommands(app vfs.App) {
-	app.Menu(" Archive Commands ", []string{"&1. Add to archive", "&2. Extract files", "&3. Test archive"}, func(idx int) {
-		switch idx {
-		case 0:
-			actionAddArchive(app)
-		case 1:
-			actionExtractArchive(app)
-		case 2:
-			actionTestArchive(app)
-		}
-	})
 }
 
 // resolveLocalArchivePath returns the absolute path of the archive to operate
@@ -191,6 +179,16 @@ func extractArchiveAsync(app vfs.App, srcPath, destDir string) {
 }
 
 func extractArchiveWithPasswordPrompt(ctx context.Context, srcPath, destDir string, reporter vfs.TaskReporter) error {
+	// A self-extracting archive is read from the same private copy panel
+	// entry uses, prepared once rather than again for every password attempt.
+	backingPath, backing, err := localArchiveBacking(srcPath)
+	if err != nil {
+		return err
+	}
+	if backing != nil {
+		defer func() { _ = backing.Close() }()
+	}
+
 	var password string
 	var release func()
 	defer func() {
@@ -199,7 +197,7 @@ func extractArchiveWithPasswordPrompt(ctx context.Context, srcPath, destDir stri
 		}
 	}()
 	for {
-		err := extractArchiveOnce(ctx, srcPath, destDir, password, reporter)
+		err := extractArchiveOnce(ctx, backingPath, destDir, password, reporter)
 		if err == nil || !isArchivePasswordRetryError(err) {
 			return err
 		}
@@ -242,6 +240,16 @@ func actionTestArchive(app vfs.App) {
 }
 
 func testArchiveWithPasswordPrompt(ctx context.Context, srcPath string, reporter vfs.TaskReporter) error {
+	// See extractArchiveWithPasswordPrompt: an SFX is tested from the copy
+	// panel entry reads, so "enters fine" and "tests fine" cannot disagree.
+	backingPath, backing, err := localArchiveBacking(srcPath)
+	if err != nil {
+		return err
+	}
+	if backing != nil {
+		defer func() { _ = backing.Close() }()
+	}
+
 	var password string
 	var release func()
 	defer func() {
@@ -251,7 +259,7 @@ func testArchiveWithPasswordPrompt(ctx context.Context, srcPath string, reporter
 	}()
 
 	for {
-		err := testArchiveOnce(ctx, srcPath, password, reporter)
+		err := testArchiveOnce(ctx, srcPath, backingPath, password, reporter)
 		if err == nil || !isArchivePasswordRetryError(err) {
 			return err
 		}
@@ -266,58 +274,415 @@ func testArchiveWithPasswordPrompt(ctx context.Context, srcPath string, reporter
 	}
 }
 
-func testArchiveOnce(ctx context.Context, srcPath, password string, reporter vfs.TaskReporter) error {
-	f, err := os.Open(srcPath)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = f.Close() }()
+type archiveTestingReader struct {
+	io.Reader
+	read int64
+}
 
+func (r *archiveTestingReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	atomic.AddInt64(&r.read, int64(n))
+	return n, err
+}
+
+type archiveTestingReaderAtSeeker struct {
+	*archiveTestingReader
+	io.ReaderAt
+	io.Seeker
+}
+
+func (r *archiveTestingReaderAtSeeker) ReadAt(p []byte, offset int64) (int, error) {
+	n, err := r.ReaderAt.ReadAt(p, offset)
+	atomic.AddInt64(&r.read, int64(n))
+	return n, err
+}
+
+func archiveTestingPercent(current, total int64) int {
+	if total <= 0 {
+		return -1
+	}
+	pct := int(float64(current) * 100 / float64(total))
+	if pct < 0 {
+		return 0
+	}
+	if pct > 100 {
+		return 100
+	}
+	return pct
+}
+
+// archiveTestingTotalPercent keeps the overall bar on screen for an archive
+// that holds no data at all -- one of only empty files, say. Its testing pass
+// is finished rather than of unknown length, which is what a hidden bar would
+// otherwise say.
+func archiveTestingTotalPercent(done, total int64, known bool) int {
+	if known && total <= 0 {
+		return 100
+	}
+	return archiveTestingPercent(done, total)
+}
+
+// archiveTestTotals is what the overall progress bar counts against: the
+// uncompressed volume the archive says it holds, taken from the archive's own
+// directory before anything is decoded. known is false when no such figure
+// could be obtained, and the testing pass then falls back to a coarser
+// measure.
+type archiveTestTotals struct {
+	bytes int64
+	files int64
+	known bool
+}
+
+// archiveFormatListsWithoutDecoding reports whether a format can enumerate its
+// members from a directory or a header instead of by decoding payloads: zip
+// keeps a central directory, 7z a header, and rar a chain of file block
+// headers that is walked by skipping over packed data. Tar has none of that,
+// and neither do the compressed-tar combinations built on it, so listing one
+// costs a full decode -- the testing pass must not pay for that twice just to
+// label its progress bar.
+func archiveFormatListsWithoutDecoding(format archives.Format) bool {
+	switch format.(type) {
+	case archives.Zip, *archives.Zip,
+		archives.SevenZip, *archives.SevenZip,
+		archives.Rar, *archives.Rar:
+		return true
+	}
+	return false
+}
+
+// openArchiveTestStream opens srcPath and identifies it with the same password
+// and RAR volume configuration the rest of the plugin applies, so that the
+// listing pass and the testing pass see the same archive. The caller owns the
+// returned file.
+func openArchiveTestStream(ctx context.Context, srcPath, password string) (*archive.Input, archives.Format, io.Reader, error) {
+	// archive.OpenInput reads the volumes of a split archive (name.7z.001,
+	// name.7z.002, ...) as one stream; the first volume alone ends before the
+	// 7z header does (issue #1179).
+	f, err := archive.OpenInput(srcPath)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	format, stream, err := archives.Identify(ctx, srcPath, f)
 	if err != nil {
-		return err
+		_ = f.Close() // Identification failed; nothing was read out of the archive.
+		return nil, nil, nil, err
 	}
 	if configured, ok := configureRARArchiveFormat(format, srcPath, password); ok {
 		format = configured
 	} else {
 		format, _ = archivePasswordFormat(format, password)
 	}
+	return f, format, stream, nil
+}
+
+// collectArchiveTestTotals adds up the size of every regular member the
+// archive lists. Only a format that can be listed without decoding is walked,
+// so this costs a header read rather than a second decompression pass.
+//
+// A password error is passed back so the caller can ask for one and retry.
+// Every other failure only leaves the totals unknown: testing a damaged
+// archive is precisely what the operation is for, and it has to run even when
+// the directory cannot be read.
+func collectArchiveTestTotals(ctx context.Context, srcPath, password string) (archiveTestTotals, error) {
+	f, format, stream, err := openArchiveTestStream(ctx, srcPath, password)
+	if err != nil {
+		if isArchivePasswordRetryError(err) {
+			return archiveTestTotals{}, err
+		}
+		return archiveTestTotals{}, nil
+	}
+	defer func() { _ = f.Close() }()
+
+	extractor, ok := format.(archives.Extractor)
+	if !ok || !archiveFormatListsWithoutDecoding(format) {
+		return archiveTestTotals{}, nil
+	}
+
+	var (
+		mu      sync.Mutex
+		totals  archiveTestTotals
+		unsized bool
+	)
+	// 7z reports its members from several goroutines at once, one per
+	// compression stream, so the accumulator below is locked.
+	err = extractor.Extract(ctx, stream, func(ctx context.Context, info archives.FileInfo) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if info.IsDir() || !info.Mode().IsRegular() {
+			return nil
+		}
+		size := info.Size()
+		mu.Lock()
+		if size < 0 {
+			unsized = true
+		} else {
+			totals.bytes += size
+			totals.files++
+		}
+		mu.Unlock()
+		return nil
+	})
+	if err != nil {
+		if isArchivePasswordRetryError(err) {
+			return archiveTestTotals{}, err
+		}
+		return archiveTestTotals{}, nil
+	}
+	if unsized {
+		return archiveTestTotals{}, nil
+	}
+	totals.known = true
+	return totals, nil
+}
+
+// testZipOnce tests every member of a zip archive through unxed/zip, the
+// reader the panel uses for zip everywhere else. Its reader checks each member
+// against the checksum the archive stores for it, joins the volumes of a split
+// archive by the name of any one of them, and reads an archive that sits
+// behind an executable stub where it lies.
+func testZipOnce(ctx context.Context, srcPath, backingPath, password string, reporter vfs.TaskReporter) error {
+	reader, err := zip.OpenReaderWithPassword(backingPath, password)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = reader.Close() }()
+
+	var total int64
+	for _, member := range reader.File {
+		if member.FileInfo().IsDir() {
+			continue
+		}
+		// #nosec G115 -- a size above MaxInt64 does not fit in the archive
+		total += int64(member.UncompressedSize64)
+	}
+
+	var tested int64
+	startTime := time.Now()
+	reportProgress := func(name string, current, size int64) {
+		elapsed := time.Since(startTime)
+		speed := int64(0)
+		if elapsed > 0 {
+			speed = int64(float64(tested) / elapsed.Seconds())
+		}
+		reporter.UpdateTransfer("Testing", name, archiveTestingPercent(current, size),
+			fmt.Sprintf("Total: %s / %s", formatSize(tested), formatSize(total)),
+			archiveTestingTotalPercent(tested, total, true), formatSize(speed)+"/s")
+	}
+	reportProgress(filepath.Base(srcPath), 0, 1)
+
+	var failures []error
+	buf := make([]byte, 128*1024)
+	for _, member := range reader.File {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if member.FileInfo().IsDir() {
+			reportProgress(member.Name, -1, 0)
+			continue
+		}
+		// #nosec G115 -- see above
+		memberSize := int64(member.UncompressedSize64)
+		rc, openErr := member.Open()
+		if openErr != nil {
+			reportProgress(member.Name, 0, memberSize)
+			failures = append(failures, fmt.Errorf("%s: %w", member.Name, openErr))
+			continue
+		}
+		var memberBytes int64
+		var readErr error
+		for {
+			if err := ctx.Err(); err != nil {
+				readErr = err
+				break
+			}
+			n, err := rc.Read(buf)
+			if n > 0 {
+				memberBytes += int64(n)
+				tested += int64(n)
+				reportProgress(member.Name, memberBytes, memberSize)
+			}
+			if err != nil {
+				if err != io.EOF {
+					readErr = err
+				}
+				break
+			}
+		}
+		closeErr := rc.Close()
+		if failure := errors.Join(readErr, closeErr); failure != nil {
+			failures = append(failures, fmt.Errorf("%s: %w", member.Name, failure))
+		}
+	}
+	if len(failures) == 0 {
+		if total < tested {
+			total = tested
+		}
+		reporter.UpdateTransfer("Testing", filepath.Base(srcPath), 100,
+			fmt.Sprintf("Total: %s / %s", formatSize(tested), formatSize(total)), 100, "")
+	}
+	return errors.Join(failures...)
+}
+
+// testArchiveOnce tests the archive stored at backingPath. srcPath is the
+// archive as the user sees it and only names it in progress updates; the two
+// differ for a self-extracting archive (see localArchiveBacking).
+func testArchiveOnce(ctx context.Context, srcPath, backingPath, password string, reporter vfs.TaskReporter) error {
+	if archive.DetectFormat(backingPath) == "zip" {
+		return testZipOnce(ctx, srcPath, backingPath, password, reporter)
+	}
+
+	totals, err := collectArchiveTestTotals(ctx, backingPath, password)
+	if err != nil {
+		return err
+	}
+
+	f, format, stream, err := openArchiveTestStream(ctx, backingPath, password)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+
+	archiveSize := f.Size()
+
 	extractor, ok := format.(archives.Extractor)
 	if !ok {
 		return fmt.Errorf("format %T does not support testing", format)
 	}
 
+	countedReader := &archiveTestingReader{Reader: stream}
+	var countedStream io.Reader = countedReader
+	if readerAt, ok := stream.(io.ReaderAt); ok {
+		if seeker, ok := stream.(io.Seeker); ok {
+			countedStream = &archiveTestingReaderAtSeeker{
+				archiveTestingReader: countedReader,
+				ReaderAt:             readerAt,
+				Seeker:               seeker,
+			}
+		}
+	}
+	// testedBytes counts the data read out of the members themselves. That is
+	// what the overall bar shows whenever the archive told us how much it
+	// holds; counting consumed archive bytes instead pins the bar at 100% on
+	// formats whose decoder re-reads and seeks around its input, 7z among
+	// them. 7z also hands members to several goroutines at once, so the
+	// counter is atomic.
+	var testedBytes int64
+	overallProgress := func() (done, total int64) {
+		if totals.known {
+			return atomic.LoadInt64(&testedBytes), totals.bytes
+		}
+		// Nothing to count against: fall back to how much of the archive file
+		// has been consumed. The formats that land here are read front to
+		// back, so that figure still climbs steadily.
+		return atomic.LoadInt64(&countedReader.read), archiveSize
+	}
+	startTime := time.Now()
+	// Reading the counter and delivering the update are two separate steps,
+	// and 7z runs this callback on one goroutine per compression stream. The
+	// counter itself only grows, but without a lock around both steps a
+	// goroutine that read the smaller figure can still reach the reporter
+	// last, and the overall bar then jumps backwards even though nothing was
+	// un-tested. Holding one lock across the read and the call makes the
+	// order the reporter sees the order the counter actually went through.
+	var reportMu sync.Mutex
+	reportProgress := func(name string, current, size int64) {
+		reportMu.Lock()
+		defer reportMu.Unlock()
+		done, total := overallProgress()
+		elapsed := time.Since(startTime)
+		speed := int64(0)
+		if elapsed > 0 {
+			speed = int64(float64(done) / elapsed.Seconds())
+		}
+		totalText := fmt.Sprintf("Total: %s / %s", formatSize(done), formatSize(total))
+		reporter.UpdateTransfer("Testing", name, archiveTestingPercent(current, size), totalText,
+			archiveTestingTotalPercent(done, total, totals.known), formatSize(speed)+"/s")
+	}
+	reportProgress(filepath.Base(srcPath), 0, 1)
+
+	var failuresMu sync.Mutex
 	var failures []error
-	err = extractor.Extract(ctx, stream, func(ctx context.Context, info archives.FileInfo) error {
+	addFailure := func(failure error) {
+		failuresMu.Lock()
+		failures = append(failures, failure)
+		failuresMu.Unlock()
+	}
+	err = extractor.Extract(ctx, countedStream, func(ctx context.Context, info archives.FileInfo) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		reporter.UpdateTransfer("Testing", info.NameInArchive, -1, "", -1, "")
 		if info.IsDir() || !info.Mode().IsRegular() {
+			reportProgress(info.NameInArchive, -1, 0)
 			return nil
 		}
 
 		member, openErr := info.Open()
 		if openErr != nil {
-			failures = append(failures, fmt.Errorf("%s: %w", info.NameInArchive, openErr))
+			reportProgress(info.NameInArchive, 0, info.Size())
+			addFailure(fmt.Errorf("%s: %w", info.NameInArchive, openErr))
 			return nil
 		}
-		_, readErr := io.Copy(io.Discard, member)
+
+		memberSize := info.Size()
+		var memberBytes int64
+		var readErr error
+		buf := make([]byte, 128*1024)
+		for {
+			if err := ctx.Err(); err != nil {
+				readErr = err
+				break
+			}
+			n, err := member.Read(buf)
+			if n > 0 {
+				memberBytes += int64(n)
+				atomic.AddInt64(&testedBytes, int64(n))
+				reportProgress(info.NameInArchive, memberBytes, memberSize)
+			}
+			if err != nil {
+				if err != io.EOF {
+					readErr = err
+				}
+				break
+			}
+		}
 		closeErr := member.Close()
 		if failure := errors.Join(readErr, closeErr); failure != nil {
-			failures = append(failures, fmt.Errorf("%s: %w", info.NameInArchive, failure))
+			addFailure(fmt.Errorf("%s: %w", info.NameInArchive, failure))
 		}
 		return nil
 	})
 	if err != nil {
-		failures = append(failures, err)
+		addFailure(err)
+	}
+	failuresMu.Lock()
+	defer failuresMu.Unlock()
+	if len(failures) == 0 {
+		done, total := overallProgress()
+		if !totals.known {
+			done = archiveSize
+		}
+		if total < done {
+			// A member that held more data than its header promised: report
+			// what was actually read rather than a bar past its own end.
+			total = done
+		}
+		reportMu.Lock()
+		reporter.UpdateTransfer("Testing", filepath.Base(srcPath), 100,
+			fmt.Sprintf("Total: %s / %s", formatSize(done), formatSize(total)), 100, "")
+		reportMu.Unlock()
 	}
 	return errors.Join(failures...)
 }
 
+// archiveTestFailureButtons are the choices of the test failure report. Each
+// needs a hotkey of its own: with "&Copy list" and "&Close" both on C, the key
+// could only ever copy and never close (issue #1179).
+var archiveTestFailureButtons = []string{"Copy &list", "&Close"}
+
 func showArchiveTestFailure(app vfs.App, srcPath string, err error) {
 	report := formatArchiveTestFailure(srcPath, err)
-	if app.Message(" Test archive ", report, []string{"&Copy list", "&Close"}) == 0 {
+	if app.Message(" Test archive ", report, archiveTestFailureButtons) == 0 {
 		go vtui.SetClipboard(report)
 	}
 }
@@ -399,11 +764,16 @@ func extractArchiveOnce(ctx context.Context, srcPath, destDir, password string, 
 // extractor has no error to trigger a retry in that case, while the header
 // checksum gives us a reliable postcondition for the password attempt.
 func validateExtracted7z(ctx context.Context, srcPath, destDir, password string) error {
-	if !strings.EqualFold(filepath.Ext(srcPath), ".7z") {
+	// The first volume of a split archive, name.7z.001, is a 7z archive too.
+	name := srcPath
+	if filepath.Ext(name) == ".001" {
+		name = strings.TrimSuffix(name, ".001")
+	}
+	if !strings.EqualFold(filepath.Ext(name), ".7z") {
 		return nil
 	}
 
-	f, err := os.Open(srcPath)
+	f, err := archive.OpenInput(srcPath)
 	if err != nil {
 		return err
 	}

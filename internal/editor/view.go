@@ -18,6 +18,7 @@ import (
 	"github.com/unxed/f4/internal/numeric"
 	"github.com/unxed/f4/internal/piecetable"
 	"github.com/unxed/f4/internal/semantic"
+	"github.com/unxed/f4/internal/stallwatch"
 	"github.com/unxed/f4/internal/terminal"
 	"github.com/unxed/f4/internal/textlayout"
 	"github.com/unxed/f4/internal/textsearch"
@@ -266,6 +267,13 @@ type EditorView struct {
 	colorerTotal    int
 	colorerCancel   func()
 	colorerWorkID   uint64
+	// The Colorer startup inputs and reload generation let an open editor
+	// restart the parser after the global Colorer configuration is reloaded.
+	colorerPath      string
+	colorerFile      string
+	colorerFirstLine string
+	colorerGen       int
+	colorerFellBack  bool
 
 	// OnClose, if set, fires once after the editor has been torn down.
 	// Used by callers (e.g. the user menu's Ctrl+F4 handler) that want
@@ -556,7 +564,7 @@ func NewEditorViewWith(pt *piecetable.PieceTable, v vfs.VFS, path string, useEdi
 				firstLine = firstLine[:idx]
 			}
 		}
-		ev.Highlighter = newColorerHighlighter(ev, filepath.Base(path), firstLine, vtui.GetHighlighter(path, ""))
+		ev.startColorer(path, filepath.Base(path), firstLine)
 	default:
 		ev.Highlighter = vtui.GetHighlighter(path, "")
 	}
@@ -997,7 +1005,7 @@ func (ev *EditorView) startHighlighting() {
 	sessionID := ev.editSession
 	ev.highlightGeneration++
 	generation := ev.highlightGeneration
-	bgAttr := ColorerEditorBaseAttr(vtui.Palette[theme.ColEditorText])
+	bgAttr := ev.colorerBaseAttr()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	ev.highlightCancel = cancel
@@ -1569,9 +1577,14 @@ func (ev *EditorView) gotoLinePosition(line, position int) {
 }
 
 func (ev *EditorView) Show(scr *vtui.ScreenBuf) {
+	defer stallwatch.Frame("editor.Show")()
+	ev.restartColorerAfterReload()
 	ev.ScreenObject.Show(scr)
 	if ev.topBar != nil {
 		ev.topBar.Show(scr)
+	}
+	if ev.menuBarPinned() {
+		ev.GetMenuBar().Show(scr)
 	}
 	ev.DisplayObject(scr)
 }
@@ -1591,7 +1604,7 @@ func (ev *EditorView) DisplayObject(scr *vtui.ScreenBuf) {
 		width--
 	}
 
-	bgAttr := ColorerEditorBaseAttr(vtui.Palette[theme.ColEditorText])
+	bgAttr := ev.colorerBaseAttr()
 	selAttr := vtui.Palette[vtui.ColDialogEditSelected]
 
 	if ev.Saving {
@@ -1656,6 +1669,7 @@ func (ev *EditorView) DisplayObject(scr *vtui.ScreenBuf) {
 	crossVRow, crossVCol := -1, -1
 	var horzCrossAttr, vertCrossAttr uint64
 	if showHorz, showVert, hAttr, vAttr := CrossAttrs(); ev.IsFocused() {
+		showHorz, showVert = ev.colorerCrossAxes(showHorz, showVert)
 		if showHorz {
 			crossVRow = curVRow
 			horzCrossAttr = hAttr
@@ -1862,6 +1876,7 @@ func (guard editorCursorPatchGuard) canPublish(ev *EditorView, handled bool) boo
 }
 
 func (ev *EditorView) ProcessKey(e *vtinput.InputEvent) bool {
+	defer stallwatch.Frame("editor.ProcessKey")()
 	if editorNavigationKey(e) {
 		ev.fenceSemanticNavigation()
 	}
@@ -2762,8 +2777,53 @@ func editorVisualClusters(text string) []editorTextCluster {
 	return clusters
 }
 
-func (ev *EditorView) fillCellsWithLinks(target []vtui.CharInfo, data []byte, defaultAttr, selAttr uint64, offset int, selActive bool, selMin, selMax int, syntax []uint64, links []viewer.UrlLink, startVisualCol int, isCrossRow bool, crossVCol int, horzCrossAttr, vertCrossAttr uint64, visualRow int) []vtui.CharInfo {
-	return ev.fillCellsSpan(target, data, defaultAttr, selAttr, offset, selActive, selMin, selMax, syntax, startVisualCol, isCrossRow, crossVCol, horzCrossAttr, vertCrossAttr, visualRow, 0, 0, int(^uint(0)>>1), links)
+// editorRenderClip returns the shortest prefix that covers maxCols renderer
+// columns. It keeps the clipping rule identical to fillCellsSpan, including
+// the editor's grapheme/BiDi cluster boundaries.
+func editorRenderClip(text string, maxCols int) string {
+	if maxCols <= 0 || len(text) <= maxCols {
+		return text
+	}
+	if vtui.DefaultBidiMode == vtui.BidiFull && vtui.HasRTL(text) {
+		return text
+	}
+	take := maxCols*4 + 64
+	for take < len(text) {
+		for take < len(text) && !utf8.RuneStart(text[take]) {
+			take++
+		}
+		if take >= len(text) {
+			break
+		}
+		if editorRenderColumns(text[:take]) >= maxCols {
+			return text[:take]
+		}
+		take *= 2
+	}
+	return text
+}
+
+func editorRenderColumns(text string) int {
+	columns := 0
+	for _, cluster := range editorVisualClusters(text) {
+		if cluster.text == "\t" {
+			columns++
+			continue
+		}
+		if _, width := vtui.SanitizeCluster(cluster.text); width > 0 {
+			columns += width
+		}
+	}
+	return columns
+}
+
+func (ev *EditorView) fillCellsWithLinks(target []vtui.CharInfo, data []byte, defaultAttr, selAttr uint64, offset int, selActive bool, selMin, selMax int, syntax []uint64, links []viewer.UrlLink, startVisualCol, maxVisualCol int, isCrossRow bool, crossVCol int, horzCrossAttr, vertCrossAttr uint64, visualRow int) []vtui.CharInfo {
+	clipRight := int(^uint(0) >> 1)
+	if maxVisualCol > 0 {
+		clipRight = maxVisualCol
+	}
+	clipped := editorRenderClip(string(data), maxVisualCol-startVisualCol)
+	return ev.fillCellsSpan(target, []byte(clipped), defaultAttr, selAttr, offset, selActive, selMin, selMax, syntax, startVisualCol, isCrossRow, crossVCol, horzCrossAttr, vertCrossAttr, visualRow, 0, 0, clipRight, links)
 }
 
 func (ev *EditorView) fillCells(target []vtui.CharInfo, data []byte, defaultAttr, selAttr uint64, offset int, selActive bool, selMin, selMax int, syntax []uint64, startVisualCol int, isCrossRow bool, crossVCol int, horzCrossAttr, vertCrossAttr uint64, visualRow int) []vtui.CharInfo {
@@ -3663,7 +3723,28 @@ func (ev *EditorView) scheduleNativeVisualExtent() {
 
 func (ev *EditorView) ResizeConsole(w, h int) {
 	// Редактор в f4 занимает всё пространство до KeyBar (h-1)
-	ev.SetPosition(0, vtui.FrameManager.WorkspaceTopInset(), w-1, h-2)
+	top := vtui.FrameManager.WorkspaceTopInset()
+	if !config.App.AlwaysShowMenuBar || ev.menuBar == nil {
+		ev.SetPosition(0, top, w-1, h-2)
+		return
+	}
+	// AlwaysShowMenuBar keeps the menu bar on the workspace's top row, the row
+	// it has over the panels and the terminal too, and the editor starts below
+	// it with its title bar, which the bar would otherwise cover.
+	ev.SetPosition(0, top+1, w-1, h-2)
+	ev.menuBar.SetPosition(0, top, w-1, top)
+}
+
+// menuBarPinned reports whether ResizeConsole has given the menu bar a row of
+// its own above the title bar. SetPosition alone puts the bar on the title
+// row, where F9 raises it over the title while AlwaysShowMenuBar is off.
+func (ev *EditorView) menuBarPinned() bool {
+	if ev.menuBar == nil {
+		return false
+	}
+	_, menuY, _, _ := ev.menuBar.GetPosition()
+	_, y1, _, _ := ev.GetPosition()
+	return menuY < y1
 }
 
 // GetMenuBar returns the editor's menu bar. Items are regenerated from
@@ -3672,6 +3753,14 @@ func (ev *EditorView) ResizeConsole(w, h int) {
 func (ev *EditorView) GetMenuBar() *vtui.MenuBar {
 	ev.menuBar.Items = MenuBarItems("Editor")
 	return ev.menuBar
+}
+
+// ResetMenuForF9 restores the editor's native F9 entry point to File after a
+// previous menu has been opened and closed.
+func (ev *EditorView) ResetMenuForF9() {
+	if ev.menuBar != nil {
+		ev.menuBar.SelectPos = 0
+	}
 }
 
 // applyPendingTarget restores the position saved for this document once the

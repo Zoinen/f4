@@ -118,6 +118,11 @@ type QuickViewModel struct {
 	Surface           SurfaceModel
 }
 
+type PanelGroupModel struct {
+	Key, Title        string
+	StartIndex, Count int
+}
+
 type PanelModel struct {
 	PathIcon            string
 	UseSortGroups       bool
@@ -135,6 +140,7 @@ type PanelModel struct {
 	Active                bool
 	Path                  string
 	Title                 string
+	ViewMode              string
 	ShowFileInfo          bool
 	GalleryLayoutMode     string
 	GalleryColumnCount    int
@@ -161,6 +167,11 @@ type PanelModel struct {
 	HighlightRevision      int64
 	HighlightStyles        map[string]HighlightStyleModel
 	CursorEntryID          string
+	GroupBy                string
+	GroupReverse           bool
+	GroupFoldersSeparately bool
+	DisplayTop             int
+	Groups                 []PanelGroupModel
 	SortMode               string
 	SortReverse            bool
 	SeparateFileExtensions bool
@@ -175,6 +186,7 @@ type PanelModel struct {
 	SelectedSize           int64
 	TotalCount             int
 	TotalSize              int64
+	Top                    int
 	GalleryColumns         []PanelColumnModel
 	Entries                []FileEntryModel
 }
@@ -927,6 +939,11 @@ func (p PanelModel) ToMap() M {
 		"pathIcon":               p.PathIcon,
 		"title":                  p.Title,
 		"useSortGroups":          p.UseSortGroups,
+		"groupBy":                p.GroupBy,
+		"groupReverse":           p.GroupReverse,
+		"groupFoldersSeparately": p.GroupFoldersSeparately,
+		"displayTop":             p.DisplayTop,
+		"groups":                 panelGroupsToMaps(p.Groups),
 		"selectedFiles":          p.SelectedFiles,
 		"selectedDirectories":    p.SelectedDirectories,
 		"totalFiles":             p.TotalFiles,
@@ -1768,6 +1785,19 @@ func panelsToMaps(items []PanelModel) []M {
 	out := make([]M, 0, len(items))
 	for _, item := range items {
 		out = append(out, item.ToMap())
+	}
+	return out
+}
+
+func panelGroupsToMaps(items []PanelGroupModel) []M {
+	out := make([]M, 0, len(items))
+	for _, item := range items {
+		out = append(out, M{
+			"key":        item.Key,
+			"title":      item.Title,
+			"startIndex": item.StartIndex,
+			"count":      item.Count,
+		})
 	}
 	return out
 }

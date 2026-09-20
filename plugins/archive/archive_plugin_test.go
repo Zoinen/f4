@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
@@ -96,19 +97,25 @@ func TestArchivePluginRegistrationFailureLeavesNoLegacySideEffects(t *testing.T)
 }
 
 type archivePluginMenuTestApp struct {
-	title string
-	items []string
+	title       string
+	items       []string
+	activeVFS   vfs.VFS
+	selected    string
+	testStarted chan string
 }
 
-func (*archivePluginMenuTestApp) GetActivePanelVFS() vfs.VFS  { return nil }
-func (*archivePluginMenuTestApp) GetPassivePanelVFS() vfs.VFS { return nil }
-func (*archivePluginMenuTestApp) GetSelectedNames() []string  { return nil }
-func (*archivePluginMenuTestApp) GetSelectedName() string     { return "" }
-func (*archivePluginMenuTestApp) RefreshAll()                 {}
-func (*archivePluginMenuTestApp) SetPendingSelection(string)  {}
+func (app *archivePluginMenuTestApp) GetActivePanelVFS() vfs.VFS { return app.activeVFS }
+func (*archivePluginMenuTestApp) GetPassivePanelVFS() vfs.VFS    { return nil }
+func (*archivePluginMenuTestApp) GetSelectedNames() []string     { return nil }
+func (app *archivePluginMenuTestApp) GetSelectedName() string    { return app.selected }
+func (*archivePluginMenuTestApp) RefreshAll()                    {}
+func (*archivePluginMenuTestApp) SetPendingSelection(string)     {}
 func (*archivePluginMenuTestApp) RunProgressTask(string, string, bool, func(context.Context, func(string, int)) error, func(error)) {
 }
-func (*archivePluginMenuTestApp) RunAdvancedProgressTask(string, bool, func(context.Context, vfs.TaskReporter) error, func(error)) {
+func (app *archivePluginMenuTestApp) RunAdvancedProgressTask(title string, _ bool, _ func(context.Context, vfs.TaskReporter) error, _ func(error)) {
+	if app.testStarted != nil {
+		app.testStarted <- title
+	}
 }
 func (*archivePluginMenuTestApp) Message(string, string, []string) int { return 0 }
 func (*archivePluginMenuTestApp) InputBox(string, string, string, func(string)) {
@@ -195,19 +202,22 @@ func TestArchivePluginRegistersFar2lFileShortcutsWithoutContributionHost(t *test
 		t.Fatalf("legacy archive hotkey = %#v, want Shift+F3 with a handler", host.hotkeys[2])
 	}
 
-	app := &archivePluginMenuTestApp{}
+	app := &archivePluginMenuTestApp{
+		activeVFS:   vfs.NewOSVFS(t.TempDir()),
+		selected:    "sample.zip",
+		testStarted: make(chan string, 1),
+	}
 	host.hotkeys[2].handler(app)
-	if app.title != " Archive Commands " {
-		t.Errorf("legacy menu title = %q", app.title)
-	}
-	wantItems := []string{"&1. Add to archive", "&2. Extract files", "&3. Test archive"}
-	if len(app.items) != len(wantItems) {
-		t.Fatalf("legacy menu items = %#v", app.items)
-	}
-	for index := range wantItems {
-		if app.items[index] != wantItems[index] {
-			t.Errorf("legacy menu item %d = %q, want %q", index, app.items[index], wantItems[index])
+	select {
+	case title := <-app.testStarted:
+		if title != " Testing... " {
+			t.Errorf("Shift+F3 progress title = %q, want %q", title, " Testing... ")
 		}
+	case <-time.After(time.Second):
+		t.Fatal("Shift+F3 did not start archive testing")
+	}
+	if app.title != "" || len(app.items) != 0 {
+		t.Fatalf("Shift+F3 opened a legacy archive menu: title=%q items=%#v", app.title, app.items)
 	}
 }
 

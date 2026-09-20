@@ -45,6 +45,21 @@ func TestEmbeddedCurrentLanguageContainsNewCommandStrings(t *testing.T) {
 	}
 }
 
+// f4 #1155: the history dropdown of an input field (Ctrl+Down) now asks before
+// Del clears the list. Its captions are vtui's own strings, so without lines in
+// the language files a Russian UI asked the question in English.
+func TestInitLangTranslatesVtuiHistoryDropdown(t *testing.T) {
+	t.Cleanup(func() { InitLang("", "", "") })
+
+	InitLang("ru", "", "")
+	if got := Msg("vtui.HistoryClearConfirm"); got != "Очистить всю историю?" {
+		t.Errorf("Russian dropdown confirmation = %q", got)
+	}
+	if got := Msg("vtui.History"); got != "История" {
+		t.Errorf("Russian dropdown title = %q", got)
+	}
+}
+
 func TestInitLangUsesEmbeddedCurrentLanguageAndResetsFallback(t *testing.T) {
 	t.Cleanup(func() { InitLang("", "", "") })
 

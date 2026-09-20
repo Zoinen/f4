@@ -15,7 +15,7 @@ import (
 )
 
 var (
-	foundationOnce sync.Once
+	foundationOnce = new(sync.Once)
 	foundationErr  error
 	objcGetClass   func(name string) uintptr
 	objcRegister   func(name string) uintptr

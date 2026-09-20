@@ -162,7 +162,7 @@ func TestColors_ExportColors_Grouped(t *testing.T) {
 	}
 	for _, note := range []string{
 		"Table.Separator colors the column separators of a table",
-		"Scrollbar is the shared fallback for generic lists and menus",
+		"Table.Scrollbar is the scrollbar of generic lists and tables",
 	} {
 		if !strings.Contains(content, note) {
 			t.Errorf("Exported file missing color usage note %q", note)
@@ -370,5 +370,102 @@ func TestColors_ContrastCorrectionKeepsLowWcagPair(t *testing.T) {
 		if diff := got - want; diff > 1 || diff < -1 {
 			t.Fatalf("yellow on light grey drifted to #%06x, want it left near #%06x", corrected, yellow)
 		}
+	}
+}
+
+// Scrollbar used to colour both menus and generic lists. It is now split into
+// Menu.Scrollbar and Table.Scrollbar (issue #261); the old key must still
+// colour both, and a canonical key in the same file must still win.
+func TestColors_LegacyScrollbarKeyFeedsMenuAndTableScrollbars(t *testing.T) {
+	vtui.SetDefaultPalette()
+	SetDefaultF4Palette()
+	oldCfg := config.App
+	config.App.EnforceColorCorrection = false
+	defer func() { config.App = oldCfg }()
+
+	InitColors(ini.Parse(strings.NewReader(`[farcolors]
+Scrollbar = foreground:#112233 | background:#445566
+`)))
+	want := vtui.SetRGBBoth(0, 0x112233, 0x445566)
+	if got := vtui.Palette[vtui.ColMenuScrollbar]; got != want {
+		t.Errorf("legacy Scrollbar did not reach Menu.Scrollbar: %#x, want %#x", got, want)
+	}
+	if got := vtui.Palette[vtui.ColScrollBar]; got != want {
+		t.Errorf("legacy Scrollbar did not reach Table.Scrollbar: %#x, want %#x", got, want)
+	}
+
+	vtui.SetDefaultPalette()
+	SetDefaultF4Palette()
+	InitColors(ini.Parse(strings.NewReader(`[farcolors]
+Scrollbar = foreground:#112233 | background:#445566
+Menu.Scrollbar = foreground:#abcdef | background:#fedcba
+`)))
+	if got, want := vtui.Palette[vtui.ColMenuScrollbar], vtui.SetRGBBoth(0, 0xabcdef, 0xfedcba); got != want {
+		t.Errorf("Menu.Scrollbar did not win over the legacy key: %#x, want %#x", got, want)
+	}
+	if got := vtui.Palette[vtui.ColScrollBar]; got != want {
+		t.Errorf("Table.Scrollbar lost the legacy value: %#x, want %#x", got, want)
+	}
+}
+
+// A menu and a generic list lie on different backgrounds, so their scrollbars
+// must follow separate keys all the way to the screen (issue #261).
+func TestColors_MenuAndListScrollbarsFollowSeparateKeys(t *testing.T) {
+	vtui.SetDefaultPalette()
+	SetDefaultF4Palette()
+	oldCfg := config.App
+	config.App.EnforceColorCorrection = false
+	defer func() { config.App = oldCfg }()
+
+	InitColors(ini.Parse(strings.NewReader(`[farcolors]
+Menu.Scrollbar = foreground:#102030 | background:#405060
+Table.Scrollbar = foreground:#a0b0c0 | background:#d0e0f0
+`)))
+	items := make([]string, 30)
+	for i := range items {
+		items[i] = "item"
+	}
+
+	menu := vtui.NewVMenu("Menu")
+	for _, item := range items {
+		menu.AddItem(vtui.MenuItem{Text: item})
+	}
+	menu.SetPosition(0, 0, 20, 10)
+	menuScr := vtui.NewSilentScreenBuf()
+	menuScr.AllocBuf(22, 12)
+	menu.Show(menuScr)
+	if cell := menuScr.GetCell(20, 1); cell.Char != vtui.ScrollUpArrow || cell.Attributes != vtui.Palette[vtui.ColMenuScrollbar] {
+		t.Errorf("menu scrollbar cell = %q %#x, want %q %#x", rune(cell.Char), cell.Attributes, rune(vtui.ScrollUpArrow), vtui.Palette[vtui.ColMenuScrollbar])
+	}
+
+	list := vtui.NewListBox(0, 0, 20, 8, items)
+	list.ShowScrollBar = true
+	listScr := vtui.NewSilentScreenBuf()
+	listScr.AllocBuf(22, 10)
+	list.Show(listScr)
+	if cell := listScr.GetCell(19, 0); cell.Char != vtui.ScrollUpArrow || cell.Attributes != vtui.Palette[vtui.ColScrollBar] {
+		t.Errorf("list scrollbar cell = %q %#x, want %q %#x", rune(cell.Char), cell.Attributes, rune(vtui.ScrollUpArrow), vtui.Palette[vtui.ColScrollBar])
+	}
+}
+
+// far2l leaves frame lines (".Box" keys) out of contrast correction. The table
+// column separator is a frame line that was renamed from Table.Box, and the
+// rename must not make its authored foreground drift.
+func TestColors_TableSeparatorExemptFromContrastCorrection(t *testing.T) {
+	vtui.SetDefaultPalette()
+	SetDefaultF4Palette()
+	oldCfg := config.App
+	config.App.EnforceColorCorrection = true
+	defer func() { config.App = oldCfg }()
+
+	InitColors(ini.Parse(strings.NewReader(`[farcolors]
+Table.Separator = foreground:#5a5a5a | background:#232323
+Table.Scrollbar = foreground:#5a5a5a | background:#232323
+`)))
+	if got := vtui.GetRGBFore(vtui.Palette[vtui.ColScrollBar]); got == 0x5a5a5a {
+		t.Fatal("contrast correction left #5a5a5a on #232323 alone; this test needs a pair it rewrites")
+	}
+	if got := vtui.GetRGBFore(vtui.Palette[vtui.ColTableBox]); got != 0x5a5a5a {
+		t.Errorf("Table.Separator foreground corrected to #%06x, want the authored #5a5a5a", got)
 	}
 }

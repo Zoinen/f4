@@ -125,7 +125,7 @@ func TestColorer_AttributesLandOnTheCellsAfterAnEmoji(t *testing.T) {
 func TestColorer_AttrCacheIsBounded(t *testing.T) {
 	ch := &ColorerHighlighter{}
 	for i := 0; i < 100; i++ {
-		ch.storeAttrs(i, []uint64{uint64(i)}, 0)
+		ch.storeAttrs(i, []uint64{uint64(i)}, 0, nil)
 	}
 	if len(ch.attrCache) != 100 {
 		t.Errorf("Attribute cache should have 100 entries, got %d", len(ch.attrCache))
@@ -281,7 +281,7 @@ func TestColorer_AttrCacheStaysBoundedOnALongForwardScroll(t *testing.T) {
 	ch := &ColorerHighlighter{}
 	const scrolled = maxCachedAttrLines * 3
 	for i := 0; i < scrolled; i++ {
-		ch.storeAttrs(i, []uint64{uint64(i)}, 0)
+		ch.storeAttrs(i, []uint64{uint64(i)}, 0, nil)
 	}
 
 	if len(ch.attrCache) >= maxCachedAttrLines {
@@ -366,7 +366,7 @@ func TestColorer_StoreAttrsPreservesTopLines(t *testing.T) {
 		bgCache:   make(map[int]uint64),
 	}
 
-	ch.storeAttrs(0, []uint64{100}, 0)
+	ch.storeAttrs(0, []uint64{100}, 0, nil)
 	if _, ok := ch.attrCache[0]; !ok {
 		t.Error("Expected line 0 to be present")
 	}
@@ -477,7 +477,7 @@ func TestColorer_ForgetPlan(t *testing.T) {
 func TestColorer_DropFromForgetsColours(t *testing.T) {
 	ch := &ColorerHighlighter{}
 	for i := 0; i < 10; i++ {
-		ch.storeAttrs(i, []uint64{uint64(i)}, 0)
+		ch.storeAttrs(i, []uint64{uint64(i)}, 0, nil)
 	}
 
 	ch.DropFrom(4)

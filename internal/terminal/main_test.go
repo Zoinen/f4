@@ -16,14 +16,15 @@ import (
 // reached: no test in this package attaches a client.
 type testApplication struct{}
 
-func (testApplication) InitCore() *vtui.ScreenBuf     { return vtui.NewSilentScreenBuf() }
-func (testApplication) InstallImageOverlay()          {}
-func (testApplication) OpenEditFile()                 {}
-func (testApplication) ClientAttached(_, _, _ string) {}
-func (testApplication) ClientDetached()               {}
-func (testApplication) VersionInfo() string           { return "f4-test" }
-func (testApplication) EditFilePath() string          { return "" }
-func (testApplication) StartupDirs() (string, string) { return "", "" }
+func (testApplication) InitCore() *vtui.ScreenBuf                 { return vtui.NewSilentScreenBuf() }
+func (testApplication) InstallImageOverlay()                      {}
+func (testApplication) OpenStartupFiles()                         {}
+func (testApplication) ClientAttached(_, _, _ string, _ []string) {}
+func (testApplication) ClientDetached()                           {}
+func (testApplication) VersionInfo() string                       { return "f4-test" }
+func (testApplication) EditFilePath() string                      { return "" }
+func (testApplication) ViewFilePaths() []string                   { return nil }
+func (testApplication) StartupDirs() (string, string)             { return "", "" }
 
 // DecodeImage handles PNG only. The application routes several formats here;
 // the kitty protocol tests transmit PNG, and a decoder that silently accepts

@@ -177,7 +177,10 @@ func (b *ViewerBackend) Refresh(ctx context.Context) bool {
 
 func (b *ViewerBackend) ReadAt(offset int64, length int) ([]byte, error) {
 	b.mu.Lock()
-	if b.ctx != nil && b.ctx.Err() != nil {
+	if b.ctx == nil {
+		b.ctx = context.Background()
+	}
+	if b.ctx.Err() != nil {
 		b.mu.Unlock()
 		return nil, b.ctx.Err()
 	}

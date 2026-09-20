@@ -2,6 +2,8 @@ package panel
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/unxed/f4/internal/ini"
@@ -9,13 +11,16 @@ import (
 )
 
 type PanelSessionState struct {
-	Path          string
-	Cursor        string
-	ViewMode      int
-	Gallery       PanelGallerySessionState
-	SortMode      int
-	SortReverse   bool
-	UseSortGroups bool
+	Path                   string
+	Cursor                 string
+	ViewMode               int
+	Gallery                PanelGallerySessionState
+	SortMode               int
+	SortReverse            bool
+	UseSortGroups          bool
+	GroupBy                GroupMode
+	GroupReverse           bool
+	GroupFoldersSeparately bool
 }
 
 type WorkspaceSessionState struct {
@@ -53,12 +58,14 @@ func LegacyWorkspaceSession() WorkspaceSessionState {
 			Gallery:  ClonePanelGallerySessionState(LastLeftGalleryState),
 			SortMode: LastLeftSortMode, SortReverse: LastLeftSortRev,
 			UseSortGroups: LastLeftSortGroups,
+			GroupBy:       LastLeftGroupBy, GroupReverse: LastLeftGroupReverse, GroupFoldersSeparately: LastLeftGroupFoldersSeparately,
 		},
 		Right: PanelSessionState{
 			Path: LastRightPath, Cursor: LastRightCursor, ViewMode: LastRightViewMode,
 			Gallery:  ClonePanelGallerySessionState(LastRightGalleryState),
 			SortMode: LastRightSortMode, SortReverse: LastRightSortRev,
 			UseSortGroups: LastRightSortGroups,
+			GroupBy:       LastRightGroupBy, GroupReverse: LastRightGroupReverse, GroupFoldersSeparately: LastRightGroupFoldersSeparately,
 		},
 		ActivePanel: LastActivePanel,
 		WidePanel:   LastWidePanel,
@@ -69,6 +76,8 @@ func LegacyWorkspaceSession() WorkspaceSessionState {
 }
 
 func SetLegacyWorkspaceSession(state WorkspaceSessionState) {
+	LastRightGroupBy, LastRightGroupReverse, LastRightGroupFoldersSeparately = state.Right.GroupBy, state.Right.GroupReverse, state.Right.GroupFoldersSeparately
+	LastLeftGroupBy, LastLeftGroupReverse, LastLeftGroupFoldersSeparately = state.Left.GroupBy, state.Left.GroupReverse, state.Left.GroupFoldersSeparately
 	LastLeftPath, LastRightPath = state.Left.Path, state.Right.Path
 	LastLeftCursor, LastRightCursor = state.Left.Cursor, state.Right.Cursor
 	LastLeftViewMode, LastRightViewMode = state.Left.ViewMode, state.Right.ViewMode
@@ -128,6 +137,7 @@ func CaptureWorkspaceSession(pf *PanelsFrame) WorkspaceSessionState {
 			Gallery:  CapturePanelGallerySessionState(left),
 			SortMode: int(left.SortMode), SortReverse: left.SortReverse,
 			UseSortGroups: left.UseSortGroups,
+			GroupBy:       left.GroupBy, GroupReverse: left.GroupReverse, GroupFoldersSeparately: left.GroupFoldersSeparately,
 		}
 	}
 	if right, ok := pf.Panels[1].(*FileSystemPanel); ok {
@@ -145,6 +155,7 @@ func CaptureWorkspaceSession(pf *PanelsFrame) WorkspaceSessionState {
 			Gallery:  CapturePanelGallerySessionState(right),
 			SortMode: int(right.SortMode), SortReverse: right.SortReverse,
 			UseSortGroups: right.UseSortGroups,
+			GroupBy:       right.GroupBy, GroupReverse: right.GroupReverse, GroupFoldersSeparately: right.GroupFoldersSeparately,
 		}
 	}
 	return state
@@ -219,6 +230,9 @@ func LoadWorkspaceSessions(ini *ini.File) ([]WorkspaceSessionState, int) {
 				SortMode:      parseSessionInt(ini, leftSection, "SortMode", int(SortName)),
 				SortReverse:   ini.GetString(leftSection, "SortReverse", "0") == "1",
 				UseSortGroups: ini.GetString(leftSection, "UseSortGroups", "0") == "1",
+				GroupBy:                ValidGroupMode(GroupMode(parseSessionInt(ini, leftSection, "GroupBy", 0))),
+				GroupReverse:           ini.GetString(leftSection, "GroupReverse", "0") == "1",
+				GroupFoldersSeparately: ini.GetString(leftSection, "GroupFoldersSeparately", "1") == "1",
 			},
 			Right: PanelSessionState{
 				Path: ini.GetString(rightSection, "Folder", ""), Cursor: ini.GetString(rightSection, "CurFile", ""),
@@ -227,6 +241,9 @@ func LoadWorkspaceSessions(ini *ini.File) ([]WorkspaceSessionState, int) {
 				SortMode:      parseSessionInt(ini, rightSection, "SortMode", int(SortName)),
 				SortReverse:   ini.GetString(rightSection, "SortReverse", "0") == "1",
 				UseSortGroups: ini.GetString(rightSection, "UseSortGroups", "0") == "1",
+				GroupBy:                ValidGroupMode(GroupMode(parseSessionInt(ini, rightSection, "GroupBy", 0))),
+				GroupReverse:           ini.GetString(rightSection, "GroupReverse", "0") == "1",
+				GroupFoldersSeparately: ini.GetString(rightSection, "GroupFoldersSeparately", "1") == "1",
 			},
 		}
 		if state.ActivePanel < 0 || state.ActivePanel > 1 {
@@ -282,6 +299,7 @@ func writePanelSession(sb *strings.Builder, section string, state PanelSessionSt
 	fmt.Fprintf(sb, "SortMode = %d\n", state.SortMode)
 	fmt.Fprintf(sb, "SortReverse = %d\n", map[bool]int{true: 1}[state.SortReverse])
 	fmt.Fprintf(sb, "UseSortGroups = %d\n", map[bool]int{true: 1}[state.UseSortGroups])
+	fmt.Fprintf(sb, "GroupBy = %d\nGroupReverse = %d\nGroupFoldersSeparately = %d\n", ValidGroupMode(state.GroupBy), map[bool]int{true: 1}[state.GroupReverse], map[bool]int{true: 1}[state.GroupFoldersSeparately])
 }
 
 func WriteWorkspaceSessions(sb *strings.Builder, states []WorkspaceSessionState, active int) {
@@ -317,10 +335,21 @@ func navigatePanelTo(pf *PanelsFrame, panel *FileSystemPanel, path string) {
 	}
 }
 
+// IsStartupFile says whether a path named on the command line is a file rather
+// than a folder: something that exists and is not a directory. Such a path opens
+// in the viewer (issue #991), and its panel shows the folder it is in.
+func IsStartupFile(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && !st.IsDir()
+}
+
 // ApplyStartupDirs opens left and right in the two panels, so `cd dir && f4`
 // shows dir and `f4 dir1 dir2` shows both, rather than session.ini's paths. It
 // runs after ApplyWorkspaceSession and therefore wins; an empty left changes
 // nothing, and an empty right sends both panels to left.
+//
+// A path that names a file sends its panel to the file's folder with the cursor
+// on the file, so closing the viewer `f4 file` opened lands on it (issue #991).
 //
 // A right that differs from left only ever comes from the command line, so it
 // also says the focus belongs on the directory named first.
@@ -334,9 +363,14 @@ func ApplyStartupDirs(pf *PanelsFrame, left, right string) {
 	}
 	for idx, dir := range [2]string{left, right} {
 		if fsp, ok := pf.Panels[idx].(*FileSystemPanel); ok && fsp != nil {
+			focus := ""
+			if IsStartupFile(dir) {
+				dir, focus = filepath.Dir(dir), filepath.Base(dir)
+			}
 			navigatePanelTo(pf, fsp, dir)
-			// The pending cursor names a file of the directory just left.
-			fsp.PendingSelection = ""
+			// The pending cursor names a file of the directory just left;
+			// for a file it names that file, placed when the listing arrives.
+			fsp.PendingSelection = focus
 		}
 	}
 	if fromCommandLine {
@@ -369,6 +403,10 @@ func ApplyWorkspaceSession(pf *PanelsFrame, state WorkspaceSessionState, width, 
 	left.SortMode, right.SortMode = SortMode(state.Left.SortMode), SortMode(state.Right.SortMode)
 	left.SortReverse, right.SortReverse = state.Left.SortReverse, state.Right.SortReverse
 	left.UseSortGroups, right.UseSortGroups = state.Left.UseSortGroups, state.Right.UseSortGroups
+
+	left.SetGrouping(state.Left.GroupBy, state.Left.GroupReverse, state.Left.GroupFoldersSeparately)
+
+	right.SetGrouping(state.Right.GroupBy, state.Right.GroupReverse, state.Right.GroupFoldersSeparately)
 
 	if restorePaths {
 		navigatePanelTo(pf, left, state.Left.Path)

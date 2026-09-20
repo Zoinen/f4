@@ -43,7 +43,3 @@ tools/icons/icons
 tools/icons/icons.exe
 tools/wine_syscall_probe/wineprobe
 tools/wine_syscall_probe/wineprobe.exe
-
-# Native ConPTY bundle installed locally by the same setup as Windows CI
-/internal/terminal/conpty.dll
-/internal/terminal/OpenConsole.exe

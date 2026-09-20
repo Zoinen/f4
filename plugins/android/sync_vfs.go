@@ -218,10 +218,13 @@ func syncEntrySize(size uint64) int64 {
 func syncEntryItem(entry SyncEntry) vfs.VFSItem {
 	name := entry.Name
 	uid, gid := -1, -1
+	known := vfs.MetadataExplicit | vfs.MetadataPermissions | vfs.MetadataHidden | vfs.MetadataExecutable | vfs.MetadataMTime
 	if entry.metadataV2 {
+		known |= vfs.MetadataUID | vfs.MetadataGID | vfs.MetadataATime | vfs.MetadataCTime
 		uid, gid = int(entry.UID), int(entry.GID)
 	}
 	return vfs.VFSItem{
+		KnownMetadata: known, SizeKnown: true,
 		Name:         name,
 		Size:         syncEntrySize(entry.Size),
 		IsDir:        entry.Mode&remoteModeType == remoteModeDir,

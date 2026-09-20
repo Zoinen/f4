@@ -198,7 +198,9 @@ func (v *SFTPVFS) ReadDir(ctx context.Context, p string, onChunk func([]vfs.VFSI
 		var unixMode uint32
 		var uid, gid int
 		var aTime time.Time
+		known := vfs.MetadataExplicit | vfs.MetadataPermissions | vfs.MetadataHidden | vfs.MetadataExecutable | vfs.MetadataMTime
 		if stat, ok := e.Sys().(*sftp.FileStat); ok {
+			known |= vfs.MetadataUID | vfs.MetadataGID | vfs.MetadataATime
 			unixMode = stat.Mode
 			uid = int(stat.UID)
 			gid = int(stat.GID)
@@ -216,6 +218,7 @@ func (v *SFTPVFS) ReadDir(ctx context.Context, p string, onChunk func([]vfs.VFSI
 		}
 
 		items = append(items, vfs.VFSItem{
+			KnownMetadata: known, SizeKnown: true,
 			Name: name, Size: e.Size(), IsDir: isDir, IsSymlink: isSymlink,
 			MTime: e.ModTime(), IsExecutable: e.Mode().Perm()&0111 != 0,
 			IsHidden: strings.HasPrefix(name, "."),
@@ -240,8 +243,10 @@ func (v *SFTPVFS) Stat(ctx context.Context, p string) (vfs.VFSItem, error) {
 	var unixMode uint32
 	var uid, gid int
 	var aTime time.Time
+	known := vfs.MetadataExplicit | vfs.MetadataPermissions | vfs.MetadataHidden | vfs.MetadataExecutable | vfs.MetadataMTime
 
 	if stat, ok := info.Sys().(*sftp.FileStat); ok {
+		known |= vfs.MetadataUID | vfs.MetadataGID | vfs.MetadataATime
 		unixMode = stat.Mode
 		uid = int(stat.UID)
 		gid = int(stat.GID)
@@ -252,6 +257,7 @@ func (v *SFTPVFS) Stat(ctx context.Context, p string) (vfs.VFSItem, error) {
 	}
 
 	return vfs.VFSItem{
+		KnownMetadata: known, SizeKnown: true,
 		Name: info.Name(), Size: info.Size(), IsDir: info.IsDir(),
 		MTime: info.ModTime(), IsExecutable: info.Mode().Perm()&0111 != 0,
 		IsHidden: strings.HasPrefix(info.Name(), "."),

@@ -15,13 +15,13 @@ func semanticStyledViewerWindowRows(vv *ViewerView, window semantic.SemanticSurf
 	topOffset := vv.TopOffset
 	lineOffsets := semantic.CloneInt64Slice(vv.LineOffsets)
 	urlRows := append([][]UrlCellRange(nil), vv.visibleURLRows...)
-	eofVisible := vv.EofVisible
+	eofVisible := vv.eof()
 	lastKnownSize := vv.lastKnownSize
 	defer func() {
 		vv.TopOffset = topOffset
 		vv.LineOffsets = lineOffsets
 		vv.visibleURLRows = urlRows
-		vv.EofVisible = eofVisible
+		vv.setEOF(eofVisible)
 		vv.lastKnownSize = lastKnownSize
 	}()
 

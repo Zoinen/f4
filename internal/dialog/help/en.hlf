@@ -8,7 +8,11 @@ f4 — efficient and cozy file manager in go
 ~Mouse wheel settings~MouseWheel@
 ~Portable mode~PortableSettings@
 ~Visual File Renamer (VisRen)~VisRen@
+~Special commands~SpecCmd@
+~Command line~CmdLine@
 ~View README.md~README@
+
+  ~Group by~@PanelGrouping@
 
 @VisRen
 $Visual File Renamer (VisRen)
@@ -647,6 +651,18 @@ $Panel Navigation Keys
   Ctrl+W        - Close workspace
   Ctrl+N        - Fork active panel to new workspace
 
+  Ctrl+Numpad + / Ctrl+=  - Select files with the current extension
+  Ctrl+Numpad - / Ctrl+-  - Deselect files with the current extension
+  Ctrl+Shift+= / Ctrl+Shift+- - Select / deselect by mask
+  Alt+=         - Invert selection
+  Numpad 5      - View file (also F3; Num Lock may be on or off)
+
+Extension selection is a standard Far Manager command. The main-keyboard
+aliases make it available without a numpad. Matching ignores case and uses
+the last extension. On a folder, folders are selected instead. The parent
+entry and autofilter-hidden rows are left alone. Ctrl+M restores the last
+selection; shortcuts can be changed in the Hotkey Configurator.
+
 @History
 $Commands History (Alt+F8)
     The commands history shows the list of previously executed commands.
@@ -849,3 +865,78 @@ f4.example.ini.
 
 Restart f4 after saving. The mode file is read before the profile is located,
 so this setting cannot be stored inside the profile itself.
+
+@SpecCmd
+$Special commands
+Like far2l's far: commands, f4 understands a few pseudo commands typed on the
+command line. f4 handles them itself; they never reach the shell.
+
+  #f4:about#   Information about f4 and the system it runs on: version,
+               build, backend, directories, environment and plugins. Also
+               Commands > About f4. Ctrl+C or Ctrl+Ins copy the whole list
+               for a bug report; Ctrl+H shows or hides rows without a value.
+
+  #f4:config#  The configuration editor: every settings.ini key, marked with
+               * when it differs from its default. Also Commands >
+               Configuration editor. Enter or F4 edit a value, Del resets it,
+               Ctrl+H keeps only the changed keys, Ctrl+A aligns the names on
+               the dot.
+
+An unknown f4: command shows the list of the commands that exist.
+
+@CmdLine
+$Command line
+f4 [path1 [path2]] [switches]
+
+Paths come before the switches, or after a "--" separator.
+
+  #f4#                  Both panels open the current directory (on Windows
+                      they keep the folders of the last session).
+
+  #f4 path1 [path2]#    path1 opens in the left panel and path2 in the
+                      right one; without path2 the right panel stays on
+                      the current directory.
+
+  #f4 file#             The file opens in the viewer, as F3 would, and its
+                      panel shows the file's folder with the cursor on
+                      it. Whether pictures and video open in their own
+                      viewers or as plain files is set in Options >
+                      Viewer settings.
+
+  #-e, --edit file#     Open the file in the editor.
+
+  #--gui [backend]#     Start in a window of its own.
+
+  #--tty [backend]#     Start in the terminal.
+
+  #--update [channel]#  Download and install the newest build, then exit.
+
+  #--debug#             Write the diagnostic log to logs/debug.log in the
+                      profile.
+
+  #-v, --version#       Print the version and exit.
+
+  #-h, --help#          Print every switch and exit.
+
+When f4 already runs in the background (Unix), the files named on the
+command line open in that session, and relative names mean the directory
+the command was typed in.
+
+@PanelGrouping
+$ #Group by#
+ F9 → Left/Right → Group by selects grouping independently of sorting.
+ Sort modes also links to this menu. No default shortcut is assigned.
+
+ Group by name, extension, size, size on disk, modification/access/creation or
+ metadata-change time, owner, permissions, attributes, VFS mode, object kind,
+ hidden or executable status. Sorting continues to work inside each group.
+ Headings scroll with files but never receive focus or selection.
+
+ Sizes: Small ≤5 MiB, Medium ≤10 MiB, Large ≤100 MiB, then Extra large.
+ Change these increasing limits in Settings Center → Panels → Grouping.
+ Dates: future days, today, yesterday, two days ago, then month and year.
+ Missing metadata stays in No data. Folder size is unknown until calculated.
+
+ Folders separately keeps a first Folders group. Turn it off to include folders
+ in ordinary groups, before files. Reverse group order affects ordinary groups
+ only: the parent row, separate folders and No data keep their positions.

@@ -24,11 +24,14 @@ import (
 // ViewerView is a high-performance file viewer component.
 type ViewerView struct {
 	vtui.BaseFrame
-	TopBar  *TopBar
-	menuBar *vtui.MenuBar
-	Backend *ViewerBackend
-	VFS     vfs.VFS
-	Path    string
+	TopBar         *TopBar
+	menuBar        *vtui.MenuBar
+	Backend        *ViewerBackend
+	VFS            vfs.VFS
+	Path           string
+	highlight      WindowColorizer
+	highlightTried bool
+	highlightKey   uint64
 
 	HexMode bool
 	// HexAuto records that hex mode came from the binary check rather than
@@ -43,11 +46,16 @@ type ViewerView struct {
 	TopOffset  int64 // Current byte offset of the first visible line
 
 	// For Text mode: offsets of lines currently on screen
-	LineOffsets         []int64
-	rowCells            []vtui.CharInfo
-	visibleURLRows      [][]UrlCellRange
-	hoverURL            string
-	EofVisible          bool
+	LineOffsets    []int64
+	rowCells       []vtui.CharInfo
+	visibleURLRows [][]UrlCellRange
+	hoverURL       string
+	EofVisible     bool
+	// eofVisible is the upstream spelling kept alongside EofVisible for
+	// compatibility with the fork's existing callers and tests. Access it
+	// through eof/setEOF so direct writes to either spelling stay coherent.
+	eofVisible          bool
+	eofVisibleLast      bool
 	lastKnownSize       int64
 	LastSearch          string
 	LastSearchOffset    int64
@@ -97,6 +105,28 @@ type ViewerView struct {
 
 	OnClose  func()
 	Codepage int
+}
+
+func (vv *ViewerView) setEOF(value bool) {
+	vv.EofVisible = value
+	vv.eofVisible = value
+	vv.eofVisibleLast = value
+}
+
+func (vv *ViewerView) eof() bool {
+	switch {
+	case vv.EofVisible != vv.eofVisibleLast && vv.eofVisible == vv.eofVisibleLast:
+		vv.eofVisible = vv.EofVisible
+	case vv.eofVisible != vv.eofVisibleLast && vv.EofVisible == vv.eofVisibleLast:
+		vv.EofVisible = vv.eofVisible
+	case vv.EofVisible != vv.eofVisible:
+		// Both compatibility fields changed independently. Prefer the public
+		// fork spelling, which is what older callers write.
+		vv.eofVisible = vv.EofVisible
+	}
+	vv.eofVisibleLast = vv.eofVisible
+	vv.EofVisible = vv.eofVisible
+	return vv.eofVisible
 }
 
 // semanticWrapSeekState keeps only the scalar cursor needed to resume a
@@ -200,7 +230,7 @@ func NewViewerView(ctx context.Context, v vfs.VFS, path string) (*ViewerView, er
 		if newOff != vv.TopOffset {
 			vv.beginViewerNavigationIntent()
 			vv.TopOffset = newOff
-			vv.EofVisible = false
+			vv.setEOF(false)
 			vtui.FrameManager.Redraw()
 		}
 	}
@@ -328,14 +358,14 @@ func (vv *ViewerView) refreshFromFile() {
 		return
 	}
 	size := vv.Backend.Size()
-	follow := vv.EofVisible && size > vv.lastKnownSize
+	follow := vv.eof() && size > vv.lastKnownSize
 	vv.lastKnownSize = size
 	if vv.TopOffset > size {
 		// The file was truncated or rotated away under the viewport, and the
 		// offset it was showing no longer exists.
 		vv.TopOffset = 0
 		vv.lastKnownSize = size
-		vv.EofVisible = false
+		vv.setEOF(false)
 	}
 	if follow {
 		vv.jumpToEnd()
@@ -357,9 +387,9 @@ func (vv *ViewerView) Reload() {
 	vv.LineOffsets = nil
 	if size := vv.Backend.Size(); vv.TopOffset > size {
 		vv.TopOffset = 0
-		vv.EofVisible = false
+		vv.setEOF(false)
 	}
-	if vv.EofVisible {
+	if vv.eof() {
 		vv.jumpToEnd()
 		return
 	}
@@ -413,6 +443,18 @@ func (vv *ViewerView) SetPosition(x1, y1, x2, y2 int) {
 	}
 }
 
+// menuBarPinned reports whether ResizeConsole has given the menu bar a row of
+// its own above the title bar. A bar positioned on the title row is not
+// pinned, even though it still exists for keyboard access.
+func (vv *ViewerView) menuBarPinned() bool {
+	if vv.menuBar == nil {
+		return false
+	}
+	_, menuY, _, _ := vv.menuBar.GetPosition()
+	_, y1, _, _ := vv.GetPosition()
+	return menuY < y1
+}
+
 // viewportHeight returns the height used by navigation and semantic windows.
 // Native chrome is measured in pixels and is not necessarily an integral
 // number of terminal cells, so the QML surface reports the complete rows that
@@ -446,6 +488,14 @@ func (vv *ViewerView) GetMenuBar() *vtui.MenuBar {
 	return vv.menuBar
 }
 
+// ResetMenuForF9 restores the viewer's native F9 entry point to File after a
+// previous menu has been opened and closed.
+func (vv *ViewerView) ResetMenuForF9() {
+	if vv.menuBar != nil {
+		vv.menuBar.SelectPos = 0
+	}
+}
+
 func (vv *ViewerView) HandleCommand(cmd int, args any) bool {
 	if cmd == vtui.CmClose {
 		vv.Close()
@@ -458,9 +508,13 @@ func (vv *ViewerView) HandleCommand(cmd int, args any) bool {
 }
 
 func (vv *ViewerView) Show(scr *vtui.ScreenBuf) {
+	vv.eof()
 	vv.ScreenObject.Show(scr)
 	if vv.TopBar != nil {
 		vv.TopBar.Show(scr)
+	}
+	if vv.menuBarPinned() {
+		vv.GetMenuBar().Show(scr)
 	}
 	vv.DisplayObject(scr)
 }
@@ -469,11 +523,12 @@ func (vv *ViewerView) DisplayObject(scr *vtui.ScreenBuf) {
 	if !vv.IsVisible() {
 		return
 	}
+	vv.eof()
 	vv.ensureTextLayoutSettings()
 
 	// AUTO-SCROLL LOGIC (tail -f)
 	currentSize := vv.Backend.Size()
-	if vv.EofVisible && currentSize > vv.lastKnownSize && !vv.Busy {
+	if vv.eof() && currentSize > vv.lastKnownSize && !vv.Busy {
 		vv.lastKnownSize = currentSize
 		vv.jumpToEnd()
 		return
@@ -541,7 +596,7 @@ func (vv *ViewerView) renderHex(scr *vtui.ScreenBuf, width, contentHeight int) {
 		scr.Write(vv.X1, vv.Y1+1+y, row.cells)
 		currOffset = row.end
 	}
-	vv.EofVisible = currOffset >= vv.Backend.Size()
+	vv.setEOF(currOffset >= vv.Backend.Size())
 }
 
 func (vv *ViewerView) effectiveDisasmMode() int {
@@ -617,7 +672,7 @@ func (vv *ViewerView) renderDecode(scr *vtui.ScreenBuf, width, contentHeight int
 		scr.Write(vv.X1, vv.Y1+1+y, row.cells)
 		currOffset = row.end
 	}
-	vv.EofVisible = currOffset >= vv.Backend.Size()
+	vv.setEOF(currOffset >= vv.Backend.Size())
 }
 
 // disasmMode returns the processor mode the decode view uses. A view built
@@ -656,6 +711,9 @@ func (vv *ViewerView) renderText(scr *vtui.ScreenBuf, width, contentHeight int) 
 func (vv *ViewerView) renderTextRows(scr *vtui.ScreenBuf, width, contentHeight int, alignEnd bool) {
 	vv.ensureTextLayoutSettings()
 	attr := vtui.Palette[theme.ColViewerText]
+	hl := vv.windowColorizer()
+	var hlLines []WindowLine
+	hlTexts := make(map[int64]string)
 	if vv.SemanticNeedsReflow {
 		resolved, ready := vv.semanticResolveTextWindowOffset(vv.TopOffset)
 		if !ready {
@@ -675,7 +733,45 @@ func (vv *ViewerView) renderTextRows(scr *vtui.ScreenBuf, width, contentHeight i
 		// Only ready rows participate in paging and EOF alignment.
 		vv.LineOffsets = append(vv.LineOffsets, constructed.start)
 		vv.visibleURLRows = append(vv.visibleURLRows, constructed.projection.links)
-		scr.Write(vv.X1, vv.Y1+1+y, constructed.projection.cells)
+		row := &constructed.projection
+		if hl != nil {
+			if lineStart, ok := vv.highlightLineStart(constructed.start); ok {
+				lineText, seen := hlTexts[lineStart]
+				if !seen {
+					lineText, ok = vv.highlightLineAt(lineStart)
+					if ok {
+						hlTexts[lineStart] = lineText
+						hlLines = append(hlLines, WindowLine{Offset: lineStart, Text: lineText})
+					}
+				}
+				if ok {
+					if attrs := hl.LineAttrs(lineStart, lineText); attrs != nil {
+						applyViewerHighlight(row.cells, row.text, row.cellByteOffsets,
+							lineText, int(constructed.start-lineStart), attrs)
+					}
+				}
+			}
+		}
+		// Highlighting is applied before these two decorations so a selected
+		// search match or hovered link remains visually authoritative.
+		if vv.LastSearchFound && vv.LastSearch != "" {
+			matchLength := vv.LastSearchMatchLen
+			if matchLength <= 0 {
+				matchLength = int64(len(vv.LastSearch))
+			}
+			applyViewerSearchAttr(row.cells, row.text, row.cellByteOffsets,
+				int(vv.LastSearchOffset-constructed.start),
+				int(vv.LastSearchOffset+matchLength-constructed.start),
+				vtui.Palette[theme.ColViewerSelectedText])
+		}
+		ApplyURLHoverAttr(row.cells, row.links, vv.hoverURL)
+		scr.Write(vv.X1, vv.Y1+1+y, row.cells)
+	}
+	if hl != nil && len(hlLines) > 0 {
+		if key := highlightWindowKey(hlLines); key != vv.highlightKey {
+			vv.highlightKey = key
+			hl.Request(vv.highlightLinesBefore(hlLines[0].Offset, viewerHighlightContextLines), hlLines)
+		}
 	}
 	if err != nil {
 		message := fmt.Sprintf(" [ Error: %v ] ", err)
@@ -693,7 +789,7 @@ func (vv *ViewerView) renderTextRows(scr *vtui.ScreenBuf, width, contentHeight i
 			// may have started an asynchronous cache fill.  Leave EOF unset so a
 			// redraw can retry the alignment instead of freezing an incomplete
 			// final page.
-			vv.EofVisible = false
+			vv.setEOF(false)
 			return
 		}
 		if aligned < vv.TopOffset {
@@ -702,7 +798,7 @@ func (vv *ViewerView) renderTextRows(scr *vtui.ScreenBuf, width, contentHeight i
 			return
 		}
 	}
-	vv.EofVisible = reachedEOF
+	vv.setEOF(reachedEOF)
 }
 
 // finalTextPageOffset returns the first visual row needed to fill the final
@@ -731,6 +827,7 @@ func (vv *ViewerView) finalTextPageOffset(offset int64, width, rows int) (int64,
 }
 
 func (vv *ViewerView) ProcessKey(e *vtinput.InputEvent) bool {
+	vv.eof()
 	if !e.KeyDown {
 		return false
 	}
@@ -756,7 +853,7 @@ func (vv *ViewerView) ProcessKey(e *vtinput.InputEvent) bool {
 		// native window request before changing TopOffset, otherwise its
 		// delayed acknowledgement can replay over this input.
 		vv.beginViewerNavigationIntent()
-		if vv.EofVisible {
+		if vv.eof() {
 			return true // Prevent scrolling past End of File
 		}
 		if vv.DecodeMode {
@@ -783,7 +880,7 @@ func (vv *ViewerView) ProcessKey(e *vtinput.InputEvent) bool {
 				}
 			}
 		}
-		vv.EofVisible = false
+		vv.setEOF(false)
 		return true
 
 	case vtinput.VK_UP:
@@ -798,7 +895,7 @@ func (vv *ViewerView) ProcessKey(e *vtinput.InputEvent) bool {
 		if vv.TopOffset < 0 {
 			vv.TopOffset = 0
 		}
-		vv.EofVisible = false
+		vv.setEOF(false)
 		return true
 
 	case vtinput.VK_NEXT: // PgDn
@@ -823,7 +920,7 @@ func (vv *ViewerView) ProcessKey(e *vtinput.InputEvent) bool {
 				}
 			}
 		} else if len(vv.LineOffsets) > 0 {
-			if vv.EofVisible {
+			if vv.eof() {
 				return true
 			}
 			nextOffset := vv.LineOffsets[len(vv.LineOffsets)-1]
@@ -833,7 +930,7 @@ func (vv *ViewerView) ProcessKey(e *vtinput.InputEvent) bool {
 			vv.TopOffset = nextOffset
 		}
 		if vv.TopOffset != oldOffset {
-			vv.EofVisible = false
+			vv.setEOF(false)
 		}
 		return true
 
@@ -858,14 +955,14 @@ func (vv *ViewerView) ProcessKey(e *vtinput.InputEvent) bool {
 			vv.TopOffset = 0
 		}
 		if vv.TopOffset != oldOffset {
-			vv.EofVisible = false
+			vv.setEOF(false)
 		}
 		return true
 
 	case vtinput.VK_HOME:
 		vv.beginViewerNavigationIntent()
 		vv.TopOffset = 0
-		vv.EofVisible = false
+		vv.setEOF(false)
 		return true
 
 	case vtinput.VK_END:
@@ -956,7 +1053,7 @@ func (vv *ViewerView) gotoPosition(n int64) {
 				return true
 			}
 			vv.TopOffset = off
-			vv.EofVisible = false
+			vv.setEOF(false)
 			vtui.FrameManager.Redraw()
 			return true
 		})
@@ -1405,10 +1502,23 @@ func (vv *ViewerView) updateURLHover(mx, my int) bool {
 	return true
 }
 func (vv *ViewerView) ResizeConsole(w, h int) {
-	vv.SetPosition(0, vtui.FrameManager.WorkspaceTopInset(), w-1, h-2)
+	top := vtui.FrameManager.WorkspaceTopInset()
+	if !config.App.AlwaysShowMenuBar || vv.menuBar == nil {
+		vv.SetPosition(0, top, w-1, h-2)
+		return
+	}
+	// AlwaysShowMenuBar keeps the menu bar on the workspace's top row, the row
+	// it has over the panels and the terminal too, and the viewer starts below
+	// it with its title bar, which the bar would otherwise cover.
+	vv.SetPosition(0, top+1, w-1, h-2)
+	vv.menuBar.SetPosition(0, top, w-1, top)
 }
 
 func (vv *ViewerView) Close() {
+	if vv.highlight != nil {
+		vv.highlight.Close()
+		vv.highlight = nil
+	}
 	vv.stopTailWatch()
 	vv.SemanticProjection, vv.ConsoleProjection = nil, nil
 	if vv.IsDone() {

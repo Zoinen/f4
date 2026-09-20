@@ -444,7 +444,7 @@ func showCommandHistoryDetails(pf *panel.PanelsFrame, rec history.HistoryRecord,
 	message := fmt.Sprintf("Command: %s\nDirectory: %s\nDate: %s\nTime: %s", rec.Name, dir, dateText, timeText)
 	buttons := []string{"&Close"}
 	if dir != "" {
-		buttons = append(buttons, "&ChDir", "&Run-up")
+		buttons = append(buttons, "Ch&Dir", "&Run-up")
 	}
 	dlg := vtui.ShowMessage(i18n.Msg("History.CommandsTitle"), message, buttons)
 	dlg.OnResult = func(code int) {
@@ -605,11 +605,14 @@ func ActionSortMenuForPanel(pf *panel.PanelsFrame, fsp *panel.FileSystemPanel) {
 		Shortcut: keymap.MenuShortcutsForAction("Shell", "Panel.SortUseGroups"),
 	})
 
+	menu.AddItem(vtui.MenuItem{Text: i18n.Msg("Group.Menu")})
 	menu.SetSelectPos(selected)
 	menu.OnAction = func(idx int) {
 		switch {
 		case idx >= 0 && idx < len(entries):
 			fsp.SetSortMode(entries[idx].mode)
+		case idx == len(entries)+1:
+			fsp.ShowGroupMenu()
 		case idx == len(entries):
 			fsp.ToggleSortGroups()
 		default:
@@ -619,7 +622,7 @@ func ActionSortMenuForPanel(pf *panel.PanelsFrame, fsp *panel.FileSystemPanel) {
 		vtui.FrameManager.Redraw()
 	}
 
-	w, h := 36, len(entries)+3
+	w, h := 36, len(entries)+4
 	panelX1, panelY1, panelX2, panelY2 := fsp.GetPosition()
 	panelW := panelX2 - panelX1 + 1
 	panelH := panelY2 - panelY1 + 1
@@ -1767,11 +1770,20 @@ func imageSiblingPaths(pf *panel.PanelsFrame, v vfs.VFS, path string) ([]string,
 }
 
 func OpenViewerInternal(pf *panel.PanelsFrame, v vfs.VFS, path string) {
-	if tryOpenVideoPlayer(pf, v, path) {
-		return
-	}
-	if tryOpenImageViewer(pf, v, path) {
-		return
+	openViewerInternal(pf, v, path)
+}
+
+func openViewerInternal(pf *panel.PanelsFrame, v vfs.VFS, path string) {
+	// Viewer settings -> "Open images and video in their own viewers" (issue
+	// #991). Off, a picture or a video opens like any other file: as text or
+	// as hex, whatever the viewer's own binary check decides.
+	if config.App.ViewerOpenAsSupportedType {
+		if tryOpenVideoPlayer(pf, v, path) {
+			return
+		}
+		if tryOpenImageViewer(pf, v, path) {
+			return
+		}
 	}
 	op := beginPendingDocumentOpen(pf, "viewer", v, path)
 	if op == nil {
@@ -2053,7 +2065,7 @@ func ActionExecute(pf *panel.PanelsFrame, v vfs.VFS, dir, name, path string) {
 				}
 				_, isOS := v.(*vfs.OSVFS)
 				_, isPty := v.(vfs.PtyProvider)
-				isWindowsShell := runtime.GOOS == "windows" && isOS
+				isWindowsShell := terminal.WindowsShellSyntax() && isOS
 
 				if !isWindowsShell {
 					historyCmd = "./" + historyCmd
@@ -2273,7 +2285,7 @@ func actionCalcDirSize(pf *panel.PanelsFrame, fsp *panel.FileSystemPanel, idx in
 			if ctx.Err() == nil {
 				entry.Size = totalStats.Bytes
 				entry.SizeCalculated = true
-				if fsp.SortMode == panel.SortSize {
+				if fsp.SortMode == panel.SortSize || fsp.GroupBy == panel.GroupSize {
 					fsp.SortEntries()
 					// Keep cursor on the same item after re-sorting
 					for i, e := range fsp.Entries {
@@ -2320,7 +2332,11 @@ func ActionEditFile(pf *panel.PanelsFrame) {
 	}
 }
 
-func ActionCopyMove(pf *panel.PanelsFrame, isMove bool) {
+// rightsComboWidth is the natural width of the access-rights field of the
+// copy/move dialog, the same as the operation-mode field below it.
+const rightsComboWidth = 32
+
+func actionCopyMove(pf *panel.PanelsFrame, isMove bool) {
 	fspSrc := pf.GetActivePanel()
 	fspDst := pf.GetInactivePanel()
 	if fspSrc == nil || fspDst == nil {
@@ -2422,7 +2438,11 @@ func ActionCopyMove(pf *panel.PanelsFrame, isMove bool) {
 		return
 	}
 
-	dlg := dialog.NewFileDialog(title, dialog.CopyBoxHeight)
+	boxHeight := dialog.CopyBoxHeight
+	if isMove {
+		boxHeight = dialog.MoveBoxHeight
+	}
+	dlg := dialog.NewFileDialog(title, boxHeight)
 	width, height := dlg.Size()
 
 	promptLbl := vtui.NewLabel(0, 0, fmt.Sprintf(prompt, len(names)), nil)
@@ -2443,6 +2463,40 @@ func ActionCopyMove(pf *panel.PanelsFrame, isMove bool) {
 	comboMode.Menu.SetSelectPos(defMode)
 	comboMode.Edit.SetText(choiceText(modes, defMode))
 
+	rightsCaption := i18n.Msg("Copy.Rights")
+	rightsChoices := []string{
+		i18n.Msg("Copy.Rights.Default"),
+		i18n.Msg("Copy.Rights.Copy"),
+		i18n.Msg("Copy.Rights.Inherit"),
+	}
+	comboRights := newChoiceCombo(rightsChoices, config.App.CopyAccessRights)
+	lblRights := vtui.NewLabel(0, 0, rightsCaption, comboRights)
+
+	// "Already existing files" starts from "Ask" every time, as far2l's copy
+	// dialog does: a remembered "Overwrite" would replace files in a copy
+	// that has nothing to do with the one it was chosen for.
+	existingCaption := i18n.Msg("Copy.Existing")
+	existingChoices := []string{
+		i18n.Msg("Copy.Existing.Ask"),
+		i18n.Msg("Copy.Existing.Overwrite"),
+		i18n.Msg("Copy.Existing.Skip"),
+	}
+	comboExisting := newChoiceCombo(existingChoices, int(fileops.ExistingFilesAsk))
+	lblExisting := vtui.NewLabel(0, 0, existingCaption, comboExisting)
+
+	// Only a copy asks about links; a move always carries a link as a link.
+	var chkSymlinks *vtui.Checkbox
+	if !isMove {
+		chkSymlinks = vtui.NewCheckbox(0, 0, i18n.Msg("Copy.SymlinkContents"), false)
+		if copyDialogSession.symlinkContents {
+			chkSymlinks.State = 1
+		}
+	}
+
+	advanced := copyDialogSession.advanced
+	btnAdvanced := vtui.NewButton(0, 0, i18n.Msg("Copy.Advanced"))
+	btnAdvanced.OnClick = func() { showCopyAdvancedOptions(&advanced) }
+
 	btnOk := vtui.NewButton(0, 0, i18n.Msg("Copy.Btn"))
 	if isMove {
 		btnOk = vtui.NewButton(0, 0, i18n.Msg("Move.Btn"))
@@ -2452,10 +2506,29 @@ func ActionCopyMove(pf *panel.PanelsFrame, isMove bool) {
 	btnOk.OnClick = func() {
 		dest := editDest.GetText()
 		mode := comboMode.Menu.SelectPos
+		rights := comboRights.Menu.SelectPos
+		existing := comboExisting.Menu.SelectPos
+		symlinkContents := chkSymlinks == nil || chkSymlinks.State == 1
 		dlg.Close()
 		if dest != "" {
+			// The choice becomes the default of the next operation, the way
+			// far2l remembers the options of its copy dialog.
+			if rights != config.App.CopyAccessRights {
+				config.App.CopyAccessRights = rights
+				if config.App.AutoSaveDialogSettings {
+					config.SaveConfig()
+				}
+			}
+			copyDialogSession.advanced = advanced
+			if chkSymlinks != nil {
+				copyDialogSession.symlinkContents = symlinkContents
+			}
 			history.CommitHistory(editDest, dest)
-			go fileops.ExecuteFileOpAt(srcVfs, dstVfs, srcBasePath, names, dest, isMove, mode, onCompleteWithClear)
+			opts := advanced
+			opts.AccessRights = fileops.AccessRightsModeFromConfig(rights)
+			opts.ExistingFiles = fileops.ExistingFilesModeFromChoice(existing)
+			opts.SymlinksAsLinks = !symlinkContents
+			go fileops.ExecuteFileOpAtWithOptions(srcVfs, dstVfs, srcBasePath, names, dest, isMove, mode, opts, onCompleteWithClear)
 		}
 	}
 	dlg.AddItem(btnOk)
@@ -2463,6 +2536,14 @@ func ActionCopyMove(pf *panel.PanelsFrame, isMove bool) {
 	btnCancel := vtui.NewButton(0, 0, i18n.Msg("vtui.Cancel"))
 	btnCancel.OnClick = func() { dlg.Close() }
 	dlg.AddItem(btnCancel)
+	dlg.AddItem(lblRights)
+	dlg.AddItem(comboRights)
+	dlg.AddItem(lblExisting)
+	dlg.AddItem(comboExisting)
+	if chkSymlinks != nil {
+		dlg.AddItem(chkSymlinks)
+	}
+	dlg.AddItem(btnAdvanced)
 	dlg.AddItem(comboMode)
 
 	// Layout Engine
@@ -2476,21 +2557,58 @@ func ActionCopyMove(pf *panel.PanelsFrame, isMove bool) {
 	hbox.Add(btnOk, vtui.Margins{}, vtui.AlignTop)
 	hbox.Add(btnCancel, vtui.Margins{}, vtui.AlignTop)
 
-	// Keep the action row above the mode selector. ComboBox.Open() places its
-	// popup below the field, so the popup cannot cover these buttons.
+	// Both captions take the width of the longer one, so the two fields start
+	// in the same column.
+	captionWidth := max(captionCells(rightsCaption), captionCells(existingCaption))
+	rowRights := optionRow(width-4, lblRights, comboRights, rightsCaption, captionWidth)
+	rowExisting := optionRow(width-4, lblExisting, comboExisting, existingCaption, captionWidth)
+
+	// Keep the action row above the selectors. ComboBox.Open() places its
+	// popup below the field, so no popup can cover these buttons.
 	vbox.Add(hbox, vtui.Margins{Top: 1}, vtui.AlignFill)
+	vbox.Add(rowRights, vtui.Margins{Top: 1}, vtui.AlignFill)
+	vbox.Add(rowExisting, vtui.Margins{}, vtui.AlignFill)
+	if chkSymlinks != nil {
+		vbox.Add(chkSymlinks, vtui.Margins{}, vtui.AlignLeft)
+	}
+	vbox.Add(btnAdvanced, vtui.Margins{Top: 1}, vtui.AlignLeft)
 	vbox.Add(comboMode, vtui.Margins{Top: 1}, vtui.AlignCenter)
 
 	// The same VBox re-applied to the new dialog rectangle is what stretches
 	// the destination field when the f4 window is resized; the button row
 	// re-centers itself from HBoxLayout.SetPosition.
+	fields := []*vtui.ComboBox{comboRights, comboExisting}
 	dlg.SetLayout(func() {
+		// An HBox keeps each element's own width, and the dialog is half of
+		// the f4 window, so in a narrow window a field has to give way to its
+		// caption. Its natural width is restored first, because a window that
+		// grew again has room for it.
+		for _, field := range fields {
+			x1, y1, _, y2 := field.GetPosition()
+			field.SetPosition(x1, y1, x1+rightsComboWidth-1, y2)
+		}
+
 		vbox.SetPosition(dlg.X1+2, dlg.Y1+2, dlg.X2-2, dlg.Y2-2)
 		vbox.Apply()
+
+		// Laying out a row is what says where its field starts, so the width
+		// that fits is known only afterwards. Each field is last in its row,
+		// so nothing else moves when it shrinks.
+		for _, field := range fields {
+			if x1, y1, x2, y2 := field.GetPosition(); x2 > dlg.X2-2 {
+				field.SetPosition(x1, y1, dlg.X2-2, y2)
+			}
+		}
 	})
 	dlg.SetFocusedItem(editDest)
 
 	vtui.FrameManager.Push(dlg)
+}
+
+// ActionCopyMove is the application-facing entry point used by the action
+// table and by panel integrations.
+func ActionCopyMove(pf *panel.PanelsFrame, isMove bool) {
+	actionCopyMove(pf, isMove)
 }
 func ActionRename(pf *panel.PanelsFrame) {
 	fsp := pf.GetActivePanel()
@@ -3223,7 +3341,10 @@ func ActionMkDir(pf *panel.PanelsFrame) {
 
 	editName := vtui.NewEdit(0, 0, 10, "")
 	editName.PathHintsEnabled = true
-	history.AttachHistoryUseLast(editName, history.NewFolderHistoryID)
+	// Keep history available through its explicit menu and navigation keys, but
+	// do not let a matching old name intercept Enter while typing a new one.
+	editName.NoAutoComplete = true
+	history.AttachHistory(editName, history.NewFolderHistoryID)
 	lblPrompt := vtui.NewLabel(0, 0, i18n.Msg("MakeFolder.Prompt"), editName)
 	dlg.AddItem(lblPrompt)
 	dlg.AddItem(editName)
@@ -3693,7 +3814,9 @@ func ActionPanelSettings(pf *panel.PanelsFrame) {
 	// display options live in actionPanelAdditionalSettings below. Keeping both
 	// pages as ordinary dialogs means they remain usable on a 25-row terminal
 	// without introducing a second scrolling container for interactive items.
-	dlg := vtui.NewCenteredDialog(60, 24, i18n.Msg("PanelSettings.Title"))
+	// This page now spends that whole budget: the next option added here needs
+	// a row freed somewhere else, or a home on the Additional page.
+	dlg := vtui.NewCenteredDialog(60, 25, i18n.Msg("PanelSettings.Title"))
 	dlg.ShowClose = true
 
 	chkHidden := vtui.NewCheckbox(0, 0, i18n.Msg("PanelSettings.ShowHidden"), false)
@@ -3712,6 +3835,12 @@ func ActionPanelSettings(pf *panel.PanelsFrame) {
 	chkHighlightMarks.State = 0
 	if config.App.ShowHighlightMarks {
 		chkHighlightMarks.State = 1
+	}
+
+	chkSymlinkArrow := vtui.NewCheckbox(0, 0, i18n.Msg("PanelSettings.ShowSymlinkArrow"), false)
+	chkSymlinkArrow.State = 0
+	if config.App.ShowSymlinkArrow {
+		chkSymlinkArrow.State = 1
 	}
 
 	chkSeparateExtensions := vtui.NewCheckbox(0, 0, i18n.Msg("PanelSettings.SeparateExtensions"), false)
@@ -3757,7 +3886,9 @@ func ActionPanelSettings(pf *panel.PanelsFrame) {
 	}
 
 	lblNavigation := vtui.NewText(0, 0, i18n.Msg("PanelSettings.Navigation"), 0)
-	navigation := vtui.NewRadioGroup(0, 0, 1, []string{
+	// Two columns keep both search-first options and the action row inside a
+	// 25-row terminal while preserving all three navigation choices.
+	navigation := vtui.NewRadioGroup(0, 0, 2, []string{
 		i18n.Msg("PanelSettings.NavigationClassic"),
 		i18n.Msg("PanelSettings.NavigationVim"),
 		i18n.Msg("PanelSettings.NavigationSearch"),
@@ -3791,6 +3922,7 @@ func ActionPanelSettings(pf *panel.PanelsFrame) {
 	dlg.AddItem(chkHidden)
 	dlg.AddItem(chkDirPrefix)
 	dlg.AddItem(chkHighlightMarks)
+	dlg.AddItem(chkSymlinkArrow)
 	dlg.AddItem(chkSeparateExtensions)
 	dlg.AddItem(chkFileInfo)
 	dlg.AddItem(lblScrollbars)
@@ -3808,11 +3940,12 @@ func ActionPanelSettings(pf *panel.PanelsFrame) {
 	dlg.AddItem(btnOk)
 	dlg.AddItem(btnCancel)
 
-	vbox := vtui.NewVBoxLayout(dlg.X1+2, dlg.Y1+2, 56, 20)
+	vbox := vtui.NewVBoxLayout(dlg.X1+2, dlg.Y1+2, 56, 21)
 	// First checkbox cluster — stack tight, no blank rows between.
 	vbox.Add(chkHidden, vtui.Margins{}, vtui.AlignLeft)
 	vbox.Add(chkDirPrefix, vtui.Margins{}, vtui.AlignLeft)
 	vbox.Add(chkHighlightMarks, vtui.Margins{}, vtui.AlignLeft)
+	vbox.Add(chkSymlinkArrow, vtui.Margins{}, vtui.AlignLeft)
 	vbox.Add(chkSeparateExtensions, vtui.Margins{}, vtui.AlignLeft)
 	vbox.Add(chkFileInfo, vtui.Margins{}, vtui.AlignLeft)
 	// Blank row before the scrollbar combo — transition to a different
@@ -3826,7 +3959,7 @@ func ActionPanelSettings(pf *panel.PanelsFrame) {
 	autoSaveRow := vtui.NewHBoxLayout(0, 0, 56, 1)
 	autoSaveRow.Add(chkAutoSave, vtui.Margins{}, vtui.AlignLeft)
 	vbox.Add(autoSaveRow, vtui.Margins{}, vtui.AlignFill)
-	vbox.Add(btnAutoSaveDetails, vtui.Margins{Left: 2}, vtui.AlignLeft)
+	vbox.Add(btnAutoSaveDetails, vtui.Margins{Top: 1, Left: 2}, vtui.AlignLeft)
 	vbox.Add(chkUseTrash, vtui.Margins{Top: 1}, vtui.AlignLeft)
 	vbox.Add(chkCmdAc, vtui.Margins{}, vtui.AlignLeft)
 	// Navigation radio group — its own visual island.
@@ -3850,6 +3983,7 @@ func ActionPanelSettings(pf *panel.PanelsFrame) {
 		config.App.ShowHiddenFiles = chkHidden.State == 1
 		config.App.ShowDirPrefix = chkDirPrefix.State == 1
 		config.App.ShowHighlightMarks = chkHighlightMarks.State == 1
+		config.App.ShowSymlinkArrow = chkSymlinkArrow.State == 1
 		config.App.SeparateFileExtensions = chkSeparateExtensions.State == 1
 		config.App.ShowPanelFileInfo = chkFileInfo.State == 1
 		config.App.PanelScrollbarMode = config.PanelScrollbarMode(comboScrollbars.Menu.SelectPos)
@@ -4034,6 +4168,7 @@ func actionPanelAdditionalSettings(pf *panel.PanelsFrame) {
 		}
 		config.App.SyncPanelLoad = chkSync.State == 1
 		config.App.ApplyCommandParallelism = applyWorkers
+		alwaysShowMenuBarChanged := config.App.AlwaysShowMenuBar != (chkAlwaysMenu.State == 1)
 		config.App.AlwaysShowMenuBar = chkAlwaysMenu.State == 1
 		config.App.InfoPanelCPUGPU = chkCPUGPU.State == 1
 		config.App.EscTogglePanels = chkEscToggle.State == 1
@@ -4050,6 +4185,11 @@ func actionPanelAdditionalSettings(pf *panel.PanelsFrame) {
 		config.App.MacroRecordFormat = comboMacro.Menu.SelectPos
 		config.SaveConfig()
 		dlg.Close()
+		if alwaysShowMenuBarChanged {
+			// Editors and viewers in other workspaces place a pinned menu
+			// bar in ResizeConsole too (issue #1153).
+			vtui.FrameManager.ResizeAllScreens()
+		}
 		pf.ResizeConsole(pf.LastW, pf.LastH)
 		pf.RefreshAll()
 	}
@@ -4797,7 +4937,7 @@ func ActionAppearanceSettings(pf *panel.PanelsFrame) {
 			config.App.GuiFontSize = config.DefaultGuiFontSize(runtime.GOOS)
 		}
 		config.App.KeepTerminalCursor = chkCursor.State == 1
-		vtui.ManageCursorStyle = !config.App.KeepTerminalCursor
+		config.ApplyCursorSettings()
 		config.App.EnforceColorCorrection = chkContrast.State == 1
 		config.App.WorkspaceTabMode = comboWorkspaceTabs.Menu.SelectPos
 		config.App.WorkspaceTabsOverlay = chkWorkspaceTabsOverlay.State == 1

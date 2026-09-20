@@ -392,14 +392,14 @@ func TestHelpView_LayoutClipsLongLinesAndPositionsScrollBar(t *testing.T) {
 	if !layout.showScrollBar {
 		t.Fatal("long topic did not request a scrollbar")
 	}
-	if got, want := hv.scrollBar.X1, hv.X2-2; got != want {
-		t.Fatalf("scrollbar x = %d, want right padding column %d", got, want)
+	if got, want := hv.scrollBar.X1, hv.X2; got != want {
+		t.Fatalf("scrollbar x = %d, want right frame column %d", got, want)
 	}
 	if got := rune(scr.GetCell(hv.X2-1, hv.Y1+1).Char); got != ' ' {
 		t.Fatalf("cell next to right border = %q, want padding", got)
 	}
-	if got := rune(scr.GetCell(hv.X2, hv.Y1+1).Char); got != '║' {
-		t.Fatalf("right border was overwritten by help text: got %q", got)
+	if got := rune(scr.GetCell(hv.X2, hv.Y1+1).Char); got != rune(ScrollUpArrow) {
+		t.Fatalf("scrollbar did not overwrite the right frame column: got %q", got)
 	}
 	if got := rune(scr.GetCell(hv.X1+1, hv.Y1+1).Char); got != ' ' {
 		t.Fatalf("cell next to left border = %q, want padding", got)

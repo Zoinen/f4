@@ -65,6 +65,20 @@ const (
 	ColorerCrossVertical
 	ColorerCrossHorizontal
 	ColorerCrossBoth
+	// ColorerCrossScheme leaves the axes to the file type's show-cross
+	// parameter, FarColorer's "if included in the scheme" cross setting.
+	ColorerCrossScheme
+)
+
+// Where viewers highlight syntax, with the editor's highlighter: nowhere (the
+// default: a viewer is for looking at a file at once, and highlighting costs
+// time), in the quick view panel, or in every viewer. FarColorer calls this
+// ViewerColoring.
+const (
+	ViewerHighlightOff = iota
+	ViewerHighlightQuickView
+	// ViewerHighlightAll highlights every viewer and the quick view.
+	ViewerHighlightAll
 )
 
 // ---- from image_slideshow.go ----
@@ -77,9 +91,17 @@ const DefaultSlideShowDelay = 5
 // nothing else is said. Every entry is a combination f4 binds and a plain TTY
 // cannot distinguish from a simpler one, and nothing here is a combination a
 // desktop is likely to want for itself.
+//
+// Ctrl+Shift+P is in the list for the same reason as the rest of it and not
+// as a special case: it is the command palette, and Shift over a bare letter
+// does not change the control byte a TTY sends, so it arrives as Ctrl+P — the
+// passive-panel command — unless an extended keyboard protocol is running.
+// vtinput asks every terminal for one at startup; VTE answers none of them,
+// which is what issue #980 is. Where there is an X server the real chord is
+// still there to be taken.
 const DefaultTTYXKeyList = "Ctrl+Shift+Up, Ctrl+Shift+Down, Ctrl+Shift+Left, Ctrl+Shift+Right, " +
 	"Ctrl+Enter, Shift+Enter, Ctrl+Shift+Enter, Ctrl+Tab, Ctrl+Shift+Tab, " +
-	"Alt+Shift+F3, Alt+Shift+F4"
+	"Alt+Shift+F3, Alt+Shift+F4, Ctrl+Shift+P"
 
 // ---- from gui_font.go ----
 func DefaultGuiFontSize(goos string) int {
@@ -182,6 +204,44 @@ func writeCompareOptions(sb *strings.Builder, opts CompareOptions) {
 	fmt.Fprintf(sb, "Ignore = %d\n", bit(opts.Ignore))
 	fmt.Fprintf(sb, "IgnoreMode = %d\n", opts.IgnoreMode)
 	fmt.Fprintf(sb, "ReportEqual = %d\n", bit(opts.ReportEqual))
+}
+
+// ---- from sync_dirs_ui.go ----
+// LoadSyncOptions reads the [Sync] section, falling back to Total
+// Commander's own starting position for a profile that has never opened
+// the synchronize window.
+func LoadSyncOptions(ini *ini.File) SyncOptions {
+	defaults := DefaultSyncOptions()
+	flag := func(key string, def bool) bool {
+		fallback := "0"
+		if def {
+			fallback = "1"
+		}
+		return ini.GetString("Sync", key, fallback) == "1"
+	}
+	opts := SyncOptions{
+		Asymmetric: flag("Asymmetric", defaults.Asymmetric),
+		Subdirs:    flag("Subdirs", defaults.Subdirs),
+		ByContent:  flag("ByContent", defaults.ByContent),
+		IgnoreDate: flag("IgnoreDate", defaults.IgnoreDate),
+		Mask:       ini.GetString("Sync", "Mask", defaults.Mask),
+	}
+	return opts.Normalize()
+}
+
+// writeSyncOptions emits the [Sync] section body.
+func writeSyncOptions(sb *strings.Builder, opts SyncOptions) {
+	bit := func(on bool) int {
+		if on {
+			return 1
+		}
+		return 0
+	}
+	fmt.Fprintf(sb, "Asymmetric = %d\n", bit(opts.Asymmetric))
+	fmt.Fprintf(sb, "Subdirs = %d\n", bit(opts.Subdirs))
+	fmt.Fprintf(sb, "ByContent = %d\n", bit(opts.ByContent))
+	fmt.Fprintf(sb, "IgnoreDate = %d\n", bit(opts.IgnoreDate))
+	fmt.Fprintf(sb, "Mask = %s\n", opts.Mask)
 }
 
 // ---- from image_decode.go ----

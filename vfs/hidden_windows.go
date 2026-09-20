@@ -8,15 +8,17 @@ import (
 )
 
 func isHidden(path string, name string, info os.FileInfo) bool {
+	var attrs uint32
 	if info != nil {
 		if stat, ok := info.Sys().(*syscall.Win32FileAttributeData); ok {
-			if stat.FileAttributes&syscall.FILE_ATTRIBUTE_HIDDEN != 0 {
-				return true
-			}
+			attrs = stat.FileAttributes
 		}
 	}
-	// A leading dot has no hidden-file semantics on Windows. Treating it like
-	// Unix made ordinary entries such as .gitignore render with the Gallery's
-	// 50% hidden-entry opacity even though Explorer considers them visible.
+	if attrs&syscall.FILE_ATTRIBUTE_HIDDEN != 0 {
+		return true
+	}
+	// A leading dot has no hidden-file semantics on Windows. The POSIX
+	// personality uses a different host implementation and does not reach
+	// this Windows attribute path.
 	return false
 }

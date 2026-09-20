@@ -7,6 +7,9 @@ import (
 )
 
 func ReadDocumentBytes(ctx context.Context, file vfs.ReadAtCloser, dst []byte, off int64) (int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	total := 0
 	for total < len(dst) {
 		if err := ctx.Err(); err != nil {

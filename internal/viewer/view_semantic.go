@@ -53,7 +53,7 @@ func (vv *ViewerView) semanticRows() []extui.TextRowModel {
 		if err != nil || len(data) == 0 {
 			break
 		}
-		lineLen, textLen, _ := semanticViewerLineLen(data, width, vv.WrapMode)
+		lineLen, textLen := semanticViewerLineLen(data, width, vv.WrapMode)
 		rows = append(rows, extui.TextRowModel{Index: y, Offset: currOffset, Text: string(data[:textLen])})
 		if lineLen <= 0 {
 			break

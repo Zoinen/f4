@@ -162,6 +162,34 @@ func TestHotkeyManager_GetKeyForActionIsDeterministic(t *testing.T) {
 	}
 }
 
+func TestPanelSelectionDefaultAliases(t *testing.T) {
+	hm := keymap.NewHotkeyManager("")
+	for _, tc := range []struct {
+		action string
+		keys   []string
+	}{
+		{action: "File.View", keys: []string{"F3", "Num5"}},
+		{action: "Panel.SelectGroup", keys: []string{"Add", "CtrlShiftVK_BB"}},
+		{action: "Panel.DeselectGroup", keys: []string{"Subtract", "CtrlShiftVK_BD"}},
+		{action: "Panel.InvertSelection", keys: []string{"Multiply", "AltVK_BB"}},
+		{action: "Panel.SelectCurrentExtension", keys: []string{"CtrlAdd", "CtrlVK_BB"}},
+		{action: "Panel.DeselectCurrentExtension", keys: []string{"CtrlSubtract", "CtrlVK_BD"}},
+	} {
+		for _, key := range tc.keys {
+			if got := hm.GetAction("Shell", key); got != tc.action {
+				t.Errorf("%s = %s, want %s", key, got, tc.action)
+			}
+		}
+		if got := hm.GetKeyForAction("Shell", tc.action); got != tc.keys[0] {
+			t.Errorf("primary %s key = %s, want %s", tc.action, got, tc.keys[0])
+		}
+		hm.Bind("Shell", tc.keys[0], "None")
+		if got := hm.GetKeyForAction("Shell", tc.action); got != tc.keys[1] {
+			t.Errorf("fallback %s key = %s, want %s", tc.action, got, tc.keys[1])
+		}
+	}
+}
+
 func TestHotkeyManager_ShellDefaults_Issue289(t *testing.T) {
 	hm := keymap.NewHotkeyManager("")
 	hm.InitDefaults()

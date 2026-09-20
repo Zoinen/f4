@@ -16,6 +16,7 @@ type HotkeyAssignFrame struct {
 	ActionName string
 	Area       string
 	OnComplete func()
+	shiftHeld  bool
 }
 
 func NewHotkeyAssignFrame(hm *keymap.HotkeyManager, actionName, area string, onComplete func()) *HotkeyAssignFrame {
@@ -58,7 +59,19 @@ func NewHotkeyAssignFrame(hm *keymap.HotkeyManager, actionName, area string, onC
 
 func (f *HotkeyAssignFrame) ProcessKey(e *vtinput.InputEvent) bool {
 	if e.Type == vtinput.FocusEventType {
+		if !e.SetFocus {
+			f.shiftHeld = false
+		}
 		return f.Window.ProcessKey(e)
+	}
+
+	switch e.VirtualKeyCode {
+	case vtinput.VK_SHIFT, vtinput.VK_LSHIFT, vtinput.VK_RSHIFT:
+		// Some GUI hosts omit ShiftPressed from the following key event. Keep
+		// the modifier state across the two events while the assignment dialog
+		// owns the keyboard (the same rule used by the grabber).
+		f.shiftHeld = e.KeyDown
+		return true
 	}
 
 	if !e.KeyDown {
@@ -72,14 +85,17 @@ func (f *HotkeyAssignFrame) ProcessKey(e *vtinput.InputEvent) bool {
 	}
 
 	switch e.VirtualKeyCode {
-	case vtinput.VK_SHIFT, vtinput.VK_LSHIFT, vtinput.VK_RSHIFT,
-		vtinput.VK_CONTROL, vtinput.VK_LCONTROL, vtinput.VK_RCONTROL,
+	case vtinput.VK_CONTROL, vtinput.VK_LCONTROL, vtinput.VK_RCONTROL,
 		vtinput.VK_MENU, vtinput.VK_LMENU, vtinput.VK_RMENU,
 		vtinput.VK_CAPITAL, vtinput.VK_NUMLOCK, vtinput.VK_SCROLL:
-		return false
+		return true
 	}
 
-	keyStr := keymap.EventToHotkeyString(e)
+	keyEvent := *e
+	if f.shiftHeld {
+		keyEvent.ControlKeyState |= vtinput.ShiftPressed
+	}
+	keyStr := keymap.EventToHotkeyString(&keyEvent)
 
 	if f.Hm != nil {
 		f.Hm.Bind(f.Area, keyStr, f.ActionName)

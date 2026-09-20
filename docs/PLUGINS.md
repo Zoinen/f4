@@ -144,3 +144,20 @@ Once you've built something cool, share it with the community via **PlugRing**:
 ## 5. Building a Native Plugin (Go SDK)
 
 For Go developers building high-performance or complex native subprocess plugins, an SDK is provided in `sdk/f4plugin`. It handles all the MessagePack multiplexing and exposes a clean, synchronous Go interface. Check `plugins/dummy_rpc/main.go` for a reference implementation.
+
+## Grouping virtual panels
+
+Any ordinary file panel backed by a VFS supports the same independent Group by
+modes as native panels. `sdk/f4plugin.VFSItem` includes the additive metadata
+mask and optional physical size, times, permissions, ownership, Windows
+attributes, link and extension flags. The numeric mask bits match `vfs`; set
+`MetadataExplicit | MetadataUID` to report UID 0 without inventing other fields.
+Old MessagePack/RPC and embedded Lua tables can omit these fields unchanged.
+Unknown fields remain unknown; a nonempty `Mode` is an opaque grouping value.
+See [VFS metadata availability](VFS.md#metadata-availability-and-panel-grouping).
+
+The semantic panel model adds `groupBy`, `groupReverse`,
+`groupFoldersSeparately`, `displayTop`, and `groups`. Each group contains `key`,
+`title`, `startIndex`, and `count`. Ranges index the file-only `entries` array.
+`cursor`, `top`, actions and counts still refer to real files; `top` is the first
+file at or after the visual scroll origin. `displayTop` includes heading rows.

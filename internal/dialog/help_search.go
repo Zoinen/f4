@@ -38,12 +38,20 @@ type helpZoomState struct {
 
 var currentHelpZoom *helpZoomState
 
+// The Help windows whose search and zoom state were painted in the render
+// pass under way. FinishHelpRender reads and resets them once the pass ends.
+var (
+	helpSearchFrameShown bool
+	helpZoomFrameShown   bool
+)
+
 // ResetHelpState drops the search and zoom a help window accumulated. Both are
 // package state that outlives the window, so a test that opened one has to say
 // so before the next opens another.
 func ResetHelpState() {
 	CurrentHelpSearch = nil
 	currentHelpZoom = nil
+	helpSearchFrameShown, helpZoomFrameShown = false, false
 }
 
 func HelpTopicForFrame(frame vtui.Frame) (string, *vtui.HelpTopic, bool) {
@@ -349,7 +357,9 @@ func ToggleHelpZoom(frame vtui.Frame) bool {
 	} else {
 		currentHelpZoom = &helpZoomState{frame: frame, saved: helpWindowBounds{x1, y1, x2, y2}}
 		width, height := vtui.FrameManager.GetScreenSize(), vtui.FrameManager.GetScreenHeight()
-		target = helpWindowBounds{0, 0, width - 1, height - 3}
+		// Leave one extra row below the maximized help window so its top
+		// border and controls remain inside the visible frame.
+		target = helpWindowBounds{0, 0, width - 1, height - 4}
 	}
 	lastW, okW := nestedHelpInt(reflect.ValueOf(frame), "lastW")
 	lastH, okH := nestedHelpInt(reflect.ValueOf(frame), "lastH")
@@ -427,61 +437,112 @@ func drawHelpWindowControls(scr *vtui.ScreenBuf, frame vtui.Frame) {
 	scr.Write(x2-offset, y1, vtui.StringToCharInfo(closeButton, attr))
 }
 
+// RenderHelpSearch is the legacy entry point used by the terminal renderer
+// and by older callers. Keep it as a thin wrapper around the frame-aware
+// renderer so the search remains correct when Help is not the top-level frame.
 func RenderHelpSearch(scr *vtui.ScreenBuf) {
 	frame := vtui.FrameManager.GetTopFrame()
-	TopicName, topic, isHelp := HelpTopicForFrame(frame)
-	if !isHelp {
+	if _, _, isHelp := HelpTopicForFrame(frame); !isHelp {
 		CurrentHelpSearch = nil
 		currentHelpZoom = nil
 		return
+	}
+	RenderHelpFrame(scr, frame)
+}
+
+// RenderHelpFrame paints Help's host decorations for one frame: the key hint
+// on the bottom border, the live query in the title and the search-match
+// highlights. It runs from vtui's FrameManager.AfterFrameShow, right after the
+// frame drew itself. Painting them as part of that frame, rather than over the
+// finished screen and only while Help is on top, keeps them under whatever is
+// pushed above Help and inside the screen grabber's snapshot, and a frame on
+// top no longer throws the search away (#378).
+func RenderHelpFrame(scr *vtui.ScreenBuf, frame vtui.Frame) {
+	TopicName, topic, isHelp := HelpTopicForFrame(frame)
+	if !isHelp {
+		return
+	}
+	if currentHelpZoom != nil && currentHelpZoom.frame == frame {
+		helpZoomFrameShown = true
 	}
 	if enableHelpZoom(frame) {
 		defer drawHelpWindowControls(scr, frame)
 	}
 
+	searching := false
+	if CurrentHelpSearch != nil && CurrentHelpSearch.Frame == frame {
+		if CurrentHelpSearch.TopicName != TopicName {
+			// The window followed a link or went back: the matches belong to
+			// the topic it left.
+			CurrentHelpSearch = nil
+		} else {
+			helpSearchFrameShown = true
+			searching = true
+		}
+	}
+
 	x1, y1, x2, y2 := frame.GetPosition()
 	titleAttr := scr.GetCell((x1+x2)/2, y1).Attributes
-	vtui.NewPainter(scr).DrawTitle(x1, y2, x2, i18n.Msg("Help.SearchHint"), titleAttr)
-	if CurrentHelpSearch == nil || CurrentHelpSearch.Frame != frame || CurrentHelpSearch.TopicName != TopicName {
-		CurrentHelpSearch = nil
+	vtui.NewPainter(scr).DrawTitle(x1, y2, x2, helpHint(frame, searching), titleAttr)
+	if !searching {
 		return
 	}
 	drawHelpSearchTitle(scr, frame, TopicName, string(CurrentHelpSearch.Query))
 	if actual, ok := helpViewScrollTop(frame); ok {
 		CurrentHelpSearch.scrollTop = actual
 	}
-	layout, ok := frame.(interface {
-		HelpLinePosition(int) (int, int, int, bool)
-	})
+	area, ok := frame.(interface{ TextArea() (int, int, int, int) })
 	if !ok {
 		return
 	}
+	// The text origin comes from HelpView: hard-coding the padding put every
+	// highlight one column left of its match once HelpView gained a padding
+	// column, overwriting the character before it.
+	textX1, textY1, textX2, textY2 := area.TextArea()
+	textWidth := textX2 - textX1 + 1
 	for matchIndex, match := range CurrentHelpSearch.Matches {
 		if match.line < 0 || match.line >= len(topic.Lines) {
 			continue
 		}
-		line, _ := visibleHelpLine(topic.Lines[match.line])
+		line, centered := visibleHelpLine(topic.Lines[match.line])
 		runes := []rune(line)
 		if match.start < 0 || match.end > len(runes) {
 			continue
 		}
-		lineX, lineY, width, visible := layout.HelpLinePosition(match.line)
-		if !visible {
+		lineX := textX1
+		if centered {
+			if offset := (textWidth - runewidth.StringWidth(line)) / 2; offset > 0 {
+				lineX += offset
+			}
+		}
+		lineX += runewidth.StringWidth(string(runes[:match.start]))
+
+		lineY := textY1
+		if match.line < topic.StickyRows {
+			lineY += match.line
+		} else {
+			row := match.line - topic.StickyRows - CurrentHelpSearch.scrollTop
+			if row < 0 {
+				// Scrolled out above the viewport; it would land on the
+				// sticky header rows.
+				continue
+			}
+			lineY += topic.StickyRows + row
+		}
+		if lineY < textY1 || lineY > textY2 || lineX > textX2 {
 			continue
 		}
-		// Match indices are runes; the console renderer allocates at least one
-		// cell per rune, plus filler cells for wide characters.
-		start, end := 0, 0
-		for i, r := range runes[:match.end] {
-			if i == match.start {
-				start = end
-			}
-			end += max(1, runewidth.RuneWidth(r))
-		}
+		// Match indices are runes; lineX already includes the rendered width of
+		// the text before the match, including filler cells for wide characters.
+		// The cells below start at the match itself, so do not add that prefix a
+		// second time when writing them.
 		foreground := vtui.GetRGBFore(vtui.Palette[vtui.ColHelpLink])
-		cells := make([]vtui.CharInfo, 0, max(0, min(width, end)-start))
-		for offset := start; offset < min(width, end); offset++ {
-			cells = append(cells, scr.GetCell(lineX+offset, lineY))
+		cells := vtui.StringToCharInfo(string(runes[match.start:match.end]), 0)
+		// HelpView clips lines at the text area; a match past the edge
+		// is not on screen and must not be painted over the padding,
+		// the scrollbar or the frame.
+		if visible := textX2 - lineX + 1; len(cells) > visible {
+			cells = cells[:visible]
 		}
 		if matchIndex == CurrentHelpSearch.Selected {
 			selectedAttr := vtui.SetRGBFore(
@@ -493,11 +554,48 @@ func RenderHelpSearch(scr *vtui.ScreenBuf) {
 			}
 		} else {
 			for i := range cells {
-				cells[i].Attributes = vtui.SetRGBFore(cells[i].Attributes, foreground)
+				// Preserve the cell's existing background and style. Search is an
+				// overlay over HelpView's rendered text, so starting from zero
+				// would erase the help-text background.
+				baseAttr := scr.GetCell(lineX+i, lineY).Attributes
+				cells[i].Attributes = vtui.SetRGBFore(baseAttr, foreground)
 			}
 		}
-		scr.Write(lineX+start, lineY, cells)
+		scr.Write(lineX, lineY, cells)
 	}
+}
+
+// helpHint is the key hint for the bottom border of a Help window. It lists
+// only keys that act right now: Next/Previous while the query has matches,
+// otherwise how to search and, when there is a topic to return to, how to go
+// back. Advertising Next/Previous when they do nothing read as "the navigation
+// keys are broken" (#378).
+func helpHint(frame vtui.Frame, searching bool) string {
+	if searching && len(CurrentHelpSearch.Matches) > 0 {
+		return i18n.Msg("Help.Hint.Results")
+	}
+	hint := i18n.Msg("Help.Hint.Search")
+	if searching {
+		// Backspace edits the query while there is one.
+		return hint
+	}
+	if historyLen, ok := NestedHelpLen(reflect.ValueOf(frame), "history"); ok && historyLen > 0 {
+		hint += "  " + i18n.Msg("Help.Hint.Back")
+	}
+	return hint
+}
+
+// FinishHelpRender runs once a render pass has drawn every frame. It drops
+// the search and zoom state of a Help window the pass did not paint: the
+// window was closed, or its workspace is no longer on screen.
+func FinishHelpRender() {
+	if !helpSearchFrameShown {
+		CurrentHelpSearch = nil
+	}
+	if !helpZoomFrameShown {
+		currentHelpZoom = nil
+	}
+	helpSearchFrameShown, helpZoomFrameShown = false, false
 }
 
 func drawHelpSearchTitle(scr *vtui.ScreenBuf, frame vtui.Frame, TopicName, Query string) {

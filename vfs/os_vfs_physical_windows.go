@@ -54,6 +54,7 @@ func fillPhysicalSizeCheap(item *VFSItem, info os.FileInfo) {
 	if hostmode.Posix() {
 		if stat, ok := info.Sys().(*winescape.Stat_t); ok {
 			item.PhysicalSize = stat.Blocks * 512
+			item.KnownMetadata |= MetadataPhysicalSize
 			item.Device = stat.Dev
 			item.Inode = stat.Ino
 		}
@@ -110,6 +111,7 @@ func fillPhysicalSize(item *VFSItem, info os.FileInfo, path string) {
 		return
 	}
 	item.PhysicalSize = fsi.AllocationSize
+	item.KnownMetadata |= MetadataPhysicalSize
 }
 
 // SupportsPhysicalSize is true on Windows — see the Unix version

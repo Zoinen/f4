@@ -1083,10 +1083,6 @@ jobs:
         path: batch-output/artifacts/${{ matrix.assets[2] }}/${{ matrix.assets[2] }}.*
         retention-days: 7
 
-  # Эта джоба собирает Windows-бинарник тулчейном thongtech/go-legacy-win7,
-  # чтобы f4 можно было запускать на Windows 7/8/8.1 (см. issue #514).
-  #
-  # Тулчейн go-legacy-win7-1.26.6-1 в остальном полноценен, но в его
   # Android for f4 means Termux (#882). A plain CGO_ENABLED=0 cross-build
   # starts from a shell but dies the moment it re-execs itself for the
   # daemon: untrusted_app on current Android refuses to exec such a file,
@@ -1206,18 +1202,20 @@ jobs:
         path: ${{ env.ASSET }}.*
         retention-days: 7
 
-  # sync/atomic отсутствуют методы Or/And у типизированных атомиков
-  # (добавлены в Go 1.23, см. https://go.dev/issue/61395) — это баг
-  # именно сборки тулчейна, а не самого Go 1.26.6
-  # (см. https://github.com/thongtech/go-legacy-win7/issues/13, ещё не
-  # исправлено апстримом). Без них не собираются github.com/gogpu/gg и
-  # github.com/ncruces/go-sqlite3. Вместо патчинга каждой такой
-  # зависимости по отдельности (как это было проверено вручную в
-  # issue #514) добавляем недостающие методы один раз прямо в GOROOT
-  # скачанного тулчейна — это эквивалентно апстримному фиксу и не требует
-  # правок go.mod. Если thongtech поправят это в своей сборке, наш файл
-  # с большой вероятностью начнёт конфликтовать (duplicate method) —
-  # тогда этот шаг нужно будет просто удалить.
+  # Эта джоба собирает Windows-бинарник тулчейном thongtech/go-legacy-win7,
+  # чтобы f4 можно было запускать на Windows 7/8/8.1 (см. issue #514).
+  #
+  # Нужен релиз не старше go-legacy-win7-1.26.8-1: в более ранних сборках
+  # не хватало части API стандартной библиотеки Go той же версии.
+  # В 1.26.6-1 не было методов Or/And у типизированных
+  # атомиков sync/atomic (thongtech/go-legacy-win7#13; без них не
+  # собираются github.com/gogpu/gg и github.com/ncruces/go-sqlite3), а до
+  # 1.26.7-1 включительно не было os.Root.RemoveAll (Go 1.25), который
+  # использует github.com/unxed/zip начиная с v0.1.133. Раньше Or/And
+  # дописывались прямо в GOROOT отдельным шагом; с 1.26.8-1 оба API на
+  # месте (релиз собран на переработанной серии патчей: API апстрима
+  # сохраняется, фоллбэки для Windows 7 — внутри), а тот шаг давал бы
+  # ошибку "method already declared", поэтому он удалён.
   build-win7:
     name: Build (windows7/amd64)
     runs-on: ubuntu-latest
@@ -1248,8 +1246,8 @@ jobs:
         set -euo pipefail
         curl -fL --retry 5 --retry-delay 10 --retry-all-errors \
           -o go-legacy-win7.tar.gz \
-          https://github.com/thongtech/go-legacy-win7/releases/download/v1.26.6-1/go-legacy-win7-1.26.6-1.linux_amd64.tar.gz
-        echo "a197a93c1ec009f600155d20f4c8cc388560cbc55748f99c1c0dd5b29ef52c05  go-legacy-win7.tar.gz" | sha256sum -c -
+          https://github.com/thongtech/go-legacy-win7/releases/download/v1.26.8-1/go-legacy-win7-1.26.8-1.linux_amd64.tar.gz
+        echo "0e8f70bc5c2f7a31ace600092453717ced935358e20c4f2cc9305309b0e283ee  go-legacy-win7.tar.gz" | sha256sum -c -
         mkdir -p "$HOME/go-legacy-win7"
         tar -xzf go-legacy-win7.tar.gz -C "$HOME/go-legacy-win7"
         echo "GOROOT=$HOME/go-legacy-win7/go-legacy-win7" >> "$GITHUB_ENV"
@@ -1393,6 +1391,151 @@ jobs:
         path: f4-windows7-amd64.zip
         retention-days: 7
 
+  # Windows before 10 cannot load a binary built by any Go since 1.21: the
+  # runtime imports six kernel32 entry points that are not there, starting with
+  # WerSetFlags, and the loader refuses the process before main runs. This job
+  # builds the one artifact that does run there -- windows/386, stock toolchain,
+  # with the go2xp shim linked in and the import table repointed at its
+  # polyfills afterwards (github.com/unxed/go2xp).
+  #
+  # One artifact serves Windows XP SP3 and ReactOS, built with the XP profile.
+  # The header is what makes that possible: XP refuses an image whose OS or
+  # subsystem version is above 5.1 ("not a valid Win32 application", issue
+  # #897), and ReactOS, which reports 5.2, loads anything up to that. The
+  # earlier ReactOS profile declared 5.2 and so could not start on XP at all.
+  #
+  # The cost falls on ReactOS and is small: the XP profile redirects ReOpenFile,
+  # FindFirstStreamW and FindNextStreamW to failing stubs, and ReactOS has real
+  # ones. f4 calls none of them itself; Go's standard library reaches ReOpenFile
+  # only to chmod a read-only file inside an os.Root, and NTFS streams do not
+  # exist on the FAT volumes ReactOS installs onto. The ReactOS result was
+  # measured with the ReactOS profile (f4 draws its panels, copies, views, edits
+  # and runs commands there); this artifact has not been run on ReactOS or on XP
+  # yet. XP needs a machine to sign it off (docs/WINE.md, legacy Windows).
+  #
+  # go2xp is pinned by commit: it decides which imports get redirected, and a
+  # silent change there would change the artifact without changing this tree.
+  # -ldflags keeps symbols (-w, no -s) because "go2xp audit" reads the proc*
+  # symbol names to report what the target lacks; the audit is the gate that
+  # fails this job if an absent export is neither polyfilled nor accepted by
+  # the profile.
+  #
+  # release and nightly must list this job in needs. They download every
+  # artifact of the run with no filter, so a job missing from needs got into
+  # the release only when it happened to finish before they started -- and the
+  # README links f4-legacy-windows-386.zip as the ReactOS download.
+  build-reactos:
+    name: Build (legacy windows/386)
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: 0
+      GOOS: windows
+      GOARCH: 386
+      GO2XP_REF: cd906f3002233bda80e91dd1ad0728aa6ec8f1d6
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v7
+      with:
+        submodules: recursive
+
+    - name: Set up Go
+      uses: actions/setup-go@v7
+      with:
+        go-version: '1.26.6'
+        cache-dependency-path: go.sum
+
+    - name: Compute build impact
+      id: affected
+      uses: ./.github/actions/affected-packages
+
+    - name: Check out go2xp
+      if: steps.affected.outputs.build == 'yes'
+      uses: actions/checkout@v7
+      with:
+        repository: unxed/go2xp
+        ref: ${{ env.GO2XP_REF }}
+        path: go2xp-src
+
+    - name: Move go2xp outside the f4 checkout
+      if: steps.affected.outputs.build == 'yes'
+      run: mv go2xp-src "$RUNNER_TEMP/go2xp-src"
+
+    - name: Build binaries
+      if: steps.affected.outputs.build == 'yes'
+      run: |
+        set -euo pipefail
+        # A throwaway modfile keeps f4's own go.mod free of the dependency:
+        # every other build target has no use for it.
+        cp go.mod /tmp/f4-go2xp.mod
+        cp go.sum /tmp/f4-go2xp.sum
+        go mod edit -modfile=/tmp/f4-go2xp.mod \
+          -require=github.com/unxed/go2xp@v0.0.0 \
+          -replace=github.com/unxed/go2xp="$RUNNER_TEMP/go2xp-src"
+
+        mkdir -p build
+        LDFLAGS="-w"
+        APP_LDFLAGS="$LDFLAGS"
+        if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+          APP_LDFLAGS="$APP_LDFLAGS -X main.buildVersion=$GITHUB_REF_NAME"
+        fi
+        go build -trimpath -ldflags="$APP_LDFLAGS" -tags=go2xp \
+          -modfile=/tmp/f4-go2xp.mod -o build/f4.exe ./cmd/f4
+
+        cp -r internal/i18n/lang internal/dialog/help build/
+        cp f4.example.ini build/
+
+    - name: Verify clean embedded revision
+      if: steps.affected.outputs.build == 'yes'
+      run: |
+        set -euo pipefail
+        metadata="$(go version -m build/f4.exe)"
+        printf '%s\n' "$metadata"
+        if grep -Eq 'vcs\.modified(=|[[:space:]])true' <<<"$metadata"; then
+          echo 'go build embedded vcs.modified=true' >&2
+          exit 1
+        fi
+
+    - name: Patch the import table and audit it
+      if: steps.affected.outputs.build == 'yes'
+      run: |
+        set -euo pipefail
+        # The patcher runs on the runner, not on the target.
+        go2xp_dir="$RUNNER_TEMP/go2xp-src"
+        (cd "$go2xp_dir" && env -u GOOS -u GOARCH go build -o /tmp/go2xp ./cmd/go2xp)
+        profile="$go2xp_dir/profiles/xp.json"
+        /tmp/go2xp patch -profile "$profile" build/f4.exe build/f4-legacy.exe \
+          | tee build/go2xp-patch.txt
+        /tmp/go2xp verify -profile "$profile" build/f4-legacy.exe
+        # The version XP checks is in the PE header, and a profile that
+        # declares more than 5.1 makes the artifact unstartable there.
+        python3 - build/f4-legacy.exe <<'EOF'
+        import struct, sys
+        d = open(sys.argv[1], 'rb').read()
+        opt = struct.unpack_from('<I', d, 0x3c)[0] + 24
+        os_v = struct.unpack_from('<HH', d, opt + 40)
+        ss_v = struct.unpack_from('<HH', d, opt + 48)
+        print('PE header: OS %d.%d, subsystem %d.%d' % (os_v + ss_v))
+        if os_v > (5, 1) or ss_v > (5, 1):
+            sys.exit('a header above 5.1 is refused by Windows XP SP3 (not a valid Win32 application)')
+        EOF
+        /tmp/go2xp audit -profile "$profile" build/f4-legacy.exe \
+          | tee build/go2xp-audit.txt
+        (cd "$go2xp_dir" && git rev-parse HEAD) > build/go2xp-commit.txt
+        rm build/f4.exe
+
+    - name: Package
+      if: steps.affected.outputs.build == 'yes'
+      run: (cd build && zip -r ../f4-legacy-windows-386.zip .)
+
+    - name: Upload Artifact
+      if: steps.affected.outputs.build == 'yes'
+      uses: actions/upload-artifact@v7
+      with:
+        name: f4-legacy-windows-386
+        path: f4-legacy-windows-386.zip
+        retention-days: 7
+
   # go vet in the quality job below only ever sees the linux build of the tree,
   # which leaves the 44 windows-only and 8 darwin-only files here unexamined by
   # any of its analyzers — printf, copylocks, lostcancel, loopclosure and two
@@ -1461,8 +1604,8 @@ jobs:
         set -euo pipefail
         while IFS= read -r cell; do
           TARGET=$(jq -r '.target' <<<"$cell")
-          GCFLAGS=$(jq -r '.gcflags // ""' <<<"$cell")
-          TAGS=$(jq -r '.tags // ""' <<<"$cell")
+          GCFLAGS=$(jq -r 'if .gcflags then .gcflags else "" end' <<<"$cell")
+          TAGS=$(jq -r 'if .tags then .tags else "" end' <<<"$cell")
 
           # An array, so the empty GCFLAGS of most cells contributes no argument
           # rather than an empty one.
@@ -1671,31 +1814,6 @@ jobs:
       with:
         submodules: recursive
 
-    - name: Install the bundled ConPTY for native Windows tests
-      if: runner.os == 'Windows'
-      shell: pwsh
-      run: |
-        $runtime = if ($env:RUNNER_ARCH -eq 'ARM64') { 'arm64' } else { 'x64' }
-        $url = 'https://github.com/microsoft/terminal/releases/download/v1.25.1912.0/Microsoft.Windows.Console.ConPTY.1.25.260710002-preview.nupkg'
-        $expected = '05fe9b571ea4fb198f5012405cb39a132cf23eee50feaa496524c149b2502692'
-        $package = Join-Path $env:RUNNER_TEMP 'Microsoft.Windows.Console.ConPTY.1.25.260710002-preview.nupkg'
-        $zip = "$package.zip"
-        & curl.exe -fL --retry 5 --retry-delay 10 --retry-all-errors -o $package $url
-        if ((Get-FileHash -Algorithm SHA256 $package).Hash -ne $expected.ToUpperInvariant()) {
-          throw "ConPTY package SHA-256 mismatch"
-        }
-        Copy-Item $package $zip -Force
-        $extract = Join-Path $env:RUNNER_TEMP 'conpty-package'
-        Expand-Archive -Path $zip -DestinationPath $extract -Force
-        # cmd/f4 is where the built binary looks for its bundle;
-        # internal/terminal is where the test that checks the bundle now runs,
-        # and go test makes a package's own directory the working directory.
-        foreach ($dest in 'cmd/f4', 'internal/terminal') {
-          Copy-Item (Join-Path $extract "runtimes/win-$runtime/native/conpty.dll") "$dest/conpty.dll" -Force
-          Copy-Item (Join-Path $extract "build/native/runtimes/$runtime/OpenConsole.exe") "$dest/OpenConsole.exe" -Force
-        }
-        Get-Item cmd/f4/conpty.dll, cmd/f4/OpenConsole.exe, internal/terminal/conpty.dll, internal/terminal/OpenConsole.exe | Format-Table Name,Length
-
     - name: Move Go caches to the fast disk (Windows)
       # C: is the OS disk and glacial at unpacking the ~650 MB Go cache --
       # three of this job's five and a half minutes on windows-latest went
@@ -1732,6 +1850,10 @@ jobs:
       env:
         AFFECTED: ${{ steps.affected.outputs.packages }}
         RUN_FILTER: ${{ matrix.run || '' }}
+        # TestConPTYPackageKeepsLongLinesWhole downloads the ConPTY package
+        # f4 fetches on first use and runs real programs in it (#885). It is
+        # Windows-only; elsewhere the variable is unused.
+        F4_NATIVE_CONPTY_PACKAGE: '1'
         # Coverage is collected on one Linux cell and both shards of each
         # split desktop cell. Reusing an OS flag lets Codecov combine the two
         # shard profiles without spending another full test matrix.
@@ -1740,7 +1862,10 @@ jobs:
         # Pull requests test only the packages their diff reaches through
         # the import graph (see the affected-packages action); pushes, tags
         # and manual runs always test everything.
-        if [ "$AFFECTED" = "all" ]; then
+        # Coverage uploads must exercise the complete module. A profile made
+        # from affected packages only records zeroes for every carried-forward
+        # package and makes the project percentage look like a regression.
+        if [ "$AFFECTED" = "all" ] || [ -n "$COVER" ]; then
           targets=(./...)
         elif [ -z "$AFFECTED" ]; then
           echo "No packages affected by this diff; skipping tests."
@@ -1968,16 +2093,16 @@ jobs:
   release:
     name: Create Official Release
     # Narrowing build-batch's condition would make release on a tag skipped, not failed.
-    needs: [build, qt-host, portable-qt, build-batch, build-win7, build-termux, test, race]
+    needs: [build, qt-host, portable-qt, build-batch, build-win7, build-reactos, build-termux, test, race]
     runs-on: ubuntu-latest
     if: ${{ always() && startsWith(github.ref, 'refs/tags/v') }}
     permissions:
       contents: write
     steps:
     - name: Verify release build prerequisites
-      if: needs.build.result != 'success' || needs.qt-host.result != 'success' || needs.portable-qt.result != 'success' || needs.build-batch.result != 'success' || needs.build-win7.result != 'success' || needs.build-termux.result != 'success' || needs.test.result != 'success' || needs.race.result != 'success'
+      if: needs.build.result != 'success' || needs.qt-host.result != 'success' || needs.portable-qt.result != 'success' || needs.build-batch.result != 'success' || needs.build-win7.result != 'success' || needs.build-reactos.result != 'success' || needs.build-termux.result != 'success' || needs.test.result != 'success' || needs.race.result != 'success'
       run: |
-        echo "::error::Official release prerequisites failed. build=${{ needs.build.result }}, qt-host=${{ needs.qt-host.result }}, portable-qt=${{ needs.portable-qt.result }}, build-batch=${{ needs.build-batch.result }}, build-win7=${{ needs.build-win7.result }}, build-termux=${{ needs.build-termux.result }}, test=${{ needs.test.result }}, race=${{ needs.race.result }}"
+        echo "::error::Official release prerequisites failed. build=${{ needs.build.result }}, qt-host=${{ needs.qt-host.result }}, portable-qt=${{ needs.portable-qt.result }}, build-batch=${{ needs.build-batch.result }}, build-win7=${{ needs.build-win7.result }}, build-reactos=${{ needs.build-reactos.result }}, build-termux=${{ needs.build-termux.result }}, test=${{ needs.test.result }}, race=${{ needs.race.result }}"
         exit 1
     # dist/, for the same reason as the nightly job below: artifacts/ is a
     # tracked directory of audit evidence, so publishing a glob over it ties
@@ -2082,16 +2207,16 @@ jobs:
   nightly:
     name: Update Nightly Release
     # Narrowing build-batch's condition would make release on a tag skipped, not failed.
-    needs: [build, qt-host, portable-qt, build-batch, build-win7, build-termux, test, race]
+    needs: [build, qt-host, portable-qt, build-batch, build-win7, build-reactos, build-termux, test, race]
     runs-on: ubuntu-latest
     if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     permissions:
       contents: write
     steps:
     - name: Verify nightly build prerequisites
-      if: needs.build.result != 'success' || needs.qt-host.result != 'success' || needs.portable-qt.result != 'success' || needs.build-batch.result != 'success' || needs.build-win7.result != 'success' || needs.build-termux.result != 'success' || needs.test.result != 'success' || needs.race.result != 'success'
+      if: needs.build.result != 'success' || needs.qt-host.result != 'success' || needs.portable-qt.result != 'success' || needs.build-batch.result != 'success' || needs.build-win7.result != 'success' || needs.build-reactos.result != 'success' || needs.build-termux.result != 'success' || needs.test.result != 'success' || needs.race.result != 'success'
       run: |
-        echo "::error::Nightly release prerequisites failed. build=${{ needs.build.result }}, qt-host=${{ needs.qt-host.result }}, portable-qt=${{ needs.portable-qt.result }}, build-batch=${{ needs.build-batch.result }}, build-win7=${{ needs.build-win7.result }}, build-termux=${{ needs.build-termux.result }}, test=${{ needs.test.result }}, race=${{ needs.race.result }}"
+        echo "::error::Nightly release prerequisites failed. build=${{ needs.build.result }}, qt-host=${{ needs.qt-host.result }}, portable-qt=${{ needs.portable-qt.result }}, build-batch=${{ needs.build-batch.result }}, build-win7=${{ needs.build-win7.result }}, build-reactos=${{ needs.build-reactos.result }}, build-termux=${{ needs.build-termux.result }}, test=${{ needs.test.result }}, race=${{ needs.race.result }}"
         exit 1
     - name: Checkout code (to get git info)
       uses: actions/checkout@v7
@@ -2145,14 +2270,17 @@ jobs:
         fi
 
     - name: Update Nightly Release
-      uses: softprops/action-gh-release@v3
-      with:
-        tag_name: nightly
-        name: "Continuous Build (Nightly)"
-        body: |
-          Automated pre-release build of the latest `main` branch.
-
-          **Commit:** `${{ env.SHORT_SHA }}`
-          **Built on:** `${{ env.BUILD_TIME }}`
-        prerelease: true
-        files: dist/*
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        # The release action uploads all assets concurrently. With the full
+        # matrix that occasionally races while creating its temporary asset
+        # directories and fails the otherwise successful main CI run. The
+        # GitHub CLI uploads the same files sequentially, which is reliable
+        # for the nightly's ~30 architecture assets.
+        gh release create nightly dist/* \
+          --repo "$GITHUB_REPOSITORY" \
+          --title "Continuous Build (Nightly)" \
+          --notes "Automated pre-release build of the latest main branch. Commit: $SHORT_SHA. Built on: $BUILD_TIME" \
+          --prerelease

@@ -64,9 +64,10 @@ func (b *settingsButtonRow) SetPosition(x1, y1, x2, y2 int) {
 }
 
 func (c *settingsCenter) rebuildCategory() {
-	c.SetTitle(settingsText("Title", "Settings"))
 	if c.recordOnly {
 		c.SetTitle(c.recordTitle)
+	} else {
+		c.SetTitle(c.windowTitle())
 	}
 	c.apply.SetText(settingsText("Apply", "&Apply"))
 	c.ok.SetText(i18n.Msg("vtui.Ok"))
@@ -160,14 +161,36 @@ func (c *settingsCenter) addCollections(category string) {
 					}
 					record := f4settings.Record{ID: fmt.Sprintf("new:%s:%d", col.ID, settingsRecordCounter.Add(1)), Values: values}
 					s.draft.Records[col.ID] = append(s.draft.Records[col.ID], record)
+					settingsTraceRecords(s, col.ID, "add", record.ID)
 					c.offsets[key] = len(s.draft.Records[col.ID]) - 1
 					c.rebuildCategory()
 				})
 				button("Delete", func() {
 					records := s.draft.Records[col.ID]
-					if selected < len(records) {
-						s.draft.Records[col.ID] = append(records[:selected], records[selected+1:]...)
-						c.rebuildCategory()
+					if selected >= len(records) {
+						return
+					}
+					// Removing a record is the one destructive button on
+					// this page, and the row it acts on is a single click
+					// away from the one next to it, so it asks first
+					// (#1148). The shared Delete.* resources keep the
+					// wording in every bundled language.
+					name := strings.TrimSpace(records[selected].Values[col.NameField])
+					if name == "" {
+						name = Phrase("(unnamed)")
+					}
+					confirm := vtui.ShowMessageOn(c, i18n.Msg("Delete.Title"), fmt.Sprintf(i18n.Msg("Delete.Confirm"), name), []string{i18n.Msg("Delete.Btn"), i18n.Msg("vtui.Cancel")})
+					confirm.OnResult = func(choice int) {
+						if choice != 0 {
+							return
+						}
+						records := s.draft.Records[col.ID]
+						if selected < len(records) {
+							removed := records[selected].ID
+							s.draft.Records[col.ID] = append(records[:selected], records[selected+1:]...)
+							settingsTraceRecords(s, col.ID, "delete", removed)
+							c.rebuildCategory()
+						}
 					}
 				})
 			}
@@ -182,6 +205,7 @@ func (c *settingsCenter) addCollections(category string) {
 						next := selected + direction
 						if selected >= 0 && selected < len(records) && next >= 0 && next < len(records) {
 							records[selected], records[next] = records[next], records[selected]
+							settingsTraceRecords(s, col.ID, "move "+label, records[next].ID)
 							if col.ID == "bookmarks" {
 								for i := range records {
 									records[i].Values["bookmark.Name"] = fmt.Sprintf("%d: %s", i, records[i].Values["bookmark.Path"])
@@ -257,6 +281,7 @@ func (c *settingsCenter) addCollections(category string) {
 						meta.Aliases = append(append([]string(nil), f.Aliases...), record.Values[col.NameField])
 						return c.matches(meta)
 					}
+					r.traceRecord = record.ID
 					r.read = func() string { return record.Values[f.ID] }
 					r.write = func(value string) {
 						record.Values[f.ID] = value

@@ -22,6 +22,10 @@ type CommandPaletteDialog struct {
 	queryPrompt *vtui.Text
 	table       *vtui.Table
 	description *vtui.Text
+	// details are the rows under the table. The first is description; the
+	// rest carry what does not fit on it (see commandPaletteDetailLines).
+	details    []*vtui.Text
+	detailRows int
 
 	entries  []commandPaletteEntry
 	filtered []commandPaletteEntry
@@ -32,6 +36,9 @@ type CommandPaletteDialog struct {
 
 	tableMouseCaptured bool
 }
+
+// Compatibility alias for the upstream in-package tests and helpers.
+type commandPaletteDialog = CommandPaletteDialog
 
 type commandPaletteRow struct {
 	entry commandPaletteEntry
@@ -108,7 +115,11 @@ func newCommandPaletteDialog(
 	if table.ScrollBar != nil {
 		table.ScrollBar.ColorIdx = vtui.ColDialogBox
 	}
-	description := vtui.NewText(0, 0, "", 0)
+	details := make([]*vtui.Text, commandPaletteDetailRows)
+	for index := range details {
+		details[index] = vtui.NewText(0, 0, "", 0)
+	}
+	description := details[0]
 
 	d := &CommandPaletteDialog{
 		Window:      window,
@@ -116,12 +127,16 @@ func newCommandPaletteDialog(
 		queryPrompt: queryPrompt,
 		table:       table,
 		description: description,
+		details:     details,
 		entries:     append([]commandPaletteEntry(nil), entries...),
 		recent:      append([]string(nil), recent...),
 		onExecute:   onExecute,
 	}
 
-	for _, item := range []vtui.UIElement{queryPrompt, query, table, description} {
+	for _, item := range []vtui.UIElement{queryPrompt, query, table} {
+		window.AddItem(item)
+	}
+	for _, item := range details {
 		window.AddItem(item)
 	}
 
@@ -178,10 +193,11 @@ func commandPaletteDialogSizeForScreen(entryCount, screenWidth, screenHeight int
 	if maxHeight < 10 {
 		maxHeight = screenHeight
 	}
-	// Normal layout needs nine non-data rows: two borders, query and
-	// description lines, table header, and spacing. This avoids showing a
-	// scrollbar when every result actually fits.
-	height := entryCount + 9
+	// Normal layout needs nine non-data rows plus the detail rows beyond the
+	// first: two borders, the query line, the table header, the detail rows,
+	// and spacing. This avoids showing a scrollbar when every result actually
+	// fits.
+	height := entryCount + 9 + commandPaletteDetailRows - 1
 	if height < 10 {
 		height = 10
 	}
@@ -221,11 +237,16 @@ func (d *CommandPaletteDialog) layoutControls() {
 	}
 
 	queryY := d.Y1 + 2
-	tableY1, tableY2 := d.Y1+4, d.Y2-4
-	descriptionY := d.Y2 - 2
+	detailRows := 1
+	if height >= commandPaletteFullDetailsMinHeight {
+		detailRows = commandPaletteDetailRows
+	}
+	descriptionY := d.Y2 - 1 - detailRows
+	tableY1, tableY2 := d.Y1+4, descriptionY-2
 	showDescription := true
 	showQuery := true
 	if height < 10 {
+		detailRows = 1
 		queryY = d.Y1 + 2
 		tableY1 = d.Y1 + 3
 		descriptionY = d.Y2 - 2
@@ -257,8 +278,21 @@ func (d *CommandPaletteDialog) layoutControls() {
 	d.table.Columns = commandPaletteColumns(width)
 	d.table.ShowHeader = tableY2-tableY1+1 >= 2
 	d.table.SetPosition(left, tableY1, right, tableY2)
-	d.description.SetVisible(showDescription)
-	d.description.SetPosition(left, descriptionY, right, descriptionY)
+	if !showDescription {
+		detailRows = 0
+	}
+	d.detailRows = detailRows
+	for index, line := range d.details {
+		line.SetVisible(index < detailRows)
+		if index < detailRows {
+			line.SetPosition(left, descriptionY+index, right, descriptionY+index)
+			continue
+		}
+		// A row this layout has no room for collapses to an empty box on
+		// the first detail row, so it lies neither on the frame nor over
+		// another control.
+		line.SetPosition(left, descriptionY, left-1, descriptionY)
+	}
 }
 
 // ResizeConsole recomputes both the d and all child coordinates. The
@@ -269,6 +303,8 @@ func (d *CommandPaletteDialog) ResizeConsole(screenWidth, screenHeight int) {
 	x1, y1 := (screenWidth-width)/2, (screenHeight-height)/2
 	d.SetPosition(x1, y1, x1+width-1, y1+height-1)
 	d.layoutControls()
+	// The details were wrapped for the old width and row count.
+	d.refreshDescription()
 }
 
 func (d *CommandPaletteDialog) refilter(query string) {
@@ -301,11 +337,136 @@ func (d *CommandPaletteDialog) refreshDescription() {
 	if d.table != nil {
 		index = d.table.SelectPos
 	}
-	if index < 0 || index >= len(d.filtered) {
-		d.description.SetText(dialog.EscapeAmpersand(i18n.Msg("CommandPalette.Empty")))
-		return
+	width := d.description.X2 - d.description.X1 + 1
+	lines := []string{i18n.Msg("CommandPalette.Empty")}
+	if index >= 0 && index < len(d.filtered) {
+		lines = commandPaletteDetailLines(d.filtered[index], d.table, width)
 	}
-	d.description.SetText(dialog.EscapeAmpersand(commandPaletteDisplayDescription(d.filtered[index])))
+	lines = commandPaletteFitLines(lines, max(1, d.detailRows), width)
+	for row, line := range d.details {
+		text := ""
+		if row < len(lines) {
+			text = lines[row]
+		}
+		line.SetText(dialog.EscapeAmpersand(text))
+	}
+}
+
+// commandPaletteDetailRows is how many rows the details under the table take
+// when the dialog is tall enough for them; commandPaletteFullDetailsMinHeight
+// is that height. A shorter dialog keeps a single row, and the table keeps at
+// least one result line.
+const (
+	commandPaletteDetailRows           = 3
+	commandPaletteFullDetailsMinHeight = 12
+)
+
+// commandPaletteDetailLines is what the rows under the table say about entry,
+// wrapped to width.
+//
+// The table cuts every cell at its column edge without a mark, and neither it
+// nor the description row used to offer any other way to read the rest
+// (discussion #144). So the details carry, besides the description, every
+// part of the entry the table did not show in full: the command name when it
+// is wider than its column, and the category and shortcuts when their columns
+// cut them or a narrow palette has no such columns at all. What the table
+// already shows whole is not repeated.
+func commandPaletteDetailLines(entry commandPaletteEntry, table *vtui.Table, width int) []string {
+	columns := []vtui.TableColumn(nil)
+	if table != nil {
+		columns = table.Columns
+	}
+	widths := commandPaletteColumnWidths(table)
+	cut := func(column int, text string) bool {
+		if text == "" {
+			return false
+		}
+		return column >= len(widths) || vtui.StringWidth(text) > widths[column]
+	}
+
+	var lines []string
+	row := commandPaletteRow{entry: entry}
+	if label := row.GetCellText(0); cut(0, label) {
+		lines = append(lines, vtui.WrapText(label, width)...)
+	}
+	if description := commandPaletteDisplayDescription(entry); description != "" {
+		lines = append(lines, vtui.WrapText(description, width)...)
+	}
+	var metadata []string
+	for column := 1; column <= 2; column++ {
+		if text := row.GetCellText(column); cut(column, text) {
+			title := ""
+			if column < len(columns) {
+				title = columns[column].Title
+			} else if column == 1 {
+				title = i18n.Msg("CommandPalette.ColumnCategory")
+			} else {
+				title = i18n.Msg("CommandPalette.ColumnShortcut")
+			}
+			metadata = append(metadata, title+": "+text)
+		}
+	}
+	if len(metadata) > 0 {
+		lines = append(lines, vtui.WrapText(strings.Join(metadata, "   "), width)...)
+	}
+	return lines
+}
+
+// commandPaletteFitLines keeps lines within rows: when there are more, the
+// last row takes the remainder and ends in an ellipsis, so a cut is visible.
+func commandPaletteFitLines(lines []string, rows, width int) []string {
+	if len(lines) <= rows {
+		return lines
+	}
+	fitted := append([]string(nil), lines[:rows-1]...)
+	rest := strings.Join(lines[rows-1:], " ")
+	return append(fitted, vtui.TruncateString(rest, width, "…"))
+}
+
+// commandPaletteColumnWidths returns the widths vtui.Table draws the palette's
+// columns at: fixed columns keep their width, and the flexible ones share
+// what the row has left after them and the separators, each at least its
+// minimum. It follows Table.resolvedWidths, which vtui does not export.
+func commandPaletteColumnWidths(table *vtui.Table) []int {
+	if table == nil || len(table.Columns) == 0 {
+		return nil
+	}
+	columns := table.Columns
+	fixed, minimum, flexible := 0, 0, 0
+	for _, column := range columns {
+		if column.Width > 0 {
+			fixed += column.Width
+			continue
+		}
+		flexible++
+		minimum += commandPaletteColumnMinWidth(column)
+	}
+	extra, share, remainder := 0, 0, 0
+	if flexible > 0 {
+		available := max(table.GetContentWidth()-fixed-(len(columns)-1), minimum)
+		extra = available - minimum
+		share, remainder = extra/flexible, extra%flexible
+	}
+	widths := make([]int, 0, len(columns))
+	for _, column := range columns {
+		width := column.Width
+		if width <= 0 {
+			width = commandPaletteColumnMinWidth(column) + share
+			if remainder > 0 {
+				width++
+				remainder--
+			}
+		}
+		widths = append(widths, width)
+	}
+	return widths
+}
+
+func commandPaletteColumnMinWidth(column vtui.TableColumn) int {
+	if column.MinWidth > 0 {
+		return column.MinWidth
+	}
+	return vtui.StringWidth(column.Title)
 }
 
 func (d *CommandPaletteDialog) executeCurrent() bool {

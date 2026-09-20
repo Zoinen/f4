@@ -149,6 +149,8 @@ type CursorShape int
 const (
 	CursorShapeUnderline CursorShape = iota
 	CursorShapeBlock
+	// CursorShapeBar is a thin vertical line at the left edge of the cell.
+	CursorShapeBar
 )
 
 // SurfaceRenderer определяет, как логический буфер CharInfo переносится на экран.

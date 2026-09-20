@@ -38,6 +38,26 @@ func (pf *PanelsFrame) SetBusy(busy bool) {
 	pf.Busy = busy
 }
 
+// unpaintedTerminalRows reports the rows between the bottom of the terminal
+// view and the bottom of the screen that nothing draws while the panels are
+// hidden. The layout reserves the keybar row for the whole life of the shell
+// so that starting and ending a command does not resize the PTY, but the
+// keybar and the command line both stand down while an alternate-screen
+// program or a running command owns the terminal -- and whatever is left
+// unpainted is filled by vtui's Desktop, whose blue background then reads as
+// a stripe below the program's output. The range is empty when one of them
+// will paint the row, or when the terminal already reaches the last row.
+func unpaintedTerminalRows(altScreen, busy bool, termY2, screenH int) (int, int) {
+	if !altScreen && !busy {
+		return 0, -1
+	}
+	first := termY2 + 1
+	if first < 0 {
+		first = 0
+	}
+	return first, screenH - 1
+}
+
 // consoleStyle returns the console view style effective for this frame.
 func (pf *PanelsFrame) consoleStyle() string {
 	return terminal.ConsoleViewStyleFor(pf.ShellMode)

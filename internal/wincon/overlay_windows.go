@@ -83,7 +83,7 @@ var (
 	procIsWindow            = user32.NewProc("IsWindow")
 	procIsIconic            = user32.NewProc("IsIconic")
 	procGetWindow           = user32.NewProc("GetWindow")
-	procGetWindowLongPtrW   = user32.NewProc("GetWindowLongPtrW")
+	procGetWindowLongPtrW   = user32.NewProc(getWindowLongPtrProc)
 	procSetTimer            = user32.NewProc("SetTimer")
 	procKillTimer           = user32.NewProc("KillTimer")
 	procGetDC               = user32.NewProc("GetDC")
