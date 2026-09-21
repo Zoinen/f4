@@ -845,8 +845,17 @@ jobs:
         # Qt's cross-build recipe needs native qsb and QML tools. Configure
         # its build-context Qt tool requirement with the same modules so
         # Qt6ShaderToolsTools and qmlcachegen exist for the ARM64 target.
+        $qtBuildOverride = @()
+        if ("${{ matrix.arch }}" -eq "arm64") {
+          # An earlier ARM package was published without Qt Quick.  The
+          # recipe validation now rejects it, but Conan considers a matching
+          # remote package present and --build=missing will not replace it.
+          # Force the target Qt package to rebuild once with the corrected
+          # qsb/QML-tool wiring.
+          $qtBuildOverride = @("--build=qt/*")
+        }
         for ($attempt = 1; $attempt -le 3; $attempt++) {
-          conan install qt/host --build=missing `
+          conan install qt/host --build=missing @qtBuildOverride `
             -s:h arch=${{ matrix.conan_arch }} -s:h build_type=Release -s:h compiler.cppstd=20 `
             -s:h compiler.runtime=static `
             -s:b build_type=Release -s:b compiler.cppstd=20 `
