@@ -600,7 +600,12 @@ if(F4_QT_STATIC)
   # Qt archives use the static CRT. The network-information backend is
   # optional for F4, so leave that default plugin out of the single-file host
   # and avoid mixing CRTs at link time.
-  qt6_import_plugins(f4-qt-host EXCLUDE_BY_TYPE qmltooling networkinformation tls)
+  # Multimedia is selected explicitly above. Exclude Qt's automatic import
+  # here so a native-only build does not also pull in the FFmpeg plugin (and
+  # its FFmpeg archives), while an FFmpeg build does not register the native
+  # Windows backend as a second implementation.
+  qt6_import_plugins(f4-qt-host
+    EXCLUDE_BY_TYPE qmltooling networkinformation tls multimedia)
 endif()
 
 qt6_finalize_target(f4-qt-host)
