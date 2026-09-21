@@ -47,6 +47,31 @@ cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake \
 cmake --build build --config RelWithDebInfo
 ```
 
+Video thumbnails are enabled by default. The CMake options are:
+
+- `F4_ENABLE_VIDEO_THUMBNAILS=OFF` removes Qt Multimedia, the video runner and
+  the FFmpeg dependency from the host graph.
+- `F4_ENABLE_FFMPEG_BACKEND=OFF` keeps Qt Multimedia but selects a native Qt
+  backend when the target provides one (for example, Media Foundation on
+  Windows). Static targets without a native backend must keep the FFmpeg
+  backend enabled or disable video thumbnails entirely.
+
+The Conan graph must use matching options so it does not build unused native
+dependencies. For a host without video support:
+
+```sh
+conan install . --build=missing \
+  -o '&:with_video_thumbnails=False' \
+  -o '&:with_ffmpeg_backend=False' \
+  -s build_type=RelWithDebInfo -s compiler.cppstd=20 \
+  --output-folder=build-no-video
+cmake -S . -B build-no-video \
+  -DCMAKE_TOOLCHAIN_FILE=build-no-video/conan_toolchain.cmake \
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DF4_ENABLE_VIDEO_THUMBNAILS=OFF \
+  -DF4_ENABLE_FFMPEG_BACKEND=OFF
+```
+
 On macOS, add `-s:h os.version=13.0` to the Conan command. The recipe enforces
 that target so Qt and every native dependency match the host's deployment
 minimum.

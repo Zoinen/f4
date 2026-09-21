@@ -187,8 +187,10 @@ target_link_libraries(f4-qt-host PRIVATE
   Qt6::QuickControls2
   Qt6::Network
   Qt6::Svg
-  Qt6::Multimedia
 )
+if(F4_ENABLE_VIDEO_THUMBNAILS)
+  target_link_libraries(f4-qt-host PRIVATE Qt6::Multimedia)
+endif()
 if(WIN32 AND F4_QT_STATIC)
   target_link_libraries(f4-qt-host PRIVATE Rpcrt4 Usp10)
 endif()
@@ -411,72 +413,97 @@ if(F4_QT_STATIC)
         "Required static Qt plugin target is missing: ${plugin_target}")
     endif()
   endforeach()
-  # Conan's Qt 6.11 recipe does not currently expose the FFmpeg backend
-  # archive as a CMake component, even though qtmultimedia builds it. Locate
-  # the archive from the Qt package and link it explicitly; the source-level
-  # Q_IMPORT_PLUGIN below then registers the backend in the static host.
   set(F4_QFFMPEG_PLUGIN_TARGET "")
   set(F4_QFFMPEG_PLUGIN_IMPL_TARGET "")
+  # Do not let a path cached by an earlier FFmpeg-enabled configure leak into
+  # a later no-video or native-backend configure of the same build directory.
+  unset(F4_QFFMPEG_PLUGIN_LIBRARY)
+  unset(F4_QFFMPEG_PLUGIN_LIBRARY CACHE)
+  set(F4_QT_MEDIA_PLUGIN_TARGET "")
   set(F4_QT_NEEDS_FFMPEG OFF)
-  if(TARGET Qt6::QFFmpegMediaPlugin)
-    set(F4_QFFMPEG_PLUGIN_TARGET Qt6::QFFmpegMediaPlugin)
-    set(F4_QT_MEDIA_PLUGIN_TARGET Qt6::QFFmpegMediaPlugin)
-    set(F4_QT_NEEDS_FFMPEG ON)
-    target_compile_definitions(f4-qt-host PRIVATE F4_QT_USE_FFMPEG_PLUGIN=1)
-  elseif(TARGET Qt6::QWindowsMediaPlugin)
-    # The official Conan Qt 6.11 Windows build enables the native Media
-    # Foundation backend when FFmpeg support is not part of the Qt package.
-    # Keep the host usable with that static backend while retaining the
-    # FFmpeg path above for packages that provide it.
-    set(F4_QT_MEDIA_PLUGIN_TARGET Qt6::QWindowsMediaPlugin)
-    target_compile_definitions(f4-qt-host PRIVATE F4_QT_USE_WINDOWS_MEDIA_PLUGIN=1)
-  else()
-    if(NOT TARGET Qt6::MultimediaPrivate)
-      add_library(Qt6::MultimediaPrivate INTERFACE IMPORTED GLOBAL)
-      set_target_properties(Qt6::MultimediaPrivate PROPERTIES
-        INTERFACE_LINK_LIBRARIES "Qt6::Multimedia;Qt6::Core;Qt6::Gui")
-    endif()
-    if(NOT TARGET Qt6::FFmpegMediaPluginImplPrivate)
-      find_library(_f4_ffmpeg_impl_archive
-        NAMES Qt6FFmpegMediaPluginImplPrivate
-        PATHS "${_f4_conan_qt_package_folder}/lib"
-        NO_DEFAULT_PATH REQUIRED)
-      add_library(Qt6::FFmpegMediaPluginImplPrivate STATIC IMPORTED GLOBAL)
-      set_target_properties(Qt6::FFmpegMediaPluginImplPrivate PROPERTIES
-        IMPORTED_LOCATION "${_f4_ffmpeg_impl_archive}"
-        INTERFACE_LINK_LIBRARIES "Qt6::MultimediaPrivate")
-      unset(_f4_ffmpeg_impl_archive CACHE)
-    endif()
-    set(F4_QFFMPEG_PLUGIN_IMPL_TARGET Qt6::FFmpegMediaPluginImplPrivate)
-    set(F4_QT_NEEDS_FFMPEG ON)
-    find_library(F4_QFFMPEG_PLUGIN_LIBRARY
-      NAMES ffmpegmediaplugin
-      PATHS
-        "${_f4_conan_qt_package_folder}/plugins/multimedia"
-        "${qt_PACKAGE_FOLDER_RELWITHDEBINFO}/plugins/multimedia"
-        "${qt_PACKAGE_FOLDER_RELEASE}/plugins/multimedia"
-        NO_DEFAULT_PATH)
-    if(NOT F4_QFFMPEG_PLUGIN_LIBRARY)
-      message(FATAL_ERROR
-        "Static Qt Multimedia was enabled, but the FFmpeg backend archive "
-        "was not found in the Qt package")
-    endif()
-    set(F4_QT_MEDIA_PLUGIN_TARGET ${F4_QFFMPEG_PLUGIN_LIBRARY})
-    target_compile_definitions(f4-qt-host PRIVATE F4_QT_USE_FFMPEG_PLUGIN=1)
-  endif()
   set(F4_FFMPEG_TARGETS)
-  if(F4_QT_NEEDS_FFMPEG)
-    find_package(ffmpeg CONFIG REQUIRED)
-    foreach(ffmpeg_component IN ITEMS avcodec avformat avutil swresample swscale)
-      if(TARGET ffmpeg::${ffmpeg_component})
-        list(APPEND F4_FFMPEG_TARGETS ffmpeg::${ffmpeg_component})
-      elseif(TARGET FFmpeg::${ffmpeg_component})
-        list(APPEND F4_FFMPEG_TARGETS FFmpeg::${ffmpeg_component})
+  if(F4_ENABLE_VIDEO_THUMBNAILS)
+    if(F4_ENABLE_FFMPEG_BACKEND)
+      # Conan's Qt 6.11 recipe does not currently expose the FFmpeg backend
+      # archive as a CMake component, even though qtmultimedia builds it.
+      # Locate the archive from the Qt package and link it explicitly; the
+      # source-level Q_IMPORT_PLUGIN below then registers it in the static
+      # host.
+      if(TARGET Qt6::QFFmpegMediaPlugin)
+        set(F4_QFFMPEG_PLUGIN_TARGET Qt6::QFFmpegMediaPlugin)
+        set(F4_QT_MEDIA_PLUGIN_TARGET Qt6::QFFmpegMediaPlugin)
+        set(F4_QT_NEEDS_FFMPEG ON)
+        target_compile_definitions(f4-qt-host PRIVATE
+          F4_QT_USE_FFMPEG_PLUGIN=1)
+      elseif(TARGET Qt6::QWindowsMediaPlugin)
+        # The official Conan Qt 6.11 Windows build may expose only the native
+        # Media Foundation backend. Keep that fallback usable even when the
+        # FFmpeg package is present in the Conan graph.
+        set(F4_QT_MEDIA_PLUGIN_TARGET Qt6::QWindowsMediaPlugin)
+        target_compile_definitions(f4-qt-host PRIVATE
+          F4_QT_USE_WINDOWS_MEDIA_PLUGIN=1)
+      else()
+        if(NOT TARGET Qt6::MultimediaPrivate)
+          add_library(Qt6::MultimediaPrivate INTERFACE IMPORTED GLOBAL)
+          set_target_properties(Qt6::MultimediaPrivate PROPERTIES
+            INTERFACE_LINK_LIBRARIES "Qt6::Multimedia;Qt6::Core;Qt6::Gui")
+        endif()
+        if(NOT TARGET Qt6::FFmpegMediaPluginImplPrivate)
+          find_library(_f4_ffmpeg_impl_archive
+            NAMES Qt6FFmpegMediaPluginImplPrivate
+            PATHS "${_f4_conan_qt_package_folder}/lib"
+            NO_DEFAULT_PATH REQUIRED)
+          add_library(Qt6::FFmpegMediaPluginImplPrivate STATIC IMPORTED GLOBAL)
+          set_target_properties(Qt6::FFmpegMediaPluginImplPrivate PROPERTIES
+            IMPORTED_LOCATION "${_f4_ffmpeg_impl_archive}"
+            INTERFACE_LINK_LIBRARIES "Qt6::MultimediaPrivate")
+          unset(_f4_ffmpeg_impl_archive CACHE)
+        endif()
+        set(F4_QFFMPEG_PLUGIN_IMPL_TARGET
+          Qt6::FFmpegMediaPluginImplPrivate)
+        set(F4_QT_NEEDS_FFMPEG ON)
+        find_library(F4_QFFMPEG_PLUGIN_LIBRARY
+          NAMES ffmpegmediaplugin
+          PATHS
+            "${_f4_conan_qt_package_folder}/plugins/multimedia"
+            "${qt_PACKAGE_FOLDER_RELWITHDEBINFO}/plugins/multimedia"
+            "${qt_PACKAGE_FOLDER_RELEASE}/plugins/multimedia"
+            NO_DEFAULT_PATH)
+        if(NOT F4_QFFMPEG_PLUGIN_LIBRARY)
+          message(FATAL_ERROR
+            "Static Qt Multimedia was enabled, but the FFmpeg backend archive "
+            "was not found in the Qt package")
+        endif()
+        set(F4_QT_MEDIA_PLUGIN_TARGET ${F4_QFFMPEG_PLUGIN_LIBRARY})
+        target_compile_definitions(f4-qt-host PRIVATE
+          F4_QT_USE_FFMPEG_PLUGIN=1)
       endif()
-    endforeach()
-    if(NOT F4_FFMPEG_TARGETS)
+    elseif(TARGET Qt6::QWindowsMediaPlugin)
+      # An explicit FFmpeg-off build is supported when Qt supplies the native
+      # Windows Media Foundation backend.
+      set(F4_QT_MEDIA_PLUGIN_TARGET Qt6::QWindowsMediaPlugin)
+      target_compile_definitions(f4-qt-host PRIVATE
+        F4_QT_USE_WINDOWS_MEDIA_PLUGIN=1)
+    else()
       message(FATAL_ERROR
-        "FFmpeg was found, but no avcodec/avformat component targets were exported")
+        "F4_ENABLE_FFMPEG_BACKEND=OFF requires Qt6::QWindowsMediaPlugin "
+        "for a static Qt Multimedia host; disable F4_ENABLE_VIDEO_THUMBNAILS "
+        "on platforms without a native Qt backend")
+    endif()
+
+    if(F4_QT_NEEDS_FFMPEG)
+      find_package(ffmpeg CONFIG REQUIRED)
+      foreach(ffmpeg_component IN ITEMS avcodec avformat avutil swresample swscale)
+        if(TARGET ffmpeg::${ffmpeg_component})
+          list(APPEND F4_FFMPEG_TARGETS ffmpeg::${ffmpeg_component})
+        elseif(TARGET FFmpeg::${ffmpeg_component})
+          list(APPEND F4_FFMPEG_TARGETS FFmpeg::${ffmpeg_component})
+        endif()
+      endforeach()
+      if(NOT F4_FFMPEG_TARGETS)
+        message(FATAL_ERROR
+          "FFmpeg was found, but no avcodec/avformat component targets were exported")
+      endif()
     endif()
   endif()
   target_sources(f4-qt-host PRIVATE

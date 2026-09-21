@@ -21,6 +21,6 @@ Q_IMPORT_PLUGIN(QJpegPlugin)
 Q_IMPORT_PLUGIN(QSvgPlugin)
 #if defined(F4_QT_USE_WINDOWS_MEDIA_PLUGIN)
 Q_IMPORT_PLUGIN(QWindowsMediaPlugin)
-#else
+#elif defined(F4_QT_USE_FFMPEG_PLUGIN)
 Q_IMPORT_PLUGIN(QFFmpegMediaPlugin)
 #endif

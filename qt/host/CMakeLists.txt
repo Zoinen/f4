@@ -15,6 +15,17 @@ endif()
 option(USE_QWK "Use QWindowKit" ON)
 option(F4_PORTABLE_STATIC
   "Build one self-contained Qt host (apart from system ABI libraries)" OFF)
+option(F4_ENABLE_VIDEO_THUMBNAILS
+  "Enable video thumbnails through Qt Multimedia" ON)
+option(F4_ENABLE_FFMPEG_BACKEND
+  "Use the Qt Multimedia FFmpeg backend for video thumbnails"
+  ${F4_ENABLE_VIDEO_THUMBNAILS})
+if(NOT F4_ENABLE_VIDEO_THUMBNAILS AND F4_ENABLE_FFMPEG_BACKEND)
+  message(STATUS
+    "F4_ENABLE_VIDEO_THUMBNAILS=OFF disables the FFmpeg backend as well")
+  set(F4_ENABLE_FFMPEG_BACKEND OFF CACHE BOOL
+    "Use the Qt Multimedia FFmpeg backend for video thumbnails" FORCE)
+endif()
 include(CTest)
 
 if(NOT EXISTS "${CMAKE_BINARY_DIR}/conan_toolchain.cmake")
@@ -36,7 +47,12 @@ if(F4_PORTABLE_STATIC)
   find_package(libjpeg-turbo REQUIRED)
 endif()
 
-find_package(Qt6 COMPONENTS Core Concurrent Gui Qml Quick QuickControls2 Network Svg Multimedia REQUIRED)
+set(F4_QT_HOST_COMPONENTS
+  Core Concurrent Gui Qml Quick QuickControls2 Network Svg)
+if(F4_ENABLE_VIDEO_THUMBNAILS)
+  list(APPEND F4_QT_HOST_COMPONENTS Multimedia)
+endif()
+find_package(Qt6 COMPONENTS ${F4_QT_HOST_COMPONENTS} REQUIRED)
 # Qt 6.11 exports the ICO image plugin as QICOPlugin (matching its class
 # name), while the older Conan facade used QIcoPlugin. Keep one compatibility
 # alias for the test and host link helpers below.
@@ -110,6 +126,10 @@ set(ZOIN_BUILD_BENCHMARKS OFF CACHE BOOL
   "Build ZoinGallery performance audit tools" FORCE)
 set(ZOIN_ENABLE_INSTALL OFF CACHE BOOL
   "Generate ZoinGallery package installation rules" FORCE)
+set(ZOIN_ENABLE_VIDEO_THUMBNAILS ${F4_ENABLE_VIDEO_THUMBNAILS} CACHE BOOL
+  "Enable video thumbnails through Qt Multimedia" FORCE)
+set(ZOIN_ENABLE_FFMPEG_BACKEND ${F4_ENABLE_FFMPEG_BACKEND} CACHE BOOL
+  "Use the Qt Multimedia FFmpeg backend for video thumbnails" FORCE)
 set(F4_ZOINGALLERY_BINARY_DIR
   "${CMAKE_CURRENT_BINARY_DIR}/ZoinGallery")
 
