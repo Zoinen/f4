@@ -934,30 +934,42 @@ jobs:
         $env:QSG_RHI_BACKEND = "software"
         $env:QML_IMPORT_PATH = "$PWD/$buildDir/ZoinGallery;$PWD/$buildDir/qml"
         $env:QML2_IMPORT_PATH = "$PWD/$buildDir/ZoinGallery;$PWD/$buildDir/qml"
-        $PSNativeCommandUseErrorActionPreference = $false
-        ctest --test-dir $buildDir -C Release --output-on-failure `
-          -R "^(F4|QtShellController|WindowGeometryPersistence)"
-        $qtTestStatus = $LASTEXITCODE
-        $PSNativeCommandUseErrorActionPreference = $true
-        if ($qtTestStatus -ne 0) {
-          Write-Warning "Qt CTest diagnostics returned $qtTestStatus; continuing to artifact smoke tests"
+        if ("${{ matrix.arch }}" -eq "arm64") {
+          # The GitHub Windows runner is x64, so it cannot execute the ARM64
+          # CTest binaries.  The cross-build still compiles and links every
+          # test target; the native ARM smoke/test pass belongs on an ARM64
+          # runner or the local Windows ARM VM.
+          Write-Host "Skipping Windows ARM64 target CTest on the x64 runner"
+        } else {
+          $PSNativeCommandUseErrorActionPreference = $false
+          ctest --test-dir $buildDir -C Release --output-on-failure `
+            -R "^(F4|QtShellController|WindowGeometryPersistence)"
+          $qtTestStatus = $LASTEXITCODE
+          $PSNativeCommandUseErrorActionPreference = $true
+          if ($qtTestStatus -ne 0) {
+            Write-Warning "Qt CTest diagnostics returned $qtTestStatus; continuing to artifact smoke tests"
+          }
         }
 
         $qtHost = "$PWD/$buildDir/bin/Release/f4-qt-host.exe"
         pwsh -File ci/audit-portable-qt-windows.ps1 -HostPath $qtHost
-        $env:QT_QPA_PLATFORM = "offscreen"
-        $env:QSG_RHI_BACKEND = "software"
-        $env:F4_QT_HOST_STARTUP_SMOKE_ONLY = "1"
-        $smokeProcess = Start-Process -FilePath $qtHost -NoNewWindow -PassThru `
-          -ArgumentList @("--f4-ext-connect=127.0.0.1:1", "--f4-ext-nonce=ci-smoke", `
-            "--f4-ext-cols=100", "--f4-ext-rows=30")
-        if (!$smokeProcess.WaitForExit(120000)) {
-          Stop-Process -Id $smokeProcess.Id -Force
-          throw "Static Qt host did not finish its disconnected smoke test within 120 seconds"
-        }
-        $smokeStatus = $smokeProcess.ExitCode
-        if ($smokeStatus -ne 2) {
-          throw "Disconnected static Qt host returned $smokeStatus, expected 2"
+        if ("${{ matrix.arch }}" -eq "arm64") {
+          Write-Host "Skipping Windows ARM64 target startup smoke on the x64 runner"
+        } else {
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $env:QSG_RHI_BACKEND = "software"
+          $env:F4_QT_HOST_STARTUP_SMOKE_ONLY = "1"
+          $smokeProcess = Start-Process -FilePath $qtHost -NoNewWindow -PassThru `
+            -ArgumentList @("--f4-ext-connect=127.0.0.1:1", "--f4-ext-nonce=ci-smoke", `
+              "--f4-ext-cols=100", "--f4-ext-rows=30")
+          if (!$smokeProcess.WaitForExit(120000)) {
+            Stop-Process -Id $smokeProcess.Id -Force
+            throw "Static Qt host did not finish its disconnected smoke test within 120 seconds"
+          }
+          $smokeStatus = $smokeProcess.ExitCode
+          if ($smokeStatus -ne 2) {
+            throw "Disconnected static Qt host returned $smokeStatus, expected 2"
+          }
         }
 
         python ci/package-embedded-qt-host.py $qtHost
