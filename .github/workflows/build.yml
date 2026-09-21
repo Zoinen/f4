@@ -535,7 +535,7 @@ jobs:
       shell: bash
       run: |
         set -euo pipefail
-        app="qt/host/F4.app"
+        app="qt/host/stage-ci/F4.app"
         app_source="qt/host/stage-ci/bin/f4-qt-host.app"
         mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 
@@ -567,7 +567,7 @@ jobs:
         app_host="$app/Contents/MacOS/f4-qt-host"
         while IFS= read -r rpath; do
           install_name_tool -delete_rpath "$rpath" "$app_host"
-        done < <(otool -l "$app_host" | awk '/cmd LC_RPATH/{getline; getline; sub(/^.*path /, ""); sub(/ \\(offset.*$/, ""); print}')
+        done < <(otool -l "$app_host" | awk '/cmd LC_RPATH/{getline; getline; sub(/^.*path /, ""); sub(/ [(]offset.*/, ""); print}')
         install_name_tool -add_rpath '@loader_path/../Resources/lib' "$app_host"
 
     - name: Prune macOS Conan build trees before cache save
@@ -722,7 +722,7 @@ jobs:
         if [[ "$RUNNER_OS" == "macOS" ]]; then
           app_archive="${artifact_base}.app.zip"
           ditto -c -k --sequesterRsrc --keepParent \
-            qt/host/F4.app "$app_archive"
+            qt/host/stage-ci/F4.app "$app_archive"
         fi
         {
           echo "name=$artifact_base"
