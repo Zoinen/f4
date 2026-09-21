@@ -20,7 +20,7 @@ _VERSION_CONFIG = r'''        save(self, os.path.join(qml_tools_dir, "Qt6QmlTool
 '''
 _CUSTOM_CONFIG_BEGIN = "        # QtDeclarative's ARM64 cross-build needs the native qmldom executable.\n"
 _QML_TOOLS_CONFIG_MARKER = "add_executable(Qt6::${_qt_qml_tool} IMPORTED GLOBAL)"
-_SHADER_TOOLS_CONFIG_MARKER = "set(Qt6ShaderToolsTools_FOUND TRUE)"
+_SHADER_TOOLS_CONFIG_MARKER = "add_executable(Qt6::qsb IMPORTED GLOBAL)"
 _SHADER_TOOLS_VERSION_CONFIG = r'''        save(self, os.path.join(shader_tools_dir, "Qt6ShaderToolsToolsConfigVersion.cmake"), textwrap.dedent("""
             set(PACKAGE_VERSION "6.11.1")
             if(PACKAGE_FIND_VERSION VERSION_EQUAL PACKAGE_VERSION)
@@ -72,13 +72,20 @@ _QML_TOOLS_CONFIG = r'''        # QtDeclarative's ARM64 cross-build needs the na
 ''' + _VERSION_CONFIG + r'''
         # QtDeclarative's cross-build also needs the native qsb executable.
         # Conan Center removes the generated Qt6ShaderToolsToolsConfig.cmake
-        # during package cleanup, so recreate a small config that imports the
-        # native qsb target from the package's generated export file.
+        # during package cleanup. Recreate a small config with a direct import
+        # of the native qsb executable: the generated export also describes the
+        # target-build tool and is not safe to reuse from a cross-build.
         shader_tools_dir = os.path.join(self.package_folder, "lib", "cmake", "Qt6ShaderToolsTools")
         os.makedirs(shader_tools_dir, exist_ok=True)
         save(self, os.path.join(shader_tools_dir, "Qt6ShaderToolsToolsConfig.cmake"), textwrap.dedent("""
             set(Qt6ShaderToolsTools_FOUND TRUE)
-            include("${CMAKE_CURRENT_LIST_DIR}/Qt6ShaderToolsToolsTargets.cmake")
+            get_filename_component(_qt_shader_tools_prefix "${CMAKE_CURRENT_LIST_DIR}/../../../" ABSOLUTE)
+            if(NOT TARGET Qt6::qsb)
+              add_executable(Qt6::qsb IMPORTED GLOBAL)
+              set_target_properties(Qt6::qsb PROPERTIES
+                IMPORTED_LOCATION "${_qt_shader_tools_prefix}/bin/qsb${CMAKE_EXECUTABLE_SUFFIX}")
+            endif()
+            set(Qt6ShaderToolsTools_TARGETS "Qt6::qsb")
             """))
 ''' + _SHADER_TOOLS_VERSION_CONFIG + r'''
 

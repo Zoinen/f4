@@ -30,6 +30,7 @@ if [[ "${target_arch}" == "arm64" ]]; then
     grep -Fq 'Qt6ShaderToolsToolsConfig.cmake' "${qt_recipe_copy}/conanfile.py"
     grep -Fq 'Qt6ShaderToolsToolsConfigVersion.cmake' "${qt_recipe_copy}/conanfile.py"
     grep -Fq 'set(Qt6ShaderToolsTools_FOUND TRUE)' "${qt_recipe_copy}/conanfile.py"
+    grep -Fq 'add_executable(Qt6::qsb IMPORTED GLOBAL)' "${qt_recipe_copy}/conanfile.py"
 fi
 
 grep -Fq 'self.requires("freetype/2.13.2")' \
