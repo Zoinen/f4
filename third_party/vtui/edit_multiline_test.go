@@ -50,13 +50,17 @@ func TestEditMultilineCaretAndHitTest(t *testing.T) {
 }
 
 func TestEditMultilineArgumentBreaksAreVisual(t *testing.T) {
-	e := NewEdit(0,0,80,`app -a "inside -quoted" --next`)
+	e := NewEdit(0, 0, 80, `app -a "inside -quoted" --next`)
 	e.Multiline, e.WordWrap = true, true
 	lines := e.multilineLines(80)
-	if len(lines) != 3 { t.Fatalf("argument lines=%+v", lines) }
+	if len(lines) != 3 {
+		t.Fatalf("argument lines=%+v", lines)
+	}
 	if got := string(e.text[lines[1].start:lines[1].end]); got != `-a "inside -quoted" ` {
-		t.Fatalf("quoted argument split: %q",got)
+		t.Fatalf("quoted argument split: %q", got)
 	}
 	e.WordWrap = false
-	if len(e.multilineLines(80)) != 1 { t.Fatal("disabled argument wrapping still splits") }
+	if len(e.multilineLines(80)) != 1 {
+		t.Fatal("disabled argument wrapping still splits")
+	}
 }

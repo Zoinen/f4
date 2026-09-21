@@ -7,8 +7,6 @@ import (
 	testing "testing"
 )
 
-import ()
-
 type semanticMenuControlTestFrame struct {
 	*vtui.VMenu
 	returnActivations int
