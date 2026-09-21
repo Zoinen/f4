@@ -92,6 +92,27 @@ _QML_TOOLS_CONFIG = r'''        # QtDeclarative's ARM64 cross-build needs the na
         extension = ""
 '''
 
+# The generated tool configs belong to the native Qt build-context package.
+# A cross-build's target package must not advertise its target-architecture
+# qsb/qml tools to CMake: on the Windows ARM job those executables are ARM64,
+# while the build runner is x64.  QT_HOST_PATH and
+# QT_ADDITIONAL_PACKAGES_PREFIX_PATH point the cross-build at the native
+# package instead.  Keep the extension anchor outside the guard because the
+# remainder of the upstream recipe uses it for target package metadata.
+_QML_TOOLS_CONFIG_BODY, _ = _QML_TOOLS_CONFIG.rsplit(
+    '        extension = ""\n', 1
+)
+_QML_TOOLS_CONFIG_EXTENSION = '        extension = ""\n'
+_QML_TOOLS_CONFIG = (
+    "        if not cross_building(self):\n"
+    + "\n".join(
+        "    " + line if line else line
+        for line in _QML_TOOLS_CONFIG_BODY.splitlines()
+    )
+    + "\n"
+    + _QML_TOOLS_CONFIG_EXTENSION
+)
+
 
 def main() -> None:
     parser = argparse.ArgumentParser()

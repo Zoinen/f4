@@ -1,9 +1,10 @@
 from conan import ConanFile
 from conan.errors import ConanInvalidConfiguration
 from conan.tools.cmake import CMakeDeps, CMakeToolchain
-from conan.tools.files import copy
+from conan.tools.files import copy, save
 from conan.tools.scm import Version
 import os
+import textwrap
 
 
 class F4QtHostConan(ConanFile):
@@ -67,6 +68,55 @@ class F4QtHostConan(ConanFile):
         if operating_system == "Macos":
             toolchain.variables["CMAKE_OSX_DEPLOYMENT_TARGET"] = str(
                 self.settings.os.version)
+
+        # In a cross build Conan exposes Qt's native build-context package
+        # through the transitive build requirements of the target Qt package.
+        # Prefer its QML/shader tool configs explicitly: the target package
+        # can contain same-named metadata whose qsb/qml executables have the
+        # target architecture and cannot run on the build runner.
+        native_qt = next(
+            (
+                dep
+                for dep in self.dependencies.build.values()
+                if dep.ref is not None and dep.ref.name == "qt"
+            ),
+            None,
+        )
+        if native_qt is not None:
+            native_qt_cmake_dir = os.path.join(native_qt.package_folder, "lib", "cmake")
+            toolchain.cache_variables["Qt6QmlTools_DIR"] = os.path.join(
+                native_qt_cmake_dir, "Qt6QmlTools"
+            )
+            toolchain.cache_variables["Qt6ShaderToolsTools_DIR"] = os.path.join(
+                native_qt_cmake_dir, "Qt6ShaderToolsTools"
+            )
+
+        # CMakeDeps puts the native Qt build-context prefixes before the
+        # target prefixes in CMAKE_PREFIX_PATH, but Qt's own package config
+        # can still select the target package's same-named tool metadata.
+        # Resolve the first prefix containing each tool config before any
+        # project() call. This keeps native qsb/qml tools on the build runner
+        # while preserving the target package for libraries and headers.
+        cross_tools_file = os.path.join(
+            self.generators_folder, "f4-qt-cross-tools.cmake"
+        )
+        save(
+            self,
+            cross_tools_file,
+            textwrap.dedent(
+                """
+                foreach(_f4_qt_prefix IN LISTS CMAKE_PREFIX_PATH)
+                  if(NOT Qt6QmlTools_DIR AND EXISTS "${_f4_qt_prefix}/Qt6QmlToolsConfig.cmake")
+                    set(Qt6QmlTools_DIR "${_f4_qt_prefix}" CACHE PATH "Native Qt QML tools" FORCE)
+                  endif()
+                  if(NOT Qt6ShaderToolsTools_DIR AND EXISTS "${_f4_qt_prefix}/Qt6ShaderToolsToolsConfig.cmake")
+                    set(Qt6ShaderToolsTools_DIR "${_f4_qt_prefix}" CACHE PATH "Native Qt shader tools" FORCE)
+                  endif()
+                endforeach()
+                """
+            ),
+        )
+        toolchain.cache_variables["CMAKE_PROJECT_INCLUDE_BEFORE"] = cross_tools_file
 
         toolchain.generate()
 
