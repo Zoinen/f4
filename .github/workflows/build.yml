@@ -513,11 +513,14 @@ jobs:
       run: |
         cmake --install qt/host/build-ci --config Release --prefix qt/host/stage-ci
         if [[ "$RUNNER_OS" == "macOS" ]]; then
-          # CMake's install script repairs the app when it is installed as a
-          # component, but keep the final sidecar tree self-checking even
-          # when the generator changes the install-script ordering.
-          cmake -DCMAKE_INSTALL_PREFIX="$PWD/qt/host/stage-ci" \
-            -P qt/host/cmake/repair-macos-app-rpath.cmake
+          # Repair the final installed copy explicitly. This remains correct
+          # even when a CMake generator changes install-script ordering.
+          app_host="qt/host/stage-ci/bin/f4-qt-host.app/Contents/MacOS/f4-qt-host"
+          while IFS= read -r rpath; do
+            [[ -n "$rpath" ]] || continue
+            install_name_tool -delete_rpath "$rpath" "$app_host"
+          done < <(otool -l "$app_host" | awk '/cmd LC_RPATH/{getline; getline; sub(/^.*path /, ""); sub(/ [(]offset.*/, ""); print}')
+          install_name_tool -add_rpath '@loader_path/../../../../lib' "$app_host"
         fi
         executable_suffix=""
         if [[ "$RUNNER_OS" == "Windows" ]]; then
@@ -682,11 +685,20 @@ jobs:
             app_env.pop("DYLD_FRAMEWORK_PATH", None)
             run_host(app_host, app_env, "macOS app bundle")
 
-            rpaths = subprocess.run(
+            rpath_dump = subprocess.run(
                 ["otool", "-l", str(app_host)],
                 check=True, text=True, stdout=subprocess.PIPE,
             ).stdout
-            if "/Users/runner/" in rpaths or "@loader_path/../../../../lib" not in rpaths:
+            rpaths = []
+            rpath_lines = rpath_dump.splitlines()
+            for index, line in enumerate(rpath_lines):
+                if line.strip() != "cmd LC_RPATH" or index + 2 >= len(rpath_lines):
+                    continue
+                path_line = rpath_lines[index + 2].strip()
+                if path_line.startswith("path "):
+                    rpaths.append(path_line[5:].split(" (offset ", 1)[0])
+            print(f"macOS app RPATHs: {rpaths}")
+            if any("/Users/runner/" in path for path in rpaths) or "@loader_path/../../../../lib" not in rpaths:
                 raise SystemExit("installed macOS app bundle retained a non-relocatable RPATH")
 
             # The release-facing classic bundle owns its complete Qt runtime.
@@ -694,11 +706,20 @@ jobs:
             # initialized, so this test deliberately supplies no QT_* paths.
             classic_env = app_env.copy()
             run_host(classic_app_host, classic_env, "macOS classic app bundle")
-            classic_rpaths = subprocess.run(
+            classic_rpath_dump = subprocess.run(
                 ["otool", "-l", str(classic_app_host)],
                 check=True, text=True, stdout=subprocess.PIPE,
             ).stdout
-            if "/Users/runner/" in classic_rpaths or "@loader_path/../Resources/lib" not in classic_rpaths:
+            classic_rpaths = []
+            classic_rpath_lines = classic_rpath_dump.splitlines()
+            for index, line in enumerate(classic_rpath_lines):
+                if line.strip() != "cmd LC_RPATH" or index + 2 >= len(classic_rpath_lines):
+                    continue
+                path_line = classic_rpath_lines[index + 2].strip()
+                if path_line.startswith("path "):
+                    classic_rpaths.append(path_line[5:].split(" (offset ", 1)[0])
+            print(f"classic macOS app RPATHs: {classic_rpaths}")
+            if any("/Users/runner/" in path for path in classic_rpaths) or "@loader_path/../Resources/lib" not in classic_rpaths:
                 raise SystemExit("classic macOS app bundle retained a non-relocatable RPATH")
         PY
 
