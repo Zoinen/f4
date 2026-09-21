@@ -42,6 +42,16 @@ class F4QtHostConan(ConanFile):
         self.requires("libjpeg-turbo/3.0.2", override=True)
         self.requires("jasper/4.2.0", override=True)
 
+    def build_requirements(self):
+        # Windows ARM is cross-compiled by the x64 GitHub runner. Keep a
+        # native Qt package in this consumer graph as well as the target Qt
+        # requirement so CMake's AUTOGEN/QML tools can run during configure.
+        # The Qt recipe already uses the same build-context package while it
+        # builds the target Qt libraries; making it explicit here exposes its
+        # package folder to the f4-qt and QWindowKit generators too.
+        if str(self.settings.os) == "Windows" and str(self.settings.arch) == "armv8":
+            self.tool_requires("qt/6.11.1")
+
     def validate(self):
         if str(self.settings.os) != "Macos":
             return
