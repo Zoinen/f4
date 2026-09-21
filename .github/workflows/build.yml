@@ -530,6 +530,46 @@ jobs:
         )
         cp -R internal/i18n/lang internal/dialog/help qt/host/stage-ci/bin/
 
+    - name: Assemble classic macOS Qt app bundle
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        set -euo pipefail
+        app="qt/host/F4.app"
+        app_source="qt/host/stage-ci/bin/f4-qt-host.app"
+        mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+
+        # Keep the Qt host as the bundle's executable. With no arguments it
+        # starts the sibling Go core in the same Contents/MacOS directory,
+        # which makes Finder/LaunchServices launches use the Qt frontend.
+        cp "qt/host/stage-ci/bin/f4" "$app/Contents/MacOS/f4"
+        cp "$app_source/Contents/MacOS/f4-qt-host" \
+          "$app/Contents/MacOS/f4-qt-host"
+        cp "$app_source/Contents/Info.plist" "$app/Contents/Info.plist"
+        cp -R "$app_source/Contents/Resources/." \
+          "$app/Contents/Resources/"
+
+        # Move every runtime payload under the bundle. The existing sidecar
+        # tree remains the separately packaged developer/debug artifact.
+        cp -R qt/host/stage-ci/lib qt/host/stage-ci/plugins \
+          qt/host/stage-ci/qml qt/host/stage-ci/licenses \
+          "$app/Contents/Resources/"
+        cp -R qt/host/stage-ci/bin/lang qt/host/stage-ci/bin/help \
+          qt/host/stage-ci/bin/plugins "$app/Contents/MacOS/"
+        chmod +x "$app/Contents/MacOS/f4" "$app/Contents/MacOS/f4-qt-host"
+        sed -e 's/^Prefix=\.\.$/Prefix=./' \
+          qt/host/stage-ci/bin/qt.conf \
+          > "$app/Contents/Resources/qt.conf"
+
+        # The installed nested app uses the sidecar-relative RPATH. The
+        # classic bundle has the same libraries one level below MacOS, so
+        # rewrite the copy rather than leaving any build-machine path behind.
+        app_host="$app/Contents/MacOS/f4-qt-host"
+        while IFS= read -r rpath; do
+          install_name_tool -delete_rpath "$rpath" "$app_host"
+        done < <(otool -l "$app_host" | awk '/cmd LC_RPATH/{getline; getline; sub(/^.*path /, ""); sub(/ \\(offset.*$/, ""); print}')
+        install_name_tool -add_rpath '@loader_path/../Resources/lib' "$app_host"
+
     - name: Prune macOS Conan build trees before cache save
       if: success()
       shell: bash
@@ -560,10 +600,11 @@ jobs:
         core = root / "bin" / f"f4{suffix}"
         host = root / "bin" / f"f4-qt-host{suffix}"
         app_host = root / "bin" / "f4-qt-host.app" / "Contents" / "MacOS" / "f4-qt-host"
+        classic_app_host = root / "F4.app" / "Contents" / "MacOS" / "f4-qt-host"
         lucide_license = root / "licenses" / "Lucide-LICENSE.txt"
         required = [core, host, lucide_license]
         if os.environ["RUNNER_OS"] == "macOS":
-            required.append(app_host)
+            required.extend([app_host, classic_app_host])
         missing = [str(path) for path in required if not path.is_file()]
         if missing:
             raise SystemExit("missing installed executable(s): " + ", ".join(missing))
@@ -640,6 +681,18 @@ jobs:
             ).stdout
             if "/Users/runner/" in rpaths or "@loader_path/../../../../lib" not in rpaths:
                 raise SystemExit("installed macOS app bundle retained a non-relocatable RPATH")
+
+            # The release-facing classic bundle owns its complete Qt runtime.
+            # The host sets these paths from Contents/Resources before Qt is
+            # initialized, so this test deliberately supplies no QT_* paths.
+            classic_env = app_env.copy()
+            run_host(classic_app_host, classic_env, "macOS classic app bundle")
+            classic_rpaths = subprocess.run(
+                ["otool", "-l", str(classic_app_host)],
+                check=True, text=True, stdout=subprocess.PIPE,
+            ).stdout
+            if "/Users/runner/" in classic_rpaths or "@loader_path/../Resources/lib" not in classic_rpaths:
+                raise SystemExit("classic macOS app bundle retained a non-relocatable RPATH")
         PY
 
     - name: Package integrated artifact
@@ -665,14 +718,32 @@ jobs:
           archive="${artifact_base}.tar.gz"
           tar -czf "$archive" -C qt/host/stage-ci .
         fi
-        echo "name=$artifact_base" >> "$GITHUB_OUTPUT"
-        echo "archive=$archive" >> "$GITHUB_OUTPUT"
+        app_archive=""
+        if [[ "$RUNNER_OS" == "macOS" ]]; then
+          app_archive="${artifact_base}.app.zip"
+          ditto -c -k --sequesterRsrc --keepParent \
+            qt/host/F4.app "$app_archive"
+        fi
+        {
+          echo "name=$artifact_base"
+          echo "archive=$archive"
+          echo "app_archive=$app_archive"
+        } >> "$GITHUB_OUTPUT"
 
     - name: Upload integrated Qt artifact
       uses: actions/upload-artifact@v4
       with:
         name: ${{ steps.qt-package.outputs.name }}
         path: ${{ steps.qt-package.outputs.archive }}
+        if-no-files-found: error
+        retention-days: 7
+
+    - name: Upload classic macOS Qt app bundle
+      if: runner.os == 'macOS'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.qt-package.outputs.name }}-app
+        path: ${{ steps.qt-package.outputs.app_archive }}
         if-no-files-found: error
         retention-days: 7
 
