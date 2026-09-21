@@ -672,7 +672,10 @@ jobs:
             goarch: arm64
             conan_arch: armv8
             msvc_arch: amd64_arm64
-            cache_contract: msvc-v143-static
+            # The previous cache contains a target Qt package that was
+            # packaged without Qt Quick after host qsb discovery failed.
+            # Keep it out of restore-keys while the recipe guard rebuilds it.
+            cache_contract: msvc-v143-static-qt-tools-v2
     env:
       CONAN_HOME: ${{ github.workspace }}/.conan2-portable-${{ matrix.platform }}-${{ matrix.arch }}
       F4_CONAN_REMOTE_URL: ${{ vars.F4_CONAN_REMOTE_URL }}

@@ -34,4 +34,10 @@ fi
 
 grep -Fq 'self.requires("freetype/2.13.2")' \
     "${qt_recipe_copy}/conanfile.py"
+if [[ "${target_arch}" == "arm64" ]]; then
+    grep -Fq 'QT_ADDITIONAL_PACKAGES_PREFIX_PATH' \
+        "${qt_recipe_copy}/conanfile.py"
+    grep -Fq 'missing_quick_libraries = []' \
+        "${qt_recipe_copy}/conanfile.py"
+fi
 conan export "${qt_recipe_copy}" --name=qt --version=6.11.1
