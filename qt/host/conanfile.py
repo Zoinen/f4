@@ -74,15 +74,42 @@ class F4QtHostConan(ConanFile):
         # Prefer its QML/shader tool configs explicitly: the target package
         # can contain same-named metadata whose qsb/qml executables have the
         # target architecture and cannot run on the build runner.
-        native_qt = next(
-            (
-                dep
-                for dep in self.dependencies.build.values()
-                if dep.ref is not None and dep.ref.name == "qt"
-            ),
-            None,
-        )
+        visited_dependencies = set()
+
+        def find_native_qt(dependencies):
+            for dep in dependencies.values():
+                dependency_key = (
+                    str(dep.ref),
+                    str(dep.package_folder),
+                    str(dep.context),
+                )
+                if dependency_key in visited_dependencies:
+                    continue
+                visited_dependencies.add(dependency_key)
+
+                if (
+                    dep.ref is not None
+                    and dep.ref.name == "qt"
+                    and dep.is_build_context
+                    and dep.package_folder
+                ):
+                    return dep
+
+                nested = find_native_qt(dep.dependencies.build)
+                if nested is not None:
+                    return nested
+                nested = find_native_qt(dep.dependencies.host)
+                if nested is not None:
+                    return nested
+            return None
+
+        native_qt = find_native_qt(self.dependencies.build)
+        if native_qt is None:
+            native_qt = find_native_qt(self.dependencies.host)
         if native_qt is not None:
+            self.output.info(
+                f"Using native Qt build-context tools from {native_qt.package_folder}"
+            )
             native_qt_cmake_dir = os.path.join(native_qt.package_folder, "lib", "cmake")
             toolchain.cache_variables["Qt6QmlTools_DIR"] = os.path.join(
                 native_qt_cmake_dir, "Qt6QmlTools"
@@ -162,13 +189,11 @@ class F4QtHostConan(ConanFile):
             build_modules_variable = f"qt_BUILD_MODULES_PATHS_{build_type.upper()}"
             native_tools_path = native_tools_file.replace("\\", "/")
             for generated_name in os.listdir(self.generators_folder):
-                if not (
-                    generated_name.startswith("Qt6-")
-                    and generated_name.endswith("-data.cmake")
+                generated_file = os.path.join(self.generators_folder, generated_name)
+                if not os.path.isfile(generated_file) or not generated_name.endswith(
+                    ".cmake"
                 ):
                     continue
-
-                generated_file = os.path.join(self.generators_folder, generated_name)
                 generated_text = load(self, generated_file)
                 if native_tools_path in generated_text:
                     continue
