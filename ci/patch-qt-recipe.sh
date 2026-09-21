@@ -10,6 +10,52 @@ python_command=python
 if ! command -v "${python_command}" >/dev/null 2>&1; then
     python_command=python3
 fi
+
+# A portable ARM job needs both the ARM target Qt package and the native x64
+# build-context Qt package.  If a previous run published a complete pair,
+# reuse that exact recipe revision: exporting the current patched recipe would
+# make Conan treat the already-built binaries as missing and start a full Qt
+# source build again.  A fresh graph still falls through to the patching path
+# below and will publish a reusable pair for the next run.
+if [[ "${target_arch}" == "arm64" ]]; then
+    reusable_qt_recipe_revision="$({
+        conan list 'qt/6.11.1:*' -r f4-conan --format=json 2>/dev/null || true
+    } | "${python_command}" -c '
+import json
+import sys
+
+try:
+    data = json.load(sys.stdin)
+    revisions = data["f4-conan"]["qt/6.11.1"]["revisions"]
+except (KeyError, TypeError, json.JSONDecodeError):
+    raise SystemExit(0)
+
+def has_arch(revision, arch):
+    return any(
+        package.get("info", {}).get("settings", {}).get("arch") == arch
+        for package in revision.get("packages", {}).values()
+    )
+
+candidates = [
+    (revision_id, revision)
+    for revision_id, revision in revisions.items()
+    if has_arch(revision, "armv8") and has_arch(revision, "x86_64")
+]
+if candidates:
+    revision_id, _ = max(
+        candidates,
+        key=lambda item: item[1].get("timestamp", 0),
+    )
+    print(revision_id)
+')"
+    if [[ -n "${reusable_qt_recipe_revision}" ]]; then
+        conan download "qt/6.11.1#${reusable_qt_recipe_revision}" \
+            --only-recipe --remote=f4-conan
+        echo "Reusing Qt recipe revision ${reusable_qt_recipe_revision} with complete ARM/native packages"
+        exit 0
+    fi
+fi
+
 # A checkpoint can contain both ConanCenter's pristine recipe and an older
 # locally exported patched revision. Resolve the upstream revision first and
 # use that exact reference; an unqualified `conan cache path` may otherwise
