@@ -257,14 +257,15 @@ class F4QtHostConan(ConanFile):
             """
         )
         if native_qt is not None:
-            # CMake's Qt package config defines imported Qt6::moc/rcc/uic
-            # targets after project(). Defer the target-property override
-            # until the directory has finished configuring, so the target
-            # package still supplies all ARM64 headers/libraries while the
-            # build runner executes the native package's tools.
-            deferred_tools_body = [
+            # Conan's Qt package build module declares Qt6::moc/rcc/uic and
+            # the other executable targets with an ``if(NOT TARGET ...)``
+            # guard. Declare those imported targets before Qt's package is
+            # loaded so the target package cannot install ARM64 executables
+            # which the x64 build runner cannot execute. The target package
+            # still supplies all headers and libraries; only the host tools
+            # come from the native build-context package.
+            native_tools_body = [
                 f'set(_f4_qt_native_prefix "{native_qt_prefix}")',
-                "function(_f4_qt_apply_native_tools)",
                 '  set(_f4_qt_native_bin "${_f4_qt_native_prefix}/bin")',
                 "  if(WIN32)",
                 '    set(_f4_qt_native_suffix ".exe")',
@@ -273,22 +274,25 @@ class F4QtHostConan(ConanFile):
                 "  endif()",
             ]
             for tool_name in native_tool_names:
-                deferred_tools_body.extend(
+                native_tools_body.extend(
                     [
                         f'  set(_f4_qt_native_tool "${{_f4_qt_native_bin}}/{tool_name}${{_f4_qt_native_suffix}}")',
-                        f'  if(TARGET Qt6::{tool_name} AND EXISTS "${{_f4_qt_native_tool}}")',
+                        f'  if(NOT TARGET Qt6::{tool_name} AND EXISTS "${{_f4_qt_native_tool}}")',
+                        f'    add_executable(Qt6::{tool_name} IMPORTED GLOBAL)',
                         f'    set_property(TARGET Qt6::{tool_name} PROPERTY IMPORTED_LOCATION "${{_f4_qt_native_tool}}")',
                         f'    set_property(TARGET Qt6::{tool_name} PROPERTY IMPORTED_LOCATION_{build_type.upper()} "${{_f4_qt_native_tool}}")',
                         "  endif()",
                     ]
                 )
-            deferred_tools_body.extend(
+            native_tools_body.extend(
                 [
-                    "endfunction()",
-                    "cmake_language(DEFER CALL _f4_qt_apply_native_tools)",
+                    "  unset(_f4_qt_native_tool)",
+                    "  unset(_f4_qt_native_suffix)",
+                    "  unset(_f4_qt_native_bin)",
+                    "unset(_f4_qt_native_prefix)",
                 ]
             )
-            cross_tools_text += "\n" + "\n".join(deferred_tools_body) + "\n"
+            cross_tools_text += "\n" + "\n".join(native_tools_body) + "\n"
         save(
             self,
             cross_tools_file,
