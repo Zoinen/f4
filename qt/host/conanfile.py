@@ -1,7 +1,7 @@
 from conan import ConanFile
 from conan.errors import ConanInvalidConfiguration
 from conan.tools.cmake import CMakeDeps, CMakeToolchain
-from conan.tools.files import copy, load, save
+from conan.tools.files import copy, save
 from conan.tools.scm import Version
 import os
 import textwrap
@@ -128,17 +128,11 @@ class F4QtHostConan(ConanFile):
                 native_qt_cmake_dir, "Qt6ShaderToolsTools"
             )
 
-            # CMakeDeps also emits Qt6::moc/rcc/uic and the other Qt host
-            # tools from the target package's conan_qt_executables_variables
-            # module. In a Windows ARM cross-build those executables have the
-            # target architecture and cannot run on the x64 GitHub runner.
-            # Append a build module after Conan's Qt modules so the imported
-            # tool targets keep the target package for headers/libraries but
-            # execute from the native Qt build-context package.
+            # Keep the native executable target list for the pre-project
+            # include below. It must not be added to CMakeDeps' build-module
+            # list: that list is also propagated into link metadata by the
+            # Conan Qt facade, where a .cmake path becomes a linker input.
             native_qt_prefix = native_qt.package_folder.replace("\\", "/")
-            native_tools_file = os.path.join(
-                self.generators_folder, "f4-qt-native-tools.cmake"
-            )
             native_tool_names = (
                 "moc",
                 "qlalr",
@@ -165,72 +159,6 @@ class F4QtHostConan(ConanFile):
                 "qmltc",
                 "qmlaotstats",
             )
-            native_tools_body = [
-                f'set(_f4_qt_native_bin "{native_qt_prefix}/bin")',
-            ]
-            for tool_name in native_tool_names:
-                native_tools_body.extend(
-                    [
-                        f'set(_f4_qt_native_tool "${{_f4_qt_native_bin}}/{tool_name}")',
-                        f'if(NOT EXISTS "${{_f4_qt_native_tool}}" AND EXISTS "${{_f4_qt_native_bin}}/{tool_name}.exe")',
-                        f'  set(_f4_qt_native_tool "${{_f4_qt_native_bin}}/{tool_name}.exe")',
-                        "endif()",
-                        f'if(TARGET Qt6::{tool_name} AND EXISTS "${{_f4_qt_native_tool}}")',
-                        f'  set_property(TARGET Qt6::{tool_name} PROPERTY IMPORTED_LOCATION "${{_f4_qt_native_tool}}")',
-                        f'  set_property(TARGET Qt6::{tool_name} PROPERTY IMPORTED_LOCATION_{build_type.upper()} "${{_f4_qt_native_tool}}")',
-                        "endif()",
-                    ]
-                )
-            native_tools_body.extend(
-                [
-                    "unset(_f4_qt_native_tool)",
-                    "unset(_f4_qt_native_bin)",
-                ]
-            )
-            save(self, native_tools_file, "\n".join(native_tools_body) + "\n")
-
-            # CMakeDeps names this file Qt6-<configuration>-<arch>-data.cmake
-            # and stores the build-module list there. Patch every generated
-            # Qt data file so the same native-tool routing is used by both
-            # QWindowKit's standalone configure and the main f4 configure.
-            build_modules_variable = f"qt_BUILD_MODULES_PATHS_{build_type.upper()}"
-            native_tools_path = native_tools_file.replace("\\", "/")
-            for generated_name in os.listdir(self.generators_folder):
-                generated_file = os.path.join(self.generators_folder, generated_name)
-                if not os.path.isfile(generated_file) or not generated_name.endswith(
-                    ".cmake"
-                ):
-                    continue
-                generated_text = load(self, generated_file)
-                if native_tools_path in generated_text:
-                    continue
-
-                generated_lines = generated_text.splitlines()
-                start = next(
-                    (
-                        index
-                        for index, line in enumerate(generated_lines)
-                        if line.startswith(f"set({build_modules_variable} ")
-                    ),
-                    None,
-                )
-                if start is None:
-                    continue
-
-                end = next(
-                    (
-                        index
-                        for index in range(start + 1, len(generated_lines))
-                        if generated_lines[index].strip() == ")"
-                    ),
-                    None,
-                )
-                if end is None:
-                    raise ConanInvalidConfiguration(
-                        f"cannot extend {generated_name}: malformed Qt build-module list"
-                    )
-                generated_lines.insert(end, f'\t\t\t"{native_tools_path}"')
-                save(self, generated_file, "\n".join(generated_lines) + "\n")
 
         # CMakeDeps puts the native Qt build-context prefixes before the
         # target prefixes in CMAKE_PREFIX_PATH, but Qt's own package config
