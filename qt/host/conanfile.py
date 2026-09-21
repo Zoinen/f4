@@ -167,16 +167,14 @@ class F4QtHostConan(ConanFile):
             )
             native_tools_body = [
                 f'set(_f4_qt_native_bin "{native_qt_prefix}/bin")',
-                "if(WIN32)",
-                '  set(_f4_qt_native_suffix ".exe")',
-                "else()",
-                '  set(_f4_qt_native_suffix "")',
-                "endif()",
             ]
             for tool_name in native_tool_names:
                 native_tools_body.extend(
                     [
-                        f'set(_f4_qt_native_tool "${{_f4_qt_native_bin}}/{tool_name}${{_f4_qt_native_suffix}}")',
+                        f'set(_f4_qt_native_tool "${{_f4_qt_native_bin}}/{tool_name}")',
+                        f'if(NOT EXISTS "${{_f4_qt_native_tool}}" AND EXISTS "${{_f4_qt_native_bin}}/{tool_name}.exe")',
+                        f'  set(_f4_qt_native_tool "${{_f4_qt_native_bin}}/{tool_name}.exe")',
+                        "endif()",
                         f'if(TARGET Qt6::{tool_name} AND EXISTS "${{_f4_qt_native_tool}}")',
                         f'  set_property(TARGET Qt6::{tool_name} PROPERTY IMPORTED_LOCATION "${{_f4_qt_native_tool}}")',
                         f'  set_property(TARGET Qt6::{tool_name} PROPERTY IMPORTED_LOCATION_{build_type.upper()} "${{_f4_qt_native_tool}}")',
@@ -186,7 +184,6 @@ class F4QtHostConan(ConanFile):
             native_tools_body.extend(
                 [
                     "unset(_f4_qt_native_tool)",
-                    "unset(_f4_qt_native_suffix)",
                     "unset(_f4_qt_native_bin)",
                 ]
             )
@@ -267,16 +264,14 @@ class F4QtHostConan(ConanFile):
             native_tools_body = [
                 f'set(_f4_qt_native_prefix "{native_qt_prefix}")',
                 '  set(_f4_qt_native_bin "${_f4_qt_native_prefix}/bin")',
-                "  if(WIN32)",
-                '    set(_f4_qt_native_suffix ".exe")',
-                "  else()",
-                '    set(_f4_qt_native_suffix "")',
-                "  endif()",
             ]
             for tool_name in native_tool_names:
                 native_tools_body.extend(
                     [
-                        f'  set(_f4_qt_native_tool "${{_f4_qt_native_bin}}/{tool_name}${{_f4_qt_native_suffix}}")',
+                        f'  set(_f4_qt_native_tool "${{_f4_qt_native_bin}}/{tool_name}")',
+                        f'  if(NOT EXISTS "${{_f4_qt_native_tool}}" AND EXISTS "${{_f4_qt_native_bin}}/{tool_name}.exe")',
+                        f'    set(_f4_qt_native_tool "${{_f4_qt_native_bin}}/{tool_name}.exe")',
+                        "  endif()",
                         f'  if(NOT TARGET Qt6::{tool_name} AND EXISTS "${{_f4_qt_native_tool}}")',
                         f'    add_executable(Qt6::{tool_name} IMPORTED GLOBAL)',
                         f'    set_property(TARGET Qt6::{tool_name} PROPERTY IMPORTED_LOCATION "${{_f4_qt_native_tool}}")',
@@ -287,7 +282,6 @@ class F4QtHostConan(ConanFile):
             native_tools_body.extend(
                 [
                     "  unset(_f4_qt_native_tool)",
-                    "  unset(_f4_qt_native_suffix)",
                     "  unset(_f4_qt_native_bin)",
                     "unset(_f4_qt_native_prefix)",
                 ]
