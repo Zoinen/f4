@@ -27,6 +27,15 @@ if ($Linkage -eq "static") {
     $QwkPlatformArgs += '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded$<$<CONFIG:Debug>:Debug>'
 }
 
+# qt/host/conanfile.py generates this include for cross builds so CMake uses
+# native Qt qsb/QML tools instead of same-named target-architecture tools.
+# QWindowKit is configured separately from qt/host, so pass the include here
+# as well when the Conan-generated file is available.
+$QwkCrossTools = Join-Path $QtRoot "f4-qt-cross-tools.cmake"
+if (Test-Path -LiteralPath $QwkCrossTools -PathType Leaf) {
+    $QwkPlatformArgs += "-DCMAKE_PROJECT_INCLUDE_BEFORE=$QwkCrossTools"
+}
+
 $cachedConfig = @(
     (Join-Path $QwkInstall "lib\cmake\QWindowKit\QWindowKitConfig.cmake"),
     (Join-Path $QwkInstall "lib64\cmake\QWindowKit\QWindowKitConfig.cmake")
