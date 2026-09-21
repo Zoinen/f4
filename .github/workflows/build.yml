@@ -512,6 +512,13 @@ jobs:
       shell: bash
       run: |
         cmake --install qt/host/build-ci --config Release --prefix qt/host/stage-ci
+        if [[ "$RUNNER_OS" == "macOS" ]]; then
+          # CMake's install script repairs the app when it is installed as a
+          # component, but keep the final sidecar tree self-checking even
+          # when the generator changes the install-script ordering.
+          cmake -DCMAKE_INSTALL_PREFIX="$PWD/qt/host/stage-ci" \
+            -P qt/host/cmake/repair-macos-app-rpath.cmake
+        fi
         executable_suffix=""
         if [[ "$RUNNER_OS" == "Windows" ]]; then
           executable_suffix=".exe"
