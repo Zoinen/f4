@@ -21,6 +21,9 @@ _VERSION_CONFIG = r'''        save(self, os.path.join(qml_tools_dir, "Qt6QmlTool
 _CUSTOM_CONFIG_BEGIN = "        # QtDeclarative's ARM64 cross-build needs the native qmldom executable.\n"
 _QML_TOOLS_CONFIG_MARKER = "add_executable(Qt6::${_qt_qml_tool} IMPORTED GLOBAL)"
 _SHADER_TOOLS_CONFIG_MARKER = "add_executable(Qt6::qsb IMPORTED GLOBAL)"
+_SHADER_TOOLS_VERSIONLESS_MARKER = "if(NOT TARGET Qt::qsb)"
+_QML_TOOLS_VERSION_CONFIG_MARKER = 'os.path.join(qml_tools_dir, "Qt6QmlToolsConfigVersion.cmake")'
+_SHADER_TOOLS_VERSION_CONFIG_MARKER = 'os.path.join(shader_tools_dir, "Qt6ShaderToolsToolsConfigVersion.cmake")'
 _SHADER_TOOLS_VERSION_CONFIG = r'''        save(self, os.path.join(shader_tools_dir, "Qt6ShaderToolsToolsConfigVersion.cmake"), textwrap.dedent("""
             set(PACKAGE_VERSION "6.11.1")
             if(PACKAGE_FIND_VERSION VERSION_EQUAL PACKAGE_VERSION)
@@ -85,6 +88,14 @@ _QML_TOOLS_CONFIG = r'''        # QtDeclarative's ARM64 cross-build needs the na
               set_target_properties(Qt6::qsb PROPERTIES
                 IMPORTED_LOCATION "${_qt_shader_tools_prefix}/bin/qsb${CMAKE_EXECUTABLE_SUFFIX}")
             endif()
+            # QtDeclarative checks the versionless target name while the
+            # Conan recipe normally creates only the Qt6:: target here. Keep
+            # the same alias that Qt's generated Tools config provides.
+            if(NOT TARGET Qt::qsb)
+              add_executable(Qt::qsb IMPORTED GLOBAL)
+              set_target_properties(Qt::qsb PROPERTIES
+                IMPORTED_LOCATION "${_qt_shader_tools_prefix}/bin/qsb${CMAKE_EXECUTABLE_SUFFIX}")
+            endif()
             set(Qt6ShaderToolsTools_TARGETS "Qt6::qsb")
             """))
 ''' + _SHADER_TOOLS_VERSION_CONFIG + r'''
@@ -141,10 +152,11 @@ def main() -> None:
         ):
             raise SystemExit("unexpected Qt recipe: Qt6QmlTools config is already customized")
         if (
-            _VERSION_CONFIG in text
-            and _QML_TOOLS_CONFIG_MARKER in text
+            _QML_TOOLS_CONFIG_MARKER in text
             and _SHADER_TOOLS_CONFIG_MARKER in text
-            and _SHADER_TOOLS_VERSION_CONFIG in text
+            and _SHADER_TOOLS_VERSIONLESS_MARKER in text
+            and _QML_TOOLS_VERSION_CONFIG_MARKER in text
+            and _SHADER_TOOLS_VERSION_CONFIG_MARKER in text
         ):
             return
         custom_start = text.find(_CUSTOM_CONFIG_BEGIN)

@@ -51,8 +51,21 @@ if candidates:
     if [[ -n "${reusable_qt_recipe_revision}" ]]; then
         conan download "qt/6.11.1#${reusable_qt_recipe_revision}" \
             --only-recipe --remote=f4-conan
-        echo "Reusing Qt recipe revision ${reusable_qt_recipe_revision} with complete ARM/native packages"
-        exit 0
+        reusable_qt_recipe="$(
+            conan cache path "qt/6.11.1#${reusable_qt_recipe_revision}" |
+                tail -n 1
+        )"
+        # A previous interrupted experiment may have published a complete
+        # ARM/native pair for a recipe that still omitted the Qt::qsb alias.
+        # Only reuse a recipe carrying the current cross-build guard; stale
+        # binaries must be rebuilt under the fixed recipe revision.
+        if [[ -f "${reusable_qt_recipe}/conanfile.py" ]] && \
+            grep -Fq 'if(NOT TARGET Qt::qsb)' "${reusable_qt_recipe}/conanfile.py" && \
+            grep -Fq 'native_qsb_config = os.path.join' "${reusable_qt_recipe}/conanfile.py"; then
+            echo "Reusing Qt recipe revision ${reusable_qt_recipe_revision} with complete ARM/native packages"
+            exit 0
+        fi
+        echo "Ignoring stale Qt recipe revision ${reusable_qt_recipe_revision}; applying the current ARM cross-build patch"
     fi
 fi
 
@@ -85,6 +98,7 @@ if [[ "${target_arch}" == "arm64" ]]; then
     grep -Fq 'Qt6ShaderToolsToolsConfigVersion.cmake' "${qt_recipe_copy}/conanfile.py"
     grep -Fq 'set(Qt6ShaderToolsTools_FOUND TRUE)' "${qt_recipe_copy}/conanfile.py"
     grep -Fq 'add_executable(Qt6::qsb IMPORTED GLOBAL)' "${qt_recipe_copy}/conanfile.py"
+    grep -Fq 'if(NOT TARGET Qt::qsb)' "${qt_recipe_copy}/conanfile.py"
 fi
 
 grep -Fq 'self.requires("freetype/2.13.2")' \

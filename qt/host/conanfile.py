@@ -205,6 +205,18 @@ class F4QtHostConan(ConanFile):
                         "  endif()",
                     ]
                 )
+            # QtDeclarative's in-tree cross build tests Qt::qsb, while the
+            # Conan executable export is namespaced as Qt6::qsb. Mirror the
+            # versionless tool target provided by Qt's native Tools config.
+            native_tools_body.extend(
+                [
+                    '  if(NOT TARGET Qt::qsb AND TARGET Qt6::qsb)',
+                    '    add_executable(Qt::qsb IMPORTED GLOBAL)',
+                    '    get_target_property(_f4_qt_native_qsb Qt6::qsb IMPORTED_LOCATION)',
+                    '    set_property(TARGET Qt::qsb PROPERTY IMPORTED_LOCATION "${_f4_qt_native_qsb}")',
+                    '  endif()',
+                ]
+            )
             native_tools_body.extend(
                 [
                     "  unset(_f4_qt_native_tool)",
