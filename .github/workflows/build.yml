@@ -521,7 +521,7 @@ jobs:
           version_ldflags="$version_ldflags -X github.com/unxed/f4/internal/app.buildVersion=$F4_BUILD_VERSION"
         fi
         CGO_ENABLED=0 go build -trimpath -ldflags="-s -w $version_ldflags" \
-          -o "qt/host/stage-ci/bin/f4${executable_suffix}" .
+          -o "qt/host/stage-ci/bin/f4${executable_suffix}" ./cmd/f4
         mkdir -p qt/host/stage-ci/bin/plugins/dummy_internal
         (
           cd plugins/dummy_internal
@@ -567,6 +567,18 @@ jobs:
         missing = [str(path) for path in required if not path.is_file()]
         if missing:
             raise SystemExit("missing installed executable(s): " + ", ".join(missing))
+
+        version = subprocess.run(
+            [str(core), "--version"],
+            cwd=root / "bin", env=os.environ.copy(), text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30,
+        )
+        print("== f4 core version ==")
+        print(version.stdout)
+        if version.returncode != 0:
+            raise SystemExit(
+                f"installed f4 core returned {version.returncode} for --version"
+            )
 
         env = os.environ.copy()
         env["QT_QPA_PLATFORM"] = "offscreen"
