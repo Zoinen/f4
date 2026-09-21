@@ -16,10 +16,10 @@ option(USE_QWK "Use QWindowKit" ON)
 option(F4_PORTABLE_STATIC
   "Build one self-contained Qt host (apart from system ABI libraries)" OFF)
 option(F4_ENABLE_VIDEO_THUMBNAILS
-  "Enable video thumbnails through Qt Multimedia" ON)
+  "Enable video thumbnails through Qt Multimedia" OFF)
 option(F4_ENABLE_FFMPEG_BACKEND
   "Use the Qt Multimedia FFmpeg backend for video thumbnails"
-  ${F4_ENABLE_VIDEO_THUMBNAILS})
+  OFF)
 if(NOT F4_ENABLE_VIDEO_THUMBNAILS AND F4_ENABLE_FFMPEG_BACKEND)
   message(STATUS
     "F4_ENABLE_VIDEO_THUMBNAILS=OFF disables the FFmpeg backend as well")

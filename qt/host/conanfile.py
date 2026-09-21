@@ -13,8 +13,8 @@ class F4QtHostConan(ConanFile):
         "with_ffmpeg_backend": [True, False],
     }
     default_options = {
-        "with_video_thumbnails": True,
-        "with_ffmpeg_backend": True,
+        "with_video_thumbnails": False,
+        "with_ffmpeg_backend": False,
         "qt/*:shared": True,
         "qt/*:qtdeclarative": True,
         "qt/*:qtsvg": True,
