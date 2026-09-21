@@ -845,17 +845,31 @@ jobs:
         # Qt's cross-build recipe needs native qsb and QML tools. Configure
         # its build-context Qt tool requirement with the same modules so
         # Qt6ShaderToolsTools and qmlcachegen exist for the ARM64 target.
-        $qtBuildOverride = @()
+        $qtForceOnRetry = $false
         if ("${{ matrix.arch }}" -eq "arm64") {
-          # An earlier ARM package was published without Qt Quick.  The
-          # recipe validation now rejects it, but Conan considers a matching
-          # remote package present and --build=missing will not replace it.
-          # Force the target Qt package to rebuild once with the corrected
-          # qsb/QML-tool wiring.
-          $qtBuildOverride = @("--build=qt/*")
+          $qtMarker = Join-Path $env:CONAN_HOME "p/.f4-qt-quick-ready"
+          if (!(Test-Path -LiteralPath $qtMarker -PathType Leaf)) {
+            # An earlier ARM package was published without Qt Quick.  The
+            # recipe validation now rejects it, but Conan considers a matching
+            # remote package present and --build=missing will not replace it.
+            # Drop stale local Qt binaries and try the remote graph first. If
+            # that package is still invalid, the retry below forces a rebuild
+            # with the corrected qsb/QML-tool wiring. This lets a successful
+            # one-time rebuild published by an earlier job be reused without
+            # compiling Qt again.
+            conan remove "qt/6.11.1:*" --confirm
+            if ($LASTEXITCODE -ne 0) { throw "Unable to remove the stale ARM64 Qt package" }
+            $qtForceOnRetry = $true
+          } else {
+            Write-Host "Reusing the validated ARM64 Qt Quick package graph"
+          }
         }
         for ($attempt = 1; $attempt -le 3; $attempt++) {
-          conan install qt/host --build=missing @qtBuildOverride `
+          $conanBuildArgs = @("--build=missing")
+          if ($qtForceOnRetry -and $attempt -gt 1) {
+            $conanBuildArgs += "--build=qt/*"
+          }
+          conan install qt/host @conanBuildArgs `
             -s:h arch=${{ matrix.conan_arch }} -s:h build_type=Release -s:h compiler.cppstd=20 `
             -s:h compiler.runtime=static `
             -s:b build_type=Release -s:b compiler.cppstd=20 `
@@ -889,6 +903,9 @@ jobs:
           }
         }
         if (!$conanInstalled) { throw "Conan install failed after 3 attempts" }
+        if ("${{ matrix.arch }}" -eq "arm64") {
+          New-Item -ItemType File -Force (Join-Path $env:CONAN_HOME "p/.f4-qt-quick-ready") | Out-Null
+        }
         New-Item -ItemType File -Force (Join-Path $buildDir '.f4-conan-ready') | Out-Null
         $PSNativeCommandUseErrorActionPreference = $true
 
