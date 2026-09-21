@@ -6,18 +6,26 @@ set -euo pipefail
 # native build contexts of Qt's cross-build graph.  ARM64 additionally needs
 # the deliberately small native QML and shader-tool exports used by the target build.
 target_arch="${1:-}"
-conan download qt/6.11.1 --only-recipe --remote=conancenter
-qt_recipe="$(conan cache path qt/6.11.1 | tail -1)"
+python_command=python
+if ! command -v "${python_command}" >/dev/null 2>&1; then
+    python_command=python3
+fi
+# A checkpoint can contain both ConanCenter's pristine recipe and an older
+# locally exported patched revision. Resolve the upstream revision first and
+# use that exact reference; an unqualified `conan cache path` may otherwise
+# select the stale patched export from the checkpoint.
+qt_recipe_revision="$(
+    conan list 'qt/6.11.1:*' -r conancenter --format=json |
+        "${python_command}" -c 'import json, sys; data = json.load(sys.stdin); revisions = data["conancenter"]["qt/6.11.1"]["revisions"]; print(max(revisions, key=lambda revision: revisions[revision].get("timestamp", 0)))'
+)"
+conan download "qt/6.11.1#${qt_recipe_revision}" --only-recipe --remote=conancenter
+qt_recipe="$(conan cache path "qt/6.11.1#${qt_recipe_revision}")"
 qt_recipe_copy="$(mktemp -d "${TMPDIR:-/tmp}/f4-qt-recipe.XXXXXX")"
 cp "${qt_recipe}/conanfile.py" \
     "${qt_recipe}/conandata.yml" \
     "${qt_recipe}/qtmodules6.11.1.conf" \
     "${qt_recipe_copy}/"
 
-python_command=python
-if ! command -v "${python_command}" >/dev/null 2>&1; then
-    python_command=python3
-fi
 "${python_command}" ci/patch-qt-dependencies.py "${qt_recipe_copy}/conanfile.py"
 
 if [[ "${target_arch}" == "arm64" ]]; then

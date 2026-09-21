@@ -6,17 +6,21 @@ set -euo pipefail
 # MSVC system headers and generates #include <> wrappers.  Use cl's /E mode,
 # which preserves #line markers; /EP suppresses them.  Normalize an older
 # cached export in place before exporting the patched recipe revision.
-conan download libgettext/0.22 --only-recipe --remote=conancenter
-libgettext_recipe="$(conan cache path libgettext/0.22 | tail -1)"
+python_command=python
+if ! command -v "${python_command}" >/dev/null 2>&1; then
+    python_command=python3
+fi
+libgettext_recipe_revision="$(
+    conan list 'libgettext/0.22:*' -r conancenter --format=json |
+        "${python_command}" -c 'import json, sys; data = json.load(sys.stdin); revisions = data["conancenter"]["libgettext/0.22"]["revisions"]; print(max(revisions, key=lambda revision: revisions[revision].get("timestamp", 0)))'
+)"
+conan download "libgettext/0.22#${libgettext_recipe_revision}" --only-recipe --remote=conancenter
+libgettext_recipe="$(conan cache path "libgettext/0.22#${libgettext_recipe_revision}")"
 libgettext_recipe_copy="$(mktemp -d "${TMPDIR:-/tmp}/f4-libgettext-recipe.XXXXXX")"
 cp "${libgettext_recipe}/conanfile.py" \
     "${libgettext_recipe}/conandata.yml" \
     "${libgettext_recipe_copy}/"
 
-python_command=python
-if ! command -v "${python_command}" >/dev/null 2>&1; then
-    python_command=python3
-fi
 "${python_command}" ci/patch-libgettext-recipe.py "${libgettext_recipe_copy}/conanfile.py"
 grep -Fq 'env.define("CPP", "cl -nologo -E")' "${libgettext_recipe_copy}/conanfile.py"
 grep -Fq 'env.define("CXXCPP", "cl -nologo -E")' "${libgettext_recipe_copy}/conanfile.py"

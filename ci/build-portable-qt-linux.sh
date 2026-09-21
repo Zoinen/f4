@@ -151,9 +151,16 @@ bash ci/patch-qt-recipe.sh
 # www.freedesktop.org rejects GitHub-hosted runners with HTTP 418 for this
 # release URL. MacPorts mirrors the byte-identical upstream archive (the
 # Conan Center SHA-256 remains authoritative), so export the unchanged recipe
-# with only its transport URL replaced.
-conan download fontconfig/2.15.0 --only-recipe --remote=conancenter
-fontconfig_recipe="$(conan cache path fontconfig/2.15.0)"
+# with only its transport URL replaced. Resolve the exact upstream revision:
+# a restored checkpoint may contain an older locally exported mirror recipe,
+# and an unqualified cache path could select that stale copy.
+fontconfig_recipe_revision="$(
+    conan list 'fontconfig/2.15.0:*' -r conancenter --format=json |
+        python -c 'import json, sys; data = json.load(sys.stdin); revisions = data["conancenter"]["fontconfig/2.15.0"]["revisions"]; print(max(revisions, key=lambda revision: revisions[revision].get("timestamp", 0)))'
+)"
+conan download "fontconfig/2.15.0#${fontconfig_recipe_revision}" \
+    --only-recipe --remote=conancenter
+fontconfig_recipe="$(conan cache path "fontconfig/2.15.0#${fontconfig_recipe_revision}")"
 fontconfig_recipe_copy="$(mktemp -d /tmp/f4-fontconfig-recipe.XXXXXX)"
 cp "${fontconfig_recipe}/conanfile.py" \
     "${fontconfig_recipe}/conandata.yml" \

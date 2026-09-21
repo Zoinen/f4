@@ -808,9 +808,18 @@ jobs:
         # tukaani.org intermittently times out from GitHub's Windows runners.
         # Export the unchanged Conan Center recipe with the byte-identical
         # archive served by the upstream project's GitHub release instead.
-        conan download xz_utils/5.8.3 --only-recipe --remote=conancenter
+        $xzRevisionJson = conan list "xz_utils/5.8.3:*" -r conancenter --format=json | ConvertFrom-Json
+        if ($LASTEXITCODE -ne 0) { throw "Unable to list the xz recipe revisions" }
+        $xzRevisions = $xzRevisionJson.conancenter.'xz_utils/5.8.3'.revisions
+        $xzRevision = ($xzRevisions.PSObject.Properties |
+          Sort-Object { $_.Value.timestamp } -Descending |
+          Select-Object -First 1).Name
+        if ([string]::IsNullOrWhiteSpace($xzRevision)) {
+          throw "Unable to resolve the latest xz recipe revision"
+        }
+        conan download "xz_utils/5.8.3#$xzRevision" --only-recipe --remote=conancenter
         if ($LASTEXITCODE -ne 0) { throw "Unable to download the xz recipe" }
-        $xzRecipe = (conan cache path xz_utils/5.8.3 | Select-Object -Last 1).Trim()
+        $xzRecipe = (conan cache path "xz_utils/5.8.3#$xzRevision" | Select-Object -Last 1).Trim()
         if ($LASTEXITCODE -ne 0) { throw "Unable to locate the xz recipe" }
         $xzRecipeCopy = Join-Path $env:RUNNER_TEMP "f4-xz-recipe"
         Remove-Item -Recurse -Force $xzRecipeCopy -ErrorAction SilentlyContinue
