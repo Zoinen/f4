@@ -559,8 +559,11 @@ jobs:
         suffix = ".exe" if os.environ["RUNNER_OS"] == "Windows" else ""
         core = root / "bin" / f"f4{suffix}"
         host = root / "bin" / f"f4-qt-host{suffix}"
+        app_host = root / "bin" / "f4-qt-host.app" / "Contents" / "MacOS" / "f4-qt-host"
         lucide_license = root / "licenses" / "Lucide-LICENSE.txt"
         required = [core, host, lucide_license]
+        if os.environ["RUNNER_OS"] == "macOS":
+            required.append(app_host)
         missing = [str(path) for path in required if not path.is_file()]
         if missing:
             raise SystemExit("missing installed executable(s): " + ", ".join(missing))
@@ -582,24 +585,49 @@ jobs:
                 [str(path) for path in runtime_dirs if path.is_dir()]
                 + [env.get("PATH", "")]
             )
-        result = subprocess.run(
-            [str(host), "--f4-ext-connect=127.0.0.1:1", "--f4-ext-nonce=ci-smoke",
-             "--f4-ext-cols=100", "--f4-ext-rows=30"],
-            cwd=root / "bin", env=env, text=True,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30,
-        )
-        print(result.stdout)
-        if result.returncode != 2:
-            raise SystemExit(
-                f"installed Qt host returned {result.returncode}; expected 2 for a refused test socket"
+        host_command = ["--f4-ext-connect=127.0.0.1:1", "--f4-ext-nonce=ci-smoke",
+                        "--f4-ext-cols=100", "--f4-ext-rows=30"]
+
+        def run_host(executable, host_env, label):
+            result = subprocess.run(
+                [str(executable), *host_command],
+                cwd=root / "bin", env=host_env, text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30,
             )
-        failure_markers = (
-            "QQmlApplicationEngine failed to load component",
-            "module \"ZoinGallery\" is not installed",
-            "Could not find the Qt platform plugin",
-        )
-        if any(marker in result.stdout for marker in failure_markers):
-            raise SystemExit("installed Qt host reported a deployment/QML import failure")
+            print(f"== {label} ==")
+            print(result.stdout)
+            if result.returncode != 2:
+                raise SystemExit(
+                    f"installed {label} returned {result.returncode}; expected 2 for a refused test socket"
+                )
+            failure_markers = (
+                "QQmlApplicationEngine failed to load component",
+                "module \"ZoinGallery\" is not installed",
+                "Could not find the Qt platform plugin",
+            )
+            if any(marker in result.stdout for marker in failure_markers):
+                raise SystemExit(f"installed {label} reported a deployment/QML import failure")
+
+        run_host(host, env, "Qt host")
+
+        if os.environ["RUNNER_OS"] == "macOS":
+            # The app copy is what LaunchServices executes.  Do not give it
+            # explicit sidecar paths: qt.conf plus the repaired @loader_path
+            # RPATH must make the installed bundle relocatable on its own.
+            app_env = env.copy()
+            app_env.pop("QT_PLUGIN_PATH", None)
+            app_env.pop("QML_IMPORT_PATH", None)
+            app_env.pop("QML2_IMPORT_PATH", None)
+            app_env.pop("DYLD_LIBRARY_PATH", None)
+            app_env.pop("DYLD_FRAMEWORK_PATH", None)
+            run_host(app_host, app_env, "macOS app bundle")
+
+            rpaths = subprocess.run(
+                ["otool", "-l", str(app_host)],
+                check=True, text=True, stdout=subprocess.PIPE,
+            ).stdout
+            if "/Users/runner/" in rpaths or "@loader_path/../../../../lib" not in rpaths:
+                raise SystemExit("installed macOS app bundle retained a non-relocatable RPATH")
         PY
 
     - name: Package integrated artifact

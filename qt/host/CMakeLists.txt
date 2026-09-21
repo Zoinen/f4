@@ -529,6 +529,9 @@ if(APPLE)
     DESTINATION bin
     USE_SOURCE_PERMISSIONS
   )
+  install(SCRIPT
+    "${CMAKE_CURRENT_LIST_DIR}/cmake/repair-macos-app-rpath.cmake"
+  )
 endif()
 install(FILES icons/lucide/LICENSE
   DESTINATION licenses
