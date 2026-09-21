@@ -244,21 +244,55 @@ class F4QtHostConan(ConanFile):
         cross_tools_file = os.path.join(
             self.generators_folder, "f4-qt-cross-tools.cmake"
         )
+        cross_tools_text = textwrap.dedent(
+            """
+            foreach(_f4_qt_prefix IN LISTS CMAKE_PREFIX_PATH)
+              if(NOT Qt6QmlTools_DIR AND EXISTS "${_f4_qt_prefix}/Qt6QmlToolsConfig.cmake")
+                set(Qt6QmlTools_DIR "${_f4_qt_prefix}" CACHE PATH "Native Qt QML tools" FORCE)
+              endif()
+              if(NOT Qt6ShaderToolsTools_DIR AND EXISTS "${_f4_qt_prefix}/Qt6ShaderToolsToolsConfig.cmake")
+                set(Qt6ShaderToolsTools_DIR "${_f4_qt_prefix}" CACHE PATH "Native Qt shader tools" FORCE)
+              endif()
+            endforeach()
+            """
+        )
+        if native_qt is not None:
+            # CMake's Qt package config defines imported Qt6::moc/rcc/uic
+            # targets after project(). Defer the target-property override
+            # until the directory has finished configuring, so the target
+            # package still supplies all ARM64 headers/libraries while the
+            # build runner executes the native package's tools.
+            deferred_tools_body = [
+                f'set(_f4_qt_native_prefix "{native_qt_prefix}")',
+                "function(_f4_qt_apply_native_tools)",
+                '  set(_f4_qt_native_bin "${_f4_qt_native_prefix}/bin")',
+                "  if(WIN32)",
+                '    set(_f4_qt_native_suffix ".exe")',
+                "  else()",
+                '    set(_f4_qt_native_suffix "")',
+                "  endif()",
+            ]
+            for tool_name in native_tool_names:
+                deferred_tools_body.extend(
+                    [
+                        f'  set(_f4_qt_native_tool "${{_f4_qt_native_bin}}/{tool_name}${{_f4_qt_native_suffix}}")',
+                        f'  if(TARGET Qt6::{tool_name} AND EXISTS "${{_f4_qt_native_tool}}")',
+                        f'    set_property(TARGET Qt6::{tool_name} PROPERTY IMPORTED_LOCATION "${{_f4_qt_native_tool}}")',
+                        f'    set_property(TARGET Qt6::{tool_name} PROPERTY IMPORTED_LOCATION_{build_type.upper()} "${{_f4_qt_native_tool}}")',
+                        "  endif()",
+                    ]
+                )
+            deferred_tools_body.extend(
+                [
+                    "endfunction()",
+                    "cmake_language(DEFER CALL _f4_qt_apply_native_tools)",
+                ]
+            )
+            cross_tools_text += "\n" + "\n".join(deferred_tools_body) + "\n"
         save(
             self,
             cross_tools_file,
-            textwrap.dedent(
-                """
-                foreach(_f4_qt_prefix IN LISTS CMAKE_PREFIX_PATH)
-                  if(NOT Qt6QmlTools_DIR AND EXISTS "${_f4_qt_prefix}/Qt6QmlToolsConfig.cmake")
-                    set(Qt6QmlTools_DIR "${_f4_qt_prefix}" CACHE PATH "Native Qt QML tools" FORCE)
-                  endif()
-                  if(NOT Qt6ShaderToolsTools_DIR AND EXISTS "${_f4_qt_prefix}/Qt6ShaderToolsToolsConfig.cmake")
-                    set(Qt6ShaderToolsTools_DIR "${_f4_qt_prefix}" CACHE PATH "Native Qt shader tools" FORCE)
-                  endif()
-                endforeach()
-                """
-            ),
+            cross_tools_text,
         )
         toolchain.cache_variables["CMAKE_PROJECT_INCLUDE_BEFORE"] = cross_tools_file
 
