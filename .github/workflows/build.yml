@@ -921,12 +921,20 @@ jobs:
           # are declared before the target Qt package's build modules load.
           $qtCrossToolArgs += "-DCMAKE_PROJECT_INCLUDE_BEFORE=$qtCrossTools"
         }
+        $buildTesting = "ON"
+        if ("${{ matrix.arch }}" -eq "arm64") {
+          # The x64 runner cannot execute ARM64 tests, and compiling those
+          # targets only lengthens the cross-build without contributing to
+          # the portable artifact. Native test coverage remains enabled for
+          # the amd64 cell.
+          $buildTesting = "OFF"
+        }
         cmake -S qt/host -B $buildDir -G Ninja `
           "-DCMAKE_TOOLCHAIN_FILE=$PWD/$buildDir/conan_toolchain.cmake" `
           -DCMAKE_BUILD_TYPE=Release `
           "-DCMAKE_PREFIX_PATH=$PWD/build/qwindowkit-install" `
           "-DQWindowKit_DIR=$PWD/build/qwindowkit-install/lib/cmake/QWindowKit" `
-          -DBUILD_TESTING=ON -DUSE_QWK=ON -DF4_PORTABLE_STATIC=ON `
+          "-DBUILD_TESTING=$buildTesting" -DUSE_QWK=ON -DF4_PORTABLE_STATIC=ON `
           @qtCrossToolArgs
         cmake --build $buildDir --config Release --parallel 4
         New-Item -ItemType Directory -Force (Join-Path $buildDir '.diagnostics') | Out-Null
