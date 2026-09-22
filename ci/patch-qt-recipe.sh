@@ -61,7 +61,9 @@ if candidates:
         # binaries must be rebuilt under the fixed recipe revision.
         if [[ -f "${reusable_qt_recipe}/conanfile.py" ]] && \
             grep -Fq 'if(NOT TARGET Qt::qsb)' "${reusable_qt_recipe}/conanfile.py" && \
-            grep -Fq 'native_qsb_config = os.path.join' "${reusable_qt_recipe}/conanfile.py"; then
+            grep -Fq 'native_qsb_config = os.path.join' "${reusable_qt_recipe}/conanfile.py" && \
+            grep -Fq 'tc.cache_variables["Qt6QuickTools_DIR"]' "${reusable_qt_recipe}/conanfile.py" && \
+            grep -Fq 'native_quick_tools_config = os.path.join' "${reusable_qt_recipe}/conanfile.py"; then
             echo "Reusing Qt recipe revision ${reusable_qt_recipe_revision} with complete ARM/native packages"
             exit 0
         fi
@@ -99,6 +101,8 @@ if [[ "${target_arch}" == "arm64" ]]; then
     grep -Fq 'set(Qt6ShaderToolsTools_FOUND TRUE)' "${qt_recipe_copy}/conanfile.py"
     grep -Fq 'add_executable(Qt6::qsb IMPORTED GLOBAL)' "${qt_recipe_copy}/conanfile.py"
     grep -Fq 'if(NOT TARGET Qt::qsb)' "${qt_recipe_copy}/conanfile.py"
+    grep -Fq 'tc.cache_variables["Qt6QuickTools_DIR"]' "${qt_recipe_copy}/conanfile.py"
+    grep -Fq 'native_quick_tools_config = os.path.join' "${qt_recipe_copy}/conanfile.py"
 fi
 
 grep -Fq 'self.requires("freetype/2.13.2")' \
