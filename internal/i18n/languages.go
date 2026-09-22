@@ -4,6 +4,7 @@ import (
 	"github.com/unxed/f4/internal/ini"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -14,9 +15,24 @@ type Language struct {
 	Name string
 }
 
+// ExecutableResourceDirs returns the executable-adjacent directories that may
+// contain resources, most preferred first. A macOS app keeps those resources
+// in Contents/Resources rather than Contents/MacOS; other layouts use the
+// executable directory itself.
+func ExecutableResourceDirs() []string {
+	exeDir := filepath.Dir(os.Args[0])
+	if runtime.GOOS == "darwin" && filepath.Base(exeDir) == "MacOS" {
+		contentsDir := filepath.Dir(exeDir)
+		if filepath.Base(contentsDir) == "Contents" {
+			return []string{filepath.Join(contentsDir, "Resources"), exeDir}
+		}
+	}
+	return []string{exeDir}
+}
+
 // SearchDirs are the directories a .lng file is looked for in, most preferred
-// first: the user's profile, then beside the executable, then ./lang for
-// `go run .`. userLangDir may be empty, and is skipped when it is.
+// first: the user's profile, the app resources, beside the executable, then
+// ./lang for `go run .`. userLangDir may be empty, and is skipped when it is.
 //
 // One list, because a fourth location added to one caller and not the others is
 // a translation that appears in the menu and not in the command palette.
@@ -26,11 +42,14 @@ type Language struct {
 // name; the directory in the repository may be renamed one day, and the
 // directory in a user's profile may not.
 func SearchDirs(userLangDir string) []string {
-	dirs := make([]string, 0, 3)
+	dirs := make([]string, 0, 2+len(ExecutableResourceDirs()))
 	if userLangDir != "" {
 		dirs = append(dirs, userLangDir)
 	}
-	return append(dirs, filepath.Join(filepath.Dir(os.Args[0]), "lang"), "lang")
+	for _, resourceDir := range ExecutableResourceDirs() {
+		dirs = append(dirs, filepath.Join(resourceDir, "lang"))
+	}
+	return append(dirs, "lang")
 }
 
 // ListAvailable enumerates the UI languages this build can switch to: every

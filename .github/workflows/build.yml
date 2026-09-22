@@ -565,7 +565,7 @@ jobs:
           qt/host/stage-ci/qml qt/host/stage-ci/licenses \
           "$app/Contents/Resources/"
         cp -R qt/host/stage-ci/bin/lang qt/host/stage-ci/bin/help \
-          qt/host/stage-ci/bin/plugins "$app/Contents/MacOS/"
+          qt/host/stage-ci/bin/plugins "$app/Contents/Resources/"
         chmod +x "$app/Contents/MacOS/f4" "$app/Contents/MacOS/f4-qt-host"
         sed -e 's/^Prefix=\.\.$/Prefix=./' \
           qt/host/stage-ci/bin/qt.conf \

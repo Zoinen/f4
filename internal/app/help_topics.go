@@ -43,11 +43,11 @@ func InitHelpSystem() {
 	// embedded English help remains the baseline, while help/en.hlf can provide
 	// user-specific topics and corrections.
 	if config.App.UseLocalLanguageFiles || (lang != "en" && lang != "eng") {
-		exeDir := filepath.Dir(os.Args[0])
-		candidates := []string{
-			filepath.Join(exeDir, "help", lang+".hlf"),
-			filepath.Join("help", lang+".hlf"), // Fallback for "go run ." development
+		candidates := make([]string, 0, 1+len(i18n.ExecutableResourceDirs()))
+		for _, resourceDir := range i18n.ExecutableResourceDirs() {
+			candidates = append(candidates, filepath.Join(resourceDir, "help", lang+".hlf"))
 		}
+		candidates = append(candidates, filepath.Join("help", lang+".hlf")) // Fallback for "go run ." development
 		if config.App.UseLocalLanguageFiles {
 			userDir := filepath.Join(config.GetF4ConfigDir(), "help")
 			candidates = append([]string{filepath.Join(userDir, lang+".hlf")}, candidates...)
