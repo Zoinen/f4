@@ -983,7 +983,13 @@ jobs:
         # ConanCenter ARM64/MSVC package; f4 does not use it.
         # Qt's cross-build recipe needs native qsb and QML tools. Configure
         # its build-context Qt tool requirement with the same modules so
-        # Qt6ShaderToolsTools and qmlcachegen exist for the ARM64 target.
+        # Qt6ShaderToolsTools, Qt6QuickTools, and qmlcachegen exist for the
+        # ARM64 target. QtDeclarative's svgtoqml host tool is only generated
+        # when the native build-context Qt also has qtsvg enabled.
+        $nativeQtOptions = @()
+        if ("${{ matrix.arch }}" -eq "arm64") {
+          $nativeQtOptions = @("-o:b", "qt/*:qtsvg=True")
+        }
         $qtForceOnRetry = $false
         if ("${{ matrix.arch }}" -eq "arm64") {
           $qtMarker = Join-Path $env:CONAN_HOME "p/.f4-qt-quick-ready"
@@ -1017,6 +1023,7 @@ jobs:
             -o:b "qt/*:shared=False" `
             -o:b "qt/*:qtdeclarative=True" `
             -o:b "qt/*:qtshadertools=True" `
+            @nativeQtOptions `
             -o:h "qt/*:with_libjpeg=libjpeg-turbo" `
             -o:b "qt/*:with_libjpeg=libjpeg-turbo" `
             -o:h "openssl/*:no_zlib=True" `
