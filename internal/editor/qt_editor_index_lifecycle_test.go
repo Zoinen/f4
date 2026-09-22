@@ -14,6 +14,7 @@ import (
 
 func indexLifecycleEditor(t *testing.T, data []byte) *EditorView {
 	t.Helper()
+	t.Cleanup(testutil.SwapFrameManager(t))
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	testutil.DrainPendingTasks()
 	reader := &documentRangeReader{data: data}
