@@ -593,6 +593,7 @@ func TestPanelsFrame_MenuCommands(t *testing.T) {
 //     visually becomes focused (as in far2l), but commands still
 //     target the source file panel underneath.
 func TestPanelsFrame_CtrlL_TogglesInfoPanel(t *testing.T) {
+	t.Cleanup(paneltest.SwapFrameManager(t))
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	pf := paneltest.SetupMockPanelsFrame(t)
 	defer pf.Close()
@@ -655,6 +656,7 @@ func TestPanelsFrame_CtrlL_TogglesInfoPanel(t *testing.T) {
 	}
 	// A render is required to propagate SetFocus into the alt panel;
 	// call Show and then check the focus state was flipped.
+	pf.LastAutoRefresh = time.Now()
 	pf.Show(vtui.NewSilentScreenBuf())
 	if !pf.AltPanels[0].IsFocused() {
 		t.Error("after Tab + render, alt panel should report focused=true")
