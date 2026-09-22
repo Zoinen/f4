@@ -58,7 +58,7 @@ func TestGenerateKeysHelpTopic_PanelNav(t *testing.T) {
 		// Alt+F1 gained Ctrl+Shift+Left as an alias (same PR).
 		"Alt+F1 / Ctrl+Shift+Left - Show the drive menu for the left panel",
 		"Ctrl+PgUp      - Go to parent directory",
-		"Ctrl+Shift+Enter - Open current file in the system file manager",
+		"Alt+Shift+Enter - Open current file in the system file manager",
 		"Ctrl+Shift+F3 / F3 - Open terminal log in viewer",
 	} {
 		if !strings.Contains(joined, want) {

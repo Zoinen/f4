@@ -29,8 +29,8 @@ func (pf *PanelsFrame) withGalleryMenuItems(side int, menu vtui.MenuBarItem) vtu
 				icons, grid = appcmd.CmRightIcons, appcmd.CmRightGrid
 			}
 			items = append(items,
-				vtui.MenuItem{Text: i18n.Msg("Panel.View.Icons"), Command: icons},
-				vtui.MenuItem{Text: i18n.Msg("Panel.View.Grid"), Command: grid})
+				vtui.MenuItem{Text: i18n.Msg("Panel.ViewIcons"), Command: icons},
+				vtui.MenuItem{Text: i18n.Msg("Panel.ViewGrid"), Command: grid})
 		}
 		items = append(items, item)
 	}

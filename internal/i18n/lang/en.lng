@@ -80,8 +80,8 @@ Panel.View.Columns2=Columns · &2
 Panel.View.Columns3=Columns · &3
 Panel.View.Details=&Details
 Panel.View.Masonry=&Masonry
-Panel.View.Icons=Icons
-Panel.View.Grid=Grid
+Panel.ViewIcons=Icons
+Panel.ViewGrid=Grid
 
 Panels.Prompt=>
 

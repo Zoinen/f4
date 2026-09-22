@@ -80,8 +80,8 @@ Panel.View.Columns2=Колонки · &2
 Panel.View.Columns3=Колонки · &3
 Panel.View.Details=&Подробно
 Panel.View.Masonry=&Плитки
-Panel.View.Icons=Значки
-Panel.View.Grid=Сетка
+Panel.ViewIcons=Значки
+Panel.ViewGrid=Сетка
 
 Panels.Prompt=>
 

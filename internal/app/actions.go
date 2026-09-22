@@ -3825,8 +3825,8 @@ func ActionPanelSettings(pf *panel.PanelsFrame) {
 	vbox.Add(chkPaths, vtui.Margins{}, vtui.AlignLeft)
 	autoSaveRow := vtui.NewHBoxLayout(0, 0, 56, 1)
 	autoSaveRow.Add(chkAutoSave, vtui.Margins{}, vtui.AlignLeft)
+	autoSaveRow.Add(btnAutoSaveDetails, vtui.Margins{Left: 1}, vtui.AlignTop)
 	vbox.Add(autoSaveRow, vtui.Margins{}, vtui.AlignFill)
-	vbox.Add(btnAutoSaveDetails, vtui.Margins{Left: 2}, vtui.AlignLeft)
 	vbox.Add(chkUseTrash, vtui.Margins{Top: 1}, vtui.AlignLeft)
 	vbox.Add(chkCmdAc, vtui.Margins{}, vtui.AlignLeft)
 	// Navigation radio group — its own visual island.

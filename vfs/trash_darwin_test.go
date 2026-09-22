@@ -17,9 +17,8 @@ func installDarwinTestStubs(t *testing.T, send func(object uintptr, selector str
 	t.Helper()
 	oldOnce, oldErr := foundationOnce, foundationErr
 	oldGetClass, oldRegister, oldMsgSend := objcGetClass, objcRegister, objcMsgSend
-	var initialized sync.Once
-	initialized.Do(func() {})
-	foundationOnce = initialized
+	foundationOnce = &sync.Once{}
+	foundationOnce.Do(func() {})
 	foundationErr = nil
 	selectors := make(map[string]uintptr)
 	var nextSelector uintptr = 100
@@ -95,9 +94,8 @@ func TestDarwinMoveToTrashFoundationError(t *testing.T) {
 		t.Fatal(err)
 	}
 	oldOnce, oldErr := foundationOnce, foundationErr
-	var initialized sync.Once
-	initialized.Do(func() {})
-	foundationOnce = initialized
+	foundationOnce = &sync.Once{}
+	foundationOnce.Do(func() {})
 	foundationErr = errors.New("Foundation unavailable")
 	t.Cleanup(func() { foundationOnce, foundationErr = oldOnce, oldErr })
 	filesystem := NewOSVFS(root)

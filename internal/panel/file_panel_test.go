@@ -3385,6 +3385,22 @@ drain:
 		close(done)
 	}()
 	waitForPanelSignal(t, done, "directory worker to stop")
+	// Metadata enrichment is queued by the worker immediately after the final
+	// loading task.  The final task clears IsLoading first, so the worker may
+	// still be the one that posts the metadata task when the loop above exits.
+	// Drain once more after joining it; otherwise the next assertion can observe
+	// a deliberately incomplete row and turn a no-op refresh into a replacement.
+drainAfterWorker:
+	for i := 0; i < 5; i++ {
+		select {
+		case task := <-vtui.FrameManager.PriorityTaskChan:
+			task()
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		default:
+			break drainAfterWorker
+		}
+	}
 }
 
 func TestFileSystemPanel_PermissionFailureRestoresAbsoluteParentWithoutDialogLoop(t *testing.T) {

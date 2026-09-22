@@ -50,8 +50,12 @@ func TestAppFrameVMenuUsesSharedMenuControlProvider(t *testing.T) {
 }
 
 func TestAppVMenuModelUsesActualParentFrameIdentity(t *testing.T) {
-	oldFrameManager := *vtui.FrameManager
-	defer func() { *vtui.FrameManager = oldFrameManager }()
+	oldFrameManager := vtui.FrameManager
+	vtui.FrameManager = vtui.NewFrameManager()
+	defer func() {
+		vtui.FrameManager.Shutdown()
+		vtui.FrameManager = oldFrameManager
+	}()
 
 	screen := vtui.NewScreenBuf()
 	screen.AllocBuf(80, 25)

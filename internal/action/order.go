@@ -106,6 +106,7 @@ var actionMenuOrder = []string{
 	"App.PlugRing",
 	"App.SaveSettings",
 	"App.ToggleWindowSize",
+	"Panel.TogglePathBar",
 	"Panel.ToggleKeyBar",
 	"Settings.MacKeyboard",
 	"Panel.Rescan",

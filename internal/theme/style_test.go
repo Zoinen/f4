@@ -8,6 +8,14 @@ import (
 	"testing"
 )
 
+func withoutUserColorOverrides(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	old := UserColorOverridesPath
+	UserColorOverridesPath = func() string { return filepath.Join(dir, "farcolors.ini") }
+	t.Cleanup(func() { UserColorOverridesPath = old })
+}
+
 func TestAvailableColorStylesIncludesBuiltInsAndUserStyles(t *testing.T) {
 	oldDir := getUserStylesDir
 	userDir := t.TempDir()
@@ -45,6 +53,7 @@ func TestAvailableColorStylesIncludesBuiltInsAndUserStyles(t *testing.T) {
 }
 
 func TestApplyColorStyleModernAndClassic(t *testing.T) {
+	withoutUserColorOverrides(t)
 	oldDir := getUserStylesDir
 	userDir := t.TempDir()
 	getUserStylesDir = func() string { return userDir }
@@ -141,6 +150,7 @@ func TestApplyColorStyleModernAndClassic(t *testing.T) {
 }
 
 func TestApplyColorStyleRadiolaWorkspaceTabs(t *testing.T) {
+	withoutUserColorOverrides(t)
 	oldDir := getUserStylesDir
 	getUserStylesDir = func() string { return t.TempDir() }
 	defer func() { getUserStylesDir = oldDir }()
@@ -182,6 +192,7 @@ func TestApplyColorStyleRadiolaWorkspaceTabs(t *testing.T) {
 }
 
 func TestApplyColorStyleDefaultDarkWorkspaceTabs(t *testing.T) {
+	withoutUserColorOverrides(t)
 	oldDir := getUserStylesDir
 	userDir := t.TempDir()
 	getUserStylesDir = func() string { return userDir }
