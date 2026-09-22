@@ -9,6 +9,9 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 qwk_source="${repo_root}/build/qwindowkit-src"
 qwk_build="${repo_root}/build/qwindowkit-build"
 qwk_install="${repo_root}/build/qwindowkit-install"
+qwk_qmsetup_host_build="${repo_root}/build/qwindowkit-qmsetup-host-build"
+qwk_qmsetup_host_install="${repo_root}/build/qwindowkit-qmsetup-host-install"
+qwk_qmsetup_host_config="${qwk_qmsetup_host_install}/lib/cmake/qmsetup/qmsetupConfig.cmake"
 qwk_patch="${repo_root}/ci/patches/qwindowkit-default-maximize-hint.patch"
 qwk_patch_hash="$(cmake -E sha256sum "${qwk_patch}" | awk '{print substr($1, 1, 16)}')"
 qwk_marker="${qwk_install}/.f4-qwindowkit-ready-${linkage}-${build_type}-${qwk_patch_hash}"
@@ -56,6 +59,24 @@ else
     git -C "${qwk_source}" apply --check "${qwk_patch}"
     git -C "${qwk_source}" apply "${qwk_patch}"
 fi
+
+# QWindowKit falls back to building its qmsetup submodule during the outer
+# configure when no host package is discoverable.  That nested build hides its
+# compiler log and is especially fragile in a target Qt graph.  Build the tiny
+# host-only helper explicitly, like the Windows ARM path does, and point the
+# outer project at the resulting package.  The helper is native to the runner;
+# QWindowKit itself still uses the target Qt package selected above.
+if [ ! -f "${qwk_qmsetup_host_config}" ]; then
+    rm -rf "${qwk_qmsetup_host_build}" "${qwk_qmsetup_host_install}"
+    cmake -S "${qwk_source}/qmsetup" -B "${qwk_qmsetup_host_build}" -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX="${qwk_qmsetup_host_install}" \
+        -DCMAKE_INSTALL_LIBDIR=lib \
+        -DQMSETUP_STATIC_RUNTIME=ON
+    cmake --build "${qwk_qmsetup_host_build}" --target install --parallel
+fi
+test -f "${qwk_qmsetup_host_config}"
+qwk_platform_args+=("-Dqmsetup_DIR=${qwk_qmsetup_host_install}/lib/cmake/qmsetup")
 
 cmake -S "${qwk_source}" -B "${qwk_build}" -G Ninja \
     -DCMAKE_BUILD_TYPE="${build_type}" \
