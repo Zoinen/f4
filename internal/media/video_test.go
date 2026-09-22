@@ -7,7 +7,7 @@ import (
 )
 
 func TestIsVideoFile(t *testing.T) {
-	for _, name := range []string{"a.mp4", "B.MKV", "clip.webm", "x.avi", "y.MOV"} {
+	for _, name := range []string{"a.mp4", "B.MKV", "clip.webm", "x.avi", "y.MOV", "camera.mxf", "phone.3g2"} {
 		if !IsVideoFile(name) {
 			t.Errorf("%s is a video", name)
 		}

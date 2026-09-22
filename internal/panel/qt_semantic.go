@@ -914,6 +914,16 @@ func semanticEntryIsImage(entry *FileEntry, extensions map[string]struct{}) bool
 	return ok
 }
 
+func semanticEntryThumbnailKind(entry *FileEntry) string {
+	if entry == nil || entry.IsDir || entry.Name == ".." {
+		return ""
+	}
+	if media.IsVideoFile(entry.Name) {
+		return "video"
+	}
+	return ""
+}
+
 func semanticHighlighterRevision() int64 {
 	if theme.GlobalFileHighlighter == nil {
 		return 0
@@ -986,6 +996,11 @@ func (fp *FileSystemPanel) semanticFingerprintsForEntries(entries []*FileEntry) 
 		if semanticEntryIsImage(entry, imageExtensions) {
 			baseFlags |= 1 << 3
 		}
+		thumbnailKind := semanticEntryThumbnailKind(entry)
+		if thumbnailKind == "video" {
+			baseFlags |= 1 << 5
+		}
+		semantic.WriteSemanticFingerprintString(catalog, thumbnailKind)
 		if entry.IsHidden {
 			baseFlags |= 1 << 4
 		}
@@ -1235,6 +1250,7 @@ func (fp *FileSystemPanel) semanticStaticPanelData(sourceKind string) *semanticP
 		entryID, logicalPath := fp.semanticEntryMetadata(entry, sourceKind)
 		cache.entryIndexByID[entryID] = i
 		isImage := semanticEntryIsImage(entry, imageExtensions)
+		thumbnailKind := semanticEntryThumbnailKind(entry)
 		if isImage {
 			imageCount++
 		}
@@ -1279,7 +1295,7 @@ func (fp *FileSystemPanel) semanticStaticPanelData(sourceKind string) *semanticP
 		// never enter ZoinGallery's image pipeline, so omitting their descriptor is
 		// both safe and materially cheaper. Legacy complete catalogs retain the
 		// previous descriptor contract.
-		needsSourceDescriptor := !metadataDeferred || isImage
+		needsSourceDescriptor := !metadataDeferred || isImage || thumbnailKind != ""
 		version := ""
 		var sourceModel *extui.ImageSourceModel
 		sourceStartedNs := int64(0)
@@ -1331,6 +1347,7 @@ func (fp *FileSystemPanel) semanticStaticPanelData(sourceKind string) *semanticP
 			IsUp:             entry.Name == "..",
 			IsHidden:         entry.IsHidden,
 			IsImage:          isImage,
+			ThumbnailKind:    thumbnailKind,
 			Version:          version,
 			Source:           sourceModel,
 			HighlightStyleID: highlightStyleID,
@@ -1861,9 +1878,10 @@ func (fp *FileSystemPanel) semanticPagedRows(offset, limit int) (
 			styles[highlightStyleID] = highlightStyle
 		}
 		isImage := semanticEntryIsImage(entry, imageExtensions)
+		thumbnailKind := semanticEntryThumbnailKind(entry)
 		version := ""
 		var sourceModel *extui.ImageSourceModel
-		if isImage {
+		if isImage || thumbnailKind != "" {
 			storage := plughost.MediaStorageClass(caps, "")
 			var versionStrength string
 			version, versionStrength = plughost.MediaSourceVersion(
@@ -1908,7 +1926,7 @@ func (fp *FileSystemPanel) semanticPagedRows(offset, limit int) (
 			Index: index, EntryID: entryID, Name: entry.Name,
 			DisplayBaseName: displayBaseName, DisplayExtension: displayExtension,
 			Path: logicalPath, IsDir: entry.IsDir, IsUp: entry.Name == "..",
-			IsHidden: entry.IsHidden, IsImage: isImage, Selected: entry.Selected,
+			IsHidden: entry.IsHidden, IsImage: isImage, ThumbnailKind: thumbnailKind, Selected: entry.Selected,
 			Version: version, Source: sourceModel, HighlightStyleID: highlightStyleID,
 			DirectorySource: directorySource,
 		})

@@ -224,6 +224,10 @@ type FileEntryModel struct {
 	IsHidden         bool
 	IsExecutable     bool
 	IsImage          bool
+	// ThumbnailKind identifies non-image media that still has a native
+	// thumbnail pipeline. "video" uses a contact-sheet decoder while keeping
+	// the still-image viewer contract separate.
+	ThumbnailKind    string
 	Selected         bool
 	SizeCalculated   bool
 	MTime            string
@@ -1040,6 +1044,9 @@ func (e FileEntryModel) ToMap() M {
 		"version":          e.Version,
 		"mode":             e.Mode,
 	}
+	if e.ThumbnailKind != "" {
+		out["thumbnailKind"] = e.ThumbnailKind
+	}
 	if e.HighlightStyleID != "" {
 		out["highlightStyleId"] = e.HighlightStyleID
 	}
@@ -1070,6 +1077,9 @@ func (e FileEntryModel) MinimalToMap() M {
 		"isUp":             e.IsUp,
 		"isImage":          e.IsImage,
 		"selected":         e.Selected,
+	}
+	if e.ThumbnailKind != "" {
+		out["thumbnailKind"] = e.ThumbnailKind
 	}
 	// Hidden entries are normally sparse. Absence is the canonical false value,
 	// so ordinary large directories pay no per-row payload cost for this

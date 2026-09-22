@@ -15,6 +15,17 @@ endif()
 option(USE_QWK "Use QWindowKit" ON)
 option(F4_PORTABLE_STATIC
   "Build one self-contained Qt host (apart from system ABI libraries)" OFF)
+option(F4_ENABLE_VIDEO_THUMBNAILS
+  "Enable video thumbnails through Qt Multimedia" OFF)
+option(F4_ENABLE_FFMPEG_BACKEND
+  "Use the Qt Multimedia FFmpeg backend for video thumbnails"
+  OFF)
+if(NOT F4_ENABLE_VIDEO_THUMBNAILS AND F4_ENABLE_FFMPEG_BACKEND)
+  message(STATUS
+    "F4_ENABLE_VIDEO_THUMBNAILS=OFF disables the FFmpeg backend as well")
+  set(F4_ENABLE_FFMPEG_BACKEND OFF CACHE BOOL
+    "Use the Qt Multimedia FFmpeg backend for video thumbnails" FORCE)
+endif()
 include(CTest)
 
 if(NOT EXISTS "${CMAKE_BINARY_DIR}/conan_toolchain.cmake")
@@ -36,7 +47,18 @@ if(F4_PORTABLE_STATIC)
   find_package(libjpeg-turbo REQUIRED)
 endif()
 
-find_package(Qt6 COMPONENTS Core Concurrent Gui Qml Quick QuickControls2 Network Svg REQUIRED)
+set(F4_QT_HOST_COMPONENTS
+  Core Concurrent Gui Qml Quick QuickControls2 Network Svg)
+if(F4_ENABLE_VIDEO_THUMBNAILS)
+  list(APPEND F4_QT_HOST_COMPONENTS Multimedia)
+endif()
+find_package(Qt6 COMPONENTS ${F4_QT_HOST_COMPONENTS} REQUIRED)
+# Qt 6.11 exports the ICO image plugin as QICOPlugin (matching its class
+# name), while the older Conan facade used QIcoPlugin. Keep one compatibility
+# alias for the test and host link helpers below.
+if(TARGET Qt6::QICOPlugin AND NOT TARGET Qt6::QIcoPlugin)
+  add_library(Qt6::QIcoPlugin ALIAS Qt6::QICOPlugin)
+endif()
 find_package(msgpack-cxx REQUIRED)
 if(USE_QWK)
   find_package(QWindowKit REQUIRED)
@@ -104,6 +126,10 @@ set(ZOIN_BUILD_BENCHMARKS OFF CACHE BOOL
   "Build ZoinGallery performance audit tools" FORCE)
 set(ZOIN_ENABLE_INSTALL OFF CACHE BOOL
   "Generate ZoinGallery package installation rules" FORCE)
+set(ZOIN_ENABLE_VIDEO_THUMBNAILS ${F4_ENABLE_VIDEO_THUMBNAILS} CACHE BOOL
+  "Enable video thumbnails through Qt Multimedia" FORCE)
+set(ZOIN_ENABLE_FFMPEG_BACKEND ${F4_ENABLE_FFMPEG_BACKEND} CACHE BOOL
+  "Use the Qt Multimedia FFmpeg backend for video thumbnails" FORCE)
 set(F4_ZOINGALLERY_BINARY_DIR
   "${CMAKE_CURRENT_BINARY_DIR}/ZoinGallery")
 
@@ -461,10 +487,9 @@ if(F4_QT_STATIC)
       target_link_libraries(${F4_ZOIN_STATIC_QML_TEST_TARGET} PRIVATE
         ${F4_REQUIRED_STATIC_QT_PLUGINS}
         ${F4_REQUIRED_STATIC_QML_PLUGINS}
-        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:$<LINK_GROUP:RESCAN,CONAN_LIB::qt_Qt6_Svg_Qt6Svg_RELEASE,CONAN_LIB::qt_Qt6_QSvgPlugin_qsvg_RELEASE>>
-        $<$<CXX_COMPILER_ID:MSVC>:CONAN_LIB::qt_Qt6_Svg_Qt6Svg_RELEASE>
-        $<$<CXX_COMPILER_ID:MSVC>:CONAN_LIB::qt_Qt6_QSvgPlugin_qsvg_RELEASE>
-        "$<LINK_LIBRARY:WHOLE_ARCHIVE,Qt6::QuickControls2Basic>")
+        Qt6::Svg
+        Qt6::QSvgPlugin
+        Qt6::QuickControls2Basic)
     endif()
   endforeach()
 endif()
@@ -498,9 +523,8 @@ if(F4_QT_STATIC)
         Qt6::QGifPlugin
         Qt6::QIcoPlugin
         Qt6::QJpegPlugin
-        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:$<LINK_GROUP:RESCAN,CONAN_LIB::qt_Qt6_Svg_Qt6Svg_RELEASE,CONAN_LIB::qt_Qt6_QSvgPlugin_qsvg_RELEASE>>
-        $<$<CXX_COMPILER_ID:MSVC>:CONAN_LIB::qt_Qt6_Svg_Qt6Svg_RELEASE>
-        $<$<CXX_COMPILER_ID:MSVC>:CONAN_LIB::qt_Qt6_QSvgPlugin_qsvg_RELEASE>)
+        Qt6::Svg
+        Qt6::QSvgPlugin)
     endif()
   endforeach()
 endif()
@@ -823,7 +847,7 @@ if(BUILD_TESTING)
       target_link_libraries(${target} PRIVATE
         ${F4_REQUIRED_STATIC_QML_PLUGINS}
         "$<LINK_LIBRARY:WHOLE_ARCHIVE,Qt6::QuickEffects>"
-        "$<LINK_LIBRARY:WHOLE_ARCHIVE,Qt6::QuickControls2Basic>")
+        Qt6::QuickControls2Basic)
       set_property(TARGET ${target} APPEND PROPERTY LINK_LIBRARY_OVERRIDE
         "WHOLE_ARCHIVE,Qt6::QuickEffects")
     endif()

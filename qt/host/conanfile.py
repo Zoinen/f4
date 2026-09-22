@@ -8,23 +8,67 @@ import os
 
 class F4QtHostConan(ConanFile):
     settings = "os", "compiler", "build_type", "arch"
+    options = {
+        "with_video_thumbnails": [True, False],
+        "with_ffmpeg_backend": [True, False],
+    }
     default_options = {
+        "with_video_thumbnails": False,
+        "with_ffmpeg_backend": False,
         "qt/*:shared": True,
         "qt/*:qtdeclarative": True,
         "qt/*:qtsvg": True,
+        "qt/*:qtmultimedia": True,
         "qt/*:qtshadertools": True,
+        # The portable host excludes Qt's TLS plugin and does not make
+        # network requests.  Disable OpenSSL so the static Windows package
+        # stays self-contained without pulling a large crypto toolchain.
+        "qt/*:openssl": False,
         "qt/*:with_pq": False,
         "qt/*:with_odbc": False,
         "msgpack-cxx/*:use_boost": False,
+        # HarfBuzz does not need GLib on Windows; disabling this integration
+        # avoids the legacy gettext/GLib toolchain that is not MSVC portable.
+        "harfbuzz/*:with_glib": False,
         "libtiff/*:jpeg": "libjpeg-turbo",
         "libraw/*:shared": True,
         "libraw/*:with_jpeg": "libjpeg-turbo",
         "libwebp/*:shared": False,
+        "libjpeg-turbo/*:shared": False,
         "jasper/*:with_libjpeg": "libjpeg-turbo",
+        "ffmpeg/*:shared": False,
+        "ffmpeg/*:with_ssl": False,
+        "ffmpeg/*:with_programs": False,
+        # Qt only consumes decoder libraries. Avoid pulling optional encoder
+        # stacks (and their GPL/size-heavy transitive graph) into the host.
+        "ffmpeg/*:with_libx264": False,
+        "ffmpeg/*:with_libx265": False,
+        "ffmpeg/*:with_libfdk_aac": False,
+        "ffmpeg/*:with_libsvtav1": False,
+        "ffmpeg/*:with_libaom": False,
+        # Keep the codec set broad without requiring a separate dav1d source
+        # download; FFmpeg still retains its native AV1 decoder.
+        "ffmpeg/*:with_libdav1d": False,
+        "ffmpeg/*:with_openh264": False,
+        "ffmpeg/*:with_libwebp": False,
     }
+
+    def configure(self):
+        video_thumbnails = bool(self.options.with_video_thumbnails)
+        if not video_thumbnails:
+            self.options.with_ffmpeg_backend = False
+        self.options["qt/*"].qtmultimedia = video_thumbnails
 
     def requirements(self):
         self.requires("qt/6.11.1")
+        if (self.options.with_video_thumbnails and
+                self.options.with_ffmpeg_backend):
+            # Keep FFmpeg in the same static graph as Qt Multimedia when the
+            # FFmpeg backend is selected. Qt's backend supplies the built-in
+            # H.264 and AV1 decoders used by video thumbnails; the optional
+            # dav1d/openh264 accelerators remain disabled to avoid a second
+            # codec toolchain.
+            self.requires("ffmpeg/7.1.5")
         self.requires("msgpack-cxx/7.0.0")
         # ZoinGallery is built from the pinned Git submodule. Keep its native
         # dependencies in this single Conan graph so the host and module share
@@ -32,9 +76,9 @@ class F4QtHostConan(ConanFile):
         self.requires("libtiff/4.7.0")
         self.requires("libraw/0.21.3")
         self.requires("libpng/1.6.45")
-        self.requires("libwebp/1.6.0")
+        self.requires("libwebp/1.6.0", override=True)
         self.requires("libheif/1.20.1")
-        self.requires("libjpeg-turbo/3.0.2")
+        self.requires("libjpeg-turbo/3.0.2", override=True)
         self.requires("jasper/4.2.0", override=True)
 
     def validate(self):
