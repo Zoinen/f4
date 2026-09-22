@@ -27,6 +27,8 @@ _HOST_PATH_PATCH = _HOST_PATH_ANCHOR + (
     '            native_qt_package = self.dependencies.direct_build["qt"].package_folder\n'
     '            native_qsb_name = "qsb.exe" if str(self.settings_build.os) == "Windows" else "qsb"\n'
     '            native_qsb = os.path.join(native_qt_package, "bin", native_qsb_name)\n'
+    '            native_svgtoqml_name = "svgtoqml.exe" if str(self.settings_build.os) == "Windows" else "svgtoqml"\n'
+    '            native_svgtoqml = os.path.join(native_qt_package, "bin", native_svgtoqml_name)\n'
     '            native_qsb_config = os.path.join(\n'
     '                native_qt_package, "lib", "cmake", "Qt6ShaderToolsTools",\n'
     '                "Qt6ShaderToolsToolsConfig.cmake"\n'
@@ -36,17 +38,18 @@ _HOST_PATH_PATCH = _HOST_PATH_ANCHOR + (
     '                "Qt6QuickToolsConfig.cmake"\n'
     '            )\n'
     '            if not all(os.path.isfile(path) for path in (\n'
-    '                native_qsb, native_qsb_config, native_quick_tools_config\n'
+    '                native_qsb, native_svgtoqml, native_qsb_config, native_quick_tools_config\n'
     '            )):\n'
     '                raise ConanInvalidConfiguration(\n'
-    '                    "Qt cross-build requires native qsb and Qt6QuickTools packages: "\n'
-    '                    + native_qsb + "; " + native_quick_tools_config\n'
+    '                    "Qt cross-build requires native qsb/svgtoqml and Qt6QuickTools packages: "\n'
+    '                    + native_qsb + "; " + native_svgtoqml + "; " + native_quick_tools_config\n'
     '                )\n'
 )
 _HOST_PATH_MARKER = 'tc.cache_variables["QT_HOST_PATH_CMAKE_DIR"]'
 _ADDITIONAL_HOST_PATH_MARKER = 'tc.cache_variables["QT_ADDITIONAL_PACKAGES_PREFIX_PATH"]'
 _QUICK_TOOLS_DIR_MARKER = 'tc.cache_variables["Qt6QuickTools_DIR"]'
 _NATIVE_QUICK_TOOLS_CONFIG_MARKER = 'native_quick_tools_config = os.path.join'
+_NATIVE_SVGTOQML_MARKER = 'native_svgtoqml_name = "svgtoqml.exe"'
 _QUICK_PACKAGE_GUARD_ANCHOR = "        cmake.install()\n"
 _QUICK_PACKAGE_GUARD_MARKER = "missing_quick_libraries = []"
 _QUICK_PACKAGE_GUARD = '''        if cross_building(self) and self.options.qtdeclarative and self.options.qtshadertools and self.options.gui:
@@ -93,6 +96,7 @@ def _patch_host_path(text: str) -> str:
             _ADDITIONAL_HOST_PATH_MARKER in text
             and _QUICK_TOOLS_DIR_MARKER in text
             and _NATIVE_QUICK_TOOLS_CONFIG_MARKER in text
+            and _NATIVE_SVGTOQML_MARKER in text
         ):
             return text
         raise SystemExit(

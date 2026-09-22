@@ -580,6 +580,17 @@ jobs:
         done < <(otool -l "$app_host" | awk '/cmd LC_RPATH/{getline; getline; sub(/^.*path /, ""); sub(/ [(]offset.*/, ""); print}')
         install_name_tool -add_rpath '@loader_path/../Resources/lib' "$app_host"
 
+        # Conan's macOS Qt package is a relocatable collection of dylibs, not
+        # a Qt framework tree, so macdeployqt has nothing useful to deploy
+        # here.  The runtime has already been copied above; sign the finished
+        # bundle so the executable's linker signature is replaced by a valid
+        # bundle/resource seal.  A developer identity can be layered on later
+        # for notarized distribution; the ad-hoc signature is sufficient for
+        # CI/local bundle integrity, while Gatekeeper distribution still needs
+        # a Developer ID signature and notarization.
+        codesign --force --deep --sign - "$app"
+        codesign --verify --deep --strict --verbose=2 "$app"
+
     - name: Prune macOS Conan build trees before cache save
       if: success()
       shell: bash

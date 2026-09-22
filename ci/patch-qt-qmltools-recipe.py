@@ -22,9 +22,23 @@ _CUSTOM_CONFIG_BEGIN = "        # QtDeclarative's ARM64 cross-build needs the na
 _QML_TOOLS_CONFIG_MARKER = "add_executable(Qt6::${_qt_qml_tool} IMPORTED GLOBAL)"
 _SHADER_TOOLS_CONFIG_MARKER = "add_executable(Qt6::qsb IMPORTED GLOBAL)"
 _SHADER_TOOLS_VERSIONLESS_MARKER = "if(NOT TARGET Qt::qsb)"
+_QUICK_TOOLS_CONFIG_MARKER = "add_executable(Qt6::svgtoqml IMPORTED GLOBAL)"
+_QUICK_TOOLS_VERSIONLESS_MARKER = "if(NOT QT_NO_CREATE_VERSIONLESS_TARGETS AND NOT TARGET Qt::svgtoqml)"
 _QML_TOOLS_VERSION_CONFIG_MARKER = 'os.path.join(qml_tools_dir, "Qt6QmlToolsConfigVersion.cmake")'
 _SHADER_TOOLS_VERSION_CONFIG_MARKER = 'os.path.join(shader_tools_dir, "Qt6ShaderToolsToolsConfigVersion.cmake")'
+_QUICK_TOOLS_VERSION_CONFIG_MARKER = 'os.path.join(quick_tools_dir, "Qt6QuickToolsConfigVersion.cmake")'
+_QUICK_TOOLS_MACROS_MARKER = 'Qt6SvgToQmlMacros.cmake'
 _SHADER_TOOLS_VERSION_CONFIG = r'''        save(self, os.path.join(shader_tools_dir, "Qt6ShaderToolsToolsConfigVersion.cmake"), textwrap.dedent("""
+            set(PACKAGE_VERSION "6.11.1")
+            if(PACKAGE_FIND_VERSION VERSION_EQUAL PACKAGE_VERSION)
+              set(PACKAGE_VERSION_COMPATIBLE TRUE)
+              set(PACKAGE_VERSION_EXACT TRUE)
+            elseif(PACKAGE_FIND_VERSION VERSION_LESS PACKAGE_VERSION)
+              set(PACKAGE_VERSION_COMPATIBLE TRUE)
+            endif()
+            """))
+'''
+_QUICK_TOOLS_VERSION_CONFIG = r'''        save(self, os.path.join(quick_tools_dir, "Qt6QuickToolsConfigVersion.cmake"), textwrap.dedent("""
             set(PACKAGE_VERSION "6.11.1")
             if(PACKAGE_FIND_VERSION VERSION_EQUAL PACKAGE_VERSION)
               set(PACKAGE_VERSION_COMPATIBLE TRUE)
@@ -100,6 +114,38 @@ _QML_TOOLS_CONFIG = r'''        # QtDeclarative's ARM64 cross-build needs the na
             """))
 ''' + _SHADER_TOOLS_VERSION_CONFIG + r'''
 
+        # QtDeclarative's cross-build also needs the native svgtoqml tool.
+        # Conan Center removes the generated Qt6QuickTools export during
+        # package cleanup, so recreate the small host-tools config and keep
+        # Qt's macro file alongside it. The target-build svgtoqml executable
+        # must not be exposed to the x64 build runner.
+        quick_tools_dir = os.path.join(self.package_folder, "lib", "cmake", "Qt6QuickTools")
+        os.makedirs(quick_tools_dir, exist_ok=True)
+        copy(
+            self,
+            "Qt6SvgToQmlMacros.cmake",
+            os.path.join(self.source_folder, "qtdeclarative", "tools", "svgtoqml"),
+            quick_tools_dir,
+            keep_path=False,
+        )
+        save(self, os.path.join(quick_tools_dir, "Qt6QuickToolsConfig.cmake"), textwrap.dedent("""
+            set(Qt6QuickTools_FOUND TRUE)
+            get_filename_component(_qt_quick_tools_prefix "${CMAKE_CURRENT_LIST_DIR}/../../../" ABSOLUTE)
+            if(NOT TARGET Qt6::svgtoqml)
+              add_executable(Qt6::svgtoqml IMPORTED GLOBAL)
+              set_target_properties(Qt6::svgtoqml PROPERTIES
+                IMPORTED_LOCATION "${_qt_quick_tools_prefix}/bin/svgtoqml${CMAKE_EXECUTABLE_SUFFIX}")
+            endif()
+            if(NOT QT_NO_CREATE_VERSIONLESS_TARGETS AND NOT TARGET Qt::svgtoqml)
+              add_executable(Qt::svgtoqml IMPORTED GLOBAL)
+              set_target_properties(Qt::svgtoqml PROPERTIES
+                IMPORTED_LOCATION "${_qt_quick_tools_prefix}/bin/svgtoqml${CMAKE_EXECUTABLE_SUFFIX}")
+            endif()
+            include("${CMAKE_CURRENT_LIST_DIR}/Qt6SvgToQmlMacros.cmake")
+            set(Qt6QuickTools_TARGETS "Qt6::svgtoqml")
+            """))
+''' + _QUICK_TOOLS_VERSION_CONFIG + r'''
+
         extension = ""
 '''
 
@@ -157,6 +203,10 @@ def main() -> None:
             and _SHADER_TOOLS_VERSIONLESS_MARKER in text
             and _QML_TOOLS_VERSION_CONFIG_MARKER in text
             and _SHADER_TOOLS_VERSION_CONFIG_MARKER in text
+            and _QUICK_TOOLS_CONFIG_MARKER in text
+            and _QUICK_TOOLS_VERSIONLESS_MARKER in text
+            and _QUICK_TOOLS_VERSION_CONFIG_MARKER in text
+            and _QUICK_TOOLS_MACROS_MARKER in text
         ):
             return
         custom_start = text.find(_CUSTOM_CONFIG_BEGIN)
