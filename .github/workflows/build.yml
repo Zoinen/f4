@@ -1188,11 +1188,35 @@ jobs:
         path: ${{ env.CONAN_HOME }}/p
         key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-complete-${{ hashFiles('.github/workflows/build.yml', 'qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1', 'ci/patches/qwindowkit-default-maximize-hint.patch', 'ci/patches/libiconv-1.17-fix-error-function-declaration-without-prototype.patch', 'ci/configure-conan-remote.sh', 'ci/patch-qt-recipe.sh', 'ci/patch-qt-dependencies.py', 'ci/patch-qt-qmltools-recipe.py', 'ci/patch-bzip2-recipe.py', 'ci/patch-bzip2-recipe.sh', 'ci/patch-libgettext-recipe.py', 'ci/patch-libgettext-recipe.sh', 'ci/patch-libiconv-recipe.py', 'ci/patch-libiconv-recipe.sh', 'ci/patch-libffi-recipe.py', 'ci/patch-libffi-recipe.sh') }}
 
+    - name: Package portable single-file artifact
+      shell: bash
+      run: |
+        set -euo pipefail
+        artifact_base="f4-${{ matrix.platform }}-${{ matrix.arch }}"
+        source_dir="dist/${artifact_base}"
+        if [[ "${{ matrix.platform }}" == "windows" ]]; then
+          archive="${artifact_base}.zip"
+          SOURCE_DIR="$source_dir" ARCHIVE="$archive" python - <<'PY'
+        import os
+        import pathlib
+        import zipfile
+
+        source_dir = pathlib.Path(os.environ["SOURCE_DIR"])
+        archive_path = pathlib.Path(os.environ["ARCHIVE"])
+        with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.write(source_dir / "f4.exe", "f4.exe")
+        PY
+        else
+          archive="${artifact_base}.tar.gz"
+          tar -czf "$archive" -C "$source_dir" f4
+        fi
+        echo "Packaged $archive"
+
     - name: Upload portable single-file artifact
       uses: actions/upload-artifact@v4
       with:
         name: f4-portable-${{ matrix.platform }}-${{ matrix.arch }}
-        path: dist/f4-${{ matrix.platform }}-${{ matrix.arch }}/f4${{ matrix.platform == 'windows' && '.exe' || '' }}
+        path: f4-${{ matrix.platform }}-${{ matrix.arch }}.${{ matrix.platform == 'windows' && 'zip' || 'tar.gz' }}
         if-no-files-found: error
         retention-days: 7
 
@@ -2296,21 +2320,28 @@ jobs:
       run: |
         echo "::error::Official release prerequisites failed. build=${{ needs.build.result }}, qt-host=${{ needs.qt-host.result }}, portable-qt=${{ needs.portable-qt.result }}, build-batch=${{ needs.build-batch.result }}, build-win7=${{ needs.build-win7.result }}, build-termux=${{ needs.build-termux.result }}, test=${{ needs.test.result }}, race=${{ needs.race.result }}"
         exit 1
-    # dist/, for the same reason as the nightly job below: artifacts/ is a
-    # tracked directory of audit evidence, so publishing a glob over it ties
-    # the release assets to whatever happens to be checked out. This job does
-    # not check the repository out today, and this keeps that from mattering
-    # if it ever does.
+    - name: Checkout release packaging script
+      uses: actions/checkout@v7
     - name: Download all artifacts
       uses: actions/download-artifact@v8
       with:
         path: dist
-        merge-multiple: true
+        merge-multiple: false
+    - name: Assemble user-facing release assets
+      run: python3 ci/package-release.py dist release
     - name: Publish Release
       uses: softprops/action-gh-release@v3
       with:
-        files: dist/*
+        files: release/*
         generate_release_notes: true
+        body: |
+          ## Downloads
+
+          The primary desktop downloads are the six Linux/Windows archives and
+          macOS `f4-darwin-<arch>.app.zip` assets: Linux and Windows contain
+          one embedded-Qt executable; macOS contains the complete `F4.app`
+          bundle. Additional archives are retained for terminal-only and
+          experimental targets.
 
   # Эта джоба обновляет Homebrew tap при пуше тэгов v*.*.*,
   # чтобы под macOS можно было поставить f4 одной командой:
@@ -2432,7 +2463,10 @@ jobs:
       uses: actions/download-artifact@v8
       with:
         path: dist
-        merge-multiple: true
+        merge-multiple: false
+
+    - name: Assemble user-facing nightly assets
+      run: python3 ci/package-release.py dist release
 
     # The Releases page is sorted by each release's created_at, and GitHub
     # sets that to the date of the tagged commit, not to the moment the
@@ -2472,4 +2506,4 @@ jobs:
           **Commit:** `${{ env.SHORT_SHA }}`
           **Built on:** `${{ env.BUILD_TIME }}`
         prerelease: true
-        files: dist/*
+        files: release/*
