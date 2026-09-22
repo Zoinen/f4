@@ -68,22 +68,23 @@ fi
 # QWindowKit itself still uses the target Qt package selected above.
 if [ ! -f "${qwk_qmsetup_host_config}" ]; then
     rm -rf "${qwk_qmsetup_host_build}" "${qwk_qmsetup_host_install}"
-    qwk_qmsetup_host_flags=()
+    qwk_qmsetup_host_cmake_args=(
+        "-DCMAKE_BUILD_TYPE=Release"
+        "-DCMAKE_INSTALL_PREFIX=${qwk_qmsetup_host_install}"
+        "-DCMAKE_INSTALL_LIBDIR=lib"
+        "-DQMSETUP_STATIC_RUNTIME=ON"
+    )
     if [ "$(uname -s)" = "Linux" ]; then
         # Ubuntu 18.04's glibc still exposes pthread_sigmask from libpthread;
         # newer glibc folds it into libc, which hid this missing link flag on
         # the native ARM VM and on the regular Linux runner.
-        qwk_qmsetup_host_flags+=(
+        qwk_qmsetup_host_cmake_args+=(
             "-DCMAKE_CXX_FLAGS=-pthread"
             "-DCMAKE_EXE_LINKER_FLAGS=-pthread"
         )
     fi
     cmake -S "${qwk_source}/qmsetup" -B "${qwk_qmsetup_host_build}" -G Ninja \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_INSTALL_PREFIX="${qwk_qmsetup_host_install}" \
-        -DCMAKE_INSTALL_LIBDIR=lib \
-        -DQMSETUP_STATIC_RUNTIME=ON \
-        "${qwk_qmsetup_host_flags[@]}"
+        "${qwk_qmsetup_host_cmake_args[@]}"
     cmake --build "${qwk_qmsetup_host_build}" --target install --parallel
 fi
 test -f "${qwk_qmsetup_host_config}"
