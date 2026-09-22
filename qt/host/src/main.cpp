@@ -72,6 +72,41 @@ void configurePortableLinuxFontconfig()
 #endif
 }
 
+void configureMacBundleRuntime(int argc, char *argv[])
+{
+#if defined(Q_OS_MACOS)
+    if (argc == 0 || argv == nullptr || argv[0] == nullptr) {
+        return;
+    }
+
+    // A self-contained F4.app keeps Qt's dynamic runtime below
+    // Contents/Resources.  Qt's qt.conf lookup is intentionally not relied on
+    // here: LaunchServices and direct executable invocation do not resolve the
+    // bundle resource directory identically.  Set the paths before creating
+    // QGuiApplication so both launch modes use the same private runtime.
+    QDir executableDir = QFileInfo(QString::fromLocal8Bit(argv[0])).absoluteDir();
+    if (executableDir.dirName() != QStringLiteral("MacOS")
+        || !executableDir.cdUp()
+        || executableDir.dirName() != QStringLiteral("Contents")) {
+        return;
+    }
+
+    const QDir resources(executableDir.filePath(QStringLiteral("Resources")));
+    const QString plugins = resources.filePath(QStringLiteral("plugins"));
+    const QString qml = resources.filePath(QStringLiteral("qml"));
+    if (!QFileInfo(plugins).isDir() || !QFileInfo(qml).isDir()) {
+        return;
+    }
+
+    qputenv("QT_PLUGIN_PATH", QFile::encodeName(plugins));
+    qputenv("QML_IMPORT_PATH", QFile::encodeName(qml));
+    qputenv("QML2_IMPORT_PATH", QFile::encodeName(qml));
+#else
+    Q_UNUSED(argc);
+    Q_UNUSED(argv);
+#endif
+}
+
 QString renderedFontFamily(const QFont &font, const QString &fallback)
 {
     const QString renderedFamily = QFontInfo(font).family().trimmed();
@@ -162,6 +197,7 @@ int main(int argc, char *argv[])
     }
 
     configurePortableLinuxFontconfig();
+    configureMacBundleRuntime(argc, argv);
 
 #if defined(F4_PORTABLE_STATIC_LINUX)
     // Prefer the session-native Wayland plugin and retain XCB as a fallback.

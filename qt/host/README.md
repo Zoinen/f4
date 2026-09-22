@@ -289,6 +289,11 @@ The Conan generate step still stages the relocatable `lib`, `qml`, and
 `plugins` tree on macOS. This includes ZoinGallery, Qt QML and platform
 plugins, module shaders/assets, codec libraries, and the shared Qt runtime.
 
+The macOS CI job also publishes `f4-qt-darwin-<arch>.app.zip`. It contains a
+self-contained `F4.app` with the Go core, Qt host, dylibs, QML imports and
+plugins below `Contents/Resources`; it is the bundle to open in Finder. The
+tarball remains the relocatable sidecar tree for development and diagnostics.
+
 Run the host-side bridge test with:
 
 ```sh

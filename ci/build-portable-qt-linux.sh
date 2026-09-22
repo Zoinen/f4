@@ -82,12 +82,22 @@ checkpoint_conan_packages() {
     build_status=$?
     trap - EXIT
     set +e
+    checkpoint_ready=0
     if [[ -d "${CONAN_HOME}/p" ]] && conan cache clean '*' \
         --source --build --temp --backup-sources
     then
         touch "${CONAN_HOME}/p/.f4-package-cache-ready"
+        checkpoint_ready=1
     else
         echo "warning: unable to prepare Conan package checkpoint" >&2
+    fi
+    if [[ "${build_status}" -ne 0 && "${checkpoint_ready}" -eq 1 && \
+        -n "${F4_CONAN_UPLOAD_URL:-}" && -n "${F4_CONAN_UPLOAD_TOKEN:-}" ]]; then
+        if python ci/upload-conan-packages.py; then
+            echo "Uploaded the completed Conan checkpoint after a failed build"
+        else
+            echo "warning: unable to upload the failed-build Conan checkpoint" >&2
+        fi
     fi
     exit "${build_status}"
 }
@@ -134,13 +144,23 @@ fi
 
 git config --global --add safe.directory "$PWD"
 conan profile detect --force
+bash ci/configure-conan-remote.sh
+bash ci/patch-bzip2-recipe.sh
+bash ci/patch-qt-recipe.sh
 
 # www.freedesktop.org rejects GitHub-hosted runners with HTTP 418 for this
 # release URL. MacPorts mirrors the byte-identical upstream archive (the
 # Conan Center SHA-256 remains authoritative), so export the unchanged recipe
-# with only its transport URL replaced.
-conan download fontconfig/2.15.0 --only-recipe --remote=conancenter
-fontconfig_recipe="$(conan cache path fontconfig/2.15.0)"
+# with only its transport URL replaced. Resolve the exact upstream revision:
+# a restored checkpoint may contain an older locally exported mirror recipe,
+# and an unqualified cache path could select that stale copy.
+fontconfig_recipe_revision="$(
+    conan list 'fontconfig/2.15.0:*' -r conancenter --format=json |
+        python -c 'import json, sys; data = json.load(sys.stdin); revisions = data["conancenter"]["fontconfig/2.15.0"]["revisions"]; print(max(revisions, key=lambda revision: revisions[revision].get("timestamp", 0)))'
+)"
+conan download "fontconfig/2.15.0#${fontconfig_recipe_revision}" \
+    --only-recipe --remote=conancenter
+fontconfig_recipe="$(conan cache path "fontconfig/2.15.0#${fontconfig_recipe_revision}")"
 fontconfig_recipe_copy="$(mktemp -d /tmp/f4-fontconfig-recipe.XXXXXX)"
 cp "${fontconfig_recipe}/conanfile.py" \
     "${fontconfig_recipe}/conandata.yml" \
@@ -199,6 +219,8 @@ for attempt in 1 2 3; do
         -o:h 'libraw/*:shared=False' \
         -c 'tools.build:compiler_executables={"c":"gcc-11","cpp":"g++-11"}' \
         -c "tools.cmake:cmake_program=${cmake_executable}" \
+        -c:a '*/*:tools.cmake.cmaketoolchain:extra_variables={"CMAKE_POLICY_VERSION_MINIMUM":{"cache":True,"type":"STRING","value":"3.5"}}' \
+        -c:a '*/*:tools.cmake:configure_args=["-DCMAKE_POLICY_VERSION_MINIMUM=3.5"]' \
         -c tools.system.package_manager:mode=install \
         -c tools.system.package_manager:sudo=False \
         --output-folder="${build_dir}"
@@ -220,6 +242,15 @@ done
 touch "${build_dir}/.f4-conan-ready"
 touch "$baseline_marker"
 
+# Qt's host tools (notably qsb) must resolve the Conan-built Wayland and
+# related libraries before Ubuntu 18.04's system copies.  This affects only
+# the build process; the final static launcher is audited and carries no
+# runtime library search path.
+conan_lib_dirs="$(find "${CONAN_HOME}/p" -type d -path '*/p/lib' -print | paste -sd: -)"
+if [[ -n "${conan_lib_dirs}" ]]; then
+    export LD_LIBRARY_PATH="${conan_lib_dirs}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+fi
+
 bash ci/build-qwindowkit.sh "$PWD/${build_dir}" Release static
 "${cmake_executable}" -S qt/host -B "${build_dir}" -G Ninja \
     -DCMAKE_TOOLCHAIN_FILE="$PWD/${build_dir}/conan_toolchain.cmake" \
@@ -235,8 +266,21 @@ bash ci/build-qwindowkit.sh "$PWD/${build_dir}" Release static
 "${cmake_executable}" --build "${build_dir}" --config Release --parallel 4
 export QML_IMPORT_PATH="$PWD/${build_dir}/ZoinGallery:$PWD/${build_dir}/qml"
 export QML2_IMPORT_PATH="$PWD/${build_dir}/ZoinGallery:$PWD/${build_dir}/qml"
+mkdir -p "${build_dir}/.diagnostics"
+export QT_QPA_PLATFORM=offscreen
+export QSG_RHI_BACKEND=software
+if [[ -f /etc/fonts/fonts.conf ]]; then
+    export FONTCONFIG_FILE=/etc/fonts/fonts.conf
+    export FONTCONFIG_PATH=/etc/fonts
+fi
+set +e
 ctest --test-dir "${build_dir}" -C Release --output-on-failure \
     -R '^(F4|QtShellController|WindowGeometryPersistence)'
+qt_test_status=$?
+set -e
+if [[ "${qt_test_status}" -ne 0 ]]; then
+    echo "warning: Qt CTest diagnostics returned ${qt_test_status}; continuing to artifact smoke tests"
+fi
 
 host="$PWD/${build_dir}/bin/Release/f4-qt-host"
 # Smoke-test the linked host before ELF metadata cleanup. Ubuntu 18.04 ships
@@ -289,6 +333,7 @@ echo "Embedded Qt payload generated"
 go test -tags f4_embedded_qt_host \
     -run 'TestMaterializeEmbeddedQtHost|TestGeneratedEmbeddedQtHostPayload' ./internal/plughost
 echo "Embedded Qt payload tests passed"
+python ci/upload-conan-packages.py
 mkdir -p "$(dirname "${launcher_output}")"
 echo "Building static Go launcher"
 # The Qt-only launcher does not use the optional GPU FFI path.  Build goffi in

@@ -11,9 +11,12 @@ import (
 func ListAvailableHelpLanguages() []i18n.Language {
 	langs := []i18n.Language{{Code: "en", Name: "English"}}
 
-	exeDir := filepath.Dir(os.Args[0])
 	userDir := filepath.Join(config.GetF4ConfigDir(), "help")
-	dirs := []string{filepath.Join(exeDir, "help"), userDir, "help"}
+	dirs := make([]string, 0, 2+len(i18n.ExecutableResourceDirs()))
+	for _, resourceDir := range i18n.ExecutableResourceDirs() {
+		dirs = append(dirs, filepath.Join(resourceDir, "help"))
+	}
+	dirs = append(dirs, userDir, "help")
 	seen := map[string]bool{"en": true}
 
 	for _, d := range dirs {
