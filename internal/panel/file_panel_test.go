@@ -988,7 +988,10 @@ func TestFormatPanelFileNameSeparateExtension(t *testing.T) {
 
 func TestSeparateExtensionAppliesToEveryViewMode(t *testing.T) {
 	oldConfig := config.App
-	defer func() { config.App = oldConfig }()
+	defer func() {
+		waitForDirectoryLoads(t)
+		config.App = oldConfig
+	}()
 	config.App.SeparateFileExtensions = true
 
 	fp := NewFileSystemPanel(0, 0, 90, 12, vfs.NewOSVFS("."))
@@ -5647,7 +5650,7 @@ func BenchmarkFileSystemPanelSortLargeDirectory(b *testing.B) {
 	if err != nil || len(items) == 0 {
 		b.Fatalf("ReadDirPhased = %d rows, err=%v", len(items), err)
 	}
-	base := fileEntriesFromItems(items)
+	base := fileEntriesFromItems(items, config.App.ShowHiddenFiles)
 	fp := &FileSystemPanel{SortMode: SortName}
 	probe := append([]*FileEntry(nil), base...)
 	linear := fp.tryLinearNameSort(probe)

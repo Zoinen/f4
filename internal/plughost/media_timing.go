@@ -9,13 +9,16 @@ func mediaTimingResourceFields(resource *ExtUiMediaResource, fields ...any) []an
 	if resource == nil {
 		return fields
 	}
+	resource.mu.Lock()
+	accessProfile := resource.AccessProfile.String()
+	resource.mu.Unlock()
 	base := []any{
 		"resourceId", resource.Id,
 		"sourceKey", resource.SourceKey,
 		"path", resource.Path,
 		"sourceBytes", resource.Size,
 		"sizeKnown", resource.SizeKnown,
-		"accessProfile", resource.AccessProfile.String(),
+		"accessProfile", accessProfile,
 		"storageClass", resource.StorageClass.String(),
 	}
 	return append(base, fields...)

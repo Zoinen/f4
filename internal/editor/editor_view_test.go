@@ -1106,6 +1106,14 @@ func TestEditorView_LongLinePerformance(t *testing.T) {
 
 	// Wrap test in timeout. If editor "hangs", test fails.
 	done := make(chan struct{})
+	defer func() {
+		select {
+		case <-done:
+		case <-time.After(30 * time.Second):
+			t.Error("long-line worker did not stop after the performance timeout")
+		}
+		ev.Close()
+	}()
 	go func() {
 		// Simulate 100 "right" presses. This heavily loads ensureCursorVisible.
 		for i := 0; i < 100; i++ {
@@ -1127,7 +1135,7 @@ func TestEditorView_LongLinePerformance(t *testing.T) {
 	select {
 	case <-done:
 		// Success: all operations finished in time.
-	case <-time.After(3 * time.Second): // 3s — safe timeout for slow CI or heavy terminal.
+	case <-time.After(15 * time.Second): // Race instrumentation and slow CI need more headroom.
 		t.Fatal("Performance test timed out. EditorView is likely still hanging on long lines.")
 	}
 }

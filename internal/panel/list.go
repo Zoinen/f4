@@ -959,8 +959,8 @@ func (fp *FileSystemPanel) freshDirectoryEntries(items []vfs.VFSItem, showUpEntr
 	return entries
 }
 
-func fileEntriesFromItems(items []vfs.VFSItem) []*FileEntry {
-	if config.App.ShowHiddenFiles && len(items) >= 4096 {
+func fileEntriesFromItems(items []vfs.VFSItem, showHidden bool) []*FileEntry {
+	if showHidden && len(items) >= 4096 {
 		entries := make([]*FileEntry, len(items))
 		backing := make([]FileEntry, len(items))
 		workerCount := min(runtime.GOMAXPROCS(0), 8)
@@ -982,7 +982,7 @@ func fileEntriesFromItems(items []vfs.VFSItem) []*FileEntry {
 		return entries
 	}
 	visibleCount := len(items)
-	if !config.App.ShowHiddenFiles {
+	if !showHidden {
 		visibleCount = 0
 		for _, item := range items {
 			if item.Name == ".." || !item.IsHidden {
@@ -994,7 +994,7 @@ func fileEntriesFromItems(items []vfs.VFSItem) []*FileEntry {
 	backing := make([]FileEntry, visibleCount)
 	next := 0
 	for _, item := range items {
-		if !config.App.ShowHiddenFiles && item.Name != ".." && item.IsHidden {
+		if !showHidden && item.Name != ".." && item.IsHidden {
 			continue
 		}
 		backing[next].VFSItem = item
@@ -3199,7 +3199,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			if len(chunk) == 0 || !previewEligible || ctx.Err() != nil {
 				return
 			}
-			previewEntries := fileEntriesFromItems(chunk)
+			previewEntries := fileEntriesFromItems(chunk, loadShowHidden)
 			if len(previewEntries) == 0 || ctx.Err() != nil {
 				return
 			}
@@ -3277,7 +3277,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				len(window.Entries) > window.TotalCount || ctx.Err() != nil {
 				return
 			}
-			windowEntries := fileEntriesFromItems(window.Entries)
+			windowEntries := fileEntriesFromItems(window.Entries, loadShowHidden)
 			target := loadPendingSelection
 			targetFound := target == "" || target == ".." && showUpEntry
 			if !targetFound {
@@ -3540,7 +3540,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			if benchmark != nil {
 				conversionStartedNs = navtrace.NavigationBenchmarkMonotonicNs()
 			}
-			newEntries := fileEntriesFromItems(chunk)
+			newEntries := fileEntriesFromItems(chunk, loadShowHidden)
 			if benchmark != nil {
 				conversionFinishedNs := navtrace.NavigationBenchmarkMonotonicNs()
 				benchmark.EventAt("model.chunk.converted", "go.worker", conversionFinishedNs,
