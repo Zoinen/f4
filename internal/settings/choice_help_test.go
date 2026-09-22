@@ -39,6 +39,7 @@ func TestSettingsChoiceDescriptionsCoverageAndLocalization(t *testing.T) {
 }
 
 func TestSettingsDropdownHoverHelpDoesNotChangeDraft(t *testing.T) {
+	t.Cleanup(testutil.SwapFrameManager(t))
 	oldConfig := config.App
 	defer func() { config.App = oldConfig; InitLang() }()
 	palette := append([]uint64(nil), vtui.Palette...)
