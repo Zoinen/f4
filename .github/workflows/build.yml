@@ -355,6 +355,8 @@ jobs:
         include:
           - runner: macos-14
             platform: darwin
+          - runner: macos-15-intel
+            platform: darwin
     env:
       CONAN_HOME: ${{ github.workspace }}/.conan2
       F4_CONAN_REMOTE_URL: ${{ vars.F4_CONAN_REMOTE_URL }}
