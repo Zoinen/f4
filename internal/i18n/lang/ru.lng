@@ -76,6 +76,12 @@ Panel.Column.Size=Размер
 Panel.Column.Modified=Изменён
 Panel.UpDir=ВВЕРХ
 Panel.SelectedInfo=Байт: %s, файлов: %d, папок: %d
+Panel.View.Columns2=Колонки · &2
+Panel.View.Columns3=Колонки · &3
+Panel.View.Details=&Подробно
+Panel.View.Masonry=&Плитки
+Panel.View.Icons=Значки
+Panel.View.Grid=Сетка
 
 Panels.Prompt=>
 
@@ -425,6 +431,10 @@ Action.App.SQLite.Desc=Открыть клиент SQLite для базы дан
 Action.Panel.TempPanel.Desc=Открыть временную панель или выбрать сохранённый список
 Action.Settings.MacKeyboard=Клавиатура &Mac
 Action.Settings.MacKeyboard.Desc=Раскладка macOS для правки текста: Cmd — начало и конец строки и файла, Opt — переходы по словам
+Action.History.ImportFar3=Импорт истории Far3
+Action.History.ImportFar3.Desc=Объединить историю команд, просмотра, редактора и папок из Far Manager 3
+Action.UserMenu.ImportFar3=Импорт меню пользователя Far Manager 3
+Action.UserMenu.ImportFar3.Desc=Добавить меню пользователя Far Manager 3 в главное меню F4
 
 Editor.GotoTitle=Перейти к позиции
 Editor.GotoLine=Строка:
@@ -588,6 +598,7 @@ Menu.Shell.Options=&Настройки
 Menu.Terminal.File=&Файл
 Menu.ProxySettings=Настройки &прокси
 Menu.Terminal.Options=&Параметры
+Menu.Left.Gallery=Галерея
 
 RemoteCmd.Title=Команда на сервере
 RemoteCmd.Prompt=Команда:
@@ -682,6 +693,7 @@ PanelSettings.CommandLineAutoComplete=Включить авто&дополнен
 PanelSettings.AlwaysShowMenuBar=Всегда показывать строку &меню
 PanelSettings.RecordMacrosTo=Записывать макросы в:
 PanelSettings.SearchExactOnHit=Быстрый поиск: только &точные совпадения (если есть)
+PanelSettings.SearchHideUnfocused=Скрывать командную строку без фокуса
 
 Jobs.Title=Фоновые задания
 Jobs.BtnShow=&Показать
@@ -857,6 +869,10 @@ AppearanceSettings.WorkspaceNumbersSession=Сохранять в текущей 
 AppearanceSettings.WorkspaceNumbersOrder=Следовать текущему порядку вкладок
 AppearanceSettings.ExportBtn=&Экспорт цветовой схемы
 AppearanceSettings.ColorCorrection=Корректировать &контрастность цветов
+AppearanceSettings.IconSet=Набор &значков QML:
+AppearanceSettings.IconSetLucide=Lucide
+AppearanceSettings.IconSetSystem=Системные
+AppearanceSettings.RestartRequired=Изменения шрифта GUI вступят в силу\nпосле перезапуска приложения.
 
 ConfirmationsSettings.Title= Подтверждения
 ConfirmationsSettings.Copy=Подтверждать &копирование
@@ -962,6 +978,13 @@ History.EmptyFolders=История папок пуста.
 History.EmptyCommands=История команд пуста.
 History.EmptyViewEdit=История просмотра и редактора пуста.
 History.SourceUnavailable=Файловая система этой записи больше не открыта ни в одной панели.
+History.Far3.Title=Импорт истории Far3
+History.Far3.Path=Папка Far3 или history.db:
+History.Far3.Merge=Объединить историю без повторов.
+History.Far3.Import=&Импорт
+History.Far3.EmptyPath=Укажите папку Far3, профиль или путь к history.db.
+History.Far3.Result=Добавлено команд: %d, файлов: %d, папок: %d.\nПропущено неподдерживаемых записей: %d (пути плагинов или внешние запуски).
+History.Far3.NotFound=В этой папке не найдена установка Far3 или файл history.db.
 
 UserMenu.LocalMenuTitle=Локальное меню
 UserMenu.MainMenuTitle=Главное меню
@@ -973,6 +996,14 @@ UserMenu.CreateSubmenuTitle= Создать подменю
 UserMenu.LabelHotkey=Горячая &клавиша:
 UserMenu.LabelLabel=&Метка:
 UserMenu.LabelCommand=&Команда:
+UserMenu.Far3.Title=Импорт меню пользователя Far3
+UserMenu.Far3.Path=FarMenu.ini или папка Far:
+UserMenu.Far3.Merge=Добавить в главное меню.
+UserMenu.Far3.Draft=Импорт в черновик главного меню.
+UserMenu.Far3.Empty=В этом файле не найдены пункты меню пользователя.
+UserMenu.Far3.Result=В главное меню добавлено пунктов верхнего уровня: %d.
+UserMenu.Far3.Keep=Существующие пункты сохраняются.
+UserMenu.Far3.Apply=Сохранение кнопкой «Применить».
 
 Language.Title= Язык (Languages)
 Language.Changed=Язык изменен.\nНекоторым элементам интерфейса может потребоваться\nперезапуск приложения для полного обновления.
@@ -1353,6 +1384,7 @@ KeyBar.SheetF7=Поиск
 KeyBar.SheetF10=Меню
 KeyBar.SheetShiftF2=Записать как
 KeyBar.SheetShiftF3=Экспорт
+KeyBar.ShiftF12=GUI/Текст
 
 Arkanoid.HighScores= Рекорды
 
@@ -3075,16 +3107,24 @@ SettingsCenter.Text.2da370fe1bd734d8be879c0af32adee32a2c4d659b1a8bd536a189cf1a15
 SettingsCenter.Text.a2d419499f292a30e04544f5785aaebc51ccf4e777d251f9cb2bfe818a781064=Не отправлять учётные данные аутентификации. Подходит только для ресурсов WebDAV, допускающих анонимный доступ.
 SettingsCenter.Matches=Совпадений: %d
 SettingsCenter.ClearSearch=Очистить поиск
+SettingsCenter.Text.c925a11891b84dfcf3a6a35ab8064b4ff807efc9c9afac7df8081e91e3af0116=Командная строка
+SettingsCenter.CommandLineMultiline.Label=Многострочный ввод команд
+SettingsCenter.CommandLineMultiline.Description=Сохранять переводы строк и расширять поле команды вверх в консоли и GUI. Shift+Enter вставляет перевод строки.
+SettingsCenter.CommandLineWordWrap.Label=Переносить аргументы команды
+SettingsCenter.CommandLineWordWrap.Description=Показывать каждый аргумент с дефисом вне кавычек на новой визуальной строке и выделять дефис цветом. Перенос не меняет текст команды.
+SettingsCenter.Text.2c3ddb3c1528cff83c63ad44c6c129d966a6dc63da9fdab8f8080dfeaa1354e3=Импорт меню пользователя Far Manager 3
+SettingsCenter.Text.09c4464a863191a292d14cb10ea4ae0a37dd34d7864363125ee5920194a08eb2=Добавить FarMenu.ini в черновик главного меню. Существующие пункты сохраняются; «Применить» сохранит импорт.
+SettingsCenter.Text.2cff9baabf56ca002610e113bc94deb6ededddfc3c130365b6e88ed5195bf774=Импорт
+SettingsCenter.SearchCommandHideUnfocused.Label=Скрывать командную строку без фокуса
+SettingsCenter.SearchCommandHideUnfocused.Description=В режиме «Сначала поиск» скрывать командную строку, когда фокус на панели. Клавиша тильды открывает её.
+SettingsCenter.HidePanelPathBar.Label=Скрывать строки пути панелей (GUI)
+SettingsCenter.HidePanelPathBar.Description=Скрывать путь, сортировку и режим просмотра над графическими панелями. Ctrl+Shift+B переключает эту настройку.
 
-Menu.Left.Gallery=Галерея
-AppearanceSettings.IconSet=Набор &значков QML:
-AppearanceSettings.IconSetLucide=Lucide
-AppearanceSettings.IconSetSystem=Системные
-AppearanceSettings.RestartRequired=Изменения шрифта GUI вступят в силу\nпосле перезапуска приложения.
-KeyBar.ShiftF12=GUI/Текст
 Presentation.GUI=Графический интерфейс
 Presentation.Text=Текстовый интерфейс
+
 MacOSLocations.Title=Расположения macOS
+
 WindowsLocations.Title=Расположения Windows
 WindowsLocations.DriveItem=Расположения Windows
 WindowsLocations.GalleryTitle=Галерея
@@ -3097,56 +3137,7 @@ WindowsLocations.AccessErrorFmt=Не удаётся открыть папку:\n
 WindowsLocations.AccessUnavailable=Это расположение недоступно.
 WindowsLocations.AccessNotFolder=Это расположение не является папкой.
 
-Panel.View.Columns2=Колонки · &2
-
-Panel.View.Columns3=Колонки · &3
-
-Panel.View.Details=&Подробно
-
-Panel.View.Masonry=&Плитки
-Panel.View.Icons=Значки
-Panel.View.Grid=Сетка
-
 DiskMenu.MacOSLocations=&Места macOS
-
 DiskMenu.MacOSLoading=Загрузка мест macOS…
-
 DiskMenu.ShellLoading=◌ Загрузка…
-
 DiskMenu.ShellEmpty=Нет мест Windows Shell
-SettingsCenter.Text.c925a11891b84dfcf3a6a35ab8064b4ff807efc9c9afac7df8081e91e3af0116=Командная строка
-SettingsCenter.CommandLineMultiline.Label=Многострочный ввод команд
-SettingsCenter.CommandLineMultiline.Description=Сохранять переводы строк и расширять поле команды вверх в консоли и GUI. Shift+Enter вставляет перевод строки.
-SettingsCenter.CommandLineWordWrap.Label=Переносить аргументы команды
-SettingsCenter.CommandLineWordWrap.Description=Показывать каждый аргумент с дефисом вне кавычек на новой визуальной строке и выделять дефис цветом. Перенос не меняет текст команды.
-
-Action.History.ImportFar3=Импорт истории Far3
-Action.History.ImportFar3.Desc=Объединить историю команд, просмотра, редактора и папок из Far Manager 3
-History.Far3.Title=Импорт истории Far3
-History.Far3.Path=Папка Far3 или history.db:
-History.Far3.Merge=Объединить историю без повторов.
-History.Far3.Import=&Импорт
-History.Far3.EmptyPath=Укажите папку Far3, профиль или путь к history.db.
-History.Far3.Result=Добавлено команд: %d, файлов: %d, папок: %d.\nПропущено неподдерживаемых записей: %d (пути плагинов или внешние запуски).
-History.Far3.NotFound=В этой папке не найдена установка Far3 или файл history.db.
-
-UserMenu.Far3.Title=Импорт меню пользователя Far3
-UserMenu.Far3.Path=FarMenu.ini или папка Far:
-UserMenu.Far3.Merge=Добавить в главное меню.
-UserMenu.Far3.Draft=Импорт в черновик главного меню.
-UserMenu.Far3.Empty=В этом файле не найдены пункты меню пользователя.
-UserMenu.Far3.Result=В главное меню добавлено пунктов верхнего уровня: %d.
-Action.UserMenu.ImportFar3=Импорт меню пользователя Far Manager 3
-Action.UserMenu.ImportFar3.Desc=Добавить меню пользователя Far Manager 3 в главное меню F4
-SettingsCenter.Text.2c3ddb3c1528cff83c63ad44c6c129d966a6dc63da9fdab8f8080dfeaa1354e3=Импорт меню пользователя Far Manager 3
-SettingsCenter.Text.09c4464a863191a292d14cb10ea4ae0a37dd34d7864363125ee5920194a08eb2=Добавить FarMenu.ini в черновик главного меню. Существующие пункты сохраняются; «Применить» сохранит импорт.
-SettingsCenter.Text.2cff9baabf56ca002610e113bc94deb6ededddfc3c130365b6e88ed5195bf774=Импорт
-UserMenu.Far3.Keep=Существующие пункты сохраняются.
-UserMenu.Far3.Apply=Сохранение кнопкой «Применить».
-
-PanelSettings.SearchHideUnfocused=Скрывать командную строку без фокуса
-SettingsCenter.SearchCommandHideUnfocused.Label=Скрывать командную строку без фокуса
-SettingsCenter.SearchCommandHideUnfocused.Description=В режиме «Сначала поиск» скрывать командную строку, когда фокус на панели. Клавиша тильды открывает её.
-
-SettingsCenter.HidePanelPathBar.Label=Скрывать строки пути панелей (GUI)
-SettingsCenter.HidePanelPathBar.Description=Скрывать путь, сортировку и режим просмотра над графическими панелями. Ctrl+Shift+B переключает эту настройку.
