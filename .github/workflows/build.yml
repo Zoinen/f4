@@ -584,12 +584,9 @@ jobs:
 
         # Conan's macOS Qt package is a relocatable collection of dylibs, not
         # a Qt framework tree, so macdeployqt has nothing useful to deploy
-        # here.  The runtime has already been copied above; sign the finished
-        # bundle so the executable's linker signature is replaced by a valid
-        # bundle/resource seal.  A developer identity can be layered on later
-        # for notarized distribution; the ad-hoc signature is sufficient for
-        # CI/local bundle integrity, while Gatekeeper distribution still needs
-        # a Developer ID signature and notarization.
+        # here.  The runtime has already been copied above.  Keep an ad-hoc
+        # bundle seal for CI/local integrity; release artifacts do not require
+        # a Developer ID certificate or Apple notarization.
         codesign --force --deep --sign - "$app"
         codesign --verify --deep --strict --verbose=2 "$app"
 

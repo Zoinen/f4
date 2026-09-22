@@ -16,10 +16,9 @@ the existing ExtUI protocol.
 The two-process boundary is intentional. Do not merge the Go runtime and the Qt
 event loop into one process merely to call the result a single binary.
 
-The downloadable unit for macOS is one signed and notarized `.app` bundle. Its
-Go executable, Qt helper, frameworks, plugins, and resources are nested code and
-data inside that bundle and must be signed before distribution. Do not extract
-an executable helper into a user cache on macOS.
+The downloadable unit for macOS is one normal `.app` bundle. Its Go executable,
+Qt helper, frameworks, plugins, and resources are nested code and data inside
+that bundle. Do not extract an executable helper into a user cache on macOS.
 
 User-installed plugins, user configuration, fonts, certificates, themes, GPU
 drivers, display servers, and other host-owned data or services are outside the
@@ -107,11 +106,11 @@ probe or the DLL import audit does not replace either of the checks above.
 - Use the repository deployment target consistently for Qt and every native
   dependency. Qt 6.11 currently makes that target macOS 13.0.
 - Prefer bundled dynamic Qt frameworks and plugins. Static Qt is permitted only
-  when it demonstrably simplifies the signed bundle; it is not a portability
+  when it demonstrably simplifies the bundle; it is not a portability
   requirement because Apple system frameworks remain dynamic.
-- Put the Go executable and Qt helper inside one normal `.app`, sign nested code
-  in the required order, sign the outer bundle, notarize it, and verify it with
-  Gatekeeper tooling.
+- Put the Go executable and Qt helper inside one normal `.app` and verify the
+  bundle layout, runtime paths, and startup behavior on both macOS
+  architectures.
 
 ## Embedded Qt-host lifecycle
 
