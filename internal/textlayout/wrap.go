@@ -527,10 +527,15 @@ func (we *WrapEngine) GetProjectionFragments(logLineIdx, count, columns int) []L
 	if we.wordWrap {
 		return we.GetFragmentsThrough(logLineIdx, count)
 	}
-	we.advanceLine(logLineIdx, 1, int(^uint(0)>>1), -1, max(1, columns))
+	columns = max(1, columns)
+	we.advanceLine(logLineIdx, 1, int(^uint(0)>>1), -1, columns)
 	fragments := we.projectedFragments(logLineIdx)
+	if len(fragments) > 0 && fragments[0].VisualWidth > columns {
+		clipped := we.clippedProjectionFragment(fragments[0], columns)
+		return []LineFragment{clipped}
+	}
 	if logLineIdx >= 0 && logLineIdx < len(we.fragmentCache) {
-		if scan := we.fragmentCache[logLineIdx].pending; scan != nil && !scan.stopped && scan.width < max(1, columns) && len(fragments) > 0 {
+		if scan := we.fragmentCache[logLineIdx].pending; scan != nil && !scan.stopped && scan.width < columns && len(fragments) > 0 {
 			fragments[0].Loading = true
 		}
 	}
@@ -553,6 +558,46 @@ func (we *WrapEngine) projectedFragments(logLineIdx int) []LineFragment {
 		}}
 	}
 	return nil
+}
+
+// clippedProjectionFragment keeps an unwrapped row's source span bounded by
+// the requested horizontal viewport even after a cursor/selection lookup has
+// scanned farther into the same logical line. The layout cache retains that
+// scan progress, but the visible projection must not grow with an unrelated
+// scalar cursor update.
+func (we *WrapEngine) clippedProjectionFragment(fragment LineFragment, columns int) LineFragment {
+	if columns <= 0 || fragment.VisualWidth <= columns || fragment.ByteOffsetEnd <= fragment.ByteOffsetStart {
+		return fragment
+	}
+	readLength := min(fragment.ByteOffsetEnd-fragment.ByteOffsetStart, columns*utf8.UTFMax+utf8.UTFMax-1)
+	we.tmpBuf = we.tmpBuf[:0]
+	data, err := we.Pt.AppendRange(we.tmpBuf, fragment.ByteOffsetStart, readLength)
+	if err != nil || len(data) == 0 {
+		return fragment
+	}
+	width, end := 0, fragment.ByteOffsetStart
+	for len(data) > 0 && width < columns {
+		if !utf8.FullRune(data) && end+len(data) < fragment.ByteOffsetEnd {
+			break
+		}
+		r, size := utf8.DecodeRune(data)
+		if size <= 0 {
+			break
+		}
+		if r == '\n' {
+			break
+		}
+		width += we.runeWidth(r, fragment.VisualColumnStart+width)
+		end += size
+		data = data[size:]
+	}
+	if end == fragment.ByteOffsetStart {
+		return fragment
+	}
+	fragment.ByteOffsetEnd = end
+	fragment.VisualWidth = width
+	fragment.Loading = false
+	return fragment
 }
 
 func (we *WrapEngine) runeWidth(r rune, column int) int {
@@ -884,6 +929,14 @@ func (we *WrapEngine) LogicalToVisual(byteOffset int) (visualRow, visualCol int)
 	fragments := we.GetFragmentsForOffset(logLineIdx, byteOffset)
 	if !we.wordWrap {
 		fragments = we.GetProjectionFragments(logLineIdx, 1, max(we.wrapWidth, byteOffset-we.Li.GetLineOffset(logLineIdx)+1))
+		if len(fragments) > 0 && byteOffset > fragments[0].ByteOffsetEnd {
+			// The byte-to-column request above is intentionally bounded by the
+			// source offset, while the visible projection may end at an earlier
+			// visual-cell boundary (tabs and wide runes can consume several
+			// cells). Reuse the scan that GetFragmentsForOffset extended to the
+			// anchor.
+			fragments = we.projectedFragments(logLineIdx)
+		}
 	}
 	totalRow := we.rowOffsets[logLineIdx]
 

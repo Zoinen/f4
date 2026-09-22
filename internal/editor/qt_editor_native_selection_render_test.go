@@ -105,7 +105,8 @@ func TestNativeEditorSelectionUsesStableRowsAndScalarOverlayState(t *testing.T) 
 	t.Run("binary", func(t *testing.T) {
 		data, err := os.ReadFile(`C:\Windows\pyw.exe`)
 		if err != nil {
-			t.Skip("Windows pyw.exe fixture unavailable")
+			data = make([]byte, 8192)
+			copy(data, []byte("MZ"))
 		}
 		check(t, data)
 	})

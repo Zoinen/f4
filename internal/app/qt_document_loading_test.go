@@ -8,6 +8,7 @@ import (
 	"github.com/unxed/f4/internal/editor"
 	"github.com/unxed/f4/internal/fileops"
 	"github.com/unxed/f4/internal/panel"
+	"github.com/unxed/f4/internal/paneltest"
 	"github.com/unxed/f4/internal/piecetable"
 	"github.com/unxed/f4/internal/viewer"
 	"github.com/unxed/f4/vfs"
@@ -371,6 +372,7 @@ func TestPendingRemoteOpenCancellationOwnsProgressLifetime(t *testing.T) {
 }
 
 func TestOpeningProgressDialogFollowsRuntimeTheme(t *testing.T) {
+	t.Cleanup(paneltest.SwapFrameManager(t))
 	indices := []int{vtui.ColDialogText, vtui.ColDialogEdit, vtui.ColDialogBox,
 		vtui.ColDialogBoxTitle, vtui.ColDialogButton, vtui.ColDialogSelectedButton,
 		vtui.ColDialogHighlightButton, vtui.ColDialogHighlightSelectedButton}
