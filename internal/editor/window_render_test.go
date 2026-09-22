@@ -5,6 +5,7 @@ import (
 	"github.com/unxed/f4/internal/config"
 	"github.com/unxed/f4/internal/piecetable"
 	"github.com/unxed/f4/internal/semantic"
+	"github.com/unxed/f4/internal/testutil"
 	"github.com/unxed/f4/internal/theme"
 	"github.com/unxed/f4/plugins/chroma"
 	"github.com/unxed/vtui"
@@ -14,6 +15,7 @@ import (
 )
 
 func TestSemanticStyledEditorWindowRowsMatchesDisplayObjectAndRestoresState(t *testing.T) {
+	t.Cleanup(testutil.SwapFrameManager(t))
 	vtui.SetDefaultPalette()
 	theme.SetDefaultF4Palette()
 	oldCrosshair, oldCrossMode := config.App.EditorCrosshair, config.App.EditorCrossMode

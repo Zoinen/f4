@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/unxed/f4/internal/config"
 	"github.com/unxed/f4/internal/semantic"
+	"github.com/unxed/f4/internal/testutil"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
@@ -48,6 +49,7 @@ func (f *viewerNavigationBlockingRead) unblock() {
 
 func navigationTestViewer(t *testing.T, data []byte, columns, rows int) (*ViewerView, *viewerNavigationBlockingRead) {
 	t.Helper()
+	t.Cleanup(testutil.SwapFrameManager(t))
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	file := &viewerNavigationBlockingRead{
 		ReadAtCloser: &vfs.MemoryReadAtCloser{Data: data},
