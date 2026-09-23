@@ -234,6 +234,8 @@ private slots:
     void routeValuesRejectNonCanonicalInput();
     void normalizationIsDeterministic();
     void lucideSourcesAndFileClassification();
+    void lucideStrokeWidthFollowsMeasuredGallerySizes();
+    void lucideStrokeWidthIsAppliedToRasterRoutes();
     void diskPluginBrandSourcesAndRasterRoutes();
     void largeLucideRouteRendersAVisibleDprAwareFallback();
     void chromeLucideRoutesRenderNamedResources();
@@ -391,6 +393,47 @@ void F4IconProviderTests::lucideSourcesAndFileClassification()
         128, 2.0, 123456);
     const QUrlQuery galleryQuery(versionedGallerySource);
     QVERIFY(!galleryQuery.hasQueryItem(QStringLiteral("version")));
+}
+
+void F4IconProviderTests::lucideStrokeWidthFollowsMeasuredGallerySizes()
+{
+    // Details uses a fixed 16-DIP icon. Default Masonry uses
+    // (150-DIP density - 8-DIP spacing) * 0.55 = 78.1 DIPs before the
+    // physical-pixel snap in GalleryEntryDelegateBase::snapIconExtent().
+    QCOMPARE(F4IconProvider::lucideStrokeWidth(16.0), qreal(2.0));
+    QCOMPARE(F4IconProvider::lucideStrokeWidth(78.1), qreal(1.0));
+    QCOMPARE(F4IconProvider::lucideStrokeWidth(47.0), qreal(1.5));
+    QCOMPARE(F4IconProvider::lucideStrokeWidth(1.0), qreal(2.0));
+    QCOMPARE(F4IconProvider::lucideStrokeWidth(200.0), qreal(1.0));
+    QCOMPARE(F4IconProvider::lucideStrokeWidth(
+                 std::numeric_limits<qreal>::quiet_NaN()), qreal(2.0));
+
+    F4IconSet icons(QStringLiteral("test-icons"));
+    QCOMPARE(icons.lucideStrokeWidth(16.0), qreal(2.0));
+    QCOMPARE(icons.lucideStrokeWidth(47.0), qreal(1.5));
+    QCOMPARE(icons.lucideStrokeWidth(78.1), qreal(1.0));
+}
+
+void F4IconProviderTests::lucideStrokeWidthIsAppliedToRasterRoutes()
+{
+    F4IconProvider provider(std::make_unique<NullBackend>());
+    F4IconSet icons(QStringLiteral("test-icons"));
+    const QColor tint(QStringLiteral("#4e9bd4"));
+    const QUrl fixed = icons.rasterizedLucideSource(
+        QStringLiteral("folder"), 40, 1.0, tint);
+    const QUrl dynamic = icons.rasterizedLucideSource(
+        QStringLiteral("folder"), 40, 1.0, tint, 1.5);
+
+    QCOMPARE(QUrlQuery(dynamic).queryItemValue(
+                 QStringLiteral("strokeWidth")), QStringLiteral("1.5"));
+    const QImage fixedImage = provider.requestImage(
+        F4IconProvider::routeId(fixed), nullptr, {});
+    const QImage dynamicImage = provider.requestImage(
+        F4IconProvider::routeId(dynamic), nullptr, {});
+    QVERIFY(!fixedImage.isNull());
+    QVERIFY(!dynamicImage.isNull());
+    QVERIFY2(!exactImageDifference(fixedImage, dynamicImage).isEmpty(),
+             "a dynamic stroke route must not render the fixed-width SVG");
 }
 
 void F4IconProviderTests::diskPluginBrandSourcesAndRasterRoutes()

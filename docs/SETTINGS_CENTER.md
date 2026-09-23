@@ -643,8 +643,8 @@ catalog, drafts, semantic controls, search results or console dialog.
 
 The GUI page hosts `ThemeEditorContent.qml`, extracted from the original
 configurator without replacing its color list, OKLCH/RGB/hex editor, font/wheel
-controls, toggles or Reset/Restore/Save/Close buttons. `ThemeEditor.qml` is its
-standalone window wrapper. The app icon requests this native page and sends only
+controls, Lucide/Native icon-set selector, toggles or Reset/Restore/Save/Close
+buttons. `ThemeEditor.qml` is its standalone window wrapper. The app icon requests this native page and sends only
 the generic `settings.open` navigation action. Core pages keep their existing
 semantic rendering. Small windows scroll the intact native content.
 

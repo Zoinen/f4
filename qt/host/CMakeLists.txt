@@ -432,9 +432,9 @@ set(F4_STREAMLINE_ICON_NAMES
 set(F4_STREAMLINE_ICONS ${F4_STREAMLINE_ICON_NAMES})
 list(TRANSFORM F4_STREAMLINE_ICONS PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/icons/streamline/")
 
-# Gallery renders the same icons at a much larger size. Generate a second,
-# thinner set from the vendored Lucide SVGs at configure time so the two sets
-# cannot drift and no SVG rewriting is needed at runtime.
+# Gallery renders the same icons at a much larger size. Keep a second,
+# thinner set from the vendored Lucide SVGs at configure time for static and
+# non-host embedders; the Qt host can override its stroke per rendered size.
 set(F4_GALLERY_LUCIDE_STROKE_WIDTH "1" CACHE STRING
   "Stroke width used by the large Lucide icons in Gallery")
 set(F4_GALLERY_LUCIDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/lucide-gallery")
@@ -1329,6 +1329,11 @@ if(BUILD_TESTING)
   set_tests_properties(F4NativeSettingsPixelGridTest PROPERTIES
     ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../.."
+  )
+  add_test(NAME F4QuickViewIconSetSettingsTest
+    COMMAND F4QuickViewSurfaceTests themeDialogIconSetControlIsLiveAndPersisted)
+  set_tests_properties(F4QuickViewIconSetSettingsTest PROPERTIES
+    ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
   )
   add_test(NAME F4QuickViewThemeDialogPixelGridTest
     COMMAND F4QuickViewSurfaceTests

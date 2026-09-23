@@ -278,14 +278,32 @@ private:
 class TestIcons final : public QObject
 {
     Q_OBJECT
-    Q_PROPERTY(qulonglong revision READ revision CONSTANT)
-    Q_PROPERTY(bool system READ system CONSTANT)
-    Q_PROPERTY(bool fileIconsAreFullColor READ fileIconsAreFullColor CONSTANT)
+    Q_PROPERTY(qulonglong revision READ revision NOTIFY revisionChanged)
+    Q_PROPERTY(QString name READ name WRITE setName NOTIFY iconSetChanged)
+    Q_PROPERTY(bool system READ system NOTIFY iconSetChanged)
+    Q_PROPERTY(bool fileIconsAreFullColor READ fileIconsAreFullColor
+               NOTIFY iconSetChanged)
 
 public:
-    qulonglong revision() const { return 1; }
-    bool system() const { return false; }
-    bool fileIconsAreFullColor() const { return false; }
+    qulonglong revision() const { return m_revision; }
+    QString name() const { return m_name; }
+    void setName(const QString &name)
+    {
+        const QString normalized = name.trimmed().compare(
+                                       QStringLiteral("system"),
+                                       Qt::CaseInsensitive)
+                == 0
+            ? QStringLiteral("system")
+            : QStringLiteral("lucide");
+        if (m_name == normalized)
+            return;
+        m_name = normalized;
+        ++m_revision;
+        emit iconSetChanged();
+        emit revisionChanged();
+    }
+    bool system() const { return m_name == QStringLiteral("system"); }
+    bool fileIconsAreFullColor() const { return system(); }
 
     Q_INVOKABLE QUrl iconSource(const QString &name, int, qreal) const
     {
@@ -314,6 +332,14 @@ public:
     {
         return {};
     }
+
+signals:
+    void iconSetChanged();
+    void revisionChanged();
+
+private:
+    QString m_name = QStringLiteral("lucide");
+    qulonglong m_revision = 1;
 };
 
 class TestThemePersistence final : public QObject
@@ -813,6 +839,7 @@ private slots:
     void themeSelectionBordersAreLiveAndPersisted();
     void themeBooleanOptionsFollowLivePalette();
     void themeDialogFontRenderingControlIsLiveAndThemeAware();
+    void themeDialogIconSetControlIsLiveAndPersisted();
     void themeColorListHoverAndPressFlashHaveExplicitLifetimes();
     void themeDialogControlsStayOnPhysicalPixelGridAt175Percent();
     void userMenuRecordDialogLeavesStaySharpAt175Percent();
@@ -2916,6 +2943,59 @@ void F4QuickViewSurfaceTests::themeDialogFontRenderingControlIsLiveAndThemeAware
     dialog->hide();
 }
 
+void F4QuickViewSurfaceTests::themeDialogIconSetControlIsLiveAndPersisted()
+{
+    QuickViewFixture fixture(shellScene());
+    QVERIFY(fixture.window);
+
+    auto *dialog = fixture.window->findChild<QQuickWindow *>(
+        QStringLiteral("themeColorConfigurator"));
+    QVERIFY(dialog);
+    auto *combo = dialog->findChild<QQuickItem *>(
+        QStringLiteral("themeIconSetCombo"));
+    QVERIFY(combo);
+
+    QCOMPARE(fixture.window->property("iconSetName").toString(),
+             QStringLiteral("lucide"));
+    QCOMPARE(combo->property("currentText").toString(),
+             QStringLiteral("Lucide"));
+    const QVariantList options =
+        fixture.window->property("iconSetOptions").toList();
+    QCOMPARE(options.size(), 2);
+    QCOMPARE(options.at(0).toMap().value(QStringLiteral("value")).toString(),
+             QStringLiteral("lucide"));
+    QCOMPARE(options.at(1).toMap().value(QStringLiteral("value")).toString(),
+             QStringLiteral("system"));
+
+    QVERIFY(QMetaObject::invokeMethod(
+        fixture.window, "setIconSet", Q_ARG(QVariant, QStringLiteral("system"))));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fixture.window->property("iconSetName").toString(),
+        QStringLiteral("system"), 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(combo->property("currentText").toString(),
+                              QStringLiteral("Native"), 1000);
+    QCOMPARE(fixture.icons.name(), QStringLiteral("system"));
+
+    QVERIFY(QMetaObject::invokeMethod(fixture.window, "saveThemeToPersistence"));
+    QCOMPARE(fixture.themePersistence.theme()
+                 .value(QStringLiteral("iconSet"))
+                 .toString(),
+             QStringLiteral("system"));
+
+    QVERIFY(QMetaObject::invokeMethod(
+        fixture.window, "setIconSet", Q_ARG(QVariant, QStringLiteral("lucide"))));
+    fixture.themePersistence.setTheme(
+        {{QStringLiteral("iconSet"), QStringLiteral("system")}});
+    QVERIFY(QMetaObject::invokeMethod(fixture.window, "loadThemeFromPersistence"));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fixture.window->property("iconSetName").toString(),
+        QStringLiteral("system"), 1000);
+    QCOMPARE(fixture.icons.name(), QStringLiteral("system"));
+    QVERIFY(fixture.shell.actions.isEmpty());
+
+    dialog->hide();
+}
+
 void F4QuickViewSurfaceTests::themeColorEditorUsesOklchCoordinates()
 {
     QuickViewFixture fixture(shellScene());
@@ -3760,6 +3840,10 @@ void F4QuickViewSurfaceTests::themeDialogControlsStayOnPhysicalPixelGridAt175Per
         QStringLiteral("themeMouseWheelCombo"),
         QStringLiteral("themeMouseWheelComboIndicator"),
         QStringLiteral("themeMouseWheelComboBackground"),
+        QStringLiteral("themeIconSetPanel"),
+        QStringLiteral("themeIconSetCombo"),
+        QStringLiteral("themeIconSetComboIndicator"),
+        QStringLiteral("themeIconSetComboBackground"),
         QStringLiteral("themeNeutralFileTextPanel"),
         QStringLiteral("themeNeutralFileTextLabels"),
         QStringLiteral("themeNeutralFileTextTitle"),
@@ -3835,6 +3919,9 @@ void F4QuickViewSurfaceTests::themeDialogControlsStayOnPhysicalPixelGridAt175Per
         QStringLiteral("themeMouseWheelLabels"),
         QStringLiteral("themeMouseWheelTitle"),
         QStringLiteral("themeMouseWheelDescription"),
+        QStringLiteral("themeIconSetLabels"),
+        QStringLiteral("themeIconSetTitle"),
+        QStringLiteral("themeIconSetDescription"),
         QStringLiteral("themeNeutralFileTextLabels"),
         QStringLiteral("themeNeutralFileTextTitle"),
         QStringLiteral("themeNeutralFileTextDescription"),
@@ -3854,6 +3941,9 @@ void F4QuickViewSurfaceTests::themeDialogControlsStayOnPhysicalPixelGridAt175Per
         QStringLiteral("themeFontRenderTypeDescription"),
         QStringLiteral("themeMouseWheelTitle"),
         QStringLiteral("themeMouseWheelDescription"),
+        QStringLiteral("themeIconSetTitle"),
+        QStringLiteral("themeIconSetDescription"),
+        QStringLiteral("themeIconSetComboText"),
         QStringLiteral("themeNeutralFileTextTitle"),
         QStringLiteral("themeNeutralFileTextDescription"),
         QStringLiteral("themeNeutralFileTextCheckBoxText"),
