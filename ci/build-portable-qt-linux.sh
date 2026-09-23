@@ -188,7 +188,9 @@ baseline_marker="$CONAN_HOME/p/.f4-glibc-2.27-gcc11-ready"
 conan_build_args=(--build=missing)
 if [[ "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" &&
     -n "${F4_CONAN_REMOTE_URL:-}" ]]; then
+    conan_build_args=(--build=never)
     echo "Using the audited glibc 2.27 / GCC 11 Conan graph from f4-conan"
+    echo "Trusted baseline mode forbids source fallback; missing packages fail fast"
 elif [[ ! -f "$baseline_marker" ]]; then
     conan_build_args+=(--build='m4/*')
     conan_build_args+=(--build='ninja/*')

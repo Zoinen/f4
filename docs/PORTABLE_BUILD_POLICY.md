@@ -57,8 +57,9 @@ single-file runtime contract.
   exception only after its package graph has been audited against that
   baseline. CI may set `F4_CONAN_TRUST_REMOTE_BASELINE=1` when
   `F4_CONAN_REMOTE_URL` points to that remote; the build must still use
-  `--build=missing` so an absent package is compiled in the baseline
-  container. This flag must not be used for an arbitrary Conan remote.
+  `--build=never` so it consumes the audited binaries directly and fails fast
+  if one is absent instead of silently compiling a replacement. This flag must
+  not be used for an arbitrary Conan remote.
 - Persist only completed Conan package folders. Remove recipe sources, build
   trees, temporary files, and backup sources before saving a checkpoint. This
   keeps the cache small and prevents stale source trees from masking recipe or
