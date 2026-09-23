@@ -371,9 +371,15 @@ int main(int argc, char *argv[])
     QObject::connect(
         &galleryBridge, &F4GalleryBridge::panelCatalogRowsRequested,
         &controller, &QtShellController::sendPanelCatalogRowsRequest);
+    QObject::connect(
+        &galleryBridge, &F4GalleryBridge::panelGroupPageRequested,
+        &controller, &QtShellController::sendPanelGroupPageRequest);
     QObject::connect(&controller, &QtShellController::panelCatalogRowsReceived,
                      &galleryBridge,
                      &F4GalleryBridge::handlePanelCatalogRowsMessage);
+    QObject::connect(&controller, &QtShellController::panelGroupPageReceived,
+                     &galleryBridge,
+                     &F4GalleryBridge::handlePanelGroupPageMessage);
     QObject::connect(
         &controller, &QtShellController::panelCatalogMetadataReceived,
         &galleryBridge,

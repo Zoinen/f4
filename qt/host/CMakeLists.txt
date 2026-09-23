@@ -277,9 +277,11 @@ set(F4_QT_HOST_SOURCES
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgePanelSync.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgeIntents.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4QuickViewPreferences.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/F4PanelPreferences.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgeQuickView.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgeProtocol.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgeRowsResponse.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgeGroupPage.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgeMetadataResponse.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/PanelCatalogModel.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/PanelCatalogModel.cpp"
@@ -318,11 +320,13 @@ set(F4_LUCIDE_ICON_NAMES
   arrow-down.svg
   arrow-left.svg
   arrow-down-a-z.svg
+  arrow-down-up.svg
   arrow-down-wide-narrow.svg
   arrow-up.svg
   binary.svg
   book-open.svg
   check.svg
+  calendar-plus.svg
   circle-check.svg
   circle-pause.svg
   circle-play.svg
@@ -338,6 +342,7 @@ set(F4_LUCIDE_ICON_NAMES
   copy.svg
   database.svg
   eye.svg
+  eye-off.svg
   file.svg
   file-clock.svg
   file-code.svg
@@ -409,7 +414,10 @@ set(F4_LUCIDE_ICON_NAMES
   tablet.svg
   text-wrap.svg
   trash-2.svg
+  settings-2.svg
   triangle-alert.svg
+  user-round.svg
+  users-round.svg
   video.svg
   x.svg
 )
@@ -489,7 +497,18 @@ if(F4_QT_STATIC)
         ${F4_REQUIRED_STATIC_QML_PLUGINS}
         Qt6::Svg
         Qt6::QSvgPlugin
-        Qt6::QuickControls2Basic)
+        ${F4_QT_QUICK_EFFECTS_LINK}
+        ${F4_QT_QUICK_CONTROLS_BASIC_LINK})
+      if(NOT TARGET Qt6::QuickEffects_resources_1)
+        set_property(TARGET ${F4_ZOIN_STATIC_QML_TEST_TARGET}
+          APPEND PROPERTY LINK_LIBRARY_OVERRIDE
+          "WHOLE_ARCHIVE,Qt6::QuickEffects")
+      endif()
+      if(NOT TARGET Qt6::QuickControls2Basic_resources_1)
+        set_property(TARGET ${F4_ZOIN_STATIC_QML_TEST_TARGET}
+          APPEND PROPERTY LINK_LIBRARY_OVERRIDE
+          "WHOLE_ARCHIVE,Qt6::QuickControls2Basic")
+      endif()
     endif()
   endforeach()
 endif()
@@ -509,6 +528,10 @@ if(F4_QT_STATIC)
       ZoinGalleryPersistentDerivedImageCacheTests
       ZoinGalleryDecodeLifecycleTests
       ZoinGalleryLayoutEngineTests
+      ZoinGalleryGroupIndexTests
+      ZoinGalleryQuickSearchIndexTests
+      ZoinGalleryThumbnailPlannerTests
+      ZoinGalleryIconResolverTests
       ZoinGalleryPanelControllerTests)
     if(TARGET ${F4_ZOIN_STATIC_CORE_TEST_TARGET})
       target_sources(${F4_ZOIN_STATIC_CORE_TEST_TARGET} PRIVATE
@@ -521,7 +544,7 @@ if(F4_QT_STATIC)
       target_link_libraries(${F4_ZOIN_STATIC_CORE_TEST_TARGET} PRIVATE
         Qt6::QOffscreenIntegrationPlugin
         Qt6::QGifPlugin
-        Qt6::QIcoPlugin
+        ${F4_QT_ICO_PLUGIN_TARGET}
         Qt6::QJpegPlugin
         Qt6::Svg
         Qt6::QSvgPlugin)
@@ -846,10 +869,16 @@ if(BUILD_TESTING)
         src/StaticQmlPluginImports.cpp)
       target_link_libraries(${target} PRIVATE
         ${F4_REQUIRED_STATIC_QML_PLUGINS}
-        "$<LINK_LIBRARY:WHOLE_ARCHIVE,Qt6::QuickEffects>"
-        Qt6::QuickControls2Basic)
-      set_property(TARGET ${target} APPEND PROPERTY LINK_LIBRARY_OVERRIDE
-        "WHOLE_ARCHIVE,Qt6::QuickEffects")
+        ${F4_QT_QUICK_EFFECTS_LINK}
+        ${F4_QT_QUICK_CONTROLS_BASIC_LINK})
+      if(NOT TARGET Qt6::QuickEffects_resources_1)
+        set_property(TARGET ${target} APPEND PROPERTY LINK_LIBRARY_OVERRIDE
+          "WHOLE_ARCHIVE,Qt6::QuickEffects")
+      endif()
+      if(NOT TARGET Qt6::QuickControls2Basic_resources_1)
+        set_property(TARGET ${target} APPEND PROPERTY LINK_LIBRARY_OVERRIDE
+          "WHOLE_ARCHIVE,Qt6::QuickControls2Basic")
+      endif()
     endif()
   endfunction()
 
@@ -859,7 +888,7 @@ if(BUILD_TESTING)
         tests/StaticQtImagePluginImports.cpp)
       target_link_libraries(${target} PRIVATE
         Qt6::QGifPlugin
-        Qt6::QIcoPlugin
+        ${F4_QT_ICO_PLUGIN_TARGET}
         Qt6::QJpegPlugin
         Qt6::QSvgPlugin)
     endif()
@@ -1170,6 +1199,7 @@ if(BUILD_TESTING)
     tests/TestExtUiStateController.h
     tests/TestExtUiStateController.cpp
     src/DummyQWK.h
+    src/F4PanelPreferences.h
     src/F4TextRenderingPolicy.h
     src/F4TextRenderingPolicy.cpp
     src/ShellStateStore.h
@@ -1208,6 +1238,12 @@ if(BUILD_TESTING)
   add_test(NAME F4QuickViewIconPixelGridTest
     COMMAND F4QuickViewSurfaceTests chromeIconsUseMatchingPhysicalTargetSizes)
   set_tests_properties(F4QuickViewIconPixelGridTest PROPERTIES
+    ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
+  )
+  add_test(NAME F4QuickViewThumbnailsTogglePixelGridTest
+    COMMAND F4QuickViewSurfaceTests
+      rendererThumbnailsToggleMatchesMenuAndPersistsPerSide)
+  set_tests_properties(F4QuickViewThumbnailsTogglePixelGridTest PROPERTIES
     ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
   )
   add_test(NAME F4PanelStatusOverlayTest COMMAND F4QuickViewSurfaceTests
@@ -1508,9 +1544,11 @@ if(BUILD_TESTING)
     src/F4GalleryBridgePanelSync.cpp
     src/F4GalleryBridgeQuickView.cpp
     src/F4QuickViewPreferences.h
+    src/F4PanelPreferences.h
     src/F4GalleryBridgeIntents.cpp
     src/F4GalleryBridgeProtocol.cpp
     src/F4GalleryBridgeRowsResponse.cpp
+    src/F4GalleryBridgeGroupPage.cpp
     src/F4GalleryBridgeMetadataResponse.cpp
     src/PanelCatalogModel.h
     src/PanelCatalogModel.cpp
@@ -1586,9 +1624,11 @@ if(BUILD_TESTING)
     src/F4GalleryBridgePanelSync.cpp
     src/F4GalleryBridgeQuickView.cpp
     src/F4QuickViewPreferences.h
+    src/F4PanelPreferences.h
     src/F4GalleryBridgeIntents.cpp
     src/F4GalleryBridgeProtocol.cpp
     src/F4GalleryBridgeRowsResponse.cpp
+    src/F4GalleryBridgeGroupPage.cpp
     src/F4GalleryBridgeMetadataResponse.cpp
     src/PanelCatalogModel.h
     src/PanelCatalogModel.cpp

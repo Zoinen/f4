@@ -945,7 +945,7 @@ func (fp *FileSystemPanel) freshDirectoryEntries(items []vfs.VFSItem, showUpEntr
 		fp.applyPersistentSelection(entry, filesystem, path)
 		entries = append(entries, entry)
 	}
-	fp.sortEntrySlice(entries)
+	fp.sortCatalogEntries(entries, time.Now())
 	return entries
 }
 
@@ -1510,6 +1510,31 @@ func (fp *FileSystemPanel) sortEntriesByPreparedName(entries []*FileEntry) {
 }
 
 // sortEntrySlice applies the panel's current ordering to a detached catalog.
+// sortCatalogEntries applies the panel ordering to a detached catalog. Group
+// sorting needs a per-entry key cache, but a directory worker must not mutate
+// the live panel while it prepares its immutable catalog. Sort a lightweight
+// panel copy for that case; the caller rebuilds the live grouping rows after
+// installing the result.
+func (fp *FileSystemPanel) sortCatalogEntries(entries []*FileEntry, now time.Time) {
+	if fp == nil || fp.GroupBy == GroupNone {
+		if fp != nil {
+			fp.sortEntrySlice(entries)
+		}
+		return
+	}
+	sorter := FileSystemPanel{
+		Entries:                  entries,
+		GroupBy:                  fp.GroupBy,
+		GroupReverse:             fp.GroupReverse,
+		GroupFoldersSeparately:   fp.GroupFoldersSeparately,
+		SortMode:                 fp.SortMode,
+		SortReverse:              fp.SortReverse,
+		UseSortGroups:            fp.UseSortGroups,
+		sortDirectionSetByAction: fp.sortDirectionSetByAction,
+	}
+	sorter.sortEntriesAt(now)
+}
+
 func (fp *FileSystemPanel) sortEntrySlice(entries []*FileEntry) {
 	if (fp.SortMode == SortUnsorted && !fp.sortGroupsActive()) || len(entries) <= 1 {
 		return
@@ -3269,6 +3294,9 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 		(!loadSyncPanel && panelSortSupportsPhasedDirectoryRead(fp.SortMode)))
 	loadSortMode, loadSortReverse := fp.SortMode, fp.SortReverse
 	loadSortGroups := fp.UseSortGroups
+	loadGroupBy := fp.GroupBy
+	loadGroupReverse := fp.GroupReverse
+	loadGroupFoldersSeparately := fp.GroupFoldersSeparately
 	previewEligible := !fp.sortGroupsActive() && loadSortMode == SortName && !loadSortReverse &&
 		!loadSyncPanel
 	windowedReader := windowedDirectoryReaderFor(loadVFS)
@@ -3434,7 +3462,10 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 					}
 				}
 				fp.Entries = append(fp.Entries, windowEntries...)
-				fp.sortEntrySlice(fp.Entries)
+				fp.sortCatalogEntries(fp.Entries, time.Now())
+				if fp.GroupBy != GroupNone {
+					fp.rebuildGroupingRows(time.Now())
+				}
 				fp.markSemanticCatalogMutation()
 				fp.catalogLogicalCount = window.TotalCount
 				if showUpEntry {
@@ -3485,11 +3516,14 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			if authoritativeBase && len(newEntries) > 1 {
 				sortStartedNs := navtrace.NavigationBenchmarkMonotonicNs()
 				sorter := FileSystemPanel{
-					SortMode:      loadSortMode,
-					SortReverse:   loadSortReverse,
-					UseSortGroups: loadSortGroups,
+					GroupBy:                loadGroupBy,
+					GroupReverse:           loadGroupReverse,
+					GroupFoldersSeparately: loadGroupFoldersSeparately,
+					SortMode:               loadSortMode,
+					SortReverse:            loadSortReverse,
+					UseSortGroups:          loadSortGroups,
 				}
-				sorter.sortEntrySlice(newEntries)
+				sorter.sortCatalogEntries(newEntries, time.Now())
 				sortFinishedNs := navtrace.NavigationBenchmarkMonotonicNs()
 				preSorted = true
 				if benchmark != nil {
@@ -3566,12 +3600,20 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 					// The complete source is rebuilt by the final completion task;
 					// do not expose an unfiltered chunk while the query is active.
 				} else if preSorted && fp.SortMode == loadSortMode &&
-					fp.SortReverse == loadSortReverse && fp.UseSortGroups == loadSortGroups {
+					fp.SortReverse == loadSortReverse && fp.UseSortGroups == loadSortGroups &&
+					fp.GroupBy == loadGroupBy && fp.GroupReverse == loadGroupReverse &&
+					fp.GroupFoldersSeparately == loadGroupFoldersSeparately {
+					if fp.GroupBy != GroupNone {
+						fp.rebuildGroupingRows(time.Now())
+					}
 					if !authoritativeWindowQueued {
 						fp.markSemanticCatalogMutation()
 					}
 				} else {
-					fp.sortEntrySlice(fp.Entries)
+					fp.sortCatalogEntries(fp.Entries, time.Now())
+					if fp.GroupBy != GroupNone {
+						fp.rebuildGroupingRows(time.Now())
+					}
 					if !authoritativeWindowQueued {
 						fp.markSemanticCatalogMutation()
 					}
@@ -3764,6 +3806,14 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 					entry := byName[item.Name]
 					entry.VFSItem = item
 				}
+				if fp.GroupBy != GroupNone {
+					// Metadata can move an entry out of the provisional "No data"
+					// group. Re-sort and rebuild once for the coalesced metadata
+					// batch, rather than once per row.
+					fp.sortCatalogEntries(fp.Entries, time.Now())
+					fp.rebuildGroupingRows(time.Now())
+					fp.markSemanticCatalogMutation()
+				}
 				fp.CommitSemanticMetadataMutation()
 				fp.Refresh()
 				if benchmark != nil {
@@ -3949,7 +3999,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 					fp.applyPersistentSelection(entry, loadVFS, path)
 					newEntries = append(newEntries, entry)
 				}
-				fp.sortEntrySlice(newEntries)
+				fp.sortCatalogEntries(newEntries, time.Now())
 				if fp.autoFilterOn {
 					// A same-directory refresh keeps the filter open. Replace its
 					// complete source and derive the visible subset from the query.
@@ -3959,6 +4009,9 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 					refreshChanged = fp.reconcileDirectoryEntries(newEntries)
 				} else {
 					fp.Entries = newEntries
+				}
+				if fp.GroupBy != GroupNone && !fp.autoFilterOn {
+					fp.rebuildGroupingRows(time.Now())
 				}
 				if refreshChanged {
 					completionPresentationChanged = true
@@ -4105,6 +4158,14 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				completionPresentationChanged = true
 				fp.SelectName(fp.PendingSelection)
 				fp.PendingSelection = ""
+			}
+			if fp.GroupBy != GroupNone && !authoritativeCatalogQueued &&
+				!loadSyncPanel && chunkCount == 0 {
+				// A provider may complete without invoking its chunk callback.
+				// Clear any grouping snapshot left by the previous directory even
+				// when the only surviving catalog row is "..".
+				fp.sortCatalogEntries(fp.Entries, time.Now())
+				fp.rebuildGroupingRows(time.Now())
 			}
 			if keepEntries {
 				fp.Refresh()

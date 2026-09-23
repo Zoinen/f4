@@ -11,6 +11,7 @@ import (
 
 	"github.com/unxed/f4/internal/mediatiming"
 	"github.com/unxed/f4/vfs"
+	"github.com/unxed/vtui"
 )
 
 const directoryPreviewFileLimit = 200
@@ -106,12 +107,7 @@ func (b *ExtUiMediaBroker) RegisterDirectory(reg MediaSourceRegistration) Direct
 }
 
 func (b *ExtUiMediaBroker) CommitDirectoryPanel(panelID string, revision int64, ids []string) {
-	next := make(map[string]struct{}, len(ids))
-	for _, id := range ids {
-		if id != "" {
-			next[id] = struct{}{}
-		}
-	}
+	next := directoryPreviewIDSet(ids)
 	b.mu.Lock()
 	if b.closed {
 		b.mu.Unlock()
@@ -145,6 +141,55 @@ func (b *ExtUiMediaBroker) CommitDirectoryPanel(panelID string, revision int64, 
 		b.releaseDirectoryPreview("", leaseID)
 	}
 	closeDirectoryVFS(toClose)
+}
+
+// CommitDirectoryPanelPage admits the directory authorities encountered in a
+// paged catalog response without treating that response as the complete
+// catalog. A semantic catalog page is often only a viewport-sized slice; an
+// incomplete page must not revoke previews for folders which have not been
+// requested in this revision yet.
+func (b *ExtUiMediaBroker) CommitDirectoryPanelPage(panelID string, revision int64, ids []string, complete bool) {
+	if complete {
+		vtui.DebugLog("[FIX:directory-preview-page] complete panel=%s revision=%d ids=%d",
+			panelID, revision, len(ids))
+		b.CommitDirectoryPanel(panelID, revision, ids)
+		return
+	}
+	next := directoryPreviewIDSet(ids)
+	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return
+	}
+	r := b.directoryPreviews
+	merged := make(map[string]struct{}, len(r.panels[panelID])+len(next))
+	for id := range r.panels[panelID] {
+		merged[id] = struct{}{}
+	}
+	accepted := 0
+	for id := range next {
+		source := r.sources[id]
+		if source == nil || source.reg.PanelID != panelID || source.reg.CatalogVersion != revision {
+			continue
+		}
+		source.valid = true
+		merged[id] = struct{}{}
+		accepted++
+	}
+	r.panels[panelID] = merged
+	b.mu.Unlock()
+	vtui.DebugLog("[FIX:directory-preview-page] partial panel=%s revision=%d page=%d accepted=%d retained=%d",
+		panelID, revision, len(ids), accepted, len(merged))
+}
+
+func directoryPreviewIDSet(ids []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if id != "" {
+			set[id] = struct{}{}
+		}
+	}
+	return set
 }
 
 func (b *ExtUiMediaBroker) retainDirectoryPanels(panelIDs []string) {

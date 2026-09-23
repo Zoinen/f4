@@ -24,6 +24,7 @@ class F4QtHostConan(ConanFile):
         # network requests.  Disable OpenSSL so the static Windows package
         # stays self-contained without pulling a large crypto toolchain.
         "qt/*:openssl": False,
+        "qt/*:with_libjpeg": "libjpeg-turbo",
         "qt/*:with_pq": False,
         "qt/*:with_odbc": False,
         "msgpack-cxx/*:use_boost": False,
@@ -76,6 +77,10 @@ class F4QtHostConan(ConanFile):
         self.requires("libtiff/4.7.0")
         self.requires("libraw/0.21.3")
         self.requires("libpng/1.6.45")
+        # ZoinGallery uses the current WebP API directly.  libtiff still
+        # declares its older compatible WebP requirement transitively; make
+        # the intended graph override explicit so static and shared builds
+        # resolve the same ABI instead of failing on a version conflict.
         self.requires("libwebp/1.6.0", override=True)
         self.requires("libheif/1.20.1")
         self.requires("libjpeg-turbo/3.0.2", override=True)

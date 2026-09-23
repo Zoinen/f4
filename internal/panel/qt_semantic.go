@@ -520,6 +520,47 @@ func (pf *PanelsFrame) HandleSemanticAction(action map[string]any) bool {
 			persistNativePanelLayoutSession(pf)
 		}
 		return true
+	case "panel_group_settings", "panel.groupSettings":
+		if fsp := pf.panelForSemanticAction(action); fsp != nil &&
+			semanticPanelIdentityMatches(fsp, action) {
+			pf.setActivePanelForAction(action)
+			return RunAction("Panel.GroupSettings")
+		}
+		return false
+	case "panel_set_grouping", "panel.setGrouping":
+		fsp := pf.panelForSemanticAction(action)
+		if fsp == nil || !semanticPanelIdentityMatches(fsp, action) {
+			return false
+		}
+		mode, ok := ParseGroupModeID(semantic.String(action["mode"]))
+		if !ok {
+			return false
+		}
+		reverse, reverseOK := action["reverse"].(bool)
+		foldersSeparately, foldersOK := action["foldersSeparately"].(bool)
+		if !reverseOK {
+			reverse = fsp.GroupReverse
+		}
+		if !foldersOK {
+			foldersSeparately = fsp.GroupFoldersSeparately
+		}
+		if fsp.GroupBy == mode && fsp.GroupReverse == reverse &&
+			fsp.GroupFoldersSeparately == foldersSeparately {
+			return true
+		}
+		pf.setActivePanelForAction(action)
+		pf.LastKey = 0
+		fsp.clearFastFindForSemanticPointerIntent()
+		previousMode := fsp.GroupBy
+		previousReverse := fsp.GroupReverse
+		previousFolders := fsp.GroupFoldersSeparately
+		fsp.SetGrouping(mode, reverse, foldersSeparately)
+		pf.UpdateMenuCheckmarks()
+		if previousMode != fsp.GroupBy || previousReverse != fsp.GroupReverse ||
+			previousFolders != fsp.GroupFoldersSeparately {
+			persistNativePanelLayoutSession(pf)
+		}
+		return true
 	case "panel.sortGroups":
 		if fsp := pf.panelForSemanticAction(action); fsp != nil {
 			enabled, ok := action["enabled"].(bool)
@@ -612,6 +653,25 @@ func (pf *PanelsFrame) panelForSemanticAction(action map[string]any) *FileSystem
 		return fsp
 	}
 	return nil
+}
+
+func semanticPanelIdentityMatches(fp *FileSystemPanel,
+	action map[string]any,
+) bool {
+	if fp == nil || fp.Vfs == nil {
+		return false
+	}
+	panelID, panelIDOK := action["panelId"]
+	path, pathOK := action["path"]
+	if !panelIDOK || !pathOK || semantic.String(panelID) != vtui.SemanticID(fp) ||
+		semantic.String(path) != fp.Vfs.GetPath() {
+		return false
+	}
+	if rawRevision, present := action["catalogRevision"]; present &&
+		semantic.Int64(rawRevision) != fp.catalogRevision {
+		return false
+	}
+	return true
 }
 
 func (fp *FileSystemPanel) clearFastFindForSemanticPointerIntent() {
@@ -1942,7 +2002,8 @@ func (fp *FileSystemPanel) semanticPagedRows(offset, limit int) (
 			for id := range fp.semanticPagedDirectoryIDs {
 				ids = append(ids, id)
 			}
-			registry.CommitDirectoryPanel(panelID, fp.catalogRevision, ids)
+			registry.CommitDirectoryPanelPage(panelID, fp.catalogRevision, ids,
+				offset == 0 && end == source.count())
 		}
 	}
 	return rows, styles, true
@@ -1972,6 +2033,42 @@ func BuildLivePanelCatalogRows(panelID, path string, catalogRevision int64,
 		PanelID: panelID, Path: path, CatalogRevision: catalogRevision,
 		Offset: offset, Limit: len(rows), Total: fp.semanticCatalogTotalCount(),
 		Entries: rows, HighlightStyles: styles,
+	}.ToMap(), true
+}
+
+// BuildLivePanelGroupPage serves the immutable grouping snapshot separately
+// from frequent panel state updates. The identity and catalog revision fence
+// make an out-of-order page harmless to the native bridge.
+func BuildLivePanelGroupPage(panelID, path string, catalogRevision int64,
+	offset, limit int,
+) (map[string]any, bool) {
+	if !semantic.PanelGroupingIsEnabled() || offset < 0 || limit <= 0 ||
+		limit > semanticPanelGroupPageSize {
+		return nil, false
+	}
+	loaded, ok := semanticLivePanels.Load(panelID)
+	if !ok {
+		return nil, false
+	}
+	fp, ok := loaded.(*FileSystemPanel)
+	if !ok || fp == nil || fp.Vfs == nil || fp.Vfs.GetPath() != path ||
+		fp.catalogRevision != catalogRevision {
+		return nil, false
+	}
+	groups := fp.Groups()
+	if offset >= len(groups) || offset+limit > len(groups) {
+		return nil, false
+	}
+	page := make([]extui.PanelGroupModel, 0, limit)
+	for _, group := range groups[offset : offset+limit] {
+		page = append(page, extui.PanelGroupModel{
+			Key: group.Key, Title: group.Title,
+			StartIndex: group.StartIndex, Count: group.Count,
+		})
+	}
+	return extui.PanelGroupPageModel{
+		PanelID: panelID, Path: path, CatalogRevision: catalogRevision,
+		Offset: offset, Limit: len(page), Total: len(groups), Groups: page,
 	}.ToMap(), true
 }
 
@@ -2089,21 +2186,26 @@ func (fp *FileSystemPanel) semanticPagedPanelModel(
 	if semanticTitle == "" {
 		semanticTitle = fp.currentTitle
 	}
+	groups, groupTotal, groupsDeferred := semanticPanelGroupSnapshot(fp.Groups())
 	return extui.PanelModel{
 		PathIcon: semanticPanelIcon(fp.Vfs),
 		ID:       panelID, Side: side, Active: active, Path: fp.Vfs.GetPath(),
 		Title: semanticTitle, ShowFileInfo: config.App.ShowPanelFileInfo,
-		ViewMode: viewModeName(fp.EffectiveViewMode()),
-		GroupBy: GroupModes[ValidGroupMode(fp.GroupBy)].ID,
-		GroupReverse: fp.GroupReverse, GroupFoldersSeparately: fp.GroupFoldersSeparately,
-		DisplayTop: fp.Table.TopPos, Groups: semanticPanelGroups(fp.Groups()),
-		GalleryLayoutMode:     string(galleryLayoutMode),
-		GalleryColumnCount:    fp.effectiveGalleryColumnCount(),
-		GalleryDensity:        fp.galleryDensity(galleryLayoutMode),
-		GalleryDensities:      fp.galleryDensitiesSnapshot(),
-		GalleryLayoutRevision: galleryLayoutRevision,
-		DropAllowed:           VfsAcceptsDrop(fp.Vfs),
-		SourceKind:            sourceKind, PreviewCapable: previewCapable,
+		ViewMode:               viewModeName(fp.EffectiveViewMode()),
+		GroupBy:                semanticPanelGroupMode(fp),
+		GroupReverse:           semanticPanelGroupingEnabled(fp) && fp.GroupReverse,
+		GroupFoldersSeparately: semanticPanelGroupingEnabled(fp) && fp.GroupFoldersSeparately,
+		DisplayTop:             fp.Table.TopPos,
+		Groups:                 groups,
+		GroupsDeferred:         groupsDeferred,
+		GroupTotal:             groupTotal,
+		GalleryLayoutMode:      string(galleryLayoutMode),
+		GalleryColumnCount:     fp.effectiveGalleryColumnCount(),
+		GalleryDensity:         fp.galleryDensity(galleryLayoutMode),
+		GalleryDensities:       fp.galleryDensitiesSnapshot(),
+		GalleryLayoutRevision:  galleryLayoutRevision,
+		DropAllowed:            VfsAcceptsDrop(fp.Vfs),
+		SourceKind:             sourceKind, PreviewCapable: previewCapable,
 		CatalogRevision:     fp.catalogRevision,
 		SelectionRevision:   fp.selectionRevision,
 		MetadataDeferred:    true,
@@ -2250,6 +2352,7 @@ func (fp *FileSystemPanel) SemanticPanelModel(ctx *vtui.SemanticContext, side in
 	// Publishing a catalog keeps the drag/request owner alive even when
 	// deferred metadata is disabled and its separate snapshot was released.
 	semanticLivePanels.Store(panelID, fp)
+	groups, groupTotal, groupsDeferred := semanticPanelGroupSnapshot(fp.Groups())
 	return extui.PanelModel{
 		PathIcon:               semanticPanelIcon(fp.Vfs),
 		ID:                     panelID,
@@ -2258,11 +2361,13 @@ func (fp *FileSystemPanel) SemanticPanelModel(ctx *vtui.SemanticContext, side in
 		Path:                   fp.Vfs.GetPath(),
 		Title:                  semanticTitle,
 		ViewMode:               viewModeName(fp.EffectiveViewMode()),
-		GroupBy:                GroupModes[ValidGroupMode(fp.GroupBy)].ID,
-		GroupReverse:           fp.GroupReverse,
-		GroupFoldersSeparately: fp.GroupFoldersSeparately,
+		GroupBy:                semanticPanelGroupMode(fp),
+		GroupReverse:           semanticPanelGroupingEnabled(fp) && fp.GroupReverse,
+		GroupFoldersSeparately: semanticPanelGroupingEnabled(fp) && fp.GroupFoldersSeparately,
 		DisplayTop:             fp.Table.TopPos,
-		Groups:                 semanticPanelGroups(fp.Groups()),
+		Groups:                 groups,
+		GroupsDeferred:         groupsDeferred,
+		GroupTotal:             groupTotal,
 		ShowFileInfo:           config.App.ShowPanelFileInfo,
 		GalleryLayoutMode:      string(galleryLayoutMode),
 		GalleryColumnCount:     fp.effectiveGalleryColumnCount(),
@@ -2342,17 +2447,20 @@ func (fp *FileSystemPanel) semanticPagedPanelHeaderModel(
 		PathIcon: semanticPanelIcon(fp.Vfs),
 		ID:       panelID, Side: side, Active: active, Path: fp.Vfs.GetPath(),
 		Title: semanticTitle, ShowFileInfo: config.App.ShowPanelFileInfo,
-		ViewMode: viewModeName(fp.EffectiveViewMode()),
-		GroupBy: GroupModes[ValidGroupMode(fp.GroupBy)].ID,
-		GroupReverse: fp.GroupReverse, GroupFoldersSeparately: fp.GroupFoldersSeparately,
-		DisplayTop: fp.Table.TopPos, Groups: semanticPanelGroups(fp.Groups()),
-		GalleryLayoutMode:     string(galleryLayoutMode),
-		GalleryColumnCount:    fp.effectiveGalleryColumnCount(),
-		GalleryDensity:        fp.galleryDensity(galleryLayoutMode),
-		GalleryDensities:      fp.galleryDensitiesSnapshot(),
-		GalleryLayoutRevision: galleryLayoutRevision,
-		DropAllowed:           VfsAcceptsDrop(fp.Vfs),
-		SourceKind:            sourceKind, PreviewCapable: previewCapable,
+		ViewMode:               viewModeName(fp.EffectiveViewMode()),
+		GroupBy:                semanticPanelGroupMode(fp),
+		GroupReverse:           semanticPanelGroupingEnabled(fp) && fp.GroupReverse,
+		GroupFoldersSeparately: semanticPanelGroupingEnabled(fp) && fp.GroupFoldersSeparately,
+		DisplayTop:             fp.Table.TopPos,
+		GroupsDeferred:         semanticPanelGroupTotal(fp) > semanticPanelGroupPageSize,
+		GroupTotal:             semanticPanelGroupTotal(fp),
+		GalleryLayoutMode:      string(galleryLayoutMode),
+		GalleryColumnCount:     fp.effectiveGalleryColumnCount(),
+		GalleryDensity:         fp.galleryDensity(galleryLayoutMode),
+		GalleryDensities:       fp.galleryDensitiesSnapshot(),
+		GalleryLayoutRevision:  galleryLayoutRevision,
+		DropAllowed:            VfsAcceptsDrop(fp.Vfs),
+		SourceKind:             sourceKind, PreviewCapable: previewCapable,
 		CatalogRevision:     fp.catalogRevision,
 		SelectionRevision:   fp.selectionRevision,
 		MetadataDeferred:    true,
@@ -2433,11 +2541,12 @@ func (fp *FileSystemPanel) semanticPanelHeaderModel(ctx *vtui.SemanticContext, s
 		Path:                   fp.Vfs.GetPath(),
 		Title:                  semanticTitle,
 		ViewMode:               viewModeName(fp.EffectiveViewMode()),
-		GroupBy:                GroupModes[ValidGroupMode(fp.GroupBy)].ID,
-		GroupReverse:           fp.GroupReverse,
-		GroupFoldersSeparately: fp.GroupFoldersSeparately,
+		GroupBy:                semanticPanelGroupMode(fp),
+		GroupReverse:           semanticPanelGroupingEnabled(fp) && fp.GroupReverse,
+		GroupFoldersSeparately: semanticPanelGroupingEnabled(fp) && fp.GroupFoldersSeparately,
 		DisplayTop:             fp.Table.TopPos,
-		Groups:                 semanticPanelGroups(fp.Groups()),
+		GroupsDeferred:         semanticPanelGroupTotal(fp) > semanticPanelGroupPageSize,
+		GroupTotal:             semanticPanelGroupTotal(fp),
 		ShowFileInfo:           config.App.ShowPanelFileInfo,
 		GalleryLayoutMode:      string(galleryLayoutMode),
 		GalleryColumnCount:     fp.effectiveGalleryColumnCount(),
@@ -2574,18 +2683,43 @@ func viewModeName(mode ViewMode) string {
 	}
 }
 
-func semanticPanelGroups(groups []PanelGroup) []extui.PanelGroupModel {
-	if len(groups) == 0 {
-		return nil
+const semanticPanelGroupPageSize = 512
+
+func semanticPanelGroupSnapshot(groups []PanelGroup) ([]extui.PanelGroupModel, int, bool) {
+	if !semantic.PanelGroupingIsEnabled() || len(groups) == 0 {
+		return nil, 0, false
 	}
-	result := make([]extui.PanelGroupModel, len(groups))
-	for i, group := range groups {
-		result[i] = extui.PanelGroupModel{
+	total := len(groups)
+	deferred := total > semanticPanelGroupPageSize
+	if deferred {
+		return nil, total, true
+	}
+	result := make([]extui.PanelGroupModel, 0, len(groups))
+	for _, group := range groups {
+		result = append(result, extui.PanelGroupModel{
 			Key: group.Key, Title: group.Title,
 			StartIndex: group.StartIndex, Count: group.Count,
-		}
+		})
 	}
-	return result
+	return result, total, deferred
+}
+
+func semanticPanelGroupTotal(fp *FileSystemPanel) int {
+	if !semanticPanelGroupingEnabled(fp) {
+		return 0
+	}
+	return len(fp.Groups())
+}
+
+func semanticPanelGroupingEnabled(fp *FileSystemPanel) bool {
+	return fp != nil && semantic.PanelGroupingIsEnabled()
+}
+
+func semanticPanelGroupMode(fp *FileSystemPanel) string {
+	if !semanticPanelGroupingEnabled(fp) {
+		return ""
+	}
+	return GroupModes[ValidGroupMode(fp.GroupBy)].ID
 }
 
 func parseSortModeName(name string) (SortMode, bool) {

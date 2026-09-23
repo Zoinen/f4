@@ -11,6 +11,7 @@ type panelMediaRegistry interface {
 type panelDirectoryRegistry interface {
 	RegisterDirectory(plughost.MediaSourceRegistration) plughost.DirectorySourceDescriptor
 	CommitDirectoryPanel(string, int64, []string)
+	CommitDirectoryPanelPage(string, int64, []string, bool)
 }
 
 var currentPanelMediaRegistry = func() panelMediaRegistry {

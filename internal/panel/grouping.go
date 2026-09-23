@@ -64,6 +64,18 @@ func ValidGroupMode(mode GroupMode) GroupMode {
 	return mode
 }
 
+// ParseGroupModeID accepts the stable semantic identifier used by the Qt
+// bridge. Labels are localized and must not become part of the transport
+// contract.
+func ParseGroupModeID(id string) (GroupMode, bool) {
+	for _, info := range GroupModes {
+		if info.ID == id {
+			return info.Mode, true
+		}
+	}
+	return GroupNone, false
+}
+
 // PanelGroup describes a contiguous range in the file-only visible list.
 type PanelGroup struct {
 	Key        string
@@ -306,6 +318,19 @@ func (fp *FileSystemPanel) rebuildDisplayRows() {
 	}
 }
 
+// rebuildGroupingRows refreshes the group-key cache and the presentation-only
+// rows after a catalog replacement. Directory loading can replace Entries
+// without going through SortEntries, so leaving this to the next user action
+// makes a stale group range describe the new catalog (most visibly, it can
+// absorb the leading ".." row).
+func (fp *FileSystemPanel) rebuildGroupingRows(now time.Time) {
+	if fp == nil {
+		return
+	}
+	fp.prepareGrouping(fp.AllEntries(), now)
+	fp.rebuildDisplayRows()
+}
+
 func (fp *FileSystemPanel) displayCount() int {
 	if fp.GroupBy == GroupNone {
 		return len(fp.Entries)
@@ -357,10 +382,16 @@ func (fp *FileSystemPanel) setGroupingAt(mode GroupMode, reverse, foldersSeparat
 	if fp == nil {
 		return
 	}
+	mode = ValidGroupMode(mode)
+	if fp.GroupBy == mode && fp.GroupReverse == reverse &&
+		fp.GroupFoldersSeparately == foldersSeparately &&
+		!fp.groupingNeedsRefresh(now) {
+		return
+	}
 	focused := fp.GetRawSelectedName()
 	offset := fp.displayOfEntry(fp.GetCursorIndex()) - fp.Table.TopPos
 	wasGrouped := fp.GroupBy != GroupNone
-	fp.GroupBy, fp.GroupReverse, fp.GroupFoldersSeparately = ValidGroupMode(mode), reverse, foldersSeparately
+	fp.GroupBy, fp.GroupReverse, fp.GroupFoldersSeparately = mode, reverse, foldersSeparately
 	if wasGrouped && fp.GroupBy == GroupNone && fp.SortMode == SortUnsorted {
 		entries := fp.AllEntries()
 		sort.SliceStable(entries, func(i, j int) bool { return entries[i].sourceOrder < entries[j].sourceOrder })

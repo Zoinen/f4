@@ -39,6 +39,8 @@ bool isSemanticPayloadType(const QString &type)
         QStringLiteral("panel_catalog_metadata_rejected"),
         QStringLiteral("panel_catalog_rows"),
         QStringLiteral("panel_catalog_rows_rejected"),
+        QStringLiteral("panel_group_page"),
+        QStringLiteral("panel_group_page_rejected"),
         QStringLiteral("chrome_snapshot"),
         QStringLiteral("workspaces_snapshot"),
         QStringLiteral("menus_snapshot"),

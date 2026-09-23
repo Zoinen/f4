@@ -235,6 +235,8 @@ type semanticSelectionAcknowledgement struct {
 var semanticPanelStatePatchKeys = map[string]struct{}{
 	"id": {}, "kind": {}, "path": {}, "title": {}, "pathIcon": {},
 	"galleryLayoutMode": {}, "sourceKind": {}, "cursorEntryId": {},
+	"groupBy": {}, "groupReverse": {}, "groupFoldersSeparately": {},
+	"groupsDeferred": {}, "groupTotal": {},
 	"sortModeName": {}, "fastFindText": {}, "symlinkTarget": {},
 	"fastFindMatchColor": {},
 	"active":             {}, "previewCapable": {}, "dropAllowed": {},

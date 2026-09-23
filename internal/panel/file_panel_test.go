@@ -4979,6 +4979,59 @@ func TestFileSystemPanel_PhasedDirectoryPublishesStableCatalogThenMergesMetadata
 	}
 }
 
+func TestFileSystemPanel_PhasedReloadRebuildsGroupingAroundParent(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	oldConfig := config.App
+	config.App.SyncPanelLoad = false
+	config.App.ShowHiddenFiles = true
+	t.Cleanup(func() { config.App = oldConfig })
+
+	load := newPhasedPanelLoad(
+		[]vfs.VFSItem{{Name: "old.txt"}}, nil, false)
+	groupedLoad := newPhasedPanelLoad(
+		[]vfs.VFSItem{
+			{Name: "first.jpg"},
+			{Name: "second.jpg"},
+			{Name: "third.jpg"},
+		}, nil, false)
+	filesystem := newPhasedPanelVFS("/initial", map[string]*phasedPanelLoad{
+		"/initial": load,
+		"/grouped": groupedLoad,
+	})
+	panel := NewFileSystemPanel(0, 0, 50, 15, filesystem)
+	t.Cleanup(func() {
+		if panel.CancelLoad != nil {
+			panel.CancelLoad()
+		}
+		panel.StopLoadingAnimation()
+	})
+	waitForLoad(t, panel)
+
+	panel.SetGrouping(GroupSize, false, false)
+	if len(panel.Groups()) != 1 || panel.Groups()[0].StartIndex != 1 ||
+		panel.Groups()[0].Count != 1 {
+		t.Fatalf("initial grouping = %+v", panel.Groups())
+	}
+
+	if err := filesystem.SetPath("/grouped"); err != nil {
+		t.Fatal(err)
+	}
+	panel.readDirectoryEx(false)
+	waitForLoad(t, panel)
+
+	groups := panel.Groups()
+	if len(groups) != 1 {
+		t.Fatalf("reloaded grouping = %+v, want one group", groups)
+	}
+	if groups[0].StartIndex != 1 || groups[0].Count != 3 {
+		t.Fatalf("reloaded group range = %+v, want start=1 count=3", groups[0])
+	}
+	if len(panel.displayRows) != 5 || panel.displayRows[0].entry != 0 ||
+		panel.displayRows[1].entry != -1 || panel.displayRows[2].entry != 1 {
+		t.Fatalf("reloaded display rows = %+v, parent/group separator order is wrong", panel.displayRows)
+	}
+}
+
 func TestFileSystemPanelWindowedDirectoryPublishesExactSparseCatalogOnce(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	oldConfig := config.App

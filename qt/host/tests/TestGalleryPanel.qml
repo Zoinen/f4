@@ -7,11 +7,13 @@ FocusScope {
     property var layoutState: null
     property var bridge: null
     property var keySink: null
+    property color groupHeaderBackdropColor: "#17191d"
     property ZG.GalleryThemePalette theme: ZG.GalleryThemePalette {}
     property ZG.GalleryPresentationMetrics metrics:
         ZG.GalleryPresentationMetrics {}
     property real devicePixelRatio: 1
     property real defaultListDensity: 22
+    property real contentHorizontalInset: 0
     property bool panelActive: false
     property bool panelCursorVisible: panelActive
     property bool viewerTransitionActive: false

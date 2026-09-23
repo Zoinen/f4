@@ -370,6 +370,20 @@ if(F4_QT_STATIC)
           INTERFACE_LINK_LIBRARIES "${_f4_basic_style_links}")
       endif()
     endif()
+
+    # The Effects plugin export has the same duplicate ordinary backing-module
+    # edge as the Basic style export. Remove it before the whole-archive link
+    # below retains the shader resources.
+    if(TARGET Qt6::effectsplugin)
+      get_target_property(_f4_effects_links
+        Qt6::effectsplugin INTERFACE_LINK_LIBRARIES)
+      if(_f4_effects_links)
+        list(REMOVE_ITEM _f4_effects_links
+          "$<LINK_ONLY:Qt6::QuickEffects>")
+        set_target_properties(Qt6::effectsplugin PROPERTIES
+          INTERFACE_LINK_LIBRARIES "${_f4_effects_links}")
+      endif()
+    endif()
   endif()
   foreach(plugin_target IN LISTS F4_REQUIRED_STATIC_QML_PLUGINS)
     if(NOT TARGET ${plugin_target})
@@ -377,19 +391,35 @@ if(F4_QT_STATIC)
         "Required static QML plugin target is missing: ${plugin_target}")
     endif()
   endforeach()
-  # Qt 6.11 names the ICO image plugin target after its class
-  # (QICOPlugin), while earlier Qt releases exported the compatibility
-  # spelling QIcoPlugin. Accept both so the portable host can use the
-  # current Qt package without changing the plugin import itself.
+  # Qt 6.11 exports the QML backing libraries together with their generated
+  # object-resource targets.  Those resources are pulled by an ordinary link
+  # in that graph, while older Conan Qt exports need WHOLE_ARCHIVE to retain
+  # them.  Keep the fallback for those older packages without applying a
+  # feature to a target whose transitive graph already links it normally.
+  set(F4_QT_QUICK_EFFECTS_LINK Qt6::QuickEffects)
+  if(NOT TARGET Qt6::QuickEffects_resources_1)
+    set(F4_QT_QUICK_EFFECTS_LINK
+      "$<LINK_LIBRARY:WHOLE_ARCHIVE,Qt6::QuickEffects>")
+  endif()
+  set(F4_QT_QUICK_CONTROLS_BASIC_LINK Qt6::QuickControls2Basic)
+  if(NOT TARGET Qt6::QuickControls2Basic_resources_1)
+    set(F4_QT_QUICK_CONTROLS_BASIC_LINK
+      "$<LINK_LIBRARY:WHOLE_ARCHIVE,Qt6::QuickControls2Basic>")
+  endif()
+
+  # Qt 6.11 normalized the ICO plugin class/target spelling to QICOPlugin,
+  # while older Qt packages export QIcoPlugin. Keep the host graph portable
+  # across both package generations; the C++ static import already uses the
+  # current plugin class name.
   set(F4_QT_ICO_PLUGIN_TARGET Qt6::QIcoPlugin)
-  if(NOT TARGET ${F4_QT_ICO_PLUGIN_TARGET} AND
-     TARGET Qt6::QICOPlugin)
+  if(NOT TARGET ${F4_QT_ICO_PLUGIN_TARGET} AND TARGET Qt6::QICOPlugin)
     set(F4_QT_ICO_PLUGIN_TARGET Qt6::QICOPlugin)
   endif()
   set(F4_REQUIRED_STATIC_QT_PLUGINS
     Qt6::QOffscreenIntegrationPlugin
     Qt6::QGifPlugin
     ${F4_QT_ICO_PLUGIN_TARGET}
+    Qt6::QJpegPlugin
     Qt6::QSvgPlugin
   )
   # Some Qt 6.11 static packages omit the optional JPEG image plugin while
@@ -511,8 +541,14 @@ if(F4_QT_STATIC)
     "${F4_QT_HOST_ROOT}/src/StaticQmlPluginImports.cpp")
   # The effects shader resources have no ordinary symbol references. Keep
   # them in the single-file host, including transitive plugin references.
-  set_property(TARGET f4-qt-host APPEND PROPERTY LINK_LIBRARY_OVERRIDE
-    "WHOLE_ARCHIVE,Qt6::QuickEffects")
+  if(NOT TARGET Qt6::QuickEffects_resources_1)
+    set_property(TARGET f4-qt-host APPEND PROPERTY LINK_LIBRARY_OVERRIDE
+      "WHOLE_ARCHIVE,Qt6::QuickEffects")
+  endif()
+  if(NOT TARGET Qt6::QuickControls2Basic_resources_1)
+    set_property(TARGET f4-qt-host APPEND PROPERTY LINK_LIBRARY_OVERRIDE
+      "WHOLE_ARCHIVE,Qt6::QuickControls2Basic")
+  endif()
   target_link_libraries(f4-qt-host PRIVATE
     ${F4_REQUIRED_STATIC_QML_PLUGINS}
     ${F4_REQUIRED_STATIC_QT_PLUGINS}
@@ -521,10 +557,10 @@ if(F4_QT_STATIC)
     ${F4_QT_MEDIA_PLUGIN_TARGET}
     ${F4_QFFMPEG_PLUGIN_LIBRARY}
     ${F4_FFMPEG_TARGETS}
-    Qt6::QuickControls2Basic
+    ${F4_QT_QUICK_CONTROLS_BASIC_LINK}
     Qt6::QuickControls2BasicStyleImpl
     Qt6::QuickControls2Impl
-    "$<LINK_LIBRARY:WHOLE_ARCHIVE,Qt6::QuickEffects>"
+    ${F4_QT_QUICK_EFFECTS_LINK}
     Qt6::QuickLayouts)
 
   # Conan exposes Qt's Linux platform and graphics integrations as separate

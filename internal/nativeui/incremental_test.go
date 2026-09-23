@@ -377,8 +377,12 @@ func TestAppScenePatchFiltersUnsupportedPanelStateFields(t *testing.T) {
 	if state["totalFiles"] != 4 || state["totalDirectories"] != 1 {
 		t.Fatalf("valid panel totals were dropped: %#v", state)
 	}
+	if state["groupBy"] != "Size" || state["groupFoldersSeparately"] != false ||
+		state["groupReverse"] != true {
+		t.Fatalf("grouping scalar state was dropped: %#v", state)
+	}
 	for _, unsupported := range []string{
-		"groupBy", "groupFoldersSeparately", "groupReverse", "displayTop", "groups",
+		"displayTop", "groups",
 	} {
 		if _, present := state[unsupported]; present {
 			t.Fatalf("unsupported panel state field %q leaked into state_update: %#v",

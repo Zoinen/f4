@@ -12,6 +12,8 @@ FocusScope {
     property bool dropTabHover: false
     property int dropHoverIndex: -2
     property point dropPointer: Qt.point(0, 0)
+    // Used by sticky group headers when Gallery panel colors are transparent.
+    property color groupHeaderBackdropColor: "#191d23"
     // Shared scene-space bounds for painting and hit testing, including gutters.
     readonly property rect wholeDropSceneRect: {
         const layout = embeddedGalleryPanel.galleryLayout
@@ -47,6 +49,17 @@ FocusScope {
     }
     onBridgeChanged: registerDragPanel()
     onSideChanged: registerDragPanel()
+    onDropHoverIndexChanged: {
+        const gallery = embeddedGalleryPanel
+        if (gallery && gallery.benchmarkTracingEnabled)
+            gallery.traceBenchmarkStage("drop.indicator.target",
+                {"fix": "[FIX:drop-indicator-content-padding]",
+                 "side": side,
+                 "index": dropHoverIndex,
+                 "mode": gallery.presentationMode,
+                 "paddingLeft": gallery.galleryLayout.paddingLeft,
+                 "paddingRight": gallery.galleryLayout.paddingRight})
+    }
 
     // Only this new outline is painted. Its edges are snapped in scene space;
     // existing text and icons retain their original transforms.
@@ -69,20 +82,28 @@ FocusScope {
             const layout = embeddedGalleryPanel.galleryLayout
             const revision = layout.layoutRevision
             const contentY = layout.contentY
+            const horizontal = embeddedGalleryPanel.presentationMode === "columns"
             let r = Qt.rect(0, 0, layout.width, layout.height)
             if (host.dropHoverIndex >= 0) {
                 for (const idx of layout.visibleIndexes) {
                     if (embeddedGalleryPanel.controller.sourceIndexAt(idx) === host.dropHoverIndex) {
                         const g = layout.indexGeometry(idx)
-                        r = Qt.rect(g.x, g.y - contentY, g.width, g.height)
+                        r = Qt.rect(
+                            g.x + layout.paddingLeft - (horizontal ? contentY : 0),
+                            g.y - (horizontal ? 0 : contentY),
+                            g.width, g.height)
                         break
                     }
                 }
             }
-            const right = Math.min(layout.width, r.x + r.width)
+            const left = host.dropHoverIndex >= 0
+                ? layout.paddingLeft : 0
+            const rightEdge = host.dropHoverIndex >= 0
+                ? layout.width - layout.paddingRight : layout.width
+            const right = Math.min(rightEdge, r.x + r.width)
             const bottom = Math.min(layout.height, r.y + r.height)
-            r = Qt.rect(Math.max(0, r.x), Math.max(0, r.y),
-                        Math.max(0, right - Math.max(0, r.x)),
+            r = Qt.rect(Math.max(left, r.x), Math.max(0, r.y),
+                        Math.max(0, right - Math.max(left, r.x)),
                         Math.max(0, bottom - Math.max(0, r.y)))
             let p = layout.mapToItem(dropOutline.parent, r.x, r.y)
             const scene = dropOutline.parent.mapToItem(null, p.x, p.y)
@@ -122,6 +143,7 @@ FocusScope {
     property var layoutState: null
     property var bridge: null
     property var keySink: null
+    property var iconProvider: null
     property string mouseWheelMode: "gui"
     property ZG.GalleryThemePalette theme: ZG.GalleryThemePalette {}
     property ZG.GalleryPresentationMetrics metrics:
@@ -150,6 +172,10 @@ FocusScope {
         inputRouter.pendingPointerActivationTimeoutMs
     property real devicePixelRatio: 1.0
     property real defaultListDensity: 22
+    // FilePanelView owns the full panel surface. Keep its normal horizontal
+    // content gap inside GalleryPanel so separators and pointer input still
+    // cover the complete panel width.
+    property real contentHorizontalInset: 0
     property bool viewerTransitionActive: false
     property string viewerTransitionEntryId: ""
     property alias forwardedKeysDown: inputRouter.forwardedKeysDown
@@ -184,6 +210,9 @@ FocusScope {
     property alias appliedRendererConfigSignature:
         panelAdapter.appliedRendererConfigSignature
     property bool applyingRendererState: false
+    readonly property var nativeGroupCatalogEpoch:
+        host.bridge && host.bridge.groupCatalogEpoch !== undefined
+            ? host.bridge.groupCatalogEpoch : 0
 
     signal keyboardInput()
     signal pointerActivationPreviewRequested(int side)
@@ -407,8 +436,10 @@ FocusScope {
         anchors.fill: parent
         session: host.session
         iconResolver: f4GalleryIconResolver
+        iconProvider: host.iconProvider
         presentationDensities: ({})
         theme: host.theme
+        groupHeaderBackdropColor: host.groupHeaderBackdropColor
         metrics: host.metrics
         animateLayoutChanges: host.bridge && host.bridge.settings
             ? host.bridge.settings.animateResizing : false
@@ -427,7 +458,35 @@ FocusScope {
             const supplied = String(host.panel.fastFindMatchColor || "")
             return supplied !== "" ? supplied : host.theme.quickSearchMatch
         }
+        groupDescriptors: {
+            // The bridge exposes only a complete group vector. For a large
+            // catalog the epoch binding reevaluates this expression after the
+            // bounded page lane commits its final page.
+            const epoch = host.nativeGroupCatalogEpoch
+            if (host.panel.groupBy === "None")
+                return []
+            if (host.bridge
+                    && typeof host.bridge.groupCatalogForSide === "function")
+                return host.bridge.groupCatalogForSide(host.side)
+            return host.panel.groups || []
+        }
+        groupingMode: String(host.panel.groupBy || "None")
+        groupingReverse: host.panel.groupReverse === true
+        groupingFoldersSeparately: host.panel.groupFoldersSeparately === true
+        groupStateKey: "side=" + String(host.side)
+                          + "|path=" + String(host.panel.path || "")
+                          + "|mode=" + String(host.panel.groupBy || "None")
+                          + "|reverse="
+                          + (host.panel.groupReverse === true ? "1" : "0")
+                          + "|folders="
+                          + (host.panel.groupFoldersSeparately === true
+                             ? "1" : "0")
+                          + "|reverse=" + (host.panel.groupReverse === true)
+                          + "|folders="
+                          + (host.panel.groupFoldersSeparately === true)
+        groupHeaderObjectSuffix: String(host.side)
         showDetailsHeader: false
+        contentHorizontalInset: host.contentHorizontalInset
         hostCapabilities: host.effectiveHostCapabilities
         devicePixelRatio: host.devicePixelRatio
         viewerTransitionActive: host.viewerTransitionActive

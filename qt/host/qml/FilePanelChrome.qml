@@ -25,6 +25,24 @@ Rectangle {
     color: hostWindow.titleBarBg
     z: 2
 
+    // The outside-click planes cover the buttons while a menu is open, so
+    // route their hover through the same overlay coordinates as the popups.
+    function switchMenuAt(overlay, x, y) {
+        const over = function(button) {
+            const position = button.mapFromItem(overlay, x, y)
+            return button.visible && button.enabled
+                    && position.x >= 0 && position.x < button.width
+                    && position.y >= 0 && position.y < button.height
+        }
+        if (rendererMenu.opened && over(sortButton)) {
+            rendererMenu.close()
+            sortMenu.open()
+        } else if (sortMenu.opened && over(presentationButton)) {
+            sortMenu.close()
+            rendererMenu.open()
+        }
+    }
+
     Rectangle {
         id: panelHeaderPanelBackground
         objectName: "panelHeaderPanelBackground-"
@@ -331,7 +349,7 @@ Rectangle {
                                     point.y))
         }
         onClosed: Qt.callLater(function() {
-            if (!panelView.panelIsActive || galleryController.viewerVisible
+            if (rendererMenu.visible || !panelView.panelIsActive || galleryController.viewerVisible
                     || hostWindow.hasBlockingOverlay()
                     || hostWindow.needsFallbackGrid()
                     || hostWindow.hasDocumentSurface()
@@ -580,6 +598,7 @@ Rectangle {
 
     PanelRendererMenu {
         id: rendererMenu
+        siblingMenuVisible: sortMenu.visible
         hostWindow: panelHeader.hostWindow
         panelView: panelHeader.panelView
         galleryController: panelHeader.galleryController
@@ -599,6 +618,8 @@ Rectangle {
         anchors.fill: parent
         visible: rendererMenu.opened
         enabled: visible
+        hoverEnabled: true
+        onPositionChanged: mouse => panelHeader.switchMenuAt(parent, mouse.x, mouse.y)
         z: 1000
         acceptedButtons: Qt.LeftButton | Qt.RightButton
                          | Qt.MiddleButton
@@ -610,6 +631,8 @@ Rectangle {
         anchors.fill: parent
         visible: sortMenu.opened
         enabled: visible
+        hoverEnabled: true
+        onPositionChanged: mouse => panelHeader.switchMenuAt(parent, mouse.x, mouse.y)
         z: 1000
         acceptedButtons: Qt.LeftButton | Qt.RightButton
                          | Qt.MiddleButton

@@ -82,6 +82,27 @@ Rectangle {
         { "label": "Unsorted", "mode": "unsorted", "icon": "list", "shortcut": "Ctrl+F7" },
         { "label": "Use sort groups", "mode": "groups", "icon": "list", "shortcut": "" }
     ]
+    readonly property var groupChoices: [
+        { "label": qsTr("Off"), "mode": "None", "icon": "list" },
+        { "label": qsTr("Name"), "mode": "Name", "icon": "arrow-down-a-z" },
+        { "label": qsTr("Extension"), "mode": "Extension", "icon": "file-type" },
+        { "label": qsTr("Size"), "mode": "Size", "icon": "arrow-down-wide-narrow" },
+        { "label": qsTr("Size on disk"), "mode": "PhysicalSize", "icon": "hard-drive" },
+        { "label": qsTr("Modification time"), "mode": "Modified", "icon": "file-clock" },
+        { "label": qsTr("Access time"), "mode": "Accessed", "icon": "clock-3" },
+        { "label": qsTr("Creation / metadata change time"), "mode": "Changed", "icon": "calendar-plus" },
+        { "label": qsTr("Owner"), "mode": "Owner", "icon": "user-round" },
+        { "label": qsTr("Owner group"), "mode": "OwnerGroup", "icon": "users-round" },
+        { "label": qsTr("Unix permissions"), "mode": "Permissions", "icon": "file-lock" },
+        { "label": qsTr("Windows attributes"), "mode": "Attributes", "icon": "list-checks" },
+        { "label": qsTr("VFS type / mode"), "mode": "ModeText", "icon": "binary" },
+        { "label": qsTr("Object kind"), "mode": "Kind", "icon": "blocks" },
+        { "label": qsTr("Hidden"), "mode": "Hidden", "icon": "eye-off" },
+        { "label": qsTr("Executable"), "mode": "Executable", "icon": "square-terminal" },
+        { "separator": true, "label": qsTr("Options") },
+        { "label": qsTr("Separate folders"), "special": "folders", "icon": "folder" },
+        { "label": qsTr("Size thresholds…"), "special": "thresholds", "icon": "settings-2" }
+    ]
 
     function rendererChoiceEnabled(choice) {
         if (!choice || choice.heading === true)
@@ -151,6 +172,76 @@ Rectangle {
             "side": panel.side,
             "mode": choice.mode
         })
+    }
+
+    function groupModeName() {
+        const mode = hostWindow.cleanText(panel.groupBy)
+        return mode !== "" ? mode : "None"
+    }
+
+    function groupModeLabel() {
+        const mode = groupModeName()
+        for (var i = 0; i < groupChoices.length; ++i) {
+            if (groupChoices[i].mode === mode)
+                return groupChoices[i].label
+        }
+        return "Off"
+    }
+
+    function groupChoiceActive(choice) {
+        if (!choice || choice.separator === true)
+            return false
+        if (choice.special === "folders")
+            return panel.groupFoldersSeparately === true
+        if (choice.special === "thresholds")
+            return false
+        return groupModeName() === String(choice.mode || "None")
+    }
+
+    function groupDirectionIconName() {
+        const mode = groupModeName()
+        // Date groups are newest-first by default; size and other ranks ascend.
+        const newestFirst = mode === "Modified" || mode === "Accessed" || mode === "Changed"
+        const ascending = newestFirst ? panel.groupReverse === true : panel.groupReverse !== true
+        return ascending ? "arrow-up" : "arrow-down"
+    }
+
+    function thumbnailsEnabled() {
+        const preferences = galleryController.panelPreferences
+        const values = preferences ? preferences.values : null
+        const key = Number(panel.side || 0) === 0
+                ? "leftThumbnailsEnabled" : "rightThumbnailsEnabled"
+        return !values || values[key] !== false
+    }
+
+    function toggleThumbnails() {
+        return galleryController.setPanelThumbnailsEnabled(
+                    Number(panel.side || 0), !thumbnailsEnabled())
+    }
+
+    function chooseGrouping(choice) {
+        if (!choice || choice.separator === true)
+            return
+        if (choice.special === "thresholds") {
+            hostWindow.action({ "action": "panel.groupSettings",
+                                "side": panel.side,
+                                "panelId": panel.id,
+                                "path": panel.path,
+                                "catalogRevision": panel.catalogRevision }, true)
+            return
+        }
+        const mode = choice.special ? groupModeName()
+                                    : String(choice.mode || "None")
+        const reverse = !choice.special && mode !== "None" && mode === groupModeName()
+                ? panel.groupReverse !== true : panel.groupReverse === true
+        const folders = choice.special === "folders"
+                ? panel.groupFoldersSeparately !== true
+                : panel.groupFoldersSeparately === true
+        hostWindow.action({ "action": "panel.setGrouping", "side": panel.side,
+                            "panelId": panel.id, "path": panel.path,
+                            "catalogRevision": panel.catalogRevision,
+                            "mode": mode, "reverse": reverse,
+                            "foldersSeparately": folders }, true)
     }
 
     function chooseRenderer(choice) {
@@ -382,8 +473,6 @@ Rectangle {
         objectName: "galleryPanelContent-" + Number(panel.side || 0)
         anchors.left: parent.left
         anchors.right: parent.right
-        anchors.leftMargin: hostWindow.panelContentSpacing
-        anchors.rightMargin: hostWindow.panelContentSpacing
         anchors.top: parent.top
         anchors.topMargin: panelHeader.height + columnHeader.height
         anchors.bottom: parent.bottom
@@ -411,6 +500,8 @@ Rectangle {
             if (typeof item.dropPanelSurface !== "undefined")
                 item.dropPanelSurface = panelRoot
             item.bridge = panelRoot.galleryController
+            if (typeof item.iconProvider !== "undefined")
+                item.iconProvider = Qt.binding(() => hostWindow.iconProvider)
             if (typeof item.dropInputEnabled !== "undefined")
                 item.dropInputEnabled = Qt.binding(() => panelRoot.visible
                     && !galleryController.viewerVisible && !hostWindow.needsFallbackGrid()
@@ -419,6 +510,11 @@ Rectangle {
             item.keySink = panelRoot.focusTarget
             item.theme = Qt.binding(() => panelRoot.galleryTheme)
             item.metrics = Qt.binding(() => panelRoot.galleryMetrics)
+            if (typeof item.groupHeaderBackdropColor !== "undefined")
+                item.groupHeaderBackdropColor = Qt.binding(() => {
+                    const color = hostWindow.windowBackgroundColor
+                    return Qt.rgba(color.r, color.g, color.b, 1)
+                })
             item.devicePixelRatio = Qt.binding(
                 () => hostWindow.screen ? hostWindow.screen.devicePixelRatio : 1.0)
             item.defaultListDensity = Qt.binding(
@@ -428,6 +524,9 @@ Rectangle {
             if (typeof item.mouseWheelMode !== "undefined")
                 item.mouseWheelMode = Qt.binding(
                     () => hostWindow.mouseWheelMode)
+            if (typeof item.contentHorizontalInset !== "undefined")
+                item.contentHorizontalInset = Qt.binding(
+                    () => hostWindow.panelContentSpacing)
             item.panelActive = Qt.binding(
                 () => panelRoot.visible
                       && panelRoot.panelIsActive
