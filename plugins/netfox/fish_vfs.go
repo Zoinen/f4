@@ -36,6 +36,7 @@ type FishVFS struct {
 	path                string
 	title               string
 	devicePath          vfs.DevicePath
+	directoryCacheKey   string
 	once                sync.Once
 	panelTitleFormatter func(title, path string) string
 	host                string
@@ -620,6 +621,25 @@ func (v *FishVFS) SessionLost(err error) bool {
 // a clone shares it, which is exactly the property a caller looking for
 // everything that died with one session needs.
 func (v *FishVFS) SessionKey() any { return v.conn }
+
+// DirectoryCacheKey identifies the configured remote rather than this view of
+// its session. A panel may close this view and receive a new pooled view on
+// re-entry while the last directory listing remains useful as a provisional
+// snapshot.
+func (v *FishVFS) DirectoryCacheKey() any {
+	if v == nil || v.directoryCacheKey == "" {
+		return nil
+	}
+	return v.directoryCacheKey
+}
+
+func (v *FishVFS) StableDirectoryKey() any { return v.DirectoryCacheKey() }
+
+func (v *FishVFS) SetDirectoryCacheKey(key string) {
+	if v != nil {
+		v.directoryCacheKey = strings.TrimSpace(key)
+	}
+}
 
 // Reconnect rebuilds the session behind this file system and points this view
 // at the result. The new shell knows nothing of what the old one was doing:
@@ -1558,6 +1578,7 @@ func (v *FishVFS) CloneForParent(parent vfs.VFS) *FishVFS {
 		conn:                v.conn,
 		path:                v.remotePath(),
 		devicePath:          v.devicePath,
+		directoryCacheKey:   v.directoryCacheKey,
 		title:               v.title,
 		panelTitleFormatter: v.panelTitleFormatter,
 		panelInfo:           v.panelInfoProvider(),
@@ -1616,6 +1637,7 @@ func netFoxConfigAt(ctx context.Context, parent vfs.VFS, pth string) (NetFoxConf
 	if err := json.NewDecoder(ctxReader{f, ctx}).Decode(&cfg); err != nil {
 		return NetFoxConfig{}, false
 	}
+	cfg.autoSSHProfile = w.NetFoxVFS.isSSHProfile(w.Base(pth))
 	return cfg, true
 }
 
@@ -1648,6 +1670,12 @@ func (p *fishProvider) Open(ctx context.Context, parent vfs.VFS, pth string) (vf
 	if err != nil {
 		return nil, err
 	}
+	connection := netFoxConnectionName(pth)
+	if connection == "" {
+		connection = res.GetTitle()
+	}
+	cfg.Port = port
+	configureNetFoxConnection(res, connection, "fish+", cfg)
 	return res, nil
 }
 

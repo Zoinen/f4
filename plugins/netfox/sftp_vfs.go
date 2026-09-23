@@ -3,7 +3,6 @@ package netfox
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -25,16 +24,20 @@ import (
 )
 
 type SFTPVFS struct {
-	parent    vfs.VFS
-	client    *sftp.Client
-	ssh       *ssh.Client
-	shared    *sftpConnectionRefs
-	codepage  string
-	pathMu    sync.RWMutex
-	path      string
-	title     string
-	decoder   *encoding.Decoder
-	closeOnce sync.Once
+	parent            vfs.VFS
+	client            *sftp.Client
+	ssh               *ssh.Client
+	shared            *sftpConnectionRefs
+	codepage          string
+	pathMu            sync.RWMutex
+	path              string
+	title             string
+	devicePath        vfs.DevicePath
+	directoryCacheKey string
+	panelInfoMu       sync.RWMutex
+	panelInfo         vfs.PanelInfoProvider
+	decoder           *encoding.Decoder
+	closeOnce         sync.Once
 }
 
 type sftpConnectionRefs struct {
@@ -142,22 +145,103 @@ func (v *SFTPVFS) EncodeCommandListANSI(text []byte) ([]byte, error) {
 func (v *SFTPVFS) GetTitle() string { return v.title }
 func (v *SFTPVFS) SessionKey() any  { return v.client }
 
+func (v *SFTPVFS) DirectoryCacheKey() any {
+	if v == nil || v.directoryCacheKey == "" {
+		return nil
+	}
+	return v.directoryCacheKey
+}
+
+func (v *SFTPVFS) StableDirectoryKey() any { return v.DirectoryCacheKey() }
+
+func (v *SFTPVFS) SetDirectoryCacheKey(key string) {
+	if v != nil {
+		v.directoryCacheKey = strings.TrimSpace(key)
+	}
+}
+
+func (v *SFTPVFS) SetPanelInfoProvider(provider vfs.PanelInfoProvider) {
+	v.panelInfoMu.Lock()
+	v.panelInfo = provider
+	v.panelInfoMu.Unlock()
+}
+
+func (v *SFTPVFS) panelInfoProvider() vfs.PanelInfoProvider {
+	v.panelInfoMu.RLock()
+	defer v.panelInfoMu.RUnlock()
+	return v.panelInfo
+}
+
+func (v *SFTPVFS) PanelInfoKey(req vfs.PanelInfoRequest) string {
+	if provider := v.panelInfoProvider(); provider != nil {
+		return provider.PanelInfoKey(req)
+	}
+	return ""
+}
+
+func (v *SFTPVFS) CachedPanelInfo(req vfs.PanelInfoRequest) (vfs.PanelInfoSnapshot, bool) {
+	if provider := v.panelInfoProvider(); provider != nil {
+		return provider.CachedPanelInfo(req)
+	}
+	return vfs.PanelInfoSnapshot{}, true
+}
+
+func (v *SFTPVFS) RefreshPanelInfo(ctx context.Context, req vfs.PanelInfoRequest) (vfs.PanelInfoSnapshot, error) {
+	if provider := v.panelInfoProvider(); provider != nil {
+		return provider.RefreshPanelInfo(ctx, req)
+	}
+	return vfs.PanelInfoSnapshot{}, nil
+}
+
+func (v *SFTPVFS) PanelTitle(p string) string {
+	public, err := v.Abs(p)
+	if err != nil {
+		return p
+	}
+	return public
+}
+
 func (v *SFTPVFS) IsAtRoot() bool {
-	p := v.GetPath()
+	p := v.remotePath()
 	return p == "/" || p == ""
 }
-func (v *SFTPVFS) GetPath() string {
+func (v *SFTPVFS) remotePath() string {
 	v.pathMu.RLock()
 	defer v.pathMu.RUnlock()
 	return v.path
 }
-func (v *SFTPVFS) IsAbs(p string) bool { return path.IsAbs(p) }
-func (v *SFTPVFS) SetPath(p string) error {
-	var target string
+func (v *SFTPVFS) GetPath() string {
+	return v.publicPath(v.remotePath())
+}
+func (v *SFTPVFS) publicPath(p string) string {
+	if v.devicePath.Scheme != "" {
+		return v.devicePath.Public(p)
+	}
+	return p
+}
+func (v *SFTPVFS) SetDevicePath(p vfs.DevicePath) { v.devicePath = p }
+func (v *SFTPVFS) IsAbs(p string) bool {
+	if v.devicePath.Scheme != "" {
+		return v.devicePath.IsAbs(p)
+	}
+	return path.IsAbs(p)
+}
+func (v *SFTPVFS) abs(p string) (string, error) {
+	if v.devicePath.Scheme != "" {
+		return v.devicePath.Remote(v.remotePath(), p)
+	}
+	if p == "" {
+		return v.remotePath(), nil
+	}
 	if path.IsAbs(p) {
-		target = p
-	} else {
-		target = v.Join(v.GetPath(), p)
+		return path.Clean(p), nil
+	}
+	return path.Join(v.remotePath(), p), nil
+}
+func (v *SFTPVFS) SetPath(p string) error {
+	target, err := v.abs(p)
+	if err != nil {
+		return err
 	}
 	target = path.Clean(target)
 	info, err := v.client.Stat(v.encodePath(target))
@@ -170,27 +254,32 @@ func (v *SFTPVFS) SetPath(p string) error {
 	v.pathMu.Lock()
 	v.path = target
 	v.pathMu.Unlock()
+	vtui.DebugLog("[FIX:netfox-path] SFTP path changed to %q (public %q)", target, v.publicPath(target))
 	return nil
 }
 
 func (v *SFTPVFS) ReadDir(ctx context.Context, p string, onChunk func([]vfs.VFSItem)) error {
-	vtui.DebugLog("SFTP: ReadDir(%q) starting...", p)
-	entries, err := v.client.ReadDir(v.encodePath(p))
+	dir, err := v.abs(p)
 	if err != nil {
-		vtui.DebugLog("SFTP: ReadDir(%q) failed: %v", p, err)
+		return err
+	}
+	vtui.DebugLog("SFTP: ReadDir(%q) starting...", dir)
+	entries, err := v.client.ReadDir(v.encodePath(dir))
+	if err != nil {
+		vtui.DebugLog("SFTP: ReadDir(%q) failed: %v", dir, err)
 		return err
 	}
 	var items []vfs.VFSItem
 	for i, e := range entries {
 		if ctx.Err() != nil {
-			vtui.DebugLog("SFTP: ReadDir(%q) aborted by context cancellation after %d items", p, i)
+			vtui.DebugLog("SFTP: ReadDir(%q) aborted by context cancellation after %d items", dir, i)
 			return ctx.Err()
 		}
 
 		isDir := e.IsDir()
 		isSymlink := e.Mode()&os.ModeSymlink != 0
 		if !isDir && isSymlink {
-			if target, err := v.client.Stat(v.encodePath(v.Join(p, e.Name()))); err == nil {
+			if target, err := v.client.Stat(v.encodePath(path.Join(dir, e.Name()))); err == nil {
 				isDir = target.IsDir()
 			}
 		}
@@ -227,12 +316,16 @@ func (v *SFTPVFS) ReadDir(ctx context.Context, p string, onChunk func([]vfs.VFSI
 			items = make([]vfs.VFSItem, 0, 500)
 		}
 	}
-	vtui.DebugLog("SFTP: ReadDir(%q) finished, total: %d", p, len(entries))
+	vtui.DebugLog("SFTP: ReadDir(%q) finished, total: %d", dir, len(entries))
 	return nil
 }
 
 func (v *SFTPVFS) Stat(ctx context.Context, p string) (vfs.VFSItem, error) {
-	info, err := v.client.Stat(v.encodePath(p))
+	target, err := v.abs(p)
+	if err != nil {
+		return vfs.VFSItem{}, err
+	}
+	info, err := v.client.Stat(v.encodePath(target))
 	if err != nil {
 		return vfs.VFSItem{}, err
 	}
@@ -259,28 +352,52 @@ func (v *SFTPVFS) Stat(ctx context.Context, p string) (vfs.VFSItem, error) {
 	}, nil
 }
 
-func (v *SFTPVFS) Join(e ...string) string { return path.Join(e...) }
-func (v *SFTPVFS) Abs(p string) (string, error) {
-	if path.IsAbs(p) {
-		return path.Clean(p), nil
+func (v *SFTPVFS) Join(e ...string) string {
+	if v.devicePath.Scheme != "" {
+		return v.devicePath.Join(e...)
 	}
-	return v.Join(v.GetPath(), p), nil
+	return path.Join(e...)
 }
-func (v *SFTPVFS) Base(p string) string { return path.Base(p) }
-func (v *SFTPVFS) Dir(p string) string  { return path.Dir(p) }
+func (v *SFTPVFS) Abs(p string) (string, error) {
+	remote, err := v.abs(p)
+	if err != nil {
+		return "", err
+	}
+	return v.publicPath(remote), nil
+}
+func (v *SFTPVFS) Base(p string) string {
+	if v.devicePath.Scheme != "" {
+		return v.devicePath.Base(p)
+	}
+	return path.Base(p)
+}
+func (v *SFTPVFS) Dir(p string) string {
+	if v.devicePath.Scheme != "" {
+		return v.devicePath.Dir(p)
+	}
+	return path.Dir(p)
+}
 func (v *SFTPVFS) MkDir(ctx context.Context, p string) error {
-	return v.client.MkdirAll(v.encodePath(p))
+	target, err := v.abs(p)
+	if err != nil {
+		return err
+	}
+	return v.client.MkdirAll(v.encodePath(target))
 }
 func (v *SFTPVFS) Remove(ctx context.Context, p string) error {
-	info, err := v.client.Lstat(v.encodePath(p))
+	target, err := v.abs(p)
+	if err != nil {
+		return err
+	}
+	info, err := v.client.Lstat(v.encodePath(target))
 	if err != nil {
 		return err
 	}
 	if !info.IsDir() {
-		return v.client.Remove(v.encodePath(p))
+		return v.client.Remove(v.encodePath(target))
 	}
 
-	walker := v.client.Walk(v.encodePath(p))
+	walker := v.client.Walk(v.encodePath(target))
 	var items []string
 	for walker.Step() {
 		if err := walker.Err(); err != nil {
@@ -311,11 +428,23 @@ func (v *SFTPVFS) Remove(ctx context.Context, p string) error {
 	return nil
 }
 func (v *SFTPVFS) Rename(ctx context.Context, o, n string) error {
-	return v.client.Rename(v.encodePath(o), v.encodePath(n))
+	oldPath, err := v.abs(o)
+	if err != nil {
+		return err
+	}
+	newPath, err := v.abs(n)
+	if err != nil {
+		return err
+	}
+	return v.client.Rename(v.encodePath(oldPath), v.encodePath(newPath))
 }
 
-func (v *SFTPVFS) SetAttributes(ctx context.Context, path string, item vfs.VFSItem) error {
-	encPath := v.encodePath(path)
+func (v *SFTPVFS) SetAttributes(ctx context.Context, p string, item vfs.VFSItem) error {
+	target, err := v.abs(p)
+	if err != nil {
+		return err
+	}
+	encPath := v.encodePath(target)
 	if item.UnixMode != 0 {
 		if err := v.client.Chmod(encPath, os.FileMode(item.UnixMode)); err != nil {
 			return err
@@ -356,8 +485,12 @@ func (*SFTPVFS) SupportsConcurrentCalls() bool { return true }
 func (v *SFTPVFS) Search(ctx context.Context, p, pat string) (chan int64, error) { return nil, nil }
 
 func (v *SFTPVFS) Open(ctx context.Context, p string) (vfs.ReadAtCloser, error) {
-	vtui.DebugLog("SFTP: Opening file %q for reading...", p)
-	f, err := v.client.Open(v.encodePath(p))
+	target, err := v.abs(p)
+	if err != nil {
+		return nil, err
+	}
+	vtui.DebugLog("SFTP: Opening file %q for reading...", target)
+	f, err := v.client.Open(v.encodePath(target))
 	if err != nil {
 		return nil, err
 	}
@@ -370,7 +503,11 @@ func (v *SFTPVFS) Open(ctx context.Context, p string) (vfs.ReadAtCloser, error) 
 }
 
 func (v *SFTPVFS) Create(ctx context.Context, p string) (io.WriteCloser, error) {
-	return v.client.Create(v.encodePath(p))
+	target, err := v.abs(p)
+	if err != nil {
+		return nil, err
+	}
+	return v.client.Create(v.encodePath(target))
 }
 func (v *SFTPVFS) ParentVFS() vfs.VFS { return v.parent }
 func (v *SFTPVFS) Close() error {
@@ -400,7 +537,9 @@ func (v *SFTPVFS) Clone() vfs.VFS {
 	decoder, _ := vfs.GetCodepageDecoderEncoder(v.codepage)
 	return &SFTPVFS{
 		parent: v.parent, client: v.client, ssh: v.ssh, shared: v.shared,
-		codepage: v.codepage, path: v.GetPath(), title: v.title, decoder: decoder,
+		codepage: v.codepage, path: v.remotePath(), title: v.title, devicePath: v.devicePath,
+		directoryCacheKey: v.directoryCacheKey,
+		panelInfo:         v.panelInfoProvider(), decoder: decoder,
 	}
 }
 
@@ -438,14 +577,9 @@ func (v *SFTPVFS) RunCommand(ctx context.Context, dir, command string, cb func(l
 		return 0, errors.New("sftp: empty shell command")
 	}
 
-	base := v.GetPath()
-	cwd := dir
-	if cwd == "" {
-		cwd = base
-	} else if path.IsAbs(cwd) {
-		cwd = path.Clean(cwd)
-	} else {
-		cwd = path.Join(base, cwd)
+	cwd, err := v.abs(dir)
+	if err != nil {
+		return 0, err
 	}
 	if cwd == "" {
 		cwd = "/"
@@ -685,35 +819,16 @@ type sftpProvider struct{}
 func (p *sftpProvider) Name() string  { return "NetFox-SFTP" }
 func (p *sftpProvider) Priority() int { return 100 }
 func (p *sftpProvider) CanOpen(ctx context.Context, parent vfs.VFS, pth string) bool {
-	w, ok := parent.(*netFoxVFSWrapper)
+	cfg, ok := netFoxConfigAt(ctx, parent, pth)
 	if !ok {
-		return false
-	}
-	item, err := w.Stat(ctx, pth)
-	if err != nil || item.IsDir {
-		return false
-	}
-	f, err := w.Open(ctx, pth)
-	if err != nil {
-		return false
-	}
-	defer func() { _ = f.Close() }() // The configuration file is read-only.
-	var cfg NetFoxConfig
-	if err := json.NewDecoder(ctxReader{f, ctx}).Decode(&cfg); err != nil {
 		return false
 	}
 	return cfg.Type == "sftp" || cfg.Type == ""
 }
 func (p *sftpProvider) Open(ctx context.Context, parent vfs.VFS, pth string) (vfs.VFS, error) {
-	w := parent.(*netFoxVFSWrapper)
-	f, err := w.Open(ctx, pth)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = f.Close() }() // The configuration file is read-only.
-	var cfg NetFoxConfig
-	if err := json.NewDecoder(ctxReader{f, ctx}).Decode(&cfg); err != nil {
-		return nil, fmt.Errorf("netfox: decode SFTP connection: %w", err)
+	cfg, ok := netFoxConfigAt(ctx, parent, pth)
+	if !ok {
+		return nil, os.ErrInvalid
 	}
 	port := cfg.Port
 	if port == "" {
@@ -727,8 +842,32 @@ func (p *sftpProvider) Open(ctx context.Context, parent vfs.VFS, pth string) (vf
 	}
 	res, err := NewSFTPVFS(parent, cfg.Host, port, cfg.User, cfg.Pass, cfg.KeyPath, timeout, cfg.Codepage, cfg.Proxy())
 	if err != nil {
+		if cfg.autoSSHProfile {
+			// Some SSH servers emit startup-shell text even for the SFTP
+			// subsystem, corrupting its binary version packet. OpenSSH's own
+			// sftp client fails in exactly the same way. The FISH+ transport
+			// uses a framed shell protocol and remains usable on those hosts.
+			vtui.DebugLog("[FIX:netfox-ssh-config] SFTP failed for OpenSSH profile %q; trying FISH+: %v", path.Base(pth), err)
+			fish, fishErr := NewFishVFS(parent, cfg.Host, port, cfg.User, cfg.Pass, cfg.KeyPath, timeout, cfg.Proxy())
+			if fishErr == nil {
+				connection := netFoxConnectionName(pth)
+				if connection == "" {
+					connection = fish.GetTitle()
+				}
+				cfg.Port = port
+				configureNetFoxConnection(fish, connection, "sftp/fish+", cfg)
+				return fish, nil
+			}
+			return nil, fmt.Errorf("netfox: SFTP failed for OpenSSH profile and FISH+ fallback failed: %w (FISH+: %v)", err, fishErr)
+		}
 		return nil, err
 	}
+	connection := netFoxConnectionName(pth)
+	if connection == "" {
+		connection = res.GetTitle()
+	}
+	cfg.Port = port
+	configureNetFoxConnection(res, connection, "sftp", cfg)
 	return res, nil
 }
 
@@ -790,14 +929,22 @@ func (v *SFTPVFS) Readlink(ctx context.Context, p string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	return v.client.ReadLink(v.encodePath(p))
+	target, err := v.abs(p)
+	if err != nil {
+		return "", err
+	}
+	return v.client.ReadLink(v.encodePath(target))
 }
 
 func (v *SFTPVFS) Symlink(ctx context.Context, target, linkPath string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return v.client.Symlink(target, v.encodePath(linkPath))
+	link, err := v.abs(linkPath)
+	if err != nil {
+		return err
+	}
+	return v.client.Symlink(target, v.encodePath(link))
 }
 
 // OpenWriteAt makes SFTPVFS a vfs.RandomWriteVFS. This is the backend the
@@ -807,7 +954,16 @@ func (v *SFTPVFS) OpenWriteAt(ctx context.Context, p string) (vfs.WriterAtCloser
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return v.client.OpenFile(v.encodePath(p), os.O_RDWR|os.O_CREATE)
+	target, err := v.abs(p)
+	if err != nil {
+		return nil, err
+	}
+	return v.client.OpenFile(v.encodePath(target), os.O_RDWR|os.O_CREATE)
 }
 
 func (*SFTPVFS) PanelIcon() string { return "network" }
+
+var (
+	_ vfs.PanelInfoProvider  = (*SFTPVFS)(nil)
+	_ vfs.PanelTitleProvider = (*SFTPVFS)(nil)
+)

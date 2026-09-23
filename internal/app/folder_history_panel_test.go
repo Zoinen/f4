@@ -31,4 +31,7 @@ func TestShouldRecordFolderHistorySkipsUnqualifiedNestedAbsolutePath(t *testing.
 	if !panel.ShouldRecordFolderHistory(pnl, "netfox://site/home/user") {
 		t.Fatal("persistent URI paths must remain eligible for folder history")
 	}
+	if !panel.ShouldRecordFolderHistory(pnl, "net://de_zoin/home/user") {
+		t.Fatal("qualified NetFox paths must remain eligible for folder history")
+	}
 }

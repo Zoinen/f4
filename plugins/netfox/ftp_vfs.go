@@ -24,15 +24,19 @@ import (
 import "golang.org/x/text/encoding"
 
 type FTPVFS struct {
-	mu        sync.Mutex
-	parent    vfs.VFS
-	conn      *ftp.ServerConn
-	session   *ftpSession
-	cwd       string
-	title     string
-	decoder   *encoding.Decoder
-	encoder   *encoding.Encoder
-	closeOnce sync.Once
+	mu                sync.Mutex
+	parent            vfs.VFS
+	conn              *ftp.ServerConn
+	session           *ftpSession
+	cwd               string
+	title             string
+	devicePath        vfs.DevicePath
+	directoryCacheKey string
+	panelInfoMu       sync.RWMutex
+	panelInfo         vfs.PanelInfoProvider
+	decoder           *encoding.Decoder
+	encoder           *encoding.Encoder
+	closeOnce         sync.Once
 }
 
 // ftpSession owns one control connection shared by independent VFS views.
@@ -163,6 +167,63 @@ func NewFTPVFS(parent vfs.VFS, host, port, user, pass string, timeout int, optio
 }
 
 func (v *FTPVFS) GetTitle() string { return v.title }
+
+func (v *FTPVFS) DirectoryCacheKey() any {
+	if v == nil || v.directoryCacheKey == "" {
+		return nil
+	}
+	return v.directoryCacheKey
+}
+
+func (v *FTPVFS) StableDirectoryKey() any { return v.DirectoryCacheKey() }
+
+func (v *FTPVFS) SetDirectoryCacheKey(key string) {
+	if v != nil {
+		v.directoryCacheKey = strings.TrimSpace(key)
+	}
+}
+
+func (v *FTPVFS) SetPanelInfoProvider(provider vfs.PanelInfoProvider) {
+	v.panelInfoMu.Lock()
+	v.panelInfo = provider
+	v.panelInfoMu.Unlock()
+}
+
+func (v *FTPVFS) panelInfoProvider() vfs.PanelInfoProvider {
+	v.panelInfoMu.RLock()
+	defer v.panelInfoMu.RUnlock()
+	return v.panelInfo
+}
+
+func (v *FTPVFS) PanelInfoKey(req vfs.PanelInfoRequest) string {
+	if provider := v.panelInfoProvider(); provider != nil {
+		return provider.PanelInfoKey(req)
+	}
+	return ""
+}
+
+func (v *FTPVFS) CachedPanelInfo(req vfs.PanelInfoRequest) (vfs.PanelInfoSnapshot, bool) {
+	if provider := v.panelInfoProvider(); provider != nil {
+		return provider.CachedPanelInfo(req)
+	}
+	return vfs.PanelInfoSnapshot{}, true
+}
+
+func (v *FTPVFS) RefreshPanelInfo(ctx context.Context, req vfs.PanelInfoRequest) (vfs.PanelInfoSnapshot, error) {
+	if provider := v.panelInfoProvider(); provider != nil {
+		return provider.RefreshPanelInfo(ctx, req)
+	}
+	return vfs.PanelInfoSnapshot{}, nil
+}
+
+func (v *FTPVFS) PanelTitle(p string) string {
+	public, err := v.Abs(p)
+	if err != nil {
+		return p
+	}
+	return public
+}
+
 func (v *FTPVFS) SessionKey() any {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -195,10 +256,39 @@ func (v *FTPVFS) operationConn() *ftp.ServerConn {
 }
 
 func (v *FTPVFS) pathLocked(p string) string {
+	if v.devicePath.Scheme != "" {
+		resolved, err := v.devicePath.Remote(v.cwd, p)
+		if err != nil {
+			return ""
+		}
+		return resolved
+	}
 	if path.IsAbs(p) {
 		return path.Clean(p)
 	}
 	return path.Join(v.cwd, p)
+}
+
+func (v *FTPVFS) pathLockedResult(p string) (string, error) {
+	if v.devicePath.Scheme != "" {
+		return v.devicePath.Remote(v.cwd, p)
+	}
+	return v.pathLocked(p), nil
+}
+
+func (v *FTPVFS) publicPath(p string) string {
+	if v.devicePath.Scheme != "" {
+		return v.devicePath.Public(p)
+	}
+	return p
+}
+
+func (v *FTPVFS) SetDevicePath(p vfs.DevicePath) { v.devicePath = p }
+
+func (v *FTPVFS) abs(p string) (string, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.pathLockedResult(p)
 }
 
 func (v *FTPVFS) IsAtRoot() bool {
@@ -209,24 +299,36 @@ func (v *FTPVFS) IsAtRoot() bool {
 func (v *FTPVFS) GetPath() string {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	return v.cwd
+	return v.publicPath(v.cwd)
 }
-func (v *FTPVFS) IsAbs(p string) bool { return path.IsAbs(p) }
+func (v *FTPVFS) IsAbs(p string) bool {
+	if v.devicePath.Scheme != "" {
+		return v.devicePath.IsAbs(p)
+	}
+	return path.IsAbs(p)
+}
 func (v *FTPVFS) SetPath(p string) error {
 	unlock := v.operationLock()
 	defer unlock()
-	target := v.pathLocked(p)
+	target, err := v.pathLockedResult(p)
+	if err != nil {
+		return err
+	}
 	if err := v.operationConn().ChangeDir(v.encodePath(target)); err != nil {
 		return err
 	}
 	v.cwd = target
+	vtui.DebugLog("[FIX:netfox-path] FTP path changed to %q (public %q)", target, v.publicPath(target))
 	return nil
 }
 
 func (v *FTPVFS) ReadDir(ctx context.Context, p string, onChunk func([]vfs.VFSItem)) error {
 	unlock := v.operationLock()
 	defer unlock()
-	target := v.pathLocked(p)
+	target, err := v.pathLockedResult(p)
+	if err != nil {
+		return err
+	}
 	vtui.DebugLog("FTP: ReadDir(%q) starting...", target)
 	entries, err := v.operationConn().List(v.encodePath(target))
 	if err != nil {
@@ -272,7 +374,10 @@ func (v *FTPVFS) ReadDir(ctx context.Context, p string, onChunk func([]vfs.VFSIt
 func (v *FTPVFS) Stat(ctx context.Context, p string) (vfs.VFSItem, error) {
 	unlock := v.operationLock()
 	defer unlock()
-	fullPath := v.pathLocked(p)
+	fullPath, err := v.pathLockedResult(p)
+	if err != nil {
+		return vfs.VFSItem{}, err
+	}
 	dir, base := path.Dir(fullPath), path.Base(fullPath)
 	entries, err := v.operationConn().List(v.encodePath(dir))
 	if err != nil {
@@ -295,26 +400,48 @@ func (v *FTPVFS) Stat(ctx context.Context, p string) (vfs.VFSItem, error) {
 	return vfs.VFSItem{}, os.ErrNotExist
 }
 
-func (v *FTPVFS) Join(e ...string) string { return path.Join(e...) }
-func (v *FTPVFS) Abs(p string) (string, error) {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	if path.IsAbs(p) {
-		return path.Clean(p), nil
+func (v *FTPVFS) Join(e ...string) string {
+	if v.devicePath.Scheme != "" {
+		return v.devicePath.Join(e...)
 	}
-	return path.Join(v.cwd, p), nil
+	return path.Join(e...)
 }
-func (v *FTPVFS) Base(p string) string { return path.Base(p) }
-func (v *FTPVFS) Dir(p string) string  { return path.Dir(p) }
+func (v *FTPVFS) Abs(p string) (string, error) {
+	remote, err := v.abs(p)
+	if err != nil {
+		return "", err
+	}
+	return v.publicPath(remote), nil
+}
+func (v *FTPVFS) Base(p string) string {
+	if v.devicePath.Scheme != "" {
+		return v.devicePath.Base(p)
+	}
+	return path.Base(p)
+}
+func (v *FTPVFS) Dir(p string) string {
+	if v.devicePath.Scheme != "" {
+		return v.devicePath.Dir(p)
+	}
+	return path.Dir(p)
+}
 func (v *FTPVFS) MkDir(ctx context.Context, p string) error {
 	unlock := v.operationLock()
 	defer unlock()
-	return v.operationConn().MakeDir(v.encodePath(v.pathLocked(p)))
+	target, err := v.pathLockedResult(p)
+	if err != nil {
+		return err
+	}
+	return v.operationConn().MakeDir(v.encodePath(target))
 }
 func (v *FTPVFS) Remove(ctx context.Context, p string) error {
 	unlock := v.operationLock()
 	defer unlock()
-	return v.removeRecursiveLocked(ctx, v.pathLocked(p))
+	target, err := v.pathLockedResult(p)
+	if err != nil {
+		return err
+	}
+	return v.removeRecursiveLocked(ctx, target)
 }
 
 func (v *FTPVFS) removeRecursiveLocked(ctx context.Context, p string) error {
@@ -354,7 +481,15 @@ func (v *FTPVFS) removeRecursiveLocked(ctx context.Context, p string) error {
 func (v *FTPVFS) Rename(ctx context.Context, o, n string) error {
 	unlock := v.operationLock()
 	defer unlock()
-	return v.operationConn().Rename(v.encodePath(v.pathLocked(o)), v.encodePath(v.pathLocked(n)))
+	oldPath, err := v.pathLockedResult(o)
+	if err != nil {
+		return err
+	}
+	newPath, err := v.pathLockedResult(n)
+	if err != nil {
+		return err
+	}
+	return v.operationConn().Rename(v.encodePath(oldPath), v.encodePath(newPath))
 }
 
 func (v *FTPVFS) SetAttributes(ctx context.Context, path string, item vfs.VFSItem) error {
@@ -371,7 +506,10 @@ func (v *FTPVFS) Search(ctx context.Context, p, pat string) (chan int64, error) 
 func (v *FTPVFS) Open(ctx context.Context, p string) (vfs.ReadAtCloser, error) {
 	unlock := v.operationLock()
 	defer unlock()
-	fullPath := v.pathLocked(p)
+	fullPath, err := v.pathLockedResult(p)
+	if err != nil {
+		return nil, err
+	}
 	vtui.DebugLog("FTP: Opening file %q for reading...", fullPath)
 	resp, err := v.operationConn().Retr(v.encodePath(fullPath))
 	if err != nil {
@@ -398,7 +536,12 @@ func (v *FTPVFS) Open(ctx context.Context, p string) (vfs.ReadAtCloser, error) {
 func (v *FTPVFS) Create(ctx context.Context, p string) (io.WriteCloser, error) {
 	v.mu.Lock()
 	conn := v.operationConn()
-	encodedPath := v.encodePath(v.pathLocked(p))
+	target, err := v.pathLockedResult(p)
+	if err != nil {
+		v.mu.Unlock()
+		return nil, err
+	}
+	encodedPath := v.encodePath(target)
 	session := v.session
 	v.mu.Unlock()
 	pr, pw := io.Pipe()
@@ -441,7 +584,9 @@ func (v *FTPVFS) Clone() vfs.VFS {
 	}
 	return &FTPVFS{
 		parent: v.parent, conn: v.conn, session: session, cwd: v.cwd,
-		title: v.title, decoder: v.decoder, encoder: v.encoder,
+		title: v.title, devicePath: v.devicePath, directoryCacheKey: v.directoryCacheKey,
+		panelInfo: v.panelInfoProvider(),
+		decoder:   v.decoder, encoder: v.encoder,
 	}
 }
 
@@ -494,6 +639,12 @@ func (p *ftpProvider) Open(ctx context.Context, parent vfs.VFS, pth string) (vfs
 	if err != nil {
 		return nil, err
 	}
+	connection := netFoxConnectionName(pth)
+	if connection == "" {
+		connection = res.GetTitle()
+	}
+	cfg.Port = port
+	configureNetFoxConnection(res, connection, "ftp", cfg)
 	return res, nil
 }
 
@@ -550,3 +701,8 @@ func (w *ftpFileWrapper) Read(ctx context.Context, p []byte) (int, error) { retu
 func (w *ftpFileWrapper) Close() error                                    { return errors.Join(w.File.Close(), os.Remove(w.path)) }
 
 func (*FTPVFS) PanelIcon() string { return "network" }
+
+var (
+	_ vfs.PanelInfoProvider  = (*FTPVFS)(nil)
+	_ vfs.PanelTitleProvider = (*FTPVFS)(nil)
+)

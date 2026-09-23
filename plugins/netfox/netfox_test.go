@@ -14,6 +14,7 @@ import (
 )
 
 func TestNetFoxVFS_ConfigPersistence(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test_net.json")
 	// Ensure the file is created for consistency in tests

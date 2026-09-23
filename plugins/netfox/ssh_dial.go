@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/unxed/f4/internal/netproxy"
+	"github.com/unxed/vtui"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 )
@@ -88,17 +89,25 @@ func DialSSH(host, port, user, pass, keyPath string, timeout int, px netproxy.Se
 	auths := []ssh.AuthMethod{}
 	var agentConn io.ReadWriteCloser
 
+	// An explicitly selected key must be tried before the agent. Some SSH
+	// servers count every offered agent key toward MaxAuthTries and close the
+	// connection before reaching the key the user selected in NetFox.
+	if keyPath != "" {
+		if signer, err := loadKeySigner(keyPath, pass); err == nil {
+			auths = append(auths, ssh.PublicKeys(signer))
+			vtui.DebugLog("[FIX:netfox-ssh-config] explicit identity loaded before SSH agent")
+		} else {
+			vtui.DebugLog("[FIX:netfox-ssh-config] explicit identity could not be loaded: %v", err)
+		}
+	}
+
 	if conn, err := openSSHAgent(); err == nil {
 		agentConn = conn
 		agentClient := newSSHAgentClient(conn)
 		auths = append(auths, ssh.PublicKeysCallback(agentClient.Signers))
 	}
 
-	if keyPath != "" {
-		if signer, err := loadKeySigner(keyPath, pass); err == nil {
-			auths = append(auths, ssh.PublicKeys(signer))
-		}
-	} else {
+	if keyPath == "" {
 		home, _ := os.UserHomeDir()
 		for _, keyName := range []string{"id_rsa", "id_ed25519", "id_ecdsa", "id_dsa"} {
 			defaultKeyPath := filepath.Join(home, ".ssh", keyName)
