@@ -550,7 +550,7 @@ func GalleryDensityLimits(mode GalleryLayoutMode) (defaultValue, minimum, maximu
 	case GalleryLayoutColumns, GalleryLayoutDetails:
 		// Zero asks the QML host to derive the untouched default from its font.
 		// Explicit compact zoom values use the same bounded row-pitch contract.
-		return 0, 22, 72
+		return 0, 22, 216
 	case GalleryLayoutGrid:
 		return 160, 96, 320
 	case GalleryLayoutIcons:
@@ -2334,7 +2334,11 @@ func (fp *FileSystemPanel) SetGalleryDensity(mode GalleryLayoutMode, density int
 	if !ok {
 		return false
 	}
+	requested := density
 	density = ClampGalleryDensity(parsed, density)
+	if requested != density {
+		vtui.DebugLog("[FIX:gallery-density] mode=%s requested=%d clamped=%d", parsed, requested, density)
+	}
 	if fp.GalleryDensities == nil {
 		fp.GalleryDensities = make(map[GalleryLayoutMode]int)
 	}

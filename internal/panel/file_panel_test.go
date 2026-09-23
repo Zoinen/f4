@@ -4687,6 +4687,21 @@ func TestFileSystemPanelGalleryLayoutState(t *testing.T) {
 	// Compact row zoom is bounded and persisted independently. Resetting the
 	// override returns to zero so the host can derive its exact font default.
 	detailsRevision := panel.GalleryLayoutRevision
+	for _, mode := range []GalleryLayoutMode{GalleryLayoutDetails, GalleryLayoutColumns} {
+		if !panel.SetGalleryDensity(mode, 200) {
+			t.Fatalf("%s density 200 was rejected", mode)
+		}
+		if got := panel.galleryDensity(mode); got != 200 {
+			t.Fatalf("%s density after zoom = %d, want 200", mode, got)
+		}
+		if !panel.SetGalleryDensity(mode, 300) {
+			t.Fatalf("%s density above maximum was rejected", mode)
+		}
+		if got := panel.galleryDensity(mode); got != 216 {
+			t.Fatalf("%s maximum density = %d, want 216", mode, got)
+		}
+	}
+	detailsRevision = panel.GalleryLayoutRevision
 	if !panel.SetGalleryDensity(GalleryLayoutDetails, 1) ||
 		panel.galleryDensity(GalleryLayoutDetails) != 22 {
 		t.Fatal("Details density was not clamped to its minimum")
