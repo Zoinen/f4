@@ -55,6 +55,7 @@ var actionMenuOrder = []string{
 	"Panel.RestoreSelection",
 	"Panel.SelectNavigation",
 	"Panel.ToggleCommandLineFocus",
+	"Panel.ToggleNavigationMode",
 	"Panel.UserMenu",
 	"UserMenu.ImportFar3",
 	"Panel.FileAssociations",

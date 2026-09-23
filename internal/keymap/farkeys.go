@@ -149,6 +149,15 @@ var vkSpelledHotkeys = map[uint16]bool{
 // way Far does, while actions such as AI.TogglePanel may be rebound or
 // explicitly unbound on the RCtrl spelling.
 func EventToHotkeyString(e *vtinput.InputEvent) string {
+	// Some GUI backends report the grave/tilde key without a virtual key.
+	// Give its Ctrl chord the same bindable identity as VK_OEM_3, including
+	// the Russian layout. Keep plain typing and macro recording unchanged.
+	if e.VirtualKeyCode == 0 && e.ControlKeyState.Contains(vtinput.LeftCtrlPressed|vtinput.RightCtrlPressed) &&
+		(e.Char == '`' || e.Char == '~' || e.Char == 'ё' || e.Char == 'Ё') {
+		physical := *e
+		physical.VirtualKeyCode = vtinput.VK_OEM_3
+		e = &physical
+	}
 	key := EventToFarString(e)
 	if vkSpelledHotkeys[e.VirtualKeyCode] && e.Char != 0 {
 		// Re-run the naming without the character so the modifiers,

@@ -161,10 +161,31 @@ runs it by name.
 
 In **Panels → Typing and focus**, Search first enables **Keep command input
 focused** and **Hide command input when unfocused**. Hiding is off by default.
-When enabled, returning focus to the panel hides the prompt and gives its space
-back to the panels without clearing command text. The tilde key restores command
-focus; Qt reveals the prompt upward over 130 ms, while the console shows it
-immediately. Other navigation modes and the terminal view retain their prompt.
+When enabled, returning focus to the panel hides an empty prompt and gives its
+space back to the panels. A command with text stays visible. The tilde key
+restores command focus; Qt reveals the prompt upward over 130 ms, while the
+console shows it immediately. Other navigation modes and the terminal view
+retain their prompt.
+
+**Ctrl+tilde** switches between Search first and Classic navigation. The
+physical grave/tilde key works both without Shift (`CtrlVK_C0`) and with Shift
+(`CtrlShiftVK_C0`), including the Russian `ё` layout. The command is
+`Panel.ToggleNavigationMode`, searchable as **Toggle Search-first / Classic
+Navigation** in the command palette, available in Options, and reassignable in
+the Hotkey Configurator. Its checkmark means Search first is active. From Vim,
+the command enters Search first; the next invocation enters Classic.
+Switching closes Fast Find, preserves command text and file selection, and
+updates focus and command-input visibility in every workspace. The preference
+uses the normal automatic settings-save policy.
+
+On macOS Qt, physical Control arrives as Right Ctrl (`RCtrlVK_C0`) and falls
+back to the Ctrl binding unless explicitly reassigned. Command arrives as Left
+Ctrl and also activates this shortcut if macOS delivers it to the application.
+Right Ctrl+grave therefore switches navigation instead of going home;
+**Ctrl+Alt+grave** retains the home-folder shortcut.
+In legacy terminals, Ctrl+tilde may arrive as an indistinguishable control byte;
+use the command palette or assign another shortcut when the terminal cannot
+report this chord.
 
 **Ctrl+Shift+B** toggles both graphical panel path bars (including their sort,
 view and expand controls). The file area uses the released space. The preference
