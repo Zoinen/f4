@@ -4822,6 +4822,10 @@ func TestFileSystemPanel_PhasedDirectoryPublishesStableCatalogThenMergesMetadata
 
 	close(load.release)
 	waitForLoad(t, panel)
+	waitForPanelCondition(t, "phased metadata UI task", func() bool {
+		header, ok := panel.semanticPanelHeaderModel(nil, 0, true)
+		return ok && header.MetadataRevision == baseModel.MetadataRevision+1
+	})
 	finalHeader, ok := panel.semanticPanelHeaderModel(nil, 0, true)
 	if !ok {
 		t.Fatal("metadata enrichment invalidated the row-free panel header")
