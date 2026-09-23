@@ -172,14 +172,12 @@ grep -q 'https://distfiles.macports.org/fontconfig/fontconfig-2.15.0.tar.xz' \
     "${fontconfig_recipe_copy}/conandata.yml"
 conan export "${fontconfig_recipe_copy}" --name=fontconfig --version=2.15.0
 
-# Conan package IDs do not encode the glibc build baseline. On a cold cache,
-# rebuild every target-side native package even if Conan Center offers a GCC
-# 11 binary; build-only tools are allowed from the remote when they run on
-# 2.27. m4 is the exception: its remote binary requires newer glibc, so rebuild
-# it too. Ninja is also forced because a locally populated Conan cache may
-# contain a build-tool binary linked against the workstation's newer glibc.
-# Once this container has completed successfully, persist a marker in the
-# cached package graph and let Conan reuse those baseline-built packages.
+# Conan package IDs do not encode the glibc build baseline. The f4 Conan
+# remote is the authoritative source for this repository's already-audited
+# glibc-2.27/GCC-11 graph, so CI may reuse those packages on a cold GitHub
+# cache. A missing package is still built in this Ubuntu 18.04 container by
+# --build=missing. Keep the conservative force-rebuild path for local builds
+# and for CI runs where the trusted baseline remote was not configured.
 target_packages=(
     brotli bzip2 double-conversion expat fontconfig freetype glib
     harfbuzz icu jasper lcms libde265 libffi libheif libiconv libjpeg-turbo
@@ -188,7 +186,10 @@ target_packages=(
 )
 baseline_marker="$CONAN_HOME/p/.f4-glibc-2.27-gcc11-ready"
 conan_build_args=(--build=missing)
-if [[ ! -f "$baseline_marker" ]]; then
+if [[ "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" &&
+    -n "${F4_CONAN_REMOTE_URL:-}" ]]; then
+    echo "Using the audited glibc 2.27 / GCC 11 Conan graph from f4-conan"
+elif [[ ! -f "$baseline_marker" ]]; then
     conan_build_args+=(--build='m4/*')
     conan_build_args+=(--build='ninja/*')
     conan_build_args+=(--build='pkgconf/*')
@@ -196,7 +197,7 @@ if [[ ! -f "$baseline_marker" ]]; then
     for package in "${target_packages[@]}"; do
         conan_build_args+=("--build=${package}/*")
     done
-    echo "No glibc 2.27 / GCC 11 package marker found; forcing baseline rebuild"
+    echo "No trusted glibc 2.27 / GCC 11 graph found; forcing baseline rebuild"
 else
     echo "Reusing cached glibc 2.27 / GCC 11 Conan package graph"
 fi
