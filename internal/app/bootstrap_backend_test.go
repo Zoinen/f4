@@ -244,9 +244,28 @@ func TestStartupConfigDefaultsAreAuto(t *testing.T) {
 	}
 }
 
+func TestPortableQtDefaultPlatforms(t *testing.T) {
+	for _, tt := range []struct {
+		goos          string
+		hasEmbeddedQt bool
+		want          bool
+	}{
+		{goos: "linux", hasEmbeddedQt: true, want: true},
+		{goos: "windows", hasEmbeddedQt: true, want: true},
+		{goos: "darwin", hasEmbeddedQt: true, want: false},
+		{goos: "linux", hasEmbeddedQt: false, want: false},
+		{goos: "freebsd", hasEmbeddedQt: true, want: false},
+	} {
+		if got := portableQtDefaultFor(tt.goos, tt.hasEmbeddedQt); got != tt.want {
+			t.Errorf("portableQtDefaultFor(%q, %v) = %v, want %v",
+				tt.goos, tt.hasEmbeddedQt, got, tt.want)
+		}
+	}
+}
+
 func TestPortableQtBuildDefaultsToGui(t *testing.T) {
 	if !portableQtDefault() {
-		t.Skip("requires Windows embedded Qt build")
+		t.Skip("requires Linux or Windows embedded Qt build")
 	}
 	if !shouldTryGui() {
 		t.Fatal("portable Qt executable defaults to console")

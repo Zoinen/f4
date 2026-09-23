@@ -5,8 +5,9 @@ read [`docs/PORTABLE_BUILD_POLICY.md`](../../docs/PORTABLE_BUILD_POLICY.md).
 It defines the required single-file Linux/Windows and signed-bundle macOS
 contracts and their verification gates.
 
-This directory contains the optional Qt/QML sidecar renderer for `f4 --gui=qt`.
-The Go core does not link Qt; it starts `f4-qt-host` only when the Qt backend is requested.
+This directory contains the Qt/QML sidecar renderer for `f4 --gui=qt`.
+Portable Linux and Windows release binaries request this backend by default;
+the Go core does not link Qt and starts `f4-qt-host` as a separate process.
 
 Native menus and dialogs carry optional `stackOrder`, a shared one-based,
 bottom-to-top position in Go's frame stack. Complete, incremental, and menu-only

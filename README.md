@@ -88,6 +88,9 @@ UI & input libraries are developed separately ([vtui](https://github.com/unxed/v
 
 **Command Line Options:**
 *   `--gui`: Start in GUI mode using the best available backend for your OS.
+    Portable Linux and Windows release binaries use their embedded Qt frontend
+    by default, including when launched from a terminal; use `--tty` to force
+    the console frontend.
 *   `--gui=win32`: Use native Win32/GDI graphical windowing (Windows and Wine).
 *   `--gui=gogpu`: Use the hardware-accelerated (GPU) renderer.
 *   `--gui=x11`: Use native X11 windowing (Linux/BSD/macOS).
