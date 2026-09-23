@@ -44,3 +44,48 @@ func TestRunAsync_TaskExecutionAndCancellation(t *testing.T) {
 		t.Error("TaskContext should report an error after Cancel() is called")
 	}
 }
+
+func TestRunAsync_RedrawDecisionUsesCapturedManager(t *testing.T) {
+	target := NewFrameManager()
+	target.Init(NewSilentScreenBuf())
+	defer target.Shutdown()
+	other := NewFrameManager()
+	other.Init(NewSilentScreenBuf())
+	defer other.Shutdown()
+
+	oldFrameManager := FrameManager
+	FrameManager = target
+	defer func() { FrameManager = oldFrameManager }()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan struct{})
+	RunAsync(func(ctx *TaskContext) {
+		close(started)
+		<-release
+		ctx.RunOnUIWithRedrawDecision(func() bool {
+			close(done)
+			return false
+		})
+	})
+	<-started
+	FrameManager = other
+	close(release)
+
+	select {
+	case task := <-target.TaskChan:
+		task()
+	case <-time.After(time.Second):
+		t.Fatal("redraw-decision task was not posted to its captured manager")
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("redraw-decision task did not execute")
+	}
+	select {
+	case <-other.TaskChan:
+		t.Fatal("redraw-decision task was posted to the replacement manager")
+	default:
+	}
+}
