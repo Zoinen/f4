@@ -792,6 +792,7 @@ type FileSystemPanel struct {
 	semanticPagedResourceRevision int64
 	semanticPagedResourceIDs      map[string]struct{}
 	semanticPagedDirectoryIDs     map[string]struct{}
+	directoryCache                *directoryListingCache
 }
 
 var DisableLoadingAnimationInTests = true
@@ -818,6 +819,7 @@ func NewFileSystemPanel(x, y, w, h int, vfs vfs.VFS) *FileSystemPanel {
 		semanticPriorIndex:    -1,
 		SelectedItems:         make(map[string]bool),
 		selectionEpoch:        make(map[string]uint64),
+		directoryCache:        newDirectoryListingCache(),
 		//entries:             []*fileEntry{{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}}},
 	}
 	fp.Frame.ColorBoxIdx = theme.ColPanelBox
@@ -2603,8 +2605,17 @@ func (fp *FileSystemPanel) pathTitleHitTest(x, y int) bool {
 }
 
 func (fp *FileSystemPanel) ReadDirectory() {
-	fp.readDirectoryEx(fp.Vfs != nil && fileops.SameVFSInstance(fp.committedListingVFS, fp.Vfs) &&
-		fp.committedListingPath == fp.Vfs.GetPath())
+	if fp == nil || fp.Vfs == nil {
+		return
+	}
+	path := fp.Vfs.GetPath()
+	keepEntries := fileops.SameVFSInstance(fp.committedListingVFS, fp.Vfs) &&
+		fp.committedListingPath == path
+	if !keepEntries {
+		showUpEntry := !fp.Vfs.IsAtRoot() || fp.Vfs.ParentVFS() != nil
+		keepEntries = fp.restoreCachedDirectory(fp.Vfs, path, showUpEntry)
+	}
+	fp.readDirectoryEx(keepEntries)
 }
 
 // enqueueDirectoryLoad keeps at most one backend read running and one newer
@@ -3802,6 +3813,9 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				return
 			}
 			needsRedraw = true
+			if err == nil {
+				fp.storeDirectorySnapshot(loadVFS, path, accumulated)
+			}
 
 			refreshChanged := !keepEntries
 			if loadSyncPanel && err == nil {

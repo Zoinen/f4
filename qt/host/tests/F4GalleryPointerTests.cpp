@@ -1506,16 +1506,24 @@ void F4GalleryPointerTests::folderDoubleClickSurvivesAcknowledgementTiming()
         }
 
         int openCount = 0;
+        int openActionIndex = -1;
+        int cursorActionsAfterOpen = 0;
         QVariantMap open;
         for (int actionIndex = first; actionIndex < actions.size(); ++actionIndex) {
             const QVariantMap candidate = actionAt(actions, actionIndex);
-            if (candidate.value(QStringLiteral("action")).toString()
-                == QStringLiteral("panel.open")) {
+            const QString actionName = candidate.value(
+                QStringLiteral("action")).toString();
+            if (actionName == QStringLiteral("panel.open")) {
                 ++openCount;
                 open = candidate;
+                openActionIndex = actionIndex;
+            } else if (openActionIndex >= 0
+                       && actionName == QStringLiteral("panel.cursor")) {
+                ++cursorActionsAfterOpen;
             }
         }
         QCOMPARE(openCount, 1);
+        QCOMPARE(cursorActionsAfterOpen, 0);
         QCOMPARE(open.value(QStringLiteral("entryId")).toString(),
                  QStringLiteral("entry-4"));
         QCOMPARE(open.value(QStringLiteral("index")).toInt(), 104);

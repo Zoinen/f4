@@ -240,18 +240,20 @@ private:
         QString sourcePath;
         qulonglong catalogRevision = 0;
         bool expectsPathChange = false;
+        QString expectedDestinationName;
         // If the source scan completes after a directory-open intent, retain
         // only its bounded wire page so a rejected navigation can recover.
         // A successful path acknowledgement discards it immediately.
         QVariantMap deferredSourcePanel;
     };
 
-    // One held-key repeat which arrived while panel.open was still in flight.
-    // It is intentionally an epoch marker rather than a stale entry request:
-    // once the authoritative destination catalog arrives, replay resolves the
-    // destination's current cursor stable ID from SideState.
+    // Held-key repeats which arrived while panel.open was still in flight.
+    // They are retained as an epoch marker rather than stale entry requests:
+    // once the cached destination cursor is ready, replay resolves the
+    // destination's current stable ID from SideState.
     struct DeferredPanelOpenRepeat {
         bool active = false;
+        int pendingCount = 0;
         int side = -1;
         QString panelId;
         QString sourcePath;
@@ -348,6 +350,7 @@ private:
     bool deferSupersededPanelCatalog(PanelSyncContext *context);
     bool deferPanelCatalogFinalization(PanelSyncContext *context);
     void acknowledgePanelOpen(PanelSyncContext *context);
+    bool destinationCursorReady(const PanelSyncContext &context) const;
     void tracePanelSyncBegin(const PanelSyncContext &context);
     void handlePanelIdentityChange(PanelSyncContext *context);
     bool applyProvisionalPanelUpdate(PanelSyncContext *context);
@@ -426,7 +429,7 @@ private:
     void reconcilePendingPanelOpen(int side);
     void clearPendingPanelOpen();
     void markPanelOpenInFlight(int side, const QString &entryId);
-    void clearInFlightPanelOpen();
+    void clearInFlightPanelOpen(bool clearDeferredRepeats = true);
     void handlePanelOpenWatchdog();
     void replayDeferredPanelOpenRepeat(int side,
                                        const QString &panelId,

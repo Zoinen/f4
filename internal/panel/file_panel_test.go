@@ -150,6 +150,67 @@ type queuedNavigationVFS struct {
 	items              map[string][]vfs.VFSItem
 }
 
+type cachedNavigationVFS struct {
+	*vfs.NullVFS
+	pathMu      sync.RWMutex
+	currentPath string
+	items       map[string][]vfs.VFSItem
+	blockNext   atomic.Bool
+	readStarted chan struct{}
+	releaseRead chan struct{}
+	startedOnce sync.Once
+}
+
+func newCachedNavigationVFS() *cachedNavigationVFS {
+	return &cachedNavigationVFS{
+		NullVFS:     vfs.NewNullVFS(0),
+		currentPath: "/root",
+		items: map[string][]vfs.VFSItem{
+			"/root":       {{Name: "child.txt"}},
+			"/root/child": {{Name: "nested.txt"}},
+		},
+		readStarted: make(chan struct{}),
+		releaseRead: make(chan struct{}),
+	}
+}
+
+func (v *cachedNavigationVFS) GetPath() string {
+	v.pathMu.RLock()
+	defer v.pathMu.RUnlock()
+	return v.currentPath
+}
+
+func (v *cachedNavigationVFS) IsAtRoot() bool { return v.GetPath() == "/" }
+
+func (v *cachedNavigationVFS) SetPath(p string) error {
+	v.pathMu.Lock()
+	v.currentPath = path.Clean(p)
+	v.pathMu.Unlock()
+	return nil
+}
+
+// DirectoryCacheKey models the stable identity exposed by a remote provider;
+// a real NetFox session may be represented by a fresh VFS view after re-entry.
+func (*cachedNavigationVFS) DirectoryCacheKey() any { return "netfox:test" }
+
+func (v *cachedNavigationVFS) ReadDir(ctx context.Context, p string, onChunk func([]vfs.VFSItem)) error {
+	if path.Clean(p) == "/root" && v.blockNext.CompareAndSwap(true, false) {
+		v.startedOnce.Do(func() { close(v.readStarted) })
+		select {
+		case <-v.releaseRead:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if onChunk != nil {
+		onChunk(v.items[path.Clean(p)])
+	}
+	return nil
+}
+
 // absoluteRecoveryVFS models AFC's path contract: panel navigation may set an
 // absolute path optimistically, but a bare ".." is rejected. SystemData is
 // visible in the container root while iOS denies listing its contents.
@@ -637,6 +698,91 @@ done2:
 	// Ensure that after returning to the parent directory, the cursor is on the folder we just exited
 	if fp.GetSelectedName() != "target_folder" {
 		t.Errorf("Expected cursor to land on 'target_folder', got %q", fp.GetSelectedName())
+	}
+}
+
+func TestFileSystemPanel_RemoteDirectoryCacheShowsRowsWhileRefreshing(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	oldSyncPanelLoad := config.App.SyncPanelLoad
+	config.App.SyncPanelLoad = false
+	t.Cleanup(func() { config.App.SyncPanelLoad = oldSyncPanelLoad })
+
+	remote := newCachedNavigationVFS()
+	fp := NewFileSystemPanel(0, 0, 80, 24, remote)
+	t.Cleanup(func() {
+		if fp.CancelLoad != nil {
+			fp.CancelLoad()
+		}
+		fp.StopLoadingAnimation()
+	})
+	waitForLoad(t, fp)
+
+	if err := remote.SetPath("/root/child"); err != nil {
+		t.Fatal(err)
+	}
+	fp.ReadDirectory()
+	waitForLoad(t, fp)
+
+	freshView := newCachedNavigationVFS()
+	freshView.blockNext.Store(true)
+	fp.Vfs = freshView
+	if err := freshView.SetPath("/root"); err != nil {
+		t.Fatal(err)
+	}
+	fp.PendingSelection = "child.txt"
+	fp.SetCursorIndex(0)
+	fp.ReadDirectory()
+	refreshDeadline := time.After(2 * time.Second)
+	for {
+		select {
+		case <-freshView.readStarted:
+			goto refreshStarted
+		case task := <-vtui.FrameManager.PriorityTaskChan:
+			task()
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		case <-refreshDeadline:
+			t.Fatal("authoritative directory refresh did not reach the blocked backend")
+		}
+	}
+
+refreshStarted:
+
+	// The cached root must replace the cold-load placeholder before the
+	// authoritative remote refresh completes. The refresh must still be
+	// visible as loading so the user knows those rows are provisional.
+	deadline := time.After(500 * time.Millisecond)
+	for {
+		found := false
+		for _, entry := range fp.Entries {
+			if entry != nil && entry.Name == "child.txt" {
+				found = true
+				break
+			}
+		}
+		if found {
+			break
+		}
+		select {
+		case task := <-vtui.FrameManager.PriorityTaskChan:
+			task()
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		case <-deadline:
+			t.Fatalf("cached rows were not visible during refresh: %+v", fp.Entries)
+		}
+	}
+	if got := fp.GetRawSelectedName(); got != "child.txt" {
+		t.Fatalf("cached directory cursor = %q before refresh completion, want cached target", got)
+	}
+	if !fp.IsLoading || !fp.semanticLoading() {
+		t.Fatal("cached directory refresh stopped reporting loading")
+	}
+
+	close(freshView.releaseRead)
+	waitForLoad(t, fp)
+	if got := fp.GetRawSelectedName(); got != "child.txt" {
+		t.Fatalf("refreshed cached directory cursor = %q, want cached target", got)
 	}
 }
 func TestFileSystemPanel_SelectedInfo(t *testing.T) {
