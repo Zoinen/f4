@@ -2328,13 +2328,15 @@ jobs:
         exit 1
     - name: Checkout release packaging script
       uses: actions/checkout@v7
+    - name: Test release packaging scripts
+      run: python3 -m unittest ci/test_package_release_scripts.py
     - name: Download all artifacts
       uses: actions/download-artifact@v8
       with:
         path: dist
         merge-multiple: false
-    - name: Assemble user-facing release assets
-      run: python3 ci/package-release.py dist release
+    - name: Assemble Qt desktop release assets
+      run: python3 ci/package-qt-release.py dist release
     - name: Publish Release
       uses: softprops/action-gh-release@v3
       with:
@@ -2343,11 +2345,10 @@ jobs:
         body: |
           ## Downloads
 
-          The primary desktop downloads are the six Linux/Windows archives and
-          macOS `f4-darwin-<arch>.app.zip` assets: Linux and Windows contain
-          one embedded-Qt executable; macOS contains the complete `F4.app`
-          bundle. Additional archives are retained for terminal-only and
-          experimental targets.
+          The release contains four Linux/Windows embedded-Qt single-file
+          archives and two classic macOS `F4.app` bundles, one per
+          architecture. No terminal-only or experimental Go targets are
+          included in this Qt desktop release.
 
   # Эта джоба обновляет Homebrew tap при пуше тэгов v*.*.*,
   # чтобы под macOS можно было поставить f4 одной командой:
@@ -2471,6 +2472,9 @@ jobs:
         path: dist
         merge-multiple: false
 
+    # Nightly keeps the legacy combined asset set for existing CLI links. The
+    # stable release above is deliberately Qt-only; package-go-release.py is
+    # available when a Go-only set is needed explicitly.
     - name: Assemble user-facing nightly assets
       run: python3 ci/package-release.py dist release
 
