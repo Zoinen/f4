@@ -231,6 +231,7 @@ type QueueTask struct {
 
 	completionOnce sync.Once
 	finalizeOnce   sync.Once
+	frameManager   *vtui.FrameManagerType
 }
 
 func (t *QueueTask) finalize() {
@@ -262,7 +263,7 @@ func (t *QueueTask) UpdateScan(currentPath string, files, dirs int64) {
 	t.TotalText = fmt.Sprintf("Files: %d, Dirs: %d", files, dirs)
 	t.Mu.Unlock()
 
-	GlobalQueueManager.RequestRefresh()
+	GlobalQueueManager.RequestRefreshOn(t.frameManager)
 }
 func (t *QueueTask) UpdateTransfer(action string, filename string, currentPct int, totalText string, totalPct int, speedText string) {
 	if t.IsCancelled() {
@@ -287,7 +288,7 @@ func (t *QueueTask) UpdateTransfer(action string, filename string, currentPct in
 
 	t.Mu.Unlock()
 
-	GlobalQueueManager.RequestRefresh()
+	GlobalQueueManager.RequestRefreshOn(t.frameManager)
 }
 
 func splitQueueTimeSpeedText(value string) (elapsed, eta, speed string) {
@@ -445,6 +446,13 @@ func (qm *OpQueueManager) wakeWorker() {
 	}
 }
 func (qm *OpQueueManager) RequestRefresh() {
+	qm.RequestRefreshOn(vtui.FrameManager)
+}
+
+func (qm *OpQueueManager) RequestRefreshOn(frames *vtui.FrameManagerType) {
+	if frames == nil {
+		return
+	}
 	qm.Mu.Lock()
 	if qm.refreshPending {
 		qm.Mu.Unlock()
@@ -453,11 +461,11 @@ func (qm *OpQueueManager) RequestRefresh() {
 	qm.refreshPending = true
 	qm.Mu.Unlock()
 
-	vtui.FrameManager.PostTask(func() {
+	frames.PostTask(func() {
 		qm.Mu.Lock()
 		qm.refreshPending = false
 		qm.Mu.Unlock()
-		qm.RefreshUI()
+		qm.RefreshUIOn(frames)
 	})
 }
 
@@ -478,6 +486,7 @@ func GetResourceKey(v vfs.VFS) string {
 }
 
 func (qm *OpQueueManager) Enqueue(task *QueueTask) {
+	frames := vtui.FrameManager
 	qm.Mu.Lock()
 	qm.nextID++
 	task.ID = qm.nextID
@@ -485,14 +494,17 @@ func (qm *OpQueueManager) Enqueue(task *QueueTask) {
 	task.State = "Queued"
 	task.Mu.Unlock()
 	task.ctx, task.cancel = context.WithCancel(context.Background())
+	task.frameManager = frames
 	qm.tasks = append(qm.tasks, task)
 	qm.Mu.Unlock()
 	qm.wakeWorker()
 
-	vtui.FrameManager.PostTask(func() {
-		qm.EnsureQueueWorkspace()
-		qm.RefreshUI()
-	})
+	if frames != nil {
+		frames.PostTask(func() {
+			qm.EnsureQueueWorkspaceOn(frames)
+			qm.RefreshUIOn(frames)
+		})
+	}
 
 	go func(id int) {
 		time.Sleep(500 * time.Millisecond)
@@ -515,10 +527,14 @@ func (qm *OpQueueManager) Enqueue(task *QueueTask) {
 }
 
 func (qm *OpQueueManager) EnsureQueueWorkspace() {
-	if vtui.FrameManager == nil || vtui.FrameManager.Screens == nil {
+	qm.EnsureQueueWorkspaceOn(vtui.FrameManager)
+}
+
+func (qm *OpQueueManager) EnsureQueueWorkspaceOn(frames *vtui.FrameManagerType) {
+	if frames == nil || frames.Screens == nil {
 		return
 	}
-	for _, s := range vtui.FrameManager.Screens {
+	for _, s := range frames.Screens {
 		for _, f := range s.Frames {
 			if qf, ok := f.(*QueueFrame); ok {
 				qm.Mu.Lock()
@@ -529,8 +545,8 @@ func (qm *OpQueueManager) EnsureQueueWorkspace() {
 		}
 	}
 
-	frame := NewQueueFrame()
-	vtui.FrameManager.AddScreenBackground(frame)
+	frame := newQueueFrameOn(frames)
+	frames.AddScreenBackground(frame)
 	qm.Mu.Lock()
 	qm.frame = frame
 	qm.Mu.Unlock()
@@ -667,12 +683,16 @@ func (qm *OpQueueManager) ClearCompleted() int {
 }
 
 func (qm *OpQueueManager) RefreshUI() {
+	qm.RefreshUIOn(vtui.FrameManager)
+}
+
+func (qm *OpQueueManager) RefreshUIOn(frames *vtui.FrameManagerType) {
 	qm.Mu.Lock()
 	frame := qm.frame
 	tasks := append([]*QueueTask(nil), qm.tasks...)
 	qm.Mu.Unlock()
 	if frame != nil {
-		frame.UpdateTasks(tasks)
+		frame.UpdateTasksOn(tasks, frames)
 	}
 }
 
@@ -686,17 +706,24 @@ func (qm *OpQueueManager) RefreshUI() {
 // their work was started against rather than on whichever one is current by
 // the time they finish.
 func (qm *OpQueueManager) postTaskCompletion(t *QueueTask) {
-	qm.postTaskCompletionOn(t, vtui.FrameManager)
+	frames := t.frameManager
+	if frames == nil {
+		frames = vtui.FrameManager
+	}
+	qm.postTaskCompletionOn(t, frames)
 }
 
 func (qm *OpQueueManager) postTaskCompletionOn(t *QueueTask, frames *vtui.FrameManagerType) {
+	if frames == nil {
+		return
+	}
 	t.finalize()
 	t.completionOnce.Do(func() {
 		frames.PostTask(func() {
 			if t.OnComplete != nil {
 				t.OnComplete()
 			}
-			qm.RefreshUI()
+			qm.RefreshUIOn(frames)
 		})
 	})
 }
@@ -768,6 +795,11 @@ func (qm *OpQueueManager) workerLoopOn(wake <-chan struct{}, stop <-chan struct{
 }
 
 func (qm *OpQueueManager) executeTask(t *QueueTask) {
+	frames := t.frameManager
+	if frames == nil {
+		frames = vtui.FrameManager
+		t.frameManager = frames
+	}
 	vtui.DebugLog("QUEUE_DEBUG: Executing Task %d (%s)", t.ID, t.Type)
 	var taskErr error
 	if t.IsCancelled() {
@@ -857,7 +889,7 @@ func (qm *OpQueueManager) executeTask(t *QueueTask) {
 
 	vtui.DebugLog("QUEUE_DEBUG: Task %d finalized with state %s (Error: %v). Posting OnComplete.", t.ID, finalState, finalError)
 
-	qm.postTaskCompletion(t)
+	qm.postTaskCompletionOn(t, frames)
 }
 
 type QueueFrame struct {
@@ -923,10 +955,14 @@ func (r queueRow) GetCellAttr(col int, def uint64) uint64 {
 }
 
 func NewQueueFrame() *QueueFrame {
+	return newQueueFrameOn(vtui.FrameManager)
+}
+
+func newQueueFrameOn(frames *vtui.FrameManagerType) *QueueFrame {
 	scrW, scrH := 80, 25
-	if vtui.FrameManager != nil && vtui.FrameManager.GetScreenSize() > 0 {
-		scrW = vtui.FrameManager.GetScreenSize()
-		scrH = vtui.FrameManager.GetScreenHeight()
+	if frames != nil && frames.GetScreenSize() > 0 {
+		scrW = frames.GetScreenSize()
+		scrH = frames.GetScreenHeight()
 	}
 
 	qf := &QueueFrame{
@@ -995,13 +1031,19 @@ func (qf *QueueFrame) requestCancelTask(idx int) bool {
 }
 
 func (qf *QueueFrame) UpdateTasks(tasks []*QueueTask) {
+	qf.UpdateTasksOn(tasks, vtui.FrameManager)
+}
+
+func (qf *QueueFrame) UpdateTasksOn(tasks []*QueueTask, frames *vtui.FrameManagerType) {
 	qf.Tasks = append([]*QueueTask(nil), tasks...)
 	rows := make([]vtui.TableRow, len(qf.Tasks))
 	for i, t := range qf.Tasks {
 		rows[i] = queueRow{task: t}
 	}
 	qf.Table.SetRows(rows)
-	vtui.FrameManager.Redraw()
+	if frames != nil {
+		frames.Redraw()
+	}
 }
 
 func (qf *QueueFrame) HandleCommand(cmd int, args any) bool {

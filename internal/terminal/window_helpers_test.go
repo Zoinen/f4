@@ -6,8 +6,6 @@ import (
 	testing "testing"
 )
 
-import ()
-
 func assertSemanticOverlapStable(t *testing.T, first, second map[string]any, unit string) int {
 	t.Helper()
 	firstRows := semanticRowsByExtent(t, first, unit)

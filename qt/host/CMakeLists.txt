@@ -576,6 +576,9 @@ if(APPLE)
     DESTINATION bin
     USE_SOURCE_PERMISSIONS
   )
+  install(SCRIPT
+    "${CMAKE_CURRENT_LIST_DIR}/cmake/repair-macos-app-rpath.cmake"
+  )
 endif()
 install(FILES icons/lucide/LICENSE
   DESTINATION licenses
@@ -890,7 +893,9 @@ if(BUILD_TESTING)
         Qt6::QGifPlugin
         ${F4_QT_ICO_PLUGIN_TARGET}
         Qt6::QJpegPlugin
-        Qt6::QSvgPlugin)
+        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:$<LINK_GROUP:RESCAN,CONAN_LIB::qt_Qt6_Svg_Qt6Svg_RELEASE,CONAN_LIB::qt_Qt6_QSvgPlugin_qsvg_RELEASE>>
+        $<$<CXX_COMPILER_ID:MSVC>:CONAN_LIB::qt_Qt6_Svg_Qt6Svg_RELEASE>
+        $<$<CXX_COMPILER_ID:MSVC>:CONAN_LIB::qt_Qt6_QSvgPlugin_qsvg_RELEASE>)
     endif()
   endfunction()
 
@@ -1065,6 +1070,7 @@ if(BUILD_TESTING)
   target_link_libraries(F4DocumentSurfaceTests PRIVATE
     Qt6::Core
     Qt6::Gui
+    Qt6::Svg
     Qt6::Qml
     Qt6::Quick
     Qt6::QuickControls2
@@ -1299,6 +1305,12 @@ if(BUILD_TESTING)
     COMMAND F4QuickViewSurfaceTests
       workspaceTabTextParentsStayOnPhysicalPixelGrid)
   set_tests_properties(F4QuickViewTextPixelGridTest PROPERTIES
+    ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
+  )
+  add_test(NAME F4NativeFontPolicyPixelGridTest
+    COMMAND F4QuickViewSurfaceTests
+      nativeFontRolesUsePlatformDefaultsAt175Percent)
+  set_tests_properties(F4NativeFontPolicyPixelGridTest PROPERTIES
     ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
   )
   add_test(NAME F4QuickViewWorktreeBranchTitleTest

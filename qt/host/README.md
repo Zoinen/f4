@@ -5,8 +5,9 @@ read [`docs/PORTABLE_BUILD_POLICY.md`](../../docs/PORTABLE_BUILD_POLICY.md).
 It defines the required single-file Linux/Windows and signed-bundle macOS
 contracts and their verification gates.
 
-This directory contains the optional Qt/QML sidecar renderer for `f4 --gui=qt`.
-The Go core does not link Qt; it starts `f4-qt-host` only when the Qt backend is requested.
+This directory contains the Qt/QML sidecar renderer for `f4 --gui=qt`.
+Portable Linux and Windows release binaries request this backend by default;
+the Go core does not link Qt and starts `f4-qt-host` as a separate process.
 
 Native menus and dialogs carry optional `stackOrder`, a shared one-based,
 bottom-to-top position in Go's frame stack. Complete, incremental, and menu-only
@@ -318,14 +319,20 @@ applies the saved preference before publishing each panel catalog.
 On Windows and Linux, installation uses Qt's QML/runtime deployment helper.
 On macOS, the build additionally creates
 `bin/<config>/f4-qt-host.app/Contents/MacOS/f4-qt-host`. The app bundle is what
-the Go launcher prefers: Xcode's `actool` compiles the layered Icon Composer
-document into adaptive `Assets.car` data plus an `AppIcon.icns` fallback for
-older macOS releases. Do not override it with `QGuiApplication::setWindowIcon`;
-that flattens the Dock icon and disables system-controlled appearances.
+the Go launcher prefers and contains the prebuilt `assets/icon/AppIcon.icns`.
+The icon is generated on a macOS development machine and checked into the
+repository so CI only copies it and does not depend on the runner's Xcode
+version. Do not override it with `QGuiApplication::setWindowIcon`; the bundle
+metadata owns the Dock and Finder icon.
 
 The Conan generate step still stages the relocatable `lib`, `qml`, and
 `plugins` tree on macOS. This includes ZoinGallery, Qt QML and platform
 plugins, module shaders/assets, codec libraries, and the shared Qt runtime.
+
+The macOS CI job also publishes `f4-qt-darwin-<arch>.app.zip`. It contains a
+self-contained `F4.app` with the Go core, Qt host, dylibs, QML imports and
+plugins below `Contents/Resources`; it is the bundle to open in Finder. The
+tarball remains the relocatable sidecar tree for development and diagnostics.
 
 Run the host-side bridge test with:
 

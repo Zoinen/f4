@@ -21,6 +21,7 @@ func (a *recordDialogApp) OpenSettingsRecord(collection, record string, create b
 }
 
 func TestAddConnectionSemanticActivation(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	w := &netFoxVFSWrapper{NewNetFoxVFS(t.TempDir() + "/connections.json")}
 	a := &recordDialogApp{netFoxPluginTestApp: netFoxPluginTestApp{active: w, selected: "<Add connection>"}}
 	for _, action := range []vfs.PanelAction{vfs.PanelActionActivate, vfs.PanelActionCreate} {

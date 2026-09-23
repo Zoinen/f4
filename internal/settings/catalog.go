@@ -74,7 +74,7 @@ PanelGroupMediumMiB|panels|Grouping|Medium group limit (MiB)|Inclusive upper siz
 PanelGroupLargeMiB|panels|Grouping|Large group limit (MiB)|Inclusive upper size bound for Large. Larger files belong to Extra large.||live
 PanelAutoFilter|panels|Typing and focus|Autofilter instead of quick search|Typing a name in a panel hides the rows that do not match instead of moving the cursor to the first match. Esc or Enter brings the hidden rows back.||live
 SearchCommandStayFocused|panels|Typing and focus|Keep command input focused|In Search-first mode, keep command entry focused after executing a command rather than returning to the panel.||live
-SearchCommandHideUnfocused|panels|Typing and focus|Hide command input when unfocused|In Search-first mode, hide the command line while the panel has focus. Press the tilde key to show it.||live
+SearchCommandHideUnfocused|panels|Typing and focus|Hide command input when unfocused|In Search-first mode, hide the command line when the panel has focus and the input is empty. Press the tilde key to show it.||live
 CommandLineAutoComplete|terminal|Path suggestions|Enable filesystem suggestions|Enable filesystem path suggestions in the command line and path-enabled dialog fields.||live
 CommandLineMultiline|terminal|Command line|Multiline command input|Preserve line breaks and expand the command input upward as text wraps, in the console and GUI. Shift+Enter inserts a line break.||live
 CommandLineWordWrap|terminal|Command line|Wrap command arguments|Start each unquoted dash-prefixed argument on a new visual line and highlight its dash. Visual wrapping never changes the command.||live

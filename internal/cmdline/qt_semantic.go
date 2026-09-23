@@ -1,10 +1,39 @@
 package cmdline
 
 import (
+	"unicode/utf16"
+
 	"github.com/unxed/f4/internal/semantic"
 	"github.com/unxed/f4/sdk/extui"
 	"github.com/unxed/vtui"
 )
+
+// SetNativeCursor accepts Qt's UTF-16 offset; the shared editor owns rune and
+// grapheme boundaries and subsequent keyboard editing in both frontends.
+func (cl *CommandLine) SetNativeCursor(position int) {
+	cl.SetNativeSelection(position, position)
+}
+
+// SetNativeSelection maps presentation UTF-16 offsets into the shared editor.
+func (cl *CommandLine) SetNativeSelection(anchor, cursor int) {
+	cl.Edit.HandleSemanticAction(map[string]any{
+		"action": "control.select", "anchor": cl.nativeRuneOffset(anchor),
+		"cursor": cl.nativeRuneOffset(cursor),
+	})
+	vtui.DebugLog("[FIX:command-line-selection] native anchor=%d cursor=%d", anchor, cursor)
+}
+
+func (cl *CommandLine) nativeRuneOffset(position int) int {
+	index, units := 0, 0
+	for _, r := range cl.Edit.GetText() {
+		units += utf16.RuneLen(r)
+		if units > position {
+			break
+		}
+		index++
+	}
+	return index
+}
 
 func (cl *CommandLine) SemanticModel(ctx *vtui.SemanticContext) *extui.CommandLineModel {
 	cl.SyncInputOptions()

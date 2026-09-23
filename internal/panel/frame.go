@@ -252,6 +252,7 @@ type PanelsFrame struct {
 	ActiveIdx               int    // 0 for left, 1 for right
 	FolderHistoryPos        [2]int // position in provider's newest-first folder history
 	Executing               bool
+	commandPayloadCleanup   func() // UI-owned; released on completion, failed dispatch, or shell close
 	afterExecution          func() // run once by endExecution; queues the next user-menu step
 	ShellPromptReady        bool
 	ignoreNextPrompt        bool
@@ -273,10 +274,11 @@ type PanelsFrame struct {
 	// panelMouseCapture owns a complete button-down/move/release gesture.
 	// Without it, dragging a row across the split can accidentally start the
 	// other panel's scrollbar (or vice versa).
-	PanelMouseCapture Panel
-	middleMouseDown   bool
-	LastW             int
-	LastH             int
+	PanelMouseCapture    Panel
+	middleMouseDown      bool
+	commandMouseCaptured bool
+	LastW                int
+	LastH                int
 
 	// Panel geometry offsets, adjusted by Ctrl+Left/Right (width) and
 	// Ctrl+Up/Down (height). Names and semantics match far2l's [Layout]:
@@ -676,8 +678,10 @@ func (pf *PanelsFrame) SetCommandLineFocus(focused bool) {
 	}
 	wasHidden := pf.commandLineHiddenByFocus()
 	pf.CommandLineFocused = focused
-	if wasHidden != pf.commandLineHiddenByFocus() {
-		pf.CmdLine.SetVisible(!pf.commandLineHiddenByFocus())
+	nowHidden := pf.commandLineHiddenByFocus()
+	if wasHidden != nowHidden || pf.CmdLine.IsVisible() == nowHidden {
+		vtui.DebugLog("[FIX:command-line-visibility] focused=%v empty=%v hidden=%v", focused, pf.CmdLine.IsEmpty(), nowHidden)
+		pf.CmdLine.SetVisible(!nowHidden)
 		pf.ResizeConsole(pf.LastW, pf.LastH)
 	}
 	pf.CmdLine.SetFocus(focused)
@@ -1331,6 +1335,8 @@ func (pf *PanelsFrame) restartLocalShell(keepScreen bool) bool {
 	}
 
 	_ = pty.Close()
+	pf.clearCommandPayload()
+	pf.TermView.CancelPreparedCleanCommand()
 
 	pf.Executing = false
 	pf.afterExecution = nil
@@ -1715,6 +1721,7 @@ func workspaceContainsPanelsFrame(screen *vtui.AppScreen, target *PanelsFrame) b
 }
 
 func (pf *PanelsFrame) Close() {
+	pf.clearCommandPayload()
 	CancelDocumentOpen(pf)
 	pf.closeTerminalOutputRedraw()
 	if pf.terminalRedraw != nil {
@@ -2157,6 +2164,7 @@ func (pf *PanelsFrame) BeginPromptDrivenExecution() {
 // screen back: to the panels if they were hidden for it, otherwise just
 // out of the busy state.
 func (pf *PanelsFrame) endExecution() {
+	pf.clearCommandPayload()
 	pf.Executing = false
 	pf.workspaceCommandTitle = ""
 	if pf.ReturnToPanels {
@@ -2391,6 +2399,9 @@ func (pf *PanelsFrame) InterceptPluginKey(e *vtinput.InputEvent) bool {
 	ctrl := (e.ControlKeyState & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed)) != 0
 	alt := (e.ControlKeyState & (vtinput.LeftAltPressed | vtinput.RightAltPressed)) != 0
 	shift := (e.ControlKeyState & vtinput.ShiftPressed) != 0
+	if pf.commandLineOwnsInputKey(e) {
+		return false
+	}
 
 	// Arkanoid easter egg: Ctrl+Alt+A
 	if e.VirtualKeyCode == 'A' && alt && ctrl {
@@ -2461,6 +2472,61 @@ func (pf *PanelsFrame) commandLineOwnsSelection(e *vtinput.InputEvent) bool {
 	return pf.CmdLine != nil && pf.CmdLine.IsVisible() && !pf.CmdLine.IsEmpty()
 }
 
+// A focused command edit owns text-navigation keys before the panel and
+// global keymaps. Classic mode keeps its panel navigation until the user
+// explicitly focuses the command line.
+func (pf *PanelsFrame) commandLineOwnsNavigation(e *vtinput.InputEvent) bool {
+	if e.Type != vtinput.KeyEventType || !e.KeyDown || pf.CmdLine == nil || !pf.CmdLine.IsVisible() {
+		return false
+	}
+	if e.ControlKeyState&(vtinput.LeftAltPressed|vtinput.RightAltPressed) != 0 {
+		return false
+	}
+	switch e.VirtualKeyCode {
+	case vtinput.VK_LEFT, vtinput.VK_RIGHT, vtinput.VK_UP, vtinput.VK_DOWN,
+		vtinput.VK_HOME, vtinput.VK_END, vtinput.VK_PRIOR, vtinput.VK_NEXT:
+	default:
+		return false
+	}
+	if pf.SearchFirstMode() && pf.CommandLineFocused {
+		return true
+	}
+	if pf.CommandLineFocused && !pf.CmdLine.IsEmpty() {
+		return true
+	}
+	return pf.commandLineOwnsSelection(e)
+}
+
+// commandLineOwnsInputKey protects editing shortcuts from panel/global
+// bindings while Search-first explicitly targets the command input.
+func (pf *PanelsFrame) commandLineOwnsInputKey(e *vtinput.InputEvent) bool {
+	if pf.commandLineOwnsNavigation(e) {
+		return true
+	}
+	if e == nil || e.Type != vtinput.KeyEventType || !e.KeyDown || pf.CmdLine == nil || !pf.CmdLine.IsVisible() {
+		return false
+	}
+	ctrl := e.ControlKeyState&(vtinput.LeftCtrlPressed|vtinput.RightCtrlPressed) != 0
+	alt := e.ControlKeyState&(vtinput.LeftAltPressed|vtinput.RightAltPressed) != 0
+	shift := e.ControlKeyState&vtinput.ShiftPressed != 0
+	if alt || !pf.SearchFirstMode() || !pf.CommandLineFocused {
+		return false
+	}
+	if shift && !ctrl && (e.VirtualKeyCode == vtinput.VK_INSERT || e.VirtualKeyCode == vtinput.VK_DELETE) {
+		return true
+	}
+	if !ctrl || shift {
+		return false
+	}
+	switch e.VirtualKeyCode {
+	case vtinput.VK_A, vtinput.VK_BACK, vtinput.VK_C, vtinput.VK_DELETE,
+		vtinput.VK_E, vtinput.VK_INSERT, vtinput.VK_V, vtinput.VK_X:
+		return true
+	default:
+		return false
+	}
+}
+
 // VetoActionKey reports modal input states in which the panels must see
 // the key before the global hotkey dispatcher. During fast find,
 // printable characters and the gray selection keys belong to the
@@ -2482,7 +2548,7 @@ func (pf *PanelsFrame) VetoActionKey(e *vtinput.InputEvent) bool {
 	// Checked ahead of the panels-visible guard: the command line keeps
 	// its selection keys in terminal mode too, where the drive menus are
 	// bound in the Terminal area.
-	if pf.commandLineOwnsSelection(e) {
+	if pf.commandLineOwnsInputKey(e) {
 		return true
 	}
 	if !pf.ShowPanels {
@@ -2574,6 +2640,23 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 	ctrl := (e.ControlKeyState & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed)) != 0
 	alt := (e.ControlKeyState & (vtinput.LeftAltPressed | vtinput.RightAltPressed)) != 0
 	shift := (e.ControlKeyState & vtinput.ShiftPressed) != 0
+	if pf.commandLineOwnsInputKey(e) {
+		vtui.DebugLog("[FIX:command-line-navigation] focused edit owns key=%x modifiers=%x", e.VirtualKeyCode, e.ControlKeyState)
+		if ctrl && pf.SearchFirstMode() && pf.CommandLineFocused {
+			switch e.VirtualKeyCode {
+			case vtinput.VK_UP:
+				pf.CmdLine.Edit.HistoryUp()
+				vtui.DebugLog("[FIX:command-line-history] direction=up position=%d", pf.CmdLine.Edit.HistoryPos)
+				return true
+			case vtinput.VK_DOWN:
+				pf.CmdLine.Edit.HistoryDown()
+				vtui.DebugLog("[FIX:command-line-history] direction=down position=%d", pf.CmdLine.Edit.HistoryPos)
+				return true
+			}
+		}
+		pf.CmdLine.ProcessKey(e)
+		return true
+	}
 	if pf.ShowPanels && e.KeyDown && alt && shift && !ctrl {
 		if fsp := pf.GetActivePanel(); fsp != nil {
 			if temp, ok := fsp.Vfs.(*TempPanelVFS); ok {
@@ -3171,6 +3254,7 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 			}
 
 			var fullWireCmd string
+			var commandCleanup func()
 			isBackground := false
 			if !isWindowsShell {
 				isBackground = strings.HasSuffix(strings.TrimSpace(cmd), "&")
@@ -3217,6 +3301,15 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 					// Parse user input through eval so a syntax error cannot prevent
 					// the surrounding OSC completion marker from being emitted.
 					sqCmd := ShellSingleQuote(cmd)
+					if pf.isLocalPTY(activePty) {
+						var err error
+						sqCmd, commandCleanup, err = prepareLocalCommandEvaluation(cmd)
+						if err != nil {
+							vtui.DebugLog("[FIX:command-handoff] preparation failed: %v", err)
+							toast.Show(err.Error(), 8*time.Second)
+							return true
+						}
+					}
 					if path != "" {
 						sqPath := strings.ReplaceAll(path, "'", "'\\''")
 						fullWireCmd = fmt.Sprintf(" set +H; cd '%s' && { trap \"printf ''\" INT; printf \"\\033]133;C\\007\"; eval %s ; FARVTRESULT=$?; printf \"\\033]133;D\\007\"; trap - INT; (exit $FARVTRESULT); }\r", sqPath, sqCmd)
@@ -3237,6 +3330,8 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 				// deliver the technical wrapper and OSC C from its read goroutine
 				// before Write itself returns.
 				pf.TermView.PrepareCleanCommand(cmd)
+				pf.clearCommandPayload()
+				pf.commandPayloadCleanup = commandCleanup
 			}
 			if managedForeground {
 				pf.BeginManagedExecution()
@@ -3256,6 +3351,7 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 			if err != nil {
 				if managedForeground {
 					pf.TermView.CancelPreparedCleanCommand()
+					pf.clearCommandPayload()
 				}
 				if trackedCommand {
 					pf.Executing = previousExecuting
@@ -3448,6 +3544,15 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 	// to run before the injected-event hotkey lookup below, which would
 	// otherwise reach the drive menu the same way the filter does.
 	if pf.commandLineOwnsSelection(e) {
+		pf.CmdLine.ProcessKey(e)
+		return true
+	}
+
+	// Multiline input owns vertical navigation while editing, even in classic
+	// mode. Edge arrows remain in the input rather than recalling history.
+	if e.KeyDown && !ctrl && !alt && !shift && pf.MultilineCommandInputActive() &&
+		(e.VirtualKeyCode == vtinput.VK_UP || e.VirtualKeyCode == vtinput.VK_DOWN) &&
+		pf.CmdLine.Edit.MultilineRows(pf.CmdLine.Edit.X2-pf.CmdLine.Edit.X1+1) > 1 {
 		pf.CmdLine.ProcessKey(e)
 		return true
 	}
@@ -3734,6 +3839,25 @@ func (pf *PanelsFrame) ProcessMouse(e *vtinput.InputEvent) bool {
 			e.MouseX, e.MouseY, e.ButtonState, e.MouseEventFlags, e.ControlKeyState, pf.ShowPanels,
 			vtui.FrameManager.WorkspaceTopInset(), config.App.AlwaysShowMenuBar,
 			pf.MenuBar != nil && pf.MenuBar.Active, pf.PanelMouseCapture, pf.middleMouseDown)
+	}
+	if e.WheelDirection == 0 && pf.commandMouseCaptured {
+		pf.CmdLine.ProcessMouse(e)
+		if vtui.IsMouseRelease(e) {
+			pf.commandMouseCaptured = false
+		}
+		return true
+	}
+	if pf.CmdLine != nil && e.WheelDirection == 0 && e.KeyDown &&
+		e.ButtonState&vtinput.FromLeft1stButtonPressed != 0 &&
+		e.MouseEventFlags&vtinput.MouseMoved == 0 && pf.CmdLine.IsVisible() &&
+		pf.CmdLine.Edit.HitTest(int(e.MouseX), int(e.MouseY)) {
+		if pf.SearchFirstMode() {
+			pf.SetCommandLineFocus(true)
+		}
+		pf.commandMouseCaptured = true
+		pf.CmdLine.ProcessMouse(e)
+		vtui.DebugLog("[FIX:command-line-selection] console pointer captured")
+		return true
 	}
 	// If panels are hidden, route relevant mouse events to term.PTY immediately
 	if !pf.ShowPanels {
@@ -4082,13 +4206,23 @@ func (pf *PanelsFrame) switchActivePanel(side int) bool {
 // back after Tab, a panel swap, or an overlay closes.
 func (pf *PanelsFrame) CancelFastFind() bool {
 	cancelled := false
+	clearedPanels := 0
 	for _, panel := range pf.Panels {
 		fsp, ok := panel.(*FileSystemPanel)
-		if !ok || !fsp.FastFindMode {
+		if !ok || (!fsp.FastFindMode && fsp.FastFindStr == "") {
 			continue
 		}
 		fsp.ExitFastFind()
 		cancelled = true
+		clearedPanels++
+	}
+	if cancelled {
+		// Fast Find is part of the native panel descriptor. A focus change or
+		// action can replace the active frame before the next redraw; without an
+		// explicit invalidation, a compact cursor/activation update may retain
+		// the old QML overlay even though the Go-side input mode is already off.
+		invalidateSemanticSceneUpdate()
+		vtui.DebugLog("[FIX:fast-find-dismiss] cleared panel state count=%d", clearedPanels)
 	}
 	return cancelled
 }

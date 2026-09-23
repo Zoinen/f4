@@ -1,9 +1,10 @@
 from conan import ConanFile
 from conan.errors import ConanInvalidConfiguration
 from conan.tools.cmake import CMakeDeps, CMakeToolchain
-from conan.tools.files import copy
+from conan.tools.files import copy, save
 from conan.tools.scm import Version
 import os
+import textwrap
 
 
 class F4QtHostConan(ConanFile):
@@ -74,6 +75,10 @@ class F4QtHostConan(ConanFile):
         # ZoinGallery is built from the pinned Git submodule. Keep its native
         # dependencies in this single Conan graph so the host and module share
         # one Qt runtime and one deployment ABI.
+        # harfbuzz/8.3.0 still pins freetype/2.13.2 while Qt exposes a
+        # compatible version range that otherwise resolves to 2.13.3. Keep
+        # the graph deterministic until Conan Center removes that mismatch.
+        self.requires("freetype/2.13.2", override=True)
         self.requires("libtiff/4.7.0")
         self.requires("libraw/0.21.3")
         self.requires("libpng/1.6.45")
@@ -85,6 +90,16 @@ class F4QtHostConan(ConanFile):
         self.requires("libheif/1.20.1")
         self.requires("libjpeg-turbo/3.0.2", override=True)
         self.requires("jasper/4.2.0", override=True)
+
+    def build_requirements(self):
+        # Windows ARM is cross-compiled by the x64 GitHub runner. Keep a
+        # native Qt package in this consumer graph as well as the target Qt
+        # requirement so CMake's AUTOGEN/QML tools can run during configure.
+        # The Qt recipe already uses the same build-context package while it
+        # builds the target Qt libraries; making it explicit here exposes its
+        # package folder to the f4-qt and QWindowKit generators too.
+        if str(self.settings.os) == "Windows" and str(self.settings.arch) == "armv8":
+            self.tool_requires("qt/6.11.1")
 
     def validate(self):
         if str(self.settings.os) != "Macos":
@@ -112,6 +127,159 @@ class F4QtHostConan(ConanFile):
         if operating_system == "Macos":
             toolchain.variables["CMAKE_OSX_DEPLOYMENT_TARGET"] = str(
                 self.settings.os.version)
+
+        # In a cross build Conan exposes Qt's native build-context package
+        # through the transitive build requirements of the target Qt package.
+        # Prefer its QML/shader tool configs explicitly: the target package
+        # can contain same-named metadata whose qsb/qml executables have the
+        # target architecture and cannot run on the build runner.
+        visited_dependencies = set()
+
+        def find_native_qt(dependencies):
+            for dep in dependencies.values():
+                dependency_key = (
+                    str(dep.ref),
+                    str(dep.package_folder),
+                    str(dep.context),
+                )
+                if dependency_key in visited_dependencies:
+                    continue
+                visited_dependencies.add(dependency_key)
+
+                if (
+                    dep.ref is not None
+                    and dep.ref.name == "qt"
+                    and dep.is_build_context
+                    and dep.package_folder
+                ):
+                    return dep
+
+                nested = find_native_qt(dep.dependencies.build)
+                if nested is not None:
+                    return nested
+                nested = find_native_qt(dep.dependencies.host)
+                if nested is not None:
+                    return nested
+            return None
+
+        native_qt = find_native_qt(self.dependencies.build)
+        if native_qt is None:
+            native_qt = find_native_qt(self.dependencies.host)
+        if native_qt is not None:
+            self.output.info(
+                f"Using native Qt build-context tools from {native_qt.package_folder}"
+            )
+            native_qt_cmake_dir = os.path.join(native_qt.package_folder, "lib", "cmake")
+            toolchain.cache_variables["Qt6QmlTools_DIR"] = os.path.join(
+                native_qt_cmake_dir, "Qt6QmlTools"
+            )
+            toolchain.cache_variables["Qt6ShaderToolsTools_DIR"] = os.path.join(
+                native_qt_cmake_dir, "Qt6ShaderToolsTools"
+            )
+
+            # Keep the native executable target list for the pre-project
+            # include below. It must not be added to CMakeDeps' build-module
+            # list: that list is also propagated into link metadata by the
+            # Conan Qt facade, where a .cmake path becomes a linker input.
+            native_qt_prefix = native_qt.package_folder.replace("\\", "/")
+            native_tool_names = (
+                "moc",
+                "qlalr",
+                "rcc",
+                "tracegen",
+                "cmake_automoc_parser",
+                "qmake",
+                "qtpaths",
+                "syncqt",
+                "tracepointgen",
+                "qvkgen",
+                "uic",
+                "windeployqt",
+                "wasmdeployqt",
+                "qsb",
+                "qmltyperegistrar",
+                "qmlcachegen",
+                "qmllint",
+                "qmlimportscanner",
+                "qmlformat",
+                "qml",
+                "qmlprofiler",
+                "qmlpreview",
+                "qmltc",
+                "qmlaotstats",
+            )
+
+        # CMakeDeps puts the native Qt build-context prefixes before the
+        # target prefixes in CMAKE_PREFIX_PATH, but Qt's own package config
+        # can still select the target package's same-named tool metadata.
+        # Resolve the first prefix containing each tool config before any
+        # project() call. This keeps native qsb/qml tools on the build runner
+        # while preserving the target package for libraries and headers.
+        cross_tools_file = os.path.join(
+            self.generators_folder, "f4-qt-cross-tools.cmake"
+        )
+        cross_tools_text = textwrap.dedent(
+            """
+            foreach(_f4_qt_prefix IN LISTS CMAKE_PREFIX_PATH)
+              if(NOT Qt6QmlTools_DIR AND EXISTS "${_f4_qt_prefix}/Qt6QmlToolsConfig.cmake")
+                set(Qt6QmlTools_DIR "${_f4_qt_prefix}" CACHE PATH "Native Qt QML tools" FORCE)
+              endif()
+              if(NOT Qt6ShaderToolsTools_DIR AND EXISTS "${_f4_qt_prefix}/Qt6ShaderToolsToolsConfig.cmake")
+                set(Qt6ShaderToolsTools_DIR "${_f4_qt_prefix}" CACHE PATH "Native Qt shader tools" FORCE)
+              endif()
+            endforeach()
+            """
+        )
+        if native_qt is not None:
+            # Conan's Qt package build module declares Qt6::moc/rcc/uic and
+            # the other executable targets with an ``if(NOT TARGET ...)``
+            # guard. Declare those imported targets before Qt's package is
+            # loaded so the target package cannot install ARM64 executables
+            # which the x64 build runner cannot execute. The target package
+            # still supplies all headers and libraries; only the host tools
+            # come from the native build-context package.
+            native_tools_body = [
+                f'set(_f4_qt_native_prefix "{native_qt_prefix}")',
+                '  set(_f4_qt_native_bin "${_f4_qt_native_prefix}/bin")',
+            ]
+            native_tool_suffix = ".exe" if operating_system == "Windows" else ""
+            for tool_name in native_tool_names:
+                native_tools_body.extend(
+                    [
+                        f'  set(_f4_qt_native_tool "${{_f4_qt_native_bin}}/{tool_name}{native_tool_suffix}")',
+                        f'  if(NOT TARGET Qt6::{tool_name})',
+                        f'    add_executable(Qt6::{tool_name} IMPORTED GLOBAL)',
+                        f'    set_property(TARGET Qt6::{tool_name} PROPERTY IMPORTED_LOCATION "${{_f4_qt_native_tool}}")',
+                        f'    set_property(TARGET Qt6::{tool_name} PROPERTY IMPORTED_LOCATION_{build_type.upper()} "${{_f4_qt_native_tool}}")',
+                        "  endif()",
+                    ]
+                )
+            # QtDeclarative's in-tree cross build tests Qt::qsb, while the
+            # Conan executable export is namespaced as Qt6::qsb. Mirror the
+            # versionless tool target provided by Qt's native Tools config.
+            native_tools_body.extend(
+                [
+                    '  if(NOT TARGET Qt::qsb AND TARGET Qt6::qsb)',
+                    '    add_executable(Qt::qsb IMPORTED GLOBAL)',
+                    '    get_target_property(_f4_qt_native_qsb Qt6::qsb IMPORTED_LOCATION)',
+                    '    set_property(TARGET Qt::qsb PROPERTY IMPORTED_LOCATION "${_f4_qt_native_qsb}")',
+                    '  endif()',
+                ]
+            )
+            native_tools_body.extend(
+                [
+                    "  unset(_f4_qt_native_tool)",
+                    "  unset(_f4_qt_native_bin)",
+                    "unset(_f4_qt_native_prefix)",
+                ]
+            )
+            cross_tools_text += "\n" + "\n".join(native_tools_body) + "\n"
+        save(
+            self,
+            cross_tools_file,
+            cross_tools_text,
+        )
+        toolchain.cache_variables["CMAKE_PROJECT_INCLUDE_BEFORE"] = cross_tools_file
 
         toolchain.generate()
 

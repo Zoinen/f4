@@ -3479,6 +3479,7 @@ func TestNewUTF8EditorPieceTableKeepsLargeFilesStreaming(t *testing.T) {
 
 func TestSession_GalleryStatePersistsWithoutPanelPaths(t *testing.T) {
 	tmpDir := t.TempDir()
+	t.Cleanup(paneltest.SwapFrameManager(t))
 	origPathFunc := GetSessionIniPath
 	GetSessionIniPath = func() string { return filepath.Join(tmpDir, "session.ini") }
 
@@ -3489,7 +3490,9 @@ func TestSession_GalleryStatePersistsWithoutPanelPaths(t *testing.T) {
 	oldRightGalleryState := panel.LastRightGalleryState
 	oldWorkspaceSessions := panel.LastWorkspaceSessions
 	oldActiveWorkspace := panel.LastActiveWorkspace
+	oldSessionLoaded := sessionLoaded
 	defer func() {
+		paneltest.WaitForDirectoryLoads(t)
 		GetSessionIniPath = origPathFunc
 		config.App = oldConfig
 		panel.LastLeftPath = oldLeftPath
@@ -3498,6 +3501,7 @@ func TestSession_GalleryStatePersistsWithoutPanelPaths(t *testing.T) {
 		panel.LastRightGalleryState = oldRightGalleryState
 		panel.LastWorkspaceSessions = oldWorkspaceSessions
 		panel.LastActiveWorkspace = oldActiveWorkspace
+		sessionLoaded = oldSessionLoaded
 	}()
 
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
@@ -3516,6 +3520,10 @@ func TestSession_GalleryStatePersistsWithoutPanelPaths(t *testing.T) {
 		t.Fatal("failed to configure per-panel Gallery state")
 	}
 	config.App.SavePanelPaths = false
+	config.App.AutoSaveSettings = true
+	config.App.AutoSavePanelSettings = true
+	config.App.AutoSaveCurrentPanel = true
+	sessionLoaded = true
 	config.App.GuiCols = vtui.FrameManager.GetScreenSize()
 	config.App.GuiRows = vtui.FrameManager.GetScreenHeight()
 	panel.LastLeftPath = "/keep/left"

@@ -525,7 +525,7 @@ func GalleryDensityLimits(mode GalleryLayoutMode) (defaultValue, minimum, maximu
 	case GalleryLayoutColumns, GalleryLayoutDetails:
 		// Zero asks the QML host to derive the untouched default from its font.
 		// Explicit compact zoom values use the same bounded row-pitch contract.
-		return 0, 22, 72
+		return 0, 22, 216
 	case GalleryLayoutGrid:
 		return 160, 96, 320
 	case GalleryLayoutIcons:
@@ -781,6 +781,7 @@ type FileSystemPanel struct {
 	semanticPagedResourceRevision int64
 	semanticPagedResourceIDs      map[string]struct{}
 	semanticPagedDirectoryIDs     map[string]struct{}
+	directoryCache                *directoryListingCache
 }
 
 var DisableLoadingAnimationInTests = true
@@ -808,6 +809,7 @@ func NewFileSystemPanel(x, y, w, h int, vfs vfs.VFS) *FileSystemPanel {
 		semanticPriorIndex:     -1,
 		SelectedItems:          make(map[string]bool),
 		selectionEpoch:         make(map[string]uint64),
+		directoryCache:         newDirectoryListingCache(),
 		//entries:             []*fileEntry{{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}}},
 	}
 	fp.Frame.ColorBoxIdx = theme.ColPanelBox
@@ -949,8 +951,8 @@ func (fp *FileSystemPanel) freshDirectoryEntries(items []vfs.VFSItem, showUpEntr
 	return entries
 }
 
-func fileEntriesFromItems(items []vfs.VFSItem) []*FileEntry {
-	if config.App.ShowHiddenFiles && len(items) >= 4096 {
+func fileEntriesFromItems(items []vfs.VFSItem, showHidden bool) []*FileEntry {
+	if showHidden && len(items) >= 4096 {
 		entries := make([]*FileEntry, len(items))
 		backing := make([]FileEntry, len(items))
 		workerCount := min(runtime.GOMAXPROCS(0), 8)
@@ -972,7 +974,7 @@ func fileEntriesFromItems(items []vfs.VFSItem) []*FileEntry {
 		return entries
 	}
 	visibleCount := len(items)
-	if !config.App.ShowHiddenFiles {
+	if !showHidden {
 		visibleCount = 0
 		for _, item := range items {
 			if item.Name == ".." || !item.IsHidden {
@@ -984,7 +986,7 @@ func fileEntriesFromItems(items []vfs.VFSItem) []*FileEntry {
 	backing := make([]FileEntry, visibleCount)
 	next := 0
 	for _, item := range items {
-		if !config.App.ShowHiddenFiles && item.Name != ".." && item.IsHidden {
+		if !showHidden && item.Name != ".." && item.IsHidden {
 			continue
 		}
 		backing[next].VFSItem = item
@@ -2462,7 +2464,11 @@ func (fp *FileSystemPanel) SetGalleryDensity(mode GalleryLayoutMode, density int
 	if !ok {
 		return false
 	}
+	requested := density
 	density = ClampGalleryDensity(parsed, density)
+	if requested != density {
+		vtui.DebugLog("[FIX:gallery-density] mode=%s requested=%d clamped=%d", parsed, requested, density)
+	}
 	if fp.GalleryDensities == nil {
 		fp.GalleryDensities = make(map[GalleryLayoutMode]int)
 	}
@@ -2739,8 +2745,17 @@ func (fp *FileSystemPanel) pathTitleHitTest(x, y int) bool {
 }
 
 func (fp *FileSystemPanel) ReadDirectory() {
-	fp.readDirectoryEx(fp.Vfs != nil && fileops.SameVFSInstance(fp.committedListingVFS, fp.Vfs) &&
-		fp.committedListingPath == fp.Vfs.GetPath())
+	if fp == nil || fp.Vfs == nil {
+		return
+	}
+	path := fp.Vfs.GetPath()
+	keepEntries := fileops.SameVFSInstance(fp.committedListingVFS, fp.Vfs) &&
+		fp.committedListingPath == path
+	if !keepEntries {
+		showUpEntry := !fp.Vfs.IsAtRoot() || fp.Vfs.ParentVFS() != nil
+		keepEntries = fp.restoreCachedDirectory(fp.Vfs, path, showUpEntry)
+	}
+	fp.readDirectoryEx(keepEntries)
 }
 
 // enqueueDirectoryLoad keeps at most one backend read running and one newer
@@ -3339,7 +3354,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			if len(chunk) == 0 || !previewEligible || ctx.Err() != nil {
 				return
 			}
-			previewEntries := fileEntriesFromItems(chunk)
+			previewEntries := fileEntriesFromItems(chunk, loadShowHidden)
 			if len(previewEntries) == 0 || ctx.Err() != nil {
 				return
 			}
@@ -3420,7 +3435,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				len(window.Entries) > window.TotalCount || ctx.Err() != nil {
 				return
 			}
-			windowEntries := fileEntriesFromItems(window.Entries)
+			windowEntries := fileEntriesFromItems(window.Entries, loadShowHidden)
 			target := loadPendingSelection
 			targetFound := target == "" || target == ".." && showUpEntry
 			if !targetFound {
@@ -3707,7 +3722,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			if benchmark != nil {
 				conversionStartedNs = navtrace.NavigationBenchmarkMonotonicNs()
 			}
-			newEntries := fileEntriesFromItems(chunk)
+			newEntries := fileEntriesFromItems(chunk, loadShowHidden)
 			if benchmark != nil {
 				conversionFinishedNs := navtrace.NavigationBenchmarkMonotonicNs()
 				benchmark.EventAt("model.chunk.converted", "go.worker", conversionFinishedNs,
@@ -3984,6 +3999,9 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				return
 			}
 			needsRedraw = true
+			if err == nil {
+				fp.storeDirectorySnapshot(loadVFS, path, accumulated)
+			}
 
 			refreshChanged := !keepEntries
 			if loadSyncPanel && err == nil {

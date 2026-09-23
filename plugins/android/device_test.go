@@ -3,6 +3,7 @@ package androidfs
 import (
 	"context"
 	"errors"
+	"net"
 	"testing"
 
 	"github.com/unxed/f4/plugins/netfox"
@@ -22,6 +23,38 @@ func TestServerDeviceSourceMapsTransportFields(t *testing.T) {
 	if got != want {
 		t.Fatalf("mapped device = %#v, want %#v", got, want)
 	}
+}
+
+func TestServerDeviceSourceRefreshesStaleUSBSnapshot(t *testing.T) {
+	server, dialer := testServer(t,
+		func(conn net.Conn) {
+			expectTestRequest(t, conn, "host:devices-l")
+			writeTestHostReply(t, conn, "emulator-5554\tdevice product:sdk model:emulator device:emu transport_id:1\n")
+		},
+		func(conn net.Conn) {
+			expectTestRequest(t, conn, "host:devices-l")
+			writeTestHostReply(t, conn, "VIVO123\tdevice usb:1-2 product:PD2454 model:V2454A device:PD2454 transport_id:2\n")
+		},
+	)
+	var refreshes int
+	server.lookupADB = func() (string, error) { return "/sdk/platform-tools/adb", nil }
+	server.restartServer = func(context.Context, string) error {
+		refreshes++
+		return nil
+	}
+	source := serverDeviceSource{server: server}
+
+	devices, err := source.ListDevices(context.Background())
+	if err != nil {
+		t.Fatalf("ListDevices: %v", err)
+	}
+	if refreshes != 1 {
+		t.Fatalf("refreshes = %d, want 1", refreshes)
+	}
+	if len(devices) != 1 || devices[0].Serial != "VIVO123" || !devices[0].USB {
+		t.Fatalf("devices after refresh = %#v", devices)
+	}
+	dialer.assertDone()
 }
 
 func TestHybridOpenerPrefersFishForShellV2(t *testing.T) {

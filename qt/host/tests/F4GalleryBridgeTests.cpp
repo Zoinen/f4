@@ -127,7 +127,9 @@ private slots:
     void staleCursorIntentRetriesAgainstNewCatalog();
     void activationSceneDoesNotSnapPendingCursorBackward();
     void nonImageOpenUsesCurrentStableCatalogImmediately();
-    void repeatedOpenIsSuppressedUntilPanelPathChanges();
+    void repeatedOpenQueuesAndReplaysEachNavigation();
+    void repeatedDirectoryOpenReplaysAfterDestinationCursorReady();
+    void repeatedParentOpenWaitsForCachedCursorBeforeReplay();
     void repeatedOpenReplaysAgainstUsefulLocalPreview();
     void selectionIsAtomicAndRevisioned();
     void selectionTransactionCommitsCursorAtomicallyAndMasksStaleScene();
@@ -4409,12 +4411,25 @@ void F4GalleryBridgeTests::nonImageOpenUsesCurrentStableCatalogImmediately()
     QCOMPARE(actions.size(), 1);
 }
 
-void F4GalleryBridgeTests::repeatedOpenIsSuppressedUntilPanelPathChanges()
+void F4GalleryBridgeTests::repeatedOpenQueuesAndReplaysEachNavigation()
 {
     QQmlEngine engine;
     F4GalleryBridge bridge(&engine);
     QVERIFY(bridge.available());
-    bridge.synchronizeScene(testScene());
+    QVariantMap source = testScene();
+    QVariantMap sourceShell = source.value(QStringLiteral("shell")).toMap();
+    QVariantMap sourcePanel = sourceShell.value(QStringLiteral("panels"))
+                                  .toList().constFirst().toMap();
+    QVariantList sourceEntries = sourcePanel.value(
+        QStringLiteral("entries")).toList();
+    QVariantMap sourceDirectory = sourceEntries.constFirst().toMap();
+    sourceDirectory.insert(QStringLiteral("isDir"), true);
+    sourceDirectory.insert(QStringLiteral("isImage"), false);
+    sourceEntries[0] = sourceDirectory;
+    sourcePanel.insert(QStringLiteral("entries"), sourceEntries);
+    sourceShell.insert(QStringLiteral("panels"), QVariantList{sourcePanel});
+    source.insert(QStringLiteral("shell"), sourceShell);
+    bridge.synchronizeScene(source);
     auto *session = qobject_cast<ZoinGallery::GallerySession *>(
         bridge.sessionForSide(0));
     QVERIFY(session);
@@ -4428,22 +4443,22 @@ void F4GalleryBridgeTests::repeatedOpenIsSuppressedUntilPanelPathChanges()
              QStringLiteral("panel.open"));
 
     // A held Enter key keeps targeting the old delegate until the new base
-    // catalog arrives. Collapse all those repeats into the delivered intent.
-    bridge.synchronizeScene(testScene());
-    for (int repeat = 0; repeat < 20; ++repeat) {
+    // catalog arrives. Every physical repeat is retained as a count; none is
+    // dispatched against a transient destination cursor.
+    for (int repeat = 0; repeat < 3; ++repeat) {
         bridge.requestOpen(0, QStringLiteral("left:one"), 7, false, 42, true);
     }
     QCOMPARE(actions.size(), 1);
 
-    QVariantMap destination = testScene();
+    // The first destination frame selects `..`. Replaying one queued event is
+    // correct here: it opens the destination's actual cached cursor, while
+    // the other two repeats remain queued for the following transitions.
+    QVariantMap destination = source;
     QVariantMap shell = destination.value(QStringLiteral("shell")).toMap();
     QVariantMap panel = shell.value(QStringLiteral("panels"))
                             .toList().constFirst().toMap();
-    const QVariantList authoritativeEntries = panel.value(
-        QStringLiteral("entries")).toList();
     panel.insert(QStringLiteral("path"), QStringLiteral("/tmp/child"));
     panel.insert(QStringLiteral("catalogRevision"), qulonglong(43));
-    panel.insert(QStringLiteral("catalogProvisional"), true);
     panel.insert(QStringLiteral("loading"), true);
     panel.insert(QStringLiteral("cursor"), 0);
     panel.insert(QStringLiteral("cursorEntryId"),
@@ -4453,68 +4468,41 @@ void F4GalleryBridgeTests::repeatedOpenIsSuppressedUntilPanelPathChanges()
                      QStringLiteral("child:up")},
                     {QStringLiteral("index"), 0},
                     {QStringLiteral("name"), QStringLiteral("..")},
-                    {QStringLiteral("isDir"), true}},
+                    {QStringLiteral("isDir"), true},
+                    {QStringLiteral("isUp"), true}},
     });
     shell.insert(QStringLiteral("panels"), QVariantList{panel});
     destination.insert(QStringLiteral("shell"), shell);
     bridge.synchronizeScene(destination);
 
-    // A provisional cold read leaves the populated source catalog visible.
-    // Held-key repeats still remain suppressed until the authoritative
-    // destination base arrives.
-    QCOMPARE(session->currentPath(), QStringLiteral("/tmp"));
-    QCOMPARE(session->catalogRevision(), qulonglong(42));
-    QCOMPARE(session->model()->rowCount(), 2);
-    QCOMPARE(session->entryIdAt(0), QStringLiteral("left:one"));
-    for (int repeat = 0; repeat < 20; ++repeat) {
-        bridge.requestOpen(0, QStringLiteral("left:one"), 7, false, 43, true);
-    }
-    QCOMPARE(actions.size(), 1);
-
-    panel.insert(QStringLiteral("catalogProvisional"), false);
-    panel.insert(QStringLiteral("loading"), false);
-    panel.insert(QStringLiteral("catalogRevision"), qulonglong(44));
-    panel.insert(QStringLiteral("cursor"), 7);
-    panel.insert(QStringLiteral("cursorEntryId"),
-                 QStringLiteral("left:one"));
-    panel.insert(QStringLiteral("entries"), authoritativeEntries);
-    shell.insert(QStringLiteral("panels"), QVariantList{panel});
-    destination.insert(QStringLiteral("shell"), shell);
-    bridge.synchronizeScene(destination);
-
-    // The accepted authoritative path begins a new input epoch. One repeat
-    // which arrived while the old path was in flight is replayed against the
-    // NEW authoritative cursor; none of the stale left:one requests above is
-    // ever sent twice.
     QCOMPARE(session->currentPath(), QStringLiteral("/tmp/child"));
-    QCOMPARE(session->catalogRevision(), qulonglong(44));
-    // Replay is pipelined as soon as the destination bridge/session state is
-    // complete; it must not wait for a later QML/render event-loop turn.
     QCOMPARE(actions.size(), 2);
     QCOMPARE(actions.constLast().constFirst().toMap()
                  .value(QStringLiteral("action")).toString(),
              QStringLiteral("panel.open"));
     QCOMPARE(actions.constLast().constFirst().toMap()
                  .value(QStringLiteral("entryId")).toString(),
-             QStringLiteral("left:one"));
+             QStringLiteral("child:up"));
 
-    // While that replay is in flight, retain at most one further repeat.
-    // Same-path/unrelated scenes cannot release it.
-    for (int repeat = 0; repeat < 20; ++repeat) {
-        bridge.requestOpen(0, QStringLiteral("left:one"), 7, false, 44, true);
-    }
-    bridge.synchronizeScene(destination);
-    QCoreApplication::processEvents();
-    QCOMPARE(actions.size(), 2);
-
-    // A second authoritative transition resolves the new current cursor,
-    // proving that the one-slot latch can be reused without accumulating the
-    // twenty suppressed requests from either epoch.
+    // The replay above is now opening the parent. The second and third
+    // queued physical repeats must survive that replacement in-flight action.
     panel.insert(QStringLiteral("path"), QStringLiteral("/tmp"));
-    panel.insert(QStringLiteral("catalogRevision"), qulonglong(45));
-    panel.insert(QStringLiteral("cursor"), 9);
+    panel.insert(QStringLiteral("catalogRevision"), qulonglong(44));
+    panel.insert(QStringLiteral("loading"), true);
+    panel.insert(QStringLiteral("cursor"), 1);
     panel.insert(QStringLiteral("cursorEntryId"),
-                 QStringLiteral("left:two"));
+                 QStringLiteral("parent:child"));
+    panel.insert(QStringLiteral("entries"), QVariantList{
+        QVariantMap{{QStringLiteral("entryId"), QStringLiteral("parent:up")},
+                    {QStringLiteral("index"), 0},
+                    {QStringLiteral("name"), QStringLiteral("..")},
+                    {QStringLiteral("isDir"), true},
+                    {QStringLiteral("isUp"), true}},
+        QVariantMap{{QStringLiteral("entryId"), QStringLiteral("parent:child")},
+                    {QStringLiteral("index"), 1},
+                    {QStringLiteral("name"), QStringLiteral("child")},
+                    {QStringLiteral("isDir"), true}},
+    });
     shell.insert(QStringLiteral("panels"), QVariantList{panel});
     destination.insert(QStringLiteral("shell"), shell);
     bridge.synchronizeScene(destination);
@@ -4524,7 +4512,194 @@ void F4GalleryBridgeTests::repeatedOpenIsSuppressedUntilPanelPathChanges()
              QStringLiteral("panel.open"));
     QCOMPARE(actions.constLast().constFirst().toMap()
                  .value(QStringLiteral("entryId")).toString(),
-             QStringLiteral("left:two"));
+             QStringLiteral("parent:child"));
+
+    panel.insert(QStringLiteral("path"), QStringLiteral("/tmp/child"));
+    panel.insert(QStringLiteral("catalogRevision"), qulonglong(45));
+    panel.insert(QStringLiteral("cursor"), 0);
+    panel.insert(QStringLiteral("cursorEntryId"),
+                 QStringLiteral("child:up"));
+    panel.insert(QStringLiteral("entries"), QVariantList{
+        QVariantMap{{QStringLiteral("entryId"), QStringLiteral("child:up")},
+                    {QStringLiteral("index"), 0},
+                    {QStringLiteral("name"), QStringLiteral("..")},
+                    {QStringLiteral("isDir"), true},
+                    {QStringLiteral("isUp"), true}},
+    });
+    shell.insert(QStringLiteral("panels"), QVariantList{panel});
+    destination.insert(QStringLiteral("shell"), shell);
+    bridge.synchronizeScene(destination);
+
+    QCOMPARE(actions.size(), 4);
+    QCOMPARE(actions.constLast().constFirst().toMap()
+                 .value(QStringLiteral("entryId")).toString(),
+             QStringLiteral("child:up"));
+}
+
+void F4GalleryBridgeTests::repeatedDirectoryOpenReplaysAfterDestinationCursorReady()
+{
+    QQmlEngine engine;
+    F4GalleryBridge bridge(&engine);
+    QVERIFY(bridge.available());
+
+    // Model a real directory row. The bridge must know that the first open
+    // changes the path; otherwise it treats the held Enter as a repeat that
+    // may be replayed against the destination catalog.
+    QVariantMap source = testScene();
+    QVariantMap sourceShell = source.value(QStringLiteral("shell")).toMap();
+    QVariantMap sourcePanel = sourceShell.value(QStringLiteral("panels"))
+                                  .toList().constFirst().toMap();
+    QVariantList sourceEntries = sourcePanel.value(
+        QStringLiteral("entries")).toList();
+    QVariantMap sourceDirectory = sourceEntries.constFirst().toMap();
+    sourceDirectory.insert(QStringLiteral("isDir"), true);
+    sourceDirectory.insert(QStringLiteral("isImage"), false);
+    sourceEntries[0] = sourceDirectory;
+    sourcePanel.insert(QStringLiteral("entries"), sourceEntries);
+    sourceShell.insert(QStringLiteral("panels"), QVariantList{sourcePanel});
+    source.insert(QStringLiteral("shell"), sourceShell);
+
+    bridge.synchronizeScene(source);
+    QSignalSpy actions(&bridge, &F4GalleryBridge::uiActionRequested);
+
+    bridge.requestOpen(0, QStringLiteral("left:one"), 7, false, 42);
+    QCOMPARE(actions.size(), 1);
+
+    // A held Enter reaches QML as an auto-repeat while the directory-open
+    // action is still in flight. It is retained and replayed against the
+    // destination cursor once that cursor is ready.
+    bridge.requestOpen(0, QStringLiteral("left:one"), 7, false, 42, true);
+    QCOMPARE(actions.size(), 1);
+
+    QVariantMap destination = source;
+    QVariantMap destinationShell = destination.value(
+        QStringLiteral("shell")).toMap();
+    QVariantMap destinationPanel = destinationShell.value(
+        QStringLiteral("panels")).toList().constFirst().toMap();
+    destinationPanel.insert(QStringLiteral("path"),
+                            QStringLiteral("/tmp/child"));
+    destinationPanel.insert(QStringLiteral("catalogRevision"),
+                            qulonglong(43));
+    destinationPanel.insert(QStringLiteral("loading"), true);
+    destinationPanel.insert(QStringLiteral("catalogProvisional"), false);
+    destinationPanel.insert(QStringLiteral("cursor"), 0);
+    destinationPanel.insert(QStringLiteral("cursorEntryId"),
+                            QStringLiteral("child:up"));
+    destinationPanel.insert(QStringLiteral("entries"), QVariantList{
+        QVariantMap{
+            {QStringLiteral("entryId"), QStringLiteral("child:up")},
+            {QStringLiteral("index"), 0},
+            {QStringLiteral("name"), QStringLiteral("..")},
+            {QStringLiteral("isDir"), true},
+            {QStringLiteral("isUp"), true},
+        },
+    });
+    destinationShell.insert(QStringLiteral("panels"),
+                            QVariantList{destinationPanel});
+    destination.insert(QStringLiteral("shell"), destinationShell);
+
+    bridge.synchronizeScene(destination);
+    QCOMPARE(actions.size(), 2);
+    QCOMPARE(actions.constLast().constFirst().toMap()
+                 .value(QStringLiteral("entryId")).toString(),
+             QStringLiteral("child:up"));
+}
+
+void F4GalleryBridgeTests::repeatedParentOpenWaitsForCachedCursorBeforeReplay()
+{
+    QQmlEngine engine;
+    F4GalleryBridge bridge(&engine);
+    QVERIFY(bridge.available());
+
+    // The source cursor is on the parent row. The first destination frame
+    // contains only the provisional `..` row; the cached listing then restores
+    // the just-left directory as the actual cursor target.
+    QVariantMap source = testScene();
+    QVariantMap sourceShell = source.value(QStringLiteral("shell")).toMap();
+    QVariantMap sourcePanel = sourceShell.value(QStringLiteral("panels"))
+                                  .toList().constFirst().toMap();
+    QVariantList sourceEntries = sourcePanel.value(
+        QStringLiteral("entries")).toList();
+    QVariantMap parentRow = sourceEntries.constFirst().toMap();
+    parentRow.insert(QStringLiteral("name"), QStringLiteral(".."));
+    parentRow.insert(QStringLiteral("isDir"), true);
+    parentRow.insert(QStringLiteral("isUp"), true);
+    sourceEntries[0] = parentRow;
+    sourcePanel.insert(QStringLiteral("path"),
+                       QStringLiteral("/tmp/child"));
+    sourcePanel.insert(QStringLiteral("entries"), sourceEntries);
+    sourceShell.insert(QStringLiteral("panels"), QVariantList{sourcePanel});
+    source.insert(QStringLiteral("shell"), sourceShell);
+
+    bridge.synchronizeScene(source);
+    QSignalSpy actions(&bridge, &F4GalleryBridge::uiActionRequested);
+    bridge.requestOpen(0, QStringLiteral("left:one"), 7, false, 42);
+    QCOMPARE(actions.size(), 1);
+
+    bridge.requestOpen(0, QStringLiteral("left:one"), 7, false, 42, true);
+    QCOMPARE(actions.size(), 1);
+
+    QVariantMap destination = source;
+    QVariantMap destinationShell = destination.value(
+        QStringLiteral("shell")).toMap();
+    QVariantMap destinationPanel = destinationShell.value(
+        QStringLiteral("panels")).toList().constFirst().toMap();
+    destinationPanel.insert(QStringLiteral("path"), QStringLiteral("/tmp"));
+    destinationPanel.insert(QStringLiteral("catalogRevision"),
+                            qulonglong(43));
+    destinationPanel.insert(QStringLiteral("loading"), true);
+    destinationPanel.insert(QStringLiteral("cursor"), 0);
+    destinationPanel.insert(QStringLiteral("cursorEntryId"),
+                            QStringLiteral("parent:up"));
+    destinationPanel.insert(QStringLiteral("entries"), QVariantList{
+        QVariantMap{
+            {QStringLiteral("entryId"), QStringLiteral("parent:up")},
+            {QStringLiteral("index"), 0},
+            {QStringLiteral("name"), QStringLiteral("..")},
+            {QStringLiteral("isDir"), true},
+            {QStringLiteral("isUp"), true},
+        },
+    });
+    destinationShell.insert(QStringLiteral("panels"),
+                            QVariantList{destinationPanel});
+    destination.insert(QStringLiteral("shell"), destinationShell);
+    bridge.synchronizeScene(destination);
+    QCOMPARE(actions.size(), 1);
+
+    // Another physical repeat is queued too; it must not be applied to the
+    // transient `..` row.
+    bridge.requestOpen(0, QStringLiteral("parent:up"), 0, false, 43, true);
+    QCOMPARE(actions.size(), 1);
+
+    destinationPanel.insert(QStringLiteral("catalogRevision"),
+                            qulonglong(44));
+    destinationPanel.insert(QStringLiteral("cursor"), 1);
+    destinationPanel.insert(QStringLiteral("cursorEntryId"),
+                            QStringLiteral("parent:child"));
+    destinationPanel.insert(QStringLiteral("entries"), QVariantList{
+        QVariantMap{
+            {QStringLiteral("entryId"), QStringLiteral("parent:up")},
+            {QStringLiteral("index"), 0},
+            {QStringLiteral("name"), QStringLiteral("..")},
+            {QStringLiteral("isDir"), true},
+            {QStringLiteral("isUp"), true},
+        },
+        QVariantMap{
+            {QStringLiteral("entryId"), QStringLiteral("parent:child")},
+            {QStringLiteral("index"), 1},
+            {QStringLiteral("name"), QStringLiteral("child")},
+            {QStringLiteral("isDir"), true},
+        },
+    });
+    destinationShell.insert(QStringLiteral("panels"),
+                            QVariantList{destinationPanel});
+    destination.insert(QStringLiteral("shell"), destinationShell);
+    bridge.synchronizeScene(destination);
+
+    QCOMPARE(actions.size(), 2);
+    QCOMPARE(actions.constLast().constFirst().toMap()
+                 .value(QStringLiteral("entryId")).toString(),
+             QStringLiteral("parent:child"));
 }
 
 void F4GalleryBridgeTests::repeatedOpenReplaysAgainstUsefulLocalPreview()

@@ -86,6 +86,12 @@ func startupChoiceAt[T any](choices []T, pos int) T {
 	return choices[pos]
 }
 
-// Portable Windows builds default to their embedded Qt frontend. Explicit
-// command-line and configured startup modes take precedence.
-func portableQtDefault() bool { return runtime.GOOS == "windows" && plughost.HasEmbeddedQtHost() }
+// Portable Linux and Windows builds default to their embedded Qt frontend.
+// Explicit command-line and configured startup modes take precedence.
+func portableQtDefault() bool {
+	return portableQtDefaultFor(runtime.GOOS, plughost.HasEmbeddedQtHost())
+}
+
+func portableQtDefaultFor(goos string, hasEmbeddedQtHost bool) bool {
+	return hasEmbeddedQtHost && (goos == "linux" || goos == "windows")
+}

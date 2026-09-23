@@ -62,9 +62,25 @@ ApplicationWindow {
     property var dropdownAnchorItems: ({})
     property int dropdownAnchorRevision: 0
 
-    readonly property string guiMonospaceFontFamily:
-        String(f4GuiFontFamily || "").length > 0
-        ? String(f4GuiFontFamily) : "Monaco"
+    readonly property string configuredGuiFontFamily:
+        typeof f4GuiFontFamily !== "undefined"
+        ? String(f4GuiFontFamily).trim() : ""
+    readonly property string uiFontFamily:
+        configuredGuiFontFamily.length > 0
+        ? configuredGuiFontFamily
+        : (typeof f4SystemUiFontFamily !== "undefined"
+           && String(f4SystemUiFontFamily).trim().length > 0
+           ? String(f4SystemUiFontFamily).trim() : host.font.family)
+    readonly property string guiMonospaceFontFamily: {
+        if (configuredGuiFontFamily.length > 0)
+            return configuredGuiFontFamily
+        if (typeof f4SystemMonospaceFontFamily !== "undefined") {
+            const systemFamily = String(f4SystemMonospaceFontFamily).trim()
+            if (systemFamily.length > 0)
+                return systemFamily
+        }
+        return "monospace"
+    }
     readonly property int guiMonospaceFontPixelSize:
         Number(f4GuiFontPixelSize) > 0 ? Number(f4GuiFontPixelSize)
                                        : (Qt.platform.os === "osx" ? 17 : 16)

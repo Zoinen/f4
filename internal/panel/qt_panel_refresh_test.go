@@ -167,6 +167,7 @@ func TestDirectoryReconciliationPreservesCursorAndClampsDeletedTail(t *testing.T
 }
 
 func TestSameDirectoryRefreshKeepsCatalogDuringReadAndNoOpRevision(t *testing.T) {
+	t.Cleanup(swapFrameManager(t))
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "keep.txt"), []byte("keep"), 0600); err != nil {
@@ -179,6 +180,14 @@ func TestSameDirectoryRefreshKeepsCatalogDuringReadAndNoOpRevision(t *testing.T)
 		}
 	}()
 	waitForLoad(t, fp)
+	waitForPanelCondition(t, "initial directory metadata", func() bool {
+		for _, entry := range fp.Entries {
+			if entry.Name == "keep.txt" {
+				return entry.SizeKnown && entry.Size == 4
+			}
+		}
+		return false
+	})
 	fp.updateSemanticRevisions()
 	previous := append([]*FileEntry(nil), fp.Entries...)
 	revision := fp.catalogRevision

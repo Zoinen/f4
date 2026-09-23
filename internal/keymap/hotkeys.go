@@ -676,8 +676,9 @@ func DeletePluginHotkey(hm *HotkeyManager, area, key string) bool {
 
 // ConfigurableHotkeyOwnsPanelBookmark lets an explicit configurable binding
 // take the place of far2l's built-in Right Ctrl/Ctrl+Alt bookmark shortcuts.
-// Unmodified defaults keep their historical bookmark behavior, while a user
-// binding on either Ctrl spelling is honored without requiring both spellings.
+// Numeric defaults keep their historical bookmark behavior; Ctrl+grave's
+// navigation-mode default also takes precedence. A user binding on either
+// Ctrl spelling is honored without requiring both spellings.
 func ConfigurableHotkeyOwnsPanelBookmark(hm *HotkeyManager, area string, e *vtinput.InputEvent) bool {
 	if hm == nil || e == nil || !IsPanelBookmarkHotkey(e) {
 		return false
@@ -687,7 +688,16 @@ func ConfigurableHotkeyOwnsPanelBookmark(hm *HotkeyManager, area string, e *vtin
 		return true
 	}
 	if strings.HasPrefix(key, "RCtrl") {
-		return hm.hasExplicitBinding(area, "Ctrl"+strings.TrimPrefix(key, "RCtrl"))
+		if hm.hasExplicitBinding(area, "Ctrl"+strings.TrimPrefix(key, "RCtrl")) {
+			return true
+		}
+	}
+	// Ctrl+grave now has a configurable navigation-mode default. Right Ctrl
+	// (physical Control on macOS) must inherit it before the legacy home
+	// bookmark handler. Ctrl+Alt+grave remains the home shortcut.
+	if e.VirtualKeyCode == vtinput.VK_OEM_3 &&
+		!e.ControlKeyState.Contains(vtinput.LeftAltPressed|vtinput.RightAltPressed) {
+		return ConfiguredHotkeyAction(hm, area, key) != ""
 	}
 	return false
 }
@@ -696,7 +706,7 @@ func ConfigurableHotkeyOwnsPanelBookmark(hm *HotkeyManager, area string, e *vtin
 // Built-in bookmark combinations reach PanelsFrame before macro and
 // configurable hotkey handling, because EventToFarString intentionally
 // normalizes left and right Ctrl. Explicit configurable bindings are allowed
-// to reclaim the combination before this handoff.
+// to reclaim the combination before this handoff, as is the Ctrl+grave default.
 func IsPanelBookmarkHotkey(e *vtinput.InputEvent) bool {
 	if e.Type != vtinput.KeyEventType || !e.KeyDown {
 		return false

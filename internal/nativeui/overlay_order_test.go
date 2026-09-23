@@ -9,8 +9,12 @@ import (
 )
 
 func TestPluginHotkeyDialogPreservesMixedOverlayStack(t *testing.T) {
-	oldManager := *vtui.FrameManager
-	t.Cleanup(func() { *vtui.FrameManager = oldManager })
+	oldManager := vtui.FrameManager
+	vtui.FrameManager = vtui.NewFrameManager()
+	t.Cleanup(func() {
+		vtui.FrameManager.Shutdown()
+		vtui.FrameManager = oldManager
+	})
 	screen := vtui.NewScreenBuf()
 	screen.AllocBuf(100, 40)
 	vtui.FrameManager.Init(screen)

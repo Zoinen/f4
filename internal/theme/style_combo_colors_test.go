@@ -9,6 +9,7 @@ import (
 
 func comboStyle(t *testing.T, name string) {
 	t.Helper()
+	withoutUserColorOverrides(t)
 	oldCfg := config.App
 	config.App.EnforceColorCorrection = false
 	t.Cleanup(func() { config.App = oldCfg })

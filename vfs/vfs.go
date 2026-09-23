@@ -969,6 +969,15 @@ type StableDirectoryIdentity interface {
 	StableDirectoryKey() any
 }
 
+// DirectoryCacheKeyProvider opts a VFS into the panel's short-lived
+// read-through directory cache. The key identifies the configured remote (not
+// one particular VFS view), so a provider may return a fresh view after a
+// panel leaves and re-enters it while still reusing the last listing. It must
+// be comparable and must not contain credentials.
+type DirectoryCacheKeyProvider interface {
+	DirectoryCacheKey() any
+}
+
 // ServerSideCopier is implemented by a file system that can copy an object
 // on the server side, avoiding pulling bytes back and forth through the client.
 type ServerSideCopier interface {

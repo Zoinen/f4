@@ -49,7 +49,7 @@ Rectangle {
             height: option.hostWindow.snapPx(implicitHeight)
             text: option.title
             color: option.hostWindow.textColor
-            font.family: option.hostWindow.guiMonospaceFontFamily
+            font.family: option.hostWindow.uiFontFamily
             font.pixelSize: 11
             font.weight: Font.Bold
             elide: Text.ElideRight
@@ -66,7 +66,7 @@ Rectangle {
             height: option.hostWindow.snapPx(implicitHeight)
             text: option.description
             color: option.hostWindow.mutedText
-            font.family: option.hostWindow.guiMonospaceFontFamily
+            font.family: option.hostWindow.uiFontFamily
             font.pixelSize: 9
             elide: Text.ElideRight
         }
@@ -123,7 +123,7 @@ Rectangle {
             leftPadding: checkBox.indicator.width + checkBox.spacing
             text: checkBox.text
             color: option.hostWindow.textColor
-            font.family: option.hostWindow.guiMonospaceFontFamily
+            font.family: option.hostWindow.uiFontFamily
             font.pixelSize: 13
             verticalAlignment: Text.AlignVCenter
             elide: Text.ElideRight

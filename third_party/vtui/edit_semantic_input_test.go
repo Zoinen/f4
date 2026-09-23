@@ -78,3 +78,19 @@ func TestEditSemanticSelectionClampsAndPreservesDirection(t *testing.T) {
 		t.Fatalf("reverse selection deletion = %q", e.GetText())
 	}
 }
+
+func TestEditSemanticMultilineCursorPreservesLineBoundaries(t *testing.T) {
+	for _, text := range []string{"abc\nx\nabcdef", "a\n\nb", "e\u0301\nx"} {
+		e := NewEdit(0, 0, 30, text)
+		e.Multiline = true
+		for offset := 0; offset <= len(e.text); offset++ {
+			if offset > 0 && offset < len(e.text) && e.text[offset] == '\u0301' {
+				continue
+			}
+			e.HandleSemanticAction(map[string]any{"action": "control.select", "anchor": offset, "cursor": offset})
+			if e.curPos != offset {
+				t.Errorf("text %q: cursor=%d, want %d", text, e.curPos, offset)
+			}
+		}
+	}
+}

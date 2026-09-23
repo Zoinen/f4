@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
@@ -195,13 +193,11 @@ func (p *NetFoxPlugin) Init(api vfs.HostAPI) error {
 	if err := api.RegisterURIProvider(&sftpURIProvider{}); err != nil {
 		return rollback(fmt.Errorf("NetFox: register sftp URI provider: %w", err))
 	}
+	if err := api.RegisterURIProvider(&netURIProvider{}); err != nil {
+		return rollback(fmt.Errorf("NetFox: register net URI provider: %w", err))
+	}
 	api.RegisterDrive("NetFox", func() vfs.VFS {
-		cfgDir := vfs.CustomConfigDir
-		if cfgDir == "" {
-			sysDir, _ := os.UserConfigDir()
-			cfgDir = filepath.Join(sysDir, "f4")
-		}
-		return &netFoxVFSWrapper{NewNetFoxVFS(filepath.Join(cfgDir, "NetFox.json"))}
+		return &netFoxVFSWrapper{NewNetFoxVFS(netFoxConnectionsPath())}
 	})
 	if host, ok := api.(vfs.SettingsContributionHost); ok {
 		reg, err := host.RegisterSettingsProvider(newSettingsProvider())

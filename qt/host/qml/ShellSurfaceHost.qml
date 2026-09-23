@@ -311,11 +311,12 @@ Item {
                 if (!item)
                     return
                 // Cached sessions publish image dimensions synchronously.
-                // Set the screen scale before converting them to logical units.
+                // Use the concrete window's render DPR before converting them
+                // to logical units. On fractional-scale Wayland the screen's
+                // integer wl_output scale can differ from QQuickWindow's
+                // effective render-target DPR.
                 item.devicePixelRatio = Qt.binding(
-                            () => surfaces.hostWindow.screen
-                                  ? surfaces.hostWindow.screen.devicePixelRatio
-                                  : 1.0)
+                            () => surfaces.hostWindow.devicePixelRatio)
                 item.session = Qt.binding(
                             () => surfaces.galleryController.viewerSession)
                 item.sourcePanel = Qt.binding(

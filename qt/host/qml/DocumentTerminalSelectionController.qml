@@ -18,6 +18,10 @@ Item {
 
     property bool selectionVisible: false
     property bool selectionDragging: false
+    property bool wordDragging: false
+    property int wordAnchorRow: -1
+    property int wordAnchorStart: -1
+    property int wordAnchorEnd: -1
     property int anchorRow: -1
     property int anchorColumn: -1
     property int focusRow: -1
@@ -119,7 +123,7 @@ Item {
         return Math.max(1, Math.round(measured / terminalCellWidth))
     }
 
-    function selectWordAt(absoluteRow, cellColumn) {
+    function wordBoundsAt(absoluteRow, cellColumn) {
         const rowData = rowDataAt(absoluteRow)
         const text = rowData ? hostWindow.rowText(rowData) : ""
         const cells = []
@@ -145,9 +149,7 @@ Item {
             }
         }
         if (hit < 0 || !cells[hit].word) {
-            selectionVisible = false
-            selectionDragging = false
-            return false
+            return {"start": cellColumn, "end": cellColumn, "found": false}
         }
 
         let first = hit
@@ -156,12 +158,26 @@ Item {
             --first
         while (last + 1 < cells.length && cells[last + 1].word)
             ++last
+        return {"start": cells[first].start, "end": cells[last].end, "found": true}
+    }
+
+    function selectWordAt(absoluteRow, cellColumn) {
+        const bounds = wordBoundsAt(absoluteRow, cellColumn)
+        if (!bounds.found) {
+            selectionVisible = false
+            selectionDragging = false
+            return false
+        }
         anchorRow = documentRow(Math.floor(absoluteRow))
-        anchorColumn = cells[first].start
+        anchorColumn = bounds.start
         focusRow = anchorRow
-        focusColumn = cells[last].end
+        focusColumn = bounds.end
         selectionVisible = true
-        selectionDragging = false
+        selectionDragging = true
+        wordDragging = true
+        wordAnchorRow = anchorRow
+        wordAnchorStart = anchorColumn
+        wordAnchorEnd = focusColumn
         stopAutoScroll()
         return true
     }
@@ -201,6 +217,7 @@ Item {
 
     function handlePressAt(absoluteRow, boundaryColumn, cellColumn, timestamp) {
         selectionVisible = false
+        wordDragging = false
         stopAutoScroll()
         const count = registerClick(absoluteRow, cellColumn, timestamp)
         if (count === 1)
@@ -288,6 +305,7 @@ Item {
     }
 
     function beginAt(row, column) {
+        wordDragging = false
         anchorRow = documentRow(Math.max(0, Math.floor(row)))
         anchorColumn = Math.max(0, Math.floor(column))
         focusRow = anchorRow
@@ -299,6 +317,27 @@ Item {
     function extendTo(row, column) {
         if (!selectionDragging)
             return
+        if (wordDragging) {
+            const targetRow = Math.max(0, Math.floor(row))
+            const targetColumn = Math.max(0, Math.floor(column))
+            const originRow = presentedRow(wordAnchorRow)
+            if (targetRow === originRow && targetColumn >= wordAnchorStart
+                    && targetColumn <= wordAnchorEnd) {
+                anchorRow = wordAnchorRow
+                anchorColumn = wordAnchorStart
+                focusRow = wordAnchorRow
+                focusColumn = wordAnchorEnd
+                return
+            }
+            const backwards = targetRow < originRow
+                    || (targetRow === originRow && targetColumn < wordAnchorStart)
+            const target = wordBoundsAt(targetRow, targetColumn)
+            anchorRow = wordAnchorRow
+            anchorColumn = backwards ? wordAnchorEnd : wordAnchorStart
+            focusRow = documentRow(targetRow)
+            focusColumn = backwards ? target.start : target.end
+            return
+        }
         focusRow = documentRow(Math.max(0, Math.floor(row)))
         focusColumn = Math.max(0, Math.floor(column))
     }

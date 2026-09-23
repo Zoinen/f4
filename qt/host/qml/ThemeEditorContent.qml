@@ -168,7 +168,7 @@ FocusScope {
                     }
                     text: "Theme Color Configurator"
                     color: hostWindow.textColor
-                    font.family: hostWindow.guiMonospaceFontFamily
+                    font.family: hostWindow.uiFontFamily
                     font.pixelSize: 14
                     font.weight: Font.Bold
                     Layout.fillWidth: true
@@ -185,7 +185,7 @@ FocusScope {
                           ? themeColorConfigurator.themePersistence.themeFilePath
                           : "gui_theme.ini"
                     color: hostWindow.mutedText
-                    font.family: hostWindow.guiMonospaceFontFamily
+                    font.family: hostWindow.uiFontFamily
                     font.pixelSize: 10
                     elide: Text.ElideMiddle
                     Layout.maximumWidth: 320
@@ -260,7 +260,7 @@ FocusScope {
                             objectName: "themeFontRenderTypeTitle"
                             text: "Font rendering"
                             color: hostWindow.textColor
-                            font.family: hostWindow.guiMonospaceFontFamily
+                            font.family: hostWindow.uiFontFamily
                             font.pixelSize: 11
                             font.weight: Font.Bold
                         }
@@ -270,7 +270,7 @@ FocusScope {
                             objectName: "themeFontRenderTypeDescription"
                             text: hostWindow.fontRenderTypeDescription
                             color: hostWindow.mutedText
-                            font.family: hostWindow.guiMonospaceFontFamily
+                            font.family: hostWindow.uiFontFamily
                             font.pixelSize: 9
                             elide: Text.ElideRight
                             Layout.fillWidth: true
@@ -357,7 +357,7 @@ FocusScope {
                             objectName: "themeMouseWheelTitle"
                             text: "Mouse wheel control"
                             color: hostWindow.textColor
-                            font.family: hostWindow.guiMonospaceFontFamily
+                            font.family: hostWindow.uiFontFamily
                             font.pixelSize: 11
                             font.weight: Font.Bold
                         }
@@ -367,7 +367,7 @@ FocusScope {
                             objectName: "themeMouseWheelDescription"
                             text: hostWindow.mouseWheelModeDescription
                             color: hostWindow.mutedText
-                            font.family: hostWindow.guiMonospaceFontFamily
+                            font.family: hostWindow.uiFontFamily
                             font.pixelSize: 9
                             elide: Text.ElideRight
                             Layout.fillWidth: true
@@ -622,7 +622,7 @@ FocusScope {
                                         }
                                         text: hostWindow.formatColorHex(hostWindow[itemDelegate.def.id])
                                         color: hostWindow.mutedText
-                                        font.family: hostWindow.guiMonospaceFontFamily
+                                        font.family: hostWindow.uiFontFamily
                                         font.pixelSize: 10
                                     }
                                 }

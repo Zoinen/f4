@@ -20,6 +20,24 @@ type fakeDeviceSource struct {
 	onReconnect    func(*fakeDeviceSource)
 }
 
+type refreshableFakeDeviceSource struct {
+	devices      []DeviceInfo
+	refreshCalls int
+	onRefresh    func(*refreshableFakeDeviceSource)
+}
+
+func (s *refreshableFakeDeviceSource) ListDevices(context.Context) ([]DeviceInfo, error) {
+	return append([]DeviceInfo(nil), s.devices...), nil
+}
+
+func (s *refreshableFakeDeviceSource) RefreshDiscovery(context.Context) error {
+	s.refreshCalls++
+	if s.onRefresh != nil {
+		s.onRefresh(s)
+	}
+	return nil
+}
+
 func (s *fakeDeviceSource) ListDevices(context.Context) ([]DeviceInfo, error) {
 	s.calls++
 	return append([]DeviceInfo(nil), s.devices...), s.err
@@ -136,6 +154,51 @@ func TestManagerReadDirDiscoversAndLabelsDevices(t *testing.T) {
 	}
 	if _, err := manager.Stat(context.Background(), "Pixel 9 (serial-z)"); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("stale device Stat error = %v, want os.ErrNotExist", err)
+	}
+}
+
+func TestManagerShowsAndExecutesRefreshWhenNoUSBDeviceIsListed(t *testing.T) {
+	source := &refreshableFakeDeviceSource{
+		devices: []DeviceInfo{{Serial: "emulator-5554", Model: "Emulator", State: DeviceStateOnline}},
+	}
+	source.onRefresh = func(source *refreshableFakeDeviceSource) {
+		source.devices = []DeviceInfo{{Serial: "phone", Model: "Pixel", State: DeviceStateOnline, USB: true}}
+	}
+	manager := NewManagerVFS(source, &fakeDeviceOpener{})
+	items, err := readManagerItems(t, manager)
+	if err != nil {
+		t.Fatalf("initial ReadDir: %v", err)
+	}
+	var refreshRow vfs.VFSItem
+	for _, item := range items {
+		if item.Name == refreshDevicesName {
+			refreshRow = item
+		}
+	}
+	if refreshRow.Name == "" || refreshRow.IconKey != "refresh-cw" {
+		t.Fatalf("refresh row = %#v", refreshRow)
+	}
+	provider := &deviceProvider{}
+	if !provider.CanOpen(context.Background(), manager, refreshRow.Name) {
+		t.Fatal("refresh row is not openable")
+	}
+	refreshed, err := provider.Open(context.Background(), manager, refreshRow.Name)
+	if err != nil {
+		t.Fatalf("open refresh row: %v", err)
+	}
+	if source.refreshCalls != 1 {
+		t.Fatalf("refresh calls = %d, want 1", source.refreshCalls)
+	}
+	refreshedManager, ok := refreshed.(*ManagerVFS)
+	if !ok {
+		t.Fatalf("refreshed VFS = %T, want *ManagerVFS", refreshed)
+	}
+	items, err = readManagerItems(t, refreshedManager)
+	if err != nil {
+		t.Fatalf("refreshed ReadDir: %v", err)
+	}
+	if len(items) != 1 || items[0].Name != "Pixel (phone)" {
+		t.Fatalf("refreshed items = %#v", items)
 	}
 }
 

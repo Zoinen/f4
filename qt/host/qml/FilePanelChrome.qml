@@ -172,6 +172,8 @@ Rectangle {
                     return "iOS"
                 if (prefix === "ai://")
                     return "AI"
+                if (prefix === "net://")
+                    return "Network"
                 return ""
             }
             navigationHandler: function(path) {

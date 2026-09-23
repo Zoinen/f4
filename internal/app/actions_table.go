@@ -807,6 +807,18 @@ func init() {
 			return true
 		},
 	})
+	RegisterAction(action.Action{
+		Name:        "Panel.ToggleNavigationMode",
+		Area:        "Shell",
+		Label:       "Toggle Search-first / Classic Navigation",
+		LabelKey:    "Action.Panel.ToggleNavigationMode",
+		Description: "Switch panel typing between filename search and the classic command line",
+		DescKey:     "Action.Panel.ToggleNavigationMode.Desc",
+		DefaultKeys: []string{"CtrlVK_C0", "CtrlShiftVK_C0"},
+		MenuPath:    "Options",
+		Checked:     func() bool { return config.App.NavigationMode == config.NavigationSearchFirst },
+		Handler:     withPF(func(pf *panel.PanelsFrame) { pf.ToggleNavigationMode() }),
+	})
 
 	RegisterAction(action.Action{
 		Name:         "Panel.UserMenu",

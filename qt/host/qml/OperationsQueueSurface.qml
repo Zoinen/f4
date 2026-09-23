@@ -331,7 +331,7 @@ Rectangle {
                 text: String(queueRow.taskId)
                 visible: queueController.idColumnWidth > 0
                 color: hostWindow.mutedText
-                font.family: hostWindow.guiMonospaceFontFamily
+                font.family: hostWindow.uiFontFamily
                 font.pixelSize: 12
             }
 

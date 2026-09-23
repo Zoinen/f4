@@ -803,8 +803,9 @@ func runGuiBackend(backend string, fromConfig bool) error {
 }
 
 func shouldTryGui() bool {
-	// Portable Qt builds carry their own frontend, including on Windows
-	// where a plain console build historically stays in the terminal.
+	// Portable Linux and Windows Qt builds carry their own frontend and should
+	// open it by default, even when launched from a terminal. A plain build
+	// without an embedded host keeps the normal auto-detection behavior.
 	if portableQtDefault() {
 		return true
 	}

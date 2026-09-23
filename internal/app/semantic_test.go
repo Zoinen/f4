@@ -22,8 +22,12 @@ import (
 )
 
 func TestWorkspaceSemanticSwitchUsesExistingScreenModel(t *testing.T) {
-	oldFM := *vtui.FrameManager
-	defer func() { *vtui.FrameManager = oldFM }()
+	oldFM := vtui.FrameManager
+	vtui.FrameManager = vtui.NewFrameManager()
+	defer func() {
+		vtui.FrameManager.Shutdown()
+		vtui.FrameManager = oldFM
+	}()
 
 	scr := vtui.NewScreenBuf()
 	scr.AllocBuf(80, 25)
@@ -59,8 +63,12 @@ func TestWorkspaceSemanticSwitchUsesExistingScreenModel(t *testing.T) {
 }
 
 func TestToastDismissSemanticAction(t *testing.T) {
-	oldFM := *vtui.FrameManager
-	defer func() { *vtui.FrameManager = oldFM }()
+	oldFM := vtui.FrameManager
+	vtui.FrameManager = vtui.NewFrameManager()
+	defer func() {
+		vtui.FrameManager.Shutdown()
+		vtui.FrameManager = oldFM
+	}()
 
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	vtui.ShowToast("PlugRing: 1 plugin update available!", time.Minute)
@@ -86,8 +94,12 @@ func TestToastDismissSemanticAction(t *testing.T) {
 }
 
 func TestMenuBarPointerSelectionRejectsStalePopup(t *testing.T) {
-	oldFM := *vtui.FrameManager
-	defer func() { *vtui.FrameManager = oldFM }()
+	oldFM := vtui.FrameManager
+	vtui.FrameManager = vtui.NewFrameManager()
+	defer func() {
+		vtui.FrameManager.Shutdown()
+		vtui.FrameManager = oldFM
+	}()
 
 	scr := vtui.NewScreenBuf()
 	scr.AllocBuf(80, 25)
@@ -195,8 +207,12 @@ func TestSemanticAttrColorHonorsReverse(t *testing.T) {
 }
 
 func TestNativeMenuActivatesWithoutOpeningF9Bar(t *testing.T) {
-	oldFM := *vtui.FrameManager
-	defer func() { *vtui.FrameManager = oldFM }()
+	oldFM := vtui.FrameManager
+	vtui.FrameManager = vtui.NewFrameManager()
+	defer func() {
+		vtui.FrameManager.Shutdown()
+		vtui.FrameManager = oldFM
+	}()
 	scr := vtui.NewScreenBuf()
 	scr.AllocBuf(80, 25)
 	vtui.FrameManager.Init(scr)
@@ -218,8 +234,12 @@ func TestNativeMenuActivatesWithoutOpeningF9Bar(t *testing.T) {
 }
 
 func TestEditorMenuBarSemanticClickOpensSubmenu(t *testing.T) {
-	oldFM := *vtui.FrameManager
-	defer func() { *vtui.FrameManager = oldFM }()
+	oldFM := vtui.FrameManager
+	vtui.FrameManager = vtui.NewFrameManager()
+	defer func() {
+		vtui.FrameManager.Shutdown()
+		vtui.FrameManager = oldFM
+	}()
 
 	scr := vtui.NewScreenBuf()
 	scr.AllocBuf(80, 25)
@@ -266,8 +286,12 @@ func TestEditorMenuBarSemanticClickOpensSubmenu(t *testing.T) {
 }
 
 func TestSettingsSemanticMenuActivationOwnsGoFocusAndScene(t *testing.T) {
-	oldFM := *vtui.FrameManager
-	defer func() { *vtui.FrameManager = oldFM }()
+	oldFM := vtui.FrameManager
+	vtui.FrameManager = vtui.NewFrameManager()
+	defer func() {
+		vtui.FrameManager.Shutdown()
+		vtui.FrameManager = oldFM
+	}()
 
 	scr := vtui.NewSilentScreenBuf()
 	scr.AllocBuf(100, 42)
@@ -409,8 +433,12 @@ func TestCommandLineSemanticModelUsesRenderedRunsAndCursor(t *testing.T) {
 }
 
 func TestCommandCompletePreservesTextWithoutExplicitSelection(t *testing.T) {
-	oldFM := *vtui.FrameManager
-	defer func() { *vtui.FrameManager = oldFM }()
+	oldFM := vtui.FrameManager
+	vtui.FrameManager = vtui.NewFrameManager()
+	defer func() {
+		vtui.FrameManager.Shutdown()
+		vtui.FrameManager = oldFM
+	}()
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 
 	pf := &panel.PanelsFrame{CmdLine: cmdline.NewCommandLine(">")}
@@ -534,8 +562,12 @@ func TestCommandSubmitPreparesCleanOutputBeforeSynchronousPTYEcho(t *testing.T) 
 }
 
 func TestGlobalCommandSubmitBypassesAutocompleteOverlay(t *testing.T) {
-	oldFM := *vtui.FrameManager
-	defer func() { *vtui.FrameManager = oldFM }()
+	oldFM := vtui.FrameManager
+	vtui.FrameManager = vtui.NewFrameManager()
+	defer func() {
+		vtui.FrameManager.Shutdown()
+		vtui.FrameManager = oldFM
+	}()
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 
 	pf := paneltest.SetupMockPanelsFrame(t)
@@ -586,8 +618,12 @@ func TestCommandSubmitWithoutPTYKeepsCommandAndPanels(t *testing.T) {
 }
 
 func TestSemanticMenuHoverNotifiesOwner(t *testing.T) {
-	oldFM := *vtui.FrameManager
-	t.Cleanup(func() { *vtui.FrameManager = oldFM })
+	oldFM := vtui.FrameManager
+	vtui.FrameManager = vtui.NewFrameManager()
+	t.Cleanup(func() {
+		vtui.FrameManager.Shutdown()
+		vtui.FrameManager = oldFM
+	})
 	scr := vtui.NewSilentScreenBuf()
 	scr.AllocBuf(100, 40)
 	vtui.FrameManager.Init(scr)

@@ -93,13 +93,13 @@ Item {
 
     FontMetrics {
         id: autocompleteFontMetrics
-        font.family: hostWindow.guiMonospaceFontFamily
+        font.family: hostWindow.uiFontFamily
         font.pixelSize: 13
     }
 
     FontMetrics {
         id: commandLineFontMetrics
-        font.family: hostWindow.guiMonospaceFontFamily
+        font.family: hostWindow.uiFontFamily
         font.pixelSize: autocompleteOverlay.commandLine.runs
                         && autocompleteOverlay.commandLine.runs.length > 0
                         ? 13 : 18
@@ -186,7 +186,7 @@ Item {
                         text: completionTextRow.fullText.substring(
                                   0, completionTextRow.matchingLength)
                         color: hostWindow.dialogAccent
-                        font.family: hostWindow.guiMonospaceFontFamily
+                        font.family: hostWindow.uiFontFamily
                         font.pixelSize: 13
                     }
 
@@ -196,7 +196,7 @@ Item {
                         text: completionTextRow.fullText.substring(
                                   completionTextRow.matchingLength)
                         color: hostWindow.textColor
-                        font.family: hostWindow.guiMonospaceFontFamily
+                        font.family: hostWindow.uiFontFamily
                         font.pixelSize: 13
                         elide: Text.ElideRight
                     }

@@ -276,6 +276,36 @@ bool F4GalleryBridge::deferPanelCatalogFinalization(
     return false;
 }
 
+bool F4GalleryBridge::destinationCursorReady(
+    const PanelSyncContext &context) const
+{
+    if (!m_inFlightPanelOpen.expectsPathChange) {
+        return true;
+    }
+    if (context.currentPath == m_inFlightPanelOpen.sourcePath) {
+        return false;
+    }
+
+    QString cursorName;
+    for (const QVariant &value : context.incomingEntries) {
+        const QVariantMap entry = value.toMap();
+        if (entry.value(QStringLiteral("entryId")).toString()
+            == context.cursorEntryId) {
+            cursorName = entry.value(QStringLiteral("name")).toString();
+            break;
+        }
+    }
+    if (cursorName == m_inFlightPanelOpen.expectedDestinationName) {
+        return true;
+    }
+
+    // If the authoritative catalog is complete and the remembered row is
+    // absent, there is no safer selection to wait for. Let Go handle the
+    // resulting current cursor normally instead of leaving the open in flight
+    // forever (for example when the folder was deleted while it was cached).
+    return !context.loading && !context.catalogProvisional;
+}
+
 void F4GalleryBridge::acknowledgePanelOpen(PanelSyncContext *context)
 {
     if (!m_inFlightPanelOpen.active
@@ -289,7 +319,19 @@ void F4GalleryBridge::acknowledgePanelOpen(PanelSyncContext *context)
         m_inFlightPanelOpen.panelId == context->panelId
         && !context->provisionalReplacementDeferred
         && m_inFlightPanelOpen.sourcePath != context->currentPath;
-    if (pathAcknowledged && m_deferredPanelOpenRepeat.active
+    if (!pathAcknowledged) {
+        return;
+    }
+    if (m_inFlightPanelOpen.expectsPathChange
+        && !destinationCursorReady(*context)) {
+        qInfo() << "[FIX:cached-enter] waiting for cached destination cursor"
+                << "side" << context->side
+                << "path" << context->currentPath
+                << "expected" << m_inFlightPanelOpen.expectedDestinationName
+                << "actual" << context->cursorEntryId;
+        return;
+    }
+    if (m_deferredPanelOpenRepeat.active
         && m_deferredPanelOpenRepeat.side == context->side
         && m_deferredPanelOpenRepeat.panelId == m_inFlightPanelOpen.panelId
         && m_deferredPanelOpenRepeat.sourcePath
@@ -297,8 +339,12 @@ void F4GalleryBridge::acknowledgePanelOpen(PanelSyncContext *context)
         && m_deferredPanelOpenRepeat.catalogRevision
             == m_inFlightPanelOpen.catalogRevision) {
         context->repeatToReplay = m_deferredPanelOpenRepeat;
+        qInfo() << "[FIX:cached-enter] replaying queued Enter after cursor restore"
+                << "side" << context->side
+                << "path" << context->currentPath
+                << "pendingCount" << context->repeatToReplay.pendingCount;
     }
-    clearInFlightPanelOpen();
+    clearInFlightPanelOpen(context->repeatToReplay.active ? false : true);
 }
 
 void F4GalleryBridge::tracePanelSyncBegin(
@@ -640,6 +686,7 @@ void F4GalleryBridge::rebuildPanelCatalogIndex(PanelSyncContext *context)
     state.catalogRowsVisibleLast = state.catalogRowsVisibleFirst;
     if (m_inFlightPanelOpen.active
         && m_inFlightPanelOpen.side == context->side
+        && m_inFlightPanelOpen.sourcePath == context->currentPath
         && !state.entryIds.contains(m_inFlightPanelOpen.entryId)) {
         clearInFlightPanelOpen();
     }
@@ -817,7 +864,7 @@ void F4GalleryBridge::replayPanelOpenAfterSync(
         || state.currentPath != context.currentPath) {
         return;
     }
-    m_deferredPanelOpenRepeat.active = true;
+    m_deferredPanelOpenRepeat = context.repeatToReplay;
     m_deferredPanelOpenRepeat.side = context.side;
     m_deferredPanelOpenRepeat.panelId = state.panelId;
     m_deferredPanelOpenRepeat.sourcePath = state.currentPath;

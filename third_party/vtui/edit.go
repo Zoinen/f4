@@ -28,6 +28,10 @@ type Edit struct {
 	multilineCacheWidth    int
 	multilineCacheWordWrap bool
 	multilineCache         []editLine
+	multilineMoveText      string
+	multilineMoveCursor    int
+	multilineMoveColumn    int
+	multilineMoveActive    bool
 	HideCursor             bool // If true, suppress blinking cursor even when focused
 	ShowHistoryButton      bool // Show a clickable [v] button
 	History                []string
@@ -60,9 +64,12 @@ type Edit struct {
 	OnTextChange        func(string)
 	// PathHintsEnabled lets the autocomplete menu ask PathHintProvider for
 	// file path suggestions in addition to history matches.
-	PathHintsEnabled  bool
-	mouseSelecting    bool
-	mouseSelectAnchor int
+	PathHintsEnabled   bool
+	mouseSelecting     bool
+	mouseSelectAnchor  int
+	mouseWordSelecting bool
+	mouseWordStart     int
+	mouseWordEnd       int
 }
 
 // HistoryProvider is an interface for external history persistence (e.g. from f4).
@@ -981,6 +988,7 @@ func (e *Edit) endSelection() {
 
 // ClearSelection removes any active text selection and resets the clear flag.
 func (e *Edit) ClearSelection() {
+	e.multilineMoveActive = false
 	e.selStart = -1
 	e.selEnd = -1
 	e.selAnchor = -1
@@ -1178,10 +1186,27 @@ func (e *Edit) ProcessMouse(ev *vtinput.InputEvent) bool {
 	if e.mouseSelecting {
 		if IsMouseRelease(ev) {
 			e.mouseSelecting = false
+			e.mouseWordSelecting = false
 			return true
 		}
 		if ev.ButtonState&vtinput.FromLeft1stButtonPressed != 0 {
 			e.curPos = e.cursorPositionAtPoint(int(ev.MouseX), int(ev.MouseY))
+			if e.mouseWordSelecting {
+				position := e.curPos
+				if position >= e.mouseWordStart && position < e.mouseWordEnd {
+					e.selStart, e.selEnd, e.curPos = e.mouseWordStart, e.mouseWordEnd, e.mouseWordEnd
+				} else {
+					e.selectWordAtCursor()
+					if position < e.mouseWordStart {
+						e.selStart, e.selEnd, e.curPos = e.selStart, e.mouseWordEnd, e.selStart
+					} else {
+						e.selStart, e.selEnd = e.mouseWordStart, e.selEnd
+					}
+				}
+				e.selAnchor = e.mouseWordStart
+				DebugLog("[FIX:command-line-word-drag] selection=%d:%d", e.selStart, e.selEnd)
+				return true
+			}
 			e.selAnchor = e.mouseSelectAnchor
 			if e.curPos < e.selAnchor {
 				e.selStart, e.selEnd = e.curPos, e.selAnchor
@@ -1203,16 +1228,24 @@ func (e *Edit) ProcessMouse(ev *vtinput.InputEvent) bool {
 			if e.HitTest(int(ev.MouseX), int(ev.MouseY)) {
 				e.curPos = e.cursorPositionAtPoint(int(ev.MouseX), int(ev.MouseY))
 				if ev.MouseEventFlags&TripleClick != 0 {
-					e.SelectAll()
+					if e.Multiline {
+						e.selectParagraphAtCursor()
+					} else {
+						e.SelectAll()
+					}
 					return true
 				}
 				if ev.MouseEventFlags&vtinput.DoubleClick != 0 {
 					e.selectWordAtCursor()
+					e.mouseWordStart, e.mouseWordEnd = e.selStart, e.selEnd
+					e.mouseWordSelecting = e.selStart >= 0
+					e.mouseSelecting = e.mouseWordSelecting
 					return true
 				}
 				e.ClearSelection()
 				e.clearFlag = false
 				e.mouseSelecting = true
+				e.mouseWordSelecting = false
 				e.mouseSelectAnchor = e.curPos
 				return true
 			}
@@ -1235,16 +1268,29 @@ func (e *Edit) selectWordAtCursor() {
 
 	category := getCharCategory(e.text[e.curPos])
 	start, end := e.curPos, e.curPos+1
-	for start > 0 && getCharCategory(e.text[start-1]) == category {
+	for start > 0 && e.text[start-1] != '\n' && getCharCategory(e.text[start-1]) == category {
 		start--
 	}
-	for end < len(e.text) && getCharCategory(e.text[end]) == category {
+	for end < len(e.text) && e.text[end] != '\n' && getCharCategory(e.text[end]) == category {
 		end++
 	}
 	e.selStart, e.selEnd = start, end
 	e.selAnchor = start
 	e.curPos = end
 	e.clearFlag = false
+}
+
+func (e *Edit) selectParagraphAtCursor() {
+	start, end := e.curPos, e.curPos
+	for start > 0 && e.text[start-1] != '\n' {
+		start--
+	}
+	for end < len(e.text) && e.text[end] != '\n' {
+		end++
+	}
+	e.selStart, e.selEnd, e.selAnchor, e.curPos = start, end, start, end
+	e.clearFlag = false
+	DebugLog("[FIX:command-line-selection] console paragraph start=%d end=%d", start, end)
 }
 
 // WordUnderCursor returns the whitespace-bounded token around the cursor as
