@@ -39,6 +39,10 @@ type Device struct {
 	Model       string
 	Device      string
 	TransportID string
+	// USB is true when the long ADB device listing identifies this transport
+	// as a USB transport. It lets the Android drive distinguish a running
+	// emulator or TCP connection from a phone which needs USB re-discovery.
+	USB bool
 }
 
 // Online reports whether adbd considers the transport ready for services.
@@ -123,7 +127,11 @@ type Server struct {
 	lookupADB     ADBLookupFunc
 	restartServer ADBRestarterFunc
 	startMu       sync.Mutex
+	discoveryMu   sync.Mutex
+	lastDiscovery time.Time
 }
+
+const discoveryRestartCooldown = 10 * time.Second
 
 // NewServer creates a client for the conventional local ADB smart socket.
 func NewServer(options ...ServerOption) *Server {
@@ -169,9 +177,36 @@ func (s *Server) Devices(ctx context.Context) ([]Device, error) {
 // restarted; restarting the daemon reliably recreates the transport and makes
 // Android show the host-key confirmation prompt again.
 func (s *Server) RestartForAuthorization(ctx context.Context) error {
+	return s.restartADB(ctx, "authorization", true)
+}
+
+// RefreshDiscovery asks the local ADB daemon to rebuild its USB transport
+// list. ADB normally notices hot-plugged phones itself, but an already-running
+// daemon can miss the transport until it is restarted (notably when f4 and
+// Android Studio started it before the phone was attached). Calls are bounded
+// so opening or refreshing the Android drive does not repeatedly disrupt an
+// otherwise healthy emulator or TCP connection.
+func (s *Server) RefreshDiscovery(ctx context.Context) error {
+	return s.restartADB(ctx, "USB discovery", true)
+}
+
+func (s *Server) refreshDiscoveryIfDue(ctx context.Context) error {
+	return s.restartADB(ctx, "USB discovery", false)
+}
+
+func (s *Server) restartADB(ctx context.Context, reason string, force bool) error {
+	s.discoveryMu.Lock()
+	defer s.discoveryMu.Unlock()
+	if !force {
+		now := time.Now()
+		if !s.lastDiscovery.IsZero() && now.Sub(s.lastDiscovery) < discoveryRestartCooldown {
+			return nil
+		}
+	}
+	s.lastDiscovery = time.Now()
 	adbPath, err := s.lookupADB()
 	if err != nil {
-		return fmt.Errorf("adb: cannot restart for authorization: %w", err)
+		return fmt.Errorf("adb: cannot restart for %s: %w", reason, err)
 	}
 	return s.restartServer(ctx, adbPath)
 }
@@ -660,6 +695,8 @@ func parseDevices(payload []byte) ([]Device, error) {
 				device.Device = value
 			case "transport_id":
 				device.TransportID = value
+			case "usb":
+				device.USB = true
 			}
 		}
 		devices = append(devices, device)
@@ -963,11 +1000,29 @@ func findADBExecutable() (string, error) {
 	if runtime.GOOS == "windows" {
 		name = "adb.exe"
 	}
+	roots := make([]string, 0, 4)
 	for _, variable := range []string{"ANDROID_SDK_ROOT", "ANDROID_HOME"} {
 		root := strings.TrimSpace(os.Getenv(variable))
 		if root == "" {
 			continue
 		}
+		roots = append(roots, root)
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		if runtime.GOOS == "darwin" {
+			roots = append(roots, filepath.Join(home, "Library", "Android", "sdk"))
+		} else if runtime.GOOS == "windows" {
+			roots = append(roots, filepath.Join(home, "AppData", "Local", "Android", "Sdk"))
+		} else {
+			roots = append(roots, filepath.Join(home, "Android", "Sdk"))
+		}
+	}
+	seenRoots := make(map[string]struct{}, len(roots))
+	for _, root := range roots {
+		if _, seen := seenRoots[root]; seen {
+			continue
+		}
+		seenRoots[root] = struct{}{}
 		candidate := filepath.Join(root, "platform-tools", name)
 		// #nosec G703 -- root is an explicit local SDK path from the user's environment, and name is a fixed adb executable basename.
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {

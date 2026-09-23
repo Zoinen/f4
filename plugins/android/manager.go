@@ -51,6 +51,7 @@ type DeviceInfo struct {
 	Product     string
 	Device      string
 	TransportID string
+	USB         bool
 }
 
 // DeviceSource discovers the devices currently known to ADB. ReadDir calls it
@@ -64,6 +65,13 @@ type DeviceSource interface {
 // can restart the host daemon and recreate an unauthorized USB transport.
 type DeviceAuthorizationRestarter interface {
 	RestartForAuthorization(ctx context.Context) error
+}
+
+// DeviceDiscoveryRefresher is implemented by sources which can force ADB (or
+// another transport) to rebuild its hot-plug device list. The manager uses it
+// for the visible retry row shown when no USB device is in the snapshot.
+type DeviceDiscoveryRefresher interface {
+	RefreshDiscovery(ctx context.Context) error
 }
 
 // DeviceSourceFunc adapts a function to DeviceSource.
@@ -134,6 +142,8 @@ type ManagerVFS struct {
 	mu      sync.RWMutex
 	devices map[string]DeviceInfo // keyed by the exact displayed row name
 }
+
+const refreshDevicesName = "Refresh device list"
 
 func NewManagerVFS(source DeviceSource, opener DeviceOpener) *ManagerVFS {
 	return newManagerVFS(source, opener, nil)
@@ -223,6 +233,14 @@ func (m *ManagerVFS) ReadDir(ctx context.Context, _ string, onChunk func([]vfs.V
 			NoExtension:  true,
 		})
 	}
+	if _, ok := m.source.(DeviceDiscoveryRefresher); ok && !hasUSBDeviceInfo(devices) {
+		items = append(items, vfs.VFSItem{
+			Name:         refreshDevicesName,
+			IconKey:      "refresh-cw",
+			IsExecutable: true,
+			NoExtension:  true,
+		})
+	}
 	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
 
 	m.mu.Lock()
@@ -300,6 +318,9 @@ func (m *ManagerVFS) RefreshPanelInfo(ctx context.Context, req vfs.PanelInfoRequ
 func (m *ManagerVFS) Stat(_ context.Context, p string) (vfs.VFSItem, error) {
 	if p == "" || p == "." || p == "/" || p == androidRoot {
 		return vfs.VFSItem{Name: "Android", IsDir: true}, nil
+	}
+	if p == refreshDevicesName || m.Base(p) == refreshDevicesName {
+		return vfs.VFSItem{Name: refreshDevicesName, IconKey: "refresh-cw", IsExecutable: true, NoExtension: true}, nil
 	}
 	device, ok := m.deviceForPath(p)
 	if !ok {
@@ -404,7 +425,14 @@ func (*deviceProvider) OpensVirtualDirectories() bool { return true }
 
 func (*deviceProvider) CanOpen(_ context.Context, parent vfs.VFS, p string) bool {
 	manager, ok := parent.(*ManagerVFS)
-	if !ok || manager.opener == nil {
+	if !ok {
+		return false
+	}
+	if manager.Base(p) == refreshDevicesName {
+		_, ok := manager.source.(DeviceDiscoveryRefresher)
+		return ok
+	}
+	if manager.opener == nil {
 		return false
 	}
 	device, ok := manager.deviceForPath(p)
@@ -415,6 +443,12 @@ func (*deviceProvider) ProviderOpenStatus(parent vfs.VFS, p string) (vfs.Provide
 	manager, ok := parent.(*ManagerVFS)
 	if !ok {
 		return vfs.ProviderOpenStatus{}, false
+	}
+	if manager.Base(p) == refreshDevicesName {
+		return vfs.ProviderOpenStatus{
+			Title:   " Refresh Android devices ",
+			Message: "Refreshing ADB USB discovery...",
+		}, true
 	}
 	device, ok := manager.deviceForPath(p)
 	if !ok || device.State != DeviceStateUnauthorized {
@@ -473,6 +507,16 @@ func (*deviceProvider) Open(ctx context.Context, parent vfs.VFS, p string) (vfs.
 	manager, ok := parent.(*ManagerVFS)
 	if !ok {
 		return nil, fmt.Errorf("android: unsupported parent %T", parent)
+	}
+	if manager.Base(p) == refreshDevicesName {
+		refresher, ok := manager.source.(DeviceDiscoveryRefresher)
+		if !ok {
+			return nil, fmt.Errorf("android: device discovery refresh is unavailable")
+		}
+		if err := refresher.RefreshDiscovery(ctx); err != nil {
+			return nil, err
+		}
+		return manager.Clone(), nil
 	}
 	device, ok := manager.deviceForPath(p)
 	if !ok {

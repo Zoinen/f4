@@ -96,8 +96,10 @@ func newSyncVFS(parent vfs.VFS, serial, title string, client syncFS, run shellCo
 	}
 }
 
-func (s *SyncVFS) GetTitle() string { return s.title }
-func (s *SyncVFS) SessionKey() any  { return "android:" + s.serial }
+func (s *SyncVFS) GetTitle() string        { return s.title }
+func (s *SyncVFS) SessionKey() any         { return "android:" + s.serial }
+func (s *SyncVFS) DirectoryCacheKey() any  { return "android:" + s.serial }
+func (s *SyncVFS) StableDirectoryKey() any { return s.DirectoryCacheKey() }
 func (s *SyncVFS) PanelTitle(p string) string {
 	public, err := s.Abs(p)
 	if err != nil {
