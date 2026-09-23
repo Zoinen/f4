@@ -431,6 +431,13 @@ jobs:
         conan_platform_settings=()
         if [[ "$RUNNER_OS" == "macOS" ]]; then
           conan_platform_settings+=("-s:h" "os.version=13.0")
+          if [[ "$(uname -m)" == "x86_64" ]]; then
+            # Apple Clang on the Intel macOS runner can spend indefinitely in
+            # OpenSSL's optional assembly build.  The portable Qt host does
+            # not require those CPU-specific optimizations, and keeping the
+            # portable C implementation preserves the TLS feature set.
+            conan_platform_settings+=("-o:h" "openssl/*:no_asm=True")
+          fi
         fi
         conan install qt/host --build=missing \
           -s:h build_type=Release -s:h compiler.cppstd=20 \
