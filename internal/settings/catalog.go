@@ -68,7 +68,7 @@ InfoPanelCPUGPU|panels|Information panels|Show CPU and GPU information|Include l
 InfoPanelBytes|panels|Information panels|Show sizes in bytes|Display raw bytes instead of human-readable sizes in information and quick-view panels.||live
 NavigationMode|panels|Typing and focus|Panel navigation|Classic types into the command line. Vim adds j/k and double dd/cc/mm actions. Search-first separates filename-search and command focus.|0:Classic;1:Vim;2:Search first|live
 SearchCommandStayFocused|panels|Typing and focus|Keep command input focused|In Search-first mode, keep command entry focused after executing a command rather than returning to the panel.||live
-SearchCommandHideUnfocused|panels|Typing and focus|Hide command input when unfocused|In Search-first mode, hide the command line while the panel has focus. Press the tilde key to show it.||live
+SearchCommandHideUnfocused|panels|Typing and focus|Hide command input when unfocused|In Search-first mode, hide the command line when the panel has focus and the input is empty. Press the tilde key to show it.||live
 CommandLineAutoComplete|terminal|Path suggestions|Enable filesystem suggestions|Enable filesystem path suggestions in the command line and path-enabled dialog fields.||live
 CommandLineMultiline|terminal|Command line|Multiline command input|Preserve line breaks and expand the command input upward as text wraps, in the console and GUI. Shift+Enter inserts a line break.||live
 CommandLineWordWrap|terminal|Command line|Wrap command arguments|Start each unquoted dash-prefixed argument on a new visual line and highlight its dash. Visual wrapping never changes the command.||live

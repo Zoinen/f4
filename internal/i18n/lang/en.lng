@@ -364,6 +364,8 @@ Action.Panel.ToggleKeyBar.Desc=Show or hide the KeyBar
 Action.Panel.Rescan.Desc=Refresh panel contents
 Action.Panel.ToggleHidden=Toggle &hidden files
 Action.Panel.ToggleHidden.Desc=Show or hide hidden and system files on both panels
+Action.Panel.ToggleNavigationMode=Toggle Search-first / Classic Navigation
+Action.Panel.ToggleNavigationMode.Desc=Switch panel typing between filename search and the classic command line
 Action.Panel.Swap.Desc=Swap left and right panels
 Action.Panel.Toggle.Desc=Show or hide panels
 Action.Panel.ToggleLeftPanel.Desc=Show or hide the left panel
@@ -3210,3 +3212,37 @@ DiskMenu.MacOSLocations=macOS &Locations
 DiskMenu.MacOSLoading=Loading macOS locations…
 DiskMenu.ShellLoading=◌ Loading…
 DiskMenu.ShellEmpty=No Windows Shell locations
+
+SettingsCenter.Text.c925a11891b84dfcf3a6a35ab8064b4ff807efc9c9afac7df8081e91e3af0116=Command line
+SettingsCenter.CommandLineMultiline.Label=Multiline command input
+SettingsCenter.CommandLineMultiline.Description=Preserve line breaks and expand the command input upward as text wraps, in the console and GUI. Shift+Enter inserts a line break.
+SettingsCenter.CommandLineWordWrap.Label=Wrap command arguments
+SettingsCenter.CommandLineWordWrap.Description=Start each unquoted dash-prefixed argument on a new visual line and highlight its dash. Visual wrapping never changes the command.
+
+Action.History.ImportFar3=Import Far3 History
+Action.History.ImportFar3.Desc=Merge commands, viewer/editor and folder history from Far Manager 3
+History.Far3.Title=Import Far3 history
+History.Far3.Path=Far3 folder or history.db:
+History.Far3.Merge=Merge histories; skip duplicates.
+History.Far3.Import=&Import
+History.Far3.EmptyPath=Enter a Far3 folder, profile folder or history.db path.
+History.Far3.Result=Added %d commands, %d viewer/editor files and %d folders.\nSkipped %d unsupported records (plugin paths or external launches).
+History.Far3.NotFound=No Far3 installation or history.db found in this folder.
+
+UserMenu.Far3.Title=Import Far3 user menu
+UserMenu.Far3.Path=FarMenu.ini or Far folder:
+UserMenu.Far3.Merge=Merge into the global user menu.
+UserMenu.Far3.Draft=Import into the global menu draft.
+UserMenu.Far3.Empty=No user menu entries were found in this file.
+UserMenu.Far3.Result=Added %d top-level entries to the global user menu.
+Action.UserMenu.ImportFar3=Import Far Manager 3 User Menu
+Action.UserMenu.ImportFar3.Desc=Merge a Far Manager 3 user menu into the global F4 user menu
+SettingsCenter.Text.2c3ddb3c1528cff83c63ad44c6c129d966a6dc63da9fdab8f8080dfeaa1354e3=Import Far Manager 3 user menu
+SettingsCenter.Text.09c4464a863191a292d14cb10ea4ae0a37dd34d7864363125ee5920194a08eb2=Merge a FarMenu.ini into the global user menu draft. Existing entries are preserved; Apply saves the import.
+SettingsCenter.Text.2cff9baabf56ca002610e113bc94deb6ededddfc3c130365b6e88ed5195bf774=Import
+UserMenu.Far3.Keep=Existing entries are kept.
+UserMenu.Far3.Apply=Apply saves the imported entries.
+
+PanelSettings.SearchHideUnfocused=Hide command input when unfocused
+SettingsCenter.SearchCommandHideUnfocused.Label=Hide command input when unfocused
+SettingsCenter.SearchCommandHideUnfocused.Description=In Search-first mode, hide the command line when the panel has focus and the input is empty. Press the tilde key to show it.

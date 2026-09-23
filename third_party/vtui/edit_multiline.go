@@ -96,6 +96,54 @@ func (e *Edit) MultilineRows(width int) int {
 	return len(e.multilineLines(width))
 }
 
+// MoveCursorVertical moves within displayed lines, retaining the preferred
+// column across shorter rows. False means the caret is already at the edge.
+func (e *Edit) MoveCursorVertical(direction int) bool {
+	return e.MoveCursorVerticalSelection(direction, false)
+}
+
+func (e *Edit) MoveCursorVerticalSelection(direction int, extend bool) bool {
+	if !e.Multiline || e.IsDisabled() || direction == 0 {
+		return false
+	}
+	lines := e.multilineLines(e.X2 - e.X1 + 1)
+	row, column := e.multilineCaret(lines)
+	next := max(0, min(len(lines)-1, row+direction))
+	if next == row {
+		e.multilineMoveActive = false
+		return false
+	}
+	text := e.multilineCacheText
+	if e.multilineMoveActive && e.multilineMoveCursor == e.curPos && e.multilineMoveText == text {
+		column = e.multilineMoveColumn
+	}
+	line := lines[next]
+	position, cells, found := line.end, 0, false
+	forEachTerminalCluster(string(e.text[line.start:line.end]), func(s string, width, _, offset int) {
+		if !found && cells+width > column {
+			position, found = line.start+offset, true
+		}
+		cells += width
+	})
+	if line.soft && position == line.end && position > line.start {
+		position = e.prevClusterBoundary(position)
+	}
+	if extend {
+		e.beginSelection()
+	} else {
+		e.ClearSelection()
+	}
+	e.curPos = position
+	if extend {
+		e.endSelection()
+	}
+	e.multilineMoveText, e.multilineMoveCursor = text, position
+	e.multilineMoveColumn, e.multilineMoveActive = column, true
+	e.ScreenObject.NotifyChange()
+	DebugLog("[FIX:command-line-navigation] row=%d target=%d column=%d", row, next, column)
+	return true
+}
+
 func (e *Edit) multilineCaret(lines []editLine) (int, int) {
 	for row, line := range lines {
 		if e.curPos <= line.end && (!line.soft || e.curPos < line.end) {

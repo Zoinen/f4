@@ -868,6 +868,11 @@ private slots:
     void commandLineHeightChangesOncePerEdit();
     void commandLineGraphicalCaretIsOptionalAndPersisted();
     void commandLineClickTransfersFocus();
+    void commandLineClickPositionsCaret();
+    void commandLineMultilineScrollAndSelection();
+    void commandLineArrowsNavigateVisualLinesBeforeHistory();
+    void commandLineArrowsNavigateVisualLinesBeforeHistory_data();
+    void commandLineArrowsUseWrappedGeometry();
     void commandLineDropOutlineMatchesPanels();
     void panelCursorBlinkSettlesAndBlockingMenuStopsIt();
     void autocompleteReturnTargetsShellCommandHandler();
@@ -878,6 +883,7 @@ private slots:
     void shortenedPanelsRevealTerminalRows();
     void semanticTableDialog();
     void terminalScrollBarStaysInsideTheExposedPanelSide();
+    void terminalDoubleClickDragExpandsWholeWords();
 };
 
 void F4QuickViewSurfaceTests::qmlImportsWithoutInstalledQt()
@@ -7436,6 +7442,222 @@ void F4QuickViewSurfaceTests::commandLineGraphicalCaretIsOptionalAndPersisted()
     QVERIFY(cursor->height() > 2);
 }
 
+void F4QuickViewSurfaceTests::commandLineClickPositionsCaret()
+{
+    auto scene = shellScene();
+    auto shell = scene.value("shell").toMap();
+    const QString text = QString::fromUtf8("a😀bc -option value");
+    QVariantMap command{{"visible", true}, {"multiline", true}, {"wordWrap", true},
+                        {"text", text}, {"cursorPosition", text.size()}};
+    shell.insert("commandLine", command);
+    scene.insert("shell", shell);
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    auto *input = fixture.item("commandLineInput");
+    QVERIFY(input);
+    QTRY_VERIFY(input->property("lineCount").toInt() > 1);
+    // The inserted argument break adds a display position, not a source byte.
+    for (const auto pair : {QPair<int, int>(3, 3), QPair<int, int>(8, 7)}) {
+        QRectF rect;
+        QVERIFY(QMetaObject::invokeMethod(input, "positionToRectangle",
+                Q_RETURN_ARG(QRectF, rect), Q_ARG(int, pair.first)));
+        fixture.shell.clearActions();
+        QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+                         input->mapToScene(rect.center()).toPoint());
+        QTRY_COMPARE(fixture.shell.actions.size(), 1);
+        const auto action = fixture.shell.actions.last();
+        QCOMPARE(action.value("action").toString(), "commandLine.focus");
+        QVERIFY(action.contains("cursorPosition"));
+        QCOMPARE(action.value("cursorPosition").toInt(), pair.second);
+    }
+}
+
+void F4QuickViewSurfaceTests::commandLineMultilineScrollAndSelection()
+{
+    auto scene = shellScene();
+    auto shell = scene.value("shell").toMap();
+    QStringList lines;
+    for (int i = 0; i < 80; ++i)
+        lines << QStringLiteral("row%1 alpha beta").arg(i);
+    const QString text = lines.join(QLatin1Char('\n'));
+    QVariantMap command{{"visible", true}, {"focused", true}, {"ownsNavigation", true},
+                        {"multiline", true}, {"wordWrap", false},
+                        {"text", text}, {"cursorPosition", text.size()}};
+    shell.insert("commandLine", command);
+    scene.insert("shell", shell);
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    auto *box = fixture.item("commandLineView");
+    auto *input = fixture.item("commandLineInput");
+    auto *bar = fixture.item("commandLineScrollBar");
+    QVERIFY(box && input && bar);
+    QTRY_VERIFY(bar->isVisible());
+    QTRY_VERIFY(box->property("scrollTop").toDouble() > 0);
+    const qreal maxScroll = box->property("maxScrollTop").toDouble();
+    QVERIFY(maxScroll > 0);
+    QVERIFY(QMetaObject::invokeMethod(box, "setScrollTop", Q_ARG(QVariant, 0.0)));
+    QTRY_VERIFY(qAbs(bar->property("position").toDouble()) < 0.002);
+    QVERIFY(QMetaObject::invokeMethod(box, "setScrollTop", Q_ARG(QVariant, maxScroll)));
+    QTRY_VERIFY(qAbs(bar->property("position").toDouble()
+                     + bar->property("size").toDouble() - 1.0) < 0.002);
+    const qreal top = box->property("scrollTop").toDouble();
+    fixture.shell.clearActions();
+    QTest::keyClick(fixture.window, Qt::Key_Up);
+    QTRY_VERIFY(!fixture.shell.actions.isEmpty());
+    QCOMPARE(fixture.shell.actions.last().value("action").toString(), "commandLine.cursor");
+    QTest::qWait(30);
+    QCOMPARE(box->property("scrollTop").toDouble(), top);
+
+    const QRectF caret = input->property("cursorRectangle").toRectF();
+    const QPoint point = input->mapToScene(QPointF(12, caret.y() + caret.height() / 2)).toPoint();
+    fixture.shell.clearActions();
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, point);
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, point);
+    QTRY_VERIFY(!fixture.shell.actions.isEmpty());
+    QCOMPARE(fixture.shell.actions.last().value("action").toString(), "commandLine.select");
+    QVERIFY(fixture.shell.actions.last().value("cursorPosition").toInt()
+            > fixture.shell.actions.last().value("anchor").toInt());
+    QVERIFY(input->property("selectionEnd").toInt()
+            > input->property("selectionStart").toInt());
+
+    fixture.shell.clearActions();
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, point);
+    QTRY_VERIFY(!fixture.shell.actions.isEmpty());
+    QCOMPARE(fixture.shell.actions.last().value("action").toString(), "commandLine.select");
+    const int paragraphStart = fixture.shell.actions.last().value("anchor").toInt();
+    const int paragraphEnd = fixture.shell.actions.last().value("cursorPosition").toInt();
+    QVERIFY(paragraphStart >= 0 && paragraphEnd > paragraphStart);
+    QCOMPARE(paragraphStart, text.lastIndexOf('\n', paragraphStart - 1) + 1);
+    const int nextBreak = text.indexOf('\n', paragraphStart);
+    QCOMPARE(paragraphEnd, nextBreak < 0 ? text.size() : nextBreak);
+
+    fixture.shell.clearActions();
+    QTest::mousePress(fixture.window, Qt::LeftButton, Qt::NoModifier, point);
+    QTest::mouseMove(fixture.window, point + QPoint(60, 0));
+    QTest::mouseRelease(fixture.window, Qt::LeftButton, Qt::NoModifier,
+                        point + QPoint(60, 0));
+    QVERIFY(!fixture.shell.actions.isEmpty());
+    QCOMPARE(fixture.shell.actions.last().value("action").toString(), "commandLine.select");
+    QVERIFY(fixture.shell.actions.last().value("cursorPosition").toInt()
+            > fixture.shell.actions.last().value("anchor").toInt());
+
+    QTest::qWait(450);
+    fixture.shell.clearActions();
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, point);
+    QTest::mousePress(fixture.window, Qt::LeftButton, Qt::NoModifier, point);
+    QTest::mouseMove(fixture.window, point + QPoint(95, 0));
+    QTest::mouseRelease(fixture.window, Qt::LeftButton, Qt::NoModifier,
+                        point + QPoint(95, 0));
+    QTRY_VERIFY(!fixture.shell.actions.isEmpty());
+    const auto wordDrag = fixture.shell.actions.last();
+    QCOMPARE(wordDrag.value("action").toString(), "commandLine.select");
+    const int wordStart = wordDrag.value("anchor").toInt();
+    const int wordEnd = wordDrag.value("cursorPosition").toInt();
+    QVERIFY(wordEnd > wordStart);
+    QVERIFY(wordStart == 0 || text.at(wordStart - 1).isSpace());
+    QVERIFY(wordEnd == text.size() || text.at(wordEnd).isSpace());
+}
+
+void F4QuickViewSurfaceTests::commandLineArrowsNavigateVisualLinesBeforeHistory_data()
+{
+    QTest::addColumn<bool>("wordWrap");
+    QTest::addColumn<int>("start");
+    QTest::newRow("plain-column") << false << 9;
+    QTest::newRow("plain-end") << false << 12;
+    QTest::newRow("rich-column") << true << 9;
+    QTest::newRow("rich-end") << true << 12;
+}
+
+void F4QuickViewSurfaceTests::commandLineArrowsNavigateVisualLinesBeforeHistory()
+{
+    QFETCH(bool, wordWrap);
+    QFETCH(int, start);
+    auto scene = shellScene();
+    auto shell = scene.value("shell").toMap();
+    QVariantMap command{{"visible", true}, {"focused", true}, {"ownsNavigation", true},
+                        {"multiline", true}, {"text", "abc\nx\nabcdef"},
+                        {"wordWrap", wordWrap}, {"cursorPosition", start}, {"cursorVisible", true}};
+    shell.insert("commandLine", command);
+    scene.insert("shell", shell);
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    auto *input = fixture.item("commandLineInput");
+    QVERIFY(input);
+    QTRY_COMPARE(input->property("cursorPosition").toInt(), start);
+    for (const auto step : {QPair<Qt::Key, int>(Qt::Key_Up, 5),
+                           QPair<Qt::Key, int>(Qt::Key_Up, 3),
+                           QPair<Qt::Key, int>(Qt::Key_Down, 5),
+                           QPair<Qt::Key, int>(Qt::Key_Down, start)}) {
+        fixture.shell.clearActions();
+        QTest::keyClick(fixture.window, step.first);
+        QTRY_COMPARE(fixture.shell.actions.size(), 1);
+        const auto action = fixture.shell.actions.last();
+        QCOMPARE(action.value("action").toString(), "commandLine.cursor");
+        QCOMPARE(action.value("cursorPosition").toInt(), step.second);
+        command.insert("cursorPosition", step.second);
+        fixture.shell.setCommandLine(command);
+        QTRY_COMPARE(input->property("cursorPosition").toInt(), step.second);
+    }
+    fixture.shell.clearActions();
+    QTest::keyClick(fixture.window, Qt::Key_Down);
+    QCOMPARE(fixture.shell.actions.size(), 0);
+    QCOMPARE(input->property("cursorPosition").toInt(), start);
+}
+
+void F4QuickViewSurfaceTests::commandLineArrowsUseWrappedGeometry()
+{
+    auto scene = shellScene();
+    auto shell = scene.value("shell").toMap();
+    const QString text = "tool -alpha value -beta value";
+    const int start = text.indexOf("-beta") + 4;
+    QVariantMap command{{"visible", true}, {"focused", true}, {"ownsNavigation", true},
+                        {"multiline", true}, {"wordWrap", true}, {"text", text},
+                        {"cursorPosition", start}, {"cursorVisible", true}};
+    shell.insert("commandLine", command);
+    scene.insert("shell", shell);
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    auto *input = fixture.item("commandLineInput");
+    QVERIFY(input);
+    QTRY_COMPARE(input->property("lineCount").toInt(), 3);
+    fixture.shell.clearActions();
+    QTest::keyClick(fixture.window, Qt::Key_Up);
+    QTRY_COMPARE(fixture.shell.actions.size(), 1);
+    QCOMPARE(fixture.shell.actions.last().value("cursorPosition").toInt(), text.indexOf("-alpha") + 4);
+    QCOMPARE(fixture.shell.actions.last().value("action").toString(), "commandLine.cursor");
+
+    const QString wrapped(500, QLatin1Char('x'));
+    command.insert("wordWrap", false);
+    command.insert("text", wrapped);
+    command.insert("cursorPosition", wrapped.size() - 5);
+    fixture.shell.setCommandLine(command);
+    QTRY_COMPARE(input->property("cursorPosition").toInt(), wrapped.size() - 5);
+    QTRY_VERIFY(input->property("lineCount").toInt() > 2);
+    const QRectF previous = input->property("cursorRectangle").toRectF();
+    fixture.shell.clearActions();
+    QTest::keyClick(fixture.window, Qt::Key_Up);
+    QTRY_COMPARE(fixture.shell.actions.size(), 1);
+    QCOMPARE(fixture.shell.actions.last().value("action").toString(), "commandLine.cursor");
+    const QRectF current = input->property("cursorRectangle").toRectF();
+    QVERIFY(qAbs(current.y() - (previous.y() - previous.height())) < 0.1);
+    QVERIFY(qAbs(current.x() - previous.x()) < 1.0);
+    QVERIFY(fixture.shell.actions.last().value("cursorPosition").toInt() < wrapped.size() - 5);
+    QString displayed;
+    QVERIFY(QMetaObject::invokeMethod(input, "getText", Q_RETURN_ARG(QString, displayed),
+                                     Q_ARG(int, 0), Q_ARG(int, wrapped.size())));
+    QCOMPARE(displayed, wrapped);
+
+    const qreal dpr = fixture.window->devicePixelRatio();
+    for (auto *leaf : {input, fixture.item("commandLineCursor")}) {
+        QVERIFY(leaf);
+        const QPointF origin = leaf->mapToScene(QPointF());
+        QVERIFY(qAbs(origin.x() * dpr - qRound(origin.x() * dpr)) < 0.01);
+        QVERIFY(qAbs(origin.y() * dpr - qRound(origin.y() * dpr)) < 0.01);
+        QCOMPARE(leaf->mapToScene(QPointF(1, 0)) - origin, QPointF(1, 0));
+        QCOMPARE(leaf->mapToScene(QPointF(0, 1)) - origin, QPointF(0, 1));
+    }
+}
+
 void F4QuickViewSurfaceTests::commandLineClickTransfersFocus()
 {
     auto scene = shellScene();
@@ -7771,6 +7993,8 @@ void F4QuickViewSurfaceTests::commandLineMultilineWrapAndPixelGrid()
     QVERIFY(input);
     QVERIFY(box);
     QTRY_COMPARE(input->property("lineCount").toInt(), 4);
+    QTRY_COMPARE(fixture.window->property("commandLineContentHeight").toDouble(),
+                 box->property("inputContentHeight").toDouble());
     const qreal threeRowsHeight = box->height();
     command.insert(QStringLiteral("text"), QStringLiteral("app ") + QStringLiteral("-argument ").repeated(150));
     command.insert(QStringLiteral("cursorPosition"), 1504);
@@ -8141,6 +8365,50 @@ void F4QuickViewSurfaceTests::widePanelDoesNotRevealTerminalBackdrop()
     fixture.shell.setScene(scene);
     QTRY_VERIFY_WITH_TIMEOUT(passivePanel->isVisible(), 3000);
     QTRY_VERIFY_WITH_TIMEOUT(widePanel->width() < fixture.window->width(), 3000);
+}
+
+void F4QuickViewSurfaceTests::terminalDoubleClickDragExpandsWholeWords()
+{
+    QVariantMap scene = shellScene();
+    QVariantMap shell = scene.value(QStringLiteral("shell")).toMap();
+    shell.insert(QStringLiteral("showLeftPanel"), false);
+    shell.insert(QStringLiteral("showRightPanel"), true);
+    shell.insert(QStringLiteral("terminal"), QVariantMap{
+        {QStringLiteral("id"), QStringLiteral("terminal-word-drag")},
+        {QStringLiteral("kind"), QStringLiteral("terminal")},
+        {QStringLiteral("scrollUnit"), QStringLiteral("rows")},
+        {QStringLiteral("scrollAction"), QStringLiteral("terminal.scroll")},
+        {QStringLiteral("selectionEnabled"), true},
+        {QStringLiteral("rows"), visualRows(0, 24)},
+        {QStringLiteral("windowRows"), visualRows(0, 40)},
+        {QStringLiteral("windowStart"), 0},
+        {QStringLiteral("windowEnd"), 40},
+        {QStringLiteral("viewportStart"), 0},
+        {QStringLiteral("viewportSpan"), 24},
+        {QStringLiteral("viewportRows"), 24},
+        {QStringLiteral("contentExtent"), 40},
+        {QStringLiteral("windowGeneration"), 1},
+    });
+    scene.insert(QStringLiteral("shell"), shell);
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    QQuickItem *surface = nullptr;
+    QTRY_VERIFY((surface = fixture.item(QStringLiteral("terminalDocumentSurface"))) != nullptr);
+    QTRY_VERIFY(surface->property("windowInitialized").toBool());
+    auto press = [&](int column, double timestamp) {
+        return QMetaObject::invokeMethod(surface, "handleTerminalSelectionPressAt",
+            Q_ARG(QVariant, 0), Q_ARG(QVariant, column),
+            Q_ARG(QVariant, column), Q_ARG(QVariant, timestamp));
+    };
+    QVERIFY(press(3, 1000.0));
+    QVERIFY(press(3, 1100.0));
+    QVERIFY(surface->property("terminalSelectionDragging").toBool());
+    QCOMPARE(surface->property("terminalSelectionAnchorColumn").toInt(), 0);
+    QCOMPARE(surface->property("terminalSelectionFocusColumn").toInt(), 7);
+    QVERIFY(QMetaObject::invokeMethod(surface, "extendTerminalSelectionTo",
+        Q_ARG(QVariant, 0), Q_ARG(QVariant, 9)));
+    QCOMPARE(surface->property("terminalSelectionAnchorColumn").toInt(), 0);
+    QCOMPARE(surface->property("terminalSelectionFocusColumn").toInt(), 11);
 }
 
 void F4QuickViewSurfaceTests::terminalScrollBarStaysInsideTheExposedPanelSide()
@@ -8878,6 +9146,9 @@ void F4QuickViewSurfaceTests::deviceBreadcrumbLabelsPreserveCanonicalNavigationA
     QTest::newRow("ios-manager")
         << QString("ios://") << QString("Apple mobile devices")
         << QString("iOS") << QString("apple-logo") << QStringList{};
+    QTest::newRow("netfox-manager")
+        << QString("net://") << QString("net://")
+        << QString("Network") << QString("network") << QStringList{};
     QTest::newRow("android-child")
         << QString("android://Pixel 3/sdcard/DCIM")
         << QString("android://Pixel 3/sdcard/DCIM")

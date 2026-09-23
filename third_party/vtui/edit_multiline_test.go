@@ -64,3 +64,48 @@ func TestEditMultilineArgumentBreaksAreVisual(t *testing.T) {
 		t.Fatal("disabled argument wrapping still splits")
 	}
 }
+
+func TestEditMultilineVerticalNavigation(t *testing.T) {
+	for _, tc := range []struct {
+		name                          string
+		text                          string
+		width, start, direction, want int
+		moved                         bool
+	}{
+		{"literal up", "abc\nx\nabcdef", 80, 9, -1, 5, true},
+		{"literal down", "abc\nx\nabcdef", 80, 2, 1, 5, true},
+		{"first row", "abc\nx", 80, 2, -1, 2, false},
+		{"last row", "abc\nx", 80, 4, 1, 4, false},
+		{"wrapped", "abcdefghijk", 5, 10, -1, 6, true},
+		{"wide grapheme", "a界b\n1234", 80, 6, -1, 1, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := NewEdit(0, 0, tc.width, tc.text)
+			e.Multiline = true
+			e.ClearSelection()
+			e.curPos = tc.start
+			if moved := e.MoveCursorVertical(tc.direction); moved != tc.moved || e.curPos != tc.want {
+				t.Fatalf("moved=%v cursor=%d, want %v/%d", moved, e.curPos, tc.moved, tc.want)
+			}
+			if e.GetText() != tc.text {
+				t.Fatal("vertical navigation modified text")
+			}
+		})
+	}
+}
+
+func TestEditMultilineShiftVerticalSelection(t *testing.T) {
+	e := NewEdit(0, 0, 80, "one\ntwo\nthree")
+	e.Multiline = true
+	e.ClearSelection()
+	e.curPos = 5
+	if !e.MoveCursorVerticalSelection(1, true) {
+		t.Fatal("Shift+Down did not move to next line")
+	}
+	if e.selStart != 5 || e.selEnd != 9 || e.curPos != 9 {
+		t.Fatalf("selection [%d,%d] cursor=%d, want [5,9]", e.selStart, e.selEnd, e.curPos)
+	}
+	if !e.MoveCursorVerticalSelection(-1, true) || e.curPos != 5 {
+		t.Fatal("Shift+Up did not return to anchor")
+	}
+}

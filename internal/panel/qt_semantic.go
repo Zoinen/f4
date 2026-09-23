@@ -258,6 +258,26 @@ func (pf *PanelsFrame) HandleSemanticAction(action map[string]any) bool {
 			}
 			pf.SetCommandLineFocus(true)
 		}
+		if position, ok := action["cursorPosition"]; ok {
+			pf.CmdLine.SetNativeCursor(semantic.Int(position))
+		}
+		return true
+	case "commandLine.cursor", "commandLine.history", "commandLine.select":
+		if pf.Closed || pf.CmdLine == nil || !pf.CmdLine.IsVisible() || !pf.CmdLine.IsFocused() ||
+			(!pf.ShowPanels && !pf.hiddenConsoleCommandLineOwnsInput()) {
+			return false
+		}
+		if semantic.String(action["action"]) == "commandLine.select" {
+			pf.CmdLine.SetNativeSelection(semantic.Int(action["anchor"]), semantic.Int(action["cursorPosition"]))
+		} else if semantic.String(action["action"]) == "commandLine.cursor" {
+			pf.CmdLine.SetNativeCursor(semantic.Int(action["cursorPosition"]))
+		} else if pf.CmdLine.Edit.Multiline && pf.CmdLine.Edit.MultilineRows(pf.CmdLine.Edit.X2-pf.CmdLine.Edit.X1+1) > 1 {
+			vtui.DebugLog("[FIX:command-line-navigation] ignored history in multiline input")
+		} else if semantic.Int(action["direction"]) < 0 {
+			pf.CmdLine.Edit.HistoryUp()
+		} else {
+			pf.CmdLine.Edit.HistoryDown()
+		}
 		return true
 	case "commandLine.dropPaths":
 		return pf.handleCommandLineDrop(action)

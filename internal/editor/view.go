@@ -126,6 +126,9 @@ type EditorView struct {
 	rectSelStartLine   int
 	rectSelStartCol    int
 	mouseRectSelecting bool
+	mouseWordSelecting bool
+	mouseWordStart     int
+	mouseWordEnd       int
 	hoverURL           string
 	hoverURLStart      int
 	editSession        int // Unique ID to fence background tasks
@@ -3186,6 +3189,19 @@ func (ev *EditorView) ProcessMouse(e *vtinput.InputEvent) bool {
 			}
 		}
 	}
+	if ev.mouseWordSelecting {
+		if e.MouseEventFlags&vtinput.MouseMoved != 0 {
+			if ev.updateCursorFromMouse(int(e.MouseX), int(e.MouseY)) {
+				ev.extendWordSelection(ev.Li.GetLineOffset(ev.CursorLine) + ev.CursorPos)
+				vtui.FrameManager.Redraw()
+			}
+			return true
+		}
+		if e.ButtonState == 0 || !e.KeyDown {
+			ev.mouseWordSelecting = false
+			return true
+		}
+	}
 
 	// A rectangular mouse drag keeps ownership of the gesture even when a
 	// backend reports motion without the button bit. On release, copy the
@@ -3248,10 +3264,13 @@ func (ev *EditorView) ProcessMouse(e *vtinput.InputEvent) bool {
 				ev.CursorLine = ev.Li.GetLineAtOffset(offset)
 				ev.CursorPos = offset - ev.Li.GetLineOffset(ev.CursorLine)
 				ev.selectWordUnderCursor()
+				ev.beginWordSelection()
 			} else if editorAddCursorClick(e) {
+				ev.mouseWordSelecting = false
 				ev.ToggleCursorAt(offset)
 				ev.updateDesiredVisualCol()
 			} else if editorBlockMouseSelection(e) {
+				ev.mouseWordSelecting = false
 				ev.SelActive = false
 				ev.RectSelActive = false
 				ev.CursorLine = ev.Li.GetLineAtOffset(offset)
@@ -3265,6 +3284,9 @@ func (ev *EditorView) ProcessMouse(e *vtinput.InputEvent) bool {
 					ev.mouseRectSelecting = true
 				}
 			} else {
+				if e.MouseEventFlags&vtinput.MouseMoved == 0 {
+					ev.mouseWordSelecting = false
+				}
 				if !ev.SelActive || e.MouseEventFlags&vtinput.MouseMoved == 0 {
 					ev.SelActive = false
 					ev.RectSelActive = false
@@ -3356,6 +3378,7 @@ func (ev *EditorView) processDocumentPointer(e *vtinput.InputEvent, fragmentOffs
 	if e.ButtonState == 0 {
 		// Always release capture, even if geometry changed during the drag.
 		ev.semanticPointerActive = false
+		ev.mouseWordSelecting = false
 		if ev.SelActive && ev.SelAnchorOffset == ev.Li.GetLineOffset(ev.CursorLine)+ev.CursorPos {
 			ev.SelActive = false
 		}
@@ -3411,13 +3434,18 @@ func (ev *EditorView) processDocumentPointer(e *vtinput.InputEvent, fragmentOffs
 	ev.CursorPos = offset - ev.Li.GetLineOffset(ev.CursorLine)
 	ev.CursorVirtualSpaces = 0
 	ev.updateDesiredVisualCol()
+	if moved && ev.mouseWordSelecting {
+		ev.extendWordSelection(offset)
+	}
 	if !moved {
 		ev.semanticPointerActive = true
 		ev.semanticPointerRevision = layoutRevision
 		ev.SelActive, ev.RectSelActive = false, false
+		ev.mouseWordSelecting = false
 		if e.ButtonState == vtinput.FromLeft1stButtonPressed {
 			if e.MouseEventFlags&vtinput.DoubleClick != 0 {
 				ev.selectWordUnderCursor()
+				ev.beginWordSelection()
 			} else {
 				ev.SelActive = true
 				ev.SelAnchorOffset = offset
@@ -5200,6 +5228,41 @@ func (ev *EditorView) appendOccurrenceSpans(dst []matchSpan, needle []byte, star
 		pos += idx + 1
 	}
 	return dst
+}
+
+func (ev *EditorView) beginWordSelection() {
+	if !ev.SelActive {
+		return
+	}
+	ev.mouseWordStart = ev.SelAnchorOffset
+	ev.mouseWordEnd = ev.Li.GetLineOffset(ev.CursorLine) + ev.CursorPos
+	ev.mouseWordSelecting = ev.mouseWordEnd > ev.mouseWordStart
+}
+
+func (ev *EditorView) extendWordSelection(offset int) {
+	start, end := ev.mouseWordStart, ev.mouseWordEnd
+	if offset >= start && offset < end {
+		ev.SelActive = true
+		ev.SelAnchorOffset = start
+		ev.CursorLine = ev.Li.GetLineAtOffset(end)
+		ev.CursorPos = end - ev.Li.GetLineOffset(ev.CursorLine)
+		return
+	}
+	ev.CursorLine = ev.Li.GetLineAtOffset(offset)
+	ev.CursorPos = offset - ev.Li.GetLineOffset(ev.CursorLine)
+	ev.selectWordUnderCursor()
+	targetStart := ev.SelAnchorOffset
+	targetEnd := ev.Li.GetLineOffset(ev.CursorLine) + ev.CursorPos
+	if offset < start {
+		ev.SelAnchorOffset = end
+		ev.CursorLine = ev.Li.GetLineAtOffset(targetStart)
+		ev.CursorPos = targetStart - ev.Li.GetLineOffset(ev.CursorLine)
+	} else {
+		ev.SelAnchorOffset = start
+		ev.CursorLine = ev.Li.GetLineAtOffset(targetEnd)
+		ev.CursorPos = targetEnd - ev.Li.GetLineOffset(ev.CursorLine)
+	}
+	vtui.DebugLog("[FIX:editor-word-drag] origin=%d:%d target=%d:%d", start, end, targetStart, targetEnd)
 }
 
 func (ev *EditorView) selectWordUnderCursor() {

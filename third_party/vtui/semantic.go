@@ -888,6 +888,12 @@ func (e *Edit) HandleSemanticAction(action map[string]any) bool {
 // offsets and keep pointers outside the interior of a rendered cluster.
 func (e *Edit) semanticCursor(offset int) int {
 	offset = max(0, min(offset, len(e.text)))
+	// Terminal clusters omit line breaks, but a multiline caret may sit on
+	// either side of one, including between consecutive empty lines.
+	if e.Multiline && offset > 0 && offset < len(e.text) &&
+		(e.text[offset] == '\n' || e.text[offset-1] == '\n') {
+		return offset
+	}
 	if offset > 0 && offset < len(e.text) {
 		offset = e.prevClusterBoundary(offset + 1)
 	}

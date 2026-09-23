@@ -121,6 +121,31 @@ func (cl *CommandLine) DisplayObject(scr *vtui.ScreenBuf) {
 
 func (cl *CommandLine) ProcessKey(e *vtinput.InputEvent) bool {
 	cl.SyncInputOptions()
+	if e.Type == vtinput.KeyEventType && e.KeyDown && e.ControlKeyState&
+		(vtinput.LeftCtrlPressed|vtinput.RightCtrlPressed|
+			vtinput.LeftAltPressed|vtinput.RightAltPressed) == 0 {
+		direction := 0
+		switch e.VirtualKeyCode {
+		case vtinput.VK_UP:
+			direction = -1
+		case vtinput.VK_DOWN:
+			direction = 1
+		case vtinput.VK_PRIOR:
+			direction = -max(1, cl.Edit.Y2-cl.Edit.Y1+1)
+		case vtinput.VK_NEXT:
+			direction = max(1, cl.Edit.Y2-cl.Edit.Y1+1)
+		}
+		shift := e.ControlKeyState&vtinput.ShiftPressed != 0
+		if direction != 0 && cl.Edit.MoveCursorVerticalSelection(direction, shift) {
+			return true
+		}
+		if direction != 0 && cl.Edit.Multiline &&
+			cl.Edit.MultilineRows(cl.Edit.X2-cl.Edit.X1+1) > 1 {
+			// A multiline buffer never turns an edge arrow into history.
+			vtui.DebugLog("[FIX:command-line-navigation] edge arrow stays in multiline input direction=%d", direction)
+			return true
+		}
+	}
 	handled := cl.Edit.ProcessKey(e)
 	if handled && cl.Edit.HistoryPos != -1 {
 		// If a key was handled by the edit control, it means the text was modified.
@@ -128,7 +153,7 @@ func (cl *CommandLine) ProcessKey(e *vtinput.InputEvent) bool {
 		// We exclude simple cursor movements from this logic.
 		isNav := false
 		switch e.VirtualKeyCode {
-		case vtinput.VK_LEFT, vtinput.VK_RIGHT, vtinput.VK_HOME, vtinput.VK_END, vtinput.VK_E, vtinput.VK_X:
+		case vtinput.VK_LEFT, vtinput.VK_RIGHT, vtinput.VK_UP, vtinput.VK_DOWN, vtinput.VK_HOME, vtinput.VK_END, vtinput.VK_PRIOR, vtinput.VK_NEXT, vtinput.VK_E, vtinput.VK_X:
 			isNav = true
 		}
 		if !isNav {

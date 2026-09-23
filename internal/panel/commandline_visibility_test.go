@@ -8,6 +8,35 @@ import (
 	"github.com/unxed/vtui"
 )
 
+func TestSearchFirstUnfocusedCommandHidesOnlyWhenEmpty(t *testing.T) {
+	original := config.App
+	t.Cleanup(func() { config.App = original })
+	config.App.NavigationMode = config.NavigationSearchFirst
+	config.App.SearchCommandHideUnfocused = true
+	pf, _ := panelsFrameWithMouseSelect(t)
+	pf.ShowPanels = true
+	pf.SetCommandLineFocus(true)
+	pf.CmdLine.Edit.SetText("pending command")
+	pf.SetCommandLineFocus(false)
+	pf.ResizeConsole(80, 25)
+	if !pf.CmdLine.IsVisible() || pf.commandLineRows(80, 12) == 0 {
+		t.Fatal("nonempty unfocused input was hidden")
+	}
+	if model := pf.commandLineSemanticModel(nil); !model.Visible {
+		t.Fatal("GUI hid nonempty unfocused input")
+	}
+	pf.CmdLine.Clear()
+	pf.ResizeConsole(80, 25)
+	if pf.CmdLine.IsVisible() || pf.commandLineRows(80, 12) != 0 {
+		t.Fatal("empty unfocused input remained visible")
+	}
+	pf.CmdLine.Edit.SetText("injected while unfocused")
+	pf.SetCommandLineFocus(false)
+	if !pf.CmdLine.IsVisible() {
+		t.Fatal("new text did not reveal previously hidden input")
+	}
+}
+
 func TestSearchFirstCommandLineVisibility(t *testing.T) {
 	original := config.App
 	t.Cleanup(func() { config.App = original })
@@ -18,15 +47,18 @@ func TestSearchFirstCommandLineVisibility(t *testing.T) {
 	pf.ShowKeyBar = true
 	pf.SetCommandLineFocus(false)
 	pf.ResizeConsole(80, 25)
-	pf.CmdLine.Edit.SetText("retained command")
 	_, _, _, hiddenBottom := pf.Panels[0].GetPosition()
 	if pf.CmdLine.IsVisible() || hiddenBottom != 23 {
 		t.Fatalf("hidden visibility=%v bottom=%d", pf.CmdLine.IsVisible(), hiddenBottom)
 	}
-	for _, visible := range []bool{true, false, true} {
+	for _, focused := range []bool{true, false, true} {
 		pf.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: 0xC0, Char: '`'})
-		if pf.CmdLine.IsVisible() != visible || pf.CommandLineFocused != visible {
-			t.Fatalf("tilde: visible=%v focused=%v want=%v", pf.CmdLine.IsVisible(), pf.CommandLineFocused, visible)
+		if focused && pf.CmdLine.Edit.GetText() == "" {
+			pf.CmdLine.Edit.SetText("retained command")
+			pf.ResizeConsole(80, 25)
+		}
+		if !pf.CmdLine.IsVisible() || pf.CommandLineFocused != focused {
+			t.Fatalf("tilde: visible=%v focused=%v want focus=%v", pf.CmdLine.IsVisible(), pf.CommandLineFocused, focused)
 		}
 		full := pf.SemanticNode(nil)["commandLine"].(map[string]any)
 		incremental, _, ok := pf.SemanticIncrementalShell(nil)
@@ -34,7 +66,7 @@ func TestSearchFirstCommandLineVisibility(t *testing.T) {
 			t.Fatal("missing incremental scene")
 		}
 		for _, model := range []map[string]any{full, incremental.CommandLine.ToMap()} {
-			if model["visible"] != visible || model["autoHide"] != true {
+			if model["visible"] != true || model["autoHide"] != true {
 				t.Fatalf("incorrect command state: %v", model)
 			}
 		}
