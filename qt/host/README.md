@@ -280,10 +280,11 @@ selection without reapplying the catalog.
 On Windows and Linux, installation uses Qt's QML/runtime deployment helper.
 On macOS, the build additionally creates
 `bin/<config>/f4-qt-host.app/Contents/MacOS/f4-qt-host`. The app bundle is what
-the Go launcher prefers: Xcode's `actool` compiles the layered Icon Composer
-document into adaptive `Assets.car` data plus an `AppIcon.icns` fallback for
-older macOS releases. Do not override it with `QGuiApplication::setWindowIcon`;
-that flattens the Dock icon and disables system-controlled appearances.
+the Go launcher prefers and contains the prebuilt `assets/icon/AppIcon.icns`.
+The icon is generated on a macOS development machine and checked into the
+repository so CI only copies it and does not depend on the runner's Xcode
+version. Do not override it with `QGuiApplication::setWindowIcon`; the bundle
+metadata owns the Dock and Finder icon.
 
 The Conan generate step still stages the relocatable `lib`, `qml`, and
 `plugins` tree on macOS. This includes ZoinGallery, Qt QML and platform

@@ -76,6 +76,9 @@ class PackageReleaseScriptsTest(unittest.TestCase):
             app = self.root / f"f4-qt-darwin-{arch}-app" / f"f4-qt-darwin-{arch}.app.zip"
             with zipfile.ZipFile(app, "a") as archive:
                 archive.writestr("F4.app/Contents/MacOS/f4-qt-host", "placeholder")
+                archive.writestr(
+                    "F4.app/Contents/Resources/AppIcon.icns", "placeholder"
+                )
                 archive.writestr("F4.app/Contents/Resources/qt.conf", "Prefix=.")
 
     def test_qt_packager_emits_only_six_qt_assets(self) -> None:

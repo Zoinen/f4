@@ -627,11 +627,13 @@ jobs:
         core = root / "bin" / f"f4{suffix}"
         host = root / "bin" / f"f4-qt-host{suffix}"
         app_host = root / "bin" / "f4-qt-host.app" / "Contents" / "MacOS" / "f4-qt-host"
+        app_icon = root / "bin" / "f4-qt-host.app" / "Contents" / "Resources" / "AppIcon.icns"
         classic_app_host = root / "F4.app" / "Contents" / "MacOS" / "f4-qt-host"
+        classic_app_icon = root / "F4.app" / "Contents" / "Resources" / "AppIcon.icns"
         lucide_license = root / "licenses" / "Lucide-LICENSE.txt"
         required = [core, host, lucide_license]
         if os.environ["RUNNER_OS"] == "macOS":
-            required.extend([app_host, classic_app_host])
+            required.extend([app_host, app_icon, classic_app_host, classic_app_icon])
         missing = [str(path) for path in required if not path.is_file()]
         if missing:
             raise SystemExit("missing installed executable(s): " + ", ".join(missing))

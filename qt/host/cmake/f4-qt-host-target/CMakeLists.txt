@@ -113,28 +113,27 @@ if(APPLE)
     "-framework Network"
   )
   # The host binary is also copied into a small application bundle below so
-  # LaunchServices can own the adaptive Icon Composer icon. Keep the bare
-  # binary working as a compatibility fallback.
+  # LaunchServices can own the application icon. Keep the bare binary working
+  # as a compatibility fallback.
   set_target_properties(f4-qt-host PROPERTIES
     INSTALL_RPATH "@loader_path/../lib;@loader_path/../../../../lib"
   )
 
-  set(F4_MACOS_ICON_DIR
-    "${F4_QT_HOST_ROOT}/../../assets/icon/AppIcon.icon")
-  set(F4_MACOS_ICON_FILES
-    "${F4_MACOS_ICON_DIR}/icon.json"
-    "${F4_MACOS_ICON_DIR}/Assets/f4-shell.svg"
-    "${F4_MACOS_ICON_DIR}/Assets/f4-content.svg"
-  )
+  set(F4_MACOS_ICON_FILE
+    "${F4_QT_HOST_ROOT}/../../assets/icon/AppIcon.icns")
+  if(NOT EXISTS "${F4_MACOS_ICON_FILE}")
+    message(FATAL_ERROR
+      "The prebuilt macOS application icon is missing: ${F4_MACOS_ICON_FILE}")
+  endif()
   set(F4_MACOS_INFO_PLIST
     "${CMAKE_BINARY_DIR}/generated/f4-qt-host-Info.plist")
   configure_file("${F4_QT_HOST_ROOT}/packaging/f4-qt-host-Info.plist.in"
     "${F4_MACOS_INFO_PLIST}" @ONLY)
 
   # A source icon change must relink the host so this post-build packaging
-  # step runs again even though actool's inputs are not C++ sources.
+  # step runs again even though the icon is not a C++ source.
   set_property(SOURCE "${F4_QT_HOST_ROOT}/src/main.cpp" APPEND PROPERTY
-    OBJECT_DEPENDS "${F4_MACOS_ICON_FILES}")
+    OBJECT_DEPENDS "${F4_MACOS_ICON_FILE}")
 
   set(F4_MACOS_APP_DIR
     "$<TARGET_FILE_DIR:f4-qt-host>/f4-qt-host.app")
@@ -142,27 +141,19 @@ if(APPLE)
     COMMAND "${CMAKE_COMMAND}" -E make_directory
       "${F4_MACOS_APP_DIR}/Contents/MacOS"
       "${F4_MACOS_APP_DIR}/Contents/Resources"
-    COMMAND xcrun actool "${F4_MACOS_ICON_DIR}"
-      --compile "${F4_MACOS_APP_DIR}/Contents/Resources"
-      --output-format human-readable-text
-      --notices
-      --warnings
-      --output-partial-info-plist
-        "${F4_MACOS_APP_DIR}/Contents/Resources/AppIcon-Partial.plist"
-      --app-icon AppIcon
-      --include-all-app-icons
-      --enable-on-demand-resources NO
-      --development-region en
-      --target-device mac
-      --minimum-deployment-target "${CMAKE_OSX_DEPLOYMENT_TARGET}"
-      --platform macosx
+    COMMAND "${CMAKE_COMMAND}" -E rm -f
+      "${F4_MACOS_APP_DIR}/Contents/Resources/AppIcon-Partial.plist"
+      "${F4_MACOS_APP_DIR}/Contents/Resources/Assets.car"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+      "${F4_MACOS_ICON_FILE}"
+      "${F4_MACOS_APP_DIR}/Contents/Resources/AppIcon.icns"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
       "${F4_MACOS_INFO_PLIST}"
       "${F4_MACOS_APP_DIR}/Contents/Info.plist"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
       "$<TARGET_FILE:f4-qt-host>"
       "${F4_MACOS_APP_DIR}/Contents/MacOS/f4-qt-host"
-    COMMENT "Building adaptive macOS f4-qt-host.app icon bundle"
+    COMMENT "Building macOS f4-qt-host.app icon bundle"
     VERBATIM
   )
 elseif(UNIX)

@@ -43,6 +43,7 @@ def verify_app_archive(path: pathlib.Path) -> None:
     required = {
         "F4.app/Contents/MacOS/f4",
         "F4.app/Contents/MacOS/f4-qt-host",
+        "F4.app/Contents/Resources/AppIcon.icns",
         "F4.app/Contents/Resources/qt.conf",
     }
     if not required.issubset(members):
