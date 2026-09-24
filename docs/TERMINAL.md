@@ -504,6 +504,10 @@ unchanged when the command input does not own focus (or has a single-line input)
 In Qt, a long input shows a scrollbar and keeps the viewport steady while
 the caret stays visible. Mouse drag selects text, double-click selects a word,
 and triple-click selects a logical line in both Qt and console modes.
+Holding Alt while dragging selects a rectangular block in the editor, text
+viewer, console output history, and multiline command input. Block columns are
+measured in displayed cells, so each selected row keeps the same left and right
+edges; Alt-click in the editor without dragging still adds or removes a caret.
 
 ## Selection and GUI launch environment
 

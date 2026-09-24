@@ -16,6 +16,19 @@ Rectangle {
     onSourceTextChanged: {
         preferredColumn = -1
         lastVerticalCursor = -1
+        blockPreview = null
+    }
+    property var blockPreview: null
+    readonly property var displayedBlock: blockPreview || commandLine
+    function acknowledgeBlockPreview() {
+        if (blockPreview === null || commandLineFocusArea.pressed)
+            return
+        if (commandLine.blockSelection === true
+                && commandLine.blockAnchorRow === blockPreview.blockAnchorRow
+                && commandLine.blockAnchorColumn === blockPreview.blockAnchorColumn
+                && commandLine.blockFocusRow === blockPreview.blockFocusRow
+                && commandLine.blockFocusColumn === blockPreview.blockFocusColumn)
+            blockPreview = null
     }
     readonly property var displayModel: buildDisplayModel()
     property real preferredColumn: -1
@@ -34,6 +47,14 @@ Rectangle {
             else hi = mid
         }
         return lo
+    }
+
+    function blockPoint(x, y) {
+        const cellWidth = Math.max(1, commandLineFontMetrics.advanceWidth("M"))
+        return {
+            "row": Math.max(0, Math.floor(y / textLineHeight)),
+            "column": Math.max(0, Math.floor(x / cellWidth))
+        }
     }
 
     function moveVisualCursor(direction) {
@@ -164,7 +185,10 @@ Rectangle {
     // text after a declarative cursor binding has already run.  Reapply
     // the semantic caret on the next event-loop turn, once both values
     // have settled.
-    onCommandLineChanged: commandInput.scheduleSemanticCursorSync()
+    onCommandLineChanged: {
+        acknowledgeBlockPreview()
+        commandInput.scheduleSemanticCursorSync()
+    }
 
     x: nativeLayout ? 0 : hostWindow.pxX(commandLine.x)
     y: nativeLayout ? hostWindow.snapPx(hostWindow.height - hostWindow.keyBarHeight() - hostWindow.commandLineHeight(shell)) : hostWindow.pxY(commandLine.y)
@@ -222,6 +246,7 @@ Rectangle {
         TextEdit {
             id: commandInput
             objectName: "commandLineInput"
+            z: 2
             x: commandLineRoot.multiline ? 0 : -hostWindow.snapPx(Math.max(0,
                    cursorRectangle.x + commandLineFontMetrics.advanceWidth("M") - inputViewport.width))
             y: commandLineRoot.textTopInset - commandLineRoot.scrollTop
@@ -251,6 +276,9 @@ Rectangle {
             }
 
             function syncSemanticCursor() {
+                // Older server echoes must not move the viewport under a drag.
+                if (commandLineFocusArea.pressed || commandLineRoot.blockPreview !== null)
+                    return
                 // Apply format before text in one transaction. Switching a
                 // rich document to plain text otherwise serializes its HTML
                 // into the command when the two bindings settle separately.
@@ -259,7 +287,8 @@ Rectangle {
                 if (text !== presentationText)
                     text = presentationText
                 var position = semanticCursorPosition()
-                const start = commandLine.selectionStart === undefined ? -1
+                const start = commandLine.blockSelection === true ? -1
+                    : commandLine.selectionStart === undefined ? -1
                     : Number(commandLine.selectionStart)
                 const end = commandLine.selectionEnd === undefined ? -1
                     : Number(commandLine.selectionEnd)
@@ -298,6 +327,52 @@ Rectangle {
                 interval: 0
                 repeat: false
                 onTriggered: commandInput.syncSemanticCursor()
+            }
+        }
+
+        Item {
+            id: commandBlockSelectionOverlay
+            objectName: "commandLineBlockSelectionOverlay"
+            anchors.fill: parent
+            z: 1
+            visible: commandLineRoot.multiline && commandLineRoot.displayedBlock.blockSelection === true
+            clip: true
+            readonly property int firstRow: Math.max(
+                Math.floor(commandLineRoot.scrollTop / commandLineRoot.textLineHeight),
+                Math.min(Number(commandLineRoot.displayedBlock.blockAnchorRow || 0),
+                         Number(commandLineRoot.displayedBlock.blockFocusRow || 0)))
+            readonly property int lastRow: Math.min(
+                Math.ceil((commandLineRoot.scrollTop + inputViewport.height) / commandLineRoot.textLineHeight),
+                Math.max(Number(commandLineRoot.displayedBlock.blockAnchorRow || 0),
+                         Number(commandLineRoot.displayedBlock.blockFocusRow || 0)))
+            readonly property int firstColumn: Math.min(
+                Number(commandLineRoot.displayedBlock.blockAnchorColumn || 0),
+                Number(commandLineRoot.displayedBlock.blockFocusColumn || 0))
+            readonly property int lastColumn: Math.max(
+                Number(commandLineRoot.displayedBlock.blockAnchorColumn || 0),
+                Number(commandLineRoot.displayedBlock.blockFocusColumn || 0))
+
+            Repeater {
+                model: commandBlockSelectionOverlay.visible
+                       ? Math.max(0, commandBlockSelectionOverlay.lastRow
+                         - commandBlockSelectionOverlay.firstRow + 1) : 0
+                delegate: Rectangle {
+                    required property int index
+                    objectName: "commandLineBlockSelectionRow" + index
+                    x: commandBlockSelectionOverlay.firstColumn
+                       * commandLineFontMetrics.advanceWidth("M")
+                    y: commandLineRoot.textTopInset
+                       + (commandBlockSelectionOverlay.firstRow + index)
+                         * commandLineRoot.textLineHeight
+                       - commandLineRoot.scrollTop
+                    width: Math.max(0, commandBlockSelectionOverlay.lastColumn
+                                       - commandBlockSelectionOverlay.firstColumn)
+                           * commandLineFontMetrics.advanceWidth("M")
+                    height: commandLineRoot.textLineHeight
+                    visible: width > 0 && y + height > 0 && y < parent.height
+                    color: commandLineRoot.hostWindow.selectedBg
+                    opacity: 0.72
+                }
             }
         }
         }
@@ -443,14 +518,37 @@ Rectangle {
         property int wordAnchorStart: -1
         property int wordAnchorEnd: -1
         property int clickCount: 0
+        property bool blockGesture: false
+        property int blockAnchorRow: 0
+        property int blockAnchorColumn: 0
         property real lastClickX: -10000
         property real lastClickY: -10000
         property double lastClickAt: 0
-        function selectAt(anchor, cursor) {
-            commandInput.select(anchor, cursor)
-            hostWindow.action({action: "commandLine.select",
+        function selectAt(anchor, cursor, block, anchorRow, anchorColumn, focusRow, focusColumn) {
+            if (block === true)
+                commandInput.deselect()
+            else
+                commandInput.select(anchor, cursor)
+            const action = {action: "commandLine.select",
                 anchor: commandLineRoot.sourcePosition(anchor),
-                cursorPosition: commandLineRoot.sourcePosition(cursor)})
+                cursorPosition: commandLineRoot.sourcePosition(cursor),
+                block: block === true}
+            if (block === true) {
+                const cellWidth = Math.max(1, commandLineFontMetrics.advanceWidth("M"))
+                action.blockAnchorRow = anchorRow
+                action.blockAnchorColumn = anchorColumn
+                action.blockFocusRow = focusRow
+                action.blockFocusColumn = focusColumn
+                action.blockWrapWidth = Math.max(1, Math.floor(inputViewport.width / cellWidth))
+                commandLineRoot.blockPreview = {
+                    blockSelection: true, blockAnchorRow: anchorRow,
+                    blockAnchorColumn: anchorColumn, blockFocusRow: focusRow,
+                    blockFocusColumn: focusColumn
+                }
+            } else {
+                commandLineRoot.blockPreview = null
+            }
+            hostWindow.action(action)
         }
         onPressed: mouse => {
             const point = commandInput.mapFromItem(commandLineFocusArea, mouse.x, mouse.y)
@@ -470,7 +568,15 @@ Rectangle {
             selectionAnchor = position
             wordAnchorStart = -1
             wordAnchorEnd = -1
-            if (clickCount === 2) {
+            blockGesture = commandLineRoot.multiline
+                && (mouse.modifiers & Qt.AltModifier) !== 0
+            if (blockGesture) {
+                clickCount = 0
+                const blockAnchor = commandLineRoot.blockPoint(point.x, point.y)
+                blockAnchorRow = blockAnchor.row
+                blockAnchorColumn = blockAnchor.column
+                selectAt(position, position, false)
+            } else if (clickCount === 2) {
                 commandInput.selectWord()
                 wordAnchorStart = commandInput.selectionStart
                 wordAnchorEnd = commandInput.selectionEnd
@@ -488,7 +594,12 @@ Rectangle {
                 return
             const point = commandInput.mapFromItem(commandLineFocusArea, mouse.x, mouse.y)
             const position = commandInput.positionAt(Math.max(0, point.x), Math.max(0, point.y))
-            if (clickCount === 2 && wordAnchorStart >= 0) {
+            if (blockGesture) {
+                const blockFocus = commandLineRoot.blockPoint(point.x, point.y)
+                selectAt(selectionAnchor, position, true,
+                         blockAnchorRow, blockAnchorColumn,
+                         blockFocus.row, blockFocus.column)
+            } else if (clickCount === 2 && wordAnchorStart >= 0) {
                 commandInput.cursorPosition = position
                 commandInput.selectWord()
                 const start = commandInput.selectionStart
@@ -503,8 +614,21 @@ Rectangle {
                 selectAt(selectionAnchor, position)
             }
         }
-        onReleased: selectionAnchor = -1
-        onCanceled: selectionAnchor = -1
+        onReleased: {
+            const wasBlock = blockGesture
+            selectionAnchor = -1
+            blockGesture = false
+            if (wasBlock) {
+                commandLineRoot.acknowledgeBlockPreview()
+                commandInput.scheduleSemanticCursorSync()
+            }
+        }
+        onCanceled: {
+            selectionAnchor = -1
+            blockGesture = false
+            commandLineRoot.blockPreview = null
+            commandInput.scheduleSemanticCursorSync()
+        }
     }
 
     Rectangle {

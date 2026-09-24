@@ -121,17 +121,27 @@ type EditorView struct {
 	// CursorLine/CursorPos and is never listed here, so every existing
 	// single-caret path keeps working untouched. Selections are still the
 	// primary caret's alone.
-	extraCursors       []extraCaret
-	RectSelActive      bool
-	rectSelStartLine   int
-	rectSelStartCol    int
-	mouseRectSelecting bool
-	mouseWordSelecting bool
-	mouseWordStart     int
-	mouseWordEnd       int
-	hoverURL           string
-	hoverURLStart      int
-	editSession        int // Unique ID to fence background tasks
+	extraCursors            []extraCaret
+	RectSelActive           bool
+	rectSelStartLine        int
+	rectSelStartCol         int
+	rectSelFocusCol         int
+	rectSelFocusColSet      bool
+	mouseRectSelecting      bool
+	mouseAltCandidate       bool
+	mouseAltDragged         bool
+	mouseAltCaretToggled    bool
+	mouseAltHadCaret        bool
+	mouseAltAnchorLine      int
+	mouseAltAnchorCol       int
+	mouseAltAnchorVisualRow int
+	mouseAltAnchorOffset    int
+	mouseWordSelecting      bool
+	mouseWordStart          int
+	mouseWordEnd            int
+	hoverURL                string
+	hoverURLStart           int
+	editSession             int // Unique ID to fence background tasks
 
 	pasting     bool
 	Saving      bool
@@ -2119,6 +2129,7 @@ func (ev *EditorView) processKeyInner(e *vtinput.InputEvent) bool {
 	}
 
 	handleNav := func() {
+		ev.rectSelFocusColSet = false
 		if alt {
 			ev.SelActive = false
 			if !ev.RectSelActive {
@@ -2877,10 +2888,7 @@ func (ev *EditorView) fillCellsSpan(target []vtui.CharInfo, data []byte, default
 			if minY > maxY {
 				minY, maxY = maxY, minY
 			}
-			minX, maxX := ev.rectSelStartCol, ev.getVisualColOf(ev.CursorLine, ev.CursorPos)
-			if minX > maxX {
-				minX, maxX = maxX, minX
-			}
+			minX, maxX := ev.rectSelectionColumns()
 			if visualRow >= minY && visualRow <= maxY && visualCol < maxX && visualCol+w > minX {
 				attr = selAttr
 			}
@@ -3202,6 +3210,44 @@ func (ev *EditorView) ProcessMouse(e *vtinput.InputEvent) bool {
 			return true
 		}
 	}
+	if ev.mouseAltCandidate {
+		if e.MouseEventFlags&vtinput.MouseMoved != 0 && e.ButtonState&vtinput.FromLeft1stButtonPressed != 0 {
+			mx, my := int(e.MouseX), int(e.MouseY)
+			visualCol := mx - ev.X1 + ev.ScrollLeft
+			visualRow := my - (ev.Y1 + 1) + ev.ScrollTopRow
+			offset := ev.snapMouseOffsetToClusterBoundary(ev.Engine.VisualToLogical(visualRow, visualCol))
+			line := ev.Li.GetLineAtOffset(offset)
+			if !ev.mouseAltDragged && (visualRow != ev.mouseAltAnchorVisualRow || visualCol != ev.mouseAltAnchorCol) {
+				if ev.mouseAltCaretToggled {
+					ev.setExtraCaretAt(ev.mouseAltAnchorOffset, ev.mouseAltHadCaret)
+				}
+				vtui.DebugLog("[FIX:text-block-selection] editor Alt drag start row=%d column=%d",
+					ev.mouseAltAnchorLine, ev.mouseAltAnchorCol)
+				ev.mouseAltDragged = true
+				ev.SelActive = false
+				ev.RectSelActive = true
+				ev.rectSelStartLine, ev.rectSelStartCol = ev.mouseAltAnchorLine, ev.mouseAltAnchorCol
+			}
+			if ev.mouseAltDragged {
+				ev.rectSelFocusCol, ev.rectSelFocusColSet = visualCol, true
+				ev.CursorLine = line
+				ev.CursorPos = offset - ev.Li.GetLineOffset(line)
+				ev.updateDesiredVisualCol()
+				ev.EnsureCursorVisible()
+				vtui.FrameManager.Redraw()
+			}
+			return true
+		}
+		if e.ButtonState == 0 || !e.KeyDown {
+			if ev.mouseAltDragged && ev.RectSelActive {
+				ev.CopySelection()
+			}
+			ev.mouseAltCandidate, ev.mouseAltDragged = false, false
+			ev.mouseAltCaretToggled, ev.mouseAltHadCaret = false, false
+			vtui.FrameManager.Redraw()
+			return true
+		}
+	}
 
 	// A rectangular mouse drag keeps ownership of the gesture even when a
 	// backend reports motion without the button bit. On release, copy the
@@ -3209,7 +3255,9 @@ func (ev *EditorView) ProcessMouse(e *vtinput.InputEvent) bool {
 	// operations.
 	if ev.mouseRectSelecting {
 		if e.MouseEventFlags&vtinput.MouseMoved != 0 {
+			visualCol := int(e.MouseX) - ev.X1 + ev.ScrollLeft
 			if ev.updateCursorFromMouse(int(e.MouseX), int(e.MouseY)) {
+				ev.rectSelFocusCol, ev.rectSelFocusColSet = visualCol, true
 				vtui.FrameManager.Redraw()
 			}
 			return true
@@ -3217,10 +3265,11 @@ func (ev *EditorView) ProcessMouse(e *vtinput.InputEvent) bool {
 		if e.ButtonState == 0 || !e.KeyDown {
 			ev.mouseRectSelecting = false
 			if ev.RectSelActive {
-				atStart := ev.rectSelStartLine == ev.CursorLine &&
-					ev.rectSelStartCol == ev.getVisualColOf(ev.CursorLine, ev.CursorPos)
+				minColumn, maxColumn := ev.rectSelectionColumns()
+				atStart := ev.rectSelStartLine == ev.CursorLine && minColumn == maxColumn
 				if atStart {
 					ev.RectSelActive = false
+					ev.rectSelFocusColSet = false
 				} else {
 					ev.CopySelection()
 				}
@@ -3246,11 +3295,31 @@ func (ev *EditorView) ProcessMouse(e *vtinput.InputEvent) bool {
 		}
 		return true
 	}
+	if ev.mouseAltCandidate && e.MouseEventFlags&vtinput.MouseMoved == 0 && e.ButtonState != 0 {
+		ev.mouseAltCandidate, ev.mouseAltDragged = false, false
+		ev.mouseAltCaretToggled, ev.mouseAltHadCaret = false, false
+	}
 
 	switch e.ButtonState {
 	case vtinput.FromLeft1stButtonPressed:
 		mx, my := int(e.MouseX), int(e.MouseY)
 		if mx >= ev.X1 && mx <= ev.X2 && my >= ev.Y1+1 && my <= ev.Y2 {
+			if editorAddCursorClick(e) {
+				visualCol := mx - ev.X1 + ev.ScrollLeft
+				visualRow := my - (ev.Y1 + 1) + ev.ScrollTopRow
+				offset := ev.snapMouseOffsetToClusterBoundary(ev.Engine.VisualToLogical(visualRow, visualCol))
+				ev.mouseAltHadCaret = ev.hasExtraCaretAt(offset)
+				ev.mouseAltCaretToggled = ev.ToggleCursorAt(offset)
+				ev.SelActive, ev.RectSelActive = false, false
+				ev.mouseAltCandidate = true
+				ev.mouseAltDragged = false
+				ev.mouseAltAnchorLine, ev.mouseAltAnchorCol = ev.Li.GetLineAtOffset(offset), visualCol
+				ev.mouseAltAnchorVisualRow = visualRow
+				ev.mouseAltAnchorOffset = offset
+				ev.rectSelFocusColSet = false
+				vtui.FrameManager.Redraw()
+				return true
+			}
 			// Clicking somewhere is asking for one caret there; only the
 			// Alt+click gesture below adds to the set.
 			if !editorAddCursorClick(e) {
@@ -3273,6 +3342,7 @@ func (ev *EditorView) ProcessMouse(e *vtinput.InputEvent) bool {
 				ev.mouseWordSelecting = false
 				ev.SelActive = false
 				ev.RectSelActive = false
+				ev.rectSelFocusColSet = false
 				ev.CursorLine = ev.Li.GetLineAtOffset(offset)
 				ev.CursorPos = offset - ev.Li.GetLineOffset(ev.CursorLine)
 				ev.updateDesiredVisualCol()
@@ -3281,6 +3351,7 @@ func (ev *EditorView) ProcessMouse(e *vtinput.InputEvent) bool {
 					ev.RectSelActive = true
 					ev.rectSelStartLine = ev.CursorLine
 					ev.rectSelStartCol = visualCol
+					ev.rectSelFocusCol, ev.rectSelFocusColSet = visualCol, true
 					ev.mouseRectSelecting = true
 				}
 			} else {
@@ -3290,6 +3361,7 @@ func (ev *EditorView) ProcessMouse(e *vtinput.InputEvent) bool {
 				if !ev.SelActive || e.MouseEventFlags&vtinput.MouseMoved == 0 {
 					ev.SelActive = false
 					ev.RectSelActive = false
+					ev.rectSelFocusColSet = false
 					ev.CursorLine = ev.Li.GetLineAtOffset(offset)
 					ev.CursorPos = offset - ev.Li.GetLineOffset(ev.CursorLine)
 					ev.updateDesiredVisualCol()
@@ -3349,8 +3421,10 @@ func (ev *EditorView) ProcessMouse(e *vtinput.InputEvent) bool {
 			ev.SelActive = false
 			vtui.FrameManager.Redraw()
 		}
-		if ev.RectSelActive && ev.rectSelStartLine == ev.CursorLine && ev.rectSelStartCol == ev.getVisualColOf(ev.CursorLine, ev.CursorPos) {
+		minColumn, maxColumn := ev.rectSelectionColumns()
+		if ev.RectSelActive && ev.rectSelStartLine == ev.CursorLine && minColumn == maxColumn {
 			ev.RectSelActive = false
+			ev.rectSelFocusColSet = false
 			vtui.FrameManager.Redraw()
 		}
 	}
@@ -3376,14 +3450,25 @@ func (ev *EditorView) processDocumentPointer(e *vtinput.InputEvent, fragmentOffs
 		}
 	}()
 	if e.ButtonState == 0 {
+		if ev.mouseAltCandidate {
+			if ev.mouseAltDragged && ev.RectSelActive {
+				ev.CopySelection()
+			}
+			ev.mouseAltCandidate, ev.mouseAltDragged = false, false
+			ev.mouseAltCaretToggled, ev.mouseAltHadCaret = false, false
+			ev.semanticPointerActive = false
+			return true
+		}
 		// Always release capture, even if geometry changed during the drag.
 		ev.semanticPointerActive = false
 		ev.mouseWordSelecting = false
 		if ev.SelActive && ev.SelAnchorOffset == ev.Li.GetLineOffset(ev.CursorLine)+ev.CursorPos {
 			ev.SelActive = false
 		}
-		if ev.RectSelActive && ev.rectSelStartLine == ev.CursorLine && ev.rectSelStartCol == ev.getVisualColOf(ev.CursorLine, ev.CursorPos) {
+		minColumn, maxColumn := ev.rectSelectionColumns()
+		if ev.RectSelActive && ev.rectSelStartLine == ev.CursorLine && minColumn == maxColumn {
 			ev.RectSelActive = false
+			ev.rectSelFocusColSet = false
 		}
 		return false
 	}
@@ -3416,14 +3501,24 @@ func (ev *EditorView) processDocumentPointer(e *vtinput.InputEvent, fragmentOffs
 	// Qt and supersedes an earlier destination that has not been published.
 	ev.semanticPendingScroll = false
 	visualCol := max(0, scrollLeft+column)
+	visualRow, _ := ev.Engine.LogicalToVisual(int(fragmentOffset))
 	offset := ev.Engine.FragmentColumnToLogical(*fragment, visualCol)
 	if !moved {
+		if ev.mouseAltCandidate {
+			ev.mouseAltCandidate, ev.mouseAltDragged = false, false
+			ev.mouseAltCaretToggled, ev.mouseAltHadCaret = false, false
+		}
 		if e.ButtonState == vtinput.FromLeft1stButtonPressed && editorAddCursorClick(e) {
-			changed = ev.ToggleCursorAt(offset)
-			if changed {
-				vtui.FrameManager.Redraw()
-			}
-			return changed
+			ev.mouseAltHadCaret = ev.hasExtraCaretAt(offset)
+			ev.mouseAltCaretToggled = ev.ToggleCursorAt(offset)
+			ev.mouseAltCandidate, ev.mouseAltDragged = true, false
+			ev.mouseAltAnchorLine, ev.mouseAltAnchorCol = line, visualCol
+			ev.mouseAltAnchorVisualRow = visualRow
+			ev.mouseAltAnchorOffset = offset
+			ev.semanticPointerActive = true
+			ev.semanticPointerRevision = layoutRevision
+			ev.SelActive, ev.RectSelActive = false, false
+			return true
 		}
 		if ev.ClearExtraCursors() {
 			vtui.FrameManager.Redraw()
@@ -3437,10 +3532,25 @@ func (ev *EditorView) processDocumentPointer(e *vtinput.InputEvent, fragmentOffs
 	if moved && ev.mouseWordSelecting {
 		ev.extendWordSelection(offset)
 	}
+	if moved && ev.mouseAltCandidate {
+		if !ev.mouseAltDragged && (visualRow != ev.mouseAltAnchorVisualRow || visualCol != ev.mouseAltAnchorCol) {
+			if ev.mouseAltCaretToggled {
+				ev.setExtraCaretAt(ev.mouseAltAnchorOffset, ev.mouseAltHadCaret)
+			}
+			ev.mouseAltDragged = true
+			ev.SelActive = false
+			ev.RectSelActive = true
+			ev.rectSelStartLine, ev.rectSelStartCol = ev.mouseAltAnchorLine, ev.mouseAltAnchorCol
+		}
+		if ev.mouseAltDragged {
+			ev.rectSelFocusCol, ev.rectSelFocusColSet = visualCol, true
+		}
+	}
 	if !moved {
 		ev.semanticPointerActive = true
 		ev.semanticPointerRevision = layoutRevision
 		ev.SelActive, ev.RectSelActive = false, false
+		ev.rectSelFocusColSet = false
 		ev.mouseWordSelecting = false
 		if e.ButtonState == vtinput.FromLeft1stButtonPressed {
 			if e.MouseEventFlags&vtinput.DoubleClick != 0 {
@@ -3453,6 +3563,7 @@ func (ev *EditorView) processDocumentPointer(e *vtinput.InputEvent, fragmentOffs
 		} else if e.ButtonState == vtinput.RightmostButtonPressed {
 			ev.RectSelActive = true
 			ev.rectSelStartLine, ev.rectSelStartCol = ev.CursorLine, visualCol
+			ev.rectSelFocusCol, ev.rectSelFocusColSet = visualCol, true
 		}
 	}
 	left := ev.ScrollLeft
@@ -3477,7 +3588,8 @@ func (ev *EditorView) processDocumentPointer(e *vtinput.InputEvent, fragmentOffs
 type editorPointerPresentation struct {
 	line, pos, virtualSpaces, top, left, targetLine int
 	selection, rectSelection                        bool
-	anchor, rectLine, rectColumn                    int
+	anchor, rectLine, rectColumn, rectFocusColumn   int
+	rectFocusColumnSet                              bool
 	layoutRevision                                  uint64
 }
 
@@ -3487,14 +3599,14 @@ func (ev *EditorView) documentPointerPresentation() editorPointerPresentation {
 		top: ev.ScrollTopRow, left: ev.ScrollLeft, targetLine: ev.TargetLine,
 		selection: ev.SelActive, rectSelection: ev.RectSelActive,
 		anchor: ev.SelAnchorOffset, rectLine: ev.rectSelStartLine, rectColumn: ev.rectSelStartCol,
+		rectFocusColumn: ev.rectSelFocusCol, rectFocusColumnSet: ev.rectSelFocusColSet,
 		layoutRevision: ev.semanticLayoutRevision,
 	}
 }
 
-// editorAddCursorClick reports the gesture that places or removes an extra
-// caret. Alt+click is what VS Code uses and what is left here: Ctrl+click
-// opens the URL under the pointer and Alt+Shift+click starts a block
-// selection, so both modifiers have to be absent.
+// editorAddCursorClick reports an Alt-click that places or removes an extra
+// caret. Alt-drag promotes the click to a block selection after the pointer
+// moves; Alt+Shift continues to start a block selection immediately.
 func editorAddCursorClick(e *vtinput.InputEvent) bool {
 	mods := e.ControlKeyState
 	return e.KeyDown &&
@@ -5103,6 +5215,31 @@ func (ev *EditorView) ToggleCursorAt(offset int) bool {
 	return true
 }
 
+func (ev *EditorView) hasExtraCaretAt(offset int) bool {
+	for _, cursor := range ev.extraCursors {
+		if cursor.off == offset {
+			return true
+		}
+	}
+	return false
+}
+
+func (ev *EditorView) setExtraCaretAt(offset int, present bool) {
+	for index, cursor := range ev.extraCursors {
+		if cursor.off != offset {
+			continue
+		}
+		if !present {
+			ev.extraCursors = append(ev.extraCursors[:index], ev.extraCursors[index+1:]...)
+		}
+		return
+	}
+	if present {
+		ev.extraCursors = append(ev.extraCursors, extraCaret{off: offset, desiredCol: ev.visualColAt(offset)})
+		ev.sortExtraCarets()
+	}
+}
+
 // clearExtraCursors drops back to a single caret and reports whether there was
 // anything to drop.
 func (ev *EditorView) ClearExtraCursors() bool {
@@ -5939,10 +6076,7 @@ func (ev *EditorView) CopySelection() {
 		if minY > maxY {
 			minY, maxY = maxY, minY
 		}
-		minX, maxX := ev.rectSelStartCol, ev.getVisualColOf(ev.CursorLine, ev.CursorPos)
-		if minX > maxX {
-			minX, maxX = maxX, minX
-		}
+		minX, maxX := ev.rectSelectionColumns()
 
 		var lines []string
 		for y := minY; y <= maxY; y++ {
@@ -6124,10 +6258,7 @@ func (ev *EditorView) DeleteSelection() {
 		if minY > maxY {
 			minY, maxY = maxY, minY
 		}
-		minX, maxX := ev.rectSelStartCol, ev.getVisualColOf(ev.CursorLine, ev.CursorPos)
-		if minX > maxX {
-			minX, maxX = maxX, minX
-		}
+		minX, maxX := ev.rectSelectionColumns()
 
 		mutated := false
 
@@ -6189,6 +6320,7 @@ func (ev *EditorView) DeleteSelection() {
 			ev.Engine.InvalidateFrom(minY)
 		}
 		ev.RectSelActive = false
+		ev.rectSelFocusColSet = false
 		ev.EnsureCursorVisible()
 		return
 	}
@@ -7136,6 +7268,17 @@ func (ev *EditorView) getVisualColOf(line, pos int) int {
 	offset := ev.Li.GetLineOffset(line) + pos
 	_, vCol := ev.Engine.LogicalToVisual(offset)
 	return vCol
+}
+
+func (ev *EditorView) rectSelectionColumns() (int, int) {
+	start, focus := ev.rectSelStartCol, ev.getVisualColOf(ev.CursorLine, ev.CursorPos)
+	if ev.rectSelFocusColSet {
+		focus = ev.rectSelFocusCol
+	}
+	if start > focus {
+		start, focus = focus, start
+	}
+	return start, focus
 }
 
 // WaitForIndexing joins the background line indexer. A caller that cancelled

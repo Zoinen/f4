@@ -24,6 +24,37 @@ Item {
     property string pointerDocumentKey: ""
     property real pointerLayoutRevision: 0
     property string lastEdgeEndpoint: ""
+    property var cursorState: ({})
+    property var blockPreview: null
+    property var blockAnchor: null
+    property real lastAbsoluteRow: 0
+
+    function updateBlockPreview(action) {
+        if (action.phase === "press") {
+            blockPreview = null
+            blockAnchor = action.alt && action.button === "left"
+                ? { row: lastAbsoluteRow, column: action.column + (action.scrollLeft || 0) } : null
+        } else if (action.moved && blockAnchor !== null) {
+            blockPreview = Object.assign({}, cursorState, {
+                rectSelection: true, selection: false,
+                rectAnchorRow: blockAnchor.row, rectAnchorColumn: blockAnchor.column,
+                rectFocusRow: lastAbsoluteRow,
+                rectFocusColumn: Math.max(0, action.column + (action.scrollLeft || 0))
+            })
+        }
+    }
+
+    function acknowledgeBlockPreview() {
+        if (activePointer !== null || blockPreview === null)
+            return
+        if (cursorState.rectSelection === true
+                && cursorState.rectAnchorRow === blockPreview.rectAnchorRow
+                && cursorState.rectAnchorColumn === blockPreview.rectAnchorColumn
+                && cursorState.rectFocusRow === blockPreview.rectFocusRow
+                && cursorState.rectFocusColumn === blockPreview.rectFocusColumn)
+            blockPreview = null
+    }
+    onCursorStateChanged: acknowledgeBlockPreview()
     readonly property bool pointerAtEdge: activePointer !== null
         && viewportController.standaloneViewport
         && (activePointer.y < 0 || activePointer.y >= documentList.height
@@ -67,6 +98,7 @@ Item {
                     absoluteRow - (viewportController.standaloneViewport
                                    ? viewportController.appliedViewportStart
                                    : Number(frame.viewportStart || 0))))
+        lastAbsoluteRow = absoluteRow
         lastMouseColumn = column
         lastMouseRow = row
         const buttons = phase === "release" ? Qt.NoButton
@@ -112,6 +144,7 @@ Item {
         const actionMap = mouseAction(mouse, phase, moved, doubleClick)
         if (actionMap === null)
             return
+        updateBlockPreview(actionMap)
         if (phase === "press")
             viewportController.cancelPendingIntent()
         if (viewportController.standaloneViewport && phase !== "release") {
@@ -132,12 +165,17 @@ Item {
             // Only the newest pointer endpoint can become visible in this
             // presentation frame, so coalesce native drag samples locally.
             pendingMouseMove = actionMap
-            mouseMoveTimer.restart()
+            if (!mouseMoveTimer.running)
+                mouseMoveTimer.start()
             return
         }
         mouseMoveTimer.stop()
         flushMouseMove()
         hostWindow.action(actionMap, true)
+        if (phase === "release") {
+            blockAnchor = null
+            acknowledgeBlockPreview()
+        }
     }
 
     function releaseMouse() {
@@ -155,6 +193,8 @@ Item {
             "row": lastMouseRow
         })
         hostWindow.action(action, true)
+        blockAnchor = null
+        acknowledgeBlockPreview()
     }
 
     function reset() {
@@ -163,6 +203,8 @@ Item {
         lastMouseAction = null
         activePointer = null
         lastEdgeEndpoint = ""
+        blockPreview = null
+        blockAnchor = null
     }
 
     function endpointSignature(action) {
@@ -193,6 +235,7 @@ Item {
         if (endpoint === lastEdgeEndpoint)
             return
         lastEdgeEndpoint = endpoint
+        updateBlockPreview(action)
         pendingMouseMove = null
         mouseMoveTimer.stop()
         hostWindow.action(action, true)
@@ -200,7 +243,7 @@ Item {
     }
 
     onFrameChanged: {
-        if (activePointer !== null
+        if ((activePointer !== null || blockPreview !== null)
                 && (hostWindow.cleanText(frame.documentKey || frame.id)
                     !== pointerDocumentKey
                     || Number(frame.layoutRevision || 0) !== pointerLayoutRevision))

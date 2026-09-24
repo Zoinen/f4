@@ -274,6 +274,39 @@ func TestEditorDocumentDoubleClickDragSelectsWholeWords(t *testing.T) {
 	}
 }
 
+func TestEditorDocumentAltBlockRetainsColumnOnEmptyRow(t *testing.T) {
+	ev := projectionTestEditor(t, "abc\n\nxyz")
+	vtui.SetClipboard("old clipboard")
+	revision := ev.semanticLayoutRevision
+	press := &vtinput.InputEvent{
+		Type: vtinput.MouseEventType, KeyDown: true,
+		ButtonState:     vtinput.FromLeft1stButtonPressed,
+		ControlKeyState: vtinput.LeftAltPressed,
+	}
+	if !ev.processDocumentPointer(press, 0, 1, 0, revision) {
+		t.Fatal("Alt-click anchor was not applied")
+	}
+	move := &vtinput.InputEvent{
+		Type:            vtinput.MouseEventType,
+		ButtonState:     vtinput.FromLeft1stButtonPressed,
+		MouseEventFlags: vtinput.MouseMoved,
+	}
+	if !ev.processDocumentPointer(move, 4, 3, 0, revision) {
+		t.Fatal("Alt drag endpoint on the empty row was not applied")
+	}
+	if !ev.RectSelActive || !ev.rectSelFocusColSet || ev.rectSelFocusCol != 3 {
+		t.Fatalf("empty-row block geometry active=%v focus=%d set=%v",
+			ev.RectSelActive, ev.rectSelFocusCol, ev.rectSelFocusColSet)
+	}
+	ev.processDocumentPointer(&vtinput.InputEvent{Type: vtinput.MouseEventType}, -1, 0, 0, revision)
+	if ev.mouseAltCandidate || ev.semanticPointerActive {
+		t.Fatal("Alt drag release did not clear pointer capture")
+	}
+	if got, want := vtui.GetClipboard(), "bc\n  "; got != want {
+		t.Fatalf("empty-row block copy=%q, want %q", got, want)
+	}
+}
+
 func TestEditorDocumentPointerCursorOnlyUsesScalarPatch(t *testing.T) {
 	oldMarkOccurrences := config.App.EditorMarkOccurrences
 	config.App.EditorMarkOccurrences = false

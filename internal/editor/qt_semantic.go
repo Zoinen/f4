@@ -25,6 +25,11 @@ type semanticEditorCursorState struct {
 	selection             bool
 	selectionAnchorRow    int64
 	selectionAnchorColumn int
+	rectSelection         bool
+	rectAnchorRow         int64
+	rectAnchorColumn      int
+	rectFocusRow          int64
+	rectFocusColumn       int
 	selectionForeground   string
 	selectionBackground   string
 	selectionBold         bool
@@ -45,6 +50,11 @@ func (state semanticEditorCursorState) ToMap() map[string]any {
 		"selection":             state.selection,
 		"selectionAnchorRow":    state.selectionAnchorRow,
 		"selectionAnchorColumn": state.selectionAnchorColumn,
+		"rectSelection":         state.rectSelection,
+		"rectAnchorRow":         state.rectAnchorRow,
+		"rectAnchorColumn":      state.rectAnchorColumn,
+		"rectFocusRow":          state.rectFocusRow,
+		"rectFocusColumn":       state.rectFocusColumn,
 		"selectionForeground":   state.selectionForeground,
 		"selectionBackground":   state.selectionBackground,
 		"selectionBold":         state.selectionBold,
@@ -107,6 +117,18 @@ func (ev *EditorView) semanticCursorState(width int) semanticEditorCursorState {
 		anchorRow, anchorColumn := ev.Engine.LogicalToVisual(ev.SelAnchorOffset)
 		state.selectionAnchorRow = int64(anchorRow)
 		state.selectionAnchorColumn = anchorColumn
+	}
+	if ev.RectSelActive && !ev.HexMode && !ev.DecodeMode && !ev.Saving && !ev.pasting {
+		anchorOffset := ev.Li.GetLineOffset(ev.rectSelStartLine)
+		anchorRow, _ := ev.Engine.LogicalToVisual(anchorOffset)
+		state.rectSelection = true
+		state.rectAnchorRow = int64(anchorRow)
+		state.rectAnchorColumn = ev.rectSelStartCol
+		state.rectFocusRow = int64(cursorAbsoluteRow)
+		state.rectFocusColumn = ev.rectSelFocusCol
+		if !ev.rectSelFocusColSet {
+			state.rectFocusColumn = cursorAbsoluteColumn + ev.CursorVirtualSpaces
+		}
 	}
 	return state
 }

@@ -870,6 +870,7 @@ private slots:
     void commandLineClickTransfersFocus();
     void commandLineClickPositionsCaret();
     void commandLineMultilineScrollAndSelection();
+    void commandLineAltDragUsesRectangularSelection();
     void commandLineArrowsNavigateVisualLinesBeforeHistory();
     void commandLineArrowsNavigateVisualLinesBeforeHistory_data();
     void commandLineArrowsUseWrappedGeometry();
@@ -7556,6 +7557,135 @@ void F4QuickViewSurfaceTests::commandLineMultilineScrollAndSelection()
     QVERIFY(wordEnd > wordStart);
     QVERIFY(wordStart == 0 || text.at(wordStart - 1).isSpace());
     QVERIFY(wordEnd == text.size() || text.at(wordEnd).isSpace());
+}
+
+void F4QuickViewSurfaceTests::commandLineAltDragUsesRectangularSelection()
+{
+    auto scene = shellScene();
+    auto shell = scene.value("shell").toMap();
+    const QString text = QStringLiteral("abcdef\n123456\nuvwxyz");
+    QVariantMap command{{"visible", true}, {"focused", true},
+                        {"ownsNavigation", true}, {"multiline", true},
+                        {"wordWrap", false}, {"text", text},
+                        {"cursorPosition", 0}};
+    shell.insert("commandLine", command);
+    scene.insert("shell", shell);
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    auto *input = fixture.item(QStringLiteral("commandLineInput"));
+    QVERIFY(input);
+    QTRY_COMPARE(input->property("lineCount").toInt(), 3);
+
+    QRectF anchorRect;
+    QRectF focusRect;
+    QVERIFY(QMetaObject::invokeMethod(
+        input, "positionToRectangle", Q_RETURN_ARG(QRectF, anchorRect),
+        Q_ARG(int, 1)));
+    QVERIFY(QMetaObject::invokeMethod(
+        input, "positionToRectangle", Q_RETURN_ARG(QRectF, focusRect),
+        Q_ARG(int, 18)));
+    const QPoint anchor = input->mapToScene(anchorRect.center()).toPoint();
+    const QPoint focus = input->mapToScene(focusRect.center()).toPoint();
+
+    fixture.shell.clearActions();
+    QTest::mousePress(fixture.window, Qt::LeftButton, Qt::AltModifier, anchor);
+    QTest::mouseMove(fixture.window, focus, 20);
+    QTest::mouseRelease(fixture.window, Qt::LeftButton, Qt::NoModifier, focus);
+    QTRY_VERIFY_WITH_TIMEOUT(!fixture.shell.actions.isEmpty(), 1000);
+    const QVariantMap action = fixture.shell.actions.constLast();
+    QCOMPARE(action.value(QStringLiteral("action")).toString(),
+             QStringLiteral("commandLine.select"));
+    QVERIFY(action.value(QStringLiteral("block")).toBool());
+    QCOMPARE(action.value(QStringLiteral("anchor")).toInt(), 1);
+    QCOMPARE(action.value(QStringLiteral("cursorPosition")).toInt(), 20);
+
+    auto wrappedScene = shellScene();
+    auto wrappedShell = wrappedScene.value("shell").toMap();
+    const QString wrappedText = QStringLiteral("tool ")
+        + QString(600, QLatin1Char('x')) + QStringLiteral(" -alpha tail");
+    QVariantMap wrappedCommand{{"visible", true}, {"focused", true},
+                               {"ownsNavigation", true}, {"multiline", true},
+                               {"wordWrap", true}, {"text", wrappedText},
+                               {"cursorPosition", 0}};
+    wrappedShell.insert("commandLine", wrappedCommand);
+    wrappedScene.insert("shell", wrappedShell);
+    QuickViewFixture wrappedFixture(wrappedScene);
+    QVERIFY(wrappedFixture.window);
+    auto *wrappedInput = wrappedFixture.item(QStringLiteral("commandLineInput"));
+    auto *wrappedBox = wrappedFixture.item(QStringLiteral("commandLineView"));
+    QVERIFY(wrappedInput && wrappedBox);
+    QTRY_VERIFY(wrappedInput->property("lineCount").toInt() > 3);
+
+    QRectF zeroRect;
+    QRectF oneRect;
+    QVERIFY(QMetaObject::invokeMethod(
+        wrappedInput, "positionToRectangle", Q_RETURN_ARG(QRectF, zeroRect),
+        Q_ARG(int, 0)));
+    QVERIFY(QMetaObject::invokeMethod(
+        wrappedInput, "positionToRectangle", Q_RETURN_ARG(QRectF, oneRect),
+        Q_ARG(int, 1)));
+    const qreal cellWidth = oneRect.x() - zeroRect.x();
+    QVERIFY(cellWidth > 0);
+    const qreal lineHeight = wrappedBox->property("textLineHeight").toReal();
+    QVERIFY(lineHeight > 0);
+    const QPoint wrappedAnchor = wrappedInput->mapToScene(
+        QPointF(2.5 * cellWidth, lineHeight / 2)).toPoint();
+
+    wrappedFixture.shell.clearActions();
+    QTest::mousePress(wrappedFixture.window, Qt::LeftButton, Qt::AltModifier,
+                      wrappedAnchor);
+    QCoreApplication::processEvents();
+    const QPoint wrappedFocus = wrappedInput->mapToScene(
+        QPointF(7.5 * cellWidth, 2.5 * lineHeight)).toPoint();
+    QTest::mouseMove(wrappedFixture.window, wrappedFocus, 20);
+    auto *overlay = wrappedFixture.item(QStringLiteral("commandLineBlockSelectionOverlay"));
+    QVERIFY(overlay);
+    QElapsedTimer feedbackTimer;
+    feedbackTimer.start();
+    QTest::qWait(100); // No Go response is supplied by this fixture.
+    QVERIFY2(overlay->isVisible(), "drag feedback must not wait for a Go round trip");
+    QCOMPARE(overlay->property("lastRow").toInt(), 2);
+    qInfo() << "ALT_DRAG delayed-backend feedback visible after" << feedbackTimer.elapsed() << "ms";
+    auto *focusArea = wrappedFixture.item(QStringLiteral("commandLineFocusArea"));
+    QVERIFY(focusArea);
+    qint64 total = 0, worst = 0;
+    for (int i = 0; i < 500; ++i) {
+        const int column = 6 + i % 2;
+        feedbackTimer.start();
+        QVERIFY(QMetaObject::invokeMethod(focusArea, "selectAt", Qt::DirectConnection,
+            Q_ARG(QVariant, 3), Q_ARG(QVariant, 150), Q_ARG(QVariant, true),
+            Q_ARG(QVariant, 0), Q_ARG(QVariant, 2), Q_ARG(QVariant, 2), Q_ARG(QVariant, column)));
+        QCOMPARE(overlay->property("lastColumn").toInt(), column);
+        const auto elapsed = feedbackTimer.nsecsElapsed();
+        total += elapsed;
+        worst = qMax(worst, elapsed);
+    }
+    qInfo() << "ALT_COMMAND mouse-to-selection synchronous us average" << total / 500.0 / 1000
+            << "max" << worst / 1000.0;
+    QTest::mouseRelease(wrappedFixture.window, Qt::LeftButton, Qt::NoModifier,
+                        wrappedFocus);
+    QTRY_VERIFY_WITH_TIMEOUT(!wrappedFixture.shell.actions.isEmpty(), 1000);
+    const QVariantMap wrappedAction = wrappedFixture.shell.actions.constLast();
+    QVERIFY(wrappedAction.value(QStringLiteral("block")).toBool());
+    QVERIFY2(wrappedAction.contains(QStringLiteral("blockAnchorRow")),
+             "block selection must carry the rendered Qt row coordinates");
+    QCOMPARE(wrappedAction.value(QStringLiteral("blockAnchorRow")).toInt(), 0);
+    QCOMPARE(wrappedAction.value(QStringLiteral("blockAnchorColumn")).toInt(), 2);
+    QCOMPARE(wrappedAction.value(QStringLiteral("blockFocusRow")).toInt(), 2);
+    QCOMPARE(wrappedAction.value(QStringLiteral("blockFocusColumn")).toInt(), 7);
+    QVERIFY(wrappedAction.value(QStringLiteral("blockWrapWidth")).toInt() > 1);
+    for (const auto &key : {"blockAnchorRow", "blockAnchorColumn", "blockFocusRow", "blockFocusColumn"})
+        wrappedCommand.insert(QString::fromLatin1(key), wrappedAction.value(QString::fromLatin1(key)));
+    wrappedCommand.insert("blockSelection", true);
+    wrappedShell.insert("commandLine", wrappedCommand);
+    wrappedScene.insert("shell", wrappedShell);
+    wrappedFixture.shell.setScene(wrappedScene);
+    QCoreApplication::processEvents();
+    wrappedCommand.insert("blockSelection", false);
+    wrappedShell.insert("commandLine", wrappedCommand);
+    wrappedScene.insert("shell", wrappedShell);
+    wrappedFixture.shell.setScene(wrappedScene);
+    QTRY_VERIFY(!overlay->isVisible());
 }
 
 void F4QuickViewSurfaceTests::commandLineArrowsNavigateVisualLinesBeforeHistory_data()

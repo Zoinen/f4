@@ -52,6 +52,7 @@ type viewerWindowConstructionKey struct {
 
 type viewerConstructedRow struct {
 	start      int64
+	column     int
 	projection viewerRowProjection
 }
 
@@ -416,7 +417,9 @@ func (vv *ViewerView) constructWindow(width, height, overscan int, pending **vie
 		if !build.foundViewport && (build.current == key.top || (key.decode && build.current >= key.top)) {
 			build.viewportRow, build.foundViewport = len(build.rows), true
 		}
-		build.rows = append(build.rows, viewerConstructedRow{start: build.current, projection: row})
+		build.rows = append(build.rows, viewerConstructedRow{
+			start: build.current, column: build.column, projection: row,
+		})
 		build.current, build.column = row.end, row.nextColumn
 	}
 	ready := key.size == 0 || (build.foundViewport &&

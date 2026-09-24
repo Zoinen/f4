@@ -86,6 +86,26 @@ func TestEditClusterBoundariesKeepThaanaVowelSigns(t *testing.T) {
 	}
 }
 
+func TestSemanticCursorPreservesMixedClusterBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		text         string
+		offset, want int
+	}{
+		{"plain text", 3, 3},
+		{"a\u0301b", 1, 0},
+		{"a\u0301b", 2, 2},
+		{"x🇺🇸z", 2, 1},
+		{"x🇺🇸z", 3, 3},
+		{sanskritSample, 4, 2},
+		{"текст", 3, 3},
+	} {
+		e := newBoundaryEdit(tc.text)
+		if got := e.semanticCursor(tc.offset); got != tc.want {
+			t.Errorf("semanticCursor(%q, %d) = %d, want %d", tc.text, tc.offset, got, tc.want)
+		}
+	}
+}
+
 // A caret boundary that the painter does not treat as a cell start puts the
 // cursor inside a glyph; that is the visible half of unxed/f4#546.
 func TestEditClusterBoundariesMatchPaintedCells(t *testing.T) {

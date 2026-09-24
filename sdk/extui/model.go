@@ -337,23 +337,28 @@ type CommandLineModel struct {
 	Visible bool
 	Focused bool
 	// OwnsNavigation routes panel navigation keys to the command line even when empty.
-	OwnsNavigation   bool
-	AutoHide         bool
-	Multiline        bool
-	WordWrap         bool
-	Prompt           string
-	PromptRuns       []RunModel
-	Text             string
-	Empty            bool
-	Runs             []RunModel
-	InputX           int
-	CursorPrefixRuns []RunModel
-	CursorX          int
-	CursorPosition   int
-	SelectionStart   int
-	SelectionEnd     int
-	CursorVisible    bool
-	CursorShape      string
+	OwnsNavigation    bool
+	AutoHide          bool
+	Multiline         bool
+	WordWrap          bool
+	Prompt            string
+	PromptRuns        []RunModel
+	Text              string
+	Empty             bool
+	Runs              []RunModel
+	InputX            int
+	CursorPrefixRuns  []RunModel
+	CursorX           int
+	CursorPosition    int
+	SelectionStart    int
+	SelectionEnd      int
+	BlockSelection    bool
+	BlockAnchorRow    int
+	BlockAnchorColumn int
+	BlockFocusRow     int
+	BlockFocusColumn  int
+	CursorVisible     bool
+	CursorShape       string
 }
 
 type TerminalModel struct {
@@ -566,6 +571,7 @@ type TextRowModel struct {
 	LogicalLine       int
 	Offset            int64
 	EndOffset         int64
+	DisplayColumn     int `json:"-"`
 	VisualWidth       int
 	HasVisualWidth    bool
 	Text              string
@@ -1179,7 +1185,7 @@ func (s HighlightStyleModel) ToMap() M {
 }
 
 func (c CommandLineModel) ToMap() M {
-	return M{
+	out := M{
 		"id":               c.ID,
 		"kind":             "commandLine",
 		"visible":          c.Visible,
@@ -1202,6 +1208,14 @@ func (c CommandLineModel) ToMap() M {
 		"cursorVisible":    c.CursorVisible,
 		"cursorShape":      c.CursorShape,
 	}
+	if c.BlockSelection {
+		out["blockSelection"] = true
+		out["blockAnchorRow"] = c.BlockAnchorRow
+		out["blockAnchorColumn"] = c.BlockAnchorColumn
+		out["blockFocusRow"] = c.BlockFocusRow
+		out["blockFocusColumn"] = c.BlockFocusColumn
+	}
+	return out
 }
 
 func (t TerminalModel) ToMap() M {
@@ -1489,6 +1503,9 @@ func (r TextRowModel) ToMap() M {
 		"logicalLine": r.LogicalLine,
 		"offset":      r.Offset,
 		"endOffset":   r.EndOffset,
+	}
+	if r.DisplayColumn != 0 {
+		out["displayColumn"] = r.DisplayColumn
 	}
 	if r.ContentKey != "" {
 		out["contentKey"] = r.ContentKey

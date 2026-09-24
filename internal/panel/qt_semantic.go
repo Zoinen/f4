@@ -268,7 +268,28 @@ func (pf *PanelsFrame) HandleSemanticAction(action map[string]any) bool {
 			return false
 		}
 		if semantic.String(action["action"]) == "commandLine.select" {
-			pf.CmdLine.SetNativeSelection(semantic.Int(action["anchor"]), semantic.Int(action["cursorPosition"]))
+			if semantic.Bool(action["block"]) {
+				if _, hasGeometry := action["blockAnchorRow"]; hasGeometry {
+					pf.CmdLine.SetNativeBlockSelectionAt(
+						semantic.Int(action["anchor"]),
+						semantic.Int(action["cursorPosition"]),
+						vtui.MultilineBlockSelectionGeometry{
+							AnchorRow:    semantic.Int(action["blockAnchorRow"]),
+							AnchorColumn: semantic.Int(action["blockAnchorColumn"]),
+							FocusRow:     semantic.Int(action["blockFocusRow"]),
+							FocusColumn:  semantic.Int(action["blockFocusColumn"]),
+							WrapWidth:    semantic.Int(action["blockWrapWidth"]),
+						},
+					)
+				} else {
+					pf.CmdLine.SetNativeBlockSelection(
+						semantic.Int(action["anchor"]),
+						semantic.Int(action["cursorPosition"]),
+					)
+				}
+			} else {
+				pf.CmdLine.SetNativeSelection(semantic.Int(action["anchor"]), semantic.Int(action["cursorPosition"]))
+			}
 		} else if semantic.String(action["action"]) == "commandLine.cursor" {
 			pf.CmdLine.SetNativeCursor(semantic.Int(action["cursorPosition"]))
 		} else if pf.CmdLine.Edit.Multiline && pf.CmdLine.Edit.MultilineRows(pf.CmdLine.Edit.X2-pf.CmdLine.Edit.X1+1) > 1 {

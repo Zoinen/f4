@@ -330,6 +330,37 @@ func TestTerminalSemanticCopySelectionAcceptsExclusiveBoundaryProtocol(t *testin
 	}
 }
 
+func TestTerminalSemanticCopySelectionPreservesAltBlockColumns(t *testing.T) {
+	vtui.SetDefaultPalette()
+	tv := seededTerminalSemanticHistory(t, 20, 3, 0)
+	defer tv.Close()
+	tv.mu.Lock()
+	tv.Pt = piecetable.New([]byte("abcdef\nuvwxyz\n123456"))
+	tv.Li = piecetable.NewLineIndex()
+	tv.Li.Rebuild(tv.Pt)
+	tv.Engine = textlayout.NewWrapEngine(tv.Pt, tv.Li)
+	tv.Engine.SetWidth(tv.Width)
+	tv.mu.Unlock()
+
+	copied := make(chan string, 1)
+	tv.ClipboardWriter = func(text string) { copied <- text }
+	if !tv.HandleSemanticAction(map[string]any{
+		"target": vtui.SemanticID(tv), "action": "terminal.copySelection",
+		"startRow": 0, "startColumn": 1, "endRow": 2, "endColumn": 4,
+		"endExclusive": true, "block": true,
+	}) {
+		t.Fatal("terminal block-copy action was not handled")
+	}
+	select {
+	case got := <-copied:
+		if got != "bcd\nvwx\n234" {
+			t.Fatalf("block clipboard text=%q", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("terminal block clipboard write did not complete")
+	}
+}
+
 func TestTerminalSemanticCurrentScreenKeepsConsoleBottomGravity(t *testing.T) {
 	vtui.SetDefaultPalette()
 	tv := NewTerminalView(12, 5)

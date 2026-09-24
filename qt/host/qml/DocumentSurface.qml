@@ -57,6 +57,7 @@ Rectangle {
     property alias pendingEditorMouseMove: editorPointerController.pendingMouseMove
     property alias terminalSelectionVisible: terminalSelectionController.selectionVisible
     property alias terminalSelectionDragging: terminalSelectionController.selectionDragging
+    property alias terminalSelectionBlockSelection: terminalSelectionController.blockSelection
     property alias terminalSelectionAnchorRow: terminalSelectionController.anchorRow
     property alias terminalSelectionAnchorColumn: terminalSelectionController.anchorColumn
     property alias terminalSelectionFocusRow: terminalSelectionController.focusRow
@@ -69,9 +70,13 @@ Rectangle {
     property alias terminalSelectionPointerY: terminalSelectionController.pointerY
     property alias terminalSelectionAutoScrollDistance: terminalSelectionController.autoScrollDistance
     property alias terminalSelectionAutoScrollLastTick: terminalSelectionController.autoScrollLastTick
+    property alias viewerSelectionVisible: viewerSelectionController.selectionVisible
+    property alias viewerSelectionDragging: viewerSelectionController.selectionDragging
+    property alias viewerBlockSelection: viewerSelectionController.blockSelection
     property alias terminalFollowTailIntent: viewportController.terminalFollowTailIntent
     property alias terminalFollowTailInitialized: viewportController.terminalFollowTailInitialized
     readonly property var presentationFrame: viewportController.presentationFrame
+    readonly property var selectionCursorFrame: editorPointerController.blockPreview || cursorFrame
     readonly property var cursorFrame:
         hostWindow.documentSurfaceStateOverride !== null
         && hostWindow.cleanText(hostWindow.documentSurfaceStateOverride.id)
@@ -99,6 +104,9 @@ Rectangle {
         && hostWindow.mouseWheelMode === "gui"
     readonly property bool terminalSelectionEnabled:
         terminalSurface && frame.selectionEnabled === true
+    readonly property bool viewerSelectionEnabled:
+        frame.kind === "viewer" && frame.mode === "text"
+        && frame.hexMode !== true && frame.decodeMode !== true
     readonly property string topBarLeftText: {
         const path = hostWindow.cleanText(presentationFrame.path).trim()
         const legacyCaption = hostWindow.cleanText(
@@ -219,17 +227,24 @@ Rectangle {
     }
 
     function editorSelectionRangeForRow(visualRow, visualWidth, caretState) {
-        const caret = caretState || cursorFrame
+        const caret = caretState || selectionCursorFrame
         let empty = ({ "valid": false, "start": 0, "end": 0 })
+        const rectangular = caret.rectSelection === true
         if (frame.kind !== "editor" || presentationFrame.hexMode === true
                 || presentationFrame.decodeMode === true
-                || caret.selection !== true || visualRow < 0)
+                || (caret.selection !== true && !rectangular) || visualRow < 0)
             return empty
-        let anchorRow = Number(caret.selectionAnchorRow || 0)
-        let anchorColumn = Number(caret.selectionAnchorColumn || 0)
-        let focusRow = Number(caret.cursorAbsoluteRow || 0)
-        let focusColumn = Number(caret.cursorAbsoluteColumn || 0)
-        if (anchorRow > focusRow
+        let anchorRow = Number(rectangular ? caret.rectAnchorRow : caret.selectionAnchorRow) || 0
+        let anchorColumn = Number(rectangular ? caret.rectAnchorColumn : caret.selectionAnchorColumn) || 0
+        let focusRow = Number(rectangular ? caret.rectFocusRow : caret.cursorAbsoluteRow) || 0
+        let focusColumn = Number(rectangular ? caret.rectFocusColumn : caret.cursorAbsoluteColumn) || 0
+        if (rectangular) {
+            if (anchorRow > focusRow) {
+                let swapRow = anchorRow
+                anchorRow = focusRow
+                focusRow = swapRow
+            }
+        } else if (anchorRow > focusRow
                 || (anchorRow === focusRow && anchorColumn > focusColumn)) {
             let swapRow = anchorRow
             let swapColumn = anchorColumn
@@ -240,8 +255,10 @@ Rectangle {
         }
         if (visualRow < anchorRow || visualRow > focusRow)
             return empty
-        let start = visualRow === anchorRow ? anchorColumn : 0
-        let end = visualRow === focusRow ? focusColumn : Math.max(0, visualWidth)
+        let start = rectangular ? Math.min(anchorColumn, focusColumn)
+            : visualRow === anchorRow ? anchorColumn : 0
+        let end = rectangular ? Math.max(anchorColumn, focusColumn)
+            : visualRow === focusRow ? focusColumn : Math.max(0, visualWidth)
         const scrollLeft = Math.max(0, Number(presentationFrame.scrollLeft || 0))
         const rowEnd = Math.max(0, Number(visualWidth || 0) - scrollLeft)
         const viewportEnd = Math.max(0, Number(presentationFrame.viewportColumns || 0))
@@ -251,8 +268,10 @@ Rectangle {
             start = Math.min(start, viewportEnd)
             end = Math.min(end, viewportEnd)
         }
-        start = Math.min(start, rowEnd)
-        end = Math.min(end, rowEnd)
+        if (!rectangular) {
+            start = Math.min(start, rowEnd)
+            end = Math.min(end, rowEnd)
+        }
         return ({ "valid": end > start, "start": start, "end": end })
     }
 
@@ -288,7 +307,12 @@ Rectangle {
     }
     function handleTerminalSelectionPressAt(row, column, cellColumn, timestamp) {
         return terminalSelectionController.handlePressAt(
-                    row, column, cellColumn, timestamp)
+                    row, column, cellColumn, timestamp, false)
+    }
+    function handleTerminalSelectionPressAtWithBlock(row, column, cellColumn,
+                                                      timestamp, block) {
+        return terminalSelectionController.handlePressAt(
+                    row, column, cellColumn, timestamp, block)
     }
     function terminalSelectionAutoScrollVelocity(distance) {
         return terminalSelectionController.autoScrollVelocity(distance)
@@ -310,6 +334,9 @@ Rectangle {
     }
     function terminalSelectionRangeForRow(row, rowWidth) {
         return terminalSelectionController.rangeForRow(row, rowWidth)
+    }
+    function viewerSelectionRangeForRow(rowData) {
+        return viewerSelectionController.rangeForRow(rowData)
     }
 
     function rowExtent(index, rows) {
@@ -518,13 +545,17 @@ Rectangle {
                               ? Qt.NoButton : Qt.MiddleButton)
                          : documentRoot.terminalSelectionEnabled
                            ? Qt.LeftButton
+                         : documentRoot.viewerSelectionEnabled
+                           ? Qt.LeftButton
                          : Qt.NoButton
         preventStealing: frame.kind === "editor"
                          || documentRoot.terminalSelectionEnabled
+                         || documentRoot.viewerSelectionEnabled
         propagateComposedEvents: true
         enabled: documentRoot.inputPresentationActive
         cursorShape: frame.kind === "editor"
                      || documentRoot.terminalSelectionEnabled
+                     || documentRoot.viewerSelectionEnabled
                      ? Qt.IBeamCursor : Qt.ArrowCursor
         z: 8
         onPressed: mouse => {
@@ -535,11 +566,21 @@ Rectangle {
                 documentList.cancelFlick()
                 viewportController.stopMotion()
                 var point = documentRoot.terminalSelectionPoint(mouse)
-                documentRoot.handleTerminalSelectionPressAt(
+                documentRoot.handleTerminalSelectionPressAtWithBlock(
                             point.row, point.column,
-                            point.cellColumn, Date.now())
+                            point.cellColumn, Date.now(),
+                            (mouse.modifiers & Qt.AltModifier) !== 0)
                 documentRoot.updateTerminalSelectionPointer(mouse.x,
                                                               mouse.y)
+            } else if (documentRoot.viewerSelectionEnabled) {
+                if ((mouse.modifiers & Qt.ControlModifier) !== 0) {
+                    mouse.accepted = false
+                    return
+                }
+                documentList.cancelFlick()
+                var viewerPoint = viewerSelectionController.point(mouse.x, mouse.y)
+                viewerSelectionController.beginAt(
+                            viewerPoint, (mouse.modifiers & Qt.AltModifier) !== 0)
             }
             mouse.accepted = true
         }
@@ -555,6 +596,10 @@ Rectangle {
                 var point = documentRoot.terminalSelectionPointAtViewportEdge()
                 documentRoot.extendTerminalSelectionTo(point.row,
                                                         point.column)
+            } else if (documentRoot.viewerSelectionDragging
+                       && mouse.buttons !== Qt.NoButton) {
+                var viewerPoint = viewerSelectionController.pointAtViewportEdge(mouse.x, mouse.y)
+                viewerSelectionController.extendTo(viewerPoint)
             }
         }
         onReleased: mouse => {
@@ -568,6 +613,10 @@ Rectangle {
                 documentRoot.extendTerminalSelectionTo(point.row,
                                                         point.column)
                 documentRoot.commitTerminalSelection()
+            } else if (documentRoot.viewerSelectionDragging) {
+                var viewerPoint = viewerSelectionController.pointAtViewportEdge(mouse.x, mouse.y)
+                viewerSelectionController.extendTo(viewerPoint)
+                viewerSelectionController.commit()
             }
             mouse.accepted = true
         }
@@ -577,6 +626,7 @@ Rectangle {
             else {
                 documentRoot.terminalSelectionDragging = false
                 documentRoot.stopTerminalSelectionAutoScroll()
+                viewerSelectionController.cancel()
             }
         }
         onDoubleClicked: mouse => {
@@ -589,9 +639,10 @@ Rectangle {
                 // this fallback covers backends that surface only the
                 // composed double-click signal.
                 var point = documentRoot.terminalSelectionPoint(mouse)
-                documentRoot.handleTerminalSelectionPressAt(
+                documentRoot.handleTerminalSelectionPressAtWithBlock(
                             point.row, point.column,
-                            point.cellColumn, Date.now())
+                            point.cellColumn, Date.now(),
+                            (mouse.modifiers & Qt.AltModifier) !== 0)
             }
             mouse.accepted = true
         }
@@ -725,6 +776,148 @@ Rectangle {
         terminalCellWidth: documentRoot.terminalCellWidth
     }
 
+    Item {
+        id: viewerSelectionController
+        objectName: "viewerSelectionController"
+        visible: false
+        width: 0
+        height: 0
+        property bool selectionVisible: false
+        property bool selectionDragging: false
+        property bool blockSelection: false
+        property int anchorOffset: -1
+        property int anchorColumn: 0
+        property int focusOffset: -1
+        property int focusColumn: 0
+        property var frame: documentRoot.presentationFrame
+
+        function columnCount() {
+            const columns = Math.floor(Number(frame.viewportColumns || 0))
+            if (columns > 0)
+                return columns
+            return Math.max(1, Math.floor((documentList.width
+                - documentRoot.textHorizontalInset) / documentRoot.terminalCellWidth))
+        }
+
+        function pointAt(pointX, pointY) {
+            const index = viewportController.windowIndexAtViewportY(pointY)
+            const rows = viewportController.displayedRows || []
+            if (index < 0 || index >= rows.length)
+                return null
+            const row = rows[index] || ({})
+            const rawColumn = (pointX - documentRoot.textHorizontalInset)
+                / Math.max(1, documentRoot.terminalCellWidth)
+            return {
+                "offset": Number(row.offset || 0),
+                "column": Math.max(0, Math.min(columnCount(), Math.floor(rawColumn + 0.5))),
+                "row": row
+            }
+        }
+
+        function point(pointX, pointY) {
+            return pointAt(pointX, pointY)
+        }
+
+        function pointAtViewportEdge(pointX, pointY) {
+            return pointAt(pointX, Math.max(0, Math.min(documentList.height - 0.001, pointY)))
+        }
+
+        function beginAt(point, block) {
+            if (!point)
+                return
+            blockSelection = block === true
+            anchorOffset = point.offset
+            anchorColumn = point.column
+            focusOffset = point.offset
+            focusColumn = point.column
+            selectionVisible = true
+            selectionDragging = true
+        }
+
+        function extendTo(point) {
+            if (!selectionDragging || !point)
+                return
+            focusOffset = point.offset
+            focusColumn = point.column
+        }
+
+        function normalized() {
+            let startOffset = anchorOffset
+            let startColumn = anchorColumn
+            let endOffset = focusOffset
+            let endColumn = focusColumn
+            if (startOffset > endOffset
+                    || (startOffset === endOffset && startColumn > endColumn)) {
+                const offset = startOffset
+                const column = startColumn
+                startOffset = endOffset
+                startColumn = endColumn
+                endOffset = offset
+                endColumn = column
+            }
+            return {
+                "startOffset": startOffset,
+                "startColumn": startColumn,
+                "endOffset": endOffset,
+                "endColumn": endColumn,
+                "blockStartColumn": Math.min(anchorColumn, focusColumn),
+                "blockEndColumn": Math.max(anchorColumn, focusColumn)
+            }
+        }
+
+        function rangeForRow(rowData) {
+            if (!selectionVisible || !rowData || rowData.offset === undefined)
+                return {"valid": false, "start": 0, "end": 0}
+            const selection = normalized()
+            const offset = Number(rowData.offset)
+            if (offset < selection.startOffset || offset > selection.endOffset)
+                return {"valid": false, "start": 0, "end": 0}
+            const columns = columnCount()
+            let start = blockSelection ? selection.blockStartColumn
+                : offset === selection.startOffset ? selection.startColumn : 0
+            let end = blockSelection ? selection.blockEndColumn
+                : offset === selection.endOffset ? selection.endColumn : columns
+            start = Math.max(0, Math.min(columns, start))
+            end = Math.max(start, Math.min(columns, end))
+            return {"valid": end > start, "start": start, "end": end}
+        }
+
+        function commit() {
+            if (!selectionDragging)
+                return
+            selectionDragging = false
+            if (anchorOffset === focusOffset && anchorColumn === focusColumn) {
+                selectionVisible = false
+                return
+            }
+            const selectedRows = []
+            const rows = viewportController.displayedRows || []
+            for (let index = 0; index < rows.length; ++index) {
+                const row = rows[index] || ({})
+                const range = rangeForRow(row)
+                if (!range.valid)
+                    continue
+                selectedRows.push({
+                    "text": hostWindow.rowText(row),
+                    "origin": Number(row.displayColumn || 0),
+                    "width": columnCount(),
+                    "start": range.start,
+                    "end": range.end
+                })
+            }
+            hostWindow.action({
+                "target": hostWindow.cleanText(frame.id),
+                "action": "viewer.copySelection",
+                "block": blockSelection,
+                "rows": selectedRows
+            }, true)
+        }
+
+        function cancel() {
+            selectionDragging = false
+        }
+    }
+
     DocumentEditorPointerController {
         id: editorPointerController
         hostWindow: documentRoot.hostWindow
@@ -732,6 +925,7 @@ Rectangle {
         fontMetrics: documentFontMetrics
         viewportController: viewportController
         frame: documentRoot.frame
+        cursorState: documentRoot.cursorFrame
         rowHeight: documentRoot.rowHeight
         textHorizontalInset: documentRoot.textHorizontalInset
         textViewportWidth: documentRoot.prospectiveViewportWidth

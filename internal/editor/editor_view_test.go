@@ -5212,6 +5212,63 @@ func TestEditorView_MouseBlockSelection_AltShiftCopiesAndKeepsSelection(t *testi
 	}
 }
 
+func TestEditorView_MouseAltDragCreatesBlockAndKeepsItAfterAltRelease(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	ev := NewEditorView(piecetable.New([]byte("abcde\n12345\nvwxyz")), nil, "")
+	defer ev.Close()
+	ev.SetPosition(0, 0, 80, 24)
+	press := func(x, y int, flags uint32, modifiers vtinput.ControlKeyState, down bool) {
+		t.Helper()
+		ev.ProcessMouse(&vtinput.InputEvent{
+			Type: vtinput.MouseEventType, KeyDown: down,
+			MouseX: int16(x), MouseY: int16(y), ButtonState: vtinput.FromLeft1stButtonPressed,
+			MouseEventFlags: flags, ControlKeyState: modifiers,
+		})
+	}
+	vtui.SetClipboard("old clipboard")
+	press(1, 1, 0, vtinput.LeftAltPressed, true)
+	if len(ev.extraCursors) != 1 {
+		t.Fatal("Alt+click should still toggle a secondary caret while the gesture is pending")
+	}
+	press(3, 3, vtinput.MouseMoved, 0, false)
+	ev.ProcessMouse(&vtinput.InputEvent{Type: vtinput.MouseEventType})
+	if ev.mouseAltCandidate || !ev.RectSelActive {
+		t.Fatalf("Alt drag state candidate=%v rectangular=%v", ev.mouseAltCandidate, ev.RectSelActive)
+	}
+	if len(ev.extraCursors) != 0 {
+		t.Fatalf("Alt drag left a secondary caret behind: %v", extraCaretOffsets(ev))
+	}
+	if got, want := vtui.GetClipboard(), "bc\n23\nwx"; got != want {
+		t.Fatalf("rectangular copy=%q, want %q", got, want)
+	}
+}
+
+func TestEditorView_MouseAltDragRetainsColumnOnEmptyLine(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	ev := NewEditorView(piecetable.New([]byte("abc\n\nxyz")), nil, "")
+	defer ev.Close()
+	ev.SetPosition(0, 0, 80, 24)
+	vtui.SetClipboard("old clipboard")
+	ev.ProcessMouse(&vtinput.InputEvent{
+		Type: vtinput.MouseEventType, KeyDown: true,
+		MouseX: 1, MouseY: 1, ButtonState: vtinput.FromLeft1stButtonPressed,
+		ControlKeyState: vtinput.LeftAltPressed,
+	})
+	ev.ProcessMouse(&vtinput.InputEvent{
+		Type: vtinput.MouseEventType, KeyDown: false,
+		MouseX: 3, MouseY: 2, ButtonState: vtinput.FromLeft1stButtonPressed,
+		MouseEventFlags: vtinput.MouseMoved,
+	})
+	ev.ProcessMouse(&vtinput.InputEvent{Type: vtinput.MouseEventType})
+
+	if !ev.RectSelActive {
+		t.Fatal("Alt drag should keep a rectangular selection ending on an empty line")
+	}
+	if got, want := vtui.GetClipboard(), "bc\n  "; got != want {
+		t.Fatalf("empty-line block copy=%q, want %q", got, want)
+	}
+}
+
 func TestEditorView_RectangularSelection_Copy(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	Pt := piecetable.New([]byte("line1\nline2\nline3"))

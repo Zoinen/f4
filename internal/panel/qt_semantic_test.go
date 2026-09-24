@@ -95,6 +95,21 @@ func TestCommandLineSemanticSelectionUsesUTF16AndBlocksMultilineHistory(t *testi
 	if model.SelectionStart != 1 || model.SelectionEnd != 4 {
 		t.Fatalf("selection = [%d,%d]", model.SelectionStart, model.SelectionEnd)
 	}
+	frame.CmdLine.Edit.SetText("abcde\n12345")
+	if !frame.HandleSemanticAction(map[string]any{
+		"action": "commandLine.select", "anchor": 1, "cursorPosition": 9, "block": true,
+		"blockAnchorRow": 0, "blockAnchorColumn": 1,
+		"blockFocusRow": 1, "blockFocusColumn": 3, "blockWrapWidth": 20,
+	}) {
+		t.Fatal("block selection rejected")
+	}
+	model = frame.CmdLine.SemanticModel(nil)
+	if !model.BlockSelection || model.BlockAnchorRow != 0 || model.BlockAnchorColumn != 1 ||
+		model.BlockFocusRow != 1 || model.BlockFocusColumn != 3 ||
+		model.SelectionStart != -1 || model.SelectionEnd != -1 {
+		t.Fatalf("block selection model = %+v", model)
+	}
+	frame.CmdLine.Edit.SetText("a😀bc\nlast")
 	if !frame.HandleSemanticAction(map[string]any{
 		"action": "commandLine.history", "direction": -1,
 	}) {

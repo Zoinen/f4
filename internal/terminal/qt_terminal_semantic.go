@@ -397,10 +397,16 @@ func (tv *TerminalView) HandleSemanticAction(action map[string]any) bool {
 		tv.mu.Unlock()
 		return true
 	case "terminal.copySelection":
+		if semantic.Bool(action["block"]) {
+			vtui.DebugLog("[FIX:text-block-selection] terminal copy rows=%d:%d columns=%d:%d",
+				semantic.Int(action["startRow"]), semantic.Int(action["endRow"]),
+				semantic.Int(action["startColumn"]), semantic.Int(action["endColumn"]))
+		}
 		text := tv.semanticSelectionTextWithEndpoints(
 			semantic.Int(action["startRow"]), semantic.Int(action["startColumn"]),
 			semantic.Int(action["endRow"]), semantic.Int(action["endColumn"]),
-			semantic.Bool(action["endExclusive"]), semantic.Bool(action["unshiftedRows"]))
+			semantic.Bool(action["endExclusive"]), semantic.Bool(action["unshiftedRows"]),
+			semantic.Bool(action["block"]))
 		if text != "" {
 			go tv.writeClipboard(text)
 		}
@@ -545,6 +551,7 @@ func (tv *TerminalView) semanticBoundarySelectionText(startRow, startColumn,
 
 func (tv *TerminalView) semanticSelectionTextWithEndpoints(
 	startRow, startColumn, endRow, endColumn int, endExclusive, unshiftedRows bool,
+	blockSelection ...bool,
 ) string {
 	tv.mu.Lock()
 	defer tv.mu.Unlock()
@@ -558,6 +565,8 @@ func (tv *TerminalView) semanticSelectionTextWithEndpoints(
 	}
 	startRow, startColumn, endRow, endColumn = terminalSelectionOrder(
 		startRow, startColumn, endRow, endColumn)
+	block := len(blockSelection) > 0 && blockSelection[0]
+	blockLeft, blockRight := min(startColumn, endColumn), max(startColumn, endColumn)
 	if !endExclusive {
 		endColumn++
 	}
@@ -567,11 +576,15 @@ func (tv *TerminalView) semanticSelectionTextWithEndpoints(
 	var out strings.Builder
 	for row := startRow; row <= endRow; row++ {
 		left, right := 0, max(0, tv.Width)
-		if row == startRow {
-			left = startColumn
-		}
-		if row == endRow {
-			right = endColumn
+		if block {
+			left, right = blockLeft, blockRight
+		} else {
+			if row == startRow {
+				left = startColumn
+			}
+			if row == endRow {
+				right = endColumn
+			}
 		}
 		text, hardBreak := tv.semanticSelectionRowRangeUnsafe(
 			layout, row, left, right)

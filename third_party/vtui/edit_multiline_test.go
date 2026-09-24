@@ -49,6 +49,97 @@ func TestEditMultilineCaretAndHitTest(t *testing.T) {
 	checkCell(t, scr, 2, 2, 't', Palette[e.ColorTextIdx])
 }
 
+func TestEditMultilineAltDragUsesRectangularSelection(t *testing.T) {
+	e := NewEdit(0, 0, 8, "abcdef\nuvwxyz\n123456")
+	e.Multiline = true
+	e.SetPosition(0, 0, 7, 2)
+	e.ClearSelection()
+	press := func(x, y int, flags uint32, modifiers vtinput.ControlKeyState) {
+		t.Helper()
+		if !e.ProcessMouse(&vtinput.InputEvent{
+			Type: vtinput.MouseEventType, KeyDown: true,
+			ButtonState: vtinput.FromLeft1stButtonPressed,
+			MouseX:      int16(x), MouseY: int16(y), MouseEventFlags: flags,
+			ControlKeyState: modifiers,
+		}) {
+			t.Fatal("mouse gesture was not handled")
+		}
+	}
+	press(1, 0, 0, vtinput.LeftAltPressed)
+	press(4, 2, vtinput.MouseMoved, 0) // Alt may be released before the drag ends.
+	e.ProcessMouse(&vtinput.InputEvent{Type: vtinput.MouseEventType})
+	if !e.blockSelection {
+		t.Fatal("Alt drag did not remain a block selection")
+	}
+	if got := e.multilineBlockText(); got != "bcd\nvwx\n234" {
+		t.Fatalf("block text=%q", got)
+	}
+	e.DeleteBlock()
+	if got := e.GetText(); got != "aef\nuyz\n156" {
+		t.Fatalf("block delete=%q", got)
+	}
+}
+
+func TestEditNativeBlockSelectionUsesRenderedWrapWidth(t *testing.T) {
+	e := NewEdit(0, 0, 39, "abcdefghi")
+	e.Multiline, e.WordWrap = true, true
+	e.SetPosition(0, 0, 39, 2)
+	e.SetMultilineBlockSelectionAt(1, 8, MultilineBlockSelectionGeometry{
+		AnchorRow: 0, AnchorColumn: 1,
+		FocusRow: 1, FocusColumn: 4,
+		WrapWidth: 5,
+	})
+	if got, want := e.multilineBlockText(), "bcd\nghi"; got != want {
+		t.Fatalf("native wrapped block copy=%q, want %q", got, want)
+	}
+	e.DeleteBlock()
+	if got, want := e.GetText(), "aef"; got != want {
+		t.Fatalf("native wrapped block delete=%q, want %q", got, want)
+	}
+}
+
+func TestEditMultilineBlockSelectionYieldsToKeyboardSelection(t *testing.T) {
+	e := NewEdit(0, 0, 19, "abcdef\nghijkl\nmnopqr")
+	e.Multiline = true
+	e.SetPosition(0, 0, 19, 2)
+	e.SetMultilineBlockSelection(1, 10)
+	if !e.MoveCursorVerticalSelection(-1, true) {
+		t.Fatal("Shift+Up did not move from the block selection")
+	}
+	if e.blockSelection || e.selStart != 3 || e.selEnd != 10 {
+		t.Fatalf("keyboard selection block=%v range=[%d,%d], want linear [3,10]", e.blockSelection, e.selStart, e.selEnd)
+	}
+
+	e.SetMultilineBlockSelection(1, 10)
+	e.SelectAll()
+	if e.blockSelection || e.selStart != 0 || e.selEnd != len(e.text) {
+		t.Fatalf("SelectAll retained block state: block=%v range=[%d,%d]", e.blockSelection, e.selStart, e.selEnd)
+	}
+
+	e.SetMultilineBlockSelection(1, 10)
+	e.SetText("replacement")
+	if e.blockSelection {
+		t.Fatal("SetText retained stale block selection")
+	}
+}
+
+func TestEditMultilineAltClickWithoutDragDoesNotLeaveEmptyBlock(t *testing.T) {
+	e := NewEdit(0, 0, 7, "first\nsecond")
+	e.Multiline = true
+	e.SetPosition(0, 0, 7, 1)
+	if !e.ProcessMouse(&vtinput.InputEvent{
+		Type: vtinput.MouseEventType, KeyDown: true,
+		ButtonState:     vtinput.FromLeft1stButtonPressed,
+		ControlKeyState: vtinput.LeftAltPressed,
+	}) {
+		t.Fatal("Alt-click was not handled")
+	}
+	e.ProcessMouse(&vtinput.InputEvent{Type: vtinput.MouseEventType})
+	if e.blockSelection {
+		t.Fatal("Alt-click without a drag left an empty block selection")
+	}
+}
+
 func TestEditMultilineArgumentBreaksAreVisual(t *testing.T) {
 	e := NewEdit(0, 0, 80, `app -a "inside -quoted" --next`)
 	e.Multiline, e.WordWrap = true, true

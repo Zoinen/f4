@@ -18,6 +18,7 @@ Item {
 
     property bool selectionVisible: false
     property bool selectionDragging: false
+    property bool blockSelection: false
     property bool wordDragging: false
     property int wordAnchorRow: -1
     property int wordAnchorStart: -1
@@ -162,6 +163,7 @@ Item {
     }
 
     function selectWordAt(absoluteRow, cellColumn) {
+        blockSelection = false
         const bounds = wordBoundsAt(absoluteRow, cellColumn)
         if (!bounds.found) {
             selectionVisible = false
@@ -183,6 +185,7 @@ Item {
     }
 
     function selectParagraphAt(absoluteRow) {
+        blockSelection = false
         const rowData = rowDataAt(absoluteRow) || ({})
         const totalRows = Math.max(1, Number(frame.contentExtent || 1))
         let start = rowData.logicalRowStart !== undefined
@@ -215,13 +218,14 @@ Item {
         return clickCount
     }
 
-    function handlePressAt(absoluteRow, boundaryColumn, cellColumn, timestamp) {
+    function handlePressAt(absoluteRow, boundaryColumn, cellColumn, timestamp, block) {
         selectionVisible = false
         wordDragging = false
+        blockSelection = block === true
         stopAutoScroll()
         const count = registerClick(absoluteRow, cellColumn, timestamp)
         if (count === 1)
-            beginAt(absoluteRow, boundaryColumn)
+            beginAt(absoluteRow, boundaryColumn, blockSelection)
         else if (count === 2)
             selectWordAt(absoluteRow, cellColumn)
         else {
@@ -304,8 +308,9 @@ Item {
         return nextY - previousY
     }
 
-    function beginAt(row, column) {
+    function beginAt(row, column, block) {
         wordDragging = false
+        blockSelection = block === true
         anchorRow = documentRow(Math.max(0, Math.floor(row)))
         anchorColumn = Math.max(0, Math.floor(column))
         focusRow = anchorRow
@@ -359,7 +364,8 @@ Item {
             "endRow": focusRow,
             "endColumn": focusColumn,
             "endExclusive": true,
-            "unshiftedRows": true
+            "unshiftedRows": true,
+            "block": blockSelection
         }, true)
     }
 
@@ -381,7 +387,9 @@ Item {
             "startRow": startRow,
             "startColumn": startColumn,
             "endRow": endRow,
-            "endColumn": endColumn
+            "endColumn": endColumn,
+            "blockStartColumn": Math.min(anchorColumn, focusColumn),
+            "blockEndColumn": Math.max(anchorColumn, focusColumn)
         }
     }
 
@@ -393,10 +401,10 @@ Item {
                 || absoluteRow > selection.endRow)
             return { "valid": false, "start": 0, "end": 0 }
         const maxColumns = columnCount(rowWidth)
-        let start = absoluteRow === selection.startRow
-                ? selection.startColumn : 0
-        let end = absoluteRow === selection.endRow
-                ? selection.endColumn : maxColumns
+        let start = blockSelection ? selection.blockStartColumn
+                : absoluteRow === selection.startRow ? selection.startColumn : 0
+        let end = blockSelection ? selection.blockEndColumn
+                : absoluteRow === selection.endRow ? selection.endColumn : maxColumns
         start = Math.max(0, Math.min(maxColumns, start))
         end = Math.max(start, Math.min(maxColumns, end))
         return { "valid": end > start, "start": start, "end": end }
@@ -405,6 +413,7 @@ Item {
     function resetForDocumentChange() {
         selectionDragging = false
         selectionVisible = false
+        blockSelection = false
         clickCount = 0
         lastClickAt = 0
         stopAutoScroll()
@@ -412,6 +421,7 @@ Item {
 
     function cancelInteraction() {
         selectionDragging = false
+        blockSelection = false
         clickCount = 0
         lastClickAt = 0
         stopAutoScroll()
