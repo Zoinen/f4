@@ -103,6 +103,18 @@ type TerminalView struct {
 	lastCharWasCR       bool
 	// A primary-screen resize can be followed by ED2 before ConPTY redraws;
 	// suppressing that erase prevents reflowed rows being duplicated in history.
+
+	// reflow makes a width change re-wrap the primary screen and GridHistory
+	// by the view's own wrap flags; see view_reflow.go. The owner sets it per
+	// session, because the flags only mean something when the stream delivers
+	// long lines whole.
+	reflow bool
+
+	// suppressEraseHistory stays set after a primary-screen reflow until the
+	// next printable cell arrives. ConPTY/OpenConsole commonly repaints a
+	// resized screen with one or more ED2 sequences before redrawing it. The
+	// rows have already been preserved by reflow; pushing the same viewport
+	// again would manufacture duplicate logical output in scrollback.
 	suppressEraseHistory bool
 	// True while f4's separate command line covers the terminal's final row.
 	// Access is protected by mu because layout and PTY parsing run separately.
@@ -189,6 +201,7 @@ func (tv *TerminalView) CloneStateFrom(other *TerminalView) {
 	tv.AltLines = allocGrid(other.AltLines)
 	tv.WrapFlags = make([]bool, len(other.WrapFlags))
 	copy(tv.WrapFlags, other.WrapFlags)
+	tv.reflow = other.reflow
 
 	tv.GridHistory = make([][]vtui.CharInfo, len(other.GridHistory))
 	for i := range other.GridHistory {
@@ -399,12 +412,15 @@ func (tv *TerminalView) extrudeGridHistoryRow(idx int) {
 	isWrapped := tv.GridHistoryWrap[idx]
 
 	lastChar := len(line) - 1
-	for lastChar >= 0 && line[lastChar].Char == ' ' && line[lastChar].Attributes == DefaultTermAttr {
+	for lastChar >= 0 && isTrailingBlank(line[lastChar]) {
 		lastChar--
 	}
 
 	var sb strings.Builder
 	for i := 0; i <= lastChar; i++ {
+		if isWrapPad(line[i]) {
+			continue
+		}
 		// Saving attributes for the log
 		if line[i].Attributes != tv.lastAttr {
 			tv.styles = append(tv.styles, StyleChange{Offset: int(tv.Pt.Size()) + sb.Len(), Attr: line[i].Attributes})
@@ -470,11 +486,13 @@ func (tv *TerminalView) terminalLogSnapshot() terminalLogSnapshot {
 		line := tv.GridHistory[i]
 		isWrapped := tv.GridHistoryWrap[i]
 		lastChar := len(line) - 1
-		for lastChar >= 0 && line[lastChar].Char == ' ' && line[lastChar].Attributes == DefaultTermAttr {
+		for lastChar >= 0 && isTrailingBlank(line[lastChar]) {
 			lastChar--
 		}
 		for j := 0; j <= lastChar; j++ {
-			sb.WriteString(vtui.CellString(line[j].Char))
+			if !isWrapPad(line[j]) {
+				sb.WriteString(vtui.CellString(line[j].Char))
+			}
 		}
 		if !isWrapped {
 			sb.WriteRune('\n')
@@ -522,12 +540,14 @@ func (tv *TerminalView) terminalLogSnapshot() terminalLogSnapshot {
 			isWrapped := tv.WrapFlags[y]
 
 			lastChar := len(line) - 1
-			for lastChar >= 0 && line[lastChar].Char == ' ' && line[lastChar].Attributes == DefaultTermAttr {
+			for lastChar >= 0 && isTrailingBlank(line[lastChar]) {
 				lastChar--
 			}
 
 			for i := 0; i <= lastChar; i++ {
-				sb.WriteString(vtui.CellString(line[i].Char))
+				if !isWrapPad(line[i]) {
+					sb.WriteString(vtui.CellString(line[i].Char))
+				}
 			}
 			if !isWrapped && y < lastValidRow {
 				sb.WriteRune('\n')
@@ -606,6 +626,26 @@ func (tv *TerminalView) PutChar(r rune, attr uint64) {
 		} else {
 			tv.CursorX = tv.Width - 1 // Overwrite last character instead of wrapping
 		}
+	} else if w > 1 && tv.AutoWrap && tv.CursorX > 0 && tv.CursorX+w > tv.Width && w <= tv.Width {
+		// A wide character that does not fit the columns left starts the
+		// next row, as in xterm. It used to be dropped. On the primary screen
+		// the columns it could not use are padded with cells that are not
+		// text, so the row reads back, and re-wraps, without a space that was
+		// never printed.
+		if tv.CursorY >= 0 && tv.CursorY < tv.Height {
+			buf := tv.GetBuffer()
+			for x := tv.CursorX; x < tv.Width && x < len(buf[tv.CursorY]); x++ {
+				if tv.UseAltScreen {
+					buf[tv.CursorY][x] = vtui.CharInfo{Char: ' ', Attributes: attr}
+				} else {
+					buf[tv.CursorY][x] = wrapPadCell
+				}
+			}
+			if !tv.UseAltScreen {
+				tv.WrapFlags[tv.CursorY] = true
+			}
+		}
+		tv.newline()
 	}
 
 	buf := tv.GetBuffer()
@@ -1515,15 +1555,15 @@ func (tv *TerminalView) Resize(w, h int) {
 
 	tv.Engine.SetWidth(w)
 
-	// A width change re-wraps the primary screen. A height-only change does
-	// not: the rows keep their contents, and the existing path below moves
-	// them between the viewport and GridHistory, which is what keeps the
-	// terminal's vertical "accordion" behaviour lossless.
-	// Горизонтальный reflow здесь НЕ делается. См. запрет в
-	// docs/CONPTY_GATE_REQUIREMENTS.md: восстанавливать логические строки из
-	// рядов сетки запрещено, потому что ряды не несут границ, и любая такая
-	// реализация вынуждена их угадывать. Длинные строки берутся целыми у
-	// пиннутого OpenConsole, а не собираются обратно здесь.
+	// A width change re-wraps the primary screen when the session delivers
+	// long lines whole (view_reflow.go). A height-only change does not: the
+	// rows keep their contents, and the path below moves them between the
+	// viewport and GridHistory, which keeps the vertical "accordion"
+	// behaviour lossless.
+	if tv.reflow && !tv.UseAltScreen && w != tv.Width && w > 0 && h > 0 && tv.Width > 0 && tv.Height > 0 {
+		tv.reflowResizeLocked(w, h)
+		return
+	}
 
 	// The branch that does *not* re-wrap: the re-wrap is off, or only the
 	// height changed. It moves rows between the viewport and history by
@@ -1908,7 +1948,7 @@ func (tv *TerminalView) textBeforeCursorLocked() string {
 func CellsText(cells []vtui.CharInfo) string {
 	var sb strings.Builder
 	for _, c := range cells {
-		if c.Char == vtui.WideCharFiller {
+		if c.Char == vtui.WideCharFiller || isWrapPad(c) {
 			continue
 		}
 		sb.WriteString(vtui.CellString(c.Char))

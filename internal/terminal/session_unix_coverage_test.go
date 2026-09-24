@@ -152,12 +152,12 @@ func TestRunClientReportsMissingServer(t *testing.T) {
 }
 
 func TestParseAttachPayloadHandlesEmptyAndUnknownFirstLines(t *testing.T) {
-	edit, left, right := parseAttachPayload("")
+	edit, left, right, _ := parseAttachPayload("")
 	if edit != "" || left != "" || right != "" {
 		t.Fatalf("parseAttachPayload(\"\") = (%q, %q, %q), want all empty", edit, left, right)
 	}
 
-	edit, left, right = parseAttachPayload("UNKNOWN\nCWD /tmp\nCWD2 /var/tmp")
+	edit, left, right, _ = parseAttachPayload("UNKNOWN\nCWD /tmp\nCWD2 /var/tmp")
 	if edit != "" || left != "/tmp" || right != "/var/tmp" {
 		t.Fatalf("parseAttachPayload unknown first line = (%q, %q, %q), want empty edit and parsed directories", edit, left, right)
 	}

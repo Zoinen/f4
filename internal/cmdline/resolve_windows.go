@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-const appPathsKeyPath = `Software\Microsoft\Windows\CurrentVersion\term.App Paths`
+const appPathsKeyPath = `Software\Microsoft\Windows\CurrentVersion\App Paths`
 
 // ResolveWindowsCommand rewrites the first token of cmd to the full path
 // registered in the "App Paths" registry key, but only when the program is

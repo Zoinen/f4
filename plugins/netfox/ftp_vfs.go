@@ -358,6 +358,7 @@ func (v *FTPVFS) ReadDir(ctx context.Context, p string, onChunk func([]vfs.VFSIt
 		// #nosec G115 -- the explicit MaxInt64 check above makes this conversion lossless.
 		size := int64(e.Size)
 		items = append(items, vfs.VFSItem{
+			KnownMetadata: vfs.MetadataExplicit | vfs.MetadataHidden | vfs.MetadataMTime, SizeKnown: true,
 			Name: name, Size: size,
 			IsDir: e.Type == ftp.EntryTypeFolder, MTime: e.Time,
 			IsHidden: strings.HasPrefix(name, "."),
@@ -391,6 +392,7 @@ func (v *FTPVFS) Stat(ctx context.Context, p string) (vfs.VFSItem, error) {
 			// #nosec G115 -- the explicit MaxInt64 check above makes this conversion lossless.
 			size := int64(e.Size)
 			return vfs.VFSItem{
+				KnownMetadata: vfs.MetadataExplicit | vfs.MetadataHidden | vfs.MetadataMTime, SizeKnown: true,
 				Name: e.Name, Size: size,
 				IsDir: e.Type == ftp.EntryTypeFolder, MTime: e.Time,
 				IsHidden: strings.HasPrefix(e.Name, "."),

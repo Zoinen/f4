@@ -17,11 +17,12 @@ import (
 // A row is a projection of one ready source span, not a retained rendering.
 // Both native export and the console painter consume this same operation.
 type viewerRowProjection struct {
-	end        int64
-	text       string
-	cells      []vtui.CharInfo
-	nextColumn int
-	links      []UrlCellRange
+	end             int64
+	text            string
+	cells           []vtui.CharInfo
+	cellByteOffsets []int
+	nextColumn      int
+	links           []UrlCellRange
 }
 
 // These are unfinished operations, not retained document windows. A completed
@@ -193,6 +194,7 @@ func (vv *ViewerView) projectRowProgress(offset int64, width, column int, pendin
 		row.end = offset + int64(scan.lineLen)
 		row.text = string(data[:scan.textLen])
 		row.cells = scan.cells
+		row.cellByteOffsets = scan.cellByteOffsets
 		row.links = urlCellRanges(row.text, scan.cellByteOffsets)
 		if vv.LastSearchFound && vv.LastSearch != "" {
 			matchLength := vv.LastSearchMatchLen

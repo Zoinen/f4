@@ -1441,6 +1441,7 @@ func enterTextAndOk(t *testing.T, dlg vtui.Container, text string) {
 }
 
 func TestFileOps_UI_RememberOverwrite(t *testing.T) {
+	t.Cleanup(testutil.SwapFrameManager(t))
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	tmpSrc := t.TempDir()
 	tmpDst := t.TempDir()

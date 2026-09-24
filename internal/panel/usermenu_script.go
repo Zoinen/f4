@@ -3,11 +3,12 @@ package panel
 import (
 	"errors"
 	"fmt"
-	"github.com/unxed/f4/internal/cmdline"
-	"github.com/unxed/f4/vfs"
 	"os"
-	"runtime"
 	"strings"
+
+	"github.com/unxed/f4/internal/cmdline"
+	"github.com/unxed/f4/internal/terminal"
+	"github.com/unxed/f4/vfs"
 )
 
 // userMenuInterpreter recognizes a standard shebang on the first command line.
@@ -45,7 +46,7 @@ func userMenuCommandDialect(pf *PanelsFrame) vfs.CommandDialect {
 			}
 		}
 	}
-	if runtime.GOOS == "windows" {
+	if terminal.WindowsShellSyntax() {
 		return vfs.CommandDialectCmd
 	}
 	return vfs.CommandDialectPOSIX

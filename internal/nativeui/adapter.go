@@ -34,6 +34,9 @@ func (Adapter) CatalogRows(id, path string, revision int64, offset, limit int) (
 func (Adapter) CatalogRowsRetryable(id, path string, revision int64) bool {
 	return panel.LivePanelCatalogRowsRetryable(id, path, revision)
 }
+func (Adapter) GroupPage(id, path string, revision int64, offset, limit int) (map[string]any, bool) {
+	return panel.BuildLivePanelGroupPage(id, path, revision, offset, limit)
+}
 func (Adapter) LiveCatalogMetadata(id, path string, catalog, metadata int64, offset, limit int) (map[string]any, bool) {
 	return panel.BuildLivePanelCatalogMetadataChunk(id, path, catalog, metadata, offset, limit)
 }

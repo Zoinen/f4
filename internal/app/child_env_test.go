@@ -209,3 +209,19 @@ func TestPrivateEnvEntryIgnoresEntriesWithoutAName(t *testing.T) {
 		t.Error("an empty value is still that variable")
 	}
 }
+
+// F4_DETACHED describes how this process was started, not the one it starts.
+// A GUI f4 runs detached and carries the flag for its whole life; the shell in
+// its built-in terminal inherited it and so did every f4 started from there,
+// which then pointed its own stdout at the crash log. `f4 --version` typed at
+// the command line printed nothing at all (issue #1151).
+func TestChildEnvDropsDetachedFlag(t *testing.T) {
+	env := terminal.BuildChildEnv([]string{"PATH=/usr/bin", "F4_DETACHED=1"}, false, false)
+
+	if envHasKey(env, "F4_DETACHED") {
+		t.Errorf("the child is not the detached copy: %v", env)
+	}
+	if !envHas(env, "PATH=/usr/bin") {
+		t.Errorf("the rest of the environment must survive: %v", env)
+	}
+}

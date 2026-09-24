@@ -9,6 +9,15 @@ import (
 	"github.com/unxed/vtinput"
 )
 
+var menuLoopScroll = true
+
+// SetMenuLoopScroll configures whether holding an arrow key at a wrapped
+// menu edge continues at the opposite edge. The default preserves vtui's
+// historic looping behaviour.
+func SetMenuLoopScroll(loop bool) { menuLoopScroll = loop }
+
+func MenuLoopScroll() bool { return menuLoopScroll }
+
 // MenuItem represents a single menu item.
 type MenuItem struct {
 	// Details contains named display fields for native renderers. Console Text
@@ -61,6 +70,9 @@ type MenuFrameProvider interface {
 type VMenu struct {
 	ScrollView
 	title string
+	// bottomTitle is drawn centred on the lower border, where far2l's
+	// VMenu::SetBottomTitle puts a menu's key hints.
+	bottomTitle string
 	Items []MenuItem
 	// SemanticBottomHint exposes a custom renderer's footer to native frontends.
 	SemanticBottomHint string
@@ -82,6 +94,12 @@ type VMenu struct {
 	OnAction       func(int)
 	OnKeyDown      func(*vtinput.InputEvent) bool
 	HideShadow     bool
+	// IgnoreSingleClick keeps a single left click from confirming the menu;
+	// a double click still confirms it.
+	IgnoreSingleClick bool
+	// DisableFilter turns off the optional item filter for consumers that own
+	// their rows and key handling, such as the Colorer outline.
+	DisableFilter bool
 	BoxType        int
 	// OnClose is invoked exactly once for one shown lifetime. Dynamic menus use
 	// it to cancel native requests and live queries when their chain closes.
@@ -142,6 +160,7 @@ func NewVMenu(title string) *VMenu {
 	m.MarginTop = 1
 	m.MarginBottom = 1
 	m.InitScrollBar(m)
+	m.ScrollBar.ColorIdx = ColMenuScrollbar
 	return m
 }
 
@@ -161,6 +180,11 @@ func (m *VMenu) AddSeparator() {
 }
 
 func (m *VMenu) GetItemCount() int { return len(m.Items) }
+
+// FilterText reports the active item-filter text. The local menu currently
+// has no implicit filter mode, so it remains empty while preserving the API
+// used by upstream callers that explicitly disable filtering.
+func (m *VMenu) FilterText() string { return "" }
 
 func (m *VMenu) itemSelectable(i int) bool {
 	return i >= 0 && i < len(m.Items) && !m.Items[i].Separator &&
@@ -690,6 +714,13 @@ func (m *VMenu) GetTitle() string {
 func (m *VMenu) SetTitle(title string) {
 	m.title = title
 }
+
+// GetBottomTitle returns the text drawn on the lower border.
+func (m *VMenu) GetBottomTitle() string { return m.bottomTitle }
+
+// SetBottomTitle sets the text drawn centred on the lower border.
+func (m *VMenu) SetBottomTitle(title string) { m.bottomTitle = title }
+
 func (m *VMenu) GetProgress() int {
 	return -1
 }
@@ -804,6 +835,9 @@ func (m *VMenu) ProcessMouse(e *vtinput.InputEvent) bool {
 				if m.OpenSubmenu(clickIdx) {
 					return true
 				}
+				if m.IgnoreSingleClick && e.MouseEventFlags&vtinput.DoubleClick == 0 {
+					return true
+				}
 				if FrameManager.DisabledCommands.IsDisabled(item.Command) {
 					return true
 				}
@@ -906,6 +940,7 @@ func (m *VMenu) DisplayObject(scr *ScreenBuf) {
 	// far2l paints a menu title with Menu.Title whether the menu holds focus
 	// or not, so there is no separate focused variant here.
 	p.DrawTitle(m.X1, m.Y1, m.X2, m.title, Palette[m.ColorTitleIdx])
+	p.DrawTitle(m.X1, m.Y2, m.X2, m.bottomTitle, Palette[m.ColorTitleIdx])
 
 	colText := Palette[m.ColorTextIdx]
 	colSel := Palette[m.ColorSelectedTextIdx]

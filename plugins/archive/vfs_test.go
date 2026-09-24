@@ -352,8 +352,24 @@ func TestArchiveVFS_DeferredClose(t *testing.T) {
 		t.Fatalf("close second archive reader: %v", err)
 	}
 
-	// 5. Wait for the shortened test TTL to expire and perform cleanup.
-	time.Sleep(2 * archiveVFSIdleTTL)
+	// 5. Wait for the shortened test TTL to expire and perform cleanup. Poll
+	// the private state instead of sleeping for exactly the TTL: a timer can
+	// legitimately run a little late on a busy Darwin or Windows runner.
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	for {
+		vArc.mu.Lock()
+		cleaned := vArc.cleanupTimer == nil && vArc.fsys == nil && vArc.closer == nil
+		vArc.mu.Unlock()
+		if cleaned {
+			break
+		}
+		select {
+		case <-time.After(10 * time.Millisecond):
+		case <-deadline.C:
+			t.Fatal("timed out waiting for archive VFS cleanup")
+		}
+	}
 
 	// 6. Try to open the file again. It should fail now as the VFS has been fully cleaned up.
 	_, errRead3 := vArc.Open(context.Background(), vArc.Join(zipPath, "file1.txt"))

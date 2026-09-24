@@ -17,7 +17,7 @@ func TestEditorURLHoverAddsUnderlineOnlyToHoveredLink(t *testing.T) {
 	const text = "https://example.org"
 	links := viewer.FindURLLinks(text)
 	ev := &EditorView{hoverURL: links[0].URL, TabSize: 8}
-	cells := ev.fillCellsWithLinks(nil, []byte(text), terminal.DefaultTermAttr, terminal.DefaultTermAttr, 0, false, 0, 0, nil, links, 0, false, -1, 0, 0, 0)
+	cells := ev.fillCellsWithLinks(nil, []byte(text), terminal.DefaultTermAttr, terminal.DefaultTermAttr, 0, false, 0, 0, nil, links, 0, 0, false, -1, 0, 0, 0)
 	if len(cells) != len(text) {
 		t.Fatalf("rendered %d cells, want %d", len(cells), len(text))
 	}
@@ -27,7 +27,7 @@ func TestEditorURLHoverAddsUnderlineOnlyToHoveredLink(t *testing.T) {
 		}
 	}
 	ev.hoverURL = "https://other.example"
-	cells = ev.fillCellsWithLinks(nil, []byte(text), terminal.DefaultTermAttr, terminal.DefaultTermAttr, 0, false, 0, 0, nil, links, 0, false, -1, 0, 0, 0)
+	cells = ev.fillCellsWithLinks(nil, []byte(text), terminal.DefaultTermAttr, terminal.DefaultTermAttr, 0, false, 0, 0, nil, links, 0, 0, false, -1, 0, 0, 0)
 	for i, cell := range cells {
 		if cell.Attributes&vtui.CommonLvbUnderscore != 0 {
 			t.Errorf("cell %d was underlined for a different URL", i)

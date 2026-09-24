@@ -1,10 +1,13 @@
 package settings
 
 import (
+	"context"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/unxed/f4/internal/config"
+	"github.com/unxed/f4/internal/gui"
 	"github.com/unxed/f4/internal/settingstest"
 	"github.com/unxed/f4/internal/testutil"
 	"github.com/unxed/f4/sdk/f4settings"
@@ -136,5 +139,137 @@ func TestSettingsDropdownHoverHelpDoesNotChangeDraft(t *testing.T) {
 	c.Show(scr)
 	if d.Values["GuiBackend"] != "gogpu" {
 		t.Fatal("confirming dropdown did not stage the highlighted choice")
+	}
+}
+
+// TestSettingsDropdownArrowClickKeepsMenuOpen covers issue #1156. A press on
+// a dropdown's arrow opens the list below the field and hands the press over
+// to it; the Center then fits the list into the content pane before the
+// release arrives. It used to do so by pulling the list up over the field, so
+// the release landed on an item: the list picked it and closed at once. The
+// Appearance page is exercised at the default GUI size, with font names wider
+// than the field, at every scroll offset that shows the font field.
+func TestSettingsDropdownArrowClickKeepsMenuOpen(t *testing.T) {
+	oldDiscover := gui.DiscoverInstalledGuiFonts
+	gui.DiscoverInstalledGuiFonts = func(string) []string {
+		fonts := make([]string, 30)
+		for i := range fonts {
+			fonts[i] = fmt.Sprintf("/fonts/Cascadia Code ExtraLight Italic %02d.ttf", i)
+		}
+		return fonts
+	}
+	t.Cleanup(func() { gui.DiscoverInstalledGuiFonts = oldDiscover })
+
+	const width, height = 100, 30
+	mouse := func(x, y int, down, moved bool) {
+		e := &vtinput.InputEvent{Type: vtinput.MouseEventType, MouseX: testutil.Int16(x), MouseY: testutil.Int16(y), KeyDown: down}
+		if down {
+			e.ButtonState = vtinput.FromLeft1stButtonPressed
+		}
+		if moved {
+			e.MouseEventFlags = vtinput.MouseMoved
+		}
+		vtui.FrameManager.InjectEvents([]*vtinput.InputEvent{e})
+		vtui.FrameManager.Step(0)
+	}
+	checked, maxScroll := 0, 0
+	for scroll := 0; scroll <= maxScroll; scroll++ {
+		t.Run(fmt.Sprintf("scroll %d", scroll), func(t *testing.T) {
+			t.Cleanup(testutil.SwapFrameManager(t))
+			scr := vtui.NewSilentScreenBuf()
+			scr.AllocBuf(width, height)
+			vtui.FrameManager.Init(scr)
+			provider := coreSettingsProvider{}
+			d, err := provider.Begin(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+			c := newSettingsCenter([]*settingsSession{{catalog: provider.Catalog(), draft: d}})
+			c.navigate("appearance", "", "", false)
+			c.ResizeConsole(width, height)
+			vtui.FrameManager.Push(c)
+			c.Show(scr)
+			maxScroll = c.page.bar.Max
+			c.page.scroll = scroll
+			c.page.positionRows()
+			c.Show(scr)
+			var combo *vtui.ComboBox
+			for _, row := range c.page.rows {
+				if row.field.ID == "GuiFont" {
+					combo, _ = row.control.(*vtui.ComboBox)
+				}
+			}
+			if combo == nil {
+				t.Fatal("the Appearance page has no graphical font dropdown")
+			}
+			if combo.Y1 < c.page.Y1 || combo.Y1 > c.page.Y2 {
+				return
+			}
+			checked++
+			text := combo.Edit.GetText()
+
+			mouse(combo.X2, combo.Y1, true, false)
+			mouse(combo.X2, combo.Y1, false, false)
+			menu := combo.Menu
+			if vtui.FrameManager.GetTopFrame() != menu {
+				t.Fatalf("releasing the button on the arrow closed the list; the field now reads %q", combo.Edit.GetText())
+			}
+			if combo.Edit.GetText() != text {
+				t.Fatalf("releasing the button on the arrow picked %q", combo.Edit.GetText())
+			}
+			if menu.Y1 <= combo.Y1 && combo.Y1 <= menu.Y2 {
+				t.Fatalf("list rows %d-%d cover the field row %d", menu.Y1, menu.Y2, combo.Y1)
+			}
+			if menu.Y1 < c.page.Y1 || menu.Y2 > c.page.Y2 || menu.X1 < c.page.X1 || menu.X2 > c.page.X2 {
+				t.Fatalf("list %d,%d-%d,%d leaves the content pane %d,%d-%d,%d", menu.X1, menu.Y1, menu.X2, menu.Y2, c.page.X1, c.page.Y1, c.page.X2, c.page.Y2)
+			}
+
+			// Pressing on the arrow and dragging onto an item still picks it.
+			vtui.FrameManager.RemoveFrame(menu)
+			mouse(combo.X2, combo.Y1, true, false)
+			vtui.FrameManager.Step(0) // the render that fits the list into the pane
+			itemY := menu.Y1 + 2
+			index := menu.GetClickIndex(itemY)
+			if index < 0 || index >= len(menu.Items) {
+				t.Fatalf("row %d of list %d-%d is not an item", itemY, menu.Y1, menu.Y2)
+			}
+			mouse(menu.X1+2, itemY, true, true)
+			mouse(menu.X1+2, itemY, false, false)
+			if vtui.FrameManager.GetTopFrame() == menu {
+				t.Fatal("releasing the drag on an item left the list open")
+			}
+			if got, want := combo.Edit.GetText(), menu.Items[index].Text; got != want {
+				t.Fatalf("the drag onto %q left the field reading %q", want, got)
+			}
+		})
+	}
+	if checked == 0 {
+		t.Fatal("no scroll offset showed the graphical font dropdown")
+	}
+}
+
+func TestSettingsDropdownRowsNeverCoverTheField(t *testing.T) {
+	cases := []struct {
+		name                       string
+		field, height, top, bottom int
+		wantY, wantHeight          int
+	}{
+		{"fits below", 5, 10, 0, 20, 6, 10},
+		{"fits above only", 15, 10, 0, 20, 5, 10},
+		{"shortened below", 9, 10, 2, 17, 10, 8},
+		{"shortened above", 11, 10, 2, 17, 2, 9},
+		{"too short on either side", 5, 10, 3, 7, 6, 10},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			y, h := settingsDropdownRows(tc.field, tc.height, tc.top, tc.bottom)
+			if y != tc.wantY || h != tc.wantHeight {
+				t.Fatalf("got rows %d+%d, want %d+%d", y, h, tc.wantY, tc.wantHeight)
+			}
+			if y <= tc.field && tc.field <= y+h-1 {
+				t.Fatalf("rows %d-%d cover the field row %d", y, y+h-1, tc.field)
+			}
+		})
 	}
 }

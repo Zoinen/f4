@@ -118,6 +118,11 @@ type QuickViewModel struct {
 	Surface           SurfaceModel
 }
 
+type PanelGroupModel struct {
+	Key, Title        string
+	StartIndex, Count int
+}
+
 type PanelModel struct {
 	PathIcon            string
 	UseSortGroups       bool
@@ -135,6 +140,7 @@ type PanelModel struct {
 	Active                bool
 	Path                  string
 	Title                 string
+	ViewMode              string
 	ShowFileInfo          bool
 	GalleryLayoutMode     string
 	GalleryColumnCount    int
@@ -161,6 +167,15 @@ type PanelModel struct {
 	HighlightRevision      int64
 	HighlightStyles        map[string]HighlightStyleModel
 	CursorEntryID          string
+	GroupBy                string
+	GroupReverse           bool
+	GroupFoldersSeparately bool
+	// GroupsDeferred means Groups contains no partial catalog. Native peers
+	// must request the bounded group pages and install them as one snapshot.
+	GroupsDeferred         bool
+	GroupTotal             int
+	DisplayTop             int
+	Groups                 []PanelGroupModel
 	SortMode               string
 	SortReverse            bool
 	SeparateFileExtensions bool
@@ -175,6 +190,7 @@ type PanelModel struct {
 	SelectedSize           int64
 	TotalCount             int
 	TotalSize              int64
+	Top                    int
 	GalleryColumns         []PanelColumnModel
 	Entries                []FileEntryModel
 }
@@ -212,6 +228,10 @@ type FileEntryModel struct {
 	IsHidden         bool
 	IsExecutable     bool
 	IsImage          bool
+	// ThumbnailKind identifies non-image media that still has a native
+	// thumbnail pipeline. "video" uses a contact-sheet decoder while keeping
+	// the still-image viewer contract separate.
+	ThumbnailKind    string
 	Selected         bool
 	SizeCalculated   bool
 	MTime            string
@@ -305,6 +325,19 @@ type PanelCatalogRowsModel struct {
 	Total           int
 	Entries         []FileEntryModel
 	HighlightStyles map[string]HighlightStyleModel
+}
+
+// PanelGroupPageModel is a bounded page of the immutable group index. Group
+// offsets are absolute source-entry indexes; the page offset addresses the
+// group ordinal, not a file row.
+type PanelGroupPageModel struct {
+	PanelID         string
+	Path            string
+	CatalogRevision int64
+	Offset          int
+	Limit           int
+	Total           int
+	Groups          []PanelGroupModel
 }
 
 type HighlightGroupModel struct {
@@ -933,6 +966,11 @@ func (p PanelModel) ToMap() M {
 		"pathIcon":               p.PathIcon,
 		"title":                  p.Title,
 		"useSortGroups":          p.UseSortGroups,
+		"groupBy":                p.GroupBy,
+		"groupReverse":           p.GroupReverse,
+		"groupFoldersSeparately": p.GroupFoldersSeparately,
+		"groupTotal":             p.GroupTotal,
+		"displayTop":             p.DisplayTop,
 		"selectedFiles":          p.SelectedFiles,
 		"selectedDirectories":    p.SelectedDirectories,
 		"totalFiles":             p.TotalFiles,
@@ -996,6 +1034,12 @@ func (p PanelModel) ToMap() M {
 	if p.CatalogRowsDeferred {
 		out["catalogRowsDeferred"] = true
 	}
+	if p.Groups != nil {
+		out["groups"] = panelGroupsToMaps(p.Groups)
+	}
+	if p.GroupsDeferred {
+		out["groupsDeferred"] = true
+	}
 	if len(p.HighlightStyles) > 0 {
 		styles := make(M, len(p.HighlightStyles))
 		for id, style := range p.HighlightStyles {
@@ -1004,6 +1048,19 @@ func (p PanelModel) ToMap() M {
 		out["highlightStyles"] = styles
 	}
 	return out
+}
+
+func (p PanelGroupPageModel) ToMap() M {
+	return M{
+		"type":            "panel_group_page",
+		"panelId":         p.PanelID,
+		"path":            p.Path,
+		"catalogRevision": p.CatalogRevision,
+		"offset":          p.Offset,
+		"limit":           p.Limit,
+		"total":           p.Total,
+		"groups":          panelGroupsToMaps(p.Groups),
+	}
 }
 
 func (e FileEntryModel) ToMap() M {
@@ -1028,6 +1085,9 @@ func (e FileEntryModel) ToMap() M {
 		"mtimeNanos":       e.MTimeNanos,
 		"version":          e.Version,
 		"mode":             e.Mode,
+	}
+	if e.ThumbnailKind != "" {
+		out["thumbnailKind"] = e.ThumbnailKind
 	}
 	if e.HighlightStyleID != "" {
 		out["highlightStyleId"] = e.HighlightStyleID
@@ -1059,6 +1119,9 @@ func (e FileEntryModel) MinimalToMap() M {
 		"isUp":             e.IsUp,
 		"isImage":          e.IsImage,
 		"selected":         e.Selected,
+	}
+	if e.ThumbnailKind != "" {
+		out["thumbnailKind"] = e.ThumbnailKind
 	}
 	// Hidden entries are normally sparse. Absence is the canonical false value,
 	// so ordinary large directories pay no per-row payload cost for this
@@ -1785,6 +1848,19 @@ func panelsToMaps(items []PanelModel) []M {
 	out := make([]M, 0, len(items))
 	for _, item := range items {
 		out = append(out, item.ToMap())
+	}
+	return out
+}
+
+func panelGroupsToMaps(items []PanelGroupModel) []M {
+	out := make([]M, 0, len(items))
+	for _, item := range items {
+		out = append(out, M{
+			"key":        item.Key,
+			"title":      item.Title,
+			"startIndex": item.StartIndex,
+			"count":      item.Count,
+		})
 	}
 	return out
 }

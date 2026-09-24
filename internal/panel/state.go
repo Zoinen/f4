@@ -28,3 +28,10 @@ var (
 // AIPrevPath remembers where a panel was before it showed the dialog, so the
 // same key brings the files back.
 var AIPrevPath [2]string
+
+var (
+	LastLeftGroupBy, LastRightGroupBy           GroupMode
+	LastLeftGroupReverse, LastRightGroupReverse bool
+	LastLeftGroupFoldersSeparately              = true
+	LastRightGroupFoldersSeparately             = true
+)

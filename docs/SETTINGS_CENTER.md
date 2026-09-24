@@ -123,7 +123,8 @@ The original-dialog column links to the original implementation and its backing 
 | AutoSaveGUIWindow | workspaces / Automatic saving | [actionAutoSaveSettings](../cmd/f4/actions.go#L3645), [actionAutoSaveSettings](../cmd/f4/actions.go#L3673), [actionPanelSettings](../cmd/f4/actions.go#L3846) | settings.ini / System / AutoSaveGUIWindow | [actions.go](../cmd/f4/actions.go#L3645), [actions.go](../cmd/f4/actions.go#L3673), [actions.go](../cmd/f4/actions.go#L3846) | Save graphical window automatically: Remember supported graphical-window dimensions and position, not external terminal geometry. Takes effect: live. |
 | ShowHiddenFiles | panels / File listing | [actionPanelSettings](../cmd/f4/actions.go#L3695), [actionPanelSettings](../cmd/f4/actions.go#L3835) | settings.ini / Panel / ShowHiddenFiles | [actions.go](../cmd/f4/actions.go#L3695), [actions.go](../cmd/f4/actions.go#L3835), [action_registry.go](../cmd/f4/action_registry.go#L1918) | Show hidden files: Include hidden files and folders in the listing. The parent-directory entry remains visible. Takes effect: live. |
 | ShowDirPrefix | panels / File listing | [actionPanelSettings](../cmd/f4/actions.go#L3701), [actionPanelSettings](../cmd/f4/actions.go#L3836) | settings.ini / Panel / ShowDirPrefix | [actions.go](../cmd/f4/actions.go#L3701), [actions.go](../cmd/f4/actions.go#L3836), [file_panel.go](../cmd/f4/file_panel.go#L143) | Prefix folder names: Prefix folder names with a slash, unless a highlight rule already supplies one. Takes effect: live. |
-| ShowHighlightMarks | panels / File listing | [actionPanelSettings](../cmd/f4/actions.go#L3707), [actionPanelSettings](../cmd/f4/actions.go#L3837) | settings.ini / Panel / ShowHighlightMarks | [actions.go](../cmd/f4/actions.go#L3707), [actions.go](../cmd/f4/actions.go#L3837), [file_panel.go](../cmd/f4/file_panel.go#L135) | Show highlight marks: Show markers from matching file-highlight rules. Also affects path suggestions; symlinks retain their fallback arrow. Takes effect: live. |
+| ShowHighlightMarks | panels / File listing | [actionPanelSettings](../cmd/f4/actions.go#L3707), [actionPanelSettings](../cmd/f4/actions.go#L3837) | settings.ini / Panel / ShowHighlightMarks | [actions.go](../cmd/f4/actions.go#L3707), [actions.go](../cmd/f4/actions.go#L3837), [file_panel.go](../cmd/f4/file_panel.go#L135) | Show highlight marks: Show markers from matching file-highlight rules. Also affects path suggestions; a symlink no rule marks follows its own arrow setting. Takes effect: live. |
+| ShowSymlinkArrow | panels / File listing | [actionPanelSettings](../internal/app/actions.go#L3627), [actionPanelSettings](../internal/app/actions.go#L3762) | settings.ini / Panel / ShowSymlinkArrow | [actions.go](../internal/app/actions.go#L3627), [actions.go](../internal/app/actions.go#L3762), [list.go](../internal/panel/list.go#L130) | Arrow before symbolic links: Prefix the name of a symbolic link with an arrow when no highlight rule marks it. The link target shown beside the focused entry is not affected. Takes effect: live. |
 | SeparateFileExtensions | panels / File listing | [actionPanelSettings](../cmd/f4/actions.go#L3712), [actionPanelSettings](../cmd/f4/actions.go#L3838) | settings.ini / Panel / SeparateFileExtensions | [actions.go](../cmd/f4/actions.go#L3712), [actions.go](../cmd/f4/actions.go#L3838), [file_panel.go](../cmd/f4/file_panel.go#L169) | Separate filename extensions: Align the final extension separately in the name column. Excludes folders, extensionless names and leading dots alone. Takes effect: live. |
 | ShowPanelFileInfo | panels / File listing | [actionPanelSettings](../cmd/f4/actions.go#L3716), [actionPanelSettings](../cmd/f4/actions.go#L3839) | settings.ini / Panel / ShowPanelFileInfo | [actions.go](../cmd/f4/actions.go#L3716), [actions.go](../cmd/f4/actions.go#L3839), [file_panel.go](../cmd/f4/file_panel.go#L2702) | Focused-file status row: Reserve a bottom row for the focused name, size and modification time. Short panels suppress this row. Takes effect: live. |
 | PanelScrollbarMode | panels / File listing | [actionPanelSettings](../cmd/f4/actions.go#L3727), [actionPanelSettings](../cmd/f4/actions.go#L3728), [actionPanelSettings](../cmd/f4/actions.go#L3840) | settings.ini / Panel / PanelScrollbarMode | [actions.go](../cmd/f4/actions.go#L3727), [actions.go](../cmd/f4/actions.go#L3728), [actions.go](../cmd/f4/actions.go#L3840) | Panel scrollbar: Hide the scrollbar, show a minimal one, or show the full scrollbar with arrows. Takes effect: live. Choices: 0:Off;1:Minimal;2:Full |
@@ -174,6 +175,7 @@ The original-dialog column links to the original implementation and its backing 
 | EditorDefaultCodePage | editor / Text encoding | [actionEditorSettings](../cmd/f4/actions.go#L2806), [actionEditorSettings](../cmd/f4/actions.go#L3012) | settings.ini / Editor / DefaultCodePage | [actions.go](../cmd/f4/actions.go#L848), [actions.go](../cmd/f4/actions.go#L865), [actions.go](../cmd/f4/actions.go#L2806) | Default editor encoding: Fallback encoding when detection is disabled or cannot determine a better result. Per-file overrides remain separate. Takes effect: new editors. |
 | ViewerAutodetectCodePage | editor / Text encoding | [actionViewerSettings](../cmd/f4/codepage_settings.go#L106), [actionViewerSettings](../cmd/f4/codepage_settings.go#L135) | settings.ini / Viewer / AutodetectCodePage | [codepage_settings.go](../cmd/f4/codepage_settings.go#L106), [codepage_settings.go](../cmd/f4/codepage_settings.go#L135), [quick_view_panel.go](../cmd/f4/quick_view_panel.go#L369) | Detect viewer encoding: Detect encoding when opening the viewer or a quick-view preview. Takes effect: new viewers. |
 | ViewerDefaultCodePage | editor / Text encoding | [actionViewerSettings](../cmd/f4/codepage_settings.go#L100), [actionViewerSettings](../cmd/f4/codepage_settings.go#L137) | settings.ini / Viewer / DefaultCodePage | [codepage_settings.go](../cmd/f4/codepage_settings.go#L100), [codepage_settings.go](../cmd/f4/codepage_settings.go#L137), [quick_view_panel.go](../cmd/f4/quick_view_panel.go#L369) | Default viewer encoding: Fallback viewer and quick-view encoding when detection is disabled or inconclusive. Takes effect: new viewers. |
+| ViewerOpenAsSupportedType | editor / Viewer | [ShowViewerSettings](../internal/dialog/settings_codepage.go) | settings.ini / Viewer / OpenAsSupportedType | [config.go](../internal/config/config.go), [actions.go](../internal/app/actions.go) | Open images and video in their own viewers: When on, viewing a picture opens the image viewer and viewing a video opens the video player, where the terminal can show them. When off, every file opens in the text and hex viewer. Takes effect: new viewers. |
 | UseExternalEditor | editor / External editor | [actionEditorSettings](../cmd/f4/actions.go#L2859), [actionEditorSettings](../cmd/f4/actions.go#L3028) | settings.ini / Editor / UseExternalEditor | [actions.go](../cmd/f4/actions.go#L2164), [actions.go](../cmd/f4/actions.go#L2309), [actions.go](../cmd/f4/actions.go#L2859) | Use external editor: Route ordinary Edit commands to an external editor. Remote files are temporarily downloaded and changes can be uploaded afterward. Takes effect: new edit commands. |
 | ExternalEditorConsole | editor / External editor | [configuredExternalEditorCommand](../cmd/f4/actions.go#L806), [configuredExternalEditorCommand](../cmd/f4/actions.go#L807), [actionEditorSettings](../cmd/f4/actions.go#L2863) | settings.ini / Editor / ExternalEditorConsole | [actions.go](../cmd/f4/actions.go#L806), [actions.go](../cmd/f4/actions.go#L807), [actions.go](../cmd/f4/actions.go#L2863) | Console editor command: Command for terminal sessions; the file path is appended as the last argument. Current parsing splits on whitespace and is not a shell-expression parser. Takes effect: new edit commands. |
 | ExternalEditorGUI | editor / External editor | [configuredExternalEditorCommand](../cmd/f4/actions.go#L803), [configuredExternalEditorCommand](../cmd/f4/actions.go#L804), [actionEditorSettings](../cmd/f4/actions.go#L2872) | settings.ini / Editor / ExternalEditorCommandGUI | [actions.go](../cmd/f4/actions.go#L803), [actions.go](../cmd/f4/actions.go#L804), [actions.go](../cmd/f4/actions.go#L2872) | Graphical editor command: Command for graphical sessions; the file path is appended as the last argument. Current parsing splits on whitespace and is not a shell-expression parser. Takes effect: new edit commands. |
@@ -183,11 +185,16 @@ The original-dialog column links to the original implementation and its backing 
 | EditorColorerSyntax | syntax / Colorer | [actionColorerSettings](../cmd/f4/colorer_settings.go#L141), [actionColorerSettings](../cmd/f4/colorer_settings.go#L226) | settings.ini / Editor / ColorerSyntax | [colorer_async.go](../cmd/f4/colorer_async.go#L271), [colorer_settings.go](../cmd/f4/colorer_settings.go#L141), [colorer_settings.go](../cmd/f4/colorer_settings.go#L226) | Colorer syntax colors: Enable Colorer syntax coloring while retaining its other style facilities. Takes effect: Colorer reload. |
 | EditorColorerBackground | syntax / Colorer | [actionEditorSettings](../cmd/f4/actions.go#L2841), [actionEditorSettings](../cmd/f4/actions.go#L3025), [actionColorerSettings](../cmd/f4/colorer_settings.go#L146) | settings.ini / Editor / ColorerBackground | [actions.go](../cmd/f4/actions.go#L2841), [actions.go](../cmd/f4/actions.go#L3025), [colorer_plugin.go](../cmd/f4/colorer_plugin.go#L374) | Use Colorer base colors: Use foreground and background fields supplied by the Colorer scheme instead of only the general editor palette. Takes effect: Colorer reload. |
 | EditorColorerCatalog | syntax / Colorer | [actionColorerSettings](../cmd/f4/colorer_settings.go#L150), [actionColorerSettings](../cmd/f4/colorer_settings.go#L228) | settings.ini / Editor / ColorerCatalog | [colorer_plugin.go](../cmd/f4/colorer_plugin.go#L228), [colorer_settings.go](../cmd/f4/colorer_settings.go#L150), [colorer_settings.go](../cmd/f4/colorer_settings.go#L228) | Colorer configuration directory: Directory containing Colorer configuration data. Empty uses the profile's colorer/configs directory; this is not a catalog XML filename. Takes effect: Colorer reload. |
+| EditorColorerUserHrc | syntax / Colorer | [actionColorerSettings](../internal/app/colorer_settings.go) | settings.ini / Editor / ColorerUserHrc | [colorer.go](../internal/editor/colorer.go) | User Colorer schemes: An .hrc file, or a folder of .hrc files, added to the catalog's schemes. Takes effect: Colorer reload. |
+| EditorColorerUserHrd | syntax / Colorer | [actionColorerSettings](../internal/app/colorer_settings.go) | settings.ini / Editor / ColorerUserHrd | [colorer.go](../internal/editor/colorer.go) | User Colorer color styles: An hrd-sets XML file, or a folder of .hrd files, added to the catalog's styles. Takes effect: Colorer reload. |
 | MacKeyboard | keyboard / Editing chords | Core setting bound by its canonical backing value | settings.ini / Interface / MacKeyboard | [action_registry.go](../cmd/f4/action_registry.go#L1586), [action_registry.go](../cmd/f4/action_registry.go#L1588), [mackeys.go](../cmd/f4/mackeys.go#L68) | Mac keyboard mode: Use Mac-style editing chords in editors and dialog fields. Auto enables them on macOS; panels retain Far navigation. Command translation requires backend support. Takes effect: live. Choices: auto:Automatic;on:On;off:Off |
 | SearchExactOnHit | keyboard / Compatibility | [actionPanelAdditionalSettings](../cmd/f4/actions.go#L3903), [actionPanelAdditionalSettings](../cmd/f4/actions.go#L4021), [configureHotkeyTableSearch](../cmd/f4/hotkeys_ui.go#L195) | settings.ini / Panel / SearchExactOnHit | [actions.go](../cmd/f4/actions.go#L3903), [actions.go](../cmd/f4/actions.go#L4021), [hotkeys_ui.go](../cmd/f4/hotkeys_ui.go#L195) | Legacy exact-hit preference: The old hotkey table used this to narrow exact search hits. Settings Center uses dim-only search and does not consume this preference. Its saved value is retained. Takes effect: unavailable. |
 | EscTogglePanels | terminal / Terminal input | [actionPanelAdditionalSettings](../cmd/f4/actions.go#L3895), [actionPanelAdditionalSettings](../cmd/f4/actions.go#L4019) | settings.ini / Panel / EscTogglePanels | [actions.go](../cmd/f4/actions.go#L3895), [actions.go](../cmd/f4/actions.go#L4019), [hotkeys.go](../cmd/f4/hotkeys.go#L38) | Escape toggles panels: Allow Escape to show or hide the file panels to access the terminal. Takes effect: live. |
 | TerminalCtrlNWorkspace | terminal / Terminal input | [actionPanelAdditionalSettings](../cmd/f4/actions.go#L3899), [actionPanelAdditionalSettings](../cmd/f4/actions.go#L4020) | settings.ini / Panel / TerminalCtrlNWorkspace | [actions.go](../cmd/f4/actions.go#L3899), [actions.go](../cmd/f4/actions.go#L4020), [hotkeys.go](../cmd/f4/hotkeys.go#L419) | Ctrl+N creates workspace: Reserve Ctrl+N while terminal input has focus to create a workspace. Off sends the chord to the terminal program. Takes effect: live. |
-| KeepTerminalCursor | terminal / Terminal input | [actionAppearanceSettings](../cmd/f4/actions.go#L4692), [actionAppearanceSettings](../cmd/f4/actions.go#L4822), [actionAppearanceSettings](../cmd/f4/actions.go#L4823) | settings.ini / Panel / KeepTerminalCursor | [actions.go](../cmd/f4/actions.go#L4692), [actions.go](../cmd/f4/actions.go#L4822), [actions.go](../cmd/f4/actions.go#L4823) | Preserve terminal cursor style: Leave cursor-style management to the terminal instead of letting f4 change it. Takes effect: live. |
+| KeepTerminalCursor | terminal / Cursor | [actionAppearanceSettings](../cmd/f4/actions.go#L4692), [actionAppearanceSettings](../cmd/f4/actions.go#L4822), [actionAppearanceSettings](../cmd/f4/actions.go#L4823) | settings.ini / Panel / KeepTerminalCursor | [actions.go](../cmd/f4/actions.go#L4692), [actions.go](../cmd/f4/actions.go#L4822), [actions.go](../cmd/f4/actions.go#L4823) | Preserve terminal cursor style: Leave cursor-style management to the terminal instead of letting f4 change it. Takes effect: live. |
+| CursorInsertShape | terminal / Cursor | Core setting bound by its canonical backing value | settings.ini / Panel / CursorInsertShape | [config.go](../internal/config/config.go), [edit.go (vtui)](https://github.com/unxed/vtui/blob/main/edit.go) | Insert mode cursor: Cursor shape while typing in insert mode: input fields, the command line and the editor. Not applied in a terminal while its own cursor style is preserved. The Linux console and the classic Windows console show an underline instead of a bar. Takes effect: live. Choices: underline:Underline;bar:Vertical bar;block:Block |
+| CursorOvertypeShape | terminal / Cursor | Core setting bound by its canonical backing value | settings.ini / Panel / CursorOvertypeShape | [config.go](../internal/config/config.go), [view.go](../internal/editor/view.go) | Overtype mode cursor: Cursor shape while typing in overtype mode, which the Insert key toggles. Not applied in a terminal while its own cursor style is preserved. The Linux console and the classic Windows console show an underline instead of a bar. Takes effect: live. Choices: underline:Underline;bar:Vertical bar;block:Block |
+| CursorBlink | terminal / Cursor | Core setting bound by its canonical backing value | settings.ini / Panel / CursorBlink | [config.go](../internal/config/config.go), [cursor_style.go (vtui)](https://github.com/unxed/vtui/blob/main/cursor_style.go) | Blinking cursor: Make the text cursor blink. Not applied in a terminal while its own cursor style is preserved, nor in the Linux console or the classic Windows console. Takes effect: live. |
 | ConsoleMode | terminal / Presentation | [actionPanelAdditionalSettings](../cmd/f4/actions.go#L3912), [actionPanelAdditionalSettings](../cmd/f4/actions.go#L4023), [actionPanelAdditionalSettings](../cmd/f4/actions.go#L4025) | settings.ini / Panel / ConsoleMode | [actions.go](../cmd/f4/actions.go#L3912), [actions.go](../cmd/f4/actions.go#L4023), [actions.go](../cmd/f4/actions.go#L4025) | Terminal presentation: Use the embedded terminal, host terminal with f4 overlay, or host terminal without overlay. Unsupported host styles fall back according to terminal capabilities. Takes effect: new workspaces. Choices: own:Embedded;far:Host with overlay;mc:Host without overlay |
 | HistoryDirsPrefixLen | history / Presentation | [actionCommandHistory](../cmd/f4/actions.go#L307), [actionCommandHistory](../cmd/f4/actions.go#L313) | settings.ini / History / DirsPrefixLen | [actions.go](../cmd/f4/actions.go#L307), [actions.go](../cmd/f4/actions.go#L313) | Command directory column width: Width of the command-history directory prefix while date-and-time display is active. Minimum four characters. Takes effect: new history dialogs. |
 | MacroRecordFormat | menus / Macro recording | [actionPanelAdditionalSettings](../cmd/f4/actions.go#L3949), [actionPanelAdditionalSettings](../cmd/f4/actions.go#L3950), [actionPanelAdditionalSettings](../cmd/f4/actions.go#L4030) | settings.ini / System / MacroRecordFormat | [actions.go](../cmd/f4/actions.go#L3949), [actions.go](../cmd/f4/actions.go#L3950), [actions.go](../cmd/f4/actions.go#L4030) | Record macros as: Save recorded key macros in the legacy key_macros.ini format or as Lua scripts under Macros/scripts. Takes effect: new recordings. Choices: 0:Legacy INI;1:Lua scripts |
@@ -231,10 +238,10 @@ Every listed field is independently described in its provider catalog. Ordered s
 | Canonical collection / fields | Original menu → dialog → subdialog | New category | Store and consuming implementation |
 |---|---|---|---|
 | `associations`: mask, description; Enter/AltEnter/F3/AltF3/F4/AltF4 commands and enable flags | Files → File associations → Edit association | associations | `settings/associations.ini`; `file_associations.go`, `file_associations_ui.go`. Alternate slots remain stored and unavailable because current dispatch has no consumer. |
-| `bookmarks`: ten paths; retained plugin/file/data metadata | Drive chooser → bookmarks; numbered folder shortcuts | history | Existing bookmark file; `bookmarks.go`. Reordering changes digit slots. |
-| `drive-links`: name, path, hotkey | Drive chooser → named links → edit | history | Existing links file; `drive_bookmarks.go`. |
+| `bookmarks`: ten paths; retained plugin/file/data metadata | Drive chooser → bookmarks; numbered folder shortcuts | drives | Existing bookmark file; `bookmarks.go`. Reordering changes digit slots. |
+| `drive-links`: name, path, hotkey | Drive chooser → named links → edit | drives | Existing links file; `drive_bookmarks.go`. |
 | `usermenu.*`: label, activation key, submenu flag, parent, multiline commands | User menu → F4 / Insert → item/submenu editor | menus | Global INI, executable-scoped and ancestor-local FarMenu files remain separate sources and separate drafts; `user_menu_ui.go`. |
-| `bindings`: action, chord, area, condition | Options → Hotkey configurator → assign → area/condition → chord | keyboard | `hotkeys.ini`; `hotkeys.go`. Native frame-owned chords are not editable bindings. |
+| `bindings`: action, chord, area, condition | Options → Hotkey configurator → assign → area/condition → chord | hotkeys | `hotkeys.ini`; `hotkeys.go`. Native frame-owned chords are not editable bindings. |
 | `envman.profiles`: kind, name, enabled, ordered variable lines | Environment Manager → profile editor | terminal | Environment Manager JSON; `plugins/envman`. Apply reconciles the environment only after a successful save. Separators are preserved. |
 | `netfox.ImportSSHProfiles`: import named OpenSSH profiles; `netfox.connections`: name, protocol, host, port, username, password, key path, timeout, codepage, FTP passive mode; proxy mode/host/port/user/password | NetFox → Add/Edit connection → Proxy | network | `NetFoxSettings.json` and `NetFox.json`; `plugins/netfox/{dialog,netfox,proxy,settings_center,ssh_config}.go`. OpenSSH aliases from `~/.ssh/config` are imported by default, refresh on list/open, and remain read-only in NetFox; SFTP aliases fall back to FISH+ when the remote startup shell corrupts the SFTP handshake. Unknown Options entries survive rename and edits. |
 | `cloudfox.{gdrive,yandex,s3,webdav}`: name, credential-storage choice, keep/replace/clear credentials; provider fields below | CloudFox → Add/Edit profile → provider → authentication/storage | network | `CloudFox.json`, vault or keyring; `plugins/cloudfox/{dialog,secrets,credential_scope,settings_center}.go`. Metadata revisions and credential scope are checked before writes. |
@@ -288,7 +295,7 @@ Every listed field is independently described in its provider catalog. Ordered s
 - Schema download/reload, palette export, update checking, plugin installation/removal and legacy external-plugin configuration are explicit commands. They never silently apply other drafts.
 - Current-file encodings, compare/copy/move/delete dialogs, connection opening, user-menu execution, macro recording, history entry details and file navigation are contextual workflows.
 - The Editor/Colorer highlighter and crosshair duplicates map to one backing setting each.
-- Legacy exact-hit searching and the two ineffective drive flags are visible unavailable compatibility values. They do not affect Center search.
+- The two ineffective drive flags remain unavailable compatibility values. Exact-hit searching applies only to the restored Hotkey Configurator table and does not affect Center search.
 - Both legacy tab-expansion modes retain their stored numeric values. Their descriptions explain that current insertion behavior is identical.
 - Configuration-only image-decoder priorities, X11 interception, custom highlight-rule editors and custom panel modes are outside consolidation. Their values are preserved.
 - Saved `qt` and `ext:*` backend values remain intact even if the current frontend cannot enumerate them.
@@ -636,8 +643,8 @@ catalog, drafts, semantic controls, search results or console dialog.
 
 The GUI page hosts `ThemeEditorContent.qml`, extracted from the original
 configurator without replacing its color list, OKLCH/RGB/hex editor, font/wheel
-controls, toggles or Reset/Restore/Save/Close buttons. `ThemeEditor.qml` is its
-standalone window wrapper. The app icon requests this native page and sends only
+controls, Lucide/Native icon-set selector, toggles or Reset/Restore/Save/Close
+buttons. `ThemeEditor.qml` is its standalone window wrapper. The app icon requests this native page and sends only
 the generic `settings.open` navigation action. Core pages keep their existing
 semantic rendering. Small windows scroll the intact native content.
 
@@ -647,3 +654,69 @@ file without removing the source; existing profile values take precedence.
 Legacy palette conversions remain in HostThemePalette. Identification highlights
 are stopped before saving. GUI preferences retain the configurator's live-edit
 and explicit Save/Restore behavior, independently of core Apply/OK/Cancel.
+## Restored Hotkey Configurator tab
+
+Hotkey Configurator has its own category beside Keyboard & shortcuts. It embeds
+its original sortable five-column table (command, chord, area, condition,
+description), normalized quick search, native read-only shortcuts, plugin
+commands, Assign/Unbind confirmation and area/condition/chord capture workflow.
+The old Settings.Hotkeys action and CmHotkeyConfig command open this tab. The
+inline binding record editor is replaced in the application UI. The table uses
+the whole content width; its description column replaces the side help pane.
+
+Editing retains a draft across category switches. Apply/OK persist changes and
+Cancel discards edits since the last Apply. Explicit unbinding retains the None
+override so default chords cannot reappear after saving. The existing settings
+provider checks concurrent changes and saves before replacing runtime bindings.
+SearchExactOnHit is available under Keyboard & shortcuts and takes effect when
+the configurator is next opened; it never changes sidebar search behavior.
+
+
+## Contextual editor restoration
+
+The Center consolidates global configuration menu entries, not in-place editing
+commands. The consolidation introduced early Settings redirects in the following
+workflows; those redirects are removed:
+
+| Context | Local interaction | Shared Settings storage/logic |
+| --- | --- | --- |
+| Drive chooser Insert / edit link | Name, path and shortcut dialog; returns to drive chooser | `panel.DriveBookmark`, `LoadDriveBookmarks`, `SaveDriveBookmarks`; Drive chooser drive links |
+| Numbered bookmarks edit | Path input for the selected slot | `panel.BookmarkSet`, `SaveBookmarks`; Drive chooser bookmark slots |
+| User menu create/edit item or submenu | Original entry editor with source/scope retained | User-menu tree and source-specific writers; User menus |
+| NetFox add/edit connection | Original connection dialog | NetFox configuration store; Network connections |
+| CloudFox add/edit profile | Provider chooser and original profile editor | Credential validation, scope checks and repository; Network connections |
+| Visual Renamer word delimiters | Small prompt within the active rename operation | `loadConfig`/`saveConfig`; File operations |
+
+The two UI surfaces continue to use their existing domain models and persistence
+routines. Contextual saves are immediate; Settings edits remain staged until
+Apply. This restores the original forms without introducing another record format
+or replacing the Settings inline editors. Global drive options, plugin
+configuration (including Environment Manager), and application preference actions
+still open the Center. Environment Manager's contextual profile editor was not
+redirected and needs no rollback.
+
+## Panel grouping
+
+F9 → Left/Right → Group by, or the link in Sort modes, opens independent grouping.
+Actions `Panel.GroupMenu`, `Panel.GroupBy<mode>`, `Panel.GroupReverse`,
+`Panel.GroupFoldersSeparately` and `Panel.GroupSettings` are available to the
+command palette, macros and hotkey configuration, with no new default keys.
+The canonical mode IDs are in `panel.GroupModes`.
+
+Group by defaults to Off. Each panel remembers its mode, reverse order and folder
+placement in the session, subject to AutoSavePanelSettings. Folder placement
+defaults to a separate first group. Unknown modes in old/newer sessions load as
+Off; workspace cloning carries grouping settings. Sorting applies within groups.
+
+Panels → Grouping configures `PanelGroupSmallMiB`, `PanelGroupMediumMiB`, and
+`PanelGroupLargeMiB` under `[Panel]` in settings.ini, initially 5, 10 and 100.
+These are inclusive upper bounds for Small, Medium and Large, followed by Extra
+large. They apply to logical and physical size. Apply requires positive, strictly
+increasing integers whose byte values fit int64. Cancel changes nothing; invalid
+saved tuples load the defaults. Settings changes immediately regroup open panels.
+
+Date groups use the local calendar: future days, today, yesterday, two days ago,
+then month/year newest first. Groups are refreshed on the first panel timer tick
+after midnight. Unknown metadata stays last; the parent row stays first outside
+groups. Reverse leaves both anchors and the separate Folders group in place.
+Folder sizes join size buckets only after explicit size calculation.

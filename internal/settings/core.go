@@ -2,8 +2,12 @@ package settings
 
 import (
 	"context"
-	"encoding/xml"
 	"fmt"
+	"path/filepath"
+	"reflect"
+	"strconv"
+	"strings"
+
 	"github.com/unxed/f4/internal/config"
 	"github.com/unxed/f4/internal/dialog"
 	"github.com/unxed/f4/internal/editor"
@@ -15,12 +19,6 @@ import (
 	"github.com/unxed/f4/sdk/f4settings"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtui"
-	"io"
-	"os"
-	"path/filepath"
-	"reflect"
-	"strconv"
-	"strings"
 )
 
 type coreSettingsProvider struct {
@@ -276,6 +274,16 @@ func (p coreSettingsProvider) Begin(context.Context) (*f4settings.Draft, error) 
 				errors[f.ID] = settingsError("this setting changed outside Settings Center; reopen to load its current value")
 			}
 		}
+		if d.Dirty("PanelGroupSmallMiB") || d.Dirty("PanelGroupMediumMiB") || d.Dirty("PanelGroupLargeMiB") {
+			small, e1 := strconv.Atoi(d.Values["PanelGroupSmallMiB"])
+			medium, e2 := strconv.Atoi(d.Values["PanelGroupMediumMiB"])
+			large, e3 := strconv.Atoi(d.Values["PanelGroupLargeMiB"])
+			if e1 != nil || e2 != nil || e3 != nil || !config.ValidPanelGroupLimits(small, medium, large) {
+				for _, id := range []string{"PanelGroupSmallMiB", "PanelGroupMediumMiB", "PanelGroupLargeMiB"} {
+					errors[id] = fmt.Errorf("%s", i18n.Msg("Group.InvalidLimits"))
+				}
+			}
+		}
 		return errors
 	}
 	d.CommitFunc = func(ctx context.Context, d *f4settings.Draft) f4settings.Result {
@@ -336,35 +344,11 @@ func (p coreSettingsProvider) Begin(context.Context) (*f4settings.Draft, error) 
 	return d, nil
 }
 
-// Enumerating names must not instantiate the highlighting WASM engine just to
-// open Settings. HRD metadata is declared in the Colorer catalog itself.
+// settingsColorerSchemes lists the colour styles of the applied Colorer
+// configuration, the user's own included. Colorer reads the catalog itself:
+// catalog.xml pulls its style lists in through external XML entities, which
+// encoding/xml does not follow, so reading it here listed nothing on a real
+// installation. It starts Colorer on a cache miss; call it off the UI thread.
 func settingsColorerSchemes() []editor.ColorerScheme {
-	return settingsColorerSchemesAt(editor.ColorerConfigsDir())
-}
-func settingsColorerSchemesAt(directory string) []editor.ColorerScheme {
-	file, err := os.Open(filepath.Join(directory, "base", "catalog.xml"))
-	if err != nil {
-		return nil
-	}
-	defer func() { _ = file.Close() }() // Read-only metadata; the read result determines success.
-	decoder := xml.NewDecoder(io.LimitReader(file, 4<<20))
-	var schemes []editor.ColorerScheme
-	for {
-		token, err := decoder.Token()
-		if err != nil {
-			break
-		}
-		start, ok := token.(xml.StartElement)
-		if !ok || start.Name.Local != "hrd" {
-			continue
-		}
-		attrs := map[string]string{}
-		for _, a := range start.Attr {
-			attrs[a.Name.Local] = a.Value
-		}
-		if attrs["class"] == "rgb" && attrs["name"] != "" {
-			schemes = append(schemes, editor.ColorerScheme{Name: attrs["name"], Description: attrs["description"]})
-		}
-	}
-	return schemes
+	return editor.ListColorerSchemesFor(editor.CurrentColorerSource())
 }

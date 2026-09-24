@@ -146,3 +146,18 @@ func TestMergeWorkspaceSessionSaveGranularPolicies(t *testing.T) {
 		t.Fatalf("panel-settings-only merge changed the wrong fields: active=%d state=%#v", active, settingsOnly[0])
 	}
 }
+
+func TestGroupWorkspaceSavePolicy(t *testing.T) {
+	previous := []panel.WorkspaceSessionState{{Number: 1, Left: panel.PanelSessionState{GroupBy: panel.GroupName, GroupFoldersSeparately: true}}}
+	current := []panel.WorkspaceSessionState{{Number: 1, Left: panel.PanelSessionState{GroupBy: panel.GroupSize, GroupReverse: true}}}
+	for _, save := range []bool{false, true} {
+		got, _ := mergeWorkspaceSessionSave(previous, 0, current, 0, save, true)
+		want := previous[0].Left
+		if save {
+			want = current[0].Left
+		}
+		if got[0].Left.GroupBy != want.GroupBy || got[0].Left.GroupReverse != want.GroupReverse || got[0].Left.GroupFoldersSeparately != want.GroupFoldersSeparately {
+			t.Fatal(got)
+		}
+	}
+}

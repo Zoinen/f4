@@ -173,15 +173,17 @@ func NewArchiveVFSContext(ctx context.Context, parent vfs.VFS, archivePath strin
 		// and normalize a discovered archive to a private backing file; the
 		// original executable remains untouched.
 		if format == "" {
-			if embedded, found, probeErr := findEmbeddedArchive(finalPath); probeErr != nil {
+			embedded, backingPath, sfxCloser, probeErr := materializeLocalSFX(finalPath)
+			if probeErr != nil {
 				return nil, probeErr
-			} else if found && embedded.offset > 0 {
+			}
+			if embedded.format != "" {
 				format = embedded.format
 				sfxOffset = embedded.offset
 				sfxSuffix = embedded.suffix
-				finalPath, closer, err = materializeEmbeddedArchive(finalPath, embedded)
-				if err != nil {
-					return nil, err
+				if embedded.offset > 0 {
+					finalPath = backingPath
+					closer = sfxCloser
 				}
 			}
 		}
@@ -192,6 +194,30 @@ func NewArchiveVFSContext(ctx context.Context, parent vfs.VFS, archivePath strin
 		}
 		finalPath = lease.Path()
 		closer = lease
+		// The same probe the local branch runs, for the same reason: a
+		// self-extracting archive names itself after its stub, so the
+		// extension-based detector never sees it, and the readers below look
+		// for the archive at byte zero. The materialized copy is an ordinary
+		// local file, so the probe works on it unchanged -- it is only the
+		// carved result that has to be owned separately, because the copy it
+		// was cut out of is no longer needed once the cut is made.
+		if format == "" {
+			embedded, backingPath, sfxCloser, probeErr := materializeNestedSFX(finalPath)
+			if probeErr != nil {
+				_ = lease.Close()
+				return nil, probeErr
+			}
+			if embedded.format != "" {
+				format = embedded.format
+				sfxOffset = embedded.offset
+				sfxSuffix = embedded.suffix
+				if embedded.offset > 0 {
+					finalPath = backingPath
+					closer = sfxCloser
+					_ = lease.Close()
+				}
+			}
+		}
 	}
 
 	fsys, password, cleanupTransferred, err := openArchiveFSWithPasswordPrompt(ctx, finalPath, displayName, closer)
@@ -567,6 +593,7 @@ func (v *ArchiveVFS) ReadDir(ctx context.Context, path string, onChunk func([]vf
 		}
 
 		items = append(items, vfs.VFSItem{
+			KnownMetadata: vfs.MetadataExplicit | vfs.MetadataHidden | vfs.MetadataMTime, SizeKnown: true,
 			Name:     name,
 			IsDir:    e.IsDir(),
 			Size:     info.Size(),
@@ -628,6 +655,7 @@ func (v *ArchiveVFS) Stat(ctx context.Context, path string) (vfs.VFSItem, error)
 	}
 
 	item := vfs.VFSItem{
+		KnownMetadata: vfs.MetadataExplicit | vfs.MetadataHidden | vfs.MetadataMTime, SizeKnown: true,
 		Name:     info.Name(),
 		IsDir:    info.IsDir(),
 		Size:     info.Size(),
@@ -1897,6 +1925,80 @@ func (v *ArchiveVFS) SetAttributes(ctx context.Context, path string, item vfs.VF
 func (v *ArchiveVFS) GetCapabilities() vfs.VFSCapabilities {
 	return vfs.VFSCapabilities{HasRandomAccess: true, HasUnixPermissions: runtime.GOOS != "windows", ReadAccess: vfs.ReadAccessMaterializeOnce, StorageClass: vfs.StorageClassVirtual}
 }
+
+// ReadHead serves vfs.HeadReader, and a ZIP can serve it. Whatever the
+// archive file itself came from, it is read through a local backing file --
+// the parent's own path when that parent is on disk, a materialization of it
+// otherwise -- and a ZIP member is decoded as it is read, so asking for the
+// first block costs the first block and reaches no network.
+//
+// Every other format declines. A member of a RAR, and of anything else that
+// arrives through the generic reader, is unpacked whole into a temporary file
+// before the first byte of it can be handed back: asking such a backend for
+// 256 KiB would quietly charge the member's full size in time and in disk,
+// and the caller asked precisely because it cannot afford that.
+//
+// Which it is follows the backing file and the reader that was opened over
+// it, never this archive's declared format: that one comes from the name, and
+// a name is exactly what a ZIP reader does not get to be chosen by. A RAR
+// renamed to .zip still opens -- the format probe in openArchiveFileSystem
+// recognizes it and hands it to the volume-aware RAR reader -- and unpacking
+// one of its members whole is the cost this refuses to pay.
+//
+// It is also deliberately not Open. Open answers a password error by asking
+// the user for one, and the caller here may be the very thread that would
+// have to draw that dialog. A member the installed password does not open is
+// reported as an error instead, which is all the caller wants to know.
+func (v *ArchiveVFS) ReadHead(ctx context.Context, path string, p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+
+	v.mu.Lock()
+	// The same question zipperarchive.OpenFS asks of the same path, so the
+	// answer is the reader it built and not a second guess at it.
+	if archive.DetectFormat(v.backingPath) != "zip" {
+		v.mu.Unlock()
+		return 0, vfs.ErrHeadUnavailable
+	}
+	if err := v.ensureFSLocked(); err != nil {
+		v.mu.Unlock()
+		return 0, err
+	}
+	if _, isRAR := v.fsys.(*rarArchiveFileSystem); isRAR {
+		v.mu.Unlock()
+		return 0, vfs.ErrHeadUnavailable
+	}
+	fsPath, err := v.resolveInnerPath(path)
+	if err != nil {
+		v.mu.Unlock()
+		return 0, err
+	}
+	v.cancelCleanupLocked()
+	v.activeCount++
+	fsys := v.fsys
+	v.mu.Unlock()
+	defer v.decrementActive()
+
+	file, err := fsys.Open(fsPath)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = file.Close() }() // The member was opened only to look at its first bytes.
+
+	n, err := io.ReadFull(file, p)
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		err = nil
+	}
+	return n, err
+}
+
 func (v *ArchiveVFS) Search(ctx context.Context, p, pat string) (chan int64, error) { return nil, nil }
 func (v *ArchiveVFS) Close() error {
 	v.mu.Lock()
@@ -2012,6 +2114,20 @@ func (v *ArchiveVFS) Clone() vfs.VFS {
 			return vfs.NewNullVFS(0)
 		}
 		finalPath, closer = lease.Path(), lease
+		if sfxOffset > 0 {
+			// The lease materializes the stub as well, and this decoder needs
+			// the archive under it, exactly as the local branch above does.
+			carved, sfxCloser, err := materializeEmbeddedArchiveAlone(finalPath, embeddedArchive{
+				format: format,
+				suffix: sfxSuffix,
+				offset: sfxOffset,
+			})
+			_ = lease.Close()
+			if err != nil {
+				return vfs.NewNullVFS(0)
+			}
+			finalPath, closer = carved, sfxCloser
+		}
 	}
 
 	fsys, _, err := openArchiveFSWithContext(context.Background(), finalPath, displayName, closer, password)
@@ -2312,10 +2428,41 @@ func ensureArchiveExtractionDir(ctx context.Context, dstVfs vfs.VFS, dir string)
 	return nil
 }
 
-func (v *ArchiveVFS) copyBulkZip(ctx context.Context, f vfs.ReadAtCloser, selected map[string]bool, innerPath, password string, dstVfs vfs.VFS, dstDir string, reporter vfs.TaskReporter) error {
+// openZipReader opens the archive's entries for reading. A ZIP split archive
+// (archive.z01, archive.z02, ..., archive.zip) keeps its central directory in
+// the last volume and its data across all of them, and zip.OpenReaderWithPassword
+// joins the volumes; a stream of the one file the panel sits on holds only a
+// part of the archive, and copying out of it failed with "zip: not a valid zip
+// file" (issue #1186). Opening by name needs a local file, so an archive on
+// another backend, or inside another archive, is still read from the stream.
+func (v *ArchiveVFS) openZipReader(ctx context.Context, f vfs.ReadAtCloser, password string) (*zip.Reader, func(), error) {
+	localPath := ""
+	if temp, ok := f.(*vfs.TempFileWrapper); ok && temp.TempPath != "" {
+		localPath = temp.TempPath
+	} else if _, ok := v.parent.(*vfs.OSVFS); ok || v.backingPath != "" {
+		localPath = v.activePath()
+	}
+	if localPath != "" {
+		// A file that cannot be opened by name is read from the stream,
+		// which is where every archive was read from before.
+		if rc, err := zip.OpenReaderWithPassword(localPath, password); err == nil {
+			return &rc.Reader, func() { _ = rc.Close() }, nil
+		}
+	}
 	zr, err := zip.NewReaderWithPassword(readerAtAdapter{r: f, ctx: ctx}, f.Size(), password)
 	if err != nil {
+		return nil, nil, err
+	}
+	return zr, nil, nil
+}
+
+func (v *ArchiveVFS) copyBulkZip(ctx context.Context, f vfs.ReadAtCloser, selected map[string]bool, innerPath, password string, dstVfs vfs.VFS, dstDir string, reporter vfs.TaskReporter) error {
+	zr, closeZip, err := v.openZipReader(ctx, f, password)
+	if err != nil {
 		return err
+	}
+	if closeZip != nil {
+		defer closeZip()
 	}
 
 	var mu sync.Mutex
@@ -2621,7 +2768,7 @@ func archiveProgressPercent(copied, total int64) int {
 	return int(float64(copied) * 100 / float64(total))
 }
 
-func (v *ArchiveVFS) openBulkExtractor(ctx context.Context, f vfs.ReadAtCloser, password string) (*os.File, archives.Extractor, error) {
+func (v *ArchiveVFS) openBulkExtractor(ctx context.Context, f vfs.ReadAtCloser, password string) (*archive.Input, archives.Extractor, error) {
 	var localPath string
 	if temp, ok := f.(*vfs.TempFileWrapper); ok && temp.TempPath != "" {
 		localPath = temp.TempPath
@@ -2629,7 +2776,10 @@ func (v *ArchiveVFS) openBulkExtractor(ctx context.Context, f vfs.ReadAtCloser, 
 		localPath = v.activePath()
 	}
 
-	localF, err := os.Open(localPath)
+	// Split archives (name.7z.001, name.7z.002, ...) are read as one stream;
+	// copying out of one read only its first volume and failed at the header
+	// (issue #1179).
+	localF, err := archive.OpenInput(localPath)
 	if err != nil {
 		return nil, nil, err
 	}

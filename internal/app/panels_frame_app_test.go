@@ -462,9 +462,14 @@ func TestPanelsFrame_KeyHandling(t *testing.T) {
 	oldMultiline := config.App.CommandLineMultiline
 	config.App.CommandLineMultiline = false
 	t.Cleanup(func() { config.App.CommandLineMultiline = oldMultiline })
+	// Keep global hotkey conditions from observing a frame left by another shuffled test.
+	// The action's NoTerminalApp condition must inspect this test's panel.
+	t.Cleanup(paneltest.SwapFrameManager(t))
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	pf := panel.NewPanelsFrame()
 	defer pf.Close()
 	pf.ResizeConsole(80, 25)
+	vtui.FrameManager.Push(pf)
 
 	// 1. Test Tab to switch active panel
 	if pf.ActiveIdx != 1 {
@@ -896,6 +901,56 @@ func TestPanelsFrame_BToggle_WithQuickView(t *testing.T) {
 	config.App.InfoPanelBytes = before
 }
 
+func TestPanelsFrame_CurrentExtensionShortcuts(t *testing.T) {
+	t.Cleanup(paneltest.SwapFrameManager(t))
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	old := keymap.GlobalHotkeysMgr
+	keymap.GlobalHotkeysMgr = keymap.NewHotkeyManager("")
+	t.Cleanup(func() { keymap.GlobalHotkeysMgr = old })
+	oldMacros := macro.MacroMgr
+	macro.MacroMgr = macro.NewMacroManager("")
+	t.Cleanup(func() { macro.MacroMgr = oldMacros })
+	pf := paneltest.SetupMockPanelsFrame(t)
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+	fp := pf.GetActivePanel()
+	fp.Entries = []*panel.FileEntry{
+		{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}},
+		{VFSItem: vfs.VFSItem{Name: "one.TXT"}},
+		{VFSItem: vfs.VFSItem{Name: "two.txt"}},
+		{VFSItem: vfs.VFSItem{Name: "three.go"}},
+		{VFSItem: vfs.VFSItem{Name: "folder.txt", IsDir: true}},
+	}
+	fp.SetCursorIndex(1)
+	fp.Refresh()
+	pf.CmdLine.Edit.SetText("unfinished command")
+	for _, ctrl := range []vtinput.ControlKeyState{vtinput.LeftCtrlPressed, vtinput.RightCtrlPressed} {
+		for _, pair := range [][2]string{{"CtrlAdd", "CtrlSubtract"}, {"Ctrl=", "Ctrl-"}} {
+			for _, noChar := range []bool{false, true} {
+				for i, key := range pair {
+					e := keymap.ParseFarKey(key)
+					e.ControlKeyState = ctrl
+					if noChar {
+						e.Char = 0
+					}
+					if !pressKey(pf, e) {
+						t.Errorf("%s (ctrl=%d noChar=%t) was not handled", key, ctrl, noChar)
+					}
+					for idx, entry := range fp.Entries {
+						want := i == 0 && (idx == 1 || idx == 2)
+						if entry.Selected != want {
+							t.Errorf("%s (ctrl=%d noChar=%t): %s selected=%t, want %t", key, ctrl, noChar, entry.Name, entry.Selected, want)
+						}
+					}
+					if fp.GetCursorIndex() != 1 || pf.CmdLine.Edit.GetText() != "unfinished command" {
+						t.Fatalf("%s: cursor=%d command=%q", key, fp.GetCursorIndex(), pf.CmdLine.Edit.GetText())
+					}
+				}
+			}
+		}
+	}
+}
+
 func TestPanelsFrame_SelectionByMask(t *testing.T) {
 	t.Cleanup(paneltest.SwapFrameManager(t))
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
@@ -1177,9 +1232,9 @@ func TestPanelsFrame_CtrlF12SortMenu(t *testing.T) {
 	if !ok {
 		t.Fatalf("Ctrl+F12 top frame = %T, want *vtui.VMenu", vtui.FrameManager.GetTopFrame())
 	}
-	// Five sort modes plus the sort-group toggle on the last row.
-	if len(menu.Items) != 6 {
-		t.Fatalf("sort menu has %d items, want 6", len(menu.Items))
+	// Five sort modes, the legacy sort-group toggle and the grouping menu.
+	if len(menu.Items) != 7 {
+		t.Fatalf("sort menu has %d items, want 7", len(menu.Items))
 	}
 	if !strings.Contains(menu.Items[5].Text, i18n.Msg("Menu.SortUseGroups")) {
 		t.Fatalf("last sort menu row = %q, want the sort-group toggle", menu.Items[5].Text)

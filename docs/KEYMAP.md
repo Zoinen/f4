@@ -7,7 +7,9 @@ arrives, before anything in f4 has looked at it. Two problems need that layer.
 Before reaching for either file: **`Ctrl+Shift+P` opens the command palette**,
 which finds any command by name and shows the key it currently sits on. On a
 legacy terminal that cannot distinguish `Ctrl+Shift+letter` from `Ctrl+letter`,
-use the built-in **`Ctrl+Alt+P`** fallback. When a multiplexer has eaten one
+use the built-in **`Ctrl+Alt+P`** fallback — and in an X11 session the real
+`Ctrl+Shift+P` is taken from the X server instead, so it works there even on a
+terminal that cannot encode it (see [TTY|Xi](TTYX.md)). When a multiplexer has eaten one
 chord, or a laptop has no `F5`, running the command from the palette is usually
 faster than writing a rule, and it is the only thing needed when the key was
 never the point.
@@ -34,6 +36,25 @@ modifier row per area to work around that.
 A rule solves both in one line, and it also covers keys `hotkeys.ini` cannot
 reach at all: framework shortcuts such as `Ctrl+Tab`, dialog and menu keys,
 and the editor's own bindings.
+
+## Panel selection without a numpad
+
+Far Manager's standard `Ctrl+Numpad +` and `Ctrl+Numpad -` commands select and
+deselect files with the same extension as the file under the cursor (see the
+[official panel-command help](https://github.com/FarGroup/FarManager/blob/master/far/FarEng.hlf.m4#L351-L367)).
+f4 also binds `Ctrl+=` and `Ctrl+-` on the main keyboard so this operation is
+available on laptops and compact keyboards without a numeric keypad.
+
+Extension matching ignores case and uses the last extension; virtual entries
+marked `NoExtension` join extensionless files. With a folder under the cursor,
+the command marks or unmarks folders instead. The parent entry is never marked,
+and autofilter-hidden rows are left alone. `Ctrl+M` restores the previous marks.
+
+`Ctrl+Shift+=` and `Ctrl+Shift+-` open the selection and deselection mask dialogs;
+`Alt+=` inverts selection. `Numpad 5` opens the viewer with Num Lock on or off,
+while `F3` remains the primary viewer shortcut. All of these are configurable
+panel actions. OEM keys use names such as `CtrlVK_BB` and `CtrlVK_BD` in
+`hotkeys.ini`, and the UI displays them as `Ctrl+=` and `Ctrl+-`.
 
 ## The file
 

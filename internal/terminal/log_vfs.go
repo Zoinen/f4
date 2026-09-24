@@ -20,12 +20,10 @@ type TerminalLogVFS struct {
 // NewTerminalLogVFS freezes the displayed log and its initial viewport for a
 // document. The host-console source overrides the PTY when panels use no PTY.
 func NewTerminalLogVFS(tv *TerminalView, fallback func() []byte) *TerminalLogVFS {
-	v := &TerminalLogVFS{tv: tv}
 	if fallback != nil {
-		v.data = append([]byte(nil), fallback()...)
-		v.immutableSnapshot = true
-		return v
+		return &TerminalLogVFS{tv: tv, fallback: fallback}
 	}
+	v := &TerminalLogVFS{tv: tv}
 	if tv == nil {
 		return v
 	}

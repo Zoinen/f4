@@ -22,7 +22,8 @@ FocusScope {
         for (const definition of hostWindow.themeColorDefinitions)
             values[definition.id] = hostWindow[definition.id].toString()
         for (const key of ["fontRenderType", "mouseWheelMode", "galleryNeutralFileTextColors",
-                           "galleryShowSelectionBorders", "commandLineGraphicalCursor"])
+                           "galleryShowSelectionBorders", "commandLineGraphicalCursor",
+                           "iconSetName"])
             values[key] = hostWindow[key]
         draftBaseline = values
     }
@@ -40,6 +41,7 @@ FocusScope {
         stopAllFlashing()
         for (const key of Object.keys(draftBaseline)) {
             if (key === "fontRenderType") hostWindow.setFontRenderType(draftBaseline[key])
+            else if (key === "iconSetName") hostWindow.setIconSet(draftBaseline[key])
             else hostWindow[key] = draftBaseline[key]
         }
         if (currentItem) setFromColor(hostWindow[currentItem.id])
@@ -53,7 +55,7 @@ FocusScope {
         event.accepted = true
     }
     implicitWidth: hostWindow.snapPx(embeddedSettings ? 535 : 720)
-    implicitHeight: hostWindow.snapPx(embeddedSettings ? 760 : 824)
+    implicitHeight: hostWindow.snapPx(embeddedSettings ? 812 : 876)
 
 
     ThemeDraftModel {
@@ -401,6 +403,107 @@ FocusScope {
                             if (hostWindow.setMouseWheelMode(value))
                                 themeColorConfigurator.statusToast =
                                     "Mouse wheel: " + hostWindow.mouseWheelModeName
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                id: themeIconSetPanel
+                objectName: "themeIconSetPanel"
+                Layout.fillWidth: true
+                Layout.preferredHeight: hostWindow.snapPx(42)
+                implicitHeight: hostWindow.snapPx(42)
+                transform: Translate {
+                    x: hostWindow.dialogPixelOffsetX(
+                        themeIconSetPanel,
+                        themeColorConfigurator.contentItem)
+                    y: hostWindow.dialogPixelOffsetY(
+                        themeIconSetPanel,
+                        themeColorConfigurator.contentItem)
+                }
+                radius: hostWindow.snapPx(4)
+                color: hostWindow.dialogHeaderBg
+                border.width: hostWindow.separatorWidth
+                border.color: hostWindow.controlBorder
+
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: hostWindow.snapPx(8)
+                    anchors.rightMargin: hostWindow.snapPx(8)
+                    spacing: hostWindow.snapPx(8)
+
+                    ColumnLayout {
+                        id: themeIconSetLabels
+                        objectName: "themeIconSetLabels"
+                        Layout.fillWidth: true
+                        spacing: hostWindow.snapPx(1)
+                        transform: Translate {
+                            x: hostWindow.dialogPixelOffsetX(
+                                themeIconSetLabels,
+                                themeColorConfigurator.contentItem)
+                            y: hostWindow.dialogPixelOffsetY(
+                                themeIconSetLabels,
+                                themeColorConfigurator.contentItem)
+                        }
+
+                        Text {
+                            id: themeIconSetTitle
+                            objectName: "themeIconSetTitle"
+                            text: "Icon set"
+                            color: hostWindow.textColor
+                            font.family: hostWindow.guiMonospaceFontFamily
+                            font.pixelSize: 11
+                            font.weight: Font.Bold
+                            transform: Translate {
+                                x: hostWindow.dialogPixelOffsetX(
+                                    themeIconSetTitle,
+                                    themeColorConfigurator.contentItem)
+                                y: hostWindow.dialogPixelOffsetY(
+                                    themeIconSetTitle,
+                                    themeColorConfigurator.contentItem)
+                            }
+                        }
+
+                        Text {
+                            id: themeIconSetDescription
+                            objectName: "themeIconSetDescription"
+                            text: hostWindow.iconSetDescription
+                            color: hostWindow.mutedText
+                            font.family: hostWindow.guiMonospaceFontFamily
+                            font.pixelSize: 9
+                            elide: Text.ElideRight
+                            Layout.fillWidth: true
+                            transform: Translate {
+                                x: hostWindow.dialogPixelOffsetX(
+                                    themeIconSetDescription,
+                                    themeColorConfigurator.contentItem)
+                                y: hostWindow.dialogPixelOffsetY(
+                                    themeIconSetDescription,
+                                    themeColorConfigurator.contentItem)
+                            }
+                        }
+                    }
+
+                    ThemeRenderTypeComboBox {
+                        id: themeIconSetCombo
+                        hostWindow: themeColorConfigurator.hostWindow
+                        objectName: "themeIconSetCombo"
+                        options: hostWindow.iconSetOptions
+                        selectedValue: hostWindow.iconSetName
+                        Layout.preferredWidth: hostWindow.snapPx(174)
+                        transform: Translate {
+                            x: hostWindow.dialogPixelOffsetX(
+                                themeIconSetCombo,
+                                themeColorConfigurator.contentItem)
+                            y: hostWindow.dialogPixelOffsetY(
+                                themeIconSetCombo,
+                                themeColorConfigurator.contentItem)
+                        }
+                        onOptionActivated: function(value) {
+                            if (hostWindow.setIconSet(value))
+                                themeColorConfigurator.statusToast =
+                                    "Icon set: " + hostWindow.iconSetOption(value).name
                         }
                     }
                 }

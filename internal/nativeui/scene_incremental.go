@@ -229,17 +229,48 @@ type semanticSelectionAcknowledgement struct {
 	Revision int64
 }
 
-func semanticPanelStateForPatch(panel map[string]any) map[string]any {
+// semanticPanelStatePatchKeys is the bounded row-free state contract accepted
+// by the Qt host. Other panel fields belong to a full panel snapshot or a
+// dedicated catalog operation and must not be sent in state_update.
+var semanticPanelStatePatchKeys = map[string]struct{}{
+	"id": {}, "kind": {}, "path": {}, "title": {}, "pathIcon": {},
+	"galleryLayoutMode": {}, "sourceKind": {}, "cursorEntryId": {},
+	"groupBy": {}, "groupReverse": {}, "groupFoldersSeparately": {},
+	"groupsDeferred": {}, "groupTotal": {},
+	"sortModeName": {}, "fastFindText": {}, "symlinkTarget": {},
+	"fastFindMatchColor": {},
+	"active":             {}, "previewCapable": {}, "dropAllowed": {},
+	"metadataDeferred": {}, "catalogRowsDeferred": {}, "sortReverse": {},
+	"useSortGroups": {}, "freeSpaceKnown": {},
+	"separateFileExtensions": {}, "loading": {},
+	"catalogProvisional": {}, "fastFind": {}, "showFileInfo": {},
+	"side": {}, "galleryColumnCount": {}, "galleryLayoutRevision": {},
+	"catalogRevision": {}, "metadataRevision": {}, "selectedCount": {},
+	"selectedFiles": {}, "selectedDirectories": {}, "diskTotalSpace": {},
+	"totalFiles": {}, "totalDirectories": {}, "selectedSize": {}, "totalSize": {},
+	"freeSpace": {}, "totalCount": {},
+	"cursor": {}, "galleryDensity": {}, "galleryDensities": {},
+	"galleryColumns": {}, "fastFindMatches": {},
+}
+
+func semanticPanelStateForPatchWithDroppedKeys(
+	panel map[string]any,
+) (map[string]any, []string) {
 	if panel == nil {
-		return nil
+		return nil, nil
 	}
 	state := make(map[string]any, len(panel))
+	var dropped []string
 	for key, value := range panel {
 		// Selection revisions are advanced by selection_delta/replace. Keeping
 		// them out of state_update makes the two operations independently
 		// ordered and lets the frontend reject a stale delta atomically.
 		// Retained catalog ranges likewise belong only to panel_catalog.
 		if key == "selectionRevision" || key == "catalogDelta" {
+			continue
+		}
+		if _, allowed := semanticPanelStatePatchKeys[key]; !allowed {
+			dropped = append(dropped, key)
 			continue
 		}
 		state[key] = value
@@ -257,6 +288,11 @@ func semanticPanelStateForPatch(panel map[string]any) map[string]any {
 			state["fastFindMatchColor"] = ""
 		}
 	}
+	return state, dropped
+}
+
+func semanticPanelStateForPatch(panel map[string]any) map[string]any {
+	state, _ := semanticPanelStateForPatchWithDroppedKeys(panel)
 	return state
 }
 
@@ -362,9 +398,18 @@ func BuildAppScenePatch(previous map[string]any, current *appIncrementalScene) (
 				return extui.ScenePatch{}, nil, false
 			}
 			beforeState := semanticPanelStateForPatch(before)
-			panelState := semanticPanelStateForPatch(panel)
-			if panelStateDelta := semanticPanelStateDeltaForPatch(
-				beforeState, panelState); panelStateDelta != nil {
+			panelState, droppedKeys := semanticPanelStateForPatchWithDroppedKeys(panel)
+			panelStateDelta := semanticPanelStateDeltaForPatch(
+				beforeState, panelState)
+			// Keep this diagnostic tied to an emitted state update so normal
+			// redraws do not fill the debug log. It identifies compatibility
+			// fields intentionally omitted from the bounded Qt operation.
+			if panelStateDelta != nil && len(droppedKeys) > 0 {
+				sort.Strings(droppedKeys)
+				vtui.DebugLog("[FIX] NATIVE_SCENE: omitted unsupported panel state fields side=%d keys=%s",
+					side, strings.Join(droppedKeys, ","))
+			}
+			if panelStateDelta != nil {
 				deltaKeys := make([]string, 0, len(panelStateDelta))
 				for key := range panelStateDelta {
 					deltaKeys = append(deltaKeys, key)

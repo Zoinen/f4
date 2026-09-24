@@ -42,13 +42,37 @@ func ShowAttributesDialogForTargets(refresh func(), v vfs.VFS, targets []Attribu
 	}
 }
 
-func setUnixAttributesForTargets(ctx context.Context, v vfs.VFS, targets []AttributesTarget, edited vfs.VFSItem, preserveUnixMode uint32) error {
+// unixAttributesEdit is what Set writes. A field the user left untouched is
+// not in it, and every object keeps its own value there. With a multiple
+// selection the dialog has no single value to write back: writing the first
+// object's owner, group or time to the rest is exactly what it must not do.
+// For one object an untouched time field would still round the modification
+// time down to the whole seconds the field shows.
+type unixAttributesEdit struct {
+	setUid   bool
+	uid      int
+	setGid   bool
+	gid      int
+	setMTime bool
+	mtime    time.Time
+	// mode holds the new mode bits, keepMode the bits each object keeps.
+	mode     uint32
+	keepMode uint32
+}
+
+func setUnixAttributesForTargets(ctx context.Context, v vfs.VFS, targets []AttributesTarget, edit unixAttributesEdit) error {
 	for _, target := range targets {
 		item := target.Item
-		item.Uid = edited.Uid
-		item.Gid = edited.Gid
-		item.UnixMode = (item.UnixMode & preserveUnixMode) | (edited.UnixMode &^ preserveUnixMode)
-		item.MTime = edited.MTime
+		if edit.setUid {
+			item.Uid = edit.uid
+		}
+		if edit.setGid {
+			item.Gid = edit.gid
+		}
+		if edit.setMTime {
+			item.MTime = edit.mtime
+		}
+		item.UnixMode = (item.UnixMode & edit.keepMode) | (edit.mode &^ edit.keepMode)
 		if err := v.SetAttributes(ctx, target.Path, item); err != nil {
 			return fmt.Errorf("%s: %w", target.Path, err)
 		}
@@ -148,24 +172,263 @@ func ReplaceSymlinkTarget(ctx context.Context, v vfs.VFS, path, newTarget string
 	return fmt.Errorf("create symlink %q: %w (original target restored)", path, createErr)
 }
 
-func setWindowsAttributesForTargets(ctx context.Context, v vfs.VFS, targets []AttributesTarget, edited vfs.VFSItem, preserveWinAttrs uint32) error {
+// windowsAttributesEdit is the Windows dialog's counterpart of
+// unixAttributesEdit: only what the user changed, the rest stays per object.
+type windowsAttributesEdit struct {
+	setMTime bool
+	mtime    time.Time
+	// winAttrs holds the new ordinary flags, keepWinAttrs the ordinary flags
+	// each object keeps.
+	winAttrs     uint32
+	keepWinAttrs uint32
+	// setUnixMode is set where Read only is carried by the mode as well
+	// (native Windows semantics); the mode then follows the Read only box.
+	setUnixMode bool
+	unixMode    uint32
+}
+
+func setWindowsAttributesForTargets(ctx context.Context, v vfs.VFS, targets []AttributesTarget, edit windowsAttributesEdit) error {
 	const editableWinAttrs = uint32(1 | 2 | 4 | 32)
 	for _, target := range targets {
 		item := target.Item
-		item.MTime = edited.MTime
-		if preserveWinAttrs&1 == 0 {
-			item.UnixMode = edited.UnixMode
+		if edit.setMTime {
+			item.MTime = edit.mtime
+		}
+		if edit.setUnixMode {
+			item.UnixMode = edit.unixMode
 		}
 		// The dialog edits only the four ordinary Windows flags. Keep
 		// directory/reparse/compression and other provider-specific flags from
 		// each target instead of copying those of the first selected object.
-		editable := editableWinAttrs &^ preserveWinAttrs
-		item.WinAttrs = (item.WinAttrs &^ editable) | (edited.WinAttrs & editable)
+		editable := editableWinAttrs &^ edit.keepWinAttrs
+		item.WinAttrs = (item.WinAttrs &^ editable) | (edit.winAttrs & editable)
 		if err := v.SetAttributes(ctx, target.Path, item); err != nil {
 			return fmt.Errorf("%s: %w", target.Path, err)
 		}
 	}
 	return nil
+}
+
+// attributesTimeFormat is the format of the dialogs' time fields.
+const attributesTimeFormat = "02.01.2006 15:04:05"
+
+// attributesSelectionSummary names a multiple selection the way far2l's
+// attributes dialog does, "selected 3 items (dirs: 1, files: 2)", so the
+// dialog describes what Set will change instead of naming its first object.
+func attributesSelectionSummary(targets []AttributesTarget) string {
+	var dirs, files, symlinks int
+	for _, target := range targets {
+		switch {
+		case target.Item.IsSymlink:
+			symlinks++
+		case target.Item.IsDir:
+			dirs++
+		default:
+			files++
+		}
+	}
+	var kinds []string
+	for _, kind := range []struct {
+		count int
+		key   string
+	}{
+		{dirs, "Attributes.SelectedDirs"},
+		{files, "Attributes.SelectedFiles"},
+		{symlinks, "Attributes.SelectedSymlinks"},
+	} {
+		if kind.count > 0 {
+			kinds = append(kinds, fmt.Sprintf(i18n.Msg(kind.key), kind.count))
+		}
+	}
+	return fmt.Sprintf(i18n.Msg("Attributes.SelectedCount"), len(targets), strings.Join(kinds, ", "))
+}
+
+// sharedAttributeText shows the value all objects have in common, or
+// "(multiple values)" when they differ, as far2l does for owner and group.
+func sharedAttributeText(targets []AttributesTarget, value func(vfs.VFSItem) int, name func(int) string) string {
+	first := value(targets[0].Item)
+	for _, target := range targets[1:] {
+		if value(target.Item) != first {
+			return i18n.Msg("Attributes.MultipleValues")
+		}
+	}
+	return name(first)
+}
+
+func unixOwnerName(uid int) string {
+	name := strconv.Itoa(uid)
+	if u, err := user.LookupId(name); err == nil {
+		return u.Username
+	}
+	return name
+}
+
+func unixGroupName(gid int) string {
+	name := strconv.Itoa(gid)
+	if g, err := user.LookupGroupId(name); err == nil {
+		return g.Name
+	}
+	return name
+}
+
+// lookupUnixUid resolves the Owner field: a user name, or a numeric id.
+func lookupUnixUid(text string) (int, bool) {
+	if u, err := user.Lookup(text); err == nil {
+		if uid, err := strconv.Atoi(u.Uid); err == nil {
+			return uid, true
+		}
+	}
+	uid, err := strconv.Atoi(text)
+	return uid, err == nil
+}
+
+// lookupUnixGid resolves the Group field: a group name, or a numeric id.
+func lookupUnixGid(text string) (int, bool) {
+	if g, err := user.LookupGroup(text); err == nil {
+		if gid, err := strconv.Atoi(g.Gid); err == nil {
+			return gid, true
+		}
+	}
+	gid, err := strconv.Atoi(text)
+	return gid, err == nil
+}
+
+// octalMixedDigit stands in the Octal field for a digit whose bits differ
+// across a multiple selection; far2l uses the same character there. A digit
+// written this way keeps its bits on every object.
+const octalMixedDigit = '-'
+
+// modeBits lists the permission bits in checkbox order: read, write and
+// execute for user, group and other.
+var modeBits = []uint32{0400, 0200, 0100, 0040, 0020, 0010, 0004, 0002, 0001}
+
+// parseOctalModeText reads the Octal field. Text shorter than four positions
+// is right-aligned, so "755" means 0755. mode holds the bits of the digits
+// written, mixed the bits of the positions written as octalMixedDigit.
+func parseOctalModeText(text string) (mode, mixed uint32, ok bool) {
+	if len(text) > 4 {
+		return 0, 0, false
+	}
+	padded := strings.Repeat("0", 4-len(text)) + text
+	for i := 0; i < 4; i++ {
+		shift := 3 * (3 - i)
+		switch c := padded[i]; {
+		case c >= '0' && c <= '7':
+			mode |= uint32(c-'0') << shift
+		case c == octalMixedDigit:
+			mixed |= 7 << shift
+		default:
+			return 0, 0, false
+		}
+	}
+	return mode, mixed, true
+}
+
+// formatOctalModeText writes the Octal field from the permission checkboxes.
+// The set-id and sticky digit has no checkboxes, so it is carried over:
+// special holds its bits, specialMixed says the digit is mixed.
+func formatOctalModeText(checks []*vtui.Checkbox, special uint32, specialMixed bool) string {
+	const octalDigits = "01234567"
+	digits := []byte{octalDigits[(special>>9)&7], 0, 0, 0}
+	if specialMixed {
+		digits[0] = octalMixedDigit
+	}
+	for triple := 0; triple < 3; triple++ {
+		var value byte
+		mixed := false
+		for i, check := range checks[triple*3 : triple*3+3] {
+			switch check.State {
+			case 1:
+				value |= 4 >> i
+			case 2:
+				mixed = true
+			}
+		}
+		digits[triple+1] = '0' + value
+		if mixed {
+			digits[triple+1] = octalMixedDigit
+		}
+	}
+	return string(digits)
+}
+
+// unixModeEdit turns the Octal field and the checkboxes into the mode bits
+// Set writes and the bits each object keeps. A digit in the field decides its
+// three bits. A digit written as octalMixedDigit leaves its bits to the
+// checkboxes, where a '?' box keeps its bit per object; the set-id and sticky
+// digit has no boxes, so written that way it keeps all three.
+func unixModeEdit(octal string, checks []*vtui.Checkbox) (mode, keep uint32) {
+	mode, mixed, ok := parseOctalModeText(octal)
+	if !ok {
+		mode, mixed = 0, 07777
+	}
+	keep = mixed & 07000
+	for i, check := range checks {
+		bit := modeBits[i]
+		if mixed&bit == 0 {
+			continue
+		}
+		mode &^= bit
+		switch check.State {
+		case 1:
+			mode |= bit
+		case 2:
+			keep |= bit
+		}
+	}
+	return mode, keep
+}
+
+// mixedOctalValidator guards the Octal field of a multiple selection: octal
+// digits, and octalMixedDigit for a digit that keeps each object's bits. A
+// single object has nothing mixed and keeps vtui.OctalValidator.
+type mixedOctalValidator struct{}
+
+func (mixedOctalValidator) Validate(s string) bool {
+	_, _, ok := parseOctalModeText(s)
+	return ok
+}
+
+func (v mixedOctalValidator) IsValidInput(s string) bool {
+	return v.Validate(s)
+}
+
+func (mixedOctalValidator) Error(owner vtui.Frame) {
+	vtui.ShowMessageOn(owner, i18n.Msg("Error.Title"), i18n.Msg("Attributes.OctalMixedError"), []string{i18n.Msg("vtui.Ok")})
+}
+
+// windowsAdvancedFlags are the flags the Windows dialog shows but does not edit.
+var windowsAdvancedFlags = []struct {
+	bit  uint32
+	name string
+}{
+	{0x00000800, "Compressed"},
+	{0x00004000, "Encrypted"},
+	{0x00000400, "Reparse Point"},
+	{0x00000200, "Sparse"},
+	{0x00001000, "Offline"},
+	{0x00002000, "Not Content Indexed"},
+	{0x00000010, "Directory"},
+}
+
+// windowsAdvancedFlagsText lists the advanced flags of the selection. A flag
+// only some of the objects have is marked "(?)", the way a mixed checkbox
+// shows "?".
+func windowsAdvancedFlagsText(targets []AttributesTarget) string {
+	winAttrs := func(item vfs.VFSItem) uint32 { return item.WinAttrs }
+	var names []string
+	for _, flag := range windowsAdvancedFlags {
+		switch mixedAttributeState(targets, flag.bit, winAttrs) {
+		case 1:
+			names = append(names, flag.name)
+		case 2:
+			names = append(names, flag.name+" (?)")
+		}
+	}
+	if len(names) == 0 {
+		return "None"
+	}
+	return strings.Join(names, ", ")
 }
 
 func ShowAttributesUnix(refresh func(), v vfs.VFS, path string, item vfs.VFSItem) {
@@ -175,8 +438,9 @@ func ShowAttributesUnix(refresh func(), v vfs.VFS, path string, item vfs.VFSItem
 func ShowAttributesUnixForTargets(refresh func(), v vfs.VFS, targets []AttributesTarget) {
 	path := targets[0].Path
 	item := targets[0].Item
+	multiple := len(targets) > 1
 	width, height := 70, 24
-	if item.IsSymlink && len(targets) == 1 {
+	if item.IsSymlink && !multiple {
 		height = 26
 	}
 
@@ -184,22 +448,29 @@ func ShowAttributesUnixForTargets(refresh func(), v vfs.VFS, targets []Attribute
 	dlg.ShowClose = true
 
 	x, y := dlg.X1, dlg.Y1
-	const timeFormat = "02.01.2006 15:04:05"
+	unixMode := func(item vfs.VFSItem) uint32 { return item.UnixMode }
 
 	// Основной контейнер
 	mainVBox := vtui.NewVBoxLayout(x+3, y+2, width-6, height-4)
 
-	// Header
-	info := fmt.Sprintf("Change file attributes for:\n%s", vtui.TruncateMiddle(v.Base(path), 60))
-	lines := vtui.WrapText(info, 60)
-	for _, l := range lines {
-		t := vtui.NewText(0, 0, l, vtui.Palette[vtui.ColDialogText])
-		dlg.AddItem(t)
-		mainVBox.Add(t, vtui.Margins{}, vtui.AlignCenter)
+	// Header. As in far2l, a multiple selection is named as a whole, never by
+	// its first object.
+	header := []string{i18n.Msg("Attributes.ChangeFor")}
+	if multiple {
+		header = append(header, i18n.Msg("Attributes.SelectedObjects"), attributesSelectionSummary(targets))
+	} else {
+		header = append(header, vtui.TruncateMiddle(v.Base(path), 60))
+	}
+	for _, line := range header {
+		for _, l := range vtui.WrapText(line, 60) {
+			t := vtui.NewText(0, 0, l, vtui.Palette[vtui.ColDialogText])
+			dlg.AddItem(t)
+			mainVBox.Add(t, vtui.Margins{}, vtui.AlignCenter)
+		}
 	}
 
 	var editTarget *vtui.Edit
-	if item.IsSymlink && len(targets) == 1 {
+	if item.IsSymlink && !multiple {
 		targetVal, _ := vfs.Readlink(context.Background(), v, path)
 		editTarget = vtui.NewEdit(0, 0, 35, targetVal)
 		lblTarget := vtui.NewLabel(0, 0, PadLabel(i18n.Msg("Attributes.Target")), editTarget)
@@ -217,13 +488,17 @@ func ShowAttributesUnixForTargets(refresh func(), v vfs.VFS, targets []Attribute
 	mainVBox.Add(gbOwnership, vtui.Margins{Top: 1}, vtui.AlignFill)
 
 	// Permissions Group
-	// Permissions Group
 	gbPerms := vtui.NewGroupBox(0, 0, 66, 7, " "+i18n.Msg("Attributes.Permissions")+" ")
 	dlg.AddItem(gbPerms)
 	mainVBox.Add(gbPerms, vtui.Margins{Top: 0}, vtui.AlignFill)
 
-	// Time Row
-	editMTime := vtui.NewEdit(0, 0, 20, item.MTime.Format(timeFormat))
+	// Time Row. far2l leaves the dates of a multiple selection blank; a blank
+	// field left blank changes nothing.
+	initialMTime := ""
+	if !multiple {
+		initialMTime = item.MTime.Format(attributesTimeFormat)
+	}
+	editMTime := vtui.NewEdit(0, 0, 20, initialMTime)
 	lblTime := vtui.NewLabel(0, 0, PadLabel(i18n.Msg("Attributes.MTime")), editMTime)
 	rowTime := vtui.NewHBoxLayout(0, 0, 66, 1)
 	rowTime.Add(lblTime, vtui.Margins{Left: 2, Right: 1}, vtui.AlignLeft)
@@ -253,17 +528,10 @@ func ShowAttributesUnixForTargets(refresh func(), v vfs.VFS, targets []Attribute
 	// --- ВТОРОЙ ПРОХОД: Наполняем уже спозиционированные GroupBox ---
 
 	// Наполнение Ownership
-	ownerName := strconv.Itoa(item.Uid)
-	if u, err := user.LookupId(ownerName); err == nil {
-		ownerName = u.Username
-	}
-	groupName := strconv.Itoa(item.Gid)
-	if g, err := user.LookupGroupId(groupName); err == nil {
-		groupName = g.Name
-	}
-
-	editOwner := vtui.NewEdit(0, 0, 20, ownerName)
-	editGroup := vtui.NewEdit(0, 0, 20, groupName)
+	initialOwner := sharedAttributeText(targets, func(item vfs.VFSItem) int { return item.Uid }, unixOwnerName)
+	initialGroup := sharedAttributeText(targets, func(item vfs.VFSItem) int { return item.Gid }, unixGroupName)
+	editOwner := vtui.NewEdit(0, 0, 20, initialOwner)
+	editGroup := vtui.NewEdit(0, 0, 20, initialGroup)
 
 	vboxOwner := vtui.NewVBoxLayout(gbOwnership.X1+2, gbOwnership.Y1+1, gbOwnership.X2-gbOwnership.X1-4, 2)
 
@@ -290,17 +558,16 @@ func ShowAttributesUnixForTargets(refresh func(), v vfs.VFS, targets []Attribute
 	// Наполнение Permissions
 	vboxPerms := vtui.NewVBoxLayout(gbPerms.X1+2, gbPerms.Y1+1, gbPerms.X2-gbPerms.X1-4, 5)
 	allChecks := []*vtui.Checkbox{}
-	threeState := len(targets) > 1
 
 	makeRow := func(label string, bitOff uint) {
 		row := vtui.NewHBoxLayout(0, 0, 60, 1)
 		lbl := vtui.NewText(0, 0, PadLabel(label), vtui.Palette[vtui.ColDialogText])
-		r := vtui.NewCheckbox(0, 0, i18n.Msg("Attributes.Read"), threeState)
-		r.State = mixedAttributeState(targets, uint32(0400>>bitOff), func(item vfs.VFSItem) uint32 { return item.UnixMode })
-		w := vtui.NewCheckbox(0, 0, i18n.Msg("Attributes.Write"), threeState)
-		w.State = mixedAttributeState(targets, uint32(0200>>bitOff), func(item vfs.VFSItem) uint32 { return item.UnixMode })
-		x_ := vtui.NewCheckbox(0, 0, i18n.Msg("Attributes.Execute"), threeState)
-		x_.State = mixedAttributeState(targets, uint32(0100>>bitOff), func(item vfs.VFSItem) uint32 { return item.UnixMode })
+		r := vtui.NewCheckbox(0, 0, i18n.Msg("Attributes.Read"), multiple)
+		r.State = mixedAttributeState(targets, uint32(0400>>bitOff), unixMode)
+		w := vtui.NewCheckbox(0, 0, i18n.Msg("Attributes.Write"), multiple)
+		w.State = mixedAttributeState(targets, uint32(0200>>bitOff), unixMode)
+		x_ := vtui.NewCheckbox(0, 0, i18n.Msg("Attributes.Execute"), multiple)
+		x_.State = mixedAttributeState(targets, uint32(0100>>bitOff), unixMode)
 		row.Add(lbl, vtui.Margins{Right: 1}, vtui.AlignLeft)
 		row.Add(r, vtui.Margins{Right: 1}, vtui.AlignLeft)
 		row.Add(w, vtui.Margins{Right: 1}, vtui.AlignLeft)
@@ -317,8 +584,18 @@ func ShowAttributesUnixForTargets(refresh func(), v vfs.VFS, targets []Attribute
 	makeRow(i18n.Msg("Attributes.PermGroup"), 3)
 	makeRow(i18n.Msg("Attributes.PermOther"), 6)
 
-	editOctal := vtui.NewEdit(0, 0, 6, fmt.Sprintf("%04o", item.UnixMode))
-	editOctal.Validator = &vtui.OctalValidator{MaxDigits: 4}
+	var editOctal *vtui.Edit
+	if multiple {
+		specialMixed := false
+		for _, bit := range []uint32{04000, 02000, 01000} {
+			specialMixed = specialMixed || mixedAttributeState(targets, bit, unixMode) == 2
+		}
+		editOctal = vtui.NewEdit(0, 0, 6, formatOctalModeText(allChecks, item.UnixMode&07000, specialMixed))
+		editOctal.Validator = mixedOctalValidator{}
+	} else {
+		editOctal = vtui.NewEdit(0, 0, 6, fmt.Sprintf("%04o", item.UnixMode))
+		editOctal.Validator = &vtui.OctalValidator{MaxDigits: 4}
+	}
 	editOctal.ClearSelection()
 	rowOct := vtui.NewHBoxLayout(0, 0, 60, 1)
 	lblOct := vtui.NewLabel(0, 0, PadLabel(i18n.Msg("Attributes.Octal")), editOctal)
@@ -335,21 +612,20 @@ func ShowAttributesUnixForTargets(refresh func(), v vfs.VFS, targets []Attribute
 		}
 	}
 
-	// Синхронизация (остается без изменений)
+	// Синхронизация чекбоксов и поля Octal. The set-id and sticky digit has
+	// no checkboxes, so a checkbox change carries it over rather than
+	// resetting it to 0.
 	syncing := false
 	updateOct := func() {
 		if syncing {
 			return
 		}
 		syncing = true
-		var m uint32
-		b := []uint32{0400, 0200, 0100, 0040, 0020, 0010, 0004, 0002, 0001}
-		for i, c := range allChecks {
-			if c.State == 1 {
-				m |= b[i]
-			}
+		mode, mixed, ok := parseOctalModeText(editOctal.GetText())
+		if !ok {
+			mode, mixed = 0, 0
 		}
-		editOctal.SetText(fmt.Sprintf("%04o", m))
+		editOctal.SetText(formatOctalModeText(allChecks, mode&07000, mixed&07000 != 0))
 		syncing = false
 		vtui.FrameManager.Redraw()
 	}
@@ -360,14 +636,18 @@ func ShowAttributesUnixForTargets(refresh func(), v vfs.VFS, targets []Attribute
 		if syncing {
 			return
 		}
-		var m uint64
-		fmt.Sscanf(s, "%o", &m)
+		mode, mixed, ok := parseOctalModeText(s)
+		if !ok {
+			return
+		}
 		syncing = true
-		b := []uint32{0400, 0200, 0100, 0040, 0020, 0010, 0004, 0002, 0001}
 		for i, c := range allChecks {
-			if (uint32(m) & b[i]) != 0 {
+			switch {
+			case mixed&modeBits[i] != 0 && c.ThreeState:
+				c.State = 2
+			case mode&modeBits[i] != 0:
 				c.State = 1
-			} else {
+			default:
 				c.State = 0
 			}
 		}
@@ -375,43 +655,26 @@ func ShowAttributesUnixForTargets(refresh func(), v vfs.VFS, targets []Attribute
 		vtui.FrameManager.Redraw()
 	}
 
-	targetEdited := item.IsSymlink && editTarget != nil && len(targets) == 1
+	targetEdited := item.IsSymlink && editTarget != nil && !multiple
 
 	btnSet.OnClick = func() {
 		newTarget := ""
 		if targetEdited {
 			newTarget = editTarget.GetText()
 		}
-		uidStr := editOwner.GetText()
-		if u, err := user.Lookup(uidStr); err == nil {
-			item.Uid, _ = strconv.Atoi(u.Uid)
-		} else {
-			if parsedUid, err := strconv.Atoi(uidStr); err == nil {
-				item.Uid = parsedUid
+		var edit unixAttributesEdit
+		if text := editOwner.GetText(); text != initialOwner {
+			edit.uid, edit.setUid = lookupUnixUid(text)
+		}
+		if text := editGroup.GetText(); text != initialGroup {
+			edit.gid, edit.setGid = lookupUnixGid(text)
+		}
+		if text := editMTime.GetText(); text != initialMTime {
+			if t, err := time.ParseInLocation(attributesTimeFormat, text, time.Local); err == nil {
+				edit.mtime, edit.setMTime = t, true
 			}
 		}
-
-		gidStr := editGroup.GetText()
-		if g, err := user.LookupGroup(gidStr); err == nil {
-			item.Gid, _ = strconv.Atoi(g.Gid)
-		} else {
-			if parsedGid, err := strconv.Atoi(gidStr); err == nil {
-				item.Gid = parsedGid
-			}
-		}
-		var m uint64
-		fmt.Sscanf(editOctal.GetText(), "%o", &m)
-		item.UnixMode = uint32(m)
-		preserveUnixMode := uint32(0)
-		modeBits := []uint32{0400, 0200, 0100, 0040, 0020, 0010, 0004, 0002, 0001}
-		for i, check := range allChecks {
-			if check.State == 2 {
-				preserveUnixMode |= modeBits[i]
-			}
-		}
-		if t, err := time.ParseInLocation(timeFormat, editMTime.GetText(), time.Local); err == nil {
-			item.MTime = t
-		}
+		edit.mode, edit.keepMode = unixModeEdit(editOctal.GetText(), allChecks)
 		vtui.RunAsync(func(ctx *vtui.TaskContext) {
 			if targetEdited {
 				if err := ReplaceSymlinkTarget(ctx.Context, v, path, newTarget); err != nil {
@@ -421,7 +684,7 @@ func ShowAttributesUnixForTargets(refresh func(), v vfs.VFS, targets []Attribute
 					return
 				}
 			}
-			err := setUnixAttributesForTargets(ctx.Context, v, targets, item, preserveUnixMode)
+			err := setUnixAttributesForTargets(ctx.Context, v, targets, edit)
 			ctx.RunOnUI(func() {
 				if err != nil {
 					vtui.ShowMessage(" Error ", err.Error(), []string{"&Ok"})
@@ -486,15 +749,19 @@ func ShowAttributesWindowsWithPropertiesForTargets(
 ) {
 	path := targets[0].Path
 	item := targets[0].Item
+	multiple := len(targets) > 1
 	width, height := 60, 22
 	dlg := vtui.NewCenteredDialog(width, height, i18n.Msg("Attributes.Title"))
 	dlg.ShowClose = true
 	x, y := dlg.X1, dlg.Y1
-	const timeFormat = "02.01.2006 15:04:05"
 
 	mainVBox := vtui.NewVBoxLayout(x+3, y+2, width-6, height-4)
 
-	lblFile := vtui.NewText(0, 0, fmt.Sprintf(i18n.Msg("Attributes.File"), vtui.TruncateMiddle(v.Base(path), 46)), vtui.Palette[vtui.ColDialogText])
+	fileText := fmt.Sprintf(i18n.Msg("Attributes.File"), vtui.TruncateMiddle(v.Base(path), 46))
+	if multiple {
+		fileText = vtui.TruncateMiddle(attributesSelectionSummary(targets), 54)
+	}
+	lblFile := vtui.NewText(0, 0, fileText, vtui.Palette[vtui.ColDialogText])
 	dlg.AddItem(lblFile)
 	mainVBox.Add(lblFile, vtui.Margins{}, vtui.AlignLeft)
 
@@ -506,7 +773,11 @@ func ShowAttributesWindowsWithPropertiesForTargets(
 	dlg.AddItem(gbAdv)
 	mainVBox.Add(gbAdv, vtui.Margins{Top: 1}, vtui.AlignFill)
 
-	editMTime := vtui.NewEdit(0, 0, 20, item.MTime.Format(timeFormat))
+	initialMTime := ""
+	if !multiple {
+		initialMTime = item.MTime.Format(attributesTimeFormat)
+	}
+	editMTime := vtui.NewEdit(0, 0, 20, initialMTime)
 	lblTime := vtui.NewLabel(0, 0, PadLabel(i18n.Msg("Attributes.LastWrite")), editMTime)
 	rowTime := vtui.NewHBoxLayout(0, 0, 54, 1)
 	rowTime.Add(lblTime, vtui.Margins{Right: 1}, vtui.AlignLeft)
@@ -520,8 +791,10 @@ func ShowAttributesWindowsWithPropertiesForTargets(
 	btnSec := vtui.NewButton(0, 0, i18n.Msg("Attributes.BtnSecurity"))
 	btnCancel := vtui.NewButton(0, 0, i18n.Msg("vtui.Cancel"))
 
+	// The native properties sheet is opened for one path. For a multiple
+	// selection that would be the first object's sheet, not the selection's.
 	var osPath string
-	if fileops.IsLocalOSVFS(v) {
+	if fileops.IsLocalOSVFS(v) && !multiple {
 		if abs, err := v.Abs(path); err == nil {
 			if runtime.GOOS == "windows" {
 				if (len(abs) >= 2 && abs[1] == ':') || strings.HasPrefix(abs, "\\\\") {
@@ -565,11 +838,10 @@ func ShowAttributesWindowsWithPropertiesForTargets(
 
 	// Apply second pass for GroupBox
 	gbVBox := vtui.NewVBoxLayout(gbAttr.X1+2, gbAttr.Y1+1, gbAttr.X2-gbAttr.X1-4, 4)
-	threeState := len(targets) > 1
-	chkRO := vtui.NewCheckbox(0, 0, i18n.Msg("Attributes.ReadOnly"), threeState)
-	chkHD := vtui.NewCheckbox(0, 0, i18n.Msg("Attributes.Hidden"), threeState)
-	chkSY := vtui.NewCheckbox(0, 0, i18n.Msg("Attributes.System"), threeState)
-	chkAR := vtui.NewCheckbox(0, 0, i18n.Msg("Attributes.Archive"), threeState)
+	chkRO := vtui.NewCheckbox(0, 0, i18n.Msg("Attributes.ReadOnly"), multiple)
+	chkHD := vtui.NewCheckbox(0, 0, i18n.Msg("Attributes.Hidden"), multiple)
+	chkSY := vtui.NewCheckbox(0, 0, i18n.Msg("Attributes.System"), multiple)
+	chkAR := vtui.NewCheckbox(0, 0, i18n.Msg("Attributes.Archive"), multiple)
 
 	chkRO.State = mixedAttributeState(targets, 1, func(item vfs.VFSItem) uint32 { return item.WinAttrs })
 	chkHD.State = mixedAttributeState(targets, 2, func(item vfs.VFSItem) uint32 { return item.WinAttrs })
@@ -586,70 +858,43 @@ func ShowAttributesWindowsWithPropertiesForTargets(
 	gbVBox.Add(chkAR, vtui.Margins{}, vtui.AlignLeft)
 	gbVBox.Apply()
 
-	var advFlags []string
-	if (item.WinAttrs & 0x00000800) != 0 {
-		advFlags = append(advFlags, "Compressed")
-	}
-	if (item.WinAttrs & 0x00004000) != 0 {
-		advFlags = append(advFlags, "Encrypted")
-	}
-	if (item.WinAttrs & 0x00000400) != 0 {
-		advFlags = append(advFlags, "Reparse Point")
-	}
-	if (item.WinAttrs & 0x00000200) != 0 {
-		advFlags = append(advFlags, "Sparse")
-	}
-	if (item.WinAttrs & 0x00001000) != 0 {
-		advFlags = append(advFlags, "Offline")
-	}
-	if (item.WinAttrs & 0x00002000) != 0 {
-		advFlags = append(advFlags, "Not Content Indexed")
-	}
-	if (item.WinAttrs & 0x00000010) != 0 {
-		advFlags = append(advFlags, "Directory")
-	}
-
-	advStr := "None"
-	if len(advFlags) > 0 {
-		advStr = strings.Join(advFlags, ", ")
-	}
-
-	lblAdv := vtui.NewText(0, 0, vtui.TruncateMiddle(advStr, 50), vtui.Palette[vtui.ColDialogText])
+	lblAdv := vtui.NewText(0, 0, vtui.TruncateMiddle(windowsAdvancedFlagsText(targets), 50), vtui.Palette[vtui.ColDialogText])
 	gbAdv.AddItem(lblAdv)
 	gbAdvVBox := vtui.NewVBoxLayout(gbAdv.X1+2, gbAdv.Y1+1, gbAdv.X2-gbAdv.X1-4, 1)
 	gbAdvVBox.Add(lblAdv, vtui.Margins{}, vtui.AlignLeft)
 	gbAdvVBox.Apply()
 
 	btnSet.OnClick = func() {
-		if nt, err := time.ParseInLocation(timeFormat, editMTime.GetText(), time.Local); err == nil {
-			item.MTime = nt
+		var edit windowsAttributesEdit
+		if text := editMTime.GetText(); text != initialMTime {
+			if nt, err := time.ParseInLocation(attributesTimeFormat, text, time.Local); err == nil {
+				edit.mtime, edit.setMTime = nt, true
+			}
 		}
 
 		// Real POSIX semantics apply on a genuine Unix build (runtime.GOOS
 		// != "windows") and equally in Wine posix mode (hostmode.Posix());
-		// on both, item.UnixMode already holds the actual rwx bits the user
-		// edited via the octal field/checkboxes above, and stomping it with
-		// a synthetic 0444/0666 derived from the Windows-only "read-only"
-		// checkbox would silently discard real per-owner/group/other
-		// permissions. Found while wiring Wine posix mode (WINE.md §14.2)
-		// but the bug is not Wine-specific: item.WinAttrs is only ever
-		// populated on GOOS=windows (vfs/os_vfs_windows.go), so chkRO
-		// defaults to unchecked on a native Linux build too, meaning Set
-		// already reset every file's mode to 0666 there before this fix.
+		// on both, each object's UnixMode already holds its actual rwx bits,
+		// and stomping it with a synthetic 0444/0666 derived from the
+		// Windows-only "read-only" checkbox would silently discard real
+		// per-owner/group/other permissions. Found while wiring Wine posix
+		// mode (WINE.md §14.2) but the bug is not Wine-specific:
+		// item.WinAttrs is only ever populated on GOOS=windows
+		// (vfs/os_vfs_windows.go), so chkRO defaults to unchecked on a
+		// native Linux build too, meaning Set already reset every file's
+		// mode to 0666 there before this fix.
 		posixSemantics := runtime.GOOS != "windows" || hostmode.Posix()
-		preserveWinAttrs := uint32(0)
 		switch chkRO.State {
 		case 2:
-			preserveWinAttrs |= 1
+			edit.keepWinAttrs |= 1
 		case 1:
-			item.WinAttrs |= 1
+			edit.winAttrs |= 1
 			if !posixSemantics {
-				item.UnixMode = 0444
+				edit.unixMode, edit.setUnixMode = 0444, true
 			}
 		default:
-			item.WinAttrs &= ^uint32(1)
 			if !posixSemantics {
-				item.UnixMode = 0666
+				edit.unixMode, edit.setUnixMode = 0666, true
 			}
 		}
 		for _, flag := range []struct {
@@ -662,16 +907,14 @@ func ShowAttributesWindowsWithPropertiesForTargets(
 		} {
 			switch flag.state {
 			case 2:
-				preserveWinAttrs |= flag.bit
+				edit.keepWinAttrs |= flag.bit
 			case 1:
-				item.WinAttrs |= flag.bit
-			default:
-				item.WinAttrs &^= flag.bit
+				edit.winAttrs |= flag.bit
 			}
 		}
 
 		vtui.RunAsync(func(ctx *vtui.TaskContext) {
-			err := setWindowsAttributesForTargets(ctx.Context, v, targets, item, preserveWinAttrs)
+			err := setWindowsAttributesForTargets(ctx.Context, v, targets, edit)
 			ctx.RunOnUI(func() {
 				if err != nil {
 					vtui.ShowMessage(" Error ", err.Error(), []string{"&Ok"})

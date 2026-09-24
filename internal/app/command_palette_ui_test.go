@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/unxed/f4/internal/testutil"
@@ -335,4 +336,83 @@ func assertCommandPaletteThemeCells(
 			t.Errorf("%s attr = %#x, want palette[%d] %#x", check.name, got, check.paletteIdx, want[check.paletteIdx])
 		}
 	}
+}
+
+func commandPaletteDetailTexts(dialog *commandPaletteDialog) []string {
+	texts := make([]string, 0, len(dialog.details))
+	for _, line := range dialog.details {
+		texts = append(texts, line.GetText())
+	}
+	return texts
+}
+
+// Discussion #144: a long command name, description or shortcut list was cut
+// at the edge of its column or of the description row, with no way to read
+// the rest. The rows under the table now carry whatever the table cut.
+func TestCommandPaletteDetailsShowWhatTheTableCutsOff(t *testing.T) {
+	label := "A command name far too long for the command column to show it whole"
+	shortcuts := "Ins, Shift+Down, Shift+End, Shift+Home, Shift+Left"
+	entries := []commandPaletteEntry{
+		{Key: "long", Label: label, Description: "Short description", Category: "Commands", Shortcut: shortcuts},
+		{Key: "short", Label: "Short", Description: "Only a description", Category: "Commands", Shortcut: "F1"},
+	}
+	dialog, _ := newCommandPaletteUITestDialog(t, 80, 25, entries, nil)
+	if dialog.detailRows != commandPaletteDetailRows {
+		t.Fatalf("80x25 palette shows %d detail rows, want %d", dialog.detailRows, commandPaletteDetailRows)
+	}
+	width := dialog.description.X2 - dialog.description.X1 + 1
+	texts := commandPaletteDetailTexts(dialog)
+	for row, text := range texts {
+		if vtui.StringWidth(text) > width {
+			t.Fatalf("detail row %d %q is wider than its %d cells", row, text, width)
+		}
+	}
+	joined := strings.Join(texts, " ")
+	shortcutTitle := dialog.table.Columns[2].Title
+	for _, want := range []string{label, "Short description", shortcutTitle + ": " + shortcuts} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("details %q do not contain %q", texts, want)
+		}
+	}
+	if strings.Contains(joined, dialog.table.Columns[1].Title+":") {
+		t.Fatalf("details %q repeat a category the table shows whole", texts)
+	}
+
+	if !dialog.ProcessKey(commandPaletteKey(vtinput.VK_DOWN)) {
+		t.Fatal("Down was not handled")
+	}
+	if got := commandPaletteDetailTexts(dialog); got[0] != "Only a description" || got[1] != "" || got[2] != "" {
+		t.Fatalf("details of an entry the table shows whole = %q, want the description alone", got)
+	}
+}
+
+func TestCommandPaletteDetailsMarkTextThatDoesNotFitTheirRows(t *testing.T) {
+	entries := []commandPaletteEntry{{
+		Key:         "huge",
+		Label:       strings.Repeat("Label ", 30),
+		Description: strings.Repeat("Description ", 20),
+		Shortcut:    "Ins, Shift+Down, Shift+End, Shift+Home, Shift+Left",
+	}}
+	dialog, _ := newCommandPaletteUITestDialog(t, 80, 25, entries, nil)
+	width := dialog.description.X2 - dialog.description.X1 + 1
+	texts := commandPaletteDetailTexts(dialog)
+	last := texts[len(texts)-1]
+	if !strings.HasSuffix(last, "…") || vtui.StringWidth(last) > width {
+		t.Fatalf("overflowing details end with %q, want an ellipsis within %d cells", last, width)
+	}
+}
+
+func TestCommandPaletteCompactDetailsCarryHiddenColumns(t *testing.T) {
+	entries := []commandPaletteEntry{{Key: "alpha", Label: "Alpha", Description: "First", Category: "Commands", Shortcut: "F1"}}
+	dialog, _ := newCommandPaletteUITestDialog(t, 80, 25, entries, nil)
+	dialog.ResizeConsole(40, 10)
+	if len(dialog.table.Columns) != 1 || dialog.detailRows != 1 {
+		t.Fatalf("40x10 palette columns=%d detail rows=%d, want 1 and 1", len(dialog.table.Columns), dialog.detailRows)
+	}
+	width := dialog.description.X2 - dialog.description.X1 + 1
+	text := dialog.description.GetText()
+	if !strings.HasPrefix(text, "First") || vtui.StringWidth(text) > width {
+		t.Fatalf("compact details = %q, want the description first within %d cells", text, width)
+	}
+	vtui.AssertLayout(t, dialog)
 }

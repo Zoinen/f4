@@ -13,7 +13,9 @@ import (
 // work the indexer posts back to the UI thread.
 func pumpUntil(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.NewTimer(5 * time.Second)
+	// Colorer-backed tests use the same helper and are substantially slower
+	// under the race detector, especially on the hosted macOS/Windows runners.
+	deadline := time.NewTimer(15 * time.Second)
 	defer deadline.Stop()
 	for !cond() {
 		select {

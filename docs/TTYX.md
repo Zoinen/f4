@@ -244,8 +244,14 @@ which lives in a map that does have a lock.
   there is no furniture.
 - **A picture is only as good as the guess about where the grid is.** See
   section 3 for what is measured and what is not.
-- **The identification runs once, at the first picture.** A session that is
-  detached and reattached elsewhere keeps pointing at the old window.
+- **A reattach from another window moves the keys, not the pictures.** The
+  daemon identifies the window again for every client that attaches, by that
+  client's pid and its `DISPLAY` and `WINDOWID` (issue #980: until then the
+  grabs stayed on the window of the first attach, and `Ctrl+Shift+P` in a new
+  GNOME Terminal window arrived as `Ctrl+P`). The same window keeps its
+  session. A different one replaces it and closes the old, but the picture
+  overlay installed for the old session is not rebuilt, so pictures stop
+  being drawn until f4 is restarted. `XAUTHORITY` is still the daemon's own.
 
 ## 6. The clipboard lives in goclip, and did not work
 
@@ -305,6 +311,21 @@ KeyList=Ctrl+Shift+Up, Ctrl+Enter, Ctrl+Tab
 found a setting does not work, and far2l asks nobody either. The setting is the
 way out for whoever disagrees about which combinations are worth taking.
 
+`KeyList` defaults to `config.DefaultTTYXKeyList`: the Ctrl+Shift arrows, the
+Enter and Tab chords, `Alt+Shift+F3`/`F4`, and `Ctrl+Shift+P`. The last one is
+the command palette. Shift over a bare letter does not change the control byte
+a TTY sends, so `Ctrl+Shift+P` reaches f4 as `Ctrl+P` — the passive-panel
+command — on any terminal without an extended keyboard protocol. vtinput asks
+for three of them at startup (Kitty, win32-input-mode, far2l); VTE answers
+none, which is why the palette could not be opened by its own documented chord
+in GNOME Terminal (issue #980). Taking the key from the X server is the only
+route to the real chord there.
+
+This is an X11 route and nothing else. Under Wayland the terminal is a Wayland
+client, `ttyx.Open` does not find a window for it, and the grab never happens:
+`Ctrl+Alt+P` remains the fallback there, as it does wherever there is no
+graphical session at all.
+
 ### Why a grab, and why only while focused
 
 A grab is shared state on the X server, and this uses one deliberately, for two
@@ -352,8 +373,10 @@ What to look for, in the order it happens:
   `_NET_WM_PID` matched, so everything stands down on purpose. This is what a
   detached session looks like from the inside: the process that owns the
   window is not an ancestor of the process asking.
-- `window N found through ...` — the identification worked, with which method
-  and what the geometry is.
+- `window N on DISPLAY found through ...` — the identification worked, with
+  which method and what the geometry is. In a daemon it is repeated for every
+  attach, followed by `client P is in window N, the same as before` or
+  `client P is not in window N; that session is closed`.
 - `TIOCGWINSZ -> text area WxH`, or failing that `CSI 16 t -> cell ...,
   CSI 14 t -> text area ...` — how the terminal was measured. All of them
   failing means the picture is placed by treating the window as the grid,

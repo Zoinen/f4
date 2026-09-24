@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/unxed/f4/internal/i18n"
 	"github.com/unxed/f4/internal/testutil"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
@@ -78,9 +79,17 @@ func TestHelpSearchRendersHighlightAndHint(t *testing.T) {
 	x1, y1, _, y2 := view.GetPosition()
 	titleAttr := scr.GetCell((view.X1+view.X2)/2, y1).Attributes
 	titleBackground := vtui.GetRGBBack(titleAttr)
-	RenderHelpSearch(scr)
+	RenderHelpFrame(scr, view)
 
 	matchCell := scr.GetCell(x1+2+len("before "), y1+1)
+	// The highlight has to sit on the match itself, not one column left of
+	// it where it overwrote the space before the word (#378).
+	if got := testutil.Rune(matchCell.Char); got != 'N' {
+		t.Fatalf("highlight starts on %q, want the match's 'N'", got)
+	}
+	if got := testutil.Rune(scr.GetCell(x1+1+len("before "), y1+1).Char); got != ' ' {
+		t.Fatalf("cell before the match = %q, want the text's space left alone", got)
+	}
 	if got, want := vtui.GetRGBFore(matchCell.Attributes), uint32(0xFFFF00); got != want {
 		t.Fatalf("current match foreground = %#x, want yellow %#x", got, want)
 	}
@@ -230,7 +239,7 @@ func TestHelpSearchHighlightsAllVisibleMatches(t *testing.T) {
 		HandleHelpSearchHotkey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, Char: r})
 	}
 	view.Show(scr)
-	RenderHelpSearch(scr)
+	RenderHelpFrame(scr, view)
 	x1, y1, _, _ := view.GetPosition()
 	first := scr.GetCell(x1+2, y1+1)
 	second := scr.GetCell(x1+2+len("needle and "), y1+1)
@@ -264,7 +273,7 @@ func TestHelpSearchHighlightFollowsManualScrolling(t *testing.T) {
 
 	wrapped.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_NEXT})
 	wrapped.Show(scr)
-	RenderHelpSearch(scr)
+	RenderHelpFrame(scr, wrapped)
 
 	scrollTop, ok := helpViewScrollTop(wrapped)
 	if !ok || scrollTop == 0 {
@@ -296,7 +305,7 @@ func TestHelpSearchReadsScrollPositionFromEmbeddedHelpView(t *testing.T) {
 func TestHelpShowsZoomButtonAndRestoresPreviousBounds(t *testing.T) {
 	view, scr := newSearchableHelpForTestAtSize(t, 80, 40, []string{"Help text"})
 	view.Show(scr)
-	RenderHelpSearch(scr)
+	RenderHelpFrame(scr, view)
 	if !view.ShowZoom {
 		t.Fatal("Help zoom support was not enabled")
 	}
@@ -311,8 +320,8 @@ func TestHelpShowsZoomButtonAndRestoresPreviousBounds(t *testing.T) {
 		t.Fatal("zoom button click was not handled")
 	}
 	maxX1, maxY1, maxX2, maxY2 := view.GetPosition()
-	if maxX1 != 0 || maxY1 != 0 || maxX2 != 79 || maxY2 != 37 || currentHelpZoom == nil {
-		t.Fatalf("zoomed Help bounds=(%d,%d)-(%d,%d), zoom state=%v, want (0,0)-(79,37)", maxX1, maxY1, maxX2, maxY2, currentHelpZoom)
+	if maxX1 != 0 || maxY1 != 0 || maxX2 != 79 || maxY2 != 36 || currentHelpZoom == nil {
+		t.Fatalf("zoomed Help bounds=(%d,%d)-(%d,%d), zoom state=%v, want (0,0)-(79,36)", maxX1, maxY1, maxX2, maxY2, currentHelpZoom)
 	}
 	_, _, zoomedX2, _ := view.GetPosition()
 	if !HandleHelpSearchHotkey(&vtinput.InputEvent{
@@ -324,5 +333,106 @@ func TestHelpShowsZoomButtonAndRestoresPreviousBounds(t *testing.T) {
 	gotX1, gotY1, gotX2, gotY2 := view.GetPosition()
 	if gotX1 != x1 || gotY1 != y1 || gotX2 != x2 || gotY2 != y2 || currentHelpZoom != nil {
 		t.Fatalf("restored bounds=(%d,%d)-(%d,%d), want (%d,%d)-(%d,%d)", gotX1, gotY1, gotX2, gotY2, x1, y1, x2, y2)
+	}
+}
+
+// helpBottomBorder returns the text on a Help window's bottom border.
+func helpBottomBorder(scr *vtui.ScreenBuf, frame vtui.Frame) string {
+	x1, _, x2, y2 := frame.GetPosition()
+	var b strings.Builder
+	for x := x1; x <= x2; x++ {
+		b.WriteRune(testutil.Rune(scr.GetCell(x, y2).Char))
+	}
+	return b.String()
+}
+
+// The hint must not advertise keys that do nothing right now: Next/Previous
+// act only on the matches of a query, and Back only with a topic to return to
+// (#378).
+func TestHelpHintListsOnlyKeysThatAct(t *testing.T) {
+	view, scr := newSearchableHelpForTest(t, []string{"one needle"})
+	vtui.GlobalHelpEngine.AddTopic(&vtui.HelpTopic{Name: "Nested", Lines: []string{"nested needle"}})
+	results := i18n.Msg("Help.Hint.Results")
+	back := i18n.Msg("Help.Hint.Back")
+	search := i18n.Msg("Help.Hint.Search")
+
+	view.Show(scr)
+	RenderHelpFrame(scr, view)
+	if hint := helpBottomBorder(scr, view); !strings.Contains(hint, search) || strings.Contains(hint, results) || strings.Contains(hint, back) {
+		t.Fatalf("root topic without a query shows %q, want only %q", hint, search)
+	}
+
+	view.SwitchTopic("Nested")
+	view.Show(scr)
+	RenderHelpFrame(scr, view)
+	if hint := helpBottomBorder(scr, view); !strings.Contains(hint, back) || strings.Contains(hint, results) {
+		t.Fatalf("nested topic without a query shows %q, want %q and %q", hint, search, back)
+	}
+
+	for _, r := range "needle" {
+		HandleHelpSearchHotkey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, Char: r})
+	}
+	view.Show(scr)
+	RenderHelpFrame(scr, view)
+	if hint := helpBottomBorder(scr, view); !strings.Contains(hint, results) || strings.Contains(hint, back) {
+		t.Fatalf("query with matches shows %q, want %q", hint, results)
+	}
+
+	HandleHelpSearchHotkey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, Char: 'x'})
+	view.Show(scr)
+	RenderHelpFrame(scr, view)
+	if hint := helpBottomBorder(scr, view); strings.Contains(hint, results) || strings.Contains(hint, back) {
+		t.Fatalf("query without matches shows %q, want neither %q nor %q", hint, results, back)
+	}
+}
+
+// Going back to the previous topic must not keep matches from the topic left
+// behind; vtui now renames the window on Backspace, and the search follows it.
+func TestHelpSearchDropsMatchesOfTheTopicLeftBehind(t *testing.T) {
+	view, scr := newSearchableHelpForTest(t, []string{"root text"})
+	vtui.GlobalHelpEngine.AddTopic(&vtui.HelpTopic{Name: "Nested", Lines: []string{"nested needle"}})
+	view.SwitchTopic("Nested")
+	for _, r := range "needle" {
+		HandleHelpSearchHotkey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, Char: r})
+	}
+	if CurrentHelpSearch == nil || len(CurrentHelpSearch.Matches) != 1 {
+		t.Fatalf("search in Nested = %#v, want one match", CurrentHelpSearch)
+	}
+	view.PopTopic()
+	view.Show(scr)
+	RenderHelpFrame(scr, view)
+	if CurrentHelpSearch != nil {
+		t.Fatalf("search of the topic left behind survived going back: %#v", CurrentHelpSearch)
+	}
+}
+
+// A frame pushed over Help, such as the screen grabber opened with Alt+Ins,
+// used to wipe the hint and the search: both were painted over the finished
+// screen and only while Help was on top (#378). Painted with the Help frame,
+// they stay, and the search is dropped only once Help is no longer drawn.
+func TestHelpDecorationsSurviveAFrameAbove(t *testing.T) {
+	view, scr := newSearchableHelpForTest(t, []string{"one needle"})
+	for _, r := range "needle" {
+		HandleHelpSearchHotkey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, Char: r})
+	}
+	above := vtui.NewDialog(0, 0, 10, 3, "Above")
+	vtui.FrameManager.Push(above)
+	t.Cleanup(func() { vtui.FrameManager.Pop() })
+
+	view.Show(scr)
+	RenderHelpFrame(scr, view)
+	RenderHelpFrame(scr, above)
+	FinishHelpRender()
+	if hint := helpBottomBorder(scr, view); !strings.Contains(hint, i18n.Msg("Help.Hint.Results")) {
+		t.Fatalf("Help under another frame shows %q on its border, want the results hint", hint)
+	}
+	if CurrentHelpSearch == nil || string(CurrentHelpSearch.Query) != "needle" {
+		t.Fatalf("search after a pass with a frame above Help = %#v, want the needle query kept", CurrentHelpSearch)
+	}
+
+	// A pass that did not draw this Help window: it is gone.
+	FinishHelpRender()
+	if CurrentHelpSearch != nil {
+		t.Fatal("search state outlived its Help window")
 	}
 }

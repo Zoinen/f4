@@ -79,9 +79,8 @@ func (c *settingsCenter) refreshChoiceHelp() {
 			// terminal widths where there is no separate right-hand pane.
 			menu := combo.Menu
 			width := min(menu.X2-menu.X1+1, c.page.X2-c.page.X1+1)
-			height := min(menu.Y2-menu.Y1+1, c.page.Y2-c.page.Y1+1)
 			x := max(c.page.X1, min(menu.X1, c.page.X2-width+1))
-			y := max(c.page.Y1, min(menu.Y1, c.page.Y2-height+1))
+			y, height := settingsDropdownRows(combo.Y1, menu.Y2-menu.Y1+1, c.page.Y1, c.page.Y2)
 			menu.SetPosition(x, y, x+width-1, y+height-1)
 			index := combo.Menu.SelectPos
 			if index >= 0 && index < len(row.field.Choices) {
@@ -113,4 +112,34 @@ func (c *settingsCenter) refreshChoiceHelp() {
 			}
 		}
 	}
+}
+
+// settingsDropdownRows places an open dropdown inside the content pane's rows
+// top..bottom and returns its first row and height. The dropdown never covers
+// the row of its own field: ComboBox.Open hands the press on the arrow over to
+// the menu, and the release then confirms whichever item lies under the
+// pointer. A menu pulled up over the arrow therefore picked an item and closed
+// the moment the button was let go (#1156).
+//
+// The order follows ComboBox.Open: below the field, then above it. When the
+// whole list fits on neither side it is shortened to the roomier one, as long
+// as that side still shows an item between the borders. A pane too short for
+// that on both sides lets the list spill out below the field rather than put
+// it over the field.
+func settingsDropdownRows(fieldY, height, top, bottom int) (int, int) {
+	below, above := bottom-fieldY, fieldY-top
+	switch {
+	case height <= below:
+		return fieldY + 1, height
+	case height <= above:
+		return fieldY - height, height
+	}
+	shortest := min(height, 3)
+	switch {
+	case below >= above && below >= shortest:
+		return fieldY + 1, below
+	case above > below && above >= shortest:
+		return fieldY - above, above
+	}
+	return fieldY + 1, height
 }

@@ -52,6 +52,7 @@ var farKeyNames = map[uint16]string{
 	vtinput.VK_MULTIPLY: "Multiply",
 	vtinput.VK_ADD:      "Add",
 	vtinput.VK_SUBTRACT: "Subtract",
+	vtinput.VK_NUMPAD5:  "Num5",
 	vtinput.VK_DECIMAL:  "Decimal",
 	vtinput.VK_DIVIDE:   "Divide",
 }
@@ -70,6 +71,12 @@ func EventToFarString(e *vtinput.InputEvent) string {
 	}
 
 	vk := e.VirtualKeyCode
+	// Bare keypad 5 is the Far viewer shortcut with either Num Lock state.
+	// Preserve modified Clear for the existing Ctrl+Clear panel-layout command.
+	if vk == vtinput.VK_CLEAR && mods&(vtinput.LeftCtrlPressed|vtinput.LeftAltPressed|vtinput.ShiftPressed) == 0 {
+		sb.WriteString("Num5")
+		return sb.String()
+	}
 	// Windows marks the numeric-keypad Enter as enhanced, while the main
 	// keyboard Enter is not enhanced. Delete is the opposite: the navigation
 	// cluster key is enhanced and the keypad decimal/delete key is not.
@@ -272,9 +279,9 @@ func ParseFarKey(s string) *vtinput.InputEvent {
 				e.VirtualKeyCode = vtinput.VK_OEM_PERIOD
 			case ',':
 				e.VirtualKeyCode = vtinput.VK_OEM_COMMA
-			case '-':
+			case '-', '_':
 				e.VirtualKeyCode = vtinput.VK_OEM_MINUS
-			case '=':
+			case '=', '+':
 				e.VirtualKeyCode = vtinput.VK_OEM_PLUS
 			case '/':
 				e.VirtualKeyCode = vtinput.VK_OEM_2

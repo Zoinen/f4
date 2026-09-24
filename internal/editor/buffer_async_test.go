@@ -277,6 +277,25 @@ func TestAsyncBuffer_ConcurrentAccess(t *testing.T) {
 		t.Fatal("Concurrency test timed out")
 	}
 }
+
+// blockingReadAt holds ReadAt until release is closed, and reports on entered
+// that a read has started, so a test can act while a read is known to be in
+// flight. The read itself goes to the file with a live context: what is under
+// test is what the buffer does with data that arrives after cancellation, not
+// how the file reacts to a cancelled read.
+type blockingReadAt struct {
+	vfs.ReadAtCloser
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (b *blockingReadAt) ReadAt(_ context.Context, p []byte, off int64) (int, error) {
+	b.once.Do(func() { close(b.entered) })
+	<-b.release
+	return b.ReadAtCloser.ReadAt(context.Background(), p, off)
+}
+
 func TestAsyncBuffer_CancellationMidFetch(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 
@@ -290,9 +309,10 @@ func TestAsyncBuffer_CancellationMidFetch(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = f.Close() }()
+	file := &blockingReadAt{ReadAtCloser: f, entered: make(chan struct{}), release: make(chan struct{})}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	buf := NewAsyncBuffer(ctx, f)
+	buf := NewAsyncBuffer(ctx, file)
 	buf.ChunkSize = 100
 	defer buf.Close()
 
@@ -302,17 +322,37 @@ func TestAsyncBuffer_CancellationMidFetch(t *testing.T) {
 		t.Fatal("Expected ErrLoading")
 	}
 
-	// 2. Cancel context while fetch is (presumably) in flight
+	// 2. Cancel while the fetch is in flight. The test used to cancel right
+	// after Read and presume the read had not finished; on a small file the
+	// fetch goroutine could read and store the chunk first, and the test
+	// failed on a buffer that had done nothing wrong. The read is held here
+	// until after the cancellation instead.
+	select {
+	case <-file.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the fetch did not start")
+	}
 	cancel()
+	close(file.release)
 
-	// 3. Pump tasks - the fetch result should be ignored because of b.ctx.Err()
-	deadline := time.Now().Add(200 * time.Millisecond)
-	for time.Now().Before(deadline) {
+	// 3. Wait for the fetch to finish, pumping the redraw it posts. The chunk
+	// leaves fetching under the same lock that decides whether it is kept.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		buf.mu.Lock()
+		inFlight := len(buf.fetching) > 0
+		buf.mu.Unlock()
+		if !inFlight {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the fetch did not finish")
+		}
 		select {
 		case task := <-vtui.FrameManager.TaskChan:
 			task()
 		default:
-			time.Sleep(5 * time.Millisecond)
+			time.Sleep(time.Millisecond)
 		}
 	}
 
@@ -323,6 +363,7 @@ func TestAsyncBuffer_CancellationMidFetch(t *testing.T) {
 	}
 	buf.mu.Unlock()
 }
+
 func TestAsyncBuffer_RedundantFetchPrevention(t *testing.T) {
 	// Tests that the 'fetching' map correctly prevents multiple goroutines
 	// for the same chunk index.

@@ -6,6 +6,14 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"hash/fnv"
+	"io"
+	"runtime"
+	"strings"
+	"sync"
+	"time"
+	"unicode/utf8"
+
 	"github.com/mattn/go-runewidth"
 	"github.com/unxed/f4/internal/config"
 	"github.com/unxed/f4/internal/fileops"
@@ -20,16 +28,10 @@ import (
 	"github.com/unxed/f4/sdk/extui"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
-	"github.com/unxed/vtui"
-	xdraw "golang.org/x/image/draw"
 	"image"
 	"image/png"
-	"io"
-	"runtime"
-	"strings"
-	"sync"
-	"time"
-	"unicode/utf8"
+	"github.com/unxed/vtui"
+	xdraw "golang.org/x/image/draw"
 )
 
 // QuickViewPanel is far2l's Ctrl+Q quick-view panel. It mirrors the
@@ -95,10 +97,15 @@ type QuickViewPanel struct {
 	scanDoneCh      chan struct{}
 
 	// Display state driven by the keyboard while the panel is focused.
-	Wrap             bool
-	ScrollY          int
-	scrollX          int
-	hexMode          bool
+	Wrap    bool
+	ScrollY int
+	scrollX int
+	hexMode bool
+	// colorizer colours the text shown, started for colorizerKey; see
+	// syntaxColors.
+	colorizer        viewer.TextColorizer
+	colorizerKey     quickViewColorKey
+	colorizerStarted bool
 	lastSearch       string
 	lastSearchSource int
 	codepages        map[quickViewSelectionKey]int
@@ -666,6 +673,14 @@ func (q *QuickViewPanel) Show(scr *vtui.ScreenBuf) {
 		y++
 	}
 
+	writeColored := func(s string, runeStart int, attrs []uint64) {
+		if y > maxY {
+			return
+		}
+		scr.Write(q.X1+1, y, quickViewColoredCells(s, runeStart, attrs, attr, innerW))
+		y++
+	}
+
 	selection, ok := q.prepareSelection()
 	if !ok {
 		writeLine(" " + i18n.Msg("QuickView.NoSelection"))
@@ -677,7 +692,7 @@ func (q *QuickViewPanel) Show(scr *vtui.ScreenBuf) {
 		q.renderDir(item, writeLine)
 		return
 	}
-	q.renderFile(item, innerW, writeLine, attr, scr)
+	q.renderFile(item, innerW, writeLine, writeColored, attr, scr)
 
 	// Vertical scrollbar over the right border. Repaints column X2
 	// with scrollbar glyphs, so if a wide content line ever bled
@@ -863,6 +878,7 @@ func (q *QuickViewPanel) cancelScan() {
 // Ctrl+L replacing it, etc.), so the scan goroutine doesn't outlive
 // the panel it's populating.
 func (q *QuickViewPanel) Close() {
+	q.closeColorizer()
 	q.cancelScan()
 	q.cancelFilePreview()
 	q.imageLoadGen++
@@ -896,7 +912,7 @@ func (q *QuickViewPanel) ensureDisplayLayout(innerW int) {
 	q.ScrollY = max(0, min(q.ScrollY, maxScroll))
 }
 
-func (q *QuickViewPanel) renderFile(item *FileEntry, innerW int, writeLine func(string), attr uint64, scr *vtui.ScreenBuf) {
+func (q *QuickViewPanel) renderFile(item *FileEntry, innerW int, writeLine func(string), writeColored func(string, int, []uint64), attr uint64, scr *vtui.ScreenBuf) {
 	if q.cacheReadErr != nil {
 		writeLine(" " + i18n.Msg("QuickView.ReadError") + ": " + q.cacheReadErr.Error())
 		return
@@ -933,13 +949,118 @@ func (q *QuickViewPanel) renderFile(item *FileEntry, innerW int, writeLine func(
 	if end > len(q.displayLines) {
 		end = len(q.displayLines)
 	}
+	colors := q.syntaxColors(attr)
 	for i := q.ScrollY; i < end; i++ {
 		line := q.displayLines[i]
+		skipped := 0
 		if !q.Wrap && q.scrollX > 0 {
-			line = trimLeftCells(line, q.scrollX)
+			trimmed := trimLeftCells(line, q.scrollX)
+			skipped = len(line) - len(trimmed)
+			line = trimmed
+		}
+		if colors != nil && i < len(q.displayToSource) {
+			if attrs := colors.LineAttrs(q.displayToSource[i]); attrs != nil {
+				writeColored(line, q.displayRuneOffset(i)+utf8.RuneCountInString(q.displayLines[i][:skipped]), attrs)
+				continue
+			}
 		}
 		writeLine(line)
 	}
+}
+
+// quickViewColorKey identifies the text a colorizer was started for.
+type quickViewColorKey struct {
+	path     string
+	codepage int
+	lines    int
+	sum      uint64
+}
+
+// syntaxColors is the colorizer for the text the quick view shows: started
+// when the text changes, stopped when it goes away or is not text.
+func (q *QuickViewPanel) syntaxColors(base uint64) viewer.TextColorizer {
+	if viewer.NewTextColorizer == nil || q.hexMode || q.cacheBinary || q.cacheImage || q.cacheLabel != "" || len(q.cacheLines) == 0 {
+		q.closeColorizer()
+		return nil
+	}
+	h := fnv.New64a()
+	for _, line := range q.cacheLines {
+		_, _ = h.Write([]byte(line))
+		_, _ = h.Write([]byte{'\n'})
+	}
+	key := quickViewColorKey{path: q.cachePath, codepage: q.cacheCodepage, lines: len(q.cacheLines), sum: h.Sum64()}
+	if !q.colorizerStarted || q.colorizerKey != key {
+		q.closeColorizer()
+		q.colorizer = viewer.NewTextColorizer(q.cachePath, q.cacheLines, base, true, func() {
+			if vtui.FrameManager != nil {
+				vtui.FrameManager.Redraw()
+			}
+		})
+		q.colorizerKey, q.colorizerStarted = key, true
+	}
+	return q.colorizer
+}
+
+func (q *QuickViewPanel) closeColorizer() {
+	if q.colorizer != nil {
+		q.colorizer.Close()
+	}
+	q.colorizer = nil
+	q.colorizerStarted = false
+}
+
+// displayRuneOffset is where display line i starts within its source line, in
+// runes: wrapping cuts a source line into consecutive display lines.
+func (q *QuickViewPanel) displayRuneOffset(i int) int {
+	if !q.Wrap || i >= len(q.displayToSource) {
+		return 0
+	}
+	n := 0
+	for j := i - 1; j >= 0 && q.displayToSource[j] == q.displayToSource[i]; j-- {
+		n += utf8.RuneCountInString(q.displayLines[j])
+	}
+	return n
+}
+
+// quickViewColoredCells lays out a display line whose runes, from runeStart
+// on, take their colours from attrs, runes past attrs taking base. Runs of
+// one colour are laid out together, so a character and its combining marks
+// stay one cell. The row is cut to width with an ellipsis and padded, as
+// Show's plain rows are.
+func quickViewColoredCells(line string, runeStart int, attrs []uint64, base uint64, width int) []vtui.CharInfo {
+	var cells []vtui.CharInfo
+	runeIdx := runeStart
+	runStart, runAttr := 0, uint64(0)
+	flush := func(end int) {
+		if end > runStart {
+			cells = append(cells, vtui.StringToCharInfo(line[runStart:end], runAttr)...)
+		}
+		runStart = end
+	}
+	for i := range line {
+		a := base
+		if runeIdx >= 0 && runeIdx < len(attrs) {
+			a = attrs[runeIdx]
+		}
+		if i == 0 {
+			runAttr = a
+		} else if a != runAttr {
+			flush(i)
+			runAttr = a
+		}
+		runeIdx++
+	}
+	flush(len(line))
+	if len(cells) > width {
+		cells = append(cells[:max(width-1, 0)], vtui.StringToCharInfo("…", base)...)
+		if len(cells) > width {
+			cells = cells[:width]
+		}
+	}
+	for len(cells) < width {
+		cells = append(cells, vtui.CharInfo{Char: ' ', Attributes: base})
+	}
+	return cells
 }
 func (q *QuickViewPanel) renderImage(innerW int, writeLine func(string), attr uint64, scr *vtui.ScreenBuf) {
 	if q.imageSurf == nil || !q.imageSurf.Valid() {

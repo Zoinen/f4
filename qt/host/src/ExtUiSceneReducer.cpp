@@ -582,6 +582,13 @@ bool validPanelCatalogEnvelope(const QVariantMap &message,
                         != QMetaType::Bool)
                 || entry.value(QStringLiteral("isImage")).metaType().id()
                     != QMetaType::Bool
+                || (entry.contains(QStringLiteral("thumbnailKind"))
+                    && (entry.value(QStringLiteral("thumbnailKind"))
+                            .metaType().id() != QMetaType::QString
+                        || (entry.value(QStringLiteral("thumbnailKind"))
+                                .toString() != QStringLiteral("image")
+                            && entry.value(QStringLiteral("thumbnailKind"))
+                                .toString() != QStringLiteral("video"))))
                 || entry.value(QStringLiteral("selected")).metaType().id()
                     != QMetaType::Bool
                 || (entry.contains(QStringLiteral("highlightStyleId"))

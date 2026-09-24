@@ -200,291 +200,268 @@ queues immutable line snapshots and consumes posted results
 line order is its state, so concurrent calls are wrong by construction, and
 one owner gives cancellation a single well-defined home.
 
----
-
-## 4. Approaches that were tried or considered and dropped
-
-**Build a state chain for Colorer by walking the file.** Shipped, then
-removed. See 3.1. It cannot work: there is no state to chain, and the walk
-damages the session.
-
-**Deep-rewind escape hatch.** When a rewind was too deep, `resync` did
-`Reset(); parsedIdx = upTo; return`, leaving the session with no context and
-its internal line numbering divorced from the document. Together with the
-walker this is what produced "a file opened in the middle never gets colours".
-Replaced by the anchor.
-
-**Serialize the Colorer parser state.** The state is a stack of schemas in
-libcolorer's `TextParser` cache. Making it serializable is a change to
-libcolorer itself, not to the Go binding. Snapshotting the wasm linear memory
-instead would mean tens of megabytes per snapshot. Not pursued.
-
-**A second Colorer session for the walker.** Doubles the wasm memory and still
-provides no way to move state from one session to the other.
-
-**Filling the Chroma chain gap with nil states after a jump** (re-anchor the
-chain heuristically instead of walking). Rejected in favour of checkpoints
-(item 7): the nil-gap version permanently mis-states everything above the
-anchor, and the checkpoints give exact colours for the price of a bounded
-replay. It stays the fallback if checkpoints prove too expensive.
-
-**A background goroutine instead of time-sliced UI tasks.** See 3.6.
-
----
-
-## 5. Invariants
-
-Breaking any of these produces silent, hard-to-trace mis-colouring.
-
-1. `ch.parsedIdx - ch.anchor` is the session's own line number. Lines are fed
-   in order, one at a time, starting at the anchor. Never feed a line out of
-   order; never assume the session can go back.
-2. Any move backwards, and any forward jump beyond `hlColorerForward`, is a
-   reset. There is no third option.
-3. `ev.lineStates` is dense from line 0 and `lineStates[i]` is the state
-   *after* line `i`. It belongs to Chroma-style highlighters only.
-4. Nothing calls `ev.highlighter.Highlight` for a Colorer with a live session.
-   The render path uses `HighlightLine`; the walker refuses to run.
-5. All highlighter text comes from `lineTextForHighlight`.
-6. A slice of background work must be bounded by wall clock, not by a line
-   count: one line of Colorer and one line of Chroma differ by two orders of
-   magnitude.
-7. The line indexer outranks the highlighter. If both want the UI thread, the
-   index wins — it is what the scroll bar and every jump are waiting for.
-
----
-
-## 6. Work queue
-
-Each item is one commit. Do them in order unless a measurement says otherwise;
-do not start the next one before the previous is verified. Every item lists
-where to look, what "done" means, and what not to touch.
-
-### Item 1 — show the file while the saved position is still being indexed
-
-*Problem.* Opening the reference file leaves the editor blank for several
-seconds. `DisplayObject` (`editor_view.go`, the `if ev.targetLine != -1` guard
-near the top) fills the text area with spaces and returns. `targetLine` is set
-in `actions.go` when a saved state exists for the file, and cleared by the
-indexer once it reaches that line — or by any key that moves the cursor.
-
-*Why it is there.* Painting from the top and then jumping when the restore
-lands reads as a flicker. That reasoning holds for a small file, where the wait
-is a few frames. It does not survive a wait of seconds.
-
-*What to do.* Time-box the blank. Record the moment the editor was created
-(or the moment `targetLine` was set) and keep the blank only for
-`restoreBlankGrace` — start with 250 ms. After that, draw the document
-normally while the restore is still pending; the jump, when it lands, is one
-frame and strictly better than an empty window.
-
-*Notes.* While `targetLine != -1` the restore path controls the scroll
-position, so the document renders from the top; do not change that. Do not
-remove the restore, do not touch `ProcessKey`'s rule about abandoning it.
-
-*Acceptance.* Opening the reference file shows the top of the file within a
-frame or two, still uncoloured or partly coloured, and jumps to the saved
-position when the index reaches it. `editor_target_line_test.go` still passes.
-
-*Test.* With `targetLine` set and the grace period pushed into the past, one
-`ev.Show(scr)` must leave non-blank cells in the text area (`scr.GetCell`);
-with the grace period still running, it must not.
-
-### Item 2 — delete the dead Colorer state-chain code
-
-Nothing calls it any more; it exists only to confuse the next reader and to be
-accidentally reachable.
-
-*Remove from `colorer_plugin.go`:* `ch.lines`, `resync`, `colorerNeedsRewind`,
-`colorerLineIndex`, and the body of the `Highlight` shim that uses them. Keep
-`Highlight` itself: it is still the `vtui.Highlighter` entry point, and it must
-keep working while the session is loading (`starting` → nil) and while a
-fallback engine is in place. With a live session it should now delegate
-nothing and return nil — `HighlightLine` is the way in.
-
-*Also remove* the tests that only covered the deleted helpers
-(`TestColorer_LineIndexComesFromTheEditorState`,
-`TestColorer_RewindsOnlyWhenTheParserIsAhead` in `colorer_plugin_test.go`).
-Keep the fallback tests.
-
-*Acceptance.* `go build ./... && go test .` unchanged, and `ch` no longer holds
-a copy of the document.
-
-### Item 3 — bound the attribute cache
-
-`maxCachedAttrLines` (5 000 000) and `attrCacheKeepWindow` (1 000 000) in
-`colorer_plugin.go` are effectively no limit: colours are kept for every line
-ever drawn, each as a `[]uint64` the width of the line. Scrolling through the
-reference file accumulates hundreds of megabytes.
-
-*What to do.* Shrink them to a window around the viewport — start with 20 000
-and 5 000 — and check `storeAttrs`'s eviction actually keeps the map near that
-size. Keep the existing exception that protects the first lines of the file, so
-`Ctrl+Home` stays instant.
-
-*Cost to expect.* A line evicted from the cache and then scrolled back to is a
-miss, and a miss above the parse position is a re-anchor. That is the designed
-behaviour; the window only has to be larger than a screen by a comfortable
-margin.
-
-*Acceptance.* `TestColorer_AttrCacheIsBounded` extended to push past the new
-limit and assert the map stays bounded.
-
-### Item 4 — bound the session on a long forward scroll — superseded by item 9
-
-Re-anchoring resets the session, which is what releases the wasm line vector
-and the parse cache. One case never re-anchors: scrolling straight down, which
-feeds the session forward for as long as the user holds `PgDn`.
-
-*Resolution.* The forced-re-anchor counter proposed here was never needed:
-item 9's upstream `colorer_forget_before` landed and is wired in as
-`session.ForgetBefore`, driven by `colorerForgetPlan` in the worker — every
-`hlColorerForgetEvery` (1000) lines fed, the session drops everything more
-than `hlColorerKeepBehind` (300) lines behind the parse position. A long
-forward scroll stays bounded without ever paying a reset's loss of context.
-
-### Item 5 — cheaper editing in a large file
-
-Typing at line 500 000 currently throws the session away on every keystroke
-(item 3.4), so the next frame re-anchors: roughly `hlColorerContext` lines of
-parsing per character. In a file small enough to be reached from line 0 this
-does not arise.
-
-*Measure first.* Type a line into the reference file and see whether it is
-felt. If it is: the fix is a smaller anchor while an edit is in flight, not a
-different design. Do not reintroduce a state chain.
-
-### Item 6 — progress feedback
-
-While a viewport is uncoloured and the walker is behind it, the user has no
-way to tell work from breakage. Show it in the top bar
-(`EditorView.topBar`, right-hand side, next to the codepage and cursor
-position) — a percentage while `ev.highlighting` is true and the walker is
-behind the viewport, nothing otherwise. Colorer has no walker and needs no
-indicator.
-
-### Item 7 — checkpoints for Chroma-style highlighters
-
-`ev.lineStates` holds one `any` per line for the whole document, and after a
-jump the walker still has to reach the viewport from wherever it stands.
-
-*What to do.* Keep a checkpoint every `Step` (start with 1000) lines —
-`checkpoints[k]` is the state entering line `k*Step`, `checkpoints[0]` is nil —
-plus a dense window around the viewport. Drawing line L takes the nearest
-checkpoint at or below L and replays at most `Step` lines. `invalidateStates`
-maps onto checkpoint granularity: drop checkpoints above `fromLine/Step`.
-
-*Why this and not a heuristic re-anchor.* See section 4. Correct colours for a
-bounded replay.
-
-*Prerequisite.* Only start this after items 1-3; it touches the same render
-path.
-
-### Item 8 — state-only fast path for the walker
-
-The walker calls `Highlight` and throws the attribute slice away — one
-allocation per line for nothing. If a highlighter also offers something like
-`HighlightState(line string, prev any) any`, discover it with a type assertion
-and use it. Chroma-side support lives in vtui, so this may become an upstream
-change there.
-
-### Item 9 — colorer4go: trim the session window — done
-
-Upstream, in `github.com/unxed/colorer4go`. The wrapper only appends; a
-`colorer_forget_before(lno)` (or a ring buffer in `WasmLineSource`) would let
-the session drop lines the editor will never ask about again, which makes item
-4 unnecessary and removes the only reason a long scroll ever resets. Do
-**not** ask for state snapshots — see section 4.
-
-*Resolution.* Delivered as `Session.ForgetBefore`; the worker calls it every
-`hlColorerForgetEvery` lines through `colorerForgetPlan` (see item 4). A
-session that answers `ForgetBefore` with an error keeps the old
-grow-until-reset behaviour for that session only.
-
----
-
-## 7. How to build and test
-
-    go build ./...
-    go vet .
-
-Targeted, while working in this area:
-
-    go test -run 'Colorer|Highlight|State|Editor_' .
-
-Whole package before sending a patch:
-
-    go test .
-
-Two failures are expected in a container and unrelated to this work:
-`TestExecuteFileOp_Move_PermissionDenied_Recovery` (runs as root, so the
-permission it wants to be denied is granted) and `TestUpdateFailureMessageRepro`
-(wants the network). Verify against a clean checkout before blaming a change
-for anything else.
-
-Manual check on the reference file, in this order: open it (item 1), `Ctrl+End`,
-hold `PgDn` from the top, `Esc` right after releasing it, `Ctrl+Home`, and type
-a character deep in the file. With `--debug`, the two loops report
-
-    EDITOR: Indexer stopped: N lines in T, W of it waiting for data, B UI batches
-    EDITOR: Highlight walker stopped: N lines, U on the UI thread, T wall clock
-
-Quick check that a problem is about highlighting at all: set
-`EditorHighlighter = None` and repeat. If it is still slow, the cost is in the
-loader or the line index, and nothing in this document applies.
-
----
-
-## 8. Constants
-
-`editor_view.go`, walker:
-
-| name | value | meaning |
-|---|---|---|
-| `hlSliceBudget` | 4 ms | longest stall one slice may put on the UI thread |
-| `hlClockStride` | 8 | lines between two clock readings inside a slice |
-| `hlDutyIndexing` | 10 % | walker's share while the line index is building |
-| `hlDutyVisible` | 50 % | share while the viewport is still uncoloured |
-| `hlDutyAhead` | 25 % | share while walking past the viewport |
-| `hlIdleMin` / `hlIdleMax` | 1 / 100 ms | bounds on the gap between slices |
-| `hlStallIdle` | 10 ms | retry gap when a slice got no data |
-| `hlMaxStallSlices` | 100 | give up after this many empty slices |
-| `syncHighlightGapLimit` | 50 | largest chain gap still caught up in the draw path |
-
-`colorer_plugin.go`, anchor:
-
-| name | value | meaning |
-|---|---|---|
-| `hlColorerForward` | 2000 | furthest the session is fed forward instead of re-anchored |
-| `hlColorerContext` | 300 | context lines parsed above a new anchor |
-| `hlColorerBatchLines` | 200 | longest uncoloured run one worker job takes on |
-| `hlColorerBatchBytes` | 256 KB | most line text one batch snapshot copies on the UI thread |
-| `hlColorerKeepBehind` | 300 | lines kept behind the parse position when the session is trimmed |
-| `hlColorerForgetEvery` | 1000 | lines fed between two `ForgetBefore` wasm calls |
-| `maxCachedAttrLines` | 20 000 | attribute cache limit (item 3, done) |
-| `attrCacheKeepWindow` | 5000 | eviction window (item 3, done) |
-
-None of these are settings. Do not add them to `AppConfig` before a
-measurement asks for it.
-
----
-
-## 9. Log
-
-- Ctrl+End froze for 30-40 s: the chain was built from line 0 inside the draw
-  path.
-- Draw path no longer catches up over a large gap; Chroma gets an immediate
-  stateless call. Chroma fixed.
-- Walker added, then bounded by wall clock and put on a duty cycle, yielding to
-  the line indexer.
-- Colorer taken out of the walker.
-- Colorer drawn from an anchor next to the viewport; `ch.lines` no longer
-  needed; fallback engine handed to the editor.
-- Reported: the tail of the reference file appears and colours immediately with
-  both highlighters. Remaining: the blank window on open, item 1.
-- Colorer parsing moved to a worker goroutine owning the session; the UI
-  queues immutable snapshots and consumes posted results (`colorer_async.go`).
-- One worker job per line made the viewport colour visibly line by line: each
-  line cost a full worker→PostTask→redraw round trip, ~40 full render passes
-  per screen. Jobs now batch the whole uncoloured run (`hlColorerBatchLines`),
-  so a screen colours in one round trip and one redraw.
+### 3.7 What Colorer reports goes to debug.log
+
+Issue #306. Colorer runs compiled without C++ exceptions, so an exception it
+throws — a catalog that does not exist, an HRC file that is not well-formed, a
+colour style it does not know — ends the call in a trap. colorer4go turns that
+into a `*colorer.FatalError` naming the throw site, and the session refuses
+every later call with the same error (`Session.Err`). Everything Colorer
+reports on the way there, and everything it survives — a regexp in a scheme
+that does not compile, a region nobody defines — arrives through its `Logger`
+and is written to debug.log as `COLORER: [level] file:line function(): message`.
+
+- Every session is created with `colorerSessionOptions()`. The level comes
+  from `COLORER_VERBOSE`, the variable far2l's FarColorer reads, with the same
+  values (`off`, `error`, `warning`/`warn`, `info`, `debug`, `trace`). Unset
+  means `warning`, not far2l's `off`: the stock catalog says nothing at that
+  level, and a broken one says what is broken.
+- A session whose call failed is closed, never pooled
+  (`releaseColorerSession`): the next user would get the old failure,
+  attributed to whatever it was trying to do.
+- A colour style that fails in `newColorerHighlighter` hands the editor to the
+  fallback engine, the way a failed session start does (3.5), and says so.
+
+A broken `rare/json.hrc` then reads, instead of a bare `wasm error:
+unreachable`:
+
+    COLORER: [error] colorer/xml/libxml2/LibXmlReader.cpp:299 xml_error_func(): /base/hrc/rare/json.hrc:81: parser error : Couldn't find end of Start Tag regexp line 81
+    COLORER: SelectType("x.json", len=1) -> selected=false, err=colorer: colorer_select_type failed: C++ exception thrown at colorer/parsers/HrcLibraryImpl.cpp:230 in parseHRC() (wasm error: unreachable)
+
+### 3.8 User schemes and colour styles
+
+Issue #277. `EditorColorerUserHrc` and `EditorColorerUserHrd` (settings.ini
+`[Editor] ColorerUserHrc`, `ColorerUserHrd`) are FarColorer's UserHrcPath and
+UserHrdPath: a file or a folder each, handed to Colorer after the catalog
+through `colorer.WithUserHRC` / `WithUserHRD`, styles first.
+
+- A session is built from a `ColorerSource` — configuration directory plus
+  both user paths — and the pool, the colour style list and the editor
+  background cache compare the whole source. A session loaded without a user
+  path is never handed out after the path is set.
+- The module sees each user path through a read-only mount of its folder. A
+  `<location link>` in an `<hrd-sets>` file resolves against catalog.xml, as in
+  Colorer, so it has to stay inside the configuration directory; a folder of
+  `.hrd` files (each root `<hrd>` naming class, name and description) has no
+  such limit.
+- File names Colorer opens must be ASCII: its legacy strings read a name as
+  CP1251. colorer4go refuses such a path with a warning instead of letting the
+  call abort. A path that does not exist is a warning too; a file that does
+  not parse fails the session, and debug.log names the host path.
+- The Settings Center lists colour styles through Colorer
+  (`editor.ListColorerSchemesFor`), off the UI thread. It used to read
+  catalog.xml with `encoding/xml`, which stops at the external entities
+  (`&catalog-rgb;`) the installed catalog lists its styles through, so the
+  list was empty on a real installation.
+
+### 3.9 Checking a configuration before it is used
+
+Issue #277, step 2. A scheme or style Colorer cannot load used to show up only
+as an editor that quietly fell back to Chroma, with the reason in debug.log.
+`editor.CheckColorerSource` loads a configuration the way an editor starts
+Colorer — catalog, user styles and schemes, colour style — and, with
+`allTypes`, the scheme of every file type (`Session.LoadFileType`), which is
+where a broken scheme otherwise waits until a file of its type is opened. It
+returns the failure and everything Colorer reported at warning level or worse.
+
+- Colorer settings dialog: OK loads a changed configuration first and stays
+  open if it fails, as FarColorer's OK does; Reload does the same before
+  dropping sessions; "Check all schemes" loads every type behind a progress
+  dialog and applies nothing. Reports that did not stop the load are shown and
+  do not block.
+- Settings Center: "Reload schemas" runs the quick check, and the new "Check
+  all schemes" the full one; either returns the findings as its error.
+- FarColorer's "Reload all" (`TestLoadBase`) calls `getBaseScheme()` on each
+  type, which in this Colorer version returns the pointer without loading;
+  the full check calls `HrcLibrary::loadFileType` instead.
+- Loading every type of the bundled catalog took 89 s on a single-core
+  sandbox, and reports two errors: `markdown:markdown` inherits
+  `markdown2:markdown2`, which no type defines.
+
+### 3.10 Pairs
+
+Issue #277, step 3. `EditorColorerPairs` (settings.ini `[Editor] ColorerPairs`,
+on by default as FarColorer's PairsDraw) draws the paired token under the
+cursor and its match.
+
+- Colorer makes pair regions special (`def:PairStart` and `def:PairEnd` are
+  children of `def:Special`), so `ParseLine` never returned them.
+  colorer4go's `ParseLinePairs` does; the worker stores a line's pairs beside
+  its colours (`pairCache`, evicted with `attrCache`).
+- `matchColorerPair` is `BaseEditor::getPairMatch` plus `searchPair` over those
+  pairs: the last token whose `[Start, End]` holds the cursor (End included),
+  then a walk counting starts and ends until the balance is zero.
+- Drawing searches only the visible lines, as `searchLocalPair` does, and
+  only lines already parsed: a line without cached colours stops the search,
+  since unlike Colorer's regions the cache may not have reached the match yet.
+  The token under the cursor is painted even without a match. The overlay is
+  painted on a copy of the cached colours.
+- Match pair, select pair contents and select pair block (actions
+  `Editor.ColorerMatchPair`, `Editor.ColorerSelectPair`,
+  `Editor.ColorerSelectBlock`; no default keys, as in FarColorer) search the
+  whole file, as `searchGlobalPair` does. The search (`colorerPairSearch`) is
+  `searchPair` made resumable: it lives on the UI thread, walks the line cache,
+  and where a line is missing queues it to the worker and resumes when the
+  result lands (`continuePairSearch` in `postColorerResult`). Walking up, the
+  job starts a batch below the missing line so one job covers a batch of lines
+  above. Lines parsed for the search go through the same anchoring as display,
+  so a match agrees with the pair drawn under the cursor. An edit, a moved
+  cursor or Esc drops the search; Esc does not stop Colorer while a search owns
+  the job.
+- Positions are FarColorer's: match pair puts the cursor on the first
+  character of a match above and the last character of one below; the
+  selections run from the upper position to the lower, where the cursor ends.
+  A match off screen is centred, as in FarColorer.
+
+### 3.11 Outline: functions, errors, locate function
+
+Issue #277, step 4. FarColorer's list of functions and list of errors come
+from Colorer's `Outliner` over the whole file.
+
+- colorer4go's `Session.LineOutline` gives each parsed line's items (regions
+  under `def:Outlined` or `def:Error`); the worker cuts their labels from the
+  line and stores them in `outlineCache`, beside and evicted with
+  `attrCache`.
+- `colorerOutlineBuild` collects the whole file the way the pair search
+  walks it: on the UI thread, queueing each line the cache has not reached,
+  resuming in `postColorerResult`. An edit or Esc drops it.
+- `Editor.ColorerListFunctions` and `Editor.ColorerListErrors` open the list
+  (a `VMenu` filtered as you type), rows written as FarEditor::showOutliner
+  writes them: line number, two spaces per level from `Outliner::manageTree`,
+  the region class letter and the label; with `EditorColorerOldOutline`
+  (default on, as FarColorer's OldOutlineView) the line's text instead. The
+  item at or above the cursor is selected; choosing one centres it.
+- `Editor.ColorerLocateFunction` takes the word under the cursor and goes to
+  the last function whose label holds it, ignoring case, preferring one off
+  the cursor's line. FarColorer's word loop drops the first character of a
+  word at the start of a line and the last at the end; f4 takes the whole
+  word.
+- The list is `colorerOutlineFrame`, FarEditor::showOutliner's keys on a
+  `VMenu` with its own filter: letters, digits, space and `; - : _ ~` narrow
+  it to labels holding the filter (a filter nothing matches loses its last
+  character); Backspace takes one back; Tab takes the completion shown after
+  `?` in the title, which extends the filter with what follows it in the
+  first row while every row still holds it; Ctrl+Up/Down go to the previous
+  or next item with the list open, and Esc then restores the editor;
+  Ctrl+Left/Right show a tree level less or more; Ctrl+Enter inserts the
+  label at the cursor.
+- With Colorer in charge, the editor's F11 menu has a Colorer submenu with
+  these commands in FarColorer's order, then, as in FarColorer:
+  - "Update highlighting" (`Editor.ColorerUpdateHighlighting`,
+    FarEditor::updateHighlighting): the colours computed are dropped and
+    computed again;
+  - "Reload Colorer base" (`Editor.ColorerReloadBase`, FarEditorSet::
+    ReloadBase): the configuration in use is loaded and checked, errors
+    shown, as the settings dialog's Reload does; when it loads, the pool is
+    dropped and every open editor highlighted by Colorer, or handed to
+    Chroma because Colorer could not start, starts Colorer afresh the next
+    time it is drawn (`ReloadColorerEditors`). A type picked from the list
+    is forgotten, as FarColorer's reload drops its editors. The settings
+    dialog's Reload and a download of schemas now do the same to open
+    editors;
+  - "Configure": the Colorer settings dialog.
+  FarColorer's menu while it is off holds only "Configure"; f4 shows no
+  Colorer submenu then, the settings being in the Options menu.
+
+### 3.12 File types and select region
+
+Issue #277, step 5.
+
+- `Editor.ColorerChooseType` is FarEditorSet::chooseType: auto detection,
+  the favourites, then every type under its group, the group names painted
+  on the separators and the total under the list. Enter picks the type for
+  this editor (`ColorerHighlighter.fileTypeOverride`, carried by each job to
+  the worker, which gives its session `SetFileType` when the type changes);
+  auto detection goes back to choosing by file name. Ins and Del add a type to
+  the favourites and take it out; F4 assigns it a one-character hotkey, shown
+  as the row's menu hotkey.
+- Favourites and hotkeys are file type parameters. Their defaults come from
+  far2l's `plug/hrcsettings.xml` in the configuration directory, loaded with
+  `colorer.WithHRCSettings` when it exists; the user's values live in
+  FarColorer's format in `colorer/HrcSettings.ini` in the profile and are set
+  on every session acquired (`applyColorerProfile`). An installation without
+  `plug/hrcsettings.xml` has no such parameters, and setting one is logged
+  and skipped.
+- `Editor.ColorerSelectRegion` selects FarEditor's `cursorRegion`: the last
+  region of the cursor line holding the cursor, its end included, a region
+  running to the end of the line ending there. The worker keeps each line's
+  regions in `regionCache`, beside and evicted with `attrCache`.
+
+### 3.13 File type settings
+
+Issue #277, step 6.
+
+- "File type settings" in the Colorer settings dialog is FarColorer's HRC
+  settings dialog (`actionColorerTypeSettings`): a file type, one of its
+  parameters — the default type's, then the type's own — and its value.
+  show-cross, cross-zorder, fullback and the true/false parameters are
+  picked from a list; maxlinelength, backparse, default-fore, default-back,
+  firstlines, firstlinebytes and hotkey are typed. `<default-...>`, last in
+  the list, takes the user's value back. The value is recorded whenever the
+  dialog moves on from a parameter; OK writes the changes to
+  `colorer/HrcSettings.ini` and drops pooled sessions.
+- The dialog reads every type and parameter up front
+  (`editor.LoadColorerTypeParams`) and holds no session while open.
+- `EditorColorerHrcSettings` (settings.ini `[Editor]
+  ColorerHrcSettings`) is FarColorer's UserHrcSettingsPath: an
+  hrc-settings file loaded after the user's schemes.
+- The Colorer settings dialog now puts each path's label beside its field,
+  to make room for this one and the button.
+- What f4 acts on, as FarEditor::reloadTypeSettings reads it ("default"
+  first, the file's type on top; `readColorerTypeSettings`):
+  - show-cross, through the new cross mode "By file type"
+    (`ColorerCrossScheme`, FarColorer's "if included in the scheme"): the
+    crosshair's axes are the file type's;
+  - maxlinelength: Colorer parses at most that many characters of a line,
+    as FarEditor::getLine cuts it; the rest takes the base colour;
+  - fullback=no: a region running to the end of the line keeps its colour
+    on the text, not on the rest of the row;
+  - default-fore and default-back: the base colour of the file's text,
+    which regions without colours of their own take.
+  The worker reads them when it gives its session a type and hands changes
+  to the UI, which recomputes the colours. An editor already open keeps the
+  values it read until its type changes or it is reopened; FarColorer applies
+  a changed profile to open editors.
+- Not applied: backparse limits how far FarColorer's parser runs on from the
+  top of the file; f4 anchors near the viewport instead (3.2), with its own
+  limits. cross-zorder decides whether a region's own background shows
+  through the cross or the cross covers it; f4's cross replaces the background
+  of every cell it crosses and keeps the text colour, and the cached colours
+  do not record which backgrounds a region set, so the distinction cannot be
+  drawn from them.
+
+### 3.14 Highlighting in viewers
+
+Issue #277, step 7. `ViewerHighlighting` (settings.ini `[Viewer]
+Highlighting`) is FarColorer's ViewerColoring for f4's viewers: off, the
+quick view panel, or every viewer. It is off by default, unlike FarColorer: a viewer is for
+looking at a file at once, and highlighting takes time. It is in the viewer
+settings dialog and the Settings Center, beside the editor's highlighter.
+
+- The engine is the editor's, by the editor's rules
+  (`editor.NewTextColorizer`): none for None; Colorer when it is chosen and
+  its schemas are installed, handing over to Chroma when Colorer cannot start
+  or knows no type for the file; Chroma otherwise. Colorer in charge with its
+  syntax colours off colours nothing.
+- The quick view panel is in `panel` and the highlighters in `editor`, which
+  imports `panel`'s neighbour `viewer`; `viewer.NewTextColorizer` is the seam,
+  set by the application.
+- A quick view shows the head of a file, so the colorizer highlights it from
+  its first line, which is all the context there is. It runs on one goroutine
+  and hands colours to the UI thread in batches of 200 lines; the panel draws
+  a line coloured once its colours are there and plain until then.
+- It is restarted when the text changes (another file, another code page),
+  stopped in hex mode, for binary, image and provider previews, and when the
+  panel closes. Colorer's file type parameters apply as in the editor.
+- "All viewers" highlights the viewer as well
+  (`viewer.NewWindowColorizer`, `editor.NewWindowColorizer`). The viewer
+  shows an arbitrary part of the file, so it hands over the logical lines on
+  screen, each with the byte offset it starts at, and up to 100 lines above
+  them as context, read from at most 64 KiB back, as FarColorer's FarViewer
+  takes them. A goroutine highlights the window from its context on — a
+  Colorer session reset for each window, or Chroma's state carried from the
+  first context line — and hands the colours back; the viewer paints each
+  row from its logical line's colours, by rune, over wrapped and tab-expanded
+  cells. A window is requested only when the lines on screen change, and a
+  newer request replaces one not started yet. As with the editor's anchor, a
+  construct opened above the context is not seen.

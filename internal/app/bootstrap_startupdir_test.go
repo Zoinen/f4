@@ -1,7 +1,10 @@
 package app
 
 import (
+	"os"
 	"path/filepath"
+	"reflect"
+	"runtime"
 	"testing"
 )
 
@@ -66,9 +69,55 @@ func TestStartupDirsForCommandLine(t *testing.T) {
 	}
 }
 
-func TestStartupDirsOverrideIgnoresPlainLaunch(t *testing.T) {
-	if left, right, ok := startupDirsOverride(t.TempDir(), nil); ok || left != "" || right != "" {
-		t.Fatalf("startupDirsOverride(no args) = (%q, %q, %t), want (empty, empty, false)", left, right, ok)
+// Folders on the command line name themselves everywhere; only a plain start
+// depends on plainOpensCwd.
+func TestStartupDirsOverride(t *testing.T) {
+	cwd := t.TempDir()
+	other := t.TempDir()
+	cases := []struct {
+		name          string
+		args          []string
+		plainOpensCwd bool
+		left, right   string
+		ok            bool
+	}{
+		{name: "plain start opens the current directory", plainOpensCwd: true, left: cwd, ok: true},
+		{name: "plain start keeps the restored session"},
+		{name: "one folder", args: []string{other}, left: other, right: cwd, ok: true},
+		{name: "one folder, plain start opening cwd", args: []string{other}, plainOpensCwd: true, left: other, right: cwd, ok: true},
+		{name: "two folders", args: []string{other, cwd}, left: other, right: cwd, ok: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			left, right, ok := startupDirsOverride(cwd, tc.args, tc.plainOpensCwd)
+			if left != tc.left || right != tc.right || ok != tc.ok {
+				t.Fatalf("startupDirsOverride(%q, %v, %t) = (%q, %q, %t), want (%q, %q, %t)",
+					cwd, tc.args, tc.plainOpensCwd, left, right, ok, tc.left, tc.right, tc.ok)
+			}
+		})
+	}
+}
+
+// `cd dir && f4` shows dir in both panels, like mc (issue #822). The change made
+// for #823 turned that off on every platform and no test failed: the one that
+// covers a plain start checks startupDirsFor, below the change, and the one
+// added with it asserted the new behaviour. On macOS the panels went back to
+// the previous session (issue #1152). This checks the decision
+// rememberStartupDirs actually makes, on each platform CI runs it on.
+func TestPlainTerminalStartOpensCurrentDirectory(t *testing.T) {
+	cwd := t.TempDir()
+	left, right, ok := startupDirsOverride(cwd, nil, plainStartOpensCwd)
+	if runtime.GOOS == "windows" {
+		// A console started from Explorer or a shortcut has a terminal on stdin
+		// too, and a working directory nobody chose: the session wins there.
+		if ok || left != "" || right != "" {
+			t.Fatalf("plain start on Windows = (%q, %q, %t), want (empty, empty, false)", left, right, ok)
+		}
+		return
+	}
+	// An empty right one sends both panels to left.
+	if !ok || left != cwd || right != "" {
+		t.Fatalf("plain start = (%q, %q, %t), want (%q, empty, true)", left, right, ok, cwd)
 	}
 }
 
@@ -101,5 +150,61 @@ func TestStartupDirArgs(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// `f4 file` opens the file in the viewer (issue #991). Of the startup paths,
+// only those naming something other than a folder are files to view; a folder
+// and a word that names nothing stay panel paths.
+func TestStartupViewFiles(t *testing.T) {
+	cwd := t.TempDir()
+	sub := filepath.Join(cwd, "sub")
+	if err := os.Mkdir(sub, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(sub, "notes.txt")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(cwd, "other.txt")
+	if err := os.WriteFile(other, []byte("y"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{name: "nothing"},
+		{name: "a folder", args: []string{"sub"}},
+		{name: "a missing path", args: []string{"nope.txt"}},
+		{name: "relative file", args: []string{filepath.Join("sub", "notes.txt")}, want: []string{file}},
+		{name: "absolute file", args: []string{other}, want: []string{other}},
+		{name: "unclean path", args: []string{filepath.Join(".", "sub", "..", "other.txt")}, want: []string{other}},
+		{name: "folder and files", args: []string{"sub", "other.txt", file}, want: []string{other, file}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := startupViewFiles(cwd, tc.args); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("startupViewFiles(%q) = %q, want %q", tc.args, got, tc.want)
+			}
+		})
+	}
+}
+
+// A path from the command line is made absolute where it was typed: the Unix
+// session daemon that opens it may run in another directory.
+func TestResolveStartupPath(t *testing.T) {
+	cwd := t.TempDir()
+	other := t.TempDir()
+	cases := []struct{ path, want string }{
+		{path: "notes.txt", want: filepath.Join(cwd, "notes.txt")},
+		{path: filepath.Join("sub", "..", "notes.txt"), want: filepath.Join(cwd, "notes.txt")},
+		{path: filepath.Join(other, "new.txt"), want: filepath.Join(other, "new.txt")},
+	}
+	for _, tc := range cases {
+		if got := resolveStartupPath(cwd, tc.path); got != tc.want {
+			t.Errorf("resolveStartupPath(%q) = %q, want %q", tc.path, got, tc.want)
+		}
 	}
 }

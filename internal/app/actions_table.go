@@ -114,6 +114,59 @@ func init() {
 		}
 	}
 
+	for _, spec := range panel.GroupModes {
+		registerAction(action.Action{Name: "Panel.GroupBy" + spec.ID,
+			Area:        "Shell",
+			Label:       "Group by: " + spec.Label,
+			LabelKey:    "Action.Panel.GroupBy" + spec.ID,
+			Description: "Choose the grouping field independently of sorting",
+			DescKey:     "Group.Choose.Desc",
+			Handler: withPF(func(pf *panel.PanelsFrame) {
+				if fp := pf.GetActivePanel(); fp != nil {
+					fp.SetGrouping(spec.Mode, fp.GroupReverse, fp.GroupFoldersSeparately)
+				}
+			})})
+	}
+	registerAction(action.Action{Name: "Panel.GroupMenu",
+		Area:        "Shell",
+		Label:       "Group by...",
+		LabelKey:    "Group.Menu",
+		Description: "Show panel grouping modes",
+		DescKey:     "Group.Menu.Desc",
+		Handler: withPF(func(pf *panel.PanelsFrame) {
+			if fp := pf.GetActivePanel(); fp != nil {
+				fp.ShowGroupMenu()
+			}
+		})})
+	registerAction(action.Action{Name: "Panel.GroupReverse",
+		Area:        "Shell",
+		Label:       "Reverse group order",
+		LabelKey:    "Group.Reverse",
+		Description: "Reverse the order of groups",
+		DescKey:     "Group.Reverse.Desc",
+		Handler: withPF(func(pf *panel.PanelsFrame) {
+			if fp := pf.GetActivePanel(); fp != nil {
+				fp.SetGrouping(fp.GroupBy, !fp.GroupReverse, fp.GroupFoldersSeparately)
+			}
+		})})
+	registerAction(action.Action{Name: "Panel.GroupFoldersSeparately",
+		Area:        "Shell",
+		Label:       "Group folders separately",
+		LabelKey:    "Group.SeparateFolders",
+		Description: "Toggle a separate first group for folders",
+		DescKey:     "Group.SeparateFolders.Desc",
+		Handler: withPF(func(pf *panel.PanelsFrame) {
+			if fp := pf.GetActivePanel(); fp != nil {
+				fp.SetGrouping(fp.GroupBy, fp.GroupReverse, !fp.GroupFoldersSeparately)
+			}
+		})})
+	registerAction(action.Action{Name: "Panel.GroupSettings",
+		Area:        "Shell",
+		Label:       "Group size thresholds",
+		LabelKey:    "Group.Settings",
+		Description: "Configure the size boundaries for panel groups",
+		DescKey:     "Group.Settings.Desc"})
+
 	// withMultiEditor is for the handful of actions that know about the
 	// multi-caret set and act on it themselves.
 	withMultiEditor := func(fn func(ev *editor.EditorView)) func() bool {
@@ -219,6 +272,26 @@ func init() {
 		Handler:     actionReloadLuaMacros,
 	})
 	RegisterAction(action.Action{
+		Name:        "App.ConfigEditor",
+		Area:        "Common",
+		Label:       "Configuration editor",
+		LabelKey:    "Action.App.ConfigEditor",
+		Description: "Edit every settings.ini key directly, as f4:config does",
+		DescKey:     "Action.App.ConfigEditor.Desc",
+		MenuPath:    "Commands",
+		Handler:     actionConfigEditor,
+	})
+	RegisterAction(action.Action{
+		Name:        "App.About",
+		Area:        "Common",
+		Label:       "About f4",
+		LabelKey:    "Action.App.About",
+		Description: "Show the version, platform, directories and plugins of this f4",
+		DescKey:     "Action.App.About.Desc",
+		MenuPath:    "Commands",
+		Handler:     actionAbout,
+	})
+	registerAction(action.Action{
 		Name:        CommandPaletteActionName,
 		Area:        "Common",
 		Label:       "Command Palette",
@@ -344,16 +417,23 @@ func init() {
 		LabelKey:    "Action.Debug.ScreenDump",
 		Description: "Write the current screen buffer to vtui.screen.log",
 		DescKey:     "Action.Debug.ScreenDump.Desc",
-		// CtrlShiftP (and any other Ctrl+Shift+<letter> combo) collapses to
-		// plain Ctrl+<letter> on a legacy ANSI terminal — Shift over a letter
-		// doesn't change the control byte sent, and disambiguating it needs
-		// an extended keyboard protocol (Kitty / win32-input-mode) that Wine's
-		// tty backend does not implement (see WINE.md §15.1). CtrlAlt<letter>
-		// survives that path: Alt is delivered as an ESC prefix, so it stays
-		// unambiguous even over a bare control byte. Same pattern already
-		// used by Panel.CopySelectedRealPaths (CtrlAltIns) above.
-		DefaultKeys: []string{"CtrlAltP"},
-		Handler:     actionScreenDump,
+		// No hotkey. The dump is reached from the command palette, which is
+		// how it was registered before CtrlAltP was tried here.
+		//
+		// CtrlAltP was taken to reach the dump on a Wine tty, where
+		// Ctrl+Shift+<letter> collapses to plain Ctrl+<letter> and only an
+		// ESC-prefixed chord should have survived (WINE.md §15.1). It did not
+		// survive either — Wine's tty backend does not deliver
+		// Ctrl+Alt+<letter> at all, measured on live Wine (WINE.md §15.2) —
+		// and the -e flag replaced the need for a keyboard route entirely.
+		//
+		// What the binding did do was claim Common/CtrlAltP in
+		// HotkeyManager.Defaults, and that is the chord App.CommandPalette
+		// advertises as its legacy fallback. commandPaletteLegacyShortcut
+		// stands down for any bound action and NativeShortcutsForAction hides
+		// a native key another action holds, so the fallback neither fired
+		// nor was shown anywhere (issue #980).
+		Handler: actionScreenDump,
 	})
 
 	// --- Shell (panels) actions ---
@@ -365,7 +445,7 @@ func init() {
 		LabelKey:    "Menu.Files.View",
 		Description: "Open file in viewer",
 		DescKey:     "Action.File.View.Desc",
-		DefaultKeys: []string{"F3"},
+		DefaultKeys: []string{"F3", "Num5"},
 		MenuPath:    "Files",
 		Handler:     withPF(func(pf *panel.PanelsFrame) { ActionViewFile(pf) }),
 	})
@@ -597,7 +677,7 @@ func init() {
 		LabelKey:            "Action.Panel.SelectGroup",
 		Description:         "Select files by mask",
 		DescKey:             "Action.Panel.SelectGroup.Desc",
-		DefaultKeys:         []string{"Add"},
+		DefaultKeys:         []string{"Add", "CtrlShiftVK_BB"},
 		MenuPath:            "Files",
 		MenuSeparatorBefore: true,
 		Handler: withPF(func(pf *panel.PanelsFrame) {
@@ -620,7 +700,7 @@ func init() {
 		LabelKey:    "Action.Panel.DeselectGroup",
 		Description: "Deselect files by mask",
 		DescKey:     "Action.Panel.DeselectGroup.Desc",
-		DefaultKeys: []string{"Subtract"},
+		DefaultKeys: []string{"Subtract", "CtrlShiftVK_BD"},
 		MenuPath:    "Files",
 		Handler: withPF(func(pf *panel.PanelsFrame) {
 			if fsp := pf.GetActivePanel(); fsp != nil {
@@ -633,6 +713,40 @@ func init() {
 			}
 		}),
 	})
+	// Ctrl+Gray +/- is standard Far Manager extension selection, documented in
+	// FarEng.hlf's PanelCmd/SelectFiles topics. Keep Ctrl+=/- as aliases so this
+	// operation remains available on laptops and keyboards without a numpad.
+	// OEM aliases use the stable VK spelling expected by EventToHotkeyString.
+	RegisterAction(action.Action{
+		Name:        "Panel.SelectCurrentExtension",
+		Area:        "Shell",
+		Label:       "Select Current Extension",
+		LabelKey:    "Action.Panel.SelectCurrentExtension",
+		Description: "Select files with the current extension, or all folders",
+		DescKey:     "Action.Panel.SelectCurrentExtension.Desc",
+		DefaultKeys: []string{"CtrlAdd", "CtrlVK_BB"},
+		MenuPath:    "Files",
+		Handler: withPF(func(pf *panel.PanelsFrame) {
+			if fsp := pf.GetActivePanel(); fsp != nil {
+				fsp.ApplyCurrentExtensionSelection(true)
+			}
+		}),
+	})
+	RegisterAction(action.Action{
+		Name:        "Panel.DeselectCurrentExtension",
+		Area:        "Shell",
+		Label:       "Deselect Current Extension",
+		LabelKey:    "Action.Panel.DeselectCurrentExtension",
+		Description: "Deselect files with the current extension, or all folders",
+		DescKey:     "Action.Panel.DeselectCurrentExtension.Desc",
+		DefaultKeys: []string{"CtrlSubtract", "CtrlVK_BD"},
+		MenuPath:    "Files",
+		Handler: withPF(func(pf *panel.PanelsFrame) {
+			if fsp := pf.GetActivePanel(); fsp != nil {
+				fsp.ApplyCurrentExtensionSelection(false)
+			}
+		}),
+	})
 	RegisterAction(action.Action{
 		Name:        "Panel.InvertSelection",
 		Area:        "Shell",
@@ -640,7 +754,7 @@ func init() {
 		LabelKey:    "Action.Panel.InvertSelection",
 		Description: "Invert file selection",
 		DescKey:     "Action.Panel.InvertSelection.Desc",
-		DefaultKeys: []string{"Multiply"},
+		DefaultKeys: []string{"Multiply", "AltVK_BB"},
 		MenuPath:    "Files",
 		Handler: withPF(func(pf *panel.PanelsFrame) {
 			if fsp := pf.GetActivePanel(); fsp != nil {
@@ -761,6 +875,17 @@ func init() {
 		MenuPath:    "Commands",
 		Visible:     panelCanCompareFolders,
 		Handler:     withPF(func(pf *panel.PanelsFrame) { ShowCompareFoldersDialog(pf) }),
+	})
+	RegisterAction(action.Action{
+		Name:        "Panel.SyncDirs",
+		Area:        "Shell",
+		Label:       "Synchronize Dirs",
+		LabelKey:    "Menu.Commands.SyncDirs",
+		Description: "Compare the two panels and copy or delete what differs",
+		DescKey:     "Action.Panel.SyncDirs.Desc",
+		MenuPath:    "Commands",
+		Visible:     panelCanSyncDirs,
+		Handler:     withPF(func(pf *panel.PanelsFrame) { ShowSyncDirsDialog(pf) }),
 	})
 	RegisterAction(action.Action{
 		Name:        "File.RunRemoteCommand",
@@ -1369,6 +1494,18 @@ func init() {
 		Handler:             withPF(func(pf *panel.PanelsFrame) { vtui.FrameManager.EmitCommand(appcmd.CmUpdateSettings, nil) }),
 	})
 	RegisterAction(action.Action{
+		Name:        "Settings.CheckUpdates",
+		Area:        "Shell",
+		Label:       "Check for Updates",
+		LabelKey:    "Menu.CheckUpdates",
+		Description: "Check for a new f4 release now and offer to install it",
+		DescKey:     "Action.Settings.CheckUpdates.Desc",
+		MenuPath:    "Options",
+		// The check waits for GitHub, so it must not hold the UI loop; it
+		// posts its result back through FrameManager when it completes.
+		Handler: withPF(func(pf *panel.PanelsFrame) { go CheckForUpdates(pf, true) }),
+	})
+	RegisterAction(action.Action{
 		Name:        "Settings.Proxy",
 		Area:        "Shell",
 		Label:       "Proxy Settings",
@@ -1436,19 +1573,22 @@ func init() {
 		DefaultKeys: []string{"AltF9"},
 		MenuPath:    "Options",
 		Handler: withPF(func(pf *panel.PanelsFrame) {
+			// far2l's Alt+F9: maximize the window, or restore it when it is
+			// maximized. vtui does it for every GUI backend and for a classic
+			// Windows console window, from the window's real state.
+			if toggleDirectWindowsTerminalWindow() || (vtui.FrameManager != nil && vtui.FrameManager.ToggleWindowMaximized()) {
+				return
+			}
+			// A terminal emulator's window is out of reach; the xterm resize
+			// sequence is all there is to ask with.
 			targetCols, targetRows := config.App.GuiCols, config.App.GuiRows
 			if pf.LastW == config.App.GuiCols && pf.LastH == config.App.GuiRows {
 				targetCols, targetRows = config.App.GuiCols+40, config.App.GuiRows+15
 			}
-			// xterm resize sequence for console mode
 			// Terminal writes here are best effort: if stdout is gone there is
 			// nothing left to resize and the next write reports it anyway.
 			_, _ = fmt.Fprintf(os.Stdout, "\x1b[8;%d;%dt", targetRows, targetCols)
 			_ = os.Stdout.Sync()
-			// Forced OS window resize for GUI mode
-			if vtui.FrameManager != nil {
-				vtui.FrameManager.ResizeWindow(targetCols, targetRows)
-			}
 		}),
 	})
 	RegisterAction(action.Action{
@@ -1522,26 +1662,33 @@ func init() {
 		DefaultKeys: []string{"CtrlU"},
 		Handler:     withPF(func(pf *panel.PanelsFrame) { vtui.FrameManager.EmitCommand(appcmd.CmSwapPanels, nil) }),
 	})
-	RegisterAction(action.Action{
-		Name:         "Panel.Toggle",
-		Area:         "Shell",
-		Label:        "Toggle Panels",
-		Description:  "Show or hide panels",
-		DescKey:      "Action.Panel.Toggle.Desc",
+	registerAction(action.Action{
+		Name:        "Panel.Toggle",
+		Area:        "Shell",
+		Label:       "Toggle Panels",
+		Description: "Show or hide panels",
+		DescKey:     "Action.Panel.Toggle.Desc",
+		// NoAltScreenApp, not the stricter NoTerminalApp: a blocked CLI tool
+		// or a GUI program holding the PTY must never lock the panels away,
+		// so Ctrl+O still reaches f4 while a child is merely busy (#50). The
+		// cost is that mc, whose own Ctrl+O leaves the alternate screen, hands
+		// f4 the next press (#249) -- the lock-out is the worse of the two.
 		DefaultKeys:  []string{"CtrlO:NoAltScreenApp", "Esc:EscToggle", "Del:EscToggle", "NumDel:EscToggle"},
 		DefaultAreas: []string{"Terminal"},
 		Handler: withPF(func(pf *panel.PanelsFrame) {
 			pf.TogglePanelsVisibility()
 		}),
 	})
-	RegisterAction(action.Action{
-		Name:        "Panel.ToggleLeftPanel",
-		Area:        "Shell",
-		Label:       "Toggle Left Panel",
-		Description: "Show or hide the left panel",
-		DescKey:     "Action.Panel.ToggleLeftPanel.Desc",
-		DefaultKeys: []string{"CtrlF1"},
+	registerAction(action.Action{
+		Name:         "Panel.ToggleLeftPanel",
+		Area:         "Shell",
+		Label:        "Toggle Left Panel",
+		Description:  "Show or hide the left panel",
+		DescKey:      "Action.Panel.ToggleLeftPanel.Desc",
+		DefaultKeys:  []string{"CtrlF1:NoAltScreenApp"},
+		DefaultAreas: []string{"Terminal"},
 		Handler: withPF(func(pf *panel.PanelsFrame) {
+			allPanelsHidden := !pf.ShowLeftPanel && !pf.ShowRightPanel
 			pf.ExitWide()
 			pf.ShowLeftPanel = !pf.ShowLeftPanel
 			if !pf.ShowLeftPanel && pf.ActiveIdx == 0 && pf.ShowRightPanel {
@@ -1549,6 +1696,8 @@ func init() {
 			}
 			if !pf.ShowLeftPanel && !pf.ShowRightPanel {
 				pf.ShowPanels = false
+			} else if allPanelsHidden {
+				pf.ShowPanels = true
 			}
 			if pf.LastW > 0 && pf.LastH > 0 {
 				pf.ResizeConsole(pf.LastW, pf.LastH)
@@ -1556,14 +1705,16 @@ func init() {
 			vtui.FrameManager.HardRefresh()
 		}),
 	})
-	RegisterAction(action.Action{
-		Name:        "Panel.ToggleRightPanel",
-		Area:        "Shell",
-		Label:       "Toggle Right Panel",
-		Description: "Show or hide the right panel",
-		DescKey:     "Action.Panel.ToggleRightPanel.Desc",
-		DefaultKeys: []string{"CtrlF2"},
+	registerAction(action.Action{
+		Name:         "Panel.ToggleRightPanel",
+		Area:         "Shell",
+		Label:        "Toggle Right Panel",
+		Description:  "Show or hide the right panel",
+		DescKey:      "Action.Panel.ToggleRightPanel.Desc",
+		DefaultKeys:  []string{"CtrlF2:NoAltScreenApp"},
+		DefaultAreas: []string{"Terminal"},
 		Handler: withPF(func(pf *panel.PanelsFrame) {
+			allPanelsHidden := !pf.ShowLeftPanel && !pf.ShowRightPanel
 			pf.ExitWide()
 			pf.ShowRightPanel = !pf.ShowRightPanel
 			if !pf.ShowRightPanel && pf.ActiveIdx == 1 && pf.ShowLeftPanel {
@@ -1571,6 +1722,8 @@ func init() {
 			}
 			if !pf.ShowLeftPanel && !pf.ShowRightPanel {
 				pf.ShowPanels = false
+			} else if allPanelsHidden {
+				pf.ShowPanels = true
 			}
 			if pf.LastW > 0 && pf.LastH > 0 {
 				pf.ResizeConsole(pf.LastW, pf.LastH)
@@ -2077,6 +2230,7 @@ func init() {
 		Name:         "App.Quit",
 		Area:         "Shell",
 		Label:        "Quit",
+		LabelKey:     "KeyBar.F10",
 		Description:  "Quit f4",
 		DescKey:      "Action.App.Quit.Desc",
 		DefaultKeys:  []string{"F10:NoAltScreenApp"},
@@ -2403,7 +2557,105 @@ func init() {
 		MenuPath:    "Search",
 		Handler:     withEditor(func(ev *editor.EditorView) { vtui.FrameManager.EmitCommand(appcmd.CmSearch, nil) }),
 	})
-	RegisterAction(action.Action{
+	registerAction(action.Action{
+		Name:        "Editor.ColorerMatchPair",
+		Area:        "Editor",
+		Label:       "Match pair",
+		LabelKey:    "Action.Editor.ColorerMatchPair",
+		Description: "Move the cursor to the match of the bracket or other paired token under it (Colorer)",
+		DescKey:     "Action.Editor.ColorerMatchPair.Desc",
+		MenuPath:    "Search",
+		Handler:     withEditor(func(ev *editor.EditorView) { ev.ColorerPair(editor.ColorerMatchPair) }),
+	})
+	registerAction(action.Action{
+		Name:        "Editor.ColorerSelectPair",
+		Area:        "Editor",
+		Label:       "Select pair contents",
+		LabelKey:    "Action.Editor.ColorerSelectPair",
+		Description: "Select the text between the paired token under the cursor and its match (Colorer)",
+		DescKey:     "Action.Editor.ColorerSelectPair.Desc",
+		MenuPath:    "Edit",
+		Handler:     withEditor(func(ev *editor.EditorView) { ev.ColorerPair(editor.ColorerSelectPair) }),
+	})
+	registerAction(action.Action{
+		Name:        "Editor.ColorerSelectBlock",
+		Area:        "Editor",
+		Label:       "Select pair block",
+		LabelKey:    "Action.Editor.ColorerSelectBlock",
+		Description: "Select the paired token under the cursor, its match and the text between them (Colorer)",
+		DescKey:     "Action.Editor.ColorerSelectBlock.Desc",
+		MenuPath:    "Edit",
+		Handler:     withEditor(func(ev *editor.EditorView) { ev.ColorerPair(editor.ColorerSelectBlock) }),
+	})
+	registerAction(action.Action{
+		Name:        "Editor.ColorerListFunctions",
+		Area:        "Editor",
+		Label:       "List functions",
+		LabelKey:    "Action.Editor.ColorerListFunctions",
+		Description: "List the functions Colorer finds in the whole file and go to one (Colorer)",
+		DescKey:     "Action.Editor.ColorerListFunctions.Desc",
+		MenuPath:    "Search",
+		Handler:     withEditor(func(ev *editor.EditorView) { ev.ColorerListOutline(false) }),
+	})
+	registerAction(action.Action{
+		Name:        "Editor.ColorerListErrors",
+		Area:        "Editor",
+		Label:       "Find errors",
+		LabelKey:    "Action.Editor.ColorerListErrors",
+		Description: "List the syntax errors Colorer finds in the whole file and go to one (Colorer)",
+		DescKey:     "Action.Editor.ColorerListErrors.Desc",
+		MenuPath:    "Search",
+		Handler:     withEditor(func(ev *editor.EditorView) { ev.ColorerListOutline(true) }),
+	})
+	registerAction(action.Action{
+		Name:        "Editor.ColorerLocateFunction",
+		Area:        "Editor",
+		Label:       "Locate function",
+		LabelKey:    "Action.Editor.ColorerLocateFunction",
+		Description: "Go to the function named by the word under the cursor (Colorer)",
+		DescKey:     "Action.Editor.ColorerLocateFunction.Desc",
+		MenuPath:    "Search",
+		Handler:     withEditor(func(ev *editor.EditorView) { ev.ColorerLocateFunction() }),
+	})
+	registerAction(action.Action{
+		Name:        "Editor.ColorerChooseType",
+		Area:        "Editor",
+		Label:       "Choose file type",
+		LabelKey:    "Action.Editor.ColorerChooseType",
+		Description: "Pick the Colorer file type to highlight the file as, or go back to choosing it by file name (Colorer)",
+		DescKey:     "Action.Editor.ColorerChooseType.Desc",
+		MenuPath:    "Options",
+		Handler:     withEditor(func(ev *editor.EditorView) { ev.ColorerChooseType() }),
+	})
+	registerAction(action.Action{
+		Name:        "Editor.ColorerSelectRegion",
+		Area:        "Editor",
+		Label:       "Select region",
+		LabelKey:    "Action.Editor.ColorerSelectRegion",
+		Description: "Select the syntax region under the cursor (Colorer)",
+		DescKey:     "Action.Editor.ColorerSelectRegion.Desc",
+		MenuPath:    "Edit",
+		Handler:     withEditor(func(ev *editor.EditorView) { ev.ColorerSelectRegion() }),
+	})
+	registerAction(action.Action{
+		Name:        "Editor.ColorerUpdateHighlighting",
+		Area:        "Editor",
+		Label:       "Update highlighting",
+		LabelKey:    "Action.Editor.ColorerUpdateHighlighting",
+		Description: "Drop the colours computed for the file and compute them again (Colorer)",
+		DescKey:     "Action.Editor.ColorerUpdateHighlighting.Desc",
+		Handler:     withEditor(func(ev *editor.EditorView) { ev.ColorerUpdateHighlighting() }),
+	})
+	registerAction(action.Action{
+		Name:        "Editor.ColorerReloadBase",
+		Area:        "Editor",
+		Label:       "Reload Colorer base",
+		LabelKey:    "Action.Editor.ColorerReloadBase",
+		Description: "Load the Colorer configuration afresh, say what is wrong with it, and restart Colorer in the open editors",
+		DescKey:     "Action.Editor.ColorerReloadBase.Desc",
+		Handler:     withPF(func(pf *panel.PanelsFrame) { actionColorerReloadBase(pf) }),
+	})
+	registerAction(action.Action{
 		Name:        "Editor.Replace",
 		Area:        "Editor",
 		Label:       "Replace",

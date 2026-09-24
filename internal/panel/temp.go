@@ -27,6 +27,9 @@ const tempPanelSlotCount = 10
 type tempPanelReference struct {
 	Id      uint64
 	Source  vfs.VFS
+	// source is the upstream package-private spelling retained for tests and
+	// older in-package helpers. Store operations normalize it to Source.
+	source  vfs.VFS
 	path    string
 	item    vfs.VFSItem
 	display string
@@ -89,6 +92,12 @@ func (s *TempPanelStore) appendReferences(slot int, refs []tempPanelReference) {
 	defer s.mu.Unlock()
 
 	for _, ref := range refs {
+		if ref.Source == nil {
+			ref.Source = ref.source
+		}
+		if ref.source == nil {
+			ref.source = ref.Source
+		}
 		if ref.Source == nil || ref.path == "" {
 			continue
 		}
@@ -110,6 +119,16 @@ func (s *TempPanelStore) appendReferences(slot int, refs []tempPanelReference) {
 		}
 		s.slots[slot] = append(s.slots[slot], ref)
 	}
+}
+
+// resolve preserves the upstream in-package helper name while the exported
+// Resolve method remains the VFS-facing entry point.
+func (t *TempPanelVFS) resolve(path string) (tempPanelReference, string, bool, bool) {
+	ref, realPath, top, ok := t.Resolve(path)
+	if ref.Source != nil && ref.source == nil {
+		ref.source = ref.Source
+	}
+	return ref, realPath, top, ok
 }
 
 func (s *TempPanelStore) references(slot int) []tempPanelReference {
@@ -716,6 +735,14 @@ func (t *TempPanelVFS) HandlePanelAction(app vfs.App, action vfs.PanelAction, pa
 					pf.SwitchToVFS(fsp, opened)
 				}
 				return true
+			} else if isNotListableDirectory(err) {
+				// A folder the host will not list (#814) is refused in
+				// place; running it through Execute would hand a directory
+				// to the shell.
+				if fsp := pf.GetActivePanel(); fsp != nil {
+					fsp.reportNotListableDirectory(err)
+				}
+				return true
 			}
 		}
 	}
@@ -798,6 +825,10 @@ func (t *TempPanelVFS) showSelectedOnPassive(pf *PanelsFrame) bool {
 		selection = ref.Source.Base(realPath)
 	}
 	if err := opened.SetPath(target); err != nil {
+		if isNotListableDirectory(err) {
+			passive.reportNotListableDirectory(err)
+			return true
+		}
 		return false
 	}
 	passive.PendingSelection = selection

@@ -48,10 +48,12 @@ same four colors in its *Files highlighting* dialog (*Normal file name*,
 *Selected file name*, *File name under cursor*, *File name selected under
 cursor*); a group copied from Far therefore works here as written.
 
-The cursor-specific keys are optional. If one is omitted, the corresponding
-ordinary color (`NormalColor` or `SelectedColor`) is used. This makes it
-possible to keep the cursor visible on selected files without changing the
-normal selected-file color.
+The four keys are independent, as in Far Manager. A state whose key is
+omitted keeps the panel's own color for that state: `Panel.Text`,
+`Panel.Text.Selected`, `Panel.Cursor` or `Panel.Cursor.Selected`. In
+particular `SelectedColor` does not paint a selected file under the cursor, so
+a group can give selected files a background of their own and the cursor still
+stands out on them. Set `SelectedCursorColor` to color that state as well.
 
 ### Matching Order and the Missing Mask
 

@@ -261,6 +261,9 @@ func (ac *AutoCompleteMenu) UpdateMatches() {
 	text := ac.Edit.GetText()
 	if text != "" {
 		matcher := NewFuzzyMatcher(text, false)
+		if ac.Edit.StrictAutoComplete {
+			matcher.maxDistance = 0
+		}
 		seen := make(map[string]bool)
 		type histMatch struct {
 			text       string

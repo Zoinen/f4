@@ -277,7 +277,15 @@ func coreVFSItem(entry coreEntry) vfs.VFSItem {
 	if entry.ModUnix != 0 {
 		mtime = time.Unix(entry.ModUnix, 0)
 	}
+	known := vfs.MetadataExplicit | vfs.MetadataHidden
+	if entry.Mode != 0 {
+		known |= vfs.MetadataPermissions | vfs.MetadataExecutable
+	}
+	if entry.ModUnix != 0 {
+		known |= vfs.MetadataMTime
+	}
 	return vfs.VFSItem{
+		KnownMetadata: known, SizeKnown: true, IsExecutable: entry.Mode&0111 != 0,
 		Name: entry.Name, Size: entry.Size, IsDir: entry.IsDir, MTime: mtime,
 		Mode: mode, IsHidden: entry.Hidden || strings.HasPrefix(entry.Name, "."),
 		IsSymlink: entry.IsLink, UnixMode: entry.Mode,

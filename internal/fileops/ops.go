@@ -14,7 +14,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -260,6 +259,25 @@ type FileOpState struct {
 	Buffer       []byte
 	IsMove       bool
 	S2SDir       int // 0: unknown, 1: push, 2: pull, 3: disabled
+	// AccessRights is the F5/F6 "Access rights" choice for this operation.
+	AccessRights AccessRightsMode
+	// parentRights caches destination folder permissions for the inherit
+	// mode. See parentRights() for why it needs no lock.
+	parentRights map[string]uint32
+
+	// The other choices of the F5/F6 dialog (#722); FileOpOptions says what
+	// each of them means.
+	CopySymlinksAsLinks bool
+	IgnoreReadErrors    bool
+	IgnoreWriteErrors   bool
+	ReadAttempts        int
+	// FailedCount counts the items an ignored error left behind. A move keeps
+	// the source of an item whenever this or SkippedCount grew while the item
+	// was copied.
+	FailedCount int
+	// Report is the log and the tallies of an operation that ignores errors,
+	// and nil for any other.
+	Report *opReport
 }
 
 // FormatIntWithSpaces converts an int64 to string with spaces as thousands separators.
@@ -422,11 +440,26 @@ func ExecuteFileOpWithResult(pf vtui.Frame, srcVfs, dstVfs vfs.VFS, names []stri
 // boundary. Panel VFS instances are navigable, so consulting GetPath after a
 // goroutine or queued task starts can otherwise target same-named files in a
 // different directory.
+func ExecuteFileOpAt(srcVfs, dstVfs vfs.VFS, srcBasePath string, names []string, destInput string, isMove bool, mode int, onComplete func()) {
+	ExecuteFileOpAtWithOptions(srcVfs, dstVfs, srcBasePath, names, destInput, isMove, mode, DefaultFileOpOptions(), onComplete)
+}
+
+// ExecuteFileOpAtWithOptions is ExecuteFileOpAt for a caller that has asked
+// the user what the operation should do, instead of taking the configured
+// defaults.
+func ExecuteFileOpAtWithOptions(srcVfs, dstVfs vfs.VFS, srcBasePath string, names []string, destInput string, isMove bool, mode int, opts FileOpOptions, onComplete func()) {
+	executeFileOpAtWithOptions(nil, srcVfs, dstVfs, srcBasePath, names, destInput, isMove, mode, opts, onComplete, nil)
+}
+
 func ExecuteFileOpAtIn(pf vtui.Frame, srcVfs, dstVfs vfs.VFS, srcBasePath string, names []string, destInput string, isMove bool, mode int, onComplete func()) {
-	executeFileOpAt(pf, srcVfs, dstVfs, srcBasePath, names, destInput, isMove, mode, onComplete, nil)
+	executeFileOpAtWithOptions(pf, srcVfs, dstVfs, srcBasePath, names, destInput, isMove, mode, DefaultFileOpOptions(), onComplete, nil)
 }
 
 func executeFileOpAt(pf vtui.Frame, srcVfs, dstVfs vfs.VFS, srcBasePath string, names []string, destInput string, isMove bool, mode int, onComplete func(), onResult func(error)) {
+	executeFileOpAtWithOptions(pf, srcVfs, dstVfs, srcBasePath, names, destInput, isMove, mode, DefaultFileOpOptions(), onComplete, onResult)
+}
+
+func executeFileOpAtWithOptions(pf vtui.Frame, srcVfs, dstVfs vfs.VFS, srcBasePath string, names []string, destInput string, isMove bool, mode int, opts FileOpOptions, onComplete func(), onResult func(error)) {
 	// A wildcard in the last component is a rename mask, as in far2l: the
 	// files land in the directory before it, under names the mask generates.
 	// Taken literally it would instead create a file called "*.1".
@@ -479,7 +512,7 @@ func executeFileOpAt(pf vtui.Frame, srcVfs, dstVfs vfs.VFS, srcBasePath string, 
 	vtui.DebugLog("FILEOP: %s src=%T base=%q names=%v dst=%T destPath=%q isTargetDir=%v mask=%q mode=%d",
 		actionDesc, srcVfs, srcBasePath, names, dstVfs, destPath, isTargetDir, mask, mode)
 
-	runFunc := func(ctx context.Context, reporter TaskReporter, anchor vtui.Frame) error {
+	runBody := func(ctx context.Context, reporter TaskReporter, anchor vtui.Frame, report *opReport) error {
 		// An interactive transfer belongs to its originating panels. Queue
 		// bookkeeping must not move overwrite/error dialogs to the queue tab.
 		if pf != nil {
@@ -512,7 +545,7 @@ func executeFileOpAt(pf vtui.Frame, srcVfs, dstVfs vfs.VFS, srcBasePath string, 
 				reporter.UpdateScan(currentPath, stats.Files, stats.Dirs)
 			}
 		}
-		bulkCopyEligible := !isMove && mask == "" && !SameVFSInstance(srcVfs, dstVfs) && transferNamesAreIdentity(srcVfs, dstVfs, srcBasePath, names)
+		bulkCopyEligible := !isMove && mask == "" && !SameVFSInstance(srcVfs, dstVfs) && transferNamesAreIdentity(srcVfs, dstVfs, srcBasePath, names) && opts.bulkCompatible()
 		if _, ok := srcVfs.(vfs.BulkCopierAt); ok && bulkCopyEligible {
 			if bulkScanner, ok := srcVfs.(vfs.BulkScannerAt); ok {
 				totalStats, scanErr = bulkScanner.ScanBulkAt(ctx, srcBasePath, names, scanCallback)
@@ -662,7 +695,9 @@ func executeFileOpAt(pf vtui.Frame, srcVfs, dstVfs vfs.VFS, srcBasePath string, 
 			Anchor:      anchor,
 			Buffer:      make([]byte, 128*1024),
 			IsMove:      isMove,
+			Report:      report,
 		}
+		opts.applyTo(state, isMove)
 
 		updateUI(true)
 		// OPTIMIZATION: Check if the source VFS supports bulk copying (e.g. for sequential archives).
@@ -719,6 +754,10 @@ func executeFileOpAt(pf vtui.Frame, srcVfs, dstVfs vfs.VFS, srcBasePath string, 
 				if renamed {
 					vtui.DebugLog("FILEOP: Optimized server-side rename: %s -> %s", srcPath, targetItemPath)
 					handleArchiveIndexOp(srcVfs, srcPath, dstVfs, targetItemPath, true)
+					// A rename keeps the object's own permissions and never passes
+					// through destinationRights, so "Inherit" has to reach it here.
+					inheritMovedTree(ctx, state, dstVfs, targetItemPath, 0)
+					state.fileCopied(srcPath, targetItemPath)
 
 					itemStat, _ := dstVfs.Stat(ctx, targetItemPath)
 					if itemStat.IsDir {
@@ -740,13 +779,17 @@ func executeFileOpAt(pf vtui.Frame, srcVfs, dstVfs vfs.VFS, srcBasePath string, 
 				}
 			}
 
+			leftBehind := state.SkippedCount + state.FailedCount
 			err := recursiveCopy(ctx, srcVfs, srcPath, dstVfs, targetItemPath, state, 0)
 			if err != nil {
 				vtui.DebugLog("FILEOP: copy %q -> %q failed: %v", srcPath, targetItemPath, err)
 				return err
 			}
 
-			if isMove && state.SkippedCount == 0 {
+			// Only what this item left behind keeps its source. The counters run
+			// for the whole operation, and a file skipped in an earlier item is
+			// no reason to keep the source of a later one that arrived whole.
+			if isMove && state.SkippedCount+state.FailedCount == leftBehind {
 				if err := srcVfs.Remove(ctx, srcPath); err != nil {
 					return &vfs.PartialOperationError{
 						Operation: "move source cleanup",
@@ -759,6 +802,19 @@ func executeFileOpAt(pf vtui.Frame, srcVfs, dstVfs vfs.VFS, srcBasePath string, 
 			updateUI(true)
 		}
 		return nil
+	}
+
+	runFunc := func(ctx context.Context, reporter TaskReporter, anchor vtui.Frame) error {
+		if !opts.Tolerant() {
+			return runBody(ctx, reporter, anchor, nil)
+		}
+		// Ignoring errors is a promise to say afterwards what was left behind
+		// (#722): such a run ends with a summary and its log however it ends.
+		report := openOpReport(actionDesc, opts, srcBasePath, names, destPath)
+		err := runBody(ctx, reporter, anchor, report)
+		report.close(err)
+		showOpSummary(isMove, report, err)
+		return err
 	}
 
 	if mode == 0 { // Queue
@@ -835,7 +891,8 @@ func executeFileOpAt(pf vtui.Frame, srcVfs, dstVfs vfs.VFS, srcBasePath string, 
 				if onResult != nil {
 					onResult(err)
 				}
-				if err != nil && err != context.Canceled {
+				// A run that ignores errors has already reported this in its summary.
+				if err != nil && err != context.Canceled && !opts.Tolerant() {
 					vtui.ShowMessage(" Error ", fmt.Sprintf("Operation failed:\n%v", err), []string{"&Ok"})
 				}
 			})
@@ -1221,6 +1278,17 @@ func bulkCopyTargetsAbsent(ctx context.Context, destination vfs.VFS, directory s
 	return true
 }
 
+// foldOSPathCase lowercases both sides of a source/destination comparison when
+// the OS filesystem ignores case, so that copying Foo onto foo is caught as
+// copying a file onto itself. Under Wine's posix personality the filesystem is
+// the host's and distinguishes them, and folding would turn a legitimate copy of
+// /a/Foo to /a/foo into a refusal.
+func foldOSPathCase(cleanSrc, cleanDst string, caseInsensitive bool) (string, string) {
+	if caseInsensitive {
+		return strings.ToLower(cleanSrc), strings.ToLower(cleanDst)
+	}
+	return cleanSrc, cleanDst
+}
 func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs vfs.VFS, destPath string, state *FileOpState, depth int) (resultErr error) {
 	if depth > 1000 {
 		return fmt.Errorf("maximum recursion depth exceeded (circular structure?)")
@@ -1231,6 +1299,9 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 
 	stat, err := srcVfs.Stat(ctx, srcPath)
 	if err != nil {
+		if state.tolerateRead(srcPath, err) {
+			return nil
+		}
 		return err
 	}
 
@@ -1263,9 +1334,8 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 	} else if !dstIsURI {
 		cleanDst = path.Clean("/" + strings.TrimLeft(strings.ReplaceAll(realDst, "\\", "/"), "/"))
 	}
-	if runtime.GOOS == "windows" && srcIsOS && dstIsOS {
-		cleanSrc = strings.ToLower(cleanSrc)
-		cleanDst = strings.ToLower(cleanDst)
+	if srcIsOS && dstIsOS {
+		cleanSrc, cleanDst = foldOSPathCase(cleanSrc, cleanDst, vfs.WindowsPersonality())
 	}
 	sameNamespace := (srcIsOS && dstIsOS) || vfs.SameSession(identitySource, identityTarget)
 
@@ -1288,26 +1358,55 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 		return fmt.Errorf("cannot copy file into its own subfolder")
 	}
 
+	if stat.IsSymlink && state.CopySymlinksAsLinks {
+		if handled, err := copySymlinkAsLink(ctx, srcVfs, srcPath, dstVfs, destPath, state, stat); handled {
+			return err
+		}
+	}
+
 	dstStat, err := dstVfs.Stat(ctx, destPath)
 	exists := err == nil
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		if state.tolerateWrite(destPath, err) {
+			return nil
+		}
 		return err
 	}
 
 	if stat.IsDir {
 		if !exists {
 			if err := dstVfs.MkDir(ctx, destPath); err != nil {
+				if state.tolerateWrite(destPath, err) {
+					return nil
+				}
 				return err
 			}
 		} else if !dstStat.IsDir {
-			return fmt.Errorf("cannot overwrite file with folder: %s", dstVfs.Base(destPath))
+			err := fmt.Errorf("cannot overwrite file with folder: %s", dstVfs.Base(destPath))
+			if state.tolerateWrite(destPath, err) {
+				return nil
+			}
+			return err
+		}
+
+		dirRights := destinationRights(ctx, state, dstVfs, destPath, stat.UnixMode, true, exists)
+		if state != nil && state.AccessRights == AccessRightsInherit && dirRights != 0 {
+			// What the children inherit is this folder, so it has to carry
+			// its own inherited permissions before they are copied into it.
+			// The other two modes keep applying the source's permissions
+			// after the walk, where a read-only source folder cannot stop
+			// the walk from writing into the copy.
+			_ = dstVfs.SetAttributes(ctx, destPath, vfs.VFSItem{UnixMode: dirRights, Uid: -1, Gid: -1})
+		}
+		if state.AccessRights == AccessRightsInherit {
+			applyPlatformRights(ctx, state, srcVfs, srcPath, dstVfs, destPath)
 		}
 
 		var items []vfs.VFSItem
 		err := srcVfs.ReadDir(ctx, srcPath, func(chunk []vfs.VFSItem) {
 			items = append(items, chunk...)
 		})
-		if err != nil {
+		if err != nil && !state.tolerateRead(srcPath, err) {
 			return err
 		}
 		for _, item := range items {
@@ -1323,10 +1422,11 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 		itemToSet := stat
 		itemToSet.Uid = -1
 		itemToSet.Gid = -1
-		if itemToSet.UnixMode == 0 {
-			itemToSet.UnixMode = 0755
-		}
+		itemToSet.UnixMode = dirRights
 		_ = dstVfs.SetAttributes(ctx, destPath, itemToSet)
+		if state.AccessRights == AccessRightsCopy {
+			applyPlatformRights(ctx, state, srcVfs, srcPath, dstVfs, destPath)
+		}
 
 		if state.Tracker != nil {
 			state.Tracker.DirDone()
@@ -1372,31 +1472,34 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 	}
 
 	skipFile := func() {
-		state.SkippedCount++
-		if state.Tracker != nil {
-			state.Tracker.FileSkipped()
-			if state.UpdateUI != nil {
-				state.UpdateUI(true)
-			}
-		}
+		state.skipItem(srcPath, destPath)
 	}
 
 	destPathForFile := destPath
 	destinationExisted := false
+	var existingRights uint32
 
 	for {
 		dstStat, err := dstVfs.Stat(ctx, destPathForFile)
 		exists := err == nil
 		destinationExisted = exists
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			if state.tolerateWrite(destPathForFile, err) {
+				return nil
+			}
 			return err
 		}
 
 		if !exists {
 			break
 		}
+		existingRights = dstStat.UnixMode
 		if dstStat.IsDir {
-			return fmt.Errorf("cannot overwrite folder with file: %s", dstVfs.Base(destPathForFile))
+			err := fmt.Errorf("cannot overwrite folder with file: %s", dstVfs.Base(destPathForFile))
+			if state.tolerateWrite(destPathForFile, err) {
+				return nil
+			}
+			return err
 		}
 		if state.SkipAll {
 			skipFile()
@@ -1445,6 +1548,8 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 	if ssc, ok := dstVfs.(vfs.ServerSideCopier); ok && vfs.SameSession(srcVfs, dstVfs) {
 		err := ssc.Copy(destinationCtx, srcPath, destPathForFile)
 		if err == nil {
+			rightsAfterExternalCopy(ctx, state, dstVfs, destPathForFile, stat.UnixMode, destinationExisted, existingRights)
+			state.fileCopied(srcPath, destPathForFile)
 			if state.Tracker != nil {
 				state.Tracker.UpdateBytes(int(stat.Size))
 				handleArchiveIndexOp(srcVfs, srcPath, dstVfs, destPathForFile, state.IsMove)
@@ -1526,6 +1631,8 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 		}
 
 		if pushed || pulled {
+			rightsAfterExternalCopy(ctx, state, dstVfs, destPathForFile, stat.UnixMode, destinationExisted, existingRights)
+			state.fileCopied(srcPath, destPathForFile)
 			if state.Tracker != nil {
 				state.Tracker.UpdateBytes(int(stat.Size))
 				handleArchiveIndexOp(srcVfs, srcPath, dstVfs, destPathForFile, state.IsMove)
@@ -1543,10 +1650,20 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 	}
 
 	var srcFile vfs.ReadAtCloser
+	openFailures := 0
 	for {
 		srcFile, err = srcVfs.Open(ctx, srcPath)
 		if err == nil {
 			break
+		}
+		if state.IgnoreReadErrors && !OperationMustNotRetry(err) {
+			openFailures++
+			if attempts := max(state.ReadAttempts, 1); openFailures < attempts {
+				state.note("RETRY    %s: open failed (attempt %d of %d): %v", srcPath, openFailures, attempts, err)
+				continue
+			}
+			state.tolerateRead(srcPath, err)
+			return nil
 		}
 		choice := AskError(ctx, "Cannot open source file", err, state.Anchor)
 		if choice == 1 {
@@ -1573,6 +1690,9 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 		dstFile, err = dstVfs.Create(writeCtx, destPathForFile)
 		if err == nil {
 			break
+		}
+		if state.tolerateWrite(destPathForFile, err) {
+			return nil
 		}
 		choice := AskError(ctx, "Cannot create destination file", err, state.Anchor)
 		if choice == 1 {
@@ -1650,29 +1770,29 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 		buf = make([]byte, 128*1024)
 	}
 
-	for {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		n, rerr := srcFile.Read(ctx, buf)
-		if n > 0 {
-			if _, werr := dstFile.Write(buf[:n]); werr != nil {
-				return werr
+	if err := pumpFile(ctx, state, srcFile, dstFile, buf, srcPath); err != nil {
+		var readErr *readFailure
+		var writeErr *writeFailure
+		switch {
+		case errors.As(err, &readErr):
+			if state.tolerateRead(srcPath, readErr.err) {
+				return nil
 			}
-			if state.OnBytes != nil {
-				state.OnBytes(n)
+			return readErr.err
+		case errors.As(err, &writeErr):
+			if state.tolerateWrite(destPathForFile, writeErr.err) {
+				return nil
 			}
+			return writeErr.err
 		}
-		if rerr != nil {
-			if rerr == io.EOF {
-				break
-			}
-			return rerr
-		}
+		return err
 	}
 
 	commitAttempted = true
 	if cerr := closeDestination(); cerr != nil {
+		if state.tolerateWrite(destPathForFile, cerr) {
+			return nil
+		}
 		return cerr
 	}
 	copySuccess = true
@@ -1681,10 +1801,10 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 		itemToSet := stat
 		itemToSet.Uid = -1
 		itemToSet.Gid = -1
-		if itemToSet.UnixMode == 0 {
-			itemToSet.UnixMode = 0644
-		}
+		itemToSet.UnixMode = destinationRights(ctx, state, dstVfs, destPathForFile, stat.UnixMode, false, destinationExisted)
 		_ = dstVfs.SetAttributes(ctx, destPathForFile, itemToSet)
+		applyPlatformRights(ctx, state, srcVfs, srcPath, dstVfs, destPathForFile)
+		state.fileCopied(srcPath, destPathForFile)
 	}
 
 	if state.Tracker != nil {
@@ -1945,10 +2065,6 @@ func NewGlobalAwareReporter(original TaskReporter, getGlobal func(action string)
 		tracker:   tracker,
 		onBytes:   onBytes,
 	}
-}
-
-func ExecuteFileOpAt(srcVfs, dstVfs vfs.VFS, srcBasePath string, names []string, destInput string, isMove bool, mode int, onComplete func()) {
-	executeFileOpAt(nil, srcVfs, dstVfs, srcBasePath, names, destInput, isMove, mode, onComplete, nil)
 }
 
 // ExecuteFileOpAtWithResult performs a transfer against the captured source

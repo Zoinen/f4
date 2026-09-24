@@ -238,7 +238,9 @@ func TestLangConsistency(t *testing.T) {
 			"fi": {whatlanggo.Fin, whatlanggo.Eng},
 			"hy": {whatlanggo.Eng},
 			"lt": {whatlanggo.Lit, whatlanggo.Eng},
-			"lv": {whatlanggo.Lav, whatlanggo.Eng},
+			// Short Latvian UI explanations are sometimes classified as the
+			// closely related Lithuanian, even with exclusively Latvian words.
+			"lv": {whatlanggo.Lav, whatlanggo.Lit, whatlanggo.Eng},
 			"et": {whatlanggo.Est, whatlanggo.Eng},
 			"es": {whatlanggo.Spa, whatlanggo.Eng},
 			"he": {whatlanggo.Heb, whatlanggo.Eng},
@@ -340,7 +342,10 @@ func TestLangConsistency(t *testing.T) {
 			// 2. N-gram language detection
 			cleanVal := placeholderRe.ReplaceAllString(val, "")
 			cleanVal = strings.ReplaceAll(cleanVal, "&", "")
-			if utf8.RuneCountInString(cleanVal) > 50 {
+			// whatlanggo has no Armenian model. For Armenian text containing
+			// Latin product names it confidently classifies only those names.
+			// The alphabet and homoglyph canaries still validate Armenian.
+			if code != "hy" && utf8.RuneCountInString(cleanVal) > 50 {
 				info := whatlanggo.Detect(cleanVal)
 				if info.IsReliable() && info.Confidence > 0.90 {
 					allowed := false
@@ -369,6 +374,54 @@ func TestLangConsistency(t *testing.T) {
 	for code := range baseline {
 		if !seenCodes[code] {
 			t.Errorf("coverage baseline requires %s.lng but the language file is missing", code)
+		}
+	}
+}
+
+// TestLanguageFilesHaveNoDuplicateStringKeys checks the raw files instead of
+// the parsed INI map: parsers necessarily keep only the last value, which
+// would hide exactly the kind of stale/duplicate localization entry reported
+// in issue #1218.  Keep English in this check too; the older consistency loop
+// treats it as the baseline and therefore skips its duplicate check.
+func TestLanguageFilesHaveNoDuplicateStringKeys(t *testing.T) {
+	files, err := filepath.Glob(filepath.Join("lang", "*.lng"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) == 0 {
+		t.Fatal("no .lng files under lang/")
+	}
+
+	for _, file := range files {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Errorf("%s: %v", file, err)
+			continue
+		}
+		seen := make(map[string]int)
+		inStrings := false
+		for lineNumber, line := range strings.Split(string(data), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "[Strings]") {
+				inStrings = true
+				continue
+			}
+			if strings.HasPrefix(trimmed, "[") {
+				inStrings = false
+				continue
+			}
+			if !inStrings || trimmed == "" || strings.HasPrefix(trimmed, ";") || strings.HasPrefix(trimmed, "#") {
+				continue
+			}
+			idx := strings.IndexByte(trimmed, '=')
+			if idx <= 0 {
+				continue
+			}
+			key := strings.TrimSpace(trimmed[:idx])
+			seen[key]++
+			if seen[key] > 1 {
+				t.Errorf("%s:%d: duplicate [Strings] key %q (occurrence %d)", file, lineNumber+1, key, seen[key])
+			}
 		}
 	}
 }

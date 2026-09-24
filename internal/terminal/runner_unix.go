@@ -3,14 +3,20 @@
 package terminal
 
 import (
-	"github.com/unxed/f4/vfs"
+	"context"
 	"os/exec"
 	"strings"
 	"syscall"
+
+	"github.com/unxed/f4/vfs"
 )
 
 func newLocalShellCommand(command string) *exec.Cmd {
-	return exec.Command(GetSystemShell(), "-c", command)
+	return exec.Command(GetSystemShell(), "-c", command) // #nosec G204 -- this is the intentional local shell command line.
+}
+
+func newLocalShellCommandContext(ctx context.Context, command string) *exec.Cmd {
+	return exec.CommandContext(ctx, GetSystemShell(), "-c", command) // #nosec G204 -- this is the intentional local shell command line.
 }
 
 func localCommandDialect() vfs.CommandDialect { return vfs.CommandDialectPOSIX }

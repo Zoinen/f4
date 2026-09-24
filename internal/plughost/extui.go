@@ -35,6 +35,7 @@ const (
 	extUiMaxDimension                   = 1<<15 - 1
 	extUiPanelCatalogMetadataCapability = "panelCatalogMetadataV1"
 	extUiPanelCatalogRowsCapability     = "panelCatalogRowsV1"
+	extUiPanelGroupingCapability        = "panelGroupingV1"
 )
 
 // Deferred panel metadata is a required extension of the lockstep protocol. Keep the
@@ -681,6 +682,8 @@ func extUiSemanticStream(msg map[string]any) (string, string, bool) {
 	case "panel_catalog_metadata", "panel_catalog_metadata_rejected":
 		return extUiPanelMessageStream(msg), extui.KindMetadata, true
 	case "panel_catalog_rows", "panel_catalog_rows_rejected":
+		return extUiPanelMessageStream(msg), extui.KindRows, true
+	case "panel_group_page", "panel_group_page_rejected":
 		return extUiPanelMessageStream(msg), extui.KindRows, true
 	}
 	return "", "", false
@@ -4282,6 +4285,7 @@ type ExtUiHost struct {
 	rows                   int
 	panelCatalogMetadataV1 bool
 	panelCatalogRowsV1     bool
+	panelGroupingV1        bool
 	platformServicesV1     bool
 	platform               *platformIPCClient
 	renderer               *ExtUiRenderer
@@ -4363,6 +4367,8 @@ func RunExternalUI(cols, rows int, execPath string, args []string) error {
 		hello, extUiPanelCatalogMetadataCapability)
 	panelCatalogRowsV1 := extUiHelloCapability(
 		hello, extUiPanelCatalogRowsCapability)
+	panelGroupingV1 := extUiHelloCapability(
+		hello, extUiPanelGroupingCapability)
 	platformServicesV1 := runtime.GOOS == "darwin" && extUiHelloCapability(
 		hello, extUiPlatformServicesCapability)
 	previousPanelCatalogMetadata := semantic.SetPanelCatalogMetadataEnabled(
@@ -4371,6 +4377,8 @@ func RunExternalUI(cols, rows int, execPath string, args []string) error {
 	previousPanelCatalogRows := semantic.SetPanelCatalogRowsEnabled(
 		panelCatalogRowsV1)
 	defer semantic.SetPanelCatalogRowsEnabled(previousPanelCatalogRows)
+	previousPanelGrouping := semantic.SetPanelGroupingEnabled(panelGroupingV1)
+	defer semantic.SetPanelGroupingEnabled(previousPanelGrouping)
 	previousDirectoryPreviews := semantic.DirectoryPreviewsEnabled.Swap(panelCatalogRowsV1 && extUiHelloCapability(hello, "directoryPreviewsV1"))
 	defer semantic.DirectoryPreviewsEnabled.Store(previousDirectoryPreviews)
 	previousDelta := semantic.PanelCatalogDeltaEnabled.Swap(extUiHelloCapability(hello, "panelCatalogDeltaV1"))
@@ -4423,6 +4431,7 @@ func RunExternalUI(cols, rows int, execPath string, args []string) error {
 		conn: conn, send: sender, cols: cols, rows: rows,
 		panelCatalogMetadataV1: panelCatalogMetadataV1,
 		panelCatalogRowsV1:     panelCatalogRowsV1,
+		panelGroupingV1:        panelGroupingV1,
 		platformServicesV1:     platformServicesV1,
 	}
 	host.platform = newPlatformIPCClient(sender, platformServicesV1)
@@ -4584,6 +4593,8 @@ func (h *ExtUiHost) handleMessageWithBenchmark(msg map[string]any, timing *navtr
 		h.queuePanelCatalogMetadata(msg)
 	case "panel_catalog_rows_request":
 		h.queuePanelCatalogRows(msg)
+	case "panel_group_page_request":
+		h.queuePanelGroupPage(msg)
 	case "stream_snapshot_request":
 		if h.renderer != nil {
 			h.renderer.SendStreamSnapshot(extUiString(msg, "streamId"))
@@ -4693,6 +4704,42 @@ func (h *ExtUiHost) queuePanelCatalogRows(msg map[string]any) bool {
 		go func() {
 			if err := h.send.Send(response); err != nil {
 				vtui.DebugLog("EXTUI_HOST: catalog rows response failed: %v", err)
+			}
+		}()
+		return false
+	})
+	return true
+}
+
+func (h *ExtUiHost) queuePanelGroupPage(msg map[string]any) bool {
+	if h == nil || !h.panelGroupingV1 || vtui.FrameManager == nil {
+		return false
+	}
+	request := make(map[string]any, len(msg))
+	for key, value := range msg {
+		request[key] = value
+	}
+	vtui.FrameManager.PostTaskWithRedrawDecision(func() bool {
+		catalogRevision := extUiInt64(request, "catalogRevision")
+		panelID := extUiString(request, "panelId")
+		path := extUiString(request, "path")
+		offset := ExtUiInt(request, "offset")
+		limit := ExtUiInt(request, "limit")
+		response, ok := Presentation.GroupPage(
+			panelID, path, catalogRevision, offset, limit)
+		if !ok {
+			response = map[string]any{
+				"type":            "panel_group_page_rejected",
+				"panelId":         panelID,
+				"path":            path,
+				"catalogRevision": catalogRevision,
+				"offset":          offset,
+				"limit":           limit,
+			}
+		}
+		go func() {
+			if err := h.send.Send(response); err != nil {
+				vtui.DebugLog("EXTUI_HOST: group page response failed: %v", err)
 			}
 		}()
 		return false

@@ -582,27 +582,50 @@ CursorColor = foreground:#FF9238
 	}
 }
 
-func TestFileHighlighter_SelectedCursorFallsBackToSelectedColor(t *testing.T) {
+// SelectedColor paints a selected file that is not under the cursor and
+// nothing else: a selected file under the cursor keeps Panel.Cursor.Selected
+// unless the group sets SelectedCursorColor, as in far2l. Falling back to
+// SelectedColor made the cursor vanish on selected files whenever that colour
+// carried a background (#1150).
+func TestFileHighlighter_SelectedCursorDoesNotFallBackToSelectedColor(t *testing.T) {
 	vtui.SetDefaultPalette()
 	SetDefaultF4Palette()
 
-	iniData := `[Highlight_0]
-Name = Pictures
-Mask = *.jpg
-SelectedColor = foreground:#123456
-CursorColor = foreground:#FF9238
-`
-	highlighter := &FileHighlighter{}
-	highlighter.LoadFromIni(ini.Parse(strings.NewReader(iniData)))
+	oldCfg := config.App
+	defer func() { config.App = oldCfg }()
+	config.App.EnforceColorCorrection = false
 
 	base := vtui.Palette[ColPanelSelectedCursor]
 	item := vfs.VFSItem{Name: "photo.jpg"}
+
+	highlighter := &FileHighlighter{}
+	highlighter.LoadFromIni(ini.Parse(strings.NewReader(`[Highlight_0]
+Name = Pictures
+Mask = *.jpg
+SelectedColor = foreground:#FFFFFF | background:#0000A0
+CursorColor = foreground:#FF9238
+`)))
+	if got := highlighter.GetColor(&item, base, true, true); got != base {
+		t.Fatalf("selected file under cursor = %#x, want Panel.Cursor.Selected %#x untouched", got, base)
+	}
+	selected := highlighter.GetColor(&item, vtui.Palette[ColPanelSelectedText], true, false)
+	if fg, bg := vtui.GetRGBFore(selected), vtui.GetRGBBack(selected); fg != 0xFFFFFF || bg != 0x0000A0 {
+		t.Fatalf("selected file off the cursor = #%06x on #%06x, want SelectedColor #FFFFFF on #0000A0", fg, bg)
+	}
+
+	// An explicit SelectedCursorColor still applies to that state.
+	highlighter.LoadFromIni(ini.Parse(strings.NewReader(`[Highlight_0]
+Name = Pictures
+Mask = *.jpg
+SelectedColor = foreground:#FFFFFF | background:#0000A0
+SelectedCursorColor = foreground:#123456
+`)))
 	got := highlighter.GetColor(&item, base, true, true)
 	if fg := vtui.GetRGBFore(got); fg != 0x123456 {
-		t.Fatalf("selected file under cursor foreground = #%06x, want SelectedColor #123456", fg)
+		t.Fatalf("selected file under cursor foreground = #%06x, want SelectedCursorColor #123456", fg)
 	}
 	if bg, want := vtui.GetRGBBack(got), vtui.GetRGBBack(base); bg != want {
-		t.Fatalf("selected file under cursor lost cursor background #%06x, want #%06x", bg, want)
+		t.Fatalf("selected file under cursor background = #%06x, want cursor background #%06x", bg, want)
 	}
 }
 

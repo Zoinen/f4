@@ -317,6 +317,7 @@ bool validPanelState(const QVariantMap &state, const QVariantMap &current,
         QStringLiteral("id"), QStringLiteral("kind"),
         QStringLiteral("path"), QStringLiteral("title"), QStringLiteral("pathIcon"),
         QStringLiteral("galleryLayoutMode"),
+        QStringLiteral("groupBy"),
         QStringLiteral("sourceKind"),
         QStringLiteral("cursorEntryId"),
         QStringLiteral("sortModeName"),
@@ -329,7 +330,10 @@ bool validPanelState(const QVariantMap &state, const QVariantMap &current,
         QStringLiteral("dropAllowed"),
         QStringLiteral("metadataDeferred"),
         QStringLiteral("catalogRowsDeferred"),
+        QStringLiteral("groupsDeferred"),
         QStringLiteral("sortReverse"),
+        QStringLiteral("groupReverse"),
+        QStringLiteral("groupFoldersSeparately"),
         QStringLiteral("useSortGroups"), QStringLiteral("freeSpaceKnown"),
         QStringLiteral("separateFileExtensions"),
         QStringLiteral("loading"),
@@ -348,6 +352,7 @@ bool validPanelState(const QVariantMap &state, const QVariantMap &current,
         QStringLiteral("totalFiles"), QStringLiteral("totalDirectories"), QStringLiteral("diskTotalSpace"),
         QStringLiteral("selectedSize"), QStringLiteral("totalSize"), QStringLiteral("freeSpace"),
         QStringLiteral("totalCount"),
+        QStringLiteral("groupTotal"),
     };
     for (auto it = state.cbegin(); it != state.cend(); ++it) {
         const QString &key = it.key();
@@ -818,6 +823,7 @@ bool applyScenePatch(const QVariantMap &message,
                         QStringLiteral("displayExtension"),
                         QStringLiteral("isDir"), QStringLiteral("isUp"),
                         QStringLiteral("isImage"),
+                        QStringLiteral("thumbnailKind"),
                         QStringLiteral("isHidden"),
                         QStringLiteral("selected"),
                         QStringLiteral("highlightStyleId"),
@@ -873,6 +879,17 @@ bool applyScenePatch(const QVariantMap &message,
                             || (entry.contains(QStringLiteral("isHidden"))
                                 && entry.value(QStringLiteral("isHidden"))
                                        .metaType().id() != QMetaType::Bool)
+                            || (entry.contains(
+                                    QStringLiteral("thumbnailKind"))
+                                && (entry.value(QStringLiteral(
+                                         "thumbnailKind")).metaType().id()
+                                        != QMetaType::QString
+                                    || (entry.value(QStringLiteral(
+                                           "thumbnailKind")).toString()
+                                            != QStringLiteral("image")
+                                        && entry.value(QStringLiteral(
+                                               "thumbnailKind")).toString()
+                                                != QStringLiteral("video"))))
                             || (entry.contains(
                                     QStringLiteral("displayBaseName"))
                                 && entry.value(QStringLiteral(

@@ -295,3 +295,31 @@ func TestKeyRemap_DefaultIniIsInert(t *testing.T) {
 		t.Fatalf("the shipped sample file must remap nothing: %+v / %+v", kr.Exact, kr.Prefix)
 	}
 }
+
+// docs/MACKEYS.md gives Mac users an Insert key with "[Common] RCtrlI=Ins":
+// in the GUI window the physical Control key arrives as Right Ctrl and Command
+// as Left Ctrl. The rule has to turn Control+I into a plain Ins in a menu
+// (discussion #144: the user menu and Bookmarks take Ins on its own) and must
+// leave Command+I alone.
+func TestKeyRemap_MacControlIStandsInForInsert(t *testing.T) {
+	kr := newTestKeyRemap(t, "[Common]\nRCtrlI=Ins\n")
+
+	for _, char := range []rune{0, 'i', '\t'} {
+		control := &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true,
+			VirtualKeyCode: vtinput.VK_I, Char: char, ControlKeyState: vtinput.RightCtrlPressed}
+		if !kr.Apply("Menu", control) {
+			t.Fatalf("Control+I (char %q) was not remapped in a menu", char)
+		}
+		if control.VirtualKeyCode != vtinput.VK_INSERT || control.Char != 0 ||
+			control.ControlKeyState&(vtinput.LeftCtrlPressed|vtinput.RightCtrlPressed) != 0 {
+			t.Fatalf("Control+I (char %q) became vk=%#x char=%q mods=%#x, want a plain Ins",
+				char, control.VirtualKeyCode, control.Char, control.ControlKeyState)
+		}
+
+		command := &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true,
+			VirtualKeyCode: vtinput.VK_I, Char: char, ControlKeyState: vtinput.LeftCtrlPressed}
+		if kr.Apply("Menu", command) || command.VirtualKeyCode != vtinput.VK_I {
+			t.Fatalf("Command+I (char %q) was remapped to vk=%#x", char, command.VirtualKeyCode)
+		}
+	}
+}

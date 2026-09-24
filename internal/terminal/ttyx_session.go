@@ -28,7 +28,9 @@ var (
 )
 
 // SharedTTYXSession connects on the first call and remembers the answer,
-// including a negative one.
+// including a negative one. The first call looks for the terminal this
+// process is running in; a session daemon replaces the answer with the
+// attaching client's terminal through AttachTTYXSession.
 func SharedTTYXSession() *ttyx.Session {
 	ttyxSessionMu.Lock()
 	defer ttyxSessionMu.Unlock()
@@ -36,8 +38,49 @@ func SharedTTYXSession() *ttyx.Session {
 		return ttyxSessionInst
 	}
 	ttyxSessionTried = true
+	ttyxSessionInst = identifyTTYXSession(ttyx.Open())
+	return ttyxSessionInst
+}
 
-	sess, err := ttyx.Open()
+// AttachTTYXSession finds the terminal window again, for the client that has
+// just attached: pid is that client and env reads that client's environment.
+//
+// It exists because of issue #980. The daemon used to identify the window
+// once, from its own ancestry and environment, and keep the answer for its
+// whole life. Those describe the terminal the daemon was started from, so
+// after the session was attached from a new window the key grabs stayed on
+// the old one — which no longer existed — and Ctrl+Shift+P in GNOME Terminal
+// arrived as the passive-panel Ctrl+P again.
+//
+// A client in the same window as before keeps the session it has, so
+// anything built on it — the picture overlay above all — is not disturbed by
+// a reattach that changed nothing. A different window, or none, replaces it,
+// and the old session is closed: nothing is drawn or grabbed any more on a
+// window f4 is not shown in.
+func AttachTTYXSession(pid int, env func(string) string) {
+	sess := identifyTTYXSession(ttyx.OpenFor(pid, env))
+
+	ttyxSessionMu.Lock()
+	old := ttyxSessionInst
+	if sess != nil && old != nil && old.Alive() &&
+		old.Display() == sess.Display() && old.Window() == sess.Window() {
+		ttyxSessionMu.Unlock()
+		sess.Close()
+		vtui.DebugLog("TTYX: client %d is in window %d, the same as before; keeping the session", pid, old.Window())
+		return
+	}
+	ttyxSessionInst, ttyxSessionTried = sess, true
+	ttyxSessionMu.Unlock()
+
+	if old != nil {
+		vtui.DebugLog("TTYX: client %d is not in window %d; that session is closed", pid, old.Window())
+		old.Close()
+	}
+}
+
+// identifyTTYXSession keeps a session only when its window was identified
+// rather than guessed, and starts the one watcher it needs.
+func identifyTTYXSession(sess *ttyx.Session, err error) *ttyx.Session {
 	if err != nil {
 		vtui.DebugLog("TTYX: no session: %v", err)
 		return nil
@@ -51,21 +94,24 @@ func SharedTTYXSession() *ttyx.Session {
 	}
 
 	geom, gerr := sess.Geometry()
-	vtui.DebugLog("TTYX: window %d found through %v, focused=%v, geometry=%+v (%v)",
-		sess.Window(), sess.Source(), sess.Focused(), geom, gerr)
-	ttyxSessionInst = sess
+	vtui.DebugLog("TTYX: window %d on %s found through %v, focused=%v, geometry=%+v (%v)",
+		sess.Window(), sess.Display(), sess.Source(), sess.Focused(), geom, gerr)
 
-	// One watcher for the process: a redraw when anything moves, so that the
+	// One watcher per session: a redraw when anything moves, so that the
 	// frame drawn while the terminal had no focus does not survive the
-	// return of it.
+	// return of it. It ends with the session, which a reattach to another
+	// window now does.
 	// Read on the goroutine that starts this work, not inside it: the
 	// work outlives the call, and reading the global from it races
 	// anything that reassigns vtui.FrameManager meanwhile.
 	frames := vtui.FrameManager
 	go func() {
 		for range sess.Changed() {
+			if !sess.Alive() {
+				return
+			}
 			frames.Redraw()
 		}
 	}()
-	return ttyxSessionInst
+	return sess
 }

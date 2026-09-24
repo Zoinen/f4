@@ -106,4 +106,6 @@ const (
 	CmLeftGrid
 	CmRightIcons
 	CmRightGrid
+	CmLeftGroupMenu
+	CmRightGroupMenu
 )

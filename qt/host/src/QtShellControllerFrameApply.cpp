@@ -154,6 +154,9 @@ void QtShellController::finalizeDecodedFrame(
     if (messageType == QStringLiteral("panel_catalog_rows")
         || messageType == QStringLiteral("panel_catalog_rows_rejected")) {
         emit panelCatalogRowsReceived(message);
+    } else if (messageType == QStringLiteral("panel_group_page")
+               || messageType == QStringLiteral("panel_group_page_rejected")) {
+        emit panelGroupPageReceived(message);
     } else if (messageType == QStringLiteral("panel_catalog_metadata")
                || messageType
                    == QStringLiteral("panel_catalog_metadata_rejected")) {

@@ -49,6 +49,7 @@ type HostAPI interface {
 
 // VFSItem represents a generic file or directory entry.
 type VFSItem struct {
+	KnownMetadata MetadataFields
 	Name string
 	// DisplayName optionally replaces Name in visual surfaces only. Name stays
 	// the provider's stable path component, so duplicate search results can be
@@ -79,6 +80,13 @@ type VFSItem struct {
 	// semantics should treat any IsSymlink as a leaf regardless of
 	// IsDir. Populated by OSVFS.ReadDir; other VFSes leave it false.
 	IsSymlink bool
+	// ReparseTag is the Windows reparse point tag (IO_REPARSE_TAG_*) of an
+	// entry with FILE_ATTRIBUTE_REPARSE_POINT, read the way the Win32
+	// documentation prescribes: FindFirstFile's dwReserved0. It is what
+	// tells a directory junction from a symbolic link, which IsSymlink alone
+	// cannot. Zero means no tag is known: not a reparse point, not Windows,
+	// or a VFS that does not report one. See LinkKindOf.
+	ReparseTag uint32
 	// Device / Inode identify the underlying filesystem object so a
 	// scanner can dedup hard links (same inode reached through
 	// multiple paths in one walk). Both zero means "not populated" —
@@ -1011,6 +1019,61 @@ type ReadAtCloser interface {
 	Read(ctx context.Context, p []byte) (n int, err error)
 	io.Closer
 	Size() int64
+}
+
+// HeadReader is a file system that can hand over the beginning of one of its
+// files cheaply: out of storage it already holds, without a network round
+// trip, and without putting anything on screen to get at it. It is what lets
+// a caller decide what a file is from its content rather than from its name
+// while the user interface waits for the answer -- far2l settles the same
+// question the same way, by handing its format modules a mapped window over
+// the file and no name at all.
+//
+// It asserts cost and silence, and both halves matter, because the caller may
+// be the UI thread itself. A file system that might have to reach a server
+// for those bytes, or would raise a password dialog to decrypt them, must not
+// implement it: the caller's alternative is to answer from the name, which is
+// cheaper and merely less precise, not to stall the panel.
+type HeadReader interface {
+	// ReadHead fills p with the start of path and returns how many bytes it
+	// read. A short read means the file ended, and is not an error.
+	//
+	// ErrHeadUnavailable declines this particular file. Whether a prefix is
+	// cheap can depend on the file rather than the file system -- a member of
+	// a ZIP is decoded as it is read, while a backend that has to unpack a
+	// whole member to hand back any of it would charge the file's full size
+	// for its first block -- and the promise this interface makes is about
+	// the read that actually happens.
+	ReadHead(ctx context.Context, path string, p []byte) (int, error)
+}
+
+// ErrHeadUnavailable is returned by ReadHead for a file whose first bytes
+// cannot be produced on the terms HeadReader promises. It is not a failure:
+// the caller loses an answer it was never owed, and falls back to whatever
+// the name tells it.
+var ErrHeadUnavailable = errors.New("no cheap head read for this file")
+
+// ReadFileHead returns up to limit bytes from the start of path. A file
+// system that cannot supply them under HeadReader's terms yields no bytes and
+// no error: callers treat "nothing to read" and "nothing to read cheaply" the
+// same way, by falling back to whatever the name tells them.
+func ReadFileHead(ctx context.Context, v VFS, path string, limit int) ([]byte, error) {
+	reader, ok := v.(HeadReader)
+	if !ok || limit <= 0 {
+		return nil, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	buf := make([]byte, limit)
+	n, err := reader.ReadHead(ctx, path, buf)
+	if errors.Is(err, ErrHeadUnavailable) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return buf[:n], nil
 }
 
 // SizeRefresher is an open file that can re-measure itself. Size() answers

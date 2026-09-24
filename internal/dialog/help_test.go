@@ -132,3 +132,42 @@ func TestVisRenHelpReference(t *testing.T) {
 		})
 	}
 }
+
+// The Command line topic (issue #991) documents starting f4 with a file and
+// --edit, in English and Russian, and is reachable from the index.
+func TestHelpCommandLineTopic(t *testing.T) {
+	for _, lang := range []string{"en", "ru"} {
+		t.Run(lang, func(t *testing.T) {
+			data, err := os.ReadFile("help/" + lang + ".hlf")
+			if err != nil {
+				t.Fatal(err)
+			}
+			engine := vtui.NewHelpEngine(NewMemoryHelpVFS(map[string]string{"f4.hlf": string(data)}))
+			if err := engine.LoadFile("f4.hlf"); err != nil {
+				t.Fatal(err)
+			}
+			topic := engine.GetTopic("CmdLine")
+			if topic == nil {
+				t.Fatal("no CmdLine topic")
+			}
+			text := strings.Join(topic.Lines, "\n")
+			for _, want := range []string{"--edit", "f4 [", "F3"} {
+				if !strings.Contains(text, want) {
+					t.Errorf("CmdLine does not mention %q", want)
+				}
+			}
+			for i, line := range topic.Lines {
+				if width := runewidth.StringWidth(strings.ReplaceAll(line, "#", "")); width > 73 {
+					t.Errorf("CmdLine line %d is %d cells wide: %q", i+1, width, line)
+				}
+			}
+			linked := false
+			for _, link := range engine.GetTopic("Contents").Links {
+				linked = linked || link.Target == "CmdLine"
+			}
+			if !linked {
+				t.Error("Contents does not link to CmdLine")
+			}
+		})
+	}
+}

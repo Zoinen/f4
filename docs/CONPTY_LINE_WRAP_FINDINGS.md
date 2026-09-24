@@ -7,10 +7,48 @@ from memory.
 
 ## Decision
 
-Ship the current ConPTY redistributable with f4, packaged beside the binary.
-No markers, no protocol change, no request pending on Microsoft, and
-explicitly **not** an old pinned build - an old build is the thing that
-breaks long lines.
+Use the current ConPTY redistributable. No markers, no protocol change, no
+request pending on Microsoft, and explicitly **not** an old pinned build - an
+old build is the thing that breaks long lines.
+
+f4 stays a single binary: the package is not shipped beside it but downloaded
+on first use into the profile, next to the Colorer schemes, and every file is
+checked against its SHA-256 (`internal/terminal/conpty_package.go`). If the
+download is not possible, the shell runs in the in-box ConPTY and the
+terminal does not reflow. The earlier arrangement, a `conpty.dll` and
+`OpenConsole.exe` next to `f4.exe` in the release archives (PR #948), is gone.
+
+Two more facts, read from the source of tag `v1.25.1912.0`, that the reflow
+depends on:
+
+* `DoWriteConsole` (`src/host/_stream.cpp`) takes `WriteCharsVT` whenever
+  both `ENABLE_VIRTUAL_TERMINAL_PROCESSING` and `ENABLE_PROCESSED_OUTPUT` are
+  set, and `WriteCharsVT` forwards the written string to the terminal as it
+  is. The terminal does the wrapping, so its own wrap flags are a record of
+  the application's lines.
+* A resize through the signal pipe goes `PtySignalInputThread::_DoResizeWindow`
+  -> `ConhostInternalGetSet::ResizeWindow` (`src/host/outputStream.cpp`) ->
+  `SetConsoleScreenBufferInfoExImpl` -> `ResizeScreenBuffer`. None of these
+  writes to the VT writer, so a resize is not followed by a repaint that
+  would overwrite a reflow done on the terminal's side.
+
+`cmd.exe` builtins (`echo`, `type`, `dir`) have no clean measurement on
+record: the runs that showed them intact went through `cmd /c ... >CONOUT$`,
+which cmd runs at mode `0x0001`, where nothing wraps, and the probe dropped
+them for that reason (commit 4934f5a4). `TestConPTYPackageKeepsLongLinesWhole`
+in Windows CI runs `cmd /c echo` of a 300-character line next to PowerShell
+and is the measurement.
+
+Text painted with `WriteConsoleOutputCharacterW` / `WriteConsoleOutputW` is
+the one path that still arrives split: `FillConsoleImpl`
+(`src/host/_output.cpp`) emits each row with its own CUP, and 200 characters
+at 80 columns arrive as `[80, 80, 40]` (commit de05ea7a).
+
+The in-box ConPTY of 10.0.22000.2538 (x64) is listed in
+`inboxConhostPreservingLines` (`pty_windows.go`) and used without a
+download: it was measured on a real machine to emit no CRLF at the wrap
+point, in the live stream and in the repaint after narrowing (commit
+0cae9c5d). Other in-box builds get the package until measured.
 
 `conpty.dll` and `OpenConsole.exe` must travel as a matched pair from the
 same package and sit in the same directory; `conpty.dll` launches

@@ -280,7 +280,10 @@ Item {
         separatorColor: surfaces.hostWindow.separatorColor
         separatorWidth: surfaces.hostWindow.separatorWidth
         gutterWidth: surfaces.hostWindow.panelContentSpacing * 2
-        leadingHitInset: Math.max(0, surfaces.hostWindow.panelContentSpacing - surfaces.hostWindow.separatorWidth)
+        // The left panel owns its edge controls, including its scrollbar.
+        // Keep the divider above docked viewers without stealing that lane.
+        leadingHitInset: Math.floor((width - separatorWidth) / 2
+                                   * devicePixelRatio) / devicePixelRatio
         opacity: surfaces.hostWindow.normalSurfaceOpacity
         z: 61
 

@@ -3,10 +3,12 @@
 package app
 
 import (
-	"github.com/unxed/f4/internal/update"
-	"golang.org/x/sys/unix"
 	"os"
 	"syscall"
+
+	"github.com/unxed/f4/internal/update"
+	"golang.org/x/sys/unix"
+	"golang.org/x/term"
 )
 
 func checkAndDetach(attached bool) {
@@ -52,8 +54,24 @@ func checkAndDetach(attached bool) {
 // and a window that simply vanishes. Only the detached copy is touched:
 // in the terminal backends stdout is the screen and must stay so.
 func redirectDetachedStdout() {
-	if os.Getenv("F4_DETACHED") != "1" {
+	if !detachedStdoutGoesToCrashLog(os.Getenv("F4_DETACHED") == "1", term.IsTerminal(int(os.Stdout.Fd()))) {
 		return
 	}
 	_ = unix.Dup2(2, 1)
+}
+
+// detachedStdoutGoesToCrashLog decides that question from the two facts it
+// depends on, so it can be checked without touching this process's own
+// descriptors.
+//
+// The flag alone is not enough. It travels in the environment, and a process
+// that inherited it from a detached ancestor is not itself detached -- a
+// terminal it can print on is the proof. Redirecting there sends the output
+// to a file nobody is looking at: `f4 --version` at the command line of a
+// GUI f4 printed its version into the outer session's crash log and left the
+// terminal blank (issue #1151). The terminal f4 exports no longer hands the
+// flag on, and this keeps the flag from being believed on its own whatever
+// other path it arrives by.
+func detachedStdoutGoesToCrashLog(detached, stdoutIsTerminal bool) bool {
+	return detached && !stdoutIsTerminal
 }

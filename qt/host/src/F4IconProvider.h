@@ -48,6 +48,7 @@ public:
     static int normalizedLogicalSize(int logicalSize);
     static qreal normalizedDevicePixelRatio(qreal devicePixelRatio);
     static QSize physicalSize(int logicalSize, qreal devicePixelRatio);
+    static qreal lucideStrokeWidth(qreal logicalSize);
     static QString normalizedIconName(QStringView name);
     static QString lucideFileIconName(QStringView fileName, bool directory);
     static QUrl lucideSource(QStringView name, int logicalSize);
@@ -60,6 +61,7 @@ private:
         int logicalSize = 16;
         qreal devicePixelRatio = 1.0;
         qreal renderDevicePixelRatio = 1.0;
+        qreal strokeWidth = 0.0;
         QSize targetSize;
     };
 
@@ -121,6 +123,12 @@ public:
                                             int logicalSize,
                                             qreal devicePixelRatio,
                                             const QColor &tint) const;
+    Q_INVOKABLE QUrl rasterizedLucideSource(const QString &name,
+                                            int logicalSize,
+                                            qreal devicePixelRatio,
+                                            const QColor &tint,
+                                            qreal strokeWidth) const;
+    Q_INVOKABLE qreal lucideStrokeWidth(qreal logicalSize) const;
     Q_INVOKABLE QUrl fileIconSource(const QString &localPath,
                                     const QString &fileName,
                                     bool directory,

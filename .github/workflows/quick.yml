@@ -1,0 +1,51 @@
+name: quick
+
+# Быстрая проверка промежуточных правок в ветках Луноботов.
+#
+# У ботов нет локальной сборки: компилировать на ноутбуке владельца запрещено,
+# поэтому роль «go build» между итерациями играет GitHub. Гонять ради этого
+# полную матрицу из build.yml — тридцать job'ов и двадцать минут на каждую
+# промежуточную правку — несоразмерно: она проверяет переносимость, а между
+# итерациями нужно всего лишь знать, что код собирается и тесты проходят.
+#
+# Этот workflow ничего не отменяет и не заменяет: build.yml по-прежнему целиком
+# отрабатывает на pull_request и на push в main. Здесь только push в ветку
+# codex/**, где PR ещё не открыт.
+
+on:
+  push:
+    branches:
+      - 'codex/**'
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+
+concurrency:
+  group: quick-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Build and test (linux/amd64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CGO_ENABLED: 0
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...

@@ -24,6 +24,7 @@ func installTestSeams() {
 	// here rather than left to whichever test happens to grow it.
 	theme.SetDefaultF4Palette()
 	semantic.SetPanelCatalogMetadataEnabled(true)
+	semantic.SetPanelGroupingEnabled(true)
 	fileops.StartQueueWorker()
 
 	// Unit tests must never hand control to the user's desktop, and no frame

@@ -31,18 +31,19 @@ require (
 	github.com/mholt/archives v0.1.5
 	github.com/pkg/sftp v1.13.6
 	github.com/tetratelabs/wazero v1.12.0
-	github.com/unxed/archives v0.0.0-20260826172907-54073a78974d
-	github.com/unxed/colorer4go v0.1.14
+	github.com/unxed/archives v0.0.0-20260917192539-4ad5487d1940
+	github.com/unxed/colorer4go v0.1.23
 	github.com/unxed/ffibridge v0.1.5
+	github.com/unxed/go2xp v0.0.0-20260918000857-00a22a520369
 	github.com/unxed/id3-go v0.1.2
-	github.com/unxed/libwinescape v0.1.5
+	github.com/unxed/libwinescape v0.2.1
 	github.com/unxed/localecp v0.1.6
-	github.com/unxed/sevenzip v0.0.0-20260826171606-a536eac9d163
-	github.com/unxed/tar v0.1.128
+	github.com/unxed/sevenzip v0.0.0-20260917192431-7f00f7c8d17b
+	github.com/unxed/tar v0.1.132
 	github.com/unxed/vtinput v0.1.8
-	github.com/unxed/vtui v0.1.330-0.20260910125545-cbe85a2141e5
-	github.com/unxed/zip v0.1.131
-	github.com/unxed/zipper v0.1.153
+	github.com/unxed/vtui v0.1.357-0.20260919112309-9d93c9606f8d
+	github.com/unxed/zip v0.1.139
+	github.com/unxed/zipper v0.1.168
 	github.com/vmihailenco/msgpack/v5 v5.4.1
 	github.com/woozymasta/png v1.2.0
 	github.com/yuin/gopher-lua v1.1.1
@@ -51,17 +52,17 @@ require (
 	golang.org/x/arch v0.30.0
 	golang.org/x/crypto v0.56.0
 	golang.org/x/image v0.45.0
-	golang.org/x/net v0.57.0
+	golang.org/x/net v0.58.0
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.45.0
 	golang.org/x/text v0.41.0
-	google.golang.org/api v0.259.0
+	google.golang.org/api v0.264.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
-	cloud.google.com/go/auth v0.18.0 // indirect
+	cloud.google.com/go/auth v0.18.2 // indirect
 	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.18 // indirect
@@ -86,8 +87,8 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/godbus/dbus/v5 v5.2.2 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
-	github.com/googleapis/enterprise-certificate-proxy v0.3.7 // indirect
-	github.com/googleapis/gax-go/v2 v2.16.0 // indirect
+	github.com/googleapis/enterprise-certificate-proxy v0.3.11 // indirect
+	github.com/googleapis/gax-go/v2 v2.17.0 // indirect
 	github.com/hajimehoshi/ebiten/v2 v2.10.0-alpha.13.0.20260811162617-464c2ddfc34c // indirect
 	github.com/icza/bitio v1.1.0 // indirect
 	github.com/jfreymuth/pulse v0.1.2 // indirect
@@ -102,8 +103,8 @@ require (
 	go.opentelemetry.io/otel v1.44.0 // indirect
 	go.opentelemetry.io/otel/metric v1.44.0 // indirect
 	go.opentelemetry.io/otel/trace v1.44.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260414002931-afd174a4e478 // indirect
-	google.golang.org/grpc v1.82.1 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
+	google.golang.org/grpc v1.83.2 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
 
@@ -116,7 +117,6 @@ require (
 	github.com/cenkalti/backoff v2.2.1+incompatible // indirect
 	github.com/coregx/ahocorasick v0.2.1 // indirect
 	github.com/dlclark/regexp2 v1.11.4 // indirect
-	github.com/dovydenkovas/ppmd v0.1.1 // indirect
 	github.com/dsnet/compress v0.0.2-0.20230904184137-39efe44ab707 // indirect
 	github.com/emmansun/base64 v0.9.0 // indirect
 	github.com/fogleman/gg v1.3.0 // indirect
@@ -142,7 +142,7 @@ require (
 	github.com/ncruces/go-sqlite3 v0.35.2
 	github.com/ncruces/go-sqlite3-wasm/v3 v3.2.35303 // indirect
 	github.com/ncruces/julianday v1.0.0 // indirect
-	github.com/neurlang/wayland v0.4.3 // indirect
+	github.com/neurlang/wayland v0.4.4 // indirect
 	github.com/neurlang/winc v0.1.2 // indirect
 	github.com/nwaples/rardecode/v2 v2.2.3 // indirect
 	github.com/pierrec/lz4/v4 v4.1.27 // indirect
@@ -156,10 +156,10 @@ require (
 	github.com/tadglines/go-pkgs v0.0.0-20210623144937-b983b20f54f9 // indirect
 	github.com/ulikunitz/xz v0.5.15 // indirect
 	github.com/unxed/keytrans v0.1.33
-	github.com/unxed/par2 v0.1.2 // indirect
-	github.com/unxed/winkeys v0.1.1 // indirect
+	github.com/unxed/par2 v0.1.3 // indirect
+	github.com/unxed/winkeys v0.1.1
 	github.com/unxed/xkb-go v0.1.8 // indirect
-	github.com/unxed/xz v0.1.41 // indirect
+	github.com/unxed/xz v0.1.44 // indirect
 	github.com/unxed/zipcharset v0.1.5 // indirect
 	github.com/unxed/zlib4go v0.1.16 // indirect
 	github.com/vishvananda/netlink v1.3.1 // indirect
@@ -186,7 +186,7 @@ replace github.com/ebitengine/purego => github.com/unxed/pureffi v0.1.19
 
 replace github.com/ebitengine/hideconsole => ./internal/hideconsole
 
-replace github.com/go-webgpu/goffi => github.com/unxed/goffi v0.1.8
+replace github.com/go-webgpu/goffi => github.com/unxed/goffi v0.1.9-0.20260919094415-3255553088ca
 
 replace github.com/unxed/vtui => ./third_party/vtui
 

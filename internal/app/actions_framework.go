@@ -2,13 +2,16 @@ package app
 
 import (
 	"fmt"
-	"github.com/unxed/f4/internal/fileops"
-	"github.com/unxed/f4/internal/panel"
-	"github.com/unxed/f4/internal/semantic"
-	"github.com/unxed/vtui"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/unxed/f4/internal/editor"
+	"github.com/unxed/f4/internal/fileops"
+	"github.com/unxed/f4/internal/panel"
+	"github.com/unxed/f4/internal/semantic"
+	"github.com/unxed/f4/internal/viewer"
+	"github.com/unxed/vtui"
 )
 
 // actionContextHelp resolves the same contextual topic as FrameManager's F1
@@ -67,13 +70,16 @@ func mainMenuActionAvailable() bool {
 // F9 fallback. The palette executes it only after its own dialog has gone away,
 // so GetTopFrame refers to the screen the user was working in.
 func actionActivateMainMenu() bool {
-	return ActivateMainMenuAt(-1)
+	return activateMainMenuAt(-1, false)
 }
 
-// activateMainMenuAt opens the active menu bar. A non-negative position is an
+// activateMainMenuAt raises the active menu bar. A non-negative position is an
 // explicit top-level menu selected by a caller such as Shift+F10; -1 keeps the
-// ordinary F9/palette behavior.
-func ActivateMainMenuAt(requestedPos int) bool {
+// ordinary F9/palette behavior. openSubMenu drops the selected menu down right
+// away, which is what far2l's ShellOptions(1) does for Shift+F10 and what
+// ShellOptions(0) deliberately does not do for F9 over the panels. The editor
+// and the viewer drop their menu down on F9 regardless: see below.
+func activateMainMenuAt(requestedPos int, openSubMenu bool) bool {
 	if !mainMenuActionAvailable() {
 		return false
 	}
@@ -102,15 +108,36 @@ func ActivateMainMenuAt(requestedPos int) bool {
 					selectPos = 0
 				}
 			}
+			switch top.(type) {
+			case *editor.EditorView, *viewer.ViewerView:
+				// far2l's F9 differs per screen. FilePanels::ProcessKey calls
+				// ShellOptions(0), which only shows the bar; the editor's
+				// EditorShellOptions and the viewer's ViewerShellOptions follow
+				// Show() with ProcessKey(KEY_DOWN) from a freshly built menu
+				// whose first item, File, is the selected one
+				// (far2l/src/fileedit2options.cpp, fileview2options.cpp).
+				// #1144 took the dropdown away from all three (issue #1149).
+				selectPos = 0
+				openSubMenu = true
+			}
 		}
 		if selectPos < 0 || selectPos >= len(menu.Items) {
 			selectPos = 0
 		}
 		menu.SelectPos = selectPos
-		menu.ActivateSubMenu(selectPos)
+		if openSubMenu {
+			menu.ActivateSubMenu(selectPos)
+		}
 	}
 	vtui.FrameManager.Redraw()
 	return true
+}
+
+// ActivateMainMenuAt opens the active menu at an explicit position without
+// immediately opening its submenu. It is kept as a small public seam for
+// menu-history actions and tests.
+func ActivateMainMenuAt(requestedPos int) bool {
+	return activateMainMenuAt(requestedPos, true)
 }
 
 func multipleWorkspacesAvailable() bool {

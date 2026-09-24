@@ -112,6 +112,41 @@ func TestDirectoryPreviewRejectsChangedChild(t *testing.T) {
 	b.Release(d.ResourceID, listing)
 }
 
+func TestDirectoryPreviewPagedCommitPreservesUnvisitedSources(t *testing.T) {
+	b, err := NewExtUiMediaBroker()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+	f := &directoryPreviewVFS{
+		countingMediaVFS: newCountingMediaVFS(nil),
+		entries:          []vfs.VFSItem{{Name: "photo.jpg"}},
+	}
+	first := b.RegisterDirectory(MediaSourceRegistration{
+		PanelID: "p", CatalogVersion: 1, FS: f, Path: "/gallery/album-a",
+		Item: vfs.VFSItem{Name: "album-a", IsDir: true},
+	})
+	second := b.RegisterDirectory(MediaSourceRegistration{
+		PanelID: "p", CatalogVersion: 1, FS: f, Path: "/gallery/album-b",
+		Item: vfs.VFSItem{Name: "album-b", IsDir: true},
+	})
+	b.CommitDirectoryPanel("p", 1, []string{first.ResourceID, second.ResourceID})
+
+	// A grouped catalog may publish only the first page after its revision
+	// changes. That page must not revoke the authority of folders which have
+	// not been requested yet.
+	first = b.RegisterDirectory(MediaSourceRegistration{
+		PanelID: "p", CatalogVersion: 2, FS: f, Path: "/gallery/album-a",
+		Item: vfs.VFSItem{Name: "album-a", IsDir: true},
+	})
+	b.CommitDirectoryPanelPage("p", 2, []string{first.ResourceID}, false)
+	if _, lease, err := b.EnumerateDirectoryPreview(context.Background(), second.ResourceID); err != nil {
+		t.Fatalf("unvisited directory authority was revoked by a partial page: %v", err)
+	} else {
+		b.Release(second.ResourceID, lease)
+	}
+}
+
 func TestDirectoryPreviewWireLeaseOwnership(t *testing.T) {
 	server, err := newExtUiMediaServer()
 	if err != nil {

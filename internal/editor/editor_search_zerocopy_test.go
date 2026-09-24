@@ -1,7 +1,6 @@
 package editor
 
 import (
-	"runtime"
 	"strings"
 	"testing"
 
@@ -47,18 +46,15 @@ func TestPieceTableView_AliasesBufferAndStopsAtPieceBoundary(t *testing.T) {
 func TestSearchBuffer_ScansMemoryBufferInPlace(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 
-	content := strings.Repeat("the quick brown fox\n", 200000) // ~4 MB
-	ev := NewEditorViewWith(piecetable.New([]byte(content)), nil, "", false, true)
+	content := []byte(strings.Repeat("the quick brown fox\n", 200000)) // ~4 MB
+	ev := NewEditorViewWith(piecetable.New(content), nil, "", false, true)
+	t.Cleanup(ev.Close)
 
 	// Warm anything lazily built on the first pass so the measurement below
 	// sees the steady state.
 	if _, err := ev.searchBuffer(nil, ev.editSession); err != nil {
 		t.Fatalf("searchBuffer: %v", err)
 	}
-
-	var before, after runtime.MemStats
-	runtime.GC()
-	runtime.ReadMemStats(&before)
 
 	data, err := ev.searchBuffer(nil, ev.editSession)
 	if err != nil {
@@ -69,20 +65,18 @@ func TestSearchBuffer_ScansMemoryBufferInPlace(t *testing.T) {
 		t.Fatalf("textsearch.FindMatch: %v", err)
 	}
 
-	runtime.ReadMemStats(&after)
-	allocated := after.TotalAlloc - before.TotalAlloc
-
 	if off != 4 {
 		t.Errorf("match at %d, want 4", off)
 	}
 	if len(data) != len(content) {
 		t.Fatalf("buffer length = %d, want %d", len(data), len(content))
 	}
-	// The whole point: no proportional-to-file allocation. A small constant
-	// of bookkeeping is fine; a copy of the text is not.
-	if allocated > 64*1024 {
-		t.Errorf("one search pass allocated %d bytes over a %d byte buffer; "+
-			"it should scan in place", allocated, len(content))
+	// The whole point: no proportional-to-file allocation. Identity proves
+	// the search pass kept the original memory window instead of copying it;
+	// unlike a process-wide allocation counter, it is not affected by another
+	// race-shard goroutine doing unrelated bookkeeping at the same time.
+	if len(data) == 0 || &data[0] != &content[0] {
+		t.Error("search pass copied the memory-backed buffer instead of scanning it in place")
 	}
 }
 

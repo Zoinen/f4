@@ -23,11 +23,17 @@ type colorerJob struct {
 	baseAttr     uint64
 	syntax       bool
 	total        int
+	// fileType is the type the user picked for the file, "" to choose by
+	// file name.
+	fileType string
 }
 
 type colorerLineAttrs struct {
 	attrs      []uint64
 	background uint64
+	pairs      []colorer.Pair
+	outline    []colorerOutlineEntry
+	regions    []colorerRegionSpan
 }
 
 type colorerResult struct {
@@ -94,7 +100,7 @@ func (ch *ColorerHighlighter) runWorker(ctx context.Context, session *colorer.Se
 				if ctx.Err() != nil {
 					return
 				}
-				if _, err := session.ParseLine(contextLine); err != nil {
+				if _, err := session.ParseLine(ch.workerTypeSettings.truncate(contextLine)); err != nil {
 					vtui.DebugLog("COLORER: ParseLine failed in context at line %d: %v", job.contextStart+i, err)
 					ch.postColorerResult(colorerResult{job: job, err: err})
 					return
@@ -120,7 +126,12 @@ func (ch *ColorerHighlighter) runWorker(ctx context.Context, session *colorer.Se
 				if ctx.Err() != nil {
 					return
 				}
-				regions, err := session.ParseLine(lineText)
+				lineText = ch.workerTypeSettings.truncate(lineText)
+				regions, pairs, err := session.ParseLinePairs(lineText)
+				var outline []colorer.OutlineItem
+				if err == nil {
+					outline, err = session.LineOutline()
+				}
 				if err != nil {
 					vtui.DebugLog("COLORER: ParseLine failed at line %d: %v", job.target+i, err)
 					if len(lineResults) == 0 {
@@ -138,7 +149,7 @@ func (ch *ColorerHighlighter) runWorker(ctx context.Context, session *colorer.Se
 				}
 				parsedIdx++
 				attrs, background := ch.attrsForSyntax(lineText, regions, job.baseAttr, job.syntax)
-				lineResults = append(lineResults, colorerLineAttrs{attrs: attrs, background: background})
+				lineResults = append(lineResults, colorerLineAttrs{attrs: attrs, background: background, pairs: pairs, outline: colorerOutlineEntries(job.target+i, lineText, outline), regions: colorerRegionSpans(regions)})
 			}
 			if ctx.Err() != nil {
 				return
@@ -184,14 +195,35 @@ func currentColorerSchemeName() string {
 }
 
 func (ch *ColorerHighlighter) prepareWorkerSession(ctx context.Context, session *colorer.Session, job colorerJob, parsedIdx, forgottenUpTo *int) error {
-	needReset := job.reset || *parsedIdx != job.contextStart
+	typeChanged := job.fileType != ch.workerFileType
+	needReset := job.reset || *parsedIdx != job.contextStart || typeChanged
 	if needReset {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		session.Reset()
-		if _, err := session.SelectType(ch.filename, ch.firstLine); err != nil {
-			return err
+		chosen := false
+		if job.fileType != "" {
+			ok, err := session.SetFileType(job.fileType)
+			if err != nil {
+				return err
+			}
+			chosen = ok
+		}
+		if !chosen {
+			if _, err := session.SelectType(ch.filename, ch.firstLine); err != nil {
+				return err
+			}
+		}
+		ch.workerFileType = job.fileType
+		if typeChanged {
+			// The type's own parameters come with it.
+			if settings := readColorerTypeSettings(session); settings != ch.workerTypeSettings {
+				ch.workerTypeSettings = settings
+				if ch.postTask != nil {
+					ch.postTask(func() { ch.adoptTypeSettings(settings) })
+				}
+			}
 		}
 		*parsedIdx = job.contextStart
 		*forgottenUpTo = job.contextStart
@@ -271,6 +303,7 @@ func (ch *ColorerHighlighter) queueLine(idx int, line string, baseAttr uint64) {
 		baseAttr:     baseAttr,
 		syntax:       config.App.EditorColorerSyntax,
 		total:        len(contextLines) + len(batch),
+		fileType:     ch.fileTypeOverride,
 	}
 	ch.forceReset = false
 	ch.pending = true
@@ -330,7 +363,9 @@ func (ch *ColorerHighlighter) postColorerResult(result colorerResult) {
 		} else {
 			ch.parsedIdx = result.job.target + len(result.lines)
 			for i, lineAttrs := range result.lines {
-				ch.storeAttrs(result.job.target+i, lineAttrs.attrs, lineAttrs.background)
+				ch.storeAttrs(result.job.target+i, lineAttrs.attrs, lineAttrs.background, lineAttrs.pairs)
+				ch.storeOutline(result.job.target+i, lineAttrs.outline)
+				ch.storeRegions(result.job.target+i, lineAttrs.regions)
 			}
 			if result.partial {
 				// The worker lost the session's position on the failed line;
@@ -340,6 +375,8 @@ func (ch *ColorerHighlighter) postColorerResult(result colorerResult) {
 			}
 		}
 		owner.finishColorerWork(result.job.id)
+		ch.continuePairSearch()
+		ch.continueOutline()
 		if redraw != nil {
 			redraw()
 		}

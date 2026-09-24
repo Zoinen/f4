@@ -427,6 +427,11 @@ func (v *AFCVFS) SetVirtualRoot(opener SelectorOpener, capabilities ...Capabilit
 }
 
 func (v *AFCVFS) rootCapabilityForPath(p string) (Capability, bool) {
+	for _, component := range strings.Split(p, "/") {
+		if component == ".." {
+			return 0, false
+		}
+	}
 	clean, err := v.resolve(p)
 	if err != nil || path.Dir(clean) != "/" {
 		return 0, false
@@ -466,7 +471,19 @@ func openAFCVFS(ctx context.Context, parent vfs.VFS, device DeviceInfo, registry
 }
 
 func (v *AFCVFS) IsAtRoot() bool { return v.remotePath() == "/" }
+
+// A zero DeviceInfo is only used by older package-local construction seams.
+// Real AFC mounts always carry a discovered device identity and therefore use
+// qualified ios:// paths. Keeping the unqualified fallback makes those small
+// seams source-compatible without weakening the URI contract of real mounts.
+func (v *AFCVFS) legacyUnqualifiedPaths() bool {
+	return v.device == (DeviceInfo{}) && !strings.Contains(v.title, ":/")
+}
+
 func (v *AFCVFS) GetPath() string {
+	if v.legacyUnqualifiedPaths() {
+		return v.remotePath()
+	}
 	return iosPaths(v.device, v.title).Public(v.remotePath())
 }
 func (v *AFCVFS) remotePath() string {
@@ -474,7 +491,12 @@ func (v *AFCVFS) remotePath() string {
 	defer v.pathMu.RUnlock()
 	return v.path
 }
-func (v *AFCVFS) IsAbs(p string) bool { return iosPaths(v.device, v.title).IsAbs(p) }
+func (v *AFCVFS) IsAbs(p string) bool {
+	if v.legacyUnqualifiedPaths() {
+		return path.IsAbs(p)
+	}
+	return iosPaths(v.device, v.title).IsAbs(p)
+}
 func (v *AFCVFS) SetPath(p string) error {
 	clean, err := v.resolve(p)
 	if err != nil {
@@ -499,16 +521,34 @@ func (v *AFCVFS) SetPathOptimistic(p string) error {
 	v.pathMu.Unlock()
 	return nil
 }
-func (v *AFCVFS) Join(elem ...string) string { return iosPaths(v.device, v.title).Join(elem...) }
+func (v *AFCVFS) Join(elem ...string) string {
+	if v.legacyUnqualifiedPaths() {
+		return path.Join(elem...)
+	}
+	return iosPaths(v.device, v.title).Join(elem...)
+}
 func (v *AFCVFS) Abs(p string) (string, error) {
+	if v.legacyUnqualifiedPaths() {
+		return v.legacyResolve(p)
+	}
 	remote, err := v.resolve(p)
 	if err != nil {
 		return "", err
 	}
 	return iosPaths(v.device, v.title).Public(remote), nil
 }
-func (v *AFCVFS) Base(p string) string { return iosPaths(v.device, v.title).Base(p) }
-func (v *AFCVFS) Dir(p string) string  { return iosPaths(v.device, v.title).Dir(p) }
+func (v *AFCVFS) Base(p string) string {
+	if v.legacyUnqualifiedPaths() {
+		return path.Base(p)
+	}
+	return iosPaths(v.device, v.title).Base(p)
+}
+func (v *AFCVFS) Dir(p string) string {
+	if v.legacyUnqualifiedPaths() {
+		return path.Dir(p)
+	}
+	return iosPaths(v.device, v.title).Dir(p)
+}
 
 func (v *AFCVFS) ReadDir(ctx context.Context, p string, onChunk func([]vfs.VFSItem)) error {
 	clean, err := v.resolve(p)
@@ -668,7 +708,18 @@ func afcVFSItem(name string, info afcproto.FileInfo) vfs.VFSItem {
 	} else if info.IsSymlink() {
 		modeText = "lrwxrwxrwx"
 	}
+	known := vfs.MetadataExplicit | vfs.MetadataHidden
+	if info.Values["st_mode"] != "" || info.Mode != 0 {
+		known |= vfs.MetadataPermissions | vfs.MetadataExecutable
+	}
+	if !info.ModTime.IsZero() {
+		known |= vfs.MetadataMTime
+	}
+	if !info.BirthTime.IsZero() {
+		known |= vfs.MetadataCTime
+	}
 	return vfs.VFSItem{
+		KnownMetadata: known, SizeKnown: info.Values["st_size"] != "" || info.Size != 0, CTime: info.BirthTime,
 		Name: name, Size: info.Size, IsDir: isDir, MTime: info.ModTime, Mode: modeText,
 		IsExecutable: info.Mode&0111 != 0, IsHidden: strings.HasPrefix(name, "."),
 		IsSymlink: info.IsSymlink(), UnixMode: info.Mode,
@@ -813,8 +864,14 @@ func (v *AFCVFS) Close() error {
 	v.closeOnce.Do(v.session.release)
 	return nil
 }
-func (v *AFCVFS) GetTitle() string                    { return "ios:" + v.key }
-func (v *AFCVFS) PanelTitle(p string) string          { title, _ := v.Abs(p); return title }
+func (v *AFCVFS) GetTitle() string { return "ios:" + v.key }
+func (v *AFCVFS) PanelTitle(p string) string {
+	if v.legacyUnqualifiedPaths() {
+		return iosPanelTitle(v.title, p)
+	}
+	title, _ := v.Abs(p)
+	return title
+}
 func (v *AFCVFS) SessionKey() any                     { return v.session }
 func (v *AFCVFS) SessionLost(err error) bool          { return afcproto.IsConnectionLost(err) }
 func (v *AFCVFS) CanReconnect() bool                  { return v.session.dial != nil }
@@ -859,7 +916,25 @@ func (v *AFCVFS) RefreshPanelInfo(ctx context.Context, _ vfs.PanelInfoRequest) (
 }
 
 func (v *AFCVFS) resolve(p string) (string, error) {
+	if v.legacyUnqualifiedPaths() {
+		return v.legacyResolve(p)
+	}
 	return iosPaths(v.device, v.title).Remote(v.remotePath(), p)
+}
+
+func (v *AFCVFS) legacyResolve(p string) (string, error) {
+	if p == "" || p == "." {
+		return v.remotePath(), nil
+	}
+	for _, component := range strings.Split(p, "/") {
+		if component == ".." {
+			return "", fmt.Errorf("ios: path escapes domain root")
+		}
+	}
+	if path.IsAbs(p) {
+		return cleanIOSPath(p)
+	}
+	return cleanIOSPath(path.Join(v.remotePath(), p))
 }
 func (v *AFCVFS) mutationPath(p string) (string, error) {
 	clean, err := v.resolve(p)

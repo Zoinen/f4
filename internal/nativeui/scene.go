@@ -828,16 +828,22 @@ func appPanelFromLegacy(node map[string]any) extui.PanelModel {
 		galleryLayoutRevision = 1
 	}
 	panel := extui.PanelModel{
-		PathIcon:            semantic.String(node["pathIcon"]),
-		UseSortGroups:       semantic.AppBool(node["useSortGroups"]),
-		SelectedFiles:       semantic.Int(node["selectedFiles"]),
-		SelectedDirectories: semantic.Int(node["selectedDirectories"]),
-		TotalFiles:          semantic.Int(node["totalFiles"]),
-		TotalDirectories:    semantic.Int(node["totalDirectories"]),
-		DiskTotalSpace:      uint64(semantic.AppInt64(node["diskTotalSpace"])),
-		FreeSpace:           uint64(semantic.AppInt64(node["freeSpace"])),
-		FreeSpaceKnown:      semantic.AppBool(node["freeSpaceKnown"]),
-		SymlinkTarget:       semantic.String(node["symlinkTarget"]),
+		PathIcon:               semantic.String(node["pathIcon"]),
+		UseSortGroups:          semantic.AppBool(node["useSortGroups"]),
+		GroupBy:                semantic.String(node["groupBy"]),
+		GroupReverse:           semantic.AppBool(node["groupReverse"]),
+		GroupFoldersSeparately: semantic.AppBool(node["groupFoldersSeparately"]),
+		GroupsDeferred:         semantic.AppBool(node["groupsDeferred"]),
+		GroupTotal:             semantic.Int(node["groupTotal"]),
+		DisplayTop:             semantic.Int(node["displayTop"]),
+		SelectedFiles:          semantic.Int(node["selectedFiles"]),
+		SelectedDirectories:    semantic.Int(node["selectedDirectories"]),
+		TotalFiles:             semantic.Int(node["totalFiles"]),
+		TotalDirectories:       semantic.Int(node["totalDirectories"]),
+		DiskTotalSpace:         uint64(semantic.AppInt64(node["diskTotalSpace"])),
+		FreeSpace:              uint64(semantic.AppInt64(node["freeSpace"])),
+		FreeSpaceKnown:         semantic.AppBool(node["freeSpaceKnown"]),
+		SymlinkTarget:          semantic.String(node["symlinkTarget"]),
 
 		ID:                     semantic.String(node["id"]),
 		Side:                   semantic.Int(node["side"]),
@@ -901,6 +907,14 @@ func appPanelFromLegacy(node map[string]any) extui.PanelModel {
 		return result
 	}
 	panel.GalleryColumns = parseColumns(node["galleryColumns"])
+	for _, group := range semantic.AppMapSlice(node["groups"]) {
+		panel.Groups = append(panel.Groups, extui.PanelGroupModel{
+			Key:        semantic.String(group["key"]),
+			Title:      semantic.String(group["title"]),
+			StartIndex: semantic.Int(group["startIndex"]),
+			Count:      semantic.Int(group["count"]),
+		})
+	}
 	if rawStyles, ok := node["highlightStyles"].(map[string]any); ok {
 		panel.HighlightStyles = make(map[string]extui.HighlightStyleModel, len(rawStyles))
 		for id, rawStyle := range rawStyles {
@@ -929,6 +943,7 @@ func appEntryFromLegacy(node map[string]any) extui.FileEntryModel {
 		IsHidden:         semantic.AppBool(node["isHidden"]),
 		IsExecutable:     semantic.AppBool(node["isExecutable"]),
 		IsImage:          semantic.AppBool(node["isImage"]),
+		ThumbnailKind:    semantic.String(node["thumbnailKind"]),
 		Selected:         semantic.AppBool(node["selected"]),
 		SizeCalculated:   semantic.AppBool(node["sizeCalculated"]),
 		MTime:            semantic.String(node["mtime"]),
@@ -948,6 +963,15 @@ func appEntryFromLegacy(node map[string]any) extui.FileEntryModel {
 			AccessProfile:   semantic.String(source["accessProfile"]),
 			StorageClass:    semantic.String(source["storageClass"]),
 		}
+	}
+	if source := semantic.AppMap(node["directorySource"]); source != nil {
+		entry.DirectorySource = &extui.DirectorySourceModel{
+			ResourceID: semantic.String(source["resourceId"]),
+			SourceKey:  semantic.String(source["sourceKey"]),
+			Version:    semantic.String(source["version"]),
+		}
+		vtui.DebugLog("[FIX:directory-preview-projection] entry=%s authority=%s version=%s",
+			entry.EntryID, entry.DirectorySource.ResourceID, entry.DirectorySource.Version)
 	}
 	return entry
 }

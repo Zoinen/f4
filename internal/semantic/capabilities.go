@@ -8,6 +8,8 @@ var extUiPanelCatalogMetadataEnabled atomic.Bool
 
 var extUiPanelCatalogRowsEnabled atomic.Bool
 
+var extUiPanelGroupingEnabled atomic.Bool
+
 var PanelCatalogDeltaEnabled atomic.Bool
 var DirectoryPreviewsEnabled atomic.Bool
 
@@ -24,4 +26,12 @@ func PanelCatalogMetadataIsEnabled() bool {
 
 func PanelCatalogRowsIsEnabled() bool {
 	return extUiPanelCatalogRowsEnabled.Load()
+}
+
+func SetPanelGroupingEnabled(enabled bool) bool {
+	return extUiPanelGroupingEnabled.Swap(enabled)
+}
+
+func PanelGroupingIsEnabled() bool {
+	return extUiPanelGroupingEnabled.Load()
 }

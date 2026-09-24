@@ -1,10 +1,12 @@
 package editor
 
 import (
+	"testing"
+	"time"
+
 	"github.com/unxed/f4/internal/config"
 	"github.com/unxed/f4/internal/plughost"
 	"github.com/unxed/vtui"
-	"testing"
 )
 
 func TestFadeSyntax_DisabledByDefault(t *testing.T) {
@@ -34,7 +36,6 @@ func TestFadeSyntax_DisabledByDefault(t *testing.T) {
 		t.Fatal("disabled fade registered a heartbeat animation")
 	}
 }
-
 func TestEditorSyntaxFadeDoesNotStartTickerForNativeQtSurface(t *testing.T) {
 	screen := vtui.NewSilentScreenBuf()
 	screen.AllocBuf(80, 25)
@@ -49,5 +50,40 @@ func TestEditorSyntaxFadeDoesNotStartTickerForNativeQtSurface(t *testing.T) {
 	}
 	if !editor.syntaxFadeStart.IsZero() {
 		t.Fatal("native editor syntax started the 25 ms redraw ticker")
+	}
+}
+
+func TestFadeSyntaxEmptyAndComplete(t *testing.T) {
+	old := config.App.EditorSyntaxAnimation
+	config.App.EditorSyntaxAnimation = true
+	t.Cleanup(func() { config.App.EditorSyntaxAnimation = old })
+
+	ev := &EditorView{}
+	if got := ev.fadeSyntax(nil, 0); got != nil {
+		t.Fatalf("empty syntax = %#v, want nil", got)
+	}
+
+	syntax := []uint64{vtui.SetRGBBoth(0, 0xABCDEF, 0x123456)}
+	ev.syntaxFadeStart = time.Now().Add(-syntaxFadeDuration)
+	if got := ev.fadeSyntax(syntax, vtui.SetRGBBoth(0, 0x000000, 0xFFFFFF)); &got[0] != &syntax[0] {
+		t.Fatal("completed fade allocated a replacement buffer")
+	}
+	if ev.fadeTick(0) != true {
+		t.Fatal("completed fade heartbeat remained active")
+	}
+	if ev.fadeReg {
+		t.Fatal("completed fade did not clear heartbeat registration")
+	}
+}
+
+func TestMixRGBInterpolatesChannels(t *testing.T) {
+	if got := mixRGB(0x000000, 0xFFFFFF, 0); got != 0x000000 {
+		t.Fatalf("mixRGB at start = %#x", got)
+	}
+	if got := mixRGB(0x000000, 0xFFFFFF, 1); got != 0xFFFFFF {
+		t.Fatalf("mixRGB at end = %#x", got)
+	}
+	if got := mixRGB(0x000000, 0xFFFFFF, 0.5); got != 0x7F7F7F {
+		t.Fatalf("mixRGB at midpoint = %#x, want 0x7f7f7f", got)
 	}
 }

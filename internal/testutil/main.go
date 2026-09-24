@@ -5,9 +5,16 @@ import (
 	"github.com/unxed/vtui"
 	"os"
 	"testing"
+	"time"
 )
 
 var configDir string
+
+// taskPumpExitTimeout is how long Main lets stopped task pumps finish
+// returning before it calls them leaked. The wait ends as soon as the last one
+// is gone, so a clean run spends none of it; the margin is for a loaded -race
+// runner, and only a real leak waits it out.
+const taskPumpExitTimeout = 5 * time.Second
 
 // ConfigDir is the temporary profile directory Main installed for this test
 // binary, or "" when one could not be created. A package whose configuration
@@ -81,14 +88,14 @@ func Main(m *testing.M, before func(), after func() error) int {
 		result = 1
 	}
 
-	taskPumps, goroutineProfile, profileErr := TaskPumpGoroutineProfile()
+	taskPumps, goroutineProfile, profileErr := WaitForTaskPumpExit(0, taskPumpExitTimeout)
 	if profileErr != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "capture goroutine profile after vtui shutdown: %v\n", profileErr)
 		result = 1
 	} else if taskPumps > 0 {
 		_, _ = fmt.Fprintf(os.Stderr,
-			"vtui task-pump goroutine leak: %d startTaskPump goroutine(s) remain after test teardown; want 0\n%s",
-			taskPumps, goroutineProfile)
+			"vtui task-pump goroutine leak: %d startTaskPump goroutine(s) remain %v after test teardown; want 0\n%s",
+			taskPumps, taskPumpExitTimeout, goroutineProfile)
 		result = 1
 	}
 

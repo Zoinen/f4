@@ -164,32 +164,54 @@ func TestActionPanelToggleTargetsActiveWorkspace(t *testing.T) {
 	}
 }
 
-func TestActionPanelToggleRightPanelUsesFullWidth(t *testing.T) {
-	t.Cleanup(paneltest.SwapFrameManager(t))
-	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
-	pf := paneltest.SetupMockPanelsFrame(t)
-	defer pf.Close()
-	pf.ResizeConsole(80, 25)
-	vtui.FrameManager.Push(pf)
+// Issue #927: Ctrl+F1 / Ctrl+F2 hide one panel and leave the other one on
+// its own half, as far2l does; it must not grow to the whole width.
+func TestActionPanelToggleSidePanelKeepsOtherPanelHalfWidth_Issue927(t *testing.T) {
+	for _, tc := range []struct {
+		action  string
+		hidden  int
+		visible int
+		wantX1  int
+		wantX2  int
+	}{
+		{action: "Panel.ToggleRightPanel", hidden: 1, visible: 0, wantX1: 0, wantX2: 39},
+		{action: "Panel.ToggleLeftPanel", hidden: 0, visible: 1, wantX1: 40, wantX2: 79},
+	} {
+		t.Run(tc.action, func(t *testing.T) {
+			t.Cleanup(paneltest.SwapFrameManager(t))
+			vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+			pf := paneltest.SetupMockPanelsFrame(t)
+			defer pf.Close()
+			pf.ResizeConsole(80, 25)
+			vtui.FrameManager.Push(pf)
 
-	if !RunAction("Panel.ToggleRightPanel") {
-		t.Fatal("Panel.ToggleRightPanel did not run")
-	}
-	if pf.ShowRightPanel {
-		t.Fatal("Panel.ToggleRightPanel did not hide the right panel")
-	}
-	if x1, _, x2, _ := pf.Panels[0].GetPosition(); x1 != 0 || x2 != 79 {
-		t.Fatalf("visible left panel geometry = %d..%d, want 0..79", x1, x2)
-	}
+			shown := func(idx int) bool {
+				if idx == 0 {
+					return pf.ShowLeftPanel
+				}
+				return pf.ShowRightPanel
+			}
 
-	if !RunAction("Panel.ToggleRightPanel") {
-		t.Fatal("Panel.ToggleRightPanel did not restore the right panel")
-	}
-	if !pf.ShowRightPanel {
-		t.Fatal("Panel.ToggleRightPanel second call did not restore the right panel")
-	}
-	if x1, _, x2, _ := pf.Panels[0].GetPosition(); x1 != 0 || x2 != 39 {
-		t.Fatalf("restored left panel geometry = %d..%d, want 0..39", x1, x2)
+			if !RunAction(tc.action) {
+				t.Fatalf("%s did not run", tc.action)
+			}
+			if shown(tc.hidden) {
+				t.Fatalf("%s did not hide panel %d", tc.action, tc.hidden)
+			}
+			if x1, _, x2, _ := pf.Panels[tc.visible].GetPosition(); x1 != tc.wantX1 || x2 != tc.wantX2 {
+				t.Fatalf("visible panel geometry = %d..%d, want %d..%d", x1, x2, tc.wantX1, tc.wantX2)
+			}
+
+			if !RunAction(tc.action) {
+				t.Fatalf("%s second call did not run", tc.action)
+			}
+			if !shown(tc.hidden) {
+				t.Fatalf("%s second call did not restore panel %d", tc.action, tc.hidden)
+			}
+			if x1, _, x2, _ := pf.Panels[tc.visible].GetPosition(); x1 != tc.wantX1 || x2 != tc.wantX2 {
+				t.Fatalf("restored panel geometry = %d..%d, want %d..%d", x1, x2, tc.wantX1, tc.wantX2)
+			}
+		})
 	}
 }
 

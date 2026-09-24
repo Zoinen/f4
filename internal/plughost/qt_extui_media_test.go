@@ -25,6 +25,7 @@ type countingMediaVFS struct {
 	profile      vfs.ReadAccessProfile
 	storage      vfs.StorageClass
 	backingPath  string
+	reportedSize int64
 	openCount    int
 	readCount    int
 	readOffsets  []int64
@@ -42,7 +43,7 @@ type countingMediaVFS struct {
 
 func newCountingMediaVFS(data []byte) *countingMediaVFS {
 	return &countingMediaVFS{
-		NullVFS: vfs.NewNullVFS(0), data: append([]byte(nil), data...),
+		NullVFS: vfs.NewNullVFS(0), data: append([]byte(nil), data...), reportedSize: -1,
 		item:    vfs.VFSItem{Name: "image.jpg", Size: int64(len(data)), SizeKnown: true, Revision: "revision-1"},
 		profile: vfs.ReadAccessNativeRange, storage: vfs.StorageClassNetwork,
 	}
@@ -218,7 +219,12 @@ func (f *closeDrainMediaVFS) allowOpenToFinish() {
 	f.state.allowFinishOnce.Do(func() { close(f.state.allowFinish) })
 }
 
-func (r *countingMediaReader) Size() int64 { return int64(len(r.owner.data)) }
+func (r *countingMediaReader) Size() int64 {
+	if r.owner.reportedSize >= 0 {
+		return r.owner.reportedSize
+	}
+	return int64(len(r.owner.data))
+}
 func (r *countingMediaReader) ReadAccessProfile() vfs.ReadAccessProfile {
 	if r.owner.backingPath != "" {
 		return vfs.ReadAccessMaterializeOnce
@@ -713,6 +719,68 @@ func TestExtUiMediaBrokerReusesProviderLocalBacking(t *testing.T) {
 	broker.Release(descriptor.ResourceID, "")
 	if _, err := os.Stat(backing); err != nil {
 		t.Fatalf("provider-owned backing was removed: %v", err)
+	}
+}
+
+func TestExtUiMediaBrokerAllowsLargeLocalBacking(t *testing.T) {
+	backing := filepath.Join(t.TempDir(), "large-video.mp4")
+	if err := os.WriteFile(backing, []byte("provider-cache"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const largeVideoSize = extUiMediaMaxMaterializeSize + 1
+	filesystem := newCountingMediaVFS([]byte("provider-cache"))
+	filesystem.backingPath = backing
+	filesystem.profile = vfs.ReadAccessMaterializeOnce
+	filesystem.reportedSize = largeVideoSize
+	filesystem.item = vfs.VFSItem{
+		Name: "large-video.mp4", Size: largeVideoSize, SizeKnown: true,
+		Revision: "large-video-revision",
+	}
+	b, err := NewExtUiMediaBroker()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	descriptor := registerCountingMediaSource(t, b, filesystem)
+	local, lease, size, _, err := b.Materialize(context.Background(), descriptor.ResourceID)
+	if err != nil {
+		t.Fatalf("large local materialization failed: %v", err)
+	}
+	if local != backing || size != largeVideoSize {
+		t.Fatalf("local/size = %q/%d, want %q/%d", local, size, backing, largeVideoSize)
+	}
+	filesystem.mu.Lock()
+	reads := filesystem.readCount
+	filesystem.mu.Unlock()
+	if reads != 0 {
+		t.Fatalf("large local backing was copied through %d reads", reads)
+	}
+	b.Release(descriptor.ResourceID, lease)
+	b.Release(descriptor.ResourceID, "")
+}
+
+func TestExtUiMediaBrokerRejectsLargeRemoteMaterialization(t *testing.T) {
+	const largeVideoSize = extUiMediaMaxMaterializeSize + 1
+	filesystem := newCountingMediaVFS([]byte("remote-video"))
+	filesystem.reportedSize = largeVideoSize
+	filesystem.item = vfs.VFSItem{
+		Name: "large-video.mp4", Size: largeVideoSize, SizeKnown: true,
+		Revision: "large-remote-revision",
+	}
+	b, err := NewExtUiMediaBroker()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	descriptor := registerCountingMediaSource(t, b, filesystem)
+	if _, _, _, _, err := b.Materialize(context.Background(), descriptor.ResourceID); !errors.Is(err, errMediaTooLarge) {
+		t.Fatalf("large remote materialization error = %v, want %v", err, errMediaTooLarge)
+	}
+	filesystem.mu.Lock()
+	reads := filesystem.readCount
+	filesystem.mu.Unlock()
+	if reads != 0 {
+		t.Fatalf("large remote source was read before the size guard: %d reads", reads)
 	}
 }
 

@@ -195,3 +195,20 @@ func (pm *PluginManager) CloseAll() {
 		}
 	}
 }
+
+// Names lists the loaded plugins by GetName, in load order; it is what
+// f4:about reports. The lock is held only to copy the list, so a GetName
+// that takes its time cannot hold up a plugin being loaded meanwhile.
+func (pm *PluginManager) Names() []string {
+	if pm == nil {
+		return nil
+	}
+	pm.mu.Lock()
+	plugins := append([]Plugin(nil), pm.plugins...)
+	pm.mu.Unlock()
+	names := make([]string, 0, len(plugins))
+	for _, p := range plugins {
+		names = append(names, p.GetName())
+	}
+	return names
+}

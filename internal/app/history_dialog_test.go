@@ -61,6 +61,74 @@ func TestHistorySearchFiltersAndTogglesPrefixMode(t *testing.T) {
 	}
 }
 
+// #263: vtui menus gained a Ctrl+Alt+F item filter that takes typed keys
+// ahead of OnKeyDown. The history dialogs filter by themselves, so the keys
+// must keep reaching processKey and the vtui filter must never engage.
+func TestHistorySearchKeepsVtuiMenuFilterOff(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	menu := vtui.NewVMenu("History")
+	search := newHistorySearch(menu, []history.HistoryRecord{{Name: "git status"}, {Name: "git commit"}, {Name: "dir"}}, "")
+	defer search.cleanup()
+	menu.OnKeyDown = search.processKey
+
+	if !menu.DisableFilter {
+		t.Fatal("newHistorySearch must turn the vtui item filter off")
+	}
+	menu.ProcessKey(&vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_F,
+		ControlKeyState: vtinput.LeftCtrlPressed | vtinput.LeftAltPressed,
+	})
+	for _, r := range "git" {
+		menu.ProcessKey(historyKey(r))
+	}
+	if menu.FilterText() != "" {
+		t.Fatalf("the vtui filter engaged with %q", menu.FilterText())
+	}
+	if string(search.query) != "git" || len(menu.Items) != 2 {
+		t.Fatalf("typed keys did not reach the history search: query %q, %d items", string(search.query), len(menu.Items))
+	}
+}
+
+// #1155: typing on past the last match piled every key into the title over
+// an empty list. far2l's menu filter, and vtui's, take the character that
+// leaves nothing shown and refuse the ones after it; so do these dialogs.
+func TestHistorySearchRefusesCharactersOnceNothingMatches(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	menu := vtui.NewVMenu("History")
+	search := newHistorySearch(menu, []history.HistoryRecord{{Name: "git status"}, {Name: "dir"}}, "")
+	defer search.cleanup()
+
+	for _, r := range "gix" {
+		search.processKey(historyKey(r))
+	}
+	if string(search.query) != "gix" || len(menu.Items) != 0 {
+		t.Fatalf("the character that empties the list should still be taken: query %q, %d items", string(search.query), len(menu.Items))
+	}
+
+	for _, r := range "why type here?" {
+		if !search.processKey(historyKey(r)) {
+			t.Fatalf("character %q was passed on instead of being refused", r)
+		}
+	}
+	if string(search.query) != "gix" {
+		t.Fatalf("characters typed after nothing matched reached the filter: %q, want gix", string(search.query))
+	}
+	if got, want := search.displayTitle(), "History [gix]"; got != want {
+		t.Fatalf("title = %q, want %q", got, want)
+	}
+
+	search.processKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_BACK})
+	if string(search.query) != "gi" || len(menu.Items) != 1 {
+		t.Fatalf("Backspace should bring the match back: query %q, %d items", string(search.query), len(menu.Items))
+	}
+	search.processKey(historyKey('t'))
+	if string(search.query) != "git" || len(menu.Items) != 1 {
+		t.Fatalf("typing should resume once an entry is shown again: query %q, %d items", string(search.query), len(menu.Items))
+	}
+}
+
 func TestHistorySearchTimeAndDirectoryModes(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	menu := vtui.NewVMenu("History")

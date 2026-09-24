@@ -69,6 +69,28 @@ func (ev *EditorView) ShowPluginsMenu() {
 	menu.AddItem(vtui.MenuItem{Text: i18n.Msg("Action.Editor.Base64Decode")})
 	menu.AddSeparator()
 	menu.AddItem(vtui.MenuItem{Text: i18n.Msg("Action.Editor.SortLines")})
+	if _, isColorer := ev.Highlighter.(*ColorerHighlighter); isColorer {
+		// FarColorer's editor menu, in its order, as far as f4 has its
+		// commands. Each runs once the menus have closed.
+		later := func(run func()) func() {
+			return func() { vtui.FrameManager.PostTask(run) }
+		}
+		menu.AddSeparator()
+		menu.AddItem(vtui.MenuItem{Text: i18n.Msg("Colorer.Menu"), SubItems: []vtui.MenuItem{
+			{Text: i18n.Msg("Action.Editor.ColorerChooseType"), OnClick: later(func() { ev.ColorerChooseType() })},
+			{Text: i18n.Msg("Action.Editor.ColorerMatchPair"), OnClick: later(func() { ev.ColorerPair(ColorerMatchPair) })},
+			{Text: i18n.Msg("Action.Editor.ColorerSelectBlock"), OnClick: later(func() { ev.ColorerPair(ColorerSelectBlock) })},
+			{Text: i18n.Msg("Action.Editor.ColorerSelectPair"), OnClick: later(func() { ev.ColorerPair(ColorerSelectPair) })},
+			{Text: i18n.Msg("Action.Editor.ColorerListFunctions"), OnClick: later(func() { ev.ColorerListOutline(false) })},
+			{Text: i18n.Msg("Action.Editor.ColorerListErrors"), OnClick: later(func() { ev.ColorerListOutline(true) })},
+			{Text: i18n.Msg("Action.Editor.ColorerSelectRegion"), OnClick: later(func() { ev.ColorerSelectRegion() })},
+			{Text: i18n.Msg("Action.Editor.ColorerLocateFunction"), OnClick: later(func() { ev.ColorerLocateFunction() })},
+			{Separator: true},
+			{Text: i18n.Msg("Action.Editor.ColorerUpdateHighlighting"), OnClick: later(func() { ev.ColorerUpdateHighlighting() })},
+			{Text: i18n.Msg("Action.Editor.ColorerReloadBase"), OnClick: later(func() { RunAction("Editor.ColorerReloadBase") })},
+			{Text: i18n.Msg("Colorer.Configure"), OnClick: later(func() { RunAction("Settings.Colorer") })},
+		}})
+	}
 
 	screenW, screenH := vtui.FrameManager.GetScreenSize(), vtui.FrameManager.GetScreenHeight()
 	w := vtui.StringWidth(i18n.Msg("Editor.Plugins.Title")) + 8

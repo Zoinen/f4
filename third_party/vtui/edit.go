@@ -56,6 +56,13 @@ type Edit struct {
 	// go-to-line prompt, where a drop-down over a few digits is only in the
 	// way.
 	NoAutoComplete bool
+	// StrictAutoComplete limits completion to exact fuzzy matches. It is used
+	// by fields such as masks and search history where approximate suggestions
+	// are more confusing than helpful.
+	StrictAutoComplete bool
+	// ClearHistory lets the host replace the default destructive-history
+	// confirmation while preserving entries it owns specially.
+	ClearHistory func(done func())
 	// AutoCompleteModifiedEnterPassthrough keeps host command shortcuts out of the suggestion menu.
 	AutoCompleteModifiedEnterPassthrough bool
 	// AutoCompletePreview previews selection and provides a row restoring typed text.

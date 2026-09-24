@@ -41,6 +41,7 @@ struct F4GalleryBridge::PanelSyncContext
     QString cursorEntryId;
     QString sourceKind;
     QString galleryLayoutMode;
+    QString groupBy;
     qulonglong catalogRevision = 0;
     qulonglong selectionRevision = 0;
     qulonglong highlightRevision = 0;
@@ -48,17 +49,23 @@ struct F4GalleryBridge::PanelSyncContext
     qulonglong iconRevision = 0;
     int cursorIndex = -1;
     int incomingTotalCount = 0;
+    int incomingGroupTotal = 0;
     bool metadataDeferred = false;
     bool previewCapable = false;
     bool active = false;
     bool loading = false;
     bool catalogProvisional = false;
     bool catalogRowsDeferred = false;
+    bool groupsDeferred = false;
+    bool groupReverse = false;
+    bool groupFoldersSeparately = false;
+    bool groupsProvided = false;
     bool usefulLocalPreview = false;
     bool catalogStreamStart = false;
     bool identityChanged = false;
     bool provisionalReplacementDeferred = false;
     bool catalogPayloadChanged = false;
+    bool groupPayloadChanged = false;
     bool catalogChanged = false;
     bool metadataStreamChanged = false;
     bool selectionChanged = false;
@@ -71,6 +78,7 @@ struct F4GalleryBridge::PanelSyncContext
     bool traceCatalogStages = false;
     QVariant catalogTraceId;
     QVariantList incomingEntries;
+    QVariantList incomingGroups;
     QVariantList entries;
     QStringList selectedIds;
     QString appliedCursorEntryId;
@@ -118,12 +126,23 @@ F4GalleryBridge::PanelSyncContext F4GalleryBridge::makePanelSyncContext(
         QStringLiteral("catalogProvisional")).toBool();
     context.catalogRowsDeferred = panel.value(
         QStringLiteral("catalogRowsDeferred")).toBool();
+    context.groupsDeferred = panel.value(
+        QStringLiteral("groupsDeferred")).toBool();
     context.galleryLayoutMode = panel.value(
         QStringLiteral("galleryLayoutMode")).toString();
+    context.groupBy = panel.value(QStringLiteral("groupBy")).toString();
+    context.groupReverse = panel.value(QStringLiteral("groupReverse"))
+                               .toBool();
+    context.groupFoldersSeparately = panel.value(
+        QStringLiteral("groupFoldersSeparately")).toBool();
     context.incomingEntries = panel.value(
         QStringLiteral("entries")).toList();
     context.incomingTotalCount = panel.value(
         QStringLiteral("totalCount"), context.incomingEntries.size()).toInt();
+    context.incomingGroups = panel.value(QStringLiteral("groups")).toList();
+    context.groupsProvided = panel.contains(QStringLiteral("groups"));
+    context.incomingGroupTotal = panel.value(
+        QStringLiteral("groupTotal"), context.incomingGroups.size()).toInt();
 
     SideState &state = *context.state;
     if (state.initialized && context.panelId == state.panelId
@@ -410,6 +429,30 @@ void F4GalleryBridge::classifyPanelSyncChanges(PanelSyncContext *context)
         || context->previewCapable != state.previewCapable
         || context->catalogRowsDeferred != state.catalogRowsDeferred
         || context->incomingTotalCount != state.totalCount;
+    const bool groupSettingsChanged = !state.initialized
+        || context->groupBy != state.groupBy
+        || context->groupReverse != state.groupReverse
+        || context->groupFoldersSeparately != state.groupFoldersSeparately;
+    // Row-free state updates deliberately omit the group array. Once bounded
+    // pages have been assembled, the producer continues to report
+    // groupsDeferred for the same large catalog; that is not a new catalog
+    // and must not restart paging or rebuild Gallery delegates.
+    const bool groupCatalogRejectedForCurrentRevision =
+        state.groupCatalogRejected
+        && state.initialized
+        && context->catalogRevision == state.catalogRevision
+        && context->currentPath == state.currentPath
+        && !groupSettingsChanged;
+    const bool groupSnapshotChanged = groupCatalogRejectedForCurrentRevision
+        ? false
+        : context->groupsDeferred
+            ? context->incomingGroupTotal != state.groupTotal
+            : (context->groupsProvided
+               && context->incomingGroups != state.groupDescriptors);
+    context->groupPayloadChanged = groupSettingsChanged
+        || groupSnapshotChanged;
+    context->catalogPayloadChanged = context->catalogPayloadChanged
+        || context->groupPayloadChanged;
     context->catalogChanged = context->catalogPayloadChanged
         || context->catalogProvisional != state.catalogProvisional;
     context->metadataStreamChanged = !state.initialized
@@ -684,7 +727,21 @@ void F4GalleryBridge::commitPanelSyncState(PanelSyncContext *context)
     state.metadataRevision = context->metadataDeferred
         ? context->metadataRevision : 0;
     state.galleryLayoutMode = context->galleryLayoutMode;
+    state.groupBy = context->groupBy;
+    state.groupReverse = context->groupReverse;
+    state.groupFoldersSeparately = context->groupFoldersSeparately;
     if (context->catalogPayloadChanged) {
+        resetPanelGroupPage(context->side);
+        state.groupCatalogRejected = false;
+        state.groupsDeferred = context->groupsDeferred;
+        state.groupTotal = qMax(0, context->incomingGroupTotal);
+        state.groupCatalogReady = !context->groupsDeferred;
+        state.groupDescriptors.clear();
+        if (!context->groupsDeferred) {
+            commitPanelGroupCatalog(
+                context->side, context->incomingGroups,
+                context->catalogRevision);
+        }
         rebuildPanelCatalogIndex(context);
     } else if (context->appearanceChanged) {
         state.entries = context->entries;
@@ -738,6 +795,9 @@ void F4GalleryBridge::finalizePanelSync(PanelSyncContext *context)
     SideState &state = *context->state;
     if (context->catalogRowsDeferred) {
         schedulePanelCatalogRowsRequest(context->side);
+    }
+    if (context->groupsDeferred) {
+        schedulePanelGroupPageRequest(context->side);
     }
     if (context->catalogChanged || context->selectionChanged) {
         state.selectedEntryIdList = context->selectedIds;

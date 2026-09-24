@@ -3,10 +3,11 @@
 package app
 
 import (
-	"github.com/unxed/f4/internal/panel"
-	"github.com/unxed/vtui"
 	"sync"
 	"syscall"
+	"github.com/unxed/f4/internal/panel"
+	"time"
+	"github.com/unxed/vtui"
 )
 
 // installConsoleCtrlHandler registers a console ctrl handler (FAR3's
@@ -24,10 +25,16 @@ var ctrlHandlerOnce sync.Once
 var procSetConsoleCtrlHandler = syscall.NewLazyDLL("kernel32.dll").NewProc("SetConsoleCtrlHandler")
 
 const (
-	ctrlCEvent     = 0
-	ctrlBreakEvent = 1
-	ctrlCloseEvent = 2
+	ctrlCEvent        = 0
+	ctrlBreakEvent    = 1
+	ctrlCloseEvent    = 2
+	ctrlLogoffEvent   = 5
+	ctrlShutdownEvent = 6
 )
+
+const consoleCloseSaveTimeout = 4 * time.Second
+
+var saveSessionOnConsoleTermination = saveSessionForConsoleTermination
 
 // consoleCtrlHandlerRoutine mirrors FAR3's control_handler(): Ctrl+Break is
 // translated into an interrupt of the active ConPTY program (same as Ctrl+C),
@@ -39,8 +46,38 @@ func consoleCtrlHandlerRoutine(ctrlType uintptr) uintptr {
 			interruptActivePTY()
 		}
 		return 1
+	case ctrlCloseEvent, ctrlLogoffEvent, ctrlShutdownEvent:
+		// Windows terminates console processes after this callback returns, so
+		// main's deferred SaveSession cannot protect settings on these paths.
+		// Marshal the save onto the FrameManager UI goroutine before allowing
+		// the system to terminate the process.
+		saveSessionOnConsoleTermination()
+		return 0
 	default:
 		return 0
+	}
+}
+
+func saveSessionForConsoleTermination() {
+	if vtui.FrameManager == nil {
+		SaveSession()
+		return
+	}
+
+	done := make(chan struct{})
+	vtui.FrameManager.PostTask(func() {
+		SaveSession()
+		close(done)
+	})
+
+	timer := time.NewTimer(consoleCloseSaveTimeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+		// A console control handler has a finite system timeout. Preserve the
+		// last observable state even if the UI loop stopped accepting tasks.
+		SaveSession()
 	}
 }
 

@@ -64,11 +64,22 @@ var terminalGraphicsSeen atomic.Bool
 // rather than stripping the wrong thing; the ones f4 itself reads are tied to
 // the constants that read them by a test in the linux build, so those cannot
 // drift apart unnoticed.
+//
+// F4_DETACHED says that *this* process is the copy checkAndDetach started: no
+// controlling terminal, stdout on /dev/null, and therefore stdout pointed at
+// the crash log by redirectDetachedStdout. A GUI f4 carries it for its whole
+// life, so before this it reached the shell in the built-in terminal and every
+// program started from there. The one program that reads it is f4 itself, and
+// a nested f4 believed it: `f4 --version` and `f4 --help` typed at the command
+// line printed into the outer session's crash log instead of the terminal and
+// showed nothing at all (issue #1151). Whatever the terminal starts is not the
+// detached copy, whichever way this copy was started.
 var PrivateToThisProcess = []string{
 	"GOFFI_UNIVERSAL_REEXEC",
 	"GOFFI_UNIVERSAL_EXE",
 	"GOFFI_UNIVERSAL_ARGV0",
 	"F4_EXE",
+	"F4_DETACHED",
 }
 
 // PrivateEnvEntry reports whether an environment entry names one of them.

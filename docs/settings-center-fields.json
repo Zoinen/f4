@@ -781,6 +781,16 @@
   },
   {
     "category": "editor",
+    "description": "When on, viewing a picture opens the image viewer and viewing a video opens the video player, where the terminal can show them. When off, every file opens in the text and hex viewer.",
+    "group": "Viewer",
+    "id": "ViewerOpenAsSupportedType",
+    "kind": "boolean",
+    "label": "Open images and video in their own viewers",
+    "timing": "new viewers",
+    "unavailable": ""
+  },
+  {
+    "category": "editor",
     "description": "Route ordinary Edit commands to an external editor. Remote files are temporarily downloaded and changes can be uploaded afterward.",
     "group": "External editor",
     "id": "UseExternalEditor",
@@ -866,6 +876,66 @@
     "id": "EditorColorerCatalog",
     "kind": "path",
     "label": "Colorer configuration directory",
+    "timing": "Colorer reload",
+    "unavailable": ""
+  },
+  {
+    "category": "syntax",
+    "description": "Draw the paired token under the cursor, such as a bracket, and its match when it is on screen, in the colors the Colorer scheme gives pairs.",
+    "group": "Colorer",
+    "id": "EditorColorerPairs",
+    "kind": "boolean",
+    "label": "Highlight pairs",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "syntax",
+    "description": "List each outlined line's text in the Colorer outliner, as FarColorer's default old outline view does, instead of line numbers, tree indentation and labels.",
+    "group": "Colorer",
+    "id": "EditorColorerOldOutline",
+    "kind": "boolean",
+    "label": "Old outline view",
+    "timing": "next outliner",
+    "unavailable": ""
+  },
+  {
+    "category": "syntax",
+    "description": "Highlight syntax with the editor's syntax highlighter, Chroma or Colorer: nowhere, in the quick view panel only, or in every viewer. Off by default: a viewer is for looking at a file at once, and highlighting takes time.",
+    "group": "Engine",
+    "id": "ViewerHighlighting",
+    "kind": "choice",
+    "label": "Syntax highlighting in viewers",
+    "timing": "new viewers",
+    "unavailable": ""
+  },
+  {
+    "category": "syntax",
+    "description": "An .hrc file, or a folder whose .hrc files are all loaded except *.ent.hrc, added to the catalog's schemes. Links inside must stay within that folder, and the file names Colorer opens must be ASCII. Empty loads none.",
+    "group": "Colorer",
+    "id": "EditorColorerUserHrc",
+    "kind": "path",
+    "label": "User Colorer schemes",
+    "timing": "Colorer reload",
+    "unavailable": ""
+  },
+  {
+    "category": "syntax",
+    "description": "An hrc-settings XML file loaded after the user schemes, whose prototypes override file type parameters, as FarColorer's user HRC settings file. The file name must be ASCII. Empty loads none.",
+    "group": "Colorer",
+    "id": "EditorColorerHrcSettings",
+    "kind": "path",
+    "label": "User Colorer HRC settings",
+    "timing": "Colorer reload",
+    "unavailable": ""
+  },
+  {
+    "category": "syntax",
+    "description": "An XML file in the catalog's hrd-sets format, or a folder of .hrd files whose root hrd element names its class, name and description. Links in an hrd-sets file resolve against catalog.xml and must stay inside the configuration directory; file names must be ASCII. Empty loads none.",
+    "group": "Colorer",
+    "id": "EditorColorerUserHrd",
+    "kind": "path",
+    "label": "User Colorer color styles",
     "timing": "Colorer reload",
     "unavailable": ""
   },
@@ -1430,7 +1500,7 @@
     "unavailable": "Reserved compatibility slot; no current dispatcher."
   },
   {
-    "category": "history",
+    "category": "drives",
     "description": "Directory path or expandable path expression for this numbered slot.",
     "group": "Folder bookmark slots",
     "id": "bookmark.Path",
@@ -1440,7 +1510,7 @@
     "unavailable": ""
   },
   {
-    "category": "history",
+    "category": "drives",
     "description": "Display name in the drive chooser.",
     "group": "Drive links",
     "id": "link.Name",
@@ -1450,7 +1520,7 @@
     "unavailable": ""
   },
   {
-    "category": "history",
+    "category": "drives",
     "description": "Directory or provider path opened by the link.",
     "group": "Drive links",
     "id": "link.Path",
@@ -1460,7 +1530,7 @@
     "unavailable": ""
   },
   {
-    "category": "history",
+    "category": "drives",
     "description": "Far-style shortcut spelling, such as Q or CtrlF5.",
     "group": "Drive links",
     "id": "link.Hotkey",

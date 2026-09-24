@@ -48,7 +48,7 @@ func (vv *ViewerView) HandleSemanticAction(action map[string]any) bool {
 			offset = vv.Backend.FindLineStart(offset)
 		}
 		vv.TopOffset = offset
-		vv.EofVisible = false
+		vv.setEOF(false)
 		vv.SemanticPendingScroll = false
 		vv.SemanticPendingGeneration = 0
 		vv.semanticWindowGeneration = generation
@@ -196,7 +196,7 @@ func (vv *ViewerView) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 		for i := window.ViewportRow; i < min(len(window.Rows), window.ViewportRow+window.ViewportRows); i++ {
 			vv.LineOffsets = append(vv.LineOffsets, window.Rows[i].Offset)
 		}
-		vv.EofVisible = vv.TopOffset+window.ViewportSpan >= vv.Backend.Size()
+		vv.setEOF(vv.TopOffset+window.ViewportSpan >= vv.Backend.Size())
 		vv.lastKnownSize = vv.Backend.Size()
 	}
 	width := vv.semanticContentWidth()
@@ -568,9 +568,19 @@ func semanticHexLine(offset int64, data []byte) string {
 	return line.String()
 }
 
-func semanticViewerLineLen(data []byte, width int, wrap bool) (lineLen int, textLen int, foundNewline bool) {
-	scan := scanViewerText(data, width, wrap, 0, 0, false)
-	return scan.lineLen, scan.textLen, scan.newline
+func semanticViewerLineLen(data []byte, width int, wrap bool) (lineLen int, textLen int) {
+	if len(data) == 0 {
+		return 0, 0
+	}
+	if width <= 0 {
+		return 1, 1
+	}
+	// Semantic rows expose the portion that fits in one viewport row even
+	// when the viewer itself is in hard no-wrap mode. The projection keeps
+	// consuming the rest of a hard line separately; this helper only reports
+	// the row contract used by native consumers.
+	scan := scanViewerText(data, width, true, 0, 0, false)
+	return scan.lineLen, scan.textLen
 }
 
 func SemanticTopBarStrings(topBar *TopBar) (left, right string) {

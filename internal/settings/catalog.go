@@ -17,8 +17,9 @@ var Categories = []f4settings.Category{
 	{ID: "editor", Label: f4settings.Text{English: "Editor & viewer"}},
 	{ID: "syntax", Label: f4settings.Text{English: "Syntax highlighting"}},
 	{ID: "keyboard", Label: f4settings.Text{English: "Keyboard & shortcuts"}},
+	{ID: "hotkeys", Label: f4settings.Text{Key: "Hotkeys.Title", English: "Hotkey Configurator"}},
 	{ID: "terminal", Label: f4settings.Text{English: "Terminal & environment"}},
-	{ID: "history", Label: f4settings.Text{English: "History & bookmarks"}},
+	{ID: "history", Label: f4settings.Text{English: "History"}},
 	{ID: "associations", Label: f4settings.Text{English: "File associations"}},
 	{ID: "menus", Label: f4settings.Text{English: "User menus & macros"}},
 	{ID: "network", Label: f4settings.Text{English: "Network & connections"}},
@@ -58,7 +59,8 @@ AutoSaveCurrentPanel|workspaces|Automatic saving|Save panel locations automatica
 AutoSaveGUIWindow|workspaces|Automatic saving|Save graphical window automatically|Remember supported graphical-window dimensions and position, not external terminal geometry.||live
 ShowHiddenFiles|panels|File listing|Show hidden files|Include hidden files and folders in the listing. The parent-directory entry remains visible.||live
 ShowDirPrefix|panels|File listing|Prefix folder names|Prefix folder names with a slash, unless a highlight rule already supplies one.||live
-ShowHighlightMarks|panels|File listing|Show highlight marks|Show markers from matching file-highlight rules. Also affects path suggestions; symlinks retain their fallback arrow.||live
+ShowHighlightMarks|panels|File listing|Show highlight marks|Show markers from matching file-highlight rules. Also affects path suggestions; a symlink no rule marks follows its own arrow setting.||live
+ShowSymlinkArrow|panels|File listing|Arrow before symbolic links|Prefix the name of a symbolic link with an arrow when no highlight rule marks it. The link target shown beside the focused entry is not affected.||live
 SeparateFileExtensions|panels|File listing|Separate filename extensions|Align the final extension separately in the name column. Excludes folders, extensionless names and leading dots alone.||live
 ShowPanelFileInfo|panels|File listing|Focused-file status row|Reserve a bottom row for the focused name, size and modification time. Short panels suppress this row.||live
 HidePanelPathBar|panels|File listing|Hide panel path bars (GUI)|Hide the path, sorting and view controls above both graphical file panels. Ctrl+Shift+B toggles this setting.||live
@@ -67,20 +69,28 @@ SyncPanelLoad|panels|Directory loading|Wait for complete directory listing|Repla
 InfoPanelCPUGPU|panels|Information panels|Show CPU and GPU information|Include locally collected CPU and GPU sections when the information provider does not supply authoritative information.||live
 InfoPanelBytes|panels|Information panels|Show sizes in bytes|Display raw bytes instead of human-readable sizes in information and quick-view panels.||live
 NavigationMode|panels|Typing and focus|Panel navigation|Classic types into the command line. Vim adds j/k and double dd/cc/mm actions. Search-first separates filename-search and command focus.|0:Classic;1:Vim;2:Search first|live
+PanelGroupSmallMiB|panels|Grouping|Small group limit (MiB)|Inclusive upper size bound for Small. The three group limits must be positive and strictly increasing.||live
+PanelGroupMediumMiB|panels|Grouping|Medium group limit (MiB)|Inclusive upper size bound for Medium. Applies to logical size and size on disk.||live
+PanelGroupLargeMiB|panels|Grouping|Large group limit (MiB)|Inclusive upper size bound for Large. Larger files belong to Extra large.||live
+PanelAutoFilter|panels|Typing and focus|Autofilter instead of quick search|Typing a name in a panel hides the rows that do not match instead of moving the cursor to the first match. Esc or Enter brings the hidden rows back.||live
 SearchCommandStayFocused|panels|Typing and focus|Keep command input focused|In Search-first mode, keep command entry focused after executing a command rather than returning to the panel.||live
 SearchCommandHideUnfocused|panels|Typing and focus|Hide command input when unfocused|In Search-first mode, hide the command line when the panel has focus and the input is empty. Press the tilde key to show it.||live
 CommandLineAutoComplete|terminal|Path suggestions|Enable filesystem suggestions|Enable filesystem path suggestions in the command line and path-enabled dialog fields.||live
 CommandLineMultiline|terminal|Command line|Multiline command input|Preserve line breaks and expand the command input upward as text wraps, in the console and GUI. Shift+Enter inserts a line break.||live
 CommandLineWordWrap|terminal|Command line|Wrap command arguments|Start each unquoted dash-prefixed argument on a new visual line and highlight its dash. Visual wrapping never changes the command.||live
+UsePromptFormat|terminal|Command line prompt|Use a prompt format string|Build the command line prompt from the format string below instead of the built-in user@host:path layout. Panels showing a virtual filesystem keep the built-in prompt.||live
+PromptFormat|terminal|Command line prompt|Prompt format|far2l-compatible format string: $u user, $n host, $p path with a tilde for the home directory, $r full path, $# hash for root and dollar otherwise, $t time, $d date, $s space, $h erase the previous character, $$ dollar sign.||live
 DialogAutoComplete|terminal|Path suggestions|Show dialog completion dropdowns|Show completion while typing in fields with history or path suggestions. Does not add sources to arbitrary fields.||live
 PathHintFullPath|terminal|Path suggestions|Show full suggestion paths|Display complete paths rather than only the final filename or folder component.||live
 PathHintSource|terminal|Path suggestions|Suggestion source|Resolve suggestions from the active panel, passive panel, or both. Both searches active first.|0:Active panel;1:Passive panel;2:Both panels|live
 PathHintTimeout|terminal|Path suggestions|Directory read timeout (seconds)|Maximum time allowed for a filesystem directory read behind suggestions. This is not a delay before suggestions appear. Minimum 1 second.||live
 PathHintMaxVisible|terminal|Path suggestions|Maximum visible suggestions|Maximum number of visible suggestion rows. Minimum 1.||live
 PathHintPerCategory|terminal|Path suggestions|Separate suggestion limits|Apply the visible-row limit separately to active-panel, passive-panel and history suggestions.||live
+UseWinescape|operations|Compatibility|Use libwinescape under Wine|Windows builds under Wine only: file operations use POSIX system calls through libwinescape instead of Win32. Off keeps the Win32 path everywhere.||restart
 UseTrash|operations|Deletion|Use trash or recycle bin|Send ordinary Delete operations to trash where supported. Explicit permanent-delete commands still delete permanently.||new operations
 DefaultFileOpMode|operations|Execution|Default operation mode|Start operations in Queue, Background or Foreground mode. Individual operation dialogs can override it.|0:Queue;1:Background;2:Foreground|new operations
 FileOpPathDisplay|operations|Execution|Progress path display|Show the current name, full path, or source and destination paths in operation progress.|0:Name;1:Full path;2:Source and destination|live
+CopyAccessRights|operations|Execution|Access rights of copies|Permissions a copied file or folder receives. The copy dialog starts from this value and stores the choice made there.|0:Default;1:Copy from source;2:Inherit from destination|new operations
 ApplyCommandParallelism|operations|Execution|Concurrent Apply commands|Maximum concurrent commands in Apply command. Zero means unlimited. The initial default is the logical CPU count.||new operations
 ConfirmCopy|operations|Confirmations|Confirm copy|Show the copy destination and options dialog before an ordinary copy.||new operations
 ConfirmMove|operations|Confirmations|Confirm move|Show the move destination and options dialog before an ordinary move.||new operations
@@ -107,26 +117,37 @@ EditorUseEditorConfig|editor|Text input|Read adjacent .editorconfig|Apply matchi
 EditorAutoComplete|editor|Completion|Editor completion|Enable completion in newly opened named files whose basenames match the configured masks.||new editors
 EditorAutoCompleteMask|editor|Completion|Completion filename masks|Semicolon-separated, case-insensitive filename patterns selecting files eligible for editor completion.||new editors
 EditorCrosshair|editor|Visual aids|Show cursor crosshair|Draw cursor guide lines using the selected axis mode.||live
-EditorCrossMode|editor|Visual aids|Crosshair axes|Select no guide, a vertical guide, a horizontal guide, or both. Colorer can supply guide colors but the behavior is editor-wide.|0:None;1:Vertical;2:Horizontal;3:Both|live
+EditorCrossMode|editor|Visual aids|Crosshair axes|Select no guide, a vertical guide, a horizontal guide, or both. Colorer can supply guide colors but the behavior is editor-wide.|0:None;1:Vertical;2:Horizontal;3:Both;4:By file type (Colorer)|live
 EditorMarkOccurrences|editor|Visual aids|Highlight selected-text occurrences|Highlight other exact occurrences of an ordinary single-line selection of 2-256 bytes containing non-whitespace. This does not automatically highlight the cursor word.||live
 EditorAutodetectCodePage|editor|Text encoding|Detect editor encoding|Detect text encoding when opening a file in the editor.||new editors
 EditorDefaultCodePage|editor|Text encoding|Default editor encoding|Fallback encoding when detection is disabled or cannot determine a better result. Per-file overrides remain separate.||new editors
 ViewerAutodetectCodePage|editor|Text encoding|Detect viewer encoding|Detect encoding when opening the viewer or a quick-view preview.||new viewers
 ViewerDefaultCodePage|editor|Text encoding|Default viewer encoding|Fallback viewer and quick-view encoding when detection is disabled or inconclusive.||new viewers
+ViewerOpenAsSupportedType|editor|Viewer|Open images and video in their own viewers|When on, viewing a picture opens the image viewer and viewing a video opens the video player, where the terminal can show them. When off, every file opens in the text and hex viewer.||new viewers
 UseExternalEditor|editor|External editor|Use external editor|Route ordinary Edit commands to an external editor. Remote files are temporarily downloaded and changes can be uploaded afterward.||new edit commands
 ExternalEditorConsole|editor|External editor|Console editor command|Command for terminal sessions; the file path is appended as the last argument. Current parsing splits on whitespace and is not a shell-expression parser.||new edit commands
 ExternalEditorGUI|editor|External editor|Graphical editor command|Command for graphical sessions; the file path is appended as the last argument. Current parsing splits on whitespace and is not a shell-expression parser.||new edit commands
 EditorHighlighter|syntax|Engine|Syntax highlighter|Choose Chroma, Colorer or no highlighting for newly opened editors. Colorer needs installed schemas and may fall back when unavailable.|Chroma:Chroma;Colorer:Colorer;None:None|new editors
 EditorSyntaxAnimation|syntax|Engine|Animate syntax colors|Fade arriving RGB syntax colors over about 400 milliseconds. Indexed colors are unchanged.||live
+ViewerHighlighting|syntax|Engine|Syntax highlighting in viewers|Highlight syntax with the editor's syntax highlighter, Chroma or Colorer: nowhere, in the quick view panel only, or in every viewer. Off by default: a viewer is for looking at a file at once, and highlighting takes time.|0:Off;1:Quick view only;2:All viewers|new viewers
 EditorColorerScheme|syntax|Colorer|Colorer scheme|Select the HRD scheme used for syntax, guide and editor base colors. Empty uses the built-in default.||Colorer reload
 EditorColorerSyntax|syntax|Colorer|Colorer syntax colors|Enable Colorer syntax coloring while retaining its other style facilities.||Colorer reload
 EditorColorerBackground|syntax|Colorer|Use Colorer base colors|Use foreground and background fields supplied by the Colorer scheme instead of only the general editor palette.||Colorer reload
 EditorColorerCatalog|syntax|Colorer|Colorer configuration directory|Directory containing Colorer configuration data. Empty uses the profile's colorer/configs directory; this is not a catalog XML filename.||Colorer reload
+EditorColorerPairs|syntax|Colorer|Highlight pairs|Draw the paired token under the cursor, such as a bracket, and its match when it is on screen, in the colors the Colorer scheme gives pairs.||live
+EditorColorerOldOutline|syntax|Colorer|Old outline view|List each outlined line's text in the Colorer outliner, as FarColorer's default old outline view does, instead of line numbers, tree indentation and labels.||next outliner
+EditorColorerUserHrc|syntax|Colorer|User Colorer schemes|An .hrc file, or a folder whose .hrc files are all loaded except *.ent.hrc, added to the catalog's schemes. Links inside must stay within that folder, and the file names Colorer opens must be ASCII. Empty loads none.||Colorer reload
+EditorColorerHrcSettings|syntax|Colorer|User Colorer HRC settings|An hrc-settings XML file loaded after the user schemes, whose prototypes override file type parameters, as FarColorer's user HRC settings file. The file name must be ASCII. Empty loads none.||Colorer reload
+EditorColorerUserHrd|syntax|Colorer|User Colorer color styles|An XML file in the catalog's hrd-sets format, or a folder of .hrd files whose root hrd element names its class, name and description. Links in an hrd-sets file resolve against catalog.xml and must stay inside the configuration directory; file names must be ASCII. Empty loads none.||Colorer reload
 MacKeyboard|keyboard|Editing chords|Mac keyboard mode|Use Mac-style editing chords in editors and dialog fields. Auto enables them on macOS; panels retain Far navigation. Command translation requires backend support.|auto:Automatic;on:On;off:Off|live
-SearchExactOnHit|keyboard|Compatibility|Legacy exact-hit preference|The old hotkey table used this to narrow exact search hits. Settings Center uses dim-only search and does not consume this preference. Its saved value is retained.||unavailable
+MenuLoopScroll|keyboard|Menu navigation|Loop list scrolling|When on, holding Up or Down in a menu or drop-down list runs past the last item back to the first. When off, a held arrow key stops at the first or last item; a separate press still jumps to the other end, as in Far Manager 3.||live
+SearchExactOnHit|keyboard|Editing chords|Prefer exact shortcut search matches|In the Hotkey Configurator table, narrow the search to exact matches when available. This does not affect the Settings Center sidebar search.||next open
 EscTogglePanels|terminal|Terminal input|Escape toggles panels|Allow Escape to show or hide the file panels to access the terminal.||live
 TerminalCtrlNWorkspace|terminal|Terminal input|Ctrl+N creates workspace|Reserve Ctrl+N while terminal input has focus to create a workspace. Off sends the chord to the terminal program.||live
-KeepTerminalCursor|terminal|Terminal input|Preserve terminal cursor style|Leave cursor-style management to the terminal instead of letting f4 change it.||live
+KeepTerminalCursor|terminal|Cursor|Preserve terminal cursor style|Leave cursor-style management to the terminal instead of letting f4 change it.||live
+CursorInsertShape|terminal|Cursor|Insert mode cursor|Cursor shape while typing in insert mode: input fields, the command line and the editor. Not applied in a terminal while its own cursor style is preserved. The Linux console and the classic Windows console show an underline instead of a bar.|underline:Underline;bar:Vertical bar;block:Block|live
+CursorOvertypeShape|terminal|Cursor|Overtype mode cursor|Cursor shape while typing in overtype mode, which the Insert key toggles. Not applied in a terminal while its own cursor style is preserved. The Linux console and the classic Windows console show an underline instead of a bar.|underline:Underline;bar:Vertical bar;block:Block|live
+CursorBlink|terminal|Cursor|Blinking cursor|Make the text cursor blink. Not applied in a terminal while its own cursor style is preserved, nor in the Linux console or the classic Windows console.||live
 ConsoleMode|terminal|Presentation|Terminal presentation|Use the embedded terminal, host terminal with f4 overlay, or host terminal without overlay. Unsupported host styles fall back according to terminal capabilities.|own:Embedded;far:Host with overlay;mc:Host without overlay|new workspaces
 HistoryDirsPrefixLen|history|Presentation|Command directory column width|Width of the command-history directory prefix while date-and-time display is active. Minimum four characters.||new history dialogs
 MacroRecordFormat|menus|Macro recording|Record macros as|Save recorded key macros in the legacy key_macros.ini format or as Lua scripts under Macros/scripts.|0:Legacy INI;1:Lua scripts|new recordings
@@ -174,7 +195,7 @@ func coreSettingsFields() []f4settings.Field {
 		if f.ID == "ProxyPort" {
 			f.InputWidth = 6
 		}
-		if f.ID == "EditorColorerCatalog" {
+		if f.ID == "EditorColorerCatalog" || f.ID == "EditorColorerUserHrc" || f.ID == "EditorColorerUserHrd" || f.ID == "EditorColorerHrcSettings" {
 			f.Kind = f4settings.Path
 		}
 		if f.Timing == "unavailable" {

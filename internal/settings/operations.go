@@ -2,6 +2,7 @@ package settings
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -39,11 +40,17 @@ func (settingsOperationsProvider) Catalog() f4settings.Catalog {
 		return host.SaveGeometry()
 	})
 	add("colors.export", "appearance", "Theme", "Export applied colors", "Write the complete applied palette to farcolors.ini in the current configuration directory.", false, func(context.Context) error { return theme.ExportColors(theme.UserColorOverridesPath()) })
-	add("syntax.reload", "syntax", "Colorer", "Reload schemas", "Drop cached Colorer sessions, regions and scheme so subsequent highlighting loads applied configuration.", false, func(context.Context) error {
-		editor.ResetColorerSessions()
-		editor.ResetColorerRegions()
-		editor.ResetColorerScheme()
-		return nil
+	add("syntax.reload", "syntax", "Colorer", "Reload schemas", "Load the applied Colorer configuration, report what Colorer finds wrong with it, then drop cached sessions, regions and scheme so subsequent highlighting uses it.", true, func(ctx context.Context) error {
+		check := editor.CheckColorerSource(ctx, editor.CurrentColorerSource(), config.App.EditorColorerScheme, false, nil)
+		if check.Err == nil {
+			editor.ResetColorerSessions()
+			editor.ResetColorerRegions()
+			editor.ResetColorerScheme()
+		}
+		return colorerCheckError(check)
+	})
+	add("syntax.check", "syntax", "Colorer", "Check all schemes", "Load the scheme of every Colorer file type in the applied configuration and report the first one Colorer cannot load, and what it reports on the way. Applies nothing.", true, func(ctx context.Context) error {
+		return colorerCheckError(editor.CheckColorerSource(ctx, editor.CurrentColorerSource(), config.App.EditorColorerScheme, true, nil))
 	})
 	add("syntax.download", "syntax", "Colorer", "Download schemas", "Download and validate the Colorer schema archive, then install it at the applied configuration directory.", true, func(ctx context.Context) error {
 		ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
@@ -149,7 +156,7 @@ func (settingsOperationsProvider) Catalog() f4settings.Catalog {
 		case cmd.ID == "colors.export":
 			cmd.Requires = []string{"ColorStyle", "EnforceColorCorrection"}
 		case strings.HasPrefix(cmd.ID, "syntax."):
-			cmd.Requires = []string{"EditorColorerCatalog", "EditorColorerScheme", "ProxyMode", "ProxyHost", "ProxyPort", "ProxyUser", "ProxyPass"}
+			cmd.Requires = []string{"EditorColorerCatalog", "EditorColorerUserHrc", "EditorColorerUserHrd", "EditorColorerScheme", "ProxyMode", "ProxyHost", "ProxyPort", "ProxyUser", "ProxyPass"}
 		case cmd.ID == "updates.check":
 			cmd.Requires = []string{"UpdateChannel", "ProxyMode", "ProxyHost", "ProxyPort", "ProxyUser", "ProxyPass"}
 		}
@@ -174,4 +181,18 @@ func RunOnUI(ctx context.Context, run func()) {
 	} else {
 		run()
 	}
+}
+
+// colorerCheckError reports a Colorer check as a command's result: nil when it
+// is clean, otherwise why it failed followed by what Colorer reported.
+func colorerCheckError(check editor.ColorerCheck) error {
+	if check.Clean() {
+		return nil
+	}
+	var parts []string
+	if check.Err != nil {
+		parts = append(parts, check.Err.Error())
+	}
+	parts = append(parts, check.Reports...)
+	return errors.New(strings.Join(parts, "\n"))
 }

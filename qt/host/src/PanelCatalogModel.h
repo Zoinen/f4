@@ -67,6 +67,23 @@ public:
     QList<MetadataRange> metadataPendingRanges;
     QString galleryLayoutMode;
 
+    // Group ranges are an immutable catalog companion. Large catalogs fetch
+    // these descriptors in bounded pages and publish only the completed
+    // vector to QML.
+    QString groupBy;
+    bool groupReverse = false;
+    bool groupFoldersSeparately = false;
+    bool groupsDeferred = false;
+    bool groupCatalogReady = true;
+    bool groupCatalogRejected = false;
+    bool groupPageRequestInFlight = false;
+    int groupPageRequestOffset = -1;
+    int groupPageRequestLimit = 0;
+    int groupTotal = 0;
+    QVariantList groupDescriptors;
+    QVariantList pendingGroupDescriptors;
+    QSet<QString> pendingGroupKeys;
+
     // Sparse catalogs keep only materialized viewport pages. rowCount is
     // totalCount; this map resolves a logical row to its compact payload slot.
     QVariantList entries;

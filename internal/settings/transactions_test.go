@@ -264,16 +264,50 @@ func TestSettingsRecordStorePartialFailureAndRevision(t *testing.T) {
 		t.Fatal("concurrent source revision ignored")
 	}
 }
+
+// The installed catalog (far2l's colorer/configs) lists its colour styles
+// through external XML entities such as &catalog-rgb;. The encoding/xml reader
+// this used to be stopped at the first one, and the Settings Center offered no
+// styles at all. Colorer reads the catalog now, and brings the user's own
+// colour styles along (issue #277).
 func TestSettingsSchemeEnumerationAndWorktreeIdentity(t *testing.T) {
-	old := config.App.EditorColorerCatalog
-	defer func() { config.App.EditorColorerCatalog = old }()
+	oldCatalog, oldUserHrd := config.App.EditorColorerCatalog, config.App.EditorColorerUserHrd
+	defer func() { config.App.EditorColorerCatalog, config.App.EditorColorerUserHrd = oldCatalog, oldUserHrd }()
 	dir := t.TempDir()
 	config.App.EditorColorerCatalog = dir
-	_ = os.MkdirAll(filepath.Join(dir, "base"), 0700)
-	_ = os.WriteFile(filepath.Join(dir, "base", "catalog.xml"), []byte(`<catalog><hrd-sets><hrd class="rgb" name="first" description="First scheme"/><hrd class="text" name="other"/></hrd-sets></catalog>`), 0600)
-	schemes := settingsColorerSchemes()
-	if len(schemes) != 1 || schemes[0].Name != "first" {
-		t.Fatal(schemes)
+	base := filepath.Join(dir, "base")
+	_ = os.MkdirAll(filepath.Join(base, "hrd"), 0700)
+	_ = os.WriteFile(filepath.Join(base, "catalog.xml"), []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE catalog [
+    <!ENTITY hrd "hrd">
+    <!ENTITY catalog-rgb SYSTEM "hrd/catalog-rgb.xml">
+]>
+<catalog xmlns="http://colorer.github.io/schema/v1/catalog">
+    <hrc-sets/>
+    <hrd-sets>
+        &catalog-rgb;
+    </hrd-sets>
+</catalog>
+`), 0600)
+	_ = os.WriteFile(filepath.Join(base, "hrd", "catalog-rgb.xml"), []byte(`
+        <hrd class="rgb" name="first" description="First scheme">
+            <location link="&hrd;/first.hrd"/>
+        </hrd>
+        <hrd class="text" name="other" description="Other">
+            <location link="&hrd;/first.hrd"/>
+        </hrd>
+`), 0600)
+	_ = os.WriteFile(filepath.Join(base, "hrd", "first.hrd"), []byte(`<hrd xmlns="http://colorer.sf.net/2003/hrd"/>`), 0600)
+	user := t.TempDir()
+	_ = os.WriteFile(filepath.Join(user, "mine.hrd"), []byte(`<hrd xmlns="http://colorer.sf.net/2003/hrd" class="rgb" name="mine" description="My style"/>`), 0600)
+	config.App.EditorColorerUserHrd = user
+
+	names := map[string]bool{}
+	for _, scheme := range settingsColorerSchemes() {
+		names[scheme.Name] = true
+	}
+	if !names["first"] || !names["mine"] || names["other"] {
+		t.Fatalf("styles listed: %v; want first and mine, and no text-class style", names)
 	}
 }
 

@@ -168,13 +168,23 @@ func (hv *HelpView) Show(scr *ScreenBuf) {
 	}
 }
 
+// TextArea reports the inclusive screen rectangle used for help text. The
+// scrollbar is painted over the right frame column, so it does not narrow the
+// text area inside the window.
+func (hv *HelpView) TextArea() (x1, y1, x2, y2 int) {
+	l := hv.layout()
+	return l.contentX1, l.contentY1, l.contentX2, l.contentY2
+}
+
 func (hv *HelpView) layout() helpViewLayout {
 	l := helpViewLayout{
-		contentX1:  hv.X1 + 2,
-		contentY1:  hv.Y1 + 1,
-		contentX2:  hv.X2 - 2,
-		contentY2:  hv.Y2 - 1,
-		scrollBarX: hv.X2 - 2,
+		contentX1: hv.X1 + 2,
+		contentY1: hv.Y1 + 1,
+		contentX2: hv.X2 - 2,
+		contentY2: hv.Y2 - 1,
+		// The help scrollbar is drawn over the right frame column, as in
+		// far2l's ScrollBarEx(X2, ...), rather than in the inner padding.
+		scrollBarX: hv.X2,
 	}
 	stickyRows := 0
 	if hv.current != nil {
@@ -187,9 +197,6 @@ func (hv *HelpView) layout() helpViewLayout {
 	if hv.current != nil {
 		totalScrollable := len(hv.current.Lines) - stickyRows
 		l.showScrollBar = hv.scrollBar != nil && totalScrollable > l.contentHeight
-	}
-	if l.showScrollBar {
-		l.contentX2--
 	}
 	l.contentWidth = l.contentX2 - l.contentX1 + 1
 	return l

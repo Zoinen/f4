@@ -81,6 +81,10 @@ const (
 	// normal control background, preserving themes that omit this slot.
 	ColDialogIndicatorBackground
 
+	// A menu draws its scrollbar over the menu background, separately from
+	// the table/list scrollbar which uses the table background.
+	ColMenuScrollbar
+
 	// Helper for array size
 	LastPaletteColor
 )
@@ -112,6 +116,7 @@ func SetDefaultPalette() {
 	Palette[ColMenuSelectedHighlight] = SetRGBBoth(0, yellow, black)
 	Palette[ColMenuBox] = SetRGBBoth(0, white, cyan)
 	Palette[ColMenuTitle] = SetRGBBoth(0, white, cyan)
+	Palette[ColMenuScrollbar] = Palette[ColMenuBox]
 
 	// Table (White on Blue)
 	Palette[ColTableText] = SetRGBBoth(0, lightGray, blue)

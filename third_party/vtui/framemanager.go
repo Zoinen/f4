@@ -269,6 +269,7 @@ type frameManager struct {
 	injectedEvents      []*vtinput.InputEvent
 	injectedMu          sync.Mutex
 	OnRender            func(scr *ScreenBuf)
+	AfterFrameShow      func(scr *ScreenBuf, frame Frame)
 	lifecycleGeneration atomic.Uint64
 
 	pendingFar2l map[uint8]chan *vtinput.Far2lStack
@@ -2651,6 +2652,18 @@ func (fm *frameManager) ResizeWindow(cols, rows int) {
 	}
 }
 
+type windowMaximizer interface {
+	ToggleMaximized() bool
+}
+
+func (fm *frameManager) ToggleWindowMaximized() bool {
+	if fm.scr == nil || fm.scr.Renderer == nil {
+		return false
+	}
+	r, ok := fm.scr.Renderer.(windowMaximizer)
+	return ok && r.ToggleMaximized()
+}
+
 func rendererWantsPeriodicRedraw(renderer SurfaceRenderer) bool {
 	if renderer, ok := renderer.(PeriodicRedrawRenderer); ok {
 		return renderer.WantsPeriodicRedraw()
@@ -3483,6 +3496,9 @@ func (fm *frameManager) renderPhase() {
 					}
 				}
 				frame.Show(fm.scr)
+				if fm.AfterFrameShow != nil {
+					fm.AfterFrameShow(fm.scr, frame)
+				}
 
 				// Only the topmost frame owns the caret. Frames are
 				// painted bottom-up, and a frame under the top one has no
@@ -4231,6 +4247,12 @@ func (fm *frameManager) dispatchEventWithPaste(ev *vtinput.InputEvent, is_inject
 				DebugLog("FM: F9 accepted, activating menu")
 				activeMenu.Active = true
 				if len(activeMenu.Items) > 0 {
+					// Editor and viewer menus are rebuilt by far2l-style F9
+					// handlers with File selected. Keep that policy out of
+					// vtui's concrete frame types by using a tiny optional hook.
+					if resetter, ok := topFrame.(interface{ ResetMenuForF9() }); ok {
+						resetter.ResetMenuForF9()
+					}
 					if activeMenu.SelectPos < 0 || activeMenu.SelectPos >= len(activeMenu.Items) {
 						activeMenu.SelectPos = 0
 					}

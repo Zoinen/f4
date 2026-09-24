@@ -9,6 +9,7 @@ import (
 	"github.com/unxed/f4/internal/config"
 	"github.com/unxed/f4/internal/editor"
 	"github.com/unxed/f4/internal/i18n"
+	"github.com/unxed/f4/internal/keymap"
 	"github.com/unxed/f4/internal/theme"
 	"github.com/unxed/f4/sdk/f4settings"
 	"github.com/unxed/vtinput"
@@ -29,6 +30,7 @@ type settingsRow struct {
 	gap                int
 	read               func() string
 	write              func(string)
+	traceRecord        string // record ID for diagnostics when the row edits a collection record
 	values             func() map[string]string
 	matchFunc          func() bool
 	unavailableReason  string
@@ -51,6 +53,7 @@ func (b *settingsCheckbox) Show(scr *vtui.ScreenBuf) {
 // settingsViewport clips only the page, leaving the window chrome fixed.
 // It remains a Group/FocusContainer so native focus and UI inspection work.
 type settingsViewport struct {
+	fullPage vtui.UIElement
 	*vtui.Group
 	rows          []*settingsRow
 	scroll, total int
@@ -74,6 +77,13 @@ func newSettingsViewport() *settingsViewport {
 }
 func (v *settingsViewport) SetPosition(x1, y1, x2, y2 int) {
 	v.Group.SetPosition(x1, y1, x2, y2)
+	if v.fullPage != nil {
+		v.fullPage.SetPosition(x1, y1, x2, y2)
+		v.total = 0
+		v.scroll = 0
+		v.boxes = nil
+		return
+	}
 	v.bar.SetPosition(x2, y1, x2, y2)
 	v.total = 0
 	v.boxes = nil
@@ -201,6 +211,10 @@ func (v *settingsViewport) positionRows() {
 	v.bar.SetParams(v.scroll, 0, max(0, v.total-v.bar.PgStep))
 }
 func (v *settingsViewport) Show(scr *vtui.ScreenBuf) {
+	if v.fullPage != nil {
+		v.Group.Show(scr)
+		return
+	}
 	v.ScreenObject.Show(scr)
 	scr.PushClipRect(v.X1, v.Y1, v.X2, v.Y2)
 	defer scr.PopClipRect()
@@ -287,6 +301,11 @@ func (v *settingsViewport) notifyFocus() {
 	}
 }
 func (v *settingsViewport) ProcessKey(e *vtinput.InputEvent) bool {
+	// Embedded pages own navigation; wrapping the single child can re-enter
+	// that same group while it is preparing a backwards focus transition.
+	if v.fullPage != nil {
+		return v.fullPage.ProcessKey(e)
+	}
 	v.WrapFocus = true
 	handled := v.Group.ProcessKey(e)
 	v.notifyFocus()
@@ -296,6 +315,9 @@ func (v *settingsViewport) ProcessKey(e *vtinput.InputEvent) bool {
 	return handled
 }
 func (v *settingsViewport) ProcessMouse(e *vtinput.InputEvent) bool {
+	if v.fullPage != nil {
+		return v.Group.ProcessMouse(e)
+	}
 	if v.bar.IsMouseCaptured() {
 		v.bar.ProcessMouse(e)
 		return true
@@ -342,8 +364,11 @@ func newSettingsHelp() *settingsHelp {
 	h.bar.OnScroll = func(n int) { h.top = n }
 	return h
 }
-func (h *settingsHelp) CanFocus() bool { return true }
+func (h *settingsHelp) CanFocus() bool { return !h.IsDisabled() }
 func (h *settingsHelp) Show(scr *vtui.ScreenBuf) {
+	if h.IsDisabled() {
+		return
+	}
 	h.ScreenObject.Show(scr)
 	scr.PushClipRect(h.X1, h.Y1, h.X2, h.Y2)
 	defer scr.PopClipRect()
@@ -362,6 +387,9 @@ func (h *settingsHelp) Show(scr *vtui.ScreenBuf) {
 	}
 }
 func (h *settingsHelp) ProcessKey(e *vtinput.InputEvent) bool {
+	if h.IsDisabled() {
+		return false
+	}
 	if !e.KeyDown {
 		return false
 	}
@@ -380,6 +408,9 @@ func (h *settingsHelp) ProcessKey(e *vtinput.InputEvent) bool {
 	return true
 }
 func (h *settingsHelp) ProcessMouse(e *vtinput.InputEvent) bool {
+	if h.IsDisabled() {
+		return false
+	}
 	if h.bar.IsMouseCaptured() {
 		h.bar.ProcessMouse(e)
 		return true
@@ -483,6 +514,7 @@ type settingsCenter struct {
 	recordOnly                            bool
 	onApplied                             func()
 	recordTitle                           string
+	hotkeyPage                            vtui.UIElement
 	searchCacheQuery, searchCacheLanguage string
 	categoryMatchCache                    map[string]int
 	recordMatchCache                      map[settingsRecordMatchKey]bool
@@ -501,6 +533,7 @@ type settingsCenter struct {
 	choiceHelpRow           *settingsRow
 	offsets                 map[string]int
 	closed                  bool
+	scoped                  bool
 	running                 *vtui.TaskContext
 	closePending            bool
 	screenW, screenH        int
@@ -625,6 +658,50 @@ func newSettingsCenter(sessions []*settingsSession) *settingsCenter {
 	return c
 }
 
+// windowTitle names the window after the single category it was narrowed
+// to, so a contextual entry point does not present itself as the whole of
+// Settings.
+func (c *settingsCenter) windowTitle() string {
+	if c.scoped && len(c.categories) == 1 {
+		return c.categoryLabel(c.categories[0].ID)
+	}
+	return settingsText("Title", "Settings")
+}
+
+// restrictTo narrows the window to the given categories and keeps every
+// other pane -- search, matches, navigation -- working inside that scope.
+// Unknown ids are ignored; a scope that matches nothing leaves the window
+// untouched rather than presenting an empty one.
+func (c *settingsCenter) restrictTo(ids ...string) {
+	keep := map[string]bool{}
+	for _, id := range ids {
+		keep[id] = true
+	}
+	var categories []f4settings.Category
+	for _, cat := range c.categories {
+		if keep[cat.ID] {
+			categories = append(categories, cat)
+		}
+	}
+	if len(categories) == 0 {
+		return
+	}
+	c.categories = categories
+	c.scoped = true
+	var rows []vtui.TableRow
+	for _, cat := range c.categories {
+		rows = append(rows, settingsCategoryRow{c, cat})
+	}
+	c.sidebar.SetRows(rows)
+	c.sidebar.SetSelectPos(0)
+	c.categoryMatchCache = nil
+	c.recordMatchCache = nil
+	c.category = ""
+	c.selectCategory(categories[0].ID)
+	c.SetTitle(c.windowTitle())
+	c.layoutWindow()
+}
+
 func (c *settingsCenter) ResizeConsole(w, h int) {
 	c.screenW, c.screenH = max(1, w), max(1, h)
 	if !c.positioned {
@@ -632,7 +709,12 @@ func (c *settingsCenter) ResizeConsole(w, h int) {
 		c.SetPosition((w-dw)/2, (h-dh)/2, (w+dw)/2-1, (h+dh)/2-1)
 		c.positioned = true
 	} else if c.SavedBounds != nil {
-		c.SetPosition(0, 0, w-1, h-1)
+		// Match vtui's BaseWindow.ToggleZoom: the workspace tab strip owns the
+		// rows above and the key bar owns the row below, and both are drawn
+		// after the frames, so a maximized window placed over them simply
+		// loses its border to them (issue #1144).
+		top := vtui.FrameManager.WorkspaceTopInset()
+		c.SetPosition(0, top, w-1, max(top, h-2))
 	} else {
 		c.fitBounds()
 	}
@@ -672,7 +754,11 @@ func (c *settingsCenter) layoutWindow() {
 	c.sidebar.SetPosition(x0+2, y0+4, x0+side, bottom)
 	c.layoutSearch()
 	px := x0 + side + 2
-	if w >= 110 {
+	c.help.SetVisible(c.category != "hotkeys")
+	c.help.SetDisabled(c.category == "hotkeys")
+	if c.category == "hotkeys" {
+		c.page.SetPosition(px, y0+3, x0+w-3, bottom)
+	} else if w >= 110 {
 		helpWidth := max(28, w/4)
 		c.page.SetPosition(px, y0+3, x0+w-helpWidth-4, bottom)
 		c.help.SetPosition(x0+w-helpWidth-2, y0+1, x0+w-3, bottom)
@@ -707,9 +793,9 @@ func (c *settingsCenter) Show(scr *vtui.ScreenBuf) {
 		return
 	}
 	attr := vtui.Palette[vtui.ColDialogBox]
-	for y := c.Y1 + 1; y <= c.help.Y2; y++ {
+	for y := c.Y1 + 1; y <= c.contentBottom(); y++ {
 		scr.Write(c.sidebar.X2+1, y, vtui.StringToCharInfo("│", attr))
-		if c.help.X1 > c.page.X2 {
+		if c.category != "hotkeys" && c.help.X1 > c.page.X2 {
 			scr.Write(c.help.X1-1, y, vtui.StringToCharInfo("│", attr))
 		}
 	}
@@ -720,7 +806,7 @@ func (c *settingsCenter) Show(scr *vtui.ScreenBuf) {
 		titleAttr = vtui.DimColor(titleAttr)
 	}
 	scr.Write(titleX, c.Y1+1, vtui.StringToCharInfo(title, titleAttr))
-	if c.help.X1 == c.page.X1 {
+	if c.category != "hotkeys" && c.help.X1 == c.page.X1 {
 		for x := c.page.X1; x <= c.help.X2; x++ {
 			scr.Write(x, c.help.Y1-1, vtui.StringToCharInfo("─", attr))
 		}
@@ -760,6 +846,14 @@ func (c *settingsCenter) categorySidebarWidth() int {
 	return min(width+5+1, max(10, available))
 }
 func (c *settingsCenter) ProcessKey(e *vtinput.InputEvent) bool {
+	if c.category == "hotkeys" && c.GetFocusedItem() == c.page && c.hotkeyPage != nil {
+		if e.KeyDown && (e.VirtualKeyCode == vtinput.VK_ESCAPE || e.VirtualKeyCode == vtinput.VK_TAB) {
+			if c.hotkeyPage.ProcessKey(e) {
+				return true
+			}
+		}
+	}
+
 	if e.KeyDown && e.VirtualKeyCode == vtinput.VK_ESCAPE {
 		c.Close()
 		return true
@@ -777,6 +871,23 @@ func (c *settingsCenter) ProcessKey(e *vtinput.InputEvent) bool {
 			return true
 		}
 		return c.BaseWindow.ProcessKey(e)
+	}
+	if e.KeyDown && e.VirtualKeyCode == vtinput.VK_RETURN {
+		// An Enter the focused control has no use for (a checkbox, a radio
+		// group, a text field) used to reach vtui's BaseWindow fallback,
+		// Group.TriggerDefaultAction. With no default button in this dialog
+		// it presses the first button it meets while descending the page:
+		// Enter on the first checkbox of Terminal & environment clicked
+		// Environment profiles' Add, and the unnamed profile failed the next
+		// Apply; File associations and User menus saved an empty record
+		// outright (f4 #1154). Such an Enter now applies, which is also what
+		// it already did on pages without buttons.
+		if focused := c.GetFocusedItem(); focused != nil && focused.ProcessKey(e) {
+			c.syncWindowBounds()
+			return true
+		}
+		c.commit(false)
+		return true
 	}
 	if e.KeyDown && e.VirtualKeyCode == vtinput.VK_F && (e.ControlKeyState&(vtinput.LeftCtrlPressed|vtinput.RightCtrlPressed)) != 0 {
 		c.SetFocusedItem(c.search)
@@ -1012,6 +1123,33 @@ func (c *settingsCenter) selectCategory(id string) {
 	c.page.SetId("settings-page")
 	c.page.SetOwner(c.Window)
 	c.page.rows = nil
+	c.page.fullPage = nil
+	if id == "hotkeys" {
+		if h, ok := host.(HotkeyPageHost); ok {
+			if c.hotkeyPage == nil {
+				c.hotkeyPage = h.HotkeyPage(c.Window, func(hm *keymap.HotkeyManager) {
+					for _, session := range c.sessions {
+						if session.catalog.ID != "hotkeys" {
+							continue
+						}
+						var records []f4settings.Record
+						for i, r := range settingsHotkeyRows(hm) {
+							records = append(records, f4settings.Record{ID: fmt.Sprintf("binding:%d", i), Values: map[string]string{"binding.Action": r.Action, "binding.Key": r.RawKey, "binding.Area": r.Area, "binding.Condition": r.Condition}})
+						}
+						session.draft.Records["bindings"] = records
+					}
+					c.status = ""
+					c.updateMatches()
+				})
+			}
+			c.page.fullPage = c.hotkeyPage
+			c.page.AddItem(c.hotkeyPage)
+			c.page.SetFocusedItem(c.hotkeyPage)
+			c.layoutWindow()
+			c.updateMatches()
+			return
+		}
+	}
 	group := ""
 	for _, s := range c.sessions {
 		for _, f := range s.catalog.Fields {
@@ -1034,6 +1172,7 @@ func (c *settingsCenter) selectCategory(id string) {
 	}
 	c.addCollections(id)
 	c.addCommands(id)
+	c.layoutWindow()
 	c.page.scroll = c.offsets[id]
 	c.layoutPage()
 	c.updateMatches()
@@ -1053,11 +1192,16 @@ func (c *settingsCenter) makeControl(r *settingsRow) vtui.UIElement {
 			c.status = Phrase("Provider is no longer loaded.")
 			return
 		}
+		old := d.Values[f.ID]
+		if r.read != nil {
+			old = r.read()
+		}
 		if r.write != nil {
 			r.write(v)
 		} else {
 			d.Values[f.ID] = v
 		}
+		settingsTraceWrite(r.session, r.traceRecord, f, old, v, r.control)
 		if f.Timing == "preview" && d.PreviewFunc != nil {
 			if err := d.PreviewFunc(d); err != nil {
 				c.status = settingsErrorText(err)
@@ -1166,7 +1310,9 @@ func (c *settingsCenter) commit(closeAfter bool) {
 			c.status = Phrase("A settings provider was unloaded; pending edits were not saved.")
 			return
 		}
+		settingsTraceDirty(s)
 		for id, err := range s.draft.Validate() {
+			vtui.DebugLog("SETTINGS_TRACE: validate %s failed: %s: %v", s.catalog.ID, id, err)
 			c.status = id + ": " + settingsErrorText(err)
 			return
 		}
@@ -1251,6 +1397,12 @@ func (c *settingsCenter) runBackground(worker func(context.Context) error, done 
 		})
 	})
 }
+
+// AllowsProgressOverlay lets an operation started from the settings (an update
+// download, a plugin install) show its progress screen over this window
+// instead of waiting for it to close.
+func (c *settingsCenter) AllowsProgressOverlay() bool { return true }
+
 func (c *settingsCenter) Close() {
 	if c.running != nil {
 		c.closePending = true
@@ -1393,6 +1545,30 @@ func (c *settingsCenter) nextMatch(direction int) {
 }
 
 func Open(category string) bool { return OpenAt(category, "", "", false) }
+
+// OpenCategoryOnly opens the Settings Center showing one category and
+// nothing else. It is the entry point for keys that belong to a specific
+// screen -- the drive menu's F9 -- where the full category list is noise
+// (#1148). An already open window is only navigated: the user asked for
+// settings from inside settings, and narrowing what is in front of them
+// would lose the rest of their session.
+func OpenCategoryOnly(category string) bool {
+	if vtui.FrameManager == nil || category == "" {
+		return false
+	}
+	if current, ok := vtui.FrameManager.GetTopFrame().(*settingsCenter); ok {
+		if current.running == nil {
+			current.navigate(category, "", "", false)
+		}
+		return true
+	}
+	sessions, err := beginSettingsSessions(context.Background())
+	if err != nil {
+		vtui.ShowMessage(Phrase("Settings"), err.Error(), []string{i18n.Msg("vtui.Ok")})
+		return true
+	}
+	return showSettingsCenterScoped(sessions, category)
+}
 func OpenAt(category, collection, record string, create bool) bool {
 	if vtui.FrameManager == nil {
 		return false
@@ -1410,6 +1586,15 @@ func OpenAt(category, collection, record string, create bool) bool {
 	}
 	return showSettingsCenter(sessions, category, collection, record, create)
 }
+func showSettingsCenterScoped(sessions []*settingsSession, category string) bool {
+	c := newSettingsCenter(sessions)
+	c.restrictTo(category)
+	c.navigate(category, "", "", false)
+	c.ResizeConsole(vtui.FrameManager.GetScreenSize(), vtui.FrameManager.GetScreenHeight())
+	vtui.FrameManager.Push(c)
+	c.refreshSchemeChoices()
+	return true
+}
 func showSettingsCenter(sessions []*settingsSession, category, collection, record string, create bool) bool {
 	c := newSettingsCenter(sessions)
 	c.navigate(category, collection, record, create)
@@ -1422,11 +1607,11 @@ func showSettingsCenter(sessions []*settingsSession, category, collection, recor
 // Catalogs can live on an unavailable network share. Enumerate their labels
 // outside the UI thread and ignore results after the editing session closes.
 func (c *settingsCenter) refreshSchemeChoices() {
-	directory := editor.ColorerConfigsDir()
+	source := editor.CurrentColorerSource()
 	vtui.RunAsync(func(task *vtui.TaskContext) {
-		schemes := settingsColorerSchemesAt(directory)
+		schemes := editor.ListColorerSchemesFor(source)
 		task.RunOnUI(func() {
-			if c.closed || directory != editor.ColorerConfigsDir() {
+			if c.closed || source != editor.CurrentColorerSource() {
 				return
 			}
 			for _, session := range c.sessions {
@@ -1465,6 +1650,18 @@ func (c *settingsCenter) navigate(category, collection, record string, create bo
 		for i, cat := range c.categories {
 			if cat.ID == category {
 				c.sidebar.SetSelectPos(i)
+			}
+		}
+	}
+	if collection == "" && record != "" {
+		for _, row := range c.page.rows {
+			if row.control != nil && row.control.GetId() == "setting:"+record {
+				c.page.scroll = row.y
+				c.page.positionRows()
+				c.SetFocusedItem(c.page)
+				c.page.SetFocusedItem(row.control)
+				c.describe(row)
+				break
 			}
 		}
 	}

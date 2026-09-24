@@ -47,11 +47,16 @@ func (p *Plugin) Init(api vfs.HostAPI) error {
 			return fmt.Errorf("VisRen: register command: %w", err)
 		}
 		configRegistration, err := contributions.RegisterPluginCommand(vfs.PluginCommand{
-			ID:          "visren.configure",
-			Location:    vfs.PluginCommandConfig,
-			Label:       tr("VisRen.ConfigMenu", "Visual File Renamer"),
-			Description: tr("VisRen.ConfigDescription", "Configure the Visual File Renamer editor"),
-			Run:         p.configure,
+			ID:       "visren.configure",
+			Location: vfs.PluginCommandConfig,
+			// Catalog keys, not resolved text: tr() freezes the entry in
+			// whichever language was active when Init ran, and it then keeps
+			// that wording across a runtime language switch (issue #618).
+			Label:          "Visual File Renamer",
+			LabelKey:       "VisRen.ConfigMenu",
+			Description:    "Configure the Visual File Renamer editor",
+			DescriptionKey: "VisRen.ConfigDescription",
+			Run:            p.configure,
 		})
 		if err != nil {
 			registration.Unregister()

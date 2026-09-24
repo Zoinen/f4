@@ -27,7 +27,6 @@ import (
 	"github.com/unxed/vtui"
 	"io"
 	"os"
-	"os/exec"
 	"os/user"
 	"path/filepath"
 	"reflect"
@@ -140,13 +139,13 @@ func (pf *PanelsFrame) AddCommandHistory(cmd string) {
 func (pf *PanelsFrame) InsertPathToCmdLine(path string) {
 	if path != "" {
 		special := " &|;<>()$`\\\"'"
-		if runtime.GOOS == "windows" {
+		if terminal.WindowsShellSyntax() {
 			// Backslash is the path separator there, not an escape
 			// character; with it in the set every single path got quoted.
 			special = " &|;<>()^\"'"
 		}
 		if strings.ContainsAny(path, special) {
-			if runtime.GOOS == "windows" {
+			if terminal.WindowsShellSyntax() {
 				if !strings.HasPrefix(path, "\"") {
 					path = "\"" + path + "\""
 				}
@@ -317,6 +316,10 @@ type PanelsFrame struct {
 	terminalOutputRedrawClosed     bool
 	terminalOutputRedrawGeneration uint64
 	terminalOutputRedrawCallbacks  sync.WaitGroup
+	// localReflow records that the local shell's output may be reflowed on
+	// a width change: its backend delivers long lines whole and the view is
+	// f4's own terminal. Guarded by PtyMutex.
+	localReflow bool
 
 	// Process-environment updates use their own locks so an Apply from a
 	// plugin cannot interleave a private assignment script with user input.
@@ -368,17 +371,14 @@ func (pf *PanelsFrame) Right() Panel { return pf.Panels[1] }
 // their on-screen X-position rather than slot index. The Ctrl+U
 // panel swap re-assigns pf.panels[0]/[1] but keeps the two frames
 // where the user sees them, so index-based routing sends Ctrl+[/]
-// to the wrong side after a swap. In single-panel mode the visible
-// panel occupies both visual sides, so both resolvers return it.
+// to the wrong side after a swap. Sizing keeps both panels
+// horizontal-adjacent whether or not one of them is hidden (see
+// ResizeConsole), so a simple min-X pick is enough. A hidden panel
+// still answers for its own side, as in far2l, where Ctrl+[ and
+// Ctrl+] read LeftPanel / RightPanel regardless of visibility.
 func (pf *PanelsFrame) VisualLeftFSP() *FileSystemPanel {
 	a, _ := pf.Panels[0].(*FileSystemPanel)
 	b, _ := pf.Panels[1].(*FileSystemPanel)
-	if pf.ShowPanels && pf.ShowLeftPanel != pf.ShowRightPanel {
-		if pf.ShowLeftPanel {
-			return a
-		}
-		return b
-	}
 	if a == nil {
 		return b
 	}
@@ -396,12 +396,6 @@ func (pf *PanelsFrame) VisualLeftFSP() *FileSystemPanel {
 func (pf *PanelsFrame) VisualRightFSP() *FileSystemPanel {
 	a, _ := pf.Panels[0].(*FileSystemPanel)
 	b, _ := pf.Panels[1].(*FileSystemPanel)
-	if pf.ShowPanels && pf.ShowLeftPanel != pf.ShowRightPanel {
-		if pf.ShowLeftPanel {
-			return a
-		}
-		return b
-	}
 	if a == nil {
 		return b
 	}
@@ -420,7 +414,13 @@ func (pf *PanelsFrame) Passive() Panel { return pf.Panels[1-pf.ActiveIdx] }
 
 func NewPanelsFrame() *PanelsFrame {
 	pf := &PanelsFrame{ActiveIdx: 1, WidePanel: -1, FolderHistoryPos: [2]int{-1, -1}}
-	pf.terminalRedraw = terminal.NewTerminalRedrawScheduler(func() { vtui.FrameManager.Redraw() })
+	// The scheduler fires from a timer goroutine long after this returns, so it
+	// must not read the vtui.FrameManager global then: a test that swaps the
+	// manager back in its cleanup raced with it (TestIssue863OwnTerminal*, four
+	// Race (shard 1) failures in a day, one on main). It redraws the manager
+	// this frame was made for, which in the application is the only one.
+	frames := vtui.FrameManager
+	pf.terminalRedraw = terminal.NewTerminalRedrawScheduler(func() { frames.Redraw() })
 	pf.SetHelp("Panels")
 	pf.ShowKeyBar = true
 	pf.ShowPanels = true
@@ -447,6 +447,7 @@ func NewPanelsFrame() *PanelsFrame {
 		pf.CmdLine.SetFocus(false)
 	}
 	pf.CmdLine.Edit.HistoryID = "cmdline"
+	pf.CmdLine.Edit.ClearHistory = history.ClearKeepingPinned(pf.CmdLine.Edit, "cmdline")
 	if vtui.GlobalHistoryProvider != nil {
 		pf.CmdLine.Edit.History = vtui.GlobalHistoryProvider.LoadHistory("cmdline")
 	}
@@ -454,6 +455,20 @@ func NewPanelsFrame() *PanelsFrame {
 	pf.KeyBar.SetOwner(pf)
 
 	pf.TermView = terminal.NewTerminalView(80, 24)
+	// OSC titles are normally consumed by f4's terminal emulator.  KiTTY
+	// extends the title protocol with local commands (for example,
+	// "__cm:calc").  Preserve those private titles on the real terminal so a
+	// shell function can continue to address the terminal emulator outside f4.
+	// ShellModeHost already forwards the complete PTY stream before parsing it,
+	// so forwarding here as well would duplicate the sequence.
+	pf.TermView.OnTitleChange = func(title string) {
+		if pf.ShellMode == terminal.ShellModeHost {
+			return
+		}
+		if seq := kittyLocalCommandTitleSequence(title); len(seq) > 0 {
+			vtui.WritePassthrough(seq)
+		}
+	}
 	pf.TermView.OnBusyChange = func(busy bool) {
 		localShell := pf.localShellIsActive()
 		if localShell {
@@ -466,7 +481,7 @@ func NewPanelsFrame() *PanelsFrame {
 			return pf.applyTerminalBusyChange(busy, localShell)
 		})
 	}
-	if runtime.GOOS == "windows" {
+	if terminal.WindowsShellSyntax() {
 		pf.CmdSession = newCmdShellSession(pf)
 		pf.TermView.OnShellMark = func(mark string, snap terminal.PromptSnapshot) {
 			if pf.localShellIsActive() {
@@ -700,7 +715,7 @@ func (pf *PanelsFrame) InsertSelectedFileName() bool {
 	}
 	// Escape spaces and special characters for shell commands.
 	if strings.ContainsAny(name, " &|;<>()$`\\\"'") {
-		if runtime.GOOS == "windows" {
+		if terminal.WindowsShellSyntax() {
 			if !strings.HasPrefix(name, "\"") {
 				name = "\"" + name + "\""
 			}
@@ -772,6 +787,7 @@ func (pf *PanelsFrame) LeftMenu() vtui.MenuBarItem {
 		{Text: "&" + i18n.Msg("Menu.SortSize"), Command: appcmd.CmLeftSortSize},
 		{Text: "&" + i18n.Msg("Menu.SortUnsorted"), Command: appcmd.CmLeftSortUnsorted},
 		{Text: "&" + i18n.Msg("Menu.SortUseGroups"), Command: appcmd.CmLeftSortGroups},
+		{Text: i18n.Msg("Group.Menu"), Command: appcmd.CmLeftGroupMenu},
 		{Separator: true},
 		{Text: i18n.Msg("Menu.Left.DriveMenu"), Command: appcmd.CmLeftDriveMenu, Shortcut: "Alt+F1"},
 		{Separator: true},
@@ -808,6 +824,7 @@ func (pf *PanelsFrame) RightMenu() vtui.MenuBarItem {
 		{Text: "&" + i18n.Msg("Menu.SortSize"), Command: appcmd.CmRightSortSize},
 		{Text: "&" + i18n.Msg("Menu.SortUnsorted"), Command: appcmd.CmRightSortUnsorted},
 		{Text: "&" + i18n.Msg("Menu.SortUseGroups"), Command: appcmd.CmRightSortGroups},
+		{Text: i18n.Msg("Group.Menu"), Command: appcmd.CmRightGroupMenu},
 		{Separator: true},
 		{Text: i18n.Msg("Menu.Right.DriveMenu"), Command: appcmd.CmRightDriveMenu, Shortcut: "Alt+F2"},
 	}})
@@ -853,7 +870,16 @@ func (pf *PanelsFrame) BuildMenuItems() []vtui.MenuBarItem {
 // GetMenuBar returns the main menu bar. Items are rebuilt on every
 // call, so shortcuts and checkmarks always follow the active bindings
 // and the current panel state.
+//
+// A frame that was not built by NewPanelsFrame may have no bar, and then
+// it provides none: nil is how vtui's GetActiveMenuBar learns to look
+// further down the stack, and UpdateMenuCheckmarks already treats a nil
+// bar the same way. The key router asks for the active bar on every key
+// since #1144, so this is reached for any such frame that gets a key.
 func (pf *PanelsFrame) GetMenuBar() *vtui.MenuBar {
+	if pf.MenuBar == nil {
+		return nil
+	}
 	pf.MenuBar.Items = pf.BuildMenuItems()
 	pf.UpdateMenuCheckmarks()
 	return pf.MenuBar
@@ -861,6 +887,13 @@ func (pf *PanelsFrame) GetMenuBar() *vtui.MenuBar {
 
 func menuCheckText(checked bool, label string) string {
 	if checked {
+		return "√" + label
+	}
+	return " " + label
+}
+
+func getMenuText(current, target ViewMode, label string) string {
+	if current == target {
 		return "√" + label
 	}
 	return " " + label
@@ -880,6 +913,13 @@ func getToggleMenuText(on bool, label string) string {
 		return "√" + label
 	}
 	return " " + label
+}
+
+// SameFolderHistoryPath is the panel-facing compatibility name used by the
+// upstream history bridge. The identity rules live in fileops so panel and
+// file-operation navigation cannot disagree about URI or local paths.
+func SameFolderHistoryPath(a, b string) bool {
+	return fileops.SameFolderHistoryPath(a, b)
 }
 
 var CommandToActionName = map[int]string{
@@ -903,12 +943,14 @@ var CommandToActionName = map[int]string{
 	appcmd.CmLeftSortSize:          "Panel.Left.SortBySize",
 	appcmd.CmLeftSortUnsorted:      "Panel.Left.SortUnsorted",
 	appcmd.CmLeftSortGroups:        "Panel.Left.SortUseGroups",
+	appcmd.CmLeftGroupMenu:         "Panel.Left.GroupMenu",
 	appcmd.CmRightSortName:         "Panel.Right.SortByName",
 	appcmd.CmRightSortExt:          "Panel.Right.SortByExt",
 	appcmd.CmRightSortTime:         "Panel.Right.SortByTime",
 	appcmd.CmRightSortSize:         "Panel.Right.SortBySize",
 	appcmd.CmRightSortUnsorted:     "Panel.Right.SortUnsorted",
 	appcmd.CmRightSortGroups:       "Panel.Right.SortUseGroups",
+	appcmd.CmRightGroupMenu:        "Panel.Right.GroupMenu",
 	appcmd.CmLeftAIContext:         "AI.Left.ViewContext",
 	appcmd.CmLeftAIChat:            "AI.Left.ViewChat",
 	appcmd.CmLeftAIOut:             "AI.Left.ViewOut",
@@ -963,12 +1005,14 @@ var commandShortcutActionName = map[int]string{
 	appcmd.CmLeftSortSize:      "Panel.SortBySize",
 	appcmd.CmLeftSortUnsorted:  "Panel.SortUnsorted",
 	appcmd.CmLeftSortGroups:    "Panel.SortUseGroups",
+	appcmd.CmLeftGroupMenu:     "Panel.GroupMenu",
 	appcmd.CmRightSortName:     "Panel.SortByName",
 	appcmd.CmRightSortExt:      "Panel.SortByExt",
 	appcmd.CmRightSortTime:     "Panel.SortByTime",
 	appcmd.CmRightSortSize:     "Panel.SortBySize",
 	appcmd.CmRightSortUnsorted: "Panel.SortUnsorted",
 	appcmd.CmRightSortGroups:   "Panel.SortUseGroups",
+	appcmd.CmRightGroupMenu:    "Panel.GroupMenu",
 }
 
 func (pf *PanelsFrame) UpdateMenuCheckmarks() {
@@ -977,6 +1021,51 @@ func (pf *PanelsFrame) UpdateMenuCheckmarks() {
 	}
 	pf.updateSideMenuCheckmarks(0, pf.MenuBar.Items[0].SubItems)
 	pf.updateSideMenuCheckmarks(1, pf.MenuBar.Items[len(pf.MenuBar.Items)-1].SubItems)
+	// Keep the older positional menu contract usable for embedders and tests
+	// that construct a minimal bar without command IDs. Native menus use the
+	// command-based updater above; this fallback only runs when both side menus
+	// clearly have the legacy ten-row shape.
+	if len(pf.MenuBar.Items) >= 5 && len(pf.MenuBar.Items[0].SubItems) >= 10 &&
+		len(pf.MenuBar.Items[4].SubItems) >= 10 &&
+		pf.MenuBar.Items[0].SubItems[0].Command == 0 &&
+		pf.MenuBar.Items[4].SubItems[0].Command == 0 {
+		legacyLeft, legacyRight := ViewModeMedium, ViewModeMedium
+		leftSort, rightSort := SortName, SortName
+		leftGroups, rightGroups := false, false
+		if fsp, ok := pf.Panels[0].(*FileSystemPanel); ok {
+			legacyLeft, leftSort, leftGroups = fsp.ViewMode, fsp.SortMode, fsp.UseSortGroups
+		}
+		if fsp, ok := pf.Panels[1].(*FileSystemPanel); ok {
+			legacyRight, rightSort, rightGroups = fsp.ViewMode, fsp.SortMode, fsp.UseSortGroups
+		}
+		if pf.Wide && pf.WidePanel == 0 {
+			legacyLeft = ViewModeWide
+		}
+		if pf.Wide && pf.WidePanel == 1 {
+			legacyRight = ViewModeWide
+		}
+		modes := []struct {
+			mode ViewMode
+			key  string
+		}{{ViewModeBrief, "Brief"}, {ViewModeMedium, "Medium"}, {ViewModeDetailed, "Detailed"}, {ViewModeWide, "Wide"}}
+		for i, mode := range modes {
+			pf.MenuBar.Items[0].SubItems[i].Text = getMenuText(legacyLeft, mode.mode, "&"+i18n.Msg("Menu.Left."+mode.key))
+			pf.MenuBar.Items[4].SubItems[i].Text = getMenuText(legacyRight, mode.mode, "&"+i18n.Msg("Menu.Left."+mode.key))
+		}
+		sorts := []struct {
+			mode SortMode
+			key  string
+		}{{SortName, "SortName"}, {SortExt, "SortExt"}, {SortTime, "SortTime"}, {SortSize, "SortSize"}, {SortUnsorted, "SortUnsorted"}}
+		for i, mode := range sorts {
+			pf.MenuBar.Items[0].SubItems[i+5].Text = getSortMenuText(leftSort, mode.mode, "&"+i18n.Msg("Menu."+mode.key))
+			pf.MenuBar.Items[4].SubItems[i+5].Text = getSortMenuText(rightSort, mode.mode, "&"+i18n.Msg("Menu."+mode.key))
+		}
+		if len(pf.MenuBar.Items[0].SubItems) > 10 && len(pf.MenuBar.Items[4].SubItems) > 10 {
+			label := "&" + i18n.Msg("Menu.SortUseGroups")
+			pf.MenuBar.Items[0].SubItems[10].Text = getToggleMenuText(leftGroups, label)
+			pf.MenuBar.Items[4].SubItems[10].Text = getToggleMenuText(rightGroups, label)
+		}
+	}
 
 	// Update shortcuts dynamically from the action registry. Framework-owned
 	// native keys are intentionally absent from keymap.HotkeyManager defaults, but
@@ -1046,7 +1135,7 @@ func (pf *PanelsFrame) BuildPrompt() []vtui.CharInfo {
 	sepStr := ":"
 	suffixStr := "$ "
 
-	if runtime.GOOS == "windows" {
+	if terminal.WindowsShellSyntax() {
 		sepStr = " "
 		suffixStr = ">"
 		// Windows prompt usually displays the absolute path without '~'
@@ -1071,6 +1160,17 @@ func (pf *PanelsFrame) BuildPrompt() []vtui.CharInfo {
 	}
 	if maxPromptLen < 15 {
 		maxPromptLen = 15
+	}
+
+	// A configured format string replaces the layout below outright: it says
+	// where the user, the host and the path go, and in what company. The
+	// budget is the same one, so a long path is still shortened to fit.
+	if promptFormatEnabled(vfsTitle) {
+		spans := promptFormatSpans(path, home, username, host, maxPromptLen)
+		if pf.SearchFirstMode() && pf.ShowPanels && !pf.CommandLineFocused {
+			return promptSpansInactive(spans)
+		}
+		return promptSpansToCharInfo(spans, vtui.Palette[theme.ColCommandLinePrompt])
 	}
 
 	// The user@host prefix gets at most half the budget: a long hostname
@@ -1139,6 +1239,13 @@ func (pf *PanelsFrame) takeLocalPTY() terminal.PtyBackend {
 // shell, and the leaked ptys exhausted macOS's ptmx_max (511), killing
 // unrelated terminal.PTY tests with ENXIO ("device not configured").
 var SpawnLocalShellPTY = true
+
+// newLocalPTY is a seam for the session lifecycle tests. Production always
+// uses the platform terminal.PTY implementation; tests can provide a controllable
+// backend without allocating a real terminal.
+var newLocalPTY = func() (terminal.PtyBackend, error) {
+	return terminal.NewLocalPTY()
+}
 
 // resetLocalShell tears down the current local shell and starts a fresh one.
 // The shell itself is the persistent session used by the command line; reset
@@ -1296,7 +1403,7 @@ func (pf *PanelsFrame) InitPTY() {
 				return
 			}
 
-			if runtime.GOOS == "windows" {
+			if terminal.WindowsShellSyntax() {
 				os.Setenv("PROMPT", windowsShellPrompt)
 			}
 			inheritedEnvironmentGeneration := terminal.GlobalProcessEnvironment.CurrentGeneration()
@@ -1315,6 +1422,8 @@ func (pf *PanelsFrame) InitPTY() {
 				return
 			}
 			pf.Pty = p
+			pf.localReflow = pf.ShellMode == terminal.ShellModeOwn && terminal.PreservesLogicalLines(p)
+			vtui.DebugLog("PTY: local shell started; reflow %v", pf.localReflow)
 			serializedPTY := &processEnvironmentSerializedPTY{owner: pf, Backend: p}
 			if pf.ShellMode == terminal.ShellModeHost {
 				muted := MutedPTY{Backend: serializedPTY}
@@ -1362,7 +1471,20 @@ func (pf *PanelsFrame) consumeLocalOutput(p terminal.PtyBackend, data []byte) {
 
 	pf.PtyMutex.Lock()
 	shouldProcess := pf.getActivePTYUnsafe() == p
+	reflow := pf.localReflow
 	pf.PtyMutex.Unlock()
+
+	if shouldProcess && pf.TermView != nil {
+		// One view serves the local shell and every remote one; the wrap
+		// flags mean what reflow needs only for the session that wrote them.
+		pf.TermView.SetReflow(reflow)
+	}
+	pf.displayLocalOutput(shouldProcess, data)
+}
+
+// displayLocalOutput is what consumeLocalOutput does with bytes meant for
+// the display; split out so route can hand them over a piece at a time.
+func (pf *PanelsFrame) displayLocalOutput(shouldProcess bool, data []byte) {
 	if !shouldProcess {
 		return
 	}
@@ -1695,20 +1817,129 @@ func (pf *PanelsFrame) SetPanelViewMode(idx int, mode ViewMode) {
 	pf.UpdateMenuCheckmarks()
 }
 
+// syncMenuBarGeometry keeps the bar on the row it occupies on screen even while
+// it is not painted. vtui's MenuBar.ActivateSubMenu positions the dropdown from
+// the bar's own Y1 at the moment of activation and never moves it afterwards,
+// so a bar parked off-screen produced a dropdown one row above the visible area
+// (issues #1129 and #1149) whichever path opened it -- f4's F9 handler, the
+// action table, vtui's own F9 fallback or an Alt hotkey.
+//
+// A bar that must not be painted is collapsed to an empty column span instead.
+// vtui's MenuBar.HitTest is geometry-only, and an empty span matches no column,
+// so the hidden bar still cannot swallow a click on the terminal's first row
+// (issue #1093). Over the panels that row belongs to the menu again: see
+// openMenuBarFromClick.
+func (pf *PanelsFrame) syncMenuBarGeometry() {
+	if pf.MenuBar == nil {
+		return
+	}
+	menuY := vtui.FrameManager.WorkspaceTopInset()
+	// A pinned bar (menuBarPinned) has a row of its own above the panels or
+	// the terminal; F9 and the menu hotkeys raise an unpinned one temporarily
+	// over whatever the workspace shows.
+	painted := pf.MenuBar.Active || pf.menuBarPinned()
+	x2 := pf.LastW - 1
+	if !painted {
+		x2 = -1
+	}
+	pf.MenuBar.SetPosition(0, menuY, x2, menuY)
+	pf.MenuBar.SetVisible(painted)
+}
+
+// menuBarPinned reports whether AlwaysShowMenuBar keeps the bar on screen, on
+// a row of its own, in the frame's current state. The panels always keep it,
+// and so does the terminal (issue #1153), except where the terminal takes the
+// whole screen: a full-screen program on the alternate screen gets the bar's
+// row back, as it gets the keybar's, which also keeps that program's first row
+// out of the menu's reach (issue #1093); and host console mode lays its
+// mirrored grid out from row 0 with no row reserved above it.
+func (pf *PanelsFrame) menuBarPinned() bool {
+	if !config.App.AlwaysShowMenuBar {
+		return false
+	}
+	if pf.ShowPanels {
+		return true
+	}
+	if pf.ShellMode == terminal.ShellModeHost {
+		return false
+	}
+	return pf.TermView == nil || !pf.TermView.OnAltScreen()
+}
+
+// menuClickTraced selects the mouse presses logged for issue #1149: any button
+// press on or above the menu bar's row. A report said a click on the panels'
+// top row still opened no menu with the bar hidden, while the regression
+// test for exactly that passed; these lines are there to show which step the
+// real event takes. They change no behaviour.
+func menuClickTraced(e *vtinput.InputEvent) bool {
+	return e != nil && e.Type == vtinput.MouseEventType && vtui.IsMousePress(e) &&
+		vtui.FrameManager != nil && int(e.MouseY) <= vtui.FrameManager.WorkspaceTopInset()
+}
+
+// openMenuBarFromClick opens the main menu for a left click on the menu bar's
+// row while the panels are shown, whether AlwaysShowMenuBar pins the bar there
+// or not: far2l's Panel::PanelProcessMouse calls ShellOptions(0, MouseEvent)
+// for a click on the top line regardless of Opt.ShowMenuBar (issue #1149).
+//
+// A pinned bar already takes the click in FrameManager's own hit-testing. A
+// hidden one is collapsed out of it (syncMenuBarGeometry), so the click lands
+// here instead and the bar gets its live span back before it is handed the
+// event. The row is the bar's own, below the workspace tabs when those are
+// shown, rather than row 0. With the panels hidden the terminal owns its first
+// row, and ProcessMouse has returned before this is reached (issue #1093).
+//
+// Only the left button opens it, the one vtui's MenuBar acts on; a right click
+// on the panel title keeps opening the drive menu.
+func (pf *PanelsFrame) openMenuBarFromClick(e *vtinput.InputEvent, my int) bool {
+	trace := menuClickTraced(e)
+	if pf.MenuBar == nil || !pf.ShowPanels || !vtui.IsMousePress(e) || e.ButtonState != vtinput.FromLeft1stButtonPressed {
+		if trace {
+			vtui.DebugLog("MENUCLICK: not a left press over the panels (bar=%v showPanels=%v press=%v buttons=%#x)",
+				pf.MenuBar != nil, pf.ShowPanels, vtui.IsMousePress(e), e.ButtonState)
+		}
+		return false
+	}
+	if my != vtui.FrameManager.WorkspaceTopInset() {
+		if trace {
+			vtui.DebugLog("MENUCLICK: row %d is not the menu row %d", my, vtui.FrameManager.WorkspaceTopInset())
+		}
+		return false
+	}
+	pf.GetMenuBar()
+	if len(pf.MenuBar.Items) == 0 {
+		if trace {
+			vtui.DebugLog("MENUCLICK: the menu bar has no items")
+		}
+		return false
+	}
+	wasActive := pf.MenuBar.Active
+	pf.MenuBar.Active = true
+	pf.syncMenuBarGeometry()
+	if !pf.MenuBar.ProcessMouse(e) {
+		if trace {
+			x1, y1, x2, y2 := pf.MenuBar.GetPosition()
+			vtui.DebugLog("MENUCLICK: MenuBar.ProcessMouse declined; bar at (%d,%d)-(%d,%d) disabled=%v", x1, y1, x2, y2, pf.MenuBar.IsDisabled())
+		}
+		pf.MenuBar.Active = wasActive
+		pf.syncMenuBarGeometry()
+		return false
+	}
+	if trace {
+		vtui.DebugLog("MENUCLICK: opened menu %d; top frame is now %T", pf.MenuBar.SelectPos, vtui.FrameManager.GetTopFrame())
+	}
+	vtui.FrameManager.Redraw()
+	return true
+}
+
 func (pf *PanelsFrame) ResizeConsole(w, h int) {
 	pf.nativeSplitLayoutPending = false
 	pf.LastW, pf.LastH = w, h
 	pf.SetPosition(0, 0, w-1, h-1) // Update hit-box for FrameManager hit-testing
 	topInset := vtui.FrameManager.WorkspaceTopInset()
-	menuY := -2 // Keep a hidden menu outside FrameManager's mouse hit-test area.
-	if config.App.AlwaysShowMenuBar && pf.ShowPanels {
-		menuY = topInset
-	}
-	pf.MenuBar.SetPosition(0, menuY, w-1, menuY)
-	pf.MenuBar.SetVisible(menuY >= 0)
+	pf.syncMenuBarGeometry()
 
 	contentY1 := topInset
-	if config.App.AlwaysShowMenuBar && pf.ShowPanels {
+	if pf.menuBarPinned() {
 		contentY1++
 	}
 
@@ -1822,17 +2053,11 @@ func (pf *PanelsFrame) ResizeConsole(w, h int) {
 	rightW := w - leftW
 	panelX1 := [2]int{0, leftW}
 	panelX2 := [2]int{leftW - 1, w - 1}
-	// A hidden side is a display mode, not a request to leave a blank half.
-	// Expand the remaining panel to the complete content width while keeping
-	// the hidden slot's split geometry ready for the next toggle.
-	if pf.ShowLeftPanel != pf.ShowRightPanel {
-		visibleIdx := 0
-		if !pf.ShowLeftPanel {
-			visibleIdx = 1
-		}
-		panelX1[visibleIdx] = 0
-		panelX2[visibleIdx] = w - 1
-	}
+	// Panel geometry does not depend on panel visibility. As in far2l
+	// (FilePanels::SetPanelPositions), hiding one side with Ctrl+F1 /
+	// Ctrl+F2 leaves the other panel on its own half and the terminal shows
+	// through the freed one; a single panel over the whole width is the
+	// separate Wide mode handled below (#927).
 
 	if pf.Panels[0] == nil {
 		pf.Panels[0] = NewFileSystemPanel(0, contentY1, leftW, panelH, vfs.NewOSVFS("."))
@@ -2008,6 +2233,15 @@ func (pf *PanelsFrame) Show(scr *vtui.ScreenBuf) {
 	if pf.ShowPanels && now.Sub(pf.LastAutoRefresh) > 2*time.Second {
 		pf.LastAutoRefresh = now
 		for _, p := range pf.Panels {
+			if fsp, ok := p.(*FileSystemPanel); ok && fsp.groupingNeedsRefresh(now) {
+				frames := vtui.FrameManager
+				frames.PostTask(func() {
+					if !pf.Closed {
+						fsp.RefreshGrouping(time.Now())
+						frames.Redraw()
+					}
+				})
+			}
 			if fsp, ok := p.(*FileSystemPanel); ok && !fsp.IsLoading && !fsp.isCheckingRefresh {
 				fsp.isCheckingRefresh = true
 				vfsPath := fsp.Vfs.GetPath()
@@ -2054,8 +2288,9 @@ func (pf *PanelsFrame) Show(scr *vtui.ScreenBuf) {
 			pf.Panels[idx].Show(scr)
 		}
 	} else if pf.ShowPanels {
-		// Keep the terminal behind a single full-width panel, or let it show
-		// through below a panel that was reduced vertically (Ctrl+Up).
+		// Show the terminal under the panels when one of them is hidden (the
+		// terminal takes the freed half), or when a panel was reduced
+		// vertically (Ctrl+Up) and the terminal shows through below it.
 		if !pf.ShowLeftPanel || !pf.ShowRightPanel || pf.LeftHeightDecrement > 0 || pf.RightHeightDecrement > 0 {
 			pf.TermView.SetVisible(true)
 			pf.TermView.Show(scr)
@@ -2091,15 +2326,22 @@ func (pf *PanelsFrame) Show(scr *vtui.ScreenBuf) {
 	} else {
 		pf.TermView.SetVisible(true)
 		pf.TermView.Show(scr)
+		// The layout keeps the keybar row out of the PTY even while a
+		// foreign program owns the terminal, but neither the keybar nor
+		// the command line is drawn in that state, so vtui's desktop
+		// background showed through the reserved row as a blue stripe
+		// under the program's output (#249).
+		if y1, y2 := unpaintedTerminalRows(pf.TermView.OnAltScreen(), isBusy, pf.TermView.Y2, pf.LastH); y1 <= y2 {
+			prevOverlay := scr.OverlayMode
+			scr.SetOverlayMode(false)
+			scr.FillRect(0, y1, pf.LastW-1, y2, ' ', terminal.DefaultTermAttr)
+			scr.SetOverlayMode(prevOverlay)
+		}
 	}
 
-	if config.App.AlwaysShowMenuBar && pf.ShowPanels {
-		pf.MenuBar.SetVisible(true)
+	pf.syncMenuBarGeometry()
+	if pf.MenuBar != nil && pf.MenuBar.IsVisible() {
 		pf.MenuBar.Show(scr)
-	} else {
-		// MenuBar.HitTest is geometry-only in vtui, so visibility alone is not
-		// enough to keep the hidden bar from intercepting terminal row 0.
-		pf.MenuBar.SetVisible(false)
 	}
 
 	// Command line logic depends on terminal state and editor visibility
@@ -2743,19 +2985,31 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 		return false
 	}
 
-	// F9 opens the main menu (other F-keys are action bindings now).
+	// F9 raises the main menu bar (other F-keys are action bindings now).
 	// Alt+F9 is term.App.ToggleWindowSize and must not fall through to this.
+	//
+	// Only the bar comes up, with the active panel's fixed side selected and
+	// no dropdown: far2l's FilePanels::ProcessKey calls ShellOptions(0), and
+	// only the LastCommand path -- Shift+F10, ShellOptions(1) -- follows the
+	// Show() with ProcessKey(KEY_DOWN) (far2l/src/options.cpp). Down, Enter,
+	// a letter hotkey or a click opens the dropdown from there, all of which
+	// vtui's MenuBar already handles while Active (f4 issue #1144).
 	if e.VirtualKeyCode == vtinput.VK_F9 && !alt {
 		pos := 0 // Left
 		if pf.ActiveIdx == 1 {
 			pos = 4 // Right
 		}
 		pf.GetMenuBar()
+		if len(pf.MenuBar.Items) == 0 {
+			// An empty bar has nothing to raise, and vtui indexes Items
+			// unconditionally once one is activated.
+			return true
+		}
 		if pos >= len(pf.MenuBar.Items) {
 			pos = 0
 		}
 		pf.MenuBar.Active = true
-		pf.MenuBar.ActivateSubMenu(pos)
+		pf.MenuBar.SelectPos = pos
 		return true
 	}
 	if e.VirtualKeyCode == vtinput.VK_ESCAPE && !pf.CmdLine.IsEmpty() && (!pf.SearchFirstMode() || pf.CommandLineFocused) {
@@ -2842,7 +3096,7 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 		commandInputActive := !pf.SearchFirstMode() || pf.CommandLineFocused || !pf.ShowPanels
 		if commandInputActive && !pf.CmdLine.IsEmpty() {
 			cmd := pf.CmdLine.Edit.GetText()
-			if cmdline.CommandHasUnmatchedQuote(cmd, runtime.GOOS == "windows") {
+			if cmdline.CommandHasUnmatchedQuote(cmd, terminal.WindowsShellSyntax()) {
 				vtui.ShowMessage(" Error ", "Unmatched quote in command. Close the quote and press Enter again.", []string{"&Ok"})
 				return true
 			}
@@ -3579,6 +3833,13 @@ func terminalWantsMouseEvent(mode int, e *vtinput.InputEvent) bool {
 }
 
 func (pf *PanelsFrame) ProcessMouse(e *vtinput.InputEvent) bool {
+	trace := menuClickTraced(e)
+	if trace {
+		vtui.DebugLog("MENUCLICK: frame press at (%d,%d) buttons=%#x flags=%#x mods=%#x showPanels=%v inset=%d always=%v barActive=%v capture=%T middle=%v",
+			e.MouseX, e.MouseY, e.ButtonState, e.MouseEventFlags, e.ControlKeyState, pf.ShowPanels,
+			vtui.FrameManager.WorkspaceTopInset(), config.App.AlwaysShowMenuBar,
+			pf.MenuBar != nil && pf.MenuBar.Active, pf.PanelMouseCapture, pf.middleMouseDown)
+	}
 	if e.WheelDirection == 0 && pf.commandMouseCaptured {
 		pf.CmdLine.ProcessMouse(e)
 		if vtui.IsMouseRelease(e) {
@@ -3634,12 +3895,32 @@ func (pf *PanelsFrame) ProcessMouse(e *vtinput.InputEvent) bool {
 
 	mx, my := int(e.MouseX), int(e.MouseY)
 	if pf.ProcessDragOutGesture(e, mx, my) {
+		if trace {
+			vtui.DebugLog("MENUCLICK: taken by the drag-out gesture")
+		}
 		return true
+	}
+
+	// A heading must not activate a panel or synthesize Enter. Captures still
+	// process releases below so dragging cannot remain armed.
+	if e.WheelDirection == 0 && e.ButtonState != 0 && e.KeyDown &&
+		pf.PanelMouseCapture == nil && !pf.middleMouseDown && pf.hitAltPanel(mx, my) < 0 {
+		for i, p := range pf.Panels {
+			if pf.Wide && i != pf.WidePanel || !pf.Wide && ((i == 0 && !pf.ShowLeftPanel) || (i == 1 && !pf.ShowRightPanel)) {
+				continue
+			}
+			if fp, ok := p.(*FileSystemPanel); ok && fp.groupHeadingAt(mx, my) {
+				return true
+			}
+		}
 	}
 
 	// A middle-button gesture that already emitted Enter owns its remaining
 	// motion/release events and must not fall through to panels or scrollbars.
 	if pf.middleMouseDown && e.WheelDirection == 0 {
+		if trace {
+			vtui.DebugLog("MENUCLICK: taken by a middle-button gesture")
+		}
 		pf.processMiddleMouseGesture(e)
 		return true
 	}
@@ -3649,6 +3930,9 @@ func (pf *PanelsFrame) ProcessMouse(e *vtinput.InputEvent) bool {
 	// with ButtonState=0; releases are the non-move event with no held button
 	// (or KeyDown=false on tty/X11 backends).
 	if pf.PanelMouseCapture != nil {
+		if trace {
+			vtui.DebugLog("MENUCLICK: taken by the panel mouse capture %T", pf.PanelMouseCapture)
+		}
 		captured := pf.PanelMouseCapture
 		captured.ProcessMouse(e)
 		isMove := e.MouseEventFlags&vtinput.MouseMoved != 0
@@ -3662,16 +3946,16 @@ func (pf *PanelsFrame) ProcessMouse(e *vtinput.InputEvent) bool {
 	if pf.SearchFirstMode() && e.WheelDirection == 0 && e.ButtonState != 0 && e.KeyDown && pf.CmdLine.IsVisible() {
 		x1, y1, x2, y2 := pf.CmdLine.GetPosition()
 		if mx >= x1 && mx <= x2 && my >= y1 && my <= y2 {
+			if trace {
+				vtui.DebugLog("MENUCLICK: taken by the search-first command line")
+			}
 			pf.SetCommandLineFocus(true)
 			pf.CmdLine.ProcessMouse(e)
 			return true
 		}
 	}
 
-	// Активация меню кликом мыши на нулевую строку (AlwaysShowMenuBar)
-	if config.App.AlwaysShowMenuBar && pf.ShowPanels && my == 0 && e.WheelDirection == 0 && e.ButtonState != 0 {
-		pf.MenuBar.Active = true
-		pf.MenuBar.ProcessMouse(e)
+	if pf.openMenuBarFromClick(e, my) {
 		return true
 	}
 
@@ -3928,8 +4212,7 @@ func (pf *PanelsFrame) CancelFastFind() bool {
 		if !ok || (!fsp.FastFindMode && fsp.FastFindStr == "") {
 			continue
 		}
-		fsp.FastFindMode = false
-		fsp.FastFindStr = ""
+		fsp.ExitFastFind()
 		cancelled = true
 		clearedPanels++
 	}
@@ -4166,6 +4449,15 @@ func (pf *PanelsFrame) HandleCommand(cmd int, args any) bool {
 		}
 		return true
 
+	case appcmd.CmLeftGroupMenu, appcmd.CmRightGroupMenu:
+		index := 0
+		if cmd == appcmd.CmRightGroupMenu {
+			index = 1
+		}
+		if fsp, ok := pf.Panels[index].(*FileSystemPanel); ok {
+			fsp.ShowGroupMenu()
+		}
+		return true
 	case appcmd.CmLeftSortName:
 		if fsp, ok := pf.Panels[0].(*FileSystemPanel); ok {
 			fsp.SetSortMode(SortName)
@@ -4287,7 +4579,15 @@ func (pf *PanelsFrame) HandleCommand(cmd int, args any) bool {
 }
 
 func (pf *PanelsFrame) GetKeyLabels() *vtui.KeySet {
-	area := CurrentArea()
+	// The panels frame can remain the key-bar provider while a modal frame
+	// (notably Help) is on top of it.  CurrentArea() describes that top frame,
+	// so using it here made the same F2/F10 bindings fall back to the generic
+	// KeyBar.F2/KeyBar.F10 captions as soon as Help opened (#1218).  Resolve
+	// the area from the frame that owns these labels instead.
+	area := "Shell"
+	if !pf.ShowPanels {
+		area = "Terminal"
+	}
 
 	f2 := i18n.Msg("KeyBar.F2")
 	f7 := i18n.Msg("KeyBar.F7")
@@ -4340,7 +4640,13 @@ func (pf *PanelsFrame) GetKeyLabels() *vtui.KeySet {
 			"copy", "folder-input", "folder-plus", "trash-2",
 			"menu", "log-out", "plug", "panels-top-left",
 		},
-		Shift:      vtui.KeyBarLabels{"", "", "", "", "", "Rename", "", "", "Save", "", "", i18n.Msg("KeyBar.ShiftF12")},
+		// Shift+F1..F3 belong to the built-in archive plugin, which registers
+		// them as global hotkeys rather than HotkeyManager bindings, so nothing
+		// would name them below. Keep the GUI/text toggle on Shift+F12.
+		Shift: vtui.KeyBarLabels{
+			i18n.Msg("KeyBar.ShiftF1"), i18n.Msg("KeyBar.ShiftF2"), i18n.Msg("KeyBar.ShiftF3"),
+			"", "", "Rename", "", "", "Save", "", "", i18n.Msg("KeyBar.ShiftF12"),
+		},
 		ShiftIcons: vtui.KeyBarIconNames{"", "", "", "", "", "pencil", "", "", "save", "", "", "monitor"},
 		Alt: vtui.KeyBarLabels{
 			i18n.Msg("KeyBar.AltF1"), i18n.Msg("KeyBar.AltF2"), i18n.Msg("KeyBar.AltF3"), "",
@@ -4430,8 +4736,21 @@ func (pf *PanelsFrame) RunProgressTask(title, startMsg string, forked bool, work
 // active screen, so a progress screen must not be placed over it.
 func progressBlockedByModal(frames interface{ GetTopFrame() vtui.Frame }) bool {
 	top := frames.GetTopFrame()
-	return top != nil && top.IsModal()
+	if top == nil || !top.IsModal() {
+		return false
+	}
+	// A modal that never waits on the worker (the Settings Center starting
+	// an update from its "Check now") lets the progress screen appear over
+	// it; otherwise the download would run unseen until that modal closed.
+	if host, ok := top.(progressOverlayHost); ok && host.AllowsProgressOverlay() {
+		return false
+	}
+	return true
 }
+
+// progressOverlayHost is implemented by a modal frame that can safely sit
+// behind a progress screen.
+type progressOverlayHost interface{ AllowsProgressOverlay() bool }
 
 func (pf *PanelsFrame) RunProgressTaskAfter(delay time.Duration, title, startMsg string, forked bool, worker func(ctx context.Context, update func(msg string, percent int)) error, onComplete func(err error)) {
 	pf.RunProgressTaskAfterContext(nil, delay, title, startMsg, forked, worker, onComplete)
@@ -4868,7 +5187,7 @@ func (pf *PanelsFrame) menuItemsWithKeyLabels(title string, items []vtui.MenuIte
 }
 
 func (pf *PanelsFrame) syncPTYDirectory(path string, v vfs.VFS) bool {
-	isWindowsShell := runtime.GOOS == "windows"
+	isWindowsShell := terminal.WindowsShellSyntax()
 	sync := false
 	if _, isOS := v.(*vfs.OSVFS); isOS {
 		sync = true
@@ -4981,6 +5300,12 @@ func (pf *PanelsFrame) getActivePTYUnsafe() terminal.PtyBackend {
 					pf.PtyMutex.Unlock()
 
 					if shouldProcess {
+						// A remote shell's line boundaries are not known
+						// to survive the trip (a Windows peer runs its own
+						// ConPTY), so its output is never reflowed.
+						if pf.TermView != nil {
+							pf.TermView.SetReflow(false)
+						}
 						start := time.Now()
 						before := captureTerminalOutputSemanticState(pf.TermView)
 						pf.Parser.Process(buf[:n])
@@ -5278,17 +5603,7 @@ func executeCapturedCommand(pf *PanelsFrame, action string, cmdStr string) {
 
 	if action == "clip" {
 		vtui.RunAsync(func(ctx *vtui.TaskContext) {
-			var cmd *exec.Cmd
-			if runtime.GOOS == "windows" {
-				cmd = exec.CommandContext(ctx.Context, "cmd.exe", "/c", cmdStr)
-			} else {
-				cmd = exec.CommandContext(ctx.Context, "sh", "-c", cmdStr)
-			}
-			if dir != "" {
-				cmd.Dir = dir
-			}
-
-			out, err := cmd.CombinedOutput()
+			out, err := terminal.RunLocalCommandCapture(ctx.Context, dir, cmdStr)
 			ctx.RunOnUI(func() {
 				if err != nil && len(out) == 0 {
 					vtui.ShowMessage(" Error ", fmt.Sprintf("Execution failed:\n%v", err), []string{"&Ok"})
@@ -5303,17 +5618,7 @@ func executeCapturedCommand(pf *PanelsFrame, action string, cmdStr string) {
 	}
 
 	pf.RunProgressTask(" Executing ", "Running: "+vtui.TruncateMiddle(cmdStr, 30), false, func(ctx context.Context, update func(msg string, percent int)) error {
-		var cmd *exec.Cmd
-		if runtime.GOOS == "windows" {
-			cmd = exec.CommandContext(ctx, "cmd.exe", "/c", cmdStr)
-		} else {
-			cmd = exec.CommandContext(ctx, "sh", "-c", cmdStr)
-		}
-		if dir != "" {
-			cmd.Dir = dir
-		}
-
-		out, err := cmd.CombinedOutput()
+		out, err := terminal.RunLocalCommandCapture(ctx, dir, cmdStr)
 		if err != nil && len(out) == 0 {
 			return err
 		}
@@ -5407,6 +5712,10 @@ func (pf *PanelsFrame) Clone() *PanelsFrame {
 			cloneFsp.CursorIdx = fsp.CursorIdx
 			cloneFsp.SortMode = fsp.SortMode
 			cloneFsp.SortReverse = fsp.SortReverse
+			cloneFsp.sortDirectionSetByAction = fsp.sortDirectionSetByAction
+			cloneFsp.UseSortGroups = fsp.UseSortGroups
+			cloneFsp.GroupBy, cloneFsp.GroupReverse, cloneFsp.GroupFoldersSeparately = fsp.GroupBy, fsp.GroupReverse, fsp.GroupFoldersSeparately
+			cloneFsp.nextSourceOrder = fsp.nextSourceOrder
 
 			cloneFsp.SelectedItems = make(map[string]bool)
 			for k, v := range fsp.SelectedItems {
@@ -5424,11 +5733,10 @@ func (pf *PanelsFrame) Clone() *PanelsFrame {
 			// Copy entries immediately so the visual state is valid before async reload
 			cloneFsp.Entries = make([]*FileEntry, len(fsp.Entries))
 			for j, e := range fsp.Entries {
-				cloneFsp.Entries[j] = &FileEntry{
-					VFSItem:  e.VFSItem,
-					Selected: e.Selected,
-				}
+				copyEntry := *e
+				cloneFsp.Entries[j] = &copyEntry
 			}
+			cloneFsp.SortEntries()
 			cloneFsp.Refresh() // Populate table rows from copied entries
 
 			cloneFsp.readDirectoryEx(true) // ВАЖНО: не удалять скопированные записи при первом чтении
@@ -6023,6 +6331,24 @@ func (pf *PanelsFrame) navigateToHistoryPath(fsp *FileSystemPanel, targetPath st
 }
 
 func (pf *PanelsFrame) NavigateToPath(fsp *FileSystemPanel, targetPath string) bool {
+	var refused error
+	if pf.navigateToPath(fsp, targetPath, &refused) {
+		return true
+	}
+	if refused == nil {
+		return false
+	}
+	// The target is a directory the host will not list (#814). Nothing moved;
+	// report it the way Enter on that folder does. The change counts as
+	// handled, so a typed "cd" is not passed on to the shell.
+	fsp.reportNotListableDirectory(refused)
+	return true
+}
+
+// navigateToPath is NavigateToPath without reporting. When it returns false
+// and a route failed only because the target directory cannot be listed, that
+// refusal is stored in *refused.
+func (pf *PanelsFrame) navigateToPath(fsp *FileSystemPanel, targetPath string, refused *error) bool {
 	if targetPath == "" {
 		return false
 	}
@@ -6073,6 +6399,8 @@ func (pf *PanelsFrame) NavigateToPath(fsp *FileSystemPanel, targetPath string) b
 			fsp.PendingSelection = ".."
 			fsp.ReadDirectory()
 			return true
+		} else {
+			noteNotListableDirectory(refused, err)
 		}
 	}
 	if provider := vfs.FindStandaloneProvider(context.Background(), fsp.Vfs, targetPath); provider != nil {
@@ -6103,6 +6431,8 @@ func (pf *PanelsFrame) NavigateToPath(fsp *FileSystemPanel, targetPath string) b
 				fsp.PendingSelection = ".."
 				pf.SwitchToVFS(fsp, newVfs)
 				return true
+			} else {
+				noteNotListableDirectory(refused, err)
 			}
 		}
 
@@ -6114,6 +6444,8 @@ func (pf *PanelsFrame) NavigateToPath(fsp *FileSystemPanel, targetPath string) b
 				fsp.PendingSelection = ".."
 				pf.SwitchToVFS(fsp, newVfs)
 				return true
+			} else {
+				noteNotListableDirectory(refused, err)
 			}
 		}
 
@@ -6205,6 +6537,8 @@ func (pf *PanelsFrame) NavigateToPath(fsp *FileSystemPanel, targetPath string) b
 		fsp.PendingSelection = ".."
 		fsp.ReadDirectory()
 		return true
+	} else {
+		noteNotListableDirectory(refused, err)
 	}
 
 	if providerOpenCanceled {
@@ -6271,10 +6605,12 @@ func (pf *PanelsFrame) NavigateAvailableFolderHistory(fsp *FileSystemPanel, hist
 		if fsp == nil || path == "" {
 			continue
 		}
-		fsp.FastFindMode = false
-		fsp.FastFindStr = ""
+		fsp.ExitFastFind()
 		fsp.SuppressNextFolderHistory(path)
-		if !pf.navigateToHistoryPath(fsp, path) {
+		// An entry whose directory the host will not list cannot be opened
+		// either (#814): skip it like any other unavailable entry instead of
+		// stopping the walk on an error message.
+		if !pf.navigateToPath(fsp, path, nil) {
 			fsp.clearFolderHistorySuppression()
 			continue
 		}
@@ -6337,9 +6673,10 @@ func (pf *PanelsFrame) MoveFolderHistory(fsp *FileSystemPanel, direction int) bo
 // "cd" typed on the command line.
 func parseDirChangeCommand(trimmedCmd string) (targetPath string, ok bool) {
 	lowerCmd := strings.ToLower(trimmedCmd)
+	windowsShell := terminal.WindowsShellSyntax()
 
 	// Drive letter changes (e.g., "C:", "D:\") on Windows
-	if runtime.GOOS == "windows" && len(trimmedCmd) >= 2 && len(trimmedCmd) <= 3 && trimmedCmd[1] == ':' {
+	if windowsShell && len(trimmedCmd) >= 2 && len(trimmedCmd) <= 3 && trimmedCmd[1] == ':' {
 		if lowerCmd[0] >= 'a' && lowerCmd[0] <= 'z' {
 			targetPath = trimmedCmd
 			if len(trimmedCmd) == 2 {
@@ -6350,9 +6687,9 @@ func parseDirChangeCommand(trimmedCmd string) (targetPath string, ok bool) {
 		return "", false
 	}
 
-	if strings.HasPrefix(lowerCmd, "cd ") || strings.HasPrefix(lowerCmd, "chdir ") || (runtime.GOOS == "windows" && strings.HasPrefix(lowerCmd, "cd /d ")) {
+	if strings.HasPrefix(lowerCmd, "cd ") || strings.HasPrefix(lowerCmd, "chdir ") || (windowsShell && strings.HasPrefix(lowerCmd, "cd /d ")) {
 		prefixLen := 3
-		if strings.HasPrefix(lowerCmd, "cd /d ") {
+		if windowsShell && strings.HasPrefix(lowerCmd, "cd /d ") {
 			prefixLen = 6
 		} else if strings.HasPrefix(lowerCmd, "chdir ") {
 			prefixLen = 6
@@ -6370,7 +6707,7 @@ func parseDirChangeCommand(trimmedCmd string) (targetPath string, ok bool) {
 	if lowerCmd == "cd.." || lowerCmd == "cd .." {
 		return "..", true
 	}
-	if lowerCmd == "cd\\" || lowerCmd == "cd/" {
+	if lowerCmd == "cd/" || (windowsShell && lowerCmd == "cd\\") {
 		return string(os.PathSeparator), true
 	}
 	return "", false
@@ -6463,6 +6800,3 @@ func expandEnvironmentVariables(s string) string {
 func isEnvironmentVariableChar(c byte) bool {
 	return c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
 }
-
-// The local-shell constructor is replaceable by lifecycle tests.
-var newLocalPTY = func() (terminal.PtyBackend, error) { return terminal.NewPTY() }

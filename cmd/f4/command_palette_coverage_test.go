@@ -65,7 +65,7 @@ var commandPaletteAuditClasses = map[string]bool{
 // one package to another; it never removes one. A smaller number here means an
 // audit entry was dropped together with its subject, which the set comparison
 // below cannot see because both sides shrink at once.
-const commandPaletteF4Surfaces = 52
+const commandPaletteF4Surfaces = 59
 
 // commandPaletteTargetPackage named the package each audited cmd/f4 file would
 // end up in once the split reached it, so an audit key survived the move that
@@ -103,6 +103,9 @@ var commandPaletteProcessKeyAudit = map[string]commandPaletteSurfaceAudit{
 	"app.(*SearchResultsWindow).ProcessKey": {
 		class: paletteAuditModalLocal, rationale: "find results are a modal result picker whose F3/F4/F5 buttons route to existing view/edit/temporary-panel operations",
 	},
+	"app.(*SyncResultsWindow).ProcessKey": {
+		class: paletteAuditModalLocal, rationale: "the synchronize window is modal and its keys only set the copy direction of the row under the cursor; Panel.SyncDirs is its registered entry point",
+	},
 	"panel.(*FileSystemPanel).ProcessKey": {
 		class: paletteAuditPanelProvider, rationale: "panel actions and audited transient panel keys are exposed by the action registry and panel-context provider",
 	},
@@ -114,6 +117,7 @@ var commandPaletteProcessKeyAudit = map[string]commandPaletteSurfaceAudit{
 	},
 	"settings.(*settingsCenter).ProcessKey":   {class: paletteAuditModalLocal, rationale: "Settings Center local search, editing, scrolling and pane navigation; Settings.Open is the registered entry point"},
 	"settings.(*settingsEdit).ProcessKey":     {class: paletteAuditModalLocal, rationale: "Settings Center local search, editing, scrolling and pane navigation; Settings.Open is the registered entry point"},
+	"app.(*hotkeyPage).ProcessKey":            {class: paletteAuditModalLocal, rationale: "the embedded Hotkey Configurator wraps local vertical focus; Settings.Open is its registered entry point"},
 	"settings.(*settingsHelp).ProcessKey":     {class: paletteAuditModalLocal, rationale: "Settings Center local search, editing, scrolling and pane navigation; Settings.Open is the registered entry point"},
 	"settings.(*settingsRadios).ProcessKey":   {class: paletteAuditModalLocal, rationale: "Settings Center local search, editing, scrolling and pane navigation; Settings.Open is the registered entry point"},
 	"settings.(*settingsViewport).ProcessKey": {class: paletteAuditModalLocal, rationale: "Settings Center local search, editing, scrolling and pane navigation; Settings.Open is the registered entry point"},
@@ -204,6 +208,9 @@ var commandPaletteNewVMenuAudit = map[string]commandPaletteSurfaceAudit{
 	"app.actionCommandHistory#1": {
 		class: paletteAuditDynamicAction, rationale: "the registered command-history action opens a runtime history list",
 	},
+	"panel.(*FileSystemPanel).ShowGroupMenu#1": {
+		class: paletteAuditDynamicAction, rationale: "the registered grouping menu exposes the same modes and toggles as the Panel.Group actions",
+	},
 	"app.ActionSortMenuForPanel#1": {
 		class: paletteAuditDynamicAction, rationale: "the registered sort-menu action opens choices that are also backed by sort actions",
 	},
@@ -218,6 +225,12 @@ var commandPaletteNewVMenuAudit = map[string]commandPaletteSurfaceAudit{
 	},
 	"editor.(*EditorView).ShowPluginsMenu#1": {
 		class: paletteAuditDynamicAction, rationale: "the registered editor plugins action opens Base64 transformations and the line-sort operation",
+	},
+	"editor.newColorerOutlineFrame#1": {
+		class: paletteAuditDynamicAction, rationale: "the registered Colorer outline actions open a runtime list of functions or syntax errors",
+	},
+	"editor.(*EditorView).ColorerChooseType#1": {
+		class: paletteAuditDynamicAction, rationale: "the registered Colorer syntax action opens a runtime list of file types",
 	},
 	"panel.(*AssocEditorState).openList#1": {
 		class: paletteAuditModalLocal, rationale: "association rows are edited inside the file-association settings workflow",
@@ -245,6 +258,12 @@ var commandPaletteNewVMenuAudit = map[string]commandPaletteSurfaceAudit{
 	},
 	"panel.showTempPanelSlots#1": {
 		class: paletteAuditModalLocal, rationale: "the temporary-panel slot picker is a local modal menu; its entries are dynamic panel state, not standalone actions",
+	},
+	"dialog.showAbout#1": {
+		class: paletteAuditDynamicAction, rationale: "the registered App.About action, also reached as f4:about, opens this read-only report list",
+	},
+	"dialog.showConfigEditor#1": {
+		class: paletteAuditDynamicAction, rationale: "the registered App.ConfigEditor action, also reached as f4:config, opens this runtime list of settings.ini keys",
 	},
 }
 

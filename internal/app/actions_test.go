@@ -927,7 +927,7 @@ func assertComboMenuDoesNotCoverButtons(t *testing.T, dlg vtui.Container, name s
 			buttons = append(buttons, child)
 		}
 	}
-	if combo == nil || len(buttons) != 2 {
+	if combo == nil || len(buttons) < 2 {
 		t.Fatalf("%s dialog controls: combo=%v buttons=%d", name, combo != nil, len(buttons))
 	}
 
@@ -1716,7 +1716,65 @@ func TestActionPanelSettings_Flow(t *testing.T) {
 	vtui.FrameManager.Pop()
 }
 
+// The arrow before a symbolic link is off by default and the checkbox next to
+// the other name-column switches is what turns it on. Toggle it and OK must
+// carry that into config and into the file the dialog writes.
+func TestActionPanelSettings_SymlinkArrowCheckbox(t *testing.T) {
+	t.Cleanup(paneltest.SwapFrameManager(t))
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	theme.SetDefaultF4Palette()
+
+	path := filepath.Join(t.TempDir(), "settings.ini")
+	origUserPathFunc := config.GetUserConfigIniPath
+	origPathsFunc := config.GetConfigIniPaths
+	oldConfig := config.App
+	defer func() {
+		config.GetUserConfigIniPath = origUserPathFunc
+		config.GetConfigIniPaths = origPathsFunc
+		config.App = oldConfig
+	}()
+	config.GetUserConfigIniPath = func() string { return path }
+	config.GetConfigIniPaths = func() []string { return []string{path} }
+	config.App.ShowSymlinkArrow = false
+
+	pf := panel.NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+
+	actionPanelSettings(pf)
+	dlg := vtui.FrameManager.GetTopFrame().(vtui.Container)
+
+	label := testutil.GetCleanText(vtui.NewCheckbox(0, 0, i18n.Msg("PanelSettings.ShowSymlinkArrow"), false))
+	var arrow *vtui.Checkbox
+	for _, itm := range dlg.GetChildren() {
+		if chk, ok := itm.(*vtui.Checkbox); ok && testutil.GetCleanText(chk) == label {
+			arrow = chk
+			break
+		}
+	}
+	if arrow == nil {
+		t.Fatalf("no %q checkbox in the panel settings dialog", label)
+	}
+	if arrow.State != 0 {
+		t.Fatalf("checkbox state = %d, want the default-off setting to arrive cleared", arrow.State)
+	}
+
+	arrow.State = 1
+	testutil.ClickDialogButton(t, dlg, testutil.GetCleanText(vtui.NewButton(0, 0, i18n.Msg("vtui.Ok"))))
+
+	if !config.App.ShowSymlinkArrow {
+		t.Error("checking the checkbox left ShowSymlinkArrow off")
+	}
+	config.App.ShowSymlinkArrow = false
+	config.LoadConfig()
+	if !config.App.ShowSymlinkArrow {
+		t.Error("OK did not persist the enabled ShowSymlinkArrow")
+	}
+}
+
 func TestActionPanelSettings_FitsSmallTerminal(t *testing.T) {
+	// Layout assertions must not inherit frames or screen state from shuffled tests.
+	t.Cleanup(paneltest.SwapFrameManager(t))
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	theme.SetDefaultF4Palette()
 

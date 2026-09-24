@@ -3,12 +3,17 @@ package update
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/unxed/f4/internal/netproxy"
 )
 
 func TestParseUpdateChannelArg(t *testing.T) {
@@ -122,5 +127,151 @@ func TestFetchUpdateCandidateExplainsRateLimit(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "60 per hour") || !strings.Contains(err.Error(), reset.Format("15:04")) {
 		t.Errorf("unhelpful rate limit message: %q", err)
+	}
+}
+
+func TestRunCLIRejectsUnknownChannel(t *testing.T) {
+	if got := RunCLI("beta", Settings{Channel: ChannelStable}, Build{}, func(Settings) {}); got != 2 {
+		t.Fatalf("RunCLI(unknown channel) = %d, want 2", got)
+	}
+}
+
+func TestRunCLIReportsCheckFailure(t *testing.T) {
+	oldAPI, oldProxy := APIURL, netproxy.Global()
+	t.Cleanup(func() {
+		APIURL = oldAPI
+		netproxy.SetGlobal(oldProxy)
+	})
+	netproxy.SetGlobal(netproxy.Settings{Mode: netproxy.ModeDirect})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "upstream unavailable", http.StatusBadGateway)
+	}))
+	defer server.Close()
+	APIURL = server.URL
+
+	if got := RunCLI("", Settings{Channel: ChannelStable}, Build{}, func(Settings) {}); got != 1 {
+		t.Fatalf("RunCLI(check failure) = %d, want 1", got)
+	}
+}
+
+func TestRunCLIStopsWhenAlreadyUpToDate(t *testing.T) {
+	oldAPI, oldOS, oldArch, oldProxy := APIURL, CurrentOS, CurrentArch, netproxy.Global()
+	t.Cleanup(func() {
+		APIURL, CurrentOS, CurrentArch = oldAPI, oldOS, oldArch
+		netproxy.SetGlobal(oldProxy)
+	})
+	CurrentOS, CurrentArch = "linux", "amd64"
+	netproxy.SetGlobal(netproxy.Settings{Mode: netproxy.ModeDirect})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(Release{
+			TagName: "v1.0.0",
+			Assets:  []Asset{{Name: "f4-linux-amd64.tar.gz", BrowserDownloadURL: "unused"}},
+		})
+	}))
+	defer server.Close()
+	APIURL = server.URL
+
+	saves := 0
+	if got := RunCLI("", Settings{Channel: ChannelStable}, Build{Version: "v1.0.0", IsRelease: true}, func(Settings) { saves++ }); got != 0 {
+		t.Fatalf("RunCLI(already current) = %d, want 0", got)
+	}
+	if saves != 0 {
+		t.Fatalf("already-current run saved settings %d times, want 0", saves)
+	}
+}
+
+func TestRunCLIChangesChannelBeforeTargetCheck(t *testing.T) {
+	oldAPI, oldOS, oldArch, oldProxy, oldExecutable := APIURL, CurrentOS, CurrentArch, netproxy.Global(), Executable
+	t.Cleanup(func() {
+		APIURL, CurrentOS, CurrentArch, Executable = oldAPI, oldOS, oldArch, oldExecutable
+		netproxy.SetGlobal(oldProxy)
+	})
+	CurrentOS, CurrentArch = "linux", "amd64"
+	netproxy.SetGlobal(netproxy.Settings{Mode: netproxy.ModeDirect})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(Release{
+			TagName: "nightly",
+			Assets:  []Asset{{Name: "f4-linux-amd64.tar.gz", BrowserDownloadURL: "unused", UpdatedAt: "2026-09-18T00:00:00Z"}},
+		})
+	}))
+	defer server.Close()
+	APIURL = server.URL
+	Executable = func() (string, error) { return "", errors.New("executable unavailable") }
+
+	saved := Settings{}
+	saves := 0
+	if got := RunCLI("nightly", Settings{Channel: ChannelStable}, Build{}, func(s Settings) { saved, saves = s, saves+1 }); got != 1 {
+		t.Fatalf("RunCLI(target failure) = %d, want 1", got)
+	}
+	if saves != 1 || saved.Channel != ChannelNightly {
+		t.Fatalf("channel save = %+v, count %d; want nightly, once", saved, saves)
+	}
+}
+
+func TestRunCLIFailsOnDownload(t *testing.T) {
+	oldAPI, oldOS, oldArch, oldProxy, oldExecutable := APIURL, CurrentOS, CurrentArch, netproxy.Global(), Executable
+	t.Cleanup(func() {
+		APIURL, CurrentOS, CurrentArch, Executable = oldAPI, oldOS, oldArch, oldExecutable
+		netproxy.SetGlobal(oldProxy)
+	})
+	CurrentOS, CurrentArch = "linux", "amd64"
+	netproxy.SetGlobal(netproxy.Settings{Mode: netproxy.ModeDirect})
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "f4")
+	if err := os.WriteFile(exe, []byte("binary"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	Executable = func() (string, error) { return exe, nil }
+	archiveURL := ""
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/archive" {
+			http.Error(w, "download unavailable", http.StatusBadGateway)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(Release{
+			TagName: "v2.0.0",
+			Assets:  []Asset{{Name: "f4-linux-amd64.tar.gz", BrowserDownloadURL: archiveURL}},
+		})
+	}))
+	defer server.Close()
+	archiveURL = server.URL + "/archive"
+	APIURL = server.URL
+
+	if got := RunCLI("stable", Settings{Channel: ChannelStable}, Build{Version: "v1.0.0", IsRelease: true}, func(Settings) {}); got != 1 {
+		t.Fatalf("RunCLI(download failure) = %d, want 1", got)
+	}
+}
+
+func TestRunCLIFailsOnInstall(t *testing.T) {
+	oldAPI, oldOS, oldArch, oldProxy, oldExecutable := APIURL, CurrentOS, CurrentArch, netproxy.Global(), Executable
+	t.Cleanup(func() {
+		APIURL, CurrentOS, CurrentArch, Executable = oldAPI, oldOS, oldArch, oldExecutable
+		netproxy.SetGlobal(oldProxy)
+	})
+	CurrentOS, CurrentArch = "linux", "amd64"
+	netproxy.SetGlobal(netproxy.Settings{Mode: netproxy.ModeDirect})
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "f4")
+	if err := os.WriteFile(exe, []byte("binary"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	Executable = func() (string, error) { return exe, nil }
+	archiveURL := ""
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/archive" {
+			_, _ = w.Write([]byte("not a tar archive"))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(Release{
+			TagName: "v2.0.0",
+			Assets:  []Asset{{Name: "f4-linux-amd64.tar.gz", BrowserDownloadURL: archiveURL}},
+		})
+	}))
+	defer server.Close()
+	APIURL = server.URL
+	archiveURL = server.URL + "/archive"
+
+	if got := RunCLI("stable", Settings{Channel: ChannelStable}, Build{Version: "v1.0.0", IsRelease: true}, func(Settings) {}); got != 1 {
+		t.Fatalf("RunCLI(install failure) = %d, want 1", got)
 	}
 }

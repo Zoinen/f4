@@ -140,8 +140,7 @@ func colorerRegionRunes(start, end, lineRunes int) (int, int, bool) {
 var (
 	colorerPoolMu  sync.Mutex
 	colorerIdle    *colorer.Session
-	colorerIdleDir string
-
+	colorerIdleSource ColorerSource
 	colorerRegionCacheMu sync.RWMutex
 	colorerRegionCache   = make(map[string]colorerRegionCacheEntry)
 )
@@ -213,43 +212,160 @@ func ensureRadiolaSchema(configsDir string) {
 	}
 }
 
-func acquireColorerSession(configsDir string) (*colorer.Session, error) {
-	ensureRadiolaSchema(configsDir)
+// colorerDiagnosticsLevel says how much of what Colorer reports about its
+// configuration goes to debug.log. COLORER_VERBOSE takes the values far2l's
+// FarColorer reads from the same variable (CerrLogger.cpp): off, error,
+// warning or warn, info, debug, trace. Unlike far2l, unset means warning, not
+// off: the stock catalog says nothing at that level, and a broken one says
+// exactly what is broken, which is the one thing debug.log is for.
+func colorerDiagnosticsLevel() (colorer.Level, bool) {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("COLORER_VERBOSE"))) {
+	case "off":
+		return 0, false
+	case "error":
+		return colorer.LevelError, true
+	case "info":
+		return colorer.LevelInfo, true
+	case "debug":
+		return colorer.LevelDebug, true
+	case "trace":
+		return colorer.LevelTrace, true
+	default:
+		return colorer.LevelWarn, true
+	}
+}
+
+// colorerSessionOptions are the options every Colorer session is created
+// with: Colorer's own reports — an HRC file that does not parse, with file and
+// line; a regexp that does not compile; a missing file — delivered to
+// debug.log. Without them a broken configuration shows up only as missing
+// colours, or as a session error naming nothing but a throw site.
+func colorerSessionOptions() []colorer.Option {
+	level, enabled := colorerDiagnosticsLevel()
+	if !enabled {
+		return nil
+	}
+	return []colorer.Option{colorer.WithDiagnostics(level, logColorerDiagnostic)}
+}
+
+func logColorerDiagnostic(d colorer.Diagnostic) {
+	vtui.DebugLog("COLORER: %s", d)
+}
+
+// ColorerSource is everything a Colorer session is built from: the
+// configuration directory and the user's own schemes and colour styles.
+// Sessions built from equal sources are interchangeable, and that is what the
+// pool and the caches compare — a changed user path is never answered by a
+// session loaded without it.
+type ColorerSource struct {
+	ConfigsDir string
+	// UserHRC and UserHRD are FarColorer's user file of schemes and user file
+	// of color styles: a file or a folder each, empty for none.
+	UserHRC string
+	UserHRD string
+	// UserHRCSettings is FarColorer's user HRC settings file, empty for none.
+	UserHRCSettings string
+}
+
+// CurrentColorerSource is the source the applied configuration names.
+func CurrentColorerSource() ColorerSource {
+	return ColorerSource{
+		ConfigsDir:      ColorerConfigsDir(),
+		UserHRC:         strings.TrimSpace(config.App.EditorColorerUserHrc),
+		UserHRD:         strings.TrimSpace(config.App.EditorColorerUserHrd),
+		UserHRCSettings: strings.TrimSpace(config.App.EditorColorerHrcSettings),
+	}
+}
+
+// sessionOptions are the options a session from this source is created with.
+func (src ColorerSource) sessionOptions() []colorer.Option {
+	return append(colorerSessionOptions(), src.userOptions()...)
+}
+
+// userOptions load far2l's HRC settings, when the configuration has them, and
+// the user's own colour styles and schemes.
+func (src ColorerSource) userOptions() []colorer.Option {
+	var opts []colorer.Option
+	if settings := colorerHRCSettingsPath(src.ConfigsDir); fileExists(settings) {
+		opts = append(opts, colorer.WithHRCSettings(settings))
+	}
+	if src.UserHRD != "" {
+		opts = append(opts, colorer.WithUserHRD(src.UserHRD))
+	}
+	if src.UserHRC != "" {
+		opts = append(opts, colorer.WithUserHRC(src.UserHRC))
+	}
+	if src.UserHRCSettings != "" {
+		opts = append(opts, colorer.WithUserHRCSettings(src.UserHRCSettings))
+	}
+	return opts
+}
+
+func acquireColorerSession(src ColorerSource) (*colorer.Session, error) {
+	if err := colorerRuntimeCheck(); err != nil {
+		return nil, err
+	}
+	ensureRadiolaSchema(src.ConfigsDir)
 
 	colorerPoolMu.Lock()
-	if colorerIdle != nil && colorerIdleDir == configsDir {
+	if colorerIdle != nil && colorerIdleSource == src {
 		session := colorerIdle
 		colorerIdle = nil
 		colorerPoolMu.Unlock()
 		session.Reset()
 		vtui.DebugLog("COLORER: Reusing a pooled session")
+		applyColorerProfile(session)
 		return session, nil
 	}
 	colorerPoolMu.Unlock()
 
 	catalogPath := "/base/catalog.xml"
-	vtui.DebugLog("COLORER: Initializing session with catalog %q, configs %q", catalogPath, configsDir)
-	return colorer.NewSession(context.Background(), catalogPath, configsDir)
+	vtui.DebugLog("COLORER: Initializing session with catalog %q, configs %q, user schemes %q, user styles %q", catalogPath, src.ConfigsDir, src.UserHRC, src.UserHRD)
+	session, err := colorer.NewSession(context.Background(), catalogPath, src.ConfigsDir, src.sessionOptions()...)
+	if err == nil {
+		applyColorerProfile(session)
+	}
+	return session, err
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }
 
 // A pooled Session owns the context it was created with. Colorer parsing gets
 // a private context instead, so Esc can interrupt an in-flight ParseLine.
-func acquireCancelableColorerSession(ctx context.Context, configsDir string) (*colorer.Session, error) {
-	ensureRadiolaSchema(configsDir)
+func acquireCancelableColorerSession(ctx context.Context, src ColorerSource) (*colorer.Session, error) {
+	if err := colorerRuntimeCheck(); err != nil {
+		return nil, err
+	}
+	ensureRadiolaSchema(src.ConfigsDir)
 
 	catalogPath := "/base/catalog.xml"
-	vtui.DebugLog("COLORER: Initializing cancellable session with catalog %q, configs %q", catalogPath, configsDir)
-	return colorer.NewSession(ctx, catalogPath, configsDir)
+	vtui.DebugLog("COLORER: Initializing cancellable session with catalog %q, configs %q, user schemes %q, user styles %q", catalogPath, src.ConfigsDir, src.UserHRC, src.UserHRD)
+	session, err := colorer.NewSession(ctx, catalogPath, src.ConfigsDir, src.sessionOptions()...)
+	if err == nil {
+		applyColorerProfile(session)
+	}
+	return session, err
 }
 
-func releaseColorerSession(session *colorer.Session, configsDir string) {
+func releaseColorerSession(session *colorer.Session, src ColorerSource) {
 	if session == nil {
+		return
+	}
+	// A call that failed leaves the session refusing every later one; pooling
+	// it would hand that failure to whoever acquires it next, attributed to
+	// whatever they were trying to do.
+	if err := session.Err(); err != nil {
+		vtui.DebugLog("COLORER: Closing a failed session instead of pooling it: %v", err)
+		go session.Close()
 		return
 	}
 	colorerPoolMu.Lock()
 	if colorerIdle == nil {
 		colorerIdle = session
-		colorerIdleDir = configsDir
+		colorerIdleSource = src
 		colorerPoolMu.Unlock()
 		return
 	}
@@ -261,7 +377,7 @@ func ResetColorerSessions() {
 	colorerPoolMu.Lock()
 	session := colorerIdle
 	colorerIdle = nil
-	colorerIdleDir = ""
+	colorerIdleSource = ColorerSource{}
 	colorerPoolMu.Unlock()
 	if session != nil {
 		session.Close()
@@ -272,6 +388,11 @@ func ColorerConfigsDir() string {
 	if custom := strings.TrimSpace(config.App.EditorColorerCatalog); custom != "" {
 		return custom
 	}
+	return DefaultColorerConfigsDir()
+}
+
+// DefaultColorerConfigsDir is where the configuration lives when none is set.
+func DefaultColorerConfigsDir() string {
 	return filepath.Join(config.GetF4ConfigDir(), "colorer", "configs")
 }
 
@@ -285,24 +406,34 @@ type ColorerScheme struct {
 }
 
 func ListColorerSchemes() []ColorerScheme {
+	return ListColorerSchemesFor(CurrentColorerSource())
+}
+
+// ListColorerSchemesFor lists the RGB colour styles a session from src offers,
+// the user's own included. Colorer itself reads the catalog: it pulls its
+// style lists in through XML entities, which only a full XML reader follows.
+// It instantiates Colorer on a cache miss, so a caller on the UI thread should
+// not be the first to ask for a source.
+func ListColorerSchemesFor(src ColorerSource) []ColorerScheme {
 	// Fast path: return cached list if already loaded.
 	schemesCacheMu.RLock()
-	if cachedSchemes != nil {
+	if cachedSchemes != nil && cachedSchemesSource == src {
 		defer schemesCacheMu.RUnlock()
 		return cachedSchemes
 	}
 	schemesCacheMu.RUnlock()
 
 	// Slow path: load schemes from disk.
-	configsDir := ColorerConfigsDir()
-	session, err := acquireColorerSession(configsDir)
+	session, err := acquireColorerSession(src)
 	if err != nil {
+		vtui.DebugLog("COLORER: Cannot list colour styles, session failed: %v", err)
 		return nil
 	}
-	defer releaseColorerSession(session, configsDir)
+	defer releaseColorerSession(session, src)
 
 	instances, err := session.EnumHRDInstances("rgb")
 	if err != nil {
+		vtui.DebugLog("COLORER: Cannot list colour styles: %v", err)
 		return nil
 	}
 	var schemes []ColorerScheme
@@ -315,12 +446,11 @@ func ListColorerSchemes() []ColorerScheme {
 
 	// Store in cache.
 	schemesCacheMu.Lock()
-	if cachedSchemes == nil {
-		cachedSchemes = schemes
-	}
+	cachedSchemes = schemes
+	cachedSchemesSource = src
 	schemesCacheMu.Unlock()
 
-	return cachedSchemes
+	return schemes
 }
 
 // ResetColorerSchemesCache clears the cached scheme list.
@@ -343,10 +473,11 @@ var (
 	schemeName       string
 	schemeGeneration uint64
 
-	// cachedSchemes holds the list of Colorer schemes loaded from disk.
-	// It is populated lazily on the first call to ListColorerSchemes().
-	cachedSchemes  []ColorerScheme
-	schemesCacheMu sync.RWMutex
+	// cachedSchemes holds the list of Colorer schemes loaded from disk for
+	// cachedSchemesSource. It is populated lazily by ListColorerSchemesFor.
+	cachedSchemes       []ColorerScheme
+	cachedSchemesSource ColorerSource
+	schemesCacheMu      sync.RWMutex
 )
 
 func SetColorerScheme(name string) {
@@ -393,7 +524,7 @@ const colorerBackgroundRegion = "def:Text"
 var colorerBackgroundCache struct {
 	sync.Mutex
 	generation uint64
-	configsDir string
+	source     ColorerSource
 	ready      bool
 	loading    bool
 	define     *colorer.RegionDefine
@@ -404,24 +535,32 @@ func ColorerGetRegionDefine(region string) *colorer.RegionDefine {
 	if cached := CachedColorerRegionDefine(region); cached != nil {
 		return cached
 	}
-	configsDir := ColorerConfigsDir()
-	schemeMu.Lock()
-	activeScheme := schemeName
-	schemeMu.Unlock()
-	return colorerGetRegionDefineFor(region, configsDir, activeScheme)
+	src := CurrentColorerSource()
+	activeScheme, _ := activeColorerScheme()
+	return colorerGetRegionDefineFor(region, src, activeScheme)
 }
 
-func colorerGetRegionDefineFor(region, configsDir, activeScheme string) *colorer.RegionDefine {
-	session, err := acquireColorerSession(configsDir)
+func colorerGetRegionDefineFor(region string, src ColorerSource, activeScheme string) *colorer.RegionDefine {
+	session, err := acquireColorerSession(src)
 	if err != nil {
+		vtui.DebugLog("COLORER: Cannot read region %q, session failed: %v", region, err)
 		return nil
 	}
-	defer releaseColorerSession(session, configsDir)
+	defer releaseColorerSession(session, src)
 
-	activeScheme, generation := activeColorerScheme()
-	_ = session.SetHRD("rgb", activeScheme)
+	if activeScheme == "" {
+		activeScheme = "default"
+	}
+	if err := session.SetHRD("rgb", activeScheme); err != nil {
+		vtui.DebugLog("COLORER: Cannot read region %q, colour style %q failed: %v", region, activeScheme, err)
+		return nil
+	}
 
-	rd, _ := session.GetRegionDefine(region)
+	rd, err := session.GetRegionDefine(region)
+	if err != nil && session.Err() != nil {
+		vtui.DebugLog("COLORER: Cannot read region %q: %v", region, err)
+	}
+	_, generation := activeColorerScheme()
 	entry := colorerRegionCacheEntry{generation: generation}
 	if rd != nil {
 		entry.define = *rd
@@ -444,7 +583,46 @@ func ColorerEditorBaseAttr(base uint64) uint64 {
 	// A render must never initialize a second WASM session synchronously while
 	// the editor's own Colorer session is starting. The first frame uses the f4
 	// palette; the background session fills this cache and requests a redraw.
-	rd := CachedColorerRegionDefine(colorerBackgroundRegion)
+	if rd := CachedColorerRegionDefine(colorerBackgroundRegion); rd != nil {
+		return applyColorerBackground(base, rd)
+	}
+	gen := ColorerSchemeGeneration()
+	src := CurrentColorerSource()
+	colorerBackgroundCache.Lock()
+	if colorerBackgroundCache.ready && colorerBackgroundCache.generation == gen && colorerBackgroundCache.source == src {
+		rd := colorerBackgroundCache.define
+		colorerBackgroundCache.Unlock()
+		return applyColorerBackground(base, rd)
+	}
+	if !colorerBackgroundCache.loading {
+		colorerBackgroundCache.loading = true
+		frames := vtui.FrameManager
+		requestedGeneration := gen
+		requestedSource := src
+		schemeMu.Lock()
+		requestedScheme := schemeName
+		schemeMu.Unlock()
+		colorerSetups.start()
+		go func() {
+			defer colorerSetups.done()
+			rd := colorerGetRegionDefineFor(colorerBackgroundRegion, requestedSource, requestedScheme)
+			colorerBackgroundCache.Lock()
+			colorerBackgroundCache.define = rd
+			colorerBackgroundCache.generation = requestedGeneration
+			colorerBackgroundCache.source = requestedSource
+			colorerBackgroundCache.ready = true
+			colorerBackgroundCache.loading = false
+			colorerBackgroundCache.Unlock()
+			if frames != nil {
+				frames.Redraw()
+			}
+		}()
+	}
+	colorerBackgroundCache.Unlock()
+	return base
+}
+
+func applyColorerBackground(base uint64, rd *colorer.RegionDefine) uint64 {
 	if rd == nil {
 		return base
 	}
@@ -468,7 +646,7 @@ func newColorerHighlighter(ev *EditorView, filename, firstLine string, fallback 
 		filename:      filename,
 		firstLine:     firstLine,
 		starting:      true,
-		configsDir:    ColorerConfigsDir(),
+		colorerSrc:    CurrentColorerSource(),
 		owner:         ev,
 		sessionCtx:    sessionCtx,
 		sessionCancel: sessionCancel,
@@ -483,8 +661,10 @@ func newColorerHighlighter(ev *EditorView, filename, firstLine string, fallback 
 	frames := vtui.FrameManager
 	ch.postTask = frames.PostTask
 	ch.redraw = frames.Redraw
+	colorerSetups.start()
 	go func() {
-		session, err := acquireCancelableColorerSession(sessionCtx, ch.configsDir)
+		defer colorerSetups.done()
+		session, err := acquireCancelableColorerSession(sessionCtx, ch.colorerSrc)
 		if err != nil {
 			vtui.DebugLog("COLORER: Failed to init session: %v", err)
 			if !ch.closed {
@@ -494,10 +674,19 @@ func newColorerHighlighter(ev *EditorView, filename, firstLine string, fallback 
 		}
 
 		activeScheme, generation := activeColorerScheme()
-		session.SetHRD("rgb", activeScheme)
+		if hErr := session.SetHRD("rgb", activeScheme); hErr != nil {
+			vtui.DebugLog("COLORER: Colour style %q failed for %q, using the fallback highlighter: %v", activeScheme, filename, hErr)
+			session.Close()
+			if !ch.closed {
+				ch.useFallback(ev)
+			}
+			return
+		}
 		cacheColorerRenderRegions(session, generation)
 
 		selected, sErr := session.SelectType(filename, firstLine)
+		detected, _ := session.FileType()
+		settings := readColorerTypeSettings(session)
 		vtui.DebugLog("COLORER: SelectType(%q, len=%d) -> selected=%v, err=%v", filename, len(firstLine), selected, sErr)
 		if sErr != nil || !selected {
 			session.Close()
@@ -521,6 +710,9 @@ func newColorerHighlighter(ev *EditorView, filename, firstLine string, fallback 
 			}
 			ch.fallback = nil
 			ch.session = session
+			ch.detectedType = detected
+			ch.typeSettings = settings
+			ch.workerTypeSettings = settings
 			ch.starting = false
 			ch.attrCache = nil
 			ch.parsedIdx = 0
@@ -550,6 +742,7 @@ func (ch *ColorerHighlighter) useFallback(ev *EditorView) {
 			if fb := ch.fallback; fb != nil && ev.Highlighter == vtui.Highlighter(ch) {
 				ch.fallback = nil
 				ev.Highlighter = fb
+				ev.colorerFellBack = true
 			}
 			ev.finishColorerWork(ch.startupWorkID)
 			ev.invalidateStates(0)
@@ -563,15 +756,41 @@ type ColorerHighlighter struct {
 	fallback   vtui.Highlighter
 	attrCache  map[int][]uint64
 	bgCache    map[int]uint64
+	pairCache  map[int][]colorer.Pair // kept and evicted with attrCache
+	pairSearch *colorerPairSearch     // a whole-file pair search in progress
 	parsedIdx  int
 	filename   string
 	firstLine  string
-	configsDir string
+	colorerSrc ColorerSource
 	closed     bool
 	starting   bool
 	owner      *EditorView
 	postTask   func(func())
 	redraw     func()
+
+	// outlineCache holds each parsed line's outline entries, kept and
+	// evicted with attrCache; outlineBuild is a whole-file outline in
+	// progress.
+	outlineCache map[int][]colorerOutlineEntry
+	outlineBuild *colorerOutlineBuild
+	// regionCache holds each parsed line's regions, kept and evicted with
+	// attrCache, for select region.
+	regionCache map[int][]colorerRegionSpan
+
+	// The type the user picked from the list of types, "" to choose by file
+	// name; and the type the file name chose. Both UI-owned. workerFileType
+	// is the type the worker last gave its session, and only the worker
+	// touches it.
+	fileTypeOverride string
+	detectedType     string
+	workerFileType   string
+
+	// The file type's parameters FarEditor::reloadTypeSettings applies:
+	// typeSettings for the UI, workerTypeSettings for the worker, which
+	// reads them whenever it gives its session a type and hands changes to
+	// the UI.
+	typeSettings       colorerTypeSettings
+	workerTypeSettings colorerTypeSettings
 
 	// The session and its worker share this context. The worker is the only
 	// goroutine allowed to call ParseLine/Reset/SelectType on the live session;
@@ -615,6 +834,13 @@ func (ch *ColorerHighlighter) Highlight(line string, prevState any, baseAttr uin
 }
 
 func (ch *ColorerHighlighter) attrsForSyntax(line string, regions []colorer.Region, baseAttr uint64, syntax bool) ([]uint64, uint64) {
+	return colorerAttrs(line, regions, baseAttr, syntax, ch.workerTypeSettings.plainEOL)
+}
+
+// colorerAttrs turns a parsed line's regions into the attribute of each rune,
+// over baseAttr, and the colour for the rest of the row. plainEOL is
+// fullback=no: a region running to the end of the line colours only the text.
+func colorerAttrs(line string, regions []colorer.Region, baseAttr uint64, syntax, plainEOL bool) ([]uint64, uint64) {
 	lineRunes := colorerLineRuneCount(line)
 	attrs := make([]uint64, lineRunes)
 	for i := range attrs {
@@ -636,7 +862,9 @@ func (ch *ColorerHighlighter) attrsForSyntax(line string, regions []colorer.Regi
 			IsBackSet: reg.IsBackSet,
 		}
 
-		if toEOL {
+		// fullback=no keeps the colour of a region running to the end of
+		// the line on its text, off the rest of the row.
+		if toEOL && !plainEOL {
 			eolBg = applyColorerStyle(eolBg, &rd)
 		}
 		for i := start; i < end; i++ {
@@ -710,6 +938,10 @@ func (ch *ColorerHighlighter) DropFrom(idx int) {
 		idx = 0
 	}
 	ch.dropCacheFrom(idx)
+	// An edit moves the text a pair search walks; its tokens are stale, and
+	// so is an outline collected so far.
+	ch.pairSearch = nil
+	ch.outlineBuild = nil
 	// The worker may currently be inside ParseLine. Do not touch its session
 	// from the UI; invalidate that result and let the next frame enqueue a
 	// fresh anchored snapshot.
@@ -734,7 +966,7 @@ func (ch *ColorerHighlighter) GetLineBackground(idx int, defaultAttr uint64) uin
 	return defaultAttr
 }
 
-func (ch *ColorerHighlighter) storeAttrs(idx int, attrs []uint64, bg uint64) {
+func (ch *ColorerHighlighter) storeAttrs(idx int, attrs []uint64, bg uint64, pairs []colorer.Pair) {
 	if ch.attrCache == nil {
 		ch.attrCache = make(map[int][]uint64)
 	}
@@ -747,15 +979,31 @@ func (ch *ColorerHighlighter) storeAttrs(idx int, attrs []uint64, bg uint64) {
 			if key > 2000 && (key < idx-attrCacheKeepWindow || key > idx+attrCacheKeepWindow) {
 				delete(ch.attrCache, key)
 				delete(ch.bgCache, key)
+				delete(ch.pairCache, key)
+				delete(ch.outlineCache, key)
+				delete(ch.regionCache, key)
 			}
 		}
 		if len(ch.attrCache) >= maxCachedAttrLines {
 			ch.attrCache = make(map[int][]uint64)
 			ch.bgCache = make(map[int]uint64)
+			ch.pairCache = nil
+			ch.outlineCache = nil
+			ch.regionCache = nil
 		}
 	}
 	ch.attrCache[idx] = attrs
 	ch.bgCache[idx] = bg
+	delete(ch.outlineCache, idx)
+	delete(ch.regionCache, idx)
+	if len(pairs) > 0 {
+		if ch.pairCache == nil {
+			ch.pairCache = make(map[int][]colorer.Pair)
+		}
+		ch.pairCache[idx] = pairs
+	} else {
+		delete(ch.pairCache, idx)
+	}
 }
 
 func (ch *ColorerHighlighter) dropCacheFrom(idx int) {
@@ -769,6 +1017,21 @@ func (ch *ColorerHighlighter) dropCacheFrom(idx int) {
 			delete(ch.bgCache, key)
 		}
 	}
+	for key := range ch.pairCache {
+		if key >= idx {
+			delete(ch.pairCache, key)
+		}
+	}
+	for key := range ch.outlineCache {
+		if key >= idx {
+			delete(ch.outlineCache, key)
+		}
+	}
+	for key := range ch.regionCache {
+		if key >= idx {
+			delete(ch.regionCache, key)
+		}
+	}
 }
 
 func (ch *ColorerHighlighter) Close() error {
@@ -779,6 +1042,11 @@ func (ch *ColorerHighlighter) Close() error {
 	}
 	ch.stopWorker()
 	ch.attrCache = nil
+	ch.pairCache = nil
+	ch.pairSearch = nil
+	ch.outlineCache = nil
+	ch.outlineBuild = nil
+	ch.regionCache = nil
 	ch.parsedIdx = 0
 	if closer, ok := ch.fallback.(io.Closer); ok {
 		closer.Close()
@@ -787,8 +1055,32 @@ func (ch *ColorerHighlighter) Close() error {
 	// Worker-owned sessions are closed by runWorker. A highlighter created by
 	// tests or a caller without a worker still uses the old pooled lifecycle.
 	if ch.session != nil && ch.workerDone == nil {
-		releaseColorerSession(ch.session, ch.configsDir)
+		releaseColorerSession(ch.session, ch.colorerSrc)
 	}
 	ch.session = nil
 	return nil
+}
+
+// storeOutline keeps a parsed line's outline entries; call it after storeAttrs,
+// which evicts them with the line's colours.
+func (ch *ColorerHighlighter) storeOutline(idx int, entries []colorerOutlineEntry) {
+	if len(entries) == 0 {
+		return
+	}
+	if ch.outlineCache == nil {
+		ch.outlineCache = make(map[int][]colorerOutlineEntry)
+	}
+	ch.outlineCache[idx] = entries
+}
+
+// storeRegions keeps a parsed line's regions; call it after storeAttrs, which
+// evicts them with the line's colours.
+func (ch *ColorerHighlighter) storeRegions(idx int, spans []colorerRegionSpan) {
+	if len(spans) == 0 {
+		return
+	}
+	if ch.regionCache == nil {
+		ch.regionCache = make(map[int][]colorerRegionSpan)
+	}
+	ch.regionCache[idx] = spans
 }

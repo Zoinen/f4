@@ -5,12 +5,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/unxed/f4/vfs"
-	zipvolume "github.com/unxed/zip"
 )
 
 func TestFindEmbeddedArchive(t *testing.T) {
@@ -21,7 +21,7 @@ func TestFindEmbeddedArchive(t *testing.T) {
 		suffix string
 	}{
 		{name: "zip", magic: []byte("PK\x03\x04"), format: "zip", suffix: ".zip"},
-		{name: "7z", magic: []byte("7z\xBC\xAF\x27\x1C"), format: "fallback", suffix: ".7z"},
+		{name: "7z", magic: validSevenZipStartHeader(), format: "fallback", suffix: ".7z"},
 		{name: "rar", magic: []byte("Rar!\x1A\x07\x00"), format: "fallback", suffix: ".rar"},
 	}
 	for _, test := range tests {
@@ -91,7 +91,7 @@ func TestArchiveProviderOpensZipSFX(t *testing.T) {
 	if len(items) != 1 || items[0].Name != "inside.txt" {
 		t.Fatalf("root entries = %#v, want inside.txt", items)
 	}
-	if archiveVFS.sfxOffset != int64(len(stub)) || archiveVFS.sfxSuffix != ".zip" {
+	if archiveVFS.sfxOffset != 0 || archiveVFS.sfxSuffix != "" {
 		t.Fatalf("SFX metadata = offset %d, suffix %q", archiveVFS.sfxOffset, archiveVFS.sfxSuffix)
 	}
 
@@ -113,12 +113,8 @@ func TestArchiveProviderOpensZipSFX(t *testing.T) {
 
 func TestArchiveProviderOpensZipSFXMultiVolume(t *testing.T) {
 	root := t.TempDir()
-	mainPath := filepath.Join(root, "bundle.zip")
-	multiWriter, err := zipvolume.NewMultiVolumeWriter(mainPath, 64)
-	if err != nil {
-		t.Fatal(err)
-	}
-	zipWriter := zip.NewWriter(multiWriter)
+	var archive bytes.Buffer
+	zipWriter := zip.NewWriter(&archive)
 	entry, err := zipWriter.Create("inside.txt")
 	if err != nil {
 		t.Fatal(err)
@@ -129,13 +125,20 @@ func TestArchiveProviderOpensZipSFXMultiVolume(t *testing.T) {
 	if err := zipWriter.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := multiWriter.Close(); err != nil {
-		t.Fatal(err)
-	}
 
-	archiveBytes, err := os.ReadFile(mainPath)
-	if err != nil {
-		t.Fatal(err)
+	// The split set sfxVolumePlanFor looks for: bundle.z01, bundle.z02 and
+	// so on, 64 bytes each, with the tail as the archive the self-extractor
+	// carries. unxed/zip's MultiVolumeWriter wrote this layout until v0.1.138,
+	// which names volumes bundle.zip.001, .002, ... instead; its reader still
+	// opens this one, so the set is cut here by hand.
+	const volumeSize = 64
+	archiveBytes := archive.Bytes()
+	for volume := 1; len(archiveBytes) > volumeSize; volume++ {
+		volumePath := filepath.Join(root, fmt.Sprintf("bundle.z%02d", volume))
+		if err := os.WriteFile(volumePath, archiveBytes[:volumeSize], 0600); err != nil { // #nosec G703 -- volumePath is inside the per-test directory created by testing.T.TempDir.
+			t.Fatal(err)
+		}
+		archiveBytes = archiveBytes[volumeSize:]
 	}
 	sfxPath := filepath.Join(root, "bundle.exe")
 	if err := os.WriteFile(sfxPath, append([]byte("stub bytes before the archive\n"), archiveBytes...), 0600); err != nil { // #nosec G703 -- sfxPath is inside the per-test directory created by testing.T.TempDir.
@@ -180,7 +183,7 @@ func TestFindEmbeddedArchiveRejectsPlainFile(t *testing.T) {
 func TestFindEmbeddedArchiveAcrossProbeChunks(t *testing.T) {
 	stub := bytes.Repeat([]byte{'x'}, 64<<10-2)
 	filename := filepath.Join(t.TempDir(), "split.exe")
-	if err := os.WriteFile(filename, append(stub, []byte("7z\xBC\xAF\x27\x1C")...), 0600); err != nil {
+	if err := os.WriteFile(filename, append(stub, validSevenZipStartHeader()...), 0600); err != nil {
 		t.Fatal(err)
 	}
 

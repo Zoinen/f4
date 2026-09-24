@@ -41,7 +41,8 @@ var videoExtensions = map[string]bool{
 	".mp4": true, ".mkv": true, ".webm": true, ".avi": true, ".mov": true,
 	".m4v": true, ".mpg": true, ".mpeg": true, ".wmv": true, ".flv": true,
 	".ts": true, ".m2ts": true, ".ogv": true, ".3gp": true, ".vob": true,
-	".mts": true, ".divx": true, ".asf": true, ".rm": true, ".rmvb": true,
+	".mts": true, ".mxf": true, ".f4v": true, ".3g2": true,
+	".ogm": true, ".divx": true, ".asf": true, ".rm": true, ".rmvb": true,
 }
 
 // IsVideoFile reports whether the name is one f4 would offer to play.

@@ -2,6 +2,7 @@ package viewer
 
 import (
 	"context"
+	"fmt"
 	"github.com/unxed/f4/internal/semantic"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -263,7 +265,6 @@ func screenContains(scr *vtui.ScreenBuf, text string) bool {
 	}
 	return false
 }
-
 func TestNativeViewerReloadReplacesSameSizeRows(t *testing.T) {
 	vv := cachedSemanticViewer([]byte("old text"))
 	defer vv.Close()
@@ -315,4 +316,139 @@ func TestNativeViewerRefreshFollowsWithoutConsolePaint(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatal("native viewer did not follow appended data without DisplayObject")
+}
+
+// frameRecorder is a renderer that keeps the text of every frame the frame
+// manager flushes, so a test can look at what was on screen in between, not
+// only at where it ended up.
+type frameRecorder struct {
+	mu     sync.Mutex
+	frames [][]string
+}
+
+func (r *frameRecorder) Render(buf, _ []vtui.CharInfo, width, height int, _ bool) {
+	rows := make([]string, height)
+	for y := range rows {
+		var row strings.Builder
+		for x := 0; x < width; x++ {
+			row.WriteRune(rune(buf[y*width+x].Char))
+		}
+		rows[y] = row.String()
+	}
+	r.mu.Lock()
+	r.frames = append(r.frames, rows)
+	r.mu.Unlock()
+}
+func (r *frameRecorder) SetCursor(int, int, bool, vtui.CursorShape) {}
+func (r *frameRecorder) SetPalette(*[256]uint32)                    {}
+func (r *frameRecorder) SetWindowTitle(string)                      {}
+func (r *frameRecorder) Flush()                                     {}
+
+func (r *frameRecorder) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.frames)
+}
+
+func (r *frameRecorder) since(n int) [][]string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([][]string(nil), r.frames[n:]...)
+}
+
+// Following a growing file must go from one tail straight to the next. It
+// used to be started in the middle of painting a frame: the desktop under the
+// viewer was already drawn, the viewer returned without drawing, and every
+// growth of the file put an empty viewer on screen for a frame -- in hex mode
+// followed by a "Loading..." one -- which reads as the whole file flickering
+// (#428). This runs the real frame manager loop, the way the application
+// does, because the viewer painted on its own never showed it.
+func TestViewerFollowingPaintsNoEmptyOrLoadingFrame(t *testing.T) {
+	for _, hex := range []bool{false, true} {
+		name := "text"
+		if hex {
+			name = "hex"
+		}
+		t.Run(name, func(t *testing.T) {
+			const width, height = 60, 8
+			rec := &frameRecorder{}
+			scr := vtui.NewSilentScreenBuf()
+			scr.Renderer = rec
+			scr.AllocBuf(width, height)
+			vtui.FrameManager.Init(scr)
+
+			root := t.TempDir()
+			path := filepath.Join(root, "log.txt")
+			var initial strings.Builder
+			for i := 0; i < 30; i++ {
+				fmt.Fprintf(&initial, "old line %02d\n", i)
+			}
+			if err := os.WriteFile(path, []byte(initial.String()), 0600); err != nil {
+				t.Fatal(err)
+			}
+
+			vv, err := NewViewerView(context.Background(), vfs.NewOSVFS(root), path)
+			if err != nil {
+				t.Fatalf("NewViewerView: %v", err)
+			}
+			defer vv.Close()
+			vv.HexMode = hex
+			vv.ResizeConsole(width, height)
+			vtui.FrameManager.AddScreen(vv)
+
+			run := func(d time.Duration) {
+				for deadline := time.Now().Add(d); time.Now().Before(deadline); {
+					vtui.FrameManager.Step(5 * time.Millisecond)
+				}
+			}
+			run(200 * time.Millisecond)
+			vtui.FrameManager.InjectEvents([]*vtinput.InputEvent{{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_END}})
+			deadline := time.Now().Add(3 * time.Second)
+			for !vv.eofVisible || vv.Busy {
+				if time.Now().After(deadline) {
+					t.Fatal("timed out waiting for the end of the file to come on screen")
+				}
+				run(20 * time.Millisecond)
+			}
+			run(100 * time.Millisecond)
+
+			// Several growths, several poll ticks apart.
+			start := rec.count()
+			last := ""
+			for i := 0; i < 4; i++ {
+				last = fmt.Sprintf("new line %d", i)
+				appendTo(t, path, last+"\n")
+				run(viewerTailPollInterval + 150*time.Millisecond)
+			}
+
+			frames := rec.since(start)
+			if len(frames) == 0 {
+				t.Fatal("nothing was painted while the file grew")
+			}
+			for i, rows := range frames {
+				// Row 0 is the title bar; the first content row of a viewer
+				// at the end of a 30-line file always has text on it.
+				if strings.TrimSpace(rows[1]) == "" {
+					t.Fatalf("frame %d of %d painted an empty viewer:\n%s", i, len(frames), strings.Join(rows, "\n"))
+				}
+				for _, row := range rows {
+					if strings.Contains(row, "Loading") {
+						t.Fatalf("frame %d of %d painted a loading placeholder:\n%s", i, len(frames), strings.Join(rows, "\n"))
+					}
+				}
+			}
+
+			// And it did follow: the last line written is on the last frame.
+			want := last
+			if hex {
+				// The hex view shows bytes, so look for the row holding the
+				// file's last byte instead.
+				want = fmt.Sprintf("%010X:", (vv.Backend.Size()-1)&^0xF)
+			}
+			final := strings.Join(frames[len(frames)-1], "\n")
+			if !strings.Contains(final, want) {
+				t.Fatalf("the viewer did not follow to %q:\n%s", want, final)
+			}
+		})
+	}
 }

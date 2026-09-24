@@ -179,6 +179,9 @@ target_link_libraries(f4-qt-host PRIVATE
   Qt6::Network
   Qt6::Svg
 )
+if(F4_ENABLE_VIDEO_THUMBNAILS)
+  target_link_libraries(f4-qt-host PRIVATE Qt6::Multimedia)
+endif()
 if(WIN32 AND F4_QT_STATIC)
   target_link_libraries(f4-qt-host PRIVATE Rpcrt4 Usp10)
 endif()
@@ -358,6 +361,20 @@ if(F4_QT_STATIC)
           INTERFACE_LINK_LIBRARIES "${_f4_basic_style_links}")
       endif()
     endif()
+
+    # The Effects plugin export has the same duplicate ordinary backing-module
+    # edge as the Basic style export. Remove it before the whole-archive link
+    # below retains the shader resources.
+    if(TARGET Qt6::effectsplugin)
+      get_target_property(_f4_effects_links
+        Qt6::effectsplugin INTERFACE_LINK_LIBRARIES)
+      if(_f4_effects_links)
+        list(REMOVE_ITEM _f4_effects_links
+          "$<LINK_ONLY:Qt6::QuickEffects>")
+        set_target_properties(Qt6::effectsplugin PROPERTIES
+          INTERFACE_LINK_LIBRARIES "${_f4_effects_links}")
+      endif()
+    endif()
   endif()
   foreach(plugin_target IN LISTS F4_REQUIRED_STATIC_QML_PLUGINS)
     if(NOT TARGET ${plugin_target})
@@ -365,13 +382,45 @@ if(F4_QT_STATIC)
         "Required static QML plugin target is missing: ${plugin_target}")
     endif()
   endforeach()
+  # Qt 6.11 exports the QML backing libraries together with their generated
+  # object-resource targets.  Those resources are pulled by an ordinary link
+  # in that graph, while older Conan Qt exports need WHOLE_ARCHIVE to retain
+  # them.  Keep the fallback for those older packages without applying a
+  # feature to a target whose transitive graph already links it normally.
+  set(F4_QT_QUICK_EFFECTS_LINK Qt6::QuickEffects)
+  if(NOT TARGET Qt6::QuickEffects_resources_1)
+    set(F4_QT_QUICK_EFFECTS_LINK
+      "$<LINK_LIBRARY:WHOLE_ARCHIVE,Qt6::QuickEffects>")
+  endif()
+  set(F4_QT_QUICK_CONTROLS_BASIC_LINK Qt6::QuickControls2Basic)
+  if(NOT TARGET Qt6::QuickControls2Basic_resources_1)
+    set(F4_QT_QUICK_CONTROLS_BASIC_LINK
+      "$<LINK_LIBRARY:WHOLE_ARCHIVE,Qt6::QuickControls2Basic>")
+  endif()
+
+  # Qt 6.11 normalized the ICO plugin class/target spelling to QICOPlugin,
+  # while older Qt packages export QIcoPlugin. Keep the host graph portable
+  # across both package generations; the C++ static import already uses the
+  # current plugin class name.
+  set(F4_QT_ICO_PLUGIN_TARGET Qt6::QIcoPlugin)
+  if(NOT TARGET ${F4_QT_ICO_PLUGIN_TARGET} AND TARGET Qt6::QICOPlugin)
+    set(F4_QT_ICO_PLUGIN_TARGET Qt6::QICOPlugin)
+  endif()
   set(F4_REQUIRED_STATIC_QT_PLUGINS
     Qt6::QOffscreenIntegrationPlugin
     Qt6::QGifPlugin
-    Qt6::QIcoPlugin
+    ${F4_QT_ICO_PLUGIN_TARGET}
     Qt6::QJpegPlugin
     Qt6::QSvgPlugin
   )
+  # Some Qt 6.11 static packages omit the optional JPEG image plugin while
+  # still providing the rest of the imageformat set. Gallery decoding uses
+  # ZoinGallery/libjpeg directly, so retain the plugin when the package ships
+  # it but do not make the portable host depend on a missing archive.
+  if(TARGET Qt6::QJpegPlugin)
+    list(APPEND F4_REQUIRED_STATIC_QT_PLUGINS Qt6::QJpegPlugin)
+    target_compile_definitions(f4-qt-host PRIVATE F4_QT_HAS_JPEG_PLUGIN=1)
+  endif()
   if(WIN32)
     list(APPEND F4_REQUIRED_STATIC_QT_PLUGINS
       Qt6::QWindowsIntegrationPlugin)
@@ -385,20 +434,124 @@ if(F4_QT_STATIC)
         "Required static Qt plugin target is missing: ${plugin_target}")
     endif()
   endforeach()
+  set(F4_QFFMPEG_PLUGIN_TARGET "")
+  set(F4_QFFMPEG_PLUGIN_IMPL_TARGET "")
+  # Do not let a path cached by an earlier FFmpeg-enabled configure leak into
+  # a later no-video or native-backend configure of the same build directory.
+  unset(F4_QFFMPEG_PLUGIN_LIBRARY)
+  unset(F4_QFFMPEG_PLUGIN_LIBRARY CACHE)
+  set(F4_QT_MEDIA_PLUGIN_TARGET "")
+  set(F4_QT_NEEDS_FFMPEG OFF)
+  set(F4_FFMPEG_TARGETS)
+  if(F4_ENABLE_VIDEO_THUMBNAILS)
+    if(F4_ENABLE_FFMPEG_BACKEND)
+      # Conan's Qt 6.11 recipe does not currently expose the FFmpeg backend
+      # archive as a CMake component, even though qtmultimedia builds it.
+      # Locate the archive from the Qt package and link it explicitly; the
+      # source-level Q_IMPORT_PLUGIN below then registers it in the static
+      # host.
+      if(TARGET Qt6::QFFmpegMediaPlugin)
+        set(F4_QFFMPEG_PLUGIN_TARGET Qt6::QFFmpegMediaPlugin)
+        set(F4_QT_MEDIA_PLUGIN_TARGET Qt6::QFFmpegMediaPlugin)
+        set(F4_QT_NEEDS_FFMPEG ON)
+        target_compile_definitions(f4-qt-host PRIVATE
+          F4_QT_USE_FFMPEG_PLUGIN=1)
+      elseif(TARGET Qt6::QWindowsMediaPlugin)
+        # The official Conan Qt 6.11 Windows build may expose only the native
+        # Media Foundation backend. Keep that fallback usable even when the
+        # FFmpeg package is present in the Conan graph.
+        set(F4_QT_MEDIA_PLUGIN_TARGET Qt6::QWindowsMediaPlugin)
+        target_compile_definitions(f4-qt-host PRIVATE
+          F4_QT_USE_WINDOWS_MEDIA_PLUGIN=1)
+      else()
+        if(NOT TARGET Qt6::MultimediaPrivate)
+          add_library(Qt6::MultimediaPrivate INTERFACE IMPORTED GLOBAL)
+          set_target_properties(Qt6::MultimediaPrivate PROPERTIES
+            INTERFACE_LINK_LIBRARIES "Qt6::Multimedia;Qt6::Core;Qt6::Gui")
+        endif()
+        if(NOT TARGET Qt6::FFmpegMediaPluginImplPrivate)
+          find_library(_f4_ffmpeg_impl_archive
+            NAMES Qt6FFmpegMediaPluginImplPrivate
+            PATHS "${_f4_conan_qt_package_folder}/lib"
+            NO_DEFAULT_PATH REQUIRED)
+          add_library(Qt6::FFmpegMediaPluginImplPrivate STATIC IMPORTED GLOBAL)
+          set_target_properties(Qt6::FFmpegMediaPluginImplPrivate PROPERTIES
+            IMPORTED_LOCATION "${_f4_ffmpeg_impl_archive}"
+            INTERFACE_LINK_LIBRARIES "Qt6::MultimediaPrivate")
+          unset(_f4_ffmpeg_impl_archive CACHE)
+        endif()
+        set(F4_QFFMPEG_PLUGIN_IMPL_TARGET
+          Qt6::FFmpegMediaPluginImplPrivate)
+        set(F4_QT_NEEDS_FFMPEG ON)
+        find_library(F4_QFFMPEG_PLUGIN_LIBRARY
+          NAMES ffmpegmediaplugin
+          PATHS
+            "${_f4_conan_qt_package_folder}/plugins/multimedia"
+            "${qt_PACKAGE_FOLDER_RELWITHDEBINFO}/plugins/multimedia"
+            "${qt_PACKAGE_FOLDER_RELEASE}/plugins/multimedia"
+            NO_DEFAULT_PATH)
+        if(NOT F4_QFFMPEG_PLUGIN_LIBRARY)
+          message(FATAL_ERROR
+            "Static Qt Multimedia was enabled, but the FFmpeg backend archive "
+            "was not found in the Qt package")
+        endif()
+        set(F4_QT_MEDIA_PLUGIN_TARGET ${F4_QFFMPEG_PLUGIN_LIBRARY})
+        target_compile_definitions(f4-qt-host PRIVATE
+          F4_QT_USE_FFMPEG_PLUGIN=1)
+      endif()
+    elseif(TARGET Qt6::QWindowsMediaPlugin)
+      # An explicit FFmpeg-off build is supported when Qt supplies the native
+      # Windows Media Foundation backend.
+      set(F4_QT_MEDIA_PLUGIN_TARGET Qt6::QWindowsMediaPlugin)
+      target_compile_definitions(f4-qt-host PRIVATE
+        F4_QT_USE_WINDOWS_MEDIA_PLUGIN=1)
+    else()
+      message(FATAL_ERROR
+        "F4_ENABLE_FFMPEG_BACKEND=OFF requires Qt6::QWindowsMediaPlugin "
+        "for a static Qt Multimedia host; disable F4_ENABLE_VIDEO_THUMBNAILS "
+        "on platforms without a native Qt backend")
+    endif()
+
+    if(F4_QT_NEEDS_FFMPEG)
+      find_package(ffmpeg CONFIG REQUIRED)
+      foreach(ffmpeg_component IN ITEMS avcodec avformat avutil swresample swscale)
+        if(TARGET ffmpeg::${ffmpeg_component})
+          list(APPEND F4_FFMPEG_TARGETS ffmpeg::${ffmpeg_component})
+        elseif(TARGET FFmpeg::${ffmpeg_component})
+          list(APPEND F4_FFMPEG_TARGETS FFmpeg::${ffmpeg_component})
+        endif()
+      endforeach()
+      if(NOT F4_FFMPEG_TARGETS)
+        message(FATAL_ERROR
+          "FFmpeg was found, but no avcodec/avformat component targets were exported")
+      endif()
+    endif()
+  endif()
   target_sources(f4-qt-host PRIVATE
     "${F4_QT_HOST_ROOT}/src/StaticQtPluginImports.cpp"
     "${F4_QT_HOST_ROOT}/src/StaticQmlPluginImports.cpp")
   # The effects shader resources have no ordinary symbol references. Keep
   # them in the single-file host, including transitive plugin references.
-  set_property(TARGET f4-qt-host APPEND PROPERTY LINK_LIBRARY_OVERRIDE
-    "WHOLE_ARCHIVE,Qt6::QuickEffects")
+  if(NOT TARGET Qt6::QuickEffects_resources_1)
+    set_property(TARGET f4-qt-host APPEND PROPERTY LINK_LIBRARY_OVERRIDE
+      "WHOLE_ARCHIVE,Qt6::QuickEffects")
+  endif()
+  if(NOT TARGET Qt6::QuickControls2Basic_resources_1)
+    set_property(TARGET f4-qt-host APPEND PROPERTY LINK_LIBRARY_OVERRIDE
+      "WHOLE_ARCHIVE,Qt6::QuickControls2Basic")
+  endif()
   target_link_libraries(f4-qt-host PRIVATE
     ${F4_REQUIRED_STATIC_QML_PLUGINS}
     ${F4_REQUIRED_STATIC_QT_PLUGINS}
-    "$<LINK_LIBRARY:WHOLE_ARCHIVE,Qt6::QuickControls2Basic>"
+    ${F4_QFFMPEG_PLUGIN_TARGET}
+    ${F4_QFFMPEG_PLUGIN_IMPL_TARGET}
+    ${F4_QT_MEDIA_PLUGIN_TARGET}
+    ${F4_QFFMPEG_PLUGIN_LIBRARY}
+    ${F4_FFMPEG_TARGETS}
+    ${F4_QT_QUICK_CONTROLS_BASIC_LINK}
     Qt6::QuickControls2BasicStyleImpl
     Qt6::QuickControls2Impl
-    "$<LINK_LIBRARY:WHOLE_ARCHIVE,Qt6::QuickEffects>"
+    ${F4_QT_QUICK_EFFECTS_LINK}
     Qt6::QuickLayouts)
 
   # Conan exposes Qt's Linux platform and graphics integrations as separate
@@ -469,7 +622,17 @@ if(F4_QT_STATIC)
 
   # The production host never enables QML debugging, so exclude the ordinary
   # debugger/profiler transport plugins supplied by Qt::Qml as well.
-  qt6_import_plugins(f4-qt-host EXCLUDE_BY_TYPE qmltooling)
+  # Qt 6.11's Conan package ships the Network List Manager initializer with
+  # the dynamic MSVC CRT, while this portable static host and the rest of the
+  # Qt archives use the static CRT. The network-information backend is
+  # optional for F4, so leave that default plugin out of the single-file host
+  # and avoid mixing CRTs at link time.
+  # Multimedia is selected explicitly above. Exclude Qt's automatic import
+  # here so a native-only build does not also pull in the FFmpeg plugin (and
+  # its FFmpeg archives), while an FFmpeg build does not register the native
+  # Windows backend as a second implementation.
+  qt6_import_plugins(f4-qt-host
+    EXCLUDE_BY_TYPE qmltooling networkinformation tls multimedia)
 endif()
 
 qt6_finalize_target(f4-qt-host)

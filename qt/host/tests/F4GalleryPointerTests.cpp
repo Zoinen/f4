@@ -85,6 +85,33 @@ QVariantMap galleryScene(int entryCount, int cursorRow = 0,
     };
 }
 
+QVariantMap groupedGalleryScene(int entryCount, int cursorRow = 0,
+                                bool panelActive = true,
+                                qulonglong catalogRevision = 5)
+{
+    QVariantMap scene = galleryScene(entryCount, cursorRow, panelActive,
+                                     catalogRevision);
+    QVariantMap shell = scene.value(QStringLiteral("shell")).toMap();
+    QVariantList panels = shell.value(QStringLiteral("panels")).toList();
+    QVariantMap panel = panels.constFirst().toMap();
+    panel.insert(QStringLiteral("groupBy"), QStringLiteral("Name"));
+    panel.insert(QStringLiteral("groupReverse"), false);
+    panel.insert(QStringLiteral("groupFoldersSeparately"), false);
+    panel.insert(QStringLiteral("groupTotal"), 1);
+    panel.insert(QStringLiteral("groups"), QVariantList{
+        QVariantMap{
+            {QStringLiteral("key"), QStringLiteral("no-data")},
+            {QStringLiteral("title"), QStringLiteral("No data")},
+            {QStringLiteral("startIndex"), 1},
+            {QStringLiteral("count"), qMax(0, entryCount - 1)},
+        },
+    });
+    panels[0] = panel;
+    shell.insert(QStringLiteral("panels"), panels);
+    scene.insert(QStringLiteral("shell"), shell);
+    return scene;
+}
+
 QVariantMap galleryImageScene(const QStringList &paths, int cursorRow = 0,
                               qulonglong catalogRevision = 5)
 {
@@ -290,6 +317,7 @@ private slots:
     void quickSearchMatchMarkupTracksPanelStateAndPalette();
     void menuFocusKeepsNonzeroCursorWithoutIntents();
     void panelCapturesPointerAndAppliesSelectionModifiers();
+    void groupedPanelCapturesPointerForGroupedEntries();
     void folderDoubleClickSurvivesAcknowledgementTiming();
     void folderDoubleClickSurvivesStaleLoaderRevisionAndFocusStress();
     void doubleClickNonCurrentImageOpensViewer();
@@ -1393,6 +1421,170 @@ void F4GalleryPointerTests::panelCapturesPointerAndAppliesSelectionModifiers()
     QCOMPARE(actions.size(), first);
 
     delete rootObject;
+}
+
+void F4GalleryPointerTests::groupedPanelCapturesPointerForGroupedEntries()
+{
+    QQuickView view;
+    view.engine()->addImportPath(QStringLiteral(":/"));
+    F4GalleryBridge bridge(view.engine());
+    QVERIFY(bridge.available());
+    const QVariantMap ungrouped = galleryScene(18);
+    const QVariantMap grouped = groupedGalleryScene(18);
+    bridge.synchronizeScene(ungrouped);
+
+    auto panelFromScene = [](const QVariantMap &scene) {
+        const QVariantMap shell = scene.value(QStringLiteral("shell")).toMap();
+        return shell.value(QStringLiteral("panels")).toList()
+            .constFirst().toMap();
+    };
+    view.engine()->rootContext()->setContextProperty(
+        QStringLiteral("groupedPointerBridge"), &bridge);
+    view.engine()->rootContext()->setContextProperty(
+        QStringLiteral("groupedPointerPanel"), panelFromScene(ungrouped));
+
+    QQmlComponent component(view.engine());
+    component.setData(R"QML(
+        import QtQuick
+        Item {
+            width: 640
+            height: 360
+            property int leakedPresses: 0
+            MouseArea {
+                anchors.fill: parent
+                acceptedButtons: Qt.AllButtons
+                onPressed: mouse => {
+                    parent.leakedPresses++
+                    mouse.accepted = true
+                }
+            }
+            Loader {
+                id: panelLoader
+                objectName: "groupedPointerPanelLoader"
+                anchors.fill: parent
+                source: groupedPointerBridge.panelComponentUrl
+                onLoaded: {
+                    item.side = 0
+                    item.bridge = groupedPointerBridge
+                    item.panel = groupedPointerPanel
+                    item.panelActive = true
+                    item.theme.panelBackground = "#141922"
+                    item.theme.text = "#e8edf2"
+                    item.theme.cursor = "#285d8f"
+                    item.theme.selection = "#ffd43b"
+                }
+            }
+        }
+    )QML", QUrl(QStringLiteral("inline:F4GroupedGalleryPointer.qml")));
+    QTRY_VERIFY_WITH_TIMEOUT(component.status() != QQmlComponent::Loading, 5000);
+    QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+    QObject *rootObject = component.create();
+    QVERIFY2(rootObject, qPrintable(component.errorString()));
+    const auto cleanup = qScopeGuard([&] { delete rootObject; });
+    view.setContent(QUrl(QStringLiteral("inline:F4GroupedGalleryPointer.qml")),
+                    &component, rootObject);
+    view.show();
+    view.requestActivate();
+
+    QObject *loader = rootObject->findChild<QObject *>(
+        QStringLiteral("groupedPointerPanelLoader"));
+    QVERIFY(loader);
+    QTRY_VERIFY(loader->property("item").value<QObject *>());
+    QObject *host = loader->property("item").value<QObject *>();
+    QObject *panel = host->findChild<QObject *>(
+        QStringLiteral("embeddedGalleryPanel"));
+    QVERIFY(panel);
+    QObject *layout = panel->findChild<QObject *>(
+        QStringLiteral("galleryViewportItem"));
+    QVERIFY(layout);
+    auto *layoutItem = qobject_cast<QQuickItem *>(layout);
+    QVERIFY(layoutItem);
+    QTRY_COMPARE_WITH_TIMEOUT(layout->property("count").toInt(), 18, 5000);
+    host->setProperty("contentHorizontalInset", 8);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        qAbs(layout->property("paddingLeft").toReal() - 14.0) < 0.01,
+        1000);
+
+    auto pointerForRow = [panel](int row) {
+        return panel->findChild<QQuickItem *>(
+            QStringLiteral("gallerySelectionSurface-%1").arg(row));
+    };
+    QTRY_VERIFY(pointerForRow(1));
+    QTRY_VERIFY(pointerForRow(4));
+
+    // Exercise the real production transition: grouping is applied after the
+    // ungrouped catalog is already live in the host.
+    const QVariantMap groupedPanel = panelFromScene(grouped);
+    bridge.synchronizeScene(grouped);
+    host->setProperty("panel", QVariant::fromValue(groupedPanel));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !layout->property("visibleGroupHeaders").toList().isEmpty(), 5000);
+    QTRY_VERIFY(pointerForRow(1));
+    QTRY_VERIFY(pointerForRow(4));
+    const auto findQuickItem = [](auto &&self, QQuickItem *root,
+                                  const QString &name) -> QQuickItem * {
+        if (!root)
+            return nullptr;
+        if (root->objectName() == name)
+            return root;
+        for (QQuickItem *child : root->childItems()) {
+            if (QQuickItem *match = self(self, child, name))
+                return match;
+        }
+        return nullptr;
+    };
+    auto *panelItem = qobject_cast<QQuickItem *>(panel);
+    QVERIFY(panelItem);
+    QQuickItem *header = nullptr;
+    QTRY_VERIFY((header = findQuickItem(
+                     findQuickItem,
+                     panelItem,
+                     QStringLiteral("galleryGroupHeader-0-no-data"))) != nullptr);
+    auto *galleryLayout = qobject_cast<QQuickItem *>(layout);
+    QVERIFY(galleryLayout);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(galleryLayout->x()) < 0.01, 1000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        qAbs(galleryLayout->width() - panelItem->width()) < 0.01, 1000);
+    QTest::qWait(100);
+    const QPoint headerEdge = header->mapToScene(
+        QPointF(2, header->height() / 2)).toPoint();
+    QTest::mouseMove(&view, headerEdge);
+    QTest::mouseClick(&view, Qt::LeftButton, Qt::NoModifier,
+                      headerEdge);
+    bool groupCollapsed = false;
+    const auto readGroupCollapsed = [&] {
+        return QMetaObject::invokeMethod(
+                   layout, "isGroupCollapsed", Qt::DirectConnection,
+                   Q_RETURN_ARG(bool, groupCollapsed),
+                   Q_ARG(QString, QStringLiteral("no-data")))
+            && groupCollapsed;
+    };
+    QTRY_VERIFY_WITH_TIMEOUT(readGroupCollapsed(), 1000);
+    QCOMPARE(rootObject->property("leakedPresses").toInt(), 0);
+    QVERIFY(QMetaObject::invokeMethod(
+        layout, "setGroupCollapsed", Qt::DirectConnection,
+        Q_RETURN_ARG(bool, groupCollapsed),
+        Q_ARG(QString, QStringLiteral("no-data")), Q_ARG(bool, false)));
+
+    QSignalSpy actions(&bridge, &F4GalleryBridge::uiActionRequested);
+    for (const int row : {1, 4}) {
+        QQuickItem *target = pointerForRow(row);
+        QVERIFY(target);
+        // The production transition is asynchronous; let the offscreen
+        // window commit its active pointer target before injecting input.
+        QTest::qWait(100);
+        const QPoint sceneCenter = itemCenter(target);
+        QTest::mouseMove(&view, sceneCenter);
+        QTRY_COMPARE_WITH_TIMEOUT(panel->property("hoveredIndex").toInt(),
+                                  row, 1000);
+        const int first = actions.size();
+        QTest::mouseClick(&view, Qt::LeftButton, Qt::NoModifier,
+                          itemCenter(target));
+        QCOMPARE(rootObject->property("leakedPresses").toInt(), 0);
+        QCOMPARE(firstActionSince(actions, first, QStringLiteral("panel.cursor"))
+                     .value(QStringLiteral("entryId")).toString(),
+                 QStringLiteral("entry-%1").arg(row));
+    }
 }
 
 void F4GalleryPointerTests::folderDoubleClickSurvivesAcknowledgementTiming()
@@ -3165,6 +3357,8 @@ void F4GalleryPointerTests::nativeDropUsesIdentityAndSnappedOutline()
     auto *layout = panel->findChild<QQuickItem *>("galleryViewportItem");
     QVERIFY(layout);
     QTRY_COMPARE(layout->property("count").toInt(), 4);
+    host->setProperty("contentHorizontalInset", 8);
+    QTRY_VERIFY(qAbs(layout->property("paddingLeft").toReal() - 14.0) < 0.01);
     QSignalSpy actions(&bridge, &F4GalleryBridge::uiActionRequested);
     QMimeData mime;
     mime.setUrls({QUrl::fromLocalFile(QDir::temp().filePath("drag space # тест.txt"))});
@@ -3184,7 +3378,32 @@ void F4GalleryPointerTests::nativeDropUsesIdentityAndSnappedOutline()
             auto *outline = host->findChild<QQuickItem *>("panelDropOutline-0");
             QVERIFY(outline);
             QTRY_VERIFY(outline->isVisible());
+            QRectF targetGeometry;
+            QVERIFY(QMetaObject::invokeMethod(
+                layout, "indexGeometry", Q_RETURN_ARG(QRectF, targetGeometry),
+                Q_ARG(int, targetRow)));
+            const qreal contentY = layout->property("contentY").toReal();
+            const bool horizontal = QString::fromLatin1(mode) == "columns";
+            const QPointF expectedViewportOrigin(
+                targetGeometry.x() + layout->property("paddingLeft").toReal()
+                    - (horizontal ? contentY : 0),
+                targetGeometry.y() - (horizontal ? 0 : contentY));
+            const QPointF expectedSceneOrigin = layout->mapToScene(
+                expectedViewportOrigin);
+            const QPointF actualSceneOrigin = outline->mapToScene(QPointF());
             const qreal dpr = view.devicePixelRatio();
+            QVERIFY2(qRound(actualSceneOrigin.x() * dpr)
+                         == qRound(expectedSceneOrigin.x() * dpr)
+                         && qRound(actualSceneOrigin.y() * dpr)
+                         == qRound(expectedSceneOrigin.y() * dpr),
+                     qPrintable(QStringLiteral(
+                         "%1 drop outline at (%2,%3), tile begins at (%4,%5), paddingLeft=%6")
+                         .arg(QString::fromLatin1(mode))
+                         .arg(actualSceneOrigin.x(), 0, 'f', 3)
+                         .arg(actualSceneOrigin.y(), 0, 'f', 3)
+                         .arg(expectedSceneOrigin.x(), 0, 'f', 3)
+                         .arg(expectedSceneOrigin.y(), 0, 'f', 3)
+                         .arg(layout->property("paddingLeft").toReal(), 0, 'f', 3)));
             for (const auto &p : {QPointF(0,0), QPointF(outline->width(),outline->height())}) {
                 const QPointF physical = outline->mapToScene(p) * dpr;
                 QVERIFY2(qAbs(physical.x() - qRound(physical.x())) < 0.001, qPrintable(QString::number(physical.x())));

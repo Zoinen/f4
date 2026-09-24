@@ -98,14 +98,13 @@ func TestFrameworkActionsKeepNativeShortcutsOutOfHotkeyDefaults(t *testing.T) {
 		}
 	}
 
-	// CtrlAltP, not CtrlShiftP: the palette owns CtrlShiftP, and Shift over a
-	// bare letter is indistinguishable from no-Shift on a legacy ANSI
-	// terminal anyway (see WINE.md §15.1) — Wine's tty backend can't deliver
-	// it at all. CtrlAlt<letter> survives because Alt arrives as an ESC
-	// prefix ahead of the plain control byte.
+	// No hotkey at all: the dump is a palette command. CtrlAltP was tried
+	// here for Wine's tty and did not work there either (WINE.md §15.2),
+	// while holding it kept App.CommandPalette's own legacy fallback on the
+	// same chord from ever firing (issue #980).
 	dump, ok := GetAction("Debug.ScreenDump")
-	if !ok || len(dump.DefaultKeys) != 1 || dump.DefaultKeys[0] != "CtrlAltP" || len(dump.NativeKeys) != 0 {
-		t.Fatalf("screen dump registration = %+v; want DefaultKeys=[CtrlAltP]", dump)
+	if !ok || len(dump.DefaultKeys) != 0 || len(dump.NativeKeys) != 0 {
+		t.Fatalf("screen dump registration = %+v; want no hotkey of its own", dump)
 	}
 }
 
@@ -218,8 +217,10 @@ func TestFrameworkHelpAndMainMenuActionsPreserveFrameBehavior(t *testing.T) {
 	if !actionActivateMainMenu() || !menu.Active {
 		t.Fatal("main menu action did not activate the frame menu")
 	}
-	if top := vtui.FrameManager.GetTopFrame(); top == frame || top.GetType() != vtui.TypeMenu {
-		t.Fatalf("top frame = %T, want the activated submenu", top)
+	// The bar comes up alone; Down, Enter or a hotkey drops the menu itself
+	// (issue #1144).
+	if top := vtui.FrameManager.GetTopFrame(); top != frame {
+		t.Fatalf("top frame = %T, want the owning frame with no dropdown", top)
 	}
 }
 
@@ -242,10 +243,9 @@ func TestPaletteMainMenuMatchesPanelsF9ActiveSide(t *testing.T) {
 	if got := panels.MenuBar.SelectPos; got != 4 {
 		t.Fatalf("right-panel menu position = %d, want physical F9 position 4", got)
 	}
-	if top := vtui.FrameManager.GetTopFrame(); top == panels || top.GetType() != vtui.TypeMenu {
-		t.Fatalf("right-panel F9 top frame = %T, want menu", top)
+	if top := vtui.FrameManager.GetTopFrame(); top != panels {
+		t.Fatalf("right-panel F9 top frame = %T, want the panels frame with no dropdown", top)
 	}
-	vtui.FrameManager.Pop()
 	vtui.FrameManager.SyncCurrentScreen()
 	panels.MenuBar.Active = false
 

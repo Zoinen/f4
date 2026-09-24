@@ -105,6 +105,15 @@ type ArchiveEntry struct {
 	open  func() (io.ReadCloser, error)
 }
 
+// archiveEntry and extractEntry keep the package-local extraction seam used by
+// older callers and tests. The exported names are the production API; both
+// spellings intentionally share the same representation and security guard.
+type archiveEntry = ArchiveEntry
+
+func extractEntry(e archiveEntry, destDir string) error {
+	return ExtractEntry(e, destDir)
+}
+
 func ExtractEntry(e ArchiveEntry, destDir string) error {
 	targetPath, err := SanitizePath(e.name, destDir)
 	if err != nil {
