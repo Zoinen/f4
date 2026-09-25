@@ -12,7 +12,10 @@ import (
 	"maps"
 	"os"
 	"strings"
+	"sync"
 )
+
+var fileFieldProjectionLog sync.Once
 
 func init() {
 	vtui.AppSceneAdapter = BuildAppSceneFromLegacy
@@ -850,6 +853,9 @@ func appPanelFromLegacy(node map[string]any) extui.PanelModel {
 		GalleryDensity:         galleryDensity,
 		GalleryDensities:       galleryDensities,
 		GalleryLayoutRevision:  galleryLayoutRevision,
+		GroupBy:                semantic.String(node["groupBy"]),
+		GroupReverse:           semantic.AppBool(node["groupReverse"]),
+		GroupFileField:         semantic.String(node["groupFileField"]),
 		SourceKind:             sourceKind,
 		DropAllowed:            semantic.AppBool(node["dropAllowed"]),
 		PreviewCapable:         semantic.AppBool(node["previewCapable"]),
@@ -872,6 +878,41 @@ func appPanelFromLegacy(node map[string]any) extui.PanelModel {
 		SelectedSize:           semantic.AppInt64(node["selectedSize"]),
 		TotalCount:             semantic.Int(node["totalCount"]),
 		TotalSize:              semantic.AppInt64(node["totalSize"]),
+		FileFieldSort:          semantic.String(node["fileFieldSort"]),
+		FileFieldFilterAny:     semantic.AppBool(node["fileFieldFilterAny"]),
+		FileFieldPendingCount:  semantic.Int(node["fileFieldPendingCount"]),
+	}
+	for _, group := range semantic.AppMapSlice(node["groups"]) {
+		panel.Groups = append(panel.Groups, extui.PanelGroupModel{
+			Key:        semantic.String(group["key"]),
+			Title:      semantic.String(group["title"]),
+			StartIndex: semantic.Int(group["startIndex"]),
+			Count:      semantic.Int(group["count"]),
+		})
+	}
+	for _, rawDescriptor := range semantic.AppMapSlice(node["fileFieldDescriptors"]) {
+		panel.FileFieldDescriptors = append(panel.FileFieldDescriptors,
+			extui.FileFieldDescriptor{
+				ID:         semantic.String(rawDescriptor["id"]),
+				Title:      semantic.String(rawDescriptor["title"]),
+				Kind:       extui.FileFieldKind(semantic.String(rawDescriptor["kind"])),
+				Unit:       semantic.String(rawDescriptor["unit"]),
+				Format:     semantic.String(rawDescriptor["format"]),
+				Precision:  semantic.Int(rawDescriptor["precision"]),
+				Operations: semantic.AppStringSlice(rawDescriptor["operations"]),
+			})
+	}
+	if len(panel.FileFieldDescriptors) > 0 {
+		fileFieldProjectionLog.Do(func() {
+			vtui.DebugLog("[FIX:file-fields] preserved %d descriptors through app scene projection", len(panel.FileFieldDescriptors))
+		})
+	}
+	for _, rawFilter := range semantic.AppMapSlice(node["fileFieldFilters"]) {
+		panel.FileFieldFilters = append(panel.FileFieldFilters, extui.FileFieldFilterModel{
+			FieldID:   semantic.String(rawFilter["fieldId"]),
+			Operation: semantic.String(rawFilter["operation"]),
+			Value:     semantic.String(rawFilter["value"]),
+		})
 	}
 	if rawMatches, ok := node["fastFindMatches"].(map[string]any); ok {
 		panel.FastFindMatches = make(map[string]extui.FastFindMatchModel, len(rawMatches))

@@ -34,5 +34,10 @@ static void initializeStaticQmlResources()
     Q_INIT_RESOURCE(qmake_QtQuick_Controls_Basic_impl);
     Q_INIT_RESOURCE(qmake_QtQuick_Controls_Basic);
     Q_INIT_RESOURCE(qmake_QtQuick_Controls);
+    Q_INIT_RESOURCE(indirectBasic);
+    Q_INIT_RESOURCE(QuickControls2Basic_raw_qml_0);
+    Q_INIT_RESOURCE(QuickControls2BasicStyleImpl_raw_qml_0);
+    Q_INIT_RESOURCE(QuickControls2Impl_raw_qml_0);
+    Q_INIT_RESOURCE(qtquickcontrols2basicstyle);
 }
 Q_CONSTRUCTOR_FUNCTION(initializeStaticQmlResources)

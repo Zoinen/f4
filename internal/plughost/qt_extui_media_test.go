@@ -1039,8 +1039,8 @@ func TestMediaVersionPrefersRevisionAndSemanticMetadataFingerprintTracksIt(t *te
 	}
 	firstSessionVersion, strength := MediaSourceVersion(filesystem, unknown, false, 1, 7)
 	secondSessionVersion, _ := MediaSourceVersion(filesystem, unknown, false, 99, 7)
-	if strength != "session" || firstSessionVersion == secondSessionVersion {
-		t.Fatalf("session versions reused across panel revisions: %q/%q (%s)", firstSessionVersion, secondSessionVersion, strength)
+	if strength != "session" || firstSessionVersion != secondSessionVersion {
+		t.Fatalf("projection revision changed the session version: %q/%q (%s)", firstSessionVersion, secondSessionVersion, strength)
 	}
 	refreshedSessionVersion, _ := MediaSourceVersion(filesystem, unknown, false, 99, 8)
 	if refreshedSessionVersion == secondSessionVersion {
@@ -1060,7 +1060,8 @@ func TestExtUiMediaBrokerUnknownVersionRefreshInvalidatesAndRetires(t *testing.T
 
 	register := func(revision int64) ImageSourceDescriptor {
 		descriptor := broker.Register(MediaSourceRegistration{
-			PanelID: "panel-1", CatalogVersion: revision, FS: filesystem,
+			PanelID: "panel-1", CatalogVersion: revision,
+			SourceEpoch: revision, FS: filesystem,
 			Path: "/gallery/image.jpg", Item: filesystem.item,
 		})
 		broker.CommitPanel("panel-1", revision, []string{descriptor.ResourceID})

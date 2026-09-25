@@ -291,11 +291,11 @@ func MediaSourceVersion(filesystem vfs.VFS, item vfs.VFSItem, local bool, catalo
 	if strength != "session" {
 		return version, strength
 	}
-	// With no provider revision or useful stat tuple, the panel catalog is the
-	// only observation that bounds the bytes. Namespace it by the access epoch,
-	// but never reuse it across catalog refreshes: the next listing may describe
-	// different bytes even when the VFS session itself is unchanged.
-	identity := fmt.Sprintf("%s\x00%s\x00%d", mediaAccessEpoch(filesystem), version, sourceEpoch)
+	// With no provider revision or useful stat tuple, a completed directory
+	// read is the only observation that bounds the bytes. Sort, filter, and
+	// grouping revisions are projections of that listing, so only the source
+	// epoch (advanced by a new observation) may invalidate this identity.
+	identity := fmt.Sprintf("%s\x00session\x00%d", mediaAccessEpoch(filesystem), sourceEpoch)
 	sum := sha256.Sum256([]byte(identity))
 	return fmt.Sprintf("session-%x", sum[:16]), strength
 }

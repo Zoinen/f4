@@ -33,6 +33,9 @@ QVariantMap PanelIntentController::toWireMap(const PanelIntent &intent)
     case PanelIntent::Kind::SetGalleryDensity:
         action = QStringLiteral("panel.setGalleryDensity");
         break;
+    case PanelIntent::Kind::SetGalleryColumnWidths:
+        action = QStringLiteral("panel.setGalleryColumnWidths");
+        break;
     case PanelIntent::Kind::Sort:
         action = QStringLiteral("panel.sort");
         break;
@@ -87,6 +90,9 @@ QVariantMap PanelIntentController::toWireMap(const PanelIntent &intent)
     case PanelIntent::Kind::SetGalleryDensity:
         wire.insert(QStringLiteral("layoutMode"), intent.layoutMode);
         wire.insert(QStringLiteral("density"), intent.density);
+        break;
+    case PanelIntent::Kind::SetGalleryColumnWidths:
+        wire.insert(QStringLiteral("columns"), intent.columns);
         break;
     case PanelIntent::Kind::Sort:
         wire.insert(QStringLiteral("mode"), intent.mode);

@@ -167,6 +167,7 @@ private slots:
     void rejectedCursorRestoresAuthoritativeState();
     void vfsUsesUnifiedSessionWithoutPreviews();
     void vfsResourceDescriptorsRemainOpaqueAndPreviewable();
+    void fileFieldUpdatesAreBatchedAndDeduplicated();
     void viewerWaitsForAuthoritativeCursor();
     void inactivePanelImageOpenWaitsForActiveAndCursor();
     void viewerIgnoresSemanticPresentation();
@@ -4192,6 +4193,54 @@ void F4GalleryBridgeTests::vfsResourceDescriptorsRemainOpaqueAndPreviewable()
     QVERIFY(bridge.viewerVisible());
 }
 
+void F4GalleryBridgeTests::fileFieldUpdatesAreBatchedAndDeduplicated()
+{
+    QQmlEngine engine;
+    F4GalleryBridge bridge(&engine);
+    QVERIFY(bridge.available());
+    bridge.synchronizeScene(testScene());
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(
+        bridge.sessionForSide(0));
+    QVERIFY(session);
+    QSignalSpy actions(&bridge, &F4GalleryBridge::uiActionRequested);
+
+    const QVariantMap first{
+        {QStringLiteral("sourceKey"), QStringLiteral("file:/tmp/one.jpg")},
+        {QStringLiteral("sourceVersion"), QStringLiteral("mtime:1:size:10")},
+        {QStringLiteral("generation"), qulonglong(7)},
+        {QStringLiteral("complete"), true},
+        {QStringLiteral("values"), QVariantMap{
+             {QStringLiteral("exif.iso"), 200},
+         }},
+    };
+    const QVariantMap second{
+        {QStringLiteral("sourceKey"), QStringLiteral("file:/tmp/two.png")},
+        {QStringLiteral("sourceVersion"), QStringLiteral("mtime:2:size:20")},
+        {QStringLiteral("generation"), qulonglong(7)},
+        {QStringLiteral("complete"), true},
+        {QStringLiteral("values"), QVariantMap{
+             {QStringLiteral("exif.iso"), 400},
+         }},
+    };
+    emit session->fileFieldsRead(first);
+    emit session->fileFieldsReadBatch(QVariantList{second, first});
+    emit session->fileFieldsRead(second);
+
+    QTRY_COMPARE(actions.size(), 1);
+    const QVariantMap action = actions.constFirst().constFirst().toMap();
+    QCOMPARE(action.value(QStringLiteral("action")).toString(),
+             QStringLiteral("panel.fileFields.updateBatch"));
+    QCOMPARE(action.value(QStringLiteral("side")).toInt(), 0);
+    QCOMPARE(action.value(QStringLiteral("panelId")).toString(),
+             QStringLiteral("panel-left-a"));
+    const QVariantList updates = action.value(QStringLiteral("updates")).toList();
+    QCOMPARE(updates.size(), 2);
+    QCOMPARE(updates.at(0).toMap().value(QStringLiteral("sourceKey")).toString(),
+             QStringLiteral("file:/tmp/one.jpg"));
+    QCOMPARE(updates.at(1).toMap().value(QStringLiteral("sourceKey")).toString(),
+             QStringLiteral("file:/tmp/two.png"));
+}
+
 void F4GalleryBridgeTests::staleCursorIntentRetriesAgainstNewCatalog()
 {
     QQmlEngine engine;
@@ -4999,6 +5048,7 @@ void F4GalleryBridgeTests::galleryLayoutDensityAndSortActionsAreValidated()
     bridge.requestGalleryLayout(0, QStringLiteral("invalid"), 2);
     bridge.requestGalleryDensity(0, QStringLiteral("invalid"), 100);
     bridge.requestSort(0, QStringLiteral("invalid"));
+    bridge.requestGalleryColumnWidths(0, QVariantList{});
     QCOMPARE(actions.size(), 0);
 
     bridge.requestGalleryLayout(1, QStringLiteral(" Columns "), 3);
@@ -5010,6 +5060,21 @@ void F4GalleryBridgeTests::galleryLayoutDensityAndSortActionsAreValidated()
     QCOMPARE(action.value(QStringLiteral("layoutMode")).toString(),
              QStringLiteral("columns"));
     QCOMPARE(action.value(QStringLiteral("columnCount")).toInt(), 3);
+
+    const QVariantList resizedColumns{
+        QVariantMap{{QStringLiteral("id"), QStringLiteral("name")},
+                    {QStringLiteral("width"), 44}},
+        QVariantMap{{QStringLiteral("id"), QStringLiteral("exif.iso")},
+                    {QStringLiteral("width"), 18}},
+    };
+    bridge.requestGalleryColumnWidths(1, resizedColumns);
+    QCOMPARE(actions.size(), 1);
+    action = actions.takeFirst().at(0).toMap();
+    QCOMPARE(action.value(QStringLiteral("action")).toString(),
+             QStringLiteral("panel.setGalleryColumnWidths"));
+    QCOMPARE(action.value(QStringLiteral("side")).toInt(), 1);
+    QCOMPARE(action.value(QStringLiteral("columns")).toList(),
+             resizedColumns);
 
     for (const QString &mode : {QStringLiteral("columns"),
                                 QStringLiteral("details")}) {

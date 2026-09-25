@@ -18,6 +18,7 @@ struct PanelIntent
         SetSelection,
         SetGalleryLayout,
         SetGalleryDensity,
+        SetGalleryColumnWidths,
         Sort,
         SortMenu,
     };
@@ -40,6 +41,7 @@ struct PanelIntent
     QString layoutMode;
     int columnCount = 0;
     int density = 0;
+    QVariantList columns;
 };
 
 Q_DECLARE_METATYPE(PanelIntent)

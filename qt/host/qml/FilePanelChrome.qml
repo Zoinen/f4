@@ -362,6 +362,10 @@ Rectangle {
                 delegate: Rectangle {
                     id: sortChoice
                     required property var modelData
+                    readonly property string choiceMode:
+                        String(modelData.mode || "")
+                    readonly property bool isHeading:
+                        modelData.heading === true
                     objectName: "panelSortChoice-"
                                 + hostWindow.cleanText(modelData.mode)
                                 + "-" + Number(panel.side || 0)
@@ -369,20 +373,71 @@ Rectangle {
                     // Content determines the menu's width (see
                     // sortMenu.contentWidth below); this row must
                     // never be narrower than what it needs.
-                    implicitWidth: 10 + sortChoiceLeading.implicitWidth
-                                   + 24 + sortChoiceShortcut.implicitWidth
-                                   + 10
-                    height: 31
+                    implicitWidth: isHeading
+                        ? 20 + sortHeadingLabel.implicitWidth
+                        : 10 + sortChoiceLeading.implicitWidth
+                          + 24 + sortChoiceShortcut.implicitWidth + 10
+                    height: isHeading ? 25 : 31
                     radius: 5
-                    readonly property bool choiceActive:
-                        modelData.mode === "groups" ? panel.useSortGroups === true
-                        : panelView.sortModeName()
-                        === hostWindow.cleanText(modelData.mode)
-                    color: sortChoicePointer.containsMouse
+                    readonly property bool choiceActive: {
+                        if (isHeading)
+                            return false
+                        if (choiceMode === "groups")
+                            return panel.useSortGroups === true
+                        if (choiceMode === "group-none")
+                            return panel.groupBy !== "FileField"
+                        if (choiceMode === "group-reverse")
+                            return panel.groupReverse === true
+                        if (choiceMode.startsWith("group:"))
+                            return panel.groupBy === "FileField"
+                                    && panel.groupFileField
+                                       === choiceMode.slice("group:".length)
+                        if (choiceMode === "file-field-columns"
+                                || choiceMode === "file-field-filter")
+                            return false
+                        return panelView.sortModeName()
+                                === hostWindow.cleanText(choiceMode)
+                    }
+                    color: !isHeading && sortChoicePointer.containsMouse
                            ? hostWindow.controlHoverBg : "transparent"
+
+                    Rectangle {
+                        visible: sortChoice.isHeading && sortChoice.index > 0
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        height: 1
+                        color: hostWindow.separatorColor
+                    }
+
+                    Text {
+                        id: sortHeadingLabel
+                        objectName: "panelSortHeading-"
+                                    + hostWindow.cleanText(modelData.label)
+                                    + "-" + Number(panel.side || 0)
+                        visible: sortChoice.isHeading
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
+                        anchors.leftMargin: 8
+                        anchors.rightMargin: 8
+                        height: 20
+                        text: hostWindow.cleanText(modelData.label)
+                        color: hostWindow.mutedText
+                        font.pixelSize: 10
+                        font.weight: Font.DemiBold
+                        verticalAlignment: Text.AlignVCenter
+                        transform: Translate {
+                            x: hostWindow.dialogPixelOffsetX(
+                                   sortHeadingLabel, hostWindow.contentItem)
+                            y: hostWindow.dialogPixelOffsetY(
+                                   sortHeadingLabel, hostWindow.contentItem)
+                        }
+                    }
 
                     Row {
                         id: sortChoiceLeading
+                        visible: !sortChoice.isHeading
                         anchors.left: parent.left
                         anchors.leftMargin: 10
                         anchors.verticalCenter: parent.verticalCenter
@@ -458,6 +513,7 @@ Rectangle {
                             x: hostWindow.dialogPixelOffsetX(sortChoiceShortcut, hostWindow.contentItem)
                             y: hostWindow.dialogPixelOffsetY(sortChoiceShortcut, hostWindow.contentItem)
                         }
+                        visible: !sortChoice.isHeading
                         anchors.right: parent.right
                         anchors.rightMargin: 10
                         anchors.verticalCenter: parent.verticalCenter
@@ -470,6 +526,7 @@ Rectangle {
                     MouseArea {
                         id: sortChoicePointer
                         anchors.fill: parent
+                        enabled: !sortChoice.isHeading
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: {

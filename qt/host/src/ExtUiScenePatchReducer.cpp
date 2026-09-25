@@ -320,6 +320,9 @@ bool validPanelState(const QVariantMap &state, const QVariantMap &current,
         QStringLiteral("sourceKind"),
         QStringLiteral("cursorEntryId"),
         QStringLiteral("sortModeName"),
+        QStringLiteral("groupBy"),
+        QStringLiteral("fileFieldSort"),
+        QStringLiteral("groupFileField"),
         QStringLiteral("fastFindText"),
         QStringLiteral("symlinkTarget"),
         QStringLiteral("fastFindMatchColor"),
@@ -330,6 +333,8 @@ bool validPanelState(const QVariantMap &state, const QVariantMap &current,
         QStringLiteral("metadataDeferred"),
         QStringLiteral("catalogRowsDeferred"),
         QStringLiteral("sortReverse"),
+        QStringLiteral("groupReverse"),
+        QStringLiteral("fileFieldFilterAny"),
         QStringLiteral("useSortGroups"), QStringLiteral("freeSpaceKnown"),
         QStringLiteral("separateFileExtensions"),
         QStringLiteral("loading"),
@@ -348,6 +353,7 @@ bool validPanelState(const QVariantMap &state, const QVariantMap &current,
         QStringLiteral("totalFiles"), QStringLiteral("totalDirectories"), QStringLiteral("diskTotalSpace"),
         QStringLiteral("selectedSize"), QStringLiteral("totalSize"), QStringLiteral("freeSpace"),
         QStringLiteral("totalCount"),
+        QStringLiteral("fileFieldPendingCount"),
     };
     for (auto it = state.cbegin(); it != state.cend(); ++it) {
         const QString &key = it.key();
@@ -382,6 +388,10 @@ bool validPanelState(const QVariantMap &state, const QVariantMap &current,
                     && densityOK && density > 0.0 && density <= 500.0;
             }
         } else if (key == QStringLiteral("galleryColumns")) {
+            valid = it.value().metaType().id() == QMetaType::QVariantList;
+        } else if (key == QStringLiteral("groups")
+                   || key == QStringLiteral("fileFieldDescriptors")
+                   || key == QStringLiteral("fileFieldFilters")) {
             valid = it.value().metaType().id() == QMetaType::QVariantList;
         } else if (key == QStringLiteral("fastFindMatches")) {
             valid = it.value().metaType().id() == QMetaType::QVariantMap;

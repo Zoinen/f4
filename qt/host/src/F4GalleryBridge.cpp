@@ -231,6 +231,7 @@ F4GalleryBridge::F4GalleryBridge(QQmlEngine *engine, QObject *parent,
         0, runtime->createExternalSession(QStringLiteral("f4-left"), this));
     m_panelSessions.setSession(
         1, runtime->createExternalSession(QStringLiteral("f4-right"), this));
+    connectSessionFileFieldUpdates();
     configureNavigationBenchmark();
 }
 

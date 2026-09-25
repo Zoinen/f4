@@ -35,6 +35,7 @@ const (
 	extUiMaxDimension                   = 1<<15 - 1
 	extUiPanelCatalogMetadataCapability = "panelCatalogMetadataV1"
 	extUiPanelCatalogRowsCapability     = "panelCatalogRowsV1"
+	extUiPanelFileFieldsCapability      = "panelFileFieldsV1"
 )
 
 // Deferred panel metadata is a required extension of the lockstep protocol. Keep the
@@ -4282,6 +4283,7 @@ type ExtUiHost struct {
 	rows                   int
 	panelCatalogMetadataV1 bool
 	panelCatalogRowsV1     bool
+	panelFileFieldsV1      bool
 	platformServicesV1     bool
 	platform               *platformIPCClient
 	renderer               *ExtUiRenderer
@@ -4363,6 +4365,8 @@ func RunExternalUI(cols, rows int, execPath string, args []string) error {
 		hello, extUiPanelCatalogMetadataCapability)
 	panelCatalogRowsV1 := extUiHelloCapability(
 		hello, extUiPanelCatalogRowsCapability)
+	panelFileFieldsV1 := extUiHelloCapability(
+		hello, extUiPanelFileFieldsCapability)
 	platformServicesV1 := runtime.GOOS == "darwin" && extUiHelloCapability(
 		hello, extUiPlatformServicesCapability)
 	previousPanelCatalogMetadata := semantic.SetPanelCatalogMetadataEnabled(
@@ -4423,6 +4427,7 @@ func RunExternalUI(cols, rows int, execPath string, args []string) error {
 		conn: conn, send: sender, cols: cols, rows: rows,
 		panelCatalogMetadataV1: panelCatalogMetadataV1,
 		panelCatalogRowsV1:     panelCatalogRowsV1,
+		panelFileFieldsV1:      panelFileFieldsV1,
 		platformServicesV1:     platformServicesV1,
 	}
 	host.platform = newPlatformIPCClient(sender, platformServicesV1)
@@ -4596,6 +4601,10 @@ func (h *ExtUiHost) handleMessageWithBenchmark(msg map[string]any, timing *navtr
 		action := msg
 		if nested, ok := msg["action"].(map[string]any); ok {
 			action = nested
+		}
+		if semantic.String(action["action"]) == "panel.fileFields.update" &&
+			!h.panelFileFieldsV1 {
+			break
 		}
 		benchmark := navtrace.NavigationBenchmarkTraceForAction(msg, action, timing)
 		queuedNs := int64(0)

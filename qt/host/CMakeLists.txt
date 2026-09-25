@@ -268,6 +268,7 @@ set(F4_QT_HOST_SOURCES
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4DirectoryPreviewProvider.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridge.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridge.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgeFileFields.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgeDragDrop.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgeSceneSync.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgeCatalogAppend.cpp"
@@ -1248,6 +1249,18 @@ if(BUILD_TESTING)
   set_tests_properties(F4QuickViewDriveMenuIconsTest PROPERTIES
     ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
   )
+  add_test(NAME F4RendererFileFieldChoicePixelGridTest
+    COMMAND F4QuickViewSurfaceTests
+      rendererFileFieldChoiceLeavesStayOnPhysicalPixelGridAt175Percent)
+  set_tests_properties(F4RendererFileFieldChoicePixelGridTest PROPERTIES
+    ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
+  )
+  add_test(NAME F4FileFieldEditorsPixelGridTest
+    COMMAND F4QuickViewSurfaceTests
+      fileFieldEditorsStayOnPhysicalPixelGridAt175Percent)
+  set_tests_properties(F4FileFieldEditorsPixelGridTest PROPERTIES
+    ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
+  )
   add_test(NAME F4QuickViewNestedMenuPixelGridTest
     COMMAND F4QuickViewSurfaceTests
       nestedMenuAnchorsHeadersTagsAndChevronsOnPhysicalPixels)
@@ -1500,6 +1513,7 @@ if(BUILD_TESTING)
     src/F4GalleryBridge.h
     src/F4GalleryBridgeDragDrop.cpp
     src/F4GalleryBridge.cpp
+    src/F4GalleryBridgeFileFields.cpp
     src/F4GalleryBridgeSceneSync.cpp
     src/F4GalleryBridgeCatalogAppend.cpp
     src/F4GalleryBridgePanelState.cpp
@@ -1578,6 +1592,7 @@ if(BUILD_TESTING)
     src/F4GalleryBridge.h
     src/F4GalleryBridgeDragDrop.cpp
     src/F4GalleryBridge.cpp
+    src/F4GalleryBridgeFileFields.cpp
     src/F4GalleryBridgeSceneSync.cpp
     src/F4GalleryBridgeCatalogAppend.cpp
     src/F4GalleryBridgePanelState.cpp

@@ -10,6 +10,7 @@ private slots:
     void pathBarVisibilitySurvivesStatePatch();
     void dropCapabilitySurvivesStatePatch();
     void panelStatusSurvivesStatePatch();
+    void fileFieldStateSurvivesStatePatch();
     void presentationProjectionDropsNativeCatalogRows();
     void snapshotMutatesOnlyItsOwnedStream();
     void snapshotPayloadTypeMustMatchStream();
@@ -76,6 +77,45 @@ void ExtUiSceneReducerTests::panelStatusSurvivesStatePatch()
         ExtUiSceneReducer::makePresentationScene(scene),1,&result,&error),qPrintable(error));
     const auto updated = result.scene.value("shell").toMap().value("panels").toList().first().toMap();
     for (auto it = state.begin(); it != state.end(); ++it) QCOMPARE(updated.value(it.key()),it.value());
+}
+
+void ExtUiSceneReducerTests::fileFieldStateSurvivesStatePatch()
+{
+    const QVariantMap panel{{"id", "left"}, {"side", 0},
+        {"catalogRevision", 10}};
+    const QVariantMap scene{{"schema", "app"}, {"version", 4},
+        {"shell", QVariantMap{{"panels", QVariantList{panel}}}}};
+    const QVariantList groups{QVariantMap{
+        {"key", "exif.iso:800"}, {"title", "ISO 800"},
+        {"startIndex", 0}, {"count", 2}}};
+    const QVariantMap state{
+        {"id", "left"}, {"side", 0}, {"kind", "filePanel"},
+        {"catalogRevision", 10}, {"metadataDeferred", true},
+        {"metadataRevision", 1}, {"groupBy", "FileField"},
+        {"groupReverse", true}, {"groupFileField", "exif.iso"},
+        {"groups", groups}, {"fileFieldSort", "exif.iso"},
+        {"fileFieldFilterAny", false}, {"fileFieldPendingCount", 3},
+        {"fileFieldDescriptors", QVariantList{QVariantMap{
+            {"id", "exif.iso"}, {"title", "ISO"}, {"kind", "integer"}}}},
+        {"fileFieldFilters", QVariantList{QVariantMap{
+            {"fieldId", "exif.iso"}, {"operation", "gte"},
+            {"value", "800"}}}},
+    };
+    const QVariantMap operation{{"op", "state_update"}, {"side", 0},
+        {"panelId", "left"}, {"catalogRevision", 10}, {"state", state}};
+    const QVariantMap patch{{"type", "scene_patch"}, {"schema", "app"},
+        {"version", 4}, {"baseRevision", 1}, {"revision", 2},
+        {"shell", QVariantMap{{"panels", QVariantList{operation}}}}};
+    ExtUiSceneReducer::AppliedScenePatch result;
+    QString error;
+    QVERIFY2(ExtUiSceneReducer::applyScenePatch(
+        patch, scene, ExtUiSceneReducer::makePresentationScene(scene),
+        1, &result, &error), qPrintable(error));
+    const QVariantMap updated = result.scene.value("shell").toMap()
+        .value("panels").toList().first().toMap();
+    for (auto it = state.cbegin(); it != state.cend(); ++it) {
+        QCOMPARE(updated.value(it.key()), it.value());
+    }
 }
 
 void ExtUiSceneReducerTests::presentationProjectionDropsNativeCatalogRows()

@@ -515,6 +515,7 @@ void QtShellController::onConnected()
              {QStringLiteral("panelCatalogRowsV1"), true},
              {QStringLiteral("directoryPreviewsV1"), true},
              {QStringLiteral("panelCatalogDeltaV1"), true},
+             {QStringLiteral("panelFileFieldsV1"), true},
              {QStringLiteral("documentViewportV1"), true},
 #if defined(Q_OS_MACOS)
              {QStringLiteral("macPlatformServicesV1"), true},

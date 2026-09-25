@@ -171,7 +171,7 @@ plugins/         # one package per plugin: archive, cloudfox, netfox, mediainfo,
                  # dummy_internal / dummy_rpc / dummy_lua are transport fixtures
 sdk/             # plugin API: f4plugin, f4rpc, f4settings, lua, extui
 tools/           # developer tooling, incl. the ttytest terminal harness
-docs/            # 48 subsystem documents — read the relevant one before editing
+docs/            # 49 subsystem documents — read the relevant one before editing
 packaging/       # distribution packaging
 artifacts/       # build artifacts
 .ai-factory/     # AI Factory context: config, description, rules, plans
@@ -197,7 +197,8 @@ artifacts/       # build artifacts
 | Document | Path | Description |
 | --- | --- | --- |
 | README | `README.md` | Project overview, downloads, backends, philosophy |
-| Subsystem docs | `docs/*.md` | 48 documents: VFS, PLUGINS, MACROS, KEYMAP, TERMINAL, CONPTY, WINCON, UX_GUIDELINES and others |
+| Subsystem docs | `docs/*.md` | 49 documents: VFS, PLUGINS, MACROS, KEYMAP, TERMINAL, CONPTY, WINCON, UX_GUIDELINES and others |
+| File fields | `docs/FILE_FIELDS.md` | Typed file metadata, EXIF, Qt panel behavior, cache, and incomplete reads |
 | Issue reviews | `docs/ISSUES/` | Per-issue solution reviews |
 | Spreadsheet | `docs/SPREADSHEET.md` | Spreadsheet mode specification |
 

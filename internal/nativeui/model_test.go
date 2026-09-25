@@ -8,6 +8,47 @@ import (
 	testing "testing"
 )
 
+func TestAppPanelFromLegacyPreservesFileFieldPresentation(t *testing.T) {
+	node := map[string]any{
+		"id": "panel-right", "side": 1,
+		"groupBy": "FileField", "groupReverse": true,
+		"groupFileField": "exif.camera_model",
+		"groups": []map[string]any{{
+			"key": "known:Canon EOS R5", "title": "Canon EOS R5",
+			"startIndex": 0, "count": 2,
+		}},
+		"fileFieldDescriptors": []map[string]any{{
+			"id": "exif.iso", "title": "ISO", "kind": "integer",
+			"unit": "", "format": "integer", "precision": 0,
+			"operations": []string{"eq", "gt", "has", "missing"},
+		}},
+		"fileFieldSort": "exif.iso",
+		"fileFieldFilters": []map[string]any{{
+			"fieldId": "exif.iso", "operation": "ge", "value": "800",
+		}},
+		"fileFieldFilterAny":    false,
+		"fileFieldPendingCount": 3,
+	}
+
+	got := appPanelFromLegacy(node).ToMap()
+	descriptors := semantic.AppMapSlice(got["fileFieldDescriptors"])
+	if len(descriptors) != 1 || descriptors[0]["id"] != "exif.iso" {
+		t.Fatalf("file field descriptors were lost in app scene projection: %#v", got["fileFieldDescriptors"])
+	}
+	if got["fileFieldSort"] != "exif.iso" || got["groupFileField"] != "exif.camera_model" ||
+		got["groupBy"] != "FileField" || got["groupReverse"] != true {
+		t.Fatalf("file field sort/group state was lost in app scene projection: %#v", got)
+	}
+	filters := semantic.AppMapSlice(got["fileFieldFilters"])
+	if len(filters) != 1 || filters[0]["fieldId"] != "exif.iso" || got["fileFieldPendingCount"] != 3 {
+		t.Fatalf("file field filters were lost in app scene projection: filters=%#v panel=%#v", filters, got)
+	}
+	groups := semantic.AppMapSlice(got["groups"])
+	if len(groups) != 1 || groups[0]["title"] != "Canon EOS R5" || groups[0]["count"] != 2 {
+		t.Fatalf("file field group ranges were lost in app scene projection: %#v", got["groups"])
+	}
+}
+
 func TestAppMenuFromLegacyPreservesClosedMenuBarSubmenus(t *testing.T) {
 	node := map[string]any{
 		"id": "main-menu", "active": false, "selected": 0,

@@ -27,6 +27,7 @@ import (
 	"github.com/unxed/f4/internal/navtrace"
 	"github.com/unxed/f4/internal/semantic"
 	"github.com/unxed/f4/internal/theme"
+	"github.com/unxed/f4/sdk/extui"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
@@ -38,10 +39,15 @@ import (
 // FileEntry implements vtui.TableRow for display in a table.
 type FileEntry struct {
 	vfs.VFSItem
-	Selected       bool
-	PrevSelected   bool // snapshot of Selected taken by SaveSelection; swapped in by RestoreSelection (Ctrl+M)
-	SizeCalculated bool
-	sourceOrder    uint64
+	Selected                bool
+	PrevSelected            bool // snapshot of Selected taken by SaveSelection; swapped in by RestoreSelection (Ctrl+M)
+	SizeCalculated          bool
+	sourceOrder             uint64
+	FileFields              map[string]extui.FileFieldValue
+	FileFieldsComplete      bool
+	FileFieldsSourceKey     string
+	FileFieldsSourceVersion string
+	FileFieldsGeneration    int64
 }
 
 // directoryFileEntryWriter is the one authoritative source allocation used by
@@ -692,9 +698,12 @@ type FileSystemPanel struct {
 	suppressFolderHistoryToken    uint64 // binds suppression to one specific asynchronous directory load
 	FastFindMode                  bool
 	FastFindStr                   string
-	// autoFilterOn keeps the complete directory in unfilteredEntries while
-	// Entries contains only rows matching the current quick-search filter.
+	// The complete file list stays in unfilteredEntries while either the
+	// quick-search or field filter narrows Entries.
 	autoFilterOn           bool
+	fileFieldFilterActive  bool
+	FileFieldFilters       []FileFieldFilter
+	FileFieldFilterAny     bool
 	unfilteredEntries      []*FileEntry
 	fastFindMatcherKey     string
 	fastFindMatchers       []*vtui.FuzzyMatcher
@@ -713,8 +722,13 @@ type FileSystemPanel struct {
 	showInactiveCursor                  bool
 	nameLeftPos                         int
 
-	SortMode    SortMode
-	SortReverse bool
+	SortMode              SortMode
+	SortReverse           bool
+	FileFieldSort         string
+	FileFieldGroup        string
+	FileFieldGroupReverse bool
+	FileFieldColumns      []FileFieldColumn
+	GalleryColumnWidths   map[string]int
 	// sortDirectionSetByAction distinguishes the current action-driven
 	// direction contract from legacy lightweight panels that assign the two
 	// public sort fields directly. The latter still use SortReverse=true for
@@ -769,18 +783,19 @@ type FileSystemPanel struct {
 	// Selection changes are journaled independently from the immutable file
 	// catalog. Native semantic renderers can therefore acknowledge one changed
 	// row without exporting or serializing every directory entry.
-	semanticSelectionBaseRevision int64
-	semanticSelectionChanges      map[string]semanticSelectionChange
-	semanticSelectionOverflow     bool
-	semanticSelectionNeedsSync    bool
-	semanticStaticCache           *semanticPanelStaticCache
-	semanticMetadataSnapshot      *semanticPanelMetadataSnapshot
-	semanticCatalogGeneration     uint64
-	semanticPublishedGeneration   uint64
-	semanticPagedSignature        string
-	semanticPagedResourceRevision int64
-	semanticPagedResourceIDs      map[string]struct{}
-	semanticPagedDirectoryIDs     map[string]struct{}
+	semanticSelectionBaseRevision  int64
+	semanticSelectionChanges       map[string]semanticSelectionChange
+	semanticSelectionOverflow      bool
+	semanticSelectionNeedsSync     bool
+	semanticStaticCache            *semanticPanelStaticCache
+	semanticMetadataSnapshot       *semanticPanelMetadataSnapshot
+	semanticCatalogGeneration      uint64
+	semanticPublishedGeneration    uint64
+	semanticPagedSignature         string
+	semanticPagedMetadataSignature string
+	semanticPagedResourceRevision  int64
+	semanticPagedResourceIDs       map[string]struct{}
+	semanticPagedDirectoryIDs      map[string]struct{}
 }
 
 var DisableLoadingAnimationInTests = true
@@ -1103,21 +1118,20 @@ func (fp *FileSystemPanel) SetFocus(f bool) {
 }
 func (fp *FileSystemPanel) SetSortMode(mode SortMode) {
 	fp.sortDirectionSetByAction = true
-	if fp.SortMode == mode {
+	if fp.FileFieldSort != "" {
+		fp.FileFieldSort = ""
+		fp.SortMode = mode
+		fp.SortReverse = false
+	} else if fp.SortMode == mode {
 		fp.SortReverse = !fp.SortReverse
 	} else {
 		fp.SortMode = mode
 		// Every mode's base comparator is its desired first-use direction:
-		// name/extension ascend, while time/size descend. Repeated activation
-		// below toggles that direction uniformly for hotkeys, menus and headers.
+		// name/extension ascend, while time/size descend.
 		fp.SortReverse = false
 	}
 	fp.updateSortColumnTitles()
-	if fp.GroupBy != GroupNone {
-		fp.SetGrouping(fp.GroupBy, fp.GroupReverse, fp.GroupFoldersSeparately)
-		return
-	}
-	fp.ReadDirectory()
+	fp.sortEntriesKeepingCursor()
 }
 
 // SetUseSortGroups switches the sort-group clustering of this  Like a
@@ -1128,7 +1142,7 @@ func (fp *FileSystemPanel) SetUseSortGroups(use bool) {
 		return
 	}
 	fp.UseSortGroups = use
-	fp.ReadDirectory()
+	fp.sortEntriesKeepingCursor()
 }
 
 func (fp *FileSystemPanel) ToggleSortGroups() {
@@ -1146,8 +1160,21 @@ func (fp *FileSystemPanel) sortGroupsActive() bool {
 
 func (fp *FileSystemPanel) SortEntries() { fp.sortEntriesAt(time.Now()) }
 
+func (fp *FileSystemPanel) sortEntriesKeepingCursor() {
+	focused := fp.GetRawSelectedName()
+	oldDisplay := fp.displayOfEntry(fp.GetCursorIndex())
+	topOffset := oldDisplay - fp.Table.TopPos
+	fp.SortEntries()
+	if focused != "" && fp.isEntryVisible(focused) {
+		fp.focusEntryByName(focused)
+	}
+	fp.Table.TopPos = max(0, fp.displayOfEntry(fp.GetCursorIndex())-topOffset)
+	fp.Refresh()
+}
+
 func (fp *FileSystemPanel) sortEntriesAt(now time.Time) {
 	entries := fp.AllEntries()
+	fp.reconcileStaleFileFields(entries)
 	for _, entry := range entries {
 		if entry.sourceOrder == 0 {
 			fp.nextSourceOrder++
@@ -1156,7 +1183,8 @@ func (fp *FileSystemPanel) sortEntriesAt(now time.Time) {
 	}
 	fp.prepareGrouping(entries, now)
 	grouped := fp.sortGroupsActive()
-	if (fp.SortMode == SortUnsorted && !grouped && fp.GroupBy == GroupNone) || len(entries) <= 1 {
+	if (fp.SortMode == SortUnsorted && fp.FileFieldSort == "" &&
+		!grouped && fp.GroupBy == GroupNone) || len(entries) <= 1 {
 		fp.refilterEntries()
 		fp.rebuildDisplayRows()
 		fp.markSemanticCatalogMutation()
@@ -1186,7 +1214,8 @@ func (fp *FileSystemPanel) sortEntriesAt(now time.Time) {
 				return n < 0
 			}
 		}
-		if (fp.SortMode != SortUnsorted || fp.GroupBy != GroupNone) && ei.IsDir != ej.IsDir {
+		if (fp.SortMode != SortUnsorted || fp.FileFieldSort != "" ||
+			fp.GroupBy != GroupNone) && ei.IsDir != ej.IsDir {
 			return ei.IsDir
 		}
 		if grouped {
@@ -1197,8 +1226,28 @@ func (fp *FileSystemPanel) sortEntriesAt(now time.Time) {
 				return fp.GroupBy != GroupNone && ei.sourceOrder < ej.sourceOrder
 			}
 		}
-		if fp.SortMode == SortUnsorted {
+		if fp.SortMode == SortUnsorted && fp.FileFieldSort == "" {
 			return ei.sourceOrder < ej.sourceOrder
+		}
+		if fp.FileFieldSort != "" {
+			if descriptor, ok := fileFieldDescriptor(fp.FileFieldSort); ok {
+				left := fieldValueForSort(ei, descriptor)
+				right := fieldValueForSort(ej, descriptor)
+				leftState, rightState := fieldValueStateOrder(left), fieldValueStateOrder(right)
+				if leftState != rightState {
+					return leftState < rightState
+				}
+				if left.State == extui.FileFieldKnown && right.State == extui.FileFieldKnown {
+					cmp := compareFileFieldValues(left, right, descriptor)
+					if fp.SortReverse {
+						cmp = -cmp
+					}
+					if cmp != 0 {
+						return cmp < 0
+					}
+				}
+			}
+			return compareName(ei.Name, ej.Name) < 0
 		}
 		cmp := 0
 		legacyDirection := !fp.sortDirectionSetByAction && (fp.SortMode == SortTime || fp.SortMode == SortSize)
@@ -2479,9 +2528,16 @@ func CloneGalleryDensities(source map[GalleryLayoutMode]int) map[GalleryLayoutMo
 }
 
 type PanelGallerySessionState struct {
-	LayoutMode  GalleryLayoutMode
-	ColumnCount int
-	Densities   map[GalleryLayoutMode]int
+	LayoutMode            GalleryLayoutMode
+	ColumnCount           int
+	Densities             map[GalleryLayoutMode]int
+	FileFieldColumns      []FileFieldColumn
+	GalleryColumnWidths   map[string]int
+	FileFieldFilters      []FileFieldFilter
+	FileFieldFilterAny    bool
+	FileFieldSort         string
+	FileFieldGroup        string
+	FileFieldGroupReverse bool
 }
 
 func DefaultPanelGallerySessionState() PanelGallerySessionState {
@@ -2497,15 +2553,49 @@ func ClonePanelGallerySessionState(state PanelGallerySessionState) PanelGalleryS
 	if !ok {
 		mode = GalleryLayoutMasonry
 	}
-	columns := state.ColumnCount
-	if columns < MinGalleryColumnCount || columns > MaxGalleryColumnCount {
-		columns = DefaultGalleryColumnCount
+	galleryColumns := state.ColumnCount
+	if galleryColumns < MinGalleryColumnCount || galleryColumns > MaxGalleryColumnCount {
+		galleryColumns = DefaultGalleryColumnCount
 	}
 	densities := CloneGalleryDensities(state.Densities)
+	fieldColumns := make([]FileFieldColumn, 0, len(state.FileFieldColumns))
+	seenColumns := make(map[string]bool, len(state.FileFieldColumns))
+	for _, column := range state.FileFieldColumns {
+		if _, ok := fileFieldDescriptor(column.FieldID); !ok ||
+			seenColumns[column.FieldID] || column.Width < 0 ||
+			column.Width > maxGalleryColumnWidth {
+			continue
+		}
+		seenColumns[column.FieldID] = true
+		if column.Width == 0 {
+			column.Width = 12
+		}
+		fieldColumns = append(fieldColumns, column)
+	}
+	columnWidths := CloneGalleryColumnWidths(state.GalleryColumnWidths)
+	filters := make([]FileFieldFilter, 0, len(state.FileFieldFilters))
+	for _, filter := range state.FileFieldFilters {
+		if validFileFieldFilter(filter) {
+			filters = append(filters, filter)
+		}
+	}
+	if _, ok := fileFieldDescriptor(state.FileFieldSort); !ok {
+		state.FileFieldSort = ""
+	}
+	if _, ok := fileFieldDescriptor(state.FileFieldGroup); !ok {
+		state.FileFieldGroup = ""
+	}
 	return PanelGallerySessionState{
-		LayoutMode:  mode,
-		ColumnCount: columns,
-		Densities:   densities,
+		LayoutMode:            mode,
+		ColumnCount:           galleryColumns,
+		Densities:             densities,
+		FileFieldColumns:      fieldColumns,
+		GalleryColumnWidths:   columnWidths,
+		FileFieldFilters:      filters,
+		FileFieldFilterAny:    state.FileFieldFilterAny && len(filters) > 0,
+		FileFieldSort:         state.FileFieldSort,
+		FileFieldGroup:        state.FileFieldGroup,
+		FileFieldGroupReverse: state.FileFieldGroupReverse,
 	}
 }
 

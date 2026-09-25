@@ -115,6 +115,12 @@ func init() {
 	}
 
 	for _, spec := range panel.GroupModes {
+		// EXIF values are produced by the Qt thumbnail pipeline and are not
+		// available to the terminal panel. Keep this mode in the shared model
+		// schema, but expose it only through the Qt field-group editor.
+		if spec.Mode == panel.GroupFileField {
+			continue
+		}
 		registerAction(action.Action{Name: "Panel.GroupBy" + spec.ID,
 			Area:        "Shell",
 			Label:       "Group by: " + spec.Label,

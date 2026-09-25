@@ -9,6 +9,7 @@
 
 #include <QCoreApplication>
 #include <QColor>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
@@ -22,6 +23,7 @@
 #include <QFontMetricsF>
 #include <QGuiApplication>
 #include <QImage>
+#include <QLineF>
 #include <QMetaProperty>
 #include <QPainter>
 #include <QPointF>
@@ -782,6 +784,8 @@ private slots:
     void panelStatusFitsLongestRowWithoutWrapping();
     void liveSelectionStatusUsesCompactPatches();
     void sortGroupLeavesStayOnPhysicalPixelGrid();
+    void rendererFileFieldChoiceLeavesStayOnPhysicalPixelGridAt175Percent();
+    void fileFieldEditorsStayOnPhysicalPixelGridAt175Percent();
     void fastFindOverlayIsIndependentFromPanelFooter();
     void fastFindOverlayAvoidsStatusAndStaysPixelAligned();
     void galleryPanelColorsAreGroupedAndRemainLive();
@@ -3425,7 +3429,7 @@ void F4QuickViewSurfaceTests::rendererChoicesUseProductOrderAndShortcuts()
     QVERIFY(panel);
 
     const QVariantList choices = panel->property("rendererChoices").toList();
-    QCOMPARE(choices.size(), 8);
+    QCOMPARE(choices.size(), 10);
     const QList<QPair<QString, QString>> expected{
         {QStringLiteral("Columns · 2"), QStringLiteral("Ctrl+1")},
         {QStringLiteral("Columns · 3"), QStringLiteral("Ctrl+2")},
@@ -3447,6 +3451,237 @@ void F4QuickViewSurfaceTests::rendererChoicesUseProductOrderAndShortcuts()
              QStringLiteral("Wide panel"));
     QCOMPARE(wide.value(QStringLiteral("shortcut")).toString(),
              QStringLiteral("Ctrl+4"));
+    QVERIFY(choices.at(8).toMap().value(QStringLiteral("heading")).toBool());
+    const QVariantMap fileFieldColumns = choices.at(9).toMap();
+    QCOMPARE(fileFieldColumns.value(QStringLiteral("label")).toString(),
+             QStringLiteral("Columns…"));
+    QCOMPARE(fileFieldColumns.value(QStringLiteral("mode")).toString(),
+             QStringLiteral("file-field-columns"));
+}
+
+QString pixelCapturePath(QTemporaryDir *temporary, const QString &fileName)
+{
+    const QString requestedDirectory = qEnvironmentVariable(
+        "F4_QT_PIXEL_CAPTURE_DIR").trimmed();
+    if (requestedDirectory.isEmpty())
+        return temporary->filePath(fileName);
+    QDir().mkpath(requestedDirectory);
+    return QDir(requestedDirectory).filePath(fileName);
+}
+
+void F4QuickViewSurfaceTests::rendererFileFieldChoiceLeavesStayOnPhysicalPixelGridAt175Percent()
+{
+    QuickViewFixture fixture(shellScene(), true);
+    QVERIFY(fixture.window);
+    if (qAbs(fixture.window->devicePixelRatio() - 1.75) >= 0.001)
+        QSKIP("Run with QT_SCALE_FACTOR=1.75 for the renderer menu pixel-grid gate");
+
+    QObject *const menu = fixture.window->findChild<QObject *>(
+        QStringLiteral("panelRendererMenu-0"));
+    QVERIFY(menu);
+    QVERIFY(QMetaObject::invokeMethod(menu, "open"));
+    QQuickItem *fileFieldChoice = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        (fileFieldChoice = visualItemWithObjectNamePrefix(
+             fixture.window->contentItem(),
+             QStringLiteral("panelRendererChoiceLabel-file-field-columns-0")))
+            && fileFieldChoice->isVisible(), 3000);
+    QTest::qWait(40);
+    QCOMPARE(fileFieldChoice->property("text").toString(),
+             QStringLiteral("Columns…"));
+
+    auto verifyLeaf = [&](QQuickItem *leaf) {
+        const QPointF origin = leaf->mapToItem(
+            fixture.window->contentItem(), QPointF());
+        const QPointF physical = origin * 1.75;
+        const QString diagnostic = QStringLiteral("%1 origin=(%2,%3) size=(%4,%5)")
+            .arg(leaf->objectName()).arg(physical.x()).arg(physical.y())
+            .arg(leaf->width() * 1.75).arg(leaf->height() * 1.75);
+        QVERIFY2(qAbs(physical.x() - qRound64(physical.x())) < .001
+                     && qAbs(physical.y() - qRound64(physical.y())) < .001,
+                 qPrintable(diagnostic));
+        QVERIFY2(qAbs(leaf->width() * 1.75
+                      - qRound64(leaf->width() * 1.75)) < .001
+                     && qAbs(leaf->height() * 1.75
+                             - qRound64(leaf->height() * 1.75)) < .001,
+                 qPrintable(diagnostic));
+        QCOMPARE(leaf->mapToItem(fixture.window->contentItem(), QPointF(1, 0))
+                     - origin,
+                 QPointF(1, 0));
+        QCOMPARE(leaf->mapToItem(fixture.window->contentItem(), QPointF(0, 1))
+                     - origin,
+                 QPointF(0, 1));
+    };
+
+    int textLeaves = 0;
+    int imageLeaves = 0;
+    QList<QQuickItem *> pending{fixture.window->contentItem()};
+    while (!pending.isEmpty()) {
+        QQuickItem *const item = pending.takeLast();
+        pending.append(item->childItems());
+        if (!item->isVisible())
+            continue;
+        const QString name = item->objectName();
+        const bool textLeaf = name.startsWith(QStringLiteral("panelRendererHeading-"))
+            || name.startsWith(QStringLiteral("panelRendererChoiceLabel-"))
+            || name.startsWith(QStringLiteral("panelRendererChoiceShortcut-"))
+            || name.startsWith(QStringLiteral("panelRendererZoomLabel-"))
+            || name.startsWith(QStringLiteral("panelRendererZoomReset-"))
+            || name.startsWith(QStringLiteral("panelRendererZoomValue-"));
+        if (textLeaf) {
+            verifyLeaf(item);
+            ++textLeaves;
+        }
+        if (name.startsWith(QStringLiteral("panelRendererChoiceIcon-"))
+            || name.startsWith(QStringLiteral("panelRendererChoiceCheck-"))) {
+            verifyLeaf(item);
+            ++imageLeaves;
+        }
+    }
+    QVERIFY(textLeaves >= 18);
+    QVERIFY(imageLeaves >= 8);
+
+    const QImage capture = fixture.window->grabWindow();
+    QVERIFY(!capture.isNull());
+    QTemporaryDir captures;
+    QVERIFY(captures.isValid());
+    QVERIFY(capture.save(pixelCapturePath(
+        &captures, QStringLiteral("renderer-file-fields-175.png"))));
+    QVERIFY(QMetaObject::invokeMethod(menu, "close"));
+}
+
+void F4QuickViewSurfaceTests::fileFieldEditorsStayOnPhysicalPixelGridAt175Percent()
+{
+    QuickViewFixture fixture(shellScene(), true);
+    QVERIFY(fixture.window);
+    if (qAbs(fixture.window->devicePixelRatio() - 1.75) >= 0.001)
+        QSKIP("Run with QT_SCALE_FACTOR=1.75 for the file-field pixel-grid gate");
+
+    QQuickItem *const panelRoot = fixture.item("filePanel-0");
+    QVERIFY(panelRoot);
+    QVariantMap state = panelRoot->property("panel").toMap();
+    state.remove("entries");
+    state.remove("highlightStyles");
+    state["kind"] = "filePanel";
+    state["side"] = 0;
+    state["metadataDeferred"] = true;
+    state["metadataRevision"] = 1;
+    const auto descriptor = [](const QString &id, const QString &title,
+                               const QString &kind, const QString &format,
+                               const QVariantList &operations) {
+        return QVariantMap{
+            {QStringLiteral("id"), id},
+            {QStringLiteral("title"), title},
+            {QStringLiteral("kind"), kind},
+            {QStringLiteral("format"), format},
+            {QStringLiteral("operations"), operations},
+        };
+    };
+    state["fileFieldDescriptors"] = QVariantList{
+        descriptor("exif.exposure_time", "Exposure", "number", "exposure",
+                   {"has", "missing", "eq", "lt", "le", "gt", "ge"}),
+        descriptor("exif.iso", "ISO", "number", "integer",
+                   {"has", "missing", "eq", "lt", "le", "gt", "ge"}),
+        descriptor("exif.f_number", "Aperture", "number", "f_number",
+                   {"has", "missing", "eq", "lt", "le", "gt", "ge"}),
+        descriptor("exif.focal_length_35mm", "Focal length", "number", "millimeters",
+                   {"has", "missing", "eq", "lt", "le", "gt", "ge"}),
+        descriptor("exif.lens_focal_range", "Lens range", "range", "millimeter_range",
+                   {"has", "missing", "eq", "contains"}),
+        descriptor("exif.camera_model", "Camera", "string", "text",
+                   {"has", "missing", "eq", "contains"}),
+        descriptor("exif.lens_model", "Lens", "string", "text",
+                   {"has", "missing", "eq", "contains"}),
+    };
+    state["galleryColumns"] = QVariantList{
+        QVariantMap{{"id", "exif.iso"}, {"width", 12}},
+    };
+    state["fileFieldFilters"] = QVariantList{
+        QVariantMap{{"fieldId", "exif.iso"}, {"operation", "eq"}, {"value", "800"}},
+    };
+    state["fileFieldPendingCount"] = 3;
+    fixture.shell.deliverCompactPresentation({
+        {"type", "scene_patch"}, {"side", 0}, {"panel", state}});
+
+    QTemporaryDir captures;
+    QVERIFY(captures.isValid());
+    auto verifyPopup = [&](const QString &popupName, int minimumTextLeaves,
+                           int minimumImageLeaves, const QString &captureName) {
+        QObject *const popup = fixture.window->findChild<QObject *>(popupName);
+        QVERIFY2(popup, qPrintable(popupName));
+        QQuickItem *const content = qobject_cast<QQuickItem *>(
+            popup->property("contentItem").value<QObject *>());
+        QVERIFY2(content, qPrintable(popupName + QStringLiteral(" content")));
+        QTRY_VERIFY_WITH_TIMEOUT(content->isVisible(), 3000);
+        QTest::qWait(40);
+
+        const qreal dpr = fixture.window->devicePixelRatio();
+        int textLeaves = 0;
+        int imageLeaves = 0;
+        QList<QQuickItem *> pending{content};
+        while (!pending.isEmpty()) {
+            QQuickItem *const item = pending.takeLast();
+            pending.append(item->childItems());
+            if (!item->isVisible())
+                continue;
+            const bool textLeaf = item->inherits("QQuickText")
+                || item->inherits("QQuickTextInput");
+            const bool imageLeaf = item->inherits("QQuickImage");
+            if (!textLeaf && !imageLeaf)
+                continue;
+
+            const QString name = item->objectName();
+            QVERIFY2(!name.isEmpty(), qPrintable(
+                popupName + QStringLiteral(" has an unnamed text/image leaf")));
+            const QPointF origin = item->mapToItem(
+                fixture.window->contentItem(), QPointF());
+            const QPointF physical = origin * dpr;
+            const QString diagnostic = QStringLiteral("%1 %2 origin=(%3,%4) size=(%5,%6)")
+                .arg(popupName, name).arg(physical.x()).arg(physical.y())
+                .arg(item->width() * dpr).arg(item->height() * dpr);
+            QVERIFY2(qAbs(physical.x() - qRound64(physical.x())) < .001
+                         && qAbs(physical.y() - qRound64(physical.y())) < .001,
+                     qPrintable(diagnostic));
+            QVERIFY2(qAbs(item->width() * dpr
+                          - qRound64(item->width() * dpr)) < .001
+                         && qAbs(item->height() * dpr
+                                 - qRound64(item->height() * dpr)) < .001,
+                     qPrintable(diagnostic));
+            QVERIFY2(QLineF(item->mapToItem(fixture.window->contentItem(),
+                                             QPointF(1, 0)) - origin,
+                            QPointF(1, 0)).length() < .001,
+                     qPrintable(diagnostic + QStringLiteral(" x transform")));
+            QVERIFY2(QLineF(item->mapToItem(fixture.window->contentItem(),
+                                             QPointF(0, 1)) - origin,
+                            QPointF(0, 1)).length() < .001,
+                     qPrintable(diagnostic + QStringLiteral(" y transform")));
+            if (textLeaf)
+                ++textLeaves;
+            if (imageLeaf)
+                ++imageLeaves;
+        }
+        QVERIFY2(textLeaves >= minimumTextLeaves, qPrintable(
+            QStringLiteral("%1 has %2 text leaves").arg(popupName).arg(textLeaves)));
+        QVERIFY2(imageLeaves >= minimumImageLeaves, qPrintable(
+            QStringLiteral("%1 has %2 image leaves").arg(popupName).arg(imageLeaves)));
+        const QImage capture = fixture.window->grabWindow();
+        QVERIFY(!capture.isNull());
+        QVERIFY(capture.save(pixelCapturePath(&captures, captureName)));
+    };
+
+    QVERIFY(QMetaObject::invokeMethod(panelRoot, "openFileFieldColumns"));
+    verifyPopup(QStringLiteral("fileFieldColumnsPopup-0"), 10, 1,
+                QStringLiteral("file-field-columns-175.png"));
+    QObject *const columnsPopup = fixture.window->findChild<QObject *>(
+        QStringLiteral("fileFieldColumnsPopup-0"));
+    QVERIFY(QMetaObject::invokeMethod(columnsPopup, "close"));
+
+    QVERIFY(QMetaObject::invokeMethod(panelRoot, "openFileFieldFilter"));
+    verifyPopup(QStringLiteral("fileFieldFilterPopup-0"), 8, 0,
+                QStringLiteral("file-field-filter-175.png"));
+    QObject *const filterPopup = fixture.window->findChild<QObject *>(
+        QStringLiteral("fileFieldFilterPopup-0"));
+    QVERIFY(QMetaObject::invokeMethod(filterPopup, "close"));
 }
 
 void F4QuickViewSurfaceTests::coverUncoverPreservesFilePanelAndRendererObjects()

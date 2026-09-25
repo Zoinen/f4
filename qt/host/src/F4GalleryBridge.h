@@ -118,6 +118,8 @@ public:
                                           int columnCount = 0);
     Q_INVOKABLE void requestGalleryDensity(int side, const QString &layoutMode,
                                            int density);
+    Q_INVOKABLE void requestGalleryColumnWidths(
+        int side, const QVariantList &columns);
     Q_INVOKABLE void requestSort(int side, const QString &sortMode,
                                  bool contextMenu = false);
     Q_INVOKABLE void recordBenchmarkStage(int side, const QString &stage,
@@ -459,6 +461,10 @@ private:
     void clearPendingViewer();
     void setViewer(int side, bool visible);
     void refreshIconAppearance();
+    void connectSessionFileFieldUpdates();
+    void queueSessionFileFieldUpdates(int side,
+                                      const QVariantList &updates);
+    void flushSessionFileFieldUpdates(int side);
     void configureNavigationBenchmark();
     void scheduleNavigationBenchmarkAdvance();
     void notifyFrameSwappedAt(qulonglong synchronizedSerial,
@@ -518,6 +524,10 @@ private:
     QVariantMap m_quickView;
     QPointer<QObject> m_runtime;
     PanelSessionRegistry m_panelSessions;
+    std::array<QList<QVariantMap>, 2> m_pendingFileFieldUpdates;
+    std::array<QSet<QString>, 2> m_pendingFileFieldUpdateKeys;
+    std::array<QString, 2> m_pendingFileFieldPanelIds;
+    std::array<bool, 2> m_fileFieldUpdateFlushScheduled = {false, false};
     std::array<DeferredCatalogFinalization, 2>
         m_deferredCatalogFinalizations;
     std::array<QVariantMap, 2> m_panelSnapshots;

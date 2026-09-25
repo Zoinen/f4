@@ -72,16 +72,11 @@ Rectangle {
         { "label": "Grid", "layoutMode": "grid", "icon": "grid-3x3", "shortcut": "Ctrl+6" },
         { "label": "Masonry", "layoutMode": "masonry", "icon": "layout-dashboard", "shortcut": "Ctrl+7" },
         { "heading": true, "label": "Layout" },
-        { "label": "Wide panel", "wideToggle": true, "icon": "panel-left", "shortcut": "Ctrl+4" }
+        { "label": "Wide panel", "wideToggle": true, "icon": "panel-left", "shortcut": "Ctrl+4" },
+        { "heading": true, "label": "File fields" },
+        { "label": "Columns…", "mode": "file-field-columns", "icon": "columns-3", "shortcut": "" }
     ]
-    readonly property var sortChoices: [
-        { "label": "Name", "mode": "name", "icon": "arrow-down-a-z", "shortcut": "Ctrl+F3" },
-        { "label": "Extension", "mode": "extension", "icon": "file-type", "shortcut": "Ctrl+F4" },
-        { "label": "Time", "mode": "time", "icon": "clock-3", "shortcut": "Ctrl+F5" },
-        { "label": "Size", "mode": "size", "icon": "arrow-down-wide-narrow", "shortcut": "Ctrl+F6" },
-        { "label": "Unsorted", "mode": "unsorted", "icon": "list", "shortcut": "Ctrl+F7" },
-        { "label": "Use sort groups", "mode": "groups", "icon": "list", "shortcut": "" }
-    ]
+    readonly property var sortChoices: fileFieldTools.sortChoices
 
     function rendererChoiceEnabled(choice) {
         if (!choice || choice.heading === true)
@@ -119,13 +114,15 @@ Rectangle {
     }
 
     function sortModeLabel() {
-        switch (sortModeName()) {
-        case "extension": return "Extension"
-        case "time": return "Time"
-        case "size": return "Size"
-        case "unsorted": return "Unsorted"
-        default: return "Name"
-        }
+        return fileFieldTools.sortModeLabel(sortModeName())
+    }
+
+    function openFileFieldColumns() {
+        fileFieldTools.openFileFieldColumns()
+    }
+
+    function openFileFieldFilter() {
+        fileFieldTools.openFileFieldFilter()
     }
 
     function sortIsAscending() {
@@ -146,6 +143,32 @@ Rectangle {
             return
         }
 
+        if (choice.mode === "group-none" || choice.mode === "group-reverse"
+                || String(choice.mode).startsWith("group:")) {
+            const currentField = String(panel.groupFileField || "")
+            const fieldId = choice.mode === "group-none" ? ""
+                    : choice.mode === "group-reverse" ? currentField
+                    : String(choice.mode).slice("group:".length)
+            hostWindow.action({
+                "action": "panel.fileFields.group",
+                "side": panel.side,
+                "fieldId": fieldId,
+                "reverse": choice.mode === "group-reverse"
+                           ? panel.groupReverse !== true
+                           : panel.groupReverse === true
+            })
+            return
+        }
+
+        if (choice.mode === "file-field-columns") {
+            fileFieldTools.openFileFieldColumns()
+            return
+        }
+        if (choice.mode === "file-field-filter") {
+            fileFieldTools.openFileFieldFilter()
+            return
+        }
+
         hostWindow.action({
             "action": "panel.sort",
             "side": panel.side,
@@ -156,6 +179,10 @@ Rectangle {
     function chooseRenderer(choice) {
         if (!rendererChoiceEnabled(choice))
             return
+        if (choice.mode === "file-field-columns") {
+            fileFieldTools.openFileFieldColumns()
+            return
+        }
         if (choice.wideToggle === true) {
             hostWindow.action({
                 "action": "panel.setWide",
@@ -287,9 +314,13 @@ Rectangle {
                 before += Math.max(1, Number(columns[i].width || 1))
             var contentWidth = Math.max(1, width
                                         - hostWindow.panelContentSpacing * 2)
-            return hostWindow.panelContentSpacing
-                    + Math.round(contentWidth * before
-                                 / totalColumnWidth)
+            const local = hostWindow.panelContentSpacing
+                    + Math.round(contentWidth * before / totalColumnWidth)
+            const scene = columnHeader.mapToItem(
+                              hostWindow.contentItem, local, 0)
+            const snapped = hostWindow.snapPx(scene.x)
+            return columnHeader.mapFromItem(
+                        hostWindow.contentItem, snapped, scene.y).x
         }
 
         function columnWidth(index) {
@@ -315,6 +346,9 @@ Rectangle {
                 Behavior on color { ColorAnimation { duration: 70 } }
 
                 Text {
+                    id: columnHeaderTitle
+                    objectName: "panelColumnHeaderText-" + index
+                                + "-" + Number(panel.side || 0)
                     anchors.fill: parent
                     anchors.leftMargin: hostWindow.panelRowInnerSpacing
                     anchors.rightMargin: hostWindow.panelRowInnerSpacing
@@ -327,6 +361,12 @@ Rectangle {
                                          ? Text.AlignRight
                                          : Text.AlignLeft
                     elide: Text.ElideRight
+                    transform: Translate {
+                        x: hostWindow.dialogPixelOffsetX(
+                               columnHeaderTitle, hostWindow.contentItem)
+                        y: hostWindow.dialogPixelOffsetY(
+                               columnHeaderTitle, hostWindow.contentItem)
+                    }
                 }
 
                 Rectangle {
@@ -653,6 +693,14 @@ Rectangle {
                 activityRevision: hostWindow.keyboardActivityRevision
             }
         }
+    }
+
+    FileFieldToolsOverlay {
+        id: fileFieldTools
+        hostWindow: panelRoot.hostWindow
+        panelItem: panelRoot
+        panelHeader: panelHeader
+        panel: panelRoot.panel
     }
 
     PanelStatusOverlay {

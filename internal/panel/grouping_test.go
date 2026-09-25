@@ -12,6 +12,7 @@ import (
 	"github.com/unxed/f4/internal/ini"
 	"github.com/unxed/f4/internal/testutil"
 	"github.com/unxed/f4/internal/theme"
+	"github.com/unxed/f4/sdk/extui"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
@@ -72,6 +73,40 @@ func TestGroupClassifiers(t *testing.T) {
 				t.Fatalf("got %s, want %s", got.id, tt.want)
 			}
 		})
+	}
+}
+
+func TestFileFieldGroupsUseExactValuesAndSeparateReadStates(t *testing.T) {
+	fp := &FileSystemPanel{GroupBy: GroupFileField, FileFieldGroup: "exif.lens_focal_range"}
+	zoom := &FileEntry{VFSItem: vfs.VFSItem{Name: "zoom.jpg"}, FileFieldsSourceKey: "source", FileFieldsSourceVersion: "v1",
+		FileFields: map[string]extui.FileFieldValue{"exif.lens_focal_range": {
+			State: extui.FileFieldKnown, Kind: extui.FileFieldRange, Min: 24, Max: 70,
+		}}}
+	sameZoom := &FileEntry{VFSItem: vfs.VFSItem{Name: "same.jpg"}, FileFieldsSourceKey: "source", FileFieldsSourceVersion: "v1",
+		FileFields: map[string]extui.FileFieldValue{"exif.lens_focal_range": {
+			State: extui.FileFieldKnown, Kind: extui.FileFieldRange, Min: 24, Max: 70,
+		}}}
+	fixed := &FileEntry{VFSItem: vfs.VFSItem{Name: "fixed.jpg"}, FileFieldsSourceKey: "source", FileFieldsSourceVersion: "v1",
+		FileFields: map[string]extui.FileFieldValue{"exif.lens_focal_range": {
+			State: extui.FileFieldKnown, Kind: extui.FileFieldRange, Min: 50, Max: 50,
+		}}}
+	missing := &FileEntry{VFSItem: vfs.VFSItem{Name: "missing.jpg"}, FileFieldsSourceKey: "source", FileFieldsSourceVersion: "v1", FileFieldsComplete: true,
+		FileFields: map[string]extui.FileFieldValue{"exif.lens_focal_range": {
+			State: extui.FileFieldMissing, Kind: extui.FileFieldRange,
+		}}}
+	unread := &FileEntry{VFSItem: vfs.VFSItem{Name: "unread.jpg"}}
+	zoomGroup := fp.groupFor(zoom, time.Now(), [3]int64{})
+	if same := fp.groupFor(sameZoom, time.Now(), [3]int64{}); same.id != zoomGroup.id {
+		t.Fatalf("equal range values split into groups: %q != %q", zoomGroup.id, same.id)
+	}
+	if fixedGroup := fp.groupFor(fixed, time.Now(), [3]int64{}); fixedGroup.id == zoomGroup.id {
+		t.Fatal("fixed focal length was merged with zoom range")
+	}
+	if got := fp.groupFor(missing, time.Now(), [3]int64{}).id; got != "field:missing" {
+		t.Fatalf("missing group id = %q", got)
+	}
+	if got := fp.groupFor(unread, time.Now(), [3]int64{}).id; got != "field:unread" {
+		t.Fatalf("unread group id = %q", got)
 	}
 }
 

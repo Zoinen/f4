@@ -15,6 +15,9 @@ set(F4_HOST_QML_FILES
   qml/HostPixelAlignedImage.qml
   qml/HostPresentationUtilities.qml
   qml/FilePanelView.qml
+  qml/FileFieldToolsOverlay.qml
+  qml/FileFieldColumnsPopup.qml
+  qml/FileFieldFilterPopup.qml
   qml/PanelStatusOverlay.qml
   qml/PanelStatusMetric.qml
   qml/PanelPairSurface.qml

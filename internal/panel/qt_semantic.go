@@ -533,15 +533,78 @@ func (pf *PanelsFrame) HandleSemanticAction(action map[string]any) bool {
 		}
 	case "panel_sort", "panel.sort":
 		if fsp := pf.panelForSemanticAction(action); fsp != nil {
-			mode, ok := parseSortModeName(semantic.String(action["mode"]))
-			if !ok {
-				return false
-			}
 			pf.setActivePanelForAction(action)
 			pf.LastKey = 0
 			fsp.clearFastFindForSemanticPointerIntent()
-			fsp.SetSortMode(mode)
+			modeName := semantic.String(action["mode"])
+			if strings.HasPrefix(modeName, "exif.") {
+				if !fsp.SetFileFieldSort(modeName) {
+					return false
+				}
+				persistNativePanelLayoutSession(pf)
+			} else {
+				mode, ok := parseSortModeName(modeName)
+				if !ok {
+					return false
+				}
+				fsp.SetSortMode(mode)
+			}
 			pf.UpdateMenuCheckmarks()
+			return true
+		}
+	case "panel.fileFields.update":
+		if fsp := pf.panelForSemanticAction(action); fsp != nil {
+			return fsp.ApplyFileFieldsUpdate(action)
+		}
+	case "panel.fileFields.updateBatch":
+		if fsp := pf.panelForSemanticAction(action); fsp != nil {
+			updates, ok := semanticFileFieldUpdatesFromAction(
+				action["updates"], semantic.String(action["panelId"]))
+			if !ok {
+				return false
+			}
+			return fsp.ApplyFileFieldsUpdates(updates)
+		}
+	case "panel.fileFields.filter":
+		if fsp := pf.panelForSemanticAction(action); fsp != nil {
+			filters, ok := semanticFileFieldFiltersFromAction(action["filters"])
+			if !ok {
+				return false
+			}
+			if !fsp.SetFileFieldFilters(filters, semantic.Bool(action["any"])) {
+				return false
+			}
+			persistNativePanelLayoutSession(pf)
+			return true
+		}
+	case "panel.fileFields.group":
+		if fsp := pf.panelForSemanticAction(action); fsp != nil {
+			if !fsp.SetFileFieldGroup(
+				semantic.String(action["fieldId"]), semantic.Bool(action["reverse"])) {
+				return false
+			}
+			persistNativePanelLayoutSession(pf)
+			return true
+		}
+	case "panel.fileFields.columns":
+		if fsp := pf.panelForSemanticAction(action); fsp != nil {
+			columns, ok := semanticFileFieldColumnsFromAction(action["columns"])
+			if !ok {
+				return false
+			}
+			if !fsp.SetFileFieldColumns(columns) {
+				return false
+			}
+			persistNativePanelLayoutSession(pf)
+			return true
+		}
+	case "panel.setGalleryColumnWidths":
+		if fsp := pf.panelForSemanticAction(action); fsp != nil {
+			widths, ok := semanticGalleryColumnWidthsFromAction(action["columns"])
+			if !ok || !fsp.SetGalleryColumnWidths(widths) {
+				return false
+			}
+			persistNativePanelLayoutSession(pf)
 			return true
 		}
 	case "panel_sort_menu", "panel.sortMenu":
@@ -583,6 +646,85 @@ func (pf *PanelsFrame) HandleSemanticAction(action map[string]any) bool {
 		return vtui.FrameManager.EmitCommand(semantic.Int(action["command"]), action["args"])
 	}
 	return false
+}
+
+func semanticFileFieldFiltersFromAction(raw any) ([]FileFieldFilter, bool) {
+	items, ok := raw.([]any)
+	if !ok {
+		return nil, raw == nil
+	}
+	filters := make([]FileFieldFilter, 0, len(items))
+	for _, item := range items {
+		fields, ok := item.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		filters = append(filters, FileFieldFilter{
+			FieldID:   semantic.String(fields["fieldId"]),
+			Operation: semantic.String(fields["operation"]),
+			Value:     semantic.String(fields["value"]),
+		})
+	}
+	return filters, true
+}
+
+func semanticFileFieldUpdatesFromAction(raw any, panelID string) ([]map[string]any, bool) {
+	items, ok := raw.([]any)
+	if !ok {
+		return nil, false
+	}
+	updates := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		fields, ok := item.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		update := make(map[string]any, len(fields)+1)
+		for key, value := range fields {
+			update[key] = value
+		}
+		update["panelId"] = panelID
+		updates = append(updates, update)
+	}
+	return updates, true
+}
+
+func semanticFileFieldColumnsFromAction(raw any) ([]FileFieldColumn, bool) {
+	items, ok := raw.([]any)
+	if !ok {
+		return nil, raw == nil
+	}
+	columns := make([]FileFieldColumn, 0, len(items))
+	for _, item := range items {
+		fields, ok := item.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		columns = append(columns, FileFieldColumn{
+			FieldID: semantic.String(fields["fieldId"]),
+			Width:   semantic.Int(fields["width"]),
+		})
+	}
+	return columns, true
+}
+
+func semanticGalleryColumnWidthsFromAction(raw any) ([]GalleryColumnWidth, bool) {
+	items, ok := raw.([]any)
+	if !ok || len(items) == 0 {
+		return nil, false
+	}
+	widths := make([]GalleryColumnWidth, 0, len(items))
+	for _, item := range items {
+		fields, ok := item.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		widths = append(widths, GalleryColumnWidth{
+			ID:    semantic.String(fields["id"]),
+			Width: semantic.Int(fields["width"]),
+		})
+	}
+	return widths, true
 }
 
 func (pf *PanelsFrame) setActivePanelForAction(action map[string]any) {
@@ -1315,6 +1457,7 @@ func (fp *FileSystemPanel) semanticStaticPanelData(sourceKind string) *semanticP
 				SizeKnown:       entry.SizeKnown || entry.Size != 0,
 				AccessProfile:   caps.ReadAccess.String(),
 				StorageClass:    storage.String(),
+				Generation:      fp.mediaSourceEpoch,
 			}
 			if mediaBroker != nil && !entry.IsDir && entry.Name != ".." {
 				descriptor := mediaBroker.Register(plughost.MediaSourceRegistration{
@@ -1326,6 +1469,7 @@ func (fp *FileSystemPanel) semanticStaticPanelData(sourceKind string) *semanticP
 					Version: descriptor.Version, VersionStrength: descriptor.VersionStrength,
 					Size: descriptor.Size, SizeKnown: descriptor.SizeKnown,
 					AccessProfile: descriptor.AccessProfile, StorageClass: descriptor.StorageClass,
+					Generation: fp.mediaSourceEpoch,
 				}
 				resourceIDs = append(resourceIDs, descriptor.ResourceID)
 			}
@@ -1681,24 +1825,39 @@ func (fp *FileSystemPanel) semanticPagedModelSignature(sourceKind string) string
 		config.App.SeparateFileExtensions, fp.mediaSourceEpoch)
 }
 
+func (fp *FileSystemPanel) semanticPagedMetadataModelSignature(sourceKind string) string {
+	if fp == nil || fp.Vfs == nil {
+		return ""
+	}
+	return fmt.Sprintf("%s\x00%T\x00%s\x00%d",
+		sourceKind, fp.Vfs, fp.Vfs.GetPath(), fp.mediaSourceEpoch)
+}
+
 func (fp *FileSystemPanel) ensureSemanticPagedRevisions(sourceKind string) {
 	if fp == nil {
 		return
 	}
 	signature := fp.semanticPagedModelSignature(sourceKind)
-	if !fp.semanticCatalogInitialized ||
+	catalogChanged := !fp.semanticCatalogInitialized ||
 		fp.semanticPublishedGeneration != fp.semanticCatalogGeneration ||
-		fp.semanticPagedSignature != signature {
+		fp.semanticPagedSignature != signature
+	metadataSignature := fp.semanticPagedMetadataModelSignature(sourceKind)
+	metadataChanged := !fp.semanticMetadataInitialized ||
+		fp.semanticPagedMetadataSignature != metadataSignature
+	if catalogChanged {
 		fp.catalogRevision++
-		fp.metadataRevision++
 		fp.semanticCatalogInitialized = true
-		fp.semanticMetadataInitialized = true
 		fp.semanticPublishedGeneration = fp.semanticCatalogGeneration
 		fp.semanticPagedSignature = signature
 		fp.semanticStaticCache = nil
-		fp.unpublishSemanticMetadataSnapshot()
 		fp.semanticPagedResourceRevision = 0
 		fp.semanticPagedResourceIDs = nil
+	}
+	if metadataChanged {
+		fp.metadataRevision++
+		fp.semanticMetadataInitialized = true
+		fp.semanticPagedMetadataSignature = metadataSignature
+		fp.unpublishSemanticMetadataSnapshot()
 	}
 	if !fp.semanticSelectionInitialized {
 		fp.semanticSelectionInitialized = true
@@ -1895,6 +2054,7 @@ func (fp *FileSystemPanel) semanticPagedRows(offset, limit int) (
 				SizeKnown:       entry.SizeKnown || entry.Size != 0,
 				AccessProfile:   caps.ReadAccess.String(),
 				StorageClass:    storage.String(),
+				Generation:      fp.mediaSourceEpoch,
 			}
 			if mediaBroker != nil {
 				descriptor := mediaBroker.Register(plughost.MediaSourceRegistration{
@@ -1907,6 +2067,7 @@ func (fp *FileSystemPanel) semanticPagedRows(offset, limit int) (
 					Version: descriptor.Version, VersionStrength: descriptor.VersionStrength,
 					Size: descriptor.Size, SizeKnown: descriptor.SizeKnown,
 					AccessProfile: descriptor.AccessProfile, StorageClass: descriptor.StorageClass,
+					Generation: fp.mediaSourceEpoch,
 				}
 				if descriptor.ResourceID != "" {
 					fp.semanticPagedResourceIDs[descriptor.ResourceID] = struct{}{}
@@ -2093,10 +2254,11 @@ func (fp *FileSystemPanel) semanticPagedPanelModel(
 		PathIcon: semanticPanelIcon(fp.Vfs),
 		ID:       panelID, Side: side, Active: active, Path: fp.Vfs.GetPath(),
 		Title: semanticTitle, ShowFileInfo: config.App.ShowPanelFileInfo,
-		ViewMode: viewModeName(fp.EffectiveViewMode()),
-		GroupBy: GroupModes[ValidGroupMode(fp.GroupBy)].ID,
-		GroupReverse: fp.GroupReverse, GroupFoldersSeparately: fp.GroupFoldersSeparately,
-		DisplayTop: fp.Table.TopPos, Groups: semanticPanelGroups(fp.Groups()),
+		ViewMode:     viewModeName(fp.EffectiveViewMode()),
+		GroupBy:      GroupModes[ValidGroupMode(fp.GroupBy)].ID,
+		GroupReverse: fp.GroupReverse, GroupFileField: fp.FileFieldGroup,
+		GroupFoldersSeparately: fp.GroupFoldersSeparately,
+		DisplayTop:             fp.Table.TopPos, Groups: semanticPanelGroups(fp.Groups()),
 		GalleryLayoutMode:     string(galleryLayoutMode),
 		GalleryColumnCount:    fp.effectiveGalleryColumnCount(),
 		GalleryDensity:        fp.galleryDensity(galleryLayoutMode),
@@ -2113,7 +2275,12 @@ func (fp *FileSystemPanel) semanticPagedPanelModel(
 		HighlightRevision:   semanticHighlighterRevision(),
 		HighlightStyles:     highlightStyles,
 		CursorEntryID:       cursorEntryID,
-		SortMode:            sortModeName(fp.SortMode), SortReverse: fp.SortReverse,
+		SortMode:            semanticSortModeName(fp), SortReverse: fp.SortReverse,
+		FileFieldDescriptors:   extui.FileFieldDescriptors(),
+		FileFieldSort:          fp.FileFieldSort,
+		FileFieldFilters:       semanticFileFieldFilters(fp),
+		FileFieldFilterAny:     fp.FileFieldFilterAny,
+		FileFieldPendingCount:  fp.FileFieldFilterPendingCount(),
 		SeparateFileExtensions: config.App.SeparateFileExtensions,
 		Cursor:                 cursor, Loading: fp.semanticLoading(),
 		CatalogProvisional: fp.catalogProvisional,
@@ -2260,6 +2427,7 @@ func (fp *FileSystemPanel) SemanticPanelModel(ctx *vtui.SemanticContext, side in
 		ViewMode:               viewModeName(fp.EffectiveViewMode()),
 		GroupBy:                GroupModes[ValidGroupMode(fp.GroupBy)].ID,
 		GroupReverse:           fp.GroupReverse,
+		GroupFileField:         fp.FileFieldGroup,
 		GroupFoldersSeparately: fp.GroupFoldersSeparately,
 		DisplayTop:             fp.Table.TopPos,
 		Groups:                 semanticPanelGroups(fp.Groups()),
@@ -2279,8 +2447,13 @@ func (fp *FileSystemPanel) SemanticPanelModel(ctx *vtui.SemanticContext, side in
 		HighlightRevision:      highlightRevision,
 		HighlightStyles:        highlightStyles,
 		CursorEntryID:          cursorEntryID,
-		SortMode:               sortModeName(fp.SortMode),
+		SortMode:               semanticSortModeName(fp),
 		SortReverse:            fp.SortReverse,
+		FileFieldDescriptors:   extui.FileFieldDescriptors(),
+		FileFieldSort:          fp.FileFieldSort,
+		FileFieldFilters:       semanticFileFieldFilters(fp),
+		FileFieldFilterAny:     fp.FileFieldFilterAny,
+		FileFieldPendingCount:  fp.FileFieldFilterPendingCount(),
 		SeparateFileExtensions: config.App.SeparateFileExtensions,
 		Cursor:                 fp.GetCursorIndex(),
 		Loading:                fp.semanticLoading(),
@@ -2342,10 +2515,11 @@ func (fp *FileSystemPanel) semanticPagedPanelHeaderModel(
 		PathIcon: semanticPanelIcon(fp.Vfs),
 		ID:       panelID, Side: side, Active: active, Path: fp.Vfs.GetPath(),
 		Title: semanticTitle, ShowFileInfo: config.App.ShowPanelFileInfo,
-		ViewMode: viewModeName(fp.EffectiveViewMode()),
-		GroupBy: GroupModes[ValidGroupMode(fp.GroupBy)].ID,
-		GroupReverse: fp.GroupReverse, GroupFoldersSeparately: fp.GroupFoldersSeparately,
-		DisplayTop: fp.Table.TopPos, Groups: semanticPanelGroups(fp.Groups()),
+		ViewMode:     viewModeName(fp.EffectiveViewMode()),
+		GroupBy:      GroupModes[ValidGroupMode(fp.GroupBy)].ID,
+		GroupReverse: fp.GroupReverse, GroupFileField: fp.FileFieldGroup,
+		GroupFoldersSeparately: fp.GroupFoldersSeparately,
+		DisplayTop:             fp.Table.TopPos, Groups: semanticPanelGroups(fp.Groups()),
 		GalleryLayoutMode:     string(galleryLayoutMode),
 		GalleryColumnCount:    fp.effectiveGalleryColumnCount(),
 		GalleryDensity:        fp.galleryDensity(galleryLayoutMode),
@@ -2360,7 +2534,12 @@ func (fp *FileSystemPanel) semanticPagedPanelHeaderModel(
 		CatalogRowsDeferred: !denseCatalog,
 		HighlightRevision:   semanticHighlighterRevision(),
 		CursorEntryID:       cursorEntryID,
-		SortMode:            sortModeName(fp.SortMode), SortReverse: fp.SortReverse,
+		SortMode:            semanticSortModeName(fp), SortReverse: fp.SortReverse,
+		FileFieldDescriptors:   extui.FileFieldDescriptors(),
+		FileFieldSort:          fp.FileFieldSort,
+		FileFieldFilters:       semanticFileFieldFilters(fp),
+		FileFieldFilterAny:     fp.FileFieldFilterAny,
+		FileFieldPendingCount:  fp.FileFieldFilterPendingCount(),
 		SeparateFileExtensions: config.App.SeparateFileExtensions,
 		Cursor:                 cursor, Loading: fp.semanticLoading(),
 		CatalogProvisional: fp.catalogProvisional,
@@ -2435,6 +2614,7 @@ func (fp *FileSystemPanel) semanticPanelHeaderModel(ctx *vtui.SemanticContext, s
 		ViewMode:               viewModeName(fp.EffectiveViewMode()),
 		GroupBy:                GroupModes[ValidGroupMode(fp.GroupBy)].ID,
 		GroupReverse:           fp.GroupReverse,
+		GroupFileField:         fp.FileFieldGroup,
 		GroupFoldersSeparately: fp.GroupFoldersSeparately,
 		DisplayTop:             fp.Table.TopPos,
 		Groups:                 semanticPanelGroups(fp.Groups()),
@@ -2453,8 +2633,13 @@ func (fp *FileSystemPanel) semanticPanelHeaderModel(ctx *vtui.SemanticContext, s
 		MetadataRevision:       fp.metadataRevision,
 		HighlightRevision:      static.highlighterRevision,
 		CursorEntryID:          cursorEntryID,
-		SortMode:               sortModeName(fp.SortMode),
+		SortMode:               semanticSortModeName(fp),
 		SortReverse:            fp.SortReverse,
+		FileFieldDescriptors:   extui.FileFieldDescriptors(),
+		FileFieldSort:          fp.FileFieldSort,
+		FileFieldFilters:       semanticFileFieldFilters(fp),
+		FileFieldFilterAny:     fp.FileFieldFilterAny,
+		FileFieldPendingCount:  fp.FileFieldFilterPendingCount(),
 		SeparateFileExtensions: config.App.SeparateFileExtensions,
 		Cursor:                 cursor,
 		Loading:                fp.semanticLoading(),
@@ -2474,6 +2659,29 @@ func (fp *FileSystemPanel) semanticPanelHeaderModel(ctx *vtui.SemanticContext, s
 	}, true
 }
 
+func semanticSortModeName(fp *FileSystemPanel) string {
+	if fp != nil && fp.FileFieldSort != "" {
+		return fp.FileFieldSort
+	}
+	if fp == nil {
+		return sortModeName(SortName)
+	}
+	return sortModeName(fp.SortMode)
+}
+
+func semanticFileFieldFilters(fp *FileSystemPanel) []extui.FileFieldFilterModel {
+	if fp == nil || len(fp.FileFieldFilters) == 0 {
+		return nil
+	}
+	filters := make([]extui.FileFieldFilterModel, len(fp.FileFieldFilters))
+	for i, filter := range fp.FileFieldFilters {
+		filters[i] = extui.FileFieldFilterModel{
+			FieldID: filter.FieldID, Operation: filter.Operation, Value: filter.Value,
+		}
+	}
+	return filters
+}
+
 func (fp *FileSystemPanel) semanticGalleryColumns() []extui.PanelColumnModel {
 	width := fp.X2 - fp.X1 + 1
 	nameWidth := width - 14
@@ -2481,7 +2689,7 @@ func (fp *FileSystemPanel) semanticGalleryColumns() []extui.PanelColumnModel {
 		nameWidth = 5
 	}
 	title := func(base string, mode SortMode) string {
-		if fp.SortMode != mode {
+		if fp.FileFieldSort != "" || fp.SortMode != mode {
 			return base
 		}
 		if fp.SortIsAscending() {
@@ -2489,28 +2697,61 @@ func (fp *FileSystemPanel) semanticGalleryColumns() []extui.PanelColumnModel {
 		}
 		return base + " ↓"
 	}
-	return []extui.PanelColumnModel{
+	columns := []extui.PanelColumnModel{
 		{
-			ID:        "name",
-			Role:      "name",
-			Index:     0,
+			ID: "name", Role: "name", Index: 0,
 			Title:     title(i18n.Msg("Panel.Column.Name"), SortName),
-			Width:     nameWidth,
+			Width:     fp.effectiveGalleryColumnWidth("name", nameWidth),
 			Alignment: "left",
-			SortMode:  sortModeName(SortName),
-			Sortable:  true,
+			SortMode:  sortModeName(SortName), Sortable: true,
 		},
 		{
-			ID:        "size",
-			Role:      "size",
-			Index:     1,
+			ID: "size", Role: "size", Index: 1,
 			Title:     title(i18n.Msg("Panel.Column.Size"), SortSize),
-			Width:     panelSizeColumnWidth,
+			Width:     fp.effectiveGalleryColumnWidth("size", panelSizeColumnWidth),
 			Alignment: "right",
-			SortMode:  sortModeName(SortSize),
-			Sortable:  true,
+			SortMode:  sortModeName(SortSize), Sortable: true,
 		},
 	}
+	for _, configured := range fp.FileFieldColumns {
+		descriptor, ok := fileFieldDescriptor(configured.FieldID)
+		if !ok {
+			continue
+		}
+		columnTitle := descriptor.Title
+		if fp.FileFieldSort == descriptor.ID {
+			if fp.SortReverse {
+				columnTitle += " ↓"
+			} else {
+				columnTitle += " ↑"
+			}
+		}
+		columnWidth := configured.Width
+		if columnWidth < 6 {
+			columnWidth = 12
+		}
+		columnWidth = fp.effectiveGalleryColumnWidth(descriptor.ID, columnWidth)
+		alignment := "right"
+		if descriptor.Kind == extui.FileFieldText {
+			alignment = "left"
+		}
+		columns = append(columns, extui.PanelColumnModel{
+			ID: descriptor.ID, Role: descriptor.ID, Index: len(columns),
+			Title: columnTitle, Width: columnWidth, Alignment: alignment,
+			SortMode: descriptor.ID, Sortable: true,
+		})
+	}
+	return columns
+}
+
+func (fp *FileSystemPanel) effectiveGalleryColumnWidth(id string, fallback int) int {
+	if fp != nil {
+		if width := fp.GalleryColumnWidths[id]; width > 0 &&
+			width <= maxGalleryColumnWidth {
+			return width
+		}
+	}
+	return fallback
 }
 
 func semanticFileSizeValue(entry *FileEntry) int64 {

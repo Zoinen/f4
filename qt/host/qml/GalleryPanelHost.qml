@@ -406,6 +406,8 @@ FocusScope {
         objectName: "embeddedGalleryPanel"
         anchors.fill: parent
         session: host.session
+        fileFieldDescriptors: host.panel.fileFieldDescriptors || []
+        groupRanges: host.panel.groups || []
         iconResolver: f4GalleryIconResolver
         presentationDensities: ({})
         theme: host.theme

@@ -377,13 +377,83 @@ func TestAppScenePatchFiltersUnsupportedPanelStateFields(t *testing.T) {
 	if state["totalFiles"] != 4 || state["totalDirectories"] != 1 {
 		t.Fatalf("valid panel totals were dropped: %#v", state)
 	}
+	if state["groupBy"] != "Size" || state["groupReverse"] != true {
+		t.Fatalf("grouping settings were dropped: %#v", state)
+	}
+	groups := semantic.AppMapSlice(state["groups"])
+	if len(groups) != 1 || groups[0]["key"] != "size" {
+		t.Fatalf("group headers were dropped: %#v", state)
+	}
 	for _, unsupported := range []string{
-		"groupBy", "groupFoldersSeparately", "groupReverse", "displayTop", "groups",
+		"groupFoldersSeparately", "displayTop",
 	} {
 		if _, present := state[unsupported]; present {
 			t.Fatalf("unsupported panel state field %q leaked into state_update: %#v",
 				unsupported, state)
 		}
+	}
+}
+
+func TestAppScenePatchCarriesFileFieldPresentationUpdates(t *testing.T) {
+	basePanel := incrementalTestPanel(0, nil)
+	basePanel["groupBy"] = "None"
+	basePanel["groupReverse"] = false
+	basePanel["groupFileField"] = ""
+	basePanel["groups"] = []map[string]any{}
+	basePanel["fileFieldSort"] = ""
+	basePanel["fileFieldFilters"] = []map[string]any{}
+	basePanel["fileFieldFilterAny"] = false
+	basePanel["fileFieldPendingCount"] = 0
+	previous := semantic.CompactAppSemanticScene(map[string]any{
+		"type": "scene", "schema": "app", "version": 4,
+		"shell": map[string]any{
+			"id": "shell", "kind": "shell", "activePanel": 0,
+			"panels": []map[string]any{basePanel},
+		},
+	})
+	currentPanel := semantic.SemanticShallowMapCopy(
+		semantic.SemanticPanelsBySide(previous)[0])
+	currentPanel["groupBy"] = "FileField"
+	currentPanel["groupReverse"] = true
+	currentPanel["groupFileField"] = "exif.camera_model"
+	currentPanel["groups"] = []map[string]any{{
+		"key": "known:Canon EOS R5", "title": "Canon EOS R5",
+		"startIndex": 0, "count": 2,
+	}}
+	currentPanel["fileFieldSort"] = "exif.iso"
+	currentPanel["fileFieldFilters"] = []map[string]any{{
+		"fieldId": "exif.iso", "operation": "ge", "value": "800",
+	}}
+	currentPanel["fileFieldFilterAny"] = true
+	currentPanel["fileFieldPendingCount"] = 3
+	currentPanel["showFileInfo"] = true
+	currentScene := semantic.SemanticShallowMapCopy(previous)
+	currentShell := semantic.SemanticShallowMapCopy(previous["shell"].(map[string]any))
+	currentShell["panels"] = []map[string]any{currentPanel}
+	currentScene["shell"] = currentShell
+
+	patch, _, ok := BuildAppScenePatch(previous,
+		&appIncrementalScene{Scene: currentScene})
+	if !ok || patch.Shell == nil || len(patch.Shell.Panels) != 1 {
+		t.Fatalf("file-field presentation transition rejected: ok=%v patch=%#v", ok, patch)
+	}
+	state := patch.Shell.Panels[0].State
+	for key, want := range map[string]any{
+		"groupBy": "FileField", "groupReverse": true,
+		"groupFileField": "exif.camera_model", "fileFieldSort": "exif.iso",
+		"fileFieldFilterAny": true, "fileFieldPendingCount": 3,
+	} {
+		if state[key] != want {
+			t.Errorf("state update %s = %#v, want %#v (state=%#v)", key, state[key], want, state)
+		}
+	}
+	filters := semantic.AppMapSlice(state["fileFieldFilters"])
+	if len(filters) != 1 || filters[0]["fieldId"] != "exif.iso" {
+		t.Errorf("file-field filter update was dropped: %#v", state)
+	}
+	groups := semantic.AppMapSlice(state["groups"])
+	if len(groups) != 1 || groups[0]["title"] != "Canon EOS R5" {
+		t.Errorf("file-field group headers were dropped: %#v", state)
 	}
 }
 

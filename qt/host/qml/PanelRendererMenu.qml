@@ -16,10 +16,10 @@ Popup {
     required property var panel
     objectName: "panelRendererMenu-" + Number(panel.side || 0)
     parent: Overlay.overlay
-    width: Math.max(160, hostWindow.repeaterMaxImplicitWidth(
+    width: hostWindow.snapPx(Math.max(160, hostWindow.repeaterMaxImplicitWidth(
                               rendererChoiceRepeater))
-           + leftPadding + rightPadding
-    padding: 6
+           + leftPadding + rightPadding)
+    padding: hostWindow.snapPx(6)
     modal: false
     dim: false
     z: 1001
@@ -32,10 +32,10 @@ Popup {
         const point = anchorItem.mapToItem(
                         hostWindow.contentItem, anchorItem.width,
                         anchorItem.height + 3)
-        x = Math.max(6, Math.min(hostWindow.width - width - 6,
-                                point.x - width))
-        y = Math.max(6, Math.min(hostWindow.height - height - 6,
-                                point.y))
+        x = hostWindow.snapPx(Math.max(6, Math.min(hostWindow.width - width - 6,
+                                point.x - width)))
+        y = hostWindow.snapPx(Math.max(6, Math.min(hostWindow.height - height - 6,
+                                point.y)))
     }
     onClosed: Qt.callLater(function() {
         if (!panelView.panelIsActive || galleryController.viewerVisible
@@ -60,7 +60,7 @@ Popup {
 
     contentItem: Column {
         id: rendererMenuColumn
-        spacing: 2
+        spacing: hostWindow.snapPx(2)
 
         Repeater {
             id: rendererChoiceRepeater
@@ -78,7 +78,7 @@ Popup {
                     : 8 + rendererChoiceLeading.implicitWidth
                       + 24 + rendererChoiceShortcut.implicitWidth
                       + 8
-                height: isHeading ? 25 : 31
+                height: hostWindow.snapPx(isHeading ? 25 : 31)
                 radius: 5
                 readonly property bool choiceEnabled:
                     panelView.rendererChoiceEnabled(modelData)
@@ -100,25 +100,33 @@ Popup {
 
                 Text {
                     id: rendererHeadingLabel
+                    objectName: "panelRendererHeading-"
+                                + Number(panel.side || 0) + "-" + rendererChoice.index
                     visible: rendererChoice.isHeading
                     anchors.left: parent.left
                     anchors.right: parent.right
                     anchors.bottom: parent.bottom
-                    anchors.leftMargin: 8
-                    anchors.rightMargin: 8
-                    height: 20
+                    anchors.leftMargin: hostWindow.snapPx(8)
+                    anchors.rightMargin: hostWindow.snapPx(8)
+                    height: hostWindow.snapPx(20)
                     text: hostWindow.cleanText(rendererChoice.modelData.label)
                     color: hostWindow.mutedText
                     font.pixelSize: 10
                     font.weight: Font.DemiBold
                     verticalAlignment: Text.AlignVCenter
+                    transform: Translate {
+                        x: hostWindow.dialogPixelOffsetX(
+                               rendererHeadingLabel, hostWindow.contentItem)
+                        y: hostWindow.dialogPixelOffsetY(
+                               rendererHeadingLabel, hostWindow.contentItem)
+                    }
                 }
 
                 Row {
                     id: rendererChoiceLeading
                     visible: !rendererChoice.isHeading
                     anchors.left: parent.left
-                    anchors.leftMargin: 8
+                    anchors.leftMargin: hostWindow.snapPx(8)
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: 8
 
@@ -173,25 +181,50 @@ Popup {
                     }
 
                     Text {
+                        id: rendererChoiceLabel
+                        objectName: "panelRendererChoiceLabel-"
+                                    + hostWindow.cleanText(
+                                          rendererChoice.modelData.mode)
+                                    + "-" + Number(panel.side || 0)
                         text: hostWindow.cleanText(rendererChoice.modelData.label)
                         color: rendererChoice.choiceEnabled
                                ? hostWindow.textColor : hostWindow.mutedText
                         opacity: rendererChoice.choiceEnabled ? 1 : 0.5
+                        width: hostWindow.snapPx(implicitWidth)
+                        height: hostWindow.snapPx(implicitHeight)
                         font.pixelSize: 12
+                        transform: Translate {
+                            x: hostWindow.dialogPixelOffsetX(
+                                   rendererChoiceLabel, hostWindow.contentItem)
+                            y: hostWindow.dialogPixelOffsetY(
+                                   rendererChoiceLabel, hostWindow.contentItem)
+                        }
                     }
                 }
 
                 Text {
                     id: rendererChoiceShortcut
+                    objectName: "panelRendererChoiceShortcut-"
+                                + hostWindow.cleanText(
+                                      rendererChoice.modelData.mode)
+                                + "-" + Number(panel.side || 0)
                     visible: !rendererChoice.isHeading
                     anchors.right: parent.right
-                    anchors.rightMargin: 8
+                    anchors.rightMargin: hostWindow.snapPx(8)
                     anchors.verticalCenter: parent.verticalCenter
                     text: hostWindow.cleanText(
                               rendererChoice.modelData.shortcut)
                     color: hostWindow.mutedText
                     opacity: rendererChoice.choiceEnabled ? 1 : 0.5
+                    width: hostWindow.snapPx(implicitWidth)
+                    height: hostWindow.snapPx(implicitHeight)
                     font.pixelSize: 10
+                    transform: Translate {
+                        x: hostWindow.dialogPixelOffsetX(
+                               rendererChoiceShortcut, hostWindow.contentItem)
+                        y: hostWindow.dialogPixelOffsetY(
+                               rendererChoiceShortcut, hostWindow.contentItem)
+                    }
                 }
 
                 MouseArea {
@@ -221,21 +254,31 @@ Popup {
                 objectName: "panelRendererZoomRow-"
                             + Number(panel.side || 0)
                 width: rendererMenu.availableWidth
-                height: visible ? 48 : 0
+                height: visible ? hostWindow.snapPx(48) : 0
                 visible: galleryController.available
                          && panelView.galleryHost()
                          && panelView.galleryHost().densityAdjustable
 
                 Text {
                     id: rendererZoomLabel
+                    objectName: "panelRendererZoomLabel-"
+                                + Number(panel.side || 0)
                     anchors.left: parent.left
-                    anchors.leftMargin: 8
+                    anchors.leftMargin: hostWindow.snapPx(8)
                     anchors.top: parent.top
-                    anchors.topMargin: 5
+                    anchors.topMargin: hostWindow.snapPx(5)
                     text: "Zoom"
                     color: hostWindow.mutedText
+                    width: hostWindow.snapPx(implicitWidth)
+                    height: hostWindow.snapPx(implicitHeight)
                     font.pixelSize: 10
                     font.weight: Font.DemiBold
+                    transform: Translate {
+                        x: hostWindow.dialogPixelOffsetX(
+                               rendererZoomLabel, hostWindow.contentItem)
+                        y: hostWindow.dialogPixelOffsetY(
+                               rendererZoomLabel, hostWindow.contentItem)
+                    }
                 }
 
                 Text {
@@ -243,13 +286,21 @@ Popup {
                     objectName: "panelRendererZoomReset-"
                                 + Number(panel.side || 0)
                     anchors.right: rendererZoomValue.left
-                    anchors.rightMargin: 8
+                    anchors.rightMargin: hostWindow.snapPx(8)
                     anchors.baseline: rendererZoomLabel.baseline
                     text: "Reset"
                     color: rendererZoomResetPointer.containsMouse
                            ? hostWindow.panelSelectionBorder : hostWindow.mutedText
+                    width: hostWindow.snapPx(implicitWidth)
+                    height: hostWindow.snapPx(implicitHeight)
                     font.pixelSize: 10
                     font.underline: rendererZoomResetPointer.containsMouse
+                    transform: Translate {
+                        x: hostWindow.dialogPixelOffsetX(
+                               rendererZoomReset, hostWindow.contentItem)
+                        y: hostWindow.dialogPixelOffsetY(
+                               rendererZoomReset, hostWindow.contentItem)
+                    }
 
                     MouseArea {
                         id: rendererZoomResetPointer
@@ -269,12 +320,22 @@ Popup {
 
                 Text {
                     id: rendererZoomValue
+                    objectName: "panelRendererZoomValue-"
+                                + Number(panel.side || 0)
                     anchors.right: parent.right
-                    anchors.rightMargin: 8
+                    anchors.rightMargin: hostWindow.snapPx(8)
                     anchors.baseline: rendererZoomLabel.baseline
                     text: Math.round(rendererZoomSlider.value) + " px"
                     color: hostWindow.mutedText
+                    width: hostWindow.snapPx(implicitWidth)
+                    height: hostWindow.snapPx(implicitHeight)
                     font.pixelSize: 10
+                    transform: Translate {
+                        x: hostWindow.dialogPixelOffsetX(
+                               rendererZoomValue, hostWindow.contentItem)
+                        y: hostWindow.dialogPixelOffsetY(
+                               rendererZoomValue, hostWindow.contentItem)
+                    }
                 }
 
                 T.Slider {
@@ -284,9 +345,9 @@ Popup {
                     anchors.left: parent.left
                     anchors.right: parent.right
                     anchors.bottom: parent.bottom
-                    anchors.leftMargin: 8
-                    anchors.rightMargin: 8
-                    height: 27
+                    anchors.leftMargin: hostWindow.snapPx(8)
+                    anchors.rightMargin: hostWindow.snapPx(8)
+                    height: hostWindow.snapPx(27)
                     focusPolicy: Qt.NoFocus
                     hoverEnabled: true
                     from: panelView.galleryHost()
@@ -317,7 +378,7 @@ Popup {
                         y: Math.round((rendererZoomSlider.height
                                        - height) / 2)
                         width: rendererZoomSlider.availableWidth
-                        height: 4
+                        height: hostWindow.snapPx(4)
                         radius: 2
                         color: hostWindow.controlBorder
 
@@ -337,8 +398,8 @@ Popup {
                                 - width)
                         y: Math.round((rendererZoomSlider.height
                                        - height) / 2)
-                        width: 14
-                        height: 14
+                        width: hostWindow.snapPx(14)
+                        height: hostWindow.snapPx(14)
                         radius: 7
                         color: rendererZoomSlider.pressed
                                ? hostWindow.panelSelectionBorder

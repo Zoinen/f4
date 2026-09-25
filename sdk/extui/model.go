@@ -188,6 +188,12 @@ type PanelModel struct {
 	TotalSize              int64
 	Top                    int
 	GalleryColumns         []PanelColumnModel
+	FileFieldDescriptors   []FileFieldDescriptor
+	FileFieldSort          string
+	GroupFileField         string
+	FileFieldFilters       []FileFieldFilterModel
+	FileFieldFilterAny     bool
+	FileFieldPendingCount  int
 	Entries                []FileEntryModel
 }
 
@@ -196,6 +202,16 @@ type PanelModel struct {
 type FastFindMatchModel struct {
 	Start  int
 	Length int
+}
+
+type FileFieldFilterModel struct {
+	FieldID   string
+	Operation string
+	Value     string
+}
+
+func (f FileFieldFilterModel) ToMap() M {
+	return M{"fieldId": f.FieldID, "operation": f.Operation, "value": f.Value}
 }
 
 type PanelColumnModel struct {
@@ -227,16 +243,18 @@ type FileEntryModel struct {
 	// ThumbnailKind identifies non-image media that still has a native
 	// thumbnail pipeline. "video" uses a contact-sheet decoder while keeping
 	// the still-image viewer contract separate.
-	ThumbnailKind    string
-	Selected         bool
-	SizeCalculated   bool
-	MTime            string
-	MTimeNanos       int64
-	Version          string
-	Source           *ImageSourceModel
-	DirectorySource  *DirectorySourceModel
-	Mode             string
-	HighlightStyleID string
+	ThumbnailKind      string
+	Selected           bool
+	SizeCalculated     bool
+	MTime              string
+	MTimeNanos         int64
+	Version            string
+	Source             *ImageSourceModel
+	DirectorySource    *DirectorySourceModel
+	Mode               string
+	HighlightStyleID   string
+	FileFields         map[string]FileFieldValue
+	FileFieldsComplete bool
 }
 
 // DirectorySourceModel grants bounded enumeration of one observed VFS folder.
@@ -262,6 +280,7 @@ type ImageSourceModel struct {
 	SizeKnown       bool
 	AccessProfile   string
 	StorageClass    string
+	Generation      int64
 }
 
 func (s ImageSourceModel) ToMap() M {
@@ -274,6 +293,7 @@ func (s ImageSourceModel) ToMap() M {
 		"sizeKnown":       s.SizeKnown,
 		"accessProfile":   s.AccessProfile,
 		"storageClass":    s.StorageClass,
+		"generation":      s.Generation,
 	}
 }
 
@@ -928,6 +948,14 @@ func (p PanelModel) ToMap() M {
 		}
 		return columns
 	}
+	fileFieldDescriptors := make([]M, 0, len(p.FileFieldDescriptors))
+	for _, descriptor := range p.FileFieldDescriptors {
+		fileFieldDescriptors = append(fileFieldDescriptors, descriptor.ToMap())
+	}
+	fileFieldFilters := make([]M, 0, len(p.FileFieldFilters))
+	for _, filter := range p.FileFieldFilters {
+		fileFieldFilters = append(fileFieldFilters, filter.ToMap())
+	}
 	galleryDensities := M{}
 	for mode, density := range p.GalleryDensities {
 		if density > 0 {
@@ -981,6 +1009,12 @@ func (p PanelModel) ToMap() M {
 		"totalSize":              p.TotalSize,
 		"totalCount":             p.TotalCount,
 		"galleryColumns":         columnsToMaps(p.GalleryColumns),
+		"fileFieldDescriptors":   fileFieldDescriptors,
+		"fileFieldSort":          p.FileFieldSort,
+		"groupFileField":         p.GroupFileField,
+		"fileFieldFilters":       fileFieldFilters,
+		"fileFieldFilterAny":     p.FileFieldFilterAny,
+		"fileFieldPendingCount":  p.FileFieldPendingCount,
 	}
 	if p.FastFindMatchColor != "" {
 		out["fastFindMatchColor"] = p.FastFindMatchColor
@@ -1050,6 +1084,12 @@ func (e FileEntryModel) ToMap() M {
 	if e.HighlightStyleID != "" {
 		out["highlightStyleId"] = e.HighlightStyleID
 	}
+	if len(e.FileFields) > 0 {
+		out["fileFields"] = fileFieldValuesToMap(e.FileFields)
+	}
+	if e.FileFieldsComplete {
+		out["fileFieldsComplete"] = true
+	}
 	if e.Source != nil {
 		out["source"] = e.Source.ToMap()
 	}
@@ -1093,6 +1133,12 @@ func (e FileEntryModel) MinimalToMap() M {
 	// the deferred metadata pass recomputes it.
 	if e.HighlightStyleID != "" {
 		out["highlightStyleId"] = e.HighlightStyleID
+	}
+	if len(e.FileFields) > 0 {
+		out["fileFields"] = fileFieldValuesToMap(e.FileFields)
+	}
+	if e.FileFieldsComplete {
+		out["fileFieldsComplete"] = true
 	}
 	// Broker-backed source identities are part of the immediately usable
 	// catalog even when filesystem/stat metadata is deferred. Without this

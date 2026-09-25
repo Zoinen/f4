@@ -239,6 +239,8 @@ var semanticPanelStatePatchKeys = map[string]struct{}{
 	"fastFindMatchColor": {},
 	"active":             {}, "previewCapable": {}, "dropAllowed": {},
 	"metadataDeferred": {}, "catalogRowsDeferred": {}, "sortReverse": {},
+	"groupBy": {}, "groupReverse": {}, "groupFileField": {},
+	"fileFieldSort": {}, "fileFieldFilterAny": {},
 	"useSortGroups": {}, "freeSpaceKnown": {},
 	"separateFileExtensions": {}, "loading": {},
 	"catalogProvisional": {}, "fastFind": {}, "showFileInfo": {},
@@ -248,7 +250,9 @@ var semanticPanelStatePatchKeys = map[string]struct{}{
 	"totalFiles": {}, "totalDirectories": {}, "selectedSize": {}, "totalSize": {},
 	"freeSpace": {}, "totalCount": {},
 	"cursor": {}, "galleryDensity": {}, "galleryDensities": {},
-	"galleryColumns": {}, "fastFindMatches": {},
+	"galleryColumns": {}, "groups": {}, "fileFieldDescriptors": {},
+	"fileFieldFilters": {}, "fileFieldPendingCount": {},
+	"fastFindMatches": {},
 }
 
 func semanticPanelStateForPatchWithDroppedKeys(

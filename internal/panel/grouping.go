@@ -11,6 +11,7 @@ import (
 
 	"github.com/unxed/f4/internal/config"
 	"github.com/unxed/f4/internal/i18n"
+	"github.com/unxed/f4/sdk/extui"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtui"
 	"golang.org/x/text/unicode/norm"
@@ -36,6 +37,7 @@ const (
 	GroupKind
 	GroupHidden
 	GroupExecutable
+	GroupFileField
 )
 
 // GroupModeInfo is the common catalog for menus, actions and persistence.
@@ -55,10 +57,11 @@ var GroupModes = []GroupModeInfo{
 	{GroupPermissions, "Permissions", "Unix permissions"}, {GroupAttributes, "Attributes", "Windows attributes"},
 	{GroupModeText, "ModeText", "VFS type / mode"}, {GroupKind, "Kind", "Object kind"},
 	{GroupHidden, "Hidden", "Hidden"}, {GroupExecutable, "Executable", "Executable"},
+	{GroupFileField, "FileField", "File field"},
 }
 
 func ValidGroupMode(mode GroupMode) GroupMode {
-	if mode < GroupNone || mode > GroupExecutable {
+	if mode < GroupNone || mode > GroupFileField {
 		return GroupNone
 	}
 	return mode
@@ -73,9 +76,12 @@ type PanelGroup struct {
 }
 
 type groupKey struct {
-	id, title string
-	pin       int // -1 folders, 0 ordinary, 1 unknown
-	order     int64
+	id, title  string
+	pin        int // -1 folders, 0 ordinary, 1 unknown
+	order      int64
+	numeric    float64
+	numeric2   float64
+	numericSet bool
 }
 
 type displayRow struct {
@@ -207,6 +213,39 @@ func (fp *FileSystemPanel) groupFor(e *FileEntry, now time.Time, limits [3]int64
 			return namedGroup("Folders", 0)
 		}
 		return namedGroup("Files", 1)
+	case GroupFileField:
+		descriptor, ok := fileFieldDescriptor(fp.FileFieldGroup)
+		if !ok {
+			return unknownGroup()
+		}
+		value := fieldValueForSort(e, descriptor)
+		switch value.State {
+		case extui.FileFieldUnread, "":
+			key := groupKey{id: "field:unread", title: "Not read", pin: 1, order: 1}
+			return key
+		case extui.FileFieldMissing:
+			return groupKey{id: "field:missing", title: "No data", pin: 1, order: 0}
+		case extui.FileFieldKnown:
+			key := groupKey{pin: 0, numericSet: descriptor.Kind != extui.FileFieldText}
+			switch descriptor.Kind {
+			case extui.FileFieldText:
+				key.id = "field:" + fp.FileFieldGroup + ":text:" + value.Text
+				key.title = value.Text
+			case extui.FileFieldRange:
+				key.id = fmt.Sprintf("field:%s:range:%g:%g", fp.FileFieldGroup, value.Min, value.Max)
+				key.title = formatFileField(fp.FileFieldGroup, value)
+				key.numeric, key.numeric2 = value.Min, value.Max
+			case extui.FileFieldNumber:
+				key.id = fmt.Sprintf("field:%s:number:%g", fp.FileFieldGroup, value.Number)
+				key.title = formatFileField(fp.FileFieldGroup, value)
+				key.numeric = value.Number
+			case extui.FileFieldInteger:
+				key.id = fmt.Sprintf("field:%s:integer:%d", fp.FileFieldGroup, value.Integer)
+				key.title = formatFileField(fp.FileFieldGroup, value)
+				key.numeric = float64(value.Integer)
+			}
+			return key
+		}
 	case GroupHidden, GroupExecutable:
 		value, field := e.IsHidden, vfs.MetadataHidden
 		if fp.GroupBy == GroupExecutable {
@@ -264,9 +303,17 @@ func (fp *FileSystemPanel) compareGroups(a, b *FileEntry, compareText func(strin
 	if n := cmp.Compare(ka.pin, kb.pin); n != 0 {
 		return n
 	}
-	n := cmp.Compare(ka.order, kb.order)
+	n := 0
+	if ka.numericSet && kb.numericSet {
+		n = cmp.Compare(ka.numeric, kb.numeric)
+		if n == 0 {
+			n = cmp.Compare(ka.numeric2, kb.numeric2)
+		}
+	} else {
+		n = cmp.Compare(ka.order, kb.order)
+	}
 	if n == 0 {
-		n = compareText(ka.id, kb.id)
+		n = compareText(ka.title, kb.title)
 	}
 	if n == 0 {
 		// Provider Mode values are exact strings. Collation can consider two
@@ -353,6 +400,24 @@ func (fp *FileSystemPanel) SetGrouping(mode GroupMode, reverse, foldersSeparatel
 	fp.setGroupingAt(mode, reverse, foldersSeparately, time.Now())
 }
 
+// SetFileFieldGroup groups by exact typed values from the current file-field
+// schema. It only reorders the loaded listing and never starts a directory read.
+func (fp *FileSystemPanel) SetFileFieldGroup(fieldID string, reverse bool) bool {
+	if fieldID != "" {
+		if _, ok := fileFieldDescriptor(fieldID); !ok {
+			return false
+		}
+	}
+	if fieldID == "" {
+		fp.FileFieldGroup = ""
+		fp.SetGrouping(GroupNone, false, fp.GroupFoldersSeparately)
+		return true
+	}
+	fp.FileFieldGroup = fieldID
+	fp.setGroupingAt(GroupFileField, reverse, fp.GroupFoldersSeparately, time.Now())
+	return true
+}
+
 func (fp *FileSystemPanel) setGroupingAt(mode GroupMode, reverse, foldersSeparately bool, now time.Time) {
 	if fp == nil {
 		return
@@ -361,6 +426,9 @@ func (fp *FileSystemPanel) setGroupingAt(mode GroupMode, reverse, foldersSeparat
 	offset := fp.displayOfEntry(fp.GetCursorIndex()) - fp.Table.TopPos
 	wasGrouped := fp.GroupBy != GroupNone
 	fp.GroupBy, fp.GroupReverse, fp.GroupFoldersSeparately = ValidGroupMode(mode), reverse, foldersSeparately
+	if fp.GroupBy != GroupFileField {
+		fp.FileFieldGroup = ""
+	}
 	if wasGrouped && fp.GroupBy == GroupNone && fp.SortMode == SortUnsorted {
 		entries := fp.AllEntries()
 		sort.SliceStable(entries, func(i, j int) bool { return entries[i].sourceOrder < entries[j].sourceOrder })

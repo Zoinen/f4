@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/unxed/f4/internal/ini"
 	"strings"
@@ -30,6 +31,21 @@ func loadPanelGallerySessionState(ini *ini.File, section string) PanelGallerySes
 			state.Densities[mode] = ClampGalleryDensity(mode, density)
 		}
 	}
+	if raw := ini.GetString(section, "FileFieldColumns", ""); raw != "" {
+		_ = json.Unmarshal([]byte(raw), &state.FileFieldColumns)
+	}
+	if raw := ini.GetString(section, "GalleryColumnWidths", ""); raw != "" {
+		_ = json.Unmarshal([]byte(raw), &state.GalleryColumnWidths)
+	}
+	if raw := ini.GetString(section, "FileFieldFilters", ""); raw != "" {
+		_ = json.Unmarshal([]byte(raw), &state.FileFieldFilters)
+	}
+	state.FileFieldFilterAny = strings.EqualFold(
+		ini.GetString(section, "FileFieldFilterAny", "false"), "true")
+	state.FileFieldSort = ini.GetString(section, "FileFieldSort", "")
+	state.FileFieldGroup = ini.GetString(section, "FileFieldGroup", "")
+	state.FileFieldGroupReverse = strings.EqualFold(
+		ini.GetString(section, "FileFieldGroupReverse", "false"), "true")
 	return state
 }
 
@@ -68,6 +84,33 @@ func WritePanelGallerySessionState(sb *strings.Builder, state PanelGallerySessio
 			fmt.Fprintf(sb, "%s = %d\n", key, density)
 		}
 	}
+	if len(state.FileFieldColumns) > 0 {
+		if encoded, err := json.Marshal(state.FileFieldColumns); err == nil {
+			fmt.Fprintf(sb, "FileFieldColumns = %s\n", encoded)
+		}
+	}
+	if len(state.GalleryColumnWidths) > 0 {
+		if encoded, err := json.Marshal(state.GalleryColumnWidths); err == nil {
+			fmt.Fprintf(sb, "GalleryColumnWidths = %s\n", encoded)
+		}
+	}
+	if len(state.FileFieldFilters) > 0 {
+		if encoded, err := json.Marshal(state.FileFieldFilters); err == nil {
+			fmt.Fprintf(sb, "FileFieldFilters = %s\n", encoded)
+		}
+	}
+	if state.FileFieldFilterAny {
+		fmt.Fprintln(sb, "FileFieldFilterAny = true")
+	}
+	if state.FileFieldSort != "" {
+		fmt.Fprintf(sb, "FileFieldSort = %s\n", state.FileFieldSort)
+	}
+	if state.FileFieldGroup != "" {
+		fmt.Fprintf(sb, "FileFieldGroup = %s\n", state.FileFieldGroup)
+	}
+	if state.FileFieldGroupReverse {
+		fmt.Fprintln(sb, "FileFieldGroupReverse = true")
+	}
 }
 
 func RestorePanelGallerySessionState(fsp *FileSystemPanel, saved PanelGallerySessionState) {
@@ -79,13 +122,35 @@ func RestorePanelGallerySessionState(fsp *FileSystemPanel, saved PanelGallerySes
 	fsp.GalleryColumnCount = saved.ColumnCount
 	fsp.GalleryDensities = CloneGalleryDensities(saved.Densities)
 	fsp.GalleryLayoutRevision = 1
+	fsp.FileFieldColumns = append([]FileFieldColumn(nil), saved.FileFieldColumns...)
+	fsp.GalleryColumnWidths = CloneGalleryColumnWidths(saved.GalleryColumnWidths)
+	fsp.FileFieldSort = saved.FileFieldSort
+	fsp.FileFieldFilters = append([]FileFieldFilter(nil), saved.FileFieldFilters...)
+	fsp.FileFieldFilterAny = saved.FileFieldFilterAny
+	fsp.FileFieldGroup = saved.FileFieldGroup
+	if saved.FileFieldGroup != "" {
+		fsp.SetFileFieldGroup(saved.FileFieldGroup, saved.FileFieldGroupReverse)
+	} else if saved.FileFieldSort != "" {
+		fsp.sortEntriesKeepingCursor()
+	}
+	fsp.refilterEntries()
 }
 
 func CapturePanelGallerySessionState(fsp *FileSystemPanel) PanelGallerySessionState {
 	if fsp == nil {
 		return DefaultPanelGallerySessionState()
 	}
-	return ClonePanelGallerySessionState(PanelGallerySessionState{LayoutMode: fsp.GalleryLayoutMode, ColumnCount: fsp.GalleryColumnCount, Densities: fsp.GalleryDensities})
+	return ClonePanelGallerySessionState(PanelGallerySessionState{
+		LayoutMode: fsp.GalleryLayoutMode, ColumnCount: fsp.GalleryColumnCount,
+		Densities:             fsp.GalleryDensities,
+		FileFieldColumns:      fsp.FileFieldColumns,
+		GalleryColumnWidths:   fsp.GalleryColumnWidths,
+		FileFieldFilters:      fsp.FileFieldFilters,
+		FileFieldFilterAny:    fsp.FileFieldFilterAny,
+		FileFieldSort:         fsp.FileFieldSort,
+		FileFieldGroup:        fsp.FileFieldGroup,
+		FileFieldGroupReverse: fsp.GroupBy == GroupFileField && fsp.GroupReverse,
+	})
 }
 
 var LastLeftGalleryState = DefaultPanelGallerySessionState()

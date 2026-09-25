@@ -31,7 +31,7 @@ func (fp *FileSystemPanel) AllEntries() []*FileEntry {
 	if fp == nil {
 		return nil
 	}
-	if fp.autoFilterOn {
+	if fp.autoFilterOn || fp.fileFieldFilterActive {
 		return fp.unfilteredEntries
 	}
 	return fp.Entries
@@ -41,7 +41,7 @@ func (fp *FileSystemPanel) AllEntries() []*FileEntry {
 // one. Directory loads go through here instead of assigning fp.Entries, so a
 // load cannot overwrite the rows an active filter is holding back.
 func (fp *FileSystemPanel) setEntries(entries []*FileEntry) {
-	if fp.autoFilterOn {
+	if fp.autoFilterOn || fp.fileFieldFilterActive {
 		fp.unfilteredEntries = entries
 	} else {
 		fp.Entries = entries
@@ -52,7 +52,7 @@ func (fp *FileSystemPanel) setEntries(entries []*FileEntry) {
 // addEntries appends rows to the complete list. A chunked load calls it once
 // per chunk, so the visible list is re-derived per chunk rather than per row.
 func (fp *FileSystemPanel) addEntries(entries ...*FileEntry) {
-	if fp.autoFilterOn {
+	if fp.autoFilterOn || fp.fileFieldFilterActive {
 		fp.unfilteredEntries = append(fp.unfilteredEntries, entries...)
 	} else {
 		fp.Entries = append(fp.Entries, entries...)
@@ -78,30 +78,43 @@ func (fp *FileSystemPanel) autoFilterWanted() bool {
 // back when the filter ends, and otherwise rebuilds the matching subset.
 func (fp *FileSystemPanel) refilterEntries() {
 	defer fp.rebuildDisplayRows()
-	switch want := fp.autoFilterWanted(); {
-	case want && !fp.autoFilterOn:
-		fp.autoFilterOn = true
+	wantSearch := fp.autoFilterWanted()
+	wantFields := len(fp.FileFieldFilters) > 0
+	wasFiltered := fp.autoFilterOn || fp.fileFieldFilterActive
+	wantFilter := wantSearch || wantFields
+	if !wasFiltered && wantFilter {
 		fp.unfilteredEntries = fp.Entries
-	case !want && fp.autoFilterOn:
-		fp.autoFilterOn = false
+	}
+	if wasFiltered && !wantFilter {
 		fp.Entries = fp.unfilteredEntries
 		fp.unfilteredEntries = nil
-		return
-	case !want:
+		fp.autoFilterOn = false
+		fp.fileFieldFilterActive = false
 		return
 	}
-
+	fp.autoFilterOn = wantSearch
+	fp.fileFieldFilterActive = wantFields
+	if !wantFilter {
+		return
+	}
+	fp.reconcileStaleFileFields(fp.unfilteredEntries)
 	visible := make([]*FileEntry, 0, len(fp.unfilteredEntries))
 	for _, entry := range fp.unfilteredEntries {
-		// ".." survives every query: a filter that matched nothing would
-		// otherwise leave a panel with no way out of the directory.
+		// ".." survives every query so users can always leave the directory.
 		if entry.Name == ".." {
 			visible = append(visible, entry)
 			continue
 		}
-		if _, _, ok := fp.fastFindMatch(entry.Name); ok {
-			visible = append(visible, entry)
+		if wantSearch {
+			if _, _, ok := fp.fastFindMatch(entry.Name); !ok {
+				continue
+			}
 		}
+		if wantFields && !entry.IsDir &&
+			fp.fieldFilterResult(entry) == fileFieldMatchFalse {
+			continue
+		}
+		visible = append(visible, entry)
 	}
 	fp.Entries = visible
 }

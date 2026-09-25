@@ -31,6 +31,19 @@ exact binary in `ExtUiProtocolTests`; changes to envelope names, integer
 representation, stream identity, or nested typed payloads therefore require a
 coordinated Go/Qt update.
 
+## Thumbnail-backed file fields
+
+Qt hosts advertise `panelFileFieldsV1` during the ExtUI hello handshake before
+the Go panel accepts typed file-field results. The existing Go-to-Qt catalog
+attribute stream remains unchanged. ZoinGallery returns values from its normal
+thumbnail metadata pass using `panel.fileFields.update`; cached metadata may
+return several results together as `panel.fileFields.updateBatch`. Each result
+contains a panel ID, content-reading generation, source key, content version,
+completion state, and a map of stable field IDs to typed values. `unread`,
+`missing`, and `known` are distinct states; a missing EXIF tag is final only
+after the decoder pass completes. The Go panel rejects results whose panel,
+generation, source, or content version no longer matches.
+
 ## Standalone document geometry and coherent windows
 
 The `documentViewportV1` hello capability enables Qt-owned standalone viewer

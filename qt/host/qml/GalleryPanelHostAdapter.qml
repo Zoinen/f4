@@ -532,6 +532,12 @@ Item {
             adapter.bridge.requestSort(adapter.side, String(sortMode || ""),
                                        contextMenu === true)
         }
+
+        function onColumnResizeRequested(columns) {
+            if (!adapter.bridge)
+                return
+            adapter.bridge.requestGalleryColumnWidths(adapter.side, columns)
+        }
     }
 
     Connections {

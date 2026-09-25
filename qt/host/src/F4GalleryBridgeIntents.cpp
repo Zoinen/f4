@@ -467,6 +467,31 @@ void F4GalleryBridge::requestGalleryDensity(int side,
     m_panelIntentController->dispatch(intent);
 }
 
+void F4GalleryBridge::requestGalleryColumnWidths(
+    int side, const QVariantList &columns)
+{
+    if (!validSide(side) || columns.isEmpty()) {
+        return;
+    }
+    QSet<QString> seen;
+    for (const QVariant &value : columns) {
+        const QVariantMap column = value.toMap();
+        bool widthOk = false;
+        const int width = column.value(QStringLiteral("width")).toInt(&widthOk);
+        const QString id = column.value(QStringLiteral("id")).toString().trimmed();
+        if (id.isEmpty() || seen.contains(id) || !widthOk || width < 1
+            || width > 1000000) {
+            return;
+        }
+        seen.insert(id);
+    }
+    PanelIntent intent;
+    intent.kind = PanelIntent::Kind::SetGalleryColumnWidths;
+    intent.side = side;
+    intent.columns = columns;
+    m_panelIntentController->dispatch(intent);
+}
+
 void F4GalleryBridge::requestSort(int side, const QString &sortMode,
                                   bool contextMenu)
 {
@@ -485,6 +510,12 @@ void F4GalleryBridge::requestSort(int side, const QString &sortMode,
         QStringLiteral("name"), QStringLiteral("extension"),
         QStringLiteral("time"), QStringLiteral("size"),
         QStringLiteral("unsorted"),
+        QStringLiteral("exif.exposure_time"), QStringLiteral("exif.iso"),
+        QStringLiteral("exif.f_number"),
+        QStringLiteral("exif.focal_length_35mm"),
+        QStringLiteral("exif.lens_focal_range"),
+        QStringLiteral("exif.camera_model"),
+        QStringLiteral("exif.lens_model"),
     };
     if (!supported.contains(normalized)) {
         return;
