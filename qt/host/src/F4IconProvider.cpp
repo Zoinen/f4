@@ -4,6 +4,7 @@
 #include <QByteArray>
 #include <QColor>
 #include <QEvent>
+#include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QMimeDatabase>
@@ -11,6 +12,7 @@
 #include <QPainter>
 #include <QPalette>
 #include <QPixmap>
+#include <QRegularExpression>
 #include <QSet>
 #include <QSvgRenderer>
 #include <QUrlQuery>
@@ -78,6 +80,14 @@ constexpr int MaxLogicalIconSize = 1024;
 constexpr qreal MinDevicePixelRatio = 0.5;
 constexpr qreal MaxDevicePixelRatio = 8.0;
 constexpr int LargeLucideIconThreshold = 48;
+constexpr qreal DetailsLucideIconSize = 16.0;
+// The default Masonry preview is (150 density - 8 item gap) * 0.55. The
+// corresponding IconImage snaps to 78 logical pixels at 1x.
+constexpr qreal DefaultMasonryLucideIconSize = (150.0 - 8.0) * 0.55;
+constexpr qreal ThickLucideStrokeWidth = 2.0;
+constexpr qreal ThinLucideStrokeWidth = 1.0;
+constexpr qreal MinLucideStrokeWidth = 0.5;
+constexpr qreal MaxLucideStrokeWidth = 4.0;
 
 const QSet<QString> &lucideIconNames()
 {
@@ -426,15 +436,39 @@ void tintMask(QImage &image, const QColor &requestedColor)
     }
 }
 
+qreal normalizedLucideStrokeWidth(qreal strokeWidth)
+{
+    if (!std::isfinite(strokeWidth) || strokeWidth <= 0) {
+        return 0.0;
+    }
+    return std::clamp(qreal(qRound(strokeWidth * 2.0)) / 2.0,
+                      MinLucideStrokeWidth, MaxLucideStrokeWidth);
+}
+
 QImage renderLucideImage(const QString &iconName, const QSize &targetSize,
-                         int logicalSize, const QColor &tint)
+                         int logicalSize, const QColor &tint,
+                         qreal strokeWidth)
 {
     if (targetSize.width() <= 0 || targetSize.height() <= 0) {
         return {};
     }
     const QUrl source = F4IconProvider::lucideSource(iconName, logicalSize);
-    QSvgRenderer renderer(resourceFileName(source));
-    if (!renderer.isValid()) {
+    QSvgRenderer renderer;
+    if (strokeWidth > 0.0 && !isStreamlineIconName(iconName)) {
+        QFile svgFile(resourceFileName(source));
+        if (!svgFile.open(QIODevice::ReadOnly)) {
+            return {};
+        }
+        QString svg = QString::fromUtf8(svgFile.readAll());
+        const QRegularExpression strokeAttribute(
+            QStringLiteral(R"(stroke-width="[0-9.]+")"));
+        svg.replace(strokeAttribute,
+                    QStringLiteral("stroke-width=\"%1\"")
+                        .arg(strokeWidth, 0, 'g', 12));
+        if (!renderer.load(svg.toUtf8())) {
+            return {};
+        }
+    } else if (!renderer.load(resourceFileName(source))) {
         return {};
     }
 
@@ -547,6 +581,13 @@ bool F4IconProvider::parseImageRequest(
     request.logicalSize = logicalOk ? logicalSize : 16;
     request.devicePixelRatio = normalizedDevicePixelRatio(queryValue(
         request.query, QStringLiteral("dpr")).toDouble());
+    bool strokeWidthOk = false;
+    const qreal requestedStrokeWidth = queryValue(
+        request.query, QStringLiteral("strokeWidth")).toDouble(
+            &strokeWidthOk);
+    if (strokeWidthOk) {
+        request.strokeWidth = normalizedLucideStrokeWidth(requestedStrokeWidth);
+    }
     request.targetSize = requestedSize;
     if (request.targetSize.width() <= 0
         && request.targetSize.height() > 0) {
@@ -601,7 +642,7 @@ QImage F4IconProvider::renderLucideRequest(
     QImage image = renderLucideImage(
         normalizedIconName(request.primary), request.targetSize,
         request.logicalSize,
-        tint.isValid() ? tint : fallbackTintColor());
+        tint.isValid() ? tint : fallbackTintColor(), request.strokeWidth);
     if (size && !image.isNull()) {
         *size = image.size();
     }
@@ -736,6 +777,21 @@ QSize F4IconProvider::physicalSize(int logicalSize, qreal devicePixelRatio)
     const qreal normalizedRatio = normalizedDevicePixelRatio(devicePixelRatio);
     const int pixels = std::max(1, qRound(normalizedSize * normalizedRatio));
     return QSize(pixels, pixels);
+}
+
+qreal F4IconProvider::lucideStrokeWidth(qreal logicalSize)
+{
+    if (!std::isfinite(logicalSize)) {
+        logicalSize = DetailsLucideIconSize;
+    }
+    const qreal span = DefaultMasonryLucideIconSize - DetailsLucideIconSize;
+    const qreal normalized = span > 0.0
+        ? std::clamp((logicalSize - DetailsLucideIconSize) / span,
+                     0.0, 1.0)
+        : 0.0;
+    const qreal interpolated = ThickLucideStrokeWidth
+        + (ThinLucideStrokeWidth - ThickLucideStrokeWidth) * normalized;
+    return normalizedLucideStrokeWidth(interpolated);
 }
 
 QString F4IconProvider::normalizedIconName(QStringView rawName)
@@ -967,6 +1023,41 @@ QUrl F4IconSet::rasterizedLucideSource(const QString &rawName,
         devicePixelRatio,
         0,
         {{QStringLiteral("color"), tint.name(QColor::HexArgb)}});
+}
+
+QUrl F4IconSet::rasterizedLucideSource(const QString &rawName,
+                                       int logicalSize,
+                                       qreal devicePixelRatio,
+                                       const QColor &tint,
+                                       qreal strokeWidth) const
+{
+    const qreal normalizedStrokeWidth = normalizedLucideStrokeWidth(
+        strokeWidth);
+    if (normalizedStrokeWidth <= 0.0) {
+        return rasterizedLucideSource(rawName, logicalSize,
+                                     devicePixelRatio, tint);
+    }
+
+    const QString iconName = F4IconProvider::normalizedIconName(rawName);
+    QList<QPair<QString, QString>> extraQuery{
+        {QStringLiteral("strokeWidth"), QString::number(
+            normalizedStrokeWidth, 'g', 12)}};
+    if (tint.isValid()) {
+        extraQuery.append({QStringLiteral("color"),
+                           tint.name(QColor::HexArgb)});
+    }
+    return systemIconSource(
+        QStringLiteral("lucide"),
+        F4IconProvider::encodeRouteValue(iconName),
+        logicalSize,
+        devicePixelRatio,
+        0,
+        extraQuery);
+}
+
+qreal F4IconSet::lucideStrokeWidth(qreal logicalSize) const
+{
+    return F4IconProvider::lucideStrokeWidth(logicalSize);
 }
 
 QUrl F4IconSet::fileIconSource(const QString &localPath,

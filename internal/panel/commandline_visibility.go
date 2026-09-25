@@ -11,7 +11,7 @@ func (pf *PanelsFrame) commandLineAutoHide() bool {
 }
 
 func (pf *PanelsFrame) commandLineHiddenByFocus() bool {
-	return pf.commandLineAutoHide() && !pf.CommandLineFocused
+	return pf.commandLineAutoHide() && !pf.CommandLineFocused && pf.CmdLine.IsEmpty()
 }
 
 func (pf *PanelsFrame) commandLineRows(width, maxRows int) int {

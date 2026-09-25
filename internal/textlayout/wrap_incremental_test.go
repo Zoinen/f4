@@ -183,6 +183,10 @@ func TestUnwrappedVisiblePrefixDoesNotScanWholeLine(t *testing.T) {
 	if offset := engine.VisualToLogical(0, 90*1024); offset != 90*1024 {
 		t.Fatalf("horizontal hit beyond 64KiB became %d", offset)
 	}
+	visible := engine.GetProjectionFragments(0, 1, 80)
+	if len(visible) != 1 || visible[0].ByteOffsetEnd != 80 || visible[0].VisualWidth != 80 {
+		t.Fatalf("far source anchor expanded the visible projection: %+v", visible)
+	}
 	full := engine.GetFragments(0)
 	if len(full) != 1 || full[0].ByteOffsetEnd != 200*1024 || full[0].VisualWidth != 200*1024 {
 		t.Fatalf("explicit full row was truncated: %+v", full)

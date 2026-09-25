@@ -1,6 +1,7 @@
 #include <QSGRendererInterface>
 #include "PointerRowAnchor.h"
 #include "DummyQWK.h"
+#include "F4PanelPreferences.h"
 #include "F4TextRenderingPolicy.h"
 #include "TestExtUiStateController.h"
 #include <ZoinGallery/GalleryPreferences.h>
@@ -38,6 +39,7 @@
 #include <QQuickStyle>
 #include <QQuickWindow>
 #include <QScopeGuard>
+#include <QSet>
 #include <QSettings>
 #include <QStyleHints>
 #include <QStringList>
@@ -215,6 +217,7 @@ class TestGallery final : public QObject
     Q_OBJECT
     Q_PROPERTY(bool available READ available CONSTANT)
     Q_PROPERTY(QObject *settings MEMBER preferences CONSTANT)
+    Q_PROPERTY(QObject *panelPreferences READ panelPreferences CONSTANT)
     Q_PROPERTY(QObject *viewerSession READ viewerSession NOTIFY viewerChanged)
     Q_PROPERTY(bool viewerVisible READ viewerVisible NOTIFY viewerChanged)
     Q_PROPERTY(bool viewerMounted READ viewerMounted NOTIFY viewerChanged)
@@ -230,6 +233,7 @@ public:
     QObject *preferences = nullptr;
 
     bool available() const { return m_available; }
+    QObject *panelPreferences() { return &m_panelPreferences; }
     QObject *viewerSession() const { return m_viewerSession; }
     bool viewerVisible() const { return m_viewerUrl.isValid() && presentationState != 1; }
     bool viewerMounted() const { return m_viewerUrl.isValid(); }
@@ -258,12 +262,17 @@ public:
 
     Q_INVOKABLE QObject *sessionForSide(int) const { return nullptr; }
     Q_INVOKABLE void closeViewer() {}
+    Q_INVOKABLE bool setPanelThumbnailsEnabled(int side, bool enabled)
+    {
+        return m_panelPreferences.setThumbnailsEnabled(side, enabled);
+    }
 
 signals:
     void viewerChanged();
 
 private:
     bool m_available = false;
+    F4PanelPreferences m_panelPreferences;
     QUrl m_viewerUrl;
     QPointer<QObject> m_viewerSession;
 };
@@ -271,14 +280,32 @@ private:
 class TestIcons final : public QObject
 {
     Q_OBJECT
-    Q_PROPERTY(qulonglong revision READ revision CONSTANT)
-    Q_PROPERTY(bool system READ system CONSTANT)
-    Q_PROPERTY(bool fileIconsAreFullColor READ fileIconsAreFullColor CONSTANT)
+    Q_PROPERTY(qulonglong revision READ revision NOTIFY revisionChanged)
+    Q_PROPERTY(QString name READ name WRITE setName NOTIFY iconSetChanged)
+    Q_PROPERTY(bool system READ system NOTIFY iconSetChanged)
+    Q_PROPERTY(bool fileIconsAreFullColor READ fileIconsAreFullColor
+               NOTIFY iconSetChanged)
 
 public:
-    qulonglong revision() const { return 1; }
-    bool system() const { return false; }
-    bool fileIconsAreFullColor() const { return false; }
+    qulonglong revision() const { return m_revision; }
+    QString name() const { return m_name; }
+    void setName(const QString &name)
+    {
+        const QString normalized = name.trimmed().compare(
+                                       QStringLiteral("system"),
+                                       Qt::CaseInsensitive)
+                == 0
+            ? QStringLiteral("system")
+            : QStringLiteral("lucide");
+        if (m_name == normalized)
+            return;
+        m_name = normalized;
+        ++m_revision;
+        emit iconSetChanged();
+        emit revisionChanged();
+    }
+    bool system() const { return m_name == QStringLiteral("system"); }
+    bool fileIconsAreFullColor() const { return system(); }
 
     Q_INVOKABLE QUrl iconSource(const QString &name, int, qreal) const
     {
@@ -307,6 +334,14 @@ public:
     {
         return {};
     }
+
+signals:
+    void iconSetChanged();
+    void revisionChanged();
+
+private:
+    QString m_name = QStringLiteral("lucide");
+    qulonglong m_revision = 1;
 };
 
 class TestThemePersistence final : public QObject
@@ -707,7 +742,12 @@ struct QuickViewFixture
     explicit QuickViewFixture(const QVariantMap &scene,
                               bool galleryAvailable = false,
                               bool usesQwk = false,
-                              QString worktreeBranch = {})
+                              QString worktreeBranch = {},
+                              QString guiFontFamily = QStringLiteral("Monaco"),
+                              QString systemUiFontFamily =
+                                  QStringLiteral("Sans Serif"),
+                              QString systemMonospaceFontFamily =
+                                  QStringLiteral("monospace"))
         : gallery(galleryAvailable)
     {
         shell.setScene(scene);
@@ -723,7 +763,13 @@ struct QuickViewFixture
         engine.rootContext()->setContextProperty(
             QStringLiteral("qtTextRendering"), &textRenderingPolicy);
         engine.rootContext()->setContextProperty(
-            QStringLiteral("f4GuiFontFamily"), QStringLiteral("Monaco"));
+            QStringLiteral("f4GuiFontFamily"), guiFontFamily);
+        engine.rootContext()->setContextProperty(
+            QStringLiteral("f4SystemUiFontFamily"),
+            systemUiFontFamily);
+        engine.rootContext()->setContextProperty(
+            QStringLiteral("f4SystemMonospaceFontFamily"),
+            systemMonospaceFontFamily);
         engine.rootContext()->setContextProperty(
             QStringLiteral("f4GuiFontPixelSize"), 13);
         engine.rootContext()->setContextProperty(
@@ -779,6 +825,7 @@ private slots:
     void functionBarSameCountUpdatesPreserveDelegates();
     void functionBarLeavesStaySharpAndThemeLiveAt175Percent();
     void readyUnifiedRendererLoaderIsVisible();
+    void galleryContentInsetBelongsToRendererPanel();
     void panelFileInfoSettingKeepsStatusOverlayAndContentGeometry();
     void panelStatusLeavesStayOnPhysicalPixelGrid();
     void panelStatusFitsLongestRowWithoutWrapping();
@@ -787,6 +834,7 @@ private slots:
     void rendererFileFieldChoiceLeavesStayOnPhysicalPixelGridAt175Percent();
     void fileFieldEditorsStayOnPhysicalPixelGridAt175Percent();
     void fastFindOverlayIsIndependentFromPanelFooter();
+    void nativeFontRolesUsePlatformDefaultsAt175Percent();
     void fastFindOverlayAvoidsStatusAndStaysPixelAligned();
     void galleryPanelColorsAreGroupedAndRemainLive();
     void themeConfiguratorExposesOnlyLiveColorProperties();
@@ -795,6 +843,7 @@ private slots:
     void themeSelectionBordersAreLiveAndPersisted();
     void themeBooleanOptionsFollowLivePalette();
     void themeDialogFontRenderingControlIsLiveAndThemeAware();
+    void themeDialogIconSetControlIsLiveAndPersisted();
     void themeColorListHoverAndPressFlashHaveExplicitLifetimes();
     void themeDialogControlsStayOnPhysicalPixelGridAt175Percent();
     void userMenuRecordDialogLeavesStaySharpAt175Percent();
@@ -804,6 +853,11 @@ private slots:
     void historyHeldUpKeepsRowsOnPhysicalPixels();
     void rendererChoicesUseProductOrderAndShortcuts();
     void rendererZoomControlsFollowLayoutCapability();
+    void rendererGroupingSubmenuMatchesParent();
+    void rendererThumbnailsToggleMatchesMenuAndPersistsPerSide();
+    void rendererZoomHoverClosesGroupingSubmenu();
+    void panelMenusSwitchOnHover();
+    void activeGroupingChoiceReversesDirection();
     void coverUncoverPreservesFilePanelAndRendererObjects();
     void compactActivationPreservesPanelObjectsAndRebindsOnlyFocus();
     void pointerActivationPreviewHandsOffBothPanelCursors();
@@ -860,6 +914,12 @@ private slots:
     void commandLineHeightChangesOncePerEdit();
     void commandLineGraphicalCaretIsOptionalAndPersisted();
     void commandLineClickTransfersFocus();
+    void commandLineClickPositionsCaret();
+    void commandLineMultilineScrollAndSelection();
+    void commandLineAltDragUsesRectangularSelection();
+    void commandLineArrowsNavigateVisualLinesBeforeHistory();
+    void commandLineArrowsNavigateVisualLinesBeforeHistory_data();
+    void commandLineArrowsUseWrappedGeometry();
     void commandLineDropOutlineMatchesPanels();
     void panelCursorBlinkSettlesAndBlockingMenuStopsIt();
     void autocompleteReturnTargetsShellCommandHandler();
@@ -870,6 +930,7 @@ private slots:
     void shortenedPanelsRevealTerminalRows();
     void semanticTableDialog();
     void terminalScrollBarStaysInsideTheExposedPanelSide();
+    void terminalDoubleClickDragExpandsWholeWords();
 };
 
 void F4QuickViewSurfaceTests::qmlImportsWithoutInstalledQt()
@@ -1606,6 +1667,445 @@ void F4QuickViewSurfaceTests::readyUnifiedRendererLoaderIsVisible()
     QVERIFY(!failure->isVisible());
 }
 
+void F4QuickViewSurfaceTests::galleryContentInsetBelongsToRendererPanel()
+{
+    // FilePanelView is the production owner of the renderer Loader. The
+    // horizontal content gap must remain inside that renderer so its full
+    // panel surface can own separators and pointer input.
+    QuickViewFixture fixture(shellScene(), true);
+    QVERIFY(fixture.window);
+    auto *panel = fixture.item(QStringLiteral("filePanel-0"));
+    auto *loader = fixture.item(QStringLiteral("galleryPanelContent-0"));
+    QVERIFY(panel && loader);
+    QTRY_VERIFY_WITH_TIMEOUT(loader->property("item").value<QObject *>(),
+                             3000);
+
+    const qreal contentInset = fixture.window->property(
+        "panelContentSpacing").toReal();
+    auto *renderer = loader->property("item").value<QObject *>();
+    QVERIFY(renderer);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(loader->x()) < 0.01, 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(qAbs(loader->width() - panel->width()) < 0.01,
+                             3000);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        qAbs(renderer->property("contentHorizontalInset").toReal()
+             - contentInset) < 0.01,
+        3000);
+}
+
+void F4QuickViewSurfaceTests::activeGroupingChoiceReversesDirection()
+{
+    QuickViewFixture fixture(shellScene({}, 0), true);
+    auto *panelView = fixture.item(QStringLiteral("filePanel-0"));
+    QVERIFY(panelView);
+    auto *menu = fixture.window->findChild<QObject *>("panelRendererMenu-0");
+    auto *submenu = fixture.window->findChild<QObject *>("panelGroupBySubmenu-0");
+    QVERIFY(menu && submenu);
+    QVariantMap state = panel(0, true);
+    state.remove("entries");
+    state.insert("groupBy", "Name");
+    state.insert("groupFoldersSeparately", true);
+    for (const bool reversed : {false, true}) {
+        state.insert("groupReverse", reversed);
+        fixture.shell.deliverCompactPresentation({
+            {"type", "scene_patch"}, {"side", 0}, {"panel", state}});
+        QVERIFY(QMetaObject::invokeMethod(menu, "open"));
+        QTRY_VERIFY(menu->property("opened").toBool());
+        QVERIFY(QMetaObject::invokeMethod(menu, "openGroupByPopup"));
+        QTRY_VERIFY(submenu->property("opened").toBool());
+        QTest::qWait(100);
+        auto *indicator = visualItemWithObjectNamePrefix(fixture.window->contentItem(),
+            QStringLiteral("panelGroupChoiceCheck-0-1"));
+        QVERIFY(indicator && indicator->isVisible());
+        QVERIFY(indicator->property("source").toUrl().toString().contains(
+            reversed ? "arrow-down" : "arrow-up"));
+        if (qEnvironmentVariableIsSet("F4_GROUP_DIRECTION_CAPTURE"))
+            QVERIFY(fixture.window->grabWindow().save(
+                qEnvironmentVariable("F4_GROUP_DIRECTION_CAPTURE") + QString::number(reversed) + ".png"));
+        fixture.shell.clearActions();
+        QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+            indicator->mapToScene(QPointF(4, 4)).toPoint());
+        QTRY_COMPARE(fixture.shell.actions.size(), 1);
+        const auto action = fixture.shell.actions.last();
+        QCOMPARE(action.value("action").toString(), QString("panel.setGrouping"));
+        QCOMPARE(action.value("mode").toString(), QString("Name"));
+        QCOMPARE(action.value("reverse").toBool(), !reversed);
+        QVERIFY(action.value("foldersSeparately").toBool());
+        QCOMPARE(action.value("side").toInt(), 0);
+        QCOMPARE(action.value("panelId"), state.value("id"));
+        QCOMPARE(action.value("path"), state.value("path"));
+    }
+    const auto choices = panelView->property("groupChoices").toList();
+    for (const auto &choice : choices)
+        QVERIFY(choice.toMap().value("special").toString() != "reverse");
+    for (const QVariantMap choice : {QVariantMap{{"mode", "Extension"}},
+             QVariantMap{{"mode", "None"}}, QVariantMap{{"special", "folders"}}}) {
+        fixture.shell.clearActions();
+        QVERIFY(QMetaObject::invokeMethod(panelView, "chooseGrouping", Q_ARG(QVariant, choice)));
+        QTRY_COMPARE(fixture.shell.actions.size(), 1);
+        QVERIFY(fixture.shell.actions.last().value("reverse").toBool());
+    }
+}
+
+void F4QuickViewSurfaceTests::panelMenusSwitchOnHover()
+{
+    QuickViewFixture fixture(shellScene({}, 0), true);
+    QVERIFY(fixture.window);
+    auto *sort = fixture.item(QStringLiteral("panelSortButton-0"));
+    auto *view = fixture.item(QStringLiteral("panelRendererButton-0"));
+    auto *sortMenu = fixture.window->findChild<QObject *>("panelSortMenu-0");
+    auto *viewMenu = fixture.window->findChild<QObject *>("panelRendererMenu-0");
+    auto *groups = fixture.window->findChild<QObject *>("panelGroupBySubmenu-0");
+    QVERIFY(sort && view && sortMenu && viewMenu && groups);
+    QTest::qWait(100);
+    const auto hover = [&](QQuickItem *item) {
+        moveNativePointer(fixture.window,
+            item->mapToScene(QPointF(item->width() / 2, item->height() / 2)).toPoint());
+        QTest::qWait(100);
+    };
+    hover(sort);
+    hover(view);
+    QVERIFY(!sortMenu->property("visible").toBool());
+    QVERIFY(!viewMenu->property("visible").toBool());
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+        sort->mapToScene(QPointF(sort->width() / 2, sort->height() / 2)).toPoint());
+    QTRY_VERIFY(sortMenu->property("opened").toBool());
+    hover(view);
+    QTRY_VERIFY(viewMenu->property("opened").toBool());
+    QTRY_VERIFY(!sortMenu->property("visible").toBool());
+    QVERIFY(QMetaObject::invokeMethod(viewMenu, "openGroupByPopup"));
+    QTRY_VERIFY(groups->property("opened").toBool());
+    hover(sort);
+    QTRY_VERIFY(sortMenu->property("opened").toBool());
+    QTRY_VERIFY(!viewMenu->property("visible").toBool());
+    QTRY_VERIFY(!groups->property("visible").toBool());
+    hover(view);
+    QTRY_VERIFY(viewMenu->property("opened").toBool());
+    QTest::keyClick(fixture.window, Qt::Key_Escape);
+    QTRY_VERIFY(!viewMenu->property("visible").toBool());
+    hover(sort);
+    QVERIFY(!sortMenu->property("visible").toBool());
+}
+
+void F4QuickViewSurfaceTests::rendererZoomHoverClosesGroupingSubmenu()
+{
+    QuickViewFixture fixture(shellScene({}, 0), true);
+    QVERIFY(fixture.window);
+    auto *menu = fixture.window->findChild<QObject *>("panelRendererMenu-0");
+    auto *submenu = fixture.window->findChild<QObject *>("panelGroupBySubmenu-0");
+    auto *zoom = fixture.item(QStringLiteral("panelRendererZoomRow-0"));
+    auto *slider = fixture.item(QStringLiteral("panelRendererZoomSlider-0"));
+    auto *reset = fixture.item(QStringLiteral("panelRendererZoomReset-0"));
+    QVERIFY(menu && submenu && zoom && slider && reset);
+    QVERIFY(QMetaObject::invokeMethod(menu, "open"));
+    QTRY_VERIFY(menu->property("opened").toBool());
+    QTest::qWait(100);
+    for (auto *target : {zoom, slider, reset}) {
+        moveNativePointer(fixture.window, QPoint(1, 1));
+        QTest::qWait(50);
+        QVERIFY(QMetaObject::invokeMethod(menu, "openGroupByPopup"));
+        QTRY_VERIFY(submenu->property("opened").toBool());
+        moveNativePointer(fixture.window, target->mapToScene(QPointF(4, 4)).toPoint());
+        QTRY_VERIFY(!submenu->property("visible").toBool());
+        QVERIFY(menu->property("opened").toBool());
+        auto *highlight = fixture.item(QStringLiteral("panelRendererGroupByHighlight-0"));
+        QVERIFY(highlight);
+        QCOMPARE(highlight->property("color").value<QColor>().alpha(), 0);
+    }
+}
+
+void F4QuickViewSurfaceTests::rendererThumbnailsToggleMatchesMenuAndPersistsPerSide()
+{
+    const QString previousOrganization = QCoreApplication::organizationName();
+    QCoreApplication::setOrganizationName(
+        QStringLiteral("f4-panel-thumbnails-ui-test"));
+    QSettings settings;
+    const QVariant oldLeft = settings.value(
+        QStringLiteral("Panels/leftThumbnailsEnabled"));
+    const QVariant oldRight = settings.value(
+        QStringLiteral("Panels/rightThumbnailsEnabled"));
+    settings.remove(QStringLiteral("Panels"));
+    const auto restoreSettings = qScopeGuard([&] {
+        if (oldLeft.isValid())
+            settings.setValue(QStringLiteral("Panels/leftThumbnailsEnabled"), oldLeft);
+        else
+            settings.remove(QStringLiteral("Panels/leftThumbnailsEnabled"));
+        if (oldRight.isValid())
+            settings.setValue(QStringLiteral("Panels/rightThumbnailsEnabled"), oldRight);
+        else
+            settings.remove(QStringLiteral("Panels/rightThumbnailsEnabled"));
+        settings.sync();
+        QCoreApplication::setOrganizationName(previousOrganization);
+    });
+
+    QuickViewFixture fixture(shellScene({}, 0), true);
+    QVERIFY(fixture.window);
+    auto *menu = fixture.window->findChild<QObject *>("panelRendererMenu-0");
+    QVERIFY(menu);
+    QVERIFY(QMetaObject::invokeMethod(menu, "open"));
+    QTRY_VERIFY(menu->property("opened").toBool());
+    auto *thumbnails = fixture.item(QStringLiteral("panelThumbnailsRow-0"));
+    auto *groupBy = fixture.item(QStringLiteral("panelRendererGroupByRow-0"));
+    auto *icon = fixture.item(QStringLiteral("panelThumbnailsIcon-0"));
+    auto *label = fixture.item(QStringLiteral("panelThumbnailsLabel-0"));
+    auto *check = fixture.item(QStringLiteral("panelThumbnailsCheck-0"));
+    QVERIFY(thumbnails && groupBy && icon && label && check);
+    auto *groupByIcon = fixture.item(
+        QStringLiteral("panelRendererGroupByIcon-0"));
+    QVERIFY(groupByIcon);
+    QCOMPARE(thumbnails->height(), groupBy->height());
+    QVERIFY(thumbnails->property("checked").toBool());
+
+    const qreal dpr = fixture.window->devicePixelRatio();
+    const qreal thumbnailCheckCenterY = check->mapToItem(
+        fixture.window->contentItem(), QPointF(0, check->height() / 2)).y();
+    const auto findPrefix = [](auto &&self, QQuickItem *root,
+                               const QString &prefix) -> QQuickItem * {
+        if (!root)
+            return nullptr;
+        if (root->objectName().startsWith(prefix))
+            return root;
+        for (QQuickItem *child : root->childItems())
+            if (QQuickItem *match = self(self, child, prefix))
+                return match;
+        return nullptr;
+    };
+    QQuickItem *rendererIcon = findPrefix(
+        findPrefix, fixture.window->contentItem(),
+        QStringLiteral("panelRendererChoiceIcon-"));
+    QQuickItem *rendererCheck = rendererIcon
+        ? findPrefix(findPrefix, rendererIcon->parentItem(),
+                     QStringLiteral("panelRendererChoiceCheck-"))
+        : nullptr;
+    QVERIFY(rendererCheck && rendererIcon);
+    const auto centerY = [&fixture](QQuickItem *item) {
+        return item->mapToItem(fixture.window->contentItem(),
+                               QPointF(0, item->height() / 2)).y();
+    };
+    const qreal thumbnailCheckToIcon =
+        (thumbnailCheckCenterY - centerY(icon)) * dpr;
+    const qreal rendererCheckToIcon =
+        (centerY(rendererCheck) - centerY(rendererIcon)) * dpr;
+    QVERIFY2(qAbs(thumbnailCheckToIcon - rendererCheckToIcon) < 0.01,
+             qPrintable(QStringLiteral(
+                 "Thumbnails check/icon center delta %1 px; View check/icon delta %2 px")
+                 .arg(thumbnailCheckToIcon, 0, 'f', 3)
+                 .arg(rendererCheckToIcon, 0, 'f', 3)));
+    for (auto *leaf : {icon, label, check, groupByIcon,
+                       rendererCheck, rendererIcon}) {
+        const QPointF origin = leaf->mapToItem(
+            fixture.window->contentItem(), QPointF());
+        for (const qreal coordinate : {origin.x() * dpr, origin.y() * dpr}) {
+            QVERIFY2(qAbs(coordinate - qRound(coordinate)) < 0.01,
+                     qPrintable(leaf->objectName()
+                                + QStringLiteral(" at %1 physical px")
+                                      .arg(coordinate)));
+        }
+        QCOMPARE(leaf->mapToItem(fixture.window->contentItem(), QPointF(1, 0))
+                     - origin,
+                 QPointF(1, 0));
+        QCOMPARE(leaf->mapToItem(fixture.window->contentItem(), QPointF(0, 1))
+                     - origin,
+                 QPointF(0, 1));
+    }
+    QTest::qWait(100);
+    const QImage capture = fixture.window->grabWindow();
+    QVERIFY(!capture.isNull());
+    for (auto *leaf : {icon, label, check}) {
+        const QPointF origin = leaf->mapToItem(
+            fixture.window->contentItem(), QPointF());
+        const QRect rect(qRound(origin.x() * dpr), qRound(origin.y() * dpr),
+                         qRound(leaf->width() * dpr),
+                         qRound(leaf->height() * dpr));
+        QVERIFY2(capture.rect().contains(rect),
+                 qPrintable(leaf->objectName() + QStringLiteral(" outside capture")));
+        const QImage renderedLeaf = capture.copy(rect);
+        QSet<QRgb> colors;
+        for (int y = 0; y < renderedLeaf.height(); ++y)
+            for (int x = 0; x < renderedLeaf.width(); ++x)
+                colors.insert(renderedLeaf.pixel(x, y));
+        QVERIFY2(colors.size() > 1,
+                 qPrintable(leaf->objectName()
+                            + QStringLiteral(" rendered without visible pixels")));
+    }
+
+    const QString scale = qEnvironmentVariable("QT_SCALE_FACTOR");
+    if (scale == QStringLiteral("1.75"))
+        QVERIFY(qAbs(dpr - 1.75) < 0.001);
+
+    auto *bridge = fixture.window->property("galleryControllerApi")
+                       .value<QObject *>();
+    QVERIFY(bridge);
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+        thumbnails->mapToScene(QPointF(thumbnails->width() / 2,
+                                        thumbnails->height() / 2)).toPoint());
+    QTRY_VERIFY(!menu->property("opened").toBool());
+    QTRY_VERIFY(!thumbnails->property("checked").toBool());
+    QVERIFY(!settings.value(QStringLiteral("Panels/leftThumbnailsEnabled"),
+                            true).toBool());
+
+    QVERIFY(QMetaObject::invokeMethod(menu, "open"));
+    QTRY_VERIFY(menu->property("opened").toBool());
+    const QVariantList rendererChoices = fixture.item(QStringLiteral("filePanel-0"))
+        ->property("rendererChoices").toList();
+    menu->setProperty("keyboardIndex", rendererChoices.size() + 1);
+    QTRY_COMPARE(menu->property("keyboardIndex").toInt(),
+                 rendererChoices.size() + 1);
+    QTest::keyClick(fixture.window, Qt::Key_Return);
+    QTRY_VERIFY(!menu->property("opened").toBool());
+    QTRY_VERIFY(thumbnails->property("checked").toBool());
+    QVERIFY(settings.value(QStringLiteral("Panels/leftThumbnailsEnabled"),
+                           false).toBool());
+
+    bool saved = false;
+    QVERIFY(QMetaObject::invokeMethod(
+        bridge, "setPanelThumbnailsEnabled", Q_RETURN_ARG(bool, saved),
+        Q_ARG(int, 0), Q_ARG(bool, false)));
+    QVERIFY(saved);
+    QTRY_VERIFY(!thumbnails->property("checked").toBool());
+}
+
+void F4QuickViewSurfaceTests::rendererGroupingSubmenuMatchesParent()
+{
+    QuickViewFixture fixture(shellScene({}, 0), true);
+    QVERIFY(fixture.window);
+    fixture.window->resize(1400, 1000);
+    auto *menu = fixture.window->findChild<QObject *>("panelRendererMenu-0");
+    auto *submenu = fixture.window->findChild<QObject *>("panelGroupBySubmenu-0");
+    QVERIFY(menu && submenu);
+    QVERIFY(QMetaObject::invokeMethod(menu, "open"));
+    QTRY_VERIFY(menu->property("opened").toBool());
+    const qreal dpr = fixture.window->devicePixelRatio();
+    auto *firstIcon = visualItemWithObjectNamePrefix(fixture.window->contentItem(),
+        QStringLiteral("panelRendererChoiceIcon-"));
+    auto *firstLabel = visualItemWithObjectNamePrefix(fixture.window->contentItem(),
+        QStringLiteral("panelRendererChoiceLabel-0-0"));
+    auto *groupRow = fixture.item(QStringLiteral("panelRendererGroupByRow-0"));
+    auto *groupIcon = fixture.item(QStringLiteral("panelRendererGroupByIcon-0"));
+    auto *groupLabel = fixture.item(QStringLiteral("panelRendererGroupByLabel-0"));
+    QVERIFY(firstIcon && firstLabel && groupRow && groupIcon && groupLabel);
+    const qreal rowHeight = firstIcon->parentItem()->parentItem()->height();
+    QCOMPARE(groupRow->height(), rowHeight);
+    for (auto *row : firstIcon->parentItem()->parentItem()->parentItem()->childItems()) {
+        if (row->property("choiceEnabled").toBool())
+            QCOMPARE(row->height(), rowHeight);
+    }
+    QVERIFY(qAbs(rowHeight * dpr - qRound(rowHeight * dpr)) < 0.01);
+    moveNativePointer(fixture.window, QPoint(1, 1));
+    moveNativePointer(fixture.window, firstIcon->mapToScene(QPointF(4, 4)).toPoint());
+    moveNativePointer(fixture.window, groupRow->mapToScene(QPointF(40, 15)).toPoint());
+    QTRY_VERIFY(submenu->property("opened").toBool());
+    auto *firstRow = firstIcon->parentItem()->parentItem();
+    QTRY_COMPARE(firstRow->property("color").value<QColor>().alpha(), 0);
+    QVERIFY(qAbs(groupIcon->mapToScene(QPointF()).x()
+                 - firstIcon->mapToScene(QPointF()).x()) * dpr <= 1);
+    QVERIFY(qAbs(groupLabel->mapToScene(QPointF()).x()
+                 - firstLabel->mapToScene(QPointF()).x()) * dpr <= 1);
+    moveNativePointer(fixture.window, QPoint(1, 1));
+    QTest::qWait(100);
+    QVERIFY(QMetaObject::invokeMethod(submenu, "close"));
+    QTRY_VERIFY(!submenu->property("visible").toBool());
+    for (const qreal menuX : {20.0, 1000.0}) {
+        menu->setProperty("x", menuX);
+        QVERIFY(QMetaObject::invokeMethod(menu, "openGroupByPopup"));
+        QTRY_VERIFY(submenu->property("opened").toBool());
+        QTest::qWait(100);
+        fixture.window->requestUpdate();
+        const QImage settledCapture = fixture.window->grabWindow();
+        QVERIFY(!settledCapture.isNull());
+        QTest::qWait(100);
+        auto *background = submenu->property("background").value<QQuickItem *>();
+        auto *parentBackground = menu->property("background").value<QQuickItem *>();
+        QVERIFY(background && parentBackground);
+        QCOMPARE(background->property("color"), parentBackground->property("color"));
+        QCOMPARE(background->property("radius"), parentBackground->property("radius"));
+        const qreal x = submenu->property("x").toReal();
+        const qreal width = submenu->property("width").toReal();
+        const qreal parentWidth = menu->property("width").toReal();
+        const qreal gap = menuX == 20 ? x - menuX - parentWidth : menuX - x - width;
+        QVERIFY2(qAbs(gap) * dpr <= 1,
+                 qPrintable(QString("submenu gap %1, x %2").arg(gap).arg(x)));
+        QVERIFY(x >= 0 && x + width <= fixture.window->width());
+        QVERIFY(submenu->property("y").toReal() >= 0);
+        QVERIFY(submenu->property("y").toReal() + submenu->property("height").toReal()
+                <= fixture.window->height());
+        QList<QQuickItem *> items;
+        const auto collectItems = [&](auto &&self, QQuickItem *parent) -> void {
+            for (auto *child : parent->childItems()) {
+                items.append(child);
+                self(self, child);
+            }
+        };
+        collectItems(collectItems, fixture.window->contentItem());
+        int checked = 0;
+        for (auto *item : items) {
+            const QString name = item->objectName();
+            if (!item->isVisible()
+                || !(name.startsWith("panelGroupChoice") || name.startsWith("panelRendererGroupBy")
+                     || name.startsWith("panelRendererChoice") || name.startsWith("panelRendererHeading"))
+                || name.startsWith("panelGroupChoiceRow") || name.startsWith("panelRendererGroupByRow")
+                || name.startsWith("panelRendererGroupByHighlight"))
+                continue;
+            const QPointF origin = item->mapToItem(fixture.window->contentItem(), QPointF());
+            for (const qreal coordinate : {origin.x() * dpr, origin.y() * dpr})
+                QVERIFY2(qAbs(coordinate - qRound(coordinate)) < 0.01,
+                         qPrintable(item->objectName() + QString(" at %1 px").arg(coordinate)));
+            QCOMPARE(item->mapToItem(fixture.window->contentItem(), QPointF(1, 0)) - origin, QPointF(1, 0));
+            QCOMPARE(item->mapToItem(fixture.window->contentItem(), QPointF(0, 1)) - origin, QPointF(0, 1));
+            ++checked;
+        }
+        QVERIFY(checked >= 39);
+        const QImage capture = fixture.window->grabWindow();
+        QVERIFY(!capture.isNull());
+        if (qEnvironmentVariableIsSet("F4_GROUP_MENU_CAPTURE"))
+            QVERIFY(capture.save(qEnvironmentVariable("F4_GROUP_MENU_CAPTURE")));
+        auto *choiceOne = visualItemWithObjectNamePrefix(fixture.window->contentItem(),
+            QStringLiteral("panelGroupChoiceRow-0-1"));
+        QVERIFY(choiceOne);
+        moveNativePointer(fixture.window, choiceOne->mapToScene(QPointF(40, 15)).toPoint());
+        QTRY_COMPARE(submenu->property("currentIndex").toInt(), 1);
+        QTest::keyClick(fixture.window, Qt::Key_Down);
+        QTRY_COMPARE(submenu->property("currentIndex").toInt(), 2);
+        QCOMPARE(choiceOne->property("color").value<QColor>().alpha(), 0);
+        moveNativePointer(fixture.window, QPoint(1, 1));
+        QTest::qWait(100);
+        QTest::keyClick(fixture.window, Qt::Key_Left);
+        QTRY_VERIFY(!submenu->property("opened").toBool());
+        QVERIFY(menu->property("opened").toBool());
+    }
+    fixture.window->resize(1400, 400);
+    QVERIFY(QMetaObject::invokeMethod(menu, "openGroupByPopup"));
+    QTRY_VERIFY(submenu->property("opened").toBool());
+    const auto choices = fixture.item(QStringLiteral("filePanel-0"))->property("groupChoices").toList();
+    const int lastChoice = choices.size() - 1;
+    const int selectableCount = std::count_if(choices.begin(), choices.end(), [](const QVariant &choice) {
+        return !choice.toMap().value("separator").toBool();
+    });
+    for (int i = 1; i < selectableCount; ++i)
+        QTest::keyClick(fixture.window, Qt::Key_Down);
+    QTRY_COMPARE(submenu->property("currentIndex").toInt(), lastChoice);
+    QTest::qWait(100);
+    auto *lastLabel = visualItemWithObjectNamePrefix(fixture.window->contentItem(),
+        QStringLiteral("panelGroupChoiceLabel-0-%1").arg(lastChoice));
+    QVERIFY(lastLabel);
+    const qreal labelY = lastLabel->mapToItem(fixture.window->contentItem(), QPointF()).y();
+    QVERIFY(labelY >= submenu->property("y").toReal());
+    QVERIFY(labelY + lastLabel->height() <= submenu->property("y").toReal()
+        + submenu->property("height").toReal());
+    QTest::keyClick(fixture.window, Qt::Key_Escape);
+    QTRY_VERIFY(!submenu->property("opened").toBool());
+    QVERIFY(menu->property("opened").toBool());
+    QVERIFY(QMetaObject::invokeMethod(menu, "openGroupByPopup"));
+    QTRY_VERIFY(submenu->property("opened").toBool());
+    QVariantMap changedPanel = panel(0, true);
+    changedPanel.remove("entries");
+    changedPanel.insert("path", "D:/different-directory");
+    fixture.shell.deliverCompactPresentation({
+        {"type", "scene_patch"}, {"side", 0}, {"panel", changedPanel}});
+    QTRY_VERIFY(!menu->property("opened").toBool());
+    QTRY_VERIFY(!submenu->property("opened").toBool());
+}
+
 void F4QuickViewSurfaceTests::rendererZoomControlsFollowLayoutCapability()
 {
     QuickViewFixture fixture(shellScene({}, 0), true);
@@ -1830,6 +2330,116 @@ void F4QuickViewSurfaceTests::fastFindOverlayIsIndependentFromPanelFooter()
     QCOMPARE(loader->property("item").value<QObject *>(), galleryHost);
 }
 
+void F4QuickViewSurfaceTests::nativeFontRolesUsePlatformDefaultsAt175Percent()
+{
+    const QString uiFontFamily = QStringLiteral("F4 Platform UI Test");
+    const QString fixedFontFamily = QStringLiteral("F4 Platform Fixed Test");
+
+    QVariantMap scene = shellScene({}, 0);
+    QVariantMap shell = scene.value(QStringLiteral("shell")).toMap();
+    QVariantList panels = shell.value(QStringLiteral("panels")).toList();
+    QVariantMap leftPanel = panels.at(0).toMap();
+    leftPanel.insert(QStringLiteral("fastFind"), true);
+    leftPanel.insert(QStringLiteral("fastFindText"),
+                     QStringLiteral("Native UI"));
+    panels[0] = leftPanel;
+    shell.insert(QStringLiteral("panels"), panels);
+    shell.insert(QStringLiteral("commandLine"), QVariantMap{
+        {QStringLiteral("visible"), true},
+        {QStringLiteral("prompt"), QStringLiteral("zoin$ ")},
+        {QStringLiteral("text"), QStringLiteral("echo fixed-width")},
+        {QStringLiteral("cursorPosition"), 16},
+    });
+    scene.insert(QStringLiteral("shell"), shell);
+
+    QuickViewFixture fixture(scene, true, true, {}, {}, uiFontFamily,
+                             fixedFontFamily);
+    QVERIFY(fixture.window);
+    const qreal dpr = fixture.window->devicePixelRatio();
+    QVERIFY2(qAbs(dpr - 1.75) < 0.001,
+             "Run this regression with QT_SCALE_FACTOR=1.75");
+    fixture.window->resize(1200, 700);
+    QCoreApplication::processEvents();
+
+    QCOMPARE(fixture.window->property("uiFontFamily").toString(),
+             uiFontFamily);
+    QCOMPARE(fixture.window->property("guiMonospaceFontFamily").toString(),
+             fixedFontFamily);
+
+    QQuickItem *const grid = fixture.item(QStringLiteral("vtuiGrid"));
+    QQuickItem *const uiLeaf = fixture.item(
+        QStringLiteral("panelFastFindText-0"));
+    QQuickItem *const fixedLeaf = fixture.item(
+        QStringLiteral("commandLineInput"));
+    QVERIFY(grid);
+    QVERIFY(uiLeaf);
+    QVERIFY(fixedLeaf);
+    QTRY_VERIFY_WITH_TIMEOUT(uiLeaf->isVisible(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(fixedLeaf->isVisible(), 3000);
+    QCOMPARE(grid->property("fontFamily").toString(), fixedFontFamily);
+    QCOMPARE(uiLeaf->property("font").value<QFont>().family(), uiFontFamily);
+    QCOMPARE(fixedLeaf->property("font").value<QFont>().family(),
+             fixedFontFamily);
+
+    QQuickItem *const content = fixture.window->contentItem();
+    const auto verifyLeaf = [content, dpr](QQuickItem *leaf) {
+        const QPointF origin = leaf->mapToItem(content, QPointF{});
+        const QPointF physical = origin * dpr;
+        const QString details = QStringLiteral(
+            "%1 origin is (%2, %3) physical px")
+                                    .arg(leaf->objectName())
+                                    .arg(physical.x(), 0, 'f', 6)
+                                    .arg(physical.y(), 0, 'f', 6);
+        QVERIFY2(qAbs(physical.x() - qRound64(physical.x())) < 0.001,
+                 qPrintable(details));
+        QVERIFY2(qAbs(physical.y() - qRound64(physical.y())) < 0.001,
+                 qPrintable(details));
+        QCOMPARE(leaf->mapToItem(content, QPointF(1, 0)) - origin,
+                 QPointF(1, 0));
+        QCOMPARE(leaf->mapToItem(content, QPointF(0, 1)) - origin,
+                 QPointF(0, 1));
+    };
+    verifyLeaf(uiLeaf);
+    verifyLeaf(fixedLeaf);
+
+    QImage frame;
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !(frame = fixture.window->grabWindow()).isNull(), 3000);
+    QVERIFY(frame.save(QStringLiteral(
+        "/tmp/f4-native-font-policy-175.png")));
+    const qreal scaleX = qreal(frame.width()) / fixture.window->width();
+    const qreal scaleY = qreal(frame.height()) / fixture.window->height();
+    const auto verifyRenderedText = [content, &frame, scaleX, scaleY](
+                                        QQuickItem *leaf) {
+        const QPointF origin = leaf->mapToItem(content, QPointF{});
+        const QRect cropRect(
+            qFloor(origin.x() * scaleX), qFloor(origin.y() * scaleY),
+            qCeil(leaf->width() * scaleX),
+            qCeil(leaf->height() * scaleY));
+        const QImage crop = frame.copy(cropRect.intersected(frame.rect()));
+        QVERIFY2(!crop.isNull(), qPrintable(leaf->objectName()));
+        const QColor foreground = leaf->property("color").value<QColor>();
+        int foregroundPixels = 0;
+        for (int y = 0; y < crop.height(); ++y) {
+            for (int x = 0; x < crop.width(); ++x) {
+                const QColor pixel = crop.pixelColor(x, y);
+                const int distance = qAbs(pixel.red() - foreground.red())
+                                   + qAbs(pixel.green() - foreground.green())
+                                   + qAbs(pixel.blue() - foreground.blue());
+                if (pixel.alpha() > 0 && distance <= 36)
+                    ++foregroundPixels;
+            }
+        }
+        QVERIFY2(foregroundPixels >= 4,
+                 qPrintable(QStringLiteral(
+                     "%1 rendered only %2 foreground-like pixels")
+                                .arg(leaf->objectName())
+                                .arg(foregroundPixels)));
+    };
+    verifyRenderedText(uiLeaf);
+    verifyRenderedText(fixedLeaf);
+}
+
 void F4QuickViewSurfaceTests::fastFindOverlayAvoidsStatusAndStaysPixelAligned()
 {
     QuickViewFixture fixture(shellScene({}, 0), true);
@@ -2046,6 +2656,22 @@ void F4QuickViewSurfaceTests::galleryPanelColorsAreGroupedAndRemainLive()
     const auto liveTheme = [gallery] {
         return qmlObjectProperties(gallery->property("theme"));
     };
+    QTRY_COMPARE_WITH_TIMEOUT(
+        liveTheme().value(QStringLiteral("panelBackground")).value<QColor>()
+            .alpha(),
+        0, 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        gallery->property("groupHeaderBackdropColor").value<QColor>(),
+        fixture.window->property("windowBackgroundColor").value<QColor>(),
+        3000);
+    const QColor livePanelBackground =
+        liveTheme().value(QStringLiteral("panelBackground")).value<QColor>();
+    QCOMPARE(livePanelBackground.alpha(), 0);
+    const QColor stickyHeaderBackdrop = gallery
+        ->property("groupHeaderBackdropColor").value<QColor>();
+    QCOMPARE(stickyHeaderBackdrop.alpha(), 255);
+    QCOMPARE(stickyHeaderBackdrop,
+             fixture.window->property("windowBackgroundColor").value<QColor>());
     QTRY_COMPARE_WITH_TIMEOUT(
         liveTheme().value(QStringLiteral("text")).value<QColor>(), textColor,
         3000);
@@ -2319,6 +2945,59 @@ void F4QuickViewSurfaceTests::themeDialogFontRenderingControlIsLiveAndThemeAware
 #endif
 
     QMetaObject::invokeMethod(popup, "close");
+    dialog->hide();
+}
+
+void F4QuickViewSurfaceTests::themeDialogIconSetControlIsLiveAndPersisted()
+{
+    QuickViewFixture fixture(shellScene());
+    QVERIFY(fixture.window);
+
+    auto *dialog = fixture.window->findChild<QQuickWindow *>(
+        QStringLiteral("themeColorConfigurator"));
+    QVERIFY(dialog);
+    auto *combo = dialog->findChild<QQuickItem *>(
+        QStringLiteral("themeIconSetCombo"));
+    QVERIFY(combo);
+
+    QCOMPARE(fixture.window->property("iconSetName").toString(),
+             QStringLiteral("lucide"));
+    QCOMPARE(combo->property("currentText").toString(),
+             QStringLiteral("Lucide"));
+    const QVariantList options =
+        fixture.window->property("iconSetOptions").toList();
+    QCOMPARE(options.size(), 2);
+    QCOMPARE(options.at(0).toMap().value(QStringLiteral("value")).toString(),
+             QStringLiteral("lucide"));
+    QCOMPARE(options.at(1).toMap().value(QStringLiteral("value")).toString(),
+             QStringLiteral("system"));
+
+    QVERIFY(QMetaObject::invokeMethod(
+        fixture.window, "setIconSet", Q_ARG(QVariant, QStringLiteral("system"))));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fixture.window->property("iconSetName").toString(),
+        QStringLiteral("system"), 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(combo->property("currentText").toString(),
+                              QStringLiteral("Native"), 1000);
+    QCOMPARE(fixture.icons.name(), QStringLiteral("system"));
+
+    QVERIFY(QMetaObject::invokeMethod(fixture.window, "saveThemeToPersistence"));
+    QCOMPARE(fixture.themePersistence.theme()
+                 .value(QStringLiteral("iconSet"))
+                 .toString(),
+             QStringLiteral("system"));
+
+    QVERIFY(QMetaObject::invokeMethod(
+        fixture.window, "setIconSet", Q_ARG(QVariant, QStringLiteral("lucide"))));
+    fixture.themePersistence.setTheme(
+        {{QStringLiteral("iconSet"), QStringLiteral("system")}});
+    QVERIFY(QMetaObject::invokeMethod(fixture.window, "loadThemeFromPersistence"));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        fixture.window->property("iconSetName").toString(),
+        QStringLiteral("system"), 1000);
+    QCOMPARE(fixture.icons.name(), QStringLiteral("system"));
+    QVERIFY(fixture.shell.actions.isEmpty());
+
     dialog->hide();
 }
 
@@ -3166,6 +3845,10 @@ void F4QuickViewSurfaceTests::themeDialogControlsStayOnPhysicalPixelGridAt175Per
         QStringLiteral("themeMouseWheelCombo"),
         QStringLiteral("themeMouseWheelComboIndicator"),
         QStringLiteral("themeMouseWheelComboBackground"),
+        QStringLiteral("themeIconSetPanel"),
+        QStringLiteral("themeIconSetCombo"),
+        QStringLiteral("themeIconSetComboIndicator"),
+        QStringLiteral("themeIconSetComboBackground"),
         QStringLiteral("themeNeutralFileTextPanel"),
         QStringLiteral("themeNeutralFileTextLabels"),
         QStringLiteral("themeNeutralFileTextTitle"),
@@ -3241,6 +3924,9 @@ void F4QuickViewSurfaceTests::themeDialogControlsStayOnPhysicalPixelGridAt175Per
         QStringLiteral("themeMouseWheelLabels"),
         QStringLiteral("themeMouseWheelTitle"),
         QStringLiteral("themeMouseWheelDescription"),
+        QStringLiteral("themeIconSetLabels"),
+        QStringLiteral("themeIconSetTitle"),
+        QStringLiteral("themeIconSetDescription"),
         QStringLiteral("themeNeutralFileTextLabels"),
         QStringLiteral("themeNeutralFileTextTitle"),
         QStringLiteral("themeNeutralFileTextDescription"),
@@ -3260,6 +3946,9 @@ void F4QuickViewSurfaceTests::themeDialogControlsStayOnPhysicalPixelGridAt175Per
         QStringLiteral("themeFontRenderTypeDescription"),
         QStringLiteral("themeMouseWheelTitle"),
         QStringLiteral("themeMouseWheelDescription"),
+        QStringLiteral("themeIconSetTitle"),
+        QStringLiteral("themeIconSetDescription"),
+        QStringLiteral("themeIconSetComboText"),
         QStringLiteral("themeNeutralFileTextTitle"),
         QStringLiteral("themeNeutralFileTextDescription"),
         QStringLiteral("themeNeutralFileTextCheckBoxText"),
@@ -4100,6 +4789,25 @@ void F4QuickViewSurfaceTests::panelSplitterCoalescesGoUpdates()
     QVERIFY(fixture.window);
     auto *splitter = fixture.item("mainPanelSplitter");
     QVERIFY(splitter);
+    fixture.shell.clearActions();
+    // The left half belongs to panel controls, notably the scrollbar.
+    const QPoint panelEdge = splitter->mapToScene(QPointF(
+        splitter->width() * 0.125, splitter->height() / 2)).toPoint();
+    QTest::mouseMove(fixture.window, panelEdge);
+    QTest::mousePress(fixture.window, Qt::LeftButton, Qt::NoModifier, panelEdge);
+    QVERIFY(!splitter->property("dragging").toBool());
+    QTest::mouseRelease(fixture.window, Qt::LeftButton, Qt::NoModifier, panelEdge);
+    for (qreal fraction : {0.625, 0.875}) {
+        QTest::mouseMove(fixture.window, QPoint(40, 300));
+        const QPoint grab = splitter->mapToScene(QPointF(
+            splitter->width() * fraction, splitter->height() / 2)).toPoint();
+        QTest::mouseMove(fixture.window, grab);
+        QTRY_VERIFY(splitter->property("hovered").toBool());
+        QTest::mousePress(fixture.window, Qt::LeftButton, Qt::NoModifier, grab);
+        QVERIFY(splitter->property("dragging").toBool());
+        QTest::mouseRelease(fixture.window, Qt::LeftButton, Qt::NoModifier, grab);
+    }
+    QTest::qWait(40);
     fixture.shell.clearActions();
     for (int i=0; i<100; ++i)
         QVERIFY(QMetaObject::invokeMethod(splitter, "ratioRequested", Q_ARG(double, 0.4+i*0.001)));
@@ -7549,6 +8257,351 @@ void F4QuickViewSurfaceTests::commandLineGraphicalCaretIsOptionalAndPersisted()
     QVERIFY(cursor->height() > 2);
 }
 
+void F4QuickViewSurfaceTests::commandLineClickPositionsCaret()
+{
+    auto scene = shellScene();
+    auto shell = scene.value("shell").toMap();
+    const QString text = QString::fromUtf8("a😀bc -option value");
+    QVariantMap command{{"visible", true}, {"multiline", true}, {"wordWrap", true},
+                        {"text", text}, {"cursorPosition", text.size()}};
+    shell.insert("commandLine", command);
+    scene.insert("shell", shell);
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    auto *input = fixture.item("commandLineInput");
+    QVERIFY(input);
+    QTRY_VERIFY(input->property("lineCount").toInt() > 1);
+    // The inserted argument break adds a display position, not a source byte.
+    for (const auto pair : {QPair<int, int>(3, 3), QPair<int, int>(8, 7)}) {
+        QRectF rect;
+        QVERIFY(QMetaObject::invokeMethod(input, "positionToRectangle",
+                Q_RETURN_ARG(QRectF, rect), Q_ARG(int, pair.first)));
+        fixture.shell.clearActions();
+        QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+                         input->mapToScene(rect.center()).toPoint());
+        QTRY_COMPARE(fixture.shell.actions.size(), 1);
+        const auto action = fixture.shell.actions.last();
+        QCOMPARE(action.value("action").toString(), "commandLine.focus");
+        QVERIFY(action.contains("cursorPosition"));
+        QCOMPARE(action.value("cursorPosition").toInt(), pair.second);
+    }
+}
+
+void F4QuickViewSurfaceTests::commandLineMultilineScrollAndSelection()
+{
+    auto scene = shellScene();
+    auto shell = scene.value("shell").toMap();
+    QStringList lines;
+    for (int i = 0; i < 80; ++i)
+        lines << QStringLiteral("row%1 alpha beta").arg(i);
+    const QString text = lines.join(QLatin1Char('\n'));
+    QVariantMap command{{"visible", true}, {"focused", true}, {"ownsNavigation", true},
+                        {"multiline", true}, {"wordWrap", false},
+                        {"text", text}, {"cursorPosition", text.size()}};
+    shell.insert("commandLine", command);
+    scene.insert("shell", shell);
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    auto *box = fixture.item("commandLineView");
+    auto *input = fixture.item("commandLineInput");
+    auto *bar = fixture.item("commandLineScrollBar");
+    QVERIFY(box && input && bar);
+    QTRY_VERIFY(bar->isVisible());
+    QTRY_VERIFY(box->property("scrollTop").toDouble() > 0);
+    const qreal maxScroll = box->property("maxScrollTop").toDouble();
+    QVERIFY(maxScroll > 0);
+    QVERIFY(QMetaObject::invokeMethod(box, "setScrollTop", Q_ARG(QVariant, 0.0)));
+    QTRY_VERIFY(qAbs(bar->property("position").toDouble()) < 0.002);
+    QVERIFY(QMetaObject::invokeMethod(box, "setScrollTop", Q_ARG(QVariant, maxScroll)));
+    QTRY_VERIFY(qAbs(bar->property("position").toDouble()
+                     + bar->property("size").toDouble() - 1.0) < 0.002);
+    const qreal top = box->property("scrollTop").toDouble();
+    fixture.shell.clearActions();
+    QTest::keyClick(fixture.window, Qt::Key_Up);
+    QTRY_VERIFY(!fixture.shell.actions.isEmpty());
+    QCOMPARE(fixture.shell.actions.last().value("action").toString(), "commandLine.cursor");
+    QTest::qWait(30);
+    QCOMPARE(box->property("scrollTop").toDouble(), top);
+
+    const QRectF caret = input->property("cursorRectangle").toRectF();
+    const QPoint point = input->mapToScene(QPointF(12, caret.y() + caret.height() / 2)).toPoint();
+    fixture.shell.clearActions();
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, point);
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, point);
+    QTRY_VERIFY(!fixture.shell.actions.isEmpty());
+    QCOMPARE(fixture.shell.actions.last().value("action").toString(), "commandLine.select");
+    QVERIFY(fixture.shell.actions.last().value("cursorPosition").toInt()
+            > fixture.shell.actions.last().value("anchor").toInt());
+    QVERIFY(input->property("selectionEnd").toInt()
+            > input->property("selectionStart").toInt());
+
+    fixture.shell.clearActions();
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, point);
+    QTRY_VERIFY(!fixture.shell.actions.isEmpty());
+    QCOMPARE(fixture.shell.actions.last().value("action").toString(), "commandLine.select");
+    const int paragraphStart = fixture.shell.actions.last().value("anchor").toInt();
+    const int paragraphEnd = fixture.shell.actions.last().value("cursorPosition").toInt();
+    QVERIFY(paragraphStart >= 0 && paragraphEnd > paragraphStart);
+    QCOMPARE(paragraphStart, text.lastIndexOf('\n', paragraphStart - 1) + 1);
+    const int nextBreak = text.indexOf('\n', paragraphStart);
+    QCOMPARE(paragraphEnd, nextBreak < 0 ? text.size() : nextBreak);
+
+    fixture.shell.clearActions();
+    QTest::mousePress(fixture.window, Qt::LeftButton, Qt::NoModifier, point);
+    QTest::mouseMove(fixture.window, point + QPoint(60, 0));
+    QTest::mouseRelease(fixture.window, Qt::LeftButton, Qt::NoModifier,
+                        point + QPoint(60, 0));
+    QVERIFY(!fixture.shell.actions.isEmpty());
+    QCOMPARE(fixture.shell.actions.last().value("action").toString(), "commandLine.select");
+    QVERIFY(fixture.shell.actions.last().value("cursorPosition").toInt()
+            > fixture.shell.actions.last().value("anchor").toInt());
+
+    QTest::qWait(450);
+    fixture.shell.clearActions();
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, point);
+    QTest::mousePress(fixture.window, Qt::LeftButton, Qt::NoModifier, point);
+    QTest::mouseMove(fixture.window, point + QPoint(95, 0));
+    QTest::mouseRelease(fixture.window, Qt::LeftButton, Qt::NoModifier,
+                        point + QPoint(95, 0));
+    QTRY_VERIFY(!fixture.shell.actions.isEmpty());
+    const auto wordDrag = fixture.shell.actions.last();
+    QCOMPARE(wordDrag.value("action").toString(), "commandLine.select");
+    const int wordStart = wordDrag.value("anchor").toInt();
+    const int wordEnd = wordDrag.value("cursorPosition").toInt();
+    QVERIFY(wordEnd > wordStart);
+    QVERIFY(wordStart == 0 || text.at(wordStart - 1).isSpace());
+    QVERIFY(wordEnd == text.size() || text.at(wordEnd).isSpace());
+}
+
+void F4QuickViewSurfaceTests::commandLineAltDragUsesRectangularSelection()
+{
+    auto scene = shellScene();
+    auto shell = scene.value("shell").toMap();
+    const QString text = QStringLiteral("abcdef\n123456\nuvwxyz");
+    QVariantMap command{{"visible", true}, {"focused", true},
+                        {"ownsNavigation", true}, {"multiline", true},
+                        {"wordWrap", false}, {"text", text},
+                        {"cursorPosition", 0}};
+    shell.insert("commandLine", command);
+    scene.insert("shell", shell);
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    auto *input = fixture.item(QStringLiteral("commandLineInput"));
+    QVERIFY(input);
+    QTRY_COMPARE(input->property("lineCount").toInt(), 3);
+
+    QRectF anchorRect;
+    QRectF focusRect;
+    QVERIFY(QMetaObject::invokeMethod(
+        input, "positionToRectangle", Q_RETURN_ARG(QRectF, anchorRect),
+        Q_ARG(int, 1)));
+    QVERIFY(QMetaObject::invokeMethod(
+        input, "positionToRectangle", Q_RETURN_ARG(QRectF, focusRect),
+        Q_ARG(int, 18)));
+    const QPoint anchor = input->mapToScene(anchorRect.center()).toPoint();
+    const QPoint focus = input->mapToScene(focusRect.center()).toPoint();
+
+    fixture.shell.clearActions();
+    QTest::mousePress(fixture.window, Qt::LeftButton, Qt::AltModifier, anchor);
+    QTest::mouseMove(fixture.window, focus, 20);
+    QTest::mouseRelease(fixture.window, Qt::LeftButton, Qt::NoModifier, focus);
+    QTRY_VERIFY_WITH_TIMEOUT(!fixture.shell.actions.isEmpty(), 1000);
+    const QVariantMap action = fixture.shell.actions.constLast();
+    QCOMPARE(action.value(QStringLiteral("action")).toString(),
+             QStringLiteral("commandLine.select"));
+    QVERIFY(action.value(QStringLiteral("block")).toBool());
+    QCOMPARE(action.value(QStringLiteral("anchor")).toInt(), 1);
+    QCOMPARE(action.value(QStringLiteral("cursorPosition")).toInt(), 20);
+
+    auto wrappedScene = shellScene();
+    auto wrappedShell = wrappedScene.value("shell").toMap();
+    const QString wrappedText = QStringLiteral("tool ")
+        + QString(600, QLatin1Char('x')) + QStringLiteral(" -alpha tail");
+    QVariantMap wrappedCommand{{"visible", true}, {"focused", true},
+                               {"ownsNavigation", true}, {"multiline", true},
+                               {"wordWrap", true}, {"text", wrappedText},
+                               {"cursorPosition", 0}};
+    wrappedShell.insert("commandLine", wrappedCommand);
+    wrappedScene.insert("shell", wrappedShell);
+    QuickViewFixture wrappedFixture(wrappedScene);
+    QVERIFY(wrappedFixture.window);
+    auto *wrappedInput = wrappedFixture.item(QStringLiteral("commandLineInput"));
+    auto *wrappedBox = wrappedFixture.item(QStringLiteral("commandLineView"));
+    QVERIFY(wrappedInput && wrappedBox);
+    QTRY_VERIFY(wrappedInput->property("lineCount").toInt() > 3);
+
+    QRectF zeroRect;
+    QRectF oneRect;
+    QVERIFY(QMetaObject::invokeMethod(
+        wrappedInput, "positionToRectangle", Q_RETURN_ARG(QRectF, zeroRect),
+        Q_ARG(int, 0)));
+    QVERIFY(QMetaObject::invokeMethod(
+        wrappedInput, "positionToRectangle", Q_RETURN_ARG(QRectF, oneRect),
+        Q_ARG(int, 1)));
+    const qreal cellWidth = oneRect.x() - zeroRect.x();
+    QVERIFY(cellWidth > 0);
+    const qreal lineHeight = wrappedBox->property("textLineHeight").toReal();
+    QVERIFY(lineHeight > 0);
+    const QPoint wrappedAnchor = wrappedInput->mapToScene(
+        QPointF(2.5 * cellWidth, lineHeight / 2)).toPoint();
+
+    wrappedFixture.shell.clearActions();
+    QTest::mousePress(wrappedFixture.window, Qt::LeftButton, Qt::AltModifier,
+                      wrappedAnchor);
+    QCoreApplication::processEvents();
+    const QPoint wrappedFocus = wrappedInput->mapToScene(
+        QPointF(7.5 * cellWidth, 2.5 * lineHeight)).toPoint();
+    QTest::mouseMove(wrappedFixture.window, wrappedFocus, 20);
+    auto *overlay = wrappedFixture.item(QStringLiteral("commandLineBlockSelectionOverlay"));
+    QVERIFY(overlay);
+    QElapsedTimer feedbackTimer;
+    feedbackTimer.start();
+    QTest::qWait(100); // No Go response is supplied by this fixture.
+    QVERIFY2(overlay->isVisible(), "drag feedback must not wait for a Go round trip");
+    QCOMPARE(overlay->property("lastRow").toInt(), 2);
+    qInfo() << "ALT_DRAG delayed-backend feedback visible after" << feedbackTimer.elapsed() << "ms";
+    auto *focusArea = wrappedFixture.item(QStringLiteral("commandLineFocusArea"));
+    QVERIFY(focusArea);
+    qint64 total = 0, worst = 0;
+    for (int i = 0; i < 500; ++i) {
+        const int column = 6 + i % 2;
+        feedbackTimer.start();
+        QVERIFY(QMetaObject::invokeMethod(focusArea, "selectAt", Qt::DirectConnection,
+            Q_ARG(QVariant, 3), Q_ARG(QVariant, 150), Q_ARG(QVariant, true),
+            Q_ARG(QVariant, 0), Q_ARG(QVariant, 2), Q_ARG(QVariant, 2), Q_ARG(QVariant, column)));
+        QCOMPARE(overlay->property("lastColumn").toInt(), column);
+        const auto elapsed = feedbackTimer.nsecsElapsed();
+        total += elapsed;
+        worst = qMax(worst, elapsed);
+    }
+    qInfo() << "ALT_COMMAND mouse-to-selection synchronous us average" << total / 500.0 / 1000
+            << "max" << worst / 1000.0;
+    QTest::mouseRelease(wrappedFixture.window, Qt::LeftButton, Qt::NoModifier,
+                        wrappedFocus);
+    QTRY_VERIFY_WITH_TIMEOUT(!wrappedFixture.shell.actions.isEmpty(), 1000);
+    const QVariantMap wrappedAction = wrappedFixture.shell.actions.constLast();
+    QVERIFY(wrappedAction.value(QStringLiteral("block")).toBool());
+    QVERIFY2(wrappedAction.contains(QStringLiteral("blockAnchorRow")),
+             "block selection must carry the rendered Qt row coordinates");
+    QCOMPARE(wrappedAction.value(QStringLiteral("blockAnchorRow")).toInt(), 0);
+    QCOMPARE(wrappedAction.value(QStringLiteral("blockAnchorColumn")).toInt(), 2);
+    QCOMPARE(wrappedAction.value(QStringLiteral("blockFocusRow")).toInt(), 2);
+    QCOMPARE(wrappedAction.value(QStringLiteral("blockFocusColumn")).toInt(), 7);
+    QVERIFY(wrappedAction.value(QStringLiteral("blockWrapWidth")).toInt() > 1);
+    for (const auto &key : {"blockAnchorRow", "blockAnchorColumn", "blockFocusRow", "blockFocusColumn"})
+        wrappedCommand.insert(QString::fromLatin1(key), wrappedAction.value(QString::fromLatin1(key)));
+    wrappedCommand.insert("blockSelection", true);
+    wrappedShell.insert("commandLine", wrappedCommand);
+    wrappedScene.insert("shell", wrappedShell);
+    wrappedFixture.shell.setScene(wrappedScene);
+    QCoreApplication::processEvents();
+    wrappedCommand.insert("blockSelection", false);
+    wrappedShell.insert("commandLine", wrappedCommand);
+    wrappedScene.insert("shell", wrappedShell);
+    wrappedFixture.shell.setScene(wrappedScene);
+    QTRY_VERIFY(!overlay->isVisible());
+}
+
+void F4QuickViewSurfaceTests::commandLineArrowsNavigateVisualLinesBeforeHistory_data()
+{
+    QTest::addColumn<bool>("wordWrap");
+    QTest::addColumn<int>("start");
+    QTest::newRow("plain-column") << false << 9;
+    QTest::newRow("plain-end") << false << 12;
+    QTest::newRow("rich-column") << true << 9;
+    QTest::newRow("rich-end") << true << 12;
+}
+
+void F4QuickViewSurfaceTests::commandLineArrowsNavigateVisualLinesBeforeHistory()
+{
+    QFETCH(bool, wordWrap);
+    QFETCH(int, start);
+    auto scene = shellScene();
+    auto shell = scene.value("shell").toMap();
+    QVariantMap command{{"visible", true}, {"focused", true}, {"ownsNavigation", true},
+                        {"multiline", true}, {"text", "abc\nx\nabcdef"},
+                        {"wordWrap", wordWrap}, {"cursorPosition", start}, {"cursorVisible", true}};
+    shell.insert("commandLine", command);
+    scene.insert("shell", shell);
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    auto *input = fixture.item("commandLineInput");
+    QVERIFY(input);
+    QTRY_COMPARE(input->property("cursorPosition").toInt(), start);
+    for (const auto step : {QPair<Qt::Key, int>(Qt::Key_Up, 5),
+                           QPair<Qt::Key, int>(Qt::Key_Up, 3),
+                           QPair<Qt::Key, int>(Qt::Key_Down, 5),
+                           QPair<Qt::Key, int>(Qt::Key_Down, start)}) {
+        fixture.shell.clearActions();
+        QTest::keyClick(fixture.window, step.first);
+        QTRY_COMPARE(fixture.shell.actions.size(), 1);
+        const auto action = fixture.shell.actions.last();
+        QCOMPARE(action.value("action").toString(), "commandLine.cursor");
+        QCOMPARE(action.value("cursorPosition").toInt(), step.second);
+        command.insert("cursorPosition", step.second);
+        fixture.shell.setCommandLine(command);
+        QTRY_COMPARE(input->property("cursorPosition").toInt(), step.second);
+    }
+    fixture.shell.clearActions();
+    QTest::keyClick(fixture.window, Qt::Key_Down);
+    QCOMPARE(fixture.shell.actions.size(), 0);
+    QCOMPARE(input->property("cursorPosition").toInt(), start);
+}
+
+void F4QuickViewSurfaceTests::commandLineArrowsUseWrappedGeometry()
+{
+    auto scene = shellScene();
+    auto shell = scene.value("shell").toMap();
+    const QString text = "tool -alpha value -beta value";
+    const int start = text.indexOf("-beta") + 4;
+    QVariantMap command{{"visible", true}, {"focused", true}, {"ownsNavigation", true},
+                        {"multiline", true}, {"wordWrap", true}, {"text", text},
+                        {"cursorPosition", start}, {"cursorVisible", true}};
+    shell.insert("commandLine", command);
+    scene.insert("shell", shell);
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    auto *input = fixture.item("commandLineInput");
+    QVERIFY(input);
+    QTRY_COMPARE(input->property("lineCount").toInt(), 3);
+    fixture.shell.clearActions();
+    QTest::keyClick(fixture.window, Qt::Key_Up);
+    QTRY_COMPARE(fixture.shell.actions.size(), 1);
+    QCOMPARE(fixture.shell.actions.last().value("cursorPosition").toInt(), text.indexOf("-alpha") + 4);
+    QCOMPARE(fixture.shell.actions.last().value("action").toString(), "commandLine.cursor");
+
+    const QString wrapped(500, QLatin1Char('x'));
+    command.insert("wordWrap", false);
+    command.insert("text", wrapped);
+    command.insert("cursorPosition", wrapped.size() - 5);
+    fixture.shell.setCommandLine(command);
+    QTRY_COMPARE(input->property("cursorPosition").toInt(), wrapped.size() - 5);
+    QTRY_VERIFY(input->property("lineCount").toInt() > 2);
+    const QRectF previous = input->property("cursorRectangle").toRectF();
+    fixture.shell.clearActions();
+    QTest::keyClick(fixture.window, Qt::Key_Up);
+    QTRY_COMPARE(fixture.shell.actions.size(), 1);
+    QCOMPARE(fixture.shell.actions.last().value("action").toString(), "commandLine.cursor");
+    const QRectF current = input->property("cursorRectangle").toRectF();
+    QVERIFY(qAbs(current.y() - (previous.y() - previous.height())) < 0.1);
+    QVERIFY(qAbs(current.x() - previous.x()) < 1.0);
+    QVERIFY(fixture.shell.actions.last().value("cursorPosition").toInt() < wrapped.size() - 5);
+    QString displayed;
+    QVERIFY(QMetaObject::invokeMethod(input, "getText", Q_RETURN_ARG(QString, displayed),
+                                     Q_ARG(int, 0), Q_ARG(int, wrapped.size())));
+    QCOMPARE(displayed, wrapped);
+
+    const qreal dpr = fixture.window->devicePixelRatio();
+    for (auto *leaf : {input, fixture.item("commandLineCursor")}) {
+        QVERIFY(leaf);
+        const QPointF origin = leaf->mapToScene(QPointF());
+        QVERIFY(qAbs(origin.x() * dpr - qRound(origin.x() * dpr)) < 0.01);
+        QVERIFY(qAbs(origin.y() * dpr - qRound(origin.y() * dpr)) < 0.01);
+        QCOMPARE(leaf->mapToScene(QPointF(1, 0)) - origin, QPointF(1, 0));
+        QCOMPARE(leaf->mapToScene(QPointF(0, 1)) - origin, QPointF(0, 1));
+    }
+}
+
 void F4QuickViewSurfaceTests::commandLineClickTransfersFocus()
 {
     auto scene = shellScene();
@@ -7884,6 +8937,8 @@ void F4QuickViewSurfaceTests::commandLineMultilineWrapAndPixelGrid()
     QVERIFY(input);
     QVERIFY(box);
     QTRY_COMPARE(input->property("lineCount").toInt(), 4);
+    QTRY_COMPARE(fixture.window->property("commandLineContentHeight").toDouble(),
+                 box->property("inputContentHeight").toDouble());
     const qreal threeRowsHeight = box->height();
     command.insert(QStringLiteral("text"), QStringLiteral("app ") + QStringLiteral("-argument ").repeated(150));
     command.insert(QStringLiteral("cursorPosition"), 1504);
@@ -8254,6 +9309,50 @@ void F4QuickViewSurfaceTests::widePanelDoesNotRevealTerminalBackdrop()
     fixture.shell.setScene(scene);
     QTRY_VERIFY_WITH_TIMEOUT(passivePanel->isVisible(), 3000);
     QTRY_VERIFY_WITH_TIMEOUT(widePanel->width() < fixture.window->width(), 3000);
+}
+
+void F4QuickViewSurfaceTests::terminalDoubleClickDragExpandsWholeWords()
+{
+    QVariantMap scene = shellScene();
+    QVariantMap shell = scene.value(QStringLiteral("shell")).toMap();
+    shell.insert(QStringLiteral("showLeftPanel"), false);
+    shell.insert(QStringLiteral("showRightPanel"), true);
+    shell.insert(QStringLiteral("terminal"), QVariantMap{
+        {QStringLiteral("id"), QStringLiteral("terminal-word-drag")},
+        {QStringLiteral("kind"), QStringLiteral("terminal")},
+        {QStringLiteral("scrollUnit"), QStringLiteral("rows")},
+        {QStringLiteral("scrollAction"), QStringLiteral("terminal.scroll")},
+        {QStringLiteral("selectionEnabled"), true},
+        {QStringLiteral("rows"), visualRows(0, 24)},
+        {QStringLiteral("windowRows"), visualRows(0, 40)},
+        {QStringLiteral("windowStart"), 0},
+        {QStringLiteral("windowEnd"), 40},
+        {QStringLiteral("viewportStart"), 0},
+        {QStringLiteral("viewportSpan"), 24},
+        {QStringLiteral("viewportRows"), 24},
+        {QStringLiteral("contentExtent"), 40},
+        {QStringLiteral("windowGeneration"), 1},
+    });
+    scene.insert(QStringLiteral("shell"), shell);
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    QQuickItem *surface = nullptr;
+    QTRY_VERIFY((surface = fixture.item(QStringLiteral("terminalDocumentSurface"))) != nullptr);
+    QTRY_VERIFY(surface->property("windowInitialized").toBool());
+    auto press = [&](int column, double timestamp) {
+        return QMetaObject::invokeMethod(surface, "handleTerminalSelectionPressAt",
+            Q_ARG(QVariant, 0), Q_ARG(QVariant, column),
+            Q_ARG(QVariant, column), Q_ARG(QVariant, timestamp));
+    };
+    QVERIFY(press(3, 1000.0));
+    QVERIFY(press(3, 1100.0));
+    QVERIFY(surface->property("terminalSelectionDragging").toBool());
+    QCOMPARE(surface->property("terminalSelectionAnchorColumn").toInt(), 0);
+    QCOMPARE(surface->property("terminalSelectionFocusColumn").toInt(), 7);
+    QVERIFY(QMetaObject::invokeMethod(surface, "extendTerminalSelectionTo",
+        Q_ARG(QVariant, 0), Q_ARG(QVariant, 9)));
+    QCOMPARE(surface->property("terminalSelectionAnchorColumn").toInt(), 0);
+    QCOMPARE(surface->property("terminalSelectionFocusColumn").toInt(), 11);
 }
 
 void F4QuickViewSurfaceTests::terminalScrollBarStaysInsideTheExposedPanelSide()
@@ -8991,6 +10090,9 @@ void F4QuickViewSurfaceTests::deviceBreadcrumbLabelsPreserveCanonicalNavigationA
     QTest::newRow("ios-manager")
         << QString("ios://") << QString("Apple mobile devices")
         << QString("iOS") << QString("apple-logo") << QStringList{};
+    QTest::newRow("netfox-manager")
+        << QString("net://") << QString("net://")
+        << QString("Network") << QString("network") << QStringList{};
     QTest::newRow("android-child")
         << QString("android://Pixel 3/sdcard/DCIM")
         << QString("android://Pixel 3/sdcard/DCIM")

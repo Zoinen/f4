@@ -831,7 +831,7 @@ func (cb *ComboBox) HandleSemanticAction(action map[string]any) bool {
 
 func (e *Edit) SemanticNode(ctx *SemanticContext) map[string]any {
 	x1, y1, x2, y2 := e.GetPosition()
-	return map[string]any{
+	node := map[string]any{
 		"id":       SemanticID(e),
 		"kind":     "edit",
 		"x":        x1,
@@ -853,6 +853,14 @@ func (e *Edit) SemanticNode(ctx *SemanticContext) map[string]any {
 		"selectionEnd":    e.selEnd,
 		"history":         e.ShowHistoryButton,
 	}
+	if e.blockSelection {
+		node["blockSelection"] = true
+		node["blockAnchorRow"] = e.blockAnchorRow
+		node["blockAnchorColumn"] = e.blockAnchorColumn
+		node["blockFocusRow"] = e.blockFocusRow
+		node["blockFocusColumn"] = e.blockFocusColumn
+	}
+	return node
 }
 
 func (e *Edit) HandleSemanticAction(action map[string]any) bool {
@@ -861,11 +869,18 @@ func (e *Edit) HandleSemanticAction(action map[string]any) bool {
 	}
 	switch semanticString(action["action"]) {
 	case "select", "control.select":
-		e.ClearSelection()
-		e.selAnchor = e.semanticCursor(semanticInt(action["anchor"]))
-		e.curPos = e.semanticCursor(semanticInt(action["cursor"]))
-		e.endSelection()
-		e.ScreenObject.NotifyChange()
+		anchor := e.semanticCursor(semanticInt(action["anchor"]))
+		cursor := e.semanticCursor(semanticInt(action["cursor"]))
+		block, _ := action["block"].(bool)
+		if block && e.Multiline {
+			e.SetMultilineBlockSelection(anchor, cursor)
+		} else {
+			e.ClearSelection()
+			e.selAnchor = anchor
+			e.curPos = cursor
+			e.endSelection()
+			e.ScreenObject.NotifyChange()
+		}
 		DebugLog("[FIX:edit-native-selection] anchor=%d cursor=%d", e.selAnchor, e.curPos)
 		return true
 	case "set_text", "control.setText":
@@ -888,7 +903,19 @@ func (e *Edit) HandleSemanticAction(action map[string]any) bool {
 // offsets and keep pointers outside the interior of a rendered cluster.
 func (e *Edit) semanticCursor(offset int) int {
 	offset = max(0, min(offset, len(e.text)))
+	// Terminal clusters omit line breaks, but a multiline caret may sit on
+	// either side of one, including between consecutive empty lines.
+	if e.Multiline && offset > 0 && offset < len(e.text) &&
+		(e.text[offset] == '\n' || e.text[offset-1] == '\n') {
+		return offset
+	}
 	if offset > 0 && offset < len(e.text) {
+		// Adjacent printable ASCII runes are always separate terminal clusters.
+		// Native pointer updates must not segment the entire input for this case.
+		left, right := e.text[offset-1], e.text[offset]
+		if left >= ' ' && left <= '~' && right >= ' ' && right <= '~' {
+			return offset
+		}
 		offset = e.prevClusterBoundary(offset + 1)
 	}
 	return offset

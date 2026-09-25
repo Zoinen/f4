@@ -208,6 +208,7 @@ F4GalleryBridge::F4GalleryBridge(QQmlEngine *engine, QObject *parent,
     }
 
     m_quickViewPreferences = new F4QuickViewPreferences(this);
+    m_panelPreferences = new F4PanelPreferences(this);
     ZoinGallery::RuntimeOptions options;
     options.providerPrefix = QStringLiteral("f4-zoingallery");
     options.storageNamespace = QStringLiteral("f4-qt-host");
@@ -232,6 +233,13 @@ F4GalleryBridge::F4GalleryBridge(QQmlEngine *engine, QObject *parent,
     m_panelSessions.setSession(
         1, runtime->createExternalSession(QStringLiteral("f4-right"), this));
     connectSessionFileFieldUpdates();
+    for (int side = 0; side < PanelSessionRegistry::PanelCount; ++side) {
+        if (auto *session = qobject_cast<ZoinGallery::GallerySession *>(
+                m_panelSessions.session(side))) {
+            session->setThumbnailsEnabled(
+                m_panelPreferences->thumbnailsEnabled(side));
+        }
+    }
     configureNavigationBenchmark();
 }
 
@@ -283,6 +291,21 @@ QObject *F4GalleryBridge::settings() const {
     return runtime ? runtime->preferences() : nullptr;
 }
 
+bool F4GalleryBridge::setPanelThumbnailsEnabled(int side, bool enabled)
+{
+    if (!validSide(side) || !m_panelPreferences) {
+        return false;
+    }
+    if (!m_panelPreferences->setThumbnailsEnabled(side, enabled)) {
+        return false;
+    }
+    if (auto *session = qobject_cast<ZoinGallery::GallerySession *>(
+            m_panelSessions.session(side))) {
+        session->setThumbnailsEnabled(enabled);
+    }
+    return true;
+}
+
 QUrl F4GalleryBridge::panelComponentUrl() const
 {
     return available() ? QUrl(QStringLiteral("qrc:/F4QtHost/qml/GalleryPanelHost.qml")) : QUrl();
@@ -301,6 +324,15 @@ bool F4GalleryBridge::navigationBenchmarkEnabled() const
 bool F4GalleryBridge::benchmarkTraceEnabled() const
 {
     return F4NavigationBenchmarkTrace::enabled();
+}
+
+QVariantList F4GalleryBridge::groupCatalogForSide(int side) const
+{
+    if (!validSide(side)) {
+        return {};
+    }
+    const SideState &state = m_panelSessions.catalog(side);
+    return state.groupCatalogReady ? state.groupDescriptors : QVariantList{};
 }
 
 void F4GalleryBridge::setScrollingMouseCursor(bool scrollingMode,

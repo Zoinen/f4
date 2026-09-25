@@ -12,6 +12,7 @@ import (
 	"github.com/unxed/f4/plugins/netfox"
 	"github.com/unxed/f4/plugins/netfox/fishplus"
 	"github.com/unxed/f4/vfs"
+	"github.com/unxed/vtui"
 )
 
 const (
@@ -26,6 +27,18 @@ func (s serverDeviceSource) ListDevices(ctx context.Context) ([]DeviceInfo, erro
 	if err != nil {
 		return nil, err
 	}
+	vtui.DebugLog("[FIX:android-discovery] ADB returned %s", describeADBDevices(devices))
+	if !hasUSBDevice(devices) {
+		vtui.DebugLog("[FIX:android-discovery] no USB transport in ADB snapshot; retrying after bounded daemon refresh")
+		if refreshErr := s.server.refreshDiscoveryIfDue(ctx); refreshErr != nil {
+			vtui.DebugLog("[FIX:android-discovery] daemon refresh failed: %v", refreshErr)
+		} else if refreshed, refreshErr := s.server.Devices(ctx); refreshErr == nil {
+			devices = refreshed
+			vtui.DebugLog("[FIX:android-discovery] ADB returned after refresh %s", describeADBDevices(devices))
+		} else {
+			vtui.DebugLog("[FIX:android-discovery] post-refresh device query failed: %v", refreshErr)
+		}
+	}
 	result := make([]DeviceInfo, 0, len(devices))
 	for _, device := range devices {
 		result = append(result, DeviceInfo{
@@ -35,6 +48,7 @@ func (s serverDeviceSource) ListDevices(ctx context.Context) ([]DeviceInfo, erro
 			Product:     device.Product,
 			Device:      device.Device,
 			TransportID: device.TransportID,
+			USB:         device.USB,
 		})
 	}
 	return result, nil
@@ -42,6 +56,47 @@ func (s serverDeviceSource) ListDevices(ctx context.Context) ([]DeviceInfo, erro
 
 func (s serverDeviceSource) RestartForAuthorization(ctx context.Context) error {
 	return s.server.RestartForAuthorization(ctx)
+}
+
+func (s serverDeviceSource) RefreshDiscovery(ctx context.Context) error {
+	return s.server.RefreshDiscovery(ctx)
+}
+
+func hasUSBDevice(devices []Device) bool {
+	for _, device := range devices {
+		if device.USB {
+			return true
+		}
+	}
+	return false
+}
+
+func hasUSBDeviceInfo(devices []DeviceInfo) bool {
+	for _, device := range devices {
+		if device.USB {
+			return true
+		}
+	}
+	return false
+}
+
+func describeADBDevices(devices []Device) string {
+	if len(devices) == 0 {
+		return "devices=0"
+	}
+	parts := make([]string, 0, len(devices))
+	for _, device := range devices {
+		kind := "non-usb"
+		if device.USB {
+			kind = "usb"
+		}
+		label := strings.TrimSpace(device.Model)
+		if label == "" {
+			label = strings.TrimSpace(device.Serial)
+		}
+		parts = append(parts, fmt.Sprintf("%s:%s:%s", label, device.State, kind))
+	}
+	return fmt.Sprintf("devices=%d [%s]", len(devices), strings.Join(parts, ", "))
 }
 
 type hybridDeviceOpener struct {
@@ -74,6 +129,7 @@ func (o *hybridDeviceOpener) OpenDevice(ctx context.Context, parent vfs.VFS, dev
 		if err == nil {
 			if fish, ok := mounted.(*netfox.FishVFS); ok {
 				fish.SetDevicePath(vfs.DevicePath{Scheme: "android", Device: deviceSessionTitle(device)})
+				fish.SetDirectoryCacheKey("android:" + device.Serial)
 			}
 			if fish, ok := mounted.(*netfox.FishVFS); ok && o.configureFish != nil {
 				o.configureFish(fish, device, features)
@@ -295,5 +351,6 @@ func NewPlugin() *Plugin {
 
 var _ DeviceSource = serverDeviceSource{}
 var _ DeviceAuthorizationRestarter = serverDeviceSource{}
+var _ DeviceDiscoveryRefresher = serverDeviceSource{}
 var _ DeviceOpener = (*hybridDeviceOpener)(nil)
 var _ io.ReadWriteCloser = (*ShellStream)(nil)

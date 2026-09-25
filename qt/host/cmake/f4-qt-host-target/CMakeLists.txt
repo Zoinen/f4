@@ -113,28 +113,27 @@ if(APPLE)
     "-framework Network"
   )
   # The host binary is also copied into a small application bundle below so
-  # LaunchServices can own the adaptive Icon Composer icon. Keep the bare
-  # binary working as a compatibility fallback.
+  # LaunchServices can own the application icon. Keep the bare binary working
+  # as a compatibility fallback.
   set_target_properties(f4-qt-host PROPERTIES
     INSTALL_RPATH "@loader_path/../lib;@loader_path/../../../../lib"
   )
 
-  set(F4_MACOS_ICON_DIR
-    "${F4_QT_HOST_ROOT}/../../assets/icon/AppIcon.icon")
-  set(F4_MACOS_ICON_FILES
-    "${F4_MACOS_ICON_DIR}/icon.json"
-    "${F4_MACOS_ICON_DIR}/Assets/f4-shell.svg"
-    "${F4_MACOS_ICON_DIR}/Assets/f4-content.svg"
-  )
+  set(F4_MACOS_ICON_FILE
+    "${F4_QT_HOST_ROOT}/../../assets/icon/AppIcon.icns")
+  if(NOT EXISTS "${F4_MACOS_ICON_FILE}")
+    message(FATAL_ERROR
+      "The prebuilt macOS application icon is missing: ${F4_MACOS_ICON_FILE}")
+  endif()
   set(F4_MACOS_INFO_PLIST
     "${CMAKE_BINARY_DIR}/generated/f4-qt-host-Info.plist")
   configure_file("${F4_QT_HOST_ROOT}/packaging/f4-qt-host-Info.plist.in"
     "${F4_MACOS_INFO_PLIST}" @ONLY)
 
   # A source icon change must relink the host so this post-build packaging
-  # step runs again even though actool's inputs are not C++ sources.
+  # step runs again even though the icon is not a C++ source.
   set_property(SOURCE "${F4_QT_HOST_ROOT}/src/main.cpp" APPEND PROPERTY
-    OBJECT_DEPENDS "${F4_MACOS_ICON_FILES}")
+    OBJECT_DEPENDS "${F4_MACOS_ICON_FILE}")
 
   set(F4_MACOS_APP_DIR
     "$<TARGET_FILE_DIR:f4-qt-host>/f4-qt-host.app")
@@ -142,27 +141,19 @@ if(APPLE)
     COMMAND "${CMAKE_COMMAND}" -E make_directory
       "${F4_MACOS_APP_DIR}/Contents/MacOS"
       "${F4_MACOS_APP_DIR}/Contents/Resources"
-    COMMAND xcrun actool "${F4_MACOS_ICON_DIR}"
-      --compile "${F4_MACOS_APP_DIR}/Contents/Resources"
-      --output-format human-readable-text
-      --notices
-      --warnings
-      --output-partial-info-plist
-        "${F4_MACOS_APP_DIR}/Contents/Resources/AppIcon-Partial.plist"
-      --app-icon AppIcon
-      --include-all-app-icons
-      --enable-on-demand-resources NO
-      --development-region en
-      --target-device mac
-      --minimum-deployment-target "${CMAKE_OSX_DEPLOYMENT_TARGET}"
-      --platform macosx
+    COMMAND "${CMAKE_COMMAND}" -E rm -f
+      "${F4_MACOS_APP_DIR}/Contents/Resources/AppIcon-Partial.plist"
+      "${F4_MACOS_APP_DIR}/Contents/Resources/Assets.car"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+      "${F4_MACOS_ICON_FILE}"
+      "${F4_MACOS_APP_DIR}/Contents/Resources/AppIcon.icns"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
       "${F4_MACOS_INFO_PLIST}"
       "${F4_MACOS_APP_DIR}/Contents/Info.plist"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
       "$<TARGET_FILE:f4-qt-host>"
       "${F4_MACOS_APP_DIR}/Contents/MacOS/f4-qt-host"
-    COMMENT "Building adaptive macOS f4-qt-host.app icon bundle"
+    COMMENT "Building macOS f4-qt-host.app icon bundle"
     VERBATIM
   )
 elseif(UNIX)
@@ -370,6 +361,20 @@ if(F4_QT_STATIC)
           INTERFACE_LINK_LIBRARIES "${_f4_basic_style_links}")
       endif()
     endif()
+
+    # The Effects plugin export has the same duplicate ordinary backing-module
+    # edge as the Basic style export. Remove it before the whole-archive link
+    # below retains the shader resources.
+    if(TARGET Qt6::effectsplugin)
+      get_target_property(_f4_effects_links
+        Qt6::effectsplugin INTERFACE_LINK_LIBRARIES)
+      if(_f4_effects_links)
+        list(REMOVE_ITEM _f4_effects_links
+          "$<LINK_ONLY:Qt6::QuickEffects>")
+        set_target_properties(Qt6::effectsplugin PROPERTIES
+          INTERFACE_LINK_LIBRARIES "${_f4_effects_links}")
+      endif()
+    endif()
   endif()
   foreach(plugin_target IN LISTS F4_REQUIRED_STATIC_QML_PLUGINS)
     if(NOT TARGET ${plugin_target})
@@ -377,19 +382,35 @@ if(F4_QT_STATIC)
         "Required static QML plugin target is missing: ${plugin_target}")
     endif()
   endforeach()
-  # Qt 6.11 names the ICO image plugin target after its class
-  # (QICOPlugin), while earlier Qt releases exported the compatibility
-  # spelling QIcoPlugin. Accept both so the portable host can use the
-  # current Qt package without changing the plugin import itself.
+  # Qt 6.11 exports the QML backing libraries together with their generated
+  # object-resource targets.  Those resources are pulled by an ordinary link
+  # in that graph, while older Conan Qt exports need WHOLE_ARCHIVE to retain
+  # them.  Keep the fallback for those older packages without applying a
+  # feature to a target whose transitive graph already links it normally.
+  set(F4_QT_QUICK_EFFECTS_LINK Qt6::QuickEffects)
+  if(NOT TARGET Qt6::QuickEffects_resources_1)
+    set(F4_QT_QUICK_EFFECTS_LINK
+      "$<LINK_LIBRARY:WHOLE_ARCHIVE,Qt6::QuickEffects>")
+  endif()
+  set(F4_QT_QUICK_CONTROLS_BASIC_LINK Qt6::QuickControls2Basic)
+  if(NOT TARGET Qt6::QuickControls2Basic_resources_1)
+    set(F4_QT_QUICK_CONTROLS_BASIC_LINK
+      "$<LINK_LIBRARY:WHOLE_ARCHIVE,Qt6::QuickControls2Basic>")
+  endif()
+
+  # Qt 6.11 normalized the ICO plugin class/target spelling to QICOPlugin,
+  # while older Qt packages export QIcoPlugin. Keep the host graph portable
+  # across both package generations; the C++ static import already uses the
+  # current plugin class name.
   set(F4_QT_ICO_PLUGIN_TARGET Qt6::QIcoPlugin)
-  if(NOT TARGET ${F4_QT_ICO_PLUGIN_TARGET} AND
-     TARGET Qt6::QICOPlugin)
+  if(NOT TARGET ${F4_QT_ICO_PLUGIN_TARGET} AND TARGET Qt6::QICOPlugin)
     set(F4_QT_ICO_PLUGIN_TARGET Qt6::QICOPlugin)
   endif()
   set(F4_REQUIRED_STATIC_QT_PLUGINS
     Qt6::QOffscreenIntegrationPlugin
     Qt6::QGifPlugin
     ${F4_QT_ICO_PLUGIN_TARGET}
+    Qt6::QJpegPlugin
     Qt6::QSvgPlugin
   )
   # Some Qt 6.11 static packages omit the optional JPEG image plugin while
@@ -511,8 +532,14 @@ if(F4_QT_STATIC)
     "${F4_QT_HOST_ROOT}/src/StaticQmlPluginImports.cpp")
   # The effects shader resources have no ordinary symbol references. Keep
   # them in the single-file host, including transitive plugin references.
-  set_property(TARGET f4-qt-host APPEND PROPERTY LINK_LIBRARY_OVERRIDE
-    "WHOLE_ARCHIVE,Qt6::QuickEffects")
+  if(NOT TARGET Qt6::QuickEffects_resources_1)
+    set_property(TARGET f4-qt-host APPEND PROPERTY LINK_LIBRARY_OVERRIDE
+      "WHOLE_ARCHIVE,Qt6::QuickEffects")
+  endif()
+  if(NOT TARGET Qt6::QuickControls2Basic_resources_1)
+    set_property(TARGET f4-qt-host APPEND PROPERTY LINK_LIBRARY_OVERRIDE
+      "WHOLE_ARCHIVE,Qt6::QuickControls2Basic")
+  endif()
   target_link_libraries(f4-qt-host PRIVATE
     ${F4_REQUIRED_STATIC_QML_PLUGINS}
     ${F4_REQUIRED_STATIC_QT_PLUGINS}
@@ -521,10 +548,10 @@ if(F4_QT_STATIC)
     ${F4_QT_MEDIA_PLUGIN_TARGET}
     ${F4_QFFMPEG_PLUGIN_LIBRARY}
     ${F4_FFMPEG_TARGETS}
-    Qt6::QuickControls2Basic
+    ${F4_QT_QUICK_CONTROLS_BASIC_LINK}
     Qt6::QuickControls2BasicStyleImpl
     Qt6::QuickControls2Impl
-    "$<LINK_LIBRARY:WHOLE_ARCHIVE,Qt6::QuickEffects>"
+    ${F4_QT_QUICK_EFFECTS_LINK}
     Qt6::QuickLayouts)
 
   # Conan exposes Qt's Linux platform and graphics integrations as separate

@@ -189,6 +189,8 @@ Rectangle {
     readonly property var terminalSelectionRange:
         documentRoot.terminalSelectionRangeForRow(
             loaded ? Number(rowData.visualRow || 0) : -1, width)
+    readonly property var viewerSelectionRange:
+        documentRoot.viewerSelectionRangeForRow(loaded ? rowData : null)
     readonly property var editorSelectionRange:
         documentRoot.editorSelectionRangeForRow(
             loaded ? Number(rowData.visualRow || 0) : -1,
@@ -201,7 +203,7 @@ Rectangle {
             readonly property var modelData: documentRow.documentRoot.editorSelectionRangeForRow(
                 documentRow.loaded ? Number(documentRow.rowData.visualRow || 0) : -1,
                 documentRow.loaded ? Number(documentRow.rowData.visualWidth || 0) : 0,
-                index === 0 ? documentRow.documentRoot.cursorFrame
+                index === 0 ? documentRow.documentRoot.selectionCursorFrame
                             : (documentRow.documentRoot.cursorFrame.secondaryCarets || [])[index - 1])
             id: editorSelectionClip
             objectName: index === 0 ? "documentEditorSelectionClip" : "documentEditorSecondarySelectionClip-" + index
@@ -286,6 +288,24 @@ Rectangle {
         visible: documentRow.documentRoot.terminalSurface
                  && documentRow.loaded
                  && documentRow.terminalSelectionRange.valid
+        color: documentRow.hostWindow.selectedBg
+        opacity: 0.72
+        z: 0
+    }
+
+    Rectangle {
+        x: documentRow.documentRoot.textHorizontalInset
+           + documentRow.viewerSelectionRange.start
+             * documentRow.documentRoot.terminalCellWidth
+        y: 0
+        width: Math.max(0,
+            (documentRow.viewerSelectionRange.end
+             - documentRow.viewerSelectionRange.start)
+            * documentRow.documentRoot.terminalCellWidth)
+        height: parent.height
+        visible: documentRow.documentRoot.viewerSelectionEnabled
+                 && documentRow.loaded
+                 && documentRow.viewerSelectionRange.valid
         color: documentRow.hostWindow.selectedBg
         opacity: 0.72
         z: 0

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/unxed/f4/sdk/f4settings"
@@ -64,14 +65,36 @@ func (p *settingsProvider) Catalog() f4settings.Catalog {
 		}
 		fields = append(fields, f)
 	}
-	return f4settings.Catalog{ID: "netfox", Categories: []f4settings.Category{{ID: "network", Label: f4settings.Text{English: "Network & connections"}}}, Collections: []f4settings.Collection{{ID: "netfox.connections", Category: "network", Group: "NetFox connections", Label: f4settings.Text{English: "NetFox connections"}, Description: f4settings.Text{English: "Saved FTP, SFTP and FISH connections. Proxy overrides are edited inline. Apply saves; opening a connection remains a separate command."}, Fields: fields, NameField: "netfox.Name"}}}
+	return f4settings.Catalog{
+		ID:         "netfox",
+		Categories: []f4settings.Category{{ID: "network", Label: f4settings.Text{English: "Network & connections"}}},
+		Fields: []f4settings.Field{{
+			ID:          importSSHProfilesSettingID,
+			Category:    "network",
+			Group:       "NetFox",
+			Label:       f4settings.Text{English: "Import OpenSSH profiles"},
+			Description: f4settings.Text{English: "Show named profiles from ~/.ssh/config in the NetFox connection list and use their host, user, port, and identity settings."},
+			Kind:        f4settings.Boolean,
+			Default:     "true",
+			Timing:      "Apply",
+		}},
+		Collections: []f4settings.Collection{{ID: "netfox.connections", Category: "network", Group: "NetFox connections", Label: f4settings.Text{English: "NetFox connections"}, Description: f4settings.Text{English: "Saved FTP, SFTP and FISH connections. Proxy overrides are edited inline. Apply saves; opening a connection remains a separate command."}, Fields: fields, NameField: "netfox.Name"}},
+	}
 }
 func (p *settingsProvider) Begin(context.Context) (*f4settings.Draft, error) {
 	p.store.mu.Lock()
 	initial, err := p.store.readConfigsLocked()
+	preferences, preferencesErr := p.store.readPreferencesLocked()
 	p.store.mu.Unlock()
 	if err != nil {
 		return nil, err
+	}
+	if preferencesErr != nil {
+		return nil, preferencesErr
+	}
+	initialImportSSHProfiles := true
+	if preferences.ImportSSHProfiles != nil {
+		initialImportSSHProfiles = *preferences.ImportSSHProfiles
 	}
 	catalog := p.Catalog()
 	fields := catalog.Collections[0].Fields
@@ -96,7 +119,16 @@ func (p *settingsProvider) Begin(context.Context) (*f4settings.Draft, error) {
 		}
 		records = append(records, f4settings.Record{ID: name, Values: values})
 	}
-	d := f4settings.NewDraft(nil, map[string][]f4settings.Record{"netfox.connections": records})
+	d := f4settings.NewDraft(map[string]string{
+		importSSHProfilesSettingID: strconv.FormatBool(initialImportSSHProfiles),
+	}, map[string][]f4settings.Record{"netfox.connections": records})
+	readImportSSHProfiles := func() (bool, error) {
+		value, ok := d.Values[importSSHProfilesSettingID]
+		if !ok {
+			return initialImportSSHProfiles, nil
+		}
+		return strconv.ParseBool(value)
+	}
 	build := func() (map[string]NetFoxConfig, error) {
 		result := map[string]NetFoxConfig{}
 		for _, r := range d.Records["netfox.connections"] {
@@ -135,6 +167,9 @@ func (p *settingsProvider) Begin(context.Context) (*f4settings.Draft, error) {
 	}
 	d.ValidateFunc = func(*f4settings.Draft) map[string]error {
 		_, err := build()
+		if _, settingsErr := readImportSSHProfiles(); err == nil {
+			err = settingsErr
+		}
 		if err != nil {
 			return map[string]error{"netfox.connections": err}
 		}
@@ -142,8 +177,31 @@ func (p *settingsProvider) Begin(context.Context) (*f4settings.Draft, error) {
 	}
 	d.CommitFunc = func(ctx context.Context, d *f4settings.Draft) f4settings.Result {
 		next, err := build()
+		nextImportSSHProfiles, settingsErr := readImportSSHProfiles()
+		if err == nil {
+			err = settingsErr
+		}
 		if err == nil {
 			err = ctx.Err()
+		}
+		if err == nil {
+			p.store.mu.Lock()
+			currentPreferences, preferencesErr := p.store.readPreferencesLocked()
+			p.store.mu.Unlock()
+			if preferencesErr != nil {
+				err = preferencesErr
+			} else {
+				currentImportSSHProfiles := true
+				if currentPreferences.ImportSSHProfiles != nil {
+					currentImportSSHProfiles = *currentPreferences.ImportSSHProfiles
+				}
+				if currentImportSSHProfiles != initialImportSSHProfiles && currentImportSSHProfiles != nextImportSSHProfiles {
+					err = f4settings.Error("OpenSSH profile import changed outside Settings Center; reopen before saving")
+				}
+			}
+		}
+		if err == nil && (d.Dirty(importSSHProfilesSettingID) || nextImportSSHProfiles != initialImportSSHProfiles) {
+			err = p.store.savePreferences(netFoxPreferences{ImportSSHProfiles: &nextImportSSHProfiles})
 		}
 		if err == nil {
 			err = p.store.updateConfigs(func(current map[string]NetFoxConfig) error {
@@ -163,7 +221,14 @@ func (p *settingsProvider) Begin(context.Context) (*f4settings.Draft, error) {
 			return f4settings.Result{Errors: map[string]error{"netfox.connections": err}}
 		}
 		initial = next
-		return f4settings.Result{Applied: []string{"netfox.connections"}}
+		applied := []string{}
+		if d.Dirty(importSSHProfilesSettingID) {
+			applied = append(applied, importSSHProfilesSettingID)
+		}
+		if d.Dirty("netfox.connections") {
+			applied = append(applied, "netfox.connections")
+		}
+		return f4settings.Result{Applied: applied}
 	}
 	return d, nil
 }

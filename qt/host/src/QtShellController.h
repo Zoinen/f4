@@ -120,6 +120,8 @@ public:
         const QVariantMap &request);
     Q_INVOKABLE void sendPanelCatalogRowsRequest(
         const QVariantMap &request);
+    Q_INVOKABLE void sendPanelGroupPageRequest(
+        const QVariantMap &request);
     Q_INVOKABLE void sendQuit();
 
 signals:
@@ -146,6 +148,7 @@ signals:
     // and must never travel through the public presentation signal below.
     void compactMessageApplied(const QVariantMap &message);
     void panelCatalogRowsReceived(const QVariantMap &message);
+    void panelGroupPageReceived(const QVariantMap &message);
     void panelCatalogMetadataReceived(const QVariantMap &message);
     void commandLineChanged();
     void commandMenusChanged();

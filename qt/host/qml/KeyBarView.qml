@@ -183,7 +183,7 @@ Rectangle {
 
         FontMetrics {
             id: keyBarAlternativeFontMetrics
-            font.family: hostWindow.guiMonospaceFontFamily
+            font.family: hostWindow.uiFontFamily
             font.pixelSize: 12
         }
 
@@ -242,7 +242,7 @@ Rectangle {
                     anchors.verticalCenter: parent.verticalCenter
                     text: hostWindow.cleanText(modelData.text)
                     color: hostWindow.textColor
-                    font.family: hostWindow.guiMonospaceFontFamily
+                    font.family: hostWindow.uiFontFamily
                     font.pixelSize: 12
                     elide: Text.ElideRight
                 }
@@ -256,7 +256,7 @@ Rectangle {
                     anchors.verticalCenter: parent.verticalCenter
                     text: hostWindow.cleanText(modelData.shortcut)
                     color: hostWindow.mutedText
-                    font.family: hostWindow.guiMonospaceFontFamily
+                    font.family: hostWindow.uiFontFamily
                     font.pixelSize: 11
                 }
 

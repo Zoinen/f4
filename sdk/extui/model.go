@@ -170,6 +170,10 @@ type PanelModel struct {
 	GroupBy                string
 	GroupReverse           bool
 	GroupFoldersSeparately bool
+	// GroupsDeferred means Groups contains no partial catalog. Native peers
+	// must request the bounded group pages and install them as one snapshot.
+	GroupsDeferred         bool
+	GroupTotal             int
 	DisplayTop             int
 	Groups                 []PanelGroupModel
 	SortMode               string
@@ -343,6 +347,19 @@ type PanelCatalogRowsModel struct {
 	HighlightStyles map[string]HighlightStyleModel
 }
 
+// PanelGroupPageModel is a bounded page of the immutable group index. Group
+// offsets are absolute source-entry indexes; the page offset addresses the
+// group ordinal, not a file row.
+type PanelGroupPageModel struct {
+	PanelID         string
+	Path            string
+	CatalogRevision int64
+	Offset          int
+	Limit           int
+	Total           int
+	Groups          []PanelGroupModel
+}
+
 type HighlightGroupModel struct {
 	ID   string
 	Name string
@@ -373,23 +390,28 @@ type CommandLineModel struct {
 	Visible bool
 	Focused bool
 	// OwnsNavigation routes panel navigation keys to the command line even when empty.
-	OwnsNavigation   bool
-	AutoHide         bool
-	Multiline        bool
-	WordWrap         bool
-	Prompt           string
-	PromptRuns       []RunModel
-	Text             string
-	Empty            bool
-	Runs             []RunModel
-	InputX           int
-	CursorPrefixRuns []RunModel
-	CursorX          int
-	CursorPosition   int
-	SelectionStart   int
-	SelectionEnd     int
-	CursorVisible    bool
-	CursorShape      string
+	OwnsNavigation    bool
+	AutoHide          bool
+	Multiline         bool
+	WordWrap          bool
+	Prompt            string
+	PromptRuns        []RunModel
+	Text              string
+	Empty             bool
+	Runs              []RunModel
+	InputX            int
+	CursorPrefixRuns  []RunModel
+	CursorX           int
+	CursorPosition    int
+	SelectionStart    int
+	SelectionEnd      int
+	BlockSelection    bool
+	BlockAnchorRow    int
+	BlockAnchorColumn int
+	BlockFocusRow     int
+	BlockFocusColumn  int
+	CursorVisible     bool
+	CursorShape       string
 }
 
 type TerminalModel struct {
@@ -602,6 +624,7 @@ type TextRowModel struct {
 	LogicalLine       int
 	Offset            int64
 	EndOffset         int64
+	DisplayColumn     int `json:"-"`
 	VisualWidth       int
 	HasVisualWidth    bool
 	Text              string
@@ -974,8 +997,8 @@ func (p PanelModel) ToMap() M {
 		"groupBy":                p.GroupBy,
 		"groupReverse":           p.GroupReverse,
 		"groupFoldersSeparately": p.GroupFoldersSeparately,
+		"groupTotal":             p.GroupTotal,
 		"displayTop":             p.DisplayTop,
-		"groups":                 panelGroupsToMaps(p.Groups),
 		"selectedFiles":          p.SelectedFiles,
 		"selectedDirectories":    p.SelectedDirectories,
 		"totalFiles":             p.TotalFiles,
@@ -1045,6 +1068,12 @@ func (p PanelModel) ToMap() M {
 	if p.CatalogRowsDeferred {
 		out["catalogRowsDeferred"] = true
 	}
+	if p.Groups != nil {
+		out["groups"] = panelGroupsToMaps(p.Groups)
+	}
+	if p.GroupsDeferred {
+		out["groupsDeferred"] = true
+	}
 	if len(p.HighlightStyles) > 0 {
 		styles := make(M, len(p.HighlightStyles))
 		for id, style := range p.HighlightStyles {
@@ -1053,6 +1082,19 @@ func (p PanelModel) ToMap() M {
 		out["highlightStyles"] = styles
 	}
 	return out
+}
+
+func (p PanelGroupPageModel) ToMap() M {
+	return M{
+		"type":            "panel_group_page",
+		"panelId":         p.PanelID,
+		"path":            p.Path,
+		"catalogRevision": p.CatalogRevision,
+		"offset":          p.Offset,
+		"limit":           p.Limit,
+		"total":           p.Total,
+		"groups":          panelGroupsToMaps(p.Groups),
+	}
 }
 
 func (e FileEntryModel) ToMap() M {
@@ -1252,7 +1294,7 @@ func (s HighlightStyleModel) ToMap() M {
 }
 
 func (c CommandLineModel) ToMap() M {
-	return M{
+	out := M{
 		"id":               c.ID,
 		"kind":             "commandLine",
 		"visible":          c.Visible,
@@ -1275,6 +1317,14 @@ func (c CommandLineModel) ToMap() M {
 		"cursorVisible":    c.CursorVisible,
 		"cursorShape":      c.CursorShape,
 	}
+	if c.BlockSelection {
+		out["blockSelection"] = true
+		out["blockAnchorRow"] = c.BlockAnchorRow
+		out["blockAnchorColumn"] = c.BlockAnchorColumn
+		out["blockFocusRow"] = c.BlockFocusRow
+		out["blockFocusColumn"] = c.BlockFocusColumn
+	}
+	return out
 }
 
 func (t TerminalModel) ToMap() M {
@@ -1562,6 +1612,9 @@ func (r TextRowModel) ToMap() M {
 		"logicalLine": r.LogicalLine,
 		"offset":      r.Offset,
 		"endOffset":   r.EndOffset,
+	}
+	if r.DisplayColumn != 0 {
+		out["displayColumn"] = r.DisplayColumn
 	}
 	if r.ContentKey != "" {
 		out["contentKey"] = r.ContentKey

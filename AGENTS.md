@@ -7,7 +7,7 @@
   `docs/PORTABLE_BUILD_POLICY.md` completely.
 - The platform contracts and verification gates in that document are required;
   do not replace them with a directory bundle on Linux or Windows, and do not
-  replace the signed application bundle with runtime extraction on macOS.
+  replace the macOS application bundle with runtime extraction.
 
 ## Build and launch rules
 

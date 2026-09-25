@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"fmt"
 	"github.com/unxed/f4/internal/plughost"
 	semantic "github.com/unxed/f4/internal/semantic"
 	vfs "github.com/unxed/f4/vfs"
@@ -65,10 +66,11 @@ var mediaRegistrationItem = vfs.VFSItem{Name: "image.jpg", Size: 10, SizeKnown: 
 func newRegistrationMediaVFS(t *testing.T) vfs.VFS { return vfs.NewOSVFS(t.TempDir()) }
 
 type registrationRecorder struct {
-	registrations []plughost.MediaSourceRegistration
-	committed     []string
-	directories   []plughost.MediaSourceRegistration
-	directoryIDs  []string
+	registrations         []plughost.MediaSourceRegistration
+	committed             []string
+	directories           []plughost.MediaSourceRegistration
+	directoryIDs          []string
+	directoryPageComplete []bool
 }
 
 func (r *registrationRecorder) RegisterDirectory(reg plughost.MediaSourceRegistration) plughost.DirectorySourceDescriptor {
@@ -77,6 +79,10 @@ func (r *registrationRecorder) RegisterDirectory(reg plughost.MediaSourceRegistr
 }
 func (r *registrationRecorder) CommitDirectoryPanel(_ string, _ int64, ids []string) {
 	r.directoryIDs = append([]string(nil), ids...)
+}
+func (r *registrationRecorder) CommitDirectoryPanelPage(_ string, _ int64, ids []string, complete bool) {
+	r.directoryIDs = append([]string(nil), ids...)
+	r.directoryPageComplete = append(r.directoryPageComplete, complete)
 }
 
 func TestPagedDirectoryPreviewAuthorityIsNegotiated(t *testing.T) {
@@ -104,6 +110,34 @@ func TestPagedDirectoryPreviewAuthorityIsNegotiated(t *testing.T) {
 	}
 	if rows[1].Source != nil || rows[1].MinimalToMap()["directorySource"] == nil {
 		t.Fatal("directory authority confused with image source")
+	}
+}
+
+func TestPagedDirectoryPreviewAuthorityUsesPartialCommit(t *testing.T) {
+	old := semantic.DirectoryPreviewsEnabled.Load()
+	t.Cleanup(func() { semantic.DirectoryPreviewsEnabled.Store(old) })
+	filesystem := newRegistrationMediaVFS(t)
+	broker := installRegistrationRecorder(t)
+	entries := make([]*FileEntry, 64)
+	for i := range entries {
+		entries[i] = &FileEntry{VFSItem: vfs.VFSItem{
+			Name: fmt.Sprintf("album-%02d", i), IsDir: true,
+		}}
+	}
+	p := &FileSystemPanel{Vfs: filesystem, Entries: entries}
+	p.updateSemanticRevisions()
+	semantic.DirectoryPreviewsEnabled.Store(true)
+	if rows, _, ok := p.semanticPagedRows(0, 48); !ok || len(rows) != 48 {
+		t.Fatalf("first directory page: ok=%v rows=%d", ok, len(rows))
+	}
+	if len(broker.directoryPageComplete) != 1 || broker.directoryPageComplete[0] {
+		t.Fatalf("first page was committed as a complete catalog: %#v", broker.directoryPageComplete)
+	}
+	if rows, _, ok := p.semanticPagedRows(48, 48); !ok || len(rows) != 16 {
+		t.Fatalf("second directory page: ok=%v rows=%d", ok, len(rows))
+	}
+	if len(broker.directoryPageComplete) != 2 || broker.directoryPageComplete[1] {
+		t.Fatalf("second page was committed as a complete catalog: %#v", broker.directoryPageComplete)
 	}
 }
 

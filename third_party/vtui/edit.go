@@ -28,6 +28,16 @@ type Edit struct {
 	multilineCacheWidth    int
 	multilineCacheWordWrap bool
 	multilineCache         []editLine
+	multilineMoveText      string
+	multilineMoveCursor    int
+	multilineMoveColumn    int
+	multilineMoveActive    bool
+	blockSelection         bool
+	blockAnchorRow         int
+	blockAnchorColumn      int
+	blockFocusRow          int
+	blockFocusColumn       int
+	blockWrapWidth         int
 	HideCursor             bool // If true, suppress blinking cursor even when focused
 	ShowHistoryButton      bool // Show a clickable [v] button
 	History                []string
@@ -60,9 +70,15 @@ type Edit struct {
 	OnTextChange        func(string)
 	// PathHintsEnabled lets the autocomplete menu ask PathHintProvider for
 	// file path suggestions in addition to history matches.
-	PathHintsEnabled  bool
-	mouseSelecting    bool
-	mouseSelectAnchor int
+	PathHintsEnabled    bool
+	mouseSelecting      bool
+	mouseBlockSelecting bool
+	mouseSelectAnchor   int
+	mouseBlockAnchorRow int
+	mouseBlockAnchorCol int
+	mouseWordSelecting  bool
+	mouseWordStart      int
+	mouseWordEnd        int
 }
 
 // HistoryProvider is an interface for external history persistence (e.g. from f4).
@@ -378,6 +394,8 @@ func (e *Edit) SetText(text string) {
 	e.leftPos = 0
 	e.selStart = -1
 	e.selAnchor = -1
+	e.blockSelection = false
+	e.blockWrapWidth = 0
 	e.NotifyChange()
 }
 
@@ -395,6 +413,9 @@ func (e *Edit) NotifyChange() {
 // SelectAll selects the entire text and sets the clear flag,
 // so the next character typed will replace the content.
 func (e *Edit) SelectAll() {
+	if e.blockSelection {
+		e.ClearSelection()
+	}
 	if len(e.text) > 0 {
 		e.selStart = 0
 		e.selEnd = len(e.text)
@@ -464,6 +485,8 @@ func (e *Edit) InsertString(text string) {
 	if e.clearFlag {
 		e.SetText("")
 		e.ClearSelection()
+	} else if e.blockSelection {
+		e.DeleteBlock()
 	} else if e.selStart != -1 {
 		e.DeleteBlock()
 	}
@@ -496,6 +519,9 @@ func (e *Edit) ProcessKey(event *vtinput.InputEvent) bool {
 				}
 				var newText []rune
 				var newCurPos int
+				if !e.clearFlag && e.blockSelection {
+					e.DeleteBlock()
+				}
 
 				if e.clearFlag {
 					newText = make([]rune, len(e.pasteBuffer))
@@ -567,6 +593,13 @@ func (e *Edit) ProcessKey(event *vtinput.InputEvent) bool {
 	shift := (event.ControlKeyState & vtinput.ShiftPressed) != 0
 	ctrl := (event.ControlKeyState & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed)) != 0
 	alt := (event.ControlKeyState & (vtinput.LeftAltPressed | vtinput.RightAltPressed)) != 0
+	if e.blockSelection {
+		switch event.VirtualKeyCode {
+		case vtinput.VK_LEFT, vtinput.VK_RIGHT, vtinput.VK_HOME, vtinput.VK_END:
+			// Keyboard navigation resumes the usual linear selection model.
+			e.ClearSelection()
+		}
+	}
 
 	if ctrl && event.VirtualKeyCode == vtinput.VK_DOWN && len(e.History) > 0 {
 		e.OpenHistory()
@@ -887,6 +920,9 @@ func (e *Edit) ProcessKey(event *vtinput.InputEvent) bool {
 		}
 
 		DebugLog("    Edit: Typing char %d", event.Char)
+		if !e.clearFlag && e.blockSelection {
+			e.DeleteBlock()
+		}
 
 		var testChar = event.Char
 		// Auto-uppercase support for specific mask markers
@@ -981,6 +1017,9 @@ func (e *Edit) endSelection() {
 
 // ClearSelection removes any active text selection and resets the clear flag.
 func (e *Edit) ClearSelection() {
+	e.multilineMoveActive = false
+	e.blockSelection = false
+	e.blockWrapWidth = 0
 	e.selStart = -1
 	e.selEnd = -1
 	e.selAnchor = -1
@@ -988,6 +1027,10 @@ func (e *Edit) ClearSelection() {
 }
 
 func (e *Edit) DeleteBlock() {
+	if e.blockSelection {
+		e.deleteMultilineBlock()
+		return
+	}
 	if e.selStart != -1 {
 		// Bounds check to prevent panics from stale selection state
 		if e.selStart < 0 {
@@ -1007,6 +1050,12 @@ func (e *Edit) DeleteBlock() {
 }
 
 func (e *Edit) copySelection() {
+	if e.blockSelection {
+		if text := e.multilineBlockText(); text != "" {
+			SetClipboard(text)
+		}
+		return
+	}
 	if e.selStart == -1 {
 		return
 	}
@@ -1175,13 +1224,50 @@ func (e *Edit) ProcessMouse(ev *vtinput.InputEvent) bool {
 	if e.IsDisabled() {
 		return false
 	}
+	if e.mouseBlockSelecting {
+		if IsMouseRelease(ev) {
+			e.mouseBlockSelecting = false
+			e.mouseSelecting = false
+			if e.blockAnchorRow == e.blockFocusRow && e.blockAnchorColumn == e.blockFocusColumn {
+				e.ClearSelection()
+			}
+			return true
+		}
+		if ev.ButtonState&vtinput.FromLeft1stButtonPressed != 0 {
+			lines := e.multilineLines(e.X2 - e.X1 + 1)
+			row := max(0, min(len(lines)-1, int(ev.MouseY)-e.Y1+e.multilineTop))
+			column := max(0, int(ev.MouseX)-e.X1)
+			anchorRow, anchorColumn := e.mouseBlockAnchorRow, e.mouseBlockAnchorCol
+			anchorOffset := e.mouseSelectAnchor
+			cursor := e.cursorPositionAtPoint(int(ev.MouseX), int(ev.MouseY))
+			e.setMultilineBlockSelection(anchorOffset, cursor, anchorRow, anchorColumn, row, column, 0)
+			return true
+		}
+	}
 	if e.mouseSelecting {
 		if IsMouseRelease(ev) {
 			e.mouseSelecting = false
+			e.mouseWordSelecting = false
 			return true
 		}
 		if ev.ButtonState&vtinput.FromLeft1stButtonPressed != 0 {
 			e.curPos = e.cursorPositionAtPoint(int(ev.MouseX), int(ev.MouseY))
+			if e.mouseWordSelecting {
+				position := e.curPos
+				if position >= e.mouseWordStart && position < e.mouseWordEnd {
+					e.selStart, e.selEnd, e.curPos = e.mouseWordStart, e.mouseWordEnd, e.mouseWordEnd
+				} else {
+					e.selectWordAtCursor()
+					if position < e.mouseWordStart {
+						e.selStart, e.selEnd, e.curPos = e.selStart, e.mouseWordEnd, e.selStart
+					} else {
+						e.selStart, e.selEnd = e.mouseWordStart, e.selEnd
+					}
+				}
+				e.selAnchor = e.mouseWordStart
+				DebugLog("[FIX:command-line-word-drag] selection=%d:%d", e.selStart, e.selEnd)
+				return true
+			}
 			e.selAnchor = e.mouseSelectAnchor
 			if e.curPos < e.selAnchor {
 				e.selStart, e.selEnd = e.curPos, e.selAnchor
@@ -1202,17 +1288,38 @@ func (e *Edit) ProcessMouse(ev *vtinput.InputEvent) bool {
 			}
 			if e.HitTest(int(ev.MouseX), int(ev.MouseY)) {
 				e.curPos = e.cursorPositionAtPoint(int(ev.MouseX), int(ev.MouseY))
+				alt := ev.ControlKeyState&(vtinput.LeftAltPressed|vtinput.RightAltPressed) != 0
+				if e.Multiline && alt {
+					lines := e.multilineLines(e.X2 - e.X1 + 1)
+					row := max(0, min(len(lines)-1, int(ev.MouseY)-e.Y1+e.multilineTop))
+					column := max(0, int(ev.MouseX)-e.X1)
+					DebugLog("[FIX:text-block-selection] edit Alt drag start row=%d column=%d", row, column)
+					e.mouseSelectAnchor = e.curPos
+					e.mouseBlockAnchorRow, e.mouseBlockAnchorCol = row, column
+					e.setMultilineBlockSelection(e.curPos, e.curPos, row, column, row, column, 0)
+					e.mouseSelecting = true
+					e.mouseBlockSelecting = true
+					return true
+				}
 				if ev.MouseEventFlags&TripleClick != 0 {
-					e.SelectAll()
+					if e.Multiline {
+						e.selectParagraphAtCursor()
+					} else {
+						e.SelectAll()
+					}
 					return true
 				}
 				if ev.MouseEventFlags&vtinput.DoubleClick != 0 {
 					e.selectWordAtCursor()
+					e.mouseWordStart, e.mouseWordEnd = e.selStart, e.selEnd
+					e.mouseWordSelecting = e.selStart >= 0
+					e.mouseSelecting = e.mouseWordSelecting
 					return true
 				}
 				e.ClearSelection()
 				e.clearFlag = false
 				e.mouseSelecting = true
+				e.mouseWordSelecting = false
 				e.mouseSelectAnchor = e.curPos
 				return true
 			}
@@ -1228,6 +1335,7 @@ func (e *Edit) ProcessMouse(ev *vtinput.InputEvent) bool {
 }
 
 func (e *Edit) selectWordAtCursor() {
+	e.blockSelection = false
 	if e.curPos < 0 || e.curPos >= len(e.text) {
 		e.ClearSelection()
 		return
@@ -1235,16 +1343,30 @@ func (e *Edit) selectWordAtCursor() {
 
 	category := getCharCategory(e.text[e.curPos])
 	start, end := e.curPos, e.curPos+1
-	for start > 0 && getCharCategory(e.text[start-1]) == category {
+	for start > 0 && e.text[start-1] != '\n' && getCharCategory(e.text[start-1]) == category {
 		start--
 	}
-	for end < len(e.text) && getCharCategory(e.text[end]) == category {
+	for end < len(e.text) && e.text[end] != '\n' && getCharCategory(e.text[end]) == category {
 		end++
 	}
 	e.selStart, e.selEnd = start, end
 	e.selAnchor = start
 	e.curPos = end
 	e.clearFlag = false
+}
+
+func (e *Edit) selectParagraphAtCursor() {
+	e.blockSelection = false
+	start, end := e.curPos, e.curPos
+	for start > 0 && e.text[start-1] != '\n' {
+		start--
+	}
+	for end < len(e.text) && e.text[end] != '\n' {
+		end++
+	}
+	e.selStart, e.selEnd, e.selAnchor, e.curPos = start, end, start, end
+	e.clearFlag = false
+	DebugLog("[FIX:command-line-selection] console paragraph start=%d end=%d", start, end)
 }
 
 // WordUnderCursor returns the whitespace-bounded token around the cursor as

@@ -140,7 +140,7 @@ Rectangle {
         textFormat: Text.PlainText
         renderType: documentHeader.hostWindow.fontRenderType
         color: documentHeader.hostWindow.galleryPathTextColor
-        font.family: documentHeader.hostWindow.guiMonospaceFontFamily
+        font.family: documentHeader.hostWindow.uiFontFamily
         font.pixelSize: documentHeader.hostWindow.semanticTextFontPixelSize
         horizontalAlignment: Text.AlignRight
         verticalAlignment: Text.AlignVCenter
@@ -170,7 +170,7 @@ Rectangle {
         textFormat: Text.PlainText
         renderType: documentHeader.hostWindow.fontRenderType
         color: documentHeader.hostWindow.galleryPathTextColor
-        font.family: documentHeader.hostWindow.guiMonospaceFontFamily
+        font.family: documentHeader.hostWindow.uiFontFamily
         font.pixelSize: documentHeader.hostWindow.semanticTextFontPixelSize
         verticalAlignment: Text.AlignVCenter
         // Preserve both the path root and the file name when the full path is

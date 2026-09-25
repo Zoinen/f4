@@ -24,6 +24,7 @@ type PresentationAdapter interface {
 	PrepareDrag(map[string]any) map[string]any
 	CatalogRows(string, string, int64, int, int) (map[string]any, bool)
 	CatalogRowsRetryable(string, string, int64) bool
+	GroupPage(string, string, int64, int, int) (map[string]any, bool)
 	LiveCatalogMetadata(string, string, int64, int64, int, int) (map[string]any, bool)
 	CatalogMetadata(string, string, int64, int64, int, int) (map[string]any, bool)
 }
@@ -42,6 +43,9 @@ func (emptyPresentation) CatalogRows(string, string, int64, int, int) (map[strin
 	return nil, false
 }
 func (emptyPresentation) CatalogRowsRetryable(string, string, int64) bool { return false }
+func (emptyPresentation) GroupPage(string, string, int64, int, int) (map[string]any, bool) {
+	return nil, false
+}
 func (emptyPresentation) LiveCatalogMetadata(string, string, int64, int64, int, int) (map[string]any, bool) {
 	return nil, false
 }

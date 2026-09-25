@@ -480,6 +480,15 @@ void QtShellController::sendPanelCatalogRowsRequest(
     sendMessage(message);
 }
 
+void QtShellController::sendPanelGroupPageRequest(
+    const QVariantMap &request)
+{
+    QVariantMap message = request;
+    message.insert(QStringLiteral("type"),
+                   QStringLiteral("panel_group_page_request"));
+    sendMessage(message);
+}
+
 void QtShellController::sendQuit()
 {
     sendMessage({{QStringLiteral("type"), QStringLiteral("quit")}});
@@ -513,6 +522,7 @@ void QtShellController::onConnected()
         {QStringLiteral("capabilities"), QVariantMap{
              {QStringLiteral("panelCatalogMetadataV1"), true},
              {QStringLiteral("panelCatalogRowsV1"), true},
+             {QStringLiteral("panelGroupingV1"), true},
              {QStringLiteral("directoryPreviewsV1"), true},
              {QStringLiteral("panelCatalogDeltaV1"), true},
              {QStringLiteral("panelFileFieldsV1"), true},

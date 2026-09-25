@@ -10,6 +10,7 @@ import (
 // Default Dark is the port of the far2l theme of the same name. Far2l Dark was
 // an earlier, approximate attempt at the same thing and has been dropped.
 func TestDefaultDarkStyle(t *testing.T) {
+	withoutUserColorOverrides(t)
 	if err := ApplyColorStyle("Default Dark"); err != nil {
 		t.Fatalf("Failed to apply Default Dark style: %v", err)
 	}
@@ -18,6 +19,7 @@ func TestDefaultDarkStyle(t *testing.T) {
 // Colours the earlier attempt got wrong, spot-checked against the far2l
 // Contrast correction is off here so the palette is compared as authored.
 func TestDefaultDarkStyle_PanelColors(t *testing.T) {
+	withoutUserColorOverrides(t)
 	oldCfg := config.App
 	config.App.EnforceColorCorrection = false
 	defer func() { config.App = oldCfg }()
@@ -58,6 +60,7 @@ func TestDefaultDarkStyle_PanelColors(t *testing.T) {
 // With correction on, far2l's algorithm leaves these pairs alone. If a future
 // change makes the keybar go white again, this is the test that catches it.
 func TestDefaultDarkStyle_SurvivesContrastCorrection(t *testing.T) {
+	withoutUserColorOverrides(t)
 	oldCfg := config.App
 	config.App.EnforceColorCorrection = true
 	defer func() { config.App = oldCfg }()

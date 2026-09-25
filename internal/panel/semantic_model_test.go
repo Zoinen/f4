@@ -304,6 +304,8 @@ func TestSemanticPanelReusesStaticCatalogForFocusOnlyChanges(t *testing.T) {
 func TestSemanticPanelFileInfoSettingIsBoundedDynamicState(t *testing.T) {
 	previousCapability := semantic.SetPanelCatalogMetadataEnabled(true)
 	t.Cleanup(func() { semantic.SetPanelCatalogMetadataEnabled(previousCapability) })
+	previousGroupingCapability := semantic.SetPanelGroupingEnabled(true)
+	t.Cleanup(func() { semantic.SetPanelGroupingEnabled(previousGroupingCapability) })
 	previousSetting := config.App.ShowPanelFileInfo
 	t.Cleanup(func() { config.App.ShowPanelFileInfo = previousSetting })
 
@@ -317,9 +319,13 @@ func TestSemanticPanelFileInfoSettingIsBoundedDynamicState(t *testing.T) {
 		},
 	}
 	t.Cleanup(panel.unpublishSemanticMetadataSnapshot)
+	panel.SetGrouping(GroupName, false, false)
 
 	config.App.ShowPanelFileInfo = false
 	full := panel.SemanticPanelModel(nil, 0, true)
+	if len(full.Groups) == 0 {
+		t.Fatal("full panel snapshot did not include the grouped catalog")
+	}
 	if full.ShowFileInfo {
 		t.Fatal("disabled file-information setting was exported as enabled")
 	}
@@ -334,6 +340,12 @@ func TestSemanticPanelFileInfoSettingIsBoundedDynamicState(t *testing.T) {
 	}
 	if len(header.Entries) != 0 || header.CatalogRevision != full.CatalogRevision {
 		t.Fatalf("file-information toggle rebuilt or leaked the catalog: %#v", header)
+	}
+	if len(header.Groups) != 0 {
+		t.Fatalf("row-free header rebuilt or leaked %d group ranges", len(header.Groups))
+	}
+	if _, present := header.ToMap()["groups"]; present {
+		t.Fatal("row-free header serialized a group array")
 	}
 }
 
@@ -574,6 +586,67 @@ func TestSemanticPagedFastFindHeaderMatchesOnlyViewportWindow(t *testing.T) {
 	}
 	if got := len(fp.fastFindMatchCache); got != semanticFastFindRowsLimit {
 		t.Fatalf("stable cursor step expanded match cache to %d rows", got)
+	}
+}
+
+func TestSemanticGroupedCatalogUsesBoundedGroupPages(t *testing.T) {
+	for _, mode := range []GroupMode{GroupName, GroupFileField} {
+		t.Run(GroupModes[mode].ID, func(t *testing.T) {
+			checkSemanticGroupedCatalogUsesBoundedGroupPages(t, mode)
+		})
+	}
+}
+
+func checkSemanticGroupedCatalogUsesBoundedGroupPages(t *testing.T, mode GroupMode) {
+	t.Helper()
+	previousGroupingCapability := semantic.SetPanelGroupingEnabled(true)
+	t.Cleanup(func() { semantic.SetPanelGroupingEnabled(previousGroupingCapability) })
+
+	directory := t.TempDir()
+	fp := &FileSystemPanel{
+		Vfs:             vfs.NewOSVFS(directory),
+		GroupBy:         mode,
+		FileFieldGroup:  "exif.camera_model",
+		catalogRevision: 7,
+	}
+	fp.Entries = make([]*FileEntry, semanticPanelGroupPageSize+1)
+	fp.visibleGroups = make([]PanelGroup, semanticPanelGroupPageSize+1)
+	for index := range fp.Entries {
+		fp.Entries[index] = &FileEntry{VFSItem: vfs.VFSItem{
+			Name: fmt.Sprintf("entry-%03d", index),
+		}}
+		fp.visibleGroups[index] = PanelGroup{
+			Key:        fmt.Sprintf("group-%03d", index),
+			Title:      fmt.Sprintf("Group %03d", index),
+			StartIndex: index,
+			Count:      1,
+		}
+	}
+
+	groups, total, deferred := semanticPanelGroupSnapshot(fp.Groups())
+	if groups != nil || total != semanticPanelGroupPageSize+1 || !deferred {
+		t.Fatalf("large group snapshot = len:%d total:%d deferred:%v",
+			len(groups), total, deferred)
+	}
+	semanticLivePanels.Store(vtui.SemanticID(fp), fp)
+	t.Cleanup(func() { semanticLivePanels.Delete(vtui.SemanticID(fp)) })
+
+	first, ok := BuildLivePanelGroupPage(
+		vtui.SemanticID(fp), directory, fp.catalogRevision, 0,
+		semanticPanelGroupPageSize)
+	if !ok || len(semantic.AppMapSlice(first["groups"])) != semanticPanelGroupPageSize {
+		t.Fatalf("first group page = ok:%v payload:%#v", ok, first)
+	}
+	last, ok := BuildLivePanelGroupPage(
+		vtui.SemanticID(fp), directory, fp.catalogRevision,
+		semanticPanelGroupPageSize, 1)
+	if !ok || len(semantic.AppMapSlice(last["groups"])) != 1 {
+		t.Fatalf("last group page = ok:%v payload:%#v", ok, last)
+	}
+	if _, ok := BuildLivePanelGroupPage(
+		vtui.SemanticID(fp), directory, fp.catalogRevision, 0,
+		semanticPanelGroupPageSize+1); ok {
+		t.Fatal("group page accepted a transfer larger than 512 descriptors")
 	}
 }
 
@@ -1629,6 +1702,70 @@ func TestPanelsFrameSemanticGalleryLayoutActions(t *testing.T) {
 	pf.SetWidePanel(1)
 	if !pf.Wide || pf.WidePanel != 1 {
 		t.Fatal("Wide command did not select the requested panel")
+	}
+}
+
+func TestPanelsFrameSemanticGroupingActionTargetsPanelAndPersists(t *testing.T) {
+	left := NewFileSystemPanel(0, 0, 40, 12, vfs.NewOSVFS(t.TempDir()))
+	right := NewFileSystemPanel(40, 0, 40, 12, vfs.NewOSVFS(t.TempDir()))
+	left.Entries = []*FileEntry{
+		{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}},
+		{VFSItem: vfs.VFSItem{Name: "alpha.txt"}},
+		{VFSItem: vfs.VFSItem{Name: "beta.go"}},
+	}
+	right.Entries = append([]*FileEntry(nil), left.Entries...)
+	pf := &PanelsFrame{Panels: [2]Panel{left, right}, ActiveIdx: 1}
+
+	originalPersist := persistNativePanelLayoutSession
+	defer func() { persistNativePanelLayoutSession = originalPersist }()
+	persisted := 0
+	persistNativePanelLayoutSession = func(*PanelsFrame) { persisted++ }
+
+	if !pf.HandleSemanticAction(map[string]any{
+		"action": "panel.setGrouping", "side": 0,
+		"panelId": vtui.SemanticID(left), "path": left.Vfs.GetPath(),
+		"catalogRevision": left.catalogRevision,
+		"mode":            "Extension", "reverse": true, "foldersSeparately": true,
+	}) {
+		t.Fatal("grouping action was rejected")
+	}
+	if pf.ActiveIdx != 0 || left.GroupBy != GroupExtension ||
+		!left.GroupReverse || !left.GroupFoldersSeparately {
+		t.Fatalf("grouping targeted wrong state: active=%d mode=%d reverse=%t folders=%t",
+			pf.ActiveIdx, left.GroupBy, left.GroupReverse,
+			left.GroupFoldersSeparately)
+	}
+	if pf.HandleSemanticAction(map[string]any{
+		"action": "panel.setGrouping", "side": 0,
+		"panelId": vtui.SemanticID(right), "path": left.Vfs.GetPath(),
+		"catalogRevision": left.catalogRevision,
+		"mode":            "Name",
+	}) {
+		t.Fatal("grouping action with a mismatched panel identity was accepted")
+	}
+	if right.GroupBy != GroupNone || persisted != 1 {
+		t.Fatalf("grouping leaked across panels: right=%d persisted=%d",
+			right.GroupBy, persisted)
+	}
+	model := left.SemanticPanelModel(nil, 0, true)
+	if model.GroupBy != "Extension" || !model.GroupReverse ||
+		!model.GroupFoldersSeparately || len(model.Groups) != 2 {
+		t.Fatalf("grouping was not exported: %#v", model)
+	}
+	if !pf.HandleSemanticAction(map[string]any{
+		"action": "panel.setGrouping", "side": 0,
+		"panelId": vtui.SemanticID(left), "path": left.Vfs.GetPath(),
+		"catalogRevision": left.catalogRevision,
+		"mode":            "Extension", "reverse": true, "foldersSeparately": true,
+	}) || persisted != 1 {
+		t.Fatalf("unchanged grouping was not a no-op: persisted=%d", persisted)
+	}
+	if pf.HandleSemanticAction(map[string]any{
+		"action": "panel.setGrouping", "side": 0, "mode": "not-a-mode",
+		"panelId": vtui.SemanticID(left), "path": left.Vfs.GetPath(),
+		"catalogRevision": left.catalogRevision,
+	}) || left.GroupBy != GroupExtension {
+		t.Fatal("invalid grouping mode was accepted")
 	}
 }
 

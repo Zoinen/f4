@@ -26,7 +26,21 @@ bool usefulLocalCatalogPreview(const QString &sourceKind,
         return !name.isEmpty() && name != QStringLiteral("..");
     });
 }
+
+QString pathLeaf(const QString &path)
+{
+    QString normalized = path;
+    while (normalized.size() > 1
+           && (normalized.endsWith(QLatin1Char('/'))
+               || normalized.endsWith(QLatin1Char('\\')))) {
+        normalized.chop(1);
+    }
+    const int slash = qMax(normalized.lastIndexOf(QLatin1Char('/')),
+                           normalized.lastIndexOf(QLatin1Char('\\')));
+    return slash >= 0 ? normalized.mid(slash + 1) : normalized;
 }
+}
+
 void F4GalleryBridge::requestActivate(int side)
 {
     if (!validSide(side)) {
@@ -119,18 +133,21 @@ void F4GalleryBridge::requestOpen(int side,
 
     const SideState &sideState = m_panelSessions.catalog(side);
     if (autoRepeat && m_inFlightPanelOpen.active) {
-        // A delivered open intent is authoritative for the current panel
-        // snapshot. Key repeat can otherwise enqueue the same stale row many
-        // times before Go publishes the destination catalog. A path/panel
-        // transition clears this guard immediately; the watchdog permits a
-        // retry if the operation is rejected without a semantic update.
-        if (m_inFlightPanelOpen.side == side
+        // Do not interpret a repeat against a transient destination cursor.
+        // Keep the physical repeat as a stable epoch marker and resolve its
+        // row only after the cached destination selection has been applied.
+        const bool sameSource =
+            m_inFlightPanelOpen.side == side
             && m_inFlightPanelOpen.panelId == sideState.panelId
-            && m_inFlightPanelOpen.sourcePath == sideState.currentPath) {
-            // Keep one repeat intent, but never keep the stale row identity.
-            // The destination catalog owns the next row under the cursor; it
-            // is resolved only after that authoritative path is synchronized.
+            && m_inFlightPanelOpen.sourcePath == sideState.currentPath;
+        const bool destinationTransition =
+            m_inFlightPanelOpen.expectsPathChange
+            && m_inFlightPanelOpen.side == side
+            && m_inFlightPanelOpen.panelId == sideState.panelId
+            && m_inFlightPanelOpen.sourcePath != sideState.currentPath;
+        if (sameSource || destinationTransition) {
             m_deferredPanelOpenRepeat.active = true;
+            ++m_deferredPanelOpenRepeat.pendingCount;
             m_deferredPanelOpenRepeat.side = side;
             m_deferredPanelOpenRepeat.panelId = m_inFlightPanelOpen.panelId;
             m_deferredPanelOpenRepeat.sourcePath = m_inFlightPanelOpen.sourcePath;
@@ -144,6 +161,8 @@ void F4GalleryBridge::requestOpen(int side,
                     {QStringLiteral("catalogRevision"),
                      QVariant::fromValue<qulonglong>(
                          sideState.catalogRevision)},
+                    {QStringLiteral("pendingCount"),
+                     m_deferredPanelOpenRepeat.pendingCount},
                 });
             return;
         }
@@ -777,15 +796,21 @@ void F4GalleryBridge::markPanelOpenInFlight(int side,
     }
     const SideState &state = m_panelSessions.catalog(side);
     bool expectsPathChange = false;
+    bool opensParent = false;
     for (const QVariant &value : state.entries) {
         const QVariantMap entry = value.toMap();
         if (entry.value(QStringLiteral("entryId")).toString() == entryId) {
             expectsPathChange = entry.value(QStringLiteral("isDir")).toBool()
                 || entry.value(QStringLiteral("isUp")).toBool();
+            opensParent = entry.value(QStringLiteral("isUp")).toBool()
+                || entry.value(QStringLiteral("name")).toString()
+                       == QStringLiteral("..");
             break;
         }
     }
-    clearInFlightPanelOpen();
+    // A queued repeat may be replaying through this new open. Replace the
+    // in-flight transition without discarding the remaining physical events.
+    clearInFlightPanelOpen(false);
     m_inFlightPanelOpen.active = true;
     m_inFlightPanelOpen.side = side;
     m_inFlightPanelOpen.panelId = state.panelId;
@@ -793,18 +818,24 @@ void F4GalleryBridge::markPanelOpenInFlight(int side,
     m_inFlightPanelOpen.sourcePath = state.currentPath;
     m_inFlightPanelOpen.catalogRevision = state.catalogRevision;
     m_inFlightPanelOpen.expectsPathChange = expectsPathChange;
+    if (expectsPathChange) {
+        m_inFlightPanelOpen.expectedDestinationName = opensParent
+            ? pathLeaf(state.currentPath) : QStringLiteral("..");
+    }
     if (m_panelOpenWatchdog) {
         m_panelOpenWatchdog->start();
     }
 }
 
-void F4GalleryBridge::clearInFlightPanelOpen()
+void F4GalleryBridge::clearInFlightPanelOpen(bool clearDeferredRepeats)
 {
     if (m_panelOpenWatchdog) {
         m_panelOpenWatchdog->stop();
     }
     m_inFlightPanelOpen = InFlightPanelOpen{};
-    m_deferredPanelOpenRepeat = DeferredPanelOpenRepeat{};
+    if (clearDeferredRepeats) {
+        m_deferredPanelOpenRepeat = DeferredPanelOpenRepeat{};
+    }
 }
 
 void F4GalleryBridge::handlePanelOpenWatchdog()
@@ -834,7 +865,6 @@ void F4GalleryBridge::replayDeferredPanelOpenRepeat(
         || m_deferredPanelOpenRepeat.catalogRevision != catalogRevision) {
         return;
     }
-    m_deferredPanelOpenRepeat = DeferredPanelOpenRepeat{};
     if (!validSide(side)) {
         return;
     }
@@ -875,7 +905,15 @@ void F4GalleryBridge::replayDeferredPanelOpenRepeat(
             {QStringLiteral("index"), sourceIndex},
             {QStringLiteral("catalogRevision"),
              QVariant::fromValue<qulonglong>(state.catalogRevision)},
+            {QStringLiteral("pendingCount"),
+             m_deferredPanelOpenRepeat.pendingCount},
         });
+    --m_deferredPanelOpenRepeat.pendingCount;
+    m_deferredPanelOpenRepeat.active =
+        m_deferredPanelOpenRepeat.pendingCount > 0;
+    // Re-enter the ordinary open path as a queued physical repeat. The
+    // current cursor has already been reconciled from the destination cache,
+    // so this does not manufacture a second synthetic event or use `..`.
     requestOpen(side, state.cursorEntryId, sourceIndex, isImage,
                 state.catalogRevision, true);
 }

@@ -206,3 +206,24 @@ func TestViewerDecodeModeScrollWindowAction(t *testing.T) {
 		t.Fatalf("expected window to contain preceding instruction row at offset 0: %+v", rows[0])
 	}
 }
+
+func TestSemanticViewerSelectionTextUsesDisplayCells(t *testing.T) {
+	got := semanticViewerSelectionText(map[string]any{
+		"rows": []any{
+			map[string]any{"text": "abcdef", "width": 6, "start": 1, "end": 3},
+			map[string]any{"text": "a界bc", "width": 6, "start": 1, "end": 4},
+		},
+	})
+	if want := "bc\n界b"; got != want {
+		t.Fatalf("stream selection=%q, want %q", got, want)
+	}
+	got = semanticViewerSelectionText(map[string]any{
+		"block": true,
+		"rows": []any{map[string]any{
+			"text": "x", "width": 5, "start": 2, "end": 4,
+		}},
+	})
+	if want := "  "; got != want {
+		t.Fatalf("padded block selection=%q, want %q", got, want)
+	}
+}

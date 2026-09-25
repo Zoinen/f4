@@ -5,8 +5,9 @@ read [`docs/PORTABLE_BUILD_POLICY.md`](../../docs/PORTABLE_BUILD_POLICY.md).
 It defines the required single-file Linux/Windows and signed-bundle macOS
 contracts and their verification gates.
 
-This directory contains the optional Qt/QML sidecar renderer for `f4 --gui=qt`.
-The Go core does not link Qt; it starts `f4-qt-host` only when the Qt backend is requested.
+This directory contains the Qt/QML sidecar renderer for `f4 --gui=qt`.
+Portable Linux and Windows release binaries request this backend by default;
+the Go core does not link Qt and starts `f4-qt-host` as a separate process.
 
 Native menus and dialogs carry optional `stackOrder`, a shared one-based,
 bottom-to-top position in Go's frame stack. Complete, incremental, and menu-only
@@ -50,7 +51,9 @@ cmake --build build --config RelWithDebInfo
 Video thumbnails are enabled by default. The CMake options are:
 
 - `F4_ENABLE_VIDEO_THUMBNAILS=OFF` removes Qt Multimedia, the video runner and
-  the FFmpeg dependency from the host graph.
+  the FFmpeg dependency from the host graph. Video entries then use ordinary
+  file-icon geometry, even when an external catalog supplies video thumbnail
+  hints; the host does not assign a 16:9 thumbnail placeholder.
 - `F4_ENABLE_FFMPEG_BACKEND=OFF` keeps Qt Multimedia but selects a native Qt
   backend when the target provides one (for example, Media Foundation on
   Windows). Static targets without a native backend must keep the FFmpeg
@@ -86,10 +89,11 @@ window-agent fallback.
 
 ## Icon sets
 
-The QML frontend offers **Lucide** (the default) and **System** in the
-Appearance dialog. The choice is stored as `QmlIconSet = lucide|system` in the
-`[Appearance]` section and is applied live; it does not affect the terminal or
-other external UI renderers.
+The QML frontend offers **Lucide** (the default) and **Native** in the GUI
+settings category. The choice is stored as `iconSet = lucide|system` in
+`gui_theme.ini` and is applied live; the legacy `QmlIconSet` value remains a
+startup fallback. The selection does not affect the terminal or other external
+UI renderers.
 
 System file icons come from Qt Gui's platform file-icon provider. Qt delegates
 that lookup to Finder/NSWorkspace on macOS, the Shell image lists on Windows,
@@ -155,6 +159,9 @@ with shared Gallery decode workers and versioned thumbnail caches.
 Masonry, Grid and Icon modes automatically preview visible directories when both peers negotiate
 `directoryPreviewsV1` together with `panelCatalogRowsV1`. Folder rows carry
 `directorySource` enumeration authority, separate from image byte authority.
+Full scene projections and catalog replacements preserve the same descriptor
+as paged rows. Sorting or grouping alone must retain existing folder-preview
+models and must not start another directory enumeration.
 `enumerateDirectoryPreview` retains the first 200 non-directory files in VFS
 delivery order, including unsupported and hidden files. Gallery filters supported
 images, naturally sorts them, and evenly samples at most 16 names.
@@ -302,17 +309,30 @@ Layout choice, column count and each strategy's density are saved independently
 per panel. Switching strategies preserves the authoritative f4 cursor and
 selection without reapplying the catalog.
 
+**View → Thumbnails** is an independent per-panel preference, on by default
+and saved across restarts. Turning it off hides image, video, and folder
+previews and stops panel-owned thumbnail, metadata, probe, and folder-preview
+work; ordinary icons and the selected layout remain. Existing bounded caches
+are retained, and full-image viewing and Quick View are unaffected. Startup
+applies the saved preference before publishing each panel catalog.
+
 On Windows and Linux, installation uses Qt's QML/runtime deployment helper.
 On macOS, the build additionally creates
 `bin/<config>/f4-qt-host.app/Contents/MacOS/f4-qt-host`. The app bundle is what
-the Go launcher prefers: Xcode's `actool` compiles the layered Icon Composer
-document into adaptive `Assets.car` data plus an `AppIcon.icns` fallback for
-older macOS releases. Do not override it with `QGuiApplication::setWindowIcon`;
-that flattens the Dock icon and disables system-controlled appearances.
+the Go launcher prefers and contains the prebuilt `assets/icon/AppIcon.icns`.
+The icon is generated on a macOS development machine and checked into the
+repository so CI only copies it and does not depend on the runner's Xcode
+version. Do not override it with `QGuiApplication::setWindowIcon`; the bundle
+metadata owns the Dock and Finder icon.
 
 The Conan generate step still stages the relocatable `lib`, `qml`, and
 `plugins` tree on macOS. This includes ZoinGallery, Qt QML and platform
 plugins, module shaders/assets, codec libraries, and the shared Qt runtime.
+
+The macOS CI job also publishes `f4-qt-darwin-<arch>.app.zip`. It contains a
+self-contained `F4.app` with the Go core, Qt host, dylibs, QML imports and
+plugins below `Contents/Resources`; it is the bundle to open in Finder. The
+tarball remains the relocatable sidecar tree for development and diagnostics.
 
 Run the host-side bridge test with:
 

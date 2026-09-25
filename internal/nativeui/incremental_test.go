@@ -377,15 +377,12 @@ func TestAppScenePatchFiltersUnsupportedPanelStateFields(t *testing.T) {
 	if state["totalFiles"] != 4 || state["totalDirectories"] != 1 {
 		t.Fatalf("valid panel totals were dropped: %#v", state)
 	}
-	if state["groupBy"] != "Size" || state["groupReverse"] != true {
-		t.Fatalf("grouping settings were dropped: %#v", state)
-	}
-	groups := semantic.AppMapSlice(state["groups"])
-	if len(groups) != 1 || groups[0]["key"] != "size" {
-		t.Fatalf("group headers were dropped: %#v", state)
+	if state["groupBy"] != "Size" || state["groupFoldersSeparately"] != false ||
+		state["groupReverse"] != true {
+		t.Fatalf("grouping scalar state was dropped: %#v", state)
 	}
 	for _, unsupported := range []string{
-		"groupFoldersSeparately", "displayTop",
+		"displayTop", "groups",
 	} {
 		if _, present := state[unsupported]; present {
 			t.Fatalf("unsupported panel state field %q leaked into state_update: %#v",
@@ -451,9 +448,8 @@ func TestAppScenePatchCarriesFileFieldPresentationUpdates(t *testing.T) {
 	if len(filters) != 1 || filters[0]["fieldId"] != "exif.iso" {
 		t.Errorf("file-field filter update was dropped: %#v", state)
 	}
-	groups := semantic.AppMapSlice(state["groups"])
-	if len(groups) != 1 || groups[0]["title"] != "Canon EOS R5" {
-		t.Errorf("file-field group headers were dropped: %#v", state)
+	if _, present := state["groups"]; present {
+		t.Errorf("file-field groups bypassed the paged group transport: %#v", state)
 	}
 }
 

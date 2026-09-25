@@ -33,6 +33,7 @@ func (p *panelPluginTestController) Close() error {
 func (p *panelPluginTestController) GetSelectedName() string { return "plugin-row" }
 
 func TestPanelProviderOpensInActiveSlotAndReceivesContext(t *testing.T) {
+	t.Cleanup(paneltest.SwapFrameManager(t))
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	pf := paneltest.SetupMockPanelsFrame(t)
 	pf.ResizeConsole(80, 25)

@@ -531,7 +531,7 @@ func GalleryDensityLimits(mode GalleryLayoutMode) (defaultValue, minimum, maximu
 	case GalleryLayoutColumns, GalleryLayoutDetails:
 		// Zero asks the QML host to derive the untouched default from its font.
 		// Explicit compact zoom values use the same bounded row-pitch contract.
-		return 0, 22, 72
+		return 0, 22, 216
 	case GalleryLayoutGrid:
 		return 160, 96, 320
 	case GalleryLayoutIcons:
@@ -796,6 +796,7 @@ type FileSystemPanel struct {
 	semanticPagedResourceRevision  int64
 	semanticPagedResourceIDs       map[string]struct{}
 	semanticPagedDirectoryIDs      map[string]struct{}
+	directoryCache                 *directoryListingCache
 }
 
 var DisableLoadingAnimationInTests = true
@@ -823,6 +824,7 @@ func NewFileSystemPanel(x, y, w, h int, vfs vfs.VFS) *FileSystemPanel {
 		semanticPriorIndex:     -1,
 		SelectedItems:          make(map[string]bool),
 		selectionEpoch:         make(map[string]uint64),
+		directoryCache:         newDirectoryListingCache(),
 		//entries:             []*fileEntry{{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}}},
 	}
 	fp.Frame.ColorBoxIdx = theme.ColPanelBox
@@ -960,12 +962,12 @@ func (fp *FileSystemPanel) freshDirectoryEntries(items []vfs.VFSItem, showUpEntr
 		fp.applyPersistentSelection(entry, filesystem, path)
 		entries = append(entries, entry)
 	}
-	fp.sortEntrySlice(entries)
+	fp.sortCatalogEntries(entries, time.Now())
 	return entries
 }
 
-func fileEntriesFromItems(items []vfs.VFSItem) []*FileEntry {
-	if config.App.ShowHiddenFiles && len(items) >= 4096 {
+func fileEntriesFromItems(items []vfs.VFSItem, showHidden bool) []*FileEntry {
+	if showHidden && len(items) >= 4096 {
 		entries := make([]*FileEntry, len(items))
 		backing := make([]FileEntry, len(items))
 		workerCount := min(runtime.GOMAXPROCS(0), 8)
@@ -987,7 +989,7 @@ func fileEntriesFromItems(items []vfs.VFSItem) []*FileEntry {
 		return entries
 	}
 	visibleCount := len(items)
-	if !config.App.ShowHiddenFiles {
+	if !showHidden {
 		visibleCount = 0
 		for _, item := range items {
 			if item.Name == ".." || !item.IsHidden {
@@ -999,7 +1001,7 @@ func fileEntriesFromItems(items []vfs.VFSItem) []*FileEntry {
 	backing := make([]FileEntry, visibleCount)
 	next := 0
 	for _, item := range items {
-		if !config.App.ShowHiddenFiles && item.Name != ".." && item.IsHidden {
+		if !showHidden && item.Name != ".." && item.IsHidden {
 			continue
 		}
 		backing[next].VFSItem = item
@@ -1559,6 +1561,31 @@ func (fp *FileSystemPanel) sortEntriesByPreparedName(entries []*FileEntry) {
 }
 
 // sortEntrySlice applies the panel's current ordering to a detached catalog.
+// sortCatalogEntries applies the panel ordering to a detached catalog. Group
+// sorting needs a per-entry key cache, but a directory worker must not mutate
+// the live panel while it prepares its immutable catalog. Sort a lightweight
+// panel copy for that case; the caller rebuilds the live grouping rows after
+// installing the result.
+func (fp *FileSystemPanel) sortCatalogEntries(entries []*FileEntry, now time.Time) {
+	if fp == nil || fp.GroupBy == GroupNone {
+		if fp != nil {
+			fp.sortEntrySlice(entries)
+		}
+		return
+	}
+	sorter := FileSystemPanel{
+		Entries:                  entries,
+		GroupBy:                  fp.GroupBy,
+		GroupReverse:             fp.GroupReverse,
+		GroupFoldersSeparately:   fp.GroupFoldersSeparately,
+		SortMode:                 fp.SortMode,
+		SortReverse:              fp.SortReverse,
+		UseSortGroups:            fp.UseSortGroups,
+		sortDirectionSetByAction: fp.sortDirectionSetByAction,
+	}
+	sorter.sortEntriesAt(now)
+}
+
 func (fp *FileSystemPanel) sortEntrySlice(entries []*FileEntry) {
 	if (fp.SortMode == SortUnsorted && !fp.sortGroupsActive()) || len(entries) <= 1 {
 		return
@@ -2486,7 +2513,11 @@ func (fp *FileSystemPanel) SetGalleryDensity(mode GalleryLayoutMode, density int
 	if !ok {
 		return false
 	}
+	requested := density
 	density = ClampGalleryDensity(parsed, density)
+	if requested != density {
+		vtui.DebugLog("[FIX:gallery-density] mode=%s requested=%d clamped=%d", parsed, requested, density)
+	}
 	if fp.GalleryDensities == nil {
 		fp.GalleryDensities = make(map[GalleryLayoutMode]int)
 	}
@@ -2804,8 +2835,17 @@ func (fp *FileSystemPanel) pathTitleHitTest(x, y int) bool {
 }
 
 func (fp *FileSystemPanel) ReadDirectory() {
-	fp.readDirectoryEx(fp.Vfs != nil && fileops.SameVFSInstance(fp.committedListingVFS, fp.Vfs) &&
-		fp.committedListingPath == fp.Vfs.GetPath())
+	if fp == nil || fp.Vfs == nil {
+		return
+	}
+	path := fp.Vfs.GetPath()
+	keepEntries := fileops.SameVFSInstance(fp.committedListingVFS, fp.Vfs) &&
+		fp.committedListingPath == path
+	if !keepEntries {
+		showUpEntry := !fp.Vfs.IsAtRoot() || fp.Vfs.ParentVFS() != nil
+		keepEntries = fp.restoreCachedDirectory(fp.Vfs, path, showUpEntry)
+	}
+	fp.readDirectoryEx(keepEntries)
 }
 
 // enqueueDirectoryLoad keeps at most one backend read running and one newer
@@ -3359,6 +3399,9 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 		(!loadSyncPanel && panelSortSupportsPhasedDirectoryRead(fp.SortMode)))
 	loadSortMode, loadSortReverse := fp.SortMode, fp.SortReverse
 	loadSortGroups := fp.UseSortGroups
+	loadGroupBy := fp.GroupBy
+	loadGroupReverse := fp.GroupReverse
+	loadGroupFoldersSeparately := fp.GroupFoldersSeparately
 	previewEligible := !fp.sortGroupsActive() && loadSortMode == SortName && !loadSortReverse &&
 		!loadSyncPanel
 	windowedReader := windowedDirectoryReaderFor(loadVFS)
@@ -3401,7 +3444,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			if len(chunk) == 0 || !previewEligible || ctx.Err() != nil {
 				return
 			}
-			previewEntries := fileEntriesFromItems(chunk)
+			previewEntries := fileEntriesFromItems(chunk, loadShowHidden)
 			if len(previewEntries) == 0 || ctx.Err() != nil {
 				return
 			}
@@ -3482,7 +3525,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				len(window.Entries) > window.TotalCount || ctx.Err() != nil {
 				return
 			}
-			windowEntries := fileEntriesFromItems(window.Entries)
+			windowEntries := fileEntriesFromItems(window.Entries, loadShowHidden)
 			target := loadPendingSelection
 			targetFound := target == "" || target == ".." && showUpEntry
 			if !targetFound {
@@ -3524,7 +3567,10 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 					}
 				}
 				fp.Entries = append(fp.Entries, windowEntries...)
-				fp.sortEntrySlice(fp.Entries)
+				fp.sortCatalogEntries(fp.Entries, time.Now())
+				if fp.GroupBy != GroupNone {
+					fp.rebuildGroupingRows(time.Now())
+				}
 				fp.markSemanticCatalogMutation()
 				fp.catalogLogicalCount = window.TotalCount
 				if showUpEntry {
@@ -3575,11 +3621,14 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			if authoritativeBase && len(newEntries) > 1 {
 				sortStartedNs := navtrace.NavigationBenchmarkMonotonicNs()
 				sorter := FileSystemPanel{
-					SortMode:      loadSortMode,
-					SortReverse:   loadSortReverse,
-					UseSortGroups: loadSortGroups,
+					GroupBy:                loadGroupBy,
+					GroupReverse:           loadGroupReverse,
+					GroupFoldersSeparately: loadGroupFoldersSeparately,
+					SortMode:               loadSortMode,
+					SortReverse:            loadSortReverse,
+					UseSortGroups:          loadSortGroups,
 				}
-				sorter.sortEntrySlice(newEntries)
+				sorter.sortCatalogEntries(newEntries, time.Now())
 				sortFinishedNs := navtrace.NavigationBenchmarkMonotonicNs()
 				preSorted = true
 				if benchmark != nil {
@@ -3656,12 +3705,20 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 					// The complete source is rebuilt by the final completion task;
 					// do not expose an unfiltered chunk while the query is active.
 				} else if preSorted && fp.SortMode == loadSortMode &&
-					fp.SortReverse == loadSortReverse && fp.UseSortGroups == loadSortGroups {
+					fp.SortReverse == loadSortReverse && fp.UseSortGroups == loadSortGroups &&
+					fp.GroupBy == loadGroupBy && fp.GroupReverse == loadGroupReverse &&
+					fp.GroupFoldersSeparately == loadGroupFoldersSeparately {
+					if fp.GroupBy != GroupNone {
+						fp.rebuildGroupingRows(time.Now())
+					}
 					if !authoritativeWindowQueued {
 						fp.markSemanticCatalogMutation()
 					}
 				} else {
-					fp.sortEntrySlice(fp.Entries)
+					fp.sortCatalogEntries(fp.Entries, time.Now())
+					if fp.GroupBy != GroupNone {
+						fp.rebuildGroupingRows(time.Now())
+					}
 					if !authoritativeWindowQueued {
 						fp.markSemanticCatalogMutation()
 					}
@@ -3755,7 +3812,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			if benchmark != nil {
 				conversionStartedNs = navtrace.NavigationBenchmarkMonotonicNs()
 			}
-			newEntries := fileEntriesFromItems(chunk)
+			newEntries := fileEntriesFromItems(chunk, loadShowHidden)
 			if benchmark != nil {
 				conversionFinishedNs := navtrace.NavigationBenchmarkMonotonicNs()
 				benchmark.EventAt("model.chunk.converted", "go.worker", conversionFinishedNs,
@@ -3853,6 +3910,14 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 					}
 					entry := byName[item.Name]
 					entry.VFSItem = item
+				}
+				if fp.GroupBy != GroupNone {
+					// Metadata can move an entry out of the provisional "No data"
+					// group. Re-sort and rebuild once for the coalesced metadata
+					// batch, rather than once per row.
+					fp.sortCatalogEntries(fp.Entries, time.Now())
+					fp.rebuildGroupingRows(time.Now())
+					fp.markSemanticCatalogMutation()
 				}
 				fp.CommitSemanticMetadataMutation()
 				fp.Refresh()
@@ -4024,6 +4089,9 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				return
 			}
 			needsRedraw = true
+			if err == nil {
+				fp.storeDirectorySnapshot(loadVFS, path, accumulated)
+			}
 
 			refreshChanged := !keepEntries
 			if loadSyncPanel && err == nil {
@@ -4039,7 +4107,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 					fp.applyPersistentSelection(entry, loadVFS, path)
 					newEntries = append(newEntries, entry)
 				}
-				fp.sortEntrySlice(newEntries)
+				fp.sortCatalogEntries(newEntries, time.Now())
 				if fp.autoFilterOn {
 					// A same-directory refresh keeps the filter open. Replace its
 					// complete source and derive the visible subset from the query.
@@ -4049,6 +4117,9 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 					refreshChanged = fp.reconcileDirectoryEntries(newEntries)
 				} else {
 					fp.Entries = newEntries
+				}
+				if fp.GroupBy != GroupNone && !fp.autoFilterOn {
+					fp.rebuildGroupingRows(time.Now())
 				}
 				if refreshChanged {
 					completionPresentationChanged = true
@@ -4195,6 +4266,14 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				completionPresentationChanged = true
 				fp.SelectName(fp.PendingSelection)
 				fp.PendingSelection = ""
+			}
+			if fp.GroupBy != GroupNone && !authoritativeCatalogQueued &&
+				!loadSyncPanel && chunkCount == 0 {
+				// A provider may complete without invoking its chunk callback.
+				// Clear any grouping snapshot left by the previous directory even
+				// when the only surviving catalog row is "..".
+				fp.sortCatalogEntries(fp.Entries, time.Now())
+				fp.rebuildGroupingRows(time.Now())
 			}
 			if keepEntries {
 				fp.Refresh()

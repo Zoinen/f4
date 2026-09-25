@@ -1,0 +1,14 @@
+{
+	auto_https disable_redirects
+	http_port 9081
+}
+
+https://v2202510307500392562.nicesrv.de:9443 {
+	tls /etc/caddy/certs/conan-fullchain.pem /etc/caddy/certs/conan-privkey.pem
+
+	reverse_proxy 127.0.0.1:8082 {
+		header_up X-JFrog-Override-Base-Url https://v2202510307500392562.nicesrv.de:9443
+		header_up X-Forwarded-Proto https
+		header_up X-Forwarded-Port 9443
+	}
+}

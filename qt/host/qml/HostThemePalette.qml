@@ -271,6 +271,10 @@ Item {
                 applied = hostWindow.setMouseWheelMode(
                               String(saved.mouseWheelMode)) || applied
             }
+            if (saved.iconSet !== undefined && saved.iconSet !== "") {
+                applied = hostWindow.setIconSet(
+                              String(saved.iconSet)) || applied
+            }
             if (saved.neutralFileTextColors !== undefined) {
                 const value = saved.neutralFileTextColors
                 galleryNeutralFileTextColors = value === true
@@ -304,6 +308,7 @@ Item {
         }
         values.fontRenderType = hostWindow.fontRenderTypeName
         values.mouseWheelMode = hostWindow.mouseWheelMode
+        values.iconSet = hostWindow.iconSetName
         values.neutralFileTextColors = galleryNeutralFileTextColors
         values.showSelectionBorders = galleryShowSelectionBorders
         values.commandLineGraphicalCursor = commandLineGraphicalCursor
@@ -319,6 +324,7 @@ Item {
         if (textRendering)
             textRendering.setRenderTypeByName("NativeRendering")
         hostWindow.mouseWheelMode = "gui"
+        hostWindow.setIconSet("lucide")
         galleryNeutralFileTextColors = true
         galleryShowSelectionBorders = true
         commandLineGraphicalCursor = true

@@ -124,7 +124,7 @@ func TestDevicesParsesLongListing(t *testing.T) {
 	}
 	want := []Device{
 		{Serial: "988673333359424b4d", State: "device", Product: "heroltexx", Model: "SM_G930F", Device: "herolte", TransportID: "14"},
-		{Serial: "R3CN", State: "unauthorized", TransportID: "9"},
+		{Serial: "R3CN", State: "unauthorized", TransportID: "9", USB: true},
 	}
 	if !reflect.DeepEqual(devices, want) {
 		t.Fatalf("devices = %#v, want %#v", devices, want)
@@ -732,6 +732,23 @@ func TestFindADBExecutableHonorsOverrideAndSDKRoots(t *testing.T) {
 		t.Setenv("PATH", "")
 		t.Setenv("ANDROID_SDK_ROOT", root)
 		t.Setenv("ANDROID_HOME", "")
+		got, err := findADBExecutable()
+		if err != nil || got != path {
+			t.Fatalf("findADBExecutable = %q, %v; want %q", got, err, path)
+		}
+	})
+
+	t.Run("default macOS SDK root", func(t *testing.T) {
+		if runtime.GOOS != "darwin" {
+			t.Skip("macOS SDK layout")
+		}
+		home := t.TempDir()
+		path := writeFakeADBExecutable(t, filepath.Join(home, "Library", "Android", "sdk", "platform-tools"))
+		t.Setenv("F4_ADB_PATH", "")
+		t.Setenv("PATH", "")
+		t.Setenv("ANDROID_SDK_ROOT", "")
+		t.Setenv("ANDROID_HOME", "")
+		t.Setenv("HOME", home)
 		got, err := findADBExecutable()
 		if err != nil || got != path {
 			t.Fatalf("findADBExecutable = %q, %v; want %q", got, err, path)

@@ -470,6 +470,8 @@ private slots:
     void nativeDocumentSlotsKeepNestedValuesAndBatchNotifications();
     void editorCursorFollowsActiveTheme();
     void shortEditorSelectionDoesNotScroll();
+    void editorRectangularSelectionCoversEmptyRows();
+    void editorBlockDragFeedbackDoesNotWaitForBackend();
     void nativeDocumentModelLifetimeMatchesPhysicalPool();
     void standaloneMetadataDoesNotCarryRowPayload();
     void sameDocumentWindowsDoNotResetShellInteraction();
@@ -520,6 +522,8 @@ private slots:
     void terminalDragSelectionSendsAbsoluteClipboardRange();
     void terminalDragSelectionAutoScrollsBeyondViewportByDistance();
     void terminalSelectionUsesNearestInsertionBoundary();
+    void terminalAltSelectionKeepsTheSameColumnsAcrossRows();
+    void viewerAltSelectionKeepsTheSameColumnsAcrossRows();
     void terminalSelectionFollowsOutputGravity();
     void terminalDoubleAndTripleClickSelectWordAndParagraph();
     void legacyRowsRemainScrollableWithoutWindowProtocol();
@@ -1052,6 +1056,90 @@ void F4DocumentSurfaceTests::streamSelectionStateKeepsBaseRowsAndSuffixPixelsSta
     QCOMPARE(findText("documentRunText", secondRun), baseSecond.data());
     QCOMPARE(suffixTextChanges.size(), 0);
     QCOMPARE(captureSuffix(), stableSuffix);
+}
+
+void F4DocumentSurfaceTests::editorRectangularSelectionCoversEmptyRows()
+{
+    auto frame = editorFrame(0, 3, 0, 1);
+    auto rows = frame.value(QStringLiteral("windowRows")).toList();
+    auto emptyRow = rows.at(1).toMap();
+    emptyRow.insert(QStringLiteral("text"), QString());
+    emptyRow.insert(QStringLiteral("visualWidth"), 0);
+    rows[1] = emptyRow;
+    frame.insert(QStringLiteral("windowRows"), rows);
+    frame.insert(QStringLiteral("viewportColumns"), 10);
+    frame.insert(QStringLiteral("scrollLeft"), 0);
+    const QVariantMap rectSelection{
+        {QStringLiteral("rectSelection"), true},
+        {QStringLiteral("rectAnchorRow"), 0},
+        {QStringLiteral("rectAnchorColumn"), 1},
+        {QStringLiteral("rectFocusRow"), 1},
+        {QStringLiteral("rectFocusColumn"), 3},
+    };
+    DocumentFixture fixture(documentScene(frame));
+    QVERIFY(fixture.ready());
+
+    QVariant result;
+    QVERIFY(QMetaObject::invokeMethod(
+        fixture.surface, "editorSelectionRangeForRow", Qt::DirectConnection,
+        Q_RETURN_ARG(QVariant, result), Q_ARG(QVariant, QVariant(1)),
+        Q_ARG(QVariant, QVariant(0)), Q_ARG(QVariant, QVariant(rectSelection))));
+    const QVariantMap range = result.toMap();
+    QVERIFY(range.value(QStringLiteral("valid")).toBool());
+    QCOMPARE(range.value(QStringLiteral("start")).toInt(), 1);
+    QCOMPARE(range.value(QStringLiteral("end")).toInt(), 3);
+}
+
+void F4DocumentSurfaceTests::editorBlockDragFeedbackDoesNotWaitForBackend()
+{
+    auto frame = editorFrame(0, 60, 0, 1);
+    DocumentFixture fixture(documentScene(frame));
+    QVERIFY(fixture.ready());
+    QTRY_VERIFY(fixture.surface->property("windowInitialized").toBool());
+    const qreal height = fixture.surface->property("rowHeight").toReal();
+    const qreal cell = fixture.surface->property("terminalCellWidth").toReal();
+    const qreal inset = fixture.surface->property("textHorizontalInset").toReal();
+    auto send = [&](int column, const QString &phase) {
+        QVariantMap point{{"x", inset + (column + 0.25) * cell}, {"y", height * 1.5},
+            {"button", int(Qt::LeftButton)}, {"buttons", phase == "release" ? 0 : int(Qt::LeftButton)},
+            {"modifiers", int(Qt::AltModifier)}};
+        return QMetaObject::invokeMethod(fixture.surface, "sendEditorMouse", Qt::DirectConnection,
+            Q_ARG(QVariant, point), Q_ARG(QVariant, phase),
+            Q_ARG(QVariant, phase == "move"), Q_ARG(QVariant, false));
+    };
+    QVERIFY(send(1, "press"));
+    QElapsedTimer timer;
+    qint64 total = 0, worst = 0;
+    for (int i = 0; i < 500; ++i) {
+        timer.start();
+        const int column = 2 + i % 30;
+        QVERIFY(send(column, "move"));
+        const auto selection = fixture.surface->property("selectionCursorFrame").toMap();
+        QVERIFY(selection.value("rectSelection").toBool());
+        QCOMPARE(selection.value("rectFocusColumn").toInt(), column);
+        const auto elapsed = timer.nsecsElapsed();
+        total += elapsed;
+        worst = qMax(worst, elapsed);
+    }
+    qInfo() << "ALT_EDITOR mouse-to-selection synchronous us average" << total / 500.0 / 1000
+            << "max" << worst / 1000.0;
+    QVERIFY(send(21, "release"));
+    // The final preview stays visible while the authoritative echo is pending.
+    QVERIFY(fixture.surface->property("selectionCursorFrame").toMap().value("rectSelection").toBool());
+    frame.insert("rectSelection", true);
+    frame.insert("rectAnchorRow", 1);
+    frame.insert("rectAnchorColumn", 1);
+    frame.insert("rectFocusRow", 1);
+    frame.insert("rectFocusColumn", 3);
+    fixture.shell.setScene(documentScene(frame));
+    QCoreApplication::processEvents();
+    QCOMPARE(fixture.surface->property("selectionCursorFrame").toMap().value("rectFocusColumn").toInt(), 21);
+    frame.insert("rectFocusColumn", 21);
+    fixture.shell.setScene(documentScene(frame));
+    QTRY_COMPARE(fixture.surface->property("cursorFrame").toMap().value("rectFocusColumn").toInt(), 21);
+    frame.insert("rectSelection", false);
+    fixture.shell.setScene(documentScene(frame));
+    QTRY_VERIFY(!fixture.surface->property("selectionCursorFrame").toMap().value("rectSelection").toBool());
 }
 
 void F4DocumentSurfaceTests::nativeStyledRunMutationIgnoresStaleContentKey()
@@ -4091,6 +4179,81 @@ void F4DocumentSurfaceTests::terminalSelectionUsesNearestInsertionBoundary()
     QVERIFY(action.value(QStringLiteral("endExclusive")).toBool());
 }
 
+void F4DocumentSurfaceTests::terminalAltSelectionKeepsTheSameColumnsAcrossRows()
+{
+    DocumentFixture fixture(documentScene(terminalFrame(970, 90, 1000, 1)));
+    QVERIFY(fixture.ready());
+    QTRY_VERIFY_WITH_TIMEOUT(
+        fixture.surface->property("windowInitialized").toBool(), 3000);
+
+    QVariant clickCount;
+    QVERIFY(QMetaObject::invokeMethod(
+        fixture.surface, "handleTerminalSelectionPressAtWithBlock",
+        Qt::DirectConnection, Q_RETURN_ARG(QVariant, clickCount),
+        Q_ARG(QVariant, QVariant(1001)), Q_ARG(QVariant, QVariant(3)),
+        Q_ARG(QVariant, QVariant(3)), Q_ARG(QVariant, QVariant(1000.0)),
+        Q_ARG(QVariant, QVariant(true))));
+    QCOMPARE(clickCount.toInt(), 1);
+    QVERIFY(fixture.surface->property("terminalSelectionBlockSelection").toBool());
+    QVERIFY(QMetaObject::invokeMethod(
+        fixture.surface, "extendTerminalSelectionTo", Qt::DirectConnection,
+        Q_ARG(QVariant, QVariant(1004)), Q_ARG(QVariant, QVariant(7))));
+
+    for (const int row : {1001, 1002, 1003, 1004}) {
+        QVariant range;
+        QVERIFY(QMetaObject::invokeMethod(
+            fixture.surface, "terminalSelectionRangeForRow",
+            Qt::DirectConnection, Q_RETURN_ARG(QVariant, range),
+            Q_ARG(QVariant, QVariant(row)),
+            Q_ARG(QVariant, QVariant(fixture.list->width()))));
+        QCOMPARE(range.toMap().value(QStringLiteral("start")).toInt(), 3);
+        QCOMPARE(range.toMap().value(QStringLiteral("end")).toInt(), 7);
+    }
+
+    fixture.shell.clearActions();
+    QVERIFY(QMetaObject::invokeMethod(fixture.surface,
+                                      "commitTerminalSelection",
+                                      Qt::DirectConnection));
+    QTRY_VERIFY_WITH_TIMEOUT(!fixture.shell.actions.isEmpty(), 1000);
+    const QVariantMap action = fixture.shell.actions.constLast();
+    QCOMPARE(action.value(QStringLiteral("action")).toString(),
+             QStringLiteral("terminal.copySelection"));
+    QVERIFY(action.value(QStringLiteral("block")).toBool());
+}
+
+void F4DocumentSurfaceTests::viewerAltSelectionKeepsTheSameColumnsAcrossRows()
+{
+    QVariantMap frame = viewerFrame(0, 80, 0, 1);
+    frame.insert(QStringLiteral("mode"), QStringLiteral("text"));
+    DocumentFixture fixture(documentScene(frame));
+    QVERIFY(fixture.ready());
+    QTRY_VERIFY_WITH_TIMEOUT(
+        fixture.surface->property("windowInitialized").toBool(), 3000);
+    auto *controller = fixture.surface->findChild<QQuickItem *>(
+        QStringLiteral("viewerSelectionController"));
+    QVERIFY(controller);
+
+    const QVariantMap anchor{{QStringLiteral("offset"), 0},
+                             {QStringLiteral("column"), 2}};
+    const QVariantMap focus{{QStringLiteral("offset"), 20},
+                            {QStringLiteral("column"), 6}};
+    QVERIFY(QMetaObject::invokeMethod(
+        controller, "beginAt", Qt::DirectConnection,
+        Q_ARG(QVariant, QVariant(anchor)), Q_ARG(QVariant, QVariant(true))));
+    QVERIFY(QMetaObject::invokeMethod(
+        controller, "extendTo", Qt::DirectConnection,
+        Q_ARG(QVariant, QVariant(focus))));
+
+    QVariant range;
+    QVERIFY(QMetaObject::invokeMethod(
+        controller, "rangeForRow", Qt::DirectConnection,
+        Q_RETURN_ARG(QVariant, range),
+        Q_ARG(QVariant, QVariant(QVariantMap{{QStringLiteral("offset"), 10}}))));
+    QCOMPARE(range.toMap().value(QStringLiteral("start")).toInt(), 2);
+    QCOMPARE(range.toMap().value(QStringLiteral("end")).toInt(), 6);
+    QVERIFY(controller->property("blockSelection").toBool());
+}
+
 void F4DocumentSurfaceTests::terminalDoubleAndTripleClickSelectWordAndParagraph()
 {
     QVariantMap frame = terminalFrame(970, 90, 1000, 1);
@@ -4128,6 +4291,9 @@ void F4DocumentSurfaceTests::terminalDoubleAndTripleClickSelectWordAndParagraph(
         Q_ARG(QVariant, QVariant(1002)), Q_ARG(QVariant, QVariant(7)),
         Q_ARG(QVariant, QVariant(7)), Q_ARG(QVariant, QVariant(1200.0))));
     QCOMPARE(clickCount.toInt(), 2);
+    QVERIFY(QMetaObject::invokeMethod(fixture.surface,
+                                      "commitTerminalSelection",
+                                      Qt::DirectConnection));
     QVERIFY(fixture.surface->property("terminalSelectionVisible").toBool());
     QVERIFY(!fixture.surface->property("terminalSelectionDragging").toBool());
     QCOMPARE(fixture.surface->property("terminalSelectionAnchorRow").toInt(),

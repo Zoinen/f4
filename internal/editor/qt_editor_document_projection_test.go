@@ -255,6 +255,58 @@ func TestEditorDocumentPointerNoOpDoesNotRedraw(t *testing.T) {
 	}
 }
 
+func TestEditorDocumentDoubleClickDragSelectsWholeWords(t *testing.T) {
+	ev := projectionTestEditor(t, "one two three four\n")
+	revision := ev.semanticLayoutRevision
+	down := &vtinput.InputEvent{Type: vtinput.MouseEventType, ButtonState: vtinput.FromLeft1stButtonPressed, MouseEventFlags: vtinput.DoubleClick}
+	move := &vtinput.InputEvent{Type: vtinput.MouseEventType, ButtonState: vtinput.FromLeft1stButtonPressed, MouseEventFlags: vtinput.MouseMoved}
+	ev.processDocumentPointer(down, 0, 5, 0, revision)
+	if !ev.mouseWordSelecting || ev.SelAnchorOffset != 4 {
+		t.Fatalf("double click word selection: active=%v anchor=%d", ev.mouseWordSelecting, ev.SelAnchorOffset)
+	}
+	ev.processDocumentPointer(move, 0, 10, 0, revision)
+	if got := ev.Li.GetLineOffset(ev.CursorLine) + ev.CursorPos; ev.SelAnchorOffset != 4 || got != 13 {
+		t.Fatalf("forward word drag [%d,%d], want [4,13]", ev.SelAnchorOffset, got)
+	}
+	ev.processDocumentPointer(move, 0, 1, 0, revision)
+	if got := ev.Li.GetLineOffset(ev.CursorLine) + ev.CursorPos; ev.SelAnchorOffset != 7 || got != 0 {
+		t.Fatalf("backward word drag [%d,%d], want [7,0]", ev.SelAnchorOffset, got)
+	}
+}
+
+func TestEditorDocumentAltBlockRetainsColumnOnEmptyRow(t *testing.T) {
+	ev := projectionTestEditor(t, "abc\n\nxyz")
+	vtui.SetClipboard("old clipboard")
+	revision := ev.semanticLayoutRevision
+	press := &vtinput.InputEvent{
+		Type: vtinput.MouseEventType, KeyDown: true,
+		ButtonState:     vtinput.FromLeft1stButtonPressed,
+		ControlKeyState: vtinput.LeftAltPressed,
+	}
+	if !ev.processDocumentPointer(press, 0, 1, 0, revision) {
+		t.Fatal("Alt-click anchor was not applied")
+	}
+	move := &vtinput.InputEvent{
+		Type:            vtinput.MouseEventType,
+		ButtonState:     vtinput.FromLeft1stButtonPressed,
+		MouseEventFlags: vtinput.MouseMoved,
+	}
+	if !ev.processDocumentPointer(move, 4, 3, 0, revision) {
+		t.Fatal("Alt drag endpoint on the empty row was not applied")
+	}
+	if !ev.RectSelActive || !ev.rectSelFocusColSet || ev.rectSelFocusCol != 3 {
+		t.Fatalf("empty-row block geometry active=%v focus=%d set=%v",
+			ev.RectSelActive, ev.rectSelFocusCol, ev.rectSelFocusColSet)
+	}
+	ev.processDocumentPointer(&vtinput.InputEvent{Type: vtinput.MouseEventType}, -1, 0, 0, revision)
+	if ev.mouseAltCandidate || ev.semanticPointerActive {
+		t.Fatal("Alt drag release did not clear pointer capture")
+	}
+	if got, want := vtui.GetClipboard(), "bc\n  "; got != want {
+		t.Fatalf("empty-row block copy=%q, want %q", got, want)
+	}
+}
+
 func TestEditorDocumentPointerCursorOnlyUsesScalarPatch(t *testing.T) {
 	oldMarkOccurrences := config.App.EditorMarkOccurrences
 	config.App.EditorMarkOccurrences = false

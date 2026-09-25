@@ -80,7 +80,9 @@ File-field sort, filter, group, and Details-column choices are part of the
 per-side gallery session state. Old sessions without these keys load with
 default file-field settings.
 
-Grouping publishes file-only ranges from Go. The gallery places one header
+Grouping publishes file-only ranges from Go through the shared paged group
+transport (`panelGroupingV1`), including EXIF groups. Collapse state is keyed
+by the selected field as well as the directory and grouping options. The gallery places one header
 before each range in Details, Columns, Grid, Icons, and Masonry. Grid and icon
 groups start on a new row; column groups occupy a separate horizontal block.
 Headers are supplementary visuals, so they do not have model indexes or take
@@ -96,8 +98,9 @@ positions once per panel, snaps the scrolling viewport in scene coordinates,
 and rounds each brick's shared edges using the window DPR. The analytical
 density and content extent retain their precision: rounding a row pitch first
 would accumulate an error over large catalogs. Hit testing uses the painted
-edges and the actual viewport translation. Group headers share that viewport;
-the fixed Details header receives its parent-origin correction from C++.
+edges and the actual viewport translation. The fixed Details header receives
+its parent-origin correction from C++. Group overlays use the shared grouping
+layout, including its sticky headers and collapse/navigation behavior.
 
 Details text and compact previews only round local extents, insets, and
 centering. They do not observe `contentY` or walk the host ancestor chain for

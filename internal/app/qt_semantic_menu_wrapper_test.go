@@ -47,8 +47,12 @@ func TestSemanticMenuActivationUsesActualProviderFrame(t *testing.T) {
 }
 
 func TestSemanticMenuScrollAcceptsAbsoluteNativeTop(t *testing.T) {
-	oldFrameManager := *vtui.FrameManager
-	defer func() { *vtui.FrameManager = oldFrameManager }()
+	oldFrameManager := vtui.FrameManager
+	vtui.FrameManager = vtui.NewFrameManager()
+	defer func() {
+		vtui.FrameManager.Shutdown()
+		vtui.FrameManager = oldFrameManager
+	}()
 
 	screen := vtui.NewScreenBuf()
 	screen.AllocBuf(80, 25)

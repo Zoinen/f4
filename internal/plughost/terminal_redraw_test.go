@@ -4,8 +4,6 @@ import (
 	testing "testing"
 )
 
-import ()
-
 func TestExtUiRenderer_CoveredTerminalRedrawDeferralRequiresNegotiatedCoveredScene(t *testing.T) {
 	tests := []struct {
 		name       string

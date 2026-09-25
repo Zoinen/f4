@@ -1,5 +1,6 @@
 #pragma once
 #include "F4QuickViewPreferences.h"
+#include "F4PanelPreferences.h"
 
 #include "PanelCatalogModel.h"
 #include "PanelIntentController.h"
@@ -37,6 +38,7 @@ class F4GalleryBridge final : public QObject
     Q_PROPERTY(bool available READ available CONSTANT)
     Q_PROPERTY(QObject *settings READ settings CONSTANT)
     Q_PROPERTY(QObject *quickViewPreferences READ quickViewPreferences CONSTANT)
+    Q_PROPERTY(QObject *panelPreferences READ panelPreferences CONSTANT)
     Q_PROPERTY(bool viewerMounted READ viewerMounted NOTIFY viewerChanged)
     Q_PROPERTY(int viewerState READ viewerState NOTIFY viewerChanged)
     Q_PROPERTY(int quickViewSide READ quickViewSide NOTIFY viewerChanged)
@@ -48,6 +50,8 @@ class F4GalleryBridge final : public QObject
     Q_PROPERTY(QUrl viewerComponentUrl READ viewerComponentUrl CONSTANT)
     Q_PROPERTY(bool navigationBenchmarkEnabled READ navigationBenchmarkEnabled CONSTANT)
     Q_PROPERTY(bool benchmarkTraceEnabled READ benchmarkTraceEnabled CONSTANT)
+    Q_PROPERTY(qulonglong groupCatalogEpoch READ groupCatalogEpoch
+               NOTIFY groupCatalogEpochChanged)
 
 public:
     Q_INVOKABLE void registerDragPanel(int side, QQuickItem *item);
@@ -62,6 +66,8 @@ public:
     bool available() const;
     QObject *settings() const;
     QObject *quickViewPreferences() const { return m_quickViewPreferences; }
+    QObject *panelPreferences() const { return m_panelPreferences; }
+    Q_INVOKABLE bool setPanelThumbnailsEnabled(int side, bool enabled);
     bool viewerMounted() const;
     int viewerState() const;
     int quickViewSide() const;
@@ -78,6 +84,8 @@ public:
     QUrl viewerComponentUrl() const;
     bool navigationBenchmarkEnabled() const;
     bool benchmarkTraceEnabled() const;
+    qulonglong groupCatalogEpoch() const { return m_groupCatalogEpoch; }
+    Q_INVOKABLE QVariantList groupCatalogForSide(int side) const;
 
     // Reuse the panel's native SVG middle-scroll cursor for document surfaces
     // without making those surfaces depend on a MasonryLayout instance.
@@ -139,6 +147,7 @@ public slots:
     void beginCompactProtocolMessage(const QVariantMap &message);
     void handleCompactProtocolMessage(const QVariantMap &message);
     void handlePanelCatalogRowsMessage(const QVariantMap &message);
+    void handlePanelGroupPageMessage(const QVariantMap &message);
     void handlePanelCatalogMetadataMessage(const QVariantMap &message);
     // main.cpp connects QQuickWindow::frameSwapped to this slot. Keeping the
     // window dependency out of the bridge makes the runner testable with a
@@ -151,6 +160,9 @@ signals:
     void uiActionRequested(const QVariantMap &action);
     void panelCatalogMetadataRequested(const QVariantMap &request);
     void panelCatalogRowsRequested(const QVariantMap &request);
+    void panelGroupPageRequested(const QVariantMap &request);
+    void panelGroupCatalogChanged(int side, qulonglong catalogRevision);
+    void groupCatalogEpochChanged();
     // Bracket catalog replacement with the bounded presentation descriptor
     // that belongs to the same semantic revision. QML applies this descriptor
     // before GallerySession emits path/model changes, so a path never reflows
@@ -205,6 +217,7 @@ private:
     friend class F4GalleryPointerTests;
     friend class F4GalleryRowsResponseReducer;
     friend class F4GalleryMetadataResponseReducer;
+    friend class F4GalleryGroupPageResponseReducer;
     using MetadataRange = PanelCatalogModel::MetadataRange;
     using SideState = PanelCatalogModel;
 
@@ -242,18 +255,20 @@ private:
         QString sourcePath;
         qulonglong catalogRevision = 0;
         bool expectsPathChange = false;
+        QString expectedDestinationName;
         // If the source scan completes after a directory-open intent, retain
         // only its bounded wire page so a rejected navigation can recover.
         // A successful path acknowledgement discards it immediately.
         QVariantMap deferredSourcePanel;
     };
 
-    // One held-key repeat which arrived while panel.open was still in flight.
-    // It is intentionally an epoch marker rather than a stale entry request:
-    // once the authoritative destination catalog arrives, replay resolves the
-    // destination's current cursor stable ID from SideState.
+    // Held-key repeats which arrived while panel.open was still in flight.
+    // They are retained as an epoch marker rather than stale entry requests:
+    // once the cached destination cursor is ready, replay resolves the
+    // destination's current stable ID from SideState.
     struct DeferredPanelOpenRepeat {
         bool active = false;
+        int pendingCount = 0;
         int side = -1;
         QString panelId;
         QString sourcePath;
@@ -350,6 +365,7 @@ private:
     bool deferSupersededPanelCatalog(PanelSyncContext *context);
     bool deferPanelCatalogFinalization(PanelSyncContext *context);
     void acknowledgePanelOpen(PanelSyncContext *context);
+    bool destinationCursorReady(const PanelSyncContext &context) const;
     void tracePanelSyncBegin(const PanelSyncContext &context);
     void handlePanelIdentityChange(PanelSyncContext *context);
     bool applyProvisionalPanelUpdate(PanelSyncContext *context);
@@ -407,6 +423,12 @@ private:
     void schedulePanelCatalogRowsRequest(int side);
     void schedulePanelCatalogRowsRetry(int side);
     int matchingCatalogRowsSide(const QVariantMap &message) const;
+    void requestPanelGroupPage(int side);
+    void schedulePanelGroupPageRequest(int side);
+    int matchingGroupPageSide(const QVariantMap &message) const;
+    void resetPanelGroupPage(int side);
+    void commitPanelGroupCatalog(int side, const QVariantList &groups,
+                                 qulonglong catalogRevision);
     bool catalogRowLoaded(const SideState &state, int row) const;
     static int catalogEntryCount(const SideState &state);
     static QVariantMap catalogEntryAt(const SideState &state, int row);
@@ -428,7 +450,7 @@ private:
     void reconcilePendingPanelOpen(int side);
     void clearPendingPanelOpen();
     void markPanelOpenInFlight(int side, const QString &entryId);
-    void clearInFlightPanelOpen();
+    void clearInFlightPanelOpen(bool clearDeferredRepeats = true);
     void handlePanelOpenWatchdog();
     void replayDeferredPanelOpenRepeat(int side,
                                        const QString &panelId,
@@ -521,6 +543,7 @@ private:
     PanelIntentController *m_panelIntentController = nullptr;
     ViewerCoordinator *m_viewerCoordinator = nullptr;
     F4QuickViewPreferences *m_quickViewPreferences = nullptr;
+    F4PanelPreferences *m_panelPreferences = nullptr;
     QVariantMap m_quickView;
     QPointer<QObject> m_runtime;
     PanelSessionRegistry m_panelSessions;
@@ -556,8 +579,10 @@ private:
     std::atomic<qulonglong> m_renderSyncSerial{0};
     bool m_metadataRequestScheduled = false;
     std::array<bool, 2> m_catalogRowsRequestScheduled = {false, false};
+    std::array<bool, 2> m_groupPageRequestScheduled = {false, false};
     bool m_metadataInputBusy = false;
     QTimer *m_metadataIdleTimer = nullptr;
     QTimer *m_suppressedKeyReleaseTimer = nullptr;
     int m_suppressedKeyRelease = -1;
+    qulonglong m_groupCatalogEpoch = 0;
 };

@@ -20,25 +20,24 @@ class MacApplicationIconTests final : public QObject
     Q_OBJECT
 
 private slots:
-    void appBundleContainsAdaptiveIconCatalog();
+    void appBundleContainsPrebuiltIcon();
     void runtimeFallbackLeavesBundleIconAuthoritative();
 };
 
-void MacApplicationIconTests::appBundleContainsAdaptiveIconCatalog()
+void MacApplicationIconTests::appBundleContainsPrebuiltIcon()
 {
     NSString *bundlePath = [NSString stringWithUTF8String:F4_MACOS_APP_BUNDLE];
     NSBundle *bundle = [NSBundle bundleWithPath:bundlePath];
     QVERIFY2(bundle != nil, F4_MACOS_APP_BUNDLE);
 
     NSDictionary *info = [bundle infoDictionary];
-    QCOMPARE(fromNSString([info objectForKey:@"CFBundleIconName"]),
-             QStringLiteral("AppIcon"));
     QCOMPARE(fromNSString([info objectForKey:@"CFBundleIconFile"]),
-             QStringLiteral("AppIcon"));
+             QStringLiteral("AppIcon.icns"));
+    QVERIFY([info objectForKey:@"CFBundleIconName"] == nil);
 
     NSFileManager *fileManager = [NSFileManager defaultManager];
     NSString *resourcesPath = [bundle resourcePath];
-    for (NSString *fileName in @[@"Assets.car", @"AppIcon.icns"]) {
+    for (NSString *fileName in @[@"AppIcon.icns"]) {
         NSString *path = [resourcesPath stringByAppendingPathComponent:fileName];
         BOOL isDirectory = NO;
         const bool exists =

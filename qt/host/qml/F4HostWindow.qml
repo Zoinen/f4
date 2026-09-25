@@ -62,9 +62,25 @@ ApplicationWindow {
     property var dropdownAnchorItems: ({})
     property int dropdownAnchorRevision: 0
 
-    readonly property string guiMonospaceFontFamily:
-        String(f4GuiFontFamily || "").length > 0
-        ? String(f4GuiFontFamily) : "Monaco"
+    readonly property string configuredGuiFontFamily:
+        typeof f4GuiFontFamily !== "undefined"
+        ? String(f4GuiFontFamily).trim() : ""
+    readonly property string uiFontFamily:
+        configuredGuiFontFamily.length > 0
+        ? configuredGuiFontFamily
+        : (typeof f4SystemUiFontFamily !== "undefined"
+           && String(f4SystemUiFontFamily).trim().length > 0
+           ? String(f4SystemUiFontFamily).trim() : host.font.family)
+    readonly property string guiMonospaceFontFamily: {
+        if (configuredGuiFontFamily.length > 0)
+            return configuredGuiFontFamily
+        if (typeof f4SystemMonospaceFontFamily !== "undefined") {
+            const systemFamily = String(f4SystemMonospaceFontFamily).trim()
+            if (systemFamily.length > 0)
+                return systemFamily
+        }
+        return "monospace"
+    }
     readonly property int guiMonospaceFontPixelSize:
         Number(f4GuiFontPixelSize) > 0 ? Number(f4GuiFontPixelSize)
                                        : (Qt.platform.os === "osx" ? 17 : 16)
@@ -123,6 +139,18 @@ ApplicationWindow {
         String(mouseWheelModeOption(mouseWheelMode).name || "GUI scrolling")
     readonly property string mouseWheelModeDescription:
         String(mouseWheelModeOption(mouseWheelMode).description || "")
+
+    readonly property var iconSetOptions: [
+        { value: "lucide", name: "Lucide",
+          description: "Use bundled Lucide outline icons" },
+        { value: "system", name: "Native",
+          description: "Use native platform file icons" }
+    ]
+    readonly property string iconSetName:
+        iconProvider && iconProvider.name !== undefined
+        ? String(iconProvider.name) : "lucide"
+    readonly property string iconSetDescription:
+        String(iconSetOption(iconSetName).description || "")
 
     readonly property real physicalSeparatorPixels:
         Math.max(1, Math.round(dpr))
@@ -317,6 +345,15 @@ ApplicationWindow {
         return options.length > 0 ? options[options.length - 1] : ({})
     }
 
+    function iconSetOption(value) {
+        const options = iconSetOptions || []
+        for (let index = 0; index < options.length; ++index) {
+            if (String(options[index].value) === String(value))
+                return options[index]
+        }
+        return options.length > 0 ? options[0] : ({})
+    }
+
     function setMouseWheelMode(value) {
         const normalized = String(value || "").toLowerCase()
         for (let index = 0; index < mouseWheelModeOptions.length; ++index) {
@@ -324,6 +361,19 @@ ApplicationWindow {
                 mouseWheelMode = normalized
                 return true
             }
+        }
+        return false
+    }
+
+    function setIconSet(value) {
+        const normalized = String(value || "").trim().toLowerCase()
+        for (let index = 0; index < iconSetOptions.length; ++index) {
+            if (String(iconSetOptions[index].value) !== normalized)
+                continue
+            if (!iconProvider || iconProvider.name === undefined)
+                return false
+            iconProvider.name = normalized
+            return iconSetName === normalized
         }
         return false
     }

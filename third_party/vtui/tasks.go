@@ -37,6 +37,10 @@ func (ctx *TaskContext) RunOnUI(fn func()) {
 // Returning false proves that the callback updated bookkeeping only; an older
 // or concurrent redraw is still preserved by FrameManager.
 func (ctx *TaskContext) RunOnUIWithRedrawDecision(fn func() bool) {
+	if fm := ctx.frames; fm != nil {
+		fm.PostTaskWithRedrawDecision(fn)
+		return
+	}
 	FrameManager.PostTaskWithRedrawDecision(fn)
 }
 

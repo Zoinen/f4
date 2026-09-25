@@ -21,6 +21,27 @@ Panel catalog rows and document text rows only occur in their corresponding
 panel/document stream. A revision gap requests a snapshot for that `streamId`
 alone.
 
+### Grouped panel catalogs
+
+`panelGroupingV1` is an opt-in native capability. A `panel_catalog` payload
+contains `groupBy`, `groupReverse`, `groupFoldersSeparately`, and the bounded
+`groupTotal` count. Catalogs with at most 512 group ranges include `groups`
+directly. Larger catalogs set `groupsDeferred:true` and keep `groups` absent;
+the peer pulls the immutable index in order with:
+
+```json
+{"type":"panel_group_page_request","panelId":"...","path":"...",
+ "catalogRevision":42,"offset":0,"limit":512}
+```
+
+The response is `panel_group_page` with the same identity fence, `offset`,
+`limit`, `total`, and at most 512 `{key,title,startIndex,count}` descriptors.
+Pages are ordered by group ordinal, cover contiguous source ranges (apart from
+the optional leading `..` entry), and are installed only after the complete
+index validates against the catalog revision. Obsolete or malformed pages are
+discarded without terminating the native host. Row-free panel state updates
+carry only grouping scalars and counts; they never serialize the group array.
+
 Control messages (`hello`, `palette`, fallback `frame`, `cursor`, clipboard,
 platform transport, and `quit`) are transport-level and intentionally do not
 use semantic revisions.

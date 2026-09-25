@@ -278,9 +278,11 @@ set(F4_QT_HOST_SOURCES
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgePanelSync.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgeIntents.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4QuickViewPreferences.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/F4PanelPreferences.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgeQuickView.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgeProtocol.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgeRowsResponse.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgeGroupPage.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/F4GalleryBridgeMetadataResponse.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/PanelCatalogModel.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/PanelCatalogModel.cpp"
@@ -319,11 +321,13 @@ set(F4_LUCIDE_ICON_NAMES
   arrow-down.svg
   arrow-left.svg
   arrow-down-a-z.svg
+  arrow-down-up.svg
   arrow-down-wide-narrow.svg
   arrow-up.svg
   binary.svg
   book-open.svg
   check.svg
+  calendar-plus.svg
   circle-check.svg
   circle-pause.svg
   circle-play.svg
@@ -339,6 +343,7 @@ set(F4_LUCIDE_ICON_NAMES
   copy.svg
   database.svg
   eye.svg
+  eye-off.svg
   file.svg
   file-clock.svg
   file-code.svg
@@ -410,7 +415,10 @@ set(F4_LUCIDE_ICON_NAMES
   tablet.svg
   text-wrap.svg
   trash-2.svg
+  settings-2.svg
   triangle-alert.svg
+  user-round.svg
+  users-round.svg
   video.svg
   x.svg
 )
@@ -425,9 +433,9 @@ set(F4_STREAMLINE_ICON_NAMES
 set(F4_STREAMLINE_ICONS ${F4_STREAMLINE_ICON_NAMES})
 list(TRANSFORM F4_STREAMLINE_ICONS PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/icons/streamline/")
 
-# Gallery renders the same icons at a much larger size. Generate a second,
-# thinner set from the vendored Lucide SVGs at configure time so the two sets
-# cannot drift and no SVG rewriting is needed at runtime.
+# Gallery renders the same icons at a much larger size. Keep a second,
+# thinner set from the vendored Lucide SVGs at configure time for static and
+# non-host embedders; the Qt host can override its stroke per rendered size.
 set(F4_GALLERY_LUCIDE_STROKE_WIDTH "1" CACHE STRING
   "Stroke width used by the large Lucide icons in Gallery")
 set(F4_GALLERY_LUCIDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/lucide-gallery")
@@ -490,7 +498,18 @@ if(F4_QT_STATIC)
         ${F4_REQUIRED_STATIC_QML_PLUGINS}
         Qt6::Svg
         Qt6::QSvgPlugin
-        Qt6::QuickControls2Basic)
+        ${F4_QT_QUICK_EFFECTS_LINK}
+        ${F4_QT_QUICK_CONTROLS_BASIC_LINK})
+      if(NOT TARGET Qt6::QuickEffects_resources_1)
+        set_property(TARGET ${F4_ZOIN_STATIC_QML_TEST_TARGET}
+          APPEND PROPERTY LINK_LIBRARY_OVERRIDE
+          "WHOLE_ARCHIVE,Qt6::QuickEffects")
+      endif()
+      if(NOT TARGET Qt6::QuickControls2Basic_resources_1)
+        set_property(TARGET ${F4_ZOIN_STATIC_QML_TEST_TARGET}
+          APPEND PROPERTY LINK_LIBRARY_OVERRIDE
+          "WHOLE_ARCHIVE,Qt6::QuickControls2Basic")
+      endif()
     endif()
   endforeach()
 endif()
@@ -510,6 +529,10 @@ if(F4_QT_STATIC)
       ZoinGalleryPersistentDerivedImageCacheTests
       ZoinGalleryDecodeLifecycleTests
       ZoinGalleryLayoutEngineTests
+      ZoinGalleryGroupIndexTests
+      ZoinGalleryQuickSearchIndexTests
+      ZoinGalleryThumbnailPlannerTests
+      ZoinGalleryIconResolverTests
       ZoinGalleryPanelControllerTests)
     if(TARGET ${F4_ZOIN_STATIC_CORE_TEST_TARGET})
       target_sources(${F4_ZOIN_STATIC_CORE_TEST_TARGET} PRIVATE
@@ -522,7 +545,7 @@ if(F4_QT_STATIC)
       target_link_libraries(${F4_ZOIN_STATIC_CORE_TEST_TARGET} PRIVATE
         Qt6::QOffscreenIntegrationPlugin
         Qt6::QGifPlugin
-        Qt6::QIcoPlugin
+        ${F4_QT_ICO_PLUGIN_TARGET}
         Qt6::QJpegPlugin
         Qt6::Svg
         Qt6::QSvgPlugin)
@@ -553,6 +576,9 @@ if(APPLE)
     "${CMAKE_BINARY_DIR}/bin/$<CONFIG>/f4-qt-host.app"
     DESTINATION bin
     USE_SOURCE_PERMISSIONS
+  )
+  install(SCRIPT
+    "${CMAKE_CURRENT_LIST_DIR}/cmake/repair-macos-app-rpath.cmake"
   )
 endif()
 install(FILES icons/lucide/LICENSE
@@ -847,10 +873,16 @@ if(BUILD_TESTING)
         src/StaticQmlPluginImports.cpp)
       target_link_libraries(${target} PRIVATE
         ${F4_REQUIRED_STATIC_QML_PLUGINS}
-        "$<LINK_LIBRARY:WHOLE_ARCHIVE,Qt6::QuickEffects>"
-        Qt6::QuickControls2Basic)
-      set_property(TARGET ${target} APPEND PROPERTY LINK_LIBRARY_OVERRIDE
-        "WHOLE_ARCHIVE,Qt6::QuickEffects")
+        ${F4_QT_QUICK_EFFECTS_LINK}
+        ${F4_QT_QUICK_CONTROLS_BASIC_LINK})
+      if(NOT TARGET Qt6::QuickEffects_resources_1)
+        set_property(TARGET ${target} APPEND PROPERTY LINK_LIBRARY_OVERRIDE
+          "WHOLE_ARCHIVE,Qt6::QuickEffects")
+      endif()
+      if(NOT TARGET Qt6::QuickControls2Basic_resources_1)
+        set_property(TARGET ${target} APPEND PROPERTY LINK_LIBRARY_OVERRIDE
+          "WHOLE_ARCHIVE,Qt6::QuickControls2Basic")
+      endif()
     endif()
   endfunction()
 
@@ -860,9 +892,11 @@ if(BUILD_TESTING)
         tests/StaticQtImagePluginImports.cpp)
       target_link_libraries(${target} PRIVATE
         Qt6::QGifPlugin
-        Qt6::QIcoPlugin
+        ${F4_QT_ICO_PLUGIN_TARGET}
         Qt6::QJpegPlugin
-        Qt6::QSvgPlugin)
+        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:$<LINK_GROUP:RESCAN,CONAN_LIB::qt_Qt6_Svg_Qt6Svg_RELEASE,CONAN_LIB::qt_Qt6_QSvgPlugin_qsvg_RELEASE>>
+        $<$<CXX_COMPILER_ID:MSVC>:CONAN_LIB::qt_Qt6_Svg_Qt6Svg_RELEASE>
+        $<$<CXX_COMPILER_ID:MSVC>:CONAN_LIB::qt_Qt6_QSvgPlugin_qsvg_RELEASE>)
     endif()
   endfunction()
 
@@ -1037,6 +1071,7 @@ if(BUILD_TESTING)
   target_link_libraries(F4DocumentSurfaceTests PRIVATE
     Qt6::Core
     Qt6::Gui
+    Qt6::Svg
     Qt6::Qml
     Qt6::Quick
     Qt6::QuickControls2
@@ -1171,6 +1206,7 @@ if(BUILD_TESTING)
     tests/TestExtUiStateController.h
     tests/TestExtUiStateController.cpp
     src/DummyQWK.h
+    src/F4PanelPreferences.h
     src/F4TextRenderingPolicy.h
     src/F4TextRenderingPolicy.cpp
     src/ShellStateStore.h
@@ -1209,6 +1245,12 @@ if(BUILD_TESTING)
   add_test(NAME F4QuickViewIconPixelGridTest
     COMMAND F4QuickViewSurfaceTests chromeIconsUseMatchingPhysicalTargetSizes)
   set_tests_properties(F4QuickViewIconPixelGridTest PROPERTIES
+    ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
+  )
+  add_test(NAME F4QuickViewThumbnailsTogglePixelGridTest
+    COMMAND F4QuickViewSurfaceTests
+      rendererThumbnailsToggleMatchesMenuAndPersistsPerSide)
+  set_tests_properties(F4QuickViewThumbnailsTogglePixelGridTest PROPERTIES
     ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
   )
   add_test(NAME F4PanelStatusOverlayTest COMMAND F4QuickViewSurfaceTests
@@ -1278,6 +1320,12 @@ if(BUILD_TESTING)
   set_tests_properties(F4QuickViewTextPixelGridTest PROPERTIES
     ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
   )
+  add_test(NAME F4NativeFontPolicyPixelGridTest
+    COMMAND F4QuickViewSurfaceTests
+      nativeFontRolesUsePlatformDefaultsAt175Percent)
+  set_tests_properties(F4NativeFontPolicyPixelGridTest PROPERTIES
+    ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
+  )
   add_test(NAME F4QuickViewWorktreeBranchTitleTest
     COMMAND F4QuickViewSurfaceTests worktreeBranchAppearsCenteredInTitleBar)
   set_tests_properties(F4QuickViewWorktreeBranchTitleTest PROPERTIES
@@ -1294,6 +1342,11 @@ if(BUILD_TESTING)
   set_tests_properties(F4NativeSettingsPixelGridTest PROPERTIES
     ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../.."
+  )
+  add_test(NAME F4QuickViewIconSetSettingsTest
+    COMMAND F4QuickViewSurfaceTests themeDialogIconSetControlIsLiveAndPersisted)
+  set_tests_properties(F4QuickViewIconSetSettingsTest PROPERTIES
+    ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
   )
   add_test(NAME F4QuickViewThemeDialogPixelGridTest
     COMMAND F4QuickViewSurfaceTests
@@ -1522,9 +1575,11 @@ if(BUILD_TESTING)
     src/F4GalleryBridgePanelSync.cpp
     src/F4GalleryBridgeQuickView.cpp
     src/F4QuickViewPreferences.h
+    src/F4PanelPreferences.h
     src/F4GalleryBridgeIntents.cpp
     src/F4GalleryBridgeProtocol.cpp
     src/F4GalleryBridgeRowsResponse.cpp
+    src/F4GalleryBridgeGroupPage.cpp
     src/F4GalleryBridgeMetadataResponse.cpp
     src/PanelCatalogModel.h
     src/PanelCatalogModel.cpp
@@ -1601,9 +1656,11 @@ if(BUILD_TESTING)
     src/F4GalleryBridgePanelSync.cpp
     src/F4GalleryBridgeQuickView.cpp
     src/F4QuickViewPreferences.h
+    src/F4PanelPreferences.h
     src/F4GalleryBridgeIntents.cpp
     src/F4GalleryBridgeProtocol.cpp
     src/F4GalleryBridgeRowsResponse.cpp
+    src/F4GalleryBridgeGroupPage.cpp
     src/F4GalleryBridgeMetadataResponse.cpp
     src/PanelCatalogModel.h
     src/PanelCatalogModel.cpp

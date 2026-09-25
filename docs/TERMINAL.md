@@ -161,6 +161,30 @@ The command is single-quoted into the `eval` by `shellSingleQuote`. Anything
 that changes this wrapper must keep the property that **no input from the user
 can prevent the D marker from being printed**.
 
+Local foreground commands whose quoted text exceeds 256 bytes, or contains a
+real line break, use a private file instead of sending the entire text through
+the interactive tty input queue. On macOS a reproduced long-line failure
+corrupted input after byte 1024 and lost the final Enter while the write still
+reported success. Splitting the write into smaller syscalls did not fix the
+regression. The shell consequently never reached C, while f4 waited muted for
+the command it had submitted.
+
+`internal/panel/frame_command.go` stores `eval 'CMD'` in the existing private
+shell-transport session (0700 directory, 0600 file). The outer C/D wrapper
+evaluates a short, quoted `command cat` substitution. The inner quoted eval
+preserves trailing newlines; both evals execute in the existing shell, preserving
+aliases, variables, cwd, positional parameters, `$0`, and tty stdin. A missing
+payload reports a read error and a non-zero result but still reaches D. Windows,
+remote-shell templates, and background dispatch remain unchanged.
+
+Payload ownership belongs to the panels frame, not the duration of the Write
+call. Completion, failed/short writes, shell replacement, and frame close release
+the file. The existing runtime shutdown and stale-session sweep cover crashes.
+Diagnostics tagged `[FIX:command-handoff]` record lengths/errors, not command
+contents. The macOS integration regression sends 20 consecutive long commands
+through a real zsh PTY; additional shell tests compare staged and direct eval
+behavior in sh, bash, and zsh.
+
 ### The prompt row belongs to the prompt (`EnsureFreshPromptLine`)
 
 f4 hides the native shell prompt by painting its own command line over the
@@ -471,6 +495,22 @@ Argument wrapping puts each unquoted argument starting with a dash on a new
 visual line and highlights the dash. Ordinary overflow wraps at word boundaries
 (with long words split as needed). Colored margin dashes identify soft breaks.
 Neither visual breaks nor margin markers enter the command buffer or history.
+
+Clicking the Qt command input sets the insertion point, including within
+wrapped arguments and text containing emoji. Qt sends a source UTF-16 caret
+offset to the Go editor; presentation-only breaks never become input offsets.
+Up/Down move between displayed lines and preserve the preferred column across
+shorter lines. When the input spans multiple visual lines, edge arrows stay in
+the input and never recall command history. Qt uses its actual text layout;
+the console uses the shared editor's cell layout. Panel navigation remains
+unchanged when the command input does not own focus (or has a single-line input).
+In Qt, a long input shows a scrollbar and keeps the viewport steady while
+the caret stays visible. Mouse drag selects text, double-click selects a word,
+and triple-click selects a logical line in both Qt and console modes.
+Holding Alt while dragging selects a rectangular block in the editor, text
+viewer, console output history, and multiline command input. Block columns are
+measured in displayed cells, so each selected row keeps the same left and right
+edges; Alt-click in the editor without dragging still adds or removes a caret.
 
 ## Selection and GUI launch environment
 

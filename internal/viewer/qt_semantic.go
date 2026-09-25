@@ -76,8 +76,62 @@ func (vv *ViewerView) HandleSemanticAction(action map[string]any) bool {
 	case "control.focus":
 		vv.SetFocus(true)
 		return true
+	case "viewer.copySelection":
+		if !vv.HexMode && !vv.DecodeMode {
+			if text := semanticViewerSelectionText(action); text != "" {
+				if semantic.Bool(action["block"]) {
+					vtui.DebugLog("[FIX:text-block-selection] viewer copy rows=%d block=true bytes=%d",
+						len(semantic.AppMapSlice(action["rows"])), len(text))
+				}
+				go vtui.SetClipboard(text)
+			}
+		}
+		return true
 	}
 	return false
+}
+
+func semanticViewerSelectionText(action map[string]any) string {
+	var rows []any
+	switch value := action["rows"].(type) {
+	case []any:
+		rows = value
+	case []map[string]any:
+		rows = make([]any, len(value))
+		for index := range value {
+			rows[index] = value[index]
+		}
+	}
+	if len(rows) == 0 {
+		return ""
+	}
+	block, _ := action["block"].(bool)
+	var out strings.Builder
+	writtenRows := 0
+	for _, raw := range rows {
+		row, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if writtenRows > 0 {
+			out.WriteByte('\n')
+		}
+		writtenRows++
+		text := semantic.String(row["text"])
+		width := max(1, semantic.Int(row["width"]))
+		origin := semantic.Int(row["origin"])
+		start := max(0, min(width, semantic.Int(row["start"])))
+		end := max(start, min(width, semantic.Int(row["end"])))
+		cells, _ := viewerTextCellsAt(text, vtui.Palette[theme.ColViewerText], effectiveViewerTabSize(), width, origin)
+		for column := start; column < end; column++ {
+			if column < len(cells) {
+				out.WriteString(vtui.CellString(cells[column].Char))
+			} else if block {
+				out.WriteByte(' ')
+			}
+		}
+	}
+	return out.String()
 }
 
 func (vv *ViewerView) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
@@ -474,7 +528,8 @@ func (vv *ViewerView) semanticWindow() semantic.SemanticSurfaceWindow {
 	// owns this array independently from the discarded construction state.
 	for _, constructed := range build.rows {
 		projection := constructed.projection
-		row := extui.TextRowModel{Index: len(window.Rows), Offset: constructed.start, EndOffset: projection.end,
+		row := extui.TextRowModel{Index: len(window.Rows), Offset: constructed.start,
+			EndOffset: projection.end, DisplayColumn: constructed.column,
 			Text: projection.text, Runs: semantic.RunsFromCells(projection.cells)}
 		row.ContentKey = extui.TextRowContentKey(row)
 		window.Rows = append(window.Rows, row)

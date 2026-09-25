@@ -153,7 +153,7 @@ Item {
 
     function maximumDensityFor(mode) {
         if (mode === "columns" || mode === "details")
-            return 72
+            return 216
         return mode === "grid" ? 320 : mode === "icons" ? 256 : 500
     }
 

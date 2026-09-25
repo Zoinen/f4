@@ -9,9 +9,7 @@
     <key>CFBundleExecutable</key>
     <string>f4-qt-host</string>
     <key>CFBundleIconFile</key>
-    <string>AppIcon</string>
-    <key>CFBundleIconName</key>
-    <string>AppIcon</string>
+    <string>AppIcon.icns</string>
     <key>CFBundleIdentifier</key>
     <string>org.unxed.f4.qt-host</string>
     <key>CFBundleInfoDictionaryVersion</key>

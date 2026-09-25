@@ -81,6 +81,12 @@ Panel.Folder=Folder
 Panel.Symlink=Symlink
 Panel.Junction=Junction
 Panel.SelectedInfo=Bytes: %s, files: %d, folders: %d
+Panel.View.Columns2=Columns · &2
+Panel.View.Columns3=Columns · &3
+Panel.View.Details=&Details
+Panel.View.Masonry=&Masonry
+Panel.ViewIcons=Icons
+Panel.ViewGrid=Grid
 
 Panels.Prompt=>
 
@@ -452,6 +458,8 @@ Action.Panel.ToggleKeyBar.Desc=Show or hide the KeyBar
 Action.Panel.Rescan.Desc=Refresh panel contents
 Action.Panel.ToggleHidden=Toggle &hidden files
 Action.Panel.ToggleHidden.Desc=Show or hide hidden and system files on both panels
+Action.Panel.ToggleNavigationMode=Toggle Search-first / Classic Navigation
+Action.Panel.ToggleNavigationMode.Desc=Switch panel typing between filename search and the classic command line
 Action.Panel.Swap.Desc=Swap left and right panels
 Action.Panel.Toggle.Desc=Show or hide panels
 Action.Panel.ToggleLeftPanel.Desc=Show or hide the left panel
@@ -712,6 +720,7 @@ Menu.Terminal.File=&File
 Menu.ProxySettings=&Proxy settings
 Menu.Panel.Player=&Player
 Menu.Terminal.Options=&Options
+Menu.Left.Gallery=Gallery
 
 RemoteCmd.Title=Remote command
 RemoteCmd.Prompt=Command:
@@ -1023,6 +1032,10 @@ AppearanceSettings.WorkspaceNumbersSession=Preserve during current session
 AppearanceSettings.WorkspaceNumbersOrder=Follow current tab order
 AppearanceSettings.ExportBtn=E&xport Scheme
 AppearanceSettings.ColorCorrection=Enforce color &contrast correction
+AppearanceSettings.IconSet=QML &icon set:
+AppearanceSettings.IconSetLucide=Lucide
+AppearanceSettings.IconSetSystem=System
+AppearanceSettings.RestartRequired=Font changes in GUI mode will take effect\nafter application restart.
 
 ConfirmationsSettings.Title= Confirmations
 ConfirmationsSettings.Copy=Confirm on &copy
@@ -1517,6 +1530,7 @@ KeyBar.SheetF7=Search
 KeyBar.SheetF10=Menu
 KeyBar.SheetShiftF2=SaveAs
 KeyBar.SheetShiftF3=Export
+KeyBar.ShiftF12=GUI/Text
 
 Arkanoid.Title=A R K A N O I D
 Arkanoid.HighScores= High Scores
@@ -3363,16 +3377,14 @@ SettingsCenter.Text.efd27bee237a8b28e19e78a861e44210c8e7ad86482874ddae75329f88ed
 SettingsCenter.Text.dbc5b04582b15d7c7603f9abedb430c3d0720021c4717ef621b60b66339ecd3d=Load the scheme of every Colorer file type in the applied configuration and report the first one Colorer cannot load, and what it reports on the way. Applies nothing.
 SettingsCenter.Matches=Matches: %d
 SettingsCenter.ClearSearch=Clear search
+SettingsCenter.HidePanelPathBar.Label=Hide panel path bars (GUI)
+SettingsCenter.HidePanelPathBar.Description=Hide the path, sorting and view controls above both graphical file panels. Ctrl+Shift+B toggles this setting.
 
-Menu.Left.Gallery=Gallery
-AppearanceSettings.IconSet=QML &icon set:
-AppearanceSettings.IconSetLucide=Lucide
-AppearanceSettings.IconSetSystem=System
-AppearanceSettings.RestartRequired=Font changes in GUI mode will take effect\nafter application restart.
-KeyBar.ShiftF12=GUI/Text
 Presentation.GUI=GUI presentation
 Presentation.Text=Text presentation
+
 MacOSLocations.Title=macOS Locations
+
 WindowsLocations.Title=Windows locations
 WindowsLocations.DriveItem=Windows locations
 WindowsLocations.GalleryTitle=Gallery
@@ -3385,24 +3397,11 @@ WindowsLocations.AccessErrorFmt=Cannot access folder:\n%s\n\n%v
 WindowsLocations.AccessUnavailable=This location is unavailable.
 WindowsLocations.AccessNotFolder=This location is not a folder.
 
-Panel.View.Columns2=Columns · &2
-
-Panel.View.Columns3=Columns · &3
-
-Panel.View.Details=&Details
-
-Panel.View.Masonry=&Masonry
 Panel.View.Icons=Icons
 Panel.View.Grid=Grid
-Panel.ViewIcons=Icons
-Panel.ViewGrid=Grid
-
 DiskMenu.MacOSLocations=macOS &Locations
-
 DiskMenu.MacOSLoading=Loading macOS locations…
-
 DiskMenu.ShellLoading=◌ Loading…
-
 DiskMenu.ShellEmpty=No Windows Shell locations
 
 SettingsCenter.Text.c925a11891b84dfcf3a6a35ab8064b4ff807efc9c9afac7df8081e91e3af0116=Command line
@@ -3437,7 +3436,7 @@ UserMenu.Far3.Apply=Apply saves the imported entries.
 
 PanelSettings.SearchHideUnfocused=Hide command input when unfocused
 SettingsCenter.SearchCommandHideUnfocused.Label=Hide command input when unfocused
-SettingsCenter.SearchCommandHideUnfocused.Description=In Search-first mode, hide the command line while the panel has focus. Press the tilde key to show it.
+SettingsCenter.SearchCommandHideUnfocused.Description=In Search-first mode, hide the command line when the panel has focus and the input is empty. Press the tilde key to show it.
 SettingsCenter.Category.hotkeys=Hotkey Configurator
 SettingsCenter.Text.8802174070f1412801a7f0343b685b2031869bce18833d79e48e7a712ab59883=Prefer exact shortcut search matches
 SettingsCenter.Text.d077ac4db77fed335010255316d50f1597c6c39b6481aa17455e4dd418ed0e40=next outliner
@@ -3519,5 +3518,3 @@ Group.Month9=September
 Group.Month10=October
 Group.Month11=November
 Group.Month12=December
-SettingsCenter.HidePanelPathBar.Label=Hide panel path bars (GUI)
-SettingsCenter.HidePanelPathBar.Description=Hide the path, sorting and view controls above both graphical file panels. Ctrl+Shift+B toggles this setting.

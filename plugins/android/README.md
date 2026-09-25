@@ -13,8 +13,11 @@ but cannot be opened until ADB reports the `device` state.
 
 f4 talks to the ADB smart socket at `127.0.0.1:5037` directly. If the server is
 not running, it starts the installed `adb` executable. Executable discovery is,
-in order: `F4_ADB_PATH`, `PATH`, `ANDROID_SDK_ROOT/platform-tools`, then
-`ANDROID_HOME/platform-tools`. Platform Tools are not downloaded or bundled.
+in order: `F4_ADB_PATH`, `PATH`, `ANDROID_SDK_ROOT/platform-tools`,
+`ANDROID_HOME/platform-tools`, and the standard per-user SDK location
+(`~/Library/Android/sdk/platform-tools` on macOS, `~/Android/Sdk/platform-tools`
+on Unix, or `%LOCALAPPDATA%/Android/Sdk/platform-tools` on Windows). Platform
+Tools are not downloaded or bundled.
 Wireless devices that have already been connected to the same ADB server are
 listed in exactly the same way as USB devices.
 
@@ -25,7 +28,12 @@ an item address opens its containing directory and remains usable for file I/O.
 Names retain spaces and apostrophes, while URI delimiters are escaped. Relative
 paths and native `/sdcard/...` paths also work inside a mounted device.
 
-Discovery resolves the friendly name to an ADB serial. Duplicate model names
+When the Android drive is opened, f4 identifies whether the ADB snapshot
+contains a USB transport. If it does not, f4 performs one bounded daemon
+refresh and repeats discovery, which recovers phones attached after an older
+ADB server was started. The root also exposes a `Refresh device list` action as
+an explicit retry. Discovery resolves the friendly name to an ADB serial.
+Duplicate model names
 use `Model (serial)` authorities (with URI escaping), independent of discovery
 order; an ambiguous unsuffixed name is rejected. Serial and manager-row aliases
 are also accepted when resolving a URI. Each mounted view accepts only its own
@@ -66,9 +74,12 @@ The drive has exactly the access of the ordinary Android `shell` user. It never
 runs `su`, requests `adb root`, remounts a partition, or bypasses scoped storage
 and Android filesystem permissions. A permission error is returned as-is.
 
-Pairing, `adb connect`, root/remount controls and hot-plug tracking are outside
-this drive. Pair or connect a device with Platform Tools first, then refresh the
-Android drive. Device discovery itself is refreshed on every panel refresh.
+Pairing, `adb connect`, root/remount controls and continuous hot-plug tracking
+are outside this drive. If Android reports an unauthorized USB transport, the
+device remains visible and opening it restarts ADB, waits for authorization,
+and opens it after the host key is accepted. Device discovery itself is also
+refreshed on every panel refresh, with the bounded USB recovery described
+above.
 
 ## Real-device test
 
