@@ -58,6 +58,7 @@ Item {
     property bool galleryNeutralFileTextColors: true
     property bool galleryShowSelectionBorders: true
     property bool commandLineGraphicalCursor: true
+    property bool compactBreadcrumbs: true
     property color galleryQuickSearchMatchColor: "#c678dd"
     property color galleryDirectoryTextColor: "#98d8ff"
     property color galleryFolderIconColor: "#5ab2f1"
@@ -230,6 +231,9 @@ Item {
             return false
         try {
             const saved = persistence.loadTheme()
+            compactBreadcrumbs = saved.compactBreadcrumbs === undefined
+                    || saved.compactBreadcrumbs === true
+                    || String(saved.compactBreadcrumbs).toLowerCase() === "true"
             commandLineGraphicalCursor = saved.commandLineGraphicalCursor === undefined
                     || saved.commandLineGraphicalCursor === true
                     || String(saved.commandLineGraphicalCursor).toLowerCase() === "true"
@@ -315,6 +319,7 @@ Item {
         values.neutralFileTextColors = galleryNeutralFileTextColors
         values.showSelectionBorders = galleryShowSelectionBorders
         values.commandLineGraphicalCursor = commandLineGraphicalCursor
+        values.compactBreadcrumbs = compactBreadcrumbs
         values.themeSchemaVersion = schemaVersion
         return persistence.saveTheme(values)
     }
@@ -331,6 +336,7 @@ Item {
         galleryNeutralFileTextColors = true
         galleryShowSelectionBorders = true
         commandLineGraphicalCursor = true
+        compactBreadcrumbs = true
     }
 
     function formatColorHex(colorValue) {

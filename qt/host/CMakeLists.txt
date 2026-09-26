@@ -336,6 +336,7 @@ set(F4_LUCIDE_ICON_NAMES
   chevron-down.svg
   chevron-up.svg
   chevron-right.svg
+  slash.svg
   clock-3.svg
   cloud.svg
   columns-2.svg

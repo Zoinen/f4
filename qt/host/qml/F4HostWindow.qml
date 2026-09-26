@@ -222,6 +222,7 @@ ApplicationWindow {
     property alias galleryShowSelectionBorders:
         themePalette.galleryShowSelectionBorders
     property alias commandLineGraphicalCursor: themePalette.commandLineGraphicalCursor
+    property alias compactBreadcrumbs: themePalette.compactBreadcrumbs
     property alias galleryQuickSearchMatchColor:
         themePalette.galleryQuickSearchMatchColor
     property alias galleryDirectoryTextColor:

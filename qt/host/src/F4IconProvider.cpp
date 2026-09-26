@@ -113,6 +113,7 @@ const QSet<QString> &lucideIconNames()
         QStringLiteral("chevron-down"),
         QStringLiteral("chevron-up"),
         QStringLiteral("chevron-right"),
+        QStringLiteral("slash"),
         QStringLiteral("clock-3"),
         QStringLiteral("cloud"),
         QStringLiteral("columns-2"),

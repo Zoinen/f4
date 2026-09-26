@@ -22,7 +22,7 @@ FocusScope {
         for (const definition of hostWindow.themeColorDefinitions)
             values[definition.id] = hostWindow[definition.id].toString()
         for (const key of ["fontRenderType", "mouseWheelMode", "galleryNeutralFileTextColors",
-                           "galleryShowSelectionBorders", "commandLineGraphicalCursor",
+                           "galleryShowSelectionBorders", "commandLineGraphicalCursor", "compactBreadcrumbs",
                            "iconSetName"])
             values[key] = hostWindow[key]
         draftBaseline = values
@@ -545,6 +545,16 @@ FocusScope {
                 description: qsTr("Use a thin vertical caret; disable for the console underline")
                 checked: hostWindow.commandLineGraphicalCursor
                 onToggled: checked => hostWindow.commandLineGraphicalCursor = checked
+            }
+
+            ThemeBooleanOption {
+                hostWindow: themeColorConfigurator.hostWindow
+                pixelGridRoot: themeColorConfigurator.contentItem
+                namePrefix: "themeCompactBreadcrumbs"
+                title: qsTr("Compact breadcrumbs when the path does not fit")
+                description: qsTr("Shorten ancestor names; disable to keep full names and scroll horizontally")
+                checked: hostWindow.compactBreadcrumbs
+                onToggled: checked => hostWindow.compactBreadcrumbs = checked
             }
 
             // Main Body: Left (List of items) + Right (Editor)

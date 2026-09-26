@@ -140,7 +140,11 @@ Rectangle {
                 Qt.platform.os === "windows"
                 || String(panel.path || "").indexOf("\\") >= 0
             breadcrumbFontPixelSize: hostWindow.semanticTextFontPixelSize
+            compactBreadcrumbs: hostWindow.compactBreadcrumbs
             pathBackgroundColor: hostWindow.galleryPathBackgroundColor
+            pathSurfaceColor: Qt.tint(Qt.tint(hostWindow.titleBarBg,
+                                              hostWindow.panelPathBg),
+                                      hostWindow.galleryPathBackgroundColor)
             pathTextColor: hostWindow.galleryPathTextColor
             pathHoveredColor: hostWindow.controlBg
             pathItemHoveredColor: hostWindow.galleryPathItemHoverColor

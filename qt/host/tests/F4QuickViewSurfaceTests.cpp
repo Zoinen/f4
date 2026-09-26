@@ -893,6 +893,7 @@ private slots:
     void compactMenuStructureTransfersFocusWithoutSceneRebind();
     void menuKeyboardSelectionSurvivesStationaryPointerPatch();
     void pathBreadcrumbTextStaysFixedWhenNavigatingDeeper();
+    void pathBreadcrumbsCompressAndExpandOnHover();
     void uriBreadcrumbKeepsSchemeTogetherAndNavigates();
     void commandMenusKeepPanelCursorWhileBlockingInput();
     void quickSearchPaletteDefaultAndResetArePink();
@@ -7908,6 +7909,117 @@ void F4QuickViewSurfaceTests::menuKeyboardSelectionSurvivesStationaryPointerPatc
              rowZero);
     QTest::qWait(100);
     QCOMPARE(fixture.shell.actions.size(), 0);
+}
+
+void F4QuickViewSurfaceTests::pathBreadcrumbsCompressAndExpandOnHover()
+{
+    auto scene = shellScene({}, 0);
+    auto shell = scene.value("shell").toMap();
+    auto panels = shell.value("panels").toList();
+    auto panel = panels[0].toMap();
+    const QString path = "/Users/zoin/.codex/worktrees/qt-run-current/f4/qt/host/build-qt-run2/bin/RelWithDebInfo/f4-qt-host.app";
+    panel.insert("path", path);
+    panel.insert("title", path);
+    panels[0] = panel;
+    shell.insert("panels", panels);
+    scene.insert("shell", shell);
+    QuickViewFixture fixture(scene, true, true);
+    QVERIFY(fixture.window);
+    fixture.window->resize(1400, 640);
+    auto *control = fixture.item("panelPathTitle-0");
+    QVERIFY(control);
+    QQuickItem *first = nullptr;
+    QQuickItem *last = nullptr;
+    QTRY_VERIFY((first = visualItemWithObjectNamePrefix(control, "pathBreadcrumb-0-text")));
+    QTRY_VERIFY((last = visualItemWithObjectNamePrefix(control, "pathBreadcrumb-11-visual")));
+    QTest::qWait(200);
+    auto *rootSeparator = visualItemWithObjectNamePrefix(control, "pathBreadcrumbRoot-separator");
+    auto *childSeparator = visualItemWithObjectNamePrefix(control, "pathBreadcrumb-0-separator");
+    QVERIFY(rootSeparator);
+    QVERIFY(childSeparator);
+    auto *rootSlash = visualItemWithObjectNamePrefix(control, "pathBreadcrumbRoot-slash");
+    QVERIFY(rootSlash);
+    QVERIFY(rootSlash->isVisible());
+    QVERIFY(!rootSeparator->isVisible());
+    QCOMPARE(rootSlash->property("text").toString(), QStringLiteral("/"));
+    auto *rootVisual = visualItemWithObjectNamePrefix(control, "pathBreadcrumbRoot-visual");
+    QVERIFY(rootVisual);
+    const qreal slashLeft = rootSlash->mapToItem(rootVisual, QPointF{}).x();
+    QVERIFY(qAbs(slashLeft - (rootVisual->width() - slashLeft - rootSlash->width())) < 0.01);
+    QCOMPARE(childSeparator->property("source").toUrl(), control->property("breadcrumbSeparatorIconSource").toUrl());
+    QCOMPARE(rootSeparator->size(), childSeparator->size());
+    QVERIFY(last->mapToItem(control, QPointF{}).x() + last->width() <= control->width() + 1);
+    auto *scroll = visualItemWithObjectNamePrefix(control, "pathDynamicPart");
+    auto *lastFade = visualItemWithObjectNamePrefix(control, "pathBreadcrumb-11-fade");
+    QVERIFY(scroll);
+    QVERIFY(lastFade);
+    QVERIFY(!lastFade->isVisible());
+    auto *trailingFade = visualItemWithObjectNamePrefix(control, "pathTrailingFade");
+    QVERIFY(trailingFade);
+    QVERIFY(!trailingFade->isVisible());
+    QCOMPARE(last->width(), last->parentItem()->property("naturalWidth").toReal());
+    scroll->setProperty("contentX", 0);
+    auto *visual = visualItemWithObjectNamePrefix(control, "pathBreadcrumb-4-visual");
+    auto *fade = visualItemWithObjectNamePrefix(control, "pathBreadcrumb-4-fade");
+    QVERIFY(visual);
+    QVERIFY(fade);
+    QVERIFY(fade->isVisible());
+    const qreal collapsed = visual->width();
+    auto *next = visualItemWithObjectNamePrefix(control, "pathBreadcrumb-5-visual");
+    QVERIFY(next);
+    const qreal nextBefore = next->mapToItem(control, QPointF{}).x();
+    const qreal hoveredBefore = visual->mapToItem(control, QPointF{}).x();
+    QVERIFY(fade->property("fadeColor").value<QColor>().alphaF() > 0.99);
+    QTest::mouseMove(fixture.window, visual->mapToScene(QPointF(collapsed / 2, visual->height() / 2)).toPoint());
+    QTest::qWait(80);
+    QVERIFY(visual->width() > collapsed);
+    QVERIFY(visual->width() < visual->parentItem()->property("naturalWidth").toReal() - 1);
+    QTRY_VERIFY(visual->width() > collapsed + 10);
+    QTRY_VERIFY(!fade->isVisible());
+    QTRY_VERIFY(qAbs(next->mapToItem(control, QPointF{}).x() - nextBefore
+                     - (visual->width() - collapsed)) < 1);
+    QCOMPARE(visual->mapToItem(control, QPointF{}).x(), hoveredBefore);
+    fixture.shell.clearActions();
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+        visual->mapToScene(QPointF(visual->width() / 2, visual->height() / 2)).toPoint());
+    QTRY_COMPARE(fixture.shell.actions.size(), 1);
+    QCOMPARE(fixture.shell.actions[0].value("path").toString(),
+             QString("/Users/zoin/.codex/worktrees/qt-run-current"));
+    const qreal expandedWidth = visual->width();
+    QTest::mouseMove(fixture.window, QPoint(700, 500));
+    QTest::qWait(80);
+    QVERIFY(visual->width() > collapsed + 1);
+    QVERIFY(visual->width() < expandedWidth);
+    QTRY_VERIFY(qAbs(visual->width() - collapsed) < 1);
+    QTRY_VERIFY(qAbs(next->mapToItem(control, QPointF{}).x() - nextBefore) < 1);
+    QVERIFY(fade->isVisible());
+    fixture.window->resize(1100, 640);
+    QTest::qWait(250);
+    QVERIFY(last->mapToItem(control, QPointF{}).x() + last->width() <= control->width() + 1);
+    auto *leadingFade = visualItemWithObjectNamePrefix(control, "pathLeadingFade");
+    QVERIFY(leadingFade);
+    QVERIFY(leadingFade->isVisible());
+    const qreal endOffset = scroll->property("contentX").toReal();
+    QVERIFY(endOffset > 0);
+    const QPoint wheelPoint = scroll->mapToScene(QPointF(scroll->width() / 2, scroll->height() / 2)).toPoint();
+    QWheelEvent horizontal(wheelPoint, fixture.window->mapToGlobal(wheelPoint),
+                           QPoint(80, 0), {}, Qt::NoButton, Qt::NoModifier,
+                           Qt::NoScrollPhase, false);
+    QCoreApplication::sendEvent(fixture.window, &horizontal);
+    QTRY_VERIFY(scroll->property("contentX").toReal() < endOffset);
+    const qreal horizontalOffset = scroll->property("contentX").toReal();
+    sendAngleWheel(fixture.window, wheelPoint, 120);
+    QTRY_VERIFY(scroll->property("contentX").toReal() < horizontalOffset);
+    sendPixelWheel(fixture.window, wheelPoint, -10000);
+    QTRY_VERIFY(qAbs(scroll->property("contentX").toReal() - endOffset) < 1);
+    QVERIFY(fixture.window->property("compactBreadcrumbs").toBool());
+    const qreal compactWidth = scroll->property("contentWidth").toReal();
+    fixture.window->setProperty("compactBreadcrumbs", false);
+    QTRY_VERIFY(!control->property("compactBreadcrumbs").toBool());
+    QTRY_VERIFY(scroll->property("contentWidth").toReal() > compactWidth);
+    QTRY_VERIFY(!fade->isVisible());
+    fixture.window->setProperty("compactBreadcrumbs", true);
+    QTRY_VERIFY(qAbs(scroll->property("contentWidth").toReal() - compactWidth) < 1);
 }
 
 void F4QuickViewSurfaceTests::pathBreadcrumbTextStaysFixedWhenNavigatingDeeper()
