@@ -3365,6 +3365,9 @@ void F4GalleryPointerTests::nativeDropUsesIdentityAndSnappedOutline()
     for (const auto &mode : {"details", "columns", "grid", "icons", "masonry"}) {
         panel->setProperty("presentationMode", mode);
         QTest::qWait(250);
+        const qreal expectedInset = QString::fromLatin1(mode) == "details" ? 8.0 : 14.0;
+        QCOMPARE(layout->property("paddingLeft").toReal(), expectedInset);
+        QCOMPARE(layout->property("paddingRight").toReal(), expectedInset);
         for (int targetRow : {0, 1}) {
             QRectF geometry;
             QVERIFY(QMetaObject::invokeMethod(layout, "indexGeometry", Q_RETURN_ARG(QRectF, geometry), Q_ARG(int, targetRow)));
@@ -3579,6 +3582,32 @@ void F4GalleryPointerTests::nativeDropUsesIdentityAndSnappedOutline()
     QDragEnterEvent readonlyDrop(point,Qt::CopyAction,&mime,Qt::LeftButton,Qt::NoModifier);
     QCoreApplication::sendEvent(&view,&readonlyDrop);
     QVERIFY(!readonlyDrop.isAccepted());
+
+    // Scrollbar presses must never prepare a file drag, even if a file's
+    // layout geometry extends underneath the scrollbar overlay.
+    host->setHeight(60);
+    for (const auto &mode : {"details", "columns", "grid", "icons", "masonry"}) {
+        panel->setProperty("presentationMode", mode);
+        auto *bar = host->findChild<QQuickItem *>(
+            QString::fromLatin1(mode) == "columns"
+                ? "galleryPanelColumnsScrollBar" : "galleryPanelScrollBar");
+        QVERIFY(bar);
+        QTRY_VERIFY(bar->isVisible());
+        QTest::qWait(50);
+        const QPoint press = bar->mapToScene(QPointF(
+            bar->width() / 2, bar->height() / 2)).toPoint();
+        actions.clear();
+        QTest::mousePress(&view, Qt::LeftButton, Qt::NoModifier, press);
+        QCOMPARE(bridge.m_dragArmedSide, -1);
+        QVERIFY(bridge.m_dragRequestId.isEmpty());
+        const QPoint move = press + (QString::fromLatin1(mode) == "columns"
+            ? QPoint(30, 0) : QPoint(0, 20));
+        QTest::mouseMove(&view, move);
+        QCOMPARE(bridge.m_dragArmedSide, -1);
+        QTest::mouseRelease(&view, Qt::LeftButton, Qt::NoModifier, move);
+        for (const auto &action : actions)
+            QVERIFY(action.at(0).toMap().value("action") != "panel.prepareDrag");
+    }
 }
 
 QTEST_MAIN(F4GalleryPointerTests)

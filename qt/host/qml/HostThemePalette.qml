@@ -194,6 +194,9 @@ Item {
             detailsRowSpacing: palette.hostWindow.snapPx(8)
             detailsIconSlotSize: palette.hostWindow.snapPx(16)
             detailsIconSize: palette.hostWindow.snapPx(16)
+            detailsIconVerticalPadding: Math.max(0,
+                (palette.hostWindow.snapPx(Math.max(22, palette.hostWindow.ch * 1.1))
+                 - detailsIconSize) / 2)
             detailsNameFontPixelSize: 13
             detailsSecondaryFontPixelSize: 12
             detailsExtensionMinimumWidth: palette.hostWindow.snapPx(40)

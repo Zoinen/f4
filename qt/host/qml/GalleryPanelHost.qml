@@ -29,6 +29,19 @@ FocusScope {
                        Math.round((top.y + layout.height) * dpr) / dpr - y)
     }
     function dragHit(x, y) {
+        // The native window filter runs before QML accepts the press. Never
+        // arm a file drag from geometry underneath an interactive scrollbar.
+        for (const bar of embeddedGalleryPanel.scrollBars) {
+            if (!bar.visible || !bar.enabled)
+                continue
+            const point = bar.mapFromItem(host, x, y)
+            if (bar.contains(point)) {
+                if (embeddedGalleryPanel.benchmarkTracingEnabled)
+                    embeddedGalleryPanel.traceBenchmarkStage(
+                        "drag.scrollbar.excluded", {"side": side})
+                return { valid: false }
+            }
+        }
         const layout = embeddedGalleryPanel.galleryLayout
         const p = layout.mapFromItem(host, x, y)
         const scene = host.mapToItem(null, x, y)
