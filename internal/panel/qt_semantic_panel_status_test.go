@@ -2,6 +2,8 @@ package panel
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/unxed/f4/internal/semantic"
@@ -9,6 +11,35 @@ import (
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtui"
 )
+
+func TestNativePanelStatusKeepsCapacityDuringNavigation(t *testing.T) {
+	parent := t.TempDir()
+	child := filepath.Join(parent, "child")
+	if err := os.Mkdir(child, 0700); err != nil {
+		t.Fatal(err)
+	}
+	source := vfs.NewOSVFS(parent)
+	fp := &FileSystemPanel{
+		Vfs: source, Table: vtui.NewTable(0, 0, 40, 10, nil),
+		nativeStatus: nativePanelStatusCache{
+			source: source, path: parent, free: 250, capacity: 1000,
+			freeKnown: true, querying: true, target: "previous-link",
+		},
+	}
+	for _, path := range []string{child, parent, child} {
+		if err := source.SetPath(path); err != nil {
+			t.Fatal(err)
+		}
+		model := extui.PanelModel{}
+		fp.enrichNativePanelStatus(&model)
+		if !model.FreeSpaceKnown || model.FreeSpace != 250 || model.DiskTotalSpace != 1000 {
+			t.Fatalf("capacity disappeared while refreshing %q: %+v", path, model)
+		}
+		if path != parent && model.SymlinkTarget != "" {
+			t.Fatal("previous directory symlink target leaked")
+		}
+	}
+}
 
 func TestNativePanelStatusTotalsAndCapacity(t *testing.T) {
 	source := vfs.NewOSVFS(t.TempDir())

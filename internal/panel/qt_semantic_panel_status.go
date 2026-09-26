@@ -70,10 +70,12 @@ func (fp *FileSystemPanel) enrichNativePanelStatus(model *extui.PanelModel) {
 	if cursor := fp.GetCursorIndex(); cursor >= 0 && cursor < len(fp.Entries) && fp.Entries[cursor].IsSymlink {
 		linkPath = fp.Vfs.Join(path, fp.Entries[cursor].Name)
 	}
-	if cache.source == fp.Vfs && cache.path == path {
+	// Keep the last capacity snapshot visible while navigation refreshes it.
+	// A new filesystem source must never inherit another source's capacity.
+	if cache.source == fp.Vfs {
 		model.FreeSpace, model.FreeSpaceKnown = cache.free, cache.freeKnown
 		model.DiskTotalSpace = cache.capacity
-		if cache.linkPath == linkPath {
+		if cache.path == path && cache.linkPath == linkPath {
 			model.SymlinkTarget = cache.target
 		}
 	}
@@ -112,6 +114,7 @@ func (fp *FileSystemPanel) enrichNativePanelStatus(model *extui.PanelModel) {
 			cache.path, cache.linkPath, cache.free, cache.freeKnown, cache.target = path, linkPath, free, known, target
 			cache.capacity, cache.source = capacity, source
 			cache.queriedAt = time.Now()
+			vtui.DebugLog("[FIX:panel-status] capacity refresh known=%t free=%d total=%d", known, free, capacity)
 			frames.Redraw()
 		})
 	}()
