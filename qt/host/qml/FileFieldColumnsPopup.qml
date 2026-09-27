@@ -111,7 +111,7 @@ Popup {
                 height: hostWindow.snapPx(28)
                 text: "Details columns"
                 color: hostWindow.textColor
-                font.pixelSize: 14
+                font.pixelSize: (hostWindow ? hostWindow.uiTextSize(14) : 14)
                 font.weight: Font.DemiBold
                 verticalAlignment: Text.AlignVCenter
                 transform: Translate {
@@ -173,7 +173,7 @@ Popup {
                         text: String(modelData.title || fieldId)
                         color: fileFieldColumnRow.selected
                                ? hostWindow.textColor : hostWindow.mutedText
-                        font.pixelSize: 12
+                        font.pixelSize: (hostWindow ? hostWindow.uiTextSize(12) : 12)
                         elide: Text.ElideRight
                         transform: Translate {
                             x: hostWindow.dialogPixelOffsetX(
@@ -204,7 +204,7 @@ Popup {
                             anchors.fill: parent
                             text: "↑"
                             color: hostWindow.textColor
-                            font.pixelSize: 13
+                            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(13) : 13)
                             horizontalAlignment: Text.AlignHCenter
                             verticalAlignment: Text.AlignVCenter
                             transform: Translate {
@@ -243,7 +243,7 @@ Popup {
                             anchors.fill: parent
                             text: "↓"
                             color: hostWindow.textColor
-                            font.pixelSize: 13
+                            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(13) : 13)
                             horizontalAlignment: Text.AlignHCenter
                             verticalAlignment: Text.AlignVCenter
                             transform: Translate {
@@ -283,7 +283,7 @@ Popup {
                             anchors.fill: parent
                             text: "−"
                             color: hostWindow.textColor
-                            font.pixelSize: 13
+                            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(13) : 13)
                             horizontalAlignment: Text.AlignHCenter
                             verticalAlignment: Text.AlignVCenter
                             transform: Translate {
@@ -315,7 +315,7 @@ Popup {
                                            fileFieldColumnRow.orderIndex].width)
                               : "—"
                         color: hostWindow.mutedText
-                        font.pixelSize: 11
+                        font.pixelSize: (hostWindow ? hostWindow.uiTextSize(11) : 11)
                         horizontalAlignment: Text.AlignHCenter
                         transform: Translate {
                             x: hostWindow.dialogPixelOffsetX(
@@ -344,7 +344,7 @@ Popup {
                             anchors.fill: parent
                             text: "+"
                             color: hostWindow.textColor
-                            font.pixelSize: 13
+                            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(13) : 13)
                             horizontalAlignment: Text.AlignHCenter
                             verticalAlignment: Text.AlignVCenter
                             transform: Translate {
@@ -399,7 +399,7 @@ Popup {
                         color: hostWindow.textColor
                         width: hostWindow.snapPx(implicitWidth)
                         height: hostWindow.snapPx(implicitHeight)
-                        font.pixelSize: 12
+                        font.pixelSize: (hostWindow ? hostWindow.uiTextSize(12) : 12)
                         transform: Translate {
                             x: hostWindow.dialogPixelOffsetX(
                                    cancelColumnsText, hostWindow.contentItem)
@@ -428,7 +428,7 @@ Popup {
                         color: hostWindow.textColor
                         width: hostWindow.snapPx(implicitWidth)
                         height: hostWindow.snapPx(implicitHeight)
-                        font.pixelSize: 12
+                        font.pixelSize: (hostWindow ? hostWindow.uiTextSize(12) : 12)
                         font.weight: Font.DemiBold
                         transform: Translate {
                             x: hostWindow.dialogPixelOffsetX(

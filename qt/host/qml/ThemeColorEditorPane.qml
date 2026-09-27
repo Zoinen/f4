@@ -58,7 +58,7 @@ ColumnLayout {
             text: draft.currentItem ? draft.currentItem.name : ""
             color: hostWindow.textColor
             font.family: hostWindow.uiFontFamily
-            font.pixelSize: 12
+            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(12) : 12)
             font.weight: Font.Bold
             elide: Text.ElideRight
             Layout.fillWidth: true
@@ -94,7 +94,7 @@ ColumnLayout {
                 id: groupText
                 text: draft.currentItem ? draft.currentItem.group : ""
                 color: hostWindow.mutedText
-                font.pixelSize: 9
+                font.pixelSize: (hostWindow ? hostWindow.uiTextSize(9) : 9)
                 x: hostWindow.snapPx((parent.width - width) / 2)
                 y: hostWindow.snapPx((parent.height - height) / 2)
             }
@@ -172,7 +172,7 @@ ColumnLayout {
             transform: Translate {
                 x: hostWindow.dialogPixelOffsetX(themeColorEditorPaneLeaf2, hostWindow.contentItem)
                 y: hostWindow.dialogPixelOffsetY(themeColorEditorPaneLeaf2, hostWindow.contentItem)
-            } text: "H"; color: hostWindow.mutedText; font.family: hostWindow.uiFontFamily; font.pixelSize: 11; font.weight: Font.DemiBold; Layout.preferredWidth: hostWindow.snapPx(12) }
+            } text: "H"; color: hostWindow.mutedText; font.family: hostWindow.uiFontFamily; font.pixelSize: (hostWindow ? hostWindow.uiTextSize(11) : 11); font.weight: Font.DemiBold; Layout.preferredWidth: hostWindow.snapPx(12) }
         Slider {
             id: hueSlider
             objectName: "themeHueSlider"
@@ -282,7 +282,7 @@ ColumnLayout {
                 }
                 id: hInput
                 anchors.fill: parent; anchors.leftMargin: hostWindow.snapPx(2); anchors.rightMargin: hostWindow.snapPx(2); verticalAlignment: TextInput.AlignVCenter; horizontalAlignment: TextInput.AlignHCenter
-                font.family: hostWindow.uiFontFamily; font.pixelSize: 10; color: hostWindow.textColor; selectByMouse: true; selectionColor: hostWindow.selectedBg; selectedTextColor: hostWindow.textColor
+                font.family: hostWindow.uiFontFamily; font.pixelSize: (hostWindow ? hostWindow.uiTextSize(10) : 10); color: hostWindow.textColor; selectByMouse: true; selectionColor: hostWindow.selectedBg; selectedTextColor: hostWindow.textColor
                 validator: IntValidator { bottom: 0; top: 360 }
                 text: !activeFocus ? Math.round(draft.selectedHue * 360).toString() : text
                 onTextEdited: { const val = parseInt(text); if (!isNaN(val)) { draft.selectedHue = Math.max(0, Math.min(360, val)) / 360; draft.applyCurrentColor(); } }
@@ -313,7 +313,7 @@ ColumnLayout {
             transform: Translate {
                 x: hostWindow.dialogPixelOffsetX(themeColorEditorPaneLeaf4, hostWindow.contentItem)
                 y: hostWindow.dialogPixelOffsetY(themeColorEditorPaneLeaf4, hostWindow.contentItem)
-            } text: "C"; color: hostWindow.mutedText; font.family: hostWindow.uiFontFamily; font.pixelSize: 11; font.weight: Font.DemiBold; Layout.preferredWidth: hostWindow.snapPx(12) }
+            } text: "C"; color: hostWindow.mutedText; font.family: hostWindow.uiFontFamily; font.pixelSize: (hostWindow ? hostWindow.uiTextSize(11) : 11); font.weight: Font.DemiBold; Layout.preferredWidth: hostWindow.snapPx(12) }
         Slider {
             id: chromaSlider
             objectName: "themeChromaSlider"
@@ -385,7 +385,7 @@ ColumnLayout {
                 }
                 id: cInput
                 anchors.fill: parent; anchors.leftMargin: hostWindow.snapPx(2); anchors.rightMargin: hostWindow.snapPx(2); verticalAlignment: TextInput.AlignVCenter; horizontalAlignment: TextInput.AlignHCenter
-                font.family: hostWindow.uiFontFamily; font.pixelSize: 10; color: hostWindow.textColor; selectByMouse: true; selectionColor: hostWindow.selectedBg; selectedTextColor: hostWindow.textColor
+                font.family: hostWindow.uiFontFamily; font.pixelSize: (hostWindow ? hostWindow.uiTextSize(10) : 10); color: hostWindow.textColor; selectByMouse: true; selectionColor: hostWindow.selectedBg; selectedTextColor: hostWindow.textColor
                 validator: DoubleValidator {
                     bottom: 0
                     top: draft.maxOklchChroma
@@ -430,7 +430,7 @@ ColumnLayout {
             transform: Translate {
                 x: hostWindow.dialogPixelOffsetX(themeColorEditorPaneLeaf6, hostWindow.contentItem)
                 y: hostWindow.dialogPixelOffsetY(themeColorEditorPaneLeaf6, hostWindow.contentItem)
-            } text: "L"; color: hostWindow.mutedText; font.family: hostWindow.uiFontFamily; font.pixelSize: 11; font.weight: Font.DemiBold; Layout.preferredWidth: hostWindow.snapPx(12) }
+            } text: "L"; color: hostWindow.mutedText; font.family: hostWindow.uiFontFamily; font.pixelSize: (hostWindow ? hostWindow.uiTextSize(11) : 11); font.weight: Font.DemiBold; Layout.preferredWidth: hostWindow.snapPx(12) }
         Slider {
             id: lightnessSlider
             objectName: "themeLightnessSlider"
@@ -494,7 +494,7 @@ ColumnLayout {
                 }
                 id: lInput
                 anchors.fill: parent; anchors.leftMargin: hostWindow.snapPx(2); anchors.rightMargin: hostWindow.snapPx(2); verticalAlignment: TextInput.AlignVCenter; horizontalAlignment: TextInput.AlignHCenter
-                font.family: hostWindow.uiFontFamily; font.pixelSize: 10; color: hostWindow.textColor; selectByMouse: true; selectionColor: hostWindow.selectedBg; selectedTextColor: hostWindow.textColor
+                font.family: hostWindow.uiFontFamily; font.pixelSize: (hostWindow ? hostWindow.uiTextSize(10) : 10); color: hostWindow.textColor; selectByMouse: true; selectionColor: hostWindow.selectedBg; selectedTextColor: hostWindow.textColor
                 validator: IntValidator { bottom: 0; top: 100 }
                 text: !activeFocus ? Math.round(draft.selectedLightness * 100).toString() : text
                 onTextEdited: { const val = parseInt(text); if (!isNaN(val)) { draft.selectedLightness = Math.max(0, Math.min(100, val)) / 100; draft.applyCurrentColor(); } }
@@ -525,7 +525,7 @@ ColumnLayout {
             transform: Translate {
                 x: hostWindow.dialogPixelOffsetX(themeColorEditorPaneLeaf8, hostWindow.contentItem)
                 y: hostWindow.dialogPixelOffsetY(themeColorEditorPaneLeaf8, hostWindow.contentItem)
-            } text: "A"; color: hostWindow.mutedText; font.family: hostWindow.uiFontFamily; font.pixelSize: 11; font.weight: Font.DemiBold; Layout.preferredWidth: hostWindow.snapPx(12) }
+            } text: "A"; color: hostWindow.mutedText; font.family: hostWindow.uiFontFamily; font.pixelSize: (hostWindow ? hostWindow.uiTextSize(11) : 11); font.weight: Font.DemiBold; Layout.preferredWidth: hostWindow.snapPx(12) }
         Slider {
             id: alphaSlider
             objectName: "themeAlphaSlider"
@@ -615,7 +615,7 @@ ColumnLayout {
                 }
                 id: aInput
                 anchors.fill: parent; anchors.leftMargin: hostWindow.snapPx(2); anchors.rightMargin: hostWindow.snapPx(2); verticalAlignment: TextInput.AlignVCenter; horizontalAlignment: TextInput.AlignHCenter
-                font.family: hostWindow.uiFontFamily; font.pixelSize: 10; color: hostWindow.textColor; selectByMouse: true; selectionColor: hostWindow.selectedBg; selectedTextColor: hostWindow.textColor
+                font.family: hostWindow.uiFontFamily; font.pixelSize: (hostWindow ? hostWindow.uiTextSize(10) : 10); color: hostWindow.textColor; selectByMouse: true; selectionColor: hostWindow.selectedBg; selectedTextColor: hostWindow.textColor
                 validator: IntValidator { bottom: 0; top: 100 }
                 text: !activeFocus ? Math.round(draft.selectedAlpha * 100).toString() : text
                 onTextEdited: { const val = parseInt(text); if (!isNaN(val)) { draft.selectedAlpha = Math.max(0, Math.min(100, val)) / 100; draft.applyCurrentColor(); } }
@@ -651,7 +651,7 @@ ColumnLayout {
             transform: Translate {
                 x: hostWindow.dialogPixelOffsetX(themeRedLabel, hostWindow.contentItem)
                 y: hostWindow.dialogPixelOffsetY(themeRedLabel, hostWindow.contentItem)
-            } text: "R:"; color: hostWindow.mutedText; font.pixelSize: 10 }
+            } text: "R:"; color: hostWindow.mutedText; font.pixelSize: (hostWindow ? hostWindow.uiTextSize(10) : 10) }
         Rectangle {
             id: themeRedInputBox
             objectName: "themeRedInputBox"
@@ -673,7 +673,7 @@ ColumnLayout {
                 }
                 id: rInput
                 anchors.fill: parent; anchors.leftMargin: hostWindow.snapPx(2); anchors.rightMargin: hostWindow.snapPx(2); verticalAlignment: TextInput.AlignVCenter; horizontalAlignment: TextInput.AlignHCenter
-                font.family: hostWindow.uiFontFamily; font.pixelSize: 10; color: hostWindow.textColor; selectByMouse: true; selectionColor: hostWindow.selectedBg; selectedTextColor: hostWindow.textColor
+                font.family: hostWindow.uiFontFamily; font.pixelSize: (hostWindow ? hostWindow.uiTextSize(10) : 10); color: hostWindow.textColor; selectByMouse: true; selectionColor: hostWindow.selectedBg; selectedTextColor: hostWindow.textColor
                 validator: IntValidator { bottom: 0; top: 255 }
                 text: !activeFocus && draft.currentItem ? Math.round(hostWindow[draft.currentItem.id].r * 255).toString() : text
                 onTextEdited: {
@@ -693,7 +693,7 @@ ColumnLayout {
             transform: Translate {
                 x: hostWindow.dialogPixelOffsetX(themeGreenLabel, hostWindow.contentItem)
                 y: hostWindow.dialogPixelOffsetY(themeGreenLabel, hostWindow.contentItem)
-            } text: "G:"; color: hostWindow.mutedText; font.pixelSize: 10 }
+            } text: "G:"; color: hostWindow.mutedText; font.pixelSize: (hostWindow ? hostWindow.uiTextSize(10) : 10) }
         Rectangle {
             id: themeGreenInputBox
             objectName: "themeGreenInputBox"
@@ -715,7 +715,7 @@ ColumnLayout {
                 }
                 id: gInput
                 anchors.fill: parent; anchors.leftMargin: hostWindow.snapPx(2); anchors.rightMargin: hostWindow.snapPx(2); verticalAlignment: TextInput.AlignVCenter; horizontalAlignment: TextInput.AlignHCenter
-                font.family: hostWindow.uiFontFamily; font.pixelSize: 10; color: hostWindow.textColor; selectByMouse: true; selectionColor: hostWindow.selectedBg; selectedTextColor: hostWindow.textColor
+                font.family: hostWindow.uiFontFamily; font.pixelSize: (hostWindow ? hostWindow.uiTextSize(10) : 10); color: hostWindow.textColor; selectByMouse: true; selectionColor: hostWindow.selectedBg; selectedTextColor: hostWindow.textColor
                 validator: IntValidator { bottom: 0; top: 255 }
                 text: !activeFocus && draft.currentItem ? Math.round(hostWindow[draft.currentItem.id].g * 255).toString() : text
                 onTextEdited: {
@@ -735,7 +735,7 @@ ColumnLayout {
             transform: Translate {
                 x: hostWindow.dialogPixelOffsetX(themeBlueLabel, hostWindow.contentItem)
                 y: hostWindow.dialogPixelOffsetY(themeBlueLabel, hostWindow.contentItem)
-            } text: "B:"; color: hostWindow.mutedText; font.pixelSize: 10 }
+            } text: "B:"; color: hostWindow.mutedText; font.pixelSize: (hostWindow ? hostWindow.uiTextSize(10) : 10) }
         Rectangle {
             id: themeBlueInputBox
             objectName: "themeBlueInputBox"
@@ -757,7 +757,7 @@ ColumnLayout {
                 }
                 id: bInput
                 anchors.fill: parent; anchors.leftMargin: hostWindow.snapPx(2); anchors.rightMargin: hostWindow.snapPx(2); verticalAlignment: TextInput.AlignVCenter; horizontalAlignment: TextInput.AlignHCenter
-                font.family: hostWindow.uiFontFamily; font.pixelSize: 10; color: hostWindow.textColor; selectByMouse: true; selectionColor: hostWindow.selectedBg; selectedTextColor: hostWindow.textColor
+                font.family: hostWindow.uiFontFamily; font.pixelSize: (hostWindow ? hostWindow.uiTextSize(10) : 10); color: hostWindow.textColor; selectByMouse: true; selectionColor: hostWindow.selectedBg; selectedTextColor: hostWindow.textColor
                 validator: IntValidator { bottom: 0; top: 255 }
                 text: !activeFocus && draft.currentItem ? Math.round(hostWindow[draft.currentItem.id].b * 255).toString() : text
                 onTextEdited: {
@@ -777,7 +777,7 @@ ColumnLayout {
             transform: Translate {
                 x: hostWindow.dialogPixelOffsetX(themeHexLabel, hostWindow.contentItem)
                 y: hostWindow.dialogPixelOffsetY(themeHexLabel, hostWindow.contentItem)
-            } text: "HEX:"; color: hostWindow.mutedText; font.pixelSize: 10 }
+            } text: "HEX:"; color: hostWindow.mutedText; font.pixelSize: (hostWindow ? hostWindow.uiTextSize(10) : 10) }
         Rectangle {
             id: themeHexInputBox
             objectName: "themeHexInputBox"
@@ -799,7 +799,7 @@ ColumnLayout {
                 }
                 id: hexInput
                 anchors.fill: parent; anchors.leftMargin: hostWindow.snapPx(4); anchors.rightMargin: hostWindow.snapPx(4); verticalAlignment: TextInput.AlignVCenter; horizontalAlignment: TextInput.AlignHCenter
-                font.family: hostWindow.uiFontFamily; font.pixelSize: 10; color: hostWindow.textColor; selectByMouse: true; selectionColor: hostWindow.selectedBg; selectedTextColor: hostWindow.textColor
+                font.family: hostWindow.uiFontFamily; font.pixelSize: (hostWindow ? hostWindow.uiTextSize(10) : 10); color: hostWindow.textColor; selectByMouse: true; selectionColor: hostWindow.selectedBg; selectedTextColor: hostWindow.textColor
                 maximumLength: 9
                 text: !activeFocus && draft.currentItem ? hostWindow.formatColorHex(hostWindow[draft.currentItem.id]) : text
                 onTextEdited: {

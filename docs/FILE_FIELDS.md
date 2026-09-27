@@ -93,6 +93,19 @@ to use file indexes while skipping the header area.
 
 ## Pixel geometry and scrolling
 
+The semantic column schema marks default widths with `autoWidth`. Qt measures
+those columns with the current panel font; name uses the remaining space and size
+reserves three groups of three digits plus a unit. Measurements update on font
+family/size, schema, padding or viewport changes, not per entry. Explicitly sized
+columns keep their relative widths. Header and row boundaries share the result.
+
+The GUI settings' **Column padding** slider sets a shared horizontal inset
+(0–24 logical pixels, default 8) for Details and two/three-column views.
+Names, separate extensions, sizes, metadata cells and Details headers use the
+same per-edge padding. Column boundaries do not move when padding changes;
+only their content area changes. Preview is immediate, Apply saves the GUI
+preference, and Cancel restores the previous value.
+
 `MasonryLayout` owns physical-pixel alignment. It observes the host ancestor
 positions once per panel, snaps the scrolling viewport in scene coordinates,
 and rounds each brick's shared edges using the window DPR. The analytical

@@ -382,7 +382,8 @@ Rectangle {
             && String(galleryPanelContent.item.appliedPresentationMode)
                     === "details"
         height: showsGalleryDetails
-                ? Math.max(22, hostWindow.ch) + hostWindow.verticalContentSpacing : 0
+                ? Math.max(22, hostWindow.ch, hostWindow.typography.panelLineHeight)
+                  + hostWindow.verticalContentSpacing : 0
         visible: showsGalleryDetails
         color: "transparent"
         z: 2
@@ -400,6 +401,14 @@ Rectangle {
         }
 
         function columnX(index) {
+            const gallery = galleryPanelContent.item
+                    ? galleryPanelContent.item.galleryPanel : null
+            if (gallery && gallery.galleryLayout) {
+                const layout = gallery.galleryLayout
+                return layout.mapToItem(columnHeader,
+                    layout.paddingLeft
+                    + gallery.fileFieldPresentationHelper.detailsColumnX(index), 0).x
+            }
             var before = 0
             for (var i = 0; i < index; ++i)
                 before += Math.max(1, Number(columns[i].width || 1))
@@ -438,15 +447,16 @@ Rectangle {
 
                 Text {
                     id: columnHeaderTitle
+                    font.family: hostWindow.typography.effectivePanelFamily
                     objectName: "panelColumnHeaderText-" + index
                                 + "-" + Number(panel.side || 0)
                     anchors.fill: parent
-                    anchors.leftMargin: hostWindow.panelRowInnerSpacing
-                    anchors.rightMargin: hostWindow.panelRowInnerSpacing
+                    anchors.leftMargin: hostWindow.snapPx(hostWindow.panelColumnPadding)
+                    anchors.rightMargin: hostWindow.snapPx(hostWindow.panelColumnPadding)
                     text: hostWindow.cleanText(modelData.title)
                     color: modelData.sortable
                            ? hostWindow.chromeText : hostWindow.mutedText
-                    font.pixelSize: 12
+                    font.pixelSize: hostWindow.typography.effectivePanelSize
                     verticalAlignment: Text.AlignVCenter
                     horizontalAlignment: index > 0
                                          ? Text.AlignRight
@@ -505,6 +515,22 @@ Rectangle {
             height: 1
             color: hostWindow.separatorColor
             opacity: 0.7
+        }
+    }
+
+    Repeater {
+        model: hostWindow.showColumnSeparators && columnHeader.visible
+                ? Math.max(0, columnHeader.columns.length - 1) : 0
+        delegate: Rectangle {
+            required property int index
+            objectName: "panelColumnSeparator-" + index + "-" + Number(panel.side || 0)
+            x: columnHeader.x + columnHeader.columnX(index + 1) - width
+            y: galleryPanelContent.y
+            width: hostWindow.separatorWidth
+            height: galleryPanelContent.height
+            color: hostWindow.separatorColor
+            opacity: 0.65
+            z: 2
         }
     }
 
@@ -646,7 +672,7 @@ Rectangle {
                       ? "The unified panel renderer could not be loaded."
                       : "The unified panel renderer is unavailable in this build."
                 color: hostWindow.textColor
-                font.pixelSize: 13
+                font.pixelSize: (hostWindow ? hostWindow.uiTextSize(13) : 13)
                 horizontalAlignment: Text.AlignHCenter
                 wrapMode: Text.Wrap
             }
@@ -711,7 +737,7 @@ Rectangle {
         FontMetrics {
             id: fastFindFontMetrics
             font.family: hostWindow.uiFontFamily
-            font.pixelSize: 13
+            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(13) : 13)
         }
 
         HostPixelAlignedImage {
@@ -740,7 +766,7 @@ Rectangle {
             text: hostWindow.cleanText(panel.fastFindText)
             color: hostWindow.textColor
             font.family: hostWindow.uiFontFamily
-            font.pixelSize: 13
+            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(13) : 13)
             elide: Text.ElideLeft
             verticalAlignment: Text.AlignVCenter
             transform: Translate {

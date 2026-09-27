@@ -60,7 +60,7 @@ Rectangle {
             text: hostWindow.cleanText(quickRoot.quickView.title)
             color: quickRoot.quickView.active === true
                    ? hostWindow.activeBorder : hostWindow.textColor
-            font.pixelSize: 13
+            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(13) : 13)
             font.bold: true
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
@@ -178,7 +178,7 @@ Rectangle {
                   ? hostWindow.cleanText(quickRoot.quickView.label)
                   : "Loading…"
             color: hostWindow.mutedText
-            font.pixelSize: 13
+            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(13) : 13)
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.WrapAtWordBoundaryOrAnywhere
         }
@@ -192,7 +192,7 @@ Rectangle {
                      && hostWindow.cleanText(quickRoot.quickView.error) !== ""
             text: hostWindow.cleanText(quickRoot.quickView.error)
             color: hostWindow.textColor
-            font.pixelSize: 13
+            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(13) : 13)
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.WrapAtWordBoundaryOrAnywhere
         }
@@ -227,7 +227,7 @@ Rectangle {
             anchors.rightMargin: 8
             text: hostWindow.cleanText(quickRoot.quickView.bottomHint)
             color: hostWindow.mutedText
-            font.pixelSize: 11
+            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(11) : 11)
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
             elide: Text.ElideMiddle

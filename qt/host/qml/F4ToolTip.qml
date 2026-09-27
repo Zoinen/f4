@@ -29,7 +29,7 @@ T.ToolTip {
                 return parts.length > 0 ? parts[0] : control.text
             }
             color: control.hostWindow ? control.hostWindow.textColor : "#ffffff"
-            font.pixelSize: 11
+            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(11) : 11)
             verticalAlignment: Text.AlignVCenter
         }
         Text {
@@ -40,7 +40,7 @@ T.ToolTip {
                 return parts.length > 1 ? parts[1] : ""
             }
             color: control.hostWindow ? control.hostWindow.mutedText : "#888888"
-            font.pixelSize: 10
+            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(10) : 10)
             verticalAlignment: Text.AlignVCenter
         }
     }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QObject>
+#include <QFont>
 #include <QString>
 #include <QVariantList>
 
@@ -19,6 +20,7 @@ public:
     QVariantList options() const;
 
     Q_INVOKABLE bool setRenderTypeByName(const QString &value);
+    Q_INVOKABLE void setInterfaceFont(const QFont &font);
 
 signals:
     void renderTypeChanged();

@@ -111,6 +111,14 @@ public:
     Q_INVOKABLE void sendQtKey(int, const QString &, bool, int) {}
     Q_INVOKABLE void sendClipboardPaste() {}
     Q_INVOKABLE void sendQtText(const QString &) {}
+    QList<int> receivedKeys;
+
+protected:
+    void keyPressEvent(QKeyEvent *event) override
+    {
+        receivedKeys.append(event->key());
+        event->accept();
+    }
 
 signals:
     void keyboardActivity();
@@ -894,8 +902,17 @@ private slots:
     void menuKeyboardSelectionSurvivesStationaryPointerPatch();
     void pathBreadcrumbTextStaysFixedWhenNavigatingDeeper();
     void pathBreadcrumbsCompressAndExpandOnHover();
+    void longBreadcrumbNavigationIsStableFromFirstFrame_data();
+    void longBreadcrumbNavigationIsStableFromFirstFrame();
     void uriBreadcrumbKeepsSchemeTogetherAndNavigates();
     void commandMenusKeepPanelCursorWhileBlockingInput();
+    void activeMenuBarOwnsNavigationWithoutPopup();
+    void columnSeparatorsDefaultOff();
+    void columnPaddingPreviewAndPersistence();
+    void editableComboCompletesFontNames();
+    void guiFontsLinkPersistAndPreview();
+    void interfaceFontUpdatesChrome();
+    void automaticColumnsFollowPanelFont();
     void quickSearchPaletteDefaultAndResetArePink();
     void deviceBreadcrumbLabelsPreserveCanonicalNavigationAt175Percent_data();
     void deviceBreadcrumbLabelsPreserveCanonicalNavigationAt175Percent();
@@ -1051,7 +1068,7 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
     QTRY_COMPARE(body->property("selectedNativePage").toString(),"gui");
     auto *categories = visualItemWithObjectName(body,"dialogWidget-categoriesTableRows");
     QVERIFY(categories);
-    QCOMPARE(categories->property("count").toInt(), 5);
+    QCOMPARE(categories->property("count").toInt(), 6);
     QCOMPARE(categories->property("currentIndex").toInt(), 2);
     auto *guiLabel = visualItemWithObjectName(body,"dialogWidget-categoriesTableCell-2-0");
     QVERIFY(guiLabel);
@@ -8022,6 +8039,83 @@ void F4QuickViewSurfaceTests::pathBreadcrumbsCompressAndExpandOnHover()
     QTRY_VERIFY(qAbs(scroll->property("contentWidth").toReal() - compactWidth) < 1);
 }
 
+void F4QuickViewSurfaceTests::longBreadcrumbNavigationIsStableFromFirstFrame_data()
+{
+    QTest::addColumn<bool>("compact");
+    QTest::newRow("compact") << true;
+    QTest::newRow("full") << false;
+}
+
+void F4QuickViewSurfaceTests::longBreadcrumbNavigationIsStableFromFirstFrame()
+{
+    QFETCH(bool, compact);
+    const auto sceneWithPath = [](const QString &path) {
+        auto scene = shellScene({}, 0);
+        auto shell = scene.value("shell").toMap();
+        auto panels = shell.value("panels").toList();
+        auto panel = panels[0].toMap();
+        panel.insert("path", path);
+        panel.insert("title", path);
+        panels[0] = panel;
+        shell.insert("panels", panels);
+        scene.insert("shell", shell);
+        return scene;
+    };
+    const QString parent = "/Users/zoin/.codex/worktrees/qt-run-current/f4/qt/host/build-qt-run2/bin/RelWithDebInfo/f4-qt-host.app";
+    QuickViewFixture fixture(sceneWithPath(parent), true, true);
+    QVERIFY(fixture.window);
+    fixture.window->resize(1100, 640);
+    fixture.window->setProperty("compactBreadcrumbs", compact);
+    QTest::mouseMove(fixture.window, QPoint(700, 500));
+    QTest::qWait(300);
+    auto *control = fixture.item("panelPathTitle-0");
+    QVERIFY(control);
+    auto *scroll = visualItemWithObjectNamePrefix(control, "pathDynamicPart");
+    QVERIFY(scroll);
+    const qreal dpr = fixture.window->devicePixelRatio();
+    const QPointF origin = control->mapToScene(QPointF{});
+    const QRect crop(qRound(origin.x() * dpr), qRound(origin.y() * dpr),
+                     qRound(control->width() * dpr), qRound(control->height() * dpr));
+    for (int cycle = 0; cycle < 6; ++cycle) {
+        const QString path = cycle % 2 ? parent : parent + "/Contents";
+        // A new path must reveal its end, even after manual ancestor scrolling.
+        scroll->setProperty("contentX", 0);
+        fixture.shell.setScene(sceneWithPath(path));
+        QCOMPARE(control->property("text").toString(), path);
+        const QImage first = fixture.window->grabWindow();
+        QVERIFY(!first.isNull());
+        const qreal end = scroll->property("contentWidth").toReal() - scroll->width();
+        QVERIFY(end > 0);
+        const qreal offset = scroll->property("contentX").toReal();
+        QVERIFY2(qAbs(offset - end) < 0.01,
+                 qPrintable(QString("cycle %1 first-frame offset %2, expected %3")
+                            .arg(cycle).arg(offset).arg(end)));
+        QList<QQuickItem *> items{control};
+        while (!items.isEmpty()) {
+            auto *item = items.takeLast();
+            items.append(item->childItems());
+            const QString name = item->objectName();
+            if (!item->isVisible() || item->width() <= 0
+                || !(name.endsWith("-text") || name.endsWith("-separator")
+                     || name.endsWith("-slash")))
+                continue;
+            const QPointF origin = item->mapToScene(QPointF{});
+            QVERIFY2(qAbs(origin.x() * dpr - qRound(origin.x() * dpr)) < 0.001,
+                     qPrintable(QString("%1 physical x = %2").arg(name).arg(origin.x() * dpr)));
+            QVERIFY2(qAbs(origin.y() * dpr - qRound(origin.y() * dpr)) < 0.001,
+                     qPrintable(QString("%1 physical y = %2").arg(name).arg(origin.y() * dpr)));
+            QCOMPARE(item->mapToScene(QPointF(1, 0)) - origin, QPointF(1, 0));
+            QCOMPARE(item->mapToScene(QPointF(0, 1)) - origin, QPointF(0, 1));
+        }
+        QTest::qWait(300);
+        const QImage settled = fixture.window->grabWindow();
+        QCOMPARE(first.copy(crop), settled.copy(crop));
+        if (cycle == 0)
+            QVERIFY(first.copy(crop).save(QDir(QDir::tempPath()).filePath(
+                QString("f4-path-first-frame-%1.png").arg(compact ? "compact" : "full"))));
+    }
+}
+
 void F4QuickViewSurfaceTests::pathBreadcrumbTextStaysFixedWhenNavigatingDeeper()
 {
     const QFont previousFont = QGuiApplication::font();
@@ -10088,6 +10182,380 @@ void F4QuickViewSurfaceTests::quickSearchPaletteDefaultAndResetArePink()
     const QColor reset = fixture.window->property("galleryQuickSearchMatchColor").value<QColor>();
     QCOMPARE(reset, pink);
     QCOMPARE(initial, pink);
+}
+
+void F4QuickViewSurfaceTests::interfaceFontUpdatesChrome()
+{
+    const QFont original = QGuiApplication::font();
+    const auto restore = qScopeGuard([&] { QGuiApplication::setFont(original); });
+    auto scene = shellScene();
+    auto shell = scene.value("shell").toMap();
+    auto panels = shell.value("panels").toList();
+    auto left = panels[0].toMap();
+    left["title"] = left.value("path");
+    panels[0] = left;
+    shell["panels"] = panels;
+    scene["shell"] = shell;
+    scene.insert("keyBar", keyBarModel(12));
+    scene.insert("workspaceTabs", QVariantMap{{"visible", true}, {"tabs", QVariantList{
+        QVariantMap{{"id", "font-tab"}, {"text", "Font preview"}, {"number", 1}, {"active", true}}
+    }}});
+    scene.insert("dialogs", QVariantList{QVariantMap{
+        {"id", "font-dialog"}, {"kind", "dialog"}, {"title", "Font preview"},
+        {"x", 20}, {"y", 10}, {"w", 40}, {"h", 8}, {"children", QVariantList{}}
+    }});
+    QuickViewFixture fixture(scene, true, true, QStringLiteral("font-preview"));
+    QVERIFY(fixture.window);
+    fixture.window->resize(1200, 800);
+    auto *fonts = fixture.window->property("typography").value<QObject *>();
+    QVERIFY(fonts);
+    for (const auto &family : {QString("Courier New"), QString("Helvetica")}) {
+        fonts->setProperty("uiFamily", family);
+        QTest::qWait(200);
+        for (const auto &name : {"panelSortLabel-0", "pathBreadcrumb-0-text",
+                                "key-bar-label-1", "key-bar-shortcut-1",
+                                "semanticDialogTitle", "worktreeBranchLabel",
+                                "workspace-tab-title-font-tab"}) {
+            auto *leaf = visualItemWithObjectName(fixture.window->contentItem(), QString::fromLatin1(name));
+            QVERIFY2(leaf, name);
+            qInfo() << "[FIX:interface-font]" << name << family;
+            QCOMPARE(leaf->property("font").value<QFont>().family(), family);
+            const auto origin = leaf->mapToScene({});
+            const auto dpr = fixture.window->devicePixelRatio();
+            QVERIFY2(qAbs(origin.x() * dpr - qRound(origin.x() * dpr)) < .01, name);
+            QVERIFY2(qAbs(origin.y() * dpr - qRound(origin.y() * dpr)) < .01, name);
+            QCOMPARE(leaf->mapToScene({1, 0}) - origin, QPointF(1, 0));
+            QCOMPARE(leaf->mapToScene({0, 1}) - origin, QPointF(0, 1));
+        }
+    }
+    QVERIFY(fixture.window->grabWindow().save("/tmp/f4-interface-font-chrome.png"));
+}
+
+void F4QuickViewSurfaceTests::automaticColumnsFollowPanelFont()
+{
+    QuickViewFixture fixture(shellScene());
+    QVERIFY(fixture.window);
+    QQmlComponent component(&fixture.engine);
+    component.setData(R"(
+        import QtQuick
+        import ZoinGallery
+        Item {
+            id: testPanel
+            required property var host
+            width: 1200
+            property var galleryLayout: null
+            property var metrics: host.galleryPresentationMetrics
+            property real sizeWidth: fields.detailsColumnWidth(1)
+            property real customWidth: fields.detailsColumnWidth(2)
+            property real manualWidth: fields.detailsColumnWidth(3)
+            GalleryFileFieldPresentation {
+                id: fields
+                panelRoot: testPanel
+                devicePixelRatio: 1.75
+                fileFieldDescriptors: []
+                columnSchema: [
+                    {role: "name", width: 50, autoWidth: true},
+                    {role: "size", width: 14, autoWidth: true},
+                    {role: "exif.iso", width: 12, autoWidth: true},
+                    {role: "manual", width: 10}
+                ]
+            }
+        }
+    )", QUrl("qrc:/F4QtHost/qml/font-columns-test.qml"));
+    QScopedPointer<QObject> object(component.createWithInitialProperties(
+        {{"host", QVariant::fromValue(fixture.window)}}));
+    QVERIFY2(object, qPrintable(component.errorString()));
+    auto *fonts = fixture.window->property("typography").value<QObject *>();
+    QVERIFY(QMetaObject::invokeMethod(fonts, "setLinked", Q_ARG(QVariant, false)));
+    fonts->setProperty("panelFamily", "Helvetica");
+    fonts->setProperty("panelSize", 12);
+    const auto smallSize = object->property("sizeWidth").toReal();
+    const auto smallCustom = object->property("customWidth").toReal();
+    const auto manual = object->property("manualWidth").toReal();
+    fonts->setProperty("panelSize", 24);
+    qInfo() << "[FIX:column-font]" << smallSize << object->property("sizeWidth");
+    QVERIFY(object->property("sizeWidth").toReal() > smallSize);
+    QVERIFY(object->property("customWidth").toReal() > smallCustom);
+    QVERIFY(qAbs(object->property("manualWidth").toReal() - manual) < 1);
+    const auto beforeFamily = object->property("sizeWidth").toReal();
+    fonts->setProperty("panelFamily", "Courier New");
+    QVERIFY(qAbs(object->property("sizeWidth").toReal() - beforeFamily) > 1);
+    fonts->setProperty("uiSize", 12);
+    QVERIFY(QMetaObject::invokeMethod(fonts, "setLinked", Q_ARG(QVariant, true)));
+    const auto linkedWidth = object->property("sizeWidth").toReal();
+    fonts->setProperty("uiSize", 24);
+    QVERIFY(object->property("sizeWidth").toReal() > linkedWidth);
+}
+
+void F4QuickViewSurfaceTests::guiFontsLinkPersistAndPreview()
+{
+    const QFont originalFont = QGuiApplication::font();
+    const auto restore = qScopeGuard([&] { QGuiApplication::setFont(originalFont); });
+    QuickViewFixture fixture(shellScene());
+    QVERIFY(fixture.window);
+    auto *fonts = fixture.window->property("typography").value<QObject *>();
+    QVERIFY(fonts);
+    QVERIFY(fonts->property("panelsLinked").toBool());
+    fonts->setProperty("uiFamily", "Helvetica");
+    fonts->setProperty("uiSize", 18);
+    QCOMPARE(fonts->property("effectivePanelFamily").toString(), QString("Helvetica"));
+    QCOMPARE(fonts->property("effectivePanelSize").toInt(), 18);
+    for (const auto &family : {QString("Courier New"), QString("Helvetica")}) {
+        fonts->setProperty("uiFamily", family);
+        QTest::qWait(100);
+        auto *label = fixture.item(QStringLiteral("panelSortLabel-0"));
+        QVERIFY(label);
+        qInfo() << "[FIX:interface-font]" << label->objectName() << family;
+        QCOMPARE(label->property("font").value<QFont>().family(), family);
+    }
+    const qreal wide = fonts->property("extensionWidth").toReal();
+    QVERIFY(QMetaObject::invokeMethod(fonts, "setLinked", Q_ARG(QVariant, false)));
+    fonts->setProperty("uiSize", 22);
+    QCOMPARE(fonts->property("effectivePanelSize").toInt(), 18);
+    QCOMPARE(fonts->property("extensionWidth").toReal(), wide);
+    fonts->setProperty("panelSize", 12);
+    QVERIFY(fonts->property("extensionWidth").toReal() < wide);
+    fonts->setProperty("monoSize", 20);
+    QCOMPARE(fixture.window->property("guiMonospaceFontPixelSize").toInt(), 20);
+    QVERIFY(QMetaObject::invokeMethod(fixture.window, "saveThemeToPersistence"));
+    const QString saved = fixture.themePersistence.theme().value("typography").toString();
+    QVERIFY(QJsonDocument::fromJson(saved.toUtf8()).isObject());
+    fonts->setProperty("uiSize", 10);
+    QVERIFY(QMetaObject::invokeMethod(fixture.window, "loadThemeFromPersistence"));
+    QCOMPARE(fonts->property("uiSize").toInt(), 22);
+    QCOMPARE(fonts->property("panelSize").toInt(), 12);
+    QCOMPARE(fonts->property("monoSize").toInt(), 20);
+    QVERIFY(!fonts->property("panelsLinked").toBool());
+    QQmlComponent component(&fixture.engine, QUrl("qrc:/F4QtHost/qml/FontSettingsPage.qml"));
+    QScopedPointer<QObject> object(component.createWithInitialProperties(
+        {{"hostWindow", QVariant::fromValue(fixture.window)}}));
+    QVERIFY2(object, qPrintable(component.errorString()));
+    auto *page = qobject_cast<QQuickItem *>(object.data());
+    QVERIFY(page);
+    page->setParentItem(fixture.window->contentItem());
+    page->setWidth(750);
+    page->setHeight(600);
+    QTest::qWait(100);
+    for (int group = 0; group < 3; ++group) {
+        for (const auto &prefix : {"fontSettingsFamily-", "fontSettingsSize-"}) {
+            const QString name = QString(prefix) + QString::number(group);
+            auto *combo = visualItemWithObjectName(page, name);
+            QVERIFY(combo);
+            combo->setProperty("currentIndex", 0);
+            auto *popup = combo->property("popup").value<QObject *>();
+            QVERIFY(popup);
+            QVERIFY(QMetaObject::invokeMethod(popup, "open"));
+            QTRY_VERIFY(popup->property("visible").toBool());
+            QTest::qWait(200); // Popup positioning and enter transition must settle.
+            for (int index = 0; index < qMin(3, combo->property("count").toInt()); ++index) {
+                QQuickItem *label = nullptr;
+                QTRY_VERIFY((label = visualItemWithObjectName(fixture.window->contentItem(),
+                    name + "PopupItemText-" + QString::number(index))));
+                QString expected;
+                QVERIFY(QMetaObject::invokeMethod(combo, "textAt",
+                    Q_RETURN_ARG(QString, expected), Q_ARG(int, index)));
+                qInfo() << "[FIX:combo-text]" << name << index << label->property("text");
+                QCOMPARE(label->property("text").toString(), expected);
+                const QPointF origin = label->mapToScene({});
+                const qreal dpr = fixture.window->devicePixelRatio();
+                QVERIFY(qAbs(origin.x() * dpr - qRound(origin.x() * dpr)) < .01);
+                QVERIFY(qAbs(origin.y() * dpr - qRound(origin.y() * dpr)) < .01);
+                QCOMPARE(label->mapToScene({1, 0}) - origin, QPointF(1, 0));
+                QCOMPARE(label->mapToScene({0, 1}) - origin, QPointF(0, 1));
+            }
+            QVERIFY(fixture.window->grabWindow().save(QDir::temp().filePath(name + "-popup.png")));
+            QVERIFY(QMetaObject::invokeMethod(popup, "close"));
+        }
+    }
+    auto *link = visualItemWithObjectName(page, "fontSettingsLink-1");
+    QVERIFY(link);
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+        link->mapToScene(QPointF(link->width() / 2, link->height() / 2)).toPoint());
+    QTRY_VERIFY(fonts->property("panelsLinked").toBool());
+    auto *panelFamily = visualItemWithObjectName(page, "fontSettingsFamily-1");
+    QVERIFY(panelFamily);
+    QVERIFY(!panelFamily->isEnabled());
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+        link->mapToScene(QPointF(link->width() / 2, link->height() / 2)).toPoint());
+    QTRY_VERIFY(!fonts->property("panelsLinked").toBool());
+    QVERIFY(panelFamily->isEnabled());
+    const qreal dpr = fixture.window->devicePixelRatio();
+    for (int i = 0; i < 3; ++i) {
+        for (const auto &prefix : {"fontSettingsPreview-", "fontSettingsTitle-"}) {
+            auto *leaf = visualItemWithObjectName(page, QString(prefix) + QString::number(i));
+            QVERIFY(leaf);
+            const QPointF origin = leaf->mapToScene({});
+            QVERIFY(qAbs(origin.x() * dpr - qRound(origin.x() * dpr)) < .01);
+            QVERIFY(qAbs(origin.y() * dpr - qRound(origin.y() * dpr)) < .01);
+            QCOMPARE(leaf->mapToScene({1, 0}) - origin, QPointF(1, 0));
+            QCOMPARE(leaf->mapToScene({0, 1}) - origin, QPointF(0, 1));
+        }
+    }
+    QVERIFY(fixture.window->grabWindow().save(QDir::temp().filePath("f4-font-settings.png")));
+    fonts->setProperty("uiSize", 25);
+    QVERIFY(QMetaObject::invokeMethod(page, "resetDraft"));
+    QCOMPARE(fonts->property("uiSize").toInt(), 22);
+    for (int role = 0; role < 3; ++role) {
+        auto *reset = visualItemWithObjectName(page, "fontSettingsReset-" + QString::number(role));
+        QVERIFY(reset && reset->isEnabled());
+        const QString family = fonts->property(role == 2 ? "platformMonoFamily" : "defaultUiFamily").toString();
+        QVERIFY(reset->property("toolTipText").toString().contains(family));
+        auto *icon = visualItemWithObjectName(reset, reset->objectName() + "Icon");
+        QVERIFY(icon && icon->isVisible());
+        const auto origin = icon->mapToScene({});
+        QVERIFY(qAbs(origin.x() * dpr - qRound(origin.x() * dpr)) < .01);
+        QVERIFY(qAbs(origin.y() * dpr - qRound(origin.y() * dpr)) < .01);
+        QCOMPARE(icon->mapToScene({1, 0}) - origin, QPointF(1, 0));
+        QCOMPARE(icon->mapToScene({0, 1}) - origin, QPointF(0, 1));
+        QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+            reset->mapToScene({reset->width() / 2, reset->height() / 2}).toPoint());
+        const char *familyProperty = role == 0 ? "effectiveUiFamily" : role == 1 ? "effectivePanelFamily" : "effectiveMonoFamily";
+        const char *sizeProperty = role == 0 ? "uiSize" : role == 1 ? "effectivePanelSize" : "effectiveMonoSize";
+        QTRY_COMPARE(fonts->property(familyProperty).toString(), family);
+        QCOMPARE(fonts->property(sizeProperty).toInt(), role == 2 ? fonts->property("platformMonoSize").toInt() : 13);
+        QTest::qWait(100);
+    }
+    QVERIFY(QMetaObject::invokeMethod(fonts, "setLinked", Q_ARG(QVariant, true)));
+    QVERIFY(!visualItemWithObjectName(page, "fontSettingsReset-1")->isEnabled());
+    QVERIFY(QMetaObject::invokeMethod(page, "resetDraft"));
+    QCOMPARE(fonts->property("uiSize").toInt(), 22);
+    QCOMPARE(fonts->property("monoSize").toInt(), 20);
+    QVERIFY(!fonts->property("panelsLinked").toBool());
+}
+
+void F4QuickViewSurfaceTests::columnSeparatorsDefaultOff()
+{
+    QuickViewFixture fixture(shellScene({}, 0), true, true);
+    QVERIFY(fixture.window);
+    QVERIFY(!fixture.window->property("showColumnSeparators").toBool());
+    QVERIFY(fixture.window->setProperty("showColumnSeparators", true));
+    QVERIFY(fixture.window->property("showColumnSeparators").toBool());
+    QVERIFY(fixture.window->setProperty("showColumnSeparators", false));
+    QVERIFY(!fixture.window->property("showColumnSeparators").toBool());
+}
+
+void F4QuickViewSurfaceTests::editableComboCompletesFontNames()
+{
+    QuickViewFixture fixture(shellScene());
+    QVERIFY(fixture.window);
+    QQmlComponent component(&fixture.engine);
+    component.setData(R"(
+        import QtQuick
+        import "qrc:/F4QtHost/qml"
+        F4EditableComboBox {
+            objectName: "fontSearchTest"
+            width: 260
+            model: ["Arial", "Courier New", "Helvetica", "Monaco"]
+        }
+    )", QUrl("qrc:/F4QtHost/qml/font-search-test.qml"));
+    QScopedPointer<QObject> object(component.createWithInitialProperties(
+        {{"hostWindow", QVariant::fromValue(fixture.window)}}));
+    QVERIFY2(object, qPrintable(component.errorString()));
+    auto *combo = qobject_cast<QQuickItem *>(object.data());
+    QVERIFY(combo);
+    combo->setParentItem(fixture.window->contentItem());
+    combo->setPosition({30, 40});
+    QTest::qWait(100);
+    auto *input = visualItemWithObjectName(combo, "fontSearchTestTextInput");
+    QVERIFY(input);
+    input->forceActiveFocus();
+    QVERIFY(QMetaObject::invokeMethod(input, "selectAll"));
+    for (const auto key : {Qt::Key_H, Qt::Key_E, Qt::Key_L})
+        QTest::keyClick(fixture.window, key);
+    QTRY_COMPARE(combo->property("editText").toString(), QString("helvetica"));
+    QTest::keyClick(fixture.window, Qt::Key_Return);
+    QTRY_COMPARE(combo->property("currentIndex").toInt(), 2);
+    QCOMPARE(combo->property("currentText").toString(), QString("Helvetica"));
+    QVERIFY(QMetaObject::invokeMethod(input, "selectAll"));
+    for (const auto key : {Qt::Key_X, Qt::Key_X, Qt::Key_X})
+        QTest::keyClick(fixture.window, key);
+    QTest::keyClick(fixture.window, Qt::Key_Return);
+    QCOMPARE(combo->property("currentIndex").toInt(), -1);
+    const qreal dpr = fixture.window->devicePixelRatio();
+    const QPointF origin = input->mapToScene({});
+    QVERIFY(qAbs(origin.x() * dpr - qRound(origin.x() * dpr)) < .01);
+    QVERIFY(qAbs(origin.y() * dpr - qRound(origin.y() * dpr)) < .01);
+    QCOMPARE(input->mapToScene({1, 0}) - origin, QPointF(1, 0));
+    QCOMPARE(input->mapToScene({0, 1}) - origin, QPointF(0, 1));
+    QVERIFY(fixture.window->grabWindow().save(QDir::temp().filePath("f4-font-search.png")));
+}
+
+void F4QuickViewSurfaceTests::columnPaddingPreviewAndPersistence()
+{
+    QuickViewFixture fixture(shellScene());
+    QVERIFY(fixture.window);
+    QCOMPARE(fixture.window->property("panelColumnPadding").toInt(), 8);
+    QQmlComponent component(&fixture.engine, QUrl("qrc:/F4QtHost/qml/ThemeEditorContent.qml"));
+    QScopedPointer<QObject> object(component.createWithInitialProperties({
+        {"hostWindow", QVariant::fromValue(fixture.window)},
+        {"themePersistence", QVariant::fromValue(&fixture.themePersistence)},
+        {"embeddedSettings", true}}));
+    QVERIFY2(object, qPrintable(component.errorString()));
+    auto *page = qobject_cast<QQuickItem *>(object.data());
+    QVERIFY(page);
+    page->setParentItem(fixture.window->contentItem());
+    page->setWidth(750);
+    page->setHeight(900);
+    fixture.window->resize(1000, 1000);
+    QTest::qWait(100);
+    auto *slider = visualItemWithObjectName(page, "themeColumnPaddingSlider");
+    QVERIFY(slider);
+    slider->forceActiveFocus();
+    QTest::keyClick(fixture.window, Qt::Key_Right);
+    QTRY_COMPARE(fixture.window->property("panelColumnPadding").toInt(), 9);
+    QVERIFY(QMetaObject::invokeMethod(page, "resetDraft"));
+    QCOMPARE(fixture.window->property("panelColumnPadding").toInt(), 8);
+    fixture.window->setProperty("panelColumnPadding", 13);
+    QVERIFY(QMetaObject::invokeMethod(page, "applyDraft"));
+    fixture.window->setProperty("panelColumnPadding", 3);
+    QVERIFY(QMetaObject::invokeMethod(fixture.window, "loadThemeFromPersistence"));
+    QCOMPARE(fixture.window->property("panelColumnPadding").toInt(), 13);
+    const qreal dpr = fixture.window->devicePixelRatio();
+    for (const auto &name : {"themeColumnPaddingTitle", "themeColumnPaddingValue"}) {
+        auto *leaf = visualItemWithObjectName(page, name);
+        QVERIFY(leaf);
+        const QPointF origin = leaf->mapToScene({});
+        QVERIFY(qAbs(origin.x() * dpr - qRound(origin.x() * dpr)) < .01);
+        QVERIFY(qAbs(origin.y() * dpr - qRound(origin.y() * dpr)) < .01);
+        QCOMPARE(leaf->mapToScene({1, 0}) - origin, QPointF(1, 0));
+        QCOMPARE(leaf->mapToScene({0, 1}) - origin, QPointF(0, 1));
+    }
+    QVERIFY(fixture.window->grabWindow().save(QDir::temp().filePath("f4-column-padding.png")));
+}
+
+void F4QuickViewSurfaceTests::activeMenuBarOwnsNavigationWithoutPopup()
+{
+    QuickViewFixture fixture(shellScene({}, 0), true, true);
+    QVERIFY(fixture.window);
+    auto *loader = fixture.item("galleryPanelContent-0");
+    QVERIFY(loader);
+    QTRY_VERIFY(loader->property("item").value<QObject *>());
+    auto *host = qobject_cast<QQuickItem *>(loader->property("item").value<QObject *>());
+    QVERIFY(host);
+    host->forceActiveFocus();
+    auto *grid = fixture.item<TestGrid>("vtuiGrid");
+    QVERIFY(grid);
+    const QVariantList items{QVariantMap{{"index", 0}, {"text", "Left"}},
+                             QVariantMap{{"index", 1}, {"text", "Files"}}};
+    for (int cycle = 0; cycle < 2; ++cycle) {
+        fixture.shell.deliverCompactPresentation({{"menuBar", QVariantMap{
+            {"active", true}, {"selected", 0}, {"items", items}}}});
+        QTRY_VERIFY(fixture.item("panelMenuBar")->isVisible());
+        grid->receivedKeys.clear();
+        fixture.shell.clearActions();
+        for (const auto key : {Qt::Key_Left, Qt::Key_Right, Qt::Key_Up, Qt::Key_Down})
+            QTest::keyClick(fixture.window, key);
+        QCOMPARE(grid->receivedKeys, QList<int>({Qt::Key_Left, Qt::Key_Right,
+                                                Qt::Key_Up, Qt::Key_Down}));
+        QVERIFY(!host->property("panelActive").toBool());
+        QVERIFY(host->property("showCursor").toBool());
+        for (const auto &action : fixture.shell.actions)
+            QVERIFY(action.value("action").toString() != "panel.cursor");
+        fixture.shell.deliverCompactPresentation({{"menuBar", QVariantMap{
+            {"active", false}, {"selected", 0}, {"items", items}}}});
+        QTRY_VERIFY(host->property("panelActive").toBool());
+        QTRY_VERIFY(host->hasActiveFocus());
+    }
 }
 
 void F4QuickViewSurfaceTests::commandMenusKeepPanelCursorWhileBlockingInput()

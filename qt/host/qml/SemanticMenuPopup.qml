@@ -216,7 +216,8 @@ Item {
         return false
     }
     readonly property real menuRowHeight:
-        hostWindow.snapPx(Math.max(27, hostWindow.ch * 1.02))
+        hostWindow.snapPx(Math.max(27, hostWindow.ch * 1.02, menuFontMetrics.height + 10))
+    FontMetrics { id: menuFontMetrics; font: hostWindow.font }
     readonly property real effectiveMenuRowHeight:
         dropdownMode ? dropdownAnchorRect.height : menuRowHeight
     // Section labels are intentionally separated from the preceding
@@ -889,7 +890,7 @@ Item {
             textFormat: Text.PlainText
             color: hostWindow.textColor
             font.family: hostWindow.font.family
-            font.pixelSize: 14
+            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(14) : 14)
             font.weight: Font.DemiBold
             elide: Text.ElideMiddle
             transform: Translate {
@@ -1122,7 +1123,7 @@ Item {
             text: hostWindow.cleanText(menuOverlay.frame.bottomHint)
             textFormat: Text.PlainText
             color: hostWindow.mutedText
-            font.pixelSize: 11
+            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(11) : 11)
             elide: Text.ElideMiddle
             visible: text !== ""
             transform: Translate {

@@ -129,7 +129,7 @@ Rectangle {
                     font.family:
                         documentRow.hostWindow.guiMonospaceFontFamily
                     font.pixelSize:
-                        documentRow.hostWindow.semanticTextFontPixelSize
+                        documentRow.hostWindow.guiMonospaceFontPixelSize
                     font.bold: runSegment.runData.bold === true
                     font.underline: runSegment.runData.underline === true
                     font.strikeout: runSegment.runData.strikeout === true
@@ -171,7 +171,7 @@ Rectangle {
         renderType: documentRow.hostWindow.fontRenderType
         color: documentRow.hostWindow.textColor
         font.family: documentRow.hostWindow.guiMonospaceFontFamily
-        font.pixelSize: documentRow.hostWindow.semanticTextFontPixelSize
+        font.pixelSize: documentRow.hostWindow.guiMonospaceFontPixelSize
         elide: Text.ElideRight
         z: 1
         transform: Translate {
@@ -252,7 +252,7 @@ Rectangle {
                        ? documentRow.documentRoot.cursorFrame.selectionForeground
                        : documentRow.hostWindow.textColor
                 font.family: documentRow.hostWindow.guiMonospaceFontFamily
-                font.pixelSize: documentRow.hostWindow.semanticTextFontPixelSize
+                font.pixelSize: documentRow.hostWindow.guiMonospaceFontPixelSize
                 font.bold:
                     documentRow.documentRoot.cursorFrame.selectionBold === true
                 font.underline:

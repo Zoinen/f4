@@ -25,7 +25,7 @@ T.Button {
     hoverEnabled: true
     font: control.hostWindow ? control.hostWindow.font : Qt.font({})
 
-    implicitHeight: snap(variant === "tool" ? 28 : 30)
+    implicitHeight: snap(Math.max(variant === "tool" ? 28 : 30, btnRow.implicitHeight + 12))
     implicitWidth: {
         if (variant === "tool" && text === "")
             return implicitHeight

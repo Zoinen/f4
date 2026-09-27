@@ -125,7 +125,7 @@ RowLayout {
         }
         text: draft.statusToast
         color: hostWindow.activeBorder
-        font.pixelSize: 11
+        font.pixelSize: (hostWindow ? hostWindow.uiTextSize(11) : 11)
         Layout.fillWidth: true
         Layout.minimumWidth: 0
         horizontalAlignment: Text.AlignHCenter

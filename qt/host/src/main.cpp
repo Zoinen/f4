@@ -505,6 +505,13 @@ int main(int argc, char *argv[])
         QStringLiteral("f4SystemMonospaceFontFamily"),
         systemMonospaceFontFamily);
     engine.rootContext()->setContextProperty(QStringLiteral("f4GuiFontPixelSize"), guiFontSize);
+    QStringList monospaceFamilies;
+    for (const QString &family : QFontDatabase::families()) {
+        if (QFontDatabase::isFixedPitch(family))
+            monospaceFamilies.append(family);
+    }
+    engine.rootContext()->setContextProperty(
+        QStringLiteral("f4MonospaceFontFamilies"), monospaceFamilies);
     engine.rootContext()->setContextProperty(
         QStringLiteral("f4WorktreeBranchName"),
         parser.value(worktreeBranchOption).trimmed());

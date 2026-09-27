@@ -2429,12 +2429,18 @@ func actionCopyMove(pf *panel.PanelsFrame, isMove bool) {
 	}
 
 	if isMove && !config.App.ConfirmMove {
-		go fileops.ExecuteFileOpAt(srcVfs, dstVfs, srcBasePath, names, initialDest, isMove, config.App.DefaultFileOpMode, onCompleteWithClear)
+		go fileops.ExecuteFileOpAtIn(
+			pf, srcVfs, dstVfs, srcBasePath, names, initialDest,
+			isMove, config.App.DefaultFileOpMode, onCompleteWithClear,
+		)
 		return
 	}
 
 	if !isMove && !config.App.ConfirmCopy {
-		go fileops.ExecuteFileOpAt(srcVfs, dstVfs, srcBasePath, names, initialDest, isMove, config.App.DefaultFileOpMode, onCompleteWithClear)
+		go fileops.ExecuteFileOpAtIn(
+			pf, srcVfs, dstVfs, srcBasePath, names, initialDest,
+			isMove, config.App.DefaultFileOpMode, onCompleteWithClear,
+		)
 		return
 	}
 
@@ -2528,7 +2534,10 @@ func actionCopyMove(pf *panel.PanelsFrame, isMove bool) {
 			opts.AccessRights = fileops.AccessRightsModeFromConfig(rights)
 			opts.ExistingFiles = fileops.ExistingFilesModeFromChoice(existing)
 			opts.SymlinksAsLinks = !symlinkContents
-			go fileops.ExecuteFileOpAtWithOptions(srcVfs, dstVfs, srcBasePath, names, dest, isMove, mode, opts, onCompleteWithClear)
+			go fileops.ExecuteFileOpAtWithOptionsIn(
+				pf, srcVfs, dstVfs, srcBasePath, names, dest,
+				isMove, mode, opts, onCompleteWithClear,
+			)
 		}
 	}
 	dlg.AddItem(btnOk)
@@ -2814,7 +2823,10 @@ func actionCopyInPlace(pf *panel.PanelsFrame) {
 			}
 		}
 
-		go fileops.ExecuteFileOpAt(sourceVFS, sourceVFS, sourceBasePath, []string{name}, newPath, false, config.App.DefaultFileOpMode, onCompleteWithClear)
+		go fileops.ExecuteFileOpAtIn(
+			pf, sourceVFS, sourceVFS, sourceBasePath, []string{name}, newPath,
+			false, config.App.DefaultFileOpMode, onCompleteWithClear,
+		)
 	})
 }
 func ActionEditorSettings(pf *panel.PanelsFrame) {

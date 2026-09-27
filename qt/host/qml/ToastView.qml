@@ -32,7 +32,7 @@ Rectangle {
             Layout.maximumWidth: Math.max(0, hostWindow.width - 92)
             text: toastRoot.message
             color: hostWindow.textColor
-            font.pixelSize: 13
+            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(13) : 13)
             elide: Text.ElideRight
             verticalAlignment: Text.AlignVCenter
         }
@@ -60,7 +60,7 @@ Rectangle {
             contentItem: Text {
                 text: "\u00d7"
                 color: hostWindow.textColor
-                font.pixelSize: 17
+                font.pixelSize: (hostWindow ? hostWindow.uiTextSize(17) : 17)
                 horizontalAlignment: Text.AlignHCenter
                 verticalAlignment: Text.AlignVCenter
             }

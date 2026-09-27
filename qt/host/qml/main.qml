@@ -187,6 +187,11 @@ F4HostWindow {
             }
         }
     }, NativeSettingsPage {
+        pageId: "gui-fonts"
+        title: qsTr("GUI fonts")
+        iconName: "file-type"
+        content: Component { FontSettingsPage { hostWindow: root } }
+    }, NativeSettingsPage {
         pageId: "gallery"
         title: qsTr("Gallery & cache")
         iconName: "images"

@@ -337,8 +337,9 @@ Rectangle {
                             ? hostWindow.snapPx(dialogBackButton.x + dialogBackButton.width + 8)
                             : hostWindow.snapPx(18)
         text: hostWindow.cleanText(frame.title)
+        font.family: hostWindow.uiFontFamily
         color: hostWindow.textColor
-        font.pixelSize: 14
+        font.pixelSize: (hostWindow ? hostWindow.uiTextSize(14) : 14)
         font.weight: Font.DemiBold
         elide: Text.ElideMiddle
     }

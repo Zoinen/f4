@@ -74,7 +74,7 @@ Rectangle {
             anchors.topMargin: 9
             text: hostWindow.cleanText(queue.title || "Operations Queue")
             color: hostWindow.textColor
-            font.pixelSize: 18
+            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(18) : 18)
             font.weight: Font.DemiBold
             Accessible.role: Accessible.Heading
             Accessible.name: text
@@ -161,7 +161,7 @@ Rectangle {
             text: queueController.columnTitle("id", "ID")
             visible: width > 0
             color: hostWindow.chromeText
-            font.pixelSize: 12
+            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(12) : 12)
             font.weight: Font.DemiBold
         }
         Text {
@@ -176,7 +176,7 @@ Rectangle {
             anchors.verticalCenter: parent.verticalCenter
             text: queueController.columnTitle("state", "State")
             color: hostWindow.chromeText
-            font.pixelSize: 12
+            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(12) : 12)
             font.weight: Font.DemiBold
         }
         Text {
@@ -192,7 +192,7 @@ Rectangle {
             anchors.verticalCenter: parent.verticalCenter
             text: queueController.columnTitle("type", "Type")
             color: hostWindow.chromeText
-            font.pixelSize: 12
+            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(12) : 12)
             font.weight: Font.DemiBold
         }
         Text {
@@ -213,7 +213,7 @@ Rectangle {
             text: queueController.columnTitle("description",
                                         "Description / Current File")
             color: hostWindow.chromeText
-            font.pixelSize: 12
+            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(12) : 12)
             font.weight: Font.DemiBold
             elide: Text.ElideRight
         }
@@ -229,7 +229,7 @@ Rectangle {
             anchors.verticalCenter: parent.verticalCenter
             text: queueController.columnTitle("progress", "Progress")
             color: hostWindow.chromeText
-            font.pixelSize: 12
+            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(12) : 12)
             font.weight: Font.DemiBold
         }
         Text {
@@ -246,7 +246,7 @@ Rectangle {
             text: queueController.columnTitle("speed", "Speed")
             visible: width > 0
             color: hostWindow.chromeText
-            font.pixelSize: 12
+            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(12) : 12)
             font.weight: Font.DemiBold
         }
     }
@@ -332,7 +332,7 @@ Rectangle {
                 visible: queueController.idColumnWidth > 0
                 color: hostWindow.mutedText
                 font.family: hostWindow.uiFontFamily
-                font.pixelSize: 12
+                font.pixelSize: (hostWindow ? hostWindow.uiTextSize(12) : 12)
             }
 
             Item {
@@ -374,7 +374,7 @@ Rectangle {
                     color: queueController.stateColor(queueRow.stateClass,
                                                 queueRow.state)
                     elide: Text.ElideRight
-                    font.pixelSize: 12
+                    font.pixelSize: (hostWindow ? hostWindow.uiTextSize(12) : 12)
                     font.weight: queueRow.active
                                  ? Font.DemiBold : Font.Normal
                 }
@@ -393,7 +393,7 @@ Rectangle {
                 text: queueRow.taskType
                 color: hostWindow.textColor
                 elide: Text.ElideRight
-                font.pixelSize: 12
+                font.pixelSize: (hostWindow ? hostWindow.uiTextSize(12) : 12)
             }
 
             Item {
@@ -425,7 +425,7 @@ Rectangle {
                     color: queueRow.error !== ""
                            ? "#ee8b8b" : hostWindow.textColor
                     elide: Text.ElideMiddle
-                    font.pixelSize: 13
+                    font.pixelSize: (hostWindow ? hostWindow.uiTextSize(13) : 13)
                 }
                 Text {
                     id: queueLeaf13
@@ -445,7 +445,7 @@ Rectangle {
                     color: queueRow.error !== ""
                            ? "#ee8b8b" : hostWindow.mutedText
                     elide: Text.ElideMiddle
-                    font.pixelSize: 11
+                    font.pixelSize: (hostWindow ? hostWindow.uiTextSize(11) : 11)
                 }
             }
 
@@ -495,7 +495,7 @@ Rectangle {
                           : queueRow.totalText
                     color: hostWindow.mutedText
                     elide: Text.ElideRight
-                    font.pixelSize: 11
+                    font.pixelSize: (hostWindow ? hostWindow.uiTextSize(11) : 11)
                 }
                 T.BusyIndicator {
                     id: rowBusy
@@ -531,7 +531,7 @@ Rectangle {
                     text: queueRow.speed
                     color: hostWindow.mutedText
                     elide: Text.ElideRight
-                    font.pixelSize: 12
+                    font.pixelSize: (hostWindow ? hostWindow.uiTextSize(12) : 12)
                 }
             }
 
@@ -625,7 +625,7 @@ Rectangle {
                       : hostWindow.cleanText(queue.emptyText || "No operations")
                 color: hostWindow.cleanText(queue.error) !== ""
                        ? "#ee8b8b" : hostWindow.mutedText
-                font.pixelSize: 16
+                font.pixelSize: (hostWindow ? hostWindow.uiTextSize(16) : 16)
             }
             Text {
                 id: queueLeaf17
@@ -638,7 +638,7 @@ Rectangle {
                 text: hostWindow.cleanText(queue.emptyDescription)
                 visible: text !== ""
                 color: hostWindow.mutedText
-                font.pixelSize: 12
+                font.pixelSize: (hostWindow ? hostWindow.uiTextSize(12) : 12)
             }
         }
     }
@@ -701,7 +701,7 @@ Rectangle {
             visible: text !== ""
             color: hostWindow.mutedText
             elide: Text.ElideRight
-            font.pixelSize: 12
+            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(12) : 12)
         }
     }
 }

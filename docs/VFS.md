@@ -57,3 +57,16 @@ per file for grouping. Native listings enrich from the FileInfo already obtained
 on native Windows physical allocation size is unavailable from this listing.
 Providers must not mark substitute access/creation dates as real. CTime means
 creation on some filesystems and metadata change on others.
+
+## Local transfer identity and interaction ownership
+
+Local copies check filesystem object identity in addition to normalized paths.
+Case-insensitive aliases and hard links must not reach overwrite/append/resume
+or truncate their own source. The check is repeated after conflict renaming.
+Only local OSVFS identities use host filesystem checks; remote paths do not.
+Case-only moves can use native no-replace rename when the destination spelling
+is an alias, not a separate directory entry.
+
+Panel actions pass their originating frame to queued operations. Interactive
+conflict dialogs belong to that workspace, not the queue worker's frame:
+otherwise a hidden confirmation can retain resource reservations indefinitely.

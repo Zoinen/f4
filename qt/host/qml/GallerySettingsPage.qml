@@ -92,7 +92,7 @@ Item {
         objectName: identity
         color: page.hostWindow.textColor
         font.family: page.hostWindow.font.family
-        font.pixelSize: 13
+        font.pixelSize: (hostWindow ? hostWindow.uiTextSize(13) : 13)
         renderType: page.hostWindow.fontRenderType
         width: parent.width
         height: page.px(implicitHeight)
@@ -114,11 +114,11 @@ Item {
         id: usage
         x: 0; y: intro.y + intro.height + page.gap; width: page.innerWidth; height: page.px(102)
         radius: page.px(8); color: page.hostWindow.dialogHeaderBg
-        Copy { identity: "galleryCacheUsageTitle"; x: page.gap; y: page.px(10); text: qsTr("DISK CACHE"); font.pixelSize: 11; font.bold: true }
+        Copy { identity: "galleryCacheUsageTitle"; x: page.gap; y: page.px(10); text: qsTr("DISK CACHE"); font.pixelSize: (hostWindow ? hostWindow.uiTextSize(11) : 11); font.bold: true }
         Copy {
             identity: "galleryCacheUsageValue"; x: page.gap; y: page.px(31); width: parent.width - page.gap * 2
             text: page.settings ? page.bytes(page.settings.diskBytes) + " / " + page.bytes(page.settings.values.diskLimitMiB * 1048576) : ""
-            font.pixelSize: 19
+            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(19) : 19)
         }
         Rectangle {
             x: page.gap; y: page.px(66); width: parent.width - page.gap * 2; height: page.px(5); radius: height / 2
@@ -128,7 +128,7 @@ Item {
                 height: parent.height; radius: height / 2; color: page.hostWindow.dialogAccent
             }
         }
-        Copy { identity: "galleryCacheRamInfo"; x: page.gap; y: page.px(79); font.pixelSize: 11; color: page.hostWindow.mutedText; text: qsTr("256 MiB shared memory cache · 128 recent folder collages per panel") }
+        Copy { identity: "galleryCacheRamInfo"; x: page.gap; y: page.px(79); font.pixelSize: (hostWindow ? hostWindow.uiTextSize(11) : 11); color: page.hostWindow.mutedText; text: qsTr("256 MiB shared memory cache · 128 recent folder collages per panel") }
     }
 
     Copy {
@@ -167,7 +167,7 @@ Item {
         id: policy
         identity: "galleryCachePolicy"
         x: 0; y: folderMode.y + folderMode.height + page.px(6); width: page.innerWidth
-        color: page.hostWindow.mutedText; font.pixelSize: 11
+        color: page.hostWindow.mutedText; font.pixelSize: (hostWindow ? hostWindow.uiTextSize(11) : 11)
         text: qsTr("On reuses cached data and refreshes it in the background. Cache only prevents new source reads; missing images remain empty.")
     }
     Copy { id: limitTitle; identity: "galleryCacheLimitTitle"; x: 0; y: policy.y + policy.height + page.gap; width: page.innerWidth; text: qsTr("Disk limit (MiB) · default 512"); font.bold: true }
@@ -191,7 +191,7 @@ Item {
         placeholderText: qsTr("Default cache location")
         onTextEdited: page.change("location", text)
     }
-    Copy { id: activeLocation; identity: "galleryCacheActiveLocation"; x: 0; y: location.y + location.height + page.px(6); width: page.innerWidth; font.pixelSize: 11; color: page.hostWindow.mutedText; text: qsTr("Active: ") + (page.settings ? page.settings.values.activeLocation : "") }
+    Copy { id: activeLocation; identity: "galleryCacheActiveLocation"; x: 0; y: location.y + location.height + page.px(6); width: page.innerWidth; font.pixelSize: (hostWindow ? hostWindow.uiTextSize(11) : 11); color: page.hostWindow.mutedText; text: qsTr("Active: ") + (page.settings ? page.settings.values.activeLocation : "") }
     F4Button {
         id: clear
         objectName: "galleryCacheClear"
@@ -247,8 +247,8 @@ Item {
         checked: page.quickViewDraft.previewOnHover !== false
         onToggled: page.quickViewDraft = Object.assign({}, page.quickViewDraft, {previewOnHover: checked})
     }
-    Copy { id: decoderHeading; identity: "galleryDecodersTitle"; x: 0; y: hoverQuickView.y + hoverQuickView.height + page.gap * 2; width: page.innerWidth; text: qsTr("Image decoders"); font.bold: true; font.pixelSize: 13 }
-    Copy { id: decoderHelp; identity: "galleryDecodersHelp"; x: 0; y: decoderHeading.y + decoderHeading.height + page.px(6); width: page.innerWidth; text: qsTr("Tried in this order. Higher priority wins; later decoders provide fallbacks."); color: page.hostWindow.mutedText; font.pixelSize: 11 }
+    Copy { id: decoderHeading; identity: "galleryDecodersTitle"; x: 0; y: hoverQuickView.y + hoverQuickView.height + page.gap * 2; width: page.innerWidth; text: qsTr("Image decoders"); font.bold: true; font.pixelSize: (hostWindow ? hostWindow.uiTextSize(13) : 13) }
+    Copy { id: decoderHelp; identity: "galleryDecodersHelp"; x: 0; y: decoderHeading.y + decoderHeading.height + page.px(6); width: page.innerWidth; text: qsTr("Tried in this order. Higher priority wins; later decoders provide fallbacks."); color: page.hostWindow.mutedText; font.pixelSize: (hostWindow ? hostWindow.uiTextSize(11) : 11) }
     Column {
         id: decoderColumn
         x: 0; y: decoderHelp.y + decoderHelp.height + page.gap; width: page.innerWidth; spacing: page.px(8)
@@ -263,7 +263,7 @@ Item {
                 border.color: page.hostWindow.controlBorder; border.width: page.hostWindow.separatorWidth
                 Copy { identity: "galleryDecoderName-" + decoder.index; x: page.gap; y: page.gap; width: parent.width - page.gap * 2; text: String(decoder.modelData.order).padStart(2, "0") + "   " + decoder.modelData.name + "   ·   " + qsTr("priority ") + decoder.modelData.priority; font.bold: true }
                 Copy { id: library; identity: "galleryDecoderLibrary-" + decoder.index; x: page.gap; y: page.px(37); width: parent.width - page.gap * 2; text: decoder.modelData.library; color: page.hostWindow.dialogAccent }
-                Copy { id: formats; identity: "galleryDecoderFormats-" + decoder.index; x: page.gap; y: library.y + library.height + page.px(7); width: parent.width - page.gap * 2; text: decoder.modelData.formats.join("  ·  ").toUpperCase(); font.pixelSize: 11; color: page.hostWindow.mutedText }
+                Copy { id: formats; identity: "galleryDecoderFormats-" + decoder.index; x: page.gap; y: library.y + library.height + page.px(7); width: parent.width - page.gap * 2; text: decoder.modelData.formats.join("  ·  ").toUpperCase(); font.pixelSize: (hostWindow ? hostWindow.uiTextSize(11) : 11); color: page.hostWindow.mutedText }
             }
         }
     }

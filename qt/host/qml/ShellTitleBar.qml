@@ -59,6 +59,7 @@ Item {
         visible: text !== "" && text !== "zoin"
         color: hostWindow.chromeText
         font.pixelSize: hostWindow.semanticTextFontPixelSize
+        font.family: hostWindow.uiFontFamily
         renderType: hostWindow.fontRenderType
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment: Text.AlignVCenter

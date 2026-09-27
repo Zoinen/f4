@@ -128,6 +128,8 @@ const QSet<QString> &lucideIconNames()
         QStringLiteral("file-code"),
         QStringLiteral("file-cog"),
         QStringLiteral("file-lock"),
+        QStringLiteral("lock-keyhole"),
+        QStringLiteral("lock-keyhole-open"),
         QStringLiteral("file-pen-line"),
         QStringLiteral("file-plus"),
         QStringLiteral("file-text"),

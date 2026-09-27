@@ -224,6 +224,7 @@ type PanelColumnModel struct {
 	Index     int
 	Title     string
 	Width     int
+	AutoWidth bool
 	Alignment string
 	SortMode  string
 	Sortable  bool
@@ -964,6 +965,7 @@ func (p PanelModel) ToMap() M {
 				"index":     column.Index,
 				"title":     column.Title,
 				"width":     column.Width,
+				"autoWidth": column.AutoWidth,
 				"alignment": column.Alignment,
 				"sortMode":  column.SortMode,
 				"sortable":  column.Sortable,

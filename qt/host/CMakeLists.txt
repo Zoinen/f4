@@ -352,6 +352,8 @@ set(F4_LUCIDE_ICON_NAMES
   file-terminal.svg
   file-cog.svg
   file-lock.svg
+  lock-keyhole.svg
+  lock-keyhole-open.svg
   file-pen-line.svg
   file-plus.svg
   file-text.svg

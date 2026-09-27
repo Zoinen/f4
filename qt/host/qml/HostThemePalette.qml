@@ -59,6 +59,8 @@ Item {
     property bool galleryShowSelectionBorders: true
     property bool commandLineGraphicalCursor: true
     property bool compactBreadcrumbs: true
+    property bool showColumnSeparators: false
+    property int panelColumnPadding: 8
     property color galleryQuickSearchMatchColor: "#c678dd"
     property color galleryDirectoryTextColor: "#98d8ff"
     property color galleryFolderIconColor: "#5ab2f1"
@@ -190,25 +192,25 @@ Item {
 
     readonly property ZG.GalleryPresentationMetrics galleryMetrics:
         ZG.GalleryPresentationMetrics {
-            detailsRowInset: palette.hostWindow.snapPx(
-                                 palette.hostWindow.panelRowInnerSpacing)
-            detailsRowSpacing: palette.hostWindow.snapPx(8)
+            panelFontFamily: palette.hostWindow.typography.effectivePanelFamily
+            panelFontPixelSize: palette.hostWindow.typography.effectivePanelSize
+            detailsExtensionMinimumWidth: palette.hostWindow.typography.extensionWidth
+            columnPadding: palette.hostWindow.snapPx(
+                                 palette.panelColumnPadding)
             detailsIconSlotSize: palette.hostWindow.snapPx(16)
             detailsIconSize: palette.hostWindow.snapPx(16)
             detailsIconVerticalPadding: Math.max(0,
                 (palette.hostWindow.snapPx(Math.max(22, palette.hostWindow.ch * 1.1))
                  - detailsIconSize) / 2)
-            detailsNameFontPixelSize: 13
-            detailsSecondaryFontPixelSize: 12
-            detailsExtensionMinimumWidth: palette.hostWindow.snapPx(40)
-            detailsExtensionMaximumWidth: palette.hostWindow.snapPx(80)
+            detailsNameFontPixelSize: palette.hostWindow.typography.effectivePanelSize
+            detailsSecondaryFontPixelSize: palette.hostWindow.typography.effectivePanelSize
+            detailsExtensionMaximumWidth: palette.hostWindow.snapPx(
+                Math.max(80, palette.hostWindow.typography.extensionWidth))
             detailsSizeColumnWidth: palette.hostWindow.snapPx(96)
             detailsHeaderHeight: palette.hostWindow.snapPx(
                                      Math.max(22, palette.hostWindow.ch)
                                      + palette.hostWindow.verticalContentSpacing)
-            detailsHeaderCellInset: palette.hostWindow.snapPx(
-                                        palette.hostWindow.panelRowInnerSpacing)
-            detailsHeaderFontPixelSize: 12
+            detailsHeaderFontPixelSize: palette.hostWindow.typography.effectivePanelSize
             detailsSeparatorVerticalMargin: palette.hostWindow.snapPx(
                                                 palette.hostWindow.columnSeparatorVerticalMargin)
             detailsSeparatorWidth: palette.hostWindow.separatorWidth
@@ -231,6 +233,17 @@ Item {
             return false
         try {
             const saved = persistence.loadTheme()
+            try {
+                hostWindow.typography.restore(saved.typography ? JSON.parse(saved.typography) : {})
+            } catch (error) {
+                console.warn("Invalid GUI typography preferences:", error)
+                hostWindow.typography.restore({})
+            }
+            showColumnSeparators = saved.showColumnSeparators === true
+                    || String(saved.showColumnSeparators).toLowerCase() === "true"
+            const padding = Number(saved.panelColumnPadding)
+            panelColumnPadding = Number.isFinite(padding)
+                    ? Math.max(0, Math.min(24, Math.round(padding))) : 8
             compactBreadcrumbs = saved.compactBreadcrumbs === undefined
                     || saved.compactBreadcrumbs === true
                     || String(saved.compactBreadcrumbs).toLowerCase() === "true"
@@ -320,7 +333,10 @@ Item {
         values.showSelectionBorders = galleryShowSelectionBorders
         values.commandLineGraphicalCursor = commandLineGraphicalCursor
         values.compactBreadcrumbs = compactBreadcrumbs
+        values.showColumnSeparators = showColumnSeparators
+        values.panelColumnPadding = panelColumnPadding
         values.themeSchemaVersion = schemaVersion
+        values.typography = JSON.stringify(hostWindow.typography.snapshot())
         return persistence.saveTheme(values)
     }
 
@@ -337,6 +353,9 @@ Item {
         galleryShowSelectionBorders = true
         commandLineGraphicalCursor = true
         compactBreadcrumbs = true
+        showColumnSeparators = false
+        panelColumnPadding = 8
+        hostWindow.typography.restore({})
     }
 
     function formatColorHex(colorValue) {

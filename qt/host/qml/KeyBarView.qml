@@ -184,7 +184,7 @@ Rectangle {
         FontMetrics {
             id: keyBarAlternativeFontMetrics
             font.family: hostWindow.uiFontFamily
-            font.pixelSize: 12
+            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(12) : 12)
         }
 
         contentItem: ListView {
@@ -243,7 +243,7 @@ Rectangle {
                     text: hostWindow.cleanText(modelData.text)
                     color: hostWindow.textColor
                     font.family: hostWindow.uiFontFamily
-                    font.pixelSize: 12
+                    font.pixelSize: (hostWindow ? hostWindow.uiTextSize(12) : 12)
                     elide: Text.ElideRight
                 }
 
@@ -257,7 +257,7 @@ Rectangle {
                     text: hostWindow.cleanText(modelData.shortcut)
                     color: hostWindow.mutedText
                     font.family: hostWindow.uiFontFamily
-                    font.pixelSize: 11
+                    font.pixelSize: (hostWindow ? hostWindow.uiTextSize(11) : 11)
                 }
 
                 MouseArea {

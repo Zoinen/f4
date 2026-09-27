@@ -105,6 +105,11 @@ func TestFileSystemPanelSemanticPanelNode(t *testing.T) {
 		t.Fatalf("quick-search match span was not exported: %#v", matches)
 	}
 	columns := node["galleryColumns"].([]map[string]any)
+	for _, column := range columns {
+		if column["autoWidth"] != true {
+			t.Fatalf("default column must auto-size: %#v", column)
+		}
+	}
 	if len(columns) != 2 || columns[0]["role"] != "name" || columns[0]["sortMode"] != "name" || columns[0]["sortable"] != true {
 		t.Fatalf("unexpected unified name column metadata: %#v", columns)
 	}

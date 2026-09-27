@@ -16,16 +16,18 @@ FocusScope {
     readonly property Item contentItem: themeColorConfigurator
     property bool embeddedSettings: false
     property var draftBaseline: ({})
+    property var typographyBaseline: ({})
     readonly property string status: statusToast
     function captureDraftBaseline() {
         let values = {}
         for (const definition of hostWindow.themeColorDefinitions)
             values[definition.id] = hostWindow[definition.id].toString()
         for (const key of ["fontRenderType", "mouseWheelMode", "galleryNeutralFileTextColors",
-                           "galleryShowSelectionBorders", "commandLineGraphicalCursor", "compactBreadcrumbs",
-                           "iconSetName"])
+                           "galleryShowSelectionBorders", "commandLineGraphicalCursor", "compactBreadcrumbs", "showColumnSeparators",
+                           "panelColumnPadding", "iconSetName"])
             values[key] = hostWindow[key]
         draftBaseline = values
+        typographyBaseline = hostWindow.typography.snapshot()
     }
     function applyDraft() {
         stopAllFlashing()
@@ -39,6 +41,7 @@ FocusScope {
     }
     function resetDraft() {
         stopAllFlashing()
+        hostWindow.typography.restore(typographyBaseline)
         for (const key of Object.keys(draftBaseline)) {
             if (key === "fontRenderType") hostWindow.setFontRenderType(draftBaseline[key])
             else if (key === "iconSetName") hostWindow.setIconSet(draftBaseline[key])
@@ -55,7 +58,7 @@ FocusScope {
         event.accepted = true
     }
     implicitWidth: hostWindow.snapPx(embeddedSettings ? 535 : 720)
-    implicitHeight: hostWindow.snapPx(embeddedSettings ? 812 : 876)
+    implicitHeight: hostWindow.snapPx(embeddedSettings ? 864 : 928)
 
 
     ThemeDraftModel {
@@ -171,7 +174,7 @@ FocusScope {
                     text: "Theme Color Configurator"
                     color: hostWindow.textColor
                     font.family: hostWindow.uiFontFamily
-                    font.pixelSize: 14
+                    font.pixelSize: (hostWindow ? hostWindow.uiTextSize(14) : 14)
                     font.weight: Font.Bold
                     Layout.fillWidth: true
                 }
@@ -188,7 +191,7 @@ FocusScope {
                           : "gui_theme.ini"
                     color: hostWindow.mutedText
                     font.family: hostWindow.uiFontFamily
-                    font.pixelSize: 10
+                    font.pixelSize: (hostWindow ? hostWindow.uiTextSize(10) : 10)
                     elide: Text.ElideMiddle
                     Layout.maximumWidth: 320
                 }
@@ -263,7 +266,7 @@ FocusScope {
                             text: "Font rendering"
                             color: hostWindow.textColor
                             font.family: hostWindow.uiFontFamily
-                            font.pixelSize: 11
+                            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(11) : 11)
                             font.weight: Font.Bold
                         }
 
@@ -273,7 +276,7 @@ FocusScope {
                             text: hostWindow.fontRenderTypeDescription
                             color: hostWindow.mutedText
                             font.family: hostWindow.uiFontFamily
-                            font.pixelSize: 9
+                            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(9) : 9)
                             elide: Text.ElideRight
                             Layout.fillWidth: true
                             transform: Translate {
@@ -360,7 +363,7 @@ FocusScope {
                             text: "Mouse wheel control"
                             color: hostWindow.textColor
                             font.family: hostWindow.uiFontFamily
-                            font.pixelSize: 11
+                            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(11) : 11)
                             font.weight: Font.Bold
                         }
 
@@ -370,7 +373,7 @@ FocusScope {
                             text: hostWindow.mouseWheelModeDescription
                             color: hostWindow.mutedText
                             font.family: hostWindow.uiFontFamily
-                            font.pixelSize: 9
+                            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(9) : 9)
                             elide: Text.ElideRight
                             Layout.fillWidth: true
                             transform: Translate {
@@ -453,7 +456,7 @@ FocusScope {
                             text: "Icon set"
                             color: hostWindow.textColor
                             font.family: hostWindow.guiMonospaceFontFamily
-                            font.pixelSize: 11
+                            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(11) : 11)
                             font.weight: Font.Bold
                             transform: Translate {
                                 x: hostWindow.dialogPixelOffsetX(
@@ -471,7 +474,7 @@ FocusScope {
                             text: hostWindow.iconSetDescription
                             color: hostWindow.mutedText
                             font.family: hostWindow.guiMonospaceFontFamily
-                            font.pixelSize: 9
+                            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(9) : 9)
                             elide: Text.ElideRight
                             Layout.fillWidth: true
                             transform: Translate {
@@ -557,7 +560,67 @@ FocusScope {
                 onToggled: checked => hostWindow.compactBreadcrumbs = checked
             }
 
+            ThemeBooleanOption {
+                hostWindow: themeColorConfigurator.hostWindow
+                pixelGridRoot: themeColorConfigurator.contentItem
+                namePrefix: "themeColumnSeparators"
+                title: qsTr("Show column separators")
+                description: qsTr("Draw vertical lines between columns in Details view")
+                checked: hostWindow.showColumnSeparators
+                onToggled: checked => hostWindow.showColumnSeparators = checked
+            }
+
             // Main Body: Left (List of items) + Right (Editor)
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.preferredHeight: hostWindow.snapPx(42)
+                spacing: hostWindow.snapPx(12)
+                Text {
+                    id: paddingTitle
+                    objectName: "themeColumnPaddingTitle"
+                    text: qsTr("Column padding")
+                    font.family: hostWindow.uiFontFamily
+                    font.pixelSize: hostWindow.uiTextSize(11)
+                    color: hostWindow.textColor
+                    Layout.fillWidth: true
+                    transform: Translate {
+                        x: hostWindow.dialogPixelOffsetX(paddingTitle, hostWindow.contentItem)
+                        y: hostWindow.dialogPixelOffsetY(paddingTitle, hostWindow.contentItem)
+                    }
+                }
+                F4Slider {
+                    id: paddingSlider
+                    objectName: "themeColumnPaddingSlider"
+                    hostWindow: themeColorConfigurator.hostWindow
+                    Layout.preferredWidth: hostWindow.snapPx(180)
+                    from: 0
+                    to: 24
+                    stepSize: 1
+                    snapMode: Slider.SnapAlways
+                    value: hostWindow.panelColumnPadding
+                    onMoved: hostWindow.panelColumnPadding = Math.round(value)
+                    Accessible.name: qsTr("Column padding in Details and two/three columns")
+                    transform: Translate {
+                        x: hostWindow.dialogPixelOffsetX(paddingSlider, hostWindow.contentItem)
+                        y: hostWindow.dialogPixelOffsetY(paddingSlider, hostWindow.contentItem)
+                    }
+                }
+                Text {
+                    id: paddingValue
+                    objectName: "themeColumnPaddingValue"
+                    text: hostWindow.panelColumnPadding + " px"
+                    font.family: hostWindow.uiFontFamily
+                    font.pixelSize: hostWindow.uiTextSize(11)
+                    color: hostWindow.mutedText
+                    Layout.preferredWidth: hostWindow.snapPx(42)
+                    horizontalAlignment: Text.AlignRight
+                    transform: Translate {
+                        x: hostWindow.dialogPixelOffsetX(paddingValue, hostWindow.contentItem)
+                        y: hostWindow.dialogPixelOffsetY(paddingValue, hostWindow.contentItem)
+                    }
+                }
+            }
+
             RowLayout {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
@@ -704,7 +767,7 @@ FocusScope {
                                             }
                                             text: itemDelegate.def.name
                                             color: hostWindow.textColor
-                                            font.pixelSize: 11
+                                            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(11) : 11)
                                             font.weight: itemDelegate.isSelected ? Font.Bold : Font.Normal
                                             elide: Text.ElideRight
                                             Layout.fillWidth: true
@@ -719,7 +782,7 @@ FocusScope {
                                             }
                                             text: itemDelegate.def.group
                                             color: hostWindow.mutedText
-                                            font.pixelSize: 9
+                                            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(9) : 9)
                                             elide: Text.ElideRight
                                             Layout.fillWidth: true
                                         }
@@ -736,7 +799,7 @@ FocusScope {
                                         text: hostWindow.formatColorHex(hostWindow[itemDelegate.def.id])
                                         color: hostWindow.mutedText
                                         font.family: hostWindow.uiFontFamily
-                                        font.pixelSize: 10
+                                        font.pixelSize: (hostWindow ? hostWindow.uiTextSize(10) : 10)
                                     }
                                 }
 

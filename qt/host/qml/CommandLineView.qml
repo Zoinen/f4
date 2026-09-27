@@ -263,7 +263,7 @@ Rectangle {
             selectionColor: hostWindow.selectedBg
             selectedTextColor: hostWindow.textColor
             font.family: hostWindow.guiMonospaceFontFamily
-            font.pixelSize: hostWindow.semanticTextFontPixelSize
+            font.pixelSize: hostWindow.guiMonospaceFontPixelSize
             verticalAlignment: TextEdit.AlignTop
             readOnly: true
             activeFocusOnPress: false

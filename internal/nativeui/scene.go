@@ -938,6 +938,7 @@ func appPanelFromLegacy(node map[string]any) extui.PanelModel {
 				Index:     semantic.Int(column["index"]),
 				Title:     semantic.String(column["title"]),
 				Width:     semantic.Int(column["width"]),
+				AutoWidth: semantic.AppBool(column["autoWidth"]),
 				Alignment: semantic.String(column["alignment"]),
 				SortMode:  semantic.String(column["sortMode"]),
 				Sortable:  semantic.AppBool(column["sortable"]),

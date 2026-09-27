@@ -2852,6 +2852,7 @@ func (fp *FileSystemPanel) semanticGalleryColumns() []extui.PanelColumnModel {
 			ID: "name", Role: "name", Index: 0,
 			Title:     title(i18n.Msg("Panel.Column.Name"), SortName),
 			Width:     fp.effectiveGalleryColumnWidth("name", nameWidth),
+			AutoWidth: fp.GalleryColumnWidths["name"] <= 0,
 			Alignment: "left",
 			SortMode:  sortModeName(SortName), Sortable: true,
 		},
@@ -2859,6 +2860,7 @@ func (fp *FileSystemPanel) semanticGalleryColumns() []extui.PanelColumnModel {
 			ID: "size", Role: "size", Index: 1,
 			Title:     title(i18n.Msg("Panel.Column.Size"), SortSize),
 			Width:     fp.effectiveGalleryColumnWidth("size", panelSizeColumnWidth),
+			AutoWidth: fp.GalleryColumnWidths["size"] <= 0,
 			Alignment: "right",
 			SortMode:  sortModeName(SortSize), Sortable: true,
 		},
@@ -2888,7 +2890,8 @@ func (fp *FileSystemPanel) semanticGalleryColumns() []extui.PanelColumnModel {
 		columns = append(columns, extui.PanelColumnModel{
 			ID: descriptor.ID, Role: descriptor.ID, Index: len(columns),
 			Title: columnTitle, Width: columnWidth, Alignment: alignment,
-			SortMode: descriptor.ID, Sortable: true,
+			AutoWidth: fp.GalleryColumnWidths[descriptor.ID] <= 0,
+			SortMode:  descriptor.ID, Sortable: true,
 		})
 	}
 	return columns

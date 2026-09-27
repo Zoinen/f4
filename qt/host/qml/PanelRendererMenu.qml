@@ -202,7 +202,7 @@ Popup {
                     height: hostWindow.snapPx(20)
                     text: hostWindow.cleanText(rendererChoice.modelData.label)
                     color: hostWindow.mutedText
-                    font.pixelSize: 10
+                    font.pixelSize: (hostWindow ? hostWindow.uiTextSize(10) : 10)
                     font.weight: Font.DemiBold
                     verticalAlignment: Text.AlignVCenter
                     transform: Translate {
@@ -281,7 +281,7 @@ Popup {
                         opacity: rendererChoice.choiceEnabled ? 1 : 0.5
                         width: hostWindow.snapPx(implicitWidth)
                         height: hostWindow.snapPx(implicitHeight)
-                        font.pixelSize: 12
+                        font.pixelSize: (hostWindow ? hostWindow.uiTextSize(12) : 12)
                         renderType: Text.NativeRendering
                         transform: Translate {
                             x: rendererMenu.pixelOffset(rendererModeLabel, true)
@@ -303,7 +303,7 @@ Popup {
                     opacity: rendererChoice.choiceEnabled ? 1 : 0.5
                     width: hostWindow.snapPx(implicitWidth)
                     height: hostWindow.snapPx(implicitHeight)
-                    font.pixelSize: 10
+                    font.pixelSize: (hostWindow ? hostWindow.uiTextSize(10) : 10)
                     renderType: Text.NativeRendering
                     transform: Translate {
                         x: rendererMenu.pixelOffset(rendererChoiceShortcut, true)
@@ -384,7 +384,7 @@ Popup {
                     }
                     text: qsTr("Group by")
                     color: hostWindow.textColor
-                    font.pixelSize: 12
+                    font.pixelSize: (hostWindow ? hostWindow.uiTextSize(12) : 12)
                 }
 
                 Text {
@@ -405,7 +405,7 @@ Popup {
                     }
                     text: panelView.groupModeLabel()
                     color: hostWindow.mutedText
-                    font.pixelSize: 11
+                    font.pixelSize: (hostWindow ? hostWindow.uiTextSize(11) : 11)
                     elide: Text.ElideRight
                 }
 
@@ -517,7 +517,7 @@ Popup {
                         anchors.verticalCenter: parent.verticalCenter
                         text: qsTr("Thumbnails")
                         color: hostWindow.textColor
-                        font.pixelSize: 12
+                        font.pixelSize: (hostWindow ? hostWindow.uiTextSize(12) : 12)
                         renderType: Text.NativeRendering
                         transform: Translate {
                             x: rendererMenu.pixelOffset(thumbnailsLabel, true)
@@ -552,7 +552,7 @@ Popup {
                 text: galleryController.panelPreferences
                       ? galleryController.panelPreferences.error : ""
                 color: hostWindow.dialogAccent
-                font.pixelSize: 10
+                font.pixelSize: (hostWindow ? hostWindow.uiTextSize(10) : 10)
             }
             Rectangle {
                 width: rendererMenu.availableWidth
@@ -592,7 +592,7 @@ Popup {
                     color: hostWindow.mutedText
                     width: hostWindow.snapPx(implicitWidth)
                     height: hostWindow.snapPx(implicitHeight)
-                    font.pixelSize: 10
+                    font.pixelSize: (hostWindow ? hostWindow.uiTextSize(10) : 10)
                     font.weight: Font.DemiBold
                     transform: Translate {
                         x: hostWindow.dialogPixelOffsetX(
@@ -614,7 +614,7 @@ Popup {
                            ? hostWindow.panelSelectionBorder : hostWindow.mutedText
                     width: hostWindow.snapPx(implicitWidth)
                     height: hostWindow.snapPx(implicitHeight)
-                    font.pixelSize: 10
+                    font.pixelSize: (hostWindow ? hostWindow.uiTextSize(10) : 10)
                     font.underline: rendererZoomResetPointer.containsMouse
                     transform: Translate {
                         x: hostWindow.dialogPixelOffsetX(
@@ -650,7 +650,7 @@ Popup {
                     color: hostWindow.mutedText
                     width: hostWindow.snapPx(implicitWidth)
                     height: hostWindow.snapPx(implicitHeight)
-                    font.pixelSize: 10
+                    font.pixelSize: (hostWindow ? hostWindow.uiTextSize(10) : 10)
                     transform: Translate {
                         x: hostWindow.dialogPixelOffsetX(
                                rendererZoomValue, hostWindow.contentItem)
@@ -959,7 +959,7 @@ Popup {
                             }
                             text: hostWindow.cleanText(modelData.label)
                             color: hostWindow.textColor
-                            font.pixelSize: 12
+                            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(12) : 12)
                             elide: Text.ElideRight
                         }
 
