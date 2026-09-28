@@ -551,3 +551,21 @@ not an acceptance oracle. The pinned-host gate in `tools/conptyreconcile` and
 the documents around it (`PINNED_CONSOLE.md`, `CONPTY_GATE_REQUIREMENTS.md`)
 describe the 1.12 direction that was set aside; they stay as the record and
 as a fallback.
+
+## Local shell startup on macOS
+
+The persistent local panel shell starts as a login shell on macOS (`-l`).
+The PTY makes it interactive. This lets the shell apply its normal startup
+sequence, including zsh's `.zprofile` before `.zshrc`, even when f4 starts
+from the Dock with a minimal inherited environment. The shell itself resolves
+startup files (including `ZDOTDIR`); f4 does not source them manually or add
+package-manager paths.
+
+Other platforms retain their existing startup arguments. Generic PTY process
+launches and individual `shell -c` commands are unchanged; login profiles run
+once per persistent shell, not once per command. Existing shell selection and
+compatibility fallbacks remain unchanged.
+
+`TestPanelsFrameMacShellLoadsLoginProfile` captures the actual panel startup
+arguments and launches a real zsh PTY with isolated startup files and a minimal
+PATH, verifying interactive login mode and profile ordering.

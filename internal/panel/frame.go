@@ -1409,7 +1409,9 @@ func (pf *PanelsFrame) InitPTY() {
 			inheritedEnvironmentGeneration := terminal.GlobalProcessEnvironment.CurrentGeneration()
 
 			shell := terminal.GetSystemShell()
-			if err := p.Run(shell); err != nil {
+			args := terminal.InteractiveShellArgs()
+			vtui.DebugLog("[FIX:login-shell] starting local shell %q with args %q", shell, args)
+			if err := p.Run(shell, args...); err != nil {
 				vtui.DebugLog("PTY: Failed to run shell: %v", err)
 				p.Close()
 				return
