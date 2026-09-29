@@ -723,7 +723,9 @@ func (pf *PanelsFrame) InsertSelectedFileName() bool {
 			name = "'" + strings.ReplaceAll(name, "'", "'\\''") + "'"
 		}
 	}
-	pf.CmdLine.InsertString(name)
+	// Keep the separator outside shell quoting so the next argument can follow.
+	pf.CmdLine.InsertString(name + " ")
+	vtui.DebugLog("[FIX:ctrl-enter] inserted selected filename with trailing space")
 	return true
 }
 
