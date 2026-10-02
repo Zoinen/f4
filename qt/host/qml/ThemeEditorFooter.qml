@@ -77,7 +77,7 @@ RowLayout {
                         "refresh-cw", 14, hostWindow.textColor)
         onClicked: {
             draft.stopAllFlashing()
-            hostWindow.resetThemeToDefaults()
+            hostWindow.resetThemeColorsToDefaults()
             if (draft.currentItem)
                 draft.setFromColor(hostWindow[draft.currentItem.id])
             draft.statusToast = "Reset all colors to default"
@@ -102,7 +102,7 @@ RowLayout {
                         "clock-3", 14, hostWindow.textColor)
         onClicked: {
             draft.stopAllFlashing()
-            if (hostWindow.loadThemeFromPersistence()) {
+            if (hostWindow.loadThemeColorsFromPersistence()) {
                 if (draft.currentItem) {
                     draft.setFromColor(
                         hostWindow[draft.currentItem.id])

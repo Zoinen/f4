@@ -806,6 +806,31 @@ struct QuickViewFixture
     {
         return window ? window->findChild<T *>(objectName) : nullptr;
     }
+
+    QQuickWindow *guiSettingsWindow()
+    {
+        QQmlComponent component(&engine);
+        component.setData(R"(
+            import QtQuick
+            import QtQuick.Controls
+            import "qrc:/F4QtHost/qml"
+            ApplicationWindow {
+                id: guiTestWindow
+                required property ApplicationWindow hostWindow
+                width: 720
+                height: 720
+                color: hostWindow.dialogBg
+                GuiSettingsPage {
+                    anchors.fill: parent
+                    hostWindow: guiTestWindow.hostWindow
+                }
+            }
+        )", QUrl());
+        auto *result = qobject_cast<QQuickWindow *>(component.createWithInitialProperties(
+            {{"hostWindow", QVariant::fromValue(window)}}));
+        if (result) result->setParent(window);
+        return result;
+    }
 };
 }
 
@@ -866,6 +891,7 @@ private slots:
     void rendererZoomHoverClosesGroupingSubmenu();
     void panelMenusSwitchOnHover();
     void activeGroupingChoiceReversesDirection();
+    void startupSortDirectionMatchesPanelState();
     void coverUncoverPreservesFilePanelAndRendererObjects();
     void compactActivationPreservesPanelObjectsAndRebindsOnlyFocus();
     void pointerActivationPreviewHandsOffBothPanelCursors();
@@ -1068,7 +1094,7 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
     QTRY_COMPARE(body->property("selectedNativePage").toString(),"gui");
     auto *categories = visualItemWithObjectName(body,"dialogWidget-categoriesTableRows");
     QVERIFY(categories);
-    QCOMPARE(categories->property("count").toInt(), 6);
+    QCOMPARE(categories->property("count").toInt(), 7);
     QCOMPARE(categories->property("currentIndex").toInt(), 2);
     auto *guiLabel = visualItemWithObjectName(body,"dialogWidget-categoriesTableCell-2-0");
     QVERIFY(guiLabel);
@@ -1081,6 +1107,17 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
     const QPoint guiPoint = guiLabel->mapToScene(QPointF(10, guiLabel->height()/2)).toPoint();
     QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, guiPoint);
     QTRY_COMPARE(body->property("selectedNativePage").toString(),"gui");
+    QSignalSpy closeRequested(body, SIGNAL(closeRequested()));
+    QTest::keyClick(fixture.window, Qt::Key_Escape);
+    QCOMPARE(closeRequested.count(), 1);
+    fixture.shell.clearActions();
+    auto *guiContent = visualItemWithObjectName(body, "guiSettingsPage");
+    QVERIFY(guiContent);
+    QVERIFY(!visualItemWithObjectName(guiContent, "themeItemsList"));
+    auto *caretOption = visualItemWithObjectName(guiContent, "themeCommandLineCaretCheckBox");
+    QVERIFY(caretOption);
+    QVERIFY(caretOption->property("checked").toBool());
+    body->setProperty("selectedNativePage", "theme");
     auto *content = visualItemWithObjectName(body,"themeConfiguratorContent");
     QTRY_VERIFY((content = visualItemWithObjectName(body,"themeConfiguratorContent")));
     auto *sharedTitle = visualItemWithObjectName(body,"dialogWidget-category-titleText");
@@ -1089,19 +1126,18 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
     auto *sharedCancel = visualItemWithObjectName(body,"dialogWidget-settings-cancelButton");
     QVERIFY(sharedTitle && sharedApply && sharedOK && sharedCancel);
     QVERIFY(sharedTitle->isVisible());
-    QCOMPARE(sharedTitle->property("text").toString(), "GUI");
+    QCOMPARE(sharedTitle->property("text").toString(), "Theme creator");
     QVERIFY(sharedApply->isVisible() && sharedOK->isVisible() && sharedCancel->isVisible());
     QVERIFY(content->findChild<QQuickItem *>("themeItemsList"));
     QVERIFY(!content->findChild<QQuickItem *>("themeSaveButton")->isVisible());
     QVERIFY(content->findChild<QQuickItem *>("themeRestoreSavedButton"));
     QVERIFY(content->findChild<QQuickItem *>("themeColorEditor"));
-    auto *caretOption = visualItemWithObjectName(content,"themeCommandLineCaretCheckBox");
-    QVERIFY(caretOption);
-    QVERIFY(caretOption->property("checked").toBool());
+    QVERIFY(!visualItemWithObjectName(content, "themeCommandLineCaretCheckBox"));
     QVERIFY(fixture.shell.actions.isEmpty()); // no GUI values or controls sent to Go
     QVERIFY(QMetaObject::invokeMethod(fixture.window,"showApplicationSettings"));
     QCOMPARE(fixture.shell.actions.last().value("action").toString(),"settings.open");
     QCOMPARE(visualItemWithObjectName(body,"themeConfiguratorContent"),content);
+    body->setProperty("selectedNativePage", "theme");
     QTest::qWait(150);
     const qreal dpr=fixture.window->devicePixelRatio();
     int leaves=0;
@@ -1258,6 +1294,8 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
     QVERIFY2(barLeft >= viewportRight + 3.5, "Settings scrollbar overlaps content instead of occupying the right gutter");
     auto *outerDialog = visualItemWithObjectName(fixture.window->contentItem(), "semanticDialog-test-settings");
     QVERIFY(outerDialog);
+    QVERIFY(qAbs(outerDialog->width() - outerDialog->property("availableWidth").toReal() * 0.8) <= 1.0 / dpr);
+    QVERIFY(qAbs(outerDialog->height() - outerDialog->property("availableHeight").toReal() * 0.8) <= 1.0 / dpr);
     const qreal dialogRight = outerDialog->mapToScene(QPointF(outerDialog->width(), 0)).x();
     const qreal barRight = contentBar->mapToScene(QPointF(contentBar->width(), 0)).x();
     QVERIFY(qAbs((dialogRight - barRight) * dpr - qRound(4 * dpr)) < 0.001);
@@ -1272,7 +1310,7 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
     QTest::qWait(150);
     inspect(inspect, galleryPage);
     if (!galleryCapture.isEmpty()) QVERIFY(fixture.window->grabWindow().save(galleryCapture + "-decoders.png"));
-    body->setProperty("selectedNativePage", "gui");
+    body->setProperty("selectedNativePage", "theme");
     QTest::qWait(100);
     content = visualItemWithObjectName(body,"themeConfiguratorContent");
     QVERIFY(content);
@@ -1288,6 +1326,7 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
     if(!capture.isEmpty()) QVERIFY(fixture.window->grabWindow().save(QString::fromLocal8Bit(capture)+"-scrolled.png"));
     // Native and core categories share pointer and keyboard navigation. Only
     // genuine core indices may be dispatched over the semantic boundary.
+    body->setProperty("selectedNativePage", "gui");
     pointer->forceActiveFocus();
     fixture.shell.clearActions();
     QTest::keyClick(fixture.window, Qt::Key_Up);
@@ -1356,7 +1395,8 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
         QTest::qWait(50);
         inspect(inspect, terminalPage);
         viewport->setProperty("contentY", 0);
-        QVERIFY(wheel->mapToItem(terminalPage,QPointF(wheel->width(),0)).x() <= terminalPage->width());
+        QVERIFY2(wheel->mapToItem(terminalPage,QPointF(wheel->width(),0)).x() <= terminalPage->width() + 0.001,
+            qPrintable(QString("Wheel right=%1 page width=%2").arg(wheel->mapToItem(terminalPage,QPointF(wheel->width(),0)).x(), 0, 'f', 6).arg(terminalPage->width(), 0, 'f', 6)));
         if (size.width() == 700) QVERIFY(fixture.window->grabWindow().save(".diagnostics/terminal-colors-narrow-175.png"));
     }
     auto *overrides = visualItemWithObjectName(terminalPage, "terminalColorsEnabled");
@@ -1709,6 +1749,36 @@ void F4QuickViewSurfaceTests::galleryContentInsetBelongsToRendererPanel()
         qAbs(renderer->property("contentHorizontalInset").toReal()
              - contentInset) < 0.01,
         3000);
+}
+
+void F4QuickViewSurfaceTests::startupSortDirectionMatchesPanelState()
+{
+    auto scene = shellScene({}, 0);
+    auto shell = scene.value(QStringLiteral("shell")).toMap();
+    auto panels = shell.value(QStringLiteral("panels")).toList();
+    auto left = panels.at(0).toMap();
+    left.insert(QStringLiteral("sortModeName"), QStringLiteral("time"));
+    left.insert(QStringLiteral("sortReverse"), true);
+    left.insert(QStringLiteral("sortAscending"), false);
+    panels[0] = left;
+    shell.insert(QStringLiteral("panels"), panels);
+    scene.insert(QStringLiteral("shell"), shell);
+
+    QuickViewFixture fixture(scene, true);
+    QVERIFY(fixture.window);
+    auto *indicator = fixture.item(QStringLiteral("panelSortDirectionIcon-0"));
+    QVERIFY(indicator);
+    QTRY_VERIFY(indicator->property("source").toUrl().toString().contains("arrow-down"));
+
+    left.insert(QStringLiteral("sortReverse"), false);
+    left.insert(QStringLiteral("sortAscending"), true);
+    left.remove(QStringLiteral("entries"));
+    fixture.shell.deliverCompactPresentation({
+        {QStringLiteral("type"), QStringLiteral("scene_patch")},
+        {QStringLiteral("side"), 0},
+        {QStringLiteral("panel"), left},
+    });
+    QTRY_VERIFY(indicator->property("source").toUrl().toString().contains("arrow-up"));
 }
 
 void F4QuickViewSurfaceTests::activeGroupingChoiceReversesDirection()
@@ -2856,8 +2926,7 @@ void F4QuickViewSurfaceTests::themeDialogFontRenderingControlIsLiveAndThemeAware
     QuickViewFixture fixture(shellScene());
     QVERIFY(fixture.window);
 
-    auto *dialog = fixture.window->findChild<QQuickWindow *>(
-        QStringLiteral("themeColorConfigurator"));
+    auto *dialog = fixture.guiSettingsWindow();
     QVERIFY(dialog);
     auto *combo = dialog->findChild<QQuickItem *>(
         QStringLiteral("themeFontRenderTypeCombo"));
@@ -2971,8 +3040,7 @@ void F4QuickViewSurfaceTests::themeDialogIconSetControlIsLiveAndPersisted()
     QuickViewFixture fixture(shellScene());
     QVERIFY(fixture.window);
 
-    auto *dialog = fixture.window->findChild<QQuickWindow *>(
-        QStringLiteral("themeColorConfigurator"));
+    auto *dialog = fixture.guiSettingsWindow();
     QVERIFY(dialog);
     auto *combo = dialog->findChild<QQuickItem *>(
         QStringLiteral("themeIconSetCombo"));
@@ -3199,11 +3267,11 @@ void F4QuickViewSurfaceTests::themeConfiguratorRestoresSavedTheme()
                  .value<QColor>(),
              QColor(QStringLiteral("#1a75afe5")));
     QCOMPARE(fixture.textRenderingPolicy.renderTypeName(),
-             QStringLiteral("QtRendering"));
+             QStringLiteral("NativeRendering"));
     QCOMPARE(fixture.window->property("mouseWheelMode").toString(),
-             QStringLiteral("console"));
+             QStringLiteral("gui"));
     QCOMPARE(fixture.window->property("galleryNeutralFileTextColors").toBool(),
-             false);
+             true);
     QCOMPARE(dialog->property("statusToast").toString(),
              QStringLiteral("Restored saved theme"));
     QCoreApplication::processEvents();
@@ -3215,8 +3283,7 @@ void F4QuickViewSurfaceTests::themeSelectionBordersAreLiveAndPersisted()
 {
     QuickViewFixture fixture(shellScene(), true);
     QVERIFY(fixture.window);
-    auto *dialog = fixture.window->findChild<QQuickWindow *>(
-        QStringLiteral("themeColorConfigurator"));
+    auto *dialog = fixture.guiSettingsWindow();
     QVERIFY(dialog);
     auto *checkBox = dialog->findChild<QQuickItem *>(
         QStringLiteral("themeSelectionBorderCheckBox"));
@@ -3238,29 +3305,27 @@ void F4QuickViewSurfaceTests::themeSelectionBordersAreLiveAndPersisted()
     QVERIFY(!liveBorderSetting());
     QCOMPARE(fixture.shell.actions.size(), initialActions);
 
-    const auto clickButton = [dialog](const QString &name) {
-        auto *button = dialog->findChild<QQuickItem *>(name);
-        return button && QMetaObject::invokeMethod(button, "clicked", Qt::DirectConnection);
-    };
-    QVERIFY(clickButton(QStringLiteral("themeSaveButton")));
+    auto *guiPage = dialog->findChild<QQuickItem *>("guiSettingsPage");
+    QVERIFY(guiPage);
+    QVERIFY(QMetaObject::invokeMethod(guiPage, "applyDraft"));
     QVERIFY(fixture.themePersistence.theme().contains(QStringLiteral("showSelectionBorders")));
     QCOMPARE(fixture.themePersistence.theme().value(QStringLiteral("showSelectionBorders")).toBool(), false);
-    QVERIFY(clickButton(QStringLiteral("themeResetAllButton")));
+    QVERIFY(fixture.window->setProperty("galleryShowSelectionBorders", true));
     QVERIFY(checkBox->property("checked").toBool());
     QVERIFY(liveBorderSetting());
-    QVERIFY(clickButton(QStringLiteral("themeRestoreSavedButton")));
+    QVERIFY(QMetaObject::invokeMethod(guiPage, "resetDraft"));
     QVERIFY(!checkBox->property("checked").toBool());
     QVERIFY(!liveBorderSetting());
 
     // QSettings returns strings, and old themes have no selection-border key.
     for (const QString &saved : {QStringLiteral("true"), QStringLiteral("false")}) {
         fixture.themePersistence.setTheme({{QStringLiteral("showSelectionBorders"), saved}});
-        QVERIFY(clickButton(QStringLiteral("themeRestoreSavedButton")));
+        QVERIFY(QMetaObject::invokeMethod(fixture.window, "loadThemeFromPersistence"));
         QCOMPARE(liveBorderSetting(), saved == QStringLiteral("true"));
         QCOMPARE(checkBox->property("checked").toBool(), liveBorderSetting());
     }
     fixture.themePersistence.setTheme({{QStringLiteral("windowBackgroundColor"), QStringLiteral("#123456")}});
-    QVERIFY(clickButton(QStringLiteral("themeRestoreSavedButton")));
+    QVERIFY(QMetaObject::invokeMethod(fixture.window, "loadThemeFromPersistence"));
     QVERIFY(liveBorderSetting());
     QVERIFY(checkBox->property("checked").toBool());
     dialog->hide();
@@ -3409,8 +3474,7 @@ void F4QuickViewSurfaceTests::themeBooleanOptionsFollowLivePalette()
 {
     QuickViewFixture fixture(shellScene());
     QVERIFY(fixture.window);
-    auto *dialog = fixture.window->findChild<QQuickWindow *>(
-        QStringLiteral("themeColorConfigurator"));
+    auto *dialog = fixture.guiSettingsWindow();
     QVERIFY(dialog);
     dialog->show();
     QTRY_VERIFY(dialog->isVisible());
@@ -3814,7 +3878,16 @@ void F4QuickViewSurfaceTests::themeDialogControlsStayOnPhysicalPixelGridAt175Per
     QTRY_VERIFY_WITH_TIMEOUT(dialog->isVisible(), 1000);
     QCoreApplication::processEvents();
 
-    QQuickItem *const dialogRoot = dialog->contentItem();
+    auto *guiDialog = fixture.guiSettingsWindow();
+    QVERIFY(guiDialog);
+    guiDialog->show();
+    QTRY_VERIFY(guiDialog->isVisible());
+    QCoreApplication::processEvents();
+    const auto findItem = [&](const QString &name) {
+        auto *item = guiDialog->findChild<QQuickItem *>(name);
+        return item ? item : dialog->findChild<QQuickItem *>(name);
+    };
+    QQuickItem *const dialogRoot = guiDialog->contentItem();
     QVERIFY(dialogRoot);
 
     QQuickItem *const themeItemsList = dialog->findChild<QQuickItem *>(
@@ -3845,7 +3918,7 @@ void F4QuickViewSurfaceTests::themeDialogControlsStayOnPhysicalPixelGridAt175Per
         QVERIFY2(item, qPrintable(name));
         if (!item)
             return;
-        const QPointF origin = item->mapToItem(dialogRoot, QPointF{});
+        const QPointF origin = item->mapToItem(item->window()->contentItem(), QPointF{});
         verifyWholePhysicalCoordinate(origin.x(), name + QStringLiteral(" x"));
         verifyWholePhysicalCoordinate(origin.y(), name + QStringLiteral(" y"));
         verifyWholePhysicalCoordinate(item->width(),
@@ -3915,13 +3988,13 @@ void F4QuickViewSurfaceTests::themeDialogControlsStayOnPhysicalPixelGridAt175Per
         QStringLiteral("themeCloseButton"),
     };
     for (const QString &name : controlNames)
-        verifyItem(dialog->findChild<QQuickItem *>(name), name);
+        verifyItem(findItem(name), name);
 
     for (const QString &name : {
              QStringLiteral("themeNeutralFileTextCheckMark"),
              QStringLiteral("themeSelectionBorderCheckMark"),
          }) {
-        QQuickItem *const mark = dialog->findChild<QQuickItem *>(name);
+        QQuickItem *const mark = findItem(name);
         QVERIFY(mark);
         const QUrl source = mark->property("source").toUrl();
         QVERIFY(source.isValid());
@@ -3950,11 +4023,11 @@ void F4QuickViewSurfaceTests::themeDialogControlsStayOnPhysicalPixelGridAt175Per
         QStringLiteral("themeNeutralFileTextDescription"),
     };
     for (const QString &name : optionVisualNames) {
-        QQuickItem *const item = dialog->findChild<QQuickItem *>(name);
+        QQuickItem *const item = findItem(name);
         QVERIFY2(item, qPrintable(name));
         if (!item)
             continue;
-        const QPointF origin = item->mapToItem(dialogRoot, QPointF{});
+        const QPointF origin = item->mapToItem(item->window()->contentItem(), QPointF{});
         verifyWholePhysicalCoordinate(origin.x(), name + QStringLiteral(" x"));
         verifyWholePhysicalCoordinate(origin.y(), name + QStringLiteral(" y"));
     }
@@ -3975,15 +4048,15 @@ void F4QuickViewSurfaceTests::themeDialogControlsStayOnPhysicalPixelGridAt175Per
         QStringLiteral("themeSelectionBorderCheckBoxText"),
     };
     for (const QString &name : optionTextLeafNames) {
-        QQuickItem *const item = dialog->findChild<QQuickItem *>(name);
+        QQuickItem *const item = findItem(name);
         QVERIFY2(item, qPrintable(name));
         if (!item)
             continue;
 
-        const QPointF origin = item->mapToItem(dialogRoot, QPointF{});
-        const QPointF xAxis = item->mapToItem(dialogRoot, QPointF(1.0, 0.0))
+        const QPointF origin = item->mapToItem(item->window()->contentItem(), QPointF{});
+        const QPointF xAxis = item->mapToItem(item->window()->contentItem(), QPointF(1.0, 0.0))
             - origin;
-        const QPointF yAxis = item->mapToItem(dialogRoot, QPointF(0.0, 1.0))
+        const QPointF yAxis = item->mapToItem(item->window()->contentItem(), QPointF(0.0, 1.0))
             - origin;
         const QByteArray transformDetails = QStringLiteral(
             "%1 has a non-unit scene transform: x=(%2,%3), y=(%4,%5)")
@@ -4005,7 +4078,7 @@ void F4QuickViewSurfaceTests::themeDialogControlsStayOnPhysicalPixelGridAt175Per
 
     QImage renderedDialog;
     QTRY_VERIFY_WITH_TIMEOUT(
-        !(renderedDialog = dialog->grabWindow()).isNull(), 3000);
+        !(renderedDialog = guiDialog->grabWindow()).isNull(), 3000);
     const qreal renderedScaleX = qreal(renderedDialog.width())
         / dialogRoot->width();
     const qreal renderedScaleY = qreal(renderedDialog.height())
@@ -4027,11 +4100,11 @@ void F4QuickViewSurfaceTests::themeDialogControlsStayOnPhysicalPixelGridAt175Per
              QStringLiteral("themeNeutralFileTextDescription"),
              QStringLiteral("themeSelectionBorderDescription"),
          }) {
-        QQuickItem *const item = dialog->findChild<QQuickItem *>(name);
+        QQuickItem *const item = findItem(name);
         QVERIFY2(item, qPrintable(name));
         if (!item)
             continue;
-        const QRectF sceneRect = item->mapRectToItem(dialogRoot,
+        const QRectF sceneRect = item->mapRectToItem(item->window()->contentItem(),
                                                      item->boundingRect());
         const int left = qFloor(sceneRect.left() * renderedScaleX);
         const int top = qFloor(sceneRect.top() * renderedScaleY);
@@ -4064,7 +4137,7 @@ void F4QuickViewSurfaceTests::themeDialogControlsStayOnPhysicalPixelGridAt175Per
         QVERIFY2(item, qPrintable(name));
         if (!item)
             return;
-        const QPointF origin = item->mapToItem(dialogRoot, QPointF{});
+        const QPointF origin = item->mapToItem(item->window()->contentItem(), QPointF{});
         verifyWholePhysicalCoordinate(origin.x(), name + QStringLiteral(" x"));
         verifyWholePhysicalCoordinate(origin.y(), name + QStringLiteral(" y"));
         verifyWholePhysicalCoordinate(item->height(),
@@ -4077,10 +4150,9 @@ void F4QuickViewSurfaceTests::themeDialogControlsStayOnPhysicalPixelGridAt175Per
         QStringLiteral("themeAlphaRow"),
     };
     for (const QString &name : layoutRowNames)
-        verifyLayoutRow(dialog->findChild<QQuickItem *>(name), name);
+        verifyLayoutRow(findItem(name), name);
 
-    QQuickItem *const indicator = dialog->findChild<QQuickItem *>(
-        QStringLiteral("themeFontRenderTypeComboIndicator"));
+    QQuickItem *const indicator = findItem(QStringLiteral("themeFontRenderTypeComboIndicator"));
     QVERIFY(indicator);
     const QUrl iconSource = indicator->property("rasterizedIconSource")
                                 .toUrl();
@@ -4091,8 +4163,7 @@ void F4QuickViewSurfaceTests::themeDialogControlsStayOnPhysicalPixelGridAt175Per
     QCOMPARE(QUrlQuery(iconSource).queryItemValue(QStringLiteral("dpr")),
              QStringLiteral("1.75"));
 
-    QQuickItem *const wheelIndicator = dialog->findChild<QQuickItem *>(
-        QStringLiteral("themeMouseWheelComboIndicator"));
+    QQuickItem *const wheelIndicator = findItem(QStringLiteral("themeMouseWheelComboIndicator"));
     QVERIFY(wheelIndicator);
     const QUrl wheelIconSource = wheelIndicator->property(
         "rasterizedIconSource").toUrl();
@@ -4111,10 +4182,8 @@ void F4QuickViewSurfaceTests::themeDialogControlsStayOnPhysicalPixelGridAt175Per
     QVERIFY(QMetaObject::invokeMethod(popup, "open"));
     QTRY_VERIFY_WITH_TIMEOUT(popup->property("visible").toBool(), 1000);
 
-    QQuickItem *const popupBackground = dialog->findChild<QQuickItem *>(
-        QStringLiteral("themeFontRenderTypeComboPopupBackground"));
-    QQuickItem *const popupList = dialog->findChild<QQuickItem *>(
-        QStringLiteral("themeFontRenderTypeComboPopupList"));
+    QQuickItem *const popupBackground = findItem(QStringLiteral("themeFontRenderTypeComboPopupBackground"));
+    QQuickItem *const popupList = findItem(QStringLiteral("themeFontRenderTypeComboPopupList"));
     QVERIFY(popupBackground);
     QVERIFY(popupList);
     verifyItem(popupBackground, QStringLiteral("themeFontRenderTypeComboPopupBackground"));
@@ -4125,6 +4194,7 @@ void F4QuickViewSurfaceTests::themeDialogControlsStayOnPhysicalPixelGridAt175Per
 
     QVERIFY(QMetaObject::invokeMethod(popup, "close"));
     QTRY_VERIFY_WITH_TIMEOUT(!popup->property("visible").toBool(), 1000);
+    guiDialog->hide();
     dialog->hide();
 }
 
@@ -10425,11 +10495,62 @@ void F4QuickViewSurfaceTests::guiFontsLinkPersistAndPreview()
 
 void F4QuickViewSurfaceTests::columnSeparatorsDefaultOff()
 {
-    QuickViewFixture fixture(shellScene({}, 0), true, true);
+    auto scene = shellScene({}, 0);
+    auto shell = scene.value("shell").toMap();
+    auto left = panel(0, true);
+    left.insert("galleryLayoutMode", "details");
+    left.insert("galleryColumns", QVariantList{
+        QVariantMap{{"key", "name"}, {"title", "Name"}, {"width", 300}},
+        QVariantMap{{"key", "size"}, {"title", "Size"}, {"width", 100}},
+    });
+    shell.insert("panels", QVariantList{left, panel(1, false)});
+    scene.insert("shell", shell);
+    QuickViewFixture fixture(scene, true, true);
     QVERIFY(fixture.window);
     QVERIFY(!fixture.window->property("showColumnSeparators").toBool());
     QVERIFY(fixture.window->setProperty("showColumnSeparators", true));
     QVERIFY(fixture.window->property("showColumnSeparators").toBool());
+    QTRY_VERIFY(visualItemWithObjectName(fixture.window->contentItem(), "panelColumnSeparator-0-0"));
+    auto *separator = visualItemWithObjectName(fixture.window->contentItem(), "panelColumnSeparator-0-0");
+    auto *content = fixture.item(QStringLiteral("galleryPanelContent-0"));
+    QVERIFY(content);
+    const qreal inset = fixture.window->property("columnSeparatorVerticalMargin").toReal();
+    QVERIFY(inset > 0);
+    auto *vertical = visualItemWithObjectName(fixture.window->contentItem(), "panelHeaderVerticalSeparator-0-0");
+    auto *horizontal = visualItemWithObjectName(fixture.window->contentItem(), "panelHeaderHorizontalSeparator-0");
+    QVERIFY(vertical);
+    QVERIFY(horizontal);
+    for (const char *key : {"headerVerticalSeparatorSpacing", "headerHorizontalSeparatorSpacing", "columnSeparatorSpacing"})
+        QVERIFY(fixture.window->property(key).toBool());
+    QCOMPARE(separator->width(), fixture.window->property("separatorWidth").toReal());
+    auto *panelDivider = visualItemWithObjectName(fixture.window->contentItem(), "panelSplitterLine");
+    QVERIFY(panelDivider);
+    QCOMPARE(panelDivider->width(), fixture.window->property("separatorWidth").toReal());
+    for (const char *key : {"headerVerticalSeparatorSpacing", "headerHorizontalSeparatorSpacing", "columnSeparatorSpacing"})
+        QVERIFY(fixture.window->setProperty(key, false));
+    QCOMPARE(separator->y(), content->y());
+    QCOMPARE(separator->height(), content->height());
+    QCOMPARE(vertical->height(), vertical->parentItem()->height());
+    QCOMPARE(horizontal->width(), horizontal->parentItem()->width());
+    QVERIFY(fixture.window->setProperty("headerVerticalSeparatorSpacing", true));
+    QTRY_COMPARE(vertical->height(), vertical->parentItem()->height() - 2 * inset);
+    QCOMPARE(horizontal->width(), horizontal->parentItem()->width());
+    QVERIFY(fixture.window->setProperty("headerHorizontalSeparatorSpacing", true));
+    QTRY_COMPARE(horizontal->x(), inset);
+    QTRY_COMPARE(horizontal->width(), horizontal->parentItem()->width() - 2 * inset);
+    QCOMPARE(separator->height(), content->height());
+    QVERIFY(fixture.window->setProperty("columnSeparatorSpacing", true));
+    QTRY_COMPARE(separator->y(), content->y() + inset);
+    QTRY_COMPARE(separator->height(), qMax(qreal(0), content->height() - 2 * inset));
+    QVERIFY(QMetaObject::invokeMethod(fixture.window, "saveThemeToPersistence"));
+    for (const char *key : {"headerVerticalSeparatorSpacing", "headerHorizontalSeparatorSpacing", "columnSeparatorSpacing"})
+        QVERIFY(fixture.window->setProperty(key, false));
+    QTRY_COMPARE(separator->height(), content->height());
+    QTRY_COMPARE(vertical->height(), vertical->parentItem()->height());
+    QTRY_COMPARE(horizontal->width(), horizontal->parentItem()->width());
+    QVERIFY(QMetaObject::invokeMethod(fixture.window, "loadThemeFromPersistence"));
+    for (const char *key : {"headerVerticalSeparatorSpacing", "headerHorizontalSeparatorSpacing", "columnSeparatorSpacing"})
+        QVERIFY(fixture.window->property(key).toBool());
     QVERIFY(fixture.window->setProperty("showColumnSeparators", false));
     QVERIFY(!fixture.window->property("showColumnSeparators").toBool());
 }

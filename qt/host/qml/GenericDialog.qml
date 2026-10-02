@@ -67,13 +67,13 @@ Rectangle {
                     ? environmentBody.minimumBodyHeight + contentPadding + hostWindow.snapPx(1) : hostWindow.snapPx(32))))
     property real preferredWidth: customContent
         ? Math.min(availableWidth, Math.max(320, (customBody.item ? customBody.item.implicitWidth : 0) + 2 * contentPadding)) : settingsLayout
-        ? Math.min(availableWidth, Math.max(640, hostWindow.pxW(frame.w))) : nativeLayout
+        ? Math.min(availableWidth, Math.max(640, availableWidth * 0.8)) : nativeLayout
         ? Math.min(availableWidth, Math.max(320, hostWindow.pxW(contentRight - contentLeft) + 2 * contentPadding))
         : Math.min(availableWidth, hostWindow.pxW(frame.w))
     property real preferredHeight: environmentProfilesLayout
         ? Math.min(availableHeight, Math.max(minimumDialogHeight, hostWindow.pxH(frame.h))) : customContent
         ? Math.min(availableHeight, Math.max(160, (customBody.item ? customBody.item.implicitHeight : 0) + dialogHeader.height + 2 * contentPadding + dialogKeyHints.height + paneHeaderHeight)) : settingsLayout
-        ? Math.min(availableHeight, Math.max(400, hostWindow.pxH(frame.h))) : nativeLayout
+        ? Math.min(availableHeight, Math.max(400, availableHeight * 0.8)) : nativeLayout
         ? Math.min(availableHeight, Math.max(100, bodyContentHeight + dialogHeader.height + contentPadding + dialogKeyHints.height + paneHeaderHeight))
         : Math.min(availableHeight, hostWindow.pxH(frame.h))
 

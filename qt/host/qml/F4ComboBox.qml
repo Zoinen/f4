@@ -138,6 +138,7 @@ T.ComboBox {
             boundsBehavior: Flickable.StopAtBounds
 
             ScrollBar.vertical: F4ScrollBar {
+                hostWindow: control.hostWindow
                 policy: ScrollBar.AsNeeded
                 thickness: 6
             }

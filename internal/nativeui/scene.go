@@ -790,6 +790,13 @@ func appQuickViewFromLegacy(node map[string]any) extui.QuickViewModel {
 }
 
 func appPanelFromLegacy(node map[string]any) extui.PanelModel {
+	sortAscending := semantic.AppBool(node["sortAscending"])
+	if _, present := node["sortAscending"]; !present {
+		sortAscending = !semantic.AppBool(node["sortReverse"])
+		if mode := semantic.String(node["sortModeName"]); mode == "time" || mode == "size" {
+			sortAscending = !sortAscending
+		}
+	}
 	sourceKind := semantic.String(node["sourceKind"])
 	if sourceKind == "" {
 		sourceKind = "vfs"
@@ -871,6 +878,7 @@ func appPanelFromLegacy(node map[string]any) extui.PanelModel {
 		CursorEntryID:          semantic.String(node["cursorEntryId"]),
 		SortMode:               semantic.String(node["sortModeName"]),
 		SortReverse:            semantic.AppBool(node["sortReverse"]),
+		SortAscending:          sortAscending,
 		SeparateFileExtensions: semantic.AppBool(node["separateFileExtensions"]),
 		Cursor:                 semantic.Int(node["cursor"]),
 		Loading:                semantic.AppBool(node["loading"]),

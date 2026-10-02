@@ -243,6 +243,9 @@ ApplicationWindow {
     property alias commandLineGraphicalCursor: themePalette.commandLineGraphicalCursor
     property alias compactBreadcrumbs: themePalette.compactBreadcrumbs
     property alias showColumnSeparators: themePalette.showColumnSeparators
+    property alias headerVerticalSeparatorSpacing: themePalette.headerVerticalSeparatorSpacing
+    property alias headerHorizontalSeparatorSpacing: themePalette.headerHorizontalSeparatorSpacing
+    property alias columnSeparatorSpacing: themePalette.columnSeparatorSpacing
     property alias panelColumnPadding: themePalette.panelColumnPadding
     property alias galleryQuickSearchMatchColor:
         themePalette.galleryQuickSearchMatchColor
@@ -749,10 +752,12 @@ ApplicationWindow {
     function loadThemeFromPersistence() {
         return themePalette.loadFromPersistence()
     }
+    function loadThemeColorsFromPersistence() { return themePalette.loadFromPersistence(true) }
     function saveThemeToPersistence() {
         return themePalette.saveToPersistence()
     }
     function resetThemeToDefaults() { themePalette.resetToDefaults() }
+    function resetThemeColorsToDefaults() { themePalette.resetToDefaults(true) }
     function formatColorHex(colorValue) {
         return themePalette.formatColorHex(colorValue)
     }

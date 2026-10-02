@@ -240,7 +240,7 @@ var semanticPanelStatePatchKeys = map[string]struct{}{
 	"sortModeName": {}, "fastFindText": {}, "symlinkTarget": {},
 	"fastFindMatchColor": {},
 	"active":             {}, "previewCapable": {}, "dropAllowed": {},
-	"metadataDeferred": {}, "catalogRowsDeferred": {}, "sortReverse": {},
+	"metadataDeferred": {}, "catalogRowsDeferred": {}, "sortReverse": {}, "sortAscending": {},
 	"groupFileField": {},
 	"fileFieldSort":  {}, "fileFieldFilterAny": {},
 	"useSortGroups": {}, "freeSpaceKnown": {},
@@ -337,22 +337,22 @@ func BuildAppScenePatch(previous map[string]any, current *appIncrementalScene) (
 	previousShell, previousHasShell := previous["shell"].(map[string]any)
 	currentShell, currentHasShell := current.Scene["shell"].(map[string]any)
 	if previousHasShell != currentHasShell {
-		// Switching between commander panels and a standalone document changes
-		// the root shape, but not any catalog. Carry the row-free shell as one
-		// bounded root value (or clear it on entry) instead of falling back to
-		// ExportSemanticScene, which would walk every hidden file entry.
+		// A document can modify a file while the panels are hidden. The
+		// incremental shell carries only headers, so installing it on return
+		// would advertise a new catalog revision with zero rows. A subsequent
+		// panel snapshot would repeat that empty header and erase the gallery.
+		// Re-export the complete catalog when panels become visible again.
+		if currentHasShell {
+			navtrace.NavigationBenchmarkIncrementalEvent("scene.incremental.patch_rejected",
+				"reason", "panels_return_requires_catalog")
+			return extui.ScenePatch{}, nil, false
+		}
+		// Entering a document only removes the shell; no catalog is needed.
 		if patch.Root == nil {
 			patch.Root = &extui.MapPatch{}
 		}
-		if currentHasShell {
-			if patch.Root.Set == nil {
-				patch.Root.Set = make(map[string]any)
-			}
-			patch.Root.Set["shell"] = currentShell
-		} else {
-			patch.Root.Clear = append(patch.Root.Clear, "shell")
-			sort.Strings(patch.Root.Clear)
-		}
+		patch.Root.Clear = append(patch.Root.Clear, "shell")
+		sort.Strings(patch.Root.Clear)
 		rootSetKeys := make([]string, 0, len(patch.Root.Set))
 		for key := range patch.Root.Set {
 			rootSetKeys = append(rootSetKeys, key)

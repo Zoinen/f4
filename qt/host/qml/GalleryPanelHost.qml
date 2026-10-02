@@ -172,6 +172,7 @@ FocusScope {
     // covers the panel. Other embedders retain the existing default.
     property bool panelCursorVisible: panelActive
     property bool commandLineHasText: false
+    property bool commandLineFocused: false
     property bool commandLineOwnsNavigation: false
     property bool fastFindActive: false
     property alias pendingCommanderInput: inputRouter.pendingCommanderInput
@@ -262,6 +263,7 @@ FocusScope {
         hostCapabilities: host.hostCapabilities
         panelActive: host.panelActive
         commandLineHasText: host.commandLineHasText
+        commandLineFocused: host.commandLineFocused
         commandLineOwnsNavigation: host.commandLineOwnsNavigation
         fastFindActive: host.fastFindActive
         onPointerActivationPreviewRequested: (requestedSide) => {

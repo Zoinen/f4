@@ -23,6 +23,35 @@ import (
 	time "time"
 )
 
+func TestSemanticPanelSortDirectionBeforeAndAfterAction(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		reverse       bool
+		actionDriven  bool
+		wantAscending bool
+	}{
+		{"restored time newest first", true, false, false},
+		{"restored time oldest first", false, false, true},
+		{"time action newest first", false, true, false},
+		{"time action oldest first", true, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fp := &FileSystemPanel{
+				Vfs:                      vfs.NewOSVFS(t.TempDir()),
+				Frame:                    vtui.NewBorderedFrame(0, 0, 39, 9, vtui.SingleBox, ""),
+				Table:                    vtui.NewTable(1, 1, 38, 6, nil),
+				SortMode:                 SortTime,
+				SortReverse:              tc.reverse,
+				sortDirectionSetByAction: tc.actionDriven,
+			}
+			got := fp.SemanticPanelModel(nil, 0, true).ToMap()["sortAscending"]
+			if got != tc.wantAscending {
+				t.Fatalf("sortAscending = %v, want %v", got, tc.wantAscending)
+			}
+		})
+	}
+}
+
 func TestFileSystemPanelSemanticPanelNode(t *testing.T) {
 	tmp := t.TempDir()
 	fp := &FileSystemPanel{

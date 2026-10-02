@@ -2419,6 +2419,7 @@ func (fp *FileSystemPanel) semanticPagedPanelModel(
 		HighlightStyles:     highlightStyles,
 		CursorEntryID:       cursorEntryID,
 		SortMode:            semanticSortModeName(fp), SortReverse: fp.SortReverse,
+		SortAscending:          fp.semanticSortAscending(),
 		FileFieldDescriptors:   extui.FileFieldDescriptors(),
 		FileFieldSort:          fp.FileFieldSort,
 		FileFieldFilters:       semanticFileFieldFilters(fp),
@@ -2595,6 +2596,7 @@ func (fp *FileSystemPanel) SemanticPanelModel(ctx *vtui.SemanticContext, side in
 		CursorEntryID:          cursorEntryID,
 		SortMode:               semanticSortModeName(fp),
 		SortReverse:            fp.SortReverse,
+		SortAscending:          fp.semanticSortAscending(),
 		FileFieldDescriptors:   extui.FileFieldDescriptors(),
 		FileFieldSort:          fp.FileFieldSort,
 		FileFieldFilters:       semanticFileFieldFilters(fp),
@@ -2684,6 +2686,7 @@ func (fp *FileSystemPanel) semanticPagedPanelHeaderModel(
 		HighlightRevision:   semanticHighlighterRevision(),
 		CursorEntryID:       cursorEntryID,
 		SortMode:            semanticSortModeName(fp), SortReverse: fp.SortReverse,
+		SortAscending:          fp.semanticSortAscending(),
 		FileFieldDescriptors:   extui.FileFieldDescriptors(),
 		FileFieldSort:          fp.FileFieldSort,
 		FileFieldFilters:       semanticFileFieldFilters(fp),
@@ -2785,6 +2788,7 @@ func (fp *FileSystemPanel) semanticPanelHeaderModel(ctx *vtui.SemanticContext, s
 		CursorEntryID:          cursorEntryID,
 		SortMode:               semanticSortModeName(fp),
 		SortReverse:            fp.SortReverse,
+		SortAscending:          fp.semanticSortAscending(),
 		FileFieldDescriptors:   extui.FileFieldDescriptors(),
 		FileFieldSort:          fp.FileFieldSort,
 		FileFieldFilters:       semanticFileFieldFilters(fp),
@@ -2817,6 +2821,15 @@ func semanticSortModeName(fp *FileSystemPanel) string {
 		return sortModeName(SortName)
 	}
 	return sortModeName(fp.SortMode)
+}
+
+func (fp *FileSystemPanel) semanticSortAscending() bool {
+	if fp.FileFieldSort == "" && fp.sortDirectionSetByAction {
+		return fp.SortIsAscending()
+	}
+	// Restored time/size modes use the legacy comparator, where reversal has
+	// the opposite meaning from a sort action's newest/largest-first comparator.
+	return !fp.SortReverse
 }
 
 func semanticFileFieldFilters(fp *FileSystemPanel) []extui.FileFieldFilterModel {

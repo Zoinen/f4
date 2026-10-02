@@ -90,6 +90,7 @@ set(F4_HOST_QML_FILES
   qml/TerminalColorsPage.qml
   qml/HostTypography.qml
   qml/FontSettingsPage.qml
+  qml/GuiSettingsPage.qml
   qml/DialogOverlay.qml
   qml/AutocompletePopup.qml
   qml/SemanticMenuItemDelegate.qml

@@ -20,6 +20,7 @@ Item {
     })
     property bool panelActive: false
     property bool commandLineHasText: false
+    property bool commandLineFocused: false
     property bool commandLineOwnsNavigation: false
     property bool fastFindActive: false
     property bool pendingCommanderInput: false
@@ -30,7 +31,7 @@ Item {
     property var forwardedKeysDown: ({})
 
     readonly property bool commanderInputActive:
-        commandLineOwnsNavigation || commandLineHasText
+        commandLineOwnsNavigation || (commandLineFocused && commandLineHasText)
         || fastFindActive || pendingCommanderInput
     readonly property var effectiveHostCapabilities: ({
         cursor: hostCapabilities.cursor,
@@ -39,7 +40,7 @@ Item {
         viewer: hostCapabilities.viewer,
         galleryOwnsPanelInput: !commanderInputActive,
         galleryOwnsZoomShortcuts: false,
-        galleryOwnsReturn: !commanderInputActive
+        galleryOwnsReturn: !commanderInputActive && !commandLineHasText
     })
 
     signal pointerActivationPreviewRequested(int side)

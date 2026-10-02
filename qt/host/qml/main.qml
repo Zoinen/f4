@@ -179,6 +179,11 @@ F4HostWindow {
         pageId: "gui"
         title: qsTr("GUI")
         iconName: "app-window"
+        content: Component { GuiSettingsPage { hostWindow: root } }
+    }, NativeSettingsPage {
+        pageId: "theme"
+        title: qsTr("Theme creator")
+        iconName: "palette"
         content: Component {
             ThemeEditorContent {
                 embeddedSettings: true

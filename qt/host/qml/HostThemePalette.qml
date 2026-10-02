@@ -60,6 +60,9 @@ Item {
     property bool commandLineGraphicalCursor: true
     property bool compactBreadcrumbs: true
     property bool showColumnSeparators: false
+    property bool headerVerticalSeparatorSpacing: true
+    property bool headerHorizontalSeparatorSpacing: true
+    property bool columnSeparatorSpacing: true
     property int panelColumnPadding: 8
     property color galleryQuickSearchMatchColor: "#c678dd"
     property color galleryDirectoryTextColor: "#98d8ff"
@@ -228,28 +231,39 @@ Item {
         return textRendering.renderType === Number(value)
     }
 
-    function loadFromPersistence() {
+    function loadFromPersistence(colorsOnly = false) {
         if (!persistence)
             return false
         try {
             const saved = persistence.loadTheme()
-            try {
-                hostWindow.typography.restore(saved.typography ? JSON.parse(saved.typography) : {})
-            } catch (error) {
-                console.warn("Invalid GUI typography preferences:", error)
-                hostWindow.typography.restore({})
+            if (!colorsOnly) {
+                try {
+                    hostWindow.typography.restore(saved.typography ? JSON.parse(saved.typography) : {})
+                } catch (error) {
+                    console.warn("Invalid GUI typography preferences:", error)
+                    hostWindow.typography.restore({})
+                }
+                showColumnSeparators = saved.showColumnSeparators === true
+                        || String(saved.showColumnSeparators).toLowerCase() === "true"
+                const padding = Number(saved.panelColumnPadding)
+                headerVerticalSeparatorSpacing = saved.headerVerticalSeparatorSpacing === undefined
+                        || saved.headerVerticalSeparatorSpacing === true
+                        || String(saved.headerVerticalSeparatorSpacing).toLowerCase() === "true"
+                headerHorizontalSeparatorSpacing = saved.headerHorizontalSeparatorSpacing === undefined
+                        || saved.headerHorizontalSeparatorSpacing === true
+                        || String(saved.headerHorizontalSeparatorSpacing).toLowerCase() === "true"
+                columnSeparatorSpacing = saved.columnSeparatorSpacing === undefined
+                        || saved.columnSeparatorSpacing === true
+                        || String(saved.columnSeparatorSpacing).toLowerCase() === "true"
+                panelColumnPadding = Number.isFinite(padding)
+                        ? Math.max(0, Math.min(24, Math.round(padding))) : 8
+                compactBreadcrumbs = saved.compactBreadcrumbs === undefined
+                        || saved.compactBreadcrumbs === true
+                        || String(saved.compactBreadcrumbs).toLowerCase() === "true"
+                commandLineGraphicalCursor = saved.commandLineGraphicalCursor === undefined
+                        || saved.commandLineGraphicalCursor === true
+                        || String(saved.commandLineGraphicalCursor).toLowerCase() === "true"
             }
-            showColumnSeparators = saved.showColumnSeparators === true
-                    || String(saved.showColumnSeparators).toLowerCase() === "true"
-            const padding = Number(saved.panelColumnPadding)
-            panelColumnPadding = Number.isFinite(padding)
-                    ? Math.max(0, Math.min(24, Math.round(padding))) : 8
-            compactBreadcrumbs = saved.compactBreadcrumbs === undefined
-                    || saved.compactBreadcrumbs === true
-                    || String(saved.compactBreadcrumbs).toLowerCase() === "true"
-            commandLineGraphicalCursor = saved.commandLineGraphicalCursor === undefined
-                    || saved.commandLineGraphicalCursor === true
-                    || String(saved.commandLineGraphicalCursor).toLowerCase() === "true"
             const savedSchemaVersion = Number(saved.themeSchemaVersion || 0)
             let applied = false
             for (let index = 0; index < colorDefinitions.length; ++index) {
@@ -281,6 +295,7 @@ Item {
                     }
                 }
             }
+            if (colorsOnly) return applied
             if (saved.fontRenderType !== undefined
                     && saved.fontRenderType !== "" && textRendering) {
                 applied = textRendering.setRenderTypeByName(
@@ -334,17 +349,21 @@ Item {
         values.commandLineGraphicalCursor = commandLineGraphicalCursor
         values.compactBreadcrumbs = compactBreadcrumbs
         values.showColumnSeparators = showColumnSeparators
+        values.headerVerticalSeparatorSpacing = headerVerticalSeparatorSpacing
+        values.headerHorizontalSeparatorSpacing = headerHorizontalSeparatorSpacing
+        values.columnSeparatorSpacing = columnSeparatorSpacing
         values.panelColumnPadding = panelColumnPadding
         values.themeSchemaVersion = schemaVersion
         values.typography = JSON.stringify(hostWindow.typography.snapshot())
         return persistence.saveTheme(values)
     }
 
-    function resetToDefaults() {
+    function resetToDefaults(colorsOnly = false) {
         for (let index = 0; index < colorDefinitions.length; ++index) {
             const definition = colorDefinitions[index]
             palette[definition.id] = Qt.color(definition.defaultColor)
         }
+        if (colorsOnly) return
         if (textRendering)
             textRendering.setRenderTypeByName("NativeRendering")
         hostWindow.mouseWheelMode = "gui"
@@ -354,6 +373,9 @@ Item {
         commandLineGraphicalCursor = true
         compactBreadcrumbs = true
         showColumnSeparators = false
+        headerVerticalSeparatorSpacing = true
+        headerHorizontalSeparatorSpacing = true
+        columnSeparatorSpacing = true
         panelColumnPadding = 8
         hostWindow.typography.restore({})
     }

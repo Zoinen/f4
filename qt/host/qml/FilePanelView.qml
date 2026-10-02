@@ -147,10 +147,30 @@ Rectangle {
     }
 
     function sortIsAscending() {
+        if (typeof panel.sortAscending === "boolean")
+            return panel.sortAscending
         const mode = sortModeName()
         const reversed = panel.sortReverse === true
         return mode === "time" || mode === "size"
                 ? reversed : !reversed
+    }
+
+    property string lastSortDirectionDiagnostic: ""
+    onPanelChanged: {
+        if (typeof panel.sortAscending !== "boolean")
+            return
+        const mode = sortModeName()
+        const legacyAscending = mode === "time" || mode === "size"
+                ? panel.sortReverse === true : panel.sortReverse !== true
+        if (legacyAscending === panel.sortAscending)
+            return
+        const state = mode + ":" + panel.sortReverse + ":" + panel.sortAscending
+        if (state !== lastSortDirectionDiagnostic) {
+            console.debug("[FIX:sort-direction] panel", panel.side,
+                          "mode", mode, "reverse", panel.sortReverse,
+                          "ascending", panel.sortAscending)
+            lastSortDirectionDiagnostic = state
+        }
     }
 
     function sortDirectionIconName() {
@@ -473,9 +493,11 @@ Rectangle {
                 Rectangle {
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
+                    objectName: "panelHeaderVerticalSeparator-" + index + "-" + Number(panel.side || 0)
                     width: 1
                     height: Math.max(1, parent.height
-                                     - hostWindow.columnSeparatorVerticalMargin * 2)
+                                     - (hostWindow.headerVerticalSeparatorSpacing
+                                        ? hostWindow.columnSeparatorVerticalMargin * 2 : 0))
                     color: hostWindow.separatorColor
                     opacity: index < columnHeader.columns.length - 1
                              ? 0.65 : 0
@@ -512,6 +534,10 @@ Rectangle {
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.bottom: parent.bottom
+            objectName: "panelHeaderHorizontalSeparator-" + Number(panel.side || 0)
+            anchors.leftMargin: hostWindow.headerHorizontalSeparatorSpacing
+                                ? hostWindow.columnSeparatorVerticalMargin : 0
+            anchors.rightMargin: anchors.leftMargin
             height: 1
             color: hostWindow.separatorColor
             opacity: 0.7
@@ -525,9 +551,12 @@ Rectangle {
             required property int index
             objectName: "panelColumnSeparator-" + index + "-" + Number(panel.side || 0)
             x: columnHeader.x + columnHeader.columnX(index + 1) - width
-            y: galleryPanelContent.y
+            readonly property real inset: hostWindow.columnSeparatorSpacing
+                                          ? hostWindow.columnSeparatorVerticalMargin : 0
+            y: galleryPanelContent.y + inset
             width: hostWindow.separatorWidth
-            height: galleryPanelContent.height
+            height: Math.max(0, galleryPanelContent.height
+                             - inset * 2)
             color: hostWindow.separatorColor
             opacity: 0.65
             z: 2
@@ -615,6 +644,8 @@ Rectangle {
                 var commandLine = hostWindow.commandLineFrame()
                 return hostWindow.cleanText(commandLine.text).length > 0
             })
+            item.commandLineFocused = Qt.binding(
+                () => hostWindow.commandLineFrame().focused === true)
             if (typeof item.commandLineOwnsNavigation !== "undefined")
                 item.commandLineOwnsNavigation = Qt.binding(
                     () => hostWindow.commandLineFrame().ownsNavigation === true)

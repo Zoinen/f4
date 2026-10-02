@@ -8,6 +8,26 @@ import (
 	testing "testing"
 )
 
+func TestAppPanelFromLegacySortDirectionFallback(t *testing.T) {
+	for _, tc := range []struct {
+		mode          string
+		reverse       bool
+		wantAscending bool
+	}{
+		{"name", false, true},
+		{"time", false, false},
+		{"time", true, true},
+	} {
+		got := appPanelFromLegacy(map[string]any{
+			"sortModeName": tc.mode,
+			"sortReverse":  tc.reverse,
+		}).SortAscending
+		if got != tc.wantAscending {
+			t.Errorf("mode=%s reverse=%t: ascending=%t, want %t", tc.mode, tc.reverse, got, tc.wantAscending)
+		}
+	}
+}
+
 func TestAppPanelFromLegacyPreservesFileFieldPresentation(t *testing.T) {
 	node := map[string]any{
 		"id": "panel-right", "side": 1,
