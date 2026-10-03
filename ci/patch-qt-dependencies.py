@@ -67,8 +67,44 @@ _FFMPEG_SOURCE_PATCH = _FFMPEG_SOURCE_ANCHOR + (
     '            "QT_FEATURE_pulseaudio OR QT_FEATURE_pipewire)",\n'
     '            strict=True,\n'
     '        )\n'
+    '        # Conan CMakeDeps also emits ffmpeg-config.cmake and\n'
+    '        # vaapi-config.cmake. Those packages use Conan target names\n'
+    '        # (ffmpeg::avformat, vaapi::vaapi), while Qt Multimedia\n'
+    '        # expects the targets created by its own Find modules\n'
+    '        # (FFmpeg::avformat, VAAPI::VAAPI). Force module mode for\n'
+    '        # these two lookups so a config package cannot shadow the\n'
+    '        # compatible Qt finders.\n'
+    '        replace_in_file(\n'
+    '            self,\n'
+    '            qtmultimedia_configure,\n'
+    '            "qt_find_package(FFmpeg OPTIONAL_COMPONENTS",\n'
+    '            "qt_find_package(FFmpeg MODULE OPTIONAL_COMPONENTS",\n'
+    '            strict=True,\n'
+    '        )\n'
+    '        replace_in_file(\n'
+    '            self,\n'
+    '            qtmultimedia_configure,\n'
+    '            "qt_find_package(VAAPI COMPONENTS",\n'
+    '            "qt_find_package(VAAPI MODULE COMPONENTS",\n'
+    '            strict=True,\n'
+    '        )\n'
+    '        ffmpeg_plugin_cmake = os.path.join(\n'
+    '            self.source_folder, "qtmultimedia", "src", "plugins",\n'
+    '            "multimedia", "ffmpeg", "CMakeLists.txt"\n'
+    '        )\n'
+    '        replace_in_file(\n'
+    '            self,\n'
+    '            ffmpeg_plugin_cmake,\n'
+    '            "qt_find_package(VAAPI COMPONENTS",\n'
+    '            "qt_find_package(VAAPI MODULE COMPONENTS",\n'
+    '            strict=True,\n'
+    '        )\n'
 )
 _FFMPEG_SOURCE_MARKER = 'qtmultimedia_configure = os.path.join'
+_FFMPEG_MODULE_SOURCE_MARKER = (
+    'qt_find_package(FFmpeg MODULE OPTIONAL_COMPONENTS'
+)
+_FFMPEG_VAAPI_MODULE_MARKER = 'qt_find_package(VAAPI MODULE COMPONENTS'
 _HOST_PATH_ANCHOR = (
     '            tc.cache_variables["QT_HOST_PATH"] = '
     'self.dependencies.direct_build["qt"].package_folder\n'
@@ -180,6 +216,13 @@ def _patch_ffmpeg(text: str) -> str:
                 "unexpected Qt recipe: Qt source patch anchor is absent or ambiguous"
             )
         text = text.replace(_FFMPEG_SOURCE_ANCHOR, _FFMPEG_SOURCE_PATCH)
+    elif (
+        _FFMPEG_MODULE_SOURCE_MARKER not in text
+        or text.count(_FFMPEG_VAAPI_MODULE_MARKER) < 2
+    ):
+        raise SystemExit(
+            "unexpected Qt recipe: existing FFmpeg source patch lacks module-mode finders"
+        )
     return text
 
 

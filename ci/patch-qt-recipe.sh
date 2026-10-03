@@ -63,6 +63,8 @@ if candidates:
             grep -Fq '"with_ffmpeg": [True, False]' "${reusable_qt_recipe}/conanfile.py" && \
             grep -Fq 'tc.cache_variables["FFMPEG_DIR"]' "${reusable_qt_recipe}/conanfile.py" && \
             grep -Fq 'qtmultimedia_configure = os.path.join' "${reusable_qt_recipe}/conanfile.py" && \
+            grep -Fq 'qt_find_package(FFmpeg MODULE OPTIONAL_COMPONENTS' "${reusable_qt_recipe}/conanfile.py" && \
+            [[ "$(grep -Fc 'qt_find_package(VAAPI MODULE COMPONENTS' "${reusable_qt_recipe}/conanfile.py")" -ge 2 ]] && \
             grep -Fq 'if(NOT TARGET Qt::qsb)' "${reusable_qt_recipe}/conanfile.py" && \
             grep -Fq 'native_qsb_config = os.path.join' "${reusable_qt_recipe}/conanfile.py" && \
             grep -Fq 'tc.cache_variables["Qt6QuickTools_DIR"]' "${reusable_qt_recipe}/conanfile.py" && \
@@ -123,6 +125,9 @@ grep -Fq 'tc.cache_variables["FFMPEG_DIR"]' \
     "${qt_recipe_copy}/conanfile.py"
 grep -Fq 'qtmultimedia_configure = os.path.join' \
     "${qt_recipe_copy}/conanfile.py"
+grep -Fq 'qt_find_package(FFmpeg MODULE OPTIONAL_COMPONENTS' \
+    "${qt_recipe_copy}/conanfile.py"
+[[ "$(grep -Fc 'qt_find_package(VAAPI MODULE COMPONENTS' "${qt_recipe_copy}/conanfile.py")" -ge 2 ]]
 if [[ "${target_arch}" == "arm64" ]]; then
     grep -Fq 'QT_ADDITIONAL_PACKAGES_PREFIX_PATH' \
         "${qt_recipe_copy}/conanfile.py"
