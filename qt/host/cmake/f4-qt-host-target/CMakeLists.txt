@@ -471,7 +471,13 @@ if(F4_QT_STATIC)
         endif()
         if(NOT TARGET Qt6::FFmpegMediaPluginImplPrivate)
           find_library(_f4_ffmpeg_impl_archive
-            NAMES Qt6FFmpegMediaPluginImplPrivate
+            # Qt 6.11 installs the archive without the Private suffix even
+            # though its CMake component/target is named
+            # FFmpegMediaPluginImplPrivate.  The generated component target
+            # is not loaded by every platform's Qt package config, so retain
+            # the explicit archive fallback for Windows and other static
+            # packages that only expose the file.
+            NAMES Qt6FFmpegMediaPluginImpl Qt6FFmpegMediaPluginImplPrivate
             PATHS "${_f4_conan_qt_package_folder}/lib"
             NO_DEFAULT_PATH REQUIRED)
           add_library(Qt6::FFmpegMediaPluginImplPrivate STATIC IMPORTED GLOBAL)
