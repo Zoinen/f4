@@ -185,6 +185,7 @@ target_packages=(
     ffmpeg openssl pcre2 qt sqlite3 wayland xkbcommon xz_utils zlib zstd
 )
 baseline_marker="$CONAN_HOME/p/.f4-glibc-2.27-gcc11-ready"
+arm64_video_baseline_marker="$CONAN_HOME/p/.f4-arm64-glibc-2.27-video-libraries-ready"
 conan_build_args=(--build=missing)
 # A Conan package ID does not describe the glibc version of a prebuilt build
 # requirement.  In particular, an m4 binary uploaded from a newer Linux host
@@ -241,33 +242,44 @@ fi
 # the expensive video graph.
 arm64_glibc_rebuild_packages=()
 if [[ "${TARGET_ARCH}" == "arm64" ]]; then
-    while IFS=: read -r package archive; do
-        package_archive_found=0
-        package_archive_incompatible=0
-        while IFS= read -r static_archive; do
-            package_archive_found=1
-            if nm -u "${static_archive}" 2>/dev/null |
-                grep -Eq '(__isoc23_|__libc_single_threaded|(^|[[:space:]])fcntl64$)'; then
-                package_archive_incompatible=1
-                echo "Cached ARM64 ${package} archive requires newer glibc: ${static_archive}"
-                break
+    arm64_glibc_package_specs=(
+        "fontconfig:libfontconfig.a"
+        "freetype:libfreetype.a"
+        "libde265:libde265.a"
+        "libraw:libraw.a"
+    )
+    if [[ "${F4_CONAN_BOOTSTRAP_VIDEO:-0}" == "1" &&
+        ! -f "${arm64_video_baseline_marker}" ]]; then
+        # The first bootstrap must not allow Conan to download an unqualified
+        # ARM64 package before its archive can be inspected.  Force this
+        # small set once; a successful native host link records the marker so
+        # later jobs reuse the corrected binaries from the cache/remote.
+        arm64_glibc_rebuild_packages=(fontconfig freetype libde265 libraw)
+        echo "No repaired ARM64 video-library checkpoint found; building the glibc 2.27 set once"
+    else
+        while IFS=: read -r package archive; do
+            package_archive_found=0
+            package_archive_incompatible=0
+            while IFS= read -r static_archive; do
+                package_archive_found=1
+                if nm -u "${static_archive}" 2>/dev/null |
+                    grep -Eq '(__isoc23_|__libc_single_threaded|(^|[[:space:]])fcntl64$)'; then
+                    package_archive_incompatible=1
+                    echo "Cached ARM64 ${package} archive requires newer glibc: ${static_archive}"
+                    break
+                fi
+            done < <(find "${CONAN_HOME}/p" -type f -path "*/p/lib/${archive}" -print 2>/dev/null)
+            if [[ "${package_archive_incompatible}" == "1" ]]; then
+                arm64_glibc_rebuild_packages+=("${package}")
+            elif [[ "${package_archive_found}" == "0" &&
+                "${F4_CONAN_BOOTSTRAP_VIDEO:-0}" == "1" ]]; then
+                # Do not let an unqualified remote package become the first
+                # copy of one of these libraries on a cold ARM64 checkpoint.
+                arm64_glibc_rebuild_packages+=("${package}")
+                echo "No cached ARM64 ${package} archive found; building it in the glibc 2.27 / GCC 11 container"
             fi
-        done < <(find "${CONAN_HOME}/p" -type f -path "*/p/lib/${archive}" -print 2>/dev/null)
-        if [[ "${package_archive_incompatible}" == "1" ]]; then
-            arm64_glibc_rebuild_packages+=("${package}")
-        elif [[ "${package_archive_found}" == "0" &&
-            "${F4_CONAN_BOOTSTRAP_VIDEO:-0}" == "1" ]]; then
-            # Do not let an unqualified remote package become the first copy
-            # of one of these libraries on a cold ARM64 checkpoint.
-            arm64_glibc_rebuild_packages+=("${package}")
-            echo "No cached ARM64 ${package} archive found; building it in the glibc 2.27 / GCC 11 container"
-        fi
-    done <<'EOF'
-fontconfig:libfontconfig.a
-freetype:libfreetype.a
-libde265:libde265.a
-libraw:libraw.a
-EOF
+        done < <(printf '%s\n' "${arm64_glibc_package_specs[@]}")
+    fi
 fi
 if [[ "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" &&
     -n "${F4_CONAN_REMOTE_URL:-}" ]]; then
@@ -486,6 +498,11 @@ go test -tags f4_embedded_qt_host \
     -run 'TestMaterializeEmbeddedQtHost|TestGeneratedEmbeddedQtHostPayload' ./internal/plughost
 echo "Embedded Qt payload tests passed"
 python ci/upload-conan-packages.py
+if [[ "${TARGET_ARCH}" == "arm64" &&
+    "${F4_CONAN_BOOTSTRAP_VIDEO:-0}" == "1" ]]; then
+    touch "${arm64_video_baseline_marker}"
+    echo "Recorded the repaired ARM64 video-library checkpoint"
+fi
 mkdir -p "$(dirname "${launcher_output}")"
 echo "Building static Go launcher"
 # The Qt-only launcher does not use the optional GPU FFI path.  Build goffi in
