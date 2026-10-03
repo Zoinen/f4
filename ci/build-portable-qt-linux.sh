@@ -186,6 +186,22 @@ target_packages=(
 )
 baseline_marker="$CONAN_HOME/p/.f4-glibc-2.27-gcc11-ready"
 conan_build_args=(--build=missing)
+# A Conan package ID does not describe the glibc version of a prebuilt build
+# requirement.  In particular, an m4 binary uploaded from a newer Linux host
+# can look like a valid cache hit and then fail only when xkbcommon invokes it
+# inside this Ubuntu 18.04/glibc-2.27 image.  Detect that case from the actual
+# executable instead of trusting the coarse graph marker.  A valid cached m4
+# remains reusable; only an incompatible one is rebuilt in the baseline image.
+force_baseline_m4=0
+cached_m4_found=0
+while IFS= read -r m4_binary; do
+    cached_m4_found=1
+    if [[ ! -x "$m4_binary" ]] || ! "$m4_binary" --version >/dev/null 2>&1; then
+        force_baseline_m4=1
+        echo "Cached Conan m4 is not executable on the glibc 2.27 baseline: ${m4_binary}"
+        break
+    fi
+done < <(find "${CONAN_HOME}/p" -type f -path '*/p/bin/m4' -print 2>/dev/null)
 if [[ "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" &&
     -n "${F4_CONAN_REMOTE_URL:-}" ]]; then
     conan_build_args=(--build=never)
@@ -211,6 +227,23 @@ elif [[ ! -f "$baseline_marker" ]]; then
     echo "No trusted glibc 2.27 / GCC 11 graph found; forcing baseline rebuild"
 else
     echo "Reusing cached glibc 2.27 / GCC 11 Conan package graph"
+fi
+if [[ "${F4_CONAN_BOOTSTRAP_VIDEO:-0}" == "1" &&
+    "${cached_m4_found}" == "0" ]]; then
+    # A cold cache would otherwise download the same unqualified package from
+    # Artifactory before this check can inspect it. Build this tiny tool once
+    # in the baseline image so the checkpoint and remote package are safe for
+    # every later Linux job.
+    force_baseline_m4=1
+    echo "No cached Conan m4 found; building it in the glibc 2.27 / GCC 11 container"
+fi
+if [[ "${force_baseline_m4}" == "1" ]]; then
+    if [[ "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" ]]; then
+        echo "error: trusted baseline contains an m4 binary incompatible with glibc 2.27" >&2
+        exit 1
+    fi
+    conan_build_args+=(--build='m4/*')
+    echo "Forcing only m4 to rebuild in the glibc 2.27 / GCC 11 container"
 fi
 
 # GLib's recipe adds elfutils solely for the GNOME `gresource` CLI. This Qt
