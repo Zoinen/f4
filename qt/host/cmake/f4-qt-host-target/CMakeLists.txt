@@ -550,8 +550,12 @@ if(F4_QT_STATIC)
     ${F4_REQUIRED_STATIC_QML_PLUGINS}
     ${F4_REQUIRED_STATIC_QT_PLUGINS}
     ${F4_QFFMPEG_PLUGIN_TARGET}
-    ${F4_QFFMPEG_PLUGIN_IMPL_TARGET}
     ${F4_QT_MEDIA_PLUGIN_TARGET}
+    # The static FFmpeg plugin references QFFmpegMediaIntegration, which is
+    # supplied by Qt6FFmpegMediaPluginImpl.  Put the plugin archive first so
+    # GNU ld retains the implementation archive when it is scanned later;
+    # the reverse order leaves the constructor undefined on Linux.
+    ${F4_QFFMPEG_PLUGIN_IMPL_TARGET}
     ${F4_QFFMPEG_PLUGIN_LIBRARY}
     ${F4_FFMPEG_TARGETS}
     ${F4_QT_QUICK_CONTROLS_BASIC_LINK}
