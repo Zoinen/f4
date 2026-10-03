@@ -447,8 +447,8 @@ jobs:
         fi
         conan install qt/host --build=missing \
           -s:h build_type=Release -s:h compiler.cppstd=20 \
-          -o:h 'qt/host:with_video_thumbnails=True' \
-          -o:h 'qt/host:with_ffmpeg_backend=True' \
+          -o:h '*:with_video_thumbnails=True' \
+          -o:h '*:with_ffmpeg_backend=True' \
           -c:a '*/*:tools.cmake.cmaketoolchain:extra_variables={"CMAKE_POLICY_VERSION_MINIMUM":{"cache":True,"type":"STRING","value":"3.5"}}' \
           -c:a '*/*:tools.cmake:configure_args=["-DCMAKE_POLICY_VERSION_MINIMUM=3.5"]' \
           -c tools.system.package_manager:mode=install \
@@ -1061,8 +1061,8 @@ jobs:
             -s:b build_type=Release -s:b compiler.cppstd=20 `
             -s:b compiler.runtime=static `
             -o:h "qt/*:shared=False" `
-            -o:h "qt/host:with_video_thumbnails=True" `
-            -o:h "qt/host:with_ffmpeg_backend=True" `
+            -o:h "*:with_video_thumbnails=True" `
+            -o:h "*:with_ffmpeg_backend=True" `
             -o:b "qt/*:shared=False" `
             -o:b "qt/*:qtdeclarative=True" `
             -o:b "qt/*:qtshadertools=True" `

@@ -221,8 +221,8 @@ for attempt in 1 2 3; do
         -s:h build_type=Release -s:h compiler.cppstd=gnu20 \
         -s:b build_type=Release -s:b compiler.cppstd=gnu20 \
         -o:h 'qt/*:shared=False' \
-        -o:h 'qt/host:with_video_thumbnails=True' \
-        -o:h 'qt/host:with_ffmpeg_backend=True' \
+        -o:h '*:with_video_thumbnails=True' \
+        -o:h '*:with_ffmpeg_backend=True' \
         -o:h 'qt/*:qtwayland=True' \
         -o:h 'qt/*:with_egl=True' \
         -o:h 'qt/*:with_libjpeg=libjpeg-turbo' \
