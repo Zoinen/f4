@@ -233,6 +233,42 @@ if [[ "${TARGET_ARCH}" == "arm64" ]]; then
         fi
     done < <(find "${CONAN_HOME}/p" -path '*/p/bin/ninja' -print 2>/dev/null)
 fi
+# Static libraries copied from a newer Linux host can pass Conan's integrity
+# check while still referring to glibc symbols that do not exist in the
+# Ubuntu 18.04/glibc-2.27 baseline.  Detect the known failure signatures in
+# the restored cache before Conan is allowed to select the corresponding
+# remote package.  Rebuild only the affected package, preserving the rest of
+# the expensive video graph.
+arm64_glibc_rebuild_packages=()
+if [[ "${TARGET_ARCH}" == "arm64" ]]; then
+    while IFS=: read -r package archive; do
+        package_archive_found=0
+        package_archive_incompatible=0
+        while IFS= read -r static_archive; do
+            package_archive_found=1
+            if nm -u "${static_archive}" 2>/dev/null |
+                grep -Eq '(__isoc23_|__libc_single_threaded|(^|[[:space:]])fcntl64$)'; then
+                package_archive_incompatible=1
+                echo "Cached ARM64 ${package} archive requires newer glibc: ${static_archive}"
+                break
+            fi
+        done < <(find "${CONAN_HOME}/p" -type f -path "*/p/lib/${archive}" -print 2>/dev/null)
+        if [[ "${package_archive_incompatible}" == "1" ]]; then
+            arm64_glibc_rebuild_packages+=("${package}")
+        elif [[ "${package_archive_found}" == "0" &&
+            "${F4_CONAN_BOOTSTRAP_VIDEO:-0}" == "1" ]]; then
+            # Do not let an unqualified remote package become the first copy
+            # of one of these libraries on a cold ARM64 checkpoint.
+            arm64_glibc_rebuild_packages+=("${package}")
+            echo "No cached ARM64 ${package} archive found; building it in the glibc 2.27 / GCC 11 container"
+        fi
+    done <<'EOF'
+fontconfig:libfontconfig.a
+freetype:libfreetype.a
+libde265:libde265.a
+libraw:libraw.a
+EOF
+fi
 if [[ "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" &&
     -n "${F4_CONAN_REMOTE_URL:-}" ]]; then
     conan_build_args=(--build=never)
@@ -304,6 +340,14 @@ if [[ "${force_baseline_ninja}" == "1" ]]; then
     conan_build_args+=(--build='ninja/*')
     echo "Forcing only Ninja to rebuild for the ARM64 baseline"
 fi
+for package in "${arm64_glibc_rebuild_packages[@]}"; do
+    if [[ "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" ]]; then
+        echo "error: trusted baseline contains an ARM64 ${package} archive incompatible with glibc 2.27" >&2
+        exit 1
+    fi
+    conan_build_args+=("--build=${package}/*")
+    echo "Forcing only ${package} to rebuild in the glibc 2.27 / GCC 11 container"
+done
 
 # GLib's recipe adds elfutils solely for the GNOME `gresource` CLI. This Qt
 # host neither builds nor uses that tool, so omit the entire expensive elfutils
