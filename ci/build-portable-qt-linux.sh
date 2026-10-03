@@ -218,6 +218,21 @@ if [[ "${TARGET_ARCH}" == "arm64" ]]; then
         fi
     done < <(find "${CONAN_HOME}/p" -type f -path '*/p/bin/pkgconf' -print 2>/dev/null)
 fi
+# Conan's Meson packages use Ninja from the build context. Keep the same
+# architecture check for it: an x86 Ninja in an ARM64 cache makes every
+# source rebuild fail before compilation starts.
+force_baseline_ninja=0
+cached_ninja_found=0
+if [[ "${TARGET_ARCH}" == "arm64" ]]; then
+    while IFS= read -r ninja_binary; do
+        cached_ninja_found=1
+        if [[ ! -x "$ninja_binary" ]] || ! "$ninja_binary" --version >/dev/null 2>&1; then
+            force_baseline_ninja=1
+            echo "Cached Conan Ninja is not executable on the ARM64 baseline: ${ninja_binary}"
+            break
+        fi
+    done < <(find "${CONAN_HOME}/p" -path '*/p/bin/ninja' -print 2>/dev/null)
+fi
 if [[ "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" &&
     -n "${F4_CONAN_REMOTE_URL:-}" ]]; then
     conan_build_args=(--build=never)
@@ -260,6 +275,11 @@ if [[ "${F4_CONAN_BOOTSTRAP_VIDEO:-0}" == "1" &&
     force_baseline_pkgconf=1
     echo "No cached Conan pkgconf found; building it for the ARM64 baseline"
 fi
+if [[ "${F4_CONAN_BOOTSTRAP_VIDEO:-0}" == "1" &&
+    "${TARGET_ARCH}" == "arm64" && "${cached_ninja_found}" == "0" ]]; then
+    force_baseline_ninja=1
+    echo "No cached Conan Ninja found; building it for the ARM64 baseline"
+fi
 if [[ "${force_baseline_m4}" == "1" ]]; then
     if [[ "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" ]]; then
         echo "error: trusted baseline contains an m4 binary incompatible with glibc 2.27" >&2
@@ -275,6 +295,14 @@ if [[ "${force_baseline_pkgconf}" == "1" ]]; then
     fi
     conan_build_args+=(--build='pkgconf/*')
     echo "Forcing only pkgconf to rebuild for the ARM64 baseline"
+fi
+if [[ "${force_baseline_ninja}" == "1" ]]; then
+    if [[ "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" ]]; then
+        echo "error: trusted baseline contains a Ninja binary incompatible with ARM64" >&2
+        exit 1
+    fi
+    conan_build_args+=(--build='ninja/*')
+    echo "Forcing only Ninja to rebuild for the ARM64 baseline"
 fi
 
 # GLib's recipe adds elfutils solely for the GNOME `gresource` CLI. This Qt
