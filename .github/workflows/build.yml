@@ -1629,9 +1629,13 @@ jobs:
         echo "GOROOT=$HOME/go-legacy-win7/go-legacy-win7" >> "$GITHUB_ENV"
         echo "$HOME/go-legacy-win7/go-legacy-win7/bin" >> "$GITHUB_PATH"
 
-    - name: Restore missing sync/atomic Or/And methods (thongtech/go-legacy-win7#13)
+    - name: Restore missing sync/atomic Or/And methods when needed
       if: steps.affected.outputs.build == 'yes'
       run: |
+        if grep -q 'func (x *Int32) Or' "$GOROOT/src/sync/atomic/type.go"; then
+          echo "go-legacy-win7 already provides typed atomic Or/And methods"
+          exit 0
+        fi
         cat > "$GOROOT/src/sync/atomic/or_and_win7compat.go" <<'EOF'
         // This file restores the Or/And methods on typed atomics (added
         // upstream in Go 1.23, see https://go.dev/issue/61395) that are
