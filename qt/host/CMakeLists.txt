@@ -37,15 +37,22 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_AUTOMOC ON)
 
-if(F4_PORTABLE_STATIC)
-  # Qt discovers its JPEG dependency from inside a helper function. Conan's
-  # generated FindJPEG module creates directory-scoped imported targets and
-  # then guards itself against a second include, so ZoinGallery cannot see
-  # JPEG::JPEG later in this sibling directory. Load both facades at the root
-  # first so their static targets are visible to the complete build graph.
-  find_package(JPEG REQUIRED)
-  find_package(libjpeg-turbo REQUIRED)
-endif()
+# Qt discovers its JPEG dependency from inside a helper function. Conan's
+# generated FindJPEG module creates directory-scoped imported targets and
+# then guards itself against a second include, so ZoinGallery cannot see
+# JPEG::JPEG later in this sibling directory. Load both facades at the root
+# first so their targets are visible to the complete build graph. This is
+# needed for the macOS shared host too: Qt still exposes the libjpeg-turbo
+# aggregate target even though the host itself is not statically linked.
+#
+# CMake does not search the Conan output directory for modules until one of
+# the generated package configs adds it. Put it on the module path before the
+# first JPEG lookup; otherwise this call resolves to CMake's host FindJPEG
+# module, while Qt's later lookup creates a second, subdirectory-scoped
+# JPEG::JPEG target and leaves libjpeg-turbo's interface dangling.
+list(PREPEND CMAKE_MODULE_PATH "${CMAKE_BINARY_DIR}")
+find_package(JPEG REQUIRED)
+find_package(libjpeg-turbo REQUIRED)
 
 set(F4_QT_HOST_COMPONENTS
   Core Concurrent Gui Qml Quick QuickControls2 Network Svg)
