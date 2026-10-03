@@ -1632,7 +1632,7 @@ jobs:
     - name: Restore missing sync/atomic Or/And methods when needed
       if: steps.affected.outputs.build == 'yes'
       run: |
-        if grep -q 'func (x *Int32) Or' "$GOROOT/src/sync/atomic/type.go"; then
+        if grep -Fq 'func (x *Int32) Or' "$GOROOT/src/sync/atomic/type.go"; then
           echo "go-legacy-win7 already provides typed atomic Or/And methods"
           exit 0
         fi
