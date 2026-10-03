@@ -574,6 +574,8 @@ endif()
 # BUILD_TESTING helpers are declared.
 if(F4_QT_STATIC)
   foreach(F4_ZOIN_STATIC_CORE_TEST_TARGET IN ITEMS
+      ViewerResamplerTests
+      ViewerDecodeSourceTests
       ZoinGallerySelectionTests
       ZoinGalleryViewerCacheTests
       ZoinGalleryThumbnailMemoryCacheTests
