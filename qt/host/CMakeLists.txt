@@ -565,11 +565,11 @@ if(F4_QT_STATIC)
         Qt6::QJpegPlugin)
       if(MSVC)
         target_link_libraries(${F4_ZOIN_STATIC_CORE_TEST_TARGET} PRIVATE
-          Qt6::Svg
-          Qt6::QSvgPlugin)
+          CONAN_LIB::qt_Qt6_Svg_Qt6Svg_RELEASE
+          CONAN_LIB::qt_Qt6_QSvgPlugin_qsvg_RELEASE)
       else()
         target_link_libraries(${F4_ZOIN_STATIC_CORE_TEST_TARGET} PRIVATE
-          "$<LINK_GROUP:RESCAN,Qt6::Svg,Qt6::QSvgPlugin>")
+          "$<LINK_GROUP:RESCAN,CONAN_LIB::qt_Qt6_Svg_Qt6Svg_RELEASE,CONAN_LIB::qt_Qt6_QSvgPlugin_qsvg_RELEASE>")
       endif()
     endif()
   endforeach()
