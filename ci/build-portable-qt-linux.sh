@@ -234,6 +234,21 @@ if [[ "${TARGET_ARCH}" == "arm64" ]]; then
         fi
     done < <(find "${CONAN_HOME}/p" -path '*/p/bin/ninja' -print 2>/dev/null)
 fi
+# Fontconfig's Meson configure step executes gperf from the build context.
+# Check its architecture too; an incompatible cached copy otherwise fails
+# after the expensive ARM64 source packages have already started building.
+force_baseline_gperf=0
+cached_gperf_found=0
+if [[ "${TARGET_ARCH}" == "arm64" ]]; then
+    while IFS= read -r gperf_binary; do
+        cached_gperf_found=1
+        if [[ ! -x "$gperf_binary" ]] || ! "$gperf_binary" --version >/dev/null 2>&1; then
+            force_baseline_gperf=1
+            echo "Cached Conan gperf is not executable on the ARM64 baseline: ${gperf_binary}"
+            break
+        fi
+    done < <(find "${CONAN_HOME}/p" -path '*/p/bin/gperf' -print 2>/dev/null)
+fi
 # Static libraries copied from a newer Linux host can pass Conan's integrity
 # check while still referring to glibc symbols that do not exist in the
 # Ubuntu 18.04/glibc-2.27 baseline.  Detect the known failure signatures in
@@ -328,6 +343,11 @@ if [[ "${F4_CONAN_BOOTSTRAP_VIDEO:-0}" == "1" &&
     force_baseline_ninja=1
     echo "No cached Conan Ninja found; building it for the ARM64 baseline"
 fi
+if [[ "${F4_CONAN_BOOTSTRAP_VIDEO:-0}" == "1" &&
+    "${TARGET_ARCH}" == "arm64" && "${cached_gperf_found}" == "0" ]]; then
+    force_baseline_gperf=1
+    echo "No cached Conan gperf found; building it for the ARM64 baseline"
+fi
 if [[ "${force_baseline_m4}" == "1" ]]; then
     if [[ "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" ]]; then
         echo "error: trusted baseline contains an m4 binary incompatible with glibc 2.27" >&2
@@ -351,6 +371,14 @@ if [[ "${force_baseline_ninja}" == "1" ]]; then
     fi
     conan_build_args+=(--build='ninja/*')
     echo "Forcing only Ninja to rebuild for the ARM64 baseline"
+fi
+if [[ "${force_baseline_gperf}" == "1" ]]; then
+    if [[ "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" ]]; then
+        echo "error: trusted baseline contains a gperf binary incompatible with ARM64" >&2
+        exit 1
+    fi
+    conan_build_args+=(--build='gperf/*')
+    echo "Forcing only gperf to rebuild for the ARM64 baseline"
 fi
 for package in "${arm64_glibc_rebuild_packages[@]}"; do
     if [[ "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" ]]; then
