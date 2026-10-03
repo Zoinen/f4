@@ -432,6 +432,14 @@ done
 # when the cache post-step would otherwise be skipped after a job failure.
 touch "${build_dir}/.f4-conan-ready"
 touch "$baseline_marker"
+if [[ "${TARGET_ARCH}" == "arm64" &&
+    "${F4_CONAN_BOOTSTRAP_VIDEO:-0}" == "1" ]]; then
+    # The four ARM64 video libraries have now been built in the baseline
+    # container. Record that fact before host compilation so a later link/test
+    # failure can reuse them from the checkpoint instead of rebuilding them.
+    touch "${arm64_video_baseline_marker}"
+    echo "Recorded the repaired ARM64 video-library checkpoint"
+fi
 
 # Qt's host tools (notably qsb) must resolve the Conan-built Wayland and
 # related libraries before Ubuntu 18.04's system copies.  This affects only
@@ -526,11 +534,6 @@ go test -tags f4_embedded_qt_host \
     -run 'TestMaterializeEmbeddedQtHost|TestGeneratedEmbeddedQtHostPayload' ./internal/plughost
 echo "Embedded Qt payload tests passed"
 python ci/upload-conan-packages.py
-if [[ "${TARGET_ARCH}" == "arm64" &&
-    "${F4_CONAN_BOOTSTRAP_VIDEO:-0}" == "1" ]]; then
-    touch "${arm64_video_baseline_marker}"
-    echo "Recorded the repaired ARM64 video-library checkpoint"
-fi
 mkdir -p "$(dirname "${launcher_output}")"
 echo "Building static Go launcher"
 # The Qt-only launcher does not use the optional GPU FFI path.  Build goffi in
