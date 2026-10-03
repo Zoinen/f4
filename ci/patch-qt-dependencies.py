@@ -150,13 +150,37 @@ _FFMPEG_SOURCE_PATCH = _FFMPEG_SOURCE_ANCHOR + (
     '            "qt_find_package(VAAPI MODULE COMPONENTS",\n'
     '            strict=True,\n'
     '        )\n'
-) + _FFMPEG_MODULE_PATCH
+) + _FFMPEG_MODULE_PATCH + (
+    '        # The glibc 2.27 baseline can provide older V4L2 UAPI headers\n'
+    '        # without the 32-bit alpha pixel-format aliases introduced by\n'
+    '        # newer kernel headers. Keep Qt Multimedia\'s format table\n'
+    '        # buildable while preserving the Linux UAPI FOURCC values.\n'
+    '        qv4l2camera = os.path.join(\n'
+    '            self.source_folder, "qtmultimedia", "src", "plugins",\n'
+    '            "multimedia", "ffmpeg", "qv4l2camera.cpp"\n'
+    '        )\n'
+    '        replace_in_file(\n'
+    '            self,\n'
+    '            qv4l2camera,\n'
+    '            "#include <qloggingcategory.h>\\n",\n'
+    '            "#include <qloggingcategory.h>\\n"\n'
+    '            "\\n"\n'
+    '            "#ifndef V4L2_PIX_FMT_BGRA32\\n"\n'
+    '            "#define V4L2_PIX_FMT_BGRA32 v4l2_fourcc(\'R\', \'A\', \'2\', \'4\')\\n"\n'
+    '            "#endif\\n"\n'
+    '            "#ifndef V4L2_PIX_FMT_RGBA32\\n"\n'
+    '            "#define V4L2_PIX_FMT_RGBA32 v4l2_fourcc(\'A\', \'B\', \'2\', \'4\')\\n"\n'
+    '            "#endif\\n",\n'
+    '            strict=True,\n'
+    '        )\n'
+)
 _FFMPEG_SOURCE_MARKER = 'qtmultimedia_configure = os.path.join'
 _FFMPEG_MODULE_SOURCE_MARKER = (
     'qt_find_package(FFmpeg MODULE OPTIONAL_COMPONENTS'
 )
 _FFMPEG_VAAPI_MODULE_MARKER = 'qt_find_package(VAAPI MODULE COMPONENTS'
 _FFMPEG_CONFIG_SOURCE_MARKER = 'find_package(ffmpeg CONFIG QUIET)'
+_V4L2_FORMAT_MARKER = '#ifndef V4L2_PIX_FMT_BGRA32'
 _FFMPEG_TARGET_BRIDGE_MARKER = 'TARGET ffmpeg::${_lowerComponent}'
 _HOST_PATH_ANCHOR = (
     '            tc.cache_variables["QT_HOST_PATH"] = '
@@ -274,10 +298,11 @@ def _patch_ffmpeg(text: str) -> str:
         or text.count(_FFMPEG_VAAPI_MODULE_MARKER) < 2
         or _FFMPEG_CONFIG_SOURCE_MARKER not in text
         or _FFMPEG_TARGET_BRIDGE_MARKER not in text
+        or _V4L2_FORMAT_MARKER not in text
     ):
         raise SystemExit(
             "unexpected Qt recipe: existing FFmpeg source patch lacks module-mode "
-            "finders or Conan target bridge"
+            "finders, Conan target bridge, or V4L2 compatibility definitions"
         )
     if _FFMPEG_PACKAGE_INFO_MARKER not in text:
         if text.count(_FFMPEG_PACKAGE_INFO_ANCHOR) != 1:

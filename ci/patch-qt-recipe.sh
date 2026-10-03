@@ -67,6 +67,7 @@ if candidates:
             [[ "$(grep -Fc 'qt_find_package(VAAPI MODULE COMPONENTS' "${reusable_qt_recipe}/conanfile.py")" -ge 2 ]] && \
             grep -Fq 'find_package(ffmpeg CONFIG QUIET)' "${reusable_qt_recipe}/conanfile.py" && \
             grep -Fq 'TARGET ffmpeg::${_lowerComponent}' "${reusable_qt_recipe}/conanfile.py" && \
+            grep -Fq '#ifndef V4L2_PIX_FMT_BGRA32' "${reusable_qt_recipe}/conanfile.py" && \
             grep -Fq '"ffmpeg::avcodec"' "${reusable_qt_recipe}/conanfile.py" && \
             grep -Fq 'if(NOT TARGET Qt::qsb)' "${reusable_qt_recipe}/conanfile.py" && \
             grep -Fq 'native_qsb_config = os.path.join' "${reusable_qt_recipe}/conanfile.py" && \
@@ -134,6 +135,8 @@ grep -Fq 'qt_find_package(FFmpeg MODULE OPTIONAL_COMPONENTS' \
 grep -Fq 'find_package(ffmpeg CONFIG QUIET)' \
     "${qt_recipe_copy}/conanfile.py"
 grep -Fq 'TARGET ffmpeg::${_lowerComponent}' \
+    "${qt_recipe_copy}/conanfile.py"
+grep -Fq '#ifndef V4L2_PIX_FMT_BGRA32' \
     "${qt_recipe_copy}/conanfile.py"
 grep -Fq '"ffmpeg::avcodec"' \
     "${qt_recipe_copy}/conanfile.py"
