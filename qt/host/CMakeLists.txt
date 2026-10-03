@@ -489,6 +489,43 @@ if(F4_PORTABLE_STATIC AND UNIX AND NOT APPLE)
   f4_strip_static_cpp_runtime_metadata("${CMAKE_CURRENT_SOURCE_DIR}")
 endif()
 
+if(F4_QT_STATIC)
+  # Conan's imported Qt facade does not preserve the Svg dependency cycle on
+  # GNU ld.  Use the package aliases here, as the generated Qt6 targets can
+  # otherwise expand LINK_GROUP to an empty group.
+  if(MSVC)
+    set(F4_QT_STATIC_SVG_LINKS
+      CONAN_LIB::qt_Qt6_Svg_Qt6Svg_RELEASE
+      CONAN_LIB::qt_Qt6_QSvgPlugin_qsvg_RELEASE)
+  else()
+    set(F4_QT_STATIC_SVG_LINKS
+      "$<LINK_GROUP:RESCAN,CONAN_LIB::qt_Qt6_Svg_Qt6Svg_RELEASE,CONAN_LIB::qt_Qt6_QSvgPlugin_qsvg_RELEASE>")
+  endif()
+
+  # Qt Multimedia's static archive has private dependencies that are missing
+  # from some Conan-generated test-target interfaces.  Test executables use
+  # the same video-enabled Qt graph as the host, so carry those dependencies
+  # explicitly whenever the video option is enabled.
+  set(F4_QT_STATIC_VIDEO_LINKS)
+  if(F4_ENABLE_VIDEO_THUMBNAILS)
+    list(APPEND F4_QT_STATIC_VIDEO_LINKS Qt6::BundledTLSF)
+    if(WIN32)
+      list(APPEND F4_QT_STATIC_VIDEO_LINKS
+        avrt
+        Dwmapi
+        Dxva2
+        ksuser
+        mf
+        mfplat
+        mfreadwrite
+        mfuuid
+        propsys
+        uuid
+        windowsapp)
+    endif()
+  endif()
+endif()
+
 # ZoinGallery's QML tests are created before the host target is included, so
 # they cannot use the static-test helpers declared in the BUILD_TESTING block
 # below.  Give their executables the same self-contained Qt platform and QML
@@ -512,8 +549,8 @@ if(F4_QT_STATIC)
       target_link_libraries(${F4_ZOIN_STATIC_QML_TEST_TARGET} PRIVATE
         ${F4_REQUIRED_STATIC_QT_PLUGINS}
         ${F4_REQUIRED_STATIC_QML_PLUGINS}
-        Qt6::Svg
-        Qt6::QSvgPlugin
+        ${F4_QT_STATIC_SVG_LINKS}
+        ${F4_QT_STATIC_VIDEO_LINKS}
         ${F4_QT_QUICK_EFFECTS_LINK}
         ${F4_QT_QUICK_CONTROLS_BASIC_LINK})
       if(NOT TARGET Qt6::QuickEffects_resources_1)
@@ -563,14 +600,9 @@ if(F4_QT_STATIC)
         Qt6::QGifPlugin
         ${F4_QT_ICO_PLUGIN_TARGET}
         Qt6::QJpegPlugin)
-      if(MSVC)
-        target_link_libraries(${F4_ZOIN_STATIC_CORE_TEST_TARGET} PRIVATE
-          CONAN_LIB::qt_Qt6_Svg_Qt6Svg_RELEASE
-          CONAN_LIB::qt_Qt6_QSvgPlugin_qsvg_RELEASE)
-      else()
-        target_link_libraries(${F4_ZOIN_STATIC_CORE_TEST_TARGET} PRIVATE
-          "$<LINK_GROUP:RESCAN,CONAN_LIB::qt_Qt6_Svg_Qt6Svg_RELEASE,CONAN_LIB::qt_Qt6_QSvgPlugin_qsvg_RELEASE>")
-      endif()
+      target_link_libraries(${F4_ZOIN_STATIC_CORE_TEST_TARGET} PRIVATE
+        ${F4_QT_STATIC_SVG_LINKS}
+        ${F4_QT_STATIC_VIDEO_LINKS})
     endif()
   endforeach()
 endif()
@@ -882,6 +914,10 @@ if(BUILD_TESTING)
         tests/StaticQtTestPluginImports.cpp)
       target_link_libraries(${target} PRIVATE
         Qt6::QOffscreenIntegrationPlugin)
+      if(F4_ENABLE_VIDEO_THUMBNAILS)
+        target_link_libraries(${target} PRIVATE
+          ${F4_QT_STATIC_VIDEO_LINKS})
+      endif()
       if(WIN32)
         target_link_libraries(${target} PRIVATE
           Qt6::QWindowsIntegrationPlugin)
@@ -916,9 +952,7 @@ if(BUILD_TESTING)
         Qt6::QGifPlugin
         ${F4_QT_ICO_PLUGIN_TARGET}
         Qt6::QJpegPlugin
-        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:$<LINK_GROUP:RESCAN,CONAN_LIB::qt_Qt6_Svg_Qt6Svg_RELEASE,CONAN_LIB::qt_Qt6_QSvgPlugin_qsvg_RELEASE>>
-        $<$<CXX_COMPILER_ID:MSVC>:CONAN_LIB::qt_Qt6_Svg_Qt6Svg_RELEASE>
-        $<$<CXX_COMPILER_ID:MSVC>:CONAN_LIB::qt_Qt6_QSvgPlugin_qsvg_RELEASE>)
+        ${F4_QT_STATIC_SVG_LINKS})
     endif()
   endfunction()
 
