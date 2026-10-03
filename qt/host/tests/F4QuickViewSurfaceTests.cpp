@@ -5913,6 +5913,19 @@ Rectangle {
     QVERIFY(innerLoader);
     auto *viewer = innerLoader->property("item").value<QObject *>();
     QVERIFY(viewer);
+    viewer->setProperty("surfaceProgress", 0.5);
+    QTRY_COMPARE(fixture.window->property("normalSurfaceOpacity").toReal(), 0.5);
+    auto *splitter = fixture.item("mainPanelSplitter");
+    QVERIFY(splitter);
+    QVERIFY(splitter->isVisible());
+    QVERIFY(!splitter->isEnabled());
+    QVERIFY(splitter->z() < outerLoader->z());
+    for (int side : {0, 1}) {
+        auto *status = fixture.item(QString("panelStatus-%1").arg(side));
+        QVERIFY(status);
+        QVERIFY(status->isVisible());
+    }
+    viewer->setProperty("surfaceProgress", 1.0);
     viewer->setProperty("tabTitle", "next.jpg — 100%");
     QTRY_COMPARE(title->property("text").toString(), QString("next.jpg — 100%"));
     QCOMPARE(title->opacity(), 1.0);
