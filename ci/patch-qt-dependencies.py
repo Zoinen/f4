@@ -42,6 +42,25 @@ _FFMPEG_GENERATE_PATCH = _FFMPEG_GENERATE_ANCHOR + (
     '            )\n'
 )
 _FFMPEG_GENERATE_MARKER = 'tc.cache_variables["FFMPEG_DIR"]'
+_FFMPEG_PACKAGE_INFO_ANCHOR = (
+    '            if self.options.get_safe("with_pulseaudio", False):\n'
+    '                multimedia_reqs.append("pulseaudio::pulse")\n'
+    '            _create_module("Multimedia", multimedia_reqs)\n'
+)
+_FFMPEG_PACKAGE_INFO_PATCH = (
+    '            if self.options.get_safe("with_pulseaudio", False):\n'
+    '                multimedia_reqs.append("pulseaudio::pulse")\n'
+    '            if self.options.get_safe("with_ffmpeg", False):\n'
+    '                multimedia_reqs.extend([\n'
+    '                    "ffmpeg::avcodec",\n'
+    '                    "ffmpeg::avformat",\n'
+    '                    "ffmpeg::avutil",\n'
+    '                    "ffmpeg::swresample",\n'
+    '                    "ffmpeg::swscale",\n'
+    '                ])\n'
+    '            _create_module("Multimedia", multimedia_reqs)\n'
+)
+_FFMPEG_PACKAGE_INFO_MARKER = '"ffmpeg::avcodec"'
 _FFMPEG_SOURCE_ANCHOR = '        apply_conandata_patches(self)\n'
 _FFMPEG_MODULE_PATCH = (
     '        ffmpeg_find_module = os.path.join(\n'
@@ -259,6 +278,16 @@ def _patch_ffmpeg(text: str) -> str:
         raise SystemExit(
             "unexpected Qt recipe: existing FFmpeg source patch lacks module-mode "
             "finders or Conan target bridge"
+        )
+    if _FFMPEG_PACKAGE_INFO_MARKER not in text:
+        if text.count(_FFMPEG_PACKAGE_INFO_ANCHOR) != 1:
+            raise SystemExit(
+                "unexpected Qt recipe: Multimedia package-info anchor is absent "
+                "or ambiguous"
+            )
+        text = text.replace(
+            _FFMPEG_PACKAGE_INFO_ANCHOR,
+            _FFMPEG_PACKAGE_INFO_PATCH,
         )
     return text
 
