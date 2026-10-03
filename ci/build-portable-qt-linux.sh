@@ -202,6 +202,22 @@ while IFS= read -r m4_binary; do
         break
     fi
 done < <(find "${CONAN_HOME}/p" -type f -path '*/p/bin/m4' -print 2>/dev/null)
+# pkgconf is executed by xkbcommon's Meson build. A package built for another
+# architecture can still look like a Conan cache hit, then fail as if xcb were
+# absent. Inspect the executable itself and rebuild only this tiny build
+# requirement when an ARM64 cache contains no runnable copy.
+force_baseline_pkgconf=0
+cached_pkgconf_found=0
+if [[ "${TARGET_ARCH}" == "arm64" ]]; then
+    while IFS= read -r pkgconf_binary; do
+        cached_pkgconf_found=1
+        if [[ ! -x "$pkgconf_binary" ]] || ! "$pkgconf_binary" --version >/dev/null 2>&1; then
+            force_baseline_pkgconf=1
+            echo "Cached Conan pkgconf is not executable on the ARM64 baseline: ${pkgconf_binary}"
+            break
+        fi
+    done < <(find "${CONAN_HOME}/p" -type f -path '*/p/bin/pkgconf' -print 2>/dev/null)
+fi
 if [[ "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" &&
     -n "${F4_CONAN_REMOTE_URL:-}" ]]; then
     conan_build_args=(--build=never)
@@ -237,6 +253,13 @@ if [[ "${F4_CONAN_BOOTSTRAP_VIDEO:-0}" == "1" &&
     force_baseline_m4=1
     echo "No cached Conan m4 found; building it in the glibc 2.27 / GCC 11 container"
 fi
+if [[ "${F4_CONAN_BOOTSTRAP_VIDEO:-0}" == "1" &&
+    "${TARGET_ARCH}" == "arm64" && "${cached_pkgconf_found}" == "0" ]]; then
+    # Do not accept the first unqualified Artifactory pkgconf package on a
+    # cold ARM64 cache; build the executable in the target container instead.
+    force_baseline_pkgconf=1
+    echo "No cached Conan pkgconf found; building it for the ARM64 baseline"
+fi
 if [[ "${force_baseline_m4}" == "1" ]]; then
     if [[ "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" ]]; then
         echo "error: trusted baseline contains an m4 binary incompatible with glibc 2.27" >&2
@@ -244,6 +267,14 @@ if [[ "${force_baseline_m4}" == "1" ]]; then
     fi
     conan_build_args+=(--build='m4/*')
     echo "Forcing only m4 to rebuild in the glibc 2.27 / GCC 11 container"
+fi
+if [[ "${force_baseline_pkgconf}" == "1" ]]; then
+    if [[ "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" ]]; then
+        echo "error: trusted baseline contains a pkgconf binary incompatible with ARM64" >&2
+        exit 1
+    fi
+    conan_build_args+=(--build='pkgconf/*')
+    echo "Forcing only pkgconf to rebuild for the ARM64 baseline"
 fi
 
 # GLib's recipe adds elfutils solely for the GNOME `gresource` CLI. This Qt

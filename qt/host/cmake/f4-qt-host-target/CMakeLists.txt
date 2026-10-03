@@ -184,6 +184,20 @@ if(F4_ENABLE_VIDEO_THUMBNAILS)
 endif()
 if(WIN32 AND F4_QT_STATIC)
   target_link_libraries(f4-qt-host PRIVATE Rpcrt4 Usp10)
+  if(F4_ENABLE_VIDEO_THUMBNAILS AND F4_ENABLE_FFMPEG_BACKEND)
+    target_link_libraries(f4-qt-host PRIVATE
+      avrt
+      Dwmapi
+      Dxva2
+      ksuser
+      mf
+      mfplat
+      mfreadwrite
+      mfuuid
+      propsys
+      uuid
+      windowsapp)
+  endif()
 endif()
 if(USE_QWK)
   target_link_libraries(f4-qt-host PRIVATE QWindowKit::Quick)
@@ -292,6 +306,11 @@ if(F4_QT_STATIC)
       Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick)
     _f4_import_conan_qt_qml_backing_module(QuickLayouts
       Qt6::Core Qt6::Qml Qt6::Gui Qt6::Quick)
+    if(F4_ENABLE_VIDEO_THUMBNAILS)
+      # Qt Multimedia's static archive depends on this internal QtBase
+      # allocator target, which Conan's generated facade omits.
+      _f4_import_conan_qt_qml_backing_module(BundledTLSF Qt6::Core)
+    endif()
     if(NOT TARGET Qt6::QOffscreenIntegrationPlugin)
       find_library(_f4_qoffscreen_archive
         NAMES qoffscreen
@@ -467,7 +486,30 @@ if(F4_QT_STATIC)
         if(NOT TARGET Qt6::MultimediaPrivate)
           add_library(Qt6::MultimediaPrivate INTERFACE IMPORTED GLOBAL)
           set_target_properties(Qt6::MultimediaPrivate PROPERTIES
-            INTERFACE_LINK_LIBRARIES "Qt6::Multimedia;Qt6::Core;Qt6::Gui")
+            INTERFACE_LINK_LIBRARIES
+              "Qt6::Multimedia;Qt6::BundledTLSF;Qt6::Core;Qt6::Gui;Qt6::Concurrent;Qt6::Network")
+        endif()
+        set(_f4_qt_ffmpeg_private_links
+          Qt6::MultimediaPrivate
+          Qt6::BundledTLSF
+          Qt6::Multimedia
+          Qt6::Core
+          Qt6::Gui
+          Qt6::Concurrent
+          Qt6::Network)
+        if(WIN32)
+          list(APPEND _f4_qt_ffmpeg_private_links
+            avrt
+            ksuser
+            propsys
+            uuid
+            mf
+            mfplat
+            mfreadwrite
+            mfuuid
+            Dwmapi
+            Dxva2
+            windowsapp)
         endif()
         if(NOT TARGET Qt6::FFmpegMediaPluginImplPrivate)
           find_library(_f4_ffmpeg_impl_archive
@@ -483,9 +525,10 @@ if(F4_QT_STATIC)
           add_library(Qt6::FFmpegMediaPluginImplPrivate STATIC IMPORTED GLOBAL)
           set_target_properties(Qt6::FFmpegMediaPluginImplPrivate PROPERTIES
             IMPORTED_LOCATION "${_f4_ffmpeg_impl_archive}"
-            INTERFACE_LINK_LIBRARIES "Qt6::MultimediaPrivate")
+            INTERFACE_LINK_LIBRARIES "${_f4_qt_ffmpeg_private_links}")
           unset(_f4_ffmpeg_impl_archive CACHE)
         endif()
+        unset(_f4_qt_ffmpeg_private_links)
         set(F4_QFFMPEG_PLUGIN_IMPL_TARGET
           Qt6::FFmpegMediaPluginImplPrivate)
         set(F4_QT_NEEDS_FFMPEG ON)

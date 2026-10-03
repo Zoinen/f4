@@ -87,6 +87,12 @@ if(F4_PORTABLE_STATIC)
     find_package(Qt6 COMPONENTS WaylandClient REQUIRED)
     find_package(wayland REQUIRED)
     find_package(xkbcommon REQUIRED)
+
+    # Qt Multimedia uses shm_open on the Ubuntu 18.04/glibc-2.27 baseline.
+    # The Conan Qt facade does not propagate librt, so static test targets
+    # otherwise fail after the production host has already linked.
+    set_property(TARGET Qt6::Core APPEND PROPERTY
+      INTERFACE_LINK_LIBRARIES rt)
   endif()
 
   # A native Qt installation exposes Qt6::Core as STATIC_LIBRARY, while the
