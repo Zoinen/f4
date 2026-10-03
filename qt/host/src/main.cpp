@@ -497,6 +497,9 @@ int main(int argc, char *argv[])
                                               &textRenderingPolicy);
     engine.rootContext()->setContextProperty(QStringLiteral("qtShell"), &controller);
     engine.rootContext()->setContextProperty(QStringLiteral("qtGallery"), &galleryBridge);
+    engine.rootContext()->setContextProperty(
+        QStringLiteral("f4SlowViewerTransition"),
+        qEnvironmentVariable("F4_QT_SLOW_VIEWER_TRANSITION") == QStringLiteral("1"));
     engine.rootContext()->setContextProperty(QStringLiteral("qtIcons"), &iconSet);
     engine.rootContext()->setContextProperty(QStringLiteral("f4GuiFontFamily"), guiFontFamily);
     engine.rootContext()->setContextProperty(

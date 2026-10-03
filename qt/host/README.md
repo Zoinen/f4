@@ -348,6 +348,11 @@ Runtime lookup order from Go:
 4. the equivalent app-bundle or bare paths below
    `qt/host/build/bin/<config>` for local development
 
+For visual debugging of the panel-to-image-viewer transition, start f4 with
+`F4_QT_SLOW_VIEWER_TRANSITION=1`. This makes opening and closing 20 times slower
+(3 seconds instead of the normal 150 ms). The setting is opt-in and is read
+when the Qt host starts; restart without it to restore normal timing.
+
 Semantic dialog edits keep text mutation in Go's `vtui.Edit`. QML forwards
 modified keys even while the native text input owns focus, and publishes pointer
 selection as `control.select` with rune-based `anchor` and `cursor` offsets.

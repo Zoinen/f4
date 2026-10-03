@@ -310,7 +310,6 @@ ApplicationWindow {
     readonly property bool nativeTwoPanelSurfaceVisible:
         isAppScene() && !needsFallbackGrid() && !hasDocumentSurface()
         && !hasOperationsQueueSurface() && galleryControllerApi
-        && !galleryControllerApi.viewerVisible
         && !terminalActive()
     readonly property real galleryViewerProgress: {
         const surfaceLoader = galleryViewerLayer ? galleryViewerLayer.item : null

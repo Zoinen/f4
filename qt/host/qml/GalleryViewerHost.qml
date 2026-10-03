@@ -11,6 +11,11 @@ FocusScope {
     property var hostWindow: null
     property bool managedPresentation: bridge && bridge.quickViewSide !== undefined && bridge.quickViewSide >= 0
     property real fullViewProgress: 1
+    // Development-only opt-in supplied by the Qt host at startup.
+    readonly property bool slowViewerTransition:
+        typeof f4SlowViewerTransition !== "undefined" && f4SlowViewerTransition
+    readonly property bool transitionDebug:
+        Qt.application.arguments.indexOf("--debug-viewer-transition") >= 0
     readonly property bool docked: managedPresentation && bridge.viewerState === 1
     function focusSource() {
         if (!bridge) return
@@ -114,10 +119,34 @@ FocusScope {
     Keys.onPressed: event => { event.accepted = true }
     Keys.onReleased: event => { event.accepted = true }
 
+    // The panel exposes its cursor underlay during the handoff, so its own
+    // selection surface becomes transparent. Carry the fill in the moving
+    // geometry behind the image; the border and caption remain above it.
+    Rectangle {
+        id: transitionFill
+        objectName: "galleryViewerTransitionFill"
+        readonly property var sourceEntry: transitionBorder.sourceSurface
+                ? transitionBorder.sourceSurface.entry : null
+        z: -1
+        visible: transitionBorder.visible
+        opacity: transitionBorder.opacity
+        x: transitionBorder.x
+        y: transitionBorder.y
+        width: transitionBorder.width
+        height: transitionBorder.height
+        radius: transitionBorder.radius
+        color: sourceEntry
+               ? (sourceEntry.detailsMode
+                  ? (sourceEntry.visualModel.cursorBackground
+                     || sourceEntry.panelRoot.cursorBackgroundColor)
+                  : sourceEntry.panelRoot.cursorColor)
+               : "transparent"
+    }
+
     ZG.GalleryViewer {
         id: galleryViewer
         objectName: "embeddedGalleryViewer"
-        animationDuration: 150
+        animationDuration: host.slowViewerTransition ? 3000 : 150
         anchors.fill: parent
         focus: host.surfaceActive
         autoFocus: host.surfaceActive
@@ -135,6 +164,15 @@ FocusScope {
         theme: host.theme
         hostCapabilities: host.hostCapabilities
         devicePixelRatio: host.devicePixelRatio
+        onTransitioningChanged: {
+            if (host.transitionDebug)
+                console.debug("[FIX:viewer-transition] transitioning=", transitioning,
+                              "progress=", transitionProgress,
+                              "fillColor=", transitionFill.color,
+                              "captionWidth=", transitionCaption.width,
+                              "sourceOpacity=", transitionBorder.sourceSurface
+                              ? transitionBorder.sourceSurface.opacity : -1)
+        }
         onNavigationRequested: (entryId, sourceIndex) => {
             if (!host.bridge || !host.session || entryId === "")
                 return
@@ -201,13 +239,6 @@ FocusScope {
         border.color: sourceSurface ? sourceSurface.visualBorderColor : "transparent"
         radius: sourceSurface ? sourceSurface.radius * (1 - progress) : 0
         antialiasing: true
-        Binding {
-            target: transitionBorder.sourceSurface
-            property: "opacity"
-            value: 0
-            when: transitionBorder.visible
-            restoreMode: Binding.RestoreBindingOrValue
-        }
     }
 
     // Carry the source caption above the expanding image. Leaving it in the
@@ -218,13 +249,17 @@ FocusScope {
         readonly property var sourceLabel: host.sourcePanel
                 && typeof host.sourcePanel.currentItemCaption === "function"
                 ? host.sourcePanel.currentItemCaption() : null
-        readonly property var sourceEntry: sourceLabel
+        readonly property bool masonryCaption: sourceLabel
+                && String(sourceLabel.objectName).startsWith("galleryMasonryLabel-")
+        readonly property var sourceVisual: sourceLabel
+                ? (masonryCaption ? sourceLabel.parent : sourceLabel) : null
+        readonly property var sourceEntry: masonryCaption
                 ? sourceLabel.parent.parent.entry : null
         readonly property real progress: galleryViewer.transitionProgress
-        readonly property rect sourceRect: sourceLabel
-                ? sourceLabel.parent.parent.mapToItem(host,
-                    sourceLabel.parent.x, sourceLabel.parent.y,
-                    sourceLabel.parent.width, sourceLabel.parent.height)
+        readonly property rect sourceRect: sourceVisual
+                ? sourceVisual.parent.mapToItem(host,
+                    sourceVisual.x, sourceVisual.y,
+                    sourceVisual.width, sourceVisual.height)
                 : Qt.rect(0, 0, 0, 0)
         // Use the mathematical endpoint, not the live image item: its fit,
         // translation and decoded dimensions settle independently at startup.
@@ -234,14 +269,16 @@ FocusScope {
         visible: sourceLabel !== null && galleryViewer.transitionHasGeometry
                  && progress < 1 && galleryViewer.viewerContentVisible
         opacity: 1 - progress
-        x: galleryViewer.lerp(sourceRect.x, imageRect.x, progress)
+        x: galleryViewer.lerp(sourceRect.x,
+                             imageRect.x + (imageRect.width - sourceRect.width) / 2,
+                             progress)
         y: galleryViewer.lerp(sourceRect.y,
                              imageRect.y + imageRect.height - height, progress)
-        width: galleryViewer.lerp(sourceRect.width, imageRect.width, progress)
+        width: sourceRect.width
         height: sourceRect.height
         clip: true
         Binding {
-            target: transitionCaption.sourceLabel ? transitionCaption.sourceLabel.parent : null
+            target: transitionCaption.sourceVisual
             property: "opacity"
             value: 0
             when: transitionCaption.visible
@@ -257,15 +294,24 @@ FocusScope {
         Text {
             objectName: "galleryViewerTransitionCaptionText"
             anchors.fill: parent
-            anchors.margins: 6
+            anchors.margins: transitionCaption.masonryCaption ? 6 : 0
             text: transitionCaption.sourceLabel ? transitionCaption.sourceLabel.text : ""
             textFormat: transitionCaption.sourceLabel
                         ? transitionCaption.sourceLabel.textFormat : Text.PlainText
             font: transitionCaption.sourceLabel ? transitionCaption.sourceLabel.font : Qt.font({pixelSize: 12})
             color: transitionCaption.sourceLabel ? transitionCaption.sourceLabel.color : "white"
-            horizontalAlignment: Text.AlignHCenter
-            verticalAlignment: Text.AlignVCenter
-            elide: Text.ElideMiddle
+            horizontalAlignment: transitionCaption.sourceLabel
+                                 ? transitionCaption.sourceLabel.horizontalAlignment
+                                 : Text.AlignHCenter
+            verticalAlignment: transitionCaption.sourceLabel
+                               ? transitionCaption.sourceLabel.verticalAlignment
+                               : Text.AlignVCenter
+            elide: transitionCaption.sourceLabel
+                   ? transitionCaption.sourceLabel.elide : Text.ElideMiddle
+            wrapMode: transitionCaption.sourceLabel
+                      ? transitionCaption.sourceLabel.wrapMode : Text.NoWrap
+            maximumLineCount: transitionCaption.sourceLabel
+                              ? transitionCaption.sourceLabel.maximumLineCount : 1
         }
     }
 }

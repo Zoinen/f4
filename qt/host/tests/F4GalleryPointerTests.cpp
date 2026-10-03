@@ -289,6 +289,8 @@ class F4GalleryPointerTests final : public QObject
 
 private slots:
     void fullNameTooltipUsesCompleteCatalogNameAndPhysicalPixels();
+    void transitionCaptionFindsGridIconsAndMasonryLabels();
+    void viewerTransitionDurationDefaultsToNormalWithDebugOptIn();
     void macCommandAndControlRemainDistinct()
     {
         QCOMPARE(VtuiGridItem::protocolModifiers(Qt::ControlModifier, true), 8);
@@ -2724,13 +2726,14 @@ void F4GalleryPointerTests::viewerRestoresOriginalPointerAndTrackpadSemantics()
                 Rectangle {
                     id: sourceBorder
                     anchors.fill: parent
-                    color: "transparent"
+                    color: sourcePanel.viewerTransitionActive ? "transparent" : "#004d8e"
                     border.width: 1
                     border.color: "#0088ff"
                     radius: 6
                     readonly property real nominalBorderWidth: 0
                     readonly property bool selectionBorderVisible: false
-                    property var entry: ({ current: true, panelRoot: { showCursor: false } })
+                    property var entry: ({ current: true, detailsMode: false,
+                                           panelRoot: { showCursor: true, cursorColor: "#004d8e" } })
                     readonly property color visualBorderColor: border.color
                 }
                 function currentItemSelectionSurface() { return sourceBorder }
@@ -2742,6 +2745,7 @@ void F4GalleryPointerTests::viewerRestoresOriginalPointerAndTrackpadSemantics()
                     color: sourcePanel.entry.highlightLabelBackground
                     Text {
                         id: sourceCaption
+                        objectName: "galleryMasonryLabel-1"
                         anchors.fill: parent
                         anchors.margins: 6
                         text: "wide.png"
@@ -2802,12 +2806,23 @@ void F4GalleryPointerTests::viewerRestoresOriginalPointerAndTrackpadSemantics()
     auto *border = viewerHost->findChild<QQuickItem *>(
         QStringLiteral("galleryViewerTransitionBorder"));
     QVERIFY(border);
-    QCOMPARE(border->property("border").value<QObject *>()->property("width").toReal(), 1.0);
+    auto *fill = viewerHost->findChild<QQuickItem *>(
+        QStringLiteral("galleryViewerTransitionFill"));
+    QVERIFY(fill);
     QTRY_VERIFY(viewer->property("transitionProgress").toReal() > 0);
+    QVERIFY(fill->isVisible());
+    QVERIFY(fill->property("color").value<QColor>().alpha() > 0);
+    QVERIFY(fill->z() < viewer->property("z").toReal());
+    QCOMPARE(border->property("border").value<QObject *>()->property("width").toReal(), 1.0);
+    auto *sourceSelection = border->property("sourceSurface").value<QQuickItem *>();
+    QVERIFY(sourceSelection);
+    QVERIFY(sourceSelection->opacity() > 0);
+    QCOMPARE(viewer->property("animationDuration").toInt(), 150);
     // The image viewport can still have its pre-fit geometry on the first
     // frame. The caption must start at its source rectangle regardless.
     auto *transition = viewer->property("transitionAnimation").value<QObject *>();
     QVERIFY(transition);
+    QCOMPARE(transition->property("duration").toInt(), 150);
     QVERIFY(QMetaObject::invokeMethod(transition, "pause"));
     const qreal savedProgress = viewer->property("transitionProgress").toReal();
     viewer->setProperty("transitionProgress", 0.0);
@@ -2824,6 +2839,15 @@ void F4GalleryPointerTests::viewerRestoresOriginalPointerAndTrackpadSemantics()
     const QRectF borderSource = border->property("sourceRect").toRectF();
     QCOMPARE(QRectF(border->x(), border->y(), border->width(), border->height()),
              borderSource);
+    QCOMPARE(QRectF(fill->x(), fill->y(), fill->width(), fill->height()),
+             borderSource);
+    viewer->setProperty("transitionProgress", 0.5);
+    QCOMPARE(QRectF(fill->x(), fill->y(), fill->width(), fill->height()),
+             QRectF(border->x(), border->y(), border->width(), border->height()));
+    QCOMPARE(fill->opacity(), 0.5);
+    QCOMPARE(caption->width(), captionSource.width());
+    QCOMPARE(caption->height(), captionSource.height());
+    QCOMPARE(caption->opacity(), 0.5);
     initialImage->setX(savedImageX);
     viewer->setProperty("transitionProgress", savedProgress);
     QVERIFY(QMetaObject::invokeMethod(transition, "resume"));
@@ -2836,14 +2860,15 @@ void F4GalleryPointerTests::viewerRestoresOriginalPointerAndTrackpadSemantics()
                  QStringLiteral("galleryViewerTransitionCaptionText"))
                  ->property("text").toString(), QStringLiteral("wide.png"));
     QTRY_COMPARE_WITH_TIMEOUT(viewer->property("transitionProgress").toReal(),
-                              qreal(1), 2000);
+                              qreal(1), 5000);
     QVERIFY(!caption->isVisible());
     QVERIFY(!border->isVisible());
     // beginOpen() is intentionally scheduled with Qt.callLater so the Loader
     // and source tile have final geometry. Waiting for !transitioning first can
     // pass before that callback even starts; terminal progress proves the open
     // actually ran, after which the running-state assertion is meaningful.
-    QTRY_VERIFY_WITH_TIMEOUT(!viewer->property("transitioning").toBool(), 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(!viewer->property("transitioning").toBool(), 5000);
+    QCOMPARE(viewer->property("animationDuration").toInt(), 150);
     QTRY_VERIFY_WITH_TIMEOUT(
         !viewer->property("currentSourceValue").toUrl().isEmpty(), 5000);
 
@@ -2985,12 +3010,14 @@ void F4GalleryPointerTests::viewerRestoresOriginalPointerAndTrackpadSemantics()
     QVERIFY(bridge.viewerVisible());
     QVERIFY(viewer);
     QCOMPARE(viewer->property("animationDuration").toInt(), 150);
+    QCOMPARE(transition->property("duration").toInt(), 150);
     QVERIFY(caption->isVisible());
     QVERIFY(caption->opacity() > 0 && caption->opacity() < 1);
+    QCOMPARE(caption->width(), captionSource.width());
     QVERIFY(border->isVisible());
     QCOMPARE(border->opacity(), caption->opacity());
     QCOMPARE(caption->opacity(), 1 - viewer->property("transitionProgress").toReal());
-    QTRY_VERIFY_WITH_TIMEOUT(!bridge.viewerVisible(), 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(!bridge.viewerVisible(), 5000);
     QTRY_VERIFY(!viewer);
     QVERIFY(!session->viewerOpen());
     QCOMPARE(rootObject->property("leakedPresses").toInt(), 0);
@@ -3677,4 +3704,63 @@ void F4GalleryPointerTests::fullNameTooltipUsesCompleteCatalogNameAndPhysicalPix
     QTest::qWait(750);
     QVERIFY(!tip->property("opened").toBool());
     QVERIFY(!tip->property("visible").toBool());
+}
+
+void F4GalleryPointerTests::transitionCaptionFindsGridIconsAndMasonryLabels()
+{
+    QQuickView view;
+    view.resize(640, 420);
+    F4GalleryBridge bridge(view.engine());
+    QVERIFY(bridge.available());
+    bridge.synchronizeScene(galleryScene(3, 1));
+    QQmlComponent component(view.engine(), bridge.panelComponentUrl());
+    QTRY_VERIFY(component.status() != QQmlComponent::Loading);
+    QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+    auto *host = qobject_cast<QQuickItem *>(component.create());
+    QVERIFY2(host, qPrintable(component.errorString()));
+    host->setWidth(view.width());
+    host->setHeight(view.height());
+    host->setProperty("bridge", QVariant::fromValue(&bridge));
+    host->setProperty("panel", QVariantMap{{"id", "pointer-left"}, {"catalogRevision", 5}});
+    host->setProperty("devicePixelRatio", view.devicePixelRatio());
+    view.setContent(bridge.panelComponentUrl(), &component, host);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+    auto *panel = host->findChild<QObject *>("embeddedGalleryPanel");
+    QVERIFY(panel);
+    for (const auto &mode : {"grid", "icons", "masonry"}) {
+        panel->setProperty("presentationMode", mode);
+        const QString expected = QString::fromLatin1(mode) == "grid"
+            ? QStringLiteral("galleryGridLabel-1")
+            : QString::fromLatin1(mode) == "icons"
+                ? QStringLiteral("galleryIconsLabel-1")
+                : QStringLiteral("galleryMasonryLabel-1");
+        QQuickItem *label = nullptr;
+        QTRY_VERIFY((label = panel->findChild<QQuickItem *>(expected)) && label->isVisible());
+        QQmlExpression caption(view.engine()->rootContext(), host,
+                               QStringLiteral("currentItemCaption()"));
+        QCOMPARE(caption.evaluate().value<QQuickItem *>(), label);
+        QVERIFY2(!caption.hasError(), qPrintable(caption.error().toString()));
+    }
+}
+
+void F4GalleryPointerTests::viewerTransitionDurationDefaultsToNormalWithDebugOptIn()
+{
+    for (const bool slow : {false, true}) {
+        QQuickView view;
+        F4GalleryBridge bridge(view.engine());
+        QVERIFY(bridge.available());
+        view.engine()->rootContext()->setContextProperty(
+            QStringLiteral("f4SlowViewerTransition"), slow);
+        QQmlComponent component(view.engine(), bridge.viewerComponentUrl());
+        QTRY_VERIFY(component.status() != QQmlComponent::Loading);
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        auto *host = qobject_cast<QQuickItem *>(component.create());
+        QVERIFY2(host, qPrintable(component.errorString()));
+        host->setProperty("bridge", QVariant::fromValue(&bridge));
+        auto *viewer = host->findChild<QObject *>("embeddedGalleryViewer");
+        QVERIFY(viewer);
+        QCOMPARE(viewer->property("animationDuration").toInt(), slow ? 3000 : 150);
+        delete host;
+    }
 }

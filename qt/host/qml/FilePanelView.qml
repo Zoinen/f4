@@ -871,7 +871,6 @@ Rectangle {
         anchors.margins: hostWindow.snapPx(8)
         width: Math.min(implicitWidth, Math.max(1, parent.width - 2 * anchors.margins))
         height: implicitHeight
-        visible: !panelRoot.viewerVisible
         z: 3
     }
 }

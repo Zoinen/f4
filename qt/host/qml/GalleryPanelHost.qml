@@ -304,7 +304,14 @@ FocusScope {
     }
 
     function currentItemCaption() {
-        return currentItemDecoration("galleryMasonryLabel-")
+        const mode = embeddedGalleryPanel.presentationMode
+        if (mode === "grid")
+            return currentItemDecoration("galleryGridLabel-")
+        if (mode === "icons")
+            return currentItemDecoration("galleryIconsLabel-")
+        if (mode === "masonry")
+            return currentItemDecoration("galleryMasonryLabel-")
+        return null
     }
 
     function currentItemSelectionSurface() {
