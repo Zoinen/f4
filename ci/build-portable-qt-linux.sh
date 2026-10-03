@@ -182,7 +182,7 @@ target_packages=(
     brotli bzip2 double-conversion expat fontconfig freetype glib
     harfbuzz icu jasper lcms libde265 libffi libheif libiconv libjpeg-turbo
     libmount libpng libraw libselinux libtiff libwebp libxml2 md4c msgpack-cxx
-    openssl pcre2 qt sqlite3 wayland xkbcommon xz_utils zlib zstd
+    ffmpeg openssl pcre2 qt sqlite3 wayland xkbcommon xz_utils zlib zstd
 )
 baseline_marker="$CONAN_HOME/p/.f4-glibc-2.27-gcc11-ready"
 conan_build_args=(--build=missing)
@@ -191,6 +191,15 @@ if [[ "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" &&
     conan_build_args=(--build=never)
     echo "Using the audited glibc 2.27 / GCC 11 Conan graph from f4-conan"
     echo "Trusted baseline mode forbids source fallback; missing packages fail fast"
+elif [[ "${F4_CONAN_BOOTSTRAP_VIDEO:-0}" == "1" ]]; then
+    # The video graph is intentionally bootstrapped from the existing
+    # Artifactory baseline. Reuse every matching remote package and compile
+    # only the new Qt Multimedia/FFmpeg nodes (or any genuinely missing
+    # transitive node) inside this Ubuntu 18.04/GCC-11 container. This keeps a
+    # cold GitHub cache from turning a feature bootstrap into a full graph
+    # rebuild while preserving the portable libc contract.
+    echo "Bootstrapping the video graph from the audited remote baseline"
+    echo "Missing packages will be built in the glibc 2.27 / GCC 11 container"
 elif [[ ! -f "$baseline_marker" ]]; then
     conan_build_args+=(--build='m4/*')
     conan_build_args+=(--build='ninja/*')
@@ -212,6 +221,8 @@ for attempt in 1 2 3; do
         -s:h build_type=Release -s:h compiler.cppstd=gnu20 \
         -s:b build_type=Release -s:b compiler.cppstd=gnu20 \
         -o:h 'qt/*:shared=False' \
+        -o:h 'qt/host:with_video_thumbnails=True' \
+        -o:h 'qt/host:with_ffmpeg_backend=True' \
         -o:h 'qt/*:qtwayland=True' \
         -o:h 'qt/*:with_egl=True' \
         -o:h 'qt/*:with_libjpeg=libjpeg-turbo' \
@@ -260,7 +271,8 @@ bash ci/build-qwindowkit.sh "$PWD/${build_dir}" Release static
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_PREFIX_PATH="$PWD/build/qwindowkit-install" \
     -DQWindowKit_DIR="$PWD/build/qwindowkit-install/lib/cmake/QWindowKit" \
-    -DBUILD_TESTING=ON -DUSE_QWK=ON -DF4_PORTABLE_STATIC=ON
+    -DBUILD_TESTING=ON -DUSE_QWK=ON -DF4_PORTABLE_STATIC=ON \
+    -DF4_ENABLE_VIDEO_THUMBNAILS=ON -DF4_ENABLE_FFMPEG_BACKEND=ON
 # Keep the glibc-baseline runner deterministic.  Some hosted Linux images
 # expose a very large virtual CPU count; letting Ninja use all of it can
 # starve Qt's long-running AUTOMOC/moc --collect-json jobs and leave the job

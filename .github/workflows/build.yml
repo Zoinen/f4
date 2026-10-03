@@ -21,6 +21,11 @@ on:
         required: false
         default: "on"
         type: string
+      bootstrap_video_dependencies:
+        description: "Build and publish missing Qt Multimedia/FFmpeg packages"
+        required: false
+        default: false
+        type: boolean
 
 # A newer push supersedes the run in flight: with ~30 jobs per run and 20
 # concurrent runners on the free tier, two overlapping runs queue each other
@@ -407,8 +412,9 @@ jobs:
         path: |
           .conan2
           build/qwindowkit-install
-        key: qt-host-6.11.1-darwin-${{ runner.arch }}-v3
+        key: qt-host-6.11.1-darwin-${{ runner.arch }}-video-v4
         restore-keys: |
+          qt-host-6.11.1-darwin-${{ runner.arch }}-video-v4
           qt-host-6.11.1-darwin-${{ runner.arch }}-v3
 
     - name: Configure Conan binary remote
@@ -441,6 +447,8 @@ jobs:
         fi
         conan install qt/host --build=missing \
           -s:h build_type=Release -s:h compiler.cppstd=20 \
+          -o:h 'qt/host:with_video_thumbnails=True' \
+          -o:h 'qt/host:with_ffmpeg_backend=True' \
           -c:a '*/*:tools.cmake.cmaketoolchain:extra_variables={"CMAKE_POLICY_VERSION_MINIMUM":{"cache":True,"type":"STRING","value":"3.5"}}' \
           -c:a '*/*:tools.cmake:configure_args=["-DCMAKE_POLICY_VERSION_MINIMUM=3.5"]' \
           -c tools.system.package_manager:mode=install \
@@ -456,6 +464,7 @@ jobs:
         cmake -S qt/host -B qt/host/build-ci -G Ninja \
           -DCMAKE_TOOLCHAIN_FILE="$PWD/qt/host/build-ci/conan_toolchain.cmake" \
           -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DUSE_QWK=ON \
+          -DF4_ENABLE_VIDEO_THUMBNAILS=ON -DF4_ENABLE_FFMPEG_BACKEND=ON \
           -DCMAKE_PREFIX_PATH="$PWD/build/qwindowkit-install"
         cmake --build qt/host/build-ci --config Release --parallel 4
         if [[ "$RUNNER_OS" == "Windows" ]]; then
@@ -869,8 +878,10 @@ jobs:
         # Do not hash this workflow: release packaging and macOS checks must
         # not invalidate the native Linux/Windows Conan dependency graph.
         path: ${{ env.CONAN_HOME }}/p
-        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-complete-${{ hashFiles('qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1', 'ci/patches/qwindowkit-default-maximize-hint.patch', 'ci/patches/libiconv-1.17-fix-error-function-declaration-without-prototype.patch', 'ci/configure-conan-remote.sh', 'ci/patch-qt-recipe.sh', 'ci/patch-qt-dependencies.py', 'ci/patch-qt-qmltools-recipe.py', 'ci/patch-bzip2-recipe.py', 'ci/patch-bzip2-recipe.sh', 'ci/patch-libgettext-recipe.py', 'ci/patch-libgettext-recipe.sh', 'ci/patch-libiconv-recipe.py', 'ci/patch-libiconv-recipe.sh', 'ci/patch-libffi-recipe.py', 'ci/patch-libffi-recipe.sh') }}
+        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v7-video-complete-${{ hashFiles('qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1', 'ci/patches/qwindowkit-default-maximize-hint.patch', 'ci/patches/libiconv-1.17-fix-error-function-declaration-without-prototype.patch', 'ci/configure-conan-remote.sh', 'ci/patch-qt-recipe.sh', 'ci/patch-qt-dependencies.py', 'ci/patch-qt-qmltools-recipe.py', 'ci/patch-bzip2-recipe.py', 'ci/patch-bzip2-recipe.sh', 'ci/patch-libgettext-recipe.py', 'ci/patch-libgettext-recipe.sh', 'ci/patch-libiconv-recipe.py', 'ci/patch-libiconv-recipe.sh', 'ci/patch-libffi-recipe.py', 'ci/patch-libffi-recipe.sh') }}
         restore-keys: |
+          portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v7-video-complete-
+          portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v7-video-checkpoint-
           portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-complete-
           portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-checkpoint-
 
@@ -887,7 +898,13 @@ jobs:
       env:
         F4_CONAN_TOKEN: ${{ secrets.F4_CONAN_REMOTE_TOKEN }}
         F4_CONAN_UPLOAD_TOKEN: ${{ secrets.F4_CONAN_UPLOAD_TOKEN }}
-        F4_CONAN_TRUST_REMOTE_BASELINE: '1'
+        # The zoin branch is the dependency bootstrap lane: it may build only
+        # packages missing from the audited baseline remote and publish them.
+        # Tagged releases stay fail-fast and consume the completed graph with
+        # --build=never. A manual dispatch can opt into the same bootstrap
+        # behavior when the remote needs repair without another zoin commit.
+        F4_CONAN_TRUST_REMOTE_BASELINE: ${{ (github.ref == 'refs/heads/zoin' || (github.event_name == 'workflow_dispatch' && inputs.bootstrap_video_dependencies)) && '0' || '1' }}
+        F4_CONAN_BOOTSTRAP_VIDEO: ${{ (github.ref == 'refs/heads/zoin' || (github.event_name == 'workflow_dispatch' && inputs.bootstrap_video_dependencies)) && '1' || '0' }}
       run: |
         go_root="$(go env GOROOT)"
         set +e
@@ -900,6 +917,7 @@ jobs:
           -e F4_CONAN_TOKEN \
           -e F4_CONAN_UPLOAD_TOKEN \
           -e F4_CONAN_TRUST_REMOTE_BASELINE \
+          -e F4_CONAN_BOOTSTRAP_VIDEO \
           -v "$PWD:/workspace" \
           -v "$go_root:/opt/go:ro" \
           -w /workspace \
@@ -1043,6 +1061,8 @@ jobs:
             -s:b build_type=Release -s:b compiler.cppstd=20 `
             -s:b compiler.runtime=static `
             -o:h "qt/*:shared=False" `
+            -o:h "qt/host:with_video_thumbnails=True" `
+            -o:h "qt/host:with_ffmpeg_backend=True" `
             -o:b "qt/*:shared=False" `
             -o:b "qt/*:qtdeclarative=True" `
             -o:b "qt/*:qtshadertools=True" `
@@ -1104,6 +1124,7 @@ jobs:
           "-DCMAKE_PREFIX_PATH=$PWD/build/qwindowkit-install" `
           "-DQWindowKit_DIR=$PWD/build/qwindowkit-install/lib/cmake/QWindowKit" `
           "-DBUILD_TESTING=$buildTesting" -DUSE_QWK=ON -DF4_PORTABLE_STATIC=ON `
+          -DF4_ENABLE_VIDEO_THUMBNAILS=ON -DF4_ENABLE_FFMPEG_BACKEND=ON `
           @qtCrossToolArgs
         cmake --build $buildDir --config Release --parallel 4
         New-Item -ItemType Directory -Force (Join-Path $buildDir '.diagnostics') | Out-Null
@@ -1191,14 +1212,14 @@ jobs:
       uses: actions/cache/save@v4
       with:
         path: ${{ env.CONAN_HOME }}/p
-        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-checkpoint-${{ hashFiles('qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1', 'ci/patches/qwindowkit-default-maximize-hint.patch', 'ci/patches/libiconv-1.17-fix-error-function-declaration-without-prototype.patch', 'ci/configure-conan-remote.sh', 'ci/patch-qt-recipe.sh', 'ci/patch-qt-dependencies.py', 'ci/patch-qt-qmltools-recipe.py', 'ci/patch-bzip2-recipe.py', 'ci/patch-bzip2-recipe.sh', 'ci/patch-libgettext-recipe.py', 'ci/patch-libgettext-recipe.sh', 'ci/patch-libiconv-recipe.py', 'ci/patch-libiconv-recipe.sh', 'ci/patch-libffi-recipe.py', 'ci/patch-libffi-recipe.sh') }}-${{ github.run_id }}-${{ github.run_attempt }}
+        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v7-video-checkpoint-${{ hashFiles('qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1', 'ci/patches/qwindowkit-default-maximize-hint.patch', 'ci/patches/libiconv-1.17-fix-error-function-declaration-without-prototype.patch', 'ci/configure-conan-remote.sh', 'ci/patch-qt-recipe.sh', 'ci/patch-qt-dependencies.py', 'ci/patch-qt-qmltools-recipe.py', 'ci/patch-bzip2-recipe.py', 'ci/patch-bzip2-recipe.sh', 'ci/patch-libgettext-recipe.py', 'ci/patch-libgettext-recipe.sh', 'ci/patch-libiconv-recipe.py', 'ci/patch-libiconv-recipe.sh', 'ci/patch-libffi-recipe.py', 'ci/patch-libffi-recipe.sh') }}-${{ github.run_id }}-${{ github.run_attempt }}
 
     - name: Save complete Conan package graph
       if: always() && !cancelled() && steps.portable-conan-cache.outputs.cache-hit != 'true' && hashFiles(format('.conan2-portable-{0}-{1}/p/.f4-package-cache-ready', matrix.platform, matrix.arch)) != '' && hashFiles(format('qt/host/build-portable-{0}-{1}/.f4-conan-ready', matrix.platform, matrix.arch)) != ''
       uses: actions/cache/save@v4
       with:
         path: ${{ env.CONAN_HOME }}/p
-        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-complete-${{ hashFiles('qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1', 'ci/patches/qwindowkit-default-maximize-hint.patch', 'ci/patches/libiconv-1.17-fix-error-function-declaration-without-prototype.patch', 'ci/configure-conan-remote.sh', 'ci/patch-qt-recipe.sh', 'ci/patch-qt-dependencies.py', 'ci/patch-qt-qmltools-recipe.py', 'ci/patch-bzip2-recipe.py', 'ci/patch-bzip2-recipe.sh', 'ci/patch-libgettext-recipe.py', 'ci/patch-libgettext-recipe.sh', 'ci/patch-libiconv-recipe.py', 'ci/patch-libiconv-recipe.sh', 'ci/patch-libffi-recipe.py', 'ci/patch-libffi-recipe.sh') }}
+        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v7-video-complete-${{ hashFiles('qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1', 'ci/patches/qwindowkit-default-maximize-hint.patch', 'ci/patches/libiconv-1.17-fix-error-function-declaration-without-prototype.patch', 'ci/configure-conan-remote.sh', 'ci/patch-qt-recipe.sh', 'ci/patch-qt-dependencies.py', 'ci/patch-qt-qmltools-recipe.py', 'ci/patch-bzip2-recipe.py', 'ci/patch-bzip2-recipe.sh', 'ci/patch-libgettext-recipe.py', 'ci/patch-libgettext-recipe.sh', 'ci/patch-libiconv-recipe.py', 'ci/patch-libiconv-recipe.sh', 'ci/patch-libffi-recipe.py', 'ci/patch-libffi-recipe.sh') }}
 
     - name: Package portable single-file artifact
       shell: bash
