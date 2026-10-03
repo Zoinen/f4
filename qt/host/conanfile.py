@@ -60,6 +60,13 @@ class F4QtHostConan(ConanFile):
         if not video_thumbnails:
             self.options.with_ffmpeg_backend = False
         self.options["qt/*"].qtmultimedia = video_thumbnails
+        # ci/patch-qt-recipe.sh adds this option to ConanCenter's Qt recipe.
+        # Keep the consumer option and Qt's own backend selection coupled so a
+        # video-enabled graph cannot accidentally use Qt Multimedia without
+        # the FFmpeg implementation.
+        self.options["qt/*"].with_ffmpeg = bool(
+            video_thumbnails and self.options.with_ffmpeg_backend
+        )
 
     def requirements(self):
         self.requires("qt/6.11.1")

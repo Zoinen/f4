@@ -449,6 +449,7 @@ jobs:
           -s:h build_type=Release -s:h compiler.cppstd=20 \
           -o:h '*:with_video_thumbnails=True' \
           -o:h '*:with_ffmpeg_backend=True' \
+          -o:h 'qt/*:with_ffmpeg=True' \
           -c:a '*/*:tools.cmake.cmaketoolchain:extra_variables={"CMAKE_POLICY_VERSION_MINIMUM":{"cache":True,"type":"STRING","value":"3.5"}}' \
           -c:a '*/*:tools.cmake:configure_args=["-DCMAKE_POLICY_VERSION_MINIMUM=3.5"]' \
           -c tools.system.package_manager:mode=install \
@@ -1063,6 +1064,7 @@ jobs:
             -o:h "qt/*:shared=False" `
             -o:h "*:with_video_thumbnails=True" `
             -o:h "*:with_ffmpeg_backend=True" `
+            -o:h "qt/*:with_ffmpeg=True" `
             -o:b "qt/*:shared=False" `
             -o:b "qt/*:qtdeclarative=True" `
             -o:b "qt/*:qtshadertools=True" `

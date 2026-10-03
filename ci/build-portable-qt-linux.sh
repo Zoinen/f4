@@ -223,6 +223,7 @@ for attempt in 1 2 3; do
         -o:h 'qt/*:shared=False' \
         -o:h '*:with_video_thumbnails=True' \
         -o:h '*:with_ffmpeg_backend=True' \
+        -o:h 'qt/*:with_ffmpeg=True' \
         -o:h 'qt/*:qtwayland=True' \
         -o:h 'qt/*:with_egl=True' \
         -o:h 'qt/*:with_libjpeg=libjpeg-turbo' \

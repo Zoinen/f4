@@ -10,6 +10,61 @@ from pathlib import Path
 _ANCHOR = '            self.requires("freetype/[>=2.13 <3]")\n'
 _PATCH = '            self.requires("freetype/2.13.2")\n'
 _MARKER = 'self.requires("freetype/2.13.2")'
+_FFMPEG_OPTION_ANCHOR = '        "with_gstreamer": [True, False],\n'
+_FFMPEG_OPTION_PATCH = _FFMPEG_OPTION_ANCHOR + (
+    '        "with_ffmpeg": [True, False],\n'
+)
+_FFMPEG_OPTION_MARKER = '        "with_ffmpeg": [True, False],\n'
+_FFMPEG_DEFAULT_ANCHOR = '        "with_gstreamer": False,\n'
+_FFMPEG_DEFAULT_PATCH = _FFMPEG_DEFAULT_ANCHOR + (
+    '        "with_ffmpeg": False,\n'
+)
+_FFMPEG_DEFAULT_MARKER = '        "with_ffmpeg": False,\n'
+_FFMPEG_REQUIREMENT_ANCHOR = (
+    '        if self.options.get_safe("with_gstreamer", False):\n'
+)
+_FFMPEG_REQUIREMENT_PATCH = (
+    '        if self.options.get_safe("with_ffmpeg", False):\n'
+    '            self.requires("ffmpeg/7.1.5")\n'
+        + _FFMPEG_REQUIREMENT_ANCHOR
+)
+_FFMPEG_REQUIREMENT_MARKER = 'self.requires("ffmpeg/7.1.5")'
+_FFMPEG_GENERATE_ANCHOR = '        tc.variables["FEATURE_pkg_config"] = "ON"\n'
+_FFMPEG_GENERATE_PATCH = _FFMPEG_GENERATE_ANCHOR + (
+    '        if self.options.get_safe("with_ffmpeg", False):\n'
+    '            # Qt Multimedia uses its FindFFmpeg module during Qt\'s own\n'
+    '            # configure step. Point it at the Conan package directly;\n'
+    '            # relying on a system pkg-config database would silently\n'
+    '            # disable the backend on clean CI runners.\n'
+    '            tc.variables["INPUT_ffmpeg"] = "yes"\n'
+    '            tc.cache_variables["FFMPEG_DIR"] = (\n'
+    '                self.dependencies["ffmpeg"].package_folder\n'
+    '            )\n'
+)
+_FFMPEG_GENERATE_MARKER = 'tc.cache_variables["FFMPEG_DIR"]'
+_FFMPEG_SOURCE_ANCHOR = '        apply_conandata_patches(self)\n'
+_FFMPEG_SOURCE_PATCH = _FFMPEG_SOURCE_ANCHOR + (
+    '        if self.options.get_safe("with_ffmpeg", False):\n'
+    '            # Qt normally restricts FFmpeg on Linux to builds that also\n'
+    '            # have PulseAudio or PipeWire. f4 uses FFmpeg for local video\n'
+    '            # decoding/thumbnails and intentionally has neither runtime\n'
+    '            # audio dependency, so make the FFmpeg backend a valid Linux\n'
+    '            # Multimedia backend in this patched static recipe.\n'
+    '            qtmultimedia_configure = os.path.join(\n'
+    '                self.source_folder, "qtmultimedia", "src", "multimedia",\n'
+    '                "configure.cmake"\n'
+    '            )\n'
+    '            replace_in_file(\n'
+    '                self,\n'
+    '                qtmultimedia_configure,\n'
+    '                "AND (APPLE OR WIN32 OR ANDROID OR QNX OR "\n'
+    '                "QT_FEATURE_pulseaudio OR QT_FEATURE_pipewire)",\n'
+    '                "AND (APPLE OR WIN32 OR ANDROID OR QNX OR LINUX OR "\n'
+    '                "QT_FEATURE_pulseaudio OR QT_FEATURE_pipewire)",\n'
+    '                strict=True,\n'
+    '            )\n'
+)
+_FFMPEG_SOURCE_MARKER = 'qtmultimedia_configure = os.path.join'
 _HOST_PATH_ANCHOR = (
     '            tc.cache_variables["QT_HOST_PATH"] = '
     'self.dependencies.direct_build["qt"].package_folder\n'
@@ -90,6 +145,40 @@ def _patch_freetype(text: str) -> str:
     return text.replace(_ANCHOR, _PATCH)
 
 
+def _patch_ffmpeg(text: str) -> str:
+    if _FFMPEG_OPTION_MARKER not in text:
+        if text.count(_FFMPEG_OPTION_ANCHOR) != 1:
+            raise SystemExit(
+                "unexpected Qt recipe: FFmpeg option anchor is absent or ambiguous"
+            )
+        text = text.replace(_FFMPEG_OPTION_ANCHOR, _FFMPEG_OPTION_PATCH)
+    if _FFMPEG_DEFAULT_MARKER not in text:
+        if text.count(_FFMPEG_DEFAULT_ANCHOR) != 1:
+            raise SystemExit(
+                "unexpected Qt recipe: FFmpeg default anchor is absent or ambiguous"
+            )
+        text = text.replace(_FFMPEG_DEFAULT_ANCHOR, _FFMPEG_DEFAULT_PATCH)
+    if _FFMPEG_REQUIREMENT_MARKER not in text:
+        if text.count(_FFMPEG_REQUIREMENT_ANCHOR) != 1:
+            raise SystemExit(
+                "unexpected Qt recipe: FFmpeg requirement anchor is absent or ambiguous"
+            )
+        text = text.replace(_FFMPEG_REQUIREMENT_ANCHOR, _FFMPEG_REQUIREMENT_PATCH)
+    if _FFMPEG_GENERATE_MARKER not in text:
+        if text.count(_FFMPEG_GENERATE_ANCHOR) != 1:
+            raise SystemExit(
+                "unexpected Qt recipe: FFmpeg CMake anchor is absent or ambiguous"
+            )
+        text = text.replace(_FFMPEG_GENERATE_ANCHOR, _FFMPEG_GENERATE_PATCH)
+    if _FFMPEG_SOURCE_MARKER not in text:
+        if text.count(_FFMPEG_SOURCE_ANCHOR) != 1:
+            raise SystemExit(
+                "unexpected Qt recipe: Qt source patch anchor is absent or ambiguous"
+            )
+        text = text.replace(_FFMPEG_SOURCE_ANCHOR, _FFMPEG_SOURCE_PATCH)
+    return text
+
+
 def _patch_host_path(text: str) -> str:
     if _HOST_PATH_MARKER in text:
         if (
@@ -128,7 +217,9 @@ def main() -> None:
     args = parser.parse_args()
 
     text = args.recipe.read_text(encoding="utf-8")
-    patched = _patch_quick_package_guard(_patch_host_path(_patch_freetype(text)))
+    patched = _patch_quick_package_guard(
+        _patch_host_path(_patch_ffmpeg(_patch_freetype(text)))
+    )
     if patched != text:
         args.recipe.write_text(patched, encoding="utf-8")
 
