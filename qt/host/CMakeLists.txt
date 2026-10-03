@@ -562,9 +562,15 @@ if(F4_QT_STATIC)
         Qt6::QOffscreenIntegrationPlugin
         Qt6::QGifPlugin
         ${F4_QT_ICO_PLUGIN_TARGET}
-        Qt6::QJpegPlugin
-        Qt6::Svg
-        Qt6::QSvgPlugin)
+        Qt6::QJpegPlugin)
+      if(MSVC)
+        target_link_libraries(${F4_ZOIN_STATIC_CORE_TEST_TARGET} PRIVATE
+          Qt6::Svg
+          Qt6::QSvgPlugin)
+      else()
+        target_link_libraries(${F4_ZOIN_STATIC_CORE_TEST_TARGET} PRIVATE
+          "$<LINK_GROUP:RESCAN,Qt6::Svg,Qt6::QSvgPlugin>")
+      endif()
     endif()
   endforeach()
 endif()
