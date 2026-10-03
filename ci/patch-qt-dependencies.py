@@ -43,6 +43,38 @@ _FFMPEG_GENERATE_PATCH = _FFMPEG_GENERATE_ANCHOR + (
 )
 _FFMPEG_GENERATE_MARKER = 'tc.cache_variables["FFMPEG_DIR"]'
 _FFMPEG_SOURCE_ANCHOR = '        apply_conandata_patches(self)\n'
+_FFMPEG_MODULE_PATCH = (
+    '        ffmpeg_find_module = os.path.join(\n'
+    '            self.source_folder, "qtmultimedia", "cmake", "FindFFmpeg.cmake"\n'
+    '        )\n'
+    '        replace_in_file(\n'
+    '            self,\n'
+    '            ffmpeg_find_module,\n'
+    '            "include(FindPackageHandleStandardArgs)\\n",\n'
+    '            "include(FindPackageHandleStandardArgs)\\n"\n'
+    '            "\\n"\n'
+    '            "# Conan CMakeDeps exports lower-case ffmpeg:: component targets.\\n"\n'
+    '            "find_package(ffmpeg CONFIG QUIET)\\n",\n'
+    '            strict=True,\n'
+    '        )\n'
+    '        replace_in_file(\n'
+    '            self,\n'
+    '            ffmpeg_find_module,\n'
+    '            \'            target_link_libraries(${_target} INTERFACE "${${_component}_LIBRARY_NAME}")\\n\'\n'
+    '            \'            target_link_directories(${_target} INTERFACE ${${_component}_LIBRARY_DIR})\\n\'\n'
+    '            \'\\n\'\n'
+    '            \'            __ffmpeg_internal_set_dependencies(${_component})\\n\',\n'
+    '            \'            if (TARGET ffmpeg::${_lowerComponent})\\n\'\n'
+    '            \'                # Conan carries the static codec, framework, and system-library dependencies.\\n\'\n'
+    '            \'                target_link_libraries(${_target} INTERFACE ffmpeg::${_lowerComponent})\\n\'\n'
+    '            \'            else()\\n\'\n'
+    '            \'                target_link_libraries(${_target} INTERFACE "${${_component}_LIBRARY_NAME}")\\n\'\n'
+    '            \'                __ffmpeg_internal_set_dependencies(${_component})\\n\'\n'
+    '            \'            endif()\\n\'\n'
+    '            \'            target_link_directories(${_target} INTERFACE ${${_component}_LIBRARY_DIR})\\n\',\n'
+    '            strict=True,\n'
+    '        )\n'
+)
 _FFMPEG_SOURCE_PATCH = _FFMPEG_SOURCE_ANCHOR + (
     '        # Conan deliberately forbids self.options access in source().\n'
     '        # This source-level relaxation is harmless when with_ffmpeg is\n'
@@ -99,12 +131,14 @@ _FFMPEG_SOURCE_PATCH = _FFMPEG_SOURCE_ANCHOR + (
     '            "qt_find_package(VAAPI MODULE COMPONENTS",\n'
     '            strict=True,\n'
     '        )\n'
-)
+) + _FFMPEG_MODULE_PATCH
 _FFMPEG_SOURCE_MARKER = 'qtmultimedia_configure = os.path.join'
 _FFMPEG_MODULE_SOURCE_MARKER = (
     'qt_find_package(FFmpeg MODULE OPTIONAL_COMPONENTS'
 )
 _FFMPEG_VAAPI_MODULE_MARKER = 'qt_find_package(VAAPI MODULE COMPONENTS'
+_FFMPEG_CONFIG_SOURCE_MARKER = 'find_package(ffmpeg CONFIG QUIET)'
+_FFMPEG_TARGET_BRIDGE_MARKER = 'TARGET ffmpeg::${_lowerComponent}'
 _HOST_PATH_ANCHOR = (
     '            tc.cache_variables["QT_HOST_PATH"] = '
     'self.dependencies.direct_build["qt"].package_folder\n'
@@ -219,9 +253,12 @@ def _patch_ffmpeg(text: str) -> str:
     elif (
         _FFMPEG_MODULE_SOURCE_MARKER not in text
         or text.count(_FFMPEG_VAAPI_MODULE_MARKER) < 2
+        or _FFMPEG_CONFIG_SOURCE_MARKER not in text
+        or _FFMPEG_TARGET_BRIDGE_MARKER not in text
     ):
         raise SystemExit(
-            "unexpected Qt recipe: existing FFmpeg source patch lacks module-mode finders"
+            "unexpected Qt recipe: existing FFmpeg source patch lacks module-mode "
+            "finders or Conan target bridge"
         )
     return text
 
