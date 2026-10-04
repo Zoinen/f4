@@ -100,6 +100,15 @@ target_compile_definitions(f4-qt-host PRIVATE
   $<$<BOOL:${USE_QWK}>:__USE_QWK>
   $<$<AND:$<BOOL:${F4_PORTABLE_STATIC}>,$<PLATFORM_ID:Linux>>:F4_PORTABLE_STATIC_LINUX>
 )
+if(F4_QT_USES_FFMPEG_BACKEND AND NOT F4_QT_STATIC)
+  # Dynamic Qt packages select their Multimedia backend from the configured
+  # plugin tree at runtime. This flag records that this build requested the
+  # FFmpeg backend; QMediaPlayer::isAvailable() still gates runtime support.
+  target_compile_definitions(f4-qt-host PRIVATE F4_QT_USE_FFMPEG_PLUGIN=1)
+endif()
+if(F4_QT_USES_FFMPEG_BACKEND)
+  target_compile_definitions(f4-qt-host PRIVATE F4_QT_HAS_MULTIMEDIA_QML=1)
+endif()
 
 set_target_properties(f4-qt-host PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>"
@@ -224,6 +233,9 @@ if(F4_QT_STATIC)
     Qt6::qtquickcontrols2plugin
     ZoinGallery::ZoinGalleryQmlplugin
   )
+  if(F4_QT_USES_FFMPEG_BACKEND AND TARGET Qt6::quickmultimedia)
+    list(APPEND F4_REQUIRED_STATIC_QML_PLUGINS Qt6::quickmultimedia)
+  endif()
 
   # Conan Center removes the native Qt *Config.cmake files after packaging
   # and recreates only the components declared by its recipe. Qt's QML plugin
@@ -410,7 +422,6 @@ if(F4_QT_STATIC)
     Qt6::QOffscreenIntegrationPlugin
     Qt6::QGifPlugin
     ${F4_QT_ICO_PLUGIN_TARGET}
-    Qt6::QJpegPlugin
     Qt6::QSvgPlugin
   )
   # Some Qt 6.11 static packages omit the optional JPEG image plugin while
@@ -553,6 +564,9 @@ if(F4_QT_STATIC)
     Qt6::QuickControls2Impl
     ${F4_QT_QUICK_EFFECTS_LINK}
     Qt6::QuickLayouts)
+  if(WIN32 AND F4_QT_USES_FFMPEG_BACKEND)
+    target_link_libraries(f4-qt-host PRIVATE Usp10)
+  endif()
 
   # Conan exposes Qt's Linux platform and graphics integrations as separate
   # static archives, but only creates a target for the base XCB plugin. Retain

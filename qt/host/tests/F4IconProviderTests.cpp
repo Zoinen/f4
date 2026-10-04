@@ -240,6 +240,7 @@ private slots:
     void largeLucideRouteRendersAVisibleDprAwareFallback();
     void chromeLucideRoutesRenderNamedResources();
     void lucideRoutesPreserveRequestedTint();
+    void filledPlayRemainsSeparateFromOutline();
     void checkGlyphIsBoldAndOpticallyCentered();
     void lucideFramebufferMatchesDirectSvgRender();
     void iconSetPropertiesAndRevision();
@@ -561,12 +562,17 @@ void F4IconProviderTests::chromeLucideRoutesRenderNamedResources()
         QStringLiteral("panel-left"),
         QStringLiteral("panel-right"),
         QStringLiteral("panels-top-left"),
+        QStringLiteral("pause"),
         QStringLiteral("pencil"),
         QStringLiteral("plug"),
         QStringLiteral("plus"),
+        QStringLiteral("play"),
+        QStringLiteral("play-filled"),
         QStringLiteral("space"),
         QStringLiteral("sparkles"),
         QStringLiteral("text-wrap"),
+        QStringLiteral("volume-2"),
+        QStringLiteral("volume-x"),
         QStringLiteral("x"),
     };
 
@@ -920,6 +926,25 @@ void F4IconProviderTests::systemNamedRoutePreservesName()
     QCOMPARE(record->namedRequests, 1);
     QCOMPARE(record->fileRequests, 0);
     QCOMPARE(record->requestedName, QStringLiteral("square-terminal"));
+}
+
+void F4IconProviderTests::filledPlayRemainsSeparateFromOutline()
+{
+    F4IconProvider provider(std::make_unique<NullBackend>());
+    F4IconSet icons(QStringLiteral("test-icons"));
+    const auto render = [&](const QString &name) {
+        return provider.requestImage(F4IconProvider::routeId(
+            icons.rasterizedLucideSource(name, 32, 1.75, Qt::white)),
+            nullptr, QSize(56, 56));
+    };
+    const QImage outline = render(QStringLiteral("play"));
+    const QImage filled = render(QStringLiteral("play-filled"));
+    QVERIFY(!outline.isNull());
+    QVERIFY(!filled.isNull());
+    QCOMPARE(outline.size(), QSize(56, 56));
+    QCOMPARE(filled.size(), outline.size());
+    QCOMPARE(outline.pixelColor(28, 28).alpha(), 0);
+    QCOMPARE(filled.pixelColor(28, 28), QColor(Qt::white));
 }
 
 void F4IconProviderTests::zeroRequestedSizeUsesLogicalFallback()

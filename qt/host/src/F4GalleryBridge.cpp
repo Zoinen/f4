@@ -207,6 +207,13 @@ F4GalleryBridge::F4GalleryBridge(QQmlEngine *engine, QObject *parent,
         return;
     }
 
+#if defined(F4_QT_USE_FFMPEG_PLUGIN)
+    // F4GalleryBridge is also constructed directly in Qt tests and tools that
+    // do not enter main(). Keep the backend contract in force before this
+    // runtime creates any thumbnail or playback player.
+    qputenv("QT_MEDIA_BACKEND", QByteArrayLiteral("ffmpeg"));
+#endif
+
     m_quickViewPreferences = new F4QuickViewPreferences(this);
     m_panelPreferences = new F4PanelPreferences(this);
     ZoinGallery::RuntimeOptions options;
@@ -217,6 +224,9 @@ F4GalleryBridge::F4GalleryBridge(QQmlEngine *engine, QObject *parent,
     // the bridge no longer creates one OS thread per logical CPU.
     options.maxDecodeThreads = 4;
     options.persistentCache = true;
+#if defined(F4_QT_USE_FFMPEG_PLUGIN)
+    options.enableVideoPlayback = true;
+#endif
     if (mediaClient) {
         options.imageSourceProvider =
             QSharedPointer<F4ImageSourceProvider>::create(mediaClient);
@@ -236,6 +246,10 @@ F4GalleryBridge::F4GalleryBridge(QQmlEngine *engine, QObject *parent,
     for (int side = 0; side < PanelSessionRegistry::PanelCount; ++side) {
         if (auto *session = qobject_cast<ZoinGallery::GallerySession *>(
                 m_panelSessions.session(side))) {
+            connect(session,
+                    &ZoinGallery::GallerySession::videoPlaybackAvailableChanged,
+                    this,
+                    &F4GalleryBridge::videoPlaybackAvailabilityChanged);
             session->setThumbnailsEnabled(
                 m_panelPreferences->thumbnailsEnabled(side));
         }
@@ -284,6 +298,13 @@ QObject *F4GalleryBridge::viewerSession() const
 {
     const int side = viewerSide();
     return m_panelSessions.session(side);
+}
+
+bool F4GalleryBridge::videoPlaybackAvailable() const
+{
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(
+        m_panelSessions.session(0));
+    return session && session->videoPlaybackAvailable();
 }
 
 QObject *F4GalleryBridge::settings() const {

@@ -69,6 +69,22 @@ func TestQuickViewNativeImageDoesNotDecodeOrSerialize(t *testing.T) {
 	}
 }
 
+func TestQuickViewNativeVideoDoesNotReadOrSerialize(t *testing.T) {
+	q, _, _ := newQuickViewProviderFixture(t, map[string][]byte{
+		"clip.mp4": []byte("video bytes must stay in the source broker"),
+	})
+	q.setNativeMedia(false, true)
+	model := q.semanticModel(1, 0, false)
+	if model.PreviewKind != "video" || model.ImageRenderer != "gallery" ||
+		model.Loading || model.ImageSource != "" || len(q.cacheRaw) != 0 ||
+		q.cacheReadErr != nil {
+		t.Fatalf("native video entered the Go read/serialization path: %+v", model)
+	}
+	if !q.cacheVideo {
+		t.Fatal("native video preview was not kept as an opaque source identity")
+	}
+}
+
 func TestQuickViewHoverSupersedesAsyncPreview(t *testing.T) {
 	started, cancelled := make(chan struct{}), make(chan struct{})
 	provider := &quickViewTestProvider{name: "hover-cancel", priority: 1000,

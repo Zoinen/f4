@@ -12,6 +12,38 @@ FocusScope {
     property bool managedPresentation: bridge && bridge.quickViewSide !== undefined && bridge.quickViewSide >= 0
     property real fullViewProgress: 1
     readonly property bool docked: managedPresentation && bridge.viewerState === 1
+    readonly property string videoPlaybackMode: {
+        if (docked && bridge && bridge.quickViewPreferences
+                && bridge.quickViewPreferences.values)
+            return String(bridge.quickViewPreferences.values.videoPlaybackMode
+                          || "autoplay-muted")
+        if (bridge && bridge.settings && bridge.settings.values)
+            return String(bridge.settings.values.videoPlaybackMode
+                          || "autoplay-muted")
+        return "autoplay-muted"
+    }
+    readonly property var videoIconSources: {
+        if (!hostWindow || typeof hostWindow.lucideIconSource !== "function")
+            return ({})
+        const tint = theme.text
+        return ({
+            play: hostWindow.lucideIconSource("play", 18, tint),
+            pause: hostWindow.lucideIconSource("pause", 18, tint),
+            muted: hostWindow.lucideIconSource("volume-x", 18, tint),
+            sound: hostWindow.lucideIconSource("volume-2", 18, tint)
+        })
+    }
+    readonly property bool playbackPresentationVisible: {
+        const targetWindow = host.Window.window
+        const windowVisible = targetWindow && targetWindow.visible
+                && targetWindow.visibility !== Window.Minimized
+                && targetWindow.visibility !== Window.Hidden
+        const viewerVisible = docked || (bridge && bridge.viewerVisible)
+        return Boolean(windowVisible && viewerVisible && host.hostWindow
+                       && !host.hostWindow.hasOperationsQueueSurface()
+                       && !host.hostWindow.hasDocumentSurface()
+                       && !host.hostWindow.needsFallbackGrid())
+    }
     function focusSource() {
         if (!bridge) return
         bridge.requestActivate(bridge.viewerSide)
@@ -125,6 +157,9 @@ FocusScope {
         sourcePanel: host.managedPresentation ? null : host.sourcePanel
         managedPresentation: host.managedPresentation
         previewEntryId: host.docked ? String(host.bridge.quickView.entryId || "") : ""
+        videoPlaybackMode: host.videoPlaybackMode
+        videoIconSources: host.videoIconSources
+        playbackPresentationVisible: host.playbackPresentationVisible
         hostKeyHandler: host.handleKey
         hostDoubleClickHandler: () => {
             if (!host.docked) return false

@@ -72,6 +72,18 @@ void configurePortableLinuxFontconfig()
 #endif
 }
 
+void configureFfmpegMediaBackend()
+{
+#if defined(F4_QT_USE_FFMPEG_PLUGIN)
+    // Qt Multimedia can silently fall back to Media Foundation when its
+    // FFmpeg plugin cannot initialize. The embedded gallery must only claim
+    // playback when the configured FFmpeg backend is actually selected.
+    // Set this before QGuiApplication and before any thumbnail/player object
+    // asks Qt Multimedia to create its integration.
+    qputenv("QT_MEDIA_BACKEND", QByteArrayLiteral("ffmpeg"));
+#endif
+}
+
 void configureMacBundleRuntime(int argc, char *argv[])
 {
 #if defined(Q_OS_MACOS)
@@ -198,6 +210,7 @@ int main(int argc, char *argv[])
 
     configurePortableLinuxFontconfig();
     configureMacBundleRuntime(argc, argv);
+    configureFfmpegMediaBackend();
 
 #if defined(F4_PORTABLE_STATIC_LINUX)
     // Prefer the session-native Wayland plugin and retain XCB as a fallback.

@@ -172,9 +172,12 @@ const QSet<QString> &lucideIconNames()
         QStringLiteral("panel-right"),
         QStringLiteral("panels-top-left"),
         QStringLiteral("palette"),
+        QStringLiteral("pause"),
         QStringLiteral("pencil"),
         QStringLiteral("plug"),
         QStringLiteral("plus"),
+        QStringLiteral("play"),
+        QStringLiteral("play-filled"),
         QStringLiteral("refresh-cw"),
         QStringLiteral("rotate-ccw"),
         QStringLiteral("rows-3"),
@@ -188,6 +191,8 @@ const QSet<QString> &lucideIconNames()
         QStringLiteral("trash-2"),
         QStringLiteral("triangle-alert"),
         QStringLiteral("video"),
+        QStringLiteral("volume-2"),
+        QStringLiteral("volume-x"),
         QStringLiteral("x"),
     };
     return names;

@@ -6,6 +6,12 @@ endif()
 
 set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "Minimum macOS deployment target" FORCE)
 
+option(F4_ENABLE_VIDEO_THUMBNAILS
+  "Enable video thumbnails through Qt Multimedia" ON)
+option(F4_ENABLE_FFMPEG_BACKEND
+  "Use the Qt Multimedia FFmpeg backend for video thumbnails"
+  ON)
+
 project(F4QtHost LANGUAGES CXX)
 
 if(APPLE)
@@ -15,11 +21,6 @@ endif()
 option(USE_QWK "Use QWindowKit" ON)
 option(F4_PORTABLE_STATIC
   "Build one self-contained Qt host (apart from system ABI libraries)" OFF)
-option(F4_ENABLE_VIDEO_THUMBNAILS
-  "Enable video thumbnails through Qt Multimedia" OFF)
-option(F4_ENABLE_FFMPEG_BACKEND
-  "Use the Qt Multimedia FFmpeg backend for video thumbnails"
-  OFF)
 if(NOT F4_ENABLE_VIDEO_THUMBNAILS AND F4_ENABLE_FFMPEG_BACKEND)
   message(STATUS
     "F4_ENABLE_VIDEO_THUMBNAILS=OFF disables the FFmpeg backend as well")
@@ -110,6 +111,31 @@ if(F4_PORTABLE_STATIC OR
   set(F4_QT_STATIC ON)
 endif()
 
+# The embedded playback QML and session controller are only compiled when the
+# selected host configuration can actually select FFmpeg. Dynamic Qt modules
+# are checked by QMediaPlayer at runtime after QT_MEDIA_BACKEND is forced;
+# static packages must contain the FFmpeg backend archive rather than just a
+# native Windows Multimedia plugin.
+set(F4_QT_USES_FFMPEG_BACKEND OFF)
+if(F4_ENABLE_VIDEO_THUMBNAILS AND F4_ENABLE_FFMPEG_BACKEND)
+  if(NOT F4_QT_STATIC OR TARGET Qt6::QFFmpegMediaPlugin)
+    set(F4_QT_USES_FFMPEG_BACKEND ON)
+  elseif(NOT TARGET Qt6::QWindowsMediaPlugin)
+    unset(_f4_qt_ffmpeg_media_plugin)
+    unset(_f4_qt_ffmpeg_media_plugin CACHE)
+    find_library(_f4_qt_ffmpeg_media_plugin
+      NAMES ffmpegmediaplugin
+      PATHS
+        "${qt_PACKAGE_FOLDER_RELEASE}/plugins/multimedia"
+        "${qt_PACKAGE_FOLDER_RELWITHDEBINFO}/plugins/multimedia"
+      NO_DEFAULT_PATH)
+    if(_f4_qt_ffmpeg_media_plugin)
+      set(F4_QT_USES_FFMPEG_BACKEND ON)
+    endif()
+    unset(_f4_qt_ffmpeg_media_plugin CACHE)
+  endif()
+endif()
+
 set(F4_ZOINGALLERY_SOURCE_DIR
   "${CMAKE_CURRENT_LIST_DIR}/../../third_party/ZoinGallery")
 if(NOT EXISTS "${F4_ZOINGALLERY_SOURCE_DIR}/CMakeLists.txt")
@@ -130,6 +156,12 @@ set(ZOIN_ENABLE_VIDEO_THUMBNAILS ${F4_ENABLE_VIDEO_THUMBNAILS} CACHE BOOL
   "Enable video thumbnails through Qt Multimedia" FORCE)
 set(ZOIN_ENABLE_FFMPEG_BACKEND ${F4_ENABLE_FFMPEG_BACKEND} CACHE BOOL
   "Use the Qt Multimedia FFmpeg backend for video thumbnails" FORCE)
+set(ZOIN_ENABLE_VIDEO_PLAYBACK OFF CACHE BOOL
+  "Enable embedded video playback when the FFmpeg backend is configured" FORCE)
+if(F4_QT_USES_FFMPEG_BACKEND)
+  set(ZOIN_ENABLE_VIDEO_PLAYBACK ON CACHE BOOL
+    "Enable embedded video playback when the FFmpeg backend is configured" FORCE)
+endif()
 set(F4_ZOINGALLERY_BINARY_DIR
   "${CMAKE_CURRENT_BINARY_DIR}/ZoinGallery")
 
@@ -183,6 +215,29 @@ endif()
 if(NOT TARGET ZoinGallery::Core OR NOT TARGET ZoinGallery::Qml)
   message(FATAL_ERROR
     "The bundled ZoinGallery submodule must provide Core and Qml targets")
+endif()
+if(F4_QT_STATIC AND F4_QT_USES_FFMPEG_BACKEND)
+  # Qt's Conan package installs the QtMultimedia QML module beside the
+  # package's QML tree, but does not expose its qmldir/Video.qml as a static
+  # resource target. Embed those files into the library linked by the host
+  # and QML tests; StaticQmlPluginImports.cpp references this initializer.
+  get_filename_component(F4_QT_PACKAGE_ROOT "${Qt6_DIR}/../../.." ABSOLUTE)
+  set(F4_QT_MULTIMEDIA_QML_DIR
+    "${F4_QT_PACKAGE_ROOT}/qml/QtMultimedia")
+  foreach(F4_QT_MULTIMEDIA_QML_FILE IN ITEMS qmldir Video.qml)
+    if(NOT EXISTS "${F4_QT_MULTIMEDIA_QML_DIR}/${F4_QT_MULTIMEDIA_QML_FILE}")
+      message(FATAL_ERROR
+        "Static Qt Multimedia QML file is missing: "
+        "${F4_QT_MULTIMEDIA_QML_DIR}/${F4_QT_MULTIMEDIA_QML_FILE}")
+    endif()
+  endforeach()
+  qt6_add_resources(ZoinGalleryQml qmake_QtMultimedia
+    PREFIX "/qt/qml/QtMultimedia"
+    BASE "${F4_QT_MULTIMEDIA_QML_DIR}"
+    FILES
+      "${F4_QT_MULTIMEDIA_QML_DIR}/qmldir"
+      "${F4_QT_MULTIMEDIA_QML_DIR}/Video.qml"
+  )
 endif()
 set(ZoinGallery_QML_IMPORT_PATH "${F4_ZOINGALLERY_BINARY_DIR}")
 if(F4_PORTABLE_STATIC AND UNIX AND NOT APPLE)
@@ -402,6 +457,9 @@ set(F4_LUCIDE_ICON_NAMES
   pencil.svg
   plug.svg
   plus.svg
+  pause.svg
+  play.svg
+  play-filled.svg
   refresh-cw.svg
   rotate-ccw.svg
   rows-3.svg
@@ -420,6 +478,8 @@ set(F4_LUCIDE_ICON_NAMES
   user-round.svg
   users-round.svg
   video.svg
+  volume-2.svg
+  volume-x.svg
   x.svg
 )
 set(F4_LUCIDE_ICONS ${F4_LUCIDE_ICON_NAMES})
@@ -493,6 +553,10 @@ if(F4_QT_STATIC)
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/StaticQtTestPluginImports.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/StaticQtImagePluginImports.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/StaticQmlPluginImports.cpp")
+      if(TARGET Qt6::QJpegPlugin)
+        target_compile_definitions(${F4_ZOIN_STATIC_QML_TEST_TARGET} PRIVATE
+          F4_QT_HAS_JPEG_PLUGIN=1)
+      endif()
       target_link_libraries(${F4_ZOIN_STATIC_QML_TEST_TARGET} PRIVATE
         ${F4_REQUIRED_STATIC_QT_PLUGINS}
         ${F4_REQUIRED_STATIC_QML_PLUGINS}
@@ -500,6 +564,29 @@ if(F4_QT_STATIC)
         Qt6::QSvgPlugin
         ${F4_QT_QUICK_EFFECTS_LINK}
         ${F4_QT_QUICK_CONTROLS_BASIC_LINK})
+      if(F4_QT_USES_FFMPEG_BACKEND)
+        target_compile_definitions(${F4_ZOIN_STATIC_QML_TEST_TARGET} PRIVATE
+          F4_QT_HAS_MULTIMEDIA_QML=1)
+      endif()
+      if(F4_ENABLE_VIDEO_THUMBNAILS AND F4_QT_MEDIA_PLUGIN_TARGET)
+        target_link_libraries(${F4_ZOIN_STATIC_QML_TEST_TARGET} PRIVATE
+          Qt6::Multimedia
+          ${F4_QT_MEDIA_PLUGIN_TARGET}
+          ${F4_QFFMPEG_PLUGIN_TARGET}
+          ${F4_QFFMPEG_PLUGIN_IMPL_TARGET}
+          ${F4_FFMPEG_TARGETS})
+        if(F4_QT_NEEDS_FFMPEG)
+          target_compile_definitions(${F4_ZOIN_STATIC_QML_TEST_TARGET} PRIVATE
+            F4_QT_USE_FFMPEG_PLUGIN=1)
+        elseif(F4_QT_MEDIA_PLUGIN_TARGET STREQUAL
+               "Qt6::QWindowsMediaPlugin")
+          target_compile_definitions(${F4_ZOIN_STATIC_QML_TEST_TARGET} PRIVATE
+            F4_QT_USE_WINDOWS_MEDIA_PLUGIN=1)
+        endif()
+      endif()
+      if(WIN32 AND F4_QT_USES_FFMPEG_BACKEND)
+        target_link_libraries(${F4_ZOIN_STATIC_QML_TEST_TARGET} PRIVATE Usp10)
+      endif()
       if(NOT TARGET Qt6::QuickEffects_resources_1)
         set_property(TARGET ${F4_ZOIN_STATIC_QML_TEST_TARGET}
           APPEND PROPERTY LINK_LIBRARY_OVERRIDE
@@ -538,6 +625,10 @@ if(F4_QT_STATIC)
       target_sources(${F4_ZOIN_STATIC_CORE_TEST_TARGET} PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/StaticQtTestPluginImports.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/StaticQtImagePluginImports.cpp")
+      if(TARGET Qt6::QJpegPlugin)
+        target_compile_definitions(${F4_ZOIN_STATIC_CORE_TEST_TARGET} PRIVATE
+          F4_QT_HAS_JPEG_PLUGIN=1)
+      endif()
       if(WIN32)
         target_link_libraries(${F4_ZOIN_STATIC_CORE_TEST_TARGET} PRIVATE
           Qt6::QWindowsIntegrationPlugin)
@@ -546,9 +637,12 @@ if(F4_QT_STATIC)
         Qt6::QOffscreenIntegrationPlugin
         Qt6::QGifPlugin
         ${F4_QT_ICO_PLUGIN_TARGET}
-        Qt6::QJpegPlugin
         Qt6::Svg
         Qt6::QSvgPlugin)
+      if(TARGET Qt6::QJpegPlugin)
+        target_link_libraries(${F4_ZOIN_STATIC_CORE_TEST_TARGET} PRIVATE
+          Qt6::QJpegPlugin)
+      endif()
     endif()
   endforeach()
 endif()
@@ -586,12 +680,20 @@ install(FILES icons/lucide/LICENSE
   RENAME Lucide-LICENSE.txt
 )
 if(USE_QWK AND NOT F4_QT_STATIC)
-  install(IMPORTED_RUNTIME_ARTIFACTS
-    QWindowKit::Core
-    QWindowKit::Quick
-    RUNTIME DESTINATION bin
-    LIBRARY DESTINATION lib
-  )
+  set(F4_QWK_RUNTIME_TARGETS)
+  foreach(F4_QWK_TARGET IN ITEMS QWindowKit::Core QWindowKit::Quick)
+    get_target_property(F4_QWK_TARGET_TYPE ${F4_QWK_TARGET} TYPE)
+    if(F4_QWK_TARGET_TYPE STREQUAL "SHARED_LIBRARY" OR
+       F4_QWK_TARGET_TYPE STREQUAL "MODULE_LIBRARY")
+      list(APPEND F4_QWK_RUNTIME_TARGETS ${F4_QWK_TARGET})
+    endif()
+  endforeach()
+  if(F4_QWK_RUNTIME_TARGETS)
+    install(IMPORTED_RUNTIME_ARTIFACTS ${F4_QWK_RUNTIME_TARGETS}
+      RUNTIME DESTINATION bin
+      LIBRARY DESTINATION lib
+    )
+  endif()
 endif()
 
 if(APPLE)
@@ -860,9 +962,28 @@ if(BUILD_TESTING)
         tests/StaticQtTestPluginImports.cpp)
       target_link_libraries(${target} PRIVATE
         Qt6::QOffscreenIntegrationPlugin)
+      if(F4_ENABLE_VIDEO_THUMBNAILS AND F4_QT_MEDIA_PLUGIN_TARGET)
+        target_link_libraries(${target} PRIVATE
+          Qt6::Multimedia
+          ${F4_QT_MEDIA_PLUGIN_TARGET}
+          ${F4_QFFMPEG_PLUGIN_TARGET}
+          ${F4_QFFMPEG_PLUGIN_IMPL_TARGET}
+          ${F4_FFMPEG_TARGETS})
+        if(F4_QT_NEEDS_FFMPEG)
+          target_compile_definitions(${target} PRIVATE
+            F4_QT_USE_FFMPEG_PLUGIN=1)
+        elseif(F4_QT_MEDIA_PLUGIN_TARGET STREQUAL
+               "Qt6::QWindowsMediaPlugin")
+          target_compile_definitions(${target} PRIVATE
+            F4_QT_USE_WINDOWS_MEDIA_PLUGIN=1)
+        endif()
+      endif()
       if(WIN32)
         target_link_libraries(${target} PRIVATE
           Qt6::QWindowsIntegrationPlugin)
+        if(F4_QT_USES_FFMPEG_BACKEND)
+          target_link_libraries(${target} PRIVATE Usp10)
+        endif()
       endif()
     endif()
   endfunction()
@@ -871,6 +992,10 @@ if(BUILD_TESTING)
     if(F4_QT_STATIC)
       target_sources(${target} PRIVATE
         src/StaticQmlPluginImports.cpp)
+      if(F4_QT_USES_FFMPEG_BACKEND)
+        target_compile_definitions(${target} PRIVATE
+          F4_QT_HAS_MULTIMEDIA_QML=1)
+      endif()
       target_link_libraries(${target} PRIVATE
         ${F4_REQUIRED_STATIC_QML_PLUGINS}
         ${F4_QT_QUICK_EFFECTS_LINK}
@@ -890,13 +1015,16 @@ if(BUILD_TESTING)
     if(F4_QT_STATIC)
       target_sources(${target} PRIVATE
         tests/StaticQtImagePluginImports.cpp)
+      if(TARGET Qt6::QJpegPlugin)
+        target_compile_definitions(${target} PRIVATE
+          F4_QT_HAS_JPEG_PLUGIN=1)
+        target_link_libraries(${target} PRIVATE Qt6::QJpegPlugin)
+      endif()
       target_link_libraries(${target} PRIVATE
         Qt6::QGifPlugin
         ${F4_QT_ICO_PLUGIN_TARGET}
-        Qt6::QJpegPlugin
-        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:$<LINK_GROUP:RESCAN,CONAN_LIB::qt_Qt6_Svg_Qt6Svg_RELEASE,CONAN_LIB::qt_Qt6_QSvgPlugin_qsvg_RELEASE>>
-        $<$<CXX_COMPILER_ID:MSVC>:CONAN_LIB::qt_Qt6_Svg_Qt6Svg_RELEASE>
-        $<$<CXX_COMPILER_ID:MSVC>:CONAN_LIB::qt_Qt6_QSvgPlugin_qsvg_RELEASE>)
+        Qt6::Svg
+        Qt6::QSvgPlugin)
     endif()
   endfunction()
 
@@ -1207,6 +1335,7 @@ if(BUILD_TESTING)
     tests/TestExtUiStateController.cpp
     src/DummyQWK.h
     src/F4PanelPreferences.h
+    src/F4QuickViewPreferences.h
     src/F4TextRenderingPolicy.h
     src/F4TextRenderingPolicy.cpp
     src/ShellStateStore.h
@@ -1238,10 +1367,24 @@ if(BUILD_TESTING)
   f4_link_static_test_platform(F4QuickViewSurfaceTests)
   f4_link_static_test_qml_plugins(F4QuickViewSurfaceTests)
   f4_link_static_test_image_plugins(F4QuickViewSurfaceTests)
+  if(F4_QT_USES_FFMPEG_BACKEND)
+    target_compile_definitions(F4QuickViewSurfaceTests PRIVATE
+      F4_QT_HAS_MULTIMEDIA_QML=1)
+    target_link_libraries(F4QuickViewSurfaceTests PRIVATE Qt6::Multimedia)
+    add_test(NAME F4GalleryVideoControlsPixelGridTest
+      COMMAND F4QuickViewSurfaceTests
+        galleryVideoControlsStayOnPhysicalPixelGridAt175Percent)
+    set_tests_properties(F4GalleryVideoControlsPixelGridTest PROPERTIES
+      ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV};F4_GALLERY_VIDEO_CONTROLS_CAPTURE=${CMAKE_BINARY_DIR}/.diagnostics/gallery-video-controls-175.png")
+  endif()
   add_test(NAME F4QuickViewSurfaceTest COMMAND F4QuickViewSurfaceTests)
   set_tests_properties(F4QuickViewSurfaceTest PROPERTIES
     ENVIRONMENT "${F4_HOST_QML_TEST_ENV}"
   )
+  add_test(NAME F4GalleryVideoSettingsPixelGridTest
+    COMMAND F4QuickViewSurfaceTests nativeSettingsPagePreservesConfigurator)
+  set_tests_properties(F4GalleryVideoSettingsPixelGridTest PROPERTIES
+    ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV};F4_GALLERY_SETTINGS_CAPTURE=${CMAKE_BINARY_DIR}/.diagnostics/gallery-video-settings-175.png")
   add_test(NAME F4QuickViewIconPixelGridTest
     COMMAND F4QuickViewSurfaceTests chromeIconsUseMatchingPhysicalTargetSizes)
   set_tests_properties(F4QuickViewIconPixelGridTest PROPERTIES

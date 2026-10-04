@@ -44,6 +44,8 @@ class F4GalleryBridge final : public QObject
     Q_PROPERTY(int quickViewSide READ quickViewSide NOTIFY viewerChanged)
     Q_PROPERTY(QVariantMap quickView READ quickView NOTIFY viewerChanged)
     Q_PROPERTY(QObject *viewerSession READ viewerSession NOTIFY viewerChanged)
+    Q_PROPERTY(bool videoPlaybackAvailable READ videoPlaybackAvailable
+               NOTIFY videoPlaybackAvailabilityChanged)
     Q_PROPERTY(bool viewerVisible READ viewerVisible NOTIFY viewerChanged)
     Q_PROPERTY(int viewerSide READ viewerSide NOTIFY viewerChanged)
     Q_PROPERTY(QUrl panelComponentUrl READ panelComponentUrl CONSTANT)
@@ -78,6 +80,7 @@ public:
     Q_INVOKABLE void settleViewer();
     Q_INVOKABLE void requestViewerCursor(const QString &entryId, int index);
     QObject *viewerSession() const;
+    bool videoPlaybackAvailable() const;
     bool viewerVisible() const;
     int viewerSide() const;
     QUrl panelComponentUrl() const;
@@ -174,6 +177,7 @@ signals:
         const QVariantList &columns, bool separateFileExtensions);
     void panelPresentationTransactionFinished(int side);
     void viewerChanged();
+    void videoPlaybackAvailabilityChanged();
     void benchmarkFrameSwapped(qulonglong serial);
 
 private:

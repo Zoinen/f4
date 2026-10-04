@@ -28,10 +28,10 @@ import (
 	"github.com/unxed/f4/sdk/extui"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
-	"image"
-	"image/png"
 	"github.com/unxed/vtui"
 	xdraw "golang.org/x/image/draw"
+	"image"
+	"image/png"
 )
 
 // QuickViewPanel is far2l's Ctrl+Q quick-view panel. It mirrors the
@@ -42,6 +42,7 @@ import (
 // features (search, syntax highlighting, …) are deliberately deferred.
 type QuickViewPanel struct {
 	nativeImages             bool
+	nativeVideos             bool
 	previewEntryID           string
 	previewCatalogRevision   int64
 	previewRequestGeneration int64
@@ -59,6 +60,7 @@ type QuickViewPanel struct {
 	cacheDir        bool // whether cache is for a directory or file
 	cacheBinary     bool
 	cacheImage      bool // whether cache is an image
+	cacheVideo      bool // native video previews never read or serialize file data
 	cacheLoading    bool
 	cacheLabel      string
 	imageSurf       *vtui.ImageSurface
@@ -1272,7 +1274,7 @@ func (q *QuickViewPanel) semanticModel(side, sourceSide int, active bool) extui.
 		sourceKind, _ := q.src.semanticSourceInfo()
 		model.EntryID, _ = q.src.semanticEntryMetadata(q.src.Entries[q.previewIndex()], sourceKind)
 		model.ImageRenderer = "builtin"
-		if q.nativeImages {
+		if q.nativeImages || q.nativeVideos {
 			model.ImageRenderer = "gallery"
 		}
 		model.Name = item.Name
@@ -1304,6 +1306,8 @@ func (q *QuickViewPanel) semanticModel(side, sourceSide int, active bool) extui.
 				model.ImageSource, model.ImageWidth, model.ImageHeight = q.semanticImageDataURL()
 				model.Loading = model.ImageSource == ""
 			}
+		case q.cacheVideo:
+			model.PreviewKind = "video"
 		case q.cacheBinary:
 			model.PreviewKind = "hex"
 			q.ensureDisplayLayout(innerW)
@@ -1475,6 +1479,7 @@ func (q *QuickViewPanel) refreshCache(key quickViewSelectionKey, path string, it
 	q.cacheDir = item.IsDir
 	q.cacheBinary = false
 	q.cacheImage = false
+	q.cacheVideo = false
 	q.cacheLoading = false
 	q.cacheLabel = ""
 	q.cacheRaw = nil
@@ -1493,6 +1498,10 @@ func (q *QuickViewPanel) refreshCache(key quickViewSelectionKey, path string, it
 		return
 	}
 	q.cancelScan()
+	if q.nativeVideos && media.IsVideoFile(item.Name) {
+		q.cacheVideo = true
+		return
+	}
 
 	if media.IsImageFile(path) {
 		q.cacheImage = true

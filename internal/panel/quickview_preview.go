@@ -14,9 +14,13 @@ func (pf *PanelsFrame) handleQuickViewPresentation(action map[string]any) bool {
 			return false
 		}
 		pf.quickViewNativeImages = semantic.Bool(action["nativeImages"])
+		// Compatibility contract: hosts that have not sent nativeVideos retain
+		// the historical text/provider fallback for video files.
+		pf.quickViewNativeVideos = semantic.Bool(action["nativeVideos"])
 		for _, alt := range pf.AltPanels {
 			if q, ok := alt.(*QuickViewPanel); ok {
-				q.setNativeImages(pf.quickViewNativeImages)
+				q.setNativeMedia(pf.quickViewNativeImages,
+					pf.quickViewNativeVideos)
 			}
 		}
 		return true
@@ -32,15 +36,24 @@ func (pf *PanelsFrame) handleQuickViewPresentation(action map[string]any) bool {
 }
 
 func (q *QuickViewPanel) setNativeImages(native bool) {
-	if q.nativeImages == native {
+	q.setNativeMedia(native, q.nativeVideos)
+}
+
+func (q *QuickViewPanel) setNativeVideos(native bool) {
+	q.setNativeMedia(q.nativeImages, native)
+}
+
+func (q *QuickViewPanel) setNativeMedia(images, videos bool) {
+	if q.nativeImages == images && q.nativeVideos == videos {
 		return
 	}
-	q.nativeImages = native
+	q.nativeImages = images
+	q.nativeVideos = videos
 	q.cacheValid = false
 	q.imageLoadGen++
 	q.imageSurf = nil
 	q.clearSemanticImage()
-	vtui.DebugLog("QUICKVIEW: native images=%v", native)
+	vtui.DebugLog("QUICKVIEW: native images=%v videos=%v", images, videos)
 }
 
 func (q *QuickViewPanel) applyPreviewRequest(action map[string]any) bool {

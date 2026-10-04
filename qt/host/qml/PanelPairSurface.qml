@@ -127,6 +127,7 @@ Item {
             QuickViewPanelView {
                 hostWindow: pair.hostWindow
                 menuBar: pair.menuBar
+                galleryController: pair.galleryController
                 quickView: pair.panelsSurface.quickViewForSide(0)
                            || ({ "side": 0 })
                 visible: pair.hostWindow.panelSideVisible(0)
@@ -141,6 +142,7 @@ Item {
             QuickViewPanelView {
                 hostWindow: pair.hostWindow
                 menuBar: pair.menuBar
+                galleryController: pair.galleryController
                 quickView: pair.panelsSurface.quickViewForSide(1)
                            || ({ "side": 1 })
                 visible: pair.hostWindow.panelSideVisible(1)

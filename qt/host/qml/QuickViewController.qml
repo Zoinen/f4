@@ -41,11 +41,13 @@ Item {
     function configure() {
         if (!preferences || !shell.id) return
         const nativeImages = !preferences.values.useBuiltinF4Viewer && !hostWindow.needsFallbackGrid()
-        const key = shell.id + ":" + nativeImages
+        const nativeVideos = nativeImages && sourceSession
+                && sourceSession.videoPlaybackAvailable === true
+        const key = shell.id + ":" + nativeImages + ":" + nativeVideos
         if (configuredShell === key) return
         configuredShell = key
         hostWindow.action({action: "quickView.configure", target: shell.id,
-            nativeImages: nativeImages}, true)
+            nativeImages: nativeImages, nativeVideos: nativeVideos}, true)
     }
     function synchronize() {
         configure()
@@ -95,6 +97,10 @@ Item {
     Connections {
         target: controller.sourceSession
         function onCurrentIndexChanged() { controller.keyboardNavigation() }
+        function onVideoPlaybackAvailableChanged() {
+            controller.configuredShell = ""
+            controller.synchronize()
+        }
         function onCatalogRevisionChanged() {
             controller.requestedEntry = ""
             controller.hoverArmed = false

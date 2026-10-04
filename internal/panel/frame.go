@@ -235,6 +235,7 @@ type Panel interface {
 // PanelsFrame is the main frame of the f4 manager, containing left and right panels.
 type PanelsFrame struct {
 	quickViewNativeImages bool
+	quickViewNativeVideos bool
 	vtui.BaseFrame
 	Panels             [2]Panel
 	DragOut            dragOutState
@@ -5052,7 +5053,8 @@ func (pf *PanelsFrame) ToggleAltPanel(kind string, factory func(src *FileSystemP
 			}
 			pf.AltPanels[opp] = factory(fsp)
 			if q, ok := pf.AltPanels[opp].(*QuickViewPanel); ok {
-				q.setNativeImages(pf.quickViewNativeImages)
+				q.setNativeMedia(pf.quickViewNativeImages,
+					pf.quickViewNativeVideos)
 			}
 			// If the opposite side is currently hidden (Ctrl+F1/F2), un-hide
 			// it — otherwise the alt panel installs into an invisible slot

@@ -20,11 +20,18 @@ QVariantMap F4GalleryBridge::quickView() const
         || pending.catalogRevision != catalog.catalogRevision
         || pending.catalogRevision != view.value("catalogRevision").toULongLong()) return view;
     const int index = session->indexForEntryId(pending.entryId);
-    if (index < 0 || !session->isImageAt(index)) return view;
-    // Native navigation is optimistic until key release. Decode this image
-    // from the existing catalog now, without waiting for the Go round trip.
+    const QString previewKind = view.value("previewKind").toString();
+    const bool image = previewKind == QStringLiteral("image")
+        && index >= 0 && session->isImageAt(index);
+    const bool video = previewKind == QStringLiteral("video")
+        && index >= 0 && session->videoPlaybackAvailable()
+        && session->isVideoAt(index);
+    if (!image && !video) return view;
+    // Native navigation is optimistic until key release. Resolve the current
+    // source from its stable ID without waiting for the Go round trip.
     view["entryId"] = pending.entryId;
-    view["previewKind"] = "image";
+    view["previewKind"] = video ? QStringLiteral("video")
+                                : QStringLiteral("image");
     return view;
 }
 
@@ -36,7 +43,8 @@ void F4GalleryBridge::synchronizeQuickView(const QVariantMap &incomingView)
     const int sourceSide = view.value("sourceSide", -1).toInt();
     const int destinationSide = view.value("side", -1).toInt();
     auto *session = qobject_cast<ZoinGallery::GallerySession *>(sessionForSide(sourceSide));
-    const bool nativeImage = view.value("previewKind").toString() == "image"
+    const QString previewKind = view.value("previewKind").toString();
+    const bool nativeImage = previewKind == QStringLiteral("image")
         && view.value("imageRenderer").toString() == "gallery"
         && m_quickViewPreferences && !m_quickViewPreferences->builtin()
         && available() && validSide(sourceSide) && validSide(destinationSide)
@@ -45,7 +53,17 @@ void F4GalleryBridge::synchronizeQuickView(const QVariantMap &incomingView)
         && view.value("sourcePanelId").toString() == m_panelSessions.catalog(sourceSide).panelId
         && view.value("catalogRevision").toULongLong() == m_panelSessions.catalog(sourceSide).catalogRevision
         && (!viewerVisible() || viewerSide() == sourceSide);
-    if (!nativeImage) {
+    const bool nativeVideo = previewKind == QStringLiteral("video")
+        && view.value("imageRenderer").toString() == "gallery"
+        && m_quickViewPreferences && !m_quickViewPreferences->builtin()
+        && available() && validSide(sourceSide) && validSide(destinationSide)
+        && sourceSide != destinationSide && session
+        && session->videoPlaybackAvailable()
+        && session->indexForEntryId(view.value("entryId").toString()) >= 0
+        && view.value("sourcePanelId").toString() == m_panelSessions.catalog(sourceSide).panelId
+        && view.value("catalogRevision").toULongLong() == m_panelSessions.catalog(sourceSide).catalogRevision
+        && (!viewerVisible() || viewerSide() == sourceSide);
+    if (!nativeImage && !nativeVideo) {
         const int previousSide = viewerSide();
         const bool wasDocked = viewerState() == ViewerCoordinator::Docked;
         m_viewerCoordinator->removeDock();

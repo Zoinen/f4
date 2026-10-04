@@ -51,6 +51,7 @@ var actionMenuOrder = []string{
 	"File.Attributes",
 	"File.Share",
 	"Panel.SystemExplorer",
+	"Panel.OpenAssociated",
 	"Panel.SelectGroup",
 	"Panel.DeselectGroup",
 	"Panel.SelectCurrentExtension",

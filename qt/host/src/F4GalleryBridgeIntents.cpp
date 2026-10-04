@@ -120,6 +120,7 @@ void F4GalleryBridge::requestOpen(int side,
                                   qulonglong catalogRevision,
                                   bool autoRepeat)
 {
+    Q_UNUSED(isImage)
     if (!validSide(side)) {
         return;
     }
@@ -173,7 +174,14 @@ void F4GalleryBridge::requestOpen(int side,
         // Only synthetic keyboard repeat is coalesced.
         clearInFlightPanelOpen();
     }
-    if (isImage && available() && sideState.previewCapable) {
+    auto *gallerySession = qobject_cast<ZoinGallery::GallerySession *>(
+        m_panelSessions.session(side));
+    const int resolvedIndex = gallerySession
+        ? gallerySession->indexForEntryId(entryId) : -1;
+    const bool currentViewable = gallerySession && resolvedIndex >= 0
+        && sideState.entryIds.contains(entryId)
+        && gallerySession->isViewableAt(resolvedIndex);
+    if (currentViewable && available() && sideState.previewCapable) {
         clearPendingPanelOpen();
         if (!viewerMounted() || viewerSide() != side) closeViewer();
         m_viewerCoordinator->beginPending(
@@ -195,7 +203,9 @@ void F4GalleryBridge::requestOpen(int side,
             reconcilePendingViewer(side);
             return;
         }
-        requestCursor(side, entryId, index, m_viewerCoordinator->pendingIntent().catalogRevision);
+        requestCursor(side, entryId,
+                      gallerySession->sourceIndexAt(resolvedIndex),
+                      m_viewerCoordinator->pendingIntent().catalogRevision);
         return;
     }
 
@@ -1077,7 +1087,7 @@ void F4GalleryBridge::reconcilePendingViewer(int side)
 
     auto *session = qobject_cast<ZoinGallery::GallerySession *>(
         m_panelSessions.session(side));
-    if (!session || !session->isImageAt(session->currentIndex())) {
+    if (!session || !session->isViewableAt(session->currentIndex())) {
         clearPendingViewer();
         return;
     }

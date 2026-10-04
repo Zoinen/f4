@@ -14,7 +14,10 @@ public:
     {
         QSettings settings;
         m_values = {{"useBuiltinF4Viewer", settings.value("QuickView/useBuiltinF4Viewer", false).toBool()},
-                    {"previewOnHover", settings.value("QuickView/previewOnHover", true).toBool()}};
+                    {"previewOnHover", settings.value("QuickView/previewOnHover", true).toBool()},
+                    {"videoPlaybackMode", normalizedVideoPlaybackMode(
+                        settings.value("QuickView/videoPlaybackMode",
+                            QStringLiteral("autoplay-muted")).toString())}};
     }
     QVariantMap values() const { return m_values; }
     QString error() const { return m_error; }
@@ -22,8 +25,17 @@ public:
     bool hover() const { return m_values.value("previewOnHover").toBool(); }
     Q_INVOKABLE bool apply(const QVariantMap &values)
     {
+        const QString mode = values.value(
+            "videoPlaybackMode", m_values.value("videoPlaybackMode",
+            QStringLiteral("autoplay-muted"))).toString();
+        if (!isValidVideoPlaybackMode(mode)) {
+            m_error = tr("Choose a valid video playback mode.");
+            emit changed();
+            return false;
+        }
         const QVariantMap next{{"useBuiltinF4Viewer", values.value("useBuiltinF4Viewer", false).toBool()},
-                               {"previewOnHover", values.value("previewOnHover", true).toBool()}};
+                               {"previewOnHover", values.value("previewOnHover", true).toBool()},
+                               {"videoPlaybackMode", mode}};
         QSettings settings;
         for (auto it = next.cbegin(); it != next.cend(); ++it)
             settings.setValue("QuickView/" + it.key(), it.value());
@@ -41,6 +53,18 @@ public:
 signals:
     void changed();
 private:
+    static bool isValidVideoPlaybackMode(const QString &mode)
+    {
+        return mode == QStringLiteral("autoplay-muted")
+            || mode == QStringLiteral("autoplay-sound")
+            || mode == QStringLiteral("manual");
+    }
+    static QString normalizedVideoPlaybackMode(const QString &mode)
+    {
+        return isValidVideoPlaybackMode(mode)
+            ? mode : QStringLiteral("autoplay-muted");
+    }
+
     QVariantMap m_values;
     QString m_error;
 };

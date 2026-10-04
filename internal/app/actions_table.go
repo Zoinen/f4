@@ -677,6 +677,15 @@ func init() {
 	})
 
 	RegisterAction(action.Action{
+		Name:        "Panel.OpenAssociated",
+		Area:        "Common",
+		Label:       "Open with Default Application",
+		Description: "Open the selected item with its system-associated application",
+		DefaultKeys: []string{"ShiftEnter:PanelsVisible"},
+		MenuPath:    "Files",
+		Handler:     withPF(func(pf *panel.PanelsFrame) { ActionOpenAssociated(pf) }),
+	})
+	RegisterAction(action.Action{
 		Name:                "Panel.SelectGroup",
 		Area:                "Shell",
 		Label:               "Select Group",
@@ -1096,9 +1105,9 @@ func init() {
 		Handler: withPF(func(pf *panel.PanelsFrame) {
 			if fsp := pf.GetActivePanel(); fsp != nil {
 				// far2l scrolls long names with Alt+Left/Right (#890). Keep
-				// folder history on the same keys, but only when nothing on
-				// screen is cut off, so scrolling never jumps directories.
-				if fsp.NamesOverflow() {
+				// that terminal behavior when names are cut off. Qt has no
+				// filename scrolling, so these keys always navigate history.
+				if vtui.ActiveBackend() != "qt" && fsp.NamesOverflow() {
 					fsp.ScrollNames(-1)
 					return
 				}
@@ -1118,7 +1127,7 @@ func init() {
 		MenuSubPath: "Navigation",
 		Handler: withPF(func(pf *panel.PanelsFrame) {
 			if fsp := pf.GetActivePanel(); fsp != nil {
-				if fsp.NamesOverflow() {
+				if vtui.ActiveBackend() != "qt" && fsp.NamesOverflow() {
 					fsp.ScrollNames(1)
 					return
 				}

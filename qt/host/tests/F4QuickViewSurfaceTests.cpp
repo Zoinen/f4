@@ -4,6 +4,8 @@
 #include "F4PanelPreferences.h"
 #include "F4TextRenderingPolicy.h"
 #include "TestExtUiStateController.h"
+#include "F4QuickViewPreferences.h"
+#include "../../../third_party/ZoinGallery/ViewerWheelArea.h"
 #include <ZoinGallery/GalleryPreferences.h>
 #include <ZoinGallery/GalleryRuntime.h>
 #include <ZoinGallery/GallerySession.h>
@@ -49,6 +51,9 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <QWheelEvent>
+#if defined(F4_QT_HAS_MULTIMEDIA_QML)
+#include <QVideoSink>
+#endif
 #include <QtQml>
 #include <QtTest>
 
@@ -217,6 +222,8 @@ class TestGallery final : public QObject
     Q_OBJECT
     Q_PROPERTY(bool available READ available CONSTANT)
     Q_PROPERTY(QObject *settings MEMBER preferences CONSTANT)
+    Q_PROPERTY(bool videoPlaybackAvailable READ videoPlaybackAvailable
+               NOTIFY viewerChanged)
     Q_PROPERTY(QObject *panelPreferences READ panelPreferences CONSTANT)
     Q_PROPERTY(QObject *viewerSession READ viewerSession NOTIFY viewerChanged)
     Q_PROPERTY(bool viewerVisible READ viewerVisible NOTIFY viewerChanged)
@@ -233,6 +240,15 @@ public:
     QObject *preferences = nullptr;
 
     bool available() const { return m_available; }
+    bool videoPlaybackAvailable() const { return videoAvailable; }
+    bool videoAvailable = false;
+    void setVideoPlaybackAvailable(bool value)
+    {
+        if (videoAvailable == value)
+            return;
+        videoAvailable = value;
+        emit viewerChanged();
+    }
     QObject *panelPreferences() { return &m_panelPreferences; }
     QObject *viewerSession() const { return m_viewerSession; }
     bool viewerVisible() const { return m_viewerUrl.isValid() && presentationState != 1; }
@@ -276,6 +292,50 @@ private:
     QUrl m_viewerUrl;
     QPointer<QObject> m_viewerSession;
 };
+
+#if defined(F4_QT_HAS_MULTIMEDIA_QML)
+class TestVideoPlaybackController final : public QObject
+{
+    Q_OBJECT
+    Q_PROPERTY(QVideoSink *videoSink READ videoSink CONSTANT)
+    Q_PROPERTY(QString state MEMBER state NOTIFY changed)
+    Q_PROPERTY(QString error MEMBER error NOTIFY changed)
+    Q_PROPERTY(qint64 position MEMBER position NOTIFY changed)
+    Q_PROPERTY(qint64 duration MEMBER duration NOTIFY changed)
+    Q_PROPERTY(bool playing MEMBER playing NOTIFY changed)
+    Q_PROPERTY(bool muted MEMBER muted NOTIFY changed)
+    Q_PROPERTY(qreal volume MEMBER volume NOTIFY changed)
+
+public:
+    explicit TestVideoPlaybackController(QObject *parent = nullptr)
+        : QObject(parent), m_videoSink(new QVideoSink(this)) {}
+
+    QVideoSink *videoSink() const { return m_videoSink; }
+    Q_INVOKABLE void playPause() { ++playPauseCalls; emit changed(); }
+    Q_INVOKABLE void seekTo(qint64 value) { position = value; emit changed(); }
+    Q_INVOKABLE void toggleMute() { muted = !muted; emit changed(); }
+    Q_INVOKABLE void adjustVolume(qreal delta)
+    {
+        volume = qBound(qreal(0), volume + delta, qreal(1));
+        emit changed();
+    }
+
+    QString state = QStringLiteral("failed");
+    QString error = QStringLiteral("Unsupported video codec");
+    qint64 position = 6500;
+    qint64 duration = 18000;
+    bool playing = false;
+    bool muted = true;
+    qreal volume = 0.5;
+    int playPauseCalls = 0;
+
+signals:
+    void changed();
+
+private:
+    QVideoSink *m_videoSink = nullptr;
+};
+#endif
 
 class TestIcons final : public QObject
 {
@@ -813,6 +873,12 @@ class F4QuickViewSurfaceTests final : public QObject
 
 private slots:
     void nativeSettingsPagePreservesConfigurator();
+#if defined(F4_QT_HAS_MULTIMEDIA_QML)
+    void galleryVideoControlsStayOnPhysicalPixelGridAt175Percent();
+    void galleryVideoSurfaceCapturesClicksAndDoubleClickCloses();
+    void galleryVideoControlsReceiveMouseClicks();
+    void galleryVideoPointerEventsReachEmbeddedViewer();
+#endif
     void initTestCase();
     void qmlImportsWithoutInstalledQt();
     void compiledHostLoadsItsQmlModule();
@@ -942,7 +1008,7 @@ void F4QuickViewSurfaceTests::qmlImportsWithoutInstalledQt()
     engine.setImportPathList({QStringLiteral("qrc:/qt-project.org/imports"),
                               QStringLiteral("qrc:/qt/qml")});
     QQmlComponent component(&engine);
-    component.setData(R"(
+    QByteArray source = R"(
         import QtQuick
         import QtQuick.Controls
         import QtQuick.Layouts
@@ -956,7 +1022,12 @@ void F4QuickViewSurfaceTests::qmlImportsWithoutInstalledQt()
             Shape { }
             MultiEffect { }
         }
-    )", QUrl(QStringLiteral("qrc:/portable-import-test.qml")));
+    )";
+#if defined(F4_QT_HAS_MULTIMEDIA_QML)
+    source.replace("import QtQuick\n", "import QtQuick\nimport QtMultimedia\n");
+    source.replace("MultiEffect { }", "MultiEffect { }\n            VideoOutput { objectName: \"portableVideoOutput\" }");
+#endif
+    component.setData(source, QUrl(QStringLiteral("qrc:/portable-import-test.qml")));
     QScopedPointer<QObject> object(component.create());
     QVERIFY2(object, qPrintable(component.errorString()));
 }
@@ -1018,6 +1089,10 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
     QSettings::setDefaultFormat(QSettings::IniFormat);
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsDirectory.path());
     QCoreApplication::setOrganizationName("F4NativeSettingsTest");
+    QSettings settings;
+    settings.remove(QStringLiteral("Gallery"));
+    settings.remove(QStringLiteral("QuickView"));
+    settings.sync();
     const auto restoreSettings = qScopeGuard([&] {
         QSettings::setDefaultFormat(previousFormat);
         QCoreApplication::setOrganizationName(previousOrganization);
@@ -1109,6 +1184,7 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
     galleryOptions.maxDecodeThreads = 4;
     auto *galleryRuntime = ZoinGallery::GalleryRuntime::install(&fixture.engine, galleryOptions);
     fixture.gallery.preferences = galleryRuntime->preferences();
+    fixture.gallery.setVideoPlaybackAvailable(true);
     body->setProperty("selectedNativePage", "gallery");
     QQuickItem *galleryPage = nullptr;
     QTRY_VERIFY((galleryPage = visualItemWithObjectName(body, "gallerySettingsPage")));
@@ -1116,6 +1192,17 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
     auto *galleryPreferences = qobject_cast<ZoinGallery::GalleryPreferences *>(fixture.gallery.preferences);
     QVERIFY(galleryPreferences);
     QTRY_VERIFY(!galleryPreferences->busy());
+    QCOMPARE(galleryPreferences->values().value("videoPlaybackMode").toString(),
+             QStringLiteral("autoplay-muted"));
+    auto *fullVideoMode = visualItemWithObjectName(
+        galleryPage, "galleryFullVideoPlaybackMode");
+    auto *quickVideoMode = visualItemWithObjectName(
+        galleryPage, "galleryQuickVideoPlaybackMode");
+    QVERIFY(fullVideoMode && quickVideoMode);
+    QCOMPARE(fullVideoMode->property("count").toInt(), 3);
+    QCOMPARE(quickVideoMode->property("count").toInt(), 3);
+    QCOMPARE(fullVideoMode->property("currentIndex").toInt(), 0);
+    QCOMPARE(quickVideoMode->property("currentIndex").toInt(), 0);
     auto *clearCache = visualItemWithObjectName(galleryPage, "galleryCacheClear");
     auto *clearLabel = visualItemWithObjectName(galleryPage, "galleryCacheClearText");
     QVERIFY(clearCache);
@@ -1177,6 +1264,11 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
     for (auto key : {Qt::Key_2, Qt::Key_0, Qt::Key_4, Qt::Key_8})
         QTest::keyClick(fixture.window, key);
     QCOMPARE(draftValues().value("diskLimitMiB").toInt(), 2048);
+    QVERIFY(QMetaObject::invokeMethod(galleryPage, "change",
+        Q_ARG(QVariant, QStringLiteral("videoPlaybackMode")),
+        Q_ARG(QVariant, QStringLiteral("manual"))));
+    QCOMPARE(draftValues().value("videoPlaybackMode").toString(),
+             QStringLiteral("manual"));
     // The next usage update must preserve edits that have not been applied.
     QSignalSpy usageRefreshed(galleryPreferences, &ZoinGallery::GalleryPreferences::changed);
     galleryPreferences->refresh();
@@ -1191,7 +1283,30 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
     QVERIFY(visualItemWithObjectName(galleryPage, "galleryCacheLimitInput"));
     QVERIFY(visualItemWithObjectName(galleryPage, "galleryDecoderFormats-0"));
     const auto galleryCapture = qEnvironmentVariable("F4_GALLERY_SETTINGS_CAPTURE");
-    if (!galleryCapture.isEmpty()) QVERIFY(fixture.window->grabWindow().save(galleryCapture));
+    if (!galleryCapture.isEmpty()) {
+        const QImage capture = fixture.window->grabWindow();
+        QVERIFY(!capture.isNull());
+        QVERIFY(capture.save(galleryCapture));
+        for (const QString &name : {QStringLiteral("galleryFullVideoPlaybackTitle"),
+                                    QStringLiteral("galleryFullVideoPlaybackModeText"),
+                                    QStringLiteral("galleryQuickVideoPlaybackTitle"),
+                                    QStringLiteral("galleryQuickVideoPlaybackModeText")}) {
+            QQuickItem *item = visualItemWithObjectName(galleryPage, name);
+            QVERIFY(item && item->isVisible());
+            const QPointF origin = item->mapToItem(fixture.window->contentItem(), QPointF{});
+            const QRect rect(qRound(origin.x() * dpr), qRound(origin.y() * dpr),
+                             qRound(item->width() * dpr), qRound(item->height() * dpr));
+            QVERIFY2(capture.rect().contains(rect), qPrintable(name));
+            const QImage leaf = capture.copy(rect);
+            QSet<QRgb> colors;
+            for (int y = 0; y < leaf.height(); ++y) {
+                for (int x = 0; x < leaf.width(); ++x)
+                    colors.insert(leaf.pixel(x, y));
+            }
+            QVERIFY2(colors.size() > 1,
+                     qPrintable(name + QStringLiteral(" rendered no visible glyphs")));
+        }
+    }
     auto *galleryViewport = visualItemWithObjectName(body, "nativeSettingsViewport");
     auto *quickHeading = visualItemWithObjectName(galleryPage, "galleryQuickViewTitle");
     auto *builtin = visualItemWithObjectName(galleryPage, "galleryBuiltinQuickView");
@@ -1200,29 +1315,51 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
     QVERIFY(!builtin->property("checked").toBool());
     QVERIFY(hover->property("checked").toBool());
     const auto retainedGalleryDraft = draftValues();
-    QQmlComponent quickPreferencesComponent(&fixture.engine);
-    quickPreferencesComponent.setData(R"(
-        import QtQml
-        QtObject {
-            property var values: ({useBuiltinF4Viewer: false, previewOnHover: true})
-            property string error: ""
-            function apply(next) { values = Object.assign({}, next); return true }
-        }
-    )", QUrl());
-    QScopedPointer<QObject> quickPreferences(quickPreferencesComponent.create());
-    QVERIFY(quickPreferences);
-    galleryPage->setProperty("quickViewPreferences", QVariant::fromValue(quickPreferences.data()));
+    F4QuickViewPreferences quickPreferences;
+    QCOMPARE(quickPreferences.values().value("videoPlaybackMode").toString(),
+             QStringLiteral("autoplay-muted"));
+    galleryPage->setProperty("quickViewPreferences",
+                             QVariant::fromValue<QObject *>(&quickPreferences));
     QVERIFY(QMetaObject::invokeMethod(galleryPage, "resetDraft"));
     QVERIFY(!galleryPage->property("dirty").toBool());
-    const QVariantMap editedQuickView{{"useBuiltinF4Viewer", true}, {"previewOnHover", false}};
+    QVERIFY(QMetaObject::invokeMethod(galleryPage, "change",
+        Q_ARG(QVariant, QStringLiteral("videoPlaybackMode")),
+        Q_ARG(QVariant, QStringLiteral("manual"))));
+    const QVariantMap editedQuickView{{"useBuiltinF4Viewer", true},
+        {"previewOnHover", false},
+        {"videoPlaybackMode", QStringLiteral("autoplay-sound")}};
     galleryPage->setProperty("quickViewDraft", editedQuickView);
     QVERIFY(galleryPage->property("dirty").toBool());
     QVERIFY(QMetaObject::invokeMethod(galleryPage, "resetDraft"));
     QVERIFY(!galleryPage->property("dirty").toBool());
     QVERIFY(!builtin->property("checked").toBool());
+    QVERIFY(QMetaObject::invokeMethod(galleryPage, "change",
+        Q_ARG(QVariant, QStringLiteral("videoPlaybackMode")),
+        Q_ARG(QVariant, QStringLiteral("manual"))));
     galleryPage->setProperty("quickViewDraft", editedQuickView);
     QVERIFY(QMetaObject::invokeMethod(galleryPage, "applyDraft"));
     QVERIFY(!galleryPage->property("dirty").toBool());
+    QCOMPARE(galleryPreferences->values().value("videoPlaybackMode").toString(),
+             QStringLiteral("manual"));
+    QCOMPARE(quickPreferences.values().value("videoPlaybackMode").toString(),
+             QStringLiteral("autoplay-sound"));
+    QCOMPARE(settings.value(QStringLiteral("Gallery/videoPlaybackMode")).toString(),
+             QStringLiteral("manual"));
+    QCOMPARE(settings.value(QStringLiteral("QuickView/videoPlaybackMode")).toString(),
+             QStringLiteral("autoplay-sound"));
+    F4QuickViewPreferences restartedQuickPreferences;
+    QCOMPARE(restartedQuickPreferences.values().value("videoPlaybackMode").toString(),
+             QStringLiteral("autoplay-sound"));
+    QQmlEngine restartedGalleryEngine;
+    galleryOptions.persistentCache = false;
+    auto *restartedGalleryRuntime = ZoinGallery::GalleryRuntime::install(
+        &restartedGalleryEngine, galleryOptions);
+    auto *restartedGalleryPreferences = qobject_cast<
+        ZoinGallery::GalleryPreferences *>(restartedGalleryRuntime->preferences());
+    QVERIFY(restartedGalleryPreferences);
+    QCOMPARE(restartedGalleryPreferences->values()
+                 .value("videoPlaybackMode").toString(),
+             QStringLiteral("manual"));
     QVERIFY(builtin->property("checked").toBool());
     QVERIFY(!hover->property("checked").toBool());
     for (auto it = retainedGalleryDraft.cbegin(); it != retainedGalleryDraft.cend(); ++it)
@@ -1406,6 +1543,318 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
     fixture.shell.setScene(shellScene());
     QTRY_COMPARE(fixture.window->property("textColor"), baselineColor);
 }
+
+#if defined(F4_QT_HAS_MULTIMEDIA_QML)
+void F4QuickViewSurfaceTests::galleryVideoControlsStayOnPhysicalPixelGridAt175Percent()
+{
+    QQmlEngine engine;
+    engine.addImportPath(QStringLiteral(":"));
+    TestVideoPlaybackController controller;
+    TestIcons icons;
+    engine.rootContext()->setContextProperty(QStringLiteral("testPlayback"),
+                                              &controller);
+    engine.rootContext()->setContextProperty(QStringLiteral("testIcons"),
+                                              &icons);
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import ZoinGallery 1.0
+        Item {
+            objectName: "galleryVideoPixelGridTestRoot"
+            width: 780
+            height: 420
+            GalleryVideoPlaybackSurface {
+                anchors.fill: parent
+                devicePixelRatio: 1.75
+                controller: testPlayback
+                iconSources: ({
+                    play: testIcons.rasterizedLucideSource(
+                        "play", 18, 1.75, Qt.rgba(0.95, 0.96, 0.97, 1)),
+                    pause: testIcons.rasterizedLucideSource(
+                        "pause", 18, 1.75, Qt.rgba(0.95, 0.96, 0.97, 1)),
+                    muted: testIcons.rasterizedLucideSource(
+                        "volume-x", 18, 1.75, Qt.rgba(0.95, 0.96, 0.97, 1)),
+                    sound: testIcons.rasterizedLucideSource(
+                        "volume-2", 18, 1.75, Qt.rgba(0.95, 0.96, 0.97, 1))
+                })
+            }
+        }
+    )", QUrl(QStringLiteral("qrc:/gallery-video-pixel-grid-test.qml")));
+    QScopedPointer<QObject> object(component.create());
+    QVERIFY2(object, qPrintable(component.errorString()));
+    auto *root = qobject_cast<QQuickItem *>(object.data());
+    QVERIFY(root);
+
+    QQuickWindow window;
+    window.setColor(Qt::black);
+    window.resize(780, 420);
+    root->setParentItem(window.contentItem());
+    window.show();
+    QTest::qWait(150);
+    if (qAbs(window.devicePixelRatio() - qreal(1.75)) >= 0.001)
+        QSKIP("Run this regression with QT_SCALE_FACTOR=1.75");
+
+    QQuickItem *playIcon = visualItemWithObjectName(
+        window.contentItem(), QStringLiteral("galleryVideoPlayButtonIcon"));
+    QQuickItem *muteIcon = visualItemWithObjectName(
+        window.contentItem(), QStringLiteral("galleryVideoMuteButtonIcon"));
+    QVERIFY(playIcon && muteIcon);
+    const QColor tint = QColor::fromRgbF(0.95, 0.96, 0.97, 1);
+    const auto iconSource = [&](const QString &name) {
+        return icons.rasterizedLucideSource(name, 18, 1.75, tint);
+    };
+    QTRY_COMPARE(playIcon->property("source").toUrl(),
+                 iconSource(QStringLiteral("play")));
+    QTRY_COMPARE(muteIcon->property("source").toUrl(),
+                 iconSource(QStringLiteral("volume-x")));
+    controller.playing = true;
+    controller.muted = false;
+    emit controller.changed();
+    QTRY_COMPARE(playIcon->property("source").toUrl(),
+                 iconSource(QStringLiteral("pause")));
+    QTRY_COMPARE(muteIcon->property("source").toUrl(),
+                 iconSource(QStringLiteral("volume-2")));
+
+    QList<QQuickItem *> items;
+    const auto collect = [&](auto &&self, QQuickItem *parent) -> void {
+        for (QQuickItem *child : parent->childItems()) {
+            if (child->isVisible()
+                && child->objectName().startsWith(QStringLiteral("galleryVideo"))) {
+                items.append(child);
+            }
+            self(self, child);
+        }
+    };
+    collect(collect, window.contentItem());
+    QVERIFY2(items.size() >= 18,
+             qPrintable(QStringLiteral("Only %1 named video surface items were visible")
+                            .arg(items.size())));
+    const qreal dpr = window.devicePixelRatio();
+    for (QQuickItem *item : items) {
+        const QPointF origin = item->mapToItem(window.contentItem(), QPointF{});
+        const QString detail = QStringLiteral("%1 physical=(%2,%3) size=(%4,%5)")
+            .arg(item->objectName())
+            .arg(origin.x() * dpr, 0, 'f', 6)
+            .arg(origin.y() * dpr, 0, 'f', 6)
+            .arg(item->width() * dpr, 0, 'f', 6)
+            .arg(item->height() * dpr, 0, 'f', 6);
+        for (qreal coordinate : {origin.x() * dpr, origin.y() * dpr,
+                                 item->width() * dpr, item->height() * dpr}) {
+            QVERIFY2(qAbs(coordinate - qRound(coordinate)) < 0.001,
+                     qPrintable(detail));
+        }
+        QCOMPARE(item->mapToItem(window.contentItem(), QPointF(1, 0)) - origin,
+                 QPointF(1, 0));
+        QCOMPARE(item->mapToItem(window.contentItem(), QPointF(0, 1)) - origin,
+                 QPointF(0, 1));
+    }
+
+    QTest::qWait(100);
+    const QImage capture = window.grabWindow();
+    QVERIFY(!capture.isNull());
+    for (const QString &name : {QStringLiteral("galleryVideoPlayButtonIcon"),
+                                QStringLiteral("galleryVideoTimeText"),
+                                QStringLiteral("galleryVideoMuteButtonIcon"),
+                                QStringLiteral("galleryVideoStatusText")}) {
+        QQuickItem *item = visualItemWithObjectName(window.contentItem(), name);
+        QVERIFY(item && item->isVisible());
+        const QPointF origin = item->mapToItem(window.contentItem(), QPointF{});
+        const QRect rect(qRound(origin.x() * dpr), qRound(origin.y() * dpr),
+                         qRound(item->width() * dpr),
+                         qRound(item->height() * dpr));
+        QVERIFY2(capture.rect().contains(rect), qPrintable(name));
+        const QImage leaf = capture.copy(rect);
+        QSet<QRgb> colors;
+        for (int y = 0; y < leaf.height(); ++y) {
+            for (int x = 0; x < leaf.width(); ++x)
+                colors.insert(leaf.pixel(x, y));
+        }
+        QVERIFY2(colors.size() > 1,
+                 qPrintable(name + QStringLiteral(" rendered no visible content")));
+    }
+    QDir().mkpath(QStringLiteral(".diagnostics"));
+    const QString capturePath = qEnvironmentVariable(
+        "F4_GALLERY_VIDEO_CONTROLS_CAPTURE");
+    if (!capturePath.isEmpty())
+        QVERIFY(capture.save(capturePath));
+}
+
+void F4QuickViewSurfaceTests::galleryVideoSurfaceCapturesClicksAndDoubleClickCloses()
+{
+    QQmlEngine engine;
+    engine.addImportPath(QStringLiteral(":"));
+    TestVideoPlaybackController controller;
+    engine.rootContext()->setContextProperty(QStringLiteral("testPlayback"),
+                                              &controller);
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import ZoinGallery 1.0
+        Item {
+            id: root
+            width: 320
+            height: 240
+            property int closeRequests: 0
+            GalleryVideoPlaybackSurface {
+                anchors.fill: parent
+                controller: testPlayback
+                viewportDoubleClickHandler: () => root.closeRequests++
+            }
+        }
+    )", QUrl(QStringLiteral("qrc:/gallery-video-click-test.qml")));
+    QScopedPointer<QObject> object(component.create());
+    QVERIFY2(object, qPrintable(component.errorString()));
+    auto *root = qobject_cast<QQuickItem *>(object.data());
+    QVERIFY(root);
+    auto *wheelOverlay = new ViewerWheelArea(root);
+    wheelOverlay->setSize(QSizeF(320, 240));
+    wheelOverlay->setZ(3);
+
+    QQuickWindow window;
+    window.resize(320, 240);
+    root->setParentItem(window.contentItem());
+    window.show();
+    QTRY_VERIFY(window.isExposed());
+
+    const QPoint videoPoint(160, 110);
+    QTest::mouseClick(&window, Qt::LeftButton, Qt::NoModifier, videoPoint);
+    QCoreApplication::processEvents();
+    QCOMPARE(root->property("closeRequests").toInt(), 0);
+    QCOMPARE(controller.playPauseCalls, 0);
+
+    QTest::mouseDClick(&window, Qt::LeftButton, Qt::NoModifier, videoPoint);
+    QTRY_COMPARE(root->property("closeRequests").toInt(), 1);
+    QCOMPARE(controller.playPauseCalls, 0);
+}
+
+void F4QuickViewSurfaceTests::galleryVideoControlsReceiveMouseClicks()
+{
+    QQmlEngine engine;
+    engine.addImportPath(QStringLiteral(":"));
+    TestVideoPlaybackController controller;
+    engine.rootContext()->setContextProperty(QStringLiteral("testPlayback"),
+                                              &controller);
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import ZoinGallery 1.0
+        Item {
+            width: 320
+            height: 240
+            GalleryVideoPlaybackSurface {
+                anchors.fill: parent
+                controller: testPlayback
+            }
+        }
+    )", QUrl(QStringLiteral("qrc:/gallery-video-controls-click-test.qml")));
+    QScopedPointer<QObject> object(component.create());
+    QVERIFY2(object, qPrintable(component.errorString()));
+    auto *root = qobject_cast<QQuickItem *>(object.data());
+    QVERIFY(root);
+    auto *wheelOverlay = new ViewerWheelArea(root);
+    wheelOverlay->setSize(QSizeF(320, 240));
+    wheelOverlay->setZ(3);
+
+    QQuickWindow window;
+    window.resize(320, 240);
+    root->setParentItem(window.contentItem());
+    window.show();
+    QTRY_VERIFY(window.isExposed());
+
+    QTest::mouseClick(&window, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(28, 211));
+    QTRY_COMPARE(controller.playPauseCalls, 1);
+
+    QTest::mouseClick(&window, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(120, 197));
+    QTRY_COMPARE(controller.position, qint64(9000));
+
+    QTest::mouseClick(&window, Qt::LeftButton, Qt::NoModifier,
+                      QPoint(194, 211));
+    QTRY_VERIFY(!controller.muted);
+}
+
+void F4QuickViewSurfaceTests::galleryVideoPointerEventsReachEmbeddedViewer()
+{
+    QQmlEngine engine;
+    engine.addImportPath(QStringLiteral(":"));
+    ZoinGallery::RuntimeOptions options;
+    options.enableVideoPlayback = true;
+    auto *runtime = ZoinGallery::GalleryRuntime::install(&engine, options);
+    QVERIFY(runtime);
+    auto *session = runtime->createExternalSession(
+        QStringLiteral("video-pointer-events"));
+    QVERIFY(session);
+    const auto shutdown = qScopeGuard([&] { runtime->shutdown(); });
+    QTRY_VERIFY_WITH_TIMEOUT(session->videoPlaybackAvailable(), 5000);
+    QVERIFY(session->applyExternalCatalog({QVariantMap{
+        {QStringLiteral("entryId"), QStringLiteral("video")},
+        {QStringLiteral("index"), 0},
+        {QStringLiteral("name"), QStringLiteral("video.mp4")},
+        {QStringLiteral("localPath"), QStringLiteral("Z:/missing/video.mp4")},
+        {QStringLiteral("isDir"), false},
+        {QStringLiteral("isImage"), true},
+        {QStringLiteral("thumbnailKind"), QStringLiteral("video")},
+    }}, 1));
+    QVERIFY(session->applyExternalState(QStringLiteral("video"), 0, {}, 1));
+    engine.rootContext()->setContextProperty(QStringLiteral("testVideoSession"),
+                                             session);
+
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import ZoinGallery 1.0
+        Item {
+            id: root
+            width: 640
+            height: 420
+            property int closeRequests: 0
+            property int fullscreenRequests: 0
+            GalleryViewer {
+                objectName: "embeddedVideoViewer"
+                anchors.fill: parent
+                session: testVideoSession
+                managedPresentation: true
+                videoPlaybackMode: "manual"
+                onPresentationCloseRequested: root.closeRequests++
+                onFullscreenToggleRequested: root.fullscreenRequests++
+            }
+        }
+    )", QUrl(QStringLiteral("qrc:/gallery-video-embedded-pointer-test.qml")));
+    QScopedPointer<QObject> object(component.create());
+    QVERIFY2(object, qPrintable(component.errorString()));
+    auto *root = qobject_cast<QQuickItem *>(object.data());
+    QVERIFY(root);
+
+    QQuickWindow window;
+    window.resize(640, 420);
+    root->setParentItem(window.contentItem());
+    window.show();
+    QTRY_VERIFY(window.isExposed());
+    auto *viewer = root->findChild<QQuickItem *>(
+        QStringLiteral("embeddedVideoViewer"));
+    QVERIFY(viewer);
+    QTRY_VERIFY_WITH_TIMEOUT(viewer->property("currentIsVideo").toBool(),
+                             5000);
+    QTRY_VERIFY_WITH_TIMEOUT(root->findChild<QQuickItem *>(
+                                 QStringLiteral("galleryVideoPlaybackSurface")),
+                             5000);
+
+    const QPoint viewportPoint(320, 170);
+    QTest::mouseClick(&window, Qt::LeftButton, Qt::NoModifier, viewportPoint);
+    QCoreApplication::processEvents();
+    QCOMPARE(root->property("closeRequests").toInt(), 0);
+    QCOMPARE(root->property("fullscreenRequests").toInt(), 0);
+
+    QTest::mouseClick(&window, Qt::MiddleButton, Qt::NoModifier,
+                      viewportPoint);
+    QTRY_COMPARE(root->property("fullscreenRequests").toInt(), 1);
+
+    QTest::mouseDClick(&window, Qt::LeftButton, Qt::NoModifier,
+                       viewportPoint);
+    QTRY_COMPARE(root->property("closeRequests").toInt(), 1);
+}
+#endif
 
 void F4QuickViewSurfaceTests::initTestCase()
 {

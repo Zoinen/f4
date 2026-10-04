@@ -13,6 +13,9 @@ Q_IMPORT_PLUGIN(QtQuickControls2ImplPlugin)
 Q_IMPORT_PLUGIN(QtQuickControls2BasicStyleImplPlugin)
 Q_IMPORT_PLUGIN(QtQuickControls2BasicStylePlugin)
 Q_IMPORT_PLUGIN(QtQuickControls2Plugin)
+#if defined(F4_QT_HAS_MULTIMEDIA_QML)
+Q_IMPORT_PLUGIN(QMultimediaQuickModule)
+#endif
 
 // Conan's static Qt targets do not retain the resource initializer objects.
 // Plugin registration alone exposes C++ types but loses qmldir dependencies,
@@ -34,6 +37,12 @@ static void initializeStaticQmlResources()
     Q_INIT_RESOURCE(qmake_QtQuick_Controls_Basic_impl);
     Q_INIT_RESOURCE(qmake_QtQuick_Controls_Basic);
     Q_INIT_RESOURCE(qmake_QtQuick_Controls);
+#if defined(F4_QT_HAS_MULTIMEDIA_QML)
+    // QtMultimedia's Video.qml and qmldir are a separate static QML module
+    // resource. QML import scanning links its plugin from ZoinGalleryQml;
+    // retain the module resource when the Qt archive is otherwise dead-stripped.
+    Q_INIT_RESOURCE(qmake_QtMultimedia);
+#endif
     Q_INIT_RESOURCE(indirectBasic);
     Q_INIT_RESOURCE(QuickControls2Basic_raw_qml_0);
     Q_INIT_RESOURCE(QuickControls2BasicStyleImpl_raw_qml_0);

@@ -2170,6 +2170,61 @@ func ActionExecute(pf *panel.PanelsFrame, v vfs.VFS, dir, name, path string) {
 	})
 }
 
+func ActionOpenAssociated(pf *panel.PanelsFrame) {
+	if pf == nil {
+		return
+	}
+	fsp := pf.GetActivePanel()
+	if fsp == nil || fsp.Vfs == nil {
+		return
+	}
+	index := fsp.GetCursorIndex()
+	if index < 0 || index >= len(fsp.Entries) {
+		return
+	}
+
+	entry := fsp.Entries[index]
+	v := fsp.Vfs
+	dir := v.GetPath()
+	path := dir
+	if entry.Name != ".." {
+		path = v.Join(dir, entry.Name)
+	}
+	isDirectory := entry.IsDir || entry.Name == ".."
+
+	vtui.RunAsync(func(ctx *vtui.TaskContext) {
+		if _, isLocal := v.(*vfs.OSVFS); !isLocal {
+			ctx.RunOnUI(func() {
+				vtui.ShowMessage(" Error ",
+					"Cannot open a remote item with a local application.",
+					[]string{"&Ok"})
+			})
+			return
+		}
+
+		command, args, supported := panel.AssociatedFileCommand(path)
+		if isDirectory {
+			command, args, supported = panel.SystemFileManagerCommand(path, true)
+		}
+		if !supported {
+			ctx.RunOnUI(func() {
+				vtui.ShowMessage(" Error ",
+					"Opening items with a system application is unsupported on this platform.",
+					[]string{"&Ok"})
+			})
+			return
+		}
+
+		if err := pf.RunExternalUICommand(command, args, dir); err != nil {
+			vtui.DebugLog("ACTIONS: Associated application failed: %v", err)
+			ctx.RunOnUI(func() {
+				message := fmt.Sprintf("Failed to open item:\n%v", err)
+				vtui.ShowMessage(" Error ", message, []string{"&Ok"})
+			})
+		}
+	})
+}
+
 func ActionNewFile(pf *panel.PanelsFrame) {
 	if fsp := pf.GetActivePanel(); fsp != nil {
 		dir := fsp.Vfs.GetPath()

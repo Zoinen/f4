@@ -9,8 +9,10 @@ Rectangle {
     id: quickRoot
     required property ApplicationWindow hostWindow
     required property Item menuBar
+    property var galleryController: null
     required property var quickView
-    readonly property bool nativeImage: quickView.imageRenderer === "gallery" && previewKind === "image"
+    readonly property bool nativeMedia: quickView.imageRenderer === "gallery"
+        && (previewKind === "image" || previewKind === "video")
     readonly property int side: Number(quickView.side || 0)
     readonly property var documentFrame:
         quickView.surface || ({})
@@ -45,7 +47,7 @@ Rectangle {
     Rectangle {
         id: quickTitle
         objectName: "quickViewTitle-" + quickRoot.side
-        visible: !quickRoot.nativeImage
+        visible: !quickRoot.nativeMedia
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
@@ -78,7 +80,7 @@ Rectangle {
 
     Item {
         id: quickHeader
-        visible: !quickRoot.nativeImage
+        visible: !quickRoot.nativeMedia
         objectName: "quickViewHeader-" + quickRoot.side
         anchors.left: parent.left
         anchors.right: parent.right
@@ -105,7 +107,7 @@ Rectangle {
 
     Item {
         id: quickContent
-        visible: !quickRoot.nativeImage
+        visible: !quickRoot.nativeMedia
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: quickHeader.bottom
@@ -200,7 +202,7 @@ Rectangle {
 
     Rectangle {
         id: quickFooter
-        visible: !quickRoot.nativeImage
+        visible: !quickRoot.nativeMedia
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
@@ -235,7 +237,7 @@ Rectangle {
     }
 
     TapHandler {
-        enabled: !quickRoot.nativeImage
+        enabled: !quickRoot.nativeMedia
         acceptedButtons: Qt.LeftButton
         gesturePolicy: TapHandler.ReleaseWithinBounds
         onTapped: hostWindow.action({

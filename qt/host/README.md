@@ -48,7 +48,7 @@ cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake \
 cmake --build build --config RelWithDebInfo
 ```
 
-Video thumbnails are enabled by default. The CMake options are:
+Video thumbnails and FFmpeg playback are enabled by default. The CMake options are:
 
 - `F4_ENABLE_VIDEO_THUMBNAILS=OFF` removes Qt Multimedia, the video runner and
   the FFmpeg dependency from the host graph. Video entries then use ordinary
@@ -58,6 +58,15 @@ Video thumbnails are enabled by default. The CMake options are:
   backend when the target provides one (for example, Media Foundation on
   Windows). Static targets without a native backend must keep the FFmpeg
   backend enabled or disable video thumbnails entirely.
+
+When both options are enabled and the built host actually selects Qt's FFmpeg
+backend, the embedded ZoinGallery viewer also plays video in the full viewer
+and Ctrl+Q Quick View. The Gallery & cache page has separate start modes for
+each presentation: auto without sound (the default), auto with sound, and
+manual. Qt Multimedia builds that select only a native backend keep video
+thumbnails but do not advertise video playback. The host forces
+`QT_MEDIA_BACKEND=ffmpeg` in FFmpeg-enabled builds so a missing FFmpeg runtime
+cannot silently turn the viewer into a Media Foundation player.
 
 The Conan graph must use matching options so it does not build unused native
 dependencies. For a host without video support:
@@ -201,7 +210,7 @@ effect on restart and do not move or delete the previous location. An empty valu
 uses the existing namespaced cache root shown on the page. Preferences are stored
 in the Qt host's QSettings, alongside its existing Gallery cache preferences.
 
-### Image Quick View
+### Image and video Quick View
 
 Ctrl+Q uses the same `GalleryViewerHost` / `ZG.GalleryViewer` as Enter for images.
 `ViewerCoordinator` keeps its source panel separate from its Quick View destination
@@ -213,12 +222,26 @@ animation. Fit responds to the viewport; custom zoom retains its absolute scale
 and center image point subject to viewport bounds and physical-pixel rounding.
 
 The **Quick View** group in **Gallery & Cache** stores F4-owned Qt preferences
-`QuickView/useBuiltinF4Viewer` (false) and `QuickView/previewOnHover` (true).
-Apply takes effect immediately. The built-in choice restores Go image decoding,
-bounded PNG serialization and the QML Image. Native image presentation bypasses
-that work and uses the source catalog's authenticated media descriptors. Errors
-stay in the selected renderer. Text, hex, directories and provider previews
-continue to use the existing F4 surfaces.
+`QuickView/useBuiltinF4Viewer` (false), `QuickView/previewOnHover` (true), and
+`QuickView/videoPlaybackMode` (`autoplay-muted` by default). The independent
+full-view mode is stored at `Gallery/videoPlaybackMode`; both accept
+`autoplay-muted`, `autoplay-sound`, and `manual`. Apply takes effect for each
+new video source immediately. The built-in choice restores Go decoding,
+provider previews, and the existing text fallback. Native image presentation
+bypasses Go decoding and uses the source catalog's authenticated media
+descriptors. Native video preview publishes only its stable source identity;
+Go does not read, decode, or serialize video bytes. Text, hex, directories and
+provider previews continue to use the existing F4 surfaces.
+
+The embedded viewer keeps one playback controller as Quick View expands or
+collapses, preserving its frame, play state, position, mute, and volume. Space
+toggles playback, M toggles mute, Ctrl+Left/Right seeks by five seconds, and
+Plus/Minus adjusts volume. The controls overlay also provides seeking, elapsed
+time, duration, and volume. Hiding or minimizing pauses active playback and
+resumes it when the presentation returns; a docked Quick View keeps playing
+while focus returns to its source panel. Playback is restricted to builds
+using Qt Multimedia with Qt's FFmpeg backend; a native-only backend keeps video
+thumbnails without enabling viewer playback.
 
 `QuickViewController` configures each shell with `quickView.configure` before
 new alternate panels load. `quickView.preview` carries Quick View and source

@@ -2223,6 +2223,71 @@ func TestPanelsFrame_AltShiftEnter_ExplorerLaunch(t *testing.T) {
 	}
 }
 
+func TestPanelsFrame_ShiftEnter_OpensAssociatedApplication(t *testing.T) {
+	if _, _, supported := panel.AssociatedFileCommand("test.txt"); !supported {
+		t.Skipf("associated-file launch is unsupported on %s", runtime.GOOS)
+	}
+	t.Cleanup(paneltest.SwapFrameManager(t))
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	oldHotkeys := keymap.GlobalHotkeysMgr
+	keymap.GlobalHotkeysMgr = keymap.NewHotkeyManager("")
+	t.Cleanup(func() { keymap.GlobalHotkeysMgr = oldHotkeys })
+	oldConfig := config.App
+	config.App.CommandLineMultiline = false
+	t.Cleanup(func() { config.App = oldConfig })
+
+	pf := panel.NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+	pf.ActiveIdx = 0
+	vtui.FrameManager.Push(pf)
+	launches := make(chan recordedExternalUICall, 1)
+	pf.ExternalUIRunner = func(command string, args []string, dir string) error {
+		launches <- recordedExternalUICall{
+			command: command,
+			args:    append([]string(nil), args...),
+			dir:     dir,
+		}
+		return nil
+	}
+
+	tmp := t.TempDir()
+	docPath := filepath.Join(tmp, "readme.txt")
+	if err := os.WriteFile(docPath, []byte("some text"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	fsp := pf.Panels[0].(*panel.FileSystemPanel)
+	if err := fsp.Vfs.SetPath(tmp); err != nil {
+		t.Fatal(err)
+	}
+	fsp.Entries = []*panel.FileEntry{
+		{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}},
+		{VFSItem: vfs.VFSItem{Name: "readme.txt", IsDir: false}},
+	}
+	fsp.Refresh()
+	fsp.SelectName("readme.txt")
+
+	if !pressKey(pf, &vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_RETURN,
+		ControlKeyState: vtinput.ShiftPressed,
+	}) {
+		t.Fatal("Shift+Enter was not handled by PanelsFrame")
+	}
+
+	command, args, _ := panel.AssociatedFileCommand(docPath)
+	want := recordedExternalUICall{command: command, args: args, dir: tmp}
+	select {
+	case got := <-launches:
+		if gotKey, wantKey := externalUICallKey(got), externalUICallKey(want); gotKey != wantKey {
+			t.Fatalf("associated-application launch = %#v, want %#v", got, want)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Shift+Enter did not launch the associated application")
+	}
+}
+
 func TestPanelsFrame_CtrlPgUp_EscapesNestedVFS(t *testing.T) {
 	vtui.SetDefaultPalette()
 	scr := vtui.NewSilentScreenBuf()

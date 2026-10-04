@@ -7,6 +7,7 @@ Item {
     required property ApplicationWindow hostWindow
     required property var settings
     property var quickViewPreferences: null
+    property bool videoPlaybackAvailable: false
     property var quickViewDraft: quickViewPreferences ? Object.assign({}, quickViewPreferences.values) : ({})
     property var savedQuickViewDraft: quickViewPreferences ? Object.assign({}, quickViewPreferences.values) : ({})
     objectName: "gallerySettingsPage"
@@ -226,7 +227,36 @@ Item {
         checked: page.draft.animateResizing === true
         onToggled: page.change("animateResizing", checked)
     }
-    Copy { id: quickViewTitle; identity: "galleryQuickViewTitle"; x: 0; y: animation.y + animation.height + page.gap; width: page.innerWidth; text: qsTr("Quick View"); font.bold: true }
+    Copy {
+        id: fullVideoPlaybackTitle
+        identity: "galleryFullVideoPlaybackTitle"
+        visible: page.videoPlaybackAvailable
+        height: visible ? page.px(18) : 0
+        x: page.px(0); y: page.px(animation.y + animation.height + page.gap)
+        width: page.innerWidth
+        text: qsTr("Full viewer video playback")
+        font.bold: true
+    }
+    F4ComboBox {
+        id: fullVideoPlaybackMode
+        objectName: "galleryFullVideoPlaybackMode"
+        hostWindow: page.hostWindow
+        focusPolicy: Qt.StrongFocus
+        visible: page.videoPlaybackAvailable
+        height: visible ? page.px(18) : 0
+        x: page.px(0); y: page.px(fullVideoPlaybackTitle.y + fullVideoPlaybackTitle.height + page.px(6))
+        width: page.innerWidth
+        model: [
+            {value: "autoplay-muted", text: qsTr("Auto without sound")},
+            {value: "autoplay-sound", text: qsTr("Auto with sound")},
+            {value: "manual", text: qsTr("Manual")}
+        ]
+        textRole: "text"
+        currentIndex: Math.max(0, model.findIndex(item =>
+            item.value === (page.draft.videoPlaybackMode || "autoplay-muted")))
+        onActivated: index => page.change("videoPlaybackMode", model[index].value)
+    }
+    Copy { id: quickViewTitle; identity: "galleryQuickViewTitle"; x: page.px(0); y: page.px(fullVideoPlaybackMode.y + fullVideoPlaybackMode.height + page.gap); width: page.innerWidth; text: qsTr("Quick View"); font.bold: true }
     F4CheckBox {
         id: builtinQuickView
         objectName: "galleryBuiltinQuickView"
@@ -247,7 +277,39 @@ Item {
         checked: page.quickViewDraft.previewOnHover !== false
         onToggled: page.quickViewDraft = Object.assign({}, page.quickViewDraft, {previewOnHover: checked})
     }
-    Copy { id: decoderHeading; identity: "galleryDecodersTitle"; x: 0; y: hoverQuickView.y + hoverQuickView.height + page.gap * 2; width: page.innerWidth; text: qsTr("Image decoders"); font.bold: true; font.pixelSize: 13 }
+    Copy {
+        id: quickVideoPlaybackTitle
+        identity: "galleryQuickVideoPlaybackTitle"
+        visible: page.videoPlaybackAvailable
+        height: visible ? page.px(implicitHeight) : 0
+        x: page.px(0); y: page.px(hoverQuickView.y + hoverQuickView.height + page.gap)
+        width: page.innerWidth
+        text: qsTr("Quick View video playback")
+        font.bold: true
+    }
+    F4ComboBox {
+        id: quickVideoPlaybackMode
+        objectName: "galleryQuickVideoPlaybackMode"
+        hostWindow: page.hostWindow
+        focusPolicy: Qt.StrongFocus
+        visible: page.videoPlaybackAvailable
+        height: visible ? page.px(implicitHeight) : 0
+        x: page.px(0); y: page.px(quickVideoPlaybackTitle.y + quickVideoPlaybackTitle.height + page.px(6))
+        width: page.innerWidth
+        model: [
+            {value: "autoplay-muted", text: qsTr("Auto without sound")},
+            {value: "autoplay-sound", text: qsTr("Auto with sound")},
+            {value: "manual", text: qsTr("Manual")}
+        ]
+        textRole: "text"
+        currentIndex: Math.max(0, model.findIndex(item =>
+            item.value === (page.quickViewDraft.videoPlaybackMode || "autoplay-muted")))
+        onActivated: index => {
+            page.quickViewDraft = Object.assign({}, page.quickViewDraft,
+                {videoPlaybackMode: model[index].value})
+        }
+    }
+    Copy { id: decoderHeading; identity: "galleryDecodersTitle"; x: page.px(0); y: page.px(quickVideoPlaybackMode.y + quickVideoPlaybackMode.height + page.gap * 2); width: page.innerWidth; text: qsTr("Image decoders"); font.bold: true; font.pixelSize: 13 }
     Copy { id: decoderHelp; identity: "galleryDecodersHelp"; x: 0; y: decoderHeading.y + decoderHeading.height + page.px(6); width: page.innerWidth; text: qsTr("Tried in this order. Higher priority wins; later decoders provide fallbacks."); color: page.hostWindow.mutedText; font.pixelSize: 11 }
     Column {
         id: decoderColumn
