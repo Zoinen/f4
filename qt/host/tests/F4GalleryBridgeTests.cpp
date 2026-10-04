@@ -161,6 +161,7 @@ private slots:
     void deferredCatalogApplyStaysWithinKeyboardFrame();
     void inactiveGalleryDoesNotStealFocus();
     void galleryRoutesOwnedAndCommanderKeys();
+    void retainedCommandKeepsMasonryNavigationLocal();
     void galleryKeepsAuthoritativeCursorVisible();
     void galleryPageNavigationSurvivesCursorAcknowledgement();
     void viewerOwnsEscapeAndZoom();
@@ -1218,6 +1219,70 @@ void F4GalleryBridgeTests::inactiveGalleryDoesNotStealFocus()
     delete rootObject;
 }
 
+void F4GalleryBridgeTests::retainedCommandKeepsMasonryNavigationLocal()
+{
+    QQuickView view;
+    view.engine()->addImportPath(QStringLiteral(":"));
+    view.engine()->addImportPath(QStringLiteral("qrc:/qt/qml"));
+    F4GalleryBridge bridge(view.engine());
+    GalleryKeyRecorder keyRecorder;
+    QVERIFY(bridge.available());
+    bridge.synchronizeScene(longCatalogScene(4, 1));
+    view.engine()->rootContext()->setContextProperty(QStringLiteral("keyBridge"), &bridge);
+    view.engine()->rootContext()->setContextProperty(QStringLiteral("keyRecorder"), &keyRecorder);
+    QQmlComponent component(view.engine());
+    component.setData(R"QML(
+        import QtQuick
+        Item {
+            width: 640
+            height: 360
+            Loader {
+                objectName: "panelLoader"
+                anchors.fill: parent
+                source: keyBridge.panelComponentUrl
+                onLoaded: {
+                    item.side = 0
+                    item.bridge = keyBridge
+                    item.keySink = keyRecorder
+                    item.panel = ({"id": "panel-left-long", "active": true,
+                                   "catalogRevision": 77})
+                    item.panelActive = true
+                }
+            }
+        }
+    )QML", QUrl(QStringLiteral("inline:F4RetainedCommandRoutingTest.qml")));
+    QTRY_VERIFY_WITH_TIMEOUT(component.status() != QQmlComponent::Loading, 5000);
+    QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+    QObject *rootObject = component.create();
+    QVERIFY2(rootObject, qPrintable(component.errorString()));
+    view.setContent(QUrl(QStringLiteral("inline:F4RetainedCommandRoutingTest.qml")),
+                    &component, rootObject);
+    view.show();
+    view.requestActivate();
+    QObject *loader = rootObject->findChild<QObject *>(QStringLiteral("panelLoader"));
+    QVERIFY(loader);
+    QTRY_VERIFY(loader->property("item").value<QObject *>());
+    QObject *host = loader->property("item").value<QObject *>();
+    QVERIFY(QMetaObject::invokeMethod(host, "forceActiveFocus"));
+    QObject *panel = host->findChild<QObject *>(QStringLiteral("embeddedGalleryPanel"));
+    QVERIFY(panel);
+    QTRY_VERIFY(panel->property("activeFocus").toBool());
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(bridge.sessionForSide(0));
+    QVERIFY(session);
+    host->setProperty("commandLineHasText", true);
+    host->setProperty("commandLineOwnsNavigation", false);
+    const int initialIndex = session->currentIndex();
+    keyRecorder.clear();
+    QTest::keyClick(&view, Qt::Key_Right);
+    QCOMPARE(keyRecorder.count(Qt::Key_Right, true), 0);
+    QCOMPARE(session->currentIndex(), initialIndex + 1);
+    QTest::keyClick(&view, Qt::Key_Return);
+    QCOMPARE(keyRecorder.count(Qt::Key_Return, true), 1);
+    QCOMPARE(keyRecorder.count(Qt::Key_Return, false), 1);
+    QVERIFY(!bridge.viewerVisible());
+    delete rootObject;
+}
+
 void F4GalleryBridgeTests::galleryRoutesOwnedAndCommanderKeys()
 {
     QQuickView view;
@@ -1831,9 +1896,20 @@ void F4GalleryBridgeTests::galleryRoutesOwnedAndCommanderKeys()
     host->setProperty("commandLineHasText", true);
     QCOMPARE(host->property("commandLineHasText").toBool(), true);
 
-    // A non-empty f4 command line owns editing text and navigation even while
-    // Gallery retains visual focus. These keys must not move the masonry
-    // cursor or toggle file selection.
+    // Search-first returned to the panel: retained command text owns Return,
+    // but masonry navigation remains local to Gallery.
+    const int panelCursor = session->currentIndex();
+    keyRecorder.clear();
+    QTest::keyClick(&view, Qt::Key_Left);
+    QCOMPARE(keyRecorder.count(Qt::Key_Left, true), 0);
+    QCOMPARE(session->currentIndex(), panelCursor - 1);
+    QTest::keyClick(&view, Qt::Key_Right);
+    QCOMPARE(keyRecorder.count(Qt::Key_Right, true), 0);
+    QCOMPARE(session->currentIndex(), panelCursor);
+    host->setProperty("commandLineOwnsNavigation", true);
+
+    // When command input explicitly owns navigation, these keys must not
+    // move the masonry cursor or toggle file selection.
     const int commandCursor = session->currentIndex();
     const auto verifyCommandLineKey = [&](const char *label, Qt::Key key,
                                           Qt::KeyboardModifiers modifiers = Qt::NoModifier) {

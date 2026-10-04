@@ -57,6 +57,15 @@ Item {
         ? workspaceTabsOverride : (workspaceState.tabs || ({}))
     readonly property var menuBarModel:
         menuBarOverride !== null ? menuBarOverride : (overlayState.menuBar || ({}))
+    readonly property bool menuBarActive: menuBarModel.active === true
+    property bool debugMenuFocus: false
+    // F9 activates the bar before any popup frame exists. Transfer keyboard
+    // ownership on that boundary, including compact menu-bar-only patches.
+    onMenuBarActiveChanged: {
+        if (debugMenuFocus)
+            console.debug("[FIX:menu-bar-focus] active", menuBarActive)
+        commandMenusUpdated()
+    }
     readonly property var keyBarModel:
         keyBarOverride !== null ? keyBarOverride : (chromeState.keyBar || ({}))
     readonly property var toastModel:
@@ -213,7 +222,7 @@ Item {
     }
 
     function hasBlockingOverlay() {
-        return overlayFrames().length > 0
+        return menuBarActive || overlayFrames().length > 0
     }
 
     function shellFrame() {

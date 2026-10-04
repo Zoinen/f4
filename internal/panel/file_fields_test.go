@@ -328,6 +328,11 @@ func TestGalleryColumnWidthsChangePresentationAndPersistWithoutCatalogReload(t *
 			beforeGeneration, fp.semanticCatalogGeneration)
 	}
 	columns := fp.semanticGalleryColumns()
+	for _, column := range columns {
+		if column.AutoWidth {
+			t.Fatalf("manually resized column must retain its width: %#v", column)
+		}
+	}
 	if len(columns) != 3 || columns[0].Width != 44 ||
 		columns[1].Width != 14 || columns[2].Width != 22 {
 		t.Fatalf("semantic widths = %#v, want name=44 size=14 iso=22", columns)

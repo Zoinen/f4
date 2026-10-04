@@ -21,10 +21,6 @@ FocusScope {
         let values = {}
         for (const definition of hostWindow.themeColorDefinitions)
             values[definition.id] = hostWindow[definition.id].toString()
-        for (const key of ["fontRenderType", "mouseWheelMode", "galleryNeutralFileTextColors",
-                           "galleryShowSelectionBorders", "commandLineGraphicalCursor",
-                           "iconSetName"])
-            values[key] = hostWindow[key]
         draftBaseline = values
     }
     function applyDraft() {
@@ -55,7 +51,7 @@ FocusScope {
         event.accepted = true
     }
     implicitWidth: hostWindow.snapPx(embeddedSettings ? 535 : 720)
-    implicitHeight: hostWindow.snapPx(embeddedSettings ? 812 : 876)
+    implicitHeight: hostWindow.snapPx(embeddedSettings ? 480 : 544)
 
 
     ThemeDraftModel {
@@ -171,7 +167,7 @@ FocusScope {
                     text: "Theme Color Configurator"
                     color: hostWindow.textColor
                     font.family: hostWindow.uiFontFamily
-                    font.pixelSize: 14
+                    font.pixelSize: (hostWindow ? hostWindow.uiTextSize(14) : 14)
                     font.weight: Font.Bold
                     Layout.fillWidth: true
                 }
@@ -188,7 +184,7 @@ FocusScope {
                           : "gui_theme.ini"
                     color: hostWindow.mutedText
                     font.family: hostWindow.uiFontFamily
-                    font.pixelSize: 10
+                    font.pixelSize: (hostWindow ? hostWindow.uiTextSize(10) : 10)
                     elide: Text.ElideMiddle
                     Layout.maximumWidth: 320
                 }
@@ -214,340 +210,7 @@ FocusScope {
                 }
             }
 
-            Rectangle {
-                id: themeFontRenderTypePanel
-                objectName: "themeFontRenderTypePanel"
-                Layout.fillWidth: true
-                Layout.preferredHeight: hostWindow.snapPx(42)
-                implicitHeight: hostWindow.snapPx(42)
-                transform: Translate {
-                    x: hostWindow.dialogPixelOffsetX(
-                        themeFontRenderTypePanel,
-                        themeColorConfigurator.contentItem)
-                    y: hostWindow.dialogPixelOffsetY(
-                        themeFontRenderTypePanel,
-                        themeColorConfigurator.contentItem)
-                }
-                radius: hostWindow.snapPx(4)
-                color: hostWindow.dialogHeaderBg
-                border.width: hostWindow.separatorWidth
-                border.color: hostWindow.controlBorder
 
-                RowLayout {
-                    anchors.fill: parent
-                    anchors.leftMargin: hostWindow.snapPx(8)
-                    anchors.rightMargin: hostWindow.snapPx(8)
-                    spacing: hostWindow.snapPx(8)
-
-                    ColumnLayout {
-                        id: themeFontRenderTypeLabels
-                        objectName: "themeFontRenderTypeLabels"
-                        Layout.fillWidth: true
-                        spacing: hostWindow.snapPx(1)
-                        transform: Translate {
-                            x: hostWindow.dialogPixelOffsetX(
-                                themeFontRenderTypeLabels,
-                                themeColorConfigurator.contentItem)
-                            y: hostWindow.dialogPixelOffsetY(
-                                themeFontRenderTypeLabels,
-                                themeColorConfigurator.contentItem)
-                        }
-
-                        Text {
-                            transform: Translate {
-                                x: hostWindow.dialogPixelOffsetX(themeFontRenderTypeTitle, hostWindow.contentItem)
-                                y: hostWindow.dialogPixelOffsetY(themeFontRenderTypeTitle, hostWindow.contentItem)
-                            }
-                            id: themeFontRenderTypeTitle
-                            objectName: "themeFontRenderTypeTitle"
-                            text: "Font rendering"
-                            color: hostWindow.textColor
-                            font.family: hostWindow.uiFontFamily
-                            font.pixelSize: 11
-                            font.weight: Font.Bold
-                        }
-
-                        Text {
-                            id: themeFontRenderTypeDescription
-                            objectName: "themeFontRenderTypeDescription"
-                            text: hostWindow.fontRenderTypeDescription
-                            color: hostWindow.mutedText
-                            font.family: hostWindow.uiFontFamily
-                            font.pixelSize: 9
-                            elide: Text.ElideRight
-                            Layout.fillWidth: true
-                            transform: Translate {
-                                x: hostWindow.dialogPixelOffsetX(
-                                    themeFontRenderTypeDescription,
-                                    themeColorConfigurator.contentItem)
-                                y: hostWindow.dialogPixelOffsetY(
-                                    themeFontRenderTypeDescription,
-                                    themeColorConfigurator.contentItem)
-                            }
-                        }
-                    }
-
-                    ThemeRenderTypeComboBox {
-                        id: themeFontRenderTypeCombo
-                        hostWindow: themeColorConfigurator.hostWindow
-                        objectName: "themeFontRenderTypeCombo"
-                        options: hostWindow.fontRenderTypeOptions
-                        selectedRenderType: hostWindow.fontRenderType
-                        Layout.preferredWidth: hostWindow.snapPx(174)
-                        transform: Translate {
-                            x: hostWindow.dialogPixelOffsetX(
-                                themeFontRenderTypeCombo,
-                                themeColorConfigurator.contentItem)
-                            y: hostWindow.dialogPixelOffsetY(
-                                themeFontRenderTypeCombo,
-                                themeColorConfigurator.contentItem)
-                        }
-                        onRenderTypeActivated: function(value) {
-                            if (hostWindow.setFontRenderType(value))
-                                themeColorConfigurator.statusToast =
-                                    "Font rendering: " + hostWindow.fontRenderTypeName
-                        }
-                    }
-                }
-            }
-
-            Rectangle {
-                id: themeMouseWheelPanel
-                objectName: "themeMouseWheelPanel"
-                Layout.fillWidth: true
-                Layout.preferredHeight: hostWindow.snapPx(42)
-                implicitHeight: hostWindow.snapPx(42)
-                transform: Translate {
-                    x: hostWindow.dialogPixelOffsetX(
-                        themeMouseWheelPanel,
-                        themeColorConfigurator.contentItem)
-                    y: hostWindow.dialogPixelOffsetY(
-                        themeMouseWheelPanel,
-                        themeColorConfigurator.contentItem)
-                }
-                radius: hostWindow.snapPx(4)
-                color: hostWindow.dialogHeaderBg
-                border.width: hostWindow.separatorWidth
-                border.color: hostWindow.controlBorder
-
-                RowLayout {
-                    anchors.fill: parent
-                    anchors.leftMargin: hostWindow.snapPx(8)
-                    anchors.rightMargin: hostWindow.snapPx(8)
-                    spacing: hostWindow.snapPx(8)
-
-                    ColumnLayout {
-                        id: themeMouseWheelLabels
-                        objectName: "themeMouseWheelLabels"
-                        Layout.fillWidth: true
-                        spacing: hostWindow.snapPx(1)
-                        transform: Translate {
-                            x: hostWindow.dialogPixelOffsetX(
-                                themeMouseWheelLabels,
-                                themeColorConfigurator.contentItem)
-                            y: hostWindow.dialogPixelOffsetY(
-                                themeMouseWheelLabels,
-                                themeColorConfigurator.contentItem)
-                        }
-
-                        Text {
-                            transform: Translate {
-                                x: hostWindow.dialogPixelOffsetX(themeMouseWheelTitle, hostWindow.contentItem)
-                                y: hostWindow.dialogPixelOffsetY(themeMouseWheelTitle, hostWindow.contentItem)
-                            }
-                            id: themeMouseWheelTitle
-                            objectName: "themeMouseWheelTitle"
-                            text: "Mouse wheel control"
-                            color: hostWindow.textColor
-                            font.family: hostWindow.uiFontFamily
-                            font.pixelSize: 11
-                            font.weight: Font.Bold
-                        }
-
-                        Text {
-                            id: themeMouseWheelDescription
-                            objectName: "themeMouseWheelDescription"
-                            text: hostWindow.mouseWheelModeDescription
-                            color: hostWindow.mutedText
-                            font.family: hostWindow.uiFontFamily
-                            font.pixelSize: 9
-                            elide: Text.ElideRight
-                            Layout.fillWidth: true
-                            transform: Translate {
-                                x: hostWindow.dialogPixelOffsetX(
-                                    themeMouseWheelDescription,
-                                    themeColorConfigurator.contentItem)
-                                y: hostWindow.dialogPixelOffsetY(
-                                    themeMouseWheelDescription,
-                                    themeColorConfigurator.contentItem)
-                            }
-                        }
-                    }
-
-                    ThemeRenderTypeComboBox {
-                        id: themeMouseWheelCombo
-                        hostWindow: themeColorConfigurator.hostWindow
-                        objectName: "themeMouseWheelCombo"
-                        options: hostWindow.mouseWheelModeOptions
-                        selectedValue: hostWindow.mouseWheelMode
-                        Layout.preferredWidth: hostWindow.snapPx(174)
-                        transform: Translate {
-                            x: hostWindow.dialogPixelOffsetX(
-                                themeMouseWheelCombo,
-                                themeColorConfigurator.contentItem)
-                            y: hostWindow.dialogPixelOffsetY(
-                                themeMouseWheelCombo,
-                                themeColorConfigurator.contentItem)
-                        }
-                        onOptionActivated: function(value) {
-                            if (hostWindow.setMouseWheelMode(value))
-                                themeColorConfigurator.statusToast =
-                                    "Mouse wheel: " + hostWindow.mouseWheelModeName
-                        }
-                    }
-                }
-            }
-
-            Rectangle {
-                id: themeIconSetPanel
-                objectName: "themeIconSetPanel"
-                Layout.fillWidth: true
-                Layout.preferredHeight: hostWindow.snapPx(42)
-                implicitHeight: hostWindow.snapPx(42)
-                transform: Translate {
-                    x: hostWindow.dialogPixelOffsetX(
-                        themeIconSetPanel,
-                        themeColorConfigurator.contentItem)
-                    y: hostWindow.dialogPixelOffsetY(
-                        themeIconSetPanel,
-                        themeColorConfigurator.contentItem)
-                }
-                radius: hostWindow.snapPx(4)
-                color: hostWindow.dialogHeaderBg
-                border.width: hostWindow.separatorWidth
-                border.color: hostWindow.controlBorder
-
-                RowLayout {
-                    anchors.fill: parent
-                    anchors.leftMargin: hostWindow.snapPx(8)
-                    anchors.rightMargin: hostWindow.snapPx(8)
-                    spacing: hostWindow.snapPx(8)
-
-                    ColumnLayout {
-                        id: themeIconSetLabels
-                        objectName: "themeIconSetLabels"
-                        Layout.fillWidth: true
-                        spacing: hostWindow.snapPx(1)
-                        transform: Translate {
-                            x: hostWindow.dialogPixelOffsetX(
-                                themeIconSetLabels,
-                                themeColorConfigurator.contentItem)
-                            y: hostWindow.dialogPixelOffsetY(
-                                themeIconSetLabels,
-                                themeColorConfigurator.contentItem)
-                        }
-
-                        Text {
-                            id: themeIconSetTitle
-                            objectName: "themeIconSetTitle"
-                            text: "Icon set"
-                            color: hostWindow.textColor
-                            font.family: hostWindow.guiMonospaceFontFamily
-                            font.pixelSize: 11
-                            font.weight: Font.Bold
-                            transform: Translate {
-                                x: hostWindow.dialogPixelOffsetX(
-                                    themeIconSetTitle,
-                                    themeColorConfigurator.contentItem)
-                                y: hostWindow.dialogPixelOffsetY(
-                                    themeIconSetTitle,
-                                    themeColorConfigurator.contentItem)
-                            }
-                        }
-
-                        Text {
-                            id: themeIconSetDescription
-                            objectName: "themeIconSetDescription"
-                            text: hostWindow.iconSetDescription
-                            color: hostWindow.mutedText
-                            font.family: hostWindow.guiMonospaceFontFamily
-                            font.pixelSize: 9
-                            elide: Text.ElideRight
-                            Layout.fillWidth: true
-                            transform: Translate {
-                                x: hostWindow.dialogPixelOffsetX(
-                                    themeIconSetDescription,
-                                    themeColorConfigurator.contentItem)
-                                y: hostWindow.dialogPixelOffsetY(
-                                    themeIconSetDescription,
-                                    themeColorConfigurator.contentItem)
-                            }
-                        }
-                    }
-
-                    ThemeRenderTypeComboBox {
-                        id: themeIconSetCombo
-                        hostWindow: themeColorConfigurator.hostWindow
-                        objectName: "themeIconSetCombo"
-                        options: hostWindow.iconSetOptions
-                        selectedValue: hostWindow.iconSetName
-                        Layout.preferredWidth: hostWindow.snapPx(174)
-                        transform: Translate {
-                            x: hostWindow.dialogPixelOffsetX(
-                                themeIconSetCombo,
-                                themeColorConfigurator.contentItem)
-                            y: hostWindow.dialogPixelOffsetY(
-                                themeIconSetCombo,
-                                themeColorConfigurator.contentItem)
-                        }
-                        onOptionActivated: function(value) {
-                            if (hostWindow.setIconSet(value))
-                                themeColorConfigurator.statusToast =
-                                    "Icon set: " + hostWindow.iconSetOption(value).name
-                        }
-                    }
-                }
-            }
-
-            ThemeBooleanOption {
-                hostWindow: themeColorConfigurator.hostWindow
-                pixelGridRoot: themeColorConfigurator.contentItem
-                namePrefix: "themeNeutralFileText"
-                title: "Panel file and folder text"
-                description: "Use neutral text colors; semantic colors still tint icons"
-                checked: hostWindow.galleryNeutralFileTextColors
-                onToggled: function(checked) {
-                    hostWindow.galleryNeutralFileTextColors = checked
-                    themeColorConfigurator.statusToast = checked
-                            ? "Neutral panel text enabled" : "Semantic panel text enabled"
-                }
-            }
-
-            ThemeBooleanOption {
-                hostWindow: themeColorConfigurator.hostWindow
-                pixelGridRoot: themeColorConfigurator.contentItem
-                namePrefix: "themeSelectionBorder"
-                title: "Selection borders"
-                description: "Outline marked items in every view; disable for text-color marking only"
-                checked: hostWindow.galleryShowSelectionBorders
-                onToggled: function(checked) {
-                    hostWindow.galleryShowSelectionBorders = checked
-                    themeColorConfigurator.statusToast = checked
-                            ? "Selection borders enabled" : "Text-only selection enabled"
-                }
-            }
-
-            ThemeBooleanOption {
-                hostWindow: themeColorConfigurator.hostWindow
-                pixelGridRoot: themeColorConfigurator.contentItem
-                namePrefix: "themeCommandLineCaret"
-                title: qsTr("Graphical command-line caret")
-                description: qsTr("Use a thin vertical caret; disable for the console underline")
-                checked: hostWindow.commandLineGraphicalCursor
-                onToggled: checked => hostWindow.commandLineGraphicalCursor = checked
-            }
-
-            // Main Body: Left (List of items) + Right (Editor)
             RowLayout {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
@@ -694,7 +357,7 @@ FocusScope {
                                             }
                                             text: itemDelegate.def.name
                                             color: hostWindow.textColor
-                                            font.pixelSize: 11
+                                            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(11) : 11)
                                             font.weight: itemDelegate.isSelected ? Font.Bold : Font.Normal
                                             elide: Text.ElideRight
                                             Layout.fillWidth: true
@@ -709,7 +372,7 @@ FocusScope {
                                             }
                                             text: itemDelegate.def.group
                                             color: hostWindow.mutedText
-                                            font.pixelSize: 9
+                                            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(9) : 9)
                                             elide: Text.ElideRight
                                             Layout.fillWidth: true
                                         }
@@ -726,7 +389,7 @@ FocusScope {
                                         text: hostWindow.formatColorHex(hostWindow[itemDelegate.def.id])
                                         color: hostWindow.mutedText
                                         font.family: hostWindow.uiFontFamily
-                                        font.pixelSize: 10
+                                        font.pixelSize: (hostWindow ? hostWindow.uiTextSize(10) : 10)
                                     }
                                 }
 

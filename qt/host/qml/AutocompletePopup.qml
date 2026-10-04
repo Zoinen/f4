@@ -94,7 +94,7 @@ Item {
     FontMetrics {
         id: autocompleteFontMetrics
         font.family: hostWindow.uiFontFamily
-        font.pixelSize: 13
+        font.pixelSize: (hostWindow ? hostWindow.uiTextSize(13) : 13)
     }
 
     FontMetrics {
@@ -187,7 +187,7 @@ Item {
                                   0, completionTextRow.matchingLength)
                         color: hostWindow.dialogAccent
                         font.family: hostWindow.uiFontFamily
-                        font.pixelSize: 13
+                        font.pixelSize: (hostWindow ? hostWindow.uiTextSize(13) : 13)
                     }
 
                     Text {
@@ -197,7 +197,7 @@ Item {
                                   completionTextRow.matchingLength)
                         color: hostWindow.textColor
                         font.family: hostWindow.uiFontFamily
-                        font.pixelSize: 13
+                        font.pixelSize: (hostWindow ? hostWindow.uiTextSize(13) : 13)
                         elide: Text.ElideRight
                     }
                 }

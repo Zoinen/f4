@@ -2419,6 +2419,7 @@ func (fp *FileSystemPanel) semanticPagedPanelModel(
 		HighlightStyles:     highlightStyles,
 		CursorEntryID:       cursorEntryID,
 		SortMode:            semanticSortModeName(fp), SortReverse: fp.SortReverse,
+		SortAscending:          fp.semanticSortAscending(),
 		FileFieldDescriptors:   extui.FileFieldDescriptors(),
 		FileFieldSort:          fp.FileFieldSort,
 		FileFieldFilters:       semanticFileFieldFilters(fp),
@@ -2595,6 +2596,7 @@ func (fp *FileSystemPanel) SemanticPanelModel(ctx *vtui.SemanticContext, side in
 		CursorEntryID:          cursorEntryID,
 		SortMode:               semanticSortModeName(fp),
 		SortReverse:            fp.SortReverse,
+		SortAscending:          fp.semanticSortAscending(),
 		FileFieldDescriptors:   extui.FileFieldDescriptors(),
 		FileFieldSort:          fp.FileFieldSort,
 		FileFieldFilters:       semanticFileFieldFilters(fp),
@@ -2684,6 +2686,7 @@ func (fp *FileSystemPanel) semanticPagedPanelHeaderModel(
 		HighlightRevision:   semanticHighlighterRevision(),
 		CursorEntryID:       cursorEntryID,
 		SortMode:            semanticSortModeName(fp), SortReverse: fp.SortReverse,
+		SortAscending:          fp.semanticSortAscending(),
 		FileFieldDescriptors:   extui.FileFieldDescriptors(),
 		FileFieldSort:          fp.FileFieldSort,
 		FileFieldFilters:       semanticFileFieldFilters(fp),
@@ -2785,6 +2788,7 @@ func (fp *FileSystemPanel) semanticPanelHeaderModel(ctx *vtui.SemanticContext, s
 		CursorEntryID:          cursorEntryID,
 		SortMode:               semanticSortModeName(fp),
 		SortReverse:            fp.SortReverse,
+		SortAscending:          fp.semanticSortAscending(),
 		FileFieldDescriptors:   extui.FileFieldDescriptors(),
 		FileFieldSort:          fp.FileFieldSort,
 		FileFieldFilters:       semanticFileFieldFilters(fp),
@@ -2817,6 +2821,15 @@ func semanticSortModeName(fp *FileSystemPanel) string {
 		return sortModeName(SortName)
 	}
 	return sortModeName(fp.SortMode)
+}
+
+func (fp *FileSystemPanel) semanticSortAscending() bool {
+	if fp.FileFieldSort == "" && fp.sortDirectionSetByAction {
+		return fp.SortIsAscending()
+	}
+	// Restored time/size modes use the legacy comparator, where reversal has
+	// the opposite meaning from a sort action's newest/largest-first comparator.
+	return !fp.SortReverse
 }
 
 func semanticFileFieldFilters(fp *FileSystemPanel) []extui.FileFieldFilterModel {
@@ -2852,6 +2865,7 @@ func (fp *FileSystemPanel) semanticGalleryColumns() []extui.PanelColumnModel {
 			ID: "name", Role: "name", Index: 0,
 			Title:     title(i18n.Msg("Panel.Column.Name"), SortName),
 			Width:     fp.effectiveGalleryColumnWidth("name", nameWidth),
+			AutoWidth: fp.GalleryColumnWidths["name"] <= 0,
 			Alignment: "left",
 			SortMode:  sortModeName(SortName), Sortable: true,
 		},
@@ -2859,6 +2873,7 @@ func (fp *FileSystemPanel) semanticGalleryColumns() []extui.PanelColumnModel {
 			ID: "size", Role: "size", Index: 1,
 			Title:     title(i18n.Msg("Panel.Column.Size"), SortSize),
 			Width:     fp.effectiveGalleryColumnWidth("size", panelSizeColumnWidth),
+			AutoWidth: fp.GalleryColumnWidths["size"] <= 0,
 			Alignment: "right",
 			SortMode:  sortModeName(SortSize), Sortable: true,
 		},
@@ -2888,7 +2903,8 @@ func (fp *FileSystemPanel) semanticGalleryColumns() []extui.PanelColumnModel {
 		columns = append(columns, extui.PanelColumnModel{
 			ID: descriptor.ID, Role: descriptor.ID, Index: len(columns),
 			Title: columnTitle, Width: columnWidth, Alignment: alignment,
-			SortMode: descriptor.ID, Sortable: true,
+			AutoWidth: fp.GalleryColumnWidths[descriptor.ID] <= 0,
+			SortMode:  descriptor.ID, Sortable: true,
 		})
 	}
 	return columns

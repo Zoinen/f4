@@ -29,8 +29,8 @@ import (
 	"github.com/unxed/f4/internal/terminal"
 	"github.com/unxed/f4/internal/theme"
 	"github.com/unxed/f4/internal/update"
-	"github.com/unxed/f4/internal/winshell"
 	"github.com/unxed/f4/internal/viewer"
+	"github.com/unxed/f4/internal/winshell"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/f4/vfs/hostmode"
 	"github.com/unxed/vtinput"
@@ -960,6 +960,13 @@ func SetupUI() {
 	setupUI(nil)
 }
 
+// handleActiveAutocompleteFocusToggle resolves the workspace for every key:
+// the startup frame may no longer own the foreground command line.
+func handleActiveAutocompleteFocusToggle(e *vtinput.InputEvent) bool {
+	pf := panel.FindPanelsFrame()
+	return pf != nil && pf.HandleAutocompleteFocusToggle(e)
+}
+
 // setupUI is SetupUI with one hook: firstRunStyle, when set, may name the
 // colour style to start with in place of the built-in default. It is asked only
 // when no settings.ini has chosen a style (issue #513).
@@ -1162,6 +1169,9 @@ func setupUI(firstRunStyle func() (string, bool)) {
 	}
 	previousEventFilter := vtui.FrameManager.EventFilter
 	vtui.FrameManager.EventFilter = func(e *vtinput.InputEvent) bool {
+		if handleActiveAutocompleteFocusToggle(e) {
+			return true
+		}
 		if panel.HandleTranslatorMouseEvent(e) {
 			return true
 		}

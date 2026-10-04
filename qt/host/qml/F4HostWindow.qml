@@ -65,13 +65,11 @@ ApplicationWindow {
     readonly property string configuredGuiFontFamily:
         typeof f4GuiFontFamily !== "undefined"
         ? String(f4GuiFontFamily).trim() : ""
-    readonly property string uiFontFamily:
-        configuredGuiFontFamily.length > 0
-        ? configuredGuiFontFamily
-        : (typeof f4SystemUiFontFamily !== "undefined"
+    readonly property string defaultUiFontFamily:
+        (typeof f4SystemUiFontFamily !== "undefined"
            && String(f4SystemUiFontFamily).trim().length > 0
-           ? String(f4SystemUiFontFamily).trim() : host.font.family)
-    readonly property string guiMonospaceFontFamily: {
+           ? String(f4SystemUiFontFamily).trim() : "sans-serif")
+    readonly property string defaultMonospaceFontFamily: {
         if (configuredGuiFontFamily.length > 0)
             return configuredGuiFontFamily
         if (typeof f4SystemMonospaceFontFamily !== "undefined") {
@@ -81,9 +79,30 @@ ApplicationWindow {
         }
         return "monospace"
     }
-    readonly property int guiMonospaceFontPixelSize:
+    readonly property int defaultMonospaceFontPixelSize:
         Number(f4GuiFontPixelSize) > 0 ? Number(f4GuiFontPixelSize)
                                        : (Qt.platform.os === "osx" ? 17 : 16)
+    readonly property alias typography: typographySettings
+    readonly property string uiFontFamily: typographySettings.effectiveUiFamily
+    readonly property string guiMonospaceFontFamily: typographySettings.effectiveMonoFamily
+    readonly property int guiMonospaceFontPixelSize: typographySettings.effectiveMonoSize
+    font.family: uiFontFamily
+    font.pixelSize: typographySettings.uiSize
+    onFontChanged: {
+        if (typeof qtTextRendering !== "undefined" && qtTextRendering
+                && typeof qtTextRendering.setInterfaceFont === "function")
+            qtTextRendering.setInterfaceFont(font)
+    }
+    function uiTextSize(baseSize) { return Math.round(baseSize * typographySettings.uiSize / 13) }
+    HostTypography {
+        id: typographySettings
+        defaultUiFamily: host.defaultUiFontFamily
+        defaultMonoFamily: host.defaultMonospaceFontFamily
+        defaultMonoSize: host.defaultMonospaceFontPixelSize
+        platformMonoFamily: typeof f4SystemMonospaceFontFamily !== "undefined"
+                            ? String(f4SystemMonospaceFontFamily) : "monospace"
+        platformMonoSize: Qt.platform.os === "osx" ? 17 : 16
+    }
     readonly property string worktreeBranch:
         typeof f4WorktreeBranch !== "undefined"
         ? String(f4WorktreeBranch) : ""
@@ -160,7 +179,7 @@ ApplicationWindow {
     // Permanent title-bar reservation, independent of the transient F9 row.
     readonly property real menuBarHeight: snapPx(42)
     readonly property bool panelPathBarsVisible: shellFrame().hidePanelPathBar !== true
-    readonly property real panelPathRowHeight: snapPx(Math.max(25, ch * 1.25)
+    readonly property real panelPathRowHeight: snapPx(Math.max(25, ch * 1.25, typographySettings.uiLineHeight)
         + verticalContentSpacing + pathRowExtraHeight)
     readonly property real workspaceTabMinWidth: 92
     readonly property real workspaceTabMaxWidth: 280
@@ -174,7 +193,7 @@ ApplicationWindow {
     readonly property real columnSeparatorVerticalMargin: 6
     readonly property real commandLineLeftMargin: panelTextInset
     readonly property real commandLineVerticalMargin: 8
-    readonly property real semanticTextFontPixelSize: 13
+    readonly property real semanticTextFontPixelSize: typographySettings.uiSize
     readonly property real actionBarVerticalMargin: 3
     readonly property real actionSeparatorVerticalMargin: 5
     readonly property real actionButtonHorizontalMargin: 8
@@ -222,6 +241,12 @@ ApplicationWindow {
     property alias galleryShowSelectionBorders:
         themePalette.galleryShowSelectionBorders
     property alias commandLineGraphicalCursor: themePalette.commandLineGraphicalCursor
+    property alias compactBreadcrumbs: themePalette.compactBreadcrumbs
+    property alias showColumnSeparators: themePalette.showColumnSeparators
+    property alias headerVerticalSeparatorSpacing: themePalette.headerVerticalSeparatorSpacing
+    property alias headerHorizontalSeparatorSpacing: themePalette.headerHorizontalSeparatorSpacing
+    property alias columnSeparatorSpacing: themePalette.columnSeparatorSpacing
+    property alias panelColumnPadding: themePalette.panelColumnPadding
     property alias galleryQuickSearchMatchColor:
         themePalette.galleryQuickSearchMatchColor
     property alias galleryDirectoryTextColor:
@@ -285,7 +310,6 @@ ApplicationWindow {
     readonly property bool nativeTwoPanelSurfaceVisible:
         isAppScene() && !needsFallbackGrid() && !hasDocumentSurface()
         && !hasOperationsQueueSurface() && galleryControllerApi
-        && !galleryControllerApi.viewerVisible
         && !terminalActive()
     readonly property real galleryViewerProgress: {
         const surfaceLoader = galleryViewerLayer ? galleryViewerLayer.item : null
@@ -564,7 +588,8 @@ ApplicationWindow {
     function keyBarHeight() {
         return sceneStoreApi && sceneStoreApi.keyBarModel.visible !== false
                 && Object.keys(sceneStoreApi.keyBarModel).length > 0
-                ? ch + commandLineVerticalMargin * 2 + separatorWidth * 2 : 0
+                ? Math.max(ch, typographySettings.uiLineHeight)
+                  + commandLineVerticalMargin * 2 + separatorWidth * 2 : 0
     }
     property real commandLineContentHeight: 0
     property real commandLineReveal: commandLineFrame().visible !== false ? 1 : 0
@@ -726,10 +751,12 @@ ApplicationWindow {
     function loadThemeFromPersistence() {
         return themePalette.loadFromPersistence()
     }
+    function loadThemeColorsFromPersistence() { return themePalette.loadFromPersistence(true) }
     function saveThemeToPersistence() {
         return themePalette.saveToPersistence()
     }
     function resetThemeToDefaults() { themePalette.resetToDefaults() }
+    function resetThemeColorsToDefaults() { themePalette.resetToDefaults(true) }
     function formatColorHex(colorValue) {
         return themePalette.formatColorHex(colorValue)
     }

@@ -667,6 +667,23 @@ func isCommandFocusToggleKey(e *vtinput.InputEvent) bool {
 	return e.VirtualKeyCode == 0 && (e.Char == '`' || e.Char == 'ё')
 }
 
+// HandleAutocompleteFocusToggle runs before the autocomplete frame receives
+// keys, so the search-first focus key cannot become a literal suggestion edit.
+func (pf *PanelsFrame) HandleAutocompleteFocusToggle(e *vtinput.InputEvent) bool {
+	if e == nil || e.Type != vtinput.KeyEventType || !e.KeyDown ||
+		!pf.SearchFirstMode() || !pf.ShowPanels || !pf.CommandLineFocused ||
+		!isCommandFocusToggleKey(e) || e.ControlKeyState&(vtinput.LeftCtrlPressed|vtinput.RightCtrlPressed|vtinput.LeftAltPressed|vtinput.RightAltPressed|vtinput.ShiftPressed) != 0 ||
+		vtui.FrameManager == nil {
+		return false
+	}
+	if _, ok := vtui.FrameManager.GetTopFrame().(*vtui.AutoCompleteMenu); !ok {
+		return false
+	}
+	pf.SetCommandLineFocus(false)
+	vtui.DebugLog("[FIX:search-first] autocomplete focus toggle returned to panel")
+	return true
+}
+
 // setCommandLineFocus changes the explicit input target used by search-first
 // navigation. Classic and Vim modes intentionally retain their legacy focus
 // model, where the active panel and command edit can both appear focused.
@@ -724,7 +741,9 @@ func (pf *PanelsFrame) InsertSelectedFileName() bool {
 			name = "'" + strings.ReplaceAll(name, "'", "'\\''") + "'"
 		}
 	}
-	pf.CmdLine.InsertString(name)
+	// Keep the separator outside shell quoting so the next argument can follow.
+	pf.CmdLine.InsertString(name + " ")
+	vtui.DebugLog("[FIX:ctrl-enter] inserted selected filename with trailing space")
 	return true
 }
 
@@ -1410,7 +1429,9 @@ func (pf *PanelsFrame) InitPTY() {
 			inheritedEnvironmentGeneration := terminal.GlobalProcessEnvironment.CurrentGeneration()
 
 			shell := terminal.GetSystemShell()
-			if err := p.Run(shell); err != nil {
+			args := terminal.InteractiveShellArgs()
+			vtui.DebugLog("[FIX:login-shell] starting local shell %q with args %q", shell, args)
+			if err := p.Run(shell, args...); err != nil {
 				vtui.DebugLog("PTY: Failed to run shell: %v", err)
 				p.Close()
 				return
@@ -2766,6 +2787,19 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 
 	// Quake-style physical key: ` / ~ / ё toggles the explicit input
 	// target in search-first mode and is never inserted as text.
+	if pf.SearchFirstMode() && pf.ShowPanels && e.Type == vtinput.KeyEventType && e.KeyDown {
+		if e.VirtualKeyCode == vtinput.VK_E && ctrl && !alt && !shift && !pf.CommandLineFocused {
+			pf.SetCommandLineFocus(true)
+			pf.CmdLine.Edit.HistoryUp()
+			vtui.DebugLog("[FIX:search-first] Ctrl+E activated command history")
+			return true
+		}
+		if e.VirtualKeyCode == vtinput.VK_TAB && !ctrl && !alt && !shift && pf.CommandLineFocused {
+			pf.SetCommandLineFocus(false)
+			vtui.DebugLog("[FIX:search-first] Tab returned focus to panel")
+			return true
+		}
+	}
 	if pf.SearchFirstMode() && pf.ShowPanels && e.KeyDown && isCommandFocusToggleKey(e) && !ctrl && !alt && !shift {
 		pf.SetCommandLineFocus(!pf.CommandLineFocused)
 		return true
@@ -3094,8 +3128,10 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 		if ctrl || shift || alt {
 			return pf.processModifiedEnter(e)
 		}
-		commandInputActive := !pf.SearchFirstMode() || pf.CommandLineFocused || !pf.ShowPanels
-		if commandInputActive && !pf.CmdLine.IsEmpty() {
+		// A retained command still owns Enter after search-first focus returns
+		// to the panel. Other navigation keys remain with the panel.
+		if !pf.CmdLine.IsEmpty() {
+			vtui.DebugLog("[FIX:search-first] Enter submits retained command (commandFocused=%v)", pf.CommandLineFocused)
 			cmd := pf.CmdLine.Edit.GetText()
 			if cmdline.CommandHasUnmatchedQuote(cmd, terminal.WindowsShellSyntax()) {
 				vtui.ShowMessage(" Error ", "Unmatched quote in command. Close the quote and press Enter again.", []string{"&Ok"})

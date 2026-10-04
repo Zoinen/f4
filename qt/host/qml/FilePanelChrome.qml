@@ -140,7 +140,12 @@ Rectangle {
                 Qt.platform.os === "windows"
                 || String(panel.path || "").indexOf("\\") >= 0
             breadcrumbFontPixelSize: hostWindow.semanticTextFontPixelSize
+            breadcrumbFontFamily: hostWindow.uiFontFamily
+            compactBreadcrumbs: hostWindow.compactBreadcrumbs
             pathBackgroundColor: hostWindow.galleryPathBackgroundColor
+            pathSurfaceColor: Qt.tint(Qt.tint(hostWindow.titleBarBg,
+                                              hostWindow.panelPathBg),
+                                      hostWindow.galleryPathBackgroundColor)
             pathTextColor: hostWindow.galleryPathTextColor
             pathHoveredColor: hostWindow.controlBg
             pathItemHoveredColor: hostWindow.galleryPathItemHoverColor
@@ -199,7 +204,8 @@ Rectangle {
             text: panelView.loadingIndicatorFrames[
                       panelView.loadingIndicatorFrame]
             color: hostWindow.mutedText
-            font.pixelSize: 13
+            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(13) : 13)
+            font.family: hostWindow.uiFontFamily
         }
     }
 
@@ -281,7 +287,8 @@ Rectangle {
                 text: panelView.sortModeLabel()
                 color: sortButton.enabled
                        ? hostWindow.chromeText : hostWindow.mutedText
-                font.pixelSize: 12
+                font.pixelSize: (hostWindow ? hostWindow.uiTextSize(12) : 12)
+                font.family: hostWindow.uiFontFamily
             }
 
             HostPixelAlignedImage {
@@ -444,7 +451,8 @@ Rectangle {
                         height: 20
                         text: hostWindow.cleanText(modelData.label)
                         color: hostWindow.mutedText
-                        font.pixelSize: 10
+                        font.pixelSize: (hostWindow ? hostWindow.uiTextSize(10) : 10)
+                        font.family: hostWindow.uiFontFamily
                         font.weight: Font.DemiBold
                         verticalAlignment: Text.AlignVCenter
                         transform: Translate {
@@ -522,7 +530,8 @@ Rectangle {
                             anchors.verticalCenter: parent.verticalCenter
                             text: hostWindow.cleanText(sortChoice.modelData.label)
                             color: hostWindow.textColor
-                            font.pixelSize: 12
+                            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(12) : 12)
+                            font.family: hostWindow.uiFontFamily
                         }
                     }
 
@@ -540,7 +549,8 @@ Rectangle {
                         text: hostWindow.cleanText(
                                   sortChoice.modelData.shortcut)
                         color: hostWindow.mutedText
-                        font.pixelSize: 10
+                        font.pixelSize: (hostWindow ? hostWindow.uiTextSize(10) : 10)
+                        font.family: hostWindow.uiFontFamily
                     }
 
                     MouseArea {

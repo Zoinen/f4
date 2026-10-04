@@ -35,7 +35,7 @@ Item {
         text: metric.text
         color: metric.textColor
         font.family: metric.hostWindow.font.family
-        font.pixelSize: 12
+        font.pixelSize: (hostWindow ? hostWindow.uiTextSize(12) : 12)
         elide: Text.ElideMiddle
         transform: Translate {
             x: metric.hostWindow.dialogPixelOffsetX(label, metric.hostWindow.contentItem)

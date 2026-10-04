@@ -34,7 +34,7 @@ Rectangle {
             anchors.rightMargin: 8
             text: hostWindow.cleanText(panel.title)
             color: hostWindow.textColor
-            font.pixelSize: 13
+            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(13) : 13)
             font.bold: true
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
@@ -69,7 +69,7 @@ Rectangle {
                 Text {
                     text: hostWindow.cleanText(modelData.label)
                     color: hostWindow.mutedText
-                    font.pixelSize: 12
+                    font.pixelSize: (hostWindow ? hostWindow.uiTextSize(12) : 12)
                     verticalAlignment: Text.AlignTop
                     Layout.alignment: Qt.AlignTop
                     Layout.preferredWidth: Math.min(150, Math.max(80, infoRows.width * 0.34))
@@ -80,7 +80,7 @@ Rectangle {
                     id: infoValue
                     text: hostWindow.cleanText(modelData.value)
                     color: hostWindow.textColor
-                    font.pixelSize: 12
+                    font.pixelSize: (hostWindow ? hostWindow.uiTextSize(12) : 12)
                     wrapMode: Text.WrapAtWordBoundaryOrAnywhere
                     horizontalAlignment: Text.AlignRight
                     verticalAlignment: Text.AlignTop
@@ -98,7 +98,7 @@ Rectangle {
                 Text {
                     text: hostWindow.cleanText(modelData.label)
                     color: hostWindow.activeBorder
-                    font.pixelSize: 12
+                    font.pixelSize: (hostWindow ? hostWindow.uiTextSize(12) : 12)
                     font.bold: true
                 }
                 Rectangle { height: 1; color: hostWindow.dialogAccent; Layout.fillWidth: true }
@@ -126,7 +126,7 @@ Rectangle {
             anchors.rightMargin: 8
             text: hostWindow.cleanText(panel.bottomHint)
             color: hostWindow.mutedText
-            font.pixelSize: 11
+            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(11) : 11)
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
             elide: Text.ElideMiddle

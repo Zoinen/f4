@@ -38,15 +38,22 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_AUTOMOC ON)
 
-if(F4_PORTABLE_STATIC)
-  # Qt discovers its JPEG dependency from inside a helper function. Conan's
-  # generated FindJPEG module creates directory-scoped imported targets and
-  # then guards itself against a second include, so ZoinGallery cannot see
-  # JPEG::JPEG later in this sibling directory. Load both facades at the root
-  # first so their static targets are visible to the complete build graph.
-  find_package(JPEG REQUIRED)
-  find_package(libjpeg-turbo REQUIRED)
-endif()
+# Qt discovers its JPEG dependency from inside a helper function. Conan's
+# generated FindJPEG module creates directory-scoped imported targets and
+# then guards itself against a second include, so ZoinGallery cannot see
+# JPEG::JPEG later in this sibling directory. Load both facades at the root
+# first so their targets are visible to the complete build graph. This is
+# needed for the macOS shared host too: Qt still exposes the libjpeg-turbo
+# aggregate target even though the host itself is not statically linked.
+#
+# CMake does not search the Conan output directory for modules until one of
+# the generated package configs adds it. Put it on the module path before the
+# first JPEG lookup; otherwise this call resolves to CMake's host FindJPEG
+# module, while Qt's later lookup creates a second, subdirectory-scoped
+# JPEG::JPEG target and leaves libjpeg-turbo's interface dangling.
+list(PREPEND CMAKE_MODULE_PATH "${CMAKE_BINARY_DIR}")
+find_package(JPEG REQUIRED)
+find_package(libjpeg-turbo REQUIRED)
 
 set(F4_QT_HOST_COMPONENTS
   Core Concurrent Gui Qml Quick QuickControls2 Network Svg)
@@ -81,6 +88,12 @@ if(F4_PORTABLE_STATIC)
     find_package(Qt6 COMPONENTS WaylandClient REQUIRED)
     find_package(wayland REQUIRED)
     find_package(xkbcommon REQUIRED)
+
+    # Qt Multimedia uses shm_open on the Ubuntu 18.04/glibc-2.27 baseline.
+    # The Conan Qt facade does not propagate librt, so static test targets
+    # otherwise fail after the production host has already linked.
+    set_property(TARGET Qt6::Core APPEND PROPERTY
+      INTERFACE_LINK_LIBRARIES rt)
   endif()
 
   # A native Qt installation exposes Qt6::Core as STATIC_LIBRARY, while the
@@ -391,6 +404,7 @@ set(F4_LUCIDE_ICON_NAMES
   chevron-down.svg
   chevron-up.svg
   chevron-right.svg
+  slash.svg
   clock-3.svg
   cloud.svg
   columns-2.svg
@@ -406,6 +420,8 @@ set(F4_LUCIDE_ICON_NAMES
   file-terminal.svg
   file-cog.svg
   file-lock.svg
+  lock-keyhole.svg
+  lock-keyhole-open.svg
   file-pen-line.svg
   file-plus.svg
   file-text.svg
@@ -533,6 +549,46 @@ if(F4_PORTABLE_STATIC AND UNIX AND NOT APPLE)
   f4_strip_static_cpp_runtime_metadata("${CMAKE_CURRENT_SOURCE_DIR}")
 endif()
 
+if(F4_QT_STATIC)
+  # Conan's imported Qt facade does not preserve the Svg dependency cycle on
+  # GNU ld.  Use the package aliases here, as the generated Qt6 targets can
+  # otherwise expand LINK_GROUP to an empty group.
+  if(NOT TARGET CONAN_LIB::qt_Qt6_Svg_Qt6Svg_RELEASE OR
+     NOT TARGET CONAN_LIB::qt_Qt6_QSvgPlugin_qsvg_RELEASE)
+    set(F4_QT_STATIC_SVG_LINKS Qt6::Svg Qt6::QSvgPlugin)
+  elseif(MSVC)
+    set(F4_QT_STATIC_SVG_LINKS
+      CONAN_LIB::qt_Qt6_Svg_Qt6Svg_RELEASE
+      CONAN_LIB::qt_Qt6_QSvgPlugin_qsvg_RELEASE)
+  else()
+    set(F4_QT_STATIC_SVG_LINKS
+      "$<LINK_GROUP:RESCAN,CONAN_LIB::qt_Qt6_Svg_Qt6Svg_RELEASE,CONAN_LIB::qt_Qt6_QSvgPlugin_qsvg_RELEASE>")
+  endif()
+
+  # Qt Multimedia's static archive has private dependencies that are missing
+  # from some Conan-generated test-target interfaces.  Test executables use
+  # the same video-enabled Qt graph as the host, so carry those dependencies
+  # explicitly whenever the video option is enabled.
+  set(F4_QT_STATIC_VIDEO_LINKS)
+  if(F4_ENABLE_VIDEO_THUMBNAILS)
+    list(APPEND F4_QT_STATIC_VIDEO_LINKS Qt6::BundledTLSF)
+    if(WIN32)
+      list(APPEND F4_QT_STATIC_VIDEO_LINKS
+        avrt
+        Dwmapi
+        Dxva2
+        ksuser
+        mf
+        mfplat
+        mfreadwrite
+        mfuuid
+        propsys
+        uuid
+        windowsapp)
+    endif()
+  endif()
+endif()
+
 # ZoinGallery's QML tests are created before the host target is included, so
 # they cannot use the static-test helpers declared in the BUILD_TESTING block
 # below.  Give their executables the same self-contained Qt platform and QML
@@ -560,8 +616,8 @@ if(F4_QT_STATIC)
       target_link_libraries(${F4_ZOIN_STATIC_QML_TEST_TARGET} PRIVATE
         ${F4_REQUIRED_STATIC_QT_PLUGINS}
         ${F4_REQUIRED_STATIC_QML_PLUGINS}
-        Qt6::Svg
-        Qt6::QSvgPlugin
+        ${F4_QT_STATIC_SVG_LINKS}
+        ${F4_QT_STATIC_VIDEO_LINKS}
         ${F4_QT_QUICK_EFFECTS_LINK}
         ${F4_QT_QUICK_CONTROLS_BASIC_LINK})
       if(F4_QT_USES_FFMPEG_BACKEND)
@@ -608,6 +664,8 @@ endif()
 # BUILD_TESTING helpers are declared.
 if(F4_QT_STATIC)
   foreach(F4_ZOIN_STATIC_CORE_TEST_TARGET IN ITEMS
+      ViewerResamplerTests
+      ViewerDecodeSourceTests
       ZoinGallerySelectionTests
       ZoinGalleryViewerCacheTests
       ZoinGalleryThumbnailMemoryCacheTests
@@ -637,8 +695,8 @@ if(F4_QT_STATIC)
         Qt6::QOffscreenIntegrationPlugin
         Qt6::QGifPlugin
         ${F4_QT_ICO_PLUGIN_TARGET}
-        Qt6::Svg
-        Qt6::QSvgPlugin)
+        ${F4_QT_STATIC_SVG_LINKS}
+        ${F4_QT_STATIC_VIDEO_LINKS})
       if(TARGET Qt6::QJpegPlugin)
         target_link_libraries(${F4_ZOIN_STATIC_CORE_TEST_TARGET} PRIVATE
           Qt6::QJpegPlugin)
@@ -978,6 +1036,10 @@ if(BUILD_TESTING)
             F4_QT_USE_WINDOWS_MEDIA_PLUGIN=1)
         endif()
       endif()
+      if(F4_ENABLE_VIDEO_THUMBNAILS)
+        target_link_libraries(${target} PRIVATE
+          ${F4_QT_STATIC_VIDEO_LINKS})
+      endif()
       if(WIN32)
         target_link_libraries(${target} PRIVATE
           Qt6::QWindowsIntegrationPlugin)
@@ -1023,8 +1085,7 @@ if(BUILD_TESTING)
       target_link_libraries(${target} PRIVATE
         Qt6::QGifPlugin
         ${F4_QT_ICO_PLUGIN_TARGET}
-        Qt6::Svg
-        Qt6::QSvgPlugin)
+        ${F4_QT_STATIC_SVG_LINKS})
     endif()
   endfunction()
 

@@ -56,6 +56,15 @@ while `F3` remains the primary viewer shortcut. All of these are configurable
 panel actions. OEM keys use names such as `CtrlVK_BB` and `CtrlVK_BD` in
 `hotkeys.ini`, and the UI displays them as `Ctrl+=` and `Ctrl+-`.
 
+## Inserting a panel filename
+
+`Ctrl+Enter` (`Panel.InsertFileName`) inserts the current filename into the
+command line followed by a space, ready for the next argument. Shell quoting
+is applied to the filename only; the trailing space stays outside the quotes.
+No leading space is inserted, so an already typed path prefix stays attached
+to the filename. While Fast Find is active, `Ctrl+Enter` still finds the next
+match instead of inserting a filename.
+
 ## The file
 
 `keymap.ini` lives in the profile directory next to `hotkeys.ini`

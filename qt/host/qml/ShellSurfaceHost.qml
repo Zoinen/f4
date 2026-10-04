@@ -285,7 +285,10 @@ Item {
         leadingHitInset: Math.floor((width - separatorWidth) / 2
                                    * devicePixelRatio) / devicePixelRatio
         opacity: surfaces.hostWindow.normalSurfaceOpacity
-        z: 61
+        // Keep the gutter interactive above docked Quick View, but do not
+        // paint it across the expanding full-area image.
+        z: surfaces.galleryController.viewerVisible
+           && galleryViewerLayer.dockSide < 0 ? 59 : 61
 
         onRatioRequested: (nextRatio) => {
             if (panelsLayer.item && panelsLayer.item.panelPair)

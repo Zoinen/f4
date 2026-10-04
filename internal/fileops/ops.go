@@ -451,6 +451,25 @@ func ExecuteFileOpAtWithOptions(srcVfs, dstVfs vfs.VFS, srcBasePath string, name
 	executeFileOpAtWithOptions(nil, srcVfs, dstVfs, srcBasePath, names, destInput, isMove, mode, opts, onComplete, nil)
 }
 
+// ExecuteFileOpAtWithOptionsIn keeps interactive conflicts on the originating
+// workspace, including operations dispatched through the background queue.
+func ExecuteFileOpAtWithOptionsIn(
+	owner vtui.Frame,
+	srcVfs, dstVfs vfs.VFS,
+	srcBasePath string,
+	names []string,
+	destInput string,
+	isMove bool,
+	mode int,
+	opts FileOpOptions,
+	onComplete func(),
+) {
+	executeFileOpAtWithOptions(
+		owner, srcVfs, dstVfs, srcBasePath, names, destInput,
+		isMove, mode, opts, onComplete, nil,
+	)
+}
+
 func ExecuteFileOpAtIn(pf vtui.Frame, srcVfs, dstVfs vfs.VFS, srcBasePath string, names []string, destInput string, isMove bool, mode int, onComplete func()) {
 	executeFileOpAtWithOptions(pf, srcVfs, dstVfs, srcBasePath, names, destInput, isMove, mode, DefaultFileOpOptions(), onComplete, nil)
 }
@@ -1214,12 +1233,16 @@ func shouldDisplayFileOpError(err error) bool {
 	return !errors.Is(err, context.Canceled)
 }
 
-// tryOptimizedRename only renames into a proven-empty destination. A remote
+// tryOptimizedRename renames into a proven-empty destination or changes the case
+// of the same local directory entry using the VFS's no-replace operation. A remote
 // Stat failure is not evidence of absence, and an uncertain mutation must not
 // be retried as a streaming copy.
 func tryOptimizedRename(ctx context.Context, srcVFS, dstVFS vfs.VFS, srcPath, dstPath string) (bool, error) {
 	if _, err := dstVFS.Stat(ctx, dstPath); err == nil {
-		return false, nil
+		if !isLocalCaseRename(srcVFS, dstVFS, srcPath, dstPath) {
+			return false, nil
+		}
+		vtui.DebugLog("[FIX:same-file] case-only rename %q -> %q", srcPath, dstPath)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return false, err
 	}
@@ -1339,7 +1362,8 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 	}
 	sameNamespace := (srcIsOS && dstIsOS) || vfs.SameSession(identitySource, identityTarget)
 
-	if sameNamespace && cleanSrc == cleanDst {
+	if sameNamespace && (cleanSrc == cleanDst || sameLocalFile(identitySource, identityTarget, absSrc, absDst)) {
+		vtui.DebugLog("[FIX:same-file] rejected self-copy %q -> %q", srcPath, destPath)
 		if stat.IsDir {
 			return fmt.Errorf("cannot copy folder into itself (source equals destination)")
 		}
@@ -1480,6 +1504,13 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 	var existingRights uint32
 
 	for {
+		// A conflict's Rename choice can change the destination to an alias of
+		// the source after the initial identity check. Guard before every write.
+		identityTarget, identityTargetPath := TransferIdentity(dstVfs, destPathForFile)
+		if sameLocalFile(identitySource, identityTarget, identitySourcePath, identityTargetPath) {
+			vtui.DebugLog("[FIX:same-file] rejected self-copy %q -> %q", srcPath, destPathForFile)
+			return fmt.Errorf("cannot copy file onto itself (source equals destination)")
+		}
 		dstStat, err := dstVfs.Stat(ctx, destPathForFile)
 		exists := err == nil
 		destinationExisted = exists

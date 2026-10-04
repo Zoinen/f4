@@ -368,7 +368,7 @@ Rectangle {
         height: hostWindow.snapPx(parent.height)
         text: "›"
         color: modelData.disabled ? hostWindow.mutedText : hostWindow.textColor
-        font.pixelSize: 17
+        font.pixelSize: (hostWindow ? hostWindow.uiTextSize(17) : 17)
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment: Text.AlignVCenter
         property real alignmentRevision:

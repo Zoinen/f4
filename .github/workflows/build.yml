@@ -21,6 +21,21 @@ on:
         required: false
         default: "on"
         type: string
+      bootstrap_video_dependencies:
+        description: "Build and publish missing Qt Multimedia/FFmpeg packages"
+        required: false
+        default: false
+        type: boolean
+      publish_qt_release:
+        description: "Publish the six Qt desktop assets as an explicit feature-lane release"
+        required: false
+        default: false
+        type: boolean
+      release_tag:
+        description: "Release tag for publish_qt_release, for example v2026.10.03"
+        required: false
+        default: ""
+        type: string
 
 # A newer push supersedes the run in flight: with ~30 jobs per run and 20
 # concurrent runners on the free tier, two overlapping runs queue each other
@@ -68,6 +83,8 @@ jobs:
 
     - name: Collect core version metadata
       shell: bash
+      env:
+        F4_RELEASE_TAG: ${{ inputs.release_tag }}
       run: |
         {
           echo "F4_BUILD_REVISION=$(git rev-parse HEAD)"
@@ -75,6 +92,8 @@ jobs:
           echo "F4_BUILD_MODIFIED=false"
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             echo "F4_BUILD_VERSION=$GITHUB_REF_NAME"
+          elif [[ -n "$F4_RELEASE_TAG" ]]; then
+            echo "F4_BUILD_VERSION=$F4_RELEASE_TAG"
           else
             echo "F4_BUILD_VERSION="
           fi
@@ -378,6 +397,8 @@ jobs:
 
     - name: Collect core version metadata
       shell: bash
+      env:
+        F4_RELEASE_TAG: ${{ inputs.release_tag }}
       run: |
         {
           echo "F4_BUILD_REVISION=$(git rev-parse HEAD)"
@@ -385,6 +406,8 @@ jobs:
           echo "F4_BUILD_MODIFIED=false"
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             echo "F4_BUILD_VERSION=$GITHUB_REF_NAME"
+          elif [[ -n "$F4_RELEASE_TAG" ]]; then
+            echo "F4_BUILD_VERSION=$F4_RELEASE_TAG"
           else
             echo "F4_BUILD_VERSION="
           fi
@@ -407,8 +430,9 @@ jobs:
         path: |
           .conan2
           build/qwindowkit-install
-        key: qt-host-6.11.1-darwin-${{ runner.arch }}-v3
+        key: qt-host-6.11.1-darwin-${{ runner.arch }}-video-v4
         restore-keys: |
+          qt-host-6.11.1-darwin-${{ runner.arch }}-video-v4
           qt-host-6.11.1-darwin-${{ runner.arch }}-v3
 
     - name: Configure Conan binary remote
@@ -441,6 +465,9 @@ jobs:
         fi
         conan install qt/host --build=missing \
           -s:h build_type=Release -s:h compiler.cppstd=20 \
+          -o:h '*:with_video_thumbnails=True' \
+          -o:h '*:with_ffmpeg_backend=True' \
+          -o:h 'qt/*:with_ffmpeg=True' \
           -c:a '*/*:tools.cmake.cmaketoolchain:extra_variables={"CMAKE_POLICY_VERSION_MINIMUM":{"cache":True,"type":"STRING","value":"3.5"}}' \
           -c:a '*/*:tools.cmake:configure_args=["-DCMAKE_POLICY_VERSION_MINIMUM=3.5"]' \
           -c tools.system.package_manager:mode=install \
@@ -456,6 +483,7 @@ jobs:
         cmake -S qt/host -B qt/host/build-ci -G Ninja \
           -DCMAKE_TOOLCHAIN_FILE="$PWD/qt/host/build-ci/conan_toolchain.cmake" \
           -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DUSE_QWK=ON \
+          -DF4_ENABLE_VIDEO_THUMBNAILS=ON -DF4_ENABLE_FFMPEG_BACKEND=ON \
           -DCMAKE_PREFIX_PATH="$PWD/build/qwindowkit-install"
         cmake --build qt/host/build-ci --config Release --parallel 4
         if [[ "$RUNNER_OS" == "Windows" ]]; then
@@ -869,8 +897,10 @@ jobs:
         # Do not hash this workflow: release packaging and macOS checks must
         # not invalidate the native Linux/Windows Conan dependency graph.
         path: ${{ env.CONAN_HOME }}/p
-        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-complete-${{ hashFiles('qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1', 'ci/patches/qwindowkit-default-maximize-hint.patch', 'ci/patches/libiconv-1.17-fix-error-function-declaration-without-prototype.patch', 'ci/configure-conan-remote.sh', 'ci/patch-qt-recipe.sh', 'ci/patch-qt-dependencies.py', 'ci/patch-qt-qmltools-recipe.py', 'ci/patch-bzip2-recipe.py', 'ci/patch-bzip2-recipe.sh', 'ci/patch-libgettext-recipe.py', 'ci/patch-libgettext-recipe.sh', 'ci/patch-libiconv-recipe.py', 'ci/patch-libiconv-recipe.sh', 'ci/patch-libffi-recipe.py', 'ci/patch-libffi-recipe.sh') }}
+        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v7-video-complete-${{ hashFiles('qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1', 'ci/patches/qwindowkit-default-maximize-hint.patch', 'ci/patches/libiconv-1.17-fix-error-function-declaration-without-prototype.patch', 'ci/configure-conan-remote.sh', 'ci/patch-qt-recipe.sh', 'ci/patch-qt-dependencies.py', 'ci/patch-qt-qmltools-recipe.py', 'ci/patch-bzip2-recipe.py', 'ci/patch-bzip2-recipe.sh', 'ci/patch-libgettext-recipe.py', 'ci/patch-libgettext-recipe.sh', 'ci/patch-libiconv-recipe.py', 'ci/patch-libiconv-recipe.sh', 'ci/patch-libffi-recipe.py', 'ci/patch-libffi-recipe.sh') }}
         restore-keys: |
+          portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v7-video-complete-
+          portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v7-video-checkpoint-
           portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-complete-
           portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-checkpoint-
 
@@ -887,7 +917,13 @@ jobs:
       env:
         F4_CONAN_TOKEN: ${{ secrets.F4_CONAN_REMOTE_TOKEN }}
         F4_CONAN_UPLOAD_TOKEN: ${{ secrets.F4_CONAN_UPLOAD_TOKEN }}
-        F4_CONAN_TRUST_REMOTE_BASELINE: '1'
+        # The zoin branch is the dependency bootstrap lane: it may build only
+        # packages missing from the audited baseline remote and publish them.
+        # Tagged releases stay fail-fast and consume the completed graph with
+        # --build=never. A manual dispatch can opt into the same bootstrap
+        # behavior when the remote needs repair without another zoin commit.
+        F4_CONAN_TRUST_REMOTE_BASELINE: ${{ (github.ref == 'refs/heads/zoin' || (github.event_name == 'workflow_dispatch' && inputs.bootstrap_video_dependencies)) && '0' || '1' }}
+        F4_CONAN_BOOTSTRAP_VIDEO: ${{ (github.ref == 'refs/heads/zoin' || (github.event_name == 'workflow_dispatch' && inputs.bootstrap_video_dependencies)) && '1' || '0' }}
       run: |
         go_root="$(go env GOROOT)"
         set +e
@@ -900,6 +936,7 @@ jobs:
           -e F4_CONAN_TOKEN \
           -e F4_CONAN_UPLOAD_TOKEN \
           -e F4_CONAN_TRUST_REMOTE_BASELINE \
+          -e F4_CONAN_BOOTSTRAP_VIDEO \
           -v "$PWD:/workspace" \
           -v "$go_root:/opt/go:ro" \
           -w /workspace \
@@ -1043,6 +1080,9 @@ jobs:
             -s:b build_type=Release -s:b compiler.cppstd=20 `
             -s:b compiler.runtime=static `
             -o:h "qt/*:shared=False" `
+            -o:h "*:with_video_thumbnails=True" `
+            -o:h "*:with_ffmpeg_backend=True" `
+            -o:h "qt/*:with_ffmpeg=True" `
             -o:b "qt/*:shared=False" `
             -o:b "qt/*:qtdeclarative=True" `
             -o:b "qt/*:qtshadertools=True" `
@@ -1104,6 +1144,7 @@ jobs:
           "-DCMAKE_PREFIX_PATH=$PWD/build/qwindowkit-install" `
           "-DQWindowKit_DIR=$PWD/build/qwindowkit-install/lib/cmake/QWindowKit" `
           "-DBUILD_TESTING=$buildTesting" -DUSE_QWK=ON -DF4_PORTABLE_STATIC=ON `
+          -DF4_ENABLE_VIDEO_THUMBNAILS=ON -DF4_ENABLE_FFMPEG_BACKEND=ON `
           @qtCrossToolArgs
         cmake --build $buildDir --config Release --parallel 4
         New-Item -ItemType Directory -Force (Join-Path $buildDir '.diagnostics') | Out-Null
@@ -1191,14 +1232,14 @@ jobs:
       uses: actions/cache/save@v4
       with:
         path: ${{ env.CONAN_HOME }}/p
-        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-checkpoint-${{ hashFiles('qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1', 'ci/patches/qwindowkit-default-maximize-hint.patch', 'ci/patches/libiconv-1.17-fix-error-function-declaration-without-prototype.patch', 'ci/configure-conan-remote.sh', 'ci/patch-qt-recipe.sh', 'ci/patch-qt-dependencies.py', 'ci/patch-qt-qmltools-recipe.py', 'ci/patch-bzip2-recipe.py', 'ci/patch-bzip2-recipe.sh', 'ci/patch-libgettext-recipe.py', 'ci/patch-libgettext-recipe.sh', 'ci/patch-libiconv-recipe.py', 'ci/patch-libiconv-recipe.sh', 'ci/patch-libffi-recipe.py', 'ci/patch-libffi-recipe.sh') }}-${{ github.run_id }}-${{ github.run_attempt }}
+        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v7-video-checkpoint-${{ hashFiles('qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1', 'ci/patches/qwindowkit-default-maximize-hint.patch', 'ci/patches/libiconv-1.17-fix-error-function-declaration-without-prototype.patch', 'ci/configure-conan-remote.sh', 'ci/patch-qt-recipe.sh', 'ci/patch-qt-dependencies.py', 'ci/patch-qt-qmltools-recipe.py', 'ci/patch-bzip2-recipe.py', 'ci/patch-bzip2-recipe.sh', 'ci/patch-libgettext-recipe.py', 'ci/patch-libgettext-recipe.sh', 'ci/patch-libiconv-recipe.py', 'ci/patch-libiconv-recipe.sh', 'ci/patch-libffi-recipe.py', 'ci/patch-libffi-recipe.sh') }}-${{ github.run_id }}-${{ github.run_attempt }}
 
     - name: Save complete Conan package graph
       if: always() && !cancelled() && steps.portable-conan-cache.outputs.cache-hit != 'true' && hashFiles(format('.conan2-portable-{0}-{1}/p/.f4-package-cache-ready', matrix.platform, matrix.arch)) != '' && hashFiles(format('qt/host/build-portable-{0}-{1}/.f4-conan-ready', matrix.platform, matrix.arch)) != ''
       uses: actions/cache/save@v4
       with:
         path: ${{ env.CONAN_HOME }}/p
-        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-complete-${{ hashFiles('qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1', 'ci/patches/qwindowkit-default-maximize-hint.patch', 'ci/patches/libiconv-1.17-fix-error-function-declaration-without-prototype.patch', 'ci/configure-conan-remote.sh', 'ci/patch-qt-recipe.sh', 'ci/patch-qt-dependencies.py', 'ci/patch-qt-qmltools-recipe.py', 'ci/patch-bzip2-recipe.py', 'ci/patch-bzip2-recipe.sh', 'ci/patch-libgettext-recipe.py', 'ci/patch-libgettext-recipe.sh', 'ci/patch-libiconv-recipe.py', 'ci/patch-libiconv-recipe.sh', 'ci/patch-libffi-recipe.py', 'ci/patch-libffi-recipe.sh') }}
+        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v7-video-complete-${{ hashFiles('qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1', 'ci/patches/qwindowkit-default-maximize-hint.patch', 'ci/patches/libiconv-1.17-fix-error-function-declaration-without-prototype.patch', 'ci/configure-conan-remote.sh', 'ci/patch-qt-recipe.sh', 'ci/patch-qt-dependencies.py', 'ci/patch-qt-qmltools-recipe.py', 'ci/patch-bzip2-recipe.py', 'ci/patch-bzip2-recipe.sh', 'ci/patch-libgettext-recipe.py', 'ci/patch-libgettext-recipe.sh', 'ci/patch-libiconv-recipe.py', 'ci/patch-libiconv-recipe.sh', 'ci/patch-libffi-recipe.py', 'ci/patch-libffi-recipe.sh') }}
 
     - name: Package portable single-file artifact
       shell: bash
@@ -1606,9 +1647,13 @@ jobs:
         echo "GOROOT=$HOME/go-legacy-win7/go-legacy-win7" >> "$GITHUB_ENV"
         echo "$HOME/go-legacy-win7/go-legacy-win7/bin" >> "$GITHUB_PATH"
 
-    - name: Restore missing sync/atomic Or/And methods (thongtech/go-legacy-win7#13)
+    - name: Restore missing sync/atomic Or/And methods when needed
       if: steps.affected.outputs.build == 'yes'
       run: |
+        if grep -Fq 'func (x *Int32) Or' "$GOROOT/src/sync/atomic/type.go"; then
+          echo "go-legacy-win7 already provides typed atomic Or/And methods"
+          exit 0
+        fi
         cat > "$GOROOT/src/sync/atomic/or_and_win7compat.go" <<'EOF'
         // This file restores the Or/And methods on typed atomics (added
         // upstream in Go 1.23, see https://go.dev/issue/61395) that are
@@ -2442,6 +2487,59 @@ jobs:
         # would also glob.
         read -r -a packages <<<"$PACKAGES"
         go test -race -shuffle=on -timeout 15m -skip '^TestSeedSweep$' "${packages[@]}"
+
+  qt-release:
+    name: Create Qt desktop feature release
+    # This is an explicit release path for the Qt feature lane. The normal
+    # tagged release below keeps its full project-wide test gate; this path
+    # only publishes after both native Qt matrices have completed and is
+    # never entered accidentally by a push or a tag.
+    needs: [qt-host, portable-qt]
+    runs-on: ubuntu-latest
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.publish_qt_release == true && needs.qt-host.result == 'success' && needs.portable-qt.result == 'success' }}
+    permissions:
+      contents: write
+    steps:
+    - name: Validate release tag
+      shell: bash
+      env:
+        RELEASE_TAG: ${{ inputs.release_tag }}
+      run: |
+        set -euo pipefail
+        if [[ ! "$RELEASE_TAG" =~ ^v[0-9]{4}\.[0-9]{2}\.[0-9]{2}$ ]]; then
+          echo "::error::release_tag must match vYYYY.MM.DD; got '$RELEASE_TAG'"
+          exit 1
+        fi
+
+    - name: Checkout release packaging script
+      uses: actions/checkout@v7
+      with:
+        ref: ${{ github.sha }}
+
+    - name: Test release packaging scripts
+      run: python3 -m unittest ci/test_package_release_scripts.py
+
+    - name: Download native Qt artifacts
+      uses: actions/download-artifact@v8
+      with:
+        path: dist
+        merge-multiple: false
+
+    - name: Assemble exactly six Qt release assets
+      run: python3 ci/package-qt-release.py dist release
+
+    - name: Publish Qt feature release
+      env:
+        GH_TOKEN: ${{ github.token }}
+        RELEASE_TAG: ${{ inputs.release_tag }}
+      run: |
+        set -euo pipefail
+        gh release create "$RELEASE_TAG" release/* \
+          --repo "$GITHUB_REPOSITORY" \
+          --target "$GITHUB_SHA" \
+          --title "$RELEASE_TAG" \
+          --generate-notes \
+          --notes 'Explicit Qt feature-lane release. Contains only the six native Qt desktop assets: Linux and Windows embedded-Qt single-file archives plus classic macOS F4.app bundles for Intel and ARM.'
 
   release:
     name: Create Official Release

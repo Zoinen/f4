@@ -153,7 +153,7 @@ Popup {
                     height: parent.height
                     text: "Filter by file fields"
                     color: hostWindow.textColor
-                    font.pixelSize: 14
+                    font.pixelSize: (hostWindow ? hostWindow.uiTextSize(14) : 14)
                     font.weight: Font.DemiBold
                     verticalAlignment: Text.AlignVCenter
                     transform: Translate {
@@ -170,7 +170,7 @@ Popup {
                     height: parent.height
                     text: fileFieldFilterDraftAny ? "Match any" : "Match all"
                     color: hostWindow.dialogAccent
-                    font.pixelSize: 12
+                    font.pixelSize: (hostWindow ? hostWindow.uiTextSize(12) : 12)
                     horizontalAlignment: Text.AlignHCenter
                     verticalAlignment: Text.AlignVCenter
                     transform: Translate {
@@ -193,7 +193,7 @@ Popup {
                           ? "Checking " + Number(panel.fileFieldPendingCount)
                             + " files…" : ""
                     color: hostWindow.mutedText
-                    font.pixelSize: 11
+                    font.pixelSize: (hostWindow ? hostWindow.uiTextSize(11) : 11)
                     horizontalAlignment: Text.AlignRight
                     verticalAlignment: Text.AlignVCenter
                     transform: Translate {
@@ -254,7 +254,7 @@ Popup {
                                     text: fileFieldFilterPopup.fileFieldFilterFieldLabel(
                                               String(fileFieldFilterRow.modelData.fieldId))
                                     color: hostWindow.textColor
-                                    font.pixelSize: 11
+                                    font.pixelSize: (hostWindow ? hostWindow.uiTextSize(11) : 11)
                                     verticalAlignment: Text.AlignVCenter
                                     elide: Text.ElideRight
                                     transform: Translate {
@@ -299,7 +299,7 @@ Popup {
                                     text: fileFieldFilterPopup.fileFieldFilterOperationLabel(
                                               String(fileFieldFilterRow.modelData.operation))
                                     color: hostWindow.textColor
-                                    font.pixelSize: 11
+                                    font.pixelSize: (hostWindow ? hostWindow.uiTextSize(11) : 11)
                                     horizontalAlignment: Text.AlignHCenter
                                     verticalAlignment: Text.AlignVCenter
                                     elide: Text.ElideRight
@@ -346,7 +346,7 @@ Popup {
                                     color: hostWindow.textColor
                                     selectionColor: hostWindow.dialogAccent
                                     selectedTextColor: hostWindow.textColor
-                                    font.pixelSize: 12
+                                    font.pixelSize: (hostWindow ? hostWindow.uiTextSize(12) : 12)
                                     verticalAlignment: TextInput.AlignVCenter
                                     clip: true
                                     transform: Translate {
@@ -383,7 +383,7 @@ Popup {
                                     anchors.fill: parent
                                     text: "×"
                                     color: hostWindow.mutedText
-                                    font.pixelSize: 16
+                                    font.pixelSize: (hostWindow ? hostWindow.uiTextSize(16) : 16)
                                     horizontalAlignment: Text.AlignHCenter
                                     verticalAlignment: Text.AlignVCenter
                                     transform: Translate {
@@ -425,7 +425,7 @@ Popup {
                         anchors.fill: parent
                         text: "+ Add condition"
                         color: hostWindow.dialogAccent
-                        font.pixelSize: 12
+                        font.pixelSize: (hostWindow ? hostWindow.uiTextSize(12) : 12)
                         verticalAlignment: Text.AlignVCenter
                         transform: Translate {
                             x: hostWindow.dialogPixelOffsetX(
@@ -460,7 +460,7 @@ Popup {
                         color: hostWindow.textColor
                         width: hostWindow.snapPx(implicitWidth)
                         height: hostWindow.snapPx(implicitHeight)
-                        font.pixelSize: 12
+                        font.pixelSize: (hostWindow ? hostWindow.uiTextSize(12) : 12)
                         transform: Translate {
                             x: hostWindow.dialogPixelOffsetX(
                                    clearFilterText, hostWindow.contentItem)
@@ -492,7 +492,7 @@ Popup {
                         color: hostWindow.textColor
                         width: hostWindow.snapPx(implicitWidth)
                         height: hostWindow.snapPx(implicitHeight)
-                        font.pixelSize: 12
+                        font.pixelSize: (hostWindow ? hostWindow.uiTextSize(12) : 12)
                         font.weight: Font.DemiBold
                         transform: Translate {
                             x: hostWindow.dialogPixelOffsetX(

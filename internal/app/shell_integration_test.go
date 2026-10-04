@@ -97,13 +97,13 @@ func TestPanelsFrame_CtrlEnter_Escaping(t *testing.T) {
 
 	if runtime.GOOS == "windows" {
 		// На Windows ожидаем двойные кавычки
-		expected := "\"" + complexName + "\""
+		expected := "\"" + complexName + "\" "
 		if got != expected {
 			t.Errorf("Windows escaping failed. Got %q, want %q", got, expected)
 		}
 	} else {
 		// На Unix ожидаем одинарные кавычки и экранирование внутренней кавычки
-		expected := "'file with'\\''quote & space.txt'"
+		expected := "'file with'\\''quote & space.txt' "
 		if got != expected {
 			t.Errorf("Unix escaping failed. Got %q, want %q", got, expected)
 		}
@@ -136,8 +136,8 @@ func TestPanelsFrame_CtrlEnterOnDirectoryInsertsWithoutEntering(t *testing.T) {
 		ControlKeyState: vtinput.LeftCtrlPressed,
 	}
 	pressKey(pf, mainCtrlEnter)
-	if got := pf.CmdLine.Edit.GetText(); got != "subdir" {
-		t.Fatalf("hotkey Ctrl+Enter inserted %q, want subdir", got)
+	if got := pf.CmdLine.Edit.GetText(); got != "subdir " {
+		t.Fatalf("hotkey Ctrl+Enter inserted %q, want %q", got, "subdir ")
 	}
 	if got := fsp.Vfs.GetPath(); got != tmp {
 		t.Fatalf("hotkey Ctrl+Enter entered %q, want to stay in %q", got, tmp)
@@ -146,8 +146,8 @@ func TestPanelsFrame_CtrlEnterOnDirectoryInsertsWithoutEntering(t *testing.T) {
 	// Exercise the frame-level fallback independently of macro.MacroManager.Filter.
 	pf.CmdLine.Clear()
 	pf.ProcessKey(mainCtrlEnter)
-	if got := pf.CmdLine.Edit.GetText(); got != "subdir" {
-		t.Fatalf("direct Ctrl+Enter inserted %q, want subdir", got)
+	if got := pf.CmdLine.Edit.GetText(); got != "subdir " {
+		t.Fatalf("direct Ctrl+Enter inserted %q, want %q", got, "subdir ")
 	}
 	if got := fsp.Vfs.GetPath(); got != tmp {
 		t.Fatalf("direct Ctrl+Enter entered %q, want to stay in %q", got, tmp)

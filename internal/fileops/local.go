@@ -2,8 +2,62 @@ package fileops
 
 import (
 	"github.com/unxed/f4/vfs"
+	"github.com/unxed/f4/vfs/hostfs"
+	"os"
 	"reflect"
+	"strings"
 )
+
+// Compare filesystem identities, not spelling: a local volume may ignore case,
+// and different names may be hard links. Never interpret a remote path locally.
+func sameLocalFile(src, dst vfs.VFS, srcPath, dstPath string) bool {
+	_, srcLocal := src.(*vfs.OSVFS)
+	_, dstLocal := dst.(*vfs.OSVFS)
+	if !srcLocal || !dstLocal {
+		return false
+	}
+	srcPath, srcErr := src.Abs(srcPath)
+	dstPath, dstErr := dst.Abs(dstPath)
+	if srcErr != nil || dstErr != nil {
+		return false
+	}
+	srcInfo, srcErr := hostfs.Stat(srcPath)
+	dstInfo, dstErr := hostfs.Stat(dstPath)
+	return srcErr == nil && dstErr == nil && os.SameFile(srcInfo, dstInfo)
+}
+
+func isLocalCaseRename(src, dst vfs.VFS, srcPath, dstPath string) bool {
+	srcName, dstName := src.Base(srcPath), dst.Base(dstPath)
+	if srcName == dstName || !strings.EqualFold(srcName, dstName) {
+		return false
+	}
+	if !sameLocalFile(src, dst, src.Dir(srcPath), dst.Dir(dstPath)) {
+		return false
+	}
+	srcPath, srcErr := src.Abs(srcPath)
+	dstPath, dstErr := dst.Abs(dstPath)
+	if srcErr != nil || dstErr != nil {
+		return false
+	}
+	// Do not mistake two distinct symlinks to the same target for one entry.
+	srcInfo, srcErr := hostfs.Lstat(srcPath)
+	dstInfo, dstErr := hostfs.Lstat(dstPath)
+	if srcErr != nil || dstErr != nil || !os.SameFile(srcInfo, dstInfo) {
+		return false
+	}
+	// On a case-sensitive volume two hard links can genuinely have these two
+	// spellings. They must not be reported as a completed case-only rename.
+	entries, err := hostfs.ReadDir(src.Dir(srcPath))
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if entry.Name() == dstName {
+			return false
+		}
+	}
+	return true
+}
 
 // IsLocalOSVFS reports whether v ultimately reads the machine's own file
 // system, looking through the wrappers a panel stacks on top of one. Several

@@ -179,6 +179,11 @@ F4HostWindow {
         pageId: "gui"
         title: qsTr("GUI")
         iconName: "app-window"
+        content: Component { GuiSettingsPage { hostWindow: root } }
+    }, NativeSettingsPage {
+        pageId: "theme"
+        title: qsTr("Theme creator")
+        iconName: "palette"
         content: Component {
             ThemeEditorContent {
                 embeddedSettings: true
@@ -186,6 +191,11 @@ F4HostWindow {
                 themePersistence: typeof qtTheme !== "undefined" ? qtTheme : null
             }
         }
+    }, NativeSettingsPage {
+        pageId: "gui-fonts"
+        title: qsTr("GUI fonts")
+        iconName: "file-type"
+        content: Component { FontSettingsPage { hostWindow: root } }
     }, NativeSettingsPage {
         pageId: "gallery"
         title: qsTr("Gallery & cache")

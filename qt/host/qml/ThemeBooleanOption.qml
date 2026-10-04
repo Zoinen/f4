@@ -17,7 +17,7 @@ Rectangle {
 
     objectName: namePrefix + "Panel"
     Layout.fillWidth: true
-    Layout.preferredHeight: hostWindow.snapPx(42)
+    Layout.preferredHeight: hostWindow.snapPx(Math.max(42, labels.height + 12))
     Layout.minimumHeight: Layout.preferredHeight
     Layout.maximumHeight: Layout.preferredHeight
     implicitHeight: Layout.preferredHeight
@@ -50,7 +50,7 @@ Rectangle {
             text: option.title
             color: option.hostWindow.textColor
             font.family: option.hostWindow.uiFontFamily
-            font.pixelSize: 11
+            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(11) : 11)
             font.weight: Font.Bold
             elide: Text.ElideRight
         }
@@ -67,7 +67,7 @@ Rectangle {
             text: option.description
             color: option.hostWindow.mutedText
             font.family: option.hostWindow.uiFontFamily
-            font.pixelSize: 9
+            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(9) : 9)
             elide: Text.ElideRight
         }
     }
@@ -124,7 +124,7 @@ Rectangle {
             text: checkBox.text
             color: option.hostWindow.textColor
             font.family: option.hostWindow.uiFontFamily
-            font.pixelSize: 13
+            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(13) : 13)
             verticalAlignment: Text.AlignVCenter
             elide: Text.ElideRight
         }

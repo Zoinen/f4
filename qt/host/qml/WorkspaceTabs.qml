@@ -467,6 +467,8 @@ Item {
                             // shift visually and breaks typographic
                             // consistency across the title bar.
                             font.weight: workspaceTab.labelWeight
+                            font.family: hostWindow.uiFontFamily
+                            font.pixelSize: hostWindow.semanticTextFontPixelSize
                             elide: Text.ElideMiddle
                         }
 
@@ -482,6 +484,8 @@ Item {
                             color: hostWindow.workspaceTabNumberColor()
                             opacity: workspaceTab.current ? 0.9 : 0.76
                             font.weight: workspaceTab.labelWeight
+                            font.family: hostWindow.uiFontFamily
+                            font.pixelSize: hostWindow.semanticTextFontPixelSize
                         }
                     }
 

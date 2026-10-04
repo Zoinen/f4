@@ -182,15 +182,134 @@ target_packages=(
     brotli bzip2 double-conversion expat fontconfig freetype glib
     harfbuzz icu jasper lcms libde265 libffi libheif libiconv libjpeg-turbo
     libmount libpng libraw libselinux libtiff libwebp libxml2 md4c msgpack-cxx
-    openssl pcre2 qt sqlite3 wayland xkbcommon xz_utils zlib zstd
+    ffmpeg openssl pcre2 qt sqlite3 wayland xkbcommon xz_utils zlib zstd
 )
 baseline_marker="$CONAN_HOME/p/.f4-glibc-2.27-gcc11-ready"
+arm64_video_baseline_marker="$CONAN_HOME/p/.f4-arm64-glibc-2.27-video-libraries-ready"
 conan_build_args=(--build=missing)
+# A Conan package ID does not describe the glibc version of a prebuilt build
+# requirement.  In particular, an m4 binary uploaded from a newer Linux host
+# can look like a valid cache hit and then fail only when xkbcommon invokes it
+# inside this Ubuntu 18.04/glibc-2.27 image.  Detect that case from the actual
+# executable instead of trusting the coarse graph marker.  A valid cached m4
+# remains reusable; only an incompatible one is rebuilt in the baseline image.
+force_baseline_m4=0
+cached_m4_found=0
+while IFS= read -r m4_binary; do
+    cached_m4_found=1
+    if [[ ! -x "$m4_binary" ]] || ! "$m4_binary" --version >/dev/null 2>&1; then
+        force_baseline_m4=1
+        echo "Cached Conan m4 is not executable on the glibc 2.27 baseline: ${m4_binary}"
+        break
+    fi
+done < <(find "${CONAN_HOME}/p" -type f -path '*/p/bin/m4' -print 2>/dev/null)
+# pkgconf is executed by xkbcommon's Meson build. A package built for another
+# architecture can still look like a Conan cache hit, then fail as if xcb were
+# absent. Inspect the executable itself and rebuild only this tiny build
+# requirement when an ARM64 cache contains no runnable copy.
+force_baseline_pkgconf=0
+cached_pkgconf_found=0
+if [[ "${TARGET_ARCH}" == "arm64" ]]; then
+    while IFS= read -r pkgconf_binary; do
+        cached_pkgconf_found=1
+        if [[ ! -x "$pkgconf_binary" ]] || ! "$pkgconf_binary" --version >/dev/null 2>&1; then
+            force_baseline_pkgconf=1
+            echo "Cached Conan pkgconf is not executable on the ARM64 baseline: ${pkgconf_binary}"
+            break
+        fi
+    done < <(find "${CONAN_HOME}/p" -type f -path '*/p/bin/pkgconf' -print 2>/dev/null)
+fi
+# Conan's Meson packages use Ninja from the build context. Keep the same
+# architecture check for it: an x86 Ninja in an ARM64 cache makes every
+# source rebuild fail before compilation starts.
+force_baseline_ninja=0
+cached_ninja_found=0
+if [[ "${TARGET_ARCH}" == "arm64" ]]; then
+    while IFS= read -r ninja_binary; do
+        cached_ninja_found=1
+        if [[ ! -x "$ninja_binary" ]] || ! "$ninja_binary" --version >/dev/null 2>&1; then
+            force_baseline_ninja=1
+            echo "Cached Conan Ninja is not executable on the ARM64 baseline: ${ninja_binary}"
+            break
+        fi
+    done < <(find "${CONAN_HOME}/p" -path '*/p/bin/ninja' -print 2>/dev/null)
+fi
+# Fontconfig's Meson configure step executes gperf from the build context.
+# Check its architecture too; an incompatible cached copy otherwise fails
+# after the expensive ARM64 source packages have already started building.
+force_baseline_gperf=0
+cached_gperf_found=0
+if [[ "${TARGET_ARCH}" == "arm64" ]]; then
+    while IFS= read -r gperf_binary; do
+        cached_gperf_found=1
+        if [[ ! -x "$gperf_binary" ]] || ! "$gperf_binary" --version >/dev/null 2>&1; then
+            force_baseline_gperf=1
+            echo "Cached Conan gperf is not executable on the ARM64 baseline: ${gperf_binary}"
+            break
+        fi
+    done < <(find "${CONAN_HOME}/p" -path '*/p/bin/gperf' -print 2>/dev/null)
+fi
+# Static libraries copied from a newer Linux host can pass Conan's integrity
+# check while still referring to glibc symbols that do not exist in the
+# Ubuntu 18.04/glibc-2.27 baseline.  Detect the known failure signatures in
+# the restored cache before Conan is allowed to select the corresponding
+# remote package.  Rebuild only the affected package, preserving the rest of
+# the expensive video graph.
+arm64_glibc_rebuild_packages=()
+if [[ "${TARGET_ARCH}" == "arm64" ]]; then
+    arm64_glibc_package_specs=(
+        "fontconfig:libfontconfig.a"
+        "freetype:libfreetype.a"
+        "libde265:libde265.a"
+        "libraw:libraw.a"
+    )
+    if [[ "${F4_CONAN_BOOTSTRAP_VIDEO:-0}" == "1" &&
+        ! -f "${arm64_video_baseline_marker}" ]]; then
+        # The first bootstrap must not allow Conan to download an unqualified
+        # ARM64 package before its archive can be inspected.  Force this
+        # small set once; a successful native host link records the marker so
+        # later jobs reuse the corrected binaries from the cache/remote.
+        arm64_glibc_rebuild_packages=(fontconfig freetype libde265 libraw)
+        echo "No repaired ARM64 video-library checkpoint found; building the glibc 2.27 set once"
+    else
+        while IFS=: read -r package archive; do
+            package_archive_found=0
+            package_archive_incompatible=0
+            while IFS= read -r static_archive; do
+                package_archive_found=1
+                if nm -u "${static_archive}" 2>/dev/null |
+                    grep -Eq '(__isoc23_|__libc_single_threaded|(^|[[:space:]])fcntl64$)'; then
+                    package_archive_incompatible=1
+                    echo "Cached ARM64 ${package} archive requires newer glibc: ${static_archive}"
+                    break
+                fi
+            done < <(find "${CONAN_HOME}/p" -type f -path "*/p/lib/${archive}" -print 2>/dev/null)
+            if [[ "${package_archive_incompatible}" == "1" ]]; then
+                arm64_glibc_rebuild_packages+=("${package}")
+            elif [[ "${package_archive_found}" == "0" &&
+                "${F4_CONAN_BOOTSTRAP_VIDEO:-0}" == "1" ]]; then
+                # Do not let an unqualified remote package become the first
+                # copy of one of these libraries on a cold ARM64 checkpoint.
+                arm64_glibc_rebuild_packages+=("${package}")
+                echo "No cached ARM64 ${package} archive found; building it in the glibc 2.27 / GCC 11 container"
+            fi
+        done < <(printf '%s\n' "${arm64_glibc_package_specs[@]}")
+    fi
+fi
 if [[ "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" &&
     -n "${F4_CONAN_REMOTE_URL:-}" ]]; then
     conan_build_args=(--build=never)
     echo "Using the audited glibc 2.27 / GCC 11 Conan graph from f4-conan"
     echo "Trusted baseline mode forbids source fallback; missing packages fail fast"
+elif [[ "${F4_CONAN_BOOTSTRAP_VIDEO:-0}" == "1" ]]; then
+    # The video graph is intentionally bootstrapped from the existing
+    # Artifactory baseline. Reuse every matching remote package and compile
+    # only the new Qt Multimedia/FFmpeg nodes (or any genuinely missing
+    # transitive node) inside this Ubuntu 18.04/GCC-11 container. This keeps a
+    # cold GitHub cache from turning a feature bootstrap into a full graph
+    # rebuild while preserving the portable libc contract.
+    echo "Bootstrapping the video graph from the audited remote baseline"
+    echo "Missing packages will be built in the glibc 2.27 / GCC 11 container"
 elif [[ ! -f "$baseline_marker" ]]; then
     conan_build_args+=(--build='m4/*')
     conan_build_args+=(--build='ninja/*')
@@ -203,6 +322,72 @@ elif [[ ! -f "$baseline_marker" ]]; then
 else
     echo "Reusing cached glibc 2.27 / GCC 11 Conan package graph"
 fi
+if [[ "${F4_CONAN_BOOTSTRAP_VIDEO:-0}" == "1" &&
+    "${cached_m4_found}" == "0" ]]; then
+    # A cold cache would otherwise download the same unqualified package from
+    # Artifactory before this check can inspect it. Build this tiny tool once
+    # in the baseline image so the checkpoint and remote package are safe for
+    # every later Linux job.
+    force_baseline_m4=1
+    echo "No cached Conan m4 found; building it in the glibc 2.27 / GCC 11 container"
+fi
+if [[ "${F4_CONAN_BOOTSTRAP_VIDEO:-0}" == "1" &&
+    "${TARGET_ARCH}" == "arm64" && "${cached_pkgconf_found}" == "0" ]]; then
+    # Do not accept the first unqualified Artifactory pkgconf package on a
+    # cold ARM64 cache; build the executable in the target container instead.
+    force_baseline_pkgconf=1
+    echo "No cached Conan pkgconf found; building it for the ARM64 baseline"
+fi
+if [[ "${F4_CONAN_BOOTSTRAP_VIDEO:-0}" == "1" &&
+    "${TARGET_ARCH}" == "arm64" && "${cached_ninja_found}" == "0" ]]; then
+    force_baseline_ninja=1
+    echo "No cached Conan Ninja found; building it for the ARM64 baseline"
+fi
+if [[ "${F4_CONAN_BOOTSTRAP_VIDEO:-0}" == "1" &&
+    "${TARGET_ARCH}" == "arm64" && "${cached_gperf_found}" == "0" ]]; then
+    force_baseline_gperf=1
+    echo "No cached Conan gperf found; building it for the ARM64 baseline"
+fi
+if [[ "${force_baseline_m4}" == "1" ]]; then
+    if [[ "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" ]]; then
+        echo "error: trusted baseline contains an m4 binary incompatible with glibc 2.27" >&2
+        exit 1
+    fi
+    conan_build_args+=(--build='m4/*')
+    echo "Forcing only m4 to rebuild in the glibc 2.27 / GCC 11 container"
+fi
+if [[ "${force_baseline_pkgconf}" == "1" ]]; then
+    if [[ "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" ]]; then
+        echo "error: trusted baseline contains a pkgconf binary incompatible with ARM64" >&2
+        exit 1
+    fi
+    conan_build_args+=(--build='pkgconf/*')
+    echo "Forcing only pkgconf to rebuild for the ARM64 baseline"
+fi
+if [[ "${force_baseline_ninja}" == "1" ]]; then
+    if [[ "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" ]]; then
+        echo "error: trusted baseline contains a Ninja binary incompatible with ARM64" >&2
+        exit 1
+    fi
+    conan_build_args+=(--build='ninja/*')
+    echo "Forcing only Ninja to rebuild for the ARM64 baseline"
+fi
+if [[ "${force_baseline_gperf}" == "1" ]]; then
+    if [[ "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" ]]; then
+        echo "error: trusted baseline contains a gperf binary incompatible with ARM64" >&2
+        exit 1
+    fi
+    conan_build_args+=(--build='gperf/*')
+    echo "Forcing only gperf to rebuild for the ARM64 baseline"
+fi
+for package in "${arm64_glibc_rebuild_packages[@]}"; do
+    if [[ "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" ]]; then
+        echo "error: trusted baseline contains an ARM64 ${package} archive incompatible with glibc 2.27" >&2
+        exit 1
+    fi
+    conan_build_args+=("--build=${package}/*")
+    echo "Forcing only ${package} to rebuild in the glibc 2.27 / GCC 11 container"
+done
 
 # GLib's recipe adds elfutils solely for the GNOME `gresource` CLI. This Qt
 # host neither builds nor uses that tool, so omit the entire expensive elfutils
@@ -212,6 +397,9 @@ for attempt in 1 2 3; do
         -s:h build_type=Release -s:h compiler.cppstd=gnu20 \
         -s:b build_type=Release -s:b compiler.cppstd=gnu20 \
         -o:h 'qt/*:shared=False' \
+        -o:h '*:with_video_thumbnails=True' \
+        -o:h '*:with_ffmpeg_backend=True' \
+        -o:h 'qt/*:with_ffmpeg=True' \
         -o:h 'qt/*:qtwayland=True' \
         -o:h 'qt/*:with_egl=True' \
         -o:h 'qt/*:with_libjpeg=libjpeg-turbo' \
@@ -244,6 +432,14 @@ done
 # when the cache post-step would otherwise be skipped after a job failure.
 touch "${build_dir}/.f4-conan-ready"
 touch "$baseline_marker"
+if [[ "${TARGET_ARCH}" == "arm64" &&
+    "${F4_CONAN_BOOTSTRAP_VIDEO:-0}" == "1" ]]; then
+    # The four ARM64 video libraries have now been built in the baseline
+    # container. Record that fact before host compilation so a later link/test
+    # failure can reuse them from the checkpoint instead of rebuilding them.
+    touch "${arm64_video_baseline_marker}"
+    echo "Recorded the repaired ARM64 video-library checkpoint"
+fi
 
 # Qt's host tools (notably qsb) must resolve the Conan-built Wayland and
 # related libraries before Ubuntu 18.04's system copies.  This affects only
@@ -260,7 +456,8 @@ bash ci/build-qwindowkit.sh "$PWD/${build_dir}" Release static
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_PREFIX_PATH="$PWD/build/qwindowkit-install" \
     -DQWindowKit_DIR="$PWD/build/qwindowkit-install/lib/cmake/QWindowKit" \
-    -DBUILD_TESTING=ON -DUSE_QWK=ON -DF4_PORTABLE_STATIC=ON
+    -DBUILD_TESTING=ON -DUSE_QWK=ON -DF4_PORTABLE_STATIC=ON \
+    -DF4_ENABLE_VIDEO_THUMBNAILS=ON -DF4_ENABLE_FFMPEG_BACKEND=ON
 # Keep the glibc-baseline runner deterministic.  Some hosted Linux images
 # expose a very large virtual CPU count; letting Ninja use all of it can
 # starve Qt's long-running AUTOMOC/moc --collect-json jobs and leave the job

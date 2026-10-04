@@ -384,7 +384,7 @@ Rectangle {
     FontMetrics {
         id: documentFontMetrics
         font.family: hostWindow.guiMonospaceFontFamily
-        font.pixelSize: hostWindow.semanticTextFontPixelSize
+        font.pixelSize: hostWindow.guiMonospaceFontPixelSize
     }
 
     // FontMetrics resolves a different native font/DPI size from QQuickText
@@ -398,7 +398,7 @@ Rectangle {
         text: "M".repeat(64)
         textFormat: Text.PlainText
         font.family: hostWindow.guiMonospaceFontFamily
-        font.pixelSize: hostWindow.semanticTextFontPixelSize
+        font.pixelSize: hostWindow.guiMonospaceFontPixelSize
         renderType: hostWindow.fontRenderType
     }
 

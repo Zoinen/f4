@@ -641,10 +641,11 @@ sending synthetic indices to Go. Native navigation and component
 selection remain in Qt; neither descriptors nor GUI values enter Go's settings
 catalog, drafts, semantic controls, search results or console dialog.
 
-The GUI page hosts `ThemeEditorContent.qml`, extracted from the original
-configurator without replacing its color list, OKLCH/RGB/hex editor, font/wheel
-controls, Lucide/Native icon-set selector, toggles or Reset/Restore/Save/Close
-buttons. `ThemeEditor.qml` is its standalone window wrapper. The app icon requests this native page and sends only
+The GUI page hosts `GuiSettingsPage.qml`: rendering, mouse-wheel behavior,
+icon set, panel toggles, separators and column padding. The separate
+**Theme creator** page hosts `ThemeEditorContent.qml` with its color list,
+OKLCH/RGB/hex editor and color Reset/Restore actions.
+`ThemeEditor.qml` is the standalone color-editor wrapper. The app icon requests the GUI page and sends only
 the generic `settings.open` navigation action. Core pages keep their existing
 semantic rendering. Small windows scroll the intact native content.
 
@@ -653,7 +654,9 @@ active profile's window geometry. If absent, it imports the legacy Qt-adjacent
 file without removing the source; existing profile values take precedence.
 Legacy palette conversions remain in HostThemePalette. Identification highlights
 are stopped before saving. GUI preferences retain the configurator's live-edit
-and explicit Save/Restore behavior, independently of core Apply/OK/Cancel.
+behavior; the common Apply/OK/Cancel controls apply or revert visited native
+pages. GUI preferences and colors have separate draft baselines. Escape closes
+settings even when the category list has focus.
 ## Restored Hotkey Configurator tab
 
 Hotkey Configurator has its own category beside Keyboard & shortcuts. It embeds

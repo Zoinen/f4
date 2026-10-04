@@ -66,7 +66,7 @@ Item {
                     color: hostWindow.cleanText(modelData.foreground) !== ""
                            ? modelData.foreground : hostWindow.textColor
                     font.family: hostWindow.guiMonospaceFontFamily
-                    font.pixelSize: hostWindow.semanticTextFontPixelSize
+                    font.pixelSize: hostWindow.guiMonospaceFontPixelSize
                     font.bold: modelData.bold === true
                     font.underline: modelData.underline === true
                     font.strikeout: modelData.strikeout === true

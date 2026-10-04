@@ -10,6 +10,178 @@ from pathlib import Path
 _ANCHOR = '            self.requires("freetype/[>=2.13 <3]")\n'
 _PATCH = '            self.requires("freetype/2.13.2")\n'
 _MARKER = 'self.requires("freetype/2.13.2")'
+_FFMPEG_OPTION_ANCHOR = '        "with_gstreamer": [True, False],\n'
+_FFMPEG_OPTION_PATCH = _FFMPEG_OPTION_ANCHOR + (
+    '        "with_ffmpeg": [True, False],\n'
+)
+_FFMPEG_OPTION_MARKER = '        "with_ffmpeg": [True, False],\n'
+_FFMPEG_DEFAULT_ANCHOR = '        "with_gstreamer": False,\n'
+_FFMPEG_DEFAULT_PATCH = _FFMPEG_DEFAULT_ANCHOR + (
+    '        "with_ffmpeg": False,\n'
+)
+_FFMPEG_DEFAULT_MARKER = '        "with_ffmpeg": False,\n'
+_FFMPEG_REQUIREMENT_ANCHOR = (
+    '        if self.options.get_safe("with_gstreamer", False):\n'
+)
+_FFMPEG_REQUIREMENT_PATCH = (
+    '        if self.options.get_safe("with_ffmpeg", False):\n'
+    '            self.requires("ffmpeg/7.1.5")\n'
+        + _FFMPEG_REQUIREMENT_ANCHOR
+)
+_FFMPEG_REQUIREMENT_MARKER = 'self.requires("ffmpeg/7.1.5")'
+_FFMPEG_GENERATE_ANCHOR = '        tc.variables["FEATURE_pkg_config"] = "ON"\n'
+_FFMPEG_GENERATE_PATCH = _FFMPEG_GENERATE_ANCHOR + (
+    '        if self.options.get_safe("with_ffmpeg", False):\n'
+    '            # Qt Multimedia uses its FindFFmpeg module during Qt\'s own\n'
+    '            # configure step. Point it at the Conan package directly;\n'
+    '            # relying on a system pkg-config database would silently\n'
+    '            # disable the backend on clean CI runners.\n'
+    '            tc.variables["INPUT_ffmpeg"] = "yes"\n'
+    '            tc.cache_variables["FFMPEG_DIR"] = (\n'
+    '                self.dependencies["ffmpeg"].package_folder\n'
+    '            )\n'
+)
+_FFMPEG_GENERATE_MARKER = 'tc.cache_variables["FFMPEG_DIR"]'
+_FFMPEG_PACKAGE_INFO_ANCHOR = (
+    '            if self.options.get_safe("with_pulseaudio", False):\n'
+    '                multimedia_reqs.append("pulseaudio::pulse")\n'
+    '            _create_module("Multimedia", multimedia_reqs)\n'
+)
+_FFMPEG_PACKAGE_INFO_PATCH = (
+    '            if self.options.get_safe("with_pulseaudio", False):\n'
+    '                multimedia_reqs.append("pulseaudio::pulse")\n'
+    '            if self.options.get_safe("with_ffmpeg", False):\n'
+    '                multimedia_reqs.extend([\n'
+    '                    "ffmpeg::avcodec",\n'
+    '                    "ffmpeg::avformat",\n'
+    '                    "ffmpeg::avutil",\n'
+    '                    "ffmpeg::swresample",\n'
+    '                    "ffmpeg::swscale",\n'
+    '                ])\n'
+    '            _create_module("Multimedia", multimedia_reqs)\n'
+)
+_FFMPEG_PACKAGE_INFO_MARKER = '"ffmpeg::avcodec"'
+_FFMPEG_SOURCE_ANCHOR = '        apply_conandata_patches(self)\n'
+_FFMPEG_MODULE_PATCH = (
+    '        ffmpeg_find_module = os.path.join(\n'
+    '            self.source_folder, "qtmultimedia", "cmake", "FindFFmpeg.cmake"\n'
+    '        )\n'
+    '        replace_in_file(\n'
+    '            self,\n'
+    '            ffmpeg_find_module,\n'
+    '            "include(FindPackageHandleStandardArgs)\\n",\n'
+    '            "include(FindPackageHandleStandardArgs)\\n"\n'
+    '            "\\n"\n'
+    '            "# Conan CMakeDeps exports lower-case ffmpeg:: component targets.\\n"\n'
+    '            "find_package(ffmpeg CONFIG QUIET)\\n",\n'
+    '            strict=True,\n'
+    '        )\n'
+    '        replace_in_file(\n'
+    '            self,\n'
+    '            ffmpeg_find_module,\n'
+    '            \'            target_link_libraries(${_target} INTERFACE "${${_component}_LIBRARY_NAME}")\\n\'\n'
+    '            \'            target_link_directories(${_target} INTERFACE ${${_component}_LIBRARY_DIR})\\n\'\n'
+    '            \'\\n\'\n'
+    '            \'            __ffmpeg_internal_set_dependencies(${_component})\\n\',\n'
+    '            \'            if (TARGET ffmpeg::${_lowerComponent})\\n\'\n'
+    '            \'                # Conan carries the static codec, framework, and system-library dependencies.\\n\'\n'
+    '            \'                target_link_libraries(${_target} INTERFACE ffmpeg::${_lowerComponent})\\n\'\n'
+    '            \'            else()\\n\'\n'
+    '            \'                target_link_libraries(${_target} INTERFACE "${${_component}_LIBRARY_NAME}")\\n\'\n'
+    '            \'                __ffmpeg_internal_set_dependencies(${_component})\\n\'\n'
+    '            \'            endif()\\n\'\n'
+    '            \'            target_link_directories(${_target} INTERFACE ${${_component}_LIBRARY_DIR})\\n\',\n'
+    '            strict=True,\n'
+    '        )\n'
+)
+_FFMPEG_SOURCE_PATCH = _FFMPEG_SOURCE_ANCHOR + (
+    '        # Conan deliberately forbids self.options access in source().\n'
+    '        # This source-level relaxation is harmless when with_ffmpeg is\n'
+    '        # false: Qt still controls whether the backend is configured from\n'
+    '        # the option, while the patched recipe can safely be exported for\n'
+    '        # every platform and package configuration.\n'
+    '        # Qt normally restricts FFmpeg on Linux to builds that also have\n'
+    '        # PulseAudio or PipeWire. f4 uses FFmpeg for local video\n'
+    '        # decoding/thumbnails and intentionally has neither runtime audio\n'
+    '        # dependency, so make the FFmpeg backend a valid Linux Multimedia\n'
+    '        # backend in this patched static recipe.\n'
+    '        qtmultimedia_configure = os.path.join(\n'
+    '            self.source_folder, "qtmultimedia", "src", "multimedia",\n'
+    '            "configure.cmake"\n'
+    '        )\n'
+    '        replace_in_file(\n'
+    '            self,\n'
+    '            qtmultimedia_configure,\n'
+    '            "AND (APPLE OR WIN32 OR ANDROID OR QNX OR "\n'
+    '            "QT_FEATURE_pulseaudio OR QT_FEATURE_pipewire)",\n'
+    '            "AND (APPLE OR WIN32 OR ANDROID OR QNX OR LINUX OR "\n'
+    '            "QT_FEATURE_pulseaudio OR QT_FEATURE_pipewire)",\n'
+    '            strict=True,\n'
+    '        )\n'
+    '        # Conan CMakeDeps also emits ffmpeg-config.cmake and\n'
+    '        # vaapi-config.cmake. Those packages use Conan target names\n'
+    '        # (ffmpeg::avformat, vaapi::vaapi), while Qt Multimedia\n'
+    '        # expects the targets created by its own Find modules\n'
+    '        # (FFmpeg::avformat, VAAPI::VAAPI). Force module mode for\n'
+    '        # these two lookups so a config package cannot shadow the\n'
+    '        # compatible Qt finders.\n'
+    '        replace_in_file(\n'
+    '            self,\n'
+    '            qtmultimedia_configure,\n'
+    '            "qt_find_package(FFmpeg OPTIONAL_COMPONENTS",\n'
+    '            "qt_find_package(FFmpeg MODULE OPTIONAL_COMPONENTS",\n'
+    '            strict=True,\n'
+    '        )\n'
+    '        replace_in_file(\n'
+    '            self,\n'
+    '            qtmultimedia_configure,\n'
+    '            "qt_find_package(VAAPI COMPONENTS",\n'
+    '            "qt_find_package(VAAPI MODULE COMPONENTS",\n'
+    '            strict=True,\n'
+    '        )\n'
+    '        ffmpeg_plugin_cmake = os.path.join(\n'
+    '            self.source_folder, "qtmultimedia", "src", "plugins",\n'
+    '            "multimedia", "ffmpeg", "CMakeLists.txt"\n'
+    '        )\n'
+    '        replace_in_file(\n'
+    '            self,\n'
+    '            ffmpeg_plugin_cmake,\n'
+    '            "qt_find_package(VAAPI COMPONENTS",\n'
+    '            "qt_find_package(VAAPI MODULE COMPONENTS",\n'
+    '            strict=True,\n'
+    '        )\n'
+) + _FFMPEG_MODULE_PATCH + (
+    '        # The glibc 2.27 baseline can provide older V4L2 UAPI headers\n'
+    '        # without the 32-bit alpha pixel-format aliases introduced by\n'
+    '        # newer kernel headers. Keep Qt Multimedia\'s format table\n'
+    '        # buildable while preserving the Linux UAPI FOURCC values.\n'
+    '        qv4l2camera = os.path.join(\n'
+    '            self.source_folder, "qtmultimedia", "src", "plugins",\n'
+    '            "multimedia", "ffmpeg", "qv4l2camera.cpp"\n'
+    '        )\n'
+    '        replace_in_file(\n'
+    '            self,\n'
+    '            qv4l2camera,\n'
+    '            "#include <qloggingcategory.h>\\n",\n'
+    '            "#include <qloggingcategory.h>\\n"\n'
+    '            "\\n"\n'
+    '            "#ifndef V4L2_PIX_FMT_BGRA32\\n"\n'
+    '            "#define V4L2_PIX_FMT_BGRA32 v4l2_fourcc(\'R\', \'A\', \'2\', \'4\')\\n"\n'
+    '            "#endif\\n"\n'
+    '            "#ifndef V4L2_PIX_FMT_RGBA32\\n"\n'
+    '            "#define V4L2_PIX_FMT_RGBA32 v4l2_fourcc(\'A\', \'B\', \'2\', \'4\')\\n"\n'
+    '            "#endif\\n",\n'
+    '            strict=True,\n'
+    '        )\n'
+)
+_FFMPEG_SOURCE_MARKER = 'qtmultimedia_configure = os.path.join'
+_FFMPEG_MODULE_SOURCE_MARKER = (
+    'qt_find_package(FFmpeg MODULE OPTIONAL_COMPONENTS'
+)
+_FFMPEG_VAAPI_MODULE_MARKER = 'qt_find_package(VAAPI MODULE COMPONENTS'
+_FFMPEG_CONFIG_SOURCE_MARKER = 'find_package(ffmpeg CONFIG QUIET)'
+_V4L2_FORMAT_MARKER = '#ifndef V4L2_PIX_FMT_BGRA32'
+_FFMPEG_TARGET_BRIDGE_MARKER = 'TARGET ffmpeg::${_lowerComponent}'
 _HOST_PATH_ANCHOR = (
     '            tc.cache_variables["QT_HOST_PATH"] = '
     'self.dependencies.direct_build["qt"].package_folder\n'
@@ -90,6 +262,61 @@ def _patch_freetype(text: str) -> str:
     return text.replace(_ANCHOR, _PATCH)
 
 
+def _patch_ffmpeg(text: str) -> str:
+    if _FFMPEG_OPTION_MARKER not in text:
+        if text.count(_FFMPEG_OPTION_ANCHOR) != 1:
+            raise SystemExit(
+                "unexpected Qt recipe: FFmpeg option anchor is absent or ambiguous"
+            )
+        text = text.replace(_FFMPEG_OPTION_ANCHOR, _FFMPEG_OPTION_PATCH)
+    if _FFMPEG_DEFAULT_MARKER not in text:
+        if text.count(_FFMPEG_DEFAULT_ANCHOR) != 1:
+            raise SystemExit(
+                "unexpected Qt recipe: FFmpeg default anchor is absent or ambiguous"
+            )
+        text = text.replace(_FFMPEG_DEFAULT_ANCHOR, _FFMPEG_DEFAULT_PATCH)
+    if _FFMPEG_REQUIREMENT_MARKER not in text:
+        if text.count(_FFMPEG_REQUIREMENT_ANCHOR) != 1:
+            raise SystemExit(
+                "unexpected Qt recipe: FFmpeg requirement anchor is absent or ambiguous"
+            )
+        text = text.replace(_FFMPEG_REQUIREMENT_ANCHOR, _FFMPEG_REQUIREMENT_PATCH)
+    if _FFMPEG_GENERATE_MARKER not in text:
+        if text.count(_FFMPEG_GENERATE_ANCHOR) != 1:
+            raise SystemExit(
+                "unexpected Qt recipe: FFmpeg CMake anchor is absent or ambiguous"
+            )
+        text = text.replace(_FFMPEG_GENERATE_ANCHOR, _FFMPEG_GENERATE_PATCH)
+    if _FFMPEG_SOURCE_MARKER not in text:
+        if text.count(_FFMPEG_SOURCE_ANCHOR) != 1:
+            raise SystemExit(
+                "unexpected Qt recipe: Qt source patch anchor is absent or ambiguous"
+            )
+        text = text.replace(_FFMPEG_SOURCE_ANCHOR, _FFMPEG_SOURCE_PATCH)
+    elif (
+        _FFMPEG_MODULE_SOURCE_MARKER not in text
+        or text.count(_FFMPEG_VAAPI_MODULE_MARKER) < 2
+        or _FFMPEG_CONFIG_SOURCE_MARKER not in text
+        or _FFMPEG_TARGET_BRIDGE_MARKER not in text
+        or _V4L2_FORMAT_MARKER not in text
+    ):
+        raise SystemExit(
+            "unexpected Qt recipe: existing FFmpeg source patch lacks module-mode "
+            "finders, Conan target bridge, or V4L2 compatibility definitions"
+        )
+    if _FFMPEG_PACKAGE_INFO_MARKER not in text:
+        if text.count(_FFMPEG_PACKAGE_INFO_ANCHOR) != 1:
+            raise SystemExit(
+                "unexpected Qt recipe: Multimedia package-info anchor is absent "
+                "or ambiguous"
+            )
+        text = text.replace(
+            _FFMPEG_PACKAGE_INFO_ANCHOR,
+            _FFMPEG_PACKAGE_INFO_PATCH,
+        )
+    return text
+
+
 def _patch_host_path(text: str) -> str:
     if _HOST_PATH_MARKER in text:
         if (
@@ -128,7 +355,9 @@ def main() -> None:
     args = parser.parse_args()
 
     text = args.recipe.read_text(encoding="utf-8")
-    patched = _patch_quick_package_guard(_patch_host_path(_patch_freetype(text)))
+    patched = _patch_quick_package_guard(
+        _patch_host_path(_patch_ffmpeg(_patch_freetype(text)))
+    )
     if patched != text:
         args.recipe.write_text(patched, encoding="utf-8")
 

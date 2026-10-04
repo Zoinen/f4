@@ -33,6 +33,12 @@ int F4TextRenderingPolicy::renderType() const
     return m_renderType;
 }
 
+void F4TextRenderingPolicy::setInterfaceFont(const QFont &font)
+{
+    if (QGuiApplication::font() != font)
+        QGuiApplication::setFont(font);
+}
+
 void F4TextRenderingPolicy::setRenderType(int renderType)
 {
     if (!isSupported(renderType))

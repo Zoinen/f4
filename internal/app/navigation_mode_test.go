@@ -139,6 +139,38 @@ func TestSearchFirstKeyboardRoutingAndFocusToggle(t *testing.T) {
 	}
 }
 
+func TestAutocompleteFocusToggleUsesActiveWorkspace(t *testing.T) {
+	oldCfg := config.App
+	t.Cleanup(func() { config.App = oldCfg })
+	config.App.NavigationMode = config.NavigationSearchFirst
+	first, _, _ := newSearchFirstTestFrame(t)
+	first.MenuBar, first.KeyBar = vtui.NewMenuBar(nil), vtui.NewKeyBar()
+	vtui.FrameManager.Push(first)
+	second := paneltest.SetupMockPanelsFrame(t)
+	t.Cleanup(second.Close)
+	second.ResizeConsole(80, 25)
+	vtui.FrameManager.AddScreen(second)
+	second.SetCommandLineFocus(true)
+	second.CmdLine.Edit.SetText("pending")
+	menu := vtui.NewAutoCompleteMenu(second.CmdLine.Edit)
+	vtui.FrameManager.Push(menu)
+	event := &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true,
+		VirtualKeyCode: vtinput.VK_OEM_3, Char: '`'}
+	if first.HandleAutocompleteFocusToggle(event) {
+		t.Fatal("inactive startup workspace consumed active command-line key")
+	}
+	if !handleActiveAutocompleteFocusToggle(event) {
+		t.Fatal("active workspace did not consume grave while autocomplete was open")
+	}
+	if second.CommandLineFocused || !menu.IsDone() || second.CmdLine.Edit.GetText() != "pending" {
+		t.Fatalf("active focus=%v menu done=%v text=%q", second.CommandLineFocused,
+			menu.IsDone(), second.CmdLine.Edit.GetText())
+	}
+	if first.CommandLineFocused {
+		t.Fatal("inactive workspace focus changed")
+	}
+}
+
 func TestSearchFirstFastFindCtrlEnterNavigation(t *testing.T) {
 	oldCfg := config.App
 	defer func() { config.App = oldCfg }()
@@ -360,10 +392,35 @@ func TestSearchFirstCommandEnterPolicyAndTab(t *testing.T) {
 	if pf.ActiveIdx != active {
 		t.Fatal("Tab in command focus switched panels")
 	}
-	pf.SetCommandLineFocus(false)
+	if pf.CommandLineFocused || pf.CmdLine.IsFocused() {
+		t.Fatal("Tab in command focus must return focus to the active panel")
+	}
 	pressKey(pf, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_TAB})
 	if pf.ActiveIdx == active {
 		t.Fatal("Tab in panel focus did not switch panels")
+	}
+}
+
+func TestSearchFirstCtrlEActivatesCommandHistory(t *testing.T) {
+	oldCfg := config.App
+	defer func() { config.App = oldCfg }()
+	config.App.NavigationMode = config.NavigationSearchFirst
+	config.App.CommandLineAutoComplete = false
+	pf, left, _ := newSearchFirstTestFrame(t)
+	pf.CmdLine.Edit.History = []string{"previous command"}
+	pf.CmdLine.Edit.HistoryPos = -1
+	event := &vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true,
+		VirtualKeyCode: vtinput.VK_E, ControlKeyState: vtinput.LeftCtrlPressed,
+	}
+	if !pressKey(pf, event) {
+		t.Fatal("Ctrl+E was not handled")
+	}
+	if !pf.CommandLineFocused || !pf.CmdLine.IsFocused() || left.IsFocused() {
+		t.Fatal("Ctrl+E must focus the command input")
+	}
+	if got := pf.CmdLine.Edit.GetText(); got != "previous command" {
+		t.Fatalf("Ctrl+E recalled %q, want previous command", got)
 	}
 }
 

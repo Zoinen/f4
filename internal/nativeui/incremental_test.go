@@ -180,7 +180,7 @@ func TestAppScenePatchMenuDoesNotCarryLargePanelCatalogs(t *testing.T) {
 	}
 }
 
-func TestAppScenePatchSwitchesBetweenPanelsAndEditorWithoutCatalogs(t *testing.T) {
+func TestAppScenePatchReturnsFromEditorWithCatalogSnapshot(t *testing.T) {
 	entries := make([]map[string]any, 10_000)
 	for index := range entries {
 		entries[index] = map[string]any{
@@ -223,15 +223,8 @@ func TestAppScenePatchSwitchesBetweenPanelsAndEditorWithoutCatalogs(t *testing.T
 	returnScene := semantic.CompactAppSemanticScene(panelsScene)
 	returnPatch, acknowledgements, ok := BuildAppScenePatch(editorScene,
 		&appIncrementalScene{Scene: returnScene})
-	if !ok || len(acknowledgements) != 0 || returnPatch.Root == nil {
-		t.Fatalf("editor -> panels transition rejected: ok=%v patch=%#v", ok, returnPatch)
-	}
-	if returnPatch.Root.Set["shell"] == nil ||
-		!incrementalTestContainsString(returnPatch.Root.Clear, "surface") {
-		t.Fatalf("editor -> panels patch has wrong root shape: %#v", returnPatch.Root)
-	}
-	if semanticValueContainsKey(returnPatch.ToMap(), "entries") {
-		t.Fatal("editor -> panels patch carried a full panel catalog")
+	if ok || len(acknowledgements) != 0 {
+		t.Fatalf("editor -> panels must export catalog rows, got ok=%v patch=%#v", ok, returnPatch)
 	}
 }
 

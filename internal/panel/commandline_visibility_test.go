@@ -37,6 +37,41 @@ func TestSearchFirstUnfocusedCommandHidesOnlyWhenEmpty(t *testing.T) {
 	}
 }
 
+func TestSearchFirstRetainedCommandRunsFromPanel(t *testing.T) {
+	original := config.App
+	t.Cleanup(func() { config.App = original })
+	config.App.NavigationMode = config.NavigationSearchFirst
+	pf, _ := panelsFrameWithMouseSelect(t)
+	pf.ShowPanels = true
+	pf.SetCommandLineFocus(true)
+	pf.CmdLine.Edit.SetText("cd " + t.TempDir())
+	pf.SetCommandLineFocus(false)
+	if !pf.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN}) {
+		t.Fatal("Enter was not handled")
+	}
+	if !pf.CmdLine.IsEmpty() {
+		t.Fatal("Enter opened the selected panel item instead of executing retained command")
+	}
+}
+
+func TestSearchFirstAutocompleteTildeTogglesFocus(t *testing.T) {
+	original := config.App
+	t.Cleanup(func() { config.App = original })
+	config.App.NavigationMode = config.NavigationSearchFirst
+	pf, _ := panelsFrameWithMouseSelect(t)
+	pf.ShowPanels = true
+	pf.SetCommandLineFocus(true)
+	pf.CmdLine.Edit.SetText("pending")
+	suggestions := vtui.NewAutoCompleteMenu(pf.CmdLine.Edit)
+	vtui.FrameManager.Push(suggestions)
+	if !pf.HandleAutocompleteFocusToggle(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_OEM_3, Char: '`'}) {
+		t.Fatal("autocomplete consumed focus toggle")
+	}
+	if pf.CommandLineFocused || !suggestions.IsDone() || pf.CmdLine.Edit.GetText() != "pending" {
+		t.Fatalf("focus=%v menuDone=%v text=%q", pf.CommandLineFocused, suggestions.IsDone(), pf.CmdLine.Edit.GetText())
+	}
+}
+
 func TestSearchFirstCommandLineVisibility(t *testing.T) {
 	original := config.App
 	t.Cleanup(func() { config.App = original })

@@ -63,7 +63,8 @@ Rectangle {
         text: button.label
         textFormat: button.labelFormat
         color: button.labelColor
-        font.pixelSize: 11
+        font.family: hostWindow.uiFontFamily
+        font.pixelSize: (hostWindow ? hostWindow.uiTextSize(11) : 11)
         elide: Text.ElideRight
         transform: Translate {
             x: hostWindow.dialogPixelOffsetX(actionLabel, hostWindow.contentItem)
@@ -78,7 +79,8 @@ Rectangle {
         anchors.verticalCenter: parent.verticalCenter
         text: button.shortcut
         color: pointer.containsMouse ? button.shortcutHoverColor : button.shortcutColor
-        font.pixelSize: 11
+        font.family: hostWindow.uiFontFamily
+        font.pixelSize: (hostWindow ? hostWindow.uiTextSize(11) : 11)
         font.weight: button.shortcutWeight
         transform: Translate {
             x: hostWindow.dialogPixelOffsetX(shortcutLabel, hostWindow.contentItem)

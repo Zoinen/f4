@@ -146,7 +146,7 @@ func TestAction_PanelInsertPath_CursorOnFile(t *testing.T) {
 	}
 }
 
-func TestAction_PanelInsertFileName_DoesNotAddSeparator(t *testing.T) {
+func TestAction_PanelInsertFileName_AppendsSpaceWithoutLeadingSeparator(t *testing.T) {
 	tmp := t.TempDir()
 	if err := os.WriteFile(filepath.Join(tmp, "a.txt"), []byte("x"), 0600); err != nil {
 		t.Fatal(err)
@@ -161,9 +161,16 @@ func TestAction_PanelInsertFileName_DoesNotAddSeparator(t *testing.T) {
 		t.Fatal("Panel.InsertFileName did not run")
 	}
 
-	want := base + "a.txt"
+	want := base + "a.txt "
 	if got := p.CmdLine.Edit.GetText(); got != want {
 		t.Errorf("command line = %q, want %q", got, want)
+	}
+	if !RunAction("Panel.InsertFileName") {
+		t.Fatal("second Panel.InsertFileName did not run")
+	}
+	want += "a.txt "
+	if got := p.CmdLine.Edit.GetText(); got != want {
+		t.Errorf("repeated insertion = %q, want %q", got, want)
 	}
 }
 

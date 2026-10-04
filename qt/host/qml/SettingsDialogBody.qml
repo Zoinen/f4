@@ -80,6 +80,12 @@ Item {
         hostWindow.action({target: core.id, action: action, index: index})
     }
     signal closeRequested()
+    Keys.onEscapePressed: event => {
+        console.debug("[FIX:settings] Escape closes settings from focused section")
+        resetNativePages()
+        closeRequested()
+        event.accepted = true
+    }
     Connections {
         target: body.hostWindow
         function onNativeSettingsPageRequested(pageId) {

@@ -60,6 +60,15 @@ if candidates:
         # Only reuse a recipe carrying the current cross-build guard; stale
         # binaries must be rebuilt under the fixed recipe revision.
         if [[ -f "${reusable_qt_recipe}/conanfile.py" ]] && \
+            grep -Fq '"with_ffmpeg": [True, False]' "${reusable_qt_recipe}/conanfile.py" && \
+            grep -Fq 'tc.cache_variables["FFMPEG_DIR"]' "${reusable_qt_recipe}/conanfile.py" && \
+            grep -Fq 'qtmultimedia_configure = os.path.join' "${reusable_qt_recipe}/conanfile.py" && \
+            grep -Fq 'qt_find_package(FFmpeg MODULE OPTIONAL_COMPONENTS' "${reusable_qt_recipe}/conanfile.py" && \
+            [[ "$(grep -Fc 'qt_find_package(VAAPI MODULE COMPONENTS' "${reusable_qt_recipe}/conanfile.py")" -ge 2 ]] && \
+            grep -Fq 'find_package(ffmpeg CONFIG QUIET)' "${reusable_qt_recipe}/conanfile.py" && \
+            grep -Fq 'TARGET ffmpeg::${_lowerComponent}' "${reusable_qt_recipe}/conanfile.py" && \
+            grep -Fq '#ifndef V4L2_PIX_FMT_BGRA32' "${reusable_qt_recipe}/conanfile.py" && \
+            grep -Fq '"ffmpeg::avcodec"' "${reusable_qt_recipe}/conanfile.py" && \
             grep -Fq 'if(NOT TARGET Qt::qsb)' "${reusable_qt_recipe}/conanfile.py" && \
             grep -Fq 'native_qsb_config = os.path.join' "${reusable_qt_recipe}/conanfile.py" && \
             grep -Fq 'tc.cache_variables["Qt6QuickTools_DIR"]' "${reusable_qt_recipe}/conanfile.py" && \
@@ -113,6 +122,23 @@ if [[ "${target_arch}" == "arm64" ]]; then
 fi
 
 grep -Fq 'self.requires("freetype/2.13.2")' \
+    "${qt_recipe_copy}/conanfile.py"
+grep -Fq '"with_ffmpeg": [True, False]' \
+    "${qt_recipe_copy}/conanfile.py"
+grep -Fq 'tc.cache_variables["FFMPEG_DIR"]' \
+    "${qt_recipe_copy}/conanfile.py"
+grep -Fq 'qtmultimedia_configure = os.path.join' \
+    "${qt_recipe_copy}/conanfile.py"
+grep -Fq 'qt_find_package(FFmpeg MODULE OPTIONAL_COMPONENTS' \
+    "${qt_recipe_copy}/conanfile.py"
+[[ "$(grep -Fc 'qt_find_package(VAAPI MODULE COMPONENTS' "${qt_recipe_copy}/conanfile.py")" -ge 2 ]]
+grep -Fq 'find_package(ffmpeg CONFIG QUIET)' \
+    "${qt_recipe_copy}/conanfile.py"
+grep -Fq 'TARGET ffmpeg::${_lowerComponent}' \
+    "${qt_recipe_copy}/conanfile.py"
+grep -Fq '#ifndef V4L2_PIX_FMT_BGRA32' \
+    "${qt_recipe_copy}/conanfile.py"
+grep -Fq '"ffmpeg::avcodec"' \
     "${qt_recipe_copy}/conanfile.py"
 if [[ "${target_arch}" == "arm64" ]]; then
     grep -Fq 'QT_ADDITIONAL_PACKAGES_PREFIX_PATH' \

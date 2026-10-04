@@ -42,6 +42,6 @@ Row {
         anchors.verticalCenter: parent.verticalCenter
         text: String(queueSummaryItem.count)
         color: hostWindow.mutedText
-        font.pixelSize: 12
+        font.pixelSize: (hostWindow ? hostWindow.uiTextSize(12) : 12)
     }
 }

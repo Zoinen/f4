@@ -49,6 +49,7 @@ set(F4_HOST_QML_FILES
   qml/F4CheckBox.qml
   qml/F4RadioButton.qml
   qml/F4ComboBox.qml
+  qml/F4EditableComboBox.qml
   qml/F4ScrollBar.qml
   qml/F4Slider.qml
   qml/F4ToolTip.qml
@@ -87,6 +88,9 @@ set(F4_HOST_QML_FILES
   qml/EnvironmentProfilesBody.qml
   qml/TerminalPaletteModel.qml
   qml/TerminalColorsPage.qml
+  qml/HostTypography.qml
+  qml/FontSettingsPage.qml
+  qml/GuiSettingsPage.qml
   qml/DialogOverlay.qml
   qml/AutocompletePopup.qml
   qml/SemanticMenuItemDelegate.qml

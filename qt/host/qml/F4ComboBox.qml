@@ -27,7 +27,7 @@ T.ComboBox {
     hoverEnabled: true
     font: control.hostWindow ? control.hostWindow.font : Qt.font({})
     padding: 0
-    implicitHeight: snap(30)
+    implicitHeight: snap(Math.max(30, (contentItem ? contentItem.implicitHeight : 0) + 12))
     implicitWidth: snap(160)
     Layout.preferredHeight: implicitHeight
     Layout.minimumHeight: implicitHeight
@@ -138,6 +138,7 @@ T.ComboBox {
             boundsBehavior: Flickable.StopAtBounds
 
             ScrollBar.vertical: F4ScrollBar {
+                hostWindow: control.hostWindow
                 policy: ScrollBar.AsNeeded
                 thickness: 6
             }
@@ -161,11 +162,14 @@ T.ComboBox {
                         : "comboBoxPopupItemText-" + itemDelegate.index
             leftPadding: control.snap(8)
             text: {
+                if (control.textRole !== "")
+                    return control.textAt(itemDelegate.index)
                 if (itemDelegate.model && itemDelegate.model.name !== undefined)
                     return itemDelegate.model.name
                 if (itemDelegate.model && itemDelegate.model.text !== undefined)
                     return itemDelegate.model.text
-                return String(itemDelegate.model || "")
+                // Primitive lists use a Qt model wrapper, not a string row.
+                return control.textAt(itemDelegate.index)
             }
             color: control.hostWindow
                ? (control.enabled ? control.hostWindow.textColor : control.hostWindow.mutedText)

@@ -510,6 +510,9 @@ int main(int argc, char *argv[])
                                               &textRenderingPolicy);
     engine.rootContext()->setContextProperty(QStringLiteral("qtShell"), &controller);
     engine.rootContext()->setContextProperty(QStringLiteral("qtGallery"), &galleryBridge);
+    engine.rootContext()->setContextProperty(
+        QStringLiteral("f4SlowViewerTransition"),
+        qEnvironmentVariable("F4_QT_SLOW_VIEWER_TRANSITION") == QStringLiteral("1"));
     engine.rootContext()->setContextProperty(QStringLiteral("qtIcons"), &iconSet);
     engine.rootContext()->setContextProperty(QStringLiteral("f4GuiFontFamily"), guiFontFamily);
     engine.rootContext()->setContextProperty(
@@ -518,6 +521,13 @@ int main(int argc, char *argv[])
         QStringLiteral("f4SystemMonospaceFontFamily"),
         systemMonospaceFontFamily);
     engine.rootContext()->setContextProperty(QStringLiteral("f4GuiFontPixelSize"), guiFontSize);
+    QStringList monospaceFamilies;
+    for (const QString &family : QFontDatabase::families()) {
+        if (QFontDatabase::isFixedPitch(family))
+            monospaceFamilies.append(family);
+    }
+    engine.rootContext()->setContextProperty(
+        QStringLiteral("f4MonospaceFontFamilies"), monospaceFamilies);
     engine.rootContext()->setContextProperty(
         QStringLiteral("f4WorktreeBranchName"),
         parser.value(worktreeBranchOption).trimmed());

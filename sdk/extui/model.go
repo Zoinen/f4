@@ -172,12 +172,15 @@ type PanelModel struct {
 	GroupFoldersSeparately bool
 	// GroupsDeferred means Groups contains no partial catalog. Native peers
 	// must request the bounded group pages and install them as one snapshot.
-	GroupsDeferred         bool
-	GroupTotal             int
-	DisplayTop             int
-	Groups                 []PanelGroupModel
-	SortMode               string
-	SortReverse            bool
+	GroupsDeferred bool
+	GroupTotal     int
+	DisplayTop     int
+	Groups         []PanelGroupModel
+	SortMode       string
+	SortReverse    bool
+	// SortAscending is the effective direction displayed by native panels.
+	// SortReverse alone is ambiguous for restored time/size modes.
+	SortAscending          bool
 	SeparateFileExtensions bool
 	Cursor                 int
 	Loading                bool
@@ -224,6 +227,7 @@ type PanelColumnModel struct {
 	Index     int
 	Title     string
 	Width     int
+	AutoWidth bool
 	Alignment string
 	SortMode  string
 	Sortable  bool
@@ -964,6 +968,7 @@ func (p PanelModel) ToMap() M {
 				"index":     column.Index,
 				"title":     column.Title,
 				"width":     column.Width,
+				"autoWidth": column.AutoWidth,
 				"alignment": column.Alignment,
 				"sortMode":  column.SortMode,
 				"sortable":  column.Sortable,
@@ -1021,6 +1026,7 @@ func (p PanelModel) ToMap() M {
 		"cursorEntryId":          p.CursorEntryID,
 		"sortModeName":           p.SortMode,
 		"sortReverse":            p.SortReverse,
+		"sortAscending":          p.SortAscending,
 		"separateFileExtensions": p.SeparateFileExtensions,
 		"cursor":                 p.Cursor,
 		"loading":                p.Loading,

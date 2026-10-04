@@ -147,10 +147,30 @@ Rectangle {
     }
 
     function sortIsAscending() {
+        if (typeof panel.sortAscending === "boolean")
+            return panel.sortAscending
         const mode = sortModeName()
         const reversed = panel.sortReverse === true
         return mode === "time" || mode === "size"
                 ? reversed : !reversed
+    }
+
+    property string lastSortDirectionDiagnostic: ""
+    onPanelChanged: {
+        if (typeof panel.sortAscending !== "boolean")
+            return
+        const mode = sortModeName()
+        const legacyAscending = mode === "time" || mode === "size"
+                ? panel.sortReverse === true : panel.sortReverse !== true
+        if (legacyAscending === panel.sortAscending)
+            return
+        const state = mode + ":" + panel.sortReverse + ":" + panel.sortAscending
+        if (state !== lastSortDirectionDiagnostic) {
+            console.debug("[FIX:sort-direction] panel", panel.side,
+                          "mode", mode, "reverse", panel.sortReverse,
+                          "ascending", panel.sortAscending)
+            lastSortDirectionDiagnostic = state
+        }
     }
 
     function sortDirectionIconName() {
@@ -382,7 +402,8 @@ Rectangle {
             && String(galleryPanelContent.item.appliedPresentationMode)
                     === "details"
         height: showsGalleryDetails
-                ? Math.max(22, hostWindow.ch) + hostWindow.verticalContentSpacing : 0
+                ? Math.max(22, hostWindow.ch, hostWindow.typography.panelLineHeight)
+                  + hostWindow.verticalContentSpacing : 0
         visible: showsGalleryDetails
         color: "transparent"
         z: 2
@@ -400,6 +421,14 @@ Rectangle {
         }
 
         function columnX(index) {
+            const gallery = galleryPanelContent.item
+                    ? galleryPanelContent.item.galleryPanel : null
+            if (gallery && gallery.galleryLayout) {
+                const layout = gallery.galleryLayout
+                return layout.mapToItem(columnHeader,
+                    layout.paddingLeft
+                    + gallery.fileFieldPresentationHelper.detailsColumnX(index), 0).x
+            }
             var before = 0
             for (var i = 0; i < index; ++i)
                 before += Math.max(1, Number(columns[i].width || 1))
@@ -438,15 +467,16 @@ Rectangle {
 
                 Text {
                     id: columnHeaderTitle
+                    font.family: hostWindow.typography.effectivePanelFamily
                     objectName: "panelColumnHeaderText-" + index
                                 + "-" + Number(panel.side || 0)
                     anchors.fill: parent
-                    anchors.leftMargin: hostWindow.panelRowInnerSpacing
-                    anchors.rightMargin: hostWindow.panelRowInnerSpacing
+                    anchors.leftMargin: hostWindow.snapPx(hostWindow.panelColumnPadding)
+                    anchors.rightMargin: hostWindow.snapPx(hostWindow.panelColumnPadding)
                     text: hostWindow.cleanText(modelData.title)
                     color: modelData.sortable
                            ? hostWindow.chromeText : hostWindow.mutedText
-                    font.pixelSize: 12
+                    font.pixelSize: hostWindow.typography.effectivePanelSize
                     verticalAlignment: Text.AlignVCenter
                     horizontalAlignment: index > 0
                                          ? Text.AlignRight
@@ -463,9 +493,11 @@ Rectangle {
                 Rectangle {
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
+                    objectName: "panelHeaderVerticalSeparator-" + index + "-" + Number(panel.side || 0)
                     width: 1
                     height: Math.max(1, parent.height
-                                     - hostWindow.columnSeparatorVerticalMargin * 2)
+                                     - (hostWindow.headerVerticalSeparatorSpacing
+                                        ? hostWindow.columnSeparatorVerticalMargin * 2 : 0))
                     color: hostWindow.separatorColor
                     opacity: index < columnHeader.columns.length - 1
                              ? 0.65 : 0
@@ -502,9 +534,32 @@ Rectangle {
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.bottom: parent.bottom
+            objectName: "panelHeaderHorizontalSeparator-" + Number(panel.side || 0)
+            anchors.leftMargin: hostWindow.headerHorizontalSeparatorSpacing
+                                ? hostWindow.columnSeparatorVerticalMargin : 0
+            anchors.rightMargin: anchors.leftMargin
             height: 1
             color: hostWindow.separatorColor
             opacity: 0.7
+        }
+    }
+
+    Repeater {
+        model: hostWindow.showColumnSeparators && columnHeader.visible
+                ? Math.max(0, columnHeader.columns.length - 1) : 0
+        delegate: Rectangle {
+            required property int index
+            objectName: "panelColumnSeparator-" + index + "-" + Number(panel.side || 0)
+            x: columnHeader.x + columnHeader.columnX(index + 1) - width
+            readonly property real inset: hostWindow.columnSeparatorSpacing
+                                          ? hostWindow.columnSeparatorVerticalMargin : 0
+            y: galleryPanelContent.y + inset
+            width: hostWindow.separatorWidth
+            height: Math.max(0, galleryPanelContent.height
+                             - inset * 2)
+            color: hostWindow.separatorColor
+            opacity: 0.65
+            z: 2
         }
     }
 
@@ -589,6 +644,8 @@ Rectangle {
                 var commandLine = hostWindow.commandLineFrame()
                 return hostWindow.cleanText(commandLine.text).length > 0
             })
+            item.commandLineFocused = Qt.binding(
+                () => hostWindow.commandLineFrame().focused === true)
             if (typeof item.commandLineOwnsNavigation !== "undefined")
                 item.commandLineOwnsNavigation = Qt.binding(
                     () => hostWindow.commandLineFrame().ownsNavigation === true)
@@ -646,7 +703,7 @@ Rectangle {
                       ? "The unified panel renderer could not be loaded."
                       : "The unified panel renderer is unavailable in this build."
                 color: hostWindow.textColor
-                font.pixelSize: 13
+                font.pixelSize: (hostWindow ? hostWindow.uiTextSize(13) : 13)
                 horizontalAlignment: Text.AlignHCenter
                 wrapMode: Text.Wrap
             }
@@ -711,7 +768,7 @@ Rectangle {
         FontMetrics {
             id: fastFindFontMetrics
             font.family: hostWindow.uiFontFamily
-            font.pixelSize: 13
+            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(13) : 13)
         }
 
         HostPixelAlignedImage {
@@ -740,7 +797,7 @@ Rectangle {
             text: hostWindow.cleanText(panel.fastFindText)
             color: hostWindow.textColor
             font.family: hostWindow.uiFontFamily
-            font.pixelSize: 13
+            font.pixelSize: (hostWindow ? hostWindow.uiTextSize(13) : 13)
             elide: Text.ElideLeft
             verticalAlignment: Text.AlignVCenter
             transform: Translate {
@@ -814,7 +871,6 @@ Rectangle {
         anchors.margins: hostWindow.snapPx(8)
         width: Math.min(implicitWidth, Math.max(1, parent.width - 2 * anchors.margins))
         height: implicitHeight
-        visible: !panelRoot.viewerVisible
         z: 3
     }
 }

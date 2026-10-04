@@ -528,6 +528,7 @@ void F4IconProviderTests::chromeLucideRoutesRenderNamedResources()
         QStringLiteral("chevron-down"),
         QStringLiteral("chevron-up"),
         QStringLiteral("chevron-right"),
+        QStringLiteral("slash"),
         QStringLiteral("circle-question-mark"),
         QStringLiteral("clock-3"),
         QStringLiteral("cloud"),
@@ -738,6 +739,7 @@ void F4IconProviderTests::lucideFramebufferMatchesDirectSvgRender()
     const QList<QPair<QString, int>> cases{
         {QStringLiteral("check"), 12},
         {QStringLiteral("chevron-right"), 12},
+        {QStringLiteral("slash"), 12},
         {QStringLiteral("chevron-down"), 11},
         {QStringLiteral("chevron-up"), 11},
         {QStringLiteral("arrow-up"), 14},
