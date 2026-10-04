@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -380,6 +381,129 @@ func TestCanceledRequestLeavesBusyQueueImmediately(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("latest request did not finish")
+	}
+}
+
+func TestCancelledBinaryResponsePreservesSharedSession(t *testing.T) {
+	for _, stage := range []string{"header", "payload", "header-timeout", "payload-timeout"} {
+		t.Run(stage, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				clientConn, peerConn := net.Pipe()
+				defer clientConn.Close()
+				defer peerConn.Close()
+				if err := peerConn.SetDeadline(time.Now().Add(time.Minute)); err != nil {
+					t.Fatal(err)
+				}
+				sess := NewSession(clientConn, clientConn, clientConn)
+				ctx, cancel := context.WithCancel(t.Context())
+				wantErr := context.Canceled
+				if strings.HasSuffix(stage, "-timeout") {
+					cancel()
+					ctx, cancel = context.WithTimeout(t.Context(), time.Second)
+					wantErr = context.DeadlineExceeded
+				}
+				defer cancel()
+				previewDone := make(chan error, 1)
+				go func() {
+					_, err := sess.ExecData(ctx, "read")
+					previewDone <- err
+				}()
+				peerReader := bufio.NewReader(peerConn)
+				request, err := peerReader.ReadString('\n')
+				if err != nil {
+					t.Fatal(err)
+				}
+				id := strings.Fields(request)[0]
+				// Binary bytes may resemble framing; cancellation must never
+				// interpret a terminator inside a payload as the real boundary.
+				payload := "\n." + sess.Token() + " " + id + " ok\n#invalid\nvideo bytes"
+				header := fmt.Sprintf("#%d\n", len(payload))
+				if strings.HasPrefix(stage, "payload") {
+					if _, err := io.WriteString(peerConn, header+payload[:1]); err != nil {
+						t.Fatal(err)
+					}
+				}
+				downloadDone := make(chan error, 1)
+				go func() {
+					response, err := sess.ExecData(t.Context(), "read")
+					if err == nil && string(response.Data) != "movie" {
+						err = fmt.Errorf("download data = %q, want movie", response.Data)
+					}
+					downloadDone <- err
+				}()
+				synctest.Wait()
+				if wantErr == context.DeadlineExceeded {
+					time.Sleep(time.Second)
+				} else {
+					cancel() // Switching away cancels a preview, not the download.
+				}
+				synctest.Wait()
+				remainder := header + payload
+				if strings.HasPrefix(stage, "payload") {
+					remainder = payload[1:]
+				}
+				if _, err := fmt.Fprintf(peerConn, "%s.%s %s ok\n", remainder, sess.Token(), id); err != nil {
+					t.Fatalf("cancelled preview closed shared transport: %v", err)
+				}
+				if err := <-previewDone; !errors.Is(err, wantErr) {
+					t.Fatalf("preview error = %v, want %v", err, wantErr)
+				}
+				request, err = peerReader.ReadString('\n')
+				if err != nil {
+					t.Fatalf("queued download lost its session: %v", err)
+				}
+				id = strings.Fields(request)[0]
+				if _, err := fmt.Fprintf(peerConn, "#5\nmovie.%s %s ok\n", sess.Token(), id); err != nil {
+					t.Fatal(err)
+				}
+				if err := <-downloadDone; err != nil {
+					t.Fatalf("queued download after tab switch: %v", err)
+				}
+			})
+		})
+	}
+}
+
+func TestCancelledBinaryDrainStopsOnTimeoutOrClose(t *testing.T) {
+	for _, stop := range []string{"timeout", "close"} {
+		t.Run(stop, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				clientConn, peerConn := net.Pipe()
+				defer clientConn.Close()
+				defer peerConn.Close()
+				sess := NewSession(clientConn, clientConn, clientConn)
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				done := make(chan error, 1)
+				go func() {
+					_, err := sess.ExecData(ctx, "read")
+					done <- err
+				}()
+				if _, err := bufio.NewReader(peerConn).ReadString('\n'); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := io.WriteString(peerConn, "#16\nx"); err != nil {
+					t.Fatal(err)
+				}
+				synctest.Wait()
+				cancel()
+				synctest.Wait()
+				if stop == "close" {
+					if err := sess.Close(); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					time.Sleep(DrainAfterCancelTimeout)
+				}
+				synctest.Wait()
+				if err := <-done; !errors.Is(err, ErrBroken) {
+					t.Fatalf("unfinished frame = %v, want ErrBroken", err)
+				}
+				if err := sess.Noop(t.Context()); !errors.Is(err, ErrBroken) {
+					t.Fatalf("unfinished stream reused: %v", err)
+				}
+			})
+		})
 	}
 }
 

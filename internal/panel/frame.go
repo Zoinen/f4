@@ -4799,7 +4799,7 @@ func (pf *PanelsFrame) RunProgressTaskAfter(delay time.Duration, title, startMsg
 // A nil lifetime preserves the ordinary progress-task caller contract.
 func (pf *PanelsFrame) RunProgressTaskAfterContext(lifetime context.Context, delay time.Duration, title, startMsg string, forked bool, worker func(ctx context.Context, update func(msg string, percent int)) error, onComplete func(err error)) {
 	presentationAllowed := func() bool { return lifetime == nil || lifetime.Err() == nil }
-	dlg := vtui.NewCenteredDialog(50, 12, title)
+	dlg := &progressTaskDialog{Window: vtui.NewCenteredDialog(50, 12, title)}
 	dlg.AttentionSuppressed = true
 
 	lbl := vtui.NewText(0, 0, startMsg, 0)
@@ -5415,7 +5415,7 @@ func sameRemotePTYBackend(left, right terminal.PtyBackend) bool {
 }
 
 func (pf *PanelsFrame) CurrentRemotePTYInterruptTarget() *remotePTYInterruptTarget {
-	if pf == nil || pf.Closed || !pf.ShowPanels {
+	if pf == nil || pf.Closed {
 		return nil
 	}
 	fsp := pf.GetActivePanel()
@@ -5453,6 +5453,7 @@ func (pf *PanelsFrame) interruptRemotePTY(expected *remotePTYInterruptTarget) bo
 		return false
 	}
 	_, _ = pf.WritePTY(target.Pty, []byte(target.sequence))
+	vtui.DebugLog("[FIX:remote-enter] interrupted remote PTY, panels=%v", pf.ShowPanels)
 	return true
 }
 

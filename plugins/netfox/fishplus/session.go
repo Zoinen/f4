@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
@@ -654,6 +655,17 @@ func (s *Session) execFull(ctx context.Context, binary bool, cmd string, args, p
 }
 
 func (s *Session) readResponse(ctx context.Context, id uint64, binary bool) (*Response, error) {
+	readCtx := ctx
+	if _, hasDeadline := ctx.Deadline(); hasDeadline && id != 0 {
+		// A preview's short deadline is not evidence of a dead transport.
+		// Treat it as abandonment of this response, allowing the same bounded
+		// drain as explicit cancellation, but report the original ctx error.
+		var cancel context.CancelFunc
+		readCtx, cancel = context.WithCancel(context.WithoutCancel(ctx))
+		stop := context.AfterFunc(ctx, cancel)
+		defer stop()
+		defer cancel()
+	}
 	prefix := "." + s.token + " " + strconv.FormatUint(id, 10) + " "
 	resp := &Response{}
 	for {
@@ -667,7 +679,7 @@ func (s *Session) readResponse(ctx context.Context, id uint64, binary bool) (*Re
 			}
 			return nil, err
 		}
-		line, err := s.readLineCtx(ctx)
+		line, err := s.readLineCtx(readCtx)
 		if err != nil {
 			s.broken.Store(true)
 			return nil, err
@@ -678,6 +690,23 @@ func (s *Session) readResponse(ctx context.Context, id uint64, binary bool) (*Re
 		// session survives and can be reused for the next request.
 		if ctx.Err() != nil {
 			if !strings.HasPrefix(line, prefix) {
+				// A header already consumed from the wire belongs to this
+				// response. Drain its exact payload before looking for lines;
+				// binary bytes can themselves resemble the terminator.
+				if binary && strings.HasPrefix(line, "#") {
+					n, convErr := strconv.Atoi(line[1:])
+					if convErr != nil || n < 0 || n > MaxFrameLen {
+						s.broken.Store(true)
+						return nil, ctx.Err()
+					}
+					dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), DrainAfterCancelTimeout)
+					err := s.copyNCtx(dctx, int64(n))
+					cancel()
+					if err != nil {
+						s.broken.Store(true)
+						return nil, ctx.Err()
+					}
+				}
 				if derr := s.drainToTerminator(ctx, prefix, binary); derr != nil {
 					s.broken.Store(true)
 				}
@@ -715,7 +744,7 @@ func (s *Session) readResponse(ctx context.Context, id uint64, binary bool) (*Re
 				return nil, fmt.Errorf("fishplus: bad data frame header %q", line)
 			}
 			buf := make([]byte, n)
-			if err := s.readFullCtx(ctx, buf); err != nil {
+			if err := s.readFullCtx(readCtx, buf); err != nil {
 				s.broken.Store(true)
 				return nil, err
 			}
@@ -906,6 +935,21 @@ func (s *Session) readFullCtx(ctx context.Context, buf []byte) error {
 	case r := <-ch:
 		return r.err
 	case <-rctx.Done():
+		if rctx.Err() == context.Canceled {
+			// Keep ownership of the in-flight reader until it consumes the
+			// entire frame. readResponse then drains the remaining response
+			// and returns cancellation without sacrificing other callers.
+			slog.Debug("[FIX:fishplus-cancel] finishing cancelled binary frame", "bytes", len(buf))
+			timer := time.NewTimer(DrainAfterCancelTimeout)
+			defer timer.Stop()
+			select {
+			case r := <-ch:
+				return r.err
+			case <-timer.C:
+				slog.Debug("[FIX:fishplus-cancel] binary drain timed out; closing transport")
+			case <-s.closeCh:
+			}
+		}
 		s.poisonAndClose()
 		<-ch
 		if rctx.Err() == context.Canceled || own {

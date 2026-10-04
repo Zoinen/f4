@@ -455,6 +455,24 @@ Development launches from automation should remove harness-only `NO_COLOR` when
 checking colored applications such as Rich. `VTUI_DEBUG` records capability
 normalization with a `[FIX]` prefix.
 
+## Remote file activation
+
+Enter on a video in a remote or archive filesystem downloads a private local
+snapshot and opens it with the current computer's desktop association. This
+route precedes executable-bit detection because Windows FISH+ synthesizes 0755
+permissions for ordinary writable files, including MP4 videos. Download progress
+supports Cancel, Escape and Ctrl+C; cancellation removes the partial snapshot.
+Successful snapshots remain in the system temporary directory for normal system
+cleanup, since desktop launchers can return before their player opens the file.
+The local snapshot is read-only from the remote filesystem's perspective: edits
+are not uploaded.
+
+Windows executable activation uses the remote VFS's `PtyShellIntegration`
+formatter and reported command dialect. Windows peers receive cmd syntax and
+prompt-driven completion; POSIX peers retain their managed OSC C/D wrapper.
+Remote Ctrl+C is
+routed ahead of global hotkeys with either panels or the terminal visible.
+
 ## Command-line clipboard paste
 
 Clipboard paste into the command line reaches the edit control as a bracketed
