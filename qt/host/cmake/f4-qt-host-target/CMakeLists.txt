@@ -271,6 +271,9 @@ if(F4_QT_STATIC)
     # QMultimediaQuickModule initializer needed by Q_IMPORT_PLUGIN. Select
     # the preserved plugin export before importing the rest of the QML graph.
     if(F4_QT_USES_FFMPEG_BACKEND)
+      if(TARGET Qt6::MultimediaQuick)
+        list(APPEND F4_REQUIRED_STATIC_QML_PLUGINS Qt6::MultimediaQuick)
+      endif()
       if(TARGET Qt6::quickmultimedia)
         list(APPEND F4_REQUIRED_STATIC_QML_PLUGINS Qt6::quickmultimedia)
       elseif(EXISTS
