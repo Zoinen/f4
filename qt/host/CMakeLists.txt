@@ -178,11 +178,11 @@ endif()
 set(F4_ZOINGALLERY_BINARY_DIR
   "${CMAKE_CURRENT_BINARY_DIR}/ZoinGallery")
 
-if(F4_QT_STATIC AND F4_QT_USES_FFMPEG_BACKEND
+if(F4_QT_USES_FFMPEG_BACKEND
    AND NOT TARGET Qt6::MultimediaPrivate)
   # ZoinGallery asks for this target while its subdirectory is configured.
-  # Conan's static Qt package provides the Multimedia archive and private
-  # headers, but does not export the native Qt6::MultimediaPrivate facade.
+  # Conan's Qt package provides the Multimedia archive and private headers,
+  # but does not export the native Qt6::MultimediaPrivate facade.
   # Create the compatible interface before add_subdirectory() so Gallery's
   # video-playback target can resolve it during its own configure step.
   set(F4_QT_MULTIMEDIA_PACKAGE_ROOT "")
