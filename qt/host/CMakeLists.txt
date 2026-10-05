@@ -630,6 +630,41 @@ if(F4_PORTABLE_STATIC AND UNIX AND NOT APPLE)
 endif()
 
 if(F4_QT_STATIC)
+  # ZoinGallery's targets live in a subdirectory.  Adding these source files
+  # directly to those targets makes CMake encode the absolute checkout path in
+  # each MSVC/Ninja object path; the long path is then truncated by link.exe on
+  # the Windows amd64 runner.  Compile the small import units once at the
+  # top-level and inject their objects into every static test instead.
+  add_library(F4StaticQtTestPluginImports OBJECT
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/StaticQtTestPluginImports.cpp")
+  add_library(F4StaticQtImagePluginImports OBJECT
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/StaticQtImagePluginImports.cpp")
+  add_library(F4StaticQmlPluginImports OBJECT
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/StaticQmlPluginImports.cpp")
+  foreach(F4_STATIC_IMPORT_TARGET IN ITEMS
+      F4StaticQtTestPluginImports
+      F4StaticQtImagePluginImports
+      F4StaticQmlPluginImports)
+    target_link_libraries(${F4_STATIC_IMPORT_TARGET} PRIVATE Qt6::Core)
+  endforeach()
+  if(F4_QT_NEEDS_FFMPEG)
+    target_compile_definitions(F4StaticQtTestPluginImports PRIVATE
+      F4_QT_USE_FFMPEG_PLUGIN=1)
+  elseif(F4_QT_MEDIA_PLUGIN_TARGET STREQUAL "Qt6::QWindowsMediaPlugin")
+    target_compile_definitions(F4StaticQtTestPluginImports PRIVATE
+      F4_QT_USE_WINDOWS_MEDIA_PLUGIN=1)
+  endif()
+  if(F4_QT_USES_FFMPEG_BACKEND)
+    target_compile_definitions(F4StaticQmlPluginImports PRIVATE
+      F4_QT_HAS_MULTIMEDIA_QML=1)
+  endif()
+  if(TARGET Qt6::QJpegPlugin)
+    target_compile_definitions(F4StaticQtImagePluginImports PRIVATE
+      F4_QT_HAS_JPEG_PLUGIN=1)
+  endif()
+endif()
+
+if(F4_QT_STATIC)
   # Conan's imported Qt facade does not preserve the Svg dependency cycle on
   # GNU ld.  Use the package aliases here, as the generated Qt6 targets can
   # otherwise expand LINK_GROUP to an empty group.
@@ -651,7 +686,18 @@ if(F4_QT_STATIC)
   # explicitly whenever the video option is enabled.
   set(F4_QT_STATIC_VIDEO_LINKS)
   if(F4_ENABLE_VIDEO_THUMBNAILS)
-    list(APPEND F4_QT_STATIC_VIDEO_LINKS Qt6::BundledTLSF)
+    if(MSVC)
+      list(APPEND F4_QT_STATIC_VIDEO_LINKS
+        Qt6::Multimedia
+        Qt6::BundledTLSF)
+    else()
+      # GNU ld scans an archive only once. QtMultimedia's archive references
+      # TLSF, while Conan's interface may place BundledTLSF before it. Rescan
+      # both archives at the test-link site so every static test gets the same
+      # closure as the production host.
+      list(APPEND F4_QT_STATIC_VIDEO_LINKS
+        "$<LINK_GROUP:RESCAN,Qt6::Multimedia,Qt6::BundledTLSF>")
+    endif()
     if(WIN32)
       list(APPEND F4_QT_STATIC_VIDEO_LINKS
         avrt
@@ -686,9 +732,9 @@ if(F4_QT_STATIC)
       ZoinGalleryStandaloneShellSmokeTests)
     if(TARGET ${F4_ZOIN_STATIC_QML_TEST_TARGET})
       target_sources(${F4_ZOIN_STATIC_QML_TEST_TARGET} PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/tests/StaticQtTestPluginImports.cpp"
-        "${CMAKE_CURRENT_SOURCE_DIR}/tests/StaticQtImagePluginImports.cpp"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/StaticQmlPluginImports.cpp")
+        $<TARGET_OBJECTS:F4StaticQtTestPluginImports>
+        $<TARGET_OBJECTS:F4StaticQtImagePluginImports>
+        $<TARGET_OBJECTS:F4StaticQmlPluginImports>)
       if(TARGET Qt6::QJpegPlugin)
         target_compile_definitions(${F4_ZOIN_STATIC_QML_TEST_TARGET} PRIVATE
           F4_QT_HAS_JPEG_PLUGIN=1)
@@ -761,8 +807,8 @@ if(F4_QT_STATIC)
       ZoinGalleryPanelControllerTests)
     if(TARGET ${F4_ZOIN_STATIC_CORE_TEST_TARGET})
       target_sources(${F4_ZOIN_STATIC_CORE_TEST_TARGET} PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/tests/StaticQtTestPluginImports.cpp"
-        "${CMAKE_CURRENT_SOURCE_DIR}/tests/StaticQtImagePluginImports.cpp")
+        $<TARGET_OBJECTS:F4StaticQtTestPluginImports>
+        $<TARGET_OBJECTS:F4StaticQtImagePluginImports>)
       if(TARGET Qt6::QJpegPlugin)
         target_compile_definitions(${F4_ZOIN_STATIC_CORE_TEST_TARGET} PRIVATE
           F4_QT_HAS_JPEG_PLUGIN=1)
@@ -1097,7 +1143,7 @@ if(BUILD_TESTING)
   function(f4_link_static_test_platform target)
     if(F4_QT_STATIC)
       target_sources(${target} PRIVATE
-        tests/StaticQtTestPluginImports.cpp)
+        $<TARGET_OBJECTS:F4StaticQtTestPluginImports>)
       target_link_libraries(${target} PRIVATE
         Qt6::QOffscreenIntegrationPlugin)
       if(F4_ENABLE_VIDEO_THUMBNAILS AND F4_QT_MEDIA_PLUGIN_TARGET)
@@ -1133,7 +1179,7 @@ if(BUILD_TESTING)
   function(f4_link_static_test_qml_plugins target)
     if(F4_QT_STATIC)
       target_sources(${target} PRIVATE
-        src/StaticQmlPluginImports.cpp)
+        $<TARGET_OBJECTS:F4StaticQmlPluginImports>)
       if(F4_QT_USES_FFMPEG_BACKEND)
         target_compile_definitions(${target} PRIVATE
           F4_QT_HAS_MULTIMEDIA_QML=1)
@@ -1156,7 +1202,7 @@ if(BUILD_TESTING)
   function(f4_link_static_test_image_plugins target)
     if(F4_QT_STATIC)
       target_sources(${target} PRIVATE
-        tests/StaticQtImagePluginImports.cpp)
+        $<TARGET_OBJECTS:F4StaticQtImagePluginImports>)
       if(TARGET Qt6::QJpegPlugin)
         target_compile_definitions(${target} PRIVATE
           F4_QT_HAS_JPEG_PLUGIN=1)
