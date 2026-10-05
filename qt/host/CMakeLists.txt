@@ -208,12 +208,21 @@ if(F4_QT_USES_FFMPEG_BACKEND
       "Static Qt Multimedia private headers are missing: "
       "${F4_QT_MULTIMEDIA_PRIVATE_INCLUDE_DIR}/QtMultimedia/private")
   endif()
+  set(F4_QT_MULTIMEDIA_PRIVATE_LINKS
+    Qt6::Multimedia
+    Qt6::Core
+    Qt6::Gui
+    Qt6::Concurrent
+    Qt6::Network)
+  if(TARGET Qt6::BundledTLSF)
+    list(APPEND F4_QT_MULTIMEDIA_PRIVATE_LINKS Qt6::BundledTLSF)
+  endif()
   add_library(Qt6::MultimediaPrivate INTERFACE IMPORTED GLOBAL)
   set_target_properties(Qt6::MultimediaPrivate PROPERTIES
     INTERFACE_INCLUDE_DIRECTORIES
       "${F4_QT_MULTIMEDIA_PRIVATE_INCLUDE_DIR}"
     INTERFACE_LINK_LIBRARIES
-      "Qt6::Multimedia;Qt6::BundledTLSF;Qt6::Core;Qt6::Gui;Qt6::Concurrent;Qt6::Network")
+      "${F4_QT_MULTIMEDIA_PRIVATE_LINKS}")
 endif()
 
 if(F4_PORTABLE_STATIC AND UNIX AND NOT APPLE)
