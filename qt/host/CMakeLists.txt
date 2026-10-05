@@ -178,51 +178,64 @@ endif()
 set(F4_ZOINGALLERY_BINARY_DIR
   "${CMAKE_CURRENT_BINARY_DIR}/ZoinGallery")
 
-if(F4_QT_USES_FFMPEG_BACKEND
-   AND NOT TARGET Qt6::MultimediaPrivate)
+if(F4_QT_USES_FFMPEG_BACKEND)
   # ZoinGallery asks for this target while its subdirectory is configured.
   # Conan's Qt package provides the Multimedia archive and private headers,
   # but does not export the native Qt6::MultimediaPrivate facade.
   # Create the compatible interface before add_subdirectory() so Gallery's
   # video-playback target can resolve it during its own configure step.
-  set(F4_QT_MULTIMEDIA_PACKAGE_ROOT "")
-  foreach(F4_QT_PACKAGE_CONFIG RELEASE RELWITHDEBINFO MINSIZEREL DEBUG)
-    if(DEFINED qt_PACKAGE_FOLDER_${F4_QT_PACKAGE_CONFIG}
-       AND EXISTS "${qt_PACKAGE_FOLDER_${F4_QT_PACKAGE_CONFIG}}/include/QtMultimedia")
-      set(F4_QT_MULTIMEDIA_PACKAGE_ROOT
-        "${qt_PACKAGE_FOLDER_${F4_QT_PACKAGE_CONFIG}}")
-      break()
+  if(NOT TARGET Qt6::MultimediaPrivate)
+    set(F4_QT_MULTIMEDIA_PACKAGE_ROOT "")
+    foreach(F4_QT_PACKAGE_CONFIG RELEASE RELWITHDEBINFO MINSIZEREL DEBUG)
+      if(DEFINED qt_PACKAGE_FOLDER_${F4_QT_PACKAGE_CONFIG}
+         AND EXISTS
+           "${qt_PACKAGE_FOLDER_${F4_QT_PACKAGE_CONFIG}}/include/QtMultimedia")
+        set(F4_QT_MULTIMEDIA_PACKAGE_ROOT
+          "${qt_PACKAGE_FOLDER_${F4_QT_PACKAGE_CONFIG}}")
+        break()
+      endif()
+    endforeach()
+    if(NOT F4_QT_MULTIMEDIA_PACKAGE_ROOT)
+      message(FATAL_ERROR
+        "Qt Multimedia is enabled, but Conan's Qt package folder could "
+        "not be located for its private headers")
     endif()
-  endforeach()
-  if(NOT F4_QT_MULTIMEDIA_PACKAGE_ROOT)
-    message(FATAL_ERROR
-      "Static Qt Multimedia is enabled, but Conan's Qt package folder "
-      "could not be located for its private headers")
+
+    set(F4_QT_MULTIMEDIA_PRIVATE_INCLUDE_DIR
+      "${F4_QT_MULTIMEDIA_PACKAGE_ROOT}/include/QtMultimedia/${Qt6_VERSION}")
+    if(NOT EXISTS
+       "${F4_QT_MULTIMEDIA_PRIVATE_INCLUDE_DIR}/QtMultimedia/private")
+      message(FATAL_ERROR
+        "Qt Multimedia private headers are missing: "
+        "${F4_QT_MULTIMEDIA_PRIVATE_INCLUDE_DIR}/QtMultimedia/private")
+    endif()
+    set(F4_QT_MULTIMEDIA_PRIVATE_LINKS
+      Qt6::Multimedia
+      Qt6::Core
+      Qt6::Gui
+      Qt6::Concurrent
+      Qt6::Network)
+    if(TARGET Qt6::BundledTLSF)
+      list(APPEND F4_QT_MULTIMEDIA_PRIVATE_LINKS Qt6::BundledTLSF)
+    endif()
+    add_library(Qt6::MultimediaPrivate INTERFACE IMPORTED GLOBAL)
+    set_target_properties(Qt6::MultimediaPrivate PROPERTIES
+      INTERFACE_INCLUDE_DIRECTORIES
+        "${F4_QT_MULTIMEDIA_PRIVATE_INCLUDE_DIR}"
+      INTERFACE_LINK_LIBRARIES
+        "${F4_QT_MULTIMEDIA_PRIVATE_LINKS}")
   endif()
 
-  set(F4_QT_MULTIMEDIA_PRIVATE_INCLUDE_DIR
-    "${F4_QT_MULTIMEDIA_PACKAGE_ROOT}/include/QtMultimedia/${Qt6_VERSION}")
-  if(NOT EXISTS
-     "${F4_QT_MULTIMEDIA_PRIVATE_INCLUDE_DIR}/QtMultimedia/private")
-    message(FATAL_ERROR
-      "Static Qt Multimedia private headers are missing: "
-      "${F4_QT_MULTIMEDIA_PRIVATE_INCLUDE_DIR}/QtMultimedia/private")
+  if(NOT TARGET Qt6::MultimediaQuickPrivate)
+    set(F4_QT_MULTIMEDIA_QUICK_PRIVATE_LINKS Qt6::MultimediaPrivate)
+    if(TARGET Qt6::QuickPrivate)
+      list(APPEND F4_QT_MULTIMEDIA_QUICK_PRIVATE_LINKS Qt6::QuickPrivate)
+    endif()
+    add_library(Qt6::MultimediaQuickPrivate INTERFACE IMPORTED GLOBAL)
+    set_target_properties(Qt6::MultimediaQuickPrivate PROPERTIES
+      INTERFACE_LINK_LIBRARIES
+        "${F4_QT_MULTIMEDIA_QUICK_PRIVATE_LINKS}")
   endif()
-  set(F4_QT_MULTIMEDIA_PRIVATE_LINKS
-    Qt6::Multimedia
-    Qt6::Core
-    Qt6::Gui
-    Qt6::Concurrent
-    Qt6::Network)
-  if(TARGET Qt6::BundledTLSF)
-    list(APPEND F4_QT_MULTIMEDIA_PRIVATE_LINKS Qt6::BundledTLSF)
-  endif()
-  add_library(Qt6::MultimediaPrivate INTERFACE IMPORTED GLOBAL)
-  set_target_properties(Qt6::MultimediaPrivate PROPERTIES
-    INTERFACE_INCLUDE_DIRECTORIES
-      "${F4_QT_MULTIMEDIA_PRIVATE_INCLUDE_DIR}"
-    INTERFACE_LINK_LIBRARIES
-      "${F4_QT_MULTIMEDIA_PRIVATE_LINKS}")
 endif()
 
 if(F4_PORTABLE_STATIC AND UNIX AND NOT APPLE)
