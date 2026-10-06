@@ -1172,11 +1172,23 @@ if(BUILD_TESTING)
 
   function(f4_link_static_test_platform target)
     if(F4_QT_STATIC)
-      target_sources(${target} PRIVATE
-        $<TARGET_OBJECTS:${F4_STATIC_QT_TEST_IMPORT_TARGET}>)
+      set(F4_STATIC_TEST_MEDIA OFF)
+      if(ARGC GREATER 1)
+        if(ARGV1)
+          set(F4_STATIC_TEST_MEDIA ON)
+        endif()
+      endif()
+      if(F4_STATIC_TEST_MEDIA)
+        target_sources(${target} PRIVATE
+          $<TARGET_OBJECTS:${F4_STATIC_QT_TEST_IMPORT_TARGET}>)
+      else()
+        target_sources(${target} PRIVATE
+          $<TARGET_OBJECTS:F4StaticQtTestPluginImports>)
+      endif()
       target_link_libraries(${target} PRIVATE
         Qt6::QOffscreenIntegrationPlugin)
-      if(F4_ENABLE_VIDEO_THUMBNAILS AND F4_QT_MEDIA_PLUGIN_TARGET)
+      if(F4_STATIC_TEST_MEDIA AND F4_ENABLE_VIDEO_THUMBNAILS
+         AND F4_QT_MEDIA_PLUGIN_TARGET)
         target_link_libraries(${target} PRIVATE
           ${F4_QT_MEDIA_PLUGIN_TARGET}
           ${F4_QFFMPEG_PLUGIN_TARGET}
@@ -1580,7 +1592,7 @@ if(BUILD_TESTING)
     ZoinGallery::Qml
   )
   f4_link_static_zoingallery_plugin(F4QuickViewSurfaceTests)
-  f4_link_static_test_platform(F4QuickViewSurfaceTests)
+  f4_link_static_test_platform(F4QuickViewSurfaceTests TRUE)
   f4_link_static_test_qml_plugins(F4QuickViewSurfaceTests)
   f4_link_static_test_image_plugins(F4QuickViewSurfaceTests)
   if(F4_QT_USES_FFMPEG_BACKEND)
