@@ -674,8 +674,6 @@ if(F4_QT_STATIC)
   endif()
   set(F4_REQUIRED_STATIC_QML_TEST_PLUGINS
     ${F4_REQUIRED_STATIC_QML_PLUGINS})
-  list(REMOVE_ITEM F4_REQUIRED_STATIC_QML_TEST_PLUGINS
-    Qt6::MultimediaQuick)
 endif()
 
 if(F4_QT_STATIC)
@@ -709,17 +707,11 @@ if(F4_QT_STATIC)
         Qt6::BundledTLSF)
     else()
       # GNU ld scans an archive only once. QtMultimedia's archive references
-      # TLSF, while MultimediaQuick also references symbols from Multimedia.
-      # Prefer Conan's component targets inside the group: CMake otherwise
-      # de-duplicates the Qt facade against its transitive interface and emits
-      # a group containing only BundledTLSF.
+      # TLSF. MultimediaQuick is intentionally kept outside the group: its
+      # Conan dependency target points back to Qt6::Multimedia, and putting it
+      # in the group creates a CMake inter-target dependency cycle. The group
+      # is emitted after MultimediaQuick, so it still closes those references.
       set(F4_QT_STATIC_VIDEO_GROUP_TARGETS)
-      if(TARGET CONAN_LIB::qt_Qt6_MultimediaQuick_Qt6MultimediaQuick_RELEASE)
-        list(APPEND F4_QT_STATIC_VIDEO_GROUP_TARGETS
-          CONAN_LIB::qt_Qt6_MultimediaQuick_Qt6MultimediaQuick_RELEASE)
-      elseif(TARGET Qt6::MultimediaQuick)
-        list(APPEND F4_QT_STATIC_VIDEO_GROUP_TARGETS Qt6::MultimediaQuick)
-      endif()
       if(TARGET CONAN_LIB::qt_Qt6_Multimedia_Qt6Multimedia_RELEASE)
         list(APPEND F4_QT_STATIC_VIDEO_GROUP_TARGETS
           CONAN_LIB::qt_Qt6_Multimedia_Qt6Multimedia_RELEASE)
