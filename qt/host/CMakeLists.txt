@@ -641,6 +641,7 @@ if(F4_QT_STATIC)
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/StaticQtImagePluginImports.cpp")
   add_library(F4StaticQmlPluginImports OBJECT
     "${CMAKE_CURRENT_SOURCE_DIR}/src/StaticQmlPluginImports.cpp")
+  set(F4_STATIC_QT_TEST_IMPORT_TARGET F4StaticQtTestPluginImports)
   foreach(F4_STATIC_IMPORT_TARGET IN ITEMS
       F4StaticQtTestPluginImports
       F4StaticQtImagePluginImports
@@ -648,11 +649,20 @@ if(F4_QT_STATIC)
     target_link_libraries(${F4_STATIC_IMPORT_TARGET} PRIVATE Qt6::Core)
   endforeach()
   if(F4_QT_NEEDS_FFMPEG)
-    target_compile_definitions(F4StaticQtTestPluginImports PRIVATE
+    add_library(F4StaticQtTestPluginImportsFfmpeg OBJECT
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/StaticQtTestPluginImports.cpp")
+    target_link_libraries(F4StaticQtTestPluginImportsFfmpeg PRIVATE Qt6::Core)
+    target_compile_definitions(F4StaticQtTestPluginImportsFfmpeg PRIVATE
       F4_QT_USE_FFMPEG_PLUGIN=1)
+    set(F4_STATIC_QT_TEST_IMPORT_TARGET F4StaticQtTestPluginImportsFfmpeg)
   elseif(F4_QT_MEDIA_PLUGIN_TARGET STREQUAL "Qt6::QWindowsMediaPlugin")
-    target_compile_definitions(F4StaticQtTestPluginImports PRIVATE
+    add_library(F4StaticQtTestPluginImportsWindowsMedia OBJECT
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/StaticQtTestPluginImports.cpp")
+    target_link_libraries(F4StaticQtTestPluginImportsWindowsMedia PRIVATE
+      Qt6::Core)
+    target_compile_definitions(F4StaticQtTestPluginImportsWindowsMedia PRIVATE
       F4_QT_USE_WINDOWS_MEDIA_PLUGIN=1)
+    set(F4_STATIC_QT_TEST_IMPORT_TARGET F4StaticQtTestPluginImportsWindowsMedia)
   endif()
   if(F4_QT_USES_FFMPEG_BACKEND)
     target_compile_definitions(F4StaticQmlPluginImports PRIVATE
@@ -662,6 +672,10 @@ if(F4_QT_STATIC)
     target_compile_definitions(F4StaticQtImagePluginImports PRIVATE
       F4_QT_HAS_JPEG_PLUGIN=1)
   endif()
+  set(F4_REQUIRED_STATIC_QML_TEST_PLUGINS
+    ${F4_REQUIRED_STATIC_QML_PLUGINS})
+  list(REMOVE_ITEM F4_REQUIRED_STATIC_QML_TEST_PLUGINS
+    Qt6::MultimediaQuick)
 endif()
 
 if(F4_QT_STATIC)
@@ -687,16 +701,41 @@ if(F4_QT_STATIC)
   set(F4_QT_STATIC_VIDEO_LINKS)
   if(F4_ENABLE_VIDEO_THUMBNAILS)
     if(MSVC)
+      if(TARGET Qt6::MultimediaQuick)
+        list(APPEND F4_QT_STATIC_VIDEO_LINKS Qt6::MultimediaQuick)
+      endif()
       list(APPEND F4_QT_STATIC_VIDEO_LINKS
         Qt6::Multimedia
         Qt6::BundledTLSF)
     else()
       # GNU ld scans an archive only once. QtMultimedia's archive references
-      # TLSF, while Conan's interface may place BundledTLSF before it. Rescan
-      # both archives at the test-link site so every static test gets the same
-      # closure as the production host.
+      # TLSF, while MultimediaQuick also references symbols from Multimedia.
+      # Prefer Conan's component targets inside the group: CMake otherwise
+      # de-duplicates the Qt facade against its transitive interface and emits
+      # a group containing only BundledTLSF.
+      set(F4_QT_STATIC_VIDEO_GROUP_TARGETS)
+      if(TARGET CONAN_LIB::qt_Qt6_MultimediaQuick_Qt6MultimediaQuick_RELEASE)
+        list(APPEND F4_QT_STATIC_VIDEO_GROUP_TARGETS
+          CONAN_LIB::qt_Qt6_MultimediaQuick_Qt6MultimediaQuick_RELEASE)
+      elseif(TARGET Qt6::MultimediaQuick)
+        list(APPEND F4_QT_STATIC_VIDEO_GROUP_TARGETS Qt6::MultimediaQuick)
+      endif()
+      if(TARGET CONAN_LIB::qt_Qt6_Multimedia_Qt6Multimedia_RELEASE)
+        list(APPEND F4_QT_STATIC_VIDEO_GROUP_TARGETS
+          CONAN_LIB::qt_Qt6_Multimedia_Qt6Multimedia_RELEASE)
+      else()
+        list(APPEND F4_QT_STATIC_VIDEO_GROUP_TARGETS Qt6::Multimedia)
+      endif()
+      if(TARGET CONAN_LIB::qt_Qt6_BundledTLSF_Qt6BundledTLSF_RELEASE)
+        list(APPEND F4_QT_STATIC_VIDEO_GROUP_TARGETS
+          CONAN_LIB::qt_Qt6_BundledTLSF_Qt6BundledTLSF_RELEASE)
+      else()
+        list(APPEND F4_QT_STATIC_VIDEO_GROUP_TARGETS Qt6::BundledTLSF)
+      endif()
+      string(REPLACE ";" "," F4_QT_STATIC_VIDEO_GROUP_ARGS
+        "${F4_QT_STATIC_VIDEO_GROUP_TARGETS}")
       list(APPEND F4_QT_STATIC_VIDEO_LINKS
-        "$<LINK_GROUP:RESCAN,Qt6::Multimedia,Qt6::BundledTLSF>")
+        "$<LINK_GROUP:RESCAN,${F4_QT_STATIC_VIDEO_GROUP_ARGS}>")
     endif()
     if(WIN32)
       list(APPEND F4_QT_STATIC_VIDEO_LINKS
@@ -732,7 +771,7 @@ if(F4_QT_STATIC)
       ZoinGalleryStandaloneShellSmokeTests)
     if(TARGET ${F4_ZOIN_STATIC_QML_TEST_TARGET})
       target_sources(${F4_ZOIN_STATIC_QML_TEST_TARGET} PRIVATE
-        $<TARGET_OBJECTS:F4StaticQtTestPluginImports>
+        $<TARGET_OBJECTS:${F4_STATIC_QT_TEST_IMPORT_TARGET}>
         $<TARGET_OBJECTS:F4StaticQtImagePluginImports>
         $<TARGET_OBJECTS:F4StaticQmlPluginImports>)
       if(TARGET Qt6::QJpegPlugin)
@@ -741,7 +780,7 @@ if(F4_QT_STATIC)
       endif()
       target_link_libraries(${F4_ZOIN_STATIC_QML_TEST_TARGET} PRIVATE
         ${F4_REQUIRED_STATIC_QT_PLUGINS}
-        ${F4_REQUIRED_STATIC_QML_PLUGINS}
+        ${F4_REQUIRED_STATIC_QML_TEST_PLUGINS}
         ${F4_QT_STATIC_SVG_LINKS}
         ${F4_QT_STATIC_VIDEO_LINKS}
         ${F4_QT_QUICK_EFFECTS_LINK}
@@ -752,7 +791,6 @@ if(F4_QT_STATIC)
       endif()
       if(F4_ENABLE_VIDEO_THUMBNAILS AND F4_QT_MEDIA_PLUGIN_TARGET)
         target_link_libraries(${F4_ZOIN_STATIC_QML_TEST_TARGET} PRIVATE
-          Qt6::Multimedia
           ${F4_QT_MEDIA_PLUGIN_TARGET}
           ${F4_QFFMPEG_PLUGIN_TARGET}
           ${F4_QFFMPEG_PLUGIN_IMPL_TARGET}
@@ -1143,12 +1181,11 @@ if(BUILD_TESTING)
   function(f4_link_static_test_platform target)
     if(F4_QT_STATIC)
       target_sources(${target} PRIVATE
-        $<TARGET_OBJECTS:F4StaticQtTestPluginImports>)
+        $<TARGET_OBJECTS:${F4_STATIC_QT_TEST_IMPORT_TARGET}>)
       target_link_libraries(${target} PRIVATE
         Qt6::QOffscreenIntegrationPlugin)
       if(F4_ENABLE_VIDEO_THUMBNAILS AND F4_QT_MEDIA_PLUGIN_TARGET)
         target_link_libraries(${target} PRIVATE
-          Qt6::Multimedia
           ${F4_QT_MEDIA_PLUGIN_TARGET}
           ${F4_QFFMPEG_PLUGIN_TARGET}
           ${F4_QFFMPEG_PLUGIN_IMPL_TARGET}
@@ -1185,7 +1222,7 @@ if(BUILD_TESTING)
           F4_QT_HAS_MULTIMEDIA_QML=1)
       endif()
       target_link_libraries(${target} PRIVATE
-        ${F4_REQUIRED_STATIC_QML_PLUGINS}
+        ${F4_REQUIRED_STATIC_QML_TEST_PLUGINS}
         ${F4_QT_QUICK_EFFECTS_LINK}
         ${F4_QT_QUICK_CONTROLS_BASIC_LINK})
       if(NOT TARGET Qt6::QuickEffects_resources_1)
@@ -1557,7 +1594,6 @@ if(BUILD_TESTING)
   if(F4_QT_USES_FFMPEG_BACKEND)
     target_compile_definitions(F4QuickViewSurfaceTests PRIVATE
       F4_QT_HAS_MULTIMEDIA_QML=1)
-    target_link_libraries(F4QuickViewSurfaceTests PRIVATE Qt6::Multimedia)
     add_test(NAME F4GalleryVideoControlsPixelGridTest
       COMMAND F4QuickViewSurfaceTests
         galleryVideoControlsStayOnPhysicalPixelGridAt175Percent)
