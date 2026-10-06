@@ -424,8 +424,8 @@ jobs:
         # Ninja 1.13.0 truncates long MSVC linker response-file lines at
         # 16,383 characters, producing broken object paths such as
         # `ry\CMakeFiles\...`. Keep the Windows static Qt link stable on the
-        # known-good 1.12.1 release.
-        python -m pip install "conan==2.29.1" "cmake==3.31.6" "ninja==1.12.1"
+        # fixed in the 1.13.1+ line; use the available 1.13.2 wheel.
+        python -m pip install "conan==2.29.1" "cmake==3.31.6" "ninja==1.13.2"
         conan profile detect --force
 
     - name: Cache the macOS native dependency graph
@@ -970,8 +970,8 @@ jobs:
         # Ninja 1.13.0 truncates long MSVC linker response-file lines at
         # 16,383 characters, producing broken object paths such as
         # `ry\CMakeFiles\...`. Keep the Windows static Qt link stable on the
-        # known-good 1.12.1 release.
-        python -m pip install "conan==2.29.1" "cmake==3.31.6" "ninja==1.12.1"
+        # fixed in the 1.13.1+ line; use the available 1.13.2 wheel.
+        python -m pip install "conan==2.29.1" "cmake==3.31.6" "ninja==1.13.2"
         conan profile detect --force
 
     - name: Configure Conan binary remote (Windows)
