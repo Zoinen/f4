@@ -190,17 +190,28 @@ conan_build_args=(--build=missing)
 # A Conan package ID does not describe the glibc version of a prebuilt build
 # requirement.  In particular, an m4 binary uploaded from a newer Linux host
 # can look like a valid cache hit and then fail only when xkbcommon invokes it
-# inside this Ubuntu 18.04/glibc-2.27 image.  Detect that case from the actual
-# executable instead of trusting the coarse graph marker.  A valid cached m4
-# remains reusable; only an incompatible one is rebuilt in the baseline image.
+# inside this Ubuntu 18.04/glibc-2.27 image.  Prefer the m4 installed by the
+# baseline container: it is already compiled for this exact libc contract and
+# avoids an unnecessary source download from the network-restricted builder.
+# Conan's cached m4 is only rebuilt as a last resort when the container has no
+# usable system copy at all.
 force_baseline_m4=0
 cached_m4_found=0
+baseline_m4_path=""
+if command -v m4 >/dev/null 2>&1 && m4 --version >/dev/null 2>&1; then
+    baseline_m4_path="$(command -v m4)"
+    export M4="${baseline_m4_path}"
+    echo "Using the Ubuntu 18.04 baseline m4: ${baseline_m4_path}"
+fi
 while IFS= read -r m4_binary; do
     cached_m4_found=1
     if [[ ! -x "$m4_binary" ]] || ! "$m4_binary" --version >/dev/null 2>&1; then
-        force_baseline_m4=1
         echo "Cached Conan m4 is not executable on the glibc 2.27 baseline: ${m4_binary}"
-        break
+        if [[ -z "${baseline_m4_path}" ]]; then
+            force_baseline_m4=1
+        else
+            echo "Using the system baseline m4 instead of rebuilding the Conan package"
+        fi
     fi
 done < <(find "${CONAN_HOME}/p" -type f -path '*/p/bin/m4' -print 2>/dev/null)
 # pkgconf is executed by xkbcommon's Meson build. A package built for another
@@ -323,7 +334,7 @@ else
     echo "Reusing cached glibc 2.27 / GCC 11 Conan package graph"
 fi
 if [[ "${F4_CONAN_BOOTSTRAP_VIDEO:-0}" == "1" &&
-    "${cached_m4_found}" == "0" ]]; then
+    "${cached_m4_found}" == "0" && -z "${baseline_m4_path}" ]]; then
     # A cold cache would otherwise download the same unqualified package from
     # Artifactory before this check can inspect it. Build this tiny tool once
     # in the baseline image so the checkpoint and remote package are safe for
