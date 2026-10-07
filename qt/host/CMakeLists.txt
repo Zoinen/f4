@@ -243,7 +243,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND ZOIN_ENABLE_VIDEO_PLAYBACK)
     "Allow a diagnostic video-only build with Qt lacking Linux audio support" OFF)
   # Test the installed headers, not Conan metadata or the presence of a sound
   # server in CI. Disabled Qt feature macros are -1, not zero.
-  function(f4_check_linux_audio_backend)
+  function(f4_check_linux_multimedia_features)
     include(CheckCXXSourceCompiles)
     include(CMakePushCheckState)
     cmake_push_check_state(RESET)
@@ -254,25 +254,31 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND ZOIN_ENABLE_VIDEO_PLAYBACK)
         "${F4_QT_MULTIMEDIA_PACKAGE_ROOT}/include"
         "${F4_QT_MULTIMEDIA_PRIVATE_INCLUDE_DIR}")
     endif()
-    unset(F4_QT_HAS_LINUX_AUDIO_BACKEND CACHE)
+    unset(F4_QT_HAS_LINUX_AUDIO_AND_FFMPEG CACHE)
     check_cxx_source_compiles("
       #include <QtMultimedia/qtmultimedia-config.h>
       #include <QtMultimedia/private/qtmultimedia-config_p.h>
-      #if QT_FEATURE_pulseaudio != 1 && QT_FEATURE_alsa != 1 && QT_FEATURE_pipewire != 1
-      #error Qt has no Linux audio backend
+      #if QT_FEATURE_ffmpeg != 1
+      #error Qt has no FFmpeg multimedia backend
+      #endif
+      #if QT_FEATURE_pulseaudio != 1
+      #error Qt has no PulseAudio output backend
       #endif
       int main() { return 0; }
-    " F4_QT_HAS_LINUX_AUDIO_BACKEND)
+    " F4_QT_HAS_LINUX_AUDIO_AND_FFMPEG)
     cmake_pop_check_state()
   endfunction()
-  f4_check_linux_audio_backend()
-  if(NOT F4_QT_HAS_LINUX_AUDIO_BACKEND)
+  f4_check_linux_multimedia_features()
+  if(NOT F4_QT_HAS_LINUX_AUDIO_AND_FFMPEG)
     if(F4_ALLOW_AUDIOLESS_VIDEO)
-      message(WARNING "Diagnostic video-only build: Qt has no Linux audio backend; playback will be silent")
+      message(WARNING
+        "Diagnostic video-only build: Qt lacks FFmpeg or PulseAudio support; "
+        "video decoding or audio playback may be unavailable")
     else()
       message(FATAL_ERROR
-        "Video playback requires a prebuilt Qt package with PulseAudio, ALSA, or PipeWire support. "
-        "The selected Qt binary has none. Do not compile a source fallback. "
+        "Portable Linux video playback requires a prebuilt Qt package with both "
+        "the FFmpeg and PulseAudio features enabled. The selected Qt binary is "
+        "missing one or both. Do not compile a source fallback. "
         "F4_ALLOW_AUDIOLESS_VIDEO=ON is only for explicit video-only diagnostics.")
     endif()
   endif()

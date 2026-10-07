@@ -68,12 +68,18 @@ thumbnails but do not advertise video playback. The host forces
 `QT_MEDIA_BACKEND=ffmpeg` in FFmpeg-enabled builds so a missing FFmpeg runtime
 cannot silently turn the viewer into a Media Foundation player.
 
-Linux playback also requires Qt compiled with PulseAudio, ALSA, or PipeWire
-support. The host checks the selected package's generated feature headers at
-configure time; an absent desktop sound server is not a configure failure.
-PulseAudio-enabled Qt works with PipeWire's PulseAudio compatibility service.
-Use audited prebuilt packages and `conan install --build=never` when consuming
-the Artifactory graph. A package with FFmpeg alone can decode video but cannot
+Linux release playback requires the Qt FFmpeg and PulseAudio features together.
+The portable Linux Conan build selects them explicitly with
+`qt/*:with_ffmpeg=True`, `qt/*:with_pulseaudio=True`,
+`qt/*:with_libalsa=False`, and `pulseaudio/*:shared=False`; the patched Qt
+recipe passes `FEATURE_pulseaudio=ON` and `FEATURE_alsa=OFF` to Qt's configure.
+The host checks the installed feature headers at configure time, and the ELF
+audit rejects dynamic FFmpeg/PulseAudio libraries so the release remains a
+single-file executable. At runtime, Linux still needs a sound service;
+PulseAudio-enabled Qt also works with PipeWire's `pipewire-pulse` compatibility
+service. An absent sound server is not a configure failure. Use audited
+prebuilt packages and `conan install --build=never` when consuming the
+Artifactory graph. A package with FFmpeg alone can decode video but cannot
 produce sound. `F4_ALLOW_AUDIOLESS_VIDEO=ON` is an explicit diagnostic escape
 hatch for testing video rendering, not a complete playback/release build.
 
@@ -91,6 +97,8 @@ ZOIN_VIDEO_GPU_FILE=/absolute/path/video.mp4 \
 
 The optional capture prefix saves the rendered 175% video frames. The file
 probe checks FFmpeg-decoded YUV presentation; it does not prove audible audio.
+The `audioDeviceDiagnostics` case likewise logs device enumeration; it is not
+an audio-output loopback test.
 `F4_MEDIA_TIMING_TRACE=1` includes material creation and video texture-upload
 failure/recovery events without emitting a new diagnostic for every frame.
 
