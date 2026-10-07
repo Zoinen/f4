@@ -238,6 +238,46 @@ if(F4_QT_USES_FFMPEG_BACKEND)
   endif()
 endif()
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND ZOIN_ENABLE_VIDEO_PLAYBACK)
+  option(F4_ALLOW_AUDIOLESS_VIDEO
+    "Allow a diagnostic video-only build with Qt lacking Linux audio support" OFF)
+  # Test the installed headers, not Conan metadata or the presence of a sound
+  # server in CI. Disabled Qt feature macros are -1, not zero.
+  function(f4_check_linux_audio_backend)
+    include(CheckCXXSourceCompiles)
+    include(CMakePushCheckState)
+    cmake_push_check_state(RESET)
+    set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+    set(CMAKE_REQUIRED_LIBRARIES Qt6::MultimediaPrivate)
+    if(F4_QT_MULTIMEDIA_PACKAGE_ROOT)
+      list(APPEND CMAKE_REQUIRED_INCLUDES
+        "${F4_QT_MULTIMEDIA_PACKAGE_ROOT}/include"
+        "${F4_QT_MULTIMEDIA_PRIVATE_INCLUDE_DIR}")
+    endif()
+    unset(F4_QT_HAS_LINUX_AUDIO_BACKEND CACHE)
+    check_cxx_source_compiles("
+      #include <QtMultimedia/qtmultimedia-config.h>
+      #include <QtMultimedia/private/qtmultimedia-config_p.h>
+      #if QT_FEATURE_pulseaudio != 1 && QT_FEATURE_alsa != 1 && QT_FEATURE_pipewire != 1
+      #error Qt has no Linux audio backend
+      #endif
+      int main() { return 0; }
+    " F4_QT_HAS_LINUX_AUDIO_BACKEND)
+    cmake_pop_check_state()
+  endfunction()
+  f4_check_linux_audio_backend()
+  if(NOT F4_QT_HAS_LINUX_AUDIO_BACKEND)
+    if(F4_ALLOW_AUDIOLESS_VIDEO)
+      message(WARNING "Diagnostic video-only build: Qt has no Linux audio backend; playback will be silent")
+    else()
+      message(FATAL_ERROR
+        "Video playback requires a prebuilt Qt package with PulseAudio, ALSA, or PipeWire support. "
+        "The selected Qt binary has none. Do not compile a source fallback. "
+        "F4_ALLOW_AUDIOLESS_VIDEO=ON is only for explicit video-only diagnostics.")
+    endif()
+  endif()
+endif()
+
 if(F4_PORTABLE_STATIC AND UNIX AND NOT APPLE)
   # Conan's static packages currently expose system C++ runtime libraries as
   # literal "stdc++" interface entries. Those entries are emitted as an

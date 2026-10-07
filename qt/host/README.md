@@ -68,6 +68,32 @@ thumbnails but do not advertise video playback. The host forces
 `QT_MEDIA_BACKEND=ffmpeg` in FFmpeg-enabled builds so a missing FFmpeg runtime
 cannot silently turn the viewer into a Media Foundation player.
 
+Linux playback also requires Qt compiled with PulseAudio, ALSA, or PipeWire
+support. The host checks the selected package's generated feature headers at
+configure time; an absent desktop sound server is not a configure failure.
+PulseAudio-enabled Qt works with PipeWire's PulseAudio compatibility service.
+Use audited prebuilt packages and `conan install --build=never` when consuming
+the Artifactory graph. A package with FFmpeg alone can decode video but cannot
+produce sound. `F4_ALLOW_AUDIOLESS_VIDEO=ON` is an explicit diagnostic escape
+hatch for testing video rendering, not a complete playback/release build.
+
+`ViewerResampleGpuTests` exercises the actual video material on an RHI backend,
+including frame replacement, direct rendering and pyramid reduction at DPR 1
+and 1.75. It also verifies the compiled image/video vertex and fragment uniform
+interfaces. On Linux it requires hardware OpenGL, not a software scene graph:
+
+```sh
+build/ZoinGallery/ViewerResampleGpuTests videoFramesRenderAndUpdate shaderStageInterfacesMatch
+ZOIN_VIDEO_GPU_FILE=/absolute/path/video.mp4 \
+  ZOIN_VIDEO_GPU_CAPTURE=/absolute/path/capture-prefix \
+  build/ZoinGallery/ViewerResampleGpuTests decodedVideoFileRenders audioDeviceDiagnostics
+```
+
+The optional capture prefix saves the rendered 175% video frames. The file
+probe checks FFmpeg-decoded YUV presentation; it does not prove audible audio.
+`F4_MEDIA_TIMING_TRACE=1` includes material creation and video texture-upload
+failure/recovery events without emitting a new diagnostic for every frame.
+
 The Conan graph must use matching options so it does not build unused native
 dependencies. For a host without video support:
 
