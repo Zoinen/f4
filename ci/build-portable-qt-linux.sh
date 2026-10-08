@@ -45,7 +45,8 @@ apt_with_timeout() {
 echo "Installing Ubuntu 18.04 bootstrap packages"
 apt_with_timeout update
 apt_with_timeout install -y --no-install-recommends \
-    autoconf automake bison build-essential ca-certificates curl flex git libssl-dev patchelf \
+    autoconf automake bison build-essential ca-certificates curl flex \
+    fontconfig fonts-dejavu-core git libssl-dev patchelf \
     gnupg gperf libtool m4 patch pkg-config software-properties-common xz-utils
 ppa_added=0
 for attempt in 1 2 3; do
@@ -451,15 +452,21 @@ bash ci/build-qwindowkit.sh "$PWD/${build_dir}" Release static
 "${cmake_executable}" --build "${build_dir}" --config Release --parallel 4
 export QML_IMPORT_PATH="$PWD/${build_dir}/ZoinGallery:$PWD/${build_dir}/qml"
 export QML2_IMPORT_PATH="$PWD/${build_dir}/ZoinGallery:$PWD/${build_dir}/qml"
-mkdir -p "${build_dir}/.diagnostics"
+mkdir -p "${build_dir}/.diagnostics" "${build_dir}/artifacts"
 export QT_QPA_PLATFORM=offscreen
 export QSG_RHI_BACKEND=software
 if [[ -f /etc/fonts/fonts.conf ]]; then
     export FONTCONFIG_FILE=/etc/fonts/fonts.conf
     export FONTCONFIG_PATH=/etc/fonts
 fi
+# The broad QtTest executables include cases with Windows-only screenshot paths
+# and DPR assumptions that are registered again as focused CTest entries with
+# their own environments. Exercise the portable host's core and multimedia
+# gates through those individually configured entries instead of running the
+# aggregate executables under the wrong environment.
+portable_ctest_regex='^(F4IconProviderTest|F4IconProviderFractionalDprFramebufferTest|QtMediaClientTest|F4GalleryVideoControlsPixelGridTest|F4GalleryVideoSettingsPixelGridTest|WindowGeometryPersistenceTest)$'
 ctest --test-dir "${build_dir}" -C Release --output-on-failure \
-    -R '^(F4|QtShellController|WindowGeometryPersistence)'
+    -R "${portable_ctest_regex}"
 
 host="$PWD/${build_dir}/bin/Release/f4-qt-host"
 # Smoke-test the linked host before ELF metadata cleanup. Ubuntu 18.04 ships

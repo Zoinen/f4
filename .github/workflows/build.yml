@@ -2203,7 +2203,7 @@ jobs:
       uses: ./.github/actions/affected-packages
 
     - name: Test Qt recipe and Conan publication helpers
-      run: python3 -m unittest ci/test_patch_qt_dependencies.py ci/test_arm64_glibc_archives.py ci/test_portable_conan_upload.py
+      run: python3 -m unittest ci/test_patch_qt_dependencies.py ci/test_arm64_glibc_archives.py ci/test_portable_conan_upload.py ci/test_portable_qt_linux.py
 
     - name: Run go vet
       if: steps.affected.outputs.packages != ''
