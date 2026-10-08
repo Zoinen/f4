@@ -1016,6 +1016,7 @@ private slots:
     void appIconMenuUsesSemanticCategoriesAndCommands();
     void shellSnapshotDoesNotRestorePreviousPanelDescriptor();
     void workspaceSwitchRetainsGalleryViewAt175Percent();
+    void rightPanelFileIconsKeepNativeRasterAt175Percent();
     void nestedMenuAnchorsHeadersTagsAndChevronsOnPhysicalPixels();
     void nestedMenuHoverUsesDelayedSubmenuAction();
     void compactMenuStructureTransfersFocusWithoutSceneRebind();
@@ -8577,6 +8578,67 @@ void F4QuickViewSurfaceTests::f9MenuOverlaysPathRowWithoutMovingContent()
     QTRY_VERIFY(!menu->isVisible());
     QCOMPARE(panel->mapToScene(QPointF()), before);
     QCOMPARE(panel->size(), sizeBefore);
+}
+
+void F4QuickViewSurfaceTests::rightPanelFileIconsKeepNativeRasterAt175Percent()
+{
+    QuickViewFixture fixture(shellScene({}, 0), true);
+    QVERIFY(fixture.window);
+    class DiagnosticIconProvider final : public QQuickImageProvider {
+    public:
+        DiagnosticIconProvider() : QQuickImageProvider(QQuickImageProvider::Image) {}
+        QImage requestImage(const QString &id, QSize *size, const QSize &requested) override {
+            auto result = provider.requestImage(id, size, requested);
+            rasterSizes.insert(id, result.size());
+            return result;
+        }
+        F4IconProvider provider;
+        QMap<QString, QSize> rasterSizes;
+    };
+    F4IconSet icons(QStringLiteral("right-grid-icons"));
+    auto *provider = new DiagnosticIconProvider();
+    fixture.engine.addImageProvider(QStringLiteral("right-grid-icons"), provider);
+    fixture.window->setProperty("iconProvider", QVariant::fromValue(static_cast<QObject *>(&icons)));
+    ZoinGallery::RuntimeOptions options;
+    options.persistentCache = false;
+    auto *runtime = ZoinGallery::GalleryRuntime::install(&fixture.engine, options);
+    auto *session = runtime->createExternalSession("right-icon-grid-diagnostic");
+    const auto shutdown = qScopeGuard([&] { runtime->shutdown(); });
+    QVERIFY(session->applyExternalCatalog({QVariantMap{
+        {"entryId", "folder"}, {"index", 0}, {"name", "Folder"},
+        {"highlightStyle", QVariantMap{{"iconKey", "folder"}}}, {"isDir", true}}}, 1));
+    fixture.gallery.showPanel(QUrl("qrc:/F4QtHost/qml/GalleryPanelHost.qml"), session);
+    auto *panel = fixture.item("filePanel-1");
+    QVERIFY(panel);
+    QVariantMap descriptor = panel->property("panel").toMap();
+    descriptor.insert("galleryLayoutMode", "details");
+    fixture.shell.deliverCompactPresentation({{"side", 1}, {"panel", descriptor}});
+    auto *content = fixture.item("galleryPanelContent-1");
+    QVERIFY(content);
+    QObject *loaded = nullptr;
+    QTRY_VERIFY((loaded = content->property("item").value<QObject *>()));
+    auto *view = qobject_cast<QQuickItem *>(loaded);
+    QVERIFY(view);
+    for (const int width : {1400, 1401, 1537, 2400}) {
+        fixture.window->resize(width, 640);
+        QTest::qWait(150);
+        auto *icon = visualItemWithObjectName(view, "galleryFallbackIcon-0");
+        QVERIFY(icon);
+        const qreal dpr = fixture.window->devicePixelRatio();
+        const QPointF origin = icon->mapToScene(QPointF());
+        qInfo() << "ICON-GRID" << width << "DPR" << dpr << "physical" << origin*dpr
+                << "extent" << icon->size()*dpr << "source" << icon->property("source");
+        QVERIFY(fixture.window->grabWindow().save(QString("/tmp/f4-right-icon-%1-175.png").arg(width)));
+        QVERIFY2(qAbs(origin.x()*dpr-qRound64(origin.x()*dpr)) < .001
+                 && qAbs(origin.y()*dpr-qRound64(origin.y()*dpr)) < .001,
+                 qPrintable(QString("right icon physical origin %1,%2").arg(origin.x()*dpr).arg(origin.y()*dpr)));
+        QCOMPARE(icon->mapToScene(QPointF(1,0))-origin, QPointF(1,0));
+        QCOMPARE(icon->mapToScene(QPointF(0,1))-origin, QPointF(0,1));
+        const QString route = F4IconProvider::routeId(icon->property("source").toUrl());
+        QTRY_VERIFY(provider->rasterSizes.contains(route));
+        QCOMPARE(provider->rasterSizes.value(route),
+                 QSize(qRound(icon->width()*dpr), qRound(icon->height()*dpr)));
+    }
 }
 
 void F4QuickViewSurfaceTests::workspaceSwitchRetainsGalleryViewAt175Percent()
