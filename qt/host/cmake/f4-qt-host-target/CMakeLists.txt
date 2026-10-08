@@ -253,8 +253,15 @@ if(F4_QT_STATIC)
   # but are not Conan components. Import those preserved targets explicitly so
   # a static Conan Qt behaves like an ordinary static Qt installation.
   set(_f4_conan_qt_package_folder "")
+  # An explicit native Qt installation can override Conan's generated facade.
+  # Import plugins from that installation, rather than a stale package folder.
+  get_filename_component(_f4_selected_qt_prefix "${Qt6_DIR}/../../.." ABSOLUTE)
+  if(EXISTS "${_f4_selected_qt_prefix}/lib/cmake/Qt6Qml/QmlPlugins")
+    set(_f4_conan_qt_package_folder "${_f4_selected_qt_prefix}")
+  endif()
   foreach(_f4_config RELEASE RELWITHDEBINFO MINSIZEREL DEBUG)
-    if(DEFINED qt_PACKAGE_FOLDER_${_f4_config}
+    if(NOT _f4_conan_qt_package_folder
+       AND DEFINED qt_PACKAGE_FOLDER_${_f4_config}
        AND EXISTS "${qt_PACKAGE_FOLDER_${_f4_config}}/lib/cmake/Qt6Qml/QmlPlugins")
       set(_f4_conan_qt_package_folder
         "${qt_PACKAGE_FOLDER_${_f4_config}}")
@@ -270,7 +277,7 @@ if(F4_QT_STATIC)
     # component target, but that component alone does not retain the static
     # QMultimediaQuickModule initializer needed by Q_IMPORT_PLUGIN. Select
     # the preserved plugin export before importing the rest of the QML graph.
-    if(F4_QT_USES_FFMPEG_BACKEND)
+    if(F4_ENABLE_VIDEO_THUMBNAILS)
       if(TARGET Qt6::MultimediaQuick)
         list(APPEND F4_REQUIRED_STATIC_QML_PLUGINS Qt6::MultimediaQuick)
       endif()
