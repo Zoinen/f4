@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/unxed/f4/internal/config"
+	"github.com/unxed/f4/internal/theme"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 )
@@ -114,5 +115,27 @@ func TestQuickSearchWindowHasNoExactMatchLine(t *testing.T) {
 	_, rows := drawFilterWindow(t, fp)
 	if strings.Contains(strings.Join(rows, "\n"), "Exact match") {
 		t.Error("the quick search window shows the filter's exact-match line")
+	}
+}
+
+// The query line of the search and filter windows has the colour of an ordinary
+// dialog edit field, and the typed text keeps its own foreground (f4#1131).
+func TestFastFindQueryLineHasTheEditFieldBackground(t *testing.T) {
+	fp := newAutoFilterPanel(t)
+	openAutoFilter(t, fp)
+	typeIntoFilter(t, fp, "alpha")
+	scr, _ := drawFilterWindow(t, fp)
+
+	// The window sits at fp.X1+9, one row below its top border.
+	x := fp.X1 + 9 + 4
+	y := fp.exactBoxY - 1
+	cell := scr.GetCell(x, y)
+	_, wantBg := theme.GetColorRGBBoth(vtui.Palette[vtui.ColDialogEdit])
+	if _, gotBg := theme.GetColorRGBBoth(cell.Attributes); gotBg != wantBg {
+		t.Errorf("query cell background = %06X, want the edit field's %06X", gotBg, wantBg)
+	}
+	blank := scr.GetCell(fp.X1+9+20, y)
+	if _, gotBg := theme.GetColorRGBBoth(blank.Attributes); gotBg != wantBg {
+		t.Errorf("the empty end of the query line has background %06X, want %06X", gotBg, wantBg)
 	}
 }

@@ -28,6 +28,14 @@ import (
 	"github.com/unxed/vtui"
 )
 
+// actionKeepsFastFind lists the actions that leave a search or filter window
+// open: they act on the program window, not on the panels, so the user is not
+// leaving the search by them. Alt+F9 (maximize or restore the window) closed
+// the filter before this (f4#1131).
+func actionKeepsFastFind(name string) bool {
+	return strings.EqualFold(name, "App.ToggleWindowSize")
+}
+
 // RunAction executes an action by name if it exists.
 func RunAction(name string) bool {
 	if a, ok := action.Lookup(name); ok && a.Handler != nil {
@@ -45,7 +53,7 @@ func RunAction(name string) bool {
 		// Fast Find is a transient panel input mode. Any action means the user
 		// is leaving it, including actions that replace a file panel in place
 		// (Info/Quick View) and therefore do not push a focus-stealing frame.
-		if !strings.EqualFold(name, commandPaletteActionName) {
+		if !strings.EqualFold(name, commandPaletteActionName) && !actionKeepsFastFind(name) {
 			if pf := panel.FindPanelsFrame(); pf != nil && pf.CancelFastFind() && vtui.FrameManager != nil {
 				vtui.FrameManager.Redraw()
 			}

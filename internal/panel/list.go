@@ -3508,7 +3508,12 @@ func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 		if fp.fastFindHasMatches() || (fp.autoFilterMode && autoFilterQuery(fp.FastFindStr) == "") {
 			searchColor = vtui.Palette[vtui.ColMenuHighlight]
 		}
-		searchAttr := fastFindMatchAttr(vtui.Palette[vtui.ColDialogText], searchColor)
+		// The query is typed on the field colour every dialog's edit control
+		// has; the foreground stays the match / no-match colour of the text
+		// (f4#1131).
+		editAttr := vtui.Palette[vtui.ColDialogEdit]
+		p.Fill(fx1+1, fy1+1, fx2-1, fy1+1, ' ', editAttr)
+		searchAttr := fastFindMatchAttr(editAttr, searchColor)
 		p.DrawString(fx1+2, fy1+1, searchStr, searchAttr)
 
 		if fp.autoFilterMode {
