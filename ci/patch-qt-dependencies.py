@@ -270,7 +270,6 @@ _PULSEAUDIO_VALIDATION_ANCHOR = '''        if self.options.get_safe("with_pulsea
 _PULSEAUDIO_VALIDATION_PATCH = '''        if self.options.get_safe("with_libalsa", False):
             raise ConanInvalidConfiguration("The portable Linux Qt package uses PulseAudio; ALSA must remain disabled.")
 '''
-_PULSEAUDIO_VALIDATION_MARKER = 'if self.options.get_safe("with_libalsa", False):'
 _PULSEAUDIO_GENERATE_ANCHOR = '        tc.variables["FEATURE_pkg_config"] = "ON"\n'
 _PULSEAUDIO_GENERATE_PATCH = _PULSEAUDIO_GENERATE_ANCHOR + (
     '        if self.options.get_safe("with_pulseaudio", False):\n'
@@ -409,7 +408,7 @@ def _patch_ffmpeg(text: str, linux_audio: bool = False) -> str:
 
 
 def _patch_linux_audio(text: str) -> str:
-    if _PULSEAUDIO_VALIDATION_MARKER not in text:
+    if _PULSEAUDIO_VALIDATION_PATCH not in text:
         if text.count(_PULSEAUDIO_VALIDATION_ANCHOR) != 1:
             raise SystemExit(
                 "unexpected Qt recipe: PulseAudio validation guard is absent or ambiguous"
@@ -417,10 +416,6 @@ def _patch_linux_audio(text: str) -> str:
         text = text.replace(
             _PULSEAUDIO_VALIDATION_ANCHOR,
             _PULSEAUDIO_VALIDATION_PATCH,
-        )
-    elif _PULSEAUDIO_VALIDATION_PATCH not in text:
-        raise SystemExit(
-            "unexpected Qt recipe: PulseAudio validation guard has conflicting content"
         )
 
     has_pulseaudio_feature = _PULSEAUDIO_FEATURE_MARKER in text
