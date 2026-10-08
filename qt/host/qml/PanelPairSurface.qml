@@ -217,23 +217,13 @@ Item {
                      : expandButton.hovered ? pair.hostWindow.controlHoverBg
                                             : "transparent"
             }
-            ZG.ToolTip {
+            F4ToolTip {
                 id: expandTip
+                hostWindow: pair.hostWindow
                 objectName: "panelExpandToolTip-" + expandButton.index
                 visible: expandButton.hovered
-                delay: 600
                 text: expandButton.Accessible.name
-                contentItem: Text {
-                    id: expandTipText
-                    objectName: "panelExpandToolTipText-" + expandButton.index
-                    text: expandTip.text
-                    font: expandTip.font
-                    color: pair.hostWindow.chromeText
-                    transform: Translate {
-                        x: pair.hostWindow.dialogPixelOffsetX(expandTipText, pair.hostWindow.contentItem)
-                        y: pair.hostWindow.dialogPixelOffsetY(expandTipText, pair.hostWindow.contentItem)
-                    }
-                }
+                mainTextObjectName: "panelExpandToolTipText-" + expandButton.index
             }
             onClicked: pair.hostWindow.action({
                 action: "panel.setWide", side: index, enabled: !expanded

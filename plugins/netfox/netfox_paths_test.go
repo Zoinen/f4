@@ -17,6 +17,29 @@ func TestNetFoxRootJoinKeepsURIAuthority(t *testing.T) {
 	}
 }
 
+func TestNetFoxWindowsPathsArePublishedReadable(t *testing.T) {
+	for _, backend := range []vfs.VFS{
+		&SFTPVFS{path: "/C:/Users"},
+		&FTPVFS{cwd: "/C:/Users"},
+		&FishVFS{path: "/C:/Users"},
+	} {
+		configureNetFoxConnection(backend, "HC_SFTP", "sftp", NetFoxConfig{})
+		const want = "net://HC_SFTP/C:/Users"
+		if got := backend.GetPath(); got != want {
+			t.Fatalf("%T GetPath = %q, want %q", backend, got, want)
+		}
+		if got, err := backend.Abs("net://HC_SFTP/C%3A/Users"); err != nil || got != want {
+			t.Fatalf("%T legacy Abs = %q, %v", backend, got, err)
+		}
+		if got := backend.Join(want, "a #?@.txt"); got != want+"/a #?@.txt" {
+			t.Fatalf("%T Join = %q", backend, got)
+		}
+		if got := backend.(vfs.PanelTitleProvider).PanelTitle(want); got != want {
+			t.Fatalf("%T PanelTitle = %q", backend, got)
+		}
+	}
+}
+
 func TestNetFoxBackendsPublishQualifiedPathsAndPanelInfoCache(t *testing.T) {
 	paths := vfs.DevicePath{Scheme: "net", Device: "de zoin"}
 

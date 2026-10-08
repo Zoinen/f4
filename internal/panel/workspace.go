@@ -89,6 +89,19 @@ func SetLegacyWorkspaceSession(state WorkspaceSessionState) {
 	LastShowPanels, LastShowLeft, LastShowRight = state.ShowPanels, state.ShowLeft, state.ShowRight
 }
 
+func sessionSortReverse(fp *FileSystemPanel) bool {
+	if fp == nil {
+		return false
+	}
+	if fp.sortDirectionSetByAction && (fp.SortMode == SortTime || fp.SortMode == SortSize) {
+		// Session files use the legacy direction convention. Action-driven
+		// time/size sorts use reverse=false for newest/largest first, while the
+		// restored comparator uses reverse=true for that same order.
+		return !fp.SortReverse
+	}
+	return fp.SortReverse
+}
+
 func panelsFrameOnScreen(screen *vtui.AppScreen) *PanelsFrame {
 	if screen == nil {
 		return nil
@@ -135,7 +148,7 @@ func CaptureWorkspaceSession(pf *PanelsFrame) WorkspaceSessionState {
 		state.Left = PanelSessionState{
 			Path: path, Cursor: cursor, ViewMode: int(left.ViewMode),
 			Gallery:  CapturePanelGallerySessionState(left),
-			SortMode: int(left.SortMode), SortReverse: left.SortReverse,
+			SortMode: int(left.SortMode), SortReverse: sessionSortReverse(left),
 			UseSortGroups: left.UseSortGroups,
 			GroupBy:       left.GroupBy, GroupReverse: left.GroupReverse, GroupFoldersSeparately: left.GroupFoldersSeparately,
 		}
@@ -153,7 +166,7 @@ func CaptureWorkspaceSession(pf *PanelsFrame) WorkspaceSessionState {
 		state.Right = PanelSessionState{
 			Path: path, Cursor: cursor, ViewMode: int(right.ViewMode),
 			Gallery:  CapturePanelGallerySessionState(right),
-			SortMode: int(right.SortMode), SortReverse: right.SortReverse,
+			SortMode: int(right.SortMode), SortReverse: sessionSortReverse(right),
 			UseSortGroups: right.UseSortGroups,
 			GroupBy:       right.GroupBy, GroupReverse: right.GroupReverse, GroupFoldersSeparately: right.GroupFoldersSeparately,
 		}

@@ -462,6 +462,7 @@ func TestAppScenePatchGalleryLayoutUsesSmallStateDelta(t *testing.T) {
 		{"id": "size", "role": "size", "title": "Size", "width": 14},
 	}
 	basePanel["fastFind"] = false
+	basePanel["fastFindNoMatch"] = false
 	basePanel["fastFindText"] = ""
 	basePanel["fastFindMatches"] = map[string]any{}
 	basePanel["fastFindMatchColor"] = ""
@@ -498,7 +499,7 @@ func TestAppScenePatchGalleryLayoutUsesSmallStateDelta(t *testing.T) {
 	}
 	for _, unchanged := range []string{
 		"path", "title", "cursor", "cursorEntryId", "galleryColumnCount",
-		"galleryDensities", "galleryColumns", "fastFind", "fastFindText", "fastFindMatches",
+		"galleryDensities", "galleryColumns", "fastFind", "fastFindNoMatch", "fastFindText", "fastFindMatches",
 		"fastFindMatchColor", "selectedCount", "totalCount",
 	} {
 		if _, present := state[unchanged]; present {

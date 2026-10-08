@@ -151,6 +151,8 @@ File panels are a special, highly optimized version of a `Table`.
 *   `Left`/`Right`: Jump one full page (view height) up or down within the *current column*. If at the top/bottom, jump to the top/bottom of the adjacent column. **These keys do not change the active panel.**
 *   `Enter`: Enters a directory or executes a file.
 *   `Ctrl+Enter`: Inserts the selected filename into the command line.
+*   **Qt quick search:** A nonempty query with no matching file is tinted softly
+    red. Finding a match or clearing the query restores the normal text color.
 
 #### Menus (`MenuBar`, `VMenu`)
 
@@ -174,6 +176,14 @@ While `vtui` is keyboard-first, mouse interaction is designed to be consistent a
 *   **Wheel:** Scrolls the component under the cursor, regardless of focus.
 
 By adhering to these rules, we aim to build TUI applications that are powerful, efficient, and a pleasure to use for both novice and expert users.
+### Qt tooltips
+
+Qt host controls use the shared `F4ToolTip` component, including gallery panel
+chrome, workspace tabs, the operations queue and settings buttons. Tooltips use
+the interface font, consistent padding and a subtle tint derived from the live
+control background and accent colors. Shortcut hints retain muted text, and
+tooltip text is plain text so filenames cannot be interpreted as markup.
+
 ### Panel group headings
 
 Group by adds decorative `──── Title ────` rows with a centered title in the

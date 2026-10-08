@@ -91,15 +91,30 @@ Item {
     // align with the command-line input.
     readonly property real preferredX: hostWindow.snapPx(Math.max(0, inputAnchor ? inputRect.x : inputTextX - 12))
     readonly property real rowHeight: hostWindow.snapPx(Math.max(22, hostWindow.ch * 1.15))
+    function itemText(item) {
+        return hostWindow.cleanText(item.text).replace(/\r\n?|\u2028|\u2029/g, "\n")
+    }
+    readonly property real preferredHeight: {
+        let result = 8
+        for (let i = 0; i < Math.min(12, items.length); ++i) {
+            const lines = itemText(items[i]).split("\n").length
+            result += lines === 1 ? rowHeight : Math.max(rowHeight,
+                Math.ceil(lines * autocompleteFontMetrics.height * hostWindow.dpr)
+                    / hostWindow.dpr + hostWindow.snapPx(8))
+        }
+        return result
+    }
     readonly property real maxHeight: Math.max(rowHeight + 8,
                                                commandLineY - hostWindow.menuBarHeight)
     readonly property real availableWidth: Math.max(1,
                                                      hostWindow.width - preferredX - 6)
     readonly property real contentWidth: {
         var widest = 0
-        for (var i = 0; i < items.length; ++i)
-            widest = Math.max(widest, autocompleteFontMetrics.advanceWidth(
-                                  hostWindow.cleanText(items[i].text)))
+        for (var i = 0; i < items.length; ++i) {
+            const lines = itemText(items[i]).split("\n")
+            for (const line of lines)
+                widest = Math.max(widest, autocompleteFontMetrics.advanceWidth(line))
+        }
         return widest + 24
     }
 
@@ -145,7 +160,8 @@ Item {
             : Math.max(hostWindow.menuBarHeight, autocompleteOverlay.commandLineY - height))
         width: hostWindow.snapPx(Math.min(autocompleteOverlay.availableWidth,
                         Math.max(80, autocompleteOverlay.contentWidth)))
-        height: hostWindow.snapPx(Math.min(autocompleteOverlay.maxHeight, Math.max(1, Math.min(12, autocompleteList.count)) * autocompleteOverlay.rowHeight + 8))
+        height: hostWindow.snapPx(Math.min(autocompleteOverlay.maxHeight,
+            Math.max(autocompleteOverlay.rowHeight + 8, autocompleteOverlay.preferredHeight)))
         color: "#202833"
         radius: 4
         border.width: 1
@@ -155,6 +171,7 @@ Item {
 
         ListView {
             id: autocompleteList
+            objectName: "autocompleteList"
             anchors.fill: parent
             anchors.margins: 4
             model: autocompleteOverlay.items
@@ -163,6 +180,10 @@ Item {
                           ? hostWindow.autocompleteSelectedIndex : -1
             boundsBehavior: Flickable.StopAtBounds
             interactive: contentHeight > height
+            ScrollBar.vertical: F4ScrollBar {
+                hostWindow: autocompleteOverlay.hostWindow
+                policy: ScrollBar.AsNeeded
+            }
             onCurrentIndexChanged: {
                 if (currentIndex >= 0)
                     positionViewAtIndex(currentIndex, ListView.Contain)
@@ -173,20 +194,27 @@ Item {
                 objectName: "autocompleteHint-" + index
                 required property int index
                 required property var modelData
+                readonly property string fullText: autocompleteOverlay.itemText(modelData)
+                readonly property bool multiline: fullText.indexOf("\n") >= 0
                 width: ListView.view.width
-                height: autocompleteOverlay.rowHeight
+                height: multiline
+                    ? Math.max(autocompleteOverlay.rowHeight,
+                        Math.ceil(completionMultilineLabel.implicitHeight * hostWindow.dpr)
+                            / hostWindow.dpr + hostWindow.snapPx(8))
+                    : autocompleteOverlay.rowHeight
                 radius: 3
                 color: index === autocompleteList.currentIndex
                        ? hostWindow.selectedBg : "transparent"
 
                 Row {
                     id: completionTextRow
+                    visible: !hintRow.multiline
                     anchors.left: parent.left
                     anchors.right: parent.right
                     y: hostWindow.snapPx((parent.height - height) / 2)
                     anchors.leftMargin: 8
                     anchors.rightMargin: 8
-                    readonly property string fullText: hostWindow.cleanText(modelData.text)
+                    readonly property string fullText: hintRow.fullText
                     readonly property string query: hostWindow.autocompleteQuery
                     readonly property int matchingLength:
                         fullText.toLocaleLowerCase().indexOf(query.toLocaleLowerCase()) === 0
@@ -215,6 +243,56 @@ Item {
                         font.family: hostWindow.uiFontFamily
                         font.pixelSize: (hostWindow ? hostWindow.uiTextSize(13) : 13)
                         elide: Text.ElideRight
+                    }
+                }
+
+                Column {
+                    id: completionMultilineLabel
+                    objectName: "autocompleteMultiline-" + hintRow.index
+                    visible: hintRow.multiline
+                    x: hostWindow.snapPx(8)
+                    y: hostWindow.snapPx(4)
+                    width: Math.max(0, parent.width - hostWindow.snapPx(24))
+                    height: Math.ceil(implicitHeight * hostWindow.dpr) / hostWindow.dpr
+                    Repeater {
+                        model: hintRow.fullText.split("\n")
+                        delegate: Text {
+                            required property int index
+                            required property string modelData
+                            objectName: "autocompleteLogicalLine-" + hintRow.index + "-" + index
+                            width: completionMultilineLabel.width
+                            height: Math.ceil(implicitHeight * hostWindow.dpr) / hostWindow.dpr
+                            property real continuationLineX: 0
+                            readonly property real continuationIndent: hostWindow.snapPx(
+                                autocompleteFontMetrics.advanceWidth("  "))
+                            text: {
+                                const lines = hintRow.fullText.split("\n")
+                                let start = 0
+                                for (let i = 0; i < index; ++i)
+                                    start += lines[i].length + 1
+                                const length = Math.max(0, completionTextRow.matchingLength - start)
+                                const prefix = hostWindow.richTextEscape(modelData.slice(0, length))
+                                const suffix = hostWindow.richTextEscape(modelData.slice(length))
+                                return '<font color="' + hostWindow.dialogAccent + '">'
+                                    + prefix + '</font>' + suffix
+                            }
+                            textFormat: Text.StyledText
+                            wrapMode: Text.Wrap
+                            color: hostWindow.textColor
+                            font.family: hostWindow.uiFontFamily
+                            font.pixelSize: hostWindow.uiTextSize(13)
+                            onLineLaidOut: (line) => {
+                                if (line.number > 0) {
+                                    line.x = continuationIndent
+                                    line.width = Math.max(1, width - continuationIndent)
+                                    continuationLineX = line.x
+                                }
+                            }
+                        }
+                    }
+                    transform: Translate {
+                        x: hostWindow.dialogPixelOffsetX(completionMultilineLabel, hostWindow.contentItem)
+                        y: hostWindow.dialogPixelOffsetY(completionMultilineLabel, hostWindow.contentItem)
                     }
                 }
 

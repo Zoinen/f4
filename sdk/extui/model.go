@@ -186,6 +186,7 @@ type PanelModel struct {
 	Loading                bool
 	CatalogProvisional     bool
 	FastFind               bool
+	FastFindNoMatch        bool
 	FastFindText           string
 	FastFindMatchColor     string
 	FastFindMatches        map[string]FastFindMatchModel
@@ -1032,6 +1033,7 @@ func (p PanelModel) ToMap() M {
 		"loading":                p.Loading,
 		"catalogProvisional":     p.CatalogProvisional,
 		"fastFind":               p.FastFind,
+		"fastFindNoMatch":        p.FastFindNoMatch,
 		"fastFindText":           p.FastFindText,
 		"selectedCount":          p.SelectedCount,
 		"selectedSize":           p.SelectedSize,

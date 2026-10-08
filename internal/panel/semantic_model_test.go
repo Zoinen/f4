@@ -52,6 +52,43 @@ func TestSemanticPanelSortDirectionBeforeAndAfterAction(t *testing.T) {
 	}
 }
 
+func TestSemanticQuickSearchNoMatchState(t *testing.T) {
+	previousRowsCapability := semantic.SetPanelCatalogRowsEnabled(true)
+	t.Cleanup(func() { semantic.SetPanelCatalogRowsEnabled(previousRowsCapability) })
+	fp := &FileSystemPanel{
+		Vfs:     vfs.NewOSVFS(t.TempDir()),
+		Frame:   vtui.NewBorderedFrame(0, 0, 39, 9, vtui.SingleBox, ""),
+		Table:   vtui.NewTable(1, 1, 38, 6, nil),
+		Entries: []*FileEntry{{VFSItem: vfs.VFSItem{Name: "alpha.txt"}}},
+	}
+	for _, tc := range []struct {
+		name    string
+		query   string
+		active  bool
+		noMatch bool
+	}{
+		{name: "no match", query: "missing", active: true, noMatch: true},
+		{name: "match restored", query: "alpha", active: true},
+		{name: "empty search", active: true},
+		{name: "closed search", query: "missing"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fp.FastFindMode = tc.active
+			fp.FastFindStr = tc.query
+			fp.doFastFind(0)
+			node := fp.SemanticPanelModel(nil, 0, true).ToMap()
+			if got := node["fastFindNoMatch"]; got != tc.noMatch {
+				t.Fatalf("fastFindNoMatch = %v, want %v", got, tc.noMatch)
+			}
+			header, ok := fp.semanticPanelHeaderModel(nil, 0, true)
+			if !ok || header.ToMap()["fastFindNoMatch"] != tc.noMatch {
+				t.Fatalf("paged fastFindNoMatch = %v (ok=%v), want %v",
+					header.ToMap()["fastFindNoMatch"], ok, tc.noMatch)
+			}
+		})
+	}
+}
+
 func TestFileSystemPanelSemanticPanelNode(t *testing.T) {
 	tmp := t.TempDir()
 	fp := &FileSystemPanel{
@@ -1800,6 +1837,64 @@ func TestPanelsFrameSemanticGroupingActionTargetsPanelAndPersists(t *testing.T) 
 		"catalogRevision": left.catalogRevision,
 	}) || left.GroupBy != GroupExtension {
 		t.Fatal("invalid grouping mode was accepted")
+	}
+}
+
+func TestPanelsFrameSemanticSortActionPersistsDirection(t *testing.T) {
+	left := NewFileSystemPanel(0, 0, 40, 12, vfs.NewOSVFS(t.TempDir()))
+	right := NewFileSystemPanel(40, 0, 40, 12, vfs.NewOSVFS(t.TempDir()))
+	older := &FileEntry{VFSItem: vfs.VFSItem{Name: "older.png", MTime: time.Unix(100, 0)}}
+	newer := &FileEntry{VFSItem: vfs.VFSItem{Name: "newer.png", MTime: time.Unix(200, 0)}}
+	left.Entries = []*FileEntry{older, newer}
+	pf := &PanelsFrame{Panels: [2]Panel{left, right}, ActiveIdx: 1}
+
+	originalPersist := persistNativePanelLayoutSession
+	defer func() { persistNativePanelLayoutSession = originalPersist }()
+	var saved WorkspaceSessionState
+	persisted := 0
+	persistNativePanelLayoutSession = func(got *PanelsFrame) {
+		if got != pf {
+			t.Fatalf("persisted unexpected PanelsFrame %p, want %p", got, pf)
+		}
+		saved = CaptureWorkspaceSession(got)
+		persisted++
+	}
+
+	if !pf.HandleSemanticAction(map[string]any{
+		"action": "panel.sort", "side": 0, "mode": "time",
+		"panelId": vtui.SemanticID(left), "path": left.Vfs.GetPath(),
+		"catalogRevision": left.catalogRevision,
+	}) {
+		t.Fatal("time sort action was rejected")
+	}
+	if persisted != 1 {
+		t.Fatalf("sort state persistence calls = %d, want 1", persisted)
+	}
+	if saved.Left.SortMode != int(SortTime) || !saved.Left.SortReverse {
+		t.Fatalf("saved sort = mode %d reverse %t, want persisted time newest-first (legacy reverse true)",
+			saved.Left.SortMode, saved.Left.SortReverse)
+	}
+	if got := left.Entries[0].Name; got != newer.Name {
+		t.Fatalf("time sort before restart starts with %q, want newest file %q", got, newer.Name)
+	}
+	saved.Number = 1
+	var serialized strings.Builder
+	WriteWorkspaceSessions(&serialized, []WorkspaceSessionState{saved}, 0)
+	restored, _ := LoadWorkspaceSessions(ini.Parse(strings.NewReader(serialized.String())))
+	if len(restored) != 1 || restored[0].Left.SortMode != int(SortTime) ||
+		!restored[0].Left.SortReverse {
+		t.Fatalf("time newest-first did not survive session round trip: %#v", restored)
+	}
+	restoredPanel := NewFileSystemPanel(0, 0, 40, 12, vfs.NewOSVFS(t.TempDir()))
+	restoredPanel.SortMode = SortMode(restored[0].Left.SortMode)
+	restoredPanel.SortReverse = restored[0].Left.SortReverse
+	restoredPanel.Entries = []*FileEntry{
+		{VFSItem: vfs.VFSItem{Name: older.Name, MTime: older.MTime}},
+		{VFSItem: vfs.VFSItem{Name: newer.Name, MTime: newer.MTime}},
+	}
+	restoredPanel.SortEntries()
+	if got := restoredPanel.Entries[0].Name; got != newer.Name {
+		t.Fatalf("restored time sort starts with %q, want newest file %q", got, newer.Name)
 	}
 }
 

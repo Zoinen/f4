@@ -224,6 +224,8 @@ ApplicationWindow {
     readonly property color inputHoverBg: themePalette.inputHoverBg
     property alias controlPressedBg: themePalette.controlPressedBg
     property alias controlBorder: themePalette.controlBorder
+    readonly property color tooltipBg: themePalette.tooltipBg
+    readonly property color tooltipBorder: themePalette.tooltipBorder
     property alias separatorColor: themePalette.separatorColor
     property alias separatorHoverColor: themePalette.separatorHoverColor
     property alias separatorActiveColor: themePalette.separatorActiveColor
@@ -326,6 +328,13 @@ ApplicationWindow {
         const viewerHost = loader ? loader.item : null
         return viewerHost ? String(viewerHost.tabTitle || "") : ""
     }
+    readonly property bool galleryViewerFileSelected: {
+        if (!galleryControllerApi || !galleryControllerApi.viewerVisible)
+            return false
+        const loader = galleryViewerLayer ? galleryViewerLayer.item : null
+        const viewerHost = loader ? loader.item : null
+        return viewerHost ? Boolean(viewerHost.viewedFileSelected) : false
+    }
 
     function presentedWorkspaceTab(tab) {
         if (!tab || tab.active !== true || galleryViewerTabTitle === ""
@@ -334,6 +343,7 @@ ApplicationWindow {
         return Object.assign({}, tab, {
             text: galleryViewerTabTitle,
             tooltipPrimary: galleryViewerTabTitle,
+            viewedFileSelected: galleryViewerFileSelected,
             surfaceKind: "imageViewer"
         })
     }

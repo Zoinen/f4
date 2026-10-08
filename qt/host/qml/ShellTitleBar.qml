@@ -148,8 +148,12 @@ Item {
         z: 3
         focusPolicy: Qt.StrongFocus
         Accessible.name: "Operations Queue"
-        ToolTip.visible: hovered
-        ToolTip.text: "Operations Queue"
+        F4ToolTip {
+            objectName: "operationsQueueToolTip"
+            hostWindow: titleBar.hostWindow
+            visible: queueButton.hovered
+            text: queueButton.Accessible.name
+        }
         property bool closeQueueOnRelease: false
         onPressed: closeQueueOnRelease = hostWindow.queueDropdownOpen
         onClicked: {

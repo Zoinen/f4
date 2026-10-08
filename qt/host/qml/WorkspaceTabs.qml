@@ -399,7 +399,8 @@ Item {
                         parent: workspaceTabMouseArea
                     }
 
-                    ZG.ToolTip {
+                    F4ToolTip {
+                        hostWindow: workspaceBar.hostWindow
                         objectName: "workspace-tab-tooltip-"
                                     + workspaceTab.objectName
                         visible: workspaceHover.hovered
@@ -554,13 +555,16 @@ Item {
                         anchors.leftMargin: 6
                         anchors.bottom: parent.bottom
                         anchors.bottomMargin: 2
+                        objectName: "workspace-tab-indicator-" + workspaceTab.index
+                        readonly property bool selectedImage: workspaceTab.current
+                            && workspaceTab.presentedTab.viewedFileSelected === true
                         width: Math.max(0, parent.width - 12)
                                * Math.max(0, Math.min(100,
-                                   Number(modelData.progress))) / 100
+                                   selectedImage ? 100 : Number(modelData.progress))) / 100
                         height: 2
                         radius: 1
-                        color: hostWindow.dialogAccent
-                        visible: Number(modelData.progress) >= 0
+                        color: selectedImage ? "#e5bd58" : hostWindow.dialogAccent
+                        visible: selectedImage || Number(modelData.progress) >= 0
                     }
 
                     MouseArea {

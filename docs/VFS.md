@@ -14,6 +14,14 @@ Device names are case-sensitive; duplicate names are disambiguated using
 stable device identifiers. URI providers resolve current discovery results
 when reopening an address and reject missing or ambiguous devices.
 
+NetFox uses the same mapping for `net://<connection>/<path>`. Its remote path
+keeps drive colons and ordinary filename punctuation readable, for example
+`net://HC_SFTP/C:/Users`, rather than publishing transport URL escapes. Older
+escaped addresses remain accepted and are canonicalized when loading/saving
+folder, command-directory and viewer/editor history. Literal percent signs
+and control characters remain escaped to preserve unambiguous round trips;
+never repeatedly URL-decode a native filename.
+
 ## Core Design Principles
 
 ### 1. Context-Aware Operations
