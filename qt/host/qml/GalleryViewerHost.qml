@@ -175,9 +175,31 @@ FocusScope {
                : "transparent"
     }
 
+    Loader {
+        id: osdLoader
+        anchors.fill: parent
+        z: 10
+        property bool opened: false
+        active: opened && !host.docked
+        Connections {
+            target: galleryViewer
+            function onPanelsVisibleChanged() {
+                if (galleryViewer.panelsVisible) osdLoader.opened = true
+            }
+        }
+        sourceComponent: ZG.GalleryViewerOsd {
+            viewer: galleryViewer
+            opacity: host.surfaceProgress * (galleryViewer.panelsVisible ? 1 : 0)
+            visible: opacity > 0
+            Behavior on opacity { NumberAnimation { duration: 150 } }
+        }
+    }
+
     ZG.GalleryViewer {
         id: galleryViewer
         objectName: "embeddedGalleryViewer"
+        scrollBarsRightMargin: panelsVisible && osdLoader.item
+            ? osdLoader.item.rightChromeInset : 0
         animationDuration: host.slowViewerTransition ? 3000 : 150
         anchors.fill: parent
         focus: host.surfaceActive

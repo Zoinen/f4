@@ -166,6 +166,55 @@ func TestDirectoryReconciliationPreservesCursorAndClampsDeletedTail(t *testing.T
 	}
 }
 
+func TestSameDirectoryRefreshKeepsActionDrivenDescendingSort(t *testing.T) {
+	base := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name string
+		mode SortMode
+	}{
+		{name: "newest time first", mode: SortTime},
+		{name: "largest size first", mode: SortSize},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			item := func(name string, rank int) vfs.VFSItem {
+				value := vfs.VFSItem{Name: name}
+				if test.mode == SortTime {
+					value.MTime = base.Add(time.Duration(rank) * time.Hour)
+				} else {
+					value.Size = int64(rank)
+				}
+				return value
+			}
+			panel := &FileSystemPanel{
+				SortMode:                 test.mode,
+				sortDirectionSetByAction: true,
+				Entries: []*FileEntry{
+					{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}},
+					{VFSItem: item("existing.jpg", 2)},
+					{VFSItem: item("older.jpg", 1)},
+				},
+			}
+			refreshed := []*FileEntry{
+				{VFSItem: item("older.jpg", 1)},
+				{VFSItem: item("newest.jpg", 3)},
+				{VFSItem: item("existing.jpg", 2)},
+				{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}},
+			}
+			panel.sortCatalogEntries(refreshed, base.Add(3*time.Hour))
+			if !panel.reconcileDirectoryEntries(refreshed) {
+				t.Fatal("same-directory refresh ignored the inserted file")
+			}
+
+			want := []string{"..", "newest.jpg", "existing.jpg", "older.jpg"}
+			for index, name := range want {
+				if got := panel.Entries[index].Name; got != name {
+					t.Fatalf("refreshed row %d = %q, want %q", index, got, name)
+				}
+			}
+		})
+	}
+}
+
 func TestSameDirectoryRefreshKeepsCatalogDuringReadAndNoOpRevision(t *testing.T) {
 	t.Cleanup(swapFrameManager(t))
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())

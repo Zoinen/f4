@@ -362,13 +362,13 @@ Item {
                         color: hostWindow.separatorColor
                         visible: !workspaceTab.current
                                  && !workspaceTab.hoverActive
-                                 && index + 1
-                                    < workspaceTabsRepeater.count
-                                 && workspaceTabsRepeater.itemAt(index + 1)
-                                 && !workspaceTabsRepeater.itemAt(
-                                        index + 1).hoverActive
-                                 && !workspaceTabsRepeater.itemAt(
-                                        index + 1).current
+                                 && (index + 1 < workspaceTabsRepeater.count
+                                     ? (workspaceTabsRepeater.itemAt(index + 1)
+                                        && !workspaceTabsRepeater.itemAt(
+                                               index + 1).hoverActive
+                                        && !workspaceTabsRepeater.itemAt(
+                                               index + 1).current)
+                                     : (workspaceNew.visible && !newHover.hovered))
                         z: 2
                     }
 

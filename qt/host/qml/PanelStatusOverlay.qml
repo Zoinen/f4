@@ -96,13 +96,13 @@ Rectangle {
             width: content.width
             height: status.hostWindow.snapPx(4)
             radius: height / 2
-            color: Qt.darker(status.hostWindow.controlBorder, 1.6)
+            color: status.hostWindow.themePaletteObject.panelProgressTrackColor
             Rectangle {
                 objectName: "panelStatusSpaceFill-" + Number(status.panel.side || 0)
                 width: status.hostWindow.snapPx(track.width * status.usedFraction)
                 height: track.height
                 radius: track.radius
-                color: status.hostWindow.controlBorder
+                color: status.hostWindow.themePaletteObject.panelProgressFillColor
             }
         }
         PanelStatusMetric {

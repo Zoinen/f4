@@ -44,6 +44,8 @@ Item {
                        Math.max(0, Math.min(1, value)), controlPressedBg.a)
     }
     property color controlBorder: "#3a495b"
+    readonly property color panelProgressFillColor: controlBorder
+    readonly property color panelProgressTrackColor: Qt.darker(panelProgressFillColor, 1.6)
     property color separatorColor: "#2d3642"
     property color separatorHoverColor: "#464d55"
     property color separatorActiveColor: "#59616a"
@@ -161,6 +163,9 @@ Item {
         ZG.GalleryThemePalette {
             panelBackground: palette.galleryPanelBackgroundColor
             viewerBackground: palette.galleryViewerBackgroundColor
+            dialogBackground: palette.dialogBg
+            progressFill: palette.panelProgressFillColor
+            progressTrack: palette.panelProgressTrackColor
             cursor: palette.commandFocusCursorColor(palette.galleryCursorColor)
             cursorBackground: palette.commandFocusCursorColor(palette.galleryCursorBackgroundColor)
             cursorBorder: palette.commandFocusCursorColor(palette.galleryCursorBorderColor)

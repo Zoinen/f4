@@ -1358,6 +1358,12 @@ func (fp *FileSystemPanel) compareEntryOrder(ei, ej *FileEntry) int {
 		} else {
 			cmp = comparePanelNames(leftName, rightName)
 		}
+		if fp.sortDirectionSetByAction && !ei.MTime.Equal(ej.MTime) {
+			// An explicit sort action defaults time to newest-first. Detached
+			// catalogs use this comparator during refresh, so they must preserve
+			// the same effective direction as sortEntriesAt.
+			cmp = -cmp
+		}
 	case SortSize:
 		if ei.Size < ej.Size {
 			cmp = -1
@@ -1365,6 +1371,11 @@ func (fp *FileSystemPanel) compareEntryOrder(ei, ej *FileEntry) int {
 			cmp = 1
 		} else {
 			cmp = comparePanelNames(leftName, rightName)
+		}
+		if fp.sortDirectionSetByAction && ei.Size != ej.Size {
+			// Explicit size sorting defaults to largest-first, just like the
+			// primary comparator in sortEntriesAt.
+			cmp = -cmp
 		}
 	default:
 		cmp = comparePanelNames(leftName, rightName)

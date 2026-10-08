@@ -968,6 +968,7 @@ private slots:
     void panelSplitterCoalescesGoUpdates();
     void workspaceDragHitOnlyAcceptsPanelTabs();
     void workspaceSeparatorBreaksUnderActiveTab();
+    void workspaceLastTabSeparatorPrecedesNewTabButton();
     void workspaceTabWheelActivatesAdjacentTabs();
     void workspaceTabMiddleClickClosesClickedTab();
     void workspaceCloseButtonHasTightHitAreaAndHoverFeedback();
@@ -5827,6 +5828,53 @@ void F4QuickViewSurfaceTests::workspaceSeparatorBreaksUnderActiveTab()
     QTRY_VERIFY_WITH_TIMEOUT(!rightInactiveDivider->isVisible(), 3000);
 }
 
+void F4QuickViewSurfaceTests::workspaceLastTabSeparatorPrecedesNewTabButton()
+{
+    QVariantMap scene = shellScene();
+    scene.insert("workspaceTabs", QVariantMap{
+        {"visible", true},
+        {"tabs", QVariantList{
+             QVariantMap{{"id", "workspace-first"}, {"text", "First"},
+                         {"active", true}},
+             QVariantMap{{"id", "workspace-last"}, {"text", "Last"},
+                         {"active", false}},
+         }},
+        {"newTab", QVariantMap{{"id", "workspace-new"}, {"visible", true},
+                               {"action", "workspace.new"}}},
+    });
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    QQuickItem *divider = nullptr;
+    QTRY_VERIFY((divider = visualItemWithObjectNamePrefix(
+        fixture.window->contentItem(), "workspace-last-divider")));
+    QQuickItem *const lastTab = divider->parentItem();
+    QQuickItem *const plus = fixture.item("workspace-new");
+    QVERIFY(lastTab);
+    QVERIFY(plus);
+    QTRY_VERIFY(divider->isVisible());
+    const auto position = [&](QQuickItem *item) {
+        return item->mapToItem(fixture.window->contentItem(), QPointF{});
+    };
+    const qreal tabEnd = position(lastTab).x() + lastTab->width();
+    const qreal gapCenter = (tabEnd + position(plus).x()) / 2;
+    QVERIFY(qAbs(position(divider).x() + divider->width() / 2 - gapCenter) < 0.51);
+    QCOMPARE(divider->property("color").value<QColor>(),
+             fixture.window->property("separatorColor").value<QColor>());
+    QTest::mouseMove(fixture.window,
+                    (position(plus) + QPointF(plus->width() / 2,
+                                             plus->height() / 2)).toPoint());
+    QTRY_VERIFY(!divider->isVisible());
+    QTest::mouseMove(fixture.window, QPoint(10, 100));
+    QTRY_VERIFY(divider->isVisible());
+    auto tabs = scene.value("workspaceTabs").toMap();
+    auto newTab = tabs.value("newTab").toMap();
+    newTab.insert("visible", false);
+    tabs.insert("newTab", newTab);
+    scene.insert("workspaceTabs", tabs);
+    fixture.shell.setScene(scene);
+    QTRY_VERIFY(!divider->isVisible());
+}
+
 void F4QuickViewSurfaceTests::workspaceCloseButtonHasTightHitAreaAndHoverFeedback()
 {
     QVariantMap scene = shellScene();
@@ -10612,6 +10660,10 @@ void F4QuickViewSurfaceTests::panelStatusLeavesStayOnPhysicalPixelGrid()
                     const auto occupiedColor = fixture.window->property("controlBorder").value<QColor>();
                     QCOMPARE(fill->property("color").value<QColor>(), occupiedColor);
                     QCOMPARE(track->property("color").value<QColor>(), occupiedColor.darker(160));
+                    auto *galleryTheme = fixture.window->property("galleryThemePalette").value<QObject *>();
+                    QVERIFY(galleryTheme);
+                    QCOMPARE(galleryTheme->property("progressFill").value<QColor>(), occupiedColor);
+                    QCOMPARE(galleryTheme->property("progressTrack").value<QColor>(), occupiedColor.darker(160));
                 }
                 QList<QQuickItem *> pending{footer};
                 int leaves = 0;

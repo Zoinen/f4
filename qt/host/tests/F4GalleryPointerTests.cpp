@@ -317,8 +317,11 @@ private slots:
     void semanticGridForwardsConsolePointerEvents();
     void viewerCaptureSurvivesHiddenGridFocusSlip();
     void quickSearchMatchMarkupTracksPanelStateAndPalette();
+    void masonryCursorHighlightsFilenameBackground();
     void menuFocusKeepsNonzeroCursorWithoutIntents();
     void panelCapturesPointerAndAppliesSelectionModifiers();
+    void panelBoundarySelection_data();
+    void panelBoundarySelection();
     void groupedPanelCapturesPointerForGroupedEntries();
     void folderDoubleClickSurvivesAcknowledgementTiming();
     void folderDoubleClickSurvivesStaleLoaderRevisionAndFocusStress();
@@ -1081,6 +1084,73 @@ void F4GalleryPointerTests::quickSearchMatchMarkupTracksPanelStateAndPalette()
     }
 }
 
+void F4GalleryPointerTests::masonryCursorHighlightsFilenameBackground()
+{
+    QQuickView view;
+    view.resize(640, 360);
+    F4GalleryBridge bridge(view.engine());
+    bridge.synchronizeScene(galleryScene(4, 2));
+    view.engine()->rootContext()->setContextProperty("testBridge", &bridge);
+    QQmlComponent component(view.engine());
+    component.setData(R"QML(
+        import QtQuick
+        import ZoinGallery as ZGS
+        Item {
+            width: 640; height: 360
+            Component.onCompleted: ZGS.Style.isDarkTheme = true
+            Loader {
+                objectName: "captionPanelLoader"
+                anchors.fill: parent
+                source: testBridge.panelComponentUrl
+                onLoaded: {
+                    item.side = 0
+                    item.bridge = testBridge
+                    item.panel = {catalogRevision: 5}
+                    item.panelActive = true
+                    item.theme.cursor = "#285d8f"
+                    item.theme.labelBackground = "#aa101216"
+                }
+            }
+        }
+    )QML", QUrl("inline:MasonryCursorCaption.qml"));
+    QTRY_VERIFY(component.status() != QQmlComponent::Loading);
+    QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+    QObject *root = component.create();
+    QVERIFY2(root, qPrintable(component.errorString()));
+    view.setContent(QUrl("inline:MasonryCursorCaption.qml"), &component, root);
+    const auto cleanup = qScopeGuard([&] { delete root; });
+    view.show();
+    auto *loader = root->findChild<QObject *>("captionPanelLoader");
+    QVERIFY(loader);
+    QObject *host = nullptr;
+    QTRY_VERIFY((host = loader->property("item").value<QObject *>()));
+    auto backgroundForRow = [host](int row) -> QQuickItem * {
+        auto *label = host->findChild<QQuickItem *>(
+            QStringLiteral("galleryMasonryLabel-%1").arg(row));
+        if (!label || !label->parentItem()) return nullptr;
+        for (auto *leaf : label->parentItem()->childItems()) {
+            if (leaf != label && leaf->property("color").isValid()) return leaf;
+        }
+        return nullptr;
+    };
+    QTRY_VERIFY(backgroundForRow(2));
+    const QColor cursor("#B33d5d7b");
+    const QColor normal("#aa101216");
+    QTRY_COMPARE(backgroundForRow(2)->property("color").value<QColor>(), cursor);
+    QCOMPARE(backgroundForRow(0)->property("color").value<QColor>(), normal);
+    auto *theme = host->property("theme").value<QObject *>();
+    QVERIFY(theme);
+    theme->setProperty("cursor", QColor("#426aa5"));
+    QTRY_COMPARE(backgroundForRow(2)->property("color").value<QColor>(), cursor);
+    host->setProperty("panelActive", false);
+    QTRY_COMPARE(backgroundForRow(2)->property("color").value<QColor>(), normal);
+    host->setProperty("panelActive", true);
+    bridge.synchronizeScene(galleryScene(4, 0));
+    QTRY_COMPARE(backgroundForRow(0)->property("color").value<QColor>(), cursor);
+    QTRY_COMPARE(backgroundForRow(2)->property("color").value<QColor>(), normal);
+    qInfo() << "[FIX:masonry-caption] original translucent ZoinGallery caption follows cursor and focus";
+}
+
 void F4GalleryPointerTests::menuFocusKeepsNonzeroCursorWithoutIntents()
 {
     QQuickView view;
@@ -1173,6 +1243,105 @@ void F4GalleryPointerTests::menuFocusKeepsNonzeroCursorWithoutIntents()
     QCOMPARE(actions.size(), 0);
     qInfo() << "[FIX:menu-cursor] nonzero cursor survives menu focus without intents; DPR"
             << view.devicePixelRatio();
+}
+
+void F4GalleryPointerTests::panelBoundarySelection_data()
+{
+    QTest::addColumn<bool>("last");
+    QTest::addColumn<bool>("selected");
+    QTest::addColumn<QString>("mode");
+    QTest::addColumn<bool>("fromMiddle");
+    for (const QString &mode : {QStringLiteral("masonry"), QStringLiteral("grid"),
+                               QStringLiteral("details"), QStringLiteral("columns")})
+        for (bool last : {false, true})
+            for (bool selected : {false, true})
+                for (bool fromMiddle : {false, true})
+                    QTest::newRow(qPrintable(QStringLiteral("%1-%2-%3-%4")
+                        .arg(mode, last ? "last" : "first", selected ? "remove" : "add",
+                             fromMiddle ? "moving" : "clamped")))
+                        << last << selected << mode << fromMiddle;
+}
+
+void F4GalleryPointerTests::panelBoundarySelection()
+{
+    QFETCH(bool, last);
+    QFETCH(bool, selected);
+    QFETCH(QString, mode);
+    QFETCH(bool, fromMiddle);
+    QQuickView view;
+    view.engine()->addImportPath(QStringLiteral(":/"));
+    F4GalleryBridge bridge(view.engine());
+    auto scene = galleryScene(4, fromMiddle ? (last ? 1 : 2) : (last ? 3 : 0));
+    auto shell = scene.value("shell").toMap();
+    auto panels = shell.value("panels").toList();
+    auto model = panels.first().toMap();
+    auto entries = model.value("entries").toList();
+    for (int row = 0; row < entries.size(); ++row) {
+        auto entry = entries[row].toMap();
+        entry.insert("name", QStringLiteral("folder-%1").arg(row));
+        entry.insert("selected", selected);
+        entries[row] = entry;
+    }
+    model.insert("entries", entries);
+    panels[0] = model;
+    shell.insert("panels", panels);
+    scene.insert("shell", shell);
+    bridge.synchronizeScene(scene);
+    view.engine()->rootContext()->setContextProperty("pointerBridge", &bridge);
+    QQmlComponent component(view.engine());
+    component.setData(R"QML(
+        import QtQuick
+        Item {
+            width: 640; height: 360
+            Loader {
+                objectName: "boundaryLoader"
+                anchors.fill: parent
+                source: pointerBridge.panelComponentUrl
+                onLoaded: {
+                    item.side = 0
+                    item.bridge = pointerBridge
+                    item.panel = ({ "catalogRevision": 5 })
+                    item.panelActive = true
+                }
+            }
+        }
+    )QML", QUrl("inline:BoundarySelection.qml"));
+    QTRY_VERIFY(component.isReady());
+    QObject *root = component.create();
+    QVERIFY(root);
+    view.setContent(QUrl("inline:BoundarySelection.qml"), &component, root);
+    view.show();
+    auto *loader = root->findChild<QObject *>("boundaryLoader");
+    QVERIFY(loader);
+    QTRY_VERIFY(loader->property("item").value<QObject *>());
+    auto *panel = loader->property("item").value<QObject *>()
+        ->findChild<QQuickItem *>("embeddedGalleryPanel");
+    QVERIFY(panel);
+    QVERIFY(panel->setProperty("presentationMode", mode));
+    auto *layout = panel->findChild<QObject *>("galleryViewportItem");
+    QTRY_COMPARE(layout->property("count").toInt(), 4);
+    panel->forceActiveFocus();
+    QTest::keyPress(&view, Qt::Key_Shift);
+    QTest::keyPress(&view, last ? Qt::Key_End : Qt::Key_Home, Qt::ShiftModifier);
+    QQmlExpression result(view.engine()->rootContext(), panel,
+        QStringLiteral("selectionController.effectiveEntrySelected('entry-%1', %2)")
+            .arg(last ? 3 : 0).arg(selected ? "true" : "false"));
+    QTRY_COMPARE(result.evaluate().toBool(), !selected);
+    if (fromMiddle) {
+        for (int row = 0; row < 4; ++row) {
+            const bool inRange = last ? row >= 1 : row <= 2;
+            QQmlExpression rowSelection(view.engine()->rootContext(), panel,
+                QStringLiteral("selectionController.effectiveEntrySelected('entry-%1', %2)")
+                    .arg(row).arg(selected ? "true" : "false"));
+            QCOMPARE(rowSelection.evaluate().toBool(), inRange ? !selected : selected);
+        }
+    }
+    // Repeating against the clamp must not invert the gesture's intent.
+    QTest::keyPress(&view, last ? Qt::Key_Down : Qt::Key_Up, Qt::ShiftModifier);
+    QCOMPARE(result.evaluate().toBool(), !selected);
+    QTest::keyPress(&view, last ? Qt::Key_PageDown : Qt::Key_PageUp, Qt::ShiftModifier);
+    QCOMPARE(result.evaluate().toBool(), !selected);
+    QTest::keyRelease(&view, Qt::Key_Shift);
 }
 
 void F4GalleryPointerTests::panelCapturesPointerAndAppliesSelectionModifiers()
@@ -2874,6 +3043,127 @@ void F4GalleryPointerTests::viewerRestoresOriginalPointerAndTrackpadSemantics()
 
     const QPoint center = itemCenter(pointerArea);
     QSignalSpy actions(&bridge, &F4GalleryBridge::uiActionRequested);
+
+    // Tab must reveal real viewer chrome, not just toggle an unused bool.
+    QTest::keyClick(&view, Qt::Key_Tab);
+    QTRY_VERIFY(viewer->property("panelsVisible").toBool());
+    auto *osd = viewerHost->findChild<QQuickItem *>(QStringLiteral("galleryViewerOsd"));
+    QVERIFY(osd);
+    QTRY_VERIFY(osd->isVisible());
+    auto *filmstrip = osd->findChild<QQuickItem *>(QStringLiteral("galleryViewerFilmstrip"));
+    QVERIFY(filmstrip);
+    QTRY_COMPARE(filmstrip->property("count").toInt(), 3);
+    auto *filename = osd->findChild<QQuickItem *>(QStringLiteral("galleryViewerOsdFilename"));
+    QVERIFY(filename);
+    QCOMPARE(filename->property("text").toString(), QStringLiteral("wide.png"));
+    auto *filenamePanel = osd->findChild<QQuickItem *>(
+        QStringLiteral("galleryViewerOsdFilenamePanel"));
+    auto *stripPanel = osd->findChild<QQuickItem *>(
+        QStringLiteral("galleryViewerFilmstripPanel"));
+    auto *imagePosition = osd->findChild<QQuickItem *>(
+        QStringLiteral("galleryViewerFilmstripPosition"));
+    QVERIFY(filenamePanel);
+    QVERIFY(stripPanel);
+    QVERIFY(imagePosition);
+    QCOMPARE(filenamePanel->x(), qreal(12));
+    QCOMPARE(stripPanel->y(), qreal(12));
+    auto *verticalBar = viewerHost->findChild<QQuickItem *>(
+        QStringLiteral("galleryViewerVerticalScrollBar"));
+    auto *horizontalBar = viewerHost->findChild<QQuickItem *>(
+        QStringLiteral("galleryViewerHorizontalScrollBar"));
+    QVERIFY(verticalBar);
+    QVERIFY(horizontalBar);
+    const qreal chromeInset = stripPanel->width() + 12;
+    QTRY_COMPARE(viewer->property("scrollBarsRightMargin").toReal(), chromeInset);
+    QTRY_COMPARE(verticalBar->x() + verticalBar->width(),
+                 verticalBar->parentItem()->width() - chromeInset);
+    QTRY_COMPARE(horizontalBar->width(),
+                 horizontalBar->parentItem()->width() - chromeInset);
+    QCOMPARE(imagePosition->property("to").toInt(), 2);
+    QCOMPARE(imagePosition->property("value").toInt(), 1);
+    const QColor dialogColor = viewer->property("theme").value<QObject *>()
+        ->property("dialogBackground").value<QColor>();
+    QColor osdColor = osd->property("background").value<QColor>();
+    QVERIFY(osdColor.lightnessF() > dialogColor.lightnessF());
+    QVERIFY(osdColor.hslSaturationF() < dialogColor.hslSaturationF());
+    QVERIFY(qAbs(osdColor.alphaF() - 0.92) < 0.01);
+    for (const auto &name : {QStringLiteral("galleryViewerFilmstripPositionTrack"),
+                             QStringLiteral("galleryViewerFilmstripPositionFill")}) {
+        auto *part = imagePosition->findChild<QQuickItem *>(name);
+        QVERIFY(part);
+        const QColor color = part->property("color").value<QColor>();
+        const auto themeProperty = name.endsWith(QStringLiteral("Track"))
+            ? "progressTrack" : "progressFill";
+        QCOMPARE(color, viewer->property("theme").value<QObject *>()
+            ->property(themeProperty).value<QColor>());
+    }
+    QVERIFY(osd->findChild<QQuickItem *>(QStringLiteral("galleryViewerExif")));
+    QCOMPARE(actions.size(), 0);
+    QTRY_VERIFY(!osd->property("exif").toList().isEmpty());
+    const auto findOsdItem = [](auto &&self, QQuickItem *root,
+                                const QString &name) -> QQuickItem * {
+        if (root->objectName() == name) return root;
+        for (auto *child : root->childItems()) {
+            if (auto *found = self(self, child, name)) return found;
+        }
+        return nullptr;
+    };
+    QQuickItem *thumbnailImage = nullptr;
+    QTRY_VERIFY((thumbnailImage = findOsdItem(findOsdItem, osd,
+        QStringLiteral("galleryViewerOsdThumbnailImage-0"))));
+    QTRY_VERIFY_WITH_TIMEOUT(!thumbnailImage->property("source").toUrl().isEmpty(), 5000);
+    QTRY_COMPARE_WITH_TIMEOUT(thumbnailImage->property("status").toInt(), 1, 5000);
+    // Filmstrip cells are fixed rectangles, but their decoded bitmaps must
+    // retain the source aspect even when no matching panel thumbnail exists.
+    for (int row = 0; row < imageSizes.size(); ++row) {
+        QQuickItem *image = nullptr;
+        QTRY_VERIFY((image = findOsdItem(findOsdItem, osd,
+            QStringLiteral("galleryViewerOsdThumbnailImage-%1").arg(row))));
+        QTRY_COMPARE_WITH_TIMEOUT(image->property("status").toInt(), 1, 5000);
+        const QSize decoded = image->property("sourceSize").toSize();
+        QVERIFY(decoded.height() > 0);
+        const qreal expected = qreal(imageSizes[row].width()) / imageSizes[row].height();
+        QVERIFY2(qAbs(qreal(decoded.width()) / decoded.height() - expected) < 0.025,
+                 qPrintable(QStringLiteral("row %1: decoded %2x%3, expected aspect %4")
+                     .arg(row).arg(decoded.width()).arg(decoded.height()).arg(expected)));
+    }
+    auto *firstThumbnail = findOsdItem(findOsdItem, osd,
+        QStringLiteral("galleryViewerOsdThumbnail-0"));
+    QVERIFY(firstThumbnail);
+    QTest::mouseClick(&view, Qt::LeftButton, Qt::NoModifier, itemCenter(firstThumbnail));
+    QTRY_COMPARE(viewer->property("presentedIndex").toInt(), 0);
+    QCOMPARE(imagePosition->property("value").toInt(), 0);
+    QCOMPARE(filename->property("text").toString(), QStringLiteral("portrait.png"));
+    // Return to the fixture's initial image before its gesture regressions.
+    auto *secondThumbnail = findOsdItem(findOsdItem, osd,
+        QStringLiteral("galleryViewerOsdThumbnail-1"));
+    QVERIFY(secondThumbnail);
+    const QPoint sliderBottom = imagePosition->mapToScene(
+        QPointF(imagePosition->width() / 2, 1)).toPoint();
+    QTest::mouseClick(&view, Qt::LeftButton, Qt::NoModifier, sliderBottom);
+    QTRY_COMPARE(viewer->property("presentedIndex").toInt(), 2);
+    QTest::mouseClick(&view, Qt::LeftButton, Qt::NoModifier, itemCenter(secondThumbnail));
+    QTRY_COMPARE(viewer->property("presentedIndex").toInt(), 1);
+    osd->setProperty("exif", QVariantList{
+        QVariantMap{{QStringLiteral("title"), true}, {QStringLiteral("text"), "Image"}},
+        QVariantMap{{QStringLiteral("text"), "1440x2560"}},
+        QVariantMap{{QStringLiteral("title"), true}, {QStringLiteral("text"), "Camera"}},
+        QVariantMap{{QStringLiteral("text"), "Camera model"}}});
+    QQuickItem *firstValue = nullptr;
+    QQuickItem *nextTitle = nullptr;
+    QTRY_VERIFY((firstValue = findOsdItem(findOsdItem, osd,
+        QStringLiteral("galleryViewerExifField-1"))));
+    QTRY_VERIFY((nextTitle = findOsdItem(findOsdItem, osd,
+        QStringLiteral("galleryViewerExifField-2"))));
+    QTRY_VERIFY(nextTitle->y() - firstValue->y() - firstValue->height() >= 15);
+    actions.clear();
+    QTest::keyClick(&view, Qt::Key_Tab);
+    QTRY_VERIFY(!viewer->property("panelsVisible").toBool());
+    QTRY_VERIFY(!osd->isVisible());
+    QTRY_COMPARE(viewer->property("scrollBarsRightMargin").toReal(), qreal(0));
+    QTRY_COMPARE(verticalBar->x() + verticalBar->width(),
+                 verticalBar->parentItem()->width());
+    QTRY_COMPARE(horizontalBar->width(), horizontalBar->parentItem()->width());
 
     // The original viewer maps a conventional vertical wheel step to the next
     // or previous image. It must not silently become zoom merely because the

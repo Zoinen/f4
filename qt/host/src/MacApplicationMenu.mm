@@ -123,16 +123,58 @@ struct MacApplicationMenu::Impl
               initWithContext:this callback:&Impl::invokeSettings])
     {
         [target setCommandCallback:&Impl::invokeCommand];
+        auto *self = this;
+        keyMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown
+            handler:^NSEvent *(NSEvent *event) {
+                if (!self->isCommandShortcut(event)) return event;
+                NSWindow *window = [event window] ?: [NSApp keyWindow];
+                NSResponder *responder = [window firstResponder];
+                if (!responder) return event;
+                // The menu bar registers key equivalents with AppKit even
+                // when submenu lookup declines them. Deliver the original
+                // event to Qt's responder before NSApplication picks a fixed
+                // Left/Right menu item, preserving Qt/Go's context routing.
+                qCDebug(menuLog) << "[FIX:native-menu-shortcuts] forwarding to focused responder"
+                                << QString::fromNSString([event charactersIgnoringModifiers]);
+                [responder keyDown:event];
+                return nil;
+            }];
+#if !__has_feature(objc_arc)
+        [keyMonitor retain];
+#endif
     }
 
     ~Impl()
     {
+        [NSEvent removeMonitor:keyMonitor];
+#if !__has_feature(objc_arc)
+        [keyMonitor release];
+#endif
         removeCommandMenus();
         removeInstalledItems();
         [target invalidate];
 #if !__has_feature(objc_arc)
         [target release];
 #endif
+    }
+
+    bool isCommandShortcut(NSEvent *event) const
+    {
+        if (!commandMenuOwner || commandMenuOwner != [NSApp mainMenu]) return false;
+        const auto modifierMask = NSEventModifierFlagControl | NSEventModifierFlagOption
+            | NSEventModifierFlagShift | NSEventModifierFlagCommand;
+        const auto modifiers = [event modifierFlags] & modifierMask;
+        NSString *key = [[event charactersIgnoringModifiers] lowercaseString];
+        if (![key length]) return false;
+        for (NSMenuItem *root in [commandMenuOwner itemArray]) {
+            if (![[root identifier] hasPrefix:@"org.f4.command."]) continue;
+            for (NSMenuItem *item in [[root submenu] itemArray]) {
+                if ([item isEnabled] && [[item keyEquivalent] isEqualToString:key]
+                    && ([item keyEquivalentModifierMask] & modifierMask) == modifiers)
+                    return true;
+            }
+        }
+        return false;
     }
 
     static void invokeSettings(void *context)
@@ -348,6 +390,7 @@ struct MacApplicationMenu::Impl
     QVariantList commandItems;
     NSMenu *commandMenuOwner = nil;
     F4SettingsMenuTarget *target = nil;
+    id keyMonitor = nil;
     NSMenu *applicationMenu = nil;
     NSMenuItem *settingsItem = nil;
     NSMenuItem *separatorItem = nil;

@@ -62,6 +62,22 @@ func (fp *FileSystemPanel) reconcileDirectoryEntries(next []*FileEntry) bool {
 		}
 	}
 	if changed {
+		if fp.sortDirectionSetByAction &&
+			(fp.SortMode == SortTime || fp.SortMode == SortSize) {
+			mode, direction := "time", "newest-first"
+			if fp.SortMode == SortSize {
+				mode, direction = "size", "largest-first"
+			}
+			if fp.SortReverse {
+				if fp.SortMode == SortTime {
+					direction = "oldest-first"
+				} else {
+					direction = "smallest-first"
+				}
+			}
+			vtui.DebugLog("[FIX:panel-sort-refresh] mode=%s direction=%s rows=%d->%d",
+				mode, direction, len(fp.Entries), len(next))
+		}
 		fp.catalogRefreshDelta = extui.M{"baseCatalogRevision": fp.catalogRevision, "oldTotalCount": len(fp.Entries), "ranges": ranges}
 		fp.Entries = next
 		fp.CursorIdx = nextCursor

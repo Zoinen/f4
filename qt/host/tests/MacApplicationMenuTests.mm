@@ -4,6 +4,14 @@
 
 #import <AppKit/AppKit.h>
 
+@interface F4ShortcutTestResponder : NSView
+@property NSUInteger keyCount;
+@end
+@implementation F4ShortcutTestResponder
+- (BOOL)acceptsFirstResponder { return YES; }
+- (void)keyDown:(NSEvent *)event { (void)event; ++_keyCount; }
+@end
+
 namespace
 {
 class ScopedApplicationMenu
@@ -138,6 +146,34 @@ private slots:
     void initTestCase()
     {
         [NSApplication sharedApplication];
+    }
+
+    void duplicatedPanelShortcutsReachFocusedResponder()
+    {
+        ScopedApplicationMenu fixture;
+        QVariantMap received;
+        MacApplicationMenu menu([] {}, [&received](const QVariantMap &action) { received = action; });
+        QVERIFY(menu.install());
+        QVariantMap child{{"index", 0}, {"text", "Name"}, {"shortcut", "Ctrl+F3"}};
+        menu.synchronize({{"items", QVariantList{
+            QVariantMap{{"index", 0}, {"text", "Left"}, {"items", QVariantList{child}}},
+            QVariantMap{{"index", 4}, {"text", "Right"}, {"items", QVariantList{child}}}}}});
+
+        NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 200, 100)
+            styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
+        F4ShortcutTestResponder *responder = [[F4ShortcutTestResponder alloc] initWithFrame:NSMakeRect(0, 0, 200, 100)];
+        [window setContentView:responder];
+        QVERIFY([window makeFirstResponder:responder]);
+        NSString *characters = [NSString stringWithCharacters:(const unichar[]){NSF3FunctionKey} length:1];
+        NSEvent *key = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint
+            modifierFlags:NSEventModifierFlagControl timestamp:0 windowNumber:[window windowNumber]
+            context:nil characters:characters charactersIgnoringModifiers:characters isARepeat:NO keyCode:99];
+        [NSApp sendEvent:key];
+        QCOMPARE([responder keyCount], NSUInteger(1));
+        QVERIFY(received.isEmpty());
+        [window setContentView:nil];
+        [responder release];
+        [window release];
     }
 
     void settingsItemIsStandardIdempotentAndActionable()
