@@ -1366,6 +1366,29 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
     QCOMPARE(draftValues().value("diskLimitMiB").toInt(), 2048);
     QCOMPARE(clearLabel->property("text").toString(), clearText);
     QVERIFY(clearCache->isEnabled());
+    auto *galleryViewport = visualItemWithObjectName(body, "nativeSettingsViewport");
+    QVERIFY(galleryViewport);
+    // The native settings page is clipped by a Flickable; show its full height
+    // so the rendered-pixel checks inspect the actual text leaves.
+    const qreal pageContentHeight = galleryPage->implicitHeight();
+    const qreal viewportHeight = galleryViewport->height();
+    if (pageContentHeight > viewportHeight) {
+        const int additionalHeight = qCeil(pageContentHeight - viewportHeight) + 2;
+        fixture.window->resize(fixture.window->width(),
+                               fixture.window->height() + additionalHeight);
+    }
+    QTRY_VERIFY(galleryViewport->height() >= galleryPage->implicitHeight());
+    auto *quickVideoModeText = visualItemWithObjectName(
+        galleryPage, "galleryQuickVideoPlaybackModeText");
+    QVERIFY(quickVideoModeText);
+    const QRectF quickVideoModeRect = quickVideoModeText->mapRectToItem(
+        galleryViewport, quickVideoModeText->boundingRect());
+    QVERIFY2(quickVideoModeRect.top() >= 0
+                 && quickVideoModeRect.bottom() <= galleryViewport->height(),
+             qPrintable(QStringLiteral("quick video mode text is clipped by its viewport: %1..%2 of %3")
+                            .arg(quickVideoModeRect.top())
+                            .arg(quickVideoModeRect.bottom())
+                            .arg(galleryViewport->height())));
     QTest::qWait(150);
     leaves = 0;
     inspect(inspect, galleryPage);
@@ -1397,7 +1420,6 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
                      qPrintable(name + QStringLiteral(" rendered no visible glyphs")));
         }
     }
-    auto *galleryViewport = visualItemWithObjectName(body, "nativeSettingsViewport");
     auto *quickHeading = visualItemWithObjectName(galleryPage, "galleryQuickViewTitle");
     auto *builtin = visualItemWithObjectName(galleryPage, "galleryBuiltinQuickView");
     auto *hover = visualItemWithObjectName(galleryPage, "galleryHoverQuickView");
