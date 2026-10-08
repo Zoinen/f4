@@ -33,7 +33,7 @@ require (
 	github.com/unxed/sevenzip v0.1.7
 	github.com/unxed/tar v0.1.141
 	github.com/unxed/vtinput v0.1.11
-	github.com/unxed/vtui v0.1.398-0.20261008152336-0dbbaf7f558c
+	github.com/unxed/vtui v0.1.398-0.20261008203304-fc68cea45dc8
 	github.com/unxed/zip v0.1.143
 	github.com/unxed/zipper v0.1.176
 	github.com/vmihailenco/msgpack/v5 v5.4.1
@@ -134,7 +134,7 @@ require (
 	github.com/ncruces/go-sqlite3 v0.35.2
 	github.com/ncruces/go-sqlite3-wasm/v3 v3.2.35303 // indirect
 	github.com/ncruces/julianday v1.0.0 // indirect
-	github.com/neurlang/wayland v0.4.4 // indirect
+	github.com/neurlang/wayland v0.4.5-0.20261007184820-37f4fac9bad0 // indirect
 	github.com/neurlang/winc v0.1.2 // indirect
 	github.com/nwaples/rardecode/v2 v2.4.1
 	github.com/pierrec/lz4/v4 v4.1.27 // indirect
@@ -163,8 +163,6 @@ require (
 replace github.com/ebitengine/purego => github.com/unxed/pureffi v0.1.21
 
 replace github.com/ebitengine/hideconsole => ./internal/hideconsole
-
-replace github.com/neurlang/wayland => github.com/unxed/wayland v0.4.5-0.20260929195943-eab109b70429
 
 replace github.com/go-webgpu/goffi => github.com/unxed/goffi v0.1.11
 
