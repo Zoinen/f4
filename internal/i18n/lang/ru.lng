@@ -150,6 +150,7 @@ vtui.HistoryClearConfirm=Очистить всю историю?
 
 Panel.Other=&Другая панель
 Panel.AutoFilterTitle= Фильтр
+Panel.AutoFilterExact=Точное соответствие
 Panel.Column.Name=Имя
 Panel.Column.Size=Размер
 Panel.Column.Modified=Изменён

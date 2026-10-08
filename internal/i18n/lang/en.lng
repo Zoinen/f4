@@ -150,6 +150,7 @@ vtui.HistoryClearConfirm=Clear entire history?
 
 Panel.Other=&Other panel
 Panel.AutoFilterTitle= Filter
+Panel.AutoFilterExact=Exact match
 Panel.Column.Name=Name
 Panel.Column.Size=Size
 Panel.Column.Modified=Modified

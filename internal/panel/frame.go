@@ -2811,6 +2811,11 @@ func (pf *PanelsFrame) VetoActionKey(e *vtinput.InputEvent) bool {
 	if e.VirtualKeyCode == vtinput.VK_RETURN && ctrl && !alt {
 		return true
 	}
+	// Ctrl+E flips the filter's exact-match option; it is the command line's
+	// history key elsewhere.
+	if e.VirtualKeyCode == vtinput.VK_E && ctrl && !alt && !shift && fsp.autoFilterMode {
+		return true
+	}
 	switch e.VirtualKeyCode {
 	case vtinput.VK_ADD, vtinput.VK_SUBTRACT, vtinput.VK_MULTIPLY:
 		return true
