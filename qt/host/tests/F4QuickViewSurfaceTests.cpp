@@ -1416,26 +1416,28 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
                          qPrintable(name + QStringLiteral(" rendered no visible glyphs")));
             }
         };
-        galleryViewport->setProperty("contentY", 0.0);
-        QTest::qWait(150);
+        const auto scrollLabelIntoView = [&](QQuickItem *anchor) {
+            const QRectF anchorRect = anchor->mapRectToItem(
+                galleryViewport, anchor->boundingRect());
+            const qreal desiredTop = qMax(
+                0.0, (galleryViewport->height() - anchorRect.height()) / 2.0);
+            const qreal targetContentY = galleryViewport->property("contentY").toReal()
+                + anchorRect.top() - desiredTop;
+            galleryViewport->setProperty("contentY", qMax(0.0, targetContentY));
+            QTRY_VERIFY(anchor->mapRectToItem(
+                            galleryViewport, anchor->boundingRect()).top() >= 0);
+            QTRY_VERIFY(anchor->mapRectToItem(
+                            galleryViewport, anchor->boundingRect()).bottom()
+                        <= galleryViewport->height());
+            QTest::qWait(150);
+        };
+        scrollLabelIntoView(fullVideoModeText);
         captureAndVerifyVideoLabels(
             galleryCapture,
             {QStringLiteral("galleryFullVideoPlaybackTitle"),
              QStringLiteral("galleryFullVideoPlaybackModeText")});
 
-        const QRectF quickModeRect = quickVideoModeText->mapRectToItem(
-            galleryViewport, quickVideoModeText->boundingRect());
-        const qreal desiredQuickModeTop = qMax(
-            0.0, (galleryViewport->height() - quickModeRect.height()) / 2.0);
-        const qreal targetContentY = galleryViewport->property("contentY").toReal()
-            + quickModeRect.top() - desiredQuickModeTop;
-        galleryViewport->setProperty("contentY", qMax(0.0, targetContentY));
-        QTRY_VERIFY(quickVideoTitle->mapRectToItem(
-                        galleryViewport, quickVideoTitle->boundingRect()).top() >= 0);
-        QTRY_VERIFY(quickVideoModeText->mapRectToItem(
-                        galleryViewport, quickVideoModeText->boundingRect()).bottom()
-                    <= galleryViewport->height());
-        QTest::qWait(150);
+        scrollLabelIntoView(quickVideoModeText);
         captureAndVerifyVideoLabels(
             galleryCapture + QStringLiteral("-quick-video.png"),
             {QStringLiteral("galleryQuickVideoPlaybackTitle"),
