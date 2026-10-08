@@ -1874,10 +1874,10 @@ func (ev *EditorView) DisplayObject(scr *vtui.ScreenBuf) {
 			// -- same glyph, same column, only its colour changes -- marks
 			// the wrap without moving a single column of text.
 			if shouldDrawWrapMark(fIdx, len(frags), startX, maxX) {
-				scr.Write(maxX, currY, vtui.StringToCharInfo("»", vtui.Palette[theme.ColEditorWrapMark]))
+				scr.Write(maxX, currY, vtui.StringToCharInfo("»", ev.wrapMarkAttr()))
 			} else if wrapMarkNeedsOverlay(fIdx, len(frags), startX, maxX) {
 				cell := scr.GetCell(maxX, currY)
-				cell.Attributes = vtui.Palette[theme.ColEditorWrapMark]
+				cell.Attributes = ev.wrapMarkAttr()
 				scr.Write(maxX, currY, []vtui.CharInfo{cell})
 			}
 
@@ -1968,6 +1968,16 @@ DoneRendering:
 			ev.scrollBar.Show(scr)
 		}
 	}
+}
+
+// wrapMarkAttr is the colour of the wrap glyph: the theme's Editor.WrapMark,
+// on the background the text is really drawn on. A theme that gives the mark
+// the text's background means it to sit on the text, and when Colorer paints
+// the editor with a background of its own the mark would otherwise show as a
+// blue (or whatever the theme's) square at the end of each wrapped row
+// (f4#1232).
+func (ev *EditorView) wrapMarkAttr() uint64 {
+	return theme.OnTextBackground(theme.ColEditorWrapMark, theme.ColEditorText, ev.colorerBaseAttr())
 }
 
 // shouldDrawWrapMark reports whether the row just rendered — fragment fIdx
