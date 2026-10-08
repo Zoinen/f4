@@ -61,6 +61,7 @@ func TestAutoFilterWindowHasExactMatchCheckbox(t *testing.T) {
 	}
 
 	// A click on the line turns it on and narrows the list to nothing.
+	// #nosec G115 -- screen coordinates of an 80x25 test panel.
 	click := &vtinput.InputEvent{
 		Type: vtinput.MouseEventType, KeyDown: true,
 		MouseX: int16(fp.exactBoxX1 + 1), MouseY: int16(fp.exactBoxY),
