@@ -15,9 +15,8 @@ import (
 // the name only selects it (f4#918).
 type toolsOptionsList struct {
 	*vtui.ListBox
-	onToggle  func(idx int)
-	onSelect  func(idx int)
-	onDefault func(idx int)
+	onToggle func(idx int)
+	onSelect func(idx int)
 }
 
 func (l *toolsOptionsList) ProcessMouse(e *vtinput.InputEvent) bool {
@@ -120,7 +119,7 @@ func (pf *PanelsFrame) ShowToolsOptions() {
 		list.Items[idx] = toolsOptionsRowText(!hidden[name], names[idx])
 		list.UpdateRows()
 	}
-	list.ListBox.OnKeyDown = func(e *vtinput.InputEvent) bool {
+	list.OnKeyDown = func(e *vtinput.InputEvent) bool {
 		switch {
 		case e.VirtualKeyCode == vtinput.VK_SPACE || e.Char == ' ':
 			list.onToggle(list.SelectPos)

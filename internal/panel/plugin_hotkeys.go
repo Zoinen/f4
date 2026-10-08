@@ -530,7 +530,9 @@ func PluginMenuKeyLabels(pf *PanelsFrame) *vtui.KeySet {
 			return &labels
 		}
 	}
-	return &vtui.KeySet{Normal: vtui.KeyBarLabels{"", "", "", "F4", "", "", "", "", "F9"}}
+	labels := &vtui.KeySet{Normal: vtui.KeyBarLabels{"", "", "", "F4"}}
+	labels.Normal[8] = "F9"
+	return labels
 }
 
 // PluginHotkeyActionsSnapshot includes commands that are currently hidden from

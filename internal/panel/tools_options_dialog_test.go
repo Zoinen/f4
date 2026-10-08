@@ -95,7 +95,7 @@ func TestToolsOptionsWindowTogglesToolsAndKnowsWhichHaveSettings(t *testing.T) {
 	_, list, button := findToolsOptionsDialog(t)
 
 	var texts []string
-	var alpha int = -1
+	alpha := -1
 	for i, item := range list.Items {
 		texts = append(texts, item)
 		if strings.Contains(item, "Alpha tool") {
