@@ -1,6 +1,6 @@
 module github.com/unxed/f4
 
-go 1.26.9
+go 1.26.6
 
 require (
 	github.com/abadojack/whatlanggo v1.0.1

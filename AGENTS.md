@@ -94,7 +94,7 @@ artifacts/       # build artifacts
 | `internal/app/api.go` | `coreAPI`, the host surface plugins are given |
 | `internal/app/actions_table.go`, `internal/action/registry.go` | Action definitions and dispatch |
 | `embedded.go` | Assets embedded into the binary |
-| `go.mod` | Module `github.com/unxed/f4`, Go 1.26.9, dependency set |
+| `go.mod` | Module `github.com/unxed/f4`, Go 1.26.6, dependency set |
 | `flake.nix`, `flake.lock`, `packaging/nix/` | Nix package, overlay, dev shell and Home Manager module |
 | `f4.example.ini` | Reference configuration file |
 | `highlight.ini` | Syntax highlighting configuration |
