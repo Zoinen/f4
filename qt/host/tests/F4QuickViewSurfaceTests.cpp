@@ -1368,6 +1368,15 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
     QCOMPARE(draftValues().value("diskLimitMiB").toInt(), 2048);
     QCOMPARE(clearLabel->property("text").toString(), clearText);
     QVERIFY(clearCache->isEnabled());
+    auto *galleryViewport = visualItemWithObjectName(body, "nativeSettingsViewport");
+    QVERIFY(galleryViewport);
+    auto *fullVideoModeText = visualItemWithObjectName(
+        galleryPage, "galleryFullVideoPlaybackModeText");
+    auto *quickVideoTitle = visualItemWithObjectName(
+        galleryPage, "galleryQuickVideoPlaybackTitle");
+    auto *quickVideoModeText = visualItemWithObjectName(
+        galleryPage, "galleryQuickVideoPlaybackModeText");
+    QVERIFY(fullVideoModeText && quickVideoTitle && quickVideoModeText);
     QTest::qWait(150);
     leaves = 0;
     inspect(inspect, galleryPage);
@@ -1376,30 +1385,66 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
     QVERIFY(visualItemWithObjectName(galleryPage, "galleryDecoderFormats-0"));
     const auto galleryCapture = qEnvironmentVariable("F4_GALLERY_SETTINGS_CAPTURE");
     if (!galleryCapture.isEmpty()) {
-        const QImage capture = fixture.window->grabWindow();
-        QVERIFY(!capture.isNull());
-        QVERIFY(capture.save(galleryCapture));
-        for (const QString &name : {QStringLiteral("galleryFullVideoPlaybackTitle"),
-                                    QStringLiteral("galleryFullVideoPlaybackModeText"),
-                                    QStringLiteral("galleryQuickVideoPlaybackTitle"),
-                                    QStringLiteral("galleryQuickVideoPlaybackModeText")}) {
-            QQuickItem *item = visualItemWithObjectName(galleryPage, name);
-            QVERIFY(item && item->isVisible());
-            const QPointF origin = item->mapToItem(fixture.window->contentItem(), QPointF{});
-            const QRect rect(qRound(origin.x() * dpr), qRound(origin.y() * dpr),
-                             qRound(item->width() * dpr), qRound(item->height() * dpr));
-            QVERIFY2(capture.rect().contains(rect), qPrintable(name));
-            const QImage leaf = capture.copy(rect);
-            QSet<QRgb> colors;
-            for (int y = 0; y < leaf.height(); ++y) {
-                for (int x = 0; x < leaf.width(); ++x)
-                    colors.insert(leaf.pixel(x, y));
+        const auto captureAndVerifyVideoLabels = [&](const QString &capturePath,
+                                                     const QStringList &names) {
+            const QImage capture = fixture.window->grabWindow();
+            QVERIFY(!capture.isNull());
+            QVERIFY(capture.save(capturePath));
+            for (const QString &name : names) {
+                QQuickItem *item = visualItemWithObjectName(galleryPage, name);
+                QVERIFY(item && item->isVisible());
+                const QRectF viewportRect = item->mapRectToItem(
+                    galleryViewport, item->boundingRect());
+                QVERIFY2(viewportRect.top() >= 0
+                             && viewportRect.bottom() <= galleryViewport->height(),
+                         qPrintable(QStringLiteral("%1 clipped by native settings viewport: %2..%3 of %4")
+                                        .arg(name)
+                                        .arg(viewportRect.top())
+                                        .arg(viewportRect.bottom())
+                                        .arg(galleryViewport->height())));
+                const QPointF origin = item->mapToItem(
+                    fixture.window->contentItem(), QPointF{});
+                const QRect rect(qRound(origin.x() * dpr), qRound(origin.y() * dpr),
+                                 qRound(item->width() * dpr),
+                                 qRound(item->height() * dpr));
+                QVERIFY2(capture.rect().contains(rect), qPrintable(name));
+                const QImage leaf = capture.copy(rect);
+                QSet<QRgb> colors;
+                for (int y = 0; y < leaf.height(); ++y) {
+                    for (int x = 0; x < leaf.width(); ++x)
+                        colors.insert(leaf.pixel(x, y));
+                }
+                QVERIFY2(colors.size() > 1,
+                         qPrintable(name + QStringLiteral(" rendered no visible glyphs")));
             }
-            QVERIFY2(colors.size() > 1,
-                     qPrintable(name + QStringLiteral(" rendered no visible glyphs")));
-        }
+        };
+        const auto scrollLabelIntoView = [&](QQuickItem *anchor) {
+            const QRectF anchorRect = anchor->mapRectToItem(
+                galleryViewport, anchor->boundingRect());
+            const qreal desiredTop = qMax(
+                0.0, (galleryViewport->height() - anchorRect.height()) / 2.0);
+            const qreal targetContentY = galleryViewport->property("contentY").toReal()
+                + anchorRect.top() - desiredTop;
+            galleryViewport->setProperty("contentY", qMax(0.0, targetContentY));
+            QTRY_VERIFY(anchor->mapRectToItem(
+                            galleryViewport, anchor->boundingRect()).top() >= 0);
+            QTRY_VERIFY(anchor->mapRectToItem(
+                            galleryViewport, anchor->boundingRect()).bottom()
+                        <= galleryViewport->height());
+            QTest::qWait(150);
+        };
+        scrollLabelIntoView(fullVideoModeText);
+        captureAndVerifyVideoLabels(
+            galleryCapture,
+            {QStringLiteral("galleryFullVideoPlaybackTitle"),
+             QStringLiteral("galleryFullVideoPlaybackModeText")});
+
+        scrollLabelIntoView(quickVideoModeText);
+        captureAndVerifyVideoLabels(
+            galleryCapture + QStringLiteral("-quick-video.png"),
+            {QStringLiteral("galleryQuickVideoPlaybackTitle"),
+             QStringLiteral("galleryQuickVideoPlaybackModeText")});
     }
-    auto *galleryViewport = visualItemWithObjectName(body, "nativeSettingsViewport");
     auto *quickHeading = visualItemWithObjectName(galleryPage, "galleryQuickViewTitle");
     auto *builtin = visualItemWithObjectName(galleryPage, "galleryBuiltinQuickView");
     auto *hover = visualItemWithObjectName(galleryPage, "galleryHoverQuickView");

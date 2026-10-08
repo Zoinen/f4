@@ -3,7 +3,8 @@
 **Date:** 2026-10-08 MSK
 **Files:** `third_party/ZoinGallery/qml/ViewerResample.qml`,
 `third_party/ZoinGallery/tests/ViewerResampleGpuTest.cpp`,
-`ci/patch-qt-dependencies.py`, `ci/test_patch_qt_dependencies.py`
+`ci/patch-qt-dependencies.py`, `ci/test_patch_qt_dependencies.py`,
+`ci/patch-qt-recipe.sh`
 **Tags:** Qt Quick, video, GPU, resampling, Linux audio, CI, Conan
 
 ## Windowed playback
@@ -40,6 +41,14 @@ recipe patcher used a broad `with_libalsa` marker: ConanCenter's separate
 the original validation guard as a conflicting prior patch. The patcher now
 recognizes the complete validation replacement, and a regression test includes
 the unrelated package-info branch. The focused patch suite passes (5 tests).
+
+## macOS Bash compatibility
+
+The macOS Qt-host job then exposed a shell compatibility issue before recipe
+patching: the system Bash 3.2 treats expansion of an empty optional argument
+array as an unbound variable under `set -u`. The recipe helper now passes the
+optional `--linux-audio` flag through explicit branches, avoiding empty-array
+expansion. The Darwin Qt-host job is the platform-specific regression check.
 
 ## Verification limits
 
