@@ -13,7 +13,11 @@ uploader = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(uploader)
 
 
-def package_index(catalog_name: str, recipe_revision: str = "recipe-revision") -> dict:
+def package_index(
+    catalog_name: str,
+    recipe_revision: str = "recipe-revision",
+    package_revision: str = "package-revision",
+) -> dict:
     return {
         catalog_name: {
             "qt/6.11.1": {
@@ -21,11 +25,13 @@ def package_index(catalog_name: str, recipe_revision: str = "recipe-revision") -
                     recipe_revision: {
                         "packages": {
                             "x86-package": {
+                                "revisions": {package_revision: {}},
                                 "info": {
                                     "settings": {"os": "Linux", "arch": "x86_64"}
                                 }
                             },
                             "arm-package": {
+                                "revisions": {package_revision: {}},
                                 "info": {
                                     "settings": {"os": "Linux", "arch": "armv8"}
                                 }
@@ -44,7 +50,7 @@ class ConanPublicationGateTests(unittest.TestCase):
 
         self.assertEqual(
             uploader.package_revisions_for_arch(data, "qt/6.11.1", "armv8"),
-            {("recipe-revision", "arm-package")},
+            {("recipe-revision", "arm-package", "package-revision")},
         )
 
     def test_remote_package_architecture_is_verified(self) -> None:
@@ -87,6 +93,31 @@ class ConanPublicationGateTests(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(SystemExit, "cannot read the uploaded packages"):
+            uploader.verify_uploaded_packages(
+                local_packages,
+                old_remote,
+                "armv8",
+                "test remote",
+                "f4-conan-upload",
+            )
+
+    def test_old_package_revision_does_not_count_as_rebuilt_binary(self) -> None:
+        local = package_index("Local Cache")
+        old_remote = package_index(
+            "f4-conan-upload",
+            package_revision="old-package-revision",
+        )
+        local_packages = uploader.verify_required_packages(
+            local,
+            ["qt/6.11.1"],
+            "armv8",
+            "test local cache",
+        )
+
+        with self.assertRaisesRegex(
+            SystemExit,
+            "qt/6.11.1#recipe-revision:arm-package#package-revision",
+        ):
             uploader.verify_uploaded_packages(
                 local_packages,
                 old_remote,

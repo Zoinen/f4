@@ -278,6 +278,38 @@ _PULSEAUDIO_GENERATE_PATCH = _PULSEAUDIO_GENERATE_ANCHOR + (
 )
 _PULSEAUDIO_FEATURE_MARKER = 'tc.variables["FEATURE_pulseaudio"] = "ON"'
 _ALSA_FEATURE_MARKER = 'tc.variables["FEATURE_alsa"] = "OFF"'
+_PULSEAUDIO_FIND_MODULE_ANCHOR = '''if(TARGET WrapPulseAudio::WrapPulseAudio)
+    set(WrapPulseAudio_FOUND ON)
+    return()
+endif()
+'''
+_PULSEAUDIO_FIND_MODULE_PATCH = _PULSEAUDIO_FIND_MODULE_ANCHOR + '''
+# Conan CMakeDeps exports PulseAudio as pulseaudio::pulse instead of the
+# legacy PULSEAUDIO_LIBRARY and PULSEAUDIO_INCLUDE_DIR variables.
+find_package(pulseaudio CONFIG QUIET)
+if(TARGET pulseaudio::pulse)
+    add_library(WrapPulseAudio::WrapPulseAudio INTERFACE IMPORTED)
+    target_link_libraries(WrapPulseAudio::WrapPulseAudio
+                          INTERFACE pulseaudio::pulse)
+    set(WrapPulseAudio_FOUND ON)
+    return()
+endif()
+'''
+_PULSEAUDIO_FIND_MODULE_MARKER = 'find_package(pulseaudio CONFIG QUIET)'
+_PULSEAUDIO_SOURCE_PATCH_MARKER = 'pulseaudio_finder = os.path.join'
+_PULSEAUDIO_SOURCE_PATCH = (
+    '        pulseaudio_finder = os.path.join(\n'
+    '            self.source_folder, "qtmultimedia", "cmake",\n'
+    '            "FindWrapPulseAudio.cmake"\n'
+    '        )\n'
+    '        replace_in_file(\n'
+    '            self,\n'
+    '            pulseaudio_finder,\n'
+    f'            {_PULSEAUDIO_FIND_MODULE_ANCHOR!r},\n'
+    f'            {_PULSEAUDIO_FIND_MODULE_PATCH!r},\n'
+    '            strict=True,\n'
+    '        )\n'
+)
 _QUICK_PACKAGE_GUARD_ANCHOR = "        cmake.install()\n"
 _QUICK_PACKAGE_GUARD_MARKER = "missing_quick_libraries = []"
 _QUICK_PACKAGE_GUARD = '''        if cross_building(self) and self.options.qtdeclarative and self.options.qtshadertools and self.options.gui:
@@ -438,7 +470,30 @@ def _patch_linux_audio(text: str) -> str:
         raise SystemExit(
             "unexpected Qt recipe: audio-enabled Linux builds must preserve Qt's FFmpeg gate"
         )
+    if _PULSEAUDIO_SOURCE_PATCH_MARKER not in text:
+        source_anchor = '        apply_conandata_patches(self)\n'
+        if text.count(source_anchor) != 1:
+            raise SystemExit(
+                "unexpected Qt recipe: source patch anchor is absent or ambiguous"
+            )
+        text = text.replace(
+            source_anchor,
+            source_anchor + _PULSEAUDIO_SOURCE_PATCH,
+        )
     return text
+
+
+def _patch_pulseaudio_finder(text: str) -> str:
+    if _PULSEAUDIO_FIND_MODULE_MARKER in text:
+        return text
+    if text.count(_PULSEAUDIO_FIND_MODULE_ANCHOR) != 1:
+        raise SystemExit(
+            "unexpected Qt source: PulseAudio finder anchor is absent or ambiguous"
+        )
+    return text.replace(
+        _PULSEAUDIO_FIND_MODULE_ANCHOR,
+        _PULSEAUDIO_FIND_MODULE_PATCH,
+    )
 
 
 def _patch_host_path(text: str) -> str:
@@ -491,6 +546,10 @@ def main() -> None:
     )
     if args.linux_audio:
         patched = _patch_linux_audio(patched)
+        print(
+            "[FIX] Qt Linux audio recipe bridges WrapPulseAudio to "
+            "Conan's pulseaudio::pulse target"
+        )
     if patched != text:
         args.recipe.write_text(patched, encoding="utf-8")
 

@@ -93,6 +93,8 @@ if candidates:
             if [[ "${qt_recipe_mode}" == "linux-audio" ]] && \
                 { ! grep -Fq 'tc.variables["FEATURE_pulseaudio"] = "ON"' "${reusable_qt_recipe}/conanfile.py" || \
                   ! grep -Fq 'tc.variables["FEATURE_alsa"] = "OFF"' "${reusable_qt_recipe}/conanfile.py" || \
+                  ! grep -Fq 'pulseaudio_finder = os.path.join' "${reusable_qt_recipe}/conanfile.py" || \
+                  ! grep -Fq 'find_package(pulseaudio CONFIG QUIET)' "${reusable_qt_recipe}/conanfile.py" || \
                   grep -Fq 'OR QNX OR LINUX OR' "${reusable_qt_recipe}/conanfile.py"; }; then
                 echo "Ignoring Qt recipe revision ${reusable_qt_recipe_revision}; its Linux audio configuration is stale"
             else
@@ -120,11 +122,13 @@ cp "${qt_recipe}/conanfile.py" \
     "${qt_recipe}/qtmodules6.11.1.conf" \
     "${qt_recipe_copy}/"
 
-qt_patch_args=()
 if [[ "${qt_recipe_mode}" == "linux-audio" ]]; then
-    qt_patch_args+=(--linux-audio)
+    "${python_command}" ci/patch-qt-dependencies.py \
+        --linux-audio "${qt_recipe_copy}/conanfile.py"
+else
+    "${python_command}" ci/patch-qt-dependencies.py \
+        "${qt_recipe_copy}/conanfile.py"
 fi
-"${python_command}" ci/patch-qt-dependencies.py "${qt_patch_args[@]}" "${qt_recipe_copy}/conanfile.py"
 
 if [[ "${target_arch}" == "arm64" ]]; then
     "${python_command}" ci/patch-qt-qmltools-recipe.py "${qt_recipe_copy}/conanfile.py"
@@ -170,6 +174,10 @@ if [[ "${qt_recipe_mode}" == "linux-audio" ]]; then
     grep -Fq 'tc.variables["FEATURE_pulseaudio"] = "ON"' \
         "${qt_recipe_copy}/conanfile.py"
     grep -Fq 'tc.variables["FEATURE_alsa"] = "OFF"' \
+        "${qt_recipe_copy}/conanfile.py"
+    grep -Fq 'pulseaudio_finder = os.path.join' \
+        "${qt_recipe_copy}/conanfile.py"
+    grep -Fq 'find_package(pulseaudio CONFIG QUIET)' \
         "${qt_recipe_copy}/conanfile.py"
     if grep -Fq 'OR QNX OR LINUX OR' "${qt_recipe_copy}/conanfile.py"; then
         echo "error: Linux audio recipe unexpectedly bypasses Qt's FFmpeg gate" >&2

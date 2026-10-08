@@ -13,7 +13,7 @@ import sys
 def package_revisions_for_arch(
     data: dict, recipe_ref: str, expected_arch: str, remote_name: str = ""
 ) -> set:
-    """Return exact recipe/package IDs for binaries of one architecture."""
+    """Return exact recipe/package revisions for binaries of one architecture."""
     catalog_name = remote_name or "Local Cache"
     catalog = data.get(catalog_name, {})
     recipe = catalog.get(recipe_ref, {})
@@ -22,7 +22,10 @@ def package_revisions_for_arch(
         for package_id, package in revision.get("packages", {}).items():
             settings = package.get("info", {}).get("settings", {})
             if str(settings.get("arch", "")) == expected_arch:
-                package_revisions.add((recipe_revision, package_id))
+                for package_revision in package.get("revisions", {}):
+                    package_revisions.add(
+                        (recipe_revision, package_id, package_revision)
+                    )
     return package_revisions
 
 
@@ -62,8 +65,12 @@ def verify_uploaded_packages(
         available = package_revisions_for_arch(
             data, recipe_ref, expected_arch, remote_name
         )
-        for recipe_revision, package_id in sorted(expected - available):
-            missing.append(f"{recipe_ref}#{recipe_revision}:{package_id}")
+        for recipe_revision, package_id, package_revision in sorted(
+            expected - available
+        ):
+            missing.append(
+                f"{recipe_ref}#{recipe_revision}:{package_id}#{package_revision}"
+            )
     if missing:
         raise SystemExit(
             f"{source} cannot read the uploaded packages: {', '.join(missing)}"
@@ -171,7 +178,9 @@ def main() -> int:
         read_remote_name = os.environ.get("F4_CONAN_REMOTE_NAME", "f4-conan")
         for verify_remote in dict.fromkeys((remote_name, read_remote_name)):
             for recipe_ref in required_refs:
-                remote_data = list_recipe_packages(f"{recipe_ref}:*", verify_remote)
+                remote_data = list_recipe_packages(
+                    f"{recipe_ref}:*#*", verify_remote
+                )
                 verify_uploaded_packages(
                     {recipe_ref: required_packages[recipe_ref]},
                     remote_data,
