@@ -34,8 +34,8 @@ require (
 	github.com/unxed/tar v0.1.141
 	github.com/unxed/vtinput v0.1.11
 	github.com/unxed/vtui v0.1.398-0.20261008203304-fc68cea45dc8
-	github.com/unxed/zip v0.1.144
-	github.com/unxed/zipper v0.1.177
+	github.com/unxed/zip v0.1.145
+	github.com/unxed/zipper v0.1.178
 	github.com/vmihailenco/msgpack/v5 v5.4.1
 	github.com/woozymasta/png v1.2.0
 	github.com/yuin/gopher-lua v1.1.1
