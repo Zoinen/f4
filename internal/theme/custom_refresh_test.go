@@ -100,6 +100,8 @@ func TestApplyColorStyle_CustomFileGainsNewKeys(t *testing.T) {
 
 // The file's own line ending survives, and a file without the section is left alone.
 func TestAddMissingColorKeys_KeepsCRLFAndIgnoresFilesWithoutTheSection(t *testing.T) {
+	// The export reads the palette; run alone (or first in a shuffled run) it is still empty.
+	SetDefaultF4Palette()
 	dir := t.TempDir()
 	crlf := filepath.Join(dir, "crlf.ini")
 	if err := os.WriteFile(crlf, []byte("[style]\r\nName = Custom\r\n\r\n[farcolors]\r\nPanel.Text = foreground:#ffffff | background:#000000\r\n"), 0o600); err != nil {
