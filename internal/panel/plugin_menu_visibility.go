@@ -2,6 +2,7 @@ package panel
 
 import (
 	"path/filepath"
+	"strings"
 
 	"github.com/unxed/f4/internal/config"
 	"github.com/unxed/f4/internal/plughost"
@@ -54,4 +55,48 @@ func SavePluginMenuHidden(names []string) error {
 // LoadPluginMenuHidden is the stored list of hidden action names, in order.
 func LoadPluginMenuHidden() ([]string, error) {
 	return LoadDisabledDriveTools(PluginMenuVisibilityFilePath())
+}
+
+// SetPluginMenuEntryHidden hides or shows one entry and stores the list at
+// once. The other names in the file, those of plugins not loaded now included,
+// are kept.
+func SetPluginMenuEntryHidden(actionName string, hidden bool) error {
+	names, err := LoadPluginMenuHidden()
+	if err != nil {
+		return err
+	}
+	out := make([]string, 0, len(names)+1)
+	present := false
+	for _, name := range names {
+		if name == actionName {
+			present = true
+			if !hidden {
+				continue
+			}
+		}
+		out = append(out, name)
+	}
+	if hidden && !present {
+		out = append(out, actionName)
+	}
+	return SavePluginMenuHidden(out)
+}
+
+// pluginConfigCommandFor finds the command that configures the tool whose menu
+// command has the given ID. A plugin names the two as a pair in one namespace,
+// "<namespace>.open" and "<namespace>.configure" (f4.envman.open and
+// f4.envman.configure, visren.open and visren.configure, and so on), and the
+// configuration one is registered at the PluginCommandConfig location.
+func pluginConfigCommandFor(commandID string, app vfs.App) (vfs.PluginCommand, bool) {
+	dot := strings.LastIndex(commandID, ".")
+	if dot <= 0 {
+		return vfs.PluginCommand{}, false
+	}
+	want := strings.ToLower(commandID[:dot] + ".configure")
+	for _, command := range plughost.PluginCommandsSnapshot(vfs.PluginCommandConfig, app) {
+		if strings.ToLower(command.ID) == want {
+			return command, true
+		}
+	}
+	return vfs.PluginCommand{}, false
 }

@@ -6053,11 +6053,9 @@ func (pf *PanelsFrame) ShowPluginMenu() {
 		}
 	}
 	if len(entries) == 0 {
-		// Everything is hidden: the only useful thing left is the page that
+		// Everything is hidden: the only useful thing left is the window that
 		// brings the entries back.
-		if OpenSettingsCategoryOnly == nil || !OpenSettingsCategoryOnly("plugins") {
-			vtui.ShowMessage(" Plugins ", "Every entry of the F11 menu is hidden in the settings.", []string{"&Ok"})
-		}
+		pf.ShowToolsOptions()
 		return
 	}
 	RefreshPluginMenuEntries(entries)
@@ -6097,12 +6095,10 @@ func (pf *PanelsFrame) ShowPluginMenu() {
 		idx := menu.SelectPos
 		switch e.VirtualKeyCode {
 		case vtinput.VK_F9:
-			// As in the drive menu, F9 opens the settings page for what this
-			// menu lists: here, which entries it shows.
-			if OpenSettingsCategoryOnly != nil {
-				menu.Close()
-				OpenSettingsCategoryOnly("plugins")
-			}
+			// F9 opens the tools window: which entries this menu shows, and
+			// the settings of each tool (f4#918).
+			menu.Close()
+			pf.ShowToolsOptions()
 			return true
 		case vtinput.VK_F4:
 			if idx >= 0 && idx < len(entries) {

@@ -1603,6 +1603,9 @@ Dialog.RenameTitle= Rename
 Dialog.RenamePrompt=Rename '%s' to:
 
 Plugins.Title= Manage Plugins (RPC)
+Plugins.ToolsOptionsTitle=Tools options
+Plugins.ToolsOptionsEmpty=No tools are registered.
+Plugins.ToolsOptionsSettings=Settings
 Plugins.BtnAdd=&Add
 Plugins.BtnRemove=&Remove
 Plugins.BtnPermissions=&Permissions

@@ -1603,6 +1603,9 @@ Dialog.RenameTitle= Переименование
 Dialog.RenamePrompt=Переименовать '%s' в:
 
 Plugins.Title= Управление плагинами (RPC)
+Plugins.ToolsOptionsTitle=Параметры инструментов
+Plugins.ToolsOptionsEmpty=Инструментов нет.
+Plugins.ToolsOptionsSettings=Настройки
 Plugins.BtnAdd=&Добавить
 Plugins.BtnRemove=&Удалить
 Plugins.BtnPermissions=&Разрешения

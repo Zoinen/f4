@@ -204,9 +204,12 @@ func IsPluginMenuHotkey(key string) bool { return pluginMenuHotkeyRune(key) != 0
 type PluginMenuEntry struct {
 	Label      string
 	ActionName string
-	Declared   string // shortcut declared by the plugin itself
-	Chord      string
-	Hotkey     string
+	// CommandID is the registered plugin command behind the entry; empty for a
+	// row a plugin added with RegisterPluginMenuItem.
+	CommandID string
+	Declared  string // shortcut declared by the plugin itself
+	Chord     string
+	Hotkey    string
 }
 
 // applyBinding splits what is currently configured for the entry into an
@@ -283,6 +286,7 @@ func buildPluginMenuEntries(items []plughost.PluginMenuItem, commands []vfs.Plug
 		entries = append(entries, PluginMenuEntry{
 			Label:      plughost.PluginCommandDisplayLabel(command),
 			ActionName: keymap.PluginCommandActionName(command.ID),
+			CommandID:  command.ID,
 			Declared:   command.Shortcut,
 		})
 	}
