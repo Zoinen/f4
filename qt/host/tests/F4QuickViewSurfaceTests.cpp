@@ -985,6 +985,7 @@ private slots:
     void compactChromeUpdatesWorkspaceTabsWithoutRebuildingPanels();
     void panelPathBarsToggleWithoutLosingContent();
     void panelExpandButtonsShareHoverAndRestore();
+    void tooltipsShareThemeTintAndTypography();
     void panelSplitterCoalescesGoUpdates();
     void panelSplitterShowsPercentageWhileDragging();
     void workspaceDragHitOnlyAcceptsPanelTabs();
@@ -1071,6 +1072,7 @@ private slots:
     void autocompleteSelectionPreviewsAndRestoresQuery();
     void autocompleteOutsideClickDismissesWithoutChangingText();
     void autocompleteHoverFollowsPopupResize();
+    void autocompleteMultilineRowsDoNotOverlap();
     void widePanelDoesNotRevealTerminalBackdrop();
     void shortenedPanelsRevealTerminalRows();
     void mediaInfoReportShowsAndScrollsAt175Percent();
@@ -1367,6 +1369,15 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
     QCOMPARE(draftValues().value("diskLimitMiB").toInt(), 2048);
     QCOMPARE(clearLabel->property("text").toString(), clearText);
     QVERIFY(clearCache->isEnabled());
+    auto *galleryViewport = visualItemWithObjectName(body, "nativeSettingsViewport");
+    QVERIFY(galleryViewport);
+    auto *fullVideoModeText = visualItemWithObjectName(
+        galleryPage, "galleryFullVideoPlaybackModeText");
+    auto *quickVideoTitle = visualItemWithObjectName(
+        galleryPage, "galleryQuickVideoPlaybackTitle");
+    auto *quickVideoModeText = visualItemWithObjectName(
+        galleryPage, "galleryQuickVideoPlaybackModeText");
+    QVERIFY(fullVideoModeText && quickVideoTitle && quickVideoModeText);
     QTest::qWait(150);
     leaves = 0;
     inspect(inspect, galleryPage);
@@ -1375,30 +1386,66 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
     QVERIFY(visualItemWithObjectName(galleryPage, "galleryDecoderFormats-0"));
     const auto galleryCapture = qEnvironmentVariable("F4_GALLERY_SETTINGS_CAPTURE");
     if (!galleryCapture.isEmpty()) {
-        const QImage capture = fixture.window->grabWindow();
-        QVERIFY(!capture.isNull());
-        QVERIFY(capture.save(galleryCapture));
-        for (const QString &name : {QStringLiteral("galleryFullVideoPlaybackTitle"),
-                                    QStringLiteral("galleryFullVideoPlaybackModeText"),
-                                    QStringLiteral("galleryQuickVideoPlaybackTitle"),
-                                    QStringLiteral("galleryQuickVideoPlaybackModeText")}) {
-            QQuickItem *item = visualItemWithObjectName(galleryPage, name);
-            QVERIFY(item && item->isVisible());
-            const QPointF origin = item->mapToItem(fixture.window->contentItem(), QPointF{});
-            const QRect rect(qRound(origin.x() * dpr), qRound(origin.y() * dpr),
-                             qRound(item->width() * dpr), qRound(item->height() * dpr));
-            QVERIFY2(capture.rect().contains(rect), qPrintable(name));
-            const QImage leaf = capture.copy(rect);
-            QSet<QRgb> colors;
-            for (int y = 0; y < leaf.height(); ++y) {
-                for (int x = 0; x < leaf.width(); ++x)
-                    colors.insert(leaf.pixel(x, y));
+        const auto captureAndVerifyVideoLabels = [&](const QString &capturePath,
+                                                     const QStringList &names) {
+            const QImage capture = fixture.window->grabWindow();
+            QVERIFY(!capture.isNull());
+            QVERIFY(capture.save(capturePath));
+            for (const QString &name : names) {
+                QQuickItem *item = visualItemWithObjectName(galleryPage, name);
+                QVERIFY(item && item->isVisible());
+                const QRectF viewportRect = item->mapRectToItem(
+                    galleryViewport, item->boundingRect());
+                QVERIFY2(viewportRect.top() >= 0
+                             && viewportRect.bottom() <= galleryViewport->height(),
+                         qPrintable(QStringLiteral("%1 clipped by native settings viewport: %2..%3 of %4")
+                                        .arg(name)
+                                        .arg(viewportRect.top())
+                                        .arg(viewportRect.bottom())
+                                        .arg(galleryViewport->height())));
+                const QPointF origin = item->mapToItem(
+                    fixture.window->contentItem(), QPointF{});
+                const QRect rect(qRound(origin.x() * dpr), qRound(origin.y() * dpr),
+                                 qRound(item->width() * dpr),
+                                 qRound(item->height() * dpr));
+                QVERIFY2(capture.rect().contains(rect), qPrintable(name));
+                const QImage leaf = capture.copy(rect);
+                QSet<QRgb> colors;
+                for (int y = 0; y < leaf.height(); ++y) {
+                    for (int x = 0; x < leaf.width(); ++x)
+                        colors.insert(leaf.pixel(x, y));
+                }
+                QVERIFY2(colors.size() > 1,
+                         qPrintable(name + QStringLiteral(" rendered no visible glyphs")));
             }
-            QVERIFY2(colors.size() > 1,
-                     qPrintable(name + QStringLiteral(" rendered no visible glyphs")));
-        }
+        };
+        const auto scrollLabelIntoView = [&](QQuickItem *anchor) {
+            const QRectF anchorRect = anchor->mapRectToItem(
+                galleryViewport, anchor->boundingRect());
+            const qreal desiredTop = qMax(
+                0.0, (galleryViewport->height() - anchorRect.height()) / 2.0);
+            const qreal targetContentY = galleryViewport->property("contentY").toReal()
+                + anchorRect.top() - desiredTop;
+            galleryViewport->setProperty("contentY", qMax(0.0, targetContentY));
+            QTRY_VERIFY(anchor->mapRectToItem(
+                            galleryViewport, anchor->boundingRect()).top() >= 0);
+            QTRY_VERIFY(anchor->mapRectToItem(
+                            galleryViewport, anchor->boundingRect()).bottom()
+                        <= galleryViewport->height());
+            QTest::qWait(150);
+        };
+        scrollLabelIntoView(fullVideoModeText);
+        captureAndVerifyVideoLabels(
+            galleryCapture,
+            {QStringLiteral("galleryFullVideoPlaybackTitle"),
+             QStringLiteral("galleryFullVideoPlaybackModeText")});
+
+        scrollLabelIntoView(quickVideoModeText);
+        captureAndVerifyVideoLabels(
+            galleryCapture + QStringLiteral("-quick-video.png"),
+            {QStringLiteral("galleryQuickVideoPlaybackTitle"),
+             QStringLiteral("galleryQuickVideoPlaybackModeText")});
     }
-    auto *galleryViewport = visualItemWithObjectName(body, "nativeSettingsViewport");
     auto *quickHeading = visualItemWithObjectName(galleryPage, "galleryQuickViewTitle");
     auto *builtin = visualItemWithObjectName(galleryPage, "galleryBuiltinQuickView");
     auto *hover = visualItemWithObjectName(galleryPage, "galleryHoverQuickView");
@@ -2952,6 +2999,26 @@ void F4QuickViewSurfaceTests::fastFindOverlayIsIndependentFromPanelFooter()
     QTRY_VERIFY_WITH_TIMEOUT(overlayCursor->isVisible(), 1000);
     QCOMPARE(overlayText->property("text").toString(),
              QStringLiteral("needle"));
+    const QColor normalSearchColor = overlayText->property("color").value<QColor>();
+    projectedPanel.insert(QStringLiteral("fastFindNoMatch"), true);
+    fixture.shell.deliverCompactPresentation({
+        {QStringLiteral("type"), QStringLiteral("scene_patch")},
+        {QStringLiteral("side"), 0},
+        {QStringLiteral("panel"), projectedPanel},
+    });
+    QTRY_VERIFY(overlayText->property("color").value<QColor>() != normalSearchColor);
+    const QColor noMatchColor = overlayText->property("color").value<QColor>();
+    QVERIFY(noMatchColor.red() > noMatchColor.green());
+    QVERIFY(noMatchColor.green() > 0);
+    QCOMPARE(overlayCursor->property("color").value<QColor>(), noMatchColor);
+    projectedPanel.insert(QStringLiteral("fastFindNoMatch"), false);
+    fixture.shell.deliverCompactPresentation({
+        {QStringLiteral("type"), QStringLiteral("scene_patch")},
+        {QStringLiteral("side"), 0},
+        {QStringLiteral("panel"), projectedPanel},
+    });
+    QTRY_COMPARE(overlayText->property("color").value<QColor>(), normalSearchColor);
+    qInfo() << "[FIX:quick-search-no-match] red tint and recovery verified";
     QVERIFY(overlayCursor->x() > overlayText->x());
     QVERIFY(overlayCursor->x() < overlayText->x() + overlayText->width());
     const qreal dpr = fixture.window->property("dpr").toReal();
@@ -5737,6 +5804,42 @@ void F4QuickViewSurfaceTests::panelSplitterShowsPercentageWhileDragging()
     }
 }
 
+void F4QuickViewSurfaceTests::tooltipsShareThemeTintAndTypography()
+{
+    QuickViewFixture fixture(shellScene());
+    QVERIFY(fixture.window);
+    auto *expandButton = visualItemWithObjectNamePrefix(fixture.window->contentItem(), "panelExpandButton-1");
+    auto *rendererButton = visualItemWithObjectNamePrefix(fixture.window->contentItem(), "panelRendererButton-1");
+    auto *queueButton = fixture.item("operationsQueueButton");
+    QVERIFY(expandButton);
+    QVERIFY(rendererButton);
+    QVERIFY(queueButton);
+    auto *expand = expandButton->findChild<QObject *>("panelExpandToolTip-1");
+    auto *renderer = rendererButton->findChild<QObject *>("panelRendererToolTip-1");
+    auto *queue = queueButton->findChild<QObject *>("operationsQueueToolTip");
+    QVERIFY(expand);
+    QVERIFY(renderer);
+    QVERIFY(queue);
+    const QColor original = fixture.window->property("tooltipBg").value<QColor>();
+    QVERIFY(original != fixture.window->property("controlBg").value<QColor>());
+    QVERIFY(original.blue() > original.red());
+    for (auto *tip : {expand, renderer, queue}) {
+        QCOMPARE(tip->property("surfaceColor").value<QColor>(), original);
+        QCOMPARE(tip->property("outlineColor").value<QColor>(),
+                 fixture.window->property("tooltipBorder").value<QColor>());
+        QCOMPARE(tip->property("font").value<QFont>(),
+                 fixture.window->property("font").value<QFont>());
+        QCOMPARE(tip->property("delay").toInt(), 500);
+        QCOMPARE(tip->property("timeout").toInt(), 5000);
+    }
+    fixture.window->setProperty("dialogAccent", QColor("#ab607e"));
+    QTRY_VERIFY(fixture.window->property("tooltipBg").value<QColor>() != original);
+    for (auto *tip : {expand, renderer, queue}) {
+        QTRY_COMPARE(tip->property("surfaceColor").value<QColor>(),
+                     fixture.window->property("tooltipBg").value<QColor>());
+    }
+}
+
 void F4QuickViewSurfaceTests::panelExpandButtonsShareHoverAndRestore()
 {
     QVariantMap scene = shellScene();
@@ -6660,6 +6763,13 @@ void F4QuickViewSurfaceTests::quickViewRetainsViewerAcrossPresentationChanges()
     fixture.gallery.showViewer(QUrl("qrc:/F4QtHost/qml/GalleryViewerHost.qml"), session);
     QQuickItem *viewer = nullptr;
     QTRY_VERIFY((viewer = fixture.item("embeddedGalleryViewer")));
+    auto *viewerHost = viewer->parentItem();
+    QVERIFY(viewerHost);
+    QTRY_VERIFY(!viewerHost->property("viewedFileSelected").toBool());
+    QVERIFY(session->applyExternalState("image", 0, {"image"}, 2));
+    QTRY_VERIFY(viewerHost->property("viewedFileSelected").toBool());
+    QVERIFY(session->applyExternalState("image", 0, {}, 3));
+    QTRY_VERIFY(!viewerHost->property("viewedFileSelected").toBool());
     auto *viewport = viewer->property("flickableArea").value<QQuickItem *>();
     QVERIFY(viewport);
     QTRY_VERIFY(viewport->property("imageTextureReady").toBool());
@@ -6800,7 +6910,7 @@ void F4QuickViewSurfaceTests::quickViewRetainsViewerAcrossPresentationChanges()
         {"entryId", "missing"}, {"index", 0}, {"name", "missing.png"},
         {"localPath", directory.filePath("missing.png")}, {"isDir", false}, {"isImage", true}
     }}, 2));
-    QVERIFY(session->applyExternalState("missing", 0, {}, 2));
+    QVERIFY(session->applyExternalState("missing", 0, {}, 4));
     fixture.gallery.quickView["entryId"] = "missing";
     emit fixture.gallery.viewerChanged();
     auto *failure = fixture.item("galleryViewerLoadFailure");
@@ -6960,6 +7070,7 @@ Rectangle {
     property real devicePixelRatio
     property real surfaceProgress: 1
     property string tabTitle: "roof.jpg — 25%"
+    property bool viewedFileSelected: false
     MouseArea { anchors.fill: parent }
 })QML");
     viewerFile.close();
@@ -6992,6 +7103,20 @@ Rectangle {
     QVERIFY(innerLoader);
     auto *viewer = innerLoader->property("item").value<QObject *>();
     QVERIFY(viewer);
+    auto *indicator = visualItemWithObjectName(fixture.window->contentItem(), "workspace-tab-indicator-0");
+    auto *otherIndicator = visualItemWithObjectName(fixture.window->contentItem(), "workspace-tab-indicator-1");
+    QVERIFY(indicator && otherIndicator);
+    QVERIFY(!indicator->isVisible());
+    viewer->setProperty("viewedFileSelected", true);
+    QTRY_VERIFY(indicator->isVisible());
+    QCOMPARE(indicator->width(), originalTab->width() - 12);
+    QCOMPARE(indicator->height(), qreal(2));
+    QCOMPARE(indicator->y(), originalTab->height() - 4);
+    QCOMPARE(indicator->property("color").value<QColor>(), QColor("#e5bd58"));
+    QVERIFY(!otherIndicator->isVisible());
+    viewer->setProperty("viewedFileSelected", false);
+    QTRY_VERIFY(!indicator->isVisible());
+    viewer->setProperty("viewedFileSelected", true);
     viewer->setProperty("surfaceProgress", 0.5);
     QTRY_COMPARE(fixture.window->property("normalSurfaceOpacity").toReal(), 0.5);
     auto *splitter = fixture.item("mainPanelSplitter");
@@ -7018,6 +7143,7 @@ Rectangle {
     QCOMPARE(title->mapToItem(fixture.window->contentItem(), QPointF(0,1)) - origin, QPointF(0,1));
     fixture.gallery.showViewer(QUrl{});
     QTRY_COMPARE(title->property("text").toString(), QString("Photos"));
+    QTRY_VERIFY(!indicator->isVisible());
     QCOMPARE(title->opacity(), 1.0);
     QCOMPARE(originalTab->width(), folderWidth);
     QTest::qWait(220);
@@ -11313,6 +11439,49 @@ void F4QuickViewSurfaceTests::dialogAutocompleteAnchorsToSearchInput()
         historyOpened |= intent.value("action").toString() == "control.history"
             && intent.value("target").toString() == "search-input";
     QVERIFY(historyOpened);
+}
+
+void F4QuickViewSurfaceTests::autocompleteMultilineRowsDoNotOverlap()
+{
+    QVariantMap scene = shellScene();
+    scene.insert("menus", QVariantList{QVariantMap{
+        {"id", "autocomplete-menu"}, {"kind", "menu"}, {"role", "autocomplete"},
+        {"query", "process"}, {"selected", 0},
+        {"items", QVariantList{
+            QVariantMap{{"text", "process\n--model lite\n--prompt \"<hello>&\" " + QString(100, 'x')}},
+            QVariantMap{{"text", "process\u2028--variants 2\u2029last line"}},
+            QVariantMap{{"text", "process --help"}},
+        }},
+    }});
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    auto *root = fixture.window->contentItem();
+    QQuickItem *first = nullptr;
+    QQuickItem *second = nullptr;
+    QTRY_VERIFY((first = visualItemWithObjectName(root, "autocompleteHint-0")));
+    QTRY_VERIFY((second = visualItemWithObjectName(root, "autocompleteHint-1")));
+    auto *suffix = visualItemWithObjectName(root, "autocompleteSuffix-0");
+    QVERIFY(suffix);
+    QTRY_VERIFY(first->height() >= suffix->implicitHeight() + 8);
+    auto *multiline = visualItemWithObjectName(root, "autocompleteMultiline-0");
+    QVERIFY(multiline);
+    QTRY_VERIFY(multiline->isVisible());
+    auto *wrapped = visualItemWithObjectName(root, "autocompleteLogicalLine-0-2");
+    QVERIFY(wrapped);
+    wrapped->setWidth(150);
+    QTRY_VERIFY(wrapped->property("lineCount").toInt() > 1);
+    QTRY_VERIFY(wrapped->property("continuationLineX").toReal() > 0);
+    auto *explicitLine = visualItemWithObjectName(root, "autocompleteLogicalLine-0-1");
+    QVERIFY(explicitLine);
+    QCOMPARE(explicitLine->x(), wrapped->x());
+    QTRY_VERIFY(second->mapToScene(QPointF()).y()
+                >= first->mapToScene(QPointF(0, first->height())).y());
+    const qreal dpr = fixture.window->devicePixelRatio();
+    const QPointF origin = multiline->mapToScene(QPointF()) * dpr;
+    QVERIFY(qAbs(origin.x() - qRound(origin.x())) < 0.01);
+    QVERIFY(qAbs(origin.y() - qRound(origin.y())) < 0.01);
+    QVERIFY(!fixture.window->grabWindow().isNull());
+    qInfo() << "[FIX:autocomplete-multiline] preserved line breaks and nonoverlapping rows";
 }
 
 void F4QuickViewSurfaceTests::autocompleteHoverFollowsPopupResize()

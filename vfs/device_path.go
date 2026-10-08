@@ -17,13 +17,17 @@ type DevicePath struct {
 }
 
 func devicePathSegment(value string) string {
+	return escapeDevicePathSegment(value, "%/\\?#@:")
+}
+
+func escapeDevicePathSegment(value, delimiters string) string {
 	// These are f4 addresses, not network URLs: Unicode, spaces and apostrophes
 	// remain readable, while delimiters and literal percent signs round-trip.
 	const hex = "0123456789ABCDEF"
 	var encoded strings.Builder
 	for i := 0; i < len(value); i++ {
 		c := value[i]
-		if c < 32 || c == 127 || strings.ContainsRune("%/\\?#@:", rune(c)) {
+		if c < 32 || c == 127 || strings.ContainsRune(delimiters, rune(c)) {
 			encoded.WriteByte('%')
 			encoded.WriteByte(hex[c>>4])
 			encoded.WriteByte(hex[c&15])
@@ -53,7 +57,15 @@ func (d DevicePath) Root() string {
 
 // Public qualifies a native device-side absolute path.
 func (d DevicePath) Public(remote string) string {
-	return d.Root() + encodeDevicePath(path.Clean("/"+strings.TrimPrefix(remote, "/")))
+	remote = path.Clean("/" + strings.TrimPrefix(remote, "/"))
+	if strings.EqualFold(d.Scheme, "net") {
+		// NetFox addresses are parsed by ParseDevicePath, not net/url. A drive
+		// colon or a filename's #, ?, @ and backslash are literal path text,
+		// not URL syntax. Only structural characters require escaping; keep
+		// percent escaped to distinguish e.g. a file named %3A from a colon.
+		return d.Root() + escapeDevicePathSegment(strings.Trim(remote, "/"), "%")
+	}
+	return d.Root() + encodeDevicePath(remote)
 }
 
 // ParseDevicePath decodes an f4 device address without interpreting the device

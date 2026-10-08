@@ -45,7 +45,8 @@ apt_with_timeout() {
 echo "Installing Ubuntu 18.04 bootstrap packages"
 apt_with_timeout update
 apt_with_timeout install -y --no-install-recommends \
-    autoconf automake bison build-essential ca-certificates curl flex git libssl-dev patchelf \
+    autoconf automake bison build-essential ca-certificates curl flex \
+    fontconfig fonts-dejavu-core git libssl-dev patchelf \
     gnupg gperf libtool m4 patch pkg-config software-properties-common xz-utils
 ppa_added=0
 for attempt in 1 2 3; do
@@ -84,7 +85,7 @@ export PATH="/opt/f4-build-venv/bin:/opt/go/bin:${PATH}"
 export CC=gcc-11
 export CXX=g++-11
 export CONAN_HOME="${CONAN_HOME:-$PWD/.conan2-portable-linux}"
-python -m unittest ci/test_patch_qt_dependencies.py
+python -m unittest ci/test_patch_qt_dependencies.py ci/test_arm64_glibc_archives.py
 
 # Always reduce Conan's cache to finished packages before returning to the
 # GitHub runner. This trap runs after a failed conan install as well, so the
@@ -263,49 +264,19 @@ if [[ "${TARGET_ARCH}" == "arm64" ]]; then
 fi
 # Static libraries copied from a newer Linux host can pass Conan's integrity
 # check while still referring to glibc symbols that do not exist in the
-# Ubuntu 18.04/glibc-2.27 baseline.  Detect the known failure signatures in
+# Ubuntu 18.04/glibc-2.27 baseline. Detect the known failure signatures in
 # the restored cache before Conan is allowed to select the corresponding
-# remote package.  Rebuild only the affected package, preserving the rest of
-# the expensive multimedia graph.
+# remote package. Keep the scanned archives and bootstrap set in one helper.
 arm64_glibc_rebuild_packages=()
 if [[ "${TARGET_ARCH}" == "arm64" ]]; then
-    arm64_glibc_package_specs=(
-        "fontconfig:libfontconfig.a"
-        "freetype:libfreetype.a"
-        "libde265:libde265.a"
-        "libraw:libraw.a"
-    )
-    if [[ "${F4_CONAN_BOOTSTRAP_MULTIMEDIA:-0}" == "1" &&
-        ! -f "${arm64_video_baseline_marker}" ]]; then
-        # The first bootstrap must not allow Conan to download an unqualified
-        # ARM64 package before its archive can be inspected.  Force this
-        # small set once; a successful native host link records the marker so
-        # later jobs reuse the corrected binaries from the cache/remote.
-        arm64_glibc_rebuild_packages=(fontconfig freetype libde265 libraw)
-        echo "No repaired ARM64 video-library checkpoint found; building the glibc 2.27 set once"
-    else
-        while IFS=: read -r package archive; do
-            package_archive_found=0
-            package_archive_incompatible=0
-            while IFS= read -r static_archive; do
-                package_archive_found=1
-                if nm -u "${static_archive}" 2>/dev/null |
-                    grep -Eq '(__isoc23_|__libc_single_threaded|(^|[[:space:]])fcntl64$)'; then
-                    package_archive_incompatible=1
-                    echo "Cached ARM64 ${package} archive requires newer glibc: ${static_archive}"
-                    break
-                fi
-            done < <(find "${CONAN_HOME}/p" -type f -path "*/p/lib/${archive}" -print 2>/dev/null)
-            if [[ "${package_archive_incompatible}" == "1" ]]; then
-                arm64_glibc_rebuild_packages+=("${package}")
-            elif [[ "${package_archive_found}" == "0" &&
-                "${F4_CONAN_BOOTSTRAP_MULTIMEDIA:-0}" == "1" ]]; then
-                # Do not let an unqualified remote package become the first
-                # copy of one of these libraries on a cold ARM64 checkpoint.
-                arm64_glibc_rebuild_packages+=("${package}")
-                echo "No cached ARM64 ${package} archive found; building it in the glibc 2.27 / GCC 11 container"
-            fi
-        done < <(printf '%s\n' "${arm64_glibc_package_specs[@]}")
+    arm64_glibc_rebuild_output="$(
+        python ci/arm64_glibc_archives.py \
+            "${CONAN_HOME}/p" \
+            "${arm64_video_baseline_marker}" \
+            "${F4_CONAN_BOOTSTRAP_MULTIMEDIA:-0}"
+    )"
+    if [[ -n "${arm64_glibc_rebuild_output}" ]]; then
+        mapfile -t arm64_glibc_rebuild_packages <<< "${arm64_glibc_rebuild_output}"
     fi
 fi
 if [[ "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" &&
@@ -333,6 +304,18 @@ elif [[ ! -f "$baseline_marker" ]]; then
     echo "No trusted glibc 2.27 / GCC 11 graph found; forcing baseline rebuild"
 else
     echo "Reusing cached glibc 2.27 / GCC 11 Conan package graph"
+fi
+if [[ "${F4_CONAN_FORBID_QT_FFMPEG_BUILD:-0}" == "1" ]]; then
+    if [[ "${F4_CONAN_BOOTSTRAP_MULTIMEDIA:-0}" != "1" ||
+        "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" ]]; then
+        echo "error: binary-only Qt/FFmpeg mode requires the untrusted-baseline repair path" >&2
+        exit 1
+    fi
+    # Release builds must never compile Qt or FFmpeg. The negative patterns
+    # keep those packages binary-only while allowing a missing/incompatible
+    # static dependency such as ARM64 libffi to be repaired in this baseline.
+    conan_build_args=(--build='missing:~qt/*' --build='missing:~ffmpeg/*')
+    echo "[FIX:glibc-baseline] Qt and FFmpeg are binary-only; Conan must reuse them or fail"
 fi
 if [[ "${F4_CONAN_BOOTSTRAP_MULTIMEDIA:-0}" == "1" &&
     "${cached_m4_found}" == "0" ]]; then
@@ -481,15 +464,21 @@ bash ci/build-qwindowkit.sh "$PWD/${build_dir}" Release static
 "${cmake_executable}" --build "${build_dir}" --config Release --parallel 4
 export QML_IMPORT_PATH="$PWD/${build_dir}/ZoinGallery:$PWD/${build_dir}/qml"
 export QML2_IMPORT_PATH="$PWD/${build_dir}/ZoinGallery:$PWD/${build_dir}/qml"
-mkdir -p "${build_dir}/.diagnostics"
+mkdir -p "${build_dir}/.diagnostics" "${build_dir}/artifacts"
 export QT_QPA_PLATFORM=offscreen
 export QSG_RHI_BACKEND=software
 if [[ -f /etc/fonts/fonts.conf ]]; then
     export FONTCONFIG_FILE=/etc/fonts/fonts.conf
     export FONTCONFIG_PATH=/etc/fonts
 fi
+# The broad QtTest executables include cases with Windows-only screenshot paths
+# and DPR assumptions that are registered again as focused CTest entries with
+# their own environments. Exercise the portable host's core and multimedia
+# gates through those individually configured entries instead of running the
+# aggregate executables under the wrong environment.
+portable_ctest_regex='^(F4IconProviderTest|F4IconProviderFractionalDprFramebufferTest|QtMediaClientTest|F4GalleryVideoControlsPixelGridTest|F4GalleryVideoSettingsPixelGridTest|WindowGeometryPersistenceTest)$'
 ctest --test-dir "${build_dir}" -C Release --output-on-failure \
-    -R '^(F4|QtShellController|WindowGeometryPersistence)'
+    -R "${portable_ctest_regex}"
 
 host="$PWD/${build_dir}/bin/Release/f4-qt-host"
 # Smoke-test the linked host before ELF metadata cleanup. Ubuntu 18.04 ships

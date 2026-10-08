@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Assemble exactly the six user-facing Qt desktop release assets."""
+"""Assemble the user-facing Qt desktop release assets."""
 
 from __future__ import annotations
 
@@ -56,8 +56,12 @@ def find_artifact_file(root: pathlib.Path, artifact: str, filename: str) -> path
 
 
 def package_qt_release(
-    input_root: pathlib.Path, output_root: pathlib.Path
+    input_root: pathlib.Path,
+    output_root: pathlib.Path,
+    platform: str = "all",
 ) -> list[pathlib.Path]:
+    if platform not in ("all", "linux"):
+        raise SystemExit(f"unsupported Qt release platform: {platform}")
     if output_root.exists():
         shutil.rmtree(output_root)
     output_root.mkdir(parents=True)
@@ -65,16 +69,21 @@ def package_qt_release(
     # Linux and Windows use one Go launcher containing the matching static Qt
     # host. Keep the stable updater-facing names, but take the files only from
     # the dedicated portable-qt artifacts.
-    for platform, arch, extension, member in (
+    release_platforms = (
         ("linux", "amd64", "tar.gz", "f4"),
         ("linux", "arm64", "tar.gz", "f4"),
         ("windows", "amd64", "zip", "f4.exe"),
         ("windows", "arm64", "zip", "f4.exe"),
-    ):
-        name = f"f4-{platform}-{arch}.{extension}"
+    )
+    if platform == "linux":
+        release_platforms = tuple(
+            item for item in release_platforms if item[0] == "linux"
+        )
+    for release_platform, arch, extension, member in release_platforms:
+        name = f"f4-{release_platform}-{arch}.{extension}"
         source = find_artifact_file(
             input_root,
-            f"f4-portable-{platform}-{arch}",
+            f"f4-portable-{release_platform}-{arch}",
             name,
         )
         destination = output_root / name
@@ -83,21 +92,24 @@ def package_qt_release(
 
     # macOS ships the complete classic bundle, one native Qt build per
     # architecture. Do not add the ordinary Go CLI tarballs here.
-    for arch in ("amd64", "arm64"):
-        name = f"f4-darwin-{arch}.app.zip"
-        source = find_artifact_file(
-            input_root,
-            f"f4-qt-darwin-{arch}-app",
-            f"f4-qt-darwin-{arch}.app.zip",
-        )
-        destination = output_root / name
-        copy_once(source, destination)
-        verify_app_archive(destination)
+    if platform == "all":
+        for arch in ("amd64", "arm64"):
+            name = f"f4-darwin-{arch}.app.zip"
+            source = find_artifact_file(
+                input_root,
+                f"f4-qt-darwin-{arch}-app",
+                f"f4-qt-darwin-{arch}.app.zip",
+            )
+            destination = output_root / name
+            copy_once(source, destination)
+            verify_app_archive(destination)
 
     assets = sorted(output_root.iterdir())
-    if len(assets) != 6:
+    expected_count = 2 if platform == "linux" else 6
+    if len(assets) != expected_count:
         raise SystemExit(
-            f"Qt release must contain exactly six assets; got {[p.name for p in assets]}"
+            f"Qt {platform} release must contain exactly {expected_count} assets; "
+            f"got {[p.name for p in assets]}"
         )
     return assets
 
@@ -106,10 +118,16 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("input", type=pathlib.Path, help="download-artifact root")
     parser.add_argument("output", type=pathlib.Path, help="release asset directory")
+    parser.add_argument(
+        "--platform",
+        choices=("all", "linux"),
+        default="all",
+        help="assemble a complete six-platform Qt release or only Linux amd64/arm64",
+    )
     args = parser.parse_args()
 
-    assets = package_qt_release(args.input, args.output)
-    print("Qt release assets:")
+    assets = package_qt_release(args.input, args.output, platform=args.platform)
+    print(f"Qt {args.platform} release assets:")
     for asset in assets:
         print(f"  {asset.name} ({asset.stat().st_size} bytes)")
 

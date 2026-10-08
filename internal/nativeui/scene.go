@@ -889,6 +889,7 @@ func appPanelFromLegacy(node map[string]any) extui.PanelModel {
 		Loading:                semantic.AppBool(node["loading"]),
 		CatalogProvisional:     semantic.AppBool(node["catalogProvisional"]),
 		FastFind:               semantic.AppBool(node["fastFind"]),
+		FastFindNoMatch:        semantic.AppBool(node["fastFindNoMatch"]),
 		FastFindText:           semantic.String(node["fastFindText"]),
 		FastFindMatchColor:     semantic.String(node["fastFindMatchColor"]),
 		SelectedCount:          semantic.Int(node["selectedCount"]),

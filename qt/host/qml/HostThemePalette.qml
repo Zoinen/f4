@@ -50,6 +50,10 @@ Item {
     property color separatorHoverColor: "#464d55"
     property color separatorActiveColor: "#59616a"
     property color dialogAccent: "#4e9bd4"
+    readonly property color tooltipBg: Qt.tint(controlBg,
+        Qt.rgba(dialogAccent.r, dialogAccent.g, dialogAccent.b, 0.14))
+    readonly property color tooltipBorder: Qt.tint(controlBorder,
+        Qt.rgba(dialogAccent.r, dialogAccent.g, dialogAccent.b, 0.22))
 
     property color galleryPanelBackgroundColor: "#00000000"
     property color galleryViewerBackgroundColor: "#00000000"

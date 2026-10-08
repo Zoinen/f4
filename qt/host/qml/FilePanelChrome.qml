@@ -226,7 +226,8 @@ Rectangle {
         hoverEnabled: true
         focusPolicy: Qt.NoFocus
 
-        ZG.ToolTip {
+        F4ToolTip {
+            hostWindow: panelView.hostWindow
             visible: sortButton.hovered && !sortMenu.opened
             delay: 500
             timeout: 5000
@@ -587,7 +588,8 @@ Rectangle {
         // active explanation.  Keeping the delayed button tooltip
         // alive above the popup creates a detached black label that
         // overlaps the menu and obscures the first interaction.
-        ZG.ToolTip {
+        F4ToolTip {
+            hostWindow: panelView.hostWindow
             objectName: "panelRendererToolTip-"
                         + Number(panel.side || 0)
             visible: presentationButton.hovered

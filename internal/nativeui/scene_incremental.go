@@ -245,7 +245,7 @@ var semanticPanelStatePatchKeys = map[string]struct{}{
 	"fileFieldSort":  {}, "fileFieldFilterAny": {},
 	"useSortGroups": {}, "freeSpaceKnown": {},
 	"separateFileExtensions": {}, "loading": {},
-	"catalogProvisional": {}, "fastFind": {}, "showFileInfo": {},
+	"catalogProvisional": {}, "fastFind": {}, "fastFindNoMatch": {}, "showFileInfo": {},
 	"side": {}, "galleryColumnCount": {}, "galleryLayoutRevision": {},
 	"catalogRevision": {}, "metadataRevision": {}, "selectedCount": {},
 	"selectedFiles": {}, "selectedDirectories": {}, "diskTotalSpace": {},

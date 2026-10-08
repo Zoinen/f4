@@ -101,6 +101,26 @@ class PackageReleaseScriptsTest(unittest.TestCase):
             ],
         )
 
+    def test_qt_linux_packager_emits_only_amd64_and_arm64_assets(self) -> None:
+        for arch in ("amd64", "arm64"):
+            self.add_tar(
+                f"f4-portable-linux-{arch}",
+                f"f4-linux-{arch}.tar.gz",
+                "f4",
+            )
+
+        output = self.root.parent / "qt-linux-release"
+        assets = QT_PACKAGER.package_qt_release(
+            self.root,
+            output,
+            platform="linux",
+        )
+
+        self.assertEqual(
+            [asset.name for asset in assets],
+            ["f4-linux-amd64.tar.gz", "f4-linux-arm64.tar.gz"],
+        )
+
     def test_go_packager_excludes_qt_artifacts(self) -> None:
         self.add_qt_inputs()
         self.add_tar("f4-linux-386", "f4-linux-386.tar.gz", "f4")

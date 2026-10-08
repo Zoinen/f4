@@ -110,6 +110,12 @@ FocusScope {
     // Expose the viewer's exact animation/gesture progress so the embedding
     // shell can fade its chrome in lockstep with the image transition.
     readonly property real surfaceProgress: managedPresentation ? fullViewProgress : galleryViewer.surfaceProgress
+    readonly property bool viewedFileSelected: {
+        const revision = session ? session.selectionRevision : 0
+        const catalogRevision = session ? session.catalogRevision : 0
+        return session && galleryViewer.presentedIndex >= 0
+            && session.isSelectedAt(galleryViewer.presentedIndex)
+    }
     readonly property string tabTitle: {
         const revision = session ? session.catalogRevision : 0
         const index = galleryViewer.presentedIndex

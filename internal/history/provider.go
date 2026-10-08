@@ -493,12 +493,19 @@ func (hp *F4HistoryProvider) LoadHistory(id string) []string {
 		// Return a copy to avoid concurrent slice modification issues
 		res := make([]string, len(items))
 		copy(res, items)
+		for i := range res {
+			res[i] = normalizeHistoryEntry(id, res[i])
+		}
 		return res
 	}
 	return nil
 }
 
 func (hp *F4HistoryProvider) SaveHistory(id string, history []string) {
+	history = append([]string(nil), history...)
+	for i := range history {
+		history[i] = normalizeHistoryEntry(id, history[i])
+	}
 	benchmark := navtrace.NavigationBenchmarkCurrentUI()
 	hp.lockForMutation()
 	hp.data[id] = append([]string(nil), history...)
@@ -518,12 +525,19 @@ func (hp *F4HistoryProvider) LoadRichHistory(id string) []HistoryRecord {
 	if items, ok := hp.rich[id]; ok {
 		res := make([]HistoryRecord, len(items))
 		copy(res, items)
+		for i := range res {
+			res[i] = normalizeHistoryRecord(id, res[i])
+		}
 		return res
 	}
 	return nil
 }
 
 func (hp *F4HistoryProvider) SaveRichHistory(id string, history []HistoryRecord) {
+	history = append([]HistoryRecord(nil), history...)
+	for i := range history {
+		history[i] = normalizeHistoryRecord(id, history[i])
+	}
 	benchmark := navtrace.NavigationBenchmarkCurrentUI()
 	hp.lockForMutation()
 	hp.rich[id] = append([]HistoryRecord(nil), history...)
@@ -614,6 +628,7 @@ func LimitRichHistory(history []HistoryRecord, limit int) []HistoryRecord {
 func mergeFolderHistoryRecords(plain []string, rich []HistoryRecord) []HistoryRecord {
 	richByIdentity := make(map[string]HistoryRecord, len(rich))
 	for _, candidate := range rich {
+		candidate.Name = normalizeHistoryPath(candidate.Name)
 		identity, valid := PathIdentity(candidate.Name)
 		if !valid {
 			continue
@@ -629,6 +644,7 @@ func mergeFolderHistoryRecords(plain []string, rich []HistoryRecord) []HistoryRe
 	records := make([]HistoryRecord, 0, len(plain))
 	recordByIdentity := make(map[string]int, len(plain))
 	for _, path := range plain {
+		path = normalizeHistoryPath(path)
 		identity, valid := PathIdentity(path)
 		record := HistoryRecord{}
 		if valid {
@@ -653,6 +669,9 @@ func mergeFolderHistoryRecords(plain []string, rich []HistoryRecord) []HistoryRe
 func (hp *F4HistoryProvider) SaveFolderHistory(records []HistoryRecord) {
 	benchmark := navtrace.NavigationBenchmarkCurrentUI()
 	records = append([]HistoryRecord(nil), records...)
+	for i := range records {
+		records[i].Name = normalizeHistoryPath(records[i].Name)
+	}
 	names := ExtractNames(records)
 	hp.lockForMutation()
 	hp.rich["folders"] = records
@@ -741,6 +760,7 @@ func SaveFolderHistoryRecords(hp *F4HistoryProvider, records []HistoryRecord) {
 }
 
 func AddFolderHistory(path string) {
+	path = normalizeHistoryPath(path)
 	if path == "" || path == "." || vtui.GlobalHistoryProvider == nil {
 		return
 	}

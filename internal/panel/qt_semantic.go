@@ -630,6 +630,8 @@ func (pf *PanelsFrame) HandleSemanticAction(action map[string]any) bool {
 					return false
 				}
 				fsp.SetSortMode(mode)
+				vtui.DebugLog("[FIX:panel-sort-persistence] Semantic sort changed mode=%s reverse=%t", modeName, fsp.SortReverse)
+				persistNativePanelLayoutSession(pf)
 			}
 			pf.UpdateMenuCheckmarks()
 			return true
@@ -2429,6 +2431,7 @@ func (fp *FileSystemPanel) semanticPagedPanelModel(
 		Cursor:                 cursor, Loading: fp.semanticLoading(),
 		CatalogProvisional: fp.catalogProvisional,
 		FastFind:           fp.FastFindMode, FastFindText: fp.FastFindStr,
+		FastFindNoMatch: fp.FastFindMode && fp.FastFindStr != "" && !fp.fastFindHasMatches(),
 		FastFindMatchColor: func() string {
 			if fp.FastFindMode && fp.FastFindStr != "" {
 				return semantic.SemanticAttrColor(vtui.Palette[theme.ColPanelHighlightText], true)
@@ -2607,6 +2610,7 @@ func (fp *FileSystemPanel) SemanticPanelModel(ctx *vtui.SemanticContext, side in
 		Loading:                fp.semanticLoading(),
 		CatalogProvisional:     fp.catalogProvisional,
 		FastFind:               fp.FastFindMode,
+		FastFindNoMatch:        fp.FastFindMode && fp.FastFindStr != "" && !fp.fastFindHasMatches(),
 		FastFindText:           fp.FastFindStr,
 		FastFindMatchColor:     fastFindMatchColor,
 		FastFindMatches:        fastFindMatches,
@@ -2696,6 +2700,7 @@ func (fp *FileSystemPanel) semanticPagedPanelHeaderModel(
 		Cursor:                 cursor, Loading: fp.semanticLoading(),
 		CatalogProvisional: fp.catalogProvisional,
 		FastFind:           fp.FastFindMode, FastFindText: fp.FastFindStr,
+		FastFindNoMatch:    fp.FastFindMode && fp.FastFindStr != "" && !fp.fastFindHasMatches(),
 		FastFindMatchColor: fastFindMatchColor,
 		FastFindMatches:    fastFindMatches,
 		SelectedCount:      len(fp.SelectedItems), TotalCount: fp.semanticCatalogTotalCount(),
@@ -2799,6 +2804,7 @@ func (fp *FileSystemPanel) semanticPanelHeaderModel(ctx *vtui.SemanticContext, s
 		Loading:                fp.semanticLoading(),
 		CatalogProvisional:     fp.catalogProvisional,
 		FastFind:               fp.FastFindMode,
+		FastFindNoMatch:        fp.FastFindMode && fp.FastFindStr != "" && !fp.fastFindHasMatches(),
 		FastFindText:           fp.FastFindStr,
 		FastFindMatchColor:     fastFindMatchColor,
 		FastFindMatches:        fastFindMatches,

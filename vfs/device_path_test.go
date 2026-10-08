@@ -57,3 +57,29 @@ func TestDevicePathNativePathsAndEscapedNames(t *testing.T) {
 		t.Fatalf("literal filename was decoded: %q", got)
 	}
 }
+
+func TestNetDevicePathReadableRemotePaths(t *testing.T) {
+	d := DevicePath{Scheme: "net", Device: "HC_SFTP"}
+	for _, tt := range []struct{ remote, public string }{
+		{"/C:/Users", "net://HC_SFTP/C:/Users"},
+		{"/C:/Users/Саша/a #?@.txt", "net://HC_SFTP/C:/Users/Саша/a #?@.txt"},
+		{"/literal%3A/100%.txt", "net://HC_SFTP/literal%253A/100%25.txt"},
+	} {
+		t.Run(tt.remote, func(t *testing.T) {
+			if got := d.Public(tt.remote); got != tt.public {
+				t.Fatalf("Public = %q, want %q", got, tt.public)
+			}
+			if got, err := d.Remote("/", tt.public); err != nil || got != tt.remote {
+				t.Fatalf("Remote = %q, %v, want %q", got, err, tt.remote)
+			}
+			if got := d.Join(d.Dir(tt.public), d.Base(tt.public)); got != tt.public {
+				t.Fatalf("Dir/Base/Join = %q, want %q", got, tt.public)
+			}
+		})
+	}
+	legacy := "net://HC_SFTP/C%3A/Users/a%20%23%3F%40.txt"
+	remote, err := d.Remote("/", legacy)
+	if err != nil || d.Public(remote) != "net://HC_SFTP/C:/Users/a #?@.txt" {
+		t.Fatalf("legacy normalization = %q, %v", remote, err)
+	}
+}

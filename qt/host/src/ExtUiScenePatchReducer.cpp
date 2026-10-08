@@ -344,6 +344,7 @@ bool validPanelState(const QVariantMap &state, const QVariantMap &current,
         QStringLiteral("loading"),
         QStringLiteral("catalogProvisional"),
         QStringLiteral("fastFind"),
+        QStringLiteral("fastFindNoMatch"),
         QStringLiteral("showFileInfo"),
     };
     static const QSet<QString> nonNegativeIntegerKeys = {

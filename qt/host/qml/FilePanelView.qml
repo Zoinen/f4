@@ -905,7 +905,9 @@ Rectangle {
             width: Math.max(0, parent.width - x - hostWindow.snapPx(10))
             height: Math.ceil(implicitHeight * hostWindow.dpr) / hostWindow.dpr
             text: hostWindow.cleanText(panel.fastFindText)
-            color: hostWindow.textColor
+            color: panel.fastFindNoMatch === true
+                ? Qt.tint(hostWindow.textColor, "#66e07070")
+                : hostWindow.textColor
             font.family: hostWindow.uiFontFamily
             font.pixelSize: (hostWindow ? hostWindow.uiTextSize(13) : 13)
             elide: Text.ElideLeft
@@ -935,7 +937,7 @@ Rectangle {
             width: hostWindow.snapPx(2)
             height: Math.max(hostWindow.snapPx(1),
                              fastFindQuery.height - hostWindow.snapPx(4))
-            color: hostWindow.textColor
+            color: fastFindQuery.color
             visible: panel.fastFind === true
             opacity: blinkOn ? 1 : 0
             z: 2
