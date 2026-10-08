@@ -7,6 +7,7 @@ import unittest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BUILD_SCRIPT = REPO_ROOT / "ci" / "build-portable-qt-linux.sh"
+WORKFLOW = REPO_ROOT / ".github" / "workflows" / "build.yml"
 
 
 class PortableQtLinuxBuildTests(unittest.TestCase):
@@ -30,6 +31,34 @@ class PortableQtLinuxBuildTests(unittest.TestCase):
 
         self.assertNotIn("F4QuickViewSurfaceTest", selected_tests)
         self.assertNotIn("F4QtArchitectureCheck", selected_tests)
+
+    def test_linux_release_repairs_arm64_baseline_without_building_qt_or_ffmpeg(self):
+        script = BUILD_SCRIPT.read_text(encoding="utf-8")
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        release_job = workflow.split("  portable-qt-linux:", 1)[1].split(
+            "  build-batch:", 1
+        )[0]
+        build_step = release_job.split(
+            "    - name: Build the glibc 2.27 portable executable", 1
+        )[1].split("      run:", 1)[0]
+
+        self.assertIn("inputs.publish_qt_release", release_job)
+        self.assertIn("F4_CONAN_FORBID_QT_FFMPEG_BUILD", build_step)
+        self.assertIn("-e F4_CONAN_FORBID_QT_FFMPEG_BUILD", release_job)
+        self.assertRegex(
+            build_step,
+            r"F4_CONAN_TRUST_REMOTE_BASELINE:.*inputs\.publish_qt_release",
+        )
+        self.assertRegex(
+            build_step,
+            r"F4_CONAN_BOOTSTRAP_MULTIMEDIA:.*inputs\.publish_qt_release",
+        )
+        self.assertIn("F4_CONAN_FORBID_QT_FFMPEG_BUILD", script)
+        self.assertRegex(
+            script,
+            r"conan_build_args=\(--build='missing:~qt/\*' "
+            r"--build='missing:~ffmpeg/\*'\)",
+        )
 
 
 if __name__ == "__main__":

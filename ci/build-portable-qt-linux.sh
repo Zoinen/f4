@@ -305,6 +305,18 @@ elif [[ ! -f "$baseline_marker" ]]; then
 else
     echo "Reusing cached glibc 2.27 / GCC 11 Conan package graph"
 fi
+if [[ "${F4_CONAN_FORBID_QT_FFMPEG_BUILD:-0}" == "1" ]]; then
+    if [[ "${F4_CONAN_BOOTSTRAP_MULTIMEDIA:-0}" != "1" ||
+        "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" ]]; then
+        echo "error: binary-only Qt/FFmpeg mode requires the untrusted-baseline repair path" >&2
+        exit 1
+    fi
+    # Release builds must never compile Qt or FFmpeg. The negative patterns
+    # keep those packages binary-only while allowing a missing/incompatible
+    # static dependency such as ARM64 libffi to be repaired in this baseline.
+    conan_build_args=(--build='missing:~qt/*' --build='missing:~ffmpeg/*')
+    echo "[FIX:glibc-baseline] Qt and FFmpeg are binary-only; Conan must reuse them or fail"
+fi
 if [[ "${F4_CONAN_BOOTSTRAP_MULTIMEDIA:-0}" == "1" &&
     "${cached_m4_found}" == "0" ]]; then
     # A cold cache would otherwise download the same unqualified package from

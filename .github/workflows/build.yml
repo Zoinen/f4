@@ -1355,8 +1355,9 @@ jobs:
         F4_CONAN_UPLOAD_REQUIRED: ${{ (github.ref == 'refs/heads/zoin' || startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.bootstrap_multimedia_dependencies)) && '1' || '0' }}
         F4_CONAN_REQUIRED_RECIPE_REFS: qt/6.11.1,pulseaudio/14.2,ffmpeg/7.1.5,libffi/3.4.8
         F4_CONAN_EXPECTED_ARCH: ${{ matrix.conan_arch }}
-        F4_CONAN_TRUST_REMOTE_BASELINE: ${{ github.event_name != 'pull_request' && !((github.ref == 'refs/heads/zoin' && github.event_name == 'push') || (github.event_name == 'workflow_dispatch' && inputs.bootstrap_multimedia_dependencies)) && '1' || '0' }}
-        F4_CONAN_BOOTSTRAP_MULTIMEDIA: ${{ ((github.ref == 'refs/heads/zoin' && github.event_name == 'push') || (github.event_name == 'workflow_dispatch' && inputs.bootstrap_multimedia_dependencies)) && '1' || '0' }}
+        F4_CONAN_FORBID_QT_FFMPEG_BUILD: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_qt_release && '1' || '0' }}
+        F4_CONAN_TRUST_REMOTE_BASELINE: ${{ github.event_name != 'pull_request' && !((github.ref == 'refs/heads/zoin' && github.event_name == 'push') || (github.event_name == 'workflow_dispatch' && (inputs.bootstrap_multimedia_dependencies || inputs.publish_qt_release))) && '1' || '0' }}
+        F4_CONAN_BOOTSTRAP_MULTIMEDIA: ${{ ((github.ref == 'refs/heads/zoin' && github.event_name == 'push') || (github.event_name == 'workflow_dispatch' && (inputs.bootstrap_multimedia_dependencies || inputs.publish_qt_release))) && '1' || '0' }}
       run: |
         go_root="$(go env GOROOT)"
         set +e
@@ -1371,6 +1372,7 @@ jobs:
           -e F4_CONAN_UPLOAD_REQUIRED \
           -e F4_CONAN_REQUIRED_RECIPE_REFS \
           -e F4_CONAN_EXPECTED_ARCH \
+          -e F4_CONAN_FORBID_QT_FFMPEG_BUILD \
           -e F4_CONAN_TRUST_REMOTE_BASELINE \
           -e F4_CONAN_BOOTSTRAP_MULTIMEDIA \
           -v "$PWD:/workspace" \
