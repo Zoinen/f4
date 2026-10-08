@@ -1,6 +1,6 @@
 module github.com/unxed/f4
 
-go 1.26.6
+go 1.26.9
 
 require (
 	github.com/abadojack/whatlanggo v1.0.1
@@ -41,12 +41,12 @@ require (
 	github.com/yuin/gopher-lua v1.1.1
 	github.com/zzl/go-win32api/v2 v2.1.0
 	golang.org/x/arch v0.30.0
-	golang.org/x/crypto v0.56.0
+	golang.org/x/crypto v0.57.0
 	golang.org/x/image v0.45.0
-	golang.org/x/net v0.58.0
-	golang.org/x/sys v0.47.0
-	golang.org/x/term v0.45.0
-	golang.org/x/text v0.41.0
+	golang.org/x/net v0.60.0
+	golang.org/x/sys v0.48.0
+	golang.org/x/term v0.46.0
+	golang.org/x/text v0.42.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -157,7 +157,7 @@ require (
 	golang.design/x/clipboard v0.7.0 // indirect
 	golang.org/x/exp/shiny v0.0.0-20260727155853-b88d891fe743 // indirect
 	golang.org/x/mobile v0.0.0-20260611195102-4dd8f1dbf5d2 // indirect
-	golang.org/x/sync v0.22.0 // indirect
+	golang.org/x/sync v0.23.0 // indirect
 )
 
 replace github.com/ebitengine/purego => github.com/unxed/pureffi v0.1.21
