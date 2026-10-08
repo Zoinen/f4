@@ -10,6 +10,7 @@
 #include <QUrl>
 
 #include <ZoinGallery/GallerySession.h>
+#include <ZoinGallery/GalleryRuntime.h>
 #include <ZoinGallery/MediaTimingTrace.h>
 
 #include <algorithm>
@@ -402,10 +403,23 @@ bool F4GalleryBridge::activatePanelSession(int side,
         && m_panelSessions.catalog(static_cast<int>(index)).panelId == panelId) {
         return true;
     }
-    // Each visible side owns one virtual model. Changing panel identity clears
-    // only its bounded materialized rows; there is no retained panel/session
-    // lookup and therefore no hidden full-directory model to swap back in.
-    m_panelSessions.resetCatalog(static_cast<int>(index));
+    m_panelSessions.activatePanel(side, panelId, [this, side, panelId]() {
+        auto *runtime = qobject_cast<ZoinGallery::GalleryRuntime *>(m_runtime.data());
+        if (!runtime)
+            return static_cast<ZoinGallery::GallerySession *>(nullptr);
+        auto *session = runtime->createExternalSession(
+            QStringLiteral("f4-%1-%2").arg(side).arg(panelId), this);
+        session->setThumbnailsEnabled(m_panelPreferences->thumbnailsEnabled(side));
+        connect(session, &ZoinGallery::GallerySession::videoPlaybackAvailableChanged,
+                this, &F4GalleryBridge::videoPlaybackAvailabilityChanged);
+        return session;
+    }, [](QObject *object) {
+        auto *session = qobject_cast<ZoinGallery::GallerySession *>(object);
+        if (session)
+            session->shutdown();
+        object->deleteLater();
+    });
+    connectSessionFileFieldUpdates();
     m_panelSnapshots[index].clear();
     return true;
 }

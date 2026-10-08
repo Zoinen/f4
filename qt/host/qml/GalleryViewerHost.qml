@@ -11,6 +11,7 @@ FocusScope {
     property var hostWindow: null
     property bool managedPresentation: bridge && bridge.quickViewSide !== undefined && bridge.quickViewSide >= 0
     property real fullViewProgress: 1
+    property bool presentationMoving: false
     // Development-only opt-in supplied by the Qt host at startup.
     readonly property bool slowViewerTransition:
         typeof f4SlowViewerTransition !== "undefined" && f4SlowViewerTransition
@@ -34,6 +35,7 @@ FocusScope {
         return ({
             play: hostWindow.lucideIconSource("play", 18, tint),
             pause: hostWindow.lucideIconSource("pause", 18, tint),
+            loop: hostWindow.lucideIconSource("repeat", 18, tint),
             muted: hostWindow.lucideIconSource("volume-x", 18, tint),
             sound: hostWindow.lucideIconSource("volume-2", 18, tint)
         })
@@ -207,6 +209,7 @@ FocusScope {
         session: host.session
         sourcePanel: host.managedPresentation ? null : host.sourcePanel
         managedPresentation: host.managedPresentation
+        externalPresentationMoving: host.presentationMoving
         previewEntryId: host.docked ? String(host.bridge.quickView.entryId || "") : ""
         videoPlaybackMode: host.videoPlaybackMode
         videoIconSources: host.videoIconSources

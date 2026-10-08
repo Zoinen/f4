@@ -7,6 +7,8 @@ f4는 Go로 작성된 실험적인 Far Manager / far2l 복제본입니다.
 ~비주얼 파일 이름 변경기 (VisRen)~VisRen@
 ~README.md 보기~README@
 
+~새 탭에 터미널 기록 상속~TerminalHistoryInheritance@
+
 @VisRen
 $비주얼 파일 이름 변경기 (VisRen)
 
@@ -605,3 +607,10 @@ $폴더 방문 기록 (Alt+F12)
 
   선택한 경로를 시스템 클립보드에 복사               Ctrl+C, Ctrl+Ins
 
+@TerminalHistoryInheritance
+$새 탭에 터미널 기록 상속
+현재 탭의 완료된 터미널 출력을 새 탭에 복사합니다. 각 탭은 독립된 셸을 시작하며 이후 출력은 해당 탭에만 남습니다. 기본적으로 꺼져 있습니다.
+
+변경 사항을 적용하면 다시 시작하지 않고 이후에 여는 탭에 적용됩니다. 기존 탭은 기록을 유지합니다. 대기 중인 셸의 프롬프트, 실행 중인 프로그램 및 셸 상태는 복사되지 않습니다.
+
+[Panel] InheritTerminalHistory = 0 / 1 (settings.ini)

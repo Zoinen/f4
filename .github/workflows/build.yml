@@ -21,8 +21,8 @@ on:
         required: false
         default: "on"
         type: string
-      bootstrap_video_dependencies:
-        description: "Build and publish missing Qt Multimedia/FFmpeg packages"
+      bootstrap_multimedia_dependencies:
+        description: "Build and publish missing Qt Multimedia video/audio packages"
         required: false
         default: false
         type: boolean
@@ -32,7 +32,7 @@ on:
         default: false
         type: boolean
       release_tag:
-        description: "Release tag for publish_qt_release, for example v2026.10.03"
+        description: "Release tag for publish_qt_release, for example v2026.10.08"
         required: false
         default: ""
         type: string
@@ -421,7 +421,11 @@ jobs:
       shell: bash
       run: |
         python -m pip install --upgrade pip
-        python -m pip install "conan==2.29.1" "cmake==3.31.6" "ninja==1.13.0"
+        # Ninja 1.13.0 truncates long MSVC linker response-file lines at
+        # 16,383 characters, producing broken object paths such as
+        # `ry\CMakeFiles\...`. Keep the Windows static Qt link stable on the
+        # fixed in the 1.13.1+ line; use the available 1.13.2 wheel.
+        python -m pip install "conan==2.29.1" "cmake==3.31.6" "ninja==1.13.2"
         conan profile detect --force
 
     - name: Cache the macOS native dependency graph
@@ -897,8 +901,10 @@ jobs:
         # Do not hash this workflow: release packaging and macOS checks must
         # not invalidate the native Linux/Windows Conan dependency graph.
         path: ${{ env.CONAN_HOME }}/p
-        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v7-video-complete-${{ hashFiles('qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1', 'ci/patches/qwindowkit-default-maximize-hint.patch', 'ci/patches/libiconv-1.17-fix-error-function-declaration-without-prototype.patch', 'ci/configure-conan-remote.sh', 'ci/patch-qt-recipe.sh', 'ci/patch-qt-dependencies.py', 'ci/patch-qt-qmltools-recipe.py', 'ci/patch-bzip2-recipe.py', 'ci/patch-bzip2-recipe.sh', 'ci/patch-libgettext-recipe.py', 'ci/patch-libgettext-recipe.sh', 'ci/patch-libiconv-recipe.py', 'ci/patch-libiconv-recipe.sh', 'ci/patch-libffi-recipe.py', 'ci/patch-libffi-recipe.sh') }}
+        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v8-video-audio-complete-${{ hashFiles('qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1', 'ci/patches/qwindowkit-default-maximize-hint.patch', 'ci/patches/libiconv-1.17-fix-error-function-declaration-without-prototype.patch', 'ci/configure-conan-remote.sh', 'ci/patch-qt-recipe.sh', 'ci/patch-qt-dependencies.py', 'ci/patch-qt-qmltools-recipe.py', 'ci/patch-bzip2-recipe.py', 'ci/patch-bzip2-recipe.sh', 'ci/patch-libgettext-recipe.py', 'ci/patch-libgettext-recipe.sh', 'ci/patch-libiconv-recipe.py', 'ci/patch-libiconv-recipe.sh', 'ci/patch-libffi-recipe.py', 'ci/patch-libffi-recipe.sh') }}
         restore-keys: |
+          portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v8-video-audio-complete-
+          portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v8-video-audio-checkpoint-
           portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v7-video-complete-
           portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v7-video-checkpoint-
           portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v6-complete-
@@ -917,13 +923,15 @@ jobs:
       env:
         F4_CONAN_TOKEN: ${{ secrets.F4_CONAN_REMOTE_TOKEN }}
         F4_CONAN_UPLOAD_TOKEN: ${{ secrets.F4_CONAN_UPLOAD_TOKEN }}
-        # The zoin branch is the dependency bootstrap lane: it may build only
-        # packages missing from the audited baseline remote and publish them.
-        # Tagged releases stay fail-fast and consume the completed graph with
-        # --build=never. A manual dispatch can opt into the same bootstrap
-        # behavior when the remote needs repair without another zoin commit.
-        F4_CONAN_TRUST_REMOTE_BASELINE: ${{ (github.ref == 'refs/heads/zoin' || (github.event_name == 'workflow_dispatch' && inputs.bootstrap_video_dependencies)) && '0' || '1' }}
-        F4_CONAN_BOOTSTRAP_VIDEO: ${{ (github.ref == 'refs/heads/zoin' || (github.event_name == 'workflow_dispatch' && inputs.bootstrap_video_dependencies)) && '1' || '0' }}
+        F4_CONAN_UPLOAD_REQUIRED: ${{ (github.ref == 'refs/heads/zoin' || startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.bootstrap_multimedia_dependencies)) && '1' || '0' }}
+        F4_CONAN_REQUIRED_RECIPE_REFS: qt/6.11.1,pulseaudio/14.2,ffmpeg/7.1.5
+        F4_CONAN_EXPECTED_ARCH: ${{ matrix.conan_arch }}
+        # Pushes to zoin bootstrap and publish missing media packages. A
+        # workflow dispatch is trusted by default; set the bootstrap input
+        # only when Artifactory needs repair. Tagged releases always consume
+        # the completed graph with --build=never.
+        F4_CONAN_TRUST_REMOTE_BASELINE: ${{ github.event_name != 'pull_request' && !((github.ref == 'refs/heads/zoin' && github.event_name == 'push') || (github.event_name == 'workflow_dispatch' && inputs.bootstrap_multimedia_dependencies)) && '1' || '0' }}
+        F4_CONAN_BOOTSTRAP_MULTIMEDIA: ${{ ((github.ref == 'refs/heads/zoin' && github.event_name == 'push') || (github.event_name == 'workflow_dispatch' && inputs.bootstrap_multimedia_dependencies)) && '1' || '0' }}
       run: |
         go_root="$(go env GOROOT)"
         set +e
@@ -935,8 +943,11 @@ jobs:
           -e F4_CONAN_USERNAME \
           -e F4_CONAN_TOKEN \
           -e F4_CONAN_UPLOAD_TOKEN \
+          -e F4_CONAN_UPLOAD_REQUIRED \
+          -e F4_CONAN_REQUIRED_RECIPE_REFS \
+          -e F4_CONAN_EXPECTED_ARCH \
           -e F4_CONAN_TRUST_REMOTE_BASELINE \
-          -e F4_CONAN_BOOTSTRAP_VIDEO \
+          -e F4_CONAN_BOOTSTRAP_MULTIMEDIA \
           -v "$PWD:/workspace" \
           -v "$go_root:/opt/go:ro" \
           -w /workspace \
@@ -963,7 +974,11 @@ jobs:
       shell: bash
       run: |
         python -m pip install --upgrade pip
-        python -m pip install "conan==2.29.1" "cmake==3.31.6" "ninja==1.13.0"
+        # Ninja 1.13.0 truncates long MSVC linker response-file lines at
+        # 16,383 characters, producing broken object paths such as
+        # `ry\CMakeFiles\...`. Keep the Windows static Qt link stable on the
+        # fixed in the 1.13.1+ line; use the available 1.13.2 wheel.
+        python -m pip install "conan==2.29.1" "cmake==3.31.6" "ninja==1.13.2"
         conan profile detect --force
 
     - name: Configure Conan binary remote (Windows)
@@ -1232,14 +1247,14 @@ jobs:
       uses: actions/cache/save@v4
       with:
         path: ${{ env.CONAN_HOME }}/p
-        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v7-video-checkpoint-${{ hashFiles('qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1', 'ci/patches/qwindowkit-default-maximize-hint.patch', 'ci/patches/libiconv-1.17-fix-error-function-declaration-without-prototype.patch', 'ci/configure-conan-remote.sh', 'ci/patch-qt-recipe.sh', 'ci/patch-qt-dependencies.py', 'ci/patch-qt-qmltools-recipe.py', 'ci/patch-bzip2-recipe.py', 'ci/patch-bzip2-recipe.sh', 'ci/patch-libgettext-recipe.py', 'ci/patch-libgettext-recipe.sh', 'ci/patch-libiconv-recipe.py', 'ci/patch-libiconv-recipe.sh', 'ci/patch-libffi-recipe.py', 'ci/patch-libffi-recipe.sh') }}-${{ github.run_id }}-${{ github.run_attempt }}
+        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v8-video-audio-checkpoint-${{ hashFiles('qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1', 'ci/patches/qwindowkit-default-maximize-hint.patch', 'ci/patches/libiconv-1.17-fix-error-function-declaration-without-prototype.patch', 'ci/configure-conan-remote.sh', 'ci/patch-qt-recipe.sh', 'ci/patch-qt-dependencies.py', 'ci/patch-qt-qmltools-recipe.py', 'ci/patch-bzip2-recipe.py', 'ci/patch-bzip2-recipe.sh', 'ci/patch-libgettext-recipe.py', 'ci/patch-libgettext-recipe.sh', 'ci/patch-libiconv-recipe.py', 'ci/patch-libiconv-recipe.sh', 'ci/patch-libffi-recipe.py', 'ci/patch-libffi-recipe.sh') }}-${{ github.run_id }}-${{ github.run_attempt }}
 
     - name: Save complete Conan package graph
       if: always() && !cancelled() && steps.portable-conan-cache.outputs.cache-hit != 'true' && hashFiles(format('.conan2-portable-{0}-{1}/p/.f4-package-cache-ready', matrix.platform, matrix.arch)) != '' && hashFiles(format('qt/host/build-portable-{0}-{1}/.f4-conan-ready', matrix.platform, matrix.arch)) != ''
       uses: actions/cache/save@v4
       with:
         path: ${{ env.CONAN_HOME }}/p
-        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v7-video-complete-${{ hashFiles('qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1', 'ci/patches/qwindowkit-default-maximize-hint.patch', 'ci/patches/libiconv-1.17-fix-error-function-declaration-without-prototype.patch', 'ci/configure-conan-remote.sh', 'ci/patch-qt-recipe.sh', 'ci/patch-qt-dependencies.py', 'ci/patch-qt-qmltools-recipe.py', 'ci/patch-bzip2-recipe.py', 'ci/patch-bzip2-recipe.sh', 'ci/patch-libgettext-recipe.py', 'ci/patch-libgettext-recipe.sh', 'ci/patch-libiconv-recipe.py', 'ci/patch-libiconv-recipe.sh', 'ci/patch-libffi-recipe.py', 'ci/patch-libffi-recipe.sh') }}
+        key: portable-conan-packages-6.11.1-${{ matrix.platform }}-${{ matrix.arch }}-${{ matrix.cache_contract }}-v8-video-audio-complete-${{ hashFiles('qt/host/conanfile.py', 'qt/host/CMakeLists.txt', 'ci/build-portable-qt-linux.sh', 'ci/build-qwindowkit.sh', 'ci/build-qwindowkit.ps1', 'ci/patches/qwindowkit-default-maximize-hint.patch', 'ci/patches/libiconv-1.17-fix-error-function-declaration-without-prototype.patch', 'ci/configure-conan-remote.sh', 'ci/patch-qt-recipe.sh', 'ci/patch-qt-dependencies.py', 'ci/patch-qt-qmltools-recipe.py', 'ci/patch-bzip2-recipe.py', 'ci/patch-bzip2-recipe.sh', 'ci/patch-libgettext-recipe.py', 'ci/patch-libgettext-recipe.sh', 'ci/patch-libiconv-recipe.py', 'ci/patch-libiconv-recipe.sh', 'ci/patch-libffi-recipe.py', 'ci/patch-libffi-recipe.sh') }}
 
     - name: Package portable single-file artifact
       shell: bash
@@ -2049,6 +2064,9 @@ jobs:
       id: affected
       uses: ./.github/actions/affected-packages
 
+    - name: Test Qt recipe and Conan publication helpers
+      run: python3 -m unittest ci/test_patch_qt_dependencies.py ci/test_portable_conan_upload.py
+
     - name: Run go vet
       if: steps.affected.outputs.packages != ''
       shell: bash
@@ -2539,7 +2557,7 @@ jobs:
           --target "$GITHUB_SHA" \
           --title "$RELEASE_TAG" \
           --generate-notes \
-          --notes 'Explicit Qt feature-lane release. Contains only the six native Qt desktop assets: Linux and Windows embedded-Qt single-file archives plus classic macOS F4.app bundles for Intel and ARM.'
+          --notes 'Explicit Qt feature-lane release. Includes Linux amd64/arm64 single-file binaries with FFmpeg video and PulseAudio output support, Windows embedded-Qt binaries, and classic macOS F4.app bundles for Intel and ARM. Linux sound uses the desktop PulseAudio service or PipeWire pulse compatibility service.'
 
   release:
     name: Create Official Release

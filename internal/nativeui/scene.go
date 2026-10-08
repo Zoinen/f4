@@ -430,6 +430,10 @@ func (item appVMenu) model(omitItems ...bool) extui.MenuModel {
 		menu.OwnerID = vtui.SemanticID(owner)
 		menu.Presentation = "dropdown"
 	}
+	if owner, ok := item.menu.GetOwner().(*vtui.Edit); ok {
+		menu.OwnerID = vtui.SemanticID(owner)
+		menu.Presentation = "dropdown"
+	}
 	if parent := item.menu.ParentFrame(); parent != nil {
 		menu.ParentID = vtui.SemanticID(parent)
 		menu.AnchorIndex = item.menu.ParentIndex()
@@ -659,6 +663,7 @@ func (item appAutocompleteMenu) model() extui.MenuModel {
 		StackOrder: item.stackOrder,
 		ID:         item.id,
 		Role:       "autocomplete",
+		OwnerID:    vtui.SemanticID(item.menu.Edit),
 		Title:      "Autocomplete",
 		Active:     true,
 		// Autocomplete is an offer, not an implicit edit.  In particular an

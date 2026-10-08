@@ -819,7 +819,8 @@ Item {
         anchors.right: parent.right
         anchors.top: parent.top
         anchors.bottom: parent.bottom
-        anchors.topMargin: menuOverlay.fromMenuBar ? menuBar.windowBottom() : 0
+        anchors.topMargin: menuOverlay.fromMenuBar ? menuBar.windowBottom() : hostWindow.menuBarHeight
+        anchors.bottomMargin: hostWindow.keyBarHeight()
         // Only the root popup owns the chain-wide backdrop. A child Loader is
         // stacked above its parent and also fills the window, so an enabled
         // backdrop here would intercept every pointer event intended for the

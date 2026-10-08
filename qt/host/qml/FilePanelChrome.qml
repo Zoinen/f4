@@ -9,6 +9,7 @@ import ZoinGallery 1.0 as ZG
 
 Rectangle {
     id: panelHeader
+    readonly property bool retainsFocusOnShellRefresh: true
     required property ApplicationWindow hostWindow
     required property Item panelView
     required property QtObject galleryController
@@ -124,15 +125,13 @@ Rectangle {
             id: panelPathControl
             objectName: "panelPathTitle-" + Number(panel.side || 0)
             anchors.left: panelDriveButton.right
-            anchors.leftMargin: hostWindow.snapPx(4)
             anchors.top: parent.top
             anchors.bottom: parent.bottom
             anchors.right: parent.right
             anchors.rightMargin: panelView.loadingIndicatorVisible ? 18 : 0
             backgroundOnHoverOnly: true
-            // panelPathArea already begins on the shared 16 px
-            // content line; do not add the standalone control's inset.
-            leadingInset: 0
+            // Keep the drive-to-breadcrumb gap inside the hover/click area.
+            leadingInset: hostWindow.snapPx(4)
             showDriveIcon: false
             // Remote panels can expose a Windows-native path even
             // when the Qt host itself is running on another OS.
@@ -147,7 +146,7 @@ Rectangle {
                                               hostWindow.panelPathBg),
                                       hostWindow.galleryPathBackgroundColor)
             pathTextColor: hostWindow.galleryPathTextColor
-            pathHoveredColor: hostWindow.controlBg
+            pathHoveredColor: hostWindow.galleryPathItemHoverColor
             pathItemHoveredColor: hostWindow.galleryPathItemHoverColor
             pathItemPressedColor: hostWindow.galleryPathItemPressedColor
             devicePixelRatio: hostWindow.iconDevicePixelRatio

@@ -9,9 +9,11 @@ import (
 
 	"github.com/unxed/f4/internal/terminal"
 	"github.com/unxed/f4/vfs"
+	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -172,4 +174,98 @@ func TestActionExecuteBatchExitRestartsShell(t *testing.T) {
 		t.Fatal("the fresh shell reports busy at its prompt")
 	}
 	t.Logf("panels returned and the shell was replaced in %v", time.Since(start))
+}
+
+func TestLocalConPTYHistoryKeepsStartupBeforeCommands(t *testing.T) {
+	for _, inherit := range []bool{false, true} {
+		name := "fresh-history"
+		if inherit {
+			name = "inherited-history"
+		}
+		t.Run(name, func(t *testing.T) { checkLocalConPTYWorkspaceHistory(t, inherit) })
+	}
+}
+
+func checkLocalConPTYWorkspaceHistory(t *testing.T, inherit bool) {
+	t.Helper()
+	pf := startLocalConPTY(t)
+	defer pf.Close()
+	run := func(frame *panel.PanelsFrame, output string) {
+		t.Helper()
+		frame.CmdLine.Edit.SetText("echo " + output)
+		frame.ProcessKey(&vtinput.InputEvent{
+			Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN,
+		})
+		deadline := time.Now().Add(8 * time.Second)
+		for {
+			drainFrameTasks()
+			if !frame.Executing && strings.Contains(string(frame.TermView.GetAllLogBytes()), "\n"+output+"\n") {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("command did not finish: executing=%v log=%q", frame.Executing, frame.TermView.GetAllLogBytes())
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	run(pf, "F4_FIRST_OUTPUT")
+	pf.ResizeConsole(100, 45)
+	run(pf, "F4_SECOND_OUTPUT")
+	text := string(pf.TermView.GetAllLogBytes())
+	if strings.LastIndex(text, "Microsoft Windows") > strings.Index(text, "F4_FIRST_OUTPUT") {
+		t.Fatalf("startup banner appeared after a command: %q", text)
+	}
+	config.App.InheritTerminalHistory = inherit
+	clone := pf.Clone()
+	defer clone.Close()
+	waitForLocalConPTYPrompt(t, clone, nil)
+	if clone.GetActivePTY() == pf.GetActivePTY() {
+		t.Fatal("new workspace shares the source shell")
+	}
+	for _, output := range []string{"\nF4_FIRST_OUTPUT\n", "\nF4_SECOND_OUTPUT\n"} {
+		want := 0
+		if inherit {
+			want = 1
+		}
+		if text := string(clone.TermView.GetAllLogBytes()); strings.Count(text, output) != want {
+			t.Fatalf("history inheritance=%v: wanted %d copies of %q, got %q", inherit, want, output, text)
+		}
+	}
+	run(clone, "F4_CLONED_OUTPUT")
+	text = string(clone.TermView.GetAllLogBytes())
+	if strings.Count(text, "\nF4_CLONED_OUTPUT\n") != 1 {
+		t.Fatalf("new workspace lost or duplicated its command output: %q", text)
+	}
+	run(pf, "F4_SOURCE_LATER_OUTPUT")
+	if got := string(clone.TermView.GetAllLogBytes()); got != text {
+		t.Fatalf("source shell output changed the new workspace history: %q", got)
+	}
+	sourceText := string(pf.TermView.GetAllLogBytes())
+	for _, output := range []string{"\nF4_FIRST_OUTPUT\n", "\nF4_SECOND_OUTPUT\n", "\nF4_SOURCE_LATER_OUTPUT\n"} {
+		if strings.Count(sourceText, output) != 1 {
+			t.Fatalf("source workspace lost or duplicated command output %q: %q", output, sourceText)
+		}
+	}
+	if strings.Contains(sourceText, "F4_CLONED_OUTPUT") {
+		t.Fatalf("new shell output leaked into the source workspace: %q", sourceText)
+	}
+	if strings.LastIndex(text, "Microsoft Windows") > strings.LastIndex(text, "F4_CLONED_OUTPUT") {
+		t.Fatalf("new shell banner appeared after its command: %q", text)
+	}
+	clone.TermView.SetVisible(true)
+	clone.TermView.SetFocus(true)
+	model := clone.TermView.SemanticModelWithBottomOverlay(nil, 1)
+	if model.CursorVisible {
+		t.Fatal("idle shell cursor is visible beside the separate command input")
+	}
+	prompt := strings.TrimSpace(clone.TermView.PromptSnapshot().Text)
+	for _, row := range model.WindowRows {
+		var line strings.Builder
+		for _, run := range row.Runs {
+			line.WriteString(run.Text)
+		}
+		if prompt != "" && strings.TrimSpace(line.String()) == prompt {
+			t.Fatalf("standalone shell prompt leaked into native history: %q", line.String())
+		}
+	}
 }

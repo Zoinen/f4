@@ -8,12 +8,8 @@ Item {
     required property ApplicationWindow hostWindow
     required property Item menuBar
     property var frame: ({})
-
-    Rectangle {
-        anchors.fill: parent
-        color: "#05080c"
-        opacity: 0.58
-    }
+    readonly property real tabTop: hostWindow.menuBarHeight
+    readonly property real tabBottom: height - hostWindow.keyBarHeight()
 
     // Keep the modal backdrop input out of the dialog rectangle. A full
     // window MouseArea can become the press grabber before deeply nested
@@ -37,9 +33,9 @@ Item {
 
         OutsideBand {
             x: 0
-            y: 0
+            y: dialogOverlay.tabTop
             width: parent.width
-            height: Math.max(0, dialogSurface.y)
+            height: Math.max(0, dialogSurface.y - y)
         }
         OutsideBand {
             x: 0
@@ -57,7 +53,7 @@ Item {
             x: 0
             y: dialogSurface.y + dialogSurface.height
             width: parent.width
-            height: Math.max(0, parent.height - y)
+            height: Math.max(0, dialogOverlay.tabBottom - y)
         }
     }
 

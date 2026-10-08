@@ -7,6 +7,8 @@ f4 ist ein experimenteller Klon von Far Manager / far2l in Go.
 ~Visual File Renamer (VisRen)~VisRen@
 ~README.md anzeigen~README@
 
+~Terminalverlauf in neue Tabs übernehmen~TerminalHistoryInheritance@
+
 @VisRen
 $Visual File Renamer (VisRen)
 
@@ -634,3 +636,11 @@ Zusätzlich zu den Cursortasten stehen folgende Tastenkombinationen zur Verfügu
   Einträge mit nicht existierenden Pfaden entfernen (bestätigt) Strg+R
 
   Den ausgewählten Pfad in die Zwischenablage kopieren Strg+C, Strg+Einfg
+
+@TerminalHistoryInheritance
+$Terminalverlauf in neue Tabs übernehmen
+Kopiert die abgeschlossene Terminalausgabe des aktuellen Tabs in neue Tabs. Jeder Tab startet eine eigene Shell; spätere Ausgaben bleiben in diesem Tab. Standardmäßig deaktiviert.
+
+Nach dem Anwenden gilt die Änderung ohne Neustart für später geöffnete Tabs. Bestehende Tabs behalten ihren Verlauf. Die Eingabeaufforderung der wartenden Shell, laufende Programme und der Shellzustand werden nicht kopiert.
+
+[Panel] InheritTerminalHistory = 0 / 1 (settings.ini)

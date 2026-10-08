@@ -151,7 +151,7 @@ Rectangle {
         }
     }
 
-    Text {
+    TextInput {
         id: documentHeaderLeft
         objectName: documentHeader.documentRoot.surfaceObjectName
                     === "documentSurface"
@@ -167,15 +167,34 @@ Rectangle {
         anchors.rightMargin: documentHeader.hostWindow.panelTextInset
         anchors.verticalCenter: parent.verticalCenter
         text: documentHeader.documentRoot.topBarLeftText
-        textFormat: Text.PlainText
+        readOnly: true
+        selectByMouse: true
+        persistentSelection: true
+        cursorVisible: false
+        clip: true
+        property bool retainsFocusOnShellRefresh: true
+        selectionColor: documentHeader.hostWindow.selectedBg
+        selectedTextColor: documentHeader.hostWindow.textColor
         renderType: documentHeader.hostWindow.fontRenderType
         color: documentHeader.hostWindow.galleryPathTextColor
         font.family: documentHeader.hostWindow.uiFontFamily
         font.pixelSize: documentHeader.hostWindow.semanticTextFontPixelSize
         verticalAlignment: Text.AlignVCenter
-        // Preserve both the path root and the file name when the full path is
-        // wider than the document header.
-        elide: Text.ElideMiddle
+        onTextChanged: {
+            deselect()
+            cursorPosition = 0
+            if (activeFocus)
+                documentHeader.hostWindow.focusTarget.forceActiveFocus()
+        }
+        onActiveFocusChanged: if (!activeFocus) {
+            deselect()
+            cursorPosition = 0
+        }
+        Keys.onEscapePressed: event => {
+            documentHeader.hostWindow.focusTarget.forceActiveFocus()
+            event.accepted = true
+        }
+        HoverHandler { cursorShape: Qt.IBeamCursor }
         transform: Translate {
             x: documentHeader.documentRoot.pixelOffsetX(documentHeaderLeft)
             y: documentHeader.documentRoot.pixelOffsetY(documentHeaderLeft)

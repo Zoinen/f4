@@ -2,8 +2,8 @@
 
 File fields add typed metadata to a panel entry without changing `VFSItem` or
 the file-list plugin API. Descriptors are shared by the semantic panel model,
-Details columns, sorting, filtering, and grouping. This first implementation
-publishes EXIF fields in the Qt frontend; it does not read metadata in the TUI
+Details columns, sorting, filtering, and grouping. The implementation
+publishes EXIF and video fields in the Qt frontend; it does not read metadata in the TUI
 or run a second scanner.
 
 ## EXIF fields
@@ -29,6 +29,35 @@ image dimension, thumbnail, or preview does not imply that the EXIF pass has
 finished. A completed decoder pass marks every absent descriptor as missing.
 Temporary source-access failures remain unread so that the existing metadata
 retry policy can run.
+
+## Video fields
+
+| Key | Display |
+| --- | --- |
+| `media.duration` | `4.48 s` below one minute, otherwise `01:01:01.125` |
+| `media.bitrate` | overall average bitrate, e.g. `1.6 Mb/s` |
+| `media.format` | container format |
+| `video.codec` | video codec |
+| `video.bitrate` | video stream bitrate |
+| `video.resolution` | `1920×1080` |
+| `video.frame_rate` | `29.97 fps` |
+| `audio.codec` | audio codec |
+| `audio.bitrate` | audio stream bitrate |
+
+The thumbnail worker reads these values from the same media player used to
+capture video frames. Track fields describe the active video and audio tracks
+(or the first track when none is selected). Overall bitrate is calculated from
+file size and duration, including container overhead; stream bitrates come from
+track metadata. Unsupported, missing, zero, or non-finite values stay blank.
+
+Video metadata uses the `video-metadata-v1` cache schema. A cache hit restores
+values and completion without opening the source. If cached thumbnail pixels
+survive but metadata is absent, the same worker loads metadata and reuses those
+pixels. Source-access failures remain unread. Completed fields are retained for
+the same source version when a delayed thumbnail or placeholder carries an
+incomplete read. Cached video pixels restore native dimensions and completed fields before
+publication; their preview dimensions never replace completed native metadata.
+Identical metadata does not invalidate settled thumbnail geometry.
 
 ## Data path and identity
 

@@ -287,6 +287,14 @@ func (fm *frameManager) HandleSemanticAction(action map[string]any) bool {
 		}
 		return false
 	}
+	if actionName == "workspace.activatePrevious" {
+		if fm.ActiveIdx < 0 || fm.ActiveIdx >= len(fm.Screens) ||
+			target != fmt.Sprintf("workspace-tab-%d", fm.Screens[fm.ActiveIdx].Number) {
+			return false
+		}
+		fm.switchPreviousScreen()
+		return true
+	}
 	if actionName == "workspace.activate" || actionName == "tab.activate" ||
 		((actionName == "activate" || actionName == "control.activate") && strings.HasPrefix(target, "workspace-tab-")) {
 		idx := -1
@@ -868,6 +876,9 @@ func (e *Edit) HandleSemanticAction(action map[string]any) bool {
 		return false
 	}
 	switch semanticString(action["action"]) {
+	case "control.history":
+		e.OpenHistory()
+		return true
 	case "select", "control.select":
 		anchor := e.semanticCursor(semanticInt(action["anchor"]))
 		cursor := e.semanticCursor(semanticInt(action["cursor"]))

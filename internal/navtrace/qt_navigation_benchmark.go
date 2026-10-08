@@ -243,7 +243,7 @@ func navigationBenchmarkTraceID(outer, action map[string]any) string {
 
 func navigationBenchmarkIsNavigationAction(action string) bool {
 	switch action {
-	case "panel.open", "panel_open", "panel.navigatePath", "panel_navigate_path", "panel.refresh", "panel_refresh", "editor.mouse":
+	case "panel.open", "panel_open", "panel.navigatePath", "panel_navigate_path", "panel.refresh", "panel_refresh", "editor.mouse", "workspace.activate", "workspace.activatePrevious":
 		return true
 	default:
 		return false

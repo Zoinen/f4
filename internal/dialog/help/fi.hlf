@@ -7,6 +7,8 @@ f4 on kokeellinen Far Manager / far2l -tiedostonhallintaohjelman klooni Go-kiele
 ~Visuaalinen tiedostojen nimeäminen (VisRen)~VisRen@
 ~Näytä README.md~README@
 
+~Peri päätteen historia uusiin välilehtiin~TerminalHistoryInheritance@
+
 @VisRen
 $Visuaalinen tiedostojen nimeäminen (VisRen)
 
@@ -593,3 +595,11 @@ Nuolinäppäinten lisäksi käytettävissä ovat seuraavat pikanäppäimet:
   Poista olemattomat polut (vahvistuksella)         Ctrl+R
 
   Kopioi valittu polku leikepöydälle                Ctrl+C, Ctrl+Ins
+
+@TerminalHistoryInheritance
+$Peri päätteen historia uusiin välilehtiin
+Kopioi nykyisen välilehden valmistuneen pääteulostulon uusiin välilehtiin. Jokainen välilehti käynnistää oman komentotulkkinsa, ja myöhempi tuloste jää kyseiselle välilehdelle. Oletuksena pois käytöstä.
+
+Kun muutos otetaan käyttöön, se vaikuttaa myöhemmin avattaviin välilehtiin ilman uudelleenkäynnistystä. Nykyiset välilehdet säilyttävät historiansa. Odottavan komentotulkin kehotetta, käynnissä olevia ohjelmia tai komentotulkin tilaa ei kopioida.
+
+[Panel] InheritTerminalHistory = 0 / 1 (settings.ini)

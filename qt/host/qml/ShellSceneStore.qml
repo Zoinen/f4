@@ -373,6 +373,10 @@ Item {
     function resetSceneProjection() {
         shellPresentationOverrideSet = false
         shellPresentationOverride = null
+        // Capture authoritative surfaces before dropping scalar overrides.
+        // Otherwise panel bindings briefly resurrect the previous workspace.
+        retainedShellFrame = surfaceRegistry.hasShell
+                ? surfaceRegistry.shell : retainedShellFrame
         documentPresentationOverrideSet = false
         documentPresentationOverride = null
         documentSurfaceStateOverride = null
@@ -392,12 +396,12 @@ Item {
     function resetShellProjection() {
         shellPresentationOverrideSet = false
         shellPresentationOverride = null
+        captureShellSurface()
         leftPanelPresentationOverride = null
         rightPanelPresentationOverride = null
         leftPanelLayoutStateOverride = null
         rightPanelLayoutStateOverride = null
         panelActivationOverride = -1
-        captureShellSurface()
         sceneReset()
     }
 

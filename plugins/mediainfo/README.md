@@ -7,7 +7,10 @@ same path and no temporary OS copy or native MediaInfo library is required.
 ## Entry points
 
 - **F11 → Media information** analyzes the item under the active-panel cursor
-  and opens a resizable report window.
+  and opens a resizable report window. In the Qt frontend the complete report
+  appears as a scrollable report with aligned field-name and value columns,
+  subdued field names, full-width section headings, and wrapping values.
+  Blank lines and literal text are preserved; custom templates retain their layout.
 - **Ctrl+Q** invokes the registered fast Quick View provider for supported
   audio/video containers. Images and text subtitles retain f4's native preview
   precedence.

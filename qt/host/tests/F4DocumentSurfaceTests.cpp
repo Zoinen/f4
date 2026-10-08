@@ -3,6 +3,8 @@
 #include "TestExtUiStateController.h"
 
 #include <QCoreApplication>
+#include <QClipboard>
+#include <QScopeGuard>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFontDatabase>
@@ -2256,6 +2258,43 @@ void F4DocumentSurfaceTests::documentHeaderShowsFullPathsForViewerAndEditor()
         QTRY_VERIFY_WITH_TIMEOUT(lucideIcon->isVisible(), 3000);
         QCOMPARE(left->property("text").toString(), expectedLeft.trimmed());
         QCOMPARE(right->property("text").toString(), expectedRight.trimmed());
+        QVERIFY(left->property("readOnly").toBool());
+        QVERIFY(left->property("selectByMouse").toBool());
+        const QString oldClipboard = QGuiApplication::clipboard()->text();
+        const auto restoreClipboard = qScopeGuard([&] { QGuiApplication::clipboard()->setText(oldClipboard); });
+        const auto start = left->mapToScene(QPointF(2, left->height()/2)).toPoint();
+        const auto end = left->mapToScene(QPointF(100, left->height()/2)).toPoint();
+        QTest::mousePress(fixture.window, Qt::LeftButton, Qt::NoModifier, start);
+        QTest::mouseMove(fixture.window, end, 20);
+        QTest::mouseRelease(fixture.window, Qt::LeftButton, Qt::NoModifier, end);
+        QTRY_VERIFY(!left->property("selectedText").toString().isEmpty());
+        QVERIFY(left->hasActiveFocus());
+        QVERIFY(QMetaObject::invokeMethod(fixture.window, "restoreSurfaceFocus"));
+        QVERIFY(left->hasActiveFocus());
+        QTest::keyClick(fixture.window, Qt::Key_A, Qt::ControlModifier);
+        QCOMPARE(left->property("selectedText").toString(), expectedLeft.trimmed());
+        QTest::keyClick(fixture.window, Qt::Key_C, Qt::ControlModifier);
+        QCOMPARE(QGuiApplication::clipboard()->text(), expectedLeft.trimmed());
+        QTest::keyClick(fixture.window, Qt::Key_X);
+        QTest::keyClick(fixture.window, Qt::Key_Backspace);
+        QTest::keyClick(fixture.window, Qt::Key_V, Qt::ControlModifier);
+        QCOMPARE(left->property("text").toString(), expectedLeft.trimmed());
+        for (auto *leaf : {left, right, lucideIcon}) {
+            const auto origin = leaf->mapToScene(QPointF());
+            const auto physical = origin * fixture.window->devicePixelRatio();
+            QVERIFY2(qAbs(physical.x()-qRound64(physical.x())) < .001 && qAbs(physical.y()-qRound64(physical.y())) < .001,
+                qPrintable(QString("%1 at %2,%3 px").arg(leaf->objectName()).arg(physical.x()).arg(physical.y())));
+            QCOMPARE(leaf->mapToScene(QPointF(1,0))-origin, QPointF(1,0));
+            QCOMPARE(leaf->mapToScene(QPointF(0,1))-origin, QPointF(0,1));
+        }
+        QVERIFY(fixture.window->grabWindow().save(QString("artifacts/selectable-header-%1-175.png").arg(frame.value("kind").toString())));
+        QTest::keyClick(fixture.window, Qt::Key_Escape);
+        QVERIFY(!left->hasActiveFocus());
+        QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, start);
+        QVERIFY(left->hasActiveFocus());
+        QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+            fixture.list->mapToScene(QPointF(40, 10)).toPoint());
+        QVERIFY(!left->hasActiveFocus());
         QVERIFY(fixture.surface->property("documentFileIconAvailable").toBool());
         QCOMPARE(fixture.surface->property("documentFileIconColor").value<QColor>(),
                  QColor(QStringLiteral("#8AE234")));
@@ -2286,6 +2325,11 @@ void F4DocumentSurfaceTests::documentHeaderShowsFullPathsForViewerAndEditor()
     editor.insert(QStringLiteral("baseName"), QStringLiteral("window.txt"));
     verify(editor, QStringLiteral("C:\\work\\editor\\window.txt"),
            QStringLiteral(" UTF-8 │ 41,2     "));
+
+    const QString longPath = QStringLiteral("C:\\work\\")
+        + QStringLiteral("long-folder-name\\").repeated(12) + QStringLiteral("window.txt");
+    viewer.insert(QStringLiteral("path"), longPath);
+    verify(viewer, longPath, QStringLiteral(" UTF-8 │ Text │ 42%     "));
 
     QVariantMap generatedEditor = editorFrame(0, 40, 0, 1);
     generatedEditor.insert(QStringLiteral("path"),

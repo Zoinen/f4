@@ -19,7 +19,7 @@ Item {
            ? hostWindow.snapPx(Math.min(availableWidth,
                                   workspaceItemsRow.width))
            : 0
-    height: hostWindow.snapPx(36)
+    height: parent.height
     visible: hostWindow.workspaceTabs.visible === true
     z: 2
     property string dragSourceWorkspace: ""
@@ -251,9 +251,9 @@ Item {
                         workspaceHover.hovered
                     objectName: String(modelData.id || ("workspace-tab-" + index))
                     width: hostWindow.preferredWorkspaceTabWidth(
-                                workspaceLabel.implicitWidth,
-                                workspaceTab.closeEnabled)
-                    height: parent.height
+                                workspaceLabel.implicitWidth)
+                    y: parent.height - height
+                    height: hostWindow.snapPx(36)
                     z: current ? 2 : 0
                     radius: 6
                     topLeftRadius: 6
@@ -383,7 +383,7 @@ Item {
                                 || !workspaceBar.nativeWindowAgentReady)
                             return
                         workspaceBar.nativeWindowAgent.setHitTestVisible(
-                                    workspaceTab)
+                                    workspaceTabMouseArea)
                         workspaceTab.nativeHitTargetRegistered = true
                     }
 
@@ -396,6 +396,7 @@ Item {
 
                     HoverHandler {
                         id: workspaceHover
+                        parent: workspaceTabMouseArea
                     }
 
                     ZG.ToolTip {
@@ -434,20 +435,16 @@ Item {
                                     + workspaceTab.objectName
                         anchors.left: workspaceIcon.right
                         anchors.leftMargin: hostWindow.snapPx(7)
-                        anchors.right: workspaceAttention.visible
-                                       ? workspaceAttention.left
-                                       : workspaceClose.visible
-                                         ? workspaceClose.left
-                                         : parent.right
-                        anchors.rightMargin: hostWindow.snapPx(6)
+                        anchors.right: parent.right
+                        anchors.rightMargin: hostWindow.snapPx(8)
                         y: hostWindow.snapPx((parent.height - height) / 2)
                         height: hostWindow.snapPx(
                                     Math.max(
                                         workspaceNumber.implicitHeight,
                                         workspaceTitle.implicitHeight))
-                        implicitWidth: workspaceNumber.implicitWidth
+                        implicitWidth: workspaceNumber.width
                                        + (workspaceTitle.text === ""
-                                          ? 0 : 5)
+                                          ? 0 : hostWindow.snapPx(5))
                                        + workspaceTitle.implicitWidth
 
                         Text {
@@ -456,9 +453,8 @@ Item {
                                         + workspaceTab.objectName
                             anchors.left: parent.left
                             anchors.right: workspaceNumber.left
-                            anchors.rightMargin: text === "" ||
-                                                 workspaceNumber.text === ""
-                                                 ? 0 : 5
+                            anchors.rightMargin: text === "" ? 0 : hostWindow.snapPx(5)
+                            height: hostWindow.snapPx(implicitHeight)
                             y: hostWindow.snapPx((parent.height - height) / 2)
                             text: hostWindow.cleanText(workspaceTab.presentedTab.text)
                             color: workspaceTab.labelColor
@@ -474,7 +470,10 @@ Item {
 
                         Text {
                             id: workspaceNumber
-                            width: hostWindow.snapPx(implicitWidth)
+                            width: hostWindow.snapPx(Math.max(14, implicitWidth))
+                            height: hostWindow.snapPx(implicitHeight)
+                            visible: !workspaceClose.visible
+                            horizontalAlignment: Text.AlignHCenter
                             objectName: "workspace-tab-number-"
                                         + workspaceTab.objectName
                             anchors.right: parent.right
@@ -491,12 +490,13 @@ Item {
 
                     Rectangle {
                         id: workspaceAttention
-                        anchors.right: parent.right
-                        anchors.rightMargin: workspaceClose.visible ? hostWindow.snapPx(29) : hostWindow.snapPx(10)
-                        anchors.verticalCenter: parent.verticalCenter
+                        objectName: "workspace-tab-attention-" + workspaceTab.objectName
+                        z: 2
+                        x: hostWindow.snapPx(workspaceIcon.x + workspaceIcon.width - width / 2)
+                        y: hostWindow.snapPx(workspaceIcon.y - height / 2)
                         width: hostWindow.snapPx(6)
                         height: hostWindow.snapPx(6)
-                        radius: 3
+                        radius: width / 2
                         color: hostWindow.dialogAccent
                         visible: modelData.attention === true
                     }
@@ -507,7 +507,8 @@ Item {
                         objectName: "workspace-close-"
                                     + hostWindow.cleanText(modelData.id)
                         z: 2
-                        x: hostWindow.snapPx(parent.width - width - 8)
+                        x: workspaceLabel.x + workspaceNumber.x
+                           + hostWindow.snapPx((workspaceNumber.width - width) / 2)
                         y: hostWindow.snapPx((parent.height - height) / 2)
                         width: hostWindow.snapPx(14)
                         height: hostWindow.snapPx(14)
@@ -563,7 +564,10 @@ Item {
                     }
 
                     MouseArea {
+                        id: workspaceTabMouseArea
+                        objectName: "workspace-tab-hit-" + workspaceTab.objectName
                         anchors.fill: parent
+                        anchors.topMargin: -workspaceTab.y
                         cursorShape: Qt.ArrowCursor
                         acceptedButtons: Qt.LeftButton | Qt.MiddleButton
                         onPressed: function(mouse) {
@@ -571,7 +575,9 @@ Item {
                                 return
                             hostWindow.action({
                                 "target": modelData.id,
-                                "action": modelData.action,
+                                "action": workspaceTab.current
+                                          ? "workspace.activatePrevious"
+                                          : modelData.action,
                                 "index": modelData.index
                             }, true)
                         }
@@ -597,7 +603,8 @@ Item {
                 objectName: hostWindow.cleanText(hostWindow.workspaceTabs.newTab
                                            ? hostWindow.workspaceTabs.newTab.id : "workspace-new")
                 width: visible ? hostWindow.snapPx(30) : 0
-                height: parent.height
+                y: parent.height - height
+                height: hostWindow.snapPx(36)
                 radius: 0
                 topLeftRadius: 6
                 topRightRadius: 6
@@ -615,7 +622,7 @@ Item {
                             || !workspaceBar.nativeWindowAgentReady)
                         return
                     workspaceBar.nativeWindowAgent.setHitTestVisible(
-                                workspaceNew)
+                                workspaceNewMouseArea)
                     workspaceNewHitTestRegistered = true
                 }
 
@@ -646,9 +653,12 @@ Item {
                     source: hostWindow.lucideIconSource(
                                 "plus", 16, hostWindow.chromeText)
                 }
-                HoverHandler { id: newHover }
+                HoverHandler { id: newHover; parent: workspaceNewMouseArea }
                 MouseArea {
+                    id: workspaceNewMouseArea
+                    objectName: "workspaceNewHitArea"
                     anchors.fill: parent
+                    anchors.topMargin: -workspaceNew.y
                     cursorShape: Qt.ArrowCursor
                     onClicked: hostWindow.action({
                         "target": hostWindow.workspaceTabs.newTab.id,

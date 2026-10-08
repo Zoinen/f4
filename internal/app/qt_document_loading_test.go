@@ -417,7 +417,10 @@ func TestOpeningProgressDialogFollowsRuntimeTheme(t *testing.T) {
 			}
 		}
 	}()
-	var dialog *vtui.Window
+	var dialog interface {
+		vtui.Frame
+		GetChildren() []vtui.UIElement
+	}
 	timer := time.NewTimer(time.Second)
 	defer timer.Stop()
 	for dialog == nil {
@@ -427,7 +430,10 @@ func TestOpeningProgressDialogFollowsRuntimeTheme(t *testing.T) {
 			for _, appScreen := range vtui.FrameManager.Screens {
 				for _, frame := range appScreen.Frames {
 					if frame.GetTitle() == " Opening... " {
-						dialog, _ = frame.(*vtui.Window)
+						dialog, _ = frame.(interface {
+							vtui.Frame
+							GetChildren() []vtui.UIElement
+						})
 					}
 				}
 			}
@@ -469,7 +475,8 @@ func TestOpeningProgressDialogFollowsRuntimeTheme(t *testing.T) {
 			}
 			checkAttr("progress filled", progress.X1, progress.Y1, vtui.ColDialogEdit)
 			checkAttr("progress empty", progress.X2, progress.Y1, vtui.ColDialogText)
-			checkAttr("border", dialog.X1, dialog.Y1+1, vtui.ColDialogBox)
+			x1, y1, _, _ := dialog.GetPosition()
+			checkAttr("border", x1, y1+1, vtui.ColDialogBox)
 			buttonIndex, hotkeyIndex := vtui.ColDialogButton, vtui.ColDialogHighlightButton
 			if focused {
 				buttonIndex, hotkeyIndex = vtui.ColDialogSelectedButton, vtui.ColDialogHighlightSelectedButton

@@ -7,6 +7,8 @@ Az f4 a Far Manager / far2l fájlkezelő kísérleti klónja Go nyelven.
 ~Vizuális fájl-átnevezés (VisRen)~VisRen@
 ~README.md megjelenítése~README@
 
+~Terminálelőzmények öröklése új lapokon~TerminalHistoryInheritance@
+
 @VisRen
 $Vizuális fájl-átnevezés (VisRen)
 
@@ -588,3 +590,11 @@ A kurzorbillentyűkön kívül az alábbi gyorsbillentyűk érhetők el:
   Nem létező útvonalak törlése (megerősítéssel)      Ctrl+R
 
   Kiválasztott útvonal másolása a vágólapra         Ctrl+C, Ctrl+Ins
+
+@TerminalHistoryInheritance
+$Terminálelőzmények öröklése új lapokon
+Az aktuális lap befejezett terminálkimenetét az új lapokra másolja. Minden lap saját parancsértelmezőt indít, és a későbbi kimenet az adott lapon marad. Alapértelmezés szerint kikapcsolva.
+
+A módosítás alkalmazása után a később megnyitott lapokra érvényes, újraindítás nélkül. A meglévő lapok megtartják előzményeiket. A várakozó parancsértelmező promptja, a futó programok és a parancsértelmező állapota nem kerül át.
+
+[Panel] InheritTerminalHistory = 0 / 1 (settings.ini)

@@ -4,8 +4,10 @@ package panel
 
 import (
 	"errors"
+	"fmt"
 	"github.com/unxed/f4/internal/sysinfo"
 	"github.com/unxed/f4/internal/winshell"
+	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 	"io/fs"
@@ -80,7 +82,9 @@ func TestWindowsLocationsDriveSubmenuUsesNativeCascadeAndWrapperActions(t *testi
 	// A semantic click must go through windowsLocationsMenu.ProcessKey, not
 	// directly through the embedded VMenu. This non-folder row is deliberately
 	// a no-op; base VMenu activation would incorrectly mark the child done.
-	if !child.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN}) {
+	if !vtui.FrameManager.HandleSemanticAction(map[string]any{
+		"action": "menu.activate", "target": vtui.SemanticID(child), "index": 0,
+	}) {
 		t.Fatal("semantic child activation was not handled")
 	}
 	if child.IsDone() || root.IsDone() {
@@ -384,5 +388,58 @@ func TestGalleryIndexingDialogOpensIndexingOptions(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("indexing settings command was not invoked")
+	}
+}
+
+func TestWindowsLocationsSemanticClickNavigatesPanel(t *testing.T) {
+	for _, panelIdx := range []int{0, 1} {
+		t.Run(fmt.Sprintf("panel-%d", panelIdx), func(t *testing.T) {
+			t.Cleanup(swapFrameManager(t))
+			screen := vtui.NewSilentScreenBuf()
+			screen.AllocBuf(100, 30)
+			vtui.FrameManager.Init(screen)
+			start, target := t.TempDir(), t.TempDir()
+			fsp := NewFileSystemPanel(0, 0, 40, 20, vfs.NewOSVFS(start))
+			waitForLoad(t, fsp)
+			t.Cleanup(func() {
+				if fsp.CancelLoad != nil {
+					fsp.CancelLoad()
+				}
+			})
+			pf := &PanelsFrame{ActiveIdx: 1 - panelIdx}
+			pf.Panels[panelIdx] = fsp
+			root := vtui.NewVMenu(" Drives ")
+			root.SetId("windows-navigation-drives")
+			child := &windowsLocationsMenu{
+				VMenu: vtui.NewVMenu(" Windows locations "), pf: pf, panelIdx: panelIdx,
+				parent: root, expanded: make(map[string]bool),
+			}
+			child.SetId("windows-navigation-locations")
+			child.rebuild([]windowsLocationRow{{node: winshell.Node{
+				URI: "shell:test-folder", Name: "Folder", Folder: true, FileSystemPath: target,
+			}}})
+			root.AddItem(vtui.MenuItem{Text: "Windows locations", SubmenuFrame: func() vtui.Frame { return child }})
+			vtui.FrameManager.PushMenu(root)
+			if !root.OpenSubmenu(0) {
+				t.Fatal("could not open locations submenu")
+			}
+			if !vtui.FrameManager.HandleSemanticAction(map[string]any{
+				"action": "menu.activate", "target": vtui.SemanticID(child), "index": 0,
+			}) {
+				t.Fatal("Qt folder click was not handled")
+			}
+			deadline := time.After(3 * time.Second)
+			for filepath.Clean(fsp.Vfs.GetPath()) != filepath.Clean(target) {
+				select {
+				case task := <-vtui.FrameManager.TaskChan:
+					task()
+				case <-deadline:
+					t.Fatalf("panel remained at %q, want %q", fsp.Vfs.GetPath(), target)
+				}
+			}
+			if !child.IsDone() || !root.IsDone() {
+				t.Fatal("navigation left menu cascade open")
+			}
+		})
 	}
 }

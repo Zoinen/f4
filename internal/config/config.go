@@ -479,6 +479,7 @@ type F4Config struct {
 	InfoPanelCPUGPU          bool   // Ctrl+L info panel: show CPU and GPU sections (off by default)
 	EscTogglePanels          bool   // ESC toggles panels visibility (Far ships this as a macro; on by default)
 	TerminalCtrlNWorkspace   bool   // reserve Ctrl+N in terminal views for cloning panels to a workspace
+	InheritTerminalHistory   bool   // copy terminal output into new workspaces; each shell remains independent
 	KeepTerminalCursor       bool
 	CursorInsertShape        string // caret while typing: "underline" | "bar" | "block" (f4 #1154)
 	CursorOvertypeShape      string // caret in overtype mode, same names
@@ -721,6 +722,7 @@ var App = F4Config{
 	InfoPanelCPUGPU:          false,
 	EscTogglePanels:          true,
 	TerminalCtrlNWorkspace:   true,
+	InheritTerminalHistory:   false,
 	KeepTerminalCursor:       false,
 	CursorInsertShape:        "underline",
 	CursorOvertypeShape:      "block",
@@ -982,6 +984,7 @@ func parseConfigInto(cfg *F4Config, merged *ini.File) {
 	cfg.InfoPanelCPUGPU = merged.GetString("Panel", "InfoPanelCPUGPU", "0") == "1"
 	cfg.EscTogglePanels = merged.GetString("Panel", "EscTogglePanels", "1") == "1"
 	cfg.TerminalCtrlNWorkspace = merged.GetString("Panel", "TerminalCtrlNWorkspace", "1") == "1"
+	cfg.InheritTerminalHistory = merged.GetString("Panel", "InheritTerminalHistory", "0") == "1"
 	cfg.KeepTerminalCursor = merged.GetString("Panel", "KeepTerminalCursor", "0") == "1"
 	cfg.CursorInsertShape = NormalizeCursorShape(merged.GetString("Panel", "CursorInsertShape", ""), "underline")
 	cfg.CursorOvertypeShape = NormalizeCursorShape(merged.GetString("Panel", "CursorOvertypeShape", ""), "block")
@@ -1311,6 +1314,7 @@ func SerializeSettingsConfig(cfg F4Config) []byte {
 	fmt.Fprintf(&sb, "InfoPanelCPUGPU = %d\n", map[bool]int{true: 1, false: 0}[cfg.InfoPanelCPUGPU])
 	fmt.Fprintf(&sb, "EscTogglePanels = %d\n", map[bool]int{true: 1, false: 0}[cfg.EscTogglePanels])
 	fmt.Fprintf(&sb, "TerminalCtrlNWorkspace = %d\n", map[bool]int{true: 1, false: 0}[cfg.TerminalCtrlNWorkspace])
+	fmt.Fprintf(&sb, "InheritTerminalHistory = %d\n", map[bool]int{true: 1, false: 0}[cfg.InheritTerminalHistory])
 	fmt.Fprintf(&sb, "KeepTerminalCursor = %d\n", map[bool]int{true: 1, false: 0}[cfg.KeepTerminalCursor])
 	fmt.Fprintf(&sb, "CursorInsertShape = %s\n", NormalizeCursorShape(cfg.CursorInsertShape, "underline"))
 	fmt.Fprintf(&sb, "CursorOvertypeShape = %s\n", NormalizeCursorShape(cfg.CursorOvertypeShape, "block"))

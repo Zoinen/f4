@@ -16,6 +16,7 @@ Item {
 
     property Item panelChromeLayer: panels
     property bool splitterHovered: false
+    property bool splitterDragging: false
     readonly property alias panelPair: panelPairLoader.item
     property var frame: hostWindow.shellFrame()
     property var panelList: frame.panels || []

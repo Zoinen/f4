@@ -650,6 +650,43 @@ func (ac *AutoCompleteMenu) ProcessMouse(e *vtinput.InputEvent) bool {
 	return true
 }
 
+func (ac *AutoCompleteMenu) HandleSemanticAction(action map[string]any) bool {
+	if action["target"] != SemanticID(ac) {
+		return false
+	}
+	switch action["action"] {
+	case "autocomplete.dismiss":
+		ac.Close()
+	case "autocomplete.select":
+		index := semanticInt(action["index"])
+		if index >= 0 && index < len(ac.items) && !ac.items[index].Separator {
+			ac.lb.SelectPos = index
+		}
+	case "autocomplete.accept":
+		index := semanticInt(action["index"])
+		submit, _ := action["submit"].(bool)
+		if submit && index < 0 {
+			ac.Close()
+			if FrameManager != nil {
+				FrameManager.InjectEvents([]*vtinput.InputEvent{{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN}})
+			}
+			return true
+		}
+		if index < 0 {
+			index = ac.lb.SelectPos
+		}
+		ac.accept(index, false)
+	case "autocomplete.tab":
+		ac.Close()
+		if FrameManager != nil {
+			FrameManager.InjectEvents([]*vtinput.InputEvent{{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_TAB}})
+		}
+	default:
+		return false
+	}
+	return true
+}
+
 // Query returns the typed text used to build this set of suggestions.
 func (ac *AutoCompleteMenu) Query() string {
 	if ac.Edit.AutoCompletePreview {

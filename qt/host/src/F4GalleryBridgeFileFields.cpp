@@ -11,18 +11,21 @@ void F4GalleryBridge::connectSessionFileFieldUpdates()
     for (int side = 0; side < PanelSessionRegistry::PanelCount; ++side) {
         auto *session = qobject_cast<ZoinGallery::GallerySession *>(
             m_panelSessions.session(side));
-        if (!session) {
+        if (!session || session->property("f4FileFieldsConnected").toBool()) {
             continue;
         }
+        session->setProperty("f4FileFieldsConnected", true);
         connect(session, &ZoinGallery::GallerySession::fileFieldsRead,
-                this, [this, side](const QVariantMap &update) {
+                this, [this, side, session](const QVariantMap &update) {
             // Cached metadata can be restored while a catalog transaction is
             // being assembled. Deliver after it commits; Go rechecks identity.
-            queueSessionFileFieldUpdates(side, {update});
+            if (m_panelSessions.session(side) == session)
+                queueSessionFileFieldUpdates(side, {update});
         });
         connect(session, &ZoinGallery::GallerySession::fileFieldsReadBatch,
-                this, [this, side](const QVariantList &updates) {
-            queueSessionFileFieldUpdates(side, updates);
+                this, [this, side, session](const QVariantList &updates) {
+            if (m_panelSessions.session(side) == session)
+                queueSessionFileFieldUpdates(side, updates);
         });
     }
 }

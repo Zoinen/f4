@@ -92,7 +92,7 @@ func (st *replaceLoop) findNext() {
 	ev := st.ev
 	vtui.FrameManager.PostTask(func() {
 		session := st.session
-		RunSearchWithProgress(st.pattern, func(ctx *vtui.TaskContext, dlg *vtui.Window) {
+		RunSearchWithProgressOn(ev, st.pattern, func(ctx *vtui.TaskContext, dlg *vtui.Window) {
 			defer ev.guardMapping("replacing")()
 			data, errBytes := ev.searchBuffer(ctx, session)
 			if errBytes != nil {
@@ -101,7 +101,7 @@ func (st *replaceLoop) findNext() {
 				}
 				ctx.RunOnUI(func() {
 					dlg.Close()
-					vtui.ShowMessage(" Error ", "Failed to read file buffer.", []string{"&Ok"})
+					vtui.ShowMessageOn(ev, " Error ", "Failed to read file buffer.", []string{"&Ok"})
 				})
 				return
 			}
@@ -141,7 +141,7 @@ func (st *replaceLoop) findNext() {
 					return
 				}
 				if err != nil {
-					vtui.ShowMessage(" Error ", fmt.Sprintf("Invalid regular expression:\n%v", err), []string{"&Ok"})
+					vtui.ShowMessageOn(ev, " Error ", fmt.Sprintf("Invalid regular expression:\n%v", err), []string{"&Ok"})
 					return
 				}
 				if ev.editSession != st.session {
@@ -229,7 +229,7 @@ func (st *replaceLoop) replaceRemaining(off, mLen int) {
 	ev := st.ev
 	vtui.FrameManager.PostTask(func() {
 		session := st.session
-		RunSearchWithProgress(st.pattern, func(ctx *vtui.TaskContext, dlg *vtui.Window) {
+		RunSearchWithProgressOn(ev, st.pattern, func(ctx *vtui.TaskContext, dlg *vtui.Window) {
 			defer ev.guardMapping("replacing")()
 			data, errBytes := ev.searchBuffer(ctx, session)
 			if errBytes != nil {
@@ -238,7 +238,7 @@ func (st *replaceLoop) replaceRemaining(off, mLen int) {
 				}
 				ctx.RunOnUI(func() {
 					dlg.Close()
-					vtui.ShowMessage(" Error ", "Failed to read file buffer.", []string{"&Ok"})
+					vtui.ShowMessageOn(ev, " Error ", "Failed to read file buffer.", []string{"&Ok"})
 				})
 				return
 			}
@@ -275,7 +275,7 @@ func (st *replaceLoop) replaceRemaining(off, mLen int) {
 					return
 				}
 				if err != nil {
-					vtui.ShowMessage(" Error ", fmt.Sprintf("Invalid regular expression:\n%v", err), []string{"&Ok"})
+					vtui.ShowMessageOn(ev, " Error ", fmt.Sprintf("Invalid regular expression:\n%v", err), []string{"&Ok"})
 					return
 				}
 				if ev.editSession != st.session {
@@ -293,11 +293,12 @@ func (st *replaceLoop) replaceRemaining(off, mLen int) {
 // "0 occurrence(s) replaced" is the honest outcome of skipping every match —
 // and the not-found message only when the very first find came up empty.
 func (st *replaceLoop) finish() {
+	ev := st.ev
 	if st.found {
-		vtui.ShowMessage(i18n.Msg("Replace.ConfirmTitle"),
+		vtui.ShowMessageOn(ev, i18n.Msg("Replace.ConfirmTitle"),
 			fmt.Sprintf(i18n.Msg("Replace.Replaced"), st.replaced), []string{i18n.Msg("vtui.Ok")})
 	} else {
-		vtui.ShowMessage(i18n.Msg("Replace.ConfirmTitle"), i18n.Msg("Search.NotFound"), []string{i18n.Msg("vtui.Ok")})
+		vtui.ShowMessageOn(ev, i18n.Msg("Replace.ConfirmTitle"), i18n.Msg("Search.NotFound"), []string{i18n.Msg("vtui.Ok")})
 	}
 }
 

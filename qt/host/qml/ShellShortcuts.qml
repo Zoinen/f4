@@ -56,7 +56,13 @@ Item {
         sequence: "Tab"
         context: Qt.ApplicationShortcut
         enabled: shortcuts.hostWindow.activeAutocompleteFrame() !== null
-        onActivated: shortcuts.hostWindow.completeAutocomplete()
+        onActivated: {
+            const frame = shortcuts.hostWindow.activeAutocompleteFrame()
+            if (shortcuts.hostWindow.dropdownAnchorForId(frame.ownerId))
+                shortcuts.hostWindow.action({target: frame.id, action: "autocomplete.tab"}, true)
+            else
+                shortcuts.hostWindow.completeAutocomplete()
+        }
     }
 
     // Modified queue keys remain authoritative vtui commands. Plain table

@@ -13,6 +13,7 @@ Item {
     visible: false
 
     property bool active: false
+    property bool continuous: false
     property int activityRevision: 0
     property int interval: 520
     property bool blinkOn: true
@@ -33,7 +34,7 @@ Item {
             return
         }
         // Off and back on is one complete, bounded blink cycle.
-        remainingTransitions = 2
+        remainingTransitions = continuous ? -1 : 2
         blinkTimer.start()
     }
 
@@ -43,6 +44,7 @@ Item {
         else
             settle()
     }
+    onContinuousChanged: restart()
     onActivityRevisionChanged: {
         if (active)
             restart()
@@ -55,13 +57,14 @@ Item {
         repeat: false
         onTriggered: {
             if (!controller.active
-                    || controller.remainingTransitions <= 0) {
+                    || (!controller.continuous && controller.remainingTransitions <= 0)) {
                 controller.settle()
                 return
             }
             controller.blinkOn = !controller.blinkOn
-            --controller.remainingTransitions
-            if (controller.remainingTransitions > 0)
+            if (!controller.continuous)
+                --controller.remainingTransitions
+            if (controller.continuous || controller.remainingTransitions > 0)
                 blinkTimer.start()
             else
                 controller.blinkOn = true

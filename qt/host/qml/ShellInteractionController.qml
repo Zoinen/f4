@@ -130,6 +130,13 @@ Item {
         if (!frame)
             return
         const shell = sceneStore.shellFrame()
+        if (hostWindow.dropdownAnchorForId(frame.ownerId)) {
+            action({target: frame.id,
+                    action: actionName === "command.preview" ? "autocomplete.select" : "autocomplete.accept",
+                    index: autocompleteSelectedIndex,
+                    submit: actionName === "command.submit" && autocompleteSelectedIndex < 0}, true)
+            return
+        }
         const intent = {
             "target": cleanText(shell.id) !== "" ? shell.id : frame.id,
             "action": actionName
@@ -291,14 +298,33 @@ Item {
                 && !sceneStore.hasOperationsQueueSurface()
     }
 
+    function nativeControlRetainsFocus() {
+        let item = hostWindow.activeFocusItem
+        if (!item || !item.visible || !item.enabled)
+            return false
+        while (item && item !== hostWindow.contentItem) {
+            if (item.retainsFocusOnShellRefresh === true)
+                return true
+            item = item.parent
+        }
+        return false
+    }
+
     function restoreSurfaceFocus() {
         // Deferred panel/shell updates must not take focus from a native queue
         // popup. Go-owned dialogs still need their normal focus hand-off.
         if (hostWindow.queueDropdownOpen && !sceneStore.hasBlockingOverlay())
             return
-        if (sceneStore.hasBlockingOverlay() || sceneStore.needsFallbackGrid()
-                || sceneStore.hasDocumentSurface()
-                || sceneStore.hasOperationsQueueSurface()) {
+        if (sceneStore.hasBlockingOverlay() || sceneStore.needsFallbackGrid()) {
+            focusTarget.forceActiveFocus()
+            return
+        }
+        // Activation and background panel updates can arrive after a click
+        // has focused a chrome control. Preserve that focus until the control
+        // releases it or a blocking surface takes keyboard ownership.
+        if (nativeControlRetainsFocus())
+            return
+        if (sceneStore.hasDocumentSurface() || sceneStore.hasOperationsQueueSurface()) {
             focusTarget.forceActiveFocus()
             return
         }

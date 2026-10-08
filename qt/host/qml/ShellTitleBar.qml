@@ -10,6 +10,8 @@ import QWindowKit 1.0
 
 Item {
     id: titleBar
+    readonly property bool retainsFocusOnShellRefresh:
+        minimizeButton.pressed || maximizeButton.pressed || closeButton.pressed
     required property ApplicationWindow hostWindow
     required property Item semanticLayer
     required property QtObject nativeWindowAgent

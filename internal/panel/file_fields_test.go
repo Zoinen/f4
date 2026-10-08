@@ -203,6 +203,39 @@ func TestFileFieldSortKeepsUnknownAndMissingLastInBothDirections(t *testing.T) {
 	assertPanelEntryNames(t, fp.Entries, "iso800.jpg", "iso100.jpg", "missing.jpg", "unread.jpg")
 }
 
+func TestVideoFileFieldsUsePanelColumnRegistry(t *testing.T) {
+	fp := groupTestPanel(t)
+	fp.mediaSourceEpoch = 7
+	entry := &FileEntry{VFSItem: vfs.VFSItem{Name: "video.mp4"}}
+	fp.Entries = []*FileEntry{entry}
+	key, version := fp.fileFieldIdentity(entry)
+	values := map[string]any{
+		"media.duration": 12.5, "media.bitrate": 1600000.0, "media.format": "MPEG-4",
+		"video.codec": "H.264", "video.bitrate": 1500000.0, "video.resolution": "1920×1080",
+		"video.frame_rate": 29.97, "audio.codec": "AAC", "audio.bitrate": 128000.0,
+	}
+	if !fp.ApplyFileFieldsUpdate(map[string]any{"panelId": vtui.SemanticID(fp), "generation": int64(7),
+		"sourceKey": key, "sourceVersion": version, "complete": true, "values": values}) {
+		t.Fatal("video metadata not applied")
+	}
+	columns := make([]FileFieldColumn, 0, len(values))
+	for id := range values {
+		if entry.FileFields[id].State != extui.FileFieldKnown {
+			t.Fatalf("video field %s is not known: %#v", id, entry.FileFields[id])
+		}
+		columns = append(columns, FileFieldColumn{FieldID: id, Width: 16})
+	}
+	if !fp.SetFileFieldColumns(columns) || !fp.SetFileFieldSort("video.frame_rate") {
+		t.Fatal("video columns or sorting rejected")
+	}
+	if !fp.SetFileFieldFilters([]FileFieldFilter{{FieldID: "media.duration", Operation: "ge", Value: "10"}}, false) {
+		t.Fatal("video duration filter rejected")
+	}
+	if entry.FileFields["exif.iso"].State != extui.FileFieldMissing {
+		t.Fatal("video metadata invented an EXIF value")
+	}
+}
+
 func TestApplyFileFieldsUpdateSurvivesSortAndRejectsStaleDirectory(t *testing.T) {
 	fp := groupTestPanel(t)
 	fp.mediaSourceEpoch = 7

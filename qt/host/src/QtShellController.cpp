@@ -106,6 +106,33 @@ QtShellController::QtShellController(const QString &connectAddress,
         m_transport->abort();
         emit fatalError(m_startupError);
     });
+    // Opt-in live diagnostic: exercise the same action as clicking either of
+    // the first two workspace tabs, retaining the third tab and its contents.
+    const int workspaceCycles = qEnvironmentVariableIntValue("F4_WORKSPACE_PROFILE_CYCLES");
+    if (workspaceCycles > 0 && F4NavigationBenchmarkTrace::enabled()) {
+        QTimer::singleShot(8000, this, [this, workspaceCycles]() {
+            auto *timer = new QTimer(this);
+            timer->setInterval(1000);
+            connect(timer, &QTimer::timeout, this,
+                    [this, timer, workspaceCycles, step = 0]() mutable {
+                const auto tabs = m_workspaceState->tabs().value("tabs").toList();
+                if (tabs.size() < 2 || step >= qMin(workspaceCycles, 100)) {
+                    timer->stop();
+                    timer->deleteLater();
+                    F4NavigationBenchmarkTrace::event("qt.workspace.profile.finished");
+                    if (qEnvironmentVariableIsSet("F4_WORKSPACE_PROFILE_EXIT")) sendQuit();
+                    return;
+                }
+                const int index = (step % 2 == 0) ? 1 : 0;
+                const QString trace = QString("workspace-profile-%1").arg(step++);
+                F4NavigationBenchmarkTrace::event("qt.workspace.profile.activate", trace,
+                    {{"index", index}, {"tabCount", tabs.size()}});
+                sendUiAction({{"action", "workspace.activate"}, {"index", index},
+                    {"target", tabs[index].toMap().value("id")}, {"benchmarkTraceId", trace}});
+            });
+            timer->start();
+        });
+    }
 }
 
 QtShellController::~QtShellController()

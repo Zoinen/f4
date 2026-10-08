@@ -395,6 +395,8 @@ Item {
         const loadedTop = modelCoordinateForIndex(loadedSlotStart)
         if (!terminalSurface || !windowInitialized)
             return loadedTop
+        if (presentationFrame.altScreen !== true && !terminalOverflow)
+            return modelCoordinateForIndex(loadedSlotEnd) - documentList.height
         const index = indexForExtent(contentStart, displayedRows)
         const contentTop = index >= 0
             ? modelCoordinateForIndex(loadedSlotStart + index) : loadedTop
@@ -422,6 +424,14 @@ Item {
     }
 
     function placeAtExtent(extent, fraction) {
+        if (terminalSurface && presentationFrame.altScreen !== true
+                && !terminalOverflow) {
+            documentList.forceLayout()
+            documentList.contentY = hostWindow.snapPx(
+                modelCoordinateForIndex(loadedSlotEnd) - documentList.height)
+            coordinator.wheelTarget = documentList.contentY
+            return
+        }
         // The terminal's semantic viewport is negotiated using Go's
         // integer viewport span, while the native ListView can expose a
         // larger physical viewport.  A follow-tail frame must therefore be

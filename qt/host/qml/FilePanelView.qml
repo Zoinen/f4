@@ -320,8 +320,11 @@ Rectangle {
                                        registeredGalleryPanelHost)
         }
         registeredGalleryPanelHost = nextHost
-        if (nextHost)
+        if (nextHost) {
             hostWindow.setGalleryPanelHost(panel.side, nextHost)
+            if (typeof nextHost.registerDragPanel === "function")
+                nextHost.registerDragPanel()
+        }
     }
 
     readonly property real nativeSplitPosition: hostWindow.nativePanelSplitPosition()
@@ -530,6 +533,64 @@ Rectangle {
             }
         }
 
+        Repeater {
+            model: Math.max(0, columnHeader.columns.length - 1)
+            delegate: MouseArea {
+                id: columnResizeHandle
+                required property int index
+                objectName: "panelColumnResizeHandle-" + index + "-" + Number(panel.side || 0)
+                readonly property var gallery: galleryPanelContent.item
+                    ? galleryPanelContent.item.galleryPanel : null
+                property real pointerStartX: 0
+                property var widthsAtPress: []
+                property var previewColumns: []
+                x: columnHeader.columnX(index + 1) - hostWindow.snapPx(4)
+                width: hostWindow.snapPx(8)
+                height: columnHeader.height
+                z: 10
+                acceptedButtons: Qt.LeftButton
+                hoverEnabled: true
+                preventStealing: true
+                cursorShape: Qt.SplitHCursor
+                onPressed: mouse => {
+                    if (!gallery) {
+                        mouse.accepted = false
+                        return
+                    }
+                    pointerStartX = mapToItem(columnHeader, mouse.x, mouse.y).x
+                    widthsAtPress = gallery.detailsHeader.columns.map(column =>
+                        Math.max(1, Number(column.width || 1)))
+                    previewColumns = []
+                    mouse.accepted = true
+                }
+                onPositionChanged: mouse => {
+                    if (!(mouse.buttons & Qt.LeftButton) || !gallery
+                            || widthsAtPress.length !== columnHeader.columns.length)
+                        return
+                    const delta = hostWindow.snapPx(
+                        mapToItem(columnHeader, mouse.x, mouse.y).x - pointerStartX)
+                    if (Math.abs(delta) < 0.01)
+                        return
+                    const columns = gallery.detailsHeader.resizedColumnsForDrag(widthsAtPress, index, delta)
+                    if (columns.length !== widthsAtPress.length)
+                        return
+                    previewColumns = columns
+                    gallery.previewColumnSchema(columns)
+                }
+                onReleased: mouse => {
+                    if (gallery && previewColumns.length > 0)
+                        gallery.columnResizeRequested(previewColumns)
+                    widthsAtPress = []
+                    previewColumns = []
+                    mouse.accepted = true
+                }
+                onCanceled: {
+                    widthsAtPress = []
+                    previewColumns = []
+                }
+            }
+        }
+
         Rectangle {
             anchors.left: parent.left
             anchors.right: parent.right
@@ -563,7 +624,7 @@ Rectangle {
         }
     }
 
-    Loader {
+    Item {
         id: galleryPanelContent
         objectName: "galleryPanelContent-" + Number(panel.side || 0)
         anchors.left: parent.left
@@ -572,88 +633,137 @@ Rectangle {
         anchors.topMargin: panelHeader.height + columnHeader.height
         anchors.bottom: parent.bottom
         z: 1
-        // Each side owns one persistent instance of the unified renderer.
-        // Covering a panel, hiding it with Ctrl+O, or switching layout mode
-        // only changes visibility/state; it never reconstructs the host.
-        active: true
-        // `status` is also the id of the panel footer below. Qualify the
-        // Loader property explicitly so QML cannot resolve that sibling
-        // object here and hide an otherwise ready, populated renderer.
-        visible: panelRoot.visible
-                 && galleryPanelContent.status === Loader.Ready
-        source: galleryController.available ? galleryController.panelComponentUrl : ""
-
+        property int currentIndex: -1
+        readonly property var currentLoader: retainedViews.itemAt(currentIndex)
+        readonly property var item: currentLoader ? currentLoader.item : null
+        readonly property int status: currentLoader ? currentLoader.status : Loader.Null
         onItemChanged: panelRoot.updateRegisteredGalleryPanelHost()
-
-        onLoaded: {
-            if (!item)
-                return
-            item.side = panel.side
-            item.panel = Qt.binding(() => panelRoot.panel)
-            if (typeof item.layoutState !== "undefined")
-                item.layoutState = Qt.binding(() => panelRoot.layoutState)
-            if (typeof item.dropPanelSurface !== "undefined")
-                item.dropPanelSurface = panelRoot
-            item.bridge = panelRoot.galleryController
-            if (typeof item.iconProvider !== "undefined")
-                item.iconProvider = Qt.binding(() => hostWindow.iconProvider)
-            if (typeof item.dropInputEnabled !== "undefined")
-                item.dropInputEnabled = Qt.binding(() => panelRoot.visible
-                    && !galleryController.viewerVisible && !hostWindow.needsFallbackGrid()
-                    && !hostWindow.hasDocumentSurface() && !hostWindow.hasOperationsQueueSurface()
-                    && !hostWindow.hasBlockingOverlay())
-            item.keySink = panelRoot.focusTarget
-            item.theme = Qt.binding(() => panelRoot.galleryTheme)
-            item.metrics = Qt.binding(() => panelRoot.galleryMetrics)
-            if (typeof item.groupHeaderBackdropColor !== "undefined")
-                item.groupHeaderBackdropColor = Qt.binding(() => {
-                    const color = hostWindow.windowBackgroundColor
-                    return Qt.rgba(color.r, color.g, color.b, 1)
-                })
-            item.devicePixelRatio = Qt.binding(
-                () => hostWindow.screen ? hostWindow.screen.devicePixelRatio : 1.0)
-            item.defaultListDensity = Qt.binding(
-                () => hostWindow.snapPx(Math.max(22, hostWindow.ch * 1.1)))
-            // Lightweight QML test embedders may supply an older panel
-            // host without this optional input property.
-            if (typeof item.mouseWheelMode !== "undefined")
-                item.mouseWheelMode = Qt.binding(
-                    () => hostWindow.mouseWheelMode)
-            if (typeof item.contentHorizontalInset !== "undefined")
-                item.contentHorizontalInset = Qt.binding(
-                    () => hostWindow.panelContentSpacing)
-            item.panelActive = Qt.binding(
-                () => panelRoot.visible
-                      && panelRoot.panelIsActive
-                      && !galleryController.viewerVisible
-                      && !hostWindow.needsFallbackGrid()
-                      && !hostWindow.hasDocumentSurface()
-                      && !hostWindow.hasOperationsQueueSurface()
-                      && !hostWindow.hasBlockingOverlay())
-            if (typeof item.panelCursorVisible !== "undefined")
-                item.panelCursorVisible = Qt.binding(
-                    () => panelRoot.visible
-                          && panelRoot.panelIsActive
-                          && !galleryController.viewerVisible
-                          && !hostWindow.needsFallbackGrid()
-                          && !hostWindow.hasDocumentSurface()
-                          && !hostWindow.hasOperationsQueueSurface()
-                          && hostWindow.overlayFrames().every(
-                              frame => frame.kind === "menu"))
-            item.commandLineHasText = Qt.binding(() => {
-                var commandLine = hostWindow.commandLineFrame()
-                return hostWindow.cleanText(commandLine.text).length > 0
-            })
-            item.commandLineFocused = Qt.binding(
-                () => hostWindow.commandLineFrame().focused === true)
-            if (typeof item.commandLineOwnsNavigation !== "undefined")
-                item.commandLineOwnsNavigation = Qt.binding(
-                    () => hostWindow.commandLineFrame().ownsNavigation === true)
-            item.fastFindActive = Qt.binding(
-                () => panelRoot.panel.fastFind === true)
-            if (item.panelActive)
-                item.forceActiveFocus()
-            panelRoot.updateRegisteredGalleryPanelHost()
+        function activatePanel() {
+            const id = String(panelRoot.panel.id || "")
+            let found = -1
+            for (let index = 0; index < retainedIdentities.count; ++index) {
+                if (retainedIdentities.get(index).panelId === id) {
+                    found = index
+                    break
+                }
+            }
+            if (found < 0) {
+                retainedIdentities.append({ "panelId": id })
+                found = retainedIdentities.count - 1
+            }
+            currentIndex = found
+            if (currentLoader)
+                currentLoader.refreshDescriptor()
+            if (retainedIdentities.count > 8) {
+                const evicted = currentIndex === 0 ? 1 : 0
+                retainedIdentities.remove(evicted)
+                if (currentIndex > evicted)
+                    currentIndex -= 1
+            }
+        }
+        Component.onCompleted: activatePanel()
+        Connections {
+            target: panelRoot
+            function onPanelChanged() { galleryPanelContent.activatePanel() }
+            function onLayoutStateChanged() {
+                if (galleryPanelContent.currentLoader)
+                    galleryPanelContent.currentLoader.refreshDescriptor()
+            }
+        }
+        ListModel { id: retainedIdentities }
+        Repeater {
+            id: retainedViews
+            model: retainedIdentities
+            delegate: Loader {
+                id: retainedLoader
+                required property string panelId
+                required property int index
+                objectName: "retainedGalleryPanel-" + panelId
+                anchors.fill: parent
+                property var retainedPanel: ({})
+                property var retainedLayoutState: null
+                function refreshDescriptor() {
+                    if (String(panelRoot.panel.id || "") !== panelId)
+                        return
+                    retainedPanel = panelRoot.panel
+                    retainedLayoutState = panelRoot.layoutState
+                }
+                Component.onCompleted: refreshDescriptor()
+                active: true
+                visible: panelRoot.visible && index === galleryPanelContent.currentIndex
+                source: galleryController.available ? galleryController.panelComponentUrl : ""
+                onLoaded: {
+                    refreshDescriptor()
+                    if (!item)
+                        return
+                    item.side = retainedLoader.retainedPanel.side
+                    item.panel = Qt.binding(() => retainedLoader.retainedPanel)
+                    if (typeof item.layoutState !== "undefined")
+                        item.layoutState = Qt.binding(() => retainedLoader.retainedLayoutState)
+                    if (typeof item.dropPanelSurface !== "undefined")
+                        item.dropPanelSurface = panelRoot
+                    item.bridge = panelRoot.galleryController
+                    if (typeof item.iconProvider !== "undefined")
+                        item.iconProvider = Qt.binding(() => hostWindow.iconProvider)
+                    if (typeof item.dropInputEnabled !== "undefined")
+                        item.dropInputEnabled = Qt.binding(() => retainedLoader.visible && panelRoot.visible
+                            && !galleryController.viewerVisible && !hostWindow.needsFallbackGrid()
+                            && !hostWindow.hasDocumentSurface() && !hostWindow.hasOperationsQueueSurface()
+                            && !hostWindow.hasBlockingOverlay())
+                    item.keySink = panelRoot.focusTarget
+                    item.theme = Qt.binding(() => panelRoot.galleryTheme)
+                    item.metrics = Qt.binding(() => panelRoot.galleryMetrics)
+                    if (typeof item.groupHeaderBackdropColor !== "undefined")
+                        item.groupHeaderBackdropColor = Qt.binding(() => {
+                            const color = hostWindow.windowBackgroundColor
+                            return Qt.rgba(color.r, color.g, color.b, 1)
+                        })
+                    item.devicePixelRatio = Qt.binding(
+                        () => hostWindow.screen ? hostWindow.screen.devicePixelRatio : 1.0)
+                    item.defaultListDensity = Qt.binding(
+                        () => hostWindow.snapPx(Math.max(22, hostWindow.ch * 1.1)))
+                    // Lightweight QML test embedders may supply an older panel
+                    // host without this optional input property.
+                    if (typeof item.mouseWheelMode !== "undefined")
+                        item.mouseWheelMode = Qt.binding(
+                            () => hostWindow.mouseWheelMode)
+                    if (typeof item.contentHorizontalInset !== "undefined")
+                        item.contentHorizontalInset = Qt.binding(
+                            () => hostWindow.panelContentSpacing)
+                    item.panelActive = Qt.binding(
+                        () => retainedLoader.visible && panelRoot.visible
+                              && panelRoot.panelIsActive
+                              && !galleryController.viewerVisible
+                              && !hostWindow.needsFallbackGrid()
+                              && !hostWindow.hasDocumentSurface()
+                              && !hostWindow.hasOperationsQueueSurface()
+                              && !hostWindow.hasBlockingOverlay())
+                    if (typeof item.panelCursorVisible !== "undefined")
+                        item.panelCursorVisible = Qt.binding(
+                            () => retainedLoader.visible && panelRoot.visible
+                                  && panelRoot.panelIsActive
+                                  && !galleryController.viewerVisible
+                                  && !hostWindow.needsFallbackGrid()
+                                  && !hostWindow.hasDocumentSurface()
+                                  && !hostWindow.hasOperationsQueueSurface()
+                                  && hostWindow.overlayFrames().every(
+                                      frame => frame.kind === "menu"))
+                    item.commandLineHasText = Qt.binding(() => {
+                        var commandLine = hostWindow.commandLineFrame()
+                        return hostWindow.cleanText(commandLine.text).length > 0
+                    })
+                    item.commandLineFocused = Qt.binding(
+                        () => hostWindow.commandLineFrame().focused === true)
+                    if (typeof item.commandLineOwnsNavigation !== "undefined")
+                        item.commandLineOwnsNavigation = Qt.binding(
+                            () => hostWindow.commandLineFrame().ownsNavigation === true)
+                    item.fastFindActive = Qt.binding(
+                        () => retainedLoader.retainedPanel.fastFind === true)
+                    if (item.panelActive)
+                        item.forceActiveFocus()
+                    panelRoot.updateRegisteredGalleryPanelHost()
+                }
+            }
         }
     }
 

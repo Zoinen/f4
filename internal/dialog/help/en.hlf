@@ -14,6 +14,8 @@ f4 — efficient and cozy file manager in go
 
   ~Group by~@PanelGrouping@
 
+~Inherit terminal history in new tabs~TerminalHistoryInheritance@
+
 @VisRen
 $Visual File Renamer (VisRen)
 
@@ -940,3 +942,11 @@ $ #Group by#
  Folders separately keeps a first Folders group. Turn it off to include folders
  in ordinary groups, before files. Reverse group order affects ordinary groups
  only: the parent row, separate folders and No data keep their positions.
+
+@TerminalHistoryInheritance
+$Inherit terminal history in new tabs
+Copy completed terminal output from the current tab into new tabs. Each tab starts its own shell, and later output stays in that tab. Off by default.
+
+After Apply, the change affects tabs opened later without restarting. Existing tabs keep their history. The idle shell prompt, running programs and shell state are not copied.
+
+[Panel] InheritTerminalHistory = 0 / 1 (settings.ini)

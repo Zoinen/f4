@@ -7,6 +7,8 @@ f4 es un clon experimental en Go de Far Manager / far2l.
 ~Renombrador visual de archivos (VisRen)~VisRen@
 ~Ver README.md~README@
 
+~Heredar el historial del terminal en pestañas nuevas~TerminalHistoryInheritance@
+
 @VisRen
 $Renombrador visual de archivos (VisRen)
 
@@ -664,3 +666,11 @@ Además de las flechas de dirección, están disponibles los siguientes accesos 
   Limpiar rutas no existentes (con confirmación)           Ctrl+R
 
   Copiar la ruta seleccionada al portapapeles              Ctrl+C, Ctrl+Ins
+
+@TerminalHistoryInheritance
+$Heredar el historial del terminal en pestañas nuevas
+Copia la salida completada del terminal de la pestaña actual en las pestañas nuevas. Cada pestaña inicia su propio intérprete de comandos y la salida posterior permanece en ella. Desactivado de forma predeterminada.
+
+Tras aplicar el cambio, afecta a las pestañas que se abran después, sin reiniciar. Las pestañas existentes conservan su historial. No se copian el indicador del intérprete inactivo, los programas en ejecución ni el estado del intérprete.
+
+[Panel] InheritTerminalHistory = 0 / 1 (settings.ini)

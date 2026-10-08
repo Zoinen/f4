@@ -32,6 +32,8 @@ Item {
     property int remoteCursorPosition: 0
     property bool remoteCursorVisible: false
     property int cursorActivityRevision: 0
+    property bool continuousCursorBlink: false
+    property real trailingInset: 0
 
     signal accepted()
     signal textEdited()
@@ -276,7 +278,7 @@ Item {
     RowLayout {
         anchors.fill: parent
         anchors.leftMargin: control.snap(8)
-        anchors.rightMargin: control.snap(8)
+        anchors.rightMargin: control.snap(8) + control.trailingInset
         spacing: control.snap(6)
 
         HostPixelAlignedImage {
@@ -424,6 +426,7 @@ Item {
                                        + "CursorBlinkController")
                                     : "textFieldCursorBlinkController"
                         interval: 480
+                        continuous: control.continuousCursorBlink
                         active: customCursor.visible
                                 && control.visible
                                 && innerInput.cursorVisible

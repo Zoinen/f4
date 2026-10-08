@@ -1,6 +1,7 @@
 package vtui
 
 import (
+	"fmt"
 	"github.com/mattn/go-runewidth"
 	"github.com/unxed/vtinput"
 	"io"
@@ -4087,10 +4088,13 @@ func TestFrameManager_TargetedNotificationFlow(t *testing.T) {
 	fm.PushToFrameScreen(taskDlg, doneMsg)
 
 	// 4. Assertions
-	// Так как сообщение модальное, оно должно было вызвать SwitchScreen и "всплыть" в конец.
+	// A modal result belongs to the task's workspace and must not steal another tab.
 	topTitle := fm.Screens[fm.ActiveIdx].GetTitle()
-	if topTitle != "Finished" {
-		t.Errorf("Modal notification failed to pull focus. Active screen title: %q", topTitle)
+	if topTitle != "ActiveWork" || fm.ActiveIdx != 1 {
+		t.Errorf("Background modal stole focus. Active screen title: %q", topTitle)
+	}
+	if fm.Screens[0].Frames[len(fm.Screens[0].Frames)-1] != doneMsg {
+		t.Fatal("Background result is missing from its owning workspace")
 	}
 }
 func TestFrameManager_PushToFrameScreen_LostAnchor(t *testing.T) {
@@ -4766,5 +4770,84 @@ func TestFrameManager_DuplicateMouseMoveDoesNotRequestRender(t *testing.T) {
 	}
 	if fm.consumeEvent(nil, false, getSize) {
 		t.Fatal("nil event must not request a render")
+	}
+}
+
+func TestFrameManager_ActiveTabPressUsesActivationHistory(t *testing.T) {
+	SetDefaultPalette()
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(100, 10)
+	fm := &frameManager{}
+	fm.Init(scr)
+	fm.Push(newMockFrame(0, 1, 20, 5, false))
+	fm.AddScreen(newMockFrame(0, 1, 20, 5, false))
+	fm.AddScreen(newMockFrame(0, 1, 20, 5, false))
+	fm.RestoreScreenNumbers([]int{7, 2, 12})
+	fm.activationHistory = nil
+	fm.ActiveIdx = 1
+	fm.frames = fm.Screens[1].Frames
+	press := func(want int) {
+		t.Helper()
+		before := append([]*AppScreen{}, fm.activationHistory...)
+		target := fmt.Sprintf("workspace-tab-%d", fm.Screens[fm.ActiveIdx].Number)
+		if !fm.HandleSemanticAction(map[string]any{"action": "workspace.activatePrevious", "target": target}) {
+			t.Fatal("active tab press was not handled")
+		}
+		if fm.Screens[fm.ActiveIdx].Number != want {
+			t.Fatalf("selected number %d, want %d", fm.Screens[fm.ActiveIdx].Number, want)
+		}
+		if len(before) != len(fm.activationHistory) {
+			t.Fatal("history navigation changed history length")
+		}
+		for i, screen := range before {
+			if fm.activationHistory[i] != screen {
+				t.Fatal("history navigation reordered history")
+			}
+		}
+	}
+	// Numbered fallback walks all tabs, then wraps without recording visits.
+	press(12)
+	press(7)
+	press(2)
+	fm.SwitchScreen(0)
+	fm.SwitchScreen(2)
+	fm.SwitchScreen(1)
+	// Actual activations take precedence over number order.
+	press(12)
+	press(7)
+	press(2)
+	press(12)
+	// A regular activation starts a fresh traversal. Repeated visits are unique.
+	fm.SwitchScreen(0)
+	press(12)
+	press(2)
+	// Closed entries in an ongoing traversal are skipped.
+	fm.CloseScreen(2)
+	press(7)
+	press(2)
+	if fm.HandleSemanticAction(map[string]any{"action": "workspace.activatePrevious", "target": "workspace-tab-7"}) {
+		t.Fatal("stale active-tab press was handled")
+	}
+	fm.CloseScreen(0)
+	press(2)
+}
+
+func TestFrameManager_ConsoleActiveTabSwitchesOnMouseDown(t *testing.T) {
+	SetDefaultPalette()
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(80, 10)
+	fm := &frameManager{}
+	fm.Init(scr)
+	fm.Push(newMockFrame(0, 1, 20, 5, false))
+	fm.AddScreen(newMockFrame(0, 1, 20, 5, false))
+	fm.drawWorkspaceTabs()
+	hit := fm.workspaceTabHits[fm.ActiveIdx]
+	fm.dispatchEvent(&vtinput.InputEvent{
+		Type: vtinput.MouseEventType, KeyDown: true,
+		MouseX: int16(hit.x1 + 1), MouseY: 0,
+		ButtonState: vtinput.FromLeft1stButtonPressed,
+	}, false)
+	if fm.ActiveIdx != 0 {
+		t.Fatalf("mouse down left active index %d, want 0", fm.ActiveIdx)
 	}
 }

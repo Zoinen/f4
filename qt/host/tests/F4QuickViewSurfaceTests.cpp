@@ -1,3 +1,5 @@
+#include "F4IconProvider.h"
+#include "WindowGeometryPersistence.h"
 #include <QSGRendererInterface>
 #include "PointerRowAnchor.h"
 #include "DummyQWK.h"
@@ -44,6 +46,7 @@
 #include <QSet>
 #include <QSettings>
 #include <QStyleHints>
+#include <QSurfaceFormat>
 #include <QStringList>
 #include <QSvgRenderer>
 #include <QUrl>
@@ -205,7 +208,8 @@ public:
         actions.append(action);
         emit uiActionSent(action);
     }
-    Q_INVOKABLE void sendQuit() {}
+    int quitRequests = 0;
+    Q_INVOKABLE void sendQuit() { ++quitRequests; }
     Q_INVOKABLE void sendKey(int vk, int ch, bool down, int mods)
     {
         keyEvents.append({
@@ -240,7 +244,7 @@ class TestGallery final : public QObject
     Q_PROPERTY(int quickViewSide MEMBER destinationSide NOTIFY viewerChanged)
     Q_PROPERTY(QVariantMap quickView MEMBER quickView NOTIFY viewerChanged)
     Q_PROPERTY(int viewerSide READ viewerSide NOTIFY viewerChanged)
-    Q_PROPERTY(QUrl panelComponentUrl READ panelComponentUrl CONSTANT)
+    Q_PROPERTY(QUrl panelComponentUrl READ panelComponentUrl NOTIFY viewerChanged)
     Q_PROPERTY(QUrl viewerComponentUrl READ viewerComponentUrl NOTIFY viewerChanged)
 
 public:
@@ -279,12 +283,17 @@ public:
     QUrl emptyUrl() const { return {}; }
     QUrl panelComponentUrl() const
     {
+        if (m_panelUrl.isValid())
+            return m_panelUrl;
         return m_available
             ? QUrl(QStringLiteral("qrc:/F4QtHost/tests/TestGalleryPanel.qml"))
             : QUrl{};
     }
 
-    Q_INVOKABLE QObject *sessionForSide(int) const { return nullptr; }
+    void showPanel(const QUrl &url, QObject *session) { m_panelUrl = url; m_panelSession = session; emit viewerChanged(); }
+    Q_INVOKABLE QObject *sessionForSide(int) const { return m_panelSession; }
+    Q_INVOKABLE QObject *sessionForPanel(const QString &, int) const { return m_panelSession; }
+    Q_INVOKABLE void requestGalleryColumnWidths(int side, const QVariantList &columns) { emit columnWidthsRequested(side, columns); }
     Q_INVOKABLE void closeViewer() {}
     Q_INVOKABLE bool setPanelThumbnailsEnabled(int side, bool enabled)
     {
@@ -293,11 +302,14 @@ public:
 
 signals:
     void viewerChanged();
+    void columnWidthsRequested(int side, const QVariantList &columns);
 
 private:
     bool m_available = false;
     F4PanelPreferences m_panelPreferences;
     QUrl m_viewerUrl;
+    QUrl m_panelUrl;
+    QPointer<QObject> m_panelSession;
     QPointer<QObject> m_viewerSession;
 };
 
@@ -311,6 +323,7 @@ class TestVideoPlaybackController final : public QObject
     Q_PROPERTY(qint64 position MEMBER position NOTIFY changed)
     Q_PROPERTY(qint64 duration MEMBER duration NOTIFY changed)
     Q_PROPERTY(bool playing MEMBER playing NOTIFY changed)
+    Q_PROPERTY(bool looping MEMBER looping NOTIFY changed)
     Q_PROPERTY(bool muted MEMBER muted NOTIFY changed)
     Q_PROPERTY(qreal volume MEMBER volume NOTIFY changed)
 
@@ -321,6 +334,7 @@ public:
     QVideoSink *videoSink() const { return m_videoSink; }
     Q_INVOKABLE void playPause() { ++playPauseCalls; emit changed(); }
     Q_INVOKABLE void seekTo(qint64 value) { position = value; emit changed(); }
+    Q_INVOKABLE void toggleLoop() { looping = !looping; emit changed(); }
     Q_INVOKABLE void toggleMute() { muted = !muted; emit changed(); }
     Q_INVOKABLE void adjustVolume(qreal delta)
     {
@@ -333,6 +347,7 @@ public:
     qint64 position = 6500;
     qint64 duration = 18000;
     bool playing = false;
+    bool looping = false;
     bool muted = true;
     qreal volume = 0.5;
     int playPauseCalls = 0;
@@ -803,6 +818,8 @@ struct QuickViewFixture
     TestGallery gallery;
     TestIcons icons;
     TestThemePersistence themePersistence;
+    QTemporaryDir geometryDirectory;
+    WindowGeometryPersistence dialogGeometry{nullptr, geometryDirectory.filePath("geometry.ini")};
     F4TextRenderingPolicy textRenderingPolicy;
     QQmlApplicationEngine engine;
     QQuickWindow *window = nullptr;
@@ -828,6 +845,7 @@ struct QuickViewFixture
                                                   &icons);
         engine.rootContext()->setContextProperty(QStringLiteral("qtTheme"),
                                                   &themePersistence);
+        engine.rootContext()->setContextProperty(QStringLiteral("qtDialogGeometry"), &dialogGeometry);
         engine.rootContext()->setContextProperty(
             QStringLiteral("qtTextRendering"), &textRenderingPolicy);
         engine.rootContext()->setContextProperty(
@@ -932,6 +950,8 @@ private slots:
     void sortGroupLeavesStayOnPhysicalPixelGrid();
     void rendererFileFieldChoiceLeavesStayOnPhysicalPixelGridAt175Percent();
     void fileFieldEditorsStayOnPhysicalPixelGridAt175Percent();
+    void externalDetailsHeaderResizesColumnsAt175Percent();
+    void activationRefreshPreservesNativeControlFocus();
     void fastFindOverlayIsIndependentFromPanelFooter();
     void nativeFontRolesUsePlatformDefaultsAt175Percent();
     void fastFindOverlayAvoidsStatusAndStaysPixelAligned();
@@ -966,11 +986,16 @@ private slots:
     void panelPathBarsToggleWithoutLosingContent();
     void panelExpandButtonsShareHoverAndRestore();
     void panelSplitterCoalescesGoUpdates();
+    void panelSplitterShowsPercentageWhileDragging();
     void workspaceDragHitOnlyAcceptsPanelTabs();
     void workspaceSeparatorBreaksUnderActiveTab();
     void workspaceLastTabSeparatorPrecedesNewTabButton();
     void workspaceTabWheelActivatesAdjacentTabs();
     void workspaceTabMiddleClickClosesClickedTab();
+    void workspaceTabsAcceptClicksAtWindowTop();
+    void workspaceActivationReplacesNumberWithoutMovingContent();
+    void workspaceAttentionOverlaysIconWithoutMovingContent();
+    void workspaceActiveTabPressRequestsPreviousImmediately();
     void workspaceCloseButtonHasTightHitAreaAndHoverFeedback();
     void workspaceTabTextParentsStayOnPhysicalPixelGrid();
     void worktreeBranchAppearsCenteredInTitleBar();
@@ -989,16 +1014,23 @@ private slots:
     void menuBarPopupStartsUnderClickedItem();
     void f9MenuOverlaysPathRowWithoutMovingContent();
     void appIconMenuUsesSemanticCategoriesAndCommands();
+    void shellSnapshotDoesNotRestorePreviousPanelDescriptor();
+    void workspaceSwitchRetainsGalleryViewAt175Percent();
     void nestedMenuAnchorsHeadersTagsAndChevronsOnPhysicalPixels();
     void nestedMenuHoverUsesDelayedSubmenuAction();
     void compactMenuStructureTransfersFocusWithoutSceneRebind();
     void menuKeyboardSelectionSurvivesStationaryPointerPatch();
     void pathBreadcrumbTextStaysFixedWhenNavigatingDeeper();
     void pathBreadcrumbsCompressAndExpandOnHover();
+    void fullBreadcrumbWidthsStayFixedOnHover_data();
+    void fullBreadcrumbWidthsStayFixedOnHover();
+    void pathEditingKeepsHoverBackground();
+    void pathLeadingSpacingEntersEditMode();
     void longBreadcrumbNavigationIsStableFromFirstFrame_data();
     void longBreadcrumbNavigationIsStableFromFirstFrame();
     void uriBreadcrumbKeepsSchemeTogetherAndNavigates();
     void commandMenusKeepPanelCursorWhileBlockingInput();
+    void modalDialogDoesNotDarkenBackground();
     void activeMenuBarOwnsNavigationWithoutPopup();
     void columnSeparatorsDefaultOff();
     void columnPaddingPreviewAndPersistence();
@@ -1034,14 +1066,17 @@ private slots:
     void commandLineDropOutlineMatchesPanels();
     void panelCursorBlinkSettlesAndBlockingMenuStopsIt();
     void autocompleteReturnTargetsShellCommandHandler();
+    void dialogAutocompleteAnchorsToSearchInput();
     void autocompleteSelectionPreviewsAndRestoresQuery();
     void autocompleteOutsideClickDismissesWithoutChangingText();
     void autocompleteHoverFollowsPopupResize();
     void widePanelDoesNotRevealTerminalBackdrop();
     void shortenedPanelsRevealTerminalRows();
+    void mediaInfoReportShowsAndScrollsAt175Percent();
     void semanticTableDialog();
     void terminalScrollBarStaysInsideTheExposedPanelSide();
     void terminalDoubleClickDragExpandsWholeWords();
+    void shortTerminalHistoryStaysAtBottom();
 };
 
 void F4QuickViewSurfaceTests::qmlImportsWithoutInstalledQt()
@@ -1608,8 +1643,25 @@ void F4QuickViewSurfaceTests::galleryVideoControlsStayOnPhysicalPixelGridAt175Pe
 {
     QQmlEngine engine;
     engine.addImportPath(QStringLiteral(":"));
+    ZoinGallery::RuntimeOptions options;
+    options.enableVideoPlayback = true;
+    auto *runtime = ZoinGallery::GalleryRuntime::install(&engine, options);
+    QVERIFY(runtime);
+    const auto shutdown = qScopeGuard([&] { runtime->shutdown(); });
+    auto *session = runtime->createExternalSession("video-flight-pixel-grid");
+    QVERIFY(session);
+    QTRY_VERIFY_WITH_TIMEOUT(session->videoPlaybackAvailable(), 5000);
+    QVERIFY(session->applyExternalCatalog({QVariantMap{
+        {"entryId", "video"}, {"index", 0}, {"name", "video.mp4"},
+        {"localPath", "Z:/missing/video.mp4"}, {"isDir", false},
+        {"isImage", true}, {"thumbnailKind", "video"}
+    }}, 1));
+    QVERIFY(session->applyExternalState("video", 0, {}, 1));
+    session->setViewerOpen(true);
+    engine.rootContext()->setContextProperty("testVideoSession", session);
     TestVideoPlaybackController controller;
-    TestIcons icons;
+    F4IconSet icons(QStringLiteral("test-icons"));
+    engine.addImageProvider(QStringLiteral("test-icons"), new F4IconProvider());
     engine.rootContext()->setContextProperty(QStringLiteral("testPlayback"),
                                               &controller);
     engine.rootContext()->setContextProperty(QStringLiteral("testIcons"),
@@ -1619,18 +1671,23 @@ void F4QuickViewSurfaceTests::galleryVideoControlsStayOnPhysicalPixelGridAt175Pe
         import QtQuick
         import ZoinGallery 1.0
         Item {
-            objectName: "galleryVideoPixelGridTestRoot"
+            objectName: "videoPixelGridTestRoot"
             width: 780
             height: 420
-            GalleryVideoPlaybackSurface {
+            GalleryViewer {
+                objectName: "videoPixelGridViewer"
                 anchors.fill: parent
                 devicePixelRatio: 1.75
-                controller: testPlayback
-                iconSources: ({
+                session: testVideoSession
+                managedPresentation: true
+                videoPlaybackMode: "manual"
+                videoIconSources: ({
                     play: testIcons.rasterizedLucideSource(
                         "play", 18, 1.75, Qt.rgba(0.95, 0.96, 0.97, 1)),
                     pause: testIcons.rasterizedLucideSource(
                         "pause", 18, 1.75, Qt.rgba(0.95, 0.96, 0.97, 1)),
+                    loop: testIcons.rasterizedLucideSource(
+                        "repeat", 18, 1.75, Qt.rgba(0.95, 0.96, 0.97, 1)),
                     muted: testIcons.rasterizedLucideSource(
                         "volume-x", 18, 1.75, Qt.rgba(0.95, 0.96, 0.97, 1)),
                     sound: testIcons.rasterizedLucideSource(
@@ -1649,9 +1706,21 @@ void F4QuickViewSurfaceTests::galleryVideoControlsStayOnPhysicalPixelGridAt175Pe
     window.resize(780, 420);
     root->setParentItem(window.contentItem());
     window.show();
-    QTest::qWait(150);
+    QTRY_VERIFY(window.isExposed());
     if (qAbs(window.devicePixelRatio() - qreal(1.75)) >= 0.001)
         QSKIP("Run this regression with QT_SCALE_FACTOR=1.75");
+    auto *viewer = root->findChild<QQuickItem *>("videoPixelGridViewer");
+    QVERIFY(viewer);
+    auto *viewport = viewer->property("flickableArea").value<QQuickItem *>();
+    QVERIFY(viewport);
+    QQuickItem *videoSurface = nullptr;
+    QTRY_VERIFY((videoSurface = root->findChild<QQuickItem *>("galleryVideoPlaybackSurface")));
+    // Inject deterministic status/time into the actual viewer overlay, not a
+    // standalone control tree that would miss inherited flight transforms.
+    videoSurface->setProperty("controller", QVariant::fromValue<QObject *>(&controller));
+    viewport->setProperty("originalSize", QSizeF(1200 / 1.75, 800 / 1.75));
+    QVERIFY(QMetaObject::invokeMethod(viewport, "zoomToFit", Q_ARG(QVariant, true)));
+    QTest::qWait(100);
 
     QQuickItem *playIcon = visualItemWithObjectName(
         window.contentItem(), QStringLiteral("galleryVideoPlayButtonIcon"));
@@ -1673,6 +1742,22 @@ void F4QuickViewSurfaceTests::galleryVideoControlsStayOnPhysicalPixelGridAt175Pe
                  iconSource(QStringLiteral("pause")));
     QTRY_COMPARE(muteIcon->property("source").toUrl(),
                  iconSource(QStringLiteral("volume-2")));
+    QTest::qWait(100);
+
+    QQuickItem *loopButton = visualItemWithObjectName(
+        window.contentItem(), QStringLiteral("galleryVideoLoopButton"));
+    QVERIFY(loopButton);
+    auto *volume = visualItemWithObjectName(window.contentItem(),
+        QStringLiteral("galleryVideoVolumeControl"));
+    QVERIFY(volume);
+    QVERIFY(loopButton->mapToItem(window.contentItem(), QPointF{}).x()
+            > volume->mapToItem(window.contentItem(), QPointF(volume->width(), 0)).x());
+    auto *loopIcon = visualItemWithObjectName(window.contentItem(),
+        QStringLiteral("galleryVideoLoopButtonIcon"));
+    QVERIFY(loopIcon);
+    QTRY_COMPARE(loopIcon->property("source").toUrl(), iconSource(QStringLiteral("repeat")));
+    controller.toggleLoop();
+    QTRY_COMPARE(loopButton->property("color").value<QColor>(), QColor("#285e87"));
 
     QList<QQuickItem *> items;
     const auto collect = [&](auto &&self, QQuickItem *parent) -> void {
@@ -1689,7 +1774,12 @@ void F4QuickViewSurfaceTests::galleryVideoControlsStayOnPhysicalPixelGridAt175Pe
              qPrintable(QStringLiteral("Only %1 named video surface items were visible")
                             .arg(items.size())));
     const qreal dpr = window.devicePixelRatio();
-    for (QQuickItem *item : items) {
+    const auto checkGrid = [&](bool leavesOnly = false) {
+      for (QQuickItem *item : items) {
+        if (leavesOnly && item != playIcon && item != muteIcon
+                && item->objectName() != QStringLiteral("galleryVideoTimeText")
+                && item->objectName() != QStringLiteral("galleryVideoStatusText"))
+            continue;
         const QPointF origin = item->mapToItem(window.contentItem(), QPointF{});
         const QString detail = QStringLiteral("%1 physical=(%2,%3) size=(%4,%5)")
             .arg(item->objectName())
@@ -1697,22 +1787,61 @@ void F4QuickViewSurfaceTests::galleryVideoControlsStayOnPhysicalPixelGridAt175Pe
             .arg(origin.y() * dpr, 0, 'f', 6)
             .arg(item->width() * dpr, 0, 'f', 6)
             .arg(item->height() * dpr, 0, 'f', 6);
+        QString ancestry;
+        for (QQuickItem *parent = item; parent; parent = parent->parentItem()) {
+            ancestry += QStringLiteral("\n%1 local=(%2,%3) size=(%4,%5) dpr=%6")
+                .arg(parent->objectName()).arg(parent->x()).arg(parent->y())
+                .arg(parent->width()).arg(parent->height())
+                .arg(parent->property("devicePixelRatio").toReal());
+        }
         for (qreal coordinate : {origin.x() * dpr, origin.y() * dpr,
                                  item->width() * dpr, item->height() * dpr}) {
             QVERIFY2(qAbs(coordinate - qRound(coordinate)) < 0.001,
-                     qPrintable(detail));
+                     qPrintable(detail + ancestry));
         }
         QCOMPARE(item->mapToItem(window.contentItem(), QPointF(1, 0)) - origin,
                  QPointF(1, 0));
         QCOMPARE(item->mapToItem(window.contentItem(), QPointF(0, 1)) - origin,
                  QPointF(0, 1));
+      }
+    };
+    checkGrid();
+
+    root->setPosition(QPointF(0.3, 0.2));
+    checkGrid(true);
+    root->setPosition(QPointF(0, 0));
+    checkGrid();
+
+    const QImage beforeFlight = window.grabWindow();
+    QVERIFY(!beforeFlight.isNull());
+    viewer->setProperty("transitionSourceGeometry", QRectF(36, 54, 140, 90));
+    viewer->setProperty("transitionHasGeometry", true);
+    viewer->setProperty("externalPresentationMoving", true);
+    for (qreal progress : {0.85, 0.65, 0.25, 0.65, 0.85}) {
+        viewer->setProperty("transitionProgress", progress);
+        QVERIFY(viewport->scale() < 1);
+        QCOMPARE(videoSurface->width(), qreal(780));
+        QCOMPARE(videoSurface->height(), qreal(420));
+        checkGrid();
     }
+    viewer->setProperty("transitionProgress", 1.0);
+    viewer->setProperty("transitionHasGeometry", false);
+    viewer->setProperty("externalPresentationMoving", false);
+    QCOMPARE(viewport->scale(), qreal(1));
+    checkGrid();
 
     QTest::qWait(100);
     const QImage capture = window.grabWindow();
     QVERIFY(!capture.isNull());
+    const QString capturePath = qEnvironmentVariable(
+        "F4_GALLERY_VIDEO_CONTROLS_CAPTURE");
+    if (!capturePath.isEmpty()) {
+        QVERIFY(beforeFlight.save(capturePath + QStringLiteral(".before.png")));
+        QVERIFY(capture.save(capturePath));
+    }
     for (const QString &name : {QStringLiteral("galleryVideoPlayButtonIcon"),
                                 QStringLiteral("galleryVideoTimeText"),
+                                QStringLiteral("galleryVideoLoopButtonIcon"),
                                 QStringLiteral("galleryVideoMuteButtonIcon"),
                                 QStringLiteral("galleryVideoStatusText")}) {
         QQuickItem *item = visualItemWithObjectName(window.contentItem(), name);
@@ -1723,6 +1852,8 @@ void F4QuickViewSurfaceTests::galleryVideoControlsStayOnPhysicalPixelGridAt175Pe
                          qRound(item->height() * dpr));
         QVERIFY2(capture.rect().contains(rect), qPrintable(name));
         const QImage leaf = capture.copy(rect);
+        QVERIFY2(exactImageDifference(leaf, beforeFlight.copy(rect)).isEmpty(),
+                 qPrintable(name + QStringLiteral(" changed after flight reversal")));
         QSet<QRgb> colors;
         for (int y = 0; y < leaf.height(); ++y) {
             for (int x = 0; x < leaf.width(); ++x)
@@ -1732,10 +1863,6 @@ void F4QuickViewSurfaceTests::galleryVideoControlsStayOnPhysicalPixelGridAt175Pe
                  qPrintable(name + QStringLiteral(" rendered no visible content")));
     }
     QDir().mkpath(QStringLiteral(".diagnostics"));
-    const QString capturePath = qEnvironmentVariable(
-        "F4_GALLERY_VIDEO_CONTROLS_CAPTURE");
-    if (!capturePath.isEmpty())
-        QVERIFY(capture.save(capturePath));
 }
 
 void F4QuickViewSurfaceTests::galleryVideoSurfaceCapturesClicksAndDoubleClickCloses()
@@ -1826,11 +1953,15 @@ void F4QuickViewSurfaceTests::galleryVideoControlsReceiveMouseClicks()
 
     QTest::mouseClick(&window, Qt::LeftButton, Qt::NoModifier,
                       QPoint(120, 197));
-    QTRY_COMPARE(controller.position, qint64(9000));
+    QVERIFY(controller.position > 12000 && controller.position < 14000);
 
     QTest::mouseClick(&window, Qt::LeftButton, Qt::NoModifier,
-                      QPoint(194, 211));
+                      QPoint(166, 211));
     QTRY_VERIFY(!controller.muted);
+    QTest::mouseClick(&window, Qt::LeftButton, Qt::NoModifier, QPoint(292, 211));
+    QTRY_VERIFY(controller.looping);
+    QTest::mouseClick(&window, Qt::LeftButton, Qt::NoModifier, QPoint(292, 211));
+    QTRY_VERIFY(!controller.looping);
 }
 
 void F4QuickViewSurfaceTests::galleryVideoPointerEventsReachEmbeddedViewer()
@@ -1917,6 +2048,17 @@ void F4QuickViewSurfaceTests::galleryVideoPointerEventsReachEmbeddedViewer()
 
 void F4QuickViewSurfaceTests::initTestCase()
 {
+#ifdef Q_OS_LINUX
+    if (qgetenv("QSG_RHI_BACKEND") == "opengl") {
+        // Match the numerical GPU fixture: baked desktop shaders require
+        // GLSL 150, not the offscreen platform's default OpenGL 2 context.
+        QSurfaceFormat format;
+        format.setVersion(3, 2);
+        format.setProfile(QSurfaceFormat::CoreProfile);
+        QSurfaceFormat::setDefaultFormat(format);
+        QQuickWindow::setGraphicsApi(QSGRendererInterface::OpenGL);
+    }
+#endif
     QQuickStyle::setStyle(QStringLiteral("Basic"));
     QGuiApplication::styleHints()->setCursorFlashTime(0);
     qmlRegisterType<TestGrid>("F4QtHost", 1, 0, "VtuiGridItem");
@@ -4823,6 +4965,14 @@ void F4QuickViewSurfaceTests::fileFieldEditorsStayOnPhysicalPixelGridAt175Percen
     state["galleryColumns"] = QVariantList{
         QVariantMap{{"id", "exif.iso"}, {"width", 12}},
     };
+    QVariantList columnDescriptors = state["fileFieldDescriptors"].toList();
+    for (const QString &id : {QStringLiteral("media.duration"), QStringLiteral("media.bitrate"),
+                             QStringLiteral("media.format"), QStringLiteral("video.codec"),
+                             QStringLiteral("video.bitrate"), QStringLiteral("video.resolution"),
+                             QStringLiteral("video.frame_rate"), QStringLiteral("audio.codec"),
+                             QStringLiteral("audio.bitrate")})
+        columnDescriptors.append(descriptor(id, id, "string", "text", {"has", "missing"}));
+    state["fileFieldDescriptors"] = columnDescriptors;
     state["fileFieldFilters"] = QVariantList{
         QVariantMap{{"fieldId", "exif.iso"}, {"operation", "eq"}, {"value", "800"}},
     };
@@ -4901,7 +5051,39 @@ void F4QuickViewSurfaceTests::fileFieldEditorsStayOnPhysicalPixelGridAt175Percen
                 QStringLiteral("file-field-columns-175.png"));
     QObject *const columnsPopup = fixture.window->findChild<QObject *>(
         QStringLiteral("fileFieldColumnsPopup-0"));
+    auto *const columnsBackground = qobject_cast<QQuickItem *>(
+        columnsPopup->property("background").value<QObject *>());
+    auto *const applyColumns = visualItemWithObjectNamePrefix(
+        fixture.window->contentItem(), QStringLiteral("fileFieldColumnsApplyText-0"));
+    QVERIFY(columnsBackground);
+    QVERIFY(applyColumns);
+    const QPointF applyBottom = applyColumns->mapToItem(
+        columnsBackground, QPointF(0, applyColumns->height()));
+    QVERIFY2(applyBottom.y() <= columnsBackground->height(), qPrintable(
+        QStringLiteral("Apply bottom %1 exceeds popup background %2")
+            .arg(applyBottom.y()).arg(columnsBackground->height())));
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, QPoint(10, 200));
+    QTRY_VERIFY(!columnsPopup->property("opened").toBool());
+    const QSize initialWindowSize = fixture.window->size();
+    fixture.window->resize(initialWindowSize.width(), 360);
+    QVERIFY(QMetaObject::invokeMethod(panelRoot, "openFileFieldColumns"));
+    QQuickItem *const columnsViewport = visualItemWithObjectNamePrefix(
+        fixture.window->contentItem(), QStringLiteral("fileFieldColumnsViewport-0"));
+    QVERIFY(columnsViewport);
+    QTRY_VERIFY(columnsViewport->property("contentHeight").toReal() > columnsViewport->height());
+    QVERIFY(columnsViewport->clip());
+    QTest::qWait(40);
+    const qreal dpr = fixture.window->devicePixelRatio();
+    const qreal scrollBottom = qRound64((columnsViewport->property("contentHeight").toReal()
+        - columnsViewport->height()) * dpr) / dpr;
+    columnsViewport->setProperty("contentY", scrollBottom);
+    QTRY_COMPARE(columnsViewport->property("contentY").toReal(), scrollBottom);
+    verifyPopup(QStringLiteral("fileFieldColumnsPopup-0"), 10, 1,
+                QStringLiteral("file-field-columns-scrolled-175.png"));
+    QVERIFY(applyColumns->mapToItem(columnsBackground, QPointF(0, applyColumns->height())).y()
+        <= columnsBackground->height());
     QVERIFY(QMetaObject::invokeMethod(columnsPopup, "close"));
+    fixture.window->resize(initialWindowSize);
 
     QVERIFY(QMetaObject::invokeMethod(panelRoot, "openFileFieldFilter"));
     verifyPopup(QStringLiteral("fileFieldFilterPopup-0"), 8, 0,
@@ -4909,6 +5091,134 @@ void F4QuickViewSurfaceTests::fileFieldEditorsStayOnPhysicalPixelGridAt175Percen
     QObject *const filterPopup = fixture.window->findChild<QObject *>(
         QStringLiteral("fileFieldFilterPopup-0"));
     QVERIFY(QMetaObject::invokeMethod(filterPopup, "close"));
+}
+
+void F4QuickViewSurfaceTests::externalDetailsHeaderResizesColumnsAt175Percent()
+{
+    QuickViewFixture fixture(shellScene(), true);
+    QVERIFY(fixture.window);
+    ZoinGallery::RuntimeOptions options;
+    options.persistentCache = false;
+    auto *runtime = ZoinGallery::GalleryRuntime::install(&fixture.engine, options);
+    auto *session = runtime->createExternalSession("external-header-resize");
+    const auto shutdown = qScopeGuard([&] { runtime->shutdown(); });
+    fixture.gallery.showPanel(QUrl("qrc:/F4QtHost/qml/GalleryPanelHost.qml"), session);
+    if (qAbs(fixture.window->devicePixelRatio() - 1.75) > .001)
+        QSKIP("Run with QT_SCALE_FACTOR=1.75");
+    QVariantMap state = fixture.item("filePanel-0")->property("panel").toMap();
+    state.remove("entries");
+    state.remove("highlightStyles");
+    state["galleryLayoutMode"] = "details";
+    state["galleryColumns"] = QVariantList{
+        QVariantMap{{"id", "name"}, {"role", "name"}, {"title", "Name"}, {"width", 50}, {"autoWidth", true}},
+        QVariantMap{{"id", "size"}, {"role", "size"}, {"title", "Size"}, {"width", 14}, {"autoWidth", true}},
+        QVariantMap{{"id", "media.duration"}, {"role", "media.duration"}, {"title", "Duration"}, {"width", 12}, {"autoWidth", true}},
+    };
+    fixture.shell.deliverCompactPresentation({{"type", "scene_patch"}, {"side", 0}, {"panel", state}});
+    auto *header = fixture.item("panelColumnHeader-0");
+    QTRY_VERIFY(header->isVisible());
+    QQuickItem *handle = nullptr;
+    QTRY_VERIFY((handle = visualItemWithObjectNamePrefix(fixture.window->contentItem(), "panelColumnResizeHandle-0-0")));
+    QTest::qWait(50);
+    auto *title = visualItemWithObjectNamePrefix(fixture.window->contentItem(), "panelColumnHeaderText-0-0");
+    QVERIFY(title);
+    const qreal before = title->width();
+    const QPoint start = handle->mapToItem(fixture.window->contentItem(), QPointF(handle->width()/2, handle->height()/2)).toPoint();
+    fixture.shell.actions.clear();
+    QSignalSpy resizeRequests(&fixture.gallery, &TestGallery::columnWidthsRequested);
+    QTest::mousePress(fixture.window, Qt::LeftButton, Qt::NoModifier, start);
+    for (int delta : {10, 20, 30})
+        QTest::mouseMove(fixture.window, start + QPoint(delta, 0), 20);
+    QTest::mouseRelease(fixture.window, Qt::LeftButton, Qt::NoModifier, start + QPoint(30, 0));
+    QTRY_VERIFY(title->width() > before + 15);
+    QTRY_COMPARE(resizeRequests.size(), 1);
+    const QVariantList columns = resizeRequests.first().at(1).toList();
+    QCOMPARE(columns.size(), 3);
+    for (const auto &column : columns)
+        QVERIFY(column.toMap().value("width").toDouble() > 0);
+    QTest::qWait(40);
+    for (int index = 0; index < 3; ++index) {
+        auto *leaf = visualItemWithObjectNamePrefix(fixture.window->contentItem(), QStringLiteral("panelColumnHeaderText-%1-0").arg(index));
+        QVERIFY(leaf);
+        const QPointF origin = leaf->mapToItem(fixture.window->contentItem(), QPointF());
+        const QPointF physical = origin * 1.75;
+        QVERIFY2(qAbs(physical.x()-qRound64(physical.x())) < .001 && qAbs(physical.y()-qRound64(physical.y())) < .001, qPrintable(leaf->objectName()));
+        QCOMPARE(leaf->mapToItem(fixture.window->contentItem(), QPointF(1,0))-origin, QPointF(1,0));
+        QCOMPARE(leaf->mapToItem(fixture.window->contentItem(), QPointF(0,1))-origin, QPointF(0,1));
+    }
+    QTemporaryDir captures;
+    QVERIFY(captures.isValid());
+    QVERIFY(fixture.window->grabWindow().save(pixelCapturePath(&captures, "external-columns-resized-175.png")));
+}
+
+void F4QuickViewSurfaceTests::activationRefreshPreservesNativeControlFocus()
+{
+    const auto scene = shellScene({}, 0);
+    QuickViewFixture fixture(scene, true, true);
+    QVERIFY(fixture.window);
+    auto *path = fixture.item("panelPathTitle-0");
+    QVERIFY(path);
+    QQuickWindow other;
+    other.resize(100, 100);
+    other.show();
+    other.requestActivate();
+    QTRY_VERIFY(!fixture.window->isActive());
+    fixture.window->requestActivate();
+    QTRY_VERIFY(fixture.window->isActive());
+    const QPoint pathPoint = path->mapToScene(QPointF(path->width()-4, path->height()/2)).toPoint();
+    QTest::mousePress(fixture.window, Qt::LeftButton, Qt::NoModifier, pathPoint);
+    QVERIFY(path->property("editMode").toBool());
+    // Application activation causes a backend shell refresh after the first
+    // press has already focused the native editor.
+    auto refreshedScene = scene;
+    auto refreshedShell = refreshedScene["shell"].toMap();
+    auto refreshedPanels = refreshedShell["panels"].toList();
+    auto refreshedLeft = refreshedPanels[0].toMap();
+    refreshedLeft["loading"] = true;
+    refreshedPanels[0] = refreshedLeft;
+    refreshedShell["panels"] = refreshedPanels;
+    refreshedScene["shell"] = refreshedShell;
+    QSignalSpy refreshes(fixture.shell.surfaceRegistry(), &SurfaceRegistry::shellChanged);
+    fixture.shell.setScene(refreshedScene);
+    QCOMPARE(refreshes.size(), 1);
+    QTest::qWait(60);
+    QVERIFY(path->property("editMode").toBool());
+    auto *field = visualItemWithObjectNamePrefix(path, "pathField");
+    QVERIFY(field);
+    QVERIFY(field->hasActiveFocus());
+    QTest::mouseRelease(fixture.window, Qt::LeftButton, Qt::NoModifier, pathPoint);
+    QTest::keyClick(fixture.window, Qt::Key_X);
+    QCOMPARE(field->property("text").toString(), QStringLiteral("x"));
+    QTest::keyClick(fixture.window, Qt::Key_Escape);
+    QVERIFY(!path->property("editMode").toBool());
+
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, pathPoint);
+    QVERIFY(path->property("editMode").toBool());
+    fixture.shell.setCommandMenus({QVariantMap{
+        {"id", "activation-focus-menu"}, {"kind", "menu"}, {"role", "vmenu"},
+        {"x", 5}, {"y", 4}, {"w", 30}, {"h", 6}, {"viewHeight", 3},
+        {"items", QVariantList{QVariantMap{{"index", 0}, {"text", "Menu item"}}}},
+    }});
+    QTRY_VERIFY(fixture.item("vtuiGrid")->hasActiveFocus());
+    QVERIFY(!field->hasActiveFocus());
+    fixture.shell.setCommandMenus({});
+
+    other.requestActivate();
+    QTRY_VERIFY(!fixture.window->isActive());
+    fixture.window->requestActivate();
+    QTRY_VERIFY(fixture.window->isActive());
+    auto *close = fixture.item("closeButton");
+    QVERIFY(close && close->isVisible());
+    const QPoint closePoint = close->mapToScene(QPointF(close->width()/2, close->height()/2)).toPoint();
+    QTest::mousePress(fixture.window, Qt::LeftButton, Qt::NoModifier, closePoint);
+    QVERIFY(close->property("pressed").toBool());
+    QVERIFY(close->hasActiveFocus());
+    fixture.shell.setScene(scene);
+    QTest::qWait(60);
+    QVERIFY(close->property("pressed").toBool());
+    QVERIFY(close->hasActiveFocus());
+    QTest::mouseRelease(fixture.window, Qt::LeftButton, Qt::NoModifier, closePoint);
+    QTRY_COMPARE(fixture.shell.quitRequests, 1);
 }
 
 void F4QuickViewSurfaceTests::coverUncoverPreservesFilePanelAndRendererObjects()
@@ -5371,6 +5681,59 @@ void F4QuickViewSurfaceTests::panelSplitterCoalescesGoUpdates()
     QVERIFY(!fixture.shell.actions.isEmpty());
     QCOMPARE(fixture.shell.actions.last().value("ratioMillionths").toInt(), 500000);
     QVERIFY(fixture.shell.actions.size() <= 2);
+}
+
+void F4QuickViewSurfaceTests::panelSplitterShowsPercentageWhileDragging()
+{
+    QuickViewFixture fixture(shellScene());
+    QVERIFY(fixture.window);
+    auto *splitter = fixture.item("mainPanelSplitter");
+    QVERIFY(splitter);
+    const QPoint grab = splitter->mapToScene(QPointF(splitter->width() * .75, 160)).toPoint();
+    QTest::mouseMove(fixture.window, grab);
+    QTest::mousePress(fixture.window, Qt::LeftButton, Qt::NoModifier, grab);
+    QVERIFY(splitter->property("dragging").toBool());
+    auto *chip = fixture.item("panelSplitPercentageChip");
+    QVERIFY(chip);
+    QVERIFY(chip->isVisible());
+    for (int side : {0, 1}) {
+        auto *button = visualItemWithObjectName(fixture.window->contentItem(), QString("panelExpandButton-%1").arg(side));
+        QVERIFY(button);
+        QVERIFY(!button->isVisible());
+    }
+    auto *label = fixture.item("panelSplitPercentageText");
+    QVERIFY(label);
+    const qreal dpr = fixture.window->devicePixelRatio();
+    for (int delta : {73, -91, 137}) {
+        QTest::mouseMove(fixture.window, grab + QPoint(delta, 0));
+        QTest::qWait(40);
+        const qreal percent = fixture.item("filePanel-0")->width() / fixture.window->width() * 100;
+        QCOMPARE(label->property("text").toString(), QString("%1%")
+            .arg(percent, 0, 'f', 2));
+        for (auto *item : {chip, label}) {
+            const auto origin = item->mapToScene(QPointF());
+            const auto physical = origin * dpr;
+            QVERIFY2(qAbs(physical.x() - qRound64(physical.x())) < .001
+                     && qAbs(physical.y() - qRound64(physical.y())) < .001,
+                     qPrintable(QString("%1 physical (%2, %3)").arg(item->objectName()).arg(physical.x()).arg(physical.y())));
+            QCOMPARE(item->mapToScene(QPointF(1, 0)) - origin, QPointF(1, 0));
+            QCOMPARE(item->mapToScene(QPointF(0, 1)) - origin, QPointF(0, 1));
+            QVERIFY(qAbs(item->width() * dpr - qRound64(item->width() * dpr)) < .001);
+            QVERIFY(qAbs(item->height() * dpr - qRound64(item->height() * dpr)) < .001);
+        }
+        const qreal center = chip->mapToScene(QPointF(chip->width()/2, 0)).x();
+        QVERIFY(qAbs(center - fixture.item("filePanel-1")->mapToScene(QPointF()).x()) <= 1/dpr);
+    }
+    QTemporaryDir captures;
+    QVERIFY(captures.isValid());
+    QVERIFY(fixture.window->grabWindow().save(pixelCapturePath(&captures, "split-percentage-175.png")));
+    QTest::mouseRelease(fixture.window, Qt::LeftButton, Qt::NoModifier, grab + QPoint(137, 0));
+    QVERIFY(!chip->isVisible());
+    for (int side : {0, 1}) {
+        auto *button = visualItemWithObjectName(fixture.window->contentItem(), QString("panelExpandButton-%1").arg(side));
+        QVERIFY(button);
+        QVERIFY(button->isVisible());
+    }
 }
 
 void F4QuickViewSurfaceTests::panelExpandButtonsShareHoverAndRestore()
@@ -5894,7 +6257,7 @@ void F4QuickViewSurfaceTests::workspaceCloseButtonHasTightHitAreaAndHoverFeedbac
     QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, outside);
     QTRY_COMPARE(fixture.shell.actions.size(), 1);
     QCOMPARE(fixture.shell.actions.first().value("action").toString(),
-             QString("workspace.activate"));
+             QString("workspace.activatePrevious"));
     fixture.shell.clearActions();
     QTest::mouseMove(fixture.window, outside);
     QTest::qWait(50);
@@ -5934,6 +6297,208 @@ void F4QuickViewSurfaceTests::workspaceCloseButtonHasTightHitAreaAndHoverFeedbac
         "workspace-close-workspace-tab-close-test")) && !close->isVisible());
 }
 
+void F4QuickViewSurfaceTests::workspaceActivationReplacesNumberWithoutMovingContent()
+{
+    QVariantList tabs;
+    for (int i=0; i<2; ++i) {
+        tabs.append(QVariantMap{{"id", QString("workspace-stable-%1").arg(i)},
+            {"text", i==0 ? "First tab with a long title" : "Second tab"},
+            {"number", i==0 ? 2 : 12}, {"index", i}, {"active", i==0},
+            {"attention", true}, {"closable", true},
+            {"action", "workspace.activate"}, {"closeAction", "workspace.close"}});
+    }
+    QVariantMap scene = shellScene();
+    scene.insert("workspaceTabs", QVariantMap{{"visible", true}, {"tabs", tabs}});
+    QuickViewFixture fixture(scene, false, true);
+    QVERIFY(fixture.window);
+    QCOMPARE(fixture.window->devicePixelRatio(), qreal(1.75));
+    const auto leaf = [&](const QString &prefix, int i) {
+        return visualItemWithObjectNamePrefix(fixture.window->contentItem(),
+            prefix+QString("workspace-stable-%1").arg(i));
+    };
+    const auto geometry = [](QQuickItem *item) {
+        return QRectF(item->mapToScene(QPointF{}), item->size());
+    };
+    QList<QRectF> before;
+    for (int i=0; i<2; ++i) {
+        for (const auto &prefix : {"workspace-tab-title-", "workspace-tab-number-", "workspace-tab-icon-"}) {
+            auto *item=leaf(prefix,i);
+            QVERIFY(item);
+            before.append(geometry(item));
+        }
+        auto *number=leaf("workspace-tab-number-",i);
+        auto *close=leaf("workspace-close-",i);
+        QVERIFY(close);
+        QCOMPARE(number->isVisible(), i!=0);
+        QCOMPARE(close->isVisible(), i==0);
+        QVERIFY(qAbs(geometry(number).center().x()-geometry(close).center().x())
+                <= 0.51/fixture.window->devicePixelRatio());
+    }
+    QVERIFY(fixture.window->grabWindow().save("artifacts/tab-number-slot-before-175.png"));
+    auto first=tabs[0].toMap(); first["active"]=false; tabs[0]=first;
+    auto second=tabs[1].toMap(); second["active"]=true; tabs[1]=second;
+    scene["workspaceTabs"]=QVariantMap{{"visible",true},{"tabs",tabs}};
+    fixture.shell.setScene(scene);
+    QTRY_VERIFY(leaf("workspace-close-",1)->isVisible());
+    int index=0;
+    for (int i=0; i<2; ++i) {
+        for (const auto &prefix : {"workspace-tab-title-", "workspace-tab-number-", "workspace-tab-icon-"}) {
+            auto *item=leaf(prefix,i);
+            QCOMPARE(geometry(item), before[index++]);
+        }
+        QCOMPARE(leaf("workspace-tab-number-",i)->isVisible(), i==0);
+        for (const auto &prefix : {"workspace-tab-title-", "workspace-tab-number-", "workspace-tab-icon-", "workspace-close-", "workspace-tab-attention-"}) {
+            auto *item=leaf(prefix,i);
+            QVERIFY(item);
+            const auto origin=item->mapToScene(QPointF{});
+            const qreal dpr=fixture.window->devicePixelRatio();
+            for(qreal coordinate : {origin.x(),origin.y(),item->width(),item->height()}) {
+                const auto message=QString("%1: %2 physical pixels").arg(prefix).arg(coordinate*dpr,0,'f',6).toUtf8();
+                QVERIFY2(qAbs(coordinate*dpr-qRound64(coordinate*dpr))<.001,message.constData());
+            }
+            QCOMPARE(item->mapToScene(QPointF(1,0))-origin,QPointF(1,0));
+            QCOMPARE(item->mapToScene(QPointF(0,1))-origin,QPointF(0,1));
+        }
+    }
+    QVERIFY(fixture.window->grabWindow().save("artifacts/tab-number-slot-after-175.png"));
+}
+
+void F4QuickViewSurfaceTests::workspaceAttentionOverlaysIconWithoutMovingContent()
+{
+    QVariantList tabs;
+    for (int i = 0; i < 2; ++i) {
+        tabs.append(QVariantMap{{"id", QString("workspace-badge-%1").arg(i)},
+            {"text", i == 0 ? "First tab" : "Second tab"}, {"number", i+1},
+            {"index", i}, {"active", i == 0}, {"attention", false},
+            {"closable", true}, {"action", "workspace.activate"},
+            {"closeAction", "workspace.close"}});
+    }
+    QVariantMap scene = shellScene();
+    scene["workspaceTabs"] = QVariantMap{{"visible",true},{"tabs",tabs}};
+    QuickViewFixture fixture(scene, false, true);
+    QVERIFY(fixture.window);
+    const qreal dpr = fixture.window->devicePixelRatio();
+    QCOMPARE(dpr, qreal(1.75));
+    const auto leaf = [&](const QString &prefix, int i) {
+        return visualItemWithObjectNamePrefix(fixture.window->contentItem(),
+            prefix + QString("workspace-badge-%1").arg(i));
+    };
+    const auto geometry = [](QQuickItem *item) {
+        return QRectF(item->mapToScene(QPointF()), item->size());
+    };
+    QList<QRectF> before;
+    for (int i = 0; i < 2; ++i) {
+        for (const auto &prefix : {"", "workspace-tab-title-", "workspace-tab-number-",
+                                  "workspace-tab-icon-", "workspace-close-"}) {
+            auto *item = leaf(prefix,i);
+            QVERIFY(item);
+            before.append(geometry(item));
+        }
+        auto tab = tabs[i].toMap();
+        tab["attention"] = true;
+        tabs[i] = tab;
+    }
+    scene["workspaceTabs"] = QVariantMap{{"visible",true},{"tabs",tabs}};
+    fixture.shell.setScene(scene);
+    QTRY_VERIFY(leaf("workspace-tab-attention-",0)->isVisible());
+    int index = 0;
+    for (int i = 0; i < 2; ++i) {
+        for (const auto &prefix : {"", "workspace-tab-title-", "workspace-tab-number-",
+                                  "workspace-tab-icon-", "workspace-close-"})
+            QCOMPARE(geometry(leaf(prefix,i)), before[index++]);
+        auto *dot = leaf("workspace-tab-attention-",i);
+        auto *icon = leaf("workspace-tab-icon-",i);
+        QVERIFY(dot && icon);
+        const QPointF corner = geometry(icon).topRight();
+        const QPointF center = geometry(dot).center();
+        QVERIFY(qAbs(center.x()-corner.x())*dpr <= .51);
+        QVERIFY(qAbs(center.y()-corner.y())*dpr <= .51);
+        for (const auto &prefix : {"workspace-tab-title-", "workspace-tab-number-",
+                                  "workspace-tab-icon-", "workspace-close-", "workspace-tab-attention-"}) {
+            auto *item = leaf(prefix,i);
+            const QPointF origin = item->mapToScene(QPointF());
+            for (qreal coordinate : {origin.x(),origin.y(),item->width(),item->height()}) {
+                const auto message = QString("%1: %2 physical pixels").arg(prefix)
+                    .arg(coordinate*dpr,0,'f',6).toUtf8();
+                QVERIFY2(qAbs(coordinate*dpr-qRound64(coordinate*dpr))<.001,message.constData());
+            }
+            QCOMPARE(item->mapToScene(QPointF(1,0))-origin,QPointF(1,0));
+            QCOMPARE(item->mapToScene(QPointF(0,1))-origin,QPointF(0,1));
+        }
+    }
+    QVERIFY(fixture.window->grabWindow().save("artifacts/tab-attention-overlay-175.png"));
+}
+
+void F4QuickViewSurfaceTests::workspaceActiveTabPressRequestsPreviousImmediately()
+{
+    QVariantMap scene = shellScene();
+    scene.insert("workspaceTabs", QVariantMap{{"visible", true}, {"tabs", QVariantList{
+        QVariantMap{{"id", "workspace-tab-2"}, {"text", "Active tab"}, {"number", 2},
+            {"index", 0}, {"active", true}, {"closable", true},
+            {"action", "workspace.activate"}, {"closeAction", "workspace.close"}}
+    }}});
+    QuickViewFixture fixture(scene, false, true);
+    QVERIFY(fixture.window);
+    auto *title = visualItemWithObjectNamePrefix(fixture.window->contentItem(),
+        "workspace-tab-title-workspace-tab-2");
+    QVERIFY(title);
+    const QPoint position = title->mapToScene(QPointF(2, title->height()/2)).toPoint();
+    QTest::mousePress(fixture.window, Qt::LeftButton, Qt::NoModifier, position);
+    QTRY_COMPARE(fixture.shell.actions.size(), 1);
+    QCOMPARE(fixture.shell.actions.first().value("action").toString(),
+             QString("workspace.activatePrevious"));
+    QCOMPARE(fixture.shell.actions.first().value("target").toString(),
+             QString("workspace-tab-2"));
+    QTest::mouseRelease(fixture.window, Qt::LeftButton, Qt::NoModifier, position);
+    QCOMPARE(fixture.shell.actions.size(), 1);
+}
+
+void F4QuickViewSurfaceTests::workspaceTabsAcceptClicksAtWindowTop()
+{
+    QVariantMap scene = shellScene();
+    scene.insert("workspaceTabs", QVariantMap{{"visible", true}, {"tabs", QVariantList{
+        QVariantMap{{"id", "workspace-edge"}, {"text", "Edge tab"}, {"number", 2},
+            {"index", 0}, {"active", false}, {"closable", true},
+            {"action", "workspace.activate"}, {"closeAction", "workspace.close"}}
+    }}, {"newTab", QVariantMap{{"id", "workspace-new"}, {"visible", true}, {"action", "workspace.new"}}}});
+    QuickViewFixture fixture(scene, false, true);
+    QVERIFY(fixture.window);
+    QCOMPARE(fixture.window->devicePixelRatio(), qreal(1.75));
+    auto *tab = visualItemWithObjectNamePrefix(fixture.window->contentItem(), "workspace-edge");
+    QVERIFY(tab);
+    QTRY_VERIFY(tab->isVisible());
+    const QPoint edge(qRound(tab->mapToScene(QPointF(tab->width()/2, 0)).x()), 0);
+    QTest::mouseMove(fixture.window, edge);
+    QTRY_VERIFY(tab->property("hoverActive").toBool());
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, edge);
+    QTRY_COMPARE(fixture.shell.actions.size(), 1);
+    QCOMPARE(fixture.shell.actions.first().value("action").toString(), QString("workspace.activate"));
+    QCOMPARE(fixture.shell.actions.first().value("target").toString(), QString("workspace-edge"));
+    fixture.shell.clearActions();
+    QTest::mouseClick(fixture.window, Qt::MiddleButton, Qt::NoModifier, edge);
+    QTRY_COMPARE(fixture.shell.actions.size(), 1);
+    QCOMPARE(fixture.shell.actions.first().value("action").toString(), QString("workspace.close"));
+    fixture.shell.clearActions();
+    auto *newTab = fixture.item("workspace-new");
+    QVERIFY(newTab);
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+        QPoint(qRound(newTab->mapToScene(QPointF(newTab->width()/2, 0)).x()), 0));
+    QTRY_COMPARE(fixture.shell.actions.size(), 1);
+    QCOMPARE(fixture.shell.actions.first().value("action").toString(), QString("workspace.new"));
+    for (const auto &name : {"workspace-tab-title-workspace-edge", "workspace-tab-number-workspace-edge",
+                             "workspace-tab-icon-workspace-edge", "workspaceNewIcon"}) {
+        auto *leaf = visualItemWithObjectNamePrefix(fixture.window->contentItem(), name);
+        QVERIFY(leaf);
+        const QPointF origin = leaf->mapToScene(QPointF{});
+        const qreal dpr = fixture.window->devicePixelRatio();
+        QVERIFY(qAbs(origin.x()*dpr-qRound(origin.x()*dpr)) < 0.001);
+        QVERIFY(qAbs(origin.y()*dpr-qRound(origin.y()*dpr)) < 0.001);
+        QCOMPARE(leaf->mapToScene(QPointF(1,0))-origin, QPointF(1,0));
+        QCOMPARE(leaf->mapToScene(QPointF(0,1))-origin, QPointF(0,1));
+    }
+    QVERIFY(fixture.window->grabWindow().save("artifacts/tab-top-edge-175.png"));
+}
+
 void F4QuickViewSurfaceTests::workspaceTabMiddleClickClosesClickedTab()
 {
     QVariantList tabs;
@@ -5971,7 +6536,7 @@ void F4QuickViewSurfaceTests::workspaceTabMiddleClickClosesClickedTab()
         QTest::mousePress(fixture.window, Qt::LeftButton, Qt::NoModifier, point);
         QTRY_COMPARE(fixture.shell.actions.size(), 1);
         QCOMPARE(fixture.shell.actions.first().value("action").toString(),
-                 QString("workspace.activate"));
+                 QString(index == 0 ? "workspace.activatePrevious" : "workspace.activate"));
         QTest::mouseRelease(fixture.window, Qt::LeftButton, Qt::NoModifier, point);
         QTest::qWait(30);
         QCOMPARE(fixture.shell.actions.size(), 1);
@@ -6115,6 +6680,13 @@ void F4QuickViewSurfaceTests::quickViewRetainsViewerAcrossPresentationChanges()
         QVERIFY(viewer->width() > 100 && viewer->height() > 100);
         QCOMPARE(viewer->property("transitionProgress").toReal(), 1.0);
         QCOMPARE(viewer->property("viewerContentVisible").toBool(), true);
+        QVERIFY(viewport->property("hardwareSampling").isValid());
+        QVERIFY(!viewport->property("hardwareSampling").toBool());
+        auto *shader = fixture.item("galleryViewerImageShader");
+        QVERIFY(shader);
+        QVERIFY(!shader->property("hardwareSampling").toBool());
+        QVERIFY(!fixture.item("galleryViewerCropShader")->property("hardwareSampling").toBool());
+        QVERIFY(shader->property("pixelAligned").toBool());
         const auto origin = layer->mapToItem(fixture.window->contentItem(), QPointF());
         for (qreal value : {origin.x(), origin.y(), layer->width(), layer->height()})
             QVERIFY(qAbs(value * 1.75 - qRound(value * 1.75)) < 0.001);
@@ -6182,6 +6754,7 @@ void F4QuickViewSurfaceTests::quickViewRetainsViewerAcrossPresentationChanges()
         validateEndpoint();
         // A custom absolute zoom survives both directions of the geometry change.
         QVERIFY(QMetaObject::invokeMethod(viewport, "zoomTo100", Q_ARG(QVariant, true)));
+        QVERIFY(!viewport->property("hardwareSampling").toBool());
         QTRY_VERIFY(!viewport->property("viewportAnimationRunning").toBool());
         const qreal zoom = viewport->property("zoomScale").toReal();
         auto *imageItem = viewport->property("image").value<QQuickItem *>();
@@ -6209,7 +6782,14 @@ void F4QuickViewSurfaceTests::quickViewRetainsViewerAcrossPresentationChanges()
     }
     fixture.gallery.expandQuickView();
     QTest::qWait(40);
+    QVERIFY(viewport->property("hardwareSampling").toBool());
+    QVERIFY(fixture.item("galleryViewerImageShader")->property("hardwareSampling").toBool());
+    QVERIFY(!fixture.item("galleryViewerImageShader")->property("pixelAligned").toBool());
+    QVERIFY(fixture.item("galleryViewerCropShader")->property("hardwareSampling").toBool());
+    QVERIFY(!viewer->property("transitioning").toBool());
     fixture.gallery.collapseQuickView();
+    QVERIFY(viewport->property("hardwareSampling").toBool());
+    QVERIFY(!viewer->property("transitioning").toBool());
     QTRY_COMPARE(fixture.gallery.presentationState, 1);
     validateEndpoint();
     fixture.window->resize(937, 677);
@@ -6302,6 +6882,7 @@ void F4QuickViewSurfaceTests::cachedGalleryViewerCentersFirstNativeZoomAt175Perc
     // stale logical dimensions by recalculating the already-loaded native tier.
     viewer->forceActiveFocus();
     QTest::keyClick(fixture.window, Qt::Key_Asterisk);
+    QVERIFY(!viewport->property("hardwareSampling").toBool());
     QTRY_COMPARE_WITH_TIMEOUT(session->viewerSourceLevel(), 2, 5000);
     QTRY_VERIFY_WITH_TIMEOUT(!viewport->property("viewportAnimationRunning").toBool(),
                             5000);
@@ -6614,7 +7195,8 @@ void F4QuickViewSurfaceTests::workspaceTabTextParentsStayOnPhysicalPixelGrid()
     for (const auto &name : {"workspace-tab-title-workspace-tab-1", "workspace-tab-number-workspace-tab-1",
                             "workspace-tab-icon-workspace-tab-1", "workspace-close-workspace-tab-1", "workspaceNewIcon"}) {
         auto *leaf = visualItemWithObjectNamePrefix(rootItem, QString::fromLatin1(name));
-        QVERIFY2(leaf && leaf->isVisible(), name);
+        QVERIFY2(leaf, name);
+        QCOMPARE(leaf->isVisible(), !QString::fromLatin1(name).startsWith("workspace-tab-number-"));
         const auto origin = leaf->mapToItem(rootItem, QPointF());
         for (qreal coordinate : {origin.x(), origin.y()})
             QVERIFY2(qAbs(coordinate * dpr - qRound64(coordinate * dpr)) < .001, name);
@@ -7997,6 +8579,94 @@ void F4QuickViewSurfaceTests::f9MenuOverlaysPathRowWithoutMovingContent()
     QCOMPARE(panel->size(), sizeBefore);
 }
 
+void F4QuickViewSurfaceTests::workspaceSwitchRetainsGalleryViewAt175Percent()
+{
+    auto scene = shellScene({}, 0);
+    QuickViewFixture fixture(scene, true);
+    QVERIFY(fixture.window);
+    ZoinGallery::RuntimeOptions options;
+    options.persistentCache = false;
+    auto *runtime = ZoinGallery::GalleryRuntime::install(&fixture.engine, options);
+    auto *session = runtime->createExternalSession("retained-panel-test");
+    const auto shutdown = qScopeGuard([&] { runtime->shutdown(); });
+    QVERIFY(session->applyExternalCatalog({QVariantMap{
+        {"entryId", "file"}, {"index", 0}, {"name", "Small secondary text.txt"},
+        {"size", 1234}, {"isDir", false}}}, 1));
+    fixture.gallery.showPanel(QUrl("qrc:/F4QtHost/qml/GalleryPanelHost.qml"), session);
+    auto *content = fixture.item("galleryPanelContent-0");
+    QVERIFY(content);
+    QObject *first = nullptr;
+    QTRY_VERIFY((first = content->property("item").value<QObject *>()));
+    auto *root = fixture.item("filePanel-0");
+    QVariantMap original = root->property("panel").toMap();
+    QVariantMap next = original;
+    next.insert("id", "second-panel");
+    next.insert("path", "C:/second-panel");
+    next.insert("galleryLayoutMode", "details");
+    next.insert("galleryColumns", QVariantList{
+        QVariantMap{{"id", "name"}, {"role", "name"}, {"title", "Name"}, {"width", 50}},
+        QVariantMap{{"id", "size"}, {"role", "size"}, {"title", "Size"}, {"width", 14}}});
+    fixture.shell.deliverCompactPresentation({{"side", 0}, {"panel", next}});
+    QObject *second = nullptr;
+    QTRY_VERIFY((second = content->property("item").value<QObject *>()));
+    QVERIFY(second != first);
+    QVERIFY(!qobject_cast<QQuickItem *>(first)->isVisible());
+    QTest::qWait(80);
+    int leaves = 0;
+    const auto visit = [&](auto &&self, QQuickItem *item) -> void {
+        if (!item->isVisible()) return;
+        const QString type = item->metaObject()->className();
+        if (type.startsWith("QQuickText") || type.startsWith("QQuickImage")) {
+            if (item->width() > 0 && item->height() > 0) {
+                QVERIFY2(!item->objectName().isEmpty(), qPrintable(type));
+                const QPointF origin = item->mapToScene(QPointF());
+                const QPointF physical = origin * fixture.window->devicePixelRatio();
+                QVERIFY2(qAbs(physical.x()-qRound64(physical.x())) < .001
+                    && qAbs(physical.y()-qRound64(physical.y())) < .001, qPrintable(item->objectName()+" "+QString::number(physical.x())+","+QString::number(physical.y())));
+                QCOMPARE(item->mapToScene(QPointF(1,0))-origin, QPointF(1,0));
+                QCOMPARE(item->mapToScene(QPointF(0,1))-origin, QPointF(0,1));
+                ++leaves;
+            }
+        }
+        for (auto *child : item->childItems()) self(self, child);
+    };
+    visit(visit, qobject_cast<QQuickItem *>(second));
+    QVERIFY(leaves > 0);
+    QVERIFY(fixture.window->grabWindow().save("/tmp/f4-retained-details-175.png"));
+    fixture.shell.deliverCompactPresentation({{"side", 0}, {"panel", original}});
+    QTRY_COMPARE(content->property("item").value<QObject *>(), first);
+    QTest::qWait(80);
+    leaves = 0;
+    visit(visit, qobject_cast<QQuickItem *>(first));
+    QVERIFY(leaves > 0);
+    QVERIFY(fixture.window->grabWindow().save("/tmp/f4-retained-panel-175.png"));
+}
+
+void F4QuickViewSurfaceTests::shellSnapshotDoesNotRestorePreviousPanelDescriptor()
+{
+    auto scene = shellScene({}, 0);
+    QuickViewFixture fixture(scene, true);
+    QVERIFY(fixture.window);
+    auto *panel = fixture.item("filePanel-0");
+    QVERIFY(panel);
+    QVariantMap nextPanel = panel->property("panel").toMap();
+    nextPanel.insert("id", "next-workspace-left");
+    nextPanel.insert("path", "C:/next-workspace");
+    fixture.shell.deliverCompactPresentation({{"side", 0}, {"panel", nextPanel}});
+    QCoreApplication::processEvents();
+    QCOMPARE(panel->property("panel").toMap().value("id").toString(), QString("next-workspace-left"));
+    QSignalSpy changes(panel, SIGNAL(panelChanged()));
+    QVariantMap shell = scene.value("shell").toMap();
+    QVariantList panels = shell.value("panels").toList();
+    panels[0] = nextPanel;
+    shell.insert("panels", panels);
+    scene.insert("shell", shell);
+    fixture.shell.setScene(scene);
+    QCoreApplication::processEvents();
+    QCOMPARE(panel->property("panel").toMap().value("id").toString(), QString("next-workspace-left"));
+    QVERIFY2(changes.count() <= 1, "Clearing the compact override restored the old descriptor before the new shell");
+}
+
 void F4QuickViewSurfaceTests::appIconMenuUsesSemanticCategoriesAndCommands()
 {
     auto scene = shellScene({}, 0);
@@ -8008,6 +8678,19 @@ void F4QuickViewSurfaceTests::appIconMenuUsesSemanticCategoriesAndCommands()
     scene.insert("menuBar", QVariantMap{{"active", false}, {"items", categories}});
     QuickViewFixture fixture(scene, true, true);
     QVERIFY(fixture.window);
+    auto *hiddenPopup = fixture.window->findChild<QObject *>("applicationMenuPopup");
+    QVERIFY(hiddenPopup);
+    QCOMPARE(hiddenPopup->property("count").toInt(), 0);
+    // A hidden menu must use the latest semantic commands when it opens.
+    QVariantList updatedCommands = commands;
+    QVariantMap updatedCommand = updatedCommands[0].toMap();
+    updatedCommand.insert("index", 6);
+    updatedCommands[0] = updatedCommand;
+    scene.insert("menuBar", QVariantMap{{"active", false}, {"items", QVariantList{
+        QVariantMap{{"index", 2}, {"text", "Files"}, {"items", updatedCommands}}}}});
+    fixture.shell.setScene(scene);
+    QCoreApplication::processEvents();
+    QCOMPARE(hiddenPopup->property("count").toInt(), 0);
     auto *icon = fixture.item("appIconButton");
     QVERIFY(icon);
     // Exercise the non-macOS entrypoint with the shared QML on the macOS CI host.
@@ -8048,7 +8731,7 @@ void F4QuickViewSurfaceTests::appIconMenuUsesSemanticCategoriesAndCommands()
     QTRY_VERIFY(!fixture.shell.actions.isEmpty());
     QCOMPARE(fixture.shell.actions.last().value("action").toString(), QString("menuBar.itemActivate"));
     QCOMPARE(fixture.shell.actions.last().value("menuIndex").toInt(), 2);
-    QCOMPARE(fixture.shell.actions.last().value("index").toInt(), 4);
+    QCOMPARE(fixture.shell.actions.last().value("index").toInt(), 6);
 }
 
 void F4QuickViewSurfaceTests::menuBarPopupStartsUnderClickedItem()
@@ -8506,6 +9189,173 @@ void F4QuickViewSurfaceTests::menuKeyboardSelectionSurvivesStationaryPointerPatc
              rowZero);
     QTest::qWait(100);
     QCOMPARE(fixture.shell.actions.size(), 0);
+}
+
+void F4QuickViewSurfaceTests::fullBreadcrumbWidthsStayFixedOnHover_data()
+{
+    QTest::addColumn<bool>("compact");
+    QTest::newRow("compact") << true;
+    QTest::newRow("full") << false;
+}
+
+void F4QuickViewSurfaceTests::fullBreadcrumbWidthsStayFixedOnHover()
+{
+    QFETCH(bool, compact);
+    auto scene = shellScene({}, 0);
+    auto shell = scene["shell"].toMap();
+    auto panels = shell["panels"].toList();
+    auto left = panels[0].toMap();
+    left["path"] = "C:/workspace/CozyPets-iOS/media/videos";
+    left["title"] = left["path"];
+    panels[0] = left;
+    shell["panels"] = panels;
+    scene["shell"] = shell;
+    QuickViewFixture fixture(scene, true, true);
+    QVERIFY(fixture.window);
+    fixture.window->resize(2400, 640);
+    fixture.window->setProperty("compactBreadcrumbs", compact);
+    auto *control = fixture.item("panelPathTitle-0");
+    QVERIFY(control);
+    QTest::mouseMove(fixture.window, QPoint(40, 400));
+    QTest::qWait(300);
+    QCOMPARE(control->property("pathHoveredColor").value<QColor>(),
+             control->property("pathItemHoveredColor").value<QColor>());
+    QList<QQuickItem *> crumbs;
+    QList<qreal> widths;
+    QList<QQuickItem *> leaves;
+    QList<QPointF> origins;
+    const qreal dpr = fixture.window->devicePixelRatio();
+    for (int index = -1; index < 4; ++index) {
+        const QString name = index < 0 ? QString("pathBreadcrumbRoot") : QString("pathBreadcrumb-%1").arg(index);
+        auto *crumb = visualItemWithObjectName(control, name);
+        QVERIFY(crumb);
+        QVERIFY(crumb->width() >= crumb->property("naturalWidth").toReal());
+        crumbs.append(crumb);
+        widths.append(crumb->width());
+        for (const auto &suffix : {"-text", "-separator", "-slash"}) {
+            auto *leaf = visualItemWithObjectName(control, name + suffix);
+            if (leaf && leaf->isVisible()) {
+                leaves.append(leaf);
+                origins.append(leaf->mapToScene(QPointF()));
+            }
+        }
+    }
+    QTemporaryDir captures;
+    QVERIFY(captures.isValid());
+    QVERIFY(fixture.window->grabWindow().save(pixelCapturePath(&captures, "breadcrumbs-full-before-" + QString::number(compact) + ".png")));
+    for (auto *hovered : crumbs) {
+        QTest::mouseMove(fixture.window, hovered->mapToScene(QPointF(hovered->width()/2, hovered->height()/2)).toPoint());
+        QTest::qWait(300);
+        for (int index = 0; index < crumbs.size(); ++index) {
+            QVERIFY2(qAbs(crumbs[index]->width() - widths[index]) < .001,
+                qPrintable(QString("%1 physical width before=%2 after=%3")
+                    .arg(crumbs[index]->objectName()).arg(widths[index]*dpr).arg(crumbs[index]->width()*dpr)));
+        }
+        for (int index = 0; index < leaves.size(); ++index) {
+            auto *leaf = leaves[index];
+            const auto origin = leaf->mapToScene(QPointF());
+            QCOMPARE(origin, origins[index]);
+            QVERIFY2(qAbs(origin.x()*dpr - qRound64(origin.x()*dpr)) < .001
+                     && qAbs(origin.y()*dpr - qRound64(origin.y()*dpr)) < .001, qPrintable(leaf->objectName()));
+            QCOMPARE(leaf->mapToScene(QPointF(1, 0)) - origin, QPointF(1, 0));
+            QCOMPARE(leaf->mapToScene(QPointF(0, 1)) - origin, QPointF(0, 1));
+        }
+    }
+    QVERIFY(fixture.window->grabWindow().save(pixelCapturePath(&captures, "breadcrumbs-full-hover-" + QString::number(compact) + ".png")));
+}
+
+void F4QuickViewSurfaceTests::pathLeadingSpacingEntersEditMode()
+{
+    auto scene = shellScene({}, 0);
+    auto shell = scene["shell"].toMap();
+    auto panels = shell["panels"].toList();
+    auto left = panels[0].toMap();
+    left["path"] = "C:/workspace/very-long-directory-name/another-long-directory/media/videos";
+    left["title"] = left["path"];
+    panels[0] = left;
+    shell["panels"] = panels;
+    scene["shell"] = shell;
+    QuickViewFixture fixture(scene, true, true);
+    QVERIFY(fixture.window);
+    fixture.window->resize(1400, 640);
+    auto *control = fixture.item("panelPathTitle-0");
+    auto *drive = fixture.item("panelDriveButton-0");
+    QVERIFY(control);
+    QVERIFY(drive);
+    QTest::qWait(150);
+    const auto driveRight = drive->mapToScene(QPointF(drive->width(), 0));
+    const auto controlLeft = control->mapToScene(QPointF());
+    QCOMPARE(controlLeft.x(), driveRight.x());
+    const qreal dpr = fixture.window->devicePixelRatio();
+    const auto verifyLeaf = [dpr](QQuickItem *leaf) {
+        QVERIFY(leaf);
+        const auto origin = leaf->mapToScene(QPointF());
+        QVERIFY2(qAbs(origin.x()*dpr - qRound64(origin.x()*dpr)) < .001
+                 && qAbs(origin.y()*dpr - qRound64(origin.y()*dpr)) < .001,
+                 qPrintable(leaf->objectName()));
+        QCOMPARE(leaf->mapToScene(QPointF(1, 0)) - origin, QPointF(1, 0));
+        QCOMPARE(leaf->mapToScene(QPointF(0, 1)) - origin, QPointF(0, 1));
+    };
+    verifyLeaf(fixture.item("panelDriveButtonIcon-0"));
+    for (int index = -1; index < 5; ++index) {
+        const auto name = index < 0 ? QString("pathBreadcrumbRoot") : QString("pathBreadcrumb-%1").arg(index);
+        for (const auto &suffix : {"-text", "-separator", "-slash"}) {
+            auto *leaf = visualItemWithObjectName(control, name + suffix);
+            if (leaf && leaf->isVisible())
+                verifyLeaf(leaf);
+        }
+    }
+    const auto gapPoint = control->mapToScene(QPointF(2, control->height()/2)).toPoint();
+    QTest::mouseMove(fixture.window, gapPoint);
+    auto *background = visualItemWithObjectName(control, "pathBackground");
+    QVERIFY(background);
+    QTRY_COMPARE(background->property("color").value<QColor>(),
+                 control->property("pathHoveredColor").value<QColor>());
+    QVERIFY(fixture.window->grabWindow().save("/tmp/f4-path-leading-spacing-175.png"));
+    fixture.shell.clearActions();
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, gapPoint);
+    QTRY_VERIFY(control->property("editMode").toBool());
+    QCOMPARE(fixture.shell.actions.size(), 0);
+    verifyLeaf(visualItemWithObjectName(control, "pathField"));
+    QVERIFY(fixture.window->grabWindow().save("/tmp/f4-path-leading-spacing-edit-175.png"));
+    QTest::keyClick(fixture.window, Qt::Key_Escape);
+    QTRY_VERIFY(!control->property("editMode").toBool());
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+        drive->mapToScene(QPointF(drive->width()/2, drive->height()/2)).toPoint());
+    QTRY_COMPARE(fixture.shell.actions.size(), 1);
+    QCOMPARE(fixture.shell.actions[0].value("action").toString(), QString("panel.driveMenu"));
+}
+
+void F4QuickViewSurfaceTests::pathEditingKeepsHoverBackground()
+{
+    QuickViewFixture fixture(shellScene({}, 0), true, true);
+    QVERIFY(fixture.window);
+    fixture.window->resize(1400, 640);
+    auto *control = fixture.item("panelPathTitle-0");
+    QVERIFY(control);
+    auto *background = visualItemWithObjectName(control, "pathBackground");
+    auto *field = visualItemWithObjectName(control, "pathField");
+    QVERIFY(background);
+    QVERIFY(field);
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+        control->mapToScene(QPointF(control->width() - 10, control->height()/2)).toPoint());
+    QTRY_VERIFY(control->property("editMode").toBool());
+    QTest::mouseMove(fixture.window, QPoint(40, 400));
+    QTest::qWait(300);
+    QCOMPARE(background->property("color").value<QColor>(),
+             control->property("pathItemHoveredColor").value<QColor>());
+    const qreal dpr = fixture.window->devicePixelRatio();
+    const QPointF origin = field->mapToScene(QPointF());
+    QVERIFY(qAbs(origin.x()*dpr - qRound64(origin.x()*dpr)) < .001);
+    QVERIFY(qAbs(origin.y()*dpr - qRound64(origin.y()*dpr)) < .001);
+    QCOMPARE(field->mapToScene(QPointF(1, 0)) - origin, QPointF(1, 0));
+    QCOMPARE(field->mapToScene(QPointF(0, 1)) - origin, QPointF(0, 1));
+    QTemporaryDir captures;
+    QVERIFY(captures.isValid());
+    QVERIFY(fixture.window->grabWindow().save(pixelCapturePath(&captures, "path-edit-highlight.png")));
+    QTest::keyClick(fixture.window, Qt::Key_Escape);
+    QTRY_VERIFY(!control->property("editMode").toBool());
+    QTRY_COMPARE(background->property("color").value<QColor>().alpha(), 0);
 }
 
 void F4QuickViewSurfaceTests::pathBreadcrumbsCompressAndExpandOnHover()
@@ -10097,6 +10947,86 @@ void F4QuickViewSurfaceTests::widePanelDoesNotRevealTerminalBackdrop()
     QTRY_VERIFY_WITH_TIMEOUT(widePanel->width() < fixture.window->width(), 3000);
 }
 
+void F4QuickViewSurfaceTests::shortTerminalHistoryStaysAtBottom()
+{
+    auto scene = shellScene();
+    auto shell = scene["shell"].toMap();
+    shell["terminalActive"] = true;
+    shell["showPanels"] = false;
+    auto term = QVariantMap{
+        {"id", "terminal-short-history"}, {"kind", "terminal"},
+        {"scrollUnit", "rows"}, {"scrollAction", "terminal.scroll"},
+        {"followTail", true}, {"selectionEnabled", true},
+        {"cursorVisible", false}, {"windowStart", 0}, {"windowEnd", 3},
+        {"viewportStart", 0}, {"viewportSpan", 3}, {"viewportRows", 24},
+        {"contentExtent", 3}, {"contentStart", 0}, {"windowGeneration", 1},
+    };
+    QVariantList rows;
+    for (int row = 0; row < 3; ++row) {
+        rows.append(QVariantMap{{"visualRow", row}, {"runs", QVariantList{
+            QVariantMap{{"text", "history "}, {"foreground", "#3399ff"}},
+            QVariantMap{{"text", QString::number(row)}, {"foreground", "#dddddd"}},
+        }}});
+    }
+    term["windowRows"] = rows;
+    shell["terminal"] = term;
+    scene["shell"] = shell;
+    QuickViewFixture fixture(scene, true, true);
+    QVERIFY(fixture.window);
+    fixture.window->resize(1400, 700);
+    auto *surface = fixture.item("terminalDocumentSurface");
+    QVERIFY(surface);
+    QTRY_VERIFY(surface->property("windowInitialized").toBool());
+    auto *list = visualItemWithObjectName(surface, "documentList");
+    QVERIFY(list);
+    const qreal dpr = fixture.window->devicePixelRatio();
+    for (int step = 0; step < 3; ++step) {
+        const QSize size = step == 0 ? QSize(1400, 700) : QSize(1100, 563);
+        if (step == 2) {
+            rows.append(rows[0]);
+            auto next = rows[0].toMap();
+            next["visualRow"] = 3;
+            rows[3] = next;
+            next["visualRow"] = 4;
+            rows.append(next);
+            term["windowRows"] = rows;
+            term["windowEnd"] = 5;
+            term["viewportSpan"] = 5;
+            term["contentExtent"] = 5;
+            term["windowGeneration"] = 2;
+            shell["terminal"] = term;
+            scene["shell"] = shell;
+            fixture.shell.setScene(scene);
+        }
+        fixture.window->resize(size);
+        QTest::qWait(300);
+        qreal lastBottom = -1;
+        int leaves = 0;
+        const auto inspect = [&](auto &&self, QQuickItem *item) -> void {
+            if (item->objectName() == "documentRowDelegate" && item->property("loaded").toBool())
+                lastBottom = std::max(lastBottom, item->mapToItem(list, QPointF(0, item->height())).y());
+            if (item->objectName() == "documentRunText" && item->isVisible()
+                && !item->property("text").toString().isEmpty()) {
+                ++leaves;
+                const auto origin = item->mapToScene(QPointF());
+                QVERIFY(qAbs(origin.x()*dpr - qRound64(origin.x()*dpr)) < .001);
+                QVERIFY(qAbs(origin.y()*dpr - qRound64(origin.y()*dpr)) < .001);
+                QCOMPARE(item->mapToScene(QPointF(1, 0)) - origin, QPointF(1, 0));
+                QCOMPARE(item->mapToScene(QPointF(0, 1)) - origin, QPointF(0, 1));
+            }
+            for (auto *child : item->childItems()) self(self, child);
+        };
+        inspect(inspect, list);
+        QCOMPARE(leaves, 2*rows.size());
+        QVERIFY2(qAbs(lastBottom-list->height()) <= 1/dpr,
+            qPrintable(QString("history bottom=%1 viewport height=%2").arg(lastBottom).arg(list->height())));
+        QVERIFY(!visualItemWithObjectName(surface, "editorCursor")->isVisible());
+    }
+    QTemporaryDir captures;
+    QVERIFY(captures.isValid());
+    QVERIFY(fixture.window->grabWindow().save(pixelCapturePath(&captures, "terminal-short-history.png")));
+}
+
 void F4QuickViewSurfaceTests::terminalDoubleClickDragExpandsWholeWords()
 {
     QVariantMap scene = shellScene();
@@ -10234,6 +11164,93 @@ void F4QuickViewSurfaceTests::terminalScrollBarStaysInsideTheExposedPanelSide()
     fixture.shell.setScene(scene);
     QTRY_VERIFY(!fixture.item("terminalDocumentSurface"));
 
+}
+
+void F4QuickViewSurfaceTests::dialogAutocompleteAnchorsToSearchInput()
+{
+    auto scene = shellScene({}, 0);
+    scene.insert("dialogs", QVariantList{QVariantMap{
+        {"id", "search-dialog"}, {"kind", "dialog"}, {"title", "Search"},
+        {"x", 20}, {"y", 8}, {"w", 50}, {"h", 14},
+        {"children", QVariantList{QVariantMap{
+            {"id", "search-input"}, {"kind", "edit"}, {"text", "mp4"},
+            {"x", 22}, {"y", 11}, {"w", 40}, {"h", 2}, {"focused", false}, {"history", true}}}}}});
+    scene.insert("menus", QVariantList{QVariantMap{
+        {"id", "search-completions"}, {"kind", "menu"}, {"role", "autocomplete"},
+        {"ownerId", "search-input"}, {"query", "mp4"}, {"selected", -1},
+        {"items", QVariantList{QVariantMap{{"text", "mp4"}}}}}});
+    QuickViewFixture fixture(scene, false, true);
+    auto *root = fixture.window->contentItem();
+    QQuickItem *input = nullptr;
+    QQuickItem *popup = nullptr;
+    QTRY_VERIFY((input = visualItemWithObjectName(root, "dialogWidget-search-inputEdit")));
+    QTRY_VERIFY((popup = visualItemWithObjectName(root, "autocompleteHintsPanel")));
+    QTest::qWait(100);
+    const auto inputOrigin = input->mapToItem(root, QPointF());
+    const auto popupOrigin = popup->mapToItem(root, QPointF());
+    QVERIFY(qAbs(popupOrigin.x() - inputOrigin.x()) * fixture.window->devicePixelRatio() <= .51);
+    QVERIFY(qAbs(popupOrigin.y() - inputOrigin.y() - input->height()) * fixture.window->devicePixelRatio() <= .51);
+    for (const auto &name : {"autocompletePrefix-0", "autocompleteSuffix-0", "dialogWidget-search-inputEditHistoryIcon", "dialogWidget-search-inputEditTextInput"}) {
+        auto *leaf = visualItemWithObjectName(root, name);
+        QVERIFY(leaf);
+        const auto origin = leaf->mapToItem(root, QPointF());
+        const auto physical = origin * fixture.window->devicePixelRatio();
+        QVERIFY(qAbs(physical.x() - qRound64(physical.x())) < .001);
+        QVERIFY(qAbs(physical.y() - qRound64(physical.y())) < .001);
+        QCOMPARE(leaf->mapToItem(root, QPointF(1, 0)) - origin, QPointF(1, 0));
+        QCOMPARE(leaf->mapToItem(root, QPointF(0, 1)) - origin, QPointF(0, 1));
+    }
+    fixture.window->grabWindow().save("D:/Code/f4-zoin/artifacts/search-autocomplete-175.png");
+    fixture.window->requestActivate();
+    QTRY_VERIFY(fixture.window->isActive());
+    auto *blink = visualItemWithObjectName(root, "dialogWidget-search-inputEditCursorBlinkController");
+    QVERIFY(blink);
+    blink->setProperty("interval", 20);
+    QTRY_VERIFY(blink->property("running").toBool());
+    QTest::qWait(120);
+    QVERIFY(blink->property("running").toBool());
+    fixture.shell.clearActions();
+    QTest::keyClick(fixture.window, Qt::Key_Return);
+    QTRY_VERIFY(!fixture.shell.actions.isEmpty());
+    QCOMPARE(fixture.shell.actions.last().value("action").toString(), QString("autocomplete.accept"));
+    QCOMPARE(fixture.shell.actions.last().value("target").toString(), QString("search-completions"));
+    QVERIFY(fixture.shell.actions.last().value("submit").toBool());
+    fixture.shell.clearActions();
+    QTest::keyClick(fixture.window, Qt::Key_Down);
+    QTRY_COMPARE(fixture.window->property("autocompleteSelectedIndex").toInt(), 0);
+    fixture.shell.clearActions();
+    QTest::keyClick(fixture.window, Qt::Key_Return);
+    QTRY_VERIFY(!fixture.shell.actions.isEmpty());
+    QCOMPARE(fixture.shell.actions.last().value("action").toString(), QString("autocomplete.accept"));
+    QCOMPARE(fixture.shell.actions.last().value("index").toInt(), 0);
+    QVERIFY(!fixture.shell.actions.last().value("submit").toBool());
+    fixture.shell.clearActions();
+    QTest::keyClick(fixture.window, Qt::Key_Tab);
+    QTRY_VERIFY(!fixture.shell.actions.isEmpty());
+    QCOMPARE(fixture.shell.actions.last().value("action").toString(), QString("autocomplete.tab"));
+    fixture.shell.clearActions();
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+        (inputOrigin + QPointF(4, input->height() / 2)).toPoint());
+    bool dismissed = false;
+    for (const auto &intent : fixture.shell.actions) {
+        dismissed |= intent.value("action").toString() == "autocomplete.dismiss";
+    }
+    QVERIFY(dismissed);
+    fixture.shell.clearActions();
+    auto *historyButton = visualItemWithObjectName(root, "dialogWidget-search-inputEditHistoryButton");
+    QVERIFY(historyButton && historyButton->isVisible());
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+        historyButton->mapToItem(root, QPointF(historyButton->width()/2, historyButton->height()/2)).toPoint());
+    QTRY_VERIFY(!fixture.shell.actions.isEmpty());
+    bool historyDismissed = false;
+    for (const auto &intent : fixture.shell.actions)
+        historyDismissed |= intent.value("action").toString() == "autocomplete.dismiss";
+    QVERIFY(historyDismissed);
+    bool historyOpened = false;
+    for (const auto &intent : fixture.shell.actions)
+        historyOpened |= intent.value("action").toString() == "control.history"
+            && intent.value("target").toString() == "search-input";
+    QVERIFY(historyOpened);
 }
 
 void F4QuickViewSurfaceTests::autocompleteHoverFollowsPopupResize()
@@ -11193,6 +12210,36 @@ void F4QuickViewSurfaceTests::activeMenuBarOwnsNavigationWithoutPopup()
     }
 }
 
+void F4QuickViewSurfaceTests::modalDialogDoesNotDarkenBackground()
+{
+    auto scene = shellScene({}, 0);
+    QuickViewFixture fixture(scene, false, true);
+    QVERIFY(fixture.window);
+    QTest::qWait(100);
+    const auto before = fixture.window->grabWindow();
+    QVERIFY(!before.isNull());
+    scene.insert("dialogs", QVariantList{QVariantMap{
+        {"id", "undimmed-dialog"}, {"kind", "dialog"},
+        {"title", "Dialog"}, {"modal", true},
+        {"x", 20}, {"y", 8}, {"w", 30}, {"h", 10}}});
+    fixture.shell.setScene(scene);
+    auto *root = fixture.window->contentItem();
+    QQuickItem *dialog = nullptr;
+    QTRY_VERIFY((dialog = visualItemWithObjectName(root, "semanticDialog-undimmed-dialog")));
+    QTest::qWait(100);
+    const QPoint point(fixture.window->width() - 20, fixture.window->height() / 2);
+    QVERIFY(!QRectF(dialog->mapToItem(root, QPointF()), dialog->size()).contains(point));
+    const auto after = fixture.window->grabWindow();
+    QVERIFY(!after.isNull());
+    const QPoint physical = (QPointF(point) * fixture.window->devicePixelRatio()).toPoint();
+    QCOMPARE(after.pixelColor(physical), before.pixelColor(physical));
+    fixture.shell.clearActions();
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, point);
+    QCoreApplication::processEvents();
+    QVERIFY(fixture.shell.actions.isEmpty());
+    after.save("D:/Code/f4-zoin/artifacts/modal-no-dimming-175.png");
+}
+
 void F4QuickViewSurfaceTests::commandMenusKeepPanelCursorWhileBlockingInput()
 {
     auto scene = shellScene({}, 0);
@@ -11450,6 +12497,131 @@ void F4QuickViewSurfaceTests::pluginPathIconFollowsPanelOnPhysicalGrid()
             capture.save("D:/Code/f4-zoin/.diagnostics/path-icon-"+name+"-175.png");
         }
     }
+}
+
+void F4QuickViewSurfaceTests::mediaInfoReportShowsAndScrollsAt175Percent()
+{
+    const QString path = qEnvironmentVariable("F4_MEDIAINFO_REPORT_SCENE");
+    if (path.isEmpty()) QSKIP("Generate the MediaInfo Go report scene first");
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    const auto node = QJsonDocument::fromJson(file.readAll()).toVariant().toMap();
+    const auto report = node.value("children").toList().first().toMap();
+    const QString prefix = "dialogWidget-" + report.value("id").toString();
+    auto scene = shellScene();
+    scene["dialogs"] = QVariantList{node};
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    fixture.window->resize(1300, 1000);
+    QTest::qWait(150);
+    auto *root = fixture.window->contentItem();
+    const qreal dpr = fixture.window->devicePixelRatio();
+    QCOMPARE(dpr, 1.75);
+    auto *list = visualItemWithObjectName(root, prefix + "ListView");
+    QVERIFY(list && list->isVisible());
+    QCOMPARE(list->property("count").toInt(), 105);
+    QVERIFY(list->property("contentHeight").toReal() > list->height());
+    auto *title = visualItemWithObjectName(root, prefix + "ListItemText-1");
+    QVERIFY(title);
+    QCOMPARE(title->property("text").toString(), QString("A&B <movie>"));
+    QCOMPARE(title->property("textFormat").toInt(), 0); // Text.PlainText
+    auto *field = visualItemWithObjectName(root, prefix + "ListItemFieldText-1");
+    auto *format = visualItemWithObjectName(root, prefix + "ListItemText-4");
+    auto *section = visualItemWithObjectName(root, prefix + "ListItemText-0");
+    QVERIFY(field && field->isVisible() && format && section);
+    QCOMPARE(field->property("text").toString(), QString("Title"));
+    QCOMPARE(field->opacity(), 0.75);
+    QCOMPARE(title->mapToItem(root, QPointF{}).x(), format->mapToItem(root, QPointF{}).x());
+    QVERIFY(title->mapToItem(root, QPointF{}).x() > field->mapToItem(root, QPointF{}).x());
+    QCOMPARE(section->mapToItem(root, QPointF{}).x(), field->mapToItem(root, QPointF{}).x());
+    auto *scrollBar = visualItemWithObjectName(root, prefix + "ListScrollBar");
+    QVERIFY(scrollBar && scrollBar->isVisible());
+    auto *dialog = visualItemWithObjectName(root, "semanticDialog-" + node.value("id").toString());
+    QVERIFY(dialog);
+    const auto checkLeaves = [&] {
+        int leaves = 0;
+        const auto inspect = [&](auto &&self, QQuickItem *item) -> void {
+            if (item->isVisible() && (item->property("renderType").isValid()
+                                     || item->property("sourceSize").isValid())) {
+                ++leaves;
+                QVERIFY(!item->objectName().isEmpty());
+                const auto origin = item->mapToItem(root, QPointF{});
+                const QString detail = QString("%1 physical=(%2,%3)").arg(item->objectName())
+                    .arg(origin.x()*dpr,0,'f',6).arg(origin.y()*dpr,0,'f',6);
+                QVERIFY2(qAbs(origin.x()*dpr-qRound(origin.x()*dpr))<.001, qPrintable(detail));
+                QVERIFY2(qAbs(origin.y()*dpr-qRound(origin.y()*dpr))<.001, qPrintable(detail));
+                QCOMPARE(item->mapToItem(root,QPointF(1,0))-origin,QPointF(1,0));
+                QCOMPARE(item->mapToItem(root,QPointF(0,1))-origin,QPointF(0,1));
+            }
+            for (auto *child : item->childItems()) self(self,child);
+        };
+        inspect(inspect,dialog);
+        QVERIFY(leaves >= 4);
+    };
+    checkLeaves();
+    QVERIFY(fixture.window->grabWindow().save(path + ".top.png"));
+    QVERIFY(QMetaObject::invokeMethod(list, "positionViewAtEnd"));
+    QTest::qWait(150);
+    // The first jump materializes the wrapped final row and updates the
+    // ListView's estimated content extent. Scroll again after measurement.
+    QVERIFY(QMetaObject::invokeMethod(list, "positionViewAtEnd"));
+    QTest::qWait(150);
+    auto *last = visualItemWithObjectName(root, prefix + "ListItemText-104");
+    QVERIFY(last && last->isVisible());
+    QCOMPARE(last->property("text").toString(), report.value("itemFields").toList().last().toMap().value("value").toString());
+    QVERIFY(last->property("lineCount").toInt() > 1);
+    auto *lastField = visualItemWithObjectName(root, prefix + "ListItemFieldText-104");
+    QVERIFY(lastField && lastField->isVisible());
+    QCOMPARE(lastField->property("text").toString(), QString("Field 99"));
+    const auto lastRect = last->mapRectToItem(list, QRectF(0, 0, last->width(), last->height()));
+    QVERIFY2(lastRect.top() >= -0.01 && lastRect.bottom() <= list->height() + 1 / dpr,
+             qPrintable(QString("last row top=%1 bottom=%2 viewport=%3").arg(lastRect.top()).arg(lastRect.bottom()).arg(list->height())));
+    checkLeaves();
+    QVERIFY(fixture.window->grabWindow().save(path + ".bottom.png"));
+
+    const QRectF before(dialog->x(), dialog->y(), dialog->width(), dialog->height());
+    QVERIFY(QMetaObject::invokeMethod(dialog, "resizeFrom", Q_ARG(QVariant, 10),
+        Q_ARG(QVariant, 80), Q_ARG(QVariant, 60), Q_ARG(QVariant, before)));
+    QVERIFY(QMetaObject::invokeMethod(dialog, "commitGeometry"));
+    const QSizeF resized(dialog->width(), dialog->height());
+    QVERIFY(resized != before.size());
+    const QString originalDialogName = dialog->objectName();
+    // A new persistence object proves the size survives host restarts.
+    WindowGeometryPersistence reader(nullptr, fixture.geometryDirectory.filePath("geometry.ini"));
+    QCOMPARE(reader.dialogSize("mediainfo.report").value("w").toReal(), resized.width());
+    QCOMPARE(reader.dialogSize("mediainfo.report").value("h").toReal(), resized.height());
+    QVERIFY(QMetaObject::invokeMethod(dialog, "moveTo", Q_ARG(QVariant, dialog->x()+10),
+                                     Q_ARG(QVariant, dialog->y()+10)));
+    QVERIFY(QMetaObject::invokeMethod(dialog, "commitGeometry"));
+    QVERIFY(QMetaObject::invokeMethod(dialog, "toggleMaximized"));
+    QTest::qWait(30);
+    QCOMPARE(reader.dialogSize("mediainfo.report").value("w").toReal(), resized.width());
+    QCOMPARE(reader.dialogSize("mediainfo.report").value("h").toReal(), resized.height());
+    QVERIFY(QMetaObject::invokeMethod(dialog, "toggleMaximized"));
+    QTest::qWait(30);
+    scene["dialogs"] = QVariantList{};
+    fixture.shell.setScene(scene);
+    QTRY_VERIFY(!visualItemWithObjectName(root, originalDialogName));
+    auto reopened = node;
+    reopened["id"] = "reopened-mediainfo";
+    reopened["title"] = "MediaInfo: another file";
+    scene["dialogs"] = QVariantList{reopened};
+    fixture.shell.setScene(scene);
+    QTRY_VERIFY(visualItemWithObjectName(root, "semanticDialog-reopened-mediainfo"));
+    dialog = visualItemWithObjectName(root, "semanticDialog-reopened-mediainfo");
+    QTRY_COMPARE(QSizeF(dialog->width(), dialog->height()), resized);
+    list = visualItemWithObjectName(root, prefix + "ListView");
+    QVERIFY(list);
+    QTest::qWait(150);
+    checkLeaves();
+    QVERIFY(fixture.window->grabWindow().save(path + ".restored.png"));
+    fixture.window->resize(640, 480);
+    QTest::qWait(150);
+    QVERIFY(dialog->width() <= dialog->property("availableWidth").toReal());
+    QVERIFY(dialog->height() <= dialog->property("availableHeight").toReal());
+    QCOMPARE(reader.dialogSize("mediainfo.report").value("w").toReal(), resized.width());
+    QCOMPARE(reader.dialogSize("mediainfo.report").value("h").toReal(), resized.height());
+    checkLeaves();
 }
 
 void F4QuickViewSurfaceTests::semanticTableDialog()

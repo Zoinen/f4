@@ -170,10 +170,18 @@ void OverlayStateStore::applyMenuState(const QVariantMap &state,
     // popup until some unrelated property changes.
     const QVariantMap menuBar = state.value(
         QStringLiteral("menuBar")).toMap();
-    if (menuBar != m_menuBar) {
-        m_menuBar = menuBar;
+    // Menu-bar actions address the active bar by category/item index. Its Go
+    // object ID changes between workspaces without changing that presentation.
+    // Keep delegates alive when only this routing identity changes.
+    QVariantMap previousBarPresentation = m_menuBar;
+    QVariantMap nextBarPresentation = menuBar;
+    previousBarPresentation.remove(QStringLiteral("id"));
+    nextBarPresentation.remove(QStringLiteral("id"));
+    const bool barPresentationChanged =
+        previousBarPresentation != nextBarPresentation;
+    m_menuBar = menuBar;
+    if (barPresentationChanged)
         emit menuBarChanged();
-    }
 
     const QVariantList menus = state.value(
         QStringLiteral("menus")).toList();

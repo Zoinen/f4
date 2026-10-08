@@ -166,8 +166,8 @@ Item {
             required property int index
             objectName: "panelExpandButton-" + index
             readonly property bool expanded: pair.hostWindow.widePanelSide() === index
-            readonly property bool revealed: hovered || pair.expandButtonsHovered
-                                             || pair.panelsSurface.splitterHovered
+            readonly property bool revealed: !pair.panelsSurface.splitterDragging
+                && (hovered || pair.expandButtonsHovered || pair.panelsSurface.splitterHovered)
             readonly property string iconName: (index === 0) !== expanded
                 ? "arrow-right-from-line" : "arrow-left-from-line"
             x: pair.hostWindow.nativePanelX(index)
@@ -187,6 +187,7 @@ Item {
             }
             focusPolicy: Qt.NoFocus
             visible: pair.hostWindow.panelPathBarsVisible
+                     && !pair.panelsSurface.splitterDragging
                      && pair.hostWindow.panelSideVisible(index)
                      && !pair.panelsSurface.altPanelForSide(index)
                      && pair.panelsSurface.hasPanelForSide(index)
@@ -240,4 +241,50 @@ Item {
         }
     }
 
+    Rectangle {
+        id: splitPercentageChip
+        objectName: "panelSplitPercentageChip"
+        parent: pair.panelsSurface.panelChromeLayer
+        visible: pair.panelsSurface.splitterDragging
+        readonly property real leftPercent: pair.hostWindow.width > 0
+            ? pair.hostWindow.nativePanelWidth(0) / pair.hostWindow.width * 100 : 50
+        readonly property real alignmentRevision:
+            x + y + width + height + pair.hostWindow.width + pair.hostWindow.height + pair.hostWindow.dpr
+        x: pair.hostWindow.snapPx(pair.hostWindow.nativePanelX(1) - width / 2)
+        y: pair.hostWindow.snapPx(pair.hostWindow.menuBarHeight
+            + (pair.hostWindow.panelPathRowHeight - height) / 2)
+        width: pair.hostWindow.snapPx(splitPercentageText.implicitWidth)
+            + pair.hostWindow.snapPx(20)
+        height: pair.hostWindow.snapPx(28)
+        radius: pair.hostWindow.snapPx(6)
+        color: pair.hostWindow.controlBg
+        border.color: pair.hostWindow.separatorActiveColor
+        border.width: pair.hostWindow.separatorWidth
+        z: 63
+        transform: Translate {
+            x: pair.hostWindow.dialogPixelOffsetX(splitPercentageChip, pair.hostWindow.contentItem)
+                + splitPercentageChip.alignmentRevision * 0
+            y: pair.hostWindow.dialogPixelOffsetY(splitPercentageChip, pair.hostWindow.contentItem)
+                + splitPercentageChip.alignmentRevision * 0
+        }
+        Text {
+            id: splitPercentageText
+            objectName: "panelSplitPercentageText"
+            text: qsTr("%1%").arg(splitPercentageChip.leftPercent.toFixed(2))
+            color: pair.hostWindow.chromeText
+            font.family: pair.hostWindow.uiFontFamily
+            font.pixelSize: pair.hostWindow.semanticTextFontPixelSize
+            renderType: pair.hostWindow.fontRenderType
+            width: pair.hostWindow.snapPx(implicitWidth)
+            height: pair.hostWindow.snapPx(implicitHeight)
+            x: pair.hostWindow.snapPx((parent.width - width) / 2)
+            y: pair.hostWindow.snapPx((parent.height - height) / 2)
+            transform: Translate {
+                x: pair.hostWindow.dialogPixelOffsetX(splitPercentageText, pair.hostWindow.contentItem)
+                    + splitPercentageChip.alignmentRevision * 0
+                y: pair.hostWindow.dialogPixelOffsetY(splitPercentageText, pair.hostWindow.contentItem)
+                    + splitPercentageChip.alignmentRevision * 0
+            }
+        }
+    }
 }

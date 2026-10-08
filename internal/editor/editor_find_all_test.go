@@ -209,6 +209,16 @@ func pumpUntilSearchDialog(t *testing.T) *vtui.Window {
 	return dlg
 }
 
+func pumpSearchSetup(t *testing.T) {
+	t.Helper()
+	select {
+	case task := <-vtui.FrameManager.TaskChan:
+		task()
+	case <-time.After(time.Second):
+		t.Fatal("search setup was not queued")
+	}
+}
+
 // openFindAllMenu runs FindAll and returns the occurrences frame once it
 // reaches the top of the frame stack.
 func openFindAllMenu(t *testing.T, ev *EditorView, pattern string, caseSensitive, useRegex, wholeWord bool) *findAllFrame {
@@ -450,11 +460,16 @@ func TestRunSearchWithProgress_CloseCancels(t *testing.T) {
 	scr.AllocBuf(80, 25)
 	vtui.FrameManager.Init(scr)
 
+	workspace := vtui.FrameManager.ActiveIdx
+	screenCount := len(vtui.FrameManager.Screens)
 	done := make(chan struct{})
 	dlg, _ := RunSearchWithProgress("x", func(ctx *vtui.TaskContext, _ *vtui.Window) {
 		<-ctx.Done()
 		close(done)
 	})
+	if vtui.FrameManager.ActiveIdx != workspace || len(vtui.FrameManager.Screens) != screenCount {
+		t.Fatal("search progress must stay in its originating workspace")
+	}
 
 	// Closing the dialog (what Esc does) must cancel the worker even though
 	// the Cancel button was never clicked.
@@ -466,8 +481,53 @@ func TestRunSearchWithProgress_CloseCancels(t *testing.T) {
 	}
 }
 
+func TestEditorFindAllBackgroundResultStaysInOwningTab(t *testing.T) {
+	ev := newFindAllEditor(t, "some content")
+	vtui.FrameManager.Push(ev)
+	owner := vtui.FrameManager.ActiveIdx
+	ev.FindAll("absent", false, false, false)
+	pumpSearchSetup(t)
+	if vtui.FrameManager.ActiveIdx != owner || len(vtui.FrameManager.Screens) != 1 {
+		t.Fatal("search progress left the editor workspace")
+	}
+	vtui.FrameManager.AddScreen(vtui.NewDesktop())
+	active := vtui.FrameManager.ActiveIdx
+	pumpFindAll(t, func() bool {
+		frames := vtui.FrameManager.GetActiveFrames(owner)
+		return frames[len(frames)-1].GetTitle() == i18n.Msg("Search.Title")
+	})
+	if vtui.FrameManager.ActiveIdx != active {
+		t.Fatal("background search result stole the active tab")
+	}
+	vtui.FrameManager.SwitchScreen(owner)
+	vtui.FrameManager.GetTopFrame().(*vtui.Window).Close()
+	vtui.FrameManager.Step(0)
+	if vtui.FrameManager.GetTopFrame() != ev {
+		t.Fatal("closing search result did not restore editor")
+	}
+}
+
+func TestEditorFindAllBackgroundMatchesStayInOwningTab(t *testing.T) {
+	ev := newFindAllEditor(t, "unit one\nunit two")
+	vtui.FrameManager.Push(ev)
+	owner := vtui.FrameManager.ActiveIdx
+	ev.FindAll("unit", false, false, false)
+	pumpSearchSetup(t)
+	vtui.FrameManager.AddScreen(vtui.NewDesktop())
+	active := vtui.FrameManager.ActiveIdx
+	pumpFindAll(t, func() bool {
+		frames := vtui.FrameManager.GetActiveFrames(owner)
+		_, ok := frames[len(frames)-1].(*findAllFrame)
+		return ok
+	})
+	if vtui.FrameManager.ActiveIdx != active {
+		t.Fatal("background matches stole the active tab")
+	}
+}
+
 func TestEditorFindAll_CancelSuppressesResults(t *testing.T) {
 	ev := newFindAllEditor(t, "unit unit unit")
+	ev.Pt, _ = stalledEditorBuffer(t, "unit unit unit")
 	ev.FindAll("unit", false, false, false)
 
 	dlg := pumpUntilSearchDialog(t)
@@ -483,6 +543,7 @@ func TestEditorFindAll_CancelSuppressesResults(t *testing.T) {
 
 func TestEditorFindAll_CancelSuppressesRegexError(t *testing.T) {
 	ev := newFindAllEditor(t, "some text")
+	ev.Pt, _ = stalledEditorBuffer(t, "some text")
 	ev.FindAll("(", false, true, false)
 
 	dlg := pumpUntilSearchDialog(t)
@@ -500,7 +561,7 @@ func TestEditorFindAll_EditSessionGuard(t *testing.T) {
 	ev := newFindAllEditor(t, "unit unit unit")
 	ev.FindAll("unit", false, false, false)
 
-	pumpUntilSearchDialog(t)
+	pumpSearchSetup(t)
 	// Simulate an edit landing while the scan runs: results must be dropped.
 	ev.editSession++
 

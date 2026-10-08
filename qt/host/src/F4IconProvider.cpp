@@ -182,6 +182,7 @@ const QSet<QString> &lucideIconNames()
         QStringLiteral("play"),
         QStringLiteral("play-filled"),
         QStringLiteral("refresh-cw"),
+        QStringLiteral("repeat"),
         QStringLiteral("rotate-ccw"),
         QStringLiteral("rows-3"),
         QStringLiteral("rows-4"),

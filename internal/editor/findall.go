@@ -596,7 +596,7 @@ func (ev *EditorView) FindAll(pattern string, caseSensitive, useRegex, wholeWord
 		pt := ev.Pt
 		readFromFile := ev.chunkReader()
 
-		RunSearchWithProgress(pattern, func(ctx *vtui.TaskContext, dlg *vtui.Window) {
+		RunSearchWithProgressOn(ev, pattern, func(ctx *vtui.TaskContext, dlg *vtui.Window) {
 			defer ev.guardMapping("collecting occurrences")()
 
 			// One span per matching line, plus the total occurrence count,
@@ -609,7 +609,7 @@ func (ev *EditorView) FindAll(pattern string, caseSensitive, useRegex, wholeWord
 				}
 				ctx.RunOnUI(func() {
 					dlg.Close()
-					vtui.ShowMessage(" Error ", "Failed to read file buffer.", []string{"&Ok"})
+					vtui.ShowMessageOn(ev, " Error ", "Failed to read file buffer.", []string{"&Ok"})
 				})
 				return
 			}
@@ -631,14 +631,14 @@ func (ev *EditorView) FindAll(pattern string, caseSensitive, useRegex, wholeWord
 					return
 				}
 				if err != nil {
-					vtui.ShowMessage(" Error ", fmt.Sprintf("Invalid regular expression:\n%v", err), []string{"&Ok"})
+					vtui.ShowMessageOn(ev, " Error ", fmt.Sprintf("Invalid regular expression:\n%v", err), []string{"&Ok"})
 					return
 				}
 				if ev.editSession != session {
 					return // buffer changed while scanning; offsets are stale
 				}
 				if len(spans) == 0 {
-					vtui.ShowMessage(i18n.Msg("Search.Title"), i18n.Msg("Search.NotFound"), []string{i18n.Msg("vtui.Ok")})
+					vtui.ShowMessageOn(ev, i18n.Msg("Search.Title"), i18n.Msg("Search.NotFound"), []string{i18n.Msg("vtui.Ok")})
 					return
 				}
 				ev.showFindAllMenu(pattern, spans, occurrences)
@@ -803,7 +803,8 @@ func (ev *EditorView) showFindAllMenu(pattern string, spans []matchSpan, occurre
 		return false
 	}
 
-	vtui.FrameManager.PushMenu(frame)
+	vtui.FrameManager.PushToFrameScreen(ev, frame)
+	vtui.FrameManager.DeclareSemanticMenuState()
 }
 
 // openFoundLinesEditor dumps the matching lines (the spans hold one match

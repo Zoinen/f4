@@ -6,9 +6,22 @@ set -euo pipefail
 # native build contexts of Qt's cross-build graph.  ARM64 additionally needs
 # the deliberately small native QML and shader-tool exports used by the target build.
 target_arch="${1:-}"
+qt_recipe_mode="${2:-}"
+target_os="${3:-}"
 python_command=python
 if ! command -v "${python_command}" >/dev/null 2>&1; then
     python_command=python3
+fi
+if [[ -z "${target_os}" ]]; then
+    case "$(uname -s)" in
+        Linux*) target_os=Linux ;;
+        Darwin*) target_os=Macos ;;
+        MINGW*|MSYS*|CYGWIN*) target_os=Windows ;;
+    esac
+fi
+if [[ "${qt_recipe_mode}" == "linux-audio" && "${target_os}" != "Linux" ]]; then
+    echo "error: linux-audio Qt recipe mode is valid only for Linux targets" >&2
+    exit 2
 fi
 
 # A portable ARM job needs both the ARM target Qt package and the native x64
@@ -30,16 +43,18 @@ try:
 except (KeyError, TypeError, json.JSONDecodeError):
     raise SystemExit(0)
 
-def has_arch(revision, arch):
+def has_arch(revision, arch, os_name):
     return any(
         package.get("info", {}).get("settings", {}).get("arch") == arch
+        and package.get("info", {}).get("settings", {}).get("os") == os_name
         for package in revision.get("packages", {}).values()
     )
 
 candidates = [
     (revision_id, revision)
     for revision_id, revision in revisions.items()
-    if has_arch(revision, "armv8") and has_arch(revision, "x86_64")
+    if has_arch(revision, "armv8", sys.argv[1])
+    and has_arch(revision, "x86_64", sys.argv[1])
 ]
 if candidates:
     revision_id, _ = max(
@@ -47,7 +62,7 @@ if candidates:
         key=lambda item: item[1].get("timestamp", 0),
     )
     print(revision_id)
-')"
+' "${target_os}")"
     if [[ -n "${reusable_qt_recipe_revision}" ]]; then
         conan download "qt/6.11.1#${reusable_qt_recipe_revision}" \
             --only-recipe --remote=f4-conan
@@ -75,8 +90,15 @@ if candidates:
             grep -Fq 'native_quick_tools_config = os.path.join' "${reusable_qt_recipe}/conanfile.py" && \
             grep -Fq 'add_executable(Qt6::svgtoqml IMPORTED GLOBAL)' "${reusable_qt_recipe}/conanfile.py" && \
             grep -Fq 'native_svgtoqml_name = "svgtoqml.exe"' "${reusable_qt_recipe}/conanfile.py"; then
-            echo "Reusing Qt recipe revision ${reusable_qt_recipe_revision} with complete ARM/native packages"
-            exit 0
+            if [[ "${qt_recipe_mode}" == "linux-audio" ]] && \
+                { ! grep -Fq 'tc.variables["FEATURE_pulseaudio"] = "ON"' "${reusable_qt_recipe}/conanfile.py" || \
+                  ! grep -Fq 'tc.variables["FEATURE_alsa"] = "OFF"' "${reusable_qt_recipe}/conanfile.py" || \
+                  grep -Fq 'OR QNX OR LINUX OR' "${reusable_qt_recipe}/conanfile.py"; }; then
+                echo "Ignoring Qt recipe revision ${reusable_qt_recipe_revision}; its Linux audio configuration is stale"
+            else
+                echo "Reusing Qt recipe revision ${reusable_qt_recipe_revision} with complete ARM/native packages"
+                exit 0
+            fi
         fi
         echo "Ignoring stale Qt recipe revision ${reusable_qt_recipe_revision}; applying the current ARM cross-build patch"
     fi
@@ -98,7 +120,11 @@ cp "${qt_recipe}/conanfile.py" \
     "${qt_recipe}/qtmodules6.11.1.conf" \
     "${qt_recipe_copy}/"
 
-"${python_command}" ci/patch-qt-dependencies.py "${qt_recipe_copy}/conanfile.py"
+qt_patch_args=()
+if [[ "${qt_recipe_mode}" == "linux-audio" ]]; then
+    qt_patch_args+=(--linux-audio)
+fi
+"${python_command}" ci/patch-qt-dependencies.py "${qt_patch_args[@]}" "${qt_recipe_copy}/conanfile.py"
 
 if [[ "${target_arch}" == "arm64" ]]; then
     "${python_command}" ci/patch-qt-qmltools-recipe.py "${qt_recipe_copy}/conanfile.py"
@@ -140,6 +166,16 @@ grep -Fq '#ifndef V4L2_PIX_FMT_BGRA32' \
     "${qt_recipe_copy}/conanfile.py"
 grep -Fq '"ffmpeg::avcodec"' \
     "${qt_recipe_copy}/conanfile.py"
+if [[ "${qt_recipe_mode}" == "linux-audio" ]]; then
+    grep -Fq 'tc.variables["FEATURE_pulseaudio"] = "ON"' \
+        "${qt_recipe_copy}/conanfile.py"
+    grep -Fq 'tc.variables["FEATURE_alsa"] = "OFF"' \
+        "${qt_recipe_copy}/conanfile.py"
+    if grep -Fq 'OR QNX OR LINUX OR' "${qt_recipe_copy}/conanfile.py"; then
+        echo "error: Linux audio recipe unexpectedly bypasses Qt's FFmpeg gate" >&2
+        exit 1
+    fi
+fi
 if [[ "${target_arch}" == "arm64" ]]; then
     grep -Fq 'QT_ADDITIONAL_PACKAGES_PREFIX_PATH' \
         "${qt_recipe_copy}/conanfile.py"

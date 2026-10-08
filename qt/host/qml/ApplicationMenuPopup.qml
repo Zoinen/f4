@@ -120,6 +120,8 @@ T.Menu {
     }
 
     Instantiator {
+        // Hidden menus need no delegates during a workspace activation.
+        active: applicationMenu.visible
         model: applicationMenu.hostWindow.menuBarModel.items || []
         delegate: T.Menu {
             id: category
