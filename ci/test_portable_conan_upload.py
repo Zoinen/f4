@@ -59,6 +59,30 @@ class ConanPublicationGateTests(unittest.TestCase):
             text=True,
         )
 
+    @patch.object(uploader.subprocess, "run")
+    def test_remote_listing_requests_all_recipe_and_package_revisions(
+        self, run
+    ) -> None:
+        run.return_value = Mock(stdout="{}")
+
+        uploader.list_all_recipe_package_revisions(
+            "qt/6.11.1", "f4-conan-upload"
+        )
+
+        run.assert_called_once_with(
+            [
+                "conan",
+                "list",
+                "qt/6.11.1#*:*#*",
+                "--remote",
+                "f4-conan-upload",
+                "--format=json",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
     def test_local_package_architectures_are_read_from_conan_json(self) -> None:
         data = package_index("Local Cache")
 

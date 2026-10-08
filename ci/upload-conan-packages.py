@@ -101,6 +101,11 @@ def list_recipe_packages(recipe_ref: str = "*/*:*#*", remote_name: str = "") -> 
     return json.loads(result.stdout)
 
 
+def list_all_recipe_package_revisions(recipe_ref: str, remote_name: str) -> dict:
+    """List every recipe and package revision for a reference on a remote."""
+    return list_recipe_packages(f"{recipe_ref}#*:*#*", remote_name)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -193,8 +198,8 @@ def main() -> int:
         read_remote_name = os.environ.get("F4_CONAN_REMOTE_NAME", "f4-conan")
         for verify_remote in dict.fromkeys((remote_name, read_remote_name)):
             for recipe_ref in required_refs:
-                remote_data = list_recipe_packages(
-                    f"{recipe_ref}:*#*", verify_remote
+                remote_data = list_all_recipe_package_revisions(
+                    recipe_ref, verify_remote
                 )
                 verify_uploaded_packages(
                     {recipe_ref: required_packages[recipe_ref]},
