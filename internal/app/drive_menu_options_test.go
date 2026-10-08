@@ -84,6 +84,11 @@ func TestDriveMenuOptions_DefaultsAndFormatting(t *testing.T) {
 
 func TestPanelsFrame_DriveMenu_F9OpensOptions(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	// With no tools registered there is nothing for the tools window to list
+	// (f4#918), so F9 goes straight to the drive options.
+	oldDrives := sysinfo.DriveRegistrySnapshot()
+	t.Cleanup(func() { sysinfo.SetDrives(oldDrives) })
+	sysinfo.SetDrives(nil)
 	pf := panel.NewPanelsFrame()
 	defer pf.Close()
 	pf.ResizeConsole(80, 25)
@@ -119,4 +124,46 @@ func TestPanelsFrame_DriveMenu_F9OpensOptions(t *testing.T) {
 	center.Show(vtui.NewSilentScreenBuf())
 	vtui.FrameManager.Pop()
 	menu.Close()
+}
+
+// With drive tools registered F9 opens their window (f4#918), whose Menu
+// options button leads to the drive options page of the Settings Center.
+func TestPanelsFrame_DriveMenu_F9OpensToolsWindowWithMenuOptionsButton(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	oldDrives := sysinfo.DriveRegistrySnapshot()
+	t.Cleanup(func() { sysinfo.SetDrives(oldDrives) })
+	sysinfo.SetDrives([]sysinfo.DriveEntry{{Name: "&A Alpha drive"}})
+	pf := panel.NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+
+	oldOptions := config.App.DriveMenuOptions
+	config.App.DriveMenuOptions = config.DefaultDriveMenuOptions
+	t.Cleanup(func() { config.App.DriveMenuOptions = oldOptions })
+
+	pf.ShowDriveMenu(0)
+	menu, ok := paneltest.DriveMenuFromFrame(vtui.FrameManager.GetTopFrame())
+	if !ok {
+		t.Fatalf("drive menu not opened: %T", vtui.FrameManager.GetTopFrame())
+	}
+	if !menu.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_F9}) {
+		t.Fatal("F9 was not consumed by the drive menu")
+	}
+	win, ok := vtui.FrameManager.GetTopFrame().(*vtui.Window)
+	if !ok {
+		t.Fatalf("F9 opened %T, want the drive tools window", vtui.FrameManager.GetTopFrame())
+	}
+	var button *vtui.Button
+	for _, item := range win.GetChildren() {
+		if b, ok := item.(*vtui.Button); ok {
+			button = b
+		}
+	}
+	if button == nil {
+		t.Fatal("the drive tools window has no Menu options button")
+	}
+	button.OnClick()
+	if center, ok := vtui.FrameManager.GetTopFrame().(*settings.Center); !ok || center.Category() != "drives" {
+		t.Fatalf("Menu options opened %T, want the drives page of the Settings Center", vtui.FrameManager.GetTopFrame())
+	}
 }

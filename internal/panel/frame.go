@@ -6497,7 +6497,7 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 			case vtinput.VK_F9:
 				// Far uses F9 for the drive-menu options dialog. Consume it
 				// here so the global F9 main-menu action never sees it.
-				pf.openDriveMenuOptions(panelIdx, menu)
+				pf.openDriveMenuTools(panelIdx, menu)
 				return true
 			case vtinput.VK_F4:
 				if onDriveBookmark {

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/unxed/f4/internal/plughost"
+	"github.com/unxed/f4/internal/sysinfo"
 	"github.com/unxed/f4/internal/testutil"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
@@ -157,5 +158,88 @@ func TestToolsOptionsWindowTogglesToolsAndKnowsWhichHaveSettings(t *testing.T) {
 	click(10)
 	if !strings.HasPrefix(list.Items[alpha], "[x] ") {
 		t.Errorf("a click on the name changed the row to %q", list.Items[alpha])
+	}
+}
+
+// F9 in the drive menu opens the same window for the drive tools: a check box
+// per tool, stored at once in the visibility file, and a button that leads to
+// the menu's own options (f4#918).
+func TestDriveToolsOptionsWindowTogglesToolsAndKeepsTheMenuOptions(t *testing.T) {
+	t.Cleanup(testutil.SwapFrameManager(t))
+	screen := vtui.NewSilentScreenBuf()
+	screen.AllocBuf(80, 25)
+	vtui.FrameManager.Init(screen)
+
+	oldDrives := sysinfo.DriveRegistrySnapshot()
+	t.Cleanup(func() { sysinfo.SetDrives(oldDrives) })
+	sysinfo.SetDrives([]sysinfo.DriveEntry{{Name: "&A Alpha drive"}, {Name: "&B Beta drive"}})
+
+	path := DriveToolsVisibilityFilePath()
+	before, readErr := os.ReadFile(path)
+	t.Cleanup(func() {
+		if readErr != nil {
+			_ = os.Remove(path)
+		} else {
+			_ = os.WriteFile(path, before, 0o600) // #nosec G703 -- the test's own profile file, put back.
+		}
+	})
+	if err := SaveDisabledDriveTools(path, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+	vtui.FrameManager.Push(pf)
+	menuOptions := 0
+	pf.ShowDriveToolsOptions(func() { menuOptions++ })
+
+	pumpTasks(t)
+	var win *vtui.Window
+	for _, frame := range vtui.FrameManager.Screens[vtui.FrameManager.ActiveIdx].Frames {
+		if w, ok := frame.(*vtui.Window); ok {
+			win = w
+		}
+	}
+	if win == nil {
+		t.Fatal("the drive tools window is not open")
+	}
+	var list *toolsOptionsList
+	var buttons []*vtui.Button
+	for _, item := range win.GetChildren() {
+		switch it := item.(type) {
+		case *toolsOptionsList:
+			list = it
+		case *vtui.Button:
+			buttons = append(buttons, it)
+		}
+	}
+	if list == nil || len(buttons) != 1 {
+		t.Fatalf("want the list and one button (menu options), got list=%v buttons=%d", list != nil, len(buttons))
+	}
+	if len(list.Items) != 2 || list.Items[0] != "[x] A Alpha drive" || list.Items[1] != "[x] B Beta drive" {
+		t.Fatalf("rows = %q, want both drive tools, markers stripped and checked", list.Items)
+	}
+
+	list.SetSelectPos(1)
+	list.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_SPACE, Char: ' '})
+	if list.Items[1] != "[ ] B Beta drive" {
+		t.Errorf("Space left the row as %q", list.Items[1])
+	}
+	disabled, err := LoadDisabledDriveTools(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(disabled) != 1 || disabled[0] != "&B Beta drive" {
+		t.Errorf("stored hidden tools = %q, want the beta drive under its full name", disabled)
+	}
+	list.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_SPACE, Char: ' '})
+	if disabled, _ = LoadDisabledDriveTools(path); len(disabled) != 0 {
+		t.Errorf("turning the tool back on left %q hidden", disabled)
+	}
+
+	buttons[0].OnClick()
+	if menuOptions != 1 {
+		t.Errorf("the menu options button ran %d times, want 1", menuOptions)
 	}
 }
