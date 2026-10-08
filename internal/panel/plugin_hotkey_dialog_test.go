@@ -135,8 +135,8 @@ func TestPluginHotkeyEditHoldsOneCharacter(t *testing.T) {
 }
 
 func TestMenuHeightLimit(t *testing.T) {
-	if pluginMenuBottomHint != " F4 Del " {
-		t.Fatalf("plugin menu hint = %q, want F4 and Del", pluginMenuBottomHint)
+	if pluginMenuBottomHint != " F4 Del F9 " {
+		t.Fatalf("plugin menu hint = %q, want F4, Del and F9", pluginMenuBottomHint)
 	}
 	if got := menuHeightLimit("", 50); got != 15 {
 		t.Errorf("a generic menu on 50 rows: %d, want 15", got)

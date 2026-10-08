@@ -2138,6 +2138,12 @@ SettingsCenter.Text.983ea5e98aa7f8f7eb08adef934361480984c4c8bb76201aa8fff64f6da0
 SettingsCenter.Text.ea93d6a262ecb87a9fa4d09edbd7654c046597936a8e235fc3949eb01775ff99=工具
 SettingsCenter.Text.ecb177517eae1ad7b9843b0a0419f4cb5d9f8cd8eb33b78f1db028a73ebf735c=选择要显示的已注册驱动器菜单工具。
 SettingsCenter.tool.Name.Description=已注册的驱动器菜单工具。
+SettingsCenter.Text.fcf11f73b06570d1a8dd703ea5456fa58584662b8ea6003a588dc503c5fa80a9=F11 菜单
+SettingsCenter.Text.8d78d31f5db14305d03e11a18a3c8844871deb801132e40bc699a37a58946c17=选择在插件菜单（F11）中显示哪些条目。隐藏的条目仍保留其快捷键。
+SettingsCenter.entry.Name.Description=F11 菜单的条目。
+SettingsCenter.entry.Name.Label=条目
+SettingsCenter.entry.Enabled.Description=在 F11 菜单中显示此条目。
+SettingsCenter.entry.Enabled.Label=显示
 SettingsCenter.tool.Name.Label=工具
 SettingsCenter.tool.Enabled.Description=在驱动器菜单中显示此工具。
 SettingsCenter.tool.Enabled.Label=已启用

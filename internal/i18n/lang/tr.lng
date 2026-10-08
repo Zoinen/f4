@@ -2217,6 +2217,12 @@ SettingsCenter.Text.983ea5e98aa7f8f7eb08adef934361480984c4c8bb76201aa8fff64f6da0
 SettingsCenter.Text.ea93d6a262ecb87a9fa4d09edbd7654c046597936a8e235fc3949eb01775ff99=Araçlar
 SettingsCenter.Text.ecb177517eae1ad7b9843b0a0419f4cb5d9f8cd8eb33b78f1db028a73ebf735c=Hangi kayıtlı sürücü menüsü araçlarının gösterileceğini seçin.
 SettingsCenter.tool.Name.Description=Kayıtlı sürücü menüsü aracı.
+SettingsCenter.Text.fcf11f73b06570d1a8dd703ea5456fa58584662b8ea6003a588dc503c5fa80a9=F11 menüsü
+SettingsCenter.Text.8d78d31f5db14305d03e11a18a3c8844871deb801132e40bc699a37a58946c17=Eklenti menüsünde (F11) hangi girdilerin gösterileceğini seçin. Gizlenen bir girdi kısayol tuşunu korur.
+SettingsCenter.entry.Name.Description=F11 menüsünün bir girdisi.
+SettingsCenter.entry.Name.Label=Girdi
+SettingsCenter.entry.Enabled.Description=Bu girdiyi F11 menüsünde göster.
+SettingsCenter.entry.Enabled.Label=Gösteriliyor
 SettingsCenter.tool.Name.Label=Araç
 SettingsCenter.tool.Enabled.Description=Bu aracı sürücü menüsünde göster.
 SettingsCenter.tool.Enabled.Label=Etkin

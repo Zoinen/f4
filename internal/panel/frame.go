@@ -6039,7 +6039,28 @@ func (pf *PanelsFrame) ShowPluginMenu() {
 		vtui.ShowMessage(" Plugins ", "No plugins registered for F11 menu.", []string{"&Ok"})
 		return
 	}
-	entries := buildPluginMenuEntries(items, commands)
+	allEntries := buildPluginMenuEntries(items, commands)
+	// Entries the user hid in the settings (F9) are left out of the menu but
+	// keep their hot keys and their place in the command palette. origin maps
+	// a visible row back to its place among all the entries.
+	hidden := hiddenPluginMenuEntries()
+	entries := make([]PluginMenuEntry, 0, len(allEntries))
+	origin := make([]int, 0, len(allEntries))
+	for i, entry := range allEntries {
+		if !hidden[entry.ActionName] {
+			entries = append(entries, entry)
+			origin = append(origin, i)
+		}
+	}
+	if len(entries) == 0 {
+		// Everything is hidden: the only useful thing left is the page that
+		// brings the entries back.
+		if OpenSettingsCategoryOnly == nil || !OpenSettingsCategoryOnly("plugins") {
+			vtui.ShowMessage(" Plugins ", "Every entry of the F11 menu is hidden in the settings.", []string{"&Ok"})
+		}
+		return
+	}
+	RefreshPluginMenuEntries(entries)
 	shortcutWidth := pluginMenuShortcutWidth(entries)
 	menuItems := make([]vtui.MenuItem, 0, len(entries))
 	for _, entry := range entries {
@@ -6075,6 +6096,14 @@ func (pf *PanelsFrame) ShowPluginMenu() {
 		}
 		idx := menu.SelectPos
 		switch e.VirtualKeyCode {
+		case vtinput.VK_F9:
+			// As in the drive menu, F9 opens the settings page for what this
+			// menu lists: here, which entries it shows.
+			if OpenSettingsCategoryOnly != nil {
+				menu.Close()
+				OpenSettingsCategoryOnly("plugins")
+			}
+			return true
 		case vtinput.VK_F4:
 			if idx >= 0 && idx < len(entries) {
 				assignPluginHotkey(entries[idx].ActionName, entries[idx].Label, func() { refresh(menu) })
@@ -6125,7 +6154,11 @@ func (pf *PanelsFrame) ShowPluginMenu() {
 			return true
 		}
 		return false
-	}, func(idx int) {
+	}, func(row int) {
+		if row < 0 || row >= len(origin) {
+			return
+		}
+		idx := origin[row]
 		switch {
 		case idx >= 0 && idx < len(items):
 			handler := items[idx].Handler
