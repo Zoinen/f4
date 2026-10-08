@@ -62,6 +62,32 @@ _FFMPEG_PACKAGE_INFO_PATCH = (
 )
 _FFMPEG_PACKAGE_INFO_MARKER = '"ffmpeg::avcodec"'
 _FFMPEG_SOURCE_ANCHOR = '        apply_conandata_patches(self)\n'
+_FFMPEG_LINUX_VIDEO_ONLY_NOTE = '''        # Qt normally restricts FFmpeg on Linux to builds that also have
+        # PulseAudio or PipeWire. f4 uses FFmpeg for local video
+        # decoding/thumbnails and intentionally has neither runtime audio
+        # dependency, so make the FFmpeg backend a valid Linux Multimedia
+        # backend in this patched static recipe.
+'''
+_FFMPEG_LINUX_AUDIO_NOTE = '''        # Keep Qt Multimedia's Linux FFmpeg gate intact. The portable Linux
+        # configuration enables PulseAudio below, so Qt only enables FFmpeg
+        # when an audio output backend is available too.
+'''
+_FFMPEG_SOURCE_NEUTRAL_NOTE = '''        # Conan deliberately forbids self.options access in source().
+        # These source-level compatibility patches are harmless when
+        # with_ffmpeg is false: Qt still controls whether the backend is
+        # configured from the option, while the recipe can safely be exported
+        # for every platform and package configuration.
+'''
+_FFMPEG_LINUX_VIDEO_ONLY_RELAXATION = '''        replace_in_file(
+            self,
+            qtmultimedia_configure,
+            "AND (APPLE OR WIN32 OR ANDROID OR QNX OR "
+            "QT_FEATURE_pulseaudio OR QT_FEATURE_pipewire)",
+            "AND (APPLE OR WIN32 OR ANDROID OR QNX OR LINUX OR "
+            "QT_FEATURE_pulseaudio OR QT_FEATURE_pipewire)",
+            strict=True,
+        )
+'''
 _FFMPEG_MODULE_PATCH = (
     '        ffmpeg_find_module = os.path.join(\n'
     '            self.source_folder, "qtmultimedia", "cmake", "FindFFmpeg.cmake"\n'
@@ -175,6 +201,21 @@ _FFMPEG_SOURCE_PATCH = _FFMPEG_SOURCE_ANCHOR + (
     '        )\n'
 )
 _FFMPEG_SOURCE_MARKER = 'qtmultimedia_configure = os.path.join'
+_FFMPEG_LINUX_AUDIO_SOURCE_PATCH = (
+    _FFMPEG_SOURCE_PATCH
+    .replace(
+        '''        # Conan deliberately forbids self.options access in source().
+        # This source-level relaxation is harmless when with_ffmpeg is
+        # false: Qt still controls whether the backend is configured from
+        # the option, while the patched recipe can safely be exported for
+        # every platform and package configuration.
+''',
+        _FFMPEG_SOURCE_NEUTRAL_NOTE,
+    )
+    .replace(_FFMPEG_LINUX_VIDEO_ONLY_NOTE, _FFMPEG_LINUX_AUDIO_NOTE)
+    .replace(_FFMPEG_LINUX_VIDEO_ONLY_RELAXATION, '')
+)
+_FFMPEG_LINUX_AUDIO_RELAXATION_MARKER = 'OR QNX OR LINUX OR'
 _FFMPEG_MODULE_SOURCE_MARKER = (
     'qt_find_package(FFmpeg MODULE OPTIONAL_COMPONENTS'
 )
@@ -222,6 +263,22 @@ _ADDITIONAL_HOST_PATH_MARKER = 'tc.cache_variables["QT_ADDITIONAL_PACKAGES_PREFI
 _QUICK_TOOLS_DIR_MARKER = 'tc.cache_variables["Qt6QuickTools_DIR"]'
 _NATIVE_QUICK_TOOLS_CONFIG_MARKER = 'native_quick_tools_config = os.path.join'
 _NATIVE_SVGTOQML_MARKER = 'native_svgtoqml_name = "svgtoqml.exe"'
+
+_PULSEAUDIO_VALIDATION_ANCHOR = '''        if self.options.get_safe("with_pulseaudio", False) or self.options.get_safe("with_libalsa", False):
+            raise ConanInvalidConfiguration("alsa and pulseaudio are not supported (QTBUG-95116), please disable them.")
+'''
+_PULSEAUDIO_VALIDATION_PATCH = '''        if self.options.get_safe("with_libalsa", False):
+            raise ConanInvalidConfiguration("The portable Linux Qt package uses PulseAudio; ALSA must remain disabled.")
+'''
+_PULSEAUDIO_VALIDATION_MARKER = 'if self.options.get_safe("with_libalsa", False):'
+_PULSEAUDIO_GENERATE_ANCHOR = '        tc.variables["FEATURE_pkg_config"] = "ON"\n'
+_PULSEAUDIO_GENERATE_PATCH = _PULSEAUDIO_GENERATE_ANCHOR + (
+    '        if self.options.get_safe("with_pulseaudio", False):\n'
+    '            tc.variables["FEATURE_pulseaudio"] = "ON"\n'
+    '            tc.variables["FEATURE_alsa"] = "OFF"\n'
+)
+_PULSEAUDIO_FEATURE_MARKER = 'tc.variables["FEATURE_pulseaudio"] = "ON"'
+_ALSA_FEATURE_MARKER = 'tc.variables["FEATURE_alsa"] = "OFF"'
 _QUICK_PACKAGE_GUARD_ANCHOR = "        cmake.install()\n"
 _QUICK_PACKAGE_GUARD_MARKER = "missing_quick_libraries = []"
 _QUICK_PACKAGE_GUARD = '''        if cross_building(self) and self.options.qtdeclarative and self.options.qtshadertools and self.options.gui:
@@ -262,7 +319,25 @@ def _patch_freetype(text: str) -> str:
     return text.replace(_ANCHOR, _PATCH)
 
 
-def _patch_ffmpeg(text: str) -> str:
+def _ffmpeg_source_patch(linux_audio: bool) -> str:
+    if not linux_audio:
+        return _FFMPEG_SOURCE_PATCH
+    if (
+        _FFMPEG_LINUX_VIDEO_ONLY_NOTE not in _FFMPEG_SOURCE_PATCH
+        or _FFMPEG_LINUX_VIDEO_ONLY_RELAXATION not in _FFMPEG_SOURCE_PATCH
+    ):
+        raise SystemExit("internal error: Linux video-only Qt patch is incomplete")
+    patched = _FFMPEG_LINUX_AUDIO_SOURCE_PATCH
+    if (
+        _FFMPEG_LINUX_VIDEO_ONLY_RELAXATION in patched
+        or _FFMPEG_LINUX_VIDEO_ONLY_NOTE in patched
+        or _FFMPEG_LINUX_AUDIO_RELAXATION_MARKER in patched
+    ):
+        raise SystemExit("internal error: audio-enabled Qt patch relaxes the Linux FFmpeg gate")
+    return patched
+
+
+def _patch_ffmpeg(text: str, linux_audio: bool = False) -> str:
     if _FFMPEG_OPTION_MARKER not in text:
         if text.count(_FFMPEG_OPTION_ANCHOR) != 1:
             raise SystemExit(
@@ -292,8 +367,24 @@ def _patch_ffmpeg(text: str) -> str:
             raise SystemExit(
                 "unexpected Qt recipe: Qt source patch anchor is absent or ambiguous"
             )
-        text = text.replace(_FFMPEG_SOURCE_ANCHOR, _FFMPEG_SOURCE_PATCH)
-    elif (
+        text = text.replace(
+            _FFMPEG_SOURCE_ANCHOR,
+            _ffmpeg_source_patch(linux_audio),
+        )
+    elif linux_audio and _FFMPEG_LINUX_VIDEO_ONLY_RELAXATION in text:
+        if text.count(_FFMPEG_LINUX_VIDEO_ONLY_NOTE) != 1:
+            raise SystemExit(
+                "unexpected Qt recipe: legacy Linux FFmpeg relaxation is ambiguous"
+            )
+        text = text.replace(
+            _FFMPEG_LINUX_VIDEO_ONLY_NOTE,
+            _FFMPEG_LINUX_AUDIO_NOTE,
+        ).replace(_FFMPEG_LINUX_VIDEO_ONLY_RELAXATION, "")
+    elif linux_audio and _FFMPEG_LINUX_AUDIO_NOTE not in text:
+        raise SystemExit(
+            "unexpected Qt recipe: existing Linux multimedia patch does not require audio"
+        )
+    if (
         _FFMPEG_MODULE_SOURCE_MARKER not in text
         or text.count(_FFMPEG_VAAPI_MODULE_MARKER) < 2
         or _FFMPEG_CONFIG_SOURCE_MARKER not in text
@@ -313,6 +404,44 @@ def _patch_ffmpeg(text: str) -> str:
         text = text.replace(
             _FFMPEG_PACKAGE_INFO_ANCHOR,
             _FFMPEG_PACKAGE_INFO_PATCH,
+        )
+    return text
+
+
+def _patch_linux_audio(text: str) -> str:
+    if _PULSEAUDIO_VALIDATION_MARKER not in text:
+        if text.count(_PULSEAUDIO_VALIDATION_ANCHOR) != 1:
+            raise SystemExit(
+                "unexpected Qt recipe: PulseAudio validation guard is absent or ambiguous"
+            )
+        text = text.replace(
+            _PULSEAUDIO_VALIDATION_ANCHOR,
+            _PULSEAUDIO_VALIDATION_PATCH,
+        )
+    elif _PULSEAUDIO_VALIDATION_PATCH not in text:
+        raise SystemExit(
+            "unexpected Qt recipe: PulseAudio validation guard has conflicting content"
+        )
+
+    has_pulseaudio_feature = _PULSEAUDIO_FEATURE_MARKER in text
+    has_alsa_feature = _ALSA_FEATURE_MARKER in text
+    if not has_pulseaudio_feature and not has_alsa_feature:
+        if text.count(_PULSEAUDIO_GENERATE_ANCHOR) != 1:
+            raise SystemExit(
+                "unexpected Qt recipe: PulseAudio CMake feature anchor is absent or ambiguous"
+            )
+        text = text.replace(
+            _PULSEAUDIO_GENERATE_ANCHOR,
+            _PULSEAUDIO_GENERATE_PATCH,
+        )
+    elif has_pulseaudio_feature != has_alsa_feature:
+        raise SystemExit(
+            "unexpected Qt recipe: PulseAudio and ALSA CMake feature selection is incomplete"
+        )
+
+    if _FFMPEG_LINUX_AUDIO_RELAXATION_MARKER in text:
+        raise SystemExit(
+            "unexpected Qt recipe: audio-enabled Linux builds must preserve Qt's FFmpeg gate"
         )
     return text
 
@@ -352,12 +481,21 @@ def _patch_quick_package_guard(text: str) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("recipe", type=Path)
+    parser.add_argument(
+        "--linux-audio",
+        action="store_true",
+        help="require the Linux PulseAudio backend for Qt Multimedia",
+    )
     args = parser.parse_args()
 
     text = args.recipe.read_text(encoding="utf-8")
     patched = _patch_quick_package_guard(
-        _patch_host_path(_patch_ffmpeg(_patch_freetype(text)))
+        _patch_host_path(
+            _patch_ffmpeg(_patch_freetype(text), linux_audio=args.linux_audio)
+        )
     )
+    if args.linux_audio:
+        patched = _patch_linux_audio(patched)
     if patched != text:
         args.recipe.write_text(patched, encoding="utf-8")
 

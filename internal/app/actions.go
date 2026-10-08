@@ -2035,6 +2035,12 @@ func ActionExecute(pf *panel.PanelsFrame, v vfs.VFS, dir, name, path string) {
 	if tryPlayInPlayerPanel(pf, v, path) {
 		return
 	}
+	// Windows remote helpers synthesize execute bits for ordinary media.
+	// Enter on a movie belongs to the desktop displaying f4, not that shell.
+	if _, local := v.(*vfs.OSVFS); !local && media.IsVideoFile(path) {
+		panel.OpenRemoteAssociatedFile(pf, v, path)
+		return
+	}
 	if _, isDisks := v.(*vfs.DisksVFS); isDisks {
 		ActionOpenEditor(pf, v, path)
 		return
@@ -2062,6 +2068,13 @@ func ActionExecute(pf *panel.PanelsFrame, v vfs.VFS, dir, name, path string) {
 				_, isOS := v.(*vfs.OSVFS)
 				_, isPty := v.(vfs.PtyProvider)
 				isWindowsShell := terminal.WindowsShellSyntax() && isOS
+				integration, integrated := v.(vfs.PtyShellIntegration)
+				if info, ok := v.(vfs.CommandRunnerInfoProvider); ok {
+					isWindowsShell = info.CommandRunnerInfo().Dialect == vfs.CommandDialectCmd
+				}
+				// POSIX peers still need the managed C/D wrapper: their shell
+				// integration does not install Windows-style prompt markers.
+				integrated = integrated && isWindowsShell
 
 				if !isWindowsShell {
 					historyCmd = "./" + historyCmd
@@ -2089,7 +2102,17 @@ func ActionExecute(pf *panel.PanelsFrame, v vfs.VFS, dir, name, path string) {
 					cmd := name
 					var cmdToWire string
 
-					if isWindowsShell {
+					if integrated {
+						command := "./" + panel.ShellSingleQuote(name)
+						if isWindowsShell {
+							command = `".\` + name + `"`
+						}
+						cmdToWire = string(integration.PtyRunCommand(actualDir, command))
+						if cmdToWire == "" {
+							vtui.DebugLog("[FIX:remote-enter] peer declined file launch")
+							return
+						}
+					} else if isWindowsShell {
 						// Combine directory sync with the command to allow excision
 						if actualDir != "" {
 							cmdToWire = fmt.Sprintf("cd /d \"%s\" & %s\r", actualDir, historyCmd)
@@ -2113,25 +2136,26 @@ func ActionExecute(pf *panel.PanelsFrame, v vfs.VFS, dir, name, path string) {
 					if isWindowsShell {
 						cleanCmd = cmd
 					}
-					if !isWindowsShell {
+					if integrated || !isWindowsShell {
 						pf.TermView.PrintCleanCommand(cleanCmd)
 					}
 
 					// Only the Unix template above wraps the command in an
 					// OSC 133 C/D pair; cmd.exe reports completion through
 					// the prompt marker instead.
-					if isWindowsShell {
+					if integrated || isWindowsShell {
 						pf.BeginPromptDrivenExecution()
 					} else {
 						pf.BeginManagedExecution()
 					}
 					pf.ReturnToPanels = true
 
-					if !isWindowsShell {
+					if !integrated && !isWindowsShell {
 						pf.TermView.SetMuted(true)
 					}
+					vtui.DebugLog("[FIX:remote-enter] integrated=%v windows=%v muted=%v", integrated, isWindowsShell, pf.TermView.Muted)
 					_, _ = pf.WritePTY(activePty, []byte(cmdToWire))
-					if isWindowsShell {
+					if isWindowsShell && !integrated {
 						if cmdline.IsBatchCommand(historyCmd) {
 							pf.CmdSession.NoteBatchExecution()
 						}

@@ -328,6 +328,7 @@ Item {
                                 surfaces.galleryController.viewerSide))
                 if (item.hostWindow !== undefined) item.hostWindow = surfaces.hostWindow
                 if (item.fullViewProgress !== undefined) item.fullViewProgress = Qt.binding(() => galleryViewerLayer.fullProgress)
+                if (item.presentationMoving !== undefined) item.presentationMoving = Qt.binding(() => presentationAnimation.running)
                 item.bridge = surfaces.galleryController
                 item.keySink = surfaces.focusTarget
                 item.theme = surfaces.galleryTheme

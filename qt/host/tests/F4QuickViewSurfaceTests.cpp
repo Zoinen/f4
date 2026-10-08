@@ -46,6 +46,7 @@
 #include <QSet>
 #include <QSettings>
 #include <QStyleHints>
+#include <QSurfaceFormat>
 #include <QStringList>
 #include <QSvgRenderer>
 #include <QUrl>
@@ -1641,6 +1642,22 @@ void F4QuickViewSurfaceTests::galleryVideoControlsStayOnPhysicalPixelGridAt175Pe
 {
     QQmlEngine engine;
     engine.addImportPath(QStringLiteral(":"));
+    ZoinGallery::RuntimeOptions options;
+    options.enableVideoPlayback = true;
+    auto *runtime = ZoinGallery::GalleryRuntime::install(&engine, options);
+    QVERIFY(runtime);
+    const auto shutdown = qScopeGuard([&] { runtime->shutdown(); });
+    auto *session = runtime->createExternalSession("video-flight-pixel-grid");
+    QVERIFY(session);
+    QTRY_VERIFY_WITH_TIMEOUT(session->videoPlaybackAvailable(), 5000);
+    QVERIFY(session->applyExternalCatalog({QVariantMap{
+        {"entryId", "video"}, {"index", 0}, {"name", "video.mp4"},
+        {"localPath", "Z:/missing/video.mp4"}, {"isDir", false},
+        {"isImage", true}, {"thumbnailKind", "video"}
+    }}, 1));
+    QVERIFY(session->applyExternalState("video", 0, {}, 1));
+    session->setViewerOpen(true);
+    engine.rootContext()->setContextProperty("testVideoSession", session);
     TestVideoPlaybackController controller;
     F4IconSet icons(QStringLiteral("test-icons"));
     engine.addImageProvider(QStringLiteral("test-icons"), new F4IconProvider());
@@ -1653,14 +1670,17 @@ void F4QuickViewSurfaceTests::galleryVideoControlsStayOnPhysicalPixelGridAt175Pe
         import QtQuick
         import ZoinGallery 1.0
         Item {
-            objectName: "galleryVideoPixelGridTestRoot"
+            objectName: "videoPixelGridTestRoot"
             width: 780
             height: 420
-            GalleryVideoPlaybackSurface {
+            GalleryViewer {
+                objectName: "videoPixelGridViewer"
                 anchors.fill: parent
                 devicePixelRatio: 1.75
-                controller: testPlayback
-                iconSources: ({
+                session: testVideoSession
+                managedPresentation: true
+                videoPlaybackMode: "manual"
+                videoIconSources: ({
                     play: testIcons.rasterizedLucideSource(
                         "play", 18, 1.75, Qt.rgba(0.95, 0.96, 0.97, 1)),
                     pause: testIcons.rasterizedLucideSource(
@@ -1685,9 +1705,21 @@ void F4QuickViewSurfaceTests::galleryVideoControlsStayOnPhysicalPixelGridAt175Pe
     window.resize(780, 420);
     root->setParentItem(window.contentItem());
     window.show();
-    QTest::qWait(150);
+    QTRY_VERIFY(window.isExposed());
     if (qAbs(window.devicePixelRatio() - qreal(1.75)) >= 0.001)
         QSKIP("Run this regression with QT_SCALE_FACTOR=1.75");
+    auto *viewer = root->findChild<QQuickItem *>("videoPixelGridViewer");
+    QVERIFY(viewer);
+    auto *viewport = viewer->property("flickableArea").value<QQuickItem *>();
+    QVERIFY(viewport);
+    QQuickItem *videoSurface = nullptr;
+    QTRY_VERIFY((videoSurface = root->findChild<QQuickItem *>("galleryVideoPlaybackSurface")));
+    // Inject deterministic status/time into the actual viewer overlay, not a
+    // standalone control tree that would miss inherited flight transforms.
+    videoSurface->setProperty("controller", QVariant::fromValue<QObject *>(&controller));
+    viewport->setProperty("originalSize", QSizeF(1200 / 1.75, 800 / 1.75));
+    QVERIFY(QMetaObject::invokeMethod(viewport, "zoomToFit", Q_ARG(QVariant, true)));
+    QTest::qWait(100);
 
     QQuickItem *playIcon = visualItemWithObjectName(
         window.contentItem(), QStringLiteral("galleryVideoPlayButtonIcon"));
@@ -1709,6 +1741,7 @@ void F4QuickViewSurfaceTests::galleryVideoControlsStayOnPhysicalPixelGridAt175Pe
                  iconSource(QStringLiteral("pause")));
     QTRY_COMPARE(muteIcon->property("source").toUrl(),
                  iconSource(QStringLiteral("volume-2")));
+    QTest::qWait(100);
 
     QQuickItem *loopButton = visualItemWithObjectName(
         window.contentItem(), QStringLiteral("galleryVideoLoopButton"));
@@ -1740,7 +1773,12 @@ void F4QuickViewSurfaceTests::galleryVideoControlsStayOnPhysicalPixelGridAt175Pe
              qPrintable(QStringLiteral("Only %1 named video surface items were visible")
                             .arg(items.size())));
     const qreal dpr = window.devicePixelRatio();
-    for (QQuickItem *item : items) {
+    const auto checkGrid = [&](bool leavesOnly = false) {
+      for (QQuickItem *item : items) {
+        if (leavesOnly && item != playIcon && item != muteIcon
+                && item->objectName() != QStringLiteral("galleryVideoTimeText")
+                && item->objectName() != QStringLiteral("galleryVideoStatusText"))
+            continue;
         const QPointF origin = item->mapToItem(window.contentItem(), QPointF{});
         const QString detail = QStringLiteral("%1 physical=(%2,%3) size=(%4,%5)")
             .arg(item->objectName())
@@ -1748,20 +1786,58 @@ void F4QuickViewSurfaceTests::galleryVideoControlsStayOnPhysicalPixelGridAt175Pe
             .arg(origin.y() * dpr, 0, 'f', 6)
             .arg(item->width() * dpr, 0, 'f', 6)
             .arg(item->height() * dpr, 0, 'f', 6);
+        QString ancestry;
+        for (QQuickItem *parent = item; parent; parent = parent->parentItem()) {
+            ancestry += QStringLiteral("\n%1 local=(%2,%3) size=(%4,%5) dpr=%6")
+                .arg(parent->objectName()).arg(parent->x()).arg(parent->y())
+                .arg(parent->width()).arg(parent->height())
+                .arg(parent->property("devicePixelRatio").toReal());
+        }
         for (qreal coordinate : {origin.x() * dpr, origin.y() * dpr,
                                  item->width() * dpr, item->height() * dpr}) {
             QVERIFY2(qAbs(coordinate - qRound(coordinate)) < 0.001,
-                     qPrintable(detail));
+                     qPrintable(detail + ancestry));
         }
         QCOMPARE(item->mapToItem(window.contentItem(), QPointF(1, 0)) - origin,
                  QPointF(1, 0));
         QCOMPARE(item->mapToItem(window.contentItem(), QPointF(0, 1)) - origin,
                  QPointF(0, 1));
+      }
+    };
+    checkGrid();
+
+    root->setPosition(QPointF(0.3, 0.2));
+    checkGrid(true);
+    root->setPosition(QPointF(0, 0));
+    checkGrid();
+
+    const QImage beforeFlight = window.grabWindow();
+    QVERIFY(!beforeFlight.isNull());
+    viewer->setProperty("transitionSourceGeometry", QRectF(36, 54, 140, 90));
+    viewer->setProperty("transitionHasGeometry", true);
+    viewer->setProperty("externalPresentationMoving", true);
+    for (qreal progress : {0.85, 0.65, 0.25, 0.65, 0.85}) {
+        viewer->setProperty("transitionProgress", progress);
+        QVERIFY(viewport->scale() < 1);
+        QCOMPARE(videoSurface->width(), qreal(780));
+        QCOMPARE(videoSurface->height(), qreal(420));
+        checkGrid();
     }
+    viewer->setProperty("transitionProgress", 1.0);
+    viewer->setProperty("transitionHasGeometry", false);
+    viewer->setProperty("externalPresentationMoving", false);
+    QCOMPARE(viewport->scale(), qreal(1));
+    checkGrid();
 
     QTest::qWait(100);
     const QImage capture = window.grabWindow();
     QVERIFY(!capture.isNull());
+    const QString capturePath = qEnvironmentVariable(
+        "F4_GALLERY_VIDEO_CONTROLS_CAPTURE");
+    if (!capturePath.isEmpty()) {
+        QVERIFY(beforeFlight.save(capturePath + QStringLiteral(".before.png")));
+        QVERIFY(capture.save(capturePath));
+    }
     for (const QString &name : {QStringLiteral("galleryVideoPlayButtonIcon"),
                                 QStringLiteral("galleryVideoTimeText"),
                                 QStringLiteral("galleryVideoLoopButtonIcon"),
@@ -1775,6 +1851,8 @@ void F4QuickViewSurfaceTests::galleryVideoControlsStayOnPhysicalPixelGridAt175Pe
                          qRound(item->height() * dpr));
         QVERIFY2(capture.rect().contains(rect), qPrintable(name));
         const QImage leaf = capture.copy(rect);
+        QVERIFY2(exactImageDifference(leaf, beforeFlight.copy(rect)).isEmpty(),
+                 qPrintable(name + QStringLiteral(" changed after flight reversal")));
         QSet<QRgb> colors;
         for (int y = 0; y < leaf.height(); ++y) {
             for (int x = 0; x < leaf.width(); ++x)
@@ -1784,10 +1862,6 @@ void F4QuickViewSurfaceTests::galleryVideoControlsStayOnPhysicalPixelGridAt175Pe
                  qPrintable(name + QStringLiteral(" rendered no visible content")));
     }
     QDir().mkpath(QStringLiteral(".diagnostics"));
-    const QString capturePath = qEnvironmentVariable(
-        "F4_GALLERY_VIDEO_CONTROLS_CAPTURE");
-    if (!capturePath.isEmpty())
-        QVERIFY(capture.save(capturePath));
 }
 
 void F4QuickViewSurfaceTests::galleryVideoSurfaceCapturesClicksAndDoubleClickCloses()
@@ -1973,6 +2047,17 @@ void F4QuickViewSurfaceTests::galleryVideoPointerEventsReachEmbeddedViewer()
 
 void F4QuickViewSurfaceTests::initTestCase()
 {
+#ifdef Q_OS_LINUX
+    if (qgetenv("QSG_RHI_BACKEND") == "opengl") {
+        // Match the numerical GPU fixture: baked desktop shaders require
+        // GLSL 150, not the offscreen platform's default OpenGL 2 context.
+        QSurfaceFormat format;
+        format.setVersion(3, 2);
+        format.setProfile(QSurfaceFormat::CoreProfile);
+        QSurfaceFormat::setDefaultFormat(format);
+        QQuickWindow::setGraphicsApi(QSGRendererInterface::OpenGL);
+    }
+#endif
     QQuickStyle::setStyle(QStringLiteral("Basic"));
     QGuiApplication::styleHints()->setCursorFlashTime(0);
     qmlRegisterType<TestGrid>("F4QtHost", 1, 0, "VtuiGridItem");
@@ -6547,6 +6632,13 @@ void F4QuickViewSurfaceTests::quickViewRetainsViewerAcrossPresentationChanges()
         QVERIFY(viewer->width() > 100 && viewer->height() > 100);
         QCOMPARE(viewer->property("transitionProgress").toReal(), 1.0);
         QCOMPARE(viewer->property("viewerContentVisible").toBool(), true);
+        QVERIFY(viewport->property("hardwareSampling").isValid());
+        QVERIFY(!viewport->property("hardwareSampling").toBool());
+        auto *shader = fixture.item("galleryViewerImageShader");
+        QVERIFY(shader);
+        QVERIFY(!shader->property("hardwareSampling").toBool());
+        QVERIFY(!fixture.item("galleryViewerCropShader")->property("hardwareSampling").toBool());
+        QVERIFY(shader->property("pixelAligned").toBool());
         const auto origin = layer->mapToItem(fixture.window->contentItem(), QPointF());
         for (qreal value : {origin.x(), origin.y(), layer->width(), layer->height()})
             QVERIFY(qAbs(value * 1.75 - qRound(value * 1.75)) < 0.001);
@@ -6614,6 +6706,7 @@ void F4QuickViewSurfaceTests::quickViewRetainsViewerAcrossPresentationChanges()
         validateEndpoint();
         // A custom absolute zoom survives both directions of the geometry change.
         QVERIFY(QMetaObject::invokeMethod(viewport, "zoomTo100", Q_ARG(QVariant, true)));
+        QVERIFY(!viewport->property("hardwareSampling").toBool());
         QTRY_VERIFY(!viewport->property("viewportAnimationRunning").toBool());
         const qreal zoom = viewport->property("zoomScale").toReal();
         auto *imageItem = viewport->property("image").value<QQuickItem *>();
@@ -6641,7 +6734,14 @@ void F4QuickViewSurfaceTests::quickViewRetainsViewerAcrossPresentationChanges()
     }
     fixture.gallery.expandQuickView();
     QTest::qWait(40);
+    QVERIFY(viewport->property("hardwareSampling").toBool());
+    QVERIFY(fixture.item("galleryViewerImageShader")->property("hardwareSampling").toBool());
+    QVERIFY(!fixture.item("galleryViewerImageShader")->property("pixelAligned").toBool());
+    QVERIFY(fixture.item("galleryViewerCropShader")->property("hardwareSampling").toBool());
+    QVERIFY(!viewer->property("transitioning").toBool());
     fixture.gallery.collapseQuickView();
+    QVERIFY(viewport->property("hardwareSampling").toBool());
+    QVERIFY(!viewer->property("transitioning").toBool());
     QTRY_COMPARE(fixture.gallery.presentationState, 1);
     validateEndpoint();
     fixture.window->resize(937, 677);
@@ -6734,6 +6834,7 @@ void F4QuickViewSurfaceTests::cachedGalleryViewerCentersFirstNativeZoomAt175Perc
     // stale logical dimensions by recalculating the already-loaded native tier.
     viewer->forceActiveFocus();
     QTest::keyClick(fixture.window, Qt::Key_Asterisk);
+    QVERIFY(!viewport->property("hardwareSampling").toBool());
     QTRY_COMPARE_WITH_TIMEOUT(session->viewerSourceLevel(), 2, 5000);
     QTRY_VERIFY_WITH_TIMEOUT(!viewport->property("viewportAnimationRunning").toBool(),
                             5000);

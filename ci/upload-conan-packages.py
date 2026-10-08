@@ -3,16 +3,105 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import subprocess
 import sys
 
 
+def package_revisions_for_arch(
+    data: dict, recipe_ref: str, expected_arch: str, remote_name: str = ""
+) -> set:
+    """Return exact recipe/package IDs for binaries of one architecture."""
+    catalog_name = remote_name or "Local Cache"
+    catalog = data.get(catalog_name, {})
+    recipe = catalog.get(recipe_ref, {})
+    package_revisions = set()
+    for recipe_revision, revision in recipe.get("revisions", {}).items():
+        for package_id, package in revision.get("packages", {}).items():
+            settings = package.get("info", {}).get("settings", {})
+            if str(settings.get("arch", "")) == expected_arch:
+                package_revisions.add((recipe_revision, package_id))
+    return package_revisions
+
+
+def verify_required_packages(
+    data: dict,
+    recipe_refs: list,
+    expected_arch: str,
+    source: str,
+    remote_name: str = "",
+) -> dict:
+    required_packages = {}
+    missing = []
+    for recipe_ref in recipe_refs:
+        package_revisions = package_revisions_for_arch(
+            data, recipe_ref, expected_arch, remote_name
+        )
+        if not package_revisions:
+            missing.append(recipe_ref)
+        else:
+            required_packages[recipe_ref] = package_revisions
+    if missing:
+        raise SystemExit(
+            f"{source} is missing {expected_arch} packages for: {', '.join(missing)}"
+        )
+    return required_packages
+
+
+def verify_uploaded_packages(
+    required_packages: dict,
+    data: dict,
+    expected_arch: str,
+    source: str,
+    remote_name: str,
+) -> None:
+    missing = []
+    for recipe_ref, expected in required_packages.items():
+        available = package_revisions_for_arch(
+            data, recipe_ref, expected_arch, remote_name
+        )
+        for recipe_revision, package_id in sorted(expected - available):
+            missing.append(f"{recipe_ref}#{recipe_revision}:{package_id}")
+    if missing:
+        raise SystemExit(
+            f"{source} cannot read the uploaded packages: {', '.join(missing)}"
+        )
+
+
+def list_recipe_packages(recipe_ref: str = "*/*:*", remote_name: str = "") -> dict:
+    command = ["conan", "list", recipe_ref]
+    if remote_name:
+        command.extend(["--remote", remote_name])
+    command.extend(["--format=json"])
+    result = subprocess.run(command, check=True, capture_output=True, text=True)
+    return json.loads(result.stdout)
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--required",
+        action="store_true",
+        help="fail instead of skipping when Artifactory credentials are absent",
+    )
+    parser.add_argument(
+        "--verify-required-packages",
+        action="store_true",
+        help="verify required local packages and their Artifactory publication",
+    )
+    args = parser.parse_args()
+
     remote_url = os.environ.get("F4_CONAN_UPLOAD_URL", "")
     token = os.environ.get("F4_CONAN_UPLOAD_TOKEN", "")
     if not remote_url or not token:
+        if args.required:
+            print(
+                "error: required Conan upload URL/token is not configured",
+                file=sys.stderr,
+            )
+            return 2
         print("Conan upload remote is not configured; skipping package upload")
         return 0
 
@@ -37,16 +126,32 @@ def main() -> int:
     # entry and aborts before it can publish any of the useful target graph.
     # Enumerate recipe references first and omit only this build-tool package
     # on Windows; the virtual remote still provides it from ConanCenter.
-    list_result = subprocess.run(
-        ["conan", "list", "*/*:*", "--format=json"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    local_cache = json.loads(list_result.stdout).get("Local Cache", {})
+    local_data = list_recipe_packages()
+    local_cache = local_data.get("Local Cache", {})
     recipe_refs = sorted(local_cache)
     if sys.platform == "win32" or os.environ.get("RUNNER_OS") == "Windows":
         recipe_refs = [ref for ref in recipe_refs if not ref.startswith("msys2/")]
+
+    required_refs = [
+        recipe_ref.strip()
+        for recipe_ref in os.environ.get("F4_CONAN_REQUIRED_RECIPE_REFS", "").split(",")
+        if recipe_ref.strip()
+    ]
+    expected_arch = os.environ.get("F4_CONAN_EXPECTED_ARCH", "").strip()
+    if args.verify_required_packages:
+        if not required_refs or not expected_arch:
+            raise SystemExit(
+                "package verification requires F4_CONAN_REQUIRED_RECIPE_REFS "
+                "and F4_CONAN_EXPECTED_ARCH"
+            )
+        required_packages = verify_required_packages(
+            local_data,
+            required_refs,
+            expected_arch,
+            "local Conan cache",
+        )
+    else:
+        required_packages = {}
 
     for recipe_ref in recipe_refs:
         subprocess.run(
@@ -61,6 +166,20 @@ def main() -> int:
             ],
             check=True,
         )
+
+    if args.verify_required_packages:
+        read_remote_name = os.environ.get("F4_CONAN_REMOTE_NAME", "f4-conan")
+        for verify_remote in dict.fromkeys((remote_name, read_remote_name)):
+            for recipe_ref in required_refs:
+                remote_data = list_recipe_packages(f"{recipe_ref}:*", verify_remote)
+                verify_uploaded_packages(
+                    {recipe_ref: required_packages[recipe_ref]},
+                    remote_data,
+                    expected_arch,
+                    f"Artifactory remote {verify_remote}",
+                    verify_remote,
+                )
+
     print("Conan package graph uploaded")
     return 0
 

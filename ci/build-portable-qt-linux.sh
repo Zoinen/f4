@@ -9,6 +9,17 @@ if ! grep -q 'Ubuntu 18.04' /etc/os-release; then
     echo "error: glibc 2.27 contract requires the Ubuntu 18.04 build container" >&2
     exit 2
 fi
+if [[ "${F4_CONAN_UPLOAD_REQUIRED:-0}" == "1" ]]; then
+    for required_variable in \
+        F4_CONAN_REMOTE_URL F4_CONAN_TOKEN F4_CONAN_UPLOAD_URL \
+        F4_CONAN_UPLOAD_TOKEN F4_CONAN_USERNAME \
+        F4_CONAN_REQUIRED_RECIPE_REFS F4_CONAN_EXPECTED_ARCH; do
+        if [[ -z "${!required_variable:-}" ]]; then
+            echo "error: required Linux Conan bootstrap variable is unset: ${required_variable}" >&2
+            exit 2
+        fi
+    done
+fi
 
 export DEBIAN_FRONTEND=noninteractive
 # GitHub-hosted runners occasionally leave the bionic mirror connection
@@ -73,6 +84,7 @@ export PATH="/opt/f4-build-venv/bin:/opt/go/bin:${PATH}"
 export CC=gcc-11
 export CXX=g++-11
 export CONAN_HOME="${CONAN_HOME:-$PWD/.conan2-portable-linux}"
+python -m unittest ci/test_patch_qt_dependencies.py
 
 # Always reduce Conan's cache to finished packages before returning to the
 # GitHub runner. This trap runs after a failed conan install as well, so the
@@ -146,7 +158,7 @@ git config --global --add safe.directory "$PWD"
 conan profile detect --force
 bash ci/configure-conan-remote.sh
 bash ci/patch-bzip2-recipe.sh
-bash ci/patch-qt-recipe.sh
+bash ci/patch-qt-recipe.sh "${TARGET_ARCH}" linux-audio Linux
 
 # www.freedesktop.org rejects GitHub-hosted runners with HTTP 418 for this
 # release URL. MacPorts mirrors the byte-identical upstream archive (the
@@ -254,7 +266,7 @@ fi
 # Ubuntu 18.04/glibc-2.27 baseline.  Detect the known failure signatures in
 # the restored cache before Conan is allowed to select the corresponding
 # remote package.  Rebuild only the affected package, preserving the rest of
-# the expensive video graph.
+# the expensive multimedia graph.
 arm64_glibc_rebuild_packages=()
 if [[ "${TARGET_ARCH}" == "arm64" ]]; then
     arm64_glibc_package_specs=(
@@ -263,7 +275,7 @@ if [[ "${TARGET_ARCH}" == "arm64" ]]; then
         "libde265:libde265.a"
         "libraw:libraw.a"
     )
-    if [[ "${F4_CONAN_BOOTSTRAP_VIDEO:-0}" == "1" &&
+    if [[ "${F4_CONAN_BOOTSTRAP_MULTIMEDIA:-0}" == "1" &&
         ! -f "${arm64_video_baseline_marker}" ]]; then
         # The first bootstrap must not allow Conan to download an unqualified
         # ARM64 package before its archive can be inspected.  Force this
@@ -287,7 +299,7 @@ if [[ "${TARGET_ARCH}" == "arm64" ]]; then
             if [[ "${package_archive_incompatible}" == "1" ]]; then
                 arm64_glibc_rebuild_packages+=("${package}")
             elif [[ "${package_archive_found}" == "0" &&
-                "${F4_CONAN_BOOTSTRAP_VIDEO:-0}" == "1" ]]; then
+                "${F4_CONAN_BOOTSTRAP_MULTIMEDIA:-0}" == "1" ]]; then
                 # Do not let an unqualified remote package become the first
                 # copy of one of these libraries on a cold ARM64 checkpoint.
                 arm64_glibc_rebuild_packages+=("${package}")
@@ -301,14 +313,14 @@ if [[ "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" &&
     conan_build_args=(--build=never)
     echo "Using the audited glibc 2.27 / GCC 11 Conan graph from f4-conan"
     echo "Trusted baseline mode forbids source fallback; missing packages fail fast"
-elif [[ "${F4_CONAN_BOOTSTRAP_VIDEO:-0}" == "1" ]]; then
-    # The video graph is intentionally bootstrapped from the existing
+elif [[ "${F4_CONAN_BOOTSTRAP_MULTIMEDIA:-0}" == "1" ]]; then
+    # The multimedia graph is intentionally bootstrapped from the existing
     # Artifactory baseline. Reuse every matching remote package and compile
     # only the new Qt Multimedia/FFmpeg nodes (or any genuinely missing
     # transitive node) inside this Ubuntu 18.04/GCC-11 container. This keeps a
     # cold GitHub cache from turning a feature bootstrap into a full graph
     # rebuild while preserving the portable libc contract.
-    echo "Bootstrapping the video graph from the audited remote baseline"
+    echo "Bootstrapping the multimedia graph from the audited remote baseline"
     echo "Missing packages will be built in the glibc 2.27 / GCC 11 container"
 elif [[ ! -f "$baseline_marker" ]]; then
     conan_build_args+=(--build='m4/*')
@@ -322,7 +334,7 @@ elif [[ ! -f "$baseline_marker" ]]; then
 else
     echo "Reusing cached glibc 2.27 / GCC 11 Conan package graph"
 fi
-if [[ "${F4_CONAN_BOOTSTRAP_VIDEO:-0}" == "1" &&
+if [[ "${F4_CONAN_BOOTSTRAP_MULTIMEDIA:-0}" == "1" &&
     "${cached_m4_found}" == "0" ]]; then
     # A cold cache would otherwise download the same unqualified package from
     # Artifactory before this check can inspect it. Build this tiny tool once
@@ -331,19 +343,19 @@ if [[ "${F4_CONAN_BOOTSTRAP_VIDEO:-0}" == "1" &&
     force_baseline_m4=1
     echo "No cached Conan m4 found; building it in the glibc 2.27 / GCC 11 container"
 fi
-if [[ "${F4_CONAN_BOOTSTRAP_VIDEO:-0}" == "1" &&
+if [[ "${F4_CONAN_BOOTSTRAP_MULTIMEDIA:-0}" == "1" &&
     "${TARGET_ARCH}" == "arm64" && "${cached_pkgconf_found}" == "0" ]]; then
     # Do not accept the first unqualified Artifactory pkgconf package on a
     # cold ARM64 cache; build the executable in the target container instead.
     force_baseline_pkgconf=1
     echo "No cached Conan pkgconf found; building it for the ARM64 baseline"
 fi
-if [[ "${F4_CONAN_BOOTSTRAP_VIDEO:-0}" == "1" &&
+if [[ "${F4_CONAN_BOOTSTRAP_MULTIMEDIA:-0}" == "1" &&
     "${TARGET_ARCH}" == "arm64" && "${cached_ninja_found}" == "0" ]]; then
     force_baseline_ninja=1
     echo "No cached Conan Ninja found; building it for the ARM64 baseline"
 fi
-if [[ "${F4_CONAN_BOOTSTRAP_VIDEO:-0}" == "1" &&
+if [[ "${F4_CONAN_BOOTSTRAP_MULTIMEDIA:-0}" == "1" &&
     "${TARGET_ARCH}" == "arm64" && "${cached_gperf_found}" == "0" ]]; then
     force_baseline_gperf=1
     echo "No cached Conan gperf found; building it for the ARM64 baseline"
@@ -400,6 +412,9 @@ for attempt in 1 2 3; do
         -o:h '*:with_video_thumbnails=True' \
         -o:h '*:with_ffmpeg_backend=True' \
         -o:h 'qt/*:with_ffmpeg=True' \
+        -o:h 'qt/*:with_pulseaudio=True' \
+        -o:h 'qt/*:with_libalsa=False' \
+        -o:h 'pulseaudio/*:shared=False' \
         -o:h 'qt/*:qtwayland=True' \
         -o:h 'qt/*:with_egl=True' \
         -o:h 'qt/*:with_libjpeg=libjpeg-turbo' \
@@ -433,7 +448,7 @@ done
 touch "${build_dir}/.f4-conan-ready"
 touch "$baseline_marker"
 if [[ "${TARGET_ARCH}" == "arm64" &&
-    "${F4_CONAN_BOOTSTRAP_VIDEO:-0}" == "1" ]]; then
+    "${F4_CONAN_BOOTSTRAP_MULTIMEDIA:-0}" == "1" ]]; then
     # The four ARM64 video libraries have now been built in the baseline
     # container. Record that fact before host compilation so a later link/test
     # failure can reuse them from the checkpoint instead of rebuilding them.
@@ -473,14 +488,8 @@ if [[ -f /etc/fonts/fonts.conf ]]; then
     export FONTCONFIG_FILE=/etc/fonts/fonts.conf
     export FONTCONFIG_PATH=/etc/fonts
 fi
-set +e
 ctest --test-dir "${build_dir}" -C Release --output-on-failure \
     -R '^(F4|QtShellController|WindowGeometryPersistence)'
-qt_test_status=$?
-set -e
-if [[ "${qt_test_status}" -ne 0 ]]; then
-    echo "warning: Qt CTest diagnostics returned ${qt_test_status}; continuing to artifact smoke tests"
-fi
 
 host="$PWD/${build_dir}/bin/Release/f4-qt-host"
 # Smoke-test the linked host before ELF metadata cleanup. Ubuntu 18.04 ships
@@ -526,14 +535,18 @@ if readelf -d "$host" | grep -Eq '\((RPATH|RUNPATH)\)'; then
         exit 1
     fi
 fi
-bash ci/audit-portable-qt-linux.sh "$host" 2.27
+bash ci/audit-portable-qt-linux.sh "$host" 2.27 "$TARGET_ARCH"
 
 python ci/package-embedded-qt-host.py "$host"
 echo "Embedded Qt payload generated"
 go test -tags f4_embedded_qt_host \
     -run 'TestMaterializeEmbeddedQtHost|TestGeneratedEmbeddedQtHostPayload' ./internal/plughost
 echo "Embedded Qt payload tests passed"
-python ci/upload-conan-packages.py
+if [[ "${F4_CONAN_UPLOAD_REQUIRED:-0}" == "1" ]]; then
+    python ci/upload-conan-packages.py --required --verify-required-packages
+else
+    python ci/upload-conan-packages.py
+fi
 mkdir -p "$(dirname "${launcher_output}")"
 echo "Building static Go launcher"
 # The Qt-only launcher does not use the optional GPU FFI path.  Build goffi in
@@ -553,7 +566,7 @@ if readelf -l "${launcher_output}" | grep -q 'INTERP'; then
     python ci/remove-elf-interpreter.py "${launcher_output}"
 fi
 echo "Auditing static Go launcher"
-bash ci/audit-static-go-linux.sh "${launcher_output}"
+bash ci/audit-static-go-linux.sh "${launcher_output}" "${TARGET_ARCH}"
 
 if [[ "${launcher_output}" == "${dist_dir}/f4" ]]; then
     artifact_files="$(find "${dist_dir}" -maxdepth 1 -type f -printf '%f\n')"

@@ -247,10 +247,6 @@ if(F4_QT_STATIC)
     Qt6::qtquickcontrols2plugin
     ZoinGallery::ZoinGalleryQmlplugin
   )
-  if(F4_QT_USES_FFMPEG_BACKEND AND TARGET Qt6::quickmultimedia)
-    list(APPEND F4_REQUIRED_STATIC_QML_PLUGINS Qt6::quickmultimedia)
-  endif()
-
   # Conan Center removes the native Qt *Config.cmake files after packaging
   # and recreates only the components declared by its recipe. Qt's QML plugin
   # libraries are packaged, along with their official Targets.cmake metadata,
@@ -268,6 +264,25 @@ if(F4_QT_STATIC)
   if(_f4_conan_qt_package_folder)
     set(_f4_qml_plugin_cmake_dir
       "${_f4_conan_qt_package_folder}/lib/cmake/Qt6Qml/QmlPlugins")
+
+    # QtMultimedia's QML plugin is exported by Qt under the lower-case
+    # quickmultimedia target name. Conan also exposes a MultimediaQuick
+    # component target, but that component alone does not retain the static
+    # QMultimediaQuickModule initializer needed by Q_IMPORT_PLUGIN. Select
+    # the preserved plugin export before importing the rest of the QML graph.
+    if(F4_QT_USES_FFMPEG_BACKEND)
+      if(TARGET Qt6::MultimediaQuick)
+        list(APPEND F4_REQUIRED_STATIC_QML_PLUGINS Qt6::MultimediaQuick)
+      endif()
+      if(TARGET Qt6::quickmultimedia)
+        list(APPEND F4_REQUIRED_STATIC_QML_PLUGINS Qt6::quickmultimedia)
+      elseif(EXISTS
+          "${_f4_qml_plugin_cmake_dir}/Qt6quickmultimediaTargets.cmake")
+        list(APPEND F4_REQUIRED_STATIC_QML_PLUGINS Qt6::quickmultimedia)
+      elseif(TARGET Qt6::MultimediaQuick)
+        list(APPEND F4_REQUIRED_STATIC_QML_PLUGINS Qt6::MultimediaQuick)
+      endif()
+    endif()
 
     # Qt's native Qt6Targets.cmake normally provides these interface-only
     # implementation-detail targets. Conan's generated Qt6 targets omit them,
