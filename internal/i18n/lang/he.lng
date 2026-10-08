@@ -2216,13 +2216,13 @@ SettingsCenter.Text.986b4b1dd226b28694c61b1fb25efb345980c4d27be52f93600268979c09
 SettingsCenter.Text.983ea5e98aa7f8f7eb08adef934361480984c4c8bb76201aa8fff64f6da0051f=תבנית הספרות חייבת להכיל בין 1 ל־20 אפסים
 SettingsCenter.Text.ea93d6a262ecb87a9fa4d09edbd7654c046597936a8e235fc3949eb01775ff99=כלים
 SettingsCenter.Text.ecb177517eae1ad7b9843b0a0419f4cb5d9f8cd8eb33b78f1db028a73ebf735c=בחר אילו כלים רשומים בתפריט הכונן יוצגו.
-SettingsCenter.tool.Name.Description=כלי רשום בתפריט הכונן.
 SettingsCenter.Text.fcf11f73b06570d1a8dd703ea5456fa58584662b8ea6003a588dc503c5fa80a9=תפריט F11
 SettingsCenter.Text.8d78d31f5db14305d03e11a18a3c8844871deb801132e40bc699a37a58946c17=בחרו אילו פריטים בתפריט התוספים (F11) יוצגו. פריט מוסתר שומר על מקש הקיצור שלו.
 SettingsCenter.entry.Name.Description=פריט בתפריט F11.
 SettingsCenter.entry.Name.Label=פריט
 SettingsCenter.entry.Enabled.Description=הצג פריט זה בתפריט F11.
 SettingsCenter.entry.Enabled.Label=מוצג
+SettingsCenter.tool.Name.Description=כלי רשום בתפריט הכונן.
 SettingsCenter.tool.Name.Label=כלי
 SettingsCenter.tool.Enabled.Description=הצג כלי זה בתפריט הכונן.
 SettingsCenter.tool.Enabled.Label=מופעל

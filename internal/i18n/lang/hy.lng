@@ -2137,13 +2137,13 @@ SettingsCenter.Text.986b4b1dd226b28694c61b1fb25efb345980c4d27be52f93600268979c09
 SettingsCenter.Text.983ea5e98aa7f8f7eb08adef934361480984c4c8bb76201aa8fff64f6da0051f=թվանշանների ձևաչափը պետք է պարունակի 1-ից 20 զրո
 SettingsCenter.Text.ea93d6a262ecb87a9fa4d09edbd7654c046597936a8e235fc3949eb01775ff99=Գործիքներ
 SettingsCenter.Text.ecb177517eae1ad7b9843b0a0419f4cb5d9f8cd8eb33b78f1db028a73ebf735c=Ընտրեք, թե գրանցված սկավառակի ցանկի որ գործիքներն են ցուցադրվում։
-SettingsCenter.tool.Name.Description=Գրանցված սկավառակի ցանկի գործիք։
 SettingsCenter.Text.fcf11f73b06570d1a8dd703ea5456fa58584662b8ea6003a588dc503c5fa80a9=F11 ընտրացանկ
 SettingsCenter.Text.8d78d31f5db14305d03e11a18a3c8844871deb801132e40bc699a37a58946c17=Ընտրեք, թե հավելումների ընտրացանկի (F11) որ կետերը ցուցադրվեն: Թաքցված կետը պահպանում է իր արագ ստեղնը։
 SettingsCenter.entry.Name.Description=F11 ընտրացանկի կետ։
 SettingsCenter.entry.Name.Label=Կետ
 SettingsCenter.entry.Enabled.Description=Ցուցադրել այս կետը F11 ընտրացանկում։
 SettingsCenter.entry.Enabled.Label=Ցուցադրվում է
+SettingsCenter.tool.Name.Description=Գրանցված սկավառակի ցանկի գործիք։
 SettingsCenter.tool.Name.Label=Գործիք
 SettingsCenter.tool.Enabled.Description=Ցուցադրել այս գործիքը սկավառակի ցանկում։
 SettingsCenter.tool.Enabled.Label=Միացված

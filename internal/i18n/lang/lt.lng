@@ -2216,13 +2216,13 @@ SettingsCenter.Text.986b4b1dd226b28694c61b1fb25efb345980c4d27be52f93600268979c09
 SettingsCenter.Text.983ea5e98aa7f8f7eb08adef934361480984c4c8bb76201aa8fff64f6da0051f=skaitmenų formate turi būti nuo 1 iki 20 nulių
 SettingsCenter.Text.ea93d6a262ecb87a9fa4d09edbd7654c046597936a8e235fc3949eb01775ff99=Įrankiai
 SettingsCenter.Text.ecb177517eae1ad7b9843b0a0419f4cb5d9f8cd8eb33b78f1db028a73ebf735c=Pasirinkite, kuriuos registruotus diskų meniu įrankius rodyti.
-SettingsCenter.tool.Name.Description=Registruotas diskų meniu įrankis.
 SettingsCenter.Text.fcf11f73b06570d1a8dd703ea5456fa58584662b8ea6003a588dc503c5fa80a9=F11 meniu
 SettingsCenter.Text.8d78d31f5db14305d03e11a18a3c8844871deb801132e40bc699a37a58946c17=Pasirinkite, kurie įskiepių meniu (F11) įrašai rodomi. Paslėptas įrašas išsaugo savo spartųjį klavišą.
 SettingsCenter.entry.Name.Description=F11 meniu įrašas.
 SettingsCenter.entry.Name.Label=Įrašas
 SettingsCenter.entry.Enabled.Description=Rodyti šį įrašą F11 meniu.
 SettingsCenter.entry.Enabled.Label=Rodoma
+SettingsCenter.tool.Name.Description=Registruotas diskų meniu įrankis.
 SettingsCenter.tool.Name.Label=Įrankis
 SettingsCenter.tool.Enabled.Description=Rodyti šį įrankį diskų meniu.
 SettingsCenter.tool.Enabled.Label=Įjungta
