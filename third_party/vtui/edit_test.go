@@ -212,7 +212,9 @@ func TestEdit_HistoryMenu_Interactions(t *testing.T) {
 	e := NewEdit(0, 0, 20, "")
 	e.History = []string{"cmd1", "cmd2"}
 
-	e.OpenHistory()
+	if !e.HandleSemanticAction(map[string]any{"action": "control.history"}) {
+		t.Fatal("semantic history button was not handled")
+	}
 	top := fm.GetTopFrame()
 	menu, ok := top.(*VMenu)
 	if !ok {

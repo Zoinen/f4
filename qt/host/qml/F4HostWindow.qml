@@ -728,9 +728,9 @@ ApplicationWindow {
     function keyBarModifierFlags(modifier) {
         return presentationUtilities.keyBarModifierFlags(modifier)
     }
-    function preferredWorkspaceTabWidth(titleWidth, closeEnabled) {
+    function preferredWorkspaceTabWidth(titleWidth) {
         return presentationUtilities.preferredWorkspaceTabWidth(
-                    titleWidth, closeEnabled)
+                    titleWidth)
     }
     function richTextEscape(value) {
         return presentationUtilities.richTextEscape(value)

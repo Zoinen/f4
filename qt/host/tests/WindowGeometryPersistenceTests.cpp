@@ -12,6 +12,7 @@ class WindowGeometryPersistenceTests final : public QObject
     Q_OBJECT
 
 private slots:
+    void dialogSizesSurviveRestartAndRemainIndependent();
     void settingsRoundTripPreservesEveryField_data();
     void settingsRoundTripPreservesEveryField();
     void exactGeometrySurvivesOnUnchangedScreen();
@@ -28,6 +29,23 @@ private slots:
     void deferredRestoreRemainsHiddenUntilExplicitShow();
     void hiddenOnCloseRetainsMaximizedStateAndNormalFrame();
 };
+
+void WindowGeometryPersistenceTests::dialogSizesSurviveRestartAndRemainIndependent()
+{
+    QTemporaryDir directory;
+    const auto path = directory.filePath("geometry.ini");
+    {
+        WindowGeometryPersistence store(nullptr, path);
+        QVERIFY(store.saveDialogSize("mediainfo.report", 700.5, 480.25));
+        QVERIFY(store.saveDialogSize("Find", 450, 320));
+        QVERIFY(!store.saveDialogSize("Find", -1, 0));
+        QVERIFY(!store.saveDialogSize("", 400, 300));
+    }
+    WindowGeometryPersistence restored(nullptr, path);
+    QCOMPARE(restored.dialogSize("mediainfo.report"), QVariantMap({{"w", 700.5}, {"h", 480.25}}));
+    QCOMPARE(restored.dialogSize("Find"), QVariantMap({{"w", 450.0}, {"h", 320.0}}));
+    QVERIFY(restored.dialogSize("unknown").isEmpty());
+}
 
 void WindowGeometryPersistenceTests::settingsRoundTripPreservesEveryField_data()
 {

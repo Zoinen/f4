@@ -11,6 +11,7 @@ import (
 	"github.com/unxed/f4/internal/dialog"
 	"github.com/unxed/f4/internal/fileops"
 	"github.com/unxed/f4/internal/i18n"
+	"github.com/unxed/f4/internal/semantic"
 	"github.com/unxed/f4/internal/sysinfo"
 	"github.com/unxed/f4/internal/winshell"
 	"github.com/unxed/f4/vfs"
@@ -639,6 +640,40 @@ func dismissShellContextToken(client *winshell.Client, token uint64) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	_ = client.DismissContextMenu(ctx, token)
+}
+
+// The embedded VMenu receiver cannot dispatch Enter or Close back through its
+// wrapper. Native menu actions must retain the Windows-specific behavior.
+func handleWindowsMenuAction(menu *vtui.VMenu, frame vtui.Frame, action map[string]any) bool {
+	target := semantic.String(action["target"])
+	if target != vtui.SemanticID(frame) && target != vtui.SemanticID(menu) {
+		return false
+	}
+	switch semantic.String(action["action"]) {
+	case "menu_activate", "menu.activate":
+		index := semantic.Int(action["index"])
+		if index < 0 || index >= len(menu.Items) || menu.Items[index].Separator ||
+			menu.Items[index].Header || menu.Items[index].Disabled {
+			return false
+		}
+		menu.SetSelectPos(index)
+		return frame.ProcessKey(&vtinput.InputEvent{
+			Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN,
+			InputSource: "qt_semantic",
+		})
+	case "close", "menu.close":
+		frame.Close()
+		return true
+	}
+	return menu.HandleSemanticAction(action)
+}
+
+func (m *windowsLocationsMenu) HandleSemanticAction(action map[string]any) bool {
+	return handleWindowsMenuAction(m.VMenu, m, action)
+}
+
+func (m *shellContextMenu) HandleSemanticAction(action map[string]any) bool {
+	return handleWindowsMenuAction(m.VMenu, m, action)
 }
 
 func (m *shellContextMenu) ProcessKey(e *vtinput.InputEvent) bool {

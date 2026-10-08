@@ -327,9 +327,9 @@ Item {
     function sessionForPanelState(panelState) {
         if (!bridge)
             return null
-        // Each side owns exactly one bounded virtualized model. A folder or
-        // workspace change replaces its materialized window in place.
-        return bridge.sessionForSide(side)
+        // Catalogs arrive before the shell descriptor. Keep the displayed
+        // identity's session until that descriptor activates the new panel.
+        return bridge.sessionForPanel(String(panelState.id || ""), side)
     }
 
     function refreshPanelSession(panelState) {
@@ -548,7 +548,8 @@ Item {
                 requestedSide, panelId, catalogRevision, mode, columnCount,
                 density, presentationDensities, columns,
                 separateFileExtensions) {
-            if (Number(requestedSide) !== adapter.side)
+            if (Number(requestedSide) !== adapter.side
+                    || String(panelId || "") !== String(adapter.panel.id || ""))
                 return
             adapter.beginPanelPresentationTransaction(
                         panelId, catalogRevision, mode, columnCount, density,

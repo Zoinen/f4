@@ -7,6 +7,44 @@ F4TextField {
     id: dialogEdit
 
     required property var widget
+    readonly property alias indicator: historyIcon
+    trailingInset: widget.history === true ? hostWindow.snapPx(30) : 0
+    Item {
+        id: historyButton
+        objectName: dialogEdit.objectName + "HistoryButton"
+        visible: dialogEdit.widget.history === true
+        z: 10
+        width: dialogEdit.trailingInset
+        height: dialogEdit.height
+        x: hostWindow.snapPx(dialogEdit.width - width)
+        HostPixelAlignedImage {
+            id: historyIcon
+            objectName: dialogEdit.objectName + "HistoryIcon"
+            hostWindow: dialogEdit.hostWindow
+            width: hostWindow.snapPx(14)
+            height: width
+            x: hostWindow.snapPx((historyButton.width - width) / 2)
+            y: hostWindow.snapPx((historyButton.height - height) / 2)
+            sourceSize: Qt.size(width * hostWindow.dpr, height * hostWindow.dpr)
+            source: hostWindow.lucideIconSource("chevron-down", 14, hostWindow.mutedText)
+        }
+        MouseArea {
+            anchors.fill: parent
+            onClicked: dialogEdit.hostWindow.action({target: dialogEdit.widget.id, action: "control.history"}, true)
+        }
+    }
+    property string registeredOwnerId: ""
+    function syncDropdownRegistration() {
+        const nextId = hostWindow.cleanText(widget.id)
+        if (registeredOwnerId !== "" && registeredOwnerId !== nextId)
+            hostWindow.unregisterDropdownAnchor(registeredOwnerId, dialogEdit)
+        registeredOwnerId = nextId
+        hostWindow.registerDropdownAnchor(registeredOwnerId, dialogEdit)
+    }
+    Component.onDestruction: {
+        if (hostWindow && typeof hostWindow.unregisterDropdownAnchor === "function")
+            hostWindow.unregisterDropdownAnchor(registeredOwnerId, dialogEdit)
+    }
     enabled: widget.disabled !== true
     remoteControlled: true
     readOnly: true
@@ -53,8 +91,13 @@ F4TextField {
     }
 
     remoteCursorPosition: utf16IndexForRuneIndex(Number(widget.cursor || 0))
-    remoteCursorVisible: widget.focused === true
-    semanticFocus: widget.focused === true
+    readonly property bool completionOwnsEdit: {
+        const completion = hostWindow.activeAutocompleteFrame()
+        return completion !== null && completion.ownerId === widget.id
+    }
+    remoteCursorVisible: widget.focused === true || completionOwnsEdit
+    semanticFocus: widget.focused === true || completionOwnsEdit
+    continuousCursorBlink: completionOwnsEdit
 
     function publishPointerSelection() {
         const cursor = Array.from(text.slice(0, cursorPosition)).length
@@ -78,7 +121,7 @@ F4TextField {
             "action": "control.focus"
         }, true)
     onRemoteSelectionActivatedChanged: Qt.callLater(syncRemoteSelection)
-    onWidgetChanged: Qt.callLater(syncRemoteSelection)
+    onWidgetChanged: { syncDropdownRegistration(); Qt.callLater(syncRemoteSelection) }
     onTextChanged: Qt.callLater(syncRemoteSelection)
-    Component.onCompleted: Qt.callLater(syncRemoteSelection)
+    Component.onCompleted: { syncDropdownRegistration(); Qt.callLater(syncRemoteSelection) }
 }

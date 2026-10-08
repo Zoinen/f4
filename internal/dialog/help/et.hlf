@@ -7,6 +7,8 @@ f4 on eksperimentaalne Far Manager / far2l failihalduri kloon Go keeles.
 ~Visuaalne failide ümbernimetamine (VisRen)~VisRen@
 ~Näita README.md~README@
 
+~Päri terminali ajalugu uutesse vahekaartidesse~TerminalHistoryInheritance@
+
 @VisRen
 $Visuaalne failide ümbernimetamine (VisRen)
 
@@ -576,3 +578,11 @@ Papildus kursora taustiņiem ir pieejami šie īsinājumtaustiņi:
   Notīrīt neeksistējošus ceļus                         Ctrl+R
 
   Kopēt izvēlēto ceļu starpliktuvē                     Ctrl+C, Ctrl+Ins
+
+@TerminalHistoryInheritance
+$Päri terminali ajalugu uutesse vahekaartidesse
+Kopeerib praeguse vahekaardi lõpetatud terminaliväljundi uutesse vahekaartidesse. Iga vahekaart käivitab oma käsukesta ja hilisem väljund jääb sellesse vahekaarti. Vaikimisi välja lülitatud.
+
+Pärast muudatuse rakendamist kehtib see hiljem avatud vahekaartidele ilma taaskäivitamiseta. Olemasolevad vahekaardid säilitavad oma ajaloo. Ootel käsukesta viipa, töötavaid programme ega käsukesta olekut ei kopeerita.
+
+[Panel] InheritTerminalHistory = 0 / 1 (settings.ini)

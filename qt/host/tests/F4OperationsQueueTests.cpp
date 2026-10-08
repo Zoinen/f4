@@ -160,6 +160,7 @@ public:
     QUrl emptyUrl() const { return {}; }
 
     Q_INVOKABLE QObject *sessionForSide(int) const { return nullptr; }
+    Q_INVOKABLE QObject *sessionForPanel(const QString &, int) const { return nullptr; }
     Q_INVOKABLE void closeViewer() {}
 };
 
@@ -775,10 +776,12 @@ class F4OperationsQueueTests final : public QObject
     Q_OBJECT
 
 private slots:
+    void searchMessageStaysInDocumentAndOnlyBlocksTab();
     void helpDialogRendersAndRoutesNavigation();
     void driveDetailsUseMeasuredColumnsOnPhysicalPixelGrid();
     void messageBodyWrapsToGuiWidth();
     void settingsSceneReplayProfile();
+    void viewerSearchSceneReplayProfile();
     void settingsHelpUpdatePreservesControlIdentity();
     void semanticChildrenModelReportsOnlyChangedRows();
     void pixelAlignmentUsesSettledAncestorTransforms();
@@ -841,6 +844,61 @@ void F4OperationsQueueTests::initTestCase()
     QQuickStyle::setStyle(QStringLiteral("Basic"));
     QGuiApplication::styleHints()->setCursorFlashTime(0);
     qmlRegisterType<TestGrid>("F4QtHost", 1, 0, "VtuiGridItem");
+}
+
+void F4OperationsQueueTests::searchMessageStaysInDocumentAndOnlyBlocksTab()
+{
+    for (const QString &kind : {QStringLiteral("editor"), QStringLiteral("viewer")}) {
+        auto scene = documentScene();
+        auto surface = scene.value("surface").toMap();
+        surface.insert("kind", kind);
+        scene.insert("surface", surface);
+        scene.insert("dialogs", QVariantList{QVariantMap{
+            {"id", "search-message"}, {"kind", "dialog"}, {"title", "Search"},
+            {"x", 20}, {"y", 8}, {"w", 26}, {"h", 7},
+            {"children", QVariantList{
+                QVariantMap{{"id", "search-message-body"}, {"kind", "text"},
+                    {"text", "Pattern not found."}, {"x", 22}, {"y", 10}, {"w", 18}, {"h", 1}},
+                QVariantMap{{"id", "search-message-ok"}, {"kind", "button"},
+                    {"text", "Ok"}, {"x", 30}, {"y", 12}, {"w", 6}, {"h", 1}}
+            }}
+        }});
+        QueueFixture fixture(scene);
+        QVERIFY(fixture.window);
+        auto *document = visualItem(fixture.window->contentItem(), "persistentDocumentLayer");
+        QTRY_VERIFY(document && document->isVisible());
+        QQuickItem *dialog = nullptr;
+        QQuickItem *button = nullptr;
+        QTRY_VERIFY((dialog = visualItem(fixture.window->contentItem(), "semanticDialog-search-message")) &&
+                    (button = visualItem(fixture.window->contentItem(), "dialogWidget-search-message-okButton")));
+        const auto buttonCenter = button->mapToItem(dialog, QPointF(button->width()/2, 0));
+        QVERIFY2(qAbs(buttonCenter.x() - dialog->width()/2) * fixture.window->devicePixelRatio() <= 1.01,
+                 qPrintable(QString("button center %1, dialog center %2").arg(buttonCenter.x()).arg(dialog->width()/2)));
+        auto *backdrop = visualItem(fixture.window->contentItem(), "dialogTabBackdrop");
+        QVERIFY(backdrop);
+        const auto backdropTop = backdrop->mapToScene(QPointF()).y();
+        QVERIFY(backdropTop >= fixture.window->property("menuBarHeight").toReal());
+        auto *title = visualItem(fixture.window->contentItem(), "semanticDialogTitle");
+        auto *body = visualItem(fixture.window->contentItem(), "dialogWidget-search-message-bodyText");
+        auto *label = visualItem(fixture.window->contentItem(), "dialogWidget-search-message-okButtonText");
+        for (auto *leaf : {title, body, label}) {
+            QVERIFY(leaf);
+            const auto origin = leaf->mapToScene(QPointF());
+            const auto physical = origin * fixture.window->devicePixelRatio();
+            QVERIFY2(qAbs(physical.x()-qRound64(physical.x())) < .02 && qAbs(physical.y()-qRound64(physical.y())) < .02,
+                qPrintable(QString("%1 at %2,%3 px").arg(leaf->objectName()).arg(physical.x()).arg(physical.y())));
+            QCOMPARE(leaf->mapToScene(QPointF(1,0))-origin, QPointF(1,0));
+            QCOMPARE(leaf->mapToScene(QPointF(0,1))-origin, QPointF(0,1));
+        }
+        QVERIFY(fixture.window->grabWindow().save(QString("artifacts/search-dialog-%1-175.png").arg(kind)));
+        fixture.shell.actions.clear();
+        auto *bar = visualItem(fixture.window->contentItem(), "workspaceBar");
+        QVERIFY(bar);
+        QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+                         bar->mapToScene(QPointF(35, bar->height()/2)).toPoint());
+        QTRY_VERIFY(std::any_of(fixture.shell.actions.cbegin(), fixture.shell.actions.cend(),
+            [](const QVariantMap &action) { return action.value("action").toString() == "workspace.activate"; }));
+    }
 }
 
 void F4OperationsQueueTests::consoleModeRestoresQueueWorkspace()
@@ -4513,7 +4571,7 @@ void F4OperationsQueueTests::settingsDecorationsAndViewportStayPixelAligned()
           {"id":"category-title","kind":"text","text":"Appearance & language","x":29,"y":1,"w":67,"h":1},
           {"id":"categories","kind":"listBox","items":["Appearance & language","Startup & profile"],"x":2,"y":4,"w":24,"h":17},
           {"id":"settings-page","kind":"group","x":29,"y":3,"w":67,"h":15,
-           "scrollable":true,"scrollTop":0,"contentHeight":32,"children":[
+           "scrollable":true,"scrollTop":0,"contentHeight":38,"children":[
              {"id":"language","kind":"group","title":"Language","bordered":true,"x":29,"y":3,"w":64,"h":5,"children":[
                {"id":"interface-label","kind":"text","text":"Interface language","x":31,"y":4,"w":19,"h":1},
                {"id":"interface","kind":"comboBox","items":["English"],"text":"English","selected":0,"x":51,"y":4,"w":40,"h":1},
@@ -4533,6 +4591,9 @@ void F4OperationsQueueTests::settingsDecorationsAndViewportStayPixelAligned()
              {"id":"titles","kind":"group","title":"Titles and menus","bordered":true,"x":29,"y":29,"w":64,"h":5,"children":[
                {"id":"title-label","kind":"text","text":"Window title template","x":31,"y":30,"w":60,"h":1},
                {"id":"title-edit","kind":"edit","text":"f4 %Ver %Platform","x":31,"y":31,"w":60,"h":1}
+             ]},
+             {"id":"presentation","kind":"group","title":"Presentation","bordered":true,"x":29,"y":35,"w":64,"h":4,"children":[
+               {"id":"inherit-terminal-history","kind":"checkbox","text":"Inherit terminal history in new tabs","state":1,"x":31,"y":36,"w":60,"h":1}
              ]}
            ]},
           {"id":"description","kind":"group","x":29,"y":19,"w":67,"h":4,"scrollable":true,"scrollTop":0,"contentHeight":3,"children":[
@@ -4577,6 +4638,8 @@ void F4OperationsQueueTests::settingsDecorationsAndViewportStayPixelAligned()
         "themeComboBoxIndicator", "contrastCheckBoxIndicator", "contrastCheckBoxCheckMark",
         "fontGroupTitle", "font-labelText", "font-editEditTextInput",
         "titlesGroupTitle", "title-labelText", "title-editEditTextInput",
+        "presentationGroupTitle", "inherit-terminal-historyCheckBoxText",
+        "inherit-terminal-historyCheckBoxIndicator", "inherit-terminal-historyCheckBoxCheckMark",
         "description-textText", "applyButtonText", "okButtonText", "cancelButtonText"
     };
     for (const auto &name : names) {
@@ -4584,7 +4647,7 @@ void F4OperationsQueueTests::settingsDecorationsAndViewportStayPixelAligned()
         QTRY_VERIFY2((leaf = visualItem(root, "dialogWidget-" + name)), qPrintable(name));
         checkGrid(leaf);
     }
-    for (const auto &group : {"language", "colors", "font", "titles"}) {
+    for (const auto &group : {"language", "colors", "font", "titles", "presentation"}) {
         for (const auto &part : {"GroupBorder", "GroupTitleBackground"}) {
             auto *item = visualItem(root, "dialogWidget-" + QString(group) + part);
             QVERIFY(item);
@@ -5292,6 +5355,48 @@ void F4OperationsQueueTests::settingsRadiosExpandAndStayPixelAligned()
 // Replay the actual settings owner exports, not a reduced synthetic dialog.
 // Export with TestSettingsProfileFixtures (F4_SETTINGS_PROFILE_DIR).
 // Run with F4_SETTINGS_REPLAY_DIR; ordinary regression runs skip this benchmark.
+void F4OperationsQueueTests::viewerSearchSceneReplayProfile()
+{
+    const auto directory = qEnvironmentVariable("F4_SEARCH_REPLAY_DIR");
+    if (directory.isEmpty()) QSKIP("Opt-in viewer search profile");
+    const auto load = [&](const QString &name) {
+        QFile file(QDir(directory).filePath(name + ".json"));
+        if (!file.open(QIODevice::ReadOnly)) return QVariantMap{};
+        return QJsonDocument::fromJson(file.readAll()).object().toVariantMap();
+    };
+    QueueFixture fixture(load("initial"));
+    QVERIFY(fixture.window);
+    fixture.window->resize(2194, 1186);
+    const auto settle = [&] {
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        QCoreApplication::processEvents();
+        fixture.window->grabWindow();
+    };
+    settle();
+    qulonglong searchRevision = 1000;
+    for (int cycle=0; cycle<4; ++cycle) {
+        for (int hit=0; hit<39; ++hit) {
+            for (const auto &phase : {QString("progress-%1").arg(hit,2,10,QChar('0')), QString("hit-%1").arg(hit,2,10,QChar('0'))}) {
+                if (qEnvironmentVariableIsSet("F4_SEARCH_REPLAY_SKIP_PROGRESS") && phase.startsWith("progress-")) continue;
+                auto scene=load(phase);
+                QVERIFY(!scene.isEmpty());
+                QElapsedTimer timer; timer.start();
+                if (qEnvironmentVariableIsSet("F4_SEARCH_REPLAY_INCREMENTAL")) {
+                    ++searchRevision;
+                    fixture.shell.overlayState()->applyDialogsState(QVariantMap{{"dialogs", scene.value("dialogs")}}, searchRevision);
+                    fixture.shell.surfaceRegistry()->applyDocument(scene.value("surface").toMap(), searchRevision);
+                } else {
+                    fixture.shell.setScene(scene);
+                }
+                const auto apply=timer.nsecsElapsed();
+                settle();
+                qInfo().noquote() << QString("SEARCH_REPLAY cycle=%1 hit=%2 phase=%3 apply_ms=%4 frame_ms=%5")
+                    .arg(cycle).arg(hit).arg(phase).arg(apply/1e6,0,'f',3).arg(timer.nsecsElapsed()/1e6,0,'f',3);
+            }
+        }
+    }
+}
+
 void F4OperationsQueueTests::settingsSceneReplayProfile()
 {
     const auto directory = qEnvironmentVariable("F4_SETTINGS_REPLAY_DIR");

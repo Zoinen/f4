@@ -72,8 +72,9 @@ func parseReportDisplayLine(line string, styleFieldName bool) reportDisplayLine 
 		return display
 	}
 	display.fieldName = name
-	display.fieldColumn = runewidth.StringWidth(prefix)
-	display.value = line[delimiter:]
+	// Keep the value's console column while leaving the separator blank.
+	display.fieldColumn = runewidth.StringWidth(prefix) + len(" : ")
+	display.value = line[delimiter+len(" : "):]
 	return display
 }
 

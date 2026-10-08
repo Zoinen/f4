@@ -393,12 +393,7 @@ QObject *F4GalleryBridge::sessionForPanel(const QString &panelId,
     if (!validSide(side)) {
         return nullptr;
     }
-    const SideState &state = m_panelSessions.catalog(side);
-    if (!panelId.isEmpty() && state.initialized
-        && state.panelId != panelId) {
-        return nullptr;
-    }
-    return m_panelSessions.session(side);
+    return m_panelSessions.sessionForPanel(side, panelId);
 }
 
 void F4GalleryBridge::notifyRenderSynchronized()

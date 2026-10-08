@@ -559,6 +559,7 @@ Rectangle {
                      ? Qt.IBeamCursor : Qt.ArrowCursor
         z: 8
         onPressed: mouse => {
+            hostWindow.focusTarget.forceActiveFocus()
             editorCursor.restartBlink()
             if (frame.kind === "editor") {
                 documentRoot.sendEditorMouse(mouse, "press", false, false)
@@ -650,6 +651,15 @@ Rectangle {
         // both viewers and editors.  Only button/drag selection events
         // need the canonical Go editor mouse handler.
         onWheel: wheel => documentRoot.handleWheel(wheel)
+    }
+
+    TapHandler {
+        parent: documentList
+        enabled: documentRoot.frame.kind === "viewer"
+                 && !documentRoot.viewerSelectionEnabled
+                 && documentRoot.inputPresentationActive
+        acceptedButtons: Qt.LeftButton
+        onTapped: documentRoot.hostWindow.focusTarget.forceActiveFocus()
     }
 
     // The browser-style middle gesture owns a stable panel-level pointer

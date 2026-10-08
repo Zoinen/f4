@@ -7,6 +7,8 @@ f4 je experimentální klon souborového manažeru Far Manager / far2l v jazyce 
 ~Vizuální přejmenování souborů (VisRen)~VisRen@
 ~Zobrazit README.md~README@
 
+~Přebírat historii terminálu do nových karet~TerminalHistoryInheritance@
+
 @VisRen
 $Vizuální přejmenování souborů (VisRen)
 
@@ -597,3 +599,11 @@ Kromě kurzorových kláves jsou k dispozici následující klávesové zkratky:
   Odstranit záznamy s neexistujícími cestami (s potvrzením) Ctrl+R
 
   Kopírovat vybranou cestu do schránky              Ctrl+C, Ctrl+Ins
+
+@TerminalHistoryInheritance
+$Přebírat historii terminálu do nových karet
+Kopíruje dokončený výstup terminálu z aktuální karty do nových karet. Každá karta spouští vlastní shell a další výstup zůstává v této kartě. Ve výchozím stavu vypnuto.
+
+Po použití změny se nastavení projeví v později otevřených kartách bez restartu. Stávající karty si ponechají svou historii. Výzva nečinného shellu, běžící programy ani stav shellu se nekopírují.
+
+[Panel] InheritTerminalHistory = 0 / 1 (settings.ini)

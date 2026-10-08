@@ -477,6 +477,7 @@ set(F4_LUCIDE_ICON_NAMES
   play.svg
   play-filled.svg
   refresh-cw.svg
+  repeat.svg
   rotate-ccw.svg
   rows-3.svg
   rows-4.svg
@@ -1392,6 +1393,10 @@ if(BUILD_TESTING)
 
   add_executable(F4QuickViewSurfaceTests
     tests/F4QuickViewSurfaceTests.cpp
+    src/WindowGeometryPersistence.h
+    src/WindowGeometryPersistence.cpp
+    src/F4IconProvider.h
+    src/F4IconProvider.cpp
     tests/TestExtUiStateController.h
     tests/TestExtUiStateController.cpp
     src/DummyQWK.h

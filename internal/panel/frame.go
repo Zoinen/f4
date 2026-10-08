@@ -414,6 +414,10 @@ func (pf *PanelsFrame) Active() Panel  { return pf.Panels[pf.ActiveIdx] }
 func (pf *PanelsFrame) Passive() Panel { return pf.Panels[1-pf.ActiveIdx] }
 
 func NewPanelsFrame() *PanelsFrame {
+	return newPanelsFrame(true)
+}
+
+func newPanelsFrame(startShell bool) *PanelsFrame {
 	pf := &PanelsFrame{ActiveIdx: 1, WidePanel: -1, FolderHistoryPos: [2]int{-1, -1}}
 	// The scheduler fires from a timer goroutine long after this returns, so it
 	// must not read the vtui.FrameManager global then: a test that swaps the
@@ -492,7 +496,9 @@ func NewPanelsFrame() *PanelsFrame {
 		logWindowsReflowRemoved()
 	}
 	// Parser will be fully initialized in initPTY once pty is ready
-	pf.InitPTY()
+	if startShell {
+		pf.InitPTY()
+	}
 	pf.TermView.Pty = pf.Pty
 	installPanelDropTarget(pf)
 
@@ -5720,7 +5726,8 @@ func (pf *PanelsFrame) forkPanelsClone() *PanelsFrame {
 }
 
 func (pf *PanelsFrame) Clone() *PanelsFrame {
-	clone := NewPanelsFrame()
+	// Start the new workspace's shell after its panel paths and layout are ready.
+	clone := newPanelsFrame(false)
 	if pf.LastW > 0 && pf.LastH > 0 {
 		clone.ResizeConsole(pf.LastW, pf.LastH)
 	}
@@ -5793,8 +5800,8 @@ func (pf *PanelsFrame) Clone() *PanelsFrame {
 	clone.Wide = pf.Wide
 	clone.ShellMode = pf.ShellMode
 
-	if pf.TermView != nil && clone.TermView != nil {
-		clone.TermView.CloneStateFrom(pf.TermView)
+	if config.App.InheritTerminalHistory && pf.TermView != nil && clone.TermView != nil {
+		clone.TermView.CloneHistoryFrom(pf.TermView, !pf.IsPtyBusy())
 	}
 	if clone.LastW > 0 && clone.LastH > 0 {
 		clone.ResizeConsole(clone.LastW, clone.LastH)
@@ -5811,6 +5818,7 @@ func (pf *PanelsFrame) Clone() *PanelsFrame {
 			}
 		}
 	}
+	clone.InitPTY()
 	return clone
 }
 

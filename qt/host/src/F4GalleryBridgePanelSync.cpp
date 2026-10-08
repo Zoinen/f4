@@ -905,7 +905,12 @@ void F4GalleryBridge::synchronizePanel(int side, const QVariantMap &panel)
         QStringLiteral("qt.gallery.bridge.panel"), mediaFields);
     acknowledgePanelOpen(&context);
     tracePanelSyncBegin(context);
+    const bool identityChanged = context.identityChanged;
     handlePanelIdentityChange(&context);
+    // Compare revisions against the restored identity, never the previous tab.
+    if (identityChanged)
+        context = makePanelSyncContext(side, panel);
+    activatePanelSession(side, context.panelId);
     m_panelSnapshots[context.sideIndex] = panel;
     context.session = qobject_cast<ZoinGallery::GallerySession *>(
         m_panelSessions.session(side));

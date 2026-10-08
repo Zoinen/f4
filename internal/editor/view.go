@@ -4551,7 +4551,7 @@ func (ev *EditorView) Replace(pattern, replacement string, caseSensitive, revers
 		var err error
 		searchPattern, err = parseHexPatternToRegex(pattern)
 		if err != nil {
-			vtui.ShowMessage(" Error ", fmt.Sprintf("Invalid hex pattern:\n%v", err), []string{"&Ok"})
+			vtui.ShowMessageOn(ev, " Error ", fmt.Sprintf("Invalid hex pattern:\n%v", err), []string{"&Ok"})
 			return
 		}
 		regexp = true
@@ -4560,7 +4560,7 @@ func (ev *EditorView) Replace(pattern, replacement string, caseSensitive, revers
 
 		repBytes, err := parseHexReplacement(replacement)
 		if err != nil {
-			vtui.ShowMessage(" Error ", fmt.Sprintf("Invalid hex replacement:\n%v", err), []string{"&Ok"})
+			vtui.ShowMessageOn(ev, " Error ", fmt.Sprintf("Invalid hex replacement:\n%v", err), []string{"&Ok"})
 			return
 		}
 		var escapedRepl strings.Builder
@@ -4584,7 +4584,7 @@ func (ev *EditorView) Replace(pattern, replacement string, caseSensitive, revers
 		var err error
 		re, err = textsearch.BuildSearchRegex(searchPattern, caseSensitive, regexp, wholeWord)
 		if err != nil {
-			vtui.ShowMessage(" Error ", fmt.Sprintf("Invalid regular expression:\n%v", err), []string{"&Ok"})
+			vtui.ShowMessageOn(ev, " Error ", fmt.Sprintf("Invalid regular expression:\n%v", err), []string{"&Ok"})
 			return
 		}
 	}
@@ -4602,7 +4602,7 @@ func (ev *EditorView) Replace(pattern, replacement string, caseSensitive, revers
 					return
 				}
 				ctx.RunOnUI(func() {
-					vtui.ShowMessage(" Error ", "Failed to read file buffer.", []string{"&Ok"})
+					vtui.ShowMessageOn(ev, " Error ", "Failed to read file buffer.", []string{"&Ok"})
 				})
 				return
 			}
@@ -4626,7 +4626,7 @@ func (ev *EditorView) Replace(pattern, replacement string, caseSensitive, revers
 				})
 			} else {
 				ctx.RunOnUI(func() {
-					vtui.ShowMessage(i18n.Msg("Replace.ConfirmTitle"), i18n.Msg("Search.NotFound"), []string{i18n.Msg("vtui.Ok")})
+					vtui.ShowMessageOn(ev, i18n.Msg("Replace.ConfirmTitle"), i18n.Msg("Search.NotFound"), []string{i18n.Msg("vtui.Ok")})
 				})
 			}
 		})
@@ -5716,14 +5716,14 @@ func (ev *EditorView) saveToFile(afterSave func(), fullWrite bool) {
 			if destinationErr != nil {
 				ctx.RunOnUI(func() {
 					ev.Saving = false
-					vtui.ShowMessage(" Error ", fmt.Sprintf("Cannot create the new file without replacing an existing target:\n%v", destinationErr), []string{"&Ok"})
+					vtui.ShowMessageOn(ev, " Error ", fmt.Sprintf("Cannot create the new file without replacing an existing target:\n%v", destinationErr), []string{"&Ok"})
 				})
 				return
 			}
 			if !capabilities.HasAtomicNoReplaceRename {
 				ctx.RunOnUI(func() {
 					ev.Saving = false
-					vtui.ShowMessage(" Error ", fmt.Sprintf("This file system cannot safely create the new file without replacing a concurrent destination:\n%v", vfs.ErrNoReplaceUnsupported), []string{"&Ok"})
+					vtui.ShowMessageOn(ev, " Error ", fmt.Sprintf("This file system cannot safely create the new file without replacing a concurrent destination:\n%v", vfs.ErrNoReplaceUnsupported), []string{"&Ok"})
 				})
 				return
 			}
@@ -5806,10 +5806,10 @@ func (ev *EditorView) saveToFile(afterSave func(), fullWrite bool) {
 				ev.Saving = false
 				if useTemp {
 					vtui.DebugLog("EDITOR: Failed to create temp file for saving: %v", err)
-					vtui.ShowMessage(" Error ", fmt.Sprintf("Failed to create temporary file:\n%v", err), []string{"&Ok"})
+					vtui.ShowMessageOn(ev, " Error ", fmt.Sprintf("Failed to create temporary file:\n%v", err), []string{"&Ok"})
 				} else {
 					vtui.DebugLog("EDITOR: Failed to open file for direct saving: %v", err)
-					vtui.ShowMessage(" Error ", fmt.Sprintf("Failed to open file for writing:\n%v", err), []string{"&Ok"})
+					vtui.ShowMessageOn(ev, " Error ", fmt.Sprintf("Failed to open file for writing:\n%v", err), []string{"&Ok"})
 				}
 			})
 			return
@@ -5880,7 +5880,7 @@ func (ev *EditorView) saveToFile(afterSave func(), fullWrite bool) {
 			}
 			ctx.RunOnUI(func() {
 				ev.Saving = false
-				vtui.ShowMessage(" Error ", fmt.Sprintf("Failed to save data:\n%v", saveErr), []string{"&Ok"})
+				vtui.ShowMessageOn(ev, " Error ", fmt.Sprintf("Failed to save data:\n%v", saveErr), []string{"&Ok"})
 			})
 			return
 		}
@@ -5922,7 +5922,7 @@ func (ev *EditorView) saveToFile(afterSave func(), fullWrite bool) {
 				}
 				ctx.RunOnUI(func() {
 					ev.Saving = false
-					vtui.ShowMessage(" Error ", fmt.Sprintf("Failed to finalize save (rename failed):\n%v", err), []string{"&Ok"})
+					vtui.ShowMessageOn(ev, " Error ", fmt.Sprintf("Failed to finalize save (rename failed):\n%v", err), []string{"&Ok"})
 				})
 				return
 			}
@@ -6057,7 +6057,7 @@ func (ev *EditorView) saveToFile(afterSave func(), fullWrite bool) {
 					ev.StartIndexing()
 				}
 				if metadataErr != nil {
-					vtui.ShowMessage(" Warning ", fmt.Sprintf("File content was saved, but original metadata could not be restored:\n%v", metadataErr), []string{"&Ok"})
+					vtui.ShowMessageOn(ev, " Warning ", fmt.Sprintf("File content was saved, but original metadata could not be restored:\n%v", metadataErr), []string{"&Ok"})
 				}
 			} else {
 				// The content mutation already committed. Keep the old backing alive,
@@ -6069,7 +6069,7 @@ func (ev *EditorView) saveToFile(afterSave func(), fullWrite bool) {
 				ev.cleanState = ev.Pt.GetState()
 				ev.codepageRaw = nil
 				ev.edited = false
-				vtui.ShowMessage(" Warning ", fmt.Sprintf("File content was saved, but the file could not be reopened:\n%v", err), []string{"&Ok"})
+				vtui.ShowMessageOn(ev, " Warning ", fmt.Sprintf("File content was saved, but the file could not be reopened:\n%v", err), []string{"&Ok"})
 			}
 		})
 	})
@@ -6847,39 +6847,6 @@ func (ev *EditorView) GetWorkspaceTabMarker() string { return "E" }
 
 func (ev *EditorView) GetWorkspaceTabSurfaceKind() string { return "editor" }
 
-// showSearchProgressDialog shows the cancelable " Searching... " popup used
-// by Find and Find All while the buffer scan runs in the background.
-func showSearchProgressDialog(pattern string) (dlg *vtui.Window, btnCancel *vtui.Button) {
-	dlg = vtui.NewCenteredDialog(50, 8, i18n.Msg("Search.Searching"))
-	lbl := vtui.NewLabel(0, 0, fmt.Sprintf(i18n.Msg("Search.LookingFor"), pattern), nil)
-	dlg.AddItem(lbl)
-	btnCancel = vtui.NewButton(0, 0, i18n.Msg("vtui.Cancel"))
-	dlg.AddItem(btnCancel)
-
-	vbox := vtui.NewVBoxLayout(dlg.X1+2, dlg.Y1+2, 50-4, 8-4)
-	vbox.Add(lbl, vtui.Margins{}, vtui.AlignCenter)
-	vbox.Add(btnCancel, vtui.Margins{Top: 1}, vtui.AlignCenter)
-	vbox.Apply()
-
-	vtui.FrameManager.AddScreenHeadless(dlg)
-	return dlg, btnCancel
-}
-
-// RunSearchWithProgress shows the progress popup and runs worker in the
-// background. The cancel wiring lives here, on the UI thread: the Cancel
-// button and any other close of the dialog (Esc, F10, a border click) all
-// cancel the task, so a dismissed search can never resurface its result.
-// Wiring after RunAsync is race-free because queued UI tasks only run once
-// the current one returns. Must be called on the UI thread; workers close
-// dlg from their RunOnUI callback and must check ctx.Err() before acting.
-func RunSearchWithProgress(pattern string, worker func(ctx *vtui.TaskContext, dlg *vtui.Window)) (*vtui.Window, *vtui.TaskContext) {
-	dlg, btnCancel := showSearchProgressDialog(pattern)
-	ctx := vtui.RunAsync(func(c *vtui.TaskContext) { worker(c, dlg) })
-	btnCancel.OnClick = func() { ctx.Cancel(); dlg.Close() }
-	dlg.OnResult = func(int) { ctx.Cancel() }
-	return dlg, ctx
-}
-
 // searchSnapshotChunk bounds how much readSearchSnapshot asks for per read.
 // A lazily loaded buffer starts a fetch for every missing chunk it is asked
 // about, so requesting the whole file at once would spawn one goroutine per
@@ -7099,7 +7066,7 @@ func (ev *EditorView) Search(pattern string, caseSensitive, reverse, regexp, who
 		var err error
 		searchPattern, err = parseHexPatternToRegex(pattern)
 		if err != nil {
-			vtui.ShowMessage(" Error ", fmt.Sprintf("Invalid hex pattern:\n%v", err), []string{"&Ok"})
+			vtui.ShowMessageOn(ev, " Error ", fmt.Sprintf("Invalid hex pattern:\n%v", err), []string{"&Ok"})
 			return
 		}
 		regexp = true
@@ -7116,7 +7083,7 @@ func (ev *EditorView) Search(pattern string, caseSensitive, reverse, regexp, who
 		session := ev.editSession
 		delegate, canDelegate := ev.searchDelegation(regexp, wholeWord)
 
-		RunSearchWithProgress(searchPattern, func(ctx *vtui.TaskContext, dlg *vtui.Window) {
+		RunSearchWithProgressOn(ev, searchPattern, func(ctx *vtui.TaskContext, dlg *vtui.Window) {
 			defer ev.guardMapping("searching")()
 
 			// A file system that can search its own copy answers without the
@@ -7147,7 +7114,7 @@ func (ev *EditorView) Search(pattern string, caseSensitive, reverse, regexp, who
 				}
 				ctx.RunOnUI(func() {
 					dlg.Close()
-					vtui.ShowMessage(" Error ", "Failed to read file buffer.", []string{"&Ok"})
+					vtui.ShowMessageOn(ev, " Error ", "Failed to read file buffer.", []string{"&Ok"})
 				})
 				return
 			}
@@ -7156,7 +7123,7 @@ func (ev *EditorView) Search(pattern string, caseSensitive, reverse, regexp, who
 			if err != nil {
 				ctx.RunOnUI(func() {
 					dlg.Close()
-					vtui.ShowMessage(" Error ", fmt.Sprintf("Invalid regular expression:\n%v", err), []string{"&Ok"})
+					vtui.ShowMessageOn(ev, " Error ", fmt.Sprintf("Invalid regular expression:\n%v", err), []string{"&Ok"})
 				})
 				return
 			}
@@ -7180,7 +7147,7 @@ func (ev *EditorView) Search(pattern string, caseSensitive, reverse, regexp, who
 				if foundOffset != -1 {
 					ev.selectFoundPattern(foundOffset, matchLen)
 				} else {
-					vtui.ShowMessage(i18n.Msg("Search.Title"), i18n.Msg("Search.NotFound"), []string{i18n.Msg("vtui.Ok")})
+					vtui.ShowMessageOn(ev, i18n.Msg("Search.Title"), i18n.Msg("Search.NotFound"), []string{i18n.Msg("vtui.Ok")})
 				}
 			})
 		})
@@ -7203,7 +7170,9 @@ func (ev *EditorView) selectFoundPattern(off, length int) {
 	ev.CursorPos = end - ev.Li.GetLineOffset(ev.CursorLine)
 
 	ev.updateDesiredVisualCol()
-	ev.EnsureCursorVisible()
+	if !ev.searchMatchVisible(off, length) {
+		ev.EnsureCursorVisible()
+	}
 	vtui.FrameManager.Redraw()
 }
 

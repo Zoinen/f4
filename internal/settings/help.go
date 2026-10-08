@@ -31,6 +31,9 @@ func InstallHelp(language string) {
 			if f.Unavailable != "" {
 				topic.Lines = append(topic.Lines, vtui.WrapText(fmt.Sprintf(phrase("Unavailable: %s"), phrase(f.Unavailable)), dialog.GeneratedHelpLineWidth)...)
 			}
+			if f.ID == "InheritTerminalHistory" {
+				topic.Lines = append(topic.Lines, "", "~"+label+"~TerminalHistoryInheritance@")
+			}
 			vtui.GlobalHelpEngine.AddTopic(topic)
 			index.Lines = append(index.Lines, "~"+label+"~Setting."+f.ID+"@")
 		}

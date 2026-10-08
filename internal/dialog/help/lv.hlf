@@ -7,6 +7,8 @@ f4 ir eksperimentāls Far Manager / far2l failu pārvaldnieka klons Go valodā.
 ~Vizuālā failu pārdēvēšana (VisRen)~VisRen@
 ~Rādīt README.md~README@
 
+~Mantot termināļa vēsturi jaunās cilnēs~TerminalHistoryInheritance@
+
 @VisRen
 $Vizuālā failu pārdēvēšana (VisRen)
 
@@ -576,3 +578,11 @@ Papildus kursora taustiņiem ir pieejami šie īsinājumtaustiņi:
   Notīrīt neeksistējošus ceļus                         Ctrl+R
 
   Kopēt izvēlēto ceļu starpliktuvē                     Ctrl+C, Ctrl+Ins
+
+@TerminalHistoryInheritance
+$Mantot termināļa vēsturi jaunās cilnēs
+Kopē pabeigto termināļa izvadi no pašreizējās cilnes uz jaunām cilnēm. Katra cilne palaiž savu čaulu, un turpmākā izvade paliek šajā cilnē. Pēc noklusējuma izslēgts.
+
+Pēc izmaiņu piemērošanas iestatījums bez restartēšanas darbojas vēlāk atvērtajās cilnēs. Esošās cilnes saglabā savu vēsturi. Gaidošās čaulas uzvedne, darbojošās programmas un čaulas stāvoklis netiek kopēti.
+
+[Panel] InheritTerminalHistory = 0 / 1 (settings.ini)

@@ -69,6 +69,7 @@ This is the highest level of navigation, allowing the user to jump between entir
 *   **Rule:** `Ctrl+Tab` cycles forward through active screens; `Ctrl+Shift+Tab` cycles backward.
 *   **Visuals:** A switcher overlay appears in the center of the screen, showing titles and progress of all workspaces.
 *   **Commit:** The switch is finalized only when the `Ctrl` key is released.
+*   **Tab press:** Pressing the active tab switches immediately on mouse down to the previously active workspace. Repeated active-tab presses walk backward through a fixed activation order without recording those visits, wrapping after all live tabs. Ordinary keyboard and programmatic switches update history and start a fresh traversal; closed workspaces are skipped. Before any history is available, previous follows display-number order, wrapping from the first number to the last.
 
 #### Tier 1: The Reliable Cycle (`Tab` / `Shift+Tab`)
 
@@ -101,6 +102,8 @@ Hotkeys provide the fastest way to activate a specific function.
 
 #### Dialogs and Windows
 
+*   **Workspace scope:** A blocking dialog belongs to its originating tab. The Qt backdrop intercepts input only within that tab's content without darkening it; tabs and window controls remain accessible. Modal popups also leave the background undimmed. Background task results stay in their owning workspace without activating it. Editor and viewer search progress and result dialogs preserve the document underneath them.
+*   **Search progress:** Show the cancelable search progress popup only when the search is still running after 150 ms. Quick searches complete without changing focus or exposing a modal progress frame. Completion or cancellation suppresses any pending popup, including an already queued display callback.
 *   `Enter`: Triggers the "default" action. This is either the button marked as `IsDefault`, or the first actionable button in the tab order if none is marked. This applies even if an `Edit` field is focused.
 *   `Esc`: Closes the window or dialog.
 *   `F1`: Opens the help topic associated with the currently focused element.

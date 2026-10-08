@@ -1000,6 +1000,16 @@
     "unavailable": ""
   },
   {
+    "category": "terminal",
+    "description": "Copy completed terminal output from the current tab into new tabs. Each tab starts its own shell, and later output stays in that tab. Off by default.",
+    "group": "Presentation",
+    "id": "InheritTerminalHistory",
+    "kind": "boolean",
+    "label": "Inherit terminal history in new tabs",
+    "timing": "new workspaces",
+    "unavailable": ""
+  },
+  {
     "category": "history",
     "description": "Width of the command-history directory prefix while date-and-time display is active. Minimum four characters.",
     "group": "Presentation",

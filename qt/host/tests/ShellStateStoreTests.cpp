@@ -10,6 +10,7 @@ class ShellStateStoreTests final : public QObject
     Q_OBJECT
 
 private slots:
+    void equivalentWorkspaceMenuBarKeepsDelegates();
     void extractsOnlyFixedShellRoles();
     void unchangedStateDoesNotInvalidateBindings();
     void surfaceRegistryRejectsCatalogPayloads();
@@ -235,6 +236,30 @@ void ShellStateStoreTests::overlayRevisionIsPublishedAfterDialogPayload()
 
     QVERIFY(openingRevisionSawPayload);
     QVERIFY(closingRevisionSawEmpty);
+}
+
+void ShellStateStoreTests::equivalentWorkspaceMenuBarKeepsDelegates()
+{
+    OverlayStateStore overlays;
+    QVariantMap bar{
+        {QStringLiteral("id"), QStringLiteral("workspace-one-bar")},
+        {QStringLiteral("active"), false},
+        {QStringLiteral("items"), QVariantList{QVariantMap{
+            {QStringLiteral("index"), 0}, {QStringLiteral("text"), "Files"},
+            {QStringLiteral("checked"), false}}}},
+    };
+    overlays.applyMenuState({{"menuBar", bar}}, 1, false);
+    QSignalSpy changed(&overlays, &OverlayStateStore::menuBarChanged);
+    bar.insert("id", "workspace-two-bar");
+    overlays.applyMenuState({{"menuBar", bar}}, 2, false);
+    QCOMPARE(changed.count(), 0);
+    QCOMPARE(overlays.menuBar().value("id").toString(), QString("workspace-two-bar"));
+    bar.insert("active", true);
+    overlays.applyMenuState({{"menuBar", bar}}, 3, false);
+    QCOMPARE(changed.count(), 1);
+    bar.insert("items", QVariantList{QVariantMap{{"index", 0}, {"text", "Files"}, {"checked", true}}});
+    overlays.applyMenuState({{"menuBar", bar}}, 4, false);
+    QCOMPARE(changed.count(), 2);
 }
 
 QTEST_GUILESS_MAIN(ShellStateStoreTests)

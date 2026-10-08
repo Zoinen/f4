@@ -7,6 +7,8 @@ f4 to eksperymentalny klon Far Managera / far2l napisany w Go.
 ~Wizualna zmiana nazw (VisRen)~VisRen@
 ~Zmień README.md~README@
 
+~Dziedzicz historię terminala w nowych kartach~TerminalHistoryInheritance@
+
 @VisRen
 $Wizualna zmiana nazw (VisRen)
 
@@ -617,3 +619,11 @@ Oprócz klawiszy kursora dostępne są następujące skróty klawiszowe:
   Usuń wpisy z nieistniejącymi ścieżkami (potwierdz.) Ctrl+R
 
   Kopiuj wybraną ścieżkę do schowka                  Ctrl+C, Ctrl+Ins
+
+@TerminalHistoryInheritance
+$Dziedzicz historię terminala w nowych kartach
+Kopiuje zakończone wyjście terminala z bieżącej karty do nowych kart. Każda karta uruchamia własną powłokę, a późniejsze wyjście pozostaje w tej karcie. Domyślnie wyłączone.
+
+Po zastosowaniu zmiany ustawienie działa dla kart otwieranych później, bez ponownego uruchamiania. Istniejące karty zachowują swoją historię. Znak zachęty oczekującej powłoki, działające programy i stan powłoki nie są kopiowane.
+
+[Panel] InheritTerminalHistory = 0 / 1 (settings.ini)

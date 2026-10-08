@@ -13,6 +13,12 @@ type reportWindow struct {
 	onEditor func()
 }
 
+func (window *reportWindow) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
+	node := window.Window.SemanticNode(ctx)
+	node["sizeKey"] = "mediainfo.report"
+	return node
+}
+
 func (window *reportWindow) ProcessKey(event *vtinput.InputEvent) bool {
 	if event != nil && event.KeyDown && event.VirtualKeyCode == vtinput.VK_F4 {
 		if window.onEditor != nil {

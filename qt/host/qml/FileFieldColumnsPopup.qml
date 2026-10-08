@@ -1,7 +1,7 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
-import QtQuick.Controls
+import QtQuick.Controls.Basic
 import QtQuick.Layouts
 
 Popup {
@@ -16,7 +16,7 @@ Popup {
         const draft = []
         for (let index = 0; index < columns.length; ++index) {
             const id = String(columns[index].id || columns[index].role || "")
-            if (id.startsWith("exif."))
+            if ((panel.fileFieldDescriptors || []).some(field => String(field.id) === id))
                 draft.push({ fieldId: id, width: Number(columns[index].width || 12) })
         }
         fileFieldColumnDraft = draft
@@ -77,14 +77,16 @@ Popup {
         objectName: "fileFieldColumnsPopup-" + Number(panel.side || 0)
         parent: Overlay.overlay
         width: hostWindow.snapPx(430)
-        height: hostWindow.snapPx(356)
+        height: hostWindow.snapPx(Math.min(hostWindow.height - 12,
+            28 + 34 + 1 + 9 + 16
+            + (panel.fileFieldDescriptors || []).length * hostWindow.snapPx(34)
+            + Math.max(0, (panel.fileFieldDescriptors || []).length - 1) * hostWindow.snapPx(3)))
         padding: hostWindow.snapPx(8)
         modal: false
         dim: false
         z: 1002
         focus: false
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
-                     | Popup.CloseOnPressOutsideParent
         onAboutToShow: {
             const point = panelItem.mapToItem(
                             hostWindow.contentItem,
@@ -122,6 +124,25 @@ Popup {
                 }
             }
 
+            Flickable {
+                id: columnsViewport
+                objectName: "fileFieldColumnsViewport-" + Number(panel.side || 0)
+                width: fileFieldColumnsPopup.availableWidth
+                height: hostWindow.snapPx(Math.max(0, fileFieldColumnsPopup.availableHeight
+                    - fileFieldColumnsTitle.height - hostWindow.snapPx(34)
+                    - hostWindow.snapPx(1) - 3 * hostWindow.snapPx(3)))
+                contentWidth: width
+                contentHeight: columnsList.height
+                clip: true
+                boundsBehavior: Flickable.StopAtBounds
+                onMovementEnded: contentY = hostWindow.snapPx(contentY)
+                ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded; active: true }
+
+                Column {
+                    id: columnsList
+                    width: columnsViewport.width
+                    spacing: hostWindow.snapPx(3)
+
             Repeater {
                 id: fileFieldColumnRepeater
                 model: panel.fileFieldDescriptors || []
@@ -137,7 +158,7 @@ Popup {
                     readonly property bool selected: orderIndex >= 0
                     objectName: "fileFieldColumnRow-" + fieldId
                                 + "-" + Number(panel.side || 0)
-                    width: fileFieldColumnsPopup.availableWidth
+                    width: columnsList.width
                     height: hostWindow.snapPx(34)
                     radius: 4
                     color: columnRowPointer.containsMouse
@@ -370,6 +391,9 @@ Popup {
                         hoverEnabled: true
                         onClicked: fileFieldColumnsPopup.toggleFileFieldColumn(fieldId)
                     }
+                }
+            }
+
                 }
             }
 

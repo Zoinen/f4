@@ -1107,45 +1107,95 @@ func TestPanelsFrame_HiddenTerminalFirstRowDoesNotOpenMenu(t *testing.T) {
 	}
 }
 
-func TestPanelsFrame_Clone_TerminalData(t *testing.T) {
+func TestPanelsFrameCloneInheritsTerminalHistoryWhenEnabled(t *testing.T) {
+	oldConfig := config.App
+	t.Cleanup(func() { config.App = oldConfig })
+	config.App.InheritTerminalHistory = true
 	pf := NewPanelsFrame()
 	defer pf.Close()
-
-	// 1. Simulate complex terminal output
-	// Inject data directly into pt to simulate extruded history
-	pf.TermView.Pt.Insert(0, []byte("L1\nL2\n"))
-	pf.TermView.Li.UpdateAfterInsert(0, []byte("L1\nL2\n"))
-
-	// Simulate active grid data
-	pf.TermView.CursorY = 5
-	pf.TermView.Lines[4][0].Char = 'H' // Previous row
-	pf.TermView.Lines[5][0].Char = 'A' // Active row (will be wiped)
-	pf.TermView.CursorX = 1
-
+	pf.ResizeConsole(80, 25)
+	terminal.NewAnsiParser(pf.TermView, nil).Process([]byte("\x1b[Horiginal command\r\noriginal result\r\noriginal prompt>"))
+	sourceLog := string(pf.TermView.GetAllLogBytes())
 	clone := pf.Clone()
 	defer clone.Close()
-
-	// 2. Check if log is deep-copied
-	if clone.TermView.Pt.String() != "L1\nL2\n" {
-		t.Errorf("Terminal log not cloned. Got %q", clone.TermView.Pt.String())
+	cloneLog := string(clone.TermView.GetAllLogBytes())
+	if !strings.Contains(cloneLog, "original command\noriginal result") {
+		t.Fatalf("enabled history preference did not copy completed output: %q", cloneLog)
 	}
-
-	// 3. CRITICAL: Check if LineIndex is correctly pointing to the NEW pt
-	if clone.TermView.Li.LineCount() != 3 {
-		t.Errorf("Terminal LineIndex not synced in clone. Expected 3 lines, got %d", clone.TermView.Li.LineCount())
+	if strings.Contains(cloneLog, "original prompt>") {
+		t.Fatalf("history inheritance copied the idle shell prompt: %q", cloneLog)
 	}
-
-	// 4. Check if visual grid is copied
-	if clone.TermView.Lines[4][0].Char != 'H' {
-		t.Error("Terminal visual grid (Lines) history not copied to clone")
+	if got := string(pf.TermView.GetAllLogBytes()); got != sourceLog {
+		t.Fatalf("copying history changed the original terminal: %q", got)
 	}
-
-	// 5. Verify prompt reset logic
-	if clone.TermView.CursorX != 0 {
-		t.Errorf("Expected clone CursorX to be 0 after prompt wipe, got %d", clone.TermView.CursorX)
+	terminal.NewAnsiParser(clone.TermView, nil).Process([]byte("\x1b[Hnew shell startup\r\nnew result\r\nnew prompt>"))
+	cloneLog = string(clone.TermView.GetAllLogBytes())
+	if !strings.Contains(cloneLog, "original command\noriginal result\nnew shell startup\nnew result") {
+		t.Errorf("fresh shell overwrote copied output or left it out of order: %q", cloneLog)
 	}
-	if clone.TermView.Lines[5][0].Char != ' ' {
-		t.Error("Current terminal line was not cleared during clone")
+	if got := string(pf.TermView.GetAllLogBytes()); got != sourceLog {
+		t.Fatalf("new shell changed the original history: %q", got)
+	}
+	terminal.NewAnsiParser(pf.TermView, nil).Process([]byte("\r\noriginal later output\r\n"))
+	if got := string(clone.TermView.GetAllLogBytes()); got != cloneLog {
+		t.Fatalf("copied terminal history remained shared with the original: %q", got)
+	}
+}
+
+func TestPanelsFrameCloneStartsIndependentTerminal(t *testing.T) {
+	for _, showPanels := range []bool{true, false} {
+		name := "terminal"
+		if showPanels {
+			name = "panels"
+		}
+		t.Run(name, func(t *testing.T) {
+			pf := NewPanelsFrame()
+			defer pf.Close()
+			pf.ResizeConsole(80, 25)
+			pf.ShowPanels = showPanels
+
+			// Cover all three stores used to display terminal output.
+			history := []byte("source saved output\n")
+			pf.TermView.Pt.Insert(0, history)
+			pf.TermView.Li.UpdateAfterInsert(0, history)
+			var row []vtui.CharInfo
+			for _, r := range "source scrollback" {
+				row = append(row, vtui.CharInfo{Char: uint64(r), Attributes: terminal.DefaultTermAttr})
+			}
+			pf.TermView.GridHistory = [][]vtui.CharInfo{row}
+			pf.TermView.GridHistoryWrap = []bool{false}
+			terminal.NewAnsiParser(pf.TermView, nil).Process([]byte("\x1b[5;1Hsource live output\r\nsource prompt>"))
+			sourceLog := string(pf.TermView.GetAllLogBytes())
+
+			clone := pf.Clone()
+			defer clone.Close()
+			if clone.TermView == pf.TermView || clone.TermView.Pt == pf.TermView.Pt ||
+				clone.TermView.Li == pf.TermView.Li || clone.TermView.Engine == pf.TermView.Engine {
+				t.Fatal("new workspace shares the source terminal or its history storage")
+			}
+			if clone.TermView.Pt.Size() != 0 || len(clone.TermView.GridHistory) != 0 {
+				t.Errorf("new workspace inherited terminal history: %q", clone.TermView.GetAllLogBytes())
+			}
+			if got := strings.TrimSpace(string(clone.TermView.GetAllLogBytes())); got != "" {
+				t.Errorf("new workspace inherited terminal output: %q", got)
+			}
+			if got := string(pf.TermView.GetAllLogBytes()); got != sourceLog {
+				t.Fatalf("opening a new workspace changed the source terminal: %q", got)
+			}
+
+			terminal.NewAnsiParser(clone.TermView, nil).Process([]byte("\x1b[Hnew tab output\r\nnew prompt>"))
+			cloneLog := string(clone.TermView.GetAllLogBytes())
+			if !strings.Contains(cloneLog, "new tab output") || strings.Contains(cloneLog, "source ") {
+				t.Errorf("new workspace output is not isolated: %q", cloneLog)
+			}
+			if got := string(pf.TermView.GetAllLogBytes()); got != sourceLog {
+				t.Fatalf("new workspace output changed the source terminal: %q", got)
+			}
+			terminal.NewAnsiParser(pf.TermView, nil).Process([]byte("\r\nsource later output\r\n"))
+			if got := string(clone.TermView.GetAllLogBytes()); got != cloneLog {
+				t.Fatalf("source workspace output changed the new terminal: %q", got)
+			}
+		})
 	}
 }
 func TestPanelsFrame_Labels(t *testing.T) {
@@ -2119,9 +2169,12 @@ func TestPanelsFrame_Clone_Comprehensive(t *testing.T) {
 		t.Error("Clone failed to preserve individual item selection flag")
 	}
 
-	// 5. Verify Terminal State
-	if !strings.HasPrefix(string(clone.TermView.GetAllLogBytes()), "foo\n") {
-		t.Errorf("Clone failed to preserve terminal history: %q", string(clone.TermView.GetAllLogBytes()))
+	// 5. Terminal output stays in the original workspace.
+	if got := strings.TrimSpace(string(clone.TermView.GetAllLogBytes())); got != "" {
+		t.Errorf("Clone inherited terminal history: %q", got)
+	}
+	if got := string(pf.TermView.GetAllLogBytes()); !strings.HasPrefix(got, "foo\n") {
+		t.Errorf("Clone changed the original terminal history: %q", got)
 	}
 
 	// 6. Verify Active Panel index

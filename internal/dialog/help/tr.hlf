@@ -7,6 +7,8 @@ f4, Go dilinde yazılmış deneysel bir Far Manager / far2l kopyasıdır.
 ~Görsel Dosya Yeniden Adlandırma (VisRen)~VisRen@
 ~README.md dosyasını görüntüle~README@
 
+~Yeni sekmelerde terminal geçmişini devral~TerminalHistoryInheritance@
+
 @VisRen
 $Görsel Dosya Yeniden Adlandırma (VisRen)
 
@@ -645,3 +647,11 @@ $Klasör Geçmişi (Alt+F12)
   Yolları artık mevcut olmayan girişleri kaldır (onaylı) Ctrl+R
 
   Seçili yolu panoya kopyala                        Ctrl+C, Ctrl+Ins
+
+@TerminalHistoryInheritance
+$Yeni sekmelerde terminal geçmişini devral
+Geçerli sekmedeki tamamlanmış terminal çıktısını yeni sekmelere kopyalar. Her sekme kendi kabuğunu başlatır ve sonraki çıktı o sekmede kalır. Varsayılan olarak kapalıdır.
+
+Değişiklik uygulandıktan sonra yeniden başlatma gerekmeden daha sonra açılan sekmelerde geçerli olur. Mevcut sekmeler geçmişlerini korur. Bekleyen kabuğun istemi, çalışan programlar ve kabuğun durumu kopyalanmaz.
+
+[Panel] InheritTerminalHistory = 0 / 1 (settings.ini)

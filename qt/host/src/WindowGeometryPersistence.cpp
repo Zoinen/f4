@@ -1,6 +1,7 @@
 #include "WindowGeometryPersistence.h"
 
 #include <QEvent>
+#include <QCryptographicHash>
 #include <QGuiApplication>
 #include <QScreen>
 #include <QSettings>
@@ -8,6 +9,7 @@
 #include <QWindow>
 
 #include <algorithm>
+#include <cmath>
 
 namespace {
 constexpr auto settingsGroup = "MainWindowGeometry";
@@ -207,6 +209,27 @@ WindowGeometryPersistence::~WindowGeometryPersistence()
 {
     if (m_window)
         m_window->removeEventFilter(this);
+}
+
+QVariantMap WindowGeometryPersistence::dialogSize(const QString &key) const
+{
+    if (key.isEmpty()) return {};
+    m_settings->sync();
+    const auto hash = QCryptographicHash::hash(key.toUtf8(), QCryptographicHash::Sha256).toHex();
+    const auto size = m_settings->value(QStringLiteral("DialogSizes/") + QString::fromLatin1(hash)).toSizeF();
+    if (!std::isfinite(size.width()) || !std::isfinite(size.height())
+        || size.width() <= 0 || size.height() <= 0) return {};
+    return {{QStringLiteral("w"), size.width()}, {QStringLiteral("h"), size.height()}};
+}
+
+bool WindowGeometryPersistence::saveDialogSize(const QString &key, qreal width, qreal height)
+{
+    if (key.isEmpty() || !std::isfinite(width) || !std::isfinite(height)
+        || width <= 0 || height <= 0) return false;
+    const auto hash = QCryptographicHash::hash(key.toUtf8(), QCryptographicHash::Sha256).toHex();
+    m_settings->setValue(QStringLiteral("DialogSizes/") + QString::fromLatin1(hash), QSizeF(width, height));
+    m_settings->sync();
+    return m_settings->status() == QSettings::NoError;
 }
 
 PersistedWindowGeometry WindowGeometryPersistence::read(QSettings &settings)

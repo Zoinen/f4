@@ -87,6 +87,8 @@ Panel.View.Details=&Details
 Panel.View.Masonry=&Masonry
 Panel.ViewIcons=Icons
 Panel.ViewGrid=Grid
+Panel.View.Icons=Icons
+Panel.View.Grid=Grid
 
 Panels.Prompt=>
 
@@ -550,6 +552,10 @@ Action.Panel.GroupByModeText=Group by: VFS type / mode
 Action.Panel.GroupByKind=Group by: Object kind
 Action.Panel.GroupByHidden=Group by: Hidden
 Action.Panel.GroupByExecutable=Group by: Executable
+Action.History.ImportFar3=Import Far3 History
+Action.History.ImportFar3.Desc=Merge commands, viewer/editor and folder history from Far Manager 3
+Action.UserMenu.ImportFar3=Import Far Manager 3 User Menu
+Action.UserMenu.ImportFar3.Desc=Merge a Far Manager 3 user menu into the global F4 user menu
 
 Editor.GotoTitle=Go to position
 Editor.GotoLine=Line:
@@ -817,6 +823,7 @@ PanelSettings.CommandLineAutoComplete=Enable command line &auto-completion
 PanelSettings.AlwaysShowMenuBar=Always show &menu bar
 PanelSettings.RecordMacrosTo=Record macros to:
 PanelSettings.SearchExactOnHit=Quick Search: e&xact hits only, when present
+PanelSettings.SearchHideUnfocused=Hide command input when unfocused
 
 Jobs.Title=Background Jobs
 Jobs.BtnShow=&Show
@@ -1144,6 +1151,13 @@ History.EmptyFolders=Folders history is empty.
 History.EmptyCommands=Command history is empty.
 History.EmptyViewEdit=Viewer and editor history is empty.
 History.SourceUnavailable=The file system for this history entry is no longer available in either panel.
+History.Far3.Title=Import Far3 history
+History.Far3.Path=Far3 folder or history.db:
+History.Far3.Merge=Merge histories; skip duplicates.
+History.Far3.Import=&Import
+History.Far3.EmptyPath=Enter a Far3 folder, profile folder or history.db path.
+History.Far3.Result=Added %d commands, %d viewer/editor files and %d folders.\nSkipped %d unsupported records (plugin paths or external launches).
+History.Far3.NotFound=No Far3 installation or history.db found in this folder.
 
 UserMenu.LocalMenuTitle=Local menu
 UserMenu.MainMenuTitle=Main menu
@@ -1155,6 +1169,14 @@ UserMenu.CreateSubmenuTitle= Create Submenu
 UserMenu.LabelHotkey=Hot &key:
 UserMenu.LabelLabel=&Label:
 UserMenu.LabelCommand=&Command:
+UserMenu.Far3.Title=Import Far3 user menu
+UserMenu.Far3.Path=FarMenu.ini or Far folder:
+UserMenu.Far3.Merge=Merge into the global user menu.
+UserMenu.Far3.Draft=Import into the global menu draft.
+UserMenu.Far3.Empty=No user menu entries were found in this file.
+UserMenu.Far3.Result=Added %d top-level entries to the global user menu.
+UserMenu.Far3.Keep=Existing entries are kept.
+UserMenu.Far3.Apply=Apply saves the imported entries.
 
 Language.Title= Languages
 Language.Changed=Language changed.\nSome UI elements require application restart\nto fully apply the new language.
@@ -2174,6 +2196,8 @@ SettingsCenter.ConfirmMove.Description=Show the move destination and options dia
 SettingsCenter.ConfirmMove.Label=Confirm move
 SettingsCenter.ConsoleMode.Description=Use the embedded terminal, host terminal with f4 overlay, or host terminal without overlay. Unsupported host styles fall back according to terminal capabilities.
 SettingsCenter.ConsoleMode.Label=Terminal presentation
+SettingsCenter.InheritTerminalHistory.Description=Copy completed terminal output from the current tab into new tabs. Each tab starts its own shell, and later output stays in that tab. Off by default.
+SettingsCenter.InheritTerminalHistory.Label=Inherit terminal history in new tabs
 SettingsCenter.ConsoleTitleTemplate.Description=Format the host title with %State, %Ver, %Platform, %Backend, %Host, %User and %Admin.
 SettingsCenter.ConsoleTitleTemplate.Label=Window title template
 SettingsCenter.CtrlTabShowsMenu.Description=Open the workspace chooser with Ctrl+Tab instead of switching directly.
@@ -3379,62 +3403,14 @@ SettingsCenter.Matches=Matches: %d
 SettingsCenter.ClearSearch=Clear search
 SettingsCenter.HidePanelPathBar.Label=Hide panel path bars (GUI)
 SettingsCenter.HidePanelPathBar.Description=Hide the path, sorting and view controls above both graphical file panels. Ctrl+Shift+B toggles this setting.
-
-Presentation.GUI=GUI presentation
-Presentation.Text=Text presentation
-
-MacOSLocations.Title=macOS Locations
-
-WindowsLocations.Title=Windows locations
-WindowsLocations.DriveItem=Windows locations
-WindowsLocations.GalleryTitle=Gallery
-WindowsLocations.GalleryIndexingInstruction=Turn on indexing
-WindowsLocations.GalleryIndexingContent=Indexing must be turned on to use File Explorer Gallery.
-WindowsLocations.GalleryOpenIndexingSettings=&Open indexing settings
-WindowsLocations.GalleryCancel=&Cancel
-WindowsLocations.GallerySettingsErrorFmt=Could not open indexing settings:\n%v
-WindowsLocations.AccessErrorFmt=Cannot access folder:\n%s\n\n%v
-WindowsLocations.AccessUnavailable=This location is unavailable.
-WindowsLocations.AccessNotFolder=This location is not a folder.
-
-Panel.View.Icons=Icons
-Panel.View.Grid=Grid
-DiskMenu.MacOSLocations=macOS &Locations
-DiskMenu.MacOSLoading=Loading macOS locations…
-DiskMenu.ShellLoading=◌ Loading…
-DiskMenu.ShellEmpty=No Windows Shell locations
-
 SettingsCenter.Text.c925a11891b84dfcf3a6a35ab8064b4ff807efc9c9afac7df8081e91e3af0116=Command line
 SettingsCenter.CommandLineMultiline.Label=Multiline command input
 SettingsCenter.CommandLineMultiline.Description=Preserve line breaks and expand the command input upward as text wraps, in the console and GUI. Shift+Enter inserts a line break.
 SettingsCenter.CommandLineWordWrap.Label=Wrap command arguments
 SettingsCenter.CommandLineWordWrap.Description=Start each unquoted dash-prefixed argument on a new visual line and highlight its dash. Visual wrapping never changes the command.
-
-Action.History.ImportFar3=Import Far3 History
-Action.History.ImportFar3.Desc=Merge commands, viewer/editor and folder history from Far Manager 3
-History.Far3.Title=Import Far3 history
-History.Far3.Path=Far3 folder or history.db:
-History.Far3.Merge=Merge histories; skip duplicates.
-History.Far3.Import=&Import
-History.Far3.EmptyPath=Enter a Far3 folder, profile folder or history.db path.
-History.Far3.Result=Added %d commands, %d viewer/editor files and %d folders.\nSkipped %d unsupported records (plugin paths or external launches).
-History.Far3.NotFound=No Far3 installation or history.db found in this folder.
-
-UserMenu.Far3.Title=Import Far3 user menu
-UserMenu.Far3.Path=FarMenu.ini or Far folder:
-UserMenu.Far3.Merge=Merge into the global user menu.
-UserMenu.Far3.Draft=Import into the global menu draft.
-UserMenu.Far3.Empty=No user menu entries were found in this file.
-UserMenu.Far3.Result=Added %d top-level entries to the global user menu.
-Action.UserMenu.ImportFar3=Import Far Manager 3 User Menu
-Action.UserMenu.ImportFar3.Desc=Merge a Far Manager 3 user menu into the global F4 user menu
 SettingsCenter.Text.2c3ddb3c1528cff83c63ad44c6c129d966a6dc63da9fdab8f8080dfeaa1354e3=Import Far Manager 3 user menu
 SettingsCenter.Text.09c4464a863191a292d14cb10ea4ae0a37dd34d7864363125ee5920194a08eb2=Merge a FarMenu.ini into the global user menu draft. Existing entries are preserved; Apply saves the import.
 SettingsCenter.Text.2cff9baabf56ca002610e113bc94deb6ededddfc3c130365b6e88ed5195bf774=Import
-UserMenu.Far3.Keep=Existing entries are kept.
-UserMenu.Far3.Apply=Apply saves the imported entries.
-
-PanelSettings.SearchHideUnfocused=Hide command input when unfocused
 SettingsCenter.SearchCommandHideUnfocused.Label=Hide command input when unfocused
 SettingsCenter.SearchCommandHideUnfocused.Description=In Search-first mode, hide the command line when the panel has focus and the input is empty. Press the tilde key to show it.
 SettingsCenter.Category.hotkeys=Hotkey Configurator
@@ -3461,6 +3437,31 @@ SettingsCenter.PanelGroupMediumMiB.Description=Inclusive upper bound. Positive, 
 SettingsCenter.PanelGroupLargeMiB.Label=Large group limit (MiB)
 SettingsCenter.PanelGroupLargeMiB.Description=Inclusive upper bound. Positive, strictly increasing limits apply to size and size on disk.
 SettingsCenter.Text.b3c6e63fa9679a23c1d76910f6fc574d71dcd6ffb6079b757a4a9d8c85398e86=Grouping
+SettingsCenter.Text.9fb91ebdbc1a603742372beb7791e16282939355448d3b0348e5bc1fb500d1af=NetFox
+SettingsCenter.Text.6d95efc3b38d12c398196dc98b4ca0b83d5fde37c8fab034c1605b07fb3a3427=Import OpenSSH profiles
+SettingsCenter.Text.5aeb6c864277eccc42d8da93eb3faa803aca655999fc7103ab17f97f13ae40b5=Show named profiles from ~/.ssh/config in the NetFox connection list and use their host, user, port, and identity settings.
+
+Presentation.GUI=GUI presentation
+Presentation.Text=Text presentation
+
+MacOSLocations.Title=macOS Locations
+
+WindowsLocations.Title=Windows locations
+WindowsLocations.DriveItem=Windows locations
+WindowsLocations.GalleryTitle=Gallery
+WindowsLocations.GalleryIndexingInstruction=Turn on indexing
+WindowsLocations.GalleryIndexingContent=Indexing must be turned on to use File Explorer Gallery.
+WindowsLocations.GalleryOpenIndexingSettings=&Open indexing settings
+WindowsLocations.GalleryCancel=&Cancel
+WindowsLocations.GallerySettingsErrorFmt=Could not open indexing settings:\n%v
+WindowsLocations.AccessErrorFmt=Cannot access folder:\n%s\n\n%v
+WindowsLocations.AccessUnavailable=This location is unavailable.
+WindowsLocations.AccessNotFolder=This location is not a folder.
+
+DiskMenu.MacOSLocations=macOS &Locations
+DiskMenu.MacOSLoading=Loading macOS locations…
+DiskMenu.ShellLoading=◌ Loading…
+DiskMenu.ShellEmpty=No Windows Shell locations
 
 Group.Menu=Group by…
 Group.Menu.Desc=Show panel grouping modes

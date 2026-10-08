@@ -7,6 +7,8 @@ f4 yra eksperimentinis Far Manager / far2l failų tvarkyklės klonas Go kalba.
 ~Vizualusis failų pervardijimas (VisRen)~VisRen@
 ~Rodyti README.md~README@
 
+~Paveldėti terminalo istoriją naujose kortelėse~TerminalHistoryInheritance@
+
 @VisRen
 $Vizualusis failų pervardijimas (VisRen)
 
@@ -578,3 +580,11 @@ Be žymeklio klavišų, galimos šios nuorodos:
   Išvalyti neegzistuojančius kelius                  Ctrl+R
 
   Nukopijuoti pasirinktą kelią į iškarpinę              Ctrl+C, Ctrl+Ins
+
+@TerminalHistoryInheritance
+$Paveldėti terminalo istoriją naujose kortelėse
+Kopijuoja užbaigtą terminalo išvestį iš dabartinės kortelės į naujas korteles. Kiekviena kortelė paleidžia atskirą komandų interpretatorių, o vėlesnė išvestis lieka toje kortelėje. Pagal numatytąją nuostatą išjungta.
+
+Pritaikius pakeitimą, jis galioja vėliau atidaromoms kortelėms be paleidimo iš naujo. Esamos kortelės išsaugo savo istoriją. Laukiančio komandų interpretatoriaus raginimas, vykdomos programos ir interpretatoriaus būsena nekopijuojami.
+
+[Panel] InheritTerminalHistory = 0 / 1 (settings.ini)

@@ -239,9 +239,11 @@ type postedTaskExecution struct {
 
 // frameManager manages multiple screens and the main application loop.
 type frameManager struct {
-	Screens           []*AppScreen
-	ActiveIdx         int
-	activationHistory []*AppScreen
+	Screens                  []*AppScreen
+	ActiveIdx                int
+	activationHistory        []*AppScreen
+	activationTraversal      []*AppScreen
+	activationTraversalIndex int
 
 	frames            []Frame // Points to the active screen's frame stack
 	scr               *ScreenBuf
@@ -573,6 +575,7 @@ func (fm *frameManager) screenIndex(target *AppScreen) int {
 }
 
 func (fm *frameManager) rememberActiveScreen() {
+	fm.activationTraversal = nil
 	if fm.ActiveIdx < 0 || fm.ActiveIdx >= len(fm.Screens) {
 		return
 	}
@@ -611,6 +614,10 @@ func (fm *frameManager) GetActiveFrames(sIdx int) []Frame {
 }
 
 func (fm *frameManager) SwitchScreen(idx int) {
+	fm.switchScreen(idx, true)
+}
+
+func (fm *frameManager) switchScreen(idx int, recordActivation bool) {
 	if idx < 0 || idx >= len(fm.Screens) {
 		return
 	}
@@ -624,7 +631,9 @@ func (fm *frameManager) SwitchScreen(idx int) {
 	}
 
 	fm.SyncCurrentScreen()
-	fm.rememberActiveScreen()
+	if recordActivation {
+		fm.rememberActiveScreen()
+	}
 
 	// Workspace order is stable. Activation changes only the active index;
 	// it never moves a workspace or changes its persistent Number.
@@ -813,6 +822,8 @@ func (fm *frameManager) Init(scr *ScreenBuf) {
 	fm.Screens = []*AppScreen{{Number: 1, Frames: fm.frames}}
 	fm.ActiveIdx = 0
 	fm.activationHistory = nil
+	fm.activationTraversal = nil
+	fm.activationTraversalIndex = 0
 	fm.mousePositionKnown = false
 	fm.WorkspaceTabMode = WorkspaceTabsMultiple
 	fm.WorkspaceCtrlTabMode = WorkspaceCtrlTabDirect
@@ -1001,12 +1012,10 @@ func (fm *frameManager) PushToFrameScreen(anchor Frame, f Frame) {
 				} else {
 					// Target is background screen
 					s.Frames = append(s.Frames, f)
-					// Initialize focus state for the new frame
-					f.ProcessKey(&vtinput.InputEvent{Type: vtinput.FocusEventType, SetFocus: true})
-					// Auto-switch to this screen if the frame is modal (pull user attention)
-					if f.IsModal() {
-						fm.SwitchScreen(i)
-					}
+					// Modality is local to this screen. Focus is acquired when the
+					// user activates its tab, not when a background task completes.
+					f.ProcessKey(&vtinput.InputEvent{Type: vtinput.FocusEventType, SetFocus: false})
+					fm.Redraw()
 				}
 				return
 			}
@@ -4057,7 +4066,11 @@ func (fm *frameManager) dispatchEventWithPaste(ev *vtinput.InputEvent, is_inject
 					if mx >= hit.x1 && mx <= hit.x2 {
 						fm.workspaceTabDrag = fm.Screens[hit.index]
 						fm.workspaceTabDragHits = append(fm.workspaceTabDragHits[:0], fm.workspaceTabHits...)
-						fm.SwitchScreen(hit.index)
+						if hit.index == fm.ActiveIdx {
+							fm.switchPreviousScreen()
+						} else {
+							fm.SwitchScreen(hit.index)
+						}
 						return true
 					}
 				}

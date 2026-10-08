@@ -437,6 +437,39 @@ func TestTerminalSemanticCommandLineOverlayOmitsIdlePromptAndCursor(t *testing.T
 	}
 }
 
+func TestTerminalSemanticHistoryAndActiveOutputStayContiguous(t *testing.T) {
+	vtui.SetDefaultPalette()
+	tv := seededTerminalSemanticHistory(t, 80, 8, 2)
+	defer tv.Close()
+	tv.SetVisible(true)
+	tv.SetFocus(true)
+	parser := NewAnsiParser(tv, nil)
+	parser.Process([]byte("\x1b[Hnew output\r\nC:\\work>"))
+	model := tv.SemanticModelWithBottomOverlay(nil, 1)
+	text := terminalModelText(semantic.AppMapSlice(model.ToMap()["windowRows"]))
+	if !strings.Contains(text, "row-000001 payload\nnew output\n") {
+		t.Fatalf("history and current output were separated by grid padding: %q", text)
+	}
+	if strings.Contains(text, "C:\\work>") || model.CursorVisible {
+		t.Fatalf("idle shell prompt or cursor leaked into history: %q cursor=%v", text, model.CursorVisible)
+	}
+}
+
+func TestTerminalSemanticOverlayHidesPromptAboveStaleGridTail(t *testing.T) {
+	vtui.SetDefaultPalette()
+	tv := NewTerminalView(80, 8)
+	defer tv.Close()
+	tv.SetVisible(true)
+	tv.SetFocus(true)
+	parser := NewAnsiParser(tv, nil)
+	parser.Process([]byte("\x1b[Hcommand output\r\nC:\\work>\x1b[8;1Hstale startup banner\x1b[2;9H"))
+	model := tv.SemanticModelWithBottomOverlay(nil, 1)
+	text := terminalModelText(semantic.AppMapSlice(model.ToMap()["windowRows"]))
+	if !strings.Contains(text, "command output") || strings.Contains(text, "C:\\work>") || strings.Contains(text, "stale startup") || model.CursorVisible {
+		t.Fatalf("idle projection retained prompt/stale tail or lost output: %q cursor=%v", text, model.CursorVisible)
+	}
+}
+
 func BenchmarkTerminalSemanticWindow100K(b *testing.B) {
 	vtui.SetDefaultPalette()
 	tv := seededTerminalSemanticHistory(b, 120, 40, 100_000)

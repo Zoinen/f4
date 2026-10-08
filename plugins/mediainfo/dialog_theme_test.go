@@ -7,6 +7,32 @@ import (
 	"github.com/unxed/vtui"
 )
 
+func TestReportViewOmitsSeparatorColonAndKeepsValueColumn(t *testing.T) {
+	lines := []string{"Title    : Example", "Duration : 12:34", "URL      : https://example.com"}
+	view := newReportTextView(2, 2, 45, 3, lines, true)
+	screen := vtui.NewSilentScreenBuf()
+	screen.AllocBuf(80, 25)
+	view.Show(screen)
+	values := []string{"Example", "12:34", "https://example.com"}
+	for row, value := range values {
+		valueX := view.X1 + strings.Index(lines[row], " : ") + len(" : ")
+		for x := view.X1 + len(view.lines[row].fieldName); x < valueX; x++ {
+			if cell := screen.GetCell(x, view.Y1+row); cell.Char != ' ' {
+				t.Fatalf("field separator at (%d,%d) = %q, want a space", x, view.Y1+row, rune(cell.Char))
+			}
+		}
+		for index, char := range value {
+			if cell := screen.GetCell(valueX+index, view.Y1+row); cell.Char != uint64(char) {
+				t.Fatalf("value at row %d column %d = %q, want %q", row, index, rune(cell.Char), char)
+			}
+		}
+		fields := view.SemanticNode(nil)["itemFields"].([]map[string]any)
+		if fields[row]["value"] != value {
+			t.Fatalf("Qt value = %q, want %q", fields[row]["value"], value)
+		}
+	}
+}
+
 func TestReportViewUsesDialogThemeAndDimsFieldNames(t *testing.T) {
 	oldText := vtui.Palette[vtui.ColDialogText]
 	oldSelected := vtui.Palette[vtui.ColDialogSelectedButton]

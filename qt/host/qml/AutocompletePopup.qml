@@ -16,6 +16,17 @@ Item {
     property real hoveredSceneY: 0
 
     property bool pointerWarpPending: false
+    readonly property var inputAnchor: {
+        const revision = hostWindow.dropdownAnchorRevision
+        return revision >= 0 ? hostWindow.dropdownAnchorForId(frame.ownerId) : null
+    }
+    property rect inputRect: Qt.rect(0, 0, 0, 0)
+    function syncInputRect() {
+        if (inputAnchor)
+            inputRect = inputAnchor.mapToItem(hostWindow.contentItem, 0, 0,
+                                             inputAnchor.width, inputAnchor.height)
+    }
+    onInputAnchorChanged: Qt.callLater(syncInputRect)
 
     function preserveHoveredRow() {
         if (!hoveredRow)
@@ -48,6 +59,7 @@ Item {
 
     Connections {
         target: autocompleteOverlay.hostWindow
+        function onAfterAnimating() { autocompleteOverlay.syncInputRect() }
         function onFrameSwapped() {
             if (!autocompleteOverlay.pointerWarpPending || !autocompleteOverlay.hoveredRow)
                 return
@@ -77,8 +89,8 @@ Item {
     // ListView has a 4 px inset and each row has another 8 px text
     // inset. Offset the panel itself so the glyphs—not its border—
     // align with the command-line input.
-    readonly property real preferredX: Math.max(0, inputTextX - 12)
-    readonly property real rowHeight: Math.max(22, hostWindow.ch * 1.15)
+    readonly property real preferredX: hostWindow.snapPx(Math.max(0, inputAnchor ? inputRect.x : inputTextX - 12))
+    readonly property real rowHeight: hostWindow.snapPx(Math.max(22, hostWindow.ch * 1.15))
     readonly property real maxHeight: Math.max(rowHeight + 8,
                                                commandLineY - hostWindow.menuBarHeight)
     readonly property real availableWidth: Math.max(1,
@@ -105,36 +117,35 @@ Item {
                         ? 13 : 18
     }
 
-    MouseArea {
-        anchors.fill: parent
+    PointHandler {
+        target: null
         acceptedButtons: Qt.AllButtons
-        hoverEnabled: true
-        preventStealing: true
-        onPressed: (mouse) => {
-            const point = mapToItem(hintsPanel, mouse.x, mouse.y)
-            if (!hintsPanel.contains(point)) {
+        onActiveChanged: {
+            if (!active) return
+            const mapped = autocompleteOverlay.mapToItem(hintsPanel, point.position.x, point.position.y)
+            if (!hintsPanel.contains(mapped)) {
                 const shell = hostWindow.shellFrame()
                 hostWindow.action({
-                    "target": hostWindow.cleanText(shell.id) || frame.id,
-                    "action": "command.complete"
+                    "target": inputAnchor ? frame.id : hostWindow.cleanText(shell.id) || frame.id,
+                    "action": inputAnchor ? "autocomplete.dismiss" : "command.complete"
                 }, true)
             }
-            mouse.accepted = true
         }
-        onReleased: (mouse) => { mouse.accepted = true }
-        onPositionChanged: (mouse) => { mouse.accepted = true }
-        onWheel: (wheel) => { wheel.accepted = false }
     }
 
     Rectangle {
         id: hintsPanel
+        objectName: "autocompleteHintsPanel"
         onYChanged: autocompleteOverlay.preserveHoveredRow()
         x: autocompleteOverlay.preferredX
-        y: Math.max(hostWindow.menuBarHeight,
-                    autocompleteOverlay.commandLineY - height)
-        width: Math.min(autocompleteOverlay.availableWidth,
-                        Math.max(80, autocompleteOverlay.contentWidth))
-        height: Math.min(autocompleteOverlay.maxHeight, Math.max(1, Math.min(12, autocompleteList.count)) * autocompleteOverlay.rowHeight + 8)
+        y: hostWindow.snapPx(autocompleteOverlay.inputAnchor
+            ? (autocompleteOverlay.inputRect.y + autocompleteOverlay.inputRect.height + height <= hostWindow.height - hostWindow.keyBarHeight()
+               ? autocompleteOverlay.inputRect.y + autocompleteOverlay.inputRect.height
+               : Math.max(hostWindow.menuBarHeight, autocompleteOverlay.inputRect.y - height))
+            : Math.max(hostWindow.menuBarHeight, autocompleteOverlay.commandLineY - height))
+        width: hostWindow.snapPx(Math.min(autocompleteOverlay.availableWidth,
+                        Math.max(80, autocompleteOverlay.contentWidth)))
+        height: hostWindow.snapPx(Math.min(autocompleteOverlay.maxHeight, Math.max(1, Math.min(12, autocompleteList.count)) * autocompleteOverlay.rowHeight + 8))
         color: "#202833"
         radius: 4
         border.width: 1
@@ -172,7 +183,7 @@ Item {
                     id: completionTextRow
                     anchors.left: parent.left
                     anchors.right: parent.right
-                    anchors.verticalCenter: parent.verticalCenter
+                    y: hostWindow.snapPx((parent.height - height) / 2)
                     anchors.leftMargin: 8
                     anchors.rightMargin: 8
                     readonly property string fullText: hostWindow.cleanText(modelData.text)
@@ -183,6 +194,9 @@ Item {
 
                     Text {
                         id: completionPrefixLabel
+                        objectName: "autocompletePrefix-" + hintRow.index
+                        width: hostWindow.snapPx(implicitWidth)
+                        height: hostWindow.snapPx(implicitHeight)
                         text: completionTextRow.fullText.substring(
                                   0, completionTextRow.matchingLength)
                         color: hostWindow.dialogAccent
@@ -191,8 +205,10 @@ Item {
                     }
 
                     Text {
+                        objectName: "autocompleteSuffix-" + hintRow.index
+                        height: hostWindow.snapPx(implicitHeight)
                         width: Math.max(0, completionTextRow.width
-                                        - completionPrefixLabel.implicitWidth)
+                                        - completionPrefixLabel.width)
                         text: completionTextRow.fullText.substring(
                                   completionTextRow.matchingLength)
                         color: hostWindow.textColor

@@ -6,6 +6,7 @@
 #include <QSize>
 #include <QString>
 #include <QTimer>
+#include <QVariantMap>
 
 #include <memory>
 
@@ -45,6 +46,9 @@ public:
     bool restoreDeferred();
     void showRestored();
     void save();
+
+    Q_INVOKABLE QVariantMap dialogSize(const QString &key) const;
+    Q_INVOKABLE bool saveDialogSize(const QString &key, qreal width, qreal height);
 
     static PersistedWindowGeometry read(QSettings &settings);
     static void write(QSettings &settings,

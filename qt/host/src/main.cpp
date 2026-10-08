@@ -505,6 +505,8 @@ int main(int argc, char *argv[])
     if (!savedRenderType.isEmpty())
         textRenderingPolicy.setRenderTypeByName(savedRenderType);
 
+    WindowGeometryPersistence dialogGeometry(nullptr, parser.value(windowGeometryFileOption));
+    engine.rootContext()->setContextProperty(QStringLiteral("qtDialogGeometry"), &dialogGeometry);
     engine.rootContext()->setContextProperty(QStringLiteral("qtTheme"), &themePersistence);
     engine.rootContext()->setContextProperty(QStringLiteral("qtTextRendering"),
                                               &textRenderingPolicy);

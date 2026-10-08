@@ -34,6 +34,7 @@ FocusScope {
         return ({
             play: hostWindow.lucideIconSource("play", 18, tint),
             pause: hostWindow.lucideIconSource("pause", 18, tint),
+            loop: hostWindow.lucideIconSource("repeat", 18, tint),
             muted: hostWindow.lucideIconSource("volume-x", 18, tint),
             sound: hostWindow.lucideIconSource("volume-2", 18, tint)
         })

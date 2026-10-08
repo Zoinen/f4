@@ -50,6 +50,11 @@ cmake --build build --config RelWithDebInfo
 
 Video thumbnails and FFmpeg playback are enabled by default. The CMake options are:
 
+Video contact sheets keep the decoded video's display aspect ratio, including
+its visible viewport and rotation. The initial 16:9 geometry is only a temporary
+placeholder until a frame is decoded; catalog updates retain the discovered
+dimensions. The display-v4 thumbnail cache regenerates older padded sheets.
+
 - `F4_ENABLE_VIDEO_THUMBNAILS=OFF` removes Qt Multimedia, the video runner and
   the FFmpeg dependency from the host graph. Video entries then use ordinary
   file-icon geometry, even when an external catalog supplies video thumbnail
@@ -376,6 +381,22 @@ For visual debugging of the panel-to-image-viewer transition, start f4 with
 (3 seconds instead of the normal 150 ms). The setting is opt-in and is read
 when the Qt host starts; restart without it to restore normal timing.
 
+While dragging the panel divider, a chip over its top edge shows the left
+panel width as a percentage to two decimal places. It follows the actual
+snapped panel boundary; expand buttons return when dragging ends.
+
+Shell refreshes preserve focus in visible native path and title-bar controls.
+This lets the first click after window activation finish without a later panel
+update dismissing the path editor or taking focus from a pressed button.
+Blocking menus, dialogs, and document surfaces still receive their normal
+keyboard focus hand-off.
+
+Resized Qt dialogs remember their normal size across reopening and host restarts.
+Sizes use the window-geometry settings file and a dialog's semantic `sizeKey`,
+falling back to its title. MediaInfo uses `mediainfo.report` across all files.
+Restoration fits the available viewport without overwriting the saved preference;
+moving or maximizing a dialog does not replace its remembered normal size.
+
 Semantic dialog edits keep text mutation in Go's `vtui.Edit`. QML forwards
 modified keys even while the native text input owns focus, and publishes pointer
 selection as `control.select` with rune-based `anchor` and `cursor` offsets.
@@ -428,6 +449,19 @@ and icon names to the `menus` root patch, never either file-panel catalog.
 
 F4 opts into Gallery's live selection transactions. Held Shift/Insert and drag
 selection coalesce changed rows for 16 ms without ending the local gesture.
+Workspace activation retains up to eight native gallery sessions and eight
+renderer views per panel side. Catalogs are keyed by panel identity, with
+revision/path checks preserved for updates. Hidden sessions retain materialized
+rows but release in-flight metadata/page leases; hidden renderer views keep their
+layout and delegates. The adapter resolves the displayed panel's exact session,
+so catalogs arriving ahead of the shell cannot rebind the previous workspace.
+Shell snapshots capture the new descriptor before clearing compact overrides.
+Application menu delegates are instantiated while the menu is visible; changing
+only the menu-bar object ID does not invalidate equivalent presentation.
+
+Right-button drag selection can start in empty panel space. The first item
+reached anchors the range and determines whether to select or deselect it;
+releasing without reaching an item leaves selection unchanged.
 Each transaction carries stable IDs and source-index hints; Go validates the
 identities and updates warm status totals in O(changed rows). Its response uses
 panel-only `state_update` and `selection_delta` patches, without catalog rows or
@@ -443,3 +477,9 @@ schedules the existing debounced settings save without replying with a semantic
 scene or catalog update. File-table geometry is applied on the next ordinary
 console layout, outside the drag update path. The debounced save itself also
 declares that it needs no redraw.
+
+The video controls include a Lucide repeat toggle to the right of the volume
+slider. Loop changes apply during playback, including clips already fully
+buffered by the decoder. The native loop queue keeps frame delivery continuous
+at each boundary. Disabling loop finishes the current iteration; enabling it
+on an ended clip resumes playback, while paused clips stay paused.

@@ -92,6 +92,12 @@ The layout keeps search, categories and actions fixed. At 110 columns or wider t
 
 ## Core scalar controls
 
+Terminal / Presentation includes **Inherit terminal history in new tabs**.
+It is a shared Go setting (`Panel.InheritTerminalHistory` in `settings.ini`),
+off by default. Apply changes how the next tab is opened without restarting.
+The new tab optionally receives a copy of completed output, then starts its own
+shell; output after the copy remains independent in each tab.
+
 The original-dialog column links to the original implementation and its backing control, including duplicated access routes. Storage keys continue using existing INI formats. Consumer links identify implementation rather than help prose.
 
 | Canonical setting | Category / visible group | Original dialog/control implementation | Persistence | Consuming code | Description / timing |

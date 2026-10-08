@@ -288,8 +288,8 @@ QtObject {
         return result
     }
 
-    function preferredWorkspaceTabWidth(titleWidth, closeEnabled) {
-        const chromeWidth = closeEnabled === true ? 64 : 46
+    function preferredWorkspaceTabWidth(titleWidth) {
+        const chromeWidth = 46
         return snapPx(Math.min(hostWindow.workspaceTabMaxWidth,
                  Math.max(hostWindow.workspaceTabMinWidth,
                           Number(titleWidth || 0) + chromeWidth)))

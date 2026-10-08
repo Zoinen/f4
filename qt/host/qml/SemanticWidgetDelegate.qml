@@ -397,11 +397,16 @@ Item {
                     required property int index
                     readonly property string iconName: (widget.itemIcons || [])[index] || ""
                     readonly property var itemState: (widget.itemStates || [])[index] || ({})
+                    readonly property var field: (widget.itemFields || [])[index] || ({})
+                    readonly property bool hasField: String(field.name || "") !== ""
+                    readonly property real fieldWidth: hasField
+                        ? hostWindow.snapPx(Math.min(hostWindow.pxW(widget.fieldColumnWidth || 1), width * 0.45)) : 0
                     readonly property bool checkable: itemState.checkable === true
                     readonly property real contentOpacity: itemState.dimmed === true ? 0.75 : 1
                     width: listView.width - (listScrollBar.visible ? listScrollBar.width : 0)
                     height: widget.wrapText === true
-                            ? hostWindow.snapPx(Math.max(21, listRowText.contentHeight) + 12)
+                            ? hostWindow.snapPx(Math.max(21, listRowText.contentHeight,
+                                                       hasField ? listFieldText.contentHeight : 0) + 12)
                             : hostWindow.snapPx(Math.max(21, hostWindow.ch))
                     radius: 4
                     color: widget.readOnly === true ? "transparent"
@@ -439,22 +444,45 @@ Item {
                         sourceSize: Qt.size(width * hostWindow.dpr, height * hostWindow.dpr)
                     }
                     Text {
+                        id: listFieldText
+                        objectName: "dialogWidget-" + hostWindow.cleanText(widget.id)
+                                    + "ListItemFieldText-" + listRow.index
+                        visible: listRow.hasField
+                        x: hostWindow.snapPx(8)
+                        width: listRow.fieldWidth
+                        height: listRow.height
+                        text: String(listRow.field.name || "")
+                        textFormat: Text.PlainText
+                        wrapMode: Text.Wrap
+                        opacity: 0.75 * listRow.contentOpacity
+                        color: hostWindow.textColor
+                        font: hostWindow.font
+                        verticalAlignment: Text.AlignTop
+                        topPadding: hostWindow.snapPx(6)
+                        transform: Translate {
+                            x: hostWindow.dialogPixelOffsetX(listFieldText, hostWindow.contentItem)
+                            y: hostWindow.dialogPixelOffsetY(listFieldText, hostWindow.contentItem)
+                        }
+                    }
+                    Text {
                         id: listRowText
                         objectName: "dialogWidget-"
                                     + hostWindow.cleanText(widget.id)
                                     + "ListItemText-" + listRow.index
                         anchors.fill: parent
                         anchors.leftMargin: hostWindow.snapPx((listRow.iconName !== "" ? 32 : 8)
-                                                               + (listRow.checkable ? 26 : 0))
+                                                               + (listRow.checkable ? 26 : 0)) + listRow.fieldWidth
                         opacity: listRow.contentOpacity
                         anchors.rightMargin: hostWindow.snapPx(8)
-                        text: widget.wrapText === true || listRow.checkable ? String(modelData)
+                        text: listRow.hasField ? String(listRow.field.value || "")
+                              : widget.wrapText === true || listRow.checkable ? String(modelData)
                               : hostWindow.mnemonicText(modelData, "")
                         textFormat: widget.wrapText === true || listRow.checkable ? Text.PlainText : Text.StyledText
                         wrapMode: widget.wrapText === true ? Text.Wrap : Text.NoWrap
                         color: hostWindow.textColor
                         font: hostWindow.font
-                        verticalAlignment: Text.AlignVCenter
+                        verticalAlignment: listRow.hasField ? Text.AlignTop : Text.AlignVCenter
+                        topPadding: listRow.hasField ? hostWindow.snapPx(6) : 0
                         elide: widget.wrapText === true ? Text.ElideNone : Text.ElideRight
                         transform: Translate {
                             x: hostWindow.dialogPixelOffsetX(

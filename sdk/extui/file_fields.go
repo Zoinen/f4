@@ -181,6 +181,15 @@ func init() {
 		{ID: "exif.lens_focal_range", Title: "Lens focal range", Kind: FileFieldRange, Unit: "mm", Format: "range", Precision: 0, Operations: strings.Fields(rangeOps)},
 		{ID: "exif.camera_model", Title: "Camera model", Kind: FileFieldText, Format: "text", Operations: strings.Fields(textOps)},
 		{ID: "exif.lens_model", Title: "Lens model", Kind: FileFieldText, Format: "text", Operations: strings.Fields(textOps)},
+		{ID: "media.duration", Title: "Duration", Kind: FileFieldNumber, Unit: "s", Format: "duration", Precision: 3, Operations: strings.Fields(numericOps)},
+		{ID: "media.bitrate", Title: "Overall bitrate", Kind: FileFieldNumber, Unit: "bit/s", Format: "bitrate", Operations: strings.Fields(numericOps)},
+		{ID: "media.format", Title: "Container format", Kind: FileFieldText, Format: "text", Operations: strings.Fields(textOps)},
+		{ID: "video.codec", Title: "Video codec", Kind: FileFieldText, Format: "text", Operations: strings.Fields(textOps)},
+		{ID: "video.bitrate", Title: "Video bitrate", Kind: FileFieldNumber, Unit: "bit/s", Format: "bitrate", Operations: strings.Fields(numericOps)},
+		{ID: "video.resolution", Title: "Video resolution", Kind: FileFieldText, Format: "text", Operations: strings.Fields(textOps)},
+		{ID: "video.frame_rate", Title: "Video frame rate", Kind: FileFieldNumber, Unit: "fps", Format: "quantity", Precision: 3, Operations: strings.Fields(numericOps)},
+		{ID: "audio.codec", Title: "Audio codec", Kind: FileFieldText, Format: "text", Operations: strings.Fields(textOps)},
+		{ID: "audio.bitrate", Title: "Audio bitrate", Kind: FileFieldNumber, Unit: "bit/s", Format: "bitrate", Operations: strings.Fields(numericOps)},
 	} {
 		if err := RegisterFileFieldDescriptor(descriptor); err != nil {
 			panic(err)
@@ -235,6 +244,19 @@ func (v FileFieldValue) Display() string {
 			return ""
 		}
 		switch {
+		case v.Format == "duration":
+			milliseconds := int64(math.Round(v.Number * 1000))
+			if milliseconds < 60_000 {
+				return strings.TrimRight(strings.TrimRight(formatDecimal(float64(milliseconds)/1000, 3), "0"), ".") + " s"
+			}
+			return fmt.Sprintf("%02d:%02d:%02d.%03d", milliseconds/3_600_000, milliseconds/60_000%60, milliseconds/1000%60, milliseconds%1000)
+		case v.Format == "bitrate":
+			if v.Number >= 1_000_000 {
+				return strings.TrimRight(strings.TrimRight(formatDecimal(v.Number/1_000_000, 2), "0"), ".") + " Mb/s"
+			}
+			return strings.TrimRight(strings.TrimRight(formatDecimal(v.Number/1000, 1), "0"), ".") + " kb/s"
+		case v.Unit == "fps":
+			return strings.TrimRight(strings.TrimRight(formatDecimal(v.Number, v.PrecisionOr(3)), "0"), ".") + " fps"
 		case v.Format == "exposure" || v.Unit == "s":
 			return formatExposure(v.Number)
 		case v.Format == "aperture" || v.Unit == "f":

@@ -2758,15 +2758,38 @@ void F4GalleryBridgeTests::panelIdentityReplacementResetsSession()
     firstScene.insert(QStringLiteral("shell"), shell);
     bridge.synchronizeScene(firstScene);
 
-    // There is exactly one virtual model per visible side. Swapping panel
-    // identities replaces those two bounded models in place; it must not keep
-    // complete off-screen sessions for previously visited panels.
+    auto *swappedLeft = qobject_cast<ZoinGallery::GallerySession *>(bridge.sessionForSide(0));
+    auto *swappedRight = qobject_cast<ZoinGallery::GallerySession *>(bridge.sessionForSide(1));
+    QVERIFY(swappedLeft != leftSession);
+    QVERIFY(swappedRight != rightSession);
+    QCOMPARE(swappedLeft->catalogRevision(), qulonglong(7));
+    QCOMPARE(swappedLeft->entryIdAt(0), QStringLiteral("right:one"));
+    QCOMPARE(swappedRight->catalogRevision(), qulonglong(42));
+    QCOMPARE(swappedRight->entryIdAt(0), QStringLiteral("left:one"));
+    QSignalSpy leftReset(leftSession->model(), &QAbstractItemModel::modelReset);
+    QSignalSpy rightReset(rightSession->model(), &QAbstractItemModel::modelReset);
+    left.insert(QStringLiteral("side"), 0);
+    right.insert(QStringLiteral("side"), 1);
+    shell.insert(QStringLiteral("panels"), QVariantList{left, right});
+    firstScene.insert(QStringLiteral("shell"), shell);
+    bridge.synchronizeScene(firstScene);
     QCOMPARE(bridge.sessionForSide(0), static_cast<QObject *>(leftSession));
     QCOMPARE(bridge.sessionForSide(1), static_cast<QObject *>(rightSession));
-    QCOMPARE(leftSession->catalogRevision(), qulonglong(7));
-    QCOMPARE(leftSession->entryIdAt(0), QStringLiteral("right:one"));
-    QCOMPARE(rightSession->catalogRevision(), qulonglong(42));
-    QCOMPARE(rightSession->entryIdAt(0), QStringLiteral("left:one"));
+    QCOMPARE(leftReset.count(), 0);
+    QCOMPARE(rightReset.count(), 0);
+    // A newer catalog for a retained identity still updates its model.
+    left.insert("catalogRevision", qulonglong(43));
+    QVariantList newerEntries = left.value("entries").toList();
+    QVariantMap newerEntry = newerEntries[0].toMap();
+    newerEntry.insert("entryId", "left:new");
+    newerEntries[0] = newerEntry;
+    left.insert("entries", newerEntries);
+    shell.insert("panels", QVariantList{left, right});
+    firstScene.insert("shell", shell);
+    bridge.synchronizeScene(firstScene);
+    QCOMPARE(leftSession->catalogRevision(), qulonglong(43));
+    QCOMPARE(leftSession->entryIdAt(0), QStringLiteral("left:new"));
+
 }
 
 void F4GalleryBridgeTests::stableCatalogSkipsRebuildAndKeepsDynamicState()

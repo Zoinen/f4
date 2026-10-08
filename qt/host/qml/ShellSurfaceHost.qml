@@ -119,6 +119,7 @@ Item {
             sourceComponent: PanelsSurface {
                 panelChromeLayer: surfaces
                 splitterHovered: mainPanelSplitter.hovered
+                splitterDragging: mainPanelSplitter.dragging
                 enabled: !surfaces.hostWindow.queueDropdownOpen
                 hostWindow: surfaces.hostWindow
                 menuBar: surfaces.menuBar

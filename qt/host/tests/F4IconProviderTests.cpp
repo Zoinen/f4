@@ -563,6 +563,7 @@ void F4IconProviderTests::chromeLucideRoutesRenderNamedResources()
         QStringLiteral("panel-left"),
         QStringLiteral("panel-right"),
         QStringLiteral("panels-top-left"),
+        QStringLiteral("repeat"),
         QStringLiteral("pause"),
         QStringLiteral("pencil"),
         QStringLiteral("plug"),
@@ -737,6 +738,7 @@ void F4IconProviderTests::lucideFramebufferMatchesDirectSvgRender()
     icon->setProperty("y", snappedPosition);
 
     const QList<QPair<QString, int>> cases{
+        {QStringLiteral("repeat"), 18},
         {QStringLiteral("check"), 12},
         {QStringLiteral("chevron-right"), 12},
         {QStringLiteral("slash"), 12},

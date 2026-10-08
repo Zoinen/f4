@@ -83,6 +83,21 @@ func (tv *TerminalView) semanticLayoutUnsafe() terminalSemanticLayout {
 	if !tv.UseAltScreen {
 		layout.pieceRows = tv.semanticPieceRowsUnsafe()
 		layout.historyRows = len(tv.GridHistory)
+		includedRows := sourceActiveRows - layout.activeOffset
+		if bottomOverlayRows > 0 {
+			// The idle prompt belongs to the command input, wherever the shell
+			// places it. A stale grid tail must not keep it visible above the
+			// row covered by the command input.
+			includedRows = min(includedRows, max(0, tv.CursorY))
+		}
+		if layout.pieceRows+layout.historyRows > 0 {
+			// Padding the live grid would separate it from saved output. Keep
+			// the combined history contiguous; the Qt viewport aligns its tail.
+			layout.activeOffset = 0
+			layout.activeRows = includedRows
+		} else {
+			layout.activeOffset = max(0, layout.activeRows-includedRows)
+		}
 	}
 	layout.totalRows = layout.pieceRows + layout.historyRows + layout.activeRows
 	if !layout.altScreen && layout.pieceRows == 0 && layout.historyRows == 0 {
@@ -306,7 +321,7 @@ func (tv *TerminalView) SemanticModelWithBottomOverlay(
 		visibleRows = windowRows[viewportRow:visibleEnd]
 	}
 	cursorAbsoluteRow := tv.semanticCursorAbsoluteRowUnsafe(layout)
-	cursorVisible := tv.IsVisible() && tv.IsFocused() &&
+	cursorVisible := tv.IsVisible() && tv.IsFocused() && tv.CursorVisible &&
 		cursorAbsoluteRow < layout.totalRows &&
 		cursorAbsoluteRow >= tv.semanticScrollTop &&
 		cursorAbsoluteRow < tv.semanticScrollTop+viewportRows

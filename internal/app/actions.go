@@ -1933,7 +1933,7 @@ func actionViewerSearchAgain(vv *viewer.ViewerView, reverse bool) {
 
 func runViewerSearch(vv *viewer.ViewerView, pattern string, reverse bool) {
 	vtui.FrameManager.PostTask(func() {
-		editor.RunSearchWithProgress(pattern, func(ctx *vtui.TaskContext, dlg *vtui.Window) {
+		editor.RunSearchWithProgressOn(vv, pattern, func(ctx *vtui.TaskContext, dlg *vtui.Window) {
 			start := vv.TopOffset + 1
 			if reverse {
 				start = vv.TopOffset
@@ -1961,21 +1961,17 @@ func runViewerSearch(vv *viewer.ViewerView, pattern string, reverse bool) {
 				}
 				if searchErr != nil {
 					if vv.LastSearchRegexp {
-						vtui.ShowMessage(" Error ", fmt.Sprintf("Invalid regular expression:\n%v", searchErr), []string{"&Ok"})
+						vtui.ShowMessageOn(vv, " Error ", fmt.Sprintf("Invalid regular expression:\n%v", searchErr), []string{"&Ok"})
 					} else {
-						vtui.ShowMessage(" Error ", "Failed to read file buffer.", []string{"&Ok"})
+						vtui.ShowMessageOn(vv, " Error ", "Failed to read file buffer.", []string{"&Ok"})
 					}
 					return
 				}
 				if foundOffset != -1 {
-					vv.TopOffset = vv.Backend.FindLineStart(foundOffset)
-					vv.LastSearchOffset = foundOffset
-					vv.LastSearchTopOffset = vv.TopOffset
-					vv.LastSearchMatchLen = int64(matchLen)
-					vv.LastSearchFound = true
+					vv.SelectSearchMatch(foundOffset, matchLen)
 					vtui.FrameManager.Redraw()
 				} else {
-					vtui.ShowMessage(" Search ", "Pattern not found.", []string{"&Ok"})
+					vtui.ShowMessageOn(vv, " Search ", "Pattern not found.", []string{"&Ok"})
 				}
 			})
 		})

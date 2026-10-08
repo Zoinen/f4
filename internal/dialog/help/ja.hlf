@@ -7,6 +7,8 @@ f4は、Go言語で実装されたFar Managerおよびfar2lの実験的なクロ
 ~ビジュアル一括リネーム (VisRen)~VisRen@
 ~README.mdを表示~README@
 
+~新しいタブにターミナル履歴を引き継ぐ~TerminalHistoryInheritance@
+
 @VisRen
 $ビジュアル一括リネーム (VisRen)
 
@@ -615,3 +617,11 @@ $フォルダ履歴 (Alt+F12)
   存在しない無効なパス履歴をクリア (確認あり)     Ctrl+R
 
   選択したパスをクリップボードにコピー             Ctrl+C, Ctrl+Ins
+
+@TerminalHistoryInheritance
+$新しいタブにターミナル履歴を引き継ぐ
+現在のタブの完了済みターミナル出力を新しいタブにコピーします。各タブは独立したシェルを起動し、その後の出力はそのタブにのみ残ります。既定では無効です。
+
+変更を適用すると、再起動せずに、その後に開くタブに反映されます。既存のタブの履歴は保持されます。待機中のシェルのプロンプト、実行中のプログラム、シェルの状態はコピーされません。
+
+[Panel] InheritTerminalHistory = 0 / 1 (settings.ini)

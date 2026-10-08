@@ -678,6 +678,17 @@ func TestAppVMenuModelIdentifiesDropdownOnlyComboOwner(t *testing.T) {
 	}
 }
 
+func TestAppVMenuModelIdentifiesEditHistoryOwner(t *testing.T) {
+	edit := vtui.NewEdit(7, 9, 24, "mp4")
+	menu := vtui.NewVMenu("History")
+	menu.SetOwner(edit)
+	menu.AddItem(vtui.MenuItem{Text: "mp4"})
+	model := (appVMenu{frame: menu, menu: menu}).model().ToMap()
+	if model["presentation"] != "dropdown" || model["ownerId"] != vtui.SemanticID(edit) {
+		t.Fatalf("edit history lost its native anchor: %#v", model)
+	}
+}
+
 func TestAppVMenuModelExportsNestedHeadersColorsAndStableIDs(t *testing.T) {
 	parent := vtui.NewVMenu("Parent")
 	parent.SetId("parent-menu")
@@ -723,6 +734,9 @@ func TestAppAutocompleteStartsWithoutImplicitSelection(t *testing.T) {
 	}
 	if model["query"] != "git st" {
 		t.Fatalf("autocomplete query = %#v, want exact edit text", model["query"])
+	}
+	if model["ownerId"] != vtui.SemanticID(edit) {
+		t.Fatalf("autocomplete owner = %#v, want edit identity", model["ownerId"])
 	}
 	items := model["items"].([]map[string]any)
 	if len(items) != 2 || items[0]["text"] != "git status" || items[1]["text"] != "git stash" {

@@ -113,6 +113,24 @@ Before finalizing the `f4` architecture, we analyzed the source code of the most
 5.  **Extrusion (Linearization):** When the `GridHistory` overflows, the oldest lines are stripped of trailing spaces and permanently serialized into `f4`'s internal `PieceTable` byte stream.
 6.  **Reconstruction:** To view the log (`Ctrl+O`), `f4` simply concatenates: `PieceTable` + `GridHistory` + `ActiveGrid`.
 
+The Qt projection keeps saved history and the occupied live rows contiguous.
+Bottom alignment belongs to the viewport; it must not insert empty rows between
+these stores. While f4's command input owns an idle prompt, the projection stops
+before the shell's cursor row and omits its cursor. Running programs and the
+alternate screen retain their live screen and cursor state.
+
+Each workspace owns its terminal screen, scrollback, and shell. Opening a new
+workspace copies the panel paths and layout, then starts an independent shell
+with fresh terminal buffers. Existing output stays in the original workspace.
+Settings → Terminal → **Inherit terminal history in new tabs** optionally copies
+completed output into the new workspace's history before starting its shell.
+This preference is off by default and is stored as `Panel.InheritTerminalHistory`
+in `settings.ini`. It is shared by the console and Qt frontends and applies to
+new tabs without restarting. The copy omits the idle shell prompt and never
+shares later output, a PTY, or running terminal-program state.
+The ordinary cmd.exe startup banner belongs to the new session, before its
+commands.
+
 ### Concrete Arguments for VTE Mirror:
 1.  **Domain-Specific Optimization:** `f4` is a file manager, not just a terminal emulator. It already possesses a highly optimized, zero-allocation `PieceTable` engine used for its Editor and Viewer. Extruding the terminal log directly into a `PieceTable` allows the internal Viewer (`F3`) to open a 10-gigabyte terminal log instantly without allocating memory for millions of `Cell` structs.
 2.  **Active Reflow where the stream keeps lines whole:** a width change

@@ -40,6 +40,32 @@ Rectangle {
     property real userWidth: 0
     property real userHeight: 0
     property rect restoredGeometry: Qt.rect(0, 0, 0, 0)
+    readonly property string sizeKey: hostWindow.cleanText(frame.sizeKey || frame.title || "")
+    property string restoredFrameId: ""
+    property bool sizeEdited: false
+
+    function restoreSize() {
+        const identity = hostWindow.cleanText(frame.id)
+        if (!identity || identity === restoredFrameId)
+            return
+        restoredFrameId = identity
+        userGeometrySet = false
+        maximized = false
+        sizeEdited = false
+        if (typeof qtDialogGeometry === "undefined")
+            return
+        const size = qtDialogGeometry.dialogSize(sizeKey)
+        if (Number(size.w) > 0 && Number(size.h) > 0) {
+            setUserGeometry((hostWindow.width - Number(size.w)) / 2,
+                            (hostWindow.height - Number(size.h)) / 2,
+                            Number(size.w), Number(size.h))
+            // Fit the current viewport without losing the preferred size.
+            userWidth = Number(size.w)
+            userHeight = Number(size.h)
+            Qt.callLater(commitGeometry)
+        }
+    }
+    Component.onCompleted: Qt.callLater(restoreSize)
     readonly property real contentLeft: {
         const items = (frame.children || []).filter(isContent)
         return items.length ? Math.min(...items.map(w => Number(w.x || 0))) : Number(frame.x || 0)
@@ -54,7 +80,7 @@ Rectangle {
     property real geometryLeft: 12
     readonly property real geometryTop: hostWindow.menuBarHeight + 8
     property real geometryRight: hostWindow.width - 12
-    readonly property real geometryBottom: hostWindow.height - 12
+    readonly property real geometryBottom: hostWindow.height - hostWindow.keyBarHeight() - 12
     readonly property real availableWidth: Math.max(
                                                1, geometryRight - geometryLeft)
     readonly property real availableHeight: Math.max(
@@ -88,6 +114,18 @@ Rectangle {
 
     function isContent(widget) { return contentLayout.isContent(widget) }
     function visualHeight(widget) { return contentLayout.visualHeight(widget) }
+
+    function contentX(widget) {
+        const items = (frame.children || []).filter(isContent)
+        const row = items.filter(item => Number(item.y) === Number(widget.y))
+        if (nativeLayout && widget.kind === "button" && row.every(item => item.kind === "button")) {
+            const left = Math.min(...row.map(item => Number(item.x)))
+            const right = Math.max(...row.map(item => Number(item.x) + Number(item.w)))
+            return hostWindow.snapPx((width - hostWindow.pxW(right - left)) / 2
+                + hostWindow.pxX(Number(widget.x) - left))
+        }
+        return contentPadding + hostWindow.pxX(Number(widget.x || 0) - contentLeft)
+    }
 
     function clamped(value, minimum, maximum) {
         return Math.max(minimum, Math.min(maximum, value))
@@ -137,11 +175,16 @@ Rectangle {
             bottom = clamped(start.y + start.height + deltaY,
                              top + minimumDialogHeight, geometryBottom)
         setUserGeometry(left, top, right - left, bottom - top)
+        sizeEdited = true
     }
 
     function commitGeometry() {
         if (!frame || hostWindow.cleanText(frame.id) === "")
             return
+        if (sizeEdited && !maximized && typeof qtDialogGeometry !== "undefined") {
+            qtDialogGeometry.saveDialogSize(sizeKey, width, height)
+            sizeEdited = false
+        }
         hostWindow.action({
             "target": frame.id,
             "action": geometryAction,
@@ -208,7 +251,10 @@ Rectangle {
             dialogBody.contentY = Math.min(maximum, bottom - dialogBody.height + 6)
     }
 
-    onFrameChanged: Qt.callLater(ensureFocusedWidgetVisible)
+    onFrameChanged: {
+        Qt.callLater(restoreSize)
+        Qt.callLater(ensureFocusedWidgetVisible)
+    }
 
     width: hostWindow.snapPx(maximized ? availableWidth
                      : userGeometrySet
@@ -507,7 +553,8 @@ Rectangle {
                     visible: dialogRoot.isContent(widgetData)
                     originX: dialogRoot.contentLeft
                     originY: frame.y || 0
-                    x: dialogRoot.contentPadding + horizontalPosition
+                    x: widgetData.kind === "button" ? dialogRoot.contentX(widgetData)
+                       : dialogRoot.contentPadding + horizontalPosition
                     maximumWidth: Math.max(1, dialogBody.width - x - dialogRoot.contentPadding)
                 }
             }

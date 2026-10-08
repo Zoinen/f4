@@ -14,6 +14,59 @@ func TestAutoComplete_SelectPos(t *testing.T) {
 		t.Errorf("Expected initial SelectPos 0, got %d", ac.SelectPos())
 	}
 }
+
+func TestAutoCompleteSemanticDismissPreservesEdit(t *testing.T) {
+	edit := NewEdit(0, 0, 20, "mp4")
+	edit.History = []string{"mp4"}
+	menu := NewAutoCompleteMenu(edit)
+	if menu.HandleSemanticAction(map[string]any{"target": "other", "action": "autocomplete.dismiss"}) {
+		t.Fatal("dismiss accepted another target")
+	}
+	if !menu.HandleSemanticAction(map[string]any{"target": SemanticID(menu), "action": "autocomplete.dismiss"}) {
+		t.Fatal("dismiss was not handled")
+	}
+	if !menu.IsDone() || edit.GetText() != "mp4" {
+		t.Fatal("dismiss must close suggestions without changing the edit")
+	}
+}
+
+func TestAutoCompleteSemanticDialogKeys(t *testing.T) {
+	FrameManager.Init(NewSilentScreenBuf())
+	for _, submit := range []bool{false, true} {
+		edit := NewEdit(0, 0, 20, "mp")
+		edit.History = []string{"mp4"}
+		menu := NewAutoCompleteMenu(edit)
+		FrameManager.injectedEvents = nil
+		index := 0
+		if submit {
+			index = -1
+		}
+		if !menu.HandleSemanticAction(map[string]any{"target": SemanticID(menu), "action": "autocomplete.accept", "index": index, "submit": submit}) {
+			t.Fatal("dialog acceptance was not handled")
+		}
+		want := "mp4"
+		if submit {
+			want = "mp"
+		}
+		if edit.GetText() != want || !menu.IsDone() {
+			t.Fatal("dialog hint was not accepted")
+		}
+		if submit && (len(FrameManager.injectedEvents) != 1 || FrameManager.injectedEvents[0].VirtualKeyCode != vtinput.VK_RETURN) {
+			t.Fatal("Enter must submit the owning dialog")
+		}
+		if !submit && len(FrameManager.injectedEvents) != 0 {
+			t.Fatal("click acceptance must not submit the dialog")
+		}
+	}
+	edit := NewEdit(0, 0, 20, "mp")
+	edit.History = []string{"mp4"}
+	menu := NewAutoCompleteMenu(edit)
+	FrameManager.injectedEvents = nil
+	menu.HandleSemanticAction(map[string]any{"target": SemanticID(menu), "action": "autocomplete.tab"})
+	if !menu.IsDone() || edit.GetText() != "mp" || len(FrameManager.injectedEvents) != 1 || FrameManager.injectedEvents[0].VirtualKeyCode != vtinput.VK_TAB {
+		t.Fatal("Tab must dismiss hints and pass navigation to the dialog")
+	}
+}
 func TestAutoComplete_IsBusyInheritance(t *testing.T) {
 	SetDefaultPalette()
 	fm := NewFrameManager()
