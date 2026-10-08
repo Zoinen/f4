@@ -85,6 +85,29 @@ class ConanPublicationGateTests(unittest.TestCase):
             "f4-conan-upload",
         )
 
+    def test_remote_package_revision_does_not_require_local_settings_metadata(
+        self,
+    ) -> None:
+        local = package_index("Local Cache")
+        remote = package_index("f4-conan-upload")
+        del remote["f4-conan-upload"]["qt/6.11.1"]["revisions"][
+            "recipe-revision"
+        ]["packages"]["arm-package"]["info"]
+        local_packages = uploader.verify_required_packages(
+            local,
+            ["qt/6.11.1"],
+            "armv8",
+            "test local cache",
+        )
+
+        uploader.verify_uploaded_packages(
+            local_packages,
+            remote,
+            "armv8",
+            "test remote",
+            "f4-conan-upload",
+        )
+
     def test_missing_architecture_fails_closed(self) -> None:
         data = package_index("Local Cache")
 

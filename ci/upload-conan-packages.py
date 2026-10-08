@@ -10,10 +10,13 @@ import subprocess
 import sys
 
 
-def package_revisions_for_arch(
-    data: dict, recipe_ref: str, expected_arch: str, remote_name: str = ""
+def package_revisions(
+    data: dict,
+    recipe_ref: str,
+    expected_arch: str | None = None,
+    remote_name: str = "",
 ) -> set:
-    """Return exact recipe/package revisions for binaries of one architecture."""
+    """Return exact recipe/package revisions, optionally filtered by architecture."""
     catalog_name = remote_name or "Local Cache"
     catalog = data.get(catalog_name, {})
     recipe = catalog.get(recipe_ref, {})
@@ -21,12 +24,23 @@ def package_revisions_for_arch(
     for recipe_revision, revision in recipe.get("revisions", {}).items():
         for package_id, package in revision.get("packages", {}).items():
             settings = package.get("info", {}).get("settings", {})
-            if str(settings.get("arch", "")) == expected_arch:
-                for package_revision in package.get("revisions", {}):
-                    package_revisions.add(
-                        (recipe_revision, package_id, package_revision)
-                    )
+            if (
+                expected_arch is not None
+                and str(settings.get("arch", "")) != expected_arch
+            ):
+                continue
+            for package_revision in package.get("revisions", {}):
+                package_revisions.add(
+                    (recipe_revision, package_id, package_revision)
+                )
     return package_revisions
+
+
+def package_revisions_for_arch(
+    data: dict, recipe_ref: str, expected_arch: str, remote_name: str = ""
+) -> set:
+    """Return exact recipe/package revisions for binaries of one architecture."""
+    return package_revisions(data, recipe_ref, expected_arch, remote_name)
 
 
 def verify_required_packages(
@@ -62,9 +76,10 @@ def verify_uploaded_packages(
 ) -> None:
     missing = []
     for recipe_ref, expected in required_packages.items():
-        available = package_revisions_for_arch(
-            data, recipe_ref, expected_arch, remote_name
-        )
+        # The local cache supplies the architecture-filtered package IDs. Conan
+        # remotes may list revisions without the local `info.settings` metadata,
+        # so remote verification must compare the exact references only.
+        available = package_revisions(data, recipe_ref, remote_name=remote_name)
         for recipe_revision, package_id, package_revision in sorted(
             expected - available
         ):
