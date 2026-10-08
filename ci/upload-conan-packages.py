@@ -77,7 +77,7 @@ def verify_uploaded_packages(
         )
 
 
-def list_recipe_packages(recipe_ref: str = "*/*:*", remote_name: str = "") -> dict:
+def list_recipe_packages(recipe_ref: str = "*/*:*#*", remote_name: str = "") -> dict:
     command = ["conan", "list", recipe_ref]
     if remote_name:
         command.extend(["--remote", remote_name])

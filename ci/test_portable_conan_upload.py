@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import pathlib
 import unittest
+from unittest.mock import Mock, patch
 
 SCRIPT = pathlib.Path(__file__).with_name("upload-conan-packages.py")
 SPEC = importlib.util.spec_from_file_location("upload_conan_packages", SCRIPT)
@@ -45,6 +46,19 @@ def package_index(
 
 
 class ConanPublicationGateTests(unittest.TestCase):
+    @patch.object(uploader.subprocess, "run")
+    def test_local_cache_listing_requests_package_revisions(self, run) -> None:
+        run.return_value = Mock(stdout="{}")
+
+        uploader.list_recipe_packages()
+
+        run.assert_called_once_with(
+            ["conan", "list", "*/*:*#*", "--format=json"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
     def test_local_package_architectures_are_read_from_conan_json(self) -> None:
         data = package_index("Local Cache")
 
