@@ -150,6 +150,7 @@ vtui.HistoryClearConfirm=Clear entire history?
 
 Panel.Other=&Other panel
 Panel.AutoFilterTitle= Filter
+Panel.AutoFilterExact=Exact match
 Panel.Column.Name=Name
 Panel.Column.Size=Size
 Panel.Column.Modified=Modified
@@ -1602,6 +1603,9 @@ Dialog.RenameTitle= Rename
 Dialog.RenamePrompt=Rename '%s' to:
 
 Plugins.Title= Manage Plugins (RPC)
+Plugins.ToolsOptionsTitle=Tools options
+Plugins.ToolsOptionsEmpty=No tools are registered.
+Plugins.ToolsOptionsSettings=Settings
 Plugins.BtnAdd=&Add
 Plugins.BtnRemove=&Remove
 Plugins.BtnPermissions=&Permissions
@@ -3949,6 +3953,12 @@ SettingsCenter.Text.986b4b1dd226b28694c61b1fb25efb345980c4d27be52f93600268979c09
 SettingsCenter.Text.983ea5e98aa7f8f7eb08adef934361480984c4c8bb76201aa8fff64f6da0051f=digit format must contain between 1 and 20 zeros
 SettingsCenter.Text.ea93d6a262ecb87a9fa4d09edbd7654c046597936a8e235fc3949eb01775ff99=Tools
 SettingsCenter.Text.ecb177517eae1ad7b9843b0a0419f4cb5d9f8cd8eb33b78f1db028a73ebf735c=Choose which registered drive-menu tools are shown.
+SettingsCenter.Text.fcf11f73b06570d1a8dd703ea5456fa58584662b8ea6003a588dc503c5fa80a9=F11 menu
+SettingsCenter.Text.8d78d31f5db14305d03e11a18a3c8844871deb801132e40bc699a37a58946c17=Choose which entries of the plugins menu (F11) are shown. A hidden entry keeps its hot key.
+SettingsCenter.entry.Name.Description=Entry of the F11 menu.
+SettingsCenter.entry.Name.Label=Entry
+SettingsCenter.entry.Enabled.Description=Show this entry in the F11 menu.
+SettingsCenter.entry.Enabled.Label=Shown
 SettingsCenter.tool.Name.Description=Registered drive-menu tool.
 SettingsCenter.tool.Name.Label=Tool
 SettingsCenter.tool.Enabled.Description=Show this tool in the drive menu.

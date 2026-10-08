@@ -2811,6 +2811,11 @@ func (pf *PanelsFrame) VetoActionKey(e *vtinput.InputEvent) bool {
 	if e.VirtualKeyCode == vtinput.VK_RETURN && ctrl && !alt {
 		return true
 	}
+	// Ctrl+E flips the filter's exact-match option; it is the command line's
+	// history key elsewhere.
+	if e.VirtualKeyCode == vtinput.VK_E && ctrl && !alt && !shift && fsp.autoFilterMode {
+		return true
+	}
 	switch e.VirtualKeyCode {
 	case vtinput.VK_ADD, vtinput.VK_SUBTRACT, vtinput.VK_MULTIPLY:
 		return true
@@ -6034,7 +6039,26 @@ func (pf *PanelsFrame) ShowPluginMenu() {
 		vtui.ShowMessage(" Plugins ", "No plugins registered for F11 menu.", []string{"&Ok"})
 		return
 	}
-	entries := buildPluginMenuEntries(items, commands)
+	allEntries := buildPluginMenuEntries(items, commands)
+	// Entries the user hid in the settings (F9) are left out of the menu but
+	// keep their hot keys and their place in the command palette. origin maps
+	// a visible row back to its place among all the entries.
+	hidden := hiddenPluginMenuEntries()
+	entries := make([]PluginMenuEntry, 0, len(allEntries))
+	origin := make([]int, 0, len(allEntries))
+	for i, entry := range allEntries {
+		if !hidden[entry.ActionName] {
+			entries = append(entries, entry)
+			origin = append(origin, i)
+		}
+	}
+	if len(entries) == 0 {
+		// Everything is hidden: the only useful thing left is the window that
+		// brings the entries back.
+		pf.ShowToolsOptions()
+		return
+	}
+	RefreshPluginMenuEntries(entries)
 	shortcutWidth := pluginMenuShortcutWidth(entries)
 	menuItems := make([]vtui.MenuItem, 0, len(entries))
 	for _, entry := range entries {
@@ -6070,6 +6094,12 @@ func (pf *PanelsFrame) ShowPluginMenu() {
 		}
 		idx := menu.SelectPos
 		switch e.VirtualKeyCode {
+		case vtinput.VK_F9:
+			// F9 opens the tools window: which entries this menu shows, and
+			// the settings of each tool (f4#918).
+			menu.Close()
+			pf.ShowToolsOptions()
+			return true
 		case vtinput.VK_F4:
 			if idx >= 0 && idx < len(entries) {
 				assignPluginHotkey(entries[idx].ActionName, entries[idx].Label, func() { refresh(menu) })
@@ -6120,7 +6150,11 @@ func (pf *PanelsFrame) ShowPluginMenu() {
 			return true
 		}
 		return false
-	}, func(idx int) {
+	}, func(row int) {
+		if row < 0 || row >= len(origin) {
+			return
+		}
+		idx := origin[row]
 		switch {
 		case idx >= 0 && idx < len(items):
 			handler := items[idx].Handler

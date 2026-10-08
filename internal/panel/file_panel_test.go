@@ -2850,8 +2850,8 @@ func TestFileSystemPanel_FastFind_Rendering(t *testing.T) {
 	if got, want := vtui.GetRGBFore(matchingAttr), vtui.GetRGBFore(vtui.Palette[vtui.ColMenuHighlight]); got != want {
 		t.Fatalf("matching query foreground = %#06x, want %#06x", got, want)
 	}
-	if got, want := vtui.GetRGBBack(matchingAttr), vtui.GetRGBBack(vtui.Palette[vtui.ColDialogText]); got != want {
-		t.Fatalf("matching query background = %#06x, want dialog background %#06x", got, want)
+	if got, want := vtui.GetRGBBack(matchingAttr), vtui.GetRGBBack(vtui.Palette[vtui.ColDialogEdit]); got != want {
+		t.Fatalf("matching query background = %#06x, want dialog edit background %#06x", got, want)
 	}
 
 	fp.FastFindStr = "*test"
@@ -2869,7 +2869,7 @@ func TestFileSystemPanel_FastFind_Rendering(t *testing.T) {
 	if got, want := vtui.GetRGBFore(missingAttr), vtui.GetRGBFore(vtui.Palette[theme.ColPanelFastFindNoMatch]); got != want {
 		t.Fatalf("missing query foreground = %#06x, want %#06x", got, want)
 	}
-	if got, want := vtui.GetRGBBack(missingAttr), vtui.GetRGBBack(vtui.Palette[vtui.ColDialogText]); got != want {
+	if got, want := vtui.GetRGBBack(missingAttr), vtui.GetRGBBack(vtui.Palette[vtui.ColDialogEdit]); got != want {
 		t.Fatalf("missing query background = %#06x, want dialog background %#06x", got, want)
 	}
 }

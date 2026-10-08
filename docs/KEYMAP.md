@@ -57,6 +57,11 @@ No leading space is inserted, so an already typed path prefix stays attached
 to the filename. While Fast Find is active, `Ctrl+Enter` still finds the next
 match instead of inserting a filename.
 
+In the autofilter window (a lone Alt, or Panel.AutoFilter), `Ctrl+E` flips the
+"Exact match" option shown on the window's second line, as a click on that line
+does; the option is the same one as Settings > Panels > "Strict autofilter and
+quick search" and is saved at once.
+
 ## The file
 
 `keymap.ini` lives in the profile directory next to `hotkeys.ini`

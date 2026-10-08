@@ -588,10 +588,13 @@ type FileSystemPanel struct {
 	suppressFolderHistoryPath  string // one-shot: history/menu navigation must not reorder MRU
 	suppressFolderHistoryToken uint64 // binds suppression to one specific asynchronous directory load
 	FastFindMode               bool
-	FastFindStr                string
-	fastFindMatcherKey         string
-	fastFindMatcherStrict      bool
-	fastFindMatchers           []*vtui.FuzzyMatcher
+	// exactBoxX1..X2, exactBoxY: where the exact-match line of the filter
+	// window was last drawn, for the mouse.
+	exactBoxX1, exactBoxX2, exactBoxY int
+	FastFindStr                       string
+	fastFindMatcherKey                string
+	fastFindMatcherStrict             bool
+	fastFindMatchers                  []*vtui.FuzzyMatcher
 	// autoFilterMode is set while the filter window is open (the search
 	// box narrows the panel instead of moving the cursor), autoFilterOn
 	// while its query is actually hiding rows. unfilteredEntries then holds
@@ -2067,8 +2070,9 @@ func (fp *FileSystemPanel) SetCursorIndex(idx int) {
 		fp.Table.SelectCol = 0
 		if fp.FastFindMode {
 			H := fp.Table.ViewHeight
-			if H > 2 && visual >= fp.Table.TopPos+H-2 {
-				fp.Table.TopPos = visual - H + 3
+			covered := fp.fastFindBoxHeight() - 1 // rows of the box over the list; its last row is the frame
+			if H > covered && visual >= fp.Table.TopPos+H-covered {
+				fp.Table.TopPos = visual - H + covered + 1
 				if fp.Table.TopPos < 0 {
 					fp.Table.TopPos = 0
 				}
@@ -2094,11 +2098,11 @@ func (fp *FileSystemPanel) SetCursorIndex(idx int) {
 			fp.Table.TopPos = visual - fp.gridColumnCount()*H + 1
 		}
 
-		if fp.FastFindMode && H > 2 {
+		if covered := fp.fastFindBoxHeight() - 1; fp.FastFindMode && H > covered {
 			rel := visual - fp.Table.TopPos
 			row := rel % H
-			if row >= H-2 {
-				shift := row - (H - 3)
+			if row >= H-covered {
+				shift := row - (H - covered - 1)
 				fp.Table.TopPos += shift
 			}
 		}
@@ -3465,8 +3469,8 @@ func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 		// driven through the console API (f4 #219, classic conhost draws
 		// DECSCUSR's underline as a one-pixel hairline).
 		scr.SetCursorShape(vtui.InsertCursorShape())
-		boxW := 24
-		boxH := 3
+		boxW := fastFindBoxWidth(fp.autoFilterMode)
+		boxH := fp.fastFindBoxHeight()
 
 		fx1 := fp.X1 + 9
 		if fx1+boxW-1 >= scr.Width() {
@@ -3477,7 +3481,7 @@ func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 		}
 		fx2 := fx1 + boxW - 1
 
-		fy1 := fp.Y2 - 2
+		fy1 := fp.Y2 - boxH + 1
 		if fy1 < 0 {
 			fy1 = 0
 		}
@@ -3504,12 +3508,66 @@ func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 		if fp.fastFindHasMatches() || (fp.autoFilterMode && autoFilterQuery(fp.FastFindStr) == "") {
 			searchColor = vtui.Palette[vtui.ColMenuHighlight]
 		}
-		searchAttr := fastFindMatchAttr(vtui.Palette[vtui.ColDialogText], searchColor)
+		// The query is typed on the field colour every dialog's edit control
+		// has; the foreground stays the match / no-match colour of the text
+		// (f4#1131).
+		editAttr := vtui.Palette[vtui.ColDialogEdit]
+		p.Fill(fx1+1, fy1+1, fx2-1, fy1+1, ' ', editAttr)
+		searchAttr := fastFindMatchAttr(editAttr, searchColor)
 		p.DrawString(fx1+2, fy1+1, searchStr, searchAttr)
+
+		if fp.autoFilterMode {
+			// The exact-match option sits in the filter window itself, where the
+			// query is typed (f4#1131). The glyph is the one a dialog checkbox uses.
+			sym := vtui.SymCheckboxOff
+			if config.App.PanelStrictAutoFilter {
+				sym = vtui.SymCheckboxOn
+			}
+			textAttr := vtui.Palette[vtui.ColDialogText]
+			p.DrawSymGlyph(fx1+2, fy1+2, sym, textAttr)
+			p.DrawString(fx1+5, fy1+2, " "+i18n.Msg("Panel.AutoFilterExact"), textAttr)
+			fp.exactBoxX1, fp.exactBoxX2, fp.exactBoxY = fx1+2, fx2-2, fy1+2
+		}
 
 		scr.SetCursorPos(fx1+2+runewidth.StringWidth(searchStr), fy1+1)
 		scr.SetCursorVisible(true)
 	}
+}
+
+// fastFindBoxHeight is the height of the search window: the filter has a
+// second line for its exact-match option.
+func (fp *FileSystemPanel) fastFindBoxHeight() int {
+	if fp.autoFilterMode {
+		return 4
+	}
+	return 3
+}
+
+// fastFindBoxWidth makes the window wide enough for the exact-match option in
+// the current language: its glyph, a space and the label, between two cells
+// of frame and one of air on each side.
+func fastFindBoxWidth(filter bool) int {
+	const base = 24
+	if !filter {
+		return base
+	}
+	return max(base, runewidth.StringWidth(i18n.Msg("Panel.AutoFilterExact"))+4+4+1)
+}
+
+// ToggleExactAutoFilter flips the exact-match option and re-derives the
+// narrowed list at once, so the checkbox shows its effect as it is clicked.
+func (fp *FileSystemPanel) ToggleExactAutoFilter() {
+	config.App.PanelStrictAutoFilter = !config.App.PanelStrictAutoFilter
+	config.SaveConfig()
+	if fp.autoFilterMode {
+		fp.updateAutoFilter()
+	}
+}
+
+// exactCheckboxAt reports whether the pointer is over the exact-match line of
+// the open filter window.
+func (fp *FileSystemPanel) exactCheckboxAt(x, y int) bool {
+	return fp.FastFindMode && fp.autoFilterMode && y == fp.exactBoxY && x >= fp.exactBoxX1 && x <= fp.exactBoxX2
 }
 
 func (fp *FileSystemPanel) fastFindMatch(name string) (startRunes, matchedRunes int, ok bool) {
@@ -3755,6 +3813,11 @@ func (fp *FileSystemPanel) processKey(e *vtinput.InputEvent, allowProviderPanelE
 			// Fast Find keeps its insertion point at the end, so forward Delete
 			// has nothing to remove. Consume it here rather than allowing the
 			// panel-level Del binding to hide the panels.
+			return true
+		}
+		if filtering && e.VirtualKeyCode == vtinput.VK_E && ctrl && !shift && !alt {
+			fp.ToggleExactAutoFilter()
+			vtui.FrameManager.Redraw()
 			return true
 		}
 		if e.VirtualKeyCode == vtinput.VK_F2 && !shift && !ctrl && !alt {
@@ -4134,6 +4197,13 @@ func (fp *FileSystemPanel) ProcessMouse(e *vtinput.InputEvent) bool {
 			fp.SetSortMode(mode)
 			return true
 		}
+	}
+
+	if e.WheelDirection == 0 && e.ButtonState&vtinput.FromLeft1stButtonPressed != 0 && e.KeyDown &&
+		!isMove && fp.exactCheckboxAt(int(e.MouseX), int(e.MouseY)) {
+		fp.ToggleExactAutoFilter()
+		vtui.FrameManager.Redraw()
+		return true
 	}
 
 	if fp.processScrollBarMouse(e) {
