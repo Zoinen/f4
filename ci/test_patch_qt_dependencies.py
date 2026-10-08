@@ -50,6 +50,20 @@ class LinuxAudioRecipePatchTests(unittest.TestCase):
             patched,
         )
 
+    def test_linux_audio_ignores_unrelated_package_info_alsa_guard(self) -> None:
+        recipe = self.recipe_skeleton() + (
+            '            if self.options.get_safe("with_libalsa", False):\n'
+            '                multimedia_reqs.append("libalsa::libalsa")\n'
+        )
+        patched = patcher._patch_ffmpeg(recipe, linux_audio=True)
+        patched = patcher._patch_linux_audio(patched)
+
+        self.assertIn(patcher._PULSEAUDIO_VALIDATION_PATCH, patched)
+        self.assertIn(
+            '                multimedia_reqs.append("libalsa::libalsa")\n',
+            patched,
+        )
+
     def test_video_only_mode_remains_unchanged_for_other_platforms(self) -> None:
         patched = patcher._patch_ffmpeg(self.recipe_skeleton())
 
