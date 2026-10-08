@@ -313,14 +313,17 @@ type PanelsFrame struct {
 	// place of panels[i]; panels[i] stays alive underneath and is
 	// still the "logical" panel for command dispatch. Alt panels
 	// never take focus (see AltPanel in info_panel.go).
-	AltPanels             [2]AltPanel
-	ActiveIdx             int    // 0 for left, 1 for right
-	FolderHistoryPos      [2]int // position in provider's newest-first folder history
-	Executing             bool
-	afterExecution        func() // run once by endExecution; queues the next user-menu step
-	ShellPromptReady      bool
-	ignoreNextPrompt      bool
-	ReturnToPanels        bool
+	AltPanels        [2]AltPanel
+	ActiveIdx        int    // 0 for left, 1 for right
+	FolderHistoryPos [2]int // position in provider's newest-first folder history
+	Executing        bool
+	afterExecution   func() // run once by endExecution; queues the next user-menu step
+	ShellPromptReady bool
+	ignoreNextPrompt bool
+	ReturnToPanels   bool
+	// TerminalOnly marks a workspace opened by Ctrl+Shift+O: a console with no
+	// panels to come back to (issue #128). See PanelsLocked.
+	TerminalOnly          bool
 	CmdSession            *cmdShellSession // local cmd.exe completion tracking (Windows)
 	workspaceCommandTitle string
 	// managedExecStartedAt/managedExecIdleStreak back the #1603 job-control
@@ -1766,6 +1769,9 @@ func (pf *PanelsFrame) Close() {
 }
 
 func (pf *PanelsFrame) SetWidePanel(idx int) {
+	if idx >= 0 && pf.PanelsLocked() {
+		return
+	}
 	if idx < 0 || idx > 1 {
 		idx = -1
 	}
