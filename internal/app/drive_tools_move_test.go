@@ -129,8 +129,9 @@ func TestDriveMenuCtrlUpDownMovesTheToolRow(t *testing.T) {
 		t.Fatal("no Other panel row")
 	}
 	menu.SetSelectPos(otherRow)
-	// Down until it has passed the first plugin tool.
-	for i := 0; i < 2; i++ {
+	// Down until it has passed Beta (a platform may list more built-in rows
+	// than another, the Windows registry for one).
+	for i := 0; i < 8 && index(stored(), "@other-panel") < index(stored(), "Beta tool"); i++ {
 		press(vtinput.VK_DOWN)
 		menu, ok = paneltest.DriveMenuFromFrame(vtui.FrameManager.GetTopFrame())
 		if !ok {
@@ -142,7 +143,7 @@ func TestDriveMenuCtrlUpDownMovesTheToolRow(t *testing.T) {
 	}
 	order = stored()
 	if index(order, "@other-panel") < index(order, "Beta tool") {
-		t.Fatalf("Other panel is still above Beta after two Ctrl+Down: %q", order)
+		t.Fatalf("Other panel is still above Beta after repeated Ctrl+Down: %q", order)
 	}
 }
 
