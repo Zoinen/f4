@@ -59,8 +59,8 @@ match instead of inserting a filename.
 
 In the autofilter window (a lone Alt, or Panel.AutoFilter), `Ctrl+E` flips the
 "Exact match" option shown on the window's second line, as a click on that line
-does; the option is the same one as Settings > Panels > "Strict autofilter and
-quick search" and is saved at once.
+does; the option is the same one as Settings > Panels > "Strict quick search"
+and is saved at once.
 
 ## The file
 

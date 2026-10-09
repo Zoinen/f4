@@ -1603,7 +1603,7 @@ Dialog.RenameTitle= Rename
 Dialog.RenamePrompt=Rename '%s' to:
 
 Plugins.Title= Manage Plugins (RPC)
-Plugins.ToolsOptionsTitle=Tools options
+Plugins.ToolsOptionsTitle=Plugins options
 Plugins.ToolsOptionsEmpty=No tools are registered.
 Plugins.ToolsOptionsSettings=Settings
 Plugins.BtnAdd=&Add
@@ -2857,7 +2857,7 @@ SettingsCenter.PanelAutoFilter.Label=Autofilter on a lone Alt press
 SettingsCenter.PanelScrollbarMode.Description=Hide the scrollbar, show a minimal one, or show the full scrollbar with arrows.
 SettingsCenter.PanelScrollbarMode.Label=Panel scrollbar
 SettingsCenter.PanelStrictAutoFilter.Description=Require an exact match instead of tolerating one typo when filtering or jumping to a name in a panel. Off by default: short queries like "tes" also match "destroy".
-SettingsCenter.PanelStrictAutoFilter.Label=Strict autofilter and quick search
+SettingsCenter.PanelStrictAutoFilter.Label=Strict quick search
 SettingsCenter.PathHintFullPath.Description=Display complete paths rather than only the final filename or folder component.
 SettingsCenter.PathHintFullPath.Label=Show full suggestion paths
 SettingsCenter.PathHintMaxVisible.Description=Maximum number of visible suggestion rows. Minimum 1.

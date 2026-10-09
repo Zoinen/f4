@@ -1603,7 +1603,7 @@ Dialog.RenameTitle= Переименование
 Dialog.RenamePrompt=Переименовать '%s' в:
 
 Plugins.Title= Управление плагинами (RPC)
-Plugins.ToolsOptionsTitle=Параметры инструментов
+Plugins.ToolsOptionsTitle=Параметры плагинов
 Plugins.ToolsOptionsEmpty=Инструментов нет.
 Plugins.ToolsOptionsSettings=Настройки
 Plugins.BtnAdd=&Добавить
@@ -2857,7 +2857,7 @@ SettingsCenter.PanelAutoFilter.Label=Автофильтр по одиночно�
 SettingsCenter.PanelScrollbarMode.Description=Скрывает полосу прокрутки, показывает минимальную либо полную полосу со стрелками.
 SettingsCenter.PanelScrollbarMode.Label=Полоса прокрутки панелей
 SettingsCenter.PanelStrictAutoFilter.Description=Требовать точное совпадение вместо допуска одной опечатки при фильтрации или переходе к имени на панели. По умолчанию выключено: короткие запросы вроде «tes» совпадают и с «destroy».
-SettingsCenter.PanelStrictAutoFilter.Label=Строгий автофильтр и быстрый поиск
+SettingsCenter.PanelStrictAutoFilter.Label=Строгий быстрый поиск
 SettingsCenter.PathHintFullPath.Description=Показывает полные пути вместо последнего компонента имени файла или папки.
 SettingsCenter.PathHintFullPath.Label=Показывать полные пути в подсказках
 SettingsCenter.PathHintMaxVisible.Description=Максимальное число видимых строк подсказок. Не менее 1.
