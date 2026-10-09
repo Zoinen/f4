@@ -327,6 +327,16 @@ func driveMenuPlatformItemVisible(drv sysinfo.DriveEntry, options uint32) bool {
 	}
 }
 
+// openDriveMenuTools is what F9 does in the drive menu: the window of the
+// menu's tools, with a button for the menu's own options (f4#918).
+func (pf *PanelsFrame) openDriveMenuTools(panelIdx int, menu *vtui.VMenu) {
+	if len(sysinfo.DriveRegistrySnapshot()) == 0 {
+		pf.openDriveMenuOptions(panelIdx, menu)
+		return
+	}
+	pf.ShowDriveToolsOptions(func() { pf.openDriveMenuOptions(panelIdx, menu) })
+}
+
 func (pf *PanelsFrame) openDriveMenuOptions(panelIdx int, menu *vtui.VMenu) {
 	// F9 belongs to the drive menu, so it opens the drive-chooser page on
 	// its own rather than the whole Settings Center (#1148). The compact
