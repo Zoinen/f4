@@ -3,6 +3,7 @@ package app
 import (
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/unxed/f4/internal/keymap"
 	"github.com/unxed/f4/internal/menuhotkeys"
@@ -35,14 +36,66 @@ func rememberMenuRowEnabled(key history.MenuHistoryItemKey, enabled func() bool)
 	menuRowEnabledMu.Unlock()
 }
 
+// menuRowStamp is what the rows' Enabled functions look at, as cheaply as it
+// can be read: which panels frame and which panel is active, where its cursor
+// stands, how many rows it lists and which built menu is being refreshed. Two
+// calls with the same stamp are answered from the first (f4#1832).
+type menuRowStamp struct {
+	frame  *panel.PanelsFrame
+	active int
+	fsp    *panel.FileSystemPanel
+	tree   *panel.TreePanel
+	cursor int
+	count  int
+	items  *vtui.MenuBarItem
+}
+
+// menuRowRefreshEvery bounds how stale a row can be when the stamp did not
+// change but something the stamp does not cover did, such as a selection made
+// without moving the cursor.
+const menuRowRefreshEvery = 250 * time.Millisecond
+
+var menuRowLast struct {
+	stamp menuRowStamp
+	at    time.Time
+	valid bool
+}
+
+func currentMenuRowStamp(items []vtui.MenuBarItem) menuRowStamp {
+	stamp := menuRowStamp{}
+	if len(items) > 0 {
+		stamp.items = &items[0]
+	}
+	pf := panel.FindPanelsFrame()
+	if pf == nil {
+		return stamp
+	}
+	stamp.frame, stamp.active = pf, pf.ActiveIdx
+	stamp.tree = focusedTreePanel(pf)
+	if fsp := pf.GetActivePanel(); fsp != nil {
+		stamp.fsp, stamp.cursor, stamp.count = fsp, fsp.GetCursorIndex(), len(fsp.Entries)
+	}
+	return stamp
+}
+
 // refreshMenuRowStates sets the Disabled flag of every row that has an
-// Enabled function to its answer now.
+// Enabled function to its answer now. GetMenuBar asks for this on every key
+// and every frame, and the answers cost a walk of the listing per row (the
+// selection) or a plugin's own check, so the rows are asked again only when
+// the cursor, the panel or the menu changed, or after menuRowRefreshEvery
+// (f4#1814, f4#1832).
 func refreshMenuRowStates(items []vtui.MenuBarItem) {
 	menuRowEnabledMu.Lock()
 	defer menuRowEnabledMu.Unlock()
 	if len(menuRowEnabled) == 0 {
 		return
 	}
+	stamp := currentMenuRowStamp(items)
+	now := time.Now()
+	if menuRowLast.valid && menuRowLast.stamp == stamp && now.Sub(menuRowLast.at) < menuRowRefreshEvery {
+		return
+	}
+	menuRowLast.stamp, menuRowLast.at, menuRowLast.valid = stamp, now, true
 	var refresh func(rows []vtui.MenuItem)
 	refresh = func(rows []vtui.MenuItem) {
 		for i := range rows {
