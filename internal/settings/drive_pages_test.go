@@ -61,9 +61,20 @@ func TestDriveChooserPagesSplitTheCategory(t *testing.T) {
 	if !found {
 		t.Fatal("the Links page has no list")
 	}
+	// Choosing a low row, as a click does, must not scroll the list inside
+	// its own window (f4#1148).
+	c.offsets["record:drive-links"] = len(records) - 1
+	c.rebuildCategory()
 	scr := vtui.NewSilentScreenBuf()
 	scr.AllocBuf(130, 45)
 	c.Show(scr)
+	for _, row := range c.page.rows {
+		if table, ok := row.control.(*vtui.Table); ok && table.GetId() == "collection:drive-links" {
+			if table.TopPos != 0 || table.SelectPos != len(records)-1 {
+				t.Fatalf("list scrolled to %d with row %d chosen", table.TopPos, table.SelectPos)
+			}
+		}
+	}
 	if got := c.categoryLabel(driveLinksPage); got != "Links" {
 		t.Fatalf("page label %q", got)
 	}
