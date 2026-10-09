@@ -249,6 +249,20 @@ func ShowSymlinkTargetDialog(refresh func(), v vfs.VFS, path, target string) {
 // the original link back before returning the error so a failed edit cannot
 // silently delete the user's link.
 func ReplaceSymlinkTarget(ctx context.Context, v vfs.VFS, path, newTarget string) error {
+	return replaceLinkTarget(ctx, v, path, newTarget, false)
+}
+
+// ReplaceJunctionTarget is ReplaceSymlinkTarget for a directory junction: the
+// link is recreated as a junction.
+func ReplaceJunctionTarget(ctx context.Context, v vfs.VFS, path, newTarget string) error {
+	return replaceLinkTarget(ctx, v, path, newTarget, true)
+}
+
+// replaceLinkTarget is ReplaceSymlinkTarget for either kind of link. A
+// directory junction is recreated as a junction (f4#1828): turning it into a
+// symbolic link would change its kind and, on Windows, needs a privilege that
+// creating a junction does not.
+func replaceLinkTarget(ctx context.Context, v vfs.VFS, path, newTarget string, junction bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -258,6 +272,14 @@ func ReplaceSymlinkTarget(ctx context.Context, v vfs.VFS, path, newTarget string
 	symVFS, ok := v.(vfs.SymlinkVFS)
 	if !ok {
 		return errors.New("VFS does not support symbolic links")
+	}
+	create := symVFS.Symlink
+	if junction {
+		juncVFS, ok := v.(vfs.JunctionVFS)
+		if !ok {
+			return errors.New("VFS does not support directory junctions")
+		}
+		create = juncVFS.Junction
 	}
 	oldTarget, err := symVFS.Readlink(ctx, path)
 	if err != nil {
@@ -269,11 +291,11 @@ func ReplaceSymlinkTarget(ctx context.Context, v vfs.VFS, path, newTarget string
 	if err := v.Remove(ctx, path); err != nil {
 		return fmt.Errorf("remove symlink %q: %w", path, err)
 	}
-	createErr := symVFS.Symlink(ctx, newTarget, path)
+	createErr := create(ctx, newTarget, path)
 	if createErr == nil {
 		return nil
 	}
-	if restoreErr := symVFS.Symlink(ctx, oldTarget, path); restoreErr != nil {
+	if restoreErr := create(ctx, oldTarget, path); restoreErr != nil {
 		return fmt.Errorf("create symlink %q: %w; restore original target %q: %v", path, createErr, oldTarget, restoreErr)
 	}
 	return fmt.Errorf("create symlink %q: %w (original target restored)", path, createErr)
@@ -1080,6 +1102,19 @@ func ShowAttributesWindowsWithPropertiesForTargets(
 		}
 	}
 
+	// f4#1828: the target of a single link is editable here as it is in the
+	// Unix-shaped dialog. A link whose target cannot be read gets no field,
+	// rather than one that would replace it with an empty string.
+	linkTarget := ""
+	linkIsJunction := false
+	if !multiple && (item.IsSymlink || vfs.LinkKindOf(&item) == vfs.LinkJunction) {
+		if t, err := vfs.Readlink(context.Background(), v, path); err == nil && t != "" {
+			linkTarget = t
+			linkIsJunction = vfs.LinkKindOf(&item) == vfs.LinkJunction
+			height += 2
+		}
+	}
+
 	dlg := vtui.NewCenteredDialog(width, height, i18n.Msg("Attributes.Title"))
 	dlg.ShowClose = true
 	x, y := dlg.X1, dlg.Y1
@@ -1093,6 +1128,19 @@ func ShowAttributesWindowsWithPropertiesForTargets(
 	lblFile := vtui.NewText(0, 0, fileText, vtui.Palette[vtui.ColDialogText])
 	dlg.AddItem(lblFile)
 	mainVBox.Add(lblFile, vtui.Margins{}, vtui.AlignLeft)
+
+	var editLinkTarget *vtui.Edit
+	var rowLinkTarget *vtui.HBoxLayout
+	if linkTarget != "" {
+		editLinkTarget = vtui.NewEdit(0, 0, 40, linkTarget)
+		lblLinkTarget := vtui.NewLabel(0, 0, i18n.Msg("Attributes.Target"), editLinkTarget)
+		rowLinkTarget = vtui.NewHBoxLayout(0, 0, 54, 1)
+		rowLinkTarget.Add(lblLinkTarget, vtui.Margins{Right: 1}, vtui.AlignLeft)
+		rowLinkTarget.Add(editLinkTarget, vtui.Margins{}, vtui.AlignFill)
+		dlg.AddItem(lblLinkTarget)
+		dlg.AddItem(editLinkTarget)
+		mainVBox.Add(rowLinkTarget, vtui.Margins{Top: 1}, vtui.AlignFill)
+	}
 
 	gbAttr := vtui.NewGroupBox(0, 0, 54, 6, " "+i18n.Msg("Attributes.Flags")+" ")
 	dlg.AddItem(gbAttr)
@@ -1205,6 +1253,9 @@ func ShowAttributesWindowsWithPropertiesForTargets(
 	// Apply first pass
 	mainVBox.Apply()
 	rowTime.Apply()
+	if rowLinkTarget != nil {
+		rowLinkTarget.Apply()
+	}
 	if rowCreated != nil {
 		rowCreated.Apply()
 	}
@@ -1315,8 +1366,20 @@ func ShowAttributesWindowsWithPropertiesForTargets(
 			}
 		}
 
+		newLinkTarget := ""
+		if editLinkTarget != nil {
+			newLinkTarget = strings.TrimSpace(editLinkTarget.GetText())
+		}
 		vtui.RunAsync(func(ctx *vtui.TaskContext) {
-			err := setWindowsAttributesForTargets(ctx.Context, v, targets, edit)
+			var err error
+			if newLinkTarget != "" && newLinkTarget != linkTarget {
+				err = replaceLinkTarget(ctx.Context, v, path, newLinkTarget, linkIsJunction)
+			} else if editLinkTarget != nil && newLinkTarget == "" {
+				err = errors.New("link target cannot be empty")
+			}
+			if err == nil {
+				err = setWindowsAttributesForTargets(ctx.Context, v, targets, edit)
+			}
 			ctx.RunOnUI(func() {
 				if err != nil {
 					vtui.ShowMessage(" Error ", err.Error(), []string{"&Ok"})
