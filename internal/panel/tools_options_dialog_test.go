@@ -47,6 +47,7 @@ func findToolsOptionsDialog(t *testing.T) (*vtui.Window, *toolsOptionsList, []*v
 // and a Settings button that is live only for a tool that has settings
 // (f4#918).
 func TestToolsOptionsWindowTogglesToolsAndKnowsWhichHaveSettings(t *testing.T) {
+	appliedRuns := 0
 	t.Cleanup(testutil.SwapFrameManager(t))
 	screen := vtui.NewSilentScreenBuf()
 	screen.AllocBuf(80, 25)
@@ -92,7 +93,7 @@ func TestToolsOptionsWindowTogglesToolsAndKnowsWhichHaveSettings(t *testing.T) {
 	defer pf.Close()
 	pf.ResizeConsole(80, 25)
 	vtui.FrameManager.Push(pf)
-	pf.ShowToolsOptions()
+	pf.ShowToolsOptions(func() { appliedRuns++ })
 	win, list, buttons := findToolsOptionsDialog(t)
 	button, okButton := buttons[0], buttons[1]
 
@@ -137,6 +138,19 @@ func TestToolsOptionsWindowTogglesToolsAndKnowsWhichHaveSettings(t *testing.T) {
 	if configured != 1 {
 		t.Errorf("the Settings button ran the configuration %d times, want 1", configured)
 	}
+	// A double click on the name is the Settings button too (f4#918).
+	// #nosec G115 -- cells of an 80x25 test screen.
+	list.ProcessMouse(&vtinput.InputEvent{
+		Type: vtinput.MouseEventType, KeyDown: true, ButtonState: vtinput.FromLeft1stButtonPressed,
+		MouseEventFlags: vtinput.DoubleClick,
+		MouseX:          int16(list.X1 + 10), MouseY: int16(list.Y1 + alpha - list.TopPos),
+	})
+	if configured != 2 {
+		t.Errorf("a double click on the name ran the configuration %d times in all, want 2", configured)
+	}
+	if appliedRuns != 0 {
+		t.Errorf("the applied callback ran before Ok")
+	}
 
 	// Space turns the tool off in the window; nothing is stored until Ok (f4#918).
 	list.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_SPACE, Char: ' '})
@@ -147,6 +161,9 @@ func TestToolsOptionsWindowTogglesToolsAndKnowsWhichHaveSettings(t *testing.T) {
 		t.Fatalf("a choice was stored before Ok: %v %v", hidden, err)
 	}
 	okButton.OnClick()
+	if appliedRuns != 1 {
+		t.Errorf("the applied callback ran %d times after Ok, want 1", appliedRuns)
+	}
 	hidden, err := LoadPluginMenuHidden()
 	if err != nil {
 		t.Fatal(err)

@@ -6061,7 +6061,7 @@ func (pf *PanelsFrame) ShowPluginMenu() {
 	if len(entries) == 0 {
 		// Everything is hidden: the only useful thing left is the window that
 		// brings the entries back.
-		pf.ShowToolsOptions()
+		pf.ShowToolsOptions(nil)
 		return
 	}
 	RefreshPluginMenuEntries(entries)
@@ -6101,10 +6101,13 @@ func (pf *PanelsFrame) ShowPluginMenu() {
 		idx := menu.SelectPos
 		switch e.VirtualKeyCode {
 		case vtinput.VK_F9:
-			// F9 opens the tools window: which entries this menu shows, and
-			// the settings of each tool (f4#918).
-			menu.Close()
-			pf.ShowToolsOptions()
+			// F9 opens the plugins window on top of this menu: which entries
+			// the menu shows, and the settings of each plugin. The menu stays
+			// where it is and is rebuilt when Ok stores a new choice (f4#918).
+			pf.ShowToolsOptions(func() {
+				menu.Close()
+				pf.ShowPluginMenu()
+			})
 			return true
 		case vtinput.VK_F4:
 			if idx >= 0 && idx < len(entries) {

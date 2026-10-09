@@ -16,8 +16,9 @@ import (
 // the name only selects it (f4#918).
 type toolsOptionsList struct {
 	*vtui.ListBox
-	onToggle func(idx int)
-	onSelect func(idx int)
+	onToggle   func(idx int)
+	onSelect   func(idx int)
+	onActivate func(idx int) // a double click on a name
 }
 
 func (l *toolsOptionsList) ProcessMouse(e *vtinput.InputEvent) bool {
@@ -28,6 +29,12 @@ func (l *toolsOptionsList) ProcessMouse(e *vtinput.InputEvent) bool {
 	}
 	if l.onSelect != nil {
 		l.onSelect(l.SelectPos)
+	}
+	// A double click on a name is the Settings button (f4#918).
+	if handled && l.onActivate != nil && e.Type == vtinput.MouseEventType && e.KeyDown &&
+		e.ButtonState&vtinput.FromLeft1stButtonPressed != 0 && e.MouseEventFlags&vtinput.DoubleClick != 0 &&
+		int(e.MouseX) > l.X1+4 && l.hasRowAt(l.SelectPos) {
+		l.onActivate(l.SelectPos)
 	}
 	return handled
 }
@@ -65,6 +72,8 @@ type toolsWindow struct {
 	// extraLabel and extra add a button of the window's own, always live.
 	extraLabel string
 	extra      func()
+	// applied runs after Ok has stored the choice and the window is closed.
+	applied func()
 }
 
 // show opens the window: every row with a check box that works at once.
@@ -126,6 +135,11 @@ func (tw *toolsWindow) show() {
 		}
 	}
 	list.onSelect = refreshButton
+	list.onActivate = func(idx int) {
+		if run, ok := configFor(idx); ok {
+			run()
+		}
+	}
 	list.onToggle = func(idx int) {
 		if idx < 0 || idx >= len(tw.names) {
 			return
@@ -183,6 +197,9 @@ func (tw *toolsWindow) show() {
 			return
 		}
 		dlg.SetExitCode(1)
+		if tw.applied != nil {
+			tw.applied()
+		}
 	}
 	btnCancel.OnClick = func() { dlg.SetExitCode(-1) }
 	dlg.AddItem(sep)
@@ -205,15 +222,16 @@ func (tw *toolsWindow) show() {
 	vtui.FrameManager.Push(dlg)
 }
 
-// ShowToolsOptions opens the window of the F11 menu's tools: every entry with a
-// check box that shows or hides it at once, and a Settings button that is live
-// when the selected tool has settings of its own (f4#918).
-func (pf *PanelsFrame) ShowToolsOptions() {
+// ShowToolsOptions opens the window of the F11 menu's plugins: every entry with a
+// check box, Ok to store the choice (applied then runs), and a Settings button
+// that is live when the selected plugin has settings of its own (f4#918).
+func (pf *PanelsFrame) ShowToolsOptions(applied func()) {
 	entries := PluginMenuEntriesSnapshot()
 	hidden := hiddenPluginMenuEntries()
 	tw := &toolsWindow{
-		title: i18n.Msg("Plugins.ToolsOptionsTitle"),
-		empty: i18n.Msg("Plugins.ToolsOptionsEmpty"),
+		title:   i18n.Msg("Plugins.ToolsOptionsTitle"),
+		empty:   i18n.Msg("Plugins.ToolsOptionsEmpty"),
+		applied: applied,
 		apply: func(shown []bool) error {
 			for i, entry := range entries {
 				name := entry.ActionName
