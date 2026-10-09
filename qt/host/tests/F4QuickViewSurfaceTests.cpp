@@ -932,6 +932,7 @@ private slots:
 #endif
     void initTestCase();
     void qmlImportsWithoutInstalledQt();
+    void unchangedPanelDescriptorsDoNotRepublishNativePanels();
     void compiledHostLoadsItsQmlModule();
     void expandedViewerKeepsWorkspaceChromeAccessible();
     void cachedGalleryViewerCentersFirstNativeZoomAt175Percent();
@@ -1017,6 +1018,7 @@ private slots:
     void appIconMenuUsesSemanticCategoriesAndCommands();
     void shellSnapshotDoesNotRestorePreviousPanelDescriptor();
     void workspaceSwitchRetainsGalleryViewAt175Percent();
+    void rightPanelFileIconsKeepNativeRasterAt175Percent();
     void nestedMenuAnchorsHeadersTagsAndChevronsOnPhysicalPixels();
     void nestedMenuHoverUsesDelayedSubmenuAction();
     void compactMenuStructureTransfersFocusWithoutSceneRebind();
@@ -1051,6 +1053,7 @@ private slots:
     void commandLineCursorTracksFirstTextPatch();
     void commandLineAutoHideRevealsUpward();
     void commandLinePanelToggleIsImmediate();
+    void dialogOnlyWorkspaceRetainsCommandLineLayout();
     void commandLineMultilineWrapAndPixelGrid();
     void commandLineFontBaselineCaretAndCompactHeight();
     void commandLineEmptyBaseline();
@@ -5218,6 +5221,54 @@ void F4QuickViewSurfaceTests::externalDetailsHeaderResizesColumnsAt175Percent()
     QVERIFY(fixture.window->grabWindow().save(pixelCapturePath(&captures, "external-columns-resized-175.png")));
 }
 
+void F4QuickViewSurfaceTests::unchangedPanelDescriptorsDoNotRepublishNativePanels()
+{
+    auto scene = shellScene({}, 0);
+    QuickViewFixture fixture(scene, true);
+    QVERIFY(fixture.window);
+    auto *left = fixture.item("filePanel-0");
+    auto *right = fixture.item("filePanel-1");
+    QVERIFY(left && right);
+    QTest::qWait(50);
+    QSignalSpy leftChanges(left, SIGNAL(panelChanged()));
+    QSignalSpy rightChanges(right, SIGNAL(panelChanged()));
+    QVERIFY(leftChanges.isValid() && rightChanges.isValid());
+
+    auto shell = scene.value("shell").toMap();
+    shell["terminal"] = QVariantMap{{"visible", false}, {"title", "updated terminal"}};
+    scene["shell"] = shell;
+    fixture.shell.setScene(scene);
+    QTest::qWait(20);
+    QCOMPARE(leftChanges.size(), 0);
+    QCOMPARE(rightChanges.size(), 0);
+
+    auto panel = shell.value("panels").toList().first().toMap();
+    panel.remove("entries");
+    panel.remove("highlightStyles");
+    panel["path"] = "android://V2454A/sdcard";
+    const QVariantMap patch{{"side", 0}, {"panel", panel}};
+    fixture.shell.deliverCompactPresentation(patch);
+    QTRY_COMPARE(leftChanges.size(), 1);
+    QCOMPARE(rightChanges.size(), 0);
+    fixture.shell.deliverCompactPresentation(patch);
+    QTest::qWait(20);
+    QCOMPARE(leftChanges.size(), 1);
+    QCOMPARE(rightChanges.size(), 0);
+
+    // A later shell publication carries the already accepted descriptor.
+    auto panels = shell.value("panels").toList();
+    panels[0] = panel;
+    shell["panels"] = panels;
+    shell["terminal"] = QVariantMap{{"visible", false}, {"title", "next terminal"}};
+    scene["shell"] = shell;
+    fixture.shell.setScene(scene);
+    QTest::qWait(20);
+    QCOMPARE(leftChanges.size(), 1);
+    QCOMPARE(rightChanges.size(), 0);
+    QCOMPARE(left->property("panel").toMap().value("path").toString(),
+             QStringLiteral("android://V2454A/sdcard"));
+}
+
 void F4QuickViewSurfaceTests::activationRefreshPreservesNativeControlFocus()
 {
     const auto scene = shellScene({}, 0);
@@ -8705,6 +8756,67 @@ void F4QuickViewSurfaceTests::f9MenuOverlaysPathRowWithoutMovingContent()
     QCOMPARE(panel->size(), sizeBefore);
 }
 
+void F4QuickViewSurfaceTests::rightPanelFileIconsKeepNativeRasterAt175Percent()
+{
+    QuickViewFixture fixture(shellScene({}, 0), true);
+    QVERIFY(fixture.window);
+    class DiagnosticIconProvider final : public QQuickImageProvider {
+    public:
+        DiagnosticIconProvider() : QQuickImageProvider(QQuickImageProvider::Image) {}
+        QImage requestImage(const QString &id, QSize *size, const QSize &requested) override {
+            auto result = provider.requestImage(id, size, requested);
+            rasterSizes.insert(id, result.size());
+            return result;
+        }
+        F4IconProvider provider;
+        QMap<QString, QSize> rasterSizes;
+    };
+    F4IconSet icons(QStringLiteral("right-grid-icons"));
+    auto *provider = new DiagnosticIconProvider();
+    fixture.engine.addImageProvider(QStringLiteral("right-grid-icons"), provider);
+    fixture.window->setProperty("iconProvider", QVariant::fromValue(static_cast<QObject *>(&icons)));
+    ZoinGallery::RuntimeOptions options;
+    options.persistentCache = false;
+    auto *runtime = ZoinGallery::GalleryRuntime::install(&fixture.engine, options);
+    auto *session = runtime->createExternalSession("right-icon-grid-diagnostic");
+    const auto shutdown = qScopeGuard([&] { runtime->shutdown(); });
+    QVERIFY(session->applyExternalCatalog({QVariantMap{
+        {"entryId", "folder"}, {"index", 0}, {"name", "Folder"},
+        {"highlightStyle", QVariantMap{{"iconKey", "folder"}}}, {"isDir", true}}}, 1));
+    fixture.gallery.showPanel(QUrl("qrc:/F4QtHost/qml/GalleryPanelHost.qml"), session);
+    auto *panel = fixture.item("filePanel-1");
+    QVERIFY(panel);
+    QVariantMap descriptor = panel->property("panel").toMap();
+    descriptor.insert("galleryLayoutMode", "details");
+    fixture.shell.deliverCompactPresentation({{"side", 1}, {"panel", descriptor}});
+    auto *content = fixture.item("galleryPanelContent-1");
+    QVERIFY(content);
+    QObject *loaded = nullptr;
+    QTRY_VERIFY((loaded = content->property("item").value<QObject *>()));
+    auto *view = qobject_cast<QQuickItem *>(loaded);
+    QVERIFY(view);
+    for (const int width : {1400, 1401, 1537, 2400}) {
+        fixture.window->resize(width, 640);
+        QTest::qWait(150);
+        auto *icon = visualItemWithObjectName(view, "galleryFallbackIcon-0");
+        QVERIFY(icon);
+        const qreal dpr = fixture.window->devicePixelRatio();
+        const QPointF origin = icon->mapToScene(QPointF());
+        qInfo() << "ICON-GRID" << width << "DPR" << dpr << "physical" << origin*dpr
+                << "extent" << icon->size()*dpr << "source" << icon->property("source");
+        QVERIFY(fixture.window->grabWindow().save(QString("/tmp/f4-right-icon-%1-175.png").arg(width)));
+        QVERIFY2(qAbs(origin.x()*dpr-qRound64(origin.x()*dpr)) < .001
+                 && qAbs(origin.y()*dpr-qRound64(origin.y()*dpr)) < .001,
+                 qPrintable(QString("right icon physical origin %1,%2").arg(origin.x()*dpr).arg(origin.y()*dpr)));
+        QCOMPARE(icon->mapToScene(QPointF(1,0))-origin, QPointF(1,0));
+        QCOMPARE(icon->mapToScene(QPointF(0,1))-origin, QPointF(0,1));
+        const QString route = F4IconProvider::routeId(icon->property("source").toUrl());
+        QTRY_VERIFY(provider->rasterSizes.contains(route));
+        QCOMPARE(provider->rasterSizes.value(route),
+                 QSize(qRound(icon->width()*dpr), qRound(icon->height()*dpr)));
+    }
+}
+
 void F4QuickViewSurfaceTests::workspaceSwitchRetainsGalleryViewAt175Percent()
 {
     auto scene = shellScene({}, 0);
@@ -10597,6 +10709,40 @@ void F4QuickViewSurfaceTests::commandLinePanelToggleIsImmediate()
         QCoreApplication::processEvents();
         QCOMPARE(fixture.window->property("commandLineReveal").toReal(), 0.0);
         QCOMPARE(box->height(), 0.0);
+    }
+}
+
+void F4QuickViewSurfaceTests::dialogOnlyWorkspaceRetainsCommandLineLayout()
+{
+    for (bool visible : {false, true}) {
+        QVariantMap scene = shellScene();
+        QVariantMap shell = scene.value("shell").toMap();
+        const QVariantMap command{{"visible", visible}, {"prompt", "> "}, {"text", "retained"}};
+        shell["commandLine"] = command;
+        scene["shell"] = shell;
+        QuickViewFixture fixture(scene);
+        QVERIFY(fixture.window);
+        auto *box = fixture.item("commandLineView");
+        auto *panel = fixture.item("filePanel-0");
+        QVERIFY(box);
+        QVERIFY(panel);
+        QTest::qWait(180);
+        const qreal commandHeight = box->height();
+        const qreal panelHeight = panel->height();
+        scene.remove("shell");
+        for (const QString &title : {QStringLiteral("Searching..."), QStringLiteral("Search results")}) {
+            scene["dialogs"] = QVariantList{QVariantMap{
+                {"id", "find-file"}, {"kind", "dialog"}, {"title", title},
+                {"x", 10}, {"y", 5}, {"w", 50}, {"h", 10}, {"children", QVariantList{}}
+            }};
+            fixture.shell.setScene(scene);
+            QTest::qWait(180);
+            QCOMPARE(box->height(), commandHeight);
+            QCOMPARE(panel->height(), panelHeight);
+            QCOMPARE(box->property("commandLine").toMap(), command);
+        }
+        fixture.shell.setScene(shellScene());
+        QTRY_COMPARE(box->height(), 0.0);
     }
 }
 

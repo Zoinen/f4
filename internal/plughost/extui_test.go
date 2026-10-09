@@ -17,6 +17,43 @@ import (
 	"time"
 )
 
+func TestExtUiRendererDialogOnlyWorkspacePublishesWithoutCellFrame(t *testing.T) {
+	var wire bytes.Buffer
+	renderer := &ExtUiRenderer{
+		send:                         &extUiMessageSender{w: &wire},
+		NativeSemanticSurfaceEnabled: true,
+	}
+	renderer.SetSemanticScene(panelActivationFastPathScene(0, "Panels"))
+	renderer.Flush()
+	extUiDrainBufferedMessages(t, &wire)
+	for _, title := range []string{"Searching...", "Search Results"} {
+		renderer.SetSemanticScene(map[string]any{
+			"type": "scene", "schema": "app", "version": extui.SceneVersion,
+			"presentation": "gui", "width": 100, "height": 40,
+			"dialogs": []map[string]any{{
+				"id": title, "kind": "dialog", "title": title,
+				"children": []map[string]any{{"kind": "table", "rows": []map[string]any{}}},
+			}},
+		})
+		renderer.Flush()
+		messages := extUiDrainBufferedMessages(t, &wire)
+		published := false
+		for _, message := range messages {
+			encoded, err := json.Marshal(message)
+			if err != nil {
+				t.Fatal(err)
+			}
+			published = published || bytes.Contains(encoded, []byte(title))
+			if message["type"] == "frame" {
+				t.Fatal("native dialog required a cell frame")
+			}
+		}
+		if !published {
+			t.Fatalf("%s was held waiting for a fallback cell frame", title)
+		}
+	}
+}
+
 func TestExtUiProtocolRoundTrip(t *testing.T) {
 	var buf bytes.Buffer
 	want := map[string]any{
@@ -1991,6 +2028,19 @@ func TestSemanticSceneOwnsNativeSurfaceKeepsFallbackProtocols(t *testing.T) {
 		{name: "native document", want: true, scene: map[string]any{
 			"schema": "app", "surface": map[string]any{"kind": "viewer"},
 		}},
+		{name: "dialog-only workspace", want: true, scene: map[string]any{
+			"schema": "app", "dialogs": []map[string]any{{"kind": "dialog"}},
+		}},
+		{name: "dialog-only text presentation", scene: map[string]any{
+			"schema": "app", "presentation": "text",
+			"dialogs": []map[string]any{{"kind": "dialog"}},
+		}},
+		{name: "dialog-only fallback widget", scene: map[string]any{
+			"schema": "app", "dialogs": []map[string]any{{
+				"kind": "dialog", "children": []map[string]any{{"kind": "fallbackWidget"}},
+			}},
+		}},
+		{name: "empty native scene", scene: map[string]any{"schema": "app"}},
 		{name: "text presentation", scene: map[string]any{
 			"schema": "app", "presentation": "text", "shell": map[string]any{"kind": "shell"},
 		}},

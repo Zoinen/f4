@@ -2095,6 +2095,10 @@ func (r *ExtUiRenderer) Render(buf, shadow []vtui.CharInfo, width, height int, f
 // The caller holds r.mu.
 func (r *ExtUiRenderer) setNativeCellFrameSuppression(scene map[string]any) {
 	suppress := r.NativeSemanticSurfaceEnabled && semanticSceneOwnsNativeSurface(scene)
+	if suppress && !r.nativeCellFrameSuppressed && scene["shell"] == nil &&
+		scene["surface"] == nil && scene["operationsQueue"] == nil && scene["dialogs"] != nil {
+		vtui.DebugLog("[FIX:dialog-workspace] native dialog scene does not require a fallback cell frame")
+	}
 	if r.nativeCellFrameSuppressed && !suppress {
 		// The hidden grid may never have received a frame. Force a complete
 		// snapshot (and the latest cursor) before revealing it again. Flush
@@ -2132,7 +2136,11 @@ func semanticSceneOwnsNativeSurface(scene map[string]any) bool {
 	if hasShell && shell != nil {
 		return !semanticContainsFallback(shell)
 	}
-	return false
+	// Transparent workspaces such as Find File own only their native dialogs;
+	// Qt retains the underlying surface. Treating them as fallback makes later
+	// updates wait for a full cell frame even though Qt can render every control.
+	dialogs := semantic.AppMapSlice(scene["dialogs"])
+	return len(dialogs) > 0 && !semanticContainsFallback(dialogs)
 }
 
 func semanticContainsFallback(value any) bool {

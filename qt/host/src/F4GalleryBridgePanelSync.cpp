@@ -27,6 +27,23 @@ bool usefulLocalCatalogPreview(const QString &sourceKind,
         return !name.isEmpty() && name != QStringLiteral("..");
     });
 }
+
+bool samePanelPresentation(const QVariantMap &previous,
+                           const QVariantMap &incoming)
+{
+    static const QStringList keys{
+        QStringLiteral("galleryLayoutMode"),
+        QStringLiteral("galleryColumnCount"),
+        QStringLiteral("galleryDensity"),
+        QStringLiteral("galleryDensities"),
+        QStringLiteral("galleryColumns"),
+        QStringLiteral("separateFileExtensions"),
+    };
+    return std::all_of(keys.cbegin(), keys.cend(),
+                       [&](const QString &key) {
+        return previous.value(key) == incoming.value(key);
+    });
+}
 }
 
 struct F4GalleryBridge::PanelSyncContext
@@ -168,6 +185,8 @@ F4GalleryBridge::PanelSyncContext F4GalleryBridge::makePanelSyncContext(
         && context.panelId != state.panelId;
     context.provisionalReplacementDeferred = context.catalogProvisional
         && !context.catalogStreamStart && !context.usefulLocalPreview
+        && context.sourceKind == QStringLiteral("local")
+        && state.sourceKind == QStringLiteral("local")
         && state.initialized && context.panelId == state.panelId
         && context.currentPath != state.currentPath;
     // A same-folder reread (including sort changes) may publish only the
@@ -911,6 +930,7 @@ void F4GalleryBridge::synchronizePanel(int side, const QVariantMap &panel)
     if (identityChanged)
         context = makePanelSyncContext(side, panel);
     activatePanelSession(side, context.panelId);
+    const QVariantMap previousPanel = m_panelSnapshots[context.sideIndex];
     m_panelSnapshots[context.sideIndex] = panel;
     context.session = qobject_cast<ZoinGallery::GallerySession *>(
         m_panelSessions.session(side));
@@ -922,8 +942,22 @@ void F4GalleryBridge::synchronizePanel(int side, const QVariantMap &panel)
 
     classifyPanelSyncChanges(&context);
     preparePanelCatalogData(&context);
+    // Revision/metadata acknowledgements still reach the session, but do not
+    // bracket unchanged rows in another synchronous layout transaction.
+    const SideState &state = *context.state;
+    const bool samePresentation = state.initialized
+        && !identityChanged
+        && context.currentPath == state.currentPath
+        && context.sourceKind == state.sourceKind
+        && context.previewCapable == state.previewCapable
+        && context.catalogRowsDeferred == state.catalogRowsDeferred
+        && context.incomingTotalCount == state.totalCount
+        && !context.groupPayloadChanged
+        && context.entries == state.entries
+        && samePanelPresentation(previousPanel, panel);
     const bool presentationTransaction = context.session
-        && (context.catalogChanged || context.metadataRestartNeeded);
+        && (context.catalogChanged || context.metadataRestartNeeded)
+        && !samePresentation;
     if (presentationTransaction) {
         emit panelPresentationTransactionStarted(
             side, context.panelId, context.catalogRevision,

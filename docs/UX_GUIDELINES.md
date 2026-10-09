@@ -103,6 +103,7 @@ Hotkeys provide the fastest way to activate a specific function.
 #### Dialogs and Windows
 
 *   **Workspace scope:** A blocking dialog belongs to its originating tab. The Qt backdrop intercepts input only within that tab's content without darkening it; tabs and window controls remain accessible. Modal popups also leave the background undimmed. Background task results stay in their owning workspace without activating it. Editor and viewer search progress and result dialogs preserve the document underneath them.
+*   **Dialog-only workspaces:** Transparent workspaces such as Find File remain native Qt surfaces when their controls support native rendering. Progress and result updates are delivered without waiting for a console cell frame. Retained panels preserve their command-line visibility and height while the dialog workspace has no command-line stream. Explicit text presentation and unsupported controls retain the console fallback.
 *   **Search progress:** Show the cancelable search progress popup only when the search is still running after 150 ms. Quick searches complete without changing focus or exposing a modal progress frame. Completion or cancellation suppresses any pending popup, including an already queued display callback.
 *   `Enter`: Triggers the "default" action. This is either the button marked as `IsDefault`, or the first actionable button in the tab order if none is marked. This applies even if an `Edit` field is focused.
 *   `Esc`: Closes the window or dialog.
