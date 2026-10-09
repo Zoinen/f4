@@ -13,7 +13,7 @@ import (
 	"github.com/unxed/vtui"
 )
 
-func findToolsOptionsDialog(t *testing.T) (*vtui.Window, *toolsOptionsList, *vtui.Button) {
+func findToolsOptionsDialog(t *testing.T) (*vtui.Window, *toolsOptionsList, []*vtui.Button) {
 	t.Helper()
 	pumpTasks(t)
 	var win *vtui.Window
@@ -28,19 +28,19 @@ func findToolsOptionsDialog(t *testing.T) (*vtui.Window, *toolsOptionsList, *vtu
 		t.Fatalf("the tools window is not open; top frame %T", vtui.FrameManager.GetTopFrame())
 	}
 	var list *toolsOptionsList
-	var button *vtui.Button
+	var buttons []*vtui.Button
 	for _, item := range win.GetChildren() {
 		switch it := item.(type) {
 		case *toolsOptionsList:
 			list = it
 		case *vtui.Button:
-			button = it
+			buttons = append(buttons, it)
 		}
 	}
-	if list == nil || button == nil {
-		t.Fatalf("the tools window lacks its list or its Settings button: %T", win.GetChildren())
+	if list == nil || len(buttons) != 3 {
+		t.Fatalf("the tools window wants its list and three buttons (Settings, Ok, Cancel), got %v %d", list != nil, len(buttons))
 	}
-	return win, list, button
+	return win, list, buttons
 }
 
 // The tools window lists every F11 entry with a check box that works at once,
@@ -93,7 +93,8 @@ func TestToolsOptionsWindowTogglesToolsAndKnowsWhichHaveSettings(t *testing.T) {
 	pf.ResizeConsole(80, 25)
 	vtui.FrameManager.Push(pf)
 	pf.ShowToolsOptions()
-	win, list, button := findToolsOptionsDialog(t)
+	win, list, buttons := findToolsOptionsDialog(t)
+	button, okButton := buttons[0], buttons[1]
 
 	// The window has no close box, and its rows use the dialog colours (f4#918).
 	if win.ShowClose {
@@ -137,11 +138,15 @@ func TestToolsOptionsWindowTogglesToolsAndKnowsWhichHaveSettings(t *testing.T) {
 		t.Errorf("the Settings button ran the configuration %d times, want 1", configured)
 	}
 
-	// Space turns the tool off and the choice is stored at once.
+	// Space turns the tool off in the window; nothing is stored until Ok (f4#918).
 	list.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_SPACE, Char: ' '})
 	if !strings.HasPrefix(list.Items[alpha], "[ ] ") {
 		t.Errorf("Space left the row as %q", list.Items[alpha])
 	}
+	if hidden, err := LoadPluginMenuHidden(); err != nil || len(hidden) != 0 {
+		t.Fatalf("a choice was stored before Ok: %v %v", hidden, err)
+	}
+	okButton.OnClick()
 	hidden, err := LoadPluginMenuHidden()
 	if err != nil {
 		t.Fatal(err)
@@ -222,9 +227,10 @@ func TestDriveToolsOptionsWindowTogglesToolsAndKeepsTheMenuOptions(t *testing.T)
 			buttons = append(buttons, it)
 		}
 	}
-	if list == nil || len(buttons) != 1 {
-		t.Fatalf("want the list and one button (menu options), got list=%v buttons=%d", list != nil, len(buttons))
+	if list == nil || len(buttons) != 3 {
+		t.Fatalf("want the list and three buttons (menu options, Ok, Cancel), got list=%v buttons=%d", list != nil, len(buttons))
 	}
+	okButton, cancelButton := buttons[1], buttons[2]
 	if len(list.Items) != 2 || list.Items[0] != "[x] A Alpha drive" || list.Items[1] != "[x] B Beta drive" {
 		t.Fatalf("rows = %q, want both drive tools, markers stripped and checked", list.Items)
 	}
@@ -234,6 +240,10 @@ func TestDriveToolsOptionsWindowTogglesToolsAndKeepsTheMenuOptions(t *testing.T)
 	if list.Items[1] != "[ ] B Beta drive" {
 		t.Errorf("Space left the row as %q", list.Items[1])
 	}
+	if disabled, _ := LoadDisabledDriveTools(path); len(disabled) != 0 {
+		t.Fatalf("a choice was stored before Ok: %q", disabled)
+	}
+	okButton.OnClick()
 	disabled, err := LoadDisabledDriveTools(path)
 	if err != nil {
 		t.Fatal(err)
@@ -241,9 +251,15 @@ func TestDriveToolsOptionsWindowTogglesToolsAndKeepsTheMenuOptions(t *testing.T)
 	if len(disabled) != 1 || disabled[0] != "&B Beta drive" {
 		t.Errorf("stored hidden tools = %q, want the beta drive under its full name", disabled)
 	}
+	// Turned back on and cancelled: the file keeps the beta drive hidden.
 	list.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_SPACE, Char: ' '})
+	cancelButton.OnClick()
+	if disabled, _ = LoadDisabledDriveTools(path); len(disabled) != 1 {
+		t.Errorf("Cancel changed the stored choice to %q", disabled)
+	}
+	okButton.OnClick()
 	if disabled, _ = LoadDisabledDriveTools(path); len(disabled) != 0 {
-		t.Errorf("turning the tool back on left %q hidden", disabled)
+		t.Errorf("turning the tool back on and Ok left %q hidden", disabled)
 	}
 
 	buttons[0].OnClick()

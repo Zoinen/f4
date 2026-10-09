@@ -155,8 +155,8 @@ func TestPanelsFrame_DriveMenu_F9OpensToolsWindowWithMenuOptionsButton(t *testin
 	}
 	var button *vtui.Button
 	for _, item := range win.GetChildren() {
-		if b, ok := item.(*vtui.Button); ok {
-			button = b
+		if b, ok := item.(*vtui.Button); ok && button == nil {
+			button = b // the first button is Menu options; Ok and Cancel follow
 		}
 	}
 	if button == nil {
