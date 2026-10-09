@@ -36,7 +36,7 @@ const messagesReply = `{"id":"msg_1","type":"message","role":"assistant","model"
 
 func TestChatAnthropicSpeaksTheMessagesAPI(t *testing.T) {
 	srv, seen := fakeMessagesServer(t, messagesReply)
-	cfg := Config{Kind: KindAnthropic, BaseURL: srv.URL, Model: "claude-opus-5-5", APIKey: "sk-ant-test"}
+	cfg := Config{Kind: KindAnthropic, BaseURL: srv.URL, Model: "claude-opus-5-5", APIKey: "test-key"}
 	text, usage, err := cfg.Chat(context.Background(), []Message{
 		{Role: "system", Content: "be brief"},
 		{Role: "user", Content: "hi"},
@@ -49,7 +49,7 @@ func TestChatAnthropicSpeaksTheMessagesAPI(t *testing.T) {
 	if text != "Hello from Claude" || usage.In != 12 || usage.Out != 4 {
 		t.Fatalf("text %q usage %#v", text, usage)
 	}
-	if !strings.HasSuffix(seen.path, "/v1/messages") || seen.key != "sk-ant-test" {
+	if !strings.HasSuffix(seen.path, "/v1/messages") || seen.key != "test-key" {
 		t.Fatalf("request went to %q with key %q", seen.path, seen.key)
 	}
 	if msgs, _ := seen.body["messages"].([]any); len(msgs) != 3 {
