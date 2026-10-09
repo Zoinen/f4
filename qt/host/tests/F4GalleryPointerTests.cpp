@@ -301,6 +301,8 @@ private slots:
     }
     void nativeDragListsSurviveWireEncoding();
     void sameFolderRefreshKeepsGalleryObjects();
+    void androidDriveSwitchClearsPreviousCatalogImmediately();
+    void revisionOnlyRefreshDoesNotStartPresentationTransaction();
     void sparseRefreshReachesGalleryAndCrossesPagingThreshold();
     void nativeDropUsesIdentityAndSnappedOutline();
     void columnsLabelsStaySnappedDuringPanelResize();
@@ -2384,6 +2386,80 @@ void F4GalleryPointerTests::galleryModeSwitchPositionsCursorImmediately()
     QCOMPARE(session->panelViewportCursorEntryId(), QStringLiteral("entry-50"));
 
     delete rootObject;
+}
+
+void F4GalleryPointerTests::androidDriveSwitchClearsPreviousCatalogImmediately()
+{
+    QQuickView view;
+    F4GalleryBridge bridge(view.engine());
+    QVERIFY(bridge.available());
+    auto scene = galleryScene(4);
+    bridge.synchronizeScene(scene);
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(bridge.sessionForSide(0));
+    QVERIFY(session);
+    QCOMPARE(session->model()->rowCount(), 4);
+    auto shell = scene.value("shell").toMap();
+    auto panel = shell.value("panels").toList().first().toMap();
+    panel["path"] = "android://";
+    panel["sourceKind"] = "vfs";
+    panel["entries"] = QVariantList{};
+    panel["totalCount"] = 0;
+    panel["catalogRevision"] = 6;
+    panel["catalogProvisional"] = true;
+    panel["loading"] = true;
+    shell["panels"] = QVariantList{panel};
+    scene["shell"] = shell;
+    bridge.synchronizeScene(scene);
+    QCOMPARE(session->model()->rowCount(), 0);
+    panel["entries"] = QVariantList{QVariantMap{
+        {"entryId", "phone"}, {"index", 0}, {"name", "Pixel"}, {"isDir", true}
+    }};
+    panel["totalCount"] = 1;
+    panel["catalogRevision"] = 7;
+    panel["catalogProvisional"] = false;
+    panel["loading"] = false;
+    shell["panels"] = QVariantList{panel};
+    scene["shell"] = shell;
+    bridge.synchronizeScene(scene);
+    QCOMPARE(session->model()->rowCount(), 1);
+}
+
+void F4GalleryPointerTests::revisionOnlyRefreshDoesNotStartPresentationTransaction()
+{
+    QQuickView view;
+    F4GalleryBridge bridge(view.engine());
+    auto scene = galleryScene(4);
+    bridge.synchronizeScene(scene);
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(bridge.sessionForSide(0));
+    QVERIFY(session);
+    QSignalSpy transactions(&bridge, &F4GalleryBridge::panelPresentationTransactionStarted);
+    QSignalSpy resets(session->model(), &QAbstractItemModel::modelReset);
+    auto shell = scene.value("shell").toMap();
+    auto panel = shell.value("panels").toList().first().toMap();
+    const auto sync = [&] {
+        shell["panels"] = QVariantList{panel};
+        scene["shell"] = shell;
+        bridge.synchronizeScene(scene);
+    };
+    panel["catalogRevision"] = qulonglong(6);
+    panel["loading"] = false;
+    sync();
+    QCOMPARE(session->catalogRevision(), qulonglong(6));
+    QCOMPARE(resets.size(), 0);
+    QCOMPARE(transactions.size(), 0);
+    // A layout configuration change still needs its atomic presentation commit.
+    panel["catalogRevision"] = qulonglong(7);
+    panel["galleryDensity"] = 180;
+    sync();
+    QCOMPARE(transactions.size(), 1);
+    transactions.clear();
+    auto entries = panel.value("entries").toList();
+    entries.removeLast();
+    panel["entries"] = entries;
+    panel["catalogRevision"] = qulonglong(8);
+    sync();
+    QCOMPARE(transactions.size(), 1);
+    QCOMPARE(session->model()->rowCount(), 3);
 }
 
 void F4GalleryPointerTests::sameFolderRefreshKeepsGalleryObjects()

@@ -162,6 +162,11 @@ func (m *ManagerVFS) IsAtRoot() bool   { return true }
 func (m *ManagerVFS) GetPath() string  { return androidRoot }
 func (m *ManagerVFS) GetTitle() string { return "Android" }
 
+// DirectoryCacheKey keeps the device list visible when returning from a mount
+// while the panel refreshes ADB discovery. Separate managers retain isolated
+// snapshots and device-row lookup maps.
+func (m *ManagerVFS) DirectoryCacheKey() any { return m }
+
 // PanelTitle names the device list while GetPath retains its canonical URI.
 func (m *ManagerVFS) PanelTitle(string) string { return "Android devices" }
 

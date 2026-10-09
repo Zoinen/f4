@@ -38,6 +38,12 @@ Item {
     property var rightPanelLayoutStateOverride: null
 
     property var retainedShellFrame: ({})
+    property var retainedCommandLineFrame: ({ "visible": false })
+    readonly property var currentCommandLineFrame: commandLineState.frame || ({})
+    onCurrentCommandLineFrameChanged: {
+        if (Object.keys(currentCommandLineFrame).length > 0)
+            retainedCommandLineFrame = currentCommandLineFrame
+    }
     property var retainedDocumentFrame: ({})
     property var retainedOperationsQueue: ({})
     property bool shellPresentationOverrideSet: false
@@ -125,7 +131,10 @@ Item {
     }
 
     function commandLineFrame() {
-        return commandLineState.frame || ({})
+        // Transparent dialog workspaces clear the command-line stream while
+        // retaining the panels. Preserve their matching lower-edge layout too.
+        return Object.keys(currentCommandLineFrame).length > 0
+                ? currentCommandLineFrame : retainedCommandLineFrame
     }
 
     function isAppScene() {

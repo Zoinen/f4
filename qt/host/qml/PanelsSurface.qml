@@ -20,8 +20,17 @@ Item {
     readonly property alias panelPair: panelPairLoader.item
     property var frame: hostWindow.shellFrame()
     property var panelList: frame.panels || []
+    property var leftPanelDescriptor: ({ "side": 0 })
+    property var rightPanelDescriptor: ({ "side": 1 })
+    property string leftPanelSignature: ""
+    property string rightPanelSignature: ""
 
-    function panelForSide(side) {
+    onPanelListChanged: {
+        updatePanelDescriptor(0)
+        updatePanelDescriptor(1)
+    }
+
+    function sourcePanelForSide(side) {
         const compactPanel = side === 0
                 ? hostWindow.leftPanelPresentationOverride
                 : hostWindow.rightPanelPresentationOverride
@@ -32,6 +41,39 @@ Item {
                 return panelList[index]
         }
         return ({ "side": side })
+    }
+
+    function updatePanelDescriptor(side) {
+        const descriptor = sourcePanelForSide(side)
+        // Descriptors are row-free. A shell/terminal update can carry fresh
+        // objects for the same panel, or repeat an accepted compact catalog.
+        // Keep each panel's observable object until its own values change.
+        const signature = JSON.stringify(descriptor)
+        if (side === 0) {
+            if (signature === leftPanelSignature)
+                return
+            leftPanelSignature = signature
+            leftPanelDescriptor = descriptor
+        } else {
+            if (signature === rightPanelSignature)
+                return
+            rightPanelSignature = signature
+            rightPanelDescriptor = descriptor
+        }
+    }
+
+    function panelForSide(side) {
+        return side === 0 ? leftPanelDescriptor : rightPanelDescriptor
+    }
+
+    Connections {
+        target: panels.hostWindow
+        function onLeftPanelPresentationOverrideChanged() {
+            panels.updatePanelDescriptor(0)
+        }
+        function onRightPanelPresentationOverrideChanged() {
+            panels.updatePanelDescriptor(1)
+        }
     }
 
     function hasPanelForSide(side) {

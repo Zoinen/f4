@@ -21,6 +21,12 @@ Tools are not downloaded or bundled.
 Wireless devices that have already been connected to the same ADB server are
 listed in exactly the same way as USB devices.
 
+Returning from a mounted device immediately restores the panel's cached device
+list and selection. ADB discovery refreshes it in the background with the normal
+panel loading indicator; the fresh list replaces the snapshot when it completes.
+Switching from another drive to Android immediately shows the Android panel,
+including an empty list while the first discovery is still pending.
+
 Mounted item paths are public addresses, for example
 `android://Pixel 3/sdcard/DCIM/file.jpg`. The panel title uses the same address.
 The Android URI provider can reopen these addresses from another filesystem;

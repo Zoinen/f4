@@ -932,6 +932,7 @@ private slots:
 #endif
     void initTestCase();
     void qmlImportsWithoutInstalledQt();
+    void unchangedPanelDescriptorsDoNotRepublishNativePanels();
     void compiledHostLoadsItsQmlModule();
     void expandedViewerKeepsWorkspaceChromeAccessible();
     void cachedGalleryViewerCentersFirstNativeZoomAt175Percent();
@@ -1052,6 +1053,7 @@ private slots:
     void commandLineCursorTracksFirstTextPatch();
     void commandLineAutoHideRevealsUpward();
     void commandLinePanelToggleIsImmediate();
+    void dialogOnlyWorkspaceRetainsCommandLineLayout();
     void commandLineMultilineWrapAndPixelGrid();
     void commandLineFontBaselineCaretAndCompactHeight();
     void commandLineEmptyBaseline();
@@ -5217,6 +5219,54 @@ void F4QuickViewSurfaceTests::externalDetailsHeaderResizesColumnsAt175Percent()
     QTemporaryDir captures;
     QVERIFY(captures.isValid());
     QVERIFY(fixture.window->grabWindow().save(pixelCapturePath(&captures, "external-columns-resized-175.png")));
+}
+
+void F4QuickViewSurfaceTests::unchangedPanelDescriptorsDoNotRepublishNativePanels()
+{
+    auto scene = shellScene({}, 0);
+    QuickViewFixture fixture(scene, true);
+    QVERIFY(fixture.window);
+    auto *left = fixture.item("filePanel-0");
+    auto *right = fixture.item("filePanel-1");
+    QVERIFY(left && right);
+    QTest::qWait(50);
+    QSignalSpy leftChanges(left, SIGNAL(panelChanged()));
+    QSignalSpy rightChanges(right, SIGNAL(panelChanged()));
+    QVERIFY(leftChanges.isValid() && rightChanges.isValid());
+
+    auto shell = scene.value("shell").toMap();
+    shell["terminal"] = QVariantMap{{"visible", false}, {"title", "updated terminal"}};
+    scene["shell"] = shell;
+    fixture.shell.setScene(scene);
+    QTest::qWait(20);
+    QCOMPARE(leftChanges.size(), 0);
+    QCOMPARE(rightChanges.size(), 0);
+
+    auto panel = shell.value("panels").toList().first().toMap();
+    panel.remove("entries");
+    panel.remove("highlightStyles");
+    panel["path"] = "android://V2454A/sdcard";
+    const QVariantMap patch{{"side", 0}, {"panel", panel}};
+    fixture.shell.deliverCompactPresentation(patch);
+    QTRY_COMPARE(leftChanges.size(), 1);
+    QCOMPARE(rightChanges.size(), 0);
+    fixture.shell.deliverCompactPresentation(patch);
+    QTest::qWait(20);
+    QCOMPARE(leftChanges.size(), 1);
+    QCOMPARE(rightChanges.size(), 0);
+
+    // A later shell publication carries the already accepted descriptor.
+    auto panels = shell.value("panels").toList();
+    panels[0] = panel;
+    shell["panels"] = panels;
+    shell["terminal"] = QVariantMap{{"visible", false}, {"title", "next terminal"}};
+    scene["shell"] = shell;
+    fixture.shell.setScene(scene);
+    QTest::qWait(20);
+    QCOMPARE(leftChanges.size(), 1);
+    QCOMPARE(rightChanges.size(), 0);
+    QCOMPARE(left->property("panel").toMap().value("path").toString(),
+             QStringLiteral("android://V2454A/sdcard"));
 }
 
 void F4QuickViewSurfaceTests::activationRefreshPreservesNativeControlFocus()
@@ -10659,6 +10709,40 @@ void F4QuickViewSurfaceTests::commandLinePanelToggleIsImmediate()
         QCoreApplication::processEvents();
         QCOMPARE(fixture.window->property("commandLineReveal").toReal(), 0.0);
         QCOMPARE(box->height(), 0.0);
+    }
+}
+
+void F4QuickViewSurfaceTests::dialogOnlyWorkspaceRetainsCommandLineLayout()
+{
+    for (bool visible : {false, true}) {
+        QVariantMap scene = shellScene();
+        QVariantMap shell = scene.value("shell").toMap();
+        const QVariantMap command{{"visible", visible}, {"prompt", "> "}, {"text", "retained"}};
+        shell["commandLine"] = command;
+        scene["shell"] = shell;
+        QuickViewFixture fixture(scene);
+        QVERIFY(fixture.window);
+        auto *box = fixture.item("commandLineView");
+        auto *panel = fixture.item("filePanel-0");
+        QVERIFY(box);
+        QVERIFY(panel);
+        QTest::qWait(180);
+        const qreal commandHeight = box->height();
+        const qreal panelHeight = panel->height();
+        scene.remove("shell");
+        for (const QString &title : {QStringLiteral("Searching..."), QStringLiteral("Search results")}) {
+            scene["dialogs"] = QVariantList{QVariantMap{
+                {"id", "find-file"}, {"kind", "dialog"}, {"title", title},
+                {"x", 10}, {"y", 5}, {"w", 50}, {"h", 10}, {"children", QVariantList{}}
+            }};
+            fixture.shell.setScene(scene);
+            QTest::qWait(180);
+            QCOMPARE(box->height(), commandHeight);
+            QCOMPARE(panel->height(), panelHeight);
+            QCOMPARE(box->property("commandLine").toMap(), command);
+        }
+        fixture.shell.setScene(shellScene());
+        QTRY_COMPARE(box->height(), 0.0);
     }
 }
 
