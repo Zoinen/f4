@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"strings"
@@ -501,6 +502,8 @@ type dirCacheKey struct {
 }
 
 type FileSystemPanel struct {
+	selMemo selectionMemo
+
 	// folderEventPath is the folder the FolderChanged macro event was last
 	// raised for, so a refresh of the same folder does not raise it again.
 	folderEventPath        string
@@ -4460,8 +4463,59 @@ func (fp *FileSystemPanel) SelectName(name string) {
 	}
 }
 
+// selectionMemo lets a caller that asks the same panel for its selection many
+// times in a row, with nothing changing in between, walk the listing once
+// (f4#1832). While it is on, GetSelectedNames hands back the first answer.
+type selectionMemo struct {
+	mu    sync.Mutex
+	on    bool
+	valid bool
+	names []string
+}
+
+// MemoizeSelection makes GetSelectedNames answer from its first result until
+// the returned function is called. The result is shared, so callers must only
+// read it. Use it around a pass that does not change the panel, such as
+// refreshing the dimmed menu rows.
+func (fp *FileSystemPanel) MemoizeSelection() (end func()) {
+	fp.selMemo.mu.Lock()
+	fp.selMemo.on, fp.selMemo.valid, fp.selMemo.names = true, false, nil
+	fp.selMemo.mu.Unlock()
+	return func() {
+		fp.selMemo.mu.Lock()
+		fp.selMemo.on, fp.selMemo.valid, fp.selMemo.names = false, false, nil
+		fp.selMemo.mu.Unlock()
+	}
+}
+
 // GetSelectedNames returns a list of selected files. If none are selected, returns the focused one.
 func (fp *FileSystemPanel) GetSelectedNames() []string {
+	fp.selMemo.mu.Lock()
+	if fp.selMemo.on && fp.selMemo.valid {
+		names := fp.selMemo.names
+		fp.selMemo.mu.Unlock()
+		return names
+	}
+	fp.selMemo.mu.Unlock()
+	names := fp.selectedNames()
+	fp.selMemo.mu.Lock()
+	if fp.selMemo.on {
+		fp.selMemo.names, fp.selMemo.valid = names, true
+	}
+	fp.selMemo.mu.Unlock()
+	return names
+}
+
+// selectionWalks counts the walks of a listing that GetSelectedNames made, for
+// the responsiveness test of the menu (f4#1832).
+var selectionWalks atomic.Int64
+
+// SelectionWalks is the number of times GetSelectedNames has walked a whole
+// listing since the process started.
+func SelectionWalks() int64 { return selectionWalks.Load() }
+
+func (fp *FileSystemPanel) selectedNames() []string {
+	selectionWalks.Add(1)
 	var names []string
 	// 1. Collect explicitly selected items (ins/shift+arrows)
 	for _, e := range fp.Entries {

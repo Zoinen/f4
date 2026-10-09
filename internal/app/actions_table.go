@@ -217,6 +217,21 @@ func viewKeyBarLabel() string {
 // copy of exactly one regular file (Encode/Decode as Base64): one entry
 // selected, and it is not a folder or "..". FileSystemPanel.GetSelectedNames
 // already leaves ".." out (f4#1356).
+// entryNamed finds the entry with the given name. With no selection the one
+// name asked about is the cursor's, so that is looked at before the listing is
+// walked (f4#1832).
+func entryNamed(fsp *panel.FileSystemPanel, name string) *panel.FileEntry {
+	if idx := fsp.GetCursorIndex(); idx >= 0 && idx < len(fsp.Entries) && fsp.Entries[idx].Name == name {
+		return fsp.Entries[idx]
+	}
+	for _, e := range fsp.Entries {
+		if e.Name == name {
+			return e
+		}
+	}
+	return nil
+}
+
 func oneRegularFileEnabled() bool {
 	pf := panel.FindPanelsFrame()
 	if pf == nil {
@@ -230,10 +245,8 @@ func oneRegularFileEnabled() bool {
 	if len(names) != 1 {
 		return false
 	}
-	for _, e := range fsp.Entries {
-		if e.Name == names[0] {
-			return !e.IsDir
-		}
+	if e := entryNamed(fsp, names[0]); e != nil {
+		return !e.IsDir
 	}
 	return false
 }
@@ -264,10 +277,8 @@ func symlinkEditEnabled() bool {
 	if _, ok := fsp.Vfs.(vfs.SymlinkVFS); !ok {
 		return false
 	}
-	for _, e := range fsp.Entries {
-		if e.Name == names[0] {
-			return e.IsSymlink
-		}
+	if e := entryNamed(fsp, names[0]); e != nil {
+		return e.IsSymlink
 	}
 	return false
 }
