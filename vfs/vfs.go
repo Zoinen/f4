@@ -130,10 +130,11 @@ type VFSItem struct {
 	// the platform reports one reliably: always on native Windows
 	// (GetFileAttributesEx's CreationTime), and on macOS/FreeBSD/NetBSD
 	// (syscall.Stat_t's Birthtimespec). Classic Unix stat(2) has no portable
-	// birth time at all — Linux would need statx(2) with STATX_BTIME, which
+	// birth time at all — Linux needs statx(2) with STATX_BTIME, which
 	// not every filesystem populates even then, and paying for an extra
 	// syscall per directory entry just to attempt it is a bigger tradeoff
-	// than this field is meant to make (f4#1404); OpenBSD, DragonFly,
+	// than this field is meant to make (f4#1404): the attributes dialog asks
+	// for it on demand instead (ReadBirthTime, f4#1817); OpenBSD, DragonFly,
 	// Solaris and illumos leave it unset for the same reason. Zero value
 	// with MetadataBTime unset means "not available", not "epoch".
 	BTime time.Time

@@ -47,8 +47,22 @@ func TestDriveMenuCaptionsLiveInTheSeparators(t *testing.T) {
 	if !ok {
 		t.Fatalf("no Tools caption in the rules: %v", captions)
 	}
-	if next := strings.ReplaceAll(menu.Items[tools+1].Text, "&", ""); next != "Alpha" {
-		t.Fatalf("the row after the Tools rule is %q, want the first tool", next)
+	// The built-in tools come first (Other panel, Temporary panel, and the
+	// registry on Windows), then the plugin tools (f4#1148).
+	builtin := map[string]bool{
+		strings.TrimSpace(strings.ReplaceAll(i18n.Msg("Panel.Other"), "&", "")):     true,
+		strings.TrimSpace(strings.ReplaceAll(i18n.Msg("TempPanel.Drive"), "&", "")): true,
+		"Windows Registry": true,
+	}
+	first := tools + 1
+	for first < len(menu.Items) && builtin[strings.TrimSpace(strings.ReplaceAll(menu.Items[first].Text, "&", ""))] {
+		first++
+	}
+	if first == tools+1 {
+		t.Fatalf("the built-in tools are not first under the Tools rule: %q", menu.Items[tools+1].Text)
+	}
+	if next := strings.TrimSpace(strings.ReplaceAll(menu.Items[first].Text, "&", "")); next != "Alpha" {
+		t.Fatalf("the row after the built-in tools is %q, want the first plugin tool", next)
 	}
 	for _, item := range menu.Items {
 		clean := strings.ReplaceAll(item.Text, "&", "")
