@@ -389,7 +389,11 @@ type PanelsFrame struct {
 	// Integrated Terminal
 	Pty        terminal.PtyBackend
 	RemotePtys map[vfs.VFS]terminal.PtyBackend
-	PtyMutex   sync.Mutex
+	// remotePtyRetryAt holds back a new attempt to open a shell on a host
+	// whose last one failed or ended at once (see remotePtyBackoff).
+	// Guarded by PtyMutex.
+	remotePtyRetryAt map[vfs.VFS]time.Time
+	PtyMutex         sync.Mutex
 	// localReflow records that the local shell's output may be reflowed on
 	// a width change: its backend delivers long lines whole and the view is
 	// f4's own terminal. Guarded by PtyMutex.
@@ -5531,6 +5535,29 @@ func vfsHasRemotePTY(v vfs.VFS) bool {
 	return true
 }
 
+// A host that takes the connection but allows no shell (an SFTP-only service
+// answers "This service allows sftp connections only" and closes the channel)
+// used to be asked for one again by every call of getActivePTYUnsafe: the
+// shell it opened ended at once, its entry was dropped, and the next call
+// dialled again, on the interface thread and under PtyMutex. The panel
+// lagged more with each cursor step and the console filled with the host's
+// answer (unxed/f4#1766). A shell that failed to open, or ended within
+// remotePtyShortLived of opening, is not asked for again before the time
+// below has passed.
+const (
+	remotePtyShortLived         = 3 * time.Second
+	remotePtyFailedBackoff      = 30 * time.Second
+	remotePtyEndedAtOnceBackoff = 10 * time.Minute
+)
+
+// holdRemotePty is called with PtyMutex held.
+func (pf *PanelsFrame) holdRemotePty(v vfs.VFS, wait time.Duration) {
+	if pf.remotePtyRetryAt == nil {
+		pf.remotePtyRetryAt = make(map[vfs.VFS]time.Time)
+	}
+	pf.remotePtyRetryAt[v] = time.Now().Add(wait)
+}
+
 func (pf *PanelsFrame) getActivePTYUnsafe() terminal.PtyBackend {
 	if pf.RemotePtys == nil {
 		pf.RemotePtys = make(map[vfs.VFS]terminal.PtyBackend)
@@ -5546,9 +5573,16 @@ func (pf *PanelsFrame) getActivePTYUnsafe() terminal.PtyBackend {
 			return pty
 		}
 
+		if until, held := pf.remotePtyRetryAt[activeVfs]; held && time.Now().Before(until) {
+			return pf.Pty
+		}
 		res, err := pp.OpenPty(pf.TermView.Width, pf.TermView.Height)
+		if err != nil {
+			pf.holdRemotePty(activeVfs, remotePtyFailedBackoff)
+		}
 		if err == nil {
 			pty := res.(terminal.PtyBackend)
+			openedAt := time.Now()
 			vtui.DebugLog("Created new remote term.PTY background session for VFS")
 			pf.RemotePtys[activeVfs] = pty
 
@@ -5595,6 +5629,9 @@ func (pf *PanelsFrame) getActivePTYUnsafe() terminal.PtyBackend {
 				pty.Close()
 				pf.PtyMutex.Lock()
 				delete(pf.RemotePtys, activeVfs)
+				if time.Since(openedAt) < remotePtyShortLived {
+					pf.holdRemotePty(activeVfs, remotePtyEndedAtOnceBackoff)
+				}
 				pf.PtyMutex.Unlock()
 				// The session that switched these on is gone and cannot
 				// switch them off.
