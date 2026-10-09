@@ -2845,7 +2845,8 @@ func TestFileSystemPanel_FastFind_Rendering(t *testing.T) {
 		t.Error("FastFind search string 'test' not found in ScreenBuf")
 	}
 
-	inputX, inputY := fp.X1+11, fp.Y2-1
+	// The query starts in the first cell of the edit field, right after the border (f4#1131).
+	inputX, inputY := fp.X1+10, fp.Y2-1
 	matchingAttr := scr.GetCell(inputX, inputY).Attributes
 	if got, want := vtui.GetRGBFore(matchingAttr), vtui.GetRGBFore(vtui.Palette[vtui.ColMenuHighlight]); got != want {
 		t.Fatalf("matching query foreground = %#06x, want %#06x", got, want)

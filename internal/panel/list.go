@@ -3498,7 +3498,7 @@ func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 		p.DrawTitle(fx1, fy1, fx2, title, vtui.Palette[vtui.ColDialogBoxTitle])
 
 		searchStr := fp.FastFindStr
-		for runewidth.StringWidth(searchStr) > boxW-4 {
+		for runewidth.StringWidth(searchStr) > boxW-3 {
 			runes := []rune(searchStr)
 			searchStr = string(runes[1:])
 		}
@@ -3514,7 +3514,7 @@ func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 		editAttr := vtui.Palette[vtui.ColDialogEdit]
 		p.Fill(fx1+1, fy1+1, fx2-1, fy1+1, ' ', editAttr)
 		searchAttr := fastFindMatchAttr(editAttr, searchColor)
-		p.DrawString(fx1+2, fy1+1, searchStr, searchAttr)
+		p.DrawString(fx1+1, fy1+1, searchStr, searchAttr)
 
 		if fp.autoFilterMode {
 			// The exact-match option sits in the filter window itself, where the
@@ -3529,7 +3529,7 @@ func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 			fp.exactBoxX1, fp.exactBoxX2, fp.exactBoxY = fx1+2, fx2-2, fy1+2
 		}
 
-		scr.SetCursorPos(fx1+2+runewidth.StringWidth(searchStr), fy1+1)
+		scr.SetCursorPos(fx1+1+runewidth.StringWidth(searchStr), fy1+1)
 		scr.SetCursorVisible(true)
 	}
 }
