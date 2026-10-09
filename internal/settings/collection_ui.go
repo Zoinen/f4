@@ -124,7 +124,11 @@ func (c *settingsCenter) addCollections(category string) {
 				selected = max(0, len(rows)-1)
 			}
 			table.SetSelectPos(selected)
-			r := &settingsRow{field: meta, session: s, control: table, controlHeight: 5, match: true}
+			listHeight := 5
+			if c.fullLists {
+				listHeight = max(listHeight, len(rows))
+			}
+			r := &settingsRow{field: meta, session: s, control: table, controlHeight: listHeight, match: true}
 			c.page.AddItem(table)
 			c.page.rows = append(c.page.rows, r)
 			table.OnSelect = func(i int) {

@@ -581,6 +581,8 @@ type settingsCenter struct {
 	offsets                 map[string]int
 	closed                  bool
 	scoped                  bool
+	// fullLists shows the record lists of a page in full, not in five rows.
+	fullLists bool
 	// fieldPrefix and fieldTitle narrow a scoped window further, to the fields
 	// of one plugin (ids that start with the prefix), under the plugin's name
 	// (f4#918). Empty: the whole category.
@@ -682,7 +684,9 @@ func newSettingsCenter(sessions []*settingsSession) *settingsCenter {
 	c.OnResult = func(int) {
 		if !c.closed {
 			c.closed = true
-			lastSettingsCategory = c.category
+			if !c.fullLists {
+				lastSettingsCategory = c.category
+			}
 			c.offsets[c.category] = c.page.scroll
 			lastSettingsOffsets = map[string]int{}
 			for k, v := range c.offsets {
@@ -1658,6 +1662,9 @@ func OpenCategoryOnly(category string) bool {
 	if err != nil {
 		vtui.ShowMessage(Phrase("Settings"), err.Error(), []string{i18n.Msg("vtui.Ok")})
 		return true
+	}
+	if category == "drives" {
+		return showDriveChooser(sessions)
 	}
 	return showSettingsCenterScoped(sessions, category)
 }
