@@ -60,8 +60,10 @@ func driveMenuNameWithoutMarker(name string) string {
 func driveMenuAssignableText(actionName, label string) string {
 	shortcut := PluginActionConfiguredKey(actionName)
 	if shortcut == "" {
+		// The hotkey column stays reserved, so the names of the Tools do not
+		// jump left and right with a letter being assigned (f4#1148).
 		clean, _, _ := vtui.ParseAmpersandString(label)
-		return clean
+		return "  " + clean
 	}
 	return PluginMenuItemText(label, shortcut, 1)
 }

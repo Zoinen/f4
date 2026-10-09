@@ -6201,9 +6201,9 @@ func (pf *PanelsFrame) driveMenuDefaultPos(panelIdx int) int {
 	cur := osVFS.GetPath()
 	for i, drv := range sysinfo.GetPlatformDrives() {
 		if driveMatchesPath(drv, cur) {
-			// The "Other panel" and "Temporary panel" entries precede
-			// platform drives.
-			return i + 2
+			// The platform drives open the menu; "Other panel" and
+			// "Temporary panel" sit in the Tools section below (f4#1148).
+			return i
 		}
 	}
 	return 0
@@ -6212,7 +6212,7 @@ func (pf *PanelsFrame) driveMenuDefaultPos(panelIdx int) int {
 // driveMatchesPath reports whether the platform drive entry drv is the one
 // the path cur currently belongs to. Only the Windows drive-letter case is
 // matched (the menu entries there carry letters, as the user expects); in
-// posix/UNIX mode the default "Other panel" row stays selected.
+// posix/UNIX mode the first row stays selected.
 func driveMatchesPath(drv sysinfo.DriveEntry, cur string) bool {
 	if runtime.GOOS != "windows" || hostmode.Posix() {
 		return false
@@ -6232,30 +6232,9 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 
 	usedHotkeys := make(map[rune]bool)
 	driveHotkeyRows := make(map[int]string)
-
-	// 1. Other panel (focused by default). It has no automatic accelerator;
-	// F4 can assign one explicitly, just like the tool rows below.
-	otherAction := keymap.DriveMenuActionName("other")
-	driveHotkeyRows[menu.GetItemCount()] = otherAction
-	menu.AddItem(vtui.MenuItem{Text: driveMenuAssignableText(otherAction, i18n.Msg("Panel.Other")), UserData: func(fsp *FileSystemPanel) {
-		otherFsp := pf.Panels[1-panelIdx].(*FileSystemPanel)
-		fsp.cancelProviderOpen()
-		if fsp.Vfs != nil {
-			_ = fsp.Vfs.Close()
-		}
-		fsp.Vfs = otherFsp.Vfs.Clone()
-		fsp.showCurrentVFSLoadingRows()
-		fsp.ReadDirectory()
-		pf.RefreshAll()
-	}})
-
-	// TempPanel is a native VFS panel, so it is available from the same
-	// Alt+F1/Alt+F2 drive menu as far2l's plugin panels.
-	temporaryAction := keymap.DriveMenuActionName("temporary")
-	driveHotkeyRows[menu.GetItemCount()] = temporaryAction
-	menu.AddItem(vtui.MenuItem{Text: driveMenuAssignableText(temporaryAction, i18n.Msg("TempPanel.Drive")), UserData: func(fsp *FileSystemPanel) {
-		pf.SwitchToVFS(fsp, NewTempPanelVFS(nil, GlobalTempPanelStore, 0))
-	}})
+	// driveHotkeyLabels is the name F4 shows for a row, without the hotkey the
+	// row's text carries in front of it (f4#1148).
+	driveHotkeyLabels := make(map[int]string)
 
 	// 2. Fixed platform paths (Root, Home, physical disks). The metadata is
 	// rendered at menu-open time, just like Far's ChangeDiskMenu, so labels,
@@ -6281,13 +6260,16 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 	// Del on one of those unmounts it. Populated in the same loop that adds
 	// the rows below, the same way bookmarkRows/driveBookmarkRows are.
 	mountRows := map[int]int{}
+	var registryDrive *sysinfo.DriveEntry
+	registryName := ""
 	for i, drv := range platformDrives {
 		factory := drv.Factory
 		name := platformNames[i]
 		if strings.EqualFold(driveMenuNameWithoutMarker(drv.Name), "Windows Registry") {
-			actionName := keymap.DriveMenuActionName("platform.windows-registry")
-			driveHotkeyRows[menu.GetItemCount()] = actionName
-			name = driveMenuAssignableText(actionName, name)
+			// A tool, not a drive: it is listed in the Tools section (f4#1148).
+			registryDrive = &platformDrives[i]
+			registryName = name
+			continue
 		}
 		// WINE.md §18.2, "список дисков, Alt+F1": posix personality has no
 		// drive letters -- its "/ Root" and "~ Home" rows need the same
@@ -6371,8 +6353,44 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 	// toolRows maps a menu row to its position in drives, for Ctrl+Up and
 	// Ctrl+Down on the tool rows (#1148).
 	toolRows := map[int]int{}
-	if len(drives) > 0 {
+	{
 		menu.AddItem(vtui.MenuItem{Separator: true, Text: i18n.Msg("Drive.Tools")})
+		// The built-in tools come first: Other panel, Temporary panel and, on
+		// Windows, the registry. None has an automatic accelerator; F4 can assign
+		// one to each, just like to the plugin tools below (f4#1148).
+		otherAction := keymap.DriveMenuActionName("other")
+		driveHotkeyRows[menu.GetItemCount()] = otherAction
+		driveHotkeyLabels[menu.GetItemCount()] = i18n.Msg("Panel.Other")
+		menu.AddItem(vtui.MenuItem{Text: driveMenuAssignableText(otherAction, i18n.Msg("Panel.Other")), UserData: func(fsp *FileSystemPanel) {
+			otherFsp := pf.Panels[1-panelIdx].(*FileSystemPanel)
+			fsp.cancelProviderOpen()
+			if fsp.Vfs != nil {
+				_ = fsp.Vfs.Close()
+			}
+			fsp.Vfs = otherFsp.Vfs.Clone()
+			fsp.showCurrentVFSLoadingRows()
+			fsp.ReadDirectory()
+			pf.RefreshAll()
+		}})
+
+		// TempPanel is a native VFS panel, so it is available from the same
+		// Alt+F1/Alt+F2 drive menu as far2l's plugin panels.
+		temporaryAction := keymap.DriveMenuActionName("temporary")
+		driveHotkeyRows[menu.GetItemCount()] = temporaryAction
+		driveHotkeyLabels[menu.GetItemCount()] = i18n.Msg("TempPanel.Drive")
+		menu.AddItem(vtui.MenuItem{Text: driveMenuAssignableText(temporaryAction, i18n.Msg("TempPanel.Drive")), UserData: func(fsp *FileSystemPanel) {
+			pf.SwitchToVFS(fsp, NewTempPanelVFS(nil, GlobalTempPanelStore, 0))
+		}})
+
+		if registryDrive != nil {
+			registryAction := keymap.DriveMenuActionName("platform.windows-registry")
+			driveHotkeyRows[menu.GetItemCount()] = registryAction
+			driveHotkeyLabels[menu.GetItemCount()] = driveMenuNameWithoutMarker(registryDrive.Name)
+			registryFactory := registryDrive.Factory
+			menu.AddItem(vtui.MenuItem{Text: driveMenuAssignableText(registryAction, registryName), UserData: func(fsp *FileSystemPanel) {
+				pf.SwitchToVFS(fsp, registryFactory())
+			}})
+		}
 		for index, drv := range drives {
 			factory := drv.Factory
 			toolRows[menu.GetItemCount()] = index
@@ -6389,6 +6407,7 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 			// link takes the same letter.
 			actionName := keymap.DriveMenuActionName("tool." + cleanName)
 			driveHotkeyRows[menu.GetItemCount()] = actionName
+			driveHotkeyLabels[menu.GetItemCount()] = cleanName
 
 			menu.AddItem(vtui.MenuItem{Text: driveMenuAssignableText(actionName, cleanName), UserData: func(fsp *FileSystemPanel) {
 				pf.SwitchToVFS(fsp, factory())
@@ -6513,7 +6532,10 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 					return true
 				}
 				if actionName, ok := driveHotkeyRows[pos]; ok {
-					label := menu.Items[pos].Text
+					label := driveHotkeyLabels[pos]
+					if label == "" {
+						label = menu.Items[pos].Text
+					}
 					assignPluginHotkey(actionName, label, func() {
 						menu.Close()
 						vtui.FrameManager.PostTask(reopen)

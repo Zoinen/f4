@@ -244,7 +244,7 @@ func TestPanelsFrame_CtrlShiftArrowsOpenDriveMenuForPanelSide(t *testing.T) {
 			otherRow := -1
 			wantOther := strings.ReplaceAll(i18n.Msg("Panel.Other"), "&", "")
 			for i, item := range menu.Items {
-				if strings.ReplaceAll(item.Text, "&", "") == wantOther {
+				if strings.TrimSpace(strings.ReplaceAll(item.Text, "&", "")) == wantOther {
 					otherRow = i
 					break
 				}
