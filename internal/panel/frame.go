@@ -486,7 +486,9 @@ func (pf *PanelsFrame) SetCommandLineFocus(focused bool) {
 		return
 	}
 	pf.CommandLineFocused = focused
-	pf.CmdLine.SetFocus(focused)
+	// Enter can reset the saved search-first target while panels are hidden.
+	// The visible console edit still owns the caret in the active workspace.
+	pf.CmdLine.SetFocus(focused || (!pf.ShowPanels && pf.IsFocused()))
 	for i, panel := range pf.Panels {
 		if panel == nil {
 			continue
@@ -1818,6 +1820,15 @@ func (pf *PanelsFrame) Show(scr *vtui.ScreenBuf) {
 			vtui.FrameManager.KeyBar = pf.KeyBar
 		} else {
 			vtui.FrameManager.KeyBar = nil
+			if pf.ShellMode == terminal.ShellModeOwn && !pf.ShowPanels && pf.TermView.Y2 < pf.LastH-1 {
+				// Own-terminal mode keeps the keybar row reserved during a
+				// command to avoid a PTY resize. Paint the uncovered row so
+				// stale UI colors do not remain below the terminal viewport.
+				previousOverlay := scr.OverlayMode
+				scr.SetOverlayMode(false)
+				scr.FillRect(0, pf.TermView.Y2+1, pf.LastW-1, pf.LastH-1, ' ', terminal.DefaultTermAttr)
+				scr.SetOverlayMode(previousOverlay)
+			}
 		}
 	}
 
@@ -1915,7 +1926,7 @@ func (pf *PanelsFrame) VetoActionKey(e *vtinput.InputEvent) bool {
 	// An active AutoCompleteMenu must consume Esc, arrows, and Enter
 	// before any global action (such as Esc:EscToggle) can intercept it.
 	if vtui.FrameManager != nil {
-		if _, isAc := vtui.FrameManager.GetTopFrame().(*vtui.AutoCompleteMenu); isAc {
+		if _, isAc := cmdline.AsCompletionMenu(vtui.FrameManager.GetTopFrame()); isAc {
 			return true
 		}
 	}
@@ -2143,7 +2154,7 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 		}
 		// Propagate application focus without losing the explicit search-first target.
 		if pf.SearchFirstMode() {
-			pf.CmdLine.SetFocus(e.SetFocus && pf.CommandLineFocused)
+			pf.CmdLine.SetFocus(e.SetFocus && (pf.CommandLineFocused || !pf.ShowPanels))
 		} else {
 			pf.CmdLine.SetFocus(e.SetFocus)
 		}
@@ -2793,7 +2804,7 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 			}
 		}
 		if config.App.CommandLineAutoComplete && !pf.CmdLine.IsEmpty() {
-			acMenu := vtui.NewAutoCompleteMenu(pf.CmdLine.Edit)
+			acMenu := cmdline.NewCompletionMenu(pf.CmdLine.Edit)
 			if acMenu.HasMatches() {
 				vtui.FrameManager.Push(acMenu)
 				return true

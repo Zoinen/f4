@@ -56,6 +56,7 @@ var actionMenuOrder = []string{
 	"Panel.UserMenu",
 	"Panel.FileAssociations",
 	"File.Find",
+	"FindFile.Stop",
 	"File.FindDuplicates",
 	"Panel.CompareFolders",
 	"File.RunRemoteCommand",
