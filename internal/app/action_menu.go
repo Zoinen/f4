@@ -96,6 +96,15 @@ func refreshMenuRowStates(items []vtui.MenuBarItem) {
 		return
 	}
 	menuRowLast.stamp, menuRowLast.at, menuRowLast.valid = stamp, now, true
+	// The rows ask the panels for their selection one after another with
+	// nothing changing in between: let the listing be walked once each.
+	if pf := panel.FindPanelsFrame(); pf != nil {
+		for _, p := range pf.Panels {
+			if fsp, ok := p.(*panel.FileSystemPanel); ok {
+				defer fsp.MemoizeSelection()()
+			}
+		}
+	}
 	var refresh func(rows []vtui.MenuItem)
 	refresh = func(rows []vtui.MenuItem) {
 		for i := range rows {
