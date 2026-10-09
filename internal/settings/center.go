@@ -581,6 +581,10 @@ type settingsCenter struct {
 	offsets                 map[string]int
 	closed                  bool
 	scoped                  bool
+	// fieldPrefix and fieldTitle narrow a scoped window further, to the fields
+	// of one plugin (ids that start with the prefix), under the plugin's name
+	// (f4#918). Empty: the whole category.
+	fieldPrefix, fieldTitle string
 	running                 *vtui.TaskContext
 	closePending            bool
 	screenW, screenH        int
@@ -705,6 +709,9 @@ func newSettingsCenter(sessions []*settingsSession) *settingsCenter {
 // to, so a contextual entry point does not present itself as the whole of
 // Settings.
 func (c *settingsCenter) windowTitle() string {
+	if c.fieldTitle != "" {
+		return c.fieldTitle
+	}
 	if c.scoped && len(c.categories) == 1 {
 		return c.categoryLabel(c.categories[0].ID)
 	}
@@ -1238,6 +1245,9 @@ func (c *settingsCenter) selectCategory(id string) {
 			if f.Category != id {
 				continue
 			}
+			if c.fieldPrefix != "" && !strings.HasPrefix(f.ID, c.fieldPrefix) {
+				continue
+			}
 			if f.Group != group {
 				group = f.Group
 				c.page.rows = append(c.page.rows, &settingsRow{field: f4settings.Field{Category: id, Group: group, Label: f4settings.Text{English: c.groupLabel(group)}}, heading: true, match: true})
@@ -1252,8 +1262,10 @@ func (c *settingsCenter) selectCategory(id string) {
 			c.page.rows = append(c.page.rows, r)
 		}
 	}
-	c.addCollections(id)
-	c.addCommands(id)
+	if c.fieldPrefix == "" {
+		c.addCollections(id)
+		c.addCommands(id)
+	}
 	c.layoutWindow()
 	c.page.scroll = c.offsets[id]
 	c.layoutPage()
@@ -1666,6 +1678,35 @@ func OpenAt(category, collection, record string, create bool) bool {
 	}
 	return showSettingsCenter(sessions, category, collection, record, create)
 }
+
+// OpenFieldsOnly opens the Settings Center narrowed to the fields of one
+// plugin: those of the category whose ids start with prefix, under title. It is
+// what the Settings button of the plugins window opens (f4#918).
+func OpenFieldsOnly(category, prefix, title string) bool {
+	if vtui.FrameManager == nil || category == "" || prefix == "" {
+		return false
+	}
+	if current, ok := vtui.FrameManager.GetTopFrame().(*settingsCenter); ok {
+		if current.running == nil {
+			current.navigate(category, "", "", false)
+		}
+		return true
+	}
+	sessions, err := beginSettingsSessions(context.Background())
+	if err != nil {
+		vtui.ShowMessage(Phrase("Settings"), err.Error(), []string{i18n.Msg("vtui.Ok")})
+		return true
+	}
+	c := newSettingsCenter(sessions)
+	c.fieldPrefix, c.fieldTitle = prefix, title
+	c.restrictTo(category)
+	c.navigate(category, "", "", false)
+	c.ResizeConsole(vtui.FrameManager.GetScreenSize(), vtui.FrameManager.GetScreenHeight())
+	vtui.FrameManager.Push(c)
+	c.refreshSchemeChoices()
+	return true
+}
+
 func showSettingsCenterScoped(sessions []*settingsSession, category string) bool {
 	c := newSettingsCenter(sessions)
 	c.restrictTo(category)

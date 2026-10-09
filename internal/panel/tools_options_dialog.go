@@ -16,8 +16,9 @@ import (
 // the name only selects it (f4#918).
 type toolsOptionsList struct {
 	*vtui.ListBox
-	onToggle func(idx int)
-	onSelect func(idx int)
+	onToggle   func(idx int)
+	onSelect   func(idx int)
+	onActivate func(idx int) // a double click on a name
 }
 
 func (l *toolsOptionsList) ProcessMouse(e *vtinput.InputEvent) bool {
@@ -28,6 +29,12 @@ func (l *toolsOptionsList) ProcessMouse(e *vtinput.InputEvent) bool {
 	}
 	if l.onSelect != nil {
 		l.onSelect(l.SelectPos)
+	}
+	// A double click on a name is the Settings button (f4#918).
+	if handled && l.onActivate != nil && e.Type == vtinput.MouseEventType && e.KeyDown &&
+		e.ButtonState&vtinput.FromLeft1stButtonPressed != 0 && e.MouseEventFlags&vtinput.DoubleClick != 0 &&
+		int(e.MouseX) > l.X1+4 && l.hasRowAt(l.SelectPos) {
+		l.onActivate(l.SelectPos)
 	}
 	return handled
 }
@@ -56,14 +63,17 @@ type toolsWindow struct {
 	title, empty string
 	names        []string
 	shown        []bool
-	// setShown stores the choice of row idx; an error leaves the row as it was.
-	setShown func(idx int, shown bool) error
+	// apply stores the final choice of every row; it runs on Ok only, so Cancel
+	// and Esc leave everything as it was. An error keeps the window open.
+	apply func(shown []bool) error
 	// configure returns what the Settings button runs for row idx; nil, or a
 	// false result, dims the button. A nil configure leaves the button out.
 	configure func(idx int) (func(), bool)
 	// extraLabel and extra add a button of the window's own, always live.
 	extraLabel string
 	extra      func()
+	// applied runs after Ok has stored the choice and the window is closed.
+	applied func()
 }
 
 // show opens the window: every row with a check box that works at once.
@@ -95,7 +105,8 @@ func (tw *toolsWindow) show() {
 	if screenH > 0 && listH > screenH-8 {
 		listH = max(3, screenH-8)
 	}
-	height := listH + 6
+	// The list, the buttons of the window, a rule and Ok / Cancel under it.
+	height := listH + 8
 
 	dlg := vtui.NewCenteredDialog(width, height, tw.title)
 	dlg.ShowClose = false
@@ -124,17 +135,17 @@ func (tw *toolsWindow) show() {
 		}
 	}
 	list.onSelect = refreshButton
+	list.onActivate = func(idx int) {
+		if run, ok := configFor(idx); ok {
+			run()
+		}
+	}
 	list.onToggle = func(idx int) {
 		if idx < 0 || idx >= len(tw.names) {
 			return
 		}
-		shown := !tw.shown[idx]
-		if err := tw.setShown(idx, shown); err != nil {
-			vtui.ShowMessage(tw.title, err.Error(), []string{i18n.Msg("vtui.Ok")})
-			return
-		}
-		tw.shown[idx] = shown
-		list.Items[idx] = toolsOptionsRowText(shown, tw.names[idx])
+		tw.shown[idx] = !tw.shown[idx]
+		list.Items[idx] = toolsOptionsRowText(tw.shown[idx], tw.names[idx])
 		list.UpdateRows()
 	}
 	list.OnKeyDown = func(e *vtinput.InputEvent) bool {
@@ -176,30 +187,62 @@ func (tw *toolsWindow) show() {
 		buttons.Add(extra, vtui.Margins{}, vtui.AlignTop)
 	}
 
-	vbox := vtui.NewVBoxLayout(dlg.X1+2, dlg.Y1+2, width-4, height-4)
+	sep := vtui.NewSeparator(0, 0, width, true, true)
+	btnOk := vtui.NewButton(0, 0, i18n.Msg("vtui.Ok"))
+	btnOk.IsDefault = true
+	btnCancel := vtui.NewButton(0, 0, i18n.Msg("vtui.Cancel"))
+	btnOk.OnClick = func() {
+		if err := tw.apply(tw.shown); err != nil {
+			vtui.ShowMessage(tw.title, err.Error(), []string{i18n.Msg("vtui.Ok")})
+			return
+		}
+		dlg.SetExitCode(1)
+		if tw.applied != nil {
+			tw.applied()
+		}
+	}
+	btnCancel.OnClick = func() { dlg.SetExitCode(-1) }
+	dlg.AddItem(sep)
+	dlg.AddItem(btnOk)
+	dlg.AddItem(btnCancel)
+	okRow := vtui.NewHBoxLayout(0, 0, width-4, 1)
+	okRow.HorizontalAlign = vtui.AlignCenter
+	okRow.Spacing = 2
+	okRow.Add(btnOk, vtui.Margins{}, vtui.AlignTop)
+	okRow.Add(btnCancel, vtui.Margins{}, vtui.AlignTop)
+
+	vbox := vtui.NewVBoxLayout(dlg.X1+2, dlg.Y1+1, width-4, height-2)
 	vbox.Add(list, vtui.Margins{}, vtui.AlignFill)
 	vbox.Add(buttons, vtui.Margins{Top: 1}, vtui.AlignFill)
+	vbox.Add(sep, vtui.Margins{Left: -2, Right: -2}, vtui.AlignFill)
+	vbox.Add(okRow, vtui.Margins{}, vtui.AlignFill)
 	vbox.Apply()
 	dlg.SetFocusedItem(list)
 
 	vtui.FrameManager.Push(dlg)
 }
 
-// ShowToolsOptions opens the window of the F11 menu's tools: every entry with a
-// check box that shows or hides it at once, and a Settings button that is live
-// when the selected tool has settings of its own (f4#918).
-func (pf *PanelsFrame) ShowToolsOptions() {
+// ShowToolsOptions opens the window of the F11 menu's plugins: every entry with a
+// check box, Ok to store the choice (applied then runs), and a Settings button
+// that is live when the selected plugin has settings of its own (f4#918).
+func (pf *PanelsFrame) ShowToolsOptions(applied func()) {
 	entries := PluginMenuEntriesSnapshot()
 	hidden := hiddenPluginMenuEntries()
 	tw := &toolsWindow{
-		title: i18n.Msg("Plugins.ToolsOptionsTitle"),
-		empty: i18n.Msg("Plugins.ToolsOptionsEmpty"),
-		setShown: func(idx int, shown bool) error {
-			name := entries[idx].ActionName
-			if err := SetPluginMenuEntryHidden(name, !shown); err != nil {
-				return err
+		title:   i18n.Msg("Plugins.ToolsOptionsTitle"),
+		empty:   i18n.Msg("Plugins.ToolsOptionsEmpty"),
+		applied: applied,
+		apply: func(shown []bool) error {
+			for i, entry := range entries {
+				name := entry.ActionName
+				if hidden[name] == !shown[i] {
+					continue
+				}
+				if err := SetPluginMenuEntryHidden(name, !shown[i]); err != nil {
+					return err
+				}
+				hidden[name] = !shown[i]
 			}
-			hidden[name] = !shown
 			return nil
 		},
 		configure: func(idx int) (func(), bool) {
@@ -238,21 +281,34 @@ func (pf *PanelsFrame) ShowDriveToolsOptions(menuOptions func()) {
 		empty:      i18n.Msg("Drive.ToolsOptionsEmpty"),
 		extraLabel: i18n.Msg("Drive.ToolsOptionsMenu"),
 		extra:      menuOptions,
-		setShown: func(idx int, shown bool) error {
-			name := drives[idx].Name
+		apply: func(shown []bool) error {
+			stillHidden := map[string]bool{}
 			var names []string
-			found := false
+			for i, drv := range drives {
+				if !shown[i] {
+					stillHidden[drv.Name] = true
+				}
+			}
+			// Keep the order of the file, and the names of tools that are not
+			// registered right now; add the newly hidden ones at the end.
 			for _, n := range disabled {
-				if n == name {
-					found = true
-					if shown {
-						continue
+				known := false
+				for _, drv := range drives {
+					if drv.Name == n {
+						known = true
+						break
 					}
 				}
-				names = append(names, n)
+				if !known || stillHidden[n] {
+					names = append(names, n)
+					delete(stillHidden, n)
+				}
 			}
-			if !shown && !found {
-				names = append(names, name)
+			for _, drv := range drives {
+				if stillHidden[drv.Name] {
+					names = append(names, drv.Name)
+					delete(stillHidden, drv.Name)
+				}
 			}
 			if err := SaveDisabledDriveTools(DriveToolsVisibilityFilePath(), names); err != nil {
 				return err
