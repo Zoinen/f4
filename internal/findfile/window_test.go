@@ -372,15 +372,24 @@ func TestLiveResultsPreserveSelectionAndAllowActions(t *testing.T) {
 func TestStopFlushesResultsAndKeepsWindow(t *testing.T) {
 	setupUI(t)
 	base := vfs.NewOSVFS(t.TempDir())
+	ready := make(chan struct{})
 	p := &streamVFS{VFS: base, search: func(ctx context.Context, q vfs.FindQuery, emit func(vfs.FoundEntry)) error {
 		emit(hit(base, "one.txt"))
 		emit(hit(base, "two.txt"))
 		q.Progress(vfs.FindProgress{DirectoryTotalKnown: true, TotalDirs: 4, CompletedDirs: 1})
+		close(ready)
 		<-ctx.Done()
 		return ctx.Err()
 	}}
 	w := Start(p, base.GetPath(), "*", "", Options{}, Host{})
-	drainUntil(t, func() bool { return len(w.found) > 0 })
+	drainUntil(t, func() bool {
+		select {
+		case <-ready:
+			return len(w.found) > 0
+		default:
+			return false
+		}
+	})
 	w.Stop()
 	drainUntil(t, func() bool { return !w.running })
 	if len(w.found) != 2 || vtui.FrameManager.GetTopFrame() != w || w.bar.Percent == 100 || !w.pauseButton.IsDisabled() {

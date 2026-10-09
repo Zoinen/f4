@@ -294,22 +294,6 @@ Move.Btn=&Rename
 
 Action.FindFile.Stop=Stop File Search
 Action.FindFile.Stop.Desc=Stop the active file search and keep its results
-ConfigEditor.Title= Configuration editor - f4:config
-ConfigEditor.Hint=Enter or F4 edit, Del reset, Ctrl+H changed only, Ctrl+A align, Shift+F1 help, Ctrl+Alt+F filter, Esc close
-ConfigEditor.DefaultPrompt=Default: %s
-ConfigEditor.NoDefault=(no default)
-ConfigEditor.ResetTitle= Reset to default
-ConfigEditor.ResetPrompt=Reset %s to its default value "%s"?
-ConfigEditor.ResetButton=&Reset
-ConfigEditor.Kept=%s is now %s: f4 did not keep the value as typed
-
-About.Title= About f4 - f4:about
-About.Copied=The about list is copied to the clipboard
-About.Hint=Esc or F10 close, Ctrl+C or Ctrl+Ins copy all, Ctrl+H (un)hide empty, Ctrl+Alt+F filter
-
-F4Command.Title= f4 command
-F4Command.Unknown=Unknown command %s.\nAvailable: %s
-
 Action.File.CreateLink=Create &link
 Action.File.CreateLink.Desc=Create symbolic link, directory junction or hard link
 Action.File.EditSymlink=Edit symbolic &link
@@ -742,6 +726,22 @@ Action.Panel.CopyFilesToClipboard=Copy files to clipboard
 Action.Panel.CopyFilesToClipboard.Desc=Remember the selected files; paste (Ctrl+V) copies them into the active panel
 Action.Panel.CutFilesToClipboard=Cut files to clipboard
 Action.Panel.CutFilesToClipboard.Desc=Remember the selected files; paste (Ctrl+V) moves them into the active panel
+
+ConfigEditor.Title= Configuration editor - f4:config
+ConfigEditor.Hint=Enter or F4 edit, Del reset, Ctrl+H changed only, Ctrl+A align, Shift+F1 help, Ctrl+Alt+F filter, Esc close
+ConfigEditor.DefaultPrompt=Default: %s
+ConfigEditor.NoDefault=(no default)
+ConfigEditor.ResetTitle= Reset to default
+ConfigEditor.ResetPrompt=Reset %s to its default value "%s"?
+ConfigEditor.ResetButton=&Reset
+ConfigEditor.Kept=%s is now %s: f4 did not keep the value as typed
+
+About.Title= About f4 - f4:about
+About.Copied=The about list is copied to the clipboard
+About.Hint=Esc or F10 close, Ctrl+C or Ctrl+Ins copy all, Ctrl+H (un)hide empty, Ctrl+Alt+F filter
+
+F4Command.Title= f4 command
+F4Command.Unknown=Unknown command %s.\nAvailable: %s
 
 ProcList.ColumnPID=PID
 ProcList.ColumnName=Name

@@ -294,22 +294,6 @@ Move.Btn=&Перенести
 
 Action.FindFile.Stop=Остановить поиск файлов
 Action.FindFile.Stop.Desc=Остановить текущий поиск и сохранить найденные результаты
-ConfigEditor.Title= Редактор конфигурации - f4:config
-ConfigEditor.Hint=Enter или F4 изменить, Del сбросить, Ctrl+H только изменённые, Ctrl+A выровнять, Shift+F1 справка, Ctrl+Alt+F фильтр, Esc закрыть
-ConfigEditor.DefaultPrompt=По умолчанию: %s
-ConfigEditor.NoDefault=(нет значения по умолчанию)
-ConfigEditor.ResetTitle= Сброс к умолчанию
-ConfigEditor.ResetPrompt=Сбросить %s к значению по умолчанию «%s»?
-ConfigEditor.ResetButton=&Сбросить
-ConfigEditor.Kept=%s теперь %s: f4 не принял значение в том виде, как оно введено
-
-About.Title= О программе f4 - f4:about
-About.Copied=Сведения о f4 скопированы в буфер обмена
-About.Hint=Esc или F10 закрыть, Ctrl+C или Ctrl+Ins копировать всё, Ctrl+H скрыть/показать пустые, Ctrl+Alt+F фильтр
-
-F4Command.Title= Команда f4
-F4Command.Unknown=Неизвестная команда %s.\nДоступны: %s
-
 Action.File.CreateLink=Создать &ссылку
 Action.File.CreateLink.Desc=Создать символическую ссылку, соединение каталогов или жесткую ссылку
 Action.File.EditSymlink=Изменить символьную &ссылку
@@ -742,6 +726,22 @@ Action.Panel.CopyFilesToClipboard=Копировать файлы в буфер 
 Action.Panel.CopyFilesToClipboard.Desc=Запомнить выделенные файлы; вставка (Ctrl+V) скопирует их в активную панель
 Action.Panel.CutFilesToClipboard=Вырезать файлы в буфер обмена
 Action.Panel.CutFilesToClipboard.Desc=Запомнить выделенные файлы; вставка (Ctrl+V) переместит их в активную панель
+
+ConfigEditor.Title= Редактор конфигурации - f4:config
+ConfigEditor.Hint=Enter или F4 изменить, Del сбросить, Ctrl+H только изменённые, Ctrl+A выровнять, Shift+F1 справка, Ctrl+Alt+F фильтр, Esc закрыть
+ConfigEditor.DefaultPrompt=По умолчанию: %s
+ConfigEditor.NoDefault=(нет значения по умолчанию)
+ConfigEditor.ResetTitle= Сброс к умолчанию
+ConfigEditor.ResetPrompt=Сбросить %s к значению по умолчанию «%s»?
+ConfigEditor.ResetButton=&Сбросить
+ConfigEditor.Kept=%s теперь %s: f4 не принял значение в том виде, как оно введено
+
+About.Title= О программе f4 - f4:about
+About.Copied=Сведения о f4 скопированы в буфер обмена
+About.Hint=Esc или F10 закрыть, Ctrl+C или Ctrl+Ins копировать всё, Ctrl+H скрыть/показать пустые, Ctrl+Alt+F фильтр
+
+F4Command.Title= Команда f4
+F4Command.Unknown=Неизвестная команда %s.\nДоступны: %s
 
 ProcList.ColumnPID=PID
 ProcList.ColumnName=Имя
