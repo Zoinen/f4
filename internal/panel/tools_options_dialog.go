@@ -98,13 +98,17 @@ func (tw *toolsWindow) show() {
 	height := listH + 6
 
 	dlg := vtui.NewCenteredDialog(width, height, tw.title)
-	dlg.ShowClose = true
+	dlg.ShowClose = false
 
 	items := make([]string, len(tw.names))
 	for i := range tw.names {
 		items[i] = toolsOptionsRowText(tw.shown[i], tw.names[i])
 	}
 	list := &toolsOptionsList{ListBox: vtui.NewListBox(0, 0, width-4, listH, items)}
+	// The rows sit on the dialog background in the dialog text colour, as the
+	// lists of the Settings dialog do (f4#918).
+	list.ColorTextIdx = vtui.ColDialogText
+	list.ColorItemSelectTextIdx = vtui.ColDialogText
 
 	var settings *vtui.Button
 	configFor := func(idx int) (func(), bool) {

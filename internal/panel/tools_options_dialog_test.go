@@ -93,7 +93,15 @@ func TestToolsOptionsWindowTogglesToolsAndKnowsWhichHaveSettings(t *testing.T) {
 	pf.ResizeConsole(80, 25)
 	vtui.FrameManager.Push(pf)
 	pf.ShowToolsOptions()
-	_, list, button := findToolsOptionsDialog(t)
+	win, list, button := findToolsOptionsDialog(t)
+
+	// The window has no close box, and its rows use the dialog colours (f4#918).
+	if win.ShowClose {
+		t.Error("the plugins window still has a close box")
+	}
+	if list.ColorTextIdx != vtui.ColDialogText || list.ColorItemSelectTextIdx != vtui.ColDialogText {
+		t.Error("the rows of the plugins window are not drawn in the dialog text colour")
+	}
 
 	var texts []string
 	alpha := -1
