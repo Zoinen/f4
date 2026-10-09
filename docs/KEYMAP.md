@@ -5,7 +5,8 @@ works one layer below: it substitutes one key for another as the keystroke
 arrives, before anything in f4 has looked at it. Two problems need that layer.
 
 Before reaching for either file: **`Ctrl+Shift+P` opens the command palette**,
-which finds any command by name and shows the key it currently sits on. On a
+which finds any command by name and shows the key it currently sits on;
+`Ctrl+K` on a result assigns a key to that command. On a
 legacy terminal that cannot distinguish `Ctrl+Shift+letter` from `Ctrl+letter`,
 use the built-in **`Ctrl+Alt+P`** fallback — and in an X11 session the real
 `Ctrl+Shift+P` is taken from the X server instead, so it works there even on a
