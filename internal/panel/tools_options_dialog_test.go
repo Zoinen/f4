@@ -101,6 +101,11 @@ func TestToolsOptionsWindowTogglesToolsAndKnowsWhichHaveSettings(t *testing.T) {
 	if win.ShowClose {
 		t.Error("the plugins window still has a close box")
 	}
+	// Ok and Cancel stand on the last row above the border, no blank rows
+	// under them (f4#918).
+	if okButton.Y1 != win.Y2-1 {
+		t.Errorf("Ok is on row %d, the frame's bottom border on %d: want them next to each other", okButton.Y1, win.Y2)
+	}
 	if list.ColorTextIdx != vtui.ColDialogText || list.ColorItemSelectTextIdx != vtui.ColDialogText {
 		t.Error("the rows of the plugins window are not drawn in the dialog text colour")
 	}
