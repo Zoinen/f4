@@ -44,11 +44,12 @@ func mountPointReparseBuffer(target string) ([]byte, error) {
 	binary.LittleEndian.PutUint32(buf[0:], 0xA0000003) // IO_REPARSE_TAG_MOUNT_POINT
 	binary.LittleEndian.PutUint16(buf[4:], uint16(dataLength))
 	// buf[6:8] reserved.
-	substituteBytes := uint16(len(substitute) * 2)
-	binary.LittleEndian.PutUint16(buf[8:], 0)                         // substitute name offset
-	binary.LittleEndian.PutUint16(buf[10:], substituteBytes)          // substitute name length, without the NUL
-	binary.LittleEndian.PutUint16(buf[12:], substituteBytes+2)        // print name offset
-	binary.LittleEndian.PutUint16(buf[14:], uint16(len(printName)*2)) // print name length
+	substituteBytes := uint16(len(substitute) * 2)             // #nosec G115 -- the length check above keeps both names far below 64 KiB
+	printBytes := uint16(len(printName) * 2)                   // #nosec G115 -- the same
+	binary.LittleEndian.PutUint16(buf[8:], 0)                  // substitute name offset
+	binary.LittleEndian.PutUint16(buf[10:], substituteBytes)   // substitute name length, without the NUL
+	binary.LittleEndian.PutUint16(buf[12:], substituteBytes+2) // print name offset
+	binary.LittleEndian.PutUint16(buf[14:], printBytes)        // print name length
 	offset := reparseGenericHeader + reparseMountPointHeader
 	for _, u := range substitute {
 		binary.LittleEndian.PutUint16(buf[offset:], u)
