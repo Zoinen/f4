@@ -55,6 +55,7 @@ func (v *TerminalLogVFS) SetAttributes(ctx context.Context, path string, item vf
 func (v *TerminalLogVFS) GetCapabilities() vfs.VFSCapabilities {
 	return vfs.VFSCapabilities{HasRandomAccess: true, HasUnixPermissions: false}
 }
+func (v *TerminalLogVFS) IsReadOnly() bool { return true }
 func (v *TerminalLogVFS) Search(ctx context.Context, path string, pattern string) (chan int64, error) {
 	return nil, nil
 }

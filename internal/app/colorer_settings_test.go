@@ -1,11 +1,15 @@
 package app
 
 import (
-	"github.com/unxed/f4/internal/config"
-	"github.com/unxed/f4/internal/editor"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/unxed/f4/internal/config"
+	"github.com/unxed/f4/internal/editor"
+	"github.com/unxed/f4/internal/i18n"
+	"github.com/unxed/f4/internal/theme"
+	"github.com/unxed/vtui"
 )
 
 // useColorerCross switches the cross options for the duration of a test.
@@ -46,6 +50,83 @@ func TestColorerCross_DisabledByTheCrosshairSwitch(t *testing.T) {
 
 	if horz, vert, _, _ := EditorCrossAttrs(); horz || vert {
 		t.Errorf("Expected no cross with the crosshair off, got horz=%v vert=%v", horz, vert)
+	}
+}
+
+func TestColorerCrossModeItems_FollowTheModeOrder(t *testing.T) {
+	got := colorerCrossModeItems()
+	want := []string{
+		i18n.Msg("ColorerSettings.CrossOff"),
+		i18n.Msg("ColorerSettings.CrossVertical"),
+		i18n.Msg("ColorerSettings.CrossHorizontal"),
+		i18n.Msg("ColorerSettings.CrossBoth"),
+		i18n.Msg("ColorerSettings.CrossScheme"),
+	}
+	if len(got) != len(want) {
+		t.Fatalf("colorerCrossModeItems() has %d items; want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("colorerCrossModeItems()[%d] = %q; want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestColorerIsActive_IsCaseInsensitive(t *testing.T) {
+	old := config.App.EditorHighlighter
+	t.Cleanup(func() { config.App.EditorHighlighter = old })
+
+	for _, tc := range []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{name: "exact", value: "Colorer", want: true},
+		{name: "lowercase", value: "colorer", want: true},
+		{name: "other highlighter", value: "Chroma", want: false},
+		{name: "empty", value: "", want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config.App.EditorHighlighter = tc.value
+			if got := colorerIsActive(); got != tc.want {
+				t.Fatalf("colorerIsActive(%q) = %v; want %v", tc.value, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestEditorCrossAttrs_MapsEnabledModesAndFallsBackToPalette(t *testing.T) {
+	oldHighlighter := config.App.EditorHighlighter
+	t.Cleanup(func() { config.App.EditorHighlighter = oldHighlighter })
+	config.App.EditorHighlighter = "None"
+
+	base := vtui.Palette[theme.ColEditorCrosshair]
+	for _, tc := range []struct {
+		name     string
+		mode     int
+		wantHorz bool
+		wantVert bool
+	}{
+		{name: "off", mode: config.ColorerCrossOff},
+		{name: "vertical", mode: config.ColorerCrossVertical, wantVert: true},
+		{name: "horizontal", mode: config.ColorerCrossHorizontal, wantHorz: true},
+		{name: "both", mode: config.ColorerCrossBoth, wantHorz: true, wantVert: true},
+		{name: "invalid", mode: -1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			useColorerCross(t, tc.mode, true)
+			horz, vert, horzAttr, vertAttr := EditorCrossAttrs()
+			if horz != tc.wantHorz || vert != tc.wantVert {
+				t.Fatalf("EditorCrossAttrs() axes = %v, %v; want %v, %v", horz, vert, tc.wantHorz, tc.wantVert)
+			}
+			wantAttr := uint64(0)
+			if tc.wantHorz || tc.wantVert {
+				wantAttr = base
+			}
+			if horzAttr != wantAttr || vertAttr != wantAttr {
+				t.Fatalf("EditorCrossAttrs() attrs = %#x, %#x; want %#x, %#x", horzAttr, vertAttr, wantAttr, wantAttr)
+			}
+		})
 	}
 }
 

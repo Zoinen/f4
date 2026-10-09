@@ -98,12 +98,24 @@ func (c *settingsCenter) addCollections(category string) {
 				continue
 			}
 			meta := f4settings.Field{ID: col.ID, Category: category, Group: col.Group, Label: col.Label, Description: col.Description}
-			table := vtui.NewTable(0, 0, 20, 5, []vtui.TableColumn{{Width: 0}})
+			listHeight := 5
+			if c.fullLists {
+				listHeight = max(listHeight, len(s.draft.Records[col.ID]))
+			}
+			table := vtui.NewTable(0, 0, 20, listHeight, []vtui.TableColumn{{Width: 0}})
 			table.ShowHeader = false
 			table.ShowSeparators = false
 			settingsDialogTable(table)
 			// Record lists are editable settings surfaces, like the adjacent inputs.
 			table.ColorTextIdx = vtui.ColDialogEdit
+			// The cursor row is the record the fields below edit. The dialog
+			// cursor colour is the same black on cyan as the edit surface, so
+			// a clicked record looked like all the others (#1148). Mark it the
+			// way a combo dropdown marks its cursor on that surface, and keep
+			// the mark while the focus is in those fields, as far2l's dialog
+			// lists do: that is when it tells which record is being edited.
+			table.ColorSelectedTextIdx = vtui.ColDialogComboSelectedText
+			table.AlwaysShowCursor = true
 			table.SetId("collection:" + col.ID)
 			var rows []vtui.TableRow
 			for _, record := range s.draft.Records[col.ID] {
@@ -116,7 +128,12 @@ func (c *settingsCenter) addCollections(category string) {
 				selected = max(0, len(rows)-1)
 			}
 			table.SetSelectPos(selected)
-			r := &settingsRow{field: meta, session: s, control: table, controlHeight: 5, match: true}
+			if c.fullLists {
+				// The whole list is on the page: the table must not scroll
+				// inside itself to keep a low row in sight (f4#1148).
+				table.TopPos = 0
+			}
+			r := &settingsRow{field: meta, session: s, control: table, controlHeight: listHeight, match: true}
 			c.page.AddItem(table)
 			c.page.rows = append(c.page.rows, r)
 			table.OnSelect = func(i int) {
@@ -154,6 +171,7 @@ func (c *settingsCenter) addCollections(category string) {
 					}
 					record := f4settings.Record{ID: fmt.Sprintf("new:%s:%d", col.ID, settingsRecordCounter.Add(1)), Values: values}
 					s.draft.Records[col.ID] = append(s.draft.Records[col.ID], record)
+					settingsTraceRecords(s, col.ID, "add", record.ID)
 					c.offsets[key] = len(s.draft.Records[col.ID]) - 1
 					c.rebuildCategory()
 				})
@@ -178,7 +196,9 @@ func (c *settingsCenter) addCollections(category string) {
 						}
 						records := s.draft.Records[col.ID]
 						if selected < len(records) {
+							removed := records[selected].ID
 							s.draft.Records[col.ID] = append(records[:selected], records[selected+1:]...)
+							settingsTraceRecords(s, col.ID, "delete", removed)
 							c.rebuildCategory()
 						}
 					}
@@ -195,6 +215,7 @@ func (c *settingsCenter) addCollections(category string) {
 						next := selected + direction
 						if selected >= 0 && selected < len(records) && next >= 0 && next < len(records) {
 							records[selected], records[next] = records[next], records[selected]
+							settingsTraceRecords(s, col.ID, "move "+label, records[next].ID)
 							if col.ID == "bookmarks" {
 								for i := range records {
 									records[i].Values["bookmark.Name"] = fmt.Sprintf("%d: %s", i, records[i].Values["bookmark.Path"])
@@ -270,6 +291,7 @@ func (c *settingsCenter) addCollections(category string) {
 						meta.Aliases = append(append([]string(nil), f.Aliases...), record.Values[col.NameField])
 						return c.matches(meta)
 					}
+					r.traceRecord = record.ID
 					r.read = func() string { return record.Values[f.ID] }
 					r.write = func(value string) {
 						record.Values[f.ID] = value

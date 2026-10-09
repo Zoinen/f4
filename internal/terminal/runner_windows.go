@@ -3,6 +3,7 @@
 package terminal
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,12 +13,22 @@ import (
 	"unicode/utf8"
 
 	"github.com/unxed/f4/vfs"
+	"github.com/unxed/f4/vfs/hostmode"
 	"golang.org/x/sys/windows"
 )
 
 func newLocalShellCommand(command string) *exec.Cmd {
+	return newLocalShellCommandContext(nil, command)
+}
+
+func newLocalShellCommandContext(ctx context.Context, command string) *exec.Cmd {
 	shell := GetSystemShell()
-	c := exec.Command(shell)
+	var c *exec.Cmd
+	if ctx == nil {
+		c = exec.Command(shell)
+	} else {
+		c = exec.CommandContext(ctx, shell)
+	}
 	// cmd.exe does not read the MSVCRT backslash-quoting that exec.Command
 	// applies to arguments, so an embedded quote arrives as \" and breaks
 	// the command. Hand cmd the raw line; /S makes it strip exactly the
@@ -28,9 +39,17 @@ func newLocalShellCommand(command string) *exec.Cmd {
 	return c
 }
 
-func localCommandDialect() vfs.CommandDialect { return vfs.CommandDialectCmd }
+func localCommandDialect() vfs.CommandDialect {
+	if hostmode.Posix() {
+		return vfs.CommandDialectPOSIX
+	}
+	return vfs.CommandDialectCmd
+}
 
 func localCommandEnvironment(environment []string) []string {
+	if hostmode.Posix() {
+		return nil
+	}
 	return commandEnvironmentWith(environment, ApplyCommandLiteralPercentEnv, "%")
 }
 

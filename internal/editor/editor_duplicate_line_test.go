@@ -148,3 +148,22 @@ func TestEditor_DuplicateLine_EmptyLine(t *testing.T) {
 		t.Fatalf("buffer = %q, want %q", got, want)
 	}
 }
+
+func TestEditor_DuplicateLine_WithPartialIndex(t *testing.T) {
+	ev := newDuplicateLineEditor(t, "line1\nline2\nline3")
+	// Opening a large file can leave only the first line in the index while the
+	// background scanner is still working. Duplicating the visible first line
+	// must not synchronously scan the rest of the file.
+	ev.Li = piecetable.NewLineIndex()
+	ev.CursorLine = 0
+	ev.CursorPos = 2
+
+	ev.DuplicateLines()
+
+	if got, want := ev.Pt.String(), "line1\nline1\nline2\nline3"; got != want {
+		t.Fatalf("buffer = %q, want %q", got, want)
+	}
+	if ev.CursorLine != 1 || ev.CursorPos != 2 {
+		t.Errorf("cursor = line %d pos %d, want line 1 pos 2", ev.CursorLine, ev.CursorPos)
+	}
+}

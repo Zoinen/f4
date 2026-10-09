@@ -61,8 +61,17 @@ func TestContextEditorsRemainLocalWithSettingsAvailable(t *testing.T) {
 func TestDriveLinkHotkeyRemainsVisible(t *testing.T) {
 	palette := append([]uint64(nil), vtui.Palette...)
 	defer copy(vtui.Palette, palette)
+	// The dialog lays itself out on vtui.FrameManager's screen, so that has to
+	// be the screen it is drawn into here. Borrowing whatever the previous test
+	// left behind made the result depend on the shuffle: after
+	// TestInfoPanel_MissingCachedCursorRowFallsBackNearby's 50x8 screen the
+	// dialog shrank to eight rows and the hotkey row fell below it, and on a
+	// 200x60 one the hotkey landed outside this buffer -- an empty cell either
+	// way.
+	t.Cleanup(testutil.SwapFrameManager(t))
 	scr := vtui.NewSilentScreenBuf()
 	scr.AllocBuf(80, 25)
+	vtui.FrameManager.Init(scr)
 	for _, initial := range []DriveBookmark{{}, {Name: "Link", Path: "/folder", Hotkey: "Ф"}} {
 		d := NewDriveBookmarkEditDialog(initial, "/folder", nil)
 		for iteration := 0; iteration < 2; iteration++ {

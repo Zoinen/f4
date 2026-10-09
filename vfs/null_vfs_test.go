@@ -75,13 +75,14 @@ func TestNullVFS_Throttling(t *testing.T) {
 		t.Fatalf("Read failed. n=%d, err=%v", n, err)
 	}
 
-	// 1 MB at 10 MB/s should take ~100ms
-	expectedMs := 100
-	actualMs := int(duration.Milliseconds())
-
-	// Allow some jitter
-	if actualMs < expectedMs-20 || actualMs > expectedMs+50 {
-		t.Errorf("Throttling inaccurate: expected ~%dms, got %dms", expectedMs, actualMs)
+	// 1 MB at 10 MB/s should take ~100ms. The lower bound catches a missing
+	// throttle; the generous upper bound accounts for timer and scheduler
+	// delays on race-enabled and otherwise busy CI runners.
+	const expected = 100 * time.Millisecond
+	const toleranceBefore = 20 * time.Millisecond
+	const toleranceAfter = 250 * time.Millisecond
+	if duration < expected-toleranceBefore || duration > expected+toleranceAfter {
+		t.Errorf("Throttling inaccurate: expected ~%s, got %s", expected, duration)
 	}
 }
 

@@ -6,8 +6,10 @@ import (
 	"strings"
 
 	"github.com/unxed/f4/internal/config"
+	"github.com/unxed/f4/internal/dialog"
 	"github.com/unxed/f4/internal/i18n"
 	"github.com/unxed/f4/internal/sysinfo"
+	"github.com/unxed/f4/vfs/hostmode"
 	"github.com/unxed/vtui"
 )
 
@@ -51,6 +53,21 @@ func driveMenuNameWithoutMarker(name string) string {
 	return strings.TrimSpace(strings.ReplaceAll(name, "&", ""))
 }
 
+// driveMenuAssignableText renders a row whose accelerator is user-configured
+// through F4. Unlike platform drives, these rows intentionally have no
+// default letter; PluginMenuItemText keeps the shortcut in a stable column
+// and preserves the same one-character accelerator behavior as F11.
+func driveMenuAssignableText(actionName, label string) string {
+	shortcut := PluginActionConfiguredKey(actionName)
+	if shortcut == "" {
+		// The hotkey column stays reserved, so the names of the Tools do not
+		// jump left and right with a letter being assigned (f4#1148).
+		clean, _, _ := vtui.ParseAmpersandString(label)
+		return "  " + clean
+	}
+	return PluginMenuItemText(label, shortcut, 1)
+}
+
 func driveMenuBaseName(name string) string {
 	name = driveMenuNameWithoutMarker(name)
 	switch {
@@ -71,7 +88,7 @@ func driveMenuInfoPath(name string) string {
 	case strings.HasPrefix(clean, "/ Root"):
 		return "/"
 	case strings.HasPrefix(clean, "~ Home"):
-		home, _ := os.UserHomeDir()
+		home, _ := hostmode.UserHomeDir()
 		return home
 	case len(clean) >= 2 && clean[1] == ':':
 		// GetDiskFreeSpaceEx and GetVolumeInformation both want a root.
@@ -79,6 +96,18 @@ func driveMenuInfoPath(name string) string {
 	default:
 		return ""
 	}
+}
+
+// driveMenuInfoPathFor is driveMenuInfoPath extended for entries that carry
+// their own path instead of one the menu has to derive from Name: a live
+// mount-point row (f4#415) sets DriveEntry.InfoPath to its mount point, so
+// its free space and filesystem type come from the same sysinfo.FS lookup
+// the built-in "/ Root" and "~ Home" rows already use.
+func driveMenuInfoPathFor(drv sysinfo.DriveEntry) string {
+	if drv.InfoPath != "" {
+		return drv.InfoPath
+	}
+	return driveMenuInfoPath(drv.Name)
 }
 
 func driveMenuKindFor(name, path string) driveMenuKind {
@@ -142,7 +171,7 @@ type driveMenuPlatformColumn struct {
 // remote and may block while resolving their metadata.
 func driveMenuPlatformRowFor(drv sysinfo.DriveEntry, options uint32) DriveMenuPlatformRow {
 	row := DriveMenuPlatformRow{Base: driveMenuBaseName(drv.Name)}
-	path := driveMenuInfoPath(drv.Name)
+	path := driveMenuInfoPathFor(drv)
 	kind := driveMenuKindFor(drv.Name, path)
 
 	if driveMenuOptionEnabled(options, config.DriveMenuShowType) {
@@ -203,18 +232,23 @@ func driveMenuPlatformRowHasDetails(columns []driveMenuPlatformColumn) bool {
 	return false
 }
 
+// driveMenuPadColumn aligns one column of a drive row. The padding is worked
+// out from the text as it reads on screen, and only then is the text escaped
+// for the menu: a volume label such as "R&D" would otherwise be taken for a
+// hotkey marker, lose its ampersand and underline the next letter (f4#1148).
 func driveMenuPadColumn(column driveMenuPlatformColumn, width int, last bool) string {
+	text := dialog.EscapeAmpersand(column.text)
 	if last {
 		if column.rightAlign {
-			return strings.Repeat(" ", width-vtui.StringWidth(column.text)) + column.text
+			return strings.Repeat(" ", width-vtui.StringWidth(column.text)) + text
 		}
-		return column.text
+		return text
 	}
 	padding := width - vtui.StringWidth(column.text)
 	if column.rightAlign {
-		return strings.Repeat(" ", padding) + column.text
+		return strings.Repeat(" ", padding) + text
 	}
-	return column.text + strings.Repeat(" ", padding)
+	return text + strings.Repeat(" ", padding)
 }
 
 // driveMenuPlatformRowsText renders the platform rows as Far-style columns.
@@ -282,7 +316,7 @@ func DriveMenuOptionsDialogSize() (int, int) {
 }
 
 func driveMenuPlatformItemVisible(drv sysinfo.DriveEntry, options uint32) bool {
-	kind := driveMenuKindFor(drv.Name, driveMenuInfoPath(drv.Name))
+	kind := driveMenuKindFor(drv.Name, driveMenuInfoPathFor(drv))
 	switch kind {
 	case driveMenuKindRemovable:
 		return driveMenuOptionEnabled(options, config.DriveMenuShowRemovable)
@@ -293,6 +327,13 @@ func driveMenuPlatformItemVisible(drv sysinfo.DriveEntry, options uint32) bool {
 	default:
 		return true
 	}
+}
+
+// openDriveMenuTools is what F9 does in the drive menu: the settings window of
+// the drive chooser with its pages, Drive options, Tools, Bookmarks and Links,
+// without a window of the tools in between (f4#1148).
+func (pf *PanelsFrame) openDriveMenuTools(panelIdx int, menu *vtui.VMenu) {
+	pf.openDriveMenuOptions(panelIdx, menu)
 }
 
 func (pf *PanelsFrame) openDriveMenuOptions(panelIdx int, menu *vtui.VMenu) {

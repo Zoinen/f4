@@ -11,6 +11,7 @@ import (
 	"github.com/unxed/f4/internal/i18n"
 	"github.com/unxed/f4/internal/keymap"
 	"github.com/unxed/f4/internal/theme"
+	"github.com/unxed/f4/internal/wheel"
 	"github.com/unxed/f4/sdk/f4settings"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
@@ -30,6 +31,7 @@ type settingsRow struct {
 	gap                int
 	read               func() string
 	write              func(string)
+	traceRecord        string // record ID for diagnostics when the row edits a collection record
 	values             func() map[string]string
 	matchFunc          func() bool
 	unavailableReason  string
@@ -60,6 +62,13 @@ type settingsViewport struct {
 	onFocus       func(*settingsRow)
 	boxes         []settingsGroupBox
 	groupLabel    func(string) string
+
+	// wheelCoast is what a fast wheel spin leaves behind: rows the list
+	// still owes the scroll position (see internal/wheel). lastMouseY is
+	// the pointer row of the last mouse event, so the coast can explain
+	// whatever it scrolls under a pointer that did not move (#1273).
+	wheelCoast wheel.Coast
+	lastMouseY int
 }
 
 type settingsGroupBox struct {
@@ -328,26 +337,52 @@ func (v *settingsViewport) ProcessMouse(e *vtinput.InputEvent) bool {
 		return false
 	}
 	if e.WheelDirection != 0 {
-		delta := e.WheelDirection
-		step := 3
-		if delta > 0 {
-			step = -step
+		v.lastMouseY = int(e.MouseY)
+		direction := 1
+		if e.WheelDirection > 0 {
+			direction = -1
 		}
-		v.scroll = max(0, min(v.bar.Max, v.scroll+step))
-		v.positionRows()
+		// A spin faster than one notch per spin window queues extra rows
+		// the list keeps scrolling on its own (see internal/wheel).
+		v.wheelCoast.Notch(direction, v.scrollWheelBy)
+		v.scrollWheelBy(direction * 3)
 		return true
 	}
 	if int(e.MouseX) == v.X2 && v.bar.ProcessMouse(e) {
 		return true
 	}
 	handled := v.Group.ProcessMouse(e)
+	v.describeRowAt(int(e.MouseY))
+	return handled
+}
+
+// scrollWheelBy moves the list by step rows, positive down, and reports
+// whether anything moved so a coast stops at an end of the settings instead
+// of spinning in place. The rows move under a pointer that did not: the
+// setting it is over now is the one to explain (#1273).
+func (v *settingsViewport) scrollWheelBy(step int) bool {
+	before := v.scroll
+	v.scroll = max(0, min(v.bar.Max, v.scroll+step))
+	if v.scroll == before {
+		return false
+	}
+	v.positionRows()
+	v.describeRowAt(v.lastMouseY)
+	return true
+}
+
+// describeRowAt hands the setting drawn on screen row y to onFocus, which
+// shows what it does.
+func (v *settingsViewport) describeRowAt(y int) {
+	if v.onFocus == nil {
+		return
+	}
 	for _, r := range v.rows {
-		if int(e.MouseY) >= v.Y1+r.y-v.scroll && int(e.MouseY) < v.Y1+r.y+r.height-v.scroll && v.onFocus != nil {
+		if y >= v.Y1+r.y-v.scroll && y < v.Y1+r.y+r.height-v.scroll {
 			v.onFocus(r)
-			break
+			return
 		}
 	}
-	return handled
 }
 
 type settingsHelp struct {
@@ -355,6 +390,10 @@ type settingsHelp struct {
 	text string
 	top  int
 	bar  *vtui.ScrollBar
+
+	// wheelCoast is what a fast wheel spin leaves behind: lines the help
+	// still owes the scroll position (see internal/wheel).
+	wheelCoast wheel.Coast
 }
 
 func newSettingsHelp() *settingsHelp {
@@ -418,14 +457,26 @@ func (h *settingsHelp) ProcessMouse(e *vtinput.InputEvent) bool {
 		return false
 	}
 	if e.WheelDirection != 0 {
+		direction := 1
 		if e.WheelDirection > 0 {
-			h.top = max(0, h.top-3)
-		} else {
-			h.top += 3
+			direction = -1
 		}
+		// A spin faster than one notch per spin window queues extra lines
+		// the help keeps scrolling on its own (see internal/wheel).
+		h.wheelCoast.Notch(direction, h.scrollWheelBy)
+		h.scrollWheelBy(direction * 3)
 		return true
 	}
 	return h.bar.ProcessMouse(e)
+}
+
+// scrollWheelBy moves the help by step lines, positive down, and reports
+// whether anything moved so a coast stops at an end of the text instead of
+// spinning in place.
+func (h *settingsHelp) scrollWheelBy(step int) bool {
+	before := h.top
+	h.top = max(0, h.top+step)
+	return h.top != before
 }
 
 func settingsWrap(text string, width int) []string {
@@ -530,6 +581,12 @@ type settingsCenter struct {
 	offsets                 map[string]int
 	closed                  bool
 	scoped                  bool
+	// fullLists shows the record lists of a page in full, not in five rows.
+	fullLists bool
+	// fieldPrefix and fieldTitle narrow a scoped window further, to the fields
+	// of one plugin (ids that start with the prefix), under the plugin's name
+	// (f4#918). Empty: the whole category.
+	fieldPrefix, fieldTitle string
 	running                 *vtui.TaskContext
 	closePending            bool
 	screenW, screenH        int
@@ -596,6 +653,9 @@ func newSettingsCenter(sessions []*settingsSession) *settingsCenter {
 	c.apply = vtui.NewButton(0, 0, settingsText("Apply", "&Apply"))
 	c.ok = vtui.NewButton(0, 0, i18n.Msg("vtui.Ok"))
 	c.cancel = vtui.NewButton(0, 0, i18n.Msg("vtui.Cancel"))
+	// Enter applies (see ProcessKey), so Apply is the dialog's default button
+	// and vtui highlights it even when it is not focused (#320).
+	c.apply.IsDefault = true
 	c.previous = &settingsSearchButton{vtui.NewButton(0, 0, settingsText("Previous", "Previous match"))}
 	c.next = &settingsSearchButton{vtui.NewButton(0, 0, settingsText("Next", "Next match"))}
 	c.previous.ScreenObject.SetText("[←]")
@@ -624,7 +684,9 @@ func newSettingsCenter(sessions []*settingsSession) *settingsCenter {
 	c.OnResult = func(int) {
 		if !c.closed {
 			c.closed = true
-			lastSettingsCategory = c.category
+			if !c.fullLists {
+				lastSettingsCategory = c.category
+			}
 			c.offsets[c.category] = c.page.scroll
 			lastSettingsOffsets = map[string]int{}
 			for k, v := range c.offsets {
@@ -651,6 +713,9 @@ func newSettingsCenter(sessions []*settingsSession) *settingsCenter {
 // to, so a contextual entry point does not present itself as the whole of
 // Settings.
 func (c *settingsCenter) windowTitle() string {
+	if c.fieldTitle != "" {
+		return c.fieldTitle
+	}
 	if c.scoped && len(c.categories) == 1 {
 		return c.categoryLabel(c.categories[0].ID)
 	}
@@ -691,12 +756,62 @@ func (c *settingsCenter) restrictTo(ids ...string) {
 	c.layoutWindow()
 }
 
+// A terminal smaller than this cannot hold the settings in a window of half
+// its width: the pages need every column there is. The dialog then opens
+// maximized, and its zoom button gives the ordinary size back (#1239).
+//
+// The Hotkey Configurator needs a much wider window than this guess ever
+// gave it -- montoner0 measured 150 columns still too narrow for it -- so
+// minSettingsScreenWidth computes that page's own threshold instead, from
+// the hotkey table's own column minimums and the sidebar's width, when it is
+// the category about to be shown (#1239 follow-up). Every other page keeps
+// this guessed constant, which already reads fine for them.
+const (
+	smallSettingsScreenWidth  = 120
+	smallSettingsScreenHeight = 30
+)
+
+// minSettingsScreenWidth is the narrowest terminal width the settings window
+// can open in without maximizing.
+func (c *settingsCenter) minSettingsScreenWidth() int {
+	if c.category != "hotkeys" {
+		return smallSettingsScreenWidth
+	}
+	sizer, ok := host.(HotkeyTableSizeHost)
+	if !ok {
+		return smallSettingsScreenWidth
+	}
+	// layoutWindow gives the hotkeys page a width of w - side - 4, where side
+	// is the sidebar's width plus its divider column. Invert that at the
+	// sidebar's natural, unshrunk width: that is what the window needs to be
+	// for the sidebar to stay that size in the first place (#1239 follow-up).
+	side := c.categorySidebarNaturalWidth() + 1
+	minWindowWidth := sizer.HotkeyTableMinPageWidth() + side + 4
+	return minScreenWidthForWindow(minWindowWidth)
+}
+
+// minScreenWidthForWindow inverts ResizeConsole's own window-width formula,
+// min(w, max(72, w/2)), to find the smallest terminal width that gives the
+// settings window at least minWindowWidth columns (#1239 follow-up).
+func minScreenWidthForWindow(minWindowWidth int) int {
+	for w := minWindowWidth; ; w++ {
+		if dw := min(w, max(72, w/2)); dw >= minWindowWidth {
+			return w
+		}
+	}
+}
+
 func (c *settingsCenter) ResizeConsole(w, h int) {
 	c.screenW, c.screenH = max(1, w), max(1, h)
 	if !c.positioned {
 		dw, dh := min(w, max(72, w/2)), min(h, max(22, h*3/4))
 		c.SetPosition((w-dw)/2, (h-dh)/2, (w+dw)/2-1, (h+dh)/2-1)
 		c.positioned = true
+		if w < c.minSettingsScreenWidth() || h < smallSettingsScreenHeight {
+			c.SavedBounds = &vtui.Rect{X1: c.X1, Y1: c.Y1, X2: c.X2, Y2: c.Y2}
+			top := vtui.FrameManager.WorkspaceTopInset()
+			c.SetPosition(0, top, w-1, max(top, h-2))
+		}
 	} else if c.SavedBounds != nil {
 		// Match vtui's BaseWindow.ToggleZoom: the workspace tab strip owns the
 		// rows above and the key bar owns the row below, and both are drawn
@@ -798,20 +913,28 @@ func (c *settingsCenter) Show(scr *vtui.ScreenBuf) {
 	}
 }
 
-func (c *settingsCenter) categorySidebarWidth() int {
+// categorySidebarNaturalWidth is the sidebar's width when nothing forces it
+// to shrink: the longest category label, plus room for " (99)" regardless of
+// the query, plus the scrollbar column. minSettingsScreenWidth needs this
+// figure at full size, since it is computing the window width that keeps the
+// sidebar that size in the first place (#1239 follow-up).
+func (c *settingsCenter) categorySidebarNaturalWidth() int {
 	width := 1
 	for _, category := range c.categories {
 		label := category.Label.Resolve(config.App.Language, i18n.Msg)
 		width = max(width, vtui.StringWidth(label))
 	}
+	return width + 5 + 1
+}
+
+func (c *settingsCenter) categorySidebarWidth() int {
 	// Leave room for the sidebar scrollbar and a usable content column.
 	w := c.X2 - c.X1 + 1
 	available := w - 30
 	if w >= 110 {
 		available -= max(28, w/4) + 1
 	}
-	// Reserve " (99)" regardless of the query, plus the scrollbar column.
-	return min(width+5+1, max(10, available))
+	return min(c.categorySidebarNaturalWidth(), max(10, available))
 }
 func (c *settingsCenter) ProcessKey(e *vtinput.InputEvent) bool {
 	if c.category == "hotkeys" && c.GetFocusedItem() == c.page && c.hotkeyPage != nil {
@@ -827,6 +950,24 @@ func (c *settingsCenter) ProcessKey(e *vtinput.InputEvent) bool {
 		return true
 	}
 	if c.running != nil {
+		return true
+	}
+	if e.KeyDown && e.VirtualKeyCode == vtinput.VK_RETURN {
+		// An Enter the focused control has no use for (a checkbox, a radio
+		// group, a text field) used to reach vtui's BaseWindow fallback,
+		// Group.TriggerDefaultAction. With no default button in this dialog
+		// (before Apply was flagged as one) it pressed the first button it met
+		// while descending the page:
+		// Enter on the first checkbox of Terminal & environment clicked
+		// Environment profiles' Add, and the unnamed profile failed the next
+		// Apply; File associations and User menus saved an empty record
+		// outright (f4 #1154). Such an Enter now applies, which is also what
+		// it already did on pages without buttons.
+		if focused := c.GetFocusedItem(); focused != nil && focused.ProcessKey(e) {
+			c.syncWindowBounds()
+			return true
+		}
+		c.commit(false)
 		return true
 	}
 	if e.KeyDown && e.VirtualKeyCode == vtinput.VK_F && (e.ControlKeyState&(vtinput.LeftCtrlPressed|vtinput.RightCtrlPressed)) != 0 {
@@ -946,6 +1087,19 @@ func (c *settingsCenter) groupLabel(id string) string {
 	return settingsText(settingsGroupKey(id), id)
 }
 func settingsError(format string, args ...any) error { return f4settings.Error(format, args...) }
+
+// reportFailure puts a failure in the status line. That line is one row long
+// and cuts what does not fit, and what does not fit is often the part that says
+// what is wrong: a Colorer error names the file it could not open at the very
+// end (#277). A text that was cut is shown whole in a message as well.
+func (c *settingsCenter) reportFailure(text string) {
+	c.status = text
+	if c.apply == nil || vtui.StringWidth(text) <= max(0, c.apply.X1-c.X1-3) {
+		return
+	}
+	vtui.ShowMessageOnEx(c.Window, settingsText("Title", "Settings"), text, []string{i18n.Msg("vtui.Ok")}, vtui.MessageWarn)
+}
+
 func settingsErrorText(err error) string {
 	if localized, ok := err.(interface {
 		Localized(string, func(string) string) string
@@ -1095,6 +1249,9 @@ func (c *settingsCenter) selectCategory(id string) {
 			if f.Category != id {
 				continue
 			}
+			if c.fieldPrefix != "" && !strings.HasPrefix(f.ID, c.fieldPrefix) {
+				continue
+			}
 			if f.Group != group {
 				group = f.Group
 				c.page.rows = append(c.page.rows, &settingsRow{field: f4settings.Field{Category: id, Group: group, Label: f4settings.Text{English: c.groupLabel(group)}}, heading: true, match: true})
@@ -1109,8 +1266,10 @@ func (c *settingsCenter) selectCategory(id string) {
 			c.page.rows = append(c.page.rows, r)
 		}
 	}
-	c.addCollections(id)
-	c.addCommands(id)
+	if c.fieldPrefix == "" {
+		c.addCollections(id)
+		c.addCommands(id)
+	}
 	c.layoutWindow()
 	c.page.scroll = c.offsets[id]
 	c.layoutPage()
@@ -1131,11 +1290,16 @@ func (c *settingsCenter) makeControl(r *settingsRow) vtui.UIElement {
 			c.status = Phrase("Provider is no longer loaded.")
 			return
 		}
+		old := d.Values[f.ID]
+		if r.read != nil {
+			old = r.read()
+		}
 		if r.write != nil {
 			r.write(v)
 		} else {
 			d.Values[f.ID] = v
 		}
+		settingsTraceWrite(r.session, r.traceRecord, f, old, v, r.control)
 		if f.Timing == "preview" && d.PreviewFunc != nil {
 			if err := d.PreviewFunc(d); err != nil {
 				c.status = settingsErrorText(err)
@@ -1232,8 +1396,10 @@ func (c *settingsCenter) commit(closeAfter bool) {
 			c.status = Phrase("A settings provider was unloaded; pending edits were not saved.")
 			return
 		}
+		settingsTraceDirty(s)
 		for id, err := range s.draft.Validate() {
-			c.status = id + ": " + settingsErrorText(err)
+			vtui.DebugLog("SETTINGS_TRACE: validate %s failed: %s: %v", s.catalog.ID, id, err)
+			c.reportFailure(id + ": " + settingsErrorText(err))
 			return
 		}
 	}
@@ -1266,7 +1432,7 @@ func (c *settingsCenter) commit(closeAfter bool) {
 			}
 			if len(r.Errors) > 0 {
 				for id, err := range r.Errors {
-					c.status = id + ": " + settingsErrorText(err)
+					c.reportFailure(id + ": " + settingsErrorText(err))
 					break
 				}
 				c.rebuildCategory()
@@ -1294,8 +1460,21 @@ func (c *settingsCenter) runBackground(worker func(context.Context) error, done 
 	c.apply.SetDisabled(true)
 	c.ok.SetDisabled(true)
 	c.running = vtui.RunAsync(func(task *vtui.TaskContext) {
-		err := worker(task)
+		progressShown := false
+		report := func(text string) {
+			task.RunOnUI(func() {
+				if c.running != nil {
+					progressShown = true
+					c.status = text
+					vtui.FrameManager.Redraw()
+				}
+			})
+		}
+		err := worker(context.WithValue(task, settingsProgressKey{}, report))
 		task.RunOnUI(func() {
+			if progressShown && err == nil {
+				c.status = "" // what it said while working is not a result
+			}
 			c.running = nil
 			c.search.SetDisabled(false)
 			c.sidebar.SetDisabled(false)
@@ -1303,7 +1482,7 @@ func (c *settingsCenter) runBackground(worker func(context.Context) error, done 
 			c.ok.SetDisabled(false)
 			c.rebuildCategory()
 			if err != nil {
-				c.status = settingsErrorText(err)
+				c.reportFailure(settingsErrorText(err))
 			}
 			if done != nil {
 				done(err)
@@ -1314,6 +1493,12 @@ func (c *settingsCenter) runBackground(worker func(context.Context) error, done 
 		})
 	})
 }
+
+// AllowsProgressOverlay lets an operation started from the settings (an update
+// download, a plugin install) show its progress screen over this window
+// instead of waiting for it to close.
+func (c *settingsCenter) AllowsProgressOverlay() bool { return true }
+
 func (c *settingsCenter) Close() {
 	if c.running != nil {
 		c.closePending = true
@@ -1478,6 +1663,9 @@ func OpenCategoryOnly(category string) bool {
 		vtui.ShowMessage(Phrase("Settings"), err.Error(), []string{i18n.Msg("vtui.Ok")})
 		return true
 	}
+	if category == "drives" {
+		return showDriveChooser(sessions)
+	}
 	return showSettingsCenterScoped(sessions, category)
 }
 func OpenAt(category, collection, record string, create bool) bool {
@@ -1497,6 +1685,35 @@ func OpenAt(category, collection, record string, create bool) bool {
 	}
 	return showSettingsCenter(sessions, category, collection, record, create)
 }
+
+// OpenFieldsOnly opens the Settings Center narrowed to the fields of one
+// plugin: those of the category whose ids start with prefix, under title. It is
+// what the Settings button of the plugins window opens (f4#918).
+func OpenFieldsOnly(category, prefix, title string) bool {
+	if vtui.FrameManager == nil || category == "" || prefix == "" {
+		return false
+	}
+	if current, ok := vtui.FrameManager.GetTopFrame().(*settingsCenter); ok {
+		if current.running == nil {
+			current.navigate(category, "", "", false)
+		}
+		return true
+	}
+	sessions, err := beginSettingsSessions(context.Background())
+	if err != nil {
+		vtui.ShowMessage(Phrase("Settings"), err.Error(), []string{i18n.Msg("vtui.Ok")})
+		return true
+	}
+	c := newSettingsCenter(sessions)
+	c.fieldPrefix, c.fieldTitle = prefix, title
+	c.restrictTo(category)
+	c.navigate(category, "", "", false)
+	c.ResizeConsole(vtui.FrameManager.GetScreenSize(), vtui.FrameManager.GetScreenHeight())
+	vtui.FrameManager.Push(c)
+	c.refreshSchemeChoices()
+	return true
+}
+
 func showSettingsCenterScoped(sessions []*settingsSession, category string) bool {
 	c := newSettingsCenter(sessions)
 	c.restrictTo(category)
@@ -1518,11 +1735,11 @@ func showSettingsCenter(sessions []*settingsSession, category, collection, recor
 // Catalogs can live on an unavailable network share. Enumerate their labels
 // outside the UI thread and ignore results after the editing session closes.
 func (c *settingsCenter) refreshSchemeChoices() {
-	directory := editor.ColorerConfigsDir()
+	source := editor.CurrentColorerSource()
 	vtui.RunAsync(func(task *vtui.TaskContext) {
-		schemes := settingsColorerSchemesAt(directory)
+		schemes := editor.ListColorerSchemesFor(source)
 		task.RunOnUI(func() {
-			if c.closed || directory != editor.ColorerConfigsDir() {
+			if c.closed || source != editor.CurrentColorerSource() {
 				return
 			}
 			for _, session := range c.sessions {
@@ -1561,6 +1778,18 @@ func (c *settingsCenter) navigate(category, collection, record string, create bo
 		for i, cat := range c.categories {
 			if cat.ID == category {
 				c.sidebar.SetSelectPos(i)
+			}
+		}
+	}
+	if collection == "" && record != "" {
+		for _, row := range c.page.rows {
+			if row.control != nil && row.control.GetId() == "setting:"+record {
+				c.page.scroll = row.y
+				c.page.positionRows()
+				c.SetFocusedItem(c.page)
+				c.page.SetFocusedItem(row.control)
+				c.describe(row)
+				break
 			}
 		}
 	}

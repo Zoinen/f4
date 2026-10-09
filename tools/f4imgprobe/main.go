@@ -54,7 +54,7 @@ var (
 	procOpenProcess                = kernel32.NewProc("OpenProcess")
 
 	procGetClassNameW       = user32.NewProc("GetClassNameW")
-	procGetWindowLongPtrW   = user32.NewProc("GetWindowLongPtrW")
+	procGetWindowLongPtrW   = user32.NewProc(getWindowLongPtrProc)
 	procGetClientRect       = user32.NewProc("GetClientRect")
 	procClientToScreen      = user32.NewProc("ClientToScreen")
 	procIsWindowVisible     = user32.NewProc("IsWindowVisible")

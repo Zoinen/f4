@@ -12,6 +12,10 @@ func runElevated([]byte, string) error {
 	return errors.New("UAC elevation is only available on Windows")
 }
 
+var restoreExecutableElevated = func(string) error {
+	return errors.New("UAC elevation is only available on Windows")
+}
+
 var RunHelper = runHelperOS
 
 func runHelperOS(string, string) error {

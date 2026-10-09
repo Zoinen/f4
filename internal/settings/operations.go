@@ -2,6 +2,7 @@ package settings
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"github.com/unxed/f4/internal/netproxy"
 	"github.com/unxed/f4/internal/panel"
 	"github.com/unxed/f4/internal/plughost"
+	"github.com/unxed/f4/internal/tarindexcache"
 	"github.com/unxed/f4/internal/theme"
 	"github.com/unxed/f4/sdk/f4settings"
 	"github.com/unxed/f4/vfs"
@@ -35,13 +37,27 @@ func (settingsOperationsProvider) Catalog() f4settings.Catalog {
 		return host.SaveGeometry()
 	})
 	add("colors.export", "appearance", "Theme", "Export applied colors", "Write the complete applied palette to farcolors.ini in the current configuration directory.", false, func(context.Context) error { return theme.ExportColors(theme.UserColorOverridesPath()) })
-	add("syntax.reload", "syntax", "Colorer", "Reload schemas", "Drop cached Colorer sessions, regions and scheme so subsequent highlighting loads applied configuration.", false, func(context.Context) error {
-		editor.ResetColorerSessions()
-		editor.ResetColorerRegions()
-		editor.ResetColorerScheme()
+	add("syntax.reload", "syntax", "Colorer", "Reload schemes", "Load the applied Colorer configuration, report what Colorer finds wrong with it, then drop cached sessions, regions and scheme so subsequent highlighting uses it.", true, func(ctx context.Context) error {
+		check := editor.CheckColorerSource(ctx, editor.CurrentColorerSource(), config.App.EditorColorerScheme, false, nil)
+		if check.Err == nil {
+			editor.ResetColorerSessions()
+			editor.ResetColorerRegions()
+			editor.ResetColorerScheme()
+		}
+		return colorerCheckError(check)
+	})
+	add("archives.clearTarIndexes", "panels", "Directory loading", "Rebuild all tar indexes", "Delete every cached tar archive index. Each is built again the next time its archive is opened.", false, func(context.Context) error {
+		tarindexcache.Clear()
 		return nil
 	})
-	add("syntax.download", "syntax", "Colorer", "Download schemas", "Download and validate the Colorer schema archive, then install it at the applied configuration directory.", true, func(ctx context.Context) error {
+	add("syntax.check", "syntax", "Colorer", "Check all schemes", "Load the scheme of every Colorer file type in the applied configuration and report the first one Colorer cannot load, and what it reports on the way. Applies nothing.", true, func(ctx context.Context) error {
+		// Every file type is loaded in turn and that takes a while; the status
+		// line says which one it is at, or the window looks hung (#277).
+		return colorerCheckError(editor.CheckColorerSource(ctx, editor.CurrentColorerSource(), config.App.EditorColorerScheme, true, func(done, total int, label string) {
+			reportSettingsProgress(ctx, fmt.Sprintf("%d/%d  %s", done+1, total, label))
+		}))
+	})
+	add("syntax.download", "syntax", "Colorer", "Download schemes", "Download and validate the Colorer schema archive, then install it at the applied configuration directory.", true, func(ctx context.Context) error {
 		ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer cancel()
 		req, err := http.NewRequestWithContext(ctx, "GET", editor.ColorerDownloadURL, nil)
@@ -145,7 +161,7 @@ func (settingsOperationsProvider) Catalog() f4settings.Catalog {
 		case cmd.ID == "colors.export":
 			cmd.Requires = []string{"ColorStyle", "EnforceColorCorrection"}
 		case strings.HasPrefix(cmd.ID, "syntax."):
-			cmd.Requires = []string{"EditorColorerCatalog", "EditorColorerScheme", "ProxyMode", "ProxyHost", "ProxyPort", "ProxyUser", "ProxyPass"}
+			cmd.Requires = []string{"EditorColorerCatalog", "EditorColorerUserHrc", "EditorColorerUserHrd", "EditorColorerScheme", "ProxyMode", "ProxyHost", "ProxyPort", "ProxyUser", "ProxyPass"}
 		case cmd.ID == "updates.check":
 			cmd.Requires = []string{"UpdateChannel", "ProxyMode", "ProxyHost", "ProxyPort", "ProxyUser", "ProxyPass"}
 		}
@@ -170,4 +186,31 @@ func RunOnUI(ctx context.Context, run func()) {
 	} else {
 		run()
 	}
+}
+
+// colorerCheckError reports a Colorer check as a command's result: nil when it
+// is clean, otherwise why it failed followed by what Colorer reported.
+// settingsProgressKey carries, in the context of an operation started from the
+// Settings Center, the function that puts a line of progress in its status row.
+type settingsProgressKey struct{}
+
+// reportSettingsProgress shows text in the status row while the operation runs.
+// It is safe to call from the operation's goroutine, and does nothing when the
+// operation was not started by the Settings Center.
+func reportSettingsProgress(ctx context.Context, text string) {
+	if report, ok := ctx.Value(settingsProgressKey{}).(func(string)); ok {
+		report(text)
+	}
+}
+
+func colorerCheckError(check editor.ColorerCheck) error {
+	if check.Clean() {
+		return nil
+	}
+	var parts []string
+	if check.Err != nil {
+		parts = append(parts, check.Err.Error())
+	}
+	parts = append(parts, check.Reports...)
+	return errors.New(strings.Join(parts, "\n"))
 }

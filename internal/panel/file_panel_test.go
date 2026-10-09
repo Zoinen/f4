@@ -43,15 +43,15 @@ func TestFileEntry_GetCellText(t *testing.T) {
 		t.Errorf("File size mismatch: %s", File.GetCellText(1))
 	}
 
-	// Regular directories should have an empty size column
-	if dir.GetCellText(1) != "" {
-		t.Errorf("Regular dir should have empty size column, got: %q", dir.GetCellText(1))
+	// Directories name their kind in the size column, as in far2l (#392)
+	if dir.GetCellText(1) != "Folder" {
+		t.Errorf("Regular dir should show Folder in the size column, got: %q", dir.GetCellText(1))
 	}
 
-	// Only ".." directory should have the UP-DIR placeholder
+	// ".." says Up
 	upDir := &FileEntry{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}}
-	if upDir.GetCellText(1) != "UP-DIR" {
-		t.Errorf("Parent dir (..) should have UP-DIR placeholder, got: %q", upDir.GetCellText(1))
+	if upDir.GetCellText(1) != "Up" {
+		t.Errorf("Parent dir (..) should show Up, got: %q", upDir.GetCellText(1))
 	}
 
 	// Cached rows are deliberately indistinguishable from fresh rows. The
@@ -2110,6 +2110,68 @@ func TestFileSystemPanel_CursorColorsColumnSeparators(t *testing.T) {
 	}
 }
 
+// With every file selected (Grey+ or Insert down to the last one), the
+// cursor sits on a selected file. A highlight group that sets only
+// SelectedColor, background included, must not paint that row: it keeps
+// Panel.Cursor.Selected, so the cursor stays distinguishable from the
+// selection around it (#1150).
+func TestFileSystemPanel_CursorVisibleOnSelectedFileWithSelectedColorGroup(t *testing.T) {
+	vtui.SetDefaultPalette()
+	theme.SetDefaultF4Palette()
+
+	oldCfg := config.App
+	defer func() { config.App = oldCfg }()
+	config.App.EnforceColorCorrection = false
+
+	oldRules := theme.GlobalFileHighlighter.Rules
+	oldUserRules := theme.GlobalFileHighlighter.UserRules
+	defer func() {
+		theme.GlobalFileHighlighter.Rules = oldRules
+		theme.GlobalFileHighlighter.UserRules = oldUserRules
+	}()
+	theme.GlobalFileHighlighter.LoadFromIni(ini.Parse(strings.NewReader(`[Highlight_0]
+Name = Directories
+IncludeAttributes = Directory
+SelectedColor = foreground:#FFFFFF | background:#0000A0
+`)))
+
+	fp := newPanelScrollTestFixture(ViewModeDetailed, 3)
+	for _, entry := range fp.Entries {
+		entry.IsDir = true
+		entry.Selected = true
+	}
+	fp.Table.Columns = []vtui.TableColumn{{Width: 20}, {Width: 12}}
+	fp.Table.ColorTextIdx = theme.ColPanelText
+	fp.Table.ColorSelectedTextIdx = theme.ColPanelCursor
+	fp.Table.ColorItemSelectTextIdx = theme.ColPanelSelectedText
+	fp.Table.ColorItemSelectCursorIdx = theme.ColPanelSelectedCursor
+	fp.Table.ColorTitleIdx = theme.ColPanelColumnTitle
+	fp.Table.ColorBoxIdx = theme.ColPanelBox
+	fp.Refresh()
+	fp.Table.SetFocus(true)
+	if fp.GetCursorIndex() != 0 {
+		t.Fatalf("cursor index = %d, want 0", fp.GetCursorIndex())
+	}
+
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(40, 12)
+	fp.Table.Show(scr)
+
+	y := fp.Table.Y1 + fp.Table.MarginTop
+	cursor := scr.GetCell(fp.Table.X1, y).Attributes
+	selected := scr.GetCell(fp.Table.X1, y+1).Attributes
+
+	if fg, bg := vtui.GetRGBFore(selected), vtui.GetRGBBack(selected); fg != 0xFFFFFF || bg != 0x0000A0 {
+		t.Fatalf("selected row off the cursor = #%06x on #%06x, want the group's SelectedColor #FFFFFF on #0000A0", fg, bg)
+	}
+	if cursor == selected {
+		t.Fatalf("cursor row on a selected file is painted like the selection (%#x): the cursor is invisible", cursor)
+	}
+	if want := vtui.Palette[theme.ColPanelSelectedCursor]; cursor != want {
+		t.Fatalf("cursor row on a selected file = %#x, want Panel.Cursor.Selected %#x", cursor, want)
+	}
+}
+
 func TestFileSystemPanel_MouseClick_Edges(t *testing.T) {
 	fp := NewFileSystemPanel(0, 0, 80, 24, vfs.NewOSVFS("."))
 	waitForLoad(t, fp)
@@ -2783,13 +2845,14 @@ func TestFileSystemPanel_FastFind_Rendering(t *testing.T) {
 		t.Error("FastFind search string 'test' not found in ScreenBuf")
 	}
 
-	inputX, inputY := fp.X1+11, fp.Y2-1
+	// The query starts in the first cell of the edit field, right after the border (f4#1131).
+	inputX, inputY := fp.X1+10, fp.Y2-1
 	matchingAttr := scr.GetCell(inputX, inputY).Attributes
 	if got, want := vtui.GetRGBFore(matchingAttr), vtui.GetRGBFore(vtui.Palette[vtui.ColMenuHighlight]); got != want {
 		t.Fatalf("matching query foreground = %#06x, want %#06x", got, want)
 	}
-	if got, want := vtui.GetRGBBack(matchingAttr), vtui.GetRGBBack(vtui.Palette[vtui.ColDialogText]); got != want {
-		t.Fatalf("matching query background = %#06x, want dialog background %#06x", got, want)
+	if got, want := vtui.GetRGBBack(matchingAttr), vtui.GetRGBBack(vtui.Palette[vtui.ColDialogEdit]); got != want {
+		t.Fatalf("matching query background = %#06x, want dialog edit background %#06x", got, want)
 	}
 
 	fp.FastFindStr = "*test"
@@ -2807,7 +2870,7 @@ func TestFileSystemPanel_FastFind_Rendering(t *testing.T) {
 	if got, want := vtui.GetRGBFore(missingAttr), vtui.GetRGBFore(vtui.Palette[theme.ColPanelFastFindNoMatch]); got != want {
 		t.Fatalf("missing query foreground = %#06x, want %#06x", got, want)
 	}
-	if got, want := vtui.GetRGBBack(missingAttr), vtui.GetRGBBack(vtui.Palette[vtui.ColDialogText]); got != want {
+	if got, want := vtui.GetRGBBack(missingAttr), vtui.GetRGBBack(vtui.Palette[vtui.ColDialogEdit]); got != want {
 		t.Fatalf("missing query background = %#06x, want dialog background %#06x", got, want)
 	}
 }
@@ -3164,6 +3227,29 @@ func TestFileSystemPanel_MaskSelection(t *testing.T) {
 	}
 }
 
+func TestFileSystemPanel_TempPanelMaskSelectionUsesBasename(t *testing.T) {
+	fp := &FileSystemPanel{
+		Vfs:   new(TempPanelVFS),
+		Table: vtui.NewTable(0, 0, 10, 10, nil),
+		Entries: []*FileEntry{
+			{VFSItem: vfs.VFSItem{Name: ".."}},
+			{VFSItem: vfs.VFSItem{Name: "/home/user/notes/readme.txt"}},
+			{VFSItem: vfs.VFSItem{Name: `C:\\work\\source.go`}},
+			{VFSItem: vfs.VFSItem{Name: "/home/user/notes/image.png"}},
+		},
+	}
+
+	fp.ApplyMaskSelection("*.txt", true)
+	if !fp.Entries[1].Selected || fp.Entries[2].Selected || fp.Entries[3].Selected {
+		t.Fatalf("Temp Panel mask selection selected wrong entries: %+v", fp.Entries)
+	}
+
+	fp.ApplyMaskSelection("*.txt", false)
+	if fp.Entries[1].Selected {
+		t.Fatal("Temp Panel mask deselection did not clear the matching file")
+	}
+}
+
 func TestFileSystemPanel_TitleDoesNotContainSortIndicator(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	v := vfs.NewOSVFS(t.TempDir())
@@ -3324,6 +3410,105 @@ func TestFileSystemPanel_Sorting(t *testing.T) {
 	}
 }
 
+// TestFileSystemPanel_SortNumeric covers f4#1471: with SortNumeric on, name
+// sort must treat the leading track number as a number ("2" before "10")
+// instead of comparing it as plain text ("10" before "2").
+func TestFileSystemPanel_SortNumeric(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	v := vfs.NewOSVFS(t.TempDir())
+	fp := NewFileSystemPanel(0, 0, 80, 24, v)
+	waitForLoad(t, fp)
+
+	fp.Entries = []*FileEntry{
+		{VFSItem: vfs.VFSItem{Name: ".."}},
+		{VFSItem: vfs.VFSItem{Name: "10.Track_10"}},
+		{VFSItem: vfs.VFSItem{Name: "1.Track_1"}},
+		{VFSItem: vfs.VFSItem{Name: "2.Track_2"}},
+	}
+
+	fp.SortMode = SortName
+	fp.SortReverse = false
+	fp.SortNumeric = false
+	fp.SortEntries()
+	// Plain text order does not know "10" is bigger than "2" — that is
+	// precisely the bug reported in f4#1471.
+	gotPlain := []string{fp.Entries[1].Name, fp.Entries[2].Name, fp.Entries[3].Name}
+	wantNumeric := []string{"1.Track_1", "2.Track_2", "10.Track_10"}
+	if reflect.DeepEqual(gotPlain, wantNumeric) {
+		t.Fatalf("plain name sort = %v already numeric; test no longer reproduces the bug", gotPlain)
+	}
+
+	fp.SortNumeric = true
+	fp.SortEntries()
+	gotNumeric := []string{fp.Entries[1].Name, fp.Entries[2].Name, fp.Entries[3].Name}
+	if !reflect.DeepEqual(gotNumeric, wantNumeric) {
+		t.Fatalf("numeric name sort = %v, want %v", gotNumeric, wantNumeric)
+	}
+
+	// SetSortNumeric/ToggleSortNumeric flip the flag the same way the
+	// UseSortGroups setters do, and are a no-op on a nil panel.
+	var nilPanel *FileSystemPanel
+	nilPanel.SetSortNumeric(true)
+	nilPanel.ToggleSortNumeric()
+
+	fp.SetSortNumeric(false)
+	if fp.SortNumeric {
+		t.Error("SetSortNumeric(false) left SortNumeric set")
+	}
+	fp.ToggleSortNumeric()
+	if !fp.SortNumeric {
+		t.Error("ToggleSortNumeric did not turn numeric sort on")
+	}
+}
+
+// Shift+F12 (f4 selected-first): marked entries sort ahead of unmarked ones,
+// but ".." keeps its leading position the way it does under every other sort.
+func TestFileSystemPanel_SortSelectedFirst(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	v := vfs.NewOSVFS(t.TempDir())
+	fp := NewFileSystemPanel(0, 0, 80, 24, v)
+	waitForLoad(t, fp)
+
+	fp.Entries = []*FileEntry{
+		{VFSItem: vfs.VFSItem{Name: ".."}},
+		{VFSItem: vfs.VFSItem{Name: "a.txt"}, Selected: true},
+		{VFSItem: vfs.VFSItem{Name: "b.txt"}, Selected: false},
+		{VFSItem: vfs.VFSItem{Name: "c.txt"}, Selected: true},
+	}
+
+	fp.SortMode = SortName
+	fp.SortReverse = false
+	fp.SortSelectedFirst = false
+	fp.SortEntries()
+	gotPlain := []string{fp.Entries[1].Name, fp.Entries[2].Name, fp.Entries[3].Name}
+	if want := []string{"a.txt", "b.txt", "c.txt"}; !reflect.DeepEqual(gotPlain, want) {
+		t.Fatalf("plain name sort = %v, want %v", gotPlain, want)
+	}
+
+	fp.SortSelectedFirst = true
+	fp.SortEntries()
+	gotSelectedFirst := []string{fp.Entries[0].Name, fp.Entries[1].Name, fp.Entries[2].Name, fp.Entries[3].Name}
+	wantSelectedFirst := []string{"..", "a.txt", "c.txt", "b.txt"}
+	if !reflect.DeepEqual(gotSelectedFirst, wantSelectedFirst) {
+		t.Fatalf("selected-first sort = %v, want %v", gotSelectedFirst, wantSelectedFirst)
+	}
+
+	// SetSortSelectedFirst/ToggleSortSelectedFirst flip the flag the same way
+	// the SortNumeric setters do, and are a no-op on a nil panel.
+	var nilPanel *FileSystemPanel
+	nilPanel.SetSortSelectedFirst(true)
+	nilPanel.ToggleSortSelectedFirst()
+
+	fp.SetSortSelectedFirst(false)
+	if fp.SortSelectedFirst {
+		t.Error("SetSortSelectedFirst(false) left SortSelectedFirst set")
+	}
+	fp.ToggleSortSelectedFirst()
+	if !fp.SortSelectedFirst {
+		t.Error("ToggleSortSelectedFirst did not turn selected-first on")
+	}
+}
+
 func TestFileSystemPanel_SetSortModeUsesModeDefaultDirection(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	fp := NewFileSystemPanel(0, 0, 80, 24, vfs.NewNullVFS(0))
@@ -3481,7 +3666,8 @@ func TestFileSystemPanel_HeaderSortMappingAllViewModes(t *testing.T) {
 			fp.Resize(80, 12)
 			x := fp.Table.X1
 			for column, want := range tc.want {
-				mode, ok := fp.headerSortModeAt(x, fp.Table.Y1)
+				labelStart, _ := fp.headerLabelSpan(column)
+				mode, ok := fp.headerSortModeAt(x+labelStart, fp.Table.Y1)
 				if !ok || mode != want {
 					t.Fatalf("column %d maps to %v,%v; want %v,true", column, mode, ok, want)
 				}
@@ -3535,7 +3721,7 @@ drain:
 	fp.EnqueueDirectoryLoad(func() {})
 	done := make(chan struct{})
 	go func() {
-		fp.LoadWorkerWG.Wait()
+		fp.WaitForIdle()
 		close(done)
 	}()
 	waitForPanelSignal(t, done, "directory worker to stop")
@@ -4824,6 +5010,10 @@ func TestFileEntry_SymlinkDisplayNameAndStatus(t *testing.T) {
 	vtui.SetDefaultPalette()
 	theme.SetDefaultF4Palette()
 
+	oldConfig := config.App
+	defer func() { config.App = oldConfig }()
+	config.App.ShowSymlinkArrow = true
+
 	entryFile := &FileEntry{VFSItem: vfs.VFSItem{Name: "link_file", IsSymlink: true}}
 	entryDir := &FileEntry{VFSItem: vfs.VFSItem{Name: "link_dir", IsDir: true, IsSymlink: true}}
 
@@ -4832,6 +5022,58 @@ func TestFileEntry_SymlinkDisplayNameAndStatus(t *testing.T) {
 	}
 	if got := entryDir.displayName(entryDir.Name); !strings.Contains(got, "→") {
 		t.Errorf("Symlink dir displayName = %q, want it to contain '→'", got)
+	}
+}
+
+// ShowSymlinkArrow=1 brings back the arrow for someone who wants symbolic
+// links called out in the name column; off is the default. The switch governs
+// only that fallback marker: a highlight rule that marks the link keeps its
+// own marker either way, and so does the folder slash.
+func TestFileEntry_SymlinkArrowSetting(t *testing.T) {
+	vtui.SetDefaultPalette()
+	theme.SetDefaultF4Palette()
+
+	oldRules := theme.GlobalFileHighlighter.Rules
+	defer func() { theme.GlobalFileHighlighter.Rules = oldRules }()
+	theme.GlobalFileHighlighter.Rules = nil
+
+	oldConfig := config.App
+	defer func() { config.App = oldConfig }()
+	config.App.ShowHighlightMarks = false
+	config.App.ShowDirPrefix = false
+
+	entryFile := &FileEntry{VFSItem: vfs.VFSItem{Name: "link_file", IsSymlink: true}}
+	entryDir := &FileEntry{VFSItem: vfs.VFSItem{Name: "link_dir", IsDir: true, IsSymlink: true}}
+
+	config.App.ShowSymlinkArrow = false
+	if got := entryFile.displayName(entryFile.Name); got != "link_file" {
+		t.Errorf("Symlink file displayName = %q, want the bare name", got)
+	}
+	if got := entryDir.displayName(entryDir.Name); got != "link_dir" {
+		t.Errorf("Symlink dir displayName = %q, want the bare name", got)
+	}
+
+	config.App.ShowDirPrefix = true
+	if got := entryDir.displayName(entryDir.Name); got != "/link_dir" {
+		t.Errorf("Symlink dir displayName = %q, want the folder slash kept", got)
+	}
+	config.App.ShowDirPrefix = false
+
+	iniData := `[Highlight_0]
+Name = Links
+Mask = link_file
+Mark = •
+`
+	theme.GlobalFileHighlighter.LoadFromIni(ini.Parse(strings.NewReader(iniData)))
+	config.App.ShowHighlightMarks = true
+	if got := entryFile.displayName(entryFile.Name); got != "• link_file" {
+		t.Errorf("Marked symlink displayName = %q, want the rule's marker", got)
+	}
+
+	config.App.ShowSymlinkArrow = true
+	config.App.ShowHighlightMarks = false
+	if got := entryFile.displayName(entryFile.Name); got != "→ link_file" {
+		t.Errorf("Symlink displayName = %q, want the arrow back", got)
 	}
 }
 
@@ -4912,12 +5154,12 @@ func TestFileSystemPanel_BottomFrameShowsCursorEntry(t *testing.T) {
 	// Directories say what they are instead of a size.
 	fp.SetCursorIndex(1)
 	fp.Show(scr)
-	if got := bottom(); !strings.Contains(got, "▸ <DIR>") {
+	if got := bottom(); !strings.Contains(got, "▸ Folder") {
 		t.Errorf("bottom frame for a dir: %q", got)
 	}
 	fp.SetCursorIndex(0)
 	fp.Show(scr)
-	if got := bottom(); !strings.Contains(got, "▸ UP-DIR") {
+	if got := bottom(); !strings.Contains(got, "▸ Up") {
 		t.Errorf("bottom frame for the up-dir: %q", got)
 	}
 	// With the far2l status line on, the marker steps aside.

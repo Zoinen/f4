@@ -73,6 +73,32 @@ func TestTempPanelVFSParentIsRestoredByPanelSwitch(t *testing.T) {
 	}
 }
 
+func TestTempPanelVFSCalculateTotalIncludesReferencedDirectoryFiles(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "top.txt"), []byte("123"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "nested"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "nested", "child.txt"), []byte("12345"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	tmp := panel.NewTempPanelVFS(nil, &panel.TempPanelStore{}, 0)
+	source := vfs.NewOSVFS(root)
+	if err := tmp.AddReferences(context.Background(), source, []string{"top.txt", "nested"}); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := tmp.CalculateTotal(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Bytes != 8 || stats.Files != 2 || stats.Dirs != 1 {
+		t.Fatalf("temporary panel total = %#v, want 8 bytes, 2 files and 1 directory", stats)
+	}
+}
+
 func TestTempPanelStoreReplacesSearchResultsInSelectedSlot(t *testing.T) {
 	root := t.TempDir()
 	first := filepath.Join(root, "first.txt")

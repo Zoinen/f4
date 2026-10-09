@@ -55,7 +55,8 @@ var uiListConstructors = map[string]int{
 // non-UI type are listed: SetText, for instance, also sets the *content* of an
 // editor, which is data and not a caption.
 var uiSetters = map[string]int{
-	"SetTitle": 0,
+	"SetTitle":       0,
+	"SetBottomTitle": 0,
 }
 
 // captionWrappers are helpers that only pad or decorate a caption they are
@@ -71,6 +72,20 @@ var captionWrappers = map[string]bool{
 var uiStructFields = map[string]map[string]bool{
 	"MenuItem":    {"Text": true},
 	"TableColumn": {"Title": true},
+}
+
+// uiPositionalArrayTypes are named fixed-size array types (not slices, so
+// they never take the []T{...} ArrayType branch below) whose elements are
+// captions addressed by F-key position rather than by field name -- unlike a
+// struct literal, so structFindings' "elt must be a KeyValueExpr" check would
+// silently accept the type name and then find nothing to report. f4#1218's
+// Ctrl-F-row and Editor Alt+F8 fixes each patched one GetKeyLabels() call
+// wiring up i18n.Msg(); the vtui.KeyBarLabels{"", "Rename", ...} fallback
+// literals in the ones nobody had touched yet -- and the same "View"/"Edit"/
+// "Quit" literals in unrelated dialogs' own GetKeyLabels() -- stayed
+// invisible to this scanner because it never looked at this literal shape.
+var uiPositionalArrayTypes = map[string]bool{
+	"KeyBarLabels": true,
 }
 
 // skipDirs are never scanned: they contain no shipped UI code.
@@ -199,7 +214,12 @@ func inspectFile(rel string, file *ast.File, fset *token.FileSet) []Finding {
 				}
 			}
 		default:
-			out = append(out, structFindings(rel, typeName(comp.Type), comp, fset)...)
+			name := typeName(comp.Type)
+			if uiPositionalArrayTypes[name] {
+				out = append(out, positionalFindings(rel, name, comp, fset)...)
+			} else {
+				out = append(out, structFindings(rel, name, comp, fset)...)
+			}
 		}
 		return true
 	})
@@ -225,6 +245,23 @@ func structFindings(rel, name string, comp *ast.CompositeLit, fset *token.FileSe
 			continue
 		}
 		out = append(out, captionFindings(rel, name+"."+key.Name, kv.Value, fset)...)
+	}
+	return out
+}
+
+// positionalFindings reports the hardcoded captions of one composite literal
+// of a named array type addressed by position (vtui.KeyBarLabels{...}), as
+// opposed to a struct literal's named fields. An element may still be a
+// KeyValueExpr if the literal sets an explicit index (KeyBarLabels{3: "F4"});
+// its Value carries the caption either way.
+func positionalFindings(rel, name string, comp *ast.CompositeLit, fset *token.FileSet) []Finding {
+	var out []Finding
+	for _, elt := range comp.Elts {
+		e := elt
+		if kv, ok := elt.(*ast.KeyValueExpr); ok {
+			e = kv.Value
+		}
+		out = append(out, captionFindings(rel, name, e, fset)...)
 	}
 	return out
 }

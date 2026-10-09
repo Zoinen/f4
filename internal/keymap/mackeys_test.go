@@ -41,6 +41,11 @@ func TestMacCommandBackendsNamesTheMacOSDefault(t *testing.T) {
 	if !macCommandBackends["gogpu"] {
 		t.Error("the macOS GUI backend is not listed as separating Command from Control")
 	}
+	// The native Cocoa backend (f4#1571) is the other native AppKit window
+	// and folds Command the same way gogpu's does.
+	if !macCommandBackends["cocoa"] {
+		t.Error("the cocoa GUI backend is not listed as separating Command from Control")
+	}
 }
 
 func macKeyEvent(mods vtinput.ControlKeyState, vk uint16) *vtinput.InputEvent {

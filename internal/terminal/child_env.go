@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 
 	"github.com/unxed/f4/internal/config"
+	"github.com/unxed/f4/vfs/hostmode"
 	"github.com/unxed/vtui"
 )
 
@@ -44,15 +45,16 @@ var terminalGraphicsSeen atomic.Bool
 // runs on glibc and musl alike) carries no PT_INTERP and no DT_NEEDED, so
 // nothing maps a libc into it. goffi's bridge re-execs the process through
 // the host dynamic loader with the host libc pre-loaded, before main, and
-// leaves GOFFI_UNIVERSAL_REEXEC behind to say the job is done. The bridge in
-// a child reads that variable, concludes it too already came through the
-// loader, and binds no libc -- so the child dies before main, on the first
-// libc symbol it touches. update.SelfCommand already knows this and starts copies of
-// f4 through the loader itself; the terminal starts other people's programs,
-// which have no such arrangement, and the one program most likely to be a
-// universal build is f4 itself (issue #87: `./f4` from f4's own terminal died
-// with SIGSEGV, frame #0 at address zero -- a call through the function
-// pointer the bridge never filled in).
+// leaves GOFFI_UNIVERSAL_REEXEC behind to say the job is done. Before goffi
+// v0.1.11 the bridge in a child read that variable, concluded it too already
+// came through the loader, and bound no libc -- so the child died before
+// main, on the first libc symbol it touched (issue #87: `./f4` from f4's own
+// terminal died with SIGSEGV, frame #0 at address zero -- a call through the
+// function pointer the bridge never filled in). v0.1.11 tags the guard with
+// the pid it was written for, so a child of this f4 runs the bridge itself;
+// but the terminal starts other people's programs, including universal
+// builds linked against an older goffi, so the variables stay out.
+// update.SelfCommand does the same for copies of f4.
 //
 // GOFFI_UNIVERSAL_EXE and _ARGV0 are the identity the re-exec destroyed,
 // recorded before it happened. They are tagged with the pid they describe, so
@@ -65,11 +67,22 @@ var terminalGraphicsSeen atomic.Bool
 // rather than stripping the wrong thing; the ones f4 itself reads are tied to
 // the constants that read them by a test in the linux build, so those cannot
 // drift apart unnoticed.
+//
+// F4_DETACHED says that *this* process is the copy checkAndDetach started: no
+// controlling terminal, stdout on /dev/null, and therefore stdout pointed at
+// the crash log by redirectDetachedStdout. A GUI f4 carries it for its whole
+// life, so before this it reached the shell in the built-in terminal and every
+// program started from there. The one program that reads it is f4 itself, and
+// a nested f4 believed it: `f4 --version` and `f4 --help` typed at the command
+// line printed into the outer session's crash log instead of the terminal and
+// showed nothing at all (issue #1151). Whatever the terminal starts is not the
+// detached copy, whichever way this copy was started.
 var PrivateToThisProcess = []string{
 	"GOFFI_UNIVERSAL_REEXEC",
 	"GOFFI_UNIVERSAL_EXE",
 	"GOFFI_UNIVERSAL_ARGV0",
 	"F4_EXE",
+	"F4_DETACHED",
 }
 
 // PrivateEnvEntry reports whether an environment entry names one of them.
@@ -113,6 +126,13 @@ func BuildChildEnv(env []string, graphics, kittyTerm bool) []string {
 		if strings.HasPrefix(kv, kittyGraphicsEnv+"=") ||
 			strings.HasPrefix(kv, kittyPidEnv+"=") ||
 			strings.HasPrefix(kv, "TERM_PROGRAM=") {
+			continue
+		}
+		// F4_NESTED is ours too, and one is appended below: a nested f4
+		// inherits the marker from the terminal that started it, and keeping
+		// that copy would hand the child one line per nesting level the
+		// session has already seen instead of exactly one.
+		if strings.HasPrefix(kv, "F4_NESTED=") {
 			continue
 		}
 		if kittyTerm && strings.HasPrefix(kv, "TERM=") {
@@ -191,7 +211,7 @@ func terminfoDirs() []string {
 	if v := os.Getenv("TERMINFO"); v != "" {
 		dirs = append(dirs, v)
 	}
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
+	if home, err := hostmode.UserHomeDir(); err == nil && home != "" {
 		dirs = append(dirs, filepath.Join(home, ".terminfo"))
 	}
 	for _, v := range filepath.SplitList(os.Getenv("TERMINFO_DIRS")) {

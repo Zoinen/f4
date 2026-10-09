@@ -86,12 +86,17 @@ func (*sqliteTestRegistration) Unregister() {}
 type sqliteTestHost struct {
 	vfs.HostAPI
 	vfs.ContributionHost
-	command vfs.PluginCommand
+	command  vfs.PluginCommand
+	provider vfs.VFSProvider
 }
 
 func (host *sqliteTestHost) RegisterPluginCommand(command vfs.PluginCommand) (vfs.Registration, error) {
 	host.command = command
 	return &sqliteTestRegistration{}, nil
+}
+
+func (host *sqliteTestHost) RegisterVFSProvider(provider vfs.VFSProvider) {
+	host.provider = provider
 }
 
 func TestPluginRegistersLocalizedPanelCommand(t *testing.T) {

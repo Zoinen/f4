@@ -1,8 +1,11 @@
 package app
 
 import (
-	"github.com/unxed/f4/internal/panel"
+	"context"
+	"fmt"
 	"strings"
+
+	"github.com/unxed/f4/internal/panel"
 
 	"github.com/unxed/f4/internal/config"
 	"github.com/unxed/f4/internal/editor"
@@ -25,6 +28,7 @@ func colorerCrossModeItems() []string {
 		i18n.Msg("ColorerSettings.CrossVertical"),
 		i18n.Msg("ColorerSettings.CrossHorizontal"),
 		i18n.Msg("ColorerSettings.CrossBoth"),
+		i18n.Msg("ColorerSettings.CrossScheme"),
 	}
 }
 
@@ -40,7 +44,8 @@ func crossModeAxes(mode int) (horz, vert bool) {
 		return false, true
 	case config.ColorerCrossHorizontal:
 		return true, false
-	case config.ColorerCrossBoth:
+	case config.ColorerCrossBoth, config.ColorerCrossScheme:
+		// In the scheme mode the editor narrows the axes to the file type's.
 		return true, true
 	}
 	return false, false
@@ -85,8 +90,90 @@ func EditorCrossAttrs() (horz, vert bool, horzAttr, vertAttr uint64) {
 		colorerCrossAttr(colorerVertCrossRegion, base)
 }
 
+// colorerCheckMessage turns a check into the text of a message box. An empty
+// title means there is nothing to say.
+func colorerCheckMessage(check editor.ColorerCheck, allTypes bool) (title, text string, kind vtui.MessageKind) {
+	var b strings.Builder
+	kind = vtui.MessageWarn
+	if check.Err != nil {
+		b.WriteString(i18n.Msg("ColorerSettings.CheckFailed"))
+		b.WriteString("\n")
+		b.WriteString(check.Err.Error())
+	}
+	if len(check.Reports) > 0 {
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString(i18n.Msg("ColorerSettings.CheckReports"))
+		for _, report := range check.Reports {
+			b.WriteString("\n")
+			b.WriteString(report)
+		}
+	}
+	if b.Len() == 0 {
+		if !allTypes {
+			return "", "", vtui.MessageInfo
+		}
+		fmt.Fprintf(&b, i18n.Msg("ColorerSettings.CheckPassed"), check.Types)
+		kind = vtui.MessageInfo
+	}
+	return i18n.Msg("ColorerSettings.CheckTitle"), b.String(), kind
+}
+
+// runColorerCheck loads a Colorer configuration off the UI thread behind a
+// progress dialog, shows what the check found, and hands the result to done on
+// the UI thread. A check the user cancelled shows nothing and is not passed on.
+func runColorerCheck(pf *panel.PanelsFrame, src editor.ColorerSource, scheme string, allTypes bool, done func(editor.ColorerCheck)) {
+	var check editor.ColorerCheck
+	pf.RunProgressTask(i18n.Msg("ColorerSettings.CheckTitle"), i18n.Msg("ColorerSettings.Checking"), false,
+		func(ctx context.Context, update func(msg string, percent int)) error {
+			// DIAG (temporary): which dialog-layout subtest starts a Colorer
+			// check, and whether two overlap; read against the === RUN lines.
+			println("DIAG runColorerCheck: start")
+			check = editor.CheckColorerSource(ctx, src, scheme, allTypes, func(n, total int, label string) {
+				update(label, n*100/total)
+			})
+			println("DIAG runColorerCheck: done")
+			return nil
+		},
+		func(error) {
+			if editor.IsColorerCheckCancelled(check) {
+				return
+			}
+			if title, text, kind := colorerCheckMessage(check, allTypes); title != "" {
+				vtui.ShowMessageEx(title, text, []string{i18n.Msg("vtui.Ok")}, kind)
+			}
+			if done != nil {
+				done(check)
+			}
+		})
+}
+
+// actionColorerReloadBase is FarColorer's "Reload base" in the editor's
+// Colorer menu: the configuration in use is loaded and checked, as the
+// settings dialog's Reload does, and, when it loads, Colorer starts afresh in
+// the open editors.
+func actionColorerReloadBase(pf *panel.PanelsFrame) {
+	runColorerCheck(pf, editor.CurrentColorerSource(), config.App.EditorColorerScheme, false, func(check editor.ColorerCheck) {
+		if check.Err != nil {
+			return
+		}
+		reloadColorerEditors()
+	})
+}
+
+// reloadColorerEditors applies a configuration accepted by the settings
+// dialog to editors that were already open. Without this, changing the user
+// HRC directory and pressing OK only saved the path: existing editors kept
+// their sessions and never saw the new schemes until a separate Reload.
+func reloadColorerEditors() {
+	editor.ResetColorerSessions()
+	editor.ResetColorerRegions()
+	editor.ReloadColorerEditors()
+}
+
 func actionColorerSettings(pf *panel.PanelsFrame) {
-	width, height := 74, 19
+	width, height := 74, 21
 	dlg := vtui.NewCenteredDialog(width, height, i18n.Msg("ColorerSettings.Title"))
 	dlg.ShowClose = true
 
@@ -94,6 +181,14 @@ func actionColorerSettings(pf *panel.PanelsFrame) {
 	chkEnabled := vtui.NewCheckbox(0, 0, i18n.Msg("ColorerSettings.Enabled"), false)
 	if colorerIsActive() {
 		chkEnabled.State = 1
+	}
+	chkPairs := vtui.NewCheckbox(0, 0, i18n.Msg("ColorerSettings.Pairs"), false)
+	if config.App.EditorColorerPairs {
+		chkPairs.State = 1
+	}
+	chkOldOutline := vtui.NewCheckbox(0, 0, i18n.Msg("ColorerSettings.OldOutline"), false)
+	if config.App.EditorColorerOldOutline {
+		chkOldOutline.State = 1
 	}
 
 	// The catalog carries a machine name and a human description; the machine
@@ -142,11 +237,22 @@ func actionColorerSettings(pf *panel.PanelsFrame) {
 		chkBackground.State = 1
 	}
 
-	editCatalog := vtui.NewEdit(0, 0, width-6, config.App.EditorColorerCatalog)
-	editCatalog.ClearSelection()
-	lblCatalog := vtui.NewLabel(0, 0, i18n.Msg("ColorerSettings.Catalog"), editCatalog)
+	// The paths: FarColorer's catalog, user file of schemes, user file of
+	// color styles and user HRC settings, each label beside its field.
+	pathLabels := padLabels(i18n.Msg("ColorerSettings.Catalog"), i18n.Msg("ColorerSettings.UserHrc"), i18n.Msg("ColorerSettings.UserHrd"), i18n.Msg("ColorerSettings.UserHrcSettings"))
+	pathField := func(value, label string) (*vtui.Edit, *vtui.Text) {
+		edit := vtui.NewEdit(0, 0, width-6, value)
+		edit.ClearSelection()
+		return edit, vtui.NewLabel(0, 0, label, edit)
+	}
+	editCatalog, lblCatalog := pathField(config.App.EditorColorerCatalog, pathLabels[0])
+	editUserHrc, lblUserHrc := pathField(config.App.EditorColorerUserHrc, pathLabels[1])
+	editUserHrd, lblUserHrd := pathField(config.App.EditorColorerUserHrd, pathLabels[2])
+	editUserHrcSettings, lblUserHrcSettings := pathField(config.App.EditorColorerHrcSettings, pathLabels[3])
+	btnTypeSettings := vtui.NewButton(0, 0, i18n.Msg("ColorerSettings.TypeSettings"))
 
 	btnReload := vtui.NewButton(0, 0, i18n.Msg("ColorerSettings.Reload"))
+	btnCheckAll := vtui.NewButton(0, 0, i18n.Msg("ColorerSettings.CheckAll"))
 	btnDownload := vtui.NewButton(0, 0, i18n.Msg("ColorerSettings.Download"))
 	btnOk := vtui.NewButton(0, 0, i18n.Msg("vtui.Ok"))
 	btnOk.IsDefault = true
@@ -154,6 +260,8 @@ func actionColorerSettings(pf *panel.PanelsFrame) {
 
 	// 2. Add to Dialog in desired focus order
 	dlg.AddItem(chkEnabled)
+	dlg.AddItem(chkPairs)
+	dlg.AddItem(chkOldOutline)
 	dlg.AddItem(lblScheme)
 	dlg.AddItem(comboScheme)
 	dlg.AddItem(lblCross)
@@ -162,15 +270,27 @@ func actionColorerSettings(pf *panel.PanelsFrame) {
 	dlg.AddItem(chkBackground)
 	dlg.AddItem(lblCatalog)
 	dlg.AddItem(editCatalog)
+	dlg.AddItem(lblUserHrc)
+	dlg.AddItem(editUserHrc)
+	dlg.AddItem(lblUserHrd)
+	dlg.AddItem(editUserHrd)
+	dlg.AddItem(lblUserHrcSettings)
+	dlg.AddItem(editUserHrcSettings)
 	dlg.AddItem(btnReload)
+	dlg.AddItem(btnCheckAll)
 	dlg.AddItem(btnDownload)
+	dlg.AddItem(btnTypeSettings)
 	dlg.AddItem(btnOk)
 	dlg.AddItem(btnCancel)
 
 	// 3. Layout Configuration
 	vbox := vtui.NewVBoxLayout(dlg.X1+2, dlg.Y1+2, width-4, height-4)
 
-	vbox.Add(chkEnabled, vtui.Margins{}, vtui.AlignLeft)
+	rowEnabled := vtui.NewHBoxLayout(0, 0, width-4, 1)
+	rowEnabled.Add(chkEnabled, vtui.Margins{Right: 2}, vtui.AlignLeft)
+	rowEnabled.Add(chkPairs, vtui.Margins{Right: 2}, vtui.AlignLeft)
+	rowEnabled.Add(chkOldOutline, vtui.Margins{}, vtui.AlignLeft)
+	vbox.Add(rowEnabled, vtui.Margins{}, vtui.AlignFill)
 
 	rowScheme := vtui.NewHBoxLayout(0, 0, width-4, 1)
 	rowScheme.Add(lblScheme, vtui.Margins{Right: 1}, vtui.AlignLeft)
@@ -187,15 +307,31 @@ func actionColorerSettings(pf *panel.PanelsFrame) {
 	rowChecks.Add(chkBackground, vtui.Margins{}, vtui.AlignLeft)
 	vbox.Add(rowChecks, vtui.Margins{Top: 1}, vtui.AlignFill)
 
-	vbox.Add(lblCatalog, vtui.Margins{Top: 1}, vtui.AlignLeft)
-	vbox.Add(editCatalog, vtui.Margins{}, vtui.AlignFill)
+	for i, path := range []struct {
+		lbl  *vtui.Text
+		edit *vtui.Edit
+	}{{lblCatalog, editCatalog}, {lblUserHrc, editUserHrc}, {lblUserHrd, editUserHrd}, {lblUserHrcSettings, editUserHrcSettings}} {
+		r := vtui.NewHBoxLayout(0, 0, width-4, 1)
+		r.Add(path.lbl, vtui.Margins{Right: 1}, vtui.AlignLeft)
+		r.Add(path.edit, vtui.Margins{}, vtui.AlignFill)
+		top := 0
+		if i == 0 {
+			top = 1
+		}
+		vbox.Add(r, vtui.Margins{Top: top}, vtui.AlignFill)
+	}
 
 	rowTools := vtui.NewHBoxLayout(0, 0, width-4, 1)
 	rowTools.HorizontalAlign = vtui.AlignCenter
 	rowTools.Spacing = 2
 	rowTools.Add(btnReload, vtui.Margins{}, vtui.AlignTop)
+	rowTools.Add(btnCheckAll, vtui.Margins{}, vtui.AlignTop)
 	rowTools.Add(btnDownload, vtui.Margins{}, vtui.AlignTop)
 	vbox.Add(rowTools, vtui.Margins{Top: 1}, vtui.AlignFill)
+	rowTypes := vtui.NewHBoxLayout(0, 0, width-4, 1)
+	rowTypes.HorizontalAlign = vtui.AlignCenter
+	rowTypes.Add(btnTypeSettings, vtui.Margins{}, vtui.AlignTop)
+	vbox.Add(rowTypes, vtui.Margins{}, vtui.AlignFill)
 
 	rowButtons := vtui.NewHBoxLayout(0, 0, width-4, 1)
 	rowButtons.HorizontalAlign = vtui.AlignCenter
@@ -219,8 +355,13 @@ func actionColorerSettings(pf *panel.PanelsFrame) {
 		}
 		config.App.EditorCrossMode = comboCross.Menu.SelectPos
 		config.App.EditorColorerSyntax = chkSyntax.State == 1
+		config.App.EditorColorerPairs = chkPairs.State == 1
+		config.App.EditorColorerOldOutline = chkOldOutline.State == 1
 		config.App.EditorColorerBackground = chkBackground.State == 1
 		config.App.EditorColorerCatalog = strings.TrimSpace(editCatalog.GetText())
+		config.App.EditorColorerUserHrc = strings.TrimSpace(editUserHrc.GetText())
+		config.App.EditorColorerUserHrd = strings.TrimSpace(editUserHrd.GetText())
+		config.App.EditorColorerHrcSettings = strings.TrimSpace(editUserHrcSettings.GetText())
 		// The catalog may now point somewhere else, so the styles are dropped
 		// instead of being kept under the same name.
 		editor.ResetColorerScheme()
@@ -228,18 +369,71 @@ func actionColorerSettings(pf *panel.PanelsFrame) {
 		config.SaveConfig()
 	}
 
+	// What the dialog would apply: the configuration a check has to load.
+	pending := func() (editor.ColorerSource, string) {
+		src := editor.ColorerSource{
+			ConfigsDir:      strings.TrimSpace(editCatalog.GetText()),
+			UserHRC:         strings.TrimSpace(editUserHrc.GetText()),
+			UserHRD:         strings.TrimSpace(editUserHrd.GetText()),
+			UserHRCSettings: strings.TrimSpace(editUserHrcSettings.GetText()),
+		}
+		if src.ConfigsDir == "" {
+			src.ConfigsDir = editor.DefaultColorerConfigsDir()
+		}
+		scheme := ""
+		if pos := comboScheme.Menu.SelectPos; pos > 0 && pos < len(schemeNames) {
+			scheme = schemeNames[pos]
+		}
+		return src, scheme
+	}
+
 	btnCancel.OnClick = func() { dlg.Close() }
 
+	// FarColorer's "HRC settings": parameters of each file type, from the
+	// configuration the dialog would apply.
+	btnTypeSettings.OnClick = func() {
+		src, _ := pending()
+		actionColorerTypeSettings(src)
+	}
+
+	// As FarColorer's OK does: a changed configuration is loaded first, and one
+	// Colorer cannot load keeps the dialog open. What Colorer merely reports is
+	// shown and does not stop the change.
 	btnOk.OnClick = func() {
-		apply()
-		dlg.Close()
+		src, scheme := pending()
+		changed := src != editor.CurrentColorerSource() || !strings.EqualFold(scheme, config.App.EditorColorerScheme) || !colorerIsActive()
+		if chkEnabled.State != 1 || !changed {
+			apply()
+			dlg.Close()
+			return
+		}
+		runColorerCheck(pf, src, scheme, false, func(check editor.ColorerCheck) {
+			if check.Err != nil {
+				return
+			}
+			apply()
+			reloadColorerEditors()
+			dlg.Close()
+		})
 	}
 
 	btnReload.OnClick = func() {
-		apply()
-		editor.ResetColorerSessions()
-		editor.ResetColorerRegions()
-		vtui.FrameManager.Redraw()
+		src, scheme := pending()
+		runColorerCheck(pf, src, scheme, false, func(check editor.ColorerCheck) {
+			if check.Err != nil {
+				return
+			}
+			apply()
+			reloadColorerEditors()
+		})
+	}
+
+	// FarColorer's "Reload all": every file type's scheme is loaded, so a
+	// scheme that breaks only when its type is used is found now. It applies
+	// nothing.
+	btnCheckAll.OnClick = func() {
+		src, scheme := pending()
+		runColorerCheck(pf, src, scheme, true, nil)
 	}
 
 	btnDownload.OnClick = func() {
@@ -253,6 +447,7 @@ func actionColorerSettings(pf *panel.PanelsFrame) {
 			editor.ResetColorerRegions()
 			editor.ResetColorerScheme()
 			editor.SetColorerScheme(config.App.EditorColorerScheme)
+			editor.ReloadColorerEditors()
 		})
 	}
 

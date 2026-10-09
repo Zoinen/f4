@@ -11,12 +11,12 @@ nothing here derives from Turbo Vision.
 
 ## Files
 
-The native format is a SQLite database, since `f4` already depends on
-`ncruces/go-sqlite3`. A sheet is a plain `.f4s.sqlite` file holding three
-tables. The extension is double on purpose: the second half is what makes every
-SQLite tool -- f4's own client included -- open the file without being told,
-and the first half keeps a sheet recognisable as a sheet. Files written under
-the earlier `.f4s` name still open.
+A regular build's native format is a SQLite database, since `f4` already
+depends on `ncruces/go-sqlite3`. A sheet is a plain `.f4s.sqlite` file holding
+three tables. The extension is double on purpose: the second half is what makes
+every SQLite tool -- f4's own client included -- open the file without being
+told, and the first half keeps a sheet recognisable as a sheet. Files written
+under the earlier `.f4s` name still open.
 
 | table           | contents                                              |
 | --------------- | ----------------------------------------------------- |
@@ -27,6 +27,19 @@ the earlier `.f4s` name still open.
 Only the raw text of a cell is stored; values are recomputed on load, so a file
 never carries stale results. `IsSheetFile` checks the schema before offering to
 open a database from the panel, which keeps unrelated `.db` files alone.
+
+A `-tags lite` build (see the "Lite build" section in [README.md](../README.md)
+for what that trims) writes
+the same information as a plain JSON document instead, under the same `.f4s`
+extension, so that a lite binary is not forced to link `ncruces/go-sqlite3` (the
+whole SQLite engine, translated to Go) for this one feature. **The two formats are not
+interchangeable**: a `.f4s` file saved by a lite build is JSON, and a regular
+build's `IsSheetFile` will not recognise it as a sheet (nor will any SQLite
+tool open it); a `.f4s.sqlite` file saved by a regular build is likewise not
+recognised by a lite build's `IsSheetFile`. Opening a sheet with the build that
+did not save it just falls through to "not a sheet file", never to a corrupted
+read -- but a sheet needs to stay with the kind of build (lite or regular) that
+created it.
 
 Import and export cover:
 

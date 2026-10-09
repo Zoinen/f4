@@ -1,3 +1,11 @@
+//go:build !lite
+
+// This is the golang.org/x/crypto/ssh-backed SSH dialer used by the full
+// build's SFTP/FTP-adjacent code and by fish_dialer_ssh.go's full-build FISH+
+// dialer. The lite build's FISH+ dialer (fish_dialer_lite.go) shells out to
+// the console ssh binary instead and never reaches this file -- see
+// internal/plughost/plugins_lite.go for the accounting of why.
+
 package netfox
 
 import (
@@ -12,6 +20,7 @@ import (
 	"time"
 
 	"github.com/unxed/f4/internal/netproxy"
+	"github.com/unxed/f4/vfs/hostmode"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 )
@@ -42,15 +51,20 @@ func sshTimeout(seconds int) time.Duration {
 // the shell's job — but a path typed into the connection dialog has no
 // shell behind it, so a bare ~/.ssh/key would otherwise resolve to a
 // nonexistent file named literally "~" in the working directory.
+//
+// hostmode.UserHomeDir, not os.UserHomeDir: under Wine's posix personality
+// (WINE.md §18.2, "$HOME") the user's real keys live under the host's own
+// $HOME, not inside the wineprefix os.UserHomeDir would otherwise resolve
+// to; everywhere else the two are the same call.
 func expandHome(p string) string {
 	if p == "~" {
-		if home, err := os.UserHomeDir(); err == nil {
+		if home, err := hostmode.UserHomeDir(); err == nil {
 			return home
 		}
 		return p
 	}
 	if strings.HasPrefix(p, "~/") || strings.HasPrefix(p, "~\\") {
-		if home, err := os.UserHomeDir(); err == nil {
+		if home, err := hostmode.UserHomeDir(); err == nil {
 			return filepath.Join(home, p[2:])
 		}
 	}
@@ -99,7 +113,7 @@ func DialSSH(host, port, user, pass, keyPath string, timeout int, px netproxy.Se
 			auths = append(auths, ssh.PublicKeys(signer))
 		}
 	} else {
-		home, _ := os.UserHomeDir()
+		home, _ := hostmode.UserHomeDir()
 		for _, keyName := range []string{"id_rsa", "id_ed25519", "id_ecdsa", "id_dsa"} {
 			defaultKeyPath := filepath.Join(home, ".ssh", keyName)
 			if signer, err := loadKeySigner(defaultKeyPath, pass); err == nil {
@@ -137,7 +151,7 @@ func DialSSH(host, port, user, pass, keyPath string, timeout int, px netproxy.Se
 }
 
 func sshHostKeyCallback() (ssh.HostKeyCallback, error) {
-	home, err := os.UserHomeDir()
+	home, err := hostmode.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("SSH host-key verification: determine home directory: %w", err)
 	}

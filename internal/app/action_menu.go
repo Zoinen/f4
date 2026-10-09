@@ -2,8 +2,11 @@ package app
 
 import (
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/unxed/f4/internal/keymap"
+	"github.com/unxed/f4/internal/menuhotkeys"
 	"github.com/unxed/f4/internal/panel"
 
 	"github.com/unxed/f4/internal/action"
@@ -13,6 +16,110 @@ import (
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtui"
 )
+
+// menuRowEnabled remembers, per menu row, the function that says whether the
+// row can be used right now. BuildMenuBarItems fills it as it builds; the
+// panels frame caches the built rows between frames, and
+// refreshMenuRowStates uses these functions to keep the dimmed flags of the
+// cached rows current (f4#1814).
+var (
+	menuRowEnabledMu sync.Mutex
+	menuRowEnabled   = map[history.MenuHistoryItemKey]func() bool{}
+)
+
+func rememberMenuRowEnabled(key history.MenuHistoryItemKey, enabled func() bool) {
+	if enabled == nil {
+		return
+	}
+	menuRowEnabledMu.Lock()
+	menuRowEnabled[key] = enabled
+	menuRowEnabledMu.Unlock()
+}
+
+// menuRowStamp is what the rows' Enabled functions look at, as cheaply as it
+// can be read: which panels frame and which panel is active, where its cursor
+// stands, how many rows it lists and which built menu is being refreshed. Two
+// calls with the same stamp are answered from the first (f4#1832).
+type menuRowStamp struct {
+	frame  *panel.PanelsFrame
+	active int
+	fsp    *panel.FileSystemPanel
+	tree   *panel.TreePanel
+	cursor int
+	count  int
+	items  *vtui.MenuBarItem
+}
+
+// menuRowRefreshEvery bounds how stale a row can be when the stamp did not
+// change but something the stamp does not cover did, such as a selection made
+// without moving the cursor.
+var menuRowRefreshEvery = 250 * time.Millisecond
+
+var menuRowLast struct {
+	stamp menuRowStamp
+	at    time.Time
+	valid bool
+}
+
+func currentMenuRowStamp(items []vtui.MenuBarItem) menuRowStamp {
+	stamp := menuRowStamp{}
+	if len(items) > 0 {
+		stamp.items = &items[0]
+	}
+	pf := panel.FindPanelsFrame()
+	if pf == nil {
+		return stamp
+	}
+	stamp.frame, stamp.active = pf, pf.ActiveIdx
+	stamp.tree = focusedTreePanel(pf)
+	if fsp := pf.GetActivePanel(); fsp != nil {
+		stamp.fsp, stamp.cursor, stamp.count = fsp, fsp.GetCursorIndex(), len(fsp.Entries)
+	}
+	return stamp
+}
+
+// refreshMenuRowStates sets the Disabled flag of every row that has an
+// Enabled function to its answer now. GetMenuBar asks for this on every key
+// and every frame, and the answers cost a walk of the listing per row (the
+// selection) or a plugin's own check, so the rows are asked again only when
+// the cursor, the panel or the menu changed, or after menuRowRefreshEvery
+// (f4#1814, f4#1832).
+func refreshMenuRowStates(items []vtui.MenuBarItem) {
+	menuRowEnabledMu.Lock()
+	defer menuRowEnabledMu.Unlock()
+	if len(menuRowEnabled) == 0 {
+		return
+	}
+	stamp := currentMenuRowStamp(items)
+	now := time.Now()
+	if menuRowLast.valid && menuRowLast.stamp == stamp && now.Sub(menuRowLast.at) < menuRowRefreshEvery {
+		return
+	}
+	menuRowLast.stamp, menuRowLast.at, menuRowLast.valid = stamp, now, true
+	// The rows ask the panels for their selection one after another with
+	// nothing changing in between: let the listing be walked once each.
+	if pf := panel.FindPanelsFrame(); pf != nil {
+		for _, p := range pf.Panels {
+			if fsp, ok := p.(*panel.FileSystemPanel); ok {
+				defer fsp.MemoizeSelection()()
+			}
+		}
+	}
+	var refresh func(rows []vtui.MenuItem)
+	refresh = func(rows []vtui.MenuItem) {
+		for i := range rows {
+			if key, ok := rows[i].UserData.(history.MenuHistoryItemKey); ok {
+				if enabled := menuRowEnabled[key]; enabled != nil {
+					rows[i].Disabled = !enabled()
+				}
+			}
+			refresh(rows[i].SubItems)
+		}
+	}
+	for i := range items {
+		refresh(items[i].SubItems)
+	}
+}
 
 // BuildMenuBarItems generates the top-level menu structure for an area
 // from the action registry. Every action with a MenuPath set appears in
@@ -57,16 +164,22 @@ func BuildMenuBarItems(area string) []vtui.MenuBarItem {
 		}
 		text := a.DisplayLabel()
 		if !strings.Contains(text, "&") {
-			text = "&" + text // first letter becomes the menu hotkey
+			text = menuhotkeys.Auto(text) // first letter becomes the menu hotkey
 		}
 		if a.Checked != nil && a.Checked() {
 			text = "√ " + text
 		}
 		item := vtui.MenuItem{
-			Text:     text,
+			Text: text,
+			// RunAction re-checks Enabled itself, so a stale Disabled flag
+			// (the action's context changed while this dropdown sat open)
+			// can never let the click through; this flag only decides how
+			// the row looks and whether vtui lets it get that far at all.
+			Disabled: a.Enabled != nil && !a.Enabled(),
 			OnClick:  func() { RunAction(a.Name) },
 			UserData: history.MenuHistoryItemKey(a.Name),
 		}
+		rememberMenuRowEnabled(history.MenuHistoryItemKey(a.Name), a.Enabled)
 		item.Shortcut = keymap.MenuShortcutsForAction(area, a.Name)
 		if a.MenuLast {
 			if a.MenuSeparatorBefore {
@@ -86,7 +199,7 @@ func BuildMenuBarItems(area string) []vtui.MenuBarItem {
 					subTitle = a.MenuSubPath
 				}
 				if !strings.Contains(subTitle, "&") {
-					subTitle = "&" + subTitle
+					subTitle = menuhotkeys.Auto(subTitle)
 				}
 				m.items = append(m.items, vtui.MenuItem{
 					Text:     subTitle,
@@ -109,7 +222,7 @@ func BuildMenuBarItems(area string) []vtui.MenuBarItem {
 		m.items = append(m.items, item)
 	}
 
-	appendPluginCommand := func(command vfs.PluginCommand) {
+	appendPluginCommand := func(command vfs.PluginCommand, app vfs.App) {
 		m := menus[command.MenuPath]
 		if m == nil {
 			title := i18n.Msg("Menu." + area + "." + command.MenuPath)
@@ -122,7 +235,7 @@ func BuildMenuBarItems(area string) []vtui.MenuBarItem {
 		}
 		text := action.PlainLabel(plughost.PluginCommandDisplayLabel(command))
 		if !strings.Contains(text, "&") {
-			text = "&" + text
+			text = menuhotkeys.Auto(text)
 		}
 		if !m.pluginSeparator {
 			m.pluginSeparator = true
@@ -132,8 +245,15 @@ func BuildMenuBarItems(area string) []vtui.MenuBarItem {
 				m.items = append(m.items, vtui.MenuItem{Separator: true})
 			}
 		}
+		if command.Enabled != nil {
+			rememberMenuRowEnabled(history.MenuHistoryItemKey("plugin:"+command.ID), func() bool { return command.Enabled(app) })
+		}
 		m.items = append(m.items, vtui.MenuItem{
-			Text:     text,
+			Text: text,
+			// ExecutePluginCommand re-checks Enabled itself (same rationale
+			// as the core-action comment above): this flag only decides how
+			// the row looks and whether vtui lets the click through at all.
+			Disabled: command.Enabled != nil && !command.Enabled(app),
 			Shortcut: panel.PluginCommandShortcut(command),
 			UserData: history.MenuHistoryItemKey("plugin:" + command.ID),
 			OnClick: func() {
@@ -171,7 +291,7 @@ func BuildMenuBarItems(area string) []vtui.MenuBarItem {
 		if pf := panel.FindPanelsFrameAnyScreen(); pf != nil {
 			for _, command := range plughost.PluginCommandsSnapshot(vfs.PluginCommandPanel, pf) {
 				if command.MenuPath != "" {
-					appendPluginCommand(command)
+					appendPluginCommand(command, pf)
 				}
 			}
 		}
@@ -194,6 +314,9 @@ func BuildMenuBarItems(area string) []vtui.MenuBarItem {
 		}
 		result = append(result, vtui.MenuBarItem{Label: m.title, SubItems: normalizeMenuSeparators(items)})
 	}
+	// Every item above took the first letter of its label, so the menus were
+	// full of items that shared a hotkey (#1258).
+	menuhotkeys.UniqueBar(result)
 	return result
 }
 

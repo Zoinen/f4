@@ -5,7 +5,12 @@ lives in vtui (see its DRAGDROP.md); this file is the f4 side and the
 roadmap.
 
 Only graphical backends can do this. Terminals have no protocol for it, so
-in a terminal nothing registers and nothing changes.
+in a terminal nothing registers and nothing changes -- with one exception:
+the Windows console (conhost, OpenConsole, Windows Terminal) can drag files
+out, into Explorer, a browser or a chat window (#1604). f4 lays an invisible
+window of its own over the console for the length of the drag, the technique
+of the Far plugin Burlak; see `internal/wincondrag`. Dropping into the
+console is not covered.
 
 ## What works now
 
@@ -28,10 +33,20 @@ The other direction works too. Press the left button on a marked file and
 move: the marked files are offered to the desktop as a file list. When
 nothing is marked, a press on a file and a drag out of the panel's rows
 offers that one file - the current file, as every other command understands
-it. Inside the rows a left drag still only moves the cursor, and with marks
+it. Inside the rows a quick left drag still only moves the cursor, because that
+is how the mouse moves it, but a button held down on the file for
+`DragOutHoldMs` (`[Panel]`, f4:config, 250 by default) starts the drag on the
+next move, and the drag pointer appears at once, so a file can be dragged onto
+a window that overlaps the panel (unxed/f4#1604). `0` starts a drag on the
+first move, `-1` keeps the old rule that only leaving the rows starts it. With marks
 present a press on an unmarked file still only moves the cursor, so the old
 mouse behaviour is kept. Only copy is offered, and only from a local panel - an
 archive or a network panel says so in a toast instead.
+
+`DragOutModifier` in `[Panel]` (f4:config; `ctrl`, `alt` or `shift`, empty by
+default) starts a drag out only while that key is held, as Far Manager with the
+Burlak plugin does. The gesture stays armed while the key is up, so pressing it
+after the button still starts the drag, and with it a drag of the current file starts on the first move instead of after the pointer leaves the panel's rows, so the drag pointer appears at once (unxed/f4#1604).
 
 Under the gogpu backend a drop works as well, with two differences gogpu's
 own API imposes: it always copies, because gogpu tells us neither what the
@@ -102,3 +117,9 @@ missing one means.
   the common senders is still unconfirmed, which is why move is not offered
   outwards. Under gogpu the question does not arise: only copy is ever
   announced, in both directions.
+
+## Terminal drag and drop
+
+The far2l-extension protocol that lets a terminal hand dropped files to the
+program inside it (and f4 receive them from the terminal it runs in) is
+specified in [FAR2L_DND.md](FAR2L_DND.md), written to be submitted to far2l.

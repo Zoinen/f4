@@ -39,6 +39,74 @@ func TestEditorBase64ActionsExposeF11AndEditCommands(t *testing.T) {
 	}
 }
 
+func TestEditorCalculateExpressionActionExposesEditCommand(t *testing.T) {
+	calc, ok := GetAction("Editor.CalculateExpression")
+	if !ok || calc.Area != "Editor" || calc.MenuPath != "Edit" || calc.Handler == nil {
+		t.Fatalf("CalculateExpression action = %#v, present=%t", calc, ok)
+	}
+}
+
+func TestEditorCalculateExpressionActionReplacesSelectionWithResult(t *testing.T) {
+	ev := newActionTestEditor(t, "2 + 2 * 3")
+	vtui.FrameManager.Push(ev)
+	ev.SelActive = true
+	ev.SelAnchorOffset = 0
+	ev.CursorLine = 0
+	ev.CursorPos = len("2 + 2 * 3")
+
+	if !RunAction("Editor.CalculateExpression") {
+		t.Fatal("Editor.CalculateExpression did not run on the editor")
+	}
+
+	if got, want := ev.GetText(), "8"; got != want {
+		t.Fatalf("text after Editor.CalculateExpression = %q, want %q", got, want)
+	}
+}
+
+func TestEditorCopyPasteActionsWorkWhileEditMenuIsOpen(t *testing.T) {
+	ev := newActionTestEditor(t, "abc")
+	vtui.FrameManager.Push(ev)
+
+	ev.SelActive = true
+	ev.SelAnchorOffset = 0
+	ev.CursorPos = len("abc")
+	menu := vtui.NewVMenu("Edit")
+	vtui.FrameManager.Push(menu)
+	t.Cleanup(menu.Close)
+
+	if !RunAction("Editor.Copy") {
+		t.Fatal("Editor.Copy did not resolve the editor below the menu")
+	}
+	if got := vtui.GetClipboard(); got != "abc" {
+		t.Fatalf("menu copy clipboard = %q, want %q", got, "abc")
+	}
+
+	ev.SelActive = false
+	ev.CursorPos = 0
+	if !RunAction("Editor.Paste") {
+		t.Fatal("Editor.Paste did not resolve the editor below the menu")
+	}
+	if got, want := ev.GetText(), "abcabc"; got != want {
+		t.Fatalf("menu paste text = %q, want %q", got, want)
+	}
+}
+
+func TestEditorAmountInWordsActionReplacesSelection(t *testing.T) {
+	ev := newActionTestEditor(t, "5 руб")
+	vtui.FrameManager.Push(ev)
+	ev.SelActive = true
+	ev.SelAnchorOffset = 0
+	ev.CursorLine = 0
+	ev.CursorPos = len("5 руб")
+
+	if !RunAction("Editor.AmountInWords") {
+		t.Fatal("Editor.AmountInWords did not run on the editor")
+	}
+	if got, want := ev.GetText(), "пять рублей"; got != want {
+		t.Fatalf("text after Editor.AmountInWords = %q, want %q", got, want)
+	}
+}
+
 func TestEditorSortLinesAction(t *testing.T) {
 	sortAction, ok := GetAction("Editor.SortLines")
 	if !ok {
@@ -156,5 +224,33 @@ func TestHotkeyDelAliasesResolve(t *testing.T) {
 	hm.Bind("Editor", "ShiftNumDel", "Editor.Copy")
 	if got := hm.GetAction("Editor", "ShiftNumDel"); got != "Editor.Copy" {
 		t.Errorf("explicit binding overridden by alias: got %q", got)
+	}
+}
+
+func TestEditorFAR3HotkeysResolve(t *testing.T) {
+	hm := keymap.NewHotkeyManager("")
+	hm.InitDefaults()
+	cases := map[string]string{
+		"CtrlN":          "Editor.MoveToScreenTop",
+		"CtrlE":          "Editor.MoveToScreenBottom",
+		"CtrlK":          "Editor.DeleteToLineEnd",
+		"AltD":           "Editor.DeleteToLineEnd",
+		"CtrlBS":         "Editor.DeleteWordBackward",
+		"CtrlT":          "Editor.DeleteSpacersForward",
+		"CtrlD":          "Editor.DeleteBlock",
+		"CtrlP":          "Editor.CopyBlockToCursor",
+		"CtrlM":          "Editor.MoveBlockToCursor",
+		"AltU":           "Editor.ShiftBlockLeft",
+		"AltI":           "Editor.ShiftBlockRight",
+		"CtrlShiftEnter": "Editor.InsertPassivePanelFileName",
+		"AltF7":          "Editor.SearchPrevious",
+		"AltF8":          "Editor.GoTo",
+		"CtrlO":          "Panel.ToggleWorkspace",
+		"ShiftF10":       "Editor.SaveAndQuit",
+	}
+	for key, want := range cases {
+		if got := hm.GetAction("Editor", key); got != want {
+			t.Errorf("Editor/%s = %q, want %q", key, got, want)
+		}
 	}
 }

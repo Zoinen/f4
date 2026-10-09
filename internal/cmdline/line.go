@@ -146,3 +146,10 @@ func (cl *CommandLine) IsEmpty() bool {
 func (cl *CommandLine) InsertString(text string) {
 	cl.Edit.InsertString(text)
 }
+
+// PasteText inserts a captured clipboard value and leaves history browsing,
+// matching the editing semantics of the native paste shortcuts.
+func (cl *CommandLine) PasteText(text string) {
+	cl.Edit.InsertString(text)
+	cl.Edit.HistoryPos = -1
+}

@@ -24,7 +24,7 @@ func run(ctx context.Context, v vfs.VFS, root, mask, text string, options Option
 	roots := make([]string, 0, len(options.SelectedFolders))
 	seen := make(map[string]bool)
 	for _, dir := range options.SelectedFolders {
-		if seen[dir] || findFileMaskMatches(v.Base(dir), excludes) {
+		if seen[dir] || findFileMaskMatches(v.Base(dir), excludes, !options.CaseSensitive) {
 			continue
 		}
 		seen[dir] = true
@@ -90,7 +90,7 @@ func runDirectory(ctx context.Context, v vfs.VFS, root, mask, text string, optio
 					continue
 				}
 				p.Scanned++
-				if findFileMaskMatches(item.Name, excludes) {
+				if findFileMaskMatches(item.Name, excludes, !options.CaseSensitive) {
 					continue
 				}
 				path := v.Join(dir, item.Name)
@@ -100,7 +100,7 @@ func runDirectory(ctx context.Context, v vfs.VFS, root, mask, text string, optio
 					}
 					item.IsDir = false
 				}
-				matched := findFileMaskMatches(item.Name, masks)
+				matched := findFileMaskMatches(item.Name, masks, !options.CaseSensitive)
 				if item.IsDir {
 					children = append(children, path)
 					matched = matched && options.FindFolders && text == ""

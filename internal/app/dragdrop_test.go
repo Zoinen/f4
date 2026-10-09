@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	androidfs "github.com/unxed/f4/plugins/android"
 	"github.com/unxed/f4/plugins/netfox"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
@@ -93,10 +92,12 @@ func TestVFSAcceptsDrop(t *testing.T) {
 	if panel.VfsAcceptsDrop(readOnlyTestVFS{local}) {
 		t.Fatal("a read-only file system must refuse before the drop")
 	}
-	androidManager := &androidfs.ManagerVFS{}
-	if panel.VfsAcceptsDrop(androidManager) {
-		t.Fatal("android manager must be read-only")
-	}
+	// plugins/android's ManagerVFS used to be checked here too, before it
+	// moved out to its own module and its own subprocess RPC plugin binary
+	// (f4#1178, plugins/android/cmd/android-plugin); this module can no
+	// longer import it. Its IsReadOnly()==true is exercised directly in
+	// plugins/android's own package tests, and the read-only-refuses-drop
+	// mechanism itself is still covered above via readOnlyTestVFS.
 	netfoxVFS := &netfox.NetFoxVFS{}
 	if panel.VfsAcceptsDrop(netfoxVFS) {
 		t.Fatal("netfox VFS must be read-only")
@@ -267,6 +268,56 @@ loop:
 			task()
 		case <-timeout:
 			break loop
+		}
+	}
+}
+
+func TestDragOutModifierHeld(t *testing.T) {
+	ctrl := vtinput.ControlKeyState(vtinput.LeftCtrlPressed)
+	alt := vtinput.ControlKeyState(vtinput.RightAltPressed)
+	shift := vtinput.ControlKeyState(vtinput.ShiftPressed)
+	cases := []struct {
+		modifier string
+		state    vtinput.ControlKeyState
+		want     bool
+	}{
+		{"", 0, true},
+		{"", ctrl, true},
+		{"ctrl", 0, false},
+		{"ctrl", ctrl, true},
+		{"ctrl", alt | shift, false},
+		{"alt", alt, true},
+		{"alt", ctrl, false},
+		{"shift", shift, true},
+		{"shift", 0, false},
+	}
+	for _, c := range cases {
+		if got := panel.DragOutModifierHeld(c.modifier, c.state); got != c.want {
+			t.Errorf("DragOutModifierHeld(%q, %#x) = %v, want %v", c.modifier, uint32(c.state), got, c.want)
+		}
+	}
+}
+
+func TestDragOutStartsInsideRows(t *testing.T) {
+	ms := time.Millisecond
+	cases := []struct {
+		name     string
+		modifier string
+		holdMs   int
+		held     time.Duration
+		want     bool
+	}{
+		{"quick drag is the cursor's", "", 250, 40 * ms, false},
+		{"held long enough starts the drag", "", 250, 250 * ms, true},
+		{"held much longer", "", 250, 3000 * ms, true},
+		{"zero starts on the first move", "", 0, 0, true},
+		{"negative never starts inside the rows", "", -1, time.Hour, false},
+		{"a modifier needs no hold", "ctrl", 250, 0, true},
+		{"a modifier beats a negative hold", "alt", -1, 0, true},
+	}
+	for _, c := range cases {
+		if got := panel.DragOutStartsInsideRows(c.modifier, c.holdMs, c.held); got != c.want {
+			t.Errorf("%s: DragOutStartsInsideRows(%q, %d, %v) = %v, want %v", c.name, c.modifier, c.holdMs, c.held, got, c.want)
 		}
 	}
 }

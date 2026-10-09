@@ -159,6 +159,12 @@ func TestArchivePluginRegistersDiscoverableCommands(t *testing.T) {
 		if command.Run == nil {
 			t.Errorf("command %q has no handler", command.ID)
 		}
+		// Enabled dims the menu row/command-palette entry instead of
+		// letting a click reach the "no archive to act on" dialogs
+		// actionAddArchive/actionExtractArchive used to show (f4#1356).
+		if command.Enabled == nil {
+			t.Errorf("command %q has no Enabled predicate", command.ID)
+		}
 	}
 
 	if err := plugin.Close(); err != nil {

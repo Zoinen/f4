@@ -1,3 +1,5 @@
+//go:build !extralite
+
 package macro
 
 import (
@@ -29,16 +31,12 @@ func (e *LuaMacroEngine) installAPI(L *lua.LState) {
 	L.SetGlobal("Actions", e.newActionsTable(L))
 	L.SetGlobal("Plugin", e.newPluginTable(L))
 
-	// Declarations f4 does not implement yet. They are accepted and ignored so
+	// Declarations f4 does not implement yet (MenuItem{} and CommandLine{} are below). They are accepted and ignored so
 	// that a script mixing them with Macro{} still contributes its macros
 	// instead of failing to load entirely.
-	for _, name := range []string{"Event", "MenuItem", "CommandLine"} {
-		declaration := name
-		L.SetGlobal(name, L.NewFunction(func(L *lua.LState) int {
-			e.host.Log("MACRO: %s{} is not supported yet, ignored (%s)", declaration, L.Where(1))
-			return 0
-		}))
-	}
+	L.SetGlobal("MenuItem", L.NewFunction(e.luaMenuItem))
+	L.SetGlobal("CommandLine", L.NewFunction(e.luaCommandLine))
+	L.SetGlobal("Event", L.NewFunction(e.luaEvent))
 
 	L.SetGlobal("Area", e.newAreaTable(L))
 	L.SetGlobal("APanel", e.newPanelTable(L, true))
@@ -51,6 +49,7 @@ func (e *LuaMacroEngine) installAPI(L *lua.LState) {
 	bits := newBitTable(L)
 	L.SetGlobal("bit", bits)
 	L.SetGlobal("bit64", bits)
+	e.installCompat(L)
 }
 
 func (e *LuaMacroEngine) newPluginTable(L *lua.LState) *lua.LTable {
@@ -233,15 +232,103 @@ func (e *LuaMacroEngine) luaMacro(L *lua.LState) int {
 	}
 
 	condition, _ := spec.RawGetString("condition").(*lua.LFunction)
+	flags := lua.LVAsString(spec.RawGetString("flags"))
 
 	e.add(&LuaMacro{
-		Areas:       splitMacroList(area),
-		Keys:        splitMacroList(key),
-		Description: lua.LVAsString(spec.RawGetString("description")),
+		Areas:            splitMacroList(area),
+		Keys:             splitMacroList(key),
+		EmptyCommandLine: hasMacroFlag(flags, "EmptyCommandLine"),
+		Description:      lua.LVAsString(spec.RawGetString("description")),
+		Source:           L.Where(1),
+		action:           action,
+		condition:        condition,
+	})
+	return 0
+}
+
+func hasMacroFlag(flags, wanted string) bool {
+	for _, flag := range strings.Fields(flags) {
+		if strings.EqualFold(flag, wanted) {
+			return true
+		}
+	}
+	return false
+}
+
+// luaMenuItem records a MenuItem{}: an entry for one of the plugin menus, with
+// the action that runs when it is chosen. Where it shows up is the caller's
+// business (MenuItems); here it is only kept.
+func (e *LuaMacroEngine) luaMenuItem(L *lua.LState) int {
+	spec := L.CheckTable(1)
+	action, _ := spec.RawGetString("action").(*lua.LFunction)
+	if action == nil {
+		e.host.Log("MACRO: MenuItem{} without an action function ignored (%s)", L.Where(1))
+		return 0
+	}
+	description := strings.TrimSpace(lua.LVAsString(spec.RawGetString("description")))
+	if description == "" {
+		e.host.Log("MACRO: MenuItem{} without a description ignored (%s)", L.Where(1))
+		return 0
+	}
+	menu := lua.LVAsString(spec.RawGetString("menu"))
+	if strings.TrimSpace(menu) == "" {
+		menu = "Plugins"
+	}
+	e.addMenuItem(&luaMenuItem{
+		menus: splitMacroList(menu),
+		areas: splitMacroList(lua.LVAsString(spec.RawGetString("area"))),
+		macro: &LuaMacro{Description: description, Source: L.Where(1), action: action},
+	})
+	return 0
+}
+
+// luaCommandLine records a CommandLine{}: command-line prefixes ("ab:cd", or
+// separated by spaces) and the action that runs for a line typed with one of
+// them. Registering the prefixes is the caller's business (CommandLinePrefixes).
+func (e *LuaMacroEngine) luaCommandLine(L *lua.LState) int {
+	spec := L.CheckTable(1)
+	action, _ := spec.RawGetString("action").(*lua.LFunction)
+	prefixes := splitCommandLinePrefixes(lua.LVAsString(spec.RawGetString("prefixes")))
+	if action == nil || len(prefixes) == 0 {
+		e.host.Log("MACRO: CommandLine{} needs an action function and prefixes, ignored (%s)", L.Where(1))
+		return 0
+	}
+	e.addCommandLine(&luaCommandLine{
+		prefixes: prefixes,
+		macro: &LuaMacro{
+			Description: strings.TrimSpace(lua.LVAsString(spec.RawGetString("description"))),
+			Source:      L.Where(1),
+			action:      action,
+		},
+	})
+	return 0
+}
+
+// splitCommandLinePrefixes splits "ab:cd ef" into ab, cd, ef, lower case.
+func splitCommandLinePrefixes(value string) []string {
+	return splitMacroList(strings.ReplaceAll(value, ":", " "))
+}
+
+// luaEvent records an Event{ group, description, action}: something to run when
+// f4 raises the group. Only "ExitFAR" and "FolderChanged" are raised so far; a declaration for
+// another group is logged and left out, and the rest of the file still loads.
+func (e *LuaMacroEngine) luaEvent(L *lua.LState) int {
+	spec := L.CheckTable(1)
+	action, _ := spec.RawGetString("action").(*lua.LFunction)
+	group := strings.TrimSpace(lua.LVAsString(spec.RawGetString("group")))
+	if action == nil || group == "" {
+		e.host.Log("MACRO: Event{} needs a group and an action function, ignored (%s)", L.Where(1))
+		return 0
+	}
+	if !supportedEventGroups[strings.ToLower(group)] {
+		e.host.Log("MACRO: Event{} group %q is not supported yet, ignored (%s)", group, L.Where(1))
+		return 0
+	}
+	e.addEvent(&luaEvent{group: group, macro: &LuaMacro{
+		Description: strings.TrimSpace(lua.LVAsString(spec.RawGetString("description"))),
 		Source:      L.Where(1),
 		action:      action,
-		condition:   condition,
-	})
+	}})
 	return 0
 }
 
@@ -332,6 +419,16 @@ func (e *LuaMacroEngine) newPanelTable(L *lua.LState, active bool) *lua.LTable {
 			return lua.LBool(info.Bof)
 		case "eof":
 			return lua.LBool(info.Eof)
+		// Far 3's plugin-panel words: f4's panels of a macro's view are file
+		// panels of the host, with no plugin panel to report.
+		case "plugin":
+			return lua.LFalse
+		case "opiflags":
+			return lua.LNumber(0)
+		case "filepanel":
+			return lua.LTrue
+		case "selected":
+			return lua.LBool(info.SelCount > 0)
 		}
 		return lua.LNil
 	})
@@ -408,8 +505,95 @@ func (e *LuaMacroEngine) newFarNamespace(L *lua.LState) *lua.LTable {
 			L.Push(lua.LString(""))
 			return 1
 		},
+		"InputBox":  e.luaFarInputBox,
+		"Menu":      e.luaFarMenu,
+		"Timer":     e.luaFarTimer,
+		"GetConfig": e.luaFarGetConfig,
 	})
+	farConstants(L, namespace)
+	e.installClipboard(namespace, L)
 	return namespace
+}
+
+// far.InputBox(title, prompt [, default]) shows a one-line input and returns
+// the text, or nil when the dialog was cancelled. (Far's fuller argument list -
+// history, flags - is not read; the three that matter are.)
+func (e *LuaMacroEngine) luaFarInputBox(L *lua.LState) int {
+	dialogs, ok := e.host.(MacroDialogHost)
+	if !ok {
+		L.Push(lua.LNil)
+		return 1
+	}
+	title := strings.TrimSpace(lua.LVAsString(L.Get(1)))
+	prompt := lua.LVAsString(L.Get(2))
+	var text string
+	var answered bool
+	// The user's time is not the script's: the macro's deadline stands still.
+	e.rt.WhileWaiting(func() { text, answered = dialogs.InputBox(title, prompt, lua.LVAsString(L.Get(3))) })
+	if answered {
+		L.Push(lua.LString(text))
+	} else {
+		L.Push(lua.LNil)
+	}
+	return 1
+}
+
+// far.Menu(properties, items) shows a menu of the items - strings, or tables
+// with a Text field - and returns the chosen item and its 1-based position, or
+// nil when the menu was cancelled. properties.Title is the menu's title.
+func (e *LuaMacroEngine) luaFarMenu(L *lua.LState) int {
+	dialogs, ok := e.host.(MacroDialogHost)
+	if !ok {
+		L.Push(lua.LNil)
+		return 1
+	}
+	title := ""
+	if props, ok := L.Get(1).(*lua.LTable); ok {
+		title = strings.TrimSpace(lua.LVAsString(props.RawGetString("Title")))
+	}
+	list := L.CheckTable(2)
+	var labels []string
+	var chosen []lua.LValue
+	list.ForEach(func(_, item lua.LValue) {
+		label := lua.LVAsString(item)
+		if t, ok := item.(*lua.LTable); ok {
+			label = lua.LVAsString(t.RawGetString("text"))
+			if label == "" {
+				label = lua.LVAsString(t.RawGetString("Text"))
+			}
+		}
+		labels = append(labels, label)
+		chosen = append(chosen, item)
+	})
+	if len(labels) == 0 {
+		L.Push(lua.LNil)
+		return 1
+	}
+	var index int
+	e.rt.WhileWaiting(func() { index = dialogs.Menu(title, labels) })
+	if index < 0 || index >= len(labels) {
+		L.Push(lua.LNil)
+		return 1
+	}
+	L.Push(chosen[index])
+	L.Push(lua.LNumber(index + 1))
+	return 2
+}
+
+// far.GetConfig(key) reads one of f4's settings by name ("Editor.TabSize",
+// "Editor.ExpandTabs", "Editor.AutoIndent"); nil for a name it does not know.
+func (e *LuaMacroEngine) luaFarGetConfig(L *lua.LState) int {
+	key := L.CheckString(1)
+	if host, ok := e.host.(MacroConfigHost); ok {
+		if value, known := host.ConfigValue(key); known {
+			if lv, err := macroValueToLua(L, value, 0); err == nil {
+				L.Push(lv)
+				return 1
+			}
+		}
+	}
+	L.Push(lua.LNil)
+	return 1
 }
 
 func newBitTable(L *lua.LState) *lua.LTable {
@@ -509,14 +693,17 @@ func (e *LuaMacroEngine) newMFTable(L *lua.LState) *lua.LTable {
 			L.Push(lua.LString(strings.ToUpper(L.CheckString(1))))
 			return 1
 		},
-		"trim": func(L *lua.LState) int {
-			L.Push(lua.LString(strings.TrimSpace(L.CheckString(1))))
-			return 1
-		},
-		"substr":  macroSubstr,
-		"index":   macroIndex,
-		"rindex":  macroRIndex,
-		"replace": macroReplace,
+		"trim":      macroTrim,
+		"itoa":      macroItoa,
+		"atoi":      macroAtoi,
+		"mod":       macroMod,
+		"date":      macroDate,
+		"substr":    macroSubstr,
+		"index":     macroIndex,
+		"rindex":    macroRIndex,
+		"replace":   macroReplace,
+		"fsplit":    macroFsplit,
+		"postmacro": e.luaPostMacro,
 		"asc": func(L *lua.LState) int {
 			runes := []rune(L.CheckString(1))
 			if len(runes) == 0 {

@@ -47,6 +47,18 @@ type PlugRingItem struct {
 	// that f4 can tell whether it can run the thing before installing it
 	// rather than after. Empty is inferred from the entrypoint.
 	Runtimes []string `json:"runtimes" yaml:"runtimes"`
+	// FirstParty marks an entry as one of f4's own native plugins: built,
+	// tested and released by this repository's own CI, from code that went
+	// through the same review as everything else in the tree, rather than an
+	// arbitrary third party's unreviewable binary. It is deliberately
+	// unexported from JSON/YAML (json:"-" yaml:"-"): the community catalog at
+	// plugring/index.yaml and any remote catalog f4 downloads are decoded
+	// straight into PlugRingItem, so nothing a third party PR to plugring/
+	// writes can ever set this field. Only FirstPartyPlugRingItems (see
+	// plugring_firstparty.go) constructs an item with it set, in Go source
+	// reviewed the same way as the rest of f4. See PlugRingItemProblem for
+	// what this exempts an entry from, and why.
+	FirstParty bool `json:"-" yaml:"-"`
 }
 
 // FetchCatalog downloads and parses the plugin catalog.
@@ -89,6 +101,23 @@ func FetchCatalog(ctx context.Context) ([]PlugRingItem, error) {
 	}
 
 	return NormalizePlugRingCatalog(items), nil
+}
+
+// FetchPlugRingCatalog is what the PlugRing dialog actually shows: the
+// community catalog from FetchCatalog, plus f4's own first-party native
+// plugins (plugring_firstparty.go), merged by MergeFirstPartyPlugRingItems.
+//
+// This stays a separate function rather than folding the merge into
+// FetchCatalog itself so that FetchCatalog keeps meaning exactly what its own
+// tests pin: the community catalog, byte for byte, with nothing added. A
+// caller that wants that alone -- CheckForPluginUpdates, the tests -- keeps
+// calling FetchCatalog; the interactive dialog calls this instead.
+func FetchPlugRingCatalog(ctx context.Context) ([]PlugRingItem, error) {
+	items, err := FetchCatalog(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return MergeFirstPartyPlugRingItems(items), nil
 }
 
 // ResolveAssetURL replaces platform-specific placeholders in the download URL.

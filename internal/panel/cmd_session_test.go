@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -45,6 +46,7 @@ var (
 	childTimeout   = terminal.ChildProcess{Name: "timeout.exe", GUI: false}
 	childNestedCmd = terminal.ChildProcess{Name: "cmd.exe", GUI: false}
 	childNotepad   = terminal.ChildProcess{Name: "notepad.exe", GUI: true}
+	childFar       = terminal.ChildProcess{Name: "Far.exe", GUI: false}
 )
 
 const promptText = `C:\work>`
@@ -92,6 +94,7 @@ func newCmdShellSim(t *testing.T, build windowsBuild) *cmdShellSim {
 	pf.Pty = pty
 	pf.CmdSession = newCmdShellSession(pf)
 	pf.TermView.OnShellMark = func(mark string, snap terminal.PromptSnapshot) { pf.CmdSession.handleMark(mark, snap) }
+	pf.TermView.OnBusyChange = pf.shellBusyChanged
 	pf.Parser = terminal.NewAnsiParser(pf.TermView, nil)
 	return &cmdShellSim{t: t, pf: pf, pty: pty, build: build}
 }
@@ -298,6 +301,109 @@ func TestCmdSessionIgnoresConsoleTitle(t *testing.T) {
 	})
 }
 
+// f4#1376's Host-mode report: with ConsoleMode set to "host" (with or
+// without the overlay), Far Manager never started -- it tried to load, then
+// f4 dropped straight back to its panels while Far was still coming up.
+// No HOST_REPLY line ever appeared in the debug log, meaning Far itself
+// never even got a chance to send a query: f4 gave up on it before it had
+// drawn anything.
+//
+// The field logs (a real Windows box, not a slow CI runner) showed cmd.exe
+// taking ~4 seconds to print even its very first prompt after the local
+// shell started. In that window, f4 had already typed two lines back to
+// back: syncPTYDirectory's directory-sync ping (sent unconditionally at
+// startup) and the "cd /d ... & Far.exe" line the user's Enter keypress
+// sent right after. Both went out before cmd printed a single prompt, so
+// both got the same sentSeq, and the sync ping's own perfectly ordinary,
+// childless completion prompt -- the second prompt to cross the pipe --
+// was consumed as the answer to the still-outstanding Far.exe line,
+// ending the execution and, in ShellModeHost, calling LeaveHostConsole()
+// before Far had drawn a single frame.
+func TestCmdSessionTwoQueuedLinesEachNeedTheirOwnPrompt(t *testing.T) {
+	forEachBuild(t, func(t *testing.T, sim *cmdShellSim) {
+		// Both lines are typed before the shell has printed anything at all
+		// (promptSeq == 0), exactly as syncPTYDirectory's ping and the
+		// command that follows it can be on a cold shell.
+		sim.pf.CmdSession.noteSent() // the directory sync ping
+		sim.pf.Executing = true
+		sim.pf.ReturnToPanels = true
+		sim.pf.ShowPanels = false
+		sim.pf.CmdSession.noteSent() // "cd /d ... & Far.exe", typed right after
+
+		sim.feed("Microsoft Windows [Version 10.0]\r\n\r\n")
+		sim.prompt("") // the shell's very first prompt, predates every typed line
+		sim.wait(settledWithin)
+		sim.expectExecuting(true, "after the shell's very first prompt")
+
+		sim.feed("cd /d \"C:\\work\" & rem f4_sync\r\n\r\n")
+		sim.prompt("") // the sync line's own, perfectly ordinary completion
+		sim.wait(settledWithin)
+		sim.expectExecuting(true, "after the sync line's own prompt, with Far.exe still outstanding")
+		if sim.pf.ShowPanels {
+			t.Fatalf("[%s] panels came back before Far.exe's own prompt (f4#1376)", sim.build.name)
+		}
+
+		sim.feed("far.exe\r\n\r\n")
+		sim.prompt("") // Far.exe's own completion (it exiting, in real life)
+		sim.wait(settledWithin)
+		sim.expectExecuting(false, "after Far.exe's own prompt")
+		if !sim.pf.ShowPanels {
+			t.Errorf("[%s] panels did not come back after Far.exe's own prompt", sim.build.name)
+		}
+	})
+}
+
+// f4#1376's Host-mode report survived #1608's fix above: with no Far.exe
+// involved at all, a plain `cls` typed at f4's own command line on a cold
+// shell still wedged f4 in "Terminal (executing)" forever. The field debug
+// logs (build 321a594, both the with- and without-overlay captures, and the
+// same shape for `rar` and for launching Far itself) show why: when the
+// directory sync's line and the typed line both complete fast enough that
+// their two prompts cross the pipe closer together than cmdPromptSettleDelay
+// -- exactly what a cold cmd.exe that took its time to come up in the first
+// place does once it is finally up and answering -- handleMark's timer
+// replacement means only the second mark's settle ever runs; the first
+// mark's settle was still scheduled, never got its own look at the screen,
+// and (before this fix) retiring exactly one line per settle call then left
+// the first line's pendingLines slot stuck at 1 with no further mark ever
+// going to arrive to retire it. The field log's own trace of this:
+// "prompt 3 settled one of the outstanding lines (sent=1 children=[]), 1
+// left", and then nothing else, ever, for the rest of the capture.
+func TestCmdSessionBurstOfPromptsRetiresEveryOutstandingLine(t *testing.T) {
+	forEachBuild(t, func(t *testing.T, sim *cmdShellSim) {
+		// Both lines are typed before the shell has printed anything at all,
+		// exactly as syncPTYDirectory's ping and the user's typed command can
+		// be on a cold shell (same setup as
+		// TestCmdSessionTwoQueuedLinesEachNeedTheirOwnPrompt above).
+		sim.pf.CmdSession.noteSent() // the directory sync ping
+		sim.pf.Executing = true
+		sim.pf.ReturnToPanels = true
+		sim.pf.ShowPanels = false
+		sim.pf.CmdSession.noteSent() // "cd /d ... & cls", typed right after
+
+		mark := func() {
+			sim.feed("\x1b]133;A\x1b\\" + promptText + "\x1b]133;B\x1b\\")
+		}
+
+		sim.feed("Microsoft Windows [Version 10.0]\r\n\r\n")
+		// All three prompts -- the shell's own startup one, the sync line's,
+		// and cls's -- cross the pipe back to back, with nothing giving
+		// handleMark's timer a chance to fire for any but the last one, the
+		// way the field's cold, then suddenly answering, shell did.
+		mark()
+		sim.feed("cd /d \"C:\\work\" & rem f4_sync\r\n\r\n")
+		mark()
+		sim.feed("cd /d \"C:\\work\" & cls\r\n\r\n")
+		mark()
+
+		sim.wait(settledWithin)
+		sim.expectExecuting(false, "after a burst of prompts answered both outstanding lines")
+		if !sim.pf.ShowPanels {
+			t.Errorf("[%s] panels did not come back after the burst settled (f4#1376)", sim.build.name)
+		}
+	})
+}
+
 // The directory sync is a typed line like any other: no second sync may be
 // typed until its prompt has settled.
 func TestCmdSessionSyncWaitsForPrompt(t *testing.T) {
@@ -398,7 +504,7 @@ func TestCmdSessionFlickeringPromptIsReleased(t *testing.T) {
 		// that a stuck settle cannot keep Esc disabled. Driving retryOrRelease
 		// itself keeps the test independent of timer scheduling.
 		sim.pf.Executing = true
-		sim.pf.CmdSession.pending = true
+		sim.pf.CmdSession.pendingLines = 1
 		sim.pf.CmdSession.promptSeq = 5
 		sim.pf.CmdSession.sentSeq = 4
 		seq := sim.pf.CmdSession.promptSeq
@@ -407,6 +513,119 @@ func TestCmdSessionFlickeringPromptIsReleased(t *testing.T) {
 		}
 		testutil.DrainUITasks()
 		sim.expectExecuting(false, "after a prompt that never settled was released")
+	})
+}
+
+// A prompt-shaped screen that keeps changing while a console child is still
+// running must not be released just because the flicker outlasted the retry
+// bound: the child, not the bound, decides. This is f4#1376's "cls sends me
+// back to f4" report -- Far Manager draws full screen without an alternate
+// screen of its own, so its own command line ("C:\path>") is promptShaped,
+// and `cls` clearing and redrawing it can flicker across a few looks while
+// Far is still the one running. Compare TestCmdSessionFlickeringPromptIsReleased,
+// which is the same flicker with no child present and must still release.
+func TestCmdSessionFlickeringPromptHeldByChildIsNotReleased(t *testing.T) {
+	forEachBuild(t, func(t *testing.T, sim *cmdShellSim) {
+		oldMax := cmdPromptMaxAttempts
+		cmdPromptMaxAttempts = 3
+		t.Cleanup(func() { cmdPromptMaxAttempts = oldMax })
+
+		sim.pty.setChildren(terminal.ChildProcess{Name: "far.exe", GUI: false})
+
+		sim.pf.Executing = true
+		sim.pf.CmdSession.pendingLines = 1
+		sim.pf.CmdSession.promptSeq = 5
+		sim.pf.CmdSession.sentSeq = 4
+		seq := sim.pf.CmdSession.promptSeq
+		for i := 0; i < cmdPromptMaxAttempts+2; i++ {
+			sim.pf.CmdSession.retryOrRelease(seq)
+		}
+		testutil.DrainUITasks()
+		sim.expectExecuting(true, "far.exe still running through a flickering, prompt-shaped repaint")
+
+		// Far exits; nothing holds the terminal any more, so the same bound
+		// releases exactly as the unheld case already does.
+		sim.pty.setChildren()
+		for i := 0; i < cmdPromptMaxAttempts; i++ {
+			sim.pf.CmdSession.retryOrRelease(seq)
+		}
+		testutil.DrainUITasks()
+		sim.expectExecuting(false, "after far.exe exited")
+	})
+}
+
+// f4#1376's residual report, after the fix in #1495: the first `cls` typed
+// at Far Manager's own command line still dropped back to f4 (Esc bounced
+// back into Far), but a second `cls` right after worked correctly. The
+// difference is not in whether the child veto fires -- TestCmdSession
+// FlickeringPromptHeldByChildIsNotReleased above already proves that in
+// isolation -- but in how much retry budget a flicker gets before that veto
+// even has to be asked: retryOrRelease's own bound-exceeded fallback resets
+// the attempt counter once it vetoes (so the *next* flicker gets a full
+// budget), and rescheduleWhileBusy does the same for a busy, non-prompt
+// screen, but settle()'s own "screen unchanged, still held by a child"
+// branch did not. Far Manager, drawing full screen without an alternate
+// screen of its own, settles into exactly that branch as soon as it is
+// launched -- its own command line is prompt-shaped and holds still for as
+// long as the user takes before typing anything -- and used to freeze the
+// counter wherever the brief flicker of Far's own startup drawing left it.
+// The very next flicker (`cls` redrawing that same line) then inherited
+// whatever was left instead of a fresh budget, reaching the bound-exceeded
+// fallback -- and therefore having to trust a single, uncached
+// child-process scan -- after only a look or two instead of
+// cmdPromptMaxAttempts of them. This test drives the real settle() path
+// (not retryOrRelease directly) through exactly that "already primed by an
+// earlier flicker, then settled, still held" sequence and checks the
+// budget survives it.
+func TestCmdSessionStableHoldResetsRetryBudget(t *testing.T) {
+	forEachBuild(t, func(t *testing.T, sim *cmdShellSim) {
+		sim.start()
+		sim.run("far.exe")
+		sim.pty.setChildren(terminal.ChildProcess{Name: "far.exe", GUI: false})
+
+		// Far settles at its own idle command line: prompt-shaped, and held
+		// still there for as long as the user takes before typing anything.
+		// This is examined by whatever settle chain the mark below leaves
+		// running -- Far does not remark a screen that is not changing, so
+		// nothing supersedes that chain until the screen changes again.
+		sim.prompt("")
+		seq := sim.pf.CmdSession.promptSeq
+		sim.wait(2 * cmdPromptRecheckDelay)
+		sim.expectExecuting(true, "while far.exe holds Far's own idle command line")
+
+		// Models a brief flicker while Far's own UI first painted: one look
+		// short of the bound retryOrRelease would enforce on a screen that
+		// never holds still. The screen is unchanged (still Far's idle
+		// prompt), so the next settle() call takes the held-by-child branch
+		// below, not retryOrRelease.
+		sim.pf.CmdSession.attempts = cmdPromptMaxAttempts - 1
+		sim.pf.CmdSession.settle(seq)
+		testutil.DrainUITasks()
+		sim.expectExecuting(true, "while far.exe holds an unchanged, prompt-shaped screen")
+
+		// This is the decisive check: a fake child list that always
+		// correctly reports far.exe (as it does throughout this test) can't
+		// by itself distinguish a veto that fires promptly from one that
+		// only fires after the bound is already exhausted -- both leave
+		// Executing true. What actually differs in the field is how much
+		// budget the *next* flicker gets before it has to trust that live,
+		// uncached check at all, which is exactly this counter.
+		if got := sim.pf.CmdSession.attempts; got != 0 {
+			t.Fatalf("[%s] settle's held-by-child branch left attempts=%d, want 0 -- the next flicker (cls) would inherit a used-up budget instead of cmdPromptMaxAttempts=%d fresh looks", sim.build.name, got, cmdPromptMaxAttempts)
+		}
+
+		// The next flicker -- cls clearing and redrawing Far's own command
+		// line -- now gets the full retry budget. Vary only trailing
+		// spaces so the screen keeps changing (current != previous) while
+		// staying prompt-shaped (promptShaped trims trailing spaces),
+		// mirroring cls redrawing the same "C:\path>" line repeatedly while
+		// Far repaints.
+		for i := 0; i < cmdPromptMaxAttempts-1; i++ {
+			sim.feed("\r" + promptText + strings.Repeat(" ", i+1))
+			sim.pf.CmdSession.settle(seq)
+			testutil.DrainUITasks()
+			sim.expectExecuting(true, "cls's flicker must not exhaust an already-spent budget")
+		}
 	})
 }
 
@@ -439,6 +658,72 @@ func TestCmdSessionBatchWithNestedCmdDoesNotRelease(t *testing.T) {
 		sim.expectExecuting(false, "after the batch's final prompt")
 		if !sim.pf.ShowPanels {
 			t.Error("panels did not come back after batch finished")
+		}
+	})
+}
+
+// farRunsCommand sends what Far Manager 3 prints when a command is run from
+// its own command line (far/cmdline.cpp, far/console.cpp): DrawFakeCommand
+// echoes the prompt and the command between console::start_prompt (D, then
+// A) and console::start_command (B), console::start_output prints C before
+// the command runs, and console::command_finished prints D with the exit
+// code after it. Far then repaints its own screen, command line included.
+func (s *cmdShellSim) farRunsCommand(command, output string) {
+	s.feed("\x1b]133;D\x1b\\\x1b]133;A\x1b\\" + promptText + "\x1b]133;B\x1b\\" + command + "\r\n")
+	s.feed("\x1b]133;C\x1b\\" + output)
+	s.feed("\x1b]133;D;0\x1b\\")
+	s.feed("\x1b[H\x1b[2J Far panels\x1b[24;1H" + promptText)
+}
+
+// Far Manager runs as a console child of the local cmd and speaks shell
+// integration itself: every command run from its own command line comes
+// wrapped in OSC 133 D, A, B, C ... D (#1376). None of those marks is cmd's.
+// Far's first D was taken for the end of the line that started Far, so the
+// first `dir` or `cls` typed into Far brought f4's panels -- and f4's hotkeys
+// -- back over a Far that was still running. f4 must wait for cmd's own
+// prompt after Far exits, and bring the panels back then.
+func TestCmdSessionFarShellIntegrationMarksDoNotEndExecution(t *testing.T) {
+	forEachBuild(t, func(t *testing.T, sim *cmdShellSim) {
+		sim.start()
+		sim.run("far")
+		sim.pty.setChildren(childFar)
+		sim.feed("\x1b[H\x1b[2J Far panels\x1b[24;1H" + promptText)
+		sim.wait(settledWithin)
+		sim.expectExecuting(true, "with Far started")
+
+		for _, command := range []string{"dir", "cls", "rar"} {
+			sim.farRunsCommand(command, "output of "+command+"\r\n")
+			sim.wait(settledWithin + 4*cmdPromptRecheckDelay)
+			sim.expectExecuting(true, "after Far ran "+command)
+			if sim.pf.ShowPanels {
+				t.Fatalf("[%s] f4's panels came back over Far after %s", sim.build.name, command)
+			}
+		}
+
+		// F10: Far exits and cmd prints its own prompt.
+		sim.pty.setChildren()
+		sim.feed("\r\n")
+		sim.prompt("")
+		sim.wait(settledWithin)
+		sim.expectExecuting(false, "after Far exited")
+		if !sim.pf.ShowPanels {
+			t.Errorf("[%s] panels did not come back after Far exited", sim.build.name)
+		}
+	})
+}
+
+// Only a console child owns the C and D marks. Without one, a D that reaches
+// the local shell ends the execution as it always has: a cmd with shell
+// integration of its own (Clink) prints D at its real prompt.
+func TestCmdSessionCommandMarksWithoutChildStillEndExecution(t *testing.T) {
+	forEachBuild(t, func(t *testing.T, sim *cmdShellSim) {
+		sim.start()
+		sim.run("dir")
+		sim.feed("\x1b]133;C\x1b\\file.txt\r\n\x1b]133;D;0\x1b\\")
+		sim.wait(settledWithin)
+		sim.expectExecuting(false, "after a D printed with no console child")
+		if !sim.pf.ShowPanels {
+			t.Errorf("[%s] panels did not come back", sim.build.name)
 		}
 	})
 }

@@ -76,10 +76,10 @@ Help.Scrollbar = foreground:#102030 | background:#405060
 	scr.AllocBuf(32, 10)
 	view.Show(scr)
 
-	// The scrollbar runs down the right padding column of the help window.
-	cell := scr.GetCell(28, 1)
+	// The scrollbar runs down the right frame column of the help window.
+	cell := scr.GetCell(view.X2, 1)
 	if cell.Char != vtui.ScrollUpArrow {
-		t.Fatalf("no scrollbar drawn at the right padding column: got %#x", cell.Char)
+		t.Fatalf("no scrollbar drawn at the right frame column: got %#x", cell.Char)
 	}
 	if got, want := cell.Attributes, vtui.Palette[vtui.ColHelpScrollbar]; got != want {
 		t.Fatalf("help scrollbar attribute = %#x, want %#x", got, want)

@@ -4,10 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"runtime"
 	"strings"
 
 	"github.com/unxed/f4/internal/cmdline"
+	"github.com/unxed/f4/internal/terminal"
 	"github.com/unxed/f4/vfs"
 )
 
@@ -46,7 +46,7 @@ func userMenuCommandDialect(pf *PanelsFrame) vfs.CommandDialect {
 			}
 		}
 	}
-	if runtime.GOOS == "windows" {
+	if terminal.WindowsShellSyntax() {
 		return vfs.CommandDialectCmd
 	}
 	return vfs.CommandDialectPOSIX

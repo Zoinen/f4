@@ -11,14 +11,49 @@ import (
 	"unicode/utf16"
 	"unsafe"
 
+	winescape "github.com/unxed/libwinescape/go"
 	"golang.org/x/sys/windows"
 )
 
 func fillPlatformTimes(item *VFSItem, info os.FileInfo) {
+	if stat, ok := info.Sys().(*winescape.Stat_t); ok {
+		item.KnownMetadata |= MetadataATime | MetadataCTime | MetadataUID | MetadataGID | MetadataPermissions | MetadataNlink
+		item.UnixMode = stat.Mode & 07777
+		item.Uid, item.Gid = int(stat.Uid), int(stat.Gid)
+		item.Nlink = stat.Nlink
+		item.ATime = time.Unix(stat.Atim.Sec, stat.Atim.Nsec)
+		item.CTime = time.Unix(stat.Ctim.Sec, stat.Ctim.Nsec)
+	}
 	if stat, ok := info.Sys().(*syscall.Win32FileAttributeData); ok {
+		item.KnownMetadata &^= MetadataPermissions
+		item.KnownMetadata |= MetadataATime | MetadataCTime | MetadataWinAttrs
 		item.ATime = time.Unix(0, stat.LastAccessTime.Nanoseconds())
 		item.CTime = time.Unix(0, stat.CreationTime.Nanoseconds())
+		// This branch is genuine Windows (Win32FileAttributeData), where
+		// CreationTime really is the object's creation time — unlike the
+		// winescape.Stat_t branch above (Wine posix mode), whose Ctim is a
+		// real POSIX ctime with no creation-time meaning at all. Populate
+		// BTime only here, so the attributes dialog's "Created" row never
+		// shows a Wine-under-Linux ctime mislabeled as a creation date
+		// (f4#1404).
+		if stat.CreationTime != (syscall.Filetime{}) {
+			item.KnownMetadata |= MetadataBTime
+			item.BTime = time.Unix(0, stat.CreationTime.Nanoseconds())
+		}
 		item.WinAttrs = stat.FileAttributes
+		// Win32FileAttributeData (what FindNextFile/os.ReadDir hands back)
+		// carries no link count at all, so there is nothing honest to put
+		// here — NOT "1", which is what f4#1400's regression report
+		// caught: a hard-linked file on native Windows kept showing 1 in
+		// the LN column forever, because this used to hardcode it rather
+		// than leave the metadata unknown. Getting the real count needs an
+		// extra per-file NTFS query (CreateFile + GetFileInformationByHandleEx),
+		// too costly to pay for every entry in a directory listing (the
+		// same tradeoff fillPhysicalSizeCheap makes for on-disk size, see
+		// os_vfs_physical_windows.go). Stat/Lstat pay that cost already for
+		// fillPhysicalSize's NTFS query and get the real Nlink from it for
+		// free; leave MetadataNlink unset here so the LN column reads
+		// blank rather than lying during ordinary panel browsing.
 	}
 }
 

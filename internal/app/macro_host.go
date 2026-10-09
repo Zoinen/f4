@@ -5,11 +5,14 @@ import (
 	"fmt"
 	"github.com/unxed/f4/internal/panel"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/unxed/f4/internal/config"
+	"github.com/unxed/f4/internal/editor"
 	"github.com/unxed/f4/internal/i18n"
 	"github.com/unxed/f4/internal/macro"
+	"github.com/unxed/f4/internal/terminal"
 	"github.com/unxed/f4/internal/toast"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
@@ -151,6 +154,159 @@ func (f4MacroHost) Message(title, text string) {
 	vtui.FrameManager.PostTask(func() {
 		vtui.ShowMessage(title, text, []string{"&Ok"})
 	})
+}
+
+// EditorInfo is macro.MacroEditorHost: the editor on top of the screen.
+func (f4MacroHost) EditorInfo() (macro.MacroEditorInfo, bool) {
+	type answer struct {
+		info macro.MacroEditorInfo
+		ok   bool
+	}
+	got := onUI(func() answer {
+		if vtui.FrameManager == nil {
+			return answer{}
+		}
+		ev, ok := vtui.FrameManager.GetTopFrame().(*editor.EditorView)
+		if !ok || ev == nil {
+			return answer{}
+		}
+		line, total, column := ev.MacroPosition()
+		return answer{macro.MacroEditorInfo{FileName: ev.FilePath, CurLine: line, CurPos: column, TotalLines: total, TabSize: config.App.EditorTabSize}, true}
+	})
+	return got.info, got.ok
+}
+
+// macroFilePanel is the file panel a macro means by "active"/"passive", or nil.
+// It is called on the UI goroutine.
+func macroFilePanel(active bool) (*panel.PanelsFrame, *panel.FileSystemPanel) {
+	frame := panel.FindPanelsFrame()
+	if frame == nil {
+		return nil, nil
+	}
+	index := frame.ActiveIdx
+	if !active {
+		index = 1 - index
+	}
+	if index < 0 || index >= len(frame.Panels) {
+		return frame, nil
+	}
+	pnl, _ := frame.Panels[index].(*panel.FileSystemPanel)
+	return frame, pnl
+}
+
+// PanelEntry, SetPanelPath, SetPanelPos and SetPanelName are
+// macro.MacroPanelHost.
+func (f4MacroHost) PanelEntry(active bool, index int) (macro.MacroPanelEntry, bool) {
+	type answer struct {
+		row macro.MacroPanelEntry
+		ok  bool
+	}
+	got := onUI(func() answer {
+		_, pnl := macroFilePanel(active)
+		if pnl == nil || pnl.IsLoading {
+			return answer{}
+		}
+		entries := pnl.Entries
+		if index < 1 || index > len(entries) || entries[index-1] == nil {
+			return answer{}
+		}
+		e := entries[index-1]
+		return answer{macro.MacroPanelEntry{Name: e.Name, IsDir: e.IsDir, Selected: e.Selected, Size: e.Size}, true}
+	})
+	return got.row, got.ok
+}
+
+func (f4MacroHost) SetPanelPath(active bool, path string) bool {
+	return onUI(func() bool {
+		frame, pnl := macroFilePanel(active)
+		return frame != nil && pnl != nil && frame.NavigateToPath(pnl, path)
+	})
+}
+
+func (f4MacroHost) SetPanelPos(active bool, index int) bool {
+	return onUI(func() bool {
+		_, pnl := macroFilePanel(active)
+		if pnl == nil || index < 1 || index > len(pnl.Entries) {
+			return false
+		}
+		pnl.SetCursorIndex(index - 1)
+		pnl.Refresh()
+		return true
+	})
+}
+
+func (f4MacroHost) SetPanelName(active bool, name string) bool {
+	return onUI(func() bool {
+		_, pnl := macroFilePanel(active)
+		if pnl == nil {
+			return false
+		}
+		for _, e := range pnl.Entries {
+			if e != nil && e.Name == name {
+				pnl.SelectName(name)
+				return true
+			}
+		}
+		return false
+	})
+}
+
+// SetClipboard and Clipboard are macro.MacroClipboardHost.
+func (f4MacroHost) SetClipboard(text string) { terminal.SetF4Clipboard(text) }
+func (f4MacroHost) Clipboard() string        { return vtui.GetClipboard() }
+
+// ConfigValue is macro.MacroConfigHost: the few settings far.GetConfig reads.
+func (f4MacroHost) ConfigValue(key string) (any, bool) {
+	switch strings.ToLower(key) {
+	case "editor.tabsize":
+		return int64(config.App.EditorTabSize), true
+	case "editor.expandtabs":
+		return int64(config.App.EditorExpandTabs), true
+	case "editor.autoindent":
+		return config.App.EditorAutoIndent, true
+	}
+	return nil, false
+}
+
+// InputBox and Menu are macro.MacroDialogHost: they wait for the answer, with no
+// deadline but the user's, because the macro is the one waiting.
+func (f4MacroHost) InputBox(title, prompt, initial string) (string, bool) {
+	if vtui.FrameManager == nil {
+		return "", false
+	}
+	type answer struct {
+		text string
+		ok   bool
+	}
+	result := make(chan answer, 1)
+	send := func(a answer) {
+		select {
+		case result <- a:
+		default:
+		}
+	}
+	vtui.FrameManager.PostTask(func() {
+		dlg := vtui.InputBox(title, prompt, initial, func(text string) { send(answer{text, true}) })
+		dlg.OnResult = func(int) { send(answer{}) } // after OK the answer is already sent
+	})
+	a := <-result
+	return a.text, a.ok
+}
+
+func (f4MacroHost) Menu(title string, items []string) int {
+	if vtui.FrameManager == nil {
+		return -1
+	}
+	result := make(chan int, 1)
+	vtui.FrameManager.PostTask(func() {
+		pf := panel.FindPanelsFrameAnyScreen()
+		if pf == nil {
+			result <- -1
+			return
+		}
+		pf.MenuCancelable(title, items, func(index int) { result <- index }, func() { result <- -1 })
+	})
+	return <-result
 }
 
 func (f4MacroHost) InjectKeys(keys []*vtinput.InputEvent) {

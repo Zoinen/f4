@@ -18,6 +18,7 @@ import (
 	"github.com/unxed/sevenzip"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
+	"github.com/unxed/zip"
 	"github.com/unxed/zipper/archive"
 )
 
@@ -40,32 +41,36 @@ func (p *ArchivePlugin) Init(api vfs.HostAPI) error {
 	archiveHostAPI = api
 	if contributions, ok := api.(vfs.ContributionHost); ok {
 		addRegistration, err := contributions.RegisterPluginCommand(vfs.PluginCommand{
-			ID:             archiveAddCommandID,
-			Location:       vfs.PluginCommandPanel,
-			Label:          "Add to archive",
-			LabelKey:       "Archive.Command.Add",
-			MenuPath:       "Files",
-			Shortcut:       "Shift+F1",
-			Description:    "Create an archive from the selected files",
-			DescriptionKey: "Archive.Command.Add.Desc",
-			SearchKeys:     []string{"Attributes.Archive"},
-			Run:            actionAddArchive,
+			ID:              archiveAddCommandID,
+			Location:        vfs.PluginCommandPanel,
+			Label:           "Add to archive",
+			LabelKey:        "Archive.Command.Add",
+			MenuPath:        "Files",
+			Shortcut:        "Shift+F1",
+			NotInPluginMenu: true,
+			Description:     "Create an archive from the selected files",
+			DescriptionKey:  "Archive.Command.Add.Desc",
+			SearchKeys:      []string{"Attributes.Archive"},
+			Enabled:         canAddArchive,
+			Run:             actionAddArchive,
 		})
 		if err != nil {
 			return fmt.Errorf("archive: register add command: %w", err)
 		}
 
 		extractRegistration, err := contributions.RegisterPluginCommand(vfs.PluginCommand{
-			ID:             archiveExtractCommandID,
-			Location:       vfs.PluginCommandPanel,
-			Label:          "Extract files",
-			LabelKey:       "Archive.Command.Extract",
-			MenuPath:       "Files",
-			Shortcut:       "Shift+F2",
-			Description:    "Extract the selected archive to the passive panel",
-			DescriptionKey: "Archive.Command.Extract.Desc",
-			SearchKeys:     []string{"Attributes.Archive"},
-			Run:            actionExtractArchive,
+			ID:              archiveExtractCommandID,
+			Location:        vfs.PluginCommandPanel,
+			Label:           "Extract files",
+			LabelKey:        "Archive.Command.Extract",
+			MenuPath:        "Files",
+			Shortcut:        "Shift+F2",
+			NotInPluginMenu: true,
+			Description:     "Extract the selected archive to the passive panel",
+			DescriptionKey:  "Archive.Command.Extract.Desc",
+			SearchKeys:      []string{"Attributes.Archive"},
+			Enabled:         canOperateOnArchive,
+			Run:             actionExtractArchive,
 		})
 		if err != nil {
 			addRegistration.Unregister()
@@ -107,11 +112,81 @@ func resolveLocalArchivePath(app vfs.App) (string, bool) {
 	return srcPath, true
 }
 
+// canOperateOnArchive reports whether "Extract files"/"Test archive"
+// (Shift+F2/Shift+F3) have an archive to act on: either the active panel
+// already is one (ArchiveVFS), where Extract copies the selected members and
+// Test verifies the archive itself, or the cursor sits on a local-filesystem
+// file whose format ArchiveProvider recognizes as an archive -- the same
+// recognition Enter already relies on to decide whether to browse into a
+// file (its CanOpen backs FindProvider, see vfs/vfs.go). Before this,
+// resolveLocalArchivePath's local-filesystem branch accepted any selected
+// name at all, regardless of its format, and only the extraction/testing
+// machinery itself discovered a bad target, well after Shift+F2/Shift+F3
+// had already committed to running it.
+//
+// This backs archive.extract's PluginCommand.Enabled, which dims the Files
+// menu row and command-palette entry, and it also guards the raw
+// actionExtractArchive/actionTestArchive handlers directly: their Shift+F2/
+// Shift+F3 hotkeys are registered through RegisterGlobalHotkey rather than
+// through the plugin-command dispatch that PluginCommand.Enabled gates, so a
+// press still reached them unconditionally (f4#1356).
+func canOperateOnArchive(app vfs.App) bool {
+	srcVfs := app.GetActivePanelVFS()
+	if srcVfs == nil {
+		return false
+	}
+	if _, ok := srcVfs.(*ArchiveVFS); ok {
+		return true
+	}
+	if _, ok := srcVfs.(*vfs.OSVFS); !ok {
+		return false
+	}
+	name := app.GetSelectedName()
+	if name == "" || name == ".." {
+		return false
+	}
+	// Join, not Abs: CanOpen resolves the path itself (it is what
+	// File.EnterDirectory's own isArchive check hands FindProvider too, see
+	// internal/app/actions_table.go), and OSVFS.Abs is idempotent on an
+	// already-absolute path in any case.
+	path := srcVfs.Join(srcVfs.GetPath(), name)
+	return (&ArchiveProvider{}).CanOpen(context.Background(), srcVfs, path)
+}
+
+// canAddArchive reports whether "Add to archive" (Shift+F1) has something to
+// add: at least one marked/selected item besides the ".." navigation row.
+// actionAddArchive already filters exactly this before it opens its name
+// prompt; canAddArchive mirrors that filter without the prompt's side
+// effects, so it can back both the archive.add PluginCommand's Enabled
+// (dims the Files menu row/palette entry) and the Shift+F1 global hotkey,
+// which bypasses PluginCommand.Enabled the same way Shift+F2/Shift+F3 do
+// (see canOperateOnArchive).
+func canAddArchive(app vfs.App) bool {
+	if app.GetActivePanelVFS() == nil {
+		return false
+	}
+	for _, name := range app.GetSelectedNames() {
+		if name != ".." {
+			return true
+		}
+	}
+	return false
+}
+
 // actionExtractArchive runs on the UI thread as a global hotkey handler, so
 // every blocking prompt (app.Message waits for the UI loop) must run on a
 // separate goroutine. Calling app.Message synchronously here deadlocked f4
 // on Shift+F2 inside an archive.
 func actionExtractArchive(app vfs.App) {
+	if !canOperateOnArchive(app) {
+		// Neither an archive panel nor a recognized archive under the
+		// cursor: a dimmed Files-menu row/palette entry would refuse this
+		// through PluginCommand.Enabled, and Shift+F2 refuses it the same
+		// way here, silently, instead of the "Extraction supported only
+		// from local filesystem" dialog this used to show for any target
+		// (f4#1356).
+		return
+	}
 	srcVfs := app.GetActivePanelVFS()
 	dstVfs := app.GetPassivePanelVFS()
 	if srcVfs == nil || dstVfs == nil {
@@ -129,9 +204,6 @@ func actionExtractArchive(app vfs.App) {
 
 	srcPath, ok := resolveLocalArchivePath(app)
 	if !ok {
-		if name := app.GetSelectedName(); name != "" && name != ".." {
-			go app.Message(" Error ", "Extraction supported only from local filesystem", []string{"&Ok"})
-		}
 		return
 	}
 	destDir := dstVfs.GetPath()
@@ -178,75 +250,117 @@ func extractArchiveAsync(app vfs.App, srcPath, destDir string) {
 }
 
 func extractArchiveWithPasswordPrompt(ctx context.Context, srcPath, destDir string, reporter vfs.TaskReporter) error {
+	// A self-extracting archive is read from the same private copy panel
+	// entry uses, prepared once rather than again for every password attempt.
+	backingPath, backing, err := localArchiveBacking(srcPath)
+	if err != nil {
+		return err
+	}
+	if backing != nil {
+		defer func() { _ = backing.Close() }()
+	}
+
 	var password string
-	var release func()
-	defer func() {
-		if release != nil {
-			release()
-		}
-	}()
 	for {
-		err := extractArchiveOnce(ctx, srcPath, destDir, password, reporter)
+		err := rarPasswordError(backingPath, password, extractArchiveOnce(ctx, backingPath, destDir, password, reporter))
 		if err == nil || !isArchivePasswordRetryError(err) {
 			return err
 		}
-
-		// One hold for the whole ask/retry cycle; see
-		// openArchiveFSWithPasswordPrompt.
-		if release == nil {
-			release = vfs.HoldInteractivePrompt()
-		}
-		password, err = promptArchivePasswordUntilProvided(ctx, filepath.Base(srcPath))
+		password, err = promptArchivePasswordForRetry(ctx, filepath.Base(srcPath))
 		if err != nil {
 			return err
 		}
 	}
 }
 
+// markedNamesApp is satisfied by an App whose active panel exposes the
+// explicitly marked items, without GetSelectedNames' fallback to the cursor
+// entry. That fallback would make "nothing marked" indistinguishable from
+// "the cursor item is marked", which is exactly the distinction
+// actionTestArchive needs (f4#1250).
+type markedNamesApp interface {
+	GetMarkedNames() []string
+}
+
 // actionTestArchive verifies every regular member of the selected archive by
 // reading it to completion, without writing anything to the panels. Password
 // prompts behave like everywhere else in the plugin.
+//
+// When the archive is browsed with some of its members marked, only those
+// members (and, for a marked directory, everything under it) are tested --
+// the same restriction Shift+F2 already applies to extraction. With nothing
+// marked the whole archive is tested, exactly as before (f4#1250).
 func actionTestArchive(app vfs.App) {
+	if !canOperateOnArchive(app) {
+		// Same guard as actionExtractArchive, and for the same reason: Test
+		// archive has no menu entry to dim at all (it is only ever reached
+		// through the Shift+F3 global hotkey), so refusing silently here is
+		// the only place this class of fix can land for it (f4#1356).
+		return
+	}
 	srcPath, ok := resolveLocalArchivePath(app)
 	if !ok {
-		if name := app.GetSelectedName(); name != "" && name != ".." {
-			go app.Message(" Error ", "Testing supported only for local archives", []string{"&Ok"})
-		}
 		return
+	}
+	// Inside the archive, test with the password it was entered with: the
+	// user has already typed it once, and extraction from the same panel
+	// does not ask again either (#1250). The dialog still comes back if the
+	// password does not open everything.
+	var password string
+	var selected map[string]bool
+	if archiveVFS, ok := app.GetActivePanelVFS().(*ArchiveVFS); ok {
+		password = archiveVFS.installedPassword()
+		if marker, ok := app.(markedNamesApp); ok {
+			selected = archiveVFS.selectedTestPaths(marker.GetMarkedNames())
+		}
 	}
 	go func() {
 		app.RunAdvancedProgressTask(" Testing... ", false, func(ctx context.Context, reporter vfs.TaskReporter) error {
 			reporter.UpdateTransfer("Testing", filepath.Base(srcPath), -1, "", -1, "")
-			return testArchiveWithPasswordPrompt(ctx, srcPath, reporter)
-		}, func(err error) {
-			if err == nil {
-				go app.Message(" Test archive ", fmt.Sprintf("%s\nNo errors found.", filepath.Base(srcPath)), []string{"&Ok"})
-			} else if err != context.Canceled {
-				go showArchiveTestFailure(app, srcPath, err)
-			}
-		})
+			return testArchiveStartingWith(withArchiveTestSelection(ctx, selected), srcPath, password, reporter)
+		}, func(err error) { finishArchiveTest(app, srcPath, err) })
 	}()
 }
 
+// finishArchiveTest reports how a test of the archive ended. A test the user
+// stopped is not a failed one: the cancellation reaches here wrapped with the
+// name of the member being read and joined with those of the other workers, so
+// it is recognised by what it is and not by comparing the error (#1250).
+func finishArchiveTest(app vfs.App, srcPath string, err error) {
+	name := filepath.Base(srcPath)
+	switch {
+	case err == nil:
+		go app.Message(" Test archive ", fmt.Sprintf("%s\nNo errors found.", name), []string{"&Ok"})
+	case errors.Is(err, context.Canceled):
+		go app.Message(" Test archive ", fmt.Sprintf("Test for %s has been interrupted by user.", name), []string{"&Ok"})
+	default:
+		go showArchiveTestFailure(app, srcPath, err)
+	}
+}
+
 func testArchiveWithPasswordPrompt(ctx context.Context, srcPath string, reporter vfs.TaskReporter) error {
-	var password string
-	var release func()
-	defer func() {
-		if release != nil {
-			release()
-		}
-	}()
+	return testArchiveStartingWith(ctx, srcPath, "", reporter)
+}
+
+// testArchiveStartingWith tests the archive with password first, and asks for
+// another one only when that is missing or rejected.
+func testArchiveStartingWith(ctx context.Context, srcPath, password string, reporter vfs.TaskReporter) error {
+	// See extractArchiveWithPasswordPrompt: an SFX is tested from the copy
+	// panel entry reads, so "enters fine" and "tests fine" cannot disagree.
+	backingPath, backing, err := localArchiveBacking(srcPath)
+	if err != nil {
+		return err
+	}
+	if backing != nil {
+		defer func() { _ = backing.Close() }()
+	}
 
 	for {
-		err := testArchiveOnce(ctx, srcPath, password, reporter)
+		err := rarPasswordError(backingPath, password, testArchiveOnce(ctx, srcPath, backingPath, password, reporter))
 		if err == nil || !isArchivePasswordRetryError(err) {
 			return err
 		}
-
-		if release == nil {
-			release = vfs.HoldInteractivePrompt()
-		}
-		password, err = promptArchivePasswordUntilProvided(ctx, filepath.Base(srcPath))
+		password, err = promptArchivePasswordForRetry(ctx, filepath.Base(srcPath))
 		if err != nil {
 			return err
 		}
@@ -312,6 +426,50 @@ type archiveTestTotals struct {
 	known bool
 }
 
+// archiveTestSelectionKey carries the optional "test only these members"
+// restriction through the context a test run already threads through every
+// helper below. A context value is used instead of a parameter so that
+// testArchiveStartingWith, testArchiveOnce, testZipOnce and
+// collectArchiveTestTotals keep the signature every existing caller (and
+// test) already uses, with the common case -- nothing marked, test
+// everything -- unaffected (f4#1250).
+type archiveTestSelectionKey struct{}
+
+// withArchiveTestSelection attaches a "test only these members" restriction
+// to ctx. A nil or empty selected means no restriction, matching today's
+// "test the whole archive" behavior.
+func withArchiveTestSelection(ctx context.Context, selected map[string]bool) context.Context {
+	if len(selected) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, archiveTestSelectionKey{}, selected)
+}
+
+// archiveTestSelectionFromContext returns the restriction withArchiveTestSelection
+// attached to ctx, or nil when the whole archive is being tested.
+func archiveTestSelectionFromContext(ctx context.Context) map[string]bool {
+	selected, _ := ctx.Value(archiveTestSelectionKey{}).(map[string]bool)
+	return selected
+}
+
+// archiveTestMemberSelected reports whether the archive member named
+// nameInArchive should be tested given the restriction ctx carries. It mirrors
+// how copyBulkFrom's extractors decide which member a marked extraction
+// copies: cleanArchiveExtractionPath rejects an unsafe name outright, and
+// archiveExtractionPathSelected matches a marked directory's whole subtree,
+// not only the directory entry itself.
+func archiveTestMemberSelected(ctx context.Context, nameInArchive string) bool {
+	selected := archiveTestSelectionFromContext(ctx)
+	if selected == nil {
+		return true
+	}
+	cleanName, err := cleanArchiveExtractionPath(nameInArchive)
+	if err != nil || cleanName == "." || cleanName == "" {
+		return false
+	}
+	return archiveExtractionPathSelected(cleanName, selected)
+}
+
 // archiveFormatListsWithoutDecoding reports whether a format can enumerate its
 // members from a directory or a header instead of by decoding payloads: zip
 // keeps a central directory, 7z a header, and rar a chain of file block
@@ -333,8 +491,11 @@ func archiveFormatListsWithoutDecoding(format archives.Format) bool {
 // and RAR volume configuration the rest of the plugin applies, so that the
 // listing pass and the testing pass see the same archive. The caller owns the
 // returned file.
-func openArchiveTestStream(ctx context.Context, srcPath, password string) (*os.File, archives.Format, io.Reader, error) {
-	f, err := os.Open(srcPath)
+func openArchiveTestStream(ctx context.Context, srcPath, password string) (*archive.Input, archives.Format, io.Reader, error) {
+	// archive.OpenInput reads the volumes of a split archive (name.7z.001,
+	// name.7z.002, ...) as one stream; the first volume alone ends before the
+	// 7z header does (issue #1179).
+	f, err := archive.OpenInput(srcPath)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -385,6 +546,9 @@ func collectArchiveTestTotals(ctx context.Context, srcPath, password string) (ar
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		if !archiveTestMemberSelected(ctx, info.NameInArchive) {
+			return nil
+		}
 		if info.IsDir() || !info.Mode().IsRegular() {
 			return nil
 		}
@@ -412,23 +576,117 @@ func collectArchiveTestTotals(ctx context.Context, srcPath, password string) (ar
 	return totals, nil
 }
 
-func testArchiveOnce(ctx context.Context, srcPath, password string, reporter vfs.TaskReporter) error {
-	totals, err := collectArchiveTestTotals(ctx, srcPath, password)
+// testZipOnce tests every member of a zip archive through unxed/zip, the
+// reader the panel uses for zip everywhere else. Its reader checks each member
+// against the checksum the archive stores for it, joins the volumes of a split
+// archive by the name of any one of them, and reads an archive that sits
+// behind an executable stub where it lies.
+func testZipOnce(ctx context.Context, srcPath, backingPath, password string, reporter vfs.TaskReporter) error {
+	reader, err := zip.OpenReaderWithPassword(backingPath, password)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = reader.Close() }()
+
+	var total int64
+	for _, member := range reader.File {
+		if member.FileInfo().IsDir() || !archiveTestMemberSelected(ctx, member.Name) {
+			continue
+		}
+		// #nosec G115 -- a size above MaxInt64 does not fit in the archive
+		total += int64(member.UncompressedSize64)
+	}
+
+	var tested int64
+	startTime := time.Now()
+	reportProgress := func(name string, current, size int64) {
+		elapsed := time.Since(startTime)
+		speed := int64(0)
+		if elapsed > 0 {
+			speed = int64(float64(tested) / elapsed.Seconds())
+		}
+		reporter.UpdateTransfer("Testing", name, archiveTestingPercent(current, size),
+			fmt.Sprintf("Total: %s / %s", formatSize(tested), formatSize(total)),
+			archiveTestingTotalPercent(tested, total, true), formatSize(speed)+"/s")
+	}
+	reportProgress(filepath.Base(srcPath), 0, 1)
+
+	var failures []error
+	buf := make([]byte, 128*1024)
+	for _, member := range reader.File {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !archiveTestMemberSelected(ctx, member.Name) {
+			continue
+		}
+		if member.FileInfo().IsDir() {
+			reportProgress(member.Name, -1, 0)
+			continue
+		}
+		// #nosec G115 -- see above
+		memberSize := int64(member.UncompressedSize64)
+		rc, openErr := member.Open()
+		if openErr != nil {
+			reportProgress(member.Name, 0, memberSize)
+			failures = append(failures, fmt.Errorf("%s: %w", member.Name, openErr))
+			continue
+		}
+		var memberBytes int64
+		var readErr error
+		for {
+			if err := ctx.Err(); err != nil {
+				readErr = err
+				break
+			}
+			n, err := rc.Read(buf)
+			if n > 0 {
+				memberBytes += int64(n)
+				tested += int64(n)
+				reportProgress(member.Name, memberBytes, memberSize)
+			}
+			if err != nil {
+				if err != io.EOF {
+					readErr = err
+				}
+				break
+			}
+		}
+		closeErr := rc.Close()
+		if failure := errors.Join(readErr, closeErr); failure != nil {
+			failures = append(failures, fmt.Errorf("%s: %w", member.Name, failure))
+		}
+	}
+	if len(failures) == 0 {
+		if total < tested {
+			total = tested
+		}
+		reporter.UpdateTransfer("Testing", filepath.Base(srcPath), 100,
+			fmt.Sprintf("Total: %s / %s", formatSize(tested), formatSize(total)), 100, "")
+	}
+	return errors.Join(failures...)
+}
+
+// testArchiveOnce tests the archive stored at backingPath. srcPath is the
+// archive as the user sees it and only names it in progress updates; the two
+// differ for a self-extracting archive (see localArchiveBacking).
+func testArchiveOnce(ctx context.Context, srcPath, backingPath, password string, reporter vfs.TaskReporter) error {
+	if archive.DetectFormat(backingPath) == "zip" {
+		return testZipOnce(ctx, srcPath, backingPath, password, reporter)
+	}
+
+	totals, err := collectArchiveTestTotals(ctx, backingPath, password)
 	if err != nil {
 		return err
 	}
 
-	f, format, stream, err := openArchiveTestStream(ctx, srcPath, password)
+	f, format, stream, err := openArchiveTestStream(ctx, backingPath, password)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = f.Close() }()
 
-	archiveStat, err := f.Stat()
-	if err != nil {
-		return err
-	}
-	archiveSize := archiveStat.Size()
+	archiveSize := f.Size()
 
 	extractor, ok := format.(archives.Extractor)
 	if !ok {
@@ -497,6 +755,9 @@ func testArchiveOnce(ctx context.Context, srcPath, password string, reporter vfs
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		if !archiveTestMemberSelected(ctx, info.NameInArchive) {
+			return nil
+		}
 		if info.IsDir() || !info.Mode().IsRegular() {
 			reportProgress(info.NameInArchive, -1, 0)
 			return nil
@@ -560,9 +821,14 @@ func testArchiveOnce(ctx context.Context, srcPath, password string, reporter vfs
 	return errors.Join(failures...)
 }
 
+// archiveTestFailureButtons are the choices of the test failure report. Each
+// needs a hotkey of its own: with "&Copy list" and "&Close" both on C, the key
+// could only ever copy and never close (issue #1179).
+var archiveTestFailureButtons = []string{"Copy &list", "&Close"}
+
 func showArchiveTestFailure(app vfs.App, srcPath string, err error) {
 	report := formatArchiveTestFailure(srcPath, err)
-	if app.Message(" Test archive ", report, []string{"&Copy list", "&Close"}) == 0 {
+	if app.Message(" Test archive ", report, archiveTestFailureButtons) == 0 {
 		go vtui.SetClipboard(report)
 	}
 }
@@ -644,11 +910,16 @@ func extractArchiveOnce(ctx context.Context, srcPath, destDir, password string, 
 // extractor has no error to trigger a retry in that case, while the header
 // checksum gives us a reliable postcondition for the password attempt.
 func validateExtracted7z(ctx context.Context, srcPath, destDir, password string) error {
-	if !strings.EqualFold(filepath.Ext(srcPath), ".7z") {
+	// The first volume of a split archive, name.7z.001, is a 7z archive too.
+	name := srcPath
+	if filepath.Ext(name) == ".001" {
+		name = strings.TrimSuffix(name, ".001")
+	}
+	if !strings.EqualFold(filepath.Ext(name), ".7z") {
 		return nil
 	}
 
-	f, err := os.Open(srcPath)
+	f, err := archive.OpenInput(srcPath)
 	if err != nil {
 		return err
 	}
@@ -761,9 +1032,20 @@ func actionAddArchive(app vfs.App) {
 		return
 	}
 
-	arcName := activeVfs.Base(activeVfs.GetPath())
-	if arcName == "." || arcName == "" {
-		arcName = "archive"
+	// GetSelectedNames already folds "nothing marked" into the item under the
+	// cursor (see its doc comment), so a single name here covers both "one
+	// item marked" and "nothing marked" -- in either case the suggested
+	// archive name should be that item's own name, not the panel directory's
+	// (f4#1504). Only an explicit multi-selection keeps the old directory-
+	// derived suggestion, since there is no single item to name it after.
+	var arcName string
+	if len(names) == 1 {
+		arcName = names[0]
+	} else {
+		arcName = activeVfs.Base(activeVfs.GetPath())
+		if arcName == "." || arcName == "" {
+			arcName = "archive"
+		}
 	}
 	arcName += ".zip"
 

@@ -7,41 +7,38 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
-	"github.com/unxed/f4/internal/config"
 	"github.com/unxed/f4/internal/i18n"
 	"github.com/unxed/f4/internal/ini"
 	"github.com/unxed/f4/internal/toast"
 	"github.com/unxed/f4/internal/vtvibe"
+	"github.com/unxed/f4/internal/vtvibe/ap"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtui"
 )
 
 // Applying an ap patch that the model wrote (github.com/unxed/ap).
 //
-// f4 does not implement the format: it shells out to the reference patcher,
-// ap.py, downloaded once from the ap repository and cached in the config
-// directory. That keeps the two projects in step while ap is still growing:
-// a format that f4 half-implements would be worse than no button at all.
-// A Go port lives in vtvibe.md as a future idea, with its trade-offs.
+// f4#1606 ported the reference patcher (implementation/ap.py) to Go
+// (internal/vtvibe/ap): applying a patch is now an in-process call, not a
+// shell-out to a downloaded Python script. No interpreter, no network
+// fetch of the patcher itself, no cached copy in the config directory -
+// aiRunPatcher below is what changed; everything about the confirmation
+// dialog and the result screen (aiApplyPatch, aiShowPatchResult) already
+// worked the same way regardless of what actually applies the patch, so
+// neither needed to change. A dry run that reached individual
+// modifications now ends on the review table instead (aiShowPatchReview,
+// vtvibe_ap_review.go).
 
 const (
-	vtvibeAPScriptURL = "https://raw.githubusercontent.com/unxed/ap/main/implementation/ap.py"
-	vtvibeAPSpecURL   = "https://raw.githubusercontent.com/unxed/ap/main/ap.md"
-	// vtvibeAPMaxDownload caps both downloads: they are a script and a
-	// specification, neither is anywhere near a megabyte.
+	vtvibeAPSpecURL = "https://raw.githubusercontent.com/unxed/ap/main/ap.md"
+	// vtvibeAPMaxDownload caps the specification download: it is a single
+	// Markdown file, nowhere near a megabyte.
 	vtvibeAPMaxDownload = 4 << 20
 )
-
-// aiPatcherPath is where the cached copy of ap.py lives.
-func aiPatcherPath() string {
-	return filepath.Join(config.GetF4ConfigDir(), "vtvibe", "ap.py")
-}
 
 // aiPatchTargetDir picks the folder the patch applies to: the other panel,
 // because the AI panel itself holds the dialog, not the project. Paths inside
@@ -82,19 +79,15 @@ func aiApplyPatch(pf *panel.PanelsFrame) {
 		return
 	}
 
-	body := fmt.Sprintf(i18n.Msg("AI.PatchConfirm"), root, len(patch.Files))
-	shown := patch.Files
-	if len(shown) > 12 {
-		shown = shown[:12]
-	}
-	for _, f := range shown {
-		body += "\n  " + f
-	}
-	if len(patch.Files) > len(shown) {
-		body += "\n  " + fmt.Sprintf(i18n.Msg("AI.PatchMoreFiles"), len(patch.Files)-len(shown))
-	}
+	body := fmt.Sprintf(i18n.Msg("AI.PatchConfirm"), root, len(patch.Files)) + aiPathList(patch.Files)
 	if patch.Ignored > 0 {
 		body += "\n\n" + fmt.Sprintf(i18n.Msg("AI.PatchIgnored"), patch.Ignored)
+	}
+
+	if aiInGitWorkTree(root) {
+		// Only a suggestion (docs/VTVIBE.md §7.4): somebody else's repository
+		// is not ours to stash.
+		body += "\n\n" + i18n.Msg("AI.PatchGitHint")
 	}
 
 	dlg := vtui.ShowMessage(i18n.Msg("AI.PatchTitle"), body,
@@ -102,29 +95,44 @@ func aiApplyPatch(pf *panel.PanelsFrame) {
 	dlg.OnResult = func(code int) {
 		switch code {
 		case 0:
-			aiRunPatcher(pf, patch, root, false)
+			aiRunPatcher(pf, patch, root, false, nil)
 		case 1:
-			aiRunPatcher(pf, patch, root, true)
+			aiRunPatcher(pf, patch, root, true, nil)
 		}
 	}
 }
 
-// aiRunPatcher writes the patch to a temporary file and hands it to ap.py.
-// The patch never touches the target folder itself: --dir is what decides
-// where the changes land.
-func aiRunPatcher(pf *panel.PanelsFrame, patch *vtvibe.Patch, root string, dry bool) {
+// aiInGitWorkTree reports whether dir is inside a git working tree: a .git
+// (a directory, or a file for a worktree or submodule) in dir or above it.
+func aiInGitWorkTree(dir string) bool {
+	for {
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			return true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
+	}
+}
+
+// aiRunPatcher writes the patch to a temporary file and applies it with the
+// native Go patcher (internal/vtvibe/ap). The patch file itself never
+// touches the target folder: projectDir is what decides where the changes
+// land, same as --dir did for the old ap.py subprocess. only is passed
+// through as ap.Options.Only: nil runs the whole patch, anything else only
+// the modifications the review screen left checked.
+func aiRunPatcher(pf *panel.PanelsFrame, patch *vtvibe.Patch, root string, dry bool, only map[ap.ModKey]bool) {
 	var output string
+	var mods []ap.ModificationResult
+	var undo *ap.Undo
 	exitCode := 0
 
 	title := i18n.Msg("AI.PatchTitle")
 	pf.RunProgressTask(title, i18n.Msg("AI.PatchRunning"), false,
 		func(ctx context.Context, update func(msg string, percent int)) error {
-			script, err := aiEnsurePatcher(ctx, update)
-			if err != nil {
-				return err
-			}
-			python, err := aiPythonPath()
-			if err != nil {
+			if err := ctx.Err(); err != nil {
 				return err
 			}
 
@@ -140,19 +148,13 @@ func aiRunPatcher(pf *panel.PanelsFrame, patch *vtvibe.Patch, root string, dry b
 			}
 
 			update(i18n.Msg("AI.PatchRunning"), -1)
-			args := []string{script, patchPath, "--dir", root}
-			if dry {
-				args = append(args, "--dry-run")
-			}
-			cmd := exec.CommandContext(ctx, python, args...)
-			cmd.Dir = root
-			out, runErr := cmd.CombinedOutput()
-			output = string(out)
-			if ee, ok := runErr.(*exec.ExitError); ok {
-				exitCode = ee.ExitCode()
-				return nil
-			}
-			return runErr
+			var out strings.Builder
+			result := ap.Apply(patchPath, root, ap.Options{DryRun: dry, Only: only, Out: &out})
+			output = out.String()
+			mods = result.ModificationResults
+			undo = result.Undo
+			exitCode = aiPatchExitCode(result.Status)
+			return nil
 		},
 		func(err error) {
 			if err != nil {
@@ -162,13 +164,47 @@ func aiRunPatcher(pf *panel.PanelsFrame, patch *vtvibe.Patch, root string, dry b
 				return
 			}
 			pf.RefreshAll()
-			aiShowPatchResult(pf, root, dry, exitCode, output)
+			// A real run that wrote something can be undone (Ctrl+Z in
+			// the AI panel, ai:undo, or Undo on the result right below).
+			aiPushUndo(undo)
+			// The journal is also kept on disk, so the patch can still be
+			// undone after f4 is restarted (aiUndoPatch loads it back).
+			if err := ap.SaveUndo(undo, aiUndoDepth); err != nil {
+				vtui.DebugLog("VTVIBE: undo snapshot not saved: %v", err)
+			}
+			// A dry run that got as far as individual modifications
+			// ends on the review table (vtvibe_ap_review.go); a real
+			// run, or a dry run that failed before any modification,
+			// keeps the plain result message.
+			if dry && len(mods) > 0 {
+				aiShowPatchReview(pf, patch, root, mods, exitCode, output)
+				return
+			}
+			aiShowPatchResult(pf, root, dry, exitCode, output, undo)
 		})
 }
 
-// aiShowPatchResult reports what the patcher said. Exit codes come from ap.py:
-// 0 applied, 2 applied in part, anything else nothing was written.
-func aiShowPatchResult(pf *panel.PanelsFrame, root string, dry bool, exitCode int, output string) {
+// aiPatchExitCode mirrors the exit codes the old ap.py subprocess used to
+// return, since aiShowPatchResult's status text already keys off them:
+// 0 applied in full, 2 applied in part (tolerant mode), anything else
+// nothing was written.
+func aiPatchExitCode(status ap.Status) int {
+	switch status {
+	case ap.StatusSuccess:
+		return 0
+	case ap.StatusPartial:
+		return 2
+	default:
+		return 1
+	}
+}
+
+// aiShowPatchResult reports what the patcher said. exitCode comes from
+// aiPatchExitCode: 0 applied, 2 applied in part, anything else nothing was
+// written. undo, when non-nil, is the run's transaction (ap.Result.Undo) and
+// adds an Undo button that reverts it without asking again - the result is
+// the moment the human sees what the patch did.
+func aiShowPatchResult(pf *panel.PanelsFrame, root string, dry bool, exitCode int, output string, undo *ap.Undo) {
 	var head string
 	switch {
 	case exitCode == 0 && dry:
@@ -207,10 +243,24 @@ func aiShowPatchResult(pf *panel.PanelsFrame, root string, dry bool, exitCode in
 		}
 	}
 
+	hasUndo := undo != nil
+	if hasUndo {
+		buttons = append(buttons, i18n.Msg("AI.BtnUndoPatch"))
+	}
+
 	dlg := vtui.ShowMessage(i18n.Msg("AI.PatchTitle"), body, buttons)
 	dlg.OnResult = func(code int) {
-		var viewLogIdx = -1
-		var attachReportIdx = -1
+		// -1 is BaseFrame.Close's exit code for "dismissed without picking a
+		// button" (Escape, or a caller force-closing the dialog), not a real
+		// button index. viewLogIdx/attachReportIdx must never match it when
+		// their button is not on the dialog at all: comparing code against a
+		// bare "not present" sentinel of -1 would make a dismissal collide
+		// with whichever of them stayed unset and fire that action anyway.
+		// Gate each case on its own hasX flag so an unset index can never
+		// match.
+		viewLogIdx := -1
+		attachReportIdx := -1
+		undoIdx := -1
 
 		currIdx := 1
 		if hasOutput {
@@ -219,27 +269,26 @@ func aiShowPatchResult(pf *panel.PanelsFrame, root string, dry bool, exitCode in
 		}
 		if hasReport {
 			attachReportIdx = currIdx
+			currIdx++
+		}
+		if hasUndo {
+			undoIdx = currIdx
 		}
 
-		switch code {
-		case viewLogIdx:
-			dir, err := os.MkdirTemp("", "vtvibe-ap-log-")
-			if err == nil {
-				logPath := filepath.Join(dir, "ap_output.log")
-				if os.WriteFile(logPath, []byte(output), 0600) == nil {
-					tempVfs := vfs.NewOSVFS(dir)
-					actionOpenViewer(pf, tempVfs, "ap_output.log")
-				}
-			}
-		case attachReportIdx:
+		switch {
+		case hasOutput && code == viewLogIdx:
+			aiViewPatchLog(pf, output)
+		case hasReport && code == attachReportIdx:
 			aiAttachFailureReport(reportPath)
+		case hasUndo && code == undoIdx:
+			aiRevertPatch(pf, undo)
 		}
 	}
 }
 
-// aiAttachFailureReport puts afailed.md into the dialog context. ap.py writes
-// that file precisely so a model can be told what went wrong without the
-// human retyping it.
+// aiAttachFailureReport puts afailed.md into the dialog context. The
+// patcher writes that file precisely so a model can be told what went
+// wrong without the human retyping it.
 func aiAttachFailureReport(reportPath string) {
 	data, err := os.ReadFile(reportPath)
 	if err != nil {
@@ -269,65 +318,6 @@ func aiWriteContextFile(name string, data []byte) error {
 		return err
 	}
 	return w.Close()
-}
-
-// aiPythonPath finds an interpreter for ap.py.
-func aiPythonPath() (string, error) {
-	candidates := []string{"python3", "python"}
-	if runtime.GOOS == "windows" {
-		candidates = []string{"python", "python3", "py"}
-	}
-	if ini := ini.Load(vtvibeIniPath()); ini != nil {
-		if custom := strings.TrimSpace(ini.GetString("general", "python", "")); custom != "" {
-			candidates = append([]string{custom}, candidates...)
-		}
-	}
-	for _, c := range candidates {
-		if p, err := exec.LookPath(c); err == nil {
-			return p, nil
-		}
-	}
-	return "", fmt.Errorf("%s", i18n.Msg("AI.NoPython"))
-}
-
-// aiEnsurePatcher returns a path to ap.py, downloading it once if needed.
-// vtvibe.ini may point at a local copy with ap_patcher, or at another build
-// of the script with ap_url.
-func aiEnsurePatcher(ctx context.Context, update func(msg string, percent int)) (string, error) {
-	ini := ini.Load(vtvibeIniPath())
-	url := vtvibeAPScriptURL
-	if ini != nil {
-		if custom := strings.TrimSpace(ini.GetString("general", "ap_patcher", "")); custom != "" {
-			if _, err := os.Stat(custom); err != nil {
-				return "", err
-			}
-			return custom, nil
-		}
-		url = ini.GetString("general", "ap_url", vtvibeAPScriptURL)
-	}
-
-	path := aiPatcherPath()
-	if st, err := os.Stat(path); err == nil && st.Size() > 0 {
-		return path, nil
-	}
-
-	update(i18n.Msg("AI.PatchDownloading"), -1)
-	data, err := aiDownload(ctx, url)
-	if err != nil {
-		return "", err
-	}
-	// A proxy login page is also a 200 with a body. Refuse anything that is
-	// not recognizably the patcher rather than feeding it to an interpreter.
-	if !strings.Contains(string(data), "def apply_patch(") {
-		return "", fmt.Errorf("%s", i18n.Msg("AI.PatchBadDownload"))
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return "", err
-	}
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		return "", err
-	}
-	return path, nil
 }
 
 // aiAttachAPSpec teaches the model the format: the specification goes into the

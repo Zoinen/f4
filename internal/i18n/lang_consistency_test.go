@@ -379,6 +379,54 @@ func TestLangConsistency(t *testing.T) {
 	}
 }
 
+// TestLanguageFilesHaveNoDuplicateStringKeys checks the raw files instead of
+// the parsed INI map: parsers necessarily keep only the last value, which
+// would hide exactly the kind of stale/duplicate localization entry reported
+// in issue #1218.  Keep English in this check too; the older consistency loop
+// treats it as the baseline and therefore skips its duplicate check.
+func TestLanguageFilesHaveNoDuplicateStringKeys(t *testing.T) {
+	files, err := filepath.Glob(filepath.Join("lang", "*.lng"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) == 0 {
+		t.Fatal("no .lng files under lang/")
+	}
+
+	for _, file := range files {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Errorf("%s: %v", file, err)
+			continue
+		}
+		seen := make(map[string]int)
+		inStrings := false
+		for lineNumber, line := range strings.Split(string(data), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "[Strings]") {
+				inStrings = true
+				continue
+			}
+			if strings.HasPrefix(trimmed, "[") {
+				inStrings = false
+				continue
+			}
+			if !inStrings || trimmed == "" || strings.HasPrefix(trimmed, ";") || strings.HasPrefix(trimmed, "#") {
+				continue
+			}
+			idx := strings.IndexByte(trimmed, '=')
+			if idx <= 0 {
+				continue
+			}
+			key := strings.TrimSpace(trimmed[:idx])
+			seen[key]++
+			if seen[key] > 1 {
+				t.Errorf("%s:%d: duplicate [Strings] key %q (occurrence %d)", file, lineNumber+1, key, seen[key])
+			}
+		}
+	}
+}
+
 func TestLangCoverageBaselineParsing(t *testing.T) {
 	baseline, err := loadLangCoverageBaseline([]byte("# comment\nru = 1343\nen=1355\n"))
 	if err != nil {

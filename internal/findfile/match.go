@@ -11,6 +11,7 @@ import (
 
 	"github.com/charlievieth/strcase"
 	"github.com/coregx/coregex"
+	"github.com/unxed/f4/internal/filemask"
 	"github.com/unxed/f4/vfs"
 )
 
@@ -74,9 +75,9 @@ func splitFindMasks(mask string) (includes, excludes []string, err error) {
 	return includes, excludes, nil
 }
 
-func findFileMaskMatches(name string, masks []string) bool {
+func findFileMaskMatches(name string, masks []string, ignoreCase bool) bool {
 	for _, mask := range masks {
-		if matched, _ := filepath.Match(mask, name); matched {
+		if filemask.Match(name, mask, ignoreCase) {
 			return true
 		}
 	}

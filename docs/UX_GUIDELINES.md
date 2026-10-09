@@ -106,6 +106,14 @@ Hotkeys provide the fastest way to activate a specific function.
 *   `F1`: Opens the help topic associated with the currently focused element.
 *   **Mouse:** Click-and-drag on the top border moves the window. Click-and-drag on the bottom-right corner resizes it.
 
+Select Group, Deselect Group and New File share a compact six-row input dialog:
+prompt, input, full-width separator and centered buttons occupy consecutive
+rows inside the frame. The minimum width is 30 cells. Screen resizing adjusts
+the width; corner dragging changes only the width and preserves the height.
+New File uses the same width calculation on opening and screen resizing:
+`min(screenWidth, max(30, screenWidth/2))`. It keeps its empty initial input,
+path hints and `NewEdit` history. Select/Deselect Group open 40 cells wide.
+
 #### Groups (`RadioGroup`, `CheckGroup`)
 
 *   **Interaction Model:** These components separate the concepts of *cursor* and *selection*.
@@ -135,9 +143,9 @@ Hotkeys provide the fastest way to activate a specific function.
 #### Dropdowns (`ComboBox`)
 
 *   **Interaction:** Combines an `Edit` field with a hidden `VMenu`.
-*   **Activation:** `Alt+Down` or clicking the down arrow (`↓`) icon opens the list.
+*   **Activation:** `Ctrl+Down` or clicking the down arrow (`↓`) icon opens the list.
 *   **Selection:** Selecting an item from the list automatically populates the `Edit` field and returns focus to it.
-*   **`DropdownOnly` Mode:** If enabled, the user cannot type custom text and must select from the provided options using `Enter` or the mouse.
+*   **`DropdownOnly` Mode:** If enabled, the user cannot type custom text and must select from the provided options. As in `far2l`, `Enter` presses the dialog's default button; the list opens with `Ctrl+Down` or the mouse. Only when the dialog has no default button does `Enter` open the list.
 
 #### File Panels (`f4` Specific)
 
@@ -177,3 +185,16 @@ Starting a search expands the parameters dialog immediately. The submitted mask,
 Pause, beside the progress percentage, suspends the search at its next progress/result checkpoint and becomes Resume. The title and current-path label reflect the paused state. Resume continues the same search and retains its results and selection. The button disappears after completion. Remote background jobs can continue on the server while the client is paused. The configurable `FindFile.Stop` action (default `Ctrl+Shift+F7`) still cancels the search and keeps its results open. Esc or Close cancels and closes it, including while paused. View (F3) and Edit (F4) remain available while searching or paused; Go to and Panel (F6) close and cancel, using the currently displayed results. F5 maximizes or restores the dialog. File actions are disabled while the list is empty. Completion, no matches and errors are shown in the same expanded dialog; errors retain partial results. Search history is saved when Find is pressed.
 
 Completed duplicate-search results use the same table without live search controls.
+By adhering to these rules, we aim to build TUI applications that are powerful, efficient, and a pleasure to use for both novice and expert users.
+### Panel group headings
+
+Group by adds decorative `──── Title ────` rows with a centered title in the
+column-title color and lines in the panel column-separator color. The file
+model contains only files: cursor, marks and file operations never see headings.
+Keyboard movement skips them, and mouse clicks (including double and middle
+clicks) cannot focus or activate them. When the first visible group's heading
+scrolls out, it stays pinned at the start of the list until that group's last
+file scrolls out. The pinned row reserves a cell without obscuring files or the
+cursor. A one-row viewport prioritizes the file and does not pin a heading.
+Medium/Brief flow through file columns without repeating a heading at column
+boundaries. Detailed/Wide headings span the list.

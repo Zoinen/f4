@@ -66,6 +66,20 @@ const (
 	ColorerCrossVertical
 	ColorerCrossHorizontal
 	ColorerCrossBoth
+	// ColorerCrossScheme leaves the axes to the file type's show-cross
+	// parameter, FarColorer's "if included in the scheme" cross setting.
+	ColorerCrossScheme
+)
+
+// Where viewers highlight syntax, with the editor's highlighter: nowhere (the
+// default: a viewer is for looking at a file at once, and highlighting costs
+// time), in the quick view panel, or in every viewer. FarColorer calls this
+// ViewerColoring.
+const (
+	ViewerHighlightOff = iota
+	ViewerHighlightQuickView
+	// ViewerHighlightAll highlights every viewer and the quick view.
+	ViewerHighlightAll
 )
 
 // ---- from image_slideshow.go ----
@@ -117,7 +131,7 @@ func NormalizeStartupGuiBackend(value string) string {
 	switch lower {
 	case "win32", "winapi", "gdi", "win32gui":
 		return "win32"
-	case "gogpu", "ebiten", "x11", "wayland":
+	case "gogpu", "ebiten", "x11", "wayland", "cocoa":
 		return lower
 	}
 	return ""
@@ -191,6 +205,44 @@ func writeCompareOptions(sb *strings.Builder, opts CompareOptions) {
 	fmt.Fprintf(sb, "Ignore = %d\n", bit(opts.Ignore))
 	fmt.Fprintf(sb, "IgnoreMode = %d\n", opts.IgnoreMode)
 	fmt.Fprintf(sb, "ReportEqual = %d\n", bit(opts.ReportEqual))
+}
+
+// ---- from sync_dirs_ui.go ----
+// LoadSyncOptions reads the [Sync] section, falling back to Total
+// Commander's own starting position for a profile that has never opened
+// the synchronize window.
+func LoadSyncOptions(ini *ini.File) SyncOptions {
+	defaults := DefaultSyncOptions()
+	flag := func(key string, def bool) bool {
+		fallback := "0"
+		if def {
+			fallback = "1"
+		}
+		return ini.GetString("Sync", key, fallback) == "1"
+	}
+	opts := SyncOptions{
+		Asymmetric: flag("Asymmetric", defaults.Asymmetric),
+		Subdirs:    flag("Subdirs", defaults.Subdirs),
+		ByContent:  flag("ByContent", defaults.ByContent),
+		IgnoreDate: flag("IgnoreDate", defaults.IgnoreDate),
+		Mask:       ini.GetString("Sync", "Mask", defaults.Mask),
+	}
+	return opts.Normalize()
+}
+
+// writeSyncOptions emits the [Sync] section body.
+func writeSyncOptions(sb *strings.Builder, opts SyncOptions) {
+	bit := func(on bool) int {
+		if on {
+			return 1
+		}
+		return 0
+	}
+	fmt.Fprintf(sb, "Asymmetric = %d\n", bit(opts.Asymmetric))
+	fmt.Fprintf(sb, "Subdirs = %d\n", bit(opts.Subdirs))
+	fmt.Fprintf(sb, "ByContent = %d\n", bit(opts.ByContent))
+	fmt.Fprintf(sb, "IgnoreDate = %d\n", bit(opts.IgnoreDate))
+	fmt.Fprintf(sb, "Mask = %s\n", opts.Mask)
 }
 
 // ---- from image_decode.go ----

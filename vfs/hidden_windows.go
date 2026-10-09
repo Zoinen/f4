@@ -4,18 +4,18 @@ package vfs
 
 import (
 	"os"
-	"strings"
 	"syscall"
+
+	"github.com/unxed/f4/vfs/hostmode"
 )
 
 func isHidden(path string, name string, info os.FileInfo) bool {
+	var attrs uint32
+	var have bool
 	if info != nil {
 		if stat, ok := info.Sys().(*syscall.Win32FileAttributeData); ok {
-			if stat.FileAttributes&syscall.FILE_ATTRIBUTE_HIDDEN != 0 {
-				return true
-			}
+			attrs, have = stat.FileAttributes, true
 		}
 	}
-	// Fallback to dot-prefix for cross-platform consistency
-	return strings.HasPrefix(name, ".")
+	return hiddenByRule(name, attrs, have, hostmode.Posix())
 }

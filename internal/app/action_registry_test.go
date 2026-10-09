@@ -63,6 +63,19 @@ func TestActionRegistry(t *testing.T) {
 	}
 }
 func TestRegistry_HexModeAndWorkspaceActions(t *testing.T) {
+	viewHex, ok := GetAction("File.ViewHex")
+	if !ok {
+		t.Fatal("File.ViewHex should be registered")
+	}
+	if len(viewHex.DefaultKeys) != 1 || viewHex.DefaultKeys[0] != "AltF3" {
+		t.Fatalf("File.ViewHex default keys = %v, want [AltF3]", viewHex.DefaultKeys)
+	}
+	hm := keymap.NewHotkeyManager("")
+	hm.InitDefaults()
+	if got := hm.GetAction("Shell", "AltF3"); got != "File.ViewHex" {
+		t.Fatalf("Shell/AltF3 = %q, want File.ViewHex", got)
+	}
+
 	a, ok := GetAction("Editor.HexMode")
 	if !ok {
 		t.Fatal("Editor.HexMode should be registered")
@@ -74,6 +87,13 @@ func TestRegistry_HexModeAndWorkspaceActions(t *testing.T) {
 	_, ok = GetAction("Workspace.New")
 	if !ok {
 		t.Fatal("Workspace.New should be registered")
+	}
+	fork, ok := GetAction("Workspace.Fork")
+	if !ok {
+		t.Fatal("Workspace.Fork should be registered")
+	}
+	if len(fork.DefaultKeys) != 1 || fork.DefaultKeys[0] != "CtrlF11" {
+		t.Fatalf("Workspace.Fork default keys = %v, want [CtrlF11]", fork.DefaultKeys)
 	}
 }
 
@@ -98,6 +118,18 @@ func TestHotkeyManager_PanelPathDefaults(t *testing.T) {
 	}
 }
 
+func TestHotkeyManager_SyncPanelsDoesNotStealAltI(t *testing.T) {
+	hm := keymap.NewHotkeyManager("")
+	hm.InitDefaults()
+
+	if got := hm.GetAction("Shell", "AltI"); got == "Panel.SyncPanels" {
+		t.Fatal("Shell/AltI must remain available to panel fast find")
+	}
+	if got := hm.GetAction("Shell", "AltShiftI"); got != "Panel.SyncPanels" {
+		t.Fatalf("Shell/AltShiftI = %q, want Panel.SyncPanels", got)
+	}
+}
+
 func TestHotkeyManager_ViewerEditorSearchDirections(t *testing.T) {
 	hm := keymap.NewHotkeyManager("")
 	hm.InitDefaults()
@@ -106,7 +138,8 @@ func TestHotkeyManager_ViewerEditorSearchDirections(t *testing.T) {
 		area, key, want string
 	}{
 		{"Editor", "CtrlEnter", "Editor.SearchForward"},
-		{"Editor", "CtrlShiftEnter", "Editor.SearchPrevious"},
+		{"Editor", "AltF7", "Editor.SearchPrevious"},
+		{"Editor", "CtrlShiftEnter", "Editor.InsertPassivePanelFileName"},
 		{"Viewer", "CtrlEnter", "Viewer.SearchNext"},
 		{"Viewer", "CtrlShiftEnter", "Viewer.SearchPrevious"},
 	}
@@ -164,31 +197,53 @@ func TestActionPanelToggleTargetsActiveWorkspace(t *testing.T) {
 	}
 }
 
-func TestActionPanelToggleRightPanelUsesFullWidth(t *testing.T) {
-	t.Cleanup(paneltest.SwapFrameManager(t))
-	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
-	pf := paneltest.SetupMockPanelsFrame(t)
-	defer pf.Close()
-	pf.ResizeConsole(80, 25)
-	vtui.FrameManager.Push(pf)
+// Issue #927: Ctrl+F1 / Ctrl+F2 hide one panel and leave the other one on
+// its own half, as far2l does; it must not grow to the whole width.
+func TestActionPanelToggleSidePanelKeepsOtherPanelHalfWidth_Issue927(t *testing.T) {
+	for _, tc := range []struct {
+		action  string
+		hidden  int
+		visible int
+		wantX1  int
+		wantX2  int
+	}{
+		{action: "Panel.ToggleRightPanel", hidden: 1, visible: 0, wantX1: 0, wantX2: 39},
+		{action: "Panel.ToggleLeftPanel", hidden: 0, visible: 1, wantX1: 40, wantX2: 79},
+	} {
+		t.Run(tc.action, func(t *testing.T) {
+			t.Cleanup(paneltest.SwapFrameManager(t))
+			vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+			pf := paneltest.SetupMockPanelsFrame(t)
+			defer pf.Close()
+			pf.ResizeConsole(80, 25)
+			vtui.FrameManager.Push(pf)
 
-	if !RunAction("Panel.ToggleRightPanel") {
-		t.Fatal("Panel.ToggleRightPanel did not run")
-	}
-	if pf.ShowRightPanel {
-		t.Fatal("Panel.ToggleRightPanel did not hide the right panel")
-	}
-	if x1, _, x2, _ := pf.Panels[0].GetPosition(); x1 != 0 || x2 != 79 {
-		t.Fatalf("visible left panel geometry = %d..%d, want 0..79", x1, x2)
-	}
+			shown := func(idx int) bool {
+				if idx == 0 {
+					return pf.ShowLeftPanel
+				}
+				return pf.ShowRightPanel
+			}
 
-	if !RunAction("Panel.ToggleRightPanel") {
-		t.Fatal("Panel.ToggleRightPanel did not restore the right panel")
-	}
-	if !pf.ShowRightPanel {
-		t.Fatal("Panel.ToggleRightPanel second call did not restore the right panel")
-	}
-	if x1, _, x2, _ := pf.Panels[0].GetPosition(); x1 != 0 || x2 != 39 {
-		t.Fatalf("restored left panel geometry = %d..%d, want 0..39", x1, x2)
+			if !RunAction(tc.action) {
+				t.Fatalf("%s did not run", tc.action)
+			}
+			if shown(tc.hidden) {
+				t.Fatalf("%s did not hide panel %d", tc.action, tc.hidden)
+			}
+			if x1, _, x2, _ := pf.Panels[tc.visible].GetPosition(); x1 != tc.wantX1 || x2 != tc.wantX2 {
+				t.Fatalf("visible panel geometry = %d..%d, want %d..%d", x1, x2, tc.wantX1, tc.wantX2)
+			}
+
+			if !RunAction(tc.action) {
+				t.Fatalf("%s second call did not run", tc.action)
+			}
+			if !shown(tc.hidden) {
+				t.Fatalf("%s second call did not restore panel %d", tc.action, tc.hidden)
+			}
+			if x1, _, x2, _ := pf.Panels[tc.visible].GetPosition(); x1 != tc.wantX1 || x2 != tc.wantX2 {
+				t.Fatalf("restored panel geometry = %d..%d, want %d..%d", x1, x2, tc.wantX1, tc.wantX2)
+			}
+		})
 	}
 }

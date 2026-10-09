@@ -27,14 +27,15 @@ const (
 
 // Entry is one directory entry as reported by the remote host.
 type Entry struct {
-	Name  string
-	Size  int64
-	Mode  uint32 // raw st_mode, file type bits included
-	MTime time.Time
-	ATime time.Time
-	CTime time.Time
-	Uid   int
-	Gid   int
+	SyntheticTimes bool // ls has only MTime; ATime/CTime are display fallbacks.
+	Name           string
+	Size           int64
+	Mode           uint32 // raw st_mode, file type bits included
+	MTime          time.Time
+	ATime          time.Time
+	CTime          time.Time
+	Uid            int
+	Gid            int
 	// TargetIsDir tells whether a symlink points at a directory. Only the
 	// "find" listing mode reports it for free; in the other modes it stays
 	// false and the caller has to resolve the link with Stat if it cares.

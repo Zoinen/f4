@@ -65,6 +65,9 @@ func handleSemanticFrameAction(frame vtui.Frame, target string, action map[strin
 			if menu, ok := frame.(*vtui.VMenu); ok {
 				idx := semantic.Int(action["index"])
 				if idx >= 0 && idx < len(menu.Items) && !menu.Items[idx].Separator {
+					// The index names an entry of the full list, which a
+					// filter typed into the menu (#263) may be hiding.
+					menu.ClearFilter()
 					menu.SetSelectPos(idx)
 					return menu.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN, InputSource: "qt_semantic"})
 				}

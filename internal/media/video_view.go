@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 
 	"github.com/unxed/f4/internal/config"
+	"github.com/unxed/f4/internal/i18n"
 	"github.com/unxed/f4/internal/terminal"
 	"github.com/unxed/f4/internal/ttyx"
 	"github.com/unxed/f4/internal/viewer"
@@ -34,6 +35,10 @@ type VideoView struct {
 	paused bool
 
 	OnClose func()
+
+	// Siblings, when set, lets PgUp/PgDn/Home/End walk through the films of
+	// the panel.
+	Siblings *VideoSiblings
 }
 
 // NewVideoView starts the player and hands back the frame it lives in.
@@ -47,7 +52,7 @@ func NewVideoView(v vfs.VFS, Path string) (*VideoView, error) {
 			}
 			return " " + base
 		},
-		func() string { return "" },
+		func() string { return vv.player.State().statusText() },
 	)
 	return vv, nil
 }
@@ -149,6 +154,18 @@ func (vv *VideoView) ProcessKey(e *vtinput.InputEvent) bool {
 	if e == nil || !e.KeyDown || vv.player == nil {
 		return false
 	}
+	ctrl := e.ControlKeyState&(vtinput.LeftCtrlPressed|vtinput.RightCtrlPressed) != 0
+	shift := e.ControlKeyState&vtinput.ShiftPressed != 0
+	// The key map is Far 3's Review (docs/VIDEO.md §11): the arrows seek by
+	// ten seconds, one with Shift, to either end with Ctrl; up and down set
+	// the volume by ten, less with Shift, to the top or nothing with Ctrl.
+	seekBy, volumeBy := 10, 10
+	if shift {
+		seekBy, volumeBy = 1, 2
+	}
+	if vv.Siblings.step(e.VirtualKeyCode) {
+		return true
+	}
 	switch e.VirtualKeyCode {
 	case vtinput.VK_ESCAPE, vtinput.VK_F10, vtinput.VK_F3:
 		vv.Close()
@@ -158,16 +175,35 @@ func (vv *VideoView) ProcessKey(e *vtinput.InputEvent) bool {
 		vv.player.TogglePause()
 		return true
 	case vtinput.VK_RIGHT:
-		vv.player.Seek(10)
+		if ctrl {
+			vv.player.SeekEnd()
+		} else {
+			vv.player.Seek(seekBy)
+		}
 		return true
 	case vtinput.VK_LEFT:
-		vv.player.Seek(-10)
+		if ctrl {
+			vv.player.SeekStart()
+		} else {
+			vv.player.Seek(-seekBy)
+		}
 		return true
 	case vtinput.VK_UP:
-		vv.player.Volume(5)
+		if ctrl {
+			vv.player.SetVolume(100)
+		} else {
+			vv.player.Volume(volumeBy)
+		}
 		return true
 	case vtinput.VK_DOWN:
-		vv.player.Volume(-5)
+		if ctrl {
+			vv.player.SetVolume(0)
+		} else {
+			vv.player.Volume(-volumeBy)
+		}
+		return true
+	case vtinput.VK_A:
+		vv.player.CycleAudio(!ctrl || !shift)
 		return true
 	}
 	return false
@@ -185,7 +221,7 @@ func (vv *VideoView) Close() {
 func (vv *VideoView) GetKeyLabels() *vtui.KeySet {
 	return &vtui.KeySet{
 		Normal: vtui.KeyBarLabels{
-			"", "", "", "", "", "", "", "", "", "Quit",
+			"", "", "", "", "", "", "", "", "", i18n.Msg("KeyBar.F10"),
 		},
 	}
 }

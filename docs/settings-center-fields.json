@@ -140,6 +140,16 @@
     "unavailable": ""
   },
   {
+    "category": "startup",
+    "description": "When f4 is started from a terminal, open the current folder in both panels, as mc does. Off restores the panels of the last session, as far2l and Far do. Folders named on the command line always win: with this on the other panel shows the current folder, with it off the other panel stays as it was.",
+    "group": "Launch defaults",
+    "id": "StartInCurrentFolder",
+    "kind": "boolean",
+    "label": "Open the current folder at start",
+    "timing": "restart",
+    "unavailable": ""
+  },
+  {
     "category": "workspaces",
     "description": "Show tabs always, only with multiple workspaces, while Ctrl is held, or never.",
     "group": "Tab presentation",
@@ -311,12 +321,32 @@
   },
   {
     "category": "panels",
+    "description": "Keep the file index of an opened tar archive in the cache, so opening it again is instant. Off rebuilds the index each time the archive is opened: slower, but never out of date.",
+    "group": "Directory loading",
+    "id": "ArchiveTarIndexCache",
+    "kind": "boolean",
+    "label": "Cache tar archive indexes",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "panels",
     "description": "Replace the listing only when all directory results are ready and bypass cached previews. Off permits incremental results. It does not block all UI work.",
     "group": "Directory loading",
     "id": "SyncPanelLoad",
     "kind": "boolean",
     "label": "Wait for complete directory listing",
     "timing": "next directory load",
+    "unavailable": ""
+  },
+  {
+    "category": "panels",
+    "description": "Re-read a panel showing a local directory when files appear, vanish or change there, keeping the cursor and selection. Uses the system's change notifications where available and periodic comparison elsewhere; archives, plugin and remote panels are never watched.",
+    "group": "Directory loading",
+    "id": "WatchDirectories",
+    "kind": "boolean",
+    "label": "Refresh panels when files change",
+    "timing": "live",
     "unavailable": ""
   },
   {
@@ -721,6 +751,16 @@
   },
   {
     "category": "editor",
+    "description": "Draw control characters as one-cell symbols such as ␀ and ␛ in newly opened editors, instead of a placeholder. The Editor > Options toggle changes it for one editor.",
+    "group": "Visual aids",
+    "id": "EditorShowControlChars",
+    "kind": "boolean",
+    "label": "Show control characters",
+    "timing": "new editors",
+    "unavailable": ""
+  },
+  {
+    "category": "editor",
     "description": "Select no guide, a vertical guide, a horizontal guide, or both. Colorer can supply guide colors but the behavior is editor-wide.",
     "group": "Visual aids",
     "id": "EditorCrossMode",
@@ -776,6 +816,16 @@
     "id": "ViewerDefaultCodePage",
     "kind": "choice",
     "label": "Default viewer encoding",
+    "timing": "new viewers",
+    "unavailable": ""
+  },
+  {
+    "category": "editor",
+    "description": "When on, viewing a picture opens the image viewer and viewing a video opens the video player, where the terminal can show them. When off, every file opens in the text and hex viewer.",
+    "group": "Viewer",
+    "id": "ViewerOpenAsSupportedType",
+    "kind": "boolean",
+    "label": "Open images and video in their own viewers",
     "timing": "new viewers",
     "unavailable": ""
   },
@@ -870,6 +920,66 @@
     "unavailable": ""
   },
   {
+    "category": "syntax",
+    "description": "Draw the paired token under the cursor, such as a bracket, and its match when it is on screen, in the colors the Colorer scheme gives pairs.",
+    "group": "Colorer",
+    "id": "EditorColorerPairs",
+    "kind": "boolean",
+    "label": "Highlight pairs",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "syntax",
+    "description": "List each outlined line's text in the Colorer outliner, as FarColorer's default old outline view does, instead of line numbers, tree indentation and labels.",
+    "group": "Colorer",
+    "id": "EditorColorerOldOutline",
+    "kind": "boolean",
+    "label": "Old outline view",
+    "timing": "next outliner",
+    "unavailable": ""
+  },
+  {
+    "category": "syntax",
+    "description": "Highlight syntax with the editor's syntax highlighter, Chroma or Colorer: nowhere, in the quick view panel only, or in every viewer. Off by default: a viewer is for looking at a file at once, and highlighting takes time.",
+    "group": "Engine",
+    "id": "ViewerHighlighting",
+    "kind": "choice",
+    "label": "Syntax highlighting in viewers",
+    "timing": "new viewers",
+    "unavailable": ""
+  },
+  {
+    "category": "syntax",
+    "description": "An .hrc file, or a folder whose .hrc files are all loaded except *.ent.hrc, added to the catalog's schemes. Links inside must stay within that folder, and the file names Colorer opens must be ASCII. Empty loads none.",
+    "group": "Colorer",
+    "id": "EditorColorerUserHrc",
+    "kind": "path",
+    "label": "User Colorer schemes",
+    "timing": "Colorer reload",
+    "unavailable": ""
+  },
+  {
+    "category": "syntax",
+    "description": "An hrc-settings XML file loaded after the user schemes, whose prototypes override file type parameters, as FarColorer's user HRC settings file. The file name must be ASCII. Empty loads none.",
+    "group": "Colorer",
+    "id": "EditorColorerHrcSettings",
+    "kind": "path",
+    "label": "User Colorer HRC settings",
+    "timing": "Colorer reload",
+    "unavailable": ""
+  },
+  {
+    "category": "syntax",
+    "description": "An XML file in the catalog's hrd-sets format, or a folder of .hrd files whose root hrd element names its class, name and description. Links in an hrd-sets file resolve against catalog.xml and must stay inside the configuration directory; file names must be ASCII. Empty loads none.",
+    "group": "Colorer",
+    "id": "EditorColorerUserHrd",
+    "kind": "path",
+    "label": "User Colorer color styles",
+    "timing": "Colorer reload",
+    "unavailable": ""
+  },
+  {
     "category": "keyboard",
     "description": "Use Mac-style editing chords in editors and dialog fields. Auto enables them on macOS; panels retain Far navigation. Command translation requires backend support.",
     "group": "Editing chords",
@@ -927,6 +1037,16 @@
     "kind": "choice",
     "label": "Terminal presentation",
     "timing": "new workspaces",
+    "unavailable": ""
+  },
+  {
+    "category": "terminal",
+    "description": "In the host console modes, draw the console f4 shows beside a hidden panel (Ctrl+F1, Ctrl+F2) in the host terminal's own default colours, so a translucent or themed terminal shows through instead of a black rectangle. Off keeps the black background. No effect in the embedded terminal.",
+    "group": "Presentation",
+    "id": "HostConsoleDefaultColors",
+    "kind": "boolean",
+    "label": "Keep host console default colors",
+    "timing": "live",
     "unavailable": ""
   },
   {

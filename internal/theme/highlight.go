@@ -25,6 +25,7 @@ const (
 	AttrSystem
 	AttrArchive
 	AttrSymlink
+	AttrJunction
 )
 
 type DateType int
@@ -63,12 +64,88 @@ type HighlightRule struct {
 
 	// Каскадная обработка (Continue Processing)
 	ContinueProcessing bool
+
+	// UseDefaults makes the rule an override of the built-in colours of its
+	// attribute (f4#912): it does not take part in the first-match walk, so its
+	// place in the file does not matter, and it paints only the colour states it
+	// names, leaving the rest to the rules of the active colour style.
+	UseDefaults bool
+	// implicitClear is set by CombineRules on an override: the attributes that
+	// outrank the rule's own (see overrideTier), so a Directory override does
+	// not repaint a symlink to a directory.
+	implicitClear AttrFlags
 }
 
 type FileHighlighter struct {
 	UserRules  []HighlightRule
 	ThemeRules []HighlightRule
-	Rules      []HighlightRule
+	// Rules is the first-match list. overrides are the UseDefaults rules of the
+	// user's file, in the order they are applied (f4#912); a matched index at or
+	// above len(Rules) names overrides[index-len(Rules)].
+	Rules     []HighlightRule
+	overrides []HighlightRule
+
+	// matchCache and hasVolatileRules are GetColor/GetMarker's cache over
+	// HighlightRule.Match, added for #884: vtui's render loop asks the
+	// active panel to redraw every frame, and every visible row's Match
+	// walked every configured rule's filepath.Match(mask, name) again on
+	// every single frame even though neither the file nor the ruleset had
+	// changed since the last frame. A CPU profile from a slow-SSH session
+	// with many files on the panels put path/filepath.Match at 75%
+	// cumulative time, called from HighlightRule.Match by way of GetMarker
+	// and GetColor — this is that hot path.
+	//
+	// The cache is reset (see CombineRules) whenever Rules itself is
+	// rebuilt, i.e. on theme switch or rule reload, which is the only way
+	// fh.Rules's identity changes; that mirrors how the #884 menu-bar cache
+	// (PanelsFrame.BuildMenuItems) invalidates on whatever actually changed
+	// rather than on a timer.
+	matchCache       map[highlightCacheKey][]int
+	hasVolatileRules bool
+}
+
+// highlightCacheMaxEntries bounds matchCache's size. GlobalFileHighlighter
+// lives for the whole process, so without a cap a long session that visits
+// many distinct directories would let the cache grow forever; when the cap
+// is hit the whole map is dropped and starts over, which is simple and, since
+// hit rate depends only on the files shown on screen right now, costs
+// nothing beyond a handful of cache misses right after the reset.
+const highlightCacheMaxEntries = 4096
+
+// highlightCacheKey captures every field HighlightRule.Match reads off a
+// vfs.VFSItem. Two items with equal keys are, by construction, items Match
+// cannot tell apart — Match is a pure function of exactly these fields (plus
+// the rule set and, for a DateRelative rule, the current time, which is why
+// hasVolatileRules bypasses the cache instead of trying to key on "now") — so
+// caching on this key alone can never serve one item's result for another.
+type highlightCacheKey struct {
+	name         string
+	isDir        bool
+	isHidden     bool
+	isExecutable bool
+	isSymlink    bool
+	winAttrs     uint32
+	unixMode     uint32
+	size         int64
+	mtimeNano    int64
+	ctimeNano    int64
+	atimeNano    int64
+}
+
+func highlightCacheKeyFor(item *vfs.VFSItem) highlightCacheKey {
+	return highlightCacheKey{
+		name:         item.Name,
+		isDir:        item.IsDir,
+		isHidden:     item.IsHidden,
+		isExecutable: item.IsExecutable,
+		isSymlink:    item.IsSymlink,
+		winAttrs:     item.WinAttrs,
+		unixMode:     item.UnixMode,
+		size:         item.Size,
+		mtimeNano:    item.MTime.UnixNano(),
+		ctimeNano:    item.CTime.UnixNano(),
+		atimeNano:    item.ATime.UnixNano(),
+	}
 }
 
 var GlobalFileHighlighter *FileHighlighter
@@ -91,15 +168,158 @@ func (fh *FileHighlighter) LoadThemeRules(ini *ini.File) {
 	fh.CombineRules()
 }
 
+// Attribute tiers of the UseDefaults overrides, highest first (f4#912): a
+// junction outranks a symlink, a symlink outranks a hidden or system item, and
+// those outrank an ordinary directory. A rule that names none of them is
+// outside the ladder and is applied first, under all of them.
+const (
+	tierJunction = iota
+	tierSymlink
+	tierHiddenSystem
+	tierDirectory
+	tierOther
+)
+
+func overrideTier(r *HighlightRule) int {
+	switch {
+	case r.AttrSet&AttrJunction != 0:
+		return tierJunction
+	case r.AttrSet&AttrSymlink != 0:
+		return tierSymlink
+	case r.AttrSet&(AttrHidden|AttrSystem) != 0:
+		return tierHiddenSystem
+	case r.AttrSet&AttrDirectory != 0:
+		return tierDirectory
+	}
+	return tierOther
+}
+
+// outranking is what an override of the given tier must not match: the
+// attributes of the tiers above it.
+func outranking(tier int) AttrFlags {
+	var flags AttrFlags
+	if tier > tierJunction && tier != tierOther {
+		flags |= AttrJunction
+	}
+	if tier > tierSymlink && tier != tierOther {
+		flags |= AttrSymlink
+	}
+	if tier > tierHiddenSystem && tier != tierOther {
+		flags |= AttrHidden | AttrSystem
+	}
+	return flags
+}
+
 func (fh *FileHighlighter) CombineRules() {
 	fh.Rules = nil
+	var plain, overrides []HighlightRule
+	for _, r := range fh.UserRules {
+		if r.UseDefaults {
+			r.implicitClear = outranking(overrideTier(&r))
+			overrides = append(overrides, r)
+		} else {
+			plain = append(plain, r)
+		}
+	}
 	if config.App.HighlightPriority == 1 { // Theme wins
 		fh.Rules = append(fh.Rules, fh.ThemeRules...)
-		fh.Rules = append(fh.Rules, fh.UserRules...)
+		fh.Rules = append(fh.Rules, plain...)
 	} else { // User wins
-		fh.Rules = append(fh.Rules, fh.UserRules...)
+		fh.Rules = append(fh.Rules, plain...)
 		fh.Rules = append(fh.Rules, fh.ThemeRules...)
 	}
+	// The overrides are applied last, lowest tier first and, inside a tier,
+	// the later section first, so that the highest tier and the earliest
+	// section decide a colour both name.
+	sort.SliceStable(overrides, func(i, j int) bool {
+		return overrideTier(&overrides[i]) > overrideTier(&overrides[j])
+	})
+	for start := 0; start < len(overrides); {
+		end := start
+		for end < len(overrides) && overrideTier(&overrides[end]) == overrideTier(&overrides[start]) {
+			end++
+		}
+		for i, j := start, end-1; i < j; i, j = i+1, j-1 {
+			overrides[i], overrides[j] = overrides[j], overrides[i]
+		}
+		start = end
+	}
+	fh.overrides = overrides
+
+	// Rules just got a new identity (theme switch or rule reload is the only
+	// way CombineRules runs), so every entry matchCache holds was matched
+	// against a ruleset that no longer applies. Drop it rather than try to
+	// key around it: nil is enough, matchedRulesCached allocates lazily.
+	fh.matchCache = nil
+
+	// A rule whose DateRelative window is set reads time.Now() inside
+	// Match, so its answer for the very same file drifts on its own as the
+	// clock advances — caching that against the file's own attributes would
+	// go stale without any file, theme or rule actually changing. That is
+	// rare enough (most highlight rules only match name masks and static
+	// attributes) that bypassing the cache entirely for the whole ruleset
+	// whenever it happens is simpler, and safer, than trying to add a time
+	// bucket to the cache key.
+	fh.hasVolatileRules = false
+	for _, r := range append(append([]HighlightRule(nil), fh.Rules...), fh.overrides...) {
+		if r.DateRelative && (r.DateAfterDur > 0 || r.DateBeforeDur > 0) {
+			fh.hasVolatileRules = true
+			break
+		}
+	}
+}
+
+// matchedRules returns, in order, the indices into fh.Rules of every rule
+// that GetColor/GetMarker would actually consult for item: each rule whose
+// Match(item) is true, stopping right after the first such rule whose
+// ContinueProcessing is false (both callers already stop there today), or
+// running to the end of Rules if every match along the way cascades. Rules
+// that do not match are skipped over, exactly as both callers' own loops
+// already did, so this trace is the one piece of work GetColor and GetMarker
+// actually share, and the one worth caching: it is where every
+// filepath.Match call the profile for #884 found happens.
+func (fh *FileHighlighter) matchedRules(item *vfs.VFSItem) []int {
+	var matched []int
+	for i := range fh.Rules {
+		if fh.Rules[i].Match(item) {
+			matched = append(matched, i)
+			if !fh.Rules[i].ContinueProcessing {
+				break
+			}
+		}
+	}
+	// UseDefaults overrides come on top of whatever the walk found, wherever
+	// the walk stopped (f4#912).
+	for i := range fh.overrides {
+		if fh.overrides[i].Match(item) {
+			matched = append(matched, len(fh.Rules)+i)
+		}
+	}
+	return matched
+}
+
+// matchedRulesCached is matchedRules with GetColor/GetMarker's cache in
+// front of it, keyed by highlightCacheKeyFor(item). A hit returns the exact
+// slice computed last time without touching a single rule's Match/
+// filepath.Match; nothing here mutates the returned slice afterwards.
+func (fh *FileHighlighter) matchedRulesCached(item *vfs.VFSItem) []int {
+	if fh.hasVolatileRules {
+		return fh.matchedRules(item)
+	}
+	key := highlightCacheKeyFor(item)
+	if fh.matchCache != nil {
+		if cached, ok := fh.matchCache[key]; ok {
+			return cached
+		}
+	} else {
+		fh.matchCache = make(map[highlightCacheKey][]int)
+	}
+	if len(fh.matchCache) >= highlightCacheMaxEntries {
+		fh.matchCache = make(map[highlightCacheKey][]int)
+	}
+	matched := fh.matchedRules(item)
+	fh.matchCache[key] = matched
+	return matched
 }
 
 // ruleSection pairs a parsed rule with the ini section it came from. The
@@ -232,6 +452,7 @@ func ParseRuleSections(ini *ini.File, prefix string) []ruleSection {
 		}
 
 		rule.ContinueProcessing = ini.GetString(secName, "ContinueProcessing", "0") == "1"
+		rule.UseDefaults = ini.GetString(secName, "UseDefaults", "0") == "1"
 
 		rule.Mark = firstIniValue(ini, secName, "Mark", "MarkChar")
 
@@ -282,10 +503,18 @@ func parseAttrFlags(s string) AttrFlags {
 			flags |= AttrArchive
 		case "symlink", "link", "sym", "l":
 			flags |= AttrSymlink
+		case "junction", "junc", "j":
+			flags |= AttrJunction
 		}
 	}
 	return flags
 }
+
+// filepathMatchFn is the filepath.Match seam highlight_cache_test.go
+// substitutes with a counting wrapper, the same pattern
+// internal/panel/menu_cache_test.go already uses for BuildMenuBarItems.
+// Production code always leaves it as filepath.Match.
+var filepathMatchFn = filepath.Match
 
 func (r *HighlightRule) Match(item *vfs.VFSItem) bool {
 	// Определение платформозависимых флагов "на лету"
@@ -320,20 +549,24 @@ func (r *HighlightRule) Match(item *vfs.VFSItem) bool {
 			return isArchive == set
 		case AttrSymlink:
 			return item.IsSymlink == set
+		case AttrJunction:
+			// Only a Windows directory junction or volume mount point;
+			// Symlink keeps matching every link, a junction included.
+			return (vfs.LinkKindOf(item) == vfs.LinkJunction) == set
 		}
 		return true
 	}
 
 	// Проверка AttrSet (должны присутствовать)
-	for _, f := range []AttrFlags{AttrDirectory, AttrHidden, AttrExecutable, AttrReadOnly, AttrSystem, AttrArchive, AttrSymlink} {
+	for _, f := range []AttrFlags{AttrDirectory, AttrHidden, AttrExecutable, AttrReadOnly, AttrSystem, AttrArchive, AttrSymlink, AttrJunction} {
 		if r.AttrSet&f != 0 && !matchAttr(f, true) {
 			return false
 		}
 	}
 
 	// Проверка AttrClear (должны отсутствовать)
-	for _, f := range []AttrFlags{AttrDirectory, AttrHidden, AttrExecutable, AttrReadOnly, AttrSystem, AttrArchive, AttrSymlink} {
-		if r.AttrClear&f != 0 && !matchAttr(f, false) {
+	for _, f := range []AttrFlags{AttrDirectory, AttrHidden, AttrExecutable, AttrReadOnly, AttrSystem, AttrArchive, AttrSymlink, AttrJunction} {
+		if (r.AttrClear|r.implicitClear)&f != 0 && !matchAttr(f, false) {
 			return false
 		}
 	}
@@ -388,12 +621,38 @@ func (r *HighlightRule) Match(item *vfs.VFSItem) bool {
 		if r.IgnoreCase {
 			m = strings.ToLower(m)
 		}
-		matched, err := filepath.Match(m, name)
+		matched, err := filepathMatchFn(m, name)
 		if err == nil && matched {
 			return true
 		}
 	}
 	return false
+}
+
+// colorFor is the colour expression a rule keeps for one of the four states.
+// Each of the four states answers only to its own key, as in far2l, where
+// every state starts from its own panel colour (hilight.cpp, FarColor[]). A
+// selected file under the cursor that fell back to SelectedColor was painted
+// exactly like the selection around it once that colour had a background, and
+// the cursor disappeared (#1150).
+func (r *HighlightRule) colorFor(isSelected, isCursor bool) string {
+	switch {
+	case isCursor && isSelected:
+		return r.SelectedCursorStr
+	case isCursor:
+		return r.CursorStr
+	case isSelected:
+		return r.SelectedStr
+	}
+	return r.NormalStr
+}
+
+// ruleAt resolves an index from matchedRules into either list.
+func (fh *FileHighlighter) ruleAt(idx int) *HighlightRule {
+	if idx >= len(fh.Rules) {
+		return &fh.overrides[idx-len(fh.Rules)]
+	}
+	return &fh.Rules[idx]
 }
 
 func (fh *FileHighlighter) GetColor(item *vfs.VFSItem, defaultAttr uint64, isSelected, isCursor bool) uint64 {
@@ -403,50 +662,18 @@ func (fh *FileHighlighter) GetColor(item *vfs.VFSItem, defaultAttr uint64, isSel
 	attr := defaultAttr
 	matchedAny := false
 
-	for _, rule := range fh.Rules {
-		if rule.Match(item) {
-			colorExpr := ""
-			if isCursor {
-				if isSelected {
-					if rule.SelectedCursorStr != "" {
-						colorExpr = rule.SelectedCursorStr
-					} else if rule.SelectedStr != "" {
-						colorExpr = rule.SelectedStr
-					}
-				} else {
-					if rule.CursorStr != "" {
-						colorExpr = rule.CursorStr
-					}
-				}
-			} else if isSelected {
-				if rule.SelectedStr != "" {
-					colorExpr = rule.SelectedStr
-				}
-			} else {
-				if rule.NormalStr != "" {
-					colorExpr = rule.NormalStr
-				}
-			}
-
-			if colorExpr != "" {
-				attr = ParseFarColor(colorExpr, attr)
-				matchedAny = true
-			}
-
-			// Если каскадная обработка выключена, сразу возвращаем результат
-			if !rule.ContinueProcessing {
-				if matchedAny {
-					if config.App.EnforceColorCorrection {
-						fg, bg := GetColorRGBBoth(attr)
-						nfg := CorrectContrast(fg, bg)
-						if nfg != fg {
-							attr = vtui.SetRGBFore(attr, nfg)
-						}
-					}
-					return attr
-				}
-				return defaultAttr
-			}
+	// matchedRulesCached does the part of this that used to run
+	// filepath.Match against every rule on every call — the traversal it
+	// returns already stops exactly where the loop below used to return
+	// (at the first non-cascading match, or at the end of Rules), because
+	// that stopping point never depended on isSelected/isCursor/defaultAttr
+	// to begin with, only on rule.Match and rule.ContinueProcessing (#884).
+	for _, idx := range fh.matchedRulesCached(item) {
+		rule := fh.ruleAt(idx)
+		colorExpr := rule.colorFor(isSelected, isCursor)
+		if colorExpr != "" {
+			attr = ParseFarColor(colorExpr, attr)
+			matchedAny = true
 		}
 	}
 
@@ -468,14 +695,24 @@ func (fh *FileHighlighter) GetMarker(item *vfs.VFSItem) string {
 	if item.Name == ".." {
 		return ""
 	}
-	for _, rule := range fh.Rules {
-		if rule.Match(item) {
-			if rule.Mark != "" {
-				return rule.Mark
-			}
-			if !rule.ContinueProcessing {
-				break
-			}
+	// See GetColor: matchedRulesCached's trace already stops exactly where
+	// this loop used to (the first non-cascading match, or the end of
+	// Rules), so replaying it here needs no ContinueProcessing check of its
+	// own.
+	matched := fh.matchedRulesCached(item)
+	// A UseDefaults override is applied last, so its mark wins; the one applied
+	// last is the one that decides.
+	for i := len(matched) - 1; i >= 0 && matched[i] >= len(fh.Rules); i-- {
+		if mark := fh.ruleAt(matched[i]).Mark; mark != "" {
+			return mark
+		}
+	}
+	for _, idx := range matched {
+		if idx >= len(fh.Rules) {
+			break
+		}
+		if fh.Rules[idx].Mark != "" {
+			return fh.Rules[idx].Mark
 		}
 	}
 	return ""

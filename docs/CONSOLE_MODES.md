@@ -52,15 +52,22 @@ Unix.** Основной режим обязан сохранять PTY.
 ### 2.2. GUI-бэкенды
 
 `internal/gui/run_unix.go`/`run_windows.go` → `vtui.RunInGUIWindow(...)`; GUI-хосты вызывают
-`vtui.SetActiveBackend("x11"|"wayland"|"gogpu"|"ebiten"|"win32")`, в чистом терминале
+`vtui.SetActiveBackend("x11"|"wayland"|"gogpu"|"ebiten"|"win32"|"cocoa")`, в чистом терминале
 `vtui.ActiveBackend() == ""`. Плюс `checkAndDetach()` переоткрывает процесс с
 `stdin/stdout/stderr → /dev/null`. Хостового терминала физически нет → **в GUI всегда
 откат на «свой терминал»**.
 
 ### 2.3. Wine
 
-`vtui.IsWine()` уже есть и используется в `main.go`. Под Wine ConPTY сырой → PTY считаем
-недоступным и **не пытаемся его создавать**.
+`vtui.IsWine()` уже есть и используется в `main.go`. Под Wine ConPTY сырой, поэтому его
+**не создаём**. С версии, где появился нативный терминал (WINE.md §18.3), у PTY под Wine есть
+второй путь: настоящий pty хоста через libwinescape (`Spawn`/`StartPTY`, `internal/terminal/pty_wine_windows.go`).
+Он включается тем же решением, что и весь posix-режим файлового слоя, `hostmode.Posix()`, то есть
+подчиняется настройке «использовать winescape» (`UseWinescape`), и только если выделение
+псевдотерминала на хосте действительно удалось (проба выполняется один раз). Оболочка тогда —
+`$SHELL` хоста, а не `cmd.exe`, и вся сборка текста для неё (кавычки, приглашение, `cd`)
+идёт через `terminal.WindowsShellSyntax()`. Если галка выключена или проба не удалась,
+остаётся прежнее поведение: PTY нет, режим — simple-inline или simple-captured.
 
 ## 3. Три режима исполнения команд
 
@@ -140,9 +147,10 @@ func resolveShellMode(cfg ShellModeConfig) ShellMode
 | Среда | конфиг `own` | конфиг `host` |
 |---|---|---|
 | TTY + PTY ок | own | **host** |
-| TTY, PTY нет (Wine в консоли) | simple-inline | simple-inline |
+| TTY, PTY нет (Wine в консоли; `UseWinescape` выключена или проба pty не удалась) | simple-inline | simple-inline |
 | GUI + PTY ок | own | own |
-| GUI, PTY нет (дефолт Wine) | simple-captured | simple-captured |
+| GUI, PTY нет (Wine; `UseWinescape` выключена или проба pty не удалась) | simple-captured | simple-captured |
+| Wine, нативный pty хоста доступен | own | host |
 
 Режим вычисляется **один раз при создании `PanelsFrame`** и хранится в `pf.shellMode`.
 Переключение на лету не поддерживается: `TERM` и прочее окружение шелла формируются при
@@ -170,6 +178,21 @@ func resolveShellMode(cfg ShellModeConfig) ShellMode
   изменение содержимого командной строки.
 
 В mc-стиле `n = 0`, scroll region не трогаем, оверлей не рисуем.
+
+### 4.2a. Зеркало консоли рядом со скрытой панелью (`HostConsoleDefaultColors`)
+
+Пока видна хотя бы одна панель, f4 остаётся на alt screen и сам рисует зеркало консоли на
+месте скрытой панели (Ctrl+F1 / Ctrl+F2) — настоящая консоль хоста лежит в primary screen и
+«просветить» сквозь alt screen нельзя. Ключ `HostConsoleDefaultColors` (раздел `[Panel]`,
+f4:config; по умолчанию `0` — как раньше, чёрное зеркало) в обоих Host-режимах (с оверлеем и
+без) рисует ячейки зеркала цветами терминала по умолчанию (`SGR 39` / `49`): прозрачный или
+темизированный терминал виден через зеркало, как через настоящую консоль. Режимы выбраны так,
+потому что запрос автора (unxed/f4#1675) не различает их, а различие оверлея касается только
+нижних строк. Явно закрашенные программой ячейки (в том числе чёрным) остаются как есть;
+превращаются лишь цвета «по умолчанию» (`SGR 0`, `39`, `49`). Реализация — `vtui.SetDefaultFore` /
+`SetDefaultBack` (флаги `ForegroundDefault` / `BackgroundDefault` атрибута, писатель ANSI
+пишет `39` / `49`) и `hostDefaultColors` в `internal/terminal/view_defaultcolors.go`; в режиме
+`own` ключ ничего не меняет.
 
 ### 4.3. Состояния и переходы
 
@@ -228,6 +251,17 @@ func (m mutedPTY) Write(p []byte) (int, error) { return len(p), nil }
 пойдёт не туда). Пользовательский ввод по-прежнему идёт через
 `pf.writePTY(pf.getActivePTY(), ...)` с настоящим бэкендом.
 
+На Windows ответ хостового терминала приходит к f4 не ребёнку, а во ввод f4 — как
+`KEY_EVENT` по символу. `internal/panel/host_console_replies.go` запоминает запросы, ушедшие
+из PTY (CPR, DSR, DA, DECRQM, цветовые OSC 4 и 10–19), собирает ответы из этих событий и
+пишет их обратно в PTY. Знать надо **каждый** запрос, которого ребёнок может ждать: ответы
+идут в порядке запросов, и один нераспознанный сбивал с шага все следующие. Far Manager
+спрашивает, обрамляя запрос двумя DA, и читает ввод, пока не увидит второй ответ DA; ответ
+DECRQM на его первый же запрос при старте уносил этот второй DA во ввод f4, и Far висел на
+пустом экране (#1376). Запрос, на который терминал промолчал, снимается первым же ответом
+на более поздний; запросы без ответа дольше `hostConsoleReplyWindow` забываются, чтобы
+следующий Esc снова был просто клавишей.
+
 ### 4.5. Ввод
 
 `PanelsFrame.ProcessKey` при скрытых панелях уже транслирует событие в байты через
@@ -270,9 +304,13 @@ keybar/menubar). Зеркало `termView.Resize()` — тем же размер
 
 ### 5.1. `ShellModeSimpleInline` (есть хостовый tty, PTY нет)
 
-Резидентного шелла нет. Каждая команда: `vtui.Suspend()` →
-`exec.Command(shell, "-c"/"/c", cmd)` с `Stdin/Stdout/Stderr = os.Stdin/os.Stdout/os.Stderr`
-и `cmd.Dir = <путь активной панели>` → `Wait()` → «Press any key» → `vtui.Resume()`.
+Резидентного шелла нет. Каждая команда: `vtui.Suspend()` → запуск с наследованием
+`stdio` и `cmd.Dir = <путь активной панели>` → `Wait()` → `vtui.Resume()`. Команда,
+запущенная с панелей, возвращает к ним сразу, как в Far и far2l и как в режимах с PTY
+(§4.8); вывод остаётся в консоли и виден по `Ctrl+O`. Паузы «Press any key» после
+команды больше нет (#897). В Windows-персоне это `cmd.exe /c`; в POSIX-персоне Wine это
+`$SHELL -c` через `libwinescape.Spawn`. Деградация PTY не должна менять язык
+командной строки.
 Прототип уже есть — `runExternalEditor()` в `actions.go`. `cd` и смена диска перехватываются
 самим f4 до отправки в шелл, так что отсутствие резидентного шелла почти не заметно.
 
@@ -285,8 +323,10 @@ keybar/menubar). Зеркало `termView.Resize()` — тем же размер
 Код почти весь готов: `showRemoteCommandOutput(pf, NewLocalCommandRunner(), dir, cmd)`
 (`remote_command.go` + `command_runner.go`) — окно со стриминговым выводом, скроллом и
 отменой по закрытию. Плюс существующие `view:<<` / `edit:<<` / `clip:<<`
-(`executeCapturedCommand`). Интерактивные программы не поддерживаются — тост
-«terminal is not available in this environment».
+(`executeCapturedCommand`). В Windows-персоне используется `cmd.exe`; в POSIX-персоне
+Wine оба пути используют host shell и host pipes через `libwinescape.Spawn`.
+Интерактивные программы не поддерживаются — тост «terminal is not available in this
+environment».
 
 ## 6. Новое API в vtui
 

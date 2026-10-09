@@ -34,6 +34,91 @@ func NormalizeMods(mods vtinput.ControlKeyState) vtinput.ControlKeyState {
 	return n
 }
 
+// layoutShortcutVK returns the physical Latin-key equivalent of a Cyrillic
+// character produced by the standard Russian keyboard layout. Wayland gives
+// vtui the layout-dependent keysym, so Ctrl+N arrives as Ctrl+т and has no
+// useful VirtualKeyCode. Shortcut chords should keep their physical meaning
+// while ordinary unmodified text must remain Unicode text.
+func layoutShortcutVK(e *vtinput.InputEvent) uint16 {
+	if e == nil || e.Char == 0 {
+		return 0
+	}
+	if e.ControlKeyState&(vtinput.LeftCtrlPressed|vtinput.RightCtrlPressed|vtinput.LeftAltPressed|vtinput.RightAltPressed) == 0 {
+		return 0
+	}
+	switch unicode.ToLower(e.Char) {
+	case 'й':
+		return vtinput.VK_Q
+	case 'ц':
+		return vtinput.VK_W
+	case 'у':
+		return vtinput.VK_E
+	case 'к':
+		return vtinput.VK_R
+	case 'е':
+		return vtinput.VK_T
+	case 'н':
+		return vtinput.VK_Y
+	case 'г':
+		return vtinput.VK_U
+	case 'ш':
+		return vtinput.VK_I
+	case 'щ':
+		return vtinput.VK_O
+	case 'з':
+		return vtinput.VK_P
+	case 'ф':
+		return vtinput.VK_A
+	case 'ы':
+		return vtinput.VK_S
+	case 'в':
+		return vtinput.VK_D
+	case 'а':
+		return vtinput.VK_F
+	case 'п':
+		return vtinput.VK_G
+	case 'р':
+		return vtinput.VK_H
+	case 'о':
+		return vtinput.VK_J
+	case 'л':
+		return vtinput.VK_K
+	case 'д':
+		return vtinput.VK_L
+	case 'я':
+		return vtinput.VK_Z
+	case 'ч':
+		return vtinput.VK_X
+	case 'с':
+		return vtinput.VK_C
+	case 'м':
+		return vtinput.VK_V
+	case 'и':
+		return vtinput.VK_B
+	case 'т':
+		return vtinput.VK_N
+	case 'ь':
+		return vtinput.VK_M
+	default:
+		return 0
+	}
+}
+
+// NormalizeLayoutShortcut restores a physical virtual key for a Cyrillic
+// shortcut when the GUI backend could only provide the translated character.
+// It intentionally leaves the character intact for text input and preserves
+// explicitly supplied virtual keys from other backends.
+func NormalizeLayoutShortcut(e *vtinput.InputEvent) bool {
+	if e == nil || e.Type != vtinput.KeyEventType || e.VirtualKeyCode != 0 {
+		return false
+	}
+	if vk := layoutShortcutVK(e); vk != 0 {
+		e.VirtualKeyCode = vk
+		return true
+	}
+	return false
+}
+
 var farKeyNames = map[uint16]string{
 	vtinput.VK_RETURN:   "Enter",
 	vtinput.VK_ESCAPE:   "Esc",
@@ -53,6 +138,7 @@ var farKeyNames = map[uint16]string{
 	vtinput.VK_MULTIPLY: "Multiply",
 	vtinput.VK_ADD:      "Add",
 	vtinput.VK_SUBTRACT: "Subtract",
+	vtinput.VK_NUMPAD5:  "Num5",
 	vtinput.VK_DECIMAL:  "Decimal",
 	vtinput.VK_DIVIDE:   "Divide",
 }
@@ -71,6 +157,16 @@ func EventToFarString(e *vtinput.InputEvent) string {
 	}
 
 	vk := e.VirtualKeyCode
+	layoutVK := layoutShortcutVK(e)
+	if layoutVK != 0 {
+		vk = layoutVK
+	}
+	// Bare keypad 5 is the Far viewer shortcut with either Num Lock state.
+	// Preserve modified Clear for the existing Ctrl+Clear panel-layout command.
+	if vk == vtinput.VK_CLEAR && mods&(vtinput.LeftCtrlPressed|vtinput.LeftAltPressed|vtinput.ShiftPressed) == 0 {
+		sb.WriteString("Num5")
+		return sb.String()
+	}
 	// Windows marks the numeric-keypad Enter as enhanced, while the main
 	// keyboard Enter is not enhanced. Delete is the opposite: the navigation
 	// cluster key is enhanced and the keypad decimal/delete key is not.
@@ -89,6 +185,10 @@ func EventToFarString(e *vtinput.InputEvent) string {
 		sb.WriteString(name)
 	} else if vk >= vtinput.VK_F1 && vk <= vtinput.VK_F24 {
 		fmt.Fprintf(&sb, "F%d", vk-vtinput.VK_F1+1)
+	} else if layoutVK != 0 {
+		// The character is the active-layout spelling of a physical shortcut;
+		// once its VK is restored, name the key by that physical Latin key.
+		sb.WriteRune(rune(vk))
 	} else if unicode.IsLetter(e.Char) || unicode.IsDigit(e.Char) {
 		// Terminal readers expose non-Latin input as a text-only event, while
 		// Win32 supplies both the physical VK and the translated character.
@@ -151,10 +251,15 @@ var vkSpelledHotkeys = map[uint16]bool{
 // explicitly unbound on the RCtrl spelling.
 func EventToHotkeyString(e *vtinput.InputEvent) string {
 	key := EventToFarString(e)
-	if vkSpelledHotkeys[e.VirtualKeyCode] && e.Char != 0 {
+	vk := e.VirtualKeyCode
+	if normalized := layoutShortcutVK(e); normalized != 0 {
+		vk = normalized
+	}
+	if vkSpelledHotkeys[vk] && e.Char != 0 {
 		// Re-run the naming without the character so the modifiers,
 		// and only the modifiers, keep coming from one place.
 		withoutChar := *e
+		withoutChar.VirtualKeyCode = vk
 		withoutChar.Char = 0
 		key = EventToFarString(&withoutChar)
 	}
@@ -264,9 +369,9 @@ func ParseFarKey(s string) *vtinput.InputEvent {
 				e.VirtualKeyCode = vtinput.VK_OEM_PERIOD
 			case ',':
 				e.VirtualKeyCode = vtinput.VK_OEM_COMMA
-			case '-':
+			case '-', '_':
 				e.VirtualKeyCode = vtinput.VK_OEM_MINUS
-			case '=':
+			case '=', '+':
 				e.VirtualKeyCode = vtinput.VK_OEM_PLUS
 			case '/':
 				e.VirtualKeyCode = vtinput.VK_OEM_2

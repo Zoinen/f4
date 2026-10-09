@@ -49,6 +49,12 @@ Since the servers must authenticate with each other, `f4` supports two seamless 
     If one host is already authorized to connect to the other (i.e. `authorized_keys` contains the public key), the transfer succeeds out of the box.
 2.  **SSH Agent Forwarding (Secure local key delegation):**
     If your private keys are stored only on your local desktop machine, `f4` automatically forwards your active local `ssh-agent`. The executing host can then authenticate with the other host using your local keys *without* those keys ever being exposed or written to disk.
+3.  **Saved-Connection Password (opt-in, off by default, f4#370):**
+    If neither of the above works, but `f4`'s own NetFox connection list already has a saved password for the *other* server, you can let `f4` use it: turn on **"Password auth for server-to-server transfers"** in Settings Center → Network & connections → NetFox connections. With it on, a failed key/agent attempt retries using that saved password.
+
+    This is off by default and deliberately not automatic like the two paths above: using it means one of the servers ends up authenticating to the other with a password that server never needed to know before. When it does apply, that password reaches the executing host only through the same encrypted FISH+ channel every ordinary file transfer already uses, lands in a private, freshly created file (`mktemp`, mode 0600) on that host, is consumed there by `sshpass -f`, and is deleted again immediately after -- never as part of the `scp` command line, an environment variable, or a log line.
+
+    A further idea the same ticket raises -- letting a server authenticate to another server using *your local machine's own* SSH private key, if both happen to accept it -- is not implemented yet; it needs its own opt-in and is left for a follow-up.
 
 **Username Requirements:**
 To ensure S2S copying works correctly, the **username MUST be explicitly specified** in the connection settings for both servers in `f4` (e.g., `userA@HostA` and `userB@HostB`). If the username is omitted in the f4 connection dialog, `scp` will attempt to use the executing host's local username, which may cause authentication failures if the usernames on the two servers do not match.

@@ -3,27 +3,12 @@ package panel
 import (
 	"strings"
 
-	"github.com/unxed/f4/internal/fileops"
-	"github.com/unxed/f4/internal/i18n"
 	"github.com/unxed/f4/internal/macro"
 	"github.com/unxed/f4/internal/semantic"
 	"github.com/unxed/f4/sdk/extui"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 )
-
-func semanticFileSize(entry *FileEntry) string {
-	if entry.IsDir {
-		if entry.SizeCalculated {
-			return fileops.FormatIntWithSpaces(entry.Size)
-		}
-		if entry.Name == ".." {
-			return i18n.Msg("Panel.UpDir")
-		}
-		return ""
-	}
-	return fileops.FormatIntWithSpaces(entry.Size)
-}
 
 func viewModeName(mode ViewMode) string {
 	switch mode {
@@ -170,7 +155,7 @@ func (fp *FileSystemPanel) SemanticPanelModel(ctx *vtui.SemanticContext, side in
 			Index:          i,
 			Name:           entry.Name,
 			Size:           entry.Size,
-			SizeText:       semanticFileSize(entry),
+			SizeText:       entrySizeText(entry),
 			IsDir:          entry.IsDir,
 			IsUp:           entry.Name == "..",
 			IsHidden:       entry.IsHidden,
@@ -183,7 +168,13 @@ func (fp *FileSystemPanel) SemanticPanelModel(ctx *vtui.SemanticContext, side in
 		})
 	}
 
+	groups := make([]extui.PanelGroupModel, len(fp.Groups()))
+	for i, g := range fp.Groups() {
+		groups[i] = extui.PanelGroupModel{Key: g.Key, Title: g.Title, StartIndex: g.StartIndex, Count: g.Count}
+	}
 	return extui.PanelModel{
+		GroupBy: GroupModes[ValidGroupMode(fp.GroupBy)].ID, GroupReverse: fp.GroupReverse, GroupFoldersSeparately: fp.GroupFoldersSeparately,
+		DisplayTop: fp.Table.TopPos, Groups: groups,
 		ID:            vtui.SemanticID(fp),
 		Side:          side,
 		Active:        active,
@@ -193,7 +184,7 @@ func (fp *FileSystemPanel) SemanticPanelModel(ctx *vtui.SemanticContext, side in
 		SortMode:      sortModeName(fp.SortMode),
 		SortReverse:   fp.SortReverse,
 		Cursor:        fp.GetCursorIndex(),
-		Top:           fp.Table.TopPos,
+		Top:           fp.FileTop(),
 		Loading:       fp.IsLoading,
 		FastFind:      fp.FastFindMode,
 		FastFindText:  fp.FastFindStr,

@@ -698,6 +698,46 @@ func TestActionExecute_PtyCommandFormatting(t *testing.T) {
 	}
 }
 
+// TestActionExecute_HostModeHandsScreenToHostConsole is the regression for
+// #1672: Enter on a runnable file (Far.exe in the panel) wrote the command to
+// the PTY and hid the panels, but in ShellModeHost never entered the host
+// console. The host terminal was then never asked the child's queries, so Far
+// Manager sat on its banner waiting for a DA reply nobody sent. The same
+// program typed on the command line worked, because that path did enter it.
+func TestActionExecute_HostModeHandsScreenToHostConsole(t *testing.T) {
+	t.Cleanup(paneltest.SwapFrameManager(t))
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	pf := paneltest.SetupMockPanelsFrame(t)
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+	pf.ShellMode = terminal.ShellModeHost
+
+	tmp := t.TempDir()
+	fileName := "app.exe"
+	if runtime.GOOS != "windows" {
+		fileName = "app.sh"
+	}
+	filePath := filepath.Join(tmp, fileName)
+	if err := os.WriteFile(filePath, []byte("#!/bin/sh\nexit 0"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	actionExecute(pf, vfs.NewOSVFS(tmp), tmp, fileName, filePath)
+
+	timeout := time.After(2 * time.Second)
+	for pf.ShowPanels {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		case <-timeout:
+			t.Fatal("Timeout waiting for execution task")
+		}
+	}
+	if !pf.IsHostConsoleActive() {
+		t.Fatal("running a file from the panel in ShellModeHost must enter the host console, or the child's queries are never answered")
+	}
+}
+
 func TestActionExecute_HistoryQuoting(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	pf := paneltest.SetupMockPanelsFrame(t)
@@ -756,6 +796,32 @@ Times=804c4587aa28dd01 004e237daa28dd01 0021f27baa28dd01
 		t.Errorf("Record 1 mismatch: %+v", recs[1])
 	}
 }
+
+func TestImportFar2lSettingsCopiesAvailableFiles(t *testing.T) {
+	sourceDir := t.TempDir()
+	targetDir := filepath.Join(t.TempDir(), "f4", "settings")
+	source := filepath.Join(sourceDir, "bookmarks.ini")
+	target := filepath.Join(targetDir, "bookmarks.ini")
+	content := []byte("[0]\nPath=/home/user\n")
+	if err := os.WriteFile(source, content, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := importFar2lSettings(sourceDir, []far2lSettingFile{
+		{name: "bookmarks.ini", target: target},
+		{name: "associations.ini", target: filepath.Join(targetDir, "associations.ini")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "bookmarks.ini" {
+		t.Fatalf("imported files = %#v", got)
+	}
+	if actual, err := os.ReadFile(target); err != nil || string(actual) != string(content) {
+		t.Fatalf("imported bookmarks = %q, err=%v", actual, err)
+	}
+}
+
 func TestActionDelete_SuccessorLogic(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	pf := panel.NewPanelsFrame()
@@ -865,7 +931,393 @@ func TestActionCopyMove_TrailingSlash(t *testing.T) {
 	vtui.FrameManager.Pop()
 }
 
-func TestActionCopyMove_ModeMenuDoesNotCoverButtons(t *testing.T) {
+// TestActionCopyMove_TreeDestination drives F5 (actionCopyMove) with the
+// tree panel (Ctrl+T) focused: the destination must be the tree's
+// highlighted node, not the (here unrelated) inactive panel, and the
+// selection must come from the panel that opened the tree, not the hidden
+// FileSystemPanel sitting underneath the tree's own slot -- see
+// treeCopyMoveTarget's doc comment (f4#1602 part 3).
+func TestActionCopyMove_TreeDestination(t *testing.T) {
+	t.Cleanup(paneltest.SwapFrameManager(t))
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	theme.SetDefaultF4Palette()
+
+	pf := paneltest.SetupMockPanelsFrame(t)
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+	vtui.FrameManager.Push(pf)
+
+	root := t.TempDir()
+	fromDir := filepath.Join(root, "from")
+	toDir := filepath.Join(root, "to")
+	if err := os.Mkdir(fromDir, 0o700); err != nil {
+		t.Fatalf("mkdir from: %v", err)
+	}
+	if err := os.Mkdir(toDir, 0o700); err != nil {
+		t.Fatalf("mkdir to: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(fromDir, "test.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("write test.txt: %v", err)
+	}
+
+	fspFrom := panel.NewFileSystemPanel(0, 0, 40, 20, vfs.NewOSVFS(fromDir))
+	paneltest.WaitForLoad(t, fspFrom)
+	idx := -1
+	for i, e := range fspFrom.Entries {
+		if e.Name == "test.txt" {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		t.Fatalf("test.txt not found in %+v", fspFrom.Entries)
+	}
+	fspFrom.SetCursorIndex(idx)
+
+	fspTo := panel.NewFileSystemPanel(0, 0, 40, 20, vfs.NewOSVFS(toDir))
+	paneltest.WaitForLoad(t, fspTo)
+	wantDest := fspTo.Vfs.GetPath()
+
+	tp := panel.NewTreePanel(fspFrom)
+	// revealPath lands the cursor on fromDir's own row; "to" is its next
+	// sibling (both are root's only children), so one Down reaches it.
+	if got := tp.GetSelectedName(); got != "from" {
+		t.Fatalf("precondition: tree cursor on %q, want \"from\"", got)
+	}
+	if !tp.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_DOWN}) {
+		t.Fatal("Down should be consumed by the tree's table")
+	}
+	if got := tp.GetSelectedName(); got != "to" {
+		t.Fatalf("precondition: tree cursor on %q after Down, want \"to\"", got)
+	}
+	tp.SetFocus(true)
+	pf.AltPanels[pf.ActiveIdx] = tp
+
+	if !fileCopyMoveEnabled(false)() {
+		t.Fatal("Copy should be enabled with the tree focused and a real selection on its source panel")
+	}
+
+	actionCopyMove(pf, false)
+
+	top := vtui.FrameManager.GetTopFrame()
+	dlg, ok := top.(vtui.Container)
+	if !ok {
+		t.Fatal("Copy dialog not found on top")
+	}
+	var editDest *vtui.Edit
+	for _, itm := range dlg.GetChildren() {
+		if e, ok := itm.(*vtui.Edit); ok {
+			editDest = e
+			break
+		}
+	}
+	if editDest == nil {
+		t.Fatal("Destination edit field not found in dialog")
+	}
+
+	wantText := wantDest + string(os.PathSeparator)
+	if got := editDest.GetText(); got != wantText {
+		t.Errorf("Copy dialog destination = %q, want %q (the tree's highlighted node)", got, wantText)
+	}
+
+	top.SetExitCode(-1)
+	vtui.FrameManager.Pop()
+}
+
+// TestActionMkDir_TreeDestination drives F7 (actionMkDir) with the tree
+// panel (Ctrl+T) focused: the new folder must be created as a child of the
+// tree's highlighted node, not of the active panel's own directory, and the
+// tree cursor must land on it afterwards -- see actionMkDir's own
+// focusedTreePanel branch and TreePanel.RefreshChildrenAndSelect (f4#1602
+// part 4).
+func TestActionMkDir_TreeDestination(t *testing.T) {
+	t.Cleanup(paneltest.SwapFrameManager(t))
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	theme.SetDefaultF4Palette()
+
+	oldQueue := fileops.GlobalQueueManager
+	queue := fileops.NewQueueManagerWithTasks()
+	fileops.GlobalQueueManager = queue
+	defer func() { fileops.GlobalQueueManager = oldQueue }()
+
+	pf := paneltest.SetupMockPanelsFrame(t)
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+	vtui.FrameManager.Push(pf)
+
+	root := t.TempDir()
+	fromDir := filepath.Join(root, "from")
+	toDir := filepath.Join(root, "to")
+	if err := os.Mkdir(fromDir, 0o700); err != nil {
+		t.Fatalf("mkdir from: %v", err)
+	}
+	if err := os.Mkdir(toDir, 0o700); err != nil {
+		t.Fatalf("mkdir to: %v", err)
+	}
+
+	fspFrom := panel.NewFileSystemPanel(0, 0, 40, 20, vfs.NewOSVFS(fromDir))
+	paneltest.WaitForLoad(t, fspFrom)
+
+	tp := panel.NewTreePanel(fspFrom)
+	// revealPath lands the cursor on fromDir's own row; "to" is its next
+	// sibling (both are root's only children), so one Down reaches it --
+	// same precondition TestActionCopyMove_TreeDestination relies on.
+	if got := tp.GetSelectedName(); got != "from" {
+		t.Fatalf("precondition: tree cursor on %q, want \"from\"", got)
+	}
+	if !tp.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_DOWN}) {
+		t.Fatal("Down should be consumed by the tree's table")
+	}
+	if got := tp.GetSelectedName(); got != "to" {
+		t.Fatalf("precondition: tree cursor on %q after Down, want \"to\"", got)
+	}
+	tp.SetFocus(true)
+	pf.AltPanels[pf.ActiveIdx] = tp
+
+	actionMkDir(pf)
+
+	top := vtui.FrameManager.GetTopFrame()
+	if top == nil || top.GetTitle() != i18n.Msg("MakeFolder.Title") {
+		t.Fatalf("Expected MkDir dialog, got %v", top)
+	}
+	dlg, ok := top.(vtui.Container)
+	if !ok {
+		t.Fatal("MkDir dialog not found on top")
+	}
+	var editName *vtui.Edit
+	var btnOk *vtui.Button
+	var comboMode *vtui.ComboBox
+	for _, itm := range dlg.GetChildren() {
+		if e, ok := itm.(*vtui.Edit); ok && editName == nil {
+			editName = e
+		}
+		if b, ok := itm.(*vtui.Button); ok && b.IsDefault {
+			btnOk = b
+		}
+		if c, ok := itm.(*vtui.ComboBox); ok {
+			comboMode = c
+		}
+	}
+	if editName == nil || btnOk == nil || comboMode == nil {
+		t.Fatal("MkDir dialog missing its name field, mode combo or default (Ok) button")
+	}
+	editName.SetText("newsub")
+	// Force Queue mode regardless of config.App.DefaultFileOpMode's current
+	// value, so this test can inspect the enqueued task deterministically
+	// instead of racing a Background/Foreground goroutine.
+	comboMode.Menu.SetSelectPos(0)
+	btnOk.OnClick()
+
+	tasks := queue.Tasks()
+	if len(tasks) == 0 {
+		t.Fatal("actionMkDir did not enqueue a task")
+	}
+	task := tasks[len(tasks)-1]
+	if err := task.Run(context.Background(), &fileops.DummyReporter{}, nil); err != nil {
+		t.Fatalf("MkDir task.Run: %v", err)
+	}
+	task.SetState("Done")
+	if task.OnComplete != nil {
+		task.OnComplete()
+	}
+
+	// The new folder must land under the tree's highlighted node (toDir),
+	// not under fromDir (the panel that opened the tree).
+	if info, err := os.Stat(filepath.Join(toDir, "newsub")); err != nil || !info.IsDir() {
+		t.Fatalf("newsub not created under toDir: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(fromDir, "newsub")); err == nil {
+		t.Fatal("newsub must not be created under fromDir")
+	}
+
+	if got := tp.GetSelectedName(); got != "newsub" {
+		t.Fatalf("tree cursor after F7 = %q, want %q", got, "newsub")
+	}
+	wantPath := filepath.Join(toDir, "newsub")
+	if got := tp.SelectedPath(); got != wantPath {
+		t.Fatalf("tree SelectedPath after F7 = %q, want %q", got, wantPath)
+	}
+}
+
+// TestActionDelete_TreeTarget drives F8/Del (actionDeleteWithDisposition)
+// with the tree panel (Ctrl+T) focused: the highlighted node itself must be
+// removed from disk, not anything on the active panel that opened the tree,
+// and afterward the tree cursor must land on a neighboring row rather than
+// stay on the now-deleted path -- see actionDeleteWithDisposition's own
+// focusedTreePanel branch and TreePanel.RefreshAfterDelete (f4#1602 part 5).
+func TestActionDelete_TreeTarget(t *testing.T) {
+	t.Cleanup(paneltest.SwapFrameManager(t))
+	fm := vtui.FrameManager
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	fm.Init(scr)
+	theme.SetDefaultF4Palette()
+
+	pf := paneltest.SetupMockPanelsFrame(t)
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+	vtui.FrameManager.Push(pf)
+
+	root := t.TempDir()
+	fromDir := filepath.Join(root, "from")
+	toDir := filepath.Join(root, "to")
+	if err := os.Mkdir(fromDir, 0o700); err != nil {
+		t.Fatalf("mkdir from: %v", err)
+	}
+	if err := os.Mkdir(toDir, 0o700); err != nil {
+		t.Fatalf("mkdir to: %v", err)
+	}
+	for _, name := range []string{"alpha", "beta", "gamma"} {
+		if err := os.Mkdir(filepath.Join(toDir, name), 0o700); err != nil {
+			t.Fatalf("mkdir %s: %v", name, err)
+		}
+	}
+
+	fspFrom := panel.NewFileSystemPanel(0, 0, 40, 20, vfs.NewOSVFS(fromDir))
+	paneltest.WaitForLoad(t, fspFrom)
+
+	tp := panel.NewTreePanel(fspFrom)
+	// revealPath lands the cursor on fromDir's own row; "to" is its next
+	// sibling (both are root's only children), same precondition
+	// TestActionCopyMove_TreeDestination/TestActionMkDir_TreeDestination
+	// rely on. Right expands "to"; two Downs then reach "beta" among its
+	// alphabetically sorted children (alpha, beta, gamma).
+	if got := tp.GetSelectedName(); got != "from" {
+		t.Fatalf("precondition: tree cursor on %q, want \"from\"", got)
+	}
+	if !tp.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_DOWN}) {
+		t.Fatal("Down should be consumed by the tree's table")
+	}
+	if got := tp.GetSelectedName(); got != "to" {
+		t.Fatalf("precondition: tree cursor on %q after Down, want \"to\"", got)
+	}
+	if !tp.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RIGHT}) {
+		t.Fatal("Right should be consumed by the tree's table")
+	}
+	if !tp.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_DOWN}) {
+		t.Fatal("Down should be consumed by the tree's table")
+	}
+	if !tp.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_DOWN}) {
+		t.Fatal("Down should be consumed by the tree's table")
+	}
+	if got := tp.GetSelectedName(); got != "beta" {
+		t.Fatalf("precondition: tree cursor on %q, want \"beta\"", got)
+	}
+	tp.SetFocus(true)
+	pf.AltPanels[pf.ActiveIdx] = tp
+
+	if !fileDeleteEnabled() {
+		t.Fatal("Delete should be enabled with the tree focused and a real node highlighted")
+	}
+
+	actionDelete(pf)
+
+	dlgConfirm, ok := fm.GetTopFrame().(vtui.Container)
+	if !ok {
+		t.Fatal("Delete confirmation dialog not found on top")
+	}
+	for _, child := range dlgConfirm.GetChildren() {
+		if c, ok := child.(*vtui.ComboBox); ok {
+			c.Menu.SetSelectPos(2) // Foreground, so this test's drain loop below can run it synchronously.
+		}
+	}
+	testutil.ClickDialogButton(t, dlgConfirm, "Delete")
+
+	timeout := time.After(2 * time.Second)
+	var progress *fileops.FileOpProgressDialog
+Loop:
+	for {
+		select {
+		case task := <-fm.TaskChan:
+			task()
+			if top, ok := fm.GetTopFrame().(*fileops.FileOpProgressDialog); ok {
+				progress = top
+			}
+			if progress != nil && progress.IsDone() {
+				break Loop
+			}
+			if fm.GetTopFrame() != nil && fm.GetTopFrame().IsDone() {
+				fm.Pop()
+			}
+		case <-timeout:
+			t.Fatal("Timeout waiting for the tree's F8/Del to finish")
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+
+	if _, err := os.Stat(filepath.Join(toDir, "beta")); !os.IsNotExist(err) {
+		t.Fatalf("beta should have been deleted from disk, stat err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(toDir, "alpha")); err != nil {
+		t.Fatalf("alpha should still exist: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(toDir, "gamma")); err != nil {
+		t.Fatalf("gamma should still exist: %v", err)
+	}
+	if _, err := os.Stat(fromDir); err != nil {
+		t.Fatalf("fromDir (unrelated to the tree's F8/Del target) must not be touched: %v", err)
+	}
+
+	// beta's next sibling in sorted order was gamma; RefreshAfterDelete
+	// should have landed the cursor there rather than leave it dangling on
+	// the now-deleted beta row.
+	if got := tp.GetSelectedName(); got != "gamma" {
+		t.Fatalf("tree cursor after F8/Del = %q, want %q (beta's next sibling)", got, "gamma")
+	}
+}
+
+// TestActionDelete_TreeRootRefused checks that F8/Del does nothing when the
+// tree's cursor sits on its own root row (the whole current volume) rather
+// than one of its subdirectories -- see TreePanel.IsRootSelected's doc
+// comment for why that would never be a sensible delete target (f4#1602
+// part 5).
+func TestActionDelete_TreeRootRefused(t *testing.T) {
+	t.Cleanup(paneltest.SwapFrameManager(t))
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	theme.SetDefaultF4Palette()
+
+	pf := paneltest.SetupMockPanelsFrame(t)
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+	vtui.FrameManager.Push(pf)
+
+	root := t.TempDir()
+	fspFrom := panel.NewFileSystemPanel(0, 0, 40, 20, vfs.NewOSVFS(root))
+	paneltest.WaitForLoad(t, fspFrom)
+
+	tp := panel.NewTreePanel(fspFrom)
+	// NewTreePanel reveals and lands the cursor on fspFrom's own directory
+	// (a subdirectory several levels under the tree's actual root, the
+	// whole OS volume -- see TreePanel's own doc comment), not on the
+	// tree's root row itself, so force the cursor back to row 0 (the root)
+	// to set up this test's actual precondition.
+	tp.Table.SelectPos = 0
+	if !tp.IsRootSelected() {
+		t.Fatal("precondition: cursor should be on the tree's own root row")
+	}
+	tp.SetFocus(true)
+	pf.AltPanels[pf.ActiveIdx] = tp
+
+	if fileDeleteEnabled() {
+		t.Fatal("Delete should be disabled with the tree's own root row selected")
+	}
+
+	actionDelete(pf)
+
+	if top := vtui.FrameManager.GetTopFrame(); top != pf {
+		t.Fatalf("actionDelete must not open anything with the tree's root row selected, got top frame %v", top)
+	}
+	if _, err := os.Stat(root); err != nil {
+		t.Fatalf("the tree's root directory must not be touched: %v", err)
+	}
+}
+
+// The buttons of the Copy dialog stand under the last rule of the dialog, as
+// in far2l (#891), so the list of the mode selector, which opens downwards,
+// is drawn over them while it is open. What still holds is that it opens
+// right under its field, whole and on the screen.
+func TestActionCopyMove_ModeMenuOpensUnderItsField(t *testing.T) {
 	scr := vtui.NewSilentScreenBuf()
 	scr.AllocBuf(80, 25)
 	vtui.FrameManager.Init(scr)
@@ -888,7 +1340,26 @@ func TestActionCopyMove_ModeMenuDoesNotCoverButtons(t *testing.T) {
 		t.Fatal("copy dialog not found on top")
 	}
 
-	assertComboMenuDoesNotCoverButtons(t, dlg, "copy")
+	var mode *vtui.ComboBox
+	for _, item := range dlg.GetChildren() {
+		if combo, ok := item.(*vtui.ComboBox); ok {
+			mode = combo // the last selector of the dialog is the mode
+		}
+	}
+	if mode == nil {
+		t.Fatal("copy dialog has no mode selector")
+	}
+	mode.Open()
+	menu, ok := vtui.FrameManager.GetTopFrame().(*vtui.VMenu)
+	if !ok {
+		t.Fatal("mode menu was not opened")
+	}
+	mx1, my1, mx2, my2 := menu.GetPosition()
+	_, _, _, fy2 := mode.GetPosition()
+	if my1 != fy2+1 || my2 >= 25 || mx1 < 0 || mx2 >= 80 {
+		t.Errorf("mode menu (%d,%d)-(%d,%d) is not whole right under its field ending at row %d", mx1, my1, mx2, my2, fy2)
+	}
+	vtui.FrameManager.Pop()
 	focusDlg, ok := vtui.FrameManager.GetTopFrame().(dialogFocusContainer)
 	if !ok {
 		t.Fatal("copy dialog does not expose focus traversal")
@@ -910,7 +1381,7 @@ func assertComboMenuDoesNotCoverButtons(t *testing.T, dlg vtui.Container, name s
 			buttons = append(buttons, child)
 		}
 	}
-	if combo == nil || len(buttons) != 2 {
+	if combo == nil || len(buttons) < 2 {
 		t.Fatalf("%s dialog controls: combo=%v buttons=%d", name, combo != nil, len(buttons))
 	}
 
@@ -1662,7 +2133,65 @@ func TestActionPanelSettings_Flow(t *testing.T) {
 	vtui.FrameManager.Pop()
 }
 
+// The arrow before a symbolic link is off by default and the checkbox next to
+// the other name-column switches is what turns it on. Toggle it and OK must
+// carry that into config and into the file the dialog writes.
+func TestActionPanelSettings_SymlinkArrowCheckbox(t *testing.T) {
+	t.Cleanup(paneltest.SwapFrameManager(t))
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	theme.SetDefaultF4Palette()
+
+	path := filepath.Join(t.TempDir(), "settings.ini")
+	origUserPathFunc := config.GetUserConfigIniPath
+	origPathsFunc := config.GetConfigIniPaths
+	oldConfig := config.App
+	defer func() {
+		config.GetUserConfigIniPath = origUserPathFunc
+		config.GetConfigIniPaths = origPathsFunc
+		config.App = oldConfig
+	}()
+	config.GetUserConfigIniPath = func() string { return path }
+	config.GetConfigIniPaths = func() []string { return []string{path} }
+	config.App.ShowSymlinkArrow = false
+
+	pf := panel.NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+
+	actionPanelSettings(pf)
+	dlg := vtui.FrameManager.GetTopFrame().(vtui.Container)
+
+	label := testutil.GetCleanText(vtui.NewCheckbox(0, 0, i18n.Msg("PanelSettings.ShowSymlinkArrow"), false))
+	var arrow *vtui.Checkbox
+	for _, itm := range dlg.GetChildren() {
+		if chk, ok := itm.(*vtui.Checkbox); ok && testutil.GetCleanText(chk) == label {
+			arrow = chk
+			break
+		}
+	}
+	if arrow == nil {
+		t.Fatalf("no %q checkbox in the panel settings dialog", label)
+	}
+	if arrow.State != 0 {
+		t.Fatalf("checkbox state = %d, want the default-off setting to arrive cleared", arrow.State)
+	}
+
+	arrow.State = 1
+	testutil.ClickDialogButton(t, dlg, testutil.GetCleanText(vtui.NewButton(0, 0, i18n.Msg("vtui.Ok"))))
+
+	if !config.App.ShowSymlinkArrow {
+		t.Error("checking the checkbox left ShowSymlinkArrow off")
+	}
+	config.App.ShowSymlinkArrow = false
+	config.LoadConfig()
+	if !config.App.ShowSymlinkArrow {
+		t.Error("OK did not persist the enabled ShowSymlinkArrow")
+	}
+}
+
 func TestActionPanelSettings_FitsSmallTerminal(t *testing.T) {
+	// Layout assertions must not inherit frames or screen state from shuffled tests.
+	t.Cleanup(paneltest.SwapFrameManager(t))
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	theme.SetDefaultF4Palette()
 
@@ -2220,7 +2749,12 @@ func TestActionOpenViewer_PromptStaysAboveDelayedProgressDialog(t *testing.T) {
 		if top := vtui.FrameManager.GetTopFrame(); top != nil && strings.Contains(top.GetTitle(), "Opening") {
 			t.Fatal("progress dialog appeared after the prompt was dismissed")
 		}
-		if len(vtui.FrameManager.Screens) > 1 {
+		// Wait for the viewer itself, not for any second screen: a screen
+		// left over from an earlier test would end the test while the open
+		// worker is still running, and that worker then races whatever
+		// swaps vtui.FrameManager next.
+		if _, ok := vtui.FrameManager.GetTopFrame().(*viewer.ViewerView); ok {
+			vtui.FrameManager.CloseActiveScreen()
 			return
 		}
 	}

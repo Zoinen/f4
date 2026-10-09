@@ -637,8 +637,8 @@ func TestFishProtocolIsRegistered(t *testing.T) {
 		t.Errorf("DefaultPort = %q, want 22", ph.DefaultPort())
 	}
 	ui, apply := ph.BuildExtraUI(&NetFoxConfig{}, 0, 0, 10, 10)
-	if ui != nil {
-		t.Error("the fish+ handler needs no extra UI yet")
+	if ui == nil {
+		t.Error("the fish+ handler carries the use-f4-on-the-host checkbox")
 	}
 	apply()
 }
@@ -1007,6 +1007,19 @@ func TestFishVFSServerToServerInfo(t *testing.T) {
 		t.Errorf("cloned ConnectionInfo mismatch: (%q, %q, %q, %t)", h2, p2, u2, ok2)
 	}
 }
+
+// TestFishVFSConnectionInfoEmptyHostIsNotAConnection guards the WSL site
+// type's isolation from server-to-server transfers: a FishVFS with no host
+// of its own (wsl_vfs_windows.go leaves host/port/user unset on purpose)
+// must report ok=false, not an empty host a caller could still act on.
+func TestFishVFSConnectionInfoEmptyHostIsNotAConnection(t *testing.T) {
+	v := &FishVFS{title: "WSL:Ubuntu"}
+	h, p, u, ok := v.ConnectionInfo()
+	if ok || h != "" || p != "" || u != "" {
+		t.Errorf("ConnectionInfo = (%q, %q, %q, %t), want (\"\", \"\", \"\", false)", h, p, u, ok)
+	}
+}
+
 func TestFishVFSPtyRunCommandWindowsRoot(t *testing.T) {
 	sess := fishplus.NewSession(nil, nil, nil)
 	v := &FishVFS{

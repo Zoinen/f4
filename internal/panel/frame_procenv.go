@@ -502,6 +502,9 @@ func (pf *PanelsFrame) reportProcessEnvironmentShellFailure() {
 }
 
 func (pf *PanelsFrame) WritePTY(pty terminal.PtyBackend, data []byte) (int, error) {
+	if pf.Parser != nil && bytes.HasPrefix(data, terminal.WindowsSyncCommandPrefix) {
+		pf.Parser.ExpectWindowsSyncEcho()
+	}
 	if !pf.isLocalPTY(pty) {
 		return pty.Write(data)
 	}

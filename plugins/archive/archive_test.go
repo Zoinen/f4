@@ -242,7 +242,7 @@ func TestTestArchiveOnce_ReportsCurrentAndTotalProgress(t *testing.T) {
 	}
 
 	app := &mockAppForProgress{}
-	if err := testArchiveOnce(context.Background(), archivePath, "", &mockReporter{m: app}); err != nil {
+	if err := testArchiveOnce(context.Background(), archivePath, archivePath, "", &mockReporter{m: app}); err != nil {
 		t.Fatalf("testArchiveOnce() error = %v", err)
 	}
 

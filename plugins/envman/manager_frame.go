@@ -283,6 +283,12 @@ func managerHintWithBackground(foreground, background uint64) uint64 {
 }
 
 func (window *managerWindow) ProcessKey(event *vtinput.InputEvent) bool {
+	if event != nil && event.KeyDown && window.controller != nil && window.controller.plugin != nil &&
+		event.VirtualKeyCode == vtinput.VK_F1 &&
+		event.ControlKeyState&(vtinput.LeftCtrlPressed|vtinput.RightCtrlPressed|vtinput.LeftAltPressed|vtinput.RightAltPressed|vtinput.ShiftPressed) == 0 {
+		window.controller.plugin.showHelp()
+		return true
+	}
 	if event != nil && event.KeyDown && window.controller != nil {
 		control := event.ControlKeyState&(vtinput.LeftCtrlPressed|vtinput.RightCtrlPressed) != 0
 		alt := event.ControlKeyState&(vtinput.LeftAltPressed|vtinput.RightAltPressed) != 0

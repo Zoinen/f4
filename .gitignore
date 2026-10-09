@@ -11,6 +11,7 @@ dummy_rpc_plugin
 _failed_tests_f4.log
 rsrc_windows_amd64.syso
 rsrc_windows_arm64.syso
+rsrc_windows_386.syso
 Profile/
 afix.ap
 afailed.*
@@ -30,6 +31,10 @@ tools/icons/icons.exe
 tools/wine_syscall_probe/wineprobe
 tools/wine_syscall_probe/wineprobe.exe
 
-# Native ConPTY bundle installed locally by the same setup as Windows CI
-/internal/terminal/conpty.dll
-/internal/terminal/OpenConsole.exe
+# plugins/observer test fixtures: built by scripts/build_observer_test_wasm.sh
+# and scripts/build_isoimg_test_wasm.sh in CI (wasi-sdk), never checked in --
+# see those scripts, plugins/observer/testdata/stub/observer_stub.c and
+# plugins/observer/testdata/isoimg/compat/.
+plugins/observer/testdata/observer_stub.wasm
+plugins/observer/testdata/isoimg_test.wasm
+

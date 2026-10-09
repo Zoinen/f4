@@ -30,3 +30,13 @@ func Configure(h Host) { host = h }
 type HotkeyPageHost interface {
 	HotkeyPage(*vtui.Window, func(*keymap.HotkeyManager)) vtui.UIElement
 }
+
+// HotkeyTableSizeHost reports how wide the embedded hotkey table's own page
+// area needs to be for its columns to stay at their readable minimum.
+// Settings uses it, when the Hotkey Configurator is the category about to be
+// shown, to size its auto-maximize threshold from the table's own
+// column-width logic instead of a guessed terminal-width constant (#1239
+// follow-up).
+type HotkeyTableSizeHost interface {
+	HotkeyTableMinPageWidth() int
+}

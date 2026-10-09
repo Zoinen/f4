@@ -2,9 +2,6 @@ package terminal
 
 import (
 	"os"
-	"runtime"
-	"strconv"
-	"strings"
 
 	"github.com/unxed/vtui"
 )
@@ -49,61 +46,8 @@ func preferCompatibleGraphicsProtocol(scr *vtui.ScreenBuf, env func(string) stri
 	}
 }
 
+// kittyGraphicsAvailable asks vtui, which knows the terminals, whether this one
+// speaks the kitty graphics protocol; what to do about it stays here.
 func kittyGraphicsAvailable(env func(string) string) bool {
-	if env == nil {
-		return false
-	}
-
-	term := strings.ToLower(env("TERM"))
-	prog := strings.ToLower(env("TERM_PROGRAM"))
-
-	// Kitty, Ghostty and WezTerm already have explicit markers in vtui. Keep
-	// these checks here as well so a stronger marker wins over another marker,
-	// such as WT_SESSION inherited by a nested session.
-	if env("KITTY_WINDOW_ID") != "" || strings.Contains(term, "kitty") {
-		return true
-	}
-	if prog == "ghostty" || env("GHOSTTY_RESOURCES_DIR") != "" {
-		return true
-	}
-	if isWezTerm(env) && runtime.GOOS != "windows" && env("WSL_DISTRO_NAME") == "" && env("WSL_INTEROP") == "" {
-		return true
-	}
-
-	// These terminals implement Kitty graphics but vtui's environment
-	// detection currently reports Sixel (or no protocol) for them.
-	if prog == "contour" || strings.Contains(term, "contour") {
-		return true
-	}
-	if prog == "wayst" || strings.Contains(term, "wayst") {
-		return true
-	}
-	if prog == "rio" || term == "rio" || strings.HasPrefix(term, "rio-") {
-		return true
-	}
-	if prog == "warpterminal" || prog == "warp" {
-		return true
-	}
-
-	return konsoleKittyGraphicsAvailable(env)
-}
-
-func isWezTerm(env func(string) string) bool {
-	return strings.ToLower(env("TERM_PROGRAM")) == "wezterm" || env("WEZTERM_PANE") != ""
-}
-
-func konsoleKittyGraphicsAvailable(env func(string) string) bool {
-	if env == nil {
-		return false
-	}
-	version := env("KONSOLE_VERSION")
-	if version == "" {
-		return false
-	}
-
-	// Konsole exports a numeric version such as 220400. Kitty graphics support
-	// is present in Konsole 22.04 and later. Keep older versions on their
-	// existing sixel path instead of sending a protocol they do not know.
-	numericVersion, err := strconv.Atoi(version)
-	return err == nil && numericVersion >= 220400
+	return vtui.KittyGraphicsTerminal(env)
 }

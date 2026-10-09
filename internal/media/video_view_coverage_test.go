@@ -99,7 +99,7 @@ func TestVideoViewProcessKeyRoutesPlaybackAndClose(t *testing.T) {
 			t.Fatalf("playback key %d was not handled", vk)
 		}
 	}
-	if vv.ProcessKey(videoViewKey(vtinput.VK_A, true)) {
+	if vv.ProcessKey(videoViewKey(vtinput.VK_B, true)) {
 		t.Fatal("unrelated key was handled")
 	}
 

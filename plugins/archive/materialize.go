@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -359,15 +361,48 @@ func reportArchiveMaterializationProgress(ctx context.Context, name string, copi
 	return nil
 }
 
+// materializedCompressionExts are the single-file compressors whose output
+// name is derived from the source file's name (sample1.bz2 holds "sample1").
+var materializedCompressionExts = map[string]bool{
+	".gz": true, ".bz2": true, ".xz": true, ".zst": true, ".lz4": true,
+	".sz": true, ".br": true, ".lz": true, ".zz": true, ".z": true,
+}
+
+// materializedSourceName is the file name a private materialized copy gets.
+// A compressed regular file must keep its name, or its content is listed under
+// the temporary one (#1661). Every other archive keeps a neutral name without
+// an extension: the format is then recognised by content, so an archive whose
+// name lies about its format (a ZIP called .7z) is still opened as before.
+func materializedSourceName(displayName string) string {
+	name := path.Base(strings.ReplaceAll(displayName, "\\", "/"))
+	if name == "" || name == "." || name == "/" || !materializedCompressionExts[strings.ToLower(path.Ext(name))] {
+		return "archive-source"
+	}
+	return name
+}
+
 func materializeArchiveSource(ctx context.Context, parent vfs.VFS, archivePath, displayName string) (string, int64, func() error, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	update, reporter := archiveProgressTargets(ctx)
 	pulseDone := make(chan struct{})
-	if update != nil || reporter != nil {
+	// pulseExited is closed when the pulse goroutine returns. stopPulse waits
+	// for it so no late "Opening" pulse can land after this function moved on
+	// (or returned), and the interval is read here, not in the goroutine, so
+	// the goroutine never touches ProgressTickerInterval after we return.
+	pulseExited := make(chan struct{})
+	stopPulse := func() {
+		close(pulseDone)
+		<-pulseExited
+	}
+	if update == nil && reporter == nil {
+		close(pulseExited)
+	} else {
+		interval := ProgressTickerInterval
 		go func() {
-			ticker := time.NewTicker(ProgressTickerInterval)
+			defer close(pulseExited)
+			ticker := time.NewTicker(interval)
 			defer ticker.Stop()
 			for {
 				select {
@@ -387,7 +422,7 @@ func materializeArchiveSource(ctx context.Context, parent vfs.VFS, archivePath, 
 		}()
 	}
 	reader, err := parent.Open(ctx, archivePath)
-	close(pulseDone)
+	stopPulse()
 	if err != nil {
 		return "", 0, nil, err
 	}
@@ -407,15 +442,22 @@ func materializeArchiveSource(ctx context.Context, parent vfs.VFS, archivePath, 
 		}
 	}
 
-	tmp, err := os.CreateTemp("", "f4-archive-source-*")
+	tmpDir, err := os.MkdirTemp("", "f4-archive-source-*")
 	if err != nil {
 		_ = reader.Close()
 		return "", 0, nil, err
 	}
-	tmpPath := tmp.Name()
+	tmpName := materializedSourceName(displayName)
+	tmpPath := filepath.Join(tmpDir, tmpName)
+	tmp, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		_ = os.RemoveAll(tmpDir)
+		_ = reader.Close()
+		return "", 0, nil, err
+	}
 	cleanupTemp := func() error {
 		closeErr := tmp.Close()
-		removeErr := os.Remove(tmpPath)
+		removeErr := os.RemoveAll(tmpDir)
 		if closeErr != nil {
 			return closeErr
 		}
@@ -487,19 +529,15 @@ func materializeArchiveSource(ctx context.Context, parent vfs.VFS, archivePath, 
 		return "", 0, nil, io.ErrUnexpectedEOF
 	}
 	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpPath) // The failed private materialization cannot be reused.
+		_ = os.RemoveAll(tmpDir) // The failed private materialization cannot be reused.
 		return "", 0, nil, err
 	}
 	if err := reportArchiveMaterializationProgress(ctx, displayName, copied, copied); err != nil {
-		_ = os.Remove(tmpPath) // The canceled private materialization cannot be reused.
+		_ = os.RemoveAll(tmpDir) // The canceled private materialization cannot be reused.
 		return "", 0, nil, err
 	}
 	cleanupTemp = func() error {
-		removeErr := os.Remove(tmpPath)
-		if removeErr != nil && !os.IsNotExist(removeErr) {
-			return removeErr
-		}
-		return nil
+		return os.RemoveAll(tmpDir)
 	}
 	return tmpPath, copied, cleanupTemp, nil
 }

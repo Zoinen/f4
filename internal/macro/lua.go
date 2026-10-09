@@ -1,7 +1,8 @@
+//go:build !extralite
+
 package macro
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -22,64 +23,52 @@ const macroExitSentinel = "f4macro:exit"
 
 // macroCallTimeout bounds one macro. A macro is user code triggered by a key
 // press, so it gets far less rope than a plugin.
-const macroCallTimeout = 10 * time.Second
-
-// MacroPanelInfo is the panel state a macro can see, gathered in one shot.
-// Reading it costs a round trip to the UI goroutine, so it is fetched whole
-// rather than field by field.
-type MacroPanelInfo struct {
-	Path      string
-	Current   string
-	ItemCount int
-	SelCount  int
-	CurPos    int
-	TopPos    int
-	IsFolder  bool
-	Empty     bool
-	Left      bool
-	Visible   bool
-	Root      bool
-	Bof       bool
-	Eof       bool
-	Type      int
-}
-
-// MacroHost is everything the macro engine needs from f4. Keeping it an
-// interface is what makes the engine testable without a terminal, and it is
-// also the seam where the "must run on the UI goroutine" rule is enforced
-// exactly once instead of in every API function.
-type MacroHost interface {
-	CurrentArea() string
-	Panel(active bool) MacroPanelInfo
-	CommandLine() string
-	ScreenSize() (width, height int)
-	Version() string
-	WindowTitle() string
-	Message(title, text string)
-	InjectKeys(keys []*vtinput.InputEvent)
-	Log(format string, args ...any)
-	RunAction(name string) bool
-	CallPlugin(context.Context, string, []any) ([]any, error)
-}
+var macroCallTimeout = 10 * time.Second
 
 // LuaMacro is one Macro{} declaration.
 type LuaMacro struct {
-	Areas       []string
-	Keys        []string
-	Description string
-	Source      string
+	Areas []string
+	Keys  []string
+	// EmptyCommandLine is Far's EmptyCommandLine macro flag. Such a macro
+	// claims its key only while the host command line is empty; otherwise the
+	// original key continues through the ordinary input route.
+	EmptyCommandLine bool
+	Description      string
+	Source           string
 
 	action    *lua.LFunction
 	condition *lua.LFunction
+
+	// callArgs are passed to action: a MenuItem{}'s action is called with the
+	// menu and the area it was chosen from, as in Far.
+	callArgs []string
+	// callValues, when set, are passed to action instead of callArgs (an event
+	// that carries numbers, such as EditorEvent).
+	callValues []lua.LValue
 }
 
-// LuaMacroBinding is the discoverable, immutable part of a Lua macro. It is
-// used by command surfaces without exposing interpreter-owned functions.
-type LuaMacroBinding struct {
-	Area        string
-	Key         string
-	Description string
-	Source      string
+// luaEvent is one Event{} declaration: the group it listens to ("ExitFAR"...)
+// and what to run.
+type luaEvent struct {
+	group string
+	macro *LuaMacro
+}
+
+// supportedEventGroups are the Event{} groups f4 raises; a declaration for
+// another group is kept out and logged.
+var supportedEventGroups = map[string]bool{"exitfar": true, "folderchanged": true, "editorevent": true, "viewerevent": true}
+
+// luaCommandLine is one CommandLine{} declaration.
+type luaCommandLine struct {
+	prefixes []string
+	macro    *LuaMacro
+}
+
+// luaMenuItem is one MenuItem{} declaration.
+type luaMenuItem struct {
+	menus []string
+	areas []string
+	macro *LuaMacro
 }
 
 // LuaMacroEngine runs Far-compatible macros written in Lua.
@@ -93,17 +82,18 @@ type LuaMacroEngine struct {
 
 	running atomic.Bool
 
+	items    []*luaMenuItem
+	events   []*luaEvent
+	timers   []*luaTimer
+	cmdLines []*luaCommandLine
+
 	// The fields below belong to the interpreter's worker goroutine while a
 	// macro is running, and are read by the caller once it has finished.
 	pendingKeys []*vtinput.InputEvent
-	invokedKey  string
-}
-
-// macroAreaAliases maps f4's own area names onto Far's. f4 reports Terminal
-// when the panels are hidden; Far has no such area, and its Shell macros are
-// what a user expects to fire there.
-var macroAreaAliases = map[string]string{
-	"terminal": "shell",
+	// postponed are the calls mf.postmacro asked for, run when the macro that
+	// asked has returned.
+	postponed  []postponedCall
+	invokedKey string
 }
 
 // NewLuaMacroEngine starts an engine with no macros loaded.
@@ -198,6 +188,212 @@ func (e *LuaMacroEngine) add(m *LuaMacro) {
 		}
 	}
 	e.all = append(e.all, m)
+}
+
+func (e *LuaMacroEngine) addEvent(ev *luaEvent) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.events = append(e.events, ev)
+}
+
+// RunEvents runs every Event{} declared for group (any case), one after the
+// other, each with the group as its argument, and waits up to wait for all of
+// them: it is what f4 calls as it exits, when nobody can be waited on for long.
+// It reports how many actions ran to the end in time.
+func (e *LuaMacroEngine) RunEvents(group string, wait time.Duration) int {
+	if e == nil {
+		return 0
+	}
+	e.mu.Lock()
+	var todo []*LuaMacro
+	for _, ev := range e.events {
+		if strings.EqualFold(ev.group, group) {
+			m := *ev.macro
+			m.callArgs = []string{ev.group}
+			todo = append(todo, &m)
+		}
+	}
+	e.mu.Unlock()
+	if len(todo) == 0 {
+		return 0
+	}
+	done := make(chan int, 1)
+	go func() {
+		n := 0
+		for _, m := range todo {
+			e.execute(m, "", nil)
+			n++
+		}
+		done <- n
+	}()
+	select {
+	case n := <-done:
+		return n
+	case <-time.After(wait):
+		return 0
+	}
+}
+
+// RaiseEvent runs, in the background, every Event{} declared for group (any
+// case), one after the other, each with the group as its argument. It is what
+// f4 calls when something happens that macros may want to react to (a panel
+// entered another folder). It reports whether anything was started: nothing is
+// when no Event{} names the group, or a macro is already running, which also
+// keeps an event action that itself changes the folder from raising the event
+// again without end.
+func (e *LuaMacroEngine) RaiseEvent(group string) bool {
+	return e.raise(group, nil)
+}
+
+// RaiseEventNumbers is RaiseEvent for an event whose action is called with
+// numbers instead of the group name (Far's EditorEvent gets the editor id, the
+// event and a parameter).
+func (e *LuaMacroEngine) RaiseEventNumbers(group string, numbers ...int) bool {
+	values := make([]lua.LValue, len(numbers))
+	for i, n := range numbers {
+		values[i] = lua.LNumber(n)
+	}
+	return e.raise(group, values)
+}
+
+func (e *LuaMacroEngine) raise(group string, values []lua.LValue) bool {
+	if e == nil {
+		return false
+	}
+	e.mu.Lock()
+	var todo []*LuaMacro
+	for _, ev := range e.events {
+		if strings.EqualFold(ev.group, group) {
+			m := *ev.macro
+			m.callArgs = []string{ev.group}
+			m.callValues = values
+			todo = append(todo, &m)
+		}
+	}
+	e.mu.Unlock()
+	if len(todo) == 0 || !e.running.CompareAndSwap(false, true) {
+		return false
+	}
+	go func() {
+		defer e.running.Store(false)
+		for _, m := range todo {
+			e.execute(m, "", nil)
+		}
+	}()
+	return true
+}
+
+func (e *LuaMacroEngine) addCommandLine(c *luaCommandLine) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.cmdLines = append(e.cmdLines, c)
+}
+
+// CommandLinePrefixes lists every prefix the CommandLine{} declarations claim,
+// one entry per prefix.
+func (e *LuaMacroEngine) CommandLinePrefixes() []LuaCommandLineInfo {
+	if e == nil {
+		return nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var out []LuaCommandLineInfo
+	for id, c := range e.cmdLines {
+		for _, prefix := range c.prefixes {
+			out = append(out, LuaCommandLineInfo{ID: id, Prefix: prefix, Description: c.macro.Description, Source: c.macro.Source})
+		}
+	}
+	return out
+}
+
+// RunCommandLine runs a CommandLine{}'s action for a line typed as
+// "prefix:text": the action gets the prefix and the text after it, as in Far.
+// It reports whether there was an action to run (and nothing else was running).
+func (e *LuaMacroEngine) RunCommandLine(id int, prefix, text string) bool {
+	if e == nil {
+		return false
+	}
+	e.mu.Lock()
+	var c *luaCommandLine
+	if id >= 0 && id < len(e.cmdLines) {
+		c = e.cmdLines[id]
+	}
+	e.mu.Unlock()
+	if c == nil {
+		return false
+	}
+	if !e.running.CompareAndSwap(false, true) {
+		return false
+	}
+	macro := *c.macro
+	macro.callArgs = []string{prefix, text}
+	go func() {
+		defer e.running.Store(false)
+		e.execute(&macro, "", nil)
+	}()
+	return true
+}
+
+func (e *LuaMacroEngine) addMenuItem(item *luaMenuItem) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.items = append(e.items, item)
+}
+
+// MenuItems lists the MenuItem{} declarations offered in menu ("Plugins",
+// "Disks" or "Config", any case) when area is the current one, or in any area
+// when area is empty; a declaration that names no menu is in "Plugins", one
+// that names no area is in every area.
+func (e *LuaMacroEngine) MenuItems(menu, area string) []LuaMenuItemInfo {
+	if e == nil {
+		return nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var out []LuaMenuItemInfo
+	for id, item := range e.items {
+		if containsFold(item.menus, menu) && (area == "" || len(item.areas) == 0 || containsFold(item.areas, area) || containsFold(item.areas, "common")) {
+			out = append(out, LuaMenuItemInfo{ID: id, Description: item.macro.Description, Source: item.macro.Source})
+		}
+	}
+	return out
+}
+
+func containsFold(list []string, s string) bool {
+	for _, x := range list {
+		if strings.EqualFold(x, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// RunMenuItem runs a MenuItem{}'s action, chosen from menu while area was
+// current, and reports whether there was one to run (and nothing else was
+// running).
+func (e *LuaMacroEngine) RunMenuItem(id int, menu, area string) bool {
+	if e == nil {
+		return false
+	}
+	e.mu.Lock()
+	var item *luaMenuItem
+	if id >= 0 && id < len(e.items) {
+		item = e.items[id]
+	}
+	e.mu.Unlock()
+	if item == nil {
+		return false
+	}
+	if !e.running.CompareAndSwap(false, true) {
+		return false
+	}
+	macro := *item.macro
+	macro.callArgs = []string{menu, area}
+	go func() {
+		defer e.running.Store(false)
+		e.execute(&macro, "", nil)
+	}()
+	return true
 }
 
 // Find returns the macro bound to a key in an area, falling back to common.
@@ -320,12 +516,25 @@ func (e *LuaMacroEngine) Remove(area, key string) bool {
 // the input loop running on the UI goroutine, and a macro that asks for panel
 // state or shows a message needs that goroutine to be free to answer.
 func (e *LuaMacroEngine) Trigger(area string, event *vtinput.InputEvent) bool {
+	return e.TriggerWithCommandLine(area, event, "")
+}
+
+// TriggerWithCommandLine is Trigger with the command-line snapshot already
+// collected by the UI event filter. The real f4 host cannot be queried from
+// that goroutine: its MacroHost deliberately posts reads back to the UI
+// goroutine, while Lua actions run on a worker. Keeping the snapshot at this
+// boundary lets EmptyCommandLine decide before the key is consumed without a
+// UI deadlock.
+func (e *LuaMacroEngine) TriggerWithCommandLine(area string, event *vtinput.InputEvent, commandLine string) bool {
 	if e == nil || event == nil {
 		return false
 	}
 	key := keymap.EventToFarString(event)
 	macro := e.Find(area, key)
 	if macro == nil {
+		return false
+	}
+	if macro.EmptyCommandLine && commandLine != "" {
 		return false
 	}
 	if !e.running.CompareAndSwap(false, true) {
@@ -389,6 +598,7 @@ func (e *LuaMacroEngine) execute(macro *LuaMacro, key string, original *vtinput.
 	err := e.rt.Do(func(L *lua.LState) error {
 		e.invokedKey = key
 		e.pendingKeys = nil
+		e.postponed = nil
 
 		if macro.condition != nil {
 			L.Push(macro.condition)
@@ -405,13 +615,24 @@ func (e *LuaMacroEngine) execute(macro *LuaMacro, key string, original *vtinput.
 		}
 
 		L.Push(macro.action)
-		if err := L.PCall(0, 0, nil); err != nil {
+		argc := len(macro.callArgs)
+		if macro.callValues != nil {
+			for _, v := range macro.callValues {
+				L.Push(v)
+			}
+			argc = len(macro.callValues)
+		} else {
+			for _, a := range macro.callArgs {
+				L.Push(lua.LString(a))
+			}
+		}
+		if err := L.PCall(argc, 0, nil); err != nil {
 			if strings.Contains(err.Error(), macroExitSentinel) {
 				return nil
 			}
 			return err
 		}
-		return nil
+		return e.runPostponed(L)
 	})
 
 	keys := e.pendingKeys
@@ -447,11 +668,18 @@ func (e *LuaMacroEngine) WaitIdle(timeout time.Duration) bool {
 	return !e.running.Load()
 }
 
+// Interrupted reports whether a macro hit its call deadline, which leaves the
+// interpreter unusable (luaplug.ErrInterrupted).
+func (e *LuaMacroEngine) Interrupted() bool {
+	return e != nil && e.rt != nil && e.rt.Interrupted()
+}
+
 // Close releases the interpreter.
 func (e *LuaMacroEngine) Close() error {
 	if e == nil || e.rt == nil {
 		return nil
 	}
+	e.stopTimers()
 	return e.rt.Close()
 }
 

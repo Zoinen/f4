@@ -98,19 +98,24 @@ func TestQuickView_ScrollAndWrap(t *testing.T) {
 		t.Error("unfocused panel must not consume arrow keys")
 	}
 
+	// The arrows move a line cursor (#1804); the view follows it once it
+	// would leave the screen.
 	q.SetFocus(true)
-	before := q.ScrollY
 	q.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_DOWN})
-	if q.ScrollY != before+1 {
-		t.Errorf("Down: scrollY=%d, want %d", q.ScrollY, before+1)
+	q.Show(scr)
+	if q.cursorY != 1 || q.ScrollY != 0 {
+		t.Errorf("Down: cursor=%d scrollY=%d, want cursor 1 without scrolling", q.cursorY, q.ScrollY)
 	}
 	q.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_NEXT})
-	if q.ScrollY <= before+1 {
-		t.Errorf("PgDn should scroll further; scrollY=%d", q.ScrollY)
+	q.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_NEXT})
+	q.Show(scr)
+	if q.ScrollY <= 0 || q.cursorY < q.ScrollY {
+		t.Errorf("PgDn past the screen should scroll to the cursor; cursor=%d scrollY=%d", q.cursorY, q.ScrollY)
 	}
 	q.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_HOME})
-	if q.ScrollY != 0 {
-		t.Errorf("Home: scrollY=%d, want 0", q.ScrollY)
+	q.Show(scr)
+	if q.ScrollY != 0 || q.cursorY != 0 {
+		t.Errorf("Home: cursor=%d scrollY=%d, want 0/0", q.cursorY, q.ScrollY)
 	}
 
 	// Wrap flip via F2. Toggle it, then a second render must produce

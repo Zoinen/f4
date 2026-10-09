@@ -41,6 +41,9 @@ func wineProbeReport() string {
 	line("f4 version", App.VersionInfo())
 	line("GOOS/GOARCH", runtime.GOOS+"/"+runtime.GOARCH)
 	line("vtui.IsWine", vtui.IsWine())
+	for _, fact := range winescapeFacts() {
+		line(fact[0], fact[1])
+	}
 	line("DefaultConsoleBackend", vtui.DefaultConsoleBackend())
 	line("SelectedTTYBackend", SelectedTTYBackend)
 	line("stdout is terminal", term.IsTerminal(int(os.Stdout.Fd())))

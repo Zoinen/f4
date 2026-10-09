@@ -25,7 +25,7 @@ func TestGenerateKeysHelpTopic(t *testing.T) {
 	// Every bound editor action appears with its default key and description.
 	for _, want := range []string{
 		"F2             - Save file",
-		"Ctrl+Z         - Undo last change",
+		"Alt+BS / Ctrl+Z - Undo last change",
 		"Ctrl+V / Shift+Ins - Paste text from clipboard",
 		"F4             - Toggle hex view",
 		"Alt+Ins        - Select and copy a screen region",
@@ -50,7 +50,7 @@ func TestGenerateKeysHelpTopic_PanelNav(t *testing.T) {
 	joined := strings.Join(topic.Lines, "\n")
 
 	for _, want := range []string{
-		"F3             - Open file in viewer",
+		"F3 / Num5      - Open file in viewer",
 		// Panel.Toggle picked up Del and NumDel as aliases (#351), and
 		// keysFor sorts + joins them alphabetically, so the emitted
 		// prefix is now "Ctrl+O / Del / Esc / NumDel".

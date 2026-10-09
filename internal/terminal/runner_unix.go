@@ -3,6 +3,7 @@
 package terminal
 
 import (
+	"context"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -11,7 +12,11 @@ import (
 )
 
 func newLocalShellCommand(command string) *exec.Cmd {
-	return exec.Command(GetSystemShell(), "-c", command)
+	return exec.Command(GetSystemShell(), "-c", command) // #nosec G204 -- this is the intentional local shell command line.
+}
+
+func newLocalShellCommandContext(ctx context.Context, command string) *exec.Cmd {
+	return exec.CommandContext(ctx, GetSystemShell(), "-c", command) // #nosec G204 -- this is the intentional local shell command line.
 }
 
 func localCommandDialect() vfs.CommandDialect { return vfs.CommandDialectPOSIX }

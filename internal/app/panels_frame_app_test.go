@@ -19,7 +19,6 @@ import (
 	"github.com/unxed/f4/internal/panel"
 	"github.com/unxed/f4/internal/paneltest"
 	"github.com/unxed/f4/internal/plughost"
-	"github.com/unxed/f4/internal/settings"
 	"github.com/unxed/f4/internal/testutil"
 	"github.com/unxed/f4/internal/theme"
 	"github.com/unxed/f4/vfs"
@@ -242,7 +241,18 @@ func TestPanelsFrame_CtrlShiftArrowsOpenDriveMenuForPanelSide(t *testing.T) {
 				t.Fatal("Ctrl+Shift+Arrow was not handled")
 			}
 			menu := paneltest.FindDriveMenu(t)
-			menu.OnAction(0)
+			otherRow := -1
+			wantOther := strings.ReplaceAll(i18n.Msg("Panel.Other"), "&", "")
+			for i, item := range menu.Items {
+				if strings.TrimSpace(strings.ReplaceAll(item.Text, "&", "")) == wantOther {
+					otherRow = i
+					break
+				}
+			}
+			if otherRow < 0 {
+				t.Fatal("Other panel row not found in drive menu")
+			}
+			menu.OnAction(otherRow)
 			want := paths[1-tt.panelIdx]
 			if got := pf.Panels[tt.panelIdx].(*panel.FileSystemPanel).Vfs.GetPath(); got != want {
 				t.Fatalf("drive menu changed path %q, want panel %d to receive %q", got, tt.panelIdx, want)
@@ -373,7 +383,7 @@ func TestLayout_F4ActionDialogs_Validity(t *testing.T) {
 		setupPanel()
 		actionCopyMove(pf, false)
 		dlg := fm.GetTopFrame().(vtui.Container)
-		vtui.AssertLayout(t, dlg)
+		assertFileDialogLayout(t, dlg)
 		focusDlg, ok := fm.GetTopFrame().(dialogFocusContainer)
 		if !ok {
 			t.Fatal("copy dialog does not expose focus traversal")
@@ -386,7 +396,7 @@ func TestLayout_F4ActionDialogs_Validity(t *testing.T) {
 		setupPanel()
 		actionCopyMove(pf, true)
 		dlg := fm.GetTopFrame().(vtui.Container)
-		vtui.AssertLayout(t, dlg)
+		assertFileDialogLayout(t, dlg)
 		focusDlg, ok := fm.GetTopFrame().(dialogFocusContainer)
 		if !ok {
 			t.Fatal("move dialog does not expose focus traversal")
@@ -528,9 +538,15 @@ func TestPanelsFrame_CtrlViewModes(t *testing.T) {
 }
 
 func TestPanelsFrame_KeyHandling(t *testing.T) {
+	// Keep global hotkey conditions from observing a frame left by another shuffled test.
+	// The action's NoTerminalApp condition must inspect this test's panel.
+	t.Cleanup(paneltest.SwapFrameManager(t))
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
 	pf := panel.NewPanelsFrame()
 	defer pf.Close()
 	pf.ResizeConsole(80, 25)
+	vtui.FrameManager.Push(pf)
 
 	// 1. Test Tab to switch active panel
 	if pf.ActiveIdx != 1 {
@@ -571,24 +587,35 @@ func TestPanelsFrame_KeyHandling(t *testing.T) {
 	}
 	pressKey(pf, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN, ControlKeyState: vtinput.LeftCtrlPressed})
 
-	expectedName := pf.Panels[0].GetSelectedName()
+	expectedName := pf.Panels[0].GetSelectedName() + " "
 	if pf.CmdLine.Edit.GetText() != expectedName {
 		t.Errorf("Ctrl+Enter failed: expected '%s', got '%s'", expectedName, pf.CmdLine.Edit.GetText())
 	}
 
-	// 4. Test Ctrl+O to toggle panels even when terminal.PTY is busy (Issue #50)
+	// 4. A busy program keeps Ctrl+O, as in far2l (#249, #1376); Ctrl+Alt+Z
+	// still reaches the panels, so the program cannot lock them away (#50).
 	pf.ShowPanels = false
-	pf.Pty = &paneltest.MockPty{}
+	busyPty := &paneltest.MockPty{}
+	pf.Pty = busyPty
 	pf.Executing = true // terminal.PTY is busy
 
-	pressKey(pf, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_O, ControlKeyState: vtinput.LeftCtrlPressed})
-	if !pf.ShowPanels {
-		t.Error("Ctrl+O should show panels even when term.PTY is busy")
+	pressKey(pf, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_O, Char: 15, ControlKeyState: vtinput.LeftCtrlPressed})
+	if pf.ShowPanels {
+		t.Error("Ctrl+O must reach the busy program, not show the panels")
+	}
+	if !strings.Contains(busyPty.String(), "\x0f") {
+		t.Errorf("busy program did not receive Ctrl+O; PTY got %q", busyPty.String())
 	}
 
+	pressKey(pf, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_Z, ControlKeyState: vtinput.LeftCtrlPressed | vtinput.LeftAltPressed})
+	if !pf.ShowPanels {
+		t.Error("Ctrl+Alt+Z should show panels even when term.PTY is busy")
+	}
+
+	// With the panels raised the keyboard is f4's: Ctrl+O hands it back.
 	pressKey(pf, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_O, ControlKeyState: vtinput.LeftCtrlPressed})
 	if pf.ShowPanels {
-		t.Error("Ctrl+O should hide panels even when term.PTY is busy")
+		t.Error("Ctrl+O should hide panels raised over a busy program")
 	}
 }
 
@@ -639,7 +666,7 @@ func TestPanelsFrame_MenuCommands(t *testing.T) {
 	if !strings.HasPrefix(menuText, "√") {
 		t.Errorf("Menu checkmark not updated, got %q", menuText)
 	}
-	sortText := pf.MenuBar.Items[0].SubItems[7].Text
+	sortText := pf.MenuBar.Items[0].SubItems[13].Text
 	if !strings.HasPrefix(sortText, "√") {
 		t.Errorf("Sort menu checkmark not updated, got %q", sortText)
 	}
@@ -782,9 +809,16 @@ func TestPanelsFrame_B_TogglesInfoPanelUnits(t *testing.T) {
 	if pf.AltPanels[0] == nil {
 		t.Fatal("Ctrl+L should install info panel")
 	}
+	// While the file panel keeps the focus, B is command-line text (#1804).
+	send(vtinput.VK_B)
+	if config.App.InfoPanelBytes {
+		t.Errorf("info panel visible but unfocused: B must not flip units")
+	}
+	// Tab into the info panel, then `B` should flip units.
+	send(vtinput.VK_TAB)
 	send(vtinput.VK_B)
 	if !config.App.InfoPanelBytes {
-		t.Errorf("with info panel: B should flip units to bytes")
+		t.Errorf("with info panel focused: B should flip units to bytes")
 	}
 	send(vtinput.VK_B)
 	if config.App.InfoPanelBytes {
@@ -939,8 +973,8 @@ func TestPanelsFrame_QuickViewWheel_ActivePanelScrolls(t *testing.T) {
 }
 
 // TestPanelsFrame_BToggle_WithQuickView ensures pressing plain `B`
-// while a quick-view alt is up flips config.App.InfoPanelBytes. Before
-// this PR the B toggle only fired for `info` alts.
+// while a quick-view alt has the focus flips config.App.InfoPanelBytes,
+// and that it stays command-line text while the file panel has it (#1804).
 func TestPanelsFrame_BToggle_WithQuickView(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	pf := paneltest.SetupMockPanelsFrame(t)
@@ -958,15 +992,73 @@ func TestPanelsFrame_BToggle_WithQuickView(t *testing.T) {
 	}
 
 	before := config.App.InfoPanelBytes
-	pressKey(pf, &vtinput.InputEvent{
-		Type: vtinput.KeyEventType, KeyDown: true,
-		VirtualKeyCode: vtinput.VK_B,
-	})
+	pressB := func() {
+		pressKey(pf, &vtinput.InputEvent{
+			Type: vtinput.KeyEventType, KeyDown: true,
+			VirtualKeyCode: vtinput.VK_B,
+		})
+	}
+	pressB()
+	if config.App.InfoPanelBytes != before {
+		t.Error("B with QuickView visible but unfocused must not flip InfoPanelBytes")
+	}
+	pressKey(pf, &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_TAB})
+	pressB()
 	if config.App.InfoPanelBytes == before {
-		t.Error("B with QuickView visible should flip InfoPanelBytes")
+		t.Error("B with QuickView focused should flip InfoPanelBytes")
 	}
 	// Flip back so the test is idempotent across a full suite.
 	config.App.InfoPanelBytes = before
+}
+
+func TestPanelsFrame_CurrentExtensionShortcuts(t *testing.T) {
+	t.Cleanup(paneltest.SwapFrameManager(t))
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	old := keymap.GlobalHotkeysMgr
+	keymap.GlobalHotkeysMgr = keymap.NewHotkeyManager("")
+	t.Cleanup(func() { keymap.GlobalHotkeysMgr = old })
+	oldMacros := macro.MacroMgr
+	macro.MacroMgr = macro.NewMacroManager("")
+	t.Cleanup(func() { macro.MacroMgr = oldMacros })
+	pf := paneltest.SetupMockPanelsFrame(t)
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+	fp := pf.GetActivePanel()
+	fp.Entries = []*panel.FileEntry{
+		{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}},
+		{VFSItem: vfs.VFSItem{Name: "one.TXT"}},
+		{VFSItem: vfs.VFSItem{Name: "two.txt"}},
+		{VFSItem: vfs.VFSItem{Name: "three.go"}},
+		{VFSItem: vfs.VFSItem{Name: "folder.txt", IsDir: true}},
+	}
+	fp.SetCursorIndex(1)
+	fp.Refresh()
+	pf.CmdLine.Edit.SetText("unfinished command")
+	for _, ctrl := range []vtinput.ControlKeyState{vtinput.LeftCtrlPressed, vtinput.RightCtrlPressed} {
+		for _, pair := range [][2]string{{"CtrlAdd", "CtrlSubtract"}, {"Ctrl=", "Ctrl-"}} {
+			for _, noChar := range []bool{false, true} {
+				for i, key := range pair {
+					e := keymap.ParseFarKey(key)
+					e.ControlKeyState = ctrl
+					if noChar {
+						e.Char = 0
+					}
+					if !pressKey(pf, e) {
+						t.Errorf("%s (ctrl=%d noChar=%t) was not handled", key, ctrl, noChar)
+					}
+					for idx, entry := range fp.Entries {
+						want := i == 0 && (idx == 1 || idx == 2)
+						if entry.Selected != want {
+							t.Errorf("%s (ctrl=%d noChar=%t): %s selected=%t, want %t", key, ctrl, noChar, entry.Name, entry.Selected, want)
+						}
+					}
+					if fp.GetCursorIndex() != 1 || pf.CmdLine.Edit.GetText() != "unfinished command" {
+						t.Fatalf("%s: cursor=%d command=%q", key, fp.GetCursorIndex(), pf.CmdLine.Edit.GetText())
+					}
+				}
+			}
+		}
+	}
 }
 
 func TestPanelsFrame_SelectionByMask(t *testing.T) {
@@ -1250,12 +1342,23 @@ func TestPanelsFrame_CtrlF12SortMenu(t *testing.T) {
 	if !ok {
 		t.Fatalf("Ctrl+F12 top frame = %T, want *vtui.VMenu", vtui.FrameManager.GetTopFrame())
 	}
-	// Five sort modes plus the sort-group toggle on the last row.
-	if len(menu.Items) != 6 {
-		t.Fatalf("sort menu has %d items, want 6", len(menu.Items))
+	// Five sort modes, a rule, the legacy sort-group toggle, the numeric-sort
+	// toggle (f4#1471), the selected-first toggle (Shift+F12) and the grouping
+	// menu (f4#1769 added the rule between the modes and the options).
+	if len(menu.Items) != 10 {
+		t.Fatalf("sort menu has %d items, want 10", len(menu.Items))
 	}
-	if !strings.Contains(menu.Items[5].Text, i18n.Msg("Menu.SortUseGroups")) {
-		t.Fatalf("last sort menu row = %q, want the sort-group toggle", menu.Items[5].Text)
+	if !menu.Items[5].Separator {
+		t.Fatalf("row 5 = %q, want a rule between the modes and the options", menu.Items[5].Text)
+	}
+	if !strings.Contains(menu.Items[6].Text, i18n.Msg("Menu.SortUseGroups")) {
+		t.Fatalf("sort-group toggle row = %q, want the sort-group toggle", menu.Items[6].Text)
+	}
+	if !strings.Contains(menu.Items[7].Text, i18n.Msg("Menu.SortNumeric")) {
+		t.Fatalf("numeric-sort toggle row = %q, want the numeric-sort toggle", menu.Items[7].Text)
+	}
+	if !strings.Contains(menu.Items[8].Text, i18n.Msg("Menu.SortSelectedFirst")) {
+		t.Fatalf("selected-first toggle row = %q, want the selected-first toggle", menu.Items[8].Text)
 	}
 	panelX1, panelY1, panelX2, panelY2 := fsp.GetPosition()
 	menuX1, menuY1, menuX2, menuY2 := menu.GetPosition()
@@ -1263,7 +1366,7 @@ func TestPanelsFrame_CtrlF12SortMenu(t *testing.T) {
 		t.Fatalf("sort menu (%d,%d)-(%d,%d) is not centered in panel (%d,%d)-(%d,%d)",
 			menuX1, menuY1, menuX2, menuY2, panelX1, panelY1, panelX2, panelY2)
 	}
-	if menu.SelectPos != int(panel.SortTime) || !strings.HasPrefix(menu.Items[panel.SortTime].Text, "✓ ") {
+	if menu.SelectPos != int(panel.SortTime) || !strings.HasPrefix(menu.Items[panel.SortTime].Text, panel.SortModeMarker(fsp.SortIsAscending())+" ") {
 		t.Fatalf("current sort not selected/marked: pos=%d item=%q", menu.SelectPos, menu.Items[panel.SortTime].Text)
 	}
 	for idx, shortcut := range []string{"Ctrl+F3", "Ctrl+F4", "Ctrl+F5", "Ctrl+F6", "Ctrl+F7"} {
@@ -1361,7 +1464,7 @@ func TestPanelsFrame_CtrlBrackets_Insertion(t *testing.T) {
 		ControlKeyState: vtinput.LeftCtrlPressed,
 	})
 	gotLeft := pf.CmdLine.Edit.GetText()
-	expectedLeft := leftPath
+	expectedLeft := leftPath + string(os.PathSeparator)
 	if gotLeft != expectedLeft {
 		t.Errorf("Ctrl+[ failed: expected %q, got %q", expectedLeft, gotLeft)
 	}
@@ -1375,7 +1478,7 @@ func TestPanelsFrame_CtrlBrackets_Insertion(t *testing.T) {
 		ControlKeyState: vtinput.LeftCtrlPressed,
 	})
 	gotRight := pf.CmdLine.Edit.GetText()
-	expectedRight := rightPath
+	expectedRight := rightPath + string(os.PathSeparator)
 	if gotRight != expectedRight {
 		t.Errorf("Ctrl+] failed: expected %q, got %q", expectedRight, gotRight)
 	}
@@ -1414,8 +1517,8 @@ func TestPanelsFrame_CtrlBrackets_InsertionWhenPanelsHidden(t *testing.T) {
 		VirtualKeyCode:  vtinput.VK_OEM_4,
 		ControlKeyState: vtinput.LeftCtrlPressed,
 	})
-	if got := pf.CmdLine.Edit.GetText(); got != leftPath {
-		t.Errorf("hidden-panels Ctrl+[ inserted %q, want %q", got, leftPath)
+	if got := pf.CmdLine.Edit.GetText(); got != leftPath+string(os.PathSeparator) {
+		t.Errorf("hidden-panels Ctrl+[ inserted %q, want %q", got, leftPath+string(os.PathSeparator))
 	}
 
 	pf.CmdLine.Clear()
@@ -1425,8 +1528,8 @@ func TestPanelsFrame_CtrlBrackets_InsertionWhenPanelsHidden(t *testing.T) {
 		VirtualKeyCode:  vtinput.VK_OEM_6,
 		ControlKeyState: vtinput.LeftCtrlPressed,
 	})
-	if got := pf.CmdLine.Edit.GetText(); got != rightPath {
-		t.Errorf("hidden-panels Ctrl+] inserted %q, want %q", got, rightPath)
+	if got := pf.CmdLine.Edit.GetText(); got != rightPath+string(os.PathSeparator) {
+		t.Errorf("hidden-panels Ctrl+] inserted %q, want %q", got, rightPath+string(os.PathSeparator))
 	}
 }
 
@@ -1458,6 +1561,78 @@ func TestPanelsFrame_ManualRefresh(t *testing.T) {
 	// It should trigger ReadDirectory
 	if !fsp.IsLoading {
 		t.Error("Ctrl+R did not trigger panel refresh (isLoading should be true)")
+	}
+}
+
+// TestPanelsFrame_ManualRefresh_TreeTarget drives Ctrl+R (Panel.Rescan) with
+// the tree panel (Ctrl+T) focused: it must re-scan the tree itself (picking
+// up a directory created on disk after the tree was built) rather than
+// falling back to RefreshAll on the two ordinary panels behind it -- see
+// TreePanel.Rescan's own doc comment (f4#1602 part 6).
+func TestPanelsFrame_ManualRefresh_TreeTarget(t *testing.T) {
+	t.Cleanup(paneltest.SwapFrameManager(t))
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	theme.SetDefaultF4Palette()
+
+	pf := paneltest.SetupMockPanelsFrame(t)
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+	vtui.FrameManager.Push(pf)
+
+	root := t.TempDir()
+	fromDir := filepath.Join(root, "from")
+	toDir := filepath.Join(root, "to")
+	if err := os.Mkdir(fromDir, 0o700); err != nil {
+		t.Fatalf("mkdir from: %v", err)
+	}
+	if err := os.Mkdir(toDir, 0o700); err != nil {
+		t.Fatalf("mkdir to: %v", err)
+	}
+
+	fsp := panel.NewFileSystemPanel(0, 0, 40, 20, vfs.NewOSVFS(fromDir))
+	paneltest.WaitForLoad(t, fsp)
+
+	tp := panel.NewTreePanel(fsp)
+	if got := tp.GetSelectedName(); got != "from" {
+		t.Fatalf("precondition: tree cursor on %q, want \"from\"", got)
+	}
+	tp.SetFocus(true)
+	pf.AltPanels[pf.ActiveIdx] = tp
+
+	// Created after the tree was built, under root -- already expanded as
+	// part of the chain NewTreePanel revealed down to fromDir -- so a plain
+	// Right/Left on "from"/"to" would never pick it up, only a rescan of
+	// root's own children would.
+	extraDir := filepath.Join(root, "zzz_extra")
+	if err := os.Mkdir(extraDir, 0o700); err != nil {
+		t.Fatalf("mkdir extra: %v", err)
+	}
+
+	handled := pressKey(pf, &vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_R,
+		ControlKeyState: vtinput.LeftCtrlPressed,
+	})
+	if !handled {
+		t.Fatal("Ctrl+R was not handled")
+	}
+
+	// The cursor must stay on "from" (it still exists), not jump back to
+	// root or anywhere else.
+	if got := tp.GetSelectedName(); got != "from" {
+		t.Errorf("tree cursor after Ctrl+R = %q, want %q (unchanged)", got, "from")
+	}
+
+	// Down, Down from "from" should now reach the newly created sibling.
+	if !tp.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_DOWN}) {
+		t.Fatal("Down should be consumed by the tree")
+	}
+	if !tp.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_DOWN}) {
+		t.Fatal("Down should be consumed by the tree")
+	}
+	if got, want := tp.SelectedPath(), extraDir; got != want {
+		t.Errorf("after Ctrl+R, two Down from %q landed on %q, want %q (Rescan did not pick up the new directory)", "from", got, want)
 	}
 }
 
@@ -1632,19 +1807,16 @@ func TestPanelsFrame_FilesMenuLabels(t *testing.T) {
 		t.Errorf("Expected Files menu label '&Files', got %q", filesMenu.Label)
 	}
 
-	expected := "&" + i18n.Msg("Menu.Files.RenMov")
+	expected := plainMenuText(i18n.Msg("Menu.Files.RenMov"))
 	var renMove *vtui.MenuItem
 	for i := range filesMenu.SubItems {
-		if filesMenu.SubItems[i].Text == expected {
+		if plainMenuText(filesMenu.SubItems[i].Text) == expected {
 			renMove = &filesMenu.SubItems[i]
 			break
 		}
 	}
 	if renMove == nil {
 		t.Fatalf("Files menu has no item %q", expected)
-	}
-	if renMove.Text != expected {
-		t.Errorf("Expected Files item %q, got %q", expected, renMove.Text)
 	}
 
 	if renMove.Shortcut != "F6" {
@@ -1741,12 +1913,12 @@ func TestPanelsFrame_F9HiddenPanels_UsesShellMenuAndKeepsTerminalLog(t *testing.
 	}
 
 	wantTerminalItems := map[string]bool{
-		i18n.Msg("Action.Terminal.ViewLog"): false,
-		i18n.Msg("Action.Terminal.EditLog"): false,
+		plainMenuText(i18n.Msg("Action.Terminal.ViewLog")): false,
+		plainMenuText(i18n.Msg("Action.Terminal.EditLog")): false,
 	}
 	for _, item := range items[0].SubItems {
-		if _, ok := wantTerminalItems[item.Text]; ok {
-			wantTerminalItems[item.Text] = true
+		if _, ok := wantTerminalItems[plainMenuText(item.Text)]; ok {
+			wantTerminalItems[plainMenuText(item.Text)] = true
 		}
 	}
 	for label, found := range wantTerminalItems {
@@ -1883,28 +2055,13 @@ func TestPanelsFrame_ShiftF9_SaveSettings(t *testing.T) {
 	if !pressKey(pf, ev) {
 		t.Error("Expected PanelsFrame to handle Shift+F9 keypress")
 	}
-	center, ok := vtui.FrameManager.GetTopFrame().(*settings.Center)
-	if !ok || center.Category() != "workspaces" {
-		t.Fatalf("Shift+F9 top frame=%T", vtui.FrameManager.GetTopFrame())
+	// Shift+F9 is Far's "save setup": the dialog that asks what to save (#1282).
+	top := vtui.FrameManager.GetTopFrame()
+	dlg, ok := top.(vtui.Container)
+	if !ok || top.GetTitle() != i18n.Msg("SaveSettings.Title") {
+		t.Fatalf("Shift+F9 top frame=%T, want the save-settings dialog", top)
 	}
-	defer center.Close()
-	var save *vtui.Button
-	var walk func(vtui.UIElement)
-	walk = func(item vtui.UIElement) {
-		if item.GetId() == "settings-command:save.preferences" {
-			save, _ = item.(*vtui.Button)
-		}
-		if c, ok := item.(vtui.Container); ok {
-			for _, child := range c.GetChildren() {
-				walk(child)
-			}
-		}
-	}
-	walk(center)
-	if save == nil {
-		t.Fatal("manual save command missing")
-	}
-	save.OnClick()
+	testutil.ClickDialogButton(t, dlg, "Save")
 
 	// Проверяем, что файл настроек действительно был записан на диск
 	info, err := os.Stat(tmp.Name())
@@ -2099,6 +2256,117 @@ func TestPanelsFrame_CtrlPgDn_EntersDir(t *testing.T) {
 	// Так как на панели симулируется Enter, путь должен измениться на sub
 	if filepath.Clean(fsp.Vfs.GetPath()) != filepath.Clean(sub) {
 		t.Errorf("Ctrl+PgDn failed to enter directory: expected %q, got %q", sub, fsp.Vfs.GetPath())
+	}
+}
+
+// f4 #1394: a macro's Keys("CtrlPgUp")/Keys("CtrlPgDn") queues an injected
+// event that bypasses the hotkey manager (FrameManager.EventFilter), unlike a
+// real keypress. Calling ProcessKey directly, without going through pressKey's
+// macroFilter step, reproduces exactly that bypass. Before the fix, the panel
+// swallowed it as a plain page-up/down cursor move onto/near "..", so the
+// directory never actually changed and a macro needed an extra Enter.
+func TestPanelsFrame_InjectedCtrlPgUp_GoesToParent(t *testing.T) {
+	// This asserts the *default* CtrlPgUp binding resolves through
+	// macroLookupHotkey, so it needs a clean default HotkeyManager rather
+	// than whatever a shuffled-order sibling test left in the shared
+	// globals (several tests install a minimal HotkeyManager/MacroManager
+	// for their own scenario and restore it via t.Cleanup on exit).
+	previousHotkeys, previousMacro := keymap.GlobalHotkeysMgr, macro.MacroMgr
+	keymap.GlobalHotkeysMgr = keymap.NewHotkeyManager("")
+	macro.MacroMgr = macro.NewMacroManager("")
+	t.Cleanup(func() {
+		keymap.GlobalHotkeysMgr = previousHotkeys
+		macro.MacroMgr = previousMacro
+	})
+
+	vtui.SetDefaultPalette()
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	vtui.FrameManager.Init(scr)
+
+	pf := panel.NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+	vtui.FrameManager.Push(pf)
+
+	fsp := pf.Panels[pf.ActiveIdx].(*panel.FileSystemPanel)
+	tmp := t.TempDir()
+	sub := filepath.Join(tmp, "sub")
+	if err := os.MkdirAll(sub, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := fsp.Vfs.SetPath(sub); err != nil {
+		t.Fatal(err)
+	}
+
+	ev := &vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_PRIOR,
+		ControlKeyState: vtinput.LeftCtrlPressed,
+	}
+
+	if !pf.ProcessKey(ev) {
+		t.Error("Expected PanelsFrame to handle an injected Ctrl+PgUp")
+	}
+	if filepath.Clean(fsp.Vfs.GetPath()) != filepath.Clean(tmp) {
+		t.Errorf("injected Ctrl+PgUp failed to go up: expected %q, got %q", tmp, fsp.Vfs.GetPath())
+	}
+	if fsp.PendingSelection != "sub" {
+		t.Errorf("injected Ctrl+PgUp should position cursor on 'sub', got %q", fsp.PendingSelection)
+	}
+}
+
+func TestPanelsFrame_InjectedCtrlPgDn_EntersDir(t *testing.T) {
+	// See TestPanelsFrame_InjectedCtrlPgUp_GoesToParent: needs the default
+	// binding, not whatever a shuffled-order sibling test left behind.
+	previousHotkeys, previousMacro := keymap.GlobalHotkeysMgr, macro.MacroMgr
+	keymap.GlobalHotkeysMgr = keymap.NewHotkeyManager("")
+	macro.MacroMgr = macro.NewMacroManager("")
+	t.Cleanup(func() {
+		keymap.GlobalHotkeysMgr = previousHotkeys
+		macro.MacroMgr = previousMacro
+	})
+
+	vtui.SetDefaultPalette()
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	vtui.FrameManager.Init(scr)
+
+	pf := panel.NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+	vtui.FrameManager.Push(pf)
+
+	fsp := pf.Panels[pf.ActiveIdx].(*panel.FileSystemPanel)
+	tmp := t.TempDir()
+	sub := filepath.Join(tmp, "sub")
+	if err := os.MkdirAll(sub, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := fsp.Vfs.SetPath(tmp); err != nil {
+		t.Fatal(err)
+	}
+
+	fsp.Entries = []*panel.FileEntry{
+		{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}},
+		{VFSItem: vfs.VFSItem{Name: "sub", IsDir: true}},
+	}
+	fsp.Refresh()
+	fsp.SelectName("sub")
+
+	ev := &vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_NEXT,
+		ControlKeyState: vtinput.LeftCtrlPressed,
+	}
+
+	if !pf.ProcessKey(ev) {
+		t.Error("Expected PanelsFrame to handle an injected Ctrl+PgDn")
+	}
+	if filepath.Clean(fsp.Vfs.GetPath()) != filepath.Clean(sub) {
+		t.Errorf("injected Ctrl+PgDn failed to enter directory: expected %q, got %q", sub, fsp.Vfs.GetPath())
 	}
 }
 

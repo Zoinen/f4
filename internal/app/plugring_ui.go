@@ -121,11 +121,29 @@ func BuildPlugRingRows(items []plughost.PlugRingItem, installed map[string]plugh
 // fetch from escaping: the goroutine outlives the test that started it, and
 // plughost.FetchCatalog reads package state that another test writes.
 //
+// It is plughost.FetchPlugRingCatalog, not plughost.FetchCatalog directly, so
+// the dialog shows f4's first-party native plugins (cloudfox, f4#1178 part 3)
+// alongside the community catalog, from one combined list.
+//
 // refresh reads this on the goroutine that starts the task, not on the one that
 // runs it, so replacing it is safe while a refresh is in flight.
-var plugRingCatalog = plughost.FetchCatalog
+var plugRingCatalog = plughost.FetchPlugRingCatalog
 
 func actionPlugRing(pf *panel.PanelsFrame) {
+	actionPlugRingFocused(pf, "")
+}
+
+// actionPlugRingFocused is actionPlugRing plus one thing: once the catalog
+// (community + first-party, f4#1178 part 3) has loaded, it selects and
+// scrolls to the row whose PlugRingItem.ID equals focusItemID, instead of
+// leaving the table wherever SetRows put it (row 0). An empty focusItemID
+// behaves exactly like actionPlugRing.
+//
+// This is f4#1178, part 4 of 4: a lite build's "CloudFox" drive entry
+// (cloud_storage_lite.go) opens PlugRing landed directly on the "cloudfox"
+// row it now carries, rather than a generic browse-everything dialog the
+// user has to search through themselves.
+func actionPlugRingFocused(pf *panel.PanelsFrame, focusItemID string) {
 	w, h := 76, 22
 
 	btnInstall := vtui.NewButton(0, 0, i18n.Msg("PlugRing.BtnInstall"))
@@ -183,6 +201,15 @@ func actionPlugRing(pf *panel.PanelsFrame) {
 				var rows []vtui.TableRow
 				rows, shown = BuildPlugRingRows(items, plughost.GetInstalledPlugRingItems())
 				table.SetRows(rows)
+				if focusItemID != "" {
+					for i, entry := range shown {
+						if entry != nil && entry.ID == focusItemID {
+							table.SelectPos = i
+							table.EnsureVisible()
+							break
+						}
+					}
+				}
 				vtui.FrameManager.Redraw()
 			})
 		})
@@ -201,7 +228,12 @@ func actionPlugRing(pf *panel.PanelsFrame) {
 
 	btnInstall.OnClick = func() {
 		if item := selected(); item != nil {
-			actionInstallPlugRingItem(pf, dlg, *item, refresh)
+			// The installer may use PanelsFrame.Message for a synchronous
+			// confirmation. Run that orchestration off the UI goroutine: Message
+			// posts the dialog to the UI queue and waits for its answer, so calling
+			// it here would wait for the same goroutine that has to show the
+			// dialog (f4#1710).
+			go actionInstallPlugRingItem(pf, dlg, *item, refresh)
 		}
 	}
 	btnRemove.OnClick = func() {
@@ -233,6 +265,25 @@ func entrypointNeedsInterpreterOnPath(entrypoint string) bool {
 	}
 	interpreter := fields[0]
 	return !strings.ContainsAny(interpreter, "/\\") && !strings.HasPrefix(interpreter, ".")
+}
+
+// firstPartyReleaseTag keeps a plugin download on the same release line as
+// the f4 binary doing the installation. Tagged builds carry their exact tag
+// in buildVersion; development and nightly builds use the moving nightly
+// release instead.
+func firstPartyReleaseTag() string {
+	if buildVersion != "" {
+		return buildVersion
+	}
+	return "nightly"
+}
+
+func resolvePlugRingAssetURL(item plughost.PlugRingItem) string {
+	url := plughost.ResolveAssetURL(item.URL)
+	if item.FirstParty {
+		url = strings.ReplaceAll(url, "{release}", firstPartyReleaseTag())
+	}
+	return url
 }
 
 func actionInstallPlugRingItem(pf *panel.PanelsFrame, parent *vtui.Window, item plughost.PlugRingItem, refresh func()) {
@@ -277,7 +328,7 @@ func actionInstallPlugRingItem(pf *panel.PanelsFrame, parent *vtui.Window, item 
 		}
 	}
 
-	url := plughost.ResolveAssetURL(item.URL)
+	url := resolvePlugRingAssetURL(item)
 	isTarGz := strings.HasSuffix(url, ".tar.gz") || strings.HasSuffix(url, ".tgz")
 	isArchive := isTarGz || strings.HasSuffix(url, ".zip")
 
@@ -388,12 +439,35 @@ func actionInstallPlugRingItem(pf *panel.PanelsFrame, parent *vtui.Window, item 
 				vtui.ShowMessageOn(parent, " Error ", fmt.Sprintf("Installation failed:\n%v", err), []string{"&Ok"})
 			}
 		} else {
-			if plughost.GlobalPluginManager != nil {
-				plughost.GlobalPluginManager.LoadSinglePlugRingItem(item)
-			}
+			finishPlugRingInstall(parent, item, refresh)
+		}
+	})
+}
+
+// loadPlugRingItem starts a just-installed plugin. It is a variable so a test
+// can stand in for a plugin that takes its time.
+var loadPlugRingItem = func(item plughost.PlugRingItem) {
+	if plughost.GlobalPluginManager != nil {
+		plughost.GlobalPluginManager.LoadSinglePlugRingItem(item)
+	}
+}
+
+// finishPlugRingInstall loads the installed plugin and reports the result.
+//
+// It is called on the UI goroutine, and loading must not run there (f4#1710):
+// it starts the plugin process and asks the user's permission to run it, and
+// that prompt is a dialog which only the UI goroutine can show. Loading on it
+// meant waiting for an answer that the waiting itself kept from being asked,
+// so the window froze for the whole two-minute prompt timeout and could not
+// even be closed. The load runs in the background and the message comes back
+// to the UI goroutine afterwards.
+func finishPlugRingInstall(parent *vtui.Window, item plughost.PlugRingItem, refresh func()) {
+	vtui.RunAsync(func(ctx *vtui.TaskContext) {
+		loadPlugRingItem(item)
+		ctx.RunOnUI(func() {
 			vtui.ShowMessageOn(parent, " Success ", "Plugin installed and loaded successfully!", []string{"&Ok"})
 			refresh()
-		}
+		})
 	})
 }
 

@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"github.com/unxed/f4/internal/keymap"
 	"github.com/unxed/f4/internal/numeric"
 	"github.com/unxed/f4/internal/theme"
+	"github.com/unxed/f4/internal/ttyx"
 	"github.com/unxed/f4/internal/update"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
@@ -107,6 +109,91 @@ func removeSessionInfo(sockPath string) {
 	os.Remove(sockPath)
 }
 
+// sessionProcessMatches reports whether pid still runs the daemon that wrote
+// info. Session files outlive their daemons for a while, and pid values get
+// reused, so killing on pid alone would eventually terminate an unrelated
+// program. The daemon's argv carries both "--server" and its socket path,
+// which is the strongest identity check available without cooperation from
+// the process being inspected.
+func sessionProcessMatches(info SessionInfo) bool {
+	if info.PID <= 1 || info.PID == os.Getpid() || !isProcessAlive(info.PID) {
+		return false
+	}
+	// #nosec G304 -- path is derived from an integer pid.
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", info.PID))
+	if err != nil {
+		// No procfs (macOS, BSD, Solaris): fall back to the same evidence
+		// listSessions used to show the entry at all -- the socket exists.
+		_, statErr := os.Stat(info.SockPath)
+		return statErr == nil
+	}
+	cmdline := string(data)
+	return strings.Contains(cmdline, "--server") && strings.Contains(cmdline, info.SockPath)
+}
+
+// stopSession terminates the daemon described by info and removes the files
+// that described it. SIGTERM goes to the whole process group first: the
+// daemon is started with Setsid, so its group id equals its pid, and the
+// group also holds the sudo dispatcher child. Processes are reaped elsewhere
+// (the daemon's parent is init), but a child of ours can linger as a zombie,
+// so /proc/<pid>/stat state "Z" counts as exited while polling.
+func stopSession(info SessionInfo) {
+	if sessionProcessMatches(info) {
+		if err := syscall.Kill(-info.PID, syscall.SIGTERM); err != nil {
+			_ = syscall.Kill(info.PID, syscall.SIGTERM)
+		}
+		deadline := time.Now().Add(time.Second)
+		for isProcessAlive(info.PID) && time.Now().Before(deadline) {
+			if procState(info.PID) == 'Z' {
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		if isProcessAlive(info.PID) && procState(info.PID) != 'Z' {
+			if err := syscall.Kill(-info.PID, syscall.SIGKILL); err != nil {
+				_ = syscall.Kill(info.PID, syscall.SIGKILL)
+			}
+		}
+	}
+
+	// The daemon rewrites its json on every loop iteration, so files go only
+	// after the process is gone -- otherwise the write would resurrect it.
+	_ = os.Remove(filepath.Join(sessionDir(), fmt.Sprintf("f4-%d.json", info.PID)))
+	if info.SockPath != "" {
+		_ = os.Remove(info.SockPath)
+		_ = os.Remove(info.SockPath + ".startup")
+	}
+	_ = os.Remove(filepath.Join(os.TempDir(), fmt.Sprintf("f4-sudo-%d.sock", info.PID)))
+	_ = os.Remove(filepath.Join(os.TempDir(), fmt.Sprintf("f4-ap-%d.sock", info.PID)))
+}
+
+// procState returns the single-letter process state from /proc/<pid>/stat,
+// or 0 when it cannot be read (no procfs, process gone).
+func procState(pid int) byte {
+	// #nosec G304 -- path is derived from an integer pid.
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return 0
+	}
+	// The comm field is parenthesised and may itself contain spaces or ')',
+	// so the state is the byte after the last ')'.
+	s := string(data)
+	close := strings.LastIndexByte(s, ')')
+	if close < 0 || close+2 >= len(s) {
+		return 0
+	}
+	return s[close+2]
+}
+
+// stopAllSessions terminates every listed daemon. A refused kill is
+// tolerated: the files are removed regardless, and listSessions drops stale
+// entries on the next scan anyway.
+func stopAllSessions(sessions []SessionInfo) {
+	for _, s := range sessions {
+		stopSession(s)
+	}
+}
+
 func ManageSessions() {
 	gui.Running = false
 	if len(os.Args) > 1 && os.Args[1] == "--server" {
@@ -131,8 +218,9 @@ func ManageSessions() {
 	if len(sessions) > 0 {
 		// -e skips the interactive picker: `f4 -e file` should just work
 		// non-interactively, reusing whatever session is already running
-		// (matching far2l's -e), not Stop to ask which one first.
-		if App.EditFilePath() != "" {
+		// (matching far2l's -e), not Stop to ask which one first. `f4 file`
+		// asks just as plainly for one file to be shown.
+		if App.EditFilePath() != "" || len(App.ViewFilePaths()) > 0 {
 			RunClient(sessions[0].SockPath, sessions[0].PID)
 			return
 		}
@@ -170,7 +258,7 @@ func runAttachedSession() {
 	ProbeHostTextArea()
 	PreferCompatibleGraphicsProtocol(scr)
 	App.InstallImageOverlay()
-	App.OpenEditFile()
+	App.OpenStartupFiles()
 
 	ttyxKeys := keymap.StartTTYXKeyboard(SharedTTYXSession())
 	if ttyxKeys != nil {
@@ -186,7 +274,7 @@ func startNewSession() {
 	sockPath := filepath.Join(sessionDir(), fmt.Sprintf("f4-new-%d-%d.sock", pid, time.Now().Unix()))
 	vtui.DebugLog("SESSION: Starting new daemon server at %s", sockPath)
 
-	cmd := update.SelfCommand(os.Args[0], "--server", sockPath)
+	cmd := update.SelfCommand(os.Args[0], append([]string{"--server", sockPath}, ServerDiagnosticArgs...)...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // Detach from terminal
 
 	// Crucial for GUI startup: redirect daemon's own I/O to null so it doesn't
@@ -366,7 +454,9 @@ func RunClient(sockPath string, serverPID int) {
 	vtui.DebugLog("CLIENT: FDs to send: In:0 Out:1 Pipe:%d", notifyPipe[1])
 
 	startLeft, startRight := App.StartupDirs()
-	n, oobn, err := conn.WriteMsgUnix(attachPayload(App.EditFilePath(), startLeft, startRight), oob, raddr)
+	payload := attachPayload(App.EditFilePath(), startLeft, startRight, App.ViewFilePaths())
+	payload = append(payload, attachClientIdentity(os.Getpid(), os.Getenv)...)
+	n, oobn, err := conn.WriteMsgUnix(payload, oob, raddr)
 	if err != nil {
 		vtui.DebugLog("CLIENT: ATTACH FAILURE: Failed to send FDs to daemon at %s: %v", sockPath, err)
 		fmt.Fprintf(os.Stderr, "f4: failed to attach to session at %s: %v\n", sockPath, err)
@@ -426,8 +516,49 @@ type attachRequest struct {
 	notifyPipeWriteEnd int
 	rawFds             []int
 	editPath           string
+	viewPaths          []string
 	startLeft          string
 	startRight         string
+	clientPID          int
+	clientEnv          map[string]string
+}
+
+// attachClientIdentity is who is attaching, for the one part of the daemon
+// that has to know: TTY|Xi, which finds the terminal window by the client's
+// ancestry and environment (issue #980). The lines go after whatever
+// attachPayload wrote, and a daemon that does not know them ignores them.
+//
+// Every variable ttyx identifies the window by is sent, set or not, so that
+// a client with no WINDOWID reads as having none instead of inheriting the
+// daemon's stale one.
+func attachClientIdentity(pid int, getenv func(string) string) []byte {
+	var b strings.Builder
+	fmt.Fprintf(&b, "\nPID %d", pid)
+	for _, name := range ttyx.IdentityEnv() {
+		b.WriteString("\nENV " + name + "=" + strings.ReplaceAll(getenv(name), "\n", ""))
+	}
+	return []byte(b.String())
+}
+
+// parseAttachClientIdentity reads back what attachClientIdentity wrote. A
+// pid of zero means an older client that sent none.
+func parseAttachClientIdentity(msg string) (pid int, env map[string]string) {
+	for _, line := range strings.Split(msg, "\n")[1:] {
+		switch {
+		case strings.HasPrefix(line, "PID "):
+			if n, err := strconv.Atoi(line[len("PID "):]); err == nil && n > 0 {
+				pid = n
+			}
+		case strings.HasPrefix(line, "ENV "):
+			if name, value, ok := strings.Cut(line[len("ENV "):], "="); ok {
+				if env == nil {
+					env = make(map[string]string)
+				}
+				env[name] = value
+			}
+		}
+	}
+	return pid, env
 }
 
 // attachPayload builds the ATTACH datagram body. Plain "ATTACH" when no
@@ -439,23 +570,32 @@ type attachRequest struct {
 // The panel directories ride on further lines, so an older server still reads
 // exactly "ATTACH" on the first. They are left out next to -e, where that
 // server would take the whole datagram as the file name.
-func attachPayload(editPath, left, right string) []byte {
+//
+// So are the files to view, one VIEW line each (issue #991): an older server
+// skips the lines it does not know, and a path with a line break in it, which
+// would read as further lines, is not sent.
+func attachPayload(editPath, left, right string, viewPaths []string) []byte {
 	if editPath != "" {
 		return []byte("ATTACH " + editPath)
 	}
-	if left == "" {
-		return []byte("ATTACH")
+	msg := "ATTACH"
+	if left != "" {
+		msg += "\nCWD " + left
+		if right != "" && right != left {
+			msg += "\nCWD2 " + right
+		}
 	}
-	msg := "ATTACH\nCWD " + left
-	if right != "" && right != left {
-		msg += "\nCWD2 " + right
+	for _, path := range viewPaths {
+		if path != "" && !strings.ContainsAny(path, "\r\n") {
+			msg += "\nVIEW " + path
+		}
 	}
 	return []byte(msg)
 }
 
 // parseAttachPayload reads back what attachPayload wrote. Unknown lines are
 // ignored rather than refused, so a future client stays attachable.
-func parseAttachPayload(msg string) (editPath, left, right string) {
+func parseAttachPayload(msg string) (editPath, left, right string, viewPaths []string) {
 	lines := strings.Split(msg, "\n")
 	if strings.HasPrefix(lines[0], "ATTACH ") {
 		editPath = lines[0][len("ATTACH "):]
@@ -466,9 +606,11 @@ func parseAttachPayload(msg string) (editPath, left, right string) {
 			right = line[len("CWD2 "):]
 		case strings.HasPrefix(line, "CWD "):
 			left = line[len("CWD "):]
+		case strings.HasPrefix(line, "VIEW "):
+			viewPaths = append(viewPaths, line[len("VIEW "):])
 		}
 	}
-	return editPath, left, right
+	return editPath, left, right, viewPaths
 }
 
 func RunServer(sockPath string) {
@@ -537,7 +679,8 @@ func RunServer(sockPath string) {
 
 			setCloseOnExec(fds)
 
-			editPath, startLeft, startRight := parseAttachPayload(string(buf[:n]))
+			editPath, startLeft, startRight, viewPaths := parseAttachPayload(string(buf[:n]))
+			clientPID, clientEnv := parseAttachClientIdentity(string(buf[:n]))
 
 			req := attachRequest{
 				in:                 os.NewFile(uintptr(fds[0]), "/dev/stdin"),
@@ -545,8 +688,11 @@ func RunServer(sockPath string) {
 				notifyPipeWriteEnd: fds[2],
 				rawFds:             fds,
 				editPath:           editPath,
+				viewPaths:          viewPaths,
 				startLeft:          startLeft,
 				startRight:         startRight,
+				clientPID:          clientPID,
+				clientEnv:          clientEnv,
 			}
 
 			// Preempt the current attached session (if any) so the new client takes over.
@@ -643,6 +789,15 @@ func RunServer(sockPath string) {
 		}(notifyPipeWriteEnd, fds[0])
 
 		vtui.DebugLog("SERVER: PRE-RUN: Stdin FD: %d, Stdout FD: %d", os.Stdin.Fd(), os.Stdout.Fd())
+		// The X side of the terminal belongs to this client, not to
+		// whichever one attached first: find its window before anything
+		// below asks for the session (issue #980). An older client sends
+		// no identity, and the session found before is kept for it.
+		if req.clientPID > 0 {
+			clientEnv := req.clientEnv
+			AttachTTYXSession(req.clientPID, func(name string) string { return clientEnv[name] })
+		}
+
 		// The terminal is asked how large its text area is before
 		// anything starts reading standard input, because afterwards
 		// the answer is just another escape sequence and the reader
@@ -656,10 +811,11 @@ func RunServer(sockPath string) {
 		reader := vtinput.NewReader(os.Stdin, false)
 
 		// The application's part of the attach: the host console, the
-		// startup directories and -e. Deferred all the way to here because
-		// -e needs a frame something has actually rendered to; the terminal
-		// is attached, sized and drawing by this point.
-		App.ClientAttached(attachStartLeft, attachStartRight, attachEditPath)
+		// startup directories and the files to view or edit. Deferred all
+		// the way to here because the files need a frame something has
+		// actually rendered to; the terminal is attached, sized and drawing
+		// by this point.
+		App.ClientAttached(attachStartLeft, attachStartRight, attachEditPath, req.viewPaths)
 
 		// The key combinations a TTY cannot carry, taken from the X
 		// server. See docs/TTYX.md.
@@ -787,8 +943,10 @@ func runSessionPicker(sessions []SessionInfo) *SessionInfo {
 	}
 
 	btnOk := vtui.NewButton(0, 0, i18n.Msg("vtui.Ok"))
+	btnDeleteAll := vtui.NewButton(0, 0, i18n.Msg("Session.DeleteAll"))
 	btnCancel := vtui.NewButton(0, 0, i18n.Msg("vtui.Cancel"))
 	dlg.AddItem(btnOk)
+	dlg.AddItem(btnDeleteAll)
 	dlg.AddItem(btnCancel)
 
 	// Layout Engine
@@ -799,6 +957,7 @@ func runSessionPicker(sessions []SessionInfo) *SessionInfo {
 	hbox.HorizontalAlign = vtui.AlignCenter
 	hbox.Spacing = 2
 	hbox.Add(btnOk, vtui.Margins{}, vtui.AlignTop)
+	hbox.Add(btnDeleteAll, vtui.Margins{}, vtui.AlignTop)
 	hbox.Add(btnCancel, vtui.Margins{}, vtui.AlignTop)
 	vbox.Add(hbox, vtui.Margins{Top: 1}, vtui.AlignFill)
 	vbox.Apply()
@@ -806,6 +965,25 @@ func runSessionPicker(sessions []SessionInfo) *SessionInfo {
 	btnOk.OnClick = func() {
 		if lb.OnAction != nil {
 			lb.OnAction(lb.SelectPos)
+		}
+	}
+	btnDeleteAll.OnClick = func() {
+		confirm := vtui.ShowMessageEx(
+			i18n.Msg("Session.DeleteAllTitle"),
+			fmt.Sprintf(i18n.Msg("Session.DeleteAllConfirm"), len(sessions)),
+			[]string{i18n.Msg("vtui.Ok"), i18n.Msg("vtui.Cancel")},
+			vtui.MessageWarn,
+		)
+		// ShowMessageEx runs OnResult from inside SetExitCode, before the
+		// FrameManager cleans up Done frames, so this still executes while
+		// both dialogs are on the stack.
+		confirm.OnResult = func(code int) {
+			if code != 0 {
+				return
+			}
+			stopAllSessions(sessions)
+			selected = &SessionInfo{PID: 0}
+			dlg.SetExitCode(1)
 		}
 	}
 	btnCancel.OnClick = func() { dlg.SetExitCode(-1) }

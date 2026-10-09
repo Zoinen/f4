@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"sync"
+	"syscall"
 	"time"
 
 	"strings"
@@ -42,22 +44,25 @@ func (v *OSVFS) IsAtRoot() bool {
 	return v.currentPath == "/"
 }
 
-func (v *OSVFS) SetPath(path string) error {
-	vtui.DebugLog("VFS: SetPath(%q) called", path)
+// resolveAndStat resolves path relative to the current directory (following
+// the same Windows reparse-point fallback SetPath uses) and stats the
+// result. It never consults the sudo helper, so SetPath and NeedsElevation
+// can share it without either one triggering the other's side effects.
+func (v *OSVFS) resolveAndStat(path string) (abs string, st os.FileInfo, statErr error) {
 	target := path
 	if !hostpath.IsAbs(path) && hostpath.VolumeName(path) == "" {
 		target = hostpath.Join(v.currentPath, path)
 	}
 	abs, err := hostpath.Abs(target)
 	if err != nil {
-		return err
+		return "", nil, err
 	}
 
 	// First try to verify the original path directly. If it exists, is
 	// accessible and is a directory (or a symlink to one), we keep the
 	// original visual path in the panel without forcing a dereference.
 	if st, errStat := hostfs.Stat(prepareOSPath(abs)); errStat == nil && st.IsDir() {
-		goto verify
+		return abs, st, nil
 	}
 
 	// If direct access failed (e.g. Permission Denied on the Windows system
@@ -66,48 +71,101 @@ func (v *OSVFS) SetPath(path string) error {
 	// Resolution runs on the PLAIN path (no \\?\ prefix): the prefix disables
 	// Win32's transparent reparse redirection, so "Documents and Settings"
 	// is opened directly and yields Access Denied.
-	if runtime.GOOS == "windows" {
+	if WindowsPersonality() {
 		for _, candidate := range resolveReparseCandidates(abs) {
 			vtui.DebugLog("VFS: SetPath: trying reparse candidate %q -> %q", abs, candidate)
 			if st, errStat := hostfs.Stat(prepareOSPath(candidate)); errStat == nil && st.IsDir() {
-				abs = candidate
-				goto verify
+				return candidate, st, nil
 			}
 		}
 	}
 
-verify:
-	st, err := hostfs.Stat(prepareOSPath(abs))
+	st, statErr = hostfs.Stat(prepareOSPath(abs))
+	return abs, st, displayPathError(statErr)
+}
+
+func (v *OSVFS) SetPath(path string) error {
+	vtui.DebugLog("VFS: SetPath(%q) called", path)
+	abs, err := v.resolvePathWithElevation(path)
 	if err != nil {
-		if os.IsPermission(err) && globalSudoClient.IsAvailable() {
-			vtui.DebugLog("VFS: SetPath: Permission denied for %q, checking via sudo...", abs)
-			item, sudoErr := globalSudoClient.Stat(prepareOSPath(abs))
-			if sudoErr == nil {
-				if item.IsDir {
-					vtui.DebugLog("VFS: Path changed to %q (via sudo Stat)", abs)
-					v.currentPath = abs
-					return nil
-				}
-				vtui.DebugLog("VFS: SetPath(%q) FAILED: not a directory (via sudo Stat)", abs)
-				return os.ErrInvalid
-			}
-			return sudoErr
-		}
 		return err
-	}
-	if !st.IsDir() {
-		vtui.DebugLog("VFS: SetPath(%q) FAILED: not a directory", abs)
-		return os.ErrInvalid
 	}
 	vtui.DebugLog("VFS: Path changed to %q", abs)
 	v.currentPath = abs
 	return nil
 }
 
+// resolvePathWithElevation resolves path exactly as SetPath does, including
+// the sudo fallback, but does not mutate v. SetPath wraps it for ordinary
+// synchronous callers; ResolveElevated exposes it directly for a caller that
+// wants to run the (possibly sudo-blocking) resolution off the UI goroutine
+// and apply the result itself via CommitPath.
+func (v *OSVFS) resolvePathWithElevation(path string) (string, error) {
+	abs, st, err := v.resolveAndStat(path)
+	if err != nil {
+		if os.IsPermission(err) && globalSudoClient.IsAvailable() {
+			vtui.DebugLog("VFS: SetPath: Permission denied for %q, checking via sudo...", abs)
+			item, sudoErr := globalSudoClient.Stat(prepareOSPath(abs))
+			if sudoErr == nil {
+				if item.IsDir {
+					return abs, nil
+				}
+				vtui.DebugLog("VFS: SetPath(%q) FAILED: not a directory (via sudo Stat)", abs)
+				return "", os.ErrInvalid
+			}
+			return "", displayPathError(sudoErr)
+		}
+		return "", err
+	}
+	if !st.IsDir() {
+		vtui.DebugLog("VFS: SetPath(%q) FAILED: not a directory", abs)
+		return "", os.ErrInvalid
+	}
+	if err := refuseNotListable(abs); err != nil {
+		vtui.DebugLog("VFS: SetPath(%q) FAILED: directory cannot be listed: %v", abs, err)
+		return "", err
+	}
+	return abs, nil
+}
+
+// NeedsElevation reports whether calling SetPath(path) would have to consult
+// the sudo helper to resolve path, and could therefore block waiting for its
+// dispatcher. It never mutates v and never calls the sudo helper itself.
+//
+// f4#1411: SudoClient.Connect can block for minutes waiting on a slow PAM
+// prompt (e.g. a fingerprint reader), and f4 has a single cooperative UI
+// goroutine, so calling SetPath synchronously from it froze the whole UI
+// whenever Enter was pressed on a directory that needs elevation. A caller
+// on the UI goroutine checks this first (it only ever does a plain, fast
+// os.Stat, so it is itself safe to call synchronously) and, if true, calls
+// ResolveElevated on a background goroutine instead, applying the result via
+// CommitPath back on the UI goroutine.
+func (v *OSVFS) NeedsElevation(path string) bool {
+	_, _, err := v.resolveAndStat(path)
+	return err != nil && os.IsPermission(err) && globalSudoClient.IsAvailable()
+}
+
+// ResolveElevated is resolvePathWithElevation exported for a caller that
+// runs it off the UI goroutine after NeedsElevation reported true. It does
+// not mutate v; the caller applies the returned path with CommitPath.
+func (v *OSVFS) ResolveElevated(path string) (string, error) {
+	return v.resolvePathWithElevation(path)
+}
+
+// CommitPath sets the current path to an already-resolved absolute
+// directory, without stating or validating it again. It exists so a caller
+// that resolved a path off the UI goroutine via ResolveElevated (f4#1411)
+// can apply the result on the UI goroutine — the only place mutating v is
+// safe — without repeating (and potentially re-blocking on) the resolution.
+func (v *OSVFS) CommitPath(abs string) {
+	vtui.DebugLog("VFS: Path changed to %q", abs)
+	v.currentPath = abs
+}
+
 func (v *OSVFS) ReadDir(ctx context.Context, path string, onChunk func([]VFSItem)) error {
 	dirPath := path
 	entries, err := hostfs.ReadDir(prepareOSPath(dirPath))
-	if err != nil && os.IsPermission(err) && runtime.GOOS == "windows" {
+	if err != nil && os.IsPermission(err) && WindowsPersonality() {
 		// Resolve protected/per-user junctions (e.g. "Documents and
 		// Settings", "<user>\Application Data") the same way SetPath does.
 		for _, candidate := range resolveReparseCandidates(dirPath) {
@@ -135,7 +193,7 @@ func (v *OSVFS) ReadDir(ctx context.Context, path string, onChunk func([]VFSItem
 		} else {
 			vtui.DebugLog("VFS: ReadDir(%q) FAILED: %v (Permission: %v, SudoAvailable: %v)", dirPath, err, os.IsPermission(err), globalSudoClient.IsAvailable())
 		}
-		return err
+		return displayPathError(err)
 	}
 
 	// hostfs.ReadDir returns the whole directory at once (both the posix
@@ -189,14 +247,26 @@ func (v *OSVFS) ReadDir(ctx context.Context, path string, onChunk func([]VFSItem
 
 			entryPath := hostpath.Join(dirPath, e.Name())
 			item := VFSItem{
-				Name:         e.Name(),
+				KnownMetadata: MetadataExplicit | MetadataHidden,
+				// e.Name() is the raw byte string the OS handed back, which
+				// on Unix is not guaranteed to be valid UTF-8. Mapping it
+				// here (see pua.go) keeps every byte while making Name safe
+				// to sort, persist as JSON and display; prepareOSPath maps
+				// it back before any syscall that needs the real name.
+				Name:         decodeUTF8OrMap([]byte(e.Name())),
 				Size:         size,
-				SizeKnown:    true,
+				SizeKnown:    info != nil,
 				IsDir:        isDir,
 				IsSymlink:    isSymlink,
+				ReparseTag:   readReparseTag(entryPath, info),
 				MTime:        mtime,
 				IsExecutable: isExec,
 				IsHidden:     isHidden(entryPath, e.Name(), info),
+			}
+			if info != nil {
+				item.UnixMode = uint32(info.Mode().Perm())
+				item.KnownMetadata |= MetadataPermissions | MetadataExecutable | MetadataMTime
+				fillPlatformTimes(&item, info)
 			}
 			// Cheap variant: on Unix stat.Blocks is already loaded
 			// alongside FileInfo, so filling PhysicalSize here is free.
@@ -214,6 +284,21 @@ func (v *OSVFS) ReadDir(ctx context.Context, path string, onChunk func([]VFSItem
 	return nil
 }
 
+// elevatedLookupError picks what to report when the plain call was refused and
+// the elevated one failed as well. A refusal only says the path could not be
+// looked at; when the elevated call could, and the name is not there, that is
+// the answer, and it must reach the caller as "does not exist". Copying into a
+// folder that needs sudo asks whether the destination is already there before
+// it creates it, and was told "permission denied" for a file that simply had
+// not been written yet (#1255).
+func elevatedLookupError(op, path string, refused, sudoErr error) error {
+	var errno syscall.Errno
+	if errors.As(sudoErr, &errno) && (errno == syscall.ENOENT || errno == syscall.ENOTDIR) {
+		return &fs.PathError{Op: op, Path: stripExtendedPrefix(path), Err: errno}
+	}
+	return displayPathError(refused)
+}
+
 func (v *OSVFS) Stat(ctx context.Context, path string) (VFSItem, error) {
 	if ctx.Err() != nil {
 		return VFSItem{}, ctx.Err()
@@ -229,8 +314,9 @@ func (v *OSVFS) Stat(ctx context.Context, path string) (VFSItem, error) {
 				return item, nil
 			}
 			vtui.DebugLog("VFS: Sudo Stat(%q) FAILED: %v", path, sudoErr)
+			return VFSItem{}, elevatedLookupError("stat", preparedPath, err, sudoErr)
 		}
-		return VFSItem{}, err
+		return VFSItem{}, displayPathError(err)
 	}
 	isSymlink := linkInfo.Mode()&os.ModeSymlink != 0 || isReparsePoint(linkInfo)
 	info := linkInfo
@@ -244,11 +330,14 @@ func (v *OSVFS) Stat(ctx context.Context, path string) (VFSItem, error) {
 	}
 
 	item := VFSItem{
-		Name:         info.Name(),
+		KnownMetadata: MetadataExplicit | MetadataPermissions | MetadataExecutable | MetadataHidden | MetadataMTime,
+		// See the comment on the same mapping in ReadDir.
+		Name:         decodeUTF8OrMap([]byte(info.Name())),
 		Size:         info.Size(),
 		SizeKnown:    true,
 		IsDir:        info.IsDir(),
 		IsSymlink:    isSymlink,
+		ReparseTag:   readReparseTag(path, linkInfo),
 		MTime:        info.ModTime(),
 		UnixMode:     uint32(info.Mode().Perm()),
 		IsExecutable: info.Mode().Perm()&0111 != 0,
@@ -279,8 +368,9 @@ func (v *OSVFS) Lstat(ctx context.Context, path string) (VFSItem, error) {
 			if sudoErr == nil {
 				return item, nil
 			}
+			return VFSItem{}, elevatedLookupError("lstat", preparedPath, err, sudoErr)
 		}
-		return VFSItem{}, err
+		return VFSItem{}, displayPathError(err)
 	}
 	isSymlink := info.Mode()&os.ModeSymlink != 0 || isReparsePoint(info)
 	isDir := info.IsDir()
@@ -291,11 +381,14 @@ func (v *OSVFS) Lstat(ctx context.Context, path string) (VFSItem, error) {
 	}
 
 	item := VFSItem{
-		Name:         info.Name(),
+		KnownMetadata: MetadataExplicit | MetadataPermissions | MetadataExecutable | MetadataHidden | MetadataMTime,
+		// See the comment on the same mapping in ReadDir.
+		Name:         decodeUTF8OrMap([]byte(info.Name())),
 		Size:         info.Size(),
 		SizeKnown:    true,
 		IsDir:        isDir,
 		IsSymlink:    isSymlink,
+		ReparseTag:   readReparseTag(absPath, info),
 		MTime:        info.ModTime(),
 		UnixMode:     uint32(info.Mode().Perm()),
 		IsExecutable: info.Mode().Perm()&0111 != 0,
@@ -325,9 +418,9 @@ func (v *OSVFS) MkDir(ctx context.Context, path string) error {
 	err := hostfs.MkdirAll(prepareOSPath(path), 0755)
 	if err != nil && os.IsPermission(err) && globalSudoClient.IsAvailable() {
 		vtui.DebugLog("VFS: Permission denied for MkDir(%q), attempting sudo...", path)
-		return globalSudoClient.MkDir(prepareOSPath(path), 0755)
+		return displayPathError(globalSudoClient.MkDir(prepareOSPath(path), 0755))
 	}
-	return err
+	return displayPathError(err)
 }
 
 func (v *OSVFS) Remove(ctx context.Context, path string) error {
@@ -336,9 +429,9 @@ func (v *OSVFS) Remove(ctx context.Context, path string) error {
 	}
 	err := hostfs.RemoveAll(prepareOSPath(path))
 	if err != nil && os.IsPermission(err) && globalSudoClient.IsAvailable() {
-		return globalSudoClient.Remove(prepareOSPath(path))
+		return displayPathError(globalSudoClient.Remove(prepareOSPath(path)))
 	}
-	return err
+	return displayPathError(err)
 }
 
 func (v *OSVFS) Rename(ctx context.Context, old, new string) error {
@@ -350,9 +443,9 @@ func (v *OSVFS) Rename(ctx context.Context, old, new string) error {
 	}
 	err := hostfs.Rename(prepareOSPath(old), prepareOSPath(new))
 	if err != nil && os.IsPermission(err) && globalSudoClient.IsAvailable() {
-		return globalSudoClient.Rename(prepareOSPath(old), prepareOSPath(new))
+		return displayPathError(globalSudoClient.Rename(prepareOSPath(old), prepareOSPath(new)))
 	}
-	return err
+	return displayPathError(err)
 }
 
 // RenameNoReplace renames an OS object without ever replacing an unrelated
@@ -363,21 +456,37 @@ func (v *OSVFS) RenameNoReplace(ctx context.Context, old, new string) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	return renameNoReplace(prepareOSPath(old), prepareOSPath(new))
+	err := renameNoReplace(prepareOSPath(old), prepareOSPath(new))
+	if err != nil && os.IsPermission(err) && globalSudoClient.IsAvailable() {
+		vtui.DebugLog("VFS: Permission denied for RenameNoReplace(%q), attempting sudo...", old)
+		return displayPathError(globalSudoClient.RenameNoReplace(prepareOSPath(old), prepareOSPath(new)))
+	}
+	return displayPathError(err)
 }
 func (v *OSVFS) SetAttributes(ctx context.Context, path string, item VFSItem) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
 
+	// Mode and times are set through a link, on what it points to. A link whose
+	// target is gone has no such thing to set them on: asking would fail with
+	// "cannot find the file" and keep the user from changing the link itself,
+	// say its target (f4#1828).
+	danglingLink := false
+	if item.IsSymlink {
+		if _, statErr := hostfs.Stat(prepareOSPath(path)); statErr != nil {
+			danglingLink = true
+		}
+	}
+
 	// Try native first
 	var errMode error
-	if item.UnixMode != 0 {
+	if item.UnixMode != 0 && !danglingLink {
 		errMode = hostfs.Chmod(prepareOSPath(path), os.FileMode(item.UnixMode))
 	}
 
 	var errOwn error
-	if runtime.GOOS != "windows" {
+	if !WindowsPersonality() {
 		if item.Uid != -1 && item.Gid != -1 {
 			if item.IsSymlink {
 				errOwn = hostfs.Lchown(prepareOSPath(path), item.Uid, item.Gid)
@@ -388,7 +497,7 @@ func (v *OSVFS) SetAttributes(ctx context.Context, path string, item VFSItem) er
 	}
 
 	var errTime error
-	if !item.ATime.IsZero() || !item.MTime.IsZero() {
+	if (!item.ATime.IsZero() || !item.MTime.IsZero()) && !danglingLink {
 		atime := item.ATime
 		mtime := item.MTime
 		if atime.IsZero() {
@@ -405,19 +514,19 @@ func (v *OSVFS) SetAttributes(ctx context.Context, path string, item VFSItem) er
 	// If any operation failed due to permissions, try sudo
 	if (os.IsPermission(errMode) || os.IsPermission(errOwn) || os.IsPermission(errTime) || os.IsPermission(errPlat)) && globalSudoClient.IsAvailable() {
 		vtui.DebugLog("VFS: SetAttributes permission denied, trying sudo for %q", path)
-		return globalSudoClient.SetAttributes(prepareOSPath(path), item)
+		return displayPathError(globalSudoClient.SetAttributes(prepareOSPath(path), item))
 	}
 
 	if errMode != nil {
-		return errMode
+		return displayPathError(errMode)
 	}
 	if errOwn != nil {
-		return errOwn
+		return displayPathError(errOwn)
 	}
 	if errTime != nil {
-		return errTime
+		return displayPathError(errTime)
 	}
-	return errPlat
+	return displayPathError(errPlat)
 }
 
 func (v *OSVFS) PatchInPlace(ctx context.Context, path string, pieces []PatchPiece) (returnErr error) {
@@ -429,7 +538,7 @@ func (v *OSVFS) PatchInPlace(ctx context.Context, path string, pieces []PatchPie
 
 	f, err := hostfs.OpenFile(prepareOSPath(path), os.O_RDWR, 0)
 	if err != nil {
-		return err
+		return displayPathError(err)
 	}
 	defer func() {
 		returnErr = errors.Join(returnErr, f.Close())
@@ -442,7 +551,7 @@ func (v *OSVFS) PatchInPlace(ctx context.Context, path string, pieces []PatchPie
 		}
 		if p.Data != nil {
 			if _, err := f.WriteAt(p.Data, newOffset); err != nil {
-				return err
+				return displayPathError(err)
 			}
 		}
 		newOffset += p.Length
@@ -451,7 +560,7 @@ func (v *OSVFS) PatchInPlace(ctx context.Context, path string, pieces []PatchPie
 	// before. WriteAt overwrites the prefix but does not remove the old tail,
 	// so truncate after the last piece to make the on-disk result match the
 	// logical piece stream.
-	return f.Truncate(newOffset)
+	return displayPathError(f.Truncate(newOffset))
 }
 func (v *OSVFS) GetCapabilities() VFSCapabilities {
 	return VFSCapabilities{
@@ -459,7 +568,7 @@ func (v *OSVFS) GetCapabilities() VFSCapabilities {
 		HasServerSideMove:        true,
 		HasRandomAccess:          true,
 		HasSearch:                false,
-		HasUnixPermissions:       runtime.GOOS != "windows",
+		HasUnixPermissions:       !WindowsPersonality(),
 		HasAtomicNoReplaceRename: true,
 		HasWrite:                 true,
 	}
@@ -496,7 +605,7 @@ func (f *osFileWrapper) RefreshSize(ctx context.Context) (int64, error) {
 	}
 	info, err := f.Stat()
 	if err != nil {
-		return f.Size(), err
+		return f.Size(), displayPathError(err)
 	}
 	if info.Mode()&(os.ModeDevice|os.ModeCharDevice) != 0 {
 		// A device's length was probed by seeking to its end when it was
@@ -514,14 +623,16 @@ func (f *osFileWrapper) Read(ctx context.Context, p []byte) (n int, err error) {
 	if ctx.Err() != nil {
 		return 0, ctx.Err()
 	}
-	return f.File.Read(p)
+	n, err = f.File.Read(p)
+	return n, displayPathError(err)
 }
 
 func (f *osFileWrapper) ReadAt(ctx context.Context, p []byte, off int64) (n int, err error) {
 	if ctx.Err() != nil {
 		return 0, ctx.Err()
 	}
-	return f.File.ReadAt(p, off)
+	n, err = f.File.ReadAt(p, off)
+	return n, displayPathError(err)
 }
 func (f *osFileWrapper) Fd() uintptr {
 	if f.File != nil {
@@ -538,21 +649,51 @@ func (v *OSVFS) Open(ctx context.Context, path string) (ReadAtCloser, error) {
 	if err == nil && (fi.Mode()&(os.ModeNamedPipe|os.ModeSocket) != 0) {
 		return nil, os.ErrInvalid
 	}
-	f, err := hostfs.OpenFile(prepareOSPath(path), os.O_RDWR, 0)
-	if err != nil {
+	// A regular file is opened for reading only. Nothing writes through
+	// this handle (in-place patching and OpenWriteAt open their own), and
+	// the editor and the viewer keep it for as long as they show the file.
+	// On Windows a handle with write access makes the file unreadable to
+	// every program that opens it with FILE_SHARE_READ alone -- .NET's
+	// File.OpenRead, StreamReader(path) and File.ReadLines among them --
+	// until the editor is closed (#1364). The read-write attempt stays for
+	// what is not known to be a regular file: it came in with block-device
+	// support, and a device is what it was for.
+	var f hostfs.File
+	if err == nil && fi.Mode().IsRegular() {
 		f, err = hostfs.Open(prepareOSPath(path))
+	} else {
+		f, err = hostfs.OpenFile(prepareOSPath(path), os.O_RDWR, 0)
+		if err != nil {
+			f, err = hostfs.Open(prepareOSPath(path))
+		}
 	}
 	if err != nil {
+		if os.IsPermission(err) && !ElevationAllowed(ctx) {
+			vtui.DebugLog("VFS: Permission denied for Open(%q); the caller ruled out sudo", path)
+			return nil, displayPathError(err)
+		}
 		if os.IsPermission(err) && globalSudoClient.IsAvailable() {
 			vtui.DebugLog("VFS: Permission denied for Open(%q), attempting sudo...", path)
-			sudoF, sudoErr := globalSudoClient.Open(prepareOSPath(path), os.O_RDONLY, 0)
+			// SudoClient.Open's first call spawns the elevated dispatcher via
+			// "sudo -A" and can then sit for a long time on a slow PAM prompt
+			// (e.g. a fingerprint reader retrying) before it either succeeds
+			// or falls back to the askpass password dialog. A caller that
+			// wired a ProgressCallback into ctx (f4#1411: the editor/viewer
+			// opening a local file that turns out to need sudo) gets told
+			// right here, before that possibly-long wait, instead of seeing
+			// nothing until the password dialog -- or nothing at all --
+			// eventually appears.
+			if update, ok := ctx.Value(ProgressKey).(ProgressCallback); ok && update != nil {
+				update("Requesting sudo access...", -1)
+			}
+			sudoF, sudoErr := sudoOpenCancellable(ctx, prepareOSPath(path))
 			if sudoErr == nil {
 				info, _ := sudoF.Stat()
 				size := info.Size()
 				if info.Mode()&(os.ModeDevice|os.ModeCharDevice) != 0 {
 					if probedSize, found, err := probeSeekSize(sudoF); err != nil {
 						_ = sudoF.Close() // The read handle cannot be returned at the wrong offset.
-						return nil, err
+						return nil, displayPathError(err)
 					} else if found {
 						size = probedSize
 					}
@@ -561,24 +702,53 @@ func (v *OSVFS) Open(ctx context.Context, path string) (ReadAtCloser, error) {
 				return &osFileWrapper{File: sudoF, size: size}, nil
 			}
 			vtui.DebugLog("VFS: Sudo Open(%q) FAILED: %v", path, sudoErr)
+			return nil, elevatedLookupError("open", prepareOSPath(path), err, sudoErr)
 		}
-		return nil, err
+		return nil, displayPathError(err)
 	}
 	info, err := f.Stat()
 	if err != nil {
 		_ = f.Close() // No writes occurred before the failed metadata read.
-		return nil, err
+		return nil, displayPathError(err)
 	}
 	size := info.Size()
 	if info.Mode()&(os.ModeDevice|os.ModeCharDevice) != 0 {
 		if probedSize, found, err := probeSeekSize(f); err != nil {
 			_ = f.Close() // The handle cannot be returned at the wrong offset.
-			return nil, err
+			return nil, displayPathError(err)
 		} else if found {
 			size = probedSize
 		}
 	}
 	return &osFileWrapper{File: f, size: size}, nil
+}
+
+// sudoOpenCancellable is globalSudoClient.Open that gives up when ctx is
+// cancelled. The elevated open can wait a long time on a PAM prompt or the
+// password dialog and takes no context, so the Cancel button of the progress
+// window did nothing (f4#1411); now the caller is released at once and the
+// open that is still going on is closed when it ends.
+func sudoOpenCancellable(ctx context.Context, path string) (*os.File, error) {
+	type result struct {
+		f   *os.File
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		f, err := globalSudoClient.Open(path, os.O_RDONLY, 0)
+		done <- result{f, err}
+	}()
+	select {
+	case r := <-done:
+		return r.f, r.err
+	case <-ctx.Done():
+		go func() {
+			if r := <-done; r.err == nil && r.f != nil {
+				_ = r.f.Close()
+			}
+		}()
+		return nil, ctx.Err()
+	}
 }
 
 func (v *OSVFS) Create(ctx context.Context, path string) (io.WriteCloser, error) {
@@ -607,13 +777,14 @@ func (v *OSVFS) Create(ctx context.Context, path string) (io.WriteCloser, error)
 	f, err := hostfs.OpenFile(prepared, flags, createMode)
 	if err != nil && os.IsPermission(err) && globalSudoClient.IsAvailable() {
 		vtui.DebugLog("VFS: Permission denied for Create(%q), attempting sudo...", path)
-		return globalSudoClient.Open(prepared, flags, uint32(createMode))
+		sudoF, sudoErr := globalSudoClient.Open(prepared, flags, uint32(createMode))
+		return sudoF, displayPathError(sudoErr)
 	}
 	if err != nil {
 		// Converting a nil *os.File directly to io.WriteCloser creates a
 		// non-nil interface. Return a literal nil so callers cannot accidentally
 		// use a writer after O_EXCL or another open failure.
-		return nil, err
+		return nil, displayPathError(err)
 	}
 	return f, nil
 }
@@ -630,7 +801,7 @@ func (v *OSVFS) Close() error { return nil }
 // and returns its known target. This is a last-resort fallback when all other
 // reparse point resolution methods fail or are blocked by permissions.
 func wellKnownJunction(path string) (string, bool) {
-	if runtime.GOOS != "windows" {
+	if !WindowsPersonality() {
 		return "", false
 	}
 	parent := hostpath.Dir(path)
@@ -669,7 +840,7 @@ func wellKnownJunction(path string) (string, bool) {
 // reparse points): the hard-coded well-known junctions, Readlink on the
 // final component, and a raw DeviceIoControl reparse read.
 func resolveReparseCandidates(abs string) []string {
-	if runtime.GOOS != "windows" {
+	if !WindowsPersonality() {
 		return nil
 	}
 	var out []string
@@ -706,6 +877,13 @@ func resolveReparseCandidates(abs string) []string {
 // prepareOSPath adds the \\?\ prefix on Windows to prevent the Win32 API
 // from automatically stripping trailing dots and spaces from file names.
 func prepareOSPath(p string) string {
+	// Reverse decodeUTF8OrMap's mapping (pua.go) on every path component
+	// before it reaches hostfs: this is the one choke point almost every
+	// OSVFS method already routes its path through, so it is where a
+	// PUA-mapped VFSItem.Name -- built back into a path via Join -- turns
+	// back into the original, possibly non-UTF-8, bytes the real syscall
+	// needs. A no-op on any path that was never mapped.
+	p = decodeMappedPathSegments(p)
 	if runtime.GOOS != "windows" {
 		return p
 	}
@@ -729,6 +907,42 @@ func prepareOSPath(p string) string {
 		return `\\?\UNC\` + abs[2:]
 	}
 	return `\\?\` + abs
+}
+
+// displayPathError reports an error against the plain path instead of the
+// extended-length form prepareOSPath handed to the OS. The \\?\ prefix is a
+// Win32 convention that exists so trailing dots, spaces and paths over
+// MAX_PATH survive the syscall; in a dialog it is noise that makes the path
+// unusable when copied back out ("Cannot access folder: open \\?\C:\...").
+// It is the exact counterpart of prepareOSPath on the way out.
+//
+// Only the path is rewritten. Op, the wrapped Errno and every errors.Is /
+// errors.As comparison are preserved, so a caller that already branched on
+// os.ErrPermission keeps branching on it -- this runs at the boundary of the
+// package, after those branches inside OSVFS have been taken.
+func displayPathError(err error) error {
+	if err == nil {
+		return nil
+	}
+	switch e := err.(type) {
+	case *fs.PathError:
+		return &fs.PathError{Op: e.Op, Path: stripExtendedPrefix(e.Path), Err: e.Err}
+	case *NotListableError:
+		return &NotListableError{Path: stripExtendedPrefix(e.Path), Err: displayPathError(e.Err)}
+	}
+	// errors.Join (PatchInPlace's deferred Close, rename_noreplace's rollback)
+	// holds its own unexported type; the []error it unwraps to is the way in.
+	// Rebuilding keeps the join semantics -- errors.Is walks every part --
+	// while each part is cleaned on its own.
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		parts := joined.Unwrap()
+		cleaned := make([]error, len(parts))
+		for i, part := range parts {
+			cleaned[i] = displayPathError(part)
+		}
+		return errors.Join(cleaned...)
+	}
+	return err
 }
 
 // stripExtendedPrefix removes the \\?\ prefix from paths returned by OS functions
@@ -757,7 +971,15 @@ func (v *OSVFS) Readlink(ctx context.Context, path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return hostfs.Readlink(prepareOSPath(abs))
+	raw, err := hostfs.Readlink(prepareOSPath(abs))
+	if err != nil {
+		return "", displayPathError(err)
+	}
+	// The target came straight from the OS and, like a directory entry's
+	// name, is not guaranteed to be valid UTF-8; map it the same way so it
+	// survives whatever the caller does with it (display it, or hand it
+	// back to Symlink to recreate the link elsewhere).
+	return decodeUTF8OrMap([]byte(raw)), nil
 }
 
 func (v *OSVFS) Symlink(ctx context.Context, target, linkPath string) error {
@@ -768,7 +990,19 @@ func (v *OSVFS) Symlink(ctx context.Context, target, linkPath string) error {
 	if err != nil {
 		return err
 	}
-	return hostfs.Symlink(target, prepareOSPath(abs))
+	// target is link content, not necessarily resolved through this VFS
+	// (it may be relative, or point outside any tree f4 has open), but it
+	// can still carry a mapped mark -- e.g. when it is the mapped name
+	// Readlink returned. decodeMappedPathSegments only touches path
+	// components that actually start with the mark, so it is a no-op on
+	// ordinary target text.
+	target = decodeMappedPathSegments(target)
+	err = hostfs.Symlink(target, prepareOSPath(abs))
+	if err != nil && os.IsPermission(err) && globalSudoClient.IsAvailable() {
+		vtui.DebugLog("VFS: Permission denied for Symlink(%q), attempting sudo...", linkPath)
+		return displayPathError(globalSudoClient.Symlink(target, prepareOSPath(abs)))
+	}
+	return displayPathError(err)
 }
 
 // OpenWriteAt makes OSVFS a RandomWriteVFS. A local file is the case where
@@ -781,7 +1015,8 @@ func (v *OSVFS) OpenWriteAt(ctx context.Context, path string) (WriterAtCloser, e
 	if err != nil {
 		return nil, err
 	}
-	return hostfs.OpenFile(prepareOSPath(abs), os.O_RDWR|os.O_CREATE, 0o644)
+	f, err := hostfs.OpenFile(prepareOSPath(abs), os.O_RDWR|os.O_CREATE, 0o644)
+	return f, displayPathError(err)
 }
 
 func (v *OSVFS) Hardlink(ctx context.Context, target, linkPath string) error {
@@ -796,7 +1031,12 @@ func (v *OSVFS) Hardlink(ctx context.Context, target, linkPath string) error {
 	if err != nil {
 		return err
 	}
-	return hostfs.Link(prepareOSPath(absTarget), prepareOSPath(absLink))
+	err = hostfs.Link(prepareOSPath(absTarget), prepareOSPath(absLink))
+	if err != nil && os.IsPermission(err) && globalSudoClient.IsAvailable() {
+		vtui.DebugLog("VFS: Permission denied for Hardlink(%q), attempting sudo...", linkPath)
+		return displayPathError(globalSudoClient.Hardlink(prepareOSPath(absTarget), prepareOSPath(absLink)))
+	}
+	return displayPathError(err)
 }
 
 func (v *OSVFS) Junction(ctx context.Context, target, linkPath string) error {
@@ -811,5 +1051,16 @@ func (v *OSVFS) Junction(ctx context.Context, target, linkPath string) error {
 	if err != nil {
 		return err
 	}
-	return hostfs.Symlink(absTarget, prepareOSPath(absLink))
+	// absTarget deliberately skips the rest of prepareOSPath here, same as
+	// it already did before this change: only the PUA-mapping reversal is
+	// wanted, not the Windows \\?\ prefixing that the rest of prepareOSPath
+	// would add and that junction targets are not known to need.
+	// A real junction on Windows; everywhere else (and in Wine's POSIX mode)
+	// there is nothing like it, so a symbolic link stands in (f4#1828: this
+	// used to create a symbolic link on Windows too).
+	if runtime.GOOS == "windows" && !hostmode.Posix() {
+		return displayPathError(createMountPoint(decodeMappedPathSegments(absTarget), prepareOSPath(absLink)))
+	}
+	err = hostfs.Symlink(decodeMappedPathSegments(absTarget), prepareOSPath(absLink))
+	return displayPathError(err)
 }

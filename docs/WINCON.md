@@ -139,3 +139,21 @@ was abandoned.
 The pump thread counts rather than logs, deliberately: its input queue is
 attached to conhost's, so a write to a file on that thread is one more way of
 stopping the console it is drawing over. See `internal/wincon/stats.go`.
+
+## 5. Alt+F9 and the default-terminal handoff
+
+Windows Terminal can be the system's default terminal application. In that
+mode a shortcut that starts `f4.exe` directly is handed to WT without
+`WT_SESSION`, and the `PseudoConsoleWindow` returned by `GetConsoleWindow`
+has no `GW_OWNER`. The owner-based route used by Far and by the normal
+`wt.exe f4.exe` launch therefore cannot find the window to maximize.
+
+When f4 is running in a terminal and Alt+F9 arrives, the fallback checks the
+foreground window's class. Only `CASCADIA_HOSTING_WINDOW_CLASS` is accepted;
+the pseudo helper, classic conhost, GUI backends and unrelated terminal
+windows are rejected. For that exact host window f4 sends `SC_MAXIMIZE` or
+`SC_RESTORE`, matching Far's direct-console path. The resulting ConPTY resize
+comes back through the ordinary terminal resize path.
+
+The class check is deliberately narrow: a generic foreground-window guess
+would maximize an unrelated application if focus changed during Alt+F9.

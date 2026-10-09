@@ -10,19 +10,52 @@ name: quick
 #
 # Этот workflow ничего не отменяет и не заменяет: build.yml по-прежнему целиком
 # отрабатывает на pull_request и на push в main. Здесь только push в ветку
-# codex/**, где PR ещё не открыт.
+# lunobot/**, где PR ещё не открыт (f4#1178, замечено при работе над батчем
+# lunobot/batch/f4/2: триггер до сих пор был на устаревшем префиксе codex/**,
+# который LUNOBOT.md давно не использует -- см. BRANCHES.md проекта f4 в
+# учётном репозитории, "префикс codex/ полностью убран из инструкции". Из-за
+# этого push в ветку пачки никогда не запускал quick вообще, только
+# build.yml's полную матрицу после открытия PR -- ровно то, что батчинг
+# должен был избежать).
+#
+# Этот workflow не покрывает подмодули plugins/*/go.mod (cloudfox, ios,
+# android -- каждый со своим go.mod): `go build ./...` из корня не спускается
+# в отдельный модуль. Полная проверка каждого такого модуля -- отдельные
+# build-*-plugin джобы в build.yml, которые всё равно гоняются только на
+# pull_request/push в main, тот же тугой бюджет CI, что и остальная полная
+# матрица; расширять quick на них -- отдельная задача, не эта правка.
+#
+# Lint. До сих пор golangci-lint гонялся только полной матрицей build.yml
+# (Lint (0)/Lint (1)), то есть впервые -- уже в поезде: lint-находка в свежем
+# коде роняла поезд, а бисект поезда (build/vet/test) её не воспроизводил, и
+# поезд застревал. Поэтому здесь те же два шарда той же версии golangci-lint
+# с тем же конфигом, --new-from-rev=origin/main и whole-tree прогоном
+# .golangci-strict.yml на шарде 0 -- отдельными job'ами параллельно check,
+# чтобы не прибавлять к задержке quick. На push "затронутых пакетов" нет,
+# поэтому линтуется всё дерево, а новизна отсекается по origin/main (для
+# lunobot/staging и любой другой lunobot/** ветки одинаково).
 
 on:
   push:
     branches:
-      - 'codex/**'
+      - 'lunobot/**'
     paths-ignore:
       - '**.md'
       - 'docs/**'
+  # The vendorHash job below starts a run of this workflow by hand on the
+  # commit it pushes: a push made with GITHUB_TOKEN triggers no other workflow,
+  # but workflow_dispatch is the exception.
+  workflow_dispatch:
 
+# lunobot/staging is one linear branch every bot lands on, often faster than a
+# run takes. Cancelling there would starve it: no run would ever finish. With
+# cancel-in-progress off, GitHub keeps the running check and replaces only the
+# queued one, so every run completes and the next always tests the newest tip,
+# which contains every commit in between. A green run on any descendant of a
+# commit covers that commit. Other branches keep cancelling superseded runs.
 concurrency:
   group: quick-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/lunobot/staging' }}
 
 jobs:
   check:
@@ -47,5 +80,368 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      # plugins/observer's tests need a tiny wasm test fixture (f4#1563,
+      # part 1), compiled from testdata/stub/observer_stub.c with wasi-sdk
+      # and never checked in -- see scripts/build_observer_test_wasm.sh.
+      # Cached by wasi-sdk version so this costs a download only once.
+      - name: Cache wasi-sdk
+        id: cache-wasi-sdk
+        uses: actions/cache@v4
+        with:
+          path: /opt/wasi-sdk
+          key: wasi-sdk-34-x86_64-linux
+
+      - name: Install wasi-sdk
+        if: steps.cache-wasi-sdk.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL -o /tmp/wasi-sdk.tar.gz \
+            https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-x86_64-linux.tar.gz
+          sudo mkdir -p /opt/wasi-sdk
+          sudo tar -xzf /tmp/wasi-sdk.tar.gz --strip-components=1 -C /opt/wasi-sdk
+
+      - name: Build plugins/observer test fixture
+        run: WASI_SDK_PATH=/opt/wasi-sdk ./scripts/build_observer_test_wasm.sh
+
+      # plugins/observer's isoimg end-to-end test (f4#1563, part 2) builds a
+      # real upstream Observer module -- not the from-scratch stub above --
+      # with the same wasi-sdk, plus a tiny genisoimage-built ISO9660 image
+      # to probe it against. See scripts/build_isoimg_test_wasm.sh,
+      # scripts/build_isoimg_test_iso.sh and
+      # plugins/observer/testdata/isoimg/compat/.
+      - name: Install genisoimage
+        run: sudo apt-get update && sudo apt-get install -y genisoimage
+
+      - name: Build plugins/observer isoimg test fixture (wasm)
+        run: WASI_SDK_PATH=/opt/wasi-sdk ./scripts/build_isoimg_test_wasm.sh
+
+      - name: Build plugins/observer isoimg test fixture (iso)
+        run: ./scripts/build_isoimg_test_iso.sh
+
+      # Confirms isoimg_test.wasm is spec-valid wasm and reports what
+      # wasm-opt -Oz would shrink it to (f4#1563, part 2 open question 2),
+      # using Binaryen's own prebuilt release, never built from source here.
+      - name: Cache Binaryen
+        id: cache-binaryen
+        uses: actions/cache@v4
+        with:
+          path: /opt/binaryen
+          key: binaryen-133-x86_64-linux
+
+      - name: Install Binaryen
+        if: steps.cache-binaryen.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL -o /tmp/binaryen.tar.gz \
+            https://github.com/WebAssembly/binaryen/releases/download/version_133/binaryen-version_133-x86_64-linux.tar.gz
+          sudo mkdir -p /opt/binaryen
+          sudo tar -xzf /tmp/binaryen.tar.gz --strip-components=1 -C /opt/binaryen
+
+      - name: Check isoimg wasm fixture with Binaryen
+        run: BINARYEN_PATH=/opt/binaryen ./scripts/check_isoimg_wasm.sh plugins/observer/testdata/isoimg_test.wasm
+
       - name: Test
         run: go test ./...
+
+  # Cheap repo-wide checks that build.yml runs only in the full matrix (its
+  # "Check formatting" / "Check language file formatting" steps and the
+  # Quality job's actionlint), so a finding surfaces at land time instead of
+  # in the train. Motivating case: a key inserted in the middle of a group in
+  # internal/i18n/lang/*.lng passed quick, then failed the train (#1642) on
+  # langfmt -check. Only seconds-cheap checks belong here; govulncheck (its
+  # result moves with the vulnerability database, not with the code) and
+  # icon regeneration stay in the full matrix. A separate job so it runs in
+  # parallel with check and adds nothing to quick's latency.
+  # The lite and extra-lite profiles are separate build-tag sets that the
+  # regular check above never compiles, so a change to a file they exclude or
+  # replace (internal/macro/lua*.go, internal/plughost/transport_*.go,
+  # vfs/codepages*.go ...) can break them silently until the openwrt workflow
+  # runs. Compilation only, no tests, one runner, beside check so that the
+  # critical path does not grow. The tag sets are the ones openwrt.yml uses.
+  variants:
+    name: Build lite and extralite (linux/amd64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CGO_ENABLED: 0
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build lite
+        run: go build -tags lite,vtui_noebiten,vtui_nogogpu -o /dev/null ./cmd/f4
+
+      - name: Build extralite
+        run: go build -tags lite,extralite,vtui_noebiten,vtui_nogogpu -o /dev/null ./cmd/f4
+
+  # Targets that the pull-request run of build.yml does not compile: the extra
+  # Linux architectures, the BSDs, illumos and solaris are built and vetted only
+  # on pushes to main and on tags, so a break in a file they select (a
+  # syscall, a stub) used to show up as a red main, after the train had merged.
+  # Compilation only, with the tags and flags of build.yml's batched build;
+  # four runners side by side, beside check, so the critical path does not grow.
+  cross:
+    name: Cross-compile (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: "linux 32-bit", targets: "linux/386 linux/arm linux/mips linux/mipsle"}
+          - {name: "linux 64-bit", targets: "linux/mips64 linux/mips64le linux/riscv64 linux/loong64 linux/ppc64 linux/ppc64le"}
+          - {name: "freebsd, netbsd, dragonfly", targets: "freebsd/amd64 freebsd/arm64 netbsd/amd64 dragonfly/amd64"}
+          - {name: "openbsd, illumos, solaris", targets: "openbsd/amd64 openbsd/arm64 illumos/amd64 solaris/amd64"}
+    env:
+      CGO_ENABLED: 0
+      TARGETS: ${{ matrix.targets }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          for target in $TARGETS; do
+            goos="${target%/*}"
+            goarch="${target#*/}"
+            flags=()
+            case "$goos" in
+              linux)
+                # arm builds without noffi; the other extra architectures have
+                # no FFI backend, so they use vtui's ANSI-only configuration.
+                if [ "$goarch" = "arm" ]; then tags="goffi_static"; else tags="noffi,goffi_static"; fi
+                flags+=(-tags "$tags")
+                ;;
+              freebsd|netbsd)
+                # fakecgo has to be built as std to export its dynamic symbols.
+                flags+=(-gcflags=github.com/go-webgpu/goffi/internal/fakecgo=-std)
+                ;;
+            esac
+            echo "::group::$target"
+            GOOS="$goos" GOARCH="$goarch" go build "${flags[@]}" -o /dev/null ./cmd/f4 </dev/null
+            echo "::endgroup::"
+          done
+
+  format:
+    name: Format checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CGO_ENABLED: 0
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.9'
+          cache-dependency-path: go.sum
+
+      - name: Check formatting
+        run: |
+          if [ -n "$(gofmt -s -l .)" ]; then
+            echo "The following files are not properly formatted:"
+            gofmt -s -l .
+            echo "Please run 'gofmt -s -w .' and commit the changes."
+            exit 1
+          fi
+
+      - name: Check language file formatting
+        run: go run ./tools/langfmt -check internal/i18n/lang/*.lng
+
+      - name: Run actionlint
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+
+  # Mirrors build.yml's lint job (same action, version, config, shards and
+  # cache keys) so a finding surfaces at land time instead of in the train.
+  lint:
+    name: Lint (${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix: { include: [{ shard: 0, cache-key: lint-0 }, { shard: 1, cache-key: lint-1 }] }
+    env:
+      CGO_ENABLED: 0
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Full history: the incremental lint below diffs against origin/main.
+          fetch-depth: 0
+          submodules: recursive
+
+      # A push has no base ref, so name main explicitly. fetch-depth: 0
+      # normally brings origin/main along already; this makes it certain and
+      # current.
+      - name: Fetch main
+        run: git fetch --quiet origin "+refs/heads/main:refs/remotes/origin/main"
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.9'
+          cache-dependency-path: go.sum
+
+      - name: Restore Go build cache (lint shard)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/go-build
+          key: lint-${{ matrix.cache-key }}-go-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            lint-${{ matrix.cache-key }}-go-
+
+      - name: Select lint packages
+        id: shard
+        uses: ./.github/actions/shard-packages
+        with:
+          shard: ${{ matrix.shard }}
+          shards: '2'
+          packages: all
+
+      - name: Convert import paths to package arguments
+        id: lint-packages
+        if: steps.shard.outputs.count != '0'
+        shell: bash
+        env:
+          PACKAGES: ${{ steps.shard.outputs.packages }}
+        run: |
+          set -euo pipefail
+          module=$(go list -m)
+          args=""
+          read -r -a shard_packages <<<"$PACKAGES"
+          for package in "${shard_packages[@]}"; do
+            case "$package" in
+              "$module")   relative=./ ;;
+              "$module"/*) relative="./${package#"$module"/}" ;;
+              *)
+                echo "::error::package is outside $module: $package"
+                exit 1 ;;
+            esac
+            args="${args:+$args }$relative"
+          done
+          echo "args=$args" >> "$GITHUB_OUTPUT"
+
+      - name: Run incremental golangci-lint
+        if: steps.shard.outputs.count != '0'
+        uses: golangci/golangci-lint-action@v9.3.0
+        with:
+          version: v2.13.1
+          args: --new-from-rev=origin/main ${{ steps.lint-packages.outputs.args }}
+
+      - name: Run whole-tree golangci-lint for the linters with no backlog
+        if: matrix.shard == 0
+        uses: golangci/golangci-lint-action@v9.3.0
+        with:
+          version: v2.13.1
+          args: --config .golangci-strict.yml
+
+  # Keeps flake.nix's vendorHash in sync with go.mod/go.sum on lunobot/staging,
+  # so that no worker has to edit flake.nix by hand after a dependency change.
+  # build.yml's nix-vendor-hash job does the same for main and reports it on
+  # pull requests (a train is one), but a train cut from staging would carry a
+  # go.mod change without its hash and go red. Here, after such a change lands
+  # in staging:
+  #
+  #   - the hash is checked whenever go.mod or go.sum differ from main, not only
+  #     when this push changed them: a queued run replaced by a newer one is
+  #     cancelled with its jobs (see concurrency above), and the newer push may
+  #     not have touched go.mod itself;
+  #   - on a mismatch the corrected flake.nix is committed on top of the current
+  #     tip of lunobot/staging (a parallel land moves it; the push is retried
+  #     on a fresh tip), with Lunobot-Task: vendorhash-autosync and a
+  #     Fixes-Staging: trailer, which makes train.py tick wait for a green quick
+  #     on that tip before it cuts a train, so the train carries the fix;
+  #   - a push made with GITHUB_TOKEN starts no workflow, so this cannot loop,
+  #     and quick would never run on the fix. The job therefore dispatches quick
+  #     on staging itself; that run is a workflow_dispatch and skips this job.
+  nix-vendor-hash:
+    name: vendorHash matches go.mod/go.sum
+    if: github.event_name == 'push' && github.ref == 'refs/heads/lunobot/staging'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Do go.mod or go.sum differ from main?
+        id: relevant
+        run: |
+          set -euo pipefail
+          git fetch --quiet --depth=1 origin main
+          if git diff --quiet FETCH_HEAD HEAD -- go.mod go.sum; then
+            echo "go.mod and go.sum are the same as main's; nothing to check"
+            echo "relevant=no" >> "$GITHUB_OUTPUT"
+          else
+            echo "relevant=yes" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Nix
+        if: steps.relevant.outputs.relevant == 'yes'
+        uses: cachix/install-nix-action@v31
+
+      - name: Verify vendorHash
+        id: verify
+        if: steps.relevant.outputs.relevant == 'yes'
+        run: |
+          set -euo pipefail
+          if nix build --no-link .#f4.goModules 2> nix-build.log; then
+            echo "vendorHash in flake.nix matches go.mod/go.sum"
+            exit 0
+          fi
+          cat nix-build.log
+          got="$(sed -n 's/^ *got: *\(sha256-[A-Za-z0-9+\/=]*\)$/\1/p' nix-build.log | tail -n1)"
+          if [ -z "$got" ]; then
+            echo "::error::nix build failed for a reason other than a vendorHash mismatch"
+            exit 1
+          fi
+          echo "got=$got" >> "$GITHUB_OUTPUT"
+
+      - name: Commit the corrected vendorHash to lunobot/staging
+        if: steps.verify.outputs.got != ''
+        env:
+          GOT: ${{ steps.verify.outputs.got }}
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for attempt in 1 2 3 4 5; do
+            git fetch --quiet origin lunobot/staging
+            git checkout --quiet -B vendorhash-autosync FETCH_HEAD
+            sed -i "s|vendorHash = \"[^\"]*\"|vendorHash = \"$GOT\"|" flake.nix
+            if git diff --quiet flake.nix; then
+              echo "flake.nix already carries $GOT on the current tip"
+              exit 0
+            fi
+            git add flake.nix
+            git commit --quiet -F - <<EOF
+          build(nix): update vendorHash [ci]
+
+          Lunobot-Task: vendorhash-autosync
+          Fixes-Staging: $RUN_URL
+
+          Проверить:
+          EOF
+            if git push --quiet origin HEAD:refs/heads/lunobot/staging; then
+              gh workflow run quick.yml --repo "$GITHUB_REPOSITORY" --ref lunobot/staging
+              exit 0
+            fi
+            echo "push raced with another land (attempt $attempt); retrying on the new tip"
+            sleep $((attempt * 3))
+          done
+          echo "::error::could not push the vendorHash update after 5 attempts"
+          exit 1

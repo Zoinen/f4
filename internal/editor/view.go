@@ -10,7 +10,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -30,12 +29,14 @@ import (
 	"github.com/unxed/f4/internal/i18n"
 	"github.com/unxed/f4/internal/numeric"
 	"github.com/unxed/f4/internal/piecetable"
+	"github.com/unxed/f4/internal/stallwatch"
 	"github.com/unxed/f4/internal/terminal"
 	"github.com/unxed/f4/internal/textlayout"
 	"github.com/unxed/f4/internal/textsearch"
 	"github.com/unxed/f4/internal/theme"
 	"github.com/unxed/f4/internal/toast"
 	"github.com/unxed/f4/internal/viewer"
+	"github.com/unxed/f4/internal/wheel"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
@@ -81,8 +82,20 @@ type EditorView struct {
 	DesiredVisualCol   int // Колонка, в которую мы хотим попасть при навигации Up/Down
 
 	ShowWhitespaces bool
-	SelActive       bool
-	SelAnchorOffset int // Абсолютное смещение начала выделения
+	// MacroID identifies this editor in the EditorEvent of Lua macros.
+	MacroID int
+	// closeNotified is set once EventClose has been raised, so a second Close
+	// does not raise it again.
+	closeNotified bool
+	// ShowControlChars draws the C0 control characters and DEL as the one-cell
+	// glyphs of the Unicode Control Pictures block (U+2400..), so a NUL or ESC in
+	// a file is told apart from every other unprintable. Display only: widths,
+	// cursor columns and the file's bytes are unchanged (unxed/f4#1667).
+	ShowControlChars  bool
+	SelActive         bool
+	SelAnchorOffset   int // Абсолютное смещение начала выделения
+	editorBookmarks   [10]int
+	editorBookmarkSet [10]bool
 	// extraCursors holds the secondary carets of a multi-caret edit, sorted
 	// by offset and without duplicates. The primary caret stays in
 	// CursorLine/CursorPos and is never listed here, so every existing
@@ -92,10 +105,15 @@ type EditorView struct {
 	RectSelActive      bool
 	rectSelStartLine   int
 	rectSelStartCol    int
+	mouseSelecting     bool
 	mouseRectSelecting bool
 	hoverURL           string
 	hoverURLStart      int
 	editSession        int // Unique ID to fence background tasks
+
+	// wheelCoast is what a fast wheel spin leaves behind: lines the editor
+	// still owes the cursor (see internal/wheel).
+	wheelCoast wheel.Coast
 
 	pasting     bool
 	Saving      bool
@@ -130,6 +148,12 @@ type EditorView struct {
 	// indexResume debounces restarting the scan after an edit, so that typing
 	// does not start and cancel a goroutine per keystroke.
 	indexResume *time.Timer
+
+	// mdSplit is the Markdown preview beside the editor (view_mdsplit.go),
+	// nil while it is off; lastW/lastH remember the size ResizeConsole was
+	// last given so the split can be laid out when it is switched.
+	mdSplit      *mdSplitState
+	lastW, lastH int
 
 	// searchSnapshot caches the assembled buffer one search pass works on,
 	// for the buffers that cannot be scanned in place. Every search used to
@@ -232,6 +256,14 @@ type EditorView struct {
 	colorerTotal    int
 	colorerCancel   func()
 	colorerWorkID   uint64
+	// What Colorer was started with, for ReloadColorerEditors: the file
+	// name and first line, the reload it was started after, and whether it
+	// handed the editor over to Chroma.
+	colorerPath      string
+	colorerFile      string
+	colorerFirstLine string
+	colorerGen       int
+	colorerFellBack  bool
 
 	// OnClose, if set, fires once after the editor has been torn down.
 	// Used by callers (e.g. the user menu's Ctrl+F4 handler) that want
@@ -358,6 +390,12 @@ func (ev *EditorView) ConfirmClose() bool {
 }
 
 func (ev *EditorView) Close() {
+	// A coast already posted to the UI loop has no view left to scroll.
+	ev.wheelCoast.Stop()
+	if !ev.closeNotified {
+		ev.closeNotified = true
+		ev.notify(EventClose)
+	}
 	if fileops.GlobalFileState != nil && ev.FilePath != "" {
 		fileops.GlobalFileState.SaveEditorStateAsync(fileops.FileStateKey(ev.Vfs, ev.FilePath), ev.CursorLine, ev.CursorPos, ev.ScrollTopRow, ev.ScrollLeft, ev.wordWrapWanted)
 	}
@@ -449,26 +487,27 @@ func NewEditorViewWith(Pt *piecetable.PieceTable, v vfs.VFS, path string, useEdi
 		Li.Rebuild(Pt)
 	}
 	ev := &EditorView{
-		Pt:              Pt,
-		Li:              Li,
-		Engine:          textlayout.NewWrapEngine(Pt, Li),
-		Vfs:             v,
-		FilePath:        path,
-		WordWrap:        false,
-		ShowWhitespaces: false,
-		cleanState:      Pt.GetState(),
-		TargetLine:      -1,
-		TargetOffset:    -1,
-		TargetPos:       -1,
-		TargetTopRow:    -1,
-		TargetLeft:      -1,
-		TabSize:         config.App.EditorTabSize,
-		ExpandTabs:      config.App.EditorExpandTabs,
-		AutoIndent:      config.App.EditorAutoIndent,
-		CursorBeyondEOL: config.App.EditorCursorBeyondEOL,
-		UseEditorConfig: useEditorConfig && config.App.EditorUseEditorConfig,
-		Codepage:        65001,
-		BinaryFile:      editorBufferHasNUL(Pt),
+		Pt:               Pt,
+		Li:               Li,
+		Engine:           textlayout.NewWrapEngine(Pt, Li),
+		Vfs:              v,
+		FilePath:         path,
+		WordWrap:         false,
+		ShowWhitespaces:  false,
+		ShowControlChars: config.App.EditorShowControlChars,
+		cleanState:       Pt.GetState(),
+		TargetLine:       -1,
+		TargetOffset:     -1,
+		TargetPos:        -1,
+		TargetTopRow:     -1,
+		TargetLeft:       -1,
+		TabSize:          config.App.EditorTabSize,
+		ExpandTabs:       config.App.EditorExpandTabs,
+		AutoIndent:       config.App.EditorAutoIndent,
+		CursorBeyondEOL:  config.App.EditorCursorBeyondEOL,
+		UseEditorConfig:  useEditorConfig && config.App.EditorUseEditorConfig,
+		Codepage:         65001,
+		BinaryFile:       editorBufferHasNUL(Pt),
 	}
 	if ev.TabSize <= 0 {
 		ev.TabSize = 8
@@ -511,7 +550,7 @@ func NewEditorViewWith(Pt *piecetable.PieceTable, v vfs.VFS, path string, useEdi
 				firstLine = firstLine[:idx]
 			}
 		}
-		ev.Highlighter = newColorerHighlighter(ev, filepath.Base(path), firstLine, vtui.GetHighlighter(path, ""))
+		ev.startColorer(path, filepath.Base(path), firstLine)
 	default:
 		ev.Highlighter = vtui.GetHighlighter(path, "")
 	}
@@ -521,6 +560,11 @@ func NewEditorViewWith(Pt *piecetable.PieceTable, v vfs.VFS, path string, useEdi
 	vtui.DebugLog("EDITOR_INIT: Path=%q, Highlighter=%T", path, ev.Highlighter)
 	ev.scrollBar = vtui.NewScrollBar(0, 0, 0)
 	ev.scrollBar.ColorIdx = theme.ColEditorScrollbar
+	// The bar sits on the background the text is drawn on, which is a
+	// Colorer style's own when Colorer paints the editor (#1232).
+	ev.scrollBar.Attr = func() uint64 {
+		return theme.OnTextBackground(theme.ColEditorScrollbar, theme.ColEditorText, ev.colorerBaseAttr())
+	}
 	ev.scrollBar.SetOwner(ev)
 	ev.scrollBar.OnScroll = func(v int) {
 		if ev.HexMode || ev.DecodeMode {
@@ -567,6 +611,8 @@ func NewEditorViewWith(Pt *piecetable.PieceTable, v vfs.VFS, path string, useEdi
 	ev.topBar.SetVisible(true)
 	ev.SetCanFocus(true)
 	ev.SetFocus(true)
+	ev.MacroID = int(lastEditorID.Add(1))
+	ev.notify(EventRead)
 	return ev
 }
 
@@ -599,6 +645,17 @@ func (ev *EditorView) ClearCaches() {
 		ch.DropFrom(0)
 	}
 }
+
+// clearCachesAfterReplace is ClearCaches for Undo and Redo, which change the
+// text from line fromLine on: the Colorer keeps drawing the old colours until
+// the worker has new ones, as it does for an edit (#1230).
+func (ev *EditorView) clearCachesAfterReplace(fromLine int) {
+	ev.Engine.InvalidateCache()
+	if ch, ok := ev.Highlighter.(*ColorerHighlighter); ok {
+		ch.DropAfterReplace(fromLine, ev.Li.LineCount())
+	}
+}
+
 func (ev *EditorView) saveUndo(op undoOpType) {
 	if ev.inGroup {
 		return
@@ -659,13 +716,15 @@ func (ev *EditorView) Undo() {
 	state := ev.undoStack[last]
 	ev.undoStack = ev.undoStack[:last]
 
+	// The change lies between where the cursor was and where it goes back to.
+	changedFrom := min(ev.CursorLine, state.line)
 	ev.Pt.LoadState(state.table)
 	ev.noteIndexRebuilt(ev.Li.Rebuild(ev.Pt))
 	ev.CursorLine = state.line
 	ev.CursorPos = state.pos
 	ev.extraCursors = append(ev.extraCursors[:0], state.carets...)
 
-	ev.ClearCaches()
+	ev.clearCachesAfterReplace(changedFrom)
 	// Intelligent modified flag: if structure matches clean state, it's not modified
 	ev.Modified = ev.UnsavedBaseline || !ev.Pt.GetState().Equals(ev.cleanState)
 	ev.lastOp = opNone
@@ -696,13 +755,14 @@ func (ev *EditorView) Redo() {
 	state := ev.redoStack[last]
 	ev.redoStack = ev.redoStack[:last]
 
+	changedFrom := min(ev.CursorLine, state.line)
 	ev.Pt.LoadState(state.table)
 	ev.noteIndexRebuilt(ev.Li.Rebuild(ev.Pt))
 	ev.CursorLine = state.line
 	ev.CursorPos = state.pos
 	ev.extraCursors = append(ev.extraCursors[:0], state.carets...)
 
-	ev.ClearCaches()
+	ev.clearCachesAfterReplace(changedFrom)
 	// Intelligent modified flag
 	ev.Modified = ev.UnsavedBaseline || !ev.Pt.GetState().Equals(ev.cleanState)
 	ev.lastOp = opNone
@@ -718,7 +778,7 @@ func (ev *EditorView) invalidateStates(fromLine int) {
 		ev.lineStates = ev.lineStates[:fromLine]
 	}
 	if ch, ok := ev.Highlighter.(*ColorerHighlighter); ok {
-		ch.DropFrom(fromLine)
+		ch.DropAfterEdit(fromLine, ev.Li.LineCount())
 	}
 }
 
@@ -951,7 +1011,7 @@ func (ev *EditorView) startHighlighting() {
 			})
 		}()
 
-		bgAttr := ColorerEditorBaseAttr(vtui.Palette[theme.ColEditorText])
+		bgAttr := ev.colorerBaseAttr()
 
 		startedAt := time.Now()
 		walked := 0
@@ -1051,9 +1111,18 @@ func (ev *EditorView) updateDesiredVisualCol() {
 	_, vCol := ev.Engine.LogicalToVisual(curOffset)
 	ev.DesiredVisualCol = vCol + ev.CursorVirtualSpaces
 }
+
+// hexOffsetAttr is the colour of the offsets down the left of the hex and
+// decode views: the viewer's offset colour (Viewer.Arrows) on the background
+// the bytes are drawn on, so the column reads as it does in the viewer rather
+// than as a strip of the status line's colour (#1232).
+func hexOffsetAttr(text uint64) uint64 {
+	return theme.OnBackgroundOf(vtui.Palette[theme.ColViewerArrows], text)
+}
+
 func (ev *EditorView) renderHex(scr *vtui.ScreenBuf, width, contentHeight int) {
-	bgAttr := ColorerEditorBaseAttr(vtui.Palette[theme.ColEditorText])
-	offAttr := vtui.Palette[theme.ColEditorStatus]
+	bgAttr := ev.colorerBaseAttr()
+	offAttr := hexOffsetAttr(bgAttr)
 	currOffset := ev.HexTopOffset
 	absPos := ev.Li.GetLineOffset(ev.CursorLine) + ev.CursorPos
 
@@ -1100,7 +1169,7 @@ func (ev *EditorView) renderHex(scr *vtui.ScreenBuf, width, contentHeight int) {
 			if ev.IsFocused() && currOffset+i == absPos {
 				scr.SetCursorPos(cx+ev.HexNibble, ev.Y1+1+y)
 				scr.SetCursorVisible(true)
-				scr.SetCursorShape(vtui.CursorShapeUnderline)
+				scr.SetCursorShape(vtui.InsertCursorShape())
 			}
 		}
 
@@ -1112,12 +1181,12 @@ func (ev *EditorView) renderHex(scr *vtui.ScreenBuf, width, contentHeight int) {
 			}
 			scr.SetCursorPos(cx+ev.HexNibble, ev.Y1+1+y)
 			scr.SetCursorVisible(true)
-			scr.SetCursorShape(vtui.CursorShapeUnderline)
+			scr.SetCursorShape(vtui.InsertCursorShape())
 		}
 
 		// ASCII part
 		asciiStartX := ev.X1 + 12 + 50
-		scr.Write(asciiStartX-2, ev.Y1+1+y, vtui.StringToCharInfo("│ ", offAttr))
+		scr.Write(asciiStartX-2, ev.Y1+1+y, vtui.StringToCharInfo("│ ", bgAttr))
 		for i := 0; i < len(data); i++ {
 			r := rune(data[i])
 			if r < 32 || r > 126 {
@@ -1125,7 +1194,7 @@ func (ev *EditorView) renderHex(scr *vtui.ScreenBuf, width, contentHeight int) {
 			}
 			cellAttr := bgAttr
 			if ev.IsFocused() && currOffset+i == absPos {
-				cellAttr = vtui.Palette[vtui.ColDialogEditSelected]
+				cellAttr = vtui.Palette[theme.ColEditorSelectedText]
 			}
 			scr.Write(asciiStartX+i, ev.Y1+1+y, []vtui.CharInfo{{Char: uint64(r), Attributes: cellAttr}})
 		}
@@ -1133,8 +1202,8 @@ func (ev *EditorView) renderHex(scr *vtui.ScreenBuf, width, contentHeight int) {
 	}
 }
 func (ev *EditorView) renderDecode(scr *vtui.ScreenBuf, width, contentHeight int) {
-	bgAttr := ColorerEditorBaseAttr(vtui.Palette[theme.ColEditorText])
-	offAttr := vtui.Palette[theme.ColEditorStatus]
+	bgAttr := ev.colorerBaseAttr()
+	offAttr := hexOffsetAttr(bgAttr)
 	currOffset := ev.HexTopOffset
 	absPos := int(ev.Li.GetLineOffset(ev.CursorLine) + ev.CursorPos)
 
@@ -1170,7 +1239,7 @@ func (ev *EditorView) renderDecode(scr *vtui.ScreenBuf, width, contentHeight int
 
 		cellAttr := bgAttr
 		if ev.IsFocused() && absPos >= currOffset && absPos < currOffset+instLen {
-			cellAttr = vtui.Palette[vtui.ColDialogEditSelected]
+			cellAttr = vtui.Palette[theme.ColEditorSelectedText]
 		}
 
 		scr.Write(ev.X1, ev.Y1+1+y, vtui.StringToCharInfo(line, offAttr))
@@ -1193,7 +1262,7 @@ func (ev *EditorView) renderDecode(scr *vtui.ScreenBuf, width, contentHeight int
 			cx := ev.X1 + 12 + byteOffset*3
 			scr.SetCursorPos(cx+ev.HexNibble, ev.Y1+1+y)
 			scr.SetCursorVisible(true)
-			scr.SetCursorShape(vtui.CursorShapeUnderline)
+			scr.SetCursorShape(vtui.InsertCursorShape())
 		}
 
 		currOffset += instLen
@@ -1478,11 +1547,20 @@ func (ev *EditorView) gotoLinePosition(line, position int) {
 }
 
 func (ev *EditorView) Show(scr *vtui.ScreenBuf) {
+	// One editor frame, for --stall-watchdog: if this does not return inside
+	// the limit, the watchdog writes the stacks of every goroutine, so a
+	// freeze names itself whether it was computing or waiting on something.
+	defer stallwatch.Frame("editor.Show")()
+	ev.restartColorerAfterReload()
 	ev.ScreenObject.Show(scr)
 	if ev.topBar != nil {
 		ev.topBar.Show(scr)
 	}
+	if ev.menuBarPinned() {
+		ev.GetMenuBar().Show(scr)
+	}
 	ev.DisplayObject(scr)
+	ev.showMarkdownSplit(scr)
 }
 
 func (ev *EditorView) DisplayObject(scr *vtui.ScreenBuf) {
@@ -1498,8 +1576,8 @@ func (ev *EditorView) DisplayObject(scr *vtui.ScreenBuf) {
 		width--
 	}
 
-	bgAttr := ColorerEditorBaseAttr(vtui.Palette[theme.ColEditorText])
-	selAttr := vtui.Palette[vtui.ColDialogEditSelected]
+	bgAttr := ev.colorerBaseAttr()
+	selAttr := vtui.Palette[theme.ColEditorSelectedText]
 
 	if ev.Saving {
 		scr.FillRect(ev.X1, ev.Y1+1, ev.X2, ev.Y2, ' ', bgAttr)
@@ -1563,6 +1641,7 @@ func (ev *EditorView) DisplayObject(scr *vtui.ScreenBuf) {
 	crossVRow, crossVCol := -1, -1
 	var horzCrossAttr, vertCrossAttr uint64
 	if showHorz, showVert, hAttr, vAttr := CrossAttrs(); ev.IsFocused() {
+		showHorz, showVert = ev.colorerCrossAxes(showHorz, showVert)
 		if showHorz {
 			crossVRow = curVRow
 			horzCrossAttr = hAttr
@@ -1601,6 +1680,23 @@ func (ev *EditorView) DisplayObject(scr *vtui.ScreenBuf) {
 		}
 	}
 	startLogLine, startFragIdx := ev.Engine.GetLogLineAtVisualRow(ev.ScrollTopRow)
+
+	// Colours cached now belong to this many lines; an edit compares against it
+	// to see how far it moved the ones below (#1230).
+	if ch, isColorer := ev.Highlighter.(*ColorerHighlighter); isColorer {
+		ch.noteLineCount(ev.Li.LineCount())
+	}
+
+	// FarColorer's pairs: the paired token under the cursor, and its match
+	// when it is on screen, drawn in their own colours. Only visible lines
+	// are searched; a logical line takes at least one row, so the last
+	// visible one is at most a screen below the first.
+	var pairOverlay colorerPairOverlay
+	if ch, isColorer := ev.Highlighter.(*ColorerHighlighter); isColorer && !ev.BinaryFile && config.App.EditorColorerPairs && ev.IsFocused() {
+		if text, ok := ev.lineTextForHighlight(ev.CursorLine); ok {
+			pairOverlay = ch.pairOverlay(ev.CursorLine, ev.CursorPos, text, startLogLine, startLogLine+(ev.Y2-ev.Y1))
+		}
+	}
 	rowsRendered := 0
 
 	for logIdx := startLogLine; logIdx < ev.Li.LineCount(); logIdx++ {
@@ -1621,7 +1717,7 @@ func (ev *EditorView) DisplayObject(scr *vtui.ScreenBuf) {
 				// be carried in ev.lineStates, so it keeps its own anchor near
 				// the viewport instead. See HIGHLIGHT.md, phase 5.
 				if text, ok := ev.lineTextForHighlight(logIdx); ok {
-					lineSyntax = ch.HighlightLine(logIdx, text, bgAttr)
+					lineSyntax = pairOverlay.apply(logIdx, ch.HighlightLine(logIdx, text, bgAttr))
 				}
 			} else if ev.Highlighter != nil {
 				// Catch up synchronously only if the uncomputed gap is small (<= 50 lines).
@@ -1736,7 +1832,7 @@ func (ev *EditorView) DisplayObject(scr *vtui.ScreenBuf) {
 			runesProcessedInLine += fragRuneCount
 
 			isCrossRow := (absVRow == crossVRow)
-			ev.renderCells = ev.fillCellsWithLinks(ev.renderCells, ev.renderBytes, bgAttr, selAttr, frag.ByteOffsetStart, ev.SelActive, selMin, selMax, ev.fadeSyntax(fragSyntax, bgAttr), lineLinks, 0, isCrossRow, crossVCol, horzCrossAttr, vertCrossAttr, absVRow)
+			ev.renderCells = ev.fillCellsWithLinks(ev.renderCells, ev.renderBytes, bgAttr, selAttr, frag.ByteOffsetStart, ev.SelActive, selMin, selMax, ev.fadeSyntax(fragSyntax, bgAttr), lineLinks, 0, ev.ScrollLeft+width, isCrossRow, crossVCol, horzCrossAttr, vertCrossAttr, absVRow)
 
 			scr.Write(ev.X1-ev.ScrollLeft, currY, ev.renderCells)
 
@@ -1763,13 +1859,35 @@ func (ev *EditorView) DisplayObject(scr *vtui.ScreenBuf) {
 				scr.FillRect(startX, currY, maxX, currY, ' ', fillBg)
 			}
 
+			// far2l marks a row that ends mid-line (word wrap, not the
+			// line's actual end) with a glyph in its last column, so it
+			// reads as "keeps going" rather than a real line break (f4
+			// #1415). When the fragment's own text already reaches the
+			// last column there's no free cell to put the glyph in --
+			// most reliably on a hard mid-word break, which fills the
+			// width exactly every time regardless of window size. An
+			// earlier fix reserved a column for the glyph by shrinking
+			// the wrap engine's width by one whenever word wrap was on,
+			// but that changed where every wrapped line actually broke
+			// and broke unrelated cursor-navigation tests (e9999e6b); it
+			// was reverted. Retinting the column's own character instead
+			// -- same glyph, same column, only its colour changes -- marks
+			// the wrap without moving a single column of text.
+			if shouldDrawWrapMark(fIdx, len(frags), startX, maxX) {
+				scr.Write(maxX, currY, vtui.StringToCharInfo("»", ev.wrapMarkAttr()))
+			} else if wrapMarkNeedsOverlay(fIdx, len(frags), startX, maxX) {
+				cell := scr.GetCell(maxX, currY)
+				cell.Attributes = ev.wrapMarkAttr()
+				scr.Write(maxX, currY, []vtui.CharInfo{cell})
+			}
+
 			if absVRow == curVRow {
 				scr.SetCursorPos(ev.X1+curVCol+ev.CursorVirtualSpaces-ev.ScrollLeft, currY)
 				scr.SetCursorVisible(true)
 				if ev.Overtype {
-					scr.SetCursorShape(vtui.CursorShapeBlock)
+					scr.SetCursorShape(vtui.OvertypeCursorShape())
 				} else {
-					scr.SetCursorShape(vtui.CursorShapeUnderline)
+					scr.SetCursorShape(vtui.InsertCursorShape())
 				}
 			}
 
@@ -1786,7 +1904,7 @@ DoneRendering:
 	// extra caret sits on with the selection colour is what the rest of the
 	// editor already does to say "this is where the text will change".
 	if len(ev.extraCursors) > 0 {
-		caretAttr := vtui.Palette[vtui.ColDialogEditSelected]
+		caretAttr := vtui.Palette[theme.ColEditorSelectedText]
 		size := ev.Pt.Size()
 		for _, caret := range ev.extraCursors {
 			off := caret.off
@@ -1852,6 +1970,36 @@ DoneRendering:
 	}
 }
 
+// wrapMarkAttr is the colour of the wrap glyph: the theme's Editor.WrapMark,
+// on the background the text is really drawn on. A theme that gives the mark
+// the text's background means it to sit on the text, and when Colorer paints
+// the editor with a background of its own the mark would otherwise show as a
+// blue (or whatever the theme's) square at the end of each wrapped row
+// (f4#1232).
+func (ev *EditorView) wrapMarkAttr() uint64 {
+	return theme.OnTextBackground(theme.ColEditorWrapMark, theme.ColEditorText, ev.colorerBaseAttr())
+}
+
+// shouldDrawWrapMark reports whether the row just rendered — fragment fIdx
+// of fragCount fragments making up one logical line — ended because word
+// wrap broke it, not because the logical line itself ended, and whether the
+// row has a free cell at maxX to carry the mark in (f4 #1415). fragCount-1
+// is the line's last fragment, the one that really does end the line.
+func shouldDrawWrapMark(fIdx, fragCount, startX, maxX int) bool {
+	return fIdx < fragCount-1 && startX <= maxX
+}
+
+// wrapMarkNeedsOverlay reports whether the row just rendered is a wrap
+// continuation (same "not the line's last fragment" test as
+// shouldDrawWrapMark) whose own text already reaches maxX, so there is no
+// free cell for the glyph. In that case the caller marks the wrap by
+// retinting the character already sitting at maxX instead of overwriting
+// it, which is what lets every continuation row carry a mark regardless of
+// window width without changing where any text sits (f4#1415).
+func wrapMarkNeedsOverlay(fIdx, fragCount, startX, maxX int) bool {
+	return fIdx < fragCount-1 && startX > maxX
+}
+
 // VetoActionKey reports modal input states in which the editor must see
 // the key before the global hotkey dispatcher. While autocomplete is
 // active, the keys it consumes (Tab/Esc) or uses to dismiss itself
@@ -1890,6 +2038,8 @@ func (ev *EditorView) VetoActionKey(e *vtinput.InputEvent) bool {
 // away even when it moved nothing: Up at the top of a file left the user at the
 // top of the file, which is precisely where they did not want to be.
 func (ev *EditorView) ProcessKey(e *vtinput.InputEvent) bool {
+	defer stallwatch.Frame("editor.ProcessKey")()
+	defer ev.scheduleMarkdownSplit()
 	if ev.TargetLine == -1 {
 		return ev.processKeyInner(e)
 	}
@@ -2021,6 +2171,16 @@ func (ev *EditorView) processKeyInner(e *vtinput.InputEvent) bool {
 	ctrl := (e.ControlKeyState & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed)) != 0
 	//alt := (e.ControlKeyState & (vtinput.LeftAltPressed | vtinput.RightAltPressed)) != 0
 
+	// FAR's editor bookmarks use the side of Ctrl as a modifier: Right Ctrl
+	// (and Ctrl+Shift) stores, while Left Ctrl jumps.  There is no action per
+	// digit, so keep this small stateful shortcut in the editor itself.
+	if e.VirtualKeyCode >= vtinput.VK_0 && e.VirtualKeyCode <= vtinput.VK_9 && ctrl && !alt {
+		slot := int(e.VirtualKeyCode - vtinput.VK_0)
+		rctrl := (e.ControlKeyState & vtinput.RightCtrlPressed) != 0
+		ev.SetEditorBookmark(slot, shift || rctrl)
+		return true
+	}
+
 	// --- Autocomplete Interception ---
 	if ev.acEnabled && len(ev.acMatches) > 0 {
 		switch e.VirtualKeyCode {
@@ -2109,6 +2269,9 @@ func (ev *EditorView) processKeyInner(e *vtinput.InputEvent) bool {
 
 	switch e.VirtualKeyCode {
 	case vtinput.VK_UP, vtinput.VK_E:
+		if e.VirtualKeyCode == vtinput.VK_E && ctrl && !shift && !alt && LookupHotkey(e) {
+			return true
+		}
 		if e.VirtualKeyCode == vtinput.VK_E && !ctrl {
 			break
 		}
@@ -2339,6 +2502,9 @@ func (ev *EditorView) processKeyInner(e *vtinput.InputEvent) bool {
 		return true
 
 	case vtinput.VK_RIGHT, vtinput.VK_D:
+		if e.VirtualKeyCode == vtinput.VK_D && ctrl && LookupHotkey(e) {
+			return true
+		}
 		isAlias := e.VirtualKeyCode == vtinput.VK_D
 		if isAlias && !ctrl {
 			break
@@ -2453,6 +2619,13 @@ func (ev *EditorView) processKeyInner(e *vtinput.InputEvent) bool {
 		return true
 
 	case vtinput.VK_BACK:
+		if ctrl && !shift && !alt {
+			if LookupHotkey(e) {
+				return true
+			}
+			ev.DeleteWordBackward()
+			return true
+		}
 		// A vertical block is a selection too. It lives in rectSelActive
 		// rather than selActive, and checking only the latter is what made
 		// Del eat the character under the cursor while a block was up.
@@ -2581,6 +2754,9 @@ func (ev *EditorView) processKeyInner(e *vtinput.InputEvent) bool {
 
 		ev.Pt.Insert(offset, []byte("\n"))
 		ev.Li.UpdateAfterInsert(offset, []byte("\n"))
+		// The new line number shifts everything below; cached colours are keyed
+		// by line number, so they are stale from the edited line on (#1230).
+		ev.invalidateStates(ev.CursorLine)
 		ev.Engine.InvalidateFrom(ev.CursorLine)
 		ev.CursorLine++
 		ev.CursorPos = 0
@@ -2598,6 +2774,9 @@ func (ev *EditorView) processKeyInner(e *vtinput.InputEvent) bool {
 		return true
 
 	case vtinput.VK_TAB:
+		if !ctrl && !alt && ev.shiftSelectedLines(shift) {
+			return true
+		}
 		if !shift && !ctrl && !alt {
 			ev.noteBufferEdit()
 			ev.saveUndo(opTyping)
@@ -2733,13 +2912,77 @@ func editorVisualClusters(text string) []editorTextCluster {
 	return clusters
 }
 
-func (ev *EditorView) fillCells(target []vtui.CharInfo, data []byte, defaultAttr, selAttr uint64, offset int, SelActive bool, selMin, selMax int, syntax []uint64, startVisualCol int, isCrossRow bool, crossVCol int, horzCrossAttr, vertCrossAttr uint64, visualRow int) []vtui.CharInfo {
-	return ev.fillCellsWithLinks(target, data, defaultAttr, selAttr, offset, SelActive, selMin, selMax, syntax, nil, startVisualCol, isCrossRow, crossVCol, horzCrossAttr, vertCrossAttr, visualRow)
+// editorRenderClip returns the prefix of text that is certain to cover the
+// first maxCols terminal columns, so that a line far wider than the viewport
+// is not segmented into grapheme clusters in full just to draw its left edge.
+// It gives back the whole text when it cannot clip: a line holding any
+// right-to-left run is laid out as a whole, because the bidi reordering of a
+// prefix is not the prefix of the reordering.
+func editorRenderClip(text string, maxCols int) string {
+	// A cluster of any width at all takes at least one byte, so a text no
+	// longer than the column budget already fits inside it.
+	if maxCols <= 0 || len(text) <= maxCols {
+		return text
+	}
+	if vtui.DefaultBidiMode == vtui.BidiFull && vtui.HasRTL(text) {
+		return text
+	}
+	// Four bytes is the longest a rune gets, and the slack covers a handful
+	// of combining marks riding on the last columns. Where that guess is
+	// short -- a line of heavily decomposed text -- the window doubles until
+	// the columns are covered, as the grapheme boundary helpers do.
+	take := maxCols*4 + 64
+	for take < len(text) {
+		for take < len(text) && !utf8.RuneStart(text[take]) {
+			take++
+		}
+		if take >= len(text) {
+			break
+		}
+		if editorRenderColumns(text[:take]) >= maxCols {
+			return text[:take]
+		}
+		take *= 2
+	}
+	return text
 }
 
-func (ev *EditorView) fillCellsWithLinks(target []vtui.CharInfo, data []byte, defaultAttr, selAttr uint64, offset int, SelActive bool, selMin, selMax int, syntax []uint64, links []viewer.UrlLink, startVisualCol int, isCrossRow bool, crossVCol int, horzCrossAttr, vertCrossAttr uint64, visualRow int) []vtui.CharInfo {
+// editorRenderColumns counts the columns the renderer will give text, using
+// the renderer's own cluster boundaries. vtui's UAX #29 segmentation is not
+// the same one: it splits an Indic virama sequence that the editor joins into
+// a single cluster of a single column, so counting with it claims columns the
+// renderer will not paint and the clip comes back too short -- the right of
+// the viewport then shows background where there is text.
+//
+// A tab counts as one column rather than its expansion, which can only make
+// the count low; the clip errs towards taking more of the line, never less.
+func editorRenderColumns(text string) int {
+	cols := 0
+	for _, cluster := range editorVisualClusters(text) {
+		if cluster.text == "\t" {
+			cols++
+			continue
+		}
+		if _, width := vtui.SanitizeCluster(cluster.text); width > 0 {
+			cols += width
+		}
+	}
+	return cols
+}
+
+func (ev *EditorView) fillCells(target []vtui.CharInfo, data []byte, defaultAttr, selAttr uint64, offset int, SelActive bool, selMin, selMax int, syntax []uint64, startVisualCol int, isCrossRow bool, crossVCol int, horzCrossAttr, vertCrossAttr uint64, visualRow int) []vtui.CharInfo {
+	return ev.fillCellsWithLinks(target, data, defaultAttr, selAttr, offset, SelActive, selMin, selMax, syntax, nil, startVisualCol, 0, isCrossRow, crossVCol, horzCrossAttr, vertCrossAttr, visualRow)
+}
+
+// maxVisualCol is the column past which the caller will not show anything, so
+// cells for it need not be built; zero asks for the whole fragment. With
+// wrapping off a fragment is the entire logical line, and a log line of tens
+// of kilobytes had a cell built for every one of its characters on every frame
+// it was on screen, only for the screen buffer to clip all but the visible
+// couple of hundred.
+func (ev *EditorView) fillCellsWithLinks(target []vtui.CharInfo, data []byte, defaultAttr, selAttr uint64, offset int, SelActive bool, selMin, selMax int, syntax []uint64, links []viewer.UrlLink, startVisualCol, maxVisualCol int, isCrossRow bool, crossVCol int, horzCrossAttr, vertCrossAttr uint64, visualRow int) []vtui.CharInfo {
 	target = target[:0]
-	text := string(data)
+	text := editorRenderClip(string(data), maxVisualCol-startVisualCol)
 	clusters := editorVisualClusters(text)
 	visualCol := startVisualCol
 	tabSize := ev.TabSize
@@ -2755,9 +2998,12 @@ func (ev *EditorView) fillCellsWithLinks(target []vtui.CharInfo, data []byte, de
 	}
 
 	for _, cluster := range clusters {
+		if maxVisualCol > 0 && visualCol >= maxVisualCol {
+			break
+		}
 		var w int
 		displayText, sanitizedWidth := vtui.SanitizeCluster(cluster.text)
-		if cluster.text == "\t" {
+		if cluster.text == "	" {
 			w = tabSize - (visualCol % tabSize)
 			displayText = " "
 			if ev.ShowWhitespaces {
@@ -2770,6 +3016,11 @@ func (ev *EditorView) fillCellsWithLinks(target []vtui.CharInfo, data []byte, de
 			w = sanitizedWidth
 			if cluster.text == " " && ev.ShowWhitespaces {
 				displayText = "·"
+			}
+			if ev.ShowControlChars {
+				if picture, ok := controlPicture(cluster.text); ok {
+					displayText = picture
+				}
 			}
 		}
 		if w <= 0 {
@@ -3110,9 +3361,84 @@ func (ev *EditorView) EnsureCursorVisible() {
 	}
 }
 
+// scrollWheelLines scrolls the text by step visual rows, positive down the
+// file, keeping the cursor in the same screen row while the view can move.
+// Once the view reaches an end, the cursor continues on its own, matching the
+// panel wheel behaviour. It reports whether anything moved so a coast stops at
+// an end of the file instead of spinning in place.
+func (ev *EditorView) scrollWheelLines(step int) bool {
+	if step == 0 {
+		return false
+	}
+	direction := 1
+	vk := uint16(vtinput.VK_DOWN)
+	if step < 0 {
+		direction = -1
+		vk = vtinput.VK_UP
+		step = -step
+	}
+
+	moved := false
+	for i := 0; i < step; i++ {
+		if ev.SelActive || ev.RectSelActive {
+			if !ev.scrollSelectionViewBy(direction) {
+				break
+			}
+			moved = true
+			continue
+		}
+
+		beforeLine := ev.CursorLine
+		beforePos := ev.CursorPos
+		beforeTop := ev.ScrollTopRow
+		beforeVirtual := ev.CursorVirtualSpaces
+
+		// Keep the cursor's screen position while there is another visual row
+		// to reveal. At the document boundary scrollViewBy deliberately does
+		// nothing, so the normal arrow movement can take over there.
+		ev.scrollViewBy(direction)
+		if ev.CursorLine == beforeLine && ev.CursorPos == beforePos &&
+			ev.ScrollTopRow == beforeTop && ev.CursorVirtualSpaces == beforeVirtual {
+			ev.ProcessKey(&vtinput.InputEvent{
+				Type:           vtinput.KeyEventType,
+				KeyDown:        true,
+				VirtualKeyCode: vk,
+			})
+		}
+
+		if ev.CursorLine == beforeLine && ev.CursorPos == beforePos &&
+			ev.ScrollTopRow == beforeTop && ev.CursorVirtualSpaces == beforeVirtual {
+			break
+		}
+		moved = true
+	}
+	return moved
+}
+
+// scrollSelectionViewBy moves only the viewport while a selection is active.
+// Wheel scrolling must not turn a fixed selection into a growing one by
+// moving its cursor endpoint.
+func (ev *EditorView) scrollSelectionViewBy(delta int) bool {
+	height := ev.Y2 - ev.Y1
+	if height <= 0 {
+		return false
+	}
+	maxTop := max(ev.Engine.GetTotalVisualRows()-height, 0)
+	nextTop := min(max(ev.ScrollTopRow+delta, 0), maxTop)
+	if nextTop == ev.ScrollTopRow {
+		return false
+	}
+	ev.ScrollTopRow = nextTop
+	vtui.FrameManager.Redraw()
+	return true
+}
+
 func (ev *EditorView) ProcessMouse(e *vtinput.InputEvent) bool {
 	if e.Type != vtinput.MouseEventType {
 		return false
+	}
+	if ev.markdownSplitMouse(e) {
+		return true
 	}
 	if e.ButtonState != 0 && ev.TargetLine != -1 {
 		ev.TargetLine = -1
@@ -3158,20 +3484,43 @@ func (ev *EditorView) ProcessMouse(e *vtinput.InputEvent) bool {
 		}
 	}
 
+	// A linear mouse drag, like a rectangular drag above, keeps ownership of
+	// the gesture when a backend reports motion without the held-button bit.
+	// Without this state the motion falls through to case 0, leaving the
+	// cursor at the anchor; the following release then mistakes a drag for a
+	// plain click and clears the selection.
+	if ev.mouseSelecting {
+		if e.MouseEventFlags&vtinput.MouseMoved != 0 {
+			if ev.updateCursorFromMouse(int(e.MouseX), int(e.MouseY)) {
+				vtui.FrameManager.Redraw()
+			}
+			return true
+		}
+		if e.ButtonState == 0 || !e.KeyDown {
+			ev.mouseSelecting = false
+			if ev.SelActive && ev.SelAnchorOffset == ev.Li.GetLineOffset(ev.CursorLine)+ev.CursorPos {
+				ev.SelActive = false
+			}
+			vtui.FrameManager.Redraw()
+			return true
+		}
+	}
+
 	if ev.scrollBar != nil && ev.scrollBar.ProcessMouse(e) {
 		return true
 	}
 
 	if e.WheelDirection != 0 {
+		direction := 1
 		speed := config.App.WheelEditorDown
-		vk := uint16(vtinput.VK_DOWN)
 		if e.WheelDirection > 0 {
+			direction = -1
 			speed = config.App.WheelEditorUp
-			vk = vtinput.VK_UP
 		}
-		for i := 0; i < config.WheelScrollLines(speed); i++ {
-			ev.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vk})
-		}
+		// A spin faster than one notch per spin window queues extra lines
+		// the editor keeps scrolling on its own (see internal/wheel).
+		ev.wheelCoast.Notch(direction, ev.scrollWheelLines)
+		ev.scrollWheelLines(direction * config.WheelScrollLines(speed))
 		return true
 	}
 
@@ -3219,6 +3568,7 @@ func (ev *EditorView) ProcessMouse(e *vtinput.InputEvent) bool {
 					if e.MouseEventFlags&vtinput.MouseMoved == 0 {
 						ev.SelActive = true
 						ev.SelAnchorOffset = offset
+						ev.mouseSelecting = true
 					}
 				} else if ev.SelActive && e.MouseEventFlags&vtinput.MouseMoved != 0 {
 					ev.CursorLine = ev.Li.GetLineAtOffset(offset)
@@ -3418,8 +3768,35 @@ func (ev *EditorView) SetPosition(x1, y1, x2, y2 int) {
 }
 
 func (ev *EditorView) ResizeConsole(w, h int) {
+	ev.lastW, ev.lastH = w, h
+	ev.resizeConsoleFull(w, h)
+	ev.layoutMarkdownSplit(w)
+}
+
+func (ev *EditorView) resizeConsoleFull(w, h int) {
 	// Редактор в f4 занимает всё пространство до KeyBar (h-1)
-	ev.SetPosition(0, vtui.FrameManager.WorkspaceTopInset(), w-1, h-2)
+	top := vtui.FrameManager.WorkspaceTopInset()
+	if !config.App.AlwaysShowMenuBar || ev.menuBar == nil {
+		ev.SetPosition(0, top, w-1, h-2)
+		return
+	}
+	// AlwaysShowMenuBar keeps the menu bar on the workspace's top row, the row
+	// it has over the panels and the terminal too, and the editor starts below
+	// it with its title bar, which the bar would otherwise cover (issue #1153).
+	ev.SetPosition(0, top+1, w-1, h-2)
+	ev.menuBar.SetPosition(0, top, w-1, top)
+}
+
+// menuBarPinned reports whether ResizeConsole has given the menu bar a row of
+// its own above the title bar. SetPosition alone puts the bar on the title
+// row, where F9 raises it over the title while AlwaysShowMenuBar is off.
+func (ev *EditorView) menuBarPinned() bool {
+	if ev.menuBar == nil {
+		return false
+	}
+	_, menuY, _, _ := ev.menuBar.GetPosition()
+	_, y1, _, _ := ev.GetPosition()
+	return menuY < y1
 }
 
 // GetMenuBar returns the editor's menu bar. Items are regenerated from
@@ -3427,6 +3804,13 @@ func (ev *EditorView) ResizeConsole(w, h int) {
 // always current.
 func (ev *EditorView) GetMenuBar() *vtui.MenuBar {
 	ev.menuBar.Items = MenuBarItems("Editor")
+	if !ev.menuBar.Active {
+		// far2l builds the editor's menu afresh for every F9 with File
+		// selected (EditorShellOptions). F9 reaches vtui's native fallback,
+		// which drops down the item at SelectPos, so a menu left earlier
+		// would come back down instead of File (#1144).
+		ev.menuBar.SelectPos = 0
+	}
 	return ev.menuBar
 }
 
@@ -4479,7 +4863,7 @@ func (ev *EditorView) scheduleIndexResume() {
 	uiFrames := vtui.FrameManager
 	ev.indexResume = time.AfterFunc(indexResumeDelay, func() {
 		uiFrames.PostTask(func() {
-			if ev.IsDone() || ev.Indexing || ev.IndexIsComplete() {
+			if ev.IsDone() || ev.Saving || ev.Indexing || ev.IndexIsComplete() {
 				return
 			}
 			ev.StartIndexing()
@@ -5128,6 +5512,9 @@ func editorTempSibling(filesystem vfs.VFS, FilePath string) (string, error) {
 }
 
 func (ev *EditorView) SaveToFile(afterSave func()) {
+	if rv, ok := ev.Vfs.(interface{ IsReadOnly() bool }); ok && rv.IsReadOnly() {
+		return
+	}
 	ev.saveToFile(afterSave, false)
 }
 
@@ -5148,6 +5535,10 @@ func (ev *EditorView) saveToFile(afterSave func(), fullWrite bool) {
 
 	// Stop indexing to prevent async reads on closed buffers
 	ev.CancelIndexing()
+	if ev.indexResume != nil {
+		ev.indexResume.Stop()
+		ev.indexResume = nil
+	}
 
 	// Capture visible offset for preloading before we destroy the current engine
 	visStart := ev.Engine.VisualToLogical(ev.ScrollTopRow, 0)
@@ -5155,6 +5546,9 @@ func (ev *EditorView) saveToFile(afterSave func(), fullWrite bool) {
 	FilePath := ev.FilePath
 
 	vtui.RunAsync(func(ctx *vtui.TaskContext) {
+		// CancelIndexing only signals the worker. Join it before the save can
+		// replace or close the mapping it may still be reading.
+		ev.WaitForIndexing()
 		// The writer reads the unchanged pieces straight out of the mapping.
 		defer ev.guardMapping("saving")()
 		// To preserve original file ownership, permissions and xattrs (crucial for root-owned files),
@@ -5400,12 +5794,18 @@ func (ev *EditorView) saveToFile(afterSave func(), fullWrite bool) {
 			}
 		}
 
-		// Restore original metadata (owner, group, perms, times). Remote VFSes may
-		// explicitly not support attributes; local failures are a committed but
-		// user-visible partial save and must not be silently ignored.
+		// Restore original metadata (owner, group, perms). The times are not part
+		// of it: the file was just written, and putting its old modification time
+		// back made every save look like no save at all to make, backup tools and
+		// the file's own properties (f4#1817). Remote VFSes may explicitly not
+		// support attributes; local failures are a committed but user-visible
+		// partial save and must not be silently ignored.
 		var metadataErr error
 		if statErr == nil {
-			if attrErr := ev.Vfs.SetAttributes(ctx.Context, finalFilePath, originalStat); attrErr != nil && fileops.IsLocalOSVFS(ev.Vfs) {
+			restore := originalStat
+			restore.MTime = time.Time{}
+			restore.ATime = time.Time{}
+			if attrErr := ev.Vfs.SetAttributes(ctx.Context, finalFilePath, restore); attrErr != nil && fileops.IsLocalOSVFS(ev.Vfs) {
 				metadataErr = attrErr
 			}
 		}
@@ -5492,6 +5892,7 @@ func (ev *EditorView) saveToFile(afterSave func(), fullWrite bool) {
 				ev.Modified = false
 				ev.UnsavedBaseline = false
 				ev.CreateNewTarget = false
+				ev.notify(EventSave)
 				if afterSave != nil {
 					afterSave()
 				}
@@ -5591,11 +5992,9 @@ func (ev *EditorView) InsertTextAtCursor(data []byte) {
 	}
 }
 
-// deleteSpacersForward removes every run of spaces and tabs starting
-// at the cursor, stopping at the first non-spacer byte (or EOF). No-
-// op when the cursor is already on a non-spacer. Matches FAR's
-// Ctrl+Del behaviour word-for-word — "spacer" is the same tokeniser
-// term the issue uses.
+// DeleteSpacersForward removes the spacer run beginning at the cursor. FAR's
+// Ctrl+T/Ctrl+Del uses this same word-boundary behavior: when the cursor is in
+// whitespace it removes the separators up to the next word.
 func (ev *EditorView) DeleteSpacersForward() {
 	offset := ev.Li.GetLineOffset(ev.CursorLine) + ev.CursorPos
 	total := ev.Pt.Size()
@@ -5991,22 +6390,29 @@ func (ev *EditorView) DuplicateLines() {
 	if first < 0 {
 		first = 0
 	}
-	ev.EnsureIndexedToLine(last + 1)
-	if last >= ev.Li.LineCount() {
-		last = ev.Li.LineCount() - 1
+	lineCount := ev.Li.LineCount()
+	if first >= lineCount {
+		return
+	}
+	if last >= lineCount {
+		last = lineCount - 1
 	}
 	if last < first {
 		return
 	}
 
 	start := ev.Li.GetLineOffset(first)
-	end := ev.Pt.Size()
-	terminated := last+1 < ev.Li.LineCount()
-	if terminated {
-		end = ev.Li.GetLineOffset(last + 1)
-	}
-	if end < start {
+	lastStart := ev.Li.GetLineOffset(last)
+	end, terminated, ok := ev.findLineEnd(lastStart)
+	if !ok || end < start {
 		return
+	}
+	// Keep the next line visible to the incremental index update. The line
+	// scanner may not have reached it yet; adding just this boundary is enough
+	// for UpdateAfterInsert to preserve both the new copy and the old next line,
+	// without scanning the rest of the file on the UI thread.
+	if terminated {
+		ev.Li.AppendOffsets([]int{end}, ev.Pt.Size())
 	}
 
 	block, err := ev.Pt.GetRange(start, end-start)
@@ -6058,6 +6464,35 @@ func (ev *EditorView) DuplicateLines() {
 	ev.CursorPos = newOffset - ev.Li.GetLineOffset(ev.CursorLine)
 	ev.updateDesiredVisualCol()
 	ev.EnsureCursorVisible()
+}
+
+// findLineEnd returns the first byte after the newline terminating the line
+// that starts at start. It deliberately does not extend the global line
+// index: commands such as duplicate-line must remain responsive while a large
+// file is being indexed in the background. The bytes read here are only the
+// line being copied, not the unindexed remainder of the file.
+func (ev *EditorView) findLineEnd(start int) (end int, terminated, ok bool) {
+	size := ev.Pt.Size()
+	if start < 0 || start > size {
+		return 0, false, false
+	}
+	if start == size {
+		return size, false, true
+	}
+
+	const chunkSize = 256 * 1024
+	for pos := start; pos < size; {
+		take := min(chunkSize, size-pos)
+		data, err := ev.Pt.GetRange(pos, take)
+		if err != nil || len(data) == 0 {
+			return 0, false, false
+		}
+		if idx := bytes.IndexByte(data, '\n'); idx >= 0 {
+			return pos + idx + 1, true, true
+		}
+		pos += len(data)
+	}
+	return size, false, true
 }
 
 // trailingLineTerminator returns the end-of-line bytes data ends with, or nil
@@ -6806,7 +7241,11 @@ func (ev *EditorView) updateAutocomplete() {
 }
 
 func isAlternateDataStream(path string) bool {
-	if runtime.GOOS != "windows" {
+	// vfs.WindowsPersonality, not a raw GOOS check (WINE.md §18.6, "NTFS
+	// stream ':'"): in posix personality a colon is an ordinary, if
+	// unusual, POSIX filename byte -- valid on the real filesystem
+	// libwinescape reads -- never an NTFS alternate-stream separator.
+	if !vfs.WindowsPersonality() {
 		return false
 	}
 	// URI schemes contain a colon but can never denote an NTFS stream.
@@ -6848,4 +7287,22 @@ func (ev *EditorView) IsSaving() bool {
 // what follows as a separate edit".
 func (ev *EditorView) Checkpoint() {
 	ev.saveUndo(opOther)
+}
+
+// controlPicture maps a lone C0 control character (tab excluded: it has its own
+// rendering) or DEL to its Unicode Control Pictures glyph, which is one cell
+// wide like the placeholder the screen buffer would otherwise show.
+func controlPicture(cluster string) (string, bool) {
+	if len(cluster) != 1 {
+		return "", false
+	}
+	switch r := rune(cluster[0]); {
+	case r == '\t' || r == '\n' || r == '\r':
+		return "", false
+	case r < 0x20:
+		return string(rune(0x2400) + r), true
+	case r == 0x7f:
+		return "\u2421", true
+	}
+	return "", false
 }

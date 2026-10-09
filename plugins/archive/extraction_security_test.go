@@ -25,7 +25,7 @@ func TestArchiveVFSCopyBulkRejectsTraversal(t *testing.T) {
 		// An extensionless ZIP is deliberately dispatched through the generic
 		// archives.Extractor branch: the constructor detects its backing by
 		// content, while CopyBulk has no display-name format hint.
-		{name: "fallback", archiveName: "malicious.payload", write: writeTraversalZIP, wantFormat: ""},
+		{name: "fallback", archiveName: "malicious.payload", write: writeTraversalZIP, wantFormat: "zip"},
 	}
 
 	for _, test := range tests {

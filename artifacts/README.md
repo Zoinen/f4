@@ -1,10 +1,7 @@
-# Native OpenConsole probe evidence
+# Probe artifacts
 
-`native-openconsole-probe.json` and the `.sessions/*.raw` files are a sanitized
-runtime capture from the pinned Windows Terminal/OpenConsole build. Absolute
-workspace, temp, and cache paths are replaced with placeholders; ephemeral
-handle values are redacted; only an allow-listed terminal environment is kept.
-
-The report covers the `80x25`, `1x1`, and `121x40` sessions and records the
-live host identity checks, resize events, exit codes, output hashes, and raw
-ConPTY bytes.
+The sanitized native OpenConsole captures (`native-openconsole-probe*.json`
+and their `.sessions/*.raw` files) are archived in unxed/f4#1684; the
+findings drawn from them are in `docs/PINNED_HOST_FACTS.md` and
+`docs/CONPTY_NATIVE_AUDIT.md`. New probe reports are written here by
+`tools/conptyreconcile` and are not committed.

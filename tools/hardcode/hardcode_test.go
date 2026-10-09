@@ -125,6 +125,48 @@ func build() {
 	}
 }
 
+// TestScanFindsKeyBarLabelCaptions guards the f4#1218 follow-up: a
+// vtui.KeyBarLabels{...} literal addresses its captions by F-key position,
+// not by field name, so it slipped past structFindings' KeyValueExpr check
+// entirely (it never found the element to reject) and was never scanned
+// before positionalFindings was added.
+func TestScanFindsKeyBarLabelCaptions(t *testing.T) {
+	root := t.TempDir()
+
+	writeFile(t, filepath.Join(root, "frame.go"), `package sample
+
+func build() *vtui.KeySet {
+	return &vtui.KeySet{
+		Normal: vtui.KeyBarLabels{
+			i18n.Msg("KeyBar.F1"), "View", "Edit", "",
+		},
+		Shift: vtui.KeyBarLabels{"", "", "", "Rename"},
+	}
+}
+`)
+
+	findings, err := Scan(root)
+	if err != nil {
+		t.Fatalf("Scan failed: %v", err)
+	}
+
+	got := make([]string, 0, len(findings))
+	for _, f := range findings {
+		got = append(got, f.Literal)
+	}
+	sort.Strings(got)
+
+	want := []string{"Edit", "Rename", "View"}
+	if len(got) != len(want) {
+		t.Fatalf("Scan found %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("Scan found %v, want %v", got, want)
+		}
+	}
+}
+
 func TestBaselineRoundTrip(t *testing.T) {
 	findings := []Finding{
 		{File: "b.go", Line: 3, Func: "NewButton", Literal: "Two\tTabbed"},

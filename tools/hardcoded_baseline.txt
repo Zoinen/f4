@@ -1,3 +1,10 @@
 # Hardcoded UI captions that predate the localization audit.
 # One entry per line: file, constructor and the quoted literal, tab separated.
 # The list may only shrink. See L10N_PLAN.md, stages S0 and S6.
+#
+# internal/panel/plugin_hotkeys.go: "F4" names the key itself -- the plugin
+# menu's key-bar hint when no macro is bound to it -- not a caption to
+# translate, the same way Editor/Viewer's "&Hex" mode label stays "Hex" in
+# every language (f4#1218). Predates the scanner learning about
+# vtui.KeyBarLabels literals (see tools/hardcode's uiPositionalArrayTypes).
+internal/panel/plugin_hotkeys.go	KeyBarLabels	"F4"

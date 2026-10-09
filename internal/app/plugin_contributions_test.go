@@ -190,6 +190,63 @@ func TestPluginCommandExecutionRejectsClosedPanelsFrame(t *testing.T) {
 	}
 }
 
+func TestPluginCommandExecutionRefusesDisabledCommand(t *testing.T) {
+	api := &coreAPI{}
+	called := 0
+	enabled := false
+	registration, err := api.RegisterPluginCommand(vfs.PluginCommand{
+		ID:       "test.disabled-plugin-command",
+		Location: vfs.PluginCommandPanel,
+		Label:    "Disabled-capable command",
+		Enabled:  func(vfs.App) bool { return enabled },
+		Run:      func(vfs.App) { called++ },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(registration.Unregister)
+
+	// Enabled==false refuses the call the same way Visible==false does
+	// (f4#1356): the command stays registered and discoverable, it just
+	// cannot run right now.
+	if plughost.ExecutePluginCommand(vfs.PluginCommandPanel, "test.disabled-plugin-command", nil) {
+		t.Fatal("disabled command executed")
+	}
+	if called != 0 {
+		t.Fatalf("disabled command handler calls = %d, want 0", called)
+	}
+	if commands := plughost.PluginCommandsSnapshot(vfs.PluginCommandPanel, nil); len(commands) != 1 {
+		t.Fatalf("disabled command disappeared from the snapshot: %#v", commands)
+	}
+
+	enabled = true
+	if !plughost.ExecutePluginCommand(vfs.PluginCommandPanel, "test.disabled-plugin-command", nil) || called != 1 {
+		t.Fatalf("enabled command execution: called=%d", called)
+	}
+}
+
+// TestPluginCommandWithoutEnabledStaysExecutable pins the backward-compatible
+// default: a command that never sets Enabled must keep running exactly as it
+// did before the field existed, gated by Visible alone.
+func TestPluginCommandWithoutEnabledStaysExecutable(t *testing.T) {
+	api := &coreAPI{}
+	called := 0
+	registration, err := api.RegisterPluginCommand(vfs.PluginCommand{
+		ID:       "test.no-enabled-plugin-command",
+		Location: vfs.PluginCommandPanel,
+		Label:    "No Enabled predicate",
+		Run:      func(vfs.App) { called++ },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(registration.Unregister)
+
+	if !plughost.ExecutePluginCommand(vfs.PluginCommandPanel, "test.no-enabled-plugin-command", nil) || called != 1 {
+		t.Fatalf("command without Enabled: called=%d", called)
+	}
+}
+
 func TestPluginCommandDisplayMetadataTracksActiveLanguage(t *testing.T) {
 	oldLanguage := config.App.Language
 	oldFallbackLanguage := config.App.FallbackLanguage

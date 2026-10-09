@@ -13,8 +13,6 @@ import (
 	"strings"
 	"sync"
 
-	"golang.org/x/crypto/ssh"
-
 	"github.com/unxed/f4/internal/netproxy"
 	"github.com/unxed/f4/plugins/netfox/fishplus"
 	"github.com/unxed/f4/vfs"
@@ -298,7 +296,7 @@ func newFishVFSFromSession(parent vfs.VFS, sess *fishplus.Session, closer io.Clo
 func establishSession(ctx context.Context, dial FishDialer, opts fishplus.HandshakeOptions) (*fishplus.Session, io.Closer, error) {
 	stdin, stdout, closer, err := dial(ctx)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, &dialError{err}
 	}
 	sess := fishplus.NewSession(stdin, stdout, closer)
 	if err := sess.HandshakeWithOptions(ctx, opts); err != nil {
@@ -307,6 +305,12 @@ func establishSession(ctx context.Context, dial FishDialer, opts fishplus.Handsh
 	}
 	return sess, closer, nil
 }
+
+// dialError marks a failure to reach the peer at all, as opposed to a peer that
+// answered and did not speak the protocol.
+type dialError struct{ error }
+
+func (e *dialError) Unwrap() error { return e.error }
 
 // establishWithFallback tries the primary (dial, opts) pair first and
 // falls back to (dialAlt, optsAlt) only when the primary handshake fails
@@ -325,8 +329,17 @@ func establishWithFallback(ctx context.Context, dial FishDialer, opts fishplus.H
 	// try. Only a handshake failure means the transport is fine but the
 	// far side did not recognize the bootstrap; only then is the fallback
 	// worth trying.
-	if _, isRemoteErr := err.(*fishplus.RemoteError); !isRemoteErr && !isHandshakeFailure(err) {
-		return nil, false, nil, err
+	var dialErr *dialError
+	if errors.As(err, &dialErr) {
+		return nil, false, nil, dialErr.error
+	}
+	// A native primary (f4 --fish-server on the peer) fails in whatever way a
+	// peer without f4 fails -- "command not found" and the end of the stream --
+	// so there any handshake error is worth the shell fallback.
+	if opts.Bootstrap != fishplus.BootstrapNative {
+		if _, isRemoteErr := err.(*fishplus.RemoteError); !isRemoteErr && !isHandshakeFailure(err) {
+			return nil, false, nil, err
+		}
 	}
 	if dialAlt == nil {
 		return nil, false, nil, err
@@ -370,118 +383,18 @@ func isHandshakeFailure(err error) bool {
 		strings.Contains(msg, "bad terminator")
 }
 
-// sshShell ties the lifetime of the remote shell and of the connection that
-// carries it to the session that speaks through them.
-type sshShell struct {
-	sess   *ssh.Session
-	client *ssh.Client
-}
-
-func (s *sshShell) Close() error {
-	return errors.Join(s.sess.Close(), s.client.Close())
-}
-
-func (s *sshShell) OpenPty(cols, rows int) (any, error) {
-	pty, err := NewSSHPty(s.client)
-	if err != nil {
-		return nil, err
-	}
-	pty.SetSize(cols, rows)
-	if err := pty.Run(""); err != nil {
-		return nil, fmt.Errorf("fishplus: start SSH PTY: %w", errors.Join(err, pty.Close()))
-	}
-	return pty, nil
-}
-
-// sshFishDialer builds the transport a FISH+ site speaks over, and — the whole
-// point of it being a dialer — can build it again. Everything it needs is in
-// the site configuration, which is what makes a reconnect possible at all: the
-// credentials are here, not on the far side.
-//
-// The shell deliberately runs without a pseudo terminal: a terminal would echo
-// every request back, turn each \n of a binary frame into \r\n and cut long
-// request lines at the canonical buffer limit. The helper can tame a terminal
-// with stty when it has to, but not asking for one in the first place is
-// cheaper and cannot fail.
-//
-// The command is "exec /bin/sh" rather than a plain shell request, because the
-// account's login shell may well be csh, fish or something else that does not
-// speak the POSIX syntax the helper is written in.
-func sshFishDialer(host, port, user, pass, keyPath string, timeout int, px netproxy.Settings) FishDialer {
-	return sshFishDialerWith(host, port, user, pass, keyPath, timeout, px, func(s *ssh.Session) error {
-		return s.Start("exec /bin/sh")
-	})
-}
-
-// sshFishDialerPwsh is the fallback for a Windows peer. It asks sshd to
-// run "powershell.exe -NoLogo -NoProfile" rather than sess.Shell(): the
-// exec request resolves through the DefaultShell of the peer, which is
-// cmd.exe on a stock OpenSSH-Server-Windows install, so a bare shell
-// request would land the helper in cmd — which does not understand a
-// single line of PowerShell. Routing through
-// "cmd.exe /c powershell.exe -NoLogo -NoProfile" instead lets cmd fork
-// PowerShell for us; a peer whose DefaultShell is already powershell.exe
-// or pwsh pays for a nested launch (~200 ms) but the same helper runs
-// on both. No pseudo-terminal is requested for the same reason as the
-// POSIX side: a ConPTY would echo every request back and inject VT
-// sequences.
-func sshFishDialerPwsh(host, port, user, pass, keyPath string, timeout int, px netproxy.Settings) FishDialer {
-	return sshFishDialerWith(host, port, user, pass, keyPath, timeout, px, func(s *ssh.Session) error {
-		return s.Start("powershell.exe -NoLogo -NoProfile")
-	})
-}
-
-// sshFishDialerWith is what both flavors share. The only thing they
-// disagree about is how they ask sshd to give them the shell: exec+cmd
-// on POSIX (which bypasses an exotic login shell), plain shell on
-// Windows (which respects DefaultShell).
-func sshFishDialerWith(host, port, user, pass, keyPath string, timeout int, px netproxy.Settings, startShell func(*ssh.Session) error) FishDialer {
-	return func(ctx context.Context) (io.Writer, io.Reader, io.Closer, error) {
-		// DialSSH carries a timeout of its own and cannot be interrupted, so
-		// the context is honoured where it can be: before the dial, and again
-		// after it, so a reconnect the user gave up on does not leave a shell
-		// running on the far side.
-		if err := ctx.Err(); err != nil {
-			return nil, nil, nil, err
-		}
-		client, err := DialSSH(host, port, user, pass, keyPath, timeout, px)
-		if err != nil {
-			return nil, nil, nil, err
-		}
-		sess, err := client.NewSession()
-		if err != nil {
-			_ = client.Close() // Preserve the session-creation failure.
-			return nil, nil, nil, err
-		}
-		shell := &sshShell{sess: sess, client: client}
-		stdin, err := sess.StdinPipe()
-		if err != nil {
-			_ = shell.Close() // Preserve the pipe-creation failure.
-			return nil, nil, nil, err
-		}
-		stdout, err := sess.StdoutPipe()
-		if err != nil {
-			_ = shell.Close() // Preserve the pipe-creation failure.
-			return nil, nil, nil, err
-		}
-		sess.Stderr = io.Discard
-		if err := startShell(sess); err != nil {
-			_ = shell.Close() // Preserve the remote-shell startup failure.
-			return nil, nil, nil, err
-		}
-		if err := ctx.Err(); err != nil {
-			_ = shell.Close() // Preserve cancellation as the primary error.
-			return nil, nil, nil, err
-		}
-		return stdin, stdout, shell, nil
-	}
-}
-
 // NewFishVFS opens a site over SSH. It goes through a dialer rather than
 // through a pair of streams, so the session it hands back is one that can be
 // rebuilt after the connection drops; a site opened any other way would have
 // to be reopened by hand.
 func NewFishVFS(parent vfs.VFS, host, port, user, pass, keyPath string, timeout int, px netproxy.Settings) (*FishVFS, error) {
+	return NewFishVFSWithOptions(parent, host, port, user, pass, keyPath, timeout, px, FishPreferRemoteF4.Load())
+}
+
+// NewFishVFSWithOptions is NewFishVFS with the choice of server made by the
+// caller: with remoteF4 set the peer's f4 (--fish-server) is tried before the
+// shell helper (see FishPreferRemoteF4).
+func NewFishVFSWithOptions(parent vfs.VFS, host, port, user, pass, keyPath string, timeout int, px netproxy.Settings, remoteF4 bool) (*FishVFS, error) {
 	key := fishPoolKey{host: host, port: port, user: user, proxy: px}
 	if conn := globalFishPool.take(key); conn != nil {
 		return newFishVFSFromPooledConn(parent, conn, host, port, user), nil
@@ -501,10 +414,23 @@ func NewFishVFS(parent vfs.VFS, host, port, user, pass, keyPath string, timeout 
 	// bootstrap with a parse error; the fallback dialer catches that,
 	// asks sshd for a plain shell (which resolves to PowerShell on
 	// Windows), and delivers the base64-encoded helper.ps1 through it.
-	v, err := NewFishVFSOnDialers(ctx, parent,
-		sshFishDialer(host, port, user, pass, keyPath, timeout, px), fishplus.HandshakeOptions{},
-		sshFishDialerPwsh(host, port, user, pass, keyPath, timeout, px), fishplus.HandshakeOptions{Bootstrap: fishplus.BootstrapBase64LinePwsh},
-		title)
+	shell := sshFishDialer(host, port, user, pass, keyPath, timeout, px)
+	pwsh := sshFishDialerPwsh(host, port, user, pass, keyPath, timeout, px)
+	var v *FishVFS
+	var err error
+	if remoteF4 {
+		// Opt-in: try f4 itself as the server first (no helper to upload, and
+		// none of the shell's limits), and fall back to the POSIX shell helper
+		// on a host that does not have it.
+		v, err = NewFishVFSOnDialers(ctx, parent,
+			sshFishDialerNative(host, port, user, pass, keyPath, timeout, px), fishplus.HandshakeOptions{Bootstrap: fishplus.BootstrapNative},
+			shell, fishplus.HandshakeOptions{},
+			title)
+	} else {
+		v, err = NewFishVFSOnDialers(ctx, parent, shell, fishplus.HandshakeOptions{},
+			pwsh, fishplus.HandshakeOptions{Bootstrap: fishplus.BootstrapBase64LinePwsh},
+			title)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -518,9 +444,13 @@ func NewFishVFS(parent vfs.VFS, host, port, user, pass, keyPath string, timeout 
 	return v, nil
 }
 
-// ConnectionInfo implements vfs.ConnectionInfoProvider.
+// ConnectionInfo implements vfs.ConnectionInfoProvider. A session with no
+// host of its own -- the WSL "wsl" site type (wsl_vfs_windows.go) reaches
+// its distribution through a locally spawned wsl.exe, not a network
+// address -- reports ok=false: it is not a second hop any scp-based
+// server-to-server transfer (internal/fileops/ops.go) could ever reach.
 func (v *FishVFS) ConnectionInfo() (host, port, user string, ok bool) {
-	return v.host, v.port, v.user, true
+	return v.host, v.port, v.user, v.host != ""
 }
 
 // client is how every request reaches the session. It asks the connection
@@ -616,6 +546,12 @@ func (v *FishVFS) Reconnect(ctx context.Context) error {
 }
 
 func (v *FishVFS) GetTitle() string { return v.title }
+
+// HistoryEntry and NavigateHistoryEntry implement vfs.HistoryPathProvider
+// (f4#262): a FISH+ session owns its own folder-history entries instead of
+// its raw remote path (e.g. /root/foo) being recorded as if it were local.
+func (v *FishVFS) HistoryEntry() (display, ref string, ok bool) { return netfoxHistoryEntry(v) }
+func (v *FishVFS) NavigateHistoryEntry(ref string) bool         { return netfoxNavigateHistoryEntry(v, ref) }
 
 // SetPanelTitleFormatter customizes only the path rendered in the panel
 // border. The canonical POSIX path and the session title remain untouched.
@@ -729,7 +665,13 @@ func (v *FishVFS) entryToItem(e fishplus.Entry) vfs.VFSItem {
 	if e.IsSymlink() && e.TargetIsDir {
 		isDir = true
 	}
+	known := vfs.MetadataExplicit | vfs.MetadataPermissions | vfs.MetadataUID | vfs.MetadataGID | vfs.MetadataHidden | vfs.MetadataExecutable | vfs.MetadataMTime
+	if !e.SyntheticTimes {
+		known |= vfs.MetadataATime | vfs.MetadataCTime
+	}
 	return vfs.VFSItem{
+		KnownMetadata: known, SizeKnown: true,
+		CTime:        e.CTime,
 		Name:         e.Name,
 		Size:         e.Size,
 		IsDir:        isDir,
@@ -920,23 +862,10 @@ func (v *FishVFS) FindFiles(ctx context.Context, dir string, q vfs.FindQuery) ([
 	}
 	out := make([]vfs.FoundEntry, 0, len(entries))
 	for _, e := range entries {
-		name := path.Base(e.Name)
-		out = append(out, vfs.FoundEntry{
-			Path: e.Name,
-			Item: vfs.VFSItem{
-				Name:         name,
-				Size:         e.Size,
-				IsDir:        e.IsDir(),
-				MTime:        e.MTime,
-				ATime:        e.ATime,
-				IsExecutable: e.IsExecutable(),
-				IsHidden:     strings.HasPrefix(name, "."),
-				IsSymlink:    e.IsSymlink(),
-				UnixMode:     e.Mode,
-				Uid:          e.Uid,
-				Gid:          e.Gid,
-			},
-		})
+		item := v.entryToItem(e)
+		item.Name = path.Base(e.Name)
+		item.IsHidden = strings.HasPrefix(item.Name, ".")
+		out = append(out, vfs.FoundEntry{Path: e.Name, Item: item})
 	}
 	return out, nil
 }
@@ -1274,7 +1203,66 @@ var (
 	_ vfs.CommandRunner                     = (*FishVFS)(nil)
 	_ vfs.CommandRunnerInfoProvider         = (*FishVFS)(nil)
 	_ vfs.CommandRunnerAvailabilityProvider = (*FishVFS)(nil)
+	_ vfs.SecondHopPasswordProvider         = (*FishVFS)(nil)
+	_ vfs.SecondHopSecretStager             = (*FishVFS)(nil)
 )
+
+// SecondHopPassword implements vfs.SecondHopPasswordProvider. It answers on
+// this site's own behalf: a server-to-server transfer that wants to
+// authenticate to this exact host, port and user with a password asks here,
+// and gets one back only when NetFox's "password auth for server-to-server
+// transfers" setting is on and a saved connection matches (see
+// secondHopPassword in s2s_password.go).
+func (v *FishVFS) SecondHopPassword() (string, bool) {
+	if v == nil {
+		return "", false
+	}
+	return secondHopPassword(v.host, v.port, v.user)
+}
+
+// s2sSecretFileTemplate is the mktemp template StageSecret uses. The prefix
+// makes a leftover file recognizable as f4's own if cleanup is ever missed
+// (a killed job, a session that dies mid-transfer); mktemp's own random
+// suffix is what keeps the name unguessable, and mktemp itself is what keeps
+// the file private (mode 0600, created rather than merely named) without
+// this client trusting a path it only guessed at.
+const s2sSecretFileTemplate = "f4-s2s-secret.XXXXXXXX" // #nosec G101 -- a mktemp template naming the file, not a credential.
+
+// StageSecret implements vfs.SecondHopSecretStager. The secret travels to
+// this host over the same encrypted FISH+ write channel every ordinary file
+// transfer already uses (Client.Write) -- never as part of a command's own
+// text, never through an environment variable a sibling process could read
+// out of /proc, and never logged -- and lands in a file mktemp created for
+// this call alone, which cleanup removes again once the caller is done.
+func (v *FishVFS) StageSecret(ctx context.Context, password string) (string, func(context.Context), error) {
+	if v.peerIsWindows() {
+		return "", nil, errors.New("fishplus: StageSecret needs a POSIX peer")
+	}
+	client := v.client()
+	if client == nil || !client.CanRun() {
+		return "", nil, fishplus.ErrNoJobs
+	}
+	lines, code, err := client.RunOutput(ctx, "",
+		"umask 077 && mktemp \"${TMPDIR:-/tmp}/"+s2sSecretFileTemplate+"\"")
+	if err != nil {
+		return "", nil, fmt.Errorf("fishplus: create secret file: %w", err)
+	}
+	path := ""
+	if len(lines) > 0 {
+		path = strings.TrimSpace(lines[0])
+	}
+	if code != 0 || path == "" {
+		return "", nil, fmt.Errorf("fishplus: create secret file: mktemp exited %d", code)
+	}
+	if err := client.Write(ctx, path, 0, []byte(password)); err != nil {
+		_, _ = client.Run(context.WithoutCancel(ctx), "", "rm -f "+posixSingleQuote(path), nil)
+		return "", nil, fmt.Errorf("fishplus: write secret file: %w", err)
+	}
+	cleanup := func(cctx context.Context) {
+		_, _ = client.Run(context.WithoutCancel(cctx), "", "rm -f "+posixSingleQuote(path), nil)
+	}
+	return path, cleanup, nil
+}
 
 // Close releases this view. The session itself goes away with its last
 // user, and closing the same view twice is harmless: a panel may well be
@@ -1346,7 +1334,8 @@ func (p *fishProvider) Open(ctx context.Context, parent vfs.VFS, pth string) (vf
 			timeout = t
 		}
 	}
-	res, err := NewFishVFS(parent, cfg.Host, port, cfg.User, cfg.Pass, cfg.KeyPath, timeout, cfg.Proxy())
+	res, err := NewFishVFSWithOptions(parent, cfg.Host, port, cfg.User, cfg.Pass, cfg.KeyPath, timeout, cfg.Proxy(),
+		FishPreferRemoteF4.Load() || cfg.Options[fishRemoteF4Option] == "true")
 	if err != nil {
 		return nil, err
 	}
@@ -1358,7 +1347,21 @@ type fishProtocolHandler struct{}
 func (ph *fishProtocolHandler) Prefix() string      { return "fish+" }
 func (ph *fishProtocolHandler) DefaultPort() string { return "22" }
 func (ph *fishProtocolHandler) BuildExtraUI(cfg *NetFoxConfig, x, y, w, h int) (vtui.UIElement, func()) {
-	return nil, func() {}
+	chk := vtui.NewCheckbox(x, y, vtui.Msg("NetFox.FishRemoteF4"), false)
+	if cfg.Options[fishRemoteF4Option] == "true" {
+		chk.State = 1
+	}
+	save := func() {
+		if chk.State == 1 {
+			if cfg.Options == nil {
+				cfg.Options = make(map[string]string)
+			}
+			cfg.Options[fishRemoteF4Option] = "true"
+		} else {
+			delete(cfg.Options, fishRemoteF4Option)
+		}
+	}
+	return chk, save
 }
 
 func init() {

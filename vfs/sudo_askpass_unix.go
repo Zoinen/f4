@@ -174,6 +174,10 @@ func (c *SudoClient) handleAskpassRequest(conn net.Conn) {
 		}
 
 		if vtui.FrameManager != nil {
+			// The request above was logged when it arrived; this line is
+			// when the UI goroutine got to it. A gap between the two is time
+			// the prompt spent waiting in the task queue.
+			vtui.DebugLog("SUDO_CLIENT: Password dialog shown")
 			vtui.FrameManager.Push(dlg)
 		}
 	})

@@ -105,3 +105,18 @@ func ActivePanelNameForEditor() string {
 	}
 	return fsp.GetSelectedName()
 }
+
+// PassivePanelNameForEditor returns the selected name on the panel opposite
+// the active one.  Editors use it for FAR's Ctrl+Shift+Enter insertion
+// shortcut while the panels frame itself remains behind the editor.
+func PassivePanelNameForEditor() string {
+	pf := FindPanelsFrameAnyScreen()
+	if pf == nil {
+		return ""
+	}
+	fsp := pf.GetInactivePanel()
+	if fsp == nil {
+		return ""
+	}
+	return fsp.GetSelectedName()
+}

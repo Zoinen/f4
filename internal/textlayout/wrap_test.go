@@ -800,3 +800,294 @@ func TestWrapEngine_NoWrapCacheInvalidatedOnEdit(t *testing.T) {
 		t.Errorf("width after edit = %d, want 13", got)
 	}
 }
+
+func TestBuildVisualCaretMapIdentityWhenNotRTL(t *testing.T) {
+	oldMode := vtui.DefaultBidiMode
+	vtui.DefaultBidiMode = vtui.BidiOff
+	defer func() { vtui.DefaultBidiMode = oldMode }()
+
+	// With bidi reordering off, buildVisualCaretMap must take its early
+	// identity-mapping branch and never consult the bidi layout, even for
+	// text that is itself RTL.
+	want := []int{0, 1, 2, 3}
+
+	caret := buildVisualCaretMap("abc")
+	if !reflect.DeepEqual(caret.LogicalToVisual, want) {
+		t.Errorf("LogicalToVisual(%q) = %v, want %v", "abc", caret.LogicalToVisual, want)
+	}
+	if !reflect.DeepEqual(caret.VisualToLogical, want) {
+		t.Errorf("VisualToLogical(%q) = %v, want %v", "abc", caret.VisualToLogical, want)
+	}
+
+	caretRTL := buildVisualCaretMap("אבג")
+	if !reflect.DeepEqual(caretRTL.LogicalToVisual, want) {
+		t.Errorf("LogicalToVisual(RTL, BidiOff) = %v, want %v", caretRTL.LogicalToVisual, want)
+	}
+	if !reflect.DeepEqual(caretRTL.VisualToLogical, want) {
+		t.Errorf("VisualToLogical(RTL, BidiOff) = %v, want %v", caretRTL.VisualToLogical, want)
+	}
+}
+
+func TestVisualClusterWidthsDefaultsAndClamps(t *testing.T) {
+	clusters := []visualCluster{
+		{text: "\t", width: 0},
+		{text: "x", width: 0},
+		{text: "世", width: 2},
+	}
+
+	// tabSize <= 0 must fall back to 8, and a non-positive cluster width
+	// (whether from a tab at column 0 or a stray zero-width cluster) must
+	// be clamped up to at least 1 so the caret can never get stuck.
+	widths := visualClusterWidths(clusters, 0)
+	want := []int{8, 1, 2}
+	if !reflect.DeepEqual(widths, want) {
+		t.Errorf("visualClusterWidths(tabSize=0) = %v, want %v", widths, want)
+	}
+}
+
+func TestFragmentLogicalToVisualClampsNegativeOffset(t *testing.T) {
+	got := fragmentLogicalToVisual("abc", -5, 8)
+	if got != 0 {
+		t.Errorf("fragmentLogicalToVisual(-5) = %d, want 0 (clamped like offset 0)", got)
+	}
+}
+
+func TestFragmentVisualToLogicalRTLBeforeFirstVisualColumn(t *testing.T) {
+	oldMode := vtui.DefaultBidiMode
+	vtui.DefaultBidiMode = vtui.BidiFull
+	defer func() { vtui.DefaultBidiMode = oldMode }()
+
+	text := "שלום" // pure RTL, 4 clusters, 2 bytes each = 8 bytes
+	// Visual column 0 is the screen's leftmost column. For a pure RTL run
+	// that is logically *past* the last character, so the caret map has no
+	// cluster to return and the function must fall back to len(text).
+	got := fragmentVisualToLogical(text, 0, 8)
+	if got != len(text) {
+		t.Errorf("fragmentVisualToLogical(col 0) = %d, want %d (end of text)", got, len(text))
+	}
+}
+
+func TestFragmentVisualMoveEmptyText(t *testing.T) {
+	got, ok := fragmentVisualMove("", 0, 1)
+	if ok {
+		t.Fatalf("fragmentVisualMove(\"\") should refuse to move, got ok=true offset=%d", got)
+	}
+	if got != 0 {
+		t.Errorf("fragmentVisualMove(\"\") offset = %d, want 0", got)
+	}
+}
+
+func TestFragmentVisualMoveNonRTLBranches(t *testing.T) {
+	tests := []struct {
+		name       string
+		text       string
+		byteOffset int
+		direction  int
+		wantOff    int
+		wantOK     bool
+	}{
+		{"move right lands on next cluster", "abc", 1, 1, 2, true},
+		{"move right past the end returns len(text)", "abc", 2, 1, 3, true},
+		{"move left past the start is refused", "abc", 0, -1, 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := fragmentVisualMove(tt.text, tt.byteOffset, tt.direction)
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v, want %v (offset %d)", ok, tt.wantOK, got)
+			}
+			if got != tt.wantOff {
+				t.Errorf("offset = %d, want %d", got, tt.wantOff)
+			}
+		})
+	}
+}
+
+func TestFragmentVisualMoveRTLReachesLogicalEnd(t *testing.T) {
+	oldMode := vtui.DefaultBidiMode
+	vtui.DefaultBidiMode = vtui.BidiFull
+	defer func() { vtui.DefaultBidiMode = oldMode }()
+
+	text := "אבג" // 3 pure-RTL letters, 2 bytes each = 6 bytes
+	// Byte offset 4 sits right before the last logical letter, which is
+	// visual position 1. Moving one more step in the visual direction of
+	// "left" (-1) reaches visual position 0 - the far edge of the run -
+	// which has no logical cluster of its own, so it must fall back to the
+	// end of the text.
+	got, ok := fragmentVisualMove(text, 4, -1)
+	if !ok {
+		t.Fatalf("fragmentVisualMove refused the move")
+	}
+	if got != len(text) {
+		t.Errorf("fragmentVisualMove(RTL, 4, -1) = %d, want %d (end of text)", got, len(text))
+	}
+}
+
+func TestWrapEngine_MoveVisual(t *testing.T) {
+	newEngine := func() *WrapEngine {
+		Pt := piecetable.New([]byte("ab\ncd"))
+		Li := piecetable.NewLineIndex()
+		Li.Rebuild(Pt)
+		we := NewWrapEngine(Pt, Li)
+		we.SetWidth(80)
+		we.ToggleWrap(false)
+		return we
+	}
+
+	t.Run("direction zero is a no-op", func(t *testing.T) {
+		we := newEngine()
+		if got := we.MoveVisual(1, 0); got != 1 {
+			t.Errorf("MoveVisual(1, 0) = %d, want 1", got)
+		}
+	})
+
+	t.Run("moves right within the same line", func(t *testing.T) {
+		we := newEngine()
+		if got := we.MoveVisual(1, 1); got != 2 {
+			t.Errorf("MoveVisual(1, 1) = %d, want 2", got)
+		}
+	})
+
+	t.Run("moving right off the end crosses into the next line", func(t *testing.T) {
+		we := newEngine()
+		if got := we.MoveVisual(2, 1); got != 3 {
+			t.Errorf("MoveVisual(2, 1) = %d, want 3 (start of \"cd\")", got)
+		}
+	})
+
+	t.Run("moving left off the start crosses into the previous line", func(t *testing.T) {
+		we := newEngine()
+		if got := we.MoveVisual(3, -1); got != 2 {
+			t.Errorf("MoveVisual(3, -1) = %d, want 2 (end of \"ab\")", got)
+		}
+	})
+
+	t.Run("moving left at the very start of the document is a no-op", func(t *testing.T) {
+		we := newEngine()
+		if got := we.MoveVisual(0, -1); got != 0 {
+			t.Errorf("MoveVisual(0, -1) = %d, want 0", got)
+		}
+	})
+}
+
+func TestWrapEngine_SetTabSizeNonPositiveDefaultsToEight(t *testing.T) {
+	Pt := piecetable.New([]byte("\t"))
+	Li := piecetable.NewLineIndex()
+	Li.Rebuild(Pt)
+	we := NewWrapEngine(Pt, Li)
+	we.ToggleWrap(false)
+
+	we.SetTabSize(4)
+	if got := we.GetFragments(0)[0].VisualWidth; got != 4 {
+		t.Fatalf("setup: TabSize 4 gave width %d, want 4", got)
+	}
+
+	we.SetTabSize(0)
+	if got := we.GetFragments(0)[0].VisualWidth; got != 8 {
+		t.Errorf("SetTabSize(0) width = %d, want 8 (default)", got)
+	}
+
+	we.SetTabSize(-3)
+	if we.tabSize != 8 {
+		t.Errorf("SetTabSize(-3) tabSize = %d, want 8 (default)", we.tabSize)
+	}
+}
+
+func TestWrapEngine_GetFragmentsOutOfRange(t *testing.T) {
+	Pt := piecetable.New([]byte("only line"))
+	Li := piecetable.NewLineIndex()
+	Li.Rebuild(Pt)
+	we := NewWrapEngine(Pt, Li)
+
+	if frags := we.GetFragments(-1); frags != nil {
+		t.Errorf("GetFragments(-1) = %v, want nil", frags)
+	}
+	if frags := we.GetFragments(5); frags != nil {
+		t.Errorf("GetFragments(5) = %v, want nil (only 1 line)", frags)
+	}
+}
+
+func TestWrapEngine_EnsureRowCountCacheNoOpWithoutWordWrap(t *testing.T) {
+	Pt := piecetable.New([]byte("a\nb\nc"))
+	Li := piecetable.NewLineIndex()
+	Li.Rebuild(Pt)
+	we := NewWrapEngine(Pt, Li)
+	we.ToggleWrap(false)
+
+	we.ensureRowCountCache(10)
+	if we.rowOffsets != nil {
+		t.Errorf("rowOffsets = %v, want nil (must stay untouched when word wrap is off)", we.rowOffsets)
+	}
+	if we.validUntil != -1 {
+		t.Errorf("validUntil = %d, want -1", we.validUntil)
+	}
+}
+
+func TestWrapEngine_GetRowOffsetBoundaries(t *testing.T) {
+	Pt := piecetable.New([]byte("L0\nL1\nL2"))
+	Li := piecetable.NewLineIndex()
+	Li.Rebuild(Pt)
+	we := NewWrapEngine(Pt, Li)
+	we.SetWidth(80)
+
+	t.Run("wrap off, negative index clamps to zero", func(t *testing.T) {
+		we.ToggleWrap(false)
+		if got := we.GetRowOffset(-5); got != 0 {
+			t.Errorf("GetRowOffset(-5) = %d, want 0", got)
+		}
+	})
+
+	t.Run("wrap off, index beyond line count clamps to line count", func(t *testing.T) {
+		we.ToggleWrap(false)
+		if got := we.GetRowOffset(100); got != 3 {
+			t.Errorf("GetRowOffset(100) = %d, want 3 (line count)", got)
+		}
+	})
+
+	t.Run("wrap on, negative index clamps to zero", func(t *testing.T) {
+		we.ToggleWrap(true)
+		if got := we.GetRowOffset(-1); got != 0 {
+			t.Errorf("GetRowOffset(-1) = %d, want 0", got)
+		}
+	})
+
+	t.Run("wrap on, index beyond line count returns total rows", func(t *testing.T) {
+		we.ToggleWrap(true)
+		total := we.GetTotalVisualRows()
+		if got := we.GetRowOffset(999); got != total {
+			t.Errorf("GetRowOffset(999) = %d, want total rows %d", got, total)
+		}
+	})
+}
+
+func TestWrapEngine_GetLogLineAtVisualRowBoundaries(t *testing.T) {
+	Pt := piecetable.New([]byte("L0\nL1\nL2"))
+	Li := piecetable.NewLineIndex()
+	Li.Rebuild(Pt)
+	we := NewWrapEngine(Pt, Li)
+	we.SetWidth(80)
+
+	t.Run("negative row clamps to the start", func(t *testing.T) {
+		logLine, frag := we.GetLogLineAtVisualRow(-1)
+		if logLine != 0 || frag != 0 {
+			t.Errorf("GetLogLineAtVisualRow(-1) = (%d,%d), want (0,0)", logLine, frag)
+		}
+	})
+
+	t.Run("wrap off, row beyond line count clamps to the last line", func(t *testing.T) {
+		we.ToggleWrap(false)
+		logLine, frag := we.GetLogLineAtVisualRow(100)
+		if logLine != 2 || frag != 0 {
+			t.Errorf("GetLogLineAtVisualRow(100) with wrap off = (%d,%d), want (2,0)", logLine, frag)
+		}
+	})
+
+	t.Run("wrap on, row beyond total after full cache clamps to the last line", func(t *testing.T) {
+		we.ToggleWrap(true)
+		total := we.GetTotalVisualRows()
+		logLine, frag := we.GetLogLineAtVisualRow(total + 50)
+		if logLine != 2 || frag != 0 {
+			t.Errorf("GetLogLineAtVisualRow(total+50) = (%d,%d), want (2,0)", logLine, frag)
+		}
+	})
+}

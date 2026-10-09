@@ -18,7 +18,7 @@ import (
 // and no frame manager is pumping them in a test.
 func WaitForLoad(t *testing.T, fp *panel.FileSystemPanel) {
 	t.Helper()
-	timeout := time.After(2 * time.Second)
+	timeout := time.After(10 * time.Second)
 	for fp.IsLoading {
 		select {
 		case task := <-vtui.FrameManager.TaskChan:
@@ -44,13 +44,22 @@ drain:
 	fp.EnqueueDirectoryLoad(func() {})
 	done := make(chan struct{})
 	go func() {
-		fp.LoadWorkerWG.Wait()
+		fp.WaitForIdle()
 		close(done)
 	}()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timeout waiting for directory worker to stop")
+	// Keep running UI tasks while waiting: the sentinel may queue behind a
+	// newer read that still posts back, and a loaded Windows runner can take
+	// well over two seconds to finish a directory read (CI hit that limit).
+	stop := time.After(10 * time.Second)
+	for {
+		select {
+		case <-done:
+			return
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		case <-stop:
+			t.Fatal("timeout waiting for directory worker to stop")
+		}
 	}
 }
 

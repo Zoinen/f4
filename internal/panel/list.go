@@ -5,10 +5,12 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"reflect"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"strings"
@@ -16,15 +18,15 @@ import (
 
 	"github.com/mattn/go-runewidth"
 	"github.com/unxed/f4/internal/history"
+	"github.com/unxed/f4/internal/macro"
 	"github.com/unxed/f4/internal/sysinfo"
-	"golang.org/x/text/collate"
-	"golang.org/x/text/language"
 
 	"github.com/unxed/f4/internal/config"
 	"github.com/unxed/f4/internal/fileops"
 	"github.com/unxed/f4/internal/i18n"
 	"github.com/unxed/f4/internal/media"
 	"github.com/unxed/f4/internal/theme"
+	"github.com/unxed/f4/internal/wheel"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
@@ -37,6 +39,12 @@ type FileEntry struct {
 	PrevSelected   bool // snapshot of Selected taken by SaveSelection; swapped in by RestoreSelection (Ctrl+M)
 	SizeCalculated bool
 	IsCached       bool
+	sourceOrder    uint64
+	// linkTarget is what a symlink points at, filled by symlinkTarget; the
+	// two flags say whether the answer is in or still on its way.
+	linkTarget   string
+	linkResolved bool
+	linkPending  bool
 }
 type mediumRow struct {
 	fp *FileSystemPanel
@@ -44,12 +52,8 @@ type mediumRow struct {
 }
 
 func (m *mediumRow) GetCellText(col int) string {
-	H := m.fp.Table.ViewHeight
-	if H <= 0 {
-		H = 1
-	}
-	idx := m.r + col*H
-	if idx >= len(m.fp.Entries) {
+	idx := m.fp.entryIndex(m.r, col)
+	if idx < 0 || idx >= len(m.fp.Entries) {
 		return ""
 	}
 	e := m.fp.Entries[idx]
@@ -57,7 +61,7 @@ func (m *mediumRow) GetCellText(col int) string {
 	if col >= 0 && col < len(m.fp.Table.Columns) {
 		width = m.fp.Table.Columns[col].Width
 	}
-	return formatPanelFileNameAt(e, width, m.fp.nameLeftPos)
+	return formatPanelFileNameAtWithOptions(e, width, m.fp.nameLeftPos, m.fp.uppercasePanelDirs())
 }
 
 type panelMatchSpan struct {
@@ -66,35 +70,15 @@ type panelMatchSpan struct {
 }
 
 func (fp *FileSystemPanel) RowCount() int {
-	return len(fp.Entries)
+	return fp.displayCount() + fp.stickyGroupRows(fp.Table.TopPos)
 }
 
 func (fp *FileSystemPanel) GetCellText(row, col int) string {
-	if fp.gridColumnCount() == 1 {
-		if row < 0 || row >= len(fp.Entries) {
-			return ""
-		}
-		e := fp.Entries[row]
-		if col == 0 && len(fp.Table.Columns) > 0 {
-			return formatPanelFileNameAt(e, fp.Table.Columns[0].Width, fp.nameLeftPos)
-		}
-		return e.GetCellText(col)
-	}
-
-	H := fp.Table.ViewHeight
-	if H <= 0 {
-		H = 1
-	}
-	idx := row + col*H
+	idx := fp.entryIndex(row, col)
 	if idx < 0 || idx >= len(fp.Entries) {
 		return ""
 	}
-	e := fp.Entries[idx]
-	width := 0
-	if col >= 0 && col < len(fp.Table.Columns) {
-		width = fp.Table.Columns[col].Width
-	}
-	return formatPanelFileNameAt(e, width, fp.nameLeftPos)
+	return fp.columnCellText(fp.Entries[idx], col)
 }
 
 // IsCellSelected implements vtui.TableCellColSelectProvider. Unlike a plain
@@ -110,39 +94,55 @@ func (fp *FileSystemPanel) IsCellSelected(row, col int) bool {
 }
 
 // entryIndex resolves the fp.entries index shown at (row, col) for the
-// current view mode: a single file-column in Wide/Detailed, or several
-// file-columns of height ViewHeight in Medium/Brief.
+// current view mode: every column of a stripe shows the same file, and the
+// stripes are file-columns of height ViewHeight (Medium/Brief).
 func (fp *FileSystemPanel) entryIndex(row, col int) int {
-	if fp.gridColumnCount() == 1 {
-		return row
-	}
-	H := fp.Table.ViewHeight
-	if H <= 0 {
-		H = 1
-	}
-	return row + col*H
+	return fp.entryAtDisplay(fp.viewportDisplayRow(row, fp.stripeOfColumn(col)))
 }
 
 func (fp *FileSystemPanel) GetCellAttr(row, col int, defaultAttr uint64) uint64 {
 	idx := fp.entryIndex(row, col)
-	if idx < 0 || idx >= len(fp.Entries) {
+	inRange := idx >= 0 && idx < len(fp.Entries)
+	if perStripe, stripes := fp.columnStripes(); perStripe > 1 && stripes > 1 && fp.Table.CellSelection {
+		// vtui paints the cursor on the one column SelectCol names; a stripe
+		// of several columns (N,S,N,S) carries it across all of them.
+		onCursor := inRange && row == fp.Table.SelectPos && fp.stripeOfColumn(col) == fp.Table.SelectCol
+		defaultAttr = fp.tableStateAttr(onCursor, inRange && fp.Entries[idx].Selected)
+	}
+	if !inRange {
 		return defaultAttr
 	}
-	if fp.gridColumnCount() == 1 {
-		return fp.Entries[idx].GetCellAttr(col, defaultAttr)
-	}
-	return fp.Entries[idx].GetCellAttr(0, defaultAttr)
+	return fp.Entries[idx].GetCellAttr(col, defaultAttr)
 }
 
 func (f *FileEntry) displayName(name string) string {
+	return f.displayNameWithOptions(name, false)
+}
+
+func (f *FileEntry) displayNameWithOptions(name string, uppercaseDirs bool) string {
 	if f.Name == ".." {
 		return ".."
+	}
+	// A name ReadDir/Stat mapped into the private-use range (vfs/pua.go,
+	// because it wasn't valid UTF-8 on disk) carries every original byte,
+	// but the private-use codepoints it uses have no glyph in any font.
+	// f.Name itself stays mapped for selection, sorting, path construction
+	// and persistence; only the copy painted to the screen is unmapped back
+	// to the original bytes here, so it renders exactly as an unmapped raw
+	// name already does (vtui substitutes "?" for whatever it still can't
+	// decode, same as before this mapping existed).
+	name = vfs.DisplayName(name)
+	if uppercaseDirs && f.IsDir {
+		name = strings.ToUpper(name)
 	}
 	marker := ""
 	if config.App.ShowHighlightMarks {
 		marker = theme.GlobalFileHighlighter.GetMarker(&f.VFSItem)
 	}
-	if marker == "" && f.IsSymlink {
+	// A symlink no highlight rule marks can carry an arrow instead. It is off
+	// by default: the panel reads as plain names unless ShowSymlinkArrow asks
+	// for the marker.
+	if marker == "" && f.IsSymlink && config.App.ShowSymlinkArrow {
 		marker = "→"
 	}
 	prefix := ""
@@ -186,6 +186,10 @@ func formatPanelFileName(entry *FileEntry, width int) string {
 // that fit. In separate-extensions mode the extension keeps its right-aligned
 // field, so only the base name counts.
 func panelNameOverflow(entry *FileEntry, width int) int {
+	return panelNameOverflowWithOptions(entry, width, false)
+}
+
+func panelNameOverflowWithOptions(entry *FileEntry, width int, uppercaseDirs bool) int {
 	if width <= 0 {
 		return 0
 	}
@@ -195,20 +199,24 @@ func panelNameOverflow(entry *FileEntry, width int) int {
 			if baseWidth <= 0 {
 				return 0
 			}
-			return max(runewidth.StringWidth(entry.displayName(base))-baseWidth, 0)
+			return max(runewidth.StringWidth(entry.displayNameWithOptions(base, uppercaseDirs))-baseWidth, 0)
 		}
 	}
-	return max(runewidth.StringWidth(entry.displayName(entry.Name))-width, 0)
+	return max(runewidth.StringWidth(entry.displayNameWithOptions(entry.Name, uppercaseDirs))-width, 0)
 }
 
 // panelNameShift clamps a panel-wide scroll position to what this particular
 // name can absorb: a name that fits its column never moves, a longer one
 // stops once its last cell is visible (far2l's MakeCurLeftPos).
 func panelNameShift(entry *FileEntry, width, leftPos int) int {
+	return panelNameShiftWithOptions(entry, width, leftPos, false)
+}
+
+func panelNameShiftWithOptions(entry *FileEntry, width, leftPos int, uppercaseDirs bool) int {
 	if leftPos <= 0 {
 		return 0
 	}
-	return min(leftPos, panelNameOverflow(entry, width))
+	return min(leftPos, panelNameOverflowWithOptions(entry, width, uppercaseDirs))
 }
 
 // scrollPanelName drops shift leading display cells from a name. A wide
@@ -232,12 +240,16 @@ func panelExtensionFieldWidth(extension string) int {
 // panel's name scroll position applied (see nameLeftPos). Only the part of
 // the name that overflows the column can scroll out of view on the left.
 func formatPanelFileNameAt(entry *FileEntry, width, leftPos int) string {
+	return formatPanelFileNameAtWithOptions(entry, width, leftPos, false)
+}
+
+func formatPanelFileNameAtWithOptions(entry *FileEntry, width, leftPos int, uppercaseDirs bool) string {
 	if !shouldSeparatePanelExtension(entry) || width <= 0 {
-		return scrollPanelName(entry.displayName(entry.Name), panelNameShift(entry, width, leftPos))
+		return scrollPanelName(entry.displayNameWithOptions(entry.Name, uppercaseDirs), panelNameShiftWithOptions(entry, width, leftPos, uppercaseDirs))
 	}
 	base, extension := splitFileExtension(entry.Name)
 	if extension == "" {
-		return scrollPanelName(entry.displayName(entry.Name), panelNameShift(entry, width, leftPos))
+		return scrollPanelName(entry.displayNameWithOptions(entry.Name, uppercaseDirs), panelNameShiftWithOptions(entry, width, leftPos, uppercaseDirs))
 	}
 
 	extensionWidth := runewidth.StringWidth(extension)
@@ -251,7 +263,7 @@ func formatPanelFileNameAt(entry *FileEntry, width, leftPos int) string {
 		}
 		return runewidth.Truncate(extension, width, "")
 	}
-	left := scrollPanelName(entry.displayName(base), panelNameShift(entry, width, leftPos))
+	left := scrollPanelName(entry.displayNameWithOptions(base, uppercaseDirs), panelNameShiftWithOptions(entry, width, leftPos, uppercaseDirs))
 	left = runewidth.Truncate(left, width-extensionFieldWidth-1, "")
 	leftWidth := runewidth.StringWidth(left)
 	padding := width - leftWidth - extensionFieldWidth
@@ -390,23 +402,15 @@ func panelFileNameMatchSpansAt(entry *FileEntry, width, leftPos, matchStartRunes
 }
 
 func (m *mediumRow) IsColSelected(col int) bool {
-	H := m.fp.Table.ViewHeight
-	if H <= 0 {
-		H = 1
-	}
-	idx := m.r + col*H
-	if idx >= len(m.fp.Entries) {
+	idx := m.fp.entryIndex(m.r, col)
+	if idx < 0 || idx >= len(m.fp.Entries) {
 		return false
 	}
 	return m.fp.Entries[idx].Selected
 }
 func (m *mediumRow) GetCellAttr(col int, defaultAttr uint64) uint64 {
-	H := m.fp.Table.ViewHeight
-	if H <= 0 {
-		H = 1
-	}
-	idx := m.r + col*H
-	if idx >= len(m.fp.Entries) {
+	idx := m.fp.entryIndex(m.r, col)
+	if idx < 0 || idx >= len(m.fp.Entries) {
 		return defaultAttr
 	}
 	e := m.fp.Entries[idx]
@@ -459,16 +463,7 @@ func (f *FileEntry) GetCellText(col int) string {
 	case 0:
 		return f.displayName(f.Name)
 	case 1:
-		if f.IsDir {
-			if f.SizeCalculated {
-				return fileops.FormatIntWithSpaces(f.Size)
-			}
-			if f.Name == ".." {
-				return i18n.Msg("Panel.UpDir")
-			}
-			return ""
-		}
-		return fileops.FormatIntWithSpaces(f.Size)
+		return entrySizeText(f)
 	case 2:
 		if f.MTime.IsZero() {
 			return ""
@@ -507,12 +502,32 @@ type dirCacheKey struct {
 }
 
 type FileSystemPanel struct {
+	selMemo selectionMemo
+
+	// folderEventPath is the folder the FolderChanged macro event was last
+	// raised for, so a refresh of the same folder does not raise it again.
+	folderEventPath        string
+	GroupBy                GroupMode
+	GroupReverse           bool
+	GroupFoldersSeparately bool
+	groupKeys              map[*FileEntry]groupKey
+	displayRows            []displayRow
+	entryRows              []int
+	visibleGroups          []PanelGroup
+	groupDate              string
+	groupLimits            [3]int64
+	nextSourceOrder        uint64
 	vtui.ScreenObject
 	Table                 *vtui.Table
 	scrollBar             *vtui.ScrollBar
 	scrollMouseActive     bool
 	minimalScrollDragGap  int
 	headerMouseActive     bool
+	columnResizeActive    bool
+	columnResizeIndex     int
+	columnResizeStartX    int
+	columnResizeLeftWidth int
+	columnResizeRightW    int
 	Frame                 *vtui.BorderedFrame
 	Vfs                   vfs.VFS
 	Entries               []*FileEntry
@@ -525,14 +540,20 @@ type FileSystemPanel struct {
 	DirectoryEpoch        uint64
 	ViewMode              ViewMode
 	Wide                  bool
-	CursorIdx             int
-	lastRightClickedIdx   int
-	rightDragActive       bool
-	rightDragSelect       bool
-	rowDragButton         uint32
-	dragScrollDirection   int
-	dragScrollTimer       *time.Timer
-	dragScrollGeneration  uint64
+	// wideViewMode is the mode shown while Wide is on (see WideViewMode);
+	// layout is the current mode fitted to the panel's width.
+	wideViewMode         ViewMode
+	wideViewModeSet      bool
+	layout               panelLayout
+	CursorIdx            int
+	lastRightClickedIdx  int
+	rightDragActive      bool
+	rightDragSelect      bool
+	rowDragButton        uint32
+	dragScrollDirection  int
+	dragScrollTimer      *time.Timer
+	dragScrollGeneration uint64
+	wheel                wheel.Coast
 
 	loadCtx        context.Context
 	CancelLoad     context.CancelFunc
@@ -541,9 +562,20 @@ type FileSystemPanel struct {
 	loadingFrame   int
 	loadingVisible bool
 
-	LoadingGeneration          uint64
-	loadQueueMu                sync.Mutex
-	LoadWorkerWG               sync.WaitGroup // joins the single directory-load queue worker
+	LoadingGeneration uint64
+	loadQueueMu       sync.Mutex
+	// loadIdleCh is closed while no directory-load worker is running for this
+	// panel, and replaced with a fresh (open) channel exactly when one starts;
+	// both transitions happen under loadQueueMu. WaitForIdle blocks on it
+	// instead of a WaitGroup: EnqueueDirectoryLoad only Adds once per "round"
+	// (a fresh worker started while none was active), and reusing a WaitGroup
+	// across independent rounds like that lets a fresh Add race a Wait that
+	// is still unblocking from the round before it -- sync.WaitGroup's own
+	// doc comment calls this out. That is exactly what -race caught: a
+	// leftover AI download's RefreshAll re-armed the queue while a test
+	// helper's join goroutine was still returning from the round that had
+	// just finished.
+	loadIdleCh                 chan struct{}
 	loadWorkerActive           bool
 	pendingDirectoryLoad       func()
 	ProviderOpenTask           *vtui.TaskContext
@@ -552,14 +584,29 @@ type FileSystemPanel struct {
 	ProviderOpenSourceSelect   string
 	providerOpenResult         func(bool) bool
 	PendingSelection           string
+	clipboardImageRevealName   string
+	clipboardImageRevealPath   string
+	clipboardImageRevealVFS    vfs.VFS
 	ProviderEntryName          string // name of entry used to enter a provider VFS (e.g. NetFox connection name)
 	suppressFolderHistoryPath  string // one-shot: history/menu navigation must not reorder MRU
 	suppressFolderHistoryToken uint64 // binds suppression to one specific asynchronous directory load
 	FastFindMode               bool
-	FastFindStr                string
-	fastFindMatcherKey         string
-	fastFindMatchers           []*vtui.FuzzyMatcher
-	showInactiveCursor         bool
+	// exactBoxX1..X2, exactBoxY: where the exact-match line of the filter
+	// window was last drawn, for the mouse.
+	exactBoxX1, exactBoxX2, exactBoxY int
+	FastFindStr                       string
+	fastFindMatcherKey                string
+	fastFindMatcherStrict             bool
+	fastFindMatchers                  []*vtui.FuzzyMatcher
+	// autoFilterMode is set while the filter window is open (the search
+	// box narrows the panel instead of moving the cursor), autoFilterOn
+	// while its query is actually hiding rows. unfilteredEntries then holds
+	// the complete row list and Entries the matching subset; see
+	// autofilter.go.
+	autoFilterMode     bool
+	autoFilterOn       bool
+	unfilteredEntries  []*FileEntry
+	showInactiveCursor bool
 	// nameLeftPos is how many display cells the name columns are scrolled to
 	// the right (far2l's FileList::LeftPos, Alt+Left/Alt+Right). Names that
 	// fit their column never move; a longer name is shifted by at most its
@@ -573,6 +620,20 @@ type FileSystemPanel struct {
 	// UseSortGroups clusters the panel by the Group-bearing highlight.ini
 	// rules before the sort mode is applied (far's Shift+F11).
 	UseSortGroups bool
+	// SortNumeric makes name comparisons treat runs of digits inside a file
+	// name as numbers instead of plain text (far3's "numeric sort" checkbox
+	// next to sort-by-name, f4#1471): "2.Track_2" then sorts before
+	// "10.Track_10" instead of after it. It modifies how names compare
+	// everywhere a name is the sort key or its tie-break, the same way
+	// UseSortGroups modifies clustering regardless of SortMode.
+	SortNumeric bool
+
+	// SortSelectedFirst makes selected entries sort ahead of unselected ones
+	// regardless of the sort mode (far's Shift+F12 "show selected first").
+	// It is a key between the directories rule and the sort groups, the
+	// same place far puts it, and like every other sort modifier it takes
+	// effect through a re-sort that keeps the cursor on its file.
+	SortSelectedFirst bool
 
 	lastDirMTime time.Time
 	DirCache     map[dirCacheKey]DirCacheEntry
@@ -585,6 +646,12 @@ type FileSystemPanel struct {
 	// (selection is per-directory, matches far/far2l).
 	lastLoadedPath string
 
+	// calculatedPanelTotal is the recursive total requested for the current
+	// directory by pressing F3 on its ".." row.  Keep it on the panel rather
+	// than on one particular VFS so every file panel can display the result.
+	calculatedPanelTotal     *vfs.OpStats
+	calculatedPanelTotalPath string
+
 	// shiftSessionActive / shiftSessionMode implement FAR-style
 	// Shift+nav selection. The mode (select vs deselect) is
 	// decided on the first Shift+nav from the state of the row
@@ -594,6 +661,24 @@ type FileSystemPanel struct {
 	// the session — the next Shift+nav starts a new one.
 	shiftSessionActive bool
 	shiftSessionMode   bool // true = select, false = deselect
+
+	// entriesRevision counts every change to what fp.Entries actually holds:
+	// a directory (re)load, an autofilter query narrowing or widening the
+	// visible rows, or anything else that calls Refresh (including a
+	// background size scan landing on an entry, f4#884's actionCalcDirSize).
+	// panelEntryTotals memoizes its full scan of fp.Entries against it, the
+	// same "don't recompute unless something actually changed" fix #1511 and
+	// #1536 already applied to the menu bar and the highlight rules — this is
+	// the panel's own bottom-border total, the other unconditional per-frame,
+	// per-file scan in the render path.
+	entriesRevision         uint64
+	entryTotalsRevision     uint64
+	entryTotalsValid        bool
+	cachedTotSize           int64
+	cachedTotCount          int
+	cachedTotFiles          int
+	cachedTotDirs           int
+	entryTotalsComputeCount int // test instrumentation: counts actual rescans
 }
 
 var DisableLoadingAnimationInTests = true
@@ -607,14 +692,15 @@ func NewFileSystemPanel(x, y, w, h int, vfs vfs.VFS) *FileSystemPanel {
 	path := vfs.GetPath()
 
 	fp := &FileSystemPanel{
-		Vfs:                 vfs,
-		Frame:               vtui.NewBorderedFrame(x, y, x+w-1, y+h-1, vtui.SingleBox, path),
-		Table:               vtui.NewTable(x+1, y+1, w-2, h-2, nil),
-		ViewMode:            ViewModeMedium,
-		lastRightClickedIdx: -1,
-		DirCache:            make(map[dirCacheKey]DirCacheEntry),
-		SelectedItems:       make(map[string]bool),
-		selectionEpoch:      make(map[string]uint64),
+		Vfs:                    vfs,
+		Frame:                  vtui.NewBorderedFrame(x, y, x+w-1, y+h-1, vtui.SingleBox, path),
+		Table:                  vtui.NewTable(x+1, y+1, w-2, h-2, nil),
+		ViewMode:               ViewModeMedium,
+		GroupFoldersSeparately: true,
+		lastRightClickedIdx:    -1,
+		DirCache:               make(map[dirCacheKey]DirCacheEntry),
+		SelectedItems:          make(map[string]bool),
+		selectionEpoch:         make(map[string]uint64),
 		//entries:             []*FileEntry{{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}}},
 	}
 	fp.Frame.ColorBoxIdx = theme.ColPanelBox
@@ -745,16 +831,17 @@ func (fp *FileSystemPanel) showCachedStandalonePath(target string) bool {
 		return false
 	}
 
-	fp.Entries = nil
+	var entries []*FileEntry
 	if cached.showUpEntry {
-		fp.Entries = append(fp.Entries, &FileEntry{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}, IsCached: true})
+		entries = append(entries, &FileEntry{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}, IsCached: true})
 	}
 	for _, item := range cached.Items {
 		if !config.App.ShowHiddenFiles && item.Name != ".." && item.IsHidden {
 			continue
 		}
-		fp.Entries = append(fp.Entries, &FileEntry{VFSItem: item, IsCached: true})
+		entries = append(entries, &FileEntry{VFSItem: item, IsCached: true})
 	}
+	fp.setEntries(entries)
 	fp.SortEntries()
 	fp.SetCursorIndex(0)
 	return true
@@ -820,8 +907,7 @@ func (fp *FileSystemPanel) ToggleSelection(idx int) {
 func (fp *FileSystemPanel) SetFocus(f bool) {
 	fp.ScreenObject.SetFocus(f)
 	if !f && fp.FastFindMode {
-		fp.FastFindMode = false
-		fp.FastFindStr = ""
+		fp.ExitFastFind()
 	}
 }
 func (fp *FileSystemPanel) SetSortMode(mode SortMode) {
@@ -835,6 +921,10 @@ func (fp *FileSystemPanel) SetSortMode(mode SortMode) {
 		fp.SortReverse = false
 	}
 	fp.updateSortColumnTitles()
+	if fp.GroupBy != GroupNone {
+		fp.SetGrouping(fp.GroupBy, fp.GroupReverse, fp.GroupFoldersSeparately)
+		return
+	}
 	fp.ReadDirectory()
 }
 
@@ -846,6 +936,10 @@ func (fp *FileSystemPanel) SetUseSortGroups(use bool) {
 		return
 	}
 	fp.UseSortGroups = use
+	if fp.GroupBy != GroupNone {
+		fp.SetGrouping(fp.GroupBy, fp.GroupReverse, fp.GroupFoldersSeparately)
+		return
+	}
 	fp.ReadDirectory()
 }
 
@@ -856,43 +950,122 @@ func (fp *FileSystemPanel) ToggleSortGroups() {
 	fp.SetUseSortGroups(!fp.UseSortGroups)
 }
 
+// SetSortNumeric switches whether name comparisons treat digit runs as
+// numbers. Like a sort mode change it goes through ReadDirectory, so the
+// cursor is kept on the same file while the rows move under it.
+func (fp *FileSystemPanel) SetSortNumeric(numeric bool) {
+	if fp == nil || fp.SortNumeric == numeric {
+		return
+	}
+	fp.SortNumeric = numeric
+	if fp.GroupBy != GroupNone {
+		fp.SetGrouping(fp.GroupBy, fp.GroupReverse, fp.GroupFoldersSeparately)
+		return
+	}
+	fp.ReadDirectory()
+}
+
+func (fp *FileSystemPanel) ToggleSortNumeric() {
+	if fp == nil {
+		return
+	}
+	fp.SetSortNumeric(!fp.SortNumeric)
+}
+
+// SetSortSelectedFirst switches whether marked rows sort ahead of unmarked
+// ones (far's Shift+F12). Like the other sort modifiers it goes through a
+// re-sort, so the cursor stays on its file while the rows move under it.
+func (fp *FileSystemPanel) SetSortSelectedFirst(on bool) {
+	if fp == nil || fp.SortSelectedFirst == on {
+		return
+	}
+	fp.SortSelectedFirst = on
+	if fp.GroupBy != GroupNone {
+		fp.SetGrouping(fp.GroupBy, fp.GroupReverse, fp.GroupFoldersSeparately)
+		return
+	}
+	fp.ReadDirectory()
+}
+
+func (fp *FileSystemPanel) ToggleSortSelectedFirst() {
+	if fp == nil {
+		return
+	}
+	fp.SetSortSelectedFirst(!fp.SortSelectedFirst)
+}
+
+// resortSelectedFirst re-sorts the rows after a selection change while the
+// "selected first" mode is on, keeping the cursor on the entry it stood on
+// (far's SortFileList(TRUE) after every selection mutation). It is a no-op
+// when the mode is off, so plain selection stays as cheap as it was.
+func (fp *FileSystemPanel) resortSelectedFirst() {
+	if fp == nil || !fp.SortSelectedFirst {
+		return
+	}
+	focused := fp.GetRawSelectedName()
+	offset := fp.displayOfEntry(fp.GetCursorIndex()) - fp.Table.TopPos
+	fp.sortEntriesAt(time.Now())
+	fp.focusEntryByName(focused)
+	fp.Table.TopPos = max(0, fp.displayOfEntry(fp.GetCursorIndex())-offset)
+	fp.SetCursorIndex(fp.GetCursorIndex())
+}
+
 // sortGroupsActive reports whether this panel's entries have to be clustered:
 // the panel asked for it and there is at least one configured group.
 func (fp *FileSystemPanel) sortGroupsActive() bool {
 	return fp != nil && fp.UseSortGroups && GlobalSortGroups.Configured()
 }
 
-func (fp *FileSystemPanel) SortEntries() {
+// SortEntries orders the panel's complete row list -- the rows an active
+// autofilter is hiding included, so a query cannot outlive the sort it was
+// typed under -- and then re-derives the visible one.
+func (fp *FileSystemPanel) SortEntries() { fp.sortEntriesAt(time.Now()) }
+
+func (fp *FileSystemPanel) sortEntriesAt(now time.Time) {
+	entries := fp.AllEntries()
+	for _, entry := range entries {
+		if entry.sourceOrder == 0 {
+			fp.nextSourceOrder++
+			entry.sourceOrder = fp.nextSourceOrder
+		}
+	}
+	fp.prepareGrouping(entries, now)
 	grouped := fp.sortGroupsActive()
-	if (fp.SortMode == SortUnsorted && !grouped) || len(fp.Entries) <= 1 {
+	// An unsorted panel normally keeps its arrival order untouched, but with
+	// "selected first" on there is something to reorder: the marked rows.
+	if (fp.SortMode == SortUnsorted && !grouped && fp.GroupBy == GroupNone && !fp.SortSelectedFirst) || len(entries) <= 1 {
+		fp.refilterEntries()
 		return
 	}
 
 	// far2l uses a string collation order for panel names: punctuation such as
 	// '_' sorts before digits and letters, unlike Go's byte/code-point order.
-	// Keep the collator local because collate.Collator reuses iterator state and
+	// Keep the comparator local because the collator reuses iterator state and
 	// is not safe for concurrent use.
-	nameCollator := collate.New(language.Und, collate.IgnoreCase, collate.Force)
+	nameCompare := newNameComparer()
 	compareName := func(left, right string) int {
-		return nameCollator.CompareString(left, right)
+		if fp.SortNumeric {
+			return naturalCompare(left, right, nameCompare)
+		}
+		return nameCompare(left, right)
 	}
 
 	// Group numbers are resolved once per entry: doing it inside the comparator
 	// would re-run every mask of every rule O(n log n) times.
 	var groups map[*FileEntry]int
 	if grouped {
-		groups = make(map[*FileEntry]int, len(fp.Entries))
-		for _, entry := range fp.Entries {
+		groups = make(map[*FileEntry]int, len(entries))
+		for _, entry := range entries {
 			groups[entry] = GlobalSortGroups.GroupOf(&entry.VFSItem)
 		}
 	}
 
 	less := func(i, j int) bool {
-		ei, ej := fp.Entries[i], fp.Entries[j]
+		ei, ej := entries[i], entries[j]
 
 		// ".." всегда сверху
 		if ei.Name == ".." {
-			return true
+			return ej.Name != ".."
 		}
 		if ej.Name == ".." {
 			return false
@@ -902,8 +1075,22 @@ func (fp *FileSystemPanel) SortEntries() {
 		// group never pulls a directory down among the files. In unsorted
 		// mode nothing is reordered except the grouping itself, so the rule
 		// stays off there exactly as before.
-		if fp.SortMode != SortUnsorted && ei.IsDir != ej.IsDir {
+		if fp.GroupBy != GroupNone {
+			if n := fp.compareGroups(ei, ej, compareName); n != 0 {
+				return n < 0
+			}
+		}
+		if (fp.SortMode != SortUnsorted || fp.GroupBy != GroupNone) && ei.IsDir != ej.IsDir {
 			return ei.IsDir
+		}
+
+		// Marked rows outrank unmarked ones once the directories rule has
+		// had its say (far's "show selected first", Shift+F12): far ranks
+		// DirectoriesFirst above SelectedFirst, so a marked file never
+		// jumps above an unmarked folder, and the sort groups and the sort
+		// key still order the rows inside each half.
+		if fp.SortSelectedFirst && ei.Selected != ej.Selected {
+			return ei.Selected
 		}
 
 		if grouped {
@@ -916,10 +1103,13 @@ func (fp *FileSystemPanel) SortEntries() {
 			if fp.SortMode == SortUnsorted {
 				// Grouping an unsorted panel only clusters the rows; the
 				// stable sort below keeps the filesystem order inside a group.
-				return false
+				return fp.GroupBy != GroupNone && ei.sourceOrder < ej.sourceOrder
 			}
 		}
 
+		if fp.SortMode == SortUnsorted {
+			return ei.sourceOrder < ej.sourceOrder
+		}
 		cmp := 0
 		switch fp.SortMode {
 		case SortName:
@@ -958,14 +1148,20 @@ func (fp *FileSystemPanel) SortEntries() {
 	if fp.SortMode == SortUnsorted {
 		// Only reachable with grouping on, where equal rows must not be
 		// shuffled: sort.Slice is not stable, SliceStable is.
-		sort.SliceStable(fp.Entries, less)
+		sort.SliceStable(entries, less)
+		fp.refilterEntries()
 		return
 	}
-	sort.Slice(fp.Entries, less)
+	sort.Slice(entries, less)
+	fp.refilterEntries()
 }
 
 func (fp *FileSystemPanel) SetViewMode(mode ViewMode) {
-	if mode == ViewModeWide {
+	if !mode.Valid() {
+		mode = ViewModeMedium
+	}
+	if mode == ViewModeWide && PanelViewModeSettings(ViewModeWide).FullScreen {
+		fp.SetWideViewMode(ViewModeWide)
 		fp.SetWide(true)
 		return
 	}
@@ -1004,11 +1200,7 @@ func (fp *FileSystemPanel) mouseEntryIndex(mouseX, mouseY int) int {
 		}
 	}
 
-	idx := fp.Table.TopPos + row + column*fp.Table.ViewHeight
-	if idx < 0 || idx >= len(fp.Entries) {
-		return -1
-	}
-	return idx
+	return fp.entryIndex(fp.Table.TopPos+row, column)
 }
 
 func (fp *FileSystemPanel) processRightDrag(idx int) {
@@ -1121,47 +1313,27 @@ func (fp *FileSystemPanel) SetWide(wide bool) {
 
 func (fp *FileSystemPanel) EffectiveViewMode() ViewMode {
 	if fp.Wide {
-		return ViewModeWide
+		return fp.WideViewMode()
 	}
 	return fp.ViewMode
 }
 
+func (fp *FileSystemPanel) uppercasePanelDirs() bool {
+	return PanelViewModeSettings(fp.EffectiveViewMode()).UppercaseDirs
+}
+
+// gridColumnCount is the number of stripes: file-columns the entries flow
+// through, top to bottom and then left to right.
 func (fp *FileSystemPanel) gridColumnCount() int {
-	switch fp.EffectiveViewMode() {
-	case ViewModeBrief:
-		return 3
-	case ViewModeMedium:
-		return 2
-	default:
-		return 1
-	}
+	_, stripes := fp.columnStripes()
+	return stripes
 }
 
 func (fp *FileSystemPanel) columnSortMode(column int) (SortMode, bool) {
 	if column < 0 || column >= len(fp.Table.Columns) {
 		return SortUnsorted, false
 	}
-	switch fp.EffectiveViewMode() {
-	case ViewModeWide:
-		switch column {
-		case 0:
-			return SortName, true
-		case 1:
-			return SortSize, true
-		case 2:
-			return SortTime, true
-		}
-	case ViewModeDetailed:
-		if column == 0 {
-			return SortName, true
-		}
-		if column == 1 {
-			return SortSize, true
-		}
-	default:
-		return SortName, true
-	}
-	return SortUnsorted, false
+	return panelColumnSortMode(fp.panelColumnAt(column).Type)
 }
 
 func (fp *FileSystemPanel) SortIsAscending() bool {
@@ -1218,41 +1390,83 @@ func hiddenSortColumnTitle(mode SortMode, ascending bool, width int) string {
 }
 
 func (fp *FileSystemPanel) updateSortColumnTitles() {
-	visibleSortColumn := false
 	for column := range fp.Table.Columns {
-		title := i18n.Msg("Panel.Column.Name")
-		switch fp.EffectiveViewMode() {
-		case ViewModeWide:
-			switch column {
-			case 1:
-				title = i18n.Msg("Panel.Column.Size")
-			case 2:
-				title = i18n.Msg("Panel.Column.Modified")
-			}
-		case ViewModeDetailed:
-			if column == 1 {
-				title = i18n.Msg("Panel.Column.Size")
-			}
-		}
-
-		mode, sortable := fp.columnSortMode(column)
-		if sortable && fp.SortMode != SortUnsorted && fp.SortMode == mode {
-			arrow := " ↓"
-			if fp.SortIsAscending() {
-				arrow = " ↑"
-			}
-			title += arrow
-			visibleSortColumn = true
-		}
-		fp.Table.Columns[column].Title = title
+		fp.Table.Columns[column].Title = fp.sortColumnLabel(column)
 	}
 
-	if fp.SortMode != SortUnsorted && !visibleSortColumn && len(fp.Table.Columns) > 0 {
+	if fp.sortModeIsHidden() {
 		right := hiddenSortColumnTitle(
 			fp.SortMode, fp.SortIsAscending(), fp.Table.Columns[0].Width)
 		fp.Table.Columns[0].Title = composePanelColumnTitle(
-			i18n.Msg("Panel.Column.Name"), right, fp.Table.Columns[0].Width)
+			panelColumnTitle(fp.panelColumnAt(0).Type), right, fp.Table.Columns[0].Width)
 	}
+}
+
+// sortedByColumn reports whether the panel is sorted by what the column holds.
+func (fp *FileSystemPanel) sortedByColumn(column int) bool {
+	mode, sortable := fp.columnSortMode(column)
+	return sortable && fp.SortMode != SortUnsorted && fp.SortMode == mode
+}
+
+// sortModeIsHidden reports whether the active sort mode has no column of its
+// own in the current view; its label is then written into the first column's
+// header (see hiddenSortColumnTitle).
+func (fp *FileSystemPanel) sortModeIsHidden() bool {
+	if fp.SortMode == SortUnsorted || len(fp.Table.Columns) == 0 {
+		return false
+	}
+	for column := range fp.Table.Columns {
+		if fp.sortedByColumn(column) {
+			return false
+		}
+	}
+	return true
+}
+
+// sortColumnLabel is the text a column's header shows for the column itself:
+// its title, followed by the direction arrow when the panel is sorted by it.
+func (fp *FileSystemPanel) sortColumnLabel(column int) string {
+	title := panelColumnTitle(fp.panelColumnAt(column).Type)
+	if fp.sortedByColumn(column) {
+		if fp.SortIsAscending() {
+			return title + " ↑"
+		}
+		return title + " ↓"
+	}
+	return title
+}
+
+// headerLabelSpan is where the label of a column's header is drawn, in cells
+// counted from the column's left edge: start inclusive, end exclusive. Only
+// the label sorts (f4#1769); the blank rest of the header does not, so a
+// stray click near a title cannot flip the sort order or mode.
+func (fp *FileSystemPanel) headerLabelSpan(column int) (start, end int) {
+	tableColumn := fp.Table.Columns[column]
+	width := tableColumn.Width
+	label := fp.sortColumnLabel(column)
+	hiddenLabelColumn := column == 0 && fp.sortModeIsHidden()
+	room := width
+	if hiddenLabelColumn {
+		// The hidden mode's own label takes the right end and a gap; whatever
+		// is left of the header belongs to the column title, left-aligned.
+		room = width - runewidth.StringWidth(hiddenSortColumnTitle(fp.SortMode, fp.SortIsAscending(), width)) - 1
+	}
+	if room <= 0 {
+		return 0, 0
+	}
+	labelWidth := runewidth.StringWidth(label)
+	if labelWidth > room {
+		labelWidth = room
+	}
+	if !hiddenLabelColumn {
+		switch tableColumn.Alignment {
+		case vtui.AlignRight:
+			start = width - labelWidth
+		case vtui.AlignCenter:
+			start = (width - labelWidth) / 2
+		}
+	}
+	return start, start + labelWidth
 }
 
 func (fp *FileSystemPanel) headerSortModeAt(x, y int) (SortMode, bool) {
@@ -1265,6 +1479,9 @@ func (fp *FileSystemPanel) headerSortModeAt(x, y int) (SortMode, bool) {
 	columnX := fp.Table.X1
 	for column, tableColumn := range fp.Table.Columns {
 		if x >= columnX && x < columnX+tableColumn.Width {
+			if start, end := fp.headerLabelSpan(column); x < columnX+start || x >= columnX+end {
+				return SortUnsorted, false
+			}
 			return fp.columnSortMode(column)
 		}
 		columnX += tableColumn.Width
@@ -1280,15 +1497,8 @@ func (fp *FileSystemPanel) headerSortModeAt(x, y int) (SortMode, bool) {
 }
 
 func (fp *FileSystemPanel) hiddenSortModeHeaderAt(x int) (SortMode, bool) {
-	if fp.SortMode == SortUnsorted || len(fp.Table.Columns) == 0 {
+	if !fp.sortModeIsHidden() {
 		return SortUnsorted, false
-	}
-
-	for column := range fp.Table.Columns {
-		mode, sortable := fp.columnSortMode(column)
-		if sortable && mode == fp.SortMode {
-			return SortUnsorted, false
-		}
 	}
 
 	width := fp.Table.Columns[0].Width
@@ -1299,6 +1509,127 @@ func (fp *FileSystemPanel) hiddenSortModeHeaderAt(x int) (SortMode, bool) {
 		return fp.SortMode, x >= fp.Table.X1 && x < columnEnd
 	}
 	return fp.SortMode, x >= columnEnd-rightWidth && x < columnEnd
+}
+
+// headerColumnBorderAt reports the index of the column to the left of the
+// one-cell separator at (x, y) in the header row, so a mouse-down there can
+// start a live column resize (f4#246) instead of a sort click. It only
+// recognizes a single-stripe layout (Detailed-style: one row of several
+// field columns) -- Brief/Medium's multiple stripes of repeating columns are
+// a separate, harder case (dragging one stripe's border would need to decide
+// whether to also resize every other stripe) left for a follow-up part.
+func (fp *FileSystemPanel) headerColumnBorderAt(x, y int) (int, bool) {
+	if !fp.Table.ShowHeader || y != fp.Table.Y1 || x < fp.Table.X1 || x > fp.Table.X2 {
+		return 0, false
+	}
+	if !fp.layoutValid() || fp.layout.stripes != 1 || len(fp.Table.Columns) < 2 {
+		return 0, false
+	}
+	columnX := fp.Table.X1
+	for column, tableColumn := range fp.Table.Columns {
+		columnX += tableColumn.Width
+		if column == len(fp.Table.Columns)-1 {
+			break
+		}
+		if x == columnX {
+			return column, true
+		}
+		columnX++
+	}
+	return 0, false
+}
+
+// minResizableColumnWidth keeps a dragged column at least this wide -- one
+// cell is the same floor preparePanelLayout already enforces when it shrinks
+// columns to fit a narrow panel.
+const minResizableColumnWidth = 1
+
+// startColumnResize begins a mouse drag of the border between column and
+// column+1 (see headerColumnBorderAt), captured at screen column x.
+func (fp *FileSystemPanel) startColumnResize(column, x int) {
+	if column < 0 || column+1 >= len(fp.Table.Columns) {
+		return
+	}
+	fp.columnResizeActive = true
+	fp.columnResizeIndex = column
+	fp.columnResizeStartX = x
+	fp.columnResizeLeftWidth = fp.Table.Columns[column].Width
+	fp.columnResizeRightW = fp.Table.Columns[column+1].Width
+}
+
+// dragColumnResize applies the in-progress resize live: it grows the left
+// column and shrinks the right one by the same amount (or the reverse),
+// never past minResizableColumnWidth, and redraws immediately. The change is
+// only persisted to panel_modes.ini once the drag ends (finishColumnResize);
+// intermediate positions are not written to disk.
+func (fp *FileSystemPanel) dragColumnResize(x int) {
+	if !fp.columnResizeActive {
+		return
+	}
+	col := fp.columnResizeIndex
+	if col+1 >= len(fp.Table.Columns) {
+		fp.columnResizeActive = false
+		return
+	}
+	delta := x - fp.columnResizeStartX
+	left := fp.columnResizeLeftWidth + delta
+	right := fp.columnResizeRightW - delta
+	if left < minResizableColumnWidth {
+		right -= minResizableColumnWidth - left
+		left = minResizableColumnWidth
+	}
+	if right < minResizableColumnWidth {
+		left -= minResizableColumnWidth - right
+		right = minResizableColumnWidth
+	}
+	if left < minResizableColumnWidth {
+		return // the panel is too narrow for both columns to keep the floor
+	}
+	fp.Table.Columns[col].Width = left
+	fp.Table.Columns[col+1].Width = right
+	if col+1 < len(fp.layout.columns) {
+		fp.layout.columns[col].Width = left
+		fp.layout.columns[col].Percent = false
+		fp.layout.columns[col+1].Width = right
+		fp.layout.columns[col+1].Percent = false
+	}
+	fp.updateSortColumnTitles()
+	fp.Refresh()
+}
+
+// finishColumnResize saves the two columns' final widths from the drag
+// started by startColumnResize into the mode's persisted settings, the same
+// PanelViewModeSettings/SetPanelViewModeSettings pair the "Panel Modes"
+// dialog's numeric width field uses (viewmodes_dialog.go) -- so a resize
+// done by dragging shows up there too, and survives a restart.
+//
+// It only updates this panel's own layout immediately; a second panel
+// currently showing the same mode picks up the new widths the next time it
+// resizes or switches mode (the same lag SetViewMode already has today for
+// any other out-of-dialog settings change) rather than being force-relaid
+// out here -- reaching across to the sibling panel is left for a follow-up
+// if it turns out to matter in practice.
+func (fp *FileSystemPanel) finishColumnResize() {
+	if !fp.columnResizeActive {
+		return
+	}
+	fp.columnResizeActive = false
+	col := fp.columnResizeIndex
+	if col+1 >= len(fp.Table.Columns) {
+		return
+	}
+	mode := fp.layout.mode
+	settings := PanelViewModeSettings(mode)
+	if col+1 >= len(settings.Columns) {
+		return
+	}
+	settings.Columns[col].Width = fp.Table.Columns[col].Width
+	settings.Columns[col].Percent = false
+	settings.Columns[col+1].Width = fp.Table.Columns[col+1].Width
+	settings.Columns[col+1].Percent = false
+	if err := SetPanelViewModeSettings(mode, &settings); err != nil {
+		vtui.DebugLog("panel column resize: save failed: %v", err)
+	}
 }
 
 // panelScrollMetrics maps the panel's item-based scrolling onto the
@@ -1314,13 +1645,17 @@ func (fp *FileSystemPanel) panelScrollMetrics() (height, visibleItems, maxTop, v
 
 	columns := fp.gridColumnCount()
 	visibleItems = height * columns
-	maxTop = len(fp.Entries) - visibleItems
+	maxTop = fp.displayCount() - visibleItems
+	if maxTop > 0 {
+		maxTop += fp.stickyGroupRows(maxTop)
+	}
+	visibleItems -= fp.stickyGroupRows(fp.Table.TopPos)
 	if maxTop <= 0 {
 		maxTop = 0
 		return
 	}
 
-	virtualRows := (len(fp.Entries) + columns - 1) / columns
+	virtualRows := (fp.displayCount() + columns - 1) / columns
 	virtualMax = virtualRows - height
 	if virtualMax <= 0 {
 		virtualMax = 1
@@ -1395,7 +1730,11 @@ func (fp *FileSystemPanel) setPanelScrollTop(top int) {
 	if delta == 0 {
 		return
 	}
-	idx := fp.GetCursorIndex() + delta
+	direction := 1
+	if delta < 0 {
+		direction = -1
+	}
+	idx := fp.nearestDisplayEntry(fp.displayOfEntry(fp.GetCursorIndex())+delta, direction)
 	if idx < 0 {
 		idx = 0
 	}
@@ -1454,8 +1793,13 @@ func minimalPanelScrollThumb(height, value, maximum int) (position, length int) 
 // vtui.Table draws all separators in one pass after drawing its rows, which
 // otherwise overwrites the cursor attributes in single-entry-per-row modes.
 func (fp *FileSystemPanel) drawCursorSeparators(scr *vtui.ScreenBuf) {
-	if fp.gridColumnCount() != 1 || !fp.Table.ShowSeparators || !fp.Table.IsFocused() {
+	perStripe, stripes := fp.columnStripes()
+	if perStripe <= 1 || !fp.Table.ShowSeparators || !fp.Table.IsFocused() {
 		return
+	}
+	cursorStripe := 0
+	if stripes > 1 {
+		cursorStripe = fp.Table.SelectCol
 	}
 
 	y := fp.Table.Y1 + fp.Table.MarginTop + fp.Table.SelectPos - fp.Table.TopPos
@@ -1466,6 +1810,11 @@ func (fp *FileSystemPanel) drawCursorSeparators(scr *vtui.ScreenBuf) {
 	x := fp.Table.X1
 	for column := 0; column < len(fp.Table.Columns)-1; column++ {
 		x += fp.Table.Columns[column].Width
+		// Only the separators inside the cursor's stripe belong to it.
+		if column/perStripe != cursorStripe || (column+1)/perStripe != cursorStripe {
+			x++
+			continue
+		}
 		// Keep the separator's own foreground and copy only the rendered
 		// cursor cell's background. The separator must not inherit the file
 		// name/highlighter foreground color.
@@ -1502,19 +1851,21 @@ func (fp *FileSystemPanel) visibleNameCells(fn func(entry *FileEntry, x, y, widt
 	if height <= 0 {
 		return
 	}
-	columns := fp.gridColumnCount()
 	for rowOffset := 0; rowOffset < height; rowOffset++ {
 		row := fp.Table.TopPos + rowOffset
 		y := fp.Table.Y1 + fp.Table.MarginTop + rowOffset
 		x := fp.Table.X1
-		for column := 0; column < columns && column < len(fp.Table.Columns); column++ {
+		for column := range fp.Table.Columns {
 			width := fp.Table.Columns[column].Width
-			entryIndex := row
-			if columns > 1 {
-				entryIndex += column * height
-			}
-			if entryIndex >= 0 && entryIndex < len(fp.Entries) {
-				fn(fp.Entries[entryIndex], x, y, width)
+			if spec := fp.panelColumnAt(column); spec.Type == NameColumn {
+				entryIndex := fp.entryIndex(row, column)
+				if entryIndex >= 0 && entryIndex < len(fp.Entries) {
+					nameX, nameWidth := x, width
+					if spec.Flags&ColumnMark != 0 && nameWidth > 1 {
+						nameX, nameWidth = nameX+1, nameWidth-1
+					}
+					fn(fp.Entries[entryIndex], nameX, y, nameWidth)
+				}
 			}
 			x += width + 1
 		}
@@ -1711,14 +2062,20 @@ func (fp *FileSystemPanel) SetCursorIndex(idx int) {
 	}
 	fp.CursorIdx = idx
 
+	visual := fp.displayOfEntry(idx)
+	if fp.GroupBy != GroupNone {
+		fp.syncGroupedCursor(visual)
+		return
+	}
 	// Sync table visual state
 	if fp.gridColumnCount() == 1 {
-		fp.Table.SetSelectPos(fp.CursorIdx)
+		fp.Table.SetSelectPos(visual)
 		fp.Table.SelectCol = 0
 		if fp.FastFindMode {
 			H := fp.Table.ViewHeight
-			if H > 2 && fp.CursorIdx >= fp.Table.TopPos+H-2 {
-				fp.Table.TopPos = fp.CursorIdx - H + 3
+			covered := fp.fastFindBoxHeight() - 1 // rows of the box over the list; its last row is the frame
+			if H > covered && visual >= fp.Table.TopPos+H-covered {
+				fp.Table.TopPos = visual - H + covered + 1
 				if fp.Table.TopPos < 0 {
 					fp.Table.TopPos = 0
 				}
@@ -1731,24 +2088,24 @@ func (fp *FileSystemPanel) SetCursorIndex(idx int) {
 		}
 
 		// 1. Ensure TopPos is sane for the current cursor
-		if fp.CursorIdx < fp.Table.TopPos {
-			fp.Table.TopPos = fp.CursorIdx
-		} else if fp.CursorIdx >= fp.Table.TopPos+fp.gridColumnCount()*H {
-			fp.Table.TopPos = fp.CursorIdx - fp.gridColumnCount()*H + 1
+		if visual < fp.Table.TopPos {
+			fp.Table.TopPos = visual
+		} else if visual >= fp.Table.TopPos+fp.gridColumnCount()*H {
+			fp.Table.TopPos = visual - fp.gridColumnCount()*H + 1
 		}
 
 		// Far-style 2-column scrolling: ensure cursorIdx is in [TopPos, TopPos + 2*H)
-		if fp.CursorIdx < fp.Table.TopPos {
-			fp.Table.TopPos = fp.CursorIdx
-		} else if fp.CursorIdx >= fp.Table.TopPos+fp.gridColumnCount()*H {
-			fp.Table.TopPos = fp.CursorIdx - fp.gridColumnCount()*H + 1
+		if visual < fp.Table.TopPos {
+			fp.Table.TopPos = visual
+		} else if visual >= fp.Table.TopPos+fp.gridColumnCount()*H {
+			fp.Table.TopPos = visual - fp.gridColumnCount()*H + 1
 		}
 
-		if fp.FastFindMode && H > 2 {
-			rel := fp.CursorIdx - fp.Table.TopPos
+		if covered := fp.fastFindBoxHeight() - 1; fp.FastFindMode && H > covered {
+			rel := visual - fp.Table.TopPos
 			row := rel % H
-			if row >= H-2 {
-				shift := row - (H - 3)
+			if row >= H-covered {
+				shift := row - (H - covered - 1)
 				fp.Table.TopPos += shift
 			}
 		}
@@ -1757,7 +2114,7 @@ func (fp *FileSystemPanel) SetCursorIndex(idx int) {
 			fp.Table.TopPos = 0
 		}
 
-		rel := fp.CursorIdx - fp.Table.TopPos
+		rel := visual - fp.Table.TopPos
 		fp.Table.SelectCol = rel / H
 		// Table internal rendering expects SelectPos to be absolute index in its row space
 		// to correctly calculate vertical offset: y = Y1 + (SelectPos - TopPos)
@@ -1886,6 +2243,8 @@ func (fp *FileSystemPanel) pathTitleHitTest(x, y int) bool {
 }
 
 func (fp *FileSystemPanel) ReadDirectory() {
+	// A fresh listing must not inherit the coast of the previous one.
+	fp.wheel.Stop()
 	fp.readDirectoryEx(false)
 }
 
@@ -1902,7 +2261,7 @@ func (fp *FileSystemPanel) EnqueueDirectoryLoad(load func()) {
 		return
 	}
 	fp.loadWorkerActive = true
-	fp.LoadWorkerWG.Add(1)
+	fp.loadIdleCh = make(chan struct{})
 	// Every worker is also counted process-wide. A worker reads globals while
 	// it runs -- config.App and vtui.FrameManager, and the frame manager's task
 	// queue when it posts back -- so anything that replaces one of those has to
@@ -1915,7 +2274,6 @@ func (fp *FileSystemPanel) EnqueueDirectoryLoad(load func()) {
 
 	go func() {
 		defer DirectoryLoadWorkers.Done()
-		defer fp.LoadWorkerWG.Done()
 		next := load
 		for next != nil {
 			next()
@@ -1925,10 +2283,35 @@ func (fp *FileSystemPanel) EnqueueDirectoryLoad(load func()) {
 			fp.pendingDirectoryLoad = nil
 			if next == nil {
 				fp.loadWorkerActive = false
+				close(fp.loadIdleCh)
 			}
 			fp.loadQueueMu.Unlock()
 		}
 	}()
+}
+
+// WaitForIdle blocks until fp has no directory-load worker running. It is
+// how a test joins the queue between actions, and it must be used instead of
+// waiting on a WaitGroup directly: EnqueueDirectoryLoad above only Add(1)s
+// once per round (a fresh worker starting while none was active), so a
+// second, unrelated EnqueueDirectoryLoad call can legally re-arm the queue
+// at any time -- including while a caller here is still unblocking from the
+// round that just finished. sync.WaitGroup does not support that reuse
+// pattern without synchronizing the new Add against the outstanding Wait
+// itself, so calling Wait() directly races. loadIdleCh only ever changes
+// under loadQueueMu, so every wait below is on a channel a concurrent
+// EnqueueDirectoryLoad cannot be racing to close.
+func (fp *FileSystemPanel) WaitForIdle() {
+	for {
+		fp.loadQueueMu.Lock()
+		idleCh := fp.loadIdleCh
+		active := fp.loadWorkerActive
+		fp.loadQueueMu.Unlock()
+		if !active {
+			return
+		}
+		<-idleCh
+	}
 }
 
 // cancelProviderOpen invalidates an asynchronous VFS mount before asking its
@@ -2061,10 +2444,11 @@ func (fp *FileSystemPanel) openVFSAsync(
 // SyncPanelLoad deliberately bypasses it), only a real parent row is safe to
 // keep interactive while the new listing is in flight.
 func (fp *FileSystemPanel) showCurrentVFSLoadingRows() {
-	fp.Entries = nil
+	var entries []*FileEntry
 	if fp.Vfs != nil && (!fp.Vfs.IsAtRoot() || fp.Vfs.ParentVFS() != nil) {
-		fp.Entries = []*FileEntry{{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}}}
+		entries = []*FileEntry{{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}}}
 	}
+	fp.setEntries(entries)
 	fp.SetCursorIndex(0)
 	fp.Refresh()
 	vtui.FrameManager.Redraw()
@@ -2082,6 +2466,61 @@ func (fp *FileSystemPanel) SetKnownDirectoryPath(target string) error {
 		return setter.SetPathOptimistic(target)
 	}
 	return fp.Vfs.SetPath(target)
+}
+
+// navigateElevatedDirectoryAsync resolves newPath off the UI goroutine for an
+// OSVFS target that NeedsElevation says would otherwise block resolving
+// through the sudo helper (f4#1411). It mirrors the synchronous Enter-key
+// handling in processKey, just deferred past a RunOnUI hop: the (possibly
+// slow) resolution runs on a background goroutine, and only the actual path
+// change — an instant field write — happens back on the UI goroutine, which
+// is the only place mutating fp.Vfs is safe.
+//
+// The fix for the freeze (this function existing at all) left a follow-up
+// reported live on f4#1411: once the UI goroutine stops blocking, a slow PAM
+// prompt (e.g. a fingerprint reader retrying) is silent — nothing on screen
+// says an elevation attempt is even happening until it finally resolves. This
+// reuses the panel's existing loading pulse (the same title spinner
+// readDirectoryEx shows for a slow listing) as the indicator: it appears in
+// the panel title after panelLoadingShowDelay so a fast, no-prompt sudo check
+// never flashes it, and it is cleared the moment the result comes back,
+// whichever way it went.
+func (fp *FileSystemPanel) navigateElevatedDirectoryAsync(osfs *vfs.OSVFS, newPath, oldPath, selectedName string) {
+	sourceVFS := fp.Vfs
+	fp.IsLoading = true
+	fp.startLoadingAnimation()
+	generation := fp.LoadingGeneration
+	vtui.RunAsync(func(task *vtui.TaskContext) {
+		abs, err := osfs.ResolveElevated(newPath)
+		task.RunOnUI(func() {
+			if fp.LoadingGeneration == generation {
+				// Nothing newer (e.g. a fresh ReadDirectory, which bumps the
+				// generation itself) has claimed the spinner since we started
+				// it, so it is still ours to clear here — on every outcome,
+				// including the stale-navigation and error returns below.
+				fp.IsLoading = false
+				fp.StopLoadingAnimation()
+				fp.updateTitle(nil)
+				vtui.FrameManager.Redraw()
+			}
+			if !fileops.SameVFSInstance(fp.Vfs, sourceVFS) || fp.Vfs.GetPath() != oldPath {
+				// The panel navigated elsewhere while the sudo prompt was up;
+				// applying this result now would clobber wherever it is now.
+				return
+			}
+			if err != nil {
+				vtui.ShowMessage(" Error ", fmt.Sprintf("Cannot access folder:\n%v", err), []string{"&Ok"})
+				return
+			}
+			osfs.CommitPath(abs)
+			if selectedName == ".." {
+				fp.PendingSelection = fp.Vfs.Base(oldPath)
+			} else {
+				fp.PendingSelection = ".."
+			}
+			fp.ReadDirectory()
+		})
+	})
 }
 
 func (fp *FileSystemPanel) SuppressNextFolderHistory(path string) {
@@ -2144,6 +2583,26 @@ func ShouldRecordFolderHistory(fp *FileSystemPanel, path string) bool {
 	return !filepath.IsAbs(path) && !strings.HasPrefix(path, "/") && !strings.HasPrefix(path, "\\")
 }
 
+// RecordFolderHistoryEntry records the folder-history entry, if any, for
+// loadVFS's current path. A VFS that implements vfs.HistoryPathProvider
+// (a panel plugin's session, e.g. NetFox) owns the decision entirely
+// (f4#262): whatever it hands back through HistoryEntry is what gets
+// recorded, and it gets nothing at all when the plugin declines. Any other
+// VFS falls back to the real-path rules in ShouldRecordFolderHistory, exactly
+// as before this hook existed.
+func RecordFolderHistoryEntry(fp *FileSystemPanel, loadVFS vfs.VFS, path string) {
+	raiseFolderChanged(fp, path)
+	if provider, ok := loadVFS.(vfs.HistoryPathProvider); ok {
+		if display, ref, ok := provider.HistoryEntry(); ok {
+			history.AddPluginFolderHistory(display, fmt.Sprintf("%T", loadVFS), ref)
+		}
+		return
+	}
+	if ShouldRecordFolderHistory(fp, path) {
+		history.AddFolderHistory(path)
+	}
+}
+
 // showDirectoryError keeps asynchronous refresh failures from stacking modal
 // dialogs. A failed recovery may schedule another read before the user closes
 // the first message; only the first live dialog should remain actionable.
@@ -2187,6 +2646,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 	fp.startLoadingAnimation()
 
 	loadVFS := fp.Vfs
+	loadRevealName := fp.clipboardImageRevealFor(loadVFS, loadVFS.GetPath())
 	path := loadVFS.GetPath()
 	suppressionToken, hasFolderHistorySuppression := fp.FolderHistorySuppression(path)
 	cacheKey := DirectoryCacheKey(loadVFS, path)
@@ -2205,18 +2665,23 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 	directoryChanged := fp.lastLoadedPath != "" && !SameFolderHistoryPath(fp.lastLoadedPath, path)
 	suppressFolderHistory := hasFolderHistorySuppression && fp.ConsumeFolderHistorySuppression(path, suppressionToken)
 	if directoryChanged {
+		// A quick search belongs to the directory it was typed in. Leaving the
+		// directory closes it, so a filter cannot carry a stale query into rows
+		// the user has never seen; re-reading the same directory keeps it.
+		fp.ExitFastFind()
 		for k := range fp.SelectedItems {
 			delete(fp.SelectedItems, k)
 		}
 		fp.DirectoryEpoch++
 		fp.selectionEpoch = make(map[string]uint64)
+		fp.clearCalculatedPanelTotal()
 	}
 	fp.lastLoadedPath = path
-	if directoryChanged && !suppressFolderHistory && ShouldRecordFolderHistory(fp, path) {
+	if directoryChanged && !suppressFolderHistory {
 		// Record accepted navigation in UI order, not in backend completion
 		// order. Otherwise an older slow cloud ReadDir can finish after a newer
 		// visit and move its path to the front of the global MRU history.
-		history.AddFolderHistory(path)
+		RecordFolderHistoryEntry(fp, loadVFS, path)
 	}
 
 	if fp.PendingSelection == "" {
@@ -2236,21 +2701,22 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 		if cached, ok := fp.DirCache[cacheKey]; ok && !config.App.SyncPanelLoad {
 			hasCache = true
 			vtui.DebugLog("PANEL: Using cached entries for %s", path)
-			fp.Entries = nil
+			var entries []*FileEntry
 
 			if showUpEntry {
-				fp.Entries = append(fp.Entries, &FileEntry{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}, IsCached: true})
+				entries = append(entries, &FileEntry{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}, IsCached: true})
 			}
 
 			for _, item := range cached.Items {
-				if !config.App.ShowHiddenFiles && item.Name != ".." && item.IsHidden {
+				if !config.App.ShowHiddenFiles && item.Name != ".." && item.Name != loadRevealName && item.IsHidden {
 					continue
 				}
 				entry := &FileEntry{VFSItem: item, IsCached: true}
 				fp.applyPersistentSelection(entry, loadVFS, path)
-				fp.Entries = append(fp.Entries, entry)
+				entries = append(entries, entry)
 			}
 
+			fp.setEntries(entries)
 			fp.SortEntries()
 
 			target := fp.PendingSelection
@@ -2270,12 +2736,31 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 		}
 	}
 
+	// Building the skeleton drops whatever rows the panel is showing, so it
+	// happens only for a directory the panel has nothing to show about: one it
+	// has never read. Two cases keep the rows instead:
+	//
+	//   - a reload of the directory already on screen, where those rows are
+	//     the freshest view there is. Replacing them with an empty ".."
+	//     skeleton flashes it with the cursor parked on it until the async
+	//     ReadDir finishes -- the jump seen after a delete or an in-place
+	//     copy, which reloads twice (dirwatch plus the completion callback).
+	//   - a navigation with SyncPanelLoad on, which promises to replace the
+	//     listing only once the whole directory is ready. Dropping to ".."
+	//     until then parks the cursor on it and bounces it onto the row the
+	//     user navigated from the moment the listing arrives -- the jump seen
+	//     on Ctrl+PgUp.
+	// The completion task below swaps in the fresh list atomically either way,
+	// the same contract the cached branch above follows.
+	buildSkeleton := len(fp.AllEntries()) == 0 ||
+		(directoryChanged && !config.App.SyncPanelLoad)
 	isFirstChunk := true
-	if !keepEntries && !hasCache {
-		fp.Entries = nil
+	if !keepEntries && !hasCache && buildSkeleton {
+		var entries []*FileEntry
 		if showUpEntry {
-			fp.Entries = []*FileEntry{{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}}}
+			entries = []*FileEntry{{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}}}
 		}
+		fp.setEntries(entries)
 		fp.SetCursorIndex(0)
 		fp.Refresh()
 		vtui.FrameManager.Redraw()
@@ -2320,7 +2805,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			newEntries := make([]*FileEntry, 0, len(chunk))
 			for _, item := range chunk {
 				// Hide hidden files if configured, but never hide '..'
-				if !loadShowHidden && item.Name != ".." && item.IsHidden {
+				if !loadShowHidden && item.Name != ".." && item.Name != loadRevealName && item.IsHidden {
 					continue
 				}
 				entry := &FileEntry{VFSItem: item}
@@ -2337,6 +2822,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				}
 
 				currentSelected := fp.GetRawSelectedName()
+				currentOffset := fp.displayOfEntry(fp.GetCursorIndex()) - fp.Table.TopPos
 				if fp.PendingSelection == "" {
 					if currentSelected != "" && currentSelected != ".." {
 						fp.PendingSelection = currentSelected
@@ -2344,11 +2830,12 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				}
 
 				if isFirstChunk {
-					fp.Entries = nil
+					var entries []*FileEntry
 					if showUpEntry {
 						upItem := vfs.VFSItem{Name: "..", IsDir: true}
-						fp.Entries = []*FileEntry{{VFSItem: upItem}}
+						entries = []*FileEntry{{VFSItem: upItem}}
 					}
+					fp.setEntries(entries)
 					isFirstChunk = false
 				}
 
@@ -2357,7 +2844,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 					fp.applyPersistentSelection(e, loadVFS, path)
 				}
 
-				fp.Entries = append(fp.Entries, newEntries...)
+				fp.addEntries(newEntries...)
 				fp.SortEntries()
 
 				// Фокусировка на нужном файле
@@ -2384,6 +2871,9 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 					fp.SetCursorIndex(0)
 				}
 
+				if fp.GroupBy != GroupNone && fp.GetRawSelectedName() == currentSelected {
+					fp.Table.TopPos = max(0, fp.displayOfEntry(fp.GetCursorIndex())-currentOffset)
+				}
 				fp.Refresh()
 
 				loadFrames.Redraw() // Рисуем каждый чанк!
@@ -2438,13 +2928,15 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				// done in the UI task rather than when the load was started.
 				liveCursorName := fp.GetRawSelectedName()
 				liveCursorIndex := fp.GetCursorIndex()
-				liveCursorOffset := liveCursorIndex - fp.Table.TopPos
+				liveCursorOffset := fp.displayOfEntry(liveCursorIndex) - fp.Table.TopPos
 				cursorMoved := liveCursorName != cacheInitialCursorName || liveCursorIndex != cacheInitialCursorIndex
 
 				if fp.SelectedItems == nil {
 					fp.SelectedItems = make(map[string]bool)
 				}
-				for _, entry := range fp.Entries {
+				// The marks of rows the autofilter is hiding are just as real
+				// as the visible ones, so the snapshot covers the whole list.
+				for _, entry := range fp.AllEntries() {
 					if entry.Name == ".." {
 						continue
 					}
@@ -2455,7 +2947,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 					}
 				}
 
-				fp.Entries = nil
+				var entries []*FileEntry
 				if showUpEntry {
 					upItem := vfs.VFSItem{Name: "..", IsDir: true}
 					if hasUpItemStat {
@@ -2466,17 +2958,18 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 						upItem.Uid = upItemStat.Uid
 						upItem.Gid = upItemStat.Gid
 					}
-					fp.Entries = []*FileEntry{{VFSItem: upItem}}
+					entries = []*FileEntry{{VFSItem: upItem}}
 				}
 
 				for _, item := range accumulated {
-					if !loadShowHidden && item.Name != ".." && item.IsHidden {
+					if !loadShowHidden && item.Name != ".." && item.Name != loadRevealName && item.IsHidden {
 						continue
 					}
 					entry := &FileEntry{VFSItem: item}
 					fp.applyPersistentSelection(entry, loadVFS, path)
-					fp.Entries = append(fp.Entries, entry)
+					entries = append(entries, entry)
 				}
+				fp.setEntries(entries)
 				fp.SortEntries()
 
 				// An unresolved navigation target still wins if the user did not
@@ -2503,7 +2996,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 					newCursorIndex = 0
 				}
 
-				newTop := newCursorIndex - liveCursorOffset
+				newTop := fp.displayOfEntry(newCursorIndex) - liveCursorOffset
 				if newTop < 0 {
 					newTop = 0
 				}
@@ -2512,7 +3005,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				fp.PendingSelection = ""
 				isFirstChunk = false
 			} else if loadSyncPanel && err == nil {
-				fp.Entries = nil
+				var entries []*FileEntry
 				if showUpEntry {
 					upItem := vfs.VFSItem{Name: "..", IsDir: true}
 					if hasUpItemStat {
@@ -2523,19 +3016,18 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 						upItem.Uid = upItemStat.Uid
 						upItem.Gid = upItemStat.Gid
 					}
-					fp.Entries = []*FileEntry{{VFSItem: upItem}}
+					entries = []*FileEntry{{VFSItem: upItem}}
 				}
 
-				newEntries := make([]*FileEntry, 0, len(accumulated))
 				for _, item := range accumulated {
-					if !loadShowHidden && item.Name != ".." && item.IsHidden {
+					if !loadShowHidden && item.Name != ".." && item.Name != loadRevealName && item.IsHidden {
 						continue
 					}
 					entry := &FileEntry{VFSItem: item}
 					fp.applyPersistentSelection(entry, loadVFS, path)
-					newEntries = append(newEntries, entry)
+					entries = append(entries, entry)
 				}
-				fp.Entries = append(fp.Entries, newEntries...)
+				fp.setEntries(entries)
 				fp.SortEntries()
 
 				if fp.PendingSelection != "" {
@@ -2551,8 +3043,9 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				// Clean up persistent selection only after the fresh list has been
 				// built. With a cache, doing this earlier would compare the marks
 				// against stale rows rather than the completed ReadDir result.
-				validNames := make(map[string]bool, len(fp.Entries))
-				for _, e := range fp.Entries {
+				all := fp.AllEntries()
+				validNames := make(map[string]bool, len(all))
+				for _, e := range all {
 					validNames[e.Name] = true
 				}
 				for name := range fp.SelectedItems {
@@ -2611,7 +3104,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			}
 
 			if isFirstChunk {
-				fp.Entries = nil
+				var entries []*FileEntry
 				if showUpEntry {
 					upItem := vfs.VFSItem{Name: "..", IsDir: true}
 					if hasUpItemStat {
@@ -2622,9 +3115,14 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 						upItem.Uid = upItemStat.Uid
 						upItem.Gid = upItemStat.Gid
 					}
-					fp.Entries = []*FileEntry{{VFSItem: upItem}}
+					entries = []*FileEntry{{VFSItem: upItem}}
 				}
+				fp.setEntries(entries)
 				fp.SetCursorIndex(0)
+			} else if showUpEntry && hasUpItemStat {
+				// The ".." row was created with the first chunk, before the
+				// parent was stat'ed (that happens only after ReadDir).
+				fp.applyUpItemStat(upItemStat)
 			}
 
 			if fp.PendingSelection != "" {
@@ -2637,10 +3135,35 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 	})
 }
 
+// applyUpItemStat gives the ".." row the times, mode and owner of the parent
+// folder, the same values the other load paths put into a freshly built row.
+func (fp *FileSystemPanel) applyUpItemStat(st vfs.VFSItem) {
+	for _, e := range fp.AllEntries() {
+		if e.Name != ".." {
+			continue
+		}
+		e.MTime = st.MTime
+		e.ATime = st.ATime
+		e.CTime = st.CTime
+		e.UnixMode = st.UnixMode
+		e.Uid = st.Uid
+		e.Gid = st.Gid
+		return
+	}
+}
+
 func (fp *FileSystemPanel) Refresh() {
+	// Refresh is the general "something about this panel's entries changed,
+	// redisplay" hook, called after every mutation that is not already routed
+	// through setEntries/addEntries/refilterEntries — a background size scan
+	// landing on an entry (actionCalcDirSize) chief among them. Bumping the
+	// entries revision here too, on top of those three, means panelEntryTotals
+	// never needs to trust that every future caller of such a mutation
+	// remembers to invalidate it by hand.
+	fp.entriesRevision++
 	idx := fp.GetCursorIndex()
 	fp.updateSortColumnTitles()
-	n := len(fp.Entries)
+	n := fp.displayCount()
 	fp.Table.SetCellProvider(fp)
 	fp.Table.SetRowCount(n)
 	fp.SetCursorIndex(idx)
@@ -2649,6 +3172,73 @@ func (fp *FileSystemPanel) Refresh() {
 		fp.Table.TopPos = maxTop
 		fp.SetCursorIndex(idx)
 	}
+}
+
+// panelEntryTotals sums the byte size, file count and directory count across
+// every entry the panel holds (not just the visible rows), for the fallback
+// bottom-border total Show draws when the VFS has not already supplied a
+// recursive one via CalculatedPanelTotal. Show used to redo this full scan of
+// fp.Entries on every single render frame regardless of whether anything about
+// the entries had changed since the previous one -- the exact same
+// per-frame-per-file cost, scaling with how many files are in the directory,
+// that #1511 and #1536 already fixed for the menu bar and the highlight
+// rules (f4#884). The result is memoized against entriesRevision, which every
+// place that can change what fp.Entries holds (setEntries, addEntries,
+// refilterEntries, and Refresh as a catch-all for direct entry mutations such
+// as actionCalcDirSize) increments.
+func (fp *FileSystemPanel) panelEntryTotals() (totSize int64, totCount, totFiles, totDirs int) {
+	if fp.entryTotalsValid && fp.entryTotalsRevision == fp.entriesRevision {
+		return fp.cachedTotSize, fp.cachedTotCount, fp.cachedTotFiles, fp.cachedTotDirs
+	}
+	for _, e := range fp.Entries {
+		if e.Name == ".." {
+			continue
+		}
+		totCount++
+		if e.IsDir {
+			totDirs++
+		} else {
+			totFiles++
+			totSize += e.Size
+		}
+	}
+	fp.cachedTotSize, fp.cachedTotCount, fp.cachedTotFiles, fp.cachedTotDirs = totSize, totCount, totFiles, totDirs
+	fp.entryTotalsRevision = fp.entriesRevision
+	fp.entryTotalsValid = true
+	fp.entryTotalsComputeCount++
+	return
+}
+
+// SetCalculatedPanelTotal stores a recursive total for the panel's current
+// directory. The path tag prevents a result from being shown after a VFS has
+// moved elsewhere before the asynchronous scan completes.
+func (fp *FileSystemPanel) SetCalculatedPanelTotal(stats vfs.OpStats) {
+	if fp == nil || fp.Vfs == nil {
+		return
+	}
+	statsCopy := stats
+	fp.calculatedPanelTotal = &statsCopy
+	fp.calculatedPanelTotalPath = fp.Vfs.GetPath()
+}
+
+func (fp *FileSystemPanel) clearCalculatedPanelTotal() {
+	if fp == nil {
+		return
+	}
+	fp.calculatedPanelTotal = nil
+	fp.calculatedPanelTotalPath = ""
+}
+
+// CalculatedPanelTotal returns the recursive total if it still belongs to the
+// directory currently displayed by the panel.
+func (fp *FileSystemPanel) CalculatedPanelTotal() (vfs.OpStats, bool) {
+	if fp == nil || fp.Vfs == nil || fp.calculatedPanelTotal == nil {
+		return vfs.OpStats{}, false
+	}
+	if fp.calculatedPanelTotalPath != fp.Vfs.GetPath() {
+		return vfs.OpStats{}, false
+	}
+	return *fp.calculatedPanelTotal, true
 }
 
 func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
@@ -2682,6 +3272,7 @@ func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 	}
 	fp.clampNameLeftPos()
 	fp.Table.Show(scr)
+	fp.drawGroupHeadings(scr)
 	fp.drawFastFindMatches(scr)
 	fp.drawCursorSeparators(scr)
 	fp.drawNameScrollBrackets(scr)
@@ -2691,17 +3282,20 @@ func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 	var totCount int
 	var totFiles int
 	var totDirs int
-	for _, e := range fp.Entries {
-		if e.Name == ".." {
-			continue
+	calculatedTotal, hasCalculatedTotal := fp.CalculatedPanelTotal()
+	if !hasCalculatedTotal {
+		if provider, ok := fp.Vfs.(interface{ CalculatedPanelTotal() (vfs.OpStats, bool) }); ok && fp.Vfs.IsAtRoot() {
+			calculatedTotal, hasCalculatedTotal = provider.CalculatedPanelTotal()
 		}
-		totCount++
-		if e.IsDir {
-			totDirs++
-		} else {
-			totFiles++
-			totSize += e.Size
-		}
+	}
+	if hasCalculatedTotal {
+		totSize = calculatedTotal.Bytes
+		totFiles = int(calculatedTotal.Files)
+		totDirs = int(calculatedTotal.Dirs)
+		totCount = totFiles + totDirs
+	}
+	if !hasCalculatedTotal {
+		totSize, totCount, totFiles, totDirs = fp.panelEntryTotals()
 	}
 	freeSpaceStr := ""
 	if _, isLocal := fp.Vfs.(*vfs.OSVFS); isLocal {
@@ -2729,31 +3323,17 @@ func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 			e := fp.Entries[idx]
 
 			dateStr := e.MTime.Format("02.01.06 15:04")
-			sizeStr := ""
-			if e.IsDir {
-				if e.SizeCalculated {
-					sizeStr = fileops.FormatIntWithSpaces(e.Size)
-				} else if e.Name == ".." {
-					sizeStr = "UP-DIR"
-				} else if e.IsSymlink {
-					sizeStr = "<LNK-DIR>"
-				} else {
-					sizeStr = "<DIR>"
-				}
-			} else if e.IsSymlink {
-				sizeStr = "<LNK>"
-			} else {
-				sizeStr = fileops.FormatIntWithSpaces(e.Size)
+			sizeStr := entrySizeText(e)
+			if e.Name == ".." && hasCalculatedTotal {
+				sizeStr = fileops.FormatIntWithSpaces(calculatedTotal.Bytes)
 			}
 
 			nameStr := e.Name
-			if e.IsSymlink && fp.Vfs != nil {
-				if target, err := vfs.Readlink(context.Background(), fp.Vfs, fp.Vfs.Join(fp.Vfs.GetPath(), e.Name)); err == nil && target != "" {
-					if fp.Vfs.GetPath() == "net://" {
-						nameStr = e.Name + " -> " + target
-					} else {
-						sizeStr = "→ " + target
-					}
+			if target, ok := fp.symlinkTarget(e); ok {
+				if fp.Vfs.GetPath() == "net://" {
+					nameStr = e.Name + " -> " + target
+				} else {
+					sizeStr = "→ " + target
 				}
 			}
 
@@ -2775,9 +3355,14 @@ func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 				rightStr = runewidth.Truncate(rightStr, availW, "")
 			}
 
-			p.DrawString(fp.X1+1, fp.Y2-1, nameStr, attrInfo)
-			if rightStr != "" {
-				p.DrawString(fp.X2-runewidth.StringWidth(rightStr), fp.Y2-1, rightStr, attrInfo)
+			if line, custom := fp.statusLineText(e, (fp.X2-1)-(fp.X1+1)+1); custom {
+				// The mode has its own status columns (f4#410).
+				p.DrawString(fp.X1+1, fp.Y2-1, line, attrInfo)
+			} else {
+				p.DrawString(fp.X1+1, fp.Y2-1, nameStr, attrInfo)
+				if rightStr != "" {
+					p.DrawString(fp.X2-runewidth.StringWidth(rightStr), fp.Y2-1, rightStr, attrInfo)
+				}
 			}
 		}
 	}
@@ -2847,26 +3432,30 @@ func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 	// The panel total keeps the centre and its own colour; the entry under
 	// the cursor is pinned to the left corner behind a ▸ marker. Both are in
 	// exact bytes, the way far2l and the Size column spell them, and so is
-	// the selected-files line. Directories say <DIR>/UP-DIR instead. When
-	// the far2l status line is switched on it already states all of this
-	// right above, so the marker steps aside.
+	// the selected-files line. Folders, links and ".." name their kind
+	// instead, the way the Size column does. When the far2l status line is
+	// switched on it already states all of this right above, so the marker
+	// steps aside.
 	if !config.App.ShowPanelFileInfo && fp.gridColumnCount() > 1 {
 		if idx := fp.GetCursorIndex(); idx >= 0 && idx < len(fp.Entries) {
 			e := fp.Entries[idx]
-			curStr := fileops.FormatIntWithSpaces(e.Size)
-			if e.IsDir && !e.SizeCalculated {
-				curStr = "<DIR>"
-				if e.Name == ".." {
-					curStr = "UP-DIR"
-				}
+			curStr := entrySizeText(e)
+			if e.Name == ".." && hasCalculatedTotal {
+				curStr = fileops.FormatIntWithSpaces(calculatedTotal.Bytes)
 			}
-			if e.IsSymlink && fp.Vfs != nil {
-				if target, err := vfs.Readlink(context.Background(), fp.Vfs, fp.Vfs.Join(fp.Vfs.GetPath(), e.Name)); err == nil && target != "" {
-					curStr = "→ " + target
-				}
+			if target, ok := fp.symlinkTarget(e); ok {
+				curStr = "→ " + target
 			}
 			curStr = " ▸ " + curStr + " "
-			if maxCurW := totalStart - (fp.X1 + 1); maxCurW > 0 {
+			maxCurW := totalStart - (fp.X1 + 1)
+			if totalStart < fp.X2 {
+				// Keep one border cell between the two numbers: the cursor
+				// entry ends with a space and the total starts with one, so
+				// without it a narrow panel reads "158 114 573 197 216 698"
+				// as a single figure (#1640).
+				maxCurW--
+			}
+			if maxCurW > 0 {
 				if runewidth.StringWidth(curStr) > maxCurW {
 					curStr = runewidth.Truncate(curStr, maxCurW, "")
 				}
@@ -2877,14 +3466,14 @@ func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 	}
 
 	if fp.FastFindMode {
-		// Ask the screen for the underline cursor instead of writing
+		// Ask the screen for the text-entry caret instead of writing
 		// DECSCUSR to stdout behind the renderer's back: the renderer
 		// knows which terminals take the sequence and which must be
 		// driven through the console API (f4 #219, classic conhost draws
 		// DECSCUSR's underline as a one-pixel hairline).
-		scr.SetCursorShape(vtui.CursorShapeUnderline)
-		boxW := 24
-		boxH := 3
+		scr.SetCursorShape(vtui.InsertCursorShape())
+		boxW := fastFindBoxWidth(fp.autoFilterMode)
+		boxH := fp.fastFindBoxHeight()
 
 		fx1 := fp.X1 + 9
 		if fx1+boxW-1 >= scr.Width() {
@@ -2895,7 +3484,7 @@ func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 		}
 		fx2 := fx1 + boxW - 1
 
-		fy1 := fp.Y2 - 2
+		fy1 := fp.Y2 - boxH + 1
 		if fy1 < 0 {
 			fy1 = 0
 		}
@@ -2905,24 +3494,83 @@ func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 
 		p.Fill(fx1, fy1, fx2, fy2, ' ', vtui.Palette[vtui.ColDialogText])
 		p.DrawBox(fx1, fy1, fx2, fy2, vtui.Palette[vtui.ColDialogBox], vtui.DoubleBox)
-		p.DrawTitle(fx1, fy1, fx2, i18n.Msg("Viewer.SearchTitle"), vtui.Palette[vtui.ColDialogBoxTitle])
+		title := i18n.Msg("Viewer.SearchTitle")
+		if fp.autoFilterMode {
+			title = i18n.Msg("Panel.AutoFilterTitle")
+		}
+		p.DrawTitle(fx1, fy1, fx2, title, vtui.Palette[vtui.ColDialogBoxTitle])
 
 		searchStr := fp.FastFindStr
-		for runewidth.StringWidth(searchStr) > boxW-4 {
+		for runewidth.StringWidth(searchStr) > boxW-3 {
 			runes := []rune(searchStr)
 			searchStr = string(runes[1:])
 		}
 
 		searchColor := vtui.Palette[theme.ColPanelFastFindNoMatch]
-		if fp.fastFindHasMatches() {
+		// An empty filter hides nothing, so it is not a failed search either.
+		if fp.fastFindHasMatches() || (fp.autoFilterMode && autoFilterQuery(fp.FastFindStr) == "") {
 			searchColor = vtui.Palette[vtui.ColMenuHighlight]
 		}
-		searchAttr := fastFindMatchAttr(vtui.Palette[vtui.ColDialogText], searchColor)
-		p.DrawString(fx1+2, fy1+1, searchStr, searchAttr)
+		// The query is typed on the field colour every dialog's edit control
+		// has; the foreground stays the match / no-match colour of the text
+		// (f4#1131).
+		editAttr := vtui.Palette[vtui.ColDialogEdit]
+		p.Fill(fx1+1, fy1+1, fx2-1, fy1+1, ' ', editAttr)
+		searchAttr := fastFindMatchAttr(editAttr, searchColor)
+		p.DrawString(fx1+1, fy1+1, searchStr, searchAttr)
 
-		scr.SetCursorPos(fx1+2+runewidth.StringWidth(searchStr), fy1+1)
+		if fp.autoFilterMode {
+			// The exact-match option sits in the filter window itself, where the
+			// query is typed (f4#1131). The glyph is the one a dialog checkbox uses.
+			sym := vtui.SymCheckboxOff
+			if config.App.PanelStrictAutoFilter {
+				sym = vtui.SymCheckboxOn
+			}
+			textAttr := vtui.Palette[vtui.ColDialogText]
+			p.DrawSymGlyph(fx1+2, fy1+2, sym, textAttr)
+			p.DrawString(fx1+5, fy1+2, " "+i18n.Msg("Panel.AutoFilterExact"), textAttr)
+			fp.exactBoxX1, fp.exactBoxX2, fp.exactBoxY = fx1+2, fx2-2, fy1+2
+		}
+
+		scr.SetCursorPos(fx1+1+runewidth.StringWidth(searchStr), fy1+1)
 		scr.SetCursorVisible(true)
 	}
+}
+
+// fastFindBoxHeight is the height of the search window: the filter has a
+// second line for its exact-match option.
+func (fp *FileSystemPanel) fastFindBoxHeight() int {
+	if fp.autoFilterMode {
+		return 4
+	}
+	return 3
+}
+
+// fastFindBoxWidth makes the window wide enough for the exact-match option in
+// the current language: its glyph, a space and the label, between two cells
+// of frame and one of air on each side.
+func fastFindBoxWidth(filter bool) int {
+	const base = 24
+	if !filter {
+		return base
+	}
+	return max(base, runewidth.StringWidth(i18n.Msg("Panel.AutoFilterExact"))+4+4+1)
+}
+
+// ToggleExactAutoFilter flips the exact-match option and re-derives the
+// narrowed list at once, so the checkbox shows its effect as it is clicked.
+func (fp *FileSystemPanel) ToggleExactAutoFilter() {
+	config.App.PanelStrictAutoFilter = !config.App.PanelStrictAutoFilter
+	config.SaveConfig()
+	if fp.autoFilterMode {
+		fp.updateAutoFilter()
+	}
+}
+
+// exactCheckboxAt reports whether the pointer is over the exact-match line of
+// the open filter window.
+func (fp *FileSystemPanel) exactCheckboxAt(x, y int) bool {
+	return fp.FastFindMode && fp.autoFilterMode && y == fp.exactBoxY && x >= fp.exactBoxX1 && x <= fp.exactBoxX2
 }
 
 func (fp *FileSystemPanel) fastFindMatch(name string) (startRunes, matchedRunes int, ok bool) {
@@ -2938,15 +3586,25 @@ func (fp *FileSystemPanel) fastFindMatch(name string) (startRunes, matchedRunes 
 		return 0, 0, anywhere
 	}
 	// Matchers are cached per query text: the needle tables are built once
-	// per keystroke, not once per visible row per redraw.
-	if fp.fastFindMatcherKey != queryText {
+	// per keystroke, not once per visible row per redraw. The strict setting
+	// is part of the cache key too, so toggling it (a "live" f4:config
+	// option) takes effect on the next redraw instead of the next keystroke.
+	strict := config.App.PanelStrictAutoFilter
+	if fp.fastFindMatcherKey != queryText || fp.fastFindMatcherStrict != strict {
 		fp.fastFindMatcherKey = queryText
+		fp.fastFindMatcherStrict = strict
 		fp.fastFindMatchers = fp.fastFindMatchers[:0]
-		for _, query := range []string{
-			queryText,
-			vtui.GlobalXlator.TranscodeString(queryText),
-		} {
+		// The layout-transcoded variant ("сфы" -> "cas") is a tolerance too:
+		// strict mode searches exactly what was typed (f4 #1709).
+		queries := []string{queryText}
+		if !strict {
+			queries = append(queries, vtui.GlobalXlator.TranscodeString(queryText))
+		}
+		for _, query := range queries {
 			if m := vtui.NewFuzzyMatcher(query, false); m != nil {
+				if strict {
+					m.Strict()
+				}
 				fp.fastFindMatchers = append(fp.fastFindMatchers, m)
 			}
 		}
@@ -2988,37 +3646,20 @@ func (fp *FileSystemPanel) drawFastFindMatches(scr *vtui.ScreenBuf) {
 	if !fp.FastFindMode || fp.FastFindStr == "" || !fp.Table.IsVisible() {
 		return
 	}
-	height := fp.Table.ViewHeight
-	if height <= 0 {
+	if fp.Table.ViewHeight <= 0 {
 		return
 	}
-	columns := fp.gridColumnCount()
 	matchAttr := vtui.Palette[theme.ColPanelHighlightText]
-
-	for rowOffset := 0; rowOffset < height; rowOffset++ {
-		row := fp.Table.TopPos + rowOffset
-		y := fp.Table.Y1 + fp.Table.MarginTop + rowOffset
-		x := fp.Table.X1
-		for column := 0; column < columns && column < len(fp.Table.Columns); column++ {
-			entryIndex := row
-			if columns > 1 {
-				entryIndex += column * height
+	fp.visibleNameCells(func(entry *FileEntry, x, y, cellWidth int) {
+		matchStart, matchedRunes, _ := fp.fastFindMatch(entry.Name)
+		for _, span := range panelFileNameMatchSpansAt(entry, cellWidth, fp.nameLeftPos, matchStart, matchedRunes) {
+			for cellOffset := 0; cellOffset < span.width; cellOffset++ {
+				cell := scr.GetCell(x+span.start+cellOffset, y)
+				cell.Attributes = fastFindMatchAttr(cell.Attributes, matchAttr)
+				scr.Write(x+span.start+cellOffset, y, []vtui.CharInfo{cell})
 			}
-			cellWidth := fp.Table.Columns[column].Width
-			if entryIndex >= 0 && entryIndex < len(fp.Entries) {
-				entry := fp.Entries[entryIndex]
-				matchStart, matchedRunes, _ := fp.fastFindMatch(entry.Name)
-				for _, span := range panelFileNameMatchSpansAt(entry, cellWidth, fp.nameLeftPos, matchStart, matchedRunes) {
-					for cellOffset := 0; cellOffset < span.width; cellOffset++ {
-						cell := scr.GetCell(x+span.start+cellOffset, y)
-						cell.Attributes = fastFindMatchAttr(cell.Attributes, matchAttr)
-						scr.Write(x+span.start+cellOffset, y, []vtui.CharInfo{cell})
-					}
-				}
-			}
-			x += cellWidth + 1
 		}
-	}
+	})
 }
 
 func (fp *FileSystemPanel) SetPosition(x1, y1, x2, y2 int) {
@@ -3035,46 +3676,15 @@ func (fp *FileSystemPanel) SetPosition(x1, y1, x2, y2 int) {
 func (fp *FileSystemPanel) Resize(w, h int) {
 	fp.SetPosition(fp.X1, fp.Y1, fp.X1+w-1, fp.Y1+h-1)
 
-	switch fp.EffectiveViewMode() {
-	case ViewModeWide:
-		nameW := w - 2 - 2 - panelSizeColumnWidth - panelModifiedColumnWidth
-		if nameW < 1 {
-			nameW = 1
-		}
-		fp.Table.Columns = []vtui.TableColumn{
-			{Title: i18n.Msg("Panel.Column.Name"), Width: nameW},
-			{Title: i18n.Msg("Panel.Column.Size"), Width: panelSizeColumnWidth, Alignment: vtui.AlignRight},
-			{Title: i18n.Msg("Panel.Column.Modified"), Width: panelModifiedColumnWidth},
-		}
-	case ViewModeDetailed:
-		// The panel's inner table is w-2 characters wide. The size column
-		// consumes 11 and its separator consumes 1, leaving w-14 for Name.
-		nameW := w - 14
-		if nameW < 5 {
-			nameW = 5
-		}
-		fp.Table.Columns = []vtui.TableColumn{
-			{Title: i18n.Msg("Panel.Column.Name"), Width: nameW},
-			{Title: i18n.Msg("Panel.Column.Size"), Width: panelSizeColumnWidth, Alignment: vtui.AlignRight},
-		}
-	default:
-		columnCount := fp.gridColumnCount()
-		available := w - 2 - (columnCount - 1)
-		if available < columnCount {
-			available = columnCount
-		}
-		columns := make([]vtui.TableColumn, columnCount)
-		remaining := available
-		for i := range columns {
-			width := remaining / (columnCount - i)
-			if width < 1 {
-				width = 1
-			}
-			columns[i] = vtui.TableColumn{Title: i18n.Msg("Panel.Column.Name"), Width: width}
-			remaining -= width
-		}
-		fp.Table.Columns = columns
-	}
+	// The panel's inner table is w-2 cells wide; the mode's columns share it
+	// the way far2l's PrepareColumnWidths shares a panel.
+	mode := fp.EffectiveViewMode()
+	layout := preparePanelLayout(PanelViewModeSettings(mode).Columns, w-2)
+	layout.mode = mode
+	layout.generation = panelViewModes.generation
+	fp.layout = layout
+	fp.Table.Columns = panelTableColumns(layout)
+	fp.configureCellSelection()
 	fp.updateSortColumnTitles()
 	fp.Refresh()
 }
@@ -3155,7 +3765,7 @@ func (fp *FileSystemPanel) processKey(e *vtinput.InputEvent, allowProviderPanelE
 	// Detailed view has no horizontal cell navigation. Outside Vim mode,
 	// reuse plain Left/Right as Page Up/Page Down while preserving the rest
 	// of the event (notably Shift selection).
-	if fp.ViewMode == ViewModeDetailed && config.App.NavigationMode != config.NavigationVim && !ctrl && !alt &&
+	if panelViewModeIsSingleStripe(fp.ViewMode) && config.App.NavigationMode != config.NavigationVim && !ctrl && !alt &&
 		(e.VirtualKeyCode == vtinput.VK_LEFT || e.VirtualKeyCode == vtinput.VK_RIGHT) {
 		Mapped := *e
 		if e.VirtualKeyCode == vtinput.VK_LEFT {
@@ -3168,15 +3778,24 @@ func (fp *FileSystemPanel) processKey(e *vtinput.InputEvent, allowProviderPanelE
 
 	// Close the shift-selection session on anything other than a
 	// Shift+nav key so the next Shift+nav re-decides its mode
-	// from the row under the cursor.
+	// from the row under the cursor. The closing key is also far's
+	// moment to re-sort: a session's rows only jump up once Shift is
+	// let go, so the sweep itself stays visually stable.
 	if !shift || !isShiftSelectNavKey(e.VirtualKeyCode) {
-		fp.shiftSessionActive = false
+		if fp.shiftSessionActive {
+			fp.shiftSessionActive = false
+			fp.resortSelectedFirst()
+		}
 	}
 
 	if fp.FastFindMode {
-		if e.VirtualKeyCode == vtinput.VK_UP || e.VirtualKeyCode == vtinput.VK_DOWN {
-			fp.FastFindMode = false
-			fp.FastFindStr = ""
+		// While the panel is narrowed every visible row is already a match, so
+		// navigation keys walk the result and the filter stays up -- that walk
+		// is the point of filtering. The cursor-moving search has nothing to
+		// walk and still closes on them.
+		filtering := fp.autoFilterMode
+		if !filtering && (e.VirtualKeyCode == vtinput.VK_UP || e.VirtualKeyCode == vtinput.VK_DOWN) {
+			fp.ExitFastFind()
 			vtui.FrameManager.Redraw()
 			// Reprocess the key as ordinary panel navigation now that Fast Find
 			// no longer owns it.
@@ -3184,13 +3803,13 @@ func (fp *FileSystemPanel) processKey(e *vtinput.InputEvent, allowProviderPanelE
 		}
 		switch e.VirtualKeyCode {
 		case vtinput.VK_LEFT, vtinput.VK_RIGHT, vtinput.VK_PRIOR, vtinput.VK_NEXT, vtinput.VK_HOME, vtinput.VK_END:
-			fp.FastFindMode = false
-			fp.FastFindStr = ""
-			vtui.FrameManager.Redraw()
+			if !filtering {
+				fp.ExitFastFind()
+				vtui.FrameManager.Redraw()
+			}
 			// Проваливаемся дальше, чтобы обработать саму навигацию
 		case vtinput.VK_ESCAPE:
-			fp.FastFindMode = false
-			fp.FastFindStr = ""
+			fp.ExitFastFind()
 			vtui.FrameManager.Redraw()
 			return true
 		case vtinput.VK_DELETE:
@@ -3199,16 +3818,21 @@ func (fp *FileSystemPanel) processKey(e *vtinput.InputEvent, allowProviderPanelE
 			// panel-level Del binding to hide the panels.
 			return true
 		}
+		if filtering && e.VirtualKeyCode == vtinput.VK_E && ctrl && !shift && !alt {
+			fp.ToggleExactAutoFilter()
+			vtui.FrameManager.Redraw()
+			return true
+		}
 		if e.VirtualKeyCode == vtinput.VK_F2 && !shift && !ctrl && !alt {
 			if strings.HasPrefix(fp.FastFindStr, "*") {
 				fp.FastFindStr = strings.TrimPrefix(fp.FastFindStr, "*")
 			} else {
 				fp.FastFindStr = "*" + fp.FastFindStr
 			}
-			if fp.FastFindStr == "" {
-				fp.FastFindMode = false
+			if autoFilterQuery(fp.FastFindStr) == "" && !fp.autoFilterMode {
+				fp.ExitFastFind()
 			} else {
-				fp.doFastFind(0)
+				fp.applyFastFind()
 			}
 			vtui.FrameManager.Redraw()
 			return true
@@ -3217,25 +3841,23 @@ func (fp *FileSystemPanel) processKey(e *vtinput.InputEvent, allowProviderPanelE
 			if len(fp.FastFindStr) > 0 {
 				runes := []rune(fp.FastFindStr)
 				fp.FastFindStr = string(runes[:len(runes)-1])
-				if len(fp.FastFindStr) == 0 {
-					fp.FastFindMode = false
+				// A bare "*" is no query at all: erasing the last character of
+				// a quick search ends it instead of matching everything. The
+				// filter window stays open with every row shown -- it closes
+				// only on Alt, Esc or Enter (#1131).
+				if autoFilterQuery(fp.FastFindStr) == "" && !fp.autoFilterMode {
+					fp.ExitFastFind()
 				} else {
-					fp.doFastFind(0)
+					fp.applyFastFind()
 				}
 			}
 			vtui.FrameManager.Redraw()
 			return true
 		}
-		if e.VirtualKeyCode == vtinput.VK_UP {
-			fp.doFastFind(-1)
-			vtui.FrameManager.Redraw()
-			return true
-		}
-		if e.VirtualKeyCode == vtinput.VK_DOWN {
-			fp.doFastFind(1)
-			vtui.FrameManager.Redraw()
-			return true
-		}
+		// Up and Down never reach this point: the cursor-moving search gave
+		// them back to ordinary navigation above, and under the filter they
+		// have to walk the narrowed list, which the navigation switch below
+		// does properly (grid columns, Shift-selection, scrolling).
 		if e.VirtualKeyCode == vtinput.VK_RETURN && ctrl && !alt {
 			dir := 1
 			if shift {
@@ -3246,22 +3868,25 @@ func (fp *FileSystemPanel) processKey(e *vtinput.InputEvent, allowProviderPanelE
 			return true
 		}
 		if e.VirtualKeyCode == vtinput.VK_RETURN {
-			fp.FastFindMode = false
-			fp.FastFindStr = ""
+			fp.ExitFastFind()
 			vtui.FrameManager.Redraw()
 			// Проваливаемся ниже, чтобы обработать Enter как вход в файл/директорию
 		} else if e.Char != 0 && !ctrl {
 			fp.FastFindStr += string(unicode.ToLower(e.Char))
-			fp.doFastFind(0)
+			fp.applyFastFind()
 			vtui.FrameManager.Redraw()
 			return true
 		}
 	} else {
 		searchFirstInput := config.App.NavigationMode == config.NavigationSearchFirst && fp.IsFocused() && !alt
 		if e.Char != 0 && (alt || searchFirstInput) && !ctrl && unicode.IsPrint(e.Char) {
+			// Typing a name is always the quick search, also with the
+			// autofilter enabled: the filter has its own key (a lone Alt
+			// or Panel.AutoFilter, see autofilter.go).
 			fp.FastFindMode = true
+			fp.autoFilterMode = false
 			fp.FastFindStr = string(unicode.ToLower(e.Char))
-			fp.doFastFind(0)
+			fp.applyFastFind()
 			vtui.FrameManager.Redraw()
 			return true
 		}
@@ -3275,9 +3900,22 @@ func (fp *FileSystemPanel) processKey(e *vtinput.InputEvent, allowProviderPanelE
 		idx := fp.GetCursorIndex()
 		fp.ToggleSelection(idx)
 		fp.SetCursorIndex(idx + 1)
+		// Far re-sorts after Ins while "selected first" is on, keeping the
+		// cursor on the row it just moved to.
+		fp.resortSelectedFirst()
 		return true
 
 	case vtinput.VK_UP, vtinput.VK_DOWN, vtinput.VK_LEFT, vtinput.VK_RIGHT, vtinput.VK_PRIOR, vtinput.VK_NEXT, vtinput.VK_HOME, vtinput.VK_END:
+		if ctrl && (e.VirtualKeyCode == vtinput.VK_PRIOR || e.VirtualKeyCode == vtinput.VK_NEXT) {
+			// CtrlPgUp/CtrlPgDn are hotkeys (Panel.GoParent / Panel.EnterDirectory).
+			// A real keypress never reaches here: the hotkey manager consumes it
+			// before FrameManager.EventFilter calls ProcessKey. An injected event
+			// (a macro's Keys("CtrlPgUp")) bypasses that filter and would
+			// otherwise be swallowed here as a plain page-up/down cursor move,
+			// landing on ".." without actually entering it (f4 #1394). Declining
+			// it lets step 4's MacroHotkey fallback run the real action.
+			return false
+		}
 		// FAR-style Shift+nav selection.
 		//
 		// The session concept unifies "select" and "deselect"
@@ -3341,7 +3979,10 @@ func (fp *FileSystemPanel) processKey(e *vtinput.InputEvent, allowProviderPanelE
 		}
 
 		handled := false
-		if columns := fp.gridColumnCount(); columns > 1 {
+		if fp.GroupBy != GroupNone {
+			fp.SetCursorIndex(fp.groupNavigationTarget(e.VirtualKeyCode))
+			handled = true
+		} else if columns := fp.gridColumnCount(); columns > 1 {
 			switch e.VirtualKeyCode {
 			case vtinput.VK_UP:
 				idx--
@@ -3481,6 +4122,14 @@ func (fp *FileSystemPanel) processKey(e *vtinput.InputEvent, allowProviderPanelE
 				oldPath := fp.Vfs.GetPath()
 				newPath := fp.Vfs.Join(oldPath, selected.Name)
 				vtui.DebugLog("PANEL: Navigating %q -> %q", oldPath, newPath)
+				if osfs, ok := fp.Vfs.(*vfs.OSVFS); ok && osfs.NeedsElevation(newPath) {
+					// Resolving this path would consult the sudo helper, which can
+					// block for minutes on a slow PAM prompt. f4 has one cooperative
+					// UI goroutine, so doing that here would freeze the whole UI
+					// (f4#1411); resolve it off the UI goroutine instead.
+					fp.navigateElevatedDirectoryAsync(osfs, newPath, oldPath, selected.Name)
+					return true
+				}
 				if err := fp.SetKnownDirectoryPath(newPath); err == nil {
 					if selected.Name == ".." {
 						fp.PendingSelection = fp.Vfs.Base(oldPath)
@@ -3506,6 +4155,11 @@ func (fp *FileSystemPanel) ProcessMouse(e *vtinput.InputEvent) bool {
 	if e.Type != vtinput.MouseEventType {
 		return false
 	}
+	if e.WheelDirection == 0 {
+		// Any other pointer gesture ends the coast: the cursor has to stay
+		// where the user last saw it when they click (see internal/wheel).
+		fp.wheel.Stop()
+	}
 	if fp.ProviderOpenTask != nil {
 		// The visible rows belong to the destination cache while fp.vfs still
 		// points at the source. Consume panel mouse input until the switch so a
@@ -3521,15 +4175,38 @@ func (fp *FileSystemPanel) ProcessMouse(e *vtinput.InputEvent) bool {
 		fp.headerMouseActive = false
 		fp.rowDragButton = 0
 		fp.stopDragAutoScroll()
+		fp.finishColumnResize()
 	}
 
+	// A resize drag in progress takes priority over every other header/row
+	// hit-test below: once the border is grabbed, the pointer driving it is
+	// what matters, not whatever happens to be under it (f4#246).
+	if isMove && fp.columnResizeActive {
+		fp.dragColumnResize(int(e.MouseX))
+		return true
+	}
+
+	if e.WheelDirection == 0 && fp.groupHeadingAt(int(e.MouseX), int(e.MouseY)) {
+		return true
+	}
 	if e.WheelDirection == 0 && e.ButtonState&vtinput.FromLeft1stButtonPressed != 0 &&
 		e.KeyDown && e.MouseEventFlags&vtinput.MouseMoved == 0 {
+		if column, ok := fp.headerColumnBorderAt(int(e.MouseX), int(e.MouseY)); ok {
+			fp.startColumnResize(column, int(e.MouseX))
+			return true
+		}
 		if mode, ok := fp.headerSortModeAt(int(e.MouseX), int(e.MouseY)); ok {
 			fp.headerMouseActive = true
 			fp.SetSortMode(mode)
 			return true
 		}
+	}
+
+	if e.WheelDirection == 0 && e.ButtonState&vtinput.FromLeft1stButtonPressed != 0 && e.KeyDown &&
+		!isMove && fp.exactCheckboxAt(int(e.MouseX), int(e.MouseY)) {
+		fp.ToggleExactAutoFilter()
+		vtui.FrameManager.Redraw()
+		return true
 	}
 
 	if fp.processScrollBarMouse(e) {
@@ -3542,7 +4219,11 @@ func (fp *FileSystemPanel) ProcessMouse(e *vtinput.InputEvent) bool {
 		}
 	}
 
-	if fp.FastFindMode && e.ButtonState != 0 {
+	if fp.FastFindMode && e.ButtonState != 0 && !fp.autoFilterMode {
+		// A filtered panel keeps its filter here on purpose: the rows under
+		// the pointer are the filtered ones, and giving the hidden rows back
+		// before this click is resolved would land it on a different file.
+		// The filter closes on Esc, on Enter, and on leaving the directory.
 		fp.FastFindMode = false
 		fp.FastFindStr = ""
 		vtui.FrameManager.Redraw()
@@ -3557,69 +4238,11 @@ func (fp *FileSystemPanel) ProcessMouse(e *vtinput.InputEvent) bool {
 			speed = config.App.WheelPanelUp
 		}
 		step := direction * config.WheelScrollLines(speed)
-
-		H := fp.Table.ViewHeight
-		if H <= 0 {
-			H = 1
-		}
-
-		if fp.gridColumnCount() == 1 {
-			// Detailed view (1-column)
-			idx := fp.GetCursorIndex()
-			newIdx := idx + step
-			if newIdx < 0 {
-				newIdx = 0
-			}
-			if newIdx >= len(fp.Entries) {
-				newIdx = len(fp.Entries) - 1
-			}
-
-			// Scroll the list if possible, keeping the cursor visually stable
-			newTop := fp.Table.TopPos + step
-			maxTop := len(fp.Entries) - H
-			if maxTop < 0 {
-				maxTop = 0
-			}
-			if newTop < 0 {
-				newTop = 0
-			}
-			if newTop > maxTop {
-				newTop = maxTop
-			}
-
-			fp.Table.TopPos = newTop
-			fp.SetCursorIndex(newIdx)
-			fp.Refresh()
-			return true
-		} else {
-			// Medium/Brief grid view.
-			idx := fp.GetCursorIndex()
-			newIdx := idx + step
-			if newIdx < 0 {
-				newIdx = 0
-			}
-			if newIdx >= len(fp.Entries) {
-				newIdx = len(fp.Entries) - 1
-			}
-
-			// Scroll the list if possible, keeping the cursor visually stable
-			newTop := fp.Table.TopPos + step
-			maxTop := len(fp.Entries) - fp.gridColumnCount()*H
-			if maxTop < 0 {
-				maxTop = 0
-			}
-			if newTop < 0 {
-				newTop = 0
-			}
-			if newTop > maxTop {
-				newTop = maxTop
-			}
-
-			fp.Table.TopPos = newTop
-			fp.SetCursorIndex(newIdx)
-			fp.Refresh()
-			return true
-		}
+		// A spin faster than one notch per spin window queues extra
+		// lines the panel keeps scrolling on its own (see internal/wheel).
+		fp.wheel.Notch(direction, fp.wheelScrollBy)
+		fp.wheelScrollBy(step)
+		return true
 	}
 
 	isRightDragMove := isMove && fp.rightDragActive &&
@@ -3652,6 +4275,14 @@ func (fp *FileSystemPanel) ProcessMouse(e *vtinput.InputEvent) bool {
 		return fp.rightDragActive
 	}
 
+	if fp.GroupBy != GroupNone {
+		if idx := fp.mouseEntryIndex(int(e.MouseX), int(e.MouseY)); idx >= 0 && e.ButtonState&vtinput.FromLeft1stButtonPressed != 0 {
+			fp.SetCursorIndex(idx)
+			fp.rowDragButton = vtinput.FromLeft1stButtonPressed
+			return true
+		}
+		return false
+	}
 	handled := fp.Table.ProcessMouse(e)
 	if handled {
 		if e.KeyDown && !isMove && e.ButtonState&vtinput.FromLeft1stButtonPressed != 0 {
@@ -3665,8 +4296,10 @@ func (fp *FileSystemPanel) ProcessMouse(e *vtinput.InputEvent) bool {
 			if H <= 0 {
 				H = 1
 			}
-			// SelectPos is already absolute (TopPos + row) in Medium mode,
-			// so we just add the column offset.
+			// vtui set SelectCol to the table column clicked; the panel keeps
+			// the stripe there. SelectPos is already absolute (TopPos + row)
+			// in Medium mode, so we just add the stripe offset.
+			fp.Table.SelectCol = fp.stripeOfColumn(fp.Table.SelectCol)
 			newIdx := fp.Table.SelectPos + fp.Table.SelectCol*H
 
 			// Fix for "click in empty space": if we selected an empty slot,
@@ -3700,6 +4333,21 @@ func (fp *FileSystemPanel) GetRawSelectedName() string {
 		return ""
 	}
 	return fp.Entries[idx].Name
+}
+
+// GetSelectedIsDir backs vfs.SelectedIsDirHost (f4#1356): it reports whether
+// the cursor entry is a directory by reading the already-cached
+// vfs.VFSItem.IsDir on that *FileEntry, the same field GetSelectedName
+// already reads to name the entry -- no Stat, no VFS round trip. The ".."
+// pseudo-entry is always built with IsDir: true, so a cursor parked on it is
+// correctly reported as a directory too. known is false only when there is
+// no entry under the cursor to ask.
+func (fp *FileSystemPanel) GetSelectedIsDir() (isDir bool, known bool) {
+	idx := fp.GetCursorIndex()
+	if len(fp.Entries) == 0 || idx < 0 || idx >= len(fp.Entries) {
+		return false, false
+	}
+	return fp.Entries[idx].IsDir, true
 }
 
 // SetSelectedByName picks or unpicks an entry by name and reports whether the
@@ -3757,11 +4405,24 @@ func (fp *FileSystemPanel) ClearSelectionIfUnchanged(token PanelSelectionToken) 
 // together with the position of the one under the cursor, or minus one when
 // the cursor is not on a picture.
 func (fp *FileSystemPanel) ImageSiblings() ([]string, int) {
+	return fp.siblingsWhere(media.IsImageFile)
+}
+
+// VideoSiblings is ImageSiblings for films: the video files of this panel in
+// the order it shows them, and the position of the one under the cursor, or
+// minus one when the cursor is not on one.
+func (fp *FileSystemPanel) VideoSiblings() ([]string, int) {
+	return fp.siblingsWhere(media.IsVideoFile)
+}
+
+// siblingsWhere lists the files of the panel that keep(name) accepts, in the
+// order the panel shows them, and the position of the one under the cursor.
+func (fp *FileSystemPanel) siblingsWhere(keep func(name string) bool) ([]string, int) {
 	current := fp.GetRawSelectedName()
 	names := make([]string, 0, len(fp.Entries))
 	index := -1
 	for _, e := range fp.Entries {
-		if e.IsDir || e.Name == ".." || !media.IsImageFile(e.Name) {
+		if e.IsDir || e.Name == ".." || !keep(e.Name) {
 			continue
 		}
 		if e.Name == current {
@@ -3802,8 +4463,59 @@ func (fp *FileSystemPanel) SelectName(name string) {
 	}
 }
 
+// selectionMemo lets a caller that asks the same panel for its selection many
+// times in a row, with nothing changing in between, walk the listing once
+// (f4#1832). While it is on, GetSelectedNames hands back the first answer.
+type selectionMemo struct {
+	mu    sync.Mutex
+	on    bool
+	valid bool
+	names []string
+}
+
+// MemoizeSelection makes GetSelectedNames answer from its first result until
+// the returned function is called. The result is shared, so callers must only
+// read it. Use it around a pass that does not change the panel, such as
+// refreshing the dimmed menu rows.
+func (fp *FileSystemPanel) MemoizeSelection() (end func()) {
+	fp.selMemo.mu.Lock()
+	fp.selMemo.on, fp.selMemo.valid, fp.selMemo.names = true, false, nil
+	fp.selMemo.mu.Unlock()
+	return func() {
+		fp.selMemo.mu.Lock()
+		fp.selMemo.on, fp.selMemo.valid, fp.selMemo.names = false, false, nil
+		fp.selMemo.mu.Unlock()
+	}
+}
+
 // GetSelectedNames returns a list of selected files. If none are selected, returns the focused one.
 func (fp *FileSystemPanel) GetSelectedNames() []string {
+	fp.selMemo.mu.Lock()
+	if fp.selMemo.on && fp.selMemo.valid {
+		names := fp.selMemo.names
+		fp.selMemo.mu.Unlock()
+		return names
+	}
+	fp.selMemo.mu.Unlock()
+	names := fp.selectedNames()
+	fp.selMemo.mu.Lock()
+	if fp.selMemo.on {
+		fp.selMemo.names, fp.selMemo.valid = names, true
+	}
+	fp.selMemo.mu.Unlock()
+	return names
+}
+
+// selectionWalks counts the walks of a listing that GetSelectedNames made, for
+// the responsiveness test of the menu (f4#1832).
+var selectionWalks atomic.Int64
+
+// SelectionWalks is the number of times GetSelectedNames has walked a whole
+// listing since the process started.
+func SelectionWalks() int64 { return selectionWalks.Load() }
+
+func (fp *FileSystemPanel) selectedNames() []string {
+	selectionWalks.Add(1)
 	var names []string
 	// 1. Collect explicitly selected items (ins/shift+arrows)
 	for _, e := range fp.Entries {
@@ -3971,6 +4683,7 @@ func (fp *FileSystemPanel) RestoreSelection() {
 	} else {
 		fp.previousSelectionPath = ""
 	}
+	fp.resortSelectedFirst()
 	vtui.FrameManager.Redraw()
 }
 
@@ -3981,6 +4694,7 @@ func (fp *FileSystemPanel) InvertSelection() {
 			fp.SetItemSelected(i, !e.Selected)
 		}
 	}
+	fp.resortSelectedFirst()
 	vtui.FrameManager.Redraw()
 }
 
@@ -3999,12 +4713,20 @@ func (fp *FileSystemPanel) ApplyMaskSelection(mask string, state bool) {
 		if e.Name == ".." {
 			continue
 		}
-		nameLower := strings.ToLower(e.Name)
+		matchName := e.Name
+		if _, ok := fp.Vfs.(*TempPanelVFS); ok {
+			// Temp Panel displays the referenced full path.  Far's file-mask
+			// selection still applies to the item name, so a mask such as
+			// "*.txt" must match the basename rather than the path separators.
+			matchName = path.Base(strings.ReplaceAll(matchName, "\\", "/"))
+		}
+		nameLower := strings.ToLower(matchName)
 		matched, _ := filepath.Match(maskLower, nameLower)
 		if matched {
 			fp.SetItemSelected(i, state)
 		}
 	}
+	fp.resortSelectedFirst()
 	vtui.FrameManager.Redraw()
 }
 
@@ -4143,4 +4865,15 @@ func CurrentPanelEntryPath(fsp *FileSystemPanel) string {
 		return base
 	}
 	return fsp.Vfs.Join(base, fsp.Entries[idx].Name)
+}
+
+// raiseFolderChanged raises the FolderChanged event of the Lua macros when the
+// panel has entered a folder other than the one it last reported (a refresh of
+// the same folder is not a change).
+func raiseFolderChanged(fp *FileSystemPanel, path string) {
+	if fp == nil || path == "" || fp.folderEventPath == path {
+		return
+	}
+	fp.folderEventPath = path
+	macro.MacroMgr.RaiseEvent("FolderChanged")
 }

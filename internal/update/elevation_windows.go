@@ -86,6 +86,14 @@ func runElevated(data []byte, archiveKind string) error {
 		return fmt.Errorf("failed to close temporary update archive: %w", err)
 	}
 
+	return runElevatedCommand([]string{HelperFlag, tmpPath, archiveKind})
+}
+
+var restoreExecutableElevated = func(backup string) error {
+	return runElevatedCommand([]string{RestoreHelperFlag, backup})
+}
+
+func runElevatedCommand(args []string) error {
 	exePath, err := Executable()
 	if err != nil {
 		return fmt.Errorf("failed to locate f4 for UAC elevation: %w", err)
@@ -103,7 +111,7 @@ func runElevated(data []byte, archiveKind string) error {
 	if err != nil {
 		return err
 	}
-	params, err := windows.UTF16PtrFromString(windows.ComposeCommandLine([]string{HelperFlag, tmpPath, archiveKind}))
+	params, err := windows.UTF16PtrFromString(windows.ComposeCommandLine(args))
 	if err != nil {
 		return err
 	}

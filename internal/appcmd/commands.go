@@ -97,4 +97,30 @@ const (
 	// Appended for the same reason: opening the terminal in a workspace of
 	// its own is new, and the commands above keep the numbers they had.
 	CmWorkspaceNewTerminal
+	CmLeftGroupMenu
+	CmRightGroupMenu
+	// Appended for the same reason: numeric ("natural") name sort is new
+	// (f4#1471) and the commands above keep the numbers they had.
+	CmSortNumeric
+	CmLeftSortNumeric
+	CmRightSortNumeric
+	// Appended for the same reason: the side menus list far2l's other six
+	// panel modes (f4#410), in the order of the ViewMode5 .. ViewMode0 slots.
+	CmLeftViewMode5
+	CmLeftViewMode6
+	CmLeftViewMode7
+	CmLeftViewMode8
+	CmLeftViewMode9
+	CmLeftViewMode0
+	CmRightViewMode5
+	CmRightViewMode6
+	CmRightViewMode7
+	CmRightViewMode8
+	CmRightViewMode9
+	CmRightViewMode0
+	// Appended for the same reason: "show selected first" (far's Shift+F12)
+	// is new and the commands above keep the numbers they had.
+	CmSortSelectedFirst
+	CmLeftSortSelectedFirst
+	CmRightSortSelectedFirst
 )

@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"github.com/unxed/f4/internal/cmdline"
 	"github.com/unxed/f4/internal/config"
 	"github.com/unxed/f4/internal/dialog"
 	"github.com/unxed/f4/internal/editor"
@@ -9,10 +10,7 @@ import (
 	"github.com/unxed/f4/internal/terminal"
 
 	"context"
-	"encoding/xml"
 	"fmt"
-	"io"
-	"os"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -96,10 +94,11 @@ func setCoreSetting(cfg *config.F4Config, id, value string) error {
 	return nil
 }
 
-func (p coreSettingsProvider) Catalog() f4settings.Catalog {
-	if p.catalog != nil {
-		return *p.catalog
-	}
+// coreSettingsStaticFields is every core field with its label and
+// description, before Catalog adds what it discovers at run time: installed
+// fonts, colour styles, languages and renderers. f4:config reads the texts
+// from here, so opening it scans nothing.
+func coreSettingsStaticFields() []f4settings.Field {
 	fields := coreSettingsFields()
 	for _, area := range []string{"Panel", "Editor", "Viewer", "Menu", "Table"} {
 		for _, direction := range []string{"Up", "Down"} {
@@ -107,6 +106,16 @@ func (p coreSettingsProvider) Catalog() f4settings.Catalog {
 			fields = append(fields, f4settings.Field{ID: id, Category: "keyboard", Group: "Mouse wheel", Label: f4settings.Text{English: area + " wheel " + strings.ToLower(direction)}, Description: f4settings.Text{English: "Number of " + strings.ToLower(area) + " rows per " + strings.ToLower(direction) + "ward wheel notch. Zero follows the system setting."}, Kind: f4settings.Integer, Timing: "live"})
 		}
 	}
+	// The fast-spin ramp behind Mouse wheel: a spin queues lines the view
+	// then scrolls on its own, faster than the wheel itself reports them.
+	// The ramp shape itself is tuned in code (see internal/wheel), so this
+	// is the only knob it has.
+	fields = append(fields, f4settings.Field{
+		ID: "WheelAcceleration", Category: "keyboard", Group: "Mouse wheel",
+		Label:       f4settings.Text{English: "Wheel acceleration"},
+		Description: f4settings.Text{English: "How many lines the very fastest wheel notch queues on top of the rows it scrolls at once, from 1 (the ramp never queues anything) to 10."},
+		Kind:        f4settings.Integer, Timing: "live",
+	})
 	for i, label := range []string{"Command history timestamps", "Folder history timestamps", "Viewer/editor history timestamps"} {
 		fields = append(fields, f4settings.Field{ID: fmt.Sprintf("HistoryShowTimes.%d", i), Category: "history", Group: "Presentation", Label: f4settings.Text{English: label}, Description: f4settings.Text{English: "Choose the timestamp presentation independently for this history."}, Kind: f4settings.ChoiceKind, Choices: settingsChoices("0:Date and time;1:Date;2:None"), Timing: "new history dialogs"})
 	}
@@ -118,6 +127,23 @@ func (p coreSettingsProvider) Catalog() f4settings.Catalog {
 		}
 		fields = append(fields, f)
 	}
+	for i := range fields {
+		f := &fields[i]
+		if f.Label.Key == "" {
+			f.Label.Key = "SettingsCenter." + f.ID + ".Label"
+		}
+		if f.Description.Key == "" {
+			f.Description.Key = "SettingsCenter." + f.ID + ".Description"
+		}
+	}
+	return fields
+}
+
+func (p coreSettingsProvider) Catalog() f4settings.Catalog {
+	if p.catalog != nil {
+		return *p.catalog
+	}
+	fields := coreSettingsStaticFields()
 	for i := range fields {
 		f := &fields[i]
 		switch f.ID {
@@ -163,12 +189,6 @@ func (p coreSettingsProvider) Catalog() f4settings.Catalog {
 		case "EditorColorerScheme":
 			f.Kind = f4settings.ChoiceKind
 			f.Choices = settingsChoices(":Built-in default")
-		}
-		if f.Label.Key == "" {
-			f.Label.Key = "SettingsCenter." + f.ID + ".Label"
-		}
-		if f.Description.Key == "" {
-			f.Description.Key = "SettingsCenter." + f.ID + ".Description"
 		}
 		f.Aliases = append(f.Aliases, "settings", f.ID)
 		if f.Group == "Typing and focus" || f.Group == "Path suggestions" {
@@ -274,8 +294,38 @@ func (p coreSettingsProvider) Begin(context.Context) (*f4settings.Draft, error) 
 					errors[f.ID] = settingsError("maximum depth is 99")
 				}
 			}
+
+			switch f.ID {
+			case "ClipboardImageJPEGQuality":
+				n, err := strconv.Atoi(value)
+				if err != nil || n < 1 || n > 100 {
+					errors[f.ID] = settingsError("JPEG quality must be between 1 and 100")
+				}
+			case "ClipboardImageTemplate":
+				if _, err := cmdline.CompileFilenameTemplate(value); err != nil {
+					errors[f.ID] = err
+				}
+			case "ClipboardImageDigitFormat":
+				if len(value) < 1 || len(value) > 20 || strings.Trim(value, "0") != "" {
+					errors[f.ID] = settingsError("digit format must contain between 1 and 20 zeros")
+				}
+			case "ClipboardImagePrefix":
+				if err := panel.ValidateClipboardImageName(value + "1.png"); err != nil {
+					errors[f.ID] = err
+				}
+			}
 			if current := coreSettingValue(config.App, f.ID); current != d.Baseline[f.ID] && current != value {
 				errors[f.ID] = settingsError("this setting changed outside Settings Center; reopen to load its current value")
+			}
+		}
+		if d.Dirty("PanelGroupSmallMiB") || d.Dirty("PanelGroupMediumMiB") || d.Dirty("PanelGroupLargeMiB") {
+			small, e1 := strconv.Atoi(d.Values["PanelGroupSmallMiB"])
+			medium, e2 := strconv.Atoi(d.Values["PanelGroupMediumMiB"])
+			large, e3 := strconv.Atoi(d.Values["PanelGroupLargeMiB"])
+			if e1 != nil || e2 != nil || e3 != nil || !config.ValidPanelGroupLimits(small, medium, large) {
+				for _, id := range []string{"PanelGroupSmallMiB", "PanelGroupMediumMiB", "PanelGroupLargeMiB"} {
+					errors[id] = fmt.Errorf("%s", i18n.Msg("Group.InvalidLimits"))
+				}
 			}
 		}
 		return errors
@@ -338,35 +388,11 @@ func (p coreSettingsProvider) Begin(context.Context) (*f4settings.Draft, error) 
 	return d, nil
 }
 
-// Enumerating names must not instantiate the highlighting WASM engine just to
-// open Settings. HRD metadata is declared in the Colorer catalog itself.
+// settingsColorerSchemes lists the colour styles of the applied Colorer
+// configuration, the user's own included. Colorer reads the catalog itself:
+// catalog.xml pulls its style lists in through external XML entities, which
+// encoding/xml does not follow, so reading it here listed nothing on a real
+// installation. It starts Colorer on a cache miss; call it off the UI thread.
 func settingsColorerSchemes() []editor.ColorerScheme {
-	return settingsColorerSchemesAt(editor.ColorerConfigsDir())
-}
-func settingsColorerSchemesAt(directory string) []editor.ColorerScheme {
-	file, err := os.Open(filepath.Join(directory, "base", "catalog.xml"))
-	if err != nil {
-		return nil
-	}
-	defer func() { _ = file.Close() }() // Read-only metadata; the read result determines success.
-	decoder := xml.NewDecoder(io.LimitReader(file, 4<<20))
-	var schemes []editor.ColorerScheme
-	for {
-		token, err := decoder.Token()
-		if err != nil {
-			break
-		}
-		start, ok := token.(xml.StartElement)
-		if !ok || start.Name.Local != "hrd" {
-			continue
-		}
-		attrs := map[string]string{}
-		for _, a := range start.Attr {
-			attrs[a.Name.Local] = a.Value
-		}
-		if attrs["class"] == "rgb" && attrs["name"] != "" {
-			schemes = append(schemes, editor.ColorerScheme{Name: attrs["name"], Description: attrs["description"]})
-		}
-	}
-	return schemes
+	return editor.ListColorerSchemesFor(editor.CurrentColorerSource())
 }

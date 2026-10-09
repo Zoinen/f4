@@ -11,7 +11,7 @@ static binary and runs either in a terminal or as a standalone graphical window.
 
 ## Tech Stack
 
-- **Programming language:** Go 1.26.6, `CGO_ENABLED=0`
+- **Programming language:** Go 1.26.9, `CGO_ENABLED=0`
 - **Framework:** none — custom TUI; UI and input come from the external `vtui` and
   `vtinput` libraries
 - **Database:** none for the application; `plugins/sqlite` browses user SQLite files
@@ -63,6 +63,8 @@ internal/        # everything the application is, in layers
   ttyx/          #     tty extensions
   unpack/        #     archive extraction
   wincon/        #     Windows console
+  wincondrag/    #     #1604: drag files out of a Windows console (Burlak's tool window)
+  winex11drag/   #     #566 steps 1-2: f4's X11 window, an X connection from Wine (unwired)
   hideconsole/   #     a vendored fork, console hiding on Windows
   testutil/      #   test scaffolding shared across packages; _test.go use only
   paneltest/     #   the same, for helpers that need a panels frame
@@ -76,9 +78,10 @@ plugins/         # one package per plugin: archive, cloudfox, netfox, mediainfo,
                  # envman, ios, android, sqlite, visren, id3editor, chroma
                  # dummy_internal / dummy_rpc / dummy_lua are transport fixtures
 sdk/             # plugin API: f4plugin, f4rpc, lua, extui
-tools/           # developer tooling, incl. the ttytest terminal harness
-docs/            # 48 subsystem documents — read the relevant one before editing
-packaging/       # distribution packaging
+tools/           # developer tooling, incl. the ttytest terminal harness and
+                 # releasecheck, the release gate (docs/UPDATER.md)
+docs/            # 56 subsystem documents — read the relevant one before editing
+packaging/       # distribution packaging and the Nix Home Manager module
 artifacts/       # build artifacts
 .ai-factory/     # AI Factory context: config, description, rules, plans
 ```
@@ -93,6 +96,7 @@ artifacts/       # build artifacts
 | `internal/app/actions_table.go`, `internal/action/registry.go` | Action definitions and dispatch |
 | `embedded.go` | Assets embedded into the binary |
 | `go.mod` | Module `github.com/unxed/f4`, Go 1.26.6, dependency set |
+| `flake.nix`, `flake.lock`, `packaging/nix/` | Nix package, overlay, dev shell and Home Manager module |
 | `f4.example.ini` | Reference configuration file |
 | `highlight.ini` | Syntax highlighting configuration |
 | `.golangci.yml`, `.golangci-strict.yml` | Lint configuration |
@@ -103,9 +107,12 @@ artifacts/       # build artifacts
 | Document | Path | Description |
 | --- | --- | --- |
 | README | `README.md` | Project overview, downloads, backends, philosophy |
-| Subsystem docs | `docs/*.md` | 48 documents: VFS, PLUGINS, MACROS, KEYMAP, TERMINAL, CONPTY, WINCON, UX_GUIDELINES and others |
+| Subsystem docs | `docs/*.md` | 56 documents: VFS, PLUGINS, MACROS, KEYMAP, TERMINAL, CONPTY, WINCON, UX_GUIDELINES and others |
+| Updater | `docs/UPDATER.md` | Release asset names as an interface with every installed f4, the release check, the rollback |
+| Archive libraries | `docs/ARCHIVE_DEPENDENCIES.md` | The chain of archive libraries (zipper, zip, tar, xz, sevenzip, archives, rardecode) and the rules for updating them |
 | Issue reviews | `docs/ISSUES/` | Per-issue solution reviews |
 | Spreadsheet | `docs/SPREADSHEET.md` | Spreadsheet mode specification |
+| Terminal junk log | `docs/TERMINAL_JUNK_LOG.md` | Stray paths, stray line feeds and the `f4_sync` directory sync in the embedded terminal. Read it whole before touching that area; never delete or prune it, add to it |
 
 ## AI Context Files
 
@@ -169,6 +176,14 @@ artifacts/       # build artifacts
 - `cmd/f4/architecture_test.go` enforces the layer rules. If a change needs an
   exemption there, the architecture document is what changes first, not the test.
 - The full rules, with the reasoning, are in `.ai-factory/ARCHITECTURE.md`.
+
+### Archive libraries
+
+- Before changing a `go.mod` line for zipper, zip, tar, xz, sevenzip, archives,
+  rardecode or their helpers, read `docs/ARCHIVE_DEPENDENCIES.md`.
+- Libraries are referred to by tag only, never by commit or branch.
+- After such a change, run `scripts/check_archive_deps.sh` and commit only when
+  it prints `OK`.
 
 ### Go build cache
 

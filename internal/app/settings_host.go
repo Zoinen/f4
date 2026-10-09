@@ -23,8 +23,10 @@ type settingsHost struct{}
 func (settingsHost) ApplyRuntime(before config.F4Config, changed []string) {
 	config.ApplyProxySettings()
 	config.ApplyWheelSettings()
+	config.ApplyMenuSettings()
 	panel.ApplyPathHintSettings()
-	vtui.ManageCursorStyle = !config.App.KeepTerminalCursor
+	config.ApplyCursorSettings()
+	ApplyGlyphStyle()
 	for _, id := range changed {
 		if id == "ColorStyle" || id == "EnforceColorCorrection" {
 			_ = theme.ApplyColorStyle(config.App.ColorStyle)
@@ -50,6 +52,11 @@ func (settingsHost) ApplyRuntime(before config.F4Config, changed []string) {
 		if before.WorkspaceTabNumbering != config.App.WorkspaceTabNumbering && config.App.WorkspaceTabNumbering == config.WorkspaceTabNumbersOrder {
 			panel.RenumberWorkspaceScreens()
 		}
+		if before.AlwaysShowMenuBar != config.App.AlwaysShowMenuBar {
+			// Editors and viewers place a pinned menu bar in ResizeConsole,
+			// like the panels frames resized below (issue #1153).
+			fm.ResizeAllScreens()
+		}
 		for _, screen := range fm.Screens {
 			for _, frame := range screen.Frames {
 				if pf, ok := frame.(*panel.PanelsFrame); ok && !pf.Closed {
@@ -59,6 +66,11 @@ func (settingsHost) ApplyRuntime(before config.F4Config, changed []string) {
 					}
 					pf.ResizeConsole(pf.LastW, pf.LastH)
 					pf.RefreshAll()
+					for _, p := range pf.Panels {
+						if fp, ok := p.(*panel.FileSystemPanel); ok {
+							fp.SetGrouping(fp.GroupBy, fp.GroupReverse, fp.GroupFoldersSeparately)
+						}
+					}
 				}
 			}
 		}
@@ -116,8 +128,22 @@ func (settingsHost) SessionPath() string { return getSessionIniPath() }
 func (settingsHost) GuiBackends() []string { return startupGuiBackends }
 func (settingsHost) PluginPackage(install bool, pf *panel.PanelsFrame, item plughost.PlugRingItem, refresh func()) {
 	if install {
-		actionInstallPlugRingItem(pf, nil, item, refresh)
+		// actionInstallPlugRingItem may wait synchronously for a confirmation
+		// dialog through PanelsFrame.Message. This method is called from a UI
+		// task by the Settings catalog, so the wait must not occupy that task
+		// (f4#1710).
+		go actionInstallPlugRingItem(pf, nil, item, refresh)
 	} else {
 		actionRemovePlugRingItem(pf, nil, item, refresh)
 	}
+}
+
+// ApplyGlyphStyle gives the graphical backends the frame and control glyph set
+// the GlyphStyle setting names (f4#285); text terminals ignore it.
+func ApplyGlyphStyle() {
+	style := vtui.GlyphStyleClassic
+	if config.NormalizeGlyphStyle(config.App.GlyphStyle) == config.GlyphStyleRounded {
+		style = vtui.GlyphStyleRounded
+	}
+	vtui.SetGlyphStyle(style)
 }

@@ -32,8 +32,33 @@ var architectureLayers = map[string]int{
 	"internal/ttyx":     0,
 	"internal/wincon":   0,
 
+	// #566 step 1/2's foundation: finding f4's own Xlib window under Wine and
+	// opening a connection to the host's X server through libwinescape. A
+	// leaf over vfs/hostmode (which is not tracked by this map -- see its own
+	// package comment) and the vendored winescape/xgb; nothing of ours is
+	// wired to call it yet.
+	"internal/winex11drag": 0,
+
+	// #1604: dragging files out of f4 in a Windows console into other
+	// applications, Burlak's tool-window technique. A leaf over vtui; the
+	// Windows console session installs it.
+	"internal/wincondrag": 0,
+
 	// Checked conversions, shared by seven packages. Zero imports of ours.
 	"internal/numeric": 0,
+
+	// f4#1463: numbers and amounts of money in words (Russian, English). Pure
+	// text in, text out; imports nothing of ours.
+	"internal/numwords": 0,
+
+	// The application icon files, embedded so that --install can put them
+	// where the desktop looks for them (f4#1290). Generated data, no code.
+	"internal/gui/assets/icon": 0,
+
+	// The --install/--self-install CLI command. It copies the running
+	// executable, edits a shell profile and writes the desktop launcher and
+	// icons; the only package of ours it imports is the embedded icon files.
+	"internal/install": 1,
 
 	// Key naming, remapping, input translation and the X key grabs. Reads
 	// internal/config like internal/theme does, and internal/numeric for the
@@ -63,6 +88,52 @@ var architectureLayers = map[string]int{
 	// import another of ours; a package that imports nothing can be shared by
 	// all four without putting one of them under another.
 	"internal/ini": 0,
+
+	// The far2l file mask matcher. A leaf because a file mask is a string
+	// question with no owner: the panel matches associations with it, the
+	// archive plugin asks it which names Enter must leave to their
+	// association, and neither may import the other.
+	"internal/filemask": 0,
+
+	// Menu hotkeys made distinct once a menu is built. A leaf over vtui only.
+	"internal/menuhotkeys": 0,
+
+	// Reading a frame's own border colour back off the screen buffer, for a
+	// view that paints a decoration onto a frame it does not own. A leaf over
+	// vtui only, so a view does not grow a private copy of a probe whose
+	// whole point is to survive a frame dragged off the screen edge.
+	"internal/frameborder": 0,
+
+	// LaTeX formulas of a Markdown document to Unicode text: a leaf over the
+	// standard library, run before the text reaches the Markdown viewer.
+	"internal/mdmath": 0,
+
+	// Mermaid flowcharts to plain Unicode text; mdmath calls it for the
+	// ```mermaid blocks of a Markdown document. A leaf over the standard library.
+	"internal/mermaid": 0,
+
+	// The reader of .NET assembly metadata: pure Go over debug/pe, with the
+	// report text taken from internal/i18n.
+	"internal/dotnet": 1,
+	// The PDF text reader: pure Go, the report text taken from internal/i18n.
+	"internal/pdftext": 1,
+
+	// Where f4 keeps the indexes of the tar archives it opened: paths and file
+	// names only, so the archive plugin and the file operations can share it.
+	"internal/tarindexcache": 0,
+
+	// The frame watchdog: a leaf that imports nothing of ours, so any view
+	// can mark its frame and the root can arm it from a command line switch.
+	"internal/stallwatch": 0,
+
+	// The width table of the bundled ConPTY host (unxed/f4#1681): a leaf that
+	// imports nothing of ours, so the terminal code can count cells the way the
+	// host does.
+	"internal/hostwidth": 0,
+
+	// Change notification for one local directory (inotify, or polling): a
+	// leaf that imports nothing of ours, so the panels can use it.
+	"internal/dirwatch": 0,
 
 	// The shared primitives: a notification channel and the history store.
 	// Both are leaves and both take what they cannot reach as a seam —
@@ -100,9 +171,25 @@ var architectureLayers = map[string]int{
 	"internal/luaplug":    0,
 	"internal/textlayout": 1,
 
+	// The side-by-side diff: a Myers edit-script diff over line slices (layer
+	// 0, importing nothing of ours) and the two-pane view built on it, on
+	// internal/theme and on internal/i18n (layer 1, the company
+	// internal/update and internal/textlayout keep).
+	"internal/textdiff": 0,
+
+	// The wheel-acceleration ramp: the coast queue every view shares. It
+	// reads internal/config the way internal/theme does, for the one
+	// [Mouse] Acceleration setting, and imports nothing else of ours.
+	"internal/wheel": 0,
+
+	"internal/diffview": 1,
+
 	// These two sit on vfs, which stays public.
 	"internal/fusefs": 1,
 	"internal/vtvibe": 1,
+
+	// Verbatim port of unxed/ap's patcher, no f4-internal imports at all.
+	"internal/vtvibe/ap": 0,
 
 	// Modal dialogs, the help viewer and help/ beside it. Layer 3 for the
 	// company it keeps rather than for what it imports: it may reach every
@@ -125,6 +212,10 @@ var architectureLayers = map[string]int{
 	// tell a window from a TTY, and the viewer's URL model to underline a link
 	// under the mouse. Nothing below layer 3 imports it.
 	"internal/terminal": 3,
+
+	// The wire codec of the far2l drag-and-drop protocol: byte layouts only,
+	// standard library only, so any layer may use it; the terminal wires it.
+	"internal/terminal/far2ldnd": 0,
 
 	// media reads the terminal's graphics protocols and the viewer's title bar,
 	// so it is layer 3 beside them, not the 1 the plan assigned.

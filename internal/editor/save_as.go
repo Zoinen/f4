@@ -144,6 +144,12 @@ func (ev *EditorView) resolveSaveAsPath(input string) string {
 	if input == "" || ev.Vfs == nil {
 		return ""
 	}
+	if !fileops.IsLocalOSVFS(ev.Vfs) {
+		if abs, err := vfs.NewOSVFS("").Abs(input); err == nil && abs != "" {
+			return abs
+		}
+		return input
+	}
 	if ev.Vfs.IsAbs(input) {
 		return input
 	}
@@ -280,15 +286,35 @@ func (ev *EditorView) saveAs(target string, cpID int, bom bool, eol saveAsEOL) {
 	if ev.Vfs == nil || ev.Saving || target == "" {
 		return
 	}
-	if target == ev.FilePath {
+	if target == ev.FilePath && fileops.IsLocalOSVFS(ev.Vfs) {
 		ev.applySaveAs(target, cpID, bom, eol, ev.CreateNewTarget)
 		return
 	}
 	filesystem := ev.Vfs
+	// When the editor holds a virtual VFS (e.g. Terminal Log) and the target
+	// lives on the local disk, use the real OS VFS for the stat check and
+	// the save. Without this, Stat on TerminalLogVFS always reports success
+	// (false "file exists"), and Create/Write fail with permission denied.
+	if !fileops.IsLocalOSVFS(filesystem) {
+		osVfs := vfs.NewOSVFS("")
+		if abs, err := osVfs.Abs(target); err == nil && abs != "" {
+			target = abs
+		}
+		if osVfs.IsAbs(target) {
+			filesystem = osVfs
+		}
+	}
 	vtui.RunAsync(func(ctx *vtui.TaskContext) {
 		_, statErr := filesystem.Stat(ctx.Context, target)
+		savedFilePath := ev.FilePath
 		ctx.RunOnUI(func() {
-			if ev.Vfs != filesystem || ev.Saving {
+			if ev.Saving || ev.FilePath != savedFilePath {
+				return
+			}
+			// When we switched the VFS from a virtual one to the local OS
+			// one above, the pointer comparison would always fire. Skip it
+			// in that case — ev.FilePath already covers staleness.
+			if !fileops.IsLocalOSVFS(filesystem) && ev.Vfs != filesystem {
 				return
 			}
 			switch {
@@ -297,10 +323,16 @@ func (ev *EditorView) saveAs(target string, cpID int, bom bool, eol saveAsEOL) {
 				confirm := vtui.ShowMessageOn(ev, i18n.Msg("SaveAs.Title"), msg, []string{i18n.Msg("FileOp.Overwrite"), i18n.Msg("vtui.Cancel")})
 				confirm.OnResult = func(code int) {
 					if code == 0 {
+						if !fileops.IsLocalOSVFS(ev.Vfs) {
+							ev.Vfs = vfs.NewOSVFS("")
+						}
 						ev.applySaveAs(target, cpID, bom, eol, false)
 					}
 				}
 			case errors.Is(statErr, os.ErrNotExist):
+				if !fileops.IsLocalOSVFS(ev.Vfs) {
+					ev.Vfs = vfs.NewOSVFS("")
+				}
 				ev.applySaveAs(target, cpID, bom, eol, true)
 			default:
 				vtui.ShowMessage(" Error ", fmt.Sprintf("Cannot check the target file:\n%v", statErr), []string{"&Ok"})

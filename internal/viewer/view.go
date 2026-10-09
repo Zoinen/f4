@@ -16,6 +16,7 @@ import (
 	"github.com/unxed/f4/internal/numeric"
 	"github.com/unxed/f4/internal/piecetable"
 	"github.com/unxed/f4/internal/theme"
+	"github.com/unxed/f4/internal/wheel"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
@@ -23,6 +24,17 @@ import (
 
 // ViewerView is a high-performance file viewer component.
 type ViewerView struct {
+	// MacroID identifies this viewer in the ViewerEvent of Lua macros;
+	// closeNotified is set once EventClose has been raised.
+	MacroID       int
+	closeNotified bool
+
+	// Syntax highlighting (see highlight.go): the colorizer, created once,
+	// and the window last handed to it.
+	highlight      WindowColorizer
+	highlightTried bool
+	highlightKey   uint64
+
 	vtui.BaseFrame
 	TopBar  *TopBar
 	menuBar *vtui.MenuBar
@@ -37,6 +49,9 @@ type ViewerView struct {
 	HexAuto    bool
 	DecodeMode bool
 	WrapMode   bool
+	// AnsiMode draws the colour sequences of terminal output (SGR) as colours
+	// instead of showing them as text (f4#1705); see ansi.go.
+	AnsiMode bool
 	// DisasmMode is the processor mode the decode view disassembles in:
 	// 16, 32 or 64, or 0 while undecided. See disasm.go.
 	DisasmMode int
@@ -68,6 +83,10 @@ type ViewerView struct {
 
 	OnClose  func()
 	Codepage int
+
+	// wheelCoast is what a fast wheel spin leaves behind: lines the viewer
+	// still owes the scroll position (see internal/wheel).
+	wheelCoast wheel.Coast
 }
 
 func NewViewerView(ctx context.Context, v vfs.VFS, path string) (*ViewerView, error) {
@@ -116,9 +135,15 @@ func NewViewerView(ctx context.Context, v vfs.VFS, path string) (*ViewerView, er
 		// which need not cover offset 0 by the time the mode is wanted.
 		DisasmMode: DetectX86Mode(header),
 		Codepage:   cpID,
+		// Files named for terminal art are shown in colour from the start,
+		// as far2l does (f4#1705).
+		AnsiMode: isANSIFileName(path),
 	}
 	vv.ScrollBar = vtui.NewScrollBar(0, 0, 0)
 	vv.ScrollBar.ColorIdx = theme.ColViewerScrollbar
+	vv.ScrollBar.Attr = func() uint64 {
+		return theme.OnTextBackground(theme.ColViewerScrollbar, theme.ColViewerText, vv.textAttr())
+	}
 	vv.ScrollBar.SetOwner(vv)
 	vv.ScrollBar.OnScroll = func(v int) {
 		newOff := int64(v)
@@ -192,6 +217,8 @@ func NewViewerView(ctx context.Context, v vfs.VFS, path string) (*ViewerView, er
 	vv.SetCanFocus(true)
 	vv.SetFocus(true)
 	vv.startTailWatch()
+	vv.MacroID = int(lastViewerID.Add(1))
+	vv.notify(EventRead)
 	return vv, nil
 }
 
@@ -248,30 +275,96 @@ func (vv *ViewerView) stopTailWatch() {
 	vv.tailStop = nil
 }
 
-// refreshFromFile re-measures the file and redraws when it moved. The
-// auto-scroll in DisplayObject does the rest: a viewer sitting at the end of
-// the file follows it, and one parked further up stays exactly where the
-// reader left it and only gets an honest scrollbar and percentage.
+// refreshFromFile re-measures the file and redraws when it moved. A viewer
+// sitting at the end of the file follows it, and one parked further up stays
+// exactly where the reader left it and only gets an honest scrollbar and
+// percentage.
+//
+// Either way the refresh dropped the window cache, so the rows on screen have
+// to be fetched again before they can be painted. The viewer is held unpainted
+// until they are (holdUntilCached): a plain Redraw painted the frame in
+// between, with the text replaced by "[ Loading... ]", once per growth of the
+// file -- a log being written to made the whole viewer blink about once a
+// second while it was read from the top (#1624).
 func (vv *ViewerView) refreshFromFile() {
 	if vv.Backend == nil || vv.Busy {
 		return
 	}
+	before := vv.Backend.Size()
 	if !vv.Backend.Refresh(context.Background()) {
 		return
 	}
-	if size := vv.Backend.Size(); vv.TopOffset > size {
+	size := vv.Backend.Size()
+	if vv.TopOffset > size {
 		// The file was truncated or rotated away under the viewport, and the
 		// offset it was showing no longer exists.
 		vv.TopOffset = 0
 		vv.lastKnownSize = size
 		vv.eofVisible = false
+	} else if vv.eofVisible && size > before {
+		vv.followTail()
+		return
 	}
-	vtui.FrameManager.Redraw()
+	vv.holdUntilCached(vv.TopOffset)
+}
+
+// followTail moves a viewer that was showing the end of the file to the file's
+// new end, and does it before the viewer is painted again.
+//
+// This runs from the poll, on the UI thread, between two frames. The frame
+// manager asks the top frame IsBusy before it paints anything, and skips the
+// whole frame while it is: so everything the move needs -- laying out the
+// last rows in the background, fetching the tail window the refresh just
+// dropped -- happens with the old tail still on screen, and the next frame
+// painted is the new tail.
+//
+// Following used to be started from DisplayObject instead, in the middle of a
+// frame the frame manager had already begun: the desktop under the viewer was
+// painted, the viewer returned without painting, and every growth of the file
+// put one empty viewer on screen before the new tail (#428). In hex mode the
+// frame after that also showed "Loading..." while the dropped window came
+// back.
+func (vv *ViewerView) followTail() {
+	vv.jumpToEnd()
+	if vv.Busy {
+		// Text layout runs in the background and repaints when it is done.
+		return
+	}
+	// Hex mode places the viewport synchronously, but the bytes under it were
+	// dropped from the cache by the refresh that noticed the growth.
+	vv.holdUntilCached(vv.TopOffset)
+}
+
+// holdUntilCached keeps the viewer busy -- and so unpainted, while it is the
+// top frame -- until the backend has the bytes at off, then repaints. When
+// they are already there it only repaints.
+func (vv *ViewerView) holdUntilCached(off int64) {
+	backend := vv.Backend
+	if _, err := backend.ReadAt(off, 1); err != piecetable.ErrLoading {
+		vtui.FrameManager.Redraw()
+		return
+	}
+	vv.Busy = true
+	vtui.RunAsync(func(ctx *vtui.TaskContext) {
+		defer ctx.RunOnUI(func() {
+			vv.Busy = false
+			vtui.FrameManager.Redraw()
+		})
+		// A closed viewer cancels the backend's context, and its fetches
+		// then never land; stop waiting for them.
+		for ctx.Err() == nil && backend.ctx.Err() == nil {
+			if _, err := backend.ReadAt(off, 1); err != piecetable.ErrLoading {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	})
 }
 
 // Reload rereads the file on demand. Unlike the poll it drops the window cache
 // even when the length did not change, so a file rewritten in place -- same
-// size, different bytes -- also shows its new contents.
+// size, different bytes -- also shows its new contents. Like the poll, it keeps
+// the old contents on screen until the new ones are there to paint.
 func (vv *ViewerView) Reload() {
 	if vv.Backend == nil {
 		return
@@ -283,10 +376,10 @@ func (vv *ViewerView) Reload() {
 		vv.eofVisible = false
 	}
 	if vv.eofVisible {
-		vv.jumpToEnd()
+		vv.followTail()
 		return
 	}
-	vtui.FrameManager.Redraw()
+	vv.holdUntilCached(vv.TopOffset)
 }
 
 // viewerDetectionHeader reads the prefix every codepage decision is made on.
@@ -336,6 +429,11 @@ func (vv *ViewerView) GetMenuBar() *vtui.MenuBar {
 	if App != nil {
 		vv.menuBar.Items = App.MenuBarItems("Viewer")
 	}
+	if !vv.menuBar.Active {
+		// As in the editor: far2l's ViewerShellOptions opens File on every
+		// F9, and vtui's F9 fallback opens whatever SelectPos holds (#1144).
+		vv.menuBar.SelectPos = 0
+	}
 	return vv.menuBar
 }
 
@@ -355,6 +453,9 @@ func (vv *ViewerView) Show(scr *vtui.ScreenBuf) {
 	if vv.TopBar != nil {
 		vv.TopBar.Show(scr)
 	}
+	if vv.menuBarPinned() {
+		vv.GetMenuBar().Show(scr)
+	}
 	vv.DisplayObject(scr)
 }
 
@@ -363,12 +464,15 @@ func (vv *ViewerView) DisplayObject(scr *vtui.ScreenBuf) {
 		return
 	}
 
-	// AUTO-SCROLL LOGIC (tail -f)
+	// A size that moved without going through the poll -- a handle whose
+	// Size changes on its own -- is only noticed here. The frame manager has
+	// already painted what lies under the viewer by now, so the frame is
+	// painted in full first and the jump comes after it: returning without
+	// painting puts an empty viewer on screen. The poll does not come through
+	// here; it follows before the frame starts, see followTail.
 	currentSize := vv.Backend.Size()
 	if vv.eofVisible && currentSize > vv.lastKnownSize && !vv.Busy {
-		vv.lastKnownSize = currentSize
-		vv.jumpToEnd()
-		return
+		defer vv.followTail()
 	}
 	vv.lastKnownSize = currentSize
 
@@ -379,7 +483,7 @@ func (vv *ViewerView) DisplayObject(scr *vtui.ScreenBuf) {
 	height := vv.Y2 - vv.Y1 + 1
 	contentHeight := height - 1
 
-	bgAttr := vtui.Palette[theme.ColViewerText]
+	bgAttr := vv.textAttr()
 
 	// 1. Draw Background
 	scr.FillRect(vv.X1, vv.Y1+1, vv.X2, vv.Y2, ' ', bgAttr)
@@ -534,10 +638,34 @@ func (vv *ViewerView) decodeStep(off int64) int64 {
 	return int64(DisasmInstLen(data, vv.disasmMode()))
 }
 
+// rowReadSize is how many bytes to read to lay out one screen row. Escape
+// sequences take bytes and no room, so an ANSI-mode row needs a longer read.
+func (vv *ViewerView) rowReadSize(width int) int {
+	if vv.AnsiMode {
+		return width * 16
+	}
+	return width * 4
+}
+
 func (vv *ViewerView) renderText(scr *vtui.ScreenBuf, width, contentHeight int) {
 
-	attr := vtui.Palette[theme.ColViewerText]
 	currOffset := vv.TopOffset
+	// Highlighting follows logical lines: lineStart is where the line of the
+	// current row begins, and every line on screen is collected for the
+	// colorizer.
+	hl := vv.windowColorizer()
+	if vv.AnsiMode {
+		// The colours are the file's own.
+		hl = nil
+	}
+	attr := vv.textAttr()
+	ansiState := attr
+	var hlLines []WindowLine
+	hlTexts := map[int64]string{}
+	lineStart, hlOK := int64(0), hl != nil
+	if hlOK {
+		lineStart, hlOK = vv.highlightLineStart(currOffset)
+	}
 	vv.lineOffsets = vv.lineOffsets[:0]
 	vv.visibleURLRows = vv.visibleURLRows[:0]
 	//lastRowWasEOF := false
@@ -552,7 +680,7 @@ func (vv *ViewerView) renderText(scr *vtui.ScreenBuf, width, contentHeight int) 
 
 		// Read a generous chunk to handle wrapping. The row helper keeps
 		// combining sequences and script conjuncts atomic.
-		data, err := vv.Backend.ReadAt(currOffset, width*4)
+		data, err := vv.Backend.ReadAt(currOffset, vv.rowReadSize(width))
 		if err == piecetable.ErrLoading {
 			vv.visibleURLRows = append(vv.visibleURLRows, nil)
 			scr.Write(vv.X1, vv.Y1+1+y, vtui.StringToCharInfo(" [ Loading... ] ", attr))
@@ -572,11 +700,27 @@ func (vv *ViewerView) renderText(scr *vtui.ScreenBuf, width, contentHeight int) 
 		if config.App.EditorTabSize > 0 {
 			tabSize = config.App.EditorTabSize
 		}
-		row := layoutViewerTextRow(data, width, tabSize, vv.WrapMode)
+		row := layoutViewerTextRowANSI(data, width, tabSize, vv.WrapMode, vv.AnsiMode)
 
 		// Build []vtui.CharInfo for the line
 		var cellByteOffsets []int
-		vv.rowCells, cellByteOffsets = viewerTextCells(string(data[:row.textLen]), attr, tabSize, width)
+		if vv.AnsiMode {
+			vv.rowCells, cellByteOffsets = ansiRowCells(data[:row.textLen], attr, &ansiState, tabSize, width)
+		} else {
+			vv.rowCells, cellByteOffsets = viewerTextCells(string(data[:row.textLen]), attr, tabSize, width)
+		}
+		if hlOK {
+			text, seen := hlTexts[lineStart]
+			if !seen {
+				if text, hlOK = vv.highlightLineAt(lineStart); hlOK {
+					hlTexts[lineStart] = text
+					hlLines = append(hlLines, WindowLine{Offset: lineStart, Text: text})
+				}
+			}
+			if attrs := hl.LineAttrs(lineStart, text); hlOK && attrs != nil {
+				applyViewerHighlight(vv.rowCells, string(data[:row.textLen]), cellByteOffsets, text, int(currOffset-lineStart), attrs)
+			}
+		}
 		if vv.LastSearchFound && vv.LastSearch != "" {
 			matchStart := vv.LastSearchOffset
 			matchLen := vv.LastSearchMatchLen
@@ -629,8 +773,17 @@ func (vv *ViewerView) renderText(scr *vtui.ScreenBuf, width, contentHeight int) 
 			}
 			currOffset = tempOff
 		}
+		if row.foundNewline || !vv.WrapMode {
+			lineStart = currOffset
+		}
 	}
 	vv.eofVisible = (currOffset >= vv.Backend.Size())
+	if hlOK && len(hlLines) > 0 {
+		if key := highlightWindowKey(hlLines); key != vv.highlightKey {
+			vv.highlightKey = key
+			hl.Request(vv.highlightLinesBefore(hlLines[0].Offset, viewerHighlightContextLines), hlLines)
+		}
+	}
 }
 
 func (vv *ViewerView) ProcessKey(e *vtinput.InputEvent) bool {
@@ -672,13 +825,13 @@ func (vv *ViewerView) ProcessKey(e *vtinput.InputEvent) bool {
 			if vv.ScrollBar != nil {
 				width--
 			}
-			data, err := vv.Backend.ReadAt(vv.TopOffset, width*4)
+			data, err := vv.Backend.ReadAt(vv.TopOffset, vv.rowReadSize(width))
 			if err == nil && len(data) > 0 {
 				tabSize := 8
 				if config.App.EditorTabSize > 0 {
 					tabSize = config.App.EditorTabSize
 				}
-				row := layoutViewerTextRow(data, width, tabSize, vv.WrapMode)
+				row := layoutViewerTextRowANSI(data, width, tabSize, vv.WrapMode, vv.AnsiMode)
 				if row.lineLen > 0 {
 					vv.TopOffset += int64(row.lineLen)
 				}
@@ -832,6 +985,9 @@ func (vv *ViewerView) jumpToEnd() {
 	// cannot re-measure themselves.
 	if vv.Backend != nil {
 		vv.Backend.Refresh(context.Background())
+		// The end about to be shown is the end as measured now, so this size
+		// is known and DisplayObject has nothing left to follow.
+		vv.lastKnownSize = vv.Backend.Size()
 	}
 
 	contentHeight := int64(vv.Y2 - vv.Y1)
@@ -853,12 +1009,35 @@ func (vv *ViewerView) jumpToEnd() {
 		return
 	}
 
+	// Everything the layout needs from the viewer is read here, on the UI
+	// goroutine that starts the task, and not inside it. The viewer's fields
+	// belong to the UI goroutine: Close clears ScrollBar, SetPosition moves
+	// X1/X2, the wrap toggle flips WrapMode and a codepage switch replaces
+	// Backend, all while this layout may still be running. The task used to
+	// read them itself, and -race caught it reading ScrollBar after the
+	// viewer had been closed under it.
+	backend := vv.Backend
+	width := vv.X2 - vv.X1 + 1
+	if vv.ScrollBar != nil {
+		width--
+	}
+	wrapMode := vv.WrapMode
+	ansiMode := vv.AnsiMode
+	rowRead := vv.rowReadSize(width)
+	tabSize := 8
+	if config.App.EditorTabSize > 0 {
+		tabSize = config.App.EditorTabSize
+	}
+
 	vv.Busy = true
 	vtui.RunAsync(func(ctx *vtui.TaskContext) {
 		defer ctx.RunOnUI(func() { vv.Busy = false })
-		width := vv.X2 - vv.X1 + 1
-		if vv.ScrollBar != nil {
-			width--
+		// A closed backend -- the viewer closed, or a codepage switch
+		// replaced it -- cancels its context, and its fetches then never
+		// land: ReadAt keeps answering ErrLoading and both loops below would
+		// wait for it forever. Stop instead, as holdUntilCached does.
+		stopped := func() bool {
+			return ctx.Err() != nil || backend.ctx.Err() != nil
 		}
 
 		chunkSize := contentHeight * int64(width) * 4
@@ -876,16 +1055,16 @@ func (vv *ViewerView) jumpToEnd() {
 		if chunkSize < tailWindow {
 			chunkSize = tailWindow
 		}
-		startOff := vv.Backend.Size() - chunkSize
+		startOff := backend.Size() - chunkSize
 		if startOff < 0 {
 			startOff = 0
 		}
 
 		for {
-			if ctx.Err() != nil {
+			if stopped() {
 				return
 			}
-			_, err := vv.Backend.ReadAt(startOff, 1024)
+			_, err := backend.ReadAt(startOff, 1024)
 			if err != piecetable.ErrLoading {
 				break
 			}
@@ -894,15 +1073,11 @@ func (vv *ViewerView) jumpToEnd() {
 		var offsets []int64
 		currOff := startOff
 
-		tabSize := 8
-		if config.App.EditorTabSize > 0 {
-			tabSize = config.App.EditorTabSize
-		}
-		for currOff < vv.Backend.Size() {
-			if ctx.Err() != nil {
+		for currOff < backend.Size() {
+			if stopped() {
 				return
 			}
-			data, err := vv.Backend.ReadAt(currOff, 64*1024)
+			data, err := backend.ReadAt(currOff, 64*1024)
 			if err == piecetable.ErrLoading {
 				time.Sleep(20 * time.Millisecond)
 				continue
@@ -915,15 +1090,15 @@ func (vv *ViewerView) jumpToEnd() {
 			for scanPos < len(data) {
 				offsets = append(offsets, currOff+int64(scanPos))
 				rowData := data[scanPos:]
-				if vv.WrapMode {
-					maxRowData := width * 4
+				if wrapMode {
+					maxRowData := rowRead
 					if maxRowData < len(rowData) {
 						rowData = rowData[:maxRowData]
 					}
 				}
-				row := layoutViewerTextRow(rowData, width, tabSize, vv.WrapMode)
+				row := layoutViewerTextRowANSI(rowData, width, tabSize, wrapMode, ansiMode)
 				scanPos += row.lineLen
-				if !row.foundNewline && !vv.WrapMode {
+				if !row.foundNewline && !wrapMode {
 					break
 				}
 				if row.lineLen == 0 {
@@ -1152,18 +1327,38 @@ func (vv *ViewerView) ProcessMouse(e *vtinput.InputEvent) bool {
 	}
 	if e.WheelDirection != 0 {
 		vv.hoverURL = ""
+		direction := 1
 		speed := config.App.WheelViewerDown
-		vk := uint16(vtinput.VK_DOWN)
 		if e.WheelDirection > 0 {
+			direction = -1
 			speed = config.App.WheelViewerUp
-			vk = vtinput.VK_UP
 		}
-		for i := 0; i < config.WheelScrollLines(speed); i++ {
-			vv.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vk})
-		}
+		// A spin faster than one notch per spin window queues extra lines
+		// the viewer keeps scrolling on its own (see internal/wheel).
+		vv.wheelCoast.Notch(direction, vv.scrollWheelLines)
+		vv.scrollWheelLines(direction * config.WheelScrollLines(speed))
 		return true
 	}
 	return false
+}
+
+// scrollWheelLines moves the view by step lines, positive down the file,
+// the way one wheel notch does, and reports whether anything moved so a
+// coast stops at the end of the file instead of spinning in place.
+func (vv *ViewerView) scrollWheelLines(step int) bool {
+	if step == 0 {
+		return false
+	}
+	before := vv.TopOffset
+	vk := uint16(vtinput.VK_DOWN)
+	if step < 0 {
+		vk = vtinput.VK_UP
+		step = -step
+	}
+	for i := 0; i < step; i++ {
+		vv.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vk})
+	}
+	return vv.TopOffset != before
 }
 
 func (vv *ViewerView) urlLinkAtMouse(mx, my int) (UrlCellRange, bool) {
@@ -1195,10 +1390,41 @@ func (vv *ViewerView) updateURLHover(mx, my int) bool {
 	return true
 }
 func (vv *ViewerView) ResizeConsole(w, h int) {
-	vv.SetPosition(0, vtui.FrameManager.WorkspaceTopInset(), w-1, h-2)
+	top := vtui.FrameManager.WorkspaceTopInset()
+	if !config.App.AlwaysShowMenuBar || vv.menuBar == nil {
+		vv.SetPosition(0, top, w-1, h-2)
+		return
+	}
+	// AlwaysShowMenuBar keeps the menu bar on the workspace's top row, the row
+	// it has over the panels and the terminal too, and the viewer starts below
+	// it with its title bar, which the bar would otherwise cover (issue #1153).
+	vv.SetPosition(0, top+1, w-1, h-2)
+	vv.menuBar.SetPosition(0, top, w-1, top)
+}
+
+// menuBarPinned reports whether ResizeConsole has given the menu bar a row of
+// its own above the title bar. SetPosition alone puts the bar on the title
+// row, where F9 raises it over the title while AlwaysShowMenuBar is off.
+func (vv *ViewerView) menuBarPinned() bool {
+	if vv.menuBar == nil {
+		return false
+	}
+	_, menuY, _, _ := vv.menuBar.GetPosition()
+	_, y1, _, _ := vv.GetPosition()
+	return menuY < y1
 }
 
 func (vv *ViewerView) Close() {
+	// A coast already posted to the UI loop has no view left to scroll.
+	vv.wheelCoast.Stop()
+	if !vv.closeNotified {
+		vv.closeNotified = true
+		vv.notify(EventClose)
+	}
+	if vv.highlight != nil {
+		vv.highlight.Close()
+		vv.highlight = nil
+	}
 	vv.stopTailWatch()
 	if fileops.GlobalFileState != nil && vv.Path != "" {
 		fileops.GlobalFileState.SaveViewerStateAsync(fileops.FileStateKey(vv.VFS, vv.Path), vv.TopOffset, vv.WrapMode, vv.HexMode)

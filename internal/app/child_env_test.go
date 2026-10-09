@@ -209,3 +209,44 @@ func TestPrivateEnvEntryIgnoresEntriesWithoutAName(t *testing.T) {
 		t.Error("an empty value is still that variable")
 	}
 }
+
+// F4_DETACHED describes how this process was started, not the one it starts.
+// A GUI f4 runs detached and carries the flag for its whole life; the shell in
+// its built-in terminal inherited it and so did every f4 started from there,
+// which then pointed its own stdout at the crash log. `f4 --version` typed at
+// the command line printed nothing at all (issue #1151).
+func TestChildEnvDropsDetachedFlag(t *testing.T) {
+	env := terminal.BuildChildEnv([]string{"PATH=/usr/bin", "F4_DETACHED=1"}, false, false)
+
+	if envHasKey(env, "F4_DETACHED") {
+		t.Errorf("the child is not the detached copy: %v", env)
+	}
+	if !envHas(env, "PATH=/usr/bin") {
+		t.Errorf("the rest of the environment must survive: %v", env)
+	}
+}
+
+// A nested f4 inherits F4_NESTED=1 from the terminal that started it and
+// exports the marker again for every child of its own. The environment is a
+// list, so the kept copy would pile up: one extra line per nesting level the
+// session has already seen, visible in `set` and in the About dialog.
+func TestChildEnvExportsNestedMarkerExactlyOnce(t *testing.T) {
+	base := []string{"PATH=/usr/bin", "F4_NESTED=1"}
+	env := terminal.BuildChildEnv(base, false, false)
+
+	count := 0
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "F4_NESTED=") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("F4_NESTED must be exported exactly once, got %d times: %v", count, env)
+	}
+	if !envHas(env, "F4_NESTED=1") {
+		t.Errorf("the marker must still be exported: %v", env)
+	}
+	if !envHas(env, "PATH=/usr/bin") {
+		t.Errorf("the rest of the environment must survive: %v", env)
+	}
+}

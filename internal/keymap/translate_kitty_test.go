@@ -34,6 +34,17 @@ func TestTranslateKeyToKitty(t *testing.T) {
 			want:  "\x1b[97;7u", // modifiers: shift(1) off, alt(2) on, ctrl(4) on -> 1+2+4 = 7
 		},
 		{
+			name: "Ctrl+C with the control character in Char names the key, not ETX",
+			event: &vtinput.InputEvent{
+				VirtualKeyCode:  'C',
+				Char:            0x03,
+				ControlKeyState: vtinput.LeftCtrlPressed,
+				KeyDown:         true,
+			},
+			flags: 1,
+			want:  "\x1b[99;5u",
+		},
+		{
 			name: "F3 with Disambiguate",
 			event: &vtinput.InputEvent{
 				VirtualKeyCode: vtinput.VK_F3,

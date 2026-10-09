@@ -18,50 +18,26 @@ import (
 	"github.com/unxed/vtui"
 )
 
+// AIChatPanel is f4's AI assistant panel: the chat history/input widget
+// itself is vtui.ChatWindow (extracted to vtui in f4 #615 so a future
+// Telegram-client vtui port can reuse it); everything below is AI-specific
+// glue between that generic control and a vtvibe.Session — provider config,
+// the attached-files/apply-patch status strip, the ai:// link scheme, and
+// the RCtrl+C/RCtrl+P hotkeys.
 type AIChatPanel struct {
-	vtui.ScreenObject
-	src     *panel.FileSystemPanel
-	frame   *vtui.BorderedFrame
-	input   *vtui.MultiLineEdit
-	focused bool
-	topPos  int
-	lines   []chatLine
-
-	visibleLinks   []chatLink
-	focusedLinkIdx int
+	*vtui.ChatWindow
+	src *panel.FileSystemPanel
 }
 
-type chatLine struct {
-	cells   []vtui.CharInfo
-	targets []string
+// aiChatStatusBar renders the strip above the input box: attached context
+// files win over an available patch, because once the user is collecting
+// context that is what they are working on (the patch is still one keypress
+// away in ai://out). This is entirely AI-specific bookkeeping, so it lives
+// here rather than in vtui.ChatWindow.
+type aiChatStatusBar struct {
+	cp *AIChatPanel
 }
 
-type chatLink struct {
-	row    int
-	col    int
-	width  int
-	target string
-}
-
-func NewAIChatPanel(src *panel.FileSystemPanel) *AIChatPanel {
-	x1, y1, x2, y2 := src.GetPosition()
-	cp := &AIChatPanel{
-		src:            src,
-		frame:          vtui.NewBorderedFrame(x1, y1, x2, y2, vtui.SingleBox, i18n.Msg("AI.ChatTitle")),
-		input:          vtui.NewMultiLineEdit(0, 0, 10, 3, ""),
-		focusedLinkIdx: -1,
-	}
-	cp.frame.ColorBoxIdx = theme.ColPanelBox
-	cp.frame.ColorTitleIdx = theme.ColPanelTitle
-	cp.frame.ColorBackgroundIdx = theme.ColPanelText
-	cp.input.ColorTextIdx = theme.ColPanelText
-	cp.SetPosition(x1, y1, x2, y2)
-	return cp
-}
-
-// The strip between the chat and the input box carries one thing at a time.
-// Attached files win: once the human starts collecting context, that is what
-// they are working on, and the patch is still one keypress away in ai://out.
 const (
 	aiBarNone = iota
 	aiBarFiles
@@ -91,13 +67,24 @@ func (cp *AIChatPanel) barKind() int {
 	return aiBarNone
 }
 
-// activateBar is what Enter on the strip does.
-func (cp *AIChatPanel) activateBar() {
+func (b *aiChatStatusBar) Label(maxW int) string {
+	session := b.cp.getSession()
+	switch b.cp.barKind() {
+	case aiBarFiles:
+		return formatAttachedFilesLabel(session.ContextFiles(), maxW)
+	case aiBarPatch:
+		return formatApplyPatchLabel(session.LastPatch(), maxW)
+	}
+	return ""
+}
+
+// Activate is what Enter on the strip does.
+func (b *aiChatStatusBar) Activate() {
 	pf := panel.FindPanelsFrameAnyScreen()
 	if pf == nil {
 		return
 	}
-	switch cp.barKind() {
+	switch b.cp.barKind() {
 	case aiBarFiles:
 		AiSetViewModePanel(pf, pf.ActiveIdx, "ai://ctx", false)
 	case aiBarPatch:
@@ -105,49 +92,87 @@ func (cp *AIChatPanel) activateBar() {
 	}
 }
 
+func NewAIChatPanel(src *panel.FileSystemPanel) *AIChatPanel {
+	x1, y1, x2, y2 := src.GetPosition()
+	cp := &AIChatPanel{
+		ChatWindow: vtui.NewChatWindow(x1, y1, x2, y2, i18n.Msg("AI.ChatTitle")),
+		src:        src,
+	}
+	cp.Frame.ColorBoxIdx = theme.ColPanelBox
+	cp.Frame.ColorBackgroundIdx = theme.ColPanelText
+	cp.ColorTitleIdx = theme.ColPanelTitle
+	cp.ColorTitleFocusedIdx = theme.ColPanelSelectedTitle
+	cp.Frame.ColorTitleIdx = theme.ColPanelTitle
+	cp.Input.ColorTextIdx = theme.ColPanelText
+
+	cp.ColorTextIdx = theme.ColPanelText
+	cp.ColorHeaderIdx = theme.ColPanelTitle
+	cp.ColorLinkIdx = vtui.ColMenuHighlight
+	cp.ColorLinkFocusIdx = theme.ColPanelCursor
+	cp.ColorStatusBarIdx = theme.ColPanelHighlightText
+	cp.ColorHighlightBgRefIdx = theme.ColEditorText
+
+	cp.SelfLabel = i18n.Msg("AI.ChatYou")
+	cp.PeerLabel = i18n.Msg("AI.ChatModel")
+	cp.BusyLabel = i18n.Msg("AI.ChatTyping")
+	cp.HighlightLang = "chat.md"
+	cp.URLSchemes = []string{"ai://"}
+
+	cp.StatusBar = &aiChatStatusBar{cp: cp}
+	cp.OnSend = func(text string) {
+		aiSend(panel.FindPanelsFrameAnyScreen(), text)
+	}
+	cp.OnActivateLink = cp.navigateToTarget
+	cp.OnLinkAltKey = func(target string, _ *vtinput.InputEvent) bool {
+		cp.copyLinkTarget(target)
+		return true
+	}
+	cp.OnStatusBarKey = func(e *vtinput.InputEvent) bool {
+		if e.VirtualKeyCode == vtinput.VK_F3 && cp.barKind() == aiBarPatch {
+			// Read the patch before trusting it.
+			cp.navigateToTarget("ai://out/afix.ap")
+			return true
+		}
+		return false
+	}
+	cp.ExtraLink = extraChatOutputLink
+
+	cp.SetPosition(x1, y1, x2, y2)
+	return cp
+}
+
+// extraChatOutputLink turns a ```lang:filename fenced code header into a
+// jump link to that output file (the ap patch protocol's convention for
+// naming the file a code block belongs to).
+func extraChatOutputLink(line string) (label, target string, ok bool) {
+	pStr := strings.TrimSpace(line)
+	if !strings.HasPrefix(pStr, "```") {
+		return "", "", false
+	}
+	colon := strings.Index(pStr, ":")
+	if colon == -1 {
+		return "", "", false
+	}
+	filename := strings.TrimSpace(pStr[colon+1:])
+	filename = strings.TrimPrefix(filename, "ai://out/")
+	filename = strings.TrimPrefix(filename, "ai://")
+	filename = strings.TrimPrefix(filename, "/out/")
+	filename = strings.TrimPrefix(filename, "out/")
+	if filename == "" {
+		return "", "", false
+	}
+	t := "ai://out/" + filename
+	return t, t, true
+}
+
 func (cp *AIChatPanel) Kind() string                   { return "ai_chat" }
 func (cp *AIChatPanel) Source() *panel.FileSystemPanel { return cp.src }
-func (cp *AIChatPanel) IsFocused() bool                { return cp.focused }
-
-func (cp *AIChatPanel) SetFocus(f bool) {
-	cp.focused = f
-	if f {
-		cp.frame.ColorTitleIdx = theme.ColPanelSelectedTitle
-	} else {
-		cp.frame.ColorTitleIdx = theme.ColPanelTitle
-	}
-	if f && cp.focusedLinkIdx == -1 {
-		cp.input.SetFocus(true)
-	} else {
-		cp.input.SetFocus(false)
-	}
-}
 
 func (cp *AIChatPanel) GetSelectedName() string {
 	if cp.src == nil {
 		return ""
 	}
 	return cp.src.GetSelectedName()
-}
-
-func (cp *AIChatPanel) SetPosition(x1, y1, x2, y2 int) {
-	cp.ScreenObject.SetPosition(x1, y1, x2, y2)
-	cp.frame.SetPosition(x1, y1, x2, y2)
-
-	inputH := 4
-	if y2-y1 < 10 {
-		inputH = 2
-	}
-	cp.input.SetPosition(x1+1, y2-inputH, x2-1, y2-1)
-}
-
-func (cp *AIChatPanel) ScrollToBottom() {
-	cp.updateLines()
-	h := cp.input.Y1 - cp.Y1 - 2
-	maxTop := len(cp.lines) - h
-	if maxTop > 0 {
-		cp.topPos = maxTop
-	}
 }
 
 func (cp *AIChatPanel) navigateToTarget(target string) {
@@ -164,16 +189,18 @@ func (cp *AIChatPanel) navigateToTarget(target string) {
 	}
 }
 
+// ProcessKey adds the AI-specific hotkeys (copy last response, apply patch,
+// undo the last applied patch)
+// on top of vtui.ChatWindow's generic scrolling/link/input handling.
 func (cp *AIChatPanel) ProcessKey(e *vtinput.InputEvent) bool {
-	if !e.KeyDown || !cp.focused {
+	if !e.KeyDown || !cp.IsFocused() {
 		return false
 	}
 
-	ctrl := (e.ControlKeyState & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed)) != 0
 	alt := (e.ControlKeyState & (vtinput.LeftAltPressed | vtinput.RightAltPressed)) != 0
 	shift := (e.ControlKeyState & vtinput.ShiftPressed) != 0
-
 	rctrl := (e.ControlKeyState & vtinput.RightCtrlPressed) != 0
+	ctrl := (e.ControlKeyState & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed)) != 0
 
 	if e.VirtualKeyCode == vtinput.VK_C && rctrl && !alt && !shift {
 		session := cp.getSession()
@@ -193,528 +220,33 @@ func (cp *AIChatPanel) ProcessKey(e *vtinput.InputEvent) bool {
 		return true
 	}
 
-	if cp.focusedLinkIdx == -2 {
-		// Focus is on the strip above the input box: attached files or the
-		// "apply patch" button, whichever it is showing.
-		if e.VirtualKeyCode == vtinput.VK_RETURN {
-			cp.activateBar()
-			return true
-		}
-		if e.VirtualKeyCode == vtinput.VK_F3 && cp.barKind() == aiBarPatch {
-			// Read the patch before trusting it.
-			cp.navigateToTarget("ai://out/afix.ap")
-			return true
-		}
-		if e.VirtualKeyCode == vtinput.VK_DOWN || e.VirtualKeyCode == vtinput.VK_RIGHT {
-			cp.focusedLinkIdx = -1
-			cp.input.SetFocus(true)
-			vtui.FrameManager.Redraw()
-			return true
-		}
-		if e.VirtualKeyCode == vtinput.VK_UP || e.VirtualKeyCode == vtinput.VK_LEFT {
-			if len(cp.visibleLinks) > 0 {
-				cp.focusedLinkIdx = len(cp.visibleLinks) - 1
-			} else {
-				cp.focusedLinkIdx = -1
-				cp.input.SetFocus(true)
-			}
-			vtui.FrameManager.Redraw()
-			return true
-		}
-		if e.VirtualKeyCode == vtinput.VK_ESCAPE {
-			cp.focusedLinkIdx = -1
-			cp.input.SetFocus(true)
-			vtui.FrameManager.Redraw()
-			return true
-		}
-	}
-
-	if cp.focusedLinkIdx >= 0 {
-		// We are focusing a response link
-		if e.VirtualKeyCode == vtinput.VK_RETURN {
-			if cp.focusedLinkIdx < len(cp.visibleLinks) {
-				cp.navigateToTarget(cp.visibleLinks[cp.focusedLinkIdx].target)
-			}
-			return true
-		}
-		if e.VirtualKeyCode == vtinput.VK_F5 {
-			if cp.focusedLinkIdx < len(cp.visibleLinks) {
-				cp.copyLinkTarget(cp.visibleLinks[cp.focusedLinkIdx].target)
-			}
-			return true
-		}
-		if e.VirtualKeyCode == vtinput.VK_ESCAPE {
-			cp.focusedLinkIdx = -1
-			cp.input.SetFocus(true)
-			vtui.FrameManager.Redraw()
-			return true
-		}
-		if e.VirtualKeyCode == vtinput.VK_RIGHT || e.VirtualKeyCode == vtinput.VK_DOWN {
-			cp.focusedLinkIdx++
-			if cp.focusedLinkIdx >= len(cp.visibleLinks) {
-				if cp.barKind() != aiBarNone {
-					cp.focusedLinkIdx = -2
-				} else {
-					cp.focusedLinkIdx = -1
-					cp.input.SetFocus(true)
-				}
-			}
-			vtui.FrameManager.Redraw()
-			return true
-		}
-		if e.VirtualKeyCode == vtinput.VK_LEFT || e.VirtualKeyCode == vtinput.VK_UP {
-			cp.focusedLinkIdx--
-			if cp.focusedLinkIdx < 0 {
-				cp.focusedLinkIdx = 0
-			}
-			vtui.FrameManager.Redraw()
-			return true
-		}
-	}
-
-	// Transition from input box (row 0) to attached files or response links
-	if cp.focusedLinkIdx == -1 && !ctrl && !alt && !shift {
-		row, col := cp.input.CursorPos()
-		if (e.VirtualKeyCode == vtinput.VK_UP && row == 0) || (e.VirtualKeyCode == vtinput.VK_LEFT && row == 0 && col == 0) {
-			if cp.barKind() != aiBarNone {
-				cp.focusedLinkIdx = -2
-				cp.input.SetFocus(false)
-				vtui.FrameManager.Redraw()
-				return true
-			} else if len(cp.visibleLinks) > 0 {
-				cp.focusedLinkIdx = len(cp.visibleLinks) - 1
-				cp.input.SetFocus(false)
-				vtui.FrameManager.Redraw()
-				return true
-			}
-		}
-	}
-
-	if e.VirtualKeyCode == vtinput.VK_RETURN && !ctrl && !alt && cp.focusedLinkIdx == -1 {
-		if shift {
-			ePlain := *e
-			ePlain.ControlKeyState &^= vtinput.ShiftPressed
-			return cp.input.ProcessKey(&ePlain)
-		} else {
-			text := cp.input.GetText()
-			if strings.TrimSpace(text) != "" {
-				aiSend(panel.FindPanelsFrameAnyScreen(), text)
-				cp.input.SetText("")
-				cp.ScrollToBottom()
-			}
-			return true
-		}
-	}
-
-	h := cp.input.Y1 - cp.Y1 - 2
-	if h < 1 {
-		h = 1
-	}
-
-	switch e.VirtualKeyCode {
-	case vtinput.VK_PRIOR:
-		cp.topPos -= h
-		if cp.topPos < 0 {
-			cp.topPos = 0
-		}
-		vtui.FrameManager.Redraw()
-		return true
-	case vtinput.VK_NEXT:
-		cp.topPos += h
-		maxTop := len(cp.lines) - h
-		if maxTop < 0 {
-			maxTop = 0
-		}
-		if cp.topPos > maxTop {
-			cp.topPos = maxTop
-		}
-		vtui.FrameManager.Redraw()
-		return true
-	case vtinput.VK_UP:
-		if !ctrl && !alt && !shift {
-			if cp.focusedLinkIdx == -1 {
-				row, _ := cp.input.CursorPos()
-				if row == 0 && cp.topPos > 0 {
-					cp.topPos--
-					vtui.FrameManager.Redraw()
-					return true
-				}
-			}
-		}
-	case vtinput.VK_DOWN:
-		if !ctrl && !alt && !shift {
-			if cp.focusedLinkIdx == -1 {
-				row, _ := cp.input.CursorPos()
-				if row == cp.input.LineCount()-1 {
-					maxTop := len(cp.lines) - h
-					if maxTop < 0 {
-						maxTop = 0
-					}
-					if cp.topPos < maxTop {
-						cp.topPos++
-						vtui.FrameManager.Redraw()
-						return true
-					}
-				}
-			}
-		}
-	case vtinput.VK_LEFT, vtinput.VK_RIGHT:
-		if shift {
-			if cp.focusedLinkIdx == -1 {
-				cp.input.ProcessKey(e)
-			}
-			return true
-		}
-	}
-
-	if cp.focusedLinkIdx == -1 {
-		if cp.input.ProcessKey(e) {
-			return true
-		}
-	}
-
-	return false
-}
-
-func (cp *AIChatPanel) ProcessMouse(e *vtinput.InputEvent) bool {
-	if cp.input.ProcessMouse(e) {
-		cp.focusedLinkIdx = -1
-		cp.input.SetFocus(true)
+	// Ctrl+Z (either Ctrl) undoes the last applied patch (docs/VTVIBE.md
+	// §7.4); the input line has no undo of its own to take it from.
+	if e.VirtualKeyCode == vtinput.VK_Z && ctrl && !alt && !shift {
+		aiUndoPatch(panel.FindPanelsFrameAnyScreen())
 		return true
 	}
-	if e.Type == vtinput.MouseEventType {
-		if e.WheelDirection != 0 {
-			if e.WheelDirection > 0 {
-				cp.topPos -= 3
-				if cp.topPos < 0 {
-					cp.topPos = 0
-				}
-			} else {
-				cp.topPos += 3
-				h := cp.input.Y1 - cp.Y1 - 2
-				maxTop := len(cp.lines) - h
-				if maxTop < 0 {
-					maxTop = 0
-				}
-				if cp.topPos > maxTop {
-					cp.topPos = maxTop
-				}
-			}
-			vtui.FrameManager.Redraw()
-			return true
-		}
-		if e.ButtonState == vtinput.FromLeft1stButtonPressed && e.KeyDown {
-			mx, my := int(e.MouseX), int(e.MouseY)
-			if mx > cp.X1 && mx < cp.X2 && my > cp.Y1 && my < cp.input.Y1-1 {
-				// Clicked in chat area
-				cp.input.SetFocus(false)
-				cp.focusedLinkIdx = -1
-				row := my - cp.Y1 - 1
-				col := mx - cp.X1 - 1
-				for i, link := range cp.visibleLinks {
-					if link.row == row && col >= link.col && col < link.col+link.width {
-						cp.focusedLinkIdx = i
-						if e.MouseEventFlags&vtinput.DoubleClick != 0 {
-							cp.navigateToTarget(link.target)
-						}
-						break
-					}
-				}
-				vtui.FrameManager.Redraw()
-				return true
-			}
-		}
-	}
-	return false
+
+	return cp.ChatWindow.ProcessKey(e)
 }
 
-func (cp *AIChatPanel) updateLines() {
-	w := cp.X2 - cp.X1 - 1
-	if w <= 0 {
-		return
-	}
-
-	var lines []chatLine
-	var session *vtvibe.Session
-	if w, ok := cp.src.Vfs.(*aiVFSWrapper); ok {
-		session = w.Session()
-	} else if a, ok := cp.src.Vfs.(*vtvibe.AIVFS); ok {
-		session = a.Session()
-	} else {
-		session = aiSession()
-	}
-	turns := session.Turns()
-
-	attr := vtui.Palette[theme.ColPanelText]
-	headerAttr := vtui.Palette[theme.ColPanelTitle]
-	linkAttr := vtui.Palette[vtui.ColMenuHighlight]
-
-	highlighter := vtui.GetHighlighter("chat.md", "")
-	var hlState any
-	bgAttr := vtui.Palette[theme.ColPanelText]
-
-	appendWrapped := func(runes []rune, attrs []uint64, targets []string) {
-		col := 0
-		var currentCells []vtui.CharInfo
-		var currentTargets []string
-
-		for i := 0; i < len(runes); i++ {
-			r := runes[i]
-			rw := runewidth.RuneWidth(r)
-			if rw <= 0 {
-				rw = 1
-			}
-
-			if col+rw > w-2 {
-				lines = append(lines, chatLine{cells: currentCells, targets: currentTargets})
-				currentCells = nil
-				currentTargets = nil
-				col = 0
-			}
-
-			charVal := vtui.RegisterCluster(string(r))
-			for j := 0; j < rw; j++ {
-				currentCells = append(currentCells, vtui.CharInfo{Char: charVal, Attributes: attrs[i]})
-				currentTargets = append(currentTargets, targets[i])
-				charVal = uint64(vtui.WideCharFiller)
-			}
-			col += rw
-		}
-		if len(currentCells) > 0 {
-			lines = append(lines, chatLine{cells: currentCells, targets: currentTargets})
-		}
-	}
-
-	makePlainLine := func(text string, attr uint64) chatLine {
-		var cells []vtui.CharInfo
-		var targets []string
-		for _, r := range text {
-			rw := runewidth.RuneWidth(r)
-			if rw <= 0 {
-				rw = 1
-			}
-			charVal := vtui.RegisterCluster(string(r))
-			for j := 0; j < rw; j++ {
-				cells = append(cells, vtui.CharInfo{Char: charVal, Attributes: attr})
-				targets = append(targets, "")
-				charVal = uint64(vtui.WideCharFiller)
-			}
-		}
-		return chatLine{cells: cells, targets: targets}
-	}
-
-	for _, t := range turns {
-		if t.Role == "user" {
-			lines = append(lines, makePlainLine("▸ "+i18n.Msg("AI.ChatYou")+"  "+t.Time.Format("15:04"), headerAttr))
-		} else {
-			lines = append(lines, makePlainLine("▾ "+i18n.Msg("AI.ChatModel")+"  "+t.Time.Format("15:04"), headerAttr))
-		}
-
-		for _, p := range strings.Split(t.Text, "\n") {
-			var lineSyntax []uint64
-			if highlighter != nil {
-				lineSyntax, hlState = highlighter.Highlight(p, hlState, bgAttr)
-			}
-
-			runesSrc := []rune("  " + p)
-			syntaxPad := []uint64{attr, attr}
-			fullSyntax := append(syntaxPad, lineSyntax...)
-
-			var runes []rune
-			var attrs []uint64
-			var targets []string
-
-			i := 0
-			for i < len(runesSrc) {
-				// Parse markdown inline links [text](url)
-				if runesSrc[i] == '[' {
-					closeBracket := -1
-					for j := i + 1; j < len(runesSrc); j++ {
-						if runesSrc[j] == ']' {
-							closeBracket = j
-							break
-						}
-					}
-					if closeBracket != -1 && closeBracket+1 < len(runesSrc) && runesSrc[closeBracket+1] == '(' {
-						closeParen := -1
-						for j := closeBracket + 2; j < len(runesSrc); j++ {
-							if runesSrc[j] == ')' {
-								closeParen = j
-								break
-							}
-						}
-						if closeParen != -1 {
-							text := string(runesSrc[i+1 : closeBracket])
-							target := string(runesSrc[closeBracket+2 : closeParen])
-							for _, r := range text {
-								runes = append(runes, r)
-								attrs = append(attrs, linkAttr)
-								targets = append(targets, target)
-							}
-							i = closeParen + 1
-							continue
-						}
-					}
-				}
-
-				// Parse raw ai:// URLs
-				if i+5 <= len(runesSrc) && string(runesSrc[i:i+5]) == "ai://" {
-					end := i
-					for end < len(runesSrc) && runesSrc[end] > 32 && runesSrc[end] != ')' && runesSrc[end] != ']' {
-						end++
-					}
-					target := string(runesSrc[i:end])
-					for _, r := range target {
-						runes = append(runes, r)
-						attrs = append(attrs, linkAttr)
-						targets = append(targets, target)
-					}
-					i = end
-					continue
-				}
-
-				// Default syntax mapping
-				curAttr := attr
-				if i < len(fullSyntax) {
-					curAttr = fullSyntax[i]
-					// If Colorer applied default bg, ensure it blends with panel text bg
-					if curAttr&vtui.IsBgRGB == 0 && vtui.GetIndexBack(curAttr) == vtui.GetIndexBack(vtui.Palette[theme.ColEditorText]) {
-						curAttr = vtui.SetIndexBack(curAttr, vtui.GetIndexBack(attr))
-					}
-				}
-				runes = append(runes, runesSrc[i])
-				attrs = append(attrs, curAttr)
-				targets = append(targets, "")
-				i++
-			}
-
-			// Add virtual link for explicit file output markers (```go:filename)
-			pStr := strings.TrimSpace(p)
-			if strings.HasPrefix(pStr, "```") {
-				colon := strings.Index(pStr, ":")
-				if colon != -1 {
-					filename := strings.TrimSpace(pStr[colon+1:])
-					filename = strings.TrimPrefix(filename, "ai://out/")
-					filename = strings.TrimPrefix(filename, "ai://")
-					filename = strings.TrimPrefix(filename, "/out/")
-					filename = strings.TrimPrefix(filename, "out/")
-					if filename != "" {
-						target := "ai://out/" + filename
-						tr := []rune("  " + target)
-						for j := 0; j < len(tr); j++ {
-							if j < 2 {
-								runes = append(runes, tr[j])
-								attrs = append(attrs, attr)
-								targets = append(targets, "")
-							} else {
-								runes = append(runes, tr[j])
-								attrs = append(attrs, linkAttr)
-								targets = append(targets, target)
-							}
-						}
-					}
-				}
-			}
-
-			appendWrapped(runes, attrs, targets)
-		}
-		lines = append(lines, chatLine{})
-	}
-
-	if session.Busy() {
-		lines = append(lines, makePlainLine("▸ "+i18n.Msg("AI.ChatTyping"), headerAttr))
-	}
-
-	cp.lines = lines
-}
-
+// Show refreshes the turns/busy state from the current session and lets
+// vtui.ChatWindow render them.
 func (cp *AIChatPanel) Show(scr *vtui.ScreenBuf) {
-	cp.frame.Show(scr)
-	cp.updateLines()
-
-	x1, y1 := cp.X1+1, cp.Y1+1
-	x2 := cp.X2 - 1
-
-	attrBox := vtui.Palette[theme.ColPanelBox]
-	vtui.NewPainter(scr).DrawLine(cp.X1+1, cp.input.Y1-1, cp.X2-1, cp.input.Y1-1, '─', attrBox, false, false)
-	scr.Write(cp.X1, cp.input.Y1-1, vtui.StringToCharInfo("├", attrBox))
-	scr.Write(cp.X2, cp.input.Y1-1, vtui.StringToCharInfo("┤", attrBox))
-
 	session := cp.getSession()
-	availW := cp.X2 - cp.X1 - 3
-	label := ""
-	switch cp.barKind() {
-	case aiBarFiles:
-		label = formatAttachedFilesLabel(session.ContextFiles(), availW)
-	case aiBarPatch:
-		label = formatApplyPatchLabel(session.LastPatch(), availW)
+	turns := session.Turns()
+	chatTurns := make([]vtui.ChatTurn, len(turns))
+	for i, t := range turns {
+		role := vtui.ChatRolePeer
+		if t.Role == "user" {
+			role = vtui.ChatRoleSelf
+		}
+		chatTurns[i] = vtui.ChatTurn{Role: role, Text: t.Text, Time: t.Time}
 	}
-	if label != "" {
-		attr := vtui.Palette[theme.ColPanelHighlightText]
-		if cp.focused && cp.focusedLinkIdx == -2 {
-			attr = vtui.Palette[theme.ColPanelCursor]
-		}
-		vtui.NewPainter(scr).DrawString(cp.X1+2, cp.input.Y1-1, label, attr)
-	}
+	cp.Turns = chatTurns
+	cp.Busy = session.Busy()
 
-	h := cp.input.Y1 - cp.Y1 - 2
-	if h > 0 {
-		maxTop := len(cp.lines) - h
-		if maxTop < 0 {
-			maxTop = 0
-		}
-		if cp.topPos > maxTop {
-			cp.topPos = maxTop
-		}
-
-		cp.visibleLinks = nil
-		for i := 0; i < h; i++ {
-			idx := cp.topPos + i
-			if idx >= len(cp.lines) {
-				break
-			}
-			line := cp.lines[idx]
-
-			vtui.NewPainter(scr).Fill(x1, y1+i, x2, y1+i, ' ', vtui.Palette[theme.ColPanelText])
-
-			col := 0
-			for j := 0; j < len(line.cells); j++ {
-				target := line.targets[j]
-
-				if target != "" {
-					startCol := col
-					for j < len(line.cells) && line.targets[j] == target {
-						if cp.focused && cp.focusedLinkIdx == len(cp.visibleLinks) {
-							line.cells[j].Attributes = vtui.SetIndexBack(line.cells[j].Attributes, vtui.GetIndexBack(vtui.Palette[theme.ColPanelCursor]))
-						}
-						j++
-						col++
-					}
-					cp.visibleLinks = append(cp.visibleLinks, chatLink{
-						row: i, col: startCol, width: col - startCol, target: target,
-					})
-					j-- // Step back since the outer loop will increment
-				} else {
-					col++
-				}
-			}
-
-			writeLen := len(line.cells)
-			if writeLen > x2-x1+1 {
-				writeLen = x2 - x1 + 1
-			}
-			scr.Write(x1, y1+i, line.cells[:writeLen])
-		}
-	}
-
-	if cp.focusedLinkIdx >= len(cp.visibleLinks) {
-		cp.focusedLinkIdx = -1
-		if cp.focused {
-			cp.input.SetFocus(true)
-		}
-	}
-
-	cp.input.Show(scr)
+	cp.ChatWindow.Show(scr)
 }
 
 // formatApplyPatchLabel draws the button this whole feature exists for: the

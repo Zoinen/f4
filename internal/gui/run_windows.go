@@ -1,4 +1,4 @@
-//go:build windows
+//go:build windows && !tty_only
 
 package gui
 

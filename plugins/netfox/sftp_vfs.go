@@ -1,3 +1,10 @@
+//go:build !lite
+
+// SFTP support statically links github.com/pkg/sftp and
+// golang.org/x/crypto/ssh, which a lite build (f4#1178) exists to shed --
+// see internal/plughost/plugins_lite.go for the accounting of what a lite
+// build carries instead.
+
 package netfox
 
 import (
@@ -142,6 +149,12 @@ func (v *SFTPVFS) EncodeCommandListANSI(text []byte) ([]byte, error) {
 func (v *SFTPVFS) GetTitle() string { return v.title }
 func (v *SFTPVFS) SessionKey() any  { return v.client }
 
+// HistoryEntry and NavigateHistoryEntry implement vfs.HistoryPathProvider
+// (f4#262): an SFTP session owns its own folder-history entries instead of
+// its raw remote path (e.g. /root/foo) being recorded as if it were local.
+func (v *SFTPVFS) HistoryEntry() (display, ref string, ok bool) { return netfoxHistoryEntry(v) }
+func (v *SFTPVFS) NavigateHistoryEntry(ref string) bool         { return netfoxNavigateHistoryEntry(v, ref) }
+
 func (v *SFTPVFS) IsAtRoot() bool {
 	p := v.GetPath()
 	return p == "/" || p == ""
@@ -198,7 +211,9 @@ func (v *SFTPVFS) ReadDir(ctx context.Context, p string, onChunk func([]vfs.VFSI
 		var unixMode uint32
 		var uid, gid int
 		var aTime time.Time
+		known := vfs.MetadataExplicit | vfs.MetadataPermissions | vfs.MetadataHidden | vfs.MetadataExecutable | vfs.MetadataMTime
 		if stat, ok := e.Sys().(*sftp.FileStat); ok {
+			known |= vfs.MetadataUID | vfs.MetadataGID | vfs.MetadataATime
 			unixMode = stat.Mode
 			uid = int(stat.UID)
 			gid = int(stat.GID)
@@ -216,6 +231,7 @@ func (v *SFTPVFS) ReadDir(ctx context.Context, p string, onChunk func([]vfs.VFSI
 		}
 
 		items = append(items, vfs.VFSItem{
+			KnownMetadata: known, SizeKnown: true,
 			Name: name, Size: e.Size(), IsDir: isDir, IsSymlink: isSymlink,
 			MTime: e.ModTime(), IsExecutable: e.Mode().Perm()&0111 != 0,
 			IsHidden: strings.HasPrefix(name, "."),
@@ -240,8 +256,10 @@ func (v *SFTPVFS) Stat(ctx context.Context, p string) (vfs.VFSItem, error) {
 	var unixMode uint32
 	var uid, gid int
 	var aTime time.Time
+	known := vfs.MetadataExplicit | vfs.MetadataPermissions | vfs.MetadataHidden | vfs.MetadataExecutable | vfs.MetadataMTime
 
 	if stat, ok := info.Sys().(*sftp.FileStat); ok {
+		known |= vfs.MetadataUID | vfs.MetadataGID | vfs.MetadataATime
 		unixMode = stat.Mode
 		uid = int(stat.UID)
 		gid = int(stat.GID)
@@ -252,6 +270,7 @@ func (v *SFTPVFS) Stat(ctx context.Context, p string) (vfs.VFSItem, error) {
 	}
 
 	return vfs.VFSItem{
+		KnownMetadata: known, SizeKnown: true,
 		Name: info.Name(), Size: info.Size(), IsDir: info.IsDir(),
 		MTime: info.ModTime(), IsExecutable: info.Mode().Perm()&0111 != 0,
 		IsHidden: strings.HasPrefix(info.Name(), "."),
@@ -310,8 +329,57 @@ func (v *SFTPVFS) Remove(ctx context.Context, p string) error {
 	}
 	return nil
 }
+
 func (v *SFTPVFS) Rename(ctx context.Context, o, n string) error {
-	return v.client.Rename(v.encodePath(o), v.encodePath(n))
+	overwrite, known := vfs.DestinationOverwrite(ctx)
+	return sftpRename(v.client, v.encodePath(o), v.encodePath(n), known && overwrite)
+}
+
+// sftpRenameClient is the part of *sftp.Client that sftpRename uses, so that a
+// server without the replacing rename can be faked in tests.
+type sftpRenameClient interface {
+	Rename(oldname, newname string) error
+	PosixRename(oldname, newname string) error
+	HasExtension(name string) (string, bool)
+	Lstat(p string) (os.FileInfo, error)
+	Remove(path string) error
+}
+
+// sftpPosixRenameExtension is the OpenSSH extension that renames over an
+// existing file, as rename(2) does.
+const sftpPosixRenameExtension = "posix-rename@openssh.com"
+
+// sftpRename renames from to to. The plain SFTP rename (protocol version 3)
+// fails with SSH_FX_FAILURE when the destination exists, which broke saving an
+// edited file over SFTP: the editor stages the new content beside the file and
+// renames it over the original (f4#1716). When the caller allows replacing the
+// destination, use the posix-rename extension; a server without it gets the
+// original moved aside first and put back if the replacement fails.
+func sftpRename(c sftpRenameClient, from, to string, overwrite bool) error {
+	if !overwrite {
+		return c.Rename(from, to)
+	}
+	if _, ok := c.HasExtension(sftpPosixRenameExtension); ok {
+		return c.PosixRename(from, to)
+	}
+	err := c.Rename(from, to)
+	if err == nil {
+		return nil
+	}
+	st, serr := c.Lstat(to)
+	if serr != nil || st.IsDir() {
+		return err
+	}
+	backup := fmt.Sprintf("%s.f4-replaced-%d", to, time.Now().UnixNano())
+	if berr := c.Rename(to, backup); berr != nil {
+		return err
+	}
+	if rerr := c.Rename(from, to); rerr != nil {
+		_ = c.Rename(backup, to)
+		return rerr
+	}
+	_ = c.Remove(backup)
+	return nil
 }
 
 func (v *SFTPVFS) SetAttributes(ctx context.Context, path string, item vfs.VFSItem) error {
@@ -702,7 +770,9 @@ func (p *sftpProvider) CanOpen(ctx context.Context, parent vfs.VFS, pth string) 
 	if err := json.NewDecoder(ctxReader{f, ctx}).Decode(&cfg); err != nil {
 		return false
 	}
-	return cfg.Type == "sftp" || cfg.Type == ""
+	// "scp" is the SFTP backend under another name (f4#187): see
+	// sftpURIProvider for why.
+	return cfg.Type == "sftp" || cfg.Type == "scp" || cfg.Type == ""
 }
 func (p *sftpProvider) Open(ctx context.Context, parent vfs.VFS, pth string) (vfs.VFS, error) {
 	w := parent.(*netFoxVFSWrapper)
@@ -740,9 +810,16 @@ func (ph *sftpProtocolHandler) BuildExtraUI(cfg *NetFoxConfig, x, y, w, h int) (
 	return nil, func() {}
 }
 
+// scpProtocolHandler lists "scp" among the connection types of the NetFox
+// manager (f4#187). A saved SCP connection is opened by sftpProvider.
+type scpProtocolHandler struct{ sftpProtocolHandler }
+
+func (ph *scpProtocolHandler) Prefix() string { return "scp" }
+
 func init() {
 	vfs.RegisterProvider(&sftpProvider{})
 	RegisterProtocol(&sftpProtocolHandler{})
+	RegisterProtocol(&scpProtocolHandler{})
 }
 
 type sftpFileWrapper struct {

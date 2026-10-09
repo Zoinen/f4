@@ -201,8 +201,23 @@ func PlugRingItemProblem(item PlugRingItem) string {
 
 	if strings.TrimSpace(item.SetupCmd) != "" {
 		// Worse than shipping a binary: an arbitrary command, run with the
-		// user's privileges, at install time.
+		// user's privileges, at install time. This applies no matter who
+		// published the entry, first-party included.
 		return "setup_cmd runs an arbitrary command at install time"
+	}
+
+	// The two checks below exist for one reason: a platform binary from a
+	// catalog entry that anybody can submit is a binary no distribution will
+	// mirror, no reviewer can audit, and no user can check -- see
+	// PLUGRING.md's "What gets turned away". That threat model is about a
+	// stranger's binary. A first-party entry (see plugring_firstparty.go) is
+	// f4's own: built by this repository's own CI from code that went
+	// through this repository's own review, and released as this
+	// repository's own GitHub Release asset. Nothing a community catalog
+	// entry writes can set FirstParty (it carries json:"-" and yaml:"-"), so
+	// this exemption cannot be reached by anyone submitting to plugring/.
+	if item.FirstParty {
+		return ""
 	}
 
 	if !IsLuaEntrypoint(item.Entrypoint) && !IsWasmEntrypoint(item.Entrypoint) {

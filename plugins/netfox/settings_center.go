@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/unxed/f4/sdk/f4settings"
@@ -50,7 +51,27 @@ func (p *settingsProvider) Catalog() f4settings.Catalog {
 		case "Port", "ProxyPort":
 			f.InputWidth = 6
 		case "Type":
-			f.Choices = f4settings.Choices("ftp:FTP", "sftp:SFTP", "fish:FISH")
+			// Filtered by what registry.go actually has a handler for, not
+			// hardcoded: a lite build (f4#1178, part 3) registers fish+
+			// alone, and offering FTP or SFTP as a choice there would save
+			// a connection nothing can open.
+			var specs []string
+			if _, ok := handlers["ftp"]; ok {
+				specs = append(specs, "ftp:FTP")
+			}
+			if _, ok := handlers["sftp"]; ok {
+				specs = append(specs, "sftp:SFTP")
+			}
+			if _, ok := handlers["scp"]; ok {
+				specs = append(specs, "scp:SCP")
+			}
+			if _, ok := handlers["smb"]; ok {
+				specs = append(specs, "smb:SMB")
+			}
+			if _, ok := handlers["fish+"]; ok {
+				specs = append(specs, "fish:FISH")
+			}
+			f.Choices = f4settings.Choices(specs...)
 		case "ProxyMode":
 			f.Choices = f4settings.Choices("0:Inherit f4", "1:System", "2:Direct", "3:HTTP", "4:SOCKS5")
 		case "Codepage":
@@ -64,7 +85,12 @@ func (p *settingsProvider) Catalog() f4settings.Catalog {
 		}
 		fields = append(fields, f)
 	}
-	return f4settings.Catalog{ID: "netfox", Categories: []f4settings.Category{{ID: "network", Label: f4settings.Text{English: "Network & connections"}}}, Collections: []f4settings.Collection{{ID: "netfox.connections", Category: "network", Group: "NetFox connections", Label: f4settings.Text{English: "NetFox connections"}, Description: f4settings.Text{English: "Saved FTP, SFTP and FISH connections. Proxy overrides are edited inline. Apply saves; opening a connection remains a separate command."}, Fields: fields, NameField: "netfox.Name"}}}
+	allowS2SPassword := f4settings.Scalar("netfox.AllowServerToServerPasswordAuth",
+		"network", "NetFox connections",
+		"Password auth for server-to-server transfers",
+		"Let f4 use a saved connection's password to authenticate the second hop of a server-to-server copy or move, instead of requiring SSH keys or agent access. Off by default: this exposes that password to the other server.",
+		f4settings.Boolean)
+	return f4settings.Catalog{ID: "netfox", Categories: []f4settings.Category{{ID: "network", Label: f4settings.Text{English: "Network & connections"}}}, Fields: []f4settings.Field{allowS2SPassword}, Collections: []f4settings.Collection{{ID: "netfox.connections", Category: "network", Group: "NetFox connections", Label: f4settings.Text{English: "NetFox connections"}, Description: f4settings.Text{English: "Saved FTP, SFTP and FISH connections. Proxy overrides are edited inline. Apply saves; opening a connection remains a separate command."}, Fields: fields, NameField: "netfox.Name"}}}
 }
 func (p *settingsProvider) Begin(context.Context) (*f4settings.Draft, error) {
 	p.store.mu.Lock()
@@ -73,6 +99,12 @@ func (p *settingsProvider) Begin(context.Context) (*f4settings.Draft, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Derived from p.store's own path, rather than the global
+	// vfs.CustomConfigDir, so a test that hands settingsProvider a
+	// throwaway store (see settings_center_test.go) gets an equally
+	// isolated behavior file for free.
+	behaviorPath := filepath.Join(filepath.Dir(p.store.path), "NetFoxBehavior.json")
+	initialBehavior := readS2SBehaviorSettingsAt(behaviorPath)
 	catalog := p.Catalog()
 	fields := catalog.Collections[0].Fields
 	var names []string
@@ -96,7 +128,10 @@ func (p *settingsProvider) Begin(context.Context) (*f4settings.Draft, error) {
 		}
 		records = append(records, f4settings.Record{ID: name, Values: values})
 	}
-	d := f4settings.NewDraft(nil, map[string][]f4settings.Record{"netfox.connections": records})
+	scalars := map[string]string{
+		"netfox.AllowServerToServerPasswordAuth": strconv.FormatBool(initialBehavior.AllowServerToServerPasswordAuth),
+	}
+	d := f4settings.NewDraft(scalars, map[string][]f4settings.Record{"netfox.connections": records})
 	build := func() (map[string]NetFoxConfig, error) {
 		result := map[string]NetFoxConfig{}
 		for _, r := range d.Records["netfox.connections"] {
@@ -141,6 +176,22 @@ func (p *settingsProvider) Begin(context.Context) (*f4settings.Draft, error) {
 		return nil
 	}
 	d.CommitFunc = func(ctx context.Context, d *f4settings.Draft) f4settings.Result {
+		var applied []string
+		if d.Dirty("netfox.AllowServerToServerPasswordAuth") {
+			current := readS2SBehaviorSettingsAt(behaviorPath)
+			if current != initialBehavior {
+				return f4settings.Result{Errors: map[string]error{
+					"netfox.AllowServerToServerPasswordAuth": f4settings.Error("NetFox behavior changed outside Settings Center; reopen before saving"),
+				}}
+			}
+			next := current
+			next.AllowServerToServerPasswordAuth = d.Values["netfox.AllowServerToServerPasswordAuth"] == "true"
+			if err := writeS2SBehaviorSettingsAt(behaviorPath, next); err != nil {
+				return f4settings.Result{Errors: map[string]error{"netfox.AllowServerToServerPasswordAuth": err}}
+			}
+			initialBehavior = next
+			applied = append(applied, "netfox.AllowServerToServerPasswordAuth")
+		}
 		next, err := build()
 		if err == nil {
 			err = ctx.Err()
@@ -163,7 +214,7 @@ func (p *settingsProvider) Begin(context.Context) (*f4settings.Draft, error) {
 			return f4settings.Result{Errors: map[string]error{"netfox.connections": err}}
 		}
 		initial = next
-		return f4settings.Result{Applied: []string{"netfox.connections"}}
+		return f4settings.Result{Applied: append(applied, "netfox.connections")}
 	}
 	return d, nil
 }

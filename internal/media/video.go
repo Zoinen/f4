@@ -57,6 +57,9 @@ type videoPlayer struct {
 	ov   *ttyx.Overlay
 	sock string
 	done chan struct{}
+
+	// tracker holds what mpv has reported (video_state.go).
+	tracker playbackTracker
 }
 
 // videoArgs builds mpv's command line. It is a plain function so that the
@@ -117,6 +120,7 @@ func startVideoPlayer(Path string, rect ttyx.Rect) (*videoPlayer, error) {
 		_ = cmd.Wait()
 		close(p.done)
 	}()
+	p.startObserving()
 	vtui.DebugLog("VIDEO: %s playing %s into window %d at %+v", bin, Path, ov.Window(), rect)
 	return p, nil
 }
@@ -167,6 +171,22 @@ func (p *videoPlayer) Command(args ...any) {
 func (p *videoPlayer) TogglePause()     { p.Command("cycle", "pause") }
 func (p *videoPlayer) Seek(seconds int) { p.Command("seek", seconds, "relative") }
 func (p *videoPlayer) Volume(delta int) { p.Command("add", "volume", delta) }
+
+// SeekStart and SeekEnd go to the beginning and to the end of the film.
+func (p *videoPlayer) SeekStart() { p.Command("seek", 0, "absolute") }
+func (p *videoPlayer) SeekEnd()   { p.Command("seek", 100, "absolute-percent") }
+
+// SetVolume sets the volume outright (0 is mute, 100 the full scale).
+func (p *videoPlayer) SetVolume(v int) { p.Command("set_property", "volume", v) }
+
+// CycleAudio switches to the next audio stream, or to the previous one.
+func (p *videoPlayer) CycleAudio(next bool) {
+	if next {
+		p.Command("cycle", "audio")
+	} else {
+		p.Command("cycle", "audio", "down")
+	}
+}
 
 // SetPaused is what the focus rule uses. Playback carries on by default while
 // the terminal is not on top, the way a player behaves.

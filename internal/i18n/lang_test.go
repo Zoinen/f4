@@ -9,7 +9,7 @@ import (
 func TestMsg(t *testing.T) {
 	// 1. Test existing key
 	got := Msg("Panel.UpDir")
-	want := "UP-DIR"
+	want := "Up"
 	if got != want {
 		t.Errorf("Msg(Panel.UpDir) = %q; want %q", got, want)
 	}

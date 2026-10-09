@@ -1,3 +1,9 @@
+//go:build !lite
+
+// FTP support statically links github.com/jlaffaye/ftp, which a lite build
+// (f4#1178) exists to shed -- see internal/plughost/plugins_lite.go for the
+// accounting of what a lite build carries instead.
+
 package netfox
 
 import (
@@ -163,6 +169,13 @@ func NewFTPVFS(parent vfs.VFS, host, port, user, pass string, timeout int, optio
 }
 
 func (v *FTPVFS) GetTitle() string { return v.title }
+
+// HistoryEntry and NavigateHistoryEntry implement vfs.HistoryPathProvider
+// (f4#262): an FTP session owns its own folder-history entries instead of
+// its raw remote path (e.g. /root/foo) being recorded as if it were local.
+func (v *FTPVFS) HistoryEntry() (display, ref string, ok bool) { return netfoxHistoryEntry(v) }
+func (v *FTPVFS) NavigateHistoryEntry(ref string) bool         { return netfoxNavigateHistoryEntry(v, ref) }
+
 func (v *FTPVFS) SessionKey() any {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -256,6 +269,7 @@ func (v *FTPVFS) ReadDir(ctx context.Context, p string, onChunk func([]vfs.VFSIt
 		// #nosec G115 -- the explicit MaxInt64 check above makes this conversion lossless.
 		size := int64(e.Size)
 		items = append(items, vfs.VFSItem{
+			KnownMetadata: vfs.MetadataExplicit | vfs.MetadataHidden | vfs.MetadataMTime, SizeKnown: true,
 			Name: name, Size: size,
 			IsDir: e.Type == ftp.EntryTypeFolder, MTime: e.Time,
 			IsHidden: strings.HasPrefix(name, "."),
@@ -286,6 +300,7 @@ func (v *FTPVFS) Stat(ctx context.Context, p string) (vfs.VFSItem, error) {
 			// #nosec G115 -- the explicit MaxInt64 check above makes this conversion lossless.
 			size := int64(e.Size)
 			return vfs.VFSItem{
+				KnownMetadata: vfs.MetadataExplicit | vfs.MetadataHidden | vfs.MetadataMTime, SizeKnown: true,
 				Name: e.Name, Size: size,
 				IsDir: e.Type == ftp.EntryTypeFolder, MTime: e.Time,
 				IsHidden: strings.HasPrefix(e.Name, "."),

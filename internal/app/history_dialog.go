@@ -57,6 +57,11 @@ type historySearchEntry struct {
 }
 
 func newHistorySearch(menu *vtui.VMenu, items []history.HistoryRecord, hint string) *historySearch {
+	// These dialogs filter as you type by themselves: they rebuild Items
+	// and repaint the rows over the menu. vtui's Ctrl+Alt+F item filter
+	// hides rows of the same menu instead, and would take the typed keys
+	// before OnKeyDown passes them to processKey, so it stays off (#263).
+	menu.DisableFilter = true
 	menu.ColorTextIdx = vtui.ColDialogText
 	menu.ColorSelectedTextIdx = vtui.ColDialogSelectedButton
 	menu.ColorHighlightIdx = vtui.ColDialogHighlightText
@@ -80,6 +85,8 @@ func newHistorySearch(menu *vtui.VMenu, items []history.HistoryRecord, hint stri
 func (s *historySearch) applyFilter() {
 	items := make([]vtui.MenuItem, 0, len(s.all))
 	var pinned []vtui.MenuItem
+	// frozen is how many top rows the pinned area takes, its divider included.
+	frozen := 0
 	// History providers keep the newest entry first. Dialogs show chronological
 	// order instead: the oldest entry at the top and the newest at the bottom.
 	for i := len(s.all) - 1; i >= 0; i-- {
@@ -106,10 +113,15 @@ func (s *historySearch) applyFilter() {
 		if len(items) > 0 {
 			pinned = append(pinned, vtui.MenuItem{Separator: true})
 		}
+		frozen = len(pinned)
 		items = append(pinned, items...)
 	}
 	s.menu.Items = items
 	s.menu.ItemCount = len(items)
+	// The dialog opens at the newest entry, the end of the list, which scrolled
+	// the pinned folders out of sight in a long history; frozen, they stay on
+	// the top rows however far the rest is scrolled (#1233).
+	s.menu.FrozenTop = frozen
 	s.menu.TopPos = 0
 	s.resize()
 	// VMenu's default renderer draws MenuItem.Text after the leading margin,
@@ -361,12 +373,44 @@ func (s *historySearch) deleteSelected() bool {
 	if !ok || rec.Lock {
 		return false
 	}
+	// applyFilter opens at the last visible entry. Remember the visible
+	// neighbours so deleting one row does not throw the cursor to the end of
+	// the history (f4#1742), including when a filter or pinned section is on.
+	next, previous := s.visibleNeighbours()
 	s.all = append(s.all[:idx], s.all[idx+1:]...)
 	if idx < len(s.secondary) {
 		s.secondary = append(s.secondary[:idx], s.secondary[idx+1:]...)
 	}
+	if next > idx {
+		next--
+	}
+	if previous > idx {
+		previous--
+	}
 	s.applyFilter()
+	if next >= 0 && s.selectOriginalIndex(next) {
+		return true
+	}
+	s.selectOriginalIndex(previous)
 	return true
+}
+
+func (s *historySearch) visibleNeighbours() (next, previous int) {
+	next, previous = -1, -1
+	selected := s.menu.SelectPos
+	for i := selected + 1; i < len(s.menu.Items); i++ {
+		if entry, ok := s.menu.Items[i].UserData.(historySearchEntry); ok {
+			next = entry.index
+			break
+		}
+	}
+	for i := selected - 1; i >= 0; i-- {
+		if entry, ok := s.menu.Items[i].UserData.(historySearchEntry); ok {
+			previous = entry.index
+			break
+		}
+	}
+	return next, previous
 }
 
 // setItems replaces the full item list (used by the "clear all" and
@@ -460,9 +504,28 @@ func (s *historySearch) processKey(e *vtinput.InputEvent) bool {
 		return true
 	}
 	if e.Char != 0 && !ctrl && !alt && unicode.IsPrint(e.Char) {
+		// Once nothing is shown there is nothing left to narrow, so the key
+		// is taken and dropped: far2l's VMenu filter does this (vmenu.cpp,
+		// `if (!GetShowItemCount()) return TRUE;`), and so does vtui's menu
+		// filter behind the Ctrl+Down dropdown. Without it every key typed
+		// past the last match piled up in the title over an empty list (#1155).
+		if !s.showsEntry() {
+			return true
+		}
 		s.query = append(s.query, e.Char)
 		s.applyFilter()
 		return true
+	}
+	return false
+}
+
+// showsEntry reports whether the filtered list shows at least one history
+// entry; the divider between the pinned and the chronological rows is not one.
+func (s *historySearch) showsEntry() bool {
+	for _, item := range s.menu.Items {
+		if _, ok := item.UserData.(historySearchEntry); ok && !item.Separator {
+			return true
+		}
 	}
 	return false
 }
@@ -533,7 +596,7 @@ func (s *historySearch) draw(scr *vtui.ScreenBuf) {
 	height := s.menu.Y2 - s.menu.Y1 - 1
 	var itemIdx int
 	for row := 0; row < height; row++ {
-		itemIdx = s.menu.TopPos + row
+		itemIdx = s.menu.ItemAtRow(row)
 		if itemIdx >= len(s.menu.Items) {
 			break
 		}

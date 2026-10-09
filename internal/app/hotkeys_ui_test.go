@@ -257,10 +257,14 @@ func TestActionHotkeyConfigBuildsNativeRowsAndFitsScreen(t *testing.T) {
 	}
 
 	var hasSave, hasCancel bool
+	var defaults []string
 	for _, child := range dlg.GetChildren() {
 		button, ok := child.(*vtui.Button)
 		if !ok {
 			continue
+		}
+		if button.IsDefault {
+			defaults = append(defaults, testutil.GetCleanText(button))
 		}
 		switch testutil.GetCleanText(button) {
 		case "Save":
@@ -271,6 +275,11 @@ func TestActionHotkeyConfigBuildsNativeRowsAndFitsScreen(t *testing.T) {
 	}
 	if !hasSave || !hasCancel {
 		t.Fatalf("hotkey dialog must expose transactional buttons: save=%v cancel=%v", hasSave, hasCancel)
+	}
+	// Enter in the table assigns the selected row, so the highlighted
+	// default button must be Assign, not Save (#320).
+	if len(defaults) != 1 || defaults[0] != "Assign" {
+		t.Errorf("default buttons = %q, want [Assign]", defaults)
 	}
 
 	x1, _, x2, _ := dlg.GetPosition()

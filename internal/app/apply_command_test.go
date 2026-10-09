@@ -21,6 +21,13 @@ import (
 
 type applyTestHistoryProvider struct{ values map[string][]string }
 
+// Apply Command owns a specialized frame; its behavioral tests depend on the
+// dialog contract rather than the embedded Window's concrete type.
+type applyTestDialog interface {
+	vtui.Frame
+	vtui.Container
+}
+
 type unavailableApplyCommandRunner struct{ *vfs.OSVFS }
 
 type invalidDialectApplyCommandRunner struct{ *vfs.OSVFS }
@@ -68,6 +75,54 @@ func TestApplyCommandActionRegistered(t *testing.T) {
 	}
 }
 
+// TestApplyCommandActionDisabledWithoutSupport checks the other half of
+// f4#1356's "silent no-op" class for File.ApplyCommand: the action already
+// had Visible: panel.PanelCanApplyCommand, which hides the menu item on a
+// VFS with no command runner, but Ctrl+G stayed live and still opened the
+// "ApplyCommand.Unsupported" error dialog. Wiring the same predicate to
+// Enabled makes RunAction refuse the hotkey too, instead of just the menu
+// entry disappearing.
+func TestApplyCommandActionDisabledWithoutSupport(t *testing.T) {
+	t.Cleanup(paneltest.SwapFrameManager(t))
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	pf := paneltest.SetupMockPanelsFrame(t)
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+	vtui.FrameManager.Push(pf)
+
+	fsp := pf.GetActivePanel()
+	fsp.Vfs = vfs.NewNullVFS(0)
+
+	act, ok := GetAction("File.ApplyCommand")
+	if !ok {
+		t.Fatal("File.ApplyCommand is not registered")
+	}
+	if act.Enabled == nil {
+		t.Fatal("File.ApplyCommand has no Enabled predicate")
+	}
+	if act.Enabled() {
+		t.Error("Enabled should be false on a VFS with no command runner")
+	}
+
+	if RunAction("File.ApplyCommand") {
+		t.Error("RunAction should refuse a disabled File.ApplyCommand instead of opening the Unsupported dialog")
+	}
+	if top := vtui.FrameManager.GetTopFrame(); top != pf {
+		t.Fatalf("a disabled File.ApplyCommand opened a frame instead of being refused: %T", top)
+	}
+
+	fsp.Vfs = vfs.NewOSVFS(t.TempDir())
+	fsp.Entries = []*panel.FileEntry{
+		{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}},
+		{VFSItem: vfs.VFSItem{Name: "file.txt"}},
+	}
+	fsp.SetCursorIndex(1)
+	if !act.Enabled() {
+		t.Error("Enabled should be true once the active VFS supports Apply Command")
+	}
+}
+
 func TestApplyCommandActionUsesActivePanelWorkspace(t *testing.T) {
 	t.Cleanup(paneltest.SwapFrameManager(t))
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
@@ -110,8 +165,8 @@ func TestApplyCommandActionUsesActivePanelWorkspace(t *testing.T) {
 	if got := panel.FindPanelsFrame(); got != pfB {
 		t.Fatalf("Apply switched to background workspace A; active frame = %p", got)
 	}
-	top, ok := vtui.FrameManager.GetTopFrame().(*vtui.Window)
-	if !ok || top.GetTitle() != i18n.Msg("ApplyCommand.Title") {
+	top, ok := vtui.FrameManager.GetTopFrame().(applyTestDialog)
+	if !ok || top.GetType() != vtui.TypeDialog || top.GetTitle() != i18n.Msg("ApplyCommand.Title") {
 		t.Fatalf("active workspace top frame = %T %q", vtui.FrameManager.GetTopFrame(), vtui.FrameManager.GetTopFrame().GetTitle())
 	}
 	top.Close()
@@ -353,8 +408,8 @@ func TestApplyCommandCtrlGOpensHistoryDialogAndPreservesCommandLine(t *testing.T
 	if !handled {
 		t.Fatal("Ctrl+G was not handled")
 	}
-	top, ok := vtui.FrameManager.GetTopFrame().(*vtui.Window)
-	if !ok || top.GetTitle() != i18n.Msg("ApplyCommand.Title") {
+	top, ok := vtui.FrameManager.GetTopFrame().(applyTestDialog)
+	if !ok || top.GetType() != vtui.TypeDialog || top.GetTitle() != i18n.Msg("ApplyCommand.Title") {
 		t.Fatalf("top frame = %T %q", vtui.FrameManager.GetTopFrame(), vtui.FrameManager.GetTopFrame().GetTitle())
 	}
 	foundHistory := false
@@ -387,8 +442,8 @@ func TestApplyCommandPromptCancellationKeepsHistoryAndSelection(t *testing.T) {
 	defer func() { panel.LastApplyCommandTemplate = oldTemplate }()
 
 	panel.ActionApplyCommand(pf)
-	applyDialog, ok := vtui.FrameManager.GetTopFrame().(*vtui.Window)
-	if !ok {
+	applyDialog, ok := vtui.FrameManager.GetTopFrame().(applyTestDialog)
+	if !ok || applyDialog.GetType() != vtui.TypeDialog || applyDialog.GetTitle() != i18n.Msg("ApplyCommand.Title") {
 		t.Fatalf("top frame = %T, want Apply dialog", vtui.FrameManager.GetTopFrame())
 	}
 	var commandEdit *vtui.Edit

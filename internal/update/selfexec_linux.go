@@ -7,20 +7,17 @@ import (
 	"os"
 	"strconv"
 	"strings"
-
-	"github.com/go-webgpu/goffi/ffi"
 )
 
 // GoffiUniversalGuard is the variable goffi's universal ("Profile U") bridge
 // adds to the environment of the copy of the process it re-execs through the
-// host dynamic loader. Its presence says two things: this process reached a
-// libc that way, and a child that inherits the variable will not be given one,
-// because the bridge in the child reads the guard and returns instead of
-// re-execing.
+// host dynamic loader, as "<pid>:1". Its presence says this process reached a
+// libc that way, so os.Executable() and os.Args[0] no longer name the file on
+// disk. Before goffi v0.1.11 it was a plain "1" that a child took for its own,
+// so a child started by path bound no libc and died before main.
 //
-// The name is goffi's, and a rename there would turn the check below into a
-// no-op rather than into a wrong answer: f4 would go back to starting children
-// by path, which is the behaviour that made them die before main.
+// The name is goffi's, and a rename there would turn the checks below into
+// no-ops: executable() would answer with the loader's path.
 const GoffiUniversalGuard = "GOFFI_UNIVERSAL_REEXEC"
 
 // GoffiUniversalExe is where goffi's universal bridge records the path of the
@@ -64,7 +61,7 @@ func executable() (string, error) {
 	if p, ok := systemLinkerExecutable(); ok {
 		return p, nil
 	}
-	if os.Getenv(GoffiUniversalGuard) == "" {
+	if !universalBuild() {
 		return os.Executable()
 	}
 	if p, ok := recordedExecutable(os.Getenv(GoffiUniversalExe)); ok {
@@ -90,30 +87,35 @@ func recordedExecutable(raw string) (string, bool) {
 	return path, true
 }
 
-// selfExecEnv is the environment for a copy of this process: ours, plus the
-// path we know and it cannot work out.
+// goffiUniversalEnvPrefix names the variables goffi's universal bridge writes:
+// the guard and the pid-tagged records of what the re-exec destroyed.
+const goffiUniversalEnvPrefix = "GOFFI_UNIVERSAL_"
+
+// selfExecEnv is the environment for a copy of this process: ours, without the
+// bridge's variables, plus the path we know and the copy may not work out.
+//
+// The copy runs the bridge itself and writes its own. goffi v0.1.11 drops
+// inherited ones and only trusts records tagged with its own pid, but an older
+// universal f4 -- the binary an update replaces, say -- takes any guard for
+// its own, binds no libc, and dies before main. Leaving them out costs
+// nothing.
 func selfExecEnv() []string {
-	env := os.Environ()
+	src := os.Environ()
+	env := make([]string, 0, len(src)+1)
+	for _, kv := range src {
+		if strings.HasPrefix(kv, goffiUniversalEnvPrefix) {
+			continue
+		}
+		env = append(env, kv)
+	}
 	if exe, err := executable(); err == nil && exe != "" {
 		env = append(env, F4ExeEnv+"="+exe)
 	}
 	return env
 }
 
-// universalHostLoader reports the host dynamic loader and libc SONAME that
-// copies of this process must be started through, and whether that applies at
-// all. It does only when this process itself came up that way; an ordinary
-// dynamic or static build wants none of it.
-func universalHostLoader() (loader, libc string, ok bool) {
-	if os.Getenv(GoffiUniversalGuard) == "" {
-		return "", "", false
-	}
-	// The same table the bridge used, through goffi's public accessors: an
-	// empty answer means the host runs a libc goffi does not recognise, and
-	// then there was no re-exec to imitate.
-	loader, libc = ffi.HostLoader(), ffi.HostLibC()
-	if loader == "" || libc == "" {
-		return "", "", false
-	}
-	return loader, libc, true
+// universalBuild reports whether this process came up through goffi's
+// universal bridge, which leaves its guard in the environment.
+func universalBuild() bool {
+	return os.Getenv(GoffiUniversalGuard) != ""
 }

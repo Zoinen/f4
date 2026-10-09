@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/unxed/goclip"
 	"github.com/unxed/vtui"
 )
 
@@ -46,6 +47,7 @@ func Main(m *testing.M, before func(), after func() error) int {
 	// that genuinely targets the OS clipboard switches the knob back off for
 	// its own scope.
 	vtui.SkipOSClipboard(true)
+	goclip.SetActiveDriver(goclip.NewFileDriver(""))
 	vtui.DisableTerminalClipboard()
 
 	tmpDir, tmpErr := os.MkdirTemp("", "f4-test-config-*")

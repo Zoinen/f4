@@ -7,7 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/unxed/f4/internal/editor"
 	"github.com/unxed/f4/internal/fileops"
+	"github.com/unxed/f4/internal/viewer"
+	"github.com/unxed/f4/vfs/hostmode"
 	"github.com/unxed/vtui"
 )
 
@@ -74,7 +77,8 @@ func actionActivateMainMenu() bool {
 // explicit top-level menu selected by a caller such as Shift+F10; -1 keeps the
 // ordinary F9/palette behavior. openSubMenu drops the selected menu down right
 // away, which is what far2l's ShellOptions(1) does for Shift+F10 and what
-// ShellOptions(0) deliberately does not do for F9.
+// ShellOptions(0) deliberately does not do for F9 over the panels. The editor
+// and the viewer drop their menu down on F9 regardless: see below.
 func activateMainMenuAt(requestedPos int, openSubMenu bool) bool {
 	if !mainMenuActionAvailable() {
 		return false
@@ -103,6 +107,18 @@ func activateMainMenuAt(requestedPos int, openSubMenu bool) bool {
 				if selectPos >= len(menu.Items) {
 					selectPos = 0
 				}
+			}
+			switch top.(type) {
+			case *editor.EditorView, *viewer.ViewerView:
+				// far2l's F9 differs per screen. FilePanels::ProcessKey calls
+				// ShellOptions(0), which only shows the bar; the editor's
+				// EditorShellOptions and the viewer's ViewerShellOptions follow
+				// Show() with ProcessKey(KEY_DOWN) from a freshly built menu
+				// whose first item, File, is the selected one
+				// (far2l/src/fileedit2options.cpp, fileview2options.cpp).
+				// #1144 took the dropdown away from all three (issue #1149).
+				selectPos = 0
+				openSubMenu = true
 			}
 		}
 		if selectPos < 0 || selectPos >= len(menu.Items) {
@@ -311,12 +327,15 @@ func dumpScreenTo(path string) error {
 // %USERPROFILE%, or %HOMEDRIVE%+%HOMEPATH% — which resolve inside the
 // wineprefix (e.g. `C:\users\<name>`, i.e.
 // `<WINEPREFIX>/drive_c/users/<name>` on the Unix side), not the real Unix
-// $HOME the user is used to looking in. Nothing about that is broken, but
-// it is exactly where issue #536 testing tripped: the file was written
-// (or the write silently failed) somewhere other than where it was searched
-// for. The executable's own directory is added first because it is the one
-// location a Wine user unambiguously knows without having to think about
-// prefix layout — they just ran the .exe from there.
+// $HOME the user is used to looking in. That is exactly where issue #536
+// testing tripped: the file was written (or the write silently failed)
+// somewhere other than where it was searched for. hostmode.UserHomeDir
+// (WINE.md §18.2, "$HOME") answers with the host's real $HOME in posix
+// personality and falls back to the same os.UserHomeDir() as before
+// everywhere else, so native Windows keeps its previous candidate
+// unchanged. The executable's own directory is still added first because
+// it is the one location a Wine user unambiguously knows without having to
+// think about prefix layout — they just ran the .exe from there.
 func screenDumpCandidateDirs() []string {
 	var dirs []string
 	if exe, err := os.Executable(); err == nil {
@@ -325,7 +344,7 @@ func screenDumpCandidateDirs() []string {
 		}
 		dirs = append(dirs, filepath.Dir(exe))
 	}
-	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+	if home, err := hostmode.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
 		dirs = append(dirs, home)
 	}
 	dirs = append(dirs, os.TempDir())

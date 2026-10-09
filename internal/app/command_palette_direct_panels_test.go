@@ -195,8 +195,7 @@ func TestCommandPaletteAISendDraftOnlyForCurrentNonEmptyInput(t *testing.T) {
 	pf := newDirectPalettePanelsFrame(left, right)
 	chat := NewAIChatPanel(left)
 	chat.SetFocus(true)
-	chat.focusedLinkIdx = -1
-	chat.input.SetText("review this patch")
+	chat.Input.SetText("review this patch")
 	pf.AltPanels[0] = chat
 	vtui.FrameManager.Push(pf)
 
@@ -204,11 +203,11 @@ func TestCommandPaletteAISendDraftOnlyForCurrentNonEmptyInput(t *testing.T) {
 	if !found || entry.Description != i18n.Msg("CommandPalette.AI.SendDraft.Desc") {
 		t.Fatalf("AI.SendDraft entry = %#v", entry)
 	}
-	chat.input.SetText("newer draft")
+	chat.Input.SetText("newer draft")
 	if executeCommandPaletteEntry(entry) {
 		t.Fatal("stale AI.SendDraft submitted a newer draft")
 	}
-	chat.input.SetText("   ")
+	chat.Input.SetText("   ")
 	if commandPaletteTestHasID(commandPalettePanelsContextEntries(pf), "AI.SendDraft") {
 		t.Fatal("blank AI draft exposed a submit command")
 	}

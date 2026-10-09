@@ -1,9 +1,12 @@
+//go:build !extralite
+
 package plughost
 
 import (
 	"fmt"
 	"path/filepath"
-	"strings"
+	"sync"
+	"time"
 
 	"github.com/unxed/f4/internal/luaplug"
 	"github.com/unxed/f4/sdk/f4rpc"
@@ -29,6 +32,14 @@ type LuaPlugin struct {
 	// identity is who this plugin is to the permission model, taken from
 	// the manifest when it came from the catalog.
 	identity PluginIdentity
+
+	// mu guards runtime, which restart replaces after a call deadline.
+	mu sync.Mutex
+	// allowUnsafe is what Init decided about Lua's os and io, kept so that a
+	// restarted runtime is built the same way without asking again.
+	allowUnsafe bool
+	// callTimeout overrides luaplug's default; tests shorten it.
+	callTimeout time.Duration
 }
 
 // SetPermissionIdentity passes on who the manifest says this plugin is, so
@@ -52,67 +63,6 @@ func NewLuaPlugin(path string) *LuaPlugin {
 	return &LuaPlugin{path: path}
 }
 
-// IsLuaEntrypoint reports whether an entrypoint is a bare Lua script that the
-// embedded interpreter can run.
-func IsLuaEntrypoint(entrypoint string) bool {
-	return isBareEntrypointWithExt(entrypoint, ".lua")
-}
-
-// isBareEntrypointWithExt reports whether an entrypoint is a single file with
-// the given extension. An entrypoint with arguments, such as "lua plugin.lua"
-// or ".venv/bin/python main.py", asks for a process and gets one.
-func isBareEntrypointWithExt(entrypoint, ext string) bool {
-	fields := strings.Fields(entrypoint)
-	if len(fields) != 1 {
-		return false
-	}
-	return strings.EqualFold(filepath.Ext(fields[0]), ext)
-}
-
-// resolvePluginPath turns an entrypoint into a path, relative to the plugin's
-// own directory when it has one.
-func resolvePluginPath(dir, entrypoint string) string {
-	path := strings.TrimSpace(entrypoint)
-	if dir != "" && !filepath.IsAbs(path) {
-		path = filepath.Join(dir, path)
-	}
-	return path
-}
-
-// newPluginForEntrypoint picks the transport an entrypoint asks for. dir is the
-// plugin's own directory, empty for a plain registered path.
-func newPluginForEntrypoint(dir, entrypoint string) Plugin {
-	if IsLuaEntrypoint(entrypoint) {
-		return NewLuaPlugin(resolvePluginPath(dir, entrypoint))
-	}
-	if IsWasmEntrypoint(entrypoint) {
-		return NewWasmPlugin(resolvePluginPath(dir, entrypoint))
-	}
-	if dir == "" {
-		return NewRPCPlugin(entrypoint)
-	}
-	return NewRPCPlugRing(dir, entrypoint)
-}
-
-// carriesPermissionIdentity is implemented by the transports that can be
-// gated.
-type carriesPermissionIdentity interface {
-	SetPermissionIdentity(PluginIdentity)
-}
-
-// newPluginForPlugRingItem is newPluginForEntrypoint with the manifest in
-// hand, which is the only place the declared permissions come from.
-func newPluginForPlugRingItem(dir string, item PlugRingItem) Plugin {
-	plugin := newPluginForEntrypoint(dir, item.Entrypoint)
-	// Unconditionally: an identity is needed even when the manifest declares
-	// no permissions, because the gate also asks about permissions a plugin
-	// never declared.
-	if aware, ok := plugin.(carriesPermissionIdentity); ok {
-		aware.SetPermissionIdentity(PermissionIdentityForPlugRingItem(item))
-	}
-	return plugin
-}
-
 func (p *LuaPlugin) GetName() string {
 	return p.path + " (Lua)"
 }
@@ -121,22 +71,19 @@ func (p *LuaPlugin) Init(api vfs.HostAPI) error {
 	gate := newPluginGate(p.permissionIdentity())
 	p.bridge = newGatedFFIBridge(gate)
 
-	runtime, err := luaplug.New(luaplug.Options{
-		Name:              filepath.Base(p.path),
-		Host:              luaplug.HostFunc(p.callHost),
-		FFI:               p.bridge,
-		AllowUnsafeStdlib: p.allowsUnsafeStdlib(gate),
-	})
+	p.allowUnsafe = p.allowsUnsafeStdlib(gate)
+	runtime, err := p.newRuntime()
 	if err != nil {
 		p.bridge.Close()
 		return err
 	}
-	p.runtime = runtime
+	p.setRuntime(runtime)
 
 	// The host methods must exist before the script body runs: a plugin is
 	// free to log or ask for its version while it is still loading.
 	p.registrations = &PluginSessionRegistrations{}
-	p.host = newHostMethods(api, p, p.path, p.bridge)
+	guard := newUIGuard(p)
+	p.host = newHostMethods(api, guard, p.path, p.bridge)
 
 	if err := runtime.LoadFile(p.path); err != nil {
 		p.Close()
@@ -148,7 +95,7 @@ func (p *LuaPlugin) Init(api vfs.HostAPI) error {
 		p.Close()
 		return fmt.Errorf("Plugin.Init failed: %w", err)
 	}
-	if err := RegisterRPCPluginCommands(api, p, p.path, res.Commands, p.registrations); err != nil {
+	if err := RegisterRPCPluginCommands(api, guard, p.path, res.Commands, p.registrations); err != nil {
 		p.Close()
 		return err
 	}
@@ -156,10 +103,63 @@ func (p *LuaPlugin) Init(api vfs.HostAPI) error {
 	for _, drive := range res.Drives {
 		driveName := drive
 		api.RegisterDrive(driveName, func() vfs.VFS {
-			return NewRPCVFS(p, driveName)
+			return NewRPCVFS(guard, driveName)
 		})
 	}
 	return nil
+}
+
+func (p *LuaPlugin) newRuntime() (*luaplug.Runtime, error) {
+	return luaplug.New(luaplug.Options{
+		Name:              filepath.Base(p.path),
+		Host:              luaplug.HostFunc(p.callHost),
+		FFI:               p.bridge,
+		AllowUnsafeStdlib: p.allowUnsafe,
+		CallTimeout:       p.callTimeout,
+	})
+}
+
+func (p *LuaPlugin) setRuntime(r *luaplug.Runtime) {
+	p.mu.Lock()
+	p.runtime = r
+	p.mu.Unlock()
+}
+
+func (p *LuaPlugin) currentRuntime() *luaplug.Runtime {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.runtime
+}
+
+// restart replaces a runtime that hit its call deadline (luaplug.ErrInterrupted)
+// with a new one running the same script: the old interpreter was stopped at an
+// arbitrary instruction and refuses all work. The plugin's commands and drives
+// stay registered with the host and reach the new runtime through the same
+// plugin object; the script's own state starts over, as after a restart.
+func (p *LuaPlugin) restart(old *luaplug.Runtime) (*luaplug.Runtime, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.runtime != old {
+		return p.runtime, nil // another call already did it
+	}
+	vtui.DebugLog("PLUGIN: %s hit its call deadline; restarting its Lua runtime", p.path)
+	fresh, err := p.newRuntime()
+	if err != nil {
+		return nil, err
+	}
+	if err := fresh.LoadFile(p.path); err != nil {
+		_ = fresh.Close()
+		return nil, fmt.Errorf("reloading %s: %w", p.path, err)
+	}
+	// A plugin may register handlers from inside Plugin.Init, so it runs
+	// again as it did at startup.
+	if _, err := fresh.Dispatch("Plugin.Init", nil); err != nil {
+		_ = fresh.Close()
+		return nil, fmt.Errorf("Plugin.Init after the restart of %s: %w", p.path, err)
+	}
+	p.runtime = fresh
+	go func() { _ = old.Close() }()
+	return fresh, nil
 }
 
 // allowsUnsafeStdlib decides whether this plugin gets Lua's os and io.
@@ -191,10 +191,17 @@ func (p *LuaPlugin) allowsUnsafeStdlib(gate *PermissionGate) bool {
 
 // Call implements PluginTransport: a request from f4 into the plugin.
 func (p *LuaPlugin) Call(method string, params any, result any) error {
-	if p.runtime == nil {
+	runtime := p.currentRuntime()
+	if runtime == nil {
 		return fmt.Errorf("lua plugin %s is not running", p.path)
 	}
-	value, err := p.runtime.Dispatch(method, params)
+	if runtime.Interrupted() {
+		var err error
+		if runtime, err = p.restart(runtime); err != nil {
+			return err
+		}
+	}
+	value, err := runtime.Dispatch(method, params)
 	if err != nil {
 		return err
 	}
@@ -219,28 +226,13 @@ func (p *LuaPlugin) callHost(method string, params any) (any, error) {
 	return handler(raw)
 }
 
-// decodePluginValue moves a value the interpreter produced into the typed
-// struct the core expects. Routing it through MessagePack costs a round trip
-// but guarantees that both transports agree on field naming, which is exactly
-// where the older Far plugin APIs drifted apart.
-func decodePluginValue(value any, result any) error {
-	if value == nil || result == nil {
-		return nil
-	}
-	encoded, err := msgpack.Marshal(value)
-	if err != nil {
-		return err
-	}
-	return msgpack.Unmarshal(encoded, result)
-}
-
 func (p *LuaPlugin) Close() error {
 	if p.registrations != nil {
 		p.registrations.Unregister()
 		p.registrations = nil
 	}
-	if p.runtime != nil {
-		_ = p.runtime.Close()
+	if r := p.currentRuntime(); r != nil {
+		_ = r.Close()
 	}
 	if p.bridge != nil {
 		p.bridge.Close()

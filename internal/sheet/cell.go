@@ -1,6 +1,19 @@
 // Package sheet implements the spreadsheet model used by f4: a grid of cells
 // holding text, numbers or formulas, a formula evaluator, and importers and
-// exporters for SQLite (the native format), plain text, CSV and XLSX.
+// exporters for the native format, plain text, CSV and XLSX.
+//
+// The native format has two, build-tag-selected, on-disk representations
+// behind the same Save/Load/IsSheetFile API (see store.go and
+// store_lite.go): a regular build writes a SQLite database (so the very
+// same ".f4s" file can also be opened with f4's own SQLite client), while a
+// "-tags lite" build writes JSON instead, to avoid linking
+// github.com/ncruces/go-sqlite3 (and its embedded wazero runtime) into a
+// lite binary just for this one feature. The two formats are NOT
+// cross-compatible: a sheet saved by a lite build is plain JSON and will not
+// be recognised as a sheet file by a regular build (IsSheetFile returns
+// false), and vice versa -- a SQLite-backed sheet opened by a lite build
+// will not be recognised either. This is a deliberate trade-off of dropping
+// sqlite from lite builds, not a bug; see f4#1552.
 //
 // The feature set intentionally follows the spreadsheet built into Dos
 // Navigator (cell kinds detected from content, DN calculator expression
@@ -16,6 +29,13 @@ import (
 	"strconv"
 	"strings"
 )
+
+// SchemaVersion is stored in every saved sheet file (the sqlite store's
+// f4_sheet_meta "schema" row, or the JSON store's top-level "schema" field)
+// so future readers can migrate. Shared by both store.go (!lite) and
+// store_lite.go (lite) rather than defined by either one, since bumping it
+// is a decision about the sheet format, not about which build wrote it.
+const SchemaVersion = 1
 
 // Grid limits, matching the classic layout: columns A..IV and 4096 rows.
 const (

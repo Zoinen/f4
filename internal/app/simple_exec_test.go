@@ -3,6 +3,7 @@ package app
 import (
 	"github.com/unxed/f4/internal/panel"
 	"github.com/unxed/f4/internal/paneltest"
+	"os"
 	"testing"
 	"time"
 
@@ -30,10 +31,6 @@ func TestSimpleInline_CommandExecution(t *testing.T) {
 	pf.ShellMode = terminal.ShellModeSimpleInline
 	pf.ResizeConsole(80, 25)
 
-	oldWait := panel.WaitForAnyKey
-	panel.WaitForAnyKey = func() {}
-	t.Cleanup(func() { panel.WaitForAnyKey = oldWait })
-
 	dir := t.TempDir()
 	pf.RunSimpleInlineCommand(dir, "echo simple_inline_test")
 
@@ -44,6 +41,78 @@ func TestSimpleInline_CommandExecution(t *testing.T) {
 		default:
 			time.Sleep(5 * time.Millisecond)
 		}
+	}
+}
+
+// A command started from the panels hands the screen straight back to them
+// when it exits, the way Far and far2l do: there is no "Press any key to
+// return to f4..." pause any more (#897). Its output stays in the host
+// console for Ctrl+O, whose far-style overlay covers the bottom rows of the
+// console window -- so the output is first pushed out of those rows, and the
+// window is fitted to the cursor after that. ReactOS does not move the window
+// after the cursor by itself (WINE.md §17.6); a fit made before the push
+// would leave the snapshot taken for Ctrl+O short of the output's end.
+func TestSimpleInline_ReturnsWithoutPauseAndLeavesRoomForOverlay(t *testing.T) {
+	t.Cleanup(paneltest.SwapFrameManager(t))
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	vtui.FrameManager.Init(scr)
+	theme.SetDefaultF4Palette()
+
+	oldCfg := config.App
+	t.Cleanup(func() { config.App = oldCfg })
+	config.App.ConsoleMode = terminal.ConsoleViewFar
+
+	pf := paneltest.SetupMockPanelsFrame(t)
+	defer pf.Close()
+	pf.ShellMode = terminal.ShellModeSimpleInline
+	pf.ShowKeyBar = true
+	pf.ResizeConsole(80, 25)
+
+	n := pf.OverlayLines()
+	if n != 2 {
+		t.Fatalf("OverlayLines() in Far style with keybar = %d, want 2", n)
+	}
+
+	out, err := os.CreateTemp(t.TempDir(), "stdout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	oldStdout := os.Stdout
+	os.Stdout = out
+	t.Cleanup(func() { os.Stdout = oldStdout })
+
+	const marker = "return_without_pause"
+	room := strings.Repeat("\r\n", n)
+	fits, fitsAfterRoom := 0, 0
+	oldFit := panel.FitConsoleWindow
+	panel.FitConsoleWindow = func() {
+		fits++
+		written, _ := os.ReadFile(out.Name())
+		text := string(written)
+		if i := strings.Index(text, marker); i >= 0 && strings.HasSuffix(text[i:], room) {
+			fitsAfterRoom++
+		}
+	}
+	t.Cleanup(func() { panel.FitConsoleWindow = oldFit })
+
+	pf.RunSimpleInlineCommand(t.TempDir(), "echo "+marker)
+
+	written, _ := os.ReadFile(out.Name())
+	if strings.Contains(string(written), "Press any key") {
+		t.Fatalf("a command run from the panels still pauses before returning to them: %q", written)
+	}
+	if !strings.Contains(string(written), marker) {
+		t.Fatalf("the command's output did not reach the console: %q", written)
+	}
+	if fits == 0 {
+		t.Fatal("the console window was never fitted to the cursor")
+	}
+	if fitsAfterRoom == 0 {
+		t.Fatalf("the console window was fitted %d time(s), none of them after the output "+
+			"was pushed out of the %d overlay rows; on ReactOS the snapshot for Ctrl+O "+
+			"then misses the end of the output", fits, n)
 	}
 }
 

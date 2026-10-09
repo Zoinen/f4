@@ -1,3 +1,5 @@
+//go:build !lite
+
 package sheet
 
 import (
@@ -10,9 +12,6 @@ import (
 
 	"github.com/ncruces/go-sqlite3/driver"
 )
-
-// SchemaVersion is stored in the meta table so future readers can migrate.
-const SchemaVersion = 1
 
 const createSchema = `
 CREATE TABLE IF NOT EXISTS f4_sheet_meta (
@@ -49,6 +48,11 @@ func openDatabase(path string) (*sql.DB, error) {
 // Save writes the sheet into a SQLite database, replacing whatever the file
 // held before. The native format is a plain database, so the very same file
 // can be inspected with the SQLite client built into f4.
+//
+// This is the regular-build store; a "-tags lite" build uses store_lite.go's
+// JSON-backed implementation instead, behind the same API but writing a
+// physically different, incompatible file format (see the package doc
+// comment in cell.go).
 func (s *Sheet) Save(ctx context.Context, path string) error {
 	db, err := openDatabase(path)
 	if err != nil {

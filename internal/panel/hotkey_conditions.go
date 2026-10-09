@@ -35,7 +35,7 @@ var hotkeyConditions = map[string]func() bool{
 			return false
 		}
 		if pf := FindPanelsFrameAnyScreen(); pf != nil {
-			if !pf.CmdLine.IsEmpty() {
+			if pf.PanelsLocked() || !pf.CmdLine.IsEmpty() {
 				return false
 			}
 			if pf.ShowPanels {
@@ -55,10 +55,16 @@ var hotkeyConditions = map[string]func() bool{
 		}
 		return false
 	},
-	// noaltscreenapp gates keys that must reach an interactive AltScreen
-	// application (mc, htop) instead of triggering f4's own actions.
+	// noaltscreenapp is the looser gate: it stands down only for an AltScreen
+	// application (mc, htop), not for a child that is merely busy. The escape
+	// hatch Ctrl+Alt+Z is bound through it so that no running program can lock
+	// the panels away (#50); keys that belong to the running program, Ctrl+O
+	// included (#249, #1376), use noterminalapp.
 	"noaltscreenapp": func() bool {
 		if pf := FindPanelsFrameAnyScreen(); pf != nil {
+			if pf.PanelsLocked() {
+				return false
+			}
 			if pf.ShowPanels {
 				return true
 			}
@@ -81,24 +87,29 @@ var hotkeyConditions = map[string]func() bool{
 	// noterminalapp is the stricter sibling of noaltscreenapp: it also
 	// stands down for a plain child process that is merely busy (a shell
 	// command, a REPL). With the panels hidden such a process owns the
-	// keyboard and the command line is not even drawn, so actions that
-	// type into it must not fire. With the panels shown nothing is in the
-	// way, which keeps the Shell binding of such a key unconditional.
+	// keyboard, as it does in far2l's terminal, and the command line is not
+	// even drawn, so neither actions that type into it nor the file-manager
+	// keys (F2, F7, F10, Alt+F1...) may fire. The AltScreen test alone is not
+	// enough for those: a Windows console program such as Far Manager draws
+	// full screen without ever switching to the alternate screen (#1376).
+	// With the panels shown nothing is in the way, which keeps the Shell
+	// binding of such a key unconditional -- also when those panels were
+	// raised over a program that is still running: the keyboard is f4's
+	// then, and Ctrl+O has to be able to hand it back.
 	"noterminalapp": func() bool {
 		if pf := FindPanelsFrameAnyScreen(); pf != nil {
-			if pf.ShowPanels {
-				return true
+			// A terminal-only workspace (Ctrl+Shift+O) owns the keyboard
+			// outright: none of the file-manager keys gated here may fire.
+			if pf.PanelsLocked() {
+				return false
 			}
-			if pf.ShellMode == terminal.ShellModeSimpleInline {
-				// Same reasoning as noaltscreenapp above: no terminal.PTY means no
-				// foreign process can be busy on screen in this mode. A
-				// command f4 itself launched (runSimpleInlineCommand) still
-				// owns the keyboard while it runs, but that state already
-				// routes through SetBusy/isPtyBusy on f4's own frame, not
-				// through this background termView.
-				return true
-			}
-			return pf.TermView != nil && !pf.TermView.UseAltScreen && !pf.IsPtyBusy()
+			// Same reasoning for SimpleInline as noaltscreenapp above: no
+			// terminal.PTY means no foreign process can be busy on screen in
+			// this mode. A command f4 itself launched (runSimpleInlineCommand)
+			// still owns the keyboard while it runs, but that state already
+			// routes through SetBusy/isPtyBusy on f4's own frame, not through
+			// the background termView. TerminalOwnsKeyboard encodes all of it.
+			return !pf.TerminalOwnsKeyboard()
 		}
 		return false
 	},
@@ -107,6 +118,17 @@ var hotkeyConditions = map[string]func() bool{
 	// being forwarded to the running application.
 	"terminalquiet": func() bool {
 		if pf := FindPanelsFrameAnyScreen(); pf != nil {
+			// Same reasoning as noaltscreenapp/noterminalapp above (see
+			// TerminalOwnsKeyboard): SimpleInline has no terminal.PTY, so
+			// pf.TermView is a leftover background object that does not
+			// reflect what's on screen, and no foreign program can ever be
+			// "loud" here anyway. Reading its UseAltScreen field hit the
+			// exact stray-flip bug that broke Ctrl+O in this mode (f4#1376)
+			// before TerminalOwnsKeyboard got the same short-circuit; F3/F4
+			// (f4#897) were left reading it directly and so stayed broken.
+			if pf.ShellMode == terminal.ShellModeSimpleInline {
+				return true
+			}
 			return pf.TermView != nil && !pf.TermView.UseAltScreen && !pf.IsPtyBusy()
 		}
 		return false
@@ -122,6 +144,18 @@ var hotkeyConditions = map[string]func() bool{
 			}
 		}
 		return false
+	},
+	// altpanelfocused is altpanelvisible narrowed to the panel holding the
+	// focus, so its keys stay ordinary command-line text until the user
+	// Tabs into it (#1804). It reads the frame's focus state rather than
+	// the panel's own flag, which only the next redraw brings up to date.
+	"altpanelfocused": func() bool {
+		pf := FindPanelsFrameAnyScreen()
+		if pf == nil || !pf.ShowPanels || pf.CommandLineFocused || pf.ActiveIdx < 0 || pf.ActiveIdx >= len(pf.AltPanels) {
+			return false
+		}
+		a := pf.AltPanels[pf.ActiveIdx]
+		return a != nil && (a.Kind() == "info" || a.Kind() == "quick_view")
 	},
 }
 
@@ -172,10 +206,19 @@ func nativeShortcutOwnedByCurrentContext(actionName, key string) bool {
 		if !terminalOwnsInput {
 			return false
 		}
-		// PanelsFrame explicitly releases workspace cycling and, when the
+		// PanelsFrame explicitly releases Ctrl+Shift+Tab and, when the
 		// preference is enabled, Ctrl+N before raw terminal forwarding.
-		if strings.EqualFold(key, "CtrlTab") || strings.EqualFold(key, "CtrlShiftTab") {
+		// Plain Ctrl+Tab is only released this way without an advanced input
+		// protocol: once win32-input-mode or the kitty keyboard protocol is
+		// negotiated, frame.go hands Ctrl+Tab to the running program instead
+		// (far2l's own panel switch, for one), so the Next Workspace hint
+		// must not claim a chord it no longer receives in that state (f4#128).
+		if strings.EqualFold(key, "CtrlShiftTab") {
 			return false
+		}
+		if strings.EqualFold(key, "CtrlTab") {
+			advanced := frame.TermView != nil && (frame.TermView.Win32InputMode || frame.TermView.KittyFlags.Load() != 0)
+			return advanced
 		}
 		if strings.EqualFold(key, "CtrlN") && config.App.TerminalCtrlNWorkspace {
 			return false

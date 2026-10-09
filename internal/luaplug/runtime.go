@@ -32,6 +32,12 @@ const DefaultCallTimeout = 30 * time.Second
 // ErrClosed is returned once the runtime has been shut down.
 var ErrClosed = errors.New("luaplug: runtime is closed")
 
+// ErrInterrupted is returned by every entry into a runtime whose earlier call
+// hit its deadline. The interpreter was stopped at an arbitrary instruction --
+// halfway through updating a table, say -- so its state cannot be trusted and
+// the runtime is discarded rather than reused; the caller starts a new one.
+var ErrInterrupted = errors.New("luaplug: the runtime was interrupted by its call deadline and must be discarded")
+
 // Host is the plugin's view of f4. Method names are the F4-RPC ones, so an
 // embedded plugin and a subprocess plugin talk to the same surface.
 type Host interface {
@@ -62,9 +68,9 @@ type Options struct {
 	AllowUnsafeStdlib bool
 
 	// CallTimeout bounds one entry into the interpreter. Zero means
-	// DefaultCallTimeout. A runtime that has hit its timeout should be
-	// discarded rather than reused: the interpreter was interrupted at an
-	// arbitrary instruction.
+	// DefaultCallTimeout. A runtime that has hit its timeout is discarded
+	// rather than reused (ErrInterrupted): the interpreter was interrupted at
+	// an arbitrary instruction.
 	CallTimeout time.Duration
 }
 
@@ -81,8 +87,14 @@ type Runtime struct {
 	quit  chan struct{}
 	wg    sync.WaitGroup
 
-	workerID atomic.Int64
-	closed   atomic.Bool
+	workerID    atomic.Int64
+	closed      atomic.Bool
+	interrupted atomic.Bool
+
+	// deadline is the running outermost call's clock, nil between calls. It
+	// is only set and cleared on the worker goroutine; PauseDeadline and
+	// ResumeDeadline read it there too.
+	deadline *callDeadline
 	once     sync.Once
 
 	// The fields below belong to the worker goroutine only.
@@ -150,10 +162,27 @@ func (r *Runtime) run(fn func(*lua.LState) error) (err error) {
 		if timeout <= 0 {
 			timeout = DefaultCallTimeout
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
+		dl := newCallDeadline(timeout, cancel)
+		r.deadline = dl
+		defer func() { r.deadline = nil }()
+		defer dl.stop()
 		r.state.SetContext(ctx)
 		defer r.state.RemoveContext()
+		// Checked whatever the call returned: a plugin can catch the
+		// interruption with pcall and carry on, and the state is no better
+		// for it.
+		defer func() {
+			if dl.hit.Load() {
+				r.interrupted.Store(true)
+				if err == nil {
+					err = ErrInterrupted
+				} else if !errors.Is(err, ErrInterrupted) {
+					err = fmt.Errorf("%w: %v", ErrInterrupted, err)
+				}
+			}
+		}()
 	}
 
 	r.depth++
@@ -162,10 +191,83 @@ func (r *Runtime) run(fn func(*lua.LState) error) (err error) {
 	return fn(r.state)
 }
 
+// callDeadline is the time one outermost call may take, as a clock that can
+// be stopped while the call waits for something that is not the script's
+// doing (a dialog the user has to answer).
+type callDeadline struct {
+	mu        sync.Mutex
+	cancel    context.CancelFunc
+	timer     *time.Timer
+	remaining time.Duration
+	started   time.Time
+	hit       atomic.Bool
+}
+
+func newCallDeadline(timeout time.Duration, cancel context.CancelFunc) *callDeadline {
+	d := &callDeadline{cancel: cancel, remaining: timeout}
+	d.start()
+	return d
+}
+
+// start runs the clock for what is left. Callers hold mu, or own d alone.
+func (d *callDeadline) start() {
+	d.started = time.Now()
+	d.timer = time.AfterFunc(d.remaining, func() {
+		d.hit.Store(true)
+		d.cancel()
+	})
+}
+
+func (d *callDeadline) stop() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.timer != nil {
+		d.timer.Stop()
+		d.timer = nil
+	}
+}
+
+func (d *callDeadline) pause() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.timer == nil || !d.timer.Stop() {
+		return // not running, or already expired
+	}
+	d.timer = nil
+	d.remaining = max(d.remaining-time.Since(d.started), time.Millisecond)
+}
+
+func (d *callDeadline) resume() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.timer != nil || d.hit.Load() {
+		return
+	}
+	d.start()
+}
+
+// WhileWaiting runs fn, which must be called from inside the script (a host
+// function the script called), with the call's deadline stopped: time spent
+// waiting for the user, or for anything else that is not the script running,
+// does not count against it. Outside a call it just runs fn.
+func (r *Runtime) WhileWaiting(fn func()) {
+	dl := r.deadline
+	if dl == nil {
+		fn()
+		return
+	}
+	dl.pause()
+	defer dl.resume()
+	fn()
+}
+
 // Do runs fn with exclusive access to the Lua state.
 func (r *Runtime) Do(fn func(*lua.LState) error) error {
 	if r.closed.Load() {
 		return ErrClosed
+	}
+	if r.interrupted.Load() {
+		return ErrInterrupted
 	}
 	if goID() == r.workerID.Load() {
 		return r.run(fn)
@@ -184,6 +286,10 @@ func (r *Runtime) Do(fn func(*lua.LState) error) error {
 		return ErrClosed
 	}
 }
+
+// Interrupted reports whether a call hit its deadline. Such a runtime refuses
+// all further work with ErrInterrupted and should be closed and replaced.
+func (r *Runtime) Interrupted() bool { return r.interrupted.Load() }
 
 // LoadString compiles and runs a chunk. Running the plugin body is what
 // populates its handler table, so this is how a plugin is started.

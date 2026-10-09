@@ -3,7 +3,6 @@ package vfs
 import (
 	"context"
 	"path/filepath"
-	"runtime"
 	"strings"
 )
 
@@ -21,7 +20,7 @@ func IsTerminalRunnable(ctx context.Context, v VFS, path string) bool {
 	}
 
 	// 1. Check executable bit on Unix
-	if runtime.GOOS != "windows" && info.IsExecutable {
+	if !WindowsPersonality() && info.IsExecutable {
 		return true
 	}
 

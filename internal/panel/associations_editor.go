@@ -107,8 +107,8 @@ func (s *AssocEditorState) openList(selected int) {
 		alt := e.ControlKeyState&(vtinput.LeftAltPressed|vtinput.RightAltPressed) != 0
 		shift := e.ControlKeyState&vtinput.ShiftPressed != 0
 
-		// Ins — add a fresh association.
-		if e.VirtualKeyCode == vtinput.VK_INSERT && !ctrl && !alt && !shift {
+		// Ins or Ctrl+N — add a fresh association.
+		if isAddItemKey(e) {
 			insertAt := s.selectedIndex(menu)
 			if insertAt < 0 {
 				insertAt = len(s.Items)
@@ -202,7 +202,7 @@ func (s *AssocEditorState) openList(selected int) {
 
 	vtui.FrameManager.Push(&UserMenuFrame{
 		VMenu:      menu,
-		bottomHint: " Ins F4 Del Ctrl+Up/Down ",
+		bottomHint: " Ins/Ctrl+N F4 Del Ctrl+Up/Down ",
 	})
 }
 

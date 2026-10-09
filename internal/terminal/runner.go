@@ -38,6 +38,17 @@ func (*LocalCommandRunner) RunCommand(ctx context.Context, dir, command string, 
 	if strings.TrimSpace(command) == "" {
 		return 0, errors.New("local command is empty")
 	}
+	nativeLines := newCommandLineWriter(cb)
+	if handled, code, err := runNativeLocalCommand(ctx, dir, command, func(chunk []byte) {
+		// The native Wine path merges stdout and stderr before this callback,
+		// just like assigning the same writer to both os/exec streams below.
+		// Keep the line splitter in one place so the two transports have the
+		// same captured-output UX.
+		_, _ = nativeLines.Write(chunk)
+	}); handled {
+		nativeLines.Flush()
+		return code, err
+	}
 
 	cmd := newLocalShellCommand(command)
 	cmd.Env = localCommandEnvironment(os.Environ())

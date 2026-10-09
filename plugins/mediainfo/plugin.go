@@ -85,11 +85,18 @@ func (plugin *Plugin) Init(api vfs.HostAPI) error {
 	panelRegistration, err := host.RegisterPluginCommand(vfs.PluginCommand{
 		ID:       panelCommandID,
 		Location: vfs.PluginCommandPanel,
-		Label:    plugin.text("MediaInfo.Menu", "&Media information", "&Информация о медиа"),
+		// Catalog key, not resolved text: plugin.text() freezes the entry in
+		// whichever language was active when Init ran, and it then keeps that
+		// wording across a runtime language switch (issue #618). The report
+		// language stays a MediaInfo setting; the menu follows the interface.
+		Label:           "&Media information",
+		LabelKey:        "MediaInfo.Menu",
+		LocalizedLabels: map[string]string{"en": "&Media information", "ru": "&Информация о медиа"},
 		Visible: func(vfs.App) bool {
 			return plugin.settings().ShowInPluginMenu
 		},
-		Run: plugin.openCurrent,
+		Enabled: canOpenCurrent,
+		Run:     plugin.openCurrent,
 	})
 	if err != nil {
 		return rollback(fmt.Errorf("MediaInfo: register panel command: %w", err))
@@ -99,7 +106,8 @@ func (plugin *Plugin) Init(api vfs.HostAPI) error {
 	configRegistration, err := host.RegisterPluginCommand(vfs.PluginCommand{
 		ID:       configCommandID,
 		Location: vfs.PluginCommandConfig,
-		Label:    plugin.text("MediaInfo.ConfigMenu", "MediaInfo", "MediaInfo"),
+		Label:    "MediaInfo",
+		LabelKey: "MediaInfo.ConfigMenu",
 		Run:      plugin.configure,
 	})
 	if err != nil {

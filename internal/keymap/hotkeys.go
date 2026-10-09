@@ -45,11 +45,29 @@ type HotkeyManager struct {
 	Bindings map[string]map[string]string // Area -> Key -> ActionName
 	Defaults map[string]map[string]string // Area -> Key -> ActionName
 	IniPath  string
+
+	// generation counts changes to the active bindings (Bind, Unbind, Load,
+	// ReplaceBindingsFrom). It lets a caller that derives something from
+	// GetKeyForAction/MenuShortcutsForAction — a generated menu's shortcut
+	// column, say — cache that work and cheaply notice when a rebind (issue
+	// #651, the Options > Keys dialog) invalidates it, without recomputing it
+	// on every call just to compare it against what it already had.
+	generation uint64
+}
+
+// Generation reports how many times this manager's active bindings have
+// changed. A nil manager (no HotkeyManager configured yet) never changes, so
+// it reports 0.
+func (hm *HotkeyManager) Generation() uint64 {
+	if hm == nil {
+		return 0
+	}
+	return hm.generation
 }
 
 // GetConditions returns the user-friendly names of all registered conditions.
 func GetConditions() []string {
-	return []string{"None", "SearchFirst", "EmptyCommandLine", "CommandLineNotEmpty", "EscToggle", "TerminalQuiet", "AltPanelVisible", "NoAltScreenApp", "NoTerminalApp"}
+	return []string{"None", "SearchFirst", "EmptyCommandLine", "CommandLineNotEmpty", "EscToggle", "TerminalQuiet", "AltPanelVisible", "AltPanelFocused", "NoAltScreenApp", "NoTerminalApp"}
 }
 
 // RegisterCondition adds a dynamic boolean check accessible by hotkey bindings.
@@ -107,6 +125,7 @@ func (hm *HotkeyManager) ReplaceBindingsFrom(src *HotkeyManager) {
 		return
 	}
 	hm.Bindings = cloneHotkeyBindings(src.Bindings)
+	hm.generation++
 }
 
 // GetActiveBindings returns a map of Area -> Key -> ActionName containing all active bindings.
@@ -136,6 +155,17 @@ func (hm *HotkeyManager) GetActiveBindings() map[string]map[string]string {
 // GetKeyForAction searches for a key combination bound to the given action in an area.
 func (hm *HotkeyManager) GetKeyForAction(area, actionName string) string {
 	find := func(binds map[string]string) string {
+		// Preserve the declared primary shortcut when an action has aliases:
+		// Add/Subtract/Multiply and F3 remain the menu hints, not laptop aliases.
+		if a, ok := LookupAction(actionName); ok {
+			for _, spec := range a.DefaultKeys {
+				key, _, _ := strings.Cut(spec, ":")
+				name, _, _ := strings.Cut(binds[key], ":")
+				if strings.EqualFold(name, actionName) {
+					return key
+				}
+			}
+		}
 		var keys []string
 		for key, binding := range binds {
 			parts := strings.SplitN(binding, ":", 2)
@@ -332,6 +362,7 @@ func (hm *HotkeyManager) InitDefaults() {
 
 // Load reads bindings from the INI file, overlaying them onto the defaults.
 func (hm *HotkeyManager) Load() {
+	hm.generation++
 	hm.Bindings = make(map[string]map[string]string)
 
 	// Copy defaults
@@ -447,6 +478,14 @@ func (hm *HotkeyManager) GetAction(area, key string) string {
 		return action
 	}
 
+	// Common bindings carry no conditions and follow the user everywhere
+	// f4 has the keyboard. A program running in the terminal is the one place
+	// f4 does not: there its keys are its own, as in far2l, and only the
+	// Terminal area's bindings -- each gated by what they may take from it --
+	// apply. Far Manager has Shift+F10 and Alt+F9 of its own (#1376).
+	useCommon := area != "Common" &&
+		(!strings.EqualFold(area, "Terminal") || ConditionTrue("NoTerminalApp"))
+
 	if binds, ok := hm.Bindings[area]; ok {
 		if binding, ok := binds[key]; ok {
 			if action := evalBinding(binding); action != "" {
@@ -454,7 +493,7 @@ func (hm *HotkeyManager) GetAction(area, key string) string {
 			}
 		}
 	}
-	if area != "Common" {
+	if useCommon {
 		if binds, ok := hm.Bindings["Common"]; ok {
 			if binding, ok := binds[key]; ok {
 				if action := evalBinding(binding); action != "" {
@@ -475,7 +514,7 @@ func (hm *HotkeyManager) GetAction(area, key string) string {
 				}
 			}
 		}
-		if area != "Common" {
+		if useCommon {
 			if binds, ok := hm.Bindings["Common"]; ok {
 				if binding, ok := binds[alias]; ok {
 					if action := evalBinding(binding); action != "" {
@@ -542,6 +581,7 @@ func (hm *HotkeyManager) Bind(area, key, action string) {
 		hm.Bindings[area] = make(map[string]string)
 	}
 	hm.Bindings[area][key] = action
+	hm.generation++
 }
 
 // Unbind removes a hotkey binding.
@@ -549,6 +589,7 @@ func (hm *HotkeyManager) Unbind(area, key string) {
 	if binds, ok := hm.Bindings[area]; ok {
 		delete(binds, key)
 	}
+	hm.generation++
 }
 
 // KeyBarLabelsForArea resolves F1-F12 keybar labels for the given area
@@ -556,31 +597,59 @@ func (hm *HotkeyManager) Unbind(area, key string) {
 // defaults when a key has no binding. A key explicitly unbound ("None")
 // gets an empty label.
 func KeyBarLabelsForArea(area string, fallbacks *vtui.KeySet) *vtui.KeySet {
+	return KeyBarLabelsForAreaExcept(area, fallbacks, nil)
+}
+
+// KeyBarLabelsForAreaExcept is KeyBarLabelsForArea with a filter: a key
+// whose resolved action satisfies drop gets an empty label (not its
+// fallback), because the caller has made that binding stand down -- a
+// panel plugin hiding the file panel's File.* captions (f4#312) is the
+// reason this exists. A nil drop filters nothing.
+func KeyBarLabelsForAreaExcept(area string, fallbacks *vtui.KeySet, drop func(actionName string) bool) *vtui.KeySet {
 	var fbNormal, fbShift, fbAlt, fbCtrl vtui.KeyBarLabels
 	if fallbacks != nil {
 		fbNormal, fbShift, fbAlt, fbCtrl = fallbacks.Normal, fallbacks.Shift, fallbacks.Alt, fallbacks.Ctrl
 	}
-	resolve := func(prefix, keyNum, fb string) string {
+	// resolve returns both the label and whether the action bound to it is
+	// currently disabled (Action.Enabled returning false). A fallback label
+	// (no binding, or the binding names an action the registry does not
+	// know) is never disabled: dimming only applies to a real, resolved
+	// action, the same one whose hotkey RunAction is about to refuse.
+	resolve := func(prefix, keyNum, fb string) (string, bool) {
 		if hm := GlobalHotkeysMgr; hm != nil {
 			if actName := hm.GetAction(area, prefix+keyNum); actName != "" {
 				if strings.EqualFold(actName, "none") {
-					return ""
+					return "", false
+				}
+				if drop != nil && drop(actName) {
+					return "", false
 				}
 				if act, ok := LookupAction(actName); ok {
-					return action.PlainLabel(act.DisplayLabel())
+					label := act.DisplayLabel()
+					if act.KeyBarLabel != nil {
+						if dynamic := act.KeyBarLabel(); dynamic != "" {
+							label = dynamic
+						}
+					}
+					return action.PlainLabel(label), act.Enabled != nil && !act.Enabled()
 				}
 			}
 		}
-		return fb
+		return fb, false
 	}
 
 	set := &vtui.KeySet{}
 	for i := 0; i < 12; i++ {
 		keyNum := fmt.Sprintf("F%d", i+1)
-		set.Normal[i] = resolve("", keyNum, fbNormal[i])
-		set.Shift[i] = resolve("Shift", keyNum, fbShift[i])
-		set.Alt[i] = resolve("Alt", keyNum, fbAlt[i])
-		set.Ctrl[i] = resolve("Ctrl", keyNum, fbCtrl[i])
+		set.Normal[i], set.NormalDisabled[i] = resolve("", keyNum, fbNormal[i])
+		set.Shift[i], set.ShiftDisabled[i] = resolve("Shift", keyNum, fbShift[i])
+		set.Alt[i], set.AltDisabled[i] = resolve("Alt", keyNum, fbAlt[i])
+		set.Ctrl[i], set.CtrlDisabled[i] = resolve("Ctrl", keyNum, fbCtrl[i])
+		// Two modifiers held together get their own rows, filled from the
+		// bindings only: nothing falls back to a caption (f4#1704).
+		set.CtrlShift[i], set.CtrlShiftDisabled[i] = resolve("CtrlShift", keyNum, "")
+		set.AltShift[i], set.AltShiftDisabled[i] = resolve("AltShift", keyNum, "")
+		set.CtrlAlt[i], set.CtrlAltDisabled[i] = resolve("CtrlAlt", keyNum, "")
 	}
 	return set
 }
@@ -588,6 +657,14 @@ func KeyBarLabelsForArea(area string, fallbacks *vtui.KeySet) *vtui.KeySet {
 func IsPluginActionName(name string) bool {
 	name = strings.ToLower(strings.TrimSpace(name))
 	return strings.HasPrefix(name, "plugin.command.") || strings.HasPrefix(name, "plugin.legacy.")
+}
+
+// IsDriveMenuActionName identifies accelerators assigned to rows which are
+// local to the Alt+F1/Alt+F2 drive menu. They persist in the hotkeys file, but
+// the menu owns the printable key while it is open instead of dispatching it
+// as an application action.
+func IsDriveMenuActionName(name string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(name)), "drivemenu.")
 }
 
 // pluginReservedKeys are bare keys the panels and the plugin menu need for
@@ -734,6 +811,8 @@ func PluginCommandActionName(id string) string { return "Plugin.Command." + id }
 func LegacyPluginActionName(index int) string {
 	return "Plugin.Legacy." + strconv.Itoa(index)
 }
+
+func DriveMenuActionName(id string) string { return "DriveMenu." + id }
 
 func ConfiguredHotkeyAction(hm *HotkeyManager, area, key string) string {
 	if hm == nil {

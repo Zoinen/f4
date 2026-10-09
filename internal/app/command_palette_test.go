@@ -66,10 +66,22 @@ func TestCommandPaletteLegacyShortcutSurvivesTheBuiltInBindings(t *testing.T) {
 	t.Cleanup(paneltest.SwapFrameManager(t))
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 
+	// This test models an idle terminal; an actual running terminal app owns Ctrl+Alt+P.
+	previousNoTerminal, _ := keymap.SetCondition("NoTerminalApp", func() bool { return true })
+	t.Cleanup(func() { keymap.SetCondition("NoTerminalApp", previousNoTerminal) })
+
 	previous := keymap.GlobalHotkeysMgr
 	manager := keymap.NewHotkeyManager(filepath.Join(t.TempDir(), "hotkeys.ini"))
 	keymap.GlobalHotkeysMgr = manager
 	t.Cleanup(func() { keymap.GlobalHotkeysMgr = previous })
+
+	// In the Terminal area the chord is f4's only while f4 has the keyboard;
+	// a program running there keeps its keys (#1376). The frame manager here
+	// holds no panels, which NoTerminalApp reads as a program owning the
+	// keyboard, so the test pins the condition to each side of that rule.
+	noTerminalApp := true
+	previousCondition, _ := keymap.SetCondition("NoTerminalApp", func() bool { return noTerminalApp })
+	t.Cleanup(func() { keymap.SetCondition("NoTerminalApp", previousCondition) })
 
 	for _, area := range []string{"Shell", "Editor", "Viewer", "Terminal", "Common"} {
 		if got := manager.GetAction(area, commandPaletteLegacyKey); got != "" {
@@ -78,6 +90,11 @@ func TestCommandPaletteLegacyShortcutSurvivesTheBuiltInBindings(t *testing.T) {
 		if !commandPaletteLegacyShortcut(area, keymap.ParseFarKey(commandPaletteLegacyKey)) {
 			t.Errorf("%s did not open the palette in area %s", commandPaletteLegacyKey, area)
 		}
+	}
+
+	noTerminalApp = false
+	if commandPaletteLegacyShortcut("Terminal", keymap.ParseFarKey(commandPaletteLegacyKey)) {
+		t.Errorf("%s was taken from a program running in the terminal", commandPaletteLegacyKey)
 	}
 
 	// The chord is also what the menu and the palette itself advertise next

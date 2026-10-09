@@ -22,13 +22,16 @@ import (
 	"github.com/unxed/f4/internal/history"
 	"github.com/unxed/f4/internal/i18n"
 	"github.com/unxed/f4/internal/ini"
+	"github.com/unxed/f4/internal/install"
 	"github.com/unxed/f4/internal/keymap"
 	"github.com/unxed/f4/internal/macro"
 	"github.com/unxed/f4/internal/plughost"
 	"github.com/unxed/f4/internal/terminal"
 	"github.com/unxed/f4/internal/theme"
 	"github.com/unxed/f4/internal/update"
+	"github.com/unxed/f4/internal/viewer"
 	"github.com/unxed/f4/vfs"
+	"github.com/unxed/f4/vfs/hostmode"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 	"golang.org/x/term"
@@ -66,15 +69,71 @@ func startupDirsFor(cwd string, args []string) (left, right string) {
 	}
 }
 
-// startupDirsOverride distinguishes an explicit directory argument from a
-// plain launch. With no directory argument the restored session must win over
-// the process cwd.
-func startupDirsOverride(cwd string, args []string) (left, right string, ok bool) {
-	if len(args) == 0 {
+// plainStartOpensCwd says what `f4` with no folders, started from a terminal,
+// shows when the "open the current folder at start" setting is on: the current
+// directory in both panels, the way mc does (issue #822), or the panels the
+// session restored. With the setting off (the default, far2l's way, issue #495)
+// a plain start always restores the session; see farStartupDirs.
+//
+// Outside Windows a terminal on stdin is what proves that a shell chose that
+// directory; a Dock or desktop start has no terminal and names nothing. On
+// Windows it proves nothing. A console program started from Explorer or a
+// shortcut is given a console of its own, so stdin is a terminal all the same,
+// while its working directory is the executable's folder or the shortcut's
+// "Start in" -- not a place anyone asked to see. There a plain start keeps the
+// restored panels, as it has since the change made for #823.
+//
+// That change applied to every platform, and `cd dir && f4` on macOS went back
+// to showing the previous session instead of dir (issue #1152).
+const plainStartOpensCwd = runtime.GOOS != "windows"
+
+// startupDirsOverride says what this start names for the panels, and whether it
+// names anything at all. Folders on the command line always do. A plain start
+// names the current directory when plainOpensCwd is set, and otherwise leaves
+// the panels to the restored session.
+func startupDirsOverride(cwd string, args []string, plainOpensCwd bool) (left, right string, ok bool) {
+	if len(args) == 0 && !plainOpensCwd {
 		return "", "", false
 	}
 	left, right = startupDirsFor(cwd, args)
 	return left, right, true
+}
+
+// farStartupDirs is what far2l and Far make of the command line: no folders
+// leaves the panels as the last session left them, a first folder replaces the
+// panel it names, a second replaces the other one. With a single folder the
+// other panel is not touched, which panel.StartupKeepPanel says in place of a
+// path. f4 has always named the panels by side, so the first folder goes to the
+// left one, and takes the focus with it (panel.ApplyStartupDirs).
+//
+// far2l is the reference: `far2l path1 path2` opens path1 in the active panel
+// and path2 in the passive one, and without paths the panels come from the saved
+// setup (far2l/src/main.cpp, Opt.strLeftFolder and friends).
+func farStartupDirs(cwd string, args []string) (left, right string, ok bool) {
+	abs := func(path string) string {
+		if filepath.IsAbs(path) {
+			return filepath.Clean(path)
+		}
+		return filepath.Join(cwd, path)
+	}
+	switch len(args) {
+	case 0:
+		return "", "", false
+	case 1:
+		return abs(args[0]), panel.StartupKeepPanel, true
+	default:
+		return abs(args[0]), abs(args[1]), true
+	}
+}
+
+// startupDirsChoice picks between the two ways to read a start from a
+// terminal: mc's (Settings: open the current folder at start), which
+// startupDirsOverride implements, and far2l's, which is the default.
+func startupDirsChoice(cwd string, args []string, currentFolderStyle bool) (left, right string, ok bool) {
+	if currentFolderStyle {
+		return startupDirsOverride(cwd, args, plainStartOpensCwd)
+	}
+	return farStartupDirs(cwd, args)
 }
 
 // startupDirArgs picks the panel directories out of a command line: the words
@@ -97,22 +156,24 @@ func startupDirArgs(args []string) []string {
 	return dirs
 }
 
-// rememberStartupDirs records those directories, but only for a start from a
-// terminal. It must run before checkAndDetach and before the daemon is spawned:
-// both hand the next process /dev/null on stdin. Values inherited from the
-// parent win, they are the answer that process already worked out.
+// rememberStartupDirs records those directories. Explicit command-line paths
+// must also be carried by a GUI start without a terminal (for example
+// `f4-gui.exe path1 path2`); a plain GUI start still leaves the restored
+// session alone. It must run before checkAndDetach and before the daemon is
+// spawned: both hand the next process /dev/null on stdin. Values inherited
+// from the parent win, they are the answer that process already worked out.
 func rememberStartupDirs(args []string) {
 	if os.Getenv(startupDirEnv) != "" {
 		return
 	}
-	if !term.IsTerminal(int(os.Stdin.Fd())) {
+	if len(args) == 0 && !term.IsTerminal(int(os.Stdin.Fd())) {
 		return
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		return
 	}
-	left, right, ok := startupDirsOverride(cwd, args)
+	left, right, ok := startupDirsChoice(cwd, args, config.App.StartInCurrentFolder)
 	if !ok {
 		return
 	}
@@ -128,30 +189,101 @@ func startupDirs() (left, right string) {
 	return os.Getenv(startupDirEnv), os.Getenv(startupDirRightEnv)
 }
 
-// editFilePath holds the -e flag's target, if given -- opened in the editor
-// once InitCore() has the panels frame ready. Package-level because the
+// editFilePath holds the -e flag's target, if given, made absolute right after
+// the command line is read -- opened in the editor once InitCore() has the
+// panels frame ready. Package-level because the
 // flag is parsed in main() but the hook point (right after the panels
 // frame is pushed) lives in InitCore(), a separate function.
 var editFilePath string
 
-// openDashEFileIfRequested opens -e's target file in the editor on the
-// current top panel.PanelsFrame, if -e was given. Called from every entry point
-// where SetupUI() (or InitCore(), which calls it) already ran in the one
+// viewFilePaths are the files among the paths named before the switches
+// (issue #991): `f4 file` opens file in the viewer, as F3 on it would, while
+// the panel goes to its folder (see panel.ApplyStartupDirs). Absolute, and
+// package-level for the same reason editFilePath is.
+var viewFilePaths []string
+
+// startupViewFiles picks the files out of the startup paths: every word that
+// names something other than a folder, resolved against cwd the way
+// startupDirsFor resolves it. A folder, and a word that names nothing, stay
+// panel paths only.
+func startupViewFiles(cwd string, args []string) []string {
+	var files []string
+	for _, arg := range args {
+		if path := resolveStartupPath(cwd, arg); panel.IsStartupFile(path) {
+			files = append(files, path)
+		}
+	}
+	return files
+}
+
+// resolveStartupPath makes a path from the command line absolute against cwd,
+// the directory the command was typed in. It has to happen in the process that
+// parsed the command line: on Unix the files are opened by the session daemon,
+// whose working directory is the one it was first started from, and a client
+// attaching to it from elsewhere used to have `f4 -e notes.txt` open that
+// directory's notes.txt.
+func resolveStartupPath(cwd, path string) string {
+	path = filepath.Clean(path)
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(cwd, path)
+	}
+	return path
+}
+
+// openStartupFilesIfRequested opens what the command line named for viewing and
+// for editing (see openStartupFilesOnPanels). Called from every entry
+// point where SetupUI() (or InitCore(), which calls it) already ran in the one
 // process that's actually going to render -- every GUI backend, and the
 // tty path on Windows (session_windows.go). The Unix tty path is the odd
 // one out: it daemonizes, so SetupUI() there runs inside a not-yet-
 // attached background process with nothing to draw to; session_unix.go's
-// terminal.RunServer() calls openEditFileIn directly instead, timed to the actual
-// client attach, not to this function.
-func openDashEFileIfRequested() {
-	if editFilePath == "" {
+// terminal.RunServer() hands the files to ClientAttached instead, timed to the
+// actual client attach, not to this function.
+func openStartupFilesIfRequested() {
+	openStartupFilesOnPanels(viewFilePaths, editFilePath)
+}
+
+// openStartupFilesOnPanels opens the files on the panels frame: the top frame,
+// or, when a dialog is open over the panels -- in a running session a client
+// attaches to, the user may have left one open, or an update prompt may have
+// come up -- the panels under it. The viewer and the editor open as screens of
+// their own, so the dialog stays where it is. The panels are not moved to the
+// startup directories in that case, as a dialog may be acting on them.
+func openStartupFilesOnPanels(viewPaths []string, editPath string) {
+	if editPath == "" && len(viewPaths) == 0 {
 		return
 	}
-	if top := vtui.FrameManager.GetTopFrame(); top != nil {
-		if pf, ok := top.(*panel.PanelsFrame); ok && pf != nil {
-			openEditFileIn(pf, editFilePath)
-		}
+	pf := panel.FindPanelsFrame()
+	if pf == nil {
+		vtui.DebugLog("MAIN: -e %q, view %q: no panels frame to open them from (top frame %T)",
+			editPath, viewPaths, vtui.FrameManager.GetTopFrame())
+		return
 	}
+	openStartupFilesIn(pf, viewPaths, editPath)
+}
+
+// openStartupFilesIn opens each view path in the viewer and then editPath, if
+// any, in the editor.
+func openStartupFilesIn(pf *panel.PanelsFrame, viewPaths []string, editPath string) {
+	for _, path := range viewPaths {
+		openViewFileIn(pf, path)
+	}
+	if editPath != "" {
+		openEditFileIn(pf, editPath)
+	}
+}
+
+// openViewFileIn opens path in pf's viewer through actionOpenViewer, the path
+// F3 takes after its file associations: the same "already viewed?" dialog,
+// history entry, and choice between the image viewer, the video player and the
+// text viewer.
+func openViewFileIn(pf *panel.PanelsFrame, path string) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		vtui.DebugLog("MAIN: view %q: filepath.Abs failed: %v", path, err)
+		return
+	}
+	actionOpenViewer(pf, vfs.NewOSVFS(filepath.Dir(abs)), abs)
 }
 
 // openEditFileIn resolves path to an absolute path and opens it in pf's
@@ -200,6 +332,8 @@ func sudoStartupMode(args []string, askpassParent bool) (dispatcher string, askp
 // deviation recorded for Task 36.
 func Main() {
 	vtui.AppName = "f4"
+	vtui.AppID = "org.unxed.f4"
+	setProcessName()
 	// Before anything asks where the configuration lives: internal/config is a
 	// layer-0 leaf and cannot reach internal/update for the answer.
 	config.Executable = update.Executable
@@ -212,6 +346,30 @@ func Main() {
 		}
 		if err := update.RunHelper(archivePath, archiveKind); err != nil {
 			fmt.Fprintf(os.Stderr, "f4 update helper failed: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if backupPath, found, err := update.ParseRestoreHelperArgs(os.Args[1:]); found {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		if err := update.RunRestoreHelper(backupPath); err != nil {
+			fmt.Fprintf(os.Stderr, "f4 restore helper failed: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+	// The elevated dispatcher of Windows (f4#1768): UAC started this copy of
+	// f4 for one client, and it does nothing else.
+	if sock, token, found, err := vfs.ParseElevatedDispatcherArgs(os.Args[1:]); found {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		if err := vfs.RunElevatedDispatcher(sock, token, nil); err != nil {
+			fmt.Fprintf(os.Stderr, "f4 elevated dispatcher failed: %v\n", err)
 			os.Exit(1)
 		}
 		return
@@ -263,11 +421,20 @@ func Main() {
 	installHangDumpHandler()
 
 	vtui.SetupStderrLog()
+	// The configuration is read before the detached copy's stderr fix, not
+	// after, because that fix is one of the two places f4 uses libwinescape
+	// and UseWinescape decides whether it may. Reading settings.ini is a
+	// handful of os.Stat/os.ReadFile calls that do not touch the host file
+	// layer, so nothing here can freeze the personality before the setting
+	// is applied.
+	config.LoadConfig() // Load config early to apply GUI font settings
+	hostmode.SetAllowed(config.App.UseWinescape)
 	redirectDetachedStdout()
 	vtui.DebugLog("MAIN: Starting with args: %v", os.Args)
-	config.LoadConfig() // Load config early to apply GUI font settings
 
 	defer func() {
+		terminalDNDStop()
+		macro.MacroMgr.RunExitEvents()
 		SaveSession() // Гарантирует сохранение размеров и путей при любом выходе
 		if plughost.GlobalPluginManager != nil {
 			plughost.GlobalPluginManager.CloseAll()
@@ -286,15 +453,18 @@ func Main() {
 				_, _ = fmt.Fprintf(os.Stdout, "[f4] Crash report saved to: %s\n", crashPath)
 			}
 			vtui.CleanupStderrLog()
+			cleanupWineStderrLog()
 			os.Exit(2)
 		}
 		vtui.CleanupStderrLog()
+		cleanupWineStderrLog()
 	}()
 	// Defer disk logging to prevent launcher processes from polluting rotation queue.
 	// Logging will be enabled in InitCore() for workers and standalone sessions.
 	vtui.ConfigDiskLogging(false)
 	var serverPath, clientPath string
 	var cpuprofile string
+	var diagFlags diagnosticFlags
 	var guiMode bool
 	var guiBackend string
 	var guiBackendGiven bool
@@ -312,6 +482,9 @@ func Main() {
 	var dumpScreenAfter float64
 	var updateRequested bool
 	var updateChannelArg string
+	var installRequested bool
+	var installYes bool
+	var installDesktopRequested bool
 
 	exeName := filepath.Base(absExecPath)
 	if strings.Contains(strings.ToLower(exeName), "gui") {
@@ -345,6 +518,12 @@ func Main() {
 				updateChannelArg = os.Args[i+1]
 				i++
 			}
+		case "--install", "--self-install":
+			installRequested = true
+		case "--install-desktop":
+			installDesktopRequested = true
+		case "--yes":
+			installYes = true
 		case "-gui", "--gui":
 			guiMode = true
 			startupChoiceGiven = true
@@ -391,6 +570,20 @@ func Main() {
 				cpuprofile = os.Args[i+1]
 				i++
 			}
+		case "--trace", "--stall-watchdog":
+			consumed, err := diagFlags.apply(flagName, flagVal, argAfter(os.Args, i))
+			if err != nil {
+				// stdout, like --version and --help: f4 has already taken stderr
+				// over for its own log by the time a switch is read.
+				fmt.Printf("%s: %v\n", flagName, err)
+				os.Exit(2)
+			}
+			i += consumed
+		case "--fish-server":
+			// The remote end of a FISH+ session (docs/FISH+.md, "f4 as the
+			// server"): stdin and stdout are the protocol, so nothing else may
+			// be written to stdout, and nothing above has been.
+			os.Exit(runFishServer(os.Stdin, os.Stdout, os.Stderr))
 		case "--new-plugin":
 			pluginName := flagVal
 			if pluginName == "" && i+1 < len(os.Args) && !strings.HasPrefix(os.Args[i+1], "-") {
@@ -436,7 +629,7 @@ func Main() {
 			if secs, err := strconv.ParseFloat(val, 64); err == nil && secs > 0 {
 				dumpScreenAfter = secs
 			}
-		case "-e":
+		case "-e", "--edit":
 			// far2l-compatible: `-e [filename]` opens filename directly in
 			// the editor. far2l also accepts `-e<line>[:<pos>]`, which this
 			// does not implement yet -- only the filename form. Primarily
@@ -460,6 +653,12 @@ func Main() {
 		}
 	}
 	rememberStartupDirs(startupDirArgs(os.Args[1:]))
+	if cwd, err := os.Getwd(); err == nil {
+		viewFilePaths = startupViewFiles(cwd, startupDirArgs(os.Args[1:]))
+		if editFilePath != "" {
+			editFilePath = resolveStartupPath(cwd, editFilePath)
+		}
+	}
 	configureF4DebugLogPath(config.GetF4ConfigDir())
 
 	if version {
@@ -469,34 +668,58 @@ func Main() {
 	if print_help {
 		fmt.Printf(`f4 version: %s
 f4 is efficient and cozy two-panel file manager in go
-Usage: f4 [folder1 [folder2]] [switches]
-Folders come before the switches, or after a "--" separator. Without them both
-panels open the current directory; folder1 alone opens in the left panel and
-leaves the right one on the current directory.
+Usage: f4 [path1 [path2]] [switches]
+Paths come before the switches, or after a "--" separator. Without them both
+panels open the current directory (on Windows they keep the folders of the last
+session); path1 alone opens in the left panel and leaves the right one on the
+current directory. A path that names a file opens that file in the viewer, as
+F3 would, and its panel shows the file's folder with the cursor on it.
 The following switches may be used in the command line:
  -h, -?, --help         This help and exit
  -v, --version          Displays the current version and exit
  --attached             Force run in Attached-mode
  --client [clientPath]
  --cpuprofile [cpuprofile]
+ --trace [file]         Write a runtime execution trace, which records GC
+                         pauses, blocking syscalls and scheduling as well as
+                         CPU; read it with "go tool trace"
+ --stall-watchdog [d]   Write every goroutine's stack into the profile's
+                         crashes folder whenever one UI frame takes longer
+                         than d (default 250ms). Answers what a freeze was
+                         waiting on, which a CPU profile cannot.
  --debug                Log to profile logs/debug.log (equivalent to --log=1)
  --dump-screen-after N  Auto-run Debug.ScreenDump N seconds after startup
                          (bypasses hotkeys entirely -- useful under Wine
                          tty mode, where complex combos like CtrlAltP can
                          fail to arrive through native console input)
- -e [filename]          Open filename directly in the editor on startup
+ -e, --edit [filename]  Open filename directly in the editor on startup
                          (far2l-compatible; useful for scripted/headless
                          testing where interactive navigation is unreliable)
  -gui, --gui [Backend]  Force run in GUI-mode
                          [Backend] values: "win32" (or "winapi", "gdi"),
-                         "gogpu", "ebiten", "x11", "wayland", "auto",
+                         "gogpu", "ebiten", "x11", "wayland", "cocoa", "auto",
                          if Backend omited, the configured default is used
                          ([Startup] GuiBackend), or the most suitable one;
                          "auto" ignores the configured default for this run
  --input [InputMode]    Defines the preferred vtinput parser method;
                          [InputMode] values: "", "ansi", "ConPTY"
+ --install, --self-install [--yes]
+                         Copy this executable into ~/.local/bin (falling back
+                         to ~/bin), then exit; if that directory is not on
+                         PATH yet, offers to add it to your shell's profile
+                         (bash, zsh or fish, detected from $SHELL) after
+                         confirming, or prints the exact line to add by hand
+                         for another shell; --yes adds the line without
+                         asking. Unix shells only; not available on Windows.
+                         On Linux and BSD it also installs the launcher
+                         (org.unxed.f4.desktop) and icons under
+                         ~/.local/share, for the task bar icon of --gui
+ --install-desktop      Only that: install the launcher and icons for this
+                         executable under ~/.local/share (no sudo), then exit
  --log [logfile]        If =1 or =true uses profile logs/debug.log,
                          otherwise logfile
+ --fish-server          Serve the FISH+ protocol on stdin/stdout (the remote
+                         command of a FISH+ connection to a host with f4)
  --new-plugin [pluginName]
  --server [serverPath]
  -test-plugins          Plugin test mode
@@ -538,6 +761,15 @@ see in vtinput project: https://github.com/unxed/vtinput
 		os.Exit(update.RunCLI(updateChannelArg, updateSettings(), currentBuild(), applyUpdateSettings))
 	}
 
+	// Installing, like updating, is a command rather than a way to start the
+	// file manager: no panels and no session come up here either.
+	if installRequested {
+		os.Exit(install.RunCLI(absExecPath, install.Options{AutoConfirm: installYes}))
+	}
+	if installDesktopRequested {
+		os.Exit(install.RunDesktopCLI(absExecPath))
+	}
+
 	for _, arg := range os.Args {
 		if arg == "--askpass" {
 			vfs.RunSudoAskpass()
@@ -545,14 +777,8 @@ see in vtinput project: https://github.com/unxed/vtinput
 		}
 	}
 
-	if serverPath != "" {
-		terminal.RunServer(serverPath)
-		return
-	}
-	if clientPath != "" {
-		terminal.RunClient(clientPath, 0)
-		return
-	}
+	// Before the daemon and client branches below, so that a daemon started
+	// with these switches measures itself (#884).
 	if cpuprofile != "" {
 		// #nosec G703 -- cpuprofile is the path the user typed after
 		// --cpuprofile; writing where they asked is the whole feature.
@@ -562,6 +788,20 @@ see in vtinput project: https://github.com/unxed/vtinput
 		}
 		_ = pprof.StartCPUProfile(f)
 		defer pprof.StopCPUProfile()
+	}
+	if diagFlags.wanted() {
+		stopDiagnostics := diagFlags.arm(filepath.Join(config.GetF4ConfigDir(), "crashes"))
+		defer stopDiagnostics()
+	}
+	terminal.ServerDiagnosticArgs = serverDiagnosticArgs(cpuprofile, diagFlags)
+
+	if serverPath != "" {
+		terminal.RunServer(serverPath)
+		return
+	}
+	if clientPath != "" {
+		terminal.RunClient(clientPath, 0)
+		return
 	}
 
 	// Settings.ini supplies whatever this run did not (issue #601). The
@@ -604,7 +844,16 @@ see in vtinput project: https://github.com/unxed/vtinput
 		})
 	}
 
+	// A bare binary on macOS gets its Finder and Dock icon stamped onto the
+	// file here, before the mode is chosen: a console start (a Finder
+	// double-click on the binary opens Terminal and lands here) is the only
+	// start many installs ever see, and it never reaches RunGui. The
+	// --server/--client daemons and the update helpers returned above and
+	// do not stamp.
+	gui.EnsureDarwinIcon()
+
 	if ttyMode {
+		redirectConsoleWineStderr()
 		terminal.ManageSessions()
 		return
 	}
@@ -629,7 +878,29 @@ see in vtinput project: https://github.com/unxed/vtinput
 	}
 
 	vtui.DebugLog("MAIN: Falling back to console mode")
+	redirectConsoleWineStderr()
 	terminal.ManageSessions()
+}
+
+// ensureDesktopIntegration puts the launcher and icons under ~/.local/share
+// before a GUI window opens, when they are missing or out of date, so that an
+// f4 installed by hand (and updating itself) shows its own icon in the task
+// bar without the user running anything (f4#1290). It needs no sudo, asks
+// nothing and never stops f4 from starting; F4_NO_DESKTOP_INSTALL=1 switches
+// it off.
+func ensureDesktopIntegration() {
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+	written, err := install.EnsureDesktopAtStart(exe)
+	if err != nil {
+		vtui.DebugLog("MAIN: desktop launcher/icons not installed: %v", err)
+		return
+	}
+	if len(written) > 0 {
+		vtui.DebugLog("MAIN: installed or refreshed %d launcher/icon files under ~/.local/share", len(written))
+	}
 }
 
 // runGuiBackend starts the GUI on a named backend, or on the best available
@@ -642,6 +913,7 @@ see in vtinput project: https://github.com/unxed/vtinput
 // saved on a different machine. A backend named on the command line keeps the
 // strict behavior, because there the user asked for that one and is watching.
 func runGuiBackend(backend string, fromConfig bool) error {
+	ensureDesktopIntegration()
 	if backend == "" {
 		return tryRunDefaultGui()
 	}
@@ -657,14 +929,14 @@ func runGuiBackend(backend string, fromConfig bool) error {
 }
 
 func shouldTryGui() bool {
-	if vtui.IsWine() {
-		// Under Wine, default to console mode (wineconsole / terminal).
-		// Win32 GUI mode is available via --gui=win32, --gui, or f4-gui.exe.
+	if !gui.Available {
 		return false
 	}
 	if runtime.GOOS == "windows" {
-		// On native Windows, we compile separate binaries for console (f4.exe) and GUI (f4-gui.exe).
-		// We do not auto-detect GUI mode; it must be requested via filename or --gui flag.
+		// Windows ships separate binaries for console (f4.exe) and GUI
+		// (f4-gui.exe). GUI mode is not auto-detected; it must be requested
+		// via the filename or the --gui flag. Wine gets exactly the same
+		// rules (issue #474).
 		return false
 	}
 	// A terminal launch must stay in console mode even when the shell has a
@@ -680,21 +952,18 @@ func shouldTryGui() bool {
 	return os.Getenv("WAYLAND_DISPLAY") != "" || os.Getenv("DISPLAY") != ""
 }
 
-// setupGuiUI builds the interface inside a freshly opened GUI window. The file
-// named by -e is opened here rather than before RunGui, because it needs the
-// frames that SetupUI creates.
+// setupGuiUI builds the interface inside a freshly opened GUI window. The files
+// named on the command line are opened here rather than before RunGui, because
+// they need the frames that SetupUI creates.
 func setupGuiUI() {
 	SetupUI()
-	openDashEFileIfRequested()
+	openStartupFilesIfRequested()
 }
 
 func tryRunDefaultGui() error {
-	if vtui.IsWine() {
-		vtui.DebugLog("GUI_AUTO: Under Wine, trying win32 GUI backend...")
-		if err := gui.RunGui("win32", setupGuiUI); err == nil {
-			return nil
-		}
-	}
+	// Wine follows the Windows order below unchanged (issue #474): it used
+	// to try win32 once on its own first and, if that failed, drop the error
+	// and try win32 a second time here.
 	var errs []string
 	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
 
@@ -707,20 +976,44 @@ func tryRunDefaultGui() error {
 				errs = append(errs, fmt.Sprintf("win32: %v", err))
 			}
 
-			vtui.DebugLog("GUI_AUTO: Trying ebiten...")
-			if err := gui.RunGui("ebiten", setupGuiUI); err == nil {
-				return nil
-			} else {
-				errs = append(errs, fmt.Sprintf("ebiten: %v", err))
+			// A lite build carries neither ebiten nor gogpu (gui.BackendBuilt),
+			// so it goes straight from win32 to x11 instead of collecting two
+			// "not built" errors on the way.
+			if gui.BackendBuilt("ebiten") {
+				vtui.DebugLog("GUI_AUTO: Trying ebiten...")
+				if err := gui.RunGui("ebiten", setupGuiUI); err == nil {
+					return nil
+				} else {
+					errs = append(errs, fmt.Sprintf("ebiten: %v", err))
+				}
 			}
 		}
 
 		// Try gogpu (macOS default; Windows fallback)
-		vtui.DebugLog("GUI_AUTO: Trying gogpu...")
-		if err := gui.RunGui("gogpu", setupGuiUI); err == nil {
-			return nil
-		} else {
-			errs = append(errs, fmt.Sprintf("gogpu: %v", err))
+		if gui.BackendBuilt("gogpu") {
+			vtui.DebugLog("GUI_AUTO: Trying gogpu...")
+			if err := gui.RunGui("gogpu", setupGuiUI); err == nil {
+				return nil
+			} else {
+				errs = append(errs, fmt.Sprintf("gogpu: %v", err))
+			}
+		}
+
+		// macOS: fall back to the native Cocoa window before X11. Cocoa is
+		// always built (unlike gogpu, it carries no vtui_noXXX build tag), so
+		// a lite build -- which has no gogpu -- reaches it right after
+		// gogpu's "not built" error above, and a regular build reaches it if
+		// gogpu's FFI layer could not load. vtui does not pick cocoa on its
+		// own: an empty backend name on darwin still means "look for
+		// DISPLAY/WAYLAND_DISPLAY", so it has to be named explicitly here,
+		// ahead of the X11/XQuartz fallback below (f4#1571).
+		if runtime.GOOS == "darwin" {
+			vtui.DebugLog("GUI_AUTO: Trying cocoa...")
+			if err := gui.RunGui("cocoa", setupGuiUI); err == nil {
+				return nil
+			} else {
+				errs = append(errs, fmt.Sprintf("cocoa: %v", err))
+			}
 		}
 
 		// Fallback to X11 if DISPLAY environment variable is set
@@ -788,13 +1081,35 @@ func InitCore() *vtui.ScreenBuf {
 
 	vtui.FrameManager.Init(scr)
 
-	SetupUI()
+	// Only this console path may pick the first-start style from the console:
+	// the GUI window draws in true colour whatever the process's console is.
+	setupUI(consoleFirstRunColorStyle)
 
 	vtui.DebugLog("CORE: Initialization complete")
 	return scr
 }
 
+// applyAndRememberStartupDirs applies explicit command-line paths and mirrors
+// the resulting panel state into the legacy session fields. The live panels
+// remain the source of truth during a normal save, but the legacy snapshot is
+// the fallback used if a GUI backend tears down its screens before Main's
+// deferred SaveSession runs.
+func applyAndRememberStartupDirs(panels *panel.PanelsFrame, left, right string) {
+	panel.ApplyStartupDirs(panels, left, right)
+	if left == "" {
+		return
+	}
+	panel.SetLegacyWorkspaceSession(panel.CaptureWorkspaceSession(panels))
+}
+
 func SetupUI() {
+	setupUI(nil)
+}
+
+// setupUI is SetupUI with one hook: firstRunStyle, when set, may name the
+// colour style to start with in place of the built-in default. It is asked only
+// when no settings.ini has chosen a style (issue #513).
+func setupUI(firstRunStyle func() (string, bool)) {
 	configureUnicodeInput()
 	vtui.ConfigDiskLogging(os.Getenv("VTUI_DEBUG") != "")
 	vtui.DebugLog("=== F4 STARTUP [%s] PID:%d ===", getFormattedVersionInfo(), os.Getpid())
@@ -802,6 +1117,8 @@ func SetupUI() {
 	theme.SetDefaultF4Palette()
 	config.LoadConfig()
 	config.ApplyWheelSettings()
+	config.ApplyMenuSettings()
+	ApplyGlyphStyle()
 	vtui.PathHintProvider = panel.PathHintProvider
 	panel.ApplyPathHintSettings()
 	ctrlTabMode := vtui.WorkspaceCtrlTabDirect
@@ -812,6 +1129,7 @@ func SetupUI() {
 	vtui.FrameManager.ConfigureWorkspaceTabOverlay(config.App.WorkspaceTabsOverlay)
 	vtui.FrameManager.ConfigureWorkspaceAltNumberSwitch(config.App.AltNumberSwitchesTabs)
 	initLang()
+	applyFirstRunColorStyle(firstRunStyle)
 	if err := theme.ApplyColorStyle(config.App.ColorStyle); err != nil {
 		vtui.DebugLog("COLORS: %v; falling back to Modern", err)
 		config.App.ColorStyle = "Modern"
@@ -831,6 +1149,13 @@ func SetupUI() {
 		return pf.Clone()
 	}
 	fileops.StartQueueWorker()
+	// A copy that ignores errors ends with a summary whose "View log" opens the
+	// log in f4's own viewer (#722).
+	fileops.OpenLog = func(path string) {
+		if pf := panel.FindPanelsFrame(); pf != nil {
+			actionOpenViewer(pf, vfs.NewOSVFS(filepath.Dir(path)), path)
+		}
+	}
 	// The registry is a leaf and cannot reach the message catalogue; the root
 	// hands it the lookup. Moves to internal/i18n's i18n.Msg when that package exists.
 	action.Localize = i18n.Msg
@@ -840,6 +1165,8 @@ func SetupUI() {
 	editor.LookupHotkey = func(e *vtinput.InputEvent) bool { return macroLookupHotkey(macro.MacroMgr, e) }
 	editor.MenuBarItems = BuildMenuBarItems
 	editor.CrossAttrs = EditorCrossAttrs
+	viewer.NewTextColorizer = editor.NewTextColorizer
+	viewer.NewWindowColorizer = editor.NewWindowColorizer
 	editor.KeyBarLabels = keymap.KeyBarLabelsForArea
 	editor.HotkeyAction = func(area, key string) string {
 		if keymap.GlobalHotkeysMgr == nil {
@@ -857,7 +1184,14 @@ func SetupUI() {
 	panel.AppCommand = handlePanelsAppCommand
 	panel.RunAction = RunAction
 	panel.BuildMenuBarItems = BuildMenuBarItems
+	panel.RefreshMenuRowStates = refreshMenuRowStates
 	panel.SaveSession = SaveSession
+	panel.GetMenuContentSignal = func() panel.MenuContentSignalValue {
+		return panel.MenuContentSignalValue{
+			PluginCommandGeneration: plughost.PluginCommandRegistryGeneration(),
+			AIPatchPresent:          aiSession().LastPatch() != nil,
+		}
+	}
 	panel.OpenEditor = actionOpenEditor
 	panel.OpenViewer = actionOpenViewer
 	panel.OpenViewerInternal = openViewerInternal
@@ -883,13 +1217,13 @@ func SetupUI() {
 	highlightPath := filepath.Join(configDir, "highlight.ini")
 	if _, err := os.Stat(highlightPath); os.IsNotExist(err) {
 		config.CreateDefaultHighlightIni(highlightPath)
+	} else if config.RefreshHighlightIniHeader(highlightPath) {
+		// The comments of a file made by an older f4 are brought up to date
+		// (f4#912); the rules under them are not touched.
+		vtui.DebugLog("highlight.ini: header comments refreshed")
 	}
 	if _, err := os.Stat(highlightPath); err == nil {
-		highlightIni := ini.Load(highlightPath)
-		theme.GlobalFileHighlighter.LoadFromIni(highlightIni)
-		// Sort groups share the file (and the rule syntax) with highlighting,
-		// the way far keeps both in one dialog. Themes may not define them.
-		panel.GlobalSortGroups.LoadFromIni(highlightIni)
+		loadHighlightIni(ini.Load(highlightPath))
 	}
 
 	// CrashDirFull задаётся рано (см. main()); здесь только повторная
@@ -906,6 +1240,7 @@ func SetupUI() {
 	}
 	keymap.GlobalKeyRemap = keymap.NewKeyRemap(keymapPath)
 	macro.MacroMgr = macro.NewMacroManager(filepath.Join(configDir, "key_macros.ini"))
+	macro.MacroMgr.OnLuaLoaded = syncMacroMenuItems
 	macro.MacroMgr.LoadLuaMacros(f4MacroHost{}, filepath.Join(configDir, "Macros", "scripts"))
 	// Help is initialized after the hotkey manager: key binding topics
 	// are generated from the action registry and must reflect the
@@ -933,7 +1268,7 @@ func SetupUI() {
 	}
 
 	LoadSession()
-	vtui.ManageCursorStyle = !config.App.KeepTerminalCursor
+	config.ApplyCursorSettings()
 	vtui.FrameManager.Push(vtui.NewDesktop())
 
 	width := vtui.FrameManager.GetScreenSize()
@@ -953,7 +1288,7 @@ func SetupUI() {
 	// The startup directories outrank the restored paths. A client attaching to
 	// a running daemon brings its own instead -- see attachPayload.
 	startLeft, startRight := startupDirs()
-	panel.ApplyStartupDirs(panels, startLeft, startRight)
+	applyAndRememberStartupDirs(panels, startLeft, startRight)
 	vtui.FrameManager.Push(panels)
 	if len(states) > 1 {
 		// AddScreenBackground inserts immediately after the active workspace;
@@ -979,8 +1314,34 @@ func SetupUI() {
 			vtui.FrameManager.SwitchScreen(activeWorkspace)
 		}
 	}
+	panel.InstallTerminalOfferHandler(terminal.RealDNDClient())
+	terminalDNDStop = startTerminalDNDBinding(terminal.RealDNDClient(), vtui.Far2lNegotiated)
+	panel.EnableTreeExpandPersistence(filepath.Join(config.GetF4ConfigDir(), "tree_expanded.txt"))
 	previousEventFilter := vtui.FrameManager.EventFilter
 	vtui.FrameManager.EventFilter = func(e *vtinput.InputEvent) bool {
+		// INPUT_DND (unxed/f4#1628) is the one far2l "f2l" event
+		// vtinput.ParseFar2lAPC does not already translate into a plain
+		// key/mouse/resize InputEvent of its own, so it is still sitting
+		// here, unclaimed, as a Far2lEventType/"event" pair; nothing else
+		// in this filter chain has any business with it either way.
+		if terminal.RealDNDClient().DispatchBridgedEvent(e) {
+			return true
+		}
+		// The lone-Alt detector must see every event before anything can
+		// consume it: an Alt+F7 the hotkey dispatcher takes still spoils
+		// the Alt tap (#1131).
+		// The tap acts after a short grace period, so an Alt release that
+		// only ends an Alt+Tab or Alt+Enter does nothing (#1131).
+		if panel.LoneAltTap(e) {
+			if pf, ok := vtui.FrameManager.GetTopFrame().(*panel.PanelsFrame); ok && pf.CanHandleLoneAlt() {
+				panel.ScheduleLoneAlt(func() {
+					if top, ok := vtui.FrameManager.GetTopFrame().(*panel.PanelsFrame); ok && top == pf {
+						pf.HandleLoneAlt()
+					}
+				})
+				return true
+			}
+		}
 		if panel.HandleTranslatorMouseEvent(e) {
 			return true
 		}
@@ -1024,12 +1385,20 @@ func SetupUI() {
 	// last drew stays frozen under nothing but the two freshly-painted
 	// overlay rows.
 	consoleOverlayOwnedScreen := true
+	// Help's hint, query and match highlights belong to the Help window, so
+	// they are painted with it, in stack order (#378). The optional dialog
+	// outer border (#1399) chains after it for the same reason: each frame
+	// decoration belongs with the frame it decorates, painted right after it.
+	vtui.FrameManager.AfterFrameShow = func(scr *vtui.ScreenBuf, frame vtui.Frame) {
+		dialog.RenderHelpFrame(scr, frame)
+		RenderDialogOuterBorder(scr, frame)
+	}
 	vtui.FrameManager.OnRender = func(scr *vtui.ScreenBuf) {
 		if config.App.WorkspaceTabNumbering == config.WorkspaceTabNumbersOrder {
 			panel.RenumberWorkspaceScreens()
 		}
 		UpdateWindowTitle(scr)
-		dialog.RenderHelpSearch(scr)
+		dialog.FinishHelpRender()
 		if panels.ShellMode == terminal.ShellModeSimpleInline && panels.ConsoleViewActive() {
 			onTop := panels.IsTopFrame()
 			if onTop {
@@ -1085,6 +1454,16 @@ func configureNestedInputMode() {
 	}
 }
 
+// loadHighlightIni hands highlight.ini to the file highlighter and to the sort
+// groups. Sort groups share the file (and the rule syntax) with highlighting,
+// the way far keeps both in one dialog. Themes may not define them.
+func loadHighlightIni(file *ini.File) {
+	theme.GlobalFileHighlighter.LoadFromIni(file)
+	// A Group key inside a coloured [Highlight_N] section puts the files that
+	// rule matches into that group: one matcher both paints and places (#413).
+	panel.GlobalSortGroups.LoadFromIni(file, theme.GlobalFileHighlighter.UserRules)
+}
+
 var getSessionIniPath = func() string {
 	return filepath.Join(config.GetF4ConfigDir(), "session.ini")
 }
@@ -1125,7 +1504,15 @@ func LoadSession() {
 	_, _ = fmt.Sscanf(ini.GetString("Panel/Left", "ViewMode", "0"), "%d", &panel.LastLeftViewMode)
 	_, _ = fmt.Sscanf(ini.GetString("Panel/Left", "SortMode", "0"), "%d", &panel.LastLeftSortMode)
 	panel.LastLeftSortRev = ini.GetString("Panel/Left", "SortReverse", "0") == "1"
-	panel.LastLeftSortGroups = ini.GetString("Panel/Left", "UseSortGroups", "0") == "1"
+	panel.LastLeftSortGroups = ini.GetString("Panel/Left", "UseSortGroups", "1") == "1"
+	panel.LastLeftSortNumeric = ini.GetString("Panel/Left", "SortNumeric", "0") == "1"
+	panel.LastLeftSortSelectedFirst = ini.GetString("Panel/Left", "SortSelectedFirst", "0") == "1"
+	if _, err := fmt.Sscanf(ini.GetString("Panel/Left", "GroupBy", "0"), "%d", &panel.LastLeftGroupBy); err != nil {
+		panel.LastLeftGroupBy = panel.GroupNone
+	}
+	panel.LastLeftGroupBy = panel.ValidGroupMode(panel.LastLeftGroupBy)
+	panel.LastLeftGroupReverse = ini.GetString("Panel/Left", "GroupReverse", "0") == "1"
+	panel.LastLeftGroupFoldersSeparately = ini.GetString("Panel/Left", "GroupFoldersSeparately", "1") == "1"
 
 	// Восстанавливаем состояние правой панели
 	panel.LastRightPath = ini.GetString("Panel/Right", "Folder", "")
@@ -1133,7 +1520,15 @@ func LoadSession() {
 	_, _ = fmt.Sscanf(ini.GetString("Panel/Right", "ViewMode", "0"), "%d", &panel.LastRightViewMode)
 	_, _ = fmt.Sscanf(ini.GetString("Panel/Right", "SortMode", "0"), "%d", &panel.LastRightSortMode)
 	panel.LastRightSortRev = ini.GetString("Panel/Right", "SortReverse", "0") == "1"
-	panel.LastRightSortGroups = ini.GetString("Panel/Right", "UseSortGroups", "0") == "1"
+	panel.LastRightSortGroups = ini.GetString("Panel/Right", "UseSortGroups", "1") == "1"
+	panel.LastRightSortNumeric = ini.GetString("Panel/Right", "SortNumeric", "0") == "1"
+	panel.LastRightSortSelectedFirst = ini.GetString("Panel/Right", "SortSelectedFirst", "0") == "1"
+	if _, err := fmt.Sscanf(ini.GetString("Panel/Right", "GroupBy", "0"), "%d", &panel.LastRightGroupBy); err != nil {
+		panel.LastRightGroupBy = panel.GroupNone
+	}
+	panel.LastRightGroupBy = panel.ValidGroupMode(panel.LastRightGroupBy)
+	panel.LastRightGroupReverse = ini.GetString("Panel/Right", "GroupReverse", "0") == "1"
+	panel.LastRightGroupFoldersSeparately = ini.GetString("Panel/Right", "GroupFoldersSeparately", "1") == "1"
 
 	// Восстанавливаем глобальное состояние сессии
 	activeStr := ini.GetString("Session", "ActivePanel", "1")
@@ -1325,6 +1720,9 @@ func saveSessionFileError(path string, savePanelSettings, saveCurrentPanel bool)
 	fmt.Fprintf(&sb, "SortMode = %d\n", panel.LastLeftSortMode)
 	fmt.Fprintf(&sb, "SortReverse = %d\n", map[bool]int{true: 1, false: 0}[panel.LastLeftSortRev])
 	fmt.Fprintf(&sb, "UseSortGroups = %d\n", map[bool]int{true: 1, false: 0}[panel.LastLeftSortGroups])
+	fmt.Fprintf(&sb, "SortNumeric = %d\n", map[bool]int{true: 1, false: 0}[panel.LastLeftSortNumeric])
+	fmt.Fprintf(&sb, "SortSelectedFirst = %d\n", map[bool]int{true: 1, false: 0}[panel.LastLeftSortSelectedFirst])
+	fmt.Fprintf(&sb, "GroupBy = %d\nGroupReverse = %d\nGroupFoldersSeparately = %d\n", panel.LastLeftGroupBy, map[bool]int{true: 1}[panel.LastLeftGroupReverse], map[bool]int{true: 1}[panel.LastLeftGroupFoldersSeparately])
 
 	sb.WriteString("\n[Panel/Right]\n")
 	fmt.Fprintf(&sb, "Folder = %s\n", panel.LastRightPath)
@@ -1333,6 +1731,9 @@ func saveSessionFileError(path string, savePanelSettings, saveCurrentPanel bool)
 	fmt.Fprintf(&sb, "SortMode = %d\n", panel.LastRightSortMode)
 	fmt.Fprintf(&sb, "SortReverse = %d\n", map[bool]int{true: 1, false: 0}[panel.LastRightSortRev])
 	fmt.Fprintf(&sb, "UseSortGroups = %d\n", map[bool]int{true: 1, false: 0}[panel.LastRightSortGroups])
+	fmt.Fprintf(&sb, "SortNumeric = %d\n", map[bool]int{true: 1, false: 0}[panel.LastRightSortNumeric])
+	fmt.Fprintf(&sb, "SortSelectedFirst = %d\n", map[bool]int{true: 1, false: 0}[panel.LastRightSortSelectedFirst])
+	fmt.Fprintf(&sb, "GroupBy = %d\nGroupReverse = %d\nGroupFoldersSeparately = %d\n", panel.LastRightGroupBy, map[bool]int{true: 1}[panel.LastRightGroupReverse], map[bool]int{true: 1}[panel.LastRightGroupFoldersSeparately])
 	panel.WriteWorkspaceSessions(&sb, panel.LastWorkspaceSessions, panel.LastActiveWorkspace)
 
 	return config.WriteUserFileAtomically(path, []byte(sb.String()), 0600)

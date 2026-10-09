@@ -1,0 +1,99 @@
+name: openwrt
+
+# Extra-lite / OpenWrt build (unxed/f4#1671; docs/OPENWRT.md). Builds the lite
+# profile for the OpenWrt-relevant Linux architectures, publishes the binaries
+# as artifacts with their size and SHA-256 in the job summary, and smoke-tests
+# the native one headlessly (scripts/openwrt_smoke.py: panel listing and
+# keyboard navigation on a pseudo-terminal, start-up time, peak RSS). Manual
+# only: it never gates a merge and never runs on push.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.profile }} (${{ matrix.target.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # extralite implies lite (see docs/OPENWRT.md for what it leaves out).
+        profile: [lite, extralite]
+        target:
+          - {name: mipsle-softfloat, goarch: mipsle, extra: "GOMIPS=softfloat", opkg: mipsel_24kc}
+          - {name: arm-v7, goarch: arm, extra: "GOARM=7", opkg: arm_cortex-a7_neon-vfpv4}
+          - {name: arm64, goarch: arm64, extra: "GOARM64=v8.0", opkg: aarch64_generic}
+          - {name: amd64, goarch: amd64, extra: "GOAMD64=v1", opkg: x86_64}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.9'
+          cache-dependency-path: go.sum
+
+      - name: Build
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.target.goarch }}
+          CGO_ENABLED: "0"
+          EXTRA: ${{ matrix.target.extra }}
+          NAME: ${{ matrix.profile }}-linux-${{ matrix.target.name }}
+          TAGS: ${{ matrix.profile == 'extralite' && 'lite,extralite' || 'lite' }}
+        run: |
+          mkdir -p dist
+          env "$EXTRA" go build -tags "$TAGS,vtui_noebiten,vtui_nogogpu" -trimpath -ldflags "-s -w" -o "dist/f4-$NAME" ./cmd/f4
+          {
+            echo "### f4 $NAME"
+            echo
+            echo '```'
+            echo "$(stat -c %s "dist/f4-$NAME") bytes"
+            sha256sum "dist/f4-$NAME"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Package (.ipk for opkg, extralite only)
+        if: matrix.profile == 'extralite'
+        env:
+          OPKG: ${{ matrix.target.opkg }}
+          NAME: ${{ matrix.profile }}-linux-${{ matrix.target.name }}
+        run: |
+          VERSION="0.0.${GITHUB_RUN_NUMBER}"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then VERSION="${GITHUB_REF_NAME#v}"; fi
+          sh scripts/build_ipk.sh "dist/f4-$NAME" "$VERSION" "$OPKG" "dist/f4_${VERSION}_${OPKG}.ipk" | tee ipk.txt
+          {
+            echo "### .ipk ($OPKG)"
+            echo
+            echo '```'
+            cat ipk.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Smoke check (native build only)
+        if: matrix.target.goarch == 'amd64'
+        run: |
+          python3 scripts/openwrt_smoke.py "dist/f4-${{ matrix.profile }}-linux-amd64" | tee smoke.txt
+          {
+            echo "### Smoke check"
+            echo
+            echo '```'
+            cat smoke.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: f4-${{ matrix.profile }}-linux-${{ matrix.target.name }}
+          path: |
+            dist/f4-${{ matrix.profile }}-linux-${{ matrix.target.name }}
+            dist/*.ipk
+          if-no-files-found: error

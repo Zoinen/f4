@@ -65,7 +65,7 @@ func TestPanelsFrame_SideMenusExposeDriveHotkeys(t *testing.T) {
 
 func findSideDriveMenuItem(items []vtui.MenuItem, label, shortcut string, command int) bool {
 	for _, item := range items {
-		if item.Text == label && item.Shortcut == shortcut && item.Command == command {
+		if plainMenuText(item.Text) == label && item.Shortcut == shortcut && item.Command == command {
 			return true
 		}
 	}
@@ -88,7 +88,9 @@ func TestPanelsFrame_SideMenuExposesWorkspaceHotkeys(t *testing.T) {
 				continue
 			}
 			found = true
-			if item.Text != i18n.Msg(tc.label) {
+			// The menu assigns hotkeys across all its rows (ten panel modes
+			// now), so only the visible text is fixed, not the marked letter.
+			if plainMenuText(item.Text) != plainMenuText(i18n.Msg(tc.label)) {
 				t.Errorf("workspace command %d label = %q, want %q", tc.command, item.Text, i18n.Msg(tc.label))
 			}
 			if item.Shortcut != tc.shortcut {

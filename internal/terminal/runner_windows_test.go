@@ -26,10 +26,14 @@ func TestLocalCommandRunnerWindowsStreamsMergedLinesAndExitStatus(t *testing.T) 
 	}
 
 	var got []string
+	command := `cd & (set /p F4_TEST_INPUT= || echo stdin-eof) & 1>&2 echo stderr-line& <nul set /p "=partial" & exit 7`
+	if !WindowsShellSyntax() {
+		command = `pwd; if IFS= read -r line; then exit 91; else printf 'stdin-eof\n'; fi; printf 'stderr-line\n' >&2; printf partial; exit 7`
+	}
 	code, err := NewLocalCommandRunner().RunCommand(
 		context.Background(),
 		dir,
-		`cd & (set /p F4_TEST_INPUT= || echo stdin-eof) & 1>&2 echo stderr-line& <nul set /p "=partial" & exit 7`,
+		command,
 		func(line string) { got = append(got, line) },
 	)
 	if err != nil {
@@ -43,7 +47,11 @@ func TestLocalCommandRunnerWindowsStreamsMergedLinesAndExitStatus(t *testing.T) 
 	}
 
 	info := NewLocalCommandRunner().CommandRunnerInfo()
-	if info.Dialect != vfs.CommandDialectCmd || info.MaxParallel != 0 {
+	wantDialect := vfs.CommandDialectCmd
+	if !WindowsShellSyntax() {
+		wantDialect = vfs.CommandDialectPOSIX
+	}
+	if info.Dialect != wantDialect || info.MaxParallel != 0 {
 		t.Fatalf("runner info = %+v", info)
 	}
 }
@@ -55,7 +63,11 @@ func TestLocalCommandRunnerWindowsCancellationKillsProcessTree(t *testing.T) {
 	var once sync.Once
 	done := make(chan error, 1)
 	go func() {
-		_, err := NewLocalCommandRunner().RunCommand(ctx, "", `ping.exe -n 30 127.0.0.1`, func(string) {
+		command := `ping.exe -n 30 127.0.0.1`
+		if !WindowsShellSyntax() {
+			command = `sleep 30`
+		}
+		_, err := NewLocalCommandRunner().RunCommand(ctx, "", command, func(string) {
 			once.Do(func() { close(started) })
 		})
 		done <- err

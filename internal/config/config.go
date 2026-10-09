@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/unxed/f4/internal/ini"
@@ -375,6 +376,71 @@ func (o CompareOptions) HasCriteria() bool {
 	return o.ByTime || o.BySize || o.ByContent
 }
 
+// SyncDefaultMask is what the mask field of the synchronize dialog starts
+// out with: everything, the way Total Commander's own field does.
+const SyncDefaultMask = "*"
+
+// SyncOptions mirrors the option row of Total Commander's "Synchronize
+// dirs" window, which is the reference this feature follows.
+type SyncOptions struct {
+	// Asymmetric makes the right folder a mirror of the left one:
+	// anything missing or older on the right is copied over it, and
+	// anything the left folder does not have is deleted from the right.
+	// Without it the two folders are peers and each side's newer file
+	// wins.
+	Asymmetric bool
+	// Subdirs compares the whole tree instead of the two folders' own
+	// files.
+	Subdirs bool
+	// ByContent reads the files whose size and time already match, to
+	// find the ones that only look equal.
+	ByContent bool
+	// IgnoreDate takes name and size as the whole truth. Total
+	// Commander documents the consequence: such a comparison can only
+	// answer "equal" or "not equal", so the copying direction is left
+	// to the user.
+	IgnoreDate bool
+	// Mask is the far2l-style file mask the comparison is limited to,
+	// including the "|" exclude section.
+	Mask string
+}
+
+// DefaultSyncOptions is Total Commander's own starting position: the whole
+// tree, everything in it, times and sizes decide.
+func DefaultSyncOptions() SyncOptions {
+	return SyncOptions{
+		Subdirs: true,
+		Mask:    SyncDefaultMask,
+	}
+}
+
+// Normalize repairs values a hand-edited config may hold.
+func (o SyncOptions) Normalize() SyncOptions {
+	if strings.TrimSpace(o.Mask) == "" {
+		o.Mask = SyncDefaultMask
+	}
+	return o
+}
+
+// CompareOptions is the comparison these sync options ask for, so that the
+// synchronize window and the Advanced Compare dialog answer the same
+// question the same way instead of growing two comparison engines.
+//
+// The two-second slack is always on: Total Commander treats a FAT
+// timestamp that is one second away from its source as the same time, and
+// without it every file copied to a memory card comes back as differing.
+func (o SyncOptions) CompareOptions() CompareOptions {
+	return CompareOptions{
+		Recursive:  o.Subdirs,
+		MaxDepth:   CompareMaxDepthLimit,
+		ByTime:     !o.IgnoreDate,
+		TimeSlack:  true,
+		BySize:     true,
+		ByContent:  o.ByContent,
+		IgnoreMode: CompareIgnoreEOL,
+	}
+}
+
 func ParsePanelScrollbarMode(value string) PanelScrollbarMode {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "minimal":
@@ -393,6 +459,8 @@ type F4Config struct {
 	HelpLanguage             string
 	UseLocalLanguageFiles    bool
 	AlwaysShowMenuBar        bool
+	DialogOuterBorder        bool   // leave an empty border outside dialog/UserMenu borders instead of a second frame (three cells on the sides, one above and below), far2l/Far3 style (default off)
+	GlyphStyle               string // box, checkbox and radio glyphs of graphical windows: "classic" or "rounded" (f4#285)
 	WorkspaceTabMode         int
 	WorkspaceTabsOverlay     bool
 	CtrlTabShowsMenu         bool
@@ -403,6 +471,7 @@ type F4Config struct {
 	ShowHiddenFiles          bool
 	ShowDirPrefix            bool
 	ShowHighlightMarks       bool
+	ShowSymlinkArrow         bool
 	SeparateFileExtensions   bool
 	PanelScrollbarMode       PanelScrollbarMode
 	ShowPanelFileInfo        bool
@@ -410,46 +479,102 @@ type F4Config struct {
 	DriveMenuOptions         uint32 // display/filter flags for the Alt+F1/Alt+F2 menu
 	InfoPanelBytes           bool   // Ctrl+L info panel: true = raw bytes, false = human (GiB/MiB…)
 	InfoPanelCPUGPU          bool   // Ctrl+L info panel: show CPU and GPU sections (off by default)
+	TreeRootWholeVolume      bool   // Ctrl+T tree panel root: true = whole current volume (far2l), false = source panel's current directory
 	EscTogglePanels          bool   // ESC toggles panels visibility (Far ships this as a macro; on by default)
 	TerminalCtrlNWorkspace   bool   // reserve Ctrl+N in terminal views for cloning panels to a workspace
 	KeepTerminalCursor       bool
+	CursorInsertShape        string // caret while typing: "underline" | "bar" | "block" (f4 #1154)
+	CursorOvertypeShape      string // caret in overtype mode, same names
+	CursorBlink              bool
 	ConsoleMode              string // "own" | "host" (default "own")
+	PluginDefaultHotkeysOff  string // semicolon-separated hotkeys (e.g. "ShiftF1;ShiftF2") whose plugin defaults the user removed with F4/Del in the plugin menu (f4:config)
+	DragOutModifier          string // "" | "ctrl" | "alt" | "shift": a drag out of a panel starts only while this key is held (default "", f4:config)
+	DragOutHoldMs            int    // without DragOutModifier: how long (ms) a left button is held on a file before a move starts a drag out instead of moving the cursor; 0 starts at once, -1 only outside the rows (default 250, f4:config)
 	ConsoleOverlayUI         bool   // Show f4 command line and keybar overlay on top of host console (default false)
+	HostConsoleDefaultColors bool   // Host modes: draw the console mirror shown beside a hidden panel in the terminal's own default colours (default false, f4:config)
+	UseWinescape             bool   // Windows only: let the file layer use libwinescape where it is available (default true)
 	AnnounceKittyTerm        bool   // introduce the built-in terminal as kitty, so that image tools use the graphics protocol
 	CommandLineAutoComplete  bool
+	UsePromptFormat          bool
+	PromptFormat             string
 	NavigationMode           PanelNavigationMode
+	PanelAutoFilter          bool // a lone Alt press opens the panel autofilter (hides non-matching rows); Alt+letter stays the quick search
+	PanelStrictAutoFilter    bool // panel quick search/autofilter requires an exact match instead of tolerating one typo
+	PanelGroupSmallMiB       int
+	PanelGroupMediumMiB      int
+	PanelGroupLargeMiB       int
 	SearchCommandStayFocused bool
 	SyncPanelLoad            bool
 	SearchExactOnHit         bool // QuickSearch keeps only exact matches when at least one exists
 	ApplyCommandParallelism  int  // 0 = unlimited; absent config defaults to runtime.NumCPU()
 	EditorAutoComplete       bool
 	EditorAutoCompleteMask   string
-	EditorExpandTabs         int
-	EditorAutoIndent         bool
-	EditorCursorBeyondEOL    bool
-	EditorTabSize            int
-	EditorUseEditorConfig    bool
-	EditorCrosshair          bool
-	EditorMarkOccurrences    bool
-	UseExternalEditor        bool
-	ExternalEditorCommand    string
-	ExternalEditorConsole    string
-	ExternalEditorGUI        string
-	EditorAutodetectCodePage bool
-	EditorHighlighter        string
-	EditorSyntaxAnimation    bool
-	EditorColorerScheme      string
-	EditorColorerBackground  bool
-	EditorColorerSyntax      bool
-	EditorColorerCatalog     string
-	EditorCrossMode          int
-	EditorDefaultCodePage    int
+	// ArchiveEnterExcludeMask names the files Enter must not open as an
+	// archive even when their content is one. It is a far2l file mask, so
+	// "|" still carves an exception out of it.
+	ArchiveEnterExcludeMask string
+	// ObserverEnterExcludeMask is ArchiveEnterExcludeMask's counterpart for
+	// plugins/observer (f4#1563): files Enter must not open as an Observer
+	// container (an ISO image, for the one module wired up so far) even
+	// when their content is one. Ctrl+PgDn keeps opening them either way.
+	// Empty by default -- unlike office documents, which are ZIP containers
+	// far2l already lists, nothing yet is known to collide with the formats
+	// Observer modules cover.
+	ObserverEnterExcludeMask string
+	// ArchiveTarIndexCache keeps the file index of an opened tar archive in the
+	// cache so that opening it again is instant. Off rebuilds the index every
+	// time, which is slower and never out of date (#1187).
+	ArchiveTarIndexCache bool
+	// WatchDirectories refreshes a panel showing a local directory when the
+	// files in it change on disk, via inotify where available and periodic
+	// comparison elsewhere (f4#1668). Off leaves refreshing to the user.
+	WatchDirectories bool
+	// ArchiveUseRatarmountIfAvailable opts in to using the user's own
+	// external `ratarmount` (https://github.com/mxmlnkn/ratarmount), when it
+	// is found on PATH, as a faster tar-index backend instead of f4's own
+	// internal/tarindexcache (#251). This first part only stores the
+	// preference and lets plugins/archive.RatarmountAvailable() detect the
+	// binary; it does not change how archives are opened yet -- see that
+	// function's doc comment for the plan.
+	ArchiveUseRatarmountIfAvailable bool
+	EditorExpandTabs                int
+	EditorAutoIndent                bool
+	EditorCursorBeyondEOL           bool
+	EditorTabSize                   int
+	EditorUseEditorConfig           bool
+	EditorCrosshair                 bool
+	EditorShowControlChars          bool
+	EditorMarkOccurrences           bool
+	UseExternalEditor               bool
+	ExternalEditorCommand           string
+	ExternalEditorConsole           string
+	ExternalEditorGUI               string
+	EditorAutodetectCodePage        bool
+	EditorHighlighter               string
+	EditorSyntaxAnimation           bool
+	EditorColorerScheme             string
+	EditorColorerBackground         bool
+	EditorColorerSyntax             bool
+	EditorColorerCatalog            string
+	EditorColorerPairs              bool   // draw the pair under the cursor, FarColorer's PairsDraw
+	EditorColorerOldOutline         bool   // list lines, not labels, in the outliner: FarColorer's OldOutlineView
+	EditorColorerUserHrc            string // user schemes, FarColorer's UserHrcPath
+	EditorColorerUserHrd            string // user colour styles, FarColorer's UserHrdPath
+	EditorColorerHrcSettings        string // user HRC settings, FarColorer's UserHrcSettingsPath
+	EditorCrossMode                 int
+	ViewerHighlighting              int // where viewers highlight syntax; see ViewerHighlightOff
+	EditorDefaultCodePage           int
 	// EditorMemoryMap lets the editor map a local file instead of reading it
 	// in chunks. Off means every buffer takes the lazily fetched path, which
 	// is the escape hatch for a file system where mapping misbehaves.
 	EditorMemoryMap          bool
 	ViewerAutodetectCodePage bool
 	ViewerDefaultCodePage    int
+	// ViewerOpenAsSupportedType sends a picture to the image viewer, a
+	// video to the video player, and a Markdown file to the formatted
+	// view (issue #991, then #1625) when a file is opened for viewing.
+	// Off, every file opens in the text and hex viewer.
+	ViewerOpenAsSupportedType bool
 	// SystemANSICodePage and SystemOEMCodePage pin what "ANSI" and "OEM"
 	// mean on a system that cannot be asked. 0 keeps the codepage deduced
 	// from the locale.
@@ -467,6 +592,11 @@ type F4Config struct {
 	WheelMenuDown   int
 	WheelTableUp    int
 	WheelTableDown  int
+	// Wheel acceleration: how many lines the very fastest notch queues on
+	// top of the rows it scrolls at once, WheelAccelerationMin (the ramp
+	// never queues) to WheelAccelerationMax. The spin window, the coast
+	// step and its delay are tuned in code, see internal/wheel.
+	WheelAcceleration int
 	// Path hints (autocomplete in path inputs and the command line).
 	PathHintTimeout     int  // seconds for a VFS ReadDir behind a hint
 	PathHintFullPath    bool // show full paths in the hint, false = final element only
@@ -476,52 +606,65 @@ type F4Config struct {
 	DialogAutoComplete  bool // drop-down while typing in fields that have history
 	// HistoryShowTimes controls the timestamp presentation in command, folder,
 	// and viewer/editor history dialogs: date+time, date, or hidden.
-	HistoryShowTimes       [HistoryTypeCount]int
-	HistoryDirsPrefixLen   int // command-history directory prefix width
-	SlideShowDelay         int
-	ImageOverlay           bool
-	VideoPauseOnFocusLoss  bool
-	ImageX11OffsetX        int
-	ImageX11OffsetY        int
-	TTYXKeys               bool
-	TTYXKeyList            string
-	ImageExternalTimeout   int
-	ImageDecoderPriority   string
-	RegisteredPlugins      []string
-	ConfirmCopy            bool
-	ConfirmMove            bool
-	ConfirmDelete          bool
-	UseTrash               bool
-	ConfirmExit            bool
-	DeleteCancelFocused    bool
-	AutoSaveSettings       bool
-	AutoSaveDialogSettings bool
-	AutoSavePanelSettings  bool
-	AutoSaveCurrentPanel   bool
-	AutoSaveGUIWindow      bool
-	DefaultFileOpMode      int
-	FileOpPathDisplay      int
-	CopyAccessRights       int
-	MacroRecordFormat      int
-	GuiFont                string
-	GuiUseSystemMonospace  bool
-	GuiFontSize            int
-	GuiCols                int
-	GuiRows                int
-	GuiPosX                int
-	GuiPosY                int
-	GuiPositionSaved       bool
+	HistoryShowTimes             [HistoryTypeCount]int
+	HistoryDirsPrefixLen         int // command-history directory prefix width
+	SlideShowDelay               int
+	ImageOverlay                 bool
+	VideoPauseOnFocusLoss        bool
+	ImageX11OffsetX              int
+	ImageX11OffsetY              int
+	TTYXKeys                     bool
+	TTYXKeyList                  string
+	ImageExternalTimeout         int
+	ImageDecoderPriority         string
+	RegisteredPlugins            []string
+	ConfirmCopy                  bool
+	ConfirmMove                  bool
+	ConfirmDelete                bool
+	UseTrash                     bool
+	ConfirmExit                  bool
+	DeleteCancelFocused          bool
+	AutoSaveSettings             bool
+	AutoSaveDialogSettings       bool
+	AutoSavePanelSettings        bool
+	AutoSaveCurrentPanel         bool
+	AutoSaveGUIWindow            bool
+	DefaultFileOpMode            int
+	FileOpPathDisplay            int
+	ClipboardImageFormat         string
+	ClipboardImagePNGCompression string
+	ClipboardImageJPEGQuality    int
+	ClipboardImagePrefix         string
+	ClipboardImageTemplate       string
+	ClipboardImageDigitFormat    string
+	CopyAccessRights             int
+	MacroRecordFormat            int
+	GuiFont                      string
+	GuiUseSystemMonospace        bool
+	GuiFontSize                  int
+	GuiCols                      int
+	GuiRows                      int
+	GuiPosX                      int
+	GuiPosY                      int
+	GuiPositionSaved             bool
 	// StartupMode, GuiBackend and TTYBackend answer "what should plain `f4`
 	// do?". They are only defaults: --gui/--tty still win on any single run.
 	// An empty backend means automatic selection.
-	StartupMode            StartupMode
-	GuiBackend             string
-	TTYBackend             string
+	StartupMode StartupMode
+	GuiBackend  string
+	TTYBackend  string
+	// StartInCurrentFolder picks what a start from a terminal does with the
+	// panels. Off is far2l's and Far's way: `f4` restores the panels of the
+	// last session, and a folder on the command line replaces only its own
+	// panel. On is mc's way: `f4` opens the current folder in both panels
+	// (issues #822, #495).
+	StartInCurrentFolder   bool
 	ConsoleTitleTemplate   string
 	DisplayFullPathInTitle bool
 	UpdateChannel          int // 0 = Stable, 1 = Nightly
 	UpdateInterval         int // 0 = Never, 1 = Every start, 2 = Daily, 3 = Weekly
 	EnforceColorCorrection bool
+	MenuLoopScroll         bool   // far2l Opt.VMenu.MenuLoopScroll, [VMenu] MenuStopWrapOnEdge
 	HighlightPriority      int    // 0 = User wins, 1 = Theme wins
 	LastUpdateCheck        int64  // Unix timestamp
 	LastUpdateVersion      string // Version string or PublishedAt timestamp
@@ -553,6 +696,10 @@ type F4Config struct {
 	// Compare keeps what the folder comparison dialog was last set to,
 	// the way Far3's Advanced Compare remembers its own options.
 	Compare CompareOptions
+
+	// Sync keeps what the synchronize dialog was last set to, the way
+	// Total Commander saves its own sync options.
+	Sync SyncOptions
 }
 
 var App = F4Config{
@@ -562,6 +709,8 @@ var App = F4Config{
 	HelpLanguage:             "en",
 	UseLocalLanguageFiles:    false,
 	AlwaysShowMenuBar:        false,
+	DialogOuterBorder:        false,
+	GlyphStyle:               GlyphStyleClassic,
 	WorkspaceTabMode:         int(vtui.WorkspaceTabsAlways),
 	WorkspaceTabsOverlay:     true,
 	CtrlTabShowsMenu:         false,
@@ -572,6 +721,7 @@ var App = F4Config{
 	ShowHiddenFiles:          true,
 	ShowDirPrefix:            false,
 	ShowHighlightMarks:       false,
+	ShowSymlinkArrow:         false,
 	SeparateFileExtensions:   false,
 	PanelScrollbarMode:       PanelScrollbarMinimal,
 	ShowPanelFileInfo:        false,
@@ -579,102 +729,146 @@ var App = F4Config{
 	DriveMenuOptions:         DefaultDriveMenuOptions,
 	InfoPanelBytes:           false,
 	InfoPanelCPUGPU:          false,
+	TreeRootWholeVolume:      true,
 	EscTogglePanels:          true,
 	TerminalCtrlNWorkspace:   true,
 	KeepTerminalCursor:       false,
+	CursorInsertShape:        "underline",
+	CursorOvertypeShape:      "block",
+	CursorBlink:              true,
 	ConsoleMode:              "own",
 	ConsoleOverlayUI:         false,
+	PluginDefaultHotkeysOff:  "",
+	DragOutModifier:          "",
+	DragOutHoldMs:            DefaultDragOutHoldMs,
+	HostConsoleDefaultColors: false,
+	UseWinescape:             true,
 	AnnounceKittyTerm:        true,
 	CommandLineAutoComplete:  true,
+	UsePromptFormat:          false,
+	PromptFormat:             "$u@$n:$p$# ",
 	NavigationMode:           NavigationClassic,
+	PanelAutoFilter:          false,
+	PanelStrictAutoFilter:    false,
+	PanelGroupSmallMiB:       5,
+	PanelGroupMediumMiB:      10,
+	PanelGroupLargeMiB:       100,
 	SearchCommandStayFocused: false,
 	SyncPanelLoad:            false,
 	SearchExactOnHit:         false,
 	ApplyCommandParallelism:  runtime.NumCPU(),
 	EditorAutoComplete:       true,
 	EditorAutoCompleteMask:   "*.go;*.c;*.cpp;*.h;*.hpp;*.py;*.js;*.ts;*.rs;*.java;*.sh;*.txt;*.md;*.html;*.css;*.json",
-	EditorExpandTabs:         0,
-	EditorAutoIndent:         true,
-	EditorCursorBeyondEOL:    false,
-	EditorTabSize:            4,
-	EditorUseEditorConfig:    true,
-	EditorCrosshair:          false,
-	EditorMarkOccurrences:    true,
-	UseExternalEditor:        false,
-	ExternalEditorCommand:    "",
-	ExternalEditorConsole:    "",
-	ExternalEditorGUI:        "",
-	EditorAutodetectCodePage: true,
-	EditorHighlighter:        "Chroma",
-	EditorSyntaxAnimation:    false,
-	EditorColorerScheme:      "",
-	EditorColorerBackground:  true,
-	EditorColorerSyntax:      true,
-	EditorColorerCatalog:     "",
-	EditorCrossMode:          ColorerCrossBoth,
-	EditorDefaultCodePage:    65001,
-	EditorMemoryMap:          true,
-	ViewerAutodetectCodePage: true,
-	ViewerDefaultCodePage:    65001,
-	WheelPanelUp:             0,
-	WheelPanelDown:           0,
-	WheelEditorUp:            0,
-	WheelEditorDown:          0,
-	WheelViewerUp:            0,
-	WheelViewerDown:          0,
-	WheelMenuUp:              0,
-	WheelMenuDown:            0,
-	WheelTableUp:             0,
-	WheelTableDown:           0,
-	PathHintTimeout:          2,
-	PathHintFullPath:         false,
-	PathHintSource:           2,
-	PathHintMaxVisible:       5,
-	PathHintPerCategory:      true,
-	DialogAutoComplete:       true,
-	HistoryShowTimes:         [HistoryTypeCount]int{HistoryShowDateTime, HistoryShowDateTime, HistoryShowDateTime},
-	HistoryDirsPrefixLen:     24,
-	SlideShowDelay:           DefaultSlideShowDelay,
-	ImageOverlay:             true,
-	TTYXKeys:                 true,
-	TTYXKeyList:              DefaultTTYXKeyList,
-	ImageExternalTimeout:     DefaultImageExternalTimeout,
-	ImageDecoderPriority:     "",
-	ConfirmCopy:              true,
-	ConfirmMove:              true,
-	ConfirmDelete:            true,
-	UseTrash:                 false,
-	ConfirmExit:              true,
-	DeleteCancelFocused:      false,
-	AutoSaveSettings:         true,
-	AutoSaveDialogSettings:   true,
-	AutoSavePanelSettings:    true,
-	AutoSaveCurrentPanel:     true,
-	AutoSaveGUIWindow:        true,
-	DefaultFileOpMode:        0,
-	FileOpPathDisplay:        0,
-	CopyAccessRights:         0,
-	GuiFont:                  "",
-	GuiUseSystemMonospace:    true,
-	GuiFontSize:              DefaultGuiFontSize(runtime.GOOS),
-	GuiCols:                  100,
-	GuiRows:                  30,
-	GuiPosX:                  0,
-	GuiPosY:                  0,
-	GuiPositionSaved:         false,
-	StartupMode:              StartupModeAuto,
-	GuiBackend:               "",
-	TTYBackend:               "",
-	ConsoleTitleTemplate:     "f4 %Ver %Platform %Admin - %State",
-	DisplayFullPathInTitle:   false,
-	UpdateChannel:            0,
-	ProxyMode:                netproxy.ModeSystem,
-	UpdateInterval:           3, // Default to Weekly
-	EnforceColorCorrection:   true,
-	HighlightPriority:        0,
-	LastUpdateCheck:          0,
-	LastUpdateVersion:        "",
-	Compare:                  DefaultCompareOptions(),
+	// far2l's KnownDocumentTypes (multiarc/src/MultiArc.cpp), the list it
+	// refuses to sink into on Enter "even while its really archive", plus
+	// .epub, which f4 issue #1184 named and far2l's list does not.
+	ArchiveTarIndexCache:            true,
+	WatchDirectories:                true,
+	ArchiveUseRatarmountIfAvailable: false,
+	ArchiveEnterExcludeMask:         "*.docx,*.docm,*.dotx,*.dotm,*.xlsx,*.xlsm,*.xltx,*.xltm,*.xlsb,*.xlam,*.pptx,*.pptm,*.potx,*.potm,*.ppam,*.ppsx,*.ppsm,*.sldx,*.sldm,*.thmx,*.odt,*.ods,*.odp,*.epub",
+	ObserverEnterExcludeMask:        "",
+	EditorExpandTabs:                0,
+	EditorAutoIndent:                true,
+	EditorCursorBeyondEOL:           false,
+	EditorTabSize:                   4,
+	EditorUseEditorConfig:           true,
+	EditorCrosshair:                 false,
+	EditorShowControlChars:          false,
+	EditorMarkOccurrences:           true,
+	UseExternalEditor:               false,
+	ExternalEditorCommand:           "",
+	ExternalEditorConsole:           "",
+	ExternalEditorGUI:               "",
+	EditorAutodetectCodePage:        true,
+	EditorHighlighter:               "Chroma",
+	EditorSyntaxAnimation:           false,
+	EditorColorerScheme:             "",
+	EditorColorerBackground:         true,
+	EditorColorerSyntax:             true,
+	EditorColorerCatalog:            "",
+	EditorColorerPairs:              true,
+	EditorColorerOldOutline:         true,
+	EditorColorerUserHrc:            "",
+	EditorColorerUserHrd:            "",
+	EditorColorerHrcSettings:        "",
+	EditorCrossMode:                 ColorerCrossBoth,
+	ViewerHighlighting:              ViewerHighlightOff,
+	EditorDefaultCodePage:           65001,
+	EditorMemoryMap:                 true,
+	ViewerAutodetectCodePage:        true,
+	ViewerDefaultCodePage:           65001,
+	WheelPanelUp:                    0,
+	WheelPanelDown:                  0,
+	WheelEditorUp:                   0,
+	WheelEditorDown:                 0,
+	WheelViewerUp:                   0,
+	WheelViewerDown:                 0,
+	WheelMenuUp:                     0,
+	WheelMenuDown:                   0,
+	WheelTableUp:                    0,
+	WheelTableDown:                  0,
+	WheelAcceleration:               WheelAccelerationDefault,
+	PathHintTimeout:                 2,
+	PathHintFullPath:                false,
+	PathHintSource:                  2,
+	PathHintMaxVisible:              5,
+	PathHintPerCategory:             true,
+	DialogAutoComplete:              true,
+	HistoryShowTimes:                [HistoryTypeCount]int{HistoryShowDateTime, HistoryShowDateTime, HistoryShowDateTime},
+	HistoryDirsPrefixLen:            24,
+	SlideShowDelay:                  DefaultSlideShowDelay,
+	ImageOverlay:                    true,
+	TTYXKeys:                        true,
+	TTYXKeyList:                     DefaultTTYXKeyList,
+	ImageExternalTimeout:            DefaultImageExternalTimeout,
+	ImageDecoderPriority:            "",
+	ConfirmCopy:                     true,
+	ConfirmMove:                     true,
+	ConfirmDelete:                   true,
+	UseTrash:                        false,
+	ConfirmExit:                     true,
+	DeleteCancelFocused:             false,
+	AutoSaveSettings:                true,
+	AutoSaveDialogSettings:          true,
+	AutoSavePanelSettings:           true,
+	AutoSaveCurrentPanel:            true,
+	AutoSaveGUIWindow:               true,
+	DefaultFileOpMode:               0,
+	FileOpPathDisplay:               0,
+	ClipboardImageFormat:            "png",
+	ClipboardImagePNGCompression:    "default",
+	ClipboardImageJPEGQuality:       90,
+	ClipboardImagePrefix:            "screenshot",
+	ClipboardImageTemplate:          "!{prefix}!!{seq}!",
+	ClipboardImageDigitFormat:       "000",
+	CopyAccessRights:                0,
+	GuiFont:                         "",
+	GuiUseSystemMonospace:           true,
+	GuiFontSize:                     DefaultGuiFontSize(runtime.GOOS),
+	GuiCols:                         100,
+	GuiRows:                         30,
+	GuiPosX:                         0,
+	GuiPosY:                         0,
+	GuiPositionSaved:                false,
+	StartupMode:                     StartupModeAuto,
+	StartInCurrentFolder:            false,
+	GuiBackend:                      "",
+	TTYBackend:                      "",
+	ConsoleTitleTemplate:            "f4 %Ver %Platform %Admin - %State",
+	DisplayFullPathInTitle:          false,
+	UpdateChannel:                   0,
+	ProxyMode:                       netproxy.ModeSystem,
+	UpdateInterval:                  3, // Default to Weekly
+	EnforceColorCorrection:          true,
+	MenuLoopScroll:                  true,
+	HighlightPriority:               0,
+	LastUpdateCheck:                 0,
+	LastUpdateVersion:               "",
+	Compare:                         DefaultCompareOptions(),
+	Sync:                            DefaultSyncOptions(),
+
+	// Pictures and video open in their own viewers (issue #991).
+	ViewerOpenAsSupportedType: true,
 }
 
 var GetUserConfigIniPath = func() string {
@@ -712,7 +906,34 @@ func normalizeHighlighter(name string) string {
 	return "Chroma"
 }
 
+// colorStyleConfigured records whether any settings.ini that LoadConfig read
+// names a ColorStyle. It is the only way to tell "the user chose Radiola" from
+// "nobody chose anything, so Radiola is the fallback", which is what lets a
+// first start pick a style that suits the console (see app.firstRunColorStyle).
+var colorStyleConfigured atomic.Bool
+
+// ColorStyleConfigured reports whether the last LoadConfig found a ColorStyle
+// in a settings.ini. False means the value in App.ColorStyle is only the
+// built-in default.
+func ColorStyleConfigured() bool {
+	return colorStyleConfigured.Load()
+}
+
 func LoadConfig() {
+	merged := loadSettingsIni()
+	parseConfigInto(&App, merged)
+	colorStyleConfigured.Store(merged.GetString("Interface", "ColorStyle", "") != "")
+	// What was read takes effect only here. parseConfigInto itself touches
+	// nothing outside the struct it fills, which is what lets f4:config work
+	// out defaults and try an edit without disturbing the running f4.
+	applyForcedCodePages()
+	ApplyProxySettings()
+	SetImageDecoderPriorities(ParseImageDecoderPriorities(App.ImageDecoderPriority))
+}
+
+// loadSettingsIni merges every settings.ini f4 reads, the machine-wide one
+// first, so that the user's own file wins.
+func loadSettingsIni() *ini.File {
 	paths := GetConfigIniPaths()
 	merged := ini.New()
 
@@ -722,267 +943,321 @@ func LoadConfig() {
 			merged.Merge(ini.Load(path))
 		}
 	}
+	return merged
+}
 
-	App.ShowHiddenFiles = merged.GetString("Panel", "ShowHiddenFiles", "1") == "1"
-	App.ColorStyle = merged.GetString("Interface", "ColorStyle", "Radiola")
+// parseConfigInto reads merged into cfg. A field it does not read keeps the
+// value cfg already had.
+func parseConfigInto(cfg *F4Config, merged *ini.File) {
+	cfg.ShowHiddenFiles = merged.GetString("Panel", "ShowHiddenFiles", "1") == "1"
+	cfg.ColorStyle = merged.GetString("Interface", "ColorStyle", "Radiola")
 	// "Far2l Dark" was an approximate port of the far2l theme "default dark".
 	// It has been replaced by an exact one; carry existing configs over.
-	if strings.EqualFold(App.ColorStyle, "Far2l Dark") {
-		App.ColorStyle = "Default Dark"
+	if strings.EqualFold(cfg.ColorStyle, "Far2l Dark") {
+		cfg.ColorStyle = "Default Dark"
 	}
-	App.Language = merged.GetString("Interface", "Language", "en")
-	App.FallbackLanguage = merged.GetString("Interface", "FallbackLanguage", "")
-	App.HelpLanguage = merged.GetString("Interface", "HelpLanguage", "en")
-	App.UseLocalLanguageFiles = merged.GetString("Interface", "UseLocalLanguageFiles", "0") == "1"
-	App.ConsoleTitleTemplate = merged.GetString("Interface", "ConsoleTitleTemplate", "f4 %Ver %Platform %Admin - %State")
-	App.DisplayFullPathInTitle = merged.GetString("Interface", "DisplayFullPathInTitle", "0") == "1"
-	App.AlwaysShowMenuBar = merged.GetString("Interface", "AlwaysShowMenuBar", "0") == "1"
+	cfg.Language = merged.GetString("Interface", "Language", "en")
+	cfg.FallbackLanguage = merged.GetString("Interface", "FallbackLanguage", "")
+	cfg.HelpLanguage = merged.GetString("Interface", "HelpLanguage", "en")
+	cfg.UseLocalLanguageFiles = merged.GetString("Interface", "UseLocalLanguageFiles", "0") == "1"
+	cfg.ConsoleTitleTemplate = merged.GetString("Interface", "ConsoleTitleTemplate", "f4 %Ver %Platform %Admin - %State")
+	cfg.DisplayFullPathInTitle = merged.GetString("Interface", "DisplayFullPathInTitle", "0") == "1"
+	cfg.AlwaysShowMenuBar = merged.GetString("Interface", "AlwaysShowMenuBar", "0") == "1"
+	cfg.DialogOuterBorder = merged.GetString("Interface", "DialogOuterBorder", "0") == "1"
+	cfg.GlyphStyle = NormalizeGlyphStyle(merged.GetString("Interface", "GlyphStyle", GlyphStyleClassic))
 	switch strings.ToLower(merged.GetString("Interface", "WorkspaceTabMode", "always")) {
 	case "always":
-		App.WorkspaceTabMode = int(vtui.WorkspaceTabsAlways)
+		cfg.WorkspaceTabMode = int(vtui.WorkspaceTabsAlways)
 	case "ctrl":
-		App.WorkspaceTabMode = int(vtui.WorkspaceTabsOnCtrl)
+		cfg.WorkspaceTabMode = int(vtui.WorkspaceTabsOnCtrl)
 	case "never":
-		App.WorkspaceTabMode = int(vtui.WorkspaceTabsNever)
+		cfg.WorkspaceTabMode = int(vtui.WorkspaceTabsNever)
 	default:
-		App.WorkspaceTabMode = int(vtui.WorkspaceTabsMultiple)
+		cfg.WorkspaceTabMode = int(vtui.WorkspaceTabsMultiple)
 	}
-	App.WorkspaceTabsOverlay = merged.GetString("Interface", "WorkspaceTabsOverlay", "1") != "0"
-	App.CtrlTabShowsMenu = strings.EqualFold(merged.GetString("Interface", "CtrlTabMode", "direct"), "menu")
-	App.AltNumberSwitchesTabs = merged.GetString("Interface", "AltNumberSwitchesTabs", "1") != "0"
-	App.RestoreWorkspaceTabs = merged.GetString("Interface", "RestoreWorkspaceTabs", "1") != "0"
-	App.WorkspaceTabNumbering = ParseWorkspaceTabNumberingMode(merged.GetString("Interface", "WorkspaceTabNumbering", "always"))
-	App.MacKeyboard = ParseMacKeysMode(merged.GetString("Interface", "MacKeyboard", MacKeysAuto))
-	if App.ConsoleTitleTemplate == "f4 - %State" {
-		App.ConsoleTitleTemplate = "f4 %Ver %Platform %Admin - %State"
+	cfg.WorkspaceTabsOverlay = merged.GetString("Interface", "WorkspaceTabsOverlay", "1") != "0"
+	cfg.CtrlTabShowsMenu = strings.EqualFold(merged.GetString("Interface", "CtrlTabMode", "direct"), "menu")
+	cfg.AltNumberSwitchesTabs = merged.GetString("Interface", "AltNumberSwitchesTabs", "1") != "0"
+	cfg.RestoreWorkspaceTabs = merged.GetString("Interface", "RestoreWorkspaceTabs", "1") != "0"
+	cfg.WorkspaceTabNumbering = ParseWorkspaceTabNumberingMode(merged.GetString("Interface", "WorkspaceTabNumbering", "always"))
+	cfg.MacKeyboard = ParseMacKeysMode(merged.GetString("Interface", "MacKeyboard", MacKeysAuto))
+	if cfg.ConsoleTitleTemplate == "f4 - %State" {
+		cfg.ConsoleTitleTemplate = "f4 %Ver %Platform %Admin - %State"
 	}
-	App.ShowDirPrefix = merged.GetString("Panel", "ShowDirPrefix", "0") == "1"
-	App.ShowHighlightMarks = merged.GetString("Panel", "ShowHighlightMarks", "0") == "1"
-	App.SeparateFileExtensions = merged.GetString("Panel", "SeparateFileExtensions", "0") == "1"
+	cfg.ShowDirPrefix = merged.GetString("Panel", "ShowDirPrefix", "0") == "1"
+	cfg.ShowHighlightMarks = merged.GetString("Panel", "ShowHighlightMarks", "0") == "1"
+	cfg.ShowSymlinkArrow = merged.GetString("Panel", "ShowSymlinkArrow", "0") == "1"
+	cfg.SeparateFileExtensions = merged.GetString("Panel", "SeparateFileExtensions", "0") == "1"
 	if mode := merged.GetString("Panel", "PanelScrollbarMode", ""); mode != "" {
-		App.PanelScrollbarMode = ParsePanelScrollbarMode(mode)
+		cfg.PanelScrollbarMode = ParsePanelScrollbarMode(mode)
 	} else {
 		// Migration from the short-lived boolean setting. When neither setting
 		// exists, use the new default: the minimal scrollbar.
 		switch merged.GetString("Panel", "ShowPanelScrollbars", "") {
 		case "1":
-			App.PanelScrollbarMode = PanelScrollbarFull
+			cfg.PanelScrollbarMode = PanelScrollbarFull
 		case "0":
-			App.PanelScrollbarMode = PanelScrollbarOff
+			cfg.PanelScrollbarMode = PanelScrollbarOff
 		default:
-			App.PanelScrollbarMode = PanelScrollbarMinimal
+			cfg.PanelScrollbarMode = PanelScrollbarMinimal
 		}
 	}
-	App.ShowPanelFileInfo = merged.GetString("Panel", "ShowPanelFileInfo", "0") == "1"
-	App.SavePanelPaths = merged.GetString("Panel", "SavePanelPaths", "1") == "1"
-	App.DriveMenuOptions = ParseDriveMenuOptions(merged.GetString("Panel", "DriveMenuOptions", ""))
-	App.InfoPanelBytes = merged.GetString("Panel", "InfoPanelBytes", "0") == "1"
-	App.InfoPanelCPUGPU = merged.GetString("Panel", "InfoPanelCPUGPU", "0") == "1"
-	App.EscTogglePanels = merged.GetString("Panel", "EscTogglePanels", "1") == "1"
-	App.TerminalCtrlNWorkspace = merged.GetString("Panel", "TerminalCtrlNWorkspace", "1") == "1"
-	App.KeepTerminalCursor = merged.GetString("Panel", "KeepTerminalCursor", "0") == "1"
-	App.ConsoleMode = merged.GetString("Panel", "ConsoleMode", "own")
-	App.ConsoleOverlayUI = merged.GetString("Panel", "ConsoleOverlayUI", "0") == "1"
-	App.CommandLineAutoComplete = merged.GetString("Panel", "CommandLineAutoComplete", "1") == "1"
+	cfg.ShowPanelFileInfo = merged.GetString("Panel", "ShowPanelFileInfo", "0") == "1"
+	cfg.SavePanelPaths = merged.GetString("Panel", "SavePanelPaths", "1") == "1"
+	cfg.DriveMenuOptions = ParseDriveMenuOptions(merged.GetString("Panel", "DriveMenuOptions", ""))
+	cfg.InfoPanelBytes = merged.GetString("Panel", "InfoPanelBytes", "0") == "1"
+	cfg.InfoPanelCPUGPU = merged.GetString("Panel", "InfoPanelCPUGPU", "0") == "1"
+	cfg.TreeRootWholeVolume = merged.GetString("Panel", "TreeRootWholeVolume", "1") == "1"
+	cfg.EscTogglePanels = merged.GetString("Panel", "EscTogglePanels", "1") == "1"
+	cfg.TerminalCtrlNWorkspace = merged.GetString("Panel", "TerminalCtrlNWorkspace", "1") == "1"
+	cfg.KeepTerminalCursor = merged.GetString("Panel", "KeepTerminalCursor", "0") == "1"
+	cfg.CursorInsertShape = NormalizeCursorShape(merged.GetString("Panel", "CursorInsertShape", ""), "underline")
+	cfg.CursorOvertypeShape = NormalizeCursorShape(merged.GetString("Panel", "CursorOvertypeShape", ""), "block")
+	cfg.CursorBlink = merged.GetString("Panel", "CursorBlink", "1") != "0"
+	cfg.ConsoleMode = merged.GetString("Panel", "ConsoleMode", "own")
+	cfg.ConsoleOverlayUI = merged.GetString("Panel", "ConsoleOverlayUI", "0") == "1"
+	cfg.PluginDefaultHotkeysOff = strings.TrimSpace(merged.GetString("Panel", "PluginDefaultHotkeysOff", ""))
+	cfg.DragOutModifier = NormalizeDragOutModifier(merged.GetString("Panel", "DragOutModifier", ""))
+	cfg.DragOutHoldMs = NormalizeDragOutHoldMs(merged.GetString("Panel", "DragOutHoldMs", ""))
+	cfg.HostConsoleDefaultColors = merged.GetString("Panel", "HostConsoleDefaultColors", "0") == "1"
+	cfg.UseWinescape = merged.GetString("Panel", "UseWinescape", "1") != "0"
+	cfg.CommandLineAutoComplete = merged.GetString("Panel", "CommandLineAutoComplete", "1") == "1"
+	cfg.UsePromptFormat = merged.GetString("Panel", "UsePromptFormat", "0") == "1"
+	cfg.PromptFormat = merged.GetString("Panel", "PromptFormat", "$u@$n:$p$# ")
 	if mode := merged.GetString("Panel", "NavigationMode", ""); mode != "" {
-		App.NavigationMode = ParsePanelNavigationMode(mode)
+		cfg.NavigationMode = ParsePanelNavigationMode(mode)
 	} else if merged.GetString("Panel", "VimHotkeys", "0") == "1" {
 		// Migration from settings written before NavigationMode was introduced.
-		App.NavigationMode = NavigationVim
+		cfg.NavigationMode = NavigationVim
 	} else {
-		App.NavigationMode = NavigationClassic
+		cfg.NavigationMode = NavigationClassic
 	}
-	App.SearchCommandStayFocused = merged.GetString("Panel", "SearchCommandStayFocused", "0") == "1"
-	App.SyncPanelLoad = merged.GetString("Panel", "SyncPanelLoad", "0") == "1"
-	App.SearchExactOnHit = merged.GetString("Panel", "SearchExactOnHit", "0") == "1"
-	App.ApplyCommandParallelism = runtime.NumCPU()
-	_, _ = fmt.Sscanf(merged.GetString("Panel", "ApplyCommandParallelism", fmt.Sprintf("%d", runtime.NumCPU())), "%d", &App.ApplyCommandParallelism)
-	if App.ApplyCommandParallelism < 0 {
-		App.ApplyCommandParallelism = runtime.NumCPU()
+	cfg.PanelAutoFilter = merged.GetString("Panel", "PanelAutoFilter", "0") == "1"
+	cfg.PanelStrictAutoFilter = merged.GetString("Panel", "PanelStrictAutoFilter", "0") == "1"
+	cfg.PanelGroupSmallMiB = parseGroupLimit(merged.GetString("Panel", "PanelGroupSmallMiB", "5"))
+	cfg.PanelGroupMediumMiB = parseGroupLimit(merged.GetString("Panel", "PanelGroupMediumMiB", "10"))
+	cfg.PanelGroupLargeMiB = parseGroupLimit(merged.GetString("Panel", "PanelGroupLargeMiB", "100"))
+	if !ValidPanelGroupLimits(cfg.PanelGroupSmallMiB, cfg.PanelGroupMediumMiB, cfg.PanelGroupLargeMiB) {
+		cfg.PanelGroupSmallMiB, cfg.PanelGroupMediumMiB, cfg.PanelGroupLargeMiB = 5, 10, 100
 	}
-	_, _ = fmt.Sscanf(merged.GetString("Panel", "DefaultFileOpMode", "0"), "%d", &App.DefaultFileOpMode)
-	App.ConfirmCopy = merged.GetString("System", "ConfirmCopy", "1") == "1"
-	App.ConfirmMove = merged.GetString("System", "ConfirmMove", "1") == "1"
-	App.ConfirmDelete = merged.GetString("System", "ConfirmDelete", "1") == "1"
-	App.UseTrash = merged.GetString("System", "UseTrash", "0") == "1"
-	App.ConfirmExit = merged.GetString("System", "ConfirmExit", "1") == "1"
-	App.DeleteCancelFocused = merged.GetString("System", "DeleteCancelFocused", "0") == "1"
+	cfg.SearchCommandStayFocused = merged.GetString("Panel", "SearchCommandStayFocused", "0") == "1"
+	cfg.SyncPanelLoad = merged.GetString("Panel", "SyncPanelLoad", "0") == "1"
+	cfg.SearchExactOnHit = merged.GetString("Panel", "SearchExactOnHit", "0") == "1"
+	cfg.ApplyCommandParallelism = runtime.NumCPU()
+	_, _ = fmt.Sscanf(merged.GetString("Panel", "ApplyCommandParallelism", fmt.Sprintf("%d", runtime.NumCPU())), "%d", &cfg.ApplyCommandParallelism)
+	if cfg.ApplyCommandParallelism < 0 {
+		cfg.ApplyCommandParallelism = runtime.NumCPU()
+	}
+	_, _ = fmt.Sscanf(merged.GetString("Panel", "DefaultFileOpMode", "0"), "%d", &cfg.DefaultFileOpMode)
+	cfg.ConfirmCopy = merged.GetString("System", "ConfirmCopy", "1") == "1"
+	cfg.ConfirmMove = merged.GetString("System", "ConfirmMove", "1") == "1"
+	cfg.ConfirmDelete = merged.GetString("System", "ConfirmDelete", "1") == "1"
+	cfg.UseTrash = merged.GetString("System", "UseTrash", "0") == "1"
+	cfg.ConfirmExit = merged.GetString("System", "ConfirmExit", "1") == "1"
+	cfg.DeleteCancelFocused = merged.GetString("System", "DeleteCancelFocused", "0") == "1"
 	legacyAutoSave := merged.GetString("System", "AutoSaveSettings", "1") != "0"
-	App.AutoSaveSettings = legacyAutoSave
+	cfg.AutoSaveSettings = legacyAutoSave
 	autoSaveDefault := "0"
 	if legacyAutoSave {
 		autoSaveDefault = "1"
 	}
-	App.AutoSaveDialogSettings = merged.GetString("System", "AutoSaveDialogSettings", autoSaveDefault) != "0"
-	App.AutoSavePanelSettings = merged.GetString("System", "AutoSavePanelSettings", autoSaveDefault) != "0"
-	App.AutoSaveCurrentPanel = merged.GetString("System", "AutoSaveCurrentPanel", autoSaveDefault) != "0"
-	App.AutoSaveGUIWindow = merged.GetString("System", "AutoSaveGUIWindow", autoSaveDefault) != "0"
-	App.AnnounceKittyTerm = merged.GetString("System", "AnnounceKittyTerm", "1") == "1"
-	_, _ = fmt.Sscanf(merged.GetString("System", "MacroRecordFormat", "0"), "%d", &App.MacroRecordFormat)
-	App.SystemANSICodePage = parseForcedCodePage(merged.GetString("System", "ANSICodePage", ""))
-	App.SystemOEMCodePage = parseForcedCodePage(merged.GetString("System", "OEMCodePage", ""))
-	applyForcedCodePages()
-	_, _ = fmt.Sscanf(merged.GetString("Panel", "FileOpPathDisplay", "0"), "%d", &App.FileOpPathDisplay)
-	_, _ = fmt.Sscanf(merged.GetString("Panel", "CopyAccessRights", "0"), "%d", &App.CopyAccessRights)
-	if App.CopyAccessRights < 0 || App.CopyAccessRights > 2 {
-		App.CopyAccessRights = 0
+	cfg.AutoSaveDialogSettings = merged.GetString("System", "AutoSaveDialogSettings", autoSaveDefault) != "0"
+	cfg.AutoSavePanelSettings = merged.GetString("System", "AutoSavePanelSettings", autoSaveDefault) != "0"
+	cfg.AutoSaveCurrentPanel = merged.GetString("System", "AutoSaveCurrentPanel", autoSaveDefault) != "0"
+	cfg.AutoSaveGUIWindow = merged.GetString("System", "AutoSaveGUIWindow", autoSaveDefault) != "0"
+	cfg.AnnounceKittyTerm = merged.GetString("System", "AnnounceKittyTerm", "1") == "1"
+	_, _ = fmt.Sscanf(merged.GetString("System", "MacroRecordFormat", "0"), "%d", &cfg.MacroRecordFormat)
+	cfg.SystemANSICodePage = parseForcedCodePage(merged.GetString("System", "ANSICodePage", ""))
+	cfg.SystemOEMCodePage = parseForcedCodePage(merged.GetString("System", "OEMCodePage", ""))
+	_, _ = fmt.Sscanf(merged.GetString("Panel", "FileOpPathDisplay", "0"), "%d", &cfg.FileOpPathDisplay)
+	cfg.ClipboardImageFormat = merged.GetString("ClipboardImages", "Format", "png")
+	cfg.ClipboardImagePNGCompression = merged.GetString("ClipboardImages", "PNGCompression", "default")
+	cfg.ClipboardImageJPEGQuality = 90
+	_, _ = fmt.Sscanf(merged.GetString("ClipboardImages", "JPEGQuality", "90"), "%d", &cfg.ClipboardImageJPEGQuality)
+	cfg.ClipboardImagePrefix = merged.GetString("ClipboardImages", "Prefix", "screenshot")
+	cfg.ClipboardImageTemplate = merged.GetString("ClipboardImages", "Template", "!{prefix}!!{seq}!")
+	cfg.ClipboardImageDigitFormat = merged.GetString("ClipboardImages", "DigitFormat", "000")
+	_, _ = fmt.Sscanf(merged.GetString("Panel", "CopyAccessRights", "0"), "%d", &cfg.CopyAccessRights)
+	if cfg.CopyAccessRights < 0 || cfg.CopyAccessRights > 2 {
+		cfg.CopyAccessRights = 0
 	}
-	App.GuiFont = merged.GetString("Appearance", "GuiFont", "")
-	App.GuiUseSystemMonospace = merged.GetString("Appearance", "GuiUseSystemMonospace", "1") == "1"
+	cfg.GuiFont = merged.GetString("Appearance", "GuiFont", "")
+	cfg.GuiUseSystemMonospace = merged.GetString("Appearance", "GuiUseSystemMonospace", "1") == "1"
 	defaultFontSize := DefaultGuiFontSize(runtime.GOOS)
-	_, _ = fmt.Sscanf(merged.GetString("Appearance", "GuiFontSize", fmt.Sprintf("%d", defaultFontSize)), "%d", &App.GuiFontSize)
-	if App.GuiFontSize <= 0 {
-		App.GuiFontSize = defaultFontSize
+	_, _ = fmt.Sscanf(merged.GetString("Appearance", "GuiFontSize", fmt.Sprintf("%d", defaultFontSize)), "%d", &cfg.GuiFontSize)
+	if cfg.GuiFontSize <= 0 {
+		cfg.GuiFontSize = defaultFontSize
 	}
-	_, _ = fmt.Sscanf(merged.GetString("Appearance", "GuiCols", "100"), "%d", &App.GuiCols)
-	if App.GuiCols <= 0 {
-		App.GuiCols = 100
+	_, _ = fmt.Sscanf(merged.GetString("Appearance", "GuiCols", "100"), "%d", &cfg.GuiCols)
+	if cfg.GuiCols <= 0 {
+		cfg.GuiCols = 100
 	}
-	_, _ = fmt.Sscanf(merged.GetString("Appearance", "GuiRows", "30"), "%d", &App.GuiRows)
-	if App.GuiRows <= 0 {
-		App.GuiRows = 30
+	_, _ = fmt.Sscanf(merged.GetString("Appearance", "GuiRows", "30"), "%d", &cfg.GuiRows)
+	if cfg.GuiRows <= 0 {
+		cfg.GuiRows = 30
 	}
 	guiPosX, xErr := strconv.Atoi(merged.GetString("Appearance", "GuiPosX", ""))
 	guiPosY, yErr := strconv.Atoi(merged.GetString("Appearance", "GuiPosY", ""))
-	App.GuiPositionSaved = xErr == nil && yErr == nil
-	if App.GuiPositionSaved {
-		App.GuiPosX = guiPosX
-		App.GuiPosY = guiPosY
+	cfg.GuiPositionSaved = xErr == nil && yErr == nil
+	if cfg.GuiPositionSaved {
+		cfg.GuiPosX = guiPosX
+		cfg.GuiPosY = guiPosY
 	} else {
-		App.GuiPosX = 0
-		App.GuiPosY = 0
+		cfg.GuiPosX = 0
+		cfg.GuiPosY = 0
 	}
-	App.StartupMode = ParseStartupMode(merged.GetString("Startup", "Mode", "auto"))
-	App.GuiBackend = NormalizeStartupGuiBackend(merged.GetString("Startup", "GuiBackend", ""))
-	App.TTYBackend = NormalizeStartupTTYBackend(merged.GetString("Startup", "TTYBackend", ""))
-	App.EnforceColorCorrection = merged.GetString("Dialogs", "EnforceColorCorrection", "1") == "1"
-	_, _ = fmt.Sscanf(merged.GetString("Appearance", "HighlightPriority", "0"), "%d", &App.HighlightPriority)
-	_, _ = fmt.Sscanf(merged.GetString("Update", "Channel", "0"), "%d", &App.UpdateChannel)
-	_, _ = fmt.Sscanf(merged.GetString("Update", "Interval", "3"), "%d", &App.UpdateInterval)
-	_, _ = fmt.Sscanf(merged.GetString("Update", "LastCheck", "0"), "%d", &App.LastUpdateCheck)
-	App.LastUpdateVersion = merged.GetString("Update", "LastVersion", "")
+	cfg.StartupMode = ParseStartupMode(merged.GetString("Startup", "Mode", "auto"))
+	cfg.GuiBackend = NormalizeStartupGuiBackend(merged.GetString("Startup", "GuiBackend", ""))
+	cfg.TTYBackend = NormalizeStartupTTYBackend(merged.GetString("Startup", "TTYBackend", ""))
+	cfg.StartInCurrentFolder = merged.GetString("Startup", "StartInCurrentFolder", "0") == "1"
+	cfg.EnforceColorCorrection = merged.GetString("Dialogs", "EnforceColorCorrection", "1") == "1"
+	cfg.MenuLoopScroll = merged.GetString("VMenu", "MenuStopWrapOnEdge", "1") == "1"
+	_, _ = fmt.Sscanf(merged.GetString("Appearance", "HighlightPriority", "0"), "%d", &cfg.HighlightPriority)
+	_, _ = fmt.Sscanf(merged.GetString("Update", "Channel", "0"), "%d", &cfg.UpdateChannel)
+	_, _ = fmt.Sscanf(merged.GetString("Update", "Interval", "3"), "%d", &cfg.UpdateInterval)
+	_, _ = fmt.Sscanf(merged.GetString("Update", "LastCheck", "0"), "%d", &cfg.LastUpdateCheck)
+	cfg.LastUpdateVersion = merged.GetString("Update", "LastVersion", "")
 
 	// The proxy password is stored obfuscated, exactly like netfox stores
 	// site passwords; a hand-written plain one keeps working.
-	_, _ = fmt.Sscanf(merged.GetString("Proxy", "Mode", "1"), "%d", &App.ProxyMode)
-	App.ProxyHost = merged.GetString("Proxy", "Host", "")
-	App.ProxyPort = merged.GetString("Proxy", "Port", "")
-	App.ProxyUser = merged.GetString("Proxy", "User", "")
-	App.ProxyPass = netproxy.DecodeSecret(merged.GetString("Proxy", "Password", ""))
-	ApplyProxySettings()
+	_, _ = fmt.Sscanf(merged.GetString("Proxy", "Mode", "1"), "%d", &cfg.ProxyMode)
+	cfg.ProxyHost = merged.GetString("Proxy", "Host", "")
+	cfg.ProxyPort = merged.GetString("Proxy", "Port", "")
+	cfg.ProxyUser = merged.GetString("Proxy", "User", "")
+	cfg.ProxyPass = netproxy.DecodeSecret(merged.GetString("Proxy", "Password", ""))
 
-	App.EditorAutoComplete = merged.GetString("Editor", "AutoComplete", "1") == "1"
-	App.EditorAutoCompleteMask = merged.GetString("Editor", "AutoCompleteMask", "*.go;*.c;*.cpp;*.h;*.hpp;*.py;*.js;*.ts;*.rs;*.java;*.sh;*.txt;*.md;*.html;*.css;*.json")
+	cfg.EditorAutoComplete = merged.GetString("Editor", "AutoComplete", "1") == "1"
+	cfg.EditorAutoCompleteMask = merged.GetString("Editor", "AutoCompleteMask", "*.go;*.c;*.cpp;*.h;*.hpp;*.py;*.js;*.ts;*.rs;*.java;*.sh;*.txt;*.md;*.html;*.css;*.json")
+	cfg.ArchiveTarIndexCache = merged.GetString("Panel", "ArchiveTarIndexCache", "1") == "1"
+	cfg.WatchDirectories = merged.GetString("Panel", "WatchDirectories", "1") == "1"
+	cfg.ArchiveUseRatarmountIfAvailable = merged.GetString("Panel", "ArchiveUseRatarmountIfAvailable", "0") == "1"
+	cfg.ArchiveEnterExcludeMask = merged.GetString("Panel", "ArchiveEnterExcludeMask", "*.docx,*.docm,*.dotx,*.dotm,*.xlsx,*.xlsm,*.xltx,*.xltm,*.xlsb,*.xlam,*.pptx,*.pptm,*.potx,*.potm,*.ppam,*.ppsx,*.ppsm,*.sldx,*.sldm,*.thmx,*.odt,*.ods,*.odp,*.epub")
+	cfg.ObserverEnterExcludeMask = merged.GetString("Panel", "ObserverEnterExcludeMask", "")
 
-	App.EditorExpandTabs = 0
-	_, _ = fmt.Sscanf(merged.GetString("Editor", "ExpandTabs", "0"), "%d", &App.EditorExpandTabs)
-	App.EditorAutoIndent = merged.GetString("Editor", "AutoIndent", "1") == "1"
-	App.EditorCursorBeyondEOL = merged.GetString("Editor", "CursorBeyondEOL", "0") == "1"
-	App.EditorUseEditorConfig = merged.GetString("Editor", "UseEditorConfig", "1") == "1"
-	App.EditorCrosshair = merged.GetString("Editor", "Crosshair", "0") == "1"
-	App.EditorMarkOccurrences = merged.GetString("Editor", "MarkOccurrences", "1") == "1"
-	App.EditorAutodetectCodePage = merged.GetString("Editor", "AutodetectCodePage", "1") == "1"
-	App.EditorMemoryMap = merged.GetString("Editor", "MemoryMap", "1") == "1"
-	App.EditorHighlighter = normalizeHighlighter(merged.GetString("Editor", "Highlighter", "Chroma"))
-	App.EditorSyntaxAnimation = merged.GetString("Editor", "SyntaxAnimation", "0") == "1"
-	App.EditorColorerScheme = merged.GetString("Editor", "ColorerScheme", "")
-	App.EditorColorerBackground = merged.GetString("Editor", "ColorerBackground", "1") == "1"
-	App.EditorColorerSyntax = merged.GetString("Editor", "ColorerSyntax", "1") == "1"
-	App.EditorColorerCatalog = merged.GetString("Editor", "ColorerCatalog", "")
-	App.EditorCrossMode = ColorerCrossBoth
-	_, _ = fmt.Sscanf(merged.GetString("Editor", "CrossMode", "3"), "%d", &App.EditorCrossMode)
-	if App.EditorCrossMode < ColorerCrossOff || App.EditorCrossMode > ColorerCrossBoth {
-		App.EditorCrossMode = ColorerCrossBoth
+	cfg.EditorExpandTabs = 0
+	_, _ = fmt.Sscanf(merged.GetString("Editor", "ExpandTabs", "0"), "%d", &cfg.EditorExpandTabs)
+	cfg.EditorAutoIndent = merged.GetString("Editor", "AutoIndent", "1") == "1"
+	cfg.EditorCursorBeyondEOL = merged.GetString("Editor", "CursorBeyondEOL", "0") == "1"
+	cfg.EditorUseEditorConfig = merged.GetString("Editor", "UseEditorConfig", "1") == "1"
+	cfg.EditorCrosshair = merged.GetString("Editor", "Crosshair", "0") == "1"
+	cfg.EditorShowControlChars = merged.GetString("Editor", "ShowControlChars", "0") == "1"
+	cfg.EditorMarkOccurrences = merged.GetString("Editor", "MarkOccurrences", "1") == "1"
+	cfg.EditorAutodetectCodePage = merged.GetString("Editor", "AutodetectCodePage", "1") == "1"
+	cfg.EditorMemoryMap = merged.GetString("Editor", "MemoryMap", "1") == "1"
+	cfg.EditorHighlighter = normalizeHighlighter(merged.GetString("Editor", "Highlighter", "Chroma"))
+	cfg.EditorSyntaxAnimation = merged.GetString("Editor", "SyntaxAnimation", "0") == "1"
+	cfg.EditorColorerScheme = merged.GetString("Editor", "ColorerScheme", "")
+	cfg.EditorColorerBackground = merged.GetString("Editor", "ColorerBackground", "1") == "1"
+	cfg.EditorColorerSyntax = merged.GetString("Editor", "ColorerSyntax", "1") == "1"
+	cfg.EditorColorerCatalog = merged.GetString("Editor", "ColorerCatalog", "")
+	cfg.EditorColorerPairs = merged.GetString("Editor", "ColorerPairs", "1") == "1"
+	cfg.EditorColorerOldOutline = merged.GetString("Editor", "ColorerOldOutline", "1") == "1"
+	cfg.EditorColorerUserHrc = merged.GetString("Editor", "ColorerUserHrc", "")
+	cfg.EditorColorerUserHrd = merged.GetString("Editor", "ColorerUserHrd", "")
+	cfg.EditorColorerHrcSettings = merged.GetString("Editor", "ColorerHrcSettings", "")
+	cfg.EditorCrossMode = ColorerCrossBoth
+	_, _ = fmt.Sscanf(merged.GetString("Editor", "CrossMode", "3"), "%d", &cfg.EditorCrossMode)
+	if cfg.EditorCrossMode < ColorerCrossOff || cfg.EditorCrossMode > ColorerCrossScheme {
+		cfg.EditorCrossMode = ColorerCrossBoth
 	}
-	_, _ = fmt.Sscanf(merged.GetString("Editor", "DefaultCodePage", "65001"), "%d", &App.EditorDefaultCodePage)
-	App.ViewerAutodetectCodePage = merged.GetString("Viewer", "AutodetectCodePage", "1") == "1"
-	_, _ = fmt.Sscanf(merged.GetString("Viewer", "DefaultCodePage", "65001"), "%d", &App.ViewerDefaultCodePage)
+	cfg.ViewerHighlighting = ViewerHighlightOff
+	_, _ = fmt.Sscanf(merged.GetString("Viewer", "Highlighting", "0"), "%d", &cfg.ViewerHighlighting)
+	if cfg.ViewerHighlighting < ViewerHighlightOff || cfg.ViewerHighlighting > ViewerHighlightAll {
+		cfg.ViewerHighlighting = ViewerHighlightOff
+	}
+	_, _ = fmt.Sscanf(merged.GetString("Editor", "DefaultCodePage", "65001"), "%d", &cfg.EditorDefaultCodePage)
+	cfg.ViewerAutodetectCodePage = merged.GetString("Viewer", "AutodetectCodePage", "1") == "1"
+	_, _ = fmt.Sscanf(merged.GetString("Viewer", "DefaultCodePage", "65001"), "%d", &cfg.ViewerDefaultCodePage)
+	cfg.ViewerOpenAsSupportedType = merged.GetString("Viewer", "OpenAsSupportedType", "1") == "1"
 
 	// [Mouse] — wheel scroll speed (lines per notch), 0 = system default.
-	App.WheelPanelUp = LoadWheelLines(merged, "PanelUp")
-	App.WheelPanelDown = LoadWheelLines(merged, "PanelDown")
-	App.WheelEditorUp = LoadWheelLines(merged, "EditorUp")
-	App.WheelEditorDown = LoadWheelLines(merged, "EditorDown")
-	App.WheelViewerUp = LoadWheelLines(merged, "ViewerUp")
-	App.WheelViewerDown = LoadWheelLines(merged, "ViewerDown")
-	App.WheelMenuUp = LoadWheelLines(merged, "MenuUp")
-	App.WheelMenuDown = LoadWheelLines(merged, "MenuDown")
-	App.WheelTableUp = LoadWheelLines(merged, "TableUp")
-	App.WheelTableDown = LoadWheelLines(merged, "TableDown")
+	cfg.WheelPanelUp = LoadWheelLines(merged, "PanelUp")
+	cfg.WheelPanelDown = LoadWheelLines(merged, "PanelDown")
+	cfg.WheelEditorUp = LoadWheelLines(merged, "EditorUp")
+	cfg.WheelEditorDown = LoadWheelLines(merged, "EditorDown")
+	cfg.WheelViewerUp = LoadWheelLines(merged, "ViewerUp")
+	cfg.WheelViewerDown = LoadWheelLines(merged, "ViewerDown")
+	cfg.WheelMenuUp = LoadWheelLines(merged, "MenuUp")
+	cfg.WheelMenuDown = LoadWheelLines(merged, "MenuDown")
+	cfg.WheelTableUp = LoadWheelLines(merged, "TableUp")
+	cfg.WheelTableDown = LoadWheelLines(merged, "TableDown")
+	// [Mouse] — the strength of the fast-spin ramp; its shape is tuned in
+	// code (see internal/wheel), and the value is clamped into its range.
+	cfg.WheelAcceleration = loadWheelInt(merged, "Acceleration", WheelAccelerationDefault, WheelAccelerationMin, WheelAccelerationMax)
 
 	// [PathHints]
-	App.PathHintTimeout = 2
-	_, _ = fmt.Sscanf(merged.GetString("PathHints", "Timeout", "2"), "%d", &App.PathHintTimeout)
-	if App.PathHintTimeout < 1 {
-		App.PathHintTimeout = 1
+	cfg.PathHintTimeout = 2
+	_, _ = fmt.Sscanf(merged.GetString("PathHints", "Timeout", "2"), "%d", &cfg.PathHintTimeout)
+	if cfg.PathHintTimeout < 1 {
+		cfg.PathHintTimeout = 1
 	}
-	App.PathHintFullPath = merged.GetString("PathHints", "FullPath", "0") == "1"
-	_, _ = fmt.Sscanf(merged.GetString("PathHints", "Source", "2"), "%d", &App.PathHintSource)
-	App.PathHintMaxVisible = 5
-	_, _ = fmt.Sscanf(merged.GetString("PathHints", "MaxVisible", "5"), "%d", &App.PathHintMaxVisible)
-	if App.PathHintMaxVisible < 1 {
-		App.PathHintMaxVisible = 1
+	cfg.PathHintFullPath = merged.GetString("PathHints", "FullPath", "0") == "1"
+	_, _ = fmt.Sscanf(merged.GetString("PathHints", "Source", "2"), "%d", &cfg.PathHintSource)
+	cfg.PathHintMaxVisible = 5
+	_, _ = fmt.Sscanf(merged.GetString("PathHints", "MaxVisible", "5"), "%d", &cfg.PathHintMaxVisible)
+	if cfg.PathHintMaxVisible < 1 {
+		cfg.PathHintMaxVisible = 1
 	}
-	App.PathHintPerCategory = merged.GetString("PathHints", "PerCategory", "1") == "1"
-	App.DialogAutoComplete = merged.GetString("PathHints", "DialogAutoComplete", "1") == "1"
-	App.HistoryShowTimes = parseHistoryShowTimes(merged.GetString("History", "ShowTimes", "0,0,0"))
+	cfg.PathHintPerCategory = merged.GetString("PathHints", "PerCategory", "1") == "1"
+	cfg.DialogAutoComplete = merged.GetString("PathHints", "DialogAutoComplete", "1") == "1"
+	cfg.HistoryShowTimes = parseHistoryShowTimes(merged.GetString("History", "ShowTimes", "0,0,0"))
 	if configured := merged.GetString("History", "HistoryShowTimes", ""); configured != "" {
-		App.HistoryShowTimes = parseHistoryShowTimes(configured)
+		cfg.HistoryShowTimes = parseHistoryShowTimes(configured)
 	}
-	App.HistoryDirsPrefixLen = 24
-	_, _ = fmt.Sscanf(merged.GetString("History", "DirsPrefixLen", "24"), "%d", &App.HistoryDirsPrefixLen)
+	cfg.HistoryDirsPrefixLen = 24
+	_, _ = fmt.Sscanf(merged.GetString("History", "DirsPrefixLen", "24"), "%d", &cfg.HistoryDirsPrefixLen)
 	if configured := merged.GetString("History", "HistoryDirsPrefixLen", ""); configured != "" {
-		_, _ = fmt.Sscanf(configured, "%d", &App.HistoryDirsPrefixLen)
+		_, _ = fmt.Sscanf(configured, "%d", &cfg.HistoryDirsPrefixLen)
 	}
-	if App.HistoryDirsPrefixLen < 4 {
-		App.HistoryDirsPrefixLen = 4
+	if cfg.HistoryDirsPrefixLen < 4 {
+		cfg.HistoryDirsPrefixLen = 4
 	}
-	App.SlideShowDelay = DefaultSlideShowDelay
-	_, _ = fmt.Sscanf(merged.GetString("Images", "SlideShowDelay", "5"), "%d", &App.SlideShowDelay)
-	if App.SlideShowDelay <= 0 {
-		App.SlideShowDelay = DefaultSlideShowDelay
+	cfg.SlideShowDelay = DefaultSlideShowDelay
+	_, _ = fmt.Sscanf(merged.GetString("Images", "SlideShowDelay", "5"), "%d", &cfg.SlideShowDelay)
+	if cfg.SlideShowDelay <= 0 {
+		cfg.SlideShowDelay = DefaultSlideShowDelay
 	}
-	App.ImageExternalTimeout = DefaultImageExternalTimeout
-	_, _ = fmt.Sscanf(merged.GetString("Images", "ExternalTimeout", "20"), "%d", &App.ImageExternalTimeout)
-	if App.ImageExternalTimeout <= 0 {
-		App.ImageExternalTimeout = DefaultImageExternalTimeout
+	cfg.ImageExternalTimeout = DefaultImageExternalTimeout
+	_, _ = fmt.Sscanf(merged.GetString("Images", "ExternalTimeout", "20"), "%d", &cfg.ImageExternalTimeout)
+	if cfg.ImageExternalTimeout <= 0 {
+		cfg.ImageExternalTimeout = DefaultImageExternalTimeout
 	}
-	App.ImageOverlay = OverlayEnabled(merged.GetString)
-	App.VideoPauseOnFocusLoss = merged.GetString("Video", "PauseOnFocusLoss", "0") == "1"
-	App.ImageX11OffsetX, App.ImageX11OffsetY = 0, 0
-	_, _ = fmt.Sscanf(merged.GetString("Images", "X11OverlayOffsetX", "0"), "%d", &App.ImageX11OffsetX)
-	_, _ = fmt.Sscanf(merged.GetString("Images", "X11OverlayOffsetY", "0"), "%d", &App.ImageX11OffsetY)
-	App.TTYXKeys = merged.GetString("TTYXi", "Keys", "1") == "1"
-	App.TTYXKeyList = merged.GetString("TTYXi", "KeyList", DefaultTTYXKeyList)
-	App.Compare = LoadCompareOptions(merged)
-	App.ImageDecoderPriority = merged.GetString("Images", "DecoderPriority", "")
-	SetImageDecoderPriorities(ParseImageDecoderPriorities(App.ImageDecoderPriority))
-	App.UseExternalEditor = merged.GetString("Editor", "UseExternalEditor", "0") == "1"
-	App.ExternalEditorCommand = merged.GetString("Editor", "ExternalEditorCommand", "")
-	App.ExternalEditorConsole = merged.GetString("Editor", "ExternalEditorCommandConsole", App.ExternalEditorCommand)
-	App.ExternalEditorGUI = merged.GetString("Editor", "ExternalEditorCommandGUI", App.ExternalEditorCommand)
+	cfg.ImageOverlay = OverlayEnabled(merged.GetString)
+	cfg.VideoPauseOnFocusLoss = merged.GetString("Video", "PauseOnFocusLoss", "0") == "1"
+	cfg.ImageX11OffsetX, cfg.ImageX11OffsetY = 0, 0
+	_, _ = fmt.Sscanf(merged.GetString("Images", "X11OverlayOffsetX", "0"), "%d", &cfg.ImageX11OffsetX)
+	_, _ = fmt.Sscanf(merged.GetString("Images", "X11OverlayOffsetY", "0"), "%d", &cfg.ImageX11OffsetY)
+	cfg.TTYXKeys = merged.GetString("TTYXi", "Keys", "1") == "1"
+	cfg.TTYXKeyList = merged.GetString("TTYXi", "KeyList", DefaultTTYXKeyList)
+	cfg.Compare = LoadCompareOptions(merged)
+	cfg.Sync = LoadSyncOptions(merged)
+	cfg.ImageDecoderPriority = merged.GetString("Images", "DecoderPriority", "")
+	cfg.UseExternalEditor = merged.GetString("Editor", "UseExternalEditor", "0") == "1"
+	cfg.ExternalEditorCommand = merged.GetString("Editor", "ExternalEditorCommand", "")
+	cfg.ExternalEditorConsole = merged.GetString("Editor", "ExternalEditorCommandConsole", cfg.ExternalEditorCommand)
+	cfg.ExternalEditorGUI = merged.GetString("Editor", "ExternalEditorCommandGUI", cfg.ExternalEditorCommand)
 	plugStr := merged.GetString("Plugins", "List", "")
 	if plugStr != "" {
-		App.RegisteredPlugins = strings.Split(plugStr, "|")
+		cfg.RegisteredPlugins = strings.Split(plugStr, "|")
 	}
-	App.EditorTabSize = 4
-	_, _ = fmt.Sscanf(merged.GetString("Editor", "TabSize", "4"), "%d", &App.EditorTabSize)
+	cfg.EditorTabSize = 4
+	_, _ = fmt.Sscanf(merged.GetString("Editor", "TabSize", "4"), "%d", &cfg.EditorTabSize)
 
 	// [Layout] — three known keys plus round-trip storage for anything else.
-	_, _ = fmt.Sscanf(merged.GetString("Layout", "WidthDecrement", "0"), "%d", &App.WidthDecrement)
-	_, _ = fmt.Sscanf(merged.GetString("Layout", "LeftHeightDecrement", "0"), "%d", &App.LeftHeightDecrement)
-	_, _ = fmt.Sscanf(merged.GetString("Layout", "RightHeightDecrement", "0"), "%d", &App.RightHeightDecrement)
-	App.LayoutExtras = nil
+	_, _ = fmt.Sscanf(merged.GetString("Layout", "WidthDecrement", "0"), "%d", &cfg.WidthDecrement)
+	_, _ = fmt.Sscanf(merged.GetString("Layout", "LeftHeightDecrement", "0"), "%d", &cfg.LeftHeightDecrement)
+	_, _ = fmt.Sscanf(merged.GetString("Layout", "RightHeightDecrement", "0"), "%d", &cfg.RightHeightDecrement)
+	cfg.LayoutExtras = nil
 	if layout, ok := merged.Sections()["Layout"]; ok {
 		for k, v := range layout {
 			switch k {
 			case "WidthDecrement", "LeftHeightDecrement", "RightHeightDecrement":
 				continue
 			}
-			if App.LayoutExtras == nil {
-				App.LayoutExtras = make(map[string]string)
+			if cfg.LayoutExtras == nil {
+				cfg.LayoutExtras = make(map[string]string)
 			}
-			App.LayoutExtras[k] = v
+			cfg.LayoutExtras[k] = v
 		}
 	}
 }
@@ -1047,6 +1322,8 @@ func SerializeSettingsConfig(cfg F4Config) []byte {
 	fmt.Fprintf(&sb, "ConsoleTitleTemplate = %s\n", cfg.ConsoleTitleTemplate)
 	fmt.Fprintf(&sb, "DisplayFullPathInTitle = %d\n", map[bool]int{true: 1, false: 0}[cfg.DisplayFullPathInTitle])
 	fmt.Fprintf(&sb, "AlwaysShowMenuBar = %d\n", map[bool]int{true: 1, false: 0}[cfg.AlwaysShowMenuBar])
+	fmt.Fprintf(&sb, "DialogOuterBorder = %d\n", map[bool]int{true: 1, false: 0}[cfg.DialogOuterBorder])
+	fmt.Fprintf(&sb, "GlyphStyle = %s\n", NormalizeGlyphStyle(cfg.GlyphStyle))
 	workspaceTabMode := "multiple"
 	if cfg.WorkspaceTabMode == int(vtui.WorkspaceTabsAlways) {
 		workspaceTabMode = "always"
@@ -1067,9 +1344,15 @@ func SerializeSettingsConfig(cfg F4Config) []byte {
 	fmt.Fprintf(&sb, "WorkspaceTabNumbering = %s\n", cfg.WorkspaceTabNumbering.String())
 	fmt.Fprintf(&sb, "MacKeyboard = %s\n\n", ParseMacKeysMode(cfg.MacKeyboard))
 	sb.WriteString("[Panel]\n")
+	fmt.Fprintf(&sb, "ArchiveEnterExcludeMask = %s\n", cfg.ArchiveEnterExcludeMask)
+	fmt.Fprintf(&sb, "ObserverEnterExcludeMask = %s\n", cfg.ObserverEnterExcludeMask)
+	fmt.Fprintf(&sb, "ArchiveTarIndexCache = %d\n", map[bool]int{true: 1, false: 0}[cfg.ArchiveTarIndexCache])
+	fmt.Fprintf(&sb, "WatchDirectories = %d\n", map[bool]int{true: 1, false: 0}[cfg.WatchDirectories])
+	fmt.Fprintf(&sb, "ArchiveUseRatarmountIfAvailable = %d\n", map[bool]int{true: 1, false: 0}[cfg.ArchiveUseRatarmountIfAvailable])
 	fmt.Fprintf(&sb, "ShowHiddenFiles = %d\n", map[bool]int{true: 1, false: 0}[cfg.ShowHiddenFiles])
 	fmt.Fprintf(&sb, "ShowDirPrefix = %d\n", map[bool]int{true: 1, false: 0}[cfg.ShowDirPrefix])
 	fmt.Fprintf(&sb, "ShowHighlightMarks = %d\n", map[bool]int{true: 1, false: 0}[cfg.ShowHighlightMarks])
+	fmt.Fprintf(&sb, "ShowSymlinkArrow = %d\n", map[bool]int{true: 1, false: 0}[cfg.ShowSymlinkArrow])
 	fmt.Fprintf(&sb, "SeparateFileExtensions = %d\n", map[bool]int{true: 1, false: 0}[cfg.SeparateFileExtensions])
 	fmt.Fprintf(&sb, "PanelScrollbarMode = %s\n", cfg.PanelScrollbarMode.String())
 	fmt.Fprintf(&sb, "ShowPanelFileInfo = %d\n", map[bool]int{true: 1, false: 0}[cfg.ShowPanelFileInfo])
@@ -1077,13 +1360,27 @@ func SerializeSettingsConfig(cfg F4Config) []byte {
 	fmt.Fprintf(&sb, "DriveMenuOptions = %d\n", cfg.DriveMenuOptions)
 	fmt.Fprintf(&sb, "InfoPanelBytes = %d\n", map[bool]int{true: 1, false: 0}[cfg.InfoPanelBytes])
 	fmt.Fprintf(&sb, "InfoPanelCPUGPU = %d\n", map[bool]int{true: 1, false: 0}[cfg.InfoPanelCPUGPU])
+	fmt.Fprintf(&sb, "TreeRootWholeVolume = %d\n", map[bool]int{true: 1, false: 0}[cfg.TreeRootWholeVolume])
 	fmt.Fprintf(&sb, "EscTogglePanels = %d\n", map[bool]int{true: 1, false: 0}[cfg.EscTogglePanels])
 	fmt.Fprintf(&sb, "TerminalCtrlNWorkspace = %d\n", map[bool]int{true: 1, false: 0}[cfg.TerminalCtrlNWorkspace])
 	fmt.Fprintf(&sb, "KeepTerminalCursor = %d\n", map[bool]int{true: 1, false: 0}[cfg.KeepTerminalCursor])
+	fmt.Fprintf(&sb, "CursorInsertShape = %s\n", NormalizeCursorShape(cfg.CursorInsertShape, "underline"))
+	fmt.Fprintf(&sb, "CursorOvertypeShape = %s\n", NormalizeCursorShape(cfg.CursorOvertypeShape, "block"))
+	fmt.Fprintf(&sb, "CursorBlink = %d\n", map[bool]int{true: 1, false: 0}[cfg.CursorBlink])
 	fmt.Fprintf(&sb, "ConsoleMode = %s\n", cfg.ConsoleMode)
+	fmt.Fprintf(&sb, "PluginDefaultHotkeysOff = %s\n", strings.TrimSpace(cfg.PluginDefaultHotkeysOff))
+	fmt.Fprintf(&sb, "DragOutModifier = %s\n", NormalizeDragOutModifier(cfg.DragOutModifier))
+	fmt.Fprintf(&sb, "DragOutHoldMs = %d\n", clampDragOutHoldMs(cfg.DragOutHoldMs))
 	fmt.Fprintf(&sb, "ConsoleOverlayUI = %d\n", map[bool]int{true: 1, false: 0}[cfg.ConsoleOverlayUI])
+	fmt.Fprintf(&sb, "HostConsoleDefaultColors = %d\n", map[bool]int{true: 1, false: 0}[cfg.HostConsoleDefaultColors])
+	fmt.Fprintf(&sb, "UseWinescape = %d\n", map[bool]int{true: 1, false: 0}[cfg.UseWinescape])
 	fmt.Fprintf(&sb, "CommandLineAutoComplete = %d\n", map[bool]int{true: 1, false: 0}[cfg.CommandLineAutoComplete])
+	fmt.Fprintf(&sb, "UsePromptFormat = %d\n", map[bool]int{true: 1, false: 0}[cfg.UsePromptFormat])
+	fmt.Fprintf(&sb, "PromptFormat = %s\n", cfg.PromptFormat)
 	fmt.Fprintf(&sb, "NavigationMode = %s\n", cfg.NavigationMode.String())
+	fmt.Fprintf(&sb, "PanelAutoFilter = %d\n", map[bool]int{true: 1, false: 0}[cfg.PanelAutoFilter])
+	fmt.Fprintf(&sb, "PanelStrictAutoFilter = %d\n", map[bool]int{true: 1, false: 0}[cfg.PanelStrictAutoFilter])
+	fmt.Fprintf(&sb, "PanelGroupSmallMiB = %d\nPanelGroupMediumMiB = %d\nPanelGroupLargeMiB = %d\n", cfg.PanelGroupSmallMiB, cfg.PanelGroupMediumMiB, cfg.PanelGroupLargeMiB)
 	fmt.Fprintf(&sb, "SearchCommandStayFocused = %d\n", map[bool]int{true: 1, false: 0}[cfg.SearchCommandStayFocused])
 	// Keep the legacy key synchronized for older f4 versions and shared configs.
 	fmt.Fprintf(&sb, "VimHotkeys = %d\n", map[bool]int{true: 1, false: 0}[cfg.NavigationMode == NavigationVim])
@@ -1094,6 +1391,8 @@ func SerializeSettingsConfig(cfg F4Config) []byte {
 	fmt.Fprintf(&sb, "FileOpPathDisplay = %d\n", cfg.FileOpPathDisplay)
 	fmt.Fprintf(&sb, "CopyAccessRights = %d\n", cfg.CopyAccessRights)
 
+	sb.WriteString("\n[ClipboardImages]\n")
+	fmt.Fprintf(&sb, "Format = %s\nPNGCompression = %s\nJPEGQuality = %d\nPrefix = %s\nTemplate = %s\nDigitFormat = %s\n", cfg.ClipboardImageFormat, cfg.ClipboardImagePNGCompression, cfg.ClipboardImageJPEGQuality, cfg.ClipboardImagePrefix, cfg.ClipboardImageTemplate, cfg.ClipboardImageDigitFormat)
 	sb.WriteString("\n[System]\n")
 	fmt.Fprintf(&sb, "ConfirmCopy = %d\n", map[bool]int{true: 1, false: 0}[cfg.ConfirmCopy])
 	fmt.Fprintf(&sb, "ConfirmMove = %d\n", map[bool]int{true: 1, false: 0}[cfg.ConfirmMove])
@@ -1114,6 +1413,9 @@ func SerializeSettingsConfig(cfg F4Config) []byte {
 	sb.WriteString("\n[Dialogs]\n")
 	fmt.Fprintf(&sb, "EnforceColorCorrection = %d\n", map[bool]int{true: 1, false: 0}[cfg.EnforceColorCorrection])
 
+	sb.WriteString("\n[VMenu]\n")
+	fmt.Fprintf(&sb, "MenuStopWrapOnEdge = %d\n", map[bool]int{true: 1, false: 0}[cfg.MenuLoopScroll])
+
 	sb.WriteString("\n[Appearance]\n")
 	fmt.Fprintf(&sb, "GuiFont = %s\n", cfg.GuiFont)
 	fmt.Fprintf(&sb, "GuiUseSystemMonospace = %d\n", map[bool]int{true: 1, false: 0}[cfg.GuiUseSystemMonospace])
@@ -1130,6 +1432,7 @@ func SerializeSettingsConfig(cfg F4Config) []byte {
 	fmt.Fprintf(&sb, "Mode = %s\n", cfg.StartupMode.String())
 	fmt.Fprintf(&sb, "GuiBackend = %s\n", cfg.GuiBackend)
 	fmt.Fprintf(&sb, "TTYBackend = %s\n", cfg.TTYBackend)
+	fmt.Fprintf(&sb, "StartInCurrentFolder = %d\n", map[bool]int{true: 1, false: 0}[cfg.StartInCurrentFolder])
 
 	sb.WriteString("\n[Update]\n")
 	fmt.Fprintf(&sb, "Channel = %d\n", cfg.UpdateChannel)
@@ -1152,6 +1455,7 @@ func SerializeSettingsConfig(cfg F4Config) []byte {
 	fmt.Fprintf(&sb, "CursorBeyondEOL = %d\n", map[bool]int{true: 1, false: 0}[cfg.EditorCursorBeyondEOL])
 	fmt.Fprintf(&sb, "UseEditorConfig = %d\n", map[bool]int{true: 1, false: 0}[cfg.EditorUseEditorConfig])
 	fmt.Fprintf(&sb, "Crosshair = %d\n", map[bool]int{true: 1, false: 0}[cfg.EditorCrosshair])
+	fmt.Fprintf(&sb, "ShowControlChars = %d\n", map[bool]int{true: 1, false: 0}[cfg.EditorShowControlChars])
 	fmt.Fprintf(&sb, "MarkOccurrences = %d\n", map[bool]int{true: 1, false: 0}[cfg.EditorMarkOccurrences])
 	fmt.Fprintf(&sb, "TabSize = %d\n", cfg.EditorTabSize)
 	fmt.Fprintf(&sb, "UseExternalEditor = %d\n", map[bool]int{true: 1, false: 0}[cfg.UseExternalEditor])
@@ -1170,12 +1474,19 @@ func SerializeSettingsConfig(cfg F4Config) []byte {
 	fmt.Fprintf(&sb, "ColorerBackground = %d\n", map[bool]int{true: 1, false: 0}[cfg.EditorColorerBackground])
 	fmt.Fprintf(&sb, "ColorerSyntax = %d\n", map[bool]int{true: 1, false: 0}[cfg.EditorColorerSyntax])
 	fmt.Fprintf(&sb, "ColorerCatalog = %s\n", cfg.EditorColorerCatalog)
+	fmt.Fprintf(&sb, "ColorerPairs = %d\n", map[bool]int{true: 1, false: 0}[cfg.EditorColorerPairs])
+	fmt.Fprintf(&sb, "ColorerOldOutline = %d\n", map[bool]int{true: 1, false: 0}[cfg.EditorColorerOldOutline])
+	fmt.Fprintf(&sb, "ColorerUserHrc = %s\n", cfg.EditorColorerUserHrc)
+	fmt.Fprintf(&sb, "ColorerUserHrd = %s\n", cfg.EditorColorerUserHrd)
+	fmt.Fprintf(&sb, "ColorerHrcSettings = %s\n", cfg.EditorColorerHrcSettings)
 	fmt.Fprintf(&sb, "CrossMode = %d\n", cfg.EditorCrossMode)
 	fmt.Fprintf(&sb, "DefaultCodePage = %d\n", cfg.EditorDefaultCodePage)
 
 	sb.WriteString("\n[Viewer]\n")
 	fmt.Fprintf(&sb, "AutodetectCodePage = %d\n", map[bool]int{true: 1, false: 0}[cfg.ViewerAutodetectCodePage])
 	fmt.Fprintf(&sb, "DefaultCodePage = %d\n", cfg.ViewerDefaultCodePage)
+	fmt.Fprintf(&sb, "OpenAsSupportedType = %d\n", map[bool]int{true: 1, false: 0}[cfg.ViewerOpenAsSupportedType])
+	fmt.Fprintf(&sb, "Highlighting = %d\n", cfg.ViewerHighlighting)
 	sb.WriteString("\n[Mouse]\n")
 	fmt.Fprintf(&sb, "PanelUp = %d\n", cfg.WheelPanelUp)
 	fmt.Fprintf(&sb, "PanelDown = %d\n", cfg.WheelPanelDown)
@@ -1187,6 +1498,7 @@ func SerializeSettingsConfig(cfg F4Config) []byte {
 	fmt.Fprintf(&sb, "MenuDown = %d\n", cfg.WheelMenuDown)
 	fmt.Fprintf(&sb, "TableUp = %d\n", cfg.WheelTableUp)
 	fmt.Fprintf(&sb, "TableDown = %d\n", cfg.WheelTableDown)
+	fmt.Fprintf(&sb, "Acceleration = %d\n", cfg.WheelAcceleration)
 	sb.WriteString("\n[PathHints]\n")
 	fmt.Fprintf(&sb, "Timeout = %d\n", cfg.PathHintTimeout)
 	fmt.Fprintf(&sb, "FullPath = %d\n", map[bool]int{true: 1, false: 0}[cfg.PathHintFullPath])
@@ -1202,8 +1514,26 @@ func SerializeSettingsConfig(cfg F4Config) []byte {
 	fmt.Fprintf(&sb, "SlideShowDelay = %d\n", cfg.SlideShowDelay)
 	fmt.Fprintf(&sb, "ExternalTimeout = %d\n", cfg.ImageExternalTimeout)
 	fmt.Fprintf(&sb, "DecoderPriority = %s\n", cfg.ImageDecoderPriority)
+	fmt.Fprintf(&sb, "Overlay = %d\n", map[bool]int{true: 1, false: 0}[cfg.ImageOverlay])
+	fmt.Fprintf(&sb, "X11OverlayOffsetX = %d\n", cfg.ImageX11OffsetX)
+	fmt.Fprintf(&sb, "X11OverlayOffsetY = %d\n", cfg.ImageX11OffsetY)
+	// [Video] and [TTYXi] have no dialog, only settings.ini, and SaveConfig
+	// replaces the whole file: a key it does not write is gone after the
+	// first save.
+	sb.WriteString("\n[Video]\n")
+	fmt.Fprintf(&sb, "PauseOnFocusLoss = %d\n", map[bool]int{true: 1, false: 0}[cfg.VideoPauseOnFocusLoss])
+	sb.WriteString("\n[TTYXi]\n")
+	fmt.Fprintf(&sb, "Keys = %d\n", map[bool]int{true: 1, false: 0}[cfg.TTYXKeys])
+	// The default list is left out, so that a profile keeps following it:
+	// it has grown before (Ctrl+Shift+P, #980), and a written copy would
+	// have frozen every existing profile at the old one.
+	if cfg.TTYXKeyList != DefaultTTYXKeyList {
+		fmt.Fprintf(&sb, "KeyList = %s\n", cfg.TTYXKeyList)
+	}
 	sb.WriteString("\n[Compare]\n")
 	writeCompareOptions(&sb, cfg.Compare)
+	sb.WriteString("\n[Sync]\n")
+	writeSyncOptions(&sb, cfg.Sync)
 	sb.WriteString("\n[Plugins]\n")
 	fmt.Fprintf(&sb, "List = %s\n", strings.Join(cfg.RegisteredPlugins, "|"))
 
@@ -1432,6 +1762,32 @@ func LoadWheelLines(ini *ini.File, key string) int {
 	return n
 }
 
+// Bounds and default of the [Mouse] Acceleration key: a settings file that
+// does not mention it ends up with the default, and so does a compiled-in
+// App before any file was read. The weakest value never queues anything, so
+// it is the ramp switched off; see internal/wheel for the ramp itself.
+const (
+	WheelAccelerationMin     = 1
+	WheelAccelerationMax     = 10
+	WheelAccelerationDefault = 5
+)
+
+// loadWheelInt reads an integer [Mouse] key: def when the key is missing or
+// unparsable, then clamped into [min, max]. settings.ini is user text, and
+// no value in it may be able to stop the panel from scrolling or make it
+// scroll at nonsense speed.
+func loadWheelInt(ini *ini.File, key string, def, min, max int) int {
+	n := def
+	_, _ = fmt.Sscanf(ini.GetString("Mouse", key, strconv.Itoa(def)), "%d", &n)
+	if n < min {
+		n = min
+	}
+	if n > max {
+		n = max
+	}
+	return n
+}
+
 // WheelScrollLines resolves a configured wheel speed (0 = follow the system
 // setting) into the number of lines to scroll per wheel notch.
 func WheelScrollLines(cfg int) int {
@@ -1448,77 +1804,107 @@ func ApplyWheelSettings() {
 	vtui.SetWheelAreaLines(vtui.WheelAreaList, App.WheelTableUp, App.WheelTableDown)
 }
 
-func CreateDefaultHighlightIni(path string) {
-	content := `# User highlight rules and sort groups.
+// ApplyMenuSettings pushes the menu behaviour options into vtui.
+func ApplyMenuSettings() {
+	vtui.SetMenuLoopScroll(App.MenuLoopScroll)
+}
+
+// NormalizeCursorShape returns name when it is one of vtui's caret shape
+// names ("underline", "bar", "block", in any letter case) and fallback
+// otherwise, so a hand-edited settings.ini cannot store a shape that the
+// Settings Center would then refuse as an unknown choice.
+func NormalizeCursorShape(name, fallback string) string {
+	if shape, ok := vtui.ParseCursorShape(strings.ToLower(strings.TrimSpace(name))); ok {
+		return shape.String()
+	}
+	return fallback
+}
+
+// ApplyCursorSettings pushes the caret options into vtui: whether f4 manages
+// the terminal cursor style at all (KeepTerminalCursor), the caret shapes for
+// insert and overtype text entry, and blinking (f4 #1154).
+func ApplyCursorSettings() {
+	vtui.ManageCursorStyle = !App.KeepTerminalCursor
+	insert, _ := vtui.ParseCursorShape(NormalizeCursorShape(App.CursorInsertShape, "underline"))
+	overtype, _ := vtui.ParseCursorShape(NormalizeCursorShape(App.CursorOvertypeShape, "block"))
+	vtui.SetCursorStyle(insert, overtype, App.CursorBlink)
+}
+
+// defaultHighlightIni is the highlight.ini a new profile gets: the comments that
+// describe every key, and the sort groups. Everything before the first section
+// is the header, which RefreshHighlightIniHeader keeps up to date in files that
+// already exist (f4#912).
+const defaultHighlightIni = `# User highlight rules and sort groups.
 #
-# f4 applies file highlighting rules from both the active Color Style (Theme)
-# and this file. By default, rules in this file have higher priority.
-# The two sources are not merged field by field: f4 puts one complete rule
-# list before the other. Change Appearance.HighlightPriority in settings.ini
-# to 0 (user rules first, the default) or 1 (theme rules first).
-# A matching rule normally stops processing even when it has no colour for
-# the current state. Add ContinueProcessing = 1 when a later rule should be
-# allowed to supply or merge the remaining colour components.
+# f4 applies the rules of this file together with those of the active Color
+# Style (Theme). Sections are tried in the order of their numbers and the first
+# match wins, unless it sets ContinueProcessing = 1. Rules of this file go first;
+# set Appearance.HighlightPriority in settings.ini to 1 to put the theme first.
 #
-# You can add your custom highlight groups here (e.g. Mask = *.mp3).
-# Default groups (Hidden, Executables, Directories) are already defined
-# by the active Color Style, so you don't need to duplicate them unless
-# you specifically want to override the theme's colors.
+# A [Highlight_N] section matches an item by its Mask, attributes, size or date.
+# Name is a label, not a matcher. A section without a Mask matches every name,
+# so a rule for folders needs IncludeAttributes = Directory and a rule for files
+# needs ExcludeAttributes = Directory. Attributes: Directory, Hidden, Executable,
+# ReadOnly, System, Archive, Symlink, Junction. Other keys: SizeAbove, SizeBelow,
+# DateType, DateAfter, DateBefore, Mark.
 #
-# A [Highlight_N] section matches an item by its Mask, attributes, size or
-# date. Name is a label for you, not a matcher. The four color keys are
-# selected independently:
-#   NormalColor          - an ordinary, unselected item
-#   SelectedColor        - a selected item
-#   CursorColor          - an ordinary item under the cursor
-#   SelectedCursorColor  - a selected item under the cursor
-# The same four can be spelled the way Far Manager names them in its Files
-# highlighting dialog, which is what a group copied from Far will use:
-#   NormalFileName, SelectedFileName, FileNameUnderCursor,
-#   FileNameSelectedUnderCursor
-# The cursor-specific keys are also accepted as NormalColorUnderCursor and
-# SelectedColorUnderCursor. If a specialized color is omitted, f4 falls back
-# to the corresponding ordinary color. Every one of the four takes a
-# foreground, a background, or both:
-#   foreground:#FF00FF | background:#008080
-# Other useful keys are IncludeAttributes/ExcludeAttributes (Directory,
-# Hidden, Executable, ReadOnly, System, Archive, Symlink), SizeAbove,
-# SizeBelow, DateType, DateAfter, DateBefore, Mark, and ContinueProcessing.
+# The four colors are set independently, each as a foreground, a background or
+# both. A color that is omitted leaves the panel's own color for that state:
+#   NormalFileName              - an ordinary item
+#   SelectedFileName            - a selected item
+#   FileNameUnderCursor         - an ordinary item under the cursor
+#   FileNameSelectedUnderCursor - a selected item under the cursor
 #
-# Sections are tried in the order of their numbers and the first match wins,
-# unless it sets ContinueProcessing = 1. A section without a Mask matches
-# every name, so a rule meant for folders needs IncludeAttributes = Directory
-# and a rule meant for files needs ExcludeAttributes = Directory -- a rule
-# with neither repaints the whole panel and hides every rule below it.
+# UseDefaults = 1 turns a section into a change of the built-in colors of its
+# attribute: its place in the file does not matter, it keeps the rest of the
+# theme's rules, and only the colors it names are replaced. When an item has
+# several attributes, the first of these decides: Junction, Symlink, Hidden or
+# System, Directory. So a Directory section does not recolor symlinks or hidden
+# folders, and a Symlink section does not recolor junctions.
 #
-# A comment takes a whole line. There are no trailing comments: '#' also
-# opens a color literal, so anything after a value stays part of that value.
+# A comment takes a whole line. There are no trailing comments: '#' also opens
+# a color literal, so anything after a value stays part of that value.
 #
-# Uncomment and adapt these complete examples to add custom rules. The
-# sections are commented out deliberately, so they do not change the panel.
+# Uncomment and adapt these examples. They are commented out deliberately, so
+# they do not change the panel.
+#
 # [Highlight_100]
 # Name = Archives
 # Mask = *.zip, *.rar, *.7z
 # ExcludeAttributes = Directory
-# NormalColor = foreground:#FF00FF | background:#000000
-# SelectedColor = foreground:#FFFF00 | background:#000000
-# CursorColor = foreground:#FFFFFF | background:#008080
-# SelectedCursorColor = foreground:#FFFF00 | background:#008080
-#
-# The same four colors for folders, written with the Far key names. Note the
-# attribute: without it the section would color the files as well.
-# [Highlight_101]
-# Name = Directories
-# IncludeAttributes = Directory
-# NormalFileName = foreground:#FFFFFF | background:#000000
-# SelectedFileName = foreground:#FFFF00 | background:#000000
-# FileNameUnderCursor = foreground:#FFFFFF | background:#008080
+# NormalFileName = foreground:#FF00FF | background:#000080
+# SelectedFileName = foreground:#FFFF00 | background:#000080
+# FileNameUnderCursor = foreground:#FF00FF | background:#008080
 # FileNameSelectedUnderCursor = foreground:#FFFF00 | background:#008080
 #
-# To use one coloured rule for sorting too, add Group to that Highlight
-# section. The same mask and attributes then control both its colour and its
-# position; sections with the same Group number form one cluster. Legacy
-# [SortGroup_N] sections are still accepted for old profiles.
+# [Highlight_101]
+# UseDefaults = 1
+# Name = Directories
+# IncludeAttributes = Directory
+# NormalFileName = foreground:#FF00FF | background:#000080
+# SelectedFileName = foreground:#FFFF00 | background:#000080
+# FileNameUnderCursor = foreground:#FF00FF | background:#008080
+# FileNameSelectedUnderCursor = foreground:#FFFF00 | background:#008080
+#
+# Sort groups put files of one kind together on a panel that has "Use sort
+# groups" switched on (Left/Right menu). There are two ways to define them, and
+# both may be used in one file:
+#
+# 1. Add "Group = N" to a coloured [Highlight_N] section: its mask and
+#    attributes then decide both the colour and the position, and sections
+#    with the same Group number form one cluster. Remember that the first
+#    matching Highlight section wins, so a Highlight section written only for
+#    sorting hides the colours of the sections below it unless it also says
+#    ContinueProcessing = 1.
+# 2. A [SortGroup_N] section is a rule that only sorts and colours nothing;
+#    the examples below are of this kind. It has the same Mask and attribute
+#    keys and does not interfere with the colours.
+#
+# Sort groups are switched on by default for new panels. To turn them off for
+# a panel, clear Left/Right menu -> "Use sort groups"; f4 remembers the choice.
+# They only take effect while at least one Group is defined in this file.
+#
+# f4 reads this file at start: restart it after editing.
 
 [SortGroup_1]
 Name = Executables
@@ -1546,8 +1932,59 @@ Name = Media
 Group = 3
 Mask = *.mp3, *.flac, *.ogg, *.wav, *.mp4, *.mkv, *.avi, *.webm, *.mov
 `
+
+// CreateDefaultHighlightIni writes the stock highlight.ini.
+func CreateDefaultHighlightIni(path string) {
+	content := defaultHighlightIni
 	_ = os.WriteFile(path, []byte(content), 0600)
 	_ = os.Chmod(path, 0600)
+}
+
+// highlightIniHeader splits a highlight.ini at its first section: the lines
+// before it are the header (comments and blank lines), the rest is the user's
+// rules. ok is false for a file with no section at all.
+func highlightIniHeader(text string) (header, rest string, ok bool) {
+	pos := 0
+	for pos < len(text) {
+		end := strings.IndexByte(text[pos:], '\n')
+		line := text[pos:]
+		next := len(text)
+		if end >= 0 {
+			line = text[pos : pos+end]
+			next = pos + end + 1
+		}
+		if strings.HasPrefix(strings.TrimSpace(line), "[") {
+			return text[:pos], text[pos:], true
+		}
+		pos = next
+	}
+	return text, "", false
+}
+
+// RefreshHighlightIniHeader rewrites the comments at the top of an existing
+// highlight.ini with those of the stock file, so that a file made by an older f4
+// describes the keys the current one reads (f4#912). Only the lines before the
+// first section are replaced; the rules stay as they are. It reports whether the
+// file was changed. A file with no section, or one it cannot write, is left alone.
+func RefreshHighlightIniHeader(path string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	text := strings.ReplaceAll(string(data), "\r\n", "\n")
+	oldHeader, rest, ok := highlightIniHeader(text)
+	if !ok {
+		return false
+	}
+	newHeader, _, _ := highlightIniHeader(defaultHighlightIni)
+	if oldHeader == newHeader {
+		return false
+	}
+	// #nosec G703 -- path is the highlight.ini inside the profile directory, built by the caller.
+	if err := os.WriteFile(path, []byte(newHeader+rest), 0600); err != nil {
+		return false
+	}
+	return true
 }
 
 // ApplyProxySettings publishes the configured proxy to netproxy, which is
@@ -1561,4 +1998,57 @@ func ApplyProxySettings() {
 		User: App.ProxyUser,
 		Pass: App.ProxyPass,
 	})
+}
+
+// NormalizeDragOutModifier maps a settings value to one of "", "ctrl", "alt"
+// and "shift"; anything else means no modifier is required.
+func NormalizeDragOutModifier(v string) string {
+	switch v = strings.ToLower(strings.TrimSpace(v)); v {
+	case "ctrl", "alt", "shift":
+		return v
+	}
+	return ""
+}
+
+// DefaultDragOutHoldMs is how long the left button must stay down on a file
+// before a move starts dragging it out of the panel (unxed/f4#1604).
+const DefaultDragOutHoldMs = 250
+
+// MaxDragOutHoldMs bounds DragOutHoldMs; a longer hold is no longer a hold.
+const MaxDragOutHoldMs = 5000
+
+// NormalizeDragOutHoldMs reads a DragOutHoldMs settings value: a number of
+// milliseconds, 0 for "start on the first move", a negative number for "only
+// once the pointer leaves the rows"; empty or unreadable means the default.
+func NormalizeDragOutHoldMs(v string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil {
+		return DefaultDragOutHoldMs
+	}
+	return clampDragOutHoldMs(n)
+}
+
+func clampDragOutHoldMs(n int) int {
+	switch {
+	case n < 0:
+		return -1
+	case n > MaxDragOutHoldMs:
+		return MaxDragOutHoldMs
+	}
+	return n
+}
+
+// The values of F4Config.GlyphStyle.
+const (
+	GlyphStyleClassic = "classic"
+	GlyphStyleRounded = "rounded"
+)
+
+// NormalizeGlyphStyle maps whatever the ini file holds to a known style; an
+// unknown or empty value is the classic one.
+func NormalizeGlyphStyle(v string) string {
+	if strings.EqualFold(strings.TrimSpace(v), GlyphStyleRounded) {
+		return GlyphStyleRounded
+	}
+	return GlyphStyleClassic
 }

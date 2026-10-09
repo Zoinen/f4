@@ -12,8 +12,20 @@ import (
 	"sync"
 
 	"github.com/unxed/archives"
+	"github.com/unxed/f4/internal/config"
 	zipperarchive "github.com/unxed/zipper/archive"
 )
+
+type uncachedTarFileSystem struct {
+	zipperarchive.FileSystem
+	indexPath string
+}
+
+func (f *uncachedTarFileSystem) Close() error {
+	err := f.FileSystem.Close()
+	removeTarIndex(f.indexPath)
+	return err
+}
 
 // rarArchiveFileSystem keeps the volume-aware RAR reader on the filesystem
 // path. zipper's generic fallback receives only one input stream, while
@@ -22,6 +34,7 @@ import (
 type rarArchiveFileSystem struct {
 	root   *archives.ArchiveFS
 	format archives.Rar
+	path   string
 
 	mu     sync.RWMutex
 	closed bool
@@ -44,7 +57,14 @@ func newRARArchiveFileSystem(localPath, password string) (zipperarchive.FileSyst
 			Context: context.Background(),
 		},
 		format: format,
+		path:   localPath,
 	}, nil
+}
+
+// passwordError lets a wrong password for a RAR archive with encrypted
+// headers bring the password dialog back; see rarPasswordError.
+func (r *rarArchiveFileSystem) passwordError(err error) error {
+	return rarPasswordError(r.path, r.format.Password, err)
 }
 
 func (r *rarArchiveFileSystem) rootFS() (*archives.ArchiveFS, error) {
@@ -67,12 +87,12 @@ func (r *rarArchiveFileSystem) Open(name string) (fs.File, error) {
 
 	info, err := root.Stat(name)
 	if err != nil {
-		return nil, err
+		return nil, r.passwordError(err)
 	}
 	if info.IsDir() {
 		entries, err := root.ReadDir(name)
 		if err != nil {
-			return nil, err
+			return nil, r.passwordError(err)
 		}
 		return &rarDirectoryFile{info: info, entries: append([]fs.DirEntry(nil), entries...)}, nil
 	}
@@ -116,7 +136,7 @@ func (r *rarArchiveFileSystem) Open(name string) (fs.File, error) {
 		return fs.SkipAll
 	})
 	if err != nil {
-		return nil, &fs.PathError{Op: "open", Path: name, Err: fmt.Errorf("extract: %w", err)}
+		return nil, &fs.PathError{Op: "open", Path: name, Err: fmt.Errorf("extract: %w", r.passwordError(err))}
 	}
 	if !found {
 		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
@@ -140,7 +160,8 @@ func (r *rarArchiveFileSystem) ReadDir(name string) ([]fs.DirEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	return root.ReadDir(name)
+	entries, err := root.ReadDir(name)
+	return entries, r.passwordError(err)
 }
 
 func (r *rarArchiveFileSystem) Stat(name string) (fs.FileInfo, error) {
@@ -151,7 +172,8 @@ func (r *rarArchiveFileSystem) Stat(name string) (fs.FileInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	return root.Stat(name)
+	info, err := root.Stat(name)
+	return info, r.passwordError(err)
 }
 
 func (r *rarArchiveFileSystem) Close() error {
@@ -219,7 +241,18 @@ func openArchiveFileSystem(ctx context.Context, localPath, displayName, password
 			return newRARArchiveFileSystem(localPath, password)
 		}
 	}
-	return zipperarchive.OpenFS(localPath, zipperarchive.Options{Password: password})
+	indexPath := tarIndexPath(localPath)
+	fsys, err := zipperarchive.OpenFS(localPath, zipperarchive.Options{Password: password, IndexPath: indexPath})
+	if err != nil {
+		if !config.App.ArchiveTarIndexCache {
+			removeTarIndex(indexPath)
+		}
+		return nil, err
+	}
+	if !config.App.ArchiveTarIndexCache && indexPath != "" {
+		return &uncachedTarFileSystem{FileSystem: fsys, indexPath: indexPath}, nil
+	}
+	return fsys, nil
 }
 
 func identifyArchiveFormat(ctx context.Context, localPath, displayName string) (archives.Format, error) {

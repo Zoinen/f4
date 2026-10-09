@@ -4,7 +4,6 @@ import (
 	"context"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 	"unicode"
@@ -70,7 +69,7 @@ func (v *OSVFS) FindFilesStream(ctx context.Context, dir string, q FindQuery, on
 			// inaccessible during a long search is treated like Far's scan:
 			// skip it and continue with the rest of the tree.
 			if current == dir {
-				return err
+				return displayPathError(err)
 			}
 			return nil
 		}
@@ -102,7 +101,7 @@ func (v *OSVFS) FindFilesStream(ctx context.Context, dir string, q FindQuery, on
 			}
 
 			if isDir {
-				if q.FindFolders && q.Text == "" && findMaskMatches(name, masks) {
+				if q.FindFolders && q.Text == "" && findMaskMatches(name, masks, q.IgnoreCase) {
 					if item, statErr := v.Stat(ctx, child); statErr == nil {
 						found++
 						onFound(FoundEntry{Path: child, Item: item})
@@ -117,7 +116,7 @@ func (v *OSVFS) FindFilesStream(ctx context.Context, dir string, q FindQuery, on
 				continue
 			}
 
-			if !findMaskMatches(name, masks) {
+			if !findMaskMatches(name, masks, q.IgnoreCase) {
 				continue
 			}
 			if matcher != nil {
@@ -162,12 +161,12 @@ func (v *OSVFS) FindFilesStream(ctx context.Context, dir string, q FindQuery, on
 	return nil
 }
 
-func findMaskMatches(name string, masks []string) bool {
+func findMaskMatches(name string, masks []string, ignoreCase bool) bool {
 	for _, mask := range masks {
 		if mask == "" {
 			continue
 		}
-		if matched, _ := filepath.Match(mask, name); matched {
+		if MatchFileMask(name, mask, ignoreCase) {
 			return true
 		}
 	}

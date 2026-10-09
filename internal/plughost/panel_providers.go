@@ -48,12 +48,15 @@ func RegisterPanelProvider(provider vfs.PanelProvider) (vfs.Registration, error)
 	panelProviderRegistry.byID[registryID] = registeredPanelProvider{provider: provider, token: token}
 	panelProviderRegistry.Unlock()
 
+	// The row is the plugin's own title, as in Far's plugin menu
+	// ("ProcList", not "Open ProcList", f4#312); "open" stays a search term
+	// so the palette still finds it that way.
 	command, err := RegisterPluginCommand(vfs.PluginCommand{
 		ID:          commandID,
 		Location:    vfs.PluginCommandPanel,
-		Label:       "Open " + provider.Title,
+		Label:       provider.Title,
 		Description: provider.Description,
-		SearchTerms: []string{"panel", "plugin", provider.ID},
+		SearchTerms: []string{"open", "panel", "plugin", provider.ID},
 		Run: func(app vfs.App) {
 			if App != nil {
 				App.OpenPanelProvider(app, registryID)

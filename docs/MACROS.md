@@ -86,6 +86,10 @@ anything else by virtual key code in hex.
 `NumEnter` and `NumDel` are the numeric keypad's Enter and Del, as distinct
 from the main ones.
 
+A plain `BS` or `Del` belongs to the command line while it holds text: neither a
+recorded macro nor a remapped hotkey on that key runs then, the key edits the line.
+The macro runs on an empty command line, so `BS` can still be "up one folder".
+
 ## Sending keys
 
 ```lua
@@ -150,7 +154,16 @@ string library:
 
 `iif`, `abs`, `max`, `min`, `int`, `float`, `string`, `len`, `lcase`, `ucase`,
 `trim`, `substr`, `index`, `rindex`, `replace`, `asc`, `chr`, `env`, `fexist`,
-`fattr`, `sleep`, `beep`, `print`, `exit`, `msgbox`, `Keys`, `akey`.
+`fattr`, `sleep`, `beep`, `print`, `exit`, `msgbox`, `Keys`, `akey`, `itoa`,
+`atoi`, `mod`, `date`.
+
+`mf.trim(s[, mode])` strips both ends (mode 0, the default), the left (1) or the
+right (2). `mf.itoa(n[, radix])` and `mf.atoi(s[, radix])` convert between
+integers and text in the radix (10 for `itoa` by default; `atoi` reads the
+integer at the start of the text, and a radix of 0 or none picks the base from a
+`0x` or `0` prefix). `mf.mod(a, b)` is the integer remainder (0 for a zero
+divisor). `mf.date([format])` is the current local time in a C `strftime`
+format, English names; with no format it is `%a %b %d %H:%M:%S %Y`.
 
 `bit` and `bit64` carry `band`, `bor`, `bxor`, `bnot`, `lshift`, `rshift`.
 
@@ -163,9 +176,14 @@ is drawing on. Use `print()`, which goes to the debug log, and `mf.env` and
 
 Most macros need no changes. What to check:
 
-- `Event{}`, `MenuItem{}` and `CommandLine{}` declarations are accepted and
-  ignored, so a file mixing them with `Macro{}` still contributes its macros,
-  but those declarations do nothing.
+- `MenuItem{}` and `CommandLine{}` declarations work. `Event{}` works for four
+  groups: `ExitFAR` (f4 is closing), `FolderChanged` (a panel entered another
+  folder; it is not raised while a macro is running), `EditorEvent` and
+  `ViewerEvent`, whose actions are called with the editor's or viewer's id, the
+  event and a parameter (0). The editor events are Far's numbers: 0 the file was
+  read, 1 it was saved, 3 the editor is closing; the viewer's: 0 the file was
+  opened, 1 the viewer is closing. A declaration for any other group is logged and left out; the rest of
+  the file still loads.
 - The `Editor`, `Viewer`, `Dlg`, `Menu`, `Object` and `Plugin` objects are not
   implemented yet.
 - There is no `ffi` and no `cdef`. f4 has its own FFI for plugins, described

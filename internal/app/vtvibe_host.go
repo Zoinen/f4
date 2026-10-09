@@ -22,6 +22,7 @@ import (
 	"github.com/unxed/f4/internal/viewer"
 	"github.com/unxed/f4/internal/vtvibe"
 	"github.com/unxed/f4/vfs"
+	"github.com/unxed/f4/vfs/hostmode"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 )
@@ -167,6 +168,18 @@ func init() {
 		Handler:     withAI(func(pf *panel.PanelsFrame) { aiApplyPatch(pf) }),
 	})
 	registerAction(action.Action{
+		Name:        "AI.UndoPatch",
+		Area:        "Shell",
+		Label:       "Undo AP Patch",
+		LabelKey:    "Action.AI.UndoPatch",
+		Description: "Put back the files the last applied ap patch changed",
+		DescKey:     "Action.AI.UndoPatch.Desc",
+		MenuPath:    "Commands",
+		MenuSubPath: "AI",
+		Visible:     func() bool { return aiTopUndo() != nil },
+		Handler:     withAI(func(pf *panel.PanelsFrame) { aiUndoPatch(pf) }),
+	})
+	registerAction(action.Action{
 		Name:        "AI.Setup",
 		Area:        "Shell",
 		Label:       "AI Setup",
@@ -272,7 +285,7 @@ func aiTogglePanel(pf *panel.PanelsFrame) {
 				}
 				target := panel.AIPrevPath[i]
 				if target == "" {
-					target, _ = os.UserHomeDir()
+					target, _ = hostmode.UserHomeDir()
 				}
 				pf.SwitchToVFS(fsp, vfs.NewOSVFS(target))
 				pf.ActiveIdx = 1 - i
@@ -462,10 +475,10 @@ func aiAskAction() bool {
 				if len(ctxParts) > 0 {
 					prompt = "[" + strings.Join(ctxParts, ", ") + "]\n"
 				}
-				cp.input.SetText(prompt)
+				cp.Input.SetText(prompt)
 				lines := len(strings.Split(prompt, "\n"))
 				if lines > 0 {
-					cp.input.SetCursorPos(lines-1, 0)
+					cp.Input.SetCursorPos(lines-1, 0)
 				}
 				cp.ScrollToBottom()
 			}
@@ -525,6 +538,8 @@ func aiCommand(app vfs.App, arg string) {
 		aiNewSession(pf)
 	case lower == "apply" || lower == "patch":
 		aiApplyPatch(pf)
+	case lower == "undo":
+		aiUndoPatch(pf)
 	case lower == "ap" || lower == "spec":
 		aiAttachAPSpec(pf)
 	case lower == "key":

@@ -115,7 +115,7 @@ func TestIssue915TestArchiveTotalProgressCountsMemberVolume(t *testing.T) {
 			}
 
 			recorder := &issue915ProgressRecorder{}
-			if err := testArchiveOnce(context.Background(), archivePath, "", recorder); err != nil {
+			if err := testArchiveOnce(context.Background(), archivePath, archivePath, "", recorder); err != nil {
 				t.Fatalf("testArchiveOnce() error = %v", err)
 			}
 
@@ -167,7 +167,7 @@ func TestIssue915TestArchiveTotalProgressWithoutDirectory(t *testing.T) {
 	archivePath, _ := issue915BuildArchive(t, t.TempDir(), "fixture.tar.gz", format, members, memberSize)
 
 	recorder := &issue915ProgressRecorder{}
-	if err := testArchiveOnce(context.Background(), archivePath, "", recorder); err != nil {
+	if err := testArchiveOnce(context.Background(), archivePath, archivePath, "", recorder); err != nil {
 		t.Fatalf("testArchiveOnce() error = %v", err)
 	}
 
@@ -209,7 +209,7 @@ func TestIssue915TestArchiveTotalsSurviveADamagedDirectory(t *testing.T) {
 	}
 
 	recorder := &issue915ProgressRecorder{}
-	err = testArchiveOnce(context.Background(), archivePath, "", recorder)
+	err = testArchiveOnce(context.Background(), archivePath, archivePath, "", recorder)
 	if err == nil {
 		t.Fatal("testArchiveOnce() reported a damaged archive as healthy")
 	}

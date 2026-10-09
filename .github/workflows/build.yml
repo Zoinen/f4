@@ -30,7 +30,52 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
+# Where a tag build writes the tag with -X: every build step below takes the
+# name from here. The linker skips an -X whose name resolves to nothing without
+# a word, which is how tagged builds came to report a commit hash once the
+# variable moved from package main to internal/app. Two checks keep that from
+# returning: TestReleaseWorkflowWritesBuildVersion in internal/app ties this
+# line to the variable on every run, and on a tag the smoke tests run
+# scripts/check_release_version.sh on the binaries they start.
+env:
+  VERSION_SYMBOL: github.com/unxed/f4/internal/app.buildVersion
+
 jobs:
+  # Lunobot bots never open their own pull requests for routine work: it
+  # lands in lunobot/staging and reaches main in trains (LUNOBOT.md § 7.2 in
+  # unxed/lunobot), one full-matrix run per train instead of one per ticket.
+  # Only lunobot/train/* and lunobot/urgent/* may be PR heads; any other
+  # lunobot/* PR fails this job at once and every heavy job below, which
+  # needs it, is skipped -- the drift shows up red without spending the
+  # matrix. `[ci-full]`/batch skipping is gone with the batches themselves:
+  # a train is pushed once, so every run it gets is the one that decides.
+  should-run-full:
+    name: Should run full matrix
+    runs-on: ubuntu-latest
+    outputs:
+      run-full: ${{ steps.decide.outputs.run-full }}
+    steps:
+    - name: Decide whether to run the full matrix
+      id: decide
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+        HEAD_REF: ${{ github.head_ref }}
+      run: |
+        set -euo pipefail
+        run_full=true
+
+        if [ "$EVENT_NAME" = "pull_request" ]; then
+          case "$HEAD_REF" in
+            lunobot/train/*|lunobot/urgent/*) ;;
+            lunobot/*)
+              echo "::error::$HEAD_REF: routine bot work lands in lunobot/staging via train.py land, not in its own PR (LUNOBOT.md § 7.2)"
+              exit 1 ;;
+          esac
+        fi
+
+        echo "event=$EVENT_NAME head_ref=$HEAD_REF run_full=$run_full" >&2
+        echo "run-full=$run_full" >> "$GITHUB_OUTPUT"
+
   # The build matrix is deliberately inline data. Pull requests build all
   # six cells because those are the artifacts anyone actually downloads
   # from a PR: the six desktop OS/architecture pairs.
@@ -41,9 +86,14 @@ jobs:
   # runs on glibc and musl alike -- see the Build binaries step below.
   build:
     name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
+    needs: [should-run-full]
+    if: needs.should-run-full.outputs.run-full == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      # 6 cells; capped so this one job doesn't claim every runner the
+      # free-tier pool has (see the concurrency comment above the jobs).
+      max-parallel: 3
       matrix: { include: [{ goos: linux, goarch: amd64 }, { goos: linux, goarch: arm64 }, { goos: windows, goarch: amd64 }, { goos: windows, goarch: arm64 }, { goos: darwin, goarch: amd64 }, { goos: darwin, goarch: arm64 }] }
     env:
       CGO_ENABLED: 0
@@ -61,7 +111,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v7
       with:
-        go-version: '1.26.6'
+        go-version: '1.26.9'
         cache-dependency-path: go.sum
 
     - name: Compute build impact
@@ -158,7 +208,7 @@ jobs:
         # prerelease tags such as v0.2.0-beta available to the updater.
         APP_LDFLAGS="$LDFLAGS"
         if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-          APP_LDFLAGS="$APP_LDFLAGS -X main.buildVersion=$GITHUB_REF_NAME"
+          APP_LDFLAGS="$APP_LDFLAGS -X $VERSION_SYMBOL=$GITHUB_REF_NAME"
         fi
 
         # fakecgo supplies environ/__progname (and __ps_strings on NetBSD)
@@ -183,27 +233,10 @@ jobs:
 
         # Build GUI-only binary for Windows (no console flash)
         if [ "$GOOS" = "windows" ]; then
-          go build "${BUILD_TAG_ARGS[@]}" -trimpath $GCFLAGS -ldflags="$APP_LDFLAGS -H windowsgui" -o build/f4-gui$EXT ./cmd/f4
+          # f4-gui.exe is a small launcher for f4.exe (f4#1567), not a second
+          # copy of the whole program linked as a GUI application.
+          go build -trimpath -ldflags="-s -w -H windowsgui" -o build/f4-gui$EXT ./cmd/f4-gui-launcher
 
-          # f4 owns the ConPTY implementation it runs. The DLL and
-          # OpenConsole.exe are extracted from the same Microsoft package and
-          # kept beside both Windows binaries; loading only one of the pair
-          # would reintroduce the version skew this bundle is meant to avoid.
-          CONPTY_URL="https://github.com/microsoft/terminal/releases/download/v1.25.1912.0/Microsoft.Windows.Console.ConPTY.1.25.260710002-preview.nupkg"
-          CONPTY_SHA256="05fe9b571ea4fb198f5012405cb39a132cf23eee50feaa496524c149b2502692"
-          CONPTY_PACKAGE="/tmp/Microsoft.Windows.Console.ConPTY.1.25.260710002-preview.nupkg"
-          case "$GOARCH" in
-            amd64) CONPTY_RUNTIME="x64" ;;
-            arm64) CONPTY_RUNTIME="arm64" ;;
-            *) echo "unsupported Windows architecture for bundled ConPTY: $GOARCH" >&2; exit 1 ;;
-          esac
-          curl -fL --retry 5 --retry-delay 10 --retry-all-errors \
-            -o "$CONPTY_PACKAGE" "$CONPTY_URL"
-          echo "$CONPTY_SHA256  $CONPTY_PACKAGE" | sha256sum -c -
-          unzip -p "$CONPTY_PACKAGE" "runtimes/win-$CONPTY_RUNTIME/native/conpty.dll" > build/conpty.dll
-          unzip -p "$CONPTY_PACKAGE" "build/native/runtimes/$CONPTY_RUNTIME/OpenConsole.exe" > build/OpenConsole.exe
-          test -s build/conpty.dll
-          test -s build/OpenConsole.exe
         fi
 
         # Copy language and help assets
@@ -211,12 +244,11 @@ jobs:
         cp f4.example.ini build/
         mkdir -p build/licenses
         cp plugins/visren/LICENSE.upstream build/licenses/VisRen-BSD-3-Clause.txt
-        cp plugins/ios/LICENSE.go-ios build/licenses/go-ios-MIT.txt
 
         # Add freedesktop launch metadata and the application icon to Linux archives.
         if [ "$GOOS" = "linux" ]; then
           mkdir -p build/share/applications
-          cp packaging/linux/f4.desktop build/share/applications/
+          cp packaging/linux/org.unxed.f4.desktop build/share/applications/
           for size in 16 24 28 30 32 36 42 48 56 64 128 256 512 1024; do
             icon_dir="build/share/icons/hicolor/${size}x${size}/apps"
             mkdir -p "$icon_dir"
@@ -231,6 +263,14 @@ jobs:
         # Build internal dummy plugin
         cd plugins/dummy_internal
         go build "${BUILD_TAG_ARGS[@]}" -trimpath $GCFLAGS -ldflags="$LDFLAGS" -o ../../build/plugins/dummy_internal/f4-internal-dummy-plugin$EXT .
+
+        # Keep every downloadable f4 file under one directory when unpacked
+        # by hand. The updater strips this wrapper and still accepts the old
+        # flat archives for in-place updates.
+        cd ../..
+        rm -rf package
+        mkdir -p package/f4
+        cp -a build/. package/f4/
 
     # The universal contract, asserted rather than assumed: no PT_INTERP and
     # no DT_NEEDED. Both halves matter and neither is visible later -- a
@@ -277,6 +317,10 @@ jobs:
     # probes the loader paths itself with raw syscalls and so would find the
     # runner's own glibc and report a pass that means nothing.
     #
+    # On a tag every run here also has to report exactly that tag as its
+    # version (scripts/check_release_version.sh): the tag is written in with
+    # -X, which the linker skips silently when the name does not resolve.
+    #
     # The container runs ride with pushes and tags, where the nightly and
     # release jobs publish and a red run blocks them via needs. Pull requests
     # keep the ELF contract above (which catches the realistic breakage: a
@@ -293,9 +337,14 @@ jobs:
         # Pinned so a rebuilt upstream image cannot change what this proves.
         GLIBC_IMAGE=debian:bookworm-slim
         MUSL_IMAGE=alpine:3.24.1
+        # glibc 2.31. Until 2.34 glibc kept pthread_create and dlopen out of
+        # libc.so.6, in libpthread.so.0 and libdl.so.2, so a bridge that
+        # preloads libc alone starts on bookworm and dies on Ubuntu 20.04
+        # before main (#1381). bookworm cannot tell the two apart; this can.
+        OLD_GLIBC_IMAGE=debian:bullseye-slim
 
         if [ "$GOARCH_CELL" = "amd64" ]; then
-          ./build/f4 --version
+          bash scripts/check_release_version.sh ./build/f4 --version
         fi
 
         if [ "$CROSS_LIBC_SMOKE" != "true" ]; then
@@ -308,19 +357,32 @@ jobs:
           run_args+=(--platform "linux/$GOARCH_CELL")
         fi
 
-        for image in "$GLIBC_IMAGE" "$MUSL_IMAGE"; do
+        for image in "$GLIBC_IMAGE" "$OLD_GLIBC_IMAGE" "$MUSL_IMAGE"; do
           echo "==> $image"
-          docker run "${run_args[@]}" "$image" /mnt/f4 --version
+          bash scripts/check_release_version.sh docker run "${run_args[@]}" "$image" /mnt/f4 --version
         done
 
+    # Windows is published as .7z as well as .zip (#1656). f4 from v0.2.0-beta
+    # to v0.3.0-beta asks for .7z first and otherwise takes the first .zip by
+    # name that ends with "-windows-<arch>.zip", and f4-lite-windows-amd64.zip
+    # used to sort before f4-windows-amd64.zip: without the .7z those builds
+    # updated themselves into the lite edition. The .7z holds exactly what the
+    # .zip does; filters are off (-mf=off) so any 7z reader f4 ever shipped
+    # decodes it.
     - name: Package
       if: steps.affected.outputs.build == 'yes'
       run: |
         if [ "${{ matrix.goos }}" = "windows" ]; then
-          (cd build && zip -r "../$ASSET.zip" .)
+          (cd package && zip -r "../$ASSET.zip" f4)
+          SEVENZIP=$(command -v 7z || command -v 7zz || command -v 7za || true)
+          if [ -z "$SEVENZIP" ]; then
+            sudo apt-get update -qq </dev/null
+            sudo apt-get install -y -qq 7zip </dev/null
+            SEVENZIP=$(command -v 7zz || command -v 7z)
+          fi
+          (cd package && "$SEVENZIP" a -t7z -mx=9 -mf=off -bd "../$ASSET.7z" f4 </dev/null)
         else
-          # Создаем архив в корне, упаковывая содержимое build (без самой папки build)
-          tar -czvf "$ASSET.tar.gz" -C build .
+          tar -czvf "$ASSET.tar.gz" -C package f4
         fi
 
         if [ "${{ matrix.goos }}" = "darwin" ]; then
@@ -353,10 +415,15 @@ jobs:
   # and toolchain setup (~50s), which cost more than the actual cross-build.
   build-batch:
     name: Build batch (${{ matrix.name }})
-    if: github.event_name != 'pull_request'
+    needs: [should-run-full]
+    if: github.event_name != 'pull_request' && needs.should-run-full.outputs.run-full == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      # 7 cells, pushes/tags only; capped so this job doesn't claim every
+      # runner the free-tier pool has (see the concurrency comment above
+      # the jobs) -- this is the matrix a tag release competes against.
+      max-parallel: 3
       # The noffi rows are the extra architectures Go can cross-compile
       # Linux for; vtui's graphical/FFI backends are unavailable there,
       # so they use its ANSI-only noffi configuration.
@@ -375,7 +442,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v7
       with:
-        go-version: '1.26.6'
+        go-version: '1.26.9'
         cache-dependency-path: go.sum
 
     - name: Build binaries
@@ -409,7 +476,7 @@ jobs:
 
           APP_LDFLAGS="$LDFLAGS"
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            APP_LDFLAGS="$APP_LDFLAGS -X main.buildVersion=$GITHUB_REF_NAME"
+            APP_LDFLAGS="$APP_LDFLAGS -X $VERSION_SYMBOL=$GITHUB_REF_NAME"
           fi
 
           # fakecgo supplies environ/__progname (and __ps_strings on NetBSD)
@@ -432,18 +499,17 @@ jobs:
           go build "${BUILD_TAG_ARGS[@]}" -trimpath $GCFLAGS -ldflags="$APP_LDFLAGS" -o "$BUILD_DIR/f4$EXT" ./cmd/f4 </dev/null
 
           if [ "$GOOS" = "windows" ]; then
-            go build "${BUILD_TAG_ARGS[@]}" -trimpath $GCFLAGS -ldflags="$APP_LDFLAGS -H windowsgui" -o "$BUILD_DIR/f4-gui$EXT" ./cmd/f4 </dev/null
+            go build -trimpath -ldflags="-s -w -H windowsgui" -o "$BUILD_DIR/f4-gui$EXT" ./cmd/f4-gui-launcher </dev/null
           fi
 
           cp -r internal/i18n/lang internal/dialog/help "$BUILD_DIR/"
           cp f4.example.ini "$BUILD_DIR/"
           mkdir -p "$BUILD_DIR/licenses"
           cp plugins/visren/LICENSE.upstream "$BUILD_DIR/licenses/VisRen-BSD-3-Clause.txt"
-          cp plugins/ios/LICENSE.go-ios "$BUILD_DIR/licenses/go-ios-MIT.txt"
 
           if [ "$GOOS" = "linux" ]; then
             mkdir -p "$BUILD_DIR/share/applications"
-            cp packaging/linux/f4.desktop "$BUILD_DIR/share/applications/"
+            cp packaging/linux/org.unxed.f4.desktop "$BUILD_DIR/share/applications/"
             for size in 16 24 28 30 32 36 42 48 56 64 128 256 512 1024; do
               icon_dir="$BUILD_DIR/share/icons/hicolor/${size}x${size}/apps"
               mkdir -p "$icon_dir"
@@ -498,7 +564,7 @@ jobs:
             sudo apt-get install -y -qq qemu-user-static </dev/null
             QEMU_READY=yes
           fi
-          "qemu-$QEMU-static" "$BUILD_DIR/f4" --version </dev/null
+          bash scripts/check_release_version.sh "qemu-$QEMU-static" "$BUILD_DIR/f4" --version </dev/null
         done < <(jq -c '.[]' <<<"$CELLS")
 
     - name: Package
@@ -515,11 +581,14 @@ jobs:
           ASSET="f4-$GOOS-$GOARCH"
           ARTIFACT_DIR="$BATCH_ROOT/artifacts/$ASSET"
           mkdir -p "$ARTIFACT_DIR"
+          PACKAGE_DIR="$BATCH_ROOT/packages/$ASSET"
+          mkdir -p "$PACKAGE_DIR/f4"
+          cp -a "$BUILD_DIR"/. "$PACKAGE_DIR/f4/"
 
           if [ "$GOOS" = "windows" ]; then
-            (cd "$BUILD_DIR" && zip -r "$ARTIFACT_DIR/$ASSET.zip" . </dev/null)
+            (cd "$PACKAGE_DIR" && zip -r "$ARTIFACT_DIR/$ASSET.zip" f4 </dev/null)
           else
-            tar -czvf "$ARTIFACT_DIR/$ASSET.tar.gz" -C "$BUILD_DIR" . </dev/null
+            tar -czvf "$ARTIFACT_DIR/$ASSET.tar.gz" -C "$PACKAGE_DIR" f4 </dev/null
           fi
         done < <(jq -c '.[]' <<<"$CELLS")
 
@@ -552,31 +621,68 @@ jobs:
         path: batch-output/artifacts/${{ matrix.assets[2] }}/${{ matrix.assets[2] }}.*
         retention-days: 7
 
-  # Эта джоба собирает Windows-бинарник тулчейном thongtech/go-legacy-win7,
-  # чтобы f4 можно было запускать на Windows 7/8/8.1 (см. issue #514).
+  # f4#1178: a "lite" build for routers and other embedded/old-weak-hardware
+  # targets, where Colorer/MP3/FUSE/cloud/archive/network weight is a real
+  # problem. The -tags lite build tag is the single point of truth for what
+  # gets left out (see internal/plughost/plugins_lite.go,
+  # internal/gui/backends_lite.go, internal/editor/colorer_lite.go,
+  # vfs/hostmode/hostmode_lite.go, internal/media/audio_stub.go and
+  # internal/fusefs/node_unsupported.go). vtui_noebiten and vtui_nogogpu
+  # always go with it: they leave vtui's Ebitengine and gogpu backends, and
+  # the GPU stack behind them, out of the binary, which keeps X11 and
+  # Wayland (Win32 on Windows) as the only GUI backends.
+  # internal/gui/liteguard.go refuses to compile a lite build without them.
   #
-  # Тулчейн go-legacy-win7-1.26.6-1 в остальном полноценен, но в его
-  # Android for f4 means Termux (#882). A plain CGO_ENABLED=0 cross-build
-  # starts from a shell but dies the moment it re-execs itself for the
-  # daemon: untrusted_app on current Android refuses to exec such a file,
-  # and the lookup of Termux's own libraries never happens. What works on
-  # the device is the NDK build: cgo, Bionic's loader, and a RUNPATH
-  # pointing at $PREFIX/lib so the binary binds against Termux's libc the
-  # way every other Termux package does. The runner image ships the NDK
-  # (ANDROID_NDK_ROOT), so nothing has to be installed. API level 24 is
-  # Termux's floor.
+  # linux/amd64 is a universal build (goffi_universal, like the regular
+  # release): Wayland needs FFI to load libxkbcommon. linux/arm and
+  # linux/mipsle stay static (goffi_static), matching build-batch's regular
+  # cells for them; vtui has no Wayland backend there and draws with X11.
+  # linux/mipsle also keeps noffi, again matching its regular cell above.
   #
-  # Only arm64 for now; it covers nearly every active Android device.
-  # armv7 and x86_64 can be added as cells on request.
-  build-termux:
-    name: Build (termux/arm64)
+  # A control binary is built alongside each lite one, with the same tags
+  # minus the lite ones, purely to print the size comparison f4#1178 asks
+  # for in this job's own log; it is not packaged or uploaded.
+  #
+  # A lite build links no archive library and no SQLite engine: archives
+  # go through plugins/multiarc's console-tool wrapper, internal/unpack reads
+  # f4's own release and plugin archives with the standard library, and the
+  # SQLite client and the spreadsheet's SQLite format are regular-build only.
+  # cmd/f4/lite_deps_test.go checks all of this from `go list -deps`.
+  build-lite:
+    name: Build lite (${{ matrix.name }})
+    needs: [should-run-full]
+    if: github.event_name != 'pull_request' && needs.should-run-full.outputs.run-full == 'true'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux/amd64
+            goos: linux
+            goarch: amd64
+            tags: goffi_universal
+            asset: f4-lite-linux-amd64
+          - name: windows/amd64
+            goos: windows
+            goarch: amd64
+            tags: ''
+            asset: f4-lite-windows-amd64
+          - name: linux/arm
+            goos: linux
+            goarch: arm
+            tags: goffi_static
+            asset: f4-lite-linux-arm
+          - name: linux/mipsle
+            goos: linux
+            goarch: mipsle
+            tags: noffi,goffi_static
+            asset: f4-lite-linux-mipsle
     env:
-      GOOS: android
-      GOARCH: arm64
-      CGO_ENABLED: 1
-      TERMUX_PREFIX: /data/data/com.termux/files/usr
-      ASSET: f4-termux-arm64
+      CGO_ENABLED: 0
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+      ASSET: ${{ matrix.asset }}
+      MATRIX_TAGS: ${{ matrix.tags }}
 
     steps:
     - name: Checkout code
@@ -587,7 +693,505 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v7
       with:
-        go-version: '1.26.6'
+        go-version: '1.26.9'
+        cache-dependency-path: go.sum
+
+    - name: Build lite and control binaries
+      run: |
+        set -euo pipefail
+        mkdir -p build/plugins/dummy_internal build-control
+
+        GCFLAGS=""
+        # See build-batch above: both BSDs need fakecgo's crt0 replacement
+        # built as std; linux does not, so this never applies to this job's
+        # cells today, but it keeps the same shape if a BSD cell is added.
+        case "$GOOS" in
+          freebsd|netbsd)
+            GCFLAGS="-gcflags=github.com/go-webgpu/goffi/internal/fakecgo=-std"
+            ;;
+        esac
+
+        LDFLAGS="-s -w"
+        APP_LDFLAGS="$LDFLAGS"
+        if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+          APP_LDFLAGS="$APP_LDFLAGS -X $VERSION_SYMBOL=$GITHUB_REF_NAME"
+        fi
+
+        EXT=""
+        if [ "$GOOS" = "windows" ]; then
+          EXT=".exe"
+        fi
+        LITE_TAGS="lite,vtui_noebiten,vtui_nogogpu${MATRIX_TAGS:+,$MATRIX_TAGS}"
+
+        go build -tags "$LITE_TAGS" -trimpath $GCFLAGS \
+          -ldflags="$APP_LDFLAGS" -o build/f4$EXT ./cmd/f4
+        # Same as the regular build: f4-gui.exe, the launcher, so a launch from
+        # Explorer opens no console window.
+        if [ "$GOOS" = "windows" ]; then
+          go build -trimpath -ldflags="-s -w -H windowsgui" -o build/f4-gui$EXT ./cmd/f4-gui-launcher
+        fi
+        go build -tags "$MATRIX_TAGS" -trimpath $GCFLAGS \
+          -ldflags="$APP_LDFLAGS" -o build-control/f4$EXT ./cmd/f4
+
+        echo "### f4#1178 size comparison: lite vs. regular (${{ matrix.name }}, -tags ${MATRIX_TAGS:-none}, stripped)" | tee -a "$GITHUB_STEP_SUMMARY"
+        LITE_SIZE=$(stat -c%s build/f4$EXT)
+        CONTROL_SIZE=$(stat -c%s build-control/f4$EXT)
+        printf 'lite:    %10d bytes\nregular: %10d bytes\ndelta:   %10d bytes (%.1f%% smaller)\n' \
+          "$LITE_SIZE" "$CONTROL_SIZE" "$((CONTROL_SIZE - LITE_SIZE))" \
+          "$(awk "BEGIN { print ($CONTROL_SIZE-$LITE_SIZE)/$CONTROL_SIZE*100 }")" \
+          | tee -a "$GITHUB_STEP_SUMMARY"
+        rm -rf build-control
+
+        go build -tags "$LITE_TAGS" -trimpath $GCFLAGS \
+          -ldflags="$LDFLAGS" -o build/plugins/dummy_internal/f4-internal-dummy-plugin$EXT \
+          ./plugins/dummy_internal
+
+        cp -r internal/i18n/lang internal/dialog/help build/
+        cp f4.example.ini build/
+        mkdir -p build/licenses
+        cp plugins/visren/LICENSE.upstream build/licenses/VisRen-BSD-3-Clause.txt
+
+    - name: Smoke test the binary
+      # Same mechanism as build-batch above: qemu-user-static's binaries run a
+      # foreign-architecture static executable directly, no container needed.
+      # The Windows binary cannot run on this Linux runner.
+      if: matrix.goos != 'windows'
+      run: |
+        set -euo pipefail
+        if [ "${{ matrix.goarch }}" = "amd64" ]; then
+          bash scripts/check_release_version.sh ./build/f4 --version </dev/null
+          exit 0
+        fi
+        case "${{ matrix.goarch }}" in
+          arm)    QEMU=arm ;;
+          mipsle) QEMU=mipsel ;;
+          *)      QEMU="${{ matrix.goarch }}" ;;
+        esac
+        sudo apt-get update -qq </dev/null
+        sudo apt-get install -y -qq qemu-user-static </dev/null
+        bash scripts/check_release_version.sh "qemu-$QEMU-static" ./build/f4 --version </dev/null
+
+    # Every lite archive is a .tar.gz, the Windows one included (#1656). A
+    # lite .zip ends with "-windows-amd64.zip", and f4 up to v0.1.3-alpha
+    # takes the first asset by name with that suffix: f4-lite-windows-amd64.zip
+    # sorts before f4-windows-amd64.zip, so the regular edition would update
+    # itself into lite. No regular Windows updater looks for a .tar.gz, and
+    # the lite updater unpacks one on every OS.
+    - name: Package
+      run: |
+        set -euo pipefail
+        rm -rf package
+        mkdir -p package/f4
+        cp -a build/. package/f4/
+        tar -czvf "$ASSET.tar.gz" -C package f4
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ env.ASSET }}
+        path: ${{ env.ASSET }}.*
+        retention-days: 7
+
+  # f4#1178 part 1 of 4 (plan: issuecomment-5851218447 on #1178): CloudFox
+  # (S3/Google Drive/Yandex Disk/WebDAV, plugins/cloudfox) moved out of the
+  # main module into its own module and its own subprocess RPC plugin
+  # binary, so the build job above no longer builds or tests it as part of
+  # ./cmd/f4. This job is that binary's own build: it exists to prove the
+  # extraction actually compiles, on a desktop matrix (native plugins are not
+  # distributed through the community PlugRing catalog per PLUGRING.md, so
+  # the exotic build-batch tier does not apply). It intentionally runs on
+  # pull requests too, unlike build-lite, since verifying this split is
+  # exactly what this PR is.
+  #
+  # go.mod here was written by hand (this repo's policy is CI-only
+  # builds/toolchain runs, never local -- see plugins/cloudfox/go.mod's own
+  # comment), so `go mod tidy` runs first rather than assuming it is already
+  # correct.
+  #
+  # f4#1178 part 2 of 4: the release job below now publishes these builds as
+  # GitHub Release assets, at the path plugring-manifest.json's URL template
+  # expects. NOTE: this matrix only has 4 cells (windows/arm64 and
+  # darwin/arm64 are missing) while the main `build` job above targets 6; a
+  # user on either missing platform gets a 404 from the manifest URL today.
+  # Widening this matrix is left to a later part -- it changes CI job budget
+  # (see LUNOBOT.md), which this part deliberately did not touch.
+  #
+  # f4#1178 part 3 of 4: "not distributed through the community PlugRing
+  # catalog" above is still true of plugring/index.yaml specifically -- that
+  # is the file PLUGRING.md's policy governs, and a native per-platform
+  # binary still does not belong in it. It is no longer the whole story:
+  # internal/plughost/plugring_firstparty.go now offers this same binary
+  # through a separate, explicitly first-party PlugRing entry that the
+  # community distribution policy does not apply to (same repository, same
+  # review, same CI -- not a third party's unreviewable binary).
+  build-cloudfox-plugin:
+    name: Build cloudfox-plugin (${{ matrix.name }})
+    needs: [should-run-full]
+    if: needs.should-run-full.outputs.run-full == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux/amd64
+            goos: linux
+            goarch: amd64
+          - name: linux/arm64
+            goos: linux
+            goarch: arm64
+          - name: windows/amd64
+            goos: windows
+            goarch: amd64
+          - name: darwin/amd64
+            goos: darwin
+            goarch: amd64
+    env:
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+    defaults:
+      run:
+        working-directory: plugins/cloudfox
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v7
+
+    - name: Set up Go
+      uses: actions/setup-go@v7
+      with:
+        go-version: '1.26.9'
+        cache-dependency-path: plugins/cloudfox/go.sum
+
+    # go mod tidy asks sum.golang.org and proxy.golang.org for every module of a
+    # plugin, and a transient answer from either ("stream error ... INTERNAL_ERROR
+    # ... reading https://sum.golang.org/tile/...") turned a whole job red on
+    # main and on trains (30-09-2026, main eb17c3a0a and train unxed/f4#1707).
+    # The go.mod files of these modules are only settled by this step, so it is
+    # retried instead of the job.
+    - name: go mod tidy
+      shell: bash
+      run: |
+        for attempt in 1 2 3 4; do
+          go mod tidy && exit 0
+          echo "go mod tidy failed (attempt $attempt of 4); retrying"
+          sleep $((attempt * 20))
+        done
+        exit 1
+
+    - name: Build cloudfox-plugin
+      run: go build -trimpath -o cloudfox-plugin ./cmd/cloudfox-plugin
+
+    - name: Run go vet (host GOOS/GOARCH only)
+      if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+      run: go vet ./...
+
+    # f4#1178 part 2 of 4: package into the same {os}-{arch} archive name
+    # plugring-manifest.json's URL template expects, for two reasons. First,
+    # the `release` job below downloads every artifact from this run with
+    # `merge-multiple: true`; four matrix cells all producing a file literally
+    # named `cloudfox-plugin` would collide into one arbitrary binary instead
+    # of publishing four platform assets. Second, the release asset name has
+    # to be predictable for the manifest URL to resolve at all.
+    #
+    # .tgz, not .tar.gz (#1656): the updater of every f4 released before
+    # that fix takes the first asset whose name ends with
+    # "-<os>-<arch>.tar.gz", and GitHub lists assets by name, so
+    # cloudfox-plugin-linux-amd64.tar.gz would be installed in place of
+    # f4-linux-amd64.tar.gz. The PlugRing installer reads both extensions.
+    - name: Package cloudfox-plugin
+      run: tar -czvf "cloudfox-plugin-$GOOS-$GOARCH.tgz" cloudfox-plugin
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v7
+      with:
+        name: cloudfox-plugin-${{ matrix.goos }}-${{ matrix.goarch }}
+        path: plugins/cloudfox/cloudfox-plugin-${{ matrix.goos }}-${{ matrix.goarch }}.tgz
+        retention-days: 7
+
+  # f4#1178 Android plugin, part 1 of 4 (mirrors build-cloudfox-plugin above,
+  # per the owner's decision at
+  # https://github.com/unxed/f4/issues/1178#issuecomment-5851392645 to give
+  # Android the same "download this plugin on demand" treatment as cloud
+  # storage/iOS). plugins/android (ADB device browsing over shell-v2/FISH+
+  # or ADB Sync) no longer links into f4 at all, in either the full or the
+  # lite build; this job builds its own extracted module as its own binary
+  # to prove the extraction compiles, on the same desktop matrix
+  # build-cloudfox-plugin uses (native plugins are not distributed through
+  # the community PlugRing catalog per PLUGRING.md, so the exotic
+  # build-batch tier does not apply here either).
+  #
+  # Unlike CloudFox, plugins/android has no unique heavy dependency of its
+  # own to shed -- see plugins/android/rpc_plugin.go's package comment for
+  # why this job still passes -tags lite: plugins/netfox (which
+  # plugins/android reuses for FISH+) gates its FTP/SFTP/SSH-dialer/Pageant
+  # files with //go:build lite/!lite rather than splitting them into a
+  # separate module, so a plain `go build` here would otherwise link all of
+  # that in even though plugins/android's own code never references it.
+  #
+  # go.mod here was written by hand, for the same reason
+  # plugins/cloudfox/go.mod's own comment gives (this repo's policy is
+  # CI-only builds/toolchain runs, never local): the `go mod tidy` step
+  # below is the actual source of truth for it and go.sum.
+  #
+  # f4#1178 part 2 of 4: the release job below now publishes these builds as
+  # GitHub Release assets too, at the path plugring-manifest.json's URL
+  # template expects (mirrors build-cloudfox-plugin's own part 2). Same
+  # caveat as that job: this matrix only has 4 of the 6 desktop cells (no
+  # windows/arm64, darwin/arm64), so those two platforms still 404 on the
+  # manifest URL; widening it is left to a later part, same reasoning as
+  # cloudfox's own part 2 (CI job budget, see LUNOBOT.md).
+  #
+  # An install path through PlugRing (part 3) and a lite/full-build menu
+  # entry (part 4) are still follow-up, exactly as they were for CloudFox.
+  build-android-plugin:
+    name: Build android-plugin (${{ matrix.name }})
+    needs: [should-run-full]
+    if: needs.should-run-full.outputs.run-full == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux/amd64
+            goos: linux
+            goarch: amd64
+          - name: linux/arm64
+            goos: linux
+            goarch: arm64
+          - name: windows/amd64
+            goos: windows
+            goarch: amd64
+          - name: darwin/amd64
+            goos: darwin
+            goarch: amd64
+    env:
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+    defaults:
+      run:
+        working-directory: plugins/android
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v7
+
+    - name: Set up Go
+      uses: actions/setup-go@v7
+      with:
+        go-version: '1.26.9'
+        cache-dependency-path: plugins/android/go.sum
+
+    # go.sum entries don't affect the compiled binary -- that's controlled
+    # by `-tags lite` on the actual build step below -- so a plain tidy
+    # here is fine even though it resolves plugins/netfox's full (non-lite)
+    # file set too; `go mod tidy` has no `-tags` flag to scope that (it
+    # fails outright: "flag provided but not defined: -tags").
+    # go mod tidy asks sum.golang.org and proxy.golang.org for every module of a
+    # plugin, and a transient answer from either ("stream error ... INTERNAL_ERROR
+    # ... reading https://sum.golang.org/tile/...") turned a whole job red on
+    # main and on trains (30-09-2026, main eb17c3a0a and train unxed/f4#1707).
+    # The go.mod files of these modules are only settled by this step, so it is
+    # retried instead of the job.
+    - name: go mod tidy
+      shell: bash
+      run: |
+        for attempt in 1 2 3 4; do
+          go mod tidy && exit 0
+          echo "go mod tidy failed (attempt $attempt of 4); retrying"
+          sleep $((attempt * 20))
+        done
+        exit 1
+
+    - name: Build android-plugin
+      run: go build -trimpath -tags lite -o android-plugin ./cmd/android-plugin
+
+    - name: Run go vet (host GOOS/GOARCH only)
+      if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+      run: go vet -tags lite ./...
+
+    # f4#1178 part 2 of 4: package into the same {os}-{arch} archive name
+    # plugring-manifest.json's URL template expects, for the same two reasons
+    # as build-cloudfox-plugin's own Package step: the `release`/`nightly`
+    # jobs below sweep every workflow artifact into one directory with
+    # `merge-multiple: true`, so four matrix cells all producing a file
+    # literally named `android-plugin` would collide into one arbitrary
+    # binary instead of publishing four platform assets; and the release
+    # asset name has to be predictable for the manifest URL to resolve.
+    # .tgz, not .tar.gz, so that no updater already released takes it for
+    # f4's own archive: see the cloudfox-plugin package step (#1656).
+    - name: Package android-plugin
+      run: tar -czvf "android-plugin-$GOOS-$GOARCH.tgz" android-plugin
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v7
+      with:
+        name: android-plugin-${{ matrix.goos }}-${{ matrix.goarch }}
+        path: plugins/android/android-plugin-${{ matrix.goos }}-${{ matrix.goarch }}.tgz
+        retention-days: 7
+
+  # f4#1178 iOS plugin, part 1 of 4 (plan: issuecomment-5851326218 on #1178,
+  # decided at issuecomment-5851392645): plugins/ios (go-ios and its fully
+  # separate userspace networking dependency chain -- gvisor.dev/gvisor,
+  # quic-go, vishvananda/netlink+netns, songgao/water, miekg/dns,
+  # grandcat/zeroconf, howett.net/plist, go.mozilla.org/pkcs7,
+  # software.sslmate.com/src/go-pkcs12, golang.zx2c4.com/wintun) moved out of
+  # the main module into its own module and its own subprocess RPC plugin
+  # binary, so the build job above no longer builds or tests it as part of
+  # ./cmd/f4. This job is that binary's own build: it exists to prove the
+  # extraction actually compiles, on the same desktop matrix
+  # build-cloudfox-plugin/build-android-plugin use (native plugins are not
+  # distributed through the community PlugRing catalog per PLUGRING.md, so
+  # the exotic build-batch tier does not apply). USB/usbmuxd access is a
+  # desktop-only concern anyway (see plugins/ios/README.md's Requirements
+  # section), so there is no separate mobile/embedded cell to add here.
+  #
+  # Like plugins/cloudfox/go.mod, plugins/ios/go.mod was written by hand
+  # (this repo's policy is CI-only builds/toolchain runs, never local), so
+  # `go mod tidy` runs first rather than assuming it is already correct.
+  #
+  # f4#1178 part 2 of 4: the release job below now publishes these builds as
+  # GitHub Release assets, at the path plugring-manifest.json's URL template
+  # expects. NOTE: this matrix only has 4 cells (windows/arm64 and
+  # darwin/arm64 are missing) while the main `build` job above targets 6; a
+  # user on either missing platform gets a 404 from the manifest URL today.
+  # Widening this matrix is left to a later part -- it changes CI job budget
+  # (see LUNOBOT.md), which this part deliberately did not touch. This
+  # mirrors build-cloudfox-plugin's own part 2 change exactly, including its
+  # 4-cell gap.
+  build-ios-plugin:
+    name: Build ios-plugin (${{ matrix.name }})
+    needs: [should-run-full]
+    if: needs.should-run-full.outputs.run-full == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux/amd64
+            goos: linux
+            goarch: amd64
+          - name: linux/arm64
+            goos: linux
+            goarch: arm64
+          - name: windows/amd64
+            goos: windows
+            goarch: amd64
+          - name: darwin/amd64
+            goos: darwin
+            goarch: amd64
+    env:
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+    defaults:
+      run:
+        working-directory: plugins/ios
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v7
+
+    - name: Set up Go
+      uses: actions/setup-go@v7
+      with:
+        go-version: '1.26.9'
+        cache-dependency-path: plugins/ios/go.sum
+
+    # go mod tidy asks sum.golang.org and proxy.golang.org for every module of a
+    # plugin, and a transient answer from either ("stream error ... INTERNAL_ERROR
+    # ... reading https://sum.golang.org/tile/...") turned a whole job red on
+    # main and on trains (30-09-2026, main eb17c3a0a and train unxed/f4#1707).
+    # The go.mod files of these modules are only settled by this step, so it is
+    # retried instead of the job.
+    - name: go mod tidy
+      shell: bash
+      run: |
+        for attempt in 1 2 3 4; do
+          go mod tidy && exit 0
+          echo "go mod tidy failed (attempt $attempt of 4); retrying"
+          sleep $((attempt * 20))
+        done
+        exit 1
+
+    - name: Build ios-plugin
+      run: go build -trimpath -o ios-plugin ./cmd/ios-plugin
+
+    - name: Run go vet (host GOOS/GOARCH only)
+      if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+      run: go vet ./...
+
+    # f4#1178 part 2 of 4: package into the same {os}-{arch} archive name
+    # plugring-manifest.json's URL template expects, for two reasons. First,
+    # the `release` job below downloads every artifact from this run with
+    # `merge-multiple: true`; four matrix cells all producing a file literally
+    # named `ios-plugin` would collide into one arbitrary binary instead of
+    # publishing four platform assets. Second, the release asset name has to
+    # be predictable for the manifest URL to resolve at all.
+    # .tgz, not .tar.gz, so that no updater already released takes it for
+    # f4's own archive: see the cloudfox-plugin package step (#1656).
+    - name: Package ios-plugin
+      run: tar -czvf "ios-plugin-$GOOS-$GOARCH.tgz" ios-plugin
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v7
+      with:
+        name: ios-plugin-${{ matrix.goos }}-${{ matrix.goarch }}
+        path: plugins/ios/ios-plugin-${{ matrix.goos }}-${{ matrix.goarch }}.tgz
+        retention-days: 7
+
+  # Android for f4 means Termux (#882). A plain CGO_ENABLED=0 cross-build
+  # starts from a shell but dies the moment it re-execs itself for the
+  # daemon: untrusted_app on current Android refuses to exec such a file,
+  # and the lookup of Termux's own libraries never happens. What works on
+  # the device is the NDK build: cgo, Bionic's loader, and a RUNPATH
+  # pointing at $PREFIX/lib so the binary binds against Termux's libc the
+  # way every other Termux package does. The runner image ships the NDK
+  # (ANDROID_NDK_ROOT), so nothing has to be installed. API level 24 is
+  # Termux's floor.
+  #
+  # Cells: arm64, which covers nearly every active Android device, and
+  # 32-bit armv7 (#1380). The asset is named after GOARCH because that is
+  # what the in-app updater asks for (internal/update assetSuffixes:
+  # android/arm -> -termux-arm.tar.gz); deb_arch is Termux's own name for
+  # the architecture, which is what apt in Termux compares against. GOARM=7
+  # is what Termux itself builds its Go packages with on arm. x86_64 can be
+  # added as another cell on request.
+  build-termux:
+    name: Build (termux/${{ matrix.goarch }})
+    needs: [should-run-full]
+    if: needs.should-run-full.outputs.run-full == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goarch: arm64
+            goarm: ''
+            cc: aarch64-linux-android24-clang
+            deb_arch: aarch64
+            elf_machine: AArch64
+          - goarch: arm
+            goarm: '7'
+            cc: armv7a-linux-androideabi24-clang
+            deb_arch: arm
+            elf_machine: ARM
+    env:
+      GOOS: android
+      GOARCH: ${{ matrix.goarch }}
+      GOARM: ${{ matrix.goarm }}
+      CGO_ENABLED: 1
+      TERMUX_PREFIX: /data/data/com.termux/files/usr
+      ASSET: f4-termux-${{ matrix.goarch }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v7
+      with:
+        submodules: recursive
+
+    - name: Set up Go
+      uses: actions/setup-go@v7
+      with:
+        go-version: '1.26.9'
         cache-dependency-path: go.sum
 
     - name: Compute build impact
@@ -599,12 +1203,12 @@ jobs:
       run: |
         set -euo pipefail
         NDK_BIN="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
-        export CC="$NDK_BIN/aarch64-linux-android24-clang"
+        export CC="$NDK_BIN/${{ matrix.cc }}"
         "$CC" --version | head -1
 
         APP_LDFLAGS="-s -w -r $TERMUX_PREFIX/lib"
         if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-          APP_LDFLAGS="$APP_LDFLAGS -X main.buildVersion=$GITHUB_REF_NAME"
+          APP_LDFLAGS="$APP_LDFLAGS -X $VERSION_SYMBOL=$GITHUB_REF_NAME"
         fi
 
         mkdir -p build
@@ -613,16 +1217,21 @@ jobs:
         cp f4.example.ini build/
         mkdir -p build/licenses
         cp plugins/visren/LICENSE.upstream build/licenses/VisRen-BSD-3-Clause.txt
-        cp plugins/ios/LICENSE.go-ios build/licenses/go-ios-MIT.txt
 
     # The binary cannot run here (it needs Bionic's loader), so assert the
     # two things that separate it from the useless pure-Go build instead:
     # it is dynamically linked and it names $PREFIX/lib as its RUNPATH.
+    # Also that it is built for the cell's machine, so a wrong CC or GOARCH
+    # in the matrix cannot publish one architecture under another's name.
     - name: Check the ELF contract
       if: steps.affected.outputs.build == 'yes'
+      env:
+        ELF_MACHINE: ${{ matrix.elf_machine }}
       run: |
         set -euo pipefail
         file build/f4
+        readelf -h build/f4 | tee /tmp/hdr
+        grep -Eq "^[[:space:]]*Machine:[[:space:]]+$ELF_MACHINE\$" /tmp/hdr
         readelf -d build/f4 | tee /tmp/dyn
         grep -q 'NEEDED' /tmp/dyn
         grep -q "RUNPATH.*$TERMUX_PREFIX/lib" /tmp/dyn
@@ -630,16 +1239,22 @@ jobs:
     # Two artifacts. The tarball mirrors the other platforms and is what
     # the in-app updater picks up (internal/update assetSuffixes maps GOOS=android
     # to the termux name). The .deb is the
-    # native way to install in Termux: `pkg install ./f4-termux-arm64.deb`.
+    # native way to install in Termux: `pkg install ./f4-termux-arm64.deb`
+    # (./f4-termux-arm.deb on armv7).
     # Termux runs with no chroot, so the paths inside are absolute
     # $PREFIX paths. Assets live in share/f4 next to the real binary and
     # bin/f4 is a symlink into it, which is how f4 finds help/ next to
     # os.Executable() without any lookup changes.
     - name: Package
       if: steps.affected.outputs.build == 'yes'
+      env:
+        DEB_ARCH: ${{ matrix.deb_arch }}
       run: |
         set -euo pipefail
-        tar -czvf "$ASSET.tar.gz" -C build .
+        rm -rf package
+        mkdir -p package/f4
+        cp -a build/. package/f4/
+        tar -czvf "$ASSET.tar.gz" -C package f4
 
         VERSION="0.0.${GITHUB_RUN_NUMBER}"
         if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
@@ -654,7 +1269,7 @@ jobs:
         cat > "$DEB/DEBIAN/control" <<EOF
         Package: f4
         Version: $VERSION
-        Architecture: aarch64
+        Architecture: $DEB_ARCH
         Maintainer: unxed <https://github.com/unxed/f4>
         Homepage: https://github.com/unxed/f4
         Description: efficient and cozy two-panel file manager
@@ -675,20 +1290,24 @@ jobs:
         path: ${{ env.ASSET }}.*
         retention-days: 7
 
-  # sync/atomic отсутствуют методы Or/And у типизированных атомиков
-  # (добавлены в Go 1.23, см. https://go.dev/issue/61395) — это баг
-  # именно сборки тулчейна, а не самого Go 1.26.6
-  # (см. https://github.com/thongtech/go-legacy-win7/issues/13, ещё не
-  # исправлено апстримом). Без них не собираются github.com/gogpu/gg и
-  # github.com/ncruces/go-sqlite3. Вместо патчинга каждой такой
-  # зависимости по отдельности (как это было проверено вручную в
-  # issue #514) добавляем недостающие методы один раз прямо в GOROOT
-  # скачанного тулчейна — это эквивалентно апстримному фиксу и не требует
-  # правок go.mod. Если thongtech поправят это в своей сборке, наш файл
-  # с большой вероятностью начнёт конфликтовать (duplicate method) —
-  # тогда этот шаг нужно будет просто удалить.
+  # Эта джоба собирает Windows-бинарник тулчейном thongtech/go-legacy-win7,
+  # чтобы f4 можно было запускать на Windows 7/8/8.1 (см. issue #514).
+  #
+  # Нужен релиз не старше go-legacy-win7-1.26.8-1: в более ранних сборках
+  # не хватало части API стандартной библиотеки Go той же версии.
+  # В 1.26.6-1 не было методов Or/And у типизированных
+  # атомиков sync/atomic (thongtech/go-legacy-win7#13; без них не
+  # собираются github.com/gogpu/gg и github.com/ncruces/go-sqlite3), а до
+  # 1.26.7-1 включительно не было os.Root.RemoveAll (Go 1.25), который
+  # использует github.com/unxed/zip начиная с v0.1.133. Раньше Or/And
+  # дописывались прямо в GOROOT отдельным шагом; с 1.26.8-1 оба API на
+  # месте (релиз собран на переработанной серии патчей: API апстрима
+  # сохраняется, фоллбэки для Windows 7 — внутри), а тот шаг давал бы
+  # ошибку "method already declared", поэтому он удалён.
   build-win7:
     name: Build (windows7/amd64)
+    needs: [should-run-full]
+    if: needs.should-run-full.outputs.run-full == 'true'
     runs-on: ubuntu-latest
     env:
       CGO_ENABLED: 0
@@ -704,7 +1323,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v7
       with:
-        go-version: '1.26.6'
+        go-version: '1.26.9'
         cache-dependency-path: go.sum
 
     - name: Compute build impact
@@ -717,115 +1336,12 @@ jobs:
         set -euo pipefail
         curl -fL --retry 5 --retry-delay 10 --retry-all-errors \
           -o go-legacy-win7.tar.gz \
-          https://github.com/thongtech/go-legacy-win7/releases/download/v1.26.6-1/go-legacy-win7-1.26.6-1.linux_amd64.tar.gz
-        echo "a197a93c1ec009f600155d20f4c8cc388560cbc55748f99c1c0dd5b29ef52c05  go-legacy-win7.tar.gz" | sha256sum -c -
+          https://github.com/thongtech/go-legacy-win7/releases/download/v1.26.8-1/go-legacy-win7-1.26.8-1.linux_amd64.tar.gz
+        echo "0e8f70bc5c2f7a31ace600092453717ced935358e20c4f2cc9305309b0e283ee  go-legacy-win7.tar.gz" | sha256sum -c -
         mkdir -p "$HOME/go-legacy-win7"
         tar -xzf go-legacy-win7.tar.gz -C "$HOME/go-legacy-win7"
         echo "GOROOT=$HOME/go-legacy-win7/go-legacy-win7" >> "$GITHUB_ENV"
         echo "$HOME/go-legacy-win7/go-legacy-win7/bin" >> "$GITHUB_PATH"
-
-    - name: Restore missing sync/atomic Or/And methods (thongtech/go-legacy-win7#13)
-      if: steps.affected.outputs.build == 'yes'
-      run: |
-        cat > "$GOROOT/src/sync/atomic/or_and_win7compat.go" <<'EOF'
-        // This file restores the Or/And methods on typed atomics (added
-        // upstream in Go 1.23, see https://go.dev/issue/61395) that are
-        // missing from the go-legacy-win7-1.26.6-1 toolchain despite it
-        // being based on Go 1.26.6. See
-        // https://github.com/thongtech/go-legacy-win7/issues/13.
-        // Remove this file once that's fixed upstream.
-        package atomic
-
-        func (x *Int32) Or(mask int32) (old int32) {
-        	for {
-        		old = x.Load()
-        		if x.CompareAndSwap(old, old|mask) {
-        			return old
-        		}
-        	}
-        }
-
-        func (x *Int32) And(mask int32) (old int32) {
-        	for {
-        		old = x.Load()
-        		if x.CompareAndSwap(old, old&mask) {
-        			return old
-        		}
-        	}
-        }
-
-        func (x *Int64) Or(mask int64) (old int64) {
-        	for {
-        		old = x.Load()
-        		if x.CompareAndSwap(old, old|mask) {
-        			return old
-        		}
-        	}
-        }
-
-        func (x *Int64) And(mask int64) (old int64) {
-        	for {
-        		old = x.Load()
-        		if x.CompareAndSwap(old, old&mask) {
-        			return old
-        		}
-        	}
-        }
-
-        func (x *Uint32) Or(mask uint32) (old uint32) {
-        	for {
-        		old = x.Load()
-        		if x.CompareAndSwap(old, old|mask) {
-        			return old
-        		}
-        	}
-        }
-
-        func (x *Uint32) And(mask uint32) (old uint32) {
-        	for {
-        		old = x.Load()
-        		if x.CompareAndSwap(old, old&mask) {
-        			return old
-        		}
-        	}
-        }
-
-        func (x *Uint64) Or(mask uint64) (old uint64) {
-        	for {
-        		old = x.Load()
-        		if x.CompareAndSwap(old, old|mask) {
-        			return old
-        		}
-        	}
-        }
-
-        func (x *Uint64) And(mask uint64) (old uint64) {
-        	for {
-        		old = x.Load()
-        		if x.CompareAndSwap(old, old&mask) {
-        			return old
-        		}
-        	}
-        }
-
-        func (x *Uintptr) Or(mask uintptr) (old uintptr) {
-        	for {
-        		old = x.Load()
-        		if x.CompareAndSwap(old, old|mask) {
-        			return old
-        		}
-        	}
-        }
-
-        func (x *Uintptr) And(mask uintptr) (old uintptr) {
-        	for {
-        		old = x.Load()
-        		if x.CompareAndSwap(old, old&mask) {
-        			return old
-        		}
-        	}
-        }
-        EOF
 
     - name: Build binaries
       if: steps.affected.outputs.build == 'yes'
@@ -834,25 +1350,34 @@ jobs:
         LDFLAGS="-s -w"
         APP_LDFLAGS="$LDFLAGS"
         if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-          APP_LDFLAGS="$APP_LDFLAGS -X main.buildVersion=$GITHUB_REF_NAME"
+          APP_LDFLAGS="$APP_LDFLAGS -X $VERSION_SYMBOL=$GITHUB_REF_NAME"
         fi
 
-        go build -trimpath -ldflags="$APP_LDFLAGS" -o build/f4.exe ./cmd/f4
-        # GUI-only binary (no console flash), same as in the main matrix.
-        go build -trimpath -ldflags="$APP_LDFLAGS -H windowsgui" -o build/f4-gui.exe ./cmd/f4
+        # -tags win7 tells the updater it is this build, so it updates to
+        # f4-windows7-amd64.zip. Without it, it asked for the regular Windows
+        # archive like any windows/amd64 f4, and installed a build that
+        # does not start on Windows 7/8/8.1 (#1656). The release check reads
+        # the tag back from the archive.
+        go build -tags win7 -trimpath -ldflags="$APP_LDFLAGS" -o build/f4.exe ./cmd/f4
+        # f4-gui.exe: the launcher, same as in the main matrix (f4#1567).
+        go build -trimpath -ldflags="-s -w -H windowsgui" -o build/f4-gui.exe ./cmd/f4-gui-launcher
 
         cp -r internal/i18n/lang internal/dialog/help build/
         cp f4.example.ini build/
         mkdir -p build/licenses
         cp plugins/visren/LICENSE.upstream build/licenses/VisRen-BSD-3-Clause.txt
-        cp plugins/ios/LICENSE.go-ios build/licenses/go-ios-MIT.txt
 
         cd plugins/dummy_internal
         go build -trimpath -ldflags="$LDFLAGS" -o ../../build/plugins/dummy_internal/f4-internal-dummy-plugin.exe .
 
     - name: Package
       if: steps.affected.outputs.build == 'yes'
-      run: (cd build && zip -r ../f4-windows7-amd64.zip .)
+      run: |
+        set -euo pipefail
+        rm -rf package
+        mkdir -p package/f4
+        cp -a build/. package/f4/
+        (cd package && zip -r ../f4-windows7-amd64.zip f4)
 
     - name: Upload Artifact
       if: steps.affected.outputs.build == 'yes'
@@ -860,6 +1385,183 @@ jobs:
       with:
         name: f4-windows7-amd64
         path: f4-windows7-amd64.zip
+        retention-days: 7
+
+  # Windows before 10 cannot load a binary built by any Go since 1.21: the
+  # runtime imports six kernel32 entry points that are not there, starting with
+  # WerSetFlags, and the loader refuses the process before main runs. This job
+  # builds the one artifact that does run there -- windows/386, stock toolchain,
+  # with the go2xp shim linked in and the import table repointed at its
+  # polyfills afterwards (github.com/unxed/go2xp).
+  #
+  # One artifact serves Windows XP SP3 and ReactOS, built with the XP profile.
+  # The header is what makes that possible: XP refuses an image whose OS or
+  # subsystem version is above 5.1 ("not a valid Win32 application", issue
+  # #897), and ReactOS, which reports 5.2, loads anything up to that. The
+  # earlier ReactOS profile declared 5.2 and so could not start on XP at all.
+  #
+  # The cost falls on ReactOS and is small: the XP profile redirects ReOpenFile,
+  # FindFirstStreamW and FindNextStreamW to failing stubs, and ReactOS has real
+  # ones. f4 calls none of them itself; Go's standard library reaches ReOpenFile
+  # only to chmod a read-only file inside an os.Root, and NTFS streams do not
+  # exist on the FAT volumes ReactOS installs onto. The ReactOS result was
+  # measured with the ReactOS profile (f4 draws its panels, copies, views, edits
+  # and runs commands there); this artifact has not been run on ReactOS or on XP
+  # yet. XP needs a machine to sign it off (docs/WINE.md, legacy Windows).
+  #
+  # go2xp is pinned by commit: it decides which imports get redirected, and a
+  # silent change there would change the artifact without changing this tree.
+  # -ldflags keeps symbols (-w, no -s) because "go2xp audit" reads the proc*
+  # symbol names to report what the target lacks; the audit is the gate that
+  # fails this job if an absent export is neither polyfilled nor accepted by
+  # the profile.
+  #
+  # release and nightly must list this job in needs. They download every
+  # artifact of the run with no filter, so a job missing from needs got into
+  # the release only when it happened to finish before they started -- and the
+  # README links f4-legacy-windows-386.zip as the ReactOS download.
+  build-reactos:
+    name: Build (legacy windows/386)
+    needs: [should-run-full]
+    if: needs.should-run-full.outputs.run-full == 'true'
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: 0
+      GOOS: windows
+      GOARCH: 386
+      GO2XP_REF: cd906f3002233bda80e91dd1ad0728aa6ec8f1d6
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v7
+      with:
+        submodules: recursive
+
+    - name: Set up Go
+      uses: actions/setup-go@v7
+      with:
+        go-version: '1.26.9'
+        cache-dependency-path: go.sum
+
+    - name: Compute build impact
+      id: affected
+      uses: ./.github/actions/affected-packages
+
+    - name: Check out go2xp
+      if: steps.affected.outputs.build == 'yes'
+      uses: actions/checkout@v7
+      with:
+        repository: unxed/go2xp
+        ref: ${{ env.GO2XP_REF }}
+        path: go2xp-src
+
+    - name: Move go2xp outside the f4 checkout
+      if: steps.affected.outputs.build == 'yes'
+      run: mv go2xp-src "$RUNNER_TEMP/go2xp-src"
+
+    - name: Generate the windows/386 icon resource
+      if: steps.affected.outputs.build == 'yes'
+      run: |
+        set -euo pipefail
+        # tools/icons (see its go:generate directive in cmd/f4/main.go) only
+        # calls go-winres for --arch amd64,arm64, because those are the only
+        # GOARCH values the regular Windows build matrix uses, so no
+        # rsrc_windows_386.syso is checked in and this job's go build linked
+        # no icon at all (f4#897, item 1 of 3). A .syso is picked up by the
+        # linker automatically as long as it sits next to main.go, exactly
+        # like the checked-in amd64/arm64 ones, so generate it here instead
+        # of checking in another binary asset; same tool, pinned version and
+        # icon file as tools/icons/main.go's makeWindowsResources.
+        # GOOS/GOARCH are job-level env for cross-compiling f4.exe itself;
+        # go-winres has to run on the runner, not on the (386) target.
+        (cd cmd/f4 && env -u GOOS -u GOARCH go run github.com/tc-hib/go-winres@v0.3.3 simply \
+          --arch 386 \
+          --out rsrc \
+          --manifest gui \
+          --product-name f4 \
+          --file-description "f4 file manager" \
+          --original-filename f4.exe \
+          --icon ../../internal/gui/assets/icon/generated/f4.ico)
+        ls -l cmd/f4/rsrc_windows_386.syso
+
+    - name: Build binaries
+      if: steps.affected.outputs.build == 'yes'
+      run: |
+        set -euo pipefail
+        # A throwaway modfile keeps f4's own go.mod free of the dependency:
+        # every other build target has no use for it.
+        cp go.mod /tmp/f4-go2xp.mod
+        cp go.sum /tmp/f4-go2xp.sum
+        go mod edit -modfile=/tmp/f4-go2xp.mod \
+          -require=github.com/unxed/go2xp@v0.0.0 \
+          -replace=github.com/unxed/go2xp="$RUNNER_TEMP/go2xp-src"
+
+        mkdir -p build
+        LDFLAGS="-w"
+        APP_LDFLAGS="$LDFLAGS"
+        if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+          APP_LDFLAGS="$APP_LDFLAGS -X $VERSION_SYMBOL=$GITHUB_REF_NAME"
+        fi
+        go build -trimpath -ldflags="$APP_LDFLAGS" -tags=go2xp \
+          -modfile=/tmp/f4-go2xp.mod -o build/f4.exe ./cmd/f4
+
+        cp -r internal/i18n/lang internal/dialog/help build/
+        cp f4.example.ini build/
+
+    - name: Verify clean embedded revision
+      if: steps.affected.outputs.build == 'yes'
+      run: |
+        set -euo pipefail
+        metadata="$(go version -m build/f4.exe)"
+        printf '%s\n' "$metadata"
+        if grep -Eq 'vcs\.modified(=|[[:space:]])true' <<<"$metadata"; then
+          echo 'go build embedded vcs.modified=true' >&2
+          exit 1
+        fi
+
+    - name: Patch the import table and audit it
+      if: steps.affected.outputs.build == 'yes'
+      run: |
+        set -euo pipefail
+        # The patcher runs on the runner, not on the target.
+        go2xp_dir="$RUNNER_TEMP/go2xp-src"
+        (cd "$go2xp_dir" && env -u GOOS -u GOARCH go build -o /tmp/go2xp ./cmd/go2xp)
+        profile="$go2xp_dir/profiles/xp.json"
+        /tmp/go2xp patch -profile "$profile" build/f4.exe build/f4-legacy.exe \
+          | tee build/go2xp-patch.txt
+        /tmp/go2xp verify -profile "$profile" build/f4-legacy.exe
+        # The version XP checks is in the PE header, and a profile that
+        # declares more than 5.1 makes the artifact unstartable there.
+        python3 - build/f4-legacy.exe <<'EOF'
+        import struct, sys
+        d = open(sys.argv[1], 'rb').read()
+        opt = struct.unpack_from('<I', d, 0x3c)[0] + 24
+        os_v = struct.unpack_from('<HH', d, opt + 40)
+        ss_v = struct.unpack_from('<HH', d, opt + 48)
+        print('PE header: OS %d.%d, subsystem %d.%d' % (os_v + ss_v))
+        if os_v > (5, 1) or ss_v > (5, 1):
+            sys.exit('a header above 5.1 is refused by Windows XP SP3 (not a valid Win32 application)')
+        EOF
+        /tmp/go2xp audit -profile "$profile" build/f4-legacy.exe \
+          | tee build/go2xp-audit.txt
+        (cd "$go2xp_dir" && git rev-parse HEAD) > build/go2xp-commit.txt
+        rm build/f4.exe
+
+    - name: Package
+      if: steps.affected.outputs.build == 'yes'
+      run: |
+        set -euo pipefail
+        rm -rf package
+        mkdir -p package/f4
+        cp -a build/. package/f4/
+        (cd package && zip -r ../f4-legacy-windows-386.zip f4)
+
+    - name: Upload Artifact
+      if: steps.affected.outputs.build == 'yes'
+      uses: actions/upload-artifact@v7
+      with:
+        name: f4-legacy-windows-386
+        path: f4-legacy-windows-386.zip
         retention-days: 7
 
   # go vet in the quality job below only ever sees the linux build of the tree,
@@ -905,9 +1607,15 @@ jobs:
   # like their builds. The full batched matrix runs everywhere else.
   vet:
     name: Vet (${{ matrix.name }})
+    needs: [should-run-full]
+    if: needs.should-run-full.outputs.run-full == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      # Up to 4 cells on pushes/tags (1 on pull requests already); capped
+      # so this job doesn't claim every runner the free-tier pool has (see
+      # the concurrency comment above the jobs).
+      max-parallel: 2
       # One long line on purpose: actionlint chews minutes on a folded variant.
       matrix: ${{ github.event_name == 'pull_request' && fromJSON('{"include":[{"name":"linux/arm","cells":[{"target":"linux/arm","tags":"goffi_static"}]}]}') || fromJSON('{"include":[{"name":"windows/amd64, linux/arm, linux/amd64","cells":[{"target":"windows/amd64"},{"target":"linux/arm","tags":"goffi_static"},{"target":"linux/amd64","tags":"goffi_universal"}]},{"name":"darwin/arm64, freebsd/amd64, dragonfly/amd64","cells":[{"target":"darwin/arm64"},{"target":"freebsd/amd64","gcflags":"-gcflags=github.com/go-webgpu/goffi/internal/fakecgo=-std"},{"target":"dragonfly/amd64"}]},{"name":"openbsd/amd64, netbsd/amd64","cells":[{"target":"openbsd/amd64"},{"target":"netbsd/amd64","gcflags":"-gcflags=github.com/go-webgpu/goffi/internal/fakecgo=-std"}]},{"name":"illumos/amd64, solaris/amd64","cells":[{"target":"illumos/amd64"},{"target":"solaris/amd64"}]}]}') }}
     env:
@@ -922,7 +1630,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v7
       with:
-        go-version: '1.26.6'
+        go-version: '1.26.9'
         cache-dependency-path: go.sum
 
     - name: Run go vet
@@ -930,8 +1638,8 @@ jobs:
         set -euo pipefail
         while IFS= read -r cell; do
           TARGET=$(jq -r '.target' <<<"$cell")
-          GCFLAGS=$(jq -r '.gcflags // ""' <<<"$cell")
-          TAGS=$(jq -r '.tags // ""' <<<"$cell")
+          GCFLAGS=$(jq -r 'if .gcflags then .gcflags else "" end' <<<"$cell")
+          TAGS=$(jq -r 'if .tags then .tags else "" end' <<<"$cell")
 
           # An array, so the empty GCFLAGS of most cells contributes no argument
           # rather than an empty one.
@@ -950,6 +1658,8 @@ jobs:
   # cost nothing here, so vet-and-scanners and the lint shards run side by side.
   quality:
     name: Quality
+    needs: [should-run-full]
+    if: needs.should-run-full.outputs.run-full == 'true'
     runs-on: ubuntu-latest
     env:
       CGO_ENABLED: 0
@@ -962,7 +1672,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v7
       with:
-        go-version: '1.26.6'
+        go-version: '1.26.9'
         cache-dependency-path: go.sum
 
     - name: Restore Go build cache (quality)
@@ -1009,6 +1719,8 @@ jobs:
 
   lint:
     name: Lint (${{ matrix.shard }})
+    needs: [should-run-full]
+    if: needs.should-run-full.outputs.run-full == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -1031,7 +1743,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v7
       with:
-        go-version: '1.26.6'
+        go-version: '1.26.9'
         cache-dependency-path: go.sum
 
     - name: Compile standalone ConPTY probe
@@ -1111,10 +1823,16 @@ jobs:
   # Эта джоба создает постоянные релизы при пуше тэгов v*.*.*
   test:
     name: Test (${{ matrix.target }}${{ matrix.shard && format(' {0}', matrix.shard) || '' }})
+    needs: [should-run-full]
+    if: needs.should-run-full.outputs.run-full == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
+      # Up to 9 cells on pushes/tags (6 on pull requests); capped so this
+      # job doesn't claim every runner the free-tier pool has (see the
+      # concurrency comment above the jobs).
+      max-parallel: 4
       # One hosted runner per native os/arch cell, except that the slow
       # darwin/arm64 and windows/amd64 cells split their tests by name.
       # Pull requests skip the second-arch twin of the two
@@ -1140,31 +1858,6 @@ jobs:
       with:
         submodules: recursive
 
-    - name: Install the bundled ConPTY for native Windows tests
-      if: runner.os == 'Windows'
-      shell: pwsh
-      run: |
-        $runtime = if ($env:RUNNER_ARCH -eq 'ARM64') { 'arm64' } else { 'x64' }
-        $url = 'https://github.com/microsoft/terminal/releases/download/v1.25.1912.0/Microsoft.Windows.Console.ConPTY.1.25.260710002-preview.nupkg'
-        $expected = '05fe9b571ea4fb198f5012405cb39a132cf23eee50feaa496524c149b2502692'
-        $package = Join-Path $env:RUNNER_TEMP 'Microsoft.Windows.Console.ConPTY.1.25.260710002-preview.nupkg'
-        $zip = "$package.zip"
-        & curl.exe -fL --retry 5 --retry-delay 10 --retry-all-errors -o $package $url
-        if ((Get-FileHash -Algorithm SHA256 $package).Hash -ne $expected.ToUpperInvariant()) {
-          throw "ConPTY package SHA-256 mismatch"
-        }
-        Copy-Item $package $zip -Force
-        $extract = Join-Path $env:RUNNER_TEMP 'conpty-package'
-        Expand-Archive -Path $zip -DestinationPath $extract -Force
-        # cmd/f4 is where the built binary looks for its bundle;
-        # internal/terminal is where the test that checks the bundle now runs,
-        # and go test makes a package's own directory the working directory.
-        foreach ($dest in 'cmd/f4', 'internal/terminal') {
-          Copy-Item (Join-Path $extract "runtimes/win-$runtime/native/conpty.dll") "$dest/conpty.dll" -Force
-          Copy-Item (Join-Path $extract "build/native/runtimes/$runtime/OpenConsole.exe") "$dest/OpenConsole.exe" -Force
-        }
-        Get-Item cmd/f4/conpty.dll, cmd/f4/OpenConsole.exe, internal/terminal/conpty.dll, internal/terminal/OpenConsole.exe | Format-Table Name,Length
-
     - name: Move Go caches to the fast disk (Windows)
       # C: is the OS disk and glacial at unpacking the ~650 MB Go cache --
       # three of this job's five and a half minutes on windows-latest went
@@ -1181,7 +1874,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v7
       with:
-        go-version: '1.26.6'
+        go-version: '1.26.9'
         # The salt file is part of the key on purpose: the cache stores
         # absolute paths, so a cache saved before a GOCACHE/GOMODCACHE move
         # above would restore to the old location -- and with the key
@@ -1196,20 +1889,95 @@ jobs:
       id: affected
       uses: ./.github/actions/affected-packages
 
+    # plugins/observer's tests need a tiny wasm test fixture (f4#1563, part
+    # 1). Built only on this one cell -- linux/amd64 is where the affected
+    # package (if any) is compiled everywhere else too, and wasi-sdk is only
+    # worth installing once, not on all nine cells -- everywhere else the
+    # tests skip themselves for lack of the fixture (see
+    # scripts/build_observer_test_wasm.sh and plugins/observer/observer_test.go).
+    - name: Cache wasi-sdk
+      id: cache-wasi-sdk
+      if: runner.os == 'Linux' && matrix.target == 'linux/amd64'
+      uses: actions/cache@v4
+      with:
+        path: /opt/wasi-sdk
+        key: wasi-sdk-34-x86_64-linux
+
+    - name: Install wasi-sdk
+      if: runner.os == 'Linux' && matrix.target == 'linux/amd64' && steps.cache-wasi-sdk.outputs.cache-hit != 'true'
+      run: |
+        curl -fsSL -o /tmp/wasi-sdk.tar.gz \
+          https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-x86_64-linux.tar.gz
+        sudo mkdir -p /opt/wasi-sdk
+        sudo tar -xzf /tmp/wasi-sdk.tar.gz --strip-components=1 -C /opt/wasi-sdk
+
+    - name: Build plugins/observer test fixture
+      if: runner.os == 'Linux' && matrix.target == 'linux/amd64'
+      run: WASI_SDK_PATH=/opt/wasi-sdk ./scripts/build_observer_test_wasm.sh
+
+    # plugins/observer's isoimg end-to-end test (f4#1563, part 2) builds a
+    # real upstream Observer module -- not the from-scratch stub above --
+    # with the same wasi-sdk, plus a tiny genisoimage-built ISO9660 image to
+    # probe it against. Built only on this one cell, same reasoning as the
+    # stub fixture above. See scripts/build_isoimg_test_wasm.sh,
+    # scripts/build_isoimg_test_iso.sh and
+    # plugins/observer/testdata/isoimg/compat/.
+    - name: Install genisoimage
+      if: runner.os == 'Linux' && matrix.target == 'linux/amd64'
+      run: sudo apt-get update && sudo apt-get install -y genisoimage
+
+    - name: Build plugins/observer isoimg test fixture (wasm)
+      if: runner.os == 'Linux' && matrix.target == 'linux/amd64'
+      run: WASI_SDK_PATH=/opt/wasi-sdk ./scripts/build_isoimg_test_wasm.sh
+
+    - name: Build plugins/observer isoimg test fixture (iso)
+      if: runner.os == 'Linux' && matrix.target == 'linux/amd64'
+      run: ./scripts/build_isoimg_test_iso.sh
+
+    # Confirms isoimg_test.wasm is spec-valid wasm and reports what
+    # wasm-opt -Oz would shrink it to (f4#1563, part 2 open question 2),
+    # using Binaryen's own prebuilt release, never built from source here.
+    - name: Cache Binaryen
+      id: cache-binaryen
+      if: runner.os == 'Linux' && matrix.target == 'linux/amd64'
+      uses: actions/cache@v4
+      with:
+        path: /opt/binaryen
+        key: binaryen-133-x86_64-linux
+
+    - name: Install Binaryen
+      if: runner.os == 'Linux' && matrix.target == 'linux/amd64' && steps.cache-binaryen.outputs.cache-hit != 'true'
+      run: |
+        curl -fsSL -o /tmp/binaryen.tar.gz \
+          https://github.com/WebAssembly/binaryen/releases/download/version_133/binaryen-version_133-x86_64-linux.tar.gz
+        sudo mkdir -p /opt/binaryen
+        sudo tar -xzf /tmp/binaryen.tar.gz --strip-components=1 -C /opt/binaryen
+
+    - name: Check isoimg wasm fixture with Binaryen
+      if: runner.os == 'Linux' && matrix.target == 'linux/amd64'
+      run: BINARYEN_PATH=/opt/binaryen ./scripts/check_isoimg_wasm.sh plugins/observer/testdata/isoimg_test.wasm
+
     - name: Run Tests
       shell: bash
       env:
         AFFECTED: ${{ steps.affected.outputs.packages }}
         RUN_FILTER: ${{ matrix.run || '' }}
+        # TestConPTYPackageKeepsLongLinesWhole downloads the ConPTY package
+        # f4 fetches on first use and runs real programs in it (#885). It is
+        # Windows-only; elsewhere the variable is unused.
+        F4_NATIVE_CONPTY_PACKAGE: '1'
         # Coverage is collected on one Linux cell and both shards of each
-        # split desktop cell. Reusing an OS flag lets Codecov combine the two
-        # shard profiles without spending another full test matrix.
+        # split desktop cell. Each shard gets its own Codecov flag so the service
+        # cannot replace a rest profile with the A-D profile.
         COVER: ${{ matrix.cover && '-coverpkg=./... -coverprofile=cover.out' || '' }}
       run: |
         # Pull requests test only the packages their diff reaches through
         # the import graph (see the affected-packages action); pushes, tags
         # and manual runs always test everything.
-        if [ "$AFFECTED" = "all" ]; then
+        # Coverage uploads must exercise the complete module. A profile made
+        # from affected packages only records zeroes for every carried-forward
+        # package and makes the project percentage look like a regression.
+        if [ "$AFFECTED" = "all" ] || [ -n "$COVER" ]; then
           targets=(./...)
         elif [ -z "$AFFECTED" ]; then
           echo "No packages affected by this diff; skipping tests."
@@ -1233,6 +2001,11 @@ jobs:
           read -r -a cover_args <<< "$COVER"
         fi
         go test "${cover_args[@]}" -shuffle="$TEST_SHUFFLE" -timeout 15m -skip '^TestAllDialogs_LayoutValidation$' "${run_args[@]}" "${targets[@]}"
+        # go test -coverpkg=./... emits one copy of every instrumented block per package. Codecov does not merge those duplicate records reliably, so normalize the profile before upload.
+        if [ -n "" ]; then
+          go run github.com/wadey/gocovmerge@b5bfa59ec0adc420475f97f89b58045c721d761c cover.out > cover.merged.out
+          mv cover.merged.out cover.out
+        fi
         # Layout validation mutates shared UI registries from parallel
         # subtests. Go 1.26 schedules them aggressively enough to expose the
         # upstream race, so isolate that test in a single-threaded process.
@@ -1270,6 +2043,10 @@ jobs:
           esac
         fi
 
+    - name: Test TTY-only GUI boundary
+      if: matrix.target == 'linux/amd64'
+      run: go test -tags tty_only,vtui_noebiten,vtui_nogogpu -run '^TestTTYOnly' ./internal/gui ./internal/app
+
     - name: Upload coverage to Codecov
       if: matrix.cover && hashFiles('cover.out') != ''
       uses: codecov/codecov-action@v7
@@ -1279,7 +2056,7 @@ jobs:
         # looks like a report and picks up internal/i18n/lang/coverage_baseline.txt,
         # which counts translation keys, not statements.
         disable_search: true
-        flags: ${{ matrix.cover }}
+        flags: ${{ matrix.cover }}${{ matrix.shard && format('-{0}', matrix.shard) || '' }}
         token: ${{ secrets.CODECOV_TOKEN }}
         # Coverage is a report, not a gate: a failed upload (or a repository
         # with no token yet) must not turn the test run red.
@@ -1344,10 +2121,15 @@ jobs:
 
   race:
     name: Race (shard ${{ matrix.shard }})
+    needs: [should-run-full]
+    if: needs.should-run-full.outputs.run-full == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
+      # 4 shards, every run; capped so this job doesn't claim every runner
+      # the free-tier pool has (see the concurrency comment above the jobs).
+      max-parallel: 3
       matrix:
         # Four numbered shards, filled by measured weight rather than by name.
         # The heaviest package lands alone in one of them and that is the floor:
@@ -1390,7 +2172,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v7
       with:
-        go-version: '1.26.6'
+        go-version: '1.26.9'
         cache: false
 
     - name: Compute affected packages
@@ -1434,30 +2216,507 @@ jobs:
         read -r -a packages <<<"$PACKAGES"
         go test -race -shuffle=on -timeout 15m -skip '^TestSeedSweep$' "${packages[@]}"
 
+  # Keeps flake.nix's vendorHash in sync with go.mod/go.sum.
+  #
+  # buildGoModule fetches the module set into a fixed-output derivation whose
+  # hash is pinned in flake.nix as vendorHash. Every dependency change
+  # invalidates that hash and breaks `nix build` / `nix run github:unxed/f4`,
+  # which is easy to miss because plain `go build` keeps working. This job
+  # makes that failure impossible to miss, and repairs it:
+  #
+  #   - on pull requests touching go.mod/go.sum/flake.nix it builds the
+  #     vendor derivation against the pull request's merge commit, so a
+  #     dependency change without a hash bump fails the PR and reports the
+  #     exact value to paste;
+  #   - on pushes to main it commits the corrected hash back, so main's
+  #     flake cannot sit broken in the window between a dependency change
+  #     landing and someone noticing (this is what happened to #1530).
+  #
+  # Only the fixed-output vendor derivation is built (f4.goModules), not f4
+  # itself: the hash is what this job is about, and the check stays fast.
+  #
+  # Moved in from its own former workflow file (nix.yml), which carried a
+  # workflow-level `paths:` filter (go.mod/go.sum/flake.nix/its own file) so
+  # docs-only and unrelated pushes/PRs skipped it entirely. There is no
+  # per-job equivalent of a workflow-level `paths:` filter, so the
+  # "Determine whether this run touches the flake's vendored inputs" step
+  # below recomputes that same decision from the diff -- the same idea as
+  # the affected-packages composite action the build job uses for its own
+  # "Compute build impact" step, just inlined here since this job's
+  # watched-path set is a fixed, short list rather than the whole package
+  # graph. Deliberately NOT gated on should-run-full: this job is already
+  # cheap and conditional on its own, and its whole point is to catch a
+  # broken vendorHash even in a batched push that would otherwise skip the
+  # full matrix.
+  nix-vendor-hash:
+    name: vendorHash matches go.mod/go.sum
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v7
+
+    - name: Determine whether this run touches the flake's vendored inputs
+      id: paths
+      env:
+        BEFORE_SHA: ${{ github.event.before }}
+      run: |
+        set -euo pipefail
+
+        relevant() { echo "relevant=yes" >> "$GITHUB_OUTPUT"; echo "relevant: yes ($1)"; exit 0; }
+        not_relevant() { echo "relevant=no" >> "$GITHUB_OUTPUT"; echo "relevant: no ($1)"; exit 0; }
+
+        is_watched() {
+          case "$1" in
+            go.mod|go.sum|flake.nix|.github/workflows/build.yml) return 0 ;;
+            *) return 1 ;;
+          esac
+        }
+
+        if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+          relevant "workflow_dispatch always ran the check in nix.yml too"
+        fi
+
+        if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+          # Same technique as affected-packages: fetch the base branch and
+          # diff against it. The checkout above is the shallow merge commit
+          # (base + PR), so this is exactly the PR's changes as long as the
+          # base has not moved since the event; if it has, the diff only
+          # gains base-side noise, which can only widen the result toward
+          # "relevant" -- the safe direction.
+          git fetch --quiet --depth=1 origin "refs/heads/$GITHUB_BASE_REF" || relevant "base fetch failed"
+          files=$(git diff --name-only FETCH_HEAD HEAD)
+        elif [ "$GITHUB_EVENT_NAME" = "push" ]; then
+          # nix.yml's own push trigger only ever fired for branches: [main];
+          # tag pushes (build.yml's other push case) never touched vendorHash.
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            not_relevant "push is not to refs/heads/main"
+          fi
+          case "$BEFORE_SHA" in
+            ""|0000000000000000000000000000000000000000)
+              relevant "no previous commit to diff against" ;;
+          esac
+          git fetch --quiet --depth=1 origin "$BEFORE_SHA" || relevant "before-commit fetch failed"
+          files=$(git diff --name-only FETCH_HEAD HEAD)
+        else
+          relevant "unrecognised event $GITHUB_EVENT_NAME; defaulting to running the check"
+        fi
+
+        [ -n "$files" ] || not_relevant "empty diff"
+
+        while IFS= read -r f; do
+          is_watched "$f" && relevant "$f changed"
+        done <<<"$files"
+
+        not_relevant "no watched path changed"
+
+    - name: Set up Nix
+      if: steps.paths.outputs.relevant == 'yes'
+      uses: cachix/install-nix-action@v31
+
+    - name: Verify vendorHash
+      id: verify
+      if: steps.paths.outputs.relevant == 'yes'
+      # A fixed-output derivation re-fetches and re-hashes its content
+      # whenever the store doesn't already have a path for it, and these
+      # runners start with an empty Nix store on every job - so a plain
+      # build here already re-verifies vendorHash from scratch every time.
+      # (--rebuild looks tempting for extra rigor, but it only works when
+      # the output is already valid/substitutable; on a fresh runner there
+      # is nothing to rebuild against, so it fails unconditionally with
+      # "are not valid, so checking is not possible" - which is exactly
+      # what happened in CI here.)
+      #
+      # A vendorHash mismatch is deliberately not a failure here: the two
+      # steps below decide what happens to it (fail a PR with the value to
+      # paste, or repair main). Any other build failure is a real failure.
+      run: |
+        set -euo pipefail
+        if nix build --no-link .#f4.goModules 2> nix-build.log; then
+          echo "vendorHash in flake.nix matches go.mod/go.sum"
+          exit 0
+        fi
+        cat nix-build.log
+        got="$(sed -n 's/^ *got: *\(sha256-[A-Za-z0-9+\/=]*\)$/\1/p' nix-build.log | tail -n1)"
+        if [ -z "$got" ]; then
+          echo "::error::nix build failed for a reason other than a vendorHash mismatch"
+          exit 1
+        fi
+        echo "vendorHash mismatch: go.mod/go.sum changed without a hash bump"
+        echo "got=$got" >> "$GITHUB_OUTPUT"
+
+    - name: Report the hash to paste
+      if: steps.paths.outputs.relevant == 'yes' && github.event_name != 'push' && steps.verify.outputs.got != ''
+      run: |
+        echo "::error::vendorHash is stale. Set vendorHash = \"${{ steps.verify.outputs.got }}\" in flake.nix (see the comment above vendorHash) and push."
+        exit 1
+
+    - name: Update vendorHash
+      if: steps.paths.outputs.relevant == 'yes' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.verify.outputs.got != ''
+      run: |
+        set -euo pipefail
+        got="${{ steps.verify.outputs.got }}"
+        sed -i "s|vendorHash = \"[^\"]*\"|vendorHash = \"$got\"|" flake.nix
+        grep -F "vendorHash = \"$got\"" flake.nix
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git add flake.nix
+        git commit -m "build(nix): update vendorHash [ci]"
+        # Pushes authenticated with GITHUB_TOKEN do not trigger further
+        # workflow runs, so this cannot recurse.
+        git push
+
+  # Runs the flake's own checks - currently just the Home Manager module's
+  # tests (packaging/nix/home-manager-module-check.nix, added by PR #1584)
+  # - plus one darwin-side evaluation, which a Linux runner would otherwise
+  # skip entirely along with the rest of that platform's outputs.
+  #
+  # This started life as a second job in PR #1584's own version of nix.yml,
+  # written before that file was folded into this workflow by #1583. Folded
+  # in here for the same reason nix-vendor-hash above was: no per-job
+  # equivalent of a workflow-level `paths:` filter exists once a job lives
+  # in build.yml, so the "Determine whether this run touches the flake's
+  # Home Manager module" step below recomputes that decision from the diff,
+  # the same technique nix-vendor-hash uses for its own, differently-scoped
+  # watched-path set. go.mod/go.sum are deliberately not watched here: the
+  # check stands pkgs.hello in for f4 (see PR #1584's description) and never
+  # touches f4's own sources, so a plain dependency bump can't affect it.
+  flake-checks:
+    name: flake checks (Home Manager module)
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v7
+
+    - name: Determine whether this run touches the flake's Home Manager module
+      id: paths
+      env:
+        BEFORE_SHA: ${{ github.event.before }}
+      run: |
+        set -euo pipefail
+
+        relevant() { echo "relevant=yes" >> "$GITHUB_OUTPUT"; echo "relevant: yes ($1)"; exit 0; }
+        not_relevant() { echo "relevant=no" >> "$GITHUB_OUTPUT"; echo "relevant: no ($1)"; exit 0; }
+
+        is_watched() {
+          case "$1" in
+            flake.nix|flake.lock|.github/workflows/build.yml) return 0 ;;
+            packaging/nix/*) return 0 ;;
+            *) return 1 ;;
+          esac
+        }
+
+        if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+          relevant "workflow_dispatch always ran this check too"
+        fi
+
+        if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+          # Same technique as affected-packages and nix-vendor-hash above:
+          # fetch the base branch and diff against it.
+          git fetch --quiet --depth=1 origin "refs/heads/$GITHUB_BASE_REF" || relevant "base fetch failed"
+          files=$(git diff --name-only FETCH_HEAD HEAD)
+        elif [ "$GITHUB_EVENT_NAME" = "push" ]; then
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            not_relevant "push is not to refs/heads/main"
+          fi
+          case "$BEFORE_SHA" in
+            ""|0000000000000000000000000000000000000000)
+              relevant "no previous commit to diff against" ;;
+          esac
+          git fetch --quiet --depth=1 origin "$BEFORE_SHA" || relevant "before-commit fetch failed"
+          files=$(git diff --name-only FETCH_HEAD HEAD)
+        else
+          relevant "unrecognised event $GITHUB_EVENT_NAME; defaulting to running the check"
+        fi
+
+        [ -n "$files" ] || not_relevant "empty diff"
+
+        while IFS= read -r f; do
+          is_watched "$f" && relevant "$f changed"
+        done <<<"$files"
+
+        not_relevant "no watched path changed"
+
+    - name: Set up Nix
+      if: steps.paths.outputs.relevant == 'yes'
+      uses: cachix/install-nix-action@v31
+
+    - name: Run the flake checks
+      if: steps.paths.outputs.relevant == 'yes'
+      run: nix flake check -L
+
+    - name: Evaluate the module for macOS
+      # A Linux runner skips the darwin outputs entirely, including the
+      # module's macOS profile path. Instantiating one darwin check
+      # evaluates that side without building for it.
+      if: steps.paths.outputs.relevant == 'yes'
+      run: nix eval --raw .#checks.aarch64-darwin.home-manager-module.drvPath > /dev/null
+
+  # f4 has had Wine-specific code (docs/WINE.md) since before this job
+  # existed, verified only by unit tests of its "clean" parts and by manual
+  # sessions under a real Wine on the author's machine. This is the missing
+  # other half, modeled on unxed/libwinescape's own Wine job: build f4.exe
+  # and actually run it under Wine on the runner.
+  #
+  # Moved in from its own former workflow file (wine.yml) so it shares this
+  # workflow's should-run-full gating, concurrency group and job-count
+  # accounting instead of running as a wholly separate, ungated pipeline
+  # alongside it.
+  #
+  # Two things this job is NOT: it does not replace the manual WINE.md
+  # sessions (screen geometry, keyboard input quirks and the like still need
+  # a human looking at a real window); and it does not attempt wineconsole (a
+  # separate GUI console host binary) or the 16-color-console startup theme
+  # that only shows up there (WINE.md §18.1). What it does check is real and
+  # load-bearing: --wine-probe's ProbePTYUsable exercises libwinescape's
+  # actual fork/openpty path (winescape.OpenPTY, pty_wine_windows.go), not a
+  # mock of it, and the render smoke tests exercise the same win32
+  # console/GUI startup path issue #474 broke (the GUI leg runs under Xvfb,
+  # since Wine itself is not a display server).
+  wine:
+    name: End-to-end under Wine (linux/amd64 host)
+    needs: [should-run-full]
+    if: needs.should-run-full.outputs.run-full == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CGO_ENABLED: 0
+      GOOS: windows
+      GOARCH: amd64
+      # Set globally for the *host* wine64 invocations below. This has
+      # nothing to do with f4's own WINEDEBUG handling for its children
+      # (WINE.md §18.4): f4 never sets or reads WINEDEBUG itself, and this
+      # variable only quiets the wine64 process this job launches directly.
+      WINEDEBUG: "-all"
+      WINEARCH: win64
+      WINEDLLOVERRIDES: "mscoree,mshtml="
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v7
+      with:
+        submodules: recursive
+
+    - name: Set up Go
+      uses: actions/setup-go@v7
+      with:
+        go-version: '1.26.9'
+        cache-dependency-path: go.sum
+
+    - name: Install Wine
+      run: |
+        set -euo pipefail
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq --no-install-recommends wine64 xvfb
+        # On Ubuntu the 64-bit loader lives under /usr/lib/wine and is not
+        # always on PATH under the name a script would guess.
+        W=$(command -v wine || command -v wine64 || echo /usr/lib/wine/wine64)
+        echo "WINE=$W" >> "$GITHUB_ENV"
+        "$W" --version
+
+    - name: Build f4.exe
+      run: |
+        set -euo pipefail
+        mkdir -p build
+        go build -trimpath -o build/f4.exe ./cmd/f4
+        cp -r internal/i18n/lang internal/dialog/help build/
+        cp f4.example.ini build/
+        # Portable profile (Far.exe.ini's UseSystemProfiles=0, config.go's
+        # ResolveProfileDir): isolates this run's settings.ini, logs/ and
+        # crashes/ under build/Profile instead of the runner's %APPDATA%,
+        # and keeps every path this job asserts on predictable. This does
+        # not touch $HOME/hostmode.HomeDir resolution (WINE.md §18.2): the
+        # profile location is Win32-resolved in both personalities.
+        printf '[General]\r\nUseSystemProfiles=0\r\n' > build/f4.exe.ini
+
+    - name: Initialise the Wine prefix
+      run: |
+        "$WINE" wineboot --init || true
+        sleep 5
+
+    - name: Probe under Wine (posix auto-detect)
+      working-directory: build
+      run: |
+        set -euo pipefail
+        "$WINE" f4.exe --wine-probe | tee probe-posix.txt
+        grep -q 'winescape.IsWine:.*true' probe-posix.txt
+        grep -q 'winescape.Available:.*true' probe-posix.txt
+        grep -q 'hostmode.Posix:.*true' probe-posix.txt
+        # The real thing, not a mock of it: winePTYUsable (pty_wine_windows.go)
+        # calls winescape.OpenPTY(), a genuine fork+openpty under this Wine.
+        grep -q 'ProbePTYUsable:.*true' probe-posix.txt
+
+    - name: Probe under Wine (UseWinescape=0 equivalent)
+      working-directory: build
+      run: |
+        set -euo pipefail
+        # F4_WINE_POSIX=0 forces the same decision UseWinescape=0 would
+        # (vfs/hostmode.Posix, "escape hatch ahead of the real config
+        # setting"), without needing a second settings.ini profile just to
+        # flip one checkbox. WINE.md §18.6 flagged this combination as
+        # never run under a live Wine; this is that run.
+        F4_WINE_POSIX=0 "$WINE" f4.exe --wine-probe | tee probe-nopx.txt
+        grep -q 'hostmode.Posix:.*false' probe-nopx.txt
+        # The native pty backend must not survive turning posix off
+        # (WINE.md §18.3, "нативный pty подчиняется общей галке").
+        grep -q 'ProbePTYUsable:.*false' probe-nopx.txt
+
+    - name: Render smoke test (console, winapi backend)
+      working-directory: build
+      run: |
+        set -euo pipefail
+        printf 'one\ntwo\nthree\n' > smoke.txt
+
+        run_smoke() {
+          local label="$1"; shift
+          rm -f vtui.screen.log Profile/logs/debug.log
+          # f4 does not exit after --dump-screen-after (it keeps running
+          # the UI loop); the runner killing it via `timeout` is the
+          # expected way this step ends, not a failure.
+          #
+          # This must run under a real pseudo-terminal, not GitHub Actions'
+          # plain stdin/stdout pipes: on those pipes Wine's console layer
+          # exposes no console at all (GetStdHandle/GetConsoleMode come
+          # back "Invalid handle" -- the same term.GetSize warnings the
+          # --wine-probe steps above print, harmlessly there since
+          # --wine-probe never touches raw mode). Here it is not harmless:
+          # vtinput's term.MakeRaw(stdin) fails on that invalid handle,
+          # vtui.PrepareTerminal() returns the error, and f4 exits within
+          # a second of starting -- long before --dump-screen-after's timer
+          # or this function's own timeout, so vtui.screen.log never gets
+          # written. `script` allocates that pty.
+          script -qec "$*" /dev/null || true
+          if [ ! -s vtui.screen.log ]; then
+            echo "::error::$label: no vtui.screen.log (screen dump never ran, or f4 never started)"
+            exit 1
+          fi
+          if [ -f Profile/logs/debug.log ] && grep -q 'FATAL PANIC' Profile/logs/debug.log; then
+            echo "::error::$label: FATAL PANIC in debug.log"
+            cat Profile/logs/debug.log
+            exit 1
+          fi
+          mkdir -p "../wine-logs/$label"
+          cp vtui.screen.log "../wine-logs/$label/" || true
+          if [ -f Profile/logs/debug.log ]; then
+            cp Profile/logs/debug.log "../wine-logs/$label/" || true
+          fi
+        }
+
+        # Forces the Win32-console-API renderer (wineconsole/ReactOS/VT-less
+        # Windows) rather than whatever backend auto-detection would pick
+        # under plain `wine f4.exe`; the ANSI/VT path already has non-Wine
+        # coverage in the rest of CI, this backend has none.
+        run_smoke console-winapi \
+          timeout --preserve-status 25 "$WINE" f4.exe --debug -e smoke.txt --dump-screen-after 8 --tty=winapi
+
+    # GUI mode needs an actual display to draw its window onto -- Wine is
+    # not itself a display server -- so this leg alone gets Xvfb. It is the
+    # exact command issue #474 was reported with (`wine f4.exe --gui=win32`)
+    # and is marked informational rather than blocking: Wine's GUI path
+    # under a virtual framebuffer is inherently more fragile than the
+    # console path above, and this is the first time either has run in CI
+    # at all.
+    - name: Render smoke test (win32 GUI backend)
+      working-directory: build
+      continue-on-error: true
+      run: |
+        set -euo pipefail
+        printf 'one\ntwo\nthree\n' > smoke.txt
+        rm -f vtui.screen.log Profile/logs/debug.log
+        xvfb-run --auto-servernum -- \
+          timeout --preserve-status 25 "$WINE" f4.exe --debug -e smoke.txt --dump-screen-after 8 --gui=win32 || true
+        mkdir -p ../wine-logs/gui-win32
+        cp vtui.screen.log ../wine-logs/gui-win32/ 2>/dev/null || true
+        cp Profile/logs/debug.log ../wine-logs/gui-win32/ 2>/dev/null || true
+        if [ ! -s vtui.screen.log ]; then
+          echo "::warning::gui-win32: no vtui.screen.log (screen dump never ran, or f4 never started)"
+          exit 1
+        fi
+        if [ -f Profile/logs/debug.log ] && grep -q 'FATAL PANIC' Profile/logs/debug.log; then
+          echo "::warning::gui-win32: FATAL PANIC in debug.log"
+          cat Profile/logs/debug.log
+          exit 1
+        fi
+
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: wine-logs
+        path: |
+          build/probe-*.txt
+          wine-logs/**
+        retention-days: 7
+
   release:
     name: Release
     # Narrowing build-batch's condition would make release on a tag skipped, not failed.
-    needs: [build, build-batch, build-win7, build-termux, test, race]
+    needs: [build, build-batch, build-lite, build-win7, build-reactos, build-termux, build-cloudfox-plugin, build-android-plugin, build-ios-plugin, test, race]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
     steps:
+    # The release check below is a Go tool of this repository. It is checked
+    # out first: checkout empties a directory that is not a repository yet,
+    # which would take dist/ with it.
+    - name: Checkout code
+      uses: actions/checkout@v7
+
     # dist/, for the same reason as the nightly job below: artifacts/ is a
     # tracked directory of audit evidence, so publishing a glob over it ties
-    # the release assets to whatever happens to be checked out. This job does
-    # not check the repository out today, and this keeps that from mattering
-    # if it ever does.
+    # the release assets to whatever happens to be checked out.
     - name: Download all artifacts
       uses: actions/download-artifact@v8
       with:
         path: dist
         merge-multiple: true
+    # wine-logs (and any future artifact whose own upload path had more
+    # than one root, e.g. build/probe-*.txt alongside wine-logs/**) keeps
+    # that nested structure through merge-multiple, landing as a real
+    # subdirectory here -- dist/build/ -- rather than a flat file. Every
+    # actual release binary is a flat file at dist/'s top level, so any
+    # top-level directory here is debug/log ballast, never a release
+    # asset; a directory in this glob makes the upload step below fail
+    # outright (you cannot POST a directory as a single asset).
+    - name: Prune non-file artifacts (e.g. wine-logs) before publishing
+      run: find dist -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
+    # Every f4 installed anywhere reads this release with the updater it was
+    # built with, and a shipped updater cannot be fixed (#1656: plugin and
+    # lite archives sorted before f4's own and were installed in its place).
+    # Replay all of them over dist/ and unpack what they would install; on
+    # any problem nothing is published and the previous release stays.
+    - name: Set up Go
+      uses: actions/setup-go@v7
+      with:
+        go-version: '1.26.9'
+        cache-dependency-path: go.sum
+
+    - name: Check the release against installed updaters
+      run: go run ./tools/releasecheck dist
+
     - name: Publish Release
       uses: softprops/action-gh-release@v3
       with:
         files: dist/*
         generate_release_notes: true
+
+    # The check before publishing replays installed builds over the names
+    # sorted the way the GitHub API lists assets today, which the API does
+    # not promise. Read the release back as the updaters will and replay it
+    # in that order; if they would misread it, turn it back into a draft,
+    # which no updater sees, and fail.
+    - name: Check the published release as the API lists it
+      env:
+        GH_TOKEN: ${{ github.token }}
+        TAG: ${{ github.ref_name }}
+      run: |
+        set -euo pipefail
+        gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq '.assets[].name' > published-assets.txt
+        if ! go run ./tools/releasecheck -listed published-assets.txt; then
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=true
+          exit 1
+        fi
 
   # Эта джоба обновляет Homebrew tap при пуше тэгов v*.*.*,
   # чтобы под macOS можно было поставить f4 одной командой:
@@ -1546,7 +2805,7 @@ jobs:
   nightly:
     name: Nightly
     # Narrowing build-batch's condition would make release on a tag skipped, not failed.
-    needs: [build, build-batch, build-win7, build-termux, test, race]
+    needs: [build, build-batch, build-lite, build-win7, build-reactos, build-termux, build-cloudfox-plugin, build-android-plugin, build-ios-plugin, test, race]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
@@ -1564,10 +2823,10 @@ jobs:
         echo "BUILD_TIME=$(date -u -d "@$(git show -s --format='%ct' HEAD)" +'%Y-%m-%d %H:%M:%S')" >> "$GITHUB_ENV"
 
     # Download into dist/, NOT artifacts/. This job checks the repository out,
-    # and artifacts/ is a tracked directory holding the ConPTY audit evidence
-    # (see artifacts/README.md). Downloading on top of it merged that evidence
-    # with the build output, and the publish step below then uploaded the
-    # committed native-openconsole-probe*.json files as nightly release assets.
+    # and artifacts/ is a tracked directory (see artifacts/README.md). It once
+    # held the ConPTY audit evidence, and downloading on top of it merged that
+    # evidence with the build output, so the publish step below uploaded the
+    # native-openconsole-probe*.json files as nightly release assets.
     # Collecting that data is a manual job -- conpty-probe.yml, workflow_dispatch
     # only -- so nothing in the automatic pipeline should be publishing it.
     - name: Download all artifacts
@@ -1575,6 +2834,31 @@ jobs:
       with:
         path: dist
         merge-multiple: true
+
+    # wine-logs (and any future artifact whose own upload path had more
+    # than one root, e.g. build/probe-*.txt alongside wine-logs/**) keeps
+    # that nested structure through merge-multiple, landing as a real
+    # subdirectory here -- dist/build/ -- rather than a flat file. Every
+    # actual release binary is a flat file at dist/'s top level, so any
+    # top-level directory here is debug/log ballast, never a release
+    # asset; a directory in this glob makes `gh release create`'s upload
+    # fail outright (you cannot POST a directory as a single asset).
+    - name: Prune non-file artifacts (e.g. wine-logs) before publishing
+      run: find dist -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
+
+    # Every f4 installed anywhere reads this release with the updater it was
+    # built with, and a shipped updater cannot be fixed (#1656: plugin and
+    # lite archives sorted before f4's own and were installed in its place).
+    # Replay all of them over dist/ and unpack what they would install; on
+    # any problem nothing is published and the previous nightly stays.
+    - name: Set up Go
+      uses: actions/setup-go@v7
+      with:
+        go-version: '1.26.9'
+        cache-dependency-path: go.sum
+
+    - name: Check the release against installed updaters
+      run: go run ./tools/releasecheck dist
 
     # The Releases page is sorted by each release's created_at, and GitHub
     # sets that to the date of the tagged commit, not to the moment the
@@ -1604,14 +2888,34 @@ jobs:
         fi
 
     - name: Update Nightly Release
-      uses: softprops/action-gh-release@v3
-      with:
-        tag_name: nightly
-        name: "Continuous Build (Nightly)"
-        body: |
-          Automated pre-release build of the latest `main` branch.
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        # The release action uploads all assets concurrently. With the full
+        # matrix that occasionally races while creating its temporary asset
+        # directories and fails the otherwise successful main CI run. The
+        # GitHub CLI uploads the same files sequentially, which is reliable
+        # for the nightly's ~30 architecture assets.
+        gh release create nightly dist/* \
+          --repo "$GITHUB_REPOSITORY" \
+          --title "Continuous Build (Nightly)" \
+          --notes "Automated pre-release build of the latest main branch. Commit: $SHORT_SHA. Built on: $BUILD_TIME" \
+          --prerelease
 
-          **Commit:** `${{ env.SHORT_SHA }}`
-          **Built on:** `${{ env.BUILD_TIME }}`
-        prerelease: true
-        files: dist/*
+    # The check before publishing replays installed builds over the names
+    # sorted the way the GitHub API lists assets today, which the API does
+    # not promise. Read the release back as the updaters will and replay it
+    # in that order; if they would misread it, turn it back into a draft,
+    # which no updater sees, and fail.
+    - name: Check the published release as the API lists it
+      env:
+        GH_TOKEN: ${{ github.token }}
+        TAG: nightly
+      run: |
+        set -euo pipefail
+        gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq '.assets[].name' > published-assets.txt
+        if ! go run ./tools/releasecheck -listed published-assets.txt; then
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=true
+          exit 1
+        fi

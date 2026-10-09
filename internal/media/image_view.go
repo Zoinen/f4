@@ -3,10 +3,12 @@ package media
 import (
 	"context"
 	"fmt"
+	"image"
 	"path/filepath"
 	"strings"
 
 	"github.com/mattn/go-runewidth"
+	"github.com/unxed/f4/internal/i18n"
 	"github.com/unxed/f4/internal/numeric"
 	"github.com/unxed/f4/internal/viewer"
 	"github.com/unxed/f4/vfs"
@@ -807,6 +809,12 @@ func (iv *ImageView) Show(scr *vtui.ScreenBuf) {
 		return
 	}
 	if !scr.SupportsGraphics() {
+		if iv.showHalfBlocks(scr, x1, top, x2, y2) {
+			if iv.Overlay {
+				iv.drawOverlay(scr)
+			}
+			return
+		}
 		msg := "This backend cannot display images."
 		x := x1 + (x2-x1+1-len(msg))/2
 		if x < x1 {
@@ -820,6 +828,25 @@ func (iv *ImageView) Show(scr *vtui.ScreenBuf) {
 	if iv.Overlay {
 		iv.drawOverlay(scr)
 	}
+}
+
+// showHalfBlocks is the picture on a screen with no graphics protocol at all:
+// coloured half-block text (HalfBlockArt), the whole picture fitted into the
+// area, so a picture opened over ssh in a plain terminal is shown and not
+// apologised for. Zoom and panning need real pixels and do not apply. It
+// reports false when there is no picture to draw.
+func (iv *ImageView) showHalfBlocks(scr *vtui.ScreenBuf, x1, top, x2, y2 int) bool {
+	img := iv.display()
+	cols, rows := x2-x1+1, y2-top+1
+	if !img.Valid() || cols <= 0 || rows <= 0 {
+		return false
+	}
+	rgba := &image.RGBA{Pix: img.Pix, Stride: img.Stride, Rect: image.Rect(0, 0, img.Width, img.Height)}
+	cells := HalfBlockArt(rgba, cols, rows)
+	for row := 0; row < rows; row++ {
+		scr.Write(x1, top+row, cells[row*cols:(row+1)*cols])
+	}
+	return true
 }
 
 func (iv *ImageView) ProcessKey(e *vtinput.InputEvent) bool {
@@ -973,7 +1000,7 @@ func (iv *ImageView) Close() {
 func (iv *ImageView) GetKeyLabels() *vtui.KeySet {
 	return &vtui.KeySet{
 		Normal: vtui.KeyBarLabels{
-			"", "", "", "", "", "", "", "", "", "Quit",
+			"", "", "", "", "", "", "", "", "", i18n.Msg("KeyBar.F10"),
 		},
 	}
 }

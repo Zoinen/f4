@@ -85,7 +85,28 @@ type Action struct {
 	// the popup. A top-frame test is only safe on a HideFromMenu action,
 	// where Visible is consulted by the command palette alone.
 	Visible func() bool
-	Handler func() bool
+	// Enabled, when set, decides whether the action can actually run right
+	// now. Unlike Visible it does not remove the item: a menu entry or
+	// key-bar F-key with Enabled returning false stays on screen, dimmed
+	// (vtui's MenuItem.Disabled / KeyBar's per-slot Disabled), and its
+	// hotkey is still recognized but does nothing -- RunAction refuses the
+	// call before Handler ever runs. This is the fix for f4#1356's "silent
+	// no-op" class of bug: a command that used to do nothing at all when its
+	// target was empty (e.g. Ctrl+A / F5 / F6 / F8 with nothing marked and
+	// the cursor on "..") now visibly can't be invoked instead of quietly
+	// declining.
+	//
+	// It is asked wherever Visible is (menu build, key-bar labels) plus on
+	// every RunAction call, so the same top-frame caveat documented on
+	// Visible applies here too.
+	Enabled func() bool
+	// KeyBarLabel, when set, lets the key bar name what the key does right
+	// now: it is asked wherever key-bar labels are built, and a non-empty
+	// answer replaces the static label on the bar. Menus and the command
+	// palette keep the static Label. F4 is the user: on a folder it opens the
+	// attributes, not an editor, and the bar should say so (f4#1794).
+	KeyBarLabel func() string
+	Handler     func() bool
 }
 
 // DisplayLabel returns the localized label, falling back to the English one.
