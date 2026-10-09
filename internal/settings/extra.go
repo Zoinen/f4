@@ -34,7 +34,7 @@ func (aiSettingsProvider) Catalog() f4settings.Catalog {
 	for _, p := range vtvibe.Providers {
 		choices = append(choices, f4settings.Choice{Value: p.ID, Label: f4settings.Text{English: p.Name, Literal: true}})
 	}
-	service := f4settings.Scalar("ai.provider", "ai", "Service", "Provider", "Service the AI panel talks to. Each preset fills in the address and reads its own key variable: GEMINI_API_KEY or GOOGLE_API_KEY, OPENAI_API_KEY, XAI_API_KEY, OPENROUTER_API_KEY. A local server needs no key.", f4settings.ChoiceKind)
+	service := f4settings.Scalar("ai.provider", "ai", "Service", "Provider", "Service the AI panel talks to. Each preset fills in the address and reads its own key variable: GEMINI_API_KEY or GOOGLE_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, XAI_API_KEY, OPENROUTER_API_KEY. A local server needs no key.", f4settings.ChoiceKind)
 	service.Choices = choices
 	key := f4settings.Scalar("ai.key", "ai", "Credentials", "Saved API key", "Used only when the key variable of the chosen provider is empty. Effective source: %s (if a key is available). The key is stored in the local vtvibe.ini file.", f4settings.Secret)
 	key.Description.Args = []any{source}

@@ -17,6 +17,9 @@ import (
 // AI Studio, OpenRouter, llama.cpp, LM Studio, Ollama and the rest: they all
 // speak the OpenAI chat-completions dialect.
 type Config struct {
+	// Kind is the wire protocol: "" for OpenAI chat-completions, KindAnthropic
+	// for the Anthropic Messages API.
+	Kind    string
 	BaseURL string
 	Model   string
 	APIKey  string
@@ -83,6 +86,9 @@ type apiError struct {
 
 // Chat sends the whole conversation and returns the reply text.
 func (c Config) Chat(ctx context.Context, msgs []Message) (string, Usage, error) {
+	if c.Kind == KindAnthropic {
+		return c.chatAnthropic(ctx, msgs)
+	}
 	if c.APIKey == "" && !isLocal(c.BaseURL) {
 		return "", Usage{}, ErrNoKey
 	}
@@ -128,6 +134,9 @@ func (c Config) Chat(ctx context.Context, msgs []Message) (string, Usage, error)
 // Models lists what the key can actually reach. Model names go stale faster
 // than documentation does, so the user needs a way to ask.
 func (c Config) Models(ctx context.Context) ([]string, error) {
+	if c.Kind == KindAnthropic {
+		return c.modelsAnthropic(ctx)
+	}
 	if c.APIKey == "" && !isLocal(c.BaseURL) {
 		return nil, ErrNoKey
 	}
