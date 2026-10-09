@@ -220,7 +220,7 @@ Every listed field is independently described in its provider catalog. Ordered s
 | `mediainfo.ShowInPluginMenu`, `EnableQuickView`, `UseEditor`, `Prefix`, `Language`, `Template` | Plugin configuration → MediaInfo | metadata | MediaInfo settings JSON; plugin report rendering, prefix registration and Quick View contribution. |
 | `visren.EditorFormat`, `visren.WordDiv` | VisRen configuration; rename dialog → word delimiters | operations | `visren.json`; `plugins/visren/config.go`, transformations and editor-format generation. Saving delimiters retains the editor format. |
 | `envman.IgnoredVariables`, `envman.AlwaysUseEditor` | Environment Manager configuration | terminal | Environment Manager configuration; process/shell reconciliation and editor workflow preference. |
-| `ai.key`, `ai.model` | Options → AI setup | ai | `vtvibe.ini`, `vtvibe_host.go`. Key precedence: GEMINI_API_KEY, GOOGLE_API_KEY, OPENAI_API_KEY, saved key. The effective source is displayed without its secret. |
+| `ai.provider`, `ai.base_url`, `ai.key`, `ai.model` | Options → AI setup | ai | `vtvibe.ini`, `vtvibe_host.go`, presets in `internal/vtvibe/providers.go`. The provider fills in the address (Local server and Custom address take `base_url`) and names the key variables: GEMINI_API_KEY/GOOGLE_API_KEY, OPENAI_API_KEY, XAI_API_KEY, OPENROUTER_API_KEY, then the saved key. An empty model is the provider's default. The effective source is displayed without its secret. |
 
 ## Explicit operations and exclusions
 

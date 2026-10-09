@@ -1628,7 +1628,6 @@ SettingsCenter.Text.719f65b2ad99ed5cc37680799d3c0371fa506a7968c295fe962ac1bbdd72
 SettingsCenter.Text.727cd3a64d792ad410e3cb6036da3eb54dbac258e87c554e3b6081c1a5efc0e6=উল্লম্ব
 SettingsCenter.Text.728776ecc016cdf523f049472181e5b61517590f1c2efb6afbf6412a3ce74b5f=কার্যকর করুন
 SettingsCenter.Text.72c2973ef0bcfce61c47d4946e3a714da8dedd10be15cfe5f3fb1ad1a38f78d7=ফোল্ডার ইতিহাস টাইমস্ট্যাম্প
-SettingsCenter.Text.72e1558a87266ee269d9db0d31eaf979e268082f31250765affcaf8e7570b617=মডেল শনাক্তকারী পরবর্তী AI অনুরোধের সাথে পাঠানো হয়েছে। কনফিগার করা API এন্ডপয়েন্ট অবশ্যই এটিকে সমর্থন করবে।
 SettingsCenter.Text.72e9a59f5a1d6289dbacb35df897d6c007c55a27e77018455c37e7b372668475=পোর্ট
 SettingsCenter.Text.7337fdb065f2ba2e0296768d3d8756d8eb593443a66bfba5b27f0f6a4db83a97=টেবিলের চাকা নিচে
 SettingsCenter.Text.7352b75a38f75cdb8adfa08098b88e905b975cd7ea9ceb66a34a6bfdccd974b0=ফোকাস করা নাম, আকার এবং পরিবর্তনের সময়ের জন্য একটি নীচের সারি সংরক্ষণ করুন। ছোট প্যানেল এই সারি দমন.
@@ -2070,7 +2069,6 @@ SettingsCenter.Text.e08de935708b73bd4e0d4c479d40f3fbf2d5981035e23c7657bb62b226df
 SettingsCenter.Text.c089bbf4b60887a88f2690d5fa3a27dddeee667841d65b2de4bab577aceb1ec3=লিগ্যাসি কনফিগারেশন
 SettingsCenter.Text.24414d27b8ff346683f58d2f0817756c5b0f9e36d0d3833431856e6197099c95=লিগ্যাসি কনফিগারেশন: %s
 SettingsCenter.Text.541c02fbf23706a2ed53125fbb85d5d4d6bb14b2c342a9f88b86d5818822b47c=এই বহিরাগত প্লাগইন সেটিংস মেটাডেটা অবদান রাখে নি। প্রয়োগকৃত পছন্দগুলি ব্যবহার করে নিজস্ব কনফিগারেশন ইন্টারফেস খোলে।
-SettingsCenter.Text.37f7bcf678fc5e867821f3b252ba6743a1a9a6baccfe147968c4e0f6addf5618=শুধুমাত্র তখনই ব্যবহৃত হয় যখন GEMINI_API_KEY, GOOGLE_API_KEY এবং OPENAI_API_KEY সবই খালি থাকে, সেই অগ্রাধিকার ক্রমে। কার্যকরী উৎস: %s (যদি একটি কী পাওয়া যায়)। কীটি স্থানীয় vtvibe.ini ফাইলে সংরক্ষণ করা হয়।
 SettingsCenter.Text.8c67fcfa12a69b6c3e8edfa20bc751404ebc8a282b951884f8027a6bf25c8bd5=স্টার্টআপ সনাক্তকরণ ব্যবহার করে একটি রেন্ডারার চয়ন করুন৷ একটি ব্যাকএন্ড পিন করা এড়িয়ে যায় যা অন্য মেশিনে অনুপলব্ধ হতে পারে; নির্বাচিত ব্যাকএন্ড পরিবেশের সাথে পরিবর্তন করতে পারে। পরবর্তী গ্রাফিকাল লঞ্চে প্রযোজ্য।
 SettingsCenter.Text.cf64399345c0b3f6ab1273b664c01f8104c461f4f04bfddd1ce61e344b0793be=নেটিভ উইন্ডোজ গ্রাফিকাল উইন্ডো GDI অঙ্কন ব্যবহার করে। GoGPU বা Ebitengine গ্রাফিক্স স্ট্যাকের প্রয়োজন নেই; সেই ব্যাকএন্ডে ড্রাইভারের সমস্যা থাকলে দরকারী। শুধুমাত্র উইন্ডোজ, এবং অঙ্কন কার্যক্ষমতা GPU ব্যাকএন্ড থেকে আলাদা। এটি একটি পৃথক উইন্ডো, উইন্ডোজ কনসোল রেন্ডারার নয়।
 SettingsCenter.Text.3b4f2fa1d5894f413e8422470600127f79bb43c8b5d59beaa766e9868cf13cff=গ্রাফিক্যাল উইন্ডো GoGPU এর মাধ্যমে রেন্ডার করা হয়েছে। পাঠ্য এবং গ্রাফিক্সের জন্য একটি GPU অঙ্কন পাইপলাইন ব্যবহার করে। এই বিল্ডে সামঞ্জস্যপূর্ণ গ্রাফিক্স ড্রাইভার এবং FFI সমর্থন প্রয়োজন; নেটিভ বা টার্মিনাল রেন্ডারার যেখানে কাজ করে সেখানে গ্রাফিক্স ইনিশিয়ালাইজেশন ব্যর্থ হতে পারে। কোন সার্বজনীন গতি সুবিধা নিশ্চিত করা হয় না.
@@ -2222,6 +2220,13 @@ SettingsCenter.Text.ea93d6a262ecb87a9fa4d09edbd7654c046597936a8e235fc3949eb01775
 SettingsCenter.Text.ecb177517eae1ad7b9843b0a0419f4cb5d9f8cd8eb33b78f1db028a73ebf735c=দেখানো হবে এমন নিবন্ধিত ড্রাইভ-মেনু সরঞ্জাম নির্বাচন করুন।
 SettingsCenter.Text.fcf11f73b06570d1a8dd703ea5456fa58584662b8ea6003a588dc503c5fa80a9=F11 মেনু
 SettingsCenter.Text.8d78d31f5db14305d03e11a18a3c8844871deb801132e40bc699a37a58946c17=প্লাগইন মেনু (F11)-এ কোন এন্ট্রিগুলি দেখানো হবে তা বেছে নিন। লুকানো এন্ট্রি তার হটকি ধরে রাখে।
+SettingsCenter.Text.d677190e0a9990e7d5fa9e4c1bbde44271fb8959c4acb6d43e02ed991128b4bf=পরিষেবা
+SettingsCenter.Text.472590ae974d4c1f44b3780df0b152d9119f076c61bfb3e8cb6affd7889ac0a8=প্রদানকারী
+SettingsCenter.Text.56ef8f20955f256423d328f65b62106005252551db25d660031887e421cb4684=ঠিকানা
+SettingsCenter.Text.8b878e6a65056142157dcad1b462f197e2f61550e46baff5c7e6ddf165f6b2ad=যে পরিষেবার সাথে AI প্যানেল কথা বলে। প্রতিটি প্রিসেট ঠিকানা পূরণ করে এবং নিজের কী ভেরিয়েবল পড়ে: GEMINI_API_KEY বা GOOGLE_API_KEY, OPENAI_API_KEY, XAI_API_KEY, OPENROUTER_API_KEY। লোকাল সার্ভারের কী লাগে না।
+SettingsCenter.Text.db3ce2f6a08f89638f6eff8c91f796292b9b8be33c025701a98a236331b8d7b8="Local server" ও "Custom address" প্রদানকারীর জন্য chat-completions ঠিকানা, যেমন LM Studio-র জন্য http://127.0.0.1:1234/v1। অন্য প্রদানকারীরা নিজেদের ঠিকানা ব্যবহার করে।
+SettingsCenter.Text.93d11bbf69e0a3e8128adfe20bfd02027491da3bde62a53dea7aa7b3224ae47f=শুধু তখনই ব্যবহৃত হয় যখন নির্বাচিত প্রদানকারীর কী ভেরিয়েবল খালি থাকে। বর্তমান উৎস: %s (যদি কী পাওয়া যায়)। কীটি স্থানীয় vtvibe.ini ফাইলে রাখা হয়।
+SettingsCenter.Text.ab48e6eed58ca17d0e52480f00f993928b0cfe4fa09bc8bf6b21e4c42a2ecde9=পরবর্তী AI অনুরোধের সাথে পাঠানো মডেল শনাক্তকারী। খালি মানে নির্বাচিত প্রদানকারীর ডিফল্ট মডেল।
 SettingsCenter.entry.Name.Description=F11 মেনুর এন্ট্রি।
 SettingsCenter.entry.Name.Label=এন্ট্রি
 SettingsCenter.entry.Enabled.Description=এই এন্ট্রি F11 মেনুতে দেখান।

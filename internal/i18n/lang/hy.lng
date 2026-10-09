@@ -1549,7 +1549,6 @@ SettingsCenter.Text.719f65b2ad99ed5cc37680799d3c0371fa506a7968c295fe962ac1bbdd72
 SettingsCenter.Text.727cd3a64d792ad410e3cb6036da3eb54dbac258e87c554e3b6081c1a5efc0e6=Ուղղահայաց
 SettingsCenter.Text.728776ecc016cdf523f049472181e5b61517590f1c2efb6afbf6412a3ce74b5f=Փորձարկել գործարկել
 SettingsCenter.Text.72c2973ef0bcfce61c47d4946e3a714da8dedd10be15cfe5f3fb1ad1a38f78d7=Թղթապանակի պատմության ժամանակացույցներ
-SettingsCenter.Text.72e1558a87266ee269d9db0d31eaf979e268082f31250765affcaf8e7570b617=Մոդելային նույնականացողը ուղարկվում է հետագա AI- ի պահանջների հետ: Ստեղծված API վերջային կետը պետք է աջակցի դրան:
 SettingsCenter.Text.72e9a59f5a1d6289dbacb35df897d6c007c55a27e77018455c37e7b372668475=Պորտ
 SettingsCenter.Text.7337fdb065f2ba2e0296768d3d8756d8eb593443a66bfba5b27f0f6a4db83a97=Սեղանի հեծանիվը ներքեւ
 SettingsCenter.Text.7352b75a38f75cdb8adfa08098b88e905b975cd7ea9ceb66a34a6bfdccd974b0=Պահպանեք ներքեւի շարքը կենտրոնացված անվանումի, չափի եւ փոփոխման ժամանակի համար: Կարճ տախտակները ճնշում են այս շարքը:
@@ -1991,7 +1990,6 @@ SettingsCenter.Text.e08de935708b73bd4e0d4c479d40f3fbf2d5981035e23c7657bb62b226df
 SettingsCenter.Text.c089bbf4b60887a88f2690d5fa3a27dddeee667841d65b2de4bab577aceb1ec3=Պահպանված կարգավորումը
 SettingsCenter.Text.24414d27b8ff346683f58d2f0817756c5b0f9e36d0d3833431856e6197099c95=Պահպանված կոնֆիգուրացիան. %s
 SettingsCenter.Text.541c02fbf23706a2ed53125fbb85d5d4d6bb14b2c342a9f88b86d5818822b47c=Այս արտաքին հավելվածը չի ներդրել պարամետրերի մետադատա: Բացվում է սեփական կոնֆիգուրացիոն ինտերֆեյսը օգտագործելով կիրառված նախընտրությունները:
-SettingsCenter.Text.37f7bcf678fc5e867821f3b252ba6743a1a9a6baccfe147968c4e0f6addf5618=Օգտագործվում է միայն այն դեպքում, երբ GEMINI_API_KEY, GOOGLE_API_KEY եւ OPENAI_API_KEY բոլորն դատարկ են, այդ նախապատրաստական կարգով: Գործնական աղբյուր. %s (եթե բանալին կա): Գալիկը պահվում է vtvibe.ini ֆայլում:
 SettingsCenter.Text.8c67fcfa12a69b6c3e8edfa20bc751404ebc8a282b951884f8027a6bf25c8bd5=Ընտրեք ռենդերեր ՝ օգտագործելով սկիզբային հայտնաբերումը: Խուսափում է միացնել մի backend, որը կարող է անհասանելի լինել այլ մեքենայում. ընտրված backend- ը կարող է փոխվել շրջակա միջավայրի հետ: Հարմար է հաջորդ գրաֆիկական արձակման համար:
 SettingsCenter.Text.cf64399345c0b3f6ab1273b664c01f8104c461f4f04bfddd1ce61e344b0793be=Գրաֆիկական պատուհաններ, որոնք օգտագործվում են GDI նկարում: Չի պահանջում GoGPU կամ Ebitengine գրաֆիկային փաթեթը. օգտակար է, երբ այդ հետադարձները ունեն վարորդի խնդիրներ: Միայն Windows- ի համար, եւ նկարչության կատարողականը տարբերվում է GPU- ի ֆունկցիաներից: Սա առանձին պատուհան է, այլ ոչ թե Windows կոնսոլի ռենդերերը:
 SettingsCenter.Text.3b4f2fa1d5894f413e8422470600127f79bb43c8b5d59beaa766e9868cf13cff=Գրաֆիկական պատուհան, որը տրենդերվում է GoGPU- ի միջոցով: Օգտագործում է GPU գրաֆիկական եւ տեքստային գրաֆիկական գծապատկերներ: Պահանջվում է համատեղելի գրաֆիկական վարորդներ եւ FFI աջակցություն այս կառուցվածքում. Գրաֆիկական նախաձեռնությունը կարող է ձախողվել, երբ աշխատում է բնիկ կամ վերջնական ռենդերերը: Ոչ մի համընդհանուր արագության առավելություն չի երաշխավորվում:
@@ -2143,6 +2141,13 @@ SettingsCenter.Text.ea93d6a262ecb87a9fa4d09edbd7654c046597936a8e235fc3949eb01775
 SettingsCenter.Text.ecb177517eae1ad7b9843b0a0419f4cb5d9f8cd8eb33b78f1db028a73ebf735c=Ընտրեք, թե գրանցված սկավառակի ցանկի որ գործիքներն են ցուցադրվում։
 SettingsCenter.Text.fcf11f73b06570d1a8dd703ea5456fa58584662b8ea6003a588dc503c5fa80a9=F11 ընտրացանկ
 SettingsCenter.Text.8d78d31f5db14305d03e11a18a3c8844871deb801132e40bc699a37a58946c17=Ընտրեք, թե հավելումների ընտրացանկի (F11) որ կետերը ցուցադրվեն: Թաքցված կետը պահպանում է իր արագ ստեղնը։
+SettingsCenter.Text.d677190e0a9990e7d5fa9e4c1bbde44271fb8959c4acb6d43e02ed991128b4bf=Ծառայություն
+SettingsCenter.Text.472590ae974d4c1f44b3780df0b152d9119f076c61bfb3e8cb6affd7889ac0a8=Մատակարար
+SettingsCenter.Text.56ef8f20955f256423d328f65b62106005252551db25d660031887e421cb4684=Հասցե
+SettingsCenter.Text.8b878e6a65056142157dcad1b462f197e2f61550e46baff5c7e6ddf165f6b2ad=Ծառայությունը, որի հետ աշխատում է ԱԲ վահանակը։ Յուրաքանչյուր նախադրված տարբերակ լրացնում է հասցեն և կարդում իր բանալու փոփոխականը՝ GEMINI_API_KEY կամ GOOGLE_API_KEY, OPENAI_API_KEY, XAI_API_KEY, OPENROUTER_API_KEY։ Տեղային սերվերին բանալի պետք չէ։
+SettingsCenter.Text.db3ce2f6a08f89638f6eff8c91f796292b9b8be33c025701a98a236331b8d7b8=Chat-completions հասցե «Local server» և «Custom address» մատակարարների համար, օրինակ՝ http://127.0.0.1:1234/v1 LM Studio-ի համար։ Մյուս մատակարարներն օգտագործում են իրենց հասցեն։
+SettingsCenter.Text.93d11bbf69e0a3e8128adfe20bfd02027491da3bde62a53dea7aa7b3224ae47f=Օգտագործվում է միայն այն դեպքում, երբ ընտրված մատակարարի բանալու փոփոխականը դատարկ է։ Գործող աղբյուր՝ %s (եթե բանալին հասանելի է)։ Բանալին պահվում է տեղային vtvibe.ini ֆայլում։
+SettingsCenter.Text.ab48e6eed58ca17d0e52480f00f993928b0cfe4fa09bc8bf6b21e4c42a2ecde9=Մոդելի նույնացուցիչ, որն ուղարկվում է ԱԲ-ի հաջորդ հարցումների հետ։ Դատարկը նշանակում է ընտրված մատակարարի լռելյայն մոդելը։
 SettingsCenter.entry.Name.Description=F11 ընտրացանկի կետ։
 SettingsCenter.entry.Name.Label=Կետ
 SettingsCenter.entry.Enabled.Description=Ցուցադրել այս կետը F11 ընտրացանկում։
