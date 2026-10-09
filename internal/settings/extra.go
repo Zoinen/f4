@@ -21,24 +21,40 @@ import (
 type aiSettingsProvider struct{}
 
 func (aiSettingsProvider) Catalog() f4settings.Catalog {
+	loaded := ini.Load(filepath.Join(config.GetF4ConfigDir(), "vtvibe.ini"))
+	provider := vtvibe.ResolveProvider(loaded.GetString("general", "provider", ""), loaded.GetString("general", "base_url", ""))
 	source := "vtvibe.ini"
-	for _, name := range []string{"GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY"} {
+	for _, name := range provider.KeyEnv {
 		if strings.TrimSpace(os.Getenv(name)) != "" {
 			source = name
 			break
 		}
 	}
-	key := f4settings.Scalar("ai.key", "ai", "Credentials", "Saved API key", "Used only when GEMINI_API_KEY, GOOGLE_API_KEY and OPENAI_API_KEY are all empty, in that precedence order. Effective source: %s (if a key is available). The key is stored in the local vtvibe.ini file.", f4settings.Secret)
+	choices := make([]f4settings.Choice, 0, len(vtvibe.Providers))
+	for _, p := range vtvibe.Providers {
+		choices = append(choices, f4settings.Choice{Value: p.ID, Label: f4settings.Text{English: p.Name, Literal: true}})
+	}
+	service := f4settings.Scalar("ai.provider", "ai", "Service", "Provider", "Service the AI panel talks to. Each preset fills in the address and reads its own key variable: GEMINI_API_KEY or GOOGLE_API_KEY, OPENAI_API_KEY, XAI_API_KEY, OPENROUTER_API_KEY. A local server needs no key.", f4settings.ChoiceKind)
+	service.Choices = choices
+	key := f4settings.Scalar("ai.key", "ai", "Credentials", "Saved API key", "Used only when the key variable of the chosen provider is empty. Effective source: %s (if a key is available). The key is stored in the local vtvibe.ini file.", f4settings.Secret)
 	key.Description.Args = []any{source}
 	return f4settings.Catalog{ID: "ai", Categories: Categories, Background: true, Fields: []f4settings.Field{
+		service,
+		f4settings.Scalar("ai.base_url", "ai", "Service", "Address", "Chat-completions address for the Local server and Custom address providers, for example http://127.0.0.1:1234/v1 for LM Studio. The other providers use their own address.", f4settings.String),
 		key,
-		f4settings.Scalar("ai.model", "ai", "Model", "Model", "Model identifier sent with subsequent AI requests. The configured API endpoint must support it.", f4settings.String),
+		f4settings.Scalar("ai.model", "ai", "Model", "Model", "Model identifier sent with subsequent AI requests. Empty means the default model of the chosen provider.", f4settings.String),
 	}}
 }
 func (p aiSettingsProvider) Begin(context.Context) (*f4settings.Draft, error) {
 	path := filepath.Join(config.GetF4ConfigDir(), "vtvibe.ini")
 	loaded := ini.Load(path)
-	d := f4settings.NewDraft(map[string]string{"ai.key": loaded.GetString("general", "key", ""), "ai.model": loaded.GetString("general", "model", vtvibe.DefaultModel)}, nil)
+	provider := vtvibe.ResolveProvider(loaded.GetString("general", "provider", ""), loaded.GetString("general", "base_url", ""))
+	d := f4settings.NewDraft(map[string]string{
+		"ai.provider": provider.ID,
+		"ai.base_url": loaded.GetString("general", "base_url", ""),
+		"ai.key":      loaded.GetString("general", "key", ""),
+		"ai.model":    loaded.GetString("general", "model", ""),
+	}, nil)
 	d.ValidateFunc = func(d *f4settings.Draft) map[string]error {
 		errs := map[string]error{}
 		for _, id := range d.Changed() {
@@ -62,10 +78,10 @@ func (p aiSettingsProvider) Begin(context.Context) (*f4settings.Draft, error) {
 		for _, id := range d.Changed() {
 			key := strings.TrimPrefix(id, "ai.")
 			fallback := ""
-			if key == "model" {
-				fallback = vtvibe.DefaultModel
-			}
 			v := current.GetString("general", key, fallback)
+			if key == "provider" {
+				v = vtvibe.ResolveProvider(v, current.GetString("general", "base_url", "")).ID
+			}
 			if v != d.Baseline[id] && v != d.Values[id] {
 				return f4settings.Result{Errors: map[string]error{id: settingsError("value changed outside Settings Center")}}
 			}

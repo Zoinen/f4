@@ -3370,7 +3370,6 @@ SettingsCenter.Text.719f65b2ad99ed5cc37680799d3c0371fa506a7968c295fe962ac1bbdd72
 SettingsCenter.Text.727cd3a64d792ad410e3cb6036da3eb54dbac258e87c554e3b6081c1a5efc0e6=Вертикальная
 SettingsCenter.Text.728776ecc016cdf523f049472181e5b61517590f1c2efb6afbf6412a3ce74b5f=Включить выполнение
 SettingsCenter.Text.72c2973ef0bcfce61c47d4946e3a714da8dedd10be15cfe5f3fb1ad1a38f78d7=Дата и время в истории папок
-SettingsCenter.Text.72e1558a87266ee269d9db0d31eaf979e268082f31250765affcaf8e7570b617=Идентификатор модели для последующих запросов к ИИ. Настроенный сервер API должен её поддерживать.
 SettingsCenter.Text.72e9a59f5a1d6289dbacb35df897d6c007c55a27e77018455c37e7b372668475=Порт
 SettingsCenter.Text.7337fdb065f2ba2e0296768d3d8756d8eb593443a66bfba5b27f0f6a4db83a97=Колесо вниз в таблице
 SettingsCenter.Text.7352b75a38f75cdb8adfa08098b88e905b975cd7ea9ceb66a34a6bfdccd974b0=Резервирует нижнюю строку для имени, размера и времени изменения текущего файла. На низких панелях строка скрывается.
@@ -3812,7 +3811,6 @@ SettingsCenter.Text.e08de935708b73bd4e0d4c479d40f3fbf2d5981035e23c7657bb62b226df
 SettingsCenter.Text.c089bbf4b60887a88f2690d5fa3a27dddeee667841d65b2de4bab577aceb1ec3=Собственные настройки плагинов
 SettingsCenter.Text.24414d27b8ff346683f58d2f0817756c5b0f9e36d0d3833431856e6197099c95=Собственные настройки: %s
 SettingsCenter.Text.541c02fbf23706a2ed53125fbb85d5d4d6bb14b2c342a9f88b86d5818822b47c=Этот внешний плагин не предоставил описание настроек для Центра. Открывает его собственный интерфейс настройки с применёнными параметрами.
-SettingsCenter.Text.37f7bcf678fc5e867821f3b252ba6743a1a9a6baccfe147968c4e0f6addf5618=Используется только при отсутствии GEMINI_API_KEY, GOOGLE_API_KEY и OPENAI_API_KEY; они проверяются именно в таком порядке. Действующий источник: %s (если ключ доступен). Ключ хранится в локальном файле vtvibe.ini.
 SettingsCenter.Text.8c67fcfa12a69b6c3e8edfa20bc751404ebc8a282b951884f8027a6bf25c8bd5=Выбирать отрисовщик автоматически при запуске. Не привязывает настройки к движку, который может отсутствовать на другом компьютере; результат зависит от окружения. Действует при следующем графическом запуске.
 SettingsCenter.Text.cf64399345c0b3f6ab1273b664c01f8104c461f4f04bfddd1ce61e344b0793be=Собственное графическое окно Windows с отрисовкой через GDI. Не требует графического стека GoGPU или Ebitengine; подходит при проблемах с их драйверами. Только для Windows; производительность отличается от движков с использованием GPU. Это отдельное окно, а не отрисовщик консоли Windows.
 SettingsCenter.Text.3b4f2fa1d5894f413e8422470600127f79bb43c8b5d59beaa766e9868cf13cff=Графическое окно с отрисовкой через GoGPU. Использует GPU для вывода текста и графики. Требует совместимых графических драйверов и поддержки FFI в сборке; инициализация может не удаться там, где работает системный или терминальный отрисовщик. Преимущество в скорости зависит от системы.
@@ -3965,6 +3963,13 @@ SettingsCenter.Text.ea93d6a262ecb87a9fa4d09edbd7654c046597936a8e235fc3949eb01775
 SettingsCenter.Text.ecb177517eae1ad7b9843b0a0419f4cb5d9f8cd8eb33b78f1db028a73ebf735c=Выбор зарегистрированных инструментов, показываемых в меню дисков.
 SettingsCenter.Text.fcf11f73b06570d1a8dd703ea5456fa58584662b8ea6003a588dc503c5fa80a9=Меню F11
 SettingsCenter.Text.8d78d31f5db14305d03e11a18a3c8844871deb801132e40bc699a37a58946c17=Выберите, какие строки меню плагинов (F11) показывать. У скрытой строки сохраняется её горячая клавиша.
+SettingsCenter.Text.d677190e0a9990e7d5fa9e4c1bbde44271fb8959c4acb6d43e02ed991128b4bf=Сервис
+SettingsCenter.Text.472590ae974d4c1f44b3780df0b152d9119f076c61bfb3e8cb6affd7889ac0a8=Поставщик
+SettingsCenter.Text.56ef8f20955f256423d328f65b62106005252551db25d660031887e421cb4684=Адрес
+SettingsCenter.Text.8b878e6a65056142157dcad1b462f197e2f61550e46baff5c7e6ddf165f6b2ad=Сервис, с которым работает ИИ-панель. Каждый вариант подставляет адрес и читает свою переменную с ключом: GEMINI_API_KEY или GOOGLE_API_KEY, OPENAI_API_KEY, XAI_API_KEY, OPENROUTER_API_KEY. Локальному серверу ключ не нужен.
+SettingsCenter.Text.db3ce2f6a08f89638f6eff8c91f796292b9b8be33c025701a98a236331b8d7b8=Адрес chat-completions для поставщиков «Local server» и «Custom address», например http://127.0.0.1:1234/v1 для LM Studio. Остальные поставщики используют свой адрес.
+SettingsCenter.Text.93d11bbf69e0a3e8128adfe20bfd02027491da3bde62a53dea7aa7b3224ae47f=Используется, только если переменная с ключом выбранного поставщика пуста. Действующий источник: %s (если ключ доступен). Ключ хранится в локальном файле vtvibe.ini.
+SettingsCenter.Text.ab48e6eed58ca17d0e52480f00f993928b0cfe4fa09bc8bf6b21e4c42a2ecde9=Идентификатор модели для последующих запросов к ИИ. Пусто — модель по умолчанию выбранного поставщика.
 SettingsCenter.entry.Name.Description=Строка меню F11.
 SettingsCenter.entry.Name.Label=Строка
 SettingsCenter.entry.Enabled.Description=Показывать эту строку в меню F11.

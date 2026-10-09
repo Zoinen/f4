@@ -167,21 +167,34 @@ ai: что делает этот файл и что в нём не так?
 
 ### Не только Google
 
-Панель говорит на общепринятом протоколе, поэтому её можно направить
-куда угодно. Файл `vtvibe.ini` в папке настроек f4:
+Панель говорит на общепринятом протоколе (OpenAI chat-completions), поэтому
+её можно направить куда угодно. Проще всего — выбрать поставщика в настройках
+(F9 → AI): адрес подставится сам, а ключ читается из переменной окружения
+этого поставщика или из сохранённого в настройках.
+
+| Поставщик | Адрес | Ключ | Модель по умолчанию |
+| --- | --- | --- | --- |
+| Google Gemini | `https://generativelanguage.googleapis.com/v1beta/openai` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` | `gemini-3.6-flash` |
+| OpenAI | `https://api.openai.com/v1` | `OPENAI_API_KEY` | `gpt-5.5` |
+| xAI Grok | `https://api.x.ai/v1` | `XAI_API_KEY` | `grok-4.6` |
+| OpenRouter | `https://openrouter.ai/api/v1` (там есть бесплатные модели) | `OPENROUTER_API_KEY` | `openrouter/auto` |
+| Локальный сервер | `http://127.0.0.1:11434/v1` (Ollama); для LM Studio — `http://127.0.0.1:1234/v1` в поле «Адрес» | не нужен | задайте сами |
+| Свой адрес | поле «Адрес» | `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `OPENAI_API_KEY` | задайте сами |
+
+Пустая модель означает модель поставщика по умолчанию; модель по умолчанию
+другого поставщика, оставшаяся после переключения, тоже заменяется. То же
+самое можно записать прямо в `vtvibe.ini` в папке настроек f4:
 
 ```ini
 [general]
-base_url = https://generativelanguage.googleapis.com/v1beta/openai
-model    = gemini-3.6-flash
-key      = AIza...
+provider = openrouter
+model    = openrouter/auto
+key      = sk-or-...
 ```
 
-Другие варианты — поменяйте `base_url` и `model`:
-
-* **OpenRouter** — `https://openrouter.ai/api/v1` (там есть бесплатные модели)
-* **Ollama** — `http://127.0.0.1:11434/v1`, ключ не нужен вовсе
-* **LM Studio** — `http://127.0.0.1:1234/v1`, ключ не нужен вовсе
+Файл без `provider`, но со своим `base_url`, работает как раньше — как
+«Свой адрес». Claude подключится отдельным шагом, родным API Anthropic
+(unxed/f4#1842).
 
 Локальные модели — это полностью бесплатно и никуда не уходит из дома.
 
@@ -203,9 +216,12 @@ Getting started with the free Google AI Studio tier:
 
 The dialog lives in `chat/`, whole files written by the model land in `out/`,
 and `draft.md` is there for long prompts (**F4**, **F2**, then a bare `ai:`).
-Settings are in `vtvibe.ini` in the f4 config directory; the key is also read
-from `GEMINI_API_KEY`. Point `base_url` at OpenRouter, Ollama or LM Studio to
-use anything else.
+Settings are in `vtvibe.ini` in the f4 config directory. Pick the service in
+Settings (F9 → AI → Provider): Google Gemini, OpenAI, xAI Grok, OpenRouter, a
+local server (Ollama, LM Studio, llama.cpp) or a custom address. Each preset
+fills in the address and reads its own key variable (`GEMINI_API_KEY` or
+`GOOGLE_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`, `OPENROUTER_API_KEY`); an
+empty model means the provider's default.
 
 ---
 
