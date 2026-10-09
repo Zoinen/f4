@@ -449,30 +449,36 @@ func TestCreateDefaultHighlightIniDocumentsColorOptions(t *testing.T) {
 	for _, key := range []string{
 		"# [Highlight_100]",
 		"Appearance.HighlightPriority",
-		"user rules first, the default",
-		"ContinueProcessing = 1 when a later rule",
-		"# NormalColor =",
-		"# SelectedColor =",
-		"# CursorColor =",
-		"# SelectedCursorColor =",
-		"NormalColorUnderCursor",
-		"SelectedColorUnderCursor",
-		// Far Manager spellings of the same four colors, and the folder
-		// example that shows why a rule needs an attribute of its own.
+		"unless it sets ContinueProcessing = 1",
+		// The four colors are documented and exemplified under the Far
+		// Manager names only (f4#912); the older spellings still work but
+		// are not advertised.
 		"# NormalFileName =",
 		"# SelectedFileName =",
 		"# FileNameUnderCursor =",
 		"# FileNameSelectedUnderCursor =",
 		"# IncludeAttributes = Directory",
+		// UseDefaults and the order of the attributes it follows.
+		"# UseDefaults = 1",
+		"Junction, Symlink, Hidden or",
+		"Sort groups put files of one kind together",
 	} {
 		if !strings.Contains(content, key) {
 			t.Errorf("generated highlight.ini is missing documented %q", key)
 		}
 	}
+	for _, key := range []string{"NormalColor", "SelectedColor", "CursorColor", "SelectedCursorColor", "UnderCursor, "} {
+		if strings.Contains(content, key) {
+			t.Errorf("generated highlight.ini still advertises the old color name %q", key)
+		}
+	}
+	if got := strings.Count(content, "# [Highlight_"); got != 2 {
+		t.Errorf("generated highlight.ini has %d examples, want 2", got)
+	}
 
 	// The ordinary colors take a background just like the cursor ones, and the
 	// example is the only place a reader sees that (#912).
-	for _, key := range []string{"# NormalColor = ", "# SelectedColor = "} {
+	for _, key := range []string{"# NormalFileName = ", "# SelectedFileName = "} {
 		idx := strings.Index(content, key)
 		if idx < 0 {
 			continue
