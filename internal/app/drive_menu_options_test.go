@@ -118,8 +118,8 @@ func TestPanelsFrame_DriveMenu_F9OpensOptions(t *testing.T) {
 		t.Fatalf("drive options frame is not a container: %T", vtui.FrameManager.GetTopFrame())
 	}
 	center, ok := dlg.(*settings.Center)
-	if !ok || center.Category() != "drives" {
-		t.Fatal("F9 must deep-link to Drive chooser in Settings Center")
+	if !ok || center.Category() != "drives.options" {
+		t.Fatal("F9 must open the Drive options page of the Drive chooser window")
 	}
 	center.Show(vtui.NewSilentScreenBuf())
 	vtui.FrameManager.Pop()
@@ -163,7 +163,7 @@ func TestPanelsFrame_DriveMenu_F9OpensToolsWindowWithMenuOptionsButton(t *testin
 		t.Fatal("the drive tools window has no Menu options button")
 	}
 	button.OnClick()
-	if center, ok := vtui.FrameManager.GetTopFrame().(*settings.Center); !ok || center.Category() != "drives" {
+	if center, ok := vtui.FrameManager.GetTopFrame().(*settings.Center); !ok || center.Category() != "drives.options" {
 		t.Fatalf("Menu options opened %T, want the drives page of the Settings Center", vtui.FrameManager.GetTopFrame())
 	}
 }
