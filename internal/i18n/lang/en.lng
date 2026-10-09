@@ -2153,6 +2153,8 @@ Hotkeys.AssignCancel=Press Esc to cancel
 
 CommandPalette.Title= Command Palette
 CommandPalette.QueryPrompt=>
+CommandPalette.AssignHint= Ctrl+K: assign key
+CommandPalette.AssignUnavailable= A key can be assigned only to commands that run an action.
 CommandPalette.ColumnCommand=Command
 CommandPalette.ColumnCategory=Category
 CommandPalette.ColumnShortcut=Shortcut
