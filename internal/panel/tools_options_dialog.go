@@ -102,11 +102,12 @@ func (tw *toolsWindow) show() {
 		width = screenW - 2
 	}
 	listH := len(tw.names)
-	if screenH > 0 && listH > screenH-8 {
-		listH = max(3, screenH-8)
+	if screenH > 0 && listH > screenH-6 {
+		listH = max(3, screenH-6)
 	}
-	// The list, the buttons of the window, a rule and Ok / Cancel under it.
-	height := listH + 8
+	// Inside the two border rows: the list, a blank row, the window's buttons,
+	// a rule, and Ok / Cancel on the last row, with nothing under them (f4#918).
+	height := listH + 6
 
 	dlg := vtui.NewCenteredDialog(width, height, tw.title)
 	dlg.ShowClose = false

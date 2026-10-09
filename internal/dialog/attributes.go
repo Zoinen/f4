@@ -733,26 +733,11 @@ func ShowAttributesUnixForTargets(refresh func(), v vfs.VFS, targets []Attribute
 		mainVBox.Add(cbRecursive, vtui.Margins{Top: 0}, vtui.AlignLeft)
 	}
 
-	// Time Row. far2l leaves the dates of a multiple selection blank; a blank
-	// field left blank changes nothing.
-	initialMTime := ""
-	if !multiple {
-		initialMTime = item.MTime.Format(attributesTimeFormat)
-	}
-	editMTime := vtui.NewEdit(0, 0, 20, initialMTime)
-	lblTime := vtui.NewLabel(0, 0, PadLabel(i18n.Msg("Attributes.MTime")), editMTime)
-	rowTime := vtui.NewHBoxLayout(0, 0, 66, 1)
-	rowTime.Add(lblTime, vtui.Margins{Left: 2, Right: 1}, vtui.AlignLeft)
-	rowTime.Add(editMTime, vtui.Margins{}, vtui.AlignLeft)
-	dlg.AddItem(lblTime)
-	dlg.AddItem(editMTime)
-	mainVBox.Add(rowTime, vtui.Margins{Top: 0}, vtui.AlignFill)
-
-	// Created/Accessed/Changed rows, in that order (f4#1404). Changed is
-	// read-only: no OS lets a program set the status-change time. Created is
-	// editable only where the platform can set a birth time (macOS) and for a
-	// real local file system; elsewhere it is shown and cannot be changed.
-	// Accessed is editable, below.
+	// Created, Modified, Metadata (changed) and Accessed rows, in that order
+	// (f4#1404, f4#1817). Changed is read-only: no OS lets a program set the
+	// status-change time. Created is editable only where the platform can set a
+	// birth time (macOS) and for a real local file system; elsewhere it is shown
+	// and cannot be changed. Accessed is editable, below.
 	var rowCreated, rowAccessed, rowChanged *vtui.HBoxLayout
 	var editCreated *vtui.Edit
 	initialCreated := ""
@@ -773,6 +758,25 @@ func ShowAttributesUnixForTargets(refresh func(), v vfs.VFS, targets []Attribute
 			rowCreated = attributesReadOnlyTimeRow(dlg, mainVBox, 66, 2, i18n.Msg("Attributes.Created"), createdText)
 		}
 	}
+	// Time Row. far2l leaves the dates of a multiple selection blank; a blank
+	// field left blank changes nothing.
+	initialMTime := ""
+	if !multiple {
+		initialMTime = item.MTime.Format(attributesTimeFormat)
+	}
+	editMTime := vtui.NewEdit(0, 0, 20, initialMTime)
+	lblTime := vtui.NewLabel(0, 0, PadLabel(i18n.Msg("Attributes.MTime")), editMTime)
+	rowTime := vtui.NewHBoxLayout(0, 0, 66, 1)
+	rowTime.Add(lblTime, vtui.Margins{Left: 2, Right: 1}, vtui.AlignLeft)
+	rowTime.Add(editMTime, vtui.Margins{}, vtui.AlignLeft)
+	dlg.AddItem(lblTime)
+	dlg.AddItem(editMTime)
+	mainVBox.Add(rowTime, vtui.Margins{Top: 0}, vtui.AlignFill)
+
+	if showChanged {
+		rowChanged = attributesReadOnlyTimeRow(dlg, mainVBox, 66, 2, i18n.Msg("Attributes.Changed"), changedText)
+	}
+
 	// Accessed is editable (f4#1404): utimensat takes it together with the
 	// modification time, which OSVFS.SetAttributes already passes on. Like
 	// M-Time it stays blank for a multiple selection, and a field left
@@ -792,10 +796,6 @@ func ShowAttributesUnixForTargets(refresh func(), v vfs.VFS, targets []Attribute
 		dlg.AddItem(editAccessed)
 		mainVBox.Add(rowAccessed, vtui.Margins{Top: 0}, vtui.AlignFill)
 	}
-	if showChanged {
-		rowChanged = attributesReadOnlyTimeRow(dlg, mainVBox, 66, 2, i18n.Msg("Attributes.Changed"), changedText)
-	}
-
 	// Buttons
 	btnSet := vtui.NewButton(0, 0, i18n.Msg("Attributes.BtnSet"))
 	btnSet.IsDefault = true
