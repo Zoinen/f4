@@ -78,11 +78,11 @@ func TestMenuBarCostDoesNotGrowWithTheFolder(t *testing.T) {
 	if walks := panel.SelectionWalks() - before; walks > 3*steps {
 		t.Errorf("%d cursor steps walked the listing %d times, want at most %d (a few per step, not one per menu row)", steps, walks, 3*steps)
 	}
-	if menuRowDisabled(t, pf, "View") {
-		t.Error("View is dimmed with the cursor on a file")
+	if menuRowDisabled(t, pf, "Edit") {
+		t.Error("Edit is dimmed with the cursor on a file")
 	}
 	src.SetCursorIndex(0)
-	if !menuRowDisabled(t, pf, "View") {
-		t.Error("View must be dimmed with the cursor on \"..\"")
+	if !menuRowDisabled(t, pf, "Edit") {
+		t.Error("Edit must be dimmed with the cursor on \"..\"")
 	}
 }
