@@ -56,8 +56,8 @@ func TestMenuRowsFollowTheCursorBetweenFrames(t *testing.T) {
 
 	// The directory is still being read: nothing under the cursor yet.
 	src.Entries = nil
-	if !menuRowDisabled(t, pf, "View") {
-		t.Fatal("View must be dimmed while the panel has no entries")
+	if !menuRowDisabled(t, pf, "Edit") {
+		t.Fatal("Edit must be dimmed while the panel has no entries")
 	}
 
 	// The listing arrives and the cursor stands on a file.
@@ -66,13 +66,13 @@ func TestMenuRowsFollowTheCursorBetweenFrames(t *testing.T) {
 		{VFSItem: vfs.VFSItem{Name: "test.txt"}},
 	}
 	src.SetCursorIndex(1)
-	if menuRowDisabled(t, pf, "View") {
-		t.Error("View stayed dimmed after the cursor moved onto a file")
+	if menuRowDisabled(t, pf, "Edit") {
+		t.Error("Edit stayed dimmed after the cursor moved onto a file")
 	}
 
 	// And back onto "..": dimmed again.
 	src.SetCursorIndex(0)
-	if !menuRowDisabled(t, pf, "View") {
-		t.Error("View must be dimmed with the cursor on \"..\"")
+	if !menuRowDisabled(t, pf, "Edit") {
+		t.Error("Edit must be dimmed with the cursor on \"..\"")
 	}
 }

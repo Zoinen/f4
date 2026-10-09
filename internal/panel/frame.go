@@ -6344,74 +6344,106 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 				return strings.ToLower(driveMenuNameWithoutMarker(drives[i].Name)) <
 					strings.ToLower(driveMenuNameWithoutMarker(drives[j].Name))
 			})
-		} else if order, err := LoadDriveToolsOrder(DriveToolsOrderFilePath()); err != nil {
-			vtui.DebugLog("DRIVE TOOLS: load order failed: %v", err)
-		} else {
-			drives = orderDriveTools(drives, order)
 		}
 	}
-	// toolRows maps a menu row to its position in drives, for Ctrl+Up and
-	// Ctrl+Down on the tool rows (#1148).
-	toolRows := map[int]int{}
+	// toolRows maps a menu row to the key of its tool, for Ctrl+Up and Ctrl+Down
+	// on the tool rows (#1148). Every row of the Tools section is a tool: the
+	// built-in ones (Other panel, Temporary panel, the registry) are ordered
+	// together with the plugins', each under a key no plugin name can have.
+	toolRows := map[int]string{}
 	{
 		menu.AddItem(vtui.MenuItem{Separator: true, Text: i18n.Msg("Drive.Tools")})
-		// The built-in tools come first: Other panel, Temporary panel and, on
-		// Windows, the registry. None has an automatic accelerator; F4 can assign
-		// one to each, just like to the plugin tools below (f4#1148).
-		otherAction := keymap.DriveMenuActionName("other")
-		driveHotkeyRows[menu.GetItemCount()] = otherAction
-		driveHotkeyLabels[menu.GetItemCount()] = i18n.Msg("Panel.Other")
-		menu.AddItem(vtui.MenuItem{Text: driveMenuAssignableText(otherAction, i18n.Msg("Panel.Other")), UserData: func(fsp *FileSystemPanel) {
-			otherFsp := pf.Panels[1-panelIdx].(*FileSystemPanel)
-			fsp.cancelProviderOpen()
-			if fsp.Vfs != nil {
-				_ = fsp.Vfs.Close()
-			}
-			fsp.Vfs = otherFsp.Vfs.Clone()
-			fsp.showCurrentVFSLoadingRows()
-			fsp.ReadDirectory()
-			pf.RefreshAll()
-		}})
-
-		// TempPanel is a native VFS panel, so it is available from the same
-		// Alt+F1/Alt+F2 drive menu as far2l's plugin panels.
-		temporaryAction := keymap.DriveMenuActionName("temporary")
-		driveHotkeyRows[menu.GetItemCount()] = temporaryAction
-		driveHotkeyLabels[menu.GetItemCount()] = i18n.Msg("TempPanel.Drive")
-		menu.AddItem(vtui.MenuItem{Text: driveMenuAssignableText(temporaryAction, i18n.Msg("TempPanel.Drive")), UserData: func(fsp *FileSystemPanel) {
-			pf.SwitchToVFS(fsp, NewTempPanelVFS(nil, GlobalTempPanelStore, 0))
-		}})
-
+		type toolRow struct {
+			key string
+			add func()
+		}
+		// None has an automatic accelerator; F4 can assign one to each, just
+		// like to the plugin tools below (f4#1148).
+		rows := []toolRow{
+			{key: driveToolKeyOtherPanel, add: func() {
+				otherAction := keymap.DriveMenuActionName("other")
+				driveHotkeyRows[menu.GetItemCount()] = otherAction
+				driveHotkeyLabels[menu.GetItemCount()] = i18n.Msg("Panel.Other")
+				menu.AddItem(vtui.MenuItem{Text: driveMenuAssignableText(otherAction, i18n.Msg("Panel.Other")), UserData: func(fsp *FileSystemPanel) {
+					otherFsp := pf.Panels[1-panelIdx].(*FileSystemPanel)
+					fsp.cancelProviderOpen()
+					if fsp.Vfs != nil {
+						_ = fsp.Vfs.Close()
+					}
+					fsp.Vfs = otherFsp.Vfs.Clone()
+					fsp.showCurrentVFSLoadingRows()
+					fsp.ReadDirectory()
+					pf.RefreshAll()
+				}})
+			}},
+			// TempPanel is a native VFS panel, so it is available from the same
+			// Alt+F1/Alt+F2 drive menu as far2l's plugin panels.
+			{key: driveToolKeyTemporaryPanel, add: func() {
+				temporaryAction := keymap.DriveMenuActionName("temporary")
+				driveHotkeyRows[menu.GetItemCount()] = temporaryAction
+				driveHotkeyLabels[menu.GetItemCount()] = i18n.Msg("TempPanel.Drive")
+				menu.AddItem(vtui.MenuItem{Text: driveMenuAssignableText(temporaryAction, i18n.Msg("TempPanel.Drive")), UserData: func(fsp *FileSystemPanel) {
+					pf.SwitchToVFS(fsp, NewTempPanelVFS(nil, GlobalTempPanelStore, 0))
+				}})
+			}},
+		}
 		if registryDrive != nil {
-			registryAction := keymap.DriveMenuActionName("platform.windows-registry")
-			driveHotkeyRows[menu.GetItemCount()] = registryAction
-			driveHotkeyLabels[menu.GetItemCount()] = driveMenuNameWithoutMarker(registryDrive.Name)
-			registryFactory := registryDrive.Factory
-			menu.AddItem(vtui.MenuItem{Text: driveMenuAssignableText(registryAction, registryName), UserData: func(fsp *FileSystemPanel) {
-				pf.SwitchToVFS(fsp, registryFactory())
+			rows = append(rows, toolRow{key: driveToolKeyRegistry, add: func() {
+				registryAction := keymap.DriveMenuActionName("platform.windows-registry")
+				driveHotkeyRows[menu.GetItemCount()] = registryAction
+				driveHotkeyLabels[menu.GetItemCount()] = driveMenuNameWithoutMarker(registryDrive.Name)
+				registryFactory := registryDrive.Factory
+				menu.AddItem(vtui.MenuItem{Text: driveMenuAssignableText(registryAction, registryName), UserData: func(fsp *FileSystemPanel) {
+					pf.SwitchToVFS(fsp, registryFactory())
+				}})
 			}})
 		}
-		for index, drv := range drives {
-			factory := drv.Factory
-			toolRows[menu.GetItemCount()] = index
+		for _, drv := range drives {
+			drv := drv
+			rows = append(rows, toolRow{key: drv.Name, add: func() {
+				factory := drv.Factory
+				// Clean name: strip existing hotkeys/numbering if any
+				cleanName := drv.Name
+				if idx := strings.Index(cleanName, ". "); idx != -1 {
+					cleanName = cleanName[idx+2:]
+				}
+				cleanName = strings.ReplaceAll(cleanName, "&", "")
 
-			// Clean name: strip existing hotkeys/numbering if any
-			cleanName := drv.Name
-			if idx := strings.Index(cleanName, ". "); idx != -1 {
-				cleanName = cleanName[idx+2:]
-			}
-			cleanName = strings.ReplaceAll(cleanName, "&", "")
+				// Tools deliberately have no automatic accelerator. A user can
+				// assign one with F4, without it moving randomly when a drive or
+				// link takes the same letter.
+				actionName := keymap.DriveMenuActionName("tool." + cleanName)
+				driveHotkeyRows[menu.GetItemCount()] = actionName
+				driveHotkeyLabels[menu.GetItemCount()] = cleanName
 
-			// Tools deliberately have no automatic accelerator. A user can
-			// assign one with F4, without it moving randomly when a drive or
-			// link takes the same letter.
-			actionName := keymap.DriveMenuActionName("tool." + cleanName)
-			driveHotkeyRows[menu.GetItemCount()] = actionName
-			driveHotkeyLabels[menu.GetItemCount()] = cleanName
-
-			menu.AddItem(vtui.MenuItem{Text: driveMenuAssignableText(actionName, cleanName), UserData: func(fsp *FileSystemPanel) {
-				pf.SwitchToVFS(fsp, factory())
+				menu.AddItem(vtui.MenuItem{Text: driveMenuAssignableText(actionName, cleanName), UserData: func(fsp *FileSystemPanel) {
+					pf.SwitchToVFS(fsp, factory())
+				}})
 			}})
+		}
+		// The order the user chose with Ctrl+Up / Ctrl+Down, for every tool;
+		// the sorted-by-name option keeps the plugins in name order instead.
+		if !driveMenuOptionEnabled(driveMenuOptions, config.DriveMenuSortPluginsByHotkey) {
+			if order, err := LoadDriveToolsOrder(DriveToolsOrderFilePath()); err != nil {
+				vtui.DebugLog("DRIVE TOOLS: load order failed: %v", err)
+			} else if len(order) > 0 {
+				keys := make([]sysinfo.DriveEntry, len(rows))
+				for i, r := range rows {
+					keys[i] = sysinfo.DriveEntry{Name: r.key}
+				}
+				byKey := map[string]toolRow{}
+				for _, r := range rows {
+					byKey[r.key] = r
+				}
+				rows = rows[:0]
+				for _, k := range orderDriveTools(keys, order) {
+					rows = append(rows, byKey[k.Name])
+				}
+			}
+		}
+		for _, r := range rows {
+			toolRows[menu.GetItemCount()] = r.key
+			r.add()
 		}
 	}
 
@@ -6460,25 +6492,32 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 			pf.openDriveBookmarkEditor(panelIdx, menu, driveBookmarks, -1, reopen)
 			return true
 		}
-		// Ctrl+Up and Ctrl+Down move the tool (plugin) row under the cursor
-		// one place up or down within the tools, and the new order is saved
-		// (#1148). The sorted-by-name option keeps its own order, so there is
-		// nothing to move then.
+		// Ctrl+Up and Ctrl+Down move the tool row under the cursor, a built-in
+		// one or a plugin's, one place up or down within the tools, and the new
+		// order is saved (#1148).
 		if e.KeyDown && (e.VirtualKeyCode == vtinput.VK_UP || e.VirtualKeyCode == vtinput.VK_DOWN) &&
 			e.ControlKeyState&(vtinput.LeftCtrlPressed|vtinput.RightCtrlPressed) != 0 &&
-			e.ControlKeyState&(vtinput.LeftAltPressed|vtinput.RightAltPressed|vtinput.ShiftPressed) == 0 &&
-			!driveMenuOptionEnabled(driveMenuOptions, config.DriveMenuSortPluginsByHotkey) {
-			if index, ok := toolRows[menu.SelectPos]; ok {
+			e.ControlKeyState&(vtinput.LeftAltPressed|vtinput.RightAltPressed|vtinput.ShiftPressed) == 0 {
+			if key, ok := toolRows[menu.SelectPos]; ok {
+				// The sorted-by-name option puts the plugin tools in name order
+				// itself, so a move would be undone at once; say so instead of
+				// doing nothing.
+				if driveMenuOptionEnabled(driveMenuOptions, config.DriveMenuSortPluginsByHotkey) {
+					vtui.ShowMessageOn(menu, i18n.Msg("DriveLink.ErrorTitle"), i18n.Msg("Drive.ToolsSortedByName"), []string{"&Ok"})
+					return true
+				}
 				delta := 1
 				if e.VirtualKeyCode == vtinput.VK_UP {
 					delta = -1
 				}
-				shown := make([]string, len(drives))
-				for i, drv := range drives {
-					shown[i] = drv.Name
+				shown := make([]string, 0, len(toolRows))
+				for row := 0; row < menu.GetItemCount(); row++ {
+					if k, isTool := toolRows[row]; isTool {
+						shown = append(shown, k)
+					}
 				}
 				pos := menu.SelectPos
-				if moved, err := moveDriveToolInFile(shown, drives[index].Name, delta); err != nil {
+				if moved, err := moveDriveToolInFile(shown, key, delta); err != nil {
 					vtui.ShowMessageOn(menu, i18n.Msg("DriveLink.ErrorTitle"), fmt.Sprintf(i18n.Msg("DriveLink.SaveError"), err), []string{"&Ok"})
 				} else if moved {
 					menu.Close()

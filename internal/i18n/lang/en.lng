@@ -2314,6 +2314,7 @@ CommandPalette.Bookmark.Home.Desc=Open the home folder in the active panel
 Drive.Title= Drive
 Drive.Links=Links
 Drive.Tools=Tools
+Drive.ToolsSortedByName=Plugin tools are sorted by name (a menu option), so their order cannot be changed. Turn that option off in the drive menu options (F9).
 Drive.BottomHint= Ins/Ctrl+N Del F4 F9
 Drive.UnmountFailedTitle=Unmount failed
 Drive.UnmountFailed=Could not unmount\n%s:\n\n%v

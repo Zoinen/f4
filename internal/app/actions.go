@@ -2224,6 +2224,13 @@ func actionViewFileMode(pf *panel.PanelsFrame, forceHex bool) {
 			return
 		}
 		if fsp.Entries[idx].IsDir {
+			// With folders marked, F3 sizes the marked ones and leaves the one
+			// under the cursor alone unless it is marked too, as Far does
+			// (f4#1795).
+			if marked := markedDirEntries(fsp); len(marked) > 0 {
+				actionCalcDirSizes(pf, fsp, marked)
+				return
+			}
 			actionCalcDirSize(pf, fsp, idx)
 			return
 		}
@@ -2299,19 +2306,78 @@ func actionCalcDirSize(pf *panel.PanelsFrame, fsp *panel.FileSystemPanel, idx in
 		func(totalStats vfs.OpStats) {
 			entry.Size = totalStats.Bytes
 			entry.SizeCalculated = true
-			// The size lands in the size column without a word, and a user who
-			// pressed F3 on a folder did not see where it went (f4#1795): say
-			// what was counted, and where a number is a lower bound, say that too.
-			msg := dirSizeResult(name, totalStats)
+			// The size lands in the size column and nothing is said about it: a
+			// message that has to be waited out or dismissed was not wanted
+			// (f4#1795). Only a number that is a lower bound is announced, since
+			// it must not pass for the exact size (f4#1670).
 			if note := unknownSizeNote(totalStats); note != "" {
-				msg += " -- " + note
+				toast.Show(dirSizeResult(name, totalStats)+" -- "+note, 5*time.Second)
 			}
-			toast.Show(msg, 5*time.Second)
 			if fsp.SortMode == panel.SortSize || fsp.GroupBy == panel.GroupSize {
 				fsp.SortEntries()
 				// Keep cursor on the same item after re-sorting
 				for i, e := range fsp.Entries {
 					if e == entry {
+						fsp.SetCursorIndex(i)
+						break
+					}
+				}
+			}
+		})
+}
+
+// markedDirEntries are the folders marked in the panel, in panel order. ".."
+// is never one of them.
+func markedDirEntries(fsp *panel.FileSystemPanel) []*panel.FileEntry {
+	var marked []*panel.FileEntry
+	for _, entry := range fsp.Entries {
+		if entry != nil && entry.Selected && entry.IsDir && entry.Name != ".." {
+			marked = append(marked, entry)
+		}
+	}
+	return marked
+}
+
+// actionCalcDirSizes sizes several folders in one scan and one progress
+// window; each folder's size lands in its own row (f4#1795).
+func actionCalcDirSizes(pf *panel.PanelsFrame, fsp *panel.FileSystemPanel, entries []*panel.FileEntry) {
+	if fsp.Vfs == nil {
+		return
+	}
+	basePath := fsp.Vfs.GetPath()
+	results := make([]vfs.OpStats, len(entries))
+	actionRunSizeScan(pf, fsp,
+		func(ctx context.Context, cb vfs.ScanCallback) (vfs.OpStats, error) {
+			var total vfs.OpStats
+			for i, entry := range entries {
+				stats, err := vfs.CalculateStats(ctx, fsp.Vfs, fsp.Vfs.Join(basePath, entry.Name), []string{""}, cb)
+				if err != nil {
+					return total, err
+				}
+				results[i] = stats
+				total.Bytes += stats.Bytes
+				total.Files += stats.Files
+				total.Dirs += stats.Dirs
+				total.UnknownSizeFiles += stats.UnknownSizeFiles
+			}
+			return total, nil
+		},
+		func(total vfs.OpStats) {
+			var cursorEntry *panel.FileEntry
+			if idx := fsp.GetCursorIndex(); idx >= 0 && idx < len(fsp.Entries) {
+				cursorEntry = fsp.Entries[idx]
+			}
+			for i, entry := range entries {
+				entry.Size = results[i].Bytes
+				entry.SizeCalculated = true
+			}
+			if note := unknownSizeNote(total); note != "" {
+				toast.Show(note, 5*time.Second)
+			}
+			if fsp.SortMode == panel.SortSize || fsp.GroupBy == panel.GroupSize {
+				fsp.SortEntries()
+				for i, e := range fsp.Entries {
+					if e == cursorEntry {
 						fsp.SetCursorIndex(i)
 						break
 					}

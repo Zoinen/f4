@@ -468,9 +468,20 @@ func (v *OSVFS) SetAttributes(ctx context.Context, path string, item VFSItem) er
 		return ctx.Err()
 	}
 
+	// Mode and times are set through a link, on what it points to. A link whose
+	// target is gone has no such thing to set them on: asking would fail with
+	// "cannot find the file" and keep the user from changing the link itself,
+	// say its target (f4#1828).
+	danglingLink := false
+	if item.IsSymlink {
+		if _, statErr := hostfs.Stat(prepareOSPath(path)); statErr != nil {
+			danglingLink = true
+		}
+	}
+
 	// Try native first
 	var errMode error
-	if item.UnixMode != 0 {
+	if item.UnixMode != 0 && !danglingLink {
 		errMode = hostfs.Chmod(prepareOSPath(path), os.FileMode(item.UnixMode))
 	}
 
@@ -486,7 +497,7 @@ func (v *OSVFS) SetAttributes(ctx context.Context, path string, item VFSItem) er
 	}
 
 	var errTime error
-	if !item.ATime.IsZero() || !item.MTime.IsZero() {
+	if (!item.ATime.IsZero() || !item.MTime.IsZero()) && !danglingLink {
 		atime := item.ATime
 		mtime := item.MTime
 		if atime.IsZero() {
@@ -1044,6 +1055,12 @@ func (v *OSVFS) Junction(ctx context.Context, target, linkPath string) error {
 	// it already did before this change: only the PUA-mapping reversal is
 	// wanted, not the Windows \\?\ prefixing that the rest of prepareOSPath
 	// would add and that junction targets are not known to need.
+	// A real junction on Windows; everywhere else (and in Wine's POSIX mode)
+	// there is nothing like it, so a symbolic link stands in (f4#1828: this
+	// used to create a symbolic link on Windows too).
+	if runtime.GOOS == "windows" && !hostmode.Posix() {
+		return displayPathError(createMountPoint(decodeMappedPathSegments(absTarget), prepareOSPath(absLink)))
+	}
 	err = hostfs.Symlink(decodeMappedPathSegments(absTarget), prepareOSPath(absLink))
 	return displayPathError(err)
 }

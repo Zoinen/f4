@@ -53,7 +53,7 @@ type menuRowStamp struct {
 // menuRowRefreshEvery bounds how stale a row can be when the stamp did not
 // change but something the stamp does not cover did, such as a selection made
 // without moving the cursor.
-const menuRowRefreshEvery = 250 * time.Millisecond
+var menuRowRefreshEvery = 250 * time.Millisecond
 
 var menuRowLast struct {
 	stamp menuRowStamp

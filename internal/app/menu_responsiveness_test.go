@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/unxed/f4/internal/panel"
 	"github.com/unxed/f4/internal/paneltest"
@@ -41,6 +42,18 @@ func bigFolderFrame(t *testing.T, entries int) (*panel.PanelsFrame, *panel.FileS
 
 func TestMenuBarCostDoesNotGrowWithTheFolder(t *testing.T) {
 	pf, src := bigFolderFrame(t, 50000)
+	// The rows are also asked again every menuRowRefreshEvery; on a slow runner
+	// 200 calls can outlast it, so the test turns the timer off and counts only
+	// what the context decides.
+	menuRowEnabledMu.Lock()
+	savedEvery := menuRowRefreshEvery
+	menuRowRefreshEvery = time.Hour
+	menuRowEnabledMu.Unlock()
+	t.Cleanup(func() {
+		menuRowEnabledMu.Lock()
+		menuRowRefreshEvery = savedEvery
+		menuRowEnabledMu.Unlock()
+	})
 	pf.GetMenuBar() // the first call builds the menu
 
 	// Asked again and again with nothing changed: no walk of the listing.
@@ -65,11 +78,11 @@ func TestMenuBarCostDoesNotGrowWithTheFolder(t *testing.T) {
 	if walks := panel.SelectionWalks() - before; walks > 3*steps {
 		t.Errorf("%d cursor steps walked the listing %d times, want at most %d (a few per step, not one per menu row)", steps, walks, 3*steps)
 	}
-	if menuRowDisabled(t, pf, "View") {
-		t.Error("View is dimmed with the cursor on a file")
+	if menuRowDisabled(t, pf, "Edit") {
+		t.Error("Edit is dimmed with the cursor on a file")
 	}
 	src.SetCursorIndex(0)
-	if !menuRowDisabled(t, pf, "View") {
-		t.Error("View must be dimmed with the cursor on \"..\"")
+	if !menuRowDisabled(t, pf, "Edit") {
+		t.Error("Edit must be dimmed with the cursor on \"..\"")
 	}
 }

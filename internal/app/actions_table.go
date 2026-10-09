@@ -179,6 +179,22 @@ func cursorEntryEnabled() bool {
 	return idx >= 0 && idx < len(fsp.Entries) && fsp.Entries[idx].Name != ".."
 }
 
+// viewEnabled is the Enabled predicate for F3: the cursor of the active panel
+// is on an entry. Unlike F4 it is also live on "..", where F3 sizes the folder
+// the panel shows (f4#1795).
+func viewEnabled() bool {
+	pf := panel.FindPanelsFrame()
+	if pf == nil {
+		return false
+	}
+	fsp := pf.GetActivePanel()
+	if fsp == nil {
+		return false
+	}
+	idx := fsp.GetCursorIndex()
+	return idx >= 0 && idx < len(fsp.Entries)
+}
+
 // cursorOnDirectory reports whether the cursor of the active panel stands on
 // a folder, the case where F4 opens its attributes instead of an editor.
 func cursorOnDirectory() bool {
@@ -207,16 +223,17 @@ func editKeyBarLabel() string {
 // (the static label), "Size" when the cursor is on a folder, because F3 on a
 // folder works out its size (f4#1795).
 func viewKeyBarLabel() string {
-	if cursorOnDirectory() {
-		return i18n.Msg("KeyBar.F3Size")
+	// On "..", too, F3 sizes a folder (the one the panel shows): f4#1795.
+	if pf := panel.FindPanelsFrame(); pf != nil {
+		if fsp := pf.GetActivePanel(); fsp != nil {
+			if idx := fsp.GetCursorIndex(); idx >= 0 && idx < len(fsp.Entries) && fsp.Entries[idx].IsDir {
+				return i18n.Msg("KeyBar.F3Size")
+			}
+		}
 	}
 	return ""
 }
 
-// oneRegularFileEnabled is the Enabled predicate for the commands that make a
-// copy of exactly one regular file (Encode/Decode as Base64): one entry
-// selected, and it is not a folder or "..". FileSystemPanel.GetSelectedNames
-// already leaves ".." out (f4#1356).
 // entryNamed finds the entry with the given name. With no selection the one
 // name asked about is the cursor's, so that is looked at before the listing is
 // walked (f4#1832).
@@ -232,6 +249,10 @@ func entryNamed(fsp *panel.FileSystemPanel, name string) *panel.FileEntry {
 	return nil
 }
 
+// oneRegularFileEnabled is the Enabled predicate for the commands that make a
+// copy of exactly one regular file (Encode/Decode as Base64): one entry
+// selected, and it is not a folder or "..". FileSystemPanel.GetSelectedNames
+// already leaves ".." out (f4#1356).
 func oneRegularFileEnabled() bool {
 	pf := panel.FindPanelsFrame()
 	if pf == nil {
@@ -715,7 +736,7 @@ func init() {
 		DescKey:     "Action.File.View.Desc",
 		DefaultKeys: []string{"F3", "Num5"},
 		MenuPath:    "Files",
-		Enabled:     cursorEntryEnabled,
+		Enabled:     viewEnabled,
 		KeyBarLabel: viewKeyBarLabel,
 		Handler:     withPF(func(pf *panel.PanelsFrame) { actionViewFile(pf) }),
 	})
