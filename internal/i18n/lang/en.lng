@@ -2628,6 +2628,7 @@ SettingsCenter.Category.drives=Drive chooser
 SettingsCenter.DriveTab.Options=Drive options
 SettingsCenter.DriveTab.Bookmarks=Bookmarks
 SettingsCenter.DriveTab.Links=Links
+SettingsCenter.DriveTools.Show=Show this tool in the drive menu.
 SettingsCenter.Category.editor=Editor & viewer
 SettingsCenter.Category.history=History
 SettingsCenter.Category.keyboard=Keyboard & shortcuts

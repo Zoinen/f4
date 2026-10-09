@@ -883,6 +883,7 @@ SettingsCenter.Category.drives=ドライブ選択
 SettingsCenter.DriveTab.Options=ドライブオプション
 SettingsCenter.DriveTab.Bookmarks=ブックマーク
 SettingsCenter.DriveTab.Links=リンク
+SettingsCenter.DriveTools.Show=このツールをドライブメニューに表示します。
 SettingsCenter.Category.editor=エディターとビューアー
 SettingsCenter.Category.history=履歴
 SettingsCenter.Category.keyboard=キーボードとショートカット

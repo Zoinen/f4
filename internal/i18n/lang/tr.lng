@@ -888,6 +888,7 @@ SettingsCenter.Category.drives=Sürücü seçimi
 SettingsCenter.DriveTab.Options=Sürücü seçenekleri
 SettingsCenter.DriveTab.Bookmarks=Yer imleri
 SettingsCenter.DriveTab.Links=Bağlantılar
+SettingsCenter.DriveTools.Show=Bu aracı sürücü menüsünde göster.
 SettingsCenter.Category.editor=Düzenleyici ve görüntüleyici
 SettingsCenter.Category.history=Geçmiş
 SettingsCenter.Category.keyboard=Klavye ve kısayollar

@@ -5,7 +5,6 @@ import (
 	"github.com/unxed/f4/internal/action"
 	"github.com/unxed/f4/internal/i18n"
 	"github.com/unxed/f4/internal/plughost"
-	"github.com/unxed/f4/internal/sysinfo"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
@@ -260,67 +259,6 @@ func (pf *PanelsFrame) ShowToolsOptions(applied func()) {
 	for _, entry := range entries {
 		tw.names = append(tw.names, action.PlainLabel(entry.Label))
 		tw.shown = append(tw.shown, !hidden[entry.ActionName])
-	}
-	tw.show()
-}
-
-// ShowDriveToolsOptions is the same window for the drive menu's tools, opened
-// by F9 there. Drive tools have no settings of their own; the old F9 page, the
-// drive menu's own options, stays one button away (f4#918).
-func (pf *PanelsFrame) ShowDriveToolsOptions(menuOptions func()) {
-	drives := sysinfo.DriveRegistrySnapshot()
-	disabled, err := LoadDisabledDriveTools(DriveToolsVisibilityFilePath())
-	if err != nil {
-		vtui.DebugLog("DRIVE TOOLS: load visibility failed: %v", err)
-	}
-	hidden := map[string]bool{}
-	for _, name := range disabled {
-		hidden[name] = true
-	}
-	tw := &toolsWindow{
-		title:      i18n.Msg("Drive.ToolsOptionsTitle"),
-		empty:      i18n.Msg("Drive.ToolsOptionsEmpty"),
-		extraLabel: i18n.Msg("Drive.ToolsOptionsMenu"),
-		extra:      menuOptions,
-		apply: func(shown []bool) error {
-			stillHidden := map[string]bool{}
-			var names []string
-			for i, drv := range drives {
-				if !shown[i] {
-					stillHidden[drv.Name] = true
-				}
-			}
-			// Keep the order of the file, and the names of tools that are not
-			// registered right now; add the newly hidden ones at the end.
-			for _, n := range disabled {
-				known := false
-				for _, drv := range drives {
-					if drv.Name == n {
-						known = true
-						break
-					}
-				}
-				if !known || stillHidden[n] {
-					names = append(names, n)
-					delete(stillHidden, n)
-				}
-			}
-			for _, drv := range drives {
-				if stillHidden[drv.Name] {
-					names = append(names, drv.Name)
-					delete(stillHidden, drv.Name)
-				}
-			}
-			if err := SaveDisabledDriveTools(DriveToolsVisibilityFilePath(), names); err != nil {
-				return err
-			}
-			disabled = names
-			return nil
-		},
-	}
-	for _, drv := range drives {
-		tw.names = append(tw.names, driveMenuNameWithoutMarker(drv.Name))
-		tw.shown = append(tw.shown, !hidden[drv.Name])
 	}
 	tw.show()
 }

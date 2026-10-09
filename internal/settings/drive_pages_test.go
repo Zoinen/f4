@@ -3,8 +3,12 @@ package settings
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
 	"testing"
 
+	"github.com/unxed/f4/internal/panel"
+	"github.com/unxed/f4/internal/sysinfo"
 	"github.com/unxed/f4/sdk/f4settings"
 	"github.com/unxed/vtui"
 )
@@ -110,8 +114,99 @@ func TestDriveChooserPagesOnRealCatalogs(t *testing.T) {
 		}
 	}
 	for _, page := range driveChooserPageIDs() {
+		// The Tools page comes from its own provider, which only this window adds.
+		if page == driveToolsPage {
+			continue
+		}
 		if pages[page] == 0 {
 			t.Errorf("page %s has nothing on it", page)
 		}
+	}
+}
+
+// f4#1148: the Tools page has a check box per tool of the drive menu; Apply
+// stores the unchecked ones in the visibility file, keeps what was in it, and
+// puts the page right after Drive options.
+func TestDriveToolsPageHidesAndShowsTools(t *testing.T) {
+	path := panel.DriveToolsVisibilityFilePath()
+	before, readErr := os.ReadFile(path)
+	t.Cleanup(func() {
+		if readErr != nil {
+			_ = os.Remove(path)
+		} else {
+			_ = os.WriteFile(path, before, 0o600) // #nosec G703 -- the test's own profile file, put back.
+		}
+	})
+	if err := panel.SaveDisabledDriveTools(path, []string{"Gone plugin", "Beta tool"}); err != nil {
+		t.Fatal(err)
+	}
+	p := driveToolsProvider{drives: []sysinfo.DriveEntry{{Name: "&A Alpha tool"}, {Name: "Beta tool"}, {Name: "Gamma tool"}}}
+	cat := p.Catalog()
+	if len(cat.Fields) != 3 || cat.Fields[0].Label.English != "A Alpha tool" || cat.Fields[0].Category != driveToolsPage {
+		t.Fatalf("catalog fields = %+v", cat.Fields)
+	}
+	d, err := p.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if d.Values["drivetool.0"] != "true" || d.Values["drivetool.1"] != "false" || d.Values["drivetool.2"] != "true" {
+		t.Fatalf("check boxes = %v, want Alpha on, Beta off (hidden in the file), Gamma on", d.Values)
+	}
+	// Show Beta again, hide Gamma.
+	d.Values["drivetool.1"], d.Values["drivetool.2"] = "true", "false"
+	result := d.CommitFunc(context.Background(), d)
+	if len(result.Errors) != 0 {
+		t.Fatalf("commit errors: %v", result.Errors)
+	}
+	got, err := panel.LoadDisabledDriveTools(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(got) != "[Gone plugin Gamma tool]" {
+		t.Errorf("hidden tools after Apply = %v, want [Gone plugin Gamma tool] (the unregistered one is kept)", got)
+	}
+
+	// The page stands right after Drive options.
+	ids := driveChooserPageIDs()
+	if ids[0] != driveOptionsPage || ids[1] != driveToolsPage {
+		t.Errorf("pages = %v, want Tools right after Drive options", ids)
+	}
+}
+
+// The window F9 opens in the drive menu has the Tools page second, with a
+// check box for each tool registered now.
+func TestDriveChooserWindowListsTheToolsOnItsToolsPage(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	old := sysinfo.DriveRegistrySnapshot()
+	t.Cleanup(func() { sysinfo.SetDrives(old) })
+	sysinfo.SetDrives([]sysinfo.DriveEntry{{Name: "&A Alpha tool"}, {Name: "Beta tool"}})
+
+	if !OpenCategoryOnly("drives") {
+		t.Fatal("the window did not open")
+	}
+	c, ok := vtui.FrameManager.GetTopFrame().(*settingsCenter)
+	if !ok {
+		t.Fatalf("top frame is %T", vtui.FrameManager.GetTopFrame())
+	}
+	defer vtui.FrameManager.Pop()
+	var pages []string
+	for _, cat := range c.categories {
+		pages = append(pages, cat.ID)
+	}
+	if fmt.Sprint(pages) != fmt.Sprint(driveChooserPageIDs()) {
+		t.Fatalf("pages = %v, want %v", pages, driveChooserPageIDs())
+	}
+	c.SetPosition(0, 0, 129, 34)
+	c.selectCategory(driveToolsPage)
+	var labels []string
+	for _, row := range c.page.rows {
+		if row.control != nil && strings.HasPrefix(row.control.GetId(), "setting:"+driveToolFieldPrefix) {
+			labels = append(labels, row.field.Label.English)
+		}
+	}
+	if fmt.Sprint(labels) != "[A Alpha tool Beta tool]" {
+		t.Errorf("tool check boxes = %v", labels)
 	}
 }

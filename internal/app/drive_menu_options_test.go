@@ -126,9 +126,10 @@ func TestPanelsFrame_DriveMenu_F9OpensOptions(t *testing.T) {
 	menu.Close()
 }
 
-// With drive tools registered F9 opens their window (f4#918), whose Menu
-// options button leads to the drive options page of the Settings Center.
-func TestPanelsFrame_DriveMenu_F9OpensToolsWindowWithMenuOptionsButton(t *testing.T) {
+// With drive tools registered, F9 opens the same settings window at once, with
+// the Tools page among its pages and no window of the tools in between
+// (f4#1148).
+func TestPanelsFrame_DriveMenu_F9OpensTheSettingsWindowWithAToolsPage(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	oldDrives := sysinfo.DriveRegistrySnapshot()
 	t.Cleanup(func() { sysinfo.SetDrives(oldDrives) })
@@ -149,21 +150,8 @@ func TestPanelsFrame_DriveMenu_F9OpensToolsWindowWithMenuOptionsButton(t *testin
 	if !menu.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_F9}) {
 		t.Fatal("F9 was not consumed by the drive menu")
 	}
-	win, ok := vtui.FrameManager.GetTopFrame().(*vtui.Window)
-	if !ok {
-		t.Fatalf("F9 opened %T, want the drive tools window", vtui.FrameManager.GetTopFrame())
-	}
-	var button *vtui.Button
-	for _, item := range win.GetChildren() {
-		if b, ok := item.(*vtui.Button); ok && button == nil {
-			button = b // the first button is Menu options; Ok and Cancel follow
-		}
-	}
-	if button == nil {
-		t.Fatal("the drive tools window has no Menu options button")
-	}
-	button.OnClick()
-	if center, ok := vtui.FrameManager.GetTopFrame().(*settings.Center); !ok || center.Category() != "drives.options" {
-		t.Fatalf("Menu options opened %T, want the drives page of the Settings Center", vtui.FrameManager.GetTopFrame())
+	center, ok := vtui.FrameManager.GetTopFrame().(*settings.Center)
+	if !ok || center.Category() != "drives.options" {
+		t.Fatalf("F9 opened %T, want the Drive chooser settings window on its first page", vtui.FrameManager.GetTopFrame())
 	}
 }

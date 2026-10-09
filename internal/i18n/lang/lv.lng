@@ -888,6 +888,7 @@ SettingsCenter.Category.drives=Diska izvēle
 SettingsCenter.DriveTab.Options=Diska opcijas
 SettingsCenter.DriveTab.Bookmarks=Grāmatzīmes
 SettingsCenter.DriveTab.Links=Saites
+SettingsCenter.DriveTools.Show=Rādīt šo rīku disku izvēlnē.
 SettingsCenter.Category.editor=Redaktors un skatītājs
 SettingsCenter.Category.history=Vēsture
 SettingsCenter.Category.keyboard=Tastatūra un īsinājumtaustiņi

@@ -845,6 +845,7 @@ SettingsCenter.Category.drives=اختيار الأقراص
 SettingsCenter.DriveTab.Options=خيارات الأقراص
 SettingsCenter.DriveTab.Bookmarks=الإشارات المرجعية
 SettingsCenter.DriveTab.Links=الروابط
+SettingsCenter.DriveTools.Show=عرض هذه الأداة في قائمة الأقراص.
 SettingsCenter.Category.editor=المحرر والعارض
 SettingsCenter.Category.history=السجل
 SettingsCenter.Category.keyboard=لوحة المفاتيح والاختصارات

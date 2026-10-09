@@ -888,6 +888,7 @@ SettingsCenter.Category.drives=בחירת כונן
 SettingsCenter.DriveTab.Options=אפשרויות כונן
 SettingsCenter.DriveTab.Bookmarks=סימניות
 SettingsCenter.DriveTab.Links=קישורים
+SettingsCenter.DriveTools.Show=הצג כלי זה בתפריט הכוננים.
 SettingsCenter.Category.editor=עורך ומציג
 SettingsCenter.Category.history=היסטוריה
 SettingsCenter.Category.keyboard=מקלדת וקיצורי מקשים
