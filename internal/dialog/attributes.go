@@ -609,6 +609,22 @@ func ShowAttributesUnixForTargets(refresh func(), v vfs.VFS, targets []Attribute
 		height = 26
 	}
 
+	// A listing carries no birth time on Linux; ask for the one of each shown
+	// object now, when the filesystem keeps it (f4#1817).
+	if _, local := v.(*vfs.OSVFS); local {
+		targets = append([]AttributesTarget(nil), targets...)
+		for i := range targets {
+			if targets[i].Item.HasMetadata(vfs.MetadataBTime) {
+				continue
+			}
+			if born, ok := vfs.ReadBirthTime(targets[i].Path); ok {
+				targets[i].Item.BTime = born
+				targets[i].Item.KnownMetadata |= vfs.MetadataBTime
+			}
+		}
+		item = targets[0].Item
+	}
+
 	// Read-only Created/Accessed/Changed rows (f4#1404 follow-up): computed
 	// up front so the dialog's height can grow by exactly the rows that will
 	// actually be shown. A row is omitted entirely, not shown with a zero
