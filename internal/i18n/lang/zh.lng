@@ -809,6 +809,7 @@ SettingsCenter.Category.drives=驱动器选择
 SettingsCenter.DriveTab.Options=驱动器选项
 SettingsCenter.DriveTab.Bookmarks=书签
 SettingsCenter.DriveTab.Links=链接
+SettingsCenter.DriveTools.Show=在驱动器菜单中显示此工具。
 SettingsCenter.Category.editor=编辑器与查看器
 SettingsCenter.Category.history=历史记录
 SettingsCenter.Category.keyboard=键盘与快捷键

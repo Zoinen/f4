@@ -891,6 +891,7 @@ SettingsCenter.Category.drives=Wybór dysku
 SettingsCenter.DriveTab.Options=Opcje dysku
 SettingsCenter.DriveTab.Bookmarks=Zakładki
 SettingsCenter.DriveTab.Links=Łącza
+SettingsCenter.DriveTools.Show=Pokaż to narzędzie w menu dysków.
 SettingsCenter.Category.editor=Edytor i przeglądarka
 SettingsCenter.Category.history=Historia
 SettingsCenter.Category.keyboard=Klawiatura i skróty

@@ -888,6 +888,7 @@ SettingsCenter.Category.drives=ড্রাইভ নির্বাচন
 SettingsCenter.DriveTab.Options=ড্রাইভ বিকল্প
 SettingsCenter.DriveTab.Bookmarks=বুকমার্ক
 SettingsCenter.DriveTab.Links=লিংক
+SettingsCenter.DriveTools.Show=ড্রাইভ মেনুতে এই টুলটি দেখান।
 SettingsCenter.Category.editor=সম্পাদক ও দর্শক
 SettingsCenter.Category.history=ইতিহাস
 SettingsCenter.Category.keyboard=কীবোর্ড ও শর্টকাট

@@ -883,6 +883,7 @@ SettingsCenter.Category.drives=드라이브 선택
 SettingsCenter.DriveTab.Options=드라이브 옵션
 SettingsCenter.DriveTab.Bookmarks=북마크
 SettingsCenter.DriveTab.Links=링크
+SettingsCenter.DriveTools.Show=이 도구를 드라이브 메뉴에 표시합니다.
 SettingsCenter.Category.editor=편집기 및 뷰어
 SettingsCenter.Category.history=기록
 SettingsCenter.Category.keyboard=키보드 및 단축키

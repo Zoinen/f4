@@ -888,6 +888,7 @@ SettingsCenter.Category.drives=Ketta valik
 SettingsCenter.DriveTab.Options=Ketta valikud
 SettingsCenter.DriveTab.Bookmarks=Järjehoidjad
 SettingsCenter.DriveTab.Links=Lingid
+SettingsCenter.DriveTools.Show=Näita seda tööriista ketaste menüüs.
 SettingsCenter.Category.editor=Redaktor ja vaatur
 SettingsCenter.Category.history=Ajalugu
 SettingsCenter.Category.keyboard=Klaviatuur ja kiirklahvid

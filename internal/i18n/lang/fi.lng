@@ -888,6 +888,7 @@ SettingsCenter.Category.drives=Aseman valinta
 SettingsCenter.DriveTab.Options=Asemavalinnat
 SettingsCenter.DriveTab.Bookmarks=Kirjanmerkit
 SettingsCenter.DriveTab.Links=Linkit
+SettingsCenter.DriveTools.Show=Näytä tämä työkalu asemavalikossa.
 SettingsCenter.Category.editor=Editori ja katselin
 SettingsCenter.Category.history=Historia
 SettingsCenter.Category.keyboard=Näppäimistö ja pikanäppäimet

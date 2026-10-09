@@ -550,6 +550,7 @@ SettingsCenter.Category.drives=ड्राइव चयन
 SettingsCenter.DriveTab.Options=ड्राइव विकल्प
 SettingsCenter.DriveTab.Bookmarks=बुकमार्क
 SettingsCenter.DriveTab.Links=लिंक
+SettingsCenter.DriveTools.Show=इस टूल को ड्राइव मेनू में दिखाएँ।
 SettingsCenter.Category.editor=संपादक और दर्शक
 SettingsCenter.Category.history=इतिहास
 SettingsCenter.Category.keyboard=कीबोर्ड और शॉर्टकट

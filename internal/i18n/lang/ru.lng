@@ -2628,6 +2628,7 @@ SettingsCenter.Category.drives=Выбор диска
 SettingsCenter.DriveTab.Options=Параметры дисков
 SettingsCenter.DriveTab.Bookmarks=Закладки
 SettingsCenter.DriveTab.Links=Ссылки
+SettingsCenter.DriveTools.Show=Показывать этот инструмент в меню дисков.
 SettingsCenter.Category.editor=Редактор и просмотр
 SettingsCenter.Category.history=История
 SettingsCenter.Category.keyboard=Клавиатура и сочетания

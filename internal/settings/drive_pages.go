@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"github.com/unxed/f4/internal/i18n"
 	"github.com/unxed/f4/sdk/f4settings"
 	"github.com/unxed/vtui"
 )
@@ -12,12 +13,14 @@ import (
 // catalog made for that one window.
 const (
 	driveOptionsPage   = "drives.options"
+	driveToolsPage     = "drives.tools"
 	driveBookmarksPage = "drives.bookmarks"
 	driveLinksPage     = "drives.links"
 )
 
 var driveChooserPages = []f4settings.Category{
 	{ID: driveOptionsPage, Label: f4settings.Text{Key: "SettingsCenter.DriveTab.Options", English: "Drive options"}},
+	{ID: driveToolsPage, Label: f4settings.Text{English: "Tools"}},
 	{ID: driveBookmarksPage, Label: f4settings.Text{Key: "SettingsCenter.DriveTab.Bookmarks", English: "Bookmarks"}},
 	{ID: driveLinksPage, Label: f4settings.Text{Key: "SettingsCenter.DriveTab.Links", English: "Links"}},
 }
@@ -76,6 +79,15 @@ func splitDriveChooser(sessions []*settingsSession) {
 }
 
 func showDriveChooser(sessions []*settingsSession) bool {
+	tools, err := newDriveToolsSession()
+	if err != nil {
+		for _, s := range sessions {
+			s.draft.Close()
+		}
+		vtui.ShowMessage(Phrase("Settings"), err.Error(), []string{i18n.Msg("vtui.Ok")})
+		return true
+	}
+	sessions = append(sessions, tools)
 	splitDriveChooser(sessions)
 	c := newSettingsCenter(sessions)
 	c.fullLists = true
