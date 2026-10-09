@@ -287,13 +287,15 @@ func TestAttributesDialog_UnixTimeRowsOrder(t *testing.T) {
 		return true
 	})
 	order := []string{"Attributes.Created", "Attributes.MTime", "Attributes.Changed", "Attributes.Accessed"}
-	for i, key := range order {
+	previous := ""
+	for _, key := range order {
 		if _, ok := rows[key]; !ok {
 			t.Fatalf("no row for %s: %v", key, rows)
 		}
-		if i > 0 && rows[order[i-1]] >= rows[key] {
-			t.Errorf("%s (line %d) is not below %s (line %d)", key, rows[key], order[i-1], rows[order[i-1]])
+		if previous != "" && rows[previous] >= rows[key] {
+			t.Errorf("%s (line %d) is not below %s (line %d)", key, rows[key], previous, rows[previous])
 		}
+		previous = key
 	}
 	fm.GetTopFrame().SetExitCode(-1)
 	fm.Pop()
