@@ -209,18 +209,20 @@ func ShowSymlinkTargetDialog(refresh func(), v vfs.VFS, path, target string) {
 
 	btnSave.OnClick = func() {
 		newTarget := editTarget.GetText()
-		vtui.RunAsync(func(ctx *vtui.TaskContext) {
-			if err := ReplaceSymlinkTarget(ctx.Context, v, path, newTarget); err != nil {
-				ctx.RunOnUI(func() {
-					vtui.ShowMessage(i18n.Msg("SymlinkEdit.ErrorTitle"), err.Error(), []string{"&Ok"})
-				})
-				return
-			}
-			ctx.RunOnUI(func() {
-				dlg.Close()
-				if refresh != nil {
-					refresh()
+		confirmDanglingLink(v, path, newTarget, newTarget == target, func() {
+			vtui.RunAsync(func(ctx *vtui.TaskContext) {
+				if err := ReplaceSymlinkTarget(ctx.Context, v, path, newTarget); err != nil {
+					ctx.RunOnUI(func() {
+						vtui.ShowMessage(i18n.Msg("SymlinkEdit.ErrorTitle"), err.Error(), []string{"&Ok"})
+					})
+					return
 				}
+				ctx.RunOnUI(func() {
+					dlg.Close()
+					if refresh != nil {
+						refresh()
+					}
+				})
 			})
 		})
 	}
@@ -241,6 +243,37 @@ func ShowSymlinkTargetDialog(refresh func(), v vfs.VFS, path, target string) {
 	vbox.Apply()
 	dlg.SetFocusedItem(editTarget)
 	vtui.FrameManager.Push(dlg)
+}
+
+// linkTargetExists reports whether target, as the link at path sees it
+// (relative to the link's folder), exists.
+func linkTargetExists(ctx context.Context, v vfs.VFS, path, target string) bool {
+	full := target
+	if !v.IsAbs(target) {
+		full = v.Join(v.Dir(path), target)
+	}
+	_, err := v.Stat(ctx, full)
+	return err == nil
+}
+
+// confirmDanglingLink runs proceed, asking first when a symbolic link is
+// about to point at nothing: such a link is legal, but saving one silently
+// looked like the link had been turned into something strange (DkmS1953,
+// f4#1828). skip says there is nothing to ask — the target is unchanged, or
+// the link is a junction, whose creation refuses a missing target itself.
+func confirmDanglingLink(v vfs.VFS, path, target string, skip bool, proceed func()) {
+	if skip || target == "" || linkTargetExists(context.Background(), v, path, target) {
+		proceed()
+		return
+	}
+	dlg := vtui.ShowMessage(i18n.Msg("Warning.Title"),
+		fmt.Sprintf(i18n.Msg("SymlinkEdit.TargetMissing"), vtui.TruncateMiddle(target, 60)),
+		[]string{i18n.Msg("SymlinkEdit.Save"), i18n.Msg("SymlinkEdit.Cancel")})
+	dlg.OnResult = func(code int) {
+		if code == 0 {
+			proceed()
+		}
+	}
 }
 
 // ReplaceSymlinkTarget changes the link itself, never the object it points at.
@@ -999,32 +1032,34 @@ func ShowAttributesUnixForTargets(refresh func(), v vfs.VFS, targets []Attribute
 		}
 		edit.mode, edit.keepMode = unixModeEdit(editOctal.GetText(), allChecks)
 		recursive := cbRecursive != nil && cbRecursive.State == 1
-		vtui.RunAsync(func(ctx *vtui.TaskContext) {
-			if targetEdited {
-				if err := ReplaceSymlinkTarget(ctx.Context, v, path, newTarget); err != nil {
-					ctx.RunOnUI(func() {
+		confirmDanglingLink(v, path, newTarget, !targetEdited, func() {
+			vtui.RunAsync(func(ctx *vtui.TaskContext) {
+				if targetEdited {
+					if err := ReplaceSymlinkTarget(ctx.Context, v, path, newTarget); err != nil {
+						ctx.RunOnUI(func() {
+							vtui.ShowMessage(" Error ", err.Error(), []string{"&Ok"})
+						})
+						return
+					}
+				}
+				applied, err := setUnixAttributesForTargets(ctx.Context, v, targets, edit, recursive)
+				ctx.RunOnUI(func() {
+					if err != nil {
 						vtui.ShowMessage(" Error ", err.Error(), []string{"&Ok"})
-					})
-					return
-				}
-			}
-			applied, err := setUnixAttributesForTargets(ctx.Context, v, targets, edit, recursive)
-			ctx.RunOnUI(func() {
-				if err != nil {
-					vtui.ShowMessage(" Error ", err.Error(), []string{"&Ok"})
-					return
-				}
-				dlg.Close()
-				if refresh != nil {
-					refresh()
-				}
-				// A recursive Set can silently touch a tree the user cannot
-				// see the size of from the dialog alone; a one-line count
-				// is this ticket's "smaller first cut" instead of a full
-				// progress dialog (f4#1502).
-				if recursive {
-					vtui.ShowMessage(i18n.Msg("Info.Title"), fmt.Sprintf(i18n.Msg("Attributes.RecursiveApplied"), applied), []string{"&Ok"})
-				}
+						return
+					}
+					dlg.Close()
+					if refresh != nil {
+						refresh()
+					}
+					// A recursive Set can silently touch a tree the user cannot
+					// see the size of from the dialog alone; a one-line count
+					// is this ticket's "smaller first cut" instead of a full
+					// progress dialog (f4#1502).
+					if recursive {
+						vtui.ShowMessage(i18n.Msg("Info.Title"), fmt.Sprintf(i18n.Msg("Attributes.RecursiveApplied"), applied), []string{"&Ok"})
+					}
+				})
 			})
 		})
 	}
@@ -1111,7 +1146,7 @@ func ShowAttributesWindowsWithPropertiesForTargets(
 		if t, err := vfs.Readlink(context.Background(), v, path); err == nil && t != "" {
 			linkTarget = t
 			linkIsJunction = vfs.LinkKindOf(&item) == vfs.LinkJunction
-			height += 2
+			height += 4 // the kind of the link and its target, each after a blank row
 		}
 	}
 
@@ -1132,6 +1167,15 @@ func ShowAttributesWindowsWithPropertiesForTargets(
 	var editLinkTarget *vtui.Edit
 	var rowLinkTarget *vtui.HBoxLayout
 	if linkTarget != "" {
+		// Which kind of link it is matters, and Ctrl+A did not say
+		// (DkmS1953, f4#1828).
+		kind := i18n.Msg("Attributes.LinkKindSymlink")
+		if linkIsJunction {
+			kind = i18n.Msg("Attributes.LinkKindJunction")
+		}
+		lblKind := vtui.NewText(0, 0, kind, vtui.Palette[vtui.ColDialogText])
+		dlg.AddItem(lblKind)
+		mainVBox.Add(lblKind, vtui.Margins{Top: 1}, vtui.AlignLeft)
 		editLinkTarget = vtui.NewEdit(0, 0, 40, linkTarget)
 		lblLinkTarget := vtui.NewLabel(0, 0, i18n.Msg("Attributes.Target"), editLinkTarget)
 		rowLinkTarget = vtui.NewHBoxLayout(0, 0, 54, 1)
@@ -1370,25 +1414,28 @@ func ShowAttributesWindowsWithPropertiesForTargets(
 		if editLinkTarget != nil {
 			newLinkTarget = strings.TrimSpace(editLinkTarget.GetText())
 		}
-		vtui.RunAsync(func(ctx *vtui.TaskContext) {
-			var err error
-			if newLinkTarget != "" && newLinkTarget != linkTarget {
-				err = replaceLinkTarget(ctx.Context, v, path, newLinkTarget, linkIsJunction)
-			} else if editLinkTarget != nil && newLinkTarget == "" {
-				err = errors.New("link target cannot be empty")
-			}
-			if err == nil {
-				err = setWindowsAttributesForTargets(ctx.Context, v, targets, edit)
-			}
-			ctx.RunOnUI(func() {
-				if err != nil {
-					vtui.ShowMessage(" Error ", err.Error(), []string{"&Ok"})
-					return
+		changeLink := newLinkTarget != "" && newLinkTarget != linkTarget
+		confirmDanglingLink(v, path, newLinkTarget, !changeLink || linkIsJunction, func() {
+			vtui.RunAsync(func(ctx *vtui.TaskContext) {
+				var err error
+				if changeLink {
+					err = replaceLinkTarget(ctx.Context, v, path, newLinkTarget, linkIsJunction)
+				} else if editLinkTarget != nil && newLinkTarget == "" {
+					err = errors.New("link target cannot be empty")
 				}
-				dlg.Close()
-				if refresh != nil {
-					refresh()
+				if err == nil {
+					err = setWindowsAttributesForTargets(ctx.Context, v, targets, edit)
 				}
+				ctx.RunOnUI(func() {
+					if err != nil {
+						vtui.ShowMessage(" Error ", err.Error(), []string{"&Ok"})
+						return
+					}
+					dlg.Close()
+					if refresh != nil {
+						refresh()
+					}
+				})
 			})
 		})
 	}

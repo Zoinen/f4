@@ -610,12 +610,17 @@ func aiStartWorker(pf *panel.PanelsFrame, manager interface{ PostTask(func()) },
 	// The worker's file changes are journaled so ai:task undo N can put
 	// them back (f4#1842, stage H9).
 	journal := &vtvibe.Journal{}
+	// The MCP servers of ai/mcp.json run for this task, in its folder.
+	mcp := &aiMCPRun{dir: dir}
 	tools := func() []vtvibe.Tool {
-		return vtvibe.WithJournal(vtvibe.WorkTools(dir, config().ToolEnv...), dir, journal)
+		return append(vtvibe.WithJournal(vtvibe.WorkTools(dir, config().ToolEnv...), dir, journal), mcp.tools()...)
 	}
 	aiWorkers.SetGates(vtvibe.GateRules{User: aiGateRules, Learned: aiLearnedRules, Learn: aiLearnRule})
 	id := aiWorkers.Start(task, dir, config, tools, func(r vtvibe.WorkerResult) {
 		text := aiTaskResultText(r, order)
+		if problems := mcp.close(); problems != "" {
+			text += "\n\n" + problems
+		}
 		if n := len(journal.Files()); n > 0 {
 			text += "\n\n" + fmt.Sprintf(i18n.Msg("AI.TaskUndoHint"), n, r.ID)
 		}
@@ -639,6 +644,84 @@ func aiStartWorker(pf *panel.PanelsFrame, manager interface{ PostTask(func()) },
 		session.Note("assistant", fmt.Sprintf(i18n.Msg("AI.WorkerStarted"), id, task))
 	}
 	aiBotRefresh(pf)
+}
+
+// vtvibeMCPPath is the MCP servers' configuration, in the format Claude
+// Code uses (f4#1842, stage H9).
+func vtvibeMCPPath() string {
+	return filepath.Join(config.GetF4ConfigDir(), "ai", "mcp.json")
+}
+
+// aiMCPRun starts the configured MCP servers for one worker task, the first
+// time it asks for tools, and stops them when the task is over.
+type aiMCPRun struct {
+	dir     string
+	once    sync.Once
+	mu      sync.Mutex
+	clients []*vtvibe.MCPClient
+	list    []vtvibe.Tool
+	errs    []error
+}
+
+func (m *aiMCPRun) tools() []vtvibe.Tool {
+	m.once.Do(func() {
+		servers, err := vtvibe.LoadMCPConfig(vtvibeMCPPath())
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if err != nil {
+			m.errs = append(m.errs, err)
+			return
+		}
+		ctx := context.Background()
+		for name, s := range servers {
+			c, err := vtvibe.StartMCP(ctx, name, s, m.dir)
+			if err != nil {
+				m.errs = append(m.errs, err)
+				continue
+			}
+			m.clients = append(m.clients, c)
+		}
+		var errs []error
+		m.list, errs = vtvibe.MCPTools(ctx, m.clients)
+		m.errs = append(m.errs, errs...)
+	})
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.list
+}
+
+// close stops the servers and tells what went wrong with them, if anything.
+func (m *aiMCPRun) close() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, c := range m.clients {
+		c.Close()
+	}
+	m.clients = nil
+	if len(m.errs) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(i18n.Msg("AI.MCPProblems"), errors.Join(m.errs...))
+}
+
+// aiMCPCommand is ai:mcp: the configured MCP servers and where they are set.
+func aiMCPCommand() {
+	path := vtvibeMCPPath()
+	servers, err := vtvibe.LoadMCPConfig(path)
+	if err != nil {
+		aiShowError(err)
+		return
+	}
+	text := fmt.Sprintf(i18n.Msg("AI.MCPNone"), path)
+	if len(servers) > 0 {
+		names := make([]string, 0, len(servers))
+		for name, s := range servers {
+			names = append(names, name+": "+strings.Join(append([]string{s.Command}, s.Args...), " "))
+		}
+		sort.Strings(names)
+		text = fmt.Sprintf(i18n.Msg("AI.MCPList"), strings.Join(names, "\n"), path)
+	}
+	vtui.ShowMessage(i18n.Msg("AI.Title"), dialog.EscapeAmpersand(text), []string{i18n.Msg("vtui.Ok")})
 }
 
 // aiJournals keeps each worker's journal by its id, for ai:task undo N.
