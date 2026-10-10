@@ -237,3 +237,18 @@ func TestVtvibeCostText(t *testing.T) {
 		t.Fatalf("cost text %q", text)
 	}
 }
+
+// f4#1842, stage H9: the model menu lists free models first, in the order
+// its rows are printed, so a row's index names its model.
+func TestVtvibeModelsMenuOrder(t *testing.T) {
+	ordered := aiModelsInOrder([]vtvibe.ModelInfo{{ID: "a"}, {ID: "b:free", Free: true}, {ID: "c"}, {ID: "d:free", Free: true}})
+	lines := aiModelLines(ordered, len(ordered))
+	if len(ordered) != 4 || ordered[0].ID != "b:free" || ordered[1].ID != "d:free" || ordered[2].ID != "a" || ordered[3].ID != "c" {
+		t.Fatalf("order %v", ordered)
+	}
+	for i, m := range ordered {
+		if !strings.Contains(lines[i], m.ID) {
+			t.Fatalf("row %d %q is not model %q", i, lines[i], m.ID)
+		}
+	}
+}

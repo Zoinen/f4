@@ -2545,6 +2545,7 @@ AI.CostNothing=This dialog has not spent any tokens yet.
 AI.CostLine=%s: %s in, %s out
 AI.CostNoPrice=the service publishes no price
 AI.CostTotal=Total: %s in, %s out
+AI.ModelsTitle= Models 
 
 ProxySettings.Title= Proxy
 ProxySettings.Mode=Proxy &type:

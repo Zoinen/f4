@@ -2545,6 +2545,7 @@ AI.CostNothing=Этот диалог ещё не потратил ни одно�
 AI.CostLine=%s: вход %s, выход %s
 AI.CostNoPrice=поставщик не публикует цену
 AI.CostTotal=Всего: вход %s, выход %s
+AI.ModelsTitle= Модели 
 
 ProxySettings.Title= Прокси
 ProxySettings.Mode=&Тип прокси:

@@ -447,6 +447,11 @@ func aiDialogsMenu(pf *panel.PanelsFrame) {
 		vtvibeConfig()
 		aiBotRefresh(pf)
 	}
+	aiShowMenu(menu, width, len(dialogs))
+}
+
+// aiShowMenu centres a menu of rows items, width wide at most, and shows it.
+func aiShowMenu(menu *vtui.VMenu, width, rows int) {
 	sw, sh := 80, 25
 	if vtui.FrameManager != nil {
 		if w := vtui.FrameManager.GetScreenSize(); w > 0 {
@@ -457,7 +462,7 @@ func aiDialogsMenu(pf *panel.PanelsFrame) {
 		}
 	}
 	w := min(width, max(sw-4, 20))
-	h := min(len(dialogs)+2, max(sh-4, 3))
+	h := min(rows+2, max(sh-4, 3))
 	x, y := (sw-w)/2, (sh-h)/2
 	menu.SetPosition(x, y, x+w-1, y+h-1)
 	vtui.FrameManager.Push(menu)
