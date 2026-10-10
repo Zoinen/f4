@@ -25,7 +25,7 @@ func writeTree(t *testing.T, files map[string]string) string {
 		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(path, []byte(text), 0o640); err != nil {
+		if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -51,7 +51,7 @@ func TestEditFileReplacesAFragment(t *testing.T) {
 	if string(data) != "x := 3\ny := 3\nz := 5\n" {
 		t.Fatalf("file %q", data)
 	}
-	if info, _ := os.Stat(filepath.Join(dir, "a.go")); info.Mode().Perm() != 0o640 && os.PathSeparator == '/' {
+	if info, _ := os.Stat(filepath.Join(dir, "a.go")); info.Mode().Perm() != 0o600 && os.PathSeparator == '/' {
 		t.Fatalf("the file lost its mode: %v", info.Mode())
 	}
 }
