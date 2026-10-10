@@ -62,6 +62,10 @@ type Session struct {
 	patch  *Patch // the ap patch of the latest answer, nil when it had none
 	apMode bool   // ask the model for ap patches instead of whole files
 	title  string // the dialog's name; the model may set it (f4#1842)
+	// pending is the answer being streamed in, shown before it is complete;
+	// onUpdate is told whenever it grows (f4#1842, stage H2).
+	pending  string
+	onUpdate func()
 }
 
 // PatchModePrompt is appended to the system prompt once the human attached the
@@ -259,13 +263,25 @@ func (s *Session) Ask(ctx context.Context, cfg Config, question string) error {
 	}
 	msgs = append(msgs, Message{Role: "user", Content: question})
 
-	reply, usage, err := cfg.Chat(ctx, msgs)
+	reply, usage, err := cfg.ChatStream(ctx, msgs, func(piece string) {
+		s.mu.Lock()
+		s.pending += piece
+		notify := s.onUpdate
+		s.mu.Unlock()
+		if notify != nil {
+			notify()
+		}
+	})
 	if err != nil {
+		s.mu.Lock()
+		s.pending = ""
+		s.mu.Unlock()
 		return err
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.pending = ""
 	s.appendTurn(Turn{Role: "user", Text: question, Time: time.Now()})
 	s.appendTurn(Turn{Role: "assistant", Text: reply, Time: time.Now()})
 	s.usage = usage
@@ -312,6 +328,22 @@ func (s *Session) Title() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.title
+}
+
+// Pending returns the part of the answer streamed in so far; empty when no
+// answer is being written.
+func (s *Session) Pending() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pending
+}
+
+// SetOnUpdate sets what to call when the streamed answer grows. It is called
+// from the request's goroutine, often: the host throttles and posts to its UI.
+func (s *Session) SetOnUpdate(fn func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onUpdate = fn
 }
 
 // Turns returns a copy of the dialog.

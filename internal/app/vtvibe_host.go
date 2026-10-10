@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/unxed/f4/internal/panel"
 
@@ -598,6 +600,7 @@ func aiSend(pf *panel.PanelsFrame, question string) {
 	}
 
 	session := aiSession()
+	session.SetOnUpdate(aiStreamRedraw(vtui.FrameManager, pf))
 	pf.RunProgressTask(i18n.Msg("AI.Title"), i18n.Msg("AI.Sending"), false,
 		func(ctx context.Context, update func(msg string, percent int)) error {
 			return session.Ask(ctx, cfg, question)
@@ -621,6 +624,32 @@ func aiSend(pf *panel.PanelsFrame, question string) {
 			}
 		})
 }
+
+// aiStreamRedraw shows a streamed answer as it grows (f4#1842, stage H2).
+// Pieces arrive many times a second from the request's goroutine; the chat
+// is redrawn at most every aiStreamRedrawEvery, and the completion handler
+// draws the final state, so a skipped last piece is never lost.
+func aiStreamRedraw(manager interface{ PostTask(func()) }, pf *panel.PanelsFrame) func() {
+	var last atomic.Int64
+	return func() {
+		now := time.Now().UnixNano()
+		if prev := last.Load(); now-prev < int64(aiStreamRedrawEvery) || !last.CompareAndSwap(prev, now) {
+			return
+		}
+		manager.PostTask(func() {
+			if pf.AltPanels[pf.ActiveIdx] != nil {
+				if cp, ok := pf.AltPanels[pf.ActiveIdx].(*AIChatPanel); ok {
+					cp.ScrollToBottom()
+				}
+			}
+			if vtui.FrameManager != nil {
+				vtui.FrameManager.Redraw()
+			}
+		})
+	}
+}
+
+var aiStreamRedrawEvery = 80 * time.Millisecond
 
 // aiLastAnswerPath is the chat file the reply was just written to.
 func aiLastAnswerPath(s *vtvibe.Session) string {
