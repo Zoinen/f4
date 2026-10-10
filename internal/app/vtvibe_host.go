@@ -586,6 +586,8 @@ func aiCommand(app vfs.App, arg string) {
 		aiDialogsMenu(pf)
 	case strings.HasPrefix(arg, "/") && !strings.HasPrefix(arg, "//"):
 		aiUserCommand(pf, arg[1:])
+	case lower == "allow":
+		aiAllowCommand(pf)
 	case lower == "mcp":
 		aiMCPCommand()
 	case lower == "cost":

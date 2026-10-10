@@ -302,29 +302,36 @@ func (s *Session) ask(ctx context.Context, cfg Config, question string, order bo
 		system += "\n\n" + extra
 	}
 
-	msgs := make([]Message, 0, len(history)+2)
-	msgs = append(msgs, Message{Role: "system", Content: system})
-	for _, t := range history {
-		if t.Text == "RCtrl+A to hide" {
-			continue
+	send := func(compact bool) (string, Usage, error) {
+		msgs := append([]Message{{Role: "system", Content: system}}, historyMessages(history, compact)...)
+		msgs = append(msgs, Message{Role: "user", Content: question})
+		reply, usage, err := cfg.ChatStream(ctx, msgs, func(piece string) {
+			s.mu.Lock()
+			s.pending += piece
+			notify := s.onUpdate
+			s.mu.Unlock()
+			if notify != nil {
+				notify()
+			}
+		})
+		if err != nil {
+			s.mu.Lock()
+			s.pending = ""
+			s.mu.Unlock()
 		}
-		msgs = append(msgs, Message{Role: t.Role, Content: t.Text})
+		return reply, usage, err
 	}
-	msgs = append(msgs, Message{Role: "user", Content: question})
-
-	reply, usage, err := cfg.ChatStream(ctx, msgs, func(piece string) {
-		s.mu.Lock()
-		s.pending += piece
-		notify := s.onUpdate
-		s.mu.Unlock()
-		if notify != nil {
-			notify()
+	reply, usage, err := send(false)
+	compacted := false
+	if err != nil && contextExhausted(err) && ctx.Err() == nil {
+		// Too long for the model: send it again with the model's own
+		// earlier answers shortened, the user's words in full (H4).
+		compacted = true
+		if reply, usage, err = send(true); err != nil && contextExhausted(err) {
+			err = errStillTooLong(err)
 		}
-	})
+	}
 	if err != nil {
-		s.mu.Lock()
-		s.pending = ""
-		s.mu.Unlock()
 		return "", err
 	}
 
@@ -340,6 +347,9 @@ func (s *Session) ask(ctx context.Context, cfg Config, question string, order bo
 	}
 	s.appendTurn(Turn{Role: "user", Text: question, Time: time.Now()})
 	s.appendTurn(Turn{Role: "assistant", Text: reply, Time: time.Now()})
+	if compacted {
+		s.appendTurn(Turn{Role: "assistant", Text: compactNote, Time: time.Now()})
+	}
 	s.usage = usage
 	s.addSpentLocked(cfg.Model, usage)
 	s.saveArtifacts(reply)

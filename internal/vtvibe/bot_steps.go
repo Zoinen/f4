@@ -34,6 +34,15 @@ func (b *Bot) SetStepped(on bool) {
 	b.whole = !on
 }
 
+// SetToolWrapper makes every round pass its tools through wrap first (the
+// host's approval of each change, f4#1842 stage H9); nil leaves them as
+// they are. It counts from the next round.
+func (b *Bot) SetToolWrapper(wrap func([]Tool) []Tool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.wrap = wrap
+}
+
 func (b *Bot) stepped() bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -73,7 +82,8 @@ context; you do step %d. The whole instruction is at %s: read the parts your
 step needs (read_file for a file, the shell for a URL) rather than guessing.
 Do your step completely and only it, using the tools: shell runs commands,
 read_file, write_file and edit_file work with
-files, grep and find_files search them. The working directory is %s. The
+files, grep and find_files search them, fetch_url
+loads a web page. The working directory is %s. The
 current time is %s. When the step is done, answer with a short report of what
 you did and what the next steps must know; that report is all they see of it.`,
 		model, n, i, source, dir, now.UTC().Format(time.RFC3339))

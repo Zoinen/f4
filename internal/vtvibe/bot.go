@@ -73,7 +73,8 @@ Each round you get the same instruction in a fresh dialog: earlier rounds are
 not in your context, so keep whatever must survive in files or in the systems
 the instruction names. Carry out the instruction now, using the tools: shell
 runs commands, read_file, write_file and edit_file work with
-files, grep and find_files search them. The working directory
+files, grep and find_files search them, fetch_url
+loads a web page. The working directory
 is %s. The current time is %s. When the round is done, answer with a short
 report of what you did; that report is all the user sees of the round.`, model, dir, now.UTC().Format(time.RFC3339))
 }
@@ -110,6 +111,9 @@ type Bot struct {
 	// whole runs a round in one context instead of step by step
 	// (bot_steps.go).
 	whole bool
+	// wrap, when set, passes each round's tools through the host's
+	// approval (SetToolWrapper).
+	wrap func([]Tool) []Tool
 }
 
 // ErrBotRunning is returned by Start while a bot is already running.
@@ -153,6 +157,12 @@ func (b *Bot) loop(ctx context.Context, dir string, config func() Config, extra 
 		tools := WorkTools(dir, cfg.ToolEnv...)
 		if extra != nil {
 			tools = append(tools, extra()...)
+		}
+		b.mu.Lock()
+		wrap := b.wrap
+		b.mu.Unlock()
+		if wrap != nil {
+			tools = wrap(tools)
 		}
 		round := b.round(ctx, n, dir, cfg, tools)
 		b.mu.Lock()

@@ -46,6 +46,7 @@ func (aiSettingsProvider) Catalog() f4settings.Catalog {
 		aiAllowField("ai.allow_model_switch", "Let the model switch models", "The model may switch the dialog to another model when you or its instruction ask for it."),
 		aiAllowField("ai.allow_rename", "Let the model rename the dialog", "The model may give the dialog a name that says what it is about."),
 		aiNonstopField(),
+		aiAskEachField(),
 		f4settings.Scalar("ai.github_token", "ai", "Credentials", "GitHub token", "Given to the commands the bot and the workers run as GH_TOKEN and GITHUB_TOKEN, unless the dialog has its own (ai:token). Stored in the local vtvibe.ini file.", f4settings.Secret),
 	}}
 }
@@ -58,6 +59,14 @@ func aiAllowField(id, label, description string) f4settings.Field {
 // aiNonstopField is the working mode of new dialogs (f4#1842, stage H6).
 func aiNonstopField() f4settings.Field {
 	f := f4settings.Scalar("ai.nonstop", "ai", "Model", "Work without stopping", "New dialogs start in the non-stop mode: the model goes on by itself until every order is done instead of answering once and waiting. The ai:mode command chooses the mode of one dialog.", f4settings.Boolean)
+	f.Default = "false"
+	return f
+}
+
+// aiAskEachField is the permission mode of workers and the bot (f4#1842,
+// stage H9).
+func aiAskEachField() f4settings.Field {
+	f := f4settings.Scalar("ai.ask_each", "ai", "Model", "Ask before each command", "Workers and the bot ask before each shell command, file change or MCP tool, unless the allow list (ai:allow) covers it. Off: one confirmation for the whole task or bot.", f4settings.Boolean)
 	f.Default = "false"
 	return f
 }
@@ -75,6 +84,7 @@ func (p aiSettingsProvider) Begin(context.Context) (*f4settings.Draft, error) {
 		"ai.allow_model_switch": loaded.GetString("general", "allow_model_switch", "true"),
 		"ai.allow_rename":       loaded.GetString("general", "allow_rename", "true"),
 		"ai.nonstop":            loaded.GetString("general", "nonstop", "false"),
+		"ai.ask_each":           loaded.GetString("general", "ask_each", "false"),
 		"ai.github_token":       loaded.GetString("general", "github_token", ""),
 	}, nil)
 	d.ValidateFunc = func(d *f4settings.Draft) map[string]error {
@@ -103,7 +113,7 @@ func (p aiSettingsProvider) Begin(context.Context) (*f4settings.Draft, error) {
 			if strings.HasPrefix(key, "allow_") {
 				fallback = "true"
 			}
-			if key == "nonstop" {
+			if key == "nonstop" || key == "ask_each" {
 				fallback = "false"
 			}
 			v := current.GetString("general", key, fallback)

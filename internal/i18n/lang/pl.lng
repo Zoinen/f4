@@ -2235,6 +2235,8 @@ SettingsCenter.Text.5b4b9a299525629f834251c49f3d856236ee77d4e8bce5d98306e190a171
 SettingsCenter.Text.e24bd4269687d6af5de7ea80901913c246d9a75ad2fc2b7c1c0203d056f314e7=Model może zmienić nazwę rozmowy
 SettingsCenter.Text.c6ce374075feb031a1e90f5a3d48a3684d7ebebe27c9a54065f82f3ade2b90aa=Model może nadać rozmowie nazwę mówiącą, czego dotyczy.
 SettingsCenter.Text.25a6e3a20e3e4ba4388d8a1ec095f041fb25aa4656425805d63fc26e1f8af4b8=Pracuj bez zatrzymywania
+SettingsCenter.Text.e920436f98236913b04579b0fb429f4d27f819d88813f8f8f63896fcbdd74a6f=Pytaj przed każdym poleceniem
+SettingsCenter.Text.bb43def2ab54f94fc9685db30be66d1470a2d8bfca97d2bc7d6aaeb1e2c21443=Pracownicy i bot pytają przed każdym poleceniem powłoki, zmianą pliku lub narzędziem MCP, chyba że obejmuje je lista dozwolonych (ai:allow). Wyłączone: jedno potwierdzenie na całe zadanie lub bota.
 SettingsCenter.Text.7ab3b32ca52beccfadd6b70522fc3c3d6e14fa22884236a142af2150a8e0d0ff=Nowe dialogi zaczynają się w trybie bez zatrzymywania: model sam kontynuuje pracę, aż wykona każde polecenie, zamiast odpowiedzieć raz i czekać. Polecenie ai:mode wybiera tryb jednego dialogu.
 SettingsCenter.Text.2ddc96639d79f923c6152d60a3b40dfcab9d5a049e472da22831b47f2322a620=Token GitHub
 SettingsCenter.Text.ae8132b1ecb6594e53ff21f0eccd0138c8a2c241b2994a07a8fe91fc8c53f157=Przekazywany poleceniom uruchamianym przez bota i pracowników jako GH_TOKEN i GITHUB_TOKEN, chyba że dialog ma własny (ai:token). Zapisywany w lokalnym pliku vtvibe.ini.

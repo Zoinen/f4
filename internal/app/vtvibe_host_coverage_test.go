@@ -1,9 +1,12 @@
 package app
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -250,5 +253,82 @@ func TestVtvibeModelsMenuOrder(t *testing.T) {
 		if !strings.Contains(lines[i], m.ID) {
 			t.Fatalf("row %d %q is not model %q", i, lines[i], m.ID)
 		}
+	}
+}
+
+// f4#1842, stage H9: each bot round gets the MCP servers afresh and the
+// round's report tells what went wrong with them.
+func TestVtvibeBotMCPRounds(t *testing.T) {
+	setupPortableIni(t, "0")
+	var rounds aiBotMCPRounds
+	if tools := rounds.begin(t.TempDir()); len(tools) != 0 || rounds.finish() != "" {
+		t.Fatal("tools or problems without any MCP server set up")
+	}
+	if err := os.MkdirAll(filepath.Dir(vtvibeMCPPath()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(vtvibeMCPPath(), []byte(`{"mcpServers":{"broken":{"command":"f4-no-such-mcp-server"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rounds.begin(t.TempDir())
+	if problems := rounds.finish(); !strings.Contains(problems, "broken") {
+		t.Fatalf("the round's report does not name the broken server: %q", problems)
+	}
+	if rounds.finish() != "" {
+		t.Fatal("a finished round was finished again")
+	}
+}
+
+// queuedManager hands posted tasks to the test, which runs them as the UI
+// thread would.
+type queuedManager chan func()
+
+func (q queuedManager) PostTask(f func()) { q <- f }
+
+// f4#1842, stage H9: with "Ask before each command" on, a worker's shell
+// command waits for the user's answer; "always" remembers a rule.
+func TestVtvibeApprovalAsksTheUser(t *testing.T) {
+	setupPortableIni(t, "0")
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	ui := make(queuedManager, 4)
+	ran := 0
+	shell := vtvibe.Tool{Name: "shell", Run: func(context.Context, json.RawMessage) (string, error) { ran++; return "ok", nil }}
+	off := aiWithApproval(ui, func() string { return "w" }, []vtvibe.Tool{shell})
+	if _, err := off[0].Run(context.Background(), json.RawMessage(`{"command":"rm x"}`)); err != nil || ran != 1 {
+		t.Fatal("with the setting off a command asked or failed")
+	}
+	writeVtvibeINI(t, "[general]\nask_each = true\n")
+	tools := aiWithApproval(ui, func() string { return "Worker #1" }, []vtvibe.Tool{shell})
+	for _, c := range []struct {
+		button  int
+		wantRan int
+		wantErr bool
+	}{{2, 1, true}, {1, 2, false}} {
+		done := make(chan error, 1)
+		go func() {
+			_, err := tools[0].Run(context.Background(), json.RawMessage(`{"command":"go test ./..."}`))
+			done <- err
+		}()
+		select {
+		case task := <-ui:
+			task() // the question is shown on the UI thread
+		case <-time.After(5 * time.Second):
+			t.Fatal("no question was asked")
+		}
+		dlg, ok := vtui.FrameManager.GetTopFrame().(*vtui.Window)
+		if !ok || dlg.OnResult == nil {
+			t.Fatal("the question is not on top")
+		}
+		dlg.OnResult(c.button)
+		dlg.Close() // reports again; must not block
+		if err := <-done; (err != nil) != c.wantErr || ran != c.wantRan {
+			t.Fatalf("button %d: err %v, ran %d", c.button, err, ran)
+		}
+	}
+	if !aiAllowList().Allowed("shell", "go test ./internal/...") {
+		t.Fatal("\"always\" did not remember the rule")
+	}
+	if _, err := tools[0].Run(context.Background(), json.RawMessage(`{"command":"go test ./x"}`)); err != nil || ran != 3 || len(ui) != 0 {
+		t.Fatalf("an allowed command asked or failed: %v", err)
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/unxed/f4/internal/config"
@@ -40,6 +41,7 @@ func aiBotCommand(pf *panel.PanelsFrame, arg string) {
 	case "stop":
 		go func() {
 			stopped := aiBot.Stop()
+			aiBotMCP.finish() // a round stopped halfway leaves its servers running
 			manager.PostTask(func() {
 				if stopped {
 					aiSession().Note("assistant", i18n.Msg("AI.BotStopped"))
@@ -71,8 +73,15 @@ func aiBotCommand(pf *panel.PanelsFrame, arg string) {
 		// Rounds go step by step in clean contexts unless "whole" was asked
 		// for (f4#1842, stage H7).
 		aiBot.SetStepped(!whole)
+		aiBot.SetToolWrapper(func(tools []vtvibe.Tool) []vtvibe.Tool {
+			return aiWithApproval(manager, func() string { return i18n.Msg("AI.BotLabel") }, tools)
+		})
 		err := aiBot.Start(source, pause, dir, config,
-			func() []vtvibe.Tool { return vtvibe.DialogTools(vtvibeDialogControls(manager, pf)) },
+			func() []vtvibe.Tool {
+				// Each round gets the MCP servers of ai/mcp.json afresh,
+				// started in the bot's folder (f4#1842, stage H9).
+				return append(vtvibe.DialogTools(vtvibeDialogControls(manager, pf)), aiBotMCP.begin(dir)...)
+			},
 			func(n int) {
 				manager.PostTask(func() {
 					aiSession().Note("assistant", fmt.Sprintf(i18n.Msg("AI.BotRoundStart"), n, source))
@@ -81,6 +90,9 @@ func aiBotCommand(pf *panel.PanelsFrame, arg string) {
 			},
 			func(r vtvibe.BotRound) {
 				text := aiBotRoundText(r)
+				if problems := aiBotMCP.finish(); problems != "" {
+					text += "\n\n" + problems
+				}
 				model := config().Model
 				manager.PostTask(func() {
 					// The bot's spending counts for the dialog (f4#1842, H9).
@@ -612,8 +624,11 @@ func aiStartWorker(pf *panel.PanelsFrame, manager interface{ PostTask(func()) },
 	journal := &vtvibe.Journal{}
 	// The MCP servers of ai/mcp.json run for this task, in its folder.
 	mcp := &aiMCPRun{dir: dir}
+	var label atomic.Value // the worker's name for the approval question, once known
+	label.Store(i18n.Msg("AI.WorkerLabel"))
 	tools := func() []vtvibe.Tool {
-		return append(vtvibe.WithJournal(vtvibe.WorkTools(dir, config().ToolEnv...), dir, journal), mcp.tools()...)
+		list := append(vtvibe.WithJournal(vtvibe.WorkTools(dir, config().ToolEnv...), dir, journal), mcp.tools()...)
+		return aiWithApproval(manager, func() string { return label.Load().(string) }, list)
 	}
 	aiWorkers.SetGates(vtvibe.GateRules{User: aiGateRules, Learned: aiLearnedRules, Learn: aiLearnRule})
 	id := aiWorkers.Start(task, dir, config, tools, func(r vtvibe.WorkerResult) {
@@ -637,6 +652,7 @@ func aiStartWorker(pf *panel.PanelsFrame, manager interface{ PostTask(func()) },
 			}
 		})
 	})
+	label.Store(fmt.Sprintf(i18n.Msg("AI.WorkerLabelN"), id))
 	aiJournals.Store(id, journal)
 	if order > 0 {
 		session.Note("assistant", fmt.Sprintf(i18n.Msg("AI.TaskStarted"), id, order, task))
@@ -702,6 +718,125 @@ func (m *aiMCPRun) close() string {
 		return ""
 	}
 	return fmt.Sprintf(i18n.Msg("AI.MCPProblems"), errors.Join(m.errs...))
+}
+
+// vtvibeAskEach is Settings → AI → "Ask before each command" (f4#1842,
+// stage H9): off, one confirmation covers a whole task or bot.
+func vtvibeAskEach() bool {
+	return ini.Load(vtvibeIniPath()).GetString("general", "ask_each", "false") == "true"
+}
+
+// vtvibeAllowPath is the allow list: one rule a line — a tool name or glob,
+// or a shell command prefix.
+func vtvibeAllowPath() string {
+	return filepath.Join(config.GetF4ConfigDir(), "ai", "allow.txt")
+}
+
+var aiAllowMu sync.Mutex
+
+func aiAllowList() vtvibe.AllowList {
+	return vtvibe.AllowList{
+		Rules: func() []string {
+			data, err := os.ReadFile(vtvibeAllowPath()) // #nosec G304 G703 -- f4's own configuration file
+			if err != nil {
+				return nil
+			}
+			return strings.Split(string(data), "\n")
+		},
+		Add: func(rule string) {
+			aiAllowMu.Lock()
+			defer aiAllowMu.Unlock()
+			data, _ := os.ReadFile(vtvibeAllowPath()) // #nosec G304 G703 -- see above
+			text := strings.TrimRight(string(data), "\n")
+			if text != "" {
+				text += "\n"
+			}
+			_ = config.WriteUserFileAtomically(vtvibeAllowPath(), []byte(text+rule+"\n"), 0o600)
+		},
+	}
+}
+
+// aiWithApproval makes tools ask before each change when the setting is on.
+// The question is posted to the UI thread; the tool's goroutine waits for
+// the answer or for its task to be stopped.
+func aiWithApproval(manager interface{ PostTask(func()) }, who func() string, tools []vtvibe.Tool) []vtvibe.Tool {
+	if !vtvibeAskEach() {
+		return tools
+	}
+	approve := func(ctx context.Context, tool, summary string) (vtvibe.Approval, error) {
+		answer := make(chan vtvibe.Approval, 1)
+		manager.PostTask(func() {
+			text := fmt.Sprintf(i18n.Msg("AI.ApproveQuestion"), who(), tool, vtui.TruncateMiddle(summary, 400))
+			dlg := vtui.ShowMessage(i18n.Msg("AI.Title"), dialog.EscapeAmpersand(text),
+				[]string{i18n.Msg("AI.ApproveOnce"), i18n.Msg("AI.ApproveAlways"), i18n.Msg("AI.ApproveDeny")})
+			dlg.OnResult = func(code int) {
+				a := vtvibe.Deny
+				switch code {
+				case 0:
+					a = vtvibe.AllowOnce
+				case 1:
+					a = vtvibe.AllowAlways
+				}
+				// The first answer counts: closing the window reports again
+				// (-1), and a second send must not block the UI thread.
+				select {
+				case answer <- a:
+				default:
+				}
+			}
+		})
+		select {
+		case a := <-answer:
+			return a, nil
+		case <-ctx.Done():
+			return vtvibe.Deny, ctx.Err()
+		}
+	}
+	return vtvibe.WithApproval(tools, approve, aiAllowList())
+}
+
+// aiAllowCommand is ai:allow: the allow list in the editor.
+func aiAllowCommand(pf *panel.PanelsFrame) {
+	path := vtvibeAllowPath()
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		if err := config.WriteUserFileAtomically(path, nil, 0o600); err != nil {
+			aiShowError(err)
+			return
+		}
+	}
+	actionOpenEditor(pf, vfs.NewOSVFS(filepath.Dir(path)), path)
+}
+
+// aiBotMCPRounds keeps the MCP servers of the bot's current round: begun
+// when the round asks for its tools, finished with the round's report or
+// when the bot is stopped.
+type aiBotMCPRounds struct {
+	mu  sync.Mutex
+	cur *aiMCPRun
+}
+
+var aiBotMCP aiBotMCPRounds
+
+func (b *aiBotMCPRounds) begin(dir string) []vtvibe.Tool {
+	b.mu.Lock()
+	if b.cur != nil {
+		_ = b.cur.close()
+	}
+	b.cur = &aiMCPRun{dir: dir}
+	run := b.cur
+	b.mu.Unlock()
+	return run.tools()
+}
+
+func (b *aiBotMCPRounds) finish() string {
+	b.mu.Lock()
+	run := b.cur
+	b.cur = nil
+	b.mu.Unlock()
+	if run == nil {
+		return ""
+	}
+	return run.close()
 }
 
 // aiMCPCommand is ai:mcp: the configured MCP servers and where they are set.
