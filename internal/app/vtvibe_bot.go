@@ -46,7 +46,7 @@ func aiBotCommand(pf *panel.PanelsFrame, arg string) {
 		}()
 		return
 	}
-	source, pause := parseBotArgs(arg)
+	source, pause, whole := parseBotArgs(arg)
 	if aiBot.Status().Running {
 		vtui.ShowMessage(i18n.Msg("AI.Title"), i18n.Msg("AI.BotAlready"), []string{i18n.Msg("vtui.Ok")})
 		return
@@ -64,6 +64,9 @@ func aiBotCommand(pf *panel.PanelsFrame, arg string) {
 			return
 		}
 		config := aiAgentConfig(aiSession())
+		// Rounds go step by step in clean contexts unless "whole" was asked
+		// for (f4#1842, stage H7).
+		aiBot.SetStepped(!whole)
 		err := aiBot.Start(source, pause, dir, config,
 			func() []vtvibe.Tool { return vtvibe.DialogTools(vtvibeDialogControls(manager, pf)) },
 			func(n int) {
@@ -85,16 +88,21 @@ func aiBotCommand(pf *panel.PanelsFrame, arg string) {
 	}
 }
 
-// parseBotArgs splits "source [pause]": a last word that parses as a Go
-// duration (30m, 1h, 90s) is the pause.
-func parseBotArgs(arg string) (string, time.Duration) {
+// parseBotArgs splits "source [pause] [whole]": a last word "whole" runs
+// each round in one context instead of step by step; a last word that parses
+// as a Go duration (30m, 1h, 90s) is the pause.
+func parseBotArgs(arg string) (string, time.Duration, bool) {
 	fields := strings.Fields(arg)
+	whole := false
+	if n := len(fields); n > 1 && strings.EqualFold(fields[n-1], "whole") {
+		whole, fields = true, fields[:n-1]
+	}
 	if len(fields) > 1 {
 		if d, err := time.ParseDuration(fields[len(fields)-1]); err == nil && d > 0 {
-			return strings.Join(fields[:len(fields)-1], " "), d
+			return strings.Join(fields[:len(fields)-1], " "), d, whole
 		}
 	}
-	return arg, vtvibe.DefaultBotPause
+	return strings.Join(fields, " "), vtvibe.DefaultBotPause, whole
 }
 
 // aiBotDir is where the bot's commands start: the active panel's folder when
