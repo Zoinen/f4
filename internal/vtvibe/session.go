@@ -80,6 +80,8 @@ type Session struct {
 	// tasks it handed out and the host has not taken yet (delegate.go).
 	delegate    bool
 	delegations []Delegation
+	// spent is what the dialog has spent, by model (usage.go).
+	spent map[string]Usage
 }
 
 // PatchModePrompt is appended to the system prompt once the human attached the
@@ -146,6 +148,7 @@ func (s *Session) reset() {
 	s.mode = ModeDefault
 	s.githubToken = ""
 	s.delegations = nil
+	s.spent = nil
 	_ = s.tree.mkdirAll(ctxDir)
 	_ = s.tree.mkdirAll(chatDir)
 	_ = s.tree.mkdirAll(outDir)
@@ -338,6 +341,7 @@ func (s *Session) ask(ctx context.Context, cfg Config, question string, order bo
 	s.appendTurn(Turn{Role: "user", Text: question, Time: time.Now()})
 	s.appendTurn(Turn{Role: "assistant", Text: reply, Time: time.Now()})
 	s.usage = usage
+	s.addSpentLocked(cfg.Model, usage)
 	s.saveArtifacts(reply)
 	s.writeSessionFile()
 	return reply, nil

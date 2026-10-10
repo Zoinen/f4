@@ -583,6 +583,8 @@ func aiCommand(app vfs.App, arg string) {
 		aiOrdersCommand(pf, "undone", arg[len("undone "):])
 	case lower == "dialogs":
 		aiDialogsMenu(pf)
+	case lower == "cost":
+		aiCostCommand(pf)
 	case lower == "gates" || strings.HasPrefix(lower, "gates "):
 		aiGatesCommand(pf, arg[len("gates"):])
 	case lower == "token" || strings.HasPrefix(lower, "token "):

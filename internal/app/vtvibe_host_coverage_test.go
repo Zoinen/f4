@@ -224,3 +224,16 @@ func TestVtvibeLearnedRulesAreKeptAndBounded(t *testing.T) {
 		t.Fatalf("%d rules, first %q, last %q", len(lines), lines[0], lines[len(lines)-1])
 	}
 }
+
+// f4#1842, stage H9: ai:cost prices what it can and still shows the tokens
+// of what it cannot.
+func TestVtvibeCostText(t *testing.T) {
+	text := aiCostText([]vtvibe.ModelCost{
+		{Model: "paid", Usage: vtvibe.Usage{In: 12345, Out: 678}, Cost: 0.25, Priced: true},
+		{Model: "local", Usage: vtvibe.Usage{In: 10, Out: 2}},
+	})
+	if !strings.Contains(text, "paid") || !strings.Contains(text, "12.3k") || !strings.Contains(text, "$0.2500") ||
+		!strings.Contains(text, "local") || !strings.Contains(text, "12.4k") {
+		t.Fatalf("cost text %q", text)
+	}
+}

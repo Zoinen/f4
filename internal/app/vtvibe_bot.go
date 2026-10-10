@@ -80,7 +80,10 @@ func aiBotCommand(pf *panel.PanelsFrame, arg string) {
 			},
 			func(r vtvibe.BotRound) {
 				text := aiBotRoundText(r)
+				model := config().Model
 				manager.PostTask(func() {
+					// The bot's spending counts for the dialog (f4#1842, H9).
+					aiSession().AddSpent(model, r.Usage)
 					aiSession().Note("assistant", text)
 					aiBotRefresh(pf)
 				})
@@ -315,6 +318,58 @@ func aiGatesCommand(pf *panel.PanelsFrame, arg string) {
 	actionOpenEditor(pf, vfs.NewOSVFS(filepath.Dir(path)), path)
 }
 
+// aiCostCommand is ai:cost: what the dialog has spent, by model, priced
+// where the service publishes prices (f4#1842, stage H9). Without a price
+// list the tokens are still shown.
+func aiCostCommand(pf *panel.PanelsFrame) {
+	session := aiSession()
+	spent := session.Spent()
+	if len(spent) == 0 {
+		vtui.ShowMessage(i18n.Msg("AI.Title"), i18n.Msg("AI.CostNothing"), []string{i18n.Msg("vtui.Ok")})
+		return
+	}
+	cfg, _ := vtvibeConfig()
+	var models []vtvibe.ModelInfo
+	pf.RunProgressTask(i18n.Msg("AI.Title"), i18n.Msg("AI.Sending"), false,
+		func(ctx context.Context, update func(msg string, percent int)) error {
+			// A failed price list leaves the tokens; it is not an error.
+			models, _ = cfg.ModelsWithInfo(ctx)
+			return ctx.Err()
+		},
+		func(err error) {
+			if err != nil {
+				return
+			}
+			vtui.ShowMessage(i18n.Msg("AI.Title"), aiCostText(vtvibe.Costs(spent, models)), []string{i18n.Msg("vtui.Ok")})
+		})
+}
+
+func aiCostText(costs []vtvibe.ModelCost) string {
+	var lines []string
+	var total vtvibe.Usage
+	var money float64
+	priced := false
+	for _, c := range costs {
+		total.In += c.Usage.In
+		total.Out += c.Usage.Out
+		line := fmt.Sprintf(i18n.Msg("AI.CostLine"), c.Model, vtvibe.FormatTokens(c.Usage.In), vtvibe.FormatTokens(c.Usage.Out))
+		if c.Priced {
+			line += fmt.Sprintf(" — $%.4f", c.Cost)
+			money += c.Cost
+			priced = true
+		} else {
+			line += " — " + i18n.Msg("AI.CostNoPrice")
+		}
+		lines = append(lines, line)
+	}
+	sum := fmt.Sprintf(i18n.Msg("AI.CostTotal"), vtvibe.FormatTokens(total.In), vtvibe.FormatTokens(total.Out))
+	if priced {
+		sum += fmt.Sprintf(" — $%.4f", money)
+	}
+	lines = append(lines, "", sum)
+	return dialog.EscapeAmpersand(strings.Join(lines, "\n"))
+}
+
 // vtvibeNonstopDefault is the mode of the dialogs that did not choose their
 // own (Settings → AI, f4#1842 stage H6): question-and-answer unless set.
 func vtvibeNonstopDefault() bool {
@@ -502,7 +557,9 @@ func aiStartWorker(pf *panel.PanelsFrame, manager interface{ PostTask(func()) },
 	aiWorkers.SetGates(vtvibe.GateRules{User: aiGateRules, Learned: aiLearnedRules, Learn: aiLearnRule})
 	id := aiWorkers.Start(task, dir, config, tools, func(r vtvibe.WorkerResult) {
 		text := aiTaskResultText(r, order)
+		model := config().Model
 		manager.PostTask(func() {
+			session.AddSpent(model, r.Usage)
 			if r.Err == nil && closeOrder {
 				_ = session.SetOrderDone(order, true)
 			}
