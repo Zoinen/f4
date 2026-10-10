@@ -182,3 +182,19 @@ func TestVtvibeGitHubTokenOfTheDialogOverridesTheSetting(t *testing.T) {
 		t.Fatalf("a token appeared from nowhere: %v", env)
 	}
 }
+
+// f4#1842, stage H5: a worker the manager started for no particular order
+// reports without a "#0".
+func TestVtvibeWorkerReportNamesTheOrderOnlyWhenThereIsOne(t *testing.T) {
+	ok := vtvibe.WorkerResult{ID: 2, Report: "all green"}
+	if text := aiTaskResultText(ok, 0); strings.Contains(text, "#0") || !strings.Contains(text, "#2") || !strings.Contains(text, "all green") {
+		t.Fatalf("report without an order: %q", text)
+	}
+	if text := aiTaskResultText(ok, 5); !strings.Contains(text, "#5") {
+		t.Fatalf("report for order 5: %q", text)
+	}
+	failed := vtvibe.WorkerResult{ID: 3, Err: errors.New("boom")}
+	if text := aiTaskResultText(failed, 0); strings.Contains(text, "#0") || !strings.Contains(text, "boom") {
+		t.Fatalf("failure without an order: %q", text)
+	}
+}

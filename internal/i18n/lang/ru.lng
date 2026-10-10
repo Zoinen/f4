@@ -2532,6 +2532,11 @@ AI.TokenFromSettings=токен из «Настройки → AI»
 AI.TokenNone=нет (GH_TOKEN окружения, если он есть)
 AI.TokenSource=Токен GitHub для команд бота и воркеров: %s.
 AI.TokenPrompt=Токен GitHub только для этого диалога (сейчас: %s).\nОн передаётся командам бота и воркеров в GH_TOKEN и GITHUB_TOKEN. Убрать: ai:token clear.
+AI.WorkerStarted=Воркер #%d взял задачу: %s
+AI.WorkerDone=Воркер #%d закончил: вызовов инструментов %d, токенов вход/выход %d/%d.
+AI.WorkerFailed=Воркер #%d не закончил: %v
+AI.DelegateConfirm=Модель отдаёт воркерам задач: %d\n\n%s\n\nРабочая папка: %s\nМодель: %s\n\nКаждый воркер получает задачу в чистом диалоге и ВЫПОЛНЯЕТ КОМАНДЫ ОБОЛОЧКИ И ПИШЕТ ФАЙЛЫ ОТ ВАШЕГО ИМЕНИ, не спрашивая о каждом шаге. Остановить: ai:task stop N.
+AI.DelegateDeclined=Пользователь не стал запускать воркеров для этих задач.
 
 ProxySettings.Title= Прокси
 ProxySettings.Mode=&Тип прокси:

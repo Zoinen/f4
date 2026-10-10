@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sort"
@@ -404,29 +405,96 @@ func aiTaskCommand(pf *panel.PanelsFrame, arg string) {
 		}
 		session := aiSession()
 		order := session.AddOrder(arg)
-		config := aiAgentConfig(aiSession())
-		tools := func() []vtvibe.Tool { return vtvibe.WorkTools(dir, config().ToolEnv...) }
-		id := aiWorkers.Start(arg, dir, config, tools, func(r vtvibe.WorkerResult) {
-			text := aiTaskResultText(r, order)
-			manager.PostTask(func() {
-				if r.Err == nil {
-					_ = session.SetOrderDone(order, true)
-				}
-				session.Note("assistant", text)
-				aiBotRefresh(pf)
-			})
+		aiStartWorker(pf, manager, session, arg, dir, order, true, nil)
+	}
+}
+
+// aiStartWorker gives task, serving order (0: none), to a worker in dir and
+// puts its report into the dialog. closeOrder closes the order when the
+// worker succeeds: right for a task the user gave with ai:task, while an
+// order the manager split up is closed by the manager. done, if set, runs on
+// the UI thread after the report.
+func aiStartWorker(pf *panel.PanelsFrame, manager interface{ PostTask(func()) }, session *vtvibe.Session, task, dir string, order int, closeOrder bool, done func()) {
+	config := aiAgentConfig(session)
+	tools := func() []vtvibe.Tool { return vtvibe.WorkTools(dir, config().ToolEnv...) }
+	id := aiWorkers.Start(task, dir, config, tools, func(r vtvibe.WorkerResult) {
+		text := aiTaskResultText(r, order)
+		manager.PostTask(func() {
+			if r.Err == nil && closeOrder {
+				_ = session.SetOrderDone(order, true)
+			}
+			session.Note("assistant", text)
+			aiBotRefresh(pf)
+			if done != nil {
+				done()
+			}
 		})
-		session.Note("assistant", fmt.Sprintf(i18n.Msg("AI.TaskStarted"), id, order, arg))
-		aiBotRefresh(pf)
+	})
+	if order > 0 {
+		session.Note("assistant", fmt.Sprintf(i18n.Msg("AI.TaskStarted"), id, order, task))
+	} else {
+		session.Note("assistant", fmt.Sprintf(i18n.Msg("AI.WorkerStarted"), id, task))
+	}
+	aiBotRefresh(pf)
+}
+
+// aiDelegate offers the tasks the manager handed out to the user; confirmed,
+// each goes to its own worker. When the last report is in and the dialog
+// works without stopping, the manager goes on by itself (f4#1842, stage H5).
+func aiDelegate(pf *panel.PanelsFrame, session *vtvibe.Session, delegations []vtvibe.Delegation) {
+	manager := vtui.FrameManager
+	cfg, _ := vtvibeConfig()
+	dir := aiBotDir(pf)
+	// The whole task is shown, within reason: the user approves what the
+	// workers will run.
+	lines := make([]string, 0, len(delegations))
+	for _, d := range delegations {
+		task := []rune(d.Task)
+		if len(task) > 400 {
+			task = append(task[:400], '…')
+		}
+		if d.Order > 0 {
+			lines = append(lines, fmt.Sprintf("#%d: %s", d.Order, string(task)))
+		} else {
+			lines = append(lines, "- "+string(task))
+		}
+	}
+	question := fmt.Sprintf(i18n.Msg("AI.DelegateConfirm"), len(delegations), dialog.EscapeAmpersand(strings.Join(lines, "\n")), dir, cfg.Model)
+	dlg := vtui.ShowMessage(i18n.Msg("AI.Title"), question, []string{i18n.Msg("AI.BotStart"), i18n.Msg("vtui.Cancel")})
+	dlg.OnResult = func(code int) {
+		if code != 0 {
+			// The manager learns it from the dialog, not by guessing.
+			session.Note("assistant", i18n.Msg("AI.DelegateDeclined"))
+			aiBotRefresh(pf)
+			return
+		}
+		left := len(delegations)
+		for _, d := range delegations {
+			aiStartWorker(pf, manager, session, d.Task, dir, d.Order, false, func() {
+				if left--; left == 0 && aiNonstop(session) && !session.Busy() {
+					aiRunWork(pf, session, func(ctx context.Context) (vtvibe.WorkEnd, error) {
+						c, _ := vtvibeConfig()
+						return session.Resume(ctx, c)
+					})
+				}
+			})
+		}
 	}
 }
 
 func aiTaskResultText(r vtvibe.WorkerResult, order int) string {
 	var sb strings.Builder
-	if r.Err != nil {
+	switch {
+	case r.Err != nil && order > 0:
 		fmt.Fprintf(&sb, i18n.Msg("AI.TaskFailed"), r.ID, order, r.Err)
-	} else {
-		fmt.Fprintf(&sb, i18n.Msg("AI.TaskDone"), r.ID, order, len(r.Steps), r.Usage.In, r.Usage.Out)
+	case r.Err != nil:
+		fmt.Fprintf(&sb, i18n.Msg("AI.WorkerFailed"), r.ID, r.Err)
+	default:
+		if order > 0 {
+			fmt.Fprintf(&sb, i18n.Msg("AI.TaskDone"), r.ID, order, len(r.Steps), r.Usage.In, r.Usage.Out)
+		} else {
+			fmt.Fprintf(&sb, i18n.Msg("AI.WorkerDone"), r.ID, len(r.Steps), r.Usage.In, r.Usage.Out)
+		}
 		sb.WriteString("\n\n")
 		sb.WriteString(r.Report)
 	}
