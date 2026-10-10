@@ -31,8 +31,8 @@ func TestHelperMCPServer(t *testing.T) {
 			m["result"] = result
 		}
 		data, _ := json.Marshal(m)
-		fmt.Fprintf(out, "%s\n", data)
-		out.Flush()
+		_, _ = fmt.Fprintf(out, "%s\n", data)
+		_ = out.Flush()
 	}
 	initialized := false
 	for in.Scan() {
@@ -51,9 +51,9 @@ func TestHelperMCPServer(t *testing.T) {
 		case m.Method == "server/discover": // "silent": an old server that ignores what it does not know
 		case m.Method == "initialize":
 			// A notification and a ping before the answer, as servers may.
-			fmt.Fprintf(out, `{"jsonrpc":"2.0","method":"notifications/message","params":{}}`+"\n")
-			fmt.Fprintf(out, `{"jsonrpc":"2.0","id":"s1","method":"ping"}`+"\n")
-			out.Flush()
+			_, _ = fmt.Fprintf(out, `{"jsonrpc":"2.0","method":"notifications/message","params":{}}`+"\n")
+			_, _ = fmt.Fprintf(out, `{"jsonrpc":"2.0","id":"s1","method":"ping"}`+"\n")
+			_ = out.Flush()
 			reply(m.ID, map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{}, "serverInfo": map[string]any{"name": "fake"}}, "")
 		case m.Method == "notifications/initialized":
 			initialized = true
