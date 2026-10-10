@@ -1885,7 +1885,7 @@ SettingsCenter.Text.8d78d31f5db14305d03e11a18a3c8844871deb801132e40bc699a37a5894
 SettingsCenter.Text.d677190e0a9990e7d5fa9e4c1bbde44271fb8959c4acb6d43e02ed991128b4bf=सेवा
 SettingsCenter.Text.472590ae974d4c1f44b3780df0b152d9119f076c61bfb3e8cb6affd7889ac0a8=प्रदाता
 SettingsCenter.Text.56ef8f20955f256423d328f65b62106005252551db25d660031887e421cb4684=पता
-SettingsCenter.Text.8b878e6a65056142157dcad1b462f197e2f61550e46baff5c7e6ddf165f6b2ad=वह सेवा जिससे AI पैनल बात करता है। हर प्रीसेट पता भर देता है और अपना कुंजी वेरिएबल पढ़ता है: GEMINI_API_KEY या GOOGLE_API_KEY, OPENAI_API_KEY, XAI_API_KEY, OPENROUTER_API_KEY। लोकल सर्वर को कुंजी की ज़रूरत नहीं।
+SettingsCenter.Text.b5e0881ae6932871dca62ef63b381370c57b6bbb2771381cee27c5a00a6945f3=वह सेवा जिससे AI पैनल बात करता है। हर प्रीसेट पता भर देता है और अपना कुंजी वेरिएबल पढ़ता है: GEMINI_API_KEY या GOOGLE_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, XAI_API_KEY, OPENROUTER_API_KEY। लोकल सर्वर को कुंजी की ज़रूरत नहीं।
 SettingsCenter.Text.db3ce2f6a08f89638f6eff8c91f796292b9b8be33c025701a98a236331b8d7b8="Local server" और "Custom address" प्रदाताओं के लिए chat-completions पता, जैसे LM Studio के लिए http://127.0.0.1:1234/v1। बाकी प्रदाता अपना पता इस्तेमाल करते हैं।
 SettingsCenter.Text.93d11bbf69e0a3e8128adfe20bfd02027491da3bde62a53dea7aa7b3224ae47f=केवल तब इस्तेमाल होती है जब चुने गए प्रदाता का कुंजी वेरिएबल खाली हो। मौजूदा स्रोत: %s (यदि कुंजी उपलब्ध है)। कुंजी स्थानीय vtvibe.ini फ़ाइल में रखी जाती है।
 SettingsCenter.Text.ab48e6eed58ca17d0e52480f00f993928b0cfe4fa09bc8bf6b21e4c42a2ecde9=आगे के AI अनुरोधों के साथ भेजा जाने वाला मॉडल पहचानकर्ता। खाली का मतलब चुने गए प्रदाता का डिफ़ॉल्ट मॉडल।

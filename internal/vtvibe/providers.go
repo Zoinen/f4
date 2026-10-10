@@ -9,7 +9,9 @@ import "strings"
 // lookup, so a service is reached without hand-editing vtvibe.ini
 // (unxed/f4#1842).
 type Provider struct {
-	ID      string
+	ID string
+	// Kind is the protocol, see Config.Kind.
+	Kind    string
 	Name    string
 	BaseURL string
 	Model   string
@@ -34,6 +36,8 @@ var Providers = []Provider{
 		Model: DefaultModel, KeyEnv: []string{"GEMINI_API_KEY", "GOOGLE_API_KEY"}, KeyURL: "https://aistudio.google.com/apikey"},
 	{ID: "openai", Name: "OpenAI", BaseURL: "https://api.openai.com/v1",
 		Model: "gpt-5.5", KeyEnv: []string{"OPENAI_API_KEY"}, KeyURL: "https://platform.openai.com/api-keys"},
+	{ID: "anthropic", Name: "Anthropic Claude", Kind: KindAnthropic, BaseURL: "https://api.anthropic.com",
+		Model: "claude-opus-5-5", KeyEnv: []string{"ANTHROPIC_API_KEY"}, KeyURL: "https://console.anthropic.com/settings/keys"},
 	{ID: "xai", Name: "xAI Grok", BaseURL: "https://api.x.ai/v1",
 		Model: "grok-4.6", KeyEnv: []string{"XAI_API_KEY"}, KeyURL: "https://console.x.ai"},
 	{ID: "openrouter", Name: "OpenRouter", BaseURL: "https://openrouter.ai/api/v1",

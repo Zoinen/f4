@@ -6220,6 +6220,39 @@ func (pf *PanelsFrame) ShowDriveMenu(panelIdx int) {
 	pf.showDriveMenuAt(panelIdx, pf.driveMenuDefaultPos(panelIdx))
 }
 
+// RevealPanel makes the panel on side (0 left, 1 right) visible, as choosing
+// a location for it in Far or Norton Commander does: the drive menu used to
+// change a hidden panel's folder blind, and Ctrl+O, Ctrl+F1 or Ctrl+F2 was
+// needed to see the result (unxed/f4#1847). Panels hidden as a whole come
+// back through the same path as Ctrl+O; a single hidden side is shown again.
+func (pf *PanelsFrame) RevealPanel(side int) {
+	mine := &pf.ShowLeftPanel
+	if side == 1 {
+		mine = &pf.ShowRightPanel
+	}
+	if pf.ShowPanels && *mine {
+		return
+	}
+	if !pf.ShowPanels {
+		pf.TogglePanelsVisibility()
+		if !pf.ShowPanels {
+			return // panels are locked here (PanelsLocked)
+		}
+	}
+	if *mine {
+		return
+	}
+	pf.ExitWide()
+	*mine = true
+	if pf.LastW > 0 && pf.LastH > 0 {
+		pf.ResizeConsole(pf.LastW, pf.LastH)
+	}
+	if vtui.FrameManager != nil {
+		vtui.FrameManager.HardRefresh()
+	}
+	pf.RefreshAll()
+}
+
 // driveMenuDefaultPos returns the drive-menu row the cursor should land on
 // when the menu opens. far2l positions the cursor on the drive the active
 // panel currently shows; for f4 that means: if the panel is on a real
@@ -6733,6 +6766,7 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 		}
 
 		if action, ok := menu.Items[idx].UserData.(func(*FileSystemPanel)); ok {
+			pf.RevealPanel(panelIdx)
 			action(fsp)
 		}
 	}

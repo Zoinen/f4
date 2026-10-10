@@ -2226,7 +2226,7 @@ SettingsCenter.Text.8d78d31f5db14305d03e11a18a3c8844871deb801132e40bc699a37a5894
 SettingsCenter.Text.d677190e0a9990e7d5fa9e4c1bbde44271fb8959c4acb6d43e02ed991128b4bf=Servicio
 SettingsCenter.Text.472590ae974d4c1f44b3780df0b152d9119f076c61bfb3e8cb6affd7889ac0a8=Proveedor
 SettingsCenter.Text.56ef8f20955f256423d328f65b62106005252551db25d660031887e421cb4684=Dirección
-SettingsCenter.Text.8b878e6a65056142157dcad1b462f197e2f61550e46baff5c7e6ddf165f6b2ad=Servicio con el que habla el panel de IA. Cada opción rellena la dirección y lee su propia variable de clave: GEMINI_API_KEY o GOOGLE_API_KEY, OPENAI_API_KEY, XAI_API_KEY, OPENROUTER_API_KEY. Un servidor local no necesita clave.
+SettingsCenter.Text.b5e0881ae6932871dca62ef63b381370c57b6bbb2771381cee27c5a00a6945f3=Servicio con el que habla el panel de IA. Cada opción rellena la dirección y lee su propia variable de clave: GEMINI_API_KEY o GOOGLE_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, XAI_API_KEY, OPENROUTER_API_KEY. Un servidor local no necesita clave.
 SettingsCenter.Text.db3ce2f6a08f89638f6eff8c91f796292b9b8be33c025701a98a236331b8d7b8=Dirección de chat-completions para los proveedores «Local server» y «Custom address», por ejemplo http://127.0.0.1:1234/v1 para LM Studio. Los demás proveedores usan su propia dirección.
 SettingsCenter.Text.93d11bbf69e0a3e8128adfe20bfd02027491da3bde62a53dea7aa7b3224ae47f=Solo se usa cuando la variable de clave del proveedor elegido está vacía. Fuente efectiva: %s (si hay una clave disponible). La clave se guarda en el archivo local vtvibe.ini.
 SettingsCenter.Text.ab48e6eed58ca17d0e52480f00f993928b0cfe4fa09bc8bf6b21e4c42a2ecde9=Identificador del modelo que se envía con las siguientes solicitudes de IA. Vacío significa el modelo predeterminado del proveedor elegido.

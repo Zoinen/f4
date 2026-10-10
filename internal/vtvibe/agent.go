@@ -49,6 +49,10 @@ const (
 	DefaultToolOutput = 32 << 10
 )
 
+// ErrAgentProtocol is returned for a service whose tool calls the agent loop
+// does not speak yet (Claude's Messages API comes in a later step).
+var ErrAgentProtocol = errors.New("vtvibe: the agent loop does not support this provider yet")
+
 // ErrAgentSteps is returned when the model keeps calling tools past MaxSteps.
 var ErrAgentSteps = errors.New("vtvibe: the agent did not finish within its step limit")
 
@@ -104,6 +108,9 @@ func textPtr(s string) *string { return &s }
 func (c Config) RunAgent(ctx context.Context, msgs []Message, tools []Tool, opts AgentOptions) (string, Usage, error) {
 	if c.APIKey == "" && !isLocal(c.BaseURL) {
 		return "", Usage{}, ErrNoKey
+	}
+	if c.Kind == KindAnthropic {
+		return "", Usage{}, ErrAgentProtocol
 	}
 	maxSteps := opts.MaxSteps
 	if maxSteps <= 0 {

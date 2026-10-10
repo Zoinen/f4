@@ -176,6 +176,7 @@ ai: что делает этот файл и что в нём не так?
 | --- | --- | --- | --- |
 | Google Gemini | `https://generativelanguage.googleapis.com/v1beta/openai` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` | `gemini-3.6-flash` |
 | OpenAI | `https://api.openai.com/v1` | `OPENAI_API_KEY` | `gpt-5.5` |
+| Anthropic Claude | `https://api.anthropic.com` (родной Messages API, не OpenAI-совместимый) | `ANTHROPIC_API_KEY` | `claude-opus-5-5` |
 | xAI Grok | `https://api.x.ai/v1` | `XAI_API_KEY` | `grok-4.6` |
 | OpenRouter | `https://openrouter.ai/api/v1` (там есть бесплатные модели) | `OPENROUTER_API_KEY` | `openrouter/auto` |
 | Локальный сервер | `http://127.0.0.1:11434/v1` (Ollama); для LM Studio — `http://127.0.0.1:1234/v1` в поле «Адрес» | не нужен | задайте сами |
@@ -193,8 +194,10 @@ key      = sk-or-...
 ```
 
 Файл без `provider`, но со своим `base_url`, работает как раньше — как
-«Свой адрес». Claude подключится отдельным шагом, родным API Anthropic
-(unxed/f4#1842).
+«Свой адрес». Claude работает через родной Messages API Anthropic (официальный Go SDK); для
+текущих моделей Claude запрос просит сервер при отказе ответить резервной
+моделью (`fallbacks: default`). В режиме бота (агентный цикл) Claude пока не
+поддерживается.
 
 Локальные модели — это полностью бесплатно и никуда не уходит из дома.
 
@@ -217,10 +220,10 @@ Getting started with the free Google AI Studio tier:
 The dialog lives in `chat/`, whole files written by the model land in `out/`,
 and `draft.md` is there for long prompts (**F4**, **F2**, then a bare `ai:`).
 Settings are in `vtvibe.ini` in the f4 config directory. Pick the service in
-Settings (F9 → AI → Provider): Google Gemini, OpenAI, xAI Grok, OpenRouter, a
-local server (Ollama, LM Studio, llama.cpp) or a custom address. Each preset
+Settings (F9 → AI → Provider): Google Gemini, OpenAI, Anthropic Claude, xAI Grok, OpenRouter,
+a local server (Ollama, LM Studio, llama.cpp) or a custom address. Each preset
 fills in the address and reads its own key variable (`GEMINI_API_KEY` or
-`GOOGLE_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`, `OPENROUTER_API_KEY`); an
+`GOOGLE_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `XAI_API_KEY`, `OPENROUTER_API_KEY`); an
 empty model means the provider's default.
 
 ---

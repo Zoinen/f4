@@ -62,6 +62,7 @@ func vtvibeProviderConfig() (vtvibe.Config, string, vtvibe.Provider) {
 	ini := ini.Load(vtvibeIniPath())
 	provider := vtvibe.ResolveProvider(ini.GetString("general", "provider", ""), ini.GetString("general", "base_url", ""))
 	cfg := vtvibe.Config{
+		Kind:    provider.Kind,
 		BaseURL: provider.Endpoint(ini.GetString("general", "base_url", "")),
 		Model:   provider.EffectiveModel(ini.GetString("general", "model", "")),
 	}
