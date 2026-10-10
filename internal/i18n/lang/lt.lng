@@ -2223,7 +2223,7 @@ SettingsCenter.Text.8d78d31f5db14305d03e11a18a3c8844871deb801132e40bc699a37a5894
 SettingsCenter.Text.d677190e0a9990e7d5fa9e4c1bbde44271fb8959c4acb6d43e02ed991128b4bf=Paslauga
 SettingsCenter.Text.472590ae974d4c1f44b3780df0b152d9119f076c61bfb3e8cb6affd7889ac0a8=Teikėjas
 SettingsCenter.Text.56ef8f20955f256423d328f65b62106005252551db25d660031887e421cb4684=Adresas
-SettingsCenter.Text.b5e0881ae6932871dca62ef63b381370c57b6bbb2771381cee27c5a00a6945f3=Paslauga, su kuria dirba DI skydelis. Kiekviena parinktis užpildo adresą ir skaito savo rakto kintamąjį: GEMINI_API_KEY arba GOOGLE_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, XAI_API_KEY, OPENROUTER_API_KEY. Vietiniam serveriui rakto nereikia.
+SettingsCenter.Text.dac49fa2ccb75e37ec422e3266b0baa7c04925a01a825cda20bc38cfaa132d41=Paslauga, su kuria dirba DI skydelis. Kiekviena parinktis užpildo adresą ir skaito savo rakto kintamąjį: GEMINI_API_KEY arba GOOGLE_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, XAI_API_KEY, MISTRAL_API_KEY, DEEPSEEK_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY. Vietiniam serveriui rakto nereikia.
 SettingsCenter.Text.db3ce2f6a08f89638f6eff8c91f796292b9b8be33c025701a98a236331b8d7b8=Chat-completions adresas teikėjams „Local server“ ir „Custom address“, pavyzdžiui, http://127.0.0.1:1234/v1 programai LM Studio. Kiti teikėjai naudoja savo adresą.
 SettingsCenter.Text.93d11bbf69e0a3e8128adfe20bfd02027491da3bde62a53dea7aa7b3224ae47f=Naudojamas tik tada, kai pasirinkto teikėjo rakto kintamasis tuščias. Galiojantis šaltinis: %s (jei raktas yra). Raktas saugomas vietiniame faile vtvibe.ini.
 SettingsCenter.Text.ab48e6eed58ca17d0e52480f00f993928b0cfe4fa09bc8bf6b21e4c42a2ecde9=Modelio identifikatorius, siunčiamas su tolesnėmis DI užklausomis. Tuščias reiškia pasirinkto teikėjo numatytąjį modelį.

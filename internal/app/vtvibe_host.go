@@ -633,10 +633,10 @@ func aiLastAnswerPath(s *vtvibe.Session) string {
 
 func aiListModels(pf *panel.PanelsFrame) {
 	cfg, _ := vtvibeConfig()
-	var models []string
+	var models []vtvibe.ModelInfo
 	pf.RunProgressTask(i18n.Msg("AI.Title"), i18n.Msg("AI.Sending"), false,
 		func(ctx context.Context, update func(msg string, percent int)) error {
-			list, err := cfg.Models(ctx)
+			list, err := cfg.ModelsWithInfo(ctx)
 			models = list
 			return err
 		},
@@ -651,11 +651,30 @@ func aiListModels(pf *panel.PanelsFrame) {
 				vtui.ShowMessage(i18n.Msg("AI.Title"), i18n.Msg("AI.NoModels"), []string{i18n.Msg("vtui.Ok")})
 				return
 			}
-			if len(models) > 40 {
-				models = models[:40]
-			}
-			vtui.ShowMessage(i18n.Msg("AI.Title"), strings.Join(models, "\n"), []string{i18n.Msg("vtui.Ok")})
+			vtui.ShowMessage(i18n.Msg("AI.Title"), strings.Join(aiModelLines(models, 40), "\n"), []string{i18n.Msg("vtui.Ok")})
 		})
+}
+
+// aiModelLines lists free models first, marked, so they stay in sight when
+// a service such as OpenRouter offers hundreds and the list is cut (f4#1842).
+func aiModelLines(models []vtvibe.ModelInfo, limit int) []string {
+	lines := make([]string, 0, len(models))
+	for _, free := range []bool{true, false} {
+		for _, m := range models {
+			if m.Free != free {
+				continue
+			}
+			if free {
+				lines = append(lines, fmt.Sprintf(i18n.Msg("AI.ModelFree"), m.ID))
+			} else {
+				lines = append(lines, m.ID)
+			}
+		}
+	}
+	if len(lines) > limit {
+		lines = lines[:limit]
+	}
+	return lines
 }
 
 func aiShowError(err error) {

@@ -2223,7 +2223,7 @@ SettingsCenter.Text.8d78d31f5db14305d03e11a18a3c8844871deb801132e40bc699a37a5894
 SettingsCenter.Text.d677190e0a9990e7d5fa9e4c1bbde44271fb8959c4acb6d43e02ed991128b4bf=পরিষেবা
 SettingsCenter.Text.472590ae974d4c1f44b3780df0b152d9119f076c61bfb3e8cb6affd7889ac0a8=প্রদানকারী
 SettingsCenter.Text.56ef8f20955f256423d328f65b62106005252551db25d660031887e421cb4684=ঠিকানা
-SettingsCenter.Text.b5e0881ae6932871dca62ef63b381370c57b6bbb2771381cee27c5a00a6945f3=যে পরিষেবার সাথে AI প্যানেল কথা বলে। প্রতিটি প্রিসেট ঠিকানা পূরণ করে এবং নিজের কী ভেরিয়েবল পড়ে: GEMINI_API_KEY বা GOOGLE_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, XAI_API_KEY, OPENROUTER_API_KEY। লোকাল সার্ভারের কী লাগে না।
+SettingsCenter.Text.dac49fa2ccb75e37ec422e3266b0baa7c04925a01a825cda20bc38cfaa132d41=যে পরিষেবার সাথে AI প্যানেল কথা বলে। প্রতিটি প্রিসেট ঠিকানা পূরণ করে এবং নিজের কী ভেরিয়েবল পড়ে: GEMINI_API_KEY বা GOOGLE_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, XAI_API_KEY, MISTRAL_API_KEY, DEEPSEEK_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY। লোকাল সার্ভারের কী লাগে না।
 SettingsCenter.Text.db3ce2f6a08f89638f6eff8c91f796292b9b8be33c025701a98a236331b8d7b8="Local server" ও "Custom address" প্রদানকারীর জন্য chat-completions ঠিকানা, যেমন LM Studio-র জন্য http://127.0.0.1:1234/v1। অন্য প্রদানকারীরা নিজেদের ঠিকানা ব্যবহার করে।
 SettingsCenter.Text.93d11bbf69e0a3e8128adfe20bfd02027491da3bde62a53dea7aa7b3224ae47f=শুধু তখনই ব্যবহৃত হয় যখন নির্বাচিত প্রদানকারীর কী ভেরিয়েবল খালি থাকে। বর্তমান উৎস: %s (যদি কী পাওয়া যায়)। কীটি স্থানীয় vtvibe.ini ফাইলে রাখা হয়।
 SettingsCenter.Text.ab48e6eed58ca17d0e52480f00f993928b0cfe4fa09bc8bf6b21e4c42a2ecde9=পরবর্তী AI অনুরোধের সাথে পাঠানো মডেল শনাক্তকারী। খালি মানে নির্বাচিত প্রদানকারীর ডিফল্ট মডেল।
