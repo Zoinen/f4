@@ -172,8 +172,8 @@ func WriteFileTool(dir string) Tool {
 }
 
 // WorkTools are the tools a bot and a worker get in dir: shell, read_file,
-// write_file, edit_file, grep, find_files and fetch_url; env (NAME=value)
+// write_file, edit_file, grep, find_files, view_image and fetch_url; env (NAME=value)
 // is added to the environment of the shell's commands.
 func WorkTools(dir string, env ...string) []Tool {
-	return []Tool{ShellTool(dir, env...), ReadFileTool(dir), WriteFileTool(dir), EditFileTool(dir), GrepTool(dir), FindFilesTool(dir), FetchURLTool()}
+	return []Tool{ShellTool(dir, env...), ReadFileTool(dir), WriteFileTool(dir), EditFileTool(dir), GrepTool(dir), FindFilesTool(dir), ViewImageTool(dir), FetchURLTool()}
 }

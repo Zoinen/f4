@@ -57,6 +57,37 @@ type agentMessage struct {
 	Content    *string        `json:"content"`
 	ToolCalls  []agentToolUse `json:"tool_calls,omitempty"`
 	ToolCallID string         `json:"tool_call_id,omitempty"`
+	// Images go with a user message as pictures (view_image).
+	Images []Image `json:"-"`
+}
+
+// MarshalJSON writes the message; with pictures the content is a list of
+// parts, as for Message.
+func (m agentMessage) MarshalJSON() ([]byte, error) {
+	type plain agentMessage
+	if len(m.Images) == 0 {
+		return json.Marshal(plain(m))
+	}
+	text := ""
+	if m.Content != nil {
+		text = *m.Content
+	}
+	parts, err := json.Marshal(Message{Role: m.Role, Content: text, Images: m.Images})
+	if err != nil {
+		return nil, err
+	}
+	var withParts struct {
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(parts, &withParts); err != nil {
+		return nil, err
+	}
+	return json.Marshal(struct {
+		Role       string          `json:"role"`
+		Content    json.RawMessage `json:"content"`
+		ToolCalls  []agentToolUse  `json:"tool_calls,omitempty"`
+		ToolCallID string          `json:"tool_call_id,omitempty"`
+	}{m.Role, withParts.Content, m.ToolCalls, m.ToolCallID})
 }
 
 type agentToolUse struct {
@@ -138,6 +169,13 @@ func (c Config) RunAgent(ctx context.Context, msgs []Message, tools []Tool, opts
 			return "", usage, err
 		}
 		raw, err := c.post(ctx, c.endpoint("/chat/completions"), body)
+		if n := len(history); err != nil && n > 0 && len(history[n-1].Images) > 0 && !contextExhausted(err) && ctx.Err() == nil {
+			// The model may not take pictures: once more without them.
+			history[n-1].Content, history[n-1].Images = textPtr(imagesRefusedText(history[n-1].Images)), nil
+			if body, err = json.Marshal(agentRequest{Model: c.Model, Messages: history, Tools: specs}); err == nil {
+				raw, err = c.post(ctx, c.endpoint("/chat/completions"), body)
+			}
+		}
 		if err != nil {
 			return "", usage, err
 		}
@@ -162,8 +200,9 @@ func (c Config) RunAgent(ctx context.Context, msgs []Message, tools []Tool, opts
 			return text, usage, nil
 		}
 		history = append(history, agentMessage{Role: "assistant", Content: textPtr(text), ToolCalls: reply.ToolCalls})
+		toolCtx, sink := withImageSink(ctx)
 		for _, call := range reply.ToolCalls {
-			result, runErr := c.runTool(ctx, byName, call)
+			result, runErr := c.runTool(toolCtx, byName, call)
 			if opts.OnStep != nil {
 				opts.OnStep(AgentStep{Tool: call.Function.Name, Args: call.Function.Arguments, Result: result, Err: runErr})
 			}
@@ -172,6 +211,9 @@ func (c Config) RunAgent(ctx context.Context, msgs []Message, tools []Tool, opts
 			}
 			history = append(history, agentMessage{Role: "tool", ToolCallID: call.ID,
 				Content: textPtr(tailBytes(result, opts.MaxToolOutput))})
+		}
+		if imgs := sink.take(); len(imgs) > 0 {
+			history = append(history, agentMessage{Role: "user", Content: textPtr(imagesShownText(imgs)), Images: imgs})
 		}
 		if err := ctx.Err(); err != nil {
 			return "", usage, err

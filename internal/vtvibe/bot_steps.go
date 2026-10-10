@@ -82,7 +82,8 @@ context; you do step %d. The whole instruction is at %s: read the parts your
 step needs (read_file for a file, the shell for a URL) rather than guessing.
 Do your step completely and only it, using the tools: shell runs commands,
 read_file, write_file and edit_file work with
-files, grep and find_files search them, fetch_url
+files, grep and find_files search them, view_image
+shows you a picture file, fetch_url
 loads a web page. The working directory is %s. The
 current time is %s. When the step is done, answer with a short report of what
 you did and what the next steps must know; that report is all they see of it.`,

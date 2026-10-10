@@ -73,7 +73,8 @@ Each round you get the same instruction in a fresh dialog: earlier rounds are
 not in your context, so keep whatever must survive in files or in the systems
 the instruction names. Carry out the instruction now, using the tools: shell
 runs commands, read_file, write_file and edit_file work with
-files, grep and find_files search them, fetch_url
+files, grep and find_files search them, view_image
+shows you a picture file, fetch_url
 loads a web page. The working directory
 is %s. The current time is %s. When the round is done, answer with a short
 report of what you did; that report is all the user sees of the round.`, model, dir, now.UTC().Format(time.RFC3339))
