@@ -2232,6 +2232,8 @@ SettingsCenter.Text.5b4b9a299525629f834251c49f3d856236ee77d4e8bce5d98306e190a171
 SettingsCenter.Text.e24bd4269687d6af5de7ea80901913c246d9a75ad2fc2b7c1c0203d056f314e7=Malli saa nimetä keskustelun uudelleen
 SettingsCenter.Text.c6ce374075feb031a1e90f5a3d48a3684d7ebebe27c9a54065f82f3ade2b90aa=Malli saa antaa keskustelulle nimen, joka kertoo, mistä se kertoo.
 SettingsCenter.Text.25a6e3a20e3e4ba4388d8a1ec095f041fb25aa4656425805d63fc26e1f8af4b8=Työskentele pysähtymättä
+SettingsCenter.Text.e920436f98236913b04579b0fb429f4d27f819d88813f8f8f63896fcbdd74a6f=Kysy ennen jokaista komentoa
+SettingsCenter.Text.bb43def2ab54f94fc9685db30be66d1470a2d8bfca97d2bc7d6aaeb1e2c21443=Työntekijät ja botti kysyvät ennen jokaista komentotulkin komentoa, tiedostomuutosta tai MCP-työkalua, ellei sallittujen luettelo (ai:allow) kata sitä. Pois: yksi vahvistus koko tehtävälle tai botille.
 SettingsCenter.Text.7ab3b32ca52beccfadd6b70522fc3c3d6e14fa22884236a142af2150a8e0d0ff=Uudet keskustelut alkavat tauottomassa tilassa: malli jatkaa itse, kunnes jokainen toimeksianto on tehty, sen sijaan että vastaisi kerran ja odottaisi. Komento ai:mode valitsee yhden keskustelun tilan.
 SettingsCenter.Text.2ddc96639d79f923c6152d60a3b40dfcab9d5a049e472da22831b47f2322a620=GitHub-tunnus
 SettingsCenter.Text.ae8132b1ecb6594e53ff21f0eccd0138c8a2c241b2994a07a8fe91fc8c53f157=Annetaan botin ja työntekijöiden ajamille komennoille muuttujina GH_TOKEN ja GITHUB_TOKEN, ellei keskustelulla ole omaansa (ai:token). Tallennetaan paikalliseen tiedostoon vtvibe.ini.

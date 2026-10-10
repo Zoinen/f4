@@ -34,6 +34,15 @@ func (b *Bot) SetStepped(on bool) {
 	b.whole = !on
 }
 
+// SetToolWrapper makes every round pass its tools through wrap first (the
+// host's approval of each change, f4#1842 stage H9); nil leaves them as
+// they are. It counts from the next round.
+func (b *Bot) SetToolWrapper(wrap func([]Tool) []Tool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.wrap = wrap
+}
+
 func (b *Bot) stepped() bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()

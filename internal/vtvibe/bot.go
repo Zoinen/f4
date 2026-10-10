@@ -110,6 +110,9 @@ type Bot struct {
 	// whole runs a round in one context instead of step by step
 	// (bot_steps.go).
 	whole bool
+	// wrap, when set, passes each round's tools through the host's
+	// approval (SetToolWrapper).
+	wrap func([]Tool) []Tool
 }
 
 // ErrBotRunning is returned by Start while a bot is already running.
@@ -153,6 +156,12 @@ func (b *Bot) loop(ctx context.Context, dir string, config func() Config, extra 
 		tools := WorkTools(dir, cfg.ToolEnv...)
 		if extra != nil {
 			tools = append(tools, extra()...)
+		}
+		b.mu.Lock()
+		wrap := b.wrap
+		b.mu.Unlock()
+		if wrap != nil {
+			tools = wrap(tools)
 		}
 		round := b.round(ctx, n, dir, cfg, tools)
 		b.mu.Lock()
