@@ -685,6 +685,11 @@ The following switches may be used in the command line:
                          without the UI; piped stdin goes with the question,
                          --ai-file PATH attaches a file (pictures too),
                          --ai-model NAME picks another model for this run
+ --ai-bot FILE|URL --ai-yes
+                        Run one round of a bot instruction in the current
+                         folder and print its report; --ai-yes allows its
+                         commands and file changes, which nobody approves
+                         here; --ai-whole runs the round in one context
  --attached             Force run in Attached-mode
  --client [clientPath]
  --cpuprofile [cpuprofile]

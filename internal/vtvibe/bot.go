@@ -73,7 +73,8 @@ Each round you get the same instruction in a fresh dialog: earlier rounds are
 not in your context, so keep whatever must survive in files or in the systems
 the instruction names. Carry out the instruction now, using the tools: shell
 runs commands, read_file, write_file and edit_file work with
-files, grep and find_files search them, fetch_url
+files, grep and find_files search them, view_image
+shows you a picture file, fetch_url
 loads a web page. The working directory
 is %s. The current time is %s. When the round is done, answer with a short
 report of what you did; that report is all the user sees of the round.`, model, dir, now.UTC().Format(time.RFC3339))
@@ -229,4 +230,27 @@ func (b *Bot) Status() BotStatus {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return BotStatus{Running: b.running, Source: b.source, Pause: b.pause, Rounds: b.rounds, Next: b.next}
+}
+
+// RunOnce runs one round of the instruction at source in dir and returns
+// it, without the loop: f4 --ai-bot does this. extra is offered besides
+// WorkTools, and the tool wrapper applies as in Start.
+func (b *Bot) RunOnce(ctx context.Context, source, dir string, cfg Config, extra []Tool) (BotRound, error) {
+	b.mu.Lock()
+	if b.running {
+		b.mu.Unlock()
+		return BotRound{}, ErrBotRunning
+	}
+	b.source = source
+	wrap := b.wrap
+	b.mu.Unlock()
+	tools := append(WorkTools(dir, cfg.ToolEnv...), extra...)
+	if wrap != nil {
+		tools = wrap(tools)
+	}
+	round := b.round(ctx, 1, dir, cfg, tools)
+	b.mu.Lock()
+	b.rounds = 1
+	b.mu.Unlock()
+	return round, nil
 }

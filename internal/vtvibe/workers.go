@@ -209,7 +209,8 @@ func WorkerSystemPrompt(model, dir string, now time.Time, earlier []AgentStep) s
 	fmt.Fprintf(&sb, `You are a worker of the f4 file manager. You are running on the model %q.
 You get one task and do it completely, using the tools: shell runs commands,
 read_file, write_file and edit_file work with
-files, grep and find_files search them, fetch_url
+files, grep and find_files search them, view_image
+shows you a picture file, fetch_url
 loads a web page. The working directory is %s. The
 current time is %s. When the task is done, answer with a short report of what
 you did and what, if anything, is left; the report is all the user sees.`, model, dir, now.UTC().Format(time.RFC3339))

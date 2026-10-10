@@ -57,13 +57,7 @@ func (c Config) anthropicParams(msgs []Message) anthropic.BetaMessageNewParams {
 				Content: []anthropic.BetaContentBlockParamUnion{anthropic.NewBetaTextBlock(m.Content)},
 			})
 		default:
-			blocks := []anthropic.BetaContentBlockParamUnion{anthropic.NewBetaTextBlock(m.Content)}
-			for _, img := range m.Images {
-				blocks = append(blocks, anthropic.NewBetaImageBlock(anthropic.BetaBase64ImageSourceParam{
-					Data:      base64.StdEncoding.EncodeToString(img.Data),
-					MediaType: anthropic.BetaBase64ImageSourceMediaType(img.MIME),
-				}))
-			}
+			blocks := append([]anthropic.BetaContentBlockParamUnion{anthropic.NewBetaTextBlock(m.Content)}, anthropicImageBlocks(m.Images)...)
 			params.Messages = append(params.Messages, anthropic.NewBetaUserMessage(blocks...))
 		}
 	}
@@ -147,8 +141,14 @@ func (c Config) runAgentAnthropic(ctx context.Context, msgs []Message, tools []T
 	}
 
 	var usage Usage
+	var withoutImages []anthropic.BetaContentBlockParamUnion
 	for step := 0; step < maxSteps; step++ {
 		reply, err := client.Beta.Messages.New(ctx, params)
+		if err != nil && withoutImages != nil && !contextExhausted(err) && ctx.Err() == nil {
+			params.Messages[len(params.Messages)-1] = anthropic.NewBetaUserMessage(withoutImages...)
+			reply, err = client.Beta.Messages.New(ctx, params)
+		}
+		withoutImages = nil
 		if err != nil {
 			return "", usage, err
 		}
@@ -163,6 +163,7 @@ func (c Config) runAgentAnthropic(ctx context.Context, msgs []Message, tools []T
 		}
 		var text strings.Builder
 		var results []anthropic.BetaContentBlockParamUnion
+		toolCtx, sink := withImageSink(ctx)
 		for _, block := range reply.Content {
 			switch b := block.AsAny().(type) {
 			case anthropic.BetaTextBlock:
@@ -175,7 +176,7 @@ func (c Config) runAgentAnthropic(ctx context.Context, msgs []Message, tools []T
 				call := agentToolUse{ID: b.ID, Type: "function"}
 				call.Function.Name = b.Name
 				call.Function.Arguments = string(raw)
-				result, runErr := c.runTool(ctx, byName, call)
+				result, runErr := c.runTool(toolCtx, byName, call)
 				if opts.OnStep != nil {
 					opts.OnStep(AgentStep{Tool: b.Name, Args: string(raw), Result: result, Err: runErr})
 				}
@@ -195,11 +196,33 @@ func (c Config) runAgentAnthropic(ctx context.Context, msgs []Message, tools []T
 		}
 		params.Messages = append(params.Messages, reply.ToParam())
 		if len(results) > 0 {
-			params.Messages = append(params.Messages, anthropic.NewBetaUserMessage(results...))
+			imgs := sink.take()
+			blocks := results
+			if len(imgs) > 0 {
+				blocks = append(append([]anthropic.BetaContentBlockParamUnion(nil), results...), anthropic.NewBetaTextBlock(imagesShownText(imgs)))
+				blocks = append(blocks, anthropicImageBlocks(imgs)...)
+			}
+			params.Messages = append(params.Messages, anthropic.NewBetaUserMessage(blocks...))
+			if len(imgs) > 0 {
+				// The model may not take pictures: the request is checked
+				// now, and on failure the round goes on without them.
+				withoutImages = append(append([]anthropic.BetaContentBlockParamUnion(nil), results...), anthropic.NewBetaTextBlock(imagesRefusedText(imgs)))
+			}
 		}
 		if err := ctx.Err(); err != nil {
 			return "", usage, err
 		}
 	}
 	return "", usage, ErrAgentSteps
+}
+
+func anthropicImageBlocks(imgs []Image) []anthropic.BetaContentBlockParamUnion {
+	blocks := make([]anthropic.BetaContentBlockParamUnion, 0, len(imgs))
+	for _, img := range imgs {
+		blocks = append(blocks, anthropic.NewBetaImageBlock(anthropic.BetaBase64ImageSourceParam{
+			Data:      base64.StdEncoding.EncodeToString(img.Data),
+			MediaType: anthropic.BetaBase64ImageSourceMediaType(img.MIME),
+		}))
+	}
+	return blocks
 }

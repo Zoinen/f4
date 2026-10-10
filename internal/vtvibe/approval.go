@@ -45,7 +45,7 @@ type AllowList struct {
 }
 
 // readOnlyTools never ask.
-var readOnlyTools = map[string]bool{"read_file": true, "grep": true, "find_files": true}
+var readOnlyTools = map[string]bool{"read_file": true, "grep": true, "find_files": true, "view_image": true}
 
 // shellMeta marks a command that does more than run one program: an allow
 // rule for "go test" must not let "go test; rm -rf ~" through.
