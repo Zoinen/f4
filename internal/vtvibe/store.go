@@ -37,7 +37,7 @@ func (s *Session) SetStorePath(path string) error {
 	if path == "" {
 		return nil
 	}
-	data, err := os.ReadFile(path) // #nosec G304 -- the host's own file in the f4 config directory
+	data, err := os.ReadFile(path) // #nosec G304 G703 -- the host's own file in the f4 config directory
 	switch {
 	case err == nil:
 		var d savedDialog
@@ -116,7 +116,7 @@ func (s *Session) Archive(dir string) (string, error) {
 		return "", nil
 	}
 	s.saveLocked()
-	data, err := os.ReadFile(s.storePath)
+	data, err := os.ReadFile(s.storePath) // #nosec G304 G703 -- the host's own dialog file
 	if err != nil {
 		return "", err
 	}
@@ -128,7 +128,8 @@ func (s *Session) Archive(dir string) (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	return target, os.WriteFile(target, data, 0o600)
+	return target, os.WriteFile(target, data, 0o600) // #nosec G703 -- the archive directory and a slug cleaned of path characters
+
 }
 
 func archiveSlug(title string) string {
@@ -170,7 +171,7 @@ func writeJSONAtomically(path string, v any) error {
 		_ = os.Remove(name)
 		return err
 	}
-	if err := os.Rename(name, path); err != nil {
+	if err := os.Rename(name, path); err != nil { // #nosec G703 -- path is the host's own dialog file
 		_ = os.Remove(name)
 		return err
 	}
