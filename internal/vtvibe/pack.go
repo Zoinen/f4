@@ -23,6 +23,7 @@ func (s *Session) Pack() string {
 	var tree bytes.Buffer
 	count, total := 0, 0
 	var skipped []string
+	pictures := 0
 
 	for _, full := range files {
 		rel := strings.TrimPrefix(full, ctxDir+"/")
@@ -38,7 +39,12 @@ func (s *Session) Pack() string {
 		total += len(data)
 		fmt.Fprintf(&tree, "  %s\n", rel)
 		fmt.Fprintf(&body, "\n=== BEGIN %s ===\n", rel)
-		if isBinary(data) {
+		if img, sent := sendableImage(rel, data, pictures); img.MIME != "" {
+			if sent {
+				pictures++
+			}
+			body.WriteString(imageNote(img, sent) + "\n")
+		} else if isBinary(data) {
 			sum := sha256.Sum256(data)
 			fmt.Fprintf(&body, "<binary, %d bytes, sha256:%s>\n", len(data), hex.EncodeToString(sum[:]))
 		} else {

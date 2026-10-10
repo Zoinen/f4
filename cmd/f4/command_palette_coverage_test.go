@@ -65,7 +65,7 @@ var commandPaletteAuditClasses = map[string]bool{
 // one package to another; it never removes one. A smaller number here means an
 // audit entry was dropped together with its subject, which the set comparison
 // below cannot see because both sides shrink at once.
-const commandPaletteF4Surfaces = 67
+const commandPaletteF4Surfaces = 69
 
 // commandPaletteTargetPackage named the package each audited cmd/f4 file would
 // end up in once the split reached it, so an audit key survived the move that
@@ -273,6 +273,12 @@ var commandPaletteProcessKeyAudit = map[string]commandPaletteSurfaceAudit{
 }
 
 var commandPaletteNewVMenuAudit = map[string]commandPaletteSurfaceAudit{
+	"app.aiModelsMenu#1": {
+		class: paletteAuditModalLocal, rationale: "ai:models opens this modal list; its rows are the provider's models, data rather than commands",
+	},
+	"app.aiDialogsMenu#1": {
+		class: paletteAuditModalLocal, rationale: "ai:dialogs opens this modal list; its rows are archived AI dialogs, data rather than commands",
+	},
 	"panel.openPanelModesMenu#1": {
 		class: paletteAuditDynamicAction, rationale: "the registered Settings.PanelModes action opens the list of panel modes; each mode is also its own Panel.View action",
 	},
