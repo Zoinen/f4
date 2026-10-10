@@ -223,10 +223,15 @@ func aiGitHubToken(session *vtvibe.Session) (token, source string) {
 	if t := session.GitHubToken(); t != "" {
 		return t, i18n.Msg("AI.TokenFromDialog")
 	}
-	if t := strings.TrimSpace(ini.Load(vtvibeIniPath()).GetString("general", "github_token", "")); t != "" {
+	if t := aiSettingsGitHubToken(); t != "" {
 		return t, i18n.Msg("AI.TokenFromSettings")
 	}
 	return "", ""
+}
+
+// aiSettingsGitHubToken is the token of Settings → AI alone.
+func aiSettingsGitHubToken() string {
+	return strings.TrimSpace(ini.Load(vtvibeIniPath()).GetString("general", "github_token", ""))
 }
 
 // aiTokenCommand is ai:token: it tells where the dialog's GitHub token comes

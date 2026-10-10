@@ -85,3 +85,52 @@ func TestAICLIUsageAndNoKey(t *testing.T) {
 		t.Fatalf("code %d, stderr %q", code, stderr.String())
 	}
 }
+
+func TestAIBotCLIRunsOneRound(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	instruction := filepath.Join(dir, "bot.md")
+	if err := os.WriteFile(instruction, []byte("Write done.txt with the word ok."), 0600); err != nil {
+		t.Fatal(err)
+	}
+	call := `{"choices":[{"message":{"content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"done.txt\",\"content\":\"ok\"}"}}]}}]}`
+	final := `{"choices":[{"message":{"content":"wrote done.txt"}}]}`
+	replies := []string{call, final}
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if len(replies) == 0 {
+			http.Error(w, `{"error":{"message":"too many requests in test"}}`, http.StatusBadRequest)
+			return
+		}
+		_, _ = io.WriteString(w, replies[0])
+		replies = replies[1:]
+	}))
+	t.Cleanup(srv.Close)
+	config := func() (vtvibe.Config, string, vtvibe.Provider) {
+		return vtvibe.Config{BaseURL: srv.URL, Model: "m", APIKey: "k"}, "TEST_KEY", vtvibe.Provider{}
+	}
+	var stdout, stderr bytes.Buffer
+	code, handled := runAICLI([]string{"--ai-bot", instruction, "--ai-yes", "--ai-whole"}, nil, &stdout, &stderr, config)
+	if !handled || code != 0 || stdout.String() != "wrote done.txt\n" || !strings.Contains(stderr.String(), "f4 --ai-bot: write_file") {
+		t.Fatalf("code %d, stdout %q, stderr %q", code, stdout.String(), stderr.String())
+	}
+	if data, err := os.ReadFile(filepath.Join(dir, "done.txt")); err != nil || string(data) != "ok" {
+		t.Fatalf("done.txt: %q, %v", data, err)
+	}
+}
+
+func TestAIBotCLIWantsConsent(t *testing.T) {
+	var stderr bytes.Buffer
+	config := func() (vtvibe.Config, string, vtvibe.Provider) { return vtvibe.Config{}, "", vtvibe.Provider{} }
+	if code, handled := runAICLI([]string{"--ai-bot", "bot.md"}, nil, io.Discard, &stderr, config); !handled || code != 2 || !strings.Contains(stderr.String(), "--ai-yes") {
+		t.Fatalf("code %d, stderr %q", code, stderr.String())
+	}
+	for _, args := range [][]string{{"--ai", "q", "--ai-bot", "b.md"}, {"--ai", "q", "--ai-yes"}, {"--ai-bot", "b.md", "--ai-file", "x"}, {"--ai-yes"}} {
+		if code, _ := runAICLI(args, nil, io.Discard, io.Discard, config); code != 2 {
+			t.Errorf("%q: code %d", args, code)
+		}
+	}
+}

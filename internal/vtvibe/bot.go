@@ -231,3 +231,26 @@ func (b *Bot) Status() BotStatus {
 	defer b.mu.Unlock()
 	return BotStatus{Running: b.running, Source: b.source, Pause: b.pause, Rounds: b.rounds, Next: b.next}
 }
+
+// RunOnce runs one round of the instruction at source in dir and returns
+// it, without the loop: f4 --ai-bot does this. extra is offered besides
+// WorkTools, and the tool wrapper applies as in Start.
+func (b *Bot) RunOnce(ctx context.Context, source, dir string, cfg Config, extra []Tool) (BotRound, error) {
+	b.mu.Lock()
+	if b.running {
+		b.mu.Unlock()
+		return BotRound{}, ErrBotRunning
+	}
+	b.source = source
+	wrap := b.wrap
+	b.mu.Unlock()
+	tools := append(WorkTools(dir, cfg.ToolEnv...), extra...)
+	if wrap != nil {
+		tools = wrap(tools)
+	}
+	round := b.round(ctx, 1, dir, cfg, tools)
+	b.mu.Lock()
+	b.rounds = 1
+	b.mu.Unlock()
+	return round, nil
+}
