@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -223,4 +224,47 @@ func aiDialogsMenu(pf *panel.PanelsFrame) {
 	x, y := (sw-w)/2, (sh-h)/2
 	menu.SetPosition(x, y, x+w-1, y+h-1)
 	vtui.FrameManager.Push(menu)
+}
+
+// aiOrdersCommand shows the register of the user's orders, or closes and
+// reopens one: "ai:orders", "ai:done N", "ai:undone N" (f4#1842, stage H4).
+func aiOrdersCommand(pf *panel.PanelsFrame, verb, arg string) {
+	session := aiSession()
+	if verb != "orders" {
+		id, err := strconv.Atoi(strings.TrimPrefix(strings.TrimSpace(arg), "#"))
+		if err == nil {
+			err = session.SetOrderDone(id, verb == "done")
+		}
+		if err != nil {
+			vtui.ShowMessage(i18n.Msg("AI.Title"), i18n.Msg("AI.OrderUnknown"), []string{i18n.Msg("vtui.Ok")})
+			return
+		}
+		aiBotRefresh(pf)
+	}
+	vtui.ShowMessage(i18n.Msg("AI.OrdersTitle"), aiOrdersText(session.Orders()), []string{i18n.Msg("vtui.Ok")})
+}
+
+// aiOrdersText lists the open orders first, then the done ones.
+func aiOrdersText(orders []vtvibe.Order) string {
+	if len(orders) == 0 {
+		return i18n.Msg("AI.NoOrders")
+	}
+	var lines []string
+	for _, done := range []bool{false, true} {
+		for _, o := range orders {
+			if o.Done != done {
+				continue
+			}
+			mark := i18n.Msg("AI.OrderOpen")
+			if o.Done {
+				mark = i18n.Msg("AI.OrderDone")
+			}
+			text := []rune(strings.ReplaceAll(strings.TrimSpace(o.Text), "\n", " "))
+			if len(text) > 70 {
+				text = append(text[:70], '…')
+			}
+			lines = append(lines, fmt.Sprintf("#%d %s %s", o.ID, mark, string(text)))
+		}
+	}
+	return dialog.EscapeAmpersand(strings.Join(lines, "\n"))
 }

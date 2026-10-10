@@ -573,6 +573,12 @@ func aiCommand(app vfs.App, arg string) {
 		aiAttachAPSpec(pf)
 	case lower == "key":
 		aiSetupDialog(pf)
+	case lower == "orders":
+		aiOrdersCommand(pf, "orders", "")
+	case strings.HasPrefix(lower, "done "):
+		aiOrdersCommand(pf, "done", arg[len("done "):])
+	case strings.HasPrefix(lower, "undone "):
+		aiOrdersCommand(pf, "undone", arg[len("undone "):])
 	case lower == "dialogs":
 		aiDialogsMenu(pf)
 	case lower == "bot" || strings.HasPrefix(lower, "bot "):

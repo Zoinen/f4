@@ -70,6 +70,8 @@ type Session struct {
 	// last failure to save it (store.go).
 	storePath string
 	storeErr  error
+	// orders is the register of the user's orders (orders.go).
+	orders []Order
 }
 
 // PatchModePrompt is appended to the system prompt once the human attached the
@@ -132,6 +134,7 @@ func (s *Session) reset() {
 	s.usage = Usage{}
 	s.patch = nil
 	s.title = ""
+	s.orders = nil
 	_ = s.tree.mkdirAll(ctxDir)
 	_ = s.tree.mkdirAll(chatDir)
 	_ = s.tree.mkdirAll(outDir)
@@ -239,6 +242,10 @@ func (s *Session) Ask(ctx context.Context, cfg Config, question string) error {
 	s.busy = true
 	history := append([]Turn(nil), s.turns...)
 	apMode := s.apMode
+	// The question being asked is an order too, and the model should see it
+	// among the open ones; it enters the register only once it was sent, so a
+	// failed request asked again is not entered twice.
+	orders := s.ordersPromptLocked(question)
 	s.mu.Unlock()
 
 	defer func() {
@@ -258,6 +265,9 @@ func (s *Session) Ask(ctx context.Context, cfg Config, question string) error {
 		system += "\n\n" + PatchModePrompt
 	}
 	system += "\n\n" + ModelNotice(cfg.Model)
+	if orders != "" {
+		system += "\n\n" + orders
+	}
 
 	msgs := make([]Message, 0, len(history)+2)
 	msgs = append(msgs, Message{Role: "system", Content: system})
@@ -288,6 +298,7 @@ func (s *Session) Ask(ctx context.Context, cfg Config, question string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pending = ""
+	s.addOrderLocked(question)
 	s.appendTurn(Turn{Role: "user", Text: question, Time: time.Now()})
 	s.appendTurn(Turn{Role: "assistant", Text: reply, Time: time.Now()})
 	s.usage = usage
