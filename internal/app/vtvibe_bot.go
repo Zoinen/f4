@@ -52,11 +52,6 @@ func aiBotCommand(pf *panel.PanelsFrame, arg string) {
 		aiShowError(vtvibe.ErrNoKey)
 		return
 	}
-	if cfg.Kind == vtvibe.KindAnthropic {
-		// The agent loop speaks only the chat-completions tool protocol so far.
-		aiShowError(vtvibe.ErrAgentProtocol)
-		return
-	}
 	dir := aiBotDir(pf)
 	question := fmt.Sprintf(i18n.Msg("AI.BotConfirm"), source, pause, dir, cfg.Model)
 	dlg := vtui.ShowMessage(i18n.Msg("AI.Title"), question, []string{i18n.Msg("AI.BotStart"), i18n.Msg("vtui.Cancel")})
