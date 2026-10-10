@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/unxed/f4/internal/dialog"
 	"github.com/unxed/f4/internal/i18n"
 	"github.com/unxed/f4/internal/ini"
 	"github.com/unxed/f4/internal/panel"
@@ -170,4 +171,56 @@ func vtvibeDialogControls(manager interface{ PostTask(func()) }, pf *panel.Panel
 // are on unless the user switched them off.
 func vtvibeAllowed(key string) bool {
 	return ini.Load(vtvibeIniPath()).GetString("general", key, "true") != "false"
+}
+
+// aiDialogsMenu lists the dialogs ai:new put aside, newest first; Enter makes
+// the chosen one current, the current one going to the archive in its place
+// (f4#1842, stage H3).
+func aiDialogsMenu(pf *panel.PanelsFrame) {
+	dialogs, err := vtvibe.ListArchive(vtvibeArchiveDir())
+	if err != nil {
+		aiShowError(err)
+		return
+	}
+	if len(dialogs) == 0 {
+		vtui.ShowMessage(i18n.Msg("AI.Title"), i18n.Msg("AI.NoDialogs"), []string{i18n.Msg("vtui.Ok")})
+		return
+	}
+	menu := vtui.NewVMenu(i18n.Msg("AI.DialogsTitle"))
+	width := vtui.StringWidth(i18n.Msg("AI.DialogsTitle")) + 6
+	for _, d := range dialogs {
+		title := d.Title
+		if title == "" {
+			title = i18n.Msg("AI.DialogUntitled")
+		}
+		text := fmt.Sprintf("%s  %s (%d)", d.Saved.Format("2006-01-02 15:04"), title, d.Messages)
+		width = max(width, vtui.StringWidth(text)+6)
+		menu.AddItem(vtui.MenuItem{Text: dialog.EscapeAmpersand(text)})
+	}
+	menu.OnAction = func(idx int) {
+		menu.Close()
+		if idx < 0 || idx >= len(dialogs) {
+			return
+		}
+		if err := aiSession().OpenArchived(dialogs[idx].Path, vtvibeArchiveDir()); err != nil {
+			aiShowError(err)
+			return
+		}
+		vtvibeConfig()
+		aiBotRefresh(pf)
+	}
+	sw, sh := 80, 25
+	if vtui.FrameManager != nil {
+		if w := vtui.FrameManager.GetScreenSize(); w > 0 {
+			sw = w
+		}
+		if h := vtui.FrameManager.GetScreenHeight(); h > 0 {
+			sh = h
+		}
+	}
+	w := min(width, max(sw-4, 20))
+	h := min(len(dialogs)+2, max(sh-4, 3))
+	x, y := (sw-w)/2, (sh-h)/2
+	menu.SetPosition(x, y, x+w-1, y+h-1)
+	vtui.FrameManager.Push(menu)
 }

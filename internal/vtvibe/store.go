@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -124,12 +125,27 @@ func (s *Session) Archive(dir string) (string, error) {
 	if slug := archiveSlug(s.title); slug != "" {
 		name += "_" + slug
 	}
-	target := filepath.Join(dir, name+".json")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	return target, os.WriteFile(target, data, 0o600) // #nosec G703 -- the archive directory and a slug cleaned of path characters
-
+	// Two dialogs put aside within one second under one name must not
+	// overwrite each other.
+	target := filepath.Join(dir, name+".json")
+	for n := 2; ; n++ {
+		f, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G304 G703 -- the archive directory and a slug cleaned of path characters
+		if os.IsExist(err) {
+			target = filepath.Join(dir, fmt.Sprintf("%s-%d.json", name, n))
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		_, werr := f.Write(data)
+		if cerr := f.Close(); werr == nil {
+			werr = cerr
+		}
+		return target, werr
+	}
 }
 
 func archiveSlug(title string) string {
@@ -176,4 +192,81 @@ func writeJSONAtomically(path string, v any) error {
 		return err
 	}
 	return nil
+}
+
+// ArchivedDialog describes one dialog put aside by ai:new.
+type ArchivedDialog struct {
+	Path     string
+	Title    string
+	Messages int
+	Saved    time.Time
+}
+
+// ListArchive returns the dialogs in dir, newest first. Files that are not
+// readable dialogs are skipped.
+func ListArchive(dir string) ([]ArchivedDialog, error) {
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out []ArchivedDialog
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		p := filepath.Join(dir, e.Name())
+		data, err := os.ReadFile(p) // #nosec G304 G703 -- the host's own archive directory
+		if err != nil {
+			continue
+		}
+		var d savedDialog
+		if json.Unmarshal(data, &d) != nil {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		messages := 0
+		for _, t := range d.Turns {
+			if t.Role == "user" || t.Role == "assistant" {
+				messages++
+			}
+		}
+		out = append(out, ArchivedDialog{Path: p, Title: d.Title, Messages: messages, Saved: info.ModTime()})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Saved.After(out[j].Saved) })
+	return out, nil
+}
+
+// OpenArchived makes the archived dialog at path the current one: the
+// current dialog goes to archiveDir first (when it has anything in it), the
+// chosen one is restored and leaves the archive, so it is not kept twice.
+func (s *Session) OpenArchived(path, archiveDir string) error {
+	data, err := os.ReadFile(path) // #nosec G304 G703 -- a file ListArchive returned
+	if err != nil {
+		return err
+	}
+	var d savedDialog
+	if err := json.Unmarshal(data, &d); err != nil {
+		return fmt.Errorf("vtvibe: %s is damaged: %w", path, err)
+	}
+	if _, err := s.Archive(archiveDir); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	storePath := s.storePath
+	s.storePath = ""
+	s.restoreLocked(d)
+	s.storePath = storePath
+	s.saveLocked()
+	err = s.storeErr
+	s.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	return os.Remove(path) // #nosec G703 -- a file ListArchive returned
 }

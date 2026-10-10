@@ -97,3 +97,48 @@ func TestDamagedDialogFileStartsAFreshDialog(t *testing.T) {
 		t.Fatalf("the fresh dialog is not saved over the damaged file: %s", data)
 	}
 }
+
+func TestArchivedDialogsAreListedAndOpened(t *testing.T) {
+	dir := t.TempDir()
+	archive := filepath.Join(dir, "dialogs")
+	s := NewSession()
+	_ = s.SetStorePath(filepath.Join(dir, "dialog.json"))
+	s.Note("assistant", "first dialog")
+	s.SetTitle("First")
+	if _, err := s.Archive(archive); err != nil {
+		t.Fatal(err)
+	}
+	s.Reset(true)
+	s.Note("assistant", "second dialog")
+
+	list, err := ListArchive(archive)
+	if err != nil || len(list) != 1 || list[0].Title != "First" || list[0].Messages != 1 {
+		t.Fatalf("archive list = %#v, %v", list, err)
+	}
+	if err := s.OpenArchived(list[0].Path, archive); err != nil {
+		t.Fatal(err)
+	}
+	turns := s.Turns()
+	if s.Title() != "First" || turns[len(turns)-1].Text != "first dialog" {
+		t.Fatalf("opened dialog: title %q, last %q", s.Title(), turns[len(turns)-1].Text)
+	}
+	after, _ := ListArchive(archive)
+	if len(after) != 1 || after[0].Title != "" {
+		t.Fatalf("the second dialog should be archived and the first should leave the archive: %#v", after)
+	}
+	if missing, err := ListArchive(filepath.Join(dir, "none")); err != nil || missing != nil {
+		t.Fatalf("missing archive dir = %v, %v", missing, err)
+	}
+}
+
+func TestArchiveNeverOverwritesAnEarlierDialog(t *testing.T) {
+	dir := t.TempDir()
+	s := NewSession()
+	_ = s.SetStorePath(filepath.Join(dir, "dialog.json"))
+	s.Note("assistant", "one")
+	a, _ := s.Archive(filepath.Join(dir, "dialogs"))
+	b, err := s.Archive(filepath.Join(dir, "dialogs"))
+	if err != nil || a == b {
+		t.Fatalf("two archives in one second share %q (%v)", a, err)
+	}
+}
