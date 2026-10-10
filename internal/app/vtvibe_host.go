@@ -17,6 +17,7 @@ import (
 
 	"github.com/unxed/f4/internal/action"
 	"github.com/unxed/f4/internal/config"
+	"github.com/unxed/f4/internal/dialog"
 	"github.com/unxed/f4/internal/editor"
 	"github.com/unxed/f4/internal/i18n"
 	"github.com/unxed/f4/internal/ini"
@@ -583,6 +584,8 @@ func aiCommand(app vfs.App, arg string) {
 		aiOrdersCommand(pf, "undone", arg[len("undone "):])
 	case lower == "dialogs":
 		aiDialogsMenu(pf)
+	case strings.HasPrefix(arg, "/") && !strings.HasPrefix(arg, "//"):
+		aiUserCommand(pf, arg[1:])
 	case lower == "cost":
 		aiCostCommand(pf)
 	case lower == "gates" || strings.HasPrefix(lower, "gates "):
@@ -738,8 +741,54 @@ func aiListModels(pf *panel.PanelsFrame) {
 				vtui.ShowMessage(i18n.Msg("AI.Title"), i18n.Msg("AI.NoModels"), []string{i18n.Msg("vtui.Ok")})
 				return
 			}
-			vtui.ShowMessage(i18n.Msg("AI.Title"), strings.Join(aiModelLines(models, 40), "\n"), []string{i18n.Msg("vtui.Ok")})
+			aiModelsMenu(pf, models, cfg.Model)
 		})
+}
+
+// aiModelsMenu lists the models, free ones first, the current one marked;
+// Enter switches the dialog to the chosen one (f4#1842, stage H9: the other
+// harnesses pick the model from a menu in the chat).
+func aiModelsMenu(pf *panel.PanelsFrame, models []vtvibe.ModelInfo, current string) {
+	ordered := aiModelsInOrder(models)
+	lines := aiModelLines(ordered, len(ordered))
+	menu := vtui.NewVMenu(i18n.Msg("AI.ModelsTitle"))
+	width := vtui.StringWidth(i18n.Msg("AI.ModelsTitle")) + 6
+	for i, line := range lines {
+		mark := "  "
+		if ordered[i].ID == current {
+			mark = "* "
+		}
+		width = max(width, vtui.StringWidth(line)+8)
+		menu.AddItem(vtui.MenuItem{Text: dialog.EscapeAmpersand(mark + line)})
+	}
+	menu.OnAction = func(idx int) {
+		menu.Close()
+		if idx < 0 || idx >= len(ordered) || ordered[idx].ID == current {
+			return
+		}
+		if err := vtvibeSaveSetting("model", ordered[idx].ID); err != nil {
+			aiShowError(err)
+			return
+		}
+		vtvibeConfig()
+		aiSession().Note("assistant", fmt.Sprintf(i18n.Msg("AI.ModelSwitched"), ordered[idx].ID))
+		aiBotRefresh(pf)
+	}
+	aiShowMenu(menu, width, len(ordered))
+}
+
+// aiModelsInOrder puts the free models first, keeping the service's order
+// within each group, as aiModelLines prints them.
+func aiModelsInOrder(models []vtvibe.ModelInfo) []vtvibe.ModelInfo {
+	out := make([]vtvibe.ModelInfo, 0, len(models))
+	for _, free := range []bool{true, false} {
+		for _, m := range models {
+			if m.Free == free {
+				out = append(out, m)
+			}
+		}
+	}
+	return out
 }
 
 // aiModelLines lists free models first, marked, so they stay in sight when

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -370,6 +371,47 @@ func aiCostText(costs []vtvibe.ModelCost) string {
 	return dialog.EscapeAmpersand(strings.Join(lines, "\n"))
 }
 
+// vtvibeCommandsDir holds the user's own commands, one NAME.md each
+// (f4#1842, stage H9).
+func vtvibeCommandsDir() string {
+	return filepath.Join(config.GetF4ConfigDir(), "ai", "commands")
+}
+
+// aiUserCommand is "ai:/NAME arguments": it sends the text of NAME.md with
+// the arguments put in; "ai:/" alone lists the commands and where they live.
+func aiUserCommand(pf *panel.PanelsFrame, arg string) {
+	name, args, _ := strings.Cut(strings.TrimSpace(arg), " ")
+	dir := vtvibeCommandsDir()
+	if name == "" {
+		names, err := vtvibe.ListCommands(dir)
+		if err != nil {
+			aiShowError(err)
+			return
+		}
+		text := fmt.Sprintf(i18n.Msg("AI.CommandsNone"), dir)
+		if len(names) > 0 {
+			text = fmt.Sprintf(i18n.Msg("AI.CommandsList"), "/"+strings.Join(names, "\n/"), dir)
+		}
+		vtui.ShowMessage(i18n.Msg("AI.Title"), dialog.EscapeAmpersand(text), []string{i18n.Msg("vtui.Ok")})
+		return
+	}
+	template, err := vtvibe.LoadCommand(dir, name)
+	if errors.Is(err, vtvibe.ErrNoCommand) {
+		vtui.ShowMessage(i18n.Msg("AI.Title"), dialog.EscapeAmpersand(fmt.Sprintf(i18n.Msg("AI.CommandUnknown"), name, dir)), []string{i18n.Msg("vtui.Ok")})
+		return
+	}
+	if err != nil {
+		aiShowError(err)
+		return
+	}
+	question := vtvibe.ExpandCommand(template, args)
+	if question == "" {
+		vtui.ShowMessage(i18n.Msg("AI.Title"), i18n.Msg("AI.EmptyDraft"), []string{i18n.Msg("vtui.Ok")})
+		return
+	}
+	aiSend(pf, question)
+}
+
 // vtvibeNonstopDefault is the mode of the dialogs that did not choose their
 // own (Settings → AI, f4#1842 stage H6): question-and-answer unless set.
 func vtvibeNonstopDefault() bool {
@@ -447,6 +489,11 @@ func aiDialogsMenu(pf *panel.PanelsFrame) {
 		vtvibeConfig()
 		aiBotRefresh(pf)
 	}
+	aiShowMenu(menu, width, len(dialogs))
+}
+
+// aiShowMenu centres a menu of rows items, width wide at most, and shows it.
+func aiShowMenu(menu *vtui.VMenu, width, rows int) {
 	sw, sh := 80, 25
 	if vtui.FrameManager != nil {
 		if w := vtui.FrameManager.GetScreenSize(); w > 0 {
@@ -457,7 +504,7 @@ func aiDialogsMenu(pf *panel.PanelsFrame) {
 		}
 	}
 	w := min(width, max(sw-4, 20))
-	h := min(len(dialogs)+2, max(sh-4, 3))
+	h := min(rows+2, max(sh-4, 3))
 	x, y := (sw-w)/2, (sh-h)/2
 	menu.SetPosition(x, y, x+w-1, y+h-1)
 	vtui.FrameManager.Push(menu)
