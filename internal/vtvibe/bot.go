@@ -72,7 +72,8 @@ func BotSystemPrompt(model, dir string, now time.Time) string {
 Each round you get the same instruction in a fresh dialog: earlier rounds are
 not in your context, so keep whatever must survive in files or in the systems
 the instruction names. Carry out the instruction now, using the tools: shell
-runs commands, read_file and write_file work with files. The working directory
+runs commands, read_file, write_file and edit_file work with
+files, grep and find_files search them. The working directory
 is %s. The current time is %s. When the round is done, answer with a short
 report of what you did; that report is all the user sees of the round.`, model, dir, now.UTC().Format(time.RFC3339))
 }
@@ -185,7 +186,7 @@ func (b *Bot) round(ctx context.Context, n int, dir string, cfg Config, tools []
 		return round
 	}
 	msgs := []Message{
-		{Role: "system", Content: BotSystemPrompt(cfg.Model, dir, time.Now())},
+		{Role: "system", Content: BotSystemPrompt(cfg.Model, dir, time.Now()) + ProjectInstructions(dir)},
 		{Role: "user", Content: instruction},
 	}
 	var usage Usage

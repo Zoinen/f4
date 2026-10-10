@@ -167,7 +167,7 @@ func runWorker(ctx context.Context, id int, task, dir string, config func() Conf
 	for attempt := 0; ; attempt++ {
 		cfg := config()
 		msgs := []Message{
-			{Role: "system", Content: WorkerSystemPrompt(cfg.Model, dir, time.Now(), earlier) + extra},
+			{Role: "system", Content: WorkerSystemPrompt(cfg.Model, dir, time.Now(), earlier) + ProjectInstructions(dir) + extra},
 			{Role: "user", Content: task},
 		}
 		var steps []AgentStep
@@ -208,7 +208,8 @@ func WorkerSystemPrompt(model, dir string, now time.Time, earlier []AgentStep) s
 	var sb strings.Builder
 	fmt.Fprintf(&sb, `You are a worker of the f4 file manager. You are running on the model %q.
 You get one task and do it completely, using the tools: shell runs commands,
-read_file and write_file work with files. The working directory is %s. The
+read_file, write_file and edit_file work with
+files, grep and find_files search them. The working directory is %s. The
 current time is %s. When the task is done, answer with a short report of what
 you did and what, if anything, is left; the report is all the user sees.`, model, dir, now.UTC().Format(time.RFC3339))
 	if len(earlier) > 0 {

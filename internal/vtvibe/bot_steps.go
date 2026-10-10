@@ -72,7 +72,8 @@ A round of the bot's instruction is split into %d steps, each done in a fresh
 context; you do step %d. The whole instruction is at %s: read the parts your
 step needs (read_file for a file, the shell for a URL) rather than guessing.
 Do your step completely and only it, using the tools: shell runs commands,
-read_file and write_file work with files. The working directory is %s. The
+read_file, write_file and edit_file work with
+files, grep and find_files search them. The working directory is %s. The
 current time is %s. When the step is done, answer with a short report of what
 you did and what the next steps must know; that report is all they see of it.`,
 		model, n, i, source, dir, now.UTC().Format(time.RFC3339))
@@ -105,7 +106,7 @@ func (b *Bot) steppedRound(ctx context.Context, round *BotRound, instruction, di
 	var reports, parts []string
 	for i, step := range steps {
 		msgs := []Message{
-			{Role: "system", Content: BotStepSystemPrompt(cfg.Model, dir, b.Status().Source, time.Now(), i+1, len(steps), reports)},
+			{Role: "system", Content: BotStepSystemPrompt(cfg.Model, dir, b.Status().Source, time.Now(), i+1, len(steps), reports) + ProjectInstructions(dir)},
 			{Role: "user", Content: step},
 		}
 		report, usage, err := cfg.RunAgent(ctx, msgs, tools, AgentOptions{
