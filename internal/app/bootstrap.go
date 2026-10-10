@@ -414,6 +414,10 @@ func Main() {
 	if code, handled := runMountCLI(); handled {
 		os.Exit(code)
 	}
+	// f4 --ai "question": the answer on stdout, no UI (f4#1842).
+	if code, handled := runAICLI(os.Args[1:], pipedStdin(), os.Stdout, os.Stderr, vtvibeReadConfig); handled {
+		os.Exit(code)
+	}
 
 	// Setup crash/stderr location before any logging starts; in portable mode
 	// this keeps crash reports inside <configDir>\crashes (Profile\crashes).
@@ -677,6 +681,10 @@ F3 would, and its panel shows the file's folder with the cursor on it.
 The following switches may be used in the command line:
  -h, -?, --help         This help and exit
  -v, --version          Displays the current version and exit
+ --ai "question"        Ask the model of Settings → AI and print the answer,
+                         without the UI; piped stdin goes with the question,
+                         --ai-file PATH attaches a file (pictures too),
+                         --ai-model NAME picks another model for this run
  --attached             Force run in Attached-mode
  --client [clientPath]
  --cpuprofile [cpuprofile]

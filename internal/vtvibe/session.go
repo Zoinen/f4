@@ -302,9 +302,10 @@ func (s *Session) ask(ctx context.Context, cfg Config, question string, order bo
 		system += "\n\n" + extra
 	}
 
+	images := s.Images()
 	send := func(compact bool) (string, Usage, error) {
 		msgs := append([]Message{{Role: "system", Content: system}}, historyMessages(history, compact)...)
-		msgs = append(msgs, Message{Role: "user", Content: question})
+		msgs = append(msgs, Message{Role: "user", Content: question, Images: images})
 		reply, usage, err := cfg.ChatStream(ctx, msgs, func(piece string) {
 			s.mu.Lock()
 			s.pending += piece
@@ -322,6 +323,14 @@ func (s *Session) ask(ctx context.Context, cfg Config, question string, order bo
 		return reply, usage, err
 	}
 	reply, usage, err := send(false)
+	if err != nil && len(images) > 0 && !contextExhausted(err) && ctx.Err() == nil {
+		// The model may not take pictures: ask once more without them and
+		// let it tell the user so (image.go).
+		refused := images
+		images = nil
+		system += "\n\n" + imagesRefusedPrompt(refused)
+		reply, usage, err = send(false)
+	}
 	compacted := false
 	if err != nil && contextExhausted(err) && ctx.Err() == nil {
 		// Too long for the model: send it again with the model's own
@@ -535,4 +544,10 @@ How to use this panel
   ai:new                    start a fresh dialog
 `)
 	_ = s.tree.writeFile(sessionFile, []byte(sb.String()))
+}
+
+// AskOnce sends one message the way f4 --ai does: the answer comes back as
+// the model gave it, and the message does not enter the register of orders.
+func (s *Session) AskOnce(ctx context.Context, cfg Config, question string) (string, error) {
+	return s.ask(ctx, cfg, question, false, "")
 }

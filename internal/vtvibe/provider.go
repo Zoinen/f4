@@ -33,6 +33,8 @@ type Config struct {
 type Message struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
+	// Images go with a user message as pictures (image.go).
+	Images []Image `json:"-"`
 }
 
 // Usage carries the token counts the endpoint reports back, when it does.

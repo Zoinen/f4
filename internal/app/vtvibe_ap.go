@@ -308,7 +308,11 @@ func aiAttachFailureReport(reportPath string) {
 // aiWriteContextFile drops a file into ai://ctx through the normal VFS, so it
 // obeys the same size limits as a file copied there with F5.
 func aiWriteContextFile(name string, data []byte) error {
-	v := vtvibe.NewVFS(aiSession())
+	return vtvibeWriteContextFile(aiSession(), name, data)
+}
+
+func vtvibeWriteContextFile(session *vtvibe.Session, name string, data []byte) error {
+	v := vtvibe.NewVFS(session)
 	w, err := v.Create(context.Background(), "/ctx/"+name)
 	if err != nil {
 		return err
