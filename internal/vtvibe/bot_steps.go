@@ -106,7 +106,7 @@ func (b *Bot) steppedRound(ctx context.Context, round *BotRound, instruction, di
 	var reports, parts []string
 	for i, step := range steps {
 		msgs := []Message{
-			{Role: "system", Content: BotStepSystemPrompt(cfg.Model, dir, b.Status().Source, time.Now(), i+1, len(steps), reports)},
+			{Role: "system", Content: BotStepSystemPrompt(cfg.Model, dir, b.Status().Source, time.Now(), i+1, len(steps), reports) + ProjectInstructions(dir)},
 			{Role: "user", Content: step},
 		}
 		report, usage, err := cfg.RunAgent(ctx, msgs, tools, AgentOptions{

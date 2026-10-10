@@ -167,7 +167,7 @@ func runWorker(ctx context.Context, id int, task, dir string, config func() Conf
 	for attempt := 0; ; attempt++ {
 		cfg := config()
 		msgs := []Message{
-			{Role: "system", Content: WorkerSystemPrompt(cfg.Model, dir, time.Now(), earlier) + extra},
+			{Role: "system", Content: WorkerSystemPrompt(cfg.Model, dir, time.Now(), earlier) + ProjectInstructions(dir) + extra},
 			{Role: "user", Content: task},
 		}
 		var steps []AgentStep

@@ -186,7 +186,7 @@ func (b *Bot) round(ctx context.Context, n int, dir string, cfg Config, tools []
 		return round
 	}
 	msgs := []Message{
-		{Role: "system", Content: BotSystemPrompt(cfg.Model, dir, time.Now())},
+		{Role: "system", Content: BotSystemPrompt(cfg.Model, dir, time.Now()) + ProjectInstructions(dir)},
 		{Role: "user", Content: instruction},
 	}
 	var usage Usage
