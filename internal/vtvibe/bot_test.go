@@ -50,6 +50,7 @@ func TestBotRunsRoundsInCleanDialogsAndStops(t *testing.T) {
 		t.Fatal(err)
 	}
 	var b Bot
+	b.SetStepped(false) // a round in one context
 	rounds := make(chan BotRound, 4)
 	cfg := func() Config { return Config{BaseURL: srv.URL, Model: "m", APIKey: "k"} }
 	if err := b.Start(instruction, 10*time.Millisecond, t.TempDir(), cfg, nil, nil, func(r BotRound) { rounds <- r }); err != nil {
@@ -81,6 +82,7 @@ func TestBotRoundsDoNotCarryHistory(t *testing.T) {
 	instruction := filepath.Join(t.TempDir(), "bot.md")
 	_ = os.WriteFile(instruction, []byte("report"), 0o600)
 	var b Bot
+	b.SetStepped(false) // a round in one context
 	done := make(chan struct{}, 2)
 	cfg := func() Config { return Config{BaseURL: srv.URL, Model: "m", APIKey: "k"} }
 	_ = b.Start(instruction, time.Millisecond, t.TempDir(), cfg, nil, nil, func(BotRound) { done <- struct{}{} })

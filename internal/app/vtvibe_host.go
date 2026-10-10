@@ -583,6 +583,8 @@ func aiCommand(app vfs.App, arg string) {
 		aiOrdersCommand(pf, "undone", arg[len("undone "):])
 	case lower == "dialogs":
 		aiDialogsMenu(pf)
+	case lower == "token" || strings.HasPrefix(lower, "token "):
+		aiTokenCommand(pf, arg[len("token"):])
 	case lower == "mode" || strings.HasPrefix(lower, "mode "):
 		aiModeCommand(pf, arg[len("mode"):])
 	case lower == "bot" || strings.HasPrefix(lower, "bot "):
@@ -633,16 +635,28 @@ func aiSend(pf *panel.PanelsFrame, question string) {
 	}
 
 	session := aiSession()
+	aiRunWork(pf, session, func(ctx context.Context) (vtvibe.WorkEnd, error) {
+		return session.Work(ctx, cfg, question, vtvibeNonstopDefault())
+	})
+}
+
+// aiRunWork runs one piece of the dialog's work (a message of the user, or
+// going on after the workers reported) behind the progress dialog; the tasks
+// the model handed to workers on the way are offered to the user afterwards.
+func aiRunWork(pf *panel.PanelsFrame, session *vtvibe.Session, work func(ctx context.Context) (vtvibe.WorkEnd, error)) {
+	// The manager may hand tasks to workers (f4#1842, stage H5).
+	session.SetDelegation(true)
 	session.SetOnUpdate(aiStreamRedraw(vtui.FrameManager, pf))
 	pf.RunProgressTask(i18n.Msg("AI.Title"), i18n.Msg("AI.Sending"), false,
 		func(ctx context.Context, update func(msg string, percent int)) error {
-			end, err := session.Work(ctx, cfg, question, vtvibeNonstopDefault())
+			end, err := work(ctx)
 			if err == nil && end == vtvibe.WorkRoundLimit {
 				session.Note("assistant", fmt.Sprintf(i18n.Msg("AI.NonstopRoundLimit"), vtvibe.MaxNonstopRounds))
 			}
 			return err
 		},
 		func(err error) {
+			delegations := session.TakeDelegations()
 			if err != nil {
 				if err == context.Canceled {
 					return
@@ -658,6 +672,9 @@ func aiSend(pf *panel.PanelsFrame, question string) {
 				vtui.FrameManager.Redraw()
 			} else if path := aiLastAnswerPath(session); path != "" {
 				actionOpenViewer(pf, vtvibe.NewVFS(session), path)
+			}
+			if len(delegations) > 0 {
+				aiDelegate(pf, session, delegations)
 			}
 		})
 }

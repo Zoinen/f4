@@ -86,6 +86,9 @@ const (
 	WorkWaiting
 	// WorkRoundLimit: MaxNonstopRounds rounds went by with orders still open.
 	WorkRoundLimit
+	// WorkDelegated: the model handed tasks to workers (TakeDelegations);
+	// the work goes on when their reports are in (Resume).
+	WorkDelegated
 )
 
 // Work sends question like Ask. In the non-stop mode (the dialog's own, or
@@ -100,9 +103,23 @@ func (s *Session) Work(ctx context.Context, cfg Config, question string, nonstop
 		nonstop = false
 	}
 	reply, err := s.ask(ctx, cfg, question, true, modePrompt(nonstop))
+	return s.goOn(ctx, cfg, nonstop, reply, err)
+}
+
+// Resume asks the model to go on with the open orders, as the non-stop mode
+// does after an answer: the host calls it when the workers the model handed
+// tasks to have reported. It does nothing when no order is open.
+func (s *Session) Resume(ctx context.Context, cfg Config) (WorkEnd, error) {
+	return s.goOn(ctx, cfg, true, "", nil)
+}
+
+func (s *Session) goOn(ctx context.Context, cfg Config, nonstop bool, reply string, err error) (WorkEnd, error) {
 	for round := 1; ; round++ {
 		if err != nil {
 			return WorkAnswered, err
+		}
+		if s.hasDelegations() {
+			return WorkDelegated, nil
 		}
 		if !nonstop {
 			return WorkAnswered, nil

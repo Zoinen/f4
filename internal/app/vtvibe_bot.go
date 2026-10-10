@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sort"
@@ -45,7 +46,7 @@ func aiBotCommand(pf *panel.PanelsFrame, arg string) {
 		}()
 		return
 	}
-	source, pause := parseBotArgs(arg)
+	source, pause, whole := parseBotArgs(arg)
 	if aiBot.Status().Running {
 		vtui.ShowMessage(i18n.Msg("AI.Title"), i18n.Msg("AI.BotAlready"), []string{i18n.Msg("vtui.Ok")})
 		return
@@ -62,7 +63,10 @@ func aiBotCommand(pf *panel.PanelsFrame, arg string) {
 		if code != 0 {
 			return
 		}
-		config := func() vtvibe.Config { c, _ := vtvibeConfig(); return c }
+		config := aiAgentConfig(aiSession())
+		// Rounds go step by step in clean contexts unless "whole" was asked
+		// for (f4#1842, stage H7).
+		aiBot.SetStepped(!whole)
 		err := aiBot.Start(source, pause, dir, config,
 			func() []vtvibe.Tool { return vtvibe.DialogTools(vtvibeDialogControls(manager, pf)) },
 			func(n int) {
@@ -84,16 +88,21 @@ func aiBotCommand(pf *panel.PanelsFrame, arg string) {
 	}
 }
 
-// parseBotArgs splits "source [pause]": a last word that parses as a Go
-// duration (30m, 1h, 90s) is the pause.
-func parseBotArgs(arg string) (string, time.Duration) {
+// parseBotArgs splits "source [pause] [whole]": a last word "whole" runs
+// each round in one context instead of step by step; a last word that parses
+// as a Go duration (30m, 1h, 90s) is the pause.
+func parseBotArgs(arg string) (string, time.Duration, bool) {
 	fields := strings.Fields(arg)
+	whole := false
+	if n := len(fields); n > 1 && strings.EqualFold(fields[n-1], "whole") {
+		whole, fields = true, fields[:n-1]
+	}
 	if len(fields) > 1 {
 		if d, err := time.ParseDuration(fields[len(fields)-1]); err == nil && d > 0 {
-			return strings.Join(fields[:len(fields)-1], " "), d
+			return strings.Join(fields[:len(fields)-1], " "), d, whole
 		}
 	}
-	return arg, vtvibe.DefaultBotPause
+	return strings.Join(fields, " "), vtvibe.DefaultBotPause, whole
 }
 
 // aiBotDir is where the bot's commands start: the active panel's folder when
@@ -173,6 +182,63 @@ func vtvibeDialogControls(manager interface{ PostTask(func()) }, pf *panel.Panel
 // are on unless the user switched them off.
 func vtvibeAllowed(key string) bool {
 	return ini.Load(vtvibeIniPath()).GetString("general", key, "true") != "false"
+}
+
+// aiAgentConfig is the configuration of the bot's and the workers' requests:
+// the chat's, with the GitHub token for the commands they run (f4#1842,
+// stage H6). It is read again for each round, so a token set meanwhile
+// counts from the next one.
+func aiAgentConfig(session *vtvibe.Session) func() vtvibe.Config {
+	return func() vtvibe.Config {
+		c, _ := vtvibeConfig()
+		token, _ := aiGitHubToken(session)
+		c.ToolEnv = vtvibe.GitHubEnv(token)
+		return c
+	}
+}
+
+// aiGitHubToken is the token the dialog's commands get and where it comes
+// from: the dialog's own, else the one in Settings → AI; empty when neither
+// is set, and the environment's GH_TOKEN, if any, stays as it is.
+func aiGitHubToken(session *vtvibe.Session) (token, source string) {
+	if t := session.GitHubToken(); t != "" {
+		return t, i18n.Msg("AI.TokenFromDialog")
+	}
+	if t := strings.TrimSpace(ini.Load(vtvibeIniPath()).GetString("general", "github_token", "")); t != "" {
+		return t, i18n.Msg("AI.TokenFromSettings")
+	}
+	return "", ""
+}
+
+// aiTokenCommand is ai:token: it tells where the dialog's GitHub token comes
+// from and asks for one bound to this dialog alone; ai:token clear unbinds it.
+func aiTokenCommand(pf *panel.PanelsFrame, arg string) {
+	session := aiSession()
+	unbind := strings.EqualFold(strings.TrimSpace(arg), "clear")
+	if unbind {
+		session.SetGitHubToken("")
+	}
+	_, source := aiGitHubToken(session)
+	if source == "" {
+		source = i18n.Msg("AI.TokenNone")
+	}
+	if unbind {
+		vtui.ShowMessage(i18n.Msg("AI.Title"), fmt.Sprintf(i18n.Msg("AI.TokenSource"), source), []string{i18n.Msg("vtui.Ok")})
+		return
+	}
+	// The token is typed into a dialog box, not the command line, so it does
+	// not land in the command history.
+	vtui.InputBox(i18n.Msg("AI.Title"), fmt.Sprintf(i18n.Msg("AI.TokenPrompt"), source), "", func(token string) {
+		if token = strings.TrimSpace(token); token == "" {
+			return
+		}
+		session.SetGitHubToken(token)
+		if err := session.StoreError(); err != nil {
+			aiShowError(err)
+			return
+		}
+		vtui.ShowMessage(i18n.Msg("AI.Title"), fmt.Sprintf(i18n.Msg("AI.TokenSource"), i18n.Msg("AI.TokenFromDialog")), []string{i18n.Msg("vtui.Ok")})
+	})
 }
 
 // vtvibeNonstopDefault is the mode of the dialogs that did not choose their
@@ -347,29 +413,96 @@ func aiTaskCommand(pf *panel.PanelsFrame, arg string) {
 		}
 		session := aiSession()
 		order := session.AddOrder(arg)
-		config := func() vtvibe.Config { c, _ := vtvibeConfig(); return c }
-		tools := func() []vtvibe.Tool { return vtvibe.WorkTools(dir) }
-		id := aiWorkers.Start(arg, dir, config, tools, func(r vtvibe.WorkerResult) {
-			text := aiTaskResultText(r, order)
-			manager.PostTask(func() {
-				if r.Err == nil {
-					_ = session.SetOrderDone(order, true)
-				}
-				session.Note("assistant", text)
-				aiBotRefresh(pf)
-			})
+		aiStartWorker(pf, manager, session, arg, dir, order, true, nil)
+	}
+}
+
+// aiStartWorker gives task, serving order (0: none), to a worker in dir and
+// puts its report into the dialog. closeOrder closes the order when the
+// worker succeeds: right for a task the user gave with ai:task, while an
+// order the manager split up is closed by the manager. done, if set, runs on
+// the UI thread after the report.
+func aiStartWorker(pf *panel.PanelsFrame, manager interface{ PostTask(func()) }, session *vtvibe.Session, task, dir string, order int, closeOrder bool, done func()) {
+	config := aiAgentConfig(session)
+	tools := func() []vtvibe.Tool { return vtvibe.WorkTools(dir, config().ToolEnv...) }
+	id := aiWorkers.Start(task, dir, config, tools, func(r vtvibe.WorkerResult) {
+		text := aiTaskResultText(r, order)
+		manager.PostTask(func() {
+			if r.Err == nil && closeOrder {
+				_ = session.SetOrderDone(order, true)
+			}
+			session.Note("assistant", text)
+			aiBotRefresh(pf)
+			if done != nil {
+				done()
+			}
 		})
-		session.Note("assistant", fmt.Sprintf(i18n.Msg("AI.TaskStarted"), id, order, arg))
-		aiBotRefresh(pf)
+	})
+	if order > 0 {
+		session.Note("assistant", fmt.Sprintf(i18n.Msg("AI.TaskStarted"), id, order, task))
+	} else {
+		session.Note("assistant", fmt.Sprintf(i18n.Msg("AI.WorkerStarted"), id, task))
+	}
+	aiBotRefresh(pf)
+}
+
+// aiDelegate offers the tasks the manager handed out to the user; confirmed,
+// each goes to its own worker. When the last report is in and the dialog
+// works without stopping, the manager goes on by itself (f4#1842, stage H5).
+func aiDelegate(pf *panel.PanelsFrame, session *vtvibe.Session, delegations []vtvibe.Delegation) {
+	manager := vtui.FrameManager
+	cfg, _ := vtvibeConfig()
+	dir := aiBotDir(pf)
+	// The whole task is shown, within reason: the user approves what the
+	// workers will run.
+	lines := make([]string, 0, len(delegations))
+	for _, d := range delegations {
+		task := []rune(d.Task)
+		if len(task) > 400 {
+			task = append(task[:400], '…')
+		}
+		if d.Order > 0 {
+			lines = append(lines, fmt.Sprintf("#%d: %s", d.Order, string(task)))
+		} else {
+			lines = append(lines, "- "+string(task))
+		}
+	}
+	question := fmt.Sprintf(i18n.Msg("AI.DelegateConfirm"), len(delegations), dialog.EscapeAmpersand(strings.Join(lines, "\n")), dir, cfg.Model)
+	dlg := vtui.ShowMessage(i18n.Msg("AI.Title"), question, []string{i18n.Msg("AI.BotStart"), i18n.Msg("vtui.Cancel")})
+	dlg.OnResult = func(code int) {
+		if code != 0 {
+			// The manager learns it from the dialog, not by guessing.
+			session.Note("assistant", i18n.Msg("AI.DelegateDeclined"))
+			aiBotRefresh(pf)
+			return
+		}
+		left := len(delegations)
+		for _, d := range delegations {
+			aiStartWorker(pf, manager, session, d.Task, dir, d.Order, false, func() {
+				if left--; left == 0 && aiNonstop(session) && !session.Busy() {
+					aiRunWork(pf, session, func(ctx context.Context) (vtvibe.WorkEnd, error) {
+						c, _ := vtvibeConfig()
+						return session.Resume(ctx, c)
+					})
+				}
+			})
+		}
 	}
 }
 
 func aiTaskResultText(r vtvibe.WorkerResult, order int) string {
 	var sb strings.Builder
-	if r.Err != nil {
+	switch {
+	case r.Err != nil && order > 0:
 		fmt.Fprintf(&sb, i18n.Msg("AI.TaskFailed"), r.ID, order, r.Err)
-	} else {
-		fmt.Fprintf(&sb, i18n.Msg("AI.TaskDone"), r.ID, order, len(r.Steps), r.Usage.In, r.Usage.Out)
+	case r.Err != nil:
+		fmt.Fprintf(&sb, i18n.Msg("AI.WorkerFailed"), r.ID, r.Err)
+	default:
+		if order > 0 {
+			fmt.Fprintf(&sb, i18n.Msg("AI.TaskDone"), r.ID, order, len(r.Steps), r.Usage.In, r.Usage.Out)
+		} else {
+			fmt.Fprintf(&sb, i18n.Msg("AI.WorkerDone"), r.ID, len(r.Steps), r.Usage.In, r.Usage.Out)
+		}
 		sb.WriteString("\n\n")
 		sb.WriteString(r.Report)
 	}

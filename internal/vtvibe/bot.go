@@ -106,6 +106,9 @@ type Bot struct {
 	rounds  int
 	next    time.Time
 	running bool
+	// whole runs a round in one context instead of step by step
+	// (bot_steps.go).
+	whole bool
 }
 
 // ErrBotRunning is returned by Start while a bot is already running.
@@ -145,11 +148,12 @@ func (b *Bot) loop(ctx context.Context, dir string, config func() Config, extra 
 		if onStart != nil {
 			onStart(n)
 		}
-		tools := WorkTools(dir)
+		cfg := config()
+		tools := WorkTools(dir, cfg.ToolEnv...)
 		if extra != nil {
 			tools = append(tools, extra()...)
 		}
-		round := b.round(ctx, n, dir, config(), tools)
+		round := b.round(ctx, n, dir, cfg, tools)
 		b.mu.Lock()
 		b.rounds = n
 		b.next = time.Now().Add(b.pause)
@@ -177,14 +181,20 @@ func (b *Bot) round(ctx context.Context, n int, dir string, cfg Config, tools []
 		round.Err = err
 		return round
 	}
+	if b.stepped() && b.steppedRound(ctx, &round, instruction, dir, cfg, tools) {
+		return round
+	}
 	msgs := []Message{
 		{Role: "system", Content: BotSystemPrompt(cfg.Model, dir, time.Now())},
 		{Role: "user", Content: instruction},
 	}
-	round.Report, round.Usage, round.Err = cfg.RunAgent(ctx, msgs, tools, AgentOptions{
+	var usage Usage
+	round.Report, usage, round.Err = cfg.RunAgent(ctx, msgs, tools, AgentOptions{
 		MaxSteps: 200,
 		OnStep:   func(s AgentStep) { round.Steps = append(round.Steps, s) },
 	})
+	round.Usage.In += usage.In
+	round.Usage.Out += usage.Out
 	return round
 }
 

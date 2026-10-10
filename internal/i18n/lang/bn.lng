@@ -2233,6 +2233,8 @@ SettingsCenter.Text.e24bd4269687d6af5de7ea80901913c246d9a75ad2fc2b7c1c0203d056f3
 SettingsCenter.Text.c6ce374075feb031a1e90f5a3d48a3684d7ebebe27c9a54065f82f3ade2b90aa=মডেল কথোপকথনকে এমন নাম দিতে পারে যা বলে সেটি কী নিয়ে।
 SettingsCenter.Text.25a6e3a20e3e4ba4388d8a1ec095f041fb25aa4656425805d63fc26e1f8af4b8=না থেমে কাজ করুন
 SettingsCenter.Text.7ab3b32ca52beccfadd6b70522fc3c3d6e14fa22884236a142af2150a8e0d0ff=নতুন সংলাপ না থামার মোডে শুরু হয়: মডেল একবার উত্তর দিয়ে অপেক্ষা না করে প্রতিটি নির্দেশ শেষ না হওয়া পর্যন্ত নিজেই কাজ চালিয়ে যায়। ai:mode কমান্ড একটি সংলাপের মোড বেছে নেয়।
+SettingsCenter.Text.2ddc96639d79f923c6152d60a3b40dfcab9d5a049e472da22831b47f2322a620=GitHub টোকেন
+SettingsCenter.Text.ae8132b1ecb6594e53ff21f0eccd0138c8a2c241b2994a07a8fe91fc8c53f157=বট ও কর্মীরা যে কমান্ড চালায়, সেগুলোকে এটি GH_TOKEN চলকে দেওয়া হয়, যদি না সংলাপের নিজস্ব টোকেন থাকে। এটি স্থানীয় vtvibe.ini ফাইলে রাখা হয়।
 SettingsCenter.entry.Name.Description=F11 মেনুর এন্ট্রি।
 SettingsCenter.entry.Name.Label=এন্ট্রি
 SettingsCenter.entry.Enabled.Description=এই এন্ট্রি F11 মেনুতে দেখান।

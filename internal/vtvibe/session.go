@@ -74,6 +74,12 @@ type Session struct {
 	orders []Order
 	// mode is the dialog's working mode (mode.go).
 	mode Mode
+	// githubToken is the dialog's own GitHub token (github.go).
+	githubToken string
+	// delegate lets the model hand tasks to workers; delegations are the
+	// tasks it handed out and the host has not taken yet (delegate.go).
+	delegate    bool
+	delegations []Delegation
 }
 
 // PatchModePrompt is appended to the system prompt once the human attached the
@@ -138,6 +144,8 @@ func (s *Session) reset() {
 	s.title = ""
 	s.orders = nil
 	s.mode = ModeDefault
+	s.githubToken = ""
+	s.delegations = nil
 	_ = s.tree.mkdirAll(ctxDir)
 	_ = s.tree.mkdirAll(chatDir)
 	_ = s.tree.mkdirAll(outDir)
@@ -261,6 +269,7 @@ func (s *Session) ask(ctx context.Context, cfg Config, question string, order bo
 		asking = question
 	}
 	orders := s.ordersPromptLocked(asking)
+	delegate := s.delegate
 	s.mu.Unlock()
 
 	defer func() {
@@ -282,6 +291,9 @@ func (s *Session) ask(ctx context.Context, cfg Config, question string, order bo
 	system += "\n\n" + ModelNotice(cfg.Model)
 	if orders != "" {
 		system += "\n\n" + orders
+	}
+	if delegate {
+		system += "\n\n" + managerPrompt()
 	}
 	if extra != "" {
 		system += "\n\n" + extra
@@ -320,6 +332,9 @@ func (s *Session) ask(ctx context.Context, cfg Config, question string, order bo
 		s.addOrderLocked(question)
 	}
 	reply = s.closeOrdersFromReplyLocked(reply)
+	if delegate {
+		s.delegations = append(s.delegations, s.parseDelegationsLocked(reply)...)
+	}
 	s.appendTurn(Turn{Role: "user", Text: question, Time: time.Now()})
 	s.appendTurn(Turn{Role: "assistant", Text: reply, Time: time.Now()})
 	s.usage = usage

@@ -2228,6 +2228,8 @@ SettingsCenter.Text.e24bd4269687d6af5de7ea80901913c246d9a75ad2fc2b7c1c0203d056f3
 SettingsCenter.Text.c6ce374075feb031a1e90f5a3d48a3684d7ebebe27c9a54065f82f3ade2b90aa=모델이 대화에 내용을 알려 주는 이름을 붙일 수 있습니다.
 SettingsCenter.Text.25a6e3a20e3e4ba4388d8a1ec095f041fb25aa4656425805d63fc26e1f8af4b8=멈추지 않고 작업
 SettingsCenter.Text.7ab3b32ca52beccfadd6b70522fc3c3d6e14fa22884236a142af2150a8e0d0ff=새 대화는 연속 작업 모드로 시작합니다. 모델은 한 번 답하고 기다리는 대신 모든 지시가 끝날 때까지 스스로 계속 작업합니다. ai:mode 명령으로 대화 하나의 모드를 고릅니다.
+SettingsCenter.Text.2ddc96639d79f923c6152d60a3b40dfcab9d5a049e472da22831b47f2322a620=GitHub 토큰
+SettingsCenter.Text.ae8132b1ecb6594e53ff21f0eccd0138c8a2c241b2994a07a8fe91fc8c53f157=봇과 작업자가 실행하는 명령에 GH_TOKEN 변수로 전달됩니다. 대화에 자체 토큰이 있으면 그것을 씁니다. 로컬 vtvibe.ini 파일에 저장됩니다.
 SettingsCenter.entry.Name.Description=F11 메뉴의 항목입니다.
 SettingsCenter.entry.Name.Label=항목
 SettingsCenter.entry.Enabled.Description=이 항목을 F11 메뉴에 표시합니다.

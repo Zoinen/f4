@@ -2236,6 +2236,8 @@ SettingsCenter.Text.e24bd4269687d6af5de7ea80901913c246d9a75ad2fc2b7c1c0203d056f3
 SettingsCenter.Text.c6ce374075feb031a1e90f5a3d48a3684d7ebebe27c9a54065f82f3ade2b90aa=Мадэль можа даць дыялогу імя, якое кажа, пра што ён.
 SettingsCenter.Text.25a6e3a20e3e4ba4388d8a1ec095f041fb25aa4656425805d63fc26e1f8af4b8=Працаваць без спынак
 SettingsCenter.Text.7ab3b32ca52beccfadd6b70522fc3c3d6e14fa22884236a142af2150a8e0d0ff=Новыя дыялогі пачынаюцца ў рэжыме «без спынак»: мадэль сама працягвае працу, пакуль не выканае ўсе распараджэнні, а не адказвае адзін раз і чакае. Каманда ai:mode выбірае рэжым аднаго дыялогу.
+SettingsCenter.Text.2ddc96639d79f923c6152d60a3b40dfcab9d5a049e472da22831b47f2322a620=Токен GitHub
+SettingsCenter.Text.ae8132b1ecb6594e53ff21f0eccd0138c8a2c241b2994a07a8fe91fc8c53f157=Перадаецца камандам, якія запускаюць бот і воркеры, у зменных GH_TOKEN і GITHUB_TOKEN, калі ў дыялогу няма свайго (ai:token). Захоўваецца ў лакальным файле vtvibe.ini.
 SettingsCenter.entry.Name.Description=Радок меню F11.
 SettingsCenter.entry.Name.Label=Радок
 SettingsCenter.entry.Enabled.Description=Паказваць гэты радок у меню F11.
