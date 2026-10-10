@@ -1384,7 +1384,7 @@ func TestTerminalView_GravityDoesNotJumpOnRedraw(t *testing.T) {
 	}
 	tv.Show(scr)
 	if c := scr.GetCell(0, 14).Char; c != 'a' {
-		t.Fatalf("first row drawn at %q, want 'a' at Y=14", rune(c))
+		t.Fatalf("first row drawn at Y=14 as U+%04X, want 'a'", c)
 	}
 
 	// The progress block (rows 5..9) is erased before it is written again.
@@ -1392,7 +1392,7 @@ func TestTerminalView_GravityDoesNotJumpOnRedraw(t *testing.T) {
 	tv.EraseDisplay(0, DefaultTermAttr)
 	tv.Show(scr)
 	if c := scr.GetCell(0, 14).Char; c != 'a' {
-		t.Fatalf("the screen jumped while the progress was redrawn: Y=14 holds %q", rune(c))
+		t.Fatalf("the screen jumped while the progress was redrawn: Y=14 holds U+%04X", c)
 	}
 
 	// A cleared screen starts over at the bottom.
@@ -1401,6 +1401,6 @@ func TestTerminalView_GravityDoesNotJumpOnRedraw(t *testing.T) {
 	tv.PutChar('z', 0)
 	tv.Show(scr)
 	if c := scr.GetCell(0, height-1).Char; c != 'z' {
-		t.Fatalf("after a clear the text is not at the bottom: %q", rune(c))
+		t.Fatalf("after a clear the text is not at the bottom: U+%04X", c)
 	}
 }
