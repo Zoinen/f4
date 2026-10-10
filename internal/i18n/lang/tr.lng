@@ -2231,6 +2231,8 @@ SettingsCenter.Text.03c8b9ea4e03d7d3e230dd5f96623b1f660430cfa5ac44443d26669e7240
 SettingsCenter.Text.5b4b9a299525629f834251c49f3d856236ee77d4e8bce5d98306e190a1714260=Siz veya talimatı istediğinde model, sohbeti başka bir modele geçirebilir.
 SettingsCenter.Text.e24bd4269687d6af5de7ea80901913c246d9a75ad2fc2b7c1c0203d056f314e7=Model, sohbetin adını değiştirebilir
 SettingsCenter.Text.c6ce374075feb031a1e90f5a3d48a3684d7ebebe27c9a54065f82f3ade2b90aa=Model, sohbete ne hakkında olduğunu söyleyen bir ad verebilir.
+SettingsCenter.Text.25a6e3a20e3e4ba4388d8a1ec095f041fb25aa4656425805d63fc26e1f8af4b8=Durmadan çalış
+SettingsCenter.Text.7ab3b32ca52beccfadd6b70522fc3c3d6e14fa22884236a142af2150a8e0d0ff=Yeni diyaloglar durmadan çalışma kipinde başlar: model bir kez yanıtlayıp beklemek yerine her talimat tamamlanana kadar kendi kendine devam eder. ai:mode komutu tek bir diyaloğun kipini seçer.
 SettingsCenter.entry.Name.Description=F11 menüsünün bir girdisi.
 SettingsCenter.entry.Name.Label=Girdi
 SettingsCenter.entry.Enabled.Description=Bu girdiyi F11 menüsünde göster.

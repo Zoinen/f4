@@ -27,6 +27,7 @@ type savedDialog struct {
 	Context   map[string][]byte `json:"context,omitempty"` // ctx/ files by path
 	Draft     string            `json:"draft,omitempty"`
 	Orders    []Order           `json:"orders,omitempty"`
+	Mode      Mode              `json:"mode,omitempty"`
 }
 
 // SetStorePath makes path the dialog's file: a dialog saved there earlier is
@@ -76,6 +77,7 @@ func (s *Session) restoreLocked(d savedDialog) {
 	s.title = d.Title
 	s.apMode = d.PatchMode
 	s.orders = d.Orders
+	s.mode = d.Mode
 	s.writeSessionFile()
 }
 
@@ -88,7 +90,7 @@ func (s *Session) saveLocked() {
 	if s.storePath == "" {
 		return
 	}
-	d := savedDialog{Version: storeVersion, Title: s.title, PatchMode: s.apMode, Turns: s.turns, Orders: s.orders}
+	d := savedDialog{Version: storeVersion, Title: s.title, PatchMode: s.apMode, Turns: s.turns, Orders: s.orders, Mode: s.mode}
 	for _, p := range s.tree.walkFiles(ctxDir) {
 		if data, ok := s.tree.readFile(p); ok {
 			if d.Context == nil {

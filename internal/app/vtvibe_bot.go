@@ -175,6 +175,47 @@ func vtvibeAllowed(key string) bool {
 	return ini.Load(vtvibeIniPath()).GetString("general", key, "true") != "false"
 }
 
+// vtvibeNonstopDefault is the mode of the dialogs that did not choose their
+// own (Settings → AI, f4#1842 stage H6): question-and-answer unless set.
+func vtvibeNonstopDefault() bool {
+	return ini.Load(vtvibeIniPath()).GetString("general", "nonstop", "false") == "true"
+}
+
+// aiNonstop reports the mode the current dialog works in.
+func aiNonstop(session *vtvibe.Session) bool {
+	switch session.Mode() {
+	case vtvibe.ModeNonstop:
+		return true
+	case vtvibe.ModeQA:
+		return false
+	}
+	return vtvibeNonstopDefault()
+}
+
+// aiModeCommand is ai:mode: alone it tells the current dialog's mode, with
+// nonstop, qa or default it chooses one for this dialog (f4#1842, stage H6).
+func aiModeCommand(pf *panel.PanelsFrame, arg string) {
+	session := aiSession()
+	if arg = strings.TrimSpace(arg); arg != "" {
+		mode, err := vtvibe.ParseMode(arg)
+		if err != nil {
+			vtui.ShowMessage(i18n.Msg("AI.Title"), i18n.Msg("AI.ModeUsage"), []string{i18n.Msg("vtui.Ok")})
+			return
+		}
+		session.SetMode(mode)
+		aiBotRefresh(pf)
+	}
+	name := i18n.Msg("AI.ModeQA")
+	if aiNonstop(session) {
+		name = i18n.Msg("AI.ModeNonstop")
+	}
+	text := fmt.Sprintf(i18n.Msg("AI.ModeIs"), name)
+	if session.Mode() == vtvibe.ModeDefault {
+		text += "\n" + i18n.Msg("AI.ModeFromSettings")
+	}
+	vtui.ShowMessage(i18n.Msg("AI.Title"), text+"\n\n"+i18n.Msg("AI.ModeUsage"), []string{i18n.Msg("vtui.Ok")})
+}
+
 // aiDialogsMenu lists the dialogs ai:new put aside, newest first; Enter makes
 // the chosen one current, the current one going to the archive in its place
 // (f4#1842, stage H3).

@@ -254,6 +254,10 @@ func (cp *AIChatPanel) Show(scr *vtui.ScreenBuf) {
 	if name := session.Title(); name != "" {
 		title += ": " + name
 	}
+	// The working mode is always in sight (f4#1842, stage H6).
+	if aiNonstop(session) {
+		title += " · " + i18n.Msg("AI.ModeNonstop")
+	}
 	if cp.Frame != nil && cp.Frame.GetTitle() != title {
 		cp.Frame.SetTitle(title)
 	}

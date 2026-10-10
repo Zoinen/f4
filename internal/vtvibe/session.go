@@ -72,6 +72,8 @@ type Session struct {
 	storeErr  error
 	// orders is the register of the user's orders (orders.go).
 	orders []Order
+	// mode is the dialog's working mode (mode.go).
+	mode Mode
 }
 
 // PatchModePrompt is appended to the system prompt once the human attached the
@@ -135,6 +137,7 @@ func (s *Session) reset() {
 	s.patch = nil
 	s.title = ""
 	s.orders = nil
+	s.mode = ModeDefault
 	_ = s.tree.mkdirAll(ctxDir)
 	_ = s.tree.mkdirAll(chatDir)
 	_ = s.tree.mkdirAll(outDir)
@@ -229,15 +232,23 @@ func (s *Session) ClearDraft() {
 //
 // It is called from a background task; the UI thread never blocks on it.
 func (s *Session) Ask(ctx context.Context, cfg Config, question string) error {
+	_, err := s.ask(ctx, cfg, question, true, "")
+	return err
+}
+
+// ask sends one message and returns the answer as it was stored. order says
+// the message is the user's and enters the register; a message f4 sends by
+// itself (mode.go) does not. extra is added to the system prompt.
+func (s *Session) ask(ctx context.Context, cfg Config, question string, order bool, extra string) (string, error) {
 	question = strings.TrimSpace(question)
 	if question == "" {
-		return fmt.Errorf("vtvibe: nothing to send")
+		return "", fmt.Errorf("vtvibe: nothing to send")
 	}
 
 	s.mu.Lock()
 	if s.busy {
 		s.mu.Unlock()
-		return ErrBusy
+		return "", ErrBusy
 	}
 	s.busy = true
 	history := append([]Turn(nil), s.turns...)
@@ -245,7 +256,11 @@ func (s *Session) Ask(ctx context.Context, cfg Config, question string) error {
 	// The question being asked is an order too, and the model should see it
 	// among the open ones; it enters the register only once it was sent, so a
 	// failed request asked again is not entered twice.
-	orders := s.ordersPromptLocked(question)
+	asking := ""
+	if order {
+		asking = question
+	}
+	orders := s.ordersPromptLocked(asking)
 	s.mu.Unlock()
 
 	defer func() {
@@ -267,6 +282,9 @@ func (s *Session) Ask(ctx context.Context, cfg Config, question string) error {
 	system += "\n\n" + ModelNotice(cfg.Model)
 	if orders != "" {
 		system += "\n\n" + orders
+	}
+	if extra != "" {
+		system += "\n\n" + extra
 	}
 
 	msgs := make([]Message, 0, len(history)+2)
@@ -292,20 +310,22 @@ func (s *Session) Ask(ctx context.Context, cfg Config, question string) error {
 		s.mu.Lock()
 		s.pending = ""
 		s.mu.Unlock()
-		return err
+		return "", err
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pending = ""
-	s.addOrderLocked(question)
+	if order {
+		s.addOrderLocked(question)
+	}
 	reply = s.closeOrdersFromReplyLocked(reply)
 	s.appendTurn(Turn{Role: "user", Text: question, Time: time.Now()})
 	s.appendTurn(Turn{Role: "assistant", Text: reply, Time: time.Now()})
 	s.usage = usage
 	s.saveArtifacts(reply)
 	s.writeSessionFile()
-	return nil
+	return reply, nil
 }
 
 // appendTurn stores the message and mirrors it as a file, so F3 works on the

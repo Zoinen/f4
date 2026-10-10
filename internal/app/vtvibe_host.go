@@ -583,6 +583,8 @@ func aiCommand(app vfs.App, arg string) {
 		aiOrdersCommand(pf, "undone", arg[len("undone "):])
 	case lower == "dialogs":
 		aiDialogsMenu(pf)
+	case lower == "mode" || strings.HasPrefix(lower, "mode "):
+		aiModeCommand(pf, arg[len("mode"):])
 	case lower == "bot" || strings.HasPrefix(lower, "bot "):
 		aiBotCommand(pf, arg[len("bot"):])
 	case lower == "models":
@@ -634,7 +636,11 @@ func aiSend(pf *panel.PanelsFrame, question string) {
 	session.SetOnUpdate(aiStreamRedraw(vtui.FrameManager, pf))
 	pf.RunProgressTask(i18n.Msg("AI.Title"), i18n.Msg("AI.Sending"), false,
 		func(ctx context.Context, update func(msg string, percent int)) error {
-			return session.Ask(ctx, cfg, question)
+			end, err := session.Work(ctx, cfg, question, vtvibeNonstopDefault())
+			if err == nil && end == vtvibe.WorkRoundLimit {
+				session.Note("assistant", fmt.Sprintf(i18n.Msg("AI.NonstopRoundLimit"), vtvibe.MaxNonstopRounds))
+			}
+			return err
 		},
 		func(err error) {
 			if err != nil {
