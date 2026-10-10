@@ -1131,7 +1131,12 @@ if(BUILD_TESTING)
       target_link_libraries(MacSystemButtonLayoutTests PRIVATE
         Qt6::Quick Qt6::Test QWindowKit::Quick "-framework AppKit")
       add_test(NAME MacSystemButtonLayoutTest COMMAND MacSystemButtonLayoutTests)
-      set_tests_properties(MacSystemButtonLayoutTest PROPERTIES LABELS "native-macos")
+      # AppKit traffic-light assertions require Cocoa's native NSView handle;
+      # an inherited offscreen platform supplies no AppKit window to inspect.
+      set_tests_properties(MacSystemButtonLayoutTest PROPERTIES
+        LABELS "native-macos"
+        ENVIRONMENT "QT_QPA_PLATFORM=cocoa"
+      )
     endif()
     add_executable(MacApplicationIconTests
       tests/MacApplicationIconTests.mm
