@@ -163,3 +163,22 @@ func TestVtvibeDialogModeOverridesTheSetting(t *testing.T) {
 		t.Fatal("the default is not question and answer")
 	}
 }
+
+// f4#1842, stage H6: the dialog's own GitHub token wins over the setting.
+func TestVtvibeGitHubTokenOfTheDialogOverridesTheSetting(t *testing.T) {
+	setupPortableIni(t, "0")
+	session := vtvibe.NewSession()
+	writeVtvibeINI(t, "[general]\ngithub_token = global-token\n")
+	if env := aiAgentConfig(session)().ToolEnv; len(env) != 2 || env[0] != "GH_TOKEN=global-token" {
+		t.Fatalf("the setting's token is not given to the commands: %v", env)
+	}
+	session.SetGitHubToken("dialog-token")
+	if token, _ := aiGitHubToken(session); token != "dialog-token" {
+		t.Fatalf("token %q", token)
+	}
+	session.SetGitHubToken("")
+	writeVtvibeINI(t, "[general]\n")
+	if env := aiAgentConfig(session)().ToolEnv; env != nil {
+		t.Fatalf("a token appeared from nowhere: %v", env)
+	}
+}

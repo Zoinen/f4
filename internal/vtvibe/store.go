@@ -28,6 +28,8 @@ type savedDialog struct {
 	Draft     string            `json:"draft,omitempty"`
 	Orders    []Order           `json:"orders,omitempty"`
 	Mode      Mode              `json:"mode,omitempty"`
+	// GitHubToken is the dialog's own token; the file is 0600.
+	GitHubToken string `json:"github_token,omitempty"`
 }
 
 // SetStorePath makes path the dialog's file: a dialog saved there earlier is
@@ -78,6 +80,7 @@ func (s *Session) restoreLocked(d savedDialog) {
 	s.apMode = d.PatchMode
 	s.orders = d.Orders
 	s.mode = d.Mode
+	s.githubToken = d.GitHubToken
 	s.writeSessionFile()
 }
 
@@ -90,7 +93,7 @@ func (s *Session) saveLocked() {
 	if s.storePath == "" {
 		return
 	}
-	d := savedDialog{Version: storeVersion, Title: s.title, PatchMode: s.apMode, Turns: s.turns, Orders: s.orders, Mode: s.mode}
+	d := savedDialog{Version: storeVersion, Title: s.title, PatchMode: s.apMode, Turns: s.turns, Orders: s.orders, Mode: s.mode, GitHubToken: s.githubToken}
 	for _, p := range s.tree.walkFiles(ctxDir) {
 		if data, ok := s.tree.readFile(p); ok {
 			if d.Context == nil {

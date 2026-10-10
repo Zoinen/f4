@@ -145,11 +145,12 @@ func (b *Bot) loop(ctx context.Context, dir string, config func() Config, extra 
 		if onStart != nil {
 			onStart(n)
 		}
-		tools := WorkTools(dir)
+		cfg := config()
+		tools := WorkTools(dir, cfg.ToolEnv...)
 		if extra != nil {
 			tools = append(tools, extra()...)
 		}
-		round := b.round(ctx, n, dir, config(), tools)
+		round := b.round(ctx, n, dir, cfg, tools)
 		b.mu.Lock()
 		b.rounds = n
 		b.next = time.Now().Add(b.pause)

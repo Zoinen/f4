@@ -62,7 +62,7 @@ func aiBotCommand(pf *panel.PanelsFrame, arg string) {
 		if code != 0 {
 			return
 		}
-		config := func() vtvibe.Config { c, _ := vtvibeConfig(); return c }
+		config := aiAgentConfig(aiSession())
 		err := aiBot.Start(source, pause, dir, config,
 			func() []vtvibe.Tool { return vtvibe.DialogTools(vtvibeDialogControls(manager, pf)) },
 			func(n int) {
@@ -173,6 +173,63 @@ func vtvibeDialogControls(manager interface{ PostTask(func()) }, pf *panel.Panel
 // are on unless the user switched them off.
 func vtvibeAllowed(key string) bool {
 	return ini.Load(vtvibeIniPath()).GetString("general", key, "true") != "false"
+}
+
+// aiAgentConfig is the configuration of the bot's and the workers' requests:
+// the chat's, with the GitHub token for the commands they run (f4#1842,
+// stage H6). It is read again for each round, so a token set meanwhile
+// counts from the next one.
+func aiAgentConfig(session *vtvibe.Session) func() vtvibe.Config {
+	return func() vtvibe.Config {
+		c, _ := vtvibeConfig()
+		token, _ := aiGitHubToken(session)
+		c.ToolEnv = vtvibe.GitHubEnv(token)
+		return c
+	}
+}
+
+// aiGitHubToken is the token the dialog's commands get and where it comes
+// from: the dialog's own, else the one in Settings → AI; empty when neither
+// is set, and the environment's GH_TOKEN, if any, stays as it is.
+func aiGitHubToken(session *vtvibe.Session) (token, source string) {
+	if t := session.GitHubToken(); t != "" {
+		return t, i18n.Msg("AI.TokenFromDialog")
+	}
+	if t := strings.TrimSpace(ini.Load(vtvibeIniPath()).GetString("general", "github_token", "")); t != "" {
+		return t, i18n.Msg("AI.TokenFromSettings")
+	}
+	return "", ""
+}
+
+// aiTokenCommand is ai:token: it tells where the dialog's GitHub token comes
+// from and asks for one bound to this dialog alone; ai:token clear unbinds it.
+func aiTokenCommand(pf *panel.PanelsFrame, arg string) {
+	session := aiSession()
+	unbind := strings.EqualFold(strings.TrimSpace(arg), "clear")
+	if unbind {
+		session.SetGitHubToken("")
+	}
+	_, source := aiGitHubToken(session)
+	if source == "" {
+		source = i18n.Msg("AI.TokenNone")
+	}
+	if unbind {
+		vtui.ShowMessage(i18n.Msg("AI.Title"), fmt.Sprintf(i18n.Msg("AI.TokenSource"), source), []string{i18n.Msg("vtui.Ok")})
+		return
+	}
+	// The token is typed into a dialog box, not the command line, so it does
+	// not land in the command history.
+	vtui.InputBox(i18n.Msg("AI.Title"), fmt.Sprintf(i18n.Msg("AI.TokenPrompt"), source), "", func(token string) {
+		if token = strings.TrimSpace(token); token == "" {
+			return
+		}
+		session.SetGitHubToken(token)
+		if err := session.StoreError(); err != nil {
+			aiShowError(err)
+			return
+		}
+		vtui.ShowMessage(i18n.Msg("AI.Title"), fmt.Sprintf(i18n.Msg("AI.TokenSource"), i18n.Msg("AI.TokenFromDialog")), []string{i18n.Msg("vtui.Ok")})
+	})
 }
 
 // vtvibeNonstopDefault is the mode of the dialogs that did not choose their
@@ -347,8 +404,8 @@ func aiTaskCommand(pf *panel.PanelsFrame, arg string) {
 		}
 		session := aiSession()
 		order := session.AddOrder(arg)
-		config := func() vtvibe.Config { c, _ := vtvibeConfig(); return c }
-		tools := func() []vtvibe.Tool { return vtvibe.WorkTools(dir) }
+		config := aiAgentConfig(aiSession())
+		tools := func() []vtvibe.Tool { return vtvibe.WorkTools(dir, config().ToolEnv...) }
 		id := aiWorkers.Start(arg, dir, config, tools, func(r vtvibe.WorkerResult) {
 			text := aiTaskResultText(r, order)
 			manager.PostTask(func() {

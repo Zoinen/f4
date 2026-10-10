@@ -74,6 +74,8 @@ type Session struct {
 	orders []Order
 	// mode is the dialog's working mode (mode.go).
 	mode Mode
+	// githubToken is the dialog's own GitHub token (github.go).
+	githubToken string
 }
 
 // PatchModePrompt is appended to the system prompt once the human attached the
@@ -138,6 +140,7 @@ func (s *Session) reset() {
 	s.title = ""
 	s.orders = nil
 	s.mode = ModeDefault
+	s.githubToken = ""
 	_ = s.tree.mkdirAll(ctxDir)
 	_ = s.tree.mkdirAll(chatDir)
 	_ = s.tree.mkdirAll(outDir)

@@ -36,8 +36,9 @@ func resolvePath(dir, p string) (string, error) {
 	return filepath.Clean(p), nil
 }
 
-// ShellTool runs a command in the system shell, starting in dir.
-func ShellTool(dir string) Tool {
+// ShellTool runs a command in the system shell, starting in dir, with env
+// (NAME=value) added to its environment.
+func ShellTool(dir string, env ...string) Tool {
 	return Tool{
 		Name:        "shell",
 		Description: "Run a command in the system shell (sh -c on Unix, cmd /C on Windows) and return its combined output and exit code. The command starts in the working directory unless it changes directory itself.",
@@ -73,6 +74,9 @@ func ShellTool(dir string) Tool {
 				cmd = exec.CommandContext(ctx, "sh", "-c", args.Command) // #nosec G204 -- see above
 			}
 			cmd.Dir = dir
+			if len(env) > 0 {
+				cmd.Env = append(os.Environ(), env...)
+			}
 			cmd.WaitDelay = 5 * time.Second
 			var out bytes.Buffer
 			cmd.Stdout = &out
@@ -167,7 +171,8 @@ func WriteFileTool(dir string) Tool {
 	}
 }
 
-// WorkTools are the tools a bot gets: shell, read_file and write_file in dir.
-func WorkTools(dir string) []Tool {
-	return []Tool{ShellTool(dir), ReadFileTool(dir), WriteFileTool(dir)}
+// WorkTools are the tools a bot gets: shell, read_file and write_file in dir;
+// env (NAME=value) is added to the environment of the shell's commands.
+func WorkTools(dir string, env ...string) []Tool {
+	return []Tool{ShellTool(dir, env...), ReadFileTool(dir), WriteFileTool(dir)}
 }

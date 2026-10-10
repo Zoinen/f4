@@ -24,6 +24,9 @@ type Config struct {
 	Model   string
 	APIKey  string
 	System  string
+	// ToolEnv is added to the environment of the commands the agent's tools
+	// run, as NAME=value (the GitHub token, github.go); never sent anywhere.
+	ToolEnv []string
 }
 
 // Message is one chat-completions message.
