@@ -136,3 +136,13 @@ func orderSummary(text string) string {
 	}
 	return line
 }
+
+// AddOrder enters an order given outside the chat (a task handed to a
+// worker) and returns its number.
+func (s *Session) AddOrder(text string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.addOrderLocked(text)
+	s.saveLocked()
+	return s.orders[len(s.orders)-1].ID
+}

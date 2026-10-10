@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -267,4 +268,97 @@ func aiOrdersText(orders []vtvibe.Order) string {
 		}
 	}
 	return dialog.EscapeAmpersand(strings.Join(lines, "\n"))
+}
+
+// aiWorkers are the workers ai:task starts (f4#1842, stage H5).
+var aiWorkers vtvibe.Workers
+
+// aiTaskCommand handles "ai:task" (list), "ai:task stop N" and
+// "ai:task <task>": the task goes to a worker in a clean context after a
+// confirmation, as a bot does, and enters the register of orders; the
+// worker's report comes into the chat and closes the order when it succeeded.
+func aiTaskCommand(pf *panel.PanelsFrame, arg string) {
+	manager := vtui.FrameManager
+	arg = strings.TrimSpace(arg)
+	lower := strings.ToLower(arg)
+	switch {
+	case arg == "":
+		vtui.ShowMessage(i18n.Msg("AI.Title"), aiTasksText(aiWorkers.Running()), []string{i18n.Msg("vtui.Ok")})
+		return
+	case strings.HasPrefix(lower, "stop "):
+		id, err := strconv.Atoi(strings.TrimPrefix(strings.TrimSpace(arg[len("stop "):]), "#"))
+		if err != nil || !aiWorkers.Stop(id) {
+			vtui.ShowMessage(i18n.Msg("AI.Title"), i18n.Msg("AI.TaskUnknown"), []string{i18n.Msg("vtui.Ok")})
+		}
+		return
+	}
+	cfg, keySource, provider := vtvibeProviderConfig()
+	if cfg.APIKey == "" && keySource == "" && provider.NeedsKey(cfg.BaseURL) {
+		aiShowError(vtvibe.ErrNoKey)
+		return
+	}
+	dir := aiBotDir(pf)
+	question := fmt.Sprintf(i18n.Msg("AI.TaskConfirm"), arg, dir, cfg.Model)
+	dlg := vtui.ShowMessage(i18n.Msg("AI.Title"), question, []string{i18n.Msg("AI.BotStart"), i18n.Msg("vtui.Cancel")})
+	dlg.OnResult = func(code int) {
+		if code != 0 {
+			return
+		}
+		session := aiSession()
+		order := session.AddOrder(arg)
+		config := func() vtvibe.Config { c, _ := vtvibeConfig(); return c }
+		tools := func() []vtvibe.Tool { return vtvibe.WorkTools(dir) }
+		id := aiWorkers.Start(arg, dir, config, tools, func(r vtvibe.WorkerResult) {
+			text := aiTaskResultText(r, order)
+			manager.PostTask(func() {
+				if r.Err == nil {
+					_ = session.SetOrderDone(order, true)
+				}
+				session.Note("assistant", text)
+				aiBotRefresh(pf)
+			})
+		})
+		session.Note("assistant", fmt.Sprintf(i18n.Msg("AI.TaskStarted"), id, order, arg))
+		aiBotRefresh(pf)
+	}
+}
+
+func aiTaskResultText(r vtvibe.WorkerResult, order int) string {
+	var sb strings.Builder
+	if r.Err != nil {
+		fmt.Fprintf(&sb, i18n.Msg("AI.TaskFailed"), r.ID, order, r.Err)
+	} else {
+		fmt.Fprintf(&sb, i18n.Msg("AI.TaskDone"), r.ID, order, len(r.Steps), r.Usage.In, r.Usage.Out)
+		sb.WriteString("\n\n")
+		sb.WriteString(r.Report)
+	}
+	if r.Restarts > 0 {
+		sb.WriteString("\n\n")
+		fmt.Fprintf(&sb, i18n.Msg("AI.TaskRestarts"), r.Restarts)
+	}
+	return sb.String()
+}
+
+func aiTasksText(running map[int]string) string {
+	if len(running) == 0 {
+		return i18n.Msg("AI.NoTasks")
+	}
+	ids := make([]int, 0, len(running))
+	for id := range running {
+		ids = append(ids, id)
+	}
+	sort.Ints(ids)
+	lines := make([]string, 0, len(ids))
+	for _, id := range ids {
+		lines = append(lines, fmt.Sprintf("#%d %s", id, orderLine(running[id])))
+	}
+	return dialog.EscapeAmpersand(strings.Join(lines, "\n"))
+}
+
+func orderLine(text string) string {
+	r := []rune(strings.ReplaceAll(strings.TrimSpace(text), "\n", " "))
+	if len(r) > 70 {
+		r = append(r[:70], '…')
+	}
+	return string(r)
 }
