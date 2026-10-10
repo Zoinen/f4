@@ -40,6 +40,7 @@ func aiBotCommand(pf *panel.PanelsFrame, arg string) {
 	case "stop":
 		go func() {
 			stopped := aiBot.Stop()
+			aiBotMCP.finish() // a round stopped halfway leaves its servers running
 			manager.PostTask(func() {
 				if stopped {
 					aiSession().Note("assistant", i18n.Msg("AI.BotStopped"))
@@ -72,7 +73,11 @@ func aiBotCommand(pf *panel.PanelsFrame, arg string) {
 		// for (f4#1842, stage H7).
 		aiBot.SetStepped(!whole)
 		err := aiBot.Start(source, pause, dir, config,
-			func() []vtvibe.Tool { return vtvibe.DialogTools(vtvibeDialogControls(manager, pf)) },
+			func() []vtvibe.Tool {
+				// Each round gets the MCP servers of ai/mcp.json afresh,
+				// started in the bot's folder (f4#1842, stage H9).
+				return append(vtvibe.DialogTools(vtvibeDialogControls(manager, pf)), aiBotMCP.begin(dir)...)
+			},
 			func(n int) {
 				manager.PostTask(func() {
 					aiSession().Note("assistant", fmt.Sprintf(i18n.Msg("AI.BotRoundStart"), n, source))
@@ -81,6 +86,9 @@ func aiBotCommand(pf *panel.PanelsFrame, arg string) {
 			},
 			func(r vtvibe.BotRound) {
 				text := aiBotRoundText(r)
+				if problems := aiBotMCP.finish(); problems != "" {
+					text += "\n\n" + problems
+				}
 				model := config().Model
 				manager.PostTask(func() {
 					// The bot's spending counts for the dialog (f4#1842, H9).
@@ -702,6 +710,38 @@ func (m *aiMCPRun) close() string {
 		return ""
 	}
 	return fmt.Sprintf(i18n.Msg("AI.MCPProblems"), errors.Join(m.errs...))
+}
+
+// aiBotMCPRounds keeps the MCP servers of the bot's current round: begun
+// when the round asks for its tools, finished with the round's report or
+// when the bot is stopped.
+type aiBotMCPRounds struct {
+	mu  sync.Mutex
+	cur *aiMCPRun
+}
+
+var aiBotMCP aiBotMCPRounds
+
+func (b *aiBotMCPRounds) begin(dir string) []vtvibe.Tool {
+	b.mu.Lock()
+	if b.cur != nil {
+		_ = b.cur.close()
+	}
+	b.cur = &aiMCPRun{dir: dir}
+	run := b.cur
+	b.mu.Unlock()
+	return run.tools()
+}
+
+func (b *aiBotMCPRounds) finish() string {
+	b.mu.Lock()
+	run := b.cur
+	b.cur = nil
+	b.mu.Unlock()
+	if run == nil {
+		return ""
+	}
+	return run.close()
 }
 
 // aiMCPCommand is ai:mcp: the configured MCP servers and where they are set.

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -250,5 +251,28 @@ func TestVtvibeModelsMenuOrder(t *testing.T) {
 		if !strings.Contains(lines[i], m.ID) {
 			t.Fatalf("row %d %q is not model %q", i, lines[i], m.ID)
 		}
+	}
+}
+
+// f4#1842, stage H9: each bot round gets the MCP servers afresh and the
+// round's report tells what went wrong with them.
+func TestVtvibeBotMCPRounds(t *testing.T) {
+	setupPortableIni(t, "0")
+	var rounds aiBotMCPRounds
+	if tools := rounds.begin(t.TempDir()); len(tools) != 0 || rounds.finish() != "" {
+		t.Fatal("tools or problems without any MCP server set up")
+	}
+	if err := os.MkdirAll(filepath.Dir(vtvibeMCPPath()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(vtvibeMCPPath(), []byte(`{"mcpServers":{"broken":{"command":"f4-no-such-mcp-server"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rounds.begin(t.TempDir())
+	if problems := rounds.finish(); !strings.Contains(problems, "broken") {
+		t.Fatalf("the round's report does not name the broken server: %q", problems)
+	}
+	if rounds.finish() != "" {
+		t.Fatal("a finished round was finished again")
 	}
 }
