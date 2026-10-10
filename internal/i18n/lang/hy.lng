@@ -2148,6 +2148,10 @@ SettingsCenter.Text.b5e0881ae6932871dca62ef63b381370c57b6bbb2771381cee27c5a00a69
 SettingsCenter.Text.db3ce2f6a08f89638f6eff8c91f796292b9b8be33c025701a98a236331b8d7b8=Chat-completions հասցե «Local server» և «Custom address» մատակարարների համար, օրինակ՝ http://127.0.0.1:1234/v1 LM Studio-ի համար։ Մյուս մատակարարներն օգտագործում են իրենց հասցեն։
 SettingsCenter.Text.93d11bbf69e0a3e8128adfe20bfd02027491da3bde62a53dea7aa7b3224ae47f=Օգտագործվում է միայն այն դեպքում, երբ ընտրված մատակարարի բանալու փոփոխականը դատարկ է։ Գործող աղբյուր՝ %s (եթե բանալին հասանելի է)։ Բանալին պահվում է տեղային vtvibe.ini ֆայլում։
 SettingsCenter.Text.ab48e6eed58ca17d0e52480f00f993928b0cfe4fa09bc8bf6b21e4c42a2ecde9=Մոդելի նույնացուցիչ, որն ուղարկվում է ԱԲ-ի հաջորդ հարցումների հետ։ Դատարկը նշանակում է ընտրված մատակարարի լռելյայն մոդելը։
+SettingsCenter.Text.03c8b9ea4e03d7d3e230dd5f96623b1f660430cfa5ac44443d26669e7240a6ba=Մոդելը կարող է փոխել մոդելը
+SettingsCenter.Text.5b4b9a299525629f834251c49f3d856236ee77d4e8bce5d98306e190a1714260=Մոդելը կարող է երկխոսությունը փոխանցել այլ մոդելի, երբ դա խնդրում եք դուք կամ նրա հրահանգը։
+SettingsCenter.Text.e24bd4269687d6af5de7ea80901913c246d9a75ad2fc2b7c1c0203d056f314e7=Մոդելը կարող է վերանվանել երկխոսությունը
+SettingsCenter.Text.c6ce374075feb031a1e90f5a3d48a3684d7ebebe27c9a54065f82f3ade2b90aa=Մոդելը կարող է երկխոսությանը տալ անուն, որը ցույց է տալիս, թե ինչի մասին է այն։
 SettingsCenter.entry.Name.Description=F11 ընտրացանկի կետ։
 SettingsCenter.entry.Name.Label=Կետ
 SettingsCenter.entry.Enabled.Description=Ցուցադրել այս կետը F11 ընտրացանկում։

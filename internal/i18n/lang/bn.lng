@@ -2227,6 +2227,10 @@ SettingsCenter.Text.b5e0881ae6932871dca62ef63b381370c57b6bbb2771381cee27c5a00a69
 SettingsCenter.Text.db3ce2f6a08f89638f6eff8c91f796292b9b8be33c025701a98a236331b8d7b8="Local server" ও "Custom address" প্রদানকারীর জন্য chat-completions ঠিকানা, যেমন LM Studio-র জন্য http://127.0.0.1:1234/v1। অন্য প্রদানকারীরা নিজেদের ঠিকানা ব্যবহার করে।
 SettingsCenter.Text.93d11bbf69e0a3e8128adfe20bfd02027491da3bde62a53dea7aa7b3224ae47f=শুধু তখনই ব্যবহৃত হয় যখন নির্বাচিত প্রদানকারীর কী ভেরিয়েবল খালি থাকে। বর্তমান উৎস: %s (যদি কী পাওয়া যায়)। কীটি স্থানীয় vtvibe.ini ফাইলে রাখা হয়।
 SettingsCenter.Text.ab48e6eed58ca17d0e52480f00f993928b0cfe4fa09bc8bf6b21e4c42a2ecde9=পরবর্তী AI অনুরোধের সাথে পাঠানো মডেল শনাক্তকারী। খালি মানে নির্বাচিত প্রদানকারীর ডিফল্ট মডেল।
+SettingsCenter.Text.03c8b9ea4e03d7d3e230dd5f96623b1f660430cfa5ac44443d26669e7240a6ba=মডেলকে মডেল বদলাতে দিন
+SettingsCenter.Text.5b4b9a299525629f834251c49f3d856236ee77d4e8bce5d98306e190a1714260=আপনি বা তার নির্দেশনা চাইলে মডেল কথোপকথনটি অন্য মডেলে বদলাতে পারে।
+SettingsCenter.Text.e24bd4269687d6af5de7ea80901913c246d9a75ad2fc2b7c1c0203d056f314e7=মডেলকে কথোপকথনের নাম বদলাতে দিন
+SettingsCenter.Text.c6ce374075feb031a1e90f5a3d48a3684d7ebebe27c9a54065f82f3ade2b90aa=মডেল কথোপকথনকে এমন নাম দিতে পারে যা বলে সেটি কী নিয়ে।
 SettingsCenter.entry.Name.Description=F11 মেনুর এন্ট্রি।
 SettingsCenter.entry.Name.Label=এন্ট্রি
 SettingsCenter.entry.Enabled.Description=এই এন্ট্রি F11 মেনুতে দেখান।

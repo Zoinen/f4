@@ -68,7 +68,7 @@ func LoadInstruction(ctx context.Context, source string) (string, error) {
 // BotSystemPrompt tells the model where it runs and on which model: the
 // model's name is always part of the context (f4#1842).
 func BotSystemPrompt(model, dir string, now time.Time) string {
-	return fmt.Sprintf(`You are a bot run by the f4 file manager. You run on the model %q.
+	return fmt.Sprintf(`You are a bot run by the f4 file manager. You are running on the model %q.
 Each round you get the same instruction in a fresh dialog: earlier rounds are
 not in your context, so keep whatever must survive in files or in the systems
 the instruction names. Carry out the instruction now, using the tools: shell
@@ -115,8 +115,11 @@ var ErrBotRunning = errors.New("vtvibe: the bot is already running")
 // current settings every round, so a model switched in between is used.
 // onRound is called from the bot's goroutine after every round, and
 // onStart before it.
+//
+// extra, when not nil, gives tools offered besides WorkTools; it is asked
+// every round, so a tool switched off in Settings is gone from the next one.
 func (b *Bot) Start(source string, pause time.Duration, dir string, config func() Config,
-	onStart func(n int), onRound func(BotRound)) error {
+	extra func() []Tool, onStart func(n int), onRound func(BotRound)) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.running {
@@ -127,11 +130,11 @@ func (b *Bot) Start(source string, pause time.Duration, dir string, config func(
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	b.cancel, b.done, b.source, b.pause, b.rounds, b.running = cancel, make(chan struct{}), source, pause, 0, true
-	go b.loop(ctx, dir, config, onStart, onRound)
+	go b.loop(ctx, dir, config, extra, onStart, onRound)
 	return nil
 }
 
-func (b *Bot) loop(ctx context.Context, dir string, config func() Config, onStart func(int), onRound func(BotRound)) {
+func (b *Bot) loop(ctx context.Context, dir string, config func() Config, extra func() []Tool, onStart func(int), onRound func(BotRound)) {
 	defer func() {
 		b.mu.Lock()
 		b.running = false
@@ -142,7 +145,11 @@ func (b *Bot) loop(ctx context.Context, dir string, config func() Config, onStar
 		if onStart != nil {
 			onStart(n)
 		}
-		round := b.round(ctx, n, dir, config())
+		tools := WorkTools(dir)
+		if extra != nil {
+			tools = append(tools, extra()...)
+		}
+		round := b.round(ctx, n, dir, config(), tools)
 		b.mu.Lock()
 		b.rounds = n
 		b.next = time.Now().Add(b.pause)
@@ -163,7 +170,7 @@ func (b *Bot) loop(ctx context.Context, dir string, config func() Config, onStar
 	}
 }
 
-func (b *Bot) round(ctx context.Context, n int, dir string, cfg Config) BotRound {
+func (b *Bot) round(ctx context.Context, n int, dir string, cfg Config, tools []Tool) BotRound {
 	round := BotRound{N: n}
 	instruction, err := LoadInstruction(ctx, b.source)
 	if err != nil {
@@ -174,7 +181,7 @@ func (b *Bot) round(ctx context.Context, n int, dir string, cfg Config) BotRound
 		{Role: "system", Content: BotSystemPrompt(cfg.Model, dir, time.Now())},
 		{Role: "user", Content: instruction},
 	}
-	round.Report, round.Usage, round.Err = cfg.RunAgent(ctx, msgs, WorkTools(dir), AgentOptions{
+	round.Report, round.Usage, round.Err = cfg.RunAgent(ctx, msgs, tools, AgentOptions{
 		MaxSteps: 200,
 		OnStep:   func(s AgentStep) { round.Steps = append(round.Steps, s) },
 	})

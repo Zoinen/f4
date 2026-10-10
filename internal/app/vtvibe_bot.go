@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/unxed/f4/internal/i18n"
+	"github.com/unxed/f4/internal/ini"
 	"github.com/unxed/f4/internal/panel"
 	"github.com/unxed/f4/internal/vtvibe"
 	"github.com/unxed/f4/vfs"
@@ -65,6 +66,7 @@ func aiBotCommand(pf *panel.PanelsFrame, arg string) {
 		}
 		config := func() vtvibe.Config { c, _ := vtvibeConfig(); return c }
 		err := aiBot.Start(source, pause, dir, config,
+			func() []vtvibe.Tool { return vtvibe.DialogTools(vtvibeDialogControls(manager, pf)) },
 			func(n int) {
 				manager.PostTask(func() {
 					aiSession().Note("assistant", fmt.Sprintf(i18n.Msg("AI.BotRoundStart"), n, source))
@@ -139,4 +141,38 @@ func aiBotRefresh(pf *panel.PanelsFrame) {
 		}
 	}
 	vtui.FrameManager.Redraw()
+}
+
+// vtvibeDialogControls gives the model its handles on the dialog, each only
+// while Settings → AI allows it (f4#1842, step B3). Called from the bot's
+// goroutine; the UI is touched only through manager.
+func vtvibeDialogControls(manager interface{ PostTask(func()) }, pf *panel.PanelsFrame) vtvibe.DialogControls {
+	var c vtvibe.DialogControls
+	if vtvibeAllowed("allow_model_switch") {
+		c.SetModel = func(model string) error {
+			if err := vtvibeSaveSetting("model", model); err != nil {
+				return err
+			}
+			manager.PostTask(func() {
+				vtvibeConfig()
+				aiSession().Note("assistant", fmt.Sprintf(i18n.Msg("AI.ModelSwitched"), model))
+				aiBotRefresh(pf)
+			})
+			return nil
+		}
+	}
+	if vtvibeAllowed("allow_rename") {
+		c.Rename = func(title string) error {
+			aiSession().SetTitle(title)
+			manager.PostTask(func() { aiBotRefresh(pf) })
+			return nil
+		}
+	}
+	return c
+}
+
+// vtvibeAllowed reads one of the model's permissions from vtvibe.ini; they
+// are on unless the user switched them off.
+func vtvibeAllowed(key string) bool {
+	return ini.Load(vtvibeIniPath()).GetString("general", key, "true") != "false"
 }

@@ -61,6 +61,7 @@ type Session struct {
 	usage  Usage
 	patch  *Patch // the ap patch of the latest answer, nil when it had none
 	apMode bool   // ask the model for ap patches instead of whole files
+	title  string // the dialog's name; the model may set it (f4#1842)
 }
 
 // PatchModePrompt is appended to the system prompt once the human attached the
@@ -121,6 +122,7 @@ func (s *Session) reset() {
 	s.turns = nil
 	s.usage = Usage{}
 	s.patch = nil
+	s.title = ""
 	_ = s.tree.mkdirAll(ctxDir)
 	_ = s.tree.mkdirAll(chatDir)
 	_ = s.tree.mkdirAll(outDir)
@@ -245,6 +247,7 @@ func (s *Session) Ask(ctx context.Context, cfg Config, question string) error {
 	if apMode {
 		system += "\n\n" + PatchModePrompt
 	}
+	system += "\n\n" + ModelNotice(cfg.Model)
 
 	msgs := make([]Message, 0, len(history)+2)
 	msgs = append(msgs, Message{Role: "system", Content: system})
@@ -294,6 +297,21 @@ func (s *Session) Note(role, text string) {
 	defer s.mu.Unlock()
 	s.appendTurn(Turn{Role: role, Text: text, Time: time.Now()})
 	s.writeSessionFile()
+}
+
+// SetTitle names the dialog; an empty title clears the name.
+func (s *Session) SetTitle(title string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.title = strings.TrimSpace(title)
+	s.writeSessionFile()
+}
+
+// Title returns the dialog's name, empty when it has none.
+func (s *Session) Title() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.title
 }
 
 // Turns returns a copy of the dialog.
@@ -389,6 +407,9 @@ func (s *Session) writeSessionFile() {
 
 	var sb strings.Builder
 	sb.WriteString("# vtvibe session\n\n")
+	if s.title != "" {
+		fmt.Fprintf(&sb, "title    : %s\n", s.title)
+	}
 	fmt.Fprintf(&sb, "endpoint : %s\n", s.status.BaseURL)
 	fmt.Fprintf(&sb, "model    : %s\n", model)
 	fmt.Fprintf(&sb, "api key  : %s\n", key)

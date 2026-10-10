@@ -52,10 +52,10 @@ func TestBotRunsRoundsInCleanDialogsAndStops(t *testing.T) {
 	var b Bot
 	rounds := make(chan BotRound, 4)
 	cfg := func() Config { return Config{BaseURL: srv.URL, Model: "m", APIKey: "k"} }
-	if err := b.Start(instruction, 10*time.Millisecond, t.TempDir(), cfg, nil, func(r BotRound) { rounds <- r }); err != nil {
+	if err := b.Start(instruction, 10*time.Millisecond, t.TempDir(), cfg, nil, nil, func(r BotRound) { rounds <- r }); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.Start(instruction, time.Minute, ".", cfg, nil, nil); err != ErrBotRunning {
+	if err := b.Start(instruction, time.Minute, ".", cfg, nil, nil, nil); err != ErrBotRunning {
 		t.Fatalf("second start = %v", err)
 	}
 	for i := 1; i <= 2; i++ {
@@ -83,7 +83,7 @@ func TestBotRoundsDoNotCarryHistory(t *testing.T) {
 	var b Bot
 	done := make(chan struct{}, 2)
 	cfg := func() Config { return Config{BaseURL: srv.URL, Model: "m", APIKey: "k"} }
-	_ = b.Start(instruction, time.Millisecond, t.TempDir(), cfg, nil, func(BotRound) { done <- struct{}{} })
+	_ = b.Start(instruction, time.Millisecond, t.TempDir(), cfg, nil, nil, func(BotRound) { done <- struct{}{} })
 	<-done
 	<-done
 	b.Stop()
