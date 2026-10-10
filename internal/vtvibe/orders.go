@@ -2,6 +2,8 @@ package vtvibe
 
 import (
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -76,8 +78,53 @@ func (s *Session) ordersPromptLocked(asking string) string {
 		return ""
 	}
 	return "The user's orders in this dialog that are not done yet. None of them may be lost or left undone: " +
-		"when you answer, say which of them your answer carries out and which are still waiting.\n" +
+		"when you answer, say which of them your answer carries out and which are still waiting. " +
+		"If your answer fully carries out some of them, end it with one last line of the form " +
+		ordersDoneMarker + " #1, #3 — never list an order there that is not completely done.\n" +
 		strings.Join(open, "\n")
+}
+
+// ordersDoneMarker starts the last line in which the model reports the
+// orders its answer carried out (f4#1842, stage H4): plain text, so it works
+// with every provider and with streamed answers alike.
+const ordersDoneMarker = "ORDERS DONE:"
+
+var ordersDoneLine = regexp.MustCompile(`(?i)^\s*ORDERS DONE:\s*((?:#?\d+\s*,?\s*)+)$`)
+
+// closeOrdersFromReplyLocked closes the open orders named on the reply's
+// last line and puts a visible check mark in its place; a reply without the
+// line is returned as it is. Caller holds s.mu.
+func (s *Session) closeOrdersFromReplyLocked(reply string) string {
+	trimmed := strings.TrimRight(reply, " \t\r\n")
+	cut := strings.LastIndexByte(trimmed, '\n')
+	last := trimmed[cut+1:]
+	m := ordersDoneLine.FindStringSubmatch(last)
+	if m == nil {
+		return reply
+	}
+	var closed []string
+	for _, field := range strings.FieldsFunc(m[1], func(r rune) bool { return r == ',' || r == ' ' || r == '#' }) {
+		id, err := strconv.Atoi(field)
+		if err != nil {
+			continue
+		}
+		for i := range s.orders {
+			if s.orders[i].ID == id && !s.orders[i].Done {
+				s.orders[i].Done = true
+				s.orders[i].DoneAt = time.Now()
+				closed = append(closed, "#"+field)
+			}
+		}
+	}
+	body := strings.TrimRight(trimmed[:cut+1], " \t\r\n")
+	if len(closed) == 0 {
+		return body
+	}
+	mark := "✓ " + strings.Join(closed, " ")
+	if body == "" {
+		return mark
+	}
+	return body + "\n\n" + mark
 }
 
 // orderSummary is the first line of an order, cut at 300 characters: the

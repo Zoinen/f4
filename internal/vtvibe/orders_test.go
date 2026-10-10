@@ -75,3 +75,42 @@ func TestOrdersAreSavedWithTheDialog(t *testing.T) {
 		t.Fatal("a new dialog kept the old orders")
 	}
 }
+
+func TestTheModelClosesOrdersWithItsLastLine(t *testing.T) {
+	s := NewSession()
+	s.mu.Lock()
+	s.addOrderLocked("first")
+	s.addOrderLocked("second")
+	s.addOrderLocked("third")
+	s.orders[2].Done = true
+	got := s.closeOrdersFromReplyLocked("Here is the work.\n\nORDERS DONE: #1, #3, #9\n")
+	s.mu.Unlock()
+	if got != "Here is the work.\n\n✓ #1" {
+		t.Fatalf("reply shown as %q", got)
+	}
+	o := s.Orders()
+	if !o[0].Done || o[1].Done {
+		t.Fatalf("orders after the reply: %#v", o)
+	}
+
+	s.mu.Lock()
+	plain := s.closeOrdersFromReplyLocked("No marker here.\nORDERS DONE is mentioned mid-text.")
+	only := s.closeOrdersFromReplyLocked("ORDERS DONE: 2")
+	s.mu.Unlock()
+	if plain != "No marker here.\nORDERS DONE is mentioned mid-text." || only != "✓ #2" {
+		t.Fatalf("plain %q, only %q", plain, only)
+	}
+	if !s.Orders()[1].Done {
+		t.Fatal("a bare number on the marker line did not close the order")
+	}
+}
+
+func TestOrdersPromptExplainsTheMarker(t *testing.T) {
+	s := NewSession()
+	s.mu.Lock()
+	prompt := s.ordersPromptLocked("do it")
+	s.mu.Unlock()
+	if !strings.Contains(prompt, ordersDoneMarker) {
+		t.Fatalf("the prompt does not tell the model how to close orders:\n%s", prompt)
+	}
+}

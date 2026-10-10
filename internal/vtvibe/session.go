@@ -299,6 +299,7 @@ func (s *Session) Ask(ctx context.Context, cfg Config, question string) error {
 	defer s.mu.Unlock()
 	s.pending = ""
 	s.addOrderLocked(question)
+	reply = s.closeOrdersFromReplyLocked(reply)
 	s.appendTurn(Turn{Role: "user", Text: question, Time: time.Now()})
 	s.appendTurn(Turn{Role: "assistant", Text: reply, Time: time.Now()})
 	s.usage = usage
