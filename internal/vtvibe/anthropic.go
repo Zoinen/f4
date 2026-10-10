@@ -75,6 +75,11 @@ func (c Config) chatAnthropic(ctx context.Context, msgs []Message) (string, Usag
 	if err != nil {
 		return "", Usage{}, err
 	}
+	return anthropicReplyText(*reply)
+}
+
+// anthropicReplyText is the text of a whole reply, or why there is none.
+func anthropicReplyText(reply anthropic.BetaMessage) (string, Usage, error) {
 	usage := Usage{In: int(reply.Usage.InputTokens), Out: int(reply.Usage.OutputTokens)}
 	if reply.StopReason == anthropic.BetaStopReasonRefusal {
 		why := strings.TrimSpace(reply.StopDetails.Explanation)

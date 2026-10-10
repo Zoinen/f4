@@ -62,6 +62,18 @@ type Session struct {
 	patch  *Patch // the ap patch of the latest answer, nil when it had none
 	apMode bool   // ask the model for ap patches instead of whole files
 	title  string // the dialog's name; the model may set it (f4#1842)
+	// pending is the answer being streamed in, shown before it is complete;
+	// onUpdate is told whenever it grows (f4#1842, stage H2).
+	pending  string
+	onUpdate func()
+	// storePath is where the dialog is saved after each change; storeErr the
+	// last failure to save it (store.go).
+	storePath string
+	storeErr  error
+	// orders is the register of the user's orders (orders.go).
+	orders []Order
+	// mode is the dialog's working mode (mode.go).
+	mode Mode
 }
 
 // PatchModePrompt is appended to the system prompt once the human attached the
@@ -77,6 +89,7 @@ func (s *Session) SetPatchMode(on bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.apMode = on
+	s.saveLocked()
 }
 
 // PatchMode reports whether the model is being asked for ap patches.
@@ -123,6 +136,8 @@ func (s *Session) reset() {
 	s.usage = Usage{}
 	s.patch = nil
 	s.title = ""
+	s.orders = nil
+	s.mode = ModeDefault
 	_ = s.tree.mkdirAll(ctxDir)
 	_ = s.tree.mkdirAll(chatDir)
 	_ = s.tree.mkdirAll(outDir)
@@ -158,6 +173,7 @@ func (s *Session) Reset(keepContext bool) {
 		_ = s.tree.writeFile(p, data)
 	}
 	s.writeSessionFile()
+	s.saveLocked()
 }
 
 // SetStatus records what the host resolved from the config file.
@@ -216,19 +232,35 @@ func (s *Session) ClearDraft() {
 //
 // It is called from a background task; the UI thread never blocks on it.
 func (s *Session) Ask(ctx context.Context, cfg Config, question string) error {
+	_, err := s.ask(ctx, cfg, question, true, "")
+	return err
+}
+
+// ask sends one message and returns the answer as it was stored. order says
+// the message is the user's and enters the register; a message f4 sends by
+// itself (mode.go) does not. extra is added to the system prompt.
+func (s *Session) ask(ctx context.Context, cfg Config, question string, order bool, extra string) (string, error) {
 	question = strings.TrimSpace(question)
 	if question == "" {
-		return fmt.Errorf("vtvibe: nothing to send")
+		return "", fmt.Errorf("vtvibe: nothing to send")
 	}
 
 	s.mu.Lock()
 	if s.busy {
 		s.mu.Unlock()
-		return ErrBusy
+		return "", ErrBusy
 	}
 	s.busy = true
 	history := append([]Turn(nil), s.turns...)
 	apMode := s.apMode
+	// The question being asked is an order too, and the model should see it
+	// among the open ones; it enters the register only once it was sent, so a
+	// failed request asked again is not entered twice.
+	asking := ""
+	if order {
+		asking = question
+	}
+	orders := s.ordersPromptLocked(asking)
 	s.mu.Unlock()
 
 	defer func() {
@@ -248,6 +280,12 @@ func (s *Session) Ask(ctx context.Context, cfg Config, question string) error {
 		system += "\n\n" + PatchModePrompt
 	}
 	system += "\n\n" + ModelNotice(cfg.Model)
+	if orders != "" {
+		system += "\n\n" + orders
+	}
+	if extra != "" {
+		system += "\n\n" + extra
+	}
 
 	msgs := make([]Message, 0, len(history)+2)
 	msgs = append(msgs, Message{Role: "system", Content: system})
@@ -259,19 +297,35 @@ func (s *Session) Ask(ctx context.Context, cfg Config, question string) error {
 	}
 	msgs = append(msgs, Message{Role: "user", Content: question})
 
-	reply, usage, err := cfg.Chat(ctx, msgs)
+	reply, usage, err := cfg.ChatStream(ctx, msgs, func(piece string) {
+		s.mu.Lock()
+		s.pending += piece
+		notify := s.onUpdate
+		s.mu.Unlock()
+		if notify != nil {
+			notify()
+		}
+	})
 	if err != nil {
-		return err
+		s.mu.Lock()
+		s.pending = ""
+		s.mu.Unlock()
+		return "", err
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.pending = ""
+	if order {
+		s.addOrderLocked(question)
+	}
+	reply = s.closeOrdersFromReplyLocked(reply)
 	s.appendTurn(Turn{Role: "user", Text: question, Time: time.Now()})
 	s.appendTurn(Turn{Role: "assistant", Text: reply, Time: time.Now()})
 	s.usage = usage
 	s.saveArtifacts(reply)
 	s.writeSessionFile()
-	return nil
+	return reply, nil
 }
 
 // appendTurn stores the message and mirrors it as a file, so F3 works on the
@@ -281,6 +335,7 @@ func (s *Session) appendTurn(t Turn) {
 	name := fmt.Sprintf("%04d-%s.md", len(s.turns), shortRole(t.Role))
 	header := fmt.Sprintf("<!-- %s, %s -->\n\n", t.Role, t.Time.Format("2006-01-02 15:04:05"))
 	_ = s.tree.writeFile(path.Join(chatDir, name), []byte(header+t.Text+"\n"))
+	s.saveLocked()
 }
 
 func shortRole(role string) string {
@@ -305,6 +360,7 @@ func (s *Session) SetTitle(title string) {
 	defer s.mu.Unlock()
 	s.title = strings.TrimSpace(title)
 	s.writeSessionFile()
+	s.saveLocked()
 }
 
 // Title returns the dialog's name, empty when it has none.
@@ -312,6 +368,22 @@ func (s *Session) Title() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.title
+}
+
+// Pending returns the part of the answer streamed in so far; empty when no
+// answer is being written.
+func (s *Session) Pending() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pending
+}
+
+// SetOnUpdate sets what to call when the streamed answer grows. It is called
+// from the request's goroutine, often: the host throttles and posts to its UI.
+func (s *Session) SetOnUpdate(fn func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onUpdate = fn
 }
 
 // Turns returns a copy of the dialog.

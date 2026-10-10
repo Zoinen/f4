@@ -243,12 +243,20 @@ func (cp *AIChatPanel) Show(scr *vtui.ScreenBuf) {
 		}
 		chatTurns[i] = vtui.ChatTurn{Role: role, Text: t.Text, Time: t.Time}
 	}
+	// The answer being streamed in shows as it grows (f4#1842, stage H2).
+	if pending := session.Pending(); pending != "" {
+		chatTurns = append(chatTurns, vtui.ChatTurn{Role: vtui.ChatRolePeer, Text: pending, Time: time.Now()})
+	}
 	cp.Turns = chatTurns
 	cp.Busy = session.Busy()
 	// The model may name the dialog (f4#1842); the name joins the title.
 	title := i18n.Msg("AI.ChatTitle")
 	if name := session.Title(); name != "" {
 		title += ": " + name
+	}
+	// The working mode is always in sight (f4#1842, stage H6).
+	if aiNonstop(session) {
+		title += " · " + i18n.Msg("AI.ModeNonstop")
 	}
 	if cp.Frame != nil && cp.Frame.GetTitle() != title {
 		cp.Frame.SetTitle(title)

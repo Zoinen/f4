@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/unxed/f4/internal/panel"
 
@@ -40,8 +42,25 @@ var (
 
 // aiSession returns the single dialog shared by every ai:// mount.
 func aiSession() *vtvibe.Session {
-	vtvibeOnce.Do(func() { vtvibeSession = vtvibe.NewSession() })
+	vtvibeOnce.Do(func() {
+		vtvibeSession = vtvibe.NewSession()
+		// The dialog outlives f4: it is read back from disk here and saved
+		// after every change (f4#1842, stage H3).
+		if err := vtvibeSession.SetStorePath(vtvibeDialogPath()); err != nil {
+			vtui.DebugLog("AI: dialog not restored: %v", err)
+		}
+	})
 	return vtvibeSession
+}
+
+// vtvibeDialogPath is the current dialog's file; finished dialogs are moved
+// to vtvibeArchiveDir by ai:new.
+func vtvibeDialogPath() string {
+	return filepath.Join(config.GetF4ConfigDir(), "ai", "dialog.json")
+}
+
+func vtvibeArchiveDir() string {
+	return filepath.Join(config.GetF4ConfigDir(), "ai", "dialogs")
 }
 
 func vtvibeIniPath() string {
@@ -347,6 +366,10 @@ func AiSetViewModePanel(pf *panel.PanelsFrame, idx int, path string, isChat bool
 }
 
 func aiNewSession(pf *panel.PanelsFrame) {
+	if _, err := aiSession().Archive(vtvibeArchiveDir()); err != nil {
+		aiShowError(err)
+		return
+	}
 	aiSession().Reset(true)
 	vtvibeConfig()
 	pf.RefreshAll()
@@ -550,6 +573,18 @@ func aiCommand(app vfs.App, arg string) {
 		aiAttachAPSpec(pf)
 	case lower == "key":
 		aiSetupDialog(pf)
+	case lower == "task" || strings.HasPrefix(lower, "task "):
+		aiTaskCommand(pf, arg[len("task"):])
+	case lower == "orders":
+		aiOrdersCommand(pf, "orders", "")
+	case strings.HasPrefix(lower, "done "):
+		aiOrdersCommand(pf, "done", arg[len("done "):])
+	case strings.HasPrefix(lower, "undone "):
+		aiOrdersCommand(pf, "undone", arg[len("undone "):])
+	case lower == "dialogs":
+		aiDialogsMenu(pf)
+	case lower == "mode" || strings.HasPrefix(lower, "mode "):
+		aiModeCommand(pf, arg[len("mode"):])
 	case lower == "bot" || strings.HasPrefix(lower, "bot "):
 		aiBotCommand(pf, arg[len("bot"):])
 	case lower == "models":
@@ -598,9 +633,14 @@ func aiSend(pf *panel.PanelsFrame, question string) {
 	}
 
 	session := aiSession()
+	session.SetOnUpdate(aiStreamRedraw(vtui.FrameManager, pf))
 	pf.RunProgressTask(i18n.Msg("AI.Title"), i18n.Msg("AI.Sending"), false,
 		func(ctx context.Context, update func(msg string, percent int)) error {
-			return session.Ask(ctx, cfg, question)
+			end, err := session.Work(ctx, cfg, question, vtvibeNonstopDefault())
+			if err == nil && end == vtvibe.WorkRoundLimit {
+				session.Note("assistant", fmt.Sprintf(i18n.Msg("AI.NonstopRoundLimit"), vtvibe.MaxNonstopRounds))
+			}
+			return err
 		},
 		func(err error) {
 			if err != nil {
@@ -621,6 +661,32 @@ func aiSend(pf *panel.PanelsFrame, question string) {
 			}
 		})
 }
+
+// aiStreamRedraw shows a streamed answer as it grows (f4#1842, stage H2).
+// Pieces arrive many times a second from the request's goroutine; the chat
+// is redrawn at most every aiStreamRedrawEvery, and the completion handler
+// draws the final state, so a skipped last piece is never lost.
+func aiStreamRedraw(manager interface{ PostTask(func()) }, pf *panel.PanelsFrame) func() {
+	var last atomic.Int64
+	return func() {
+		now := time.Now().UnixNano()
+		if prev := last.Load(); now-prev < int64(aiStreamRedrawEvery) || !last.CompareAndSwap(prev, now) {
+			return
+		}
+		manager.PostTask(func() {
+			if pf.AltPanels[pf.ActiveIdx] != nil {
+				if cp, ok := pf.AltPanels[pf.ActiveIdx].(*AIChatPanel); ok {
+					cp.ScrollToBottom()
+				}
+			}
+			if vtui.FrameManager != nil {
+				vtui.FrameManager.Redraw()
+			}
+		})
+	}
+}
+
+var aiStreamRedrawEvery = 80 * time.Millisecond
 
 // aiLastAnswerPath is the chat file the reply was just written to.
 func aiLastAnswerPath(s *vtvibe.Session) string {

@@ -144,3 +144,22 @@ func TestVtvibeHostProviderPreset(t *testing.T) {
 		t.Fatalf("leftover Gemini model kept for xAI: %q", cfg.Model)
 	}
 }
+
+// f4#1842, stage H6: a dialog's own mode wins over the setting for new ones.
+func TestVtvibeDialogModeOverridesTheSetting(t *testing.T) {
+	setupPortableIni(t, "0")
+	session := vtvibe.NewSession()
+	writeVtvibeINI(t, "[general]\nnonstop = true\n")
+	if !aiNonstop(session) {
+		t.Fatal("a dialog without its own mode does not follow the setting")
+	}
+	session.SetMode(vtvibe.ModeQA)
+	if aiNonstop(session) {
+		t.Fatal("the dialog's own mode lost to the setting")
+	}
+	writeVtvibeINI(t, "[general]\n")
+	session.SetMode(vtvibe.ModeDefault)
+	if aiNonstop(session) {
+		t.Fatal("the default is not question and answer")
+	}
+}
