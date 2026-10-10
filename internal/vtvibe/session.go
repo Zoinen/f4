@@ -545,3 +545,9 @@ How to use this panel
 `)
 	_ = s.tree.writeFile(sessionFile, []byte(sb.String()))
 }
+
+// AskOnce sends one message the way f4 --ai does: the answer comes back as
+// the model gave it, and the message does not enter the register of orders.
+func (s *Session) AskOnce(ctx context.Context, cfg Config, question string) (string, error) {
+	return s.ask(ctx, cfg, question, false, "")
+}
