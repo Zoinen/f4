@@ -66,6 +66,10 @@ type Session struct {
 	// onUpdate is told whenever it grows (f4#1842, stage H2).
 	pending  string
 	onUpdate func()
+	// storePath is where the dialog is saved after each change; storeErr the
+	// last failure to save it (store.go).
+	storePath string
+	storeErr  error
 }
 
 // PatchModePrompt is appended to the system prompt once the human attached the
@@ -81,6 +85,7 @@ func (s *Session) SetPatchMode(on bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.apMode = on
+	s.saveLocked()
 }
 
 // PatchMode reports whether the model is being asked for ap patches.
@@ -162,6 +167,7 @@ func (s *Session) Reset(keepContext bool) {
 		_ = s.tree.writeFile(p, data)
 	}
 	s.writeSessionFile()
+	s.saveLocked()
 }
 
 // SetStatus records what the host resolved from the config file.
@@ -297,6 +303,7 @@ func (s *Session) appendTurn(t Turn) {
 	name := fmt.Sprintf("%04d-%s.md", len(s.turns), shortRole(t.Role))
 	header := fmt.Sprintf("<!-- %s, %s -->\n\n", t.Role, t.Time.Format("2006-01-02 15:04:05"))
 	_ = s.tree.writeFile(path.Join(chatDir, name), []byte(header+t.Text+"\n"))
+	s.saveLocked()
 }
 
 func shortRole(role string) string {
@@ -321,6 +328,7 @@ func (s *Session) SetTitle(title string) {
 	defer s.mu.Unlock()
 	s.title = strings.TrimSpace(title)
 	s.writeSessionFile()
+	s.saveLocked()
 }
 
 // Title returns the dialog's name, empty when it has none.

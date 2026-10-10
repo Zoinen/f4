@@ -42,8 +42,25 @@ var (
 
 // aiSession returns the single dialog shared by every ai:// mount.
 func aiSession() *vtvibe.Session {
-	vtvibeOnce.Do(func() { vtvibeSession = vtvibe.NewSession() })
+	vtvibeOnce.Do(func() {
+		vtvibeSession = vtvibe.NewSession()
+		// The dialog outlives f4: it is read back from disk here and saved
+		// after every change (f4#1842, stage H3).
+		if err := vtvibeSession.SetStorePath(vtvibeDialogPath()); err != nil {
+			vtui.DebugLog("AI: dialog not restored: %v", err)
+		}
+	})
 	return vtvibeSession
+}
+
+// vtvibeDialogPath is the current dialog's file; finished dialogs are moved
+// to vtvibeArchiveDir by ai:new.
+func vtvibeDialogPath() string {
+	return filepath.Join(config.GetF4ConfigDir(), "ai", "dialog.json")
+}
+
+func vtvibeArchiveDir() string {
+	return filepath.Join(config.GetF4ConfigDir(), "ai", "dialogs")
 }
 
 func vtvibeIniPath() string {
@@ -349,6 +366,10 @@ func AiSetViewModePanel(pf *panel.PanelsFrame, idx int, path string, isChat bool
 }
 
 func aiNewSession(pf *panel.PanelsFrame) {
+	if _, err := aiSession().Archive(vtvibeArchiveDir()); err != nil {
+		aiShowError(err)
+		return
+	}
 	aiSession().Reset(true)
 	vtvibeConfig()
 	pf.RefreshAll()
