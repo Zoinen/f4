@@ -2,6 +2,7 @@ package vtvibe
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -56,7 +57,14 @@ func (c Config) anthropicParams(msgs []Message) anthropic.BetaMessageNewParams {
 				Content: []anthropic.BetaContentBlockParamUnion{anthropic.NewBetaTextBlock(m.Content)},
 			})
 		default:
-			params.Messages = append(params.Messages, anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock(m.Content)))
+			blocks := []anthropic.BetaContentBlockParamUnion{anthropic.NewBetaTextBlock(m.Content)}
+			for _, img := range m.Images {
+				blocks = append(blocks, anthropic.NewBetaImageBlock(anthropic.BetaBase64ImageSourceParam{
+					Data:      base64.StdEncoding.EncodeToString(img.Data),
+					MediaType: anthropic.BetaBase64ImageSourceMediaType(img.MIME),
+				}))
+			}
+			params.Messages = append(params.Messages, anthropic.NewBetaUserMessage(blocks...))
 		}
 	}
 	if anthropicFallbackModels[c.Model] {
