@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/unxed/f4/internal/config"
 	"github.com/unxed/f4/internal/dialog"
 	"github.com/unxed/f4/internal/i18n"
 	"github.com/unxed/f4/internal/ini"
@@ -241,6 +243,34 @@ func aiTokenCommand(pf *panel.PanelsFrame, arg string) {
 	})
 }
 
+// vtvibeGatesPath is the file of the user's gate rules (f4#1842, stage H8).
+func vtvibeGatesPath() string {
+	return filepath.Join(config.GetF4ConfigDir(), "ai", "gates.md")
+}
+
+// aiGateRules reads the user's gate rules; none when the file is missing.
+func aiGateRules() string {
+	data, err := os.ReadFile(vtvibeGatesPath()) // #nosec G304 -- f4's own file in its configuration folder
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+// aiGatesCommand is ai:gates: it opens the rules in the editor, creating the
+// file empty the first time. Every finished worker task is checked against
+// them in a clean dialog and given back to the worker when it breaks one.
+func aiGatesCommand(pf *panel.PanelsFrame) {
+	path := vtvibeGatesPath()
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		if err := config.WriteUserFileAtomically(path, nil, 0o600); err != nil {
+			aiShowError(err)
+			return
+		}
+	}
+	actionOpenEditor(pf, vfs.NewOSVFS(filepath.Dir(path)), path)
+}
+
 // vtvibeNonstopDefault is the mode of the dialogs that did not choose their
 // own (Settings → AI, f4#1842 stage H6): question-and-answer unless set.
 func vtvibeNonstopDefault() bool {
@@ -425,6 +455,7 @@ func aiTaskCommand(pf *panel.PanelsFrame, arg string) {
 func aiStartWorker(pf *panel.PanelsFrame, manager interface{ PostTask(func()) }, session *vtvibe.Session, task, dir string, order int, closeOrder bool, done func()) {
 	config := aiAgentConfig(session)
 	tools := func() []vtvibe.Tool { return vtvibe.WorkTools(dir, config().ToolEnv...) }
+	aiWorkers.SetGateRules(aiGateRules)
 	id := aiWorkers.Start(task, dir, config, tools, func(r vtvibe.WorkerResult) {
 		text := aiTaskResultText(r, order)
 		manager.PostTask(func() {
@@ -509,6 +540,16 @@ func aiTaskResultText(r vtvibe.WorkerResult, order int) string {
 	if r.Restarts > 0 {
 		sb.WriteString("\n\n")
 		fmt.Fprintf(&sb, i18n.Msg("AI.TaskRestarts"), r.Restarts)
+	}
+	if r.GateReturns > 0 {
+		sb.WriteString("\n\n")
+		fmt.Fprintf(&sb, i18n.Msg("AI.GateReturned"), r.GateReturns)
+	}
+	if r.Gate != "" {
+		sb.WriteString("\n\n")
+		sb.WriteString(i18n.Msg("AI.GateObjections"))
+		sb.WriteString("\n")
+		sb.WriteString(r.Gate)
 	}
 	return sb.String()
 }

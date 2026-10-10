@@ -198,3 +198,15 @@ func TestVtvibeWorkerReportNamesTheOrderOnlyWhenThereIsOne(t *testing.T) {
 		t.Fatalf("failure without an order: %q", text)
 	}
 }
+
+// f4#1842, stage H8: a worker's report tells what the gate did.
+func TestVtvibeWorkerReportTellsTheGate(t *testing.T) {
+	text := aiTaskResultText(vtvibe.WorkerResult{ID: 1, Err: errors.New("did not pass"), GateReturns: 2, Gate: "- rule 1 broken"}, 3)
+	if !strings.Contains(text, "2") || !strings.Contains(text, "- rule 1 broken") {
+		t.Fatalf("report %q", text)
+	}
+	setupPortableIni(t, "0")
+	if aiGateRules() != "" {
+		t.Fatal("rules appeared without a file")
+	}
+}
