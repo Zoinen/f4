@@ -134,8 +134,31 @@ func (c Config) Chat(ctx context.Context, msgs []Message) (string, Usage, error)
 // Models lists what the key can actually reach. Model names go stale faster
 // than documentation does, so the user needs a way to ask.
 func (c Config) Models(ctx context.Context) ([]string, error) {
+	infos, err := c.ModelsWithInfo(ctx)
+	out := make([]string, 0, len(infos))
+	for _, m := range infos {
+		out = append(out, m.ID)
+	}
+	return out, err
+}
+
+// ModelInfo is one model a key can reach.
+type ModelInfo struct {
+	ID string
+	// Free is true when the service says the model costs nothing: OpenRouter
+	// marks such models with a ":free" suffix and a zero price (f4#1842).
+	Free bool
+}
+
+// ModelsWithInfo is Models with what the service tells about each model.
+func (c Config) ModelsWithInfo(ctx context.Context) ([]ModelInfo, error) {
 	if c.Kind == KindAnthropic {
-		return c.modelsAnthropic(ctx)
+		ids, err := c.modelsAnthropic(ctx)
+		out := make([]ModelInfo, 0, len(ids))
+		for _, id := range ids {
+			out = append(out, ModelInfo{ID: id})
+		}
+		return out, err
 	}
 	if c.APIKey == "" && !isLocal(c.BaseURL) {
 		return nil, ErrNoKey
@@ -146,7 +169,11 @@ func (c Config) Models(ctx context.Context) ([]string, error) {
 	}
 	var parsed struct {
 		Data []struct {
-			ID string `json:"id"`
+			ID      string `json:"id"`
+			Pricing *struct {
+				Prompt     json.RawMessage `json:"prompt"`
+				Completion json.RawMessage `json:"completion"`
+			} `json:"pricing"`
 		} `json:"data"`
 		Error *apiError `json:"error"`
 	}
@@ -156,11 +183,24 @@ func (c Config) Models(ctx context.Context) ([]string, error) {
 	if parsed.Error != nil && parsed.Error.Message != "" {
 		return nil, errors.New(parsed.Error.Message)
 	}
-	out := make([]string, 0, len(parsed.Data))
+	out := make([]ModelInfo, 0, len(parsed.Data))
 	for _, m := range parsed.Data {
-		out = append(out, strings.TrimPrefix(m.ID, "models/"))
+		info := ModelInfo{ID: strings.TrimPrefix(m.ID, "models/")}
+		info.Free = strings.HasSuffix(info.ID, ":free") ||
+			(m.Pricing != nil && zeroPrice(m.Pricing.Prompt) && zeroPrice(m.Pricing.Completion))
+		out = append(out, info)
 	}
 	return out, nil
+}
+
+// zeroPrice reads a price that may come as a string ("0") or a number (0).
+func zeroPrice(raw json.RawMessage) bool {
+	text := strings.Trim(strings.TrimSpace(string(raw)), `"`)
+	if text == "" || text == "null" {
+		return false
+	}
+	f, err := strconv.ParseFloat(text, 64)
+	return err == nil && f == 0
 }
 
 func (c Config) post(ctx context.Context, url string, body []byte) ([]byte, error) {

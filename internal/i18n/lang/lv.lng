@@ -2223,10 +2223,14 @@ SettingsCenter.Text.8d78d31f5db14305d03e11a18a3c8844871deb801132e40bc699a37a5894
 SettingsCenter.Text.d677190e0a9990e7d5fa9e4c1bbde44271fb8959c4acb6d43e02ed991128b4bf=Pakalpojums
 SettingsCenter.Text.472590ae974d4c1f44b3780df0b152d9119f076c61bfb3e8cb6affd7889ac0a8=Nodrošinātājs
 SettingsCenter.Text.56ef8f20955f256423d328f65b62106005252551db25d660031887e421cb4684=Adrese
-SettingsCenter.Text.b5e0881ae6932871dca62ef63b381370c57b6bbb2771381cee27c5a00a6945f3=Pakalpojums, ar kuru strādā MI panelis. Katra priekšiestatne aizpilda adresi un nolasa savu atslēgas mainīgo: GEMINI_API_KEY vai GOOGLE_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, XAI_API_KEY, OPENROUTER_API_KEY. Lokālajam serverim atslēga nav vajadzīga.
+SettingsCenter.Text.dac49fa2ccb75e37ec422e3266b0baa7c04925a01a825cda20bc38cfaa132d41=Pakalpojums, ar kuru strādā MI panelis. Katra priekšiestatne aizpilda adresi un nolasa savu atslēgas mainīgo: GEMINI_API_KEY vai GOOGLE_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, XAI_API_KEY, MISTRAL_API_KEY, DEEPSEEK_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY. Lokālajam serverim atslēga nav vajadzīga.
 SettingsCenter.Text.db3ce2f6a08f89638f6eff8c91f796292b9b8be33c025701a98a236331b8d7b8=Chat-completions adrese nodrošinātājiem “Local server” un “Custom address”, piemēram, http://127.0.0.1:1234/v1 programmai LM Studio. Pārējie nodrošinātāji izmanto savu adresi.
 SettingsCenter.Text.93d11bbf69e0a3e8128adfe20bfd02027491da3bde62a53dea7aa7b3224ae47f=Izmanto tikai tad, ja izvēlētā nodrošinātāja atslēgas mainīgais ir tukšs. Pašreizējais avots: %s (ja atslēga ir pieejama). Atslēgu saglabā vietējā failā vtvibe.ini.
 SettingsCenter.Text.ab48e6eed58ca17d0e52480f00f993928b0cfe4fa09bc8bf6b21e4c42a2ecde9=Modeļa identifikators, ko nosūta ar turpmākajiem MI pieprasījumiem. Tukšs nozīmē izvēlētā nodrošinātāja noklusējuma modeli.
+SettingsCenter.Text.03c8b9ea4e03d7d3e230dd5f96623b1f660430cfa5ac44443d26669e7240a6ba=Modelis drīkst mainīt modeli
+SettingsCenter.Text.5b4b9a299525629f834251c49f3d856236ee77d4e8bce5d98306e190a1714260=Modelis drīkst pārslēgt dialogu uz citu modeli, ja to lūdzat jūs vai tā instrukcija.
+SettingsCenter.Text.e24bd4269687d6af5de7ea80901913c246d9a75ad2fc2b7c1c0203d056f314e7=Modelis drīkst pārdēvēt dialogu
+SettingsCenter.Text.c6ce374075feb031a1e90f5a3d48a3684d7ebebe27c9a54065f82f3ade2b90aa=Modelis drīkst dot dialogam nosaukumu, kas pasaka, par ko tas ir.
 SettingsCenter.entry.Name.Description=F11 izvēlnes ieraksts.
 SettingsCenter.entry.Name.Label=Ieraksts
 SettingsCenter.entry.Enabled.Description=Rādīt šo ierakstu F11 izvēlnē.

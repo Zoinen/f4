@@ -130,6 +130,13 @@ ai: что делает этот файл и что в нём не так?
 | `ai:model ИМЯ` | сменить модель |
 | `ai:key` | ввести ключ доступа |
 | `ai:new` | начать диалог с чистого листа (файлы в `ctx/` останутся) |
+| `ai:bot ФАЙЛ-ИЛИ-URL [ПАУЗА]` | режим бота: выполнять инструкцию по кругу, каждый круг в чистом диалоге, между кругами пауза (по умолчанию `30m`; можно `1h`, `90s`). Бот выполняет команды оболочки и пишет файлы от вашего имени, поэтому запуск только после подтверждения. Отчёт каждого круга появляется в чате. |
+| `ai:bot stop` / `ai:bot` | остановить бота / показать его состояние |
+
+Название модели всегда есть в системном промпте. В режиме бота модель может сама
+переключить диалог на другую модель (инструмент `set_model`, со следующего
+запроса) и дать диалогу имя (`rename_dialog`, имя видно в заголовке чата);
+обе возможности выключаются в F9 → AI.
 | `ai:help` | эта шпаргалка |
 
 Плюс пункты в меню **F9 → Команды** и клавиша **Ctrl+Alt+A**.
@@ -178,9 +185,17 @@ ai: что делает этот файл и что в нём не так?
 | OpenAI | `https://api.openai.com/v1` | `OPENAI_API_KEY` | `gpt-5.5` |
 | Anthropic Claude | `https://api.anthropic.com` (родной Messages API, не OpenAI-совместимый) | `ANTHROPIC_API_KEY` | `claude-opus-5-5` |
 | xAI Grok | `https://api.x.ai/v1` | `XAI_API_KEY` | `grok-4.6` |
+| Mistral | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY` | `mistral-large-latest` |
+| DeepSeek | `https://api.deepseek.com` | `DEEPSEEK_API_KEY` | `deepseek-flash` |
+| Groq | `https://api.groq.com/openai/v1` (есть бесплатный тариф) | `GROQ_API_KEY` | `llama-3.3-70b-versatile` |
 | OpenRouter | `https://openrouter.ai/api/v1` (там есть бесплатные модели) | `OPENROUTER_API_KEY` | `openrouter/auto` |
 | Локальный сервер | `http://127.0.0.1:11434/v1` (Ollama); для LM Studio — `http://127.0.0.1:1234/v1` в поле «Адрес» | не нужен | задайте сами |
 | Свой адрес | поле «Адрес» | `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `OPENAI_API_KEY` | задайте сами |
+
+**Бесплатные модели.** Бесплатный тариф есть у Google Gemini (ключ AI Studio) и
+Groq, а у OpenRouter — модели с суффиксом `:free`. `ai:models` показывает
+бесплатные модели первыми и помечает их — выберите одну через `ai:model ИМЯ`
+или поле «Модель» в настройках.
 
 Пустая модель означает модель поставщика по умолчанию; модель по умолчанию
 другого поставщика, оставшаяся после переключения, тоже заменяется. То же
@@ -196,8 +211,8 @@ key      = sk-or-...
 Файл без `provider`, но со своим `base_url`, работает как раньше — как
 «Свой адрес». Claude работает через родной Messages API Anthropic (официальный Go SDK); для
 текущих моделей Claude запрос просит сервер при отказе ответить резервной
-моделью (`fallbacks: default`). В режиме бота (агентный цикл) Claude пока не
-поддерживается.
+моделью (`fallbacks: default`). Режим бота работает и с Claude: его инструменты
+идут через родной протокол tool_use / tool_result.
 
 Локальные модели — это полностью бесплатно и никуда не уходит из дома.
 
@@ -220,10 +235,11 @@ Getting started with the free Google AI Studio tier:
 The dialog lives in `chat/`, whole files written by the model land in `out/`,
 and `draft.md` is there for long prompts (**F4**, **F2**, then a bare `ai:`).
 Settings are in `vtvibe.ini` in the f4 config directory. Pick the service in
-Settings (F9 → AI → Provider): Google Gemini, OpenAI, Anthropic Claude, xAI Grok, OpenRouter,
-a local server (Ollama, LM Studio, llama.cpp) or a custom address. Each preset
+Settings (F9 → AI → Provider): Google Gemini, OpenAI, Anthropic Claude, xAI Grok, Mistral,
+DeepSeek, Groq, OpenRouter, a local server (Ollama, LM Studio, llama.cpp) or a custom address. Each preset
 fills in the address and reads its own key variable (`GEMINI_API_KEY` or
-`GOOGLE_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `XAI_API_KEY`, `OPENROUTER_API_KEY`); an
+`GOOGLE_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `XAI_API_KEY`, `MISTRAL_API_KEY`, `DEEPSEEK_API_KEY`,
+`GROQ_API_KEY`, `OPENROUTER_API_KEY`); `ai:models` lists free models first. An
 empty model means the provider's default.
 
 ---

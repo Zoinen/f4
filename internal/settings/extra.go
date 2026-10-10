@@ -34,7 +34,7 @@ func (aiSettingsProvider) Catalog() f4settings.Catalog {
 	for _, p := range vtvibe.Providers {
 		choices = append(choices, f4settings.Choice{Value: p.ID, Label: f4settings.Text{English: p.Name, Literal: true}})
 	}
-	service := f4settings.Scalar("ai.provider", "ai", "Service", "Provider", "Service the AI panel talks to. Each preset fills in the address and reads its own key variable: GEMINI_API_KEY or GOOGLE_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, XAI_API_KEY, OPENROUTER_API_KEY. A local server needs no key.", f4settings.ChoiceKind)
+	service := f4settings.Scalar("ai.provider", "ai", "Service", "Provider", "Service the AI panel talks to. Each preset fills in the address and reads its own key variable: GEMINI_API_KEY or GOOGLE_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, XAI_API_KEY, MISTRAL_API_KEY, DEEPSEEK_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY. A local server needs no key.", f4settings.ChoiceKind)
 	service.Choices = choices
 	key := f4settings.Scalar("ai.key", "ai", "Credentials", "Saved API key", "Used only when the key variable of the chosen provider is empty. Effective source: %s (if a key is available). The key is stored in the local vtvibe.ini file.", f4settings.Secret)
 	key.Description.Args = []any{source}
@@ -43,8 +43,16 @@ func (aiSettingsProvider) Catalog() f4settings.Catalog {
 		f4settings.Scalar("ai.base_url", "ai", "Service", "Address", "Chat-completions address for the Local server and Custom address providers, for example http://127.0.0.1:1234/v1 for LM Studio. The other providers use their own address.", f4settings.String),
 		key,
 		f4settings.Scalar("ai.model", "ai", "Model", "Model", "Model identifier sent with subsequent AI requests. Empty means the default model of the chosen provider.", f4settings.String),
+		aiAllowField("ai.allow_model_switch", "Let the model switch models", "The model may switch the dialog to another model when you or its instruction ask for it."),
+		aiAllowField("ai.allow_rename", "Let the model rename the dialog", "The model may give the dialog a name that says what it is about."),
 	}}
 }
+func aiAllowField(id, label, description string) f4settings.Field {
+	f := f4settings.Scalar(id, "ai", "Model", label, description, f4settings.Boolean)
+	f.Default = "true"
+	return f
+}
+
 func (p aiSettingsProvider) Begin(context.Context) (*f4settings.Draft, error) {
 	path := filepath.Join(config.GetF4ConfigDir(), "vtvibe.ini")
 	loaded := ini.Load(path)
@@ -54,6 +62,9 @@ func (p aiSettingsProvider) Begin(context.Context) (*f4settings.Draft, error) {
 		"ai.base_url": loaded.GetString("general", "base_url", ""),
 		"ai.key":      loaded.GetString("general", "key", ""),
 		"ai.model":    loaded.GetString("general", "model", ""),
+		// The model's own controls (f4#1842) are on unless switched off.
+		"ai.allow_model_switch": loaded.GetString("general", "allow_model_switch", "true"),
+		"ai.allow_rename":       loaded.GetString("general", "allow_rename", "true"),
 	}, nil)
 	d.ValidateFunc = func(d *f4settings.Draft) map[string]error {
 		errs := map[string]error{}
@@ -78,6 +89,9 @@ func (p aiSettingsProvider) Begin(context.Context) (*f4settings.Draft, error) {
 		for _, id := range d.Changed() {
 			key := strings.TrimPrefix(id, "ai.")
 			fallback := ""
+			if strings.HasPrefix(key, "allow_") {
+				fallback = "true"
+			}
 			v := current.GetString("general", key, fallback)
 			if key == "provider" {
 				v = vtvibe.ResolveProvider(v, current.GetString("general", "base_url", "")).ID

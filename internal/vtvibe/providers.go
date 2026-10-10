@@ -40,6 +40,13 @@ var Providers = []Provider{
 		Model: "claude-opus-5-5", KeyEnv: []string{"ANTHROPIC_API_KEY"}, KeyURL: "https://console.anthropic.com/settings/keys"},
 	{ID: "xai", Name: "xAI Grok", BaseURL: "https://api.x.ai/v1",
 		Model: "grok-4.6", KeyEnv: []string{"XAI_API_KEY"}, KeyURL: "https://console.x.ai"},
+	{ID: "mistral", Name: "Mistral", BaseURL: "https://api.mistral.ai/v1",
+		Model: "mistral-large-latest", KeyEnv: []string{"MISTRAL_API_KEY"}, KeyURL: "https://console.mistral.ai/api-keys"},
+	{ID: "deepseek", Name: "DeepSeek", BaseURL: "https://api.deepseek.com",
+		Model: "deepseek-flash", KeyEnv: []string{"DEEPSEEK_API_KEY"}, KeyURL: "https://platform.deepseek.com/api_keys"},
+	// Groq serves open-weight models fast and has a free tier.
+	{ID: "groq", Name: "Groq", BaseURL: "https://api.groq.com/openai/v1",
+		Model: "llama-3.3-70b-versatile", KeyEnv: []string{"GROQ_API_KEY"}, KeyURL: "https://console.groq.com/keys"},
 	{ID: "openrouter", Name: "OpenRouter", BaseURL: "https://openrouter.ai/api/v1",
 		Model: "openrouter/auto", KeyEnv: []string{"OPENROUTER_API_KEY"}, KeyURL: "https://openrouter.ai/keys"},
 	{ID: "local", Name: "Local server (Ollama, LM Studio, llama.cpp)", BaseURL: "http://127.0.0.1:11434/v1", OwnURL: true},

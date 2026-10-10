@@ -2,6 +2,7 @@ package vtvibe
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -105,4 +106,87 @@ func (c Config) modelsAnthropic(ctx context.Context) ([]string, error) {
 		out = append(out, pager.Current().ID)
 	}
 	return out, pager.Err()
+}
+
+// runAgentAnthropic is RunAgent over the Messages API: tools are offered as
+// client tools, every tool_use block of a reply is run and answered with a
+// tool_result block in one user message, and the reply itself goes back into
+// the history unchanged (ToParam keeps its thinking blocks, which the next
+// request must carry as they were).
+func (c Config) runAgentAnthropic(ctx context.Context, msgs []Message, tools []Tool, opts AgentOptions, maxSteps int) (string, Usage, error) {
+	client := c.anthropicClient()
+	params := c.anthropicParams(msgs)
+	byName := make(map[string]Tool, len(tools))
+	for _, t := range tools {
+		byName[t.Name] = t
+		schema := anthropic.BetaToolInputSchemaParam{}
+		if t.Parameters != nil {
+			schema.Properties = t.Parameters["properties"]
+			if req, ok := t.Parameters["required"].([]string); ok {
+				schema.Required = req
+			}
+		}
+		spec := anthropic.BetaToolUnionParamOfTool(schema, t.Name)
+		if t.Description != "" {
+			spec.OfTool.Description = anthropic.String(t.Description)
+		}
+		params.Tools = append(params.Tools, spec)
+	}
+
+	var usage Usage
+	for step := 0; step < maxSteps; step++ {
+		reply, err := client.Beta.Messages.New(ctx, params)
+		if err != nil {
+			return "", usage, err
+		}
+		usage.In += int(reply.Usage.InputTokens)
+		usage.Out += int(reply.Usage.OutputTokens)
+		if reply.StopReason == anthropic.BetaStopReasonRefusal {
+			why := strings.TrimSpace(reply.StopDetails.Explanation)
+			if why == "" {
+				why = string(reply.StopDetails.Category)
+			}
+			return "", usage, fmt.Errorf("the model declined to go on: %s", why)
+		}
+		var text strings.Builder
+		var results []anthropic.BetaContentBlockParamUnion
+		for _, block := range reply.Content {
+			switch b := block.AsAny().(type) {
+			case anthropic.BetaTextBlock:
+				text.WriteString(b.Text)
+			case anthropic.BetaToolUseBlock:
+				raw, err := json.Marshal(b.Input)
+				if err != nil {
+					raw = []byte("{}")
+				}
+				call := agentToolUse{ID: b.ID, Type: "function"}
+				call.Function.Name = b.Name
+				call.Function.Arguments = string(raw)
+				result, runErr := c.runTool(ctx, byName, call)
+				if opts.OnStep != nil {
+					opts.OnStep(AgentStep{Tool: b.Name, Args: string(raw), Result: result, Err: runErr})
+				}
+				if runErr != nil {
+					result = "error: " + runErr.Error() + "\n" + result
+				}
+				results = append(results, anthropic.NewBetaToolResultBlock(b.ID, tailBytes(result, opts.MaxToolOutput), runErr != nil))
+			}
+		}
+		// pause_turn: a long server-side turn stopped midway; sending the
+		// reply back as it is lets the model continue it.
+		if len(results) == 0 && reply.StopReason != anthropic.BetaStopReasonPauseTurn {
+			if strings.TrimSpace(text.String()) == "" {
+				return "", usage, errors.New("the model returned an empty answer")
+			}
+			return text.String(), usage, nil
+		}
+		params.Messages = append(params.Messages, reply.ToParam())
+		if len(results) > 0 {
+			params.Messages = append(params.Messages, anthropic.NewBetaUserMessage(results...))
+		}
+		if err := ctx.Err(); err != nil {
+			return "", usage, err
+		}
+	}
+	return "", usage, ErrAgentSteps
 }

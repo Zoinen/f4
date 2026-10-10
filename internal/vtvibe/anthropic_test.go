@@ -84,16 +84,71 @@ func TestChatAnthropicReportsARefusal(t *testing.T) {
 	}
 }
 
-func TestAnthropicNeedsKeyAndHasNoAgentYet(t *testing.T) {
+func TestAnthropicNeedsKey(t *testing.T) {
 	cfg := Config{Kind: KindAnthropic, BaseURL: "https://api.anthropic.com", Model: "claude-opus-5-5"}
 	if _, _, err := cfg.Chat(context.Background(), nil); !errors.Is(err, ErrNoKey) {
 		t.Fatalf("no key = %v", err)
 	}
-	cfg.APIKey = "k"
-	if _, _, err := cfg.RunAgent(context.Background(), nil, nil, AgentOptions{}); !errors.Is(err, ErrAgentProtocol) {
-		t.Fatalf("agent = %v", err)
-	}
 	if p := ProviderByID("anthropic"); p.Kind != KindAnthropic || p.KeyEnv[0] != "ANTHROPIC_API_KEY" {
 		t.Fatalf("preset = %#v", p)
+	}
+}
+
+// fakeMessagesSequence answers each Messages API request with the next reply
+// and keeps the decoded bodies.
+func fakeMessagesSequence(t *testing.T, replies ...string) (*httptest.Server, *[]map[string]any) {
+	t.Helper()
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		var body map[string]any
+		_ = json.Unmarshal(data, &body)
+		bodies = append(bodies, body)
+		w.Header().Set("Content-Type", "application/json")
+		if len(bodies) > len(replies) {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"type":"error","error":{"type":"invalid_request_error","message":"too many"}}`)
+			return
+		}
+		_, _ = io.WriteString(w, replies[len(bodies)-1])
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &bodies
+}
+
+func TestRunAgentAnthropicRunsToolUseUntilText(t *testing.T) {
+	toolUse := `{"id":"m1","type":"message","role":"assistant","model":"claude-opus-5-5",
+"content":[{"type":"thinking","thinking":"","signature":"sig"},{"type":"tool_use","id":"tu1","name":"echo","input":{"text":"ping"}}],
+"stop_reason":"tool_use","usage":{"input_tokens":10,"output_tokens":5}}`
+	srv, bodies := fakeMessagesSequence(t, toolUse, messagesReply)
+	cfg := Config{Kind: KindAnthropic, BaseURL: srv.URL, Model: "claude-opus-5-5", APIKey: "test-key"}
+	calls := 0
+	text, usage, err := cfg.RunAgent(context.Background(),
+		[]Message{{Role: "system", Content: "s"}, {Role: "user", Content: "go"}},
+		[]Tool{echoTool(&calls)}, AgentOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text != "Hello from Claude" || calls != 1 || usage.In != 22 || usage.Out != 9 {
+		t.Fatalf("text %q calls %d usage %#v", text, calls, usage)
+	}
+	first := (*bodies)[0]
+	tools, _ := first["tools"].([]any)
+	if len(tools) != 1 || tools[0].(map[string]any)["name"] != "echo" {
+		t.Fatalf("tools not offered: %v", first["tools"])
+	}
+	msgs, _ := (*bodies)[1]["messages"].([]any)
+	if len(msgs) != 3 {
+		t.Fatalf("second request has %d messages, want user, assistant, tool results", len(msgs))
+	}
+	assistant := msgs[1].(map[string]any)
+	content, _ := assistant["content"].([]any)
+	if assistant["role"] != "assistant" || len(content) != 2 || content[0].(map[string]any)["type"] != "thinking" {
+		t.Fatalf("the reply did not go back unchanged: %v", assistant)
+	}
+	results := msgs[2].(map[string]any)["content"].([]any)
+	result := results[0].(map[string]any)
+	if result["type"] != "tool_result" || result["tool_use_id"] != "tu1" {
+		t.Fatalf("tool result = %v", result)
 	}
 }

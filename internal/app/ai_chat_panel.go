@@ -245,6 +245,14 @@ func (cp *AIChatPanel) Show(scr *vtui.ScreenBuf) {
 	}
 	cp.Turns = chatTurns
 	cp.Busy = session.Busy()
+	// The model may name the dialog (f4#1842); the name joins the title.
+	title := i18n.Msg("AI.ChatTitle")
+	if name := session.Title(); name != "" {
+		title += ": " + name
+	}
+	if cp.Frame != nil && cp.Frame.GetTitle() != title {
+		cp.Frame.SetTitle(title)
+	}
 
 	cp.ChatWindow.Show(scr)
 }
