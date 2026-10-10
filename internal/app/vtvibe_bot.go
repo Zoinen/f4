@@ -574,6 +574,13 @@ func aiTaskCommand(pf *panel.PanelsFrame, arg string) {
 			vtui.ShowMessage(i18n.Msg("AI.Title"), i18n.Msg("AI.TaskUnknown"), []string{i18n.Msg("vtui.Ok")})
 		}
 		return
+	case strings.HasPrefix(lower, "undo "):
+		id, err := strconv.Atoi(strings.TrimPrefix(strings.TrimSpace(arg[len("undo "):]), "#"))
+		if err != nil {
+			id = 0
+		}
+		aiUndoTask(pf, id)
+		return
 	}
 	cfg, keySource, provider := vtvibeProviderConfig()
 	if cfg.APIKey == "" && keySource == "" && provider.NeedsKey(cfg.BaseURL) {
@@ -600,10 +607,18 @@ func aiTaskCommand(pf *panel.PanelsFrame, arg string) {
 // the UI thread after the report.
 func aiStartWorker(pf *panel.PanelsFrame, manager interface{ PostTask(func()) }, session *vtvibe.Session, task, dir string, order int, closeOrder bool, done func()) {
 	config := aiAgentConfig(session)
-	tools := func() []vtvibe.Tool { return vtvibe.WorkTools(dir, config().ToolEnv...) }
+	// The worker's file changes are journaled so ai:task undo N can put
+	// them back (f4#1842, stage H9).
+	journal := &vtvibe.Journal{}
+	tools := func() []vtvibe.Tool {
+		return vtvibe.WithJournal(vtvibe.WorkTools(dir, config().ToolEnv...), dir, journal)
+	}
 	aiWorkers.SetGates(vtvibe.GateRules{User: aiGateRules, Learned: aiLearnedRules, Learn: aiLearnRule})
 	id := aiWorkers.Start(task, dir, config, tools, func(r vtvibe.WorkerResult) {
 		text := aiTaskResultText(r, order)
+		if n := len(journal.Files()); n > 0 {
+			text += "\n\n" + fmt.Sprintf(i18n.Msg("AI.TaskUndoHint"), n, r.ID)
+		}
 		model := config().Model
 		manager.PostTask(func() {
 			session.AddSpent(model, r.Usage)
@@ -617,12 +632,40 @@ func aiStartWorker(pf *panel.PanelsFrame, manager interface{ PostTask(func()) },
 			}
 		})
 	})
+	aiJournals.Store(id, journal)
 	if order > 0 {
 		session.Note("assistant", fmt.Sprintf(i18n.Msg("AI.TaskStarted"), id, order, task))
 	} else {
 		session.Note("assistant", fmt.Sprintf(i18n.Msg("AI.WorkerStarted"), id, task))
 	}
 	aiBotRefresh(pf)
+}
+
+// aiJournals keeps each worker's journal by its id, for ai:task undo N.
+var aiJournals sync.Map
+
+// aiUndoTask puts back the files worker id changed through its file tools.
+func aiUndoTask(pf *panel.PanelsFrame, id int) {
+	value, ok := aiJournals.Load(id)
+	if !ok {
+		vtui.ShowMessage(i18n.Msg("AI.Title"), i18n.Msg("AI.TaskUnknown"), []string{i18n.Msg("vtui.Ok")})
+		return
+	}
+	if _, busy := aiWorkers.Running()[id]; busy {
+		vtui.ShowMessage(i18n.Msg("AI.Title"), i18n.Msg("AI.TaskUndoBusy"), []string{i18n.Msg("vtui.Ok")})
+		return
+	}
+	done, err := value.(*vtvibe.Journal).Undo()
+	text := fmt.Sprintf(i18n.Msg("AI.TaskUndone"), id, len(done))
+	if len(done) > 0 {
+		text += "\n" + strings.Join(done, "\n")
+	}
+	if err != nil {
+		text += "\n\n" + err.Error()
+	}
+	aiSession().Note("assistant", text)
+	aiBotRefresh(pf)
+	vtui.ShowMessage(i18n.Msg("AI.Title"), dialog.EscapeAmpersand(text), []string{i18n.Msg("vtui.Ok")})
 }
 
 // aiDelegate offers the tasks the manager handed out to the user; confirmed,
