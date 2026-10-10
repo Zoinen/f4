@@ -57,14 +57,32 @@ func TestDriveMenuChoiceShowsTheHiddenSide(t *testing.T) {
 	}
 }
 
-func TestDriveMenuChoiceBringsPanelsBackAfterCtrlO(t *testing.T) {
-	pf, _ := newRevealTestFrame(t)
-	pf.TogglePanelsVisibility() // Ctrl+O
-	if pf.ShowPanels {
-		t.Fatal("Ctrl+O did not hide the panels")
+// After Ctrl+O hid both panels, the choice shows its own side only: the
+// other stays hidden (fromgate, f4#1847, after trying the first fix).
+func TestDriveMenuChoiceAfterCtrlOShowsOnlyItsSide(t *testing.T) {
+	for _, side := range []int{0, 1} {
+		pf, _ := newRevealTestFrame(t)
+		pf.TogglePanelsVisibility() // Ctrl+O
+		if pf.ShowPanels {
+			t.Fatal("Ctrl+O did not hide the panels")
+		}
+		pickDriveRow(t, pf, side, "Alpha")
+		mine, other := pf.ShowLeftPanel, pf.ShowRightPanel
+		if side == 1 {
+			mine, other = other, mine
+		}
+		if !pf.ShowPanels || !mine || other {
+			t.Fatalf("side %d: panels=%v this side=%v other side=%v, want only this side shown", side, pf.ShowPanels, mine, other)
+		}
 	}
+}
+
+// A side hidden on its own (Ctrl+F1) is shown without touching the other.
+func TestDriveMenuChoiceKeepsTheOtherSideAsItWas(t *testing.T) {
+	pf, _ := newRevealTestFrame(t)
+	pf.ShowLeftPanel, pf.ShowRightPanel = false, false
 	pickDriveRow(t, pf, 1, "Alpha")
-	if !pf.ShowPanels || !pf.ShowRightPanel {
-		t.Fatalf("panels still hidden after choosing a location: panels=%v right=%v", pf.ShowPanels, pf.ShowRightPanel)
+	if !pf.ShowRightPanel || pf.ShowLeftPanel {
+		t.Fatalf("left=%v right=%v, want only the right panel shown", pf.ShowLeftPanel, pf.ShowRightPanel)
 	}
 }

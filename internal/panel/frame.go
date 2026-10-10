@@ -6224,22 +6224,29 @@ func (pf *PanelsFrame) ShowDriveMenu(panelIdx int) {
 // a location for it in Far or Norton Commander does: the drive menu used to
 // change a hidden panel's folder blind, and Ctrl+O, Ctrl+F1 or Ctrl+F2 was
 // needed to see the result (unxed/f4#1847). Panels hidden as a whole come
-// back through the same path as Ctrl+O; a single hidden side is shown again.
+// back through the same path as Ctrl+O, but only this side: the other one
+// stays hidden, as fromgate asked after trying the first fix (Alt+F1 shows
+// the left panel alone, Alt+F2 the right one); a single hidden side is
+// shown again.
 func (pf *PanelsFrame) RevealPanel(side int) {
-	mine := &pf.ShowLeftPanel
+	mine, other := &pf.ShowLeftPanel, &pf.ShowRightPanel
 	if side == 1 {
-		mine = &pf.ShowRightPanel
+		mine, other = &pf.ShowRightPanel, &pf.ShowLeftPanel
 	}
 	if pf.ShowPanels && *mine {
 		return
 	}
 	if !pf.ShowPanels {
+		// Set the sides before Ctrl+O's path brings the panels back, so
+		// it lays out this side alone and does not show both.
+		wasMine, wasOther := *mine, *other
+		*mine, *other = true, false
 		pf.TogglePanelsVisibility()
 		if !pf.ShowPanels {
+			*mine, *other = wasMine, wasOther
 			return // panels are locked here (PanelsLocked)
 		}
-	}
-	if *mine {
+		pf.RefreshAll()
 		return
 	}
 	pf.ExitWide()
