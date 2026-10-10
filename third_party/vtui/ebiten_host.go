@@ -1,9 +1,10 @@
-//go:build (linux || windows || darwin) && !android && (amd64 || arm64)
+//go:build (linux || windows || darwin) && !android && (amd64 || arm64) && !vtui_noebiten
 
 package vtui
 
 import (
 	"fmt"
+	"image/color"
 	"io"
 	"os"
 	"sync"
@@ -34,6 +35,11 @@ type EbitenHost struct {
 	// device-independent pixels while the cells are measured in real ones, so
 	// every crossing between the two goes through this.
 	scale int
+
+	// fontName and fontSize are the font the cells are drawn with, kept so a
+	// display scale change can reload it at the new scale (see checkScale).
+	fontName string
+	fontSize float64
 
 	// Last window size seen by Layout, in logical pixels.
 	winW, winH int
@@ -233,21 +239,90 @@ func (h *EbitenHost) requestSize(w, h2 int) {
 	h.mu.Unlock()
 }
 
+// SetFont reloads the font used to draw the grid and asks Ebitengine to
+// resize the window to the new cell size, keeping the grid geometry (cols x
+// rows) unchanged -- the same policy the other GUI backends' SetFont use
+// for their own windows (vtui #136). It never fails: loadBestFont falls
+// back to a built-in bitmap font when fontName cannot be found, the same
+// fallback RunEbitenHost applies at startup.
+//
+// The size is measured at the display scale the window was opened with
+// (see RunEbitenHost), the same scale requestSize's caller, Update,
+// converts back out of when it calls ebiten.SetWindowSize.
+//
+// requestSize alone does not repaint: a same-size font swap keeps the
+// window's pixel size unchanged, so Layout sees no grid change and nothing
+// else drives a redraw. FrameManager.HardRefresh is therefore called
+// unconditionally to cover that case, the same way the other backends'
+// SetFont do.
+func (h *EbitenHost) SetFont(fontName string, fontSize float64) {
+	h.mu.Lock()
+	h.fontName, h.fontSize = fontName, fontSize
+	scale := h.scale
+	h.mu.Unlock()
+	if scale < 1 {
+		scale = 1
+	}
+
+	face, cellW, cellH := loadBestFont(fontName, fontSize*float64(scale), 72)
+	if cellW <= 0 || cellH <= 0 {
+		cellW, cellH = 7*scale, 13*scale
+	}
+
+	h.mu.Lock()
+	h.cellW, h.cellH = cellW, cellH
+	cols, rows := h.cols, h.rows
+	h.mu.Unlock()
+
+	if h.renderer != nil {
+		h.renderer.setFace(face, cellW, cellH)
+	}
+	if h.scr != nil {
+		h.scr.Graphics().SetCellSize(cellW, cellH)
+	}
+	h.requestSize(cols*cellW, rows*cellH)
+	if FrameManager != nil {
+		FrameManager.HardRefresh()
+	}
+}
+
 // ebitenGame is the ebiten.Game implementation. Update translates input,
 // Draw uploads whatever the renderer has rasterised.
 type ebitenGame struct {
 	host *EbitenHost
 	tex  *ebiten.Image
 
-	// presented says the screen already holds a frame. Ebitengine is a fixed
-	// tick loop with no render-on-demand, but with clearing disabled it keeps
-	// the previous contents, so once a frame is up an unchanged UI needs
-	// neither an upload nor a blit and Draw becomes free.
-	presented bool
+	// target is the offscreen image the last frame was drawn into, and
+	// drawnW by drawnH the size of that frame. Ebitengine is a fixed tick loop
+	// with no render-on-demand, but with clearing disabled it keeps the
+	// offscreen contents, so while the target and the frame stay the same an
+	// unchanged UI needs neither an upload nor a blit and Draw becomes free.
+	target         *ebiten.Image
+	drawnW, drawnH int
+}
+
+// planEbitenDraw decides what Draw has to do with the offscreen it is given.
+//
+// The offscreen is window sized, the frame covers whole cells only, and the
+// offscreen is not cleared between frames. Whatever lands outside the frame
+// therefore stays there until the offscreen is cleared, and a frame can land
+// there: the renderer runs on the FrameManager goroutine, so the first Draw
+// after Ebitengine has recreated the offscreen for a smaller window can still
+// get the frame rendered for the larger one (f4 #283). The smaller frames
+// that follow cover only the cells, and the partial right column and bottom
+// row went on showing the larger layout.
+//
+// So the offscreen is cleared whenever it is not the one the previous frame
+// went into, or the frame size differs from that frame; clearing implies a
+// redraw. newTarget reports that the offscreen is not the previous target.
+func planEbitenDraw(newTarget bool, frameW, frameH, drawnW, drawnH int, changed bool) (draw, wipe bool) {
+	wipe = newTarget || frameW != drawnW || frameH != drawnH
+	return changed || wipe, wipe
 }
 
 func (g *ebitenGame) Update() error {
 	h := g.host
+	h.checkScale(ebitenMonitorScale())
 
 	h.mu.Lock()
 	if h.pendingSize.valid {
@@ -258,7 +333,7 @@ func (g *ebitenGame) Update() error {
 		if sc < 1 {
 			sc = 1
 		}
-		ebiten.SetWindowSize(w/sc, ph/sc)
+		ebiten.SetWindowSize(ebitenDIPs(w, sc), ebitenDIPs(ph, sc))
 	} else {
 		h.mu.Unlock()
 	}
@@ -511,19 +586,30 @@ func (g *ebitenGame) Draw(screen *ebiten.Image) {
 	if g.tex == nil || g.tex.Bounds().Dx() != w || g.tex.Bounds().Dy() != h {
 		g.tex = ebiten.NewImage(w, h)
 		changed = true
-		g.presented = false
 	}
 
-	// Nothing moved and the screen already shows the last frame: skip both the
-	// upload and the blit. This is what keeps an idle file manager off the GPU.
-	if !changed && g.presented {
+	newTarget := screen != g.target
+	if newTarget {
+		sb := screen.Bounds()
+		DebugLog("EBITEN_HOST: offscreen %dx%d, frame %dx%d", sb.Dx(), sb.Dy(), w, h)
+	}
+
+	// Nothing moved and the offscreen already shows the last frame: skip both
+	// the upload and the blit. This is what keeps an idle file manager off the
+	// GPU.
+	draw, wipe := planEbitenDraw(newTarget, w, h, g.drawnW, g.drawnH, changed)
+	if !draw {
 		return
 	}
 	if changed {
 		g.tex.WritePixels(pix)
 	}
+	if wipe {
+		// Opaque black, like the partial cells of the other GUI backends.
+		screen.Fill(color.Black)
+	}
 	screen.DrawImage(g.tex, nil)
-	g.presented = true
+	g.target, g.drawnW, g.drawnH = screen, w, h
 }
 
 // Layout maps the window size onto the character grid and tells the running
@@ -573,17 +659,9 @@ func RunEbitenHost(cols, rows int, fontName string, fontSize float64, setupApp f
 	// The scale factor has to be known before the font is measured, because a
 	// HiDPI screen needs the face rasterised at the larger size. Scaling a
 	// face built for 96dpi up afterwards is what makes text look soft.
-	// DeviceScaleFactor is readable before RunGame; if the window later moves
-	// to a monitor with a different factor the cells keep their pixel size,
-	// which is a visible but not a broken result and is left for later.
-	var monitorScale float64 = 1.0
-	if m := ebiten.Monitor(); m != nil {
-		monitorScale = m.DeviceScaleFactor()
-	}
-	scale := int(monitorScale + 0.5)
-	if scale < 1 {
-		scale = 1
-	}
+	// DeviceScaleFactor is readable before RunGame; a later change is picked
+	// up by checkScale.
+	scale := ebitenScale(ebitenMonitorScale())
 
 	face, cellW, cellH := loadBestFont(fontName, fontSize*float64(scale), 72)
 	if cellW <= 0 || cellH <= 0 {
@@ -597,6 +675,8 @@ func RunEbitenHost(cols, rows int, fontName string, fontSize float64, setupApp f
 		cellW:      cellW,
 		cellH:      cellH,
 		scale:      scale,
+		fontName:   fontName,
+		fontSize:   fontSize,
 		winW:       cols * cellW,
 		winH:       rows * cellH,
 		lastMouseX: -1,
@@ -617,6 +697,7 @@ func RunEbitenHost(cols, rows int, fontName string, fontSize float64, setupApp f
 	// terminal, and the viewer falls back to showing a JPEG as text even
 	// though this backend can draw it.
 	scr.Graphics().SetProtocol(GraphicsNative)
+	scr.Graphics().SetCellSize(cellW, cellH)
 	host.scr = scr
 	FrameManager.Init(scr)
 
@@ -654,10 +735,12 @@ func RunEbitenHost(cols, rows int, fontName string, fontSize float64, setupApp f
 	setWheelNotchLines(getSystemScrollLines())
 
 	ebiten.SetWindowTitle(WindowTitleWithBackend(AppName))
-	ebiten.SetWindowSize(cols*cellW/scale, rows*cellH/scale)
+	ebiten.SetWindowSize(ebitenDIPs(cols*cellW, scale), ebitenDIPs(rows*cellH, scale))
 	ebiten.SetWindowResizingMode(ebiten.WindowResizingModeEnabled)
-	// The screen is fully repainted from our own framebuffer every frame, so
-	// letting Ebitengine clear it first would only waste a pass.
+	// Draw repaints the offscreen from our own framebuffer and clears it
+	// itself whenever the offscreen or the frame size changes (see
+	// planEbitenDraw), so letting Ebitengine clear it every frame would only
+	// waste a pass.
 	ebiten.SetScreenClearedEveryFrame(false)
 
 	game := &ebitenGame{host: host}

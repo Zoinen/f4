@@ -1,3 +1,9 @@
+//go:build !lite
+
+// FTP support statically links github.com/jlaffaye/ftp, which a lite build
+// (f4#1178) exists to shed -- see internal/plughost/plugins_lite.go for the
+// accounting of what a lite build carries instead.
+
 package netfox
 
 import (
@@ -223,6 +229,12 @@ func (v *FTPVFS) PanelTitle(p string) string {
 	}
 	return public
 }
+
+// HistoryEntry and NavigateHistoryEntry implement vfs.HistoryPathProvider
+// (f4#262): an FTP session owns its own folder-history entries instead of
+// its raw remote path (e.g. /root/foo) being recorded as if it were local.
+func (v *FTPVFS) HistoryEntry() (display, ref string, ok bool) { return netfoxHistoryEntry(v) }
+func (v *FTPVFS) NavigateHistoryEntry(ref string) bool         { return netfoxNavigateHistoryEntry(v, ref) }
 
 func (v *FTPVFS) SessionKey() any {
 	v.mu.Lock()

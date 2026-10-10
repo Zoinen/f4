@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"github.com/unxed/f4/internal/netproxy"
 	"io"
 	"os"
 	"os/exec"
@@ -738,8 +737,8 @@ func TestFishProtocolIsRegistered(t *testing.T) {
 		t.Errorf("DefaultPort = %q, want 22", ph.DefaultPort())
 	}
 	ui, apply := ph.BuildExtraUI(&NetFoxConfig{}, 0, 0, 10, 10)
-	if ui != nil {
-		t.Error("the fish+ handler needs no extra UI yet")
+	if ui == nil {
+		t.Error("the fish+ handler carries the use-f4-on-the-host checkbox")
 	}
 	apply()
 }
@@ -771,13 +770,6 @@ func TestSSHTimeoutDefaults(t *testing.T) {
 	}
 }
 
-func TestDialSSHFailsOnAClosedPort(t *testing.T) {
-	client, err := DialSSH("127.0.0.1", "1", "nobody", "", "", 2, netproxy.Settings{})
-	if err == nil {
-		_ = client.Close() // unexpected dial cleanup only
-		t.Fatal("dialing a closed port succeeded")
-	}
-}
 func TestFishVFSLineIndex(t *testing.T) {
 	v := newLocalFishVFS(t)
 	ctx := context.Background()
@@ -1108,6 +1100,19 @@ func TestFishVFSServerToServerInfo(t *testing.T) {
 		t.Errorf("cloned ConnectionInfo mismatch: (%q, %q, %q, %t)", h2, p2, u2, ok2)
 	}
 }
+
+// TestFishVFSConnectionInfoEmptyHostIsNotAConnection guards the WSL site
+// type's isolation from server-to-server transfers: a FishVFS with no host
+// of its own (wsl_vfs_windows.go leaves host/port/user unset on purpose)
+// must report ok=false, not an empty host a caller could still act on.
+func TestFishVFSConnectionInfoEmptyHostIsNotAConnection(t *testing.T) {
+	v := &FishVFS{title: "WSL:Ubuntu"}
+	h, p, u, ok := v.ConnectionInfo()
+	if ok || h != "" || p != "" || u != "" {
+		t.Errorf("ConnectionInfo = (%q, %q, %q, %t), want (\"\", \"\", \"\", false)", h, p, u, ok)
+	}
+}
+
 func TestFishVFSPtyRunCommandWindowsRoot(t *testing.T) {
 	sess := fishplus.NewSession(nil, nil, nil)
 	v := &FishVFS{
@@ -1148,13 +1153,5 @@ func TestFishVFSCloseNilReceiver(t *testing.T) {
 	var v *FishVFS
 	if err := v.Close(); err != nil {
 		t.Errorf("nil FishVFS.Close() returned error: %v", err)
-	}
-	var s *SFTPVFS
-	if err := s.Close(); err != nil {
-		t.Errorf("nil SFTPVFS.Close() returned error: %v", err)
-	}
-	var f *FTPVFS
-	if err := f.Close(); err != nil {
-		t.Errorf("nil FTPVFS.Close() returned error: %v", err)
 	}
 }

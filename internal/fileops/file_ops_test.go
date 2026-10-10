@@ -306,8 +306,10 @@ func TestRecursiveCopy_CancelCleanup(t *testing.T) {
 
 type mockS2SVFS struct {
 	vfs.VFS
-	runCommand func(ctx context.Context, dir, command string, cb func(line string)) (int, error)
-	connInfo   func() (host, port, user string, ok bool)
+	runCommand        func(ctx context.Context, dir, command string, cb func(line string)) (int, error)
+	connInfo          func() (host, port, user string, ok bool)
+	secondHopPassword func() (password string, ok bool)
+	stageSecret       func(ctx context.Context, password string) (ref string, cleanup func(context.Context), err error)
 }
 
 func (m *mockS2SVFS) RunCommand(ctx context.Context, dir, command string, cb func(line string)) (int, error) {
@@ -322,6 +324,25 @@ func (m *mockS2SVFS) ConnectionInfo() (host, port, user string, ok bool) {
 		return m.connInfo()
 	}
 	return "localhost", "22", "user", true
+}
+
+// SecondHopPassword and StageSecret implement vfs.SecondHopPasswordProvider
+// and vfs.SecondHopSecretStager unconditionally, exactly like the real
+// FishVFS: whether a password is offered, or a secret can be staged at all,
+// is a runtime answer (ok / a non-nil error), not something a caller can
+// tell from the type alone.
+func (m *mockS2SVFS) SecondHopPassword() (string, bool) {
+	if m.secondHopPassword != nil {
+		return m.secondHopPassword()
+	}
+	return "", false
+}
+
+func (m *mockS2SVFS) StageSecret(ctx context.Context, password string) (string, func(context.Context), error) {
+	if m.stageSecret != nil {
+		return m.stageSecret(ctx, password)
+	}
+	return "", nil, fmt.Errorf("unsupported")
 }
 
 func (m *mockS2SVFS) GetCapabilities() vfs.VFSCapabilities {
@@ -402,6 +423,172 @@ func TestRecursiveCopy_S2SProbing(t *testing.T) {
 	}
 	if pulledCmd == "" {
 		t.Error("Expected pull to be executed directly when S2SDir is 2")
+	}
+}
+
+// TestRecursiveCopy_S2SPasswordAuthOffByDefault is the security-relevant
+// regression test for f4#370: even when the destination VFS could offer a
+// password for the second hop, a caller must opt in for it to be used at
+// all. SecondHopPassword answering ok=false here stands in for that
+// default -- exactly what NetFox's real implementation does before its
+// "password auth for server-to-server transfers" setting is switched on --
+// and this test's whole point is that StageSecret must then never be
+// reached and no command line may ever mention sshpass, regardless of the
+// key/agent-based attempt failing on both directions.
+func TestRecursiveCopy_S2SPasswordAuthOffByDefault(t *testing.T) {
+	tmpSrc := t.TempDir()
+	tmpDst := t.TempDir()
+
+	srcFile := filepath.Join(tmpSrc, "s2s.bin")
+	if err := os.WriteFile(srcFile, []byte("s2s_data"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	dstFile := filepath.Join(tmpDst, "s2s.bin")
+
+	var stagedOnSrc, stagedOnDst bool
+	var sawSshpass bool
+
+	srcMock := &mockS2SVFS{
+		VFS: vfs.NewOSVFS(tmpSrc),
+		runCommand: func(ctx context.Context, dir, command string, cb func(line string)) (int, error) {
+			if strings.Contains(command, "sshpass") {
+				sawSshpass = true
+			}
+			return 1, nil // Key/agent-based push always fails.
+		},
+		connInfo: func() (host, port, user string, ok bool) { return "hostA", "22", "userA", true },
+		stageSecret: func(ctx context.Context, password string) (string, func(context.Context), error) {
+			stagedOnSrc = true
+			return "/tmp/should-not-be-used", func(context.Context) {}, nil
+		},
+	}
+	dstMock := &mockS2SVFS{
+		VFS: vfs.NewOSVFS(tmpDst),
+		runCommand: func(ctx context.Context, dir, command string, cb func(line string)) (int, error) {
+			if strings.Contains(command, "sshpass") {
+				sawSshpass = true
+			}
+			return 1, nil // Key/agent-based pull always fails too.
+		},
+		connInfo: func() (host, port, user string, ok bool) { return "hostB", "22", "userB", true },
+		// A password exists, but SecondHopPassword's ok=false below is what
+		// an opt-in setting left off actually returns: the ticket is explicit
+		// that a saved password being available must never be enough on its
+		// own.
+		secondHopPassword: func() (string, bool) { return "hunter2", false },
+		stageSecret: func(ctx context.Context, password string) (string, func(context.Context), error) {
+			stagedOnDst = true
+			return "/tmp/should-not-be-used", func(context.Context) {}, nil
+		},
+	}
+
+	state := &FileOpState{}
+	// Both mocks embed a real OSVFS, so once S2S gives up, the operation
+	// still succeeds by streaming the file through the client -- exactly
+	// the existing fail-safe fallback (docs/FISH_PLUS_S2S.md §4). That is
+	// not what this test is about; what matters is that streaming, not
+	// sshpass, is how the bytes got there.
+	if err := recursiveCopy(context.Background(), srcMock, srcFile, dstMock, dstFile, state, 0); err != nil {
+		t.Fatalf("recursiveCopy failed: %v", err)
+	}
+	if got, err := os.ReadFile(dstFile); err != nil || string(got) != "s2s_data" {
+		t.Fatalf("destination content = %q, %v, want %q", got, err, "s2s_data")
+	}
+	if sawSshpass {
+		t.Error("password-based server-to-server auth was attempted while its opt-in setting is off")
+	}
+	if stagedOnSrc || stagedOnDst {
+		t.Error("StageSecret was called although SecondHopPassword never offered a password")
+	}
+	if state.S2SUsePassword {
+		t.Error("S2SUsePassword must stay false when the opt-in setting is off")
+	}
+}
+
+// TestRecursiveCopy_S2SPasswordAuthFallback is the companion positive case:
+// once the opt-in setting is on and the target's saved connection has a
+// password, a server-to-server transfer whose key/agent attempt fails must
+// retry through a password instead of giving up on S2S and streaming the
+// file through the client.
+func TestRecursiveCopy_S2SPasswordAuthFallback(t *testing.T) {
+	tmpSrc := t.TempDir()
+	tmpDst := t.TempDir()
+
+	srcFile := filepath.Join(tmpSrc, "s2s.bin")
+	if err := os.WriteFile(srcFile, []byte("s2s_data"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	dstFile := filepath.Join(tmpDst, "s2s.bin")
+
+	var commands []string
+	var cleanedUp bool
+	const secretRef = "/tmp/f4-s2s-secret.abc123" // #nosec G101 -- a fake staged-file path fixture, not a credential.
+
+	srcMock := &mockS2SVFS{
+		VFS: vfs.NewOSVFS(tmpSrc),
+		runCommand: func(ctx context.Context, dir, command string, cb func(line string)) (int, error) {
+			commands = append(commands, command)
+			if strings.Contains(command, "sshpass") {
+				if !strings.Contains(command, secretRef) {
+					t.Errorf("sshpass command does not reference the staged secret: %q", command)
+				}
+				if strings.Contains(command, "hunter2") {
+					t.Errorf("the password itself must never appear in the command line: %q", command)
+				}
+				return 0, nil // The password-based push succeeds.
+			}
+			return 1, nil // The plain, key/agent-based push still fails first.
+		},
+		connInfo: func() (host, port, user string, ok bool) { return "hostA", "22", "userA", true },
+		stageSecret: func(ctx context.Context, password string) (string, func(context.Context), error) {
+			if password != "hunter2" {
+				t.Errorf("StageSecret got password %q, want %q", password, "hunter2")
+			}
+			return secretRef, func(context.Context) { cleanedUp = true }, nil
+		},
+	}
+	dstMock := &mockS2SVFS{
+		VFS:               vfs.NewOSVFS(tmpDst),
+		connInfo:          func() (host, port, user string, ok bool) { return "hostB", "22", "userB", true },
+		secondHopPassword: func() (string, bool) { return "hunter2", true },
+	}
+
+	state := &FileOpState{}
+	if err := recursiveCopy(context.Background(), srcMock, srcFile, dstMock, dstFile, state, 0); err != nil {
+		t.Fatalf("recursiveCopy failed during S2S password fallback: %v", err)
+	}
+
+	var sawSshpass bool
+	for _, c := range commands {
+		if strings.Contains(c, "sshpass") {
+			sawSshpass = true
+		}
+	}
+	if !sawSshpass {
+		t.Errorf("expected a password-based (sshpass) push attempt, got commands: %v", commands)
+	}
+	if !cleanedUp {
+		t.Error("StageSecret's cleanup was never called")
+	}
+	if state.S2SDir != 1 {
+		t.Errorf("expected S2SDir 1 (push), got %d", state.S2SDir)
+	}
+	if !state.S2SUsePassword {
+		t.Error("expected S2SUsePassword to be set after a password-based success")
+	}
+
+	// A second file in the same operation should go straight to the
+	// password path instead of re-probing the attempt that already failed.
+	commands = nil
+	dstFile2 := filepath.Join(tmpDst, "s2s2.bin")
+	if err := os.WriteFile(filepath.Join(tmpSrc, "s2s2.bin"), []byte("more"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := recursiveCopy(context.Background(), srcMock, filepath.Join(tmpSrc, "s2s2.bin"), dstMock, dstFile2, state, 0); err != nil {
+		t.Fatalf("recursiveCopy failed on the second file: %v", err)
+	}
+	if len(commands) != 1 || !strings.Contains(commands[0], "sshpass") {
+		t.Errorf("expected the second file to go straight to the password attempt, got commands: %v", commands)
 	}
 }
 
@@ -851,14 +1038,28 @@ func TestExecuteFileOp_Move_Skip_NoDataLoss(t *testing.T) {
 	}
 }
 func TestExecuteFileOp_MoveAcrossVFS_Fallback(t *testing.T) {
-	// Tests that moving a file between two different VFS implementations
-	// (or when optimized Rename fails) correctly falls back to Copy + Delete.
+	// Tests that moving a file between two VFS instances with no shared
+	// device identity (simulating different volumes/servers, or an
+	// optimized Rename that failed) correctly falls back to Copy + Delete.
+	//
+	// Two independent *vfs.OSVFS values are no longer enough to force this
+	// path on their own (#1635): since sameDeviceForMove was added, two
+	// OSVFS panels that happen to read the same real disk (as tmpSrc/tmpDst
+	// under t.TempDir() normally do) now take the fast rename path instead.
+	// Wrapping srcVfs strips vfs.FileIdentifier (fileOpSafetyProbeVFS embeds
+	// the vfs.VFS interface, which does not promote that optional method) and
+	// gives it a concrete type that differs from dstVfs's, so both
+	// sameDeviceForMove and vfs.SameSession report false and this test keeps
+	// exercising the actual fallback logic. Wrapping the source specifically
+	// (rather than the destination) also lets the assertion below observe
+	// that tryOptimizedRename's Rename call — issued on srcVFS, never
+	// dstVFS — was skipped entirely.
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 
 	tmpSrc := t.TempDir()
 	tmpDst := t.TempDir()
 
-	srcVfs := vfs.NewOSVFS(tmpSrc)
+	srcVfs := &fileOpSafetyProbeVFS{VFS: vfs.NewOSVFS(tmpSrc)}
 	dstVfs := vfs.NewOSVFS(tmpDst)
 
 	fileName := "cross_vfs.txt"
@@ -867,8 +1068,6 @@ func TestExecuteFileOp_MoveAcrossVFS_Fallback(t *testing.T) {
 	}
 
 	// Use ExecuteFileOp with isMove=true.
-	// Since they are different OSVFS instances (simulating different volumes/servers),
-	// the recursiveCopy logic will be used.
 	done := make(chan struct{})
 	ExecuteFileOp(srcVfs, dstVfs, []string{fileName}, tmpDst, true, 2, func() {
 		close(done)
@@ -891,6 +1090,12 @@ Loop:
 	// Verify result
 	if data, _ := os.ReadFile(filepath.Join(tmpDst, fileName)); string(data) != "payload" {
 		t.Error("File was not moved correctly to destination")
+	}
+	if srcVfs.renameCalls != 0 {
+		t.Errorf("Rename called %d times; move should have used Copy + Delete, not the optimized rename path", srcVfs.renameCalls)
+	}
+	if _, err := os.Stat(filepath.Join(tmpSrc, fileName)); !os.IsNotExist(err) {
+		t.Errorf("source file still present after move: err=%v", err)
 	}
 }
 func TestExecuteFileOp_LargeFileIntegrity(t *testing.T) {
@@ -1409,6 +1614,43 @@ func waitForDialog(t *testing.T, title string) vtui.Container {
 	}
 }
 
+// Concurrent operations own separate progress workspaces. Closing one dialog
+// does not activate another workspace; the harness must switch like a user.
+func waitForDialogAcrossWorkspaces(t *testing.T, title string) vtui.Container {
+	t.Helper()
+	find := func() vtui.Container {
+		vtui.FrameManager.SyncCurrentScreen()
+		for index, screen := range vtui.FrameManager.Screens {
+			for position := len(screen.Frames) - 1; position >= 0; position-- {
+				frame := screen.Frames[position]
+				if frame.IsDone() {
+					continue
+				}
+				if frame.GetTitle() == title {
+					t.Logf("[FIX] answering %q on workspace %d", title, index)
+					vtui.FrameManager.SwitchScreen(index)
+					return frame.(vtui.Container)
+				}
+				break // A live modal above the requested dialog must be answered first.
+			}
+		}
+		return nil
+	}
+	timeout := time.NewTimer(2 * time.Second)
+	defer timeout.Stop()
+	for {
+		if dialog := find(); dialog != nil {
+			return dialog
+		}
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		case <-timeout.C:
+			t.Fatalf("Timeout waiting for dialog %q across workspaces", title)
+		}
+	}
+}
+
 func setDialogCheckbox(t *testing.T, dlg vtui.Container, chkText string, state int) {
 	t.Helper()
 	for _, itm := range dlg.GetChildren() {
@@ -1615,10 +1857,10 @@ func TestFileOps_UI_ConcurrentConflicts(t *testing.T) {
 	ExecuteFileOp(vfs.NewOSVFS(tmpSrc1), vfs.NewOSVFS(tmpDst1), []string{"f1.txt"}, tmpDst1, false, 2, func() { close(done1) })
 	ExecuteFileOp(vfs.NewOSVFS(tmpSrc2), vfs.NewOSVFS(tmpDst2), []string{"f2.txt"}, tmpDst2, false, 2, func() { close(done2) })
 
-	// We expect TWO warning dialogs (processed sequentially by the TaskChan pump).
+	// We expect two warning dialogs, each anchored to its operation's workspace.
 	// Since operations are concurrent, we must check which dialog is which.
 	for i := 0; i < 2; i++ {
-		dlg := waitForDialog(t, i18n.Msg("Warning.Title"))
+		dlg := waitForDialogAcrossWorkspaces(t, i18n.Msg("Warning.Title"))
 
 		isOp1 := false
 		isOp2 := false

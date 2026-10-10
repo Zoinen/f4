@@ -233,7 +233,7 @@ func TestFixedSideMenuKeepsActivePanelShortcutHints(t *testing.T) {
 	pf.UpdateMenuCheckmarks()
 
 	for _, menuIndex := range []int{0, len(pf.MenuBar.Items) - 1} {
-		for itemIndex, want := range []string{"Ctrl+1", "Ctrl+2", "Ctrl+3", "Ctrl+4"} {
+		for itemIndex, want := range []string{"Ctrl+2", "Ctrl+1", "Ctrl+3", "Ctrl+4"} {
 			if got := pf.MenuBar.Items[menuIndex].SubItems[itemIndex].Shortcut; got != want {
 				t.Errorf("menu %d view item %d shortcut = %q, want %q", menuIndex, itemIndex, got, want)
 			}

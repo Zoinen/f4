@@ -146,3 +146,44 @@ func TestHelpView_MouseWheelScrollsWithoutChangingSelectedLink(t *testing.T) {
 		t.Fatalf("wheel scrolling changed selected link to %d, want %d", hv.selectedIdx, selected)
 	}
 }
+
+func TestHelpView_ScrollTopAndSourceRow(t *testing.T) {
+	SetDefaultPalette()
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	FrameManager.Init(scr)
+
+	lines := make([]string, 60)
+	for i := range lines {
+		lines[i] = "line"
+	}
+	engine := NewHelpEngine(&mockHelpVFS{})
+	engine.AddTopic(&HelpTopic{Name: "Long", Lines: lines})
+	hv := NewHelpView(engine, "Long")
+	hv.ResizeConsole(80, 25)
+
+	if hv.ScrollTop() != 0 {
+		t.Fatalf("ScrollTop at the start = %d, want 0", hv.ScrollTop())
+	}
+	hv.SetScrollTop(10)
+	if hv.ScrollTop() != 10 {
+		t.Fatalf("ScrollTop after SetScrollTop(10) = %d", hv.ScrollTop())
+	}
+	hv.SetScrollTop(1000)
+	if got := hv.ScrollTop(); got <= 10 || got >= len(lines) {
+		t.Errorf("SetScrollTop(1000) = %d, want the last scrollable position", got)
+	}
+	hv.SetScrollTop(-5)
+	if hv.ScrollTop() != 0 {
+		t.Errorf("SetScrollTop(-5) = %d, want 0", hv.ScrollTop())
+	}
+	if src, ok := hv.SourceRow(3); !ok || src != 3 {
+		t.Errorf("SourceRow(3) = %d, %v", src, ok)
+	}
+	if _, ok := hv.SourceRow(len(hv.CurrentTopic().Lines)); ok {
+		t.Error("SourceRow past the end reported ok")
+	}
+	if _, ok := hv.SourceRow(-1); ok {
+		t.Error("SourceRow(-1) reported ok")
+	}
+}

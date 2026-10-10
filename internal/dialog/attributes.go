@@ -55,29 +55,136 @@ type unixAttributesEdit struct {
 	gid      int
 	setMTime bool
 	mtime    time.Time
+	// setATime writes the access time the Accessed field holds (f4#1404).
+	setATime bool
+	atime    time.Time
+	// setBTime writes the creation time the Created field holds, where the
+	// platform can set one (macOS; vfs.OSVFS.SupportsSetBTime).
+	setBTime bool
+	btime    time.Time
 	// mode holds the new mode bits, keepMode the bits each object keeps.
 	mode     uint32
 	keepMode uint32
 }
 
-func setUnixAttributesForTargets(ctx context.Context, v vfs.VFS, targets []AttributesTarget, edit unixAttributesEdit) error {
-	for _, target := range targets {
-		item := target.Item
-		if edit.setUid {
-			item.Uid = edit.uid
-		}
-		if edit.setGid {
-			item.Gid = edit.gid
-		}
-		if edit.setMTime {
-			item.MTime = edit.mtime
-		}
-		item.UnixMode = (item.UnixMode & edit.keepMode) | (edit.mode &^ edit.keepMode)
-		if err := v.SetAttributes(ctx, target.Path, item); err != nil {
-			return fmt.Errorf("%s: %w", target.Path, err)
-		}
+// applyUnixAttributesToOne is the single-item primitive: turn edit into the
+// object's new VFSItem and write it. It is the one place edit is applied, so
+// that setUnixAttributesForTargets (top-level selection) and
+// walkUnixAttributesRecursive (f4#1502: recursive Set) do exactly the same
+// thing to every object they reach, including symlinks -- Lchown for the
+// owner, Chmod (which follows the link) for the mode, exactly as a single
+// selected symlink is already handled today via OSVFS.SetAttributes.
+func applyUnixAttributesToOne(ctx context.Context, v vfs.VFS, path string, item vfs.VFSItem, edit unixAttributesEdit) error {
+	if edit.setUid {
+		item.Uid = edit.uid
+	}
+	if edit.setGid {
+		item.Gid = edit.gid
+	}
+	if edit.setMTime {
+		item.MTime = edit.mtime
+	}
+	if edit.setATime {
+		item.ATime = edit.atime
+	}
+	if edit.setBTime {
+		item.BTime, item.SetBTime = edit.btime, true
+	}
+	item.UnixMode = (item.UnixMode & edit.keepMode) | (edit.mode &^ edit.keepMode)
+	if err := v.SetAttributes(ctx, path, item); err != nil {
+		return fmt.Errorf("%s: %w", path, err)
 	}
 	return nil
+}
+
+// setUnixAttributesForTargets applies edit to every selected object and,
+// when recursive is set, to everything a selected real directory contains
+// (f4#1502 -- "Смена владельца/прав не работает рекурсивно"). applied counts
+// every object actually written, selected or descendant, for the caller's
+// completion summary. It stops at the first error, same as before this
+// object had no recursion at all: a multi-object Set has always stopped
+// there, and a recursive one keeps that rather than inventing a
+// continue-past-errors policy for just this one path.
+func setUnixAttributesForTargets(ctx context.Context, v vfs.VFS, targets []AttributesTarget, edit unixAttributesEdit, recursive bool) (applied int, err error) {
+	for _, target := range targets {
+		if err := applyUnixAttributesToOne(ctx, v, target.Path, target.Item, edit); err != nil {
+			return applied, err
+		}
+		applied++
+		// A symlink is a leaf here even when it resolves to a directory --
+		// the same convention f4's own recursive tree walks already use:
+		// OSVFS.Remove's os.RemoveAll only ever removes the link itself,
+		// and vfs.ScanOptions{FollowSymlinkDirs: false} (QuickView) counts
+		// a symlink once instead of walking its target. Recursing through
+		// it here would let a Set on one selected folder reach arbitrary
+		// files outside that folder, and could loop forever on a symlink
+		// that points back into its own tree.
+		if recursive && target.Item.IsDir && !target.Item.IsSymlink {
+			n, walkErr := walkUnixAttributesRecursive(ctx, v, target.Path, edit, 0)
+			applied += n
+			if walkErr != nil {
+				return applied, walkErr
+			}
+		}
+	}
+	return applied, nil
+}
+
+// walkUnixAttributesRecursive applies edit to every entry ReadDir finds
+// under dirPath, recursing into real subdirectories only (see the symlink
+// note on setUnixAttributesForTargets). Each entry is applied through
+// applyUnixAttributesToOne, the very primitive the non-recursive Set already
+// uses, so a permission error partway through the tree gets exactly the
+// same sudo-elevation fallback that OSVFS.SetAttributes already gives a
+// single object (the mechanism #1255/#1261 fixed) -- no separate privilege
+// path for the recursive case.
+func walkUnixAttributesRecursive(ctx context.Context, v vfs.VFS, dirPath string, edit unixAttributesEdit, depth int) (applied int, err error) {
+	if depth > 1000 {
+		return 0, fmt.Errorf("%s: maximum recursion depth exceeded (circular structure?)", dirPath)
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	var items []vfs.VFSItem
+	if err := v.ReadDir(ctx, dirPath, func(chunk []vfs.VFSItem) {
+		items = append(items, chunk...)
+	}); err != nil {
+		return 0, fmt.Errorf("%s: %w", dirPath, err)
+	}
+	for _, item := range items {
+		if item.Name == "" || item.Name == ".." {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return applied, err
+		}
+		childPath := v.Join(dirPath, item.Name)
+		if err := applyUnixAttributesToOne(ctx, v, childPath, item, edit); err != nil {
+			return applied, err
+		}
+		applied++
+		if item.IsDir && !item.IsSymlink {
+			n, err := walkUnixAttributesRecursive(ctx, v, childPath, edit, depth+1)
+			applied += n
+			if err != nil {
+				return applied, err
+			}
+		}
+	}
+	return applied, nil
+}
+
+// targetsIncludeRealDir reports whether the recursive checkbox has anything
+// to do: it is offered only when a real directory (not a symlink, even one
+// that resolves to a directory -- see the symlink note above) is among the
+// selected objects.
+func targetsIncludeRealDir(targets []AttributesTarget) bool {
+	for _, target := range targets {
+		if target.Item.IsDir && !target.Item.IsSymlink {
+			return true
+		}
+	}
+	return false
 }
 
 func ShowSymlinkTargetDialog(refresh func(), v vfs.VFS, path, target string) {
@@ -142,6 +249,20 @@ func ShowSymlinkTargetDialog(refresh func(), v vfs.VFS, path, target string) {
 // the original link back before returning the error so a failed edit cannot
 // silently delete the user's link.
 func ReplaceSymlinkTarget(ctx context.Context, v vfs.VFS, path, newTarget string) error {
+	return replaceLinkTarget(ctx, v, path, newTarget, false)
+}
+
+// ReplaceJunctionTarget is ReplaceSymlinkTarget for a directory junction: the
+// link is recreated as a junction.
+func ReplaceJunctionTarget(ctx context.Context, v vfs.VFS, path, newTarget string) error {
+	return replaceLinkTarget(ctx, v, path, newTarget, true)
+}
+
+// replaceLinkTarget is ReplaceSymlinkTarget for either kind of link. A
+// directory junction is recreated as a junction (f4#1828): turning it into a
+// symbolic link would change its kind and, on Windows, needs a privilege that
+// creating a junction does not.
+func replaceLinkTarget(ctx context.Context, v vfs.VFS, path, newTarget string, junction bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -151,6 +272,14 @@ func ReplaceSymlinkTarget(ctx context.Context, v vfs.VFS, path, newTarget string
 	symVFS, ok := v.(vfs.SymlinkVFS)
 	if !ok {
 		return errors.New("VFS does not support symbolic links")
+	}
+	create := symVFS.Symlink
+	if junction {
+		juncVFS, ok := v.(vfs.JunctionVFS)
+		if !ok {
+			return errors.New("VFS does not support directory junctions")
+		}
+		create = juncVFS.Junction
 	}
 	oldTarget, err := symVFS.Readlink(ctx, path)
 	if err != nil {
@@ -162,11 +291,11 @@ func ReplaceSymlinkTarget(ctx context.Context, v vfs.VFS, path, newTarget string
 	if err := v.Remove(ctx, path); err != nil {
 		return fmt.Errorf("remove symlink %q: %w", path, err)
 	}
-	createErr := symVFS.Symlink(ctx, newTarget, path)
+	createErr := create(ctx, newTarget, path)
 	if createErr == nil {
 		return nil
 	}
-	if restoreErr := symVFS.Symlink(ctx, oldTarget, path); restoreErr != nil {
+	if restoreErr := create(ctx, oldTarget, path); restoreErr != nil {
 		return fmt.Errorf("create symlink %q: %w; restore original target %q: %v", path, createErr, oldTarget, restoreErr)
 	}
 	return fmt.Errorf("create symlink %q: %w (original target restored)", path, createErr)
@@ -177,6 +306,13 @@ func ReplaceSymlinkTarget(ctx context.Context, v vfs.VFS, path, newTarget string
 type windowsAttributesEdit struct {
 	setMTime bool
 	mtime    time.Time
+	// setATime writes the access time the Accessed field holds (f4#1404).
+	setATime bool
+	atime    time.Time
+	// setBTime writes the creation time the Created field holds, where the
+	// platform can set one (vfs.OSVFS.SupportsSetBTime; f4#1404).
+	setBTime bool
+	btime    time.Time
 	// winAttrs holds the new ordinary flags, keepWinAttrs the ordinary flags
 	// each object keeps.
 	winAttrs     uint32
@@ -194,6 +330,12 @@ func setWindowsAttributesForTargets(ctx context.Context, v vfs.VFS, targets []At
 		if edit.setMTime {
 			item.MTime = edit.mtime
 		}
+		if edit.setATime {
+			item.ATime = edit.atime
+		}
+		if edit.setBTime {
+			item.BTime, item.SetBTime = edit.btime, true
+		}
 		if edit.setUnixMode {
 			item.UnixMode = edit.unixMode
 		}
@@ -209,7 +351,13 @@ func setWindowsAttributesForTargets(ctx context.Context, v vfs.VFS, targets []At
 	return nil
 }
 
-// attributesTimeFormat is the format of the dialogs' time fields.
+// attributesTimeFormat is the format of the dialogs' time fields, as a Go
+// reference-time layout (used for both parsing and rendering the current
+// value). It is unfit for showing the user as "the expected format" on a
+// parse error: Go's reference date "02.01.2006 15:04:05" reads as a
+// specific past date/time to anyone who does not know Go's layout
+// convention, not as a pattern to follow (f4#1404) — the error message
+// below uses the localized i18n.Msg("Attributes.MTimeFormatHint") instead.
 const attributesTimeFormat = "02.01.2006 15:04:05"
 
 // attributesSelectionSummary names a multiple selection the way far2l's
@@ -253,6 +401,45 @@ func sharedAttributeText(targets []AttributesTarget, value func(vfs.VFSItem) int
 		}
 	}
 	return name(first)
+}
+
+// sharedAttributeTimeText is sharedAttributeText's counterpart for a
+// time.Time field that is only sometimes known (Created/Accessed/Changed):
+// ok is false when any object in the selection lacks the field at all, so
+// the caller omits the row entirely rather than showing a wrong zero time
+// for part of the selection. When every object has it, the text is the
+// common value, or "(multiple values)" the way owner/group show one.
+func sharedAttributeTimeText(targets []AttributesTarget, value func(vfs.VFSItem) time.Time, known func(vfs.VFSItem) bool) (text string, ok bool) {
+	for _, target := range targets {
+		if !known(target.Item) {
+			return "", false
+		}
+	}
+	first := value(targets[0].Item)
+	for _, target := range targets[1:] {
+		if !value(target.Item).Equal(first) {
+			return i18n.Msg("Attributes.MultipleValues"), true
+		}
+	}
+	return first.Format(attributesTimeFormat), true
+}
+
+// attributesReadOnlyTimeRow builds a label+value row for a time field the
+// dialog only displays (Created/Accessed/Changed): no Edit, no Set-time
+// validation, matching the reporter's explicit read-only ask (f4#1404).
+// leftMargin mirrors whatever margin the dialog's own M-Time/Last-write row
+// uses, so the new rows line up with it (the Unix and Windows-shaped dialogs
+// use different values).
+func attributesReadOnlyTimeRow(dlg *vtui.Window, mainVBox *vtui.VBoxLayout, width, leftMargin int, label, text string) *vtui.HBoxLayout {
+	lbl := vtui.NewText(0, 0, PadLabel(label), vtui.Palette[vtui.ColDialogText])
+	val := vtui.NewText(0, 0, text, vtui.Palette[vtui.ColDialogText])
+	row := vtui.NewHBoxLayout(0, 0, width, 1)
+	row.Add(lbl, vtui.Margins{Left: leftMargin, Right: 1}, vtui.AlignLeft)
+	row.Add(val, vtui.Margins{}, vtui.AlignLeft)
+	dlg.AddItem(lbl)
+	dlg.AddItem(val)
+	mainVBox.Add(row, vtui.Margins{Top: 0}, vtui.AlignFill)
+	return row
 }
 
 func unixOwnerName(uid int) string {
@@ -444,6 +631,49 @@ func ShowAttributesUnixForTargets(refresh func(), v vfs.VFS, targets []Attribute
 		height = 26
 	}
 
+	// A listing carries no birth time on Linux; ask for the one of each shown
+	// object now, when the filesystem keeps it (f4#1817).
+	if _, local := v.(*vfs.OSVFS); local {
+		targets = append([]AttributesTarget(nil), targets...)
+		for i := range targets {
+			if targets[i].Item.HasMetadata(vfs.MetadataBTime) {
+				continue
+			}
+			if born, ok := vfs.ReadBirthTime(targets[i].Path); ok {
+				targets[i].Item.BTime = born
+				targets[i].Item.KnownMetadata |= vfs.MetadataBTime
+			}
+		}
+		item = targets[0].Item
+	}
+
+	// Read-only Created/Accessed/Changed rows (f4#1404 follow-up): computed
+	// up front so the dialog's height can grow by exactly the rows that will
+	// actually be shown. A row is omitted entirely, not shown with a zero
+	// time, when any object in the selection lacks that field.
+	createdText, showCreated := sharedAttributeTimeText(targets,
+		func(item vfs.VFSItem) time.Time { return item.BTime },
+		func(item vfs.VFSItem) bool { return item.HasMetadata(vfs.MetadataBTime) })
+	accessedText, showAccessed := sharedAttributeTimeText(targets,
+		func(item vfs.VFSItem) time.Time { return item.ATime },
+		func(item vfs.VFSItem) bool { return item.HasMetadata(vfs.MetadataATime) })
+	changedText, showChanged := sharedAttributeTimeText(targets,
+		func(item vfs.VFSItem) time.Time { return item.CTime },
+		func(item vfs.VFSItem) bool { return item.HasMetadata(vfs.MetadataCTime) })
+	for _, shown := range []bool{showCreated, showAccessed, showChanged} {
+		if shown {
+			height++
+		}
+	}
+
+	// The recursive checkbox (f4#1502) only makes sense, and is only shown,
+	// when a real directory is actually selected -- a selection of plain
+	// files has nothing under it to walk.
+	showRecursive := targetsIncludeRealDir(targets)
+	if showRecursive {
+		height++
+	}
+
 	dlg := vtui.NewCenteredDialog(width, height, i18n.Msg("Attributes.Title"))
 	dlg.ShowClose = true
 
@@ -492,6 +722,42 @@ func ShowAttributesUnixForTargets(refresh func(), v vfs.VFS, targets []Attribute
 	dlg.AddItem(gbPerms)
 	mainVBox.Add(gbPerms, vtui.Margins{Top: 0}, vtui.AlignFill)
 
+	// Recursive checkbox (f4#1502). Opt-in and off by default, the way
+	// Sync.Subdirs/Compare.Recursive ("&Subfolders") are in this codebase's
+	// other apply-to-a-tree dialogs -- a plain checkbox next to the other
+	// options rather than its own group box.
+	var cbRecursive *vtui.Checkbox
+	if showRecursive {
+		cbRecursive = vtui.NewCheckbox(0, 0, i18n.Msg("Attributes.Recursive"), false)
+		dlg.AddItem(cbRecursive)
+		mainVBox.Add(cbRecursive, vtui.Margins{Top: 0}, vtui.AlignLeft)
+	}
+
+	// Created, Modified, Metadata (changed) and Accessed rows, in that order
+	// (f4#1404, f4#1817). Changed is read-only: no OS lets a program set the
+	// status-change time. Created is editable only where the platform can set a
+	// birth time (macOS) and for a real local file system; elsewhere it is shown
+	// and cannot be changed. Accessed is editable, below.
+	var rowCreated, rowAccessed, rowChanged *vtui.HBoxLayout
+	var editCreated *vtui.Edit
+	initialCreated := ""
+	if showCreated {
+		if osv, ok := v.(*vfs.OSVFS); ok && osv.SupportsSetBTime() {
+			if !multiple {
+				initialCreated = createdText
+			}
+			editCreated = vtui.NewEdit(0, 0, 20, initialCreated)
+			lblCreated := vtui.NewText(0, 0, PadLabel(i18n.Msg("Attributes.Created")), vtui.Palette[vtui.ColDialogText])
+			rowCreated = vtui.NewHBoxLayout(0, 0, 66, 1)
+			rowCreated.Add(lblCreated, vtui.Margins{Left: 2, Right: 1}, vtui.AlignLeft)
+			rowCreated.Add(editCreated, vtui.Margins{}, vtui.AlignLeft)
+			dlg.AddItem(lblCreated)
+			dlg.AddItem(editCreated)
+			mainVBox.Add(rowCreated, vtui.Margins{Top: 0}, vtui.AlignFill)
+		} else {
+			rowCreated = attributesReadOnlyTimeRow(dlg, mainVBox, 66, 2, i18n.Msg("Attributes.Created"), createdText)
+		}
+	}
 	// Time Row. far2l leaves the dates of a multiple selection blank; a blank
 	// field left blank changes nothing.
 	initialMTime := ""
@@ -507,6 +773,29 @@ func ShowAttributesUnixForTargets(refresh func(), v vfs.VFS, targets []Attribute
 	dlg.AddItem(editMTime)
 	mainVBox.Add(rowTime, vtui.Margins{Top: 0}, vtui.AlignFill)
 
+	if showChanged {
+		rowChanged = attributesReadOnlyTimeRow(dlg, mainVBox, 66, 2, i18n.Msg("Attributes.Changed"), changedText)
+	}
+
+	// Accessed is editable (f4#1404): utimensat takes it together with the
+	// modification time, which OSVFS.SetAttributes already passes on. Like
+	// M-Time it stays blank for a multiple selection, and a field left
+	// untouched changes nothing.
+	var editAccessed *vtui.Edit
+	initialAccessed := ""
+	if showAccessed {
+		if !multiple {
+			initialAccessed = accessedText
+		}
+		editAccessed = vtui.NewEdit(0, 0, 20, initialAccessed)
+		lblAccessed := vtui.NewText(0, 0, PadLabel(i18n.Msg("Attributes.Accessed")), vtui.Palette[vtui.ColDialogText])
+		rowAccessed = vtui.NewHBoxLayout(0, 0, 66, 1)
+		rowAccessed.Add(lblAccessed, vtui.Margins{Left: 2, Right: 1}, vtui.AlignLeft)
+		rowAccessed.Add(editAccessed, vtui.Margins{}, vtui.AlignLeft)
+		dlg.AddItem(lblAccessed)
+		dlg.AddItem(editAccessed)
+		mainVBox.Add(rowAccessed, vtui.Margins{Top: 0}, vtui.AlignFill)
+	}
 	// Buttons
 	btnSet := vtui.NewButton(0, 0, i18n.Msg("Attributes.BtnSet"))
 	btnSet.IsDefault = true
@@ -523,6 +812,15 @@ func ShowAttributesUnixForTargets(refresh func(), v vfs.VFS, targets []Attribute
 	// --- ПЕРВЫЙ ПРОХОД: Позиционируем контейнеры в диалоге ---
 	mainVBox.Apply()
 	rowTime.Apply()
+	if rowCreated != nil {
+		rowCreated.Apply()
+	}
+	if rowAccessed != nil {
+		rowAccessed.Apply()
+	}
+	if rowChanged != nil {
+		rowChanged.Apply()
+	}
 	rowBtns.Apply()
 
 	// --- ВТОРОЙ ПРОХОД: Наполняем уже спозиционированные GroupBox ---
@@ -670,11 +968,37 @@ func ShowAttributesUnixForTargets(refresh func(), v vfs.VFS, targets []Attribute
 			edit.gid, edit.setGid = lookupUnixGid(text)
 		}
 		if text := editMTime.GetText(); text != initialMTime {
-			if t, err := time.ParseInLocation(attributesTimeFormat, text, time.Local); err == nil {
-				edit.mtime, edit.setMTime = t, true
+			t, err := time.ParseInLocation(attributesTimeFormat, text, time.Local)
+			if err != nil {
+				// f4 #1404: a garbled date used to be silently dropped —
+				// nothing applied, nothing said why.
+				vtui.ShowMessage(" Error ", fmt.Sprintf(i18n.Msg("Attributes.MTimeInvalidError"), i18n.Msg("Attributes.MTimeFormatHint")), []string{"&Ok"})
+				return
+			}
+			edit.mtime, edit.setMTime = t, true
+		}
+		if editAccessed != nil {
+			if text := editAccessed.GetText(); text != initialAccessed {
+				t, err := time.ParseInLocation(attributesTimeFormat, text, time.Local)
+				if err != nil {
+					vtui.ShowMessage(" Error ", fmt.Sprintf(i18n.Msg("Attributes.MTimeInvalidError"), i18n.Msg("Attributes.MTimeFormatHint")), []string{"&Ok"})
+					return
+				}
+				edit.atime, edit.setATime = t, true
+			}
+		}
+		if editCreated != nil {
+			if text := editCreated.GetText(); text != initialCreated {
+				t, err := time.ParseInLocation(attributesTimeFormat, text, time.Local)
+				if err != nil {
+					vtui.ShowMessage(" Error ", fmt.Sprintf(i18n.Msg("Attributes.MTimeInvalidError"), i18n.Msg("Attributes.MTimeFormatHint")), []string{"&Ok"})
+					return
+				}
+				edit.btime, edit.setBTime = t, true
 			}
 		}
 		edit.mode, edit.keepMode = unixModeEdit(editOctal.GetText(), allChecks)
+		recursive := cbRecursive != nil && cbRecursive.State == 1
 		vtui.RunAsync(func(ctx *vtui.TaskContext) {
 			if targetEdited {
 				if err := ReplaceSymlinkTarget(ctx.Context, v, path, newTarget); err != nil {
@@ -684,15 +1008,22 @@ func ShowAttributesUnixForTargets(refresh func(), v vfs.VFS, targets []Attribute
 					return
 				}
 			}
-			err := setUnixAttributesForTargets(ctx.Context, v, targets, edit)
+			applied, err := setUnixAttributesForTargets(ctx.Context, v, targets, edit, recursive)
 			ctx.RunOnUI(func() {
 				if err != nil {
 					vtui.ShowMessage(" Error ", err.Error(), []string{"&Ok"})
-				} else {
-					dlg.Close()
-					if refresh != nil {
-						refresh()
-					}
+					return
+				}
+				dlg.Close()
+				if refresh != nil {
+					refresh()
+				}
+				// A recursive Set can silently touch a tree the user cannot
+				// see the size of from the dialog alone; a one-line count
+				// is this ticket's "smaller first cut" instead of a full
+				// progress dialog (f4#1502).
+				if recursive {
+					vtui.ShowMessage(i18n.Msg("Info.Title"), fmt.Sprintf(i18n.Msg("Attributes.RecursiveApplied"), applied), []string{"&Ok"})
 				}
 			})
 		})
@@ -751,6 +1082,39 @@ func ShowAttributesWindowsWithPropertiesForTargets(
 	item := targets[0].Item
 	multiple := len(targets) > 1
 	width, height := 60, 22
+
+	// Read-only Created/Accessed rows (f4#1404 follow-up). No "Changed" row
+	// here: Windows has no ctime-shaped "metadata changed" timestamp to show,
+	// unlike Unix. Computed up front so height grows by exactly the rows
+	// that will actually be shown; a row is omitted, not shown with a zero
+	// time, when any object in the selection lacks the field (e.g. Wine
+	// posix mode, whose Ctim is a real Linux ctime with no creation-time
+	// meaning at all, never sets MetadataBTime — see os_vfs_windows.go).
+	createdText, showCreated := sharedAttributeTimeText(targets,
+		func(item vfs.VFSItem) time.Time { return item.BTime },
+		func(item vfs.VFSItem) bool { return item.HasMetadata(vfs.MetadataBTime) })
+	accessedText, showAccessed := sharedAttributeTimeText(targets,
+		func(item vfs.VFSItem) time.Time { return item.ATime },
+		func(item vfs.VFSItem) bool { return item.HasMetadata(vfs.MetadataATime) })
+	for _, shown := range []bool{showCreated, showAccessed} {
+		if shown {
+			height++
+		}
+	}
+
+	// f4#1828: the target of a single link is editable here as it is in the
+	// Unix-shaped dialog. A link whose target cannot be read gets no field,
+	// rather than one that would replace it with an empty string.
+	linkTarget := ""
+	linkIsJunction := false
+	if !multiple && (item.IsSymlink || vfs.LinkKindOf(&item) == vfs.LinkJunction) {
+		if t, err := vfs.Readlink(context.Background(), v, path); err == nil && t != "" {
+			linkTarget = t
+			linkIsJunction = vfs.LinkKindOf(&item) == vfs.LinkJunction
+			height += 2
+		}
+	}
+
 	dlg := vtui.NewCenteredDialog(width, height, i18n.Msg("Attributes.Title"))
 	dlg.ShowClose = true
 	x, y := dlg.X1, dlg.Y1
@@ -764,6 +1128,19 @@ func ShowAttributesWindowsWithPropertiesForTargets(
 	lblFile := vtui.NewText(0, 0, fileText, vtui.Palette[vtui.ColDialogText])
 	dlg.AddItem(lblFile)
 	mainVBox.Add(lblFile, vtui.Margins{}, vtui.AlignLeft)
+
+	var editLinkTarget *vtui.Edit
+	var rowLinkTarget *vtui.HBoxLayout
+	if linkTarget != "" {
+		editLinkTarget = vtui.NewEdit(0, 0, 40, linkTarget)
+		lblLinkTarget := vtui.NewLabel(0, 0, i18n.Msg("Attributes.Target"), editLinkTarget)
+		rowLinkTarget = vtui.NewHBoxLayout(0, 0, 54, 1)
+		rowLinkTarget.Add(lblLinkTarget, vtui.Margins{Right: 1}, vtui.AlignLeft)
+		rowLinkTarget.Add(editLinkTarget, vtui.Margins{}, vtui.AlignFill)
+		dlg.AddItem(lblLinkTarget)
+		dlg.AddItem(editLinkTarget)
+		mainVBox.Add(rowLinkTarget, vtui.Margins{Top: 1}, vtui.AlignFill)
+	}
 
 	gbAttr := vtui.NewGroupBox(0, 0, 54, 6, " "+i18n.Msg("Attributes.Flags")+" ")
 	dlg.AddItem(gbAttr)
@@ -785,6 +1162,48 @@ func ShowAttributesWindowsWithPropertiesForTargets(
 	dlg.AddItem(lblTime)
 	dlg.AddItem(editMTime)
 	mainVBox.Add(rowTime, vtui.Margins{Top: 1}, vtui.AlignFill)
+
+	var rowCreated, rowAccessed *vtui.HBoxLayout
+	// Created is editable where the platform can set a creation time (native
+	// Windows), and only for a real local file system; elsewhere it is shown
+	// and cannot be changed. Like Accessed it is blank for a multiple
+	// selection, and a field left untouched changes nothing.
+	var editCreated *vtui.Edit
+	initialCreated := ""
+	if showCreated {
+		if osv, ok := v.(*vfs.OSVFS); ok && osv.SupportsSetBTime() {
+			if !multiple {
+				initialCreated = createdText
+			}
+			editCreated = vtui.NewEdit(0, 0, 20, initialCreated)
+			lblCreated := vtui.NewText(0, 0, PadLabel(i18n.Msg("Attributes.Created")), vtui.Palette[vtui.ColDialogText])
+			rowCreated = vtui.NewHBoxLayout(0, 0, 54, 1)
+			rowCreated.Add(lblCreated, vtui.Margins{Right: 1}, vtui.AlignLeft)
+			rowCreated.Add(editCreated, vtui.Margins{}, vtui.AlignLeft)
+			dlg.AddItem(lblCreated)
+			dlg.AddItem(editCreated)
+			mainVBox.Add(rowCreated, vtui.Margins{Top: 0}, vtui.AlignFill)
+		} else {
+			rowCreated = attributesReadOnlyTimeRow(dlg, mainVBox, 54, 0, i18n.Msg("Attributes.Created"), createdText)
+		}
+	}
+	// Accessed is editable (f4#1404), like Last write; blank for a multiple
+	// selection, and a field left untouched changes nothing.
+	var editAccessed *vtui.Edit
+	initialAccessed := ""
+	if showAccessed {
+		if !multiple {
+			initialAccessed = accessedText
+		}
+		editAccessed = vtui.NewEdit(0, 0, 20, initialAccessed)
+		lblAccessed := vtui.NewText(0, 0, PadLabel(i18n.Msg("Attributes.Accessed")), vtui.Palette[vtui.ColDialogText])
+		rowAccessed = vtui.NewHBoxLayout(0, 0, 54, 1)
+		rowAccessed.Add(lblAccessed, vtui.Margins{Right: 1}, vtui.AlignLeft)
+		rowAccessed.Add(editAccessed, vtui.Margins{}, vtui.AlignLeft)
+		dlg.AddItem(lblAccessed)
+		dlg.AddItem(editAccessed)
+		mainVBox.Add(rowAccessed, vtui.Margins{Top: 0}, vtui.AlignFill)
+	}
 
 	btnSet := vtui.NewButton(0, 0, i18n.Msg("Attributes.BtnSet"))
 	btnSet.IsDefault = true
@@ -834,6 +1253,15 @@ func ShowAttributesWindowsWithPropertiesForTargets(
 	// Apply first pass
 	mainVBox.Apply()
 	rowTime.Apply()
+	if rowLinkTarget != nil {
+		rowLinkTarget.Apply()
+	}
+	if rowCreated != nil {
+		rowCreated.Apply()
+	}
+	if rowAccessed != nil {
+		rowAccessed.Apply()
+	}
 	rowBtns.Apply()
 
 	// Apply second pass for GroupBox
@@ -867,8 +1295,33 @@ func ShowAttributesWindowsWithPropertiesForTargets(
 	btnSet.OnClick = func() {
 		var edit windowsAttributesEdit
 		if text := editMTime.GetText(); text != initialMTime {
-			if nt, err := time.ParseInLocation(attributesTimeFormat, text, time.Local); err == nil {
-				edit.mtime, edit.setMTime = nt, true
+			nt, err := time.ParseInLocation(attributesTimeFormat, text, time.Local)
+			if err != nil {
+				// f4 #1404: a garbled date used to be silently dropped —
+				// nothing applied, nothing said why.
+				vtui.ShowMessage(" Error ", fmt.Sprintf(i18n.Msg("Attributes.MTimeInvalidError"), i18n.Msg("Attributes.MTimeFormatHint")), []string{"&Ok"})
+				return
+			}
+			edit.mtime, edit.setMTime = nt, true
+		}
+		if editAccessed != nil {
+			if text := editAccessed.GetText(); text != initialAccessed {
+				nt, err := time.ParseInLocation(attributesTimeFormat, text, time.Local)
+				if err != nil {
+					vtui.ShowMessage(" Error ", fmt.Sprintf(i18n.Msg("Attributes.MTimeInvalidError"), i18n.Msg("Attributes.MTimeFormatHint")), []string{"&Ok"})
+					return
+				}
+				edit.atime, edit.setATime = nt, true
+			}
+		}
+		if editCreated != nil {
+			if text := editCreated.GetText(); text != initialCreated {
+				nt, err := time.ParseInLocation(attributesTimeFormat, text, time.Local)
+				if err != nil {
+					vtui.ShowMessage(" Error ", fmt.Sprintf(i18n.Msg("Attributes.MTimeInvalidError"), i18n.Msg("Attributes.MTimeFormatHint")), []string{"&Ok"})
+					return
+				}
+				edit.btime, edit.setBTime = nt, true
 			}
 		}
 
@@ -913,8 +1366,20 @@ func ShowAttributesWindowsWithPropertiesForTargets(
 			}
 		}
 
+		newLinkTarget := ""
+		if editLinkTarget != nil {
+			newLinkTarget = strings.TrimSpace(editLinkTarget.GetText())
+		}
 		vtui.RunAsync(func(ctx *vtui.TaskContext) {
-			err := setWindowsAttributesForTargets(ctx.Context, v, targets, edit)
+			var err error
+			if newLinkTarget != "" && newLinkTarget != linkTarget {
+				err = replaceLinkTarget(ctx.Context, v, path, newLinkTarget, linkIsJunction)
+			} else if editLinkTarget != nil && newLinkTarget == "" {
+				err = errors.New("link target cannot be empty")
+			}
+			if err == nil {
+				err = setWindowsAttributesForTargets(ctx.Context, v, targets, edit)
+			}
 			ctx.RunOnUI(func() {
 				if err != nil {
 					vtui.ShowMessage(" Error ", err.Error(), []string{"&Ok"})

@@ -7,6 +7,8 @@ set(F4_HOST_QML_FILES
   qml/HelpContent.qml
   qml/main.qml
   qml/F4HostWindow.qml
+  qml/HostWindowEffects.qml
+  qml/HostPreferenceController.qml
   qml/PanelSplitter.qml
   qml/GalleryPanelHost.qml
   qml/GalleryPanelHostAdapter.qml
@@ -15,6 +17,8 @@ set(F4_HOST_QML_FILES
   qml/HostPixelAlignedImage.qml
   qml/HostPresentationUtilities.qml
   qml/FilePanelView.qml
+  qml/RetainedGalleryPanelContent.qml
+  qml/PanelFastFindOverlay.qml
   qml/FileFieldToolsOverlay.qml
   qml/FileFieldColumnsPopup.qml
   qml/FileFieldFilterPopup.qml
@@ -28,6 +32,7 @@ set(F4_HOST_QML_FILES
   qml/ShellInteractionController.qml
   qml/FilePanelChrome.qml
   qml/PanelRendererMenu.qml
+  qml/PanelGroupByPopup.qml
   qml/QuickViewPanelView.qml
   qml/InfoPanelView.qml
   qml/CommandLineView.qml
@@ -40,6 +45,8 @@ set(F4_HOST_QML_FILES
   qml/DocumentWindowPresenter.qml
   qml/DocumentRowPool.qml
   qml/DocumentTerminalSelectionController.qml
+  qml/DocumentEditorSelectionController.qml
+  qml/DocumentViewerSelectionController.qml
   qml/DocumentEditorPointerController.qml
   qml/TerminalBackdrop.qml
   qml/OperationsQueueSurface.qml
@@ -66,6 +73,7 @@ set(F4_HOST_QML_FILES
   qml/HostThemePalette.qml
   qml/ThemeColorWheel.qml
   qml/ThemeColorEditorPane.qml
+  qml/ThemeActiveColorRow.qml
   qml/ThemeEditorFooter.qml
   qml/SemanticMenuBar.qml
   qml/ApplicationMenuPopup.qml
@@ -95,6 +103,7 @@ set(F4_HOST_QML_FILES
   qml/AutocompletePopup.qml
   qml/SemanticMenuItemDelegate.qml
   qml/SemanticMenuPopup.qml
+  qml/SemanticMenuSurface.qml
   qml/OverlayHost.qml
   qml/KeyBarActionButton.qml
   qml/KeyBarView.qml

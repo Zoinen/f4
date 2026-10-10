@@ -24,6 +24,8 @@ type viewerEndRowScanner struct {
 	size                      int64
 	width, height             int
 	wrap, started             bool
+	ansi                      bool
+	escapeState               byte
 	tabSize                   int
 	nextOffset                int64
 	logicalColumn, widthInRow int
@@ -144,6 +146,9 @@ func (scanner *viewerEndRowScanner) feed(base int64, data []byte, final bool) er
 }
 
 func (scanner *viewerEndRowScanner) feedRune(offset int64, r rune, runeSize int) {
+	if scanner.ansi && scanner.skipEscapeRune(r) {
+		return
+	}
 	if r == '\n' {
 		scanner.logicalColumn = 0
 		scanner.widthInRow = 0
@@ -170,6 +175,50 @@ func (scanner *viewerEndRowScanner) feedRune(offset int64, r rune, runeSize int)
 	scanner.logicalColumn += cells
 }
 
+// Escape state survives source slices, so a split CSI/OSC never takes cells.
+func (scanner *viewerEndRowScanner) skipEscapeRune(r rune) bool {
+	switch scanner.escapeState {
+	case 1:
+		switch r {
+		case '[':
+			scanner.escapeState = 2
+		case ']':
+			scanner.escapeState = 3
+		case '(', ')':
+			scanner.escapeState = 5
+		default:
+			scanner.escapeState = 0
+		}
+		return true
+	case 2:
+		if r >= 0x40 && r <= 0x7e {
+			scanner.escapeState = 0
+		}
+		return true
+	case 3:
+		if r == 7 {
+			scanner.escapeState = 0
+		} else if r == 0x1b {
+			scanner.escapeState = 4
+		}
+		return true
+	case 4:
+		scanner.escapeState = 3
+		if r == '\\' {
+			scanner.escapeState = 0
+		}
+		return true
+	case 5:
+		scanner.escapeState = 0
+		return true
+	}
+	if r == 0x1b {
+		scanner.escapeState = 1
+		return true
+	}
+	return false
+}
+
 func feedViewerEndData(scanner *viewerEndRowScanner, base int64, data []byte) error {
 	if len(data) == 0 {
 		return scanner.feed(base, nil, true)
@@ -187,7 +236,7 @@ func feedViewerEndData(scanner *viewerEndRowScanner, base int64, data []byte) er
 // window. A non-BOF window is laid out only after its first newline, so an
 // arbitrary byte boundary can never become a synthetic visual row.
 func viewerFastEndOffset(ctx context.Context, data []byte, dataStart, size int64,
-	width, height int, wrap bool, tabSize int,
+	width, height int, wrap bool, tabSize int, ansi ...bool,
 ) (viewerEndResult, bool, error) {
 	anchor := dataStart
 	if dataStart > 0 {
@@ -217,6 +266,7 @@ func viewerFastEndOffset(ctx context.Context, data []byte, dataStart, size int64
 		}
 	}
 	scanner := newViewerEndRowScanner(ctx, size, anchor, width, height, wrap, tabSize)
+	scanner.ansi = len(ansi) > 0 && ansi[0]
 	if err := feedViewerEndData(scanner, anchor, data); err != nil {
 		return viewerEndResult{}, false, err
 	}
@@ -284,12 +334,13 @@ func viewerEndLogicalAnchor(ctx context.Context, backend *ViewerBackend,
 }
 
 func viewerEndOffsetFromAnchor(ctx context.Context, backend *ViewerBackend,
-	anchor, tailStart, size int64, tail []byte, width, height int, wrap bool, tabSize int,
+	anchor, tailStart, size int64, tail []byte, width, height int, wrap bool, tabSize int, ansi ...bool,
 ) (viewerEndResult, error) {
 	if !wrap {
 		return viewerEndResult{top: viewerRowPosition{offset: anchor}}, nil
 	}
 	scanner := newViewerEndRowScanner(ctx, size, anchor, width, height, true, tabSize)
+	scanner.ansi = len(ansi) > 0 && ansi[0]
 	buffer := make([]byte, viewerEndReadSlice)
 	for cursor := anchor; cursor < tailStart; {
 		if err := ctx.Err(); err != nil {

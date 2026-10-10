@@ -43,5 +43,6 @@ func (testApplication) DecodeImage(data []byte) (*vtui.ImageSurface, error) {
 
 func TestMain(m *testing.M) {
 	App = testApplication{}
+	DisableSystemFileClipboard()
 	os.Exit(testutil.Main(m, theme.SetDefaultF4Palette, nil))
 }

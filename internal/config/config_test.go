@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"github.com/unxed/f4/internal/ini"
 	"github.com/unxed/vtui"
 	"os"
@@ -40,6 +41,9 @@ func TestConfig_SaveAndLoad(t *testing.T) {
 	App.CommandLineWordWrap = false
 	App.SeparateFileExtensions = true
 	App.ShowSymlinkArrow = true
+	App.StartInCurrentFolder = true
+	App.ArchiveTarIndexCache = false
+	App.ArchiveUseRatarmountIfAvailable = true
 	App.PanelScrollbarMode = PanelScrollbarMinimal
 	App.ShowPanelFileInfo = true
 	App.MacroRecordFormat = 1
@@ -47,6 +51,10 @@ func TestConfig_SaveAndLoad(t *testing.T) {
 	App.TerminalCtrlNWorkspace = false
 	App.ConsoleMode = "host"
 	App.ConsoleOverlayUI = true
+	App.DragOutModifier = "ctrl"
+	App.DragOutHoldMs = 0
+	App.PluginDefaultHotkeysOff = "ShiftF1;ShiftF2"
+	App.HostConsoleDefaultColors = true
 	App.WorkspaceTabMode = int(vtui.WorkspaceTabsNever)
 	App.WorkspaceTabsOverlay = false
 	App.CtrlTabShowsMenu = true
@@ -76,6 +84,9 @@ func TestConfig_SaveAndLoad(t *testing.T) {
 	App.EditorColorerBackground = true
 	App.SeparateFileExtensions = false
 	App.ShowSymlinkArrow = false
+	App.StartInCurrentFolder = false
+	App.ArchiveTarIndexCache = true
+	App.ArchiveUseRatarmountIfAvailable = false
 	App.PanelScrollbarMode = PanelScrollbarOff
 	App.ShowPanelFileInfo = false
 	App.MacroRecordFormat = 0
@@ -160,6 +171,15 @@ func TestConfig_SaveAndLoad(t *testing.T) {
 	if !App.ShowSymlinkArrow {
 		t.Error("LoadConfig failed to restore an enabled ShowSymlinkArrow")
 	}
+	if !App.StartInCurrentFolder {
+		t.Error("LoadConfig failed to restore an enabled StartInCurrentFolder")
+	}
+	if App.ArchiveTarIndexCache {
+		t.Error("LoadConfig failed to restore a disabled ArchiveTarIndexCache")
+	}
+	if !App.ArchiveUseRatarmountIfAvailable {
+		t.Error("LoadConfig failed to restore an enabled ArchiveUseRatarmountIfAvailable")
+	}
 	if App.PanelScrollbarMode != PanelScrollbarMinimal {
 		t.Errorf("LoadConfig restored PanelScrollbarMode %v, want minimal", App.PanelScrollbarMode)
 	}
@@ -180,6 +200,18 @@ func TestConfig_SaveAndLoad(t *testing.T) {
 	}
 	if !App.ConsoleOverlayUI {
 		t.Error("LoadConfig failed to restore ConsoleOverlayUI")
+	}
+	if App.PluginDefaultHotkeysOff != "ShiftF1;ShiftF2" {
+		t.Errorf("LoadConfig failed to restore PluginDefaultHotkeysOff: got %q", App.PluginDefaultHotkeysOff)
+	}
+	if App.DragOutHoldMs != 0 {
+		t.Errorf("LoadConfig failed to restore DragOutHoldMs: got %d", App.DragOutHoldMs)
+	}
+	if App.DragOutModifier != "ctrl" {
+		t.Errorf("LoadConfig failed to restore DragOutModifier: got %q", App.DragOutModifier)
+	}
+	if !App.HostConsoleDefaultColors {
+		t.Error("LoadConfig failed to restore HostConsoleDefaultColors")
 	}
 	if App.ApplyCommandParallelism != 0 {
 		t.Errorf("ApplyCommandParallelism = %d, want Unlimited (0)", App.ApplyCommandParallelism)
@@ -221,12 +253,16 @@ func TestConfig_ConsoleModeDefaultsWhenAbsent(t *testing.T) {
 
 	App.ConsoleMode = "host"
 	App.ConsoleOverlayUI = true
+	App.HostConsoleDefaultColors = true
 	LoadConfig()
 	if App.ConsoleMode != "own" {
 		t.Fatalf("ConsoleMode must default to 'own' when setting is absent, got %q", App.ConsoleMode)
 	}
 	if App.ConsoleOverlayUI {
 		t.Fatal("ConsoleOverlayUI must default to false when setting is absent")
+	}
+	if App.HostConsoleDefaultColors {
+		t.Fatal("HostConsoleDefaultColors must default to false when setting is absent")
 	}
 }
 
@@ -419,30 +455,36 @@ func TestCreateDefaultHighlightIniDocumentsColorOptions(t *testing.T) {
 	for _, key := range []string{
 		"# [Highlight_100]",
 		"Appearance.HighlightPriority",
-		"user rules first, the default",
-		"ContinueProcessing = 1 when a later rule",
-		"# NormalColor =",
-		"# SelectedColor =",
-		"# CursorColor =",
-		"# SelectedCursorColor =",
-		"NormalColorUnderCursor",
-		"SelectedColorUnderCursor",
-		// Far Manager spellings of the same four colors, and the folder
-		// example that shows why a rule needs an attribute of its own.
+		"unless it sets ContinueProcessing = 1",
+		// The four colors are documented and exemplified under the Far
+		// Manager names only (f4#912); the older spellings still work but
+		// are not advertised.
 		"# NormalFileName =",
 		"# SelectedFileName =",
 		"# FileNameUnderCursor =",
 		"# FileNameSelectedUnderCursor =",
 		"# IncludeAttributes = Directory",
+		// UseDefaults and the order of the attributes it follows.
+		"# UseDefaults = 1",
+		"Junction, Symlink, Hidden or",
+		"Sort groups put files of one kind together",
 	} {
 		if !strings.Contains(content, key) {
 			t.Errorf("generated highlight.ini is missing documented %q", key)
 		}
 	}
+	for _, key := range []string{"NormalColor", "SelectedColor", "CursorColor", "SelectedCursorColor", "UnderCursor, "} {
+		if strings.Contains(content, key) {
+			t.Errorf("generated highlight.ini still advertises the old color name %q", key)
+		}
+	}
+	if got := strings.Count(content, "# [Highlight_"); got != 2 {
+		t.Errorf("generated highlight.ini has %d examples, want 2", got)
+	}
 
 	// The ordinary colors take a background just like the cursor ones, and the
 	// example is the only place a reader sees that (#912).
-	for _, key := range []string{"# NormalColor = ", "# SelectedColor = "} {
+	for _, key := range []string{"# NormalFileName = ", "# SelectedFileName = "} {
 		idx := strings.Index(content, key)
 		if idx < 0 {
 			continue
@@ -873,5 +915,145 @@ func TestConfig_MouseWheelRoundTrip(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("wheel config field %d: expected %d, got %d", i, want[i], got[i])
 		}
+	}
+}
+
+func TestConfig_MouseAccelerationRoundTrip(t *testing.T) {
+	tmpDir := t.TempDir()
+	userIniPath := filepath.Join(tmpDir, "settings.ini")
+
+	origUserPathFunc := GetUserConfigIniPath
+	GetUserConfigIniPath = func() string { return userIniPath }
+	origPathsFunc := GetConfigIniPaths
+	GetConfigIniPaths = func() []string { return []string{userIniPath} }
+
+	oldCfg := App
+	defer func() {
+		GetUserConfigIniPath = origUserPathFunc
+		GetConfigIniPaths = origPathsFunc
+		App = oldCfg
+	}()
+
+	App.WheelAcceleration = 7
+	SaveConfig()
+
+	App.WheelAcceleration = 1
+	LoadConfig()
+
+	if App.WheelAcceleration != 7 {
+		t.Errorf("Acceleration after a round trip = %d, want 7", App.WheelAcceleration)
+	}
+}
+
+// A settings file is user text: a value outside the documented range, or no
+// number at all, must land on a sane value instead of on nonsense.
+func TestConfig_MouseAccelerationClampsNonsense(t *testing.T) {
+	tmpDir := t.TempDir()
+	userIniPath := filepath.Join(tmpDir, "settings.ini")
+
+	origUserPathFunc := GetUserConfigIniPath
+	GetUserConfigIniPath = func() string { return userIniPath }
+	origPathsFunc := GetConfigIniPaths
+	GetConfigIniPaths = func() []string { return []string{userIniPath} }
+
+	oldCfg := App
+	defer func() {
+		GetUserConfigIniPath = origUserPathFunc
+		GetConfigIniPaths = origPathsFunc
+		App = oldCfg
+	}()
+
+	for _, tc := range []struct{ ini, want int }{
+		{WheelAccelerationMin - 5, WheelAccelerationMin},
+		{0, WheelAccelerationMin},
+		{WheelAccelerationMin, WheelAccelerationMin},
+		{7, 7},
+		{WheelAccelerationMax, WheelAccelerationMax},
+		{999, WheelAccelerationMax},
+	} {
+		iniText := fmt.Sprintf("[Mouse]\nAcceleration = %d\n", tc.ini)
+		if err := os.WriteFile(userIniPath, []byte(iniText), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		LoadConfig()
+		if App.WheelAcceleration != tc.want {
+			t.Errorf("Acceleration = %d: got %d, want %d", tc.ini, App.WheelAcceleration, tc.want)
+		}
+	}
+
+	if err := os.WriteFile(userIniPath, []byte("[Mouse]\nAcceleration = soon\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	LoadConfig()
+	if App.WheelAcceleration != WheelAccelerationDefault {
+		t.Errorf("unparsable Acceleration = %d, want the default %d", App.WheelAcceleration, WheelAccelerationDefault)
+	}
+}
+
+func TestNormalizeDragOutHoldMs(t *testing.T) {
+	for in, want := range map[string]int{"": DefaultDragOutHoldMs, "abc": DefaultDragOutHoldMs, "0": 0, " 400 ": 400, "-1": -1, "-50": -1, "99999": MaxDragOutHoldMs} {
+		if got := NormalizeDragOutHoldMs(in); got != want {
+			t.Errorf("NormalizeDragOutHoldMs(%q) = %d, want %d", in, got, want)
+		}
+	}
+}
+
+func TestNormalizeDragOutModifier(t *testing.T) {
+	for in, want := range map[string]string{"": "", "Ctrl": "ctrl", " ALT ": "alt", "shift": "shift", "meta": "", "1": ""} {
+		if got := NormalizeDragOutModifier(in); got != want {
+			t.Errorf("NormalizeDragOutModifier(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestRefreshHighlightIniHeaderReplacesOnlyTheComments(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "highlight.ini")
+	userRules := "[Highlight_1]\nMask = *.go\nNormalColor = 0x0a\n\n[Highlight_2]\nMask = *.txt\n"
+	old := "# an old header\n# without the new keys\n\n" + userRules
+	if err := os.WriteFile(path, []byte(old), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if !RefreshHighlightIniHeader(path) {
+		t.Fatal("a stale header must be refreshed")
+	}
+	data, _ := os.ReadFile(path)
+	got := string(data)
+	if !strings.HasSuffix(got, userRules) {
+		t.Errorf("user rules must stay untouched, got:\n%s", got)
+	}
+	if strings.Contains(got, "an old header") {
+		t.Error("the old header comments must be gone")
+	}
+	if !strings.Contains(got, "# NormalFileName =") {
+		t.Error("the refreshed file must carry the current key documentation")
+	}
+	if RefreshHighlightIniHeader(path) {
+		t.Error("a file that is already current must not be rewritten")
+	}
+}
+
+func TestRefreshHighlightIniHeaderLeavesOtherFilesAlone(t *testing.T) {
+	dir := t.TempDir()
+	if RefreshHighlightIniHeader(filepath.Join(dir, "missing.ini")) {
+		t.Error("a missing file has nothing to refresh")
+	}
+	noSection := filepath.Join(dir, "plain.ini")
+	if err := os.WriteFile(noSection, []byte("# only comments\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if RefreshHighlightIniHeader(noSection) {
+		t.Error("a file with no section must not be touched")
+	}
+
+	fresh := filepath.Join(dir, "fresh.ini")
+	CreateDefaultHighlightIni(fresh)
+	before, _ := os.ReadFile(fresh)
+	if RefreshHighlightIniHeader(fresh) {
+		t.Error("the stock file is already current")
+	}
+	after, _ := os.ReadFile(fresh)
+	if string(before) != string(after) {
+		t.Error("the stock file must stay byte-for-byte the same")
 	}
 }

@@ -1,15 +1,12 @@
 package i18n
 
 import (
-	"embed"
-	"github.com/unxed/f4/internal/ini"
-	"github.com/unxed/vtui"
 	"sort"
 	"strings"
-)
 
-//go:embed lang/*.lng
-var LangPackFS embed.FS
+	"github.com/unxed/f4/internal/ini"
+	"github.com/unxed/vtui"
+)
 
 // LoadAllLanguagePacks returns every translation shipped with f4, ready to be
 // handed to the vtui layout validator. Captions have different lengths in

@@ -94,9 +94,20 @@ func TestIconLoadingInvalidWindow(t *testing.T) {
 	}
 }
 
-func TestIconFindGogpuWindowWithoutGogpu(t *testing.T) {
-	if got := findGogpuWindow(uint32(os.Getpid())); got != 0 {
-		t.Fatalf("findGogpuWindow(current process) = %#x, want no GoGPU window", got)
+func TestIconWindowsAppWindowClasses(t *testing.T) {
+	for _, className := range []string{gogpuWindowClass, win32WindowClass} {
+		if !isWindowsAppWindowClass(className) {
+			t.Errorf("isWindowsAppWindowClass(%q) = false, want true", className)
+		}
+	}
+	if isWindowsAppWindowClass("STATIC") {
+		t.Fatal(`isWindowsAppWindowClass("STATIC") = true, want false`)
+	}
+}
+
+func TestIconFindWindowsAppWindowWithoutGui(t *testing.T) {
+	if got := findWindowsAppWindow(uint32(os.Getpid())); got != 0 {
+		t.Fatalf("findWindowsAppWindow(current process) = %#x, want no GUI window", got)
 	}
 }
 

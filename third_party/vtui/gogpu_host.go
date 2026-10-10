@@ -1,4 +1,4 @@
-//go:build !freebsd && !dragonfly && !openbsd && !netbsd && !illumos && !solaris && !plan9 && !android && (amd64 || arm64)
+//go:build !freebsd && !dragonfly && !openbsd && !netbsd && !illumos && !solaris && !plan9 && !android && (amd64 || arm64) && !vtui_nogogpu
 
 package vtui
 
@@ -28,6 +28,153 @@ var (
 // clipboard shortcut works at all — while on Windows and Linux the Super/Win
 // key belongs to the OS and must stay out of the application's way.
 var gogpuCmdIsCtrl = runtime.GOOS == "darwin"
+
+// gogpuPenIsSeparate is whether the platform layer reports a pen only as a pen
+// pointer, never also as a mouse one (macOS does: the subtype of the NSEvent
+// decides which). Elsewhere the operating system may synthesise mouse events for
+// a pen as well, and forwarding the pen pointer would send every press twice.
+var gogpuPenIsSeparate = runtime.GOOS == "darwin"
+
+type penAction uint8
+
+const (
+	penPress penAction = iota
+	penRelease
+	penMove
+)
+
+// penPointerAction maps a pen pointer event to the mouse action it stands for.
+// Mouse and touch pointers return ok false: the first already reaches the mouse
+// callbacks, the second is left to the operating system's own mouse emulation.
+// The pen's barrel button arrives as the right button, as macOS reports it.
+func penPointerAction(ev gpucontext.PointerEvent) (penAction, gpucontext.MouseButton, bool) {
+	if ev.PointerType != gpucontext.PointerTypePen {
+		return 0, 0, false
+	}
+	button := gpucontext.MouseButtonLeft
+	switch ev.Button {
+	case gpucontext.ButtonRight:
+		button = gpucontext.MouseButtonRight
+	case gpucontext.ButtonMiddle:
+		button = gpucontext.MouseButtonMiddle
+	}
+	switch ev.Type {
+	case gpucontext.PointerDown:
+		return penPress, button, true
+	case gpucontext.PointerUp:
+		return penRelease, button, true
+	case gpucontext.PointerMove:
+		return penMove, 0, true
+	}
+	return 0, 0, false
+}
+
+// mousePress reports a button going down at pixel (x, y) as a mouse event in
+// cells, and remembers the button for the motion that follows.
+func (host *GogpuHost) mousePress(button gpucontext.MouseButton, x, y float64) {
+	var btn uint32
+	switch button {
+	case gpucontext.MouseButtonLeft:
+		btn = uint32(vtinput.FromLeft1stButtonPressed)
+	case gpucontext.MouseButtonRight:
+		btn = uint32(vtinput.RightmostButtonPressed)
+	case gpucontext.MouseButtonMiddle:
+		btn = uint32(vtinput.FromLeft2ndButtonPressed)
+	default:
+		btn = uint32(vtinput.FromLeft1stButtonPressed)
+	}
+
+	host.mu.Lock()
+	host.mouseBtn = btn
+	cW := host.cellW
+	cH := host.cellH
+	host.mu.Unlock()
+
+	host.sendEvent(&vtinput.InputEvent{
+		Type:        vtinput.MouseEventType,
+		MouseX:      int16(x / float64(cW)),
+		MouseY:      int16(y / float64(cH)),
+		KeyDown:     true,
+		ButtonState: btn,
+	})
+}
+
+// mouseRelease reports the button coming up at pixel (x, y).
+func (host *GogpuHost) mouseRelease(_ gpucontext.MouseButton, x, y float64) {
+	host.mu.Lock()
+	host.mouseBtn = 0
+	cW := host.cellW
+	cH := host.cellH
+	host.mu.Unlock()
+
+	host.sendEvent(&vtinput.InputEvent{
+		Type:        vtinput.MouseEventType,
+		MouseX:      int16(x / float64(cW)),
+		MouseY:      int16(y / float64(cH)),
+		KeyDown:     false,
+		ButtonState: 0,
+	})
+}
+
+// clampCell narrows a cell coordinate to the int16 the mouse event carries; a
+// pointer dragged far outside the window saturates instead of wrapping.
+func clampCell(v int) int16 {
+	switch {
+	case v > math.MaxInt16:
+		return math.MaxInt16
+	case v < math.MinInt16:
+		return math.MinInt16
+	}
+	return int16(v) //nolint:gosec // range checked above
+}
+
+// mouseMove reports pointer motion, once for each cell the pointer enters.
+func (host *GogpuHost) mouseMove(x, y float64) {
+	host.mu.Lock()
+	btn := host.mouseBtn
+	cW := host.cellW
+	cH := host.cellH
+	mods := host.currentMods
+	cellX, cellY := int(x/float64(cW)), int(y/float64(cH))
+	moved := !host.mouseCellKnown || cellX != host.lastMouseCellX || cellY != host.lastMouseCellY
+	host.lastMouseCellX, host.lastMouseCellY = cellX, cellY
+	host.mouseCellKnown = true
+	host.mu.Unlock()
+
+	// Motion is reported per cell, whether or not a button is held:
+	// the terminal, the viewer and the editor underline the URL under
+	// the pointer (f4 #459) and need hover motion for that, exactly as
+	// the tty backend delivers it through any-event tracking (?1003).
+	// Coalescing by cell keeps a fast sweep from flooding the queue.
+	if !moved {
+		return
+	}
+	host.sendEvent(&vtinput.InputEvent{
+		Type:            vtinput.MouseEventType,
+		MouseX:          clampCell(cellX),
+		MouseY:          clampCell(cellY),
+		MouseEventFlags: vtinput.MouseMoved,
+		ButtonState:     btn,
+		ControlKeyState: mods,
+	})
+}
+
+// penPointer turns a pen pointer event into the mouse handling of the same
+// action; other pointers are left to the mouse callbacks.
+func (host *GogpuHost) penPointer(ev gpucontext.PointerEvent) {
+	kind, button, ok := penPointerAction(ev)
+	if !ok {
+		return
+	}
+	switch kind {
+	case penPress:
+		host.mousePress(button, ev.X, ev.Y)
+	case penRelease:
+		host.mouseRelease(button, ev.X, ev.Y)
+	case penMove:
+		host.mouseMove(ev.X, ev.Y)
+	}
+}
 
 // gogpuAltComposesText says the platform makes a chord type a character of its
 // own instead of leaving the key its own.
@@ -80,6 +227,9 @@ type GogpuHost struct {
 	// Cached sizes to prevent deadlocks and speed up GetTerminalSize
 	lastAppW, lastAppH int
 	resizePending      bool
+	// lastScale is the device scale (physical pixels per logical pixel) the
+	// last frame was drawn at; 0 before the first frame. See noteScale.
+	lastScale float64
 	// dragOut is the gesture waiting for the main loop to hand it to
 	// gogpu, or nil. One pointer, so one gesture at a time.
 	dragOut *gogpuDragRequest
@@ -383,6 +533,70 @@ func (h *GogpuHost) handleFocus(focused bool) {
 	h.sendEvent(&vtinput.InputEvent{Type: vtinput.FocusEventType, SetFocus: focused})
 }
 
+// SetFont reloads the font used to draw the grid and asks gogpu to resize
+// the window to the new cell size, keeping the grid geometry (cols x rows)
+// unchanged -- the same policy the other GUI backends' SetFont use for
+// their own windows (vtui #136). It never fails: loadGogpuFont falls back
+// to a built-in cell size when fontName cannot be found.
+//
+// RequestSize alone does not repaint: a same-size font swap keeps the
+// window's pixel size unchanged, so no OnDraw size-change event follows to
+// drive a redraw. FrameManager.HardRefresh is therefore called
+// unconditionally to cover that case, the same way the other backends'
+// SetFont do.
+func (h *GogpuHost) SetFont(fontName string, fontSize float64) {
+	face, chain, cellW, cellH := loadGogpuFont(fontName, fontSize)
+
+	h.mu.Lock()
+	h.face = face
+	h.cellW = cellW
+	h.cellH = cellH
+	app := h.app
+	cols, rows := h.cols, h.rows
+	h.mu.Unlock()
+
+	if scr := h.scr; scr != nil {
+		if r, ok := scr.Renderer.(*GogpuRenderer); ok {
+			r.setFace(face, chain, cellW, cellH)
+		}
+		scr.Graphics().SetCellSize(cellW, cellH)
+	}
+	if app != nil {
+		app.RequestSize(cols*cellW, rows*cellH)
+	}
+	if FrameManager != nil {
+		FrameManager.HardRefresh()
+	}
+}
+
+// noteScale records the device scale a frame is drawn at and reports whether
+// it differs from the previous frame's -- the window moved to a display with
+// another scale, or the display's scale or resolution changed.
+//
+// gogpu lays the window out in logical pixels and ggcanvas follows the device
+// scale on its own, so the cell size and the grid stay as they are; the
+// caller only forces a full repaint at the new scale. Every change is logged, with both sizes: on macOS the backing scale
+// is the one thing this backend cannot observe directly, so the log is what
+// tells a wrong scale from gogpu apart from a wrong one in vtui.
+func (h *GogpuHost) noteScale(scale float64, w, ht, fbW, fbH int) bool {
+	if scale <= 0 {
+		return false
+	}
+	h.mu.Lock()
+	prev := h.lastScale
+	h.lastScale = scale
+	h.mu.Unlock()
+	if prev == 0 {
+		DebugLog("GOGPU_HOST: device scale %.3f, logical %dx%d, framebuffer %dx%d", scale, w, ht, fbW, fbH)
+		return false
+	}
+	if math.Abs(prev-scale) < 0.001 {
+		return false
+	}
+	DebugLog("GOGPU_HOST: device scale %.3f -> %.3f, logical %dx%d, framebuffer %dx%d", prev, scale, w, ht, fbW, fbH)
+	return true
+}
+
 func RunGogpuHost(cols, rows int, fontName string, fontSize float64, setupApp func()) error {
 	// DX12: use naga DXIL backend instead of HLSL->FXC
 	// to avoid 2-6s shader compilation via d3dcompiler_47.dll
@@ -606,79 +820,20 @@ func RunGogpuHost(cols, rows int, fontName string, fontSize float64, setupApp fu
 		})
 	})
 
-	app.EventSource().OnMousePress(func(button gpucontext.MouseButton, x, y float64) {
-		var btn uint32
-		switch button {
-		case gpucontext.MouseButtonLeft:
-			btn = uint32(vtinput.FromLeft1stButtonPressed)
-		case gpucontext.MouseButtonRight:
-			btn = uint32(vtinput.RightmostButtonPressed)
-		case gpucontext.MouseButtonMiddle:
-			btn = uint32(vtinput.FromLeft2ndButtonPressed)
-		default:
-			btn = uint32(vtinput.FromLeft1stButtonPressed)
-		}
+	app.EventSource().OnMousePress(host.mousePress)
 
-		host.mu.Lock()
-		host.mouseBtn = btn
-		cW := host.cellW
-		cH := host.cellH
-		host.mu.Unlock()
+	app.EventSource().OnMouseRelease(host.mouseRelease)
 
-		host.sendEvent(&vtinput.InputEvent{
-			Type:        vtinput.MouseEventType,
-			MouseX:      int16(x / float64(cW)),
-			MouseY:      int16(y / float64(cH)),
-			KeyDown:     true,
-			ButtonState: btn,
-		})
-	})
+	app.EventSource().OnMouseMove(host.mouseMove)
 
-	app.EventSource().OnMouseRelease(func(button gpucontext.MouseButton, x, y float64) {
-		host.mu.Lock()
-		host.mouseBtn = 0
-		cW := host.cellW
-		cH := host.cellH
-		host.mu.Unlock()
-
-		host.sendEvent(&vtinput.InputEvent{
-			Type:        vtinput.MouseEventType,
-			MouseX:      int16(x / float64(cW)),
-			MouseY:      int16(y / float64(cH)),
-			KeyDown:     false,
-			ButtonState: 0,
-		})
-	})
-
-	app.EventSource().OnMouseMove(func(x, y float64) {
-		host.mu.Lock()
-		btn := host.mouseBtn
-		cW := host.cellW
-		cH := host.cellH
-		mods := host.currentMods
-		cellX, cellY := int(x/float64(cW)), int(y/float64(cH))
-		moved := !host.mouseCellKnown || cellX != host.lastMouseCellX || cellY != host.lastMouseCellY
-		host.lastMouseCellX, host.lastMouseCellY = cellX, cellY
-		host.mouseCellKnown = true
-		host.mu.Unlock()
-
-		// Motion is reported per cell, whether or not a button is held:
-		// the terminal, the viewer and the editor underline the URL under
-		// the pointer (f4 #459) and need hover motion for that, exactly as
-		// the tty backend delivers it through any-event tracking (?1003).
-		// Coalescing by cell keeps a fast sweep from flooding the queue.
-		if !moved {
-			return
-		}
-		host.sendEvent(&vtinput.InputEvent{
-			Type:            vtinput.MouseEventType,
-			MouseX:          int16(cellX),
-			MouseY:          int16(cellY),
-			MouseEventFlags: vtinput.MouseMoved,
-			ButtonState:     btn,
-			ControlKeyState: mods,
-		})
-	})
+	// gogpu reports a stylus as a pen pointer and hands the legacy mouse
+	// callbacks only to mouse-type pointers ("to avoid duplicates from
+	// touch/pen"), so on macOS a Wacom pen moved the cursor (its hover arrives
+	// as mouse moves) and could not click (unxed/f4#1689). The pen pointer
+	// events are turned into the same button and motion events here.
+	if pointers, ok := app.EventSource().(gpucontext.PointerEventSource); ok && gogpuPenIsSeparate {
+		pointers.OnPointer(host.penPointer)
+	}
 
 	app.EventSource().OnScroll(func(dx float64, dy float64) {
 		host.mu.Lock()
@@ -723,6 +878,12 @@ func RunGogpuHost(cols, rows int, fontName string, fontSize float64, setupApp fu
 			host.resizePending = true
 		}
 		host.mu.Unlock()
+
+		if host.noteScale(dc.ScaleFactor(), w, h, dc.FramebufferWidth(), dc.FramebufferHeight()) {
+			if FrameManager != nil {
+				FrameManager.HardRefresh()
+			}
+		}
 
 		if sizeChanged && host.reader != nil && host.reader.EventChan != nil {
 			host.sendEvent(&vtinput.InputEvent{Type: vtinput.ResizeEventType})

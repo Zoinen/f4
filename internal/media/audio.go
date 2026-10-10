@@ -24,6 +24,14 @@ const AudioBytesPerFrame = 4 // go-mp3 output: 16-bit LE stereo
 
 var errAudioUnavailable = errors.New("audio output is not available on this system")
 
+// ErrNeedFFmpeg is what Load returns for a format only ffmpeg can decode
+// when there is no ffmpeg. The panel turns it into the install message.
+// It lives here, not in audio_decode.go, because that file is built only
+// where the real AudioEngine is (see its //go:build comment); the stub
+// engine never returns this error but panel/player.go still names the
+// symbol unconditionally, so it must exist on every build.
+var ErrNeedFFmpeg = errors.New("ffmpeg is needed to play this format")
+
 // pcmTap sits between the decoder and the device. It counts bytes for the
 // position clock and keeps the last pcmTapWindow mono samples for the
 // spectrum display. It is the only place that sees the PCM, so it is cheap:

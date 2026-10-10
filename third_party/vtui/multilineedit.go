@@ -311,7 +311,7 @@ func (m *MultiLineEdit) Show(scr *ScreenBuf) {
 	m.DisplayObject(scr)
 	if m.IsFocused() {
 		scr.SetCursorVisible(true)
-		scr.SetCursorShape(CursorShapeUnderline)
+		scr.SetCursorShape(InsertCursorShape())
 		off := 0
 		clusters := visualClusters(m.lines[m.curRow])
 		visualPos := m.currentVisualPos()

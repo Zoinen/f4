@@ -232,7 +232,7 @@ observed on Windows while touching unrelated code.
 2. **GUI Lag:** Users report visual lag/sluggishness in both `gogpu` and `ebiten` backends on Windows. This could be due to CPU rasterization overhead, GPU driver sync issues, or high polling rates. Needs further performance profiling of the draw loops on various target machines.
 ## Declarative Bindings Architecture Proposals
 
-Proposals for future architecture evolution (signals integration, virtual-tree diffing, zero-copy shm canvas, runtime introspection) are documented in `ARCH_PROPOSALS.md`.
+Proposals for future architecture evolution (signals integration, virtual-tree diffing, zero-copy shm canvas, runtime introspection) are collected in unxed/vtui#174.
 ## Classic Win32 Console API Renderer (`--tty=winapi`)
 
 We added a dedicated Win32 Console API backend using `WriteConsoleOutputW`, `SetConsoleCursorPosition`, and `SetConsoleCursorInfo` without requiring VT/ANSI escape sequences.

@@ -162,3 +162,159 @@ func TestPropertyAccess_Widgets(t *testing.T) {
 		}
 	})
 }
+
+func TestPropKind_String(t *testing.T) {
+	cases := []struct {
+		name string
+		kind PropKind
+		want string
+	}{
+		{"string", PropString, "string"},
+		{"int", PropInt, "int"},
+		{"bool", PropBool, "bool"},
+		{"color", PropColor, "color"},
+		{"stringList", PropStringList, "stringList"},
+		{"rect", PropRect, "rect"},
+		{"unknown", PropKind(99), "unknown"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.kind.String(); got != tc.want {
+				t.Errorf("PropKind(%d).String() = %q, want %q", tc.kind, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPropValue_String(t *testing.T) {
+	cases := []struct {
+		name string
+		v    PropValue
+		want string
+	}{
+		{"string", PropValString("hi"), `PropValue(string: "hi")`},
+		{"int", PropValInt(42), "PropValue(int: 42)"},
+		{"bool", PropValBool(true), "PropValue(bool: true)"},
+		{"color", PropValColor(0xff0000), "PropValue(color: 0xff0000)"},
+		{"stringList", PropValStringList([]string{"a", "b"}), "PropValue(stringList: [a b])"},
+		{"rect", PropValRect(Rect{X1: 1, Y1: 2, X2: 3, Y2: 4}), "PropValue(rect: 1,2-3,4)"},
+		{"invalid", PropValue{Kind: PropKind(99)}, "PropValue(invalid)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.v.String(); got != tc.want {
+				t.Errorf("PropValue.String() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPropValueConstructors(t *testing.T) {
+	if v := PropValColor(0x123456); v.Kind != PropColor || v.C != 0x123456 {
+		t.Errorf("PropValColor mismatch: %+v", v)
+	}
+	r := Rect{X1: 5, Y1: 6, X2: 7, Y2: 8}
+	if v := PropValRect(r); v.Kind != PropRect || v.R != r {
+		t.Errorf("PropValRect mismatch: %+v", v)
+	}
+}
+
+// TestScreenObjectProperties_TableDriven exercises the ScreenObject.SetProperty
+// / GetProperty pairs that TestPropertyAccess_ScreenObject does not already
+// cover: help, grow, align, stretch and the min/max size bounds, plus their
+// type-mismatch errors.
+func TestScreenObjectProperties_TableDriven(t *testing.T) {
+	cases := []struct {
+		name    string
+		prop    string
+		set     PropValue
+		wantErr error
+		get     func(PropValue) bool // only used when wantErr is nil
+	}{
+		{name: "id wrong type", prop: "id", set: PropValInt(1), wantErr: ErrPropertyType},
+		{name: "enabled wrong type", prop: "enabled", set: PropValInt(1), wantErr: ErrPropertyType},
+
+		{name: "help", prop: "help", set: PropValString("topic.help"),
+			get: func(v PropValue) bool { return v.S == "topic.help" }},
+		{name: "help wrong type", prop: "help", set: PropValInt(1), wantErr: ErrPropertyType},
+
+		{name: "grow", prop: "grow", set: PropValInt(int(GrowAll)),
+			get: func(v PropValue) bool { return v.I == int(GrowAll) }},
+		{name: "grow wrong type", prop: "grow", set: PropValString("x"), wantErr: ErrPropertyType},
+
+		{name: "align", prop: "align", set: PropValString("left"),
+			get: func(v PropValue) bool { return v.S == "left" }},
+		{name: "align wrong type", prop: "align", set: PropValInt(1), wantErr: ErrPropertyType},
+
+		{name: "stretch", prop: "stretch", set: PropValInt(3),
+			get: func(v PropValue) bool { return v.I == 3 }},
+		{name: "stretch wrong type", prop: "stretch", set: PropValString("x"), wantErr: ErrPropertyType},
+
+		{name: "minWidth", prop: "minWidth", set: PropValInt(10),
+			get: func(v PropValue) bool { return v.I == 10 }},
+		{name: "minWidth wrong type", prop: "minWidth", set: PropValString("x"), wantErr: ErrPropertyType},
+
+		{name: "minHeight", prop: "minHeight", set: PropValInt(11),
+			get: func(v PropValue) bool { return v.I == 11 }},
+		{name: "minHeight wrong type", prop: "minHeight", set: PropValString("x"), wantErr: ErrPropertyType},
+
+		{name: "maxWidth", prop: "maxWidth", set: PropValInt(12),
+			get: func(v PropValue) bool { return v.I == 12 }},
+		{name: "maxWidth wrong type", prop: "maxWidth", set: PropValString("x"), wantErr: ErrPropertyType},
+
+		{name: "maxHeight", prop: "maxHeight", set: PropValInt(13),
+			get: func(v PropValue) bool { return v.I == 13 }},
+		{name: "maxHeight wrong type", prop: "maxHeight", set: PropValString("x"), wantErr: ErrPropertyType},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			so := &ScreenObject{}
+			err := so.SetProperty(tc.prop, tc.set)
+			if tc.wantErr != nil {
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("SetProperty(%q) error = %v, want %v", tc.prop, err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("SetProperty(%q) unexpected error: %v", tc.prop, err)
+			}
+			got, ok := so.GetProperty(tc.prop)
+			if !ok {
+				t.Fatalf("GetProperty(%q) ok = false", tc.prop)
+			}
+			if !tc.get(got) {
+				t.Errorf("GetProperty(%q) = %+v, did not match expectation", tc.prop, got)
+			}
+		})
+	}
+}
+
+// TestScreenObjectProperties_Defaults covers the fallback branches in
+// GetProperty for "align" (defaults to "fill" when unset) and "stretch"
+// (defaults to 1 when unset).
+func TestScreenObjectProperties_Defaults(t *testing.T) {
+	so := &ScreenObject{}
+
+	if v, ok := so.GetProperty("align"); !ok || v.S != "fill" {
+		t.Errorf("GetProperty(align) on zero value = %+v, ok=%v, want fill", v, ok)
+	}
+	if v, ok := so.GetProperty("stretch"); !ok || v.I != 1 {
+		t.Errorf("GetProperty(stretch) on zero value = %+v, ok=%v, want 1", v, ok)
+	}
+
+	if err := so.SetProperty("align", PropValString("")); err != nil {
+		t.Fatalf("SetProperty(align, \"\") unexpected error: %v", err)
+	}
+	if v, ok := so.GetProperty("align"); !ok || v.S != "fill" {
+		t.Errorf("GetProperty(align) after setting empty = %+v, ok=%v, want fill", v, ok)
+	}
+
+	if err := so.SetProperty("stretch", PropValInt(0)); err != nil {
+		t.Fatalf("SetProperty(stretch, 0) unexpected error: %v", err)
+	}
+	if v, ok := so.GetProperty("stretch"); !ok || v.I != 1 {
+		t.Errorf("GetProperty(stretch) after setting 0 = %+v, ok=%v, want 1", v, ok)
+	}
+}

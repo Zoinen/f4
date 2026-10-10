@@ -16,6 +16,29 @@ import (
 
 var CustomConfigDir string
 
+type streamReadContextKey struct{}
+
+// WithStreamRead asks a VFS provider to preserve a member as a
+// reader-backed handle when that is possible. Providers may ignore the hint
+// and keep their existing materialization or format-specific path.
+func WithStreamRead(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, streamReadContextKey{}, true)
+}
+
+// StreamReadRequested reports whether a VFS open is part of a reader-backed
+// provider composition. It is a hint, not a guarantee that the returned
+// handle has cheap random access.
+func StreamReadRequested(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	requested, _ := ctx.Value(streamReadContextKey{}).(bool)
+	return requested
+}
+
 // App defines the interface for plugin-to-core UI interactions.
 type App interface {
 	GetActivePanelVFS() VFS
@@ -108,11 +131,31 @@ type VFSItem struct {
 	// a cache key together with the VFS session and canonical path.
 	Revision string
 	// Metadata for Attributes dialog
-	ATime    time.Time // Last Access
-	CTime    time.Time // Creation (Win) or Status Change (Unix)
-	UnixMode uint32    // Raw numeric mode for chmod
-	Uid, Gid int       // Ownership
-	WinAttrs uint32    // Windows file attributes
+	ATime time.Time // Last Access
+	CTime time.Time // Creation (Win) or Status Change (Unix)
+	// BTime is the object's actual creation/birth time, populated only where
+	// the platform reports one reliably: always on native Windows
+	// (GetFileAttributesEx's CreationTime), and on macOS/FreeBSD/NetBSD
+	// (syscall.Stat_t's Birthtimespec). Classic Unix stat(2) has no portable
+	// birth time at all — Linux needs statx(2) with STATX_BTIME, which
+	// not every filesystem populates even then, and paying for an extra
+	// syscall per directory entry just to attempt it is a bigger tradeoff
+	// than this field is meant to make (f4#1404): the attributes dialog asks
+	// for it on demand instead (ReadBirthTime, f4#1817); OpenBSD, DragonFly,
+	// Solaris and illumos leave it unset for the same reason. Zero value
+	// with MetadataBTime unset means "not available", not "epoch".
+	BTime time.Time
+	// SetBTime asks SetAttributes to write BTime as the creation time, where
+	// the platform can (OSVFS.SupportsSetBTime). Only an explicit edit of the
+	// Created field sets it: a plain item read from a listing carries a BTime
+	// too, and writing that back on every attribute change would be noise.
+	SetBTime bool
+	UnixMode uint32 // Raw numeric mode for chmod
+	Uid, Gid int    // Ownership
+	WinAttrs uint32 // Windows file attributes
+	// Nlink is the number of hard links to the file (far3's "LN" panel
+	// column). 1 for an ordinary file with no extra links.
+	Nlink uint64
 }
 
 // VFSCapabilities defines what the current VFS implementation can do efficiently.
@@ -1014,6 +1057,70 @@ type ConnectionInfoProvider interface {
 	ConnectionInfo() (host, port, user string, ok bool)
 }
 
+// SecondHopPasswordProvider lets a server-to-server copy or move authenticate
+// the leg it runs on this VFS's behalf with a password, instead of requiring
+// the two remote hosts to already trust each other through SSH keys or an
+// agent. A VFS answers for itself: ok is true only when it has a saved
+// password for its own connection AND the caller opted in to using saved
+// passwords this way (both are the implementation's business, not the
+// server-to-server orchestration's). False covers every other case --
+// the feature switched off, no saved connection matches, or the VFS kind
+// never carries a password at all -- uniformly, so a caller just falls back
+// to whatever access already exists between the two hosts.
+//
+// The password is looked up fresh on every call rather than cached on the
+// live connection, so it is held no longer than the one attempt that needs
+// it.
+type SecondHopPasswordProvider interface {
+	SecondHopPassword() (password string, ok bool)
+}
+
+// SecondHopSecretStager lets a server-to-server copy or move place a secret
+// where a command this same VFS is about to run (through CommandRunner.
+// RunCommand) can read it, without that secret ever appearing in the
+// command's own text, in a world-readable file, or in a log.
+//
+// StageSecret writes password into a private, freshly created location on
+// this VFS's host and returns a reference to it that is safe to embed in a
+// shell command line (typically a file path an argument like sshpass -f
+// expects). cleanup removes it again once the caller is done with it,
+// whether or not the command that used it succeeded, and must be called
+// exactly once.
+type SecondHopSecretStager interface {
+	StageSecret(ctx context.Context, password string) (ref string, cleanup func(context.Context), err error)
+}
+
+// HistoryPathProvider lets a panel plugin's VFS own its folder-history
+// entries, instead of the panel core judging one from GetPath() alone (see
+// panel.ShouldRecordFolderHistory). A plugin session's path is often
+// meaningless outside the plugin — a NetFox path such as /home/user is a
+// server-side path, indistinguishable from a real local one if recorded raw
+// — so a nested VFS that answers ok=false, or that does not implement this
+// interface at all, gets no folder-history entry: silence beats a raw
+// remote path mistaken for a local one, and beats a bare entry point with
+// no navigational value (f4#262).
+type HistoryPathProvider interface {
+	// HistoryEntry returns the text to show for the panel's current
+	// location, plus an opaque, plugin-defined reference that the same VFS
+	// kind can later use, through NavigateHistoryEntry, to return there. Both
+	// values are stored verbatim in folder history, including across
+	// restarts, so ref must never carry a password or other secret. ok is
+	// false when the current location has nothing worth remembering — for
+	// example, a plugin's own connection-list root screen.
+	HistoryEntry() (display, ref string, ok bool)
+
+	// NavigateHistoryEntry moves this VFS instance to the location named by
+	// ref, previously returned by HistoryEntry from (maybe) a different
+	// instance of the same kind. It must act only when this instance is
+	// already a live session for that ref's connection, and must never open
+	// a new connection or prompt for credentials: an implementation that
+	// would need to reconnect returns false instead, so picking a history
+	// entry never surprises the user with a password or sudo prompt
+	// (f4#262). It also returns false, leaving this instance untouched, when
+	// ref does not belong to this session at all.
+	NavigateHistoryEntry(ref string) bool
+}
+
 type ReadAtCloser interface {
 	ReadAt(ctx context.Context, p []byte, off int64) (n int, err error)
 	Read(ctx context.Context, p []byte) (n int, err error)
@@ -1139,6 +1246,31 @@ func DestinationOverwrite(ctx context.Context) (overwrite, known bool) {
 	}
 	overwrite, known = ctx.Value(destinationOverwriteKeyType{}).(bool)
 	return overwrite, known
+}
+
+type noElevationKeyType struct{}
+
+// WithoutElevation marks ctx so that OSVFS reports a refusal as it is instead
+// of retrying the call through sudo.
+//
+// It is for code on the UI goroutine. The sudo password prompt is a dialog,
+// and only that goroutine can show it: SudoClient waits for the elevated
+// dispatcher while the prompt it needs sits in the task queue behind the
+// wait, so an elevated call made from the UI goroutine waits for itself
+// until SudoClient gives up on the dispatcher. Such code reads without
+// elevation and hands a refused read to a worker goroutine.
+func WithoutElevation(ctx context.Context) context.Context {
+	return context.WithValue(ctx, noElevationKeyType{}, true)
+}
+
+// ElevationAllowed reports whether a refused call made with ctx may be
+// retried through sudo.
+func ElevationAllowed(ctx context.Context) bool {
+	if ctx == nil {
+		return true
+	}
+	off, _ := ctx.Value(noElevationKeyType{}).(bool)
+	return !off
 }
 
 type ProgressCallback func(msg string, percent int)

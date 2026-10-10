@@ -2,6 +2,7 @@ package dialog
 
 import (
 	"github.com/unxed/f4/internal/i18n"
+	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 )
 
@@ -15,15 +16,18 @@ const (
 	fileDialogMinWidth = 40
 
 	// Heights are deliberately fixed: only the width follows the window.
-	fileInputBoxHeight = 9
+	// The prompt, the field, a rule and the buttons between the frame rows.
+	fileInputBoxHeight = 6
 
-	// CopyBoxHeight holds the prompt, the destination field, the button row,
-	// the options of #722 (access rights, already existing files, symlink
-	// contents and the advanced options button) and the operation mode.
-	CopyBoxHeight = 17
+	// CopyBoxHeight holds the prompt, the destination field, a rule, the
+	// options of #722 (access rights, already existing files, symlink
+	// contents, the operation mode, and the advanced options button with the
+	// one blank row it keeps over itself), a rule and the button row, plus the
+	// two rows of the frame.
+	CopyBoxHeight = 13
 	// MoveBoxHeight is the same dialog for a move, which has no symlink
 	// contents option: a move carries a link as a link.
-	MoveBoxHeight = 16
+	MoveBoxHeight = 12
 )
 
 // FileDialogWidth returns the dialog width for the given screen width.
@@ -73,6 +77,17 @@ func NewFileDialog(title string, height int) *FileDialog {
 	}
 	dlg.ShowClose = true
 	return dlg
+}
+
+// ProcessMouse swallows the corner drag that vtui.Window offers on every modal
+// dialog: the width follows the f4 window and the height is fixed, so letting
+// the user stretch the dialog only left the controls behind (f4#891).
+func (d *FileDialog) ProcessMouse(e *vtinput.InputEvent) bool {
+	if e != nil && e.Type == vtinput.MouseEventType && e.ButtonState == vtinput.FromLeft1stButtonPressed && e.KeyDown &&
+		int(e.MouseX) == d.X2 && int(e.MouseY) == d.Y2 {
+		return true
+	}
+	return d.Window.ProcessMouse(e)
 }
 
 // SetLayout stores the layout pass and runs it once for the initial size.
@@ -134,21 +149,29 @@ func FileInputBox(title, prompt, defaultText string, onOk func(string)) *FileDia
 	dlg.AddItem(btnOk)
 	dlg.AddItem(btnCancel)
 
-	width, height := dlg.Size()
-	layout := vtui.NewAutoLayout(dlg.X1+2, dlg.Y1+2, width-4, height-4)
-	layout.
-		PinTop(lbl, 0).PinLeft(lbl, 0).
-		StackVertical(1, lbl, edit).FillWidth(edit, 0, 0).
-		PinBottom(btnOk, 0).PinBottom(btnCancel, 0).
-		StackHorizontal(2, btnOk, btnCancel).
-		CenterHorizontalGroup(btnOk, btnCancel)
+	sep := vtui.NewSeparator(0, 0, dlg.X2-dlg.X1+1, true, true)
+	dlg.AddItem(sep)
 
-	// AutoLayout.SetPosition re-suggests its bounds and solves again, so the
-	// one constraint set serves every window width. The layout keeps the
-	// minimum sizes it took from the freshly created controls, so a later
-	// resize can also make the dialog narrower again.
+	width, height := dlg.Size()
+	buttons := vtui.NewHBoxLayout(0, 0, width-4, 1)
+	buttons.HorizontalAlign = vtui.AlignCenter
+	buttons.Spacing = 2
+	buttons.Add(btnOk, vtui.Margins{}, vtui.AlignTop)
+	buttons.Add(btnCancel, vtui.Margins{}, vtui.AlignTop)
+
+	// The rows follow each other without blank lines, and the buttons stand
+	// under a rule that reaches the frame on both sides (#891). The same VBox
+	// applied to a new dialog rectangle is what stretches the field when the
+	// f4 window is resized.
+	vbox := vtui.NewVBoxLayout(dlg.X1+2, dlg.Y1+1, width-4, height-2)
+	vbox.Add(lbl, vtui.Margins{}, vtui.AlignLeft)
+	vbox.Add(edit, vtui.Margins{}, vtui.AlignFill)
+	vbox.Add(sep, vtui.Margins{Left: -2, Right: -2}, vtui.AlignFill)
+	vbox.Add(buttons, vtui.Margins{}, vtui.AlignFill)
+
 	dlg.SetLayout(func() {
-		layout.SetPosition(dlg.X1+2, dlg.Y1+2, dlg.X2-2, dlg.Y2-2)
+		vbox.SetPosition(dlg.X1+2, dlg.Y1+1, dlg.X2-2, dlg.Y2-1)
+		vbox.Apply()
 	})
 
 	vtui.FrameManager.Push(dlg)

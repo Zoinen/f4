@@ -83,6 +83,28 @@ func TestNonNegativeUint64Clamps(t *testing.T) {
 	}
 }
 
+// BoundedInt64 clamps rather than rejects, so every case has a want and no
+// ok flag: the caller never sees a failure, only a saturated value.
+func TestBoundedInt64(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		in   uint64
+		want int64
+	}{
+		{"zero", 0, 0},
+		{"one", 1, 1},
+		{"max int64", math.MaxInt64, math.MaxInt64},
+		{"just above int64", math.MaxInt64 + 1, math.MaxInt64},
+		{"max uint64", math.MaxUint64, math.MaxInt64},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := BoundedInt64(tt.in); got != tt.want {
+				t.Errorf("BoundedInt64(%d) = %d, want %d", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestBoundedInt16(t *testing.T) {
 	for _, tt := range []struct {
 		in int

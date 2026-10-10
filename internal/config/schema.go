@@ -130,7 +130,7 @@ func NormalizeStartupGuiBackend(value string) string {
 	switch lower {
 	case "win32", "winapi", "gdi", "win32gui":
 		return "win32"
-	case "gogpu", "ebiten", "x11", "wayland":
+	case "gogpu", "ebiten", "x11", "wayland", "cocoa":
 		return lower
 	}
 	return ""

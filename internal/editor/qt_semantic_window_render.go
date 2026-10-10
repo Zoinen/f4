@@ -1,6 +1,7 @@
 package editor
 
 import (
+	"github.com/unxed/f4/internal/config"
 	"github.com/unxed/f4/internal/piecetable"
 	"github.com/unxed/f4/internal/semantic"
 	"github.com/unxed/f4/internal/theme"
@@ -18,6 +19,7 @@ type semanticEditorStyledRowsContext struct {
 	tabSize           int
 	wordWrap          bool
 	showWhitespaces   bool
+	showControlChars  bool
 	paletteHash       uint64
 	colorerGeneration uint64
 	highlighterType   reflect.Type
@@ -201,6 +203,9 @@ func semanticEditorStyledRowsCacheEligible(ev *EditorView) bool {
 	if showHorz || showVert {
 		return false
 	}
+	if _, colorer := ev.Highlighter.(*ColorerHighlighter); colorer && config.App.EditorColorerPairs && ev.IsFocused() {
+		return false
+	}
 	return ev.syntaxFadeStart.IsZero() ||
 		time.Since(ev.syntaxFadeStart) >= syntaxFadeDuration
 }
@@ -225,6 +230,7 @@ func semanticEditorStyledRowsContextFor(ev *EditorView, width int) semanticEdito
 		tabSize:           ev.TabSize,
 		wordWrap:          ev.WordWrap,
 		showWhitespaces:   ev.ShowWhitespaces,
+		showControlChars:  ev.ShowControlChars,
 		paletteHash:       semanticEditorPaletteHash(),
 		colorerGeneration: ColorerSchemeGeneration(),
 		highlighterType:   highlighterType,
@@ -258,11 +264,7 @@ func semanticEditorSelectionStateFor(ev *EditorView) semanticEditorSelectionStat
 		if top > bottom {
 			top, bottom = bottom, top
 		}
-		left, right := ev.rectSelStartCol,
-			ev.getVisualColOf(ev.CursorLine, ev.CursorPos)
-		if left > right {
-			left, right = right, left
-		}
+		left, right := ev.rectSelectionColumns()
 		return semanticEditorSelectionState{
 			kind: 2, top: top, bottom: bottom, left: left, right: right,
 		}

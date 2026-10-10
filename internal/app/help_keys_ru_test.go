@@ -5,6 +5,7 @@ import (
 	"github.com/unxed/f4/internal/config"
 	"github.com/unxed/f4/internal/dialog"
 	"github.com/unxed/f4/internal/keymap"
+	"github.com/unxed/vtui"
 	"strings"
 	"testing"
 )
@@ -54,12 +55,28 @@ func TestGenerateKeysHelpTopicsFitHelpWidth(t *testing.T) {
 		{name: "PanelNav", areas: []string{"Shell", "Terminal", "Common"}},
 		{name: "ViewerEditor", areas: []string{"Editor", "Viewer", "Common"}},
 	} {
-		topic := GenerateKeysHelpTopic(tc.name, "t", tc.areas, "")
-		for lineNo, line := range topic.Lines {
-			if width := runewidth.StringWidth(line); width > dialog.GeneratedHelpLineWidth {
-				t.Errorf("%s line %d is %d columns wide, want <= %d: %q", tc.name, lineNo, width, dialog.GeneratedHelpLineWidth, line)
+		t.Run(tc.name, func(t *testing.T) {
+			topic := GenerateKeysHelpTopic(tc.name, "t", tc.areas, "")
+			engine := vtui.NewHelpEngine(nil)
+			engine.AddTopic(topic)
+			view := vtui.NewHelpView(engine, tc.name)
+			screen := vtui.NewSilentScreenBuf()
+			screen.AllocBuf(180, 25)
+			// Help wraps source lines at the visible width so zoom can reflow them.
+			view.SetPosition(0, 0, dialog.GeneratedHelpLineWidth+3, 20)
+			view.Show(screen)
+			narrowRows := len(view.CurrentTopic().Lines)
+			for lineNo, line := range view.CurrentTopic().Lines {
+				if width := runewidth.StringWidth(line); width > dialog.GeneratedHelpLineWidth {
+					t.Errorf("line %d is %d columns wide, want <= %d: %q", lineNo, width, dialog.GeneratedHelpLineWidth, line)
+				}
 			}
-		}
+			view.SetPosition(0, 0, 173, 20)
+			view.Show(screen)
+			if wideRows := len(view.CurrentTopic().Lines); wideRows >= narrowRows {
+				t.Fatalf("wider help did not reflow generated descriptions: narrow=%d wide=%d", narrowRows, wideRows)
+			}
+		})
 	}
 }
 

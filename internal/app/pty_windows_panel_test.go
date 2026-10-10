@@ -103,7 +103,7 @@ func TestActionExecuteBatchDoesNotReturnPanelsEarly(t *testing.T) {
 	for pf.ShowPanels {
 		drainFrameTasks()
 		if time.Since(start) > 5*time.Second {
-			t.Fatal("actionExecute did not hide panels")
+			t.Fatal("ActionExecute did not hide panels")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -147,7 +147,7 @@ func TestActionExecuteBatchExitRestartsShell(t *testing.T) {
 	for pf.ShowPanels {
 		drainFrameTasks()
 		if time.Since(start) > 5*time.Second {
-			t.Fatal("actionExecute did not hide panels")
+			t.Fatal("ActionExecute did not hide panels")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

@@ -56,4 +56,5 @@ func init() {
 	RegisterType("Separator", func() UIElement { return NewSeparator(0, 0, 10, true, true) })
 	RegisterType("Spacer", func() UIElement { return NewSpacer() })
 	RegisterType("Desktop", func() UIElement { return NewDesktop() })
+	RegisterType("Canvas", func() UIElement { return NewCanvas() })
 }

@@ -212,6 +212,32 @@ func TestHistorySearchUsesOriginalIndexWhenFiltered(t *testing.T) {
 	}
 }
 
+func TestHistorySearchDeleteKeepsCursorNearDeletedEntry(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	menu := vtui.NewVMenu("History")
+	search := newHistorySearch(menu, []history.HistoryRecord{{Name: "first"}, {Name: "second"}, {Name: "third"}}, "")
+	defer search.cleanup()
+
+	// applyFilter displays the history chronologically: third, second, first.
+	menu.SetSelectPos(1) // second
+	if !search.deleteSelected() {
+		t.Fatal("failed to delete the selected history entry")
+	}
+	_, selected, ok := search.selected()
+	if !ok || selected.Name != "first" {
+		t.Fatalf("cursor after deleting middle entry = %#v, want the following entry", selected)
+	}
+
+	menu.SetSelectPos(1) // first, now the last visible entry
+	if !search.deleteSelected() {
+		t.Fatal("failed to delete the last history entry")
+	}
+	_, selected, ok = search.selected()
+	if !ok || selected.Name != "third" {
+		t.Fatalf("cursor after deleting last entry = %#v, want the previous entry", selected)
+	}
+}
+
 func TestHistorySearchMatchIsCaseInsensitiveAndHighlightsAllMatches(t *testing.T) {
 	matched, highlights := historySearchMatch("АбАба", []rune("аБ"), false)
 	if !matched {

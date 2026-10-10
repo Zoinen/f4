@@ -191,6 +191,10 @@ const (
 	// wire protocol. Selected explicitly by callers today; flavor auto-probe
 	// will pick it based on the peer's response to a probe line.
 	BootstrapBase64LinePwsh
+	// BootstrapNative talks to an f4 that runs as the server (Server, started
+	// as the remote command) instead of a shell: no helper is uploaded, the
+	// client just says hello with the session token and waits for the banner.
+	BootstrapNative
 )
 
 // HandshakeOptions controls helper upload. Callers that do not need a
@@ -376,6 +380,11 @@ func (s *Session) HandshakeWithOptions(ctx context.Context, opts HandshakeOption
 			return err
 		}
 		if err := s.waitForReady(ctx); err != nil {
+			return err
+		}
+	case BootstrapNative:
+		if _, err := io.WriteString(s.w, NativeHelloLine(s.token)); err != nil {
+			s.broken.Store(true)
 			return err
 		}
 	default:

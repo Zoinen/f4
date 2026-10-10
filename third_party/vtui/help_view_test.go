@@ -121,6 +121,11 @@ func TestHelpView_BackRestoresOriginatingLinkAndViewport(t *testing.T) {
 	if hv.scrollTop != wantScroll {
 		t.Fatalf("restored scrollTop = %d, want %d", hv.scrollTop, wantScroll)
 	}
+	// The title has to follow the topic back: hosts resolve the current
+	// topic from it (f4 #378).
+	if got, want := hv.GetTitle(), " Help: Root "; got != want {
+		t.Fatalf("title after Backspace = %q, want %q", got, want)
+	}
 }
 
 func TestHelpView_BackButtonReturnsToOriginatingLink(t *testing.T) {
@@ -374,7 +379,7 @@ func TestHelpView_MultiLinkLineRendering(t *testing.T) {
 	checkCell(t, scr, 9, 1, 'L', Palette[ColHelpSelectedLink])
 }
 
-func TestHelpView_LayoutClipsLongLinesAndPositionsScrollBar(t *testing.T) {
+func TestHelpView_LayoutWrapsLongLinesAndPositionsScrollBar(t *testing.T) {
 	SetDefaultPalette()
 	engine := NewHelpEngine(&mockHelpVFS{})
 	lines := make([]string, 20)
@@ -392,14 +397,27 @@ func TestHelpView_LayoutClipsLongLinesAndPositionsScrollBar(t *testing.T) {
 	if !layout.showScrollBar {
 		t.Fatal("long topic did not request a scrollbar")
 	}
+	// far2l puts the help scrollbar on the right frame column (f4 #378).
 	if got, want := hv.scrollBar.X1, hv.X2; got != want {
-		t.Fatalf("scrollbar x = %d, want right frame column %d", got, want)
+		t.Fatalf("scrollbar x = %d, want the right border column %d", got, want)
+	}
+	if got := rune(scr.GetCell(hv.X2, hv.Y1+1).Char); got != rune(ScrollUpArrow) {
+		t.Fatalf("right border at the first text row = %q, want the scrollbar's up arrow", got)
+	}
+	if got := rune(scr.GetCell(hv.X2, hv.Y2).Char); got != '╝' {
+		t.Fatalf("bottom-right corner = %q, want it left to the frame", got)
 	}
 	if got := rune(scr.GetCell(hv.X2-1, hv.Y1+1).Char); got != ' ' {
 		t.Fatalf("cell next to right border = %q, want padding", got)
 	}
-	if got := rune(scr.GetCell(hv.X2, hv.Y1+1).Char); got != rune(ScrollUpArrow) {
-		t.Fatalf("scrollbar did not overwrite the right frame column: got %q", got)
+	// The scrollbar no longer takes a text column: the first row of the wrapped
+	// line runs up to the padding ("This line is deliberately" is exactly as
+	// wide as the text area).
+	if got := rune(scr.GetCell(hv.X2-2, hv.Y1+1).Char); got != 'y' {
+		t.Fatalf("last text column = %q, want 'y' of \"deliberately\"", got)
+	}
+	if x1, y1, x2, y2 := hv.TextArea(); x1 != hv.X1+2 || y1 != hv.Y1+1 || x2 != hv.X2-2 || y2 != hv.Y2-1 {
+		t.Fatalf("TextArea = (%d,%d)-(%d,%d), want (%d,%d)-(%d,%d)", x1, y1, x2, y2, hv.X1+2, hv.Y1+1, hv.X2-2, hv.Y2-1)
 	}
 	if got := rune(scr.GetCell(hv.X1+1, hv.Y1+1).Char); got != ' ' {
 		t.Fatalf("cell next to left border = %q, want padding", got)

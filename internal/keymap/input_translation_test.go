@@ -119,3 +119,81 @@ func TestTranslateMouseInput(t *testing.T) {
 		})
 	}
 }
+
+func TestTranslateMouseInputWithMode_LegacyX10(t *testing.T) {
+	press := &vtinput.InputEvent{
+		KeyDown:     true,
+		MouseX:      10,
+		MouseY:      5,
+		ButtonState: vtinput.FromLeft1stButtonPressed,
+	}
+	if got, want := TranslateMouseInputWithMode(press, false), "\x1b[M"+string([]byte{32, 43, 38}); got != want {
+		t.Fatalf("legacy press = %q, want %q", got, want)
+	}
+
+	release := &vtinput.InputEvent{KeyDown: false, MouseX: 10, MouseY: 5}
+	if got, want := TranslateMouseInputWithMode(release, false), "\x1b[M"+string([]byte{35, 43, 38}); got != want {
+		t.Fatalf("legacy release = %q, want %q", got, want)
+	}
+}
+
+func TestTranslateMouseInputWithMode_SGRReleaseKeepsReleasedButton(t *testing.T) {
+	release := &vtinput.InputEvent{
+		KeyDown:     false,
+		MouseX:      10,
+		MouseY:      5,
+		ButtonState: vtinput.FromLeft1stButtonPressed,
+	}
+	if got, want := TranslateMouseInputWithMode(release, true), "\x1b[<0;11;6m"; got != want {
+		t.Fatalf("SGR release = %q, want %q", got, want)
+	}
+
+	// A backend that cannot identify the released button retains the old
+	// compatibility code; PanelsFrame supplies the remembered button for the
+	// Windows Console shape before reaching this function.
+	unknown := *release
+	unknown.ButtonState = 0
+	if got, want := TranslateMouseInputWithMode(&unknown, true), "\x1b[<3;11;6m"; got != want {
+		t.Fatalf("buttonless SGR release = %q, want %q", got, want)
+	}
+}
+
+func TestTranslateMouseInputWithMode_LargeCoordinateUsesSGR(t *testing.T) {
+	e := &vtinput.InputEvent{KeyDown: true, MouseX: 224, MouseY: 5, ButtonState: vtinput.FromLeft1stButtonPressed}
+	if got, want := TranslateMouseInputWithMode(e, false), "\x1b[<0;225;6M"; got != want {
+		t.Fatalf("large-coordinate fallback = %q, want %q", got, want)
+	}
+}
+
+// A program that reads a line in cooked mode ignores an Enter or a Backspace
+// whose record has no character: DiskPart never took the "exit" typed into it
+// under `su` (#207). Backends that deliver these keys without one get it added.
+func TestTranslateInputWin32AddsTheControlCharacter(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		vk   uint16
+		mods vtinput.ControlKeyState
+		want string
+	}{
+		{"Enter", vtinput.VK_RETURN, 0, "\x1b[13;0;13;1;0;1_"},
+		{"Backspace", vtinput.VK_BACK, 0, "\x1b[8;0;8;1;0;1_"},
+		{"Tab", vtinput.VK_TAB, 0, "\x1b[9;0;9;1;0;1_"},
+		{"Escape", vtinput.VK_ESCAPE, 0, "\x1b[27;0;27;1;0;1_"},
+		{"Space", vtinput.VK_SPACE, 0, "\x1b[32;0;32;1;0;1_"},
+		{"Shift+Enter", vtinput.VK_RETURN, vtinput.ShiftPressed, "\x1b[13;0;13;1;16;1_"},
+		// With Ctrl or Alt the key means something else; nothing is invented.
+		{"Ctrl+Enter", vtinput.VK_RETURN, vtinput.LeftCtrlPressed, "\x1b[13;0;0;1;8;1_"},
+		{"Alt+Backspace", vtinput.VK_BACK, vtinput.LeftAltPressed, "\x1b[8;0;0;1;2;1_"},
+		{"F5", vtinput.VK_F5, 0, "\x1b[116;0;0;1;0;1_"},
+	} {
+		e := &vtinput.InputEvent{Type: vtinput.KeyEventType, VirtualKeyCode: tc.vk, KeyDown: true, ControlKeyState: tc.mods, RepeatCount: 1}
+		if got := TranslateInput(e, true, 0, false); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+	// A character the backend did supply is passed on untouched.
+	e := &vtinput.InputEvent{Type: vtinput.KeyEventType, VirtualKeyCode: vtinput.VK_RETURN, Char: '\n', KeyDown: true, RepeatCount: 1}
+	if got := TranslateInput(e, true, 0, false); got != "\x1b[13;0;10;1;0;1_" {
+		t.Errorf("a supplied character was replaced: %q", got)
+	}
+}

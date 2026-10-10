@@ -31,3 +31,12 @@ func WaitForAsyncClipboard() {
 	defer asyncClipboardMu.Unlock()
 	asyncClipboardWG.Wait()
 }
+
+// TrackClipboardRead registers a clipboard reader before starting its worker.
+// The returned function releases it after its UI completion has been posted.
+func TrackClipboardRead() func() {
+	asyncClipboardMu.Lock()
+	asyncClipboardWG.Add(1)
+	asyncClipboardMu.Unlock()
+	return asyncClipboardWG.Done
+}

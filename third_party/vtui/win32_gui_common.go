@@ -73,6 +73,13 @@ const (
 	wmMouseWheel      = 0x020A
 	wmPerformDragDrop = 0x0400 + 101
 	wmPerformResize   = wmPerformDragDrop + 1
+	wmSysCommand      = 0x0112
+)
+
+// WM_SYSCOMMAND commands.
+const (
+	scMaximize = 0xF030
+	scRestore  = 0xF120
 )
 
 const (
@@ -129,4 +136,35 @@ func rgbaToBGRA(dst, src []byte, lineBytes int) {
 		dst[i+2] = src[i]   // R
 		dst[i+3] = 255      // A
 	}
+}
+
+// pixelRect is a half-open pixel rectangle [x0,x1) x [y0,y1).
+type pixelRect struct {
+	x0, y0, x1, y1 int
+}
+
+// frameMarginRects returns the parts of a clientW x clientH client area that a
+// frameW x frameH frame blitted at the origin leaves uncovered: the partial
+// cell column on the right and the partial cell row at the bottom when the
+// window size is not a whole number of cells, or a wider band while the
+// frame still has the size of a smaller grid.
+//
+// Nothing else paints those pixels (WM_ERASEBKGND is suppressed once a frame
+// has been shown), so whatever an earlier paint left there -- for instance a
+// frame composed for the maximized size and blitted, clipped, right after the
+// window was restored -- stays visible until they are cleared (f4 #283).
+func frameMarginRects(clientW, clientH, frameW, frameH int) []pixelRect {
+	if clientW <= 0 || clientH <= 0 {
+		return nil
+	}
+	frameW = max(frameW, 0)
+	frameH = max(frameH, 0)
+	var rects []pixelRect
+	if frameW < clientW {
+		rects = append(rects, pixelRect{frameW, 0, clientW, clientH})
+	}
+	if frameH < clientH {
+		rects = append(rects, pixelRect{0, frameH, min(frameW, clientW), clientH})
+	}
+	return rects
 }

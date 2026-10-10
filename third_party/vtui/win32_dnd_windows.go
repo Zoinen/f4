@@ -46,6 +46,13 @@ func oleInit() {
 // is deliberately not used here -- a Pinner collected without Unpin panics,
 // so a client that never releases to zero would take the process down
 // instead of merely leaking one object.
+//
+// Because these objects are Go memory, every callback that reads its "this"
+// declares it as the Go pointer type it is rather than as a uintptr.
+// syscall.NewCallback hands each pointer-sized argument over unchanged, so
+// the declared type costs nothing at the ABI level, and it means a Go
+// address is never rebuilt out of an integer -- winPtr is only for memory
+// Windows owns, and cannot stand in for that.
 var (
 	comLiveMu sync.Mutex
 	comLive   = map[uintptr]any{}
@@ -167,7 +174,7 @@ func buildUnicodeText(paths []string) (uintptr, error) {
 		return 0, fmt.Errorf("GlobalLock failed")
 	}
 
-	destSlice := unsafe.Slice((*uint16)(unsafe.Pointer(ptr)), len(u16))
+	destSlice := unsafe.Slice((*uint16)(winPtr(ptr)), len(u16))
 	copy(destSlice, u16)
 
 	procGlobalUnlock.Call(hGlobal)
@@ -256,11 +263,12 @@ func buildHDROP(paths []string) (uintptr, error) {
 		return 0, fmt.Errorf("GlobalLock failed")
 	}
 
-	df := (*dropFiles)(unsafe.Pointer(ptr))
+	base := winPtr(ptr)
+	df := (*dropFiles)(base)
 	df.pFiles = dfSize
 	df.fWide = 1 // UTF-16
 
-	destSlice := unsafe.Slice((*uint16)(unsafe.Pointer(ptr+uintptr(dfSize))), len(utf16Buf))
+	destSlice := unsafe.Slice((*uint16)(unsafe.Add(base, dfSize)), len(utf16Buf))
 	copy(destSlice, utf16Buf)
 
 	procGlobalUnlock.Call(hGlobal)
@@ -323,7 +331,7 @@ func (s *comDropSource) toIUnknown() uintptr {
 	return uintptr(unsafe.Pointer(s))
 }
 
-func comDropSourceQueryInterface(this uintptr, riid *guid, ppvObject *uintptr) uintptr {
+func comDropSourceQueryInterface(s *comDropSource, riid *guid, ppvObject *uintptr) uintptr {
 	if ppvObject == nil {
 		return ePointer
 	}
@@ -331,8 +339,7 @@ func comDropSourceQueryInterface(this uintptr, riid *guid, ppvObject *uintptr) u
 		return eNoInterface
 	}
 	if guidEqual(*riid, iidIUnknown) || guidEqual(*riid, iidIDropSource) {
-		*ppvObject = this
-		s := (*comDropSource)(unsafe.Pointer(this))
+		*ppvObject = s.toIUnknown()
 		atomic.AddInt32(&s.refCount, 1)
 		return sOK
 	}
@@ -340,16 +347,14 @@ func comDropSourceQueryInterface(this uintptr, riid *guid, ppvObject *uintptr) u
 	return eNoInterface
 }
 
-func comDropSourceAddRef(this uintptr) uintptr {
-	s := (*comDropSource)(unsafe.Pointer(this))
+func comDropSourceAddRef(s *comDropSource) uintptr {
 	return uintptr(atomic.AddInt32(&s.refCount, 1))
 }
 
-func comDropSourceRelease(this uintptr) uintptr {
-	s := (*comDropSource)(unsafe.Pointer(this))
+func comDropSourceRelease(s *comDropSource) uintptr {
 	count := atomic.AddInt32(&s.refCount, -1)
 	if count <= 0 {
-		comReleaseFinal(this)
+		comReleaseFinal(s.toIUnknown())
 	}
 	return uintptr(count)
 }
@@ -409,7 +414,7 @@ func (d *comDataObject) toIUnknown() uintptr {
 	return uintptr(unsafe.Pointer(d))
 }
 
-func comDataObjectQueryInterface(this uintptr, riid *guid, ppvObject *uintptr) uintptr {
+func comDataObjectQueryInterface(d *comDataObject, riid *guid, ppvObject *uintptr) uintptr {
 	if ppvObject == nil {
 		return ePointer
 	}
@@ -417,8 +422,7 @@ func comDataObjectQueryInterface(this uintptr, riid *guid, ppvObject *uintptr) u
 		return eNoInterface
 	}
 	if guidEqual(*riid, iidIUnknown) || guidEqual(*riid, iidIDataObject) {
-		*ppvObject = this
-		d := (*comDataObject)(unsafe.Pointer(this))
+		*ppvObject = d.toIUnknown()
 		atomic.AddInt32(&d.refCount, 1)
 		return sOK
 	}
@@ -426,21 +430,19 @@ func comDataObjectQueryInterface(this uintptr, riid *guid, ppvObject *uintptr) u
 	return eNoInterface
 }
 
-func comDataObjectAddRef(this uintptr) uintptr {
-	d := (*comDataObject)(unsafe.Pointer(this))
+func comDataObjectAddRef(d *comDataObject) uintptr {
 	return uintptr(atomic.AddInt32(&d.refCount, 1))
 }
 
-func comDataObjectRelease(this uintptr) uintptr {
-	d := (*comDataObject)(unsafe.Pointer(this))
+func comDataObjectRelease(d *comDataObject) uintptr {
 	count := atomic.AddInt32(&d.refCount, -1)
 	if count <= 0 {
-		comReleaseFinal(this)
+		comReleaseFinal(d.toIUnknown())
 	}
 	return uintptr(count)
 }
 
-func comDataObjectGetData(this uintptr, pFormatEtcIn *formatEtc, pMedium *stgMedium) uintptr {
+func comDataObjectGetData(d *comDataObject, pFormatEtcIn *formatEtc, pMedium *stgMedium) uintptr {
 	if pFormatEtcIn == nil || pMedium == nil {
 		return ePointer
 	}
@@ -448,8 +450,6 @@ func comDataObjectGetData(this uintptr, pFormatEtcIn *formatEtc, pMedium *stgMed
 	if pFormatEtcIn.tymed&tymedHGLOBAL == 0 {
 		return dvETymed
 	}
-
-	d := (*comDataObject)(unsafe.Pointer(this))
 
 	if pFormatEtcIn.cfFormat == cfHDROP {
 		hGlobal, err := buildHDROP(d.paths)
@@ -578,7 +578,7 @@ func (e *comEnumFormatEtc) toIUnknown() uintptr {
 	return uintptr(unsafe.Pointer(e))
 }
 
-func comEnumFormatEtcQueryInterface(this uintptr, riid *guid, ppvObject *uintptr) uintptr {
+func comEnumFormatEtcQueryInterface(e *comEnumFormatEtc, riid *guid, ppvObject *uintptr) uintptr {
 	if ppvObject == nil {
 		return ePointer
 	}
@@ -586,8 +586,7 @@ func comEnumFormatEtcQueryInterface(this uintptr, riid *guid, ppvObject *uintptr
 		return eNoInterface
 	}
 	if guidEqual(*riid, iidIUnknown) || guidEqual(*riid, iidIEnumFORMATETC) {
-		*ppvObject = this
-		e := (*comEnumFormatEtc)(unsafe.Pointer(this))
+		*ppvObject = e.toIUnknown()
 		atomic.AddInt32(&e.refCount, 1)
 		return sOK
 	}
@@ -595,25 +594,22 @@ func comEnumFormatEtcQueryInterface(this uintptr, riid *guid, ppvObject *uintptr
 	return eNoInterface
 }
 
-func comEnumFormatEtcAddRef(this uintptr) uintptr {
-	e := (*comEnumFormatEtc)(unsafe.Pointer(this))
+func comEnumFormatEtcAddRef(e *comEnumFormatEtc) uintptr {
 	return uintptr(atomic.AddInt32(&e.refCount, 1))
 }
 
-func comEnumFormatEtcRelease(this uintptr) uintptr {
-	e := (*comEnumFormatEtc)(unsafe.Pointer(this))
+func comEnumFormatEtcRelease(e *comEnumFormatEtc) uintptr {
 	count := atomic.AddInt32(&e.refCount, -1)
 	if count <= 0 {
-		comReleaseFinal(this)
+		comReleaseFinal(e.toIUnknown())
 	}
 	return uintptr(count)
 }
 
-func comEnumFormatEtcNext(this uintptr, celt uintptr, rgelt *formatEtc, pceltFetched *uint32) uintptr {
+func comEnumFormatEtcNext(e *comEnumFormatEtc, celt uintptr, rgelt *formatEtc, pceltFetched *uint32) uintptr {
 	if rgelt == nil {
 		return ePointer
 	}
-	e := (*comEnumFormatEtc)(unsafe.Pointer(this))
 
 	requested := int(celt)
 	fetched := 0
@@ -635,8 +631,7 @@ func comEnumFormatEtcNext(this uintptr, celt uintptr, rgelt *formatEtc, pceltFet
 	return sFalse
 }
 
-func comEnumFormatEtcSkip(this uintptr, celt uintptr) uintptr {
-	e := (*comEnumFormatEtc)(unsafe.Pointer(this))
+func comEnumFormatEtcSkip(e *comEnumFormatEtc, celt uintptr) uintptr {
 	e.index += int(celt)
 	if e.index > len(e.formats) {
 		e.index = len(e.formats)
@@ -645,17 +640,15 @@ func comEnumFormatEtcSkip(this uintptr, celt uintptr) uintptr {
 	return sOK
 }
 
-func comEnumFormatEtcReset(this uintptr) uintptr {
-	e := (*comEnumFormatEtc)(unsafe.Pointer(this))
+func comEnumFormatEtcReset(e *comEnumFormatEtc) uintptr {
 	e.index = 0
 	return sOK
 }
 
-func comEnumFormatEtcClone(this uintptr, ppenum *uintptr) uintptr {
+func comEnumFormatEtcClone(e *comEnumFormatEtc, ppenum *uintptr) uintptr {
 	if ppenum == nil {
 		return ePointer
 	}
-	e := (*comEnumFormatEtc)(unsafe.Pointer(this))
 	cloned := newComEnumFormatEtc(e.formats)
 	cloned.index = e.index
 	*ppenum = cloned.toIUnknown()
@@ -685,8 +678,8 @@ func win32DoDragDrop(paths []string, allowed DropAction) (DropAction, error) {
 	DebugLog("WIN32_DND: ole32!DoDragDrop returned hr=0x%08X, dwEffect=0x%X", uint32(r1), dwEffect)
 
 	// Release COM objects
-	comDataObjectRelease(dataObj.toIUnknown())
-	comDropSourceRelease(dropSrc.toIUnknown())
+	comDataObjectRelease(dataObj)
+	comDropSourceRelease(dropSrc)
 
 	if r1 == uintptr(dragDropSDrop) {
 		return dropEffectToDropAction(dwEffect), nil

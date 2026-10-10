@@ -51,7 +51,25 @@ type PluginCommand struct {
 	// "Shift+F4"). The plugin remains responsible for registering the hotkey.
 	Shortcut string
 	Visible  func(App) bool
-	Run      func(App)
+	// NotInPluginMenu keeps the command out of the F11 plugin menu: it is a
+	// basic shell command in spirit (Add to archive, Extract), with its own key
+	// and its row in the generated main menu and the command palette, and having
+	// it among the plugins made users ask how to add files to an archive
+	// (unxed/f4#918).
+	NotInPluginMenu bool
+	// Enabled, when set, decides whether the command can actually run right
+	// now, without removing it from the menu the way Visible does: a
+	// generated menu item stays on screen dimmed instead of disappearing
+	// (BuildMenuBarItems sets vtui.MenuItem.Disabled from it), and
+	// ExecutePluginCommand refuses the call before Run ever runs. This
+	// mirrors the Visible/Enabled split action.Action already uses (see
+	// internal/action/registry.go) and exists for the same reason: f4#1356's
+	// "shows an error dialog instead of a disabled control" class of bug
+	// (for example ID3 Tag Editor on a non-MP3 file, or Media Information on
+	// a directory). Left nil, a command behaves exactly as it did before
+	// this field existed -- enabled whenever Visible admits it.
+	Enabled func(App) bool
+	Run     func(App)
 }
 
 // CommandPrefixRegistration controls a registered command-line prefix. An
@@ -137,8 +155,133 @@ type PanelController interface {
 	Close() error
 }
 
+// PanelStateProvider is the optional PanelController extension that lets a
+// bookmark (unxed/f4#1669) return to more than the panel's directory. The host
+// stores what SavePanelState returns in the bookmark and hands it back to
+// RestorePanelState right after it opens the panel again. The state is an
+// opaque single-line string owned by the plugin (for example the name of the
+// selected entry); it may be stale or foreign by then, so RestorePanelState
+// must ignore what it does not understand. Both are called on the UI goroutine.
+type PanelStateProvider interface {
+	SavePanelState() string
+	RestorePanelState(state string)
+}
+
+// PanelKey is one key a panel plugin binds while its panel has the focus.
+// It is the single, shared key/keybar primitive for every PanelProvider
+// (f4#312): a plugin declares *what* its keys do and how they are captioned,
+// and the host owns *how* that reaches the user -- dispatch order, the
+// keybar, and which of f4's own panel bindings stand down meanwhile -- the
+// same way for all panel plugins, instead of each plugin hand-rolling a
+// ProcessKey switch and leaving the file panel's F-key captions and actions
+// live underneath it.
+//
+// VK is a vtinput virtual key code; Mods uses the same vtinput modifier bits
+// Host.RegisterGlobalHotkey does, and matching compares only whether Ctrl,
+// Alt and Shift are held (left and right variants are equivalent; lock and
+// enhanced-key bits are ignored). Label is the keybar caption, already
+// localized; it is shown only for F1..F12 with no modifier or exactly one of
+// Shift, Ctrl or Alt, and an empty Label binds the key without a caption.
+// Run is called on the UI goroutine. Enabled is optional: when it reports
+// false the caption is dimmed and the key is still consumed (and Run not
+// called), matching how f4's own configured hotkeys own a key even when
+// their action cannot currently run.
+type PanelKey struct {
+	VK      uint16
+	Mods    vtinput.ControlKeyState
+	Label   string
+	Run     func()
+	Enabled func() bool
+}
+
+// ShowPanelHelp opens a panel plugin's help: markdown in the Markdown viewer,
+// the window f4's own help and the F3 view of .md files use (f4#272). The
+// text is the plugin's, in the interface language it already renders itself
+// in; nothing is parsed or looked up here.
+func ShowPanelHelp(title, markdown string) {
+	if vtui.FrameManager == nil {
+		return
+	}
+	view := vtui.NewMarkdownView(title, markdown)
+	view.SetTitle(" " + title + " ")
+	vtui.FrameManager.Push(view)
+}
+
+// PanelHelpKey is the F1 key of a panel plugin that has a help of its own:
+// declare it among PanelKeys and the host runs it ahead of the global Help
+// binding and captions F1 with label. title and markdown are called when the
+// key is pressed, so they may follow the interface language.
+func PanelHelpKey(label string, title, markdown func() string) PanelKey {
+	return PanelKey{VK: vtinput.VK_F1, Label: label, Run: func() { ShowPanelHelp(title(), markdown()) }}
+}
+
+// Matches reports whether e is a key-down event for k. Non-key events and
+// key-up events never match.
+func (k PanelKey) Matches(e *vtinput.InputEvent) bool {
+	if e == nil || e.Type != vtinput.KeyEventType || !e.KeyDown || e.VirtualKeyCode != k.VK {
+		return false
+	}
+	return panelKeyMods(e.ControlKeyState) == panelKeyMods(k.Mods)
+}
+
+// panelKeyMods folds left/right modifier variants together and drops lock
+// and enhanced-key bits, so a declaration and an event compare on intent.
+func panelKeyMods(m vtinput.ControlKeyState) vtinput.ControlKeyState {
+	var out vtinput.ControlKeyState
+	if m&(vtinput.LeftCtrlPressed|vtinput.RightCtrlPressed) != 0 {
+		out |= vtinput.LeftCtrlPressed
+	}
+	if m&(vtinput.LeftAltPressed|vtinput.RightAltPressed) != 0 {
+		out |= vtinput.LeftAltPressed
+	}
+	if m&vtinput.ShiftPressed != 0 {
+		out |= vtinput.ShiftPressed
+	}
+	return out
+}
+
+// PanelKeyProvider is the optional PanelController extension that declares
+// PanelKeys. The host calls PanelKeys on the UI goroutine every time it
+// dispatches a key or draws the keybar, so a plugin may return a different
+// set as its state changes (a key that only exists on some platforms simply
+// is not in the slice there). It should be cheap and must not block.
+//
+// While a panel plugin has the focus in the active slot, the host
+// guarantees, whether or not the controller implements this interface:
+//
+//   - a declared key runs its PanelKey before any global plugin hotkey or
+//     configured f4 hotkey, including keys injected by a keybar click;
+//   - f4 bindings that act on the file panel's cursor or selection (the
+//     File.* actions and the group-selection keys) and global plugin
+//     hotkeys stand down; the key reaches the controller's ProcessKey
+//     instead, and is dropped if the controller does not claim it;
+//   - the file panel hidden under the plugin never receives keys;
+//   - the keybar shows the declared captions, the file-panel captions are
+//     blank, and every other f4 binding (Help, menus, panel toggles, quit,
+//     ...) keeps its caption and its key.
+type PanelKeyProvider interface {
+	PanelKeys() []PanelKey
+}
+
+// DispatchPanelKey runs the first key in keys that matches e and reports
+// whether one did. A disabled match is consumed without running. It is the
+// host's own dispatcher, exported so a controller (or its tests) can route
+// the same declarations through ProcessKey when hosted without it.
+func DispatchPanelKey(keys []PanelKey, e *vtinput.InputEvent) bool {
+	for _, k := range keys {
+		if !k.Matches(e) {
+			continue
+		}
+		if k.Run != nil && (k.Enabled == nil || k.Enabled()) {
+			k.Run()
+		}
+		return true
+	}
+	return false
+}
+
 // PanelProvider describes a panel-only plugin contribution. The host exposes
-// an automatically searchable "Open <Title>" command for every provider.
+// an automatically searchable command for every provider, labelled with Title.
 // Open is called on the UI goroutine and should construct controls quickly;
 // long-running work belongs in the existing task APIs.
 type PanelProvider struct {
@@ -217,4 +360,49 @@ type TextEditorRequest struct {
 // TextEditorHost is an optional UI capability exposed by PanelsFrame.
 type TextEditorHost interface {
 	OpenTextEditor(TextEditorRequest) error
+}
+
+// SelectedIsDirHost is an optional App capability implemented by hosts that
+// can answer "is the current selection a directory?" synchronously, from
+// already-cached panel state, without any new filesystem round trip
+// (f4#1356). PanelsFrame implements it by reading the cursor entry's cached
+// vfs.VFSItem.IsDir, exactly what GetSelectedName already reads to name that
+// entry -- so this costs no extra I/O over what a Visible/Enabled predicate
+// already pays.
+//
+// known is false when the host cannot answer at all right now (for example,
+// nothing under the cursor); it is deliberately not a place for a host to
+// report "unknown" merely because a real Stat would be needed, since no
+// current implementation needs one. Callers must treat known==false the
+// same as "this host does not implement SelectedIsDirHost at all": absence
+// of information, never grounds to assume either true or false.
+type SelectedIsDirHost interface {
+	GetSelectedIsDir() (isDir bool, known bool)
+}
+
+// SelectionToken is an opaque handle returned by
+// SelectionClearHost.CaptureSelectionToken.
+type SelectionToken interface {
+	// Clear drops the captured entry's selection, but only if it is still
+	// exactly what was captured (same panel, same directory, same VFS
+	// instance, entry still selected). It reports whether it actually
+	// cleared anything.
+	Clear() bool
+}
+
+// SelectionClearHost is an optional App capability that lets a plugin drop a
+// panel entry's explicit ("Insert"/marked) selection once whatever it
+// started on that entry finishes successfully, without touching entries the
+// user selected or deselected in the meantime (f4#1623: after a successful
+// checksum generation or validation, the processed files and folders should
+// no longer be marked). It mirrors the capture-then-clear pair f4's own
+// "Apply command" already uses on marked panel entries
+// (internal/panel/apply.go, PanelSelectionToken): capture a token right
+// before work starts, then Clear it once the work is done.
+type SelectionClearHost interface {
+	// CaptureSelectionToken snapshots whether name is currently selected on
+	// the active panel. exists is false when name is not currently selected
+	// (or the host has no active panel to ask) -- there is then nothing to
+	// capture and nothing to clear later.
+	CaptureSelectionToken(name string) (token SelectionToken, exists bool)
 }

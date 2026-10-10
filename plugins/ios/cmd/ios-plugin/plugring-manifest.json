@@ -1,0 +1,11 @@
+{
+    "id": "ios",
+    "name": "Apple mobile devices (iOS)",
+    "version": "0.0.0-part2-published-not-installable",
+    "author": "unxed",
+    "description": "Browse an iPhone or iPad's Media export, applications and crash reports as a top-level f4 drive over usbmuxd. Ships as a native subprocess plugin so a lite build (f4#1178) does not have to carry go-ios and its userspace networking stack in its own binary.",
+    "url": "https://github.com/unxed/f4/releases/download/{release}/ios-plugin-{os}-{arch}.tgz",
+    "entrypoint": "ios-plugin",
+    "category": "filesystem",
+    "runtimes": ["native"]
+}

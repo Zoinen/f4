@@ -225,3 +225,28 @@ func TestChildEnvDropsDetachedFlag(t *testing.T) {
 		t.Errorf("the rest of the environment must survive: %v", env)
 	}
 }
+
+// A nested f4 inherits F4_NESTED=1 from the terminal that started it and
+// exports the marker again for every child of its own. The environment is a
+// list, so the kept copy would pile up: one extra line per nesting level the
+// session has already seen, visible in `set` and in the About dialog.
+func TestChildEnvExportsNestedMarkerExactlyOnce(t *testing.T) {
+	base := []string{"PATH=/usr/bin", "F4_NESTED=1"}
+	env := terminal.BuildChildEnv(base, false, false)
+
+	count := 0
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "F4_NESTED=") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("F4_NESTED must be exported exactly once, got %d times: %v", count, env)
+	}
+	if !envHas(env, "F4_NESTED=1") {
+		t.Errorf("the marker must still be exported: %v", env)
+	}
+	if !envHas(env, "PATH=/usr/bin") {
+		t.Errorf("the rest of the environment must survive: %v", env)
+	}
+}

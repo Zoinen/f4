@@ -25,7 +25,7 @@ func TestGenerateKeysHelpTopic(t *testing.T) {
 	// Every bound editor action appears with its default key and description.
 	for _, want := range []string{
 		"F2             - Save file",
-		"Ctrl+Z         - Undo last change",
+		"Alt+BS / Ctrl+Z - Undo last change",
 		"Ctrl+V / Shift+Ins - Paste text from clipboard",
 		"F4             - Toggle hex view",
 		"Alt+Ins        - Select and copy a screen region",

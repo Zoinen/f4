@@ -1,4 +1,4 @@
-//go:build !freebsd && !dragonfly && !openbsd && !netbsd && !illumos && !solaris && !plan9 && !android && (amd64 || arm64)
+//go:build !freebsd && !dragonfly && !openbsd && !netbsd && !illumos && !solaris && !plan9 && !android && (amd64 || arm64) && !vtui_nogogpu
 
 package vtui
 
@@ -98,6 +98,36 @@ func (r *GogpuRenderer) SetFallbackFontChain(chain *fontFallbackChain) {
 	r.glyphMemo = nil
 }
 
+// setFace installs a newly loaded primary face, fallback chain and cell
+// size, dropping every glyph-shape cache keyed by the old font (faceFor's
+// faceCache, glyphRectsCached's glyphMemo) and the graphics-layer generation
+// stamp, so the next frame re-walks both from scratch instead of serving
+// stale entries for the new font. The caller is GogpuHost.SetFont (vtui
+// #136).
+func (r *GogpuRenderer) setFace(face text.Face, chain *fontFallbackChain, cellW, cellH int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.face = face
+	r.chain = chain
+	r.cellW, r.cellH = cellW, cellH
+	r.faceCache = nil
+	r.glyphMemo = nil
+	r.gfxKnown = false
+}
+
+// SetFont changes the font of the already-open window without recreating
+// it: see GogpuHost.SetFont. It always reports true when there is a host to
+// forward to -- gogpu and ebiten are, as of this part, the GUI backends
+// implementing font hot-swap (vtui #136) -- and false only for a renderer
+// built without one.
+func (r *GogpuRenderer) SetFont(fontName string, fontSize float64) bool {
+	if r.host == nil {
+		return false
+	}
+	r.host.SetFont(fontName, fontSize)
+	return true
+}
+
 // faceFor resolves the face owning a glyph for ch, memoised per rune: a cmap
 // probe once per distinct rune on screen, not per cell per frame, keeps this
 // off the hot path. The caller must hold r.mu (DrawToScreen, the only caller,
@@ -108,7 +138,7 @@ func (r *GogpuRenderer) SetFallbackFontChain(chain *fontFallbackChain) {
 // no box-drawing runes (they go through drawCustomChar) and never regional
 // indicators — two lone RIs in one string would shape into a flag.
 func gogpuBatchRune(ch uint64) bool {
-	if ch == 0 || ch == WideCharFiller || IsCompChar(ch) {
+	if ch == 0 || ch == WideCharFiller || IsCompChar(ch) || IsSymChar(ch) {
 		return false
 	}
 	if ch == ' ' {
@@ -244,14 +274,7 @@ func (r *GogpuRenderer) Render(buf, shadow []CharInfo, w, h int, force bool) {
 		}
 	}
 
-	now := time.Now()
-	if now.Sub(r.lastBlinkTime) >= 500*time.Millisecond {
-		r.blinkState = !r.blinkState
-		r.lastBlinkTime = r.lastBlinkTime.Add(500 * time.Millisecond)
-		if now.Sub(r.lastBlinkTime) >= 500*time.Millisecond {
-			r.lastBlinkTime = now
-		}
-	}
+	stepSoftwareBlink(&r.blinkState, &r.lastBlinkTime, time.Now())
 
 	if !needsRedraw && r.cursorVis {
 		if r.blinkState != r.lastBlinkState {
@@ -316,6 +339,22 @@ func (r *GogpuRenderer) ResizeWindow(cols, rows int) {
 	if app != nil && cw > 0 && ch > 0 {
 		app.RequestSize(cols*cw, rows*ch)
 	}
+}
+
+// ToggleMaximized maximizes the window or restores it, through gogpu's
+// App.Maximize, which toggles between the two. The state logged beforehand
+// is gogpu's own answer, so a log shows what gogpu believed.
+func (r *GogpuRenderer) ToggleMaximized() bool {
+	r.host.mu.Lock()
+	app := r.host.app
+	r.host.mu.Unlock()
+
+	if app == nil {
+		return false
+	}
+	DebugLog("GOGPU: toggle maximized: gogpu reports maximized=%v", app.IsMaximized())
+	app.Maximize()
+	return true
 }
 
 // glyphMemoEntry caches a rune's mask-space rects and bbox offset from the
@@ -412,12 +451,36 @@ func (r *GogpuRenderer) glyphRectsCached(char rune) (glyphMemoEntry, bool) {
 	return e, ok
 }
 
+// drawSymGlyphShape draws one checkbox/radio SymGlyph token (symchar.go) as
+// a geometric shape spanning the w x h pixel area of the 3 cells it
+// occupies -- the gogpu counterpart of drawCustomChar for box-drawing runes.
+// false means the active GlyphStyle has no shape for sym (always the case
+// for GlyphStyleClassic), so the caller falls through to its ordinary
+// per-cell font path unchanged.
+func (r *GogpuRenderer) drawSymGlyphShape(dc *gg.Context, sym SymGlyph, x, y, w, h float64) bool {
+	rects, ok := symGlyphRects(sym, w, h, 1.0)
+	if !ok {
+		return false
+	}
+	for _, rect := range rects {
+		dc.DrawRectangle(x+rect.x, y+rect.y, rect.w, rect.h)
+		_ = dc.Fill()
+	}
+	return true
+}
+
 // drawCustomChar draws one cell of a box/arrow/block rune.
 func (r *GogpuRenderer) drawCustomChar(dc *gg.Context, char rune, x, y, w, h, ascent float64) bool {
 	thick := 1.0
 	fillR := func(rx, ry, rw, rh float64) {
 		dc.DrawRectangle(rx, ry, rw, rh)
 		dc.Fill()
+	}
+	if rects, ok := classicGlyphRects(char, w, h, thick); ok {
+		for _, rect := range rects {
+			fillR(x+rect.x, y+rect.y, rect.w, rect.h)
+		}
+		return true
 	}
 
 	mx := math.Floor(x + w/2 - thick/2)
@@ -741,8 +804,25 @@ func (r *GogpuRenderer) drawFrame(dc *gg.Context, w, h int) gogpuFrameStats {
 					rw = 2
 				}
 
-				char := CellBaseRune(currCell.Char)
 				underlined := currCell.Attributes&CommonLvbUnderscore != 0
+
+				if IsSymChar(currCell.Char) && sx+2 < spanW && x+sx+2 < drawCols {
+					if sym, symOk := symGlyphAt(currCell.Char, r.renderBuf[idx+1].Char, r.renderBuf[idx+2].Char); symOk {
+						tBox := gogpuProfNow()
+						drawn := r.drawSymGlyphShape(dc, sym, lx+float64(sx*r.cellW), ly, float64(3*r.cellW), float64(r.cellH))
+						prof.boxTime += gogpuProfSince(tBox)
+						if drawn {
+							prof.boxChars++
+							if underlined {
+								drawGogpuUnderline(dc, lx+float64(sx*r.cellW), ly, float64(3*r.cellW), float64(r.cellH), fg)
+							}
+							sx += 3
+							continue
+						}
+					}
+				}
+
+				char := CellBaseRune(currCell.Char)
 
 				if isBoxDrawRune(char) {
 					tBox := gogpuProfNow()
@@ -828,13 +908,10 @@ func (r *GogpuRenderer) drawFrame(dc *gg.Context, w, h int) gogpuFrameStats {
 		curX, curSpan := CellSpanAt(r.renderBuf, drawCols, r.cursorX, r.cursorY)
 		cx := float64(curX * r.cellW)
 		cy := float64(r.cursorY * r.cellH)
-		curW := float64(curSpan * r.cellW)
-		if r.cursorShape == CursorShapeBlock {
-			dc.DrawRectangle(cx, cy, curW, float64(r.cellH))
-		} else {
-			cy += float64(r.cellH) - 2
-			dc.DrawRectangle(cx, cy, curW, 2)
-		}
+		// This renderer has always drawn two-pixel lines whatever the
+		// display scale; that is kept.
+		x0, y0, x1, y1 := cursorCellRect(r.cursorShape, curSpan*r.cellW, r.cellH, false)
+		dc.DrawRectangle(cx+float64(x0), cy+float64(y0), float64(x1-x0), float64(y1-y0))
 		dc.Fill()
 	}
 	return prof

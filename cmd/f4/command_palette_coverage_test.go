@@ -65,7 +65,7 @@ var commandPaletteAuditClasses = map[string]bool{
 // one package to another; it never removes one. A smaller number here means an
 // audit entry was dropped together with its subject, which the set comparison
 // below cannot see because both sides shrink at once.
-const commandPaletteF4Surfaces = 59
+const commandPaletteF4Surfaces = 71
 
 // commandPaletteTargetPackage named the package each audited cmd/f4 file would
 // end up in once the split reached it, so an audit key survived the move that
@@ -83,7 +83,7 @@ var commandPaletteProcessKeyAudit = map[string]commandPaletteSurfaceAudit{
 	"panel.(*shellContextMenu).ProcessKey":     {class: paletteAuditModalLocal, rationale: "Windows Shell verbs come from the selected item native context menu; keyboard handling navigates and activates those dynamic verbs"},
 	"panel.(*windowsLocationsMenu).ProcessKey": {class: paletteAuditModalLocal, rationale: "Drive-menu Windows locations tree handles expansion, collapse, activation and dismissal inside the existing drive-selection action"},
 	"app.(*AIChatPanel).ProcessKey": {
-		class: paletteAuditPanelProvider, rationale: "focused AI panel commands are supplied by the panel-context palette provider; text and link navigation remain local",
+		class: paletteAuditPanelProvider, rationale: "focused AI panel commands are supplied by the panel-context palette provider; Ctrl+Z (undo the last applied ap patch) is also the registered AI.UndoPatch action; text and link navigation remain local",
 	},
 	"app.(*ArkanoidFrame).ProcessKey": {
 		class: paletteAuditFrameProvider, rationale: "Arkanoid commands are supplied by commandPaletteArkanoidEntries",
@@ -97,6 +97,18 @@ var commandPaletteProcessKeyAudit = map[string]commandPaletteSurfaceAudit{
 	"app.(*CommandPaletteDialog).ProcessKey": {
 		class: paletteAuditModalLocal, rationale: "the palette dialog owns query, navigation, execution, and cancellation while it is open",
 	},
+	"app.(*calendarTable).ProcessKey": {
+		class: paletteAuditModalLocal, rationale: "the calendar dialog's day grid captures PgUp/PgDn/Ctrl+PgUp/Ctrl+PgDn/Home locally to page the month/year and jump to today; Panel.Calendar is its registered entry point",
+	},
+	"app.(*aiReviewTable).ProcessKey": {
+		class: paletteAuditModalLocal, rationale: "the ap patch review dialog's table captures Space/Ins to switch the edit under the cursor on and off, F8 to reject it with a reason for the model's next message, Tab to move focus to the permanent diff pane below it, Enter to open the file at the edit and F3 to view the whole patch; the dialog is reached from the AI panel's dry run, and none of it means anything outside it",
+	},
+	"app.(*aiReviewDiffPane).ProcessKey": {
+		class: paletteAuditModalLocal, rationale: "the ap patch review dialog's permanent diff pane scrolls locally (arrows/paging/Home/End) and hands focus back to the table on Tab; it only ever shows the row the table's own cursor is on, nothing outside the dialog",
+	},
+	"app.(*markdownView).ProcessKey": {
+		class: paletteAuditModalLocal, rationale: "the formatted Markdown view is a read-only frame F3 opens on a Markdown file in place of the text viewer; F3/F10 close it and F4 goes back to the text view, local to it like the text viewer's own mode switch, and scrolling is HelpView's",
+	},
 	"editor.(*EditorView).ProcessKey": {
 		class: paletteAuditActionArea, rationale: "editor commands are registered actions; raw text and cursor editing remain local primitives",
 	},
@@ -108,6 +120,9 @@ var commandPaletteProcessKeyAudit = map[string]commandPaletteSurfaceAudit{
 	},
 	"panel.(*FileSystemPanel).ProcessKey": {
 		class: paletteAuditPanelProvider, rationale: "panel actions and audited transient panel keys are exposed by the action registry and panel-context provider",
+	},
+	"panel.(*progressTaskDialog).ProcessKey": {
+		class: paletteAuditModalLocal, rationale: "the remote-open progress dialog consumes Ctrl+C to cancel its own task; cancellation only has meaning while this modal dialog is open",
 	},
 	"app.(*GrabberFrame).ProcessKey": {
 		class: paletteAuditFrameProvider, rationale: "screen-grabber commands are supplied by commandPaletteGrabberEntries",
@@ -127,8 +142,17 @@ var commandPaletteProcessKeyAudit = map[string]commandPaletteSurfaceAudit{
 	"panel.(*PluginHotkeyAssignFrame).ProcessKey": {
 		class: paletteAuditModalLocal, rationale: "the plugin hotkey assignment dialog captures its next key locally and is not a global command surface",
 	},
+	"panel.(*toolsOptionsList).ProcessKey": {
+		class: paletteAuditModalLocal, rationale: "the list of the F11 tools window switches a tool on or off and selects its row locally; it is not a global command surface",
+	},
+	"panel.(*pluginHotkeyEdit).ProcessKey": {
+		class: paletteAuditModalLocal, rationale: "the one-character field of the plugin hotkey dialog takes a letter, a digit or Delete locally and is not a global command surface",
+	},
 	"media.(*ImageView).ProcessKey": {
 		class: paletteAuditFrameProvider, rationale: "image-viewer commands are supplied by commandPaletteImageEntries",
+	},
+	"media.(*FrameVideoView).ProcessKey": {
+		class: paletteAuditModalLocal, rationale: "the frame-drawn video player is a frame of its own; pause, seek and close are local playback primitives",
 	},
 	"media.(*VideoView).ProcessKey": {
 		class: paletteAuditModalLocal, rationale: "the video player is a modal frame over a window of its own; play, seek and volume are local primitives sent down mpv's socket",
@@ -160,11 +184,17 @@ var commandPaletteProcessKeyAudit = map[string]commandPaletteSurfaceAudit{
 	"panel.(*QuickViewPanel).ProcessKey": {
 		class: paletteAuditPanelProvider, rationale: "the focused Quick View toggle is supplied by the panel-context palette provider",
 	},
+	"panel.(*TreePanel).ProcessKey": {
+		class: paletteAuditPanelProvider, rationale: "the focused directory-tree toggle is supplied by the panel-context palette provider; Right/Left expand or collapse the row under the cursor and Enter navigates the source panel, all local primitives inside the panel",
+	},
 	"fileops.(*QueueFrame).ProcessKey": {
 		class: paletteAuditFrameProvider, rationale: "queue commands are supplied by commandPaletteQueueEntries",
 	},
 	"viewer.(*ViewerView).ProcessKey": {
 		class: paletteAuditActionArea, rationale: "viewer commands are registered actions; scrolling and selection remain local primitives",
+	},
+	"diffview.(*DiffView).ProcessKey": {
+		class: paletteAuditActionArea, rationale: "the diff view's entry point is the registered Panel.CompareFilesByContent action; scrolling and difference navigation inside it remain local primitives",
 	},
 	"dummy_rpc.(*DummyPlugin).ProcessKey": {
 		class: paletteAuditTransportHook, rationale: "this is the RPC plugin ProcessKey protocol hook, not an in-process frame",
@@ -196,12 +226,42 @@ var commandPaletteProcessKeyAudit = map[string]commandPaletteSurfaceAudit{
 	"plughost.(*rpcVUIPanel).ProcessKey": {
 		class: paletteAuditTransportHook, rationale: "RPC panel input is forwarded to the remote plugin, whose .vui document owns its semantic commands",
 	},
+	"proclist.(*procListPanel).ProcessKey": {
+		class: paletteAuditPanelProvider, rationale: "ProcList forwards raw input to its own vtui.Table; sorting, quick-search and cursor movement are local table primitives, and the panel itself is reached through the plugin-owned PluginPanelInstance surface (f4#312 part 1 of 4)",
+	},
+	"netbrowse.(*netPanel).ProcessKey": {
+		class: paletteAuditPanelProvider, rationale: "the Windows network browser forwards raw input to its own vtui.Table; Enter goes into a container or up on the .. row and F5 reloads, and quick-search and cursor movement are local table primitives; the panel is reached through the plugin-owned PluginPanelInstance surface (f4#1702 part 1)",
+	},
+	"svcmgr.(*servicesPanel).ProcessKey": {
+		class: paletteAuditPanelProvider, rationale: "the Windows services panel forwards raw input to its own vtui.Table; F5 reloads the list, and sorting, quick-search and cursor movement are local table primitives; the panel is reached through the plugin-owned PluginPanelInstance surface (f4#311 part 1)",
+	},
+	"git.(*statusPanel).ProcessKey": {
+		class: paletteAuditPanelProvider, rationale: "the git status panel forwards raw input to its own vtui.Table; Enter/Insert/Ctrl+K/Ctrl+E are the panel's own diff, stage-or-unstage, commit and log commands, and the panel itself is reached through the plugin-owned PluginPanelInstance surface Action.App.GitStatus opens, the same split proclist_actions.go uses for plugins/proclist (f4#659 part 1 of N)",
+	},
+	"git.(*LogView).ProcessKey": {
+		class: paletteAuditPluginLocal, rationale: "the git plugin owns this read-only commit-log screen, opened with Ctrl+E on the status panel that Action.App.GitStatus reaches; F5/Enter/close are local screen primitives, and navigation/quick-search fall through to its table (f4#659 part 5 of N)",
+	},
+	"git.(*BranchView).ProcessKey": {
+		class: paletteAuditPluginLocal, rationale: "the git plugin owns this local branch list, opened with Ctrl+S on the status panel that Action.App.GitStatus reaches; F5/Enter/Insert/Delete/F8/close are local screen primitives (switch, create, delete branch) and navigation/quick-search fall through to its table, the same split LogView already uses (f4#659 part 7 of N)",
+	},
+	"git.(*HunkView).ProcessKey": {
+		class: paletteAuditPluginLocal, rationale: "the git plugin owns this per-file hunk picker, opened with F4 (or Shift+F4 for staged hunks, F8 to discard worktree hunks) on the status panel that Action.App.GitStatus reaches; Insert/Space (pick a hunk or line), Enter/F2 (stage, unstage or -- after a confirmation -- discard the picked lines) and close are local screen primitives and navigation falls through to its table, the same split LogView/BranchView/LogDiffFilesView already use (f4#659 parts 12-15 of N)",
+	},
+	"git.(*LogDiffFilesView).ProcessKey": {
+		class: paletteAuditPluginLocal, rationale: "the git plugin owns this local changed-file picker, opened with Enter on a LogView commit that changed more than one path; Enter/close are local screen primitives (pick one path and diff it) and navigation/quick-search fall through to its table, the same split LogView/BranchView already use (f4#659 part 11 of N)",
+	},
 }
 
 var commandPaletteNewVMenuAudit = map[string]commandPaletteSurfaceAudit{
 	"panel.newMacOSLocationsMenu#1":   {class: paletteAuditModalLocal, rationale: "Platform location choices are supplied dynamically by the drive menu"},
 	"panel.newWindowsLocationsMenu#1": {class: paletteAuditModalLocal, rationale: "Windows Shell folder tree is supplied dynamically by the drive menu"},
 	"panel.showShellContextMenu#1":    {class: paletteAuditModalLocal, rationale: "Native verbs belong to the selected Shell item and are supplied dynamically by Windows"},
+	"panel.openPanelModesMenu#1": {
+		class: paletteAuditDynamicAction, rationale: "the registered Settings.PanelModes action opens the list of panel modes; each mode is also its own Panel.View action",
+	},
+	"panel.showModeColumnsEditor#1": {
+		class: paletteAuditModalLocal, rationale: "the type picker of the column list inside the panel mode dialog (Settings.PanelModes, f4#410); it only chooses which column the local list adds",
+	},
 	"app.actionFoldersHistory#1": {
 		class: paletteAuditDynamicAction, rationale: "the registered folder-history action opens a runtime history list",
 	},
@@ -241,7 +301,7 @@ var commandPaletteNewVMenuAudit = map[string]commandPaletteSurfaceAudit{
 	"panel.showMountList#1": {
 		class: paletteAuditDynamicAction, rationale: "the registered mount-list action opens the current mount inventory",
 	},
-	"panel.(*PanelsFrame).menuItemsWithKeyLabels#1": {
+	"panel.(*PanelsFrame).menuCore#1": {
 		class: paletteAuditPluginDialogBridge, rationale: "the generic callback-based plugin menu bridge adds runtime plugin rows and optional key labels that are not globally enumerable commands",
 	},
 	"panel.(*PanelsFrame).showDriveMenuAt#1": {

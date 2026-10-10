@@ -1,4 +1,4 @@
-//go:build (linux || windows || darwin) && !android && (amd64 || arm64)
+//go:build (linux || windows || darwin) && !android && (amd64 || arm64) && !vtui_noebiten
 
 package vtui
 
@@ -744,4 +744,32 @@ func TestEbitenHost_ResolveModifiers_Locks(t *testing.T) {
 	h := &EbitenHost{}
 	mods := h.resolveModifiers(false)
 	_ = mods
+}
+
+// f4 #283: the first frame drawn into an offscreen recreated for a smaller
+// window can still be the larger one, and the smaller frames after it cover
+// only the cells. Every change of offscreen or frame size has to clear the
+// offscreen, and a clear is never left without a redraw.
+func TestPlanEbitenDraw(t *testing.T) {
+	cases := []struct {
+		name               string
+		newTarget          bool
+		frameW, frameH     int
+		drawnW, drawnH     int
+		changed            bool
+		wantDraw, wantWipe bool
+	}{
+		{"idle", false, 1000, 570, 1000, 570, false, false, false},
+		{"changed cells", false, 1000, 570, 1000, 570, true, true, false},
+		{"first frame", true, 1000, 570, 0, 0, true, true, true},
+		{"larger frame into the new smaller offscreen", true, 1920, 1045, 1920, 1045, true, true, true},
+		{"smaller frame after it", false, 1000, 570, 1920, 1045, true, true, true},
+		{"new offscreen, same unchanged frame", true, 1000, 570, 1000, 570, false, true, true},
+	}
+	for _, c := range cases {
+		draw, wipe := planEbitenDraw(c.newTarget, c.frameW, c.frameH, c.drawnW, c.drawnH, c.changed)
+		if draw != c.wantDraw || wipe != c.wantWipe {
+			t.Errorf("%s: draw=%v wipe=%v, want draw=%v wipe=%v", c.name, draw, wipe, c.wantDraw, c.wantWipe)
+		}
+	}
 }

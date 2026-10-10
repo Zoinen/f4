@@ -61,11 +61,17 @@ func TestSplitFindMasks(t *testing.T) {
 	}
 }
 func TestFindFileMaskMatches(t *testing.T) {
-	if !findFileMaskMatches(".git", []string{"*.git", ".git"}) {
+	if !findFileMaskMatches(".git", []string{"*.git", ".git"}, false) {
 		t.Fatal("an excluded directory mask did not match")
 	}
-	if findFileMaskMatches("keep.txt", []string{".git", "skip.txt"}) {
+	if findFileMaskMatches("keep.txt", []string{".git", "skip.txt"}, false) {
 		t.Fatal("an unrelated name matched an excluded mask")
+	}
+	if !findFileMaskMatches("REPORT.TXT", []string{"*.txt"}, true) {
+		t.Fatal("case-insensitive file mask did not match")
+	}
+	if findFileMaskMatches("REPORT.TXT", []string{"*.txt"}, false) {
+		t.Fatal("case-sensitive file mask matched unexpectedly")
 	}
 }
 

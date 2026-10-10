@@ -1,6 +1,7 @@
 package app
 
 import (
+	"github.com/unxed/f4/internal/config"
 	keymap "github.com/unxed/f4/internal/keymap"
 	macro "github.com/unxed/f4/internal/macro"
 	"github.com/unxed/f4/internal/panel"
@@ -9,11 +10,26 @@ import (
 	testing "testing"
 )
 
+// The independent Wide toggle belongs to the native semantic renderer; the
+// terminal's ordinary view modes deliberately return to a split layout.
+type shortcutNativeRenderer struct{}
+
+func (shortcutNativeRenderer) NativeSemanticSurfaceActive() bool                       { return true }
+func (shortcutNativeRenderer) Render([]vtui.CharInfo, []vtui.CharInfo, int, int, bool) {}
+func (shortcutNativeRenderer) SetCursor(int, int, bool, vtui.CursorShape)              {}
+func (shortcutNativeRenderer) SetPalette(*[256]uint32)                                 {}
+func (shortcutNativeRenderer) SetWindowTitle(string)                                   {}
+func (shortcutNativeRenderer) Flush()                                                  {}
+
 func TestPanelsFrame_CtrlViewModes(t *testing.T) {
 	vtui.SetDefaultPalette()
 	scr := vtui.NewSilentScreenBuf()
 	scr.AllocBuf(80, 25)
 	vtui.FrameManager.Init(scr)
+	presentation := config.App.GuiPresentation
+	config.App.GuiPresentation = config.GuiPresentationGUI
+	defer func() { config.App.GuiPresentation = presentation }()
+	scr.Renderer = shortcutNativeRenderer{}
 
 	pf := panel.NewPanelsFrame()
 	defer pf.Close()

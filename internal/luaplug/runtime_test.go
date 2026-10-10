@@ -264,6 +264,50 @@ func TestRuntimeTimeout(t *testing.T) {
 	}
 }
 
+// A runtime that hit its deadline was stopped at an arbitrary instruction, so
+// it refuses all further work instead of running on a state nobody can vouch
+// for; a new runtime is unaffected.
+func TestRuntimeIsDiscardedAfterItsDeadline(t *testing.T) {
+	r, err := New(Options{Name: "test", CallTimeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+
+	if err := r.LoadString("spin", "while true do end"); !errors.Is(err, ErrInterrupted) {
+		t.Fatalf("the endless loop returned %v, want ErrInterrupted", err)
+	}
+	if !r.Interrupted() {
+		t.Fatal("Interrupted() is false after a deadline")
+	}
+	if err := r.LoadString("later", "x = 1"); !errors.Is(err, ErrInterrupted) {
+		t.Fatalf("a later call returned %v, want ErrInterrupted", err)
+	}
+
+	fresh := newTestRuntime(t, nil)
+	if err := fresh.LoadString("ok", "x = 1"); err != nil {
+		t.Fatalf("a new runtime must work: %v", err)
+	}
+	if fresh.Interrupted() {
+		t.Fatal("a healthy runtime reports Interrupted()")
+	}
+}
+
+// A plugin that catches the interruption with pcall does not get its state
+// back: the runtime is marked all the same.
+func TestRuntimeDeadlineCaughtByThePluginStillDiscards(t *testing.T) {
+	r, err := New(Options{Name: "test", CallTimeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+
+	err = r.LoadString("catch", "pcall(function() while true do end end)")
+	if !errors.Is(err, ErrInterrupted) || !r.Interrupted() {
+		t.Fatalf("caught deadline: err=%v interrupted=%v, want ErrInterrupted", err, r.Interrupted())
+	}
+}
+
 func TestLoadStringSkipsShebang(t *testing.T) {
 	r := newTestRuntime(t, nil)
 	err := r.LoadString("plugin", "#!/usr/bin/env lua\nrequire('f4rpc')")

@@ -78,3 +78,27 @@ is an alias, not a separate directory entry.
 Panel actions pass their originating frame to queued operations. Interactive
 conflict dialogs belong to that workspace, not the queue worker's frame:
 otherwise a hidden confirmation can retain resource reservations indefinitely.
+
+## Elevated dispatcher on Windows (f4#1768, in progress)
+
+On Unix a root dispatcher, started through `sudo`, answers the file operations a
+user was refused; the socket's file permissions are what keep other users off
+it. Windows has no such boundary between two programs of one user: UAC asks for
+consent once, for f4, and a program that only finds the socket must not inherit
+it. The channel for the Windows dispatcher therefore starts with `CmdHello`,
+which carries a one-time random token (`NewSudoToken`) known only to the f4 that
+launched the dispatcher (`DialElevated`, `ServeElevated` in `vfs/sudo_elevated.go`).
+Until it is presented nothing is answered, a wrong token drops the connection
+without ending the dispatcher, and the dispatcher serves one authenticated client
+and exits when it leaves. Windows has no descriptor passing, so the framing
+(`vfs/sudo_frame.go`) carries messages only, bounded to 64 MiB each; file contents
+will cross as requests, not as handles.
+
+What is done: the authenticated channel, and the dispatcher itself:
+`f4 --elevated-dispatcher <socket> <token>` (accepted only as the whole tail of
+the command line) listens on the socket, serves the one client with the token and
+exits when it leaves; `LaunchElevatedDispatcher` starts it through
+`ShellExecute "runas"`, which is where UAC asks. Still to come, one part at a time:
+the operations it serves, and the prompt in panels and in the editor that offers to
+retry a refused operation as administrator. Until the last part lands the Windows build still
+reports elevation as unavailable.

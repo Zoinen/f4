@@ -4,6 +4,7 @@ package vtui
 
 import (
 	"fmt"
+	"image"
 	"io"
 	"runtime"
 	"sync"
@@ -12,6 +13,7 @@ import (
 	"unsafe"
 
 	"github.com/unxed/vtinput"
+	"golang.org/x/image/font"
 	"golang.org/x/sys/windows"
 )
 
@@ -24,6 +26,7 @@ var (
 	procDefWindowProcW     = user32.NewProc("DefWindowProcW")
 	procDestroyWindow      = user32.NewProc("DestroyWindow")
 	procShowWindow         = user32.NewProc("ShowWindow")
+	procIsZoomed           = user32.NewProc("IsZoomed")
 	procUpdateWindow       = user32.NewProc("UpdateWindow")
 	procGetMessageW        = user32.NewProc("GetMessageW")
 	procTranslateMessage   = user32.NewProc("TranslateMessage")
@@ -132,19 +135,26 @@ type win32Point struct {
 }
 
 type Win32GuiHost struct {
-	mu                                   sync.Mutex
-	mouseCoalesceMu                      sync.Mutex
-	lastMouseSent                        time.Time
-	pendingMouse                         *vtinput.InputEvent
-	hwnd                                 syscall.Handle
-	hCursor                              syscall.Handle
-	renderer                             *Win32GuiRenderer
-	reader                               *vtinput.Reader
-	scr                                  *ScreenBuf
-	cols, rows                           int
-	cellW, cellH                         int
-	scale                                int
-	winW, winH                           int
+	mu              sync.Mutex
+	mouseCoalesceMu sync.Mutex
+	lastMouseSent   time.Time
+	pendingMouse    *vtinput.InputEvent
+	hwnd            syscall.Handle
+	hCursor         syscall.Handle
+	renderer        *Win32GuiRenderer
+	reader          *vtinput.Reader
+	scr             *ScreenBuf
+	cols, rows      int
+	cellW, cellH    int
+	scale           int
+	winW, winH      int
+	fontName        string
+	fontSize        float64
+	// fontDPI is the font DPI computed once at window creation from the
+	// device's logical DPI (see RunWin32GuiHost); SetFont reuses it so a
+	// font hot-swap keeps the same scaling the window opened with.
+	fontDPI float64
+
 	mouseBtn                             uint32
 	closeChan                            chan struct{}
 	closed                               bool
@@ -153,8 +163,10 @@ type Win32GuiHost struct {
 
 	// dropTarget is the IDropTarget registered for this window, held as the
 	// bare interface pointer so this struct stays free of a type that only
-	// exists on the architectures which implement it.
-	dropTarget uintptr
+	// exists on the architectures which implement it. It is an unsafe.Pointer
+	// rather than a uintptr because it is the address of a Go object, which
+	// must never have to be rebuilt from an integer.
+	dropTarget unsafe.Pointer
 
 	// paintPending is set by Invalidate() and cleared only by a WM_PAINT
 	// that actually put pixels on the screen. BeginPaint() validates the
@@ -251,6 +263,107 @@ func (h *Win32GuiHost) ResizeGrid(cols, rows int) {
 	// resize just like DoDragDrop is posted, so SetWindowPos and the resulting
 	// WM_SIZE are handled by the window's owning thread.
 	procPostMessageW.Call(uintptr(hwnd), wmPerformResize, 0, 0)
+}
+
+// setFace replaces the rasterizer and cell size after a font hot-swap (vtui
+// #136). Unlike the Wayland/X11 renderers, Win32GuiRenderer keeps its own
+// copy of cellW/cellH (set once at construction from the host's), so this
+// also has to update those, or Render would keep composing frames at the
+// old cell size. Takes r.mu itself: the caller (Win32GuiHost.applyFontLocked)
+// holds host.mu, a different lock, and Render/Flush/blitTo take r.mu on
+// their own.
+//
+// Lives here rather than in win32_gui_renderer.go (which has no build tag
+// and is compiled on every platform) because this is its only caller, and
+// that caller is Windows-only: on a lint run done on a non-Windows GOOS,
+// this file -- and therefore the call -- drops out of the build, which
+// made the unused checker flag setFace as dead code when it lived in the
+// build-tag-free file.
+func (r *Win32GuiRenderer) setFace(face font.Face, cellW, cellH int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.face = face
+	r.cellW, r.cellH = cellW, cellH
+	r.glyphCache = make(map[glyphKey]*image.RGBA)
+	r.gfxKnown = false
+}
+
+// applyFontLocked reloads the font face at the host's fontDPI (the value
+// computed once from the device's logical DPI when the window was created;
+// see RunWin32GuiHost) and pushes the new cell size to the renderer and the
+// screen's graphics layer. The caller holds h.mu.
+func (h *Win32GuiHost) applyFontLocked(fontName string, fontSize float64) {
+	dpi := h.fontDPI
+	if dpi <= 0 {
+		dpi = 72.0
+	}
+	face, cellW, cellH := loadBestFont(fontName, fontSize, dpi)
+	h.fontName = fontName
+	h.fontSize = fontSize
+	h.cellW = cellW
+	h.cellH = cellH
+	if h.renderer != nil {
+		h.renderer.setFace(face, cellW, cellH)
+	}
+	if h.scr != nil {
+		h.scr.Graphics().SetCellSize(cellW, cellH)
+	}
+}
+
+// SetFont reloads the font used to draw the grid and asks Windows to resize
+// the window to the new cell size, keeping the grid geometry (cols x rows)
+// unchanged -- the same policy WaylandHost.SetFont and X11Host.SetFont use
+// for their own backends (vtui #136). It never fails: loadBestFont falls
+// back to a built-in bitmap font when fontName cannot be found.
+//
+// Resizing goes through ResizeGrid/wmPerformResize, exactly like an explicit
+// ResizeWindow call: the Win32 window and its message pump live on the
+// locked GUI thread, while FrameManager calls SetFont from its own
+// goroutine, so SetWindowPos has to be posted to, and carried out by, the
+// window's own thread. A same-size font swap does not by itself generate a
+// WM_SIZE (and therefore no repaint), so HardRefresh is called
+// unconditionally to cover that case, the same way the other two hot-swap
+// backends do.
+func (h *Win32GuiHost) SetFont(fontName string, fontSize float64) {
+	if fontSize <= 0 {
+		fontSize = 18.0
+	}
+	h.mu.Lock()
+	h.applyFontLocked(fontName, fontSize)
+	cols, rows := h.cols, h.rows
+	h.mu.Unlock()
+
+	h.ResizeGrid(cols, rows)
+	if FrameManager != nil {
+		FrameManager.HardRefresh()
+	}
+}
+
+// ToggleMaximized maximizes the window, or restores it when it is maximized,
+// with the WM_SYSCOMMAND the title bar buttons send. The command is posted,
+// like ResizeGrid's, so the window's own thread carries it out.
+func (h *Win32GuiHost) ToggleMaximized() bool {
+	if h == nil {
+		return false
+	}
+	h.mu.Lock()
+	hwnd := h.hwnd
+	h.mu.Unlock()
+	if hwnd == 0 {
+		return false
+	}
+	zoomed, _, _ := procIsZoomed.Call(uintptr(hwnd))
+	cmd := uintptr(scMaximize)
+	if zoomed != 0 {
+		cmd = scRestore
+	}
+	DebugLog("WIN32GUI: toggle maximized: IsZoomed=%v", zoomed != 0)
+	ok, _, err := procPostMessageW.Call(uintptr(hwnd), wmSysCommand, cmd, 0)
+	if ok == 0 {
+		DebugLog("WIN32GUI: toggle maximized: PostMessage failed: %v", err)
+		return false
+	}
+	return true
 }
 
 // WindowPosition returns the top-left screen position of the native window.
@@ -506,15 +619,7 @@ func (h *Win32GuiHost) handleMessage(hwnd syscall.Handle, msg uint32, wParam, lP
 		// ResizeGrid takes logical cells, but SetWindowPos takes the outer
 		// window size. Use the exact same style/ex-style pair as creation so
 		// the requested client area remains cols*cellW by rows*cellH.
-		var rc win32Rect
-		rc.right = int32(cols * cellW)
-		rc.bottom = int32(rows * cellH)
-		procAdjustWindowRectEx.Call(
-			uintptr(unsafe.Pointer(&rc)),
-			uintptr(wsOverlappedWindow),
-			0,
-			uintptr(wsExAcceptFiles|wsExAppWindow),
-		)
+		rc := gridWindowRect(0, 0, cols, rows, cellW, cellH, win32WindowDPI(hwnd))
 		outerW := rc.right - rc.left
 		outerH := rc.bottom - rc.top
 		if outerW <= 0 || outerH <= 0 {
@@ -552,7 +657,20 @@ func (h *Win32GuiHost) handleMessage(hwnd syscall.Handle, msg uint32, wParam, lP
 		painted := false
 		if hdc != 0 {
 			if h.renderer != nil {
-				painted = h.renderer.blitTo(hdc)
+				var frameW, frameH int
+				frameW, frameH, painted = h.renderer.blitTo(hdc)
+				if painted {
+					// The frame covers whole cells only; clear what lies
+					// outside it, or pixels from an earlier, larger frame
+					// stay in the partial right column and bottom row
+					// (f4 #283).
+					var client win32Rect
+					procGetClientRect.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&client)))
+					for _, m := range frameMarginRects(int(client.right), int(client.bottom), frameW, frameH) {
+						rc := win32Rect{left: int32(m.x0), top: int32(m.y0), right: int32(m.x1), bottom: int32(m.y1)}
+						fillRectBlack(hdc, &rc)
+					}
+				}
 			}
 			if !painted {
 				// BeginPaint has already validated the update region, so
@@ -572,6 +690,13 @@ func (h *Win32GuiHost) handleMessage(hwnd syscall.Handle, msg uint32, wParam, lP
 			h.everPainted = true
 			h.mu.Unlock()
 		}
+		return 0
+
+	case wmDpiChanged:
+		// LOWORD(wParam) is the new DPI (X and Y are always equal);
+		// lParam points at the rectangle Windows suggests for it.
+		dpi := float64(wParam & 0xFFFF)
+		h.handleDPIChange(hwnd, dpi, (*win32Rect)(winPtr(lParam)))
 		return 0
 
 	case wmSize:
@@ -651,8 +776,9 @@ func (h *Win32GuiHost) handleMessage(hwnd syscall.Handle, msg uint32, wParam, lP
 		procSetCapture.Call(uintptr(hwnd))
 		x := int16(int32(int16(lParam & 0xFFFF)))
 		y := int16(int32(int16(lParam >> 16)))
-		cellX := int16(int(x) / h.cellW)
-		cellY := int16(int(y) / h.cellH)
+		cellW, cellH := h.cellSize()
+		cellX := pixelToCell(int(x), cellW)
+		cellY := pixelToCell(int(y), cellH)
 		var btn uint32
 		switch msg {
 		case wmLButtonDown:
@@ -679,8 +805,9 @@ func (h *Win32GuiHost) handleMessage(hwnd syscall.Handle, msg uint32, wParam, lP
 	case wmLButtonUp, wmRButtonUp, wmMButtonUp:
 		x := int16(int32(int16(lParam & 0xFFFF)))
 		y := int16(int32(int16((lParam >> 16) & 0xFFFF)))
-		cellX := int16(int(x) / h.cellW)
-		cellY := int16(int(y) / h.cellH)
+		cellW, cellH := h.cellSize()
+		cellX := pixelToCell(int(x), cellW)
+		cellY := pixelToCell(int(y), cellH)
 		var btn uint32
 		switch msg {
 		case wmLButtonUp:
@@ -710,8 +837,9 @@ func (h *Win32GuiHost) handleMessage(hwnd syscall.Handle, msg uint32, wParam, lP
 	case wmLButtonDblClk, wmRButtonDblClk, wmMButtonDblClk:
 		x := int16(int32(int16(lParam & 0xFFFF)))
 		y := int16(int32(int16((lParam >> 16) & 0xFFFF)))
-		cellX := int16(int(x) / h.cellW)
-		cellY := int16(int(y) / h.cellH)
+		cellW, cellH := h.cellSize()
+		cellX := pixelToCell(int(x), cellW)
+		cellY := pixelToCell(int(y), cellH)
 		var btn uint32
 		switch msg {
 		case wmLButtonDblClk:
@@ -739,8 +867,9 @@ func (h *Win32GuiHost) handleMessage(hwnd syscall.Handle, msg uint32, wParam, lP
 	case wmMouseMove:
 		x := int16(int32(int16(lParam & 0xFFFF)))
 		y := int16(int32(int16((lParam >> 16) & 0xFFFF)))
-		cellX := int16(int(x) / h.cellW)
-		cellY := int16(int(y) / h.cellH)
+		cellW, cellH := h.cellSize()
+		cellX := pixelToCell(int(x), cellW)
+		cellY := pixelToCell(int(y), cellH)
 		h.mu.Lock()
 		btn := h.mouseBtn
 		moved := !h.mouseCellKnown || cellX != h.lastMouseCellX || cellY != h.lastMouseCellY
@@ -783,8 +912,9 @@ func (h *Win32GuiHost) handleMessage(hwnd syscall.Handle, msg uint32, wParam, lP
 		pt.x = int32(int16(lParam & 0xFFFF))
 		pt.y = int32(int16((lParam >> 16) & 0xFFFF))
 		procScreenToClient.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&pt)))
-		cellX := int16(int(pt.x) / h.cellW)
-		cellY := int16(int(pt.y) / h.cellH)
+		cellW, cellH := h.cellSize()
+		cellX := pixelToCell(int(pt.x), cellW)
+		cellY := pixelToCell(int(pt.y), cellH)
 		h.sendEvent(&vtinput.InputEvent{
 			Type:            vtinput.MouseEventType,
 			MouseX:          cellX,
@@ -798,8 +928,9 @@ func (h *Win32GuiHost) handleMessage(hwnd syscall.Handle, msg uint32, wParam, lP
 		hDrop := syscall.Handle(wParam)
 		var pt win32Point
 		procDragQueryPoint.Call(uintptr(hDrop), uintptr(unsafe.Pointer(&pt)))
-		cellX := int(pt.x) / h.cellW
-		cellY := int(pt.y) / h.cellH
+		cellW, cellH := h.cellSize()
+		cellX := int(pt.x) / cellW
+		cellY := int(pt.y) / cellH
 
 		countRet, _, _ := procDragQueryFileW.Call(uintptr(hDrop), 0xFFFFFFFF, 0, 0)
 		fileCount := int(countRet)
@@ -913,22 +1044,23 @@ func fillRectBlack(hdc uintptr, rc *win32Rect) {
 // a plain GDI memory DC + BitBlt is the standard, reliable pattern for
 // presenting a software-rendered bitmap into a window. See f4 issue #514.
 //
-// It reports whether pixels were handed to the DC. A false return means the
-// caller must keep the paint pending rather than treat the window as drawn.
-func (r *Win32GuiRenderer) blitTo(hdc uintptr) bool {
+// It returns the size of the frame it blitted and whether pixels were handed
+// to the DC. A false return means the caller must keep the paint pending
+// rather than treat the window as drawn.
+func (r *Win32GuiRenderer) blitTo(hdc uintptr) (w, h int, ok bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	w, h, ok := r.syncBGRALocked()
+	w, h, ok = r.syncBGRALocked()
 	if !ok || w <= 0 || h <= 0 {
-		return false
+		return 0, 0, false
 	}
 
 	if r.memDC == 0 || r.memW != w || r.memH != h {
 		r.releaseMemDCLocked()
 		memDC, _, _ := procCreateCompatDC.Call(hdc)
 		if memDC == 0 {
-			return false
+			return 0, 0, false
 		}
 		// A device-INDEPENDENT bitmap (DIB section): unlike a DDB from
 		// CreateCompatibleBitmap, its pixel buffer is always writable
@@ -946,7 +1078,7 @@ func (r *Win32GuiRenderer) blitTo(hdc uintptr) bool {
 		)
 		if bmp == 0 {
 			procDeleteDC.Call(memDC)
-			return false
+			return 0, 0, false
 		}
 		procSelectObject.Call(memDC, bmp)
 		r.memDC, r.memBitmap = memDC, bmp
@@ -958,15 +1090,17 @@ func (r *Win32GuiRenderer) blitTo(hdc uintptr) bool {
 	// exactly the layout syncBGRALocked produced -- so copy pixels straight
 	// into the DIB memory and skip SetDIBits entirely.
 	if r.memBits == 0 || len(r.bgraBuf) < w*h*4 {
-		return false
+		return 0, 0, false
 	}
-	dst := unsafe.Slice((*byte)(unsafe.Pointer(r.memBits)), w*h*4)
+	// memBits is the DIB section's pixel buffer, which GDI allocated and
+	// owns until DeleteObject.
+	dst := unsafe.Slice((*byte)(winPtr(r.memBits)), w*h*4)
 	copy(dst, r.bgraBuf[:w*h*4])
 
 	const srcCopyRop = srcCopy
 	ret, _, _ := procBitBlt.Call(hdc, 0, 0, uintptr(w), uintptr(h), r.memDC, 0, 0, srcCopyRop)
 	procGdiFlush.Call()
-	return ret != 0
+	return w, h, ret != 0
 }
 
 // releaseMemDCLocked frees the offscreen memory DC and bitmap. Caller must
@@ -1022,20 +1156,15 @@ func RunWin32GuiHost(cols, rows int, fontName string, fontSize float64, setupApp
 		fontSize = 18.0
 	}
 
-	win32DPI := getWin32DPI()
-	scaleFactor := win32DPI / 96.0
-	if scaleFactor < 1.0 {
-		scaleFactor = 1.0
-	}
-	fontDPI := 72.0 * scaleFactor
+	// The primary monitor's current DPI, not the system DPI, which Windows
+	// freezes at sign-in (see win32_gui_dpi_windows.go). syncWindowDPI
+	// corrects it once the window exists, should it open elsewhere.
+	win32DPI := primaryMonitorDPI()
+	fontDPI, scale := win32DPIScale(win32DPI)
+	scaleFactor := fontDPI / 72.0
 	face, cellW, cellH := loadBestFont(fontName, fontSize, fontDPI)
 	if cellW <= 0 || cellH <= 0 {
 		cellW, cellH = int(8*scaleFactor+0.5), int(16*scaleFactor+0.5)
-	}
-
-	scale := int(scaleFactor + 0.5)
-	if scale < 1 {
-		scale = 1
 	}
 
 	host := &Win32GuiHost{
@@ -1046,6 +1175,9 @@ func RunWin32GuiHost(cols, rows int, fontName string, fontSize float64, setupApp
 		scale:     scale,
 		winW:      cols * cellW,
 		winH:      rows * cellH,
+		fontName:  fontName,
+		fontSize:  fontSize,
+		fontDPI:   fontDPI,
 		closeChan: make(chan struct{}),
 	}
 
@@ -1079,10 +1211,7 @@ func RunWin32GuiHost(cols, rows int, fontName string, fontSize float64, setupApp
 	win32GuiClassMu.Unlock()
 
 	style := uint32(wsOverlappedWindow)
-	var rc struct{ left, top, right, bottom int32 }
-	rc.right = int32(cols * cellW)
-	rc.bottom = int32(rows * cellH)
-	procAdjustWindowRectEx.Call(uintptr(unsafe.Pointer(&rc)), uintptr(style), 0, uintptr(wsExAcceptFiles|wsExAppWindow))
+	rc := gridWindowRect(0, 0, cols, rows, cellW, cellH, win32DPI)
 	adjW := rc.right - rc.left
 	adjH := rc.bottom - rc.top
 
@@ -1145,6 +1274,10 @@ func RunWin32GuiHost(cols, rows int, fontName string, fontSize float64, setupApp
 	UseWindowClipboard()
 	SetDragBackend(host)
 	setupApp()
+	// setupApp may have moved the window to its saved position; either way,
+	// measure it against the monitor it is on before it is first painted.
+	host.syncWindowDPI(host.hwnd)
+	cellW, cellH = host.cellSize()
 	SetActiveBackend("win32", fmt.Sprintf("cell %dx%d, font %q", cellW, cellH, fontName), "GDI SetDIBitsToDevice")
 	setWheelNotchLines(getSystemScrollLines())
 

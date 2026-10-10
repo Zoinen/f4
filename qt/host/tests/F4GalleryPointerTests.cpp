@@ -3751,14 +3751,17 @@ void F4GalleryPointerTests::nativeDropUsesIdentityAndSnappedOutline()
     QVERIFY(layout);
     QTRY_COMPARE(layout->property("count").toInt(), 4);
     host->setProperty("contentHorizontalInset", 8);
-    QTRY_VERIFY(qAbs(layout->property("paddingLeft").toReal() - 14.0) < 0.01);
+    const auto pixelExtent = [&view](qreal value) {
+        return qRound(value * view.devicePixelRatio()) / view.devicePixelRatio();
+    };
+    QTRY_VERIFY(qAbs(layout->property("paddingLeft").toReal() - pixelExtent(14.0)) < 0.01);
     QSignalSpy actions(&bridge, &F4GalleryBridge::uiActionRequested);
     QMimeData mime;
     mime.setUrls({QUrl::fromLocalFile(QDir::temp().filePath("drag space # тест.txt"))});
     for (const auto &mode : {"details", "columns", "grid", "icons", "masonry"}) {
         panel->setProperty("presentationMode", mode);
         QTest::qWait(250);
-        const qreal expectedInset = QString::fromLatin1(mode) == "details" ? 8.0 : 14.0;
+        const qreal expectedInset = pixelExtent(QString::fromLatin1(mode) == "details" ? 8.0 : 14.0);
         QCOMPARE(layout->property("paddingLeft").toReal(), expectedInset);
         QCOMPARE(layout->property("paddingRight").toReal(), expectedInset);
         for (int targetRow : {0, 1}) {

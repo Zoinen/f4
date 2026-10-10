@@ -153,7 +153,7 @@ Rectangle {
         readonly property bool centeredLabel: !overlayController.dropdownMode && modelData.header !== true
         anchors.top: centeredLabel ? undefined : parent.top
         anchors.bottom: centeredLabel ? undefined : parent.bottom
-        height: implicitHeight
+        height: hostWindow.snapPx(implicitHeight)
         y: hostWindow.snapPx((parent.height - menuLabelMetrics.tightBoundingRect.height) / 2
                             - menuLabelMetrics.tightBoundingRect.y - baselineOffset)
         anchors.topMargin: menuItem.dropdownTextLayout

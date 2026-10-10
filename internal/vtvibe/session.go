@@ -199,11 +199,7 @@ func (s *Session) Draft() string {
 	s.treeMu.RLock()
 	defer s.treeMu.RUnlock()
 	data, _ := s.tree.readFile(draftFile)
-	text := strings.TrimSpace(string(data))
-	if text == strings.TrimSpace(draftTemplate) {
-		return ""
-	}
-	return text
+	return draftText(stripDraftMarkers(strings.ReplaceAll(string(data), "\r\n", "\n")))
 }
 
 // ClearDraft empties the draft after it has been sent.

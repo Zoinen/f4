@@ -241,6 +241,87 @@ func TestPendingDocumentOpenCoalescesCancelsAndRejectsObsoleteCompletion(t *test
 	}
 }
 
+func TestPendingLocalOpenShowsCancelableSudoProgress(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	defer vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	pf := &panel.PanelsFrame{}
+	filesystem := vfs.NewOSVFS(t.TempDir())
+	op := beginPendingDocumentOpen(pf, "viewer", filesystem, "file.txt")
+	completed := false // accessed only by UI callbacks
+	defer func() {
+		CancelPendingDocumentOpen(pf)
+		timer := time.NewTimer(2 * time.Second)
+		defer timer.Stop()
+		for !completed {
+			select {
+			case task := <-vtui.FrameManager.TaskChan:
+				task()
+			case <-timer.C:
+				t.Error("local opening worker did not complete during cleanup")
+				return
+			}
+		}
+	}()
+	runPendingDocumentOpen(
+		pf,
+		filesystem,
+		op,
+		"Preparing to open file...",
+		func(ctx context.Context) error {
+			update, ok := ctx.Value(vfs.ProgressKey).(vfs.ProgressCallback)
+			if !ok {
+				return errors.New("local open has no progress callback")
+			}
+			update("Requesting sudo access...", -1)
+			<-ctx.Done()
+			return ctx.Err()
+		},
+		func(err error) {
+			completed = true
+			if finishPendingDocumentOpen(pf, op) {
+				t.Error("cancelled local open was accepted")
+			}
+			if !errors.Is(err, context.Canceled) {
+				t.Errorf("local opening error = %v, want cancellation", err)
+			}
+		},
+	)
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	var progress vtui.Frame
+	for progress == nil && !completed {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+			for _, screen := range vtui.FrameManager.Screens {
+				for _, frame := range screen.Frames {
+					if !frame.IsDone() && strings.Contains(frame.GetTitle(), "Opening") {
+						progress = frame
+					}
+				}
+			}
+		case <-timer.C:
+			CancelPendingDocumentOpen(pf)
+			t.Fatal("slow local open did not show delayed progress")
+		}
+	}
+	if progress == nil {
+		t.Fatal("local worker completed without a progress dialog")
+	}
+	CancelPendingDocumentOpen(pf)
+	for !completed {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		case <-timer.C:
+			t.Fatal("cancelled local worker did not complete")
+		}
+	}
+	if !progress.IsDone() {
+		t.Fatal("cancelled local progress dialog stayed visible")
+	}
+}
+
 // This provider deliberately ignores cancellation while opening and reports
 // progress after cancellation too. Its caller must own presentation lifetime;
 // a remote provider cannot be relied upon to promptly return or stop callbacks.
@@ -400,6 +481,7 @@ func TestOpeningProgressDialogFollowsRuntimeTheme(t *testing.T) {
 	// Exercise the unchanged generic/immediate caller contract as well as the
 	// actual opening dialog construction; no document lifetime is supplied.
 	pf.RunProgressTaskAfter(0, " Opening... ", "Opening source", false, func(ctx context.Context, update func(string, int)) error {
+		update("Opening source", 50)
 		<-release
 		return nil
 	}, func(error) { completed = true })
@@ -420,6 +502,7 @@ func TestOpeningProgressDialogFollowsRuntimeTheme(t *testing.T) {
 	var dialog interface {
 		vtui.Frame
 		GetChildren() []vtui.UIElement
+		GetProgress() int
 	}
 	timer := time.NewTimer(time.Second)
 	defer timer.Stop()
@@ -433,6 +516,7 @@ func TestOpeningProgressDialogFollowsRuntimeTheme(t *testing.T) {
 						dialog, _ = frame.(interface {
 							vtui.Frame
 							GetChildren() []vtui.UIElement
+							GetProgress() int
 						})
 					}
 				}
@@ -442,13 +526,19 @@ func TestOpeningProgressDialogFollowsRuntimeTheme(t *testing.T) {
 		}
 	}
 	var labels []*vtui.Text
-	var progress *vtui.ProgressBar
+	var progress interface {
+		vtui.UIElement
+		SetPercent(int)
+	}
 	var button *vtui.Button
 	for _, child := range dialog.GetChildren() {
 		switch control := child.(type) {
 		case *vtui.Text:
 			labels = append(labels, control)
-		case *vtui.ProgressBar:
+		case interface {
+			vtui.UIElement
+			SetPercent(int)
+		}:
 			progress = control
 		case *vtui.Button:
 			button = control
@@ -457,7 +547,17 @@ func TestOpeningProgressDialogFollowsRuntimeTheme(t *testing.T) {
 	if len(labels) != 2 || progress == nil || button == nil {
 		t.Fatal("progress dialog lost its expected controls")
 	}
-	progress.SetPercent(50)
+	// The upstream lazy bar becomes visible only when a worker reports a
+	// percentage. Exercise that API rather than bypassing its visibility gate.
+	for dialog.GetProgress() != 50 {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		case <-timer.C:
+			t.Fatal("worker progress was not applied")
+		}
+	}
+	t.Log("[FIX:opening-theme] worker progress reached 50 percent")
 	button.SetText("&Cancel")
 	checkAttr := func(name string, x, y, paletteIndex int) {
 		t.Helper()
@@ -473,11 +573,15 @@ func TestOpeningProgressDialogFollowsRuntimeTheme(t *testing.T) {
 			for _, label := range labels {
 				checkAttr("label", label.X1, label.Y1, vtui.ColDialogText)
 			}
-			checkAttr("progress filled", progress.X1, progress.Y1, vtui.ColDialogEdit)
-			checkAttr("progress empty", progress.X2, progress.Y1, vtui.ColDialogText)
+			px1, py1, px2, _ := progress.GetPosition()
+			checkAttr("progress filled", px1, py1, vtui.ColDialogEdit)
+			checkAttr("progress empty", px2, py1, vtui.ColDialogText)
 			x1, y1, _, _ := dialog.GetPosition()
 			checkAttr("border", x1, y1+1, vtui.ColDialogBox)
 			buttonIndex, hotkeyIndex := vtui.ColDialogButton, vtui.ColDialogHighlightButton
+			if button.IsEnterDefault() {
+				buttonIndex = vtui.ColDialogHighlightButton
+			}
 			if focused {
 				buttonIndex, hotkeyIndex = vtui.ColDialogSelectedButton, vtui.ColDialogHighlightSelectedButton
 			}

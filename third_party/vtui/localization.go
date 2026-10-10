@@ -15,6 +15,8 @@ var (
 		"vtui.Path":    "Path:",
 		"vtui.File":    "&File:",
 		"vtui.History": "History",
+		// Confirmation for Del in an input field's history dropdown.
+		"vtui.HistoryClearConfirm": "Clear entire history?",
 	}
 )
 

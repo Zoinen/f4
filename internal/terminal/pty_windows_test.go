@@ -120,7 +120,7 @@ func TestConPTYPackageKeepsLongLinesWhole(t *testing.T) {
 	for _, tc := range []struct {
 		name, line, command string
 	}{
-		{"powershell", strings.Repeat("A", 300), `powershell.exe -NoLogo -NoProfile -NonInteractive -Command "Write-Output ('A' * 300)"`},
+		{"powershell", strings.Repeat("A", 300), `powershell.exe -NoLogo -NoProfile -NonInteractive -Command "Write-Output ('A' * 300); exit 0"`},
 		{"cmd-echo", strings.Repeat("B", 300), `cmd.exe /d /c echo ` + strings.Repeat("B", 300)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

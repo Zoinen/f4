@@ -1,16 +1,18 @@
-//go:build !dragonfly && !netbsd && !solaris && !illumos
+//go:build !dragonfly && !netbsd && !solaris && !illumos && !lite
 
 package fileops
 
 import (
 	"context"
-	"github.com/unxed/f4/vfs"
-	"github.com/unxed/tar"
-	"github.com/unxed/vtui"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/unxed/f4/internal/tarindexcache"
+	"github.com/unxed/f4/vfs"
+	"github.com/unxed/tar"
+	"github.com/unxed/vtui"
 )
 
 func isTarArchive(path string) bool {
@@ -40,6 +42,11 @@ func handleArchiveIndexOp(srcVfs vfs.VFS, oldPath string, dstVfs vfs.VFS, newPat
 	absNew, newErr := dstVfs.Abs(newPath)
 	if oldErr != nil || newErr != nil {
 		return
+	}
+	// The index f4 keeps in its own cache goes with a moved archive: what it
+	// holds is the archive's content, which a move does not change (#1187).
+	if isMove {
+		tarindexcache.Move(absOld, absNew)
 	}
 
 	oldIdx, oldErr := tar.GetStandardIndexPath(absOld)
@@ -107,12 +114,26 @@ func collectArchiveIndexes(ctx context.Context, v vfs.VFS, p string) []string {
 		return indexes
 	} else if isTarArchive(p) {
 		abs, _ := v.Abs(p)
+		// The indexes f4 keeps in its cache would otherwise stay for good.
+		indexes := tarindexcache.Files(abs)
+		// The path marker belongs to the same archive cache entry. Remove it
+		// together with the indexes, otherwise Cleanup has to discover the
+		// already-deleted archive again on a later startup (#1187).
+		if marker := tarindexcache.PathFile(abs); fileExists(marker) {
+			indexes = append(indexes, marker)
+		}
 		idx, _ := tar.GetStandardIndexPath(abs)
 		if _, err := os.Stat(idx); err == nil {
-			return []string{idx}
+			indexes = append(indexes, idx)
 		}
+		return indexes
 	}
 	return nil
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 func removeArchiveIndexes(indexes []string) {

@@ -196,42 +196,50 @@ func Frame(name string) func() {
 }
 
 func watch() {
-	for {
-		limit := time.Duration(threshold.Load())
-		if !enabled.Load() || limit <= 0 {
-			return
-		}
-		time.Sleep(limit / 4)
-		if !enabled.Load() {
-			return
-		}
-
-		if started := openedAt.Load(); started != 0 {
-			if !reported.Load() {
-				if elapsed := time.Since(time.Unix(0, started)); elapsed >= limit {
-					reported.Store(true)
-					name, _ := openName.Load().(string)
-					dump(fmt.Sprintf("%q has been running for %v", name, elapsed.Round(time.Millisecond)))
-				}
-			}
-			continue
-		}
-
-		// Nothing running. A quiet stretch that interrupts steady work is the
-		// other shape of freeze: the UI thread is idle because nothing is
-		// reaching it, and the stacks show what everyone else is waiting on.
-		if gapReported.Load() || tightRun.Load() < busyRun {
-			continue
-		}
-		prev := lastEnd.Load()
-		if prev == 0 {
-			continue
-		}
-		if quiet := time.Since(time.Unix(0, prev)); quiet >= limit {
-			gapReported.Store(true)
-			dump(fmt.Sprintf("nothing has run for %v, after %d units of steady work", quiet.Round(time.Millisecond), tightRun.Load()))
-		}
+	for watchTick() {
 	}
+}
+
+// watchTick runs one pass of the watcher: sleep out a quarter of the limit,
+// then look for a stall. It reports whether watch should keep looping,
+// which lets tests drive it directly instead of racing a real goroutine
+// against real time to reach its exit paths.
+func watchTick() bool {
+	limit := time.Duration(threshold.Load())
+	if !enabled.Load() || limit <= 0 {
+		return false
+	}
+	time.Sleep(limit / 4)
+	if !enabled.Load() {
+		return false
+	}
+
+	if started := openedAt.Load(); started != 0 {
+		if !reported.Load() {
+			if elapsed := time.Since(time.Unix(0, started)); elapsed >= limit {
+				reported.Store(true)
+				name, _ := openName.Load().(string)
+				dump(fmt.Sprintf("%q has been running for %v", name, elapsed.Round(time.Millisecond)))
+			}
+		}
+		return true
+	}
+
+	// Nothing running. A quiet stretch that interrupts steady work is the
+	// other shape of freeze: the UI thread is idle because nothing is
+	// reaching it, and the stacks show what everyone else is waiting on.
+	if gapReported.Load() || tightRun.Load() < busyRun {
+		return true
+	}
+	prev := lastEnd.Load()
+	if prev == 0 {
+		return true
+	}
+	if quiet := time.Since(time.Unix(0, prev)); quiet >= limit {
+		gapReported.Store(true)
+		dump(fmt.Sprintf("nothing has run for %v, after %d units of steady work", quiet.Round(time.Millisecond), tightRun.Load()))
+	}
+	return true
 }
 
 func dump(reason string) {

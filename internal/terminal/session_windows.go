@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/unxed/f4/internal/gui"
+	"github.com/unxed/f4/internal/wincondrag"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 )
@@ -64,6 +65,11 @@ func ManageSessions() {
 	// renders sixel and is left alone. Before the first frame, because
 	// every gate on it is asked from inside one.
 	App.InstallImageOverlay()
+
+	// Dragging files out of the panels into other applications (#1604).
+	// A console has no drag and drop protocol, so this is a tool window of
+	// our own laid over it for the length of a drag; see wincondrag.
+	wincondrag.Install()
 
 	// Unlike the Unix build (session_unix.go's RunServer, attach time),
 	// there's no separate daemon/client split here to defer this past --

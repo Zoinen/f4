@@ -97,7 +97,7 @@ func InitHelpSystem() {
 		dialog.HelpMsg("Help.PanelNav"), []string{"Shell", "Terminal", "Common"}, "ShellNav"))
 }
 
-// generateKeysHelpTopic builds a help topic listing the active key
+// GenerateKeysHelpTopic builds a help topic listing the active key
 // bindings of the given areas, straight from the action registry.
 // navTarget, when non-empty, appends a link to the static topic holding
 // widget-level navigation keys (arrows and the like are not actions).

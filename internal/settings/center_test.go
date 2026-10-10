@@ -6,16 +6,18 @@ import (
 
 	"context"
 	"errors"
-	"github.com/unxed/f4/internal/i18n"
-	"github.com/unxed/f4/internal/theme"
-	"github.com/unxed/f4/sdk/f4settings"
-	"github.com/unxed/vtinput"
-	"github.com/unxed/vtui"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/unxed/f4/internal/i18n"
+	"github.com/unxed/f4/internal/theme"
+	"github.com/unxed/f4/sdk/f4settings"
+	"github.com/unxed/vtinput"
+	"github.com/unxed/vtui"
 )
 
 func TestSettingsDisabledInputUsesDimmedNormalPalette(t *testing.T) {
@@ -341,7 +343,7 @@ func TestSettingsActionCaptionsAppearOnce(t *testing.T) {
 		titleX := c.page.X1 + (c.page.X2-c.page.X1+1-vtui.StringWidth(title))/2
 		for i, ch := range title {
 			cell := scr.GetCell(titleX+i, c.Y1+1)
-			if testutil.Rune(cell.Char) != ch || cell.Attributes != vtui.Palette[vtui.ColDialogBoxTitle] {
+			if vtui.CellBaseRune(cell.Char) != ch || cell.Attributes != vtui.Palette[vtui.ColDialogBoxTitle] {
 				t.Fatal("category title is not centered or does not follow the palette")
 			}
 		}
@@ -357,7 +359,7 @@ func TestSettingsActionCaptionsAppearOnce(t *testing.T) {
 		var rendered strings.Builder
 		for line := c.page.Y1; line <= c.page.Y2; line++ {
 			for col := c.page.X1; col <= c.page.X2; col++ {
-				rendered.WriteRune(testutil.Rune(scr.GetCell(col, line).Char))
+				rendered.WriteRune(vtui.CellBaseRune(scr.GetCell(col, line).Char))
 			}
 			rendered.WriteByte('\n')
 		}
@@ -402,7 +404,7 @@ func TestSettingsCategoryHeadingNotRepeatedInHelp(t *testing.T) {
 		c.Show(scr)
 		var top strings.Builder
 		for x := c.page.X1; x <= c.help.X2; x++ {
-			top.WriteRune(testutil.Rune(scr.GetCell(x, c.Y1+1).Char))
+			top.WriteRune(vtui.CellBaseRune(scr.GetCell(x, c.Y1+1).Char))
 		}
 		if strings.Count(top.String(), c.categoryLabel("operations")) != 1 {
 			t.Fatalf("category heading must appear once: %q", top.String())
@@ -659,7 +661,7 @@ func TestHotkeyCategoryHidesDescriptionRendering(t *testing.T) {
 				for y := 0; y < 30; y++ {
 					var line strings.Builder
 					for x := 0; x < width; x++ {
-						line.WriteRune(testutil.Rune(scr.GetCell(x, y).Char))
+						line.WriteRune(vtui.CellBaseRune(scr.GetCell(x, y).Char))
 					}
 					if strings.Contains(line.String(), "DESCRIPTION_SENTINEL") {
 						t.Fatal("hidden description overpainted hotkey page")
@@ -674,5 +676,190 @@ func TestHotkeyCategoryHidesDescriptionRendering(t *testing.T) {
 				t.Fatal("description did not return with current palette")
 			}
 		}
+	}
+}
+
+// The status line is one row, and a failure is cut to fit it: the part that
+// says what is wrong, at the end of a Colorer error, was cut off (#277). A cut
+// text is shown whole in a message; a short one stays in the line alone.
+func TestSettingsCenterShowsAFailureThatDoesNotFitInFull(t *testing.T) {
+	t.Cleanup(testutil.SwapFrameManager(t))
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(100, 30)
+	vtui.FrameManager.Init(scr)
+	d, _ := (coreSettingsProvider{}).Begin(context.Background())
+	defer d.Close()
+	c := newSettingsCenter([]*settingsSession{{catalog: (coreSettingsProvider{}).Catalog(), draft: d}})
+	c.ResizeConsole(100, 30)
+	vtui.FrameManager.Push(c)
+
+	c.reportFailure("short")
+	if vtui.FrameManager.GetTopFrame() != vtui.Frame(c) || c.status != "short" {
+		t.Fatalf("a failure that fits opened a message (top %T) or was lost (%q)", vtui.FrameManager.GetTopFrame(), c.status)
+	}
+
+	long := "[warning] colorer4go: user colour styles not loaded: stat ~/.config/f4/colorer/mystyles/that-file-does-not-exist-anywhere.xml: no such file or directory"
+	c.reportFailure(long)
+	if c.status != long {
+		t.Fatalf("status = %q", c.status)
+	}
+	msg, ok := vtui.FrameManager.GetTopFrame().(*vtui.Window)
+	if !ok || vtui.Frame(msg) == vtui.Frame(c) {
+		t.Fatalf("a cut failure did not open a message; top is %T", vtui.FrameManager.GetTopFrame())
+	}
+	var texts []string
+	var walk func(vtui.UIElement)
+	walk = func(el vtui.UIElement) {
+		if txt, ok := el.(interface{ GetText() string }); ok {
+			texts = append(texts, txt.GetText())
+		}
+		if container, ok := el.(vtui.Container); ok {
+			for _, child := range container.GetChildren() {
+				walk(child)
+			}
+		}
+	}
+	walk(msg)
+	joined := strings.Join(texts, " ")
+	for _, want := range []string{"no such file", "does-not-exist"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("the message lacks %q; it shows %q", want, joined)
+		}
+	}
+}
+
+// A small terminal gets the settings maximized, a large one the ordinary
+// window; the zoom button gives the ordinary size back (#1239).
+func TestSettingsCenterOpensMaximizedInASmallTerminal(t *testing.T) {
+	d, _ := (coreSettingsProvider{}).Begin(context.Background())
+	defer d.Close()
+	open := func(w, h int) *settingsCenter {
+		c := newSettingsCenter([]*settingsSession{{catalog: (coreSettingsProvider{}).Catalog(), draft: d}})
+		c.ResizeConsole(w, h)
+		return c
+	}
+
+	small := open(100, 28)
+	if small.X1 != 0 || small.X2 != 99 || small.Y1 != 0 || small.Y2 != 26 {
+		t.Fatalf("small terminal: window at %d,%d–%d,%d, want the whole screen above the key bar", small.X1, small.Y1, small.X2, small.Y2)
+	}
+	if small.SavedBounds == nil {
+		t.Fatal("the ordinary size was not kept for the zoom button")
+	}
+	// Narrow only, and short only, are small too.
+	for _, size := range [][2]int{{110, 50}, {200, 25}} {
+		if c := open(size[0], size[1]); c.SavedBounds == nil || c.X1 != 0 {
+			t.Fatalf("%dx%d terminal did not get a maximized dialog", size[0], size[1])
+		}
+	}
+
+	large := open(180, 60)
+	if large.SavedBounds != nil || large.X1 != 45 || large.X2 != 134 {
+		t.Fatalf("large terminal: window at %d–%d, saved=%v; want the ordinary centered window", large.X1, large.X2, large.SavedBounds)
+	}
+
+	// A resize of the terminal keeps it maximized.
+	small.ResizeConsole(90, 26)
+	if small.X2 != 89 || small.Y2 != 24 {
+		t.Fatalf("after a resize the window is at %d,%d–%d,%d", small.X1, small.Y1, small.X2, small.Y2)
+	}
+}
+
+// hotkeyTableSizeFakeHost lets a test drive minSettingsScreenWidth's own
+// threshold arithmetic with a known, fixed hotkey-table width, instead of
+// internal/app's real column-width logic (which imports this package, so
+// this package cannot import it back to use the real figure directly).
+type hotkeyTableSizeFakeHost struct {
+	testHost
+	minPageWidth int
+}
+
+func (h hotkeyTableSizeFakeHost) HotkeyTableMinPageWidth() int { return h.minPageWidth }
+
+// The Hotkey Configurator gets its own auto-maximize threshold, computed
+// from the embedded table's own minimum width plus the sidebar's width,
+// rather than the fixed guess every other page keeps: montoner0 found even
+// 150 columns still too narrow for it (#1239 follow-up).
+func TestSettingsCenterOpensMaximizedForHotkeysAtItsComputedThreshold(t *testing.T) {
+	previousHost := host
+	fake := hotkeyTableSizeFakeHost{minPageWidth: 60}
+	Configure(fake)
+	t.Cleanup(func() { Configure(previousHost) })
+
+	d, _ := (coreSettingsProvider{}).Begin(context.Background())
+	defer d.Close()
+	open := func(w, h int) *settingsCenter {
+		c := newSettingsCenter([]*settingsSession{{catalog: (coreSettingsProvider{}).Catalog(), draft: d}})
+		c.selectCategory("hotkeys")
+		c.ResizeConsole(w, h)
+		return c
+	}
+
+	side := open(200, 60).categorySidebarNaturalWidth() + 1
+	minWindowWidth := fake.minPageWidth + side + 4
+	threshold := minScreenWidthForWindow(minWindowWidth)
+	if threshold <= smallSettingsScreenWidth {
+		t.Fatalf("computed threshold %d does not exceed the old fixed guess of %d", threshold, smallSettingsScreenWidth)
+	}
+
+	if c := open(threshold-1, 40); c.SavedBounds == nil {
+		t.Fatalf("%d columns: want the hotkey page maximized (one short of its computed threshold %d)", threshold-1, threshold)
+	}
+	if c := open(threshold, 40); c.SavedBounds != nil {
+		t.Fatalf("%d columns: want the hotkey page at its ordinary size (its computed threshold)", threshold)
+	}
+
+	// A page other than the Hotkey Configurator is unaffected by the fake
+	// host: it keeps the fixed guess.
+	other := newSettingsCenter([]*settingsSession{{catalog: (coreSettingsProvider{}).Catalog(), draft: d}})
+	other.ResizeConsole(smallSettingsScreenWidth-1, 40)
+	if other.SavedBounds == nil {
+		t.Fatalf("a non-hotkeys page below %d columns should still maximize", smallSettingsScreenWidth)
+	}
+	other2 := newSettingsCenter([]*settingsSession{{catalog: (coreSettingsProvider{}).Catalog(), draft: d}})
+	other2.ResizeConsole(smallSettingsScreenWidth, 40)
+	if other2.SavedBounds != nil {
+		t.Fatalf("a non-hotkeys page at %d columns should not maximize", smallSettingsScreenWidth)
+	}
+}
+
+// A long operation says what it is doing in the status row while it runs, and
+// the row is empty again when it has finished without error (#277).
+func TestSettingsCenterShowsAnOperationsProgress(t *testing.T) {
+	t.Cleanup(testutil.SwapFrameManager(t))
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(100, 30)
+	vtui.FrameManager.Init(scr)
+	d, _ := (coreSettingsProvider{}).Begin(context.Background())
+	defer d.Close()
+	c := newSettingsCenter([]*settingsSession{{catalog: (coreSettingsProvider{}).Catalog(), draft: d}})
+	c.ResizeConsole(100, 30)
+	vtui.FrameManager.Push(c)
+
+	release := make(chan struct{})
+	c.runBackground(func(ctx context.Context) error {
+		reportSettingsProgress(ctx, "1/2  first")
+		<-release
+		return nil
+	}, nil)
+
+	pump := func(cond func() bool) {
+		t.Helper()
+		deadline := time.After(10 * time.Second)
+		for !cond() {
+			select {
+			case task := <-vtui.FrameManager.TaskChan:
+				task()
+			case <-time.After(5 * time.Millisecond):
+			case <-deadline:
+				t.Fatalf("timed out; status is %q", c.status)
+			}
+		}
+	}
+	pump(func() bool { return c.status == "1/2  first" })
+	close(release)
+	pump(func() bool { return c.running == nil })
+	if c.status != "" {
+		t.Fatalf("the progress line stayed after the operation finished: %q", c.status)
 	}
 }

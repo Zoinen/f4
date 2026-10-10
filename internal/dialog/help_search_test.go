@@ -304,6 +304,16 @@ func TestHelpSearchReadsScrollPositionFromEmbeddedHelpView(t *testing.T) {
 
 func TestHelpShowsZoomButtonAndRestoresPreviousBounds(t *testing.T) {
 	view, scr := newSearchableHelpForTestAtSize(t, 80, 40, []string{"Help text"})
+	// f4#904: reproduce the reporter's setup (Workspaces & saving = Always),
+	// which reserves one row above every frame for the tab strip. Three
+	// earlier rounds pinned this test's expectations while the harness left
+	// WorkspaceTopInset() at its default 0, so it never exercised the exact
+	// case the bug report was about.
+	vtui.FrameManager.ConfigureWorkspaceTabs(vtui.WorkspaceTabsAlways, vtui.WorkspaceCtrlTabDirect)
+	top := vtui.FrameManager.WorkspaceTopInset()
+	if top != 1 {
+		t.Fatalf("WorkspaceTopInset() = %d, want 1 with WorkspaceTabsAlways", top)
+	}
 	view.Show(scr)
 	RenderHelpFrame(scr, view)
 	if !view.ShowZoom {
@@ -319,20 +329,37 @@ func TestHelpShowsZoomButtonAndRestoresPreviousBounds(t *testing.T) {
 	}) {
 		t.Fatal("zoom button click was not handled")
 	}
+	// The maximized window starts below the tab strip's row(s) (top) and
+	// ends one row above the key bar (height-2), matching vtui's
+	// BaseWindow.ToggleZoom and f4's settingsCenter.ResizeConsole, both of
+	// which were fixed for the identical symptom in issue #1144.
+	wantMaxY1, wantMaxY2 := top, 40-2
 	maxX1, maxY1, maxX2, maxY2 := view.GetPosition()
-	if maxX1 != 0 || maxY1 != 0 || maxX2 != 79 || maxY2 != 36 || currentHelpZoom == nil {
-		t.Fatalf("zoomed Help bounds=(%d,%d)-(%d,%d), zoom state=%v, want (0,0)-(79,36)", maxX1, maxY1, maxX2, maxY2, currentHelpZoom)
+	if maxX1 != 0 || maxY1 != wantMaxY1 || maxX2 != 79 || maxY2 != wantMaxY2 || currentHelpZoom == nil {
+		t.Fatalf("zoomed Help bounds=(%d,%d)-(%d,%d), zoom state=%v, want (0,%d)-(79,%d)", maxX1, maxY1, maxX2, maxY2, currentHelpZoom, wantMaxY1, wantMaxY2)
 	}
-	_, _, zoomedX2, _ := view.GetPosition()
+	// f4#904: the maximized window's own top border, with its zoom/collapse
+	// button, must stay inside the visible screen rather than being scrolled
+	// out from under the tab bar.
+	RenderHelpFrame(scr, view)
+	if got := testutil.Rune(scr.GetCell(maxX2-6, maxY1).Char); got != vtui.UIStrings.ZoomSymbol {
+		t.Fatalf("maximized top border zoom symbol = %q, want %q", got, vtui.UIStrings.ZoomSymbol)
+	}
+	_, zoomedY1, zoomedX2, _ := view.GetPosition()
 	if !HandleHelpSearchHotkey(&vtinput.InputEvent{
 		Type: vtinput.MouseEventType, KeyDown: true,
-		ButtonState: vtinput.FromLeft1stButtonPressed, MouseX: testutil.Int16(zoomedX2 - 6), MouseY: 0,
+		ButtonState: vtinput.FromLeft1stButtonPressed, MouseX: testutil.Int16(zoomedX2 - 6), MouseY: testutil.Int16(zoomedY1),
 	}) {
 		t.Fatal("restore button click was not handled")
 	}
 	gotX1, gotY1, gotX2, gotY2 := view.GetPosition()
 	if gotX1 != x1 || gotY1 != y1 || gotX2 != x2 || gotY2 != y2 || currentHelpZoom != nil {
 		t.Fatalf("restored bounds=(%d,%d)-(%d,%d), want (%d,%d)-(%d,%d)", gotX1, gotY1, gotX2, gotY2, x1, y1, x2, y2)
+	}
+	// The collapsed-back window keeps the same working top border too.
+	RenderHelpFrame(scr, view)
+	if got := testutil.Rune(scr.GetCell(gotX2-6, gotY1).Char); got != vtui.UIStrings.ZoomSymbol {
+		t.Fatalf("restored top border zoom symbol = %q, want %q", got, vtui.UIStrings.ZoomSymbol)
 	}
 }
 
@@ -434,5 +461,72 @@ func TestHelpDecorationsSurviveAFrameAbove(t *testing.T) {
 	FinishHelpRender()
 	if CurrentHelpSearch != nil {
 		t.Fatal("search state outlived its Help window")
+	}
+}
+
+// f4 #378: the help window breaks a line that is longer than it is wide, so the
+// rows it shows are not the lines the engine holds. The search counts matches
+// in the rows on screen, and counts them again when a zoom changes the layout.
+func TestHelpSearchFollowsTheLaidOutTopicWhenTheWindowChangesWidth(t *testing.T) {
+	long := "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron"
+	view, scr := newSearchableHelpForTestAtSize(t, 100, 25, []string{"first", long, "last"})
+	view.Show(scr)
+	if rows := len(view.CurrentTopic().Lines); rows <= 3 {
+		t.Fatalf("the default window laid the topic out in %d rows, want the long line broken", rows)
+	}
+
+	for _, r := range "omicron" {
+		if !HandleHelpSearchHotkey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, Char: r}) {
+			t.Fatalf("character %q was not consumed", r)
+		}
+	}
+	if len(CurrentHelpSearch.Matches) != 1 || CurrentHelpSearch.Matches[0].line != 2 {
+		t.Fatalf("matches = %#v, want one on row 2, the second row of the broken line", CurrentHelpSearch.Matches)
+	}
+
+	view.SetPosition(0, 0, 99, 20)
+	view.Show(scr)
+	RenderHelpFrame(scr, view)
+	if len(CurrentHelpSearch.Matches) != 1 || CurrentHelpSearch.Matches[0].line != 1 {
+		t.Fatalf("after widening, matches = %#v, want one on line 1: the line is a single row again", CurrentHelpSearch.Matches)
+	}
+}
+
+// helpHintAttr is the colour of the key hint RenderHelpFrame paints on the
+// bottom border of a frame.
+func helpHintAttr(scr *vtui.ScreenBuf, frame vtui.Frame) uint64 {
+	x1, _, x2, y2 := frame.GetPosition()
+	return scr.GetCell((x1+x2)/2, y2).Attributes
+}
+
+// A Help window dragged past the top edge keeps the position MoveRelative gave
+// it -- nothing clamps it -- so its title row is off the screen while GetCell
+// answers that coordinate with a zero cell, and the hint on the bottom border
+// used to be painted in that zero colour. The same case in a dialog's outer
+// ring is f4#1399.
+func TestHelpDecorationsKeepTheirColourWhenDraggedOffScreen(t *testing.T) {
+	view, scr := newSearchableHelpForTest(t, []string{"before needle after"})
+	for _, r := range "needle" {
+		if !HandleHelpSearchHotkey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, Char: r}) {
+			t.Fatalf("character %q was not consumed", r)
+		}
+	}
+	view.Show(scr)
+	RenderHelpFrame(scr, view)
+	before := helpHintAttr(scr, view)
+	if before == 0 {
+		t.Fatalf("the hint drawn in place has no colour: %#x", before)
+	}
+
+	view.MoveRelative(0, -8)
+	view.Show(scr)
+	RenderHelpFrame(scr, view)
+
+	if _, y1, _, _ := view.GetPosition(); y1 >= 0 {
+		t.Fatalf("the window did not leave the screen: y1 = %d", y1)
+	}
+	if after := helpHintAttr(scr, view); after != before {
+		t.Fatalf("hint colour after the drag = %#x, want %#x, the colour the window's border is drawn in",
+			after, before)
 	}
 }

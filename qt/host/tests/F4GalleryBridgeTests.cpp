@@ -5937,10 +5937,13 @@ void F4GalleryBridgeTests::catalogPathChangeAppliesPresentationBeforeSessionSign
                  .value(QStringLiteral("galleryLayoutMode")).toString(),
              QStringLiteral("masonry"));
 
+    QSignalSpy echoTransactions(host.data(), SIGNAL(applyingRendererStateChanged()));
+    QVERIFY(echoTransactions.isValid());
     QVERIFY(host->setProperty("panel", destination));
     QTest::qWait(20);
-    QCOMPARE(layout->property("delegateCommitRevision").toULongLong(),
-             delegateCommitBefore + 1);
+    // Decode completions may commit delegates independently. The semantic
+    // echo itself must not start a second presentation transaction.
+    QCOMPARE(echoTransactions.size(), 0);
 }
 
 void F4GalleryBridgeTests::navigateParentReentryKeepsCursor()
@@ -6282,7 +6285,8 @@ void F4GalleryBridgeTests::equalGalleryColumnSchemaDoesNotResetLayout()
     // entry and once on exit.
     QTRY_COMPARE_WITH_TIMEOUT(rendererStateChanged.size(), 2, 3000);
     QTRY_COMPARE(columnSchemaChanged.size(), 1);
-    QTRY_VERIFY_WITH_TIMEOUT(layoutReset.size() >= 1, 3000);
+    // A title-only schema update changes the header, not row geometry.
+    QCOMPARE(layoutReset.size(), 0);
     QCOMPARE(embeddedPanel->property("columnSchema").toList(),
              changedColumns);
 }

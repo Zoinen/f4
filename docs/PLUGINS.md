@@ -55,6 +55,8 @@ Plugins can colorize files in the text editor dynamically.
 ### D. Host Callbacks (Plugin -> Host)
 Because F4-RPC is a full-duplex protocol, plugins can call back into `f4` at any time:
 *   `Host.Log` / `Host.Message` / `Host.InputBox` / `Host.Menu`: Standard UI and debugging interactions.
+    `Host.InputBox` and `Host.Menu` are refused with an error while f4's interface thread is itself waiting for the plugin (for example inside a `VFS.*` request): a dialog cannot be shown then, and waiting for it would freeze f4. Ask from a command or a hotkey handler instead.
+*   `Host.Language`: returns the language codes to try, in order (the interface language, its fallback, then `en`), for a plugin that localizes its own dialogs and messages, the way command labels are localized. The language can change at run time, so ask when building a text.
 *   `Host.RunAction`: Triggers any internal f4 semantic action (e.g., `Editor.Save`, `Panel.Swap`).
 *   `Host.RunProgressTask` / `Host.UpdateProgress`: Safely offloads long-running plugin operations to f4's background job manager, displaying a progress dialog to the user with standard Cancel functionality.
 *   `Host.AskOverwrite` / `Host.AskError`: Invokes f4's native, rich collision/error dialogs (Retry, Skip, Overwrite All, etc.) during mutations.
@@ -64,23 +66,61 @@ Because F4-RPC is a full-duplex protocol, plugins can call back into `f4` at any
 
 A plugin does not have to mount a VFS to provide a full-screen panel surface.
 Native Go plugins can opt into the optional `vfs.PanelContributionHost` and
-register a `vfs.PanelProvider`. f4 publishes one searchable `Open <title>`
-command for each provider. Opening it replaces the active file-panel surface
+register a `vfs.PanelProvider`. f4 publishes one searchable command for each
+provider, labelled with its title. Opening it replaces the active file-panel surface
 for that slot; the underlying `FileSystemPanel` remains alive as the logical
 source for normal file actions.
 
 The host calls the panel controller with the ordinary `vtui` drawing and input
 interfaces. Before each draw and input event it supplies a `PanelContext` with
 the panel side, screen bounds, active side, current path, cursor name, marked
-names, and the corresponding snapshot from the other file panel. `Esc` closes
-the panel when the controller does not consume it. This keeps panel plugins
+names, and the corresponding snapshot from the other file panel. `Esc` and
+plain `F10` close the panel when the controller does not consume them (F10 is
+Quit elsewhere; under a panel plugin it returns to the file panel, and the
+keybar caption says so). This keeps panel plugins
 portable and prevents them from reaching into f4's private panel state.
+
+A panel plugin's own keys go through one shared primitive instead of a
+hand-written `ProcessKey` switch: the controller also implements
+`vfs.PanelKeyProvider` and returns `[]vfs.PanelKey` -- virtual key,
+modifiers, an already-localized keybar caption, a `Run` callback and an
+optional `Enabled` predicate. While a panel plugin has the focus in the
+active slot, f4 applies the same rules to every panel plugin, whether it
+declares keys or not:
+
+* a declared key runs before any global plugin hotkey or configured f4
+  hotkey, including keys injected by a click on the keybar;
+* bindings that act on the hidden file panel's cursor or selection (every
+  `File.*` action, the group-selection actions and the file-panel navigation
+  ones such as `Panel.GoParent`/`Panel.EnterDirectory` on Ctrl+PgUp/Ctrl+PgDn) and global plugin
+  hotkeys stand down, so their keys reach the controller's `ProcessKey`
+  instead; the hidden file panel itself never receives keys;
+* the keybar shows the declared captions, blanks the file-panel captions and
+  keeps every other f4 binding (Help, menus, panel toggles); F10 is captioned as closing the panel.
+
+A folder bookmark taken while a panel plugin covers the directory remembers
+that plugin (`Plugin=f4-panel:<provider ID>` in `bookmarks.ini`) and opens it
+again over the directory. A controller that also implements
+`vfs.PanelStateProvider` (`SavePanelState`/`RestorePanelState`, an opaque
+one-line string such as the selected entry) gets its state stored in the
+bookmark's `PluginData` and handed back after the panel reopens; state it does
+not recognise must be ignored. A provider that is not registered on the
+machine leaves the directory open and shows a message.
+
+`vfs.DispatchPanelKey` is the host's dispatcher, exported so a controller can
+route the same declarations from its own `ProcessKey`.
 
 RPC plugins declare panel descriptors in the structured `Plugin.Init` result:
 
 ```text
-Panels: [{ ID, Title, Description }]
+Panels: [{ ID, Title, Description, Help, LocalizedHelp }]
 ```
+
+`Help` is optional Markdown shown on F1 in f4's Markdown viewer, titled with the
+panel's `Title`; `LocalizedHelp` maps language codes to translations and wins when
+it has the interface language (then its fallback languages, then `en`). F1 is
+captioned on the keybar. A panel that declares its own F1 key keeps it, and a panel
+without help leaves F1 to f4's global Help.
 
 The host then uses these calls lazily:
 
@@ -90,6 +130,20 @@ The host then uses these calls lazily:
   `key` or `mouse`, and returns `{ Handled, Document, Close }`. `Document` is
   optional; when present it replaces the current widget tree.
 * `Plugin.ClosePanel` receives `{ ID }` when the panel is dismissed.
+
+An RPC panel declares its keys (the same `vfs.PanelKey` contract as in-process
+panels, see above) by adding `Keys` and `HasKeys: true` to the `OpenPanel` and
+`PanelEvent` answers. Each key is `{ VK, Mods, Label, Disabled }`; a declared
+key is delivered as an ordinary `PanelEvent` of `Kind` `key`, and a `Disabled`
+one is consumed by f4 without a call. f4 keeps the last declaration it
+received (it never asks for it while drawing the keybar), so a plugin re-sends
+the set with any answer after which it may differ; an answer without `HasKeys`
+keeps it, and `HasKeys` with no `Keys` clears it. Plugins that never set
+`HasKeys` behave exactly as before, and f4 builds that predate panel keys
+ignore the fields. In Go, implement `f4plugin.PanelKeyProvider` next to
+`f4plugin.PanelProvider`: the SDK attaches the set to every answer and also
+consumes disabled keys under older f4 builds; `plugins/dummy_rpc` has a
+counter panel that uses it.
 
 The `.vui` document is rendered by the same `vtui` controls and wire format
 used by the bindings in the `vtui` repository. The plugin owns semantic

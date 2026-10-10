@@ -494,7 +494,7 @@ func driveMenuFromFrame(frame vtui.Frame) (*vtui.VMenu, bool) {
 // wantDriveMenuRow re-derives from the rendered menu the row the cursor is
 // supposed to open on for a panel sitting at cur: the drive entry that owns
 // cur when the menu lists one (Windows drive letters), otherwise the "Other
-// panel" entry at row 0. Deliberately independent of driveMenuDefaultPos, so
+// panel" entry. Deliberately independent of driveMenuDefaultPos, so
 // the assertions still test something, and independent of the platform, so
 // the runner's drive layout cannot flip them -- GitHub's Windows images check
 // the tree out on D:, which is what made this a hard-coded 0 no longer true.
@@ -510,6 +510,17 @@ func wantDriveMenuRow(menu *vtui.VMenu, cur string) int {
 		}
 	}
 	return 0
+}
+
+func otherPanelRow(menu *vtui.VMenu) int {
+	want := strings.ReplaceAll(i18n.Msg("Panel.Other"), "&", "")
+	for i, item := range menu.Items {
+		// The row sits in the Tools section, after the reserved hotkey column.
+		if strings.TrimSpace(strings.ReplaceAll(item.Text, "&", "")) == want {
+			return i
+		}
+	}
+	return -1
 }
 
 func TestPanelsFrame_DriveMenuBookmarkKeys(t *testing.T) {
@@ -740,7 +751,7 @@ func TestPanelsFrame_RightClickPanelPathOpensDriveMenuForThatPanel(t *testing.T)
 		t.Fatal("path context click incorrectly captured a panel drag")
 	}
 	menu := findDriveMenu(t)
-	menu.OnAction(0) // "Other panel" must apply to the right panel.
+	menu.OnAction(otherPanelRow(menu)) // "Other panel" must apply to the right panel.
 	if got := right.Vfs.GetPath(); got != leftPath {
 		t.Fatalf("drive menu changed path %q, want right panel to receive %q", got, leftPath)
 	}
@@ -2519,9 +2530,9 @@ func TestExecuteDummyOp_HeadlessMode(t *testing.T) {
 	if !newScreen.Transparent {
 		t.Error("Headless screen should be transparent")
 	}
-	dlg, ok := newScreen.Frames[0].(*vtui.Window)
+	dlg, ok := newScreen.Frames[0].(*progressTaskDialog)
 	if !ok {
-		t.Fatalf("headless frame = %T, want progress dialog", newScreen.Frames[0])
+		t.Fatalf("headless frame = %T, want wrapped progress dialog", newScreen.Frames[0])
 	}
 	dlg.OnResult(1)
 	timeout = time.After(2 * time.Second)
@@ -2579,20 +2590,22 @@ func TestPanelsFrame_TerminalForwarding_Advanced(t *testing.T) {
 	pty := &mockPty{}
 	pf.Pty = pty
 
-	// 1. Ctrl+Tab remains a global workspace shortcut in Advanced mode.
+	// 1. Ctrl+Tab goes to the terminal app in Advanced mode (f4 #128): the
+	// protocol can tell it apart from plain Tab, so an app that uses the
+	// chord itself (far2l's own panel switch, say) keeps working.
 	handled := pressKey(pf, &vtinput.InputEvent{
 		Type: vtinput.KeyEventType, KeyDown: true,
 		VirtualKeyCode: vtinput.VK_TAB, ControlKeyState: vtinput.LeftCtrlPressed,
 	})
-	if handled {
-		t.Error("Ctrl+Tab was erroneously forwarded to term.PTY in Advanced mode")
+	if !handled {
+		t.Error("Ctrl+Tab should be forwarded to term.PTY in Advanced mode")
 	}
-	if len(pty.written) != 0 {
-		t.Error("PTY received bytes for Ctrl+Tab in Advanced mode")
+	if len(pty.written) == 0 {
+		t.Error("PTY did not receive bytes for Ctrl+Tab in Advanced mode")
 	}
 	pty.written = nil
 
-	// 2. Shift+Ctrl+Tab should NOT be forwarded in any mode
+	// 2. Shift+Ctrl+Tab stays f4's own workspace shortcut in every mode.
 	handled = pressKey(pf, &vtinput.InputEvent{
 		Type: vtinput.KeyEventType, KeyDown: true,
 		VirtualKeyCode: vtinput.VK_TAB, ControlKeyState: vtinput.LeftCtrlPressed | vtinput.ShiftPressed,
@@ -2632,6 +2645,48 @@ func TestPanelsFrame_TerminalForwarding_BusyNonAltScreenWorkspaceKeys(t *testing
 		if got := pty.String(); got != "" {
 			t.Errorf("workspace key with modifiers %#x reached term.PTY as %q", state, got)
 		}
+	}
+}
+
+// f4 #128: the same split applies to a busy non-AltScreen PTY (a Python REPL
+// and the like) as to an AltScreen app: with an advanced protocol negotiated,
+// plain Ctrl+Tab goes to the child instead of switching workspaces, but
+// Ctrl+Shift+Tab is still f4's.
+func TestPanelsFrame_TerminalForwarding_BusyNonAltScreenAdvancedProtocol(t *testing.T) {
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ShowPanels = false
+	pf.TermView.UseAltScreen = false
+	pf.TermView.Win32InputMode = true
+
+	pty := &busyMockPty{}
+	pf.Pty = pty
+
+	handled := pressKey(pf, &vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_TAB,
+		ControlKeyState: vtinput.LeftCtrlPressed,
+	})
+	if !handled {
+		t.Error("Ctrl+Tab should be forwarded to a busy term.PTY in Advanced mode")
+	}
+	if len(pty.written) == 0 {
+		t.Error("busy term.PTY did not receive bytes for Ctrl+Tab in Advanced mode")
+	}
+	pty.Reset()
+
+	handled = pressKey(pf, &vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_TAB,
+		ControlKeyState: vtinput.LeftCtrlPressed | vtinput.ShiftPressed,
+	})
+	if handled {
+		t.Error("Shift+Ctrl+Tab was erroneously forwarded to a busy term.PTY")
+	}
+	if got := pty.String(); got != "" {
+		t.Errorf("Shift+Ctrl+Tab reached a busy term.PTY as %q", got)
 	}
 }
 
@@ -2711,6 +2766,55 @@ func TestPanelsFrame_ForkFromTerminalOpensPanelsInNewWorkspace(t *testing.T) {
 	waitForLoad(t, clone.Panels[0].(*FileSystemPanel))
 	waitForLoad(t, clone.Panels[1].(*FileSystemPanel))
 }
+
+// f4 discussion #1409: the Settings Center hint for "Terminal presentation"
+// (ConsoleMode) promises it takes effect in new workspaces, without a
+// restart. Clone() used to overwrite the freshly resolved ShellMode of the
+// new workspace with the source workspace's own (possibly stale) ShellMode,
+// so a workspace forked after changing the setting kept showing the old
+// terminal display mode until f4 was restarted. Cloning must instead reflect
+// whatever config.App.ConsoleMode says right now.
+func TestPanelsFrame_Clone_PicksUpConsoleModeChangedAfterSourceCreated(t *testing.T) {
+	oldConsoleMode := config.App.ConsoleMode
+	oldConsoleOverlayUI := config.App.ConsoleOverlayUI
+	oldProbeGUI := terminal.ProbeGUIBackend
+	oldProbeTTY := terminal.ProbeHostTTY
+	oldProbePTY := terminal.ProbePTYUsable
+	defer func() {
+		config.App.ConsoleMode = oldConsoleMode
+		config.App.ConsoleOverlayUI = oldConsoleOverlayUI
+		terminal.ProbeGUIBackend = oldProbeGUI
+		terminal.ProbeHostTTY = oldProbeTTY
+		terminal.ProbePTYUsable = oldProbePTY
+	}()
+	terminal.ProbePTYUsable = func() bool { return true }
+	terminal.ProbeGUIBackend = func() string { return "" }
+	terminal.ProbeHostTTY = func() bool { return true }
+
+	config.App.ConsoleMode = "own"
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(100, 30)
+	if pf.ShellMode != terminal.ShellModeOwn {
+		t.Fatalf("source workspace ShellMode = %v, want ShellModeOwn", pf.ShellMode)
+	}
+
+	// The user opens Settings Center and switches "Terminal presentation" to
+	// the host-with-overlay style without restarting f4.
+	config.App.ConsoleMode = "far"
+
+	clone := pf.Clone()
+	defer clone.Close()
+	if clone.ShellMode != terminal.ShellModeHost {
+		t.Errorf("cloned workspace ShellMode = %v, want ShellModeHost after the live ConsoleMode change", clone.ShellMode)
+	}
+	// The already-open source workspace is unaffected until restarted;
+	// forking is what is expected to observe the new value.
+	if pf.ShellMode != terminal.ShellModeOwn {
+		t.Errorf("source workspace ShellMode changed unexpectedly to %v", pf.ShellMode)
+	}
+}
+
 func TestPanelsFrame_ProcessMouse_RightDoubleClickNoEnter(t *testing.T) {
 	pf := NewPanelsFrame()
 	defer pf.Close()
@@ -2773,6 +2877,58 @@ func TestPanelsFrame_QuitConfirmation_Cancel(t *testing.T) {
 		t.Error("Application shut down even after exit was canceled")
 	}
 }
+
+// A held Ctrl+W queues its repeats in the event channel while the exit
+// confirmation is up; each queued repeat re-emits CmQuit. Without a guard
+// every repeat stacked another copy of the dialog, so the user had to press
+// Cancel once per queued event.
+func TestPanelsFrame_QuitConfirmation_NoDuplicateOnRepeat(t *testing.T) {
+	fm := vtui.FrameManager
+	fm.Init(vtui.NewSilentScreenBuf())
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	fm.Push(pf)
+
+	oldConfirm := config.App.ConfirmExit
+	config.App.ConfirmExit = true
+	t.Cleanup(func() { config.App.ConfirmExit = oldConfirm })
+
+	pf.HandleCommand(vtui.CmQuit, nil)
+	top := fm.GetTopFrame()
+	if top == nil || top.GetTitle() != i18n.Msg("Quit.Title") {
+		t.Fatal("Quit dialog didn't appear")
+	}
+	if !QuitConfirmationOpen() {
+		t.Fatal("QuitConfirmationOpen() = false while the dialog is up")
+	}
+
+	// Queued repeats of a held Ctrl+W re-emit CmQuit while the dialog is up.
+	for i := 0; i < 5; i++ {
+		pf.HandleCommand(vtui.CmQuit, nil)
+	}
+	if got := fm.GetTopFrame(); got != top {
+		t.Errorf("repeated CmQuit stacked a duplicate dialog: top %q, want the original", got.GetTitle())
+	}
+
+	// Real cancel path: Esc/Cancel sets the exit code and marks the dialog done.
+	top.SetExitCode(-1)
+	if QuitConfirmationOpen() {
+		t.Error("QuitConfirmationOpen() still true after the dialog was dismissed")
+	}
+
+	// The guard must not stick: a fresh CmQuit opens a new confirmation.
+	pf.HandleCommand(vtui.CmQuit, nil)
+	if got := fm.GetTopFrame(); got == nil || got.GetTitle() != i18n.Msg("Quit.Title") {
+		t.Fatal("CmQuit after cancel didn't open a new confirmation")
+	}
+	got := fm.GetTopFrame()
+	got.SetExitCode(-1)
+
+	if fm.IsShutdown() {
+		t.Error("Application shut down even after exit was canceled")
+	}
+}
+
 func TestPanelsFrame_DriveMenu_OtherPanel(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	theme.SetDefaultF4Palette()
@@ -2798,7 +2954,7 @@ func TestPanelsFrame_DriveMenu_OtherPanel(t *testing.T) {
 		t.Fatal("Drive menu not opened")
 	}
 
-	// "Other panel" stays at index 0, but the cursor now opens on the drive
+	// "Other panel" is a tool below the platform drives, and the cursor opens on the drive
 	// the panel currently shows when the menu lists it (driveMenuDefaultPos,
 	// far2l parity), so the expected row depends on where the panel sits.
 	if menu.GetTitle() != i18n.Msg("Drive.Title") {
@@ -2809,8 +2965,8 @@ func TestPanelsFrame_DriveMenu_OtherPanel(t *testing.T) {
 		t.Errorf("Menu state invalid: pos=%d, want %d (panel at %q)", menu.SelectPos, want, cur)
 	}
 
-	// Trigger "Other panel" (idx 0)
-	menu.OnAction(0)
+	// Trigger "Other panel" by its rendered row.
+	menu.OnAction(otherPanelRow(menu))
 
 	// Left panel VFS path must now match Right panel's path
 	got := pf.Panels[0].(*FileSystemPanel).Vfs.GetPath()
@@ -2878,7 +3034,7 @@ func TestPanelsFrame_TerminalTabAutoComplete(t *testing.T) {
 	}
 }
 
-func TestDriveMenu_SmartHotkeys(t *testing.T) {
+func TestDriveMenuToolsHaveNoAutomaticHotkeys(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	pf := NewPanelsFrame()
 	defer pf.Close()
@@ -2931,11 +3087,11 @@ func TestDriveMenu_SmartHotkeys(t *testing.T) {
 	nfText := menu.Items[nfIdx].Text
 	nullText := menu.Items[nullIdx].Text
 
-	if !strings.Contains(nfText, "&N") {
-		t.Errorf("NetFox should have 'N' as hotkey: %q", nfText)
+	if strings.Contains(nfText, "&") {
+		t.Errorf("NetFox should have no automatic hotkey: %q", nfText)
 	}
-	if !strings.Contains(nullText, "N&u") {
-		t.Errorf("Null VFS should have 'u' as hotkey (N is taken): %q", nullText)
+	if strings.Contains(nullText, "&") {
+		t.Errorf("Null VFS should have no automatic hotkey: %q", nullText)
 	}
 }
 
@@ -3705,6 +3861,69 @@ func TestPanelsFrame_MouseForwarding_ToPTY(t *testing.T) {
 	}
 	if got := pty.String(); got != beforeMove {
 		t.Errorf("PTY received hover motion in normal tracking mode: got %q, want %q", got, beforeMove)
+	}
+}
+
+func TestPanelsFrame_MouseForwarding_WindowsReleaseUsesPressedButton(t *testing.T) {
+	pf := setupMockPanelsFrame(t)
+	pty := pf.Pty.(*mockPty)
+	defer pf.Close()
+
+	pf.ShowPanels = false
+	pf.TermView.MouseTrackingMode = 1003
+	pf.TermView.MouseSGRMode = true
+
+	if !pf.ProcessMouse(&vtinput.InputEvent{
+		Type:        vtinput.MouseEventType,
+		KeyDown:     true,
+		MouseX:      10,
+		MouseY:      10,
+		ButtonState: vtinput.FromLeft1stButtonPressed,
+	}) {
+		t.Fatal("mouse press was not forwarded")
+	}
+	// The Windows console reader reports the release as another key-down
+	// shaped record with no button bits.
+	if !pf.ProcessMouse(&vtinput.InputEvent{Type: vtinput.MouseEventType, KeyDown: true, MouseX: 10, MouseY: 10}) {
+		t.Fatal("Windows-shaped mouse release was not forwarded")
+	}
+
+	want := "\x1b[<0;11;11M\x1b[<0;11;11m"
+	if got := pty.String(); got != want {
+		t.Fatalf("Windows-shaped SGR mouse stream = %q, want %q", got, want)
+	}
+}
+
+func TestPanelsFrame_MouseForwarding_UsesLegacyFormatWhenRequested(t *testing.T) {
+	pf := setupMockPanelsFrame(t)
+	pty := pf.Pty.(*mockPty)
+	defer pf.Close()
+
+	pf.ShowPanels = false
+	pf.TermView.MouseTrackingMode = 1003
+	pf.TermView.MouseSGRMode = false
+
+	press := &vtinput.InputEvent{
+		Type:        vtinput.MouseEventType,
+		KeyDown:     true,
+		MouseX:      10,
+		MouseY:      10,
+		ButtonState: vtinput.FromLeft1stButtonPressed,
+	}
+	if !pf.ProcessMouse(press) {
+		t.Fatal("legacy mouse press should be handled by PanelsFrame")
+	}
+	release := &vtinput.InputEvent{
+		Type:    vtinput.MouseEventType,
+		KeyDown: false,
+		MouseX:  10,
+		MouseY:  10,
+	}
+	if !pf.ProcessMouse(release) {
+		t.Fatal("legacy mouse release should be handled by PanelsFrame")
+	}
+	if got, want := pty.String(), "\x1b[M"+string([]byte{32, 43, 43})+"\x1b[M"+string([]byte{35, 43, 43}); got != want {
+		t.Fatalf("legacy mouse stream = %q, want %q", got, want)
 	}
 }
 

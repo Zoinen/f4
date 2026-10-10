@@ -42,8 +42,8 @@ func TestNavigationToggleShortcut(t *testing.T) {
 						t.Fatal("Classic must dismiss search and restore visible command input")
 					}
 					pressKey(pf, event)
-					if config.App.NavigationMode != config.NavigationSearchFirst || pf.CommandLineFocused || pf.CmdLine.IsFocused() || pf.CmdLine.IsVisible() {
-						t.Fatal("second shortcut must return to search-first panel focus and hidden input")
+					if config.App.NavigationMode != config.NavigationSearchFirst || pf.CommandLineFocused || pf.CmdLine.IsFocused() || !pf.CmdLine.IsVisible() {
+						t.Fatal("second shortcut must return to panel focus while retaining visible nonempty input")
 					}
 					if !left.IsFocused() || right.IsFocused() || left.GetSelectedName() != "beta.txt" || pf.CmdLine.Edit.GetText() != "retained command" {
 						t.Fatal("toggle lost panel focus, selection, or retained command")
@@ -52,6 +52,11 @@ func TestNavigationToggleShortcut(t *testing.T) {
 					pressKey(pf, event)
 					if config.App.NavigationMode != config.NavigationSearchFirst {
 						t.Fatal("key release toggled navigation")
+					}
+					pf.CmdLine.Clear()
+					pf.ResizeConsole(80, 25)
+					if pf.CmdLine.IsVisible() {
+						t.Fatal("empty unfocused search-first input was not hidden")
 					}
 				})
 			}
@@ -123,8 +128,13 @@ func TestNavigationToggleUpdatesOtherWorkspaces(t *testing.T) {
 		t.Fatal("background workspace retained search-first state")
 	}
 	pf.ToggleNavigationMode()
-	if other.CmdLine.IsVisible() || other.CmdLine.IsFocused() || !active.IsFocused() || other.CmdLine.Edit.GetText() != "keep me" {
+	if !other.CmdLine.IsVisible() || other.CmdLine.IsFocused() || !active.IsFocused() || other.CmdLine.Edit.GetText() != "keep me" {
 		t.Fatal("background workspace did not acquire search-first panel focus")
+	}
+	other.CmdLine.Clear()
+	other.ResizeConsole(80, 25)
+	if other.CmdLine.IsVisible() {
+		t.Fatal("empty background search-first input was not hidden")
 	}
 	// A workspace displaying its terminal must keep its input available.
 	other.ShowPanels = false

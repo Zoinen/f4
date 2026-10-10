@@ -42,7 +42,7 @@ func TestCopyDialogFollowsWindowResize(t *testing.T) {
 	}
 
 	assertFileDialogGeometry(t, dlg, edit, 80)
-	vtui.AssertLayout(t, dlg)
+	assertFileDialogLayout(t, dlg)
 
 	dlg.ResizeConsole(160, 40)
 	assertFileDialogGeometry(t, dlg, edit, 160)

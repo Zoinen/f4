@@ -452,98 +452,132 @@ func ParsePanelScrollbarMode(value string) PanelScrollbarMode {
 }
 
 type F4Config struct {
-	ColorStyle               string
-	Language                 string
-	FallbackLanguage         string
-	HelpLanguage             string
-	UseLocalLanguageFiles    bool
-	AlwaysShowMenuBar        bool
-	WorkspaceTabMode         int
-	WorkspaceTabsOverlay     bool
-	CtrlTabShowsMenu         bool
-	AltNumberSwitchesTabs    bool
-	RestoreWorkspaceTabs     bool
-	WorkspaceTabNumbering    WorkspaceTabNumberingMode
-	MacKeyboard              string
-	ShowHiddenFiles          bool
-	ShowDirPrefix            bool
-	ShowHighlightMarks       bool
-	ShowSymlinkArrow         bool
-	SeparateFileExtensions   bool
-	PanelScrollbarMode       PanelScrollbarMode
-	ShowPanelFileInfo        bool
-	HidePanelPathBar         bool
-	SavePanelPaths           bool
-	DriveMenuOptions         uint32 // display/filter flags for the Alt+F1/Alt+F2 menu
-	InfoPanelBytes           bool   // Ctrl+L info panel: true = raw bytes, false = human (GiB/MiB…)
-	InfoPanelCPUGPU          bool   // Ctrl+L info panel: show CPU and GPU sections (off by default)
-	EscTogglePanels          bool   // ESC toggles panels visibility (Far ships this as a macro; on by default)
-	TerminalCtrlNWorkspace   bool   // reserve Ctrl+N in terminal views for cloning panels to a workspace
-	InheritTerminalHistory   bool   // copy terminal output into new workspaces; each shell remains independent
-	KeepTerminalCursor       bool
-	CursorInsertShape        string // caret while typing: "underline" | "bar" | "block" (f4 #1154)
-	CursorOvertypeShape      string // caret in overtype mode, same names
-	CursorBlink              bool
-	ConsoleMode              string // "own" | "host" (default "own")
-	ConsoleOverlayUI         bool   // Show f4 command line and keybar overlay on top of host console (default false)
-	UseWinescape             bool   // Windows only: let the file layer use libwinescape where it is available (default true)
-	AnnounceKittyTerm        bool   // introduce the built-in terminal as kitty, so that image tools use the graphics protocol
-	CommandLineAutoComplete  bool
-	CommandLineMultiline     bool
-	CommandLineWordWrap      bool
-	UsePromptFormat          bool
-	PromptFormat             string
-	NavigationMode           PanelNavigationMode
-	PanelAutoFilter          bool // panel quick search hides non-matching rows instead of moving the cursor
-	PanelGroupSmallMiB       int
-	PanelGroupMediumMiB      int
-	PanelGroupLargeMiB       int
-	SearchCommandStayFocused bool
+	ColorStyle                 string
+	Language                   string
+	FallbackLanguage           string
+	HelpLanguage               string
+	UseLocalLanguageFiles      bool
+	AlwaysShowMenuBar          bool
+	DialogOuterBorder          bool   // leave an empty border outside dialog/UserMenu borders instead of a second frame (three cells on the sides, one above and below), far2l/Far3 style (default off)
+	GlyphStyle                 string // box, checkbox and radio glyphs of graphical windows: "classic" or "rounded" (f4#285)
+	WorkspaceTabMode           int
+	WorkspaceTabsOverlay       bool
+	CtrlTabShowsMenu           bool
+	AltNumberSwitchesTabs      bool
+	RestoreWorkspaceTabs       bool
+	WorkspaceTabNumbering      WorkspaceTabNumberingMode
+	MacKeyboard                string
+	ShowHiddenFiles            bool
+	ShowDirPrefix              bool
+	ShowHighlightMarks         bool
+	ShowSymlinkArrow           bool
+	SeparateFileExtensions     bool
+	PanelScrollbarMode         PanelScrollbarMode
+	ShowPanelFileInfo          bool
+	HidePanelPathBar           bool
+	SavePanelPaths             bool
+	DriveMenuOptions           uint32 // display/filter flags for the Alt+F1/Alt+F2 menu
+	InfoPanelBytes             bool   // Ctrl+L info panel: true = raw bytes, false = human (GiB/MiB…)
+	InfoPanelCPUGPU            bool   // Ctrl+L info panel: show CPU and GPU sections (off by default)
+	TreeRootWholeVolume        bool   // Ctrl+T tree panel root: true = whole current volume (far2l), false = source panel's current directory
+	EscTogglePanels            bool   // ESC toggles panels visibility (Far ships this as a macro; on by default)
+	TerminalCtrlNWorkspace     bool   // reserve Ctrl+N in terminal views for cloning panels to a workspace
+	InheritTerminalHistory     bool   // copy terminal output into new workspaces; each shell remains independent
+	KeepTerminalCursor         bool
+	CursorInsertShape          string // caret while typing: "underline" | "bar" | "block" (f4 #1154)
+	CursorOvertypeShape        string // caret in overtype mode, same names
+	CursorBlink                bool
+	ConsoleMode                string // "own" | "host" (default "own")
+	PluginDefaultHotkeysOff    string // semicolon-separated hotkeys (e.g. "ShiftF1;ShiftF2") whose plugin defaults the user removed with F4/Del in the plugin menu (f4:config)
+	DragOutModifier            string // "" | "ctrl" | "alt" | "shift": a drag out of a panel starts only while this key is held (default "", f4:config)
+	DragOutHoldMs              int    // without DragOutModifier: how long (ms) a left button is held on a file before a move starts a drag out instead of moving the cursor; 0 starts at once, -1 only outside the rows (default 250, f4:config)
+	ConsoleOverlayUI           bool   // Show f4 command line and keybar overlay on top of host console (default false)
+	HostConsoleDefaultColors   bool   // Host modes: draw the console mirror shown beside a hidden panel in the terminal's own default colours (default false, f4:config)
+	UseWinescape               bool   // Windows only: let the file layer use libwinescape where it is available (default true)
+	AnnounceKittyTerm          bool   // introduce the built-in terminal as kitty, so that image tools use the graphics protocol
+	CommandLineAutoComplete    bool
+	CommandLineMultiline       bool
+	CommandLineWordWrap        bool
+	UsePromptFormat            bool
+	PromptFormat               string
+	NavigationMode             PanelNavigationMode
+	PanelAutoFilter            bool // a lone Alt press opens the panel autofilter (hides non-matching rows); Alt+letter stays the quick search
+	PanelStrictAutoFilter      bool // panel quick search/autofilter requires an exact match instead of tolerating one typo
+	PanelGroupSmallMiB         int
+	PanelGroupMediumMiB        int
+	PanelGroupLargeMiB         int
+	SearchCommandStayFocused   bool
 	SearchCommandHideUnfocused bool
-	SyncPanelLoad            bool
-	SearchExactOnHit         bool // QuickSearch keeps only exact matches when at least one exists
-	ApplyCommandParallelism  int  // 0 = unlimited; absent config defaults to runtime.NumCPU()
-	EditorAutoComplete       bool
-	EditorAutoCompleteMask   string
+	SyncPanelLoad              bool
+	SearchExactOnHit           bool // QuickSearch keeps only exact matches when at least one exists
+	ApplyCommandParallelism    int  // 0 = unlimited; absent config defaults to runtime.NumCPU()
+	EditorAutoComplete         bool
+	EditorAutoCompleteMask     string
 	// ArchiveEnterExcludeMask names the files Enter must not open as an
 	// archive even when their content is one. It is a far2l file mask, so
 	// "|" still carves an exception out of it.
-	ArchiveEnterExcludeMask  string
-	EditorExpandTabs         int
-	EditorAutoIndent         bool
-	EditorCursorBeyondEOL    bool
-	EditorTabSize            int
-	EditorUseEditorConfig    bool
-	EditorCrosshair          bool
-	EditorMarkOccurrences    bool
-	UseExternalEditor        bool
-	ExternalEditorCommand    string
-	ExternalEditorConsole    string
-	ExternalEditorGUI        string
-	EditorAutodetectCodePage bool
-	EditorHighlighter        string
-	EditorSyntaxAnimation    bool
-	EditorColorerScheme      string
-	EditorColorerBackground  bool
-	EditorColorerSyntax      bool
-	EditorColorerCatalog     string
-	EditorColorerPairs       bool   // draw the pair under the cursor, FarColorer's PairsDraw
-	EditorColorerOldOutline  bool   // list lines, not labels, in the outliner: FarColorer's OldOutlineView
-	EditorColorerUserHrc     string // user schemes, FarColorer's UserHrcPath
-	EditorColorerUserHrd     string // user colour styles, FarColorer's UserHrdPath
-	EditorColorerHrcSettings string // user HRC settings, FarColorer's UserHrcSettingsPath
-	EditorCrossMode          int
-	ViewerHighlighting       int // where viewers highlight syntax; see ViewerHighlightOff
-	EditorDefaultCodePage    int
+	ArchiveEnterExcludeMask string
+	// ObserverEnterExcludeMask is ArchiveEnterExcludeMask's counterpart for
+	// plugins/observer (f4#1563): files Enter must not open as an Observer
+	// container (an ISO image, for the one module wired up so far) even
+	// when their content is one. Ctrl+PgDn keeps opening them either way.
+	// Empty by default -- unlike office documents, which are ZIP containers
+	// far2l already lists, nothing yet is known to collide with the formats
+	// Observer modules cover.
+	ObserverEnterExcludeMask string
+	// ArchiveTarIndexCache keeps the file index of an opened tar archive in the
+	// cache so that opening it again is instant. Off rebuilds the index every
+	// time, which is slower and never out of date (#1187).
+	ArchiveTarIndexCache bool
+	// WatchDirectories refreshes a panel showing a local directory when the
+	// files in it change on disk, via inotify where available and periodic
+	// comparison elsewhere (f4#1668). Off leaves refreshing to the user.
+	WatchDirectories bool
+	// ArchiveUseRatarmountIfAvailable opts in to using the user's own
+	// external `ratarmount` (https://github.com/mxmlnkn/ratarmount), when it
+	// is found on PATH, as a faster tar-index backend instead of f4's own
+	// internal/tarindexcache (#251). This first part only stores the
+	// preference and lets plugins/archive.RatarmountAvailable() detect the
+	// binary; it does not change how archives are opened yet -- see that
+	// function's doc comment for the plan.
+	ArchiveUseRatarmountIfAvailable bool
+	EditorExpandTabs                int
+	EditorAutoIndent                bool
+	EditorCursorBeyondEOL           bool
+	EditorTabSize                   int
+	EditorUseEditorConfig           bool
+	EditorCrosshair                 bool
+	EditorShowControlChars          bool
+	EditorMarkOccurrences           bool
+	UseExternalEditor               bool
+	ExternalEditorCommand           string
+	ExternalEditorConsole           string
+	ExternalEditorGUI               string
+	EditorAutodetectCodePage        bool
+	EditorHighlighter               string
+	EditorSyntaxAnimation           bool
+	EditorColorerScheme             string
+	EditorColorerBackground         bool
+	EditorColorerSyntax             bool
+	EditorColorerCatalog            string
+	EditorColorerPairs              bool   // draw the pair under the cursor, FarColorer's PairsDraw
+	EditorColorerOldOutline         bool   // list lines, not labels, in the outliner: FarColorer's OldOutlineView
+	EditorColorerUserHrc            string // user schemes, FarColorer's UserHrcPath
+	EditorColorerUserHrd            string // user colour styles, FarColorer's UserHrdPath
+	EditorColorerHrcSettings        string // user HRC settings, FarColorer's UserHrcSettingsPath
+	EditorCrossMode                 int
+	ViewerHighlighting              int // where viewers highlight syntax; see ViewerHighlightOff
+	EditorDefaultCodePage           int
 	// EditorMemoryMap lets the editor map a local file instead of reading it
 	// in chunks. Off means every buffer takes the lazily fetched path, which
 	// is the escape hatch for a file system where mapping misbehaves.
 	EditorMemoryMap          bool
 	ViewerAutodetectCodePage bool
 	ViewerDefaultCodePage    int
-	// ViewerOpenAsSupportedType sends a picture to the image viewer and a
-	// video to the video player when a file is opened for viewing (issue
-	// #991). Off, every file opens in the text and hex viewer.
+	// ViewerOpenAsSupportedType sends a picture to the image viewer, a
+	// video to the video player, and a Markdown file to the formatted
+	// view (issue #991, then #1625) when a file is opened for viewing.
+	// Off, every file opens in the text and hex viewer.
 	ViewerOpenAsSupportedType bool
 	// SystemANSICodePage and SystemOEMCodePage pin what "ANSI" and "OEM"
 	// mean on a system that cannot be asked. 0 keeps the codepage deduced
@@ -562,6 +596,11 @@ type F4Config struct {
 	WheelMenuDown   int
 	WheelTableUp    int
 	WheelTableDown  int
+	// Wheel acceleration: how many lines the very fastest notch queues on
+	// top of the rows it scrolls at once, WheelAccelerationMin (the ramp
+	// never queues) to WheelAccelerationMax. The spin window, the coast
+	// step and its delay are tuned in code, see internal/wheel.
+	WheelAcceleration int
 	// Path hints (autocomplete in path inputs and the command line).
 	PathHintTimeout     int  // seconds for a VFS ReadDir behind a hint
 	PathHintFullPath    bool // show full paths in the hint, false = final element only
@@ -571,49 +610,61 @@ type F4Config struct {
 	DialogAutoComplete  bool // drop-down while typing in fields that have history
 	// HistoryShowTimes controls the timestamp presentation in command, folder,
 	// and viewer/editor history dialogs: date+time, date, or hidden.
-	HistoryShowTimes       [HistoryTypeCount]int
-	HistoryDirsPrefixLen   int // command-history directory prefix width
-	SlideShowDelay         int
-	ImageOverlay           bool
-	VideoPauseOnFocusLoss  bool
-	ImageX11OffsetX        int
-	ImageX11OffsetY        int
-	TTYXKeys               bool
-	TTYXKeyList            string
-	ImageExternalTimeout   int
-	ImageDecoderPriority   string
-	RegisteredPlugins      []string
-	ConfirmCopy            bool
-	ConfirmMove            bool
-	ConfirmDelete          bool
-	UseTrash               bool
-	ConfirmExit            bool
-	DeleteCancelFocused    bool
-	AutoSaveSettings       bool
-	AutoSaveDialogSettings bool
-	AutoSavePanelSettings  bool
-	AutoSaveCurrentPanel   bool
-	AutoSaveGUIWindow      bool
-	DefaultFileOpMode      int
-	FileOpPathDisplay      int
-	CopyAccessRights       int
-	MacroRecordFormat      int
-	GuiFont                string
-	GuiUseSystemMonospace  bool
-	GuiFontSize            int
-	GuiCols                int
-	GuiRows                int
-	GuiPosX                int
-	GuiPosY                int
-	GuiPositionSaved       bool
+	HistoryShowTimes             [HistoryTypeCount]int
+	HistoryDirsPrefixLen         int // command-history directory prefix width
+	SlideShowDelay               int
+	ImageOverlay                 bool
+	VideoPauseOnFocusLoss        bool
+	ImageX11OffsetX              int
+	ImageX11OffsetY              int
+	TTYXKeys                     bool
+	TTYXKeyList                  string
+	ImageExternalTimeout         int
+	ImageDecoderPriority         string
+	RegisteredPlugins            []string
+	ConfirmCopy                  bool
+	ConfirmMove                  bool
+	ConfirmDelete                bool
+	UseTrash                     bool
+	ConfirmExit                  bool
+	DeleteCancelFocused          bool
+	AutoSaveSettings             bool
+	AutoSaveDialogSettings       bool
+	AutoSavePanelSettings        bool
+	AutoSaveCurrentPanel         bool
+	AutoSaveGUIWindow            bool
+	DefaultFileOpMode            int
+	FileOpPathDisplay            int
+	ClipboardImageFormat         string
+	ClipboardImagePNGCompression string
+	ClipboardImageJPEGQuality    int
+	ClipboardImagePrefix         string
+	ClipboardImageTemplate       string
+	ClipboardImageDigitFormat    string
+	CopyAccessRights             int
+	MacroRecordFormat            int
+	GuiFont                      string
+	GuiUseSystemMonospace        bool
+	GuiFontSize                  int
+	GuiCols                      int
+	GuiRows                      int
+	GuiPosX                      int
+	GuiPosY                      int
+	GuiPositionSaved             bool
 	// StartupMode, GuiBackend and TTYBackend answer "what should plain `f4`
 	// do?". They are only defaults: --gui/--tty still win on any single run.
 	// An empty backend means automatic selection.
-	StartupMode            StartupMode
-	GuiBackend             string
-	TTYBackend             string
-	GuiPresentation        GuiPresentationMode
-	QmlIconSet             QmlIconSetMode
+	StartupMode     StartupMode
+	GuiBackend      string
+	TTYBackend      string
+	GuiPresentation GuiPresentationMode
+	QmlIconSet      QmlIconSetMode
+	// StartInCurrentFolder picks what a start from a terminal does with the
+	// panels. Off is far2l's and Far's way: `f4` restores the panels of the
+	// last session, and a folder on the command line replaces only its own
+	// panel. On is mc's way: `f4` opens the current folder in both panels
+	// (issues #822, #495).
+	StartInCurrentFolder   bool
 	ConsoleTitleTemplate   string
 	DisplayFullPathInTitle bool
 	UpdateChannel          int // 0 = Stable, 1 = Nightly
@@ -695,153 +746,174 @@ func ParseQmlIconSetMode(value string) QmlIconSetMode {
 }
 
 var App = F4Config{
-	ColorStyle:               "Modern",
-	Language:                 "en",
-	FallbackLanguage:         "",
-	HelpLanguage:             "en",
-	UseLocalLanguageFiles:    false,
-	AlwaysShowMenuBar:        false,
-	WorkspaceTabMode:         int(vtui.WorkspaceTabsAlways),
-	WorkspaceTabsOverlay:     true,
-	CtrlTabShowsMenu:         false,
-	AltNumberSwitchesTabs:    true,
-	RestoreWorkspaceTabs:     true,
-	WorkspaceTabNumbering:    WorkspaceTabNumbersAlways,
-	MacKeyboard:              MacKeysAuto,
-	ShowHiddenFiles:          true,
-	ShowDirPrefix:            false,
-	ShowHighlightMarks:       false,
-	ShowSymlinkArrow:         false,
-	SeparateFileExtensions:   false,
-	PanelScrollbarMode:       PanelScrollbarMinimal,
-	ShowPanelFileInfo:        false,
-	HidePanelPathBar:         false,
-	SavePanelPaths:           true,
-	DriveMenuOptions:         DefaultDriveMenuOptions,
-	InfoPanelBytes:           false,
-	InfoPanelCPUGPU:          false,
-	EscTogglePanels:          true,
-	TerminalCtrlNWorkspace:   true,
-	InheritTerminalHistory:   false,
-	KeepTerminalCursor:       false,
-	CursorInsertShape:        "underline",
-	CursorOvertypeShape:      "block",
-	CursorBlink:              true,
-	ConsoleMode:              "own",
-	ConsoleOverlayUI:         false,
-	UseWinescape:             true,
-	AnnounceKittyTerm:        true,
-	CommandLineAutoComplete:  true,
-	CommandLineMultiline:     true,
-	CommandLineWordWrap:      true,
-	UsePromptFormat:          false,
-	PromptFormat:             "$u@$n:$p$# ",
-	NavigationMode:           NavigationClassic,
-	PanelAutoFilter:          false,
-	PanelGroupSmallMiB:       5,
-	PanelGroupMediumMiB:      10,
-	PanelGroupLargeMiB:       100,
-	SearchCommandStayFocused: false,
+	ColorStyle:                 "Modern",
+	Language:                   "en",
+	FallbackLanguage:           "",
+	HelpLanguage:               "en",
+	UseLocalLanguageFiles:      false,
+	AlwaysShowMenuBar:          false,
+	DialogOuterBorder:          false,
+	GlyphStyle:                 GlyphStyleClassic,
+	WorkspaceTabMode:           int(vtui.WorkspaceTabsAlways),
+	WorkspaceTabsOverlay:       true,
+	CtrlTabShowsMenu:           false,
+	AltNumberSwitchesTabs:      true,
+	RestoreWorkspaceTabs:       true,
+	WorkspaceTabNumbering:      WorkspaceTabNumbersAlways,
+	MacKeyboard:                MacKeysAuto,
+	ShowHiddenFiles:            true,
+	ShowDirPrefix:              false,
+	ShowHighlightMarks:         false,
+	ShowSymlinkArrow:           false,
+	SeparateFileExtensions:     false,
+	PanelScrollbarMode:         PanelScrollbarMinimal,
+	ShowPanelFileInfo:          false,
+	HidePanelPathBar:           false,
+	SavePanelPaths:             true,
+	DriveMenuOptions:           DefaultDriveMenuOptions,
+	InfoPanelBytes:             false,
+	InfoPanelCPUGPU:            false,
+	TreeRootWholeVolume:        true,
+	EscTogglePanels:            true,
+	TerminalCtrlNWorkspace:     true,
+	InheritTerminalHistory:     false,
+	KeepTerminalCursor:         false,
+	CursorInsertShape:          "underline",
+	CursorOvertypeShape:        "block",
+	CursorBlink:                true,
+	ConsoleMode:                "own",
+	ConsoleOverlayUI:           false,
+	PluginDefaultHotkeysOff:    "",
+	DragOutModifier:            "",
+	DragOutHoldMs:              DefaultDragOutHoldMs,
+	HostConsoleDefaultColors:   false,
+	UseWinescape:               true,
+	AnnounceKittyTerm:          true,
+	CommandLineAutoComplete:    true,
+	CommandLineMultiline:       true,
+	CommandLineWordWrap:        true,
+	UsePromptFormat:            false,
+	PromptFormat:               "$u@$n:$p$# ",
+	NavigationMode:             NavigationClassic,
+	PanelAutoFilter:            false,
+	PanelStrictAutoFilter:      false,
+	PanelGroupSmallMiB:         5,
+	PanelGroupMediumMiB:        10,
+	PanelGroupLargeMiB:         100,
+	SearchCommandStayFocused:   false,
 	SearchCommandHideUnfocused: false,
-	SyncPanelLoad:            false,
-	SearchExactOnHit:         false,
-	ApplyCommandParallelism:  runtime.NumCPU(),
-	EditorAutoComplete:       true,
-	EditorAutoCompleteMask:   "*.go;*.c;*.cpp;*.h;*.hpp;*.py;*.js;*.ts;*.rs;*.java;*.sh;*.txt;*.md;*.html;*.css;*.json",
+	SyncPanelLoad:              false,
+	SearchExactOnHit:           false,
+	ApplyCommandParallelism:    runtime.NumCPU(),
+	EditorAutoComplete:         true,
+	EditorAutoCompleteMask:     "*.go;*.c;*.cpp;*.h;*.hpp;*.py;*.js;*.ts;*.rs;*.java;*.sh;*.txt;*.md;*.html;*.css;*.json",
 	// far2l's KnownDocumentTypes (multiarc/src/MultiArc.cpp), the list it
 	// refuses to sink into on Enter "even while its really archive", plus
 	// .epub, which f4 issue #1184 named and far2l's list does not.
-	ArchiveEnterExcludeMask:  "*.docx,*.docm,*.dotx,*.dotm,*.xlsx,*.xlsm,*.xltx,*.xltm,*.xlsb,*.xlam,*.pptx,*.pptm,*.potx,*.potm,*.ppam,*.ppsx,*.ppsm,*.sldx,*.sldm,*.thmx,*.odt,*.ods,*.odp,*.epub",
-	EditorExpandTabs:         0,
-	EditorAutoIndent:         true,
-	EditorCursorBeyondEOL:    false,
-	EditorTabSize:            4,
-	EditorUseEditorConfig:    true,
-	EditorCrosshair:          false,
-	EditorMarkOccurrences:    true,
-	UseExternalEditor:        false,
-	ExternalEditorCommand:    "",
-	ExternalEditorConsole:    "",
-	ExternalEditorGUI:        "",
-	EditorAutodetectCodePage: true,
-	EditorHighlighter:        "Chroma",
-	EditorSyntaxAnimation:    false,
-	EditorColorerScheme:      "",
-	EditorColorerBackground:  true,
-	EditorColorerSyntax:      true,
-	EditorColorerCatalog:     "",
-	EditorColorerPairs:       true,
-	EditorColorerOldOutline:  true,
-	EditorColorerUserHrc:     "",
-	EditorColorerUserHrd:     "",
-	EditorColorerHrcSettings: "",
-	EditorCrossMode:          ColorerCrossBoth,
-	ViewerHighlighting:       ViewerHighlightOff,
-	EditorDefaultCodePage:    65001,
-	EditorMemoryMap:          true,
-	ViewerAutodetectCodePage: true,
-	ViewerDefaultCodePage:    65001,
-	WheelPanelUp:             0,
-	WheelPanelDown:           0,
-	WheelEditorUp:            0,
-	WheelEditorDown:          0,
-	WheelViewerUp:            0,
-	WheelViewerDown:          0,
-	WheelMenuUp:              0,
-	WheelMenuDown:            0,
-	WheelTableUp:             0,
-	WheelTableDown:           0,
-	PathHintTimeout:          2,
-	PathHintFullPath:         false,
-	PathHintSource:           2,
-	PathHintMaxVisible:       5,
-	PathHintPerCategory:      true,
-	DialogAutoComplete:       true,
-	HistoryShowTimes:         [HistoryTypeCount]int{HistoryShowDateTime, HistoryShowDateTime, HistoryShowDateTime},
-	HistoryDirsPrefixLen:     24,
-	SlideShowDelay:           DefaultSlideShowDelay,
-	ImageOverlay:             true,
-	TTYXKeys:                 true,
-	TTYXKeyList:              DefaultTTYXKeyList,
-	ImageExternalTimeout:     DefaultImageExternalTimeout,
-	ImageDecoderPriority:     "",
-	ConfirmCopy:              true,
-	ConfirmMove:              true,
-	ConfirmDelete:            true,
-	UseTrash:                 false,
-	ConfirmExit:              true,
-	DeleteCancelFocused:      false,
-	AutoSaveSettings:         true,
-	AutoSaveDialogSettings:   true,
-	AutoSavePanelSettings:    true,
-	AutoSaveCurrentPanel:     true,
-	AutoSaveGUIWindow:        true,
-	DefaultFileOpMode:        0,
-	FileOpPathDisplay:        0,
-	CopyAccessRights:         0,
-	GuiFont:                  "",
-	GuiUseSystemMonospace:    true,
-	GuiFontSize:              DefaultGuiFontSize(runtime.GOOS),
-	GuiCols:                  100,
-	GuiRows:                  30,
-	GuiPosX:                  0,
-	GuiPosY:                  0,
-	GuiPositionSaved:         false,
-	StartupMode:              StartupModeAuto,
-	GuiBackend:               "",
-	TTYBackend:               "",
-	ConsoleTitleTemplate:     "f4 %Ver %Platform %Admin - %State",
-	DisplayFullPathInTitle:   false,
-	UpdateChannel:            0,
-	ProxyMode:                netproxy.ModeSystem,
-	UpdateInterval:           3, // Default to Weekly
-	EnforceColorCorrection:   true,
-	MenuLoopScroll:           true,
-	HighlightPriority:        0,
-	LastUpdateCheck:          0,
-	LastUpdateVersion:        "",
-	Compare:                  DefaultCompareOptions(),
-	Sync:                     DefaultSyncOptions(),
+	ArchiveTarIndexCache:            true,
+	WatchDirectories:                true,
+	ArchiveUseRatarmountIfAvailable: false,
+	ArchiveEnterExcludeMask:         "*.docx,*.docm,*.dotx,*.dotm,*.xlsx,*.xlsm,*.xltx,*.xltm,*.xlsb,*.xlam,*.pptx,*.pptm,*.potx,*.potm,*.ppam,*.ppsx,*.ppsm,*.sldx,*.sldm,*.thmx,*.odt,*.ods,*.odp,*.epub",
+	ObserverEnterExcludeMask:        "",
+	EditorExpandTabs:                0,
+	EditorAutoIndent:                true,
+	EditorCursorBeyondEOL:           false,
+	EditorTabSize:                   4,
+	EditorUseEditorConfig:           true,
+	EditorCrosshair:                 false,
+	EditorShowControlChars:          false,
+	EditorMarkOccurrences:           true,
+	UseExternalEditor:               false,
+	ExternalEditorCommand:           "",
+	ExternalEditorConsole:           "",
+	ExternalEditorGUI:               "",
+	EditorAutodetectCodePage:        true,
+	EditorHighlighter:               "Chroma",
+	EditorSyntaxAnimation:           false,
+	EditorColorerScheme:             "",
+	EditorColorerBackground:         true,
+	EditorColorerSyntax:             true,
+	EditorColorerCatalog:            "",
+	EditorColorerPairs:              true,
+	EditorColorerOldOutline:         true,
+	EditorColorerUserHrc:            "",
+	EditorColorerUserHrd:            "",
+	EditorColorerHrcSettings:        "",
+	EditorCrossMode:                 ColorerCrossBoth,
+	ViewerHighlighting:              ViewerHighlightOff,
+	EditorDefaultCodePage:           65001,
+	EditorMemoryMap:                 true,
+	ViewerAutodetectCodePage:        true,
+	ViewerDefaultCodePage:           65001,
+	WheelPanelUp:                    0,
+	WheelPanelDown:                  0,
+	WheelEditorUp:                   0,
+	WheelEditorDown:                 0,
+	WheelViewerUp:                   0,
+	WheelViewerDown:                 0,
+	WheelMenuUp:                     0,
+	WheelMenuDown:                   0,
+	WheelTableUp:                    0,
+	WheelTableDown:                  0,
+	WheelAcceleration:               WheelAccelerationDefault,
+	PathHintTimeout:                 2,
+	PathHintFullPath:                false,
+	PathHintSource:                  2,
+	PathHintMaxVisible:              5,
+	PathHintPerCategory:             true,
+	DialogAutoComplete:              true,
+	HistoryShowTimes:                [HistoryTypeCount]int{HistoryShowDateTime, HistoryShowDateTime, HistoryShowDateTime},
+	HistoryDirsPrefixLen:            24,
+	SlideShowDelay:                  DefaultSlideShowDelay,
+	ImageOverlay:                    true,
+	TTYXKeys:                        true,
+	TTYXKeyList:                     DefaultTTYXKeyList,
+	ImageExternalTimeout:            DefaultImageExternalTimeout,
+	ImageDecoderPriority:            "",
+	ConfirmCopy:                     true,
+	ConfirmMove:                     true,
+	ConfirmDelete:                   true,
+	UseTrash:                        false,
+	ConfirmExit:                     true,
+	DeleteCancelFocused:             false,
+	AutoSaveSettings:                true,
+	AutoSaveDialogSettings:          true,
+	AutoSavePanelSettings:           true,
+	AutoSaveCurrentPanel:            true,
+	AutoSaveGUIWindow:               true,
+	DefaultFileOpMode:               0,
+	FileOpPathDisplay:               0,
+	ClipboardImageFormat:            "png",
+	ClipboardImagePNGCompression:    "default",
+	ClipboardImageJPEGQuality:       90,
+	ClipboardImagePrefix:            "screenshot",
+	ClipboardImageTemplate:          "!{prefix}!!{seq}!",
+	ClipboardImageDigitFormat:       "000",
+	CopyAccessRights:                0,
+	GuiFont:                         "",
+	GuiUseSystemMonospace:           true,
+	GuiFontSize:                     DefaultGuiFontSize(runtime.GOOS),
+	GuiCols:                         100,
+	GuiRows:                         30,
+	GuiPosX:                         0,
+	GuiPosY:                         0,
+	GuiPositionSaved:                false,
+	StartupMode:                     StartupModeAuto,
+	StartInCurrentFolder:            false,
+	GuiBackend:                      "",
+	TTYBackend:                      "",
+	ConsoleTitleTemplate:            "f4 %Ver %Platform %Admin - %State",
+	DisplayFullPathInTitle:          false,
+	UpdateChannel:                   0,
+	ProxyMode:                       netproxy.ModeSystem,
+	UpdateInterval:                  3, // Default to Weekly
+	EnforceColorCorrection:          true,
+	MenuLoopScroll:                  true,
+	HighlightPriority:               0,
+	LastUpdateCheck:                 0,
+	LastUpdateVersion:               "",
+	Compare:                         DefaultCompareOptions(),
+	Sync:                            DefaultSyncOptions(),
 
 	// Pictures and video open in their own viewers (issue #991).
 	ViewerOpenAsSupportedType: true,
@@ -939,6 +1011,8 @@ func parseConfigInto(cfg *F4Config, merged *ini.File) {
 	cfg.ConsoleTitleTemplate = merged.GetString("Interface", "ConsoleTitleTemplate", "f4 %Ver %Platform %Admin - %State")
 	cfg.DisplayFullPathInTitle = merged.GetString("Interface", "DisplayFullPathInTitle", "0") == "1"
 	cfg.AlwaysShowMenuBar = merged.GetString("Interface", "AlwaysShowMenuBar", "0") == "1"
+	cfg.DialogOuterBorder = merged.GetString("Interface", "DialogOuterBorder", "0") == "1"
+	cfg.GlyphStyle = NormalizeGlyphStyle(merged.GetString("Interface", "GlyphStyle", GlyphStyleClassic))
 	switch strings.ToLower(merged.GetString("Interface", "WorkspaceTabMode", "always")) {
 	case "always":
 		cfg.WorkspaceTabMode = int(vtui.WorkspaceTabsAlways)
@@ -982,6 +1056,7 @@ func parseConfigInto(cfg *F4Config, merged *ini.File) {
 	cfg.DriveMenuOptions = ParseDriveMenuOptions(merged.GetString("Panel", "DriveMenuOptions", ""))
 	cfg.InfoPanelBytes = merged.GetString("Panel", "InfoPanelBytes", "0") == "1"
 	cfg.InfoPanelCPUGPU = merged.GetString("Panel", "InfoPanelCPUGPU", "0") == "1"
+	cfg.TreeRootWholeVolume = merged.GetString("Panel", "TreeRootWholeVolume", "1") == "1"
 	cfg.EscTogglePanels = merged.GetString("Panel", "EscTogglePanels", "1") == "1"
 	cfg.TerminalCtrlNWorkspace = merged.GetString("Panel", "TerminalCtrlNWorkspace", "1") == "1"
 	cfg.InheritTerminalHistory = merged.GetString("Panel", "InheritTerminalHistory", "0") == "1"
@@ -991,6 +1066,10 @@ func parseConfigInto(cfg *F4Config, merged *ini.File) {
 	cfg.CursorBlink = merged.GetString("Panel", "CursorBlink", "1") != "0"
 	cfg.ConsoleMode = merged.GetString("Panel", "ConsoleMode", "own")
 	cfg.ConsoleOverlayUI = merged.GetString("Panel", "ConsoleOverlayUI", "0") == "1"
+	cfg.PluginDefaultHotkeysOff = strings.TrimSpace(merged.GetString("Panel", "PluginDefaultHotkeysOff", ""))
+	cfg.DragOutModifier = NormalizeDragOutModifier(merged.GetString("Panel", "DragOutModifier", ""))
+	cfg.DragOutHoldMs = NormalizeDragOutHoldMs(merged.GetString("Panel", "DragOutHoldMs", ""))
+	cfg.HostConsoleDefaultColors = merged.GetString("Panel", "HostConsoleDefaultColors", "0") == "1"
 	cfg.UseWinescape = merged.GetString("Panel", "UseWinescape", "1") != "0"
 	cfg.CommandLineAutoComplete = merged.GetString("Panel", "CommandLineAutoComplete", "1") == "1"
 	cfg.CommandLineMultiline = merged.GetString("Panel", "CommandLineMultiline", "1") == "1"
@@ -1006,6 +1085,7 @@ func parseConfigInto(cfg *F4Config, merged *ini.File) {
 		cfg.NavigationMode = NavigationClassic
 	}
 	cfg.PanelAutoFilter = merged.GetString("Panel", "PanelAutoFilter", "0") == "1"
+	cfg.PanelStrictAutoFilter = merged.GetString("Panel", "PanelStrictAutoFilter", "0") == "1"
 	cfg.PanelGroupSmallMiB = parseGroupLimit(merged.GetString("Panel", "PanelGroupSmallMiB", "5"))
 	cfg.PanelGroupMediumMiB = parseGroupLimit(merged.GetString("Panel", "PanelGroupMediumMiB", "10"))
 	cfg.PanelGroupLargeMiB = parseGroupLimit(merged.GetString("Panel", "PanelGroupLargeMiB", "100"))
@@ -1043,6 +1123,13 @@ func parseConfigInto(cfg *F4Config, merged *ini.File) {
 	cfg.SystemANSICodePage = parseForcedCodePage(merged.GetString("System", "ANSICodePage", ""))
 	cfg.SystemOEMCodePage = parseForcedCodePage(merged.GetString("System", "OEMCodePage", ""))
 	_, _ = fmt.Sscanf(merged.GetString("Panel", "FileOpPathDisplay", "0"), "%d", &cfg.FileOpPathDisplay)
+	cfg.ClipboardImageFormat = merged.GetString("ClipboardImages", "Format", "png")
+	cfg.ClipboardImagePNGCompression = merged.GetString("ClipboardImages", "PNGCompression", "default")
+	cfg.ClipboardImageJPEGQuality = 90
+	_, _ = fmt.Sscanf(merged.GetString("ClipboardImages", "JPEGQuality", "90"), "%d", &cfg.ClipboardImageJPEGQuality)
+	cfg.ClipboardImagePrefix = merged.GetString("ClipboardImages", "Prefix", "screenshot")
+	cfg.ClipboardImageTemplate = merged.GetString("ClipboardImages", "Template", "!{prefix}!!{seq}!")
+	cfg.ClipboardImageDigitFormat = merged.GetString("ClipboardImages", "DigitFormat", "000")
 	_, _ = fmt.Sscanf(merged.GetString("Panel", "CopyAccessRights", "0"), "%d", &cfg.CopyAccessRights)
 	if cfg.CopyAccessRights < 0 || cfg.CopyAccessRights > 2 {
 		cfg.CopyAccessRights = 0
@@ -1075,6 +1162,7 @@ func parseConfigInto(cfg *F4Config, merged *ini.File) {
 	cfg.StartupMode = ParseStartupMode(merged.GetString("Startup", "Mode", "auto"))
 	cfg.GuiBackend = NormalizeStartupGuiBackend(merged.GetString("Startup", "GuiBackend", ""))
 	cfg.TTYBackend = NormalizeStartupTTYBackend(merged.GetString("Startup", "TTYBackend", ""))
+	cfg.StartInCurrentFolder = merged.GetString("Startup", "StartInCurrentFolder", "0") == "1"
 	cfg.EnforceColorCorrection = merged.GetString("Dialogs", "EnforceColorCorrection", "1") == "1"
 	cfg.MenuLoopScroll = merged.GetString("VMenu", "MenuStopWrapOnEdge", "1") == "1"
 	_, _ = fmt.Sscanf(merged.GetString("Appearance", "HighlightPriority", "0"), "%d", &cfg.HighlightPriority)
@@ -1093,7 +1181,11 @@ func parseConfigInto(cfg *F4Config, merged *ini.File) {
 
 	cfg.EditorAutoComplete = merged.GetString("Editor", "AutoComplete", "1") == "1"
 	cfg.EditorAutoCompleteMask = merged.GetString("Editor", "AutoCompleteMask", "*.go;*.c;*.cpp;*.h;*.hpp;*.py;*.js;*.ts;*.rs;*.java;*.sh;*.txt;*.md;*.html;*.css;*.json")
+	cfg.ArchiveTarIndexCache = merged.GetString("Panel", "ArchiveTarIndexCache", "1") == "1"
+	cfg.WatchDirectories = merged.GetString("Panel", "WatchDirectories", "1") == "1"
+	cfg.ArchiveUseRatarmountIfAvailable = merged.GetString("Panel", "ArchiveUseRatarmountIfAvailable", "0") == "1"
 	cfg.ArchiveEnterExcludeMask = merged.GetString("Panel", "ArchiveEnterExcludeMask", "*.docx,*.docm,*.dotx,*.dotm,*.xlsx,*.xlsm,*.xltx,*.xltm,*.xlsb,*.xlam,*.pptx,*.pptm,*.potx,*.potm,*.ppam,*.ppsx,*.ppsm,*.sldx,*.sldm,*.thmx,*.odt,*.ods,*.odp,*.epub")
+	cfg.ObserverEnterExcludeMask = merged.GetString("Panel", "ObserverEnterExcludeMask", "")
 
 	cfg.EditorExpandTabs = 0
 	_, _ = fmt.Sscanf(merged.GetString("Editor", "ExpandTabs", "0"), "%d", &cfg.EditorExpandTabs)
@@ -1101,6 +1193,7 @@ func parseConfigInto(cfg *F4Config, merged *ini.File) {
 	cfg.EditorCursorBeyondEOL = merged.GetString("Editor", "CursorBeyondEOL", "0") == "1"
 	cfg.EditorUseEditorConfig = merged.GetString("Editor", "UseEditorConfig", "1") == "1"
 	cfg.EditorCrosshair = merged.GetString("Editor", "Crosshair", "0") == "1"
+	cfg.EditorShowControlChars = merged.GetString("Editor", "ShowControlChars", "0") == "1"
 	cfg.EditorMarkOccurrences = merged.GetString("Editor", "MarkOccurrences", "1") == "1"
 	cfg.EditorAutodetectCodePage = merged.GetString("Editor", "AutodetectCodePage", "1") == "1"
 	cfg.EditorMemoryMap = merged.GetString("Editor", "MemoryMap", "1") == "1"
@@ -1141,6 +1234,9 @@ func parseConfigInto(cfg *F4Config, merged *ini.File) {
 	cfg.WheelMenuDown = LoadWheelLines(merged, "MenuDown")
 	cfg.WheelTableUp = LoadWheelLines(merged, "TableUp")
 	cfg.WheelTableDown = LoadWheelLines(merged, "TableDown")
+	// [Mouse] — the strength of the fast-spin ramp; its shape is tuned in
+	// code (see internal/wheel), and the value is clamped into its range.
+	cfg.WheelAcceleration = loadWheelInt(merged, "Acceleration", WheelAccelerationDefault, WheelAccelerationMin, WheelAccelerationMax)
 
 	// [PathHints]
 	cfg.PathHintTimeout = 2
@@ -1279,6 +1375,8 @@ func SerializeSettingsConfig(cfg F4Config) []byte {
 	fmt.Fprintf(&sb, "ConsoleTitleTemplate = %s\n", cfg.ConsoleTitleTemplate)
 	fmt.Fprintf(&sb, "DisplayFullPathInTitle = %d\n", map[bool]int{true: 1, false: 0}[cfg.DisplayFullPathInTitle])
 	fmt.Fprintf(&sb, "AlwaysShowMenuBar = %d\n", map[bool]int{true: 1, false: 0}[cfg.AlwaysShowMenuBar])
+	fmt.Fprintf(&sb, "DialogOuterBorder = %d\n", map[bool]int{true: 1, false: 0}[cfg.DialogOuterBorder])
+	fmt.Fprintf(&sb, "GlyphStyle = %s\n", NormalizeGlyphStyle(cfg.GlyphStyle))
 	workspaceTabMode := "multiple"
 	if cfg.WorkspaceTabMode == int(vtui.WorkspaceTabsAlways) {
 		workspaceTabMode = "always"
@@ -1300,6 +1398,10 @@ func SerializeSettingsConfig(cfg F4Config) []byte {
 	fmt.Fprintf(&sb, "MacKeyboard = %s\n\n", ParseMacKeysMode(cfg.MacKeyboard))
 	sb.WriteString("[Panel]\n")
 	fmt.Fprintf(&sb, "ArchiveEnterExcludeMask = %s\n", cfg.ArchiveEnterExcludeMask)
+	fmt.Fprintf(&sb, "ObserverEnterExcludeMask = %s\n", cfg.ObserverEnterExcludeMask)
+	fmt.Fprintf(&sb, "ArchiveTarIndexCache = %d\n", map[bool]int{true: 1, false: 0}[cfg.ArchiveTarIndexCache])
+	fmt.Fprintf(&sb, "WatchDirectories = %d\n", map[bool]int{true: 1, false: 0}[cfg.WatchDirectories])
+	fmt.Fprintf(&sb, "ArchiveUseRatarmountIfAvailable = %d\n", map[bool]int{true: 1, false: 0}[cfg.ArchiveUseRatarmountIfAvailable])
 	fmt.Fprintf(&sb, "ShowHiddenFiles = %d\n", map[bool]int{true: 1, false: 0}[cfg.ShowHiddenFiles])
 	fmt.Fprintf(&sb, "ShowDirPrefix = %d\n", map[bool]int{true: 1, false: 0}[cfg.ShowDirPrefix])
 	fmt.Fprintf(&sb, "ShowHighlightMarks = %d\n", map[bool]int{true: 1, false: 0}[cfg.ShowHighlightMarks])
@@ -1312,6 +1414,7 @@ func SerializeSettingsConfig(cfg F4Config) []byte {
 	fmt.Fprintf(&sb, "DriveMenuOptions = %d\n", cfg.DriveMenuOptions)
 	fmt.Fprintf(&sb, "InfoPanelBytes = %d\n", map[bool]int{true: 1, false: 0}[cfg.InfoPanelBytes])
 	fmt.Fprintf(&sb, "InfoPanelCPUGPU = %d\n", map[bool]int{true: 1, false: 0}[cfg.InfoPanelCPUGPU])
+	fmt.Fprintf(&sb, "TreeRootWholeVolume = %d\n", map[bool]int{true: 1, false: 0}[cfg.TreeRootWholeVolume])
 	fmt.Fprintf(&sb, "EscTogglePanels = %d\n", map[bool]int{true: 1, false: 0}[cfg.EscTogglePanels])
 	fmt.Fprintf(&sb, "TerminalCtrlNWorkspace = %d\n", map[bool]int{true: 1, false: 0}[cfg.TerminalCtrlNWorkspace])
 	fmt.Fprintf(&sb, "InheritTerminalHistory = %d\n", map[bool]int{true: 1, false: 0}[cfg.InheritTerminalHistory])
@@ -1320,7 +1423,11 @@ func SerializeSettingsConfig(cfg F4Config) []byte {
 	fmt.Fprintf(&sb, "CursorOvertypeShape = %s\n", NormalizeCursorShape(cfg.CursorOvertypeShape, "block"))
 	fmt.Fprintf(&sb, "CursorBlink = %d\n", map[bool]int{true: 1, false: 0}[cfg.CursorBlink])
 	fmt.Fprintf(&sb, "ConsoleMode = %s\n", cfg.ConsoleMode)
+	fmt.Fprintf(&sb, "PluginDefaultHotkeysOff = %s\n", strings.TrimSpace(cfg.PluginDefaultHotkeysOff))
+	fmt.Fprintf(&sb, "DragOutModifier = %s\n", NormalizeDragOutModifier(cfg.DragOutModifier))
+	fmt.Fprintf(&sb, "DragOutHoldMs = %d\n", clampDragOutHoldMs(cfg.DragOutHoldMs))
 	fmt.Fprintf(&sb, "ConsoleOverlayUI = %d\n", map[bool]int{true: 1, false: 0}[cfg.ConsoleOverlayUI])
+	fmt.Fprintf(&sb, "HostConsoleDefaultColors = %d\n", map[bool]int{true: 1, false: 0}[cfg.HostConsoleDefaultColors])
 	fmt.Fprintf(&sb, "UseWinescape = %d\n", map[bool]int{true: 1, false: 0}[cfg.UseWinescape])
 	fmt.Fprintf(&sb, "CommandLineAutoComplete = %d\n", map[bool]int{true: 1, false: 0}[cfg.CommandLineAutoComplete])
 	fmt.Fprintf(&sb, "CommandLineMultiline = %d\n", map[bool]int{true: 1, false: 0}[cfg.CommandLineMultiline])
@@ -1329,6 +1436,7 @@ func SerializeSettingsConfig(cfg F4Config) []byte {
 	fmt.Fprintf(&sb, "PromptFormat = %s\n", cfg.PromptFormat)
 	fmt.Fprintf(&sb, "NavigationMode = %s\n", cfg.NavigationMode.String())
 	fmt.Fprintf(&sb, "PanelAutoFilter = %d\n", map[bool]int{true: 1, false: 0}[cfg.PanelAutoFilter])
+	fmt.Fprintf(&sb, "PanelStrictAutoFilter = %d\n", map[bool]int{true: 1, false: 0}[cfg.PanelStrictAutoFilter])
 	fmt.Fprintf(&sb, "PanelGroupSmallMiB = %d\nPanelGroupMediumMiB = %d\nPanelGroupLargeMiB = %d\n", cfg.PanelGroupSmallMiB, cfg.PanelGroupMediumMiB, cfg.PanelGroupLargeMiB)
 	fmt.Fprintf(&sb, "SearchCommandStayFocused = %d\n", map[bool]int{true: 1, false: 0}[cfg.SearchCommandStayFocused])
 	fmt.Fprintf(&sb, "SearchCommandHideUnfocused = %d\n", map[bool]int{true: 1, false: 0}[cfg.SearchCommandHideUnfocused])
@@ -1341,6 +1449,8 @@ func SerializeSettingsConfig(cfg F4Config) []byte {
 	fmt.Fprintf(&sb, "FileOpPathDisplay = %d\n", cfg.FileOpPathDisplay)
 	fmt.Fprintf(&sb, "CopyAccessRights = %d\n", cfg.CopyAccessRights)
 
+	sb.WriteString("\n[ClipboardImages]\n")
+	fmt.Fprintf(&sb, "Format = %s\nPNGCompression = %s\nJPEGQuality = %d\nPrefix = %s\nTemplate = %s\nDigitFormat = %s\n", cfg.ClipboardImageFormat, cfg.ClipboardImagePNGCompression, cfg.ClipboardImageJPEGQuality, cfg.ClipboardImagePrefix, cfg.ClipboardImageTemplate, cfg.ClipboardImageDigitFormat)
 	sb.WriteString("\n[System]\n")
 	fmt.Fprintf(&sb, "ConfirmCopy = %d\n", map[bool]int{true: 1, false: 0}[cfg.ConfirmCopy])
 	fmt.Fprintf(&sb, "ConfirmMove = %d\n", map[bool]int{true: 1, false: 0}[cfg.ConfirmMove])
@@ -1382,6 +1492,7 @@ func SerializeSettingsConfig(cfg F4Config) []byte {
 	fmt.Fprintf(&sb, "Mode = %s\n", cfg.StartupMode.String())
 	fmt.Fprintf(&sb, "GuiBackend = %s\n", cfg.GuiBackend)
 	fmt.Fprintf(&sb, "TTYBackend = %s\n", cfg.TTYBackend)
+	fmt.Fprintf(&sb, "StartInCurrentFolder = %d\n", map[bool]int{true: 1, false: 0}[cfg.StartInCurrentFolder])
 
 	sb.WriteString("\n[Update]\n")
 	fmt.Fprintf(&sb, "Channel = %d\n", cfg.UpdateChannel)
@@ -1404,6 +1515,7 @@ func SerializeSettingsConfig(cfg F4Config) []byte {
 	fmt.Fprintf(&sb, "CursorBeyondEOL = %d\n", map[bool]int{true: 1, false: 0}[cfg.EditorCursorBeyondEOL])
 	fmt.Fprintf(&sb, "UseEditorConfig = %d\n", map[bool]int{true: 1, false: 0}[cfg.EditorUseEditorConfig])
 	fmt.Fprintf(&sb, "Crosshair = %d\n", map[bool]int{true: 1, false: 0}[cfg.EditorCrosshair])
+	fmt.Fprintf(&sb, "ShowControlChars = %d\n", map[bool]int{true: 1, false: 0}[cfg.EditorShowControlChars])
 	fmt.Fprintf(&sb, "MarkOccurrences = %d\n", map[bool]int{true: 1, false: 0}[cfg.EditorMarkOccurrences])
 	fmt.Fprintf(&sb, "TabSize = %d\n", cfg.EditorTabSize)
 	fmt.Fprintf(&sb, "UseExternalEditor = %d\n", map[bool]int{true: 1, false: 0}[cfg.UseExternalEditor])
@@ -1446,6 +1558,7 @@ func SerializeSettingsConfig(cfg F4Config) []byte {
 	fmt.Fprintf(&sb, "MenuDown = %d\n", cfg.WheelMenuDown)
 	fmt.Fprintf(&sb, "TableUp = %d\n", cfg.WheelTableUp)
 	fmt.Fprintf(&sb, "TableDown = %d\n", cfg.WheelTableDown)
+	fmt.Fprintf(&sb, "Acceleration = %d\n", cfg.WheelAcceleration)
 	sb.WriteString("\n[PathHints]\n")
 	fmt.Fprintf(&sb, "Timeout = %d\n", cfg.PathHintTimeout)
 	fmt.Fprintf(&sb, "FullPath = %d\n", map[bool]int{true: 1, false: 0}[cfg.PathHintFullPath])
@@ -1710,6 +1823,32 @@ func LoadWheelLines(ini *ini.File, key string) int {
 	return n
 }
 
+// Bounds and default of the [Mouse] Acceleration key: a settings file that
+// does not mention it ends up with the default, and so does a compiled-in
+// App before any file was read. The weakest value never queues anything, so
+// it is the ramp switched off; see internal/wheel for the ramp itself.
+const (
+	WheelAccelerationMin     = 1
+	WheelAccelerationMax     = 10
+	WheelAccelerationDefault = 5
+)
+
+// loadWheelInt reads an integer [Mouse] key: def when the key is missing or
+// unparsable, then clamped into [min, max]. settings.ini is user text, and
+// no value in it may be able to stop the panel from scrolling or make it
+// scroll at nonsense speed.
+func loadWheelInt(ini *ini.File, key string, def, min, max int) int {
+	n := def
+	_, _ = fmt.Sscanf(ini.GetString("Mouse", key, strconv.Itoa(def)), "%d", &n)
+	if n < min {
+		n = min
+	}
+	if n > max {
+		n = max
+	}
+	return n
+}
+
 // WheelScrollLines resolves a configured wheel speed (0 = follow the system
 // setting) into the number of lines to scroll per wheel notch.
 func WheelScrollLines(cfg int) int {
@@ -1752,78 +1891,81 @@ func ApplyCursorSettings() {
 	vtui.SetCursorStyle(insert, overtype, App.CursorBlink)
 }
 
-func CreateDefaultHighlightIni(path string) {
-	content := `# User highlight rules and sort groups.
+// defaultHighlightIni is the highlight.ini a new profile gets: the comments that
+// describe every key, and the sort groups. Everything before the first section
+// is the header, which RefreshHighlightIniHeader keeps up to date in files that
+// already exist (f4#912).
+const defaultHighlightIni = `# User highlight rules and sort groups.
 #
-# f4 applies file highlighting rules from both the active Color Style (Theme)
-# and this file. By default, rules in this file have higher priority.
-# The two sources are not merged field by field: f4 puts one complete rule
-# list before the other. Change Appearance.HighlightPriority in settings.ini
-# to 0 (user rules first, the default) or 1 (theme rules first).
-# A matching rule normally stops processing even when it has no colour for
-# the current state. Add ContinueProcessing = 1 when a later rule should be
-# allowed to supply or merge the remaining colour components.
+# f4 applies the rules of this file together with those of the active Color
+# Style (Theme). Sections are tried in the order of their numbers and the first
+# match wins, unless it sets ContinueProcessing = 1. Rules of this file go first;
+# set Appearance.HighlightPriority in settings.ini to 1 to put the theme first.
 #
-# You can add your custom highlight groups here (e.g. Mask = *.mp3).
-# Default groups (Hidden, Executables, Directories) are already defined
-# by the active Color Style, so you don't need to duplicate them unless
-# you specifically want to override the theme's colors.
+# A [Highlight_N] section matches an item by its Mask, attributes, size or date.
+# Name is a label, not a matcher. A section without a Mask matches every name,
+# so a rule for folders needs IncludeAttributes = Directory and a rule for files
+# needs ExcludeAttributes = Directory. Attributes: Directory, Hidden, Executable,
+# ReadOnly, System, Archive, Symlink, Junction. Other keys: SizeAbove, SizeBelow,
+# DateType, DateAfter, DateBefore, Mark.
 #
-# A [Highlight_N] section matches an item by its Mask, attributes, size or
-# date. Name is a label for you, not a matcher. The four color keys are
-# selected independently:
-#   NormalColor          - an ordinary, unselected item
-#   SelectedColor        - a selected item
-#   CursorColor          - an ordinary item under the cursor
-#   SelectedCursorColor  - a selected item under the cursor
-# The same four can be spelled the way Far Manager names them in its Files
-# highlighting dialog, which is what a group copied from Far will use:
-#   NormalFileName, SelectedFileName, FileNameUnderCursor,
-#   FileNameSelectedUnderCursor
-# The cursor-specific keys are also accepted as NormalColorUnderCursor and
-# SelectedColorUnderCursor. A color that is omitted leaves the panel's own
-# color for that state, as in Far: SelectedColor does not apply to a selected
-# item under the cursor. Every one of the four takes a foreground, a
-# background, or both:
-#   foreground:#FF00FF | background:#008080
-# Other useful keys are IncludeAttributes/ExcludeAttributes (Directory,
-# Hidden, Executable, ReadOnly, System, Archive, Symlink), SizeAbove,
-# SizeBelow, DateType, DateAfter, DateBefore, Mark, and ContinueProcessing.
+# The four colors are set independently, each as a foreground, a background or
+# both. A color that is omitted leaves the panel's own color for that state:
+#   NormalFileName              - an ordinary item
+#   SelectedFileName            - a selected item
+#   FileNameUnderCursor         - an ordinary item under the cursor
+#   FileNameSelectedUnderCursor - a selected item under the cursor
 #
-# Sections are tried in the order of their numbers and the first match wins,
-# unless it sets ContinueProcessing = 1. A section without a Mask matches
-# every name, so a rule meant for folders needs IncludeAttributes = Directory
-# and a rule meant for files needs ExcludeAttributes = Directory -- a rule
-# with neither repaints the whole panel and hides every rule below it.
+# UseDefaults = 1 turns a section into a change of the built-in colors of its
+# attribute: its place in the file does not matter, it keeps the rest of the
+# theme's rules, and only the colors it names are replaced. When an item has
+# several attributes, the first of these decides: Junction, Symlink, Hidden or
+# System, Directory. So a Directory section does not recolor symlinks or hidden
+# folders, and a Symlink section does not recolor junctions.
 #
-# A comment takes a whole line. There are no trailing comments: '#' also
-# opens a color literal, so anything after a value stays part of that value.
+# A comment takes a whole line. There are no trailing comments: '#' also opens
+# a color literal, so anything after a value stays part of that value.
 #
-# Uncomment and adapt these complete examples to add custom rules. The
-# sections are commented out deliberately, so they do not change the panel.
+# Uncomment and adapt these examples. They are commented out deliberately, so
+# they do not change the panel.
+#
 # [Highlight_100]
 # Name = Archives
 # Mask = *.zip, *.rar, *.7z
 # ExcludeAttributes = Directory
-# NormalColor = foreground:#FF00FF | background:#000000
-# SelectedColor = foreground:#FFFF00 | background:#000000
-# CursorColor = foreground:#FFFFFF | background:#008080
-# SelectedCursorColor = foreground:#FFFF00 | background:#008080
-#
-# The same four colors for folders, written with the Far key names. Note the
-# attribute: without it the section would color the files as well.
-# [Highlight_101]
-# Name = Directories
-# IncludeAttributes = Directory
-# NormalFileName = foreground:#FFFFFF | background:#000000
-# SelectedFileName = foreground:#FFFF00 | background:#000000
-# FileNameUnderCursor = foreground:#FFFFFF | background:#008080
+# NormalFileName = foreground:#FF00FF | background:#000080
+# SelectedFileName = foreground:#FFFF00 | background:#000080
+# FileNameUnderCursor = foreground:#FF00FF | background:#008080
 # FileNameSelectedUnderCursor = foreground:#FFFF00 | background:#008080
 #
-# To use one coloured rule for sorting too, add Group to that Highlight
-# section. The same mask and attributes then control both its colour and its
-# position; sections with the same Group number form one cluster. Legacy
-# [SortGroup_N] sections are still accepted for old profiles.
+# [Highlight_101]
+# UseDefaults = 1
+# Name = Directories
+# IncludeAttributes = Directory
+# NormalFileName = foreground:#FF00FF | background:#000080
+# SelectedFileName = foreground:#FFFF00 | background:#000080
+# FileNameUnderCursor = foreground:#FF00FF | background:#008080
+# FileNameSelectedUnderCursor = foreground:#FFFF00 | background:#008080
+#
+# Sort groups put files of one kind together on a panel that has "Use sort
+# groups" switched on (Left/Right menu). There are two ways to define them, and
+# both may be used in one file:
+#
+# 1. Add "Group = N" to a coloured [Highlight_N] section: its mask and
+#    attributes then decide both the colour and the position, and sections
+#    with the same Group number form one cluster. Remember that the first
+#    matching Highlight section wins, so a Highlight section written only for
+#    sorting hides the colours of the sections below it unless it also says
+#    ContinueProcessing = 1.
+# 2. A [SortGroup_N] section is a rule that only sorts and colours nothing;
+#    the examples below are of this kind. It has the same Mask and attribute
+#    keys and does not interfere with the colours.
+#
+# Sort groups are switched on by default for new panels. To turn them off for
+# a panel, clear Left/Right menu -> "Use sort groups"; f4 remembers the choice.
+# They only take effect while at least one Group is defined in this file.
+#
+# f4 reads this file at start: restart it after editing.
 
 [SortGroup_1]
 Name = Executables
@@ -1851,8 +1993,59 @@ Name = Media
 Group = 3
 Mask = *.mp3, *.flac, *.ogg, *.wav, *.mp4, *.mkv, *.avi, *.webm, *.mov
 `
+
+// CreateDefaultHighlightIni writes the stock highlight.ini.
+func CreateDefaultHighlightIni(path string) {
+	content := defaultHighlightIni
 	_ = os.WriteFile(path, []byte(content), 0600)
 	_ = os.Chmod(path, 0600)
+}
+
+// highlightIniHeader splits a highlight.ini at its first section: the lines
+// before it are the header (comments and blank lines), the rest is the user's
+// rules. ok is false for a file with no section at all.
+func highlightIniHeader(text string) (header, rest string, ok bool) {
+	pos := 0
+	for pos < len(text) {
+		end := strings.IndexByte(text[pos:], '\n')
+		line := text[pos:]
+		next := len(text)
+		if end >= 0 {
+			line = text[pos : pos+end]
+			next = pos + end + 1
+		}
+		if strings.HasPrefix(strings.TrimSpace(line), "[") {
+			return text[:pos], text[pos:], true
+		}
+		pos = next
+	}
+	return text, "", false
+}
+
+// RefreshHighlightIniHeader rewrites the comments at the top of an existing
+// highlight.ini with those of the stock file, so that a file made by an older f4
+// describes the keys the current one reads (f4#912). Only the lines before the
+// first section are replaced; the rules stay as they are. It reports whether the
+// file was changed. A file with no section, or one it cannot write, is left alone.
+func RefreshHighlightIniHeader(path string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	text := strings.ReplaceAll(string(data), "\r\n", "\n")
+	oldHeader, rest, ok := highlightIniHeader(text)
+	if !ok {
+		return false
+	}
+	newHeader, _, _ := highlightIniHeader(defaultHighlightIni)
+	if oldHeader == newHeader {
+		return false
+	}
+	// #nosec G703 -- path is the highlight.ini inside the profile directory, built by the caller.
+	if err := os.WriteFile(path, []byte(newHeader+rest), 0600); err != nil {
+		return false
+	}
+	return true
 }
 
 // ApplyProxySettings publishes the configured proxy to netproxy, which is
@@ -1866,4 +2059,57 @@ func ApplyProxySettings() {
 		User: App.ProxyUser,
 		Pass: App.ProxyPass,
 	})
+}
+
+// NormalizeDragOutModifier maps a settings value to one of "", "ctrl", "alt"
+// and "shift"; anything else means no modifier is required.
+func NormalizeDragOutModifier(v string) string {
+	switch v = strings.ToLower(strings.TrimSpace(v)); v {
+	case "ctrl", "alt", "shift":
+		return v
+	}
+	return ""
+}
+
+// DefaultDragOutHoldMs is how long the left button must stay down on a file
+// before a move starts dragging it out of the panel (unxed/f4#1604).
+const DefaultDragOutHoldMs = 250
+
+// MaxDragOutHoldMs bounds DragOutHoldMs; a longer hold is no longer a hold.
+const MaxDragOutHoldMs = 5000
+
+// NormalizeDragOutHoldMs reads a DragOutHoldMs settings value: a number of
+// milliseconds, 0 for "start on the first move", a negative number for "only
+// once the pointer leaves the rows"; empty or unreadable means the default.
+func NormalizeDragOutHoldMs(v string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil {
+		return DefaultDragOutHoldMs
+	}
+	return clampDragOutHoldMs(n)
+}
+
+func clampDragOutHoldMs(n int) int {
+	switch {
+	case n < 0:
+		return -1
+	case n > MaxDragOutHoldMs:
+		return MaxDragOutHoldMs
+	}
+	return n
+}
+
+// The values of F4Config.GlyphStyle.
+const (
+	GlyphStyleClassic = "classic"
+	GlyphStyleRounded = "rounded"
+)
+
+// NormalizeGlyphStyle maps whatever the ini file holds to a known style; an
+// unknown or empty value is the classic one.
+func NormalizeGlyphStyle(v string) string {
+	if strings.EqualFold(strings.TrimSpace(v), GlyphStyleRounded) {
+		return GlyphStyleRounded
+	}
+	return GlyphStyleClassic
 }

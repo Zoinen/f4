@@ -16,6 +16,13 @@ const (
 	MetadataMTime
 	MetadataATime
 	MetadataCTime
+	MetadataNlink
+	// MetadataBTime marks VFSItem.BTime as a genuine, platform-reported
+	// creation/birth time (see its doc comment for which platforms populate
+	// it). Left unset, rather than inferred from a non-zero BTime, because a
+	// bug that leaves BTime at its zero value would otherwise silently
+	// "know" the object was created at the Unix epoch.
+	MetadataBTime
 	MetadataExplicit MetadataFields = 1 << 31
 )
 
@@ -48,6 +55,8 @@ func (item VFSItem) HasMetadata(field MetadataFields) bool {
 		return !item.ATime.IsZero()
 	case MetadataCTime:
 		return !item.CTime.IsZero()
+	case MetadataNlink:
+		return item.Nlink > 0
 	}
 	return false
 }

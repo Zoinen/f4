@@ -52,9 +52,9 @@ func MacKeysEnabled() bool {
 
 // macCommandBackends are the rendering backends that hand Command over as the
 // left Ctrl channel and the physical Control key as the right one. Only the
-// one macOS uses for its window does this today; a terminal, and a GUI backend
-// that folds nothing, report a single Ctrl and cannot be asked which key it
-// was.
+// native AppKit windows (gogpu, cocoa) do this today; a terminal, and a GUI
+// backend that folds nothing, report a single Ctrl and cannot be asked which
+// key it was.
 //
 // The list is here rather than in vtui because the fold is a property of the
 // platform layer, not of the framework's interface, and f4 only needs to know
@@ -62,6 +62,7 @@ func MacKeysEnabled() bool {
 var macCommandBackends = map[string]bool{
 	"gogpu": true,
 	"qt":    true,
+	"cocoa": true,
 }
 
 // macCommandIsDistinct reports whether a chord on the left Ctrl channel is

@@ -194,7 +194,7 @@ func GetLongVersionInfo() string {
 	return processVersionInfo().long()
 }
 
-// getVCSInfo keeps the updater's stable-release comparison on the same
+// GetVCSInfo keeps the updater's stable-release comparison on the same
 // process-local build metadata used by the title and Help screen.
 func GetVCSInfo() (rev string, dirty string, timeStr string) {
 	info := processVersionInfo()

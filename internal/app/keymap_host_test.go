@@ -248,7 +248,7 @@ func TestHotkeyManager_Conditions(t *testing.T) {
 func TestNoAltScreenApp_SimpleInline_IgnoresBackgroundTermView(t *testing.T) {
 	// The frame pushed below is never popped, so on the shared manager it
 	// stays on top for the rest of the process -- and it is precisely the
-	// state keyRemapSuspended() reads as "a foreign application owns the
+	// state KeyRemapSuspended() reads as "a foreign application owns the
 	// keyboard": panels hidden, a terminal.PTY shell mode, UseAltScreen set. Every
 	// later test that expects a key substitution to happen then silently
 	// gets none. Take a manager of our own so the frame leaves with it.

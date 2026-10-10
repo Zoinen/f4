@@ -127,14 +127,15 @@ func (d *BookmarksDialog) open(slot int, onClose func()) {
 
 		slot := d.SlotAt(d.menu.SelectPos)
 
-		// Ins stores the panel's directory, Del clears the slot, F4 edits
-		// the path by hand. All three overwrite without asking, as far2l
-		// does, and each one hits the disk immediately.
+		// Ins (or Ctrl+N) stores the panel's directory, Del clears the slot,
+		// F4 edits the path by hand. All three overwrite without asking, as
+		// far2l does, and each one hits the disk immediately.
+		if isAddItemKey(e) {
+			d.saveCurrentDir(slot)
+			return true
+		}
 		if !ctrl && !shift && !alt {
 			switch e.VirtualKeyCode {
-			case vtinput.VK_INSERT:
-				d.saveCurrentDir(slot)
-				return true
 			case vtinput.VK_DELETE:
 				d.clearSlot(slot)
 				return true
@@ -220,6 +221,10 @@ func (d *BookmarksDialog) RowText(slot int) string {
 	if path == "" {
 		path = i18n.Msg("Bookmarks.EmptySlot")
 	}
+	if id, ok := bookmarkPanelProviderID(d.Set[slot]); ok {
+		// A plugin-panel bookmark also opens that plugin over the folder.
+		path += "  [" + id + "]"
+	}
 	return fmt.Sprintf("%s %d   %s", i18n.Msg("Bookmarks.RowPrefix"), slot, dialog.EscapeAmpersand(path))
 }
 
@@ -254,13 +259,14 @@ func (d *BookmarksDialog) size() (int, int) {
 	return w, h
 }
 
-// saveCurrentDir records the active panel's directory in the slot.
+// saveCurrentDir records the active panel's location in the slot: its
+// directory and, when a panel plugin covers it, that plugin's identity.
 func (d *BookmarksDialog) saveCurrentDir(slot int) {
 	fsp := d.Pf.GetActivePanel()
-	if fsp == nil || slot < 0 {
+	if fsp == nil || slot < 0 || slot >= len(d.Set) {
 		return
 	}
-	d.Set.SetCurrentDir(slot, fsp.Vfs.GetPath())
+	d.Set[slot] = d.Pf.BookmarkForPanel(fsp)
 	d.persist()
 }
 
@@ -280,12 +286,12 @@ func (d *BookmarksDialog) editPath(slot int) {
 		return
 	}
 	current := d.Set[slot].Path
-	vtui.InputBox(i18n.Msg("Bookmarks.EditTitle"), i18n.Msg("Bookmarks.EditPrompt"), current, func(text string) {
+	vtui.InputBox(bookmarkEditTitle(d.Set[slot]), i18n.Msg("Bookmarks.EditPrompt"), current, func(text string) {
 		text = strings.TrimSpace(text)
 		if text == "" {
 			return
 		}
-		d.Set.SetCurrentDir(slot, text)
+		d.Set.SetPathKeepingPlugin(slot, text)
 		d.persist()
 	})
 }
@@ -336,6 +342,28 @@ func (s *BookmarkSet) SwapSlots(a, b int) {
 		return
 	}
 	s[a], s[b] = s[b], s[a]
+}
+
+// bookmarkEditTitle is the title of the edit box: for a bookmark that also
+// opens a panel plugin it names the plugin, so the user can see that editing
+// the path keeps it (f4#1669).
+func bookmarkEditTitle(b Bookmark) string {
+	title := i18n.Msg("Bookmarks.EditTitle")
+	if id, ok := bookmarkPanelProviderID(b); ok {
+		title = strings.TrimRight(title, " ") + " [" + id + "] "
+	}
+	return title
+}
+
+// SetPathKeepingPlugin changes the directory of the slot and leaves the panel
+// plugin it opens (and that plugin's saved state) alone. The path is the
+// directory the plugin panel covers, so editing it moves the bookmark; to drop
+// the plugin the slot is cleared and saved again.
+func (s *BookmarkSet) SetPathKeepingPlugin(i int, path string) {
+	if i < 0 || i >= len(s) {
+		return
+	}
+	s[i].Path = path
 }
 
 // setCurrentDir stores path in the slot and clears the plugin fields:

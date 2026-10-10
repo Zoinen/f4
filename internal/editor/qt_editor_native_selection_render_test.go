@@ -145,14 +145,15 @@ func TestNativeEditorProjectionPreservesStyledRows(t *testing.T) {
 	// Native base rows keep all source identities, projected cells and
 	// non-stream-selection attributes deterministic across projection modes.
 	snapshots := map[string]string{
-		"text":         "346d667e49fe3d40a2506829c3beee8be5a384c1bd7b0cb31996a4db2ff49900",
-		"wrap":         "6c1a02f890302345553b150f4b282fc15c382145ff7190db7dbb5e7372b3986e",
+		"text": "346d667e49fe3d40a2506829c3beee8be5a384c1bd7b0cb31996a4db2ff49900",
+		// Upstream adds wrap markers and text-background hex/decode offsets.
+		"wrap":         "3b96a3a13e43b3c12c37d74dbc6c283cbe1895dab71b0d1195a648ec5f4aa997",
 		"syntax":       "78f87c99c5c468d499436ae071744bbdbe014d38d170e53db2f24198087f9ed7",
 		"crosshair":    "e19293f382d822d99b0f66b6f8dfcc2e8e97747060602fe2e41b1aa017bda523",
 		"whitespace":   "f07433456294c2b1e43fae14b8c99a32a2da87b3f170440a40f02c6259ca9f55",
 		"autocomplete": "14e53ca7dc1d35c6a2d1a5aa2558fa5bc0f9193c84a5490c00f6e502126f3450",
-		"hex":          "ad706df8432c3b2e9bccd2656b49c993771d3f2ef3dd0fcc890521f14ff5da21",
-		"decode":       "f9d64db2db82beca81050fca870b1a8569dd72e213299e9543d20dd67edd3e77",
+		"hex":          "f4f9b8d8606edf2c6c9cf50ab85074cc31489f8aa2abd3b1aacdc38c7100cd79",
+		"decode":       "eaf66254ef76f2d683ab25444993447a87c2b15e382223b582e7b39d86e2058b",
 	}
 	oldConfig := config.App
 	defer func() { config.App = oldConfig }()

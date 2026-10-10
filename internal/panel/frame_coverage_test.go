@@ -270,6 +270,50 @@ func TestPanelsFrameDeterministicHelpers(t *testing.T) {
 	}
 }
 
+func TestPanelsFrame_CommandLineOwnsPlainDeletionWhenNonEmpty(t *testing.T) {
+	oldConfig := config.App
+	config.App.NavigationMode = config.NavigationClassic
+	t.Cleanup(func() { config.App = oldConfig })
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	pf := NewPanelsFrame()
+	t.Cleanup(pf.Close)
+	pf.ResizeConsole(80, 25)
+
+	for _, tc := range []struct {
+		name string
+		key  uint16
+		pos  uint16
+		want string
+	}{
+		{name: "backspace", key: vtinput.VK_BACK, pos: vtinput.VK_END, want: "ab"},
+		{name: "delete", key: vtinput.VK_DELETE, pos: vtinput.VK_HOME, want: "bc"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pf.CmdLine.Edit.SetText("abc")
+			pf.CmdLine.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: tc.pos})
+			e := &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: tc.key}
+			if !pf.VetoActionKey(e) {
+				t.Fatalf("VetoActionKey(%s) = false, want command-line ownership", tc.name)
+			}
+			if !pf.ProcessKey(e) {
+				t.Fatalf("ProcessKey(%s) did not consume command-line deletion", tc.name)
+			}
+			if got := pf.CmdLine.Edit.GetText(); got != tc.want {
+				t.Fatalf("command line after %s = %q, want %q", tc.name, got, tc.want)
+			}
+		})
+	}
+
+	pf.CmdLine.Clear()
+	for _, key := range []uint16{vtinput.VK_BACK, vtinput.VK_DELETE} {
+		e := &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: key}
+		if pf.VetoActionKey(e) {
+			t.Fatalf("VetoActionKey(0x%X) claimed an empty command line", key)
+		}
+	}
+}
+
 type coverageFrameStack struct {
 	top vtui.Frame
 }

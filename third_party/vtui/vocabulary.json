@@ -315,6 +315,15 @@
       "sizeHint": { "w": 80, "h": 25 },
       "minSize": { "w": 10, "h": 5 },
       "sizePolicy": { "h": "expanding", "v": "expanding" }
+    },
+    "Canvas": {
+      "extends": "Widget",
+      "summary": "RGBA image placement over the terminal cell grid",
+      "properties": {},
+      "signals": [],
+      "sizeHint": { "w": 40, "h": 12 },
+      "minSize": { "w": 1, "h": 1 },
+      "sizePolicy": { "h": "expanding", "v": "expanding" }
     }
   },
   "layouts": {

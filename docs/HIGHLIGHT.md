@@ -240,10 +240,20 @@ through `colorer.WithUserHRC` / `WithUserHRD`, styles first.
   background cache compare the whole source. A session loaded without a user
   path is never handed out after the path is set.
 - The module sees each user path through a read-only mount of its folder. A
-  `<location link>` in an `<hrd-sets>` file resolves against catalog.xml, as in
-  Colorer, so it has to stay inside the configuration directory; a folder of
-  `.hrd` files (each root `<hrd>` naming class, name and description) has no
-  such limit.
+  `<location link>` in an `<hrd-sets>` file resolves against catalog.xml, not
+  against the file that contains it — traced to `fillMapper` in colorer4go's
+  vendored Colorer-library, which always resolves an `HrdNode`'s locations
+  against `base_catalog_path` — so a style elsewhere on disk could not link
+  to a sibling `.hrd` file by a plain relative path (reported by montoner0).
+  `materializeUserHRDPath` (`colorer.go`) works around it without touching
+  colorer4go: it copies every such link's target into
+  `configsDir/base/.f4-user-hrd-cache`, the one place Colorer does resolve
+  links against, and hands Colorer a rewritten copy of the file pointing
+  there. A link that is empty, absolute, a URL, or uses an XML entity such as
+  `&hrd;` that only catalog.xml's own DOCTYPE defines is left exactly as
+  written, since it already means "resolve me against the catalog". A folder
+  of `.hrd` files (each root `<hrd>` naming class, name and description) has
+  no `<location>` indirection to fix.
 - File names Colorer opens must be ASCII: its legacy strings read a name as
   CP1251. colorer4go refuses such a path with a warning instead of letting the
   call abort. A path that does not exist is a warning too; a file that does
@@ -269,7 +279,7 @@ returns the failure and everything Colorer reported at warning level or worse.
   dropping sessions; "Check all schemes" loads every type behind a progress
   dialog and applies nothing. Reports that did not stop the load are shown and
   do not block.
-- Settings Center: "Reload schemas" runs the quick check, and the new "Check
+- Settings Center: "Reload schemes" runs the quick check, and the new "Check
   all schemes" the full one; either returns the findings as its error.
 - FarColorer's "Reload all" (`TestLoadBase`) calls `getBaseScheme()` on each
   type, which in this Colorer version returns the pointer without loading;
@@ -277,6 +287,15 @@ returns the failure and everything Colorer reported at warning level or worse.
 - Loading every type of the bundled catalog took 89 s on a single-core
   sandbox, and reports two errors: `markdown:markdown` inherits
   `markdown2:markdown2`, which no type defines.
+- Issue #277, later comment: the check got slower call after call instead of
+  costing about the same each time, because every type stayed in the same
+  colorer4go session, and colorer4go's HRC engine re-links and rebuilds the
+  search dispatch table of every scheme the session has ever loaded — not just
+  the new one — after each type it loads (`HrcLibrary::Impl::updateLinks`,
+  called from `parseHRC`). That makes one shared session for every type
+  quadratic in the number of types. `CheckColorerSource` now closes the
+  session and opens a fresh one every `checkAllBatchSize` types, which bounds
+  the work any single load re-processes and keeps the total roughly linear.
 
 ### 3.10 Pairs
 

@@ -79,6 +79,8 @@ type Edit struct {
 	mouseWordSelecting  bool
 	mouseWordStart      int
 	mouseWordEnd        int
+	historyClickArmed   bool
+	historyMouseMoved   bool
 }
 
 // HistoryProvider is an interface for external history persistence (e.g. from f4).
@@ -158,6 +160,34 @@ func NewPasswordEdit(x, y, width int, defaultText string) *Edit {
 	return e
 }
 
+// cellWidth reports how many terminal columns the rune at index i takes in
+// this field, honouring password masking.
+func (e *Edit) cellWidth(i int) int {
+	if e.PasswordMode {
+		return 1
+	}
+	return ClusterWidth(string(e.text[i]))
+}
+
+// fillView scrolls the view back towards the start of the text while the
+// remainder still fits. Scrolling only ever moved forward, so a field that
+// became wider -- a resized dialog, a relaid-out settings page -- kept
+// showing the tail it had scrolled to, with unused columns after it. widths
+// holds the column width of every position in display order.
+func (e *Edit) fillView(widths []int, visibleWidth int) {
+	tail := 0
+	for i := e.leftPos; i < len(widths); i++ {
+		tail += widths[i]
+	}
+	// Stop one column short: the caret sits after the last character, and
+	// filling the final column would scroll the view forward again on the
+	// next repaint.
+	for e.leftPos > 0 && tail+widths[e.leftPos-1] < visibleWidth {
+		e.leftPos--
+		tail += widths[e.leftPos]
+	}
+}
+
 func (e *Edit) Show(scr *ScreenBuf) {
 	e.ScreenObject.Show(scr)
 	if e.Multiline {
@@ -198,27 +228,29 @@ func (e *Edit) Show(scr *ScreenBuf) {
 			})
 			e.leftPos++
 		}
+		if e.leftPos > 0 {
+			var widths []int
+			forEachTerminalCluster(vis, func(_ string, w, _, _ int) { widths = append(widths, w) })
+			e.fillView(widths, visibleWidth)
+		}
 	} else {
 		if e.curPos < e.leftPos {
 			e.leftPos = e.curPos
 		}
 		width := 0
 		for i := e.leftPos; i < e.curPos; i++ {
-			r := e.text[i]
-			if e.PasswordMode {
-				width += 1
-			} else {
-				width += ClusterWidth(string(r))
-			}
+			width += e.cellWidth(i)
 		}
 		for e.leftPos < e.curPos && width >= visibleWidth {
-			r := e.text[e.leftPos]
-			if e.PasswordMode {
-				width -= 1
-			} else {
-				width -= ClusterWidth(string(r))
-			}
+			width -= e.cellWidth(e.leftPos)
 			e.leftPos++
+		}
+		if e.leftPos > 0 {
+			widths := make([]int, len(e.text))
+			for i := range e.text {
+				widths[i] = e.cellWidth(i)
+			}
+			e.fillView(widths, visibleWidth)
 		}
 	}
 
@@ -227,9 +259,9 @@ func (e *Edit) Show(scr *ScreenBuf) {
 	if e.IsFocused() && !e.HideCursor {
 		scr.SetCursorVisible(true)
 		if e.overtype {
-			scr.SetCursorShape(CursorShapeBlock)
+			scr.SetCursorShape(OvertypeCursorShape())
 		} else {
-			scr.SetCursorShape(CursorShapeUnderline)
+			scr.SetCursorShape(InsertCursorShape())
 		}
 		vOffset := 0
 		if DefaultBidiMode == BidiFull {
@@ -1070,6 +1102,10 @@ func (e *Edit) OpenHistory() {
 	}
 	menu := NewVMenu(Msg("vtui.History"))
 	menu.BoxType = SingleBox
+	// Typing narrows the list at once, as it does in f4's Alt+F8, Alt+F11
+	// and Alt+F12 history dialogs (f4 #263): letters select nothing else
+	// here, since history entries carry no hotkeys.
+	menu.FilterOnType = true
 	for _, h := range e.History {
 		menu.AddItem(MenuItem{Text: h})
 	}
@@ -1079,14 +1115,14 @@ func (e *Edit) OpenHistory() {
 		h = 10
 	}
 
-	// Calculate width: at least the width of the input field, but max 50
+	// The list is as wide as the input field it drops from, so a long entry
+	// never reaches past the field's own edge (f4 #891); a field too narrow
+	// to read an entry in still gets 20 columns.
 	w := e.X2 - e.X1 + 1
 	if w < 20 {
 		w = 20
 	}
-	if w > 50 {
-		w = 50
-	}
+	menu.TruncateMark = ">"
 
 	// Positioning logic
 	scrH := 25
@@ -1102,68 +1138,117 @@ func (e *Edit) OpenHistory() {
 	menu.SetPosition(e.X1, y, e.X1+w-1, y+h-1)
 
 	menu.SetOwner(e)
+	// Picking an entry only puts it into the field, as far2l's
+	// Dialog::SelectFromEditHistory does; confirming stays with the user
+	// (f4 #1331). The pick used to queue an Enter behind it, which the dialog
+	// took for its default button: F7 created the folder the moment a name
+	// was picked from its history.
 	menu.OnAction = func(idx int) {
 		e.SetText(e.History[idx])
 		e.SetFocus(true)
 		e.clearFlag = false
 		e.HistoryPos = -1
-		// Auto-execute on mouse selection (matches Far behavior)
-		if FrameManager != nil {
-			FrameManager.InjectEvents([]*vtinput.InputEvent{
-				{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN},
-			})
-		}
 	}
 
 	menu.OnKeyDown = func(ev *vtinput.InputEvent) bool {
-		// Handle deleting items from history
-		if ev.VirtualKeyCode == vtinput.VK_DELETE || ev.VirtualKeyCode == vtinput.VK_BACK {
-			if len(menu.Items) == 0 {
-				return true
-			}
-			idx := menu.SelectPos
-			e.History = append(e.History[:idx], e.History[idx+1:]...)
-			if e.HistoryID != "" && GlobalHistoryProvider != nil {
-				GlobalHistoryProvider.SaveHistory(e.HistoryID, e.History)
-			}
-			menu.Items = append(menu.Items[:idx], menu.Items[idx+1:]...)
-			menu.ItemCount = len(menu.Items)
+		shift := (ev.ControlKeyState & vtinput.ShiftPressed) != 0
+		ctrl := (ev.ControlKeyState & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed)) != 0
+		alt := (ev.ControlKeyState & (vtinput.LeftAltPressed | vtinput.RightAltPressed)) != 0
 
-			if menu.SelectPos >= menu.ItemCount && menu.ItemCount > 0 {
-				menu.SetSelectPos(menu.ItemCount - 1)
-			} else if menu.ItemCount > 0 {
-				menu.SetSelectPos(menu.SelectPos) // Refresh view
-			}
-
-			if menu.ItemCount == 0 {
-				menu.Close()
-			}
-			FrameManager.Redraw()
+		// The keys are far2l's, and the same f4's Alt+F8/F11/F12 history
+		// dialogs use (f4 #1155): Shift+Del drops the entry under the cursor,
+		// Del clears the whole list once confirmed. This dropdown used to
+		// drop one entry on Del, Backspace and their Shift forms alike.
+		if (ev.VirtualKeyCode == vtinput.VK_DELETE || ev.VirtualKeyCode == vtinput.VK_BACK) && shift {
+			e.deleteHistoryMenuItem(menu)
+			return true
+		}
+		if ev.VirtualKeyCode == vtinput.VK_DELETE && !shift && !ctrl && !alt {
+			e.confirmClearHistoryMenu(menu)
 			return true
 		}
 
-		// Handle Enter (Execute) vs Shift+Enter (Insert only)
+		// Enter, with or without Shift, puts the entry into the field and
+		// closes the list, nothing more: see OnAction above (f4 #1331).
 		if ev.VirtualKeyCode == vtinput.VK_RETURN {
 			if len(menu.Items) == 0 {
 				return true
 			}
-			shift := (ev.ControlKeyState & vtinput.ShiftPressed) != 0
 			idx := menu.SelectPos
 			e.SetText(e.History[idx])
 			e.SetFocus(true)
 			e.clearFlag = false
 			menu.Close()
-
-			if !shift {
-				// Inject a real Enter event so the parent frame handles execution
-				FrameManager.InjectEvents([]*vtinput.InputEvent{ev})
-			}
 			return true
 		}
 		return false
 	}
 
 	FrameManager.PushMenu(menu)
+}
+
+// deleteHistoryMenuItem removes the entry under the cursor of the history
+// dropdown from the list and from the history it came from.
+func (e *Edit) deleteHistoryMenuItem(menu *VMenu) {
+	idx := menu.SelectPos
+	if idx < 0 || idx >= len(menu.Items) || idx >= len(e.History) {
+		return
+	}
+	e.History = append(e.History[:idx], e.History[idx+1:]...)
+	if e.HistoryID != "" && GlobalHistoryProvider != nil {
+		GlobalHistoryProvider.SaveHistory(e.HistoryID, e.History)
+	}
+	menu.Items = append(menu.Items[:idx], menu.Items[idx+1:]...)
+	menu.ItemCount = len(menu.Items)
+
+	if menu.SelectPos >= menu.ItemCount && menu.ItemCount > 0 {
+		menu.SetSelectPos(menu.ItemCount - 1)
+	} else if menu.ItemCount > 0 {
+		menu.SetSelectPos(menu.SelectPos) // Refresh view
+	}
+
+	if menu.ItemCount == 0 {
+		menu.Close()
+	}
+	FrameManager.Redraw()
+}
+
+// confirmClearHistoryMenu asks before wiping the whole history behind the
+// dropdown, the way far2l does for Del in any history list. Nothing changes
+// unless the first button is chosen.
+func (e *Edit) confirmClearHistoryMenu(menu *VMenu) {
+	if len(menu.Items) == 0 {
+		return
+	}
+	e.clearHistory(func() {
+		menu.Items = nil
+		menu.ItemCount = 0
+		menu.Close()
+		FrameManager.Redraw()
+	})
+}
+
+// clearHistory wipes the whole history of the field once the user confirms,
+// then calls done. It is the one place every Del-clears-the-list key ends up,
+// so the dropdown and the completion menu cannot drift apart.
+func (e *Edit) clearHistory(done func()) {
+	if e.ClearHistory != nil {
+		e.ClearHistory(done)
+		return
+	}
+	buttons := []string{Msg("vtui.Ok"), Msg("vtui.Cancel")}
+	dlg := ShowMessageEx(Msg("vtui.History"), Msg("vtui.HistoryClearConfirm"), buttons, MessageInfo)
+	dlg.OnResult = func(code int) {
+		if code != 0 {
+			return
+		}
+		e.History = nil
+		if e.HistoryID != "" && GlobalHistoryProvider != nil {
+			GlobalHistoryProvider.SaveHistory(e.HistoryID, e.History)
+		}
+		e.HistoryPos = -1
+		done()
+	}
 }
 
 // AddHistory adds a string to the beginning of the history, removing duplicates.
@@ -1248,9 +1333,18 @@ func (e *Edit) ProcessMouse(ev *vtinput.InputEvent) bool {
 		if IsMouseRelease(ev) {
 			e.mouseSelecting = false
 			e.mouseWordSelecting = false
+			openHistory := e.historyClickArmed && !e.historyMouseMoved
+			e.historyClickArmed = false
+			e.historyMouseMoved = false
+			if openHistory {
+				e.OpenHistory()
+			}
 			return true
 		}
 		if ev.ButtonState&vtinput.FromLeft1stButtonPressed != 0 {
+			if ev.MouseEventFlags&vtinput.MouseMoved != 0 {
+				e.historyMouseMoved = true
+			}
 			e.curPos = e.cursorPositionAtPoint(int(ev.MouseX), int(ev.MouseY))
 			if e.mouseWordSelecting {
 				position := e.curPos
@@ -1321,6 +1415,11 @@ func (e *Edit) ProcessMouse(ev *vtinput.InputEvent) bool {
 				e.mouseSelecting = true
 				e.mouseWordSelecting = false
 				e.mouseSelectAnchor = e.curPos
+				// A history field's whole area opens the drop-down on a
+				// plain click, same as a DropdownOnly ComboBox's field; a
+				// click that turns into a drag selects text instead.
+				e.historyClickArmed = e.ShowHistoryButton
+				e.historyMouseMoved = false
 				return true
 			}
 		}

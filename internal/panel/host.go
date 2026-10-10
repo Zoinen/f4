@@ -32,9 +32,37 @@ var (
 	// BuildMenuBarItems builds the menu bar for an area from the action table.
 	BuildMenuBarItems = func(area string) []vtui.MenuBarItem { return nil }
 
+	// RefreshMenuRowStates brings the dimmed flag of each row of a menu built
+	// by BuildMenuBarItems up to date with the application's state. The menu
+	// itself is cached between frames, but whether a row can be used depends on
+	// things that change without the cache noticing, the cursor above all
+	// (f4#1814).
+	RefreshMenuRowStates = func(items []vtui.MenuBarItem) {}
+
 	// SaveSession persists the workspace layout after a change to it.
 	SaveSession = func() {}
 )
+
+// MenuContentSignalValue is a cheap-to-compare snapshot of application-level
+// state that can change what BuildMenuItems' generated menus contain, but
+// that this package has no way to read for itself (it does not import the
+// application layer). GetMenuContentSignal reports it; BuildMenuItems' cache
+// treats any change to it, since the last time it was asked, as a reason to
+// rebuild.
+type MenuContentSignalValue struct {
+	// PluginCommandGeneration is plughost.PluginCommandRegistryGeneration():
+	// it moves when a panel plugin command is registered or unregistered.
+	PluginCommandGeneration uint64
+	// AIPatchPresent is whether the AI session currently holds an applicable
+	// patch (AI.ApplyPatch's Visible check).
+	AIPatchPresent bool
+}
+
+// GetMenuContentSignal reports the current MenuContentSignalValue. The
+// default always returns the zero value, which is correct for a build that
+// never wires plugins or the AI panel in: the cache simply never sees this
+// component change.
+var GetMenuContentSignal = func() MenuContentSignalValue { return MenuContentSignalValue{} }
 
 // Opening a file is the application's business. It picks the frame, keeps the
 // editor's table of open files and writes the view/edit history; the panel

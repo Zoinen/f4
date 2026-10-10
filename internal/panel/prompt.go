@@ -38,15 +38,18 @@ func promptFormatSpans(path, home, username, host string, maxPromptLen int) []cm
 	return cmdline.FitPrompt(spans, maxPromptLen)
 }
 
-// promptSpansToCharInfo paints the spans: the user and host names keep the
-// colour bash gives them, everything else follows the theme.
+// promptSpansToCharInfo paints the spans: the user and host names, and the path,
+// have colours of their own in the theme (CommandLine.User, CommandLine.Path);
+// everything else is on baseAttr (CommandLine.Prefix).
 func promptSpansToCharInfo(spans []cmdline.PromptSpan, baseAttr uint64) []vtui.CharInfo {
-	identityAttr := vtui.SetRGBFore(baseAttr, 0x8AE234)
 	var out []vtui.CharInfo
 	for _, s := range spans {
 		attr := baseAttr
-		if s.Kind == cmdline.PromptIdentity {
-			attr = identityAttr
+		switch s.Kind {
+		case cmdline.PromptIdentity:
+			attr = vtui.Palette[theme.ColCommandLineUser]
+		case cmdline.PromptPath:
+			attr = vtui.Palette[theme.ColCommandLinePath]
 		}
 		out = append(out, vtui.StringToCharInfo(s.Text, attr)...)
 	}

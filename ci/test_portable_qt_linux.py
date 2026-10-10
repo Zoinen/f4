@@ -60,6 +60,26 @@ class PortableQtLinuxBuildTests(unittest.TestCase):
             r"--build='missing:~ffmpeg/\*'\)",
         )
 
+    def test_required_embedded_qml_gate_runs_without_installed_import_paths(self):
+        script = BUILD_SCRIPT.read_text(encoding="utf-8")
+        self.assertRegex(script, r'env -u QML_IMPORT_PATH -u QML2_IMPORT_PATH\s*\\\s*'
+                         r'"\$\{build_dir\}/F4QuickViewSurfaceTests" qmlImportsWithoutInstalledQt')
+
+    def test_both_linux_container_jobs_receive_tag_metadata(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertEqual(workflow.count("-e GITHUB_REF -e GITHUB_REF_NAME -e GITHUB_SHA -e VERSION_SYMBOL"), 2)
+        self.assertEqual(workflow.count("-e F4_RELEASE_TAG"), 2)
+        script = BUILD_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn('launcher_ldflags="$(python ci/go-build-metadata.py)"', script)
+        self.assertIn('bash scripts/check_release_version.sh "${launcher_output}" --version', script)
+
+    def test_desktop_native_ctest_failures_block_release(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertNotIn("continuing to artifact smoke tests", workflow)
+        self.assertIn('throw "Qt CTest gate failed: $qtTestStatus"', workflow)
+        self.assertIn('exit "$qt_test_status"', workflow)
+        self.assertGreaterEqual(workflow.count("^(F4|QtMediaClient|QtShellController|WindowGeometryPersistence)"), 3)
+
 
 if __name__ == "__main__":
     unittest.main()

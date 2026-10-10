@@ -2,6 +2,7 @@ package panel
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -82,12 +83,34 @@ func MainMenuFilePath() string {
 	return filepath.Join(config.GetF4ConfigDir(), "settings", "user_menu.ini")
 }
 
-// FindLocalFarMenu walks startDir upward looking for FarMenu.ini.
+// FindLocalFarMenu walks startDir upward looking for FarMenu.ini. It goes
+// through a bare OSVFS's own Stat rather than a raw os.Stat, so a directory
+// that needs the sudo helper to even be looked at is still resolved through
+// the same elevation fallback #1261 already gave OSVFS.Stat/Open, instead of
+// the caller silently treating a permission refusal as "nothing here" (or,
+// worse, a later Open on the same path surfacing that refusal as a bare
+// "permission denied" once it stops being silent -- f4#1255). A plain
+// os.Getwd()-derived or near-binary startDir never needs elevation, so this
+// costs those callers nothing beyond the one extra permission check.
 func FindLocalFarMenu(startDir string) (path string, found bool) {
+	return FindLocalFarMenuVFS(context.Background(), farMenuLookupVFS, startDir)
+}
+
+// farMenuLookupVFS is a bare, pathless OSVFS: Stat and Open take an already
+// absolute path and never consult v's own current directory, so one shared,
+// stateless instance is fine for every FindLocalFarMenu/LoadFarMenuFile
+// caller that has no panel VFS of its own to pass to the *VFS variant below.
+var farMenuLookupVFS = vfs.NewOSVFS("")
+
+// FindLocalFarMenuVFS is FindLocalFarMenu resolved through v.Stat instead of
+// a raw os.Stat, for a caller that has the panel's own VFS on hand (the
+// MenuModeLocal lookup does, since the folder that needs sudo is exactly the
+// one the active panel is sitting in).
+func FindLocalFarMenuVFS(ctx context.Context, v vfs.VFS, startDir string) (path string, found bool) {
 	dir := startDir
 	for {
 		candidate := filepath.Join(dir, FarMenuFileName)
-		if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
+		if item, err := v.Stat(ctx, candidate); err == nil && !item.IsDir {
 			return candidate, true
 		}
 		parent := filepath.Dir(dir)
@@ -111,14 +134,22 @@ func findFarMenuNearBinary() (path string, found bool) {
 	return "", false
 }
 
-// LoadFarMenuFile reads a FarMenu.ini (text format) into a slice.
+// LoadFarMenuFile reads a FarMenu.ini (text format) into a slice. See
+// FindLocalFarMenu for why this goes through a bare OSVFS's Open rather than
+// a raw os.Open (f4#1255).
 func LoadFarMenuFile(path string) ([]UserMenuItem, error) {
-	f, err := os.Open(path)
+	return LoadFarMenuFileVFS(context.Background(), farMenuLookupVFS, path)
+}
+
+// LoadFarMenuFileVFS is LoadFarMenuFile resolved through v.Open instead of a
+// raw os.Open, for a caller that has the panel's own VFS on hand.
+func LoadFarMenuFileVFS(ctx context.Context, v vfs.VFS, path string) ([]UserMenuItem, error) {
+	f, err := v.Open(ctx, path)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	return ParseFarMenu(f)
+	defer func() { _ = f.Close() }()
+	return ParseFarMenu(contextReader{ctx: ctx, reader: f})
 }
 
 // saveFarMenuFile writes a FarMenu.ini text-format file atomically.
@@ -194,11 +225,14 @@ func LoadMenuForMode(pf *PanelsFrame, mode MenuMode) (items []UserMenuItem, titl
 		if fsp == nil {
 			return nil, i18n.Msg("UserMenu.LocalMenuTitle"), "", false
 		}
-		path, found := FindLocalFarMenu(fsp.Vfs.GetPath())
+		// Go through the panel's own VFS (not the bare one FindLocalFarMenu
+		// otherwise defaults to): it is the VFS that may need sudo to look
+		// at this exact directory (f4#1255).
+		path, found := FindLocalFarMenuVFS(context.Background(), fsp.Vfs, fsp.Vfs.GetPath())
 		if !found {
 			return nil, i18n.Msg("UserMenu.LocalMenuTitle"), "", false
 		}
-		loaded, err := LoadFarMenuFile(path)
+		loaded, err := LoadFarMenuFileVFS(context.Background(), fsp.Vfs, path)
 		if err != nil {
 			return nil, i18n.Msg("UserMenu.LocalMenuTitle"), path, false
 		}
@@ -693,6 +727,55 @@ func (s *userMenuState) goBack(current *vtui.VMenu) {
 	})
 }
 
+type userMenuItemDialog struct {
+	*vtui.Window
+	buttonRow   *vtui.HBoxLayout
+	labelEdit   *vtui.Edit
+	commandEdit *vtui.MultiLineEdit
+	separators  []*vtui.Separator
+}
+
+func (d *userMenuItemDialog) layoutControls() {
+	if d.buttonRow == nil {
+		return
+	}
+	// Reflow against the visible frame, including modal viewport resizes which
+	// do not apply child grow modes in vtui.
+	d.labelEdit.SetPosition(d.X1+2, d.Y1+4, d.X2-2, d.Y1+4)
+	for i, sep := range d.separators {
+		y := d.Y1 + 5
+		if i == len(d.separators)-1 {
+			y = d.Y2 - 2
+		}
+		sep.SetPosition(d.X1, y, d.X2, y)
+	}
+	if d.commandEdit != nil {
+		d.commandEdit.SetPosition(d.X1+2, d.Y1+7, d.X2-2, d.Y2-3)
+	}
+	d.buttonRow.SetPosition(d.X1+2, d.Y2-1, d.X2-2, d.Y2-1)
+}
+
+func (d *userMenuItemDialog) ResizeConsole(w, h int) {
+	d.Window.ResizeConsole(w, h)
+	d.layoutControls()
+}
+
+func (d *userMenuItemDialog) ChangeSize(w, h int) {
+	d.Window.ChangeSize(w, h)
+	d.layoutControls()
+}
+
+func (d *userMenuItemDialog) ProcessMouse(e *vtinput.InputEvent) bool {
+	handled := d.Window.ProcessMouse(e)
+	d.layoutControls()
+	return handled
+}
+
+func (d *userMenuItemDialog) Show(scr *vtui.ScreenBuf) {
+	d.layoutControls()
+	d.Window.Show(scr)
+}
+
 func showEditItemDialog(s *userMenuState, current *vtui.VMenu, items []UserMenuItem, idx int, isCreate bool, isSubmenu bool) {
 	title := i18n.Msg("UserMenu.EditTitle")
 	if isCreate {
@@ -719,56 +802,59 @@ func showEditItemDialog(s *userMenuState, current *vtui.VMenu, items []UserMenuI
 		}
 	}
 
-	// Number of visible rows in the multiline command field. Six matches
-	// FAR's edit-menu-item dialog and comfortably shows short scripts.
+	// Match Far's stacked menu-item editor: two labelled fields, a command
+	// section with six visible lines, and a separate button row.
 	const cmdRowsVisible = 6
-	width := 56
-	height := 11
+	width := 70
+	height := 8
 	if !isSubmenu {
-		// Extra rows for the multiline command box + one for its label row.
-		height = 11 + cmdRowsVisible + 1
+		height += cmdRowsVisible + 2
 	}
 
-	dlg := vtui.NewCenteredDialog(width, height, title)
+	dlg := &userMenuItemDialog{Window: vtui.NewCenteredDialog(width, height, title)}
 	dlg.ShowClose = true
 
-	editHotkey := vtui.NewEdit(0, 0, 10, hotkey)
-	editLabel := vtui.NewEdit(0, 0, 36, label)
+	editHotkey := vtui.NewEdit(0, 0, 3, hotkey)
+	editLabel := vtui.NewEdit(0, 0, width-4, label)
+	editLabel.SetGrowMode(vtui.GrowHiX)
+	dlg.labelEdit = editLabel
 	var editCommand *vtui.MultiLineEdit
 	if !isSubmenu {
 		editCommand = vtui.NewMultiLineEdit(0, 0, width-4, cmdRowsVisible, "")
 		editCommand.SetLines(cmdLines)
+		editCommand.SetGrowMode(vtui.GrowHiX | vtui.GrowHiY)
+		dlg.commandEdit = editCommand
 	}
 
-	makeRow := func(labelText string, edit vtui.UIElement) *vtui.HBoxLayout {
-		hbox := vtui.NewHBoxLayout(0, 0, width-4, 1)
-		l := vtui.NewLabel(0, 0, dialog.PadLabel(labelText), edit)
+	vbox := vtui.NewVBoxLayout(dlg.X1+2, dlg.Y1+1, width-4, height-2)
+	addField := func(labelText string, edit vtui.UIElement, align vtui.Alignment) {
+		l := vtui.NewLabel(0, 0, labelText, edit)
 		dlg.AddItem(l)
 		dlg.AddItem(edit)
-		hbox.Add(l, vtui.Margins{Right: 1}, vtui.AlignLeft)
-		hbox.Add(edit, vtui.Margins{}, vtui.AlignFill)
-		return hbox
+		vbox.Add(l, vtui.Margins{}, vtui.AlignLeft)
+		vbox.Add(edit, vtui.Margins{}, align)
 	}
-
-	vbox := vtui.NewVBoxLayout(dlg.X1+2, dlg.Y1+2, width-4, height-4)
-	vbox.Add(makeRow(i18n.Msg("UserMenu.LabelHotkey"), editHotkey), vtui.Margins{}, vtui.AlignFill)
-	vbox.Add(makeRow(i18n.Msg("UserMenu.LabelLabel"), editLabel), vtui.Margins{Top: 1}, vtui.AlignFill)
+	addSeparator := func() {
+		sep := vtui.NewSeparator(0, 0, width, true, true)
+		sep.SetGrowMode(vtui.GrowHiX)
+		dlg.separators = append(dlg.separators, sep)
+		dlg.AddItem(sep)
+		vbox.Add(sep, vtui.Margins{Left: -2, Right: -2}, vtui.AlignFill)
+	}
+	addField(i18n.Msg("UserMenu.LabelHotkey"), editHotkey, vtui.AlignLeft)
+	addField(i18n.Msg("UserMenu.LabelLabel"), editLabel, vtui.AlignFill)
 	if !isSubmenu {
-		// Multi-line command box: label sits on its own row above the box
-		// (FAR's edit-menu-item dialog layout) so the multi-row edit
-		// doesn't leave the label floating next to just its first row.
-		cmdLabel := vtui.NewLabel(0, 0, i18n.Msg("UserMenu.LabelCommand"), editCommand)
-		dlg.AddItem(cmdLabel)
-		dlg.AddItem(editCommand)
-		cmdBox := vtui.NewHBoxLayout(0, 0, width-4, cmdRowsVisible)
-		cmdBox.Add(editCommand, vtui.Margins{}, vtui.AlignFill)
-		vbox.Add(cmdLabel, vtui.Margins{Top: 1}, vtui.AlignLeft)
-		vbox.Add(cmdBox, vtui.Margins{}, vtui.AlignFill)
+		addSeparator()
+		addField(i18n.Msg("UserMenu.LabelCommand"), editCommand, vtui.AlignFill)
 	}
+	addSeparator()
+	dlg.separators[len(dlg.separators)-1].SetGrowMode(vtui.GrowHiX | vtui.GrowLoY | vtui.GrowHiY)
 
 	btnOk := vtui.NewButton(0, 0, i18n.Msg("vtui.Save"))
 	btnCancel := vtui.NewButton(0, 0, i18n.Msg("vtui.Cancel"))
 	btnOk.IsDefault = true
+	btnOk.SetGrowMode(vtui.GrowLoY | vtui.GrowHiY)
+	btnCancel.SetGrowMode(vtui.GrowLoY | vtui.GrowHiY)
 
 	btnHbox := vtui.NewHBoxLayout(0, 0, width-4, 1)
 	btnHbox.HorizontalAlign = vtui.AlignCenter
@@ -778,8 +864,15 @@ func showEditItemDialog(s *userMenuState, current *vtui.VMenu, items []UserMenuI
 	btnHbox.Add(btnOk, vtui.Margins{}, vtui.AlignTop)
 	btnHbox.Add(btnCancel, vtui.Margins{}, vtui.AlignTop)
 
-	vbox.Add(btnHbox, vtui.Margins{Top: 1}, vtui.AlignFill)
+	vbox.Add(btnHbox, vtui.Margins{}, vtui.AlignFill)
 	vbox.Apply()
+	dlg.buttonRow = btnHbox
+	dlg.layoutControls()
+	dlg.MinW = 40
+	dlg.MinH = 8
+	if !isSubmenu {
+		dlg.MinH = 11
+	}
 
 	btnCancel.OnClick = func() { dlg.Close() }
 	btnOk.OnClick = func() {

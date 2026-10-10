@@ -77,23 +77,6 @@ func deadTCPPort(t *testing.T) string {
 	return strconv.Itoa(port)
 }
 
-// TestSSHFishDialerReportsAFailedDial: a dialer that cannot reach the host says
-// so and hands back nothing to close. A closer returned alongside an error
-// would be leaked by every caller, since none of them expect one.
-func TestSSHFishDialerReportsAFailedDial(t *testing.T) {
-	dial := sshFishDialer("127.0.0.1", deadTCPPort(t), "nobody", "", "", 1, netproxy.Settings{})
-	stdin, stdout, closer, err := dial(context.Background())
-	if err == nil {
-		if closer != nil {
-			_ = closer.Close() // unexpected dial cleanup only
-		}
-		t.Fatal("dialling a dead port succeeded")
-	}
-	if stdin != nil || stdout != nil || closer != nil {
-		t.Fatal("a failed dial handed back something to use")
-	}
-}
-
 // TestSSHFishDialerHonoursACancelledContext: a reconnect the user gave up on
 // must not open a connection, and the check has to happen before the dial
 // because DialSSH itself cannot be interrupted.

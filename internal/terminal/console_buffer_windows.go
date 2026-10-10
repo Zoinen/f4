@@ -9,8 +9,6 @@ import (
 )
 
 var (
-	modMsvcrtDLL            = syscall.NewLazyDLL("msvcrt.dll")
-	procGetch               = modMsvcrtDLL.NewProc("_getch")
 	kernel32SimpleExec      = syscall.NewLazyDLL("kernel32.dll")
 	procReadConsoleOutputW  = kernel32SimpleExec.NewProc("ReadConsoleOutputW")
 	procWriteConsoleOutputW = kernel32SimpleExec.NewProc("WriteConsoleOutputW")
@@ -131,11 +129,4 @@ func HostConsoleBufferMatches(w, h int) bool {
 	savedHostConsoleMu.Lock()
 	defer savedHostConsoleMu.Unlock()
 	return len(savedHostConsoleBuffer) > 0 && savedHostConsoleW == w && savedHostConsoleH == h
-}
-
-// MsvcrtProc is msvcrt's _getch, which is what a paused simple-exec waits on.
-func MsvcrtProc() interface {
-	Call(...uintptr) (uintptr, uintptr, error)
-} {
-	return procGetch
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/unxed/f4/internal/panel"
 	"github.com/unxed/f4/internal/semantic"
 	"github.com/unxed/f4/internal/viewer"
+	"github.com/unxed/f4/vfs/hostmode"
 	"github.com/unxed/vtui"
 )
 
@@ -172,7 +173,7 @@ func forkNearestPanelsFrame() bool {
 	return panels != nil && panels.HandleCommand(vtui.CmResize, "fork")
 }
 
-// handleWorkspaceForkCommand serves vtui's fork request -- CmResize carrying
+// HandleWorkspaceForkCommand serves vtui's fork request -- CmResize carrying
 // the string "fork", as emitted by FrameManager's native Ctrl+N fallback and
 // by a click on the "+" workspace tab. Only panel.PanelsFrame implements that
 // command, and FrameManager routes it down the *active* screen's frame stack
@@ -181,7 +182,7 @@ func forkNearestPanelsFrame() bool {
 // (issue #528). Full-screen frames call this from HandleCommand so the chord
 // forks the panels they were opened from instead.
 //
-// It forks those panels directly rather than calling actionWorkspaceNew:
+// It forks those panels directly rather than calling ActionWorkspaceNew:
 // that action first hands the request back to
 // FrameManager.HandleSemanticAction, which re-emits this very command into
 // this very frame stack, and the two would recurse.
@@ -273,6 +274,17 @@ func actionWorkspaceCloseNumber(number int) bool {
 	if queue := queueFrameInWorkspace(screen); queue != nil && queue.VetoCloseWhileActive() {
 		return true
 	}
+	// An explicit close of a modified background editor must expose its
+	// confirmation. Clean background workspaces still close without stealing
+	// focus, and unrelated background prompts remain local to their workspace.
+	for _, frame := range screen.Frames {
+		if ev, ok := frame.(*editor.EditorView); ok && ev.Modified {
+			if !actionActivateWorkspaceNumber(number) {
+				return false
+			}
+			break
+		}
+	}
 	return vtui.FrameManager.HandleSemanticAction(map[string]any{
 		"action": "workspace.close",
 		"target": semantic.WorkspaceSemanticTarget(number),
@@ -330,12 +342,15 @@ func dumpScreenTo(path string) error {
 // %USERPROFILE%, or %HOMEDRIVE%+%HOMEPATH% — which resolve inside the
 // wineprefix (e.g. `C:\users\<name>`, i.e.
 // `<WINEPREFIX>/drive_c/users/<name>` on the Unix side), not the real Unix
-// $HOME the user is used to looking in. Nothing about that is broken, but
-// it is exactly where issue #536 testing tripped: the file was written
-// (or the write silently failed) somewhere other than where it was searched
-// for. The executable's own directory is added first because it is the one
-// location a Wine user unambiguously knows without having to think about
-// prefix layout — they just ran the .exe from there.
+// $HOME the user is used to looking in. That is exactly where issue #536
+// testing tripped: the file was written (or the write silently failed)
+// somewhere other than where it was searched for. hostmode.UserHomeDir
+// (WINE.md §18.2, "$HOME") answers with the host's real $HOME in posix
+// personality and falls back to the same os.UserHomeDir() as before
+// everywhere else, so native Windows keeps its previous candidate
+// unchanged. The executable's own directory is still added first because
+// it is the one location a Wine user unambiguously knows without having to
+// think about prefix layout — they just ran the .exe from there.
 func screenDumpCandidateDirs() []string {
 	var dirs []string
 	if exe, err := os.Executable(); err == nil {
@@ -344,7 +359,7 @@ func screenDumpCandidateDirs() []string {
 		}
 		dirs = append(dirs, filepath.Dir(exe))
 	}
-	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+	if home, err := hostmode.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
 		dirs = append(dirs, home)
 	}
 	dirs = append(dirs, os.TempDir())

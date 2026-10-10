@@ -4656,10 +4656,13 @@ func TestFrameManager_FocusLossResetsModifiers(t *testing.T) {
 	// Push a mock frame to prevent dispatchEvent from returning early
 	fm.Push(&mockFrame{})
 
-	// 1. Set modifiers to active via a key event
+	// 1. Set modifiers to active via the modifier key's own event. Ordinary
+	// key events may only clear a key bar row; only a modifier event may raise
+	// one (see KeyBar.SetModifiers).
 	fm.dispatchEvent(&vtinput.InputEvent{
 		Type:            vtinput.KeyEventType,
 		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_SHIFT,
 		ControlKeyState: vtinput.ShiftPressed | vtinput.LeftCtrlPressed,
 	}, false)
 

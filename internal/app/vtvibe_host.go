@@ -13,6 +13,7 @@ import (
 	"github.com/unxed/f4/internal/viewer"
 	"github.com/unxed/f4/internal/vtvibe"
 	"github.com/unxed/f4/vfs"
+	"github.com/unxed/f4/vfs/hostmode"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 	"os"
@@ -28,11 +29,7 @@ import (
 // the core: it publishes the ai:// drive, the "ai:" command prefix and the
 // registry actions. Everything else lives in the vtvibe package.
 
-const (
-	vtvibeIniName        = "vtvibe.ini"
-	vtvibeDefaultBaseURL = "https://generativelanguage.googleapis.com/v1beta/openai"
-	vtvibeDefaultModel   = vtvibe.DefaultModel
-)
+const vtvibeIniName = "vtvibe.ini"
 
 var (
 	vtvibeOnce    sync.Once
@@ -52,13 +49,22 @@ func vtvibeIniPath() string {
 // vtvibeConfig re-reads the settings on every use, so editing vtvibe.ini or
 // exporting a key does not need a restart.
 func vtvibeConfig() (vtvibe.Config, string) {
+	cfg, keySource, _ := vtvibeProviderConfig()
+	return cfg, keySource
+}
+
+// vtvibeProviderConfig is vtvibeConfig together with the preset it used: the
+// provider chosen in vtvibe.ini decides the address, the default model and
+// which environment variables carry the key (#1842).
+func vtvibeProviderConfig() (vtvibe.Config, string, vtvibe.Provider) {
 	ini := ini.Load(vtvibeIniPath())
+	provider := vtvibe.ResolveProvider(ini.GetString("general", "provider", ""), ini.GetString("general", "base_url", ""))
 	cfg := vtvibe.Config{
-		BaseURL: ini.GetString("general", "base_url", vtvibeDefaultBaseURL),
-		Model:   ini.GetString("general", "model", vtvibeDefaultModel),
+		BaseURL: provider.Endpoint(ini.GetString("general", "base_url", "")),
+		Model:   provider.EffectiveModel(ini.GetString("general", "model", "")),
 	}
 	keySource := ""
-	for _, name := range []string{"GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY"} {
+	for _, name := range provider.KeyEnv {
 		if v := strings.TrimSpace(os.Getenv(name)); v != "" {
 			cfg.APIKey, keySource = v, name
 			break
@@ -70,7 +76,7 @@ func vtvibeConfig() (vtvibe.Config, string) {
 		}
 	}
 	aiSession().SetStatus(vtvibe.Status{BaseURL: cfg.BaseURL, Model: cfg.Model, KeySource: keySource})
-	return cfg, keySource
+	return cfg, keySource, provider
 }
 
 // vtvibeSaveSetting rewrites one key of vtvibe.ini, keeping the rest.
@@ -163,6 +169,18 @@ func init() {
 		MenuSubPath: "AI",
 		Visible:     func() bool { return aiSession().LastPatch() != nil },
 		Handler:     withAI(func(pf *panel.PanelsFrame) { aiApplyPatch(pf) }),
+	})
+	RegisterAction(action.Action{
+		Name:        "AI.UndoPatch",
+		Area:        "Shell",
+		Label:       "Undo AP Patch",
+		LabelKey:    "Action.AI.UndoPatch",
+		Description: "Put back the files the last applied ap patch changed",
+		DescKey:     "Action.AI.UndoPatch.Desc",
+		MenuPath:    "Commands",
+		MenuSubPath: "AI",
+		Visible:     func() bool { return aiTopUndo() != nil },
+		Handler:     withAI(func(pf *panel.PanelsFrame) { aiUndoPatch(pf) }),
 	})
 	RegisterAction(action.Action{
 		Name:        "AI.Setup",
@@ -270,7 +288,7 @@ func aiTogglePanel(pf *panel.PanelsFrame) {
 				}
 				target := panel.AIPrevPath[i]
 				if target == "" {
-					target, _ = os.UserHomeDir()
+					target, _ = hostmode.UserHomeDir()
 				}
 				pf.SwitchToVFS(fsp, vfs.NewOSVFS(target))
 				pf.ActiveIdx = 1 - i
@@ -460,10 +478,10 @@ func aiAskAction() bool {
 				if len(ctxParts) > 0 {
 					prompt = "[" + strings.Join(ctxParts, ", ") + "]\n"
 				}
-				cp.input.SetText(prompt)
+				cp.Input.SetText(prompt)
 				lines := len(strings.Split(prompt, "\n"))
 				if lines > 0 {
-					cp.input.SetCursorPos(lines-1, 0)
+					cp.Input.SetCursorPos(lines-1, 0)
 				}
 				cp.ScrollToBottom()
 			}
@@ -523,6 +541,8 @@ func aiCommand(app vfs.App, arg string) {
 		aiNewSession(pf)
 	case lower == "apply" || lower == "patch":
 		aiApplyPatch(pf)
+	case lower == "undo":
+		aiUndoPatch(pf)
 	case lower == "ap" || lower == "spec":
 		aiAttachAPSpec(pf)
 	case lower == "key":
@@ -548,14 +568,19 @@ func aiCommand(app vfs.App, arg string) {
 // aiSend runs the round trip through the background task manager: the UI
 // thread never blocks and Cancel actually cancels the HTTP request.
 func aiSend(pf *panel.PanelsFrame, question string) {
-	cfg, keySource := vtvibeConfig()
-	if cfg.APIKey == "" && keySource == "" && !strings.Contains(cfg.BaseURL, "127.0.0.1") &&
-		!strings.Contains(cfg.BaseURL, "localhost") {
+	cfg, keySource, provider := vtvibeProviderConfig()
+	if cfg.APIKey == "" && keySource == "" && provider.NeedsKey(cfg.BaseURL) {
 		vtui.FrameManager.PostTask(func() {
+			if provider.ID != vtvibe.ProviderGemini {
+				// The prompt offers a free Google AI Studio key; for any other
+				// service only the setup dialog makes sense.
+				aiSetupDialog(pf)
+				return
+			}
 			dlg := vtui.ShowMessage(i18n.Msg("AI.Title"), i18n.Msg("AI.NoKeyBrowserPrompt"), []string{i18n.Msg("AI.BtnGetToken"), i18n.Msg("vtui.Cancel")})
 			dlg.OnResult = func(code int) {
 				if code == 0 {
-					openBrowser("https://aistudio.google.com/apikey")
+					openBrowser(provider.KeyURL)
 					aiSetupDialog(pf)
 				}
 			}

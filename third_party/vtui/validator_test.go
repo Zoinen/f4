@@ -15,6 +15,61 @@ func TestFilterValidator(t *testing.T) {
 	}
 }
 
+func TestIntRangeValidator(t *testing.T) {
+	v := &IntRangeValidator{Min: -2, Max: 10}
+	for _, tc := range []struct {
+		input string
+		valid bool
+	}{
+		{"-2", true}, {"10", true}, {"-3", false}, {"11", false}, {"nope", false},
+	} {
+		if got := v.Validate(tc.input); got != tc.valid {
+			t.Errorf("Validate(%q) = %v, want %v", tc.input, got, tc.valid)
+		}
+	}
+	for _, tc := range []struct {
+		input string
+		valid bool
+	}{
+		{"", true}, {"-", true}, {"12", true}, {"1x", false},
+	} {
+		if got := v.IsValidInput(tc.input); got != tc.valid {
+			t.Errorf("IsValidInput(%q) = %v, want %v", tc.input, got, tc.valid)
+		}
+	}
+}
+
+func TestRegexValidator(t *testing.T) {
+	v := &RegexValidator{Pattern: `^[a-z]+$`}
+	if !v.Validate("hello") {
+		t.Error("RegexValidator rejected a matching string")
+	}
+	if v.Validate("Hello1") {
+		t.Error("RegexValidator accepted a non-matching string")
+	}
+	if !v.IsValidInput("partial") {
+		t.Error("RegexValidator should allow partial input")
+	}
+}
+
+func TestOctalValidator(t *testing.T) {
+	v := &OctalValidator{MaxDigits: 3}
+	for _, tc := range []struct {
+		input   string
+		final   bool
+		partial bool
+	}{
+		{"", true, true}, {"755", true, true}, {"7550", false, false}, {"789", false, false}, {"77x", false, false},
+	} {
+		if got := v.Validate(tc.input); got != tc.final {
+			t.Errorf("Validate(%q) = %v, want %v", tc.input, got, tc.final)
+		}
+		if got := v.IsValidInput(tc.input); got != tc.partial {
+			t.Errorf("IsValidInput(%q) = %v, want %v", tc.input, got, tc.partial)
+		}
+	}
+}
+
 func TestLookupValidator(t *testing.T) {
 	v := &LookupValidator{
 		List:       []string{"UTF-8", "CP866", "Windows-1251"},
@@ -90,4 +145,62 @@ func TestMaskValidator_LiteralEscaping(t *testing.T) {
 	if v.IsValidInput("Rex-1") {
 		t.Error("Mismatching literal 'x' instead of 'f' should be rejected")
 	}
+}
+
+func TestValidatorEdgeCases(t *testing.T) {
+	t.Run("filter Validate delegates to IsValidInput", func(t *testing.T) {
+		v := &FilterValidator{ValidChars: "abc"}
+		if !v.Validate("cab") {
+			t.Error("FilterValidator should accept a string containing only valid characters")
+		}
+		if v.Validate("cad") {
+			t.Error("FilterValidator should reject an invalid character")
+		}
+	})
+
+	t.Run("regex invalid pattern", func(t *testing.T) {
+		v := &RegexValidator{Pattern: "["}
+		if v.Validate("anything") {
+			t.Error("invalid regexp should not validate input")
+		}
+		if !v.IsValidInput("partial") {
+			t.Error("RegexValidator should allow partial input even for an invalid final pattern")
+		}
+	})
+
+	t.Run("lookup is case sensitive when configured", func(t *testing.T) {
+		v := &LookupValidator{List: []string{"UTF-8"}}
+		if v.Validate("utf-8") {
+			t.Error("case-sensitive lookup should reject different casing")
+		}
+		if !v.Validate("UTF-8") || !v.IsValidInput("partial") {
+			t.Error("lookup should accept an exact item and any partial input")
+		}
+	})
+
+	t.Run("octal zero digit limit", func(t *testing.T) {
+		v := &OctalValidator{}
+		if !v.Validate("") {
+			t.Error("empty octal input should remain valid")
+		}
+		if v.Validate("0") {
+			t.Error("non-empty input should fail when MaxDigits is zero")
+		}
+		if !v.IsValidInput("777") {
+			t.Error("MaxDigits zero should not limit partial input")
+		}
+	})
+
+	t.Run("mask letter markers", func(t *testing.T) {
+		v := &MaskValidator{Mask: "?&"}
+		if !v.IsValidInput("AБ") {
+			t.Error("letter markers should accept Unicode letters")
+		}
+		if v.IsValidInput("1A") {
+			t.Error("? marker should reject a non-letter")
+		}
+		if v.IsValidInput("A1") {
+			t.Error("& marker should reject a non-letter")
+		}
+	})
 }

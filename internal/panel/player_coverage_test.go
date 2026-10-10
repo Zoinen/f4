@@ -60,3 +60,28 @@ func TestPlayerGlobalAndControlKeys(t *testing.T) {
 		t.Error("F1 is not file-panel-only")
 	}
 }
+
+func TestPlayerVetoesFilePanelHotkeysBeforeGlobalActions(t *testing.T) {
+	player := &PlayerPanel{focused: true}
+	p := &PanelsFrame{ShowPanels: true, ActiveIdx: 0}
+	p.AltPanels[0] = player
+
+	for _, vk := range []uint16{
+		vtinput.VK_F3, vtinput.VK_F4, vtinput.VK_F5, vtinput.VK_F6,
+		vtinput.VK_F7, vtinput.VK_F8, vtinput.VK_INSERT, vtinput.VK_DELETE,
+	} {
+		e := &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vk}
+		if !p.VetoActionKey(e) {
+			t.Errorf("VetoActionKey(%d) = false, want true with focused player", vk)
+		}
+	}
+
+	for _, e := range []*vtinput.InputEvent{
+		{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_F4, ControlKeyState: vtinput.LeftCtrlPressed},
+		{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_F4, ControlKeyState: vtinput.LeftAltPressed},
+	} {
+		if p.VetoActionKey(e) {
+			t.Errorf("VetoActionKey(%d) = true with modifier 0x%x, want false", e.VirtualKeyCode, e.ControlKeyState)
+		}
+	}
+}

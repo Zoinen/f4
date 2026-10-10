@@ -8,8 +8,10 @@ import (
 	"github.com/unxed/f4/internal/fileops"
 	"github.com/unxed/f4/internal/i18n"
 	"github.com/unxed/f4/internal/numeric"
+	"github.com/unxed/f4/internal/piecetable"
 	"github.com/unxed/f4/internal/semantic"
 	"github.com/unxed/f4/internal/theme"
+	"github.com/unxed/f4/internal/wheel"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
@@ -24,11 +26,18 @@ import (
 // ViewerView is a high-performance file viewer component.
 type ViewerView struct {
 	vtui.BaseFrame
-	TopBar         *TopBar
-	menuBar        *vtui.MenuBar
-	Backend        *ViewerBackend
-	VFS            vfs.VFS
-	Path           string
+	TopBar  *TopBar
+	menuBar *vtui.MenuBar
+	Backend *ViewerBackend
+	VFS     vfs.VFS
+	Path    string
+	// MacroID identifies this viewer in the ViewerEvent of Lua macros;
+	// closeNotified is set once EventClose has been raised.
+	MacroID       int
+	closeNotified bool
+
+	// Syntax highlighting (see highlight.go): the colorizer, created once,
+	// and the window last handed to it.
 	highlight      WindowColorizer
 	highlightTried bool
 	highlightKey   uint64
@@ -40,6 +49,9 @@ type ViewerView struct {
 	HexAuto    bool
 	DecodeMode bool
 	WrapMode   bool
+	// AnsiMode draws the colour sequences of terminal output (SGR) as colours
+	// instead of showing them as text (f4#1705); see ansi.go.
+	AnsiMode bool
 	// DisasmMode is the processor mode the decode view disassembles in:
 	// 16, 32 or 64, or 0 while undecided. See disasm.go.
 	DisasmMode int
@@ -95,6 +107,7 @@ type ViewerView struct {
 	NativeViewportRevision uint64
 	SemanticLayoutRevision uint64
 	layoutTabSize          int
+	layoutANSI             bool
 
 	ScrollBar *vtui.ScrollBar
 
@@ -105,6 +118,10 @@ type ViewerView struct {
 
 	OnClose  func()
 	Codepage int
+
+	// wheelCoast is what a fast wheel spin leaves behind: lines the viewer
+	// still owes the scroll position (see internal/wheel).
+	wheelCoast wheel.Coast
 }
 
 func (vv *ViewerView) setEOF(value bool) {
@@ -210,11 +227,16 @@ func NewViewerView(ctx context.Context, v vfs.VFS, path string) (*ViewerView, er
 		Codepage:               cpID,
 		SemanticLayoutRevision: 1,
 		layoutTabSize:          effectiveViewerTabSize(),
+		layoutANSI:             isANSIFileName(path),
 		HexAuto:                binary,
 		DisasmMode:             DetectX86Mode(header),
+		AnsiMode:               isANSIFileName(path),
 	}
 	vv.ScrollBar = vtui.NewScrollBar(0, 0, 0)
 	vv.ScrollBar.ColorIdx = theme.ColViewerScrollbar
+	vv.ScrollBar.Attr = func() uint64 {
+		return theme.OnTextBackground(theme.ColViewerScrollbar, theme.ColViewerText, vv.textAttr())
+	}
 	vv.ScrollBar.SetOwner(vv)
 	vv.ScrollBar.OnScroll = func(v int) {
 		newOff := int64(v)
@@ -292,6 +314,8 @@ func NewViewerView(ctx context.Context, v vfs.VFS, path string) (*ViewerView, er
 	vv.SetCanFocus(true)
 	vv.SetFocus(true)
 	vv.startTailWatch()
+	vv.MacroID = int(lastViewerID.Add(1))
+	vv.notify(EventRead)
 	return vv, nil
 }
 
@@ -350,6 +374,17 @@ func (vv *ViewerView) stopTailWatch() {
 
 // Following belongs to the viewer lifecycle: native frontends may publish
 // semantic state without ever calling the console painter.
+// refreshFromFile re-measures the file and redraws when it moved. A viewer
+// sitting at the end of the file follows it, and one parked further up stays
+// exactly where the reader left it and only gets an honest scrollbar and
+// percentage.
+//
+// Either way the refresh dropped the window cache, so the rows on screen have
+// to be fetched again before they can be painted. The viewer is held unpainted
+// until they are (holdUntilCached): a plain Redraw painted the frame in
+// between, with the text replaced by "[ Loading... ]", once per growth of the
+// file -- a log being written to made the whole viewer blink about once a
+// second while it was read from the top (#1624).
 func (vv *ViewerView) refreshFromFile() {
 	if vv.Backend == nil || vv.Busy {
 		return
@@ -368,15 +403,49 @@ func (vv *ViewerView) refreshFromFile() {
 		vv.setEOF(false)
 	}
 	if follow {
-		vv.jumpToEnd()
+		vv.followTail()
 		return
 	}
-	vtui.FrameManager.Redraw()
+	vv.holdUntilCached(vv.TopOffset)
+}
+
+func (vv *ViewerView) followTail() {
+	vv.jumpToEnd()
+	if !vv.Busy {
+		vv.holdUntilCached(vv.TopOffset)
+	}
+}
+
+// Keep the old rows painted until a refresh's replacement bytes are ready.
+func (vv *ViewerView) holdUntilCached(off int64) {
+	backend := vv.Backend
+	if _, err := backend.ReadAt(off, 1); err != piecetable.ErrLoading {
+		vtui.FrameManager.Redraw()
+		return
+	}
+	intent := vv.viewerNavigationGeneration
+	vv.Busy = true
+	vtui.RunAsync(func(ctx *vtui.TaskContext) {
+		defer ctx.RunOnUIWithRedrawDecision(func() bool {
+			if vv.IsDone() || vv.Backend != backend || vv.viewerNavigationGeneration != intent {
+				return false
+			}
+			vv.Busy = false
+			return true
+		})
+		for ctx.Err() == nil && backend.ctx.Err() == nil {
+			if _, err := backend.ReadAt(off, 1); err != piecetable.ErrLoading {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	})
 }
 
 // Reload rereads the file on demand. Unlike the poll it drops the window cache
 // even when the length did not change, so a file rewritten in place -- same
-// size, different bytes -- also shows its new contents.
+// size, different bytes -- also shows its new contents. Like the poll, it keeps
+// the old contents on screen until the new ones are there to paint.
 func (vv *ViewerView) Reload() {
 	if vv.Backend == nil {
 		return
@@ -390,10 +459,10 @@ func (vv *ViewerView) Reload() {
 		vv.setEOF(false)
 	}
 	if vv.eof() {
-		vv.jumpToEnd()
+		vv.followTail()
 		return
 	}
-	vtui.FrameManager.Redraw()
+	vv.holdUntilCached(vv.TopOffset)
 }
 
 // viewerDetectionHeader reads the prefix every codepage decision is made on.
@@ -544,7 +613,7 @@ func (vv *ViewerView) DisplayObject(scr *vtui.ScreenBuf) {
 	// pages backwards and leaves the last lines below the QML viewport.
 	contentHeight := vv.viewportHeight()
 
-	bgAttr := vtui.Palette[theme.ColViewerText]
+	bgAttr := vv.textAttr()
 
 	// 1. Draw Background
 	scr.FillRect(vv.X1, vv.Y1+1, vv.X2, vv.Y2, ' ', bgAttr)
@@ -701,6 +770,15 @@ func (vv *ViewerView) decodeStep(off int64) int64 {
 	return int64(DisasmInstLen(data, vv.disasmMode()))
 }
 
+// rowReadSize is how many bytes to read to lay out one screen row. Escape
+// sequences take bytes and no room, so an ANSI-mode row needs a longer read.
+func (vv *ViewerView) rowReadSize(width int) int {
+	if vv.AnsiMode {
+		return width * 16
+	}
+	return width * 4
+}
+
 func (vv *ViewerView) renderText(scr *vtui.ScreenBuf, width, contentHeight int) {
 	vv.renderTextRows(scr, width, contentHeight, true)
 }
@@ -710,8 +788,12 @@ func (vv *ViewerView) renderText(scr *vtui.ScreenBuf, width, contentHeight int) 
 // latter must keep its requested row-to-byte mapping intact.
 func (vv *ViewerView) renderTextRows(scr *vtui.ScreenBuf, width, contentHeight int, alignEnd bool) {
 	vv.ensureTextLayoutSettings()
-	attr := vtui.Palette[theme.ColViewerText]
 	hl := vv.windowColorizer()
+	if vv.AnsiMode {
+		// The colours are the file's own.
+		hl = nil
+	}
+	attr := vv.textAttr()
 	var hlLines []WindowLine
 	hlTexts := make(map[int64]string)
 	if vv.SemanticNeedsReflow {
@@ -868,13 +950,13 @@ func (vv *ViewerView) ProcessKey(e *vtinput.InputEvent) bool {
 			// Fail-safe: if lineOffsets not populated (e.g. before first render),
 			// try to proactively find the next line start from current offset.
 			width := vv.viewportWidth()
-			data, err := vv.Backend.ReadAt(vv.TopOffset, width*4)
+			data, err := vv.Backend.ReadAt(vv.TopOffset, vv.rowReadSize(width))
 			if err == nil && len(data) > 0 {
 				tabSize := 8
 				if config.App.EditorTabSize > 0 {
 					tabSize = config.App.EditorTabSize
 				}
-				row := layoutViewerTextRow(data, width, tabSize, vv.WrapMode)
+				row := layoutViewerTextRowANSI(data, width, tabSize, vv.WrapMode, vv.AnsiMode)
 				if row.lineLen > 0 {
 					vv.TopOffset += int64(row.lineLen)
 				}
@@ -1157,6 +1239,7 @@ func (vv *ViewerView) jumpToEndForIntent(intent uint64) {
 	backend := vv.Backend
 	size := backend.Size()
 	wrapMode := vv.WrapMode
+	ansiMode := vv.AnsiMode
 	layoutRevision := vv.SemanticLayoutRevision
 	viewportRevision := vv.NativeViewportRevision
 	layoutTabSize := effectiveViewerTabSize()
@@ -1191,7 +1274,7 @@ func (vv *ViewerView) jumpToEndForIntent(intent uint64) {
 		}
 
 		endResult, ready, err := viewerFastEndOffset(scanContext, tail, startOff, size,
-			width, int(contentHeight), wrapMode, layoutTabSize)
+			width, int(contentHeight), wrapMode, layoutTabSize, ansiMode)
 		if err != nil {
 			return
 		}
@@ -1209,7 +1292,7 @@ func (vv *ViewerView) jumpToEndForIntent(intent uint64) {
 				}
 			}
 			endResult, err = viewerEndOffsetFromAnchor(scanContext, backend, anchor,
-				startOff, size, tail, width, int(contentHeight), wrapMode, layoutTabSize)
+				startOff, size, tail, width, int(contentHeight), wrapMode, layoutTabSize, ansiMode)
 			if err != nil {
 				return
 			}
@@ -1230,7 +1313,7 @@ func (vv *ViewerView) jumpToEndForIntent(intent uint64) {
 				vv.NativeViewportRevision != viewportRevision ||
 				vv.viewportWidth() != width ||
 				int64(vv.viewportHeight()) != contentHeight ||
-				vv.WrapMode != wrapMode || effectiveViewerTabSize() != layoutTabSize ||
+				vv.WrapMode != wrapMode || vv.AnsiMode != ansiMode || effectiveViewerTabSize() != layoutTabSize ||
 				backend.Size() != size {
 				vv.jumpToEndForIntent(intent)
 				return false
@@ -1459,18 +1542,38 @@ func (vv *ViewerView) ProcessMouse(e *vtinput.InputEvent) bool {
 	}
 	if e.WheelDirection != 0 {
 		vv.hoverURL = ""
+		direction := 1
 		speed := config.App.WheelViewerDown
-		vk := uint16(vtinput.VK_DOWN)
 		if e.WheelDirection > 0 {
+			direction = -1
 			speed = config.App.WheelViewerUp
-			vk = vtinput.VK_UP
 		}
-		for i := 0; i < config.WheelScrollLines(speed); i++ {
-			vv.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vk})
-		}
+		// A spin faster than one notch per spin window queues extra lines
+		// the viewer keeps scrolling on its own (see internal/wheel).
+		vv.wheelCoast.Notch(direction, vv.scrollWheelLines)
+		vv.scrollWheelLines(direction * config.WheelScrollLines(speed))
 		return true
 	}
 	return false
+}
+
+// scrollWheelLines moves the view by step lines, positive down the file,
+// the way one wheel notch does, and reports whether anything moved so a
+// coast stops at the end of the file instead of spinning in place.
+func (vv *ViewerView) scrollWheelLines(step int) bool {
+	if step == 0 {
+		return false
+	}
+	before := vv.TopOffset
+	vk := uint16(vtinput.VK_DOWN)
+	if step < 0 {
+		vk = vtinput.VK_UP
+		step = -step
+	}
+	for i := 0; i < step; i++ {
+		vv.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vk})
+	}
+	return vv.TopOffset != before
 }
 
 func (vv *ViewerView) urlLinkAtMouse(mx, my int) (UrlCellRange, bool) {
@@ -1515,6 +1618,12 @@ func (vv *ViewerView) ResizeConsole(w, h int) {
 }
 
 func (vv *ViewerView) Close() {
+	// A coast already posted to the UI loop has no view left to scroll.
+	vv.wheelCoast.Stop()
+	if !vv.closeNotified {
+		vv.closeNotified = true
+		vv.notify(EventClose)
+	}
 	if vv.highlight != nil {
 		vv.highlight.Close()
 		vv.highlight = nil

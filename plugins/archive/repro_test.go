@@ -112,7 +112,11 @@ func TestActionAddArchive_OverwriteWarning(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	archiveName := v.Base(tmpDir) + ".zip"
+	// actionAddArchive suggests the selected item's own name + ".zip" as the
+	// default archive name when a single item is selected (f4#1504), so the
+	// fixture must create a file under that name to genuinely exercise the
+	// overwrite-warning path.
+	archiveName := "file_to_archive.txt" + ".zip"
 	existingArchive := v.Join(tmpDir, archiveName)
 	if err := os.WriteFile(existingArchive, []byte("existing zip content"), 0600); err != nil {
 		t.Fatal(err)

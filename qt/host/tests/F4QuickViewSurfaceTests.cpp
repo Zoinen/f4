@@ -5310,7 +5310,10 @@ void F4QuickViewSurfaceTests::activationRefreshPreservesNativeControlFocus()
     QTest::keyClick(fixture.window, Qt::Key_Escape);
     QVERIFY(!path->property("editMode").toBool());
 
-    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, pathPoint);
+    // The loading indicator narrows the path editor after the refresh.
+    const QPoint refreshedPathPoint = path->mapToScene(
+        QPointF(path->width()-4, path->height()/2)).toPoint();
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, refreshedPathPoint);
     QVERIFY(path->property("editMode").toBool());
     fixture.shell.setCommandMenus({QVariantMap{
         {"id", "activation-focus-menu"}, {"kind", "menu"}, {"role", "vmenu"},
@@ -8849,6 +8852,9 @@ void F4QuickViewSurfaceTests::workspaceSwitchRetainsGalleryViewAt175Percent()
     QTRY_VERIFY((second = content->property("item").value<QObject *>()));
     QVERIFY(second != first);
     QVERIFY(!qobject_cast<QQuickItem *>(first)->isVisible());
+    QCOMPARE(first->property("panel").toMap().value("id"), original.value("id"));
+    QCOMPARE(second->property("panel").toMap().value("id"), next.value("id"));
+    QCOMPARE(root->property("registeredGalleryPanelHost").value<QObject *>(), second);
     QTest::qWait(80);
     int leaves = 0;
     const auto visit = [&](auto &&self, QQuickItem *item) -> void {
@@ -8878,6 +8884,27 @@ void F4QuickViewSurfaceTests::workspaceSwitchRetainsGalleryViewAt175Percent()
     visit(visit, qobject_cast<QQuickItem *>(first));
     QVERIFY(leaves > 0);
     QVERIFY(fixture.window->grabWindow().save("/tmp/f4-retained-panel-175.png"));
+    QCOMPARE(root->property("registeredGalleryPanelHost").value<QObject *>(), first);
+
+    QPointer<QObject> originalHost(first);
+    for (int index = 0; index < 9; ++index) {
+        QVariantMap replacement = original;
+        const QString identity = QString("cache-limit-panel-%1").arg(index);
+        replacement.insert("id", identity);
+        replacement.insert("path", "C:/" + identity);
+        fixture.shell.deliverCompactPresentation({{"side", 0}, {"panel", replacement}});
+        QObject *current = nullptr;
+        QTRY_VERIFY((current = content->property("item").value<QObject *>()));
+        QTRY_COMPARE(current->property("panel").toMap().value("id").toString(), identity);
+        int retainedCount = 0;
+        for (auto *child : content->findChildren<QObject *>()) {
+            if (child->objectName().startsWith("retainedGalleryPanel-"))
+                ++retainedCount;
+        }
+        QVERIFY(retainedCount <= 8);
+        QCOMPARE(root->property("registeredGalleryPanelHost").value<QObject *>(), current);
+    }
+    QTRY_VERIFY(originalHost.isNull());
 }
 
 void F4QuickViewSurfaceTests::shellSnapshotDoesNotRestorePreviousPanelDescriptor()
@@ -9061,7 +9088,7 @@ void F4QuickViewSurfaceTests::nestedMenuAnchorsHeadersTagsAndChevronsOnPhysicalP
         {QStringLiteral("w"), 24},
         {QStringLiteral("h"), 4},
         {QStringLiteral("selected"), 0},
-        {QStringLiteral("viewHeight"), 1},
+        {QStringLiteral("viewHeight"), 2},
         {QStringLiteral("items"), QVariantList{
              QVariantMap{
                  {QStringLiteral("index"), 0},
@@ -9229,7 +9256,7 @@ void F4QuickViewSurfaceTests::nestedMenuAnchorsHeadersTagsAndChevronsOnPhysicalP
 
     fixture.shell.clearActions();
     QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
-                      QPoint(2, 2));
+                      QPoint(2, fixture.window->height() / 2));
     QTRY_COMPARE_WITH_TIMEOUT(fixture.shell.actions.size(), 1, 1500);
     QCOMPARE(fixture.shell.actions.constFirst()
                  .value(QStringLiteral("target")).toString(),
@@ -10513,7 +10540,10 @@ void F4QuickViewSurfaceTests::commandLineClickTransfersFocus()
             bool returnedFocus = false;
             for (const auto &action : fixture.shell.actions)
                 returnedFocus |= action.value("action").toString() == "panel.activate" && action.value("side").toInt() == side;
-            QVERIFY(returnedFocus);
+            QVERIFY2(returnedFocus, qPrintable(QString(
+                "panel %1 click (%2,%3), actions=%4")
+                .arg(side).arg(point.x()).arg(point.y())
+                .arg(fixture.shell.actions.size())));
         }
     }
     command.insert("ownsNavigation", false);
@@ -12452,11 +12482,9 @@ void F4QuickViewSurfaceTests::columnPaddingPreviewAndPersistence()
     QuickViewFixture fixture(shellScene());
     QVERIFY(fixture.window);
     QCOMPARE(fixture.window->property("panelColumnPadding").toInt(), 8);
-    QQmlComponent component(&fixture.engine, QUrl("qrc:/F4QtHost/qml/ThemeEditorContent.qml"));
+    QQmlComponent component(&fixture.engine, QUrl("qrc:/F4QtHost/qml/GuiSettingsPage.qml"));
     QScopedPointer<QObject> object(component.createWithInitialProperties({
-        {"hostWindow", QVariant::fromValue(fixture.window)},
-        {"themePersistence", QVariant::fromValue(&fixture.themePersistence)},
-        {"embeddedSettings", true}}));
+        {"hostWindow", QVariant::fromValue(fixture.window)}}));
     QVERIFY2(object, qPrintable(component.errorString()));
     auto *page = qobject_cast<QQuickItem *>(object.data());
     QVERIFY(page);

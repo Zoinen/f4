@@ -36,7 +36,7 @@ func TestVocabularyIntegrity(t *testing.T) {
 	requiredWidgets := []string{
 		"Dialog", "BorderedFrame", "Button", "Checkbox", "RadioButton",
 		"Edit", "ListBox", "ComboBox", "Table", "VMenu", "MenuBar",
-		"KeyBar", "StatusLine", "Label", "GroupBox", "Desktop",
+		"KeyBar", "StatusLine", "Label", "GroupBox", "Desktop", "Canvas",
 	}
 
 	for _, req := range requiredWidgets {

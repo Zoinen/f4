@@ -1,17 +1,19 @@
-package fileops
+//go:build integration
+
+package fileops_test
 
 import (
 	context "context"
 	sha256 "crypto/sha256"
 	hex "encoding/hex"
 	errors "errors"
-	androidfs "github.com/unxed/f4/plugins/android"
-	iosfs "github.com/unxed/f4/plugins/ios"
+	fileops "github.com/unxed/f4/internal/fileops"
+	plughost "github.com/unxed/f4/internal/plughost"
+	f4rpc "github.com/unxed/f4/sdk/f4rpc"
 	vfs "github.com/unxed/f4/vfs"
-	vtinput "github.com/unxed/vtinput"
-	vtui "github.com/unxed/vtui"
 	io "io"
 	os "os"
+	exec "os/exec"
 	sort "sort"
 	strings "strings"
 	testing "testing"
@@ -20,39 +22,18 @@ import (
 
 const realIOSAndroidCopyEnv = "F4_REAL_IOS_ANDROID_COPY"
 
-type realDeviceCopyHost struct {
-	drives    map[string]func() vfs.VFS
-	providers []vfs.VFSProvider
+// Supply separately built standalone plugins in F4_REAL_IOS_PLUGIN and
+// F4_REAL_ANDROID_PLUGIN. Run with -tags=integration -timeout=50m and enable
+// F4_REAL_IOS_ANDROID_COPY only when overwriting the destination is intended.
+// Plugin dependencies stay outside the root module's build list.
+type realDeviceCopyTransport struct {
+	ctx     context.Context
+	session *f4rpc.Session
 }
 
-func newRealDeviceCopyHost() *realDeviceCopyHost {
-	return &realDeviceCopyHost{drives: make(map[string]func() vfs.VFS)}
+func (transport realDeviceCopyTransport) Call(method string, params, result any) error {
+	return transport.session.CallContext(transport.ctx, method, params, result)
 }
-
-func (*realDeviceCopyHost) GetVersion() string { return "real-device-copy-test" }
-
-func (*realDeviceCopyHost) Log(string) {}
-
-func (*realDeviceCopyHost) Message(string) {}
-
-func (*realDeviceCopyHost) RegisterHighlighter(vtui.HighlighterProvider) {}
-
-func (h *realDeviceCopyHost) RegisterVFSProvider(provider vfs.VFSProvider) {
-	h.providers = append(h.providers, provider)
-}
-
-func (*realDeviceCopyHost) RegisterURIProvider(vfs.URIProvider) error { return nil }
-
-func (h *realDeviceCopyHost) RegisterDrive(name string, factory func() vfs.VFS) {
-	h.drives[name] = factory
-}
-
-func (*realDeviceCopyHost) RegisterGlobalHotkey(uint16, vtinput.ControlKeyState, func(vfs.App)) {
-}
-
-func (*realDeviceCopyHost) RegisterPluginMenuItem(string, func(vfs.App)) {}
-
-func (*realDeviceCopyHost) RunAction(string) bool { return false }
 
 func TestRealIOSDCIMToAndroidDCIMCopy(t *testing.T) {
 	if os.Getenv(realIOSAndroidCopyEnv) == "" {
@@ -62,32 +43,17 @@ func TestRealIOSDCIMToAndroidDCIMCopy(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
 	defer cancel()
 
-	iosPlugin, androidPlugin := iosfs.NewPlugin(), androidfs.NewPlugin()
-	iosHost, androidHost := newRealDeviceCopyHost(), newRealDeviceCopyHost()
-	if err := iosPlugin.Init(iosHost); err != nil {
-		t.Fatalf("initialize iOS plugin: %v", err)
-	}
-	defer func() {
-		if err := iosPlugin.Close(); err != nil {
-			t.Errorf("close iOS plugin: %v", err)
-		}
-	}()
-	if err := androidPlugin.Init(androidHost); err != nil {
-		t.Fatalf("initialize Android plugin: %v", err)
-	}
-	defer func() {
-		if err := androidPlugin.Close(); err != nil {
-			t.Errorf("close Android plugin: %v", err)
-		}
-	}()
-
-	source := openRealDeviceForCopy(t, ctx, iosHost, "iOS", os.Getenv("F4_REAL_IOS_DEVICE"))
+	iosManager := startRealDeviceCopyPlugin(t, ctx, "F4_REAL_IOS_PLUGIN", "iOS")
+	androidManager := startRealDeviceCopyPlugin(t, ctx, "F4_REAL_ANDROID_PLUGIN", "Android")
+	source := openRealDeviceForCopy(t, ctx, iosManager, "iOS", os.Getenv("F4_REAL_IOS_DEVICE"))
 	defer source.Close()
-	destination := openRealDeviceForCopy(t, ctx, androidHost, "Android", os.Getenv("F4_REAL_ANDROID_DEVICE"))
+	destination := openRealDeviceForCopy(t, ctx, androidManager, "Android", os.Getenv("F4_REAL_ANDROID_DEVICE"))
 	defer destination.Close()
 
-	const sourceDir = "/DCIM/100APPLE"
-	const destinationDir = "/sdcard/DCIM"
+	// RPC paths include the device row; unlike the old provider mount they do
+	// not discard that prefix when entering the device's native filesystem.
+	sourceDir := source.Join(source.GetPath(), "DCIM", "100APPLE")
+	destinationDir := destination.Join(destination.GetPath(), "sdcard", "DCIM")
 	if err := source.SetPath(sourceDir); err != nil {
 		t.Fatalf("open iPhone source %s: %v", sourceDir, err)
 	}
@@ -118,20 +84,20 @@ func TestRealIOSDCIMToAndroidDCIMCopy(t *testing.T) {
 	}
 	collisions := 0
 	for _, name := range names {
-		if existing[TransferItemName(source, source.Join(sourceDir, name), destination, name)] {
+		if existing[fileops.TransferItemName(source, source.Join(sourceDir, name), destination, name)] {
 			collisions++
 		}
 	}
 	t.Logf("copying %d top-level item(s), %d file(s), %d directorie(s), %d bytes from %T to %T; %d destination collision(s)",
 		len(names), stats.Files, stats.Dirs, stats.Bytes, source, destination, collisions)
 
-	state := &FileOpState{OverwriteAll: true, Buffer: make([]byte, 128*1024)}
+	state := &fileops.FileOpState{OverwriteAll: true, Buffer: make([]byte, 128*1024)}
 	copyStarted := time.Now()
 	for index, name := range names {
 		sourcePath := source.Join(sourceDir, name)
-		targetName := TransferItemName(source, sourcePath, destination, name)
+		targetName := fileops.TransferItemName(source, sourcePath, destination, name)
 		targetPath := destination.Join(destinationDir, targetName)
-		if err := recursiveCopy(ctx, source, sourcePath, destination, targetPath, state, 0); err != nil {
+		if err := fileops.CopyForRealDeviceIntegration(ctx, source, sourcePath, destination, targetPath, state); err != nil {
 			t.Fatalf("copy item %d/%d %q: %v", index+1, len(names), name, err)
 		}
 		if (index+1)%10 == 0 || index+1 == len(names) {
@@ -144,7 +110,7 @@ func TestRealIOSDCIMToAndroidDCIMCopy(t *testing.T) {
 	verifyStarted := time.Now()
 	for _, name := range names {
 		sourcePath := source.Join(sourceDir, name)
-		targetName := TransferItemName(source, sourcePath, destination, name)
+		targetName := fileops.TransferItemName(source, sourcePath, destination, name)
 		targetPath := destination.Join(destinationDir, targetName)
 		verifyRealDeviceCopyTree(t, ctx, source, sourcePath, destination, targetPath, name, &verified)
 	}
@@ -156,17 +122,68 @@ func TestRealIOSDCIMToAndroidDCIMCopy(t *testing.T) {
 		verified.files, verified.dirs, verified.bytes, time.Since(verifyStarted).Round(time.Millisecond))
 }
 
-func openRealDeviceForCopy(t *testing.T, ctx context.Context, host *realDeviceCopyHost, driveName, selector string) vfs.VFS {
+func startRealDeviceCopyPlugin(t *testing.T, ctx context.Context, binaryEnv, driveName string) vfs.VFS {
 	t.Helper()
-	factory := host.drives[driveName]
-	if factory == nil {
-		t.Fatalf("%s plugin did not register its drive", driveName)
+	binary := os.Getenv(binaryEnv)
+	if binary == "" {
+		t.Fatalf("set %s to the separately built %s plugin executable", binaryEnv, driveName)
 	}
-	manager := factory()
+	pluginCtx, stop := context.WithCancel(ctx)
+	t.Cleanup(stop)
+	command := exec.CommandContext(pluginCtx, binary)
+	command.Stderr = os.Stderr
+	stdin, err := command.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		_ = stdin.Close()
+		t.Fatal(err)
+	}
+	if err := command.Start(); err != nil {
+		_ = stdin.Close()
+		_ = stdout.Close()
+		t.Fatalf("start %s plugin: %v", driveName, err)
+	}
+	session := f4rpc.NewSession(stdout, stdin)
+	served := make(chan error, 1)
+	go func() { served <- session.Serve() }()
+	t.Cleanup(func() {
+		stop()
+		_ = stdin.Close()
+		_ = command.Wait() // Cancellation intentionally terminates this test's child.
+		_ = stdout.Close()
+		select {
+		case <-served:
+		case <-time.After(2 * time.Second):
+			t.Errorf("%s RPC transport did not stop", driveName)
+		}
+	})
+	transport := realDeviceCopyTransport{ctx: pluginCtx, session: session}
+	var initialized plughost.PluginInitResponse
+	if err := transport.Call("Plugin.Init", nil, &initialized); err != nil {
+		t.Fatalf("initialize %s plugin: %v", driveName, err)
+	}
+	for _, drive := range initialized.Drives {
+		if drive == driveName {
+			t.Logf("[FIX] initialized standalone %s plugin %q", driveName, binary)
+			return plughost.NewRPCVFS(transport, driveName)
+		}
+	}
+	t.Fatalf("%s plugin did not register its drive: %v", driveName, initialized.Drives)
+	return nil
+}
+
+func openRealDeviceForCopy(t *testing.T, ctx context.Context, manager vfs.VFS, driveName, selector string) vfs.VFS {
+	t.Helper()
 	items := readRealDeviceCopyDir(t, ctx, manager, manager.GetPath())
 	selector = strings.ToLower(strings.TrimSpace(selector))
 	var candidates []vfs.VFSItem
 	for _, item := range items {
+		if item.Name == ".." || !item.IsDir {
+			continue
+		}
 		if selector == "" || strings.Contains(strings.ToLower(item.Name), selector) {
 			candidates = append(candidates, item)
 		}
@@ -179,19 +196,14 @@ func openRealDeviceForCopy(t *testing.T, ctx context.Context, host *realDeviceCo
 		t.Fatalf("%s device selector %q matched %d rows; available rows: %v", driveName, selector, len(candidates), names)
 	}
 	devicePath := manager.Join(manager.GetPath(), candidates[0].Name)
-	for _, provider := range host.providers {
-		if !provider.CanOpen(ctx, manager, devicePath) {
-			continue
-		}
-		mounted, err := provider.Open(ctx, manager, devicePath)
-		if err != nil {
-			t.Fatalf("open %s device %q: %v", driveName, candidates[0].Name, err)
-		}
-		t.Logf("opened %s device %q through %T", driveName, candidates[0].Name, mounted)
-		return mounted
+	mounted := manager.Clone()
+	if err := mounted.SetPath(devicePath); err != nil {
+		t.Fatalf("open %s device %q: %v", driveName, candidates[0].Name, err)
 	}
-	t.Fatalf("no %s provider accepted device %q", driveName, candidates[0].Name)
-	return nil
+	// SetPath on RPCVFS is local; listing verifies the remote device can open.
+	readRealDeviceCopyDir(t, ctx, mounted, devicePath)
+	t.Logf("opened %s device %q through %T", driveName, candidates[0].Name, mounted)
+	return mounted
 }
 
 func readRealDeviceCopyDir(t *testing.T, ctx context.Context, filesystem vfs.VFS, dir string) []vfs.VFSItem {
@@ -231,7 +243,7 @@ func verifyRealDeviceCopyTree(t *testing.T, ctx context.Context, source vfs.VFS,
 				continue
 			}
 			childSource := source.Join(sourcePath, child.Name)
-			childTargetName := TransferItemName(source, childSource, destination, child.Name)
+			childTargetName := fileops.TransferItemName(source, childSource, destination, child.Name)
 			verifyRealDeviceCopyTree(t, ctx, source, childSource, destination, destination.Join(destinationPath, childTargetName), displayPath+"/"+child.Name, totals)
 		}
 		return
@@ -278,5 +290,3 @@ func hashRealDeviceCopyFile(t *testing.T, ctx context.Context, filesystem vfs.VF
 	}
 	return hex.EncodeToString(hash.Sum(nil))
 }
-
-var _ vfs.HostAPI = (*realDeviceCopyHost)(nil)

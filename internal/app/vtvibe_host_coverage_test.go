@@ -126,3 +126,21 @@ func TestAIVFSWrapperRejectsUnrelatedKeysAndApps(t *testing.T) {
 		t.Fatal("AI wrapper handled a key-up event")
 	}
 }
+
+func TestVtvibeHostProviderPreset(t *testing.T) {
+	setupPortableIni(t, "0")
+	for _, name := range []string{"GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY"} {
+		t.Setenv(name, "")
+	}
+	t.Setenv("OPENAI_API_KEY", "openai-key")
+	t.Setenv("XAI_API_KEY", "xai-key")
+	writeVtvibeINI(t, "[general]\nprovider = xai\nbase_url = http://ignored/v1\nmodel = "+vtvibe.DefaultModel+"\n")
+
+	cfg, source := vtvibeConfig()
+	if cfg.BaseURL != "https://api.x.ai/v1" || cfg.APIKey != "xai-key" || source != "XAI_API_KEY" {
+		t.Fatalf("xAI preset = %#v from %q", cfg, source)
+	}
+	if cfg.Model != vtvibe.ProviderByID("xai").Model {
+		t.Fatalf("leftover Gemini model kept for xAI: %q", cfg.Model)
+	}
+}

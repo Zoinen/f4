@@ -390,17 +390,31 @@ func (v *NetFoxVFS) RefreshPanelInfo(ctx context.Context, req vfs.PanelInfoReque
 	return snapshot, nil
 }
 
+// HistoryEntry implements vfs.HistoryPathProvider. The root screen is a list
+// of saved connections, not a folder, so it never has anything worth
+// remembering in folder history (f4#262): without this, the bare "net://"
+// GetPath() above fell through to ShouldRecordFolderHistory's "no parent
+// VFS, trust it as a local path" rule and was recorded as a useless entry
+// point with no navigational value.
+func (v *NetFoxVFS) HistoryEntry() (display, ref string, ok bool) { return "", "", false }
+
+// NavigateHistoryEntry implements vfs.HistoryPathProvider. HistoryEntry
+// above never produces an entry for the root screen, so this is never
+// reached through the normal folder-history flow; it exists only to satisfy
+// the interface and always declines.
+func (v *NetFoxVFS) NavigateHistoryEntry(ref string) bool { return false }
+
 func (v *NetFoxVFS) ReadDir(ctx context.Context, p string, onChunk func([]vfs.VFSItem)) error {
 	configs := v.getConfigs()
 	var items []vfs.VFSItem
-	items = append(items, vfs.VFSItem{Name: "<Add connection>", IconKey: "plus", NoExtension: true, IsExecutable: true})
+	items = append(items, vfs.VFSItem{Name: "<Add connection>", IconKey: "plus", NoExtension: true})
 	names := make([]string, 0, len(configs))
 	for name := range configs {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		items = append(items, vfs.VFSItem{Name: name, IsDir: false, IsExecutable: true})
+		items = append(items, vfs.VFSItem{Name: name, IsDir: false})
 	}
 	if len(items) > 0 {
 		onChunk(items)
@@ -411,11 +425,11 @@ func (v *NetFoxVFS) ReadDir(ctx context.Context, p string, onChunk func([]vfs.VF
 func (v *NetFoxVFS) Stat(ctx context.Context, p string) (vfs.VFSItem, error) {
 	name := v.Base(p)
 	if name == "<Add connection>" {
-		return vfs.VFSItem{Name: name, IconKey: "plus", NoExtension: true, IsExecutable: true}, nil
+		return vfs.VFSItem{Name: name, IconKey: "plus", NoExtension: true}, nil
 	}
 	configs := v.getConfigs()
 	if _, ok := configs[name]; ok {
-		return vfs.VFSItem{Name: name, IsDir: false, IsExecutable: true}, nil
+		return vfs.VFSItem{Name: name, IsDir: false}, nil
 	}
 	return vfs.VFSItem{}, os.ErrNotExist
 }

@@ -1,16 +1,22 @@
 package panel
 
-import (
-	"strings"
+import "strings"
 
-	"github.com/unxed/f4/internal/config"
-)
-
-// The autofilter is the second answer a panel can give to the quick search: it
-// hides every row that does not match instead of moving the cursor to the first
-// match, so what is left on screen is the result (f4 #1131). Matching itself is
-// unchanged -- the same fuzzy matcher the cursor-moving search uses, so a query
-// behaves identically in both modes and only the presentation differs.
+// The autofilter is the panel's second way to look for a name, next to the
+// quick search: it hides every row that does not match instead of moving the
+// cursor to the first match, so what is left on screen is the result (f4
+// #1131). The two live side by side -- Alt+letter is always the quick search,
+// and the filter has a key of its own: a lone Alt press (when the
+// PanelAutoFilter option is on, see LoneAltTap) or the Panel.AutoFilter
+// action. Matching itself is shared -- the same fuzzy matcher the
+// cursor-moving search uses, so a query behaves identically in both and only
+// the presentation differs.
+//
+// The filter is a window the user opened on purpose, so it is closed on
+// purpose too: Alt again, Esc, Enter or leaving the directory. Erasing the
+// query does not close it -- an empty filter just shows every row and waits
+// for the next attempt. autoFilterMode is that window being open;
+// autoFilterOn below is the narrower "rows are being hidden right now".
 //
 // The rows are deliberately not re-ranked by match quality the way the hotkey
 // table ranks its own: a file panel would lose folders-first and its sort order,
@@ -41,6 +47,7 @@ func (fp *FileSystemPanel) AllEntries() []*FileEntry {
 // one. Directory loads go through here instead of assigning fp.Entries, so a
 // load cannot overwrite the rows an active filter is holding back.
 func (fp *FileSystemPanel) setEntries(entries []*FileEntry) {
+	fp.entriesRevision++
 	if fp.autoFilterOn || fp.fileFieldFilterActive {
 		fp.unfilteredEntries = entries
 	} else {
@@ -52,6 +59,7 @@ func (fp *FileSystemPanel) setEntries(entries []*FileEntry) {
 // addEntries appends rows to the complete list. A chunked load calls it once
 // per chunk, so the visible list is re-derived per chunk rather than per row.
 func (fp *FileSystemPanel) addEntries(entries ...*FileEntry) {
+	fp.entriesRevision++
 	if fp.autoFilterOn || fp.fileFieldFilterActive {
 		fp.unfilteredEntries = append(fp.unfilteredEntries, entries...)
 	} else {
@@ -69,8 +77,39 @@ func autoFilterQuery(search string) string {
 
 // autoFilterWanted reports whether the panel should be narrowed right now.
 func (fp *FileSystemPanel) autoFilterWanted() bool {
-	return fp != nil && config.App.PanelAutoFilter && fp.FastFindMode &&
+	return fp != nil && fp.autoFilterMode && fp.FastFindMode &&
 		autoFilterQuery(fp.FastFindStr) != ""
+}
+
+// AutoFilterActive reports whether the filter window is open on this panel,
+// whether or not its query is hiding anything yet.
+func (fp *FileSystemPanel) AutoFilterActive() bool {
+	return fp != nil && fp.FastFindMode && fp.autoFilterMode
+}
+
+// ToggleAutoFilter opens the filter window, or closes it when it is open.
+// A quick search in progress is turned into a filter over the same query
+// rather than thrown away: the user asked for the other presentation of what
+// they already typed.
+func (fp *FileSystemPanel) ToggleAutoFilter() {
+	if fp == nil {
+		return
+	}
+	if fp.AutoFilterActive() {
+		fp.ExitFastFind()
+		fp.Refresh()
+		return
+	}
+	// A filter answers "which files have this in the name", so it starts
+	// unanchored. Seeding the '*' rather than special-casing the matcher keeps
+	// one meaning for the prefix: F2 still takes it off and narrows the filter
+	// to names starting with the query.
+	if !strings.HasPrefix(fp.FastFindStr, "*") {
+		fp.FastFindStr = "*" + fp.FastFindStr
+	}
+	fp.FastFindMode = true
+	fp.autoFilterMode = true
+	fp.updateAutoFilter()
 }
 
 // refilterEntries brings the visible list in line with the current search
@@ -78,6 +117,7 @@ func (fp *FileSystemPanel) autoFilterWanted() bool {
 // back when the filter ends, and otherwise rebuilds the matching subset.
 func (fp *FileSystemPanel) refilterEntries() {
 	defer fp.rebuildDisplayRows()
+	fp.entriesRevision++
 	wantSearch := fp.autoFilterWanted()
 	wantFields := len(fp.FileFieldFilters) > 0
 	wasFiltered := fp.autoFilterOn || fp.fileFieldFilterActive
@@ -161,10 +201,10 @@ func (fp *FileSystemPanel) updateAutoFilter() {
 
 // applyFastFind reacts to a changed search string, in whichever mode the panel
 // is searching: the autofilter re-derives the visible rows, the cursor-moving
-// search jumps to the first match. The autoFilterOn arm also covers the option
-// being switched off mid-search, which has to give the hidden rows back.
+// search jumps to the first match. An open filter with an empty query still
+// goes the filter way, so erasing the query gives the hidden rows back.
 func (fp *FileSystemPanel) applyFastFind() {
-	if fp.autoFilterWanted() || fp.autoFilterOn {
+	if fp.autoFilterMode || fp.autoFilterOn {
 		fp.updateAutoFilter()
 		return
 	}
@@ -180,6 +220,7 @@ func (fp *FileSystemPanel) ExitFastFind() {
 	}
 	fp.FastFindMode = false
 	fp.FastFindStr = ""
+	fp.autoFilterMode = false
 	if !fp.autoFilterOn {
 		return
 	}

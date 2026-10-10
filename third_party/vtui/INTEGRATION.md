@@ -1,0 +1,264 @@
+# Vendored vtui integration
+
+The fork's recorded upstream base is `v0.1.328` (f4 merge `6a6c4abe59d65060d2e6f237f346051539270cc0`). Upstream changes through `8b34a0d98bcb` (`v0.1.399-0.20261009152503-8b34a0d98bcb`) were integrated by a three-way source comparison with that base and the current fork. The vendored directory is not a Git repository.
+
+The integration retains the fork's semantic scene/task lifecycle, lazy and custom-frame submenus, stable row replacement, native editor behavior, rectangular selection, help rendering, and keybar icon metadata. Upstream source, tests and widget documentation were brought forward; upstream CI workflows and deletions of historical review documents were excluded.
+
+## Caller contracts
+
+- `KeySet` and `KeyBar` provide `CtrlShift`, `AltShift`, `CtrlAlt` and their `*Disabled` rows. Corresponding `*Icons` rows are also available. Empty combined label rows fall back to the ordinary modifier row with that row's icons and availability.
+- `LatchModifiers` records physical modifier press/release state. `SetModifiers` only clears latched state from ordinary event flags; callers simulating a physical held modifier must use the latch contract.
+- Native keybar items and alternatives include `disabled` and optional `icon` metadata. The shared frame refresh copies every label, icon and availability row.
+- `VMenu` supports upstream filtering, description footers, truncation, title updates, repeat-aware loop scrolling, and both `OpenSubMenu` and `OpenSubmenu` spellings. Lazy factories, `SubmenuFrame`, `KeepOpen`, stable IDs, `OnClose`, and custom window presentation remain supported. Filtered replacement steers selection and closes a child when its anchor becomes hidden.
+- `AutoCompletePreview` remains opt-in and retains the original-text row. Default autocomplete requires an explicit suggestion choice. Modified-Enter passthrough retains the original shortcut event.
+- `HelpView.CurrentTopic`, `SourceRow`, `ScrollTop`, and `SetScrollTop` expose upstream wrapping and scroll state. Native rendering rewraps after resize and shares escaped-markup handling with console rendering.
+
+## Validation on 2026-10-10
+
+- PASS: `CGO_ENABLED=0 go test -mod=readonly ./...` within this module, including fork, upstream, and integration regression tests.
+- PASS: `CGO_ENABLED=0 go test -mod=readonly github.com/unxed/vtui` from the parent f4 module (its selected dependencies).
+- PASS: `CGO_ENABLED=0 go build -mod=readonly ./...` for windows/amd64, linux/amd64, and linux/mipsle.
+- BLOCKED: freebsd/amd64 standalone-module cross-build: `github.com/unxed/goffi@v0.1.9/internal/fakecgo/freebsd.go` has `//go:cgo_export_dynamic` directives rejected outside cgo-generated code. The parent module selects goffi v0.1.11; its dependency file still contains these directives, so its FreeBSD integration gate remains outstanding.
+- PASS: scoped `git diff --check`; no merge markers remain in vtui.
+- Builds/tests used the system Go build cache. No application launch, stop, merge staging, commit, or push was performed. Parent application integration, Qt runtime checks, and release gates belong to the coordinating agent.
+
+## Changed-file inventory
+
+Paths below are relative to `third_party/vtui`; this document is also new.
+
+- `GRAPHICS.md`
+- `PLATFORMS.md`
+- `README.md`
+- `REVIEW.md`
+- `UX_GUIDELINES.md`
+- `ansi_writer.go`
+- `autocomplete.go`
+- `autocomplete_test.go`
+- `backend_info.go`
+- `backend_tags_test.go`
+- `basewindow.go`
+- `basewindow_test.go`
+- `bindings/node/ui.js`
+- `bindings/python/vtui/_props.py`
+- `bindings/python/vtui/ui.py`
+- `button.go`
+- `button_rounded.go`
+- `button_rounded_test.go`
+- `button_test.go`
+- `canvas.go`
+- `canvas_test.go`
+- `chatwindow.go`
+- `chatwindow_test.go`
+- `checkbox.go`
+- `checkgroup.go`
+- `checkgroup_test.go`
+- `classic_glyph.go`
+- `classic_glyph_raster.go`
+- `classic_glyph_test.go`
+- `clipboard_windows.go`
+- `clipboard_windows_test.go`
+- `close_glyph.go`
+- `close_glyph_other.go`
+- `close_glyph_test.go`
+- `close_glyph_windows.go`
+- `cmd/cocoa-smoke/main.go`
+- `cmd/cocoa-smoke/main_other.go`
+- `cmd/vtui-gen/main_test.go`
+- `cocoa_gui_common.go`
+- `cocoa_gui_darwin.go`
+- `cocoa_gui_keys_darwin.go`
+- `cocoa_gui_renderer.go`
+- `cocoa_gui_stub.go`
+- `cocoa_gui_test.go`
+- `color_validator.go`
+- `color_validator_test.go`
+- `colors.go`
+- `colors_test.go`
+- `combobox.go`
+- `combobox_test.go`
+- `conhost_altscreen_windows.go`
+- `console_diag_windows.go`
+- `console_maximize_other.go`
+- `console_maximize_windows.go`
+- `console_maximize_windows_test.go`
+- `coverage_batch1_test.go`
+- `coverage_batch2_test.go`
+- `crash_report.go`
+- `cursor_style.go`
+- `cursor_style_test.go`
+- `docs/widgets.md`
+- `ebiten_dragdrop.go`
+- `ebiten_font_hotswap_test.go`
+- `ebiten_host.go`
+- `ebiten_keys.go`
+- `ebiten_renderer.go`
+- `ebiten_renderer_test.go`
+- `ebiten_scale.go`
+- `ebiten_scale_test.go`
+- `ebiten_stub.go`
+- `edit.go`
+- `edit_bind.go`
+- `edit_bind_test.go`
+- `edit_history_field_click_test.go`
+- `edit_history_pick_test.go`
+- `edit_history_width_test.go`
+- `edit_test.go`
+- `factory.go`
+- `far2l_extensions.go`
+- `far2l_extensions_test.go`
+- `filelist.md`
+- `framemanager.go`
+- `framemanager_caret_test.go`
+- `framemanager_test.go`
+- `fuzzy.go`
+- `fuzzy_test.go`
+- `go.mod`
+- `go.sum`
+- `gogpu_customchar_test.go`
+- `gogpu_dnd.go`
+- `gogpu_dnd_test.go`
+- `gogpu_ffi.go`
+- `gogpu_ffi_stub.go`
+- `gogpu_font_hotswap_test.go`
+- `gogpu_glyphgen_test.go`
+- `gogpu_host.go`
+- `gogpu_host_test.go`
+- `gogpu_keys_test.go`
+- `gogpu_pen_test.go`
+- `gogpu_profile.go`
+- `gogpu_renderer.go`
+- `gogpu_renderer_test.go`
+- `gogpu_scale_test.go`
+- `gogpu_stub.go`
+- `graphics_iterm2.go`
+- `graphics_iterm2_test.go`
+- `graphics_kitty.go`
+- `graphics_kitty_terminals.go`
+- `graphics_kitty_terminals_test.go`
+- `graphics_native_test.go`
+- `graphics_probe_windows.go`
+- `graphics_probe_winescape_windows.go`
+- `graphics_probe_winescape_windows_test.go`
+- `graphics_scale_test.go`
+- `group.go`
+- `gui_api.go`
+- `gui_api_fallback.go`
+- `gui_boxdraw.go`
+- `gui_boxdraw_test.go`
+- `gui_cell.go`
+- `gui_cell_test.go`
+- `gui_font.go`
+- `gui_font_hotswap_test.go`
+- `gui_font_inventory.go`
+- `gui_font_inventory_other.go`
+- `gui_font_inventory_test.go`
+- `gui_font_inventory_windows.go`
+- `gui_font_scripts.go`
+- `gui_font_test.go`
+- `gui_grid_raster.go`
+- `help_engine.go`
+- `help_view.go`
+- `help_view_mouse_test.go`
+- `help_view_test.go`
+- `help_wrap.go`
+- `help_wrap_test.go`
+- `internal/uba/uba_test.go`
+- `key_repeat.go`
+- `key_repeat_test.go`
+- `keybar.go`
+- `keybar_combined_row_test.go`
+- `keybar_menu_disabled_test.go`
+- `keybar_modifier_row_test.go`
+- `keybar_test.go`
+- `localization.go`
+- `markdown.go`
+- `markdown_test.go`
+- `menubar.go`
+- `multilineedit.go`
+- `painter.go`
+- `palette.go`
+- `palette_portable_test.go`
+- `properties_test.go`
+- `protocol.go`
+- `protocol_test.go`
+- `radiobutton.go`
+- `radiogroup.go`
+- `screenbuf.go`
+- `screenbuf_lock_test.go`
+- `screenbuf_test.go`
+- `scrollbar.go`
+- `scrollbar_widget_test.go`
+- `scrollview.go`
+- `scrollview_frozen_test.go`
+- `semantic.go`
+- `semantic_help.go`
+- `semantic_help_test.go`
+- `semantic_widgets_test.go`
+- `sizespec_test.go`
+- `symchar.go`
+- `symchar_glyph.go`
+- `symchar_glyph_test.go`
+- `symchar_gogpu_test.go`
+- `symchar_test.go`
+- `syscons_text.go`
+- `syscons_text_test.go`
+- `table.go`
+- `table_test.go`
+- `terminal_env.go`
+- `terminal_env_test.go`
+- `terminal_env_windows.go`
+- `textseg.go`
+- `types.go`
+- `upstream_integration_test.go`
+- `validator_test.go`
+- `vmenu.go`
+- `vmenu_bottomtext_test.go`
+- `vmenu_filter.go`
+- `vmenu_filter_test.go`
+- `vmenu_overflow_test.go`
+- `vmenu_submenu_test.go`
+- `vmenu_test.go`
+- `vmenu_titles_test.go`
+- `vocabulary.json`
+- `vocabulary_embed.go`
+- `vocabulary_embed_test.go`
+- `vreactive/statemachine_test.go`
+- `vtui_test.go`
+- `vui_layout_test.go`
+- `vui_loader.go`
+- `vui_state_path_test.go`
+- `wayland_display_tasks_test.go`
+- `wayland_host.go`
+- `wayland_host_test.go`
+- `wayland_renderer.go`
+- `win32_console_common.go`
+- `win32_dnd_test.go`
+- `win32_dnd_windows.go`
+- `win32_droptarget_windows.go`
+- `win32_droptarget_windows_test.go`
+- `win32_gui_common.go`
+- `win32_gui_dpi_windows.go`
+- `win32_gui_dpi_windows_test.go`
+- `win32_gui_font_windows_test.go`
+- `win32_gui_renderer.go`
+- `win32_gui_stub.go`
+- `win32_gui_test.go`
+- `win32_gui_windows.go`
+- `win32_ptr_windows.go`
+- `window_maximize_test.go`
+- `x11_dpi.go`
+- `x11_dpi_test.go`
+- `x11_dpi_watch_test.go`
+- `x11_host.go`
+- `x11_host_test.go`
+- `x11_maximize_test.go`
+- `x11_render_common.go`
+- `x11_renderer.go`
+- `x11_shm_fallback.go`
+- `x11_shm_select_test.go`
+- `x11_shm_unix.go`
+- `x11_translator_select.go`
+- `x11_translator_select_test.go`
+- `x11_window_identity_test.go`
+- `x11_xdnd.go`
+

@@ -215,6 +215,8 @@ const (
 	applyNodePrompt
 	applyNodeInlineList
 	applyNodeListFile
+	applyNodeFilenamePrefix
+	applyNodeFilenameSequence
 )
 
 type applyCommandListModifiers struct {
@@ -331,6 +333,7 @@ type applyCommandParser struct {
 	source            string
 	panel             ApplyCommandPanelSelector
 	allowPrompts      bool
+	filename          bool
 	sawMetasymbol     bool
 	prompts           []compiledApplyPrompt
 	aggregatePanels   []ApplyCommandPanelSelector
@@ -362,6 +365,10 @@ func (p *applyCommandParser) parse() ([]applyCommandNode, error) {
 		}
 
 		switch {
+		case p.filename && strings.HasPrefix(rest, "!{prefix}!"):
+			appendToken(applyNodeFilenamePrefix, len("!{prefix}!"))
+		case p.filename && strings.HasPrefix(rest, "!{seq}!"):
+			appendToken(applyNodeFilenameSequence, len("!{seq}!"))
 		case strings.HasPrefix(rest, "!!"):
 			p.sawMetasymbol = true
 			nodes = append(nodes, applyCommandNode{kind: applyNodeText, text: "!"})
@@ -530,7 +537,7 @@ func (p *applyCommandParser) parsePrompt(offset int) (compiledApplyPrompt, int, 
 	if separator >= 0 {
 		initialOffset = separator + 1
 	}
-	initialNodes, err := compileApplyPromptFragment(initial, initialOffset)
+	initialNodes, err := compileApplyPromptFragmentMode(initial, initialOffset, p.filename)
 	if err != nil {
 		return compiledApplyPrompt{}, 0, err
 	}
@@ -544,6 +551,10 @@ func (p *applyCommandParser) parsePrompt(offset int) (compiledApplyPrompt, int, 
 }
 
 func compileApplyPromptFragment(source string, baseOffset int) ([]applyCommandNode, error) {
+	return compileApplyPromptFragmentMode(source, baseOffset, false)
+}
+
+func compileApplyPromptFragmentMode(source string, baseOffset int, filename bool) ([]applyCommandNode, error) {
 	open, close, depth := -1, -1, 0
 	for i, r := range source {
 		switch r {
@@ -570,7 +581,7 @@ func compileApplyPromptFragment(source string, baseOffset int) ([]applyCommandNo
 	}
 
 	inner := source[open+1 : close]
-	parser := applyCommandParser{source: inner, panel: ApplyCommandPanelActive, allowPrompts: false}
+	parser := applyCommandParser{source: inner, panel: ApplyCommandPanelActive, allowPrompts: false, filename: filename}
 	innerNodes, err := parser.parse()
 	if syntax, ok := err.(*ApplyCommandSyntaxError); ok {
 		syntax.Offset += baseOffset + open + 1

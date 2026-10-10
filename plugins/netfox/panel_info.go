@@ -151,16 +151,13 @@ func configureNetFoxConnection(fs vfs.VFS, connection, protocol string, cfg NetF
 	devicePath := vfs.DevicePath{Scheme: "net", Device: connection}
 	provider := newNetFoxPanelInfoProvider(connection, protocol, cfg)
 	directoryCacheKey := netFoxDirectoryCacheIdentity(connection, cfg)
-	switch mounted := fs.(type) {
-	case *FishVFS:
-		mounted.SetDevicePath(devicePath)
-		mounted.SetDirectoryCacheKey(directoryCacheKey)
-		mounted.SetPanelInfoProvider(provider)
-	case *SFTPVFS:
-		mounted.SetDevicePath(devicePath)
-		mounted.SetDirectoryCacheKey(directoryCacheKey)
-		mounted.SetPanelInfoProvider(provider)
-	case *FTPVFS:
+	// Optional interfaces also work in lite builds, where FTP and SFTP types
+	// are deliberately absent.
+	if mounted, ok := fs.(interface {
+		SetDevicePath(vfs.DevicePath)
+		SetDirectoryCacheKey(string)
+		SetPanelInfoProvider(vfs.PanelInfoProvider)
+	}); ok {
 		mounted.SetDevicePath(devicePath)
 		mounted.SetDirectoryCacheKey(directoryCacheKey)
 		mounted.SetPanelInfoProvider(provider)

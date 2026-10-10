@@ -102,12 +102,24 @@ func (c *settingsCenter) addCollections(category string) {
 				continue
 			}
 			meta := f4settings.Field{ID: col.ID, Category: category, Group: col.Group, Label: col.Label, Description: col.Description}
-			table := vtui.NewTable(0, 0, 20, 5, []vtui.TableColumn{{Width: 0}})
+			listHeight := 5
+			if c.fullLists {
+				listHeight = max(listHeight, len(s.draft.Records[col.ID]))
+			}
+			table := vtui.NewTable(0, 0, 20, listHeight, []vtui.TableColumn{{Width: 0}})
 			table.ShowHeader = false
 			table.ShowSeparators = false
 			settingsDialogTable(table)
 			// Record lists are editable settings surfaces, like the adjacent inputs.
 			table.ColorTextIdx = vtui.ColDialogEdit
+			// The cursor row is the record the fields below edit. The dialog
+			// cursor colour is the same black on cyan as the edit surface, so
+			// a clicked record looked like all the others (#1148). Mark it the
+			// way a combo dropdown marks its cursor on that surface, and keep
+			// the mark while the focus is in those fields, as far2l's dialog
+			// lists do: that is when it tells which record is being edited.
+			table.ColorSelectedTextIdx = vtui.ColDialogComboSelectedText
+			table.AlwaysShowCursor = true
 			table.SetId("collection:" + col.ID)
 			var rows []vtui.TableRow
 			for _, record := range s.draft.Records[col.ID] {
@@ -120,7 +132,12 @@ func (c *settingsCenter) addCollections(category string) {
 				selected = max(0, len(rows)-1)
 			}
 			table.SetSelectPos(selected)
-			r := &settingsRow{field: meta, session: s, control: table, controlHeight: 5, match: true}
+			if c.fullLists {
+				// The whole list is on the page: the table must not scroll
+				// inside itself to keep a low row in sight (f4#1148).
+				table.TopPos = 0
+			}
+			r := &settingsRow{field: meta, session: s, control: table, controlHeight: listHeight, match: true}
 			if !c.recordOnly {
 				c.page.AddItem(table)
 				c.page.rows = append(c.page.rows, r)

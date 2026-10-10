@@ -19,6 +19,8 @@ FocusScope {
     property bool viewerTransitionActive: false
     property string viewerTransitionEntryId: ""
     property bool commandLineHasText: false
+    property bool commandLineFocused: false
+    property bool commandLineOwnsNavigation: false
     property bool fastFindActive: false
     readonly property bool showCursor: panelCursorVisible
     signal pointerActivationPreviewRequested(int side)

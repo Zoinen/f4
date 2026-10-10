@@ -17,6 +17,7 @@
 #include <QFile>
 #include <QDir>
 #include <QFont>
+#include <QFontMetricsF>
 #include <QGuiApplication>
 #include <QImage>
 #include <QJsonDocument>
@@ -27,6 +28,7 @@
 #include <QPointer>
 #include <QScopeGuard>
 #include <QStyleHints>
+#include <QTemporaryDir>
 #include <QUrl>
 #include <QUrlQuery>
 #include <QVariantList>
@@ -3654,16 +3656,18 @@ void F4OperationsQueueTests::errorMessagesWrapToNativeWidth()
 void F4OperationsQueueTests::semanticDialogControlsUseWindowFontAndStayPixelAligned()
 {
     const QFont previousFont = QGuiApplication::font();
-    const auto restoreFont = qScopeGuard([previousFont]() {
-        QGuiApplication::setFont(previousFont);
-    });
     QFont dialogFont = previousFont;
     dialogFont.setPixelSize(17);
-    dialogFont.setWeight(QFont::Medium);
-    QGuiApplication::setFont(dialogFont);
 
     QueueFixture fixture(panelScene());
     QVERIFY(fixture.window);
+    // GUI preferences own the interface font; the application font is untouched.
+    auto *typography = fixture.window->property("typography").value<QObject *>();
+    QVERIFY(typography);
+    QVERIFY(typography->setProperty("uiFamily", dialogFont.family()));
+    QVERIFY(typography->setProperty("uiSize", dialogFont.pixelSize()));
+    QTRY_COMPARE(fixture.window->property("font").value<QFont>(), dialogFont);
+    QCOMPARE(QGuiApplication::font(), previousFont);
 
     const QColor firstText(QStringLiteral("#d4e5f6"));
     const QColor firstMuted(QStringLiteral("#8091a2"));
@@ -4056,6 +4060,8 @@ void F4OperationsQueueTests::semanticDialogControlsUseWindowFontAndStayPixelAlig
     QTRY_VERIFY_WITH_TIMEOUT(
         !(focusedFrame = fixture.window->grabWindow()).isNull(), 3000);
     QVERIFY(focusedFrame != normalFrame);
+    QCOMPARE(fixture.window->property("font").value<QFont>(), updatedFont);
+    QCOMPARE(QGuiApplication::font(), previousFont);
 
     if (qAbs(dpr - 1.75) >= 0.001)
         QSKIP("175% scale invocation required for the physical-pixel gate");
@@ -4510,7 +4516,12 @@ void F4OperationsQueueTests::driveDetailsUseMeasuredColumnsOnPhysicalPixelGrid()
         checkGrid(ordinaryText);
         QCOMPARE(driveName->mapToItem(fixture.window->contentItem(), QPointF()).x(),
                  ordinaryText->mapToItem(fixture.window->contentItem(), QPointF()).x());
-        QVERIFY(qAbs(capacity->y() + capacity->height()/2 - track->y() - track->height()/2) * fixture.window->devicePixelRatio() <= 1);
+        const QRectF ink = QFontMetricsF(capacity->property("font").value<QFont>())
+                               .tightBoundingRect(QStringLiteral("Ag"));
+        const qreal inkCenter = capacity->y() + capacity->property("baselineOffset").toReal()
+                                + ink.y() + ink.height() / 2;
+        QVERIFY(qAbs(inkCenter - track->y() - track->height()/2)
+                    * fixture.window->devicePixelRatio() <= 1);
 
     }
     auto *virtualCaption = visualItem(fixture.window->contentItem(), "semanticMenuDetail-drives-9-name");
@@ -5641,8 +5652,11 @@ void F4OperationsQueueTests::menuBarPressDragReleaseActivatesItem()
 {
     QFETCH(int, releaseIndex);
     auto scene = panelScene();
-    QVariantMap bar{{"id", "main-menu"}, {"kind", "menu"}, {"active", false}, {"selected", 0},
-        {"items", QVariantList{QVariantMap{{"index", 0}, {"text", "Files"}}}}};
+    // F9 exposes the panel-level bar; inactive bars are deliberately hidden.
+    // Pressing another caption must open its menu before release.
+    QVariantMap bar{{"id", "main-menu"}, {"kind", "menu"}, {"active", true}, {"selected", 1},
+        {"items", QVariantList{QVariantMap{{"index", 0}, {"text", "Files"}},
+                              QVariantMap{{"index", 1}, {"text", "Other"}}}}};
     scene.insert("menuBar", bar);
     QueueFixture fixture(scene);
     QVERIFY(fixture.window);
@@ -5657,6 +5671,7 @@ void F4OperationsQueueTests::menuBarPressDragReleaseActivatesItem()
     QVERIFY(std::any_of(fixture.shell.actions.cbegin(), fixture.shell.actions.cend(),
         [](const QVariantMap &action) { return action.value("action") == "menuBar.toggle"; }));
     bar.insert("active", true);
+    bar.insert("selected", 0);
     scene.insert("menuBar", bar);
     scene.insert("menus", QVariantList{QVariantMap{{"id", "files-menu"}, {"kind", "menu"},
         {"role", "vmenu"}, {"menuBarSubmenu", true}, {"selected", 0},
@@ -6047,5 +6062,8 @@ void F4OperationsQueueTests::multilineDialogEditor()
         qPrintable(QString("TextEdit physical origin %1,%2").arg(physical.x()).arg(physical.y())));
     QVERIFY(QLineF(edit->mapToItem(root,QPointF(1,0))-origin,QPointF(1,0)).length()<.001);
     QVERIFY(QLineF(edit->mapToItem(root,QPointF(0,1))-origin,QPointF(0,1)).length()<.001);
-    QVERIFY(fixture.window->grabWindow().save("D:/Code/f4-zoin/.diagnostics/multiline.png"));
+    QTemporaryDir captureDirectory(QDir::tempPath() + "/f4-multiline-XXXXXX");
+    QVERIFY2(captureDirectory.isValid(), "Could not create multiline capture directory");
+    const auto capturePath = captureDirectory.filePath("multiline.png");
+    QVERIFY2(fixture.window->grabWindow().save(capturePath), qPrintable(capturePath));
 }

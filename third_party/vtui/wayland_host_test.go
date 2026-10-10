@@ -3,6 +3,7 @@
 package vtui
 
 import (
+	"image"
 	"io"
 	"testing"
 	"time"
@@ -389,5 +390,154 @@ func TestLogicalWaylandPixelsRoundsToNearest(t *testing.T) {
 	}
 	if got := logicalWaylandPixels(1, 3); got != 1 {
 		t.Errorf("logicalWaylandPixels(1, 3) = %d, want 1", got)
+	}
+}
+
+// f4 #283: the new backing image is committed before FrameManager repaints, so
+// it carries the previous frame over instead of showing black. The partial
+// right column and bottom row outside the grid stay blank, because the
+// renderer never paints them.
+func TestCarryOverRGBA(t *testing.T) {
+	fill := func(img *image.RGBA, v uint8) {
+		for i := range img.Pix {
+			img.Pix[i] = v
+		}
+	}
+	at := func(img *image.RGBA, x, y int) uint8 {
+		return img.Pix[y*img.Stride+x*4]
+	}
+
+	// Shrink: window 1005x580 over a 100x30 grid of 10x19 cells, so the grid
+	// covers 1000x570 and the margins are 5 px wide and 10 px tall.
+	src := image.NewRGBA(image.Rect(0, 0, 1068, 601))
+	fill(src, 0x40)
+	dst := image.NewRGBA(image.Rect(0, 0, 1005, 580))
+	carryOverRGBA(dst, src, 1000, 570)
+	if got := at(dst, 999, 569); got != 0x40 {
+		t.Errorf("last grid pixel: got %#x, want the previous frame %#x", got, 0x40)
+	}
+	if got := at(dst, 1000, 100); got != 0 {
+		t.Errorf("right margin: got %#x, want blank", got)
+	}
+	if got := at(dst, 100, 570); got != 0 {
+		t.Errorf("bottom margin: got %#x, want blank", got)
+	}
+
+	// Growth: only the area the previous frame covered is carried over.
+	src = image.NewRGBA(image.Rect(0, 0, 500, 300))
+	fill(src, 0x40)
+	dst = image.NewRGBA(image.Rect(0, 0, 1005, 580))
+	carryOverRGBA(dst, src, 1000, 570)
+	if got := at(dst, 499, 299); got != 0x40 {
+		t.Errorf("carried pixel: got %#x, want %#x", got, 0x40)
+	}
+	if got := at(dst, 500, 299); got != 0 {
+		t.Errorf("newly exposed pixel: got %#x, want blank", got)
+	}
+
+	// A nil image on either side is a no-op rather than a panic.
+	carryOverRGBA(nil, src, 10, 10)
+	carryOverRGBA(dst, nil, 10, 10)
+}
+
+// f4 #283: the same race as on X11. Resize replaces the backing image and
+// forces a repaint, which renders the previous, larger grid into the new image
+// before FrameManager has resized; the partial margins it fills must be blank
+// again once the frame for the new grid is rendered.
+func TestWaylandRendererClearsMarginsFilledByALargerFrame(t *testing.T) {
+	const (
+		windowWidth  = 14
+		windowHeight = 8
+		cellWidth    = 5
+		cellHeight   = 3
+	)
+	host := &WaylandHost{
+		imgBuf: image.NewRGBA(image.Rect(0, 0, windowWidth, windowHeight)),
+		cols:   2,
+		rows:   2,
+		cellW:  cellWidth,
+		cellH:  cellHeight,
+		scale:  1,
+	}
+	renderer := NewWaylandRenderer(host, nil)
+
+	large := redCells(3 * 3)
+	renderer.Render(large, make([]CharInfo, len(large)), 3, 3, true)
+	// (13,6) is in the bottom margin and the right margin of the 2x2 grid.
+	if got := host.imgBuf.Pix[6*host.imgBuf.Stride+13*4]; got != 0xff {
+		t.Fatalf("setup: the larger frame did not reach the margin: %#x", got)
+	}
+
+	small := redCells(2 * 2)
+	renderer.Render(small, make([]CharInfo, len(small)), 2, 2, true)
+	if x, y, stale := stalePixel(host.imgBuf, 2*cellWidth, 2*cellHeight); stale {
+		t.Fatalf("stale pixel at (%d,%d) outside the smaller grid", x, y)
+	}
+	if got := host.imgBuf.Pix[0]; got != 0xff {
+		t.Errorf("the smaller frame was not drawn: %#x", got)
+	}
+}
+
+// SetFont reloads the font and pushes the new cell size to the renderer and
+// the screen's graphics layer, without touching the grid geometry -- the
+// window resize (through the widget, which is absent in this unit test) is
+// the only thing that follows the cell size, not cols/rows (vtui #136).
+func TestWaylandHost_SetFont(t *testing.T) {
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(10, 5)
+
+	host := &WaylandHost{
+		cols:     10,
+		rows:     5,
+		cellW:    1,
+		cellH:    1,
+		scale:    1,
+		fontName: "old-font",
+		fontSize: 12,
+		screen:   scr,
+	}
+	renderer := NewWaylandRenderer(host, nil)
+	renderer.glyphCache[glyphKey{}] = &image.RGBA{}
+	renderer.gfxKnown = true
+	host.renderer = renderer
+
+	_, wantCellW, wantCellH := loadBestFont("NonExistentFontAtAll", 20, 72.0)
+
+	if renderer.face != nil {
+		t.Fatal("setup: renderer already has a face before SetFont")
+	}
+	host.SetFont("NonExistentFontAtAll", 20)
+
+	if host.fontName != "NonExistentFontAtAll" || host.fontSize != 20 {
+		t.Fatalf("fontName/fontSize = %q/%v, want NonExistentFontAtAll/20", host.fontName, host.fontSize)
+	}
+	if host.cellW != wantCellW || host.cellH != wantCellH {
+		t.Fatalf("host cell size = %dx%d, want %dx%d", host.cellW, host.cellH, wantCellW, wantCellH)
+	}
+	if cw, ch := scr.Graphics().CellSize(); cw != wantCellW || ch != wantCellH {
+		t.Fatalf("screen cell size = %dx%d, want %dx%d", cw, ch, wantCellW, wantCellH)
+	}
+	if renderer.face == nil {
+		t.Error("renderer face was not set")
+	}
+	if len(renderer.glyphCache) != 0 {
+		t.Errorf("glyphCache not cleared: %d entries left", len(renderer.glyphCache))
+	}
+	if renderer.gfxKnown {
+		t.Error("gfxKnown not reset after font change")
+	}
+	if host.cols != 10 || host.rows != 5 {
+		t.Fatalf("grid = %dx%d, want unchanged 10x5", host.cols, host.rows)
+	}
+}
+
+// A widget-less host (no native window yet, as in the test above) must not
+// panic when SetFont is called -- mirrors the "testable before a native
+// window exists" contract Win32GuiHost.ResizeGrid documents.
+func TestWaylandHost_SetFontWithoutWidget(t *testing.T) {
+	host := &WaylandHost{scale: 1, fontName: "old-font", fontSize: 12}
+	host.SetFont("NonExistentFontAtAll", 20)
+	if host.fontName != "NonExistentFontAtAll" {
+		t.Errorf("fontName = %q, want NonExistentFontAtAll", host.fontName)
 	}
 }

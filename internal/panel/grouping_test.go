@@ -186,9 +186,6 @@ func TestGroupSortIndependence(t *testing.T) {
 }
 
 func TestGroupRowsNavigationFilter(t *testing.T) {
-	before := config.App
-	defer func() { config.App = before }()
-	config.App.PanelAutoFilter = true
 	for _, view := range []ViewMode{ViewModeDetailed, ViewModeMedium, ViewModeBrief, ViewModeWide} {
 		fp := groupTestPanel(t)
 		fp.SetViewMode(view)
@@ -229,7 +226,7 @@ func TestGroupRowsNavigationFilter(t *testing.T) {
 				}
 			}
 		}
-		fp.FastFindMode, fp.FastFindStr = true, "b"
+		fp.FastFindMode, fp.autoFilterMode, fp.FastFindStr = true, true, "b"
 		fp.updateAutoFilter()
 		if len(fp.Groups()) != 1 || fp.Groups()[0].Key != "name:B" {
 			t.Fatalf("filter groups %v", fp.Groups())

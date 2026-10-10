@@ -104,6 +104,7 @@ func TestFileFieldFiltersKeepDirectoriesAndCombineWithNameSearch(t *testing.T) {
 	}
 
 	fp.FastFindMode = true
+	fp.autoFilterMode = true
 	fp.FastFindStr = "Camera"
 	fp.applyFastFind()
 	assertPanelEntryNames(t, fp.Entries, "..", "Camera Roll", "Camera-ISO-800.jpg", "Camera-pending.jpg")

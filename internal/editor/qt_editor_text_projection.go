@@ -1,6 +1,7 @@
 package editor
 
 import (
+	"github.com/unxed/f4/internal/config"
 	"github.com/unxed/f4/internal/piecetable"
 	"github.com/unxed/f4/internal/textlayout"
 	"github.com/unxed/f4/internal/theme"
@@ -27,7 +28,7 @@ func (ev *EditorView) textProjectionStyle() editorTextProjectionStyle {
 	cursorOffset := ev.Li.GetLineOffset(ev.CursorLine) + ev.CursorPos
 	cursorRow, cursorColumn := ev.Engine.LogicalToVisual(cursorOffset)
 	style := editorTextProjectionStyle{
-		background: ColorerEditorBaseAttr(vtui.Palette[theme.ColEditorText]),
+		background: ev.colorerBaseAttr(),
 		selected:   vtui.Palette[vtui.ColDialogEditSelected],
 		cursorRow:  cursorRow, cursorColumn: cursorColumn,
 		crossRow: -1, crossColumn: -1,
@@ -88,6 +89,15 @@ func (ev *EditorView) projectTextRows(startVisualRow, width, height int,
 		}
 	}
 	startLogLine, startFragIdx := ev.Engine.GetLogLineAtVisualRow(startVisualRow)
+	var pairOverlay colorerPairOverlay
+	if ch, ok := ev.Highlighter.(*ColorerHighlighter); ok {
+		ch.noteLineCount(ev.Li.LineCount())
+		if !ev.BinaryFile && config.App.EditorColorerPairs && ev.IsFocused() {
+			if text, ready := ev.lineTextForHighlight(ev.CursorLine); ready {
+				pairOverlay = ch.pairOverlay(ev.CursorLine, ev.CursorPos, text, startLogLine, startLogLine+height)
+			}
+		}
+	}
 	rowsRendered := 0
 
 	for logIdx := startLogLine; logIdx < ev.Li.LineCount(); logIdx++ {
@@ -101,14 +111,14 @@ func (ev *EditorView) projectTextRows(startVisualRow, width, height int,
 
 		// Stateful Highlighting
 		var lineSyntax []uint64
-		if ch, isColorer := ev.Highlighter.(*ColorerHighlighter); isColorer {
+		if ch, isColorer := ev.Highlighter.(*ColorerHighlighter); isColorer && !ev.BinaryFile {
 			// Colorer is addressed by line number: its parser state cannot
 			// be carried in ev.lineStates, so it keeps its own anchor near
 			// the viewport instead. See HIGHLIGHT.md, phase 5.
 			if text, ok := ev.lineTextForHighlight(logIdx); ok {
-				lineSyntax = ch.HighlightLine(logIdx, text, bgAttr)
+				lineSyntax = pairOverlay.apply(logIdx, ch.HighlightLine(logIdx, text, bgAttr))
 			}
-		} else if ev.Highlighter != nil {
+		} else if ev.Highlighter != nil && !ev.BinaryFile {
 			// Catch up synchronously only if the uncomputed gap is small (<= 50 lines).
 			// For large jumps, render unhighlighted immediately and compute in background.
 			const syncHighlightGapLimit = 50
@@ -227,10 +237,8 @@ func (ev *EditorView) projectTextRows(startVisualRow, width, height int,
 			ev.renderCells = ev.fillCellsSpan(ev.renderCells, ev.renderBytes, bgAttr, selAttr, frag.ByteOffsetStart, style.paintStreamSelection && ev.SelActive, selMin, selMax, ev.fadeSyntax(fragSyntax, bgAttr), 0, isCrossRow, crossVCol, horzCrossAttr, vertCrossAttr, absVRow, frag.VisualColumnStart, ev.ScrollLeft, ev.ScrollLeft+width)
 
 			lineBg := bgAttr
-			if logIdx < len(ev.lineStates) {
-				if ch, ok := ev.Highlighter.(*ColorerHighlighter); ok {
-					lineBg = ch.GetLineBackground(logIdx, bgAttr)
-				}
+			if ch, ok := ev.Highlighter.(*ColorerHighlighter); ok {
+				lineBg = ch.GetLineBackground(logIdx, bgAttr)
 			}
 			fillBg := lineBg
 			if isCrossRow && horzCrossAttr != 0 {
@@ -242,6 +250,14 @@ func (ev *EditorView) projectTextRows(startVisualRow, width, height int,
 			}
 			for len(ev.renderCells) < width {
 				ev.renderCells = append(ev.renderCells, vtui.CharInfo{Char: ' ', Attributes: fillBg})
+			}
+			// Mark soft wraps without moving their byte or cell boundaries.
+			if ev.WordWrap && fIdx+1 < len(frags) && width > 0 {
+				last := &ev.renderCells[width-1]
+				if frag.VisualWidth-ev.ScrollLeft < width {
+					last.Char = '»'
+				}
+				last.Attributes = ev.wrapMarkAttr()
 			}
 			if absVRow == autocompleteRow {
 				copy(ev.renderCells[autocompleteColumn:], autocompleteCells)

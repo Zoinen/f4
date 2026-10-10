@@ -107,6 +107,45 @@ func TestOpenViewerFollowsOpenAsSupportedType(t *testing.T) {
 	}
 }
 
+func TestOpenViewerInternalForceHex(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	testutil.DrainPendingTasks()
+	theme.SetDefaultF4Palette()
+
+	old := config.App.ViewerOpenAsSupportedType
+	t.Cleanup(func() { config.App.ViewerOpenAsSupportedType = old })
+	config.App.ViewerOpenAsSupportedType = true
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "plain.txt")
+	if err := os.WriteFile(path, []byte("plain text"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	pf := panel.NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+	openViewerInternalMode(pf, vfs.NewOSVFS(dir), path, true)
+
+	var vv *viewer.ViewerView
+	timeout := time.After(5 * time.Second)
+	for vv == nil {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		case <-timeout:
+			t.Fatal("hex viewer did not open")
+		}
+		if found, _ := findOpenedViewer(vfs.NewOSVFS(dir), path); found != nil {
+			vv = found
+		}
+	}
+	defer vv.Close()
+	if !vv.HexMode {
+		t.Fatal("forced hex viewer opened in text mode")
+	}
+}
+
 func writeViewByTypePNG(t *testing.T, path string) {
 	t.Helper()
 	img := image.NewRGBA(image.Rect(0, 0, 4, 4))

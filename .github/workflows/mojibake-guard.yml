@@ -1,0 +1,57 @@
+name: mojibake-guard
+
+# Bot comments are posted under the owner's account, and a bot whose
+# environment mangles non-ASCII text delivers Russian as rows of "?" that
+# nobody can read and nobody can recover (unxed/lunobot: f4#1774, f4#1778,
+# f4#1790). The guard reads each new or edited comment of the repository
+# owner, and when it is mostly runs of "?" it replaces the unreadable text
+# with a notice (the original stays in the comment's edit history). The
+# notice tells the author to resend it through the accounting repository's
+# gh_post.py, which refuses such text up front.
+#
+# A person's own "???" is not touched: it takes three separate runs of three
+# or more question marks, outside code, to trip it.
+
+on:
+  issue_comment:
+    types: [created, edited]
+
+permissions:
+  issues: write
+
+jobs:
+  guard:
+    if: ${{ github.event.comment.user.login == github.repository_owner }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Replace an unreadable comment with a notice
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+          REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re, subprocess, sys
+
+          body = os.environ["COMMENT_BODY"]
+          prose = re.sub(r"`[^`\n]*`", " ", re.sub(r"```.*?(```|$)", " ", body, flags=re.S))
+          if len(re.findall(r"\?{3,}", prose)) < 3:
+              print("comment is readable")
+              sys.exit(0)
+          notice = (
+              "⚠️ Комментарий скрыт автоматически: при отправке сломалась "
+              "кодировка, русские буквы превратились в «?», и прочитать текст нельзя. "
+              "Автор, отправьте его заново через `gh_post.py` из учётного репозитория "
+              "(LUNOBOT.md § 2) и проверьте, что в среде включён UTF-8.\n\n"
+              "This comment was hidden automatically: its text reached GitHub as rows "
+              "of \"?\" (broken encoding) and cannot be read. Author: please resend it "
+              "through `gh_post.py` and check that the environment uses UTF-8."
+          )
+          subprocess.run(
+              ["gh", "api", "-X", "PATCH",
+               f"repos/{os.environ['REPO']}/issues/comments/{os.environ['COMMENT_ID']}",
+               "-f", f"body={notice}"],
+              check=True)
+          print("comment replaced with a notice")
+          PY

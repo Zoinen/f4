@@ -25,8 +25,8 @@ const tempPanelSlotCount = 10
 // same operation as far2l's TmpPanel PutFiles and remains useful for large or
 // remote files.
 type tempPanelReference struct {
-	Id      uint64
-	Source  vfs.VFS
+	Id     uint64
+	Source vfs.VFS
 	// source is the upstream package-private spelling retained for tests and
 	// older in-package helpers. Store operations normalize it to Source.
 	source  vfs.VFS
@@ -325,6 +325,7 @@ type TempPanelVFS struct {
 	currentPath     string
 	parent          vfs.VFS
 	parentSelection string
+	calculatedTotal *vfs.OpStats
 }
 
 func NewTempPanelVFS(parent vfs.VFS, store *TempPanelStore, slot int) *TempPanelVFS {
@@ -351,6 +352,45 @@ func (t *TempPanelVFS) PanelTitle(string) string {
 }
 
 func (t *TempPanelVFS) IsAtRoot() bool { return t.currentPath == t.root() }
+
+// CalculateTotal scans every reference in the current temporary-panel slot.
+// It deliberately works on the referenced VFSes directly: two references may
+// have the same display name, while their source paths remain unambiguous.
+func (t *TempPanelVFS) CalculateTotal(ctx context.Context, cb vfs.ScanCallback) (vfs.OpStats, error) {
+	var total vfs.OpStats
+	if t == nil {
+		return total, os.ErrInvalid
+	}
+	for _, ref := range t.store.references(t.slot) {
+		if err := ctx.Err(); err != nil {
+			return total, err
+		}
+		stats, err := vfs.CalculateStats(ctx, ref.source, ref.path, []string{""}, cb)
+		if err != nil {
+			return total, err
+		}
+		total.Add(stats)
+	}
+	return total, nil
+}
+
+// SetCalculatedTotal records the result shown in the panel's total status
+// line after F3 is pressed on the temporary panel's parent row.
+func (t *TempPanelVFS) SetCalculatedTotal(stats vfs.OpStats) {
+	if t == nil {
+		return
+	}
+	t.calculatedTotal = &stats
+}
+
+// CalculatedPanelTotal lets the panel renderer use the aggregate calculated
+// size instead of only summing the top-level reference metadata.
+func (t *TempPanelVFS) CalculatedPanelTotal() (vfs.OpStats, bool) {
+	if t == nil || t.calculatedTotal == nil {
+		return vfs.OpStats{}, false
+	}
+	return *t.calculatedTotal, true
+}
 
 func (t *TempPanelVFS) GetPath() string {
 	if t.currentPath == "" {
@@ -697,7 +737,9 @@ func (t *TempPanelVFS) Clone() vfs.VFS {
 func (t *TempPanelVFS) Close() error { return nil }
 
 func (t *TempPanelVFS) AddReferences(ctx context.Context, source vfs.VFS, names []string) error {
-	return t.store.addReferences(ctx, t.slot, source, names)
+	err := t.store.addReferences(ctx, t.slot, source, names)
+	t.calculatedTotal = nil
+	return err
 }
 
 func (t *TempPanelVFS) HandlePanelAction(app vfs.App, action vfs.PanelAction, paths []string) bool {
@@ -759,6 +801,7 @@ func (t *TempPanelVFS) RemovePanelReferences(paths []string) bool {
 			t.store.removeReference(t.slot, ref.Id)
 		}
 	}
+	t.calculatedTotal = nil
 	return true
 }
 
@@ -901,4 +944,25 @@ func (t *TempPanelVFS) TransferIdentity(path string) (vfs.VFS, string) {
 		return ref.Source, realPath
 	}
 	return t, path
+}
+
+// LocalPaths resolves the named entries of the panel's root to the paths of
+// the files they reference, when every one of them lives on the local disk.
+// It is what dragging out of a temporary panel offers the desktop (#1604).
+func (t *TempPanelVFS) LocalPaths(names []string) ([]string, bool) {
+	if t == nil || t.store == nil || len(names) == 0 || !t.IsAtRoot() {
+		return nil, false
+	}
+	paths := make([]string, 0, len(names))
+	for _, name := range names {
+		ref, realPath, isReference, ok := t.Resolve(t.Join(t.root(), name))
+		if !ok || !isReference {
+			return nil, false
+		}
+		if _, local := ref.Source.(*vfs.OSVFS); !local {
+			return nil, false
+		}
+		paths = append(paths, realPath)
+	}
+	return paths, true
 }

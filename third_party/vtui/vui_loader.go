@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -84,6 +85,62 @@ func loadDialogFileOnce(path string) (*Window, error) {
 	return LoadDialog(f)
 }
 
+// widgetStates is the data of the controls of a window, taken before a hot
+// reload. Element ids are unique only inside their own container, and the
+// generated ones ("auto:Edit:1") repeat from container to container, so the
+// primary key is the structural path from the window root
+// ("/dlg/panel/auto:Edit:1"). A control that carries an explicit id and has
+// moved to another container in the edited template is still found by that id.
+type widgetStates struct {
+	byPath map[string]any
+	byID   map[string]any
+}
+
+func captureWidgetStates(root UIElement) widgetStates {
+	st := widgetStates{byPath: map[string]any{}, byID: map[string]any{}}
+	walkWithPath(root, "", func(path string, el UIElement) {
+		dc, ok := el.(DataControl)
+		if !ok {
+			return
+		}
+		st.byPath[path] = dc.GetData()
+		if id := el.GetId(); id != "" && !strings.HasPrefix(id, "auto:") {
+			st.byID[id] = dc.GetData()
+		}
+	})
+	return st
+}
+
+func (st widgetStates) restore(root UIElement) {
+	walkWithPath(root, "", func(path string, el UIElement) {
+		dc, ok := el.(DataControl)
+		if !ok {
+			return
+		}
+		if val, ok := st.byPath[path]; ok {
+			dc.SetData(val)
+			return
+		}
+		if id := el.GetId(); id != "" && !strings.HasPrefix(id, "auto:") {
+			if val, ok := st.byID[id]; ok {
+				dc.SetData(val)
+			}
+		}
+	})
+}
+
+// walkWithPath visits el and its descendants with the path of ids from the
+// root down to each of them.
+func walkWithPath(el UIElement, parent string, fn func(path string, el UIElement)) {
+	path := parent + "/" + el.GetId()
+	fn(path, el)
+	if c, ok := el.(Container); ok {
+		for _, child := range c.GetChildren() {
+			walkWithPath(child, path, fn)
+		}
+	}
+}
+
 func watchVuiFile(path string, targetWin *Window) {
 	fi, err := os.Stat(path)
 	if err != nil {
@@ -106,30 +163,11 @@ func watchVuiFile(path string, targetWin *Window) {
 				lastMtime = info.ModTime()
 				DebugLog("VUI: Hot reloading %s...", path)
 				fm.PostTask(func() {
-					stateMap := make(map[string]any)
-					walk(targetWin, func(el UIElement) bool {
-						id := el.GetId()
-						if id != "" {
-							if dc, ok := el.(DataControl); ok {
-								stateMap[id] = dc.GetData()
-							}
-						}
-						return true
-					})
+					states := captureWidgetStates(targetWin)
 
 					newWin, err := loadDialogFileOnce(path)
 					if err == nil && newWin != nil {
-						walk(newWin, func(el UIElement) bool {
-							id := el.GetId()
-							if id != "" {
-								if val, ok := stateMap[id]; ok {
-									if dc, ok := el.(DataControl); ok {
-										dc.SetData(val)
-									}
-								}
-							}
-							return true
-						})
+						states.restore(newWin)
 						targetWin.SetPosition(newWin.X1, newWin.Y1, newWin.X2, newWin.Y2)
 						targetWin.rootGroup = newWin.rootGroup
 						targetWin.rootGroup.SetOwner(targetWin)

@@ -4,6 +4,7 @@ import (
 	"github.com/unxed/f4/internal/action"
 	"github.com/unxed/f4/internal/cmdline"
 	"github.com/unxed/f4/internal/editor"
+	"github.com/unxed/f4/internal/history"
 	"github.com/unxed/f4/internal/i18n"
 	"github.com/unxed/f4/internal/nativeui"
 	"github.com/unxed/f4/internal/panel"
@@ -222,7 +223,7 @@ func TestNativeMenuActivatesWithoutOpeningF9Bar(t *testing.T) {
 	ev.SetVisible(true)
 	vtui.FrameManager.Push(ev)
 	if !HandleSemanticAction(map[string]any{
-		"action": "menuBar.itemActivate", "menuIndex": 0, "index": 3,
+		"action": "menuBar.itemActivate", "menuIndex": 0, "index": editorQuitMenuIndex(t, ev),
 	}) {
 		t.Fatal("native File > Exit was not handled without an F9 submenu")
 	}
@@ -231,6 +232,17 @@ func TestNativeMenuActivatesWithoutOpeningF9Bar(t *testing.T) {
 			t.Fatal("editor remained open after native File > Exit")
 		}
 	}
+}
+
+func editorQuitMenuIndex(t *testing.T, ev *editor.EditorView) int {
+	t.Helper()
+	for index, item := range ev.GetMenuBar().Items[0].SubItems {
+		if item.UserData == history.MenuHistoryItemKey("Editor.Quit") {
+			return index
+		}
+	}
+	t.Fatal("editor File menu is missing its Quit action")
+	return -1
 }
 
 func TestEditorMenuBarSemanticClickOpensSubmenu(t *testing.T) {
@@ -272,8 +284,9 @@ func TestEditorMenuBarSemanticClickOpensSubmenu(t *testing.T) {
 	if !HandleSemanticAction(map[string]any{
 		"action":    "menuBar.itemActivate",
 		"menuIndex": 0,
-		// Save, Save As, Switch to Viewer, Quit follow registry order.
-		"index": 3,
+		// Upstream Markdown preview actions also belong to File. Resolve
+		// Quit by identity without assuming its registration position.
+		"index": editorQuitMenuIndex(t, ev),
 	}) {
 		t.Fatal("editor Exit menu item was not activated")
 	}

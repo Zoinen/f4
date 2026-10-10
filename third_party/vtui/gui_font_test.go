@@ -1,6 +1,8 @@
 package vtui
 
 import (
+	"io"
+	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -157,5 +159,38 @@ func TestLoadBestFont_Fallback(t *testing.T) {
 	}
 	if w <= 0 || h <= 0 {
 		t.Errorf("Invalid font dimensions: %dx%d", w, h)
+	}
+}
+
+// A font that loads is news for the debug log, not for stderr: stderr is the
+// crash log in applications that call SetupStderrLog, and any byte there keeps
+// that file on disk after a clean exit (f4 #474).
+func TestLoadBestFont_SuccessStaysOutOfStderr(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	captured := make(chan []byte, 1)
+	go func() {
+		out, _ := io.ReadAll(r)
+		captured <- out
+	}()
+
+	saved := os.Stderr
+	os.Stderr = w
+	face, _, _ := loadBestFont("NonExistentFontAtAll", 12.0, 96.0)
+	os.Stderr = saved
+	_ = w.Close()
+	out := <-captured
+	_ = r.Close()
+	if closer, ok := face.(interface{ Close() error }); ok {
+		defer closer.Close()
+	}
+
+	if face == basicfont.Face7x13 {
+		t.Skip("no TrueType font on this machine; the success path did not run")
+	}
+	if strings.Contains(string(out), "Successfully loaded") {
+		t.Errorf("loadBestFont reported a loaded font on stderr: %q", out)
 	}
 }

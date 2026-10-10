@@ -1,0 +1,95 @@
+name: sandbox
+
+# One-off manual experiments -- "how does this specific piece of code behave
+# on Windows", a benchmark, a hypothesis check -- without paying for the full
+# build.yml matrix (~26-40 jobs) just to answer one narrow question. This is a
+# separate, self-contained mechanism: it never runs on push/pull_request and
+# never gates a merge. build.yml (the release/PR matrix) and quick.yml (the
+# per-branch smoke check) are untouched.
+#
+# Usage: gh workflow run sandbox.yml -f os=windows-latest -f command="go test ./internal/foo/... -run TestBar -v"
+#        gh workflow run sandbox.yml -f os=ubuntu-latest -f command='go vet ./... && go test ./internal/foo/... | tail -n 20'
+# Then: gh run view <id> --log
+#
+# The command is parsed by a real shell, so shell syntax works: on Linux/macOS
+# it runs as `bash -c "$SANDBOX_COMMAND"` (&&, ||, |, ;, quotes, for loops,
+# `VAR=x cmd`, redirections); on Windows it runs through PowerShell 7's
+# Invoke-Expression (`;`, `&&`/`||` pipeline chains, `|`). The exit status of
+# the command is the step result.
+#
+# Security: `inputs.command` is attacker/operator-controlled free text and is
+# never interpolated directly into a `run:` script body -- doing that turns
+# the input into literal script text before it runs, which is the classic
+# GitHub Actions script-injection vector (any stray quote/backtick/$() in the
+# command could break out of the intended command and run something else, or
+# just fail to parse). Instead the value crosses into the step only through
+# `env:`, which the runner sets as a plain environment variable, and the run
+# step executes that variable rather than the raw expression. Handing the
+# variable to `bash -c` / Invoke-Expression does let the *value* use shell
+# syntax -- that is the point, the operator is asking for arbitrary code on a
+# throwaway runner -- but the workflow's own script text is fixed and cannot
+# be rewritten by the input. See "Security
+# hardening for GitHub Actions" / script injection in the GitHub docs.
+
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: "Runner to execute the command on"
+        required: true
+        type: choice
+        default: ubuntu-latest
+        options:
+          - ubuntu-latest
+          - ubuntu-24.04-arm
+          - windows-latest
+          - windows-11-arm
+          - macos-latest
+          - macos-15-intel
+      command:
+        description: "Shell command to run after checkout + setup-go"
+        required: true
+        type: string
+
+jobs:
+  run:
+    name: Sandbox (${{ inputs.os }})
+    runs-on: ${{ inputs.os }}
+    # A one-off experiment can still hang (e.g. a test waiting on input); cap
+    # it the same way build.yml caps its test jobs instead of leaving it to
+    # the default 6h runner timeout.
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive # f4 pulls in vtui/vtinput as submodules
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.9'
+          cache-dependency-path: go.sum
+
+      # Two steps, one per shell family, both keeping the untrusted input in
+      # an env var rather than in the run: script text (see the note above).
+      - name: Run sandbox command (bash)
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          SANDBOX_COMMAND: ${{ inputs.command }}
+        # "$SANDBOX_COMMAND" is expanded by the step's bash as a single quoted
+        # argument and handed to a child bash to parse; ${{ inputs.command }}
+        # is never spliced into this line. (Plain `run: $SANDBOX_COMMAND` only
+        # word-split the value, so &&, |, quotes and loops did not work.)
+        run: bash -c "$SANDBOX_COMMAND"
+
+      - name: Run sandbox command (PowerShell)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          SANDBOX_COMMAND: ${{ inputs.command }}
+        # PowerShell 7 parses the string itself, including `;` and the
+        # `&&`/`||` pipeline-chain operators; the input again arrives only via
+        # $env:SANDBOX_COMMAND, never as script text.
+        run: Invoke-Expression $env:SANDBOX_COMMAND

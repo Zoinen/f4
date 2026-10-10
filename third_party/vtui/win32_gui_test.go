@@ -138,6 +138,18 @@ func TestFrameManager_GetBackendName_Win32Gui(t *testing.T) {
 	}
 }
 
+// A renderer built without a host (as several tests above do, e.g.
+// TestWin32GuiRenderer_Lifecycle) has nothing to forward a font change to;
+// SetFont must report that rather than dereference a nil host (vtui #136).
+// The real hot-swap, which needs the host's Windows-only fields, is covered
+// by TestWin32GuiRenderer_SetFont in win32_gui_font_windows_test.go.
+func TestWin32GuiRenderer_SetFont_NilHost(t *testing.T) {
+	r := NewWin32GuiRenderer(nil, nil, 8, 16)
+	if r.SetFont("Comic Sans", 14) {
+		t.Error("SetFont = true for a renderer with no host")
+	}
+}
+
 func TestWin32Gui_PostQuitState(t *testing.T) {
 	host := &Win32GuiHost{
 		closeChan: make(chan struct{}),
@@ -162,4 +174,37 @@ func TestWin32Gui_PostQuitState(t *testing.T) {
 
 	// Calling PostQuit again should be safe and idempotent
 	host.PostQuit()
+}
+
+// TestWin32Gui_FrameMarginRects checks the pixels WM_PAINT has to clear besides
+// the blitted frame, which covers whole cells only (f4 #283).
+func TestWin32Gui_FrameMarginRects(t *testing.T) {
+	tests := []struct {
+		name                             string
+		clientW, clientH, frameW, frameH int
+		want                             []pixelRect
+	}{
+		{"cell aligned", 1000, 570, 1000, 570, nil},
+		{"partial column and row", 1005, 580, 1000, 570, []pixelRect{{1000, 0, 1005, 580}, {0, 570, 1000, 580}}},
+		{"partial column only", 1005, 570, 1000, 570, []pixelRect{{1000, 0, 1005, 570}}},
+		{"partial row only", 1000, 580, 1000, 570, []pixelRect{{0, 570, 1000, 580}}},
+		// A frame still composed for the maximized grid covers the whole
+		// restored client area: nothing to clear yet.
+		{"stale larger frame", 1005, 580, 1600, 969, nil},
+		{"wider but shorter frame", 1005, 580, 1600, 570, []pixelRect{{0, 570, 1005, 580}}},
+		{"no client area", 0, 0, 1000, 570, nil},
+	}
+	for _, tt := range tests {
+		got := frameMarginRects(tt.clientW, tt.clientH, tt.frameW, tt.frameH)
+		if len(got) != len(tt.want) {
+			t.Errorf("%s: got %v, want %v", tt.name, got, tt.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != tt.want[i] {
+				t.Errorf("%s: got %v, want %v", tt.name, got, tt.want)
+				break
+			}
+		}
+	}
 }

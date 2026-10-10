@@ -30,6 +30,10 @@ type WindowColorizer interface {
 	// offset, or nil while it is not highlighted with this text. The slice is
 	// shared and must not be modified.
 	LineAttrs(offset int64, text string) []uint64
+	// BaseAttr returns the attribute the highlighted lines are drawn over —
+	// the base the colorizer was given, or a Colorer style's own background
+	// on top of it — once the first lines arrived; ok is false until then.
+	BaseAttr() (attr uint64, ok bool)
 	// Close stops the work and releases what it holds.
 	Close()
 }
@@ -48,6 +52,32 @@ const (
 	viewerHighlightMaxBytes     = 64 * 1024
 )
 
+// RefreshHighlighting drops the colorizer this window built on first use, so
+// the next redraw asks NewWindowColorizer again and picks up a setting
+// changed since then (f4 #1413: toggling ViewerHighlighting for a viewer
+// that is already open).
+func (vv *ViewerView) RefreshHighlighting() {
+	if vv.highlight != nil {
+		vv.highlight.Close()
+	}
+	vv.highlight = nil
+	vv.highlightTried = false
+	// renderText only re-requests a window when the lines on screen hash
+	// differently from the last request it made (highlightKey), so it does
+	// not spam the colorizer every frame while nothing has scrolled. That
+	// hash says nothing about which colorizer made the request, though: left
+	// as is, toggling highlighting back on without scrolling built a fresh,
+	// empty colorizer that never got a Request, because the screen still
+	// hashed to the same key as the one already highlighted before this
+	// toggle turned it off (f4 #1413 — "выключает подсветку сразу, а
+	// включает с нескольких попыток"). Resetting it here makes the next
+	// renderText call send a request regardless of the lines on screen.
+	vv.highlightKey = 0
+	if vtui.FrameManager != nil {
+		vtui.FrameManager.Redraw()
+	}
+}
+
 // windowColorizer is the viewer's colorizer, created on first use.
 func (vv *ViewerView) windowColorizer() WindowColorizer {
 	if !vv.highlightTried {
@@ -62,6 +92,22 @@ func (vv *ViewerView) windowColorizer() WindowColorizer {
 		}
 	}
 	return vv.highlight
+}
+
+// textAttr is what the text view is drawn over: Viewer.Text, or, once the
+// colorizer says what it draws highlighted lines over, that, so the rest of
+// the view does not show as strips of another background around the lines,
+// as it does when Colorer paints them on its style's own background (#1232).
+// The hex and decode views are not highlighted and stay on Viewer.Text.
+func (vv *ViewerView) textAttr() uint64 {
+	attr := vtui.Palette[theme.ColViewerText]
+	if vv.HexMode || vv.DecodeMode || vv.highlight == nil {
+		return attr
+	}
+	if base, ok := vv.highlight.BaseAttr(); ok {
+		return base
+	}
+	return attr
 }
 
 // highlightLineStart finds where the logical line holding off begins, looking

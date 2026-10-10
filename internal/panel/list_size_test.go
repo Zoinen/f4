@@ -84,3 +84,57 @@ func TestFileSystemPanel_StatusLineNamesJunction(t *testing.T) {
 		t.Errorf("status line for a junction = %q, want Junction", got)
 	}
 }
+
+func TestFileSystemPanel_CalculatedPanelTotalUsesStatusAndBorder(t *testing.T) {
+	oldCfg := config.App
+	defer func() { config.App = oldCfg }()
+
+	vtui.SetDefaultPalette()
+	theme.SetDefaultF4Palette()
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(100, 25)
+	vtui.FrameManager.Init(scr)
+
+	fp := NewFileSystemPanel(0, 0, 90, 20, vfs.NewOSVFS(t.TempDir()))
+	waitForLoad(t, fp)
+	fp.IsLoading = false
+	if fp.LoadingTimer != nil {
+		fp.LoadingTimer.Stop()
+	}
+	fp.Entries = []*FileEntry{
+		{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}},
+		{VFSItem: vfs.VFSItem{Name: "file.bin", Size: 10}},
+	}
+	fp.SetCursorIndex(0)
+	fp.SetCalculatedPanelTotal(vfs.OpStats{Bytes: 1234567, Files: 4, Dirs: 2})
+	fp.Refresh()
+
+	rowText := func(y int) string {
+		var b strings.Builder
+		for x := fp.X1; x <= fp.X2; x++ {
+			cell := scr.GetCell(x, y)
+			if cell.Char == 0 {
+				b.WriteRune(' ')
+			} else {
+				b.WriteRune(vtui.CellBaseRune(cell.Char))
+			}
+		}
+		return strings.TrimSpace(b.String())
+	}
+
+	config.App.ShowPanelFileInfo = true
+	fp.Show(scr)
+	if got := rowText(fp.Y2 - 1); !strings.Contains(got, "1 234 567") {
+		t.Fatalf("calculated size missing from visible status row: %q", got)
+	}
+	if got := rowText(fp.Y2); !strings.Contains(got, "1 234 567") || !strings.Contains(got, "(4/2)") {
+		t.Fatalf("calculated total missing from bottom border: %q", got)
+	}
+
+	config.App.ShowPanelFileInfo = false
+	fp.SetPosition(0, 0, 89, 19)
+	fp.Show(scr)
+	if got := rowText(fp.Y2); !strings.Contains(got, "▸ 1 234 567") || !strings.Contains(got, "(4/2)") {
+		t.Fatalf("calculated size missing from compact bottom line: %q", got)
+	}
+}

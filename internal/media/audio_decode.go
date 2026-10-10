@@ -1,3 +1,5 @@
+//go:build !noffi && !lite && !android && (windows || ((linux || darwin || freebsd) && (amd64 || arm64)))
+
 package media
 
 import (
@@ -29,6 +31,14 @@ import (
 // what f4 leans on for video; it writes raw PCM to a pipe and the engine
 // reads it like any other source. So a recording plays anywhere ffmpeg does,
 // and the missing-tool message says what to install where it does not.
+//
+// This file, and the go-mp3/flac/oggvorbis decoders it imports, only exist
+// for the platforms audio_oto.go builds the real AudioEngine for (the tag
+// above matches it exactly); on the stub side (audio_stub.go, including the
+// lite build) none of this is reachable, so it must not be here to keep
+// those libraries out of the dependency graph. What both sides need
+// unconditionally — recognizing an audio file by name — lives in
+// audio_format.go instead.
 
 // audioSource is a decoded track: Reader yields 16-bit LE stereo PCM at
 // Rate. Length is the decoded byte count, or zero when the format cannot say
@@ -51,64 +61,6 @@ func (s *audioSource) Close() {
 		s.closer = nil
 	}
 }
-
-// audioFormat says how a file name is played: natively, or through ffmpeg.
-type audioFormat struct {
-	Codec    string
-	External bool
-}
-
-// audioFormats maps extension (lower case, with the dot) to how it is
-// played. Anything not here is not audio as far as the player is concerned:
-// the extension is what says the file is a recording, and sniffing every
-// file a user presses Enter on would promise something quite different.
-var audioFormats = map[string]audioFormat{
-	".mp3":  {Codec: "MP3"},
-	".wav":  {Codec: "WAV"},
-	".wave": {Codec: "WAV"},
-	".flac": {Codec: "FLAC"},
-	".ogg":  {Codec: "Vorbis"},
-	".oga":  {Codec: "Vorbis"},
-
-	// Dictaphones and phones: AMR narrow band and wide band.
-	".amr": {Codec: "AMR", External: true},
-	".awb": {Codec: "AMR-WB", External: true},
-	".3ga": {Codec: "AMR", External: true},
-
-	".aac":  {Codec: "AAC", External: true},
-	".m4a":  {Codec: "AAC", External: true},
-	".m4b":  {Codec: "AAC", External: true},
-	".opus": {Codec: "Opus", External: true},
-	".wma":  {Codec: "WMA", External: true},
-	".ape":  {Codec: "APE", External: true},
-	".wv":   {Codec: "WavPack", External: true},
-	".mka":  {Codec: "Matroska", External: true},
-	".aif":  {Codec: "AIFF", External: true},
-	".aiff": {Codec: "AIFF", External: true},
-	".mpc":  {Codec: "Musepack", External: true},
-	".ac3":  {Codec: "AC-3", External: true},
-	".au":   {Codec: "AU", External: true},
-	".mp2":  {Codec: "MP2", External: true},
-	".tta":  {Codec: "TTA", External: true},
-	".spx":  {Codec: "Speex", External: true},
-	".dss":  {Codec: "DSS", External: true},
-	".gsm":  {Codec: "GSM", External: true},
-}
-
-func audioFormatFor(Path string) (audioFormat, bool) {
-	f, ok := audioFormats[strings.ToLower(filepath.Ext(Path))]
-	return f, ok
-}
-
-// IsAudioFile reports whether the player knows what to do with the name.
-func IsAudioFile(Path string) bool {
-	_, ok := audioFormatFor(Path)
-	return ok
-}
-
-// ErrNeedFFmpeg is what Load returns for a format only ffmpeg can decode
-// when there is no ffmpeg. The panel turns it into the install message.
-var ErrNeedFFmpeg = errors.New("ffmpeg is needed to play this format")
 
 // openAudioSource decodes Path. preferRate is the rate the output device
 // already runs at, or zero; native decoders ignore it (the engine resamples),

@@ -64,13 +64,31 @@ func (p *Painter) DrawTitle(x1, y1, x2 int, title string, attr uint64) {
 
 // DrawCloseButton draws the [x] button on the top right.
 func (p *Painter) DrawCloseButton(x2, y1 int, offset int, attr uint64) {
-	closeStr := string(UIStrings.CloseBrackets[0]) + string(UIStrings.CloseSymbol) + string(UIStrings.CloseBrackets[1])
+	closeStr := string(UIStrings.CloseBrackets[0]) + string(EffectiveCloseSymbol()) + string(UIStrings.CloseBrackets[1])
 	p.scr.Write(x2-offset, y1, StringToCharInfo(closeStr, attr))
 }
 
 // DrawString draws a raw string with given attributes.
 func (p *Painter) DrawString(x, y int, text string, attr uint64) {
 	p.scr.Write(x, y, StringToCharInfo(text, attr))
+}
+
+// DrawSymGlyph draws a symbolic checkbox/radio glyph token (symchar.go) at
+// (x, y). The token always occupies 3 cells, exactly like the classic text
+// it replaces, so callers can lay out around it precisely as before. attr
+// applies to all 3 cells; the label or spacing next to the glyph is drawn
+// with a separate call, just as a differently-coloured indicator prefix was
+// previously written on top of a plain "[x] "/"( ) " string.
+func (p *Painter) DrawSymGlyph(x, y int, sym SymGlyph, attr uint64) {
+	p.scr.Write(x, y, SymGlyphCharInfo(sym, attr))
+}
+
+// DrawButtonEar draws one of a Button's symbolic ear tokens (symchar.go) at
+// (x, y): SymButtonEarLeft or SymButtonEarRight. The token always occupies 2
+// cells, exactly like the classic "[ "/" ]" text it replaces, so callers can
+// lay out the label next to it precisely as before.
+func (p *Painter) DrawButtonEar(x, y int, sym SymGlyph, attr uint64) {
+	p.scr.Write(x, y, SymButtonEarCharInfo(sym, attr))
 }
 
 // DrawHighlightedText draws a pre-parsed string with a specific hotkey position.

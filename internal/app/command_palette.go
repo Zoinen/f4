@@ -18,7 +18,7 @@ import (
 
 const (
 	CommandPaletteActionName = "App.CommandPalette"
-	commandPaletteActionName  = CommandPaletteActionName
+	commandPaletteActionName = CommandPaletteActionName
 	commandPaletteHistoryID  = "command-palette"
 	commandPaletteHistoryMax = 50
 	commandPaletteLegacyKey  = "CtrlAltP"
@@ -120,6 +120,7 @@ func ShowCommandPalette() bool {
 			}
 		})
 	})
+	dialog.rebuild = func() []commandPaletteEntry { return buildCommandPaletteEntries(area, pf) }
 	vtui.FrameManager.Push(dialog)
 	// Pushing any ordinary overlay cancels Fast Find on focus loss. The command
 	// palette is the exception: it has just indexed the transient F2 command and
@@ -150,6 +151,10 @@ func commandPaletteAreaAllowed(area string) bool {
 // explicitly assigned or silenced it.
 func CommandPaletteLegacyShortcut(area string, e *vtinput.InputEvent) bool {
 	if e == nil || !e.KeyDown || keymap.EventToHotkeyString(e) != commandPaletteLegacyKey {
+		return false
+	}
+	// A program running in the terminal keeps its keys (#1376).
+	if strings.EqualFold(area, "Terminal") && !keymap.ConditionTrue("NoTerminalApp") {
 		return false
 	}
 	if keymap.GlobalHotkeysMgr == nil {

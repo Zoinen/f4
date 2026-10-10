@@ -26,6 +26,7 @@ func (settingsHost) ApplyRuntime(before config.F4Config, changed []string) {
 	config.ApplyMenuSettings()
 	panel.ApplyPathHintSettings()
 	config.ApplyCursorSettings()
+	ApplyGlyphStyle()
 	for _, id := range changed {
 		if id == "ColorStyle" || id == "EnforceColorCorrection" {
 			_ = theme.ApplyColorStyle(config.App.ColorStyle)
@@ -127,8 +128,22 @@ func (settingsHost) SessionPath() string { return GetSessionIniPath() }
 func (settingsHost) GuiBackends() []string { return startupGuiBackends }
 func (settingsHost) PluginPackage(install bool, pf *panel.PanelsFrame, item plughost.PlugRingItem, refresh func()) {
 	if install {
-		actionInstallPlugRingItem(pf, nil, item, refresh)
+		// actionInstallPlugRingItem may wait synchronously for a confirmation
+		// dialog through PanelsFrame.Message. This method is called from a UI
+		// task by the Settings catalog, so the wait must not occupy that task
+		// (f4#1710).
+		go actionInstallPlugRingItem(pf, nil, item, refresh)
 	} else {
 		actionRemovePlugRingItem(pf, nil, item, refresh)
 	}
+}
+
+// ApplyGlyphStyle gives the graphical backends the frame and control glyph set
+// the GlyphStyle setting names (f4#285); text terminals ignore it.
+func ApplyGlyphStyle() {
+	style := vtui.GlyphStyleClassic
+	if config.NormalizeGlyphStyle(config.App.GlyphStyle) == config.GlyphStyleRounded {
+		style = vtui.GlyphStyleRounded
+	}
+	vtui.SetGlyphStyle(style)
 }

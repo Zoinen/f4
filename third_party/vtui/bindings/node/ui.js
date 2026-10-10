@@ -1,3 +1,36 @@
+function sameJson(a, b) {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+// diffTrees diffs two virtual trees by (type, id) and returns the patch ops
+// that turn the mounted tree into the new one: one `set` per element whose
+// props changed. It returns null when the trees differ in structure (other
+// type, id, layout or number of children, or changed props on an element
+// without an id): such a change needs the frame to be mounted again.
+function diffTrees(oldTree, newTree) {
+  const ops = [];
+  return diffNode(oldTree, newTree, ops) ? ops : null;
+}
+
+function diffNode(oldNode, newNode, ops) {
+  if (oldNode.type !== newNode.type || oldNode.id !== newNode.id) return false;
+  if (!sameJson(oldNode.layout, newNode.layout)) return false;
+  const oldProps = oldNode.props || {};
+  const newProps = newNode.props || {};
+  if (!sameJson(oldProps, newProps)) {
+    if (!newNode.id || Object.keys(oldProps).some(k => !(k in newProps))) return false;
+    const changed = {};
+    for (const [k, v] of Object.entries(newProps)) {
+      if (!sameJson(oldProps[k], v)) changed[k] = v;
+    }
+    ops.push({ kind: "set", id: newNode.id, props: changed });
+  }
+  const oldChildren = oldNode.children || [];
+  const newChildren = newNode.children || [];
+  if (oldChildren.length !== newChildren.length) return false;
+  return newChildren.every((child, i) => diffNode(oldChildren[i], child, ops));
+}
+
 class Ui {
   constructor(session) {
     this.session = session;
@@ -96,7 +129,17 @@ class Ui {
     if (!this.mounted) {
       this.session.mount(this.rootId, this.currentRoot);
       this.mounted = true;
+    } else {
+      const ops = diffTrees(this.mountedRoot, this.currentRoot);
+      if (ops === null) {
+        // The structure changed: replace the frame with the new tree.
+        this.session.send({ op: "close", frameId: this.rootId });
+        this.session.mount(this.rootId, this.currentRoot);
+      } else if (ops.length > 0) {
+        this.session.patch(this.rootId, ops);
+      }
     }
+    this.mountedRoot = JSON.parse(JSON.stringify(this.currentRoot));
     this.clickedIds.clear();
   }
 
@@ -110,4 +153,4 @@ class Ui {
   }
 }
 
-module.exports = { Ui };
+module.exports = { Ui, diffTrees };

@@ -5,18 +5,6 @@ import (
 	"sync"
 
 	"github.com/unxed/f4/internal/config"
-	androidfs "github.com/unxed/f4/plugins/android"
-	"github.com/unxed/f4/plugins/archive"
-	"github.com/unxed/f4/plugins/chroma"
-	"github.com/unxed/f4/plugins/cloudfox"
-	"github.com/unxed/f4/plugins/dummy_internal"
-	"github.com/unxed/f4/plugins/envman"
-	"github.com/unxed/f4/plugins/id3editor"
-	iosfs "github.com/unxed/f4/plugins/ios"
-	"github.com/unxed/f4/plugins/mediainfo"
-	"github.com/unxed/f4/plugins/netfox"
-	sqliteplugin "github.com/unxed/f4/plugins/sqlite"
-	"github.com/unxed/f4/plugins/visren"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtui"
 )
@@ -152,23 +140,36 @@ func (pm *PluginManager) LoadSinglePlugRingItem(item PlugRingItem) {
 }
 
 func (pm *PluginManager) loadInternal() {
-	plugins := []Plugin{
-		&chroma.Plugin{},
-		&dummy_internal.InternalDummyPlugin{},
-		&archive.ArchivePlugin{},
-		androidfs.NewPlugin(),
-		iosfs.NewPlugin(),
-		cloudfox.NewPlugin(cloudfox.Options{
-			ConfigDir: config.GetF4ConfigDir(),
-			Portable:  config.IsPortableProfile(),
-		}),
-		&netfox.NetFoxPlugin{},
-		&visren.Plugin{},
-		&id3editor.ID3EditorPlugin{},
-		envman.NewPlugin(config.GetF4ConfigDir()),
-		mediainfo.NewPlugin(config.GetF4ConfigDir()),
-		sqliteplugin.NewPlugin(),
-	}
+	plugins := internalPlugins()
+	// cloudfox (cloud services), android (ADB device browsing) and iOS
+	// (Apple mobile devices over usbmuxd) stay excluded from both builds
+	// entirely, in either build. All three moved out to their own module
+	// and their own subprocess RPC plugin binary
+	// (plugins/cloudfox/cmd/cloudfox-plugin,
+	// plugins/android/cmd/android-plugin, plugins/ios/cmd/ios-plugin), per
+	// the owner's decision to give every plugin that is not part of f4's
+	// baseline feature set the same "download on demand" treatment
+	// (f4#1178, https://github.com/unxed/f4/issues/1178#issuecomment-5851392645)
+	// -- for android that is an architectural unification, not a binary-size
+	// win the way cloudfox's ~30 MB of cloud SDKs or iOS's go-ios/gvisor/
+	// quic-go userspace networking stack was; see
+	// plugins/android/rpc_plugin.go's package comment. Archive support comes
+	// back as plugins/multiarc, a CLI-archiver wrapper, in place of the
+	// native-library one (f4#1178, part 2), and netfox comes back cut down
+	// to FISH+ over a subprocess ssh dialer, in place of the full build's
+	// FTP/SFTP/FISH+ trio (part 3) -- no ftp/sftp/scp VFS provider. See
+	// plugins_lite.go/plugins_full.go, the single point of truth for which
+	// build tag gets which set, for the full accounting.
+	plugins = append(plugins, optionalVFSPlugins()...)
+
+	// observerplugin registers after archive/multiarc (f4#1563's own design
+	// requires this: "Регистрировать провайдер нужно после archive, чтобы
+	// zip, 7z, rar и SFX оставались за ним"), in both build tags -- unlike
+	// everything optionalVFSPlugins covers, an Observer module is a wazero
+	// wasm reactor, the same dependency transport_wazero.go already keeps in
+	// both builds for the generic wasm plugin transport, so there is no
+	// lite/full split to make here at all.
+	plugins = append(plugins, optionalObserverPlugins()...)
 
 	for _, p := range plugins {
 		if err := p.Init(pm.api); err == nil {

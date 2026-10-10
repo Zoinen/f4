@@ -1,6 +1,6 @@
 # f4 — efficient and cozy file manager in go
 
-[![codecov](https://codecov.io/gh/unxed/f4/branch/main/graph/badge.svg)](https://codecov.io/gh/unxed/f4)
+[![codecov](https://codecov.io/gh/unxed/f4/branch/main/graph/badge.svg)](https://app.codecov.io/gh/unxed/f4)
 
 ![](https://raw.githubusercontent.com/unxed/f4/refs/heads/main/.github/assets/screenshot.png)
 ### ⚡ Quick Download (Nightly Builds)
@@ -11,7 +11,7 @@
 | **Windows 7/8/8.1** | .zip | [amd64](https://github.com/unxed/f4/releases/download/nightly/f4-windows7-amd64.zip) |
 | **ReactOS** ([details](#-reactos)) | .zip | [x86](https://github.com/unxed/f4/releases/download/nightly/f4-legacy-windows-386.zip) |
 | **macOS** | `F4.app` | [amd64](https://github.com/unxed/f4/releases/download/nightly/f4-darwin-amd64.app.zip) / [arm64](https://github.com/unxed/f4/releases/download/nightly/f4-darwin-arm64.app.zip) |
-| **Android (Termux)** | .tar.gz / .deb | [arm64 archive](https://github.com/unxed/f4/releases/download/nightly/f4-termux-arm64.tar.gz) / [arm64 package](https://github.com/unxed/f4/releases/download/nightly/f4-termux-arm64.deb) |
+| **Android (Termux)** | .tar.gz / .deb | [arm64 archive](https://github.com/unxed/f4/releases/download/nightly/f4-termux-arm64.tar.gz) / [arm64 package](https://github.com/unxed/f4/releases/download/nightly/f4-termux-arm64.deb) / [armv7 archive](https://github.com/unxed/f4/releases/download/nightly/f4-termux-arm.tar.gz) / [armv7 package](https://github.com/unxed/f4/releases/download/nightly/f4-termux-arm.deb) |
 | **Linux** | single-file Qt for amd64/arm64; .tar.gz for other architectures | [amd64](https://github.com/unxed/f4/releases/download/nightly/f4-linux-amd64.tar.gz) / [arm64](https://github.com/unxed/f4/releases/download/nightly/f4-linux-arm64.tar.gz) / [armv7l](https://github.com/unxed/f4/releases/download/nightly/f4-linux-arm.tar.gz) / [386](https://github.com/unxed/f4/releases/download/nightly/f4-linux-386.tar.gz) / [mips](https://github.com/unxed/f4/releases/download/nightly/f4-linux-mips.tar.gz) / [mipsle](https://github.com/unxed/f4/releases/download/nightly/f4-linux-mipsle.tar.gz) / [mips64](https://github.com/unxed/f4/releases/download/nightly/f4-linux-mips64.tar.gz) / [mips64le](https://github.com/unxed/f4/releases/download/nightly/f4-linux-mips64le.tar.gz) / [riscv64](https://github.com/unxed/f4/releases/download/nightly/f4-linux-riscv64.tar.gz) / [loong64](https://github.com/unxed/f4/releases/download/nightly/f4-linux-loong64.tar.gz) / [ppc64](https://github.com/unxed/f4/releases/download/nightly/f4-linux-ppc64.tar.gz) / [ppc64le](https://github.com/unxed/f4/releases/download/nightly/f4-linux-ppc64le.tar.gz) |
 | **FreeBSD** | .tar.gz | [amd64](https://github.com/unxed/f4/releases/download/nightly/f4-freebsd-amd64.tar.gz) / [arm64](https://github.com/unxed/f4/releases/download/nightly/f4-freebsd-arm64.tar.gz) |
 | **DragonflyBSD** | .tar.gz | [amd64](https://github.com/unxed/f4/releases/download/nightly/f4-dragonfly-amd64.tar.gz) |
@@ -19,6 +19,9 @@
 | **NetBSD** | .tar.gz | [amd64](https://github.com/unxed/f4/releases/download/nightly/f4-netbsd-amd64.tar.gz) / [arm64](https://github.com/unxed/f4/releases/download/nightly/f4-netbsd-arm64.tar.gz) |
 | **Illumos** (experimental) | .tar.gz | [amd64](https://github.com/unxed/f4/releases/download/nightly/f4-illumos-amd64.tar.gz) |
 | **Solaris** (experimental) | .tar.gz | [amd64](https://github.com/unxed/f4/releases/download/nightly/f4-solaris-amd64.tar.gz) |
+| **Linux (lite)** ([details](#-lite-build)) | .tar.gz | [amd64](https://github.com/unxed/f4/releases/download/nightly/f4-lite-linux-amd64.tar.gz) / [armv7l](https://github.com/unxed/f4/releases/download/nightly/f4-lite-linux-arm.tar.gz) / [mipsle](https://github.com/unxed/f4/releases/download/nightly/f4-lite-linux-mipsle.tar.gz) |
+| **Windows (lite)** ([details](#-lite-build)) | .tar.gz | [x64](https://github.com/unxed/f4/releases/download/nightly/f4-lite-windows-amd64.tar.gz) |
+| **Experimental ports** | — | [Redox, GNU Hurd, Haiku](#-experimental-redox-gnu-hurd-haiku) |
 
 *These builds are automated and represent the current state of the `main` branch.*
 
@@ -32,6 +35,13 @@ f4 --update           # whichever channel is configured (Options > Auto update)
 
 A named channel also becomes the one f4 checks automatically from then on.
 
+On a Linux or BSD desktop, a single downloaded binary has no launcher and no icon, so the task bar of a GUI window would show the window manager's default icon. f4 therefore puts its launcher (`org.unxed.f4.desktop`) and icons under `~/.local/share` by itself the first time a GUI window opens, and refreshes them after an update; no sudo, no questions. A launcher you wrote yourself under that name is never changed, a launcher installed by a package is respected, and `F4_NO_DESKTOP_INSTALL=1` switches this off. The same can be done by hand, without sudo:
+
+```sh
+f4 --install-desktop   # launcher + icons into ~/.local/share (no copying of the binary)
+f4 --install           # also copies f4 into ~/.local/bin, and does the same
+```
+
 ### 🍺 Install on macOS via Homebrew
 
 Tagged releases (`vX.Y.Z`) are published to a Homebrew tap, so you can install with one command:
@@ -44,18 +54,77 @@ To upgrade later: `brew upgrade f4`. Both Apple Silicon (arm64) and Intel (amd64
 
 The tap carries tagged releases only, so a nightly build has to come from f4 itself: `f4 --update nightly` writes it into the Cellar directory brew installed to. That works, and `brew upgrade` or `brew reinstall` puts the tagged release back whenever you want it.
 
-### 📱 Install on Android via Termux
+### ❄️ Install via Nix
 
-The Android build currently targets **arm64 in Termux**. Download the `.deb`
-package above and install it from Termux:
+The repository is a flake. Run f4 without installing it:
 
 ```sh
-pkg install ./f4-termux-arm64.deb
+nix run github:unxed/f4
 ```
+
+The default package contains both terminal and graphical modes. To start a
+graphical window explicitly, use `nix run github:unxed/f4#gui`. The separate
+`f4-tty` package is compiled without GUI backends and installs `f4-tty`;
+run it with `nix run github:unxed/f4#tty`. Both packages can be installed
+together. The flake exports them as `packages.<system>.f4-gui` and
+`packages.<system>.f4-tty` (and as `pkgs.f4-gui` and `pkgs.f4-tty` through
+the overlay). `packages.<system>.f4` remains an alias of `f4-gui`.
+
+For a persistent install, add `overlays.default` to your configuration and
+use `pkgs.f4`; `nix develop github:unxed/f4` opens a Go development shell.
+
+#### Home Manager
+
+The flake also exports `homeManagerModules.default`, a module managing f4
+as `programs.f4`:
+
+```nix
+{ inputs, ... }:
+{
+  imports = [ inputs.f4.homeManagerModules.default ];
+
+  programs.f4 = {
+    enable = true;
+    settings = {
+      Interface.ColorStyle = "Radiola";
+      Panel.ShowHiddenFiles = false;
+    };
+  };
+}
+```
+
+`programs.f4.package` defaults to `pkgs.f4`, so the overlay above (or an
+explicit `package`) is needed. Besides `settings` (`settings.ini`), the
+module declares `keymap` (`keymap.ini`), `hotkeys` (`hotkeys.ini`) and
+`highlight` (`highlight.ini`); each option's description documents the
+file's format.
+
+f4 keeps settings and state in the same files and rewrites them at
+runtime, so Home Manager does not take those files over. Every
+`home-manager switch` writes the keys you declare into the live files and
+touches nothing else in them: values changed through f4's own UI revert to
+the declared ones on the next switch, and keys removed from the
+configuration stay in the files until deleted there by hand.
+
+### 📱 Install on Android via Termux
+
+The Android build targets **Termux** on **arm64** and on 32-bit **armv7**
+devices. Download the `.deb` package for your device above and install it from
+Termux (`dpkg --print-architecture` in Termux prints `aarch64` or `arm`, which
+tells you which one you need):
+
+```sh
+pkg install ./f4-termux-arm64.deb   # arm64
+pkg install ./f4-termux-arm.deb     # armv7
+```
+
+A `pkg install f4` from Termux's own repository is not available yet: the
+recipe for it is `packaging/termux/build.sh`, waiting for a pull request to
+termux/termux-packages (unxed/f4#12).
 
 Alternatively, extract the `.tar.gz` archive and run `./f4`. Both artifacts
 are linked against Termux's libraries and are intended to run inside Termux;
-they are not standalone Android APKs. Other Android architectures are not
+they are not standalone Android APKs. x86_64 (Chromebooks, emulators) is not
 published yet.
 
 ### 🪟 ReactOS
@@ -79,7 +148,99 @@ programs cannot be given input there — run those from the console mode.
 Not tested on ReactOS: self-update (`f4 --update`). Not claimed for Windows XP:
 XP lacks a few functions ReactOS has.
 
+### 🛜 Lite build
+
+The lite build targets routers and other embedded/old-weak-hardware devices.
+Its GUI backends are the ones that draw with the display server's own
+protocol: X11 and Wayland (`--gui=x11`, `--gui=wayland`), Win32 GDI on
+Windows (`--gui=win32`), and the native Cocoa window on macOS
+(`--gui=cocoa`, also the automatic default there since a lite build has no
+gogpu) -- unlike the other three, Cocoa needs no separate display server, so
+it needs no XQuartz; the GPU-accelerated `gogpu` and `ebiten` backends, and
+the graphics stack behind them, are left out. Wayland needs a loader to
+reach `libxkbcommon`, so it is available on the amd64 build, which is
+universal like the regular one; the static arm and mipsle builds draw with
+X11. There is no Colorer (Chroma-based syntax highlighting only), no
+Wine-specific code or `libwinescape` dependency, no MP3 player, no
+FUSE-based VFS mounting, and no cloud VFS provider. Archives come back
+through `plugins/multiarc`, which wraps whichever of `tar`, `unzip`/`zip`,
+`7z`/`7za`/`7zr` and `gzip` the host already has on `PATH` instead of linking
+the regular build's native archive libraries (f4#1178, part 2). Like far2l's
+multiarc it lists, extracts and, as far as each tool can do it safely,
+changes archives: copying onto an opened archive, `F7` and `F8` add, replace
+and delete members through `7z`, `zip` (or `7z`/`7za`) for zips, and GNU tar
+for tarballs (a compressed one via its stand-alone compressor); bsdtar
+(macOS, Windows' `tar.exe`) only adds members, BusyBox tar cannot change an
+existing tarball, and a lone `.gz` can only have its one file replaced. Add
+to archive (`Shift+F1`) creates a `.zip`, `.7z`, `.tar` or compressed tarball
+with whichever of those tools is present — bsdtar makes zips too. Whatever
+the tools on `PATH` cannot do is refused with a message saying what is
+missing. Network
+access comes back too, but only as FISH+: `plugins/netfox` keeps its
+connection storage and its "Add/Edit connection" dialog, wired to a dialer
+that shells out to the console `ssh` binary instead of linking
+`golang.org/x/crypto/ssh` — the same "wrap the console tool" story as
+`multiarc` — while `pkg/sftp`, `jlaffaye/ftp` and `kbolino/pageant` (and
+their own FTP/SFTP backends) stay out entirely (f4#1178, part 3). That
+subprocess dialer covers key- and ssh-agent-based auth; password auth, an
+explicit HTTP/SOCKS5 proxy and this build's own host-key handling are not
+supported (its own comment in `plugins/netfox/fish_dialer_lite.go` has the
+detail on why). The build links none of the archive libraries either: the
+updater and PlugRing unpack f4's own `.tar.gz` and `.zip` downloads with Go's
+standard library. The build links no SQLite engine (`ncruces/go-sqlite3`,
+about 7 MB): the SQLite client (`Ctrl+Alt+D`, and Enter on a database file)
+runs the host's `sqlite3` command-line tool instead (`opkg install
+sqlite3-cli`, `apt install sqlite3`), one process per statement, so a
+transaction begun in its SQL box ends with that statement. The built-in
+spreadsheet (`Ctrl+Alt+S`) keeps working, but saves its native `.f4s` files as
+plain JSON instead of a SQLite database (f4#1552). The two on-disk formats
+are not interchangeable — see the "Files" section of
+[docs/SPREADSHEET.md](docs/SPREADSHEET.md) for the trade-off. Everything else
+— panels, editor, viewer, Lua and wasm plugins — works the same as the regular
+build. Built with `go build -tags lite,vtui_noebiten,vtui_nogogpu`; the two
+vtui tags drop its Ebitengine and gogpu backends, and a lite build without
+them does not compile. See `internal/plughost`, `internal/gui`,
+`internal/editor`, `vfs/hostmode`, `internal/media`, `internal/fusefs` and
+`internal/sheet` for where each exclusion is implemented.
+
+An **extra-lite** profile (`-tags lite,extralite,vtui_noebiten,vtui_nogogpu`) goes
+further for routers: only English and Russian embedded, only the built-in plugins
+that mc has an equivalent of, no Lua and no WASM runtime, no collation tables. It is built for OpenWrt (`.ipk` packages, see the
+`openwrt` workflow); the target matrix, sizes and what is left out are in
+[docs/OPENWRT.md](docs/OPENWRT.md).
+
 **The Core:** Creating an experimental, cross-platform TUI (Terminal User Interface) file manager that aims to fully replicate the features, UX, data structures, and rendering logic of `far2l` and Far Manager, but implemented entirely in Go.
+
+### 🧪 Experimental: Redox, GNU Hurd, Haiku
+
+Ports to three more OSes are in progress in [unxed/sandbox](https://github.com/unxed/sandbox),
+built and verified only in that repo's own GitHub Actions (nothing in `unxed/f4` itself
+changes yet). No nightly artifacts for these three are published from `unxed/f4`'s own
+release pipeline, so there is nothing in the table above for them — here are the most
+useful current links instead.
+
+- **[Redox OS](https://github.com/unxed/sandbox/tree/main/f4-redox)** — builds for
+  `GOOS=redox GOARCH=amd64` and runs in the console (panels, F-keys, Help, menu, built-in
+  shell) and over the pure-Go X11 backend, verified by
+  [`f4-redox.yml`](https://github.com/unxed/sandbox/blob/main/.github/workflows/f4-redox.yml).
+  No standalone binary is published yet — see the sandbox README for build steps and
+  screenshots.
+- **[GNU Hurd](https://github.com/unxed/sandbox/tree/main/f4-hurd)** — builds for
+  `GOOS=hurd` and runs in the console and over the pure-Go X11 backend. A prebuilt binary
+  from the last verified run is available at
+  [unxed/debian-hurd `poc/f4/f4.gz`](https://github.com/unxed/debian-hurd/blob/main/poc/f4/f4.gz)
+  (stripped, ~27 MB gzipped) — enthusiasts on Debian GNU/Hurd can try it directly; everyone
+  else, see the sandbox README for how it's built.
+- **[Haiku](https://github.com/unxed/sandbox/tree/main/f4-haiku)** — builds for
+  `GOOS=haiku GOARCH=amd64` and has run in a real Haiku VM (native Terminal, directory
+  navigation, PTY-backed shell commands), verified by
+  [`f4-haiku.yml`](https://github.com/unxed/sandbox/blob/main/.github/workflows/f4-haiku.yml).
+  This one is the least stable of the three right now — check that workflow's recent runs
+  before relying on it. No standalone binary is published yet.
+
+None of these three has reached the point of a maintained, always-current downloadable
+build; treat them as a moving snapshot of in-progress porting work, not a supported release
+channel.
 
 ### Philosophy & Goals
 
@@ -101,7 +262,7 @@ UI & input libraries are developed separately ([vtui](https://github.com/unxed/v
 *   **Input (`vtinput`):** Built as a separate library to handle advanced protocols like the [Kitty Keyboard Protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) and [Win32 Input Mode](https://github.com/microsoft/terminal/blob/main/doc/specs/%234999%20-%20Improved%20keyboard%20handling%20in%20Conpty.md). This is strictly required for distinguishing combinations like `Ctrl+Enter` or `Shift+Tab`.
 *   **Framework (`vtui`):** A custom UI framework built from scratch in the style of Far, borrowing responsive layout features (like window resizing and anchors) from Turbo Vision. Ideally, it should cover all capabilities of Far's UI kit and Turbo Vision (excluding non-relevant features like custom serialization engines).
 *   **Word Navigation:** `Ctrl+Left`/`Ctrl+Right` and their `Shift` variants follow the exact word boundary rules of `far2l`, down to its intentional asymmetry between moving and selecting. See [Word Navigation Rules](WORDNAV.md).
-*   **Command Palette:** `Ctrl+Shift+P` finds any command by name and shows the key it sits on. On legacy terminals that cannot distinguish `Ctrl+Shift+letter`, use the built-in `Ctrl+Alt+P` fallback; both need no configuration and make the palette the first answer to "my terminal ate that shortcut".
+*   **Command Palette:** `Ctrl+Shift+P` finds any command by name and shows the key it sits on; `Ctrl+K` on a result assigns a key to it. On legacy terminals that cannot distinguish `Ctrl+Shift+letter`, use the built-in `Ctrl+Alt+P` fallback; both need no configuration and make the palette the first answer to "my terminal ate that shortcut".
 *   **Changing Keys:** `Options > Hotkey Configuration` rebinds a *command*: pick it in the list, press *Assign*, press the new chord. Under it sits `keymap.ini`, which substitutes one *key* for another before f4 looks at the event — for chords a multiplexer (tmux, zellij, screen) claims first, for keyboards with no F-row, and for keys that belong to a dialog rather than to a command. See [Key Remapping](docs/KEYMAP.md).
 
 ### GUI Mode & Backends
@@ -120,6 +281,7 @@ UI & input libraries are developed separately ([vtui](https://github.com/unxed/v
 *   `--gui=x11`: Use native X11 windowing (Linux/BSD/macOS).
 *   `--gui=wayland`: Use native Wayland windowing (Linux/BSD).
 *   `--gui=ebiten`: Use the portable Ebitengine graphical backend (Windows/Linux/macOS).
+*   `--gui=cocoa`: Use the native AppKit window (macOS only); needs no XQuartz and no GPU stack.
 *   `--tty=ansi`: Force terminal mode with ANSI input/output.
 *   `--tty=win32`: Force terminal mode with the Windows Console API (`winapi` is an alias).
 *   `--gui=auto` / `--tty=auto`: Ignore the configured default backend for this run and detect one.
@@ -133,6 +295,7 @@ The available backends and their main characteristics are:
 | `--gui=x11` | X11 desktops (Linux/BSD/macOS) | Native X11 windowing. |
 | `--gui=wayland` | Linux/BSD with Wayland | Native Wayland windowing. |
 | `--gui=ebiten` | Windows/Linux/macOS | Portable graphical fallback with no gogpu stack requirement. |
+| `--gui=cocoa` | macOS | Native AppKit window; the automatic default there when gogpu is unavailable, including every lite build. |
 | `--tty=ansi` | ANSI-compatible terminals | Renders through the terminal's byte stream. |
 | `--tty=win32` (`winapi`) | Windows and Wine consoles | Uses the Windows Console API; useful when ConPTY is unavailable. |
 | `Panel.ConsoleMode = host` | Host terminals with PTY support | Sends the shell to the host terminal for native scrollback, selection, and job control; f4 falls back to a simple execution mode when a PTY is unavailable. |
@@ -150,7 +313,7 @@ To avoid repeating the same switch on every start, the choice can be saved in
 ```ini
 [Startup]
 Mode = gui          ; auto (detect, the default), tty, or gui
-GuiBackend = gogpu  ; empty means detect; win32, gogpu, ebiten, x11, wayland
+GuiBackend = gogpu  ; empty means detect; win32, gogpu, ebiten, x11, wayland, cocoa
 TTYBackend =        ; empty means detect; ansi, winapi
 ```
 
@@ -210,6 +373,12 @@ the same for a single run.
 7. **Custom File Highlighting:** Highly flexible file highlighting system supporting glob masks, cross-platform attributes, file sizes, absolute/relative dates, cascade blending, and visual marker glyphs. See [File Highlighting Guide](HIGHLIGHTING.md).
 8. **Declarative Localization:** Flexible i18n system for UI and Help files with a built-in "Ctrl+Alt+RightClick" Translator Tool. See [Localization Guide](I18N.md).
 9. **FUSE Mounts:** Any file system f4 can open — archives, SFTP/FTP hosts, phones — can be mounted as an ordinary directory, so that programs which know nothing about f4 can read it. See [FUSE Mounts](FUSE.md).
+10. **Windows Services:** a panel of the services of a Windows machine, with start, stop, pause, start type, details and a remote computer. See [Windows services panel](docs/SERVICES.md).
+11. **.NET Assemblies:** Ctrl+PgDn on a `.dll` or `.exe` shows the assembly as a read-only tree: references, types, signatures, IL, resources. See [.NET assemblies](docs/DOTNET.md).
+12. **PDF:** F3 shows the text of a PDF, Ctrl+PgDn opens it as a tree of pages and embedded pictures. See [PDF files](docs/PDF.md).
+13. **Formulas and Mermaid diagrams:** the Markdown views turn LaTeX formulas and Mermaid diagrams into readable text. See [Formulas and Mermaid](docs/MERMAID.md).
+14. **Remote connection types:** FTP, SFTP, SCP, SMB and FISH+ (with f4 itself as the server on the remote host). See [NetFox connection types](docs/NETFOX.md).
+15. **Docker, Kubernetes and MongoDB panels:** containers, pods and collections as drives. See [Docker](docs/DOCKER.md), [Kubernetes](docs/KUBERNETES.md), [MongoDB](docs/MONGODB.md).
 
 ---
 

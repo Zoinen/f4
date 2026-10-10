@@ -143,5 +143,22 @@ func commandPaletteAuditedActionMenuGroups(area string) []commandPaletteActionMe
 		}
 
 	}
+	if area == "Shell" {
+		priority := func(path string) int {
+			switch path {
+			case "Files":
+				return 0
+			case "Commands":
+				return 1
+			case "Options":
+				return 2
+			default:
+				return 3
+			}
+		}
+		sort.SliceStable(groups, func(i, j int) bool {
+			return priority(groups[i].path) < priority(groups[j].path)
+		})
+	}
 	return groups
 }

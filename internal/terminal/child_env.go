@@ -1,13 +1,15 @@
 package terminal
 
 import (
-	"github.com/unxed/f4/internal/config"
-	"github.com/unxed/vtui"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
+
+	"github.com/unxed/f4/internal/config"
+	"github.com/unxed/f4/vfs/hostmode"
+	"github.com/unxed/vtui"
 )
 
 // The environment the built-in terminal hands to the program it starts. This
@@ -43,15 +45,16 @@ var terminalGraphicsSeen atomic.Bool
 // runs on glibc and musl alike) carries no PT_INTERP and no DT_NEEDED, so
 // nothing maps a libc into it. goffi's bridge re-execs the process through
 // the host dynamic loader with the host libc pre-loaded, before main, and
-// leaves GOFFI_UNIVERSAL_REEXEC behind to say the job is done. The bridge in
-// a child reads that variable, concludes it too already came through the
-// loader, and binds no libc -- so the child dies before main, on the first
-// libc symbol it touches. update.SelfCommand already knows this and starts copies of
-// f4 through the loader itself; the terminal starts other people's programs,
-// which have no such arrangement, and the one program most likely to be a
-// universal build is f4 itself (issue #87: `./f4` from f4's own terminal died
-// with SIGSEGV, frame #0 at address zero -- a call through the function
-// pointer the bridge never filled in).
+// leaves GOFFI_UNIVERSAL_REEXEC behind to say the job is done. Before goffi
+// v0.1.11 the bridge in a child read that variable, concluded it too already
+// came through the loader, and bound no libc -- so the child died before
+// main, on the first libc symbol it touched (issue #87: `./f4` from f4's own
+// terminal died with SIGSEGV, frame #0 at address zero -- a call through the
+// function pointer the bridge never filled in). v0.1.11 tags the guard with
+// the pid it was written for, so a child of this f4 runs the bridge itself;
+// but the terminal starts other people's programs, including universal
+// builds linked against an older goffi, so the variables stay out.
+// update.SelfCommand does the same for copies of f4.
 //
 // GOFFI_UNIVERSAL_EXE and _ARGV0 are the identity the re-exec destroyed,
 // recorded before it happened. They are tagged with the pid they describe, so
@@ -139,6 +142,13 @@ func BuildChildEnv(env []string, graphics, kittyTerm bool) []string {
 			strings.HasPrefix(kv, "TERM_PROGRAM=") {
 			continue
 		}
+		// F4_NESTED is ours too, and one is appended below: a nested f4
+		// inherits the marker from the terminal that started it, and keeping
+		// that copy would hand the child one line per nesting level the
+		// session has already seen instead of exactly one.
+		if strings.HasPrefix(kv, "F4_NESTED=") {
+			continue
+		}
 		if kittyTerm && strings.HasPrefix(kv, "TERM=") {
 			continue
 		}
@@ -215,7 +225,7 @@ func terminfoDirs() []string {
 	if v := os.Getenv("TERMINFO"); v != "" {
 		dirs = append(dirs, v)
 	}
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
+	if home, err := hostmode.UserHomeDir(); err == nil && home != "" {
 		dirs = append(dirs, filepath.Join(home, ".terminfo"))
 	}
 	for _, v := range filepath.SplitList(os.Getenv("TERMINFO_DIRS")) {

@@ -52,3 +52,39 @@ func TestSelectionKeyNames(t *testing.T) {
 		}
 	}
 }
+
+func TestRussianLayoutShortcutUsesPhysicalLatinKey(t *testing.T) {
+	for _, tc := range []struct {
+		char rune
+		want uint16
+		key  string
+	}{
+		{char: 'т', want: vtinput.VK_N, key: "CtrlN"},
+		{char: 'Т', want: vtinput.VK_N, key: "CtrlN"},
+		{char: 'ц', want: vtinput.VK_W, key: "CtrlW"},
+		{char: 'ф', want: vtinput.VK_A, key: "CtrlA"},
+	} {
+		e := &vtinput.InputEvent{
+			Type:            vtinput.KeyEventType,
+			KeyDown:         true,
+			Char:            tc.char,
+			ControlKeyState: vtinput.LeftCtrlPressed,
+		}
+		if got := EventToHotkeyString(e); got != tc.key {
+			t.Errorf("%q = %q, want %q", string(tc.char), got, tc.key)
+		}
+		if !NormalizeLayoutShortcut(e) || e.VirtualKeyCode != tc.want {
+			t.Errorf("NormalizeLayoutShortcut(%q) = VK %d, want VK %d", string(tc.char), e.VirtualKeyCode, tc.want)
+		}
+	}
+}
+
+func TestRussianTextWithoutShortcutModifierStaysUnicode(t *testing.T) {
+	e := &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, Char: 'т'}
+	if NormalizeLayoutShortcut(e) {
+		t.Fatal("unmodified Cyrillic text must not become a Latin virtual key")
+	}
+	if got := EventToHotkeyString(e); got != "Т" {
+		t.Fatalf("unmodified Cyrillic text = %q, want Т", got)
+	}
+}

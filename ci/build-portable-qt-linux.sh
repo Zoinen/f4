@@ -85,7 +85,7 @@ export PATH="/opt/f4-build-venv/bin:/opt/go/bin:${PATH}"
 export CC=gcc-11
 export CXX=g++-11
 export CONAN_HOME="${CONAN_HOME:-$PWD/.conan2-portable-linux}"
-python -m unittest ci/test_patch_qt_dependencies.py ci/test_arm64_glibc_archives.py
+python -m unittest ci/test_patch_qt_dependencies.py ci/test_arm64_glibc_archives.py ci/test_go_build_metadata.py ci/test_portable_qt_linux.py
 
 # Always reduce Conan's cache to finished packages before returning to the
 # GitHub runner. This trap runs after a failed conan install as well, so the
@@ -479,6 +479,10 @@ fi
 portable_ctest_regex='^(F4IconProviderTest|F4IconProviderFractionalDprFramebufferTest|QtMediaClientTest|F4GalleryVideoControlsPixelGridTest|F4GalleryVideoSettingsPixelGridTest|WindowGeometryPersistenceTest)$'
 ctest --test-dir "${build_dir}" -C Release --output-on-failure \
     -R "${portable_ctest_regex}"
+# Run the required installed-tree-independent QML gate directly, without
+# pulling in unrelated aggregate screenshot tests or allowing zero matches.
+env -u QML_IMPORT_PATH -u QML2_IMPORT_PATH \
+    "${build_dir}/F4QuickViewSurfaceTests" qmlImportsWithoutInstalledQt
 
 host="$PWD/${build_dir}/bin/Release/f4-qt-host"
 # Smoke-test the linked host before ELF metadata cleanup. Ubuntu 18.04 ships
@@ -538,6 +542,7 @@ else
 fi
 mkdir -p "$(dirname "${launcher_output}")"
 echo "Building static Go launcher"
+launcher_ldflags="$(python ci/go-build-metadata.py)"
 # The Qt-only launcher does not use the optional GPU FFI path.  Build goffi in
 # its deliberate static/stub mode so it contributes neither fake-CGo startup
 # hooks nor cgo_import_dynamic metadata.  This keeps the zero-interpreter,
@@ -545,7 +550,7 @@ echo "Building static Go launcher"
 CGO_ENABLED=0 GOOS=linux GOARCH="${TARGET_ARCH}" go build -trimpath \
     -buildmode=exe \
     -tags 'goffi_static f4_embedded_qt_host' \
-    -ldflags='-s -w' \
+    -ldflags="${launcher_ldflags}" \
     -o "${launcher_output}" ./cmd/f4
 # Go 1.26 may emit an otherwise-unused PT_INTERP even for a CGO-free internal
 # link.  The goffi_static build normally prevents that; keep this guard for
@@ -556,6 +561,11 @@ if readelf -l "${launcher_output}" | grep -q 'INTERP'; then
 fi
 echo "Auditing static Go launcher"
 bash ci/audit-static-go-linux.sh "${launcher_output}" "${TARGET_ARCH}"
+bash scripts/check_release_version.sh "${launcher_output}" --version
+if [[ -n "${F4_RELEASE_TAG:-}" ]]; then
+    GITHUB_REF="refs/tags/${F4_RELEASE_TAG}" GITHUB_REF_NAME="${F4_RELEASE_TAG}" \
+        bash scripts/check_release_version.sh "${launcher_output}" --version
+fi
 
 if [[ "${launcher_output}" == "${dist_dir}/f4" ]]; then
     artifact_files="$(find "${dist_dir}" -maxdepth 1 -type f -printf '%f\n')"

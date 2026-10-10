@@ -37,7 +37,7 @@ func TestMenuHonoursVisible(t *testing.T) {
 				groups++
 			}
 			for _, it := range m.SubItems {
-				if it.Text == "&"+item || it.Text == item {
+				if plainMenuText(it.Text) == item {
 					items++
 				}
 			}

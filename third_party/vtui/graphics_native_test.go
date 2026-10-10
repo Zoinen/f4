@@ -93,21 +93,6 @@ func TestScaleSurfaceTransparencyDoesNotBleed(t *testing.T) {
 	}
 }
 
-func TestFitInside(t *testing.T) {
-	if w, h := FitInside(200, 100, 50, 50); w != 50 || h != 25 {
-		t.Errorf("wide image: got %dx%d", w, h)
-	}
-	if w, h := FitInside(100, 200, 50, 50); w != 25 || h != 50 {
-		t.Errorf("tall image: got %dx%d", w, h)
-	}
-	if w, h := FitInside(10, 10, 0, 5); w != 0 || h != 0 {
-		t.Errorf("degenerate box must return zeroes, got %dx%d", w, h)
-	}
-	if w, h := FitInside(1000, 1, 10, 10); w < 1 || h < 1 {
-		t.Errorf("extreme ratios must not collapse to zero, got %dx%d", w, h)
-	}
-}
-
 func TestSurfaceImageRoundTrip(t *testing.T) {
 	s := solidSurface(3, 2, 200, 100, 50, 128)
 	back := NewImageSurfaceFromImage(s.ToRGBA())

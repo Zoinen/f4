@@ -2,11 +2,13 @@ package plughost
 
 import (
 	"context"
-	"github.com/unxed/f4/vfs"
-	"github.com/unxed/vtinput"
 	"io"
 	"path"
 	"path/filepath"
+	"sync"
+
+	"github.com/unxed/f4/vfs"
+	"github.com/unxed/vtinput"
 )
 
 // RPCVFS acts as a local proxy that forwards VFS calls to the plugin process over RPC.
@@ -20,14 +22,34 @@ type rpcFileWrapper struct {
 	sess PluginTransport
 	id   uint32
 	size int64
+	mu   sync.Mutex
+	off  int64
 }
 
-func (w *rpcFileWrapper) Size() int64                                     { return w.size }
-func (w *rpcFileWrapper) Read(ctx context.Context, p []byte) (int, error) { return 0, io.EOF }
+func (w *rpcFileWrapper) Size() int64 { return w.size }
+func (w *rpcFileWrapper) Read(ctx context.Context, p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	n, err := w.ReadAt(ctx, p, w.off)
+	w.off += int64(n)
+	if n > 0 && err == io.EOF {
+		return n, nil
+	}
+	return n, err
+}
 func (w *rpcFileWrapper) ReadAt(ctx context.Context, p []byte, off int64) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	req := ReadAtReq{ID: w.id, Len: len(p), Off: off}
 	var data []byte
 	err := w.sess.Call("VFS.ReadAt", req, &data)
+	if len(data) > len(p) {
+		data = data[:len(p)]
+	}
 	if len(data) > 0 {
 		copy(p, data)
 	}
@@ -85,6 +107,18 @@ func (v *RPCVFS) GetPath() string {
 }
 func (v *RPCVFS) IsAbs(p string) bool { return path.IsAbs(p) }
 
+func (v *RPCVFS) pathForRPC(p string) string {
+	p = filepath.ToSlash(p)
+	if !path.IsAbs(p) {
+		p = path.Join(filepath.ToSlash(v.path), p)
+	}
+	p = path.Clean(p)
+	if p == "." {
+		return "/"
+	}
+	return p
+}
+
 func (v *RPCVFS) Join(e ...string) string {
 	return filepath.Join(e...)
 }
@@ -106,42 +140,43 @@ func (v *RPCVFS) Dir(p string) string {
 
 func (v *RPCVFS) ReadDir(ctx context.Context, path string, onChunk func([]vfs.VFSItem)) error {
 	var items []vfs.VFSItem
-	req := map[string]string{"Drive": v.driveName, "Path": path}
+	req := map[string]string{"Drive": v.driveName, "Path": v.pathForRPC(path)}
 	err := v.sess.Call("VFS.ReadDir", req, &items)
 	if err == nil && len(items) > 0 {
 		onChunk(items)
 	}
-	return err
+	return rpcVFSError(err)
 }
 
 func (v *RPCVFS) Stat(ctx context.Context, path string) (vfs.VFSItem, error) {
 	var item vfs.VFSItem
+	path = v.pathForRPC(path)
 	// Provide a fallback dummy response for the root itself if the plugin doesn't handle it well
 	if path == "/" || path == "" {
 		return vfs.VFSItem{Name: v.driveName, IsDir: true}, nil
 	}
 	req := map[string]string{"Drive": v.driveName, "Path": path}
 	err := v.sess.Call("VFS.Stat", req, &item)
-	return item, err
+	return item, rpcVFSError(err)
 }
 
 func (v *RPCVFS) MkDir(ctx context.Context, p string) error {
-	req := MkDirReq{Drive: v.driveName, Path: p}
-	return v.sess.Call("VFS.MkDir", req, nil)
+	req := MkDirReq{Drive: v.driveName, Path: v.pathForRPC(p)}
+	return rpcVFSError(v.sess.Call("VFS.MkDir", req, nil))
 }
 
 func (v *RPCVFS) Remove(ctx context.Context, p string) error {
-	req := RemoveReq{Drive: v.driveName, Path: p}
-	return v.sess.Call("VFS.Remove", req, nil)
+	req := RemoveReq{Drive: v.driveName, Path: v.pathForRPC(p)}
+	return rpcVFSError(v.sess.Call("VFS.Remove", req, nil))
 }
 
 func (v *RPCVFS) Rename(ctx context.Context, old, new string) error {
-	req := RenameReq{Drive: v.driveName, Old: old, New: new}
-	return v.sess.Call("VFS.Rename", req, nil)
+	req := RenameReq{Drive: v.driveName, Old: v.pathForRPC(old), New: v.pathForRPC(new)}
+	return rpcVFSError(v.sess.Call("VFS.Rename", req, nil))
 }
 func (v *RPCVFS) SetAttributes(ctx context.Context, path string, item vfs.VFSItem) error {
-	req := SetAttrReq{Drive: v.driveName, Path: path, Item: item}
-	return v.sess.Call("VFS.SetAttributes", req, nil)
+	req := SetAttrReq{Drive: v.driveName, Path: v.pathForRPC(path), Item: item}
+	return rpcVFSError(v.sess.Call("VFS.SetAttributes", req, nil))
 }
 
 func (v *RPCVFS) GetCapabilities() vfs.VFSCapabilities {
@@ -156,21 +191,21 @@ func (v *RPCVFS) Search(ctx context.Context, p, pat string) (chan int64, error) 
 }
 
 func (v *RPCVFS) Open(ctx context.Context, p string) (vfs.ReadAtCloser, error) {
-	req := OpenReq{Drive: v.driveName, Path: p}
+	req := OpenReq{Drive: v.driveName, Path: v.pathForRPC(p)}
 	var res OpenRes
 	err := v.sess.Call("VFS.Open", req, &res)
 	if err != nil {
-		return nil, err
+		return nil, rpcVFSError(err)
 	}
 	return &rpcFileWrapper{sess: v.sess, id: res.ID, size: res.Size}, nil
 }
 
 func (v *RPCVFS) Create(ctx context.Context, p string) (io.WriteCloser, error) {
-	req := OpenReq{Drive: v.driveName, Path: p}
+	req := OpenReq{Drive: v.driveName, Path: v.pathForRPC(p)}
 	var res OpenRes
 	err := v.sess.Call("VFS.Create", req, &res)
 	if err != nil {
-		return nil, err
+		return nil, rpcVFSError(err)
 	}
 	return &rpcWriteWrapper{sess: v.sess, id: res.ID}, nil
 }

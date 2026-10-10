@@ -187,23 +187,42 @@ func viewportSize(info consoleScreenBufferInfo) (int, int) {
 // inside the target first, every time, and points at #2366 in its source for
 // why. So does this now.
 func (c *conhostAltScreen) fit(w, h int) {
+	fitConsoleBuffer(c.own, w, h)
+}
+
+// fitConsoleBuffer makes the screen buffer behind handle exactly w by h cells
+// with the viewport at the origin, in the order planFit gives (see fit).
+func fitConsoleBuffer(handle syscall.Handle, w, h int) {
 	if w <= 0 || h <= 0 || w > 0x7fff || h > 0x7fff {
 		return
 	}
 	var info consoleScreenBufferInfo
-	if ok, _, _ := procGetConsoleScreenBufferInfo.Call(uintptr(c.own), uintptr(unsafe.Pointer(&info))); ok == 0 {
+	if ok, _, _ := procGetConsoleScreenBufferInfo.Call(uintptr(handle), uintptr(unsafe.Pointer(&info))); ok == 0 {
 		return
 	}
 	plan := planFit(info, w, h)
+	if len(plan) > 0 {
+		DebugLog("CONSOLE: fit to %dx%d from buffer %dx%d, srWindow L%d T%d R%d B%d, cursor %d,%d: %d steps",
+			w, h, info.dwSize.X, info.dwSize.Y,
+			info.srWindow.Left, info.srWindow.Top, info.srWindow.Right, info.srWindow.Bottom,
+			info.dwCursorPosition.X, info.dwCursorPosition.Y, len(plan))
+	}
 	for _, step := range plan {
+		var ok uintptr
+		var err error
 		switch step.op {
 		case fitGrowBuffer, fitSizeBuffer:
-			procSetConsoleScreenBufferSize.Call(uintptr(c.own), coordArg(step.coord))
+			ok, _, err = procSetConsoleScreenBufferSize.Call(uintptr(handle), coordArg(step.coord))
 		case fitMoveCursor:
-			procSetConsoleCursorPosition.Call(uintptr(c.own), coordArg(step.coord))
+			ok, _, err = procSetConsoleCursorPosition.Call(uintptr(handle), coordArg(step.coord))
 		case fitWindow:
 			rect := SmallRect{Right: step.coord.X, Bottom: step.coord.Y}
-			procSetConsoleWindowInfo.Call(uintptr(c.own), uintptr(1), uintptr(unsafe.Pointer(&rect)))
+			ok, _, err = procSetConsoleWindowInfo.Call(uintptr(handle), uintptr(1), uintptr(unsafe.Pointer(&rect)))
+		}
+		if ok != 0 {
+			DebugLog("CONSOLE: fit to %dx%d: %s %d,%d ok", w, h, fitOpLabel(step.op), step.coord.X, step.coord.Y)
+		} else {
+			DebugLog("CONSOLE: fit to %dx%d: %s %d,%d FAILED: %v", w, h, fitOpLabel(step.op), step.coord.X, step.coord.Y, err)
 		}
 	}
 }

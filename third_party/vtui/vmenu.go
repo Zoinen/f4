@@ -2,21 +2,13 @@ package vtui
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
 	"github.com/mattn/go-runewidth"
 	"github.com/unxed/vtinput"
 )
-
-var menuLoopScroll = true
-
-// SetMenuLoopScroll configures whether holding an arrow key at a wrapped
-// menu edge continues at the opposite edge. The default preserves vtui's
-// historic looping behaviour.
-func SetMenuLoopScroll(loop bool) { menuLoopScroll = loop }
-
-func MenuLoopScroll() bool { return menuLoopScroll }
 
 // MenuItem represents a single menu item.
 type MenuItem struct {
@@ -36,15 +28,16 @@ type MenuItem struct {
 	Icon string
 	// IconColor is an optional graphical-frontend color (for example a Finder
 	// tag color). Terminal rendering keeps using the configured menu palette.
-	IconColor string
-	SubItems  []MenuItem
-	Shortcut  string // Optional right-aligned hotkey hint (e.g. "F3")
-	Command   int    // TV-style Command ID to emit when selected
-	OnClick   func() // Closure called when selected
-	UserData  any
-	Separator bool
-	Header    bool
-	Disabled  bool
+	IconColor   string
+	Description string
+	SubItems    []MenuItem
+	Shortcut    string // Optional right-aligned hotkey hint (e.g. "F3")
+	Command     int    // TV-style Command ID to emit when selected
+	OnClick     func() // Closure called when selected
+	UserData    any
+	Separator   bool
+	Header      bool
+	Disabled    bool
 	// KeepOpen leaves the menu chain active after invoking this leaf. It is
 	// useful for Retry/refresh commands that replace rows asynchronously.
 	KeepOpen bool
@@ -66,14 +59,25 @@ type MenuFrameProvider interface {
 	MenuControl() *VMenu
 }
 
+// menuItemDisabled reports whether item is unavailable: either the caller
+// marked it Disabled directly, or its Command id is one FrameManager.
+// DisabledCommands currently disables. Both dim and both block activation
+// the same way, so every call site that used to test DisabledCommands alone
+// tests this instead.
+func menuItemDisabled(item MenuItem) bool {
+	return item.Disabled || FrameManager.DisabledCommands.IsDisabled(item.Command)
+}
+
 // VMenu implements a vertical menu with navigation support.
 type VMenu struct {
 	ScrollView
 	title string
 	// bottomTitle is drawn centred on the lower border, where far2l's
 	// VMenu::SetBottomTitle puts a menu's key hints.
-	bottomTitle string
-	Items []MenuItem
+	bottomTitle     string
+	bottomTextLines int
+	TruncateMark    string
+	Items           []MenuItem
 	// SemanticBottomHint exposes a custom renderer's footer to native frontends.
 	SemanticBottomHint string
 	// SemanticPresentation selects an optional native menu layout.
@@ -96,11 +100,9 @@ type VMenu struct {
 	HideShadow     bool
 	// IgnoreSingleClick keeps a single left click from confirming the menu;
 	// a double click still confirms it.
-	IgnoreSingleClick bool
 	// DisableFilter turns off the optional item filter for consumers that own
 	// their rows and key handling, such as the Colorer outline.
-	DisableFilter bool
-	BoxType        int
+	BoxType int
 	// OnClose is invoked exactly once for one shown lifetime. Dynamic menus use
 	// it to cancel native requests and live queries when their chain closes.
 	OnClose func()
@@ -132,6 +134,46 @@ type VMenu struct {
 	ColorSelectedHighlightIdx int
 	ColorBoxIdx               int
 	ColorTitleIdx             int
+
+	// DisableFilter turns the item filter (Ctrl+Alt+F, see vmenu_filter.go)
+	// off. A menu that filters its own items, or paints rows from TopPos
+	// and Items by itself, sets it: the filter hides rows the consumer
+	// would still paint.
+	DisableFilter bool
+	// FilterOnType starts the filter with the first printable key, without
+	// Ctrl+Alt+F. It suits a list whose letters do nothing else, such as the
+	// history of an input field.
+	FilterOnType bool
+	// IgnoreSingleClick is far2l's VMENU_IGNORE_SINGLECLICK: a single left
+	// click only selects the row it lands on, and a double click confirms
+	// it. It suits a list read rather than chosen from, such as an about
+	// box, where a stray click must not close it.
+	IgnoreSingleClick bool
+
+	filterOn     bool
+	filterLocked bool
+	filterText   []rune
+	filterTop    int
+}
+
+// menuStopHeldArrowAtEdge holds the inverse of SetMenuLoopScroll, so that
+// the zero value keeps the behaviour menus always had: arrows loop.
+var menuStopHeldArrowAtEdge atomic.Bool
+
+// SetMenuLoopScroll is far2l's "Loop list scrolling" option (Menu settings;
+// Opt.VMenu.MenuLoopScroll, stored as [VMenu] MenuStopWrapOnEdge). On, the
+// default, Up on the first item and Down on the last wrap round the menu
+// even while the arrow is held. Off, a held arrow stops at the first or the
+// last item and only a separate press wraps, which is what Far Manager 3
+// always does. It concerns menus whose Wrap is set; the wheel and the page
+// keys stop at the ends either way.
+func SetMenuLoopScroll(loop bool) {
+	menuStopHeldArrowAtEdge.Store(!loop)
+}
+
+// MenuLoopScroll reports the value last given to SetMenuLoopScroll.
+func MenuLoopScroll() bool {
+	return !menuStopHeldArrowAtEdge.Load()
 }
 
 // NewVMenu creates a new vertical menu instance.
@@ -161,6 +203,14 @@ func NewVMenu(title string) *VMenu {
 	m.MarginBottom = 1
 	m.InitScrollBar(m)
 	m.ScrollBar.ColorIdx = ColMenuScrollbar
+	// The bar counts shown rows while the filter hides items.
+	m.ScrollBar.OnScroll = func(v int) {
+		if m.filtering() {
+			m.scrollFilteredBy(m.visibleRows(), v-m.filterTop)
+			return
+		}
+		m.ScrollBy(v - m.scrollBarTop())
+	}
 	return m
 }
 
@@ -180,11 +230,6 @@ func (m *VMenu) AddSeparator() {
 }
 
 func (m *VMenu) GetItemCount() int { return len(m.Items) }
-
-// FilterText reports the active item-filter text. The local menu currently
-// has no implicit filter mode, so it remains empty while preserving the API
-// used by upstream callers that explicitly disable filtering.
-func (m *VMenu) FilterText() string { return "" }
 
 func (m *VMenu) itemSelectable(i int) bool {
 	return i >= 0 && i < len(m.Items) && !m.Items[i].Separator &&
@@ -207,6 +252,9 @@ func (m *VMenu) selectFirstSelectable() {
 func (m *VMenu) SetSelectPos(pos int) {
 	oldPos := m.SelectPos
 	m.ScrollView.SetSelectPos(pos)
+	if m.filtering() {
+		m.steerSelection(m.visibleRows())
+	}
 	if oldPos != m.SelectPos {
 		m.cancelSubmenuHover()
 	}
@@ -244,12 +292,15 @@ func (m *VMenu) ReplaceItems(items []MenuItem) {
 	} else {
 		m.selectFirstSelectable()
 	}
+	if m.filtering() {
+		m.steerSelection(m.visibleRows())
+	}
 	if m.childMenu != nil {
 		nextChildIndex := -1
 		if childID != "" {
 			for i := range m.Items {
 				if m.Items[i].ID == childID && m.itemSelectable(i) &&
-					m.HasSubmenu(i) {
+					m.HasSubmenu(i) && (!m.filtering() || rowOfItem(m.visibleRows(), i) >= 0) {
 					nextChildIndex = i
 					break
 				}
@@ -346,7 +397,7 @@ func (m *VMenu) positionSubmenu(child *VMenu, index int) {
 	if x < 0 {
 		x = 0
 	}
-	y := m.Y1 + m.MarginTop + index - m.TopPos
+	y := m.Y1 + m.MarginTop + m.rowOffset(index)
 	if y+height > screenH {
 		y = screenH - height
 	}
@@ -376,6 +427,17 @@ func (m *VMenu) OpenSubmenu(index int) bool {
 		childFrame = item.Submenu()
 	} else if len(item.SubItems) > 0 {
 		sub := NewVMenu(item.Text)
+		sub.HideShadow = m.HideShadow
+		sub.BoxType = m.BoxType
+		sub.ColorTextIdx = m.ColorTextIdx
+		sub.ColorSelectedTextIdx = m.ColorSelectedTextIdx
+		sub.ColorHighlightIdx = m.ColorHighlightIdx
+		sub.ColorSelectedHighlightIdx = m.ColorSelectedHighlightIdx
+		sub.ColorBoxIdx = m.ColorBoxIdx
+		sub.ColorTitleIdx = m.ColorTitleIdx
+		if sub.ScrollBar != nil && m.ScrollBar != nil {
+			sub.ScrollBar.ColorIdx = m.ScrollBar.ColorIdx
+		}
 		for _, nested := range item.SubItems {
 			sub.AddItem(nested)
 		}
@@ -418,6 +480,7 @@ func (m *VMenu) notifyClosed() {
 
 func (m *VMenu) finish(code int, emitClose bool) {
 	m.cancelSubmenuHover()
+	m.ClearFilter()
 	m.CloseSubmenu()
 	m.done = true
 	m.exitCode = code
@@ -470,7 +533,12 @@ func (m *VMenu) declareSemanticMenuState() {
 // application callback and may change the document or shell behind the menu.
 func (m *VMenu) handleSemanticNavigation(e *vtinput.InputEvent) bool {
 	oldPos := m.SelectPos
-	handled := m.HandleKey(e)
+	var handled bool
+	if e.VirtualKeyCode == vtinput.VK_UP || e.VirtualKeyCode == vtinput.VK_DOWN {
+		handled = m.handleArrowKey(e)
+	} else {
+		handled = m.HandleKey(e)
+	}
 	if handled && oldPos != m.SelectPos {
 		m.cancelSubmenuHover()
 	}
@@ -519,7 +587,6 @@ func menuItemsWidth(items []MenuItem, minWidth int) int {
 // HasSubMenu reports whether the item at index opens a nested menu.
 func (m *VMenu) HasSubMenu(index int) bool { return m.HasSubmenu(index) }
 
-// OpenSubMenu is the upstream spelling of the shared semantic submenu path.
 func (m *VMenu) OpenSubMenu(index int) bool { return m.OpenSubmenu(index) }
 
 func (m *VMenu) CloseSubMenu() { m.CloseSubmenu() }
@@ -543,6 +610,17 @@ func (m *VMenu) closeAncestors() {
 func (m *VMenu) ProcessKey(e *vtinput.InputEvent) bool {
 	if m.IsDisabled() || !e.KeyDown {
 		return false
+	}
+
+	if m.filtering() {
+		// A consumer may have changed Items since the last key.
+		m.steerSelection(m.visibleRows())
+	}
+	if m.processFilterKey(e) {
+		return true
+	}
+	if m.filterBlocksKey(e) {
+		return true
 	}
 
 	if m.OnKeyDown != nil && m.OnKeyDown(e) {
@@ -579,17 +657,17 @@ func (m *VMenu) ProcessKey(e *vtinput.InputEvent) bool {
 			return true
 		}
 		// If last item in standalone menu, let focus cycle (unless wrapping is on)
-		if m.SelectPos == m.ItemCount-1 && !m.Wrap {
+		if m.atLastRow() && !m.Wrap {
 			return false
 		}
 		return m.handleSemanticNavigation(e)
 	case vtinput.VK_UP:
-		if m.SelectPos == 0 && !isSubMenu && !m.Wrap {
+		if m.atFirstRow() && !isSubMenu && !m.Wrap {
 			return false
 		}
 		return m.handleSemanticNavigation(e)
 	case vtinput.VK_DOWN:
-		if m.SelectPos == m.ItemCount-1 && !isSubMenu && !m.Wrap {
+		if m.atLastRow() && !isSubMenu && !m.Wrap {
 			return false
 		}
 		return m.handleSemanticNavigation(e)
@@ -621,7 +699,7 @@ func (m *VMenu) ProcessKey(e *vtinput.InputEvent) bool {
 				if m.OpenSubmenu(m.SelectPos) {
 					return true
 				}
-				if FrameManager.DisabledCommands.IsDisabled(item.Command) {
+				if menuItemDisabled(item) {
 					return true
 				}
 
@@ -660,13 +738,22 @@ func (m *VMenu) ProcessKey(e *vtinput.InputEvent) bool {
 	if e.Char != 0 {
 		charLower := unicode.ToLower(e.Char)
 		xlatLower := unicode.ToLower(GlobalXlator.Translate(e.Char))
+		var shown []int
+		if m.filtering() {
+			shown = m.visibleRows()
+		}
 		for i, item := range m.Items {
 			if !m.itemSelectable(i) {
 				continue
 			}
+			// A locked filter hands letters back to the hotkeys, but only
+			// for the items it shows.
+			if shown != nil && rowOfItem(shown, i) < 0 {
+				continue
+			}
 			hk := ExtractHotkey(item.Text)
 			if hk != 0 && (hk == charLower || hk == xlatLower) {
-				if FrameManager.DisabledCommands.IsDisabled(item.Command) {
+				if menuItemDisabled(item) {
 					return true
 				}
 				m.SetSelectPos(i)
@@ -705,21 +792,105 @@ func (m *VMenu) ProcessKey(e *vtinput.InputEvent) bool {
 	return m.handleSemanticNavigation(e)
 }
 
+// atFirstRow and atLastRow report whether the selection is on the first or
+// the last row shown.
+func (m *VMenu) atFirstRow() bool {
+	if !m.filtering() {
+		return m.SelectPos == 0
+	}
+	rows := m.visibleRows()
+	return len(rows) == 0 || m.SelectPos == rows[0]
+}
+
+func (m *VMenu) atLastRow() bool {
+	if !m.filtering() {
+		return m.SelectPos == m.ItemCount-1
+	}
+	rows := m.visibleRows()
+	return len(rows) == 0 || m.SelectPos == rows[len(rows)-1]
+}
+
+// handleArrowKey moves the selection for Up and Down. far2l's VMenu passes
+// stop_on_edge = IsRepeatedKey() && !Opt.VMenu.MenuLoopScroll for these keys
+// (Far Manager 3 passes IsRepeatedKey() alone): a wrapping menu stops at its
+// first or last item while the arrow is held, and keeps the key, so focus
+// does not leave the menu either. Wrap is lifted for that one move only, as
+// Far 3 clears VMENU_WRAPMODE around a single step.
+func (m *VMenu) handleArrowKey(e *vtinput.InputEvent) bool {
+	if m.Wrap && !MenuLoopScroll() && FrameManager != nil && FrameManager.IsRepeatedKey() {
+		m.Wrap = false
+		defer func() { m.Wrap = true }()
+	}
+	return m.HandleKey(e)
+}
+
 func (m *VMenu) ResizeConsole(w, h int) {
 	// For standalone VMenus, we might want to keep them centered
 }
 func (m *VMenu) GetTitle() string {
 	return m.title
 }
+
+// SetTitle replaces the title, dropping ampersands the way NewVMenu does.
+// far2l retitles a menu in place to show a mode, such as far:about's
+// hidden-rows marker.
 func (m *VMenu) SetTitle(title string) {
-	m.title = title
+	m.title, _, _ = ParseAmpersandString(title)
 }
 
 // GetBottomTitle returns the text drawn on the lower border.
-func (m *VMenu) GetBottomTitle() string { return m.bottomTitle }
+func (m *VMenu) GetBottomTitle() string {
+	return m.bottomTitle
+}
 
-// SetBottomTitle sets the text drawn centred on the lower border.
-func (m *VMenu) SetBottomTitle(title string) { m.bottomTitle = title }
+// SetBottomTitle sets the text drawn centred on the lower border, typically
+// the keys a menu understands beyond the usual ones. An empty string removes
+// it.
+func (m *VMenu) SetBottomTitle(title string) {
+	m.bottomTitle = title
+}
+
+// SetBottomTextLines is far2l's VMenu::SetBottomTextLines: it reserves n
+// rows at the foot of the box, under a separator, where the Description of
+// the selected item is shown word-wrapped, the way far2l's far:config
+// explains the option under the cursor. The list keeps the rows above the
+// separator, so its scrollbar, paging and mouse hits stop there too. Zero,
+// the default, removes the area.
+//
+// far2l grows the area while a long description is selected; here it keeps
+// the size it is given, so that the list does not jump as the selection
+// moves. The caller sizes it for the longest description it will show.
+func (m *VMenu) SetBottomTextLines(n int) {
+	if n < 0 {
+		n = 0
+	}
+	m.bottomTextLines = n
+	m.MarginBottom = 1 + m.bottomAreaHeight()
+	if m.Y2 > m.Y1 {
+		m.SetPosition(m.X1, m.Y1, m.X2, m.Y2)
+	}
+}
+
+// GetBottomTextLines returns the value last given to SetBottomTextLines.
+func (m *VMenu) GetBottomTextLines() int {
+	return m.bottomTextLines
+}
+
+// bottomAreaHeight is the bottom text area with its separator row, or zero
+// when the menu has none.
+func (m *VMenu) bottomAreaHeight() int {
+	if m.bottomTextLines <= 0 {
+		return 0
+	}
+	return m.bottomTextLines + 1
+}
+
+// BottomTextWidth is the width the bottom text area wraps descriptions to,
+// as far2l's VMenu::GetBottomTextWidth: the box less its borders and a
+// column of padding on each side.
+func (m *VMenu) BottomTextWidth() int {
+	return max(0, m.X2-m.X1-3)
+}
 
 func (m *VMenu) GetProgress() int {
 	return -1
@@ -731,6 +902,9 @@ func (m *VMenu) GetType() FrameType {
 
 func (m *VMenu) SetExitCode(code int) {
 	m.mouseSelecting = false
+	// far2l drops the filter whenever the menu goes away; the item indices
+	// the menu hands back never depended on it.
+	m.setFilter(false)
 	m.CloseSubMenu()
 	m.closeAncestors()
 	m.done = true
@@ -756,6 +930,7 @@ func (m *VMenu) HasShadow() bool       { return !m.HideShadow }
 // ClearDone resets the menu state, allowing it to be shown again.
 func (m *VMenu) ClearDone() {
 	m.mouseSelecting = false
+	m.setFilter(false)
 	m.done = false
 	m.exitCode = -1
 	m.selectAtOpen = m.SelectPos
@@ -771,6 +946,9 @@ func (m *VMenu) ProcessMouse(e *vtinput.InputEvent) bool {
 	}
 	if m.processWindowMouse(e) {
 		return true
+	}
+	if m.filtering() {
+		m.steerSelection(m.visibleRows())
 	}
 	if m.mouseSelecting {
 		index := m.GetClickIndex(int(e.MouseY))
@@ -790,7 +968,19 @@ func (m *VMenu) ProcessMouse(e *vtinput.InputEvent) bool {
 		}
 		return true
 	}
+	if m.filtering() && e.WheelDirection != 0 && (m.ScrollBar == nil || !m.ScrollBar.IsMouseCaptured()) {
+		lines := wheelLinesFor(m.WheelArea, e.WheelDirection)
+		if e.WheelDirection > 0 {
+			lines = -lines
+		}
+		m.scrollFilteredBy(m.visibleRows(), lines)
+		return true
+	}
+	oldPos := m.SelectPos
 	if m.HandleMouseScroll(e) {
+		if m.SelectPos != oldPos && m.OnSelect != nil {
+			m.OnSelect(m.SelectPos)
+		}
 		m.declareSemanticMenuState()
 		return true
 	}
@@ -838,7 +1028,7 @@ func (m *VMenu) ProcessMouse(e *vtinput.InputEvent) bool {
 				if m.IgnoreSingleClick && e.MouseEventFlags&vtinput.DoubleClick == 0 {
 					return true
 				}
-				if FrameManager.DisabledCommands.IsDisabled(item.Command) {
+				if menuItemDisabled(item) {
 					return true
 				}
 
@@ -939,13 +1129,14 @@ func (m *VMenu) DisplayObject(scr *ScreenBuf) {
 
 	// far2l paints a menu title with Menu.Title whether the menu holds focus
 	// or not, so there is no separate focused variant here.
-	p.DrawTitle(m.X1, m.Y1, m.X2, m.title, Palette[m.ColorTitleIdx])
+	p.DrawTitle(m.X1, m.Y1, m.X2, m.displayTitle(), Palette[m.ColorTitleIdx])
 	p.DrawTitle(m.X1, m.Y2, m.X2, m.bottomTitle, Palette[m.ColorTitleIdx])
 
 	colText := Palette[m.ColorTextIdx]
 	colSel := Palette[m.ColorSelectedTextIdx]
 	colBox := Palette[m.ColorBoxIdx]
-	height := m.Y2 - m.Y1 - 1
+	listBottom := m.Y2 - m.bottomAreaHeight()
+	height := listBottom - m.Y1 - 1
 	if height < 0 {
 		height = 0
 	}
@@ -953,19 +1144,36 @@ func (m *VMenu) DisplayObject(scr *ScreenBuf) {
 	colHigh := Palette[m.ColorHighlightIdx]
 	colSelHigh := Palette[m.ColorSelectedHighlightIdx]
 
-	// 3. Rendering items
+	// 3. Rendering items. While the filter hides items, rows map to the
+	// items it shows.
+	top := m.TopPos
+	var shown []int
+	if m.filtering() {
+		shown = m.visibleRows()
+		m.steerSelection(shown)
+		top = m.filterTop
+	}
 	for i := 0; i < height; i++ {
-		itemIdx := i + m.TopPos
+		itemIdx := i + top
+		if shown == nil {
+			itemIdx = m.ItemAtRow(i)
+		}
 		currY := m.Y1 + 1 + i
-		if currY >= m.Y2 {
+		if currY >= listBottom {
 			break
+		}
+		if shown != nil {
+			if itemIdx >= len(shown) {
+				continue
+			}
+			itemIdx = shown[itemIdx]
 		}
 		if itemIdx >= len(m.Items) {
 			continue
 		}
 
 		item := m.Items[itemIdx]
-		isDisabled := !item.Separator && (item.Disabled || FrameManager.DisabledCommands.IsDisabled(item.Command))
+		isDisabled := !item.Separator && menuItemDisabled(item)
 
 		attr := colText
 		if isDisabled {
@@ -975,20 +1183,20 @@ func (m *VMenu) DisplayObject(scr *ScreenBuf) {
 		}
 
 		if item.Separator {
-			if m.BoxType == SingleBox {
-				symbols := getBoxSymbols(SingleBox)
-				p.DrawLine(m.X1, currY, m.X2, currY, symbols[bsH], colBox, false, false)
-				scr.Write(m.X1, currY, []CharInfo{{Char: uint64(symbols[bsHCrossLeft]), Attributes: colBox}})
-				scr.Write(m.X2, currY, []CharInfo{{Char: uint64(symbols[bsHCrossRight]), Attributes: colBox}})
-			} else {
-				p.DrawLine(m.X1, currY, m.X2, currY, boxSymbols[bsH], colBox, true, true)
+			m.drawSeparator(p, scr, currY, colBox)
+			// A separator may carry a heading. It is drawn here, on the row the
+			// separator really has, so that it follows scrolling and the filter;
+			// a caller painting headings over the menu by row number had them
+			// left on rows that hold other things (f4 #263).
+			if item.Text != "" {
+				p.DrawTitle(m.X1, currY, m.X2, " "+item.Text+" ", Palette[m.ColorTitleIdx])
 			}
 			continue
 		}
 
 		// Resolve item colors
 		isSel := itemIdx == m.SelectPos
-		isDisabled = item.Disabled || FrameManager.DisabledCommands.IsDisabled(item.Command)
+		isDisabled = menuItemDisabled(item)
 
 		itemAttr := colText
 		hiAttr := colHigh
@@ -1025,7 +1233,21 @@ func (m *VMenu) DisplayObject(scr *ScreenBuf) {
 		if item.Header {
 			itemAttr, hiAttr = DimColor(itemAttr), DimColor(hiAttr)
 		}
-		p.DrawControlText(textX, currY, item.Text, itemAttr, hiAttr)
+		// The text must not run past the box: a name longer than the menu (a
+		// combo box drop-down of long font names on a narrow console, f4 #1706)
+		// would otherwise be painted over the border, the scrollbar and
+		// whatever is beside the menu. What does not fit is cut with an
+		// ellipsis; the accent letter of a cut item is not drawn.
+		avail := m.X2 - textX - vLenHint
+		if clean, _, _ := ParseAmpersandString(item.Text); StringWidth(clean) > avail {
+			mark := m.TruncateMark
+			if mark == "" {
+				mark = "…"
+			}
+			p.DrawString(textX, currY, TruncateString(clean, avail, mark), itemAttr)
+		} else {
+			p.DrawControlText(textX, currY, item.Text, itemAttr, hiAttr)
+		}
 		if hintText != "" {
 			p.DrawString(m.X2-vLenHint, currY, hintText, itemAttr)
 		}
@@ -1034,6 +1256,48 @@ func (m *VMenu) DisplayObject(scr *ScreenBuf) {
 		}
 	}
 
-	// 4. Scrollbar
+	// 4. The selected item's description, under the list.
+	m.drawBottomText(p, scr, listBottom, colText, colBox)
+
+	// 5. Scrollbar
 	m.DrawScrollBar(scr)
+}
+
+// drawSeparator draws a horizontal rule across the box on row y, joined to
+// its borders.
+func (m *VMenu) drawSeparator(p *Painter, scr *ScreenBuf, y int, colBox uint64) {
+	if m.BoxType == SingleBox {
+		symbols := getBoxSymbols(SingleBox)
+		p.DrawLine(m.X1, y, m.X2, y, symbols[bsH], colBox, false, false)
+		scr.Write(m.X1, y, []CharInfo{{Char: uint64(symbols[bsHCrossLeft]), Attributes: colBox}})  // #nosec G115 -- box-drawing rune, always small and non-negative
+		scr.Write(m.X2, y, []CharInfo{{Char: uint64(symbols[bsHCrossRight]), Attributes: colBox}}) // #nosec G115 -- box-drawing rune, always small and non-negative
+	} else {
+		p.DrawLine(m.X1, y, m.X2, y, boxSymbols[bsH], colBox, true, true)
+	}
+}
+
+// drawBottomText is far2l's VMenu::DrawBottomText: a separator on row
+// separatorY, then the selected item's Description wrapped to the box,
+// as many lines as the area has. What does not fit is cut off.
+func (m *VMenu) drawBottomText(p *Painter, scr *ScreenBuf, separatorY int, colText, colBox uint64) {
+	if m.bottomTextLines <= 0 || separatorY <= m.Y1 || separatorY >= m.Y2 {
+		return
+	}
+	m.drawSeparator(p, scr, separatorY, colBox)
+	width := m.BottomTextWidth()
+	if width <= 0 || m.SelectPos < 0 || m.SelectPos >= len(m.Items) {
+		return
+	}
+	item := m.Items[m.SelectPos]
+	if item.Separator || item.Description == "" {
+		return
+	}
+	y := separatorY + 1
+	for _, line := range WrapText(item.Description, width) {
+		if y >= m.Y2 {
+			break
+		}
+		p.DrawString(m.X1+2, y, TruncateString(line, width, ""), colText)
+		y++
+	}
 }

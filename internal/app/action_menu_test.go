@@ -130,7 +130,7 @@ func TestBuildMenuBarItems_Shell(t *testing.T) {
 	}
 	var foundEditSymlink bool
 	for _, item := range files {
-		if item.Text == editSymlinkAction.DisplayLabel() || item.Text == "&"+editSymlinkAction.DisplayLabel() {
+		if plainMenuText(item.Text) == plainMenuText(editSymlinkAction.DisplayLabel()) {
 			foundEditSymlink = true
 			break
 		}
@@ -186,6 +186,56 @@ func TestBuildMenuBarItems_Shell(t *testing.T) {
 	checkShortcuts(items[1].SubItems)
 	for label := range wantCommandShortcuts {
 		t.Errorf("Commands menu is missing %q", label)
+	}
+}
+
+func TestBuildMenuBarItemsUsesFarMnemonics(t *testing.T) {
+	old := keymap.GlobalHotkeysMgr
+	keymap.GlobalHotkeysMgr = keymap.NewHotkeyManager("")
+	defer func() { keymap.GlobalHotkeysMgr = old }()
+
+	items := BuildMenuBarItems("Shell")
+	if len(items) < 2 {
+		t.Fatalf("expected Files and Commands menus, got %+v", items)
+	}
+
+	want := make(map[string]rune)
+	want["File.View"] = 'v'
+	want["File.Edit"] = 'e'
+	want["File.Copy"] = 'c'
+	want["File.Move"] = 'r'
+	want["File.MakeDir"] = 'm'
+	want["File.Delete"] = 'd'
+	found := make(map[string]bool, len(want))
+	spreadsheetHotkey := rune(0)
+	for _, menu := range items {
+		var visit func([]vtui.MenuItem)
+		visit = func(menuItems []vtui.MenuItem) {
+			for _, item := range menuItems {
+				for name, hotkey := range want {
+					if item.UserData != history.MenuHistoryItemKey(name) {
+						continue
+					}
+					found[name] = true
+					if got := vtui.ExtractHotkey(item.Text); got != hotkey {
+						t.Errorf("%s mnemonic = %q, want %q (%q)", name, got, hotkey, item.Text)
+					}
+				}
+				if item.UserData == history.MenuHistoryItemKey("App.Spreadsheet") {
+					spreadsheetHotkey = vtui.ExtractHotkey(item.Text)
+				}
+				visit(item.SubItems)
+			}
+		}
+		visit(menu.SubItems)
+	}
+	for name := range want {
+		if !found[name] {
+			t.Errorf("menu item %s was not found", name)
+		}
+	}
+	if spreadsheetHotkey == 0 {
+		t.Error("App.Spreadsheet has no mnemonic")
 	}
 }
 
@@ -276,6 +326,63 @@ func TestBuildMenuBarItems_IncludesPluginPanelCommandsInDeclaredMenu(t *testing.
 	// The click is intentionally wired through the live registry rather than
 	// retaining a plugin closure in the menu item.
 	archiveItem.OnClick()
+	if run != 1 {
+		t.Fatalf("plugin command ran %d times, want once", run)
+	}
+}
+
+func TestBuildMenuBarItems_DimsPluginCommandWithEnabledFalse(t *testing.T) {
+	t.Cleanup(testutil.SetFrameManagerScreens(t, []*vtui.AppScreen{{Frames: []vtui.Frame{&panel.PanelsFrame{}}}}, 0))
+
+	api := &coreAPI{}
+	run := 0
+	enabled := false
+	registration, err := api.RegisterPluginCommand(vfs.PluginCommand{
+		ID:       "test.menu.disabled-command",
+		Location: vfs.PluginCommandPanel,
+		Label:    "Disableable command",
+		MenuPath: "Files",
+		Enabled:  func(vfs.App) bool { return enabled },
+		Run:      func(vfs.App) { run++ },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(registration.Unregister)
+
+	old := keymap.GlobalHotkeysMgr
+	keymap.GlobalHotkeysMgr = keymap.NewHotkeyManager("")
+	t.Cleanup(func() { keymap.GlobalHotkeysMgr = old })
+
+	findItem := func() *vtui.MenuItem {
+		items := BuildMenuBarItems("Shell")
+		if len(items) == 0 || items[0].Label != "&Files" {
+			t.Fatalf("Files menu is missing: %+v", items)
+		}
+		for index, item := range items[0].SubItems {
+			if action.PlainLabel(item.Text) == "Disableable command" {
+				return &items[0].SubItems[index]
+			}
+		}
+		t.Fatalf("Files menu has no plugin command: %+v", items[0].SubItems)
+		return nil
+	}
+
+	// Enabled()==false dims the item exactly like a core action's Enabled
+	// does (f4#1356): the row stays put, it just cannot be clicked.
+	item := findItem()
+	if !item.Disabled {
+		t.Fatalf("disabled plugin command was not dimmed: %+v", *item)
+	}
+
+	enabled = true
+	item = findItem()
+	if item.Disabled {
+		t.Fatalf("enabled plugin command stayed dimmed: %+v", *item)
+	}
+	// ExecutePluginCommand re-checks Enabled itself, so this click is safe
+	// even against a menu snapshot built while the command was disabled.
+	item.OnClick()
 	if run != 1 {
 		t.Fatalf("plugin command ran %d times, want once", run)
 	}
@@ -433,6 +540,27 @@ func TestBuildMenuBarItemsFoldsRareCommandsIntoSubMenus(t *testing.T) {
 		if find(commands, act.DisplayLabel()) != nil {
 			t.Errorf("%q is listed both at the top level and in the %q submenu", act.DisplayLabel(), action.PlainLabel(sub.title))
 		}
+	}
+
+	historyMenu := find(commands, i18n.Msg("Menu.Shell.Commands.History"))
+	if historyMenu == nil {
+		t.Fatal("Commands menu has no History submenu")
+	}
+	for _, member := range []string{"History.ImportFar2l", "History.ImportFar2lFolders"} {
+		act, ok := GetAction(member)
+		if !ok {
+			t.Fatalf("%s is not registered", member)
+		}
+		if find(historyMenu.SubItems, act.DisplayLabel()) == nil {
+			t.Errorf("%q is missing from the History submenu", act.DisplayLabel())
+		}
+	}
+	settingsImport, ok := GetAction("Settings.ImportFar2l")
+	if !ok {
+		t.Fatal("Settings.ImportFar2l is not registered")
+	}
+	if find(commands, settingsImport.DisplayLabel()) == nil {
+		t.Errorf("%q is missing from the Commands menu", settingsImport.DisplayLabel())
 	}
 }
 

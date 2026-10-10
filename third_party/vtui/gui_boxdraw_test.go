@@ -3,6 +3,7 @@
 package vtui
 
 import (
+	"bytes"
 	"image"
 	"testing"
 )
@@ -86,6 +87,128 @@ func TestDrawBoxGlyph_ScaleThickensLines(t *testing.T) {
 	if litPixels(thick) <= litPixels(thin) {
 		t.Errorf("scale 3 lit %d pixels, scale 1 lit %d; expected more",
 			litPixels(thick), litPixels(thin))
+	}
+}
+
+// Every image-backed GUI backend goes through drawBoxGlyph. Keep the shared
+// classic table pixel-compatible with the raster geometry it replaced; this
+// also protects X11, Wayland, Win32 GUI and Ebiten from backend-specific drift.
+func TestDrawBoxGlyph_ClassicMatchesLegacyRasterGeometry(t *testing.T) {
+	// ╬ is intentionally omitted: the old raster switch did not handle it;
+	// classicGlyphRects coverage verifies the newly shared implementation.
+	runes := []rune{
+		'─', '│', '┌', '┐', '└', '┘', '├', '┤', '┬', '┴', '┼',
+		'═', '║', '╔', '╗', '╚', '╝', '╠', '╣', '╩', '╦', '╟', '╢',
+	}
+	for _, size := range []struct{ w, h int }{{8, 16}, {10, 20}, {16, 16}} {
+		for _, thick := range []int{1, 2, 3} {
+			for _, char := range runes {
+				got := newTestSurface(size.w, size.h)
+				want := newTestSurface(size.w, size.h)
+				if !drawBoxGlyph(got, char, 0, 0, size.w, size.h, thick, 0x204060) {
+					t.Fatalf("drawBoxGlyph(%q) declined a classic rune", char)
+				}
+				if !drawBoxGlyphLegacy(want, char, 0, 0, size.w, size.h, thick, 0x204060) {
+					t.Fatalf("drawBoxGlyphLegacy(%q) declined a classic rune", char)
+				}
+				if !bytes.Equal(got.Pix, want.Pix) {
+					t.Errorf("drawBoxGlyph(%q, %dx%d, thick=%d) changed classic raster geometry", char, size.w, size.h, thick)
+				}
+			}
+		}
+	}
+}
+
+func TestGlyphStyleRoundedOnlyChangesSingleCorners(t *testing.T) {
+	previous := CurrentGlyphStyle()
+	t.Cleanup(func() { SetGlyphStyle(previous) })
+
+	classicCorner := newTestSurface(16, 16)
+	classicLine := newTestSurface(16, 16)
+	classicDouble := newTestSurface(16, 16)
+	SetGlyphStyle(GlyphStyleClassic)
+	drawBoxGlyph(classicCorner, '┌', 0, 0, 16, 16, 1, 0xffffff)
+	drawBoxGlyph(classicLine, '─', 0, 0, 16, 16, 1, 0xffffff)
+	drawBoxGlyph(classicDouble, '╔', 0, 0, 16, 16, 1, 0xffffff)
+
+	roundedCorner := newTestSurface(16, 16)
+	roundedLine := newTestSurface(16, 16)
+	roundedDouble := newTestSurface(16, 16)
+	SetGlyphStyle(GlyphStyleRounded)
+	drawBoxGlyph(roundedCorner, '┌', 0, 0, 16, 16, 1, 0xffffff)
+	drawBoxGlyph(roundedLine, '─', 0, 0, 16, 16, 1, 0xffffff)
+	drawBoxGlyph(roundedDouble, '╔', 0, 0, 16, 16, 1, 0xffffff)
+
+	if bytes.Equal(classicCorner.Pix, roundedCorner.Pix) {
+		t.Fatal("rounded style did not change a single-line corner")
+	}
+	if !bytes.Equal(classicLine.Pix, roundedLine.Pix) {
+		t.Fatal("rounded style changed a straight line")
+	}
+	if !bytes.Equal(classicDouble.Pix, roundedDouble.Pix) {
+		t.Fatal("rounded style changed a double-line corner")
+	}
+}
+
+// drawSymGlyphRaster is the X11/Wayland/Ebiten/Win32-GUI raster path for a
+// checkbox/radio SymGlyph token (symchar.go): the counterpart of
+// drawClassicGlyph for box-drawing runes, sharing the same fillClassicRects
+// fill loop (classic_glyph_raster.go).
+
+// Under GlyphStyleClassic every symbol must decline and draw nothing, so
+// text is byte/pixel-identical to before this change, exactly like
+// TestSymChar_GraphicsPathUnaffected already pins down for the ordinary
+// font path.
+func TestDrawSymGlyphRaster_ClassicDeclines(t *testing.T) {
+	previous := CurrentGlyphStyle()
+	t.Cleanup(func() { SetGlyphStyle(previous) })
+	SetGlyphStyle(GlyphStyleClassic)
+
+	for _, sym := range allSymGlyphs {
+		img := newTestSurface(48, 16)
+		if drawSymGlyphRaster(img, sym, 0, 0, 48, 16, 1, 0xffffff) {
+			t.Errorf("drawSymGlyphRaster(%v) claimed a shape under GlyphStyleClassic", sym)
+		}
+		if litPixels(img) != 0 {
+			t.Errorf("drawSymGlyphRaster(%v) declined under GlyphStyleClassic but still drew", sym)
+		}
+	}
+}
+
+// Under GlyphStyleRounded every checkbox/radio symbol must draw something,
+// and a checked/mixed/selected state must look different from its
+// unchecked/unselected counterpart -- the actual geometric rendering this
+// slice of f4#285 adds.
+func TestDrawSymGlyphRaster_RoundedDrawsAndStatesDiffer(t *testing.T) {
+	previous := CurrentGlyphStyle()
+	t.Cleanup(func() { SetGlyphStyle(previous) })
+	SetGlyphStyle(GlyphStyleRounded)
+
+	imgFor := func(sym SymGlyph) *image.RGBA {
+		img := newTestSurface(48, 16)
+		if !drawSymGlyphRaster(img, sym, 0, 0, 48, 16, 1, 0xffffff) {
+			t.Fatalf("drawSymGlyphRaster(%v) declined under GlyphStyleRounded", sym)
+		}
+		if litPixels(img) == 0 {
+			t.Fatalf("drawSymGlyphRaster(%v) claimed a shape but drew nothing", sym)
+		}
+		return img
+	}
+
+	off, on, mixed := imgFor(SymCheckboxOff), imgFor(SymCheckboxOn), imgFor(SymCheckboxMixed)
+	if bytes.Equal(off.Pix, on.Pix) {
+		t.Error("SymCheckboxOff and SymCheckboxOn rendered identically under GlyphStyleRounded")
+	}
+	if bytes.Equal(off.Pix, mixed.Pix) {
+		t.Error("SymCheckboxOff and SymCheckboxMixed rendered identically under GlyphStyleRounded")
+	}
+	if bytes.Equal(on.Pix, mixed.Pix) {
+		t.Error("SymCheckboxOn and SymCheckboxMixed rendered identically under GlyphStyleRounded")
+	}
+
+	radioOff, radioOn := imgFor(SymRadioOff), imgFor(SymRadioOn)
+	if bytes.Equal(radioOff.Pix, radioOn.Pix) {
+		t.Error("SymRadioOff and SymRadioOn rendered identically under GlyphStyleRounded")
 	}
 }
 

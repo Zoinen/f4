@@ -124,3 +124,48 @@ func TestFolderHistorySkipsUnlistableDirectory(t *testing.T) {
 		t.Error("the skipped entry was reported")
 	}
 }
+
+// TestGetSelectedIsDirReadsCachedCursorEntry checks the vfs.SelectedIsDirHost
+// implementation added for f4#1356: it must answer from the panel's already
+// loaded Entries (the same cached vfs.VFSItem.IsDir GetSelectedName already
+// reads to name the cursor entry), for both a file and a directory, through
+// both FileSystemPanel and the PanelsFrame that delegates to it, and report
+// known=false once the panel has no entries to ask about.
+func TestGetSelectedIsDirReadsCachedCursorEntry(t *testing.T) {
+	t.Cleanup(swapFrameManager(t))
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "folder"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "file.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	fsp := NewFileSystemPanel(0, 0, 80, 24, vfs.NewOSVFS(root))
+	waitForLoad(t, fsp)
+	pf := &PanelsFrame{Panels: [2]Panel{fsp, nil}, ActiveIdx: 0}
+
+	fsp.SelectName("folder")
+	if isDir, known := fsp.GetSelectedIsDir(); !known || !isDir {
+		t.Errorf("FileSystemPanel.GetSelectedIsDir() on a directory = (%v, %v), want (true, true)", isDir, known)
+	}
+	if isDir, known := pf.GetSelectedIsDir(); !known || !isDir {
+		t.Errorf("PanelsFrame.GetSelectedIsDir() on a directory = (%v, %v), want (true, true)", isDir, known)
+	}
+
+	fsp.SelectName("file.txt")
+	if isDir, known := fsp.GetSelectedIsDir(); !known || isDir {
+		t.Errorf("FileSystemPanel.GetSelectedIsDir() on a file = (%v, %v), want (false, true)", isDir, known)
+	}
+	if isDir, known := pf.GetSelectedIsDir(); !known || isDir {
+		t.Errorf("PanelsFrame.GetSelectedIsDir() on a file = (%v, %v), want (false, true)", isDir, known)
+	}
+
+	empty := NewFileSystemPanel(0, 0, 80, 24, vfs.NewOSVFS(root))
+	waitForLoad(t, empty)
+	empty.Entries = nil
+	if isDir, known := empty.GetSelectedIsDir(); known {
+		t.Errorf("GetSelectedIsDir() on an empty panel = (%v, %v), want known=false", isDir, known)
+	}
+}

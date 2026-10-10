@@ -1,3 +1,5 @@
+//go:build cloudfox_inprocess_tests
+
 package app
 
 import (

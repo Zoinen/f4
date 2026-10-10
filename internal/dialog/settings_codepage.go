@@ -92,7 +92,7 @@ func CodepageChoiceIndex(ids []int, current int) int {
 }
 
 // ShowViewerSettings is Options -> Viewer settings: the code page choices, and
-// whether pictures and video open in their own viewers.
+// whether pictures, video and Markdown files open in their own viewers.
 func ShowViewerSettings() {
 	width, height := 78, 14
 	dlg := vtui.NewCenteredDialog(width, height, i18n.Msg("ViewerSettings.Title"))

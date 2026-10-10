@@ -82,6 +82,11 @@ type WaylandHost struct {
 	reader  *vtinput.Reader
 	present waylandPresentWake
 
+	// displayTasks are toolkit calls FrameManager's goroutine needs made on
+	// the DisplayRun goroutine. runOnDisplay queues them; the next present
+	// callback runs them, before its redraw.
+	displayTasks []func()
+
 	imgBuf     *image.RGBA
 	cols, rows int
 	cellW      int
@@ -149,6 +154,7 @@ func runInWaylandWindow(cols, rows int, fontName string, fontSize float64, setup
 	host.win = window.Create(d)
 	host.widget = host.win.AddWidget(host)
 	host.win.SetTitle(AppName + " (Wayland)")
+	host.win.SetAppID(AppID)
 	host.win.SetBufferType(window.BufferTypeShm)
 
 	// Set handlers
@@ -236,12 +242,19 @@ func (h *WaylandHost) Resize(widget *window.Widget, width int32, height int32, p
 	cols, rows := h.cols, h.rows
 	pixelSizeChanged := int(pwidth) != h.imgBuf.Rect.Dx() || int(pheight) != h.imgBuf.Rect.Dy()
 	if pixelSizeChanged {
+		previous := h.imgBuf
 		h.imgBuf = image.NewRGBA(image.Rect(0, 0, int(pwidth), int(pheight)))
 		if !scaleChanged {
 			h.cols = int(pwidth) / h.cellW
 			h.rows = int(pheight) / h.cellH
 		}
 		cols, rows = h.cols, h.rows
+		// The buffer is committed as soon as this configure is handled, well
+		// before FrameManager repaints, so a blank buffer is a black frame on
+		// screen. During a drag-resize the configures outrun the repaints and
+		// the window stays black until the drag ends (f4 #283). Carry the
+		// previous frame over so those commits show the old content instead.
+		carryOverRGBA(h.imgBuf, previous, h.cols*h.cellW, h.rows*h.cellH)
 		h.mu.Unlock()
 
 		if h.reader != nil {
@@ -301,8 +314,18 @@ func (h *WaylandHost) updateScaleLocked(scale float64) bool {
 	if scale <= 0 || math.Abs(h.scale-scale) < 0.001 {
 		return false
 	}
-	face, cellW, cellH := loadBestFont(h.fontName, h.fontSize, 72.0*float64(scale))
 	h.scale = scale
+	h.applyFontLocked(h.fontName, h.fontSize)
+	return true
+}
+
+// applyFontLocked reloads the font face at the dpi implied by the current
+// output scale, and pushes the new cell size to the renderer and the
+// screen's graphics layer. The caller holds h.mu.
+func (h *WaylandHost) applyFontLocked(fontName string, fontSize float64) {
+	face, cellW, cellH := loadBestFont(fontName, fontSize, 72.0*h.scale)
+	h.fontName = fontName
+	h.fontSize = fontSize
 	h.cellW = cellW
 	h.cellH = cellH
 	if h.renderer != nil {
@@ -311,7 +334,35 @@ func (h *WaylandHost) updateScaleLocked(scale float64) bool {
 	if h.screen != nil {
 		h.screen.Graphics().SetCellSize(cellW, cellH)
 	}
-	return true
+}
+
+// SetFont reloads the font used to draw the grid and asks the compositor to
+// resize the window to the new cell size, keeping the grid geometry (cols x
+// rows) unchanged -- the same policy already used by updateScaleLocked when
+// the Wayland output scale changes. It never fails: loadBestFont falls back
+// to a built-in bitmap font when fontName cannot be found.
+//
+// The resize request alone does not repaint: the compositor only sends a
+// fresh configure (which drives the repaint in Resize) when the pixel size
+// actually changes, so a same-size font swap would otherwise leave the old
+// glyphs on screen. HardRefresh is called unconditionally to cover that
+// case.
+func (h *WaylandHost) SetFont(fontName string, fontSize float64) {
+	if fontSize <= 0 {
+		fontSize = 18.0
+	}
+	h.mu.Lock()
+	h.applyFontLocked(fontName, fontSize)
+	widget := h.widget
+	cols, rows, scale, cellW, cellH := h.cols, h.rows, h.scale, h.cellW, h.cellH
+	h.mu.Unlock()
+
+	if widget != nil {
+		widget.ScheduleResize(logicalWaylandPixels(cols*cellW, scale), logicalWaylandPixels(rows*cellH, scale))
+	}
+	if FrameManager != nil {
+		FrameManager.HardRefresh()
+	}
 }
 
 func (h *WaylandHost) Redraw(widget *window.Widget) {
@@ -373,6 +424,16 @@ func (h *WaylandHost) Close() {
 	h.present.close()
 }
 
+// runOnDisplay runs fn on the DisplayRun goroutine, where the window toolkit
+// expects to be called, by queueing it for the present callback and asking
+// for one. A task queued after the host has closed is dropped.
+func (h *WaylandHost) runOnDisplay(fn func()) {
+	h.mu.Lock()
+	h.displayTasks = append(h.displayTasks, fn)
+	h.mu.Unlock()
+	h.requestPresent()
+}
+
 // requestPresent asks the compositor to send a callback. The callback wakes
 // DisplayRun from its blocking socket read and schedules the deferred redraw
 // on the display goroutine, avoiding a cross-goroutine toolkit call.
@@ -416,7 +477,12 @@ func (h *WaylandHost) HandleCallbackDone(event wl.CallbackDoneEvent) {
 
 	h.mu.Lock()
 	widget := h.widget
+	tasks := h.displayTasks
+	h.displayTasks = nil
 	h.mu.Unlock()
+	for _, task := range tasks {
+		task()
+	}
 	if widget != nil {
 		widget.ScheduleRedraw()
 	}
@@ -514,6 +580,27 @@ func (h *WaylandHost) Button(w *window.Widget, input *window.Input, time uint32,
 			ButtonState:     bs,
 			ControlKeyState: h.modsForPointer(input),
 		}
+	}
+}
+
+// carryOverRGBA copies the previous frame into a freshly allocated backing
+// image, clipped to the part of the new grid both images cover. Pixels of the
+// partial right column and bottom row outside the grid are left blank: the
+// renderer never paints them, and carrying them over would leave the previous
+// window size showing there.
+func carryOverRGBA(dst, src *image.RGBA, gridW, gridH int) {
+	if dst == nil || src == nil {
+		return
+	}
+	w := min(min(dst.Rect.Dx(), src.Rect.Dx()), gridW)
+	h := min(min(dst.Rect.Dy(), src.Rect.Dy()), gridH)
+	if w <= 0 || h <= 0 {
+		return
+	}
+	for y := 0; y < h; y++ {
+		dstRow := y * dst.Stride
+		srcRow := y * src.Stride
+		copy(dst.Pix[dstRow:dstRow+w*4], src.Pix[srcRow:srcRow+w*4])
 	}
 }
 

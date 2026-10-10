@@ -179,6 +179,66 @@ type PanelEventResponse struct {
 	// current document, which is useful for events that only need consuming.
 	Document []byte
 	Close    bool
+	// Keys and HasKeys carry the panel's key declaration back to f4. Run fills
+	// them from PanelKeyProvider after every event; a plugin does not set them.
+	Keys    []PanelKey
+	HasKeys bool
+}
+
+// PanelKey is one key a panel binds while it has the focus (f4#312). VK is a
+// vtinput virtual key code and Mods uses the vtinput modifier bits; only
+// whether Ctrl, Alt and Shift are held matters, left and right variants are
+// the same. Label is the keybar caption, already localized, and is shown for
+// F1..F12 with no modifier or exactly one of Shift, Ctrl or Alt; an empty
+// Label binds the key without a caption. Disabled dims the caption and makes
+// f4 consume the key without sending it to the plugin.
+//
+// While the panel has the focus a declared key reaches the plugin before any
+// f4 hotkey or global plugin hotkey, and f4's file-panel captions stand down.
+type PanelKey struct {
+	VK       uint16
+	Mods     uint32
+	Label    string
+	Disabled bool
+}
+
+// Matches reports whether event is a key-down event for k, comparing
+// modifiers the way f4 does.
+func (k PanelKey) Matches(event vtinput.InputEvent) bool {
+	if event.Type != vtinput.KeyEventType || !event.KeyDown || event.VirtualKeyCode != k.VK {
+		return false
+	}
+	return panelKeyMods(uint32(event.ControlKeyState)) == panelKeyMods(k.Mods)
+}
+
+func panelKeyMods(m uint32) uint32 {
+	var out uint32
+	if m&uint32(vtinput.LeftCtrlPressed|vtinput.RightCtrlPressed) != 0 {
+		out |= uint32(vtinput.LeftCtrlPressed)
+	}
+	if m&uint32(vtinput.LeftAltPressed|vtinput.RightAltPressed) != 0 {
+		out |= uint32(vtinput.LeftAltPressed)
+	}
+	if m&uint32(vtinput.ShiftPressed) != 0 {
+		out |= uint32(vtinput.ShiftPressed)
+	}
+	return out
+}
+
+// PanelKeyProvider is an optional extension of PanelProvider that declares
+// the keys of an open panel. Run asks for the set after OpenPanel and after
+// every HandlePanelEvent and sends it along with the answer, so a set that
+// depends on the panel's state (a key that only makes sense with a row under
+// the cursor) is refreshed whenever that state can have changed. It must be
+// cheap and must not block.
+//
+// A declared key arrives as an ordinary HandlePanelEvent of Kind "key"; use
+// PanelKey.Matches to recognize it. A key declared Disabled never reaches
+// HandlePanelEvent, whichever f4 version hosts the plugin: f4 builds that
+// predate panel keys ignore the declaration and send every key as before, and
+// Run consumes a disabled one for them.
+type PanelKeyProvider interface {
+	PanelKeys(id string) []PanelKey
 }
 
 // PanelProvider is an optional extension for plugins that own a full panel
@@ -223,6 +283,13 @@ type Plugin interface {
 // Run attaches the plugin to stdin/stdout and starts the RPC server loop.
 func Run(p Plugin) {
 	_ = run(p, os.Stdin, os.Stdout, os.Stderr)
+}
+
+// Serve runs the plugin's RPC server loop over the given streams instead of
+// stdin/stdout, for example to host a plugin in process in a test. It returns
+// when in reaches EOF or a transport error occurs.
+func Serve(p Plugin, in io.Reader, out io.Writer) error {
+	return run(p, in, out, os.Stderr)
 }
 
 func run(p Plugin, stdin io.Reader, stdout, stderr io.Writer) error {
@@ -283,7 +350,12 @@ func run(p Plugin, stdin io.Reader, stdout, stderr io.Writer) error {
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"Document": document}, nil
+		response := map[string]any{"Document": document}
+		if keys, ok := p.(PanelKeyProvider); ok {
+			response["Keys"] = keys.PanelKeys(request.ID)
+			response["HasKeys"] = true
+		}
+		return response, nil
 	})
 
 	sess.Register("Plugin.PanelEvent", func(data msgpack.RawMessage) (any, error) {
@@ -295,7 +367,22 @@ func run(p Plugin, stdin io.Reader, stdout, stderr io.Writer) error {
 		if err := msgpack.Unmarshal(data, &request); err != nil {
 			return nil, err
 		}
-		return panels.HandlePanelEvent(request)
+		keys, declares := p.(PanelKeyProvider)
+		if !declares {
+			return panels.HandlePanelEvent(request)
+		}
+		var response PanelEventResponse
+		if request.Kind == "key" && disabledPanelKey(keys.PanelKeys(request.ID), request.Event) {
+			response.Handled = true
+		} else {
+			var err error
+			if response, err = panels.HandlePanelEvent(request); err != nil {
+				return response, err
+			}
+		}
+		response.Keys = keys.PanelKeys(request.ID)
+		response.HasKeys = true
+		return response, nil
 	})
 
 	sess.Register("Plugin.ClosePanel", func(data msgpack.RawMessage) (any, error) {
@@ -425,6 +512,17 @@ func run(p Plugin, stdin io.Reader, stdout, stderr io.Writer) error {
 	})
 
 	return sess.Serve()
+}
+
+// disabledPanelKey reports whether the first declared key matching event is
+// disabled, mirroring the host's dispatcher.
+func disabledPanelKey(keys []PanelKey, event vtinput.InputEvent) bool {
+	for _, key := range keys {
+		if key.Matches(event) {
+			return key.Disabled
+		}
+	}
+	return false
 }
 
 func (h *Host) RegisterHighlighter() {

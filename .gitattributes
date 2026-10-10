@@ -2,3 +2,18 @@
 *.raw binary
 # Dialog-title values intentionally retain padding spaces for the terminal UI.
 *.lng whitespace=-trailing-space
+
+# internal/vtvibe/ap's line-ending reference fixtures (upstream ap's
+# 54_crlf_preservation, 56_insert_noop, 57_explicit_lf) test exactly which
+# line endings the patcher detects and writes, so they are compared byte for
+# byte. A Windows checkout with core.autocrlf would rewrite their LF to CRLF
+# and change what the case tests; keep them as committed.
+internal/vtvibe/ap/testdata/reftests/*/54_crlf* -text
+internal/vtvibe/ap/testdata/reftests/*/56_insert_noop* -text
+internal/vtvibe/ap/testdata/reftests/*/57_explicit_lf* -text
+
+# The packaged launcher is compared byte for byte with the one internal/install
+# generates (TestDesktopEntryMatchesThePackagedOne), and a .desktop file must be
+# LF on every platform anyway. A Windows checkout with core.autocrlf would turn
+# it into CRLF and fail that test.
+*.desktop text eol=lf

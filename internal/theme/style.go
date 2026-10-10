@@ -149,17 +149,38 @@ func colorIniDefinesSlot(ini *ini.File, slot ColorSlot) bool {
 	return false
 }
 
+// isCompleteColorIni reports whether ini defines (almost) every color slot,
+// i.e. it looks like a full replacement scheme rather than a handful of
+// tweaks meant to sit on top of whichever style is active.
+//
+// This does not require literal 100% coverage. ColorSlots keeps growing as
+// f4 gains new themeable elements, so a farcolors.ini that was a complete
+// export at the time it was written will, release after release, define a
+// shrinking fraction of the *current* slot list even though nothing about
+// the file itself changed. Demanding exact coverage made such a file look
+// "partial" and forced nearly all of its colors onto every built-in style,
+// silently ignoring whatever theme was actually selected in Settings
+// (f4#107). A generous coverage threshold tolerates that drift while still
+// rejecting a file that only overrides a couple of colors.
 func isCompleteColorIni(ini *ini.File) bool {
+	const minCoverage = 0.9 // tolerate slots added to f4 after the file was written
+
+	total := 0
+	defined := 0
 	for _, slot := range ColorSlots {
 		// Older complete exports predate this optional, inherited background.
 		if slot.Index == vtui.ColDialogIndicatorBackground || slot.Index == ColDialogSettingsBackground {
 			continue
 		}
-		if !colorIniDefinesSlot(ini, slot) {
-			return false
+		total++
+		if colorIniDefinesSlot(ini, slot) {
+			defined++
 		}
 	}
-	return true
+	if total == 0 {
+		return true
+	}
+	return float64(defined)/float64(total) >= minCoverage
 }
 
 func isStandaloneCustomColorIni(ini *ini.File) bool {
@@ -208,6 +229,11 @@ func ApplyColorStyle(name string) error {
 			themeStyle = base
 		}
 		ApplyColorIni(style.ini)
+		// Elements f4 gained since the file was written are added to it, with
+		// the colours the palette holds now (f4#234).
+		if added := AddMissingColorKeys(UserColorOverridesPath(), style.ini); added > 0 {
+			vtui.DebugLog("THEME: %d new colour elements added to %s", added, UserColorOverridesPath())
+		}
 		// A pre-existing custom theme did not opt into indicator surfaces,
 		// even if its fallback base now defines the newly introduced slot.
 		for _, optional := range []ColorSlot{

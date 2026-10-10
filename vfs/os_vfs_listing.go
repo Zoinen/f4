@@ -5,7 +5,25 @@ import (
 	"os"
 
 	"github.com/unxed/f4/vfs/hostfs"
+	"github.com/unxed/vtui"
 )
+
+// CheckDirectoryListable applies SetPath's listing-permission check without
+// Stat, reading directory entries, contacting sudo or changing the current
+// path. Relative paths are resolved against this VFS's current directory.
+// Callers navigating an authoritative directory row can check this before
+// SetPathOptimistic to preserve the up-front refusal of unlistable folders.
+// As with SetPath, an available elevation route permits access; errors other
+// than permission refusals remain for the subsequent ReadDir to report.
+func (v *OSVFS) CheckDirectoryListable(path string) error {
+	abs, err := v.Abs(path)
+	if err != nil {
+		return err
+	}
+	err = refuseNotListable(abs)
+	vtui.DebugLog("[FIX:directory-listability] check path=%q err=%v", abs, err)
+	return err
+}
 
 // NotListableError is what OSVFS.SetPath returns for a directory that exists
 // but whose contents the host refuses to list, when no elevation route can
@@ -52,7 +70,7 @@ func checkOSDirListable(dir string) error {
 func openOSDirOnce(dir string) error {
 	f, err := hostfs.Open(prepareOSPath(dir))
 	if err != nil {
-		return err
+		return displayPathError(err)
 	}
 	_ = f.Close() // Only whether the open succeeds is in question; nothing was read.
 	return nil
@@ -71,5 +89,29 @@ func refuseNotListable(dir string) error {
 	if globalSudoClient.IsAvailable() {
 		return nil
 	}
-	return &NotListableError{Path: dir, Err: err}
+	return displayPathError(&NotListableError{Path: dir, Err: err})
+}
+
+// NeedsElevationToEnter reports whether an ordinary, unprivileged open of dir
+// -- the access SetPath's own refuseNotListable checks, and the same one
+// ReadDir and a plain shell's own "cd" need -- would be refused, with the
+// sudo helper available to do it instead.
+//
+// This is not OSVFS.NeedsElevation: that one asks whether a bare Stat of a
+// path needs elevation, which is true for a path nested one level inside a
+// directory that already refuses listing, but false for the boundary
+// directory itself (a plain Stat of it only walks its parents, never checks
+// its own permission bits -- the same reason SetPath's own resolveAndStat
+// happily resolves a mode-0700 folder someone else owns). This instead does
+// the real access check, so it correctly reports "needs sudo" for that far
+// more common case: the folder the active panel is actually sitting in,
+// which is exactly what a caller deciding whether a plain unprivileged
+// shell's own "cd" can reach it needs to know (f4#1255).
+//
+// It costs one real open+close, exactly like checkOSDirListable itself; it
+// never calls into the sudo helper, so -- like NeedsElevation -- it is safe
+// to call from the UI goroutine.
+func (v *OSVFS) NeedsElevationToEnter(dir string) bool {
+	err := checkOSDirListable(dir)
+	return err != nil && os.IsPermission(err) && globalSudoClient.IsAvailable()
 }

@@ -148,6 +148,27 @@ func TestPluginHotkeyDialogRejectsDelAndAssignsLetters(t *testing.T) {
 	}
 }
 
+func TestDriveMenuHotkeyDialogUsesPersistentMenuNamespace(t *testing.T) {
+	restoreManager := paneltest.SwapFrameManager(t)
+	defer restoreManager()
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	actionName := keymap.DriveMenuActionName("other")
+	hm := &keymap.HotkeyManager{
+		Bindings: map[string]map[string]string{"Shell": {}},
+		Defaults: map[string]map[string]string{},
+		IniPath:  filepath.Join(t.TempDir(), "hotkeys.ini"),
+	}
+	frame := panel.NewPluginHotkeyAssignFrame(hm, actionName, "Other panel", nil)
+	vtui.FrameManager.Push(frame)
+	if !frame.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_Q, Char: 'q'}) {
+		t.Fatal("drive menu hotkey dialog ignored a letter")
+	}
+	if got := hm.Bindings["Shell"]["Q"]; got != actionName {
+		t.Fatalf("drive menu hot key = %q, want %q", got, actionName)
+	}
+}
+
 func TestDeletePluginHotkeyGivesTheKeyBackToItsDefault(t *testing.T) {
 	hm := &keymap.HotkeyManager{
 		Bindings: map[string]map[string]string{"Shell": {"Del": "Plugin.Legacy.0"}},

@@ -31,6 +31,10 @@ type WaylandRenderer struct {
 
 	stats renderStats
 
+	// frameW and frameH are the cell size of the frame rendered last, so a
+	// frame of another size is known to need its margins cleared.
+	frameW, frameH int
+
 	gfxList  []ImagePlacement
 	gfxCache nativeGraphicsCache
 	gfxGen   uint64
@@ -93,6 +97,36 @@ func (r *WaylandRenderer) ResizeWindow(cols, rows int) {
 	}
 }
 
+// SetFont changes the font of the already-open window without recreating
+// it: see WaylandHost.SetFont. It always reports true, since Wayland is
+// currently the only backend implementing GUI font hot-swap (vtui #136).
+func (r *WaylandRenderer) SetFont(fontName string, fontSize float64) bool {
+	r.host.SetFont(fontName, fontSize)
+	return true
+}
+
+// ToggleMaximized asks the compositor to maximize the window, or to restore
+// it when it is maximized (xdg_toplevel set_maximized / unset_maximized).
+// The toolkit tracks the state from the compositor's configure events on the
+// DisplayRun goroutine, so the toggle runs there.
+func (r *WaylandRenderer) ToggleMaximized() bool {
+	r.host.mu.Lock()
+	win := r.host.win
+	r.host.mu.Unlock()
+
+	if win == nil {
+		return false
+	}
+	r.host.runOnDisplay(func() {
+		if err := win.ToggleMaximized(); err != nil {
+			DebugLog("WAYLAND: toggle maximized failed: %v", err)
+			return
+		}
+		DebugLog("WAYLAND: toggle maximized requested")
+	})
+	return true
+}
+
 // RenderGraphics implements GraphicsRenderer. The Wayland host pushes the
 // whole buffer to the compositor on every flush, so unlike X11 there are no
 // dirty lines to mark.
@@ -138,20 +172,21 @@ func (r *WaylandRenderer) Render(buf, shadow []CharInfo, w, h int, forceRedraw b
 	r.host.mu.Lock()
 	defer r.host.mu.Unlock()
 
-	now := time.Now()
-	if now.Sub(r.lastBlinkTime) >= 500*time.Millisecond {
-		r.blinkState = !r.blinkState
-		r.lastBlinkTime = r.lastBlinkTime.Add(500 * time.Millisecond)
-		if now.Sub(r.lastBlinkTime) >= 500*time.Millisecond {
-			r.lastBlinkTime = now
-		}
-	}
+	stepSoftwareBlink(&r.blinkState, &r.lastBlinkTime, time.Now())
 
 	cursorVisible := r.cursorVis && r.blinkState
 
 	r.w, r.h = w, h
 	img := r.host.imgBuf
 	cw, ch := r.host.cellW, r.host.cellH
+
+	// Whatever lies outside the grid of this frame is blank, whatever an
+	// earlier frame of another size left there (see clearFrameMargins).
+	if cw > 0 && ch > 0 && (forceRedraw || w != r.frameW || h != r.frameH) {
+		clearFrameMargins(img, w*cw, h*ch)
+		r.frameW, r.frameH = w, h
+		forceRedraw = true
+	}
 
 	for y := 0; y < h; y++ {
 		r.stats.totalRows++
@@ -226,6 +261,28 @@ func (r *WaylandRenderer) Render(buf, shadow []CharInfo, w, h int, forceRedraw b
 					continue
 				}
 
+				if IsSymChar(currCell.Char) && sx+2 < spanW && currX+2 < w {
+					if sym, symOk := symGlyphAt(currCell.Char, buf[cIdx+1].Char, buf[cIdx+2].Char); symOk {
+						scale := int(math.Ceil(r.host.scale))
+						cpx := currX * cw
+						cfg, _ := r.getCellColors(currCell)
+						if drawSymGlyphRaster(img, sym, cpx, py, cw*3, ch, scale, cfg) {
+							r.stats.glyphs++
+							if currCell.Attributes&CommonLvbUnderscore != 0 {
+								drawUnderline(img, cpx, py, cw*3, ch, scale, cfg)
+							}
+							for k := 0; k < 3; k++ {
+								colX := currX + k
+								if cursorVisible && y == r.cursorY && r.cursorX == colX {
+									invertCursorRect(img.Pix, img.Stride, img.Rect.Max.X, img.Rect.Max.Y, colX*cw, py, r.cursorShape, cw, ch, r.host.scale > 1)
+								}
+							}
+							sx += 3
+							continue
+						}
+					}
+				}
+
 				char := CellBaseRune(currCell.Char)
 				_, rw := CellSpanAt(buf, w, currX, y)
 
@@ -245,35 +302,7 @@ func (r *WaylandRenderer) Render(buf, shadow []CharInfo, w, h int, forceRedraw b
 				}
 
 				if cursorVisible && y == r.cursorY && r.cursorX >= currX && r.cursorX < currX+rw {
-					var startY int
-					if r.cursorShape == CursorShapeBlock {
-						startY = 0
-					} else {
-						thickness := 2
-						if r.host.scale > 1 {
-							thickness = 4
-						}
-						startY = ch - thickness
-					}
-					for iy := startY; iy < ch; iy++ {
-						pixelY := py + iy
-						if pixelY < 0 || pixelY >= img.Rect.Max.Y {
-							continue
-						}
-						rowStart := pixelY * img.Stride
-						for ix := 0; ix < cw*rw; ix++ {
-							pixelX := cpx + ix
-							if pixelX < 0 || pixelX >= img.Rect.Max.X {
-								continue
-							}
-							off := rowStart + pixelX*4
-							if off+2 < len(img.Pix) {
-								img.Pix[off] = 255 - img.Pix[off]
-								img.Pix[off+1] = 255 - img.Pix[off+1]
-								img.Pix[off+2] = 255 - img.Pix[off+2]
-							}
-						}
-					}
+					invertCursorRect(img.Pix, img.Stride, img.Rect.Max.X, img.Rect.Max.Y, cpx, py, r.cursorShape, cw*rw, ch, r.host.scale > 1)
 				}
 				sx += rw
 			}

@@ -43,8 +43,9 @@ func ActiveBackend() string {
 	return activeBackend
 }
 
-// BackendDetails returns a copy of the extra facts reported by the active
-// backend through SetActiveBackend.
+// BackendDetails returns the extra facts the active backend reported through
+// SetActiveBackend, for an about box that lays them out itself rather than
+// taking BackendAbout's text. It is empty when the backend reported none.
 func BackendDetails() []string {
 	backendMu.RLock()
 	defer backendMu.RUnlock()

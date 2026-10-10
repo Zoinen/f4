@@ -98,7 +98,7 @@ func newComDropTarget(h *Win32GuiHost) *comDropTarget {
 
 func (t *comDropTarget) toIUnknown() uintptr { return uintptr(unsafe.Pointer(t)) }
 
-func comDropTargetQueryInterface(this uintptr, riid *guid, ppvObject *uintptr) uintptr {
+func comDropTargetQueryInterface(t *comDropTarget, riid *guid, ppvObject *uintptr) uintptr {
 	if ppvObject == nil {
 		return ePointer
 	}
@@ -106,8 +106,7 @@ func comDropTargetQueryInterface(this uintptr, riid *guid, ppvObject *uintptr) u
 		return eNoInterface
 	}
 	if guidEqual(*riid, iidIUnknown) || guidEqual(*riid, iidIDropTarget) {
-		*ppvObject = this
-		t := (*comDropTarget)(unsafe.Pointer(this))
+		*ppvObject = t.toIUnknown()
 		atomic.AddInt32(&t.refCount, 1)
 		return sOK
 	}
@@ -115,16 +114,14 @@ func comDropTargetQueryInterface(this uintptr, riid *guid, ppvObject *uintptr) u
 	return eNoInterface
 }
 
-func comDropTargetAddRef(this uintptr) uintptr {
-	t := (*comDropTarget)(unsafe.Pointer(this))
+func comDropTargetAddRef(t *comDropTarget) uintptr {
 	return uintptr(atomic.AddInt32(&t.refCount, 1))
 }
 
-func comDropTargetRelease(this uintptr) uintptr {
-	t := (*comDropTarget)(unsafe.Pointer(this))
+func comDropTargetRelease(t *comDropTarget) uintptr {
 	count := atomic.AddInt32(&t.refCount, -1)
 	if count <= 0 {
-		comReleaseFinal(this)
+		comReleaseFinal(t.toIUnknown())
 	}
 	return uintptr(count)
 }
@@ -136,9 +133,13 @@ func comDropTargetRelease(this uintptr) uintptr {
 // amd64/arm64 constraint on this file protects: under 32-bit stdcall the
 // same struct occupies two stack slots and would have to be declared as two
 // separate arguments.
+//
+// "this" arrives typed as *comDropTarget because it is one of our own Go
+// objects (see comLive). pDataObj arrives as an unsafe.Pointer because it
+// is whatever IDataObject the source handed OLE, and it stays that type all
+// the way to the vtable call, so neither is ever rebuilt from an integer.
 
-func comDropTargetDragEnter(this, pDataObj, grfKeyState, pt uintptr, pdwEffect *uint32) uintptr {
-	t := (*comDropTarget)(unsafe.Pointer(this))
+func comDropTargetDragEnter(t *comDropTarget, pDataObj unsafe.Pointer, grfKeyState, pt uintptr, pdwEffect *uint32) uintptr {
 	paths := win32PathsFromDataObject(pDataObj)
 	t.mu.Lock()
 	t.paths = paths
@@ -147,13 +148,11 @@ func comDropTargetDragEnter(this, pDataObj, grfKeyState, pt uintptr, pdwEffect *
 	return t.answer(DragEnter, grfKeyState, pt, pdwEffect)
 }
 
-func comDropTargetDragOver(this, grfKeyState, pt uintptr, pdwEffect *uint32) uintptr {
-	t := (*comDropTarget)(unsafe.Pointer(this))
+func comDropTargetDragOver(t *comDropTarget, grfKeyState, pt uintptr, pdwEffect *uint32) uintptr {
 	return t.answer(DragOver, grfKeyState, pt, pdwEffect)
 }
 
-func comDropTargetDragLeave(this uintptr) uintptr {
-	t := (*comDropTarget)(unsafe.Pointer(this))
+func comDropTargetDragLeave(t *comDropTarget) uintptr {
 	t.mu.Lock()
 	t.paths = nil
 	t.mu.Unlock()
@@ -162,8 +161,7 @@ func comDropTargetDragLeave(this uintptr) uintptr {
 	return sOK
 }
 
-func comDropTargetDrop(this, pDataObj, grfKeyState, pt uintptr, pdwEffect *uint32) uintptr {
-	t := (*comDropTarget)(unsafe.Pointer(this))
+func comDropTargetDrop(t *comDropTarget, pDataObj unsafe.Pointer, grfKeyState, pt uintptr, pdwEffect *uint32) uintptr {
 	// The data object handed to Drop is the authoritative one: a source is
 	// free to fill in during the drop a format it only promised during the
 	// drag, so ask again rather than trusting what DragEnter saw.
@@ -308,8 +306,8 @@ func floorDiv(a, b int) int {
 // win32PathsFromDataObject asks a foreign IDataObject for CF_HDROP and
 // decodes the DROPFILES block it hands back. Nothing here may assume the
 // object is one of ours, so the call goes through its vtable.
-func win32PathsFromDataObject(pDataObj uintptr) []string {
-	if pDataObj == 0 {
+func win32PathsFromDataObject(pDataObj unsafe.Pointer) []string {
+	if pDataObj == nil {
 		return nil
 	}
 	fe := formatEtc{
@@ -319,9 +317,9 @@ func win32PathsFromDataObject(pDataObj uintptr) []string {
 		tymed:    tymedHGLOBAL,
 	}
 	var med stgMedium
-	vtbl := *(**[16]uintptr)(unsafe.Pointer(pDataObj))
+	vtbl := *(**[16]uintptr)(pDataObj)
 	hr, _, _ := syscall.SyscallN(vtbl[slotDataObjectGetData],
-		pDataObj, uintptr(unsafe.Pointer(&fe)), uintptr(unsafe.Pointer(&med)))
+		uintptr(pDataObj), uintptr(unsafe.Pointer(&fe)), uintptr(unsafe.Pointer(&med)))
 	if uint32(hr) != sOK {
 		DebugLog("WIN32_DND: IDataObject.GetData(CF_HDROP) failed hr=0x%08X", uint32(hr))
 		return nil
@@ -336,19 +334,20 @@ func win32PathsFromDataObject(pDataObj uintptr) []string {
 		return nil
 	}
 	defer procGlobalUnlock.Call(med.handle)
-	return parseHDROP(ptr, size)
+	// ptr is GlobalLock's view of a block the source allocated.
+	return parseHDROP(winPtr(ptr), size)
 }
 
 // parseHDROP walks the file list of a DROPFILES block: a run of
 // NUL-terminated names closed by an empty one. size bounds the walk, so a
 // block that is malformed or missing its final terminator cannot send this
 // off the end of the allocation.
-func parseHDROP(base, size uintptr) []string {
+func parseHDROP(base unsafe.Pointer, size uintptr) []string {
 	header := unsafe.Sizeof(dropFiles{})
 	if size < header {
 		return nil
 	}
-	df := (*dropFiles)(unsafe.Pointer(base))
+	df := (*dropFiles)(base)
 	off := uintptr(df.pFiles)
 	if off < header || off >= size {
 		return nil
@@ -359,7 +358,7 @@ func parseHDROP(base, size uintptr) []string {
 		for off+2 <= size {
 			var name []uint16
 			for off+2 <= size {
-				c := *(*uint16)(unsafe.Pointer(base + off))
+				c := *(*uint16)(unsafe.Add(base, off))
 				off += 2
 				if c == 0 {
 					break
@@ -376,7 +375,7 @@ func parseHDROP(base, size uintptr) []string {
 	for off < size {
 		var name []byte
 		for off < size {
-			c := *(*byte)(unsafe.Pointer(base + off))
+			c := *(*byte)(unsafe.Add(base, off))
 			off++
 			if c == 0 {
 				break
@@ -407,11 +406,11 @@ func win32RegisterDropTarget(h *Win32GuiHost, hwnd syscall.Handle) {
 	hr, _, _ := procRegisterDragDrop.Call(uintptr(hwnd), t.toIUnknown())
 	if uint32(hr) != sOK {
 		DebugLog("WIN32_DND: RegisterDragDrop failed hr=0x%08X, only WM_DROPFILES will work", uint32(hr))
-		comDropTargetRelease(t.toIUnknown())
+		comDropTargetRelease(t)
 		return
 	}
 	h.mu.Lock()
-	h.dropTarget = t.toIUnknown()
+	h.dropTarget = unsafe.Pointer(t)
 	h.mu.Unlock()
 	DebugLog("WIN32_DND: RegisterDragDrop succeeded, the window now answers drags")
 }
@@ -424,14 +423,14 @@ func win32RevokeDropTarget(h *Win32GuiHost, hwnd syscall.Handle) {
 		return
 	}
 	h.mu.Lock()
-	this := h.dropTarget
-	h.dropTarget = 0
+	t := (*comDropTarget)(h.dropTarget)
+	h.dropTarget = nil
 	h.mu.Unlock()
-	if this == 0 {
+	if t == nil {
 		return
 	}
 	if hwnd != 0 {
 		procRevokeDragDrop.Call(uintptr(hwnd))
 	}
-	comDropTargetRelease(this)
+	comDropTargetRelease(t)
 }

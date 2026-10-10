@@ -91,6 +91,11 @@ func TestPluginPrefersRichCommandAndUnregistersIt(t *testing.T) {
 		len(command.SearchKeys) != 3 || command.Run == nil {
 		t.Fatalf("rich command metadata = %#v", command)
 	}
+	// Enabled dims the menu item/command-palette entry instead of letting
+	// it pop an error dialog on a file the editor cannot handle (f4#1356).
+	if command.Enabled == nil {
+		t.Fatal("rich command has no Enabled predicate")
+	}
 	if err := plugin.Close(); err != nil {
 		t.Fatal(err)
 	}

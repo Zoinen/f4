@@ -21,7 +21,7 @@ func TestCloneHistoryFromCopiesOutputWithoutSharingSession(t *testing.T) {
 	source.Pty = &mockPtyForTerminal{}
 	source.Win32InputMode = true
 	source.BracketedPasteMode = true
-	source.KittyFlags = 7
+	source.KittyFlags.Store(7)
 	source.SelActive = true
 	destination := NewTerminalView(32, 4)
 	destinationPTY := &mockPtyForTerminal{}
@@ -32,7 +32,7 @@ func TestCloneHistoryFromCopiesOutputWithoutSharingSession(t *testing.T) {
 		t.Fatal("inherited history lost or duplicated output across the history stores")
 	}
 	if destination.Pty != destinationPTY || destination.Win32InputMode || destination.BracketedPasteMode ||
-		destination.KittyFlags != 0 || destination.SelActive || destination.UseAltScreen {
+		destination.KittyFlags.Load() != 0 || destination.SelActive || destination.UseAltScreen {
 		t.Fatal("history inheritance copied source shell ownership or protocol state")
 	}
 	if source.Pt == destination.Pt || source.Li == destination.Li || source.Engine == destination.Engine {

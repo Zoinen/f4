@@ -28,6 +28,16 @@ detection returns `none`, since a multiplexer that swallows half of an image
 leaves the session in a mess. An application that can probe the terminal
 should call `scr.Graphics().SetProtocol(...)` with the result.
 
+## iTerm2 inline images
+
+`GraphicsITerm2` (iTerm2, and terminals that speak its protocol, WezTerm and
+mintty among them) draws a placement with `OSC 1337 ; File=inline=1`. Each
+placement is cropped to its source rectangle, shrunk to the pixel size of the
+cells it covers when the source is larger, sent as a PNG, and stretched by the
+terminal over exactly `Cols x Rows` cells. The picture is cell content, like a
+sixel: nothing is sent to remove it, the layer repaints it whenever the text
+under it was repainted, and a forced redraw drops the encoder's cache.
+
 ## Redraw rules
 
 Terminal graphics live above the cell grid, so an image has to be sent again

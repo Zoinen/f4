@@ -7,7 +7,6 @@ import (
 	"github.com/unxed/vtui"
 	"os"
 	"os/exec"
-	"runtime"
 	"strings"
 )
 
@@ -21,35 +20,16 @@ func shellCommandFlag() string {
 	return "-c"
 }
 
-// waitForAnyKey reads a single keystroke immediately using _getch on Windows/Wine or stdin read on Unix.
-var WaitForAnyKey = func() {
-	if runtime.GOOS == "windows" {
-		mod := os.Getenv("COMSPEC")
-		_ = mod
-		if proc := modMsvcrtProc(); proc != nil {
-			proc.Call()
-			return
-		}
-	}
-	var buf [1]byte
-	_, _ = os.Stdin.Read(buf[:])
-}
-
 // FitConsoleWindow brings the host console's window down to the cursor after
 // output has been written to it (terminal.ScrollHostConsoleToCursor). It is a
-// variable, like WaitForAnyKey, so a test can see when it is called relative
-// to what has been printed.
+// variable so a test can see when it is called relative to what has been
+// printed.
 var FitConsoleWindow = terminal.ScrollHostConsoleToCursor
 
-func modMsvcrtProc() interface {
-	Call(...uintptr) (uintptr, uintptr, error)
-} {
-	return terminal.MsvcrtProc()
-}
-
-// runSimpleInlineCommand executes a command directly in the host console without a terminal.PTY
-// by suspending vtui, running the command with inherited stdio, waiting for a keypress,
-// and restoring vtui.
+// RunSimpleInlineCommand executes a command directly in the host console
+// without a terminal.PTY: it suspends vtui, runs the command with inherited
+// stdio, and gives the screen back to f4 as soon as the command exits. The
+// output stays in the host console, where Ctrl+O shows it.
 func (pf *PanelsFrame) RunSimpleInlineCommand(dir, command string) {
 	shell := terminal.GetSystemShell()
 
@@ -159,14 +139,25 @@ func (pf *PanelsFrame) RunSimpleInlineCommand(dir, command string) {
 		return
 	}
 
-	fmt.Print("\r\nPress any key to return to f4...")
-	// The prompt itself moved the cursor two rows further, past a window
-	// that the FitConsoleWindow call above fitted to the child's last line
-	// -- and ReactOS does not follow it there. Fit the window again, so the
-	// user waiting on this prompt sees the prompt and the end of the output
-	// above it, not a window stuck somewhere in the middle (WINE.md §17.6).
-	FitConsoleWindow()
-	WaitForAnyKey()
+	// Launched from the panels: go straight back to them, the way Far and
+	// far2l do, and the way f4 itself does wherever it has a PTY
+	// (CONSOLE_MODES.md §4.8). There used to be a "Press any key to return
+	// to f4..." pause here (#897); the output it held on screen is not lost
+	// without it -- it stays in the host console, and Ctrl+O shows it.
+	//
+	// That Ctrl+O view paints the far-style overlay (command line and
+	// keybar) over the bottom rows of the console window, which is where
+	// the child's last lines are whenever its output reached the bottom of
+	// the window. The prompt used to push them up out of those rows as a
+	// side effect. Do it on purpose now, the same way the console-view
+	// branch above does, so the end of the output is not the part the
+	// overlay hides. The newlines can move the cursor below the window
+	// again, and ReactOS does not follow it there (WINE.md §17.6), so fit
+	// the window once more before the snapshot below reads it.
+	if n := pf.OverlayLines(); n > 0 {
+		os.Stdout.WriteString(strings.Repeat("\r\n", n))
+		FitConsoleWindow()
+	}
 
 	captureHostConsoleBuffer(pf.LastW, pf.LastH)
 
