@@ -11,7 +11,7 @@ func startGated(t *testing.T, rules string, replies ...string) (WorkerResult, *[
 	t.Helper()
 	srv, got := fakeAgentServer(t, replies...)
 	var w Workers
-	w.SetGateRules(func() string { return rules })
+	w.SetGates(GateRules{User: func() string { return rules }})
 	done := make(chan WorkerResult, 1)
 	cfg := func() Config { return Config{BaseURL: srv.URL, Model: "m", APIKey: "k"} }
 	w.Start("clean the build folder", t.TempDir(), cfg, func() []Tool { return nil }, func(r WorkerResult) { done <- r })

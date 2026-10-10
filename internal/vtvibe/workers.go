@@ -26,7 +26,9 @@ type WorkerResult struct {
 	// its last objections when the work never passed (gates.go).
 	GateReturns int
 	Gate        string
-	Err         error
+	// Learned is the rule the manager formed from this run, if any.
+	Learned string
+	Err     error
 }
 
 // maxWorkerRestarts bounds how often one task is started again after
@@ -39,17 +41,18 @@ type Workers struct {
 	next    int
 	running map[int]context.CancelFunc
 	tasks   map[int]string
-	// rules gives the user's gate rules; empty rules mean no gate.
-	rules func() string
+	// gates gives the gate's rules; with none there is no gate (gates.go,
+	// gates_learn.go).
+	gates GateRules
 }
 
-// SetGateRules makes every finished task pass the gate with the rules rules
-// returns (asked each time, so edited rules count at once); nil switches the
-// gate off.
-func (w *Workers) SetGateRules(rules func() string) {
+// SetGates makes every finished task pass the gate with the rules gates
+// gives (asked each time, so edited rules count at once) and lets the
+// manager learn rules from runs that went wrong.
+func (w *Workers) SetGates(gates GateRules) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.rules = rules
+	w.gates = gates
 }
 
 // Running returns the tasks in progress by id.
@@ -75,10 +78,20 @@ func (w *Workers) Start(task, dir string, config func() Config, tools func() []T
 	w.next++
 	id := w.next
 	w.running[id], w.tasks[id] = cancel, task
-	rules := w.rules
+	gates := w.gates
 	w.mu.Unlock()
 	go func() {
-		result := runGatedWorker(ctx, id, task, dir, config, tools, rules)
+		result := runGatedWorker(ctx, id, task, dir, config, tools, gates.text)
+		if gates.Learn != nil && worthLearning(result) && ctx.Err() == nil {
+			// The manager learns from the run before reporting it.
+			rule, usage, err := config().DistillRule(ctx, gates.text(), result)
+			result.Usage.In += usage.In
+			result.Usage.Out += usage.Out
+			if err == nil && rule != "" {
+				gates.Learn(rule)
+				result.Learned = rule
+			}
+		}
 		w.mu.Lock()
 		delete(w.running, id)
 		delete(w.tasks, id)
@@ -106,7 +119,13 @@ func (w *Workers) Stop(id int) bool {
 // dialog check the work; work that does not pass goes back to a fresh worker
 // with the objections, at most maxGateReturns times.
 func runGatedWorker(ctx context.Context, id int, task, dir string, config func() Config, tools func() []Tool, rules func() string) WorkerResult {
-	result := runWorker(ctx, id, task, dir, config, tools, "")
+	upfront := ""
+	if rules != nil {
+		if text := strings.TrimSpace(rules()); text != "" {
+			upfront = "\n\nFollow these rules; a gate checks your work against them:\n" + text
+		}
+	}
+	result := runWorker(ctx, id, task, dir, config, tools, upfront)
 	for {
 		text := ""
 		if rules != nil {
@@ -131,7 +150,7 @@ func runGatedWorker(ctx context.Context, id int, task, dir string, config func()
 			result.Err = fmt.Errorf("the work did not pass the gate after %d returns", result.GateReturns)
 			return result
 		}
-		again := runWorker(ctx, id, task, dir, config, tools, gateReturnPrompt(verdict.Objections))
+		again := runWorker(ctx, id, task, dir, config, tools, upfront+gateReturnPrompt(verdict.Objections))
 		again.Steps = append(result.Steps, again.Steps...)
 		again.Usage.In += result.Usage.In
 		again.Usage.Out += result.Usage.Out

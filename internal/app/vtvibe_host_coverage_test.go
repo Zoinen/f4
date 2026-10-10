@@ -2,6 +2,7 @@ package app
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -208,5 +209,18 @@ func TestVtvibeWorkerReportTellsTheGate(t *testing.T) {
 	setupPortableIni(t, "0")
 	if aiGateRules() != "" {
 		t.Fatal("rules appeared without a file")
+	}
+}
+
+// f4#1842, stage H8: the manager's rules are kept, one per line, the oldest
+// going first past the limit.
+func TestVtvibeLearnedRulesAreKeptAndBounded(t *testing.T) {
+	setupPortableIni(t, "0")
+	for i := 0; i < maxLearnedRules+2; i++ {
+		aiLearnRule(fmt.Sprintf("rule %d\nsecond line", i))
+	}
+	lines := strings.Split(strings.TrimSpace(aiLearnedRules()), "\n")
+	if len(lines) != maxLearnedRules || lines[0] != "- rule 2 second line" || lines[len(lines)-1] != fmt.Sprintf("- rule %d second line", maxLearnedRules+1) {
+		t.Fatalf("%d rules, first %q, last %q", len(lines), lines[0], lines[len(lines)-1])
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/unxed/f4/internal/config"
@@ -257,11 +258,54 @@ func aiGateRules() string {
 	return string(data)
 }
 
-// aiGatesCommand is ai:gates: it opens the rules in the editor, creating the
-// file empty the first time. Every finished worker task is checked against
-// them in a clean dialog and given back to the worker when it breaks one.
-func aiGatesCommand(pf *panel.PanelsFrame) {
+// vtvibeLearnedGatesPath keeps the rules the worker manager formed from
+// mistakes of workers (f4#1842, stage H8).
+func vtvibeLearnedGatesPath() string {
+	return filepath.Join(config.GetF4ConfigDir(), "ai", "gates_learned.md")
+}
+
+// aiLearnedRules reads the rules the manager formed.
+func aiLearnedRules() string {
+	data, err := os.ReadFile(vtvibeLearnedGatesPath()) // #nosec G304 -- f4's own file in its configuration folder
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+// maxLearnedRules bounds the manager's rules; the oldest go first.
+const maxLearnedRules = 50
+
+var aiLearnMu sync.Mutex
+
+// aiLearnRule keeps a rule the manager formed. Workers finish on their own
+// goroutines, hence the lock.
+func aiLearnRule(rule string) {
+	aiLearnMu.Lock()
+	defer aiLearnMu.Unlock()
+	var lines []string
+	for _, line := range strings.Split(aiLearnedRules(), "\n") {
+		if strings.TrimSpace(line) != "" {
+			lines = append(lines, line)
+		}
+	}
+	lines = append(lines, "- "+strings.ReplaceAll(rule, "\n", " "))
+	if len(lines) > maxLearnedRules {
+		lines = lines[len(lines)-maxLearnedRules:]
+	}
+	_ = config.WriteUserFileAtomically(vtvibeLearnedGatesPath(), []byte(strings.Join(lines, "\n")+"\n"), 0o600)
+}
+
+// aiGatesCommand is ai:gates: it opens the user's rules in the editor,
+// creating the file empty the first time; "ai:gates learned" opens the rules
+// the worker manager formed from mistakes, to read, correct or delete. Every
+// finished worker task is checked against both in a clean dialog and given
+// back to the worker when it breaks one.
+func aiGatesCommand(pf *panel.PanelsFrame, arg string) {
 	path := vtvibeGatesPath()
+	if strings.EqualFold(strings.TrimSpace(arg), "learned") {
+		path = vtvibeLearnedGatesPath()
+	}
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		if err := config.WriteUserFileAtomically(path, nil, 0o600); err != nil {
 			aiShowError(err)
@@ -455,7 +499,7 @@ func aiTaskCommand(pf *panel.PanelsFrame, arg string) {
 func aiStartWorker(pf *panel.PanelsFrame, manager interface{ PostTask(func()) }, session *vtvibe.Session, task, dir string, order int, closeOrder bool, done func()) {
 	config := aiAgentConfig(session)
 	tools := func() []vtvibe.Tool { return vtvibe.WorkTools(dir, config().ToolEnv...) }
-	aiWorkers.SetGateRules(aiGateRules)
+	aiWorkers.SetGates(vtvibe.GateRules{User: aiGateRules, Learned: aiLearnedRules, Learn: aiLearnRule})
 	id := aiWorkers.Start(task, dir, config, tools, func(r vtvibe.WorkerResult) {
 		text := aiTaskResultText(r, order)
 		manager.PostTask(func() {
@@ -550,6 +594,10 @@ func aiTaskResultText(r vtvibe.WorkerResult, order int) string {
 		sb.WriteString(i18n.Msg("AI.GateObjections"))
 		sb.WriteString("\n")
 		sb.WriteString(r.Gate)
+	}
+	if r.Learned != "" {
+		sb.WriteString("\n\n")
+		fmt.Fprintf(&sb, i18n.Msg("AI.GateLearned"), r.Learned)
 	}
 	return sb.String()
 }
