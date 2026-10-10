@@ -1000,6 +1000,7 @@ SymlinkEdit.ErrorTitle= Ошибка символической ссылки
 SymlinkEdit.OneFile=Выберите ровно один файл.
 SymlinkEdit.NotSymlink=Выбранный объект не является символической ссылкой.
 SymlinkEdit.Unsupported=Эта файловая система не поддерживает символические ссылки.
+SymlinkEdit.TargetMissing=Цель не существует:\n%s\n\nВсё равно сохранить символическую ссылку на неё?
 
 Btn.OverwriteAll=Переписать &все
 Btn.SkipAll=П&ропустить все
@@ -2001,6 +2002,8 @@ Attributes.OctalMixedError=Неверное восьмеричное значе�
 Attributes.MTimeInvalidError=Неверная дата/время.\nИспользуйте формат %s.
 Attributes.MTimeFormatHint=ДД.ММ.ГГГГ ЧЧ:ММ:СС
 Attributes.Target=&Цель:
+Attributes.LinkKindSymlink=Тип ссылки: символическая ссылка
+Attributes.LinkKindJunction=Тип ссылки: связь каталогов (junction)
 Attributes.MTime=Изменён:
 Attributes.LastWrite=Изменён:
 Attributes.Created=Создан:

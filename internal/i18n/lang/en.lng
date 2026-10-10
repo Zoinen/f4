@@ -1000,6 +1000,7 @@ SymlinkEdit.ErrorTitle= Symbolic link error
 SymlinkEdit.OneFile=Select exactly one file.
 SymlinkEdit.NotSymlink=The selected item is not a symbolic link.
 SymlinkEdit.Unsupported=This file system does not support symbolic links.
+SymlinkEdit.TargetMissing=The target does not exist:\n%s\n\nSave the symbolic link pointing at it anyway?
 
 Btn.OverwriteAll=Overwrite &All
 Btn.SkipAll=S&kip All
@@ -2001,6 +2002,8 @@ Attributes.OctalMixedError=Invalid octal value.\nUse the digits 0-7, or - where 
 Attributes.MTimeInvalidError=Invalid date/time.\nUse the format %s.
 Attributes.MTimeFormatHint=DD.MM.YYYY HH:MM:SS
 Attributes.Target=T&arget:
+Attributes.LinkKindSymlink=Link type: symbolic link
+Attributes.LinkKindJunction=Link type: directory junction
 Attributes.MTime=Modified:
 Attributes.LastWrite=Last write:
 Attributes.Created=Created:
