@@ -550,6 +550,8 @@ func aiCommand(app vfs.App, arg string) {
 		aiAttachAPSpec(pf)
 	case lower == "key":
 		aiSetupDialog(pf)
+	case lower == "bot" || strings.HasPrefix(lower, "bot "):
+		aiBotCommand(pf, arg[len("bot"):])
 	case lower == "models":
 		aiListModels(pf)
 	case lower == "model":

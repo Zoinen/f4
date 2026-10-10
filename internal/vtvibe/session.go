@@ -287,6 +287,15 @@ func shortRole(role string) string {
 	return "model"
 }
 
+// Note adds a turn that did not come from Ask, such as a bot round's report,
+// so it shows in the chat like any other message.
+func (s *Session) Note(role, text string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.appendTurn(Turn{Role: role, Text: text, Time: time.Now()})
+	s.writeSessionFile()
+}
+
 // Turns returns a copy of the dialog.
 func (s *Session) Turns() []Turn {
 	s.mu.Lock()
