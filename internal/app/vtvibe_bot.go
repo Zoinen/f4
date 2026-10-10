@@ -4,11 +4,14 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/unxed/f4/internal/config"
 	"github.com/unxed/f4/internal/dialog"
 	"github.com/unxed/f4/internal/i18n"
 	"github.com/unxed/f4/internal/ini"
@@ -77,7 +80,10 @@ func aiBotCommand(pf *panel.PanelsFrame, arg string) {
 			},
 			func(r vtvibe.BotRound) {
 				text := aiBotRoundText(r)
+				model := config().Model
 				manager.PostTask(func() {
+					// The bot's spending counts for the dialog (f4#1842, H9).
+					aiSession().AddSpent(model, r.Usage)
 					aiSession().Note("assistant", text)
 					aiBotRefresh(pf)
 				})
@@ -239,6 +245,129 @@ func aiTokenCommand(pf *panel.PanelsFrame, arg string) {
 		}
 		vtui.ShowMessage(i18n.Msg("AI.Title"), fmt.Sprintf(i18n.Msg("AI.TokenSource"), i18n.Msg("AI.TokenFromDialog")), []string{i18n.Msg("vtui.Ok")})
 	})
+}
+
+// vtvibeGatesPath is the file of the user's gate rules (f4#1842, stage H8).
+func vtvibeGatesPath() string {
+	return filepath.Join(config.GetF4ConfigDir(), "ai", "gates.md")
+}
+
+// aiGateRules reads the user's gate rules; none when the file is missing.
+func aiGateRules() string {
+	data, err := os.ReadFile(vtvibeGatesPath()) // #nosec G304 -- f4's own file in its configuration folder
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+// vtvibeLearnedGatesPath keeps the rules the worker manager formed from
+// mistakes of workers (f4#1842, stage H8).
+func vtvibeLearnedGatesPath() string {
+	return filepath.Join(config.GetF4ConfigDir(), "ai", "gates_learned.md")
+}
+
+// aiLearnedRules reads the rules the manager formed.
+func aiLearnedRules() string {
+	data, err := os.ReadFile(vtvibeLearnedGatesPath()) // #nosec G304 -- f4's own file in its configuration folder
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+// maxLearnedRules bounds the manager's rules; the oldest go first.
+const maxLearnedRules = 50
+
+var aiLearnMu sync.Mutex
+
+// aiLearnRule keeps a rule the manager formed. Workers finish on their own
+// goroutines, hence the lock.
+func aiLearnRule(rule string) {
+	aiLearnMu.Lock()
+	defer aiLearnMu.Unlock()
+	var lines []string
+	for _, line := range strings.Split(aiLearnedRules(), "\n") {
+		if strings.TrimSpace(line) != "" {
+			lines = append(lines, line)
+		}
+	}
+	lines = append(lines, "- "+strings.ReplaceAll(rule, "\n", " "))
+	if len(lines) > maxLearnedRules {
+		lines = lines[len(lines)-maxLearnedRules:]
+	}
+	_ = config.WriteUserFileAtomically(vtvibeLearnedGatesPath(), []byte(strings.Join(lines, "\n")+"\n"), 0o600)
+}
+
+// aiGatesCommand is ai:gates: it opens the user's rules in the editor,
+// creating the file empty the first time; "ai:gates learned" opens the rules
+// the worker manager formed from mistakes, to read, correct or delete. Every
+// finished worker task is checked against both in a clean dialog and given
+// back to the worker when it breaks one.
+func aiGatesCommand(pf *panel.PanelsFrame, arg string) {
+	path := vtvibeGatesPath()
+	if strings.EqualFold(strings.TrimSpace(arg), "learned") {
+		path = vtvibeLearnedGatesPath()
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		if err := config.WriteUserFileAtomically(path, nil, 0o600); err != nil {
+			aiShowError(err)
+			return
+		}
+	}
+	actionOpenEditor(pf, vfs.NewOSVFS(filepath.Dir(path)), path)
+}
+
+// aiCostCommand is ai:cost: what the dialog has spent, by model, priced
+// where the service publishes prices (f4#1842, stage H9). Without a price
+// list the tokens are still shown.
+func aiCostCommand(pf *panel.PanelsFrame) {
+	session := aiSession()
+	spent := session.Spent()
+	if len(spent) == 0 {
+		vtui.ShowMessage(i18n.Msg("AI.Title"), i18n.Msg("AI.CostNothing"), []string{i18n.Msg("vtui.Ok")})
+		return
+	}
+	cfg, _ := vtvibeConfig()
+	var models []vtvibe.ModelInfo
+	pf.RunProgressTask(i18n.Msg("AI.Title"), i18n.Msg("AI.Sending"), false,
+		func(ctx context.Context, update func(msg string, percent int)) error {
+			// A failed price list leaves the tokens; it is not an error.
+			models, _ = cfg.ModelsWithInfo(ctx)
+			return ctx.Err()
+		},
+		func(err error) {
+			if err != nil {
+				return
+			}
+			vtui.ShowMessage(i18n.Msg("AI.Title"), aiCostText(vtvibe.Costs(spent, models)), []string{i18n.Msg("vtui.Ok")})
+		})
+}
+
+func aiCostText(costs []vtvibe.ModelCost) string {
+	var lines []string
+	var total vtvibe.Usage
+	var money float64
+	priced := false
+	for _, c := range costs {
+		total.In += c.Usage.In
+		total.Out += c.Usage.Out
+		line := fmt.Sprintf(i18n.Msg("AI.CostLine"), c.Model, vtvibe.FormatTokens(c.Usage.In), vtvibe.FormatTokens(c.Usage.Out))
+		if c.Priced {
+			line += fmt.Sprintf(" — $%.4f", c.Cost)
+			money += c.Cost
+			priced = true
+		} else {
+			line += " — " + i18n.Msg("AI.CostNoPrice")
+		}
+		lines = append(lines, line)
+	}
+	sum := fmt.Sprintf(i18n.Msg("AI.CostTotal"), vtvibe.FormatTokens(total.In), vtvibe.FormatTokens(total.Out))
+	if priced {
+		sum += fmt.Sprintf(" — $%.4f", money)
+	}
+	lines = append(lines, "", sum)
+	return dialog.EscapeAmpersand(strings.Join(lines, "\n"))
 }
 
 // vtvibeNonstopDefault is the mode of the dialogs that did not choose their
@@ -425,9 +554,12 @@ func aiTaskCommand(pf *panel.PanelsFrame, arg string) {
 func aiStartWorker(pf *panel.PanelsFrame, manager interface{ PostTask(func()) }, session *vtvibe.Session, task, dir string, order int, closeOrder bool, done func()) {
 	config := aiAgentConfig(session)
 	tools := func() []vtvibe.Tool { return vtvibe.WorkTools(dir, config().ToolEnv...) }
+	aiWorkers.SetGates(vtvibe.GateRules{User: aiGateRules, Learned: aiLearnedRules, Learn: aiLearnRule})
 	id := aiWorkers.Start(task, dir, config, tools, func(r vtvibe.WorkerResult) {
 		text := aiTaskResultText(r, order)
+		model := config().Model
 		manager.PostTask(func() {
+			session.AddSpent(model, r.Usage)
 			if r.Err == nil && closeOrder {
 				_ = session.SetOrderDone(order, true)
 			}
@@ -509,6 +641,20 @@ func aiTaskResultText(r vtvibe.WorkerResult, order int) string {
 	if r.Restarts > 0 {
 		sb.WriteString("\n\n")
 		fmt.Fprintf(&sb, i18n.Msg("AI.TaskRestarts"), r.Restarts)
+	}
+	if r.GateReturns > 0 {
+		sb.WriteString("\n\n")
+		fmt.Fprintf(&sb, i18n.Msg("AI.GateReturned"), r.GateReturns)
+	}
+	if r.Gate != "" {
+		sb.WriteString("\n\n")
+		sb.WriteString(i18n.Msg("AI.GateObjections"))
+		sb.WriteString("\n")
+		sb.WriteString(r.Gate)
+	}
+	if r.Learned != "" {
+		sb.WriteString("\n\n")
+		fmt.Fprintf(&sb, i18n.Msg("AI.GateLearned"), r.Learned)
 	}
 	return sb.String()
 }

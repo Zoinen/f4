@@ -37,8 +37,8 @@ type Message struct {
 
 // Usage carries the token counts the endpoint reports back, when it does.
 type Usage struct {
-	In  int
-	Out int
+	In  int `json:"in"`
+	Out int `json:"out"`
 }
 
 var (
@@ -151,6 +151,10 @@ type ModelInfo struct {
 	// Free is true when the service says the model costs nothing: OpenRouter
 	// marks such models with a ":free" suffix and a zero price (f4#1842).
 	Free bool
+	// PriceIn and PriceOut are the price of one input and one output token
+	// when the service publishes it (Priced).
+	PriceIn, PriceOut float64
+	Priced            bool
 }
 
 // ModelsWithInfo is Models with what the service tells about each model.
@@ -191,6 +195,11 @@ func (c Config) ModelsWithInfo(ctx context.Context) ([]ModelInfo, error) {
 		info := ModelInfo{ID: strings.TrimPrefix(m.ID, "models/")}
 		info.Free = strings.HasSuffix(info.ID, ":free") ||
 			(m.Pricing != nil && zeroPrice(m.Pricing.Prompt) && zeroPrice(m.Pricing.Completion))
+		if m.Pricing != nil {
+			in, okIn := price(m.Pricing.Prompt)
+			out, okOut := price(m.Pricing.Completion)
+			info.PriceIn, info.PriceOut, info.Priced = in, out, okIn && okOut
+		}
 		out = append(out, info)
 	}
 	return out, nil

@@ -22,7 +22,13 @@ type WorkerResult struct {
 	Steps    []AgentStep
 	Usage    Usage
 	Restarts int
-	Err      error
+	// GateReturns counts the times the gate gave the work back; Gate holds
+	// its last objections when the work never passed (gates.go).
+	GateReturns int
+	Gate        string
+	// Learned is the rule the manager formed from this run, if any.
+	Learned string
+	Err     error
 }
 
 // maxWorkerRestarts bounds how often one task is started again after
@@ -35,6 +41,18 @@ type Workers struct {
 	next    int
 	running map[int]context.CancelFunc
 	tasks   map[int]string
+	// gates gives the gate's rules; with none there is no gate (gates.go,
+	// gates_learn.go).
+	gates GateRules
+}
+
+// SetGates makes every finished task pass the gate with the rules gates
+// gives (asked each time, so edited rules count at once) and lets the
+// manager learn rules from runs that went wrong.
+func (w *Workers) SetGates(gates GateRules) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.gates = gates
 }
 
 // Running returns the tasks in progress by id.
@@ -60,9 +78,20 @@ func (w *Workers) Start(task, dir string, config func() Config, tools func() []T
 	w.next++
 	id := w.next
 	w.running[id], w.tasks[id] = cancel, task
+	gates := w.gates
 	w.mu.Unlock()
 	go func() {
-		result := runWorker(ctx, id, task, dir, config, tools)
+		result := runGatedWorker(ctx, id, task, dir, config, tools, gates.text)
+		if gates.Learn != nil && worthLearning(result) && ctx.Err() == nil {
+			// The manager learns from the run before reporting it.
+			rule, usage, err := config().DistillRule(ctx, gates.text(), result)
+			result.Usage.In += usage.In
+			result.Usage.Out += usage.Out
+			if err == nil && rule != "" {
+				gates.Learn(rule)
+				result.Learned = rule
+			}
+		}
 		w.mu.Lock()
 		delete(w.running, id)
 		delete(w.tasks, id)
@@ -86,13 +115,59 @@ func (w *Workers) Stop(id int) bool {
 	return ok
 }
 
-func runWorker(ctx context.Context, id int, task, dir string, config func() Config, tools func() []Tool) WorkerResult {
+// runGatedWorker runs the task and, when there are rules, has a clean
+// dialog check the work; work that does not pass goes back to a fresh worker
+// with the objections, at most maxGateReturns times.
+func runGatedWorker(ctx context.Context, id int, task, dir string, config func() Config, tools func() []Tool, rules func() string) WorkerResult {
+	upfront := ""
+	if rules != nil {
+		if text := strings.TrimSpace(rules()); text != "" {
+			upfront = "\n\nFollow these rules; a gate checks your work against them:\n" + text
+		}
+	}
+	result := runWorker(ctx, id, task, dir, config, tools, upfront)
+	for {
+		text := ""
+		if rules != nil {
+			text = strings.TrimSpace(rules())
+		}
+		if result.Err != nil || text == "" {
+			return result
+		}
+		verdict, usage, err := config().CheckGate(ctx, text, task, result.Report, result.Steps)
+		result.Usage.In += usage.In
+		result.Usage.Out += usage.Out
+		if err != nil {
+			result.Err = fmt.Errorf("gate: %w", err)
+			return result
+		}
+		if verdict.Pass {
+			result.Gate = ""
+			return result
+		}
+		result.Gate = verdict.Objections
+		if result.GateReturns >= maxGateReturns {
+			result.Err = fmt.Errorf("the work did not pass the gate after %d returns", result.GateReturns)
+			return result
+		}
+		again := runWorker(ctx, id, task, dir, config, tools, upfront+gateReturnPrompt(verdict.Objections))
+		again.Steps = append(result.Steps, again.Steps...)
+		again.Usage.In += result.Usage.In
+		again.Usage.Out += result.Usage.Out
+		again.Restarts += result.Restarts
+		again.GateReturns = result.GateReturns + 1
+		again.Gate = result.Gate
+		result = again
+	}
+}
+
+func runWorker(ctx context.Context, id int, task, dir string, config func() Config, tools func() []Tool, extra string) WorkerResult {
 	result := WorkerResult{ID: id, Task: task}
 	var earlier []AgentStep
 	for attempt := 0; ; attempt++ {
 		cfg := config()
 		msgs := []Message{
-			{Role: "system", Content: WorkerSystemPrompt(cfg.Model, dir, time.Now(), earlier)},
+			{Role: "system", Content: WorkerSystemPrompt(cfg.Model, dir, time.Now(), earlier) + extra},
 			{Role: "user", Content: task},
 		}
 		var steps []AgentStep

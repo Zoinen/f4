@@ -2,6 +2,7 @@ package app
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -196,5 +197,43 @@ func TestVtvibeWorkerReportNamesTheOrderOnlyWhenThereIsOne(t *testing.T) {
 	failed := vtvibe.WorkerResult{ID: 3, Err: errors.New("boom")}
 	if text := aiTaskResultText(failed, 0); strings.Contains(text, "#0") || !strings.Contains(text, "boom") {
 		t.Fatalf("failure without an order: %q", text)
+	}
+}
+
+// f4#1842, stage H8: a worker's report tells what the gate did.
+func TestVtvibeWorkerReportTellsTheGate(t *testing.T) {
+	text := aiTaskResultText(vtvibe.WorkerResult{ID: 1, Err: errors.New("did not pass"), GateReturns: 2, Gate: "- rule 1 broken"}, 3)
+	if !strings.Contains(text, "2") || !strings.Contains(text, "- rule 1 broken") {
+		t.Fatalf("report %q", text)
+	}
+	setupPortableIni(t, "0")
+	if aiGateRules() != "" {
+		t.Fatal("rules appeared without a file")
+	}
+}
+
+// f4#1842, stage H8: the manager's rules are kept, one per line, the oldest
+// going first past the limit.
+func TestVtvibeLearnedRulesAreKeptAndBounded(t *testing.T) {
+	setupPortableIni(t, "0")
+	for i := 0; i < maxLearnedRules+2; i++ {
+		aiLearnRule(fmt.Sprintf("rule %d\nsecond line", i))
+	}
+	lines := strings.Split(strings.TrimSpace(aiLearnedRules()), "\n")
+	if len(lines) != maxLearnedRules || lines[0] != "- rule 2 second line" || lines[len(lines)-1] != fmt.Sprintf("- rule %d second line", maxLearnedRules+1) {
+		t.Fatalf("%d rules, first %q, last %q", len(lines), lines[0], lines[len(lines)-1])
+	}
+}
+
+// f4#1842, stage H9: ai:cost prices what it can and still shows the tokens
+// of what it cannot.
+func TestVtvibeCostText(t *testing.T) {
+	text := aiCostText([]vtvibe.ModelCost{
+		{Model: "paid", Usage: vtvibe.Usage{In: 12345, Out: 678}, Cost: 0.25, Priced: true},
+		{Model: "local", Usage: vtvibe.Usage{In: 10, Out: 2}},
+	})
+	if !strings.Contains(text, "paid") || !strings.Contains(text, "12.3k") || !strings.Contains(text, "$0.2500") ||
+		!strings.Contains(text, "local") || !strings.Contains(text, "12.4k") {
+		t.Fatalf("cost text %q", text)
 	}
 }
