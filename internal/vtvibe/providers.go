@@ -9,7 +9,9 @@ import "strings"
 // lookup, so a service is reached without hand-editing vtvibe.ini
 // (unxed/f4#1842).
 type Provider struct {
-	ID      string
+	ID string
+	// Kind is the protocol, see Config.Kind.
+	Kind    string
 	Name    string
 	BaseURL string
 	Model   string
@@ -34,8 +36,17 @@ var Providers = []Provider{
 		Model: DefaultModel, KeyEnv: []string{"GEMINI_API_KEY", "GOOGLE_API_KEY"}, KeyURL: "https://aistudio.google.com/apikey"},
 	{ID: "openai", Name: "OpenAI", BaseURL: "https://api.openai.com/v1",
 		Model: "gpt-5.5", KeyEnv: []string{"OPENAI_API_KEY"}, KeyURL: "https://platform.openai.com/api-keys"},
+	{ID: "anthropic", Name: "Anthropic Claude", Kind: KindAnthropic, BaseURL: "https://api.anthropic.com",
+		Model: "claude-opus-5-5", KeyEnv: []string{"ANTHROPIC_API_KEY"}, KeyURL: "https://console.anthropic.com/settings/keys"},
 	{ID: "xai", Name: "xAI Grok", BaseURL: "https://api.x.ai/v1",
 		Model: "grok-4.6", KeyEnv: []string{"XAI_API_KEY"}, KeyURL: "https://console.x.ai"},
+	{ID: "mistral", Name: "Mistral", BaseURL: "https://api.mistral.ai/v1",
+		Model: "mistral-large-latest", KeyEnv: []string{"MISTRAL_API_KEY"}, KeyURL: "https://console.mistral.ai/api-keys"},
+	{ID: "deepseek", Name: "DeepSeek", BaseURL: "https://api.deepseek.com",
+		Model: "deepseek-flash", KeyEnv: []string{"DEEPSEEK_API_KEY"}, KeyURL: "https://platform.deepseek.com/api_keys"},
+	// Groq serves open-weight models fast and has a free tier.
+	{ID: "groq", Name: "Groq", BaseURL: "https://api.groq.com/openai/v1",
+		Model: "llama-3.3-70b-versatile", KeyEnv: []string{"GROQ_API_KEY"}, KeyURL: "https://console.groq.com/keys"},
 	{ID: "openrouter", Name: "OpenRouter", BaseURL: "https://openrouter.ai/api/v1",
 		Model: "openrouter/auto", KeyEnv: []string{"OPENROUTER_API_KEY"}, KeyURL: "https://openrouter.ai/keys"},
 	{ID: "local", Name: "Local server (Ollama, LM Studio, llama.cpp)", BaseURL: "http://127.0.0.1:11434/v1", OwnURL: true},

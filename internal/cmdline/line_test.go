@@ -130,6 +130,42 @@ func TestCommandLine_HistoryBoundaries(t *testing.T) {
 	}
 }
 
+func TestCommandLine_ArrowHistoryFallback(t *testing.T) {
+	options := config.App
+	t.Cleanup(func() { config.App = options })
+	for _, tc := range []struct {
+		name      string
+		multiline bool
+	}{
+		{name: "single line"},
+		{name: "multiline enabled with one row", multiline: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config.App.CommandLineMultiline = tc.multiline
+			cl := NewCommandLine("")
+			cl.SetPosition(0, 0, 79, 0)
+			cl.Edit.History = []string{"latest", "older"}
+			cl.Edit.SetText("draft")
+			for _, step := range []struct {
+				key  uint16
+				want string
+			}{
+				{key: vtinput.VK_UP, want: "latest"},
+				{key: vtinput.VK_UP, want: "older"},
+				{key: vtinput.VK_DOWN, want: "latest"},
+				{key: vtinput.VK_DOWN, want: ""},
+			} {
+				if !cl.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: step.key}) {
+					t.Fatalf("arrow %d was not handled", step.key)
+				}
+				if got := cl.Edit.GetText(); got != step.want {
+					t.Fatalf("arrow %d: text = %q, want %q", step.key, got, step.want)
+				}
+			}
+		})
+	}
+}
+
 func TestCommandLine_AutoCompleteDisabled(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	theme.SetDefaultF4Palette()

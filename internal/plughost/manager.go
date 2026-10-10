@@ -30,7 +30,7 @@ type PluginManager struct {
 var GlobalPluginManager *PluginManager
 
 func NewPluginManager(api vfs.HostAPI) *PluginManager {
-	return &PluginManager{api: api}
+	return &PluginManager{api: &extractedURIHost{HostAPI: api, providers: make(map[string]*deferredURIProvider)}}
 }
 
 func (pm *PluginManager) LoadAll() {
@@ -53,6 +53,7 @@ func (pm *PluginManager) LoadInternal() {
 // posted tasks.
 func (pm *PluginManager) LoadExternal() {
 	pm.externalOnce.Do(func() {
+		defer pm.api.(*extractedURIHost).finish()
 		if pm.externalLoader != nil {
 			pm.externalLoader()
 			return
@@ -140,6 +141,7 @@ func (pm *PluginManager) LoadSinglePlugRingItem(item PlugRingItem) {
 }
 
 func (pm *PluginManager) loadInternal() {
+	pm.api.(*extractedURIHost).prepareInstalled()
 	plugins := internalPlugins()
 	// cloudfox (cloud services), android (ADB device browsing) and iOS
 	// (Apple mobile devices over usbmuxd) stay excluded from both builds
@@ -188,6 +190,7 @@ func (pm *PluginManager) CloseAll() {
 	plugins := append([]Plugin(nil), pm.plugins...)
 	pm.plugins = nil
 	pm.mu.Unlock()
+	pm.api.(*extractedURIHost).close()
 	// Close outside the manager lock so a plugin can finish callbacks without
 	// deadlocking on registry or manager work. Reverse order mirrors startup.
 	for i := len(plugins) - 1; i >= 0; i-- {

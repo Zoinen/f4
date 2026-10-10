@@ -95,9 +95,10 @@
 
 ## Project Overview
 
-`f4` is a cross-platform TUI file manager written entirely in Go that reproduces the
+`f4` is a cross-platform file manager with a Go core that reproduces the
 features, UX and internal structures of `far2l` / Far Manager. It ships as a single
-static binary and runs either in a terminal or as a standalone graphical window.
+static Go binary and runs either in a terminal or as a standalone graphical
+window; the Qt backend uses a separate C++/QML host and embedded ZoinGallery.
 
 ## Tech Stack
 
@@ -171,7 +172,12 @@ plugring/        # community catalogue of installable plugins: data, not a
 plugins/         # one package per plugin: archive, cloudfox, netfox, mediainfo,
                  # envman, ios, android, sqlite, visren, id3editor, chroma
                  # dummy_internal / dummy_rpc / dummy_lua are transport fixtures
-sdk/             # plugin API: f4plugin, f4rpc, f4settings, lua, extui
+sdk/             # plugin API: f4plugin, f4rpc, f4settings, f4vfs, lua, extui
+  f4vfs/         # native VFS-to-URI RPC adapter for standalone plugins;
+                 # f4plugin keeps the URI wire contract independent of vfs
+qt/host/         # Qt C++/QML host, semantic protocol and native UI tests
+third_party/     # vendored vtui/vtinput and the ZoinGallery submodule
+ci/              # portable Go+Qt release builds, dependency and packaging tools
 tools/           # developer tooling, incl. the ttytest terminal harness and
                  # releasecheck, the release gate (docs/UPDATER.md)
 docs/            # subsystem documents — read the relevant one before editing

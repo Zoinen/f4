@@ -173,17 +173,58 @@ Item {
             pixelAligned: !historyMenu
             readonly property bool historyMenu: menuOverlay.historyMenu
             property bool initialPositionReady: false
+            property int historyAnchorIndex: -1
+            property real historyAnchorY: 0
+            property Item historyAnchorItem: null
+            // ListView may round its private scroll position during polish.
+            // Keep the entire content on the keyboard anchor until it settles;
+            // the viewport and scrollbar themselves must not move.
+            contentItem.transform: Translate {
+                y: popupMenuList.historyAnchorIndex === menuOverlay.semanticSelectedIndex
+                   && popupMenuList.historyAnchorItem
+                   ? popupMenuList.contentY - popupMenuList.historyAnchorItem.y
+                     + popupMenuList.historyAnchorY : 0
+            }
             opacity: historyMenu && !initialPositionReady ? 0 : 1
             clip: true
             // ListView resets currentIndex while installing a model. Keep the
             // visual cursor synchronized explicitly with the authoritative Go
             // menu selection instead of allowing that local reset to win.
             currentIndex: -1
+            // Selection is drawn by the semantic delegate. Let only our
+            // containment function move the history viewport, not Qt's
+            // deferred logical-pixel highlight tracking during polish.
+            highlightFollowsCurrentItem: !historyMenu
             boundsBehavior: Flickable.StopAtBounds
             interactive: popupMenuScrollBar.nativeOverflow
             transform: Translate {
                 y: menuOverlay.dropdownContentShift
             }
+
+            function historyViewportAnchorY(value) {
+                // Snap the viewport edge once, before subtracting the large
+                // recycled row coordinate. A half-pixel edge otherwise rounds
+                // in opposite directions as floating-point subtraction varies.
+                const sceneY = mapToItem(hostWindow.contentItem, 0, value).y
+                const physicalY = sceneY * hostWindow.dpr
+                // Layout arithmetic can produce n + .5 +/- machine epsilon.
+                // Keep that tie deterministic while retaining the pixel grid.
+                return value + Math.round(physicalY + 1e-7) / hostWindow.dpr - sceneY
+            }
+
+            function maintainHistoryAnchor() {
+                if (!historyMenu || moving || popupMenuScrollBar.pressed
+                        || historyAnchorIndex !== menuOverlay.semanticSelectedIndex)
+                    return
+                const row = itemAtIndex(historyAnchorIndex)
+                if (row && Math.abs(contentY - (row.y - historyAnchorY)) > .001)
+                    contentY = row.y - historyAnchorY
+            }
+            // Recycling can adjust the list origin during polish, after the
+            // keyboard containment pass. Preserve its viewport anchor, but
+            // relinquish it as soon as the user scrolls independently.
+            onContentYChanged: Qt.callLater(maintainHistoryAnchor)
+            onMovingChanged: if (moving) historyAnchorIndex = -1
 
             function syncTopPosition(revealSelection = true, applyTopHint = true) {
                 if (menuOverlay.dropdownMode
@@ -192,23 +233,47 @@ Item {
                     return
                 }
                 if (count > 0 && !popupMenuScrollBar.pressed) {
-                    if (applyTopHint)
+                    if (applyTopHint) {
+                        historyAnchorIndex = -1
                         positionViewAtIndex(menuOverlay.semanticTopIndex,
                                             ListView.Beginning)
+                    }
                     // Console top/viewHeight do not include native title and
                     // row metrics. Use its hint for opening/explicit scrolling,
                     // but preserve the native viewport on keyboard selection.
                     // Reveal the cursor only when it leaves that viewport.
                     // Scroll-only acknowledgements must not pull the user back.
                     if (revealSelection) {
+                        if (historyMenu)
+                            forceLayout()
                         const visibleRow = itemAtIndex(menuOverlay.semanticSelectedIndex)
+                        if (historyMenu && visibleRow) {
+                            // Contain schedules a Flickable fixup that rounds
+                            // the viewport again during polish. History rows
+                            // already provide exact geometry: move directly.
+                            if (visibleRow.y < contentY) {
+                                historyAnchorY = historyViewportAnchorY(0)
+                                historyAnchorItem = visibleRow
+                                contentY = visibleRow.y - historyAnchorY
+                                historyAnchorIndex = menuOverlay.semanticSelectedIndex
+                            } else if (visibleRow.y + visibleRow.height > contentY + height) {
+                                historyAnchorY = historyViewportAnchorY(height - visibleRow.height)
+                                historyAnchorItem = visibleRow
+                                contentY = visibleRow.y - historyAnchorY
+                                historyAnchorIndex = menuOverlay.semanticSelectedIndex
+                            } else {
+                                historyAnchorIndex = -1
+                            }
+                            return
+                        }
                         if (visibleRow && visibleRow.y >= contentY - .01
                                 && visibleRow.y + visibleRow.height <= contentY + height + .01)
                             return
                         positionViewAtIndex(menuOverlay.semanticSelectedIndex,
                                             ListView.Contain)
-                        if (historyMenu)
+                        if (historyMenu) {
                             forceLayout()
+                        }
                         // Qt's positioning can round contentY to logical
                         // pixels. Round outward so a fractional-DPR last row
                         // is not clipped by the remaining fraction of a pixel.
@@ -216,12 +281,18 @@ Item {
                         // Contain rounds to logical pixels. At 175%, its
                         // leading-edge remainder varies by row, making the
                         // first line jump even after the glyphs are snapped.
-                        if (historyMenu && row && Math.abs(row.y - contentY) <= 1.01)
-                            contentY = row.y
-                        else if (historyMenu && row
-                                 && Math.abs(row.y + row.height - contentY - height) <= 1.01)
-                            contentY = row.y + row.height - height
-                        else if (row && row.y + row.height > contentY + height)
+                        if (historyMenu && row && Math.abs(row.y - contentY) <= 1.01) {
+                            historyAnchorY = historyViewportAnchorY(0)
+                            historyAnchorItem = row
+                            contentY = row.y - historyAnchorY
+                            historyAnchorIndex = menuOverlay.semanticSelectedIndex
+                        } else if (historyMenu && row
+                                 && Math.abs(row.y + row.height - contentY - height) <= 1.01) {
+                            historyAnchorY = historyViewportAnchorY(height - row.height)
+                            historyAnchorItem = row
+                            contentY = row.y - historyAnchorY
+                            historyAnchorIndex = menuOverlay.semanticSelectedIndex
+                        } else if (row && row.y + row.height > contentY + height)
                             contentY = Math.ceil((row.y + row.height - height)
                                                 * hostWindow.dpr) / hostWindow.dpr
                         else if (row && row.y < contentY)
@@ -267,6 +338,13 @@ Item {
                 popupSurfaceItem: popupSurface
                 popupList: popupMenuList
                 scrollBar: popupMenuScrollBar
+                // Recycled delegates can move during polish without a change
+                // to contentY. Reapply the keyboard anchor in that case too.
+                onYChanged: {
+                    if (popupMenuList.historyMenu
+                            && Number(modelData.index) === popupMenuList.historyAnchorIndex)
+                        Qt.callLater(popupMenuList.maintainHistoryAnchor)
+                }
             }
 
             ScrollBar.vertical: F4ScrollBar {
@@ -286,6 +364,7 @@ Item {
 
                 onPressedChanged: {
                     if (pressed) {
+                        popupMenuList.historyAnchorIndex = -1
                         nativeDragActive = true
                     } else if (nativeDragActive) {
                         nativeDragActive = false

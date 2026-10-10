@@ -54,6 +54,7 @@ import (
 // ManagerVFS's own map is, and forwards VFS calls into it exactly as
 // CloudFox's RPCPlugin forwards into a cached CloudVFS session.
 type RPCPlugin struct {
+	uriRPCState
 	plugin  *Plugin
 	manager *ManagerVFS
 

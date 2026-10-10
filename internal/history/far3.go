@@ -1,3 +1,5 @@
+//go:build !lite
+
 package history
 
 import (
@@ -10,13 +12,6 @@ import (
 
 	"github.com/ncruces/go-sqlite3/driver"
 )
-
-// Far3History is a read-only snapshot of the three portable Far history kinds.
-type Far3History struct {
-	Commands, Folders []HistoryRecord
-	Files             []ViewerEditorRecord
-	Skipped           int
-}
 
 // ReadFar3History reads committed SQLite data, including Far's live WAL. It
 // never runs commands or changes Far's database. Kinds and record types follow

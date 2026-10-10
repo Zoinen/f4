@@ -855,6 +855,22 @@ void F4OperationsQueueTests::searchMessageStaysInDocumentAndOnlyBlocksTab()
         auto surface = scene.value("surface").toMap();
         surface.insert("kind", kind);
         scene.insert("surface", surface);
+        // Model the document as the active workspace. Pressing the active
+        // tab navigates to the previous workspace; this check deliberately
+        // switches to the inactive Commander tab through the modal overlay.
+        auto workspaces = scene.value("workspaceTabs").toMap();
+        auto tabs = workspaces.value("tabs").toList();
+        auto commanderTab = tabs[0].toMap();
+        commanderTab.insert("active", false);
+        tabs[0] = commanderTab;
+        auto documentTab = tabs[1].toMap();
+        documentTab.insert("id", "document-tab");
+        documentTab.insert("surfaceKind", kind);
+        documentTab.insert("active", true);
+        documentTab.insert("text", "report.txt");
+        tabs[1] = documentTab;
+        workspaces.insert("tabs", tabs);
+        scene.insert("workspaceTabs", workspaces);
         scene.insert("dialogs", QVariantList{QVariantMap{
             {"id", "search-message"}, {"kind", "dialog"}, {"title", "Search"},
             {"x", 20}, {"y", 8}, {"w", 26}, {"h", 7},
@@ -894,12 +910,15 @@ void F4OperationsQueueTests::searchMessageStaysInDocumentAndOnlyBlocksTab()
         }
         QVERIFY(fixture.window->grabWindow().save(QString("artifacts/search-dialog-%1-175.png").arg(kind)));
         fixture.shell.actions.clear();
-        auto *bar = visualItem(fixture.window->contentItem(), "workspaceBar");
-        QVERIFY(bar);
+        auto *tab = visualItem(fixture.window->contentItem(), "commander-tab");
+        QVERIFY(tab && tab->isVisible());
         QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
-                         bar->mapToScene(QPointF(35, bar->height()/2)).toPoint());
+                         itemCenter(tab));
         QTRY_VERIFY(std::any_of(fixture.shell.actions.cbegin(), fixture.shell.actions.cend(),
-            [](const QVariantMap &action) { return action.value("action").toString() == "workspace.activate"; }));
+            [](const QVariantMap &action) {
+                return action.value("action").toString() == "workspace.activate"
+                    && action.value("target").toString() == "commander-tab";
+            }));
     }
 }
 
@@ -1176,13 +1195,13 @@ void F4OperationsQueueTests::queueUsesNativeAccessibleSurfaceAndGuardsActiveClos
     QVERIFY(QMetaObject::invokeMethod(
         fixture.window, "preferredWorkspaceTabWidth",
         Q_RETURN_ARG(QVariant, naturalTabWidth),
-        Q_ARG(QVariant, 180), Q_ARG(QVariant, false)));
+        Q_ARG(QVariant, 180)));
     QCOMPARE(naturalTabWidth.toInt(), 226);
     QVariant cappedTabWidth;
     QVERIFY(QMetaObject::invokeMethod(
         fixture.window, "preferredWorkspaceTabWidth",
         Q_RETURN_ARG(QVariant, cappedTabWidth),
-        Q_ARG(QVariant, 400), Q_ARG(QVariant, true)));
+        Q_ARG(QVariant, 400)));
     QCOMPARE(cappedTabWidth.toInt(), 280);
 
     QVariant tabWeight;
@@ -1646,12 +1665,13 @@ void F4OperationsQueueTests::panelLoadingPulseIsDelayedLocalAndDoesNotMoveRender
     QCOMPARE(path->property("text").toString(),
              QStringLiteral("/Users/zoin/Documents"));
     QVERIFY(path->property("backgroundOnHoverOnly").toBool());
-    QCOMPARE(path->property("leadingInset").toReal(), 0.0);
+    const qreal dpr = fixture.window->devicePixelRatio();
+    QCOMPARE(path->property("leadingInset").toReal(), qRound(4 * dpr) / dpr);
     QCOMPARE(path->property("breadcrumbFontPixelSize").toReal(), 13.0);
     QCOMPARE(path->property("pathTextColor").value<QColor>(),
              QColor(QStringLiteral("#e8edf2")));
     QCOMPARE(path->property("pathHoveredColor").value<QColor>(),
-             QColor(QStringLiteral("#222c38")));
+             QColor(QStringLiteral("#2a3745")));
     QCOMPARE(path->property("pathItemHoveredColor").value<QColor>(),
              QColor(QStringLiteral("#2a3745")));
     QCOMPARE(path->property("pathItemPressedColor").value<QColor>(),
@@ -5687,6 +5707,7 @@ void F4OperationsQueueTests::menuBarPressDragReleaseActivatesItem()
     if (releaseIndex == -1) end = QPoint(fixture.window->width()-10, fixture.window->height()-10);
     if (releaseIndex == -2) end = start;
     fixture.shell.clearActions();
+    QCursor::setPos(fixture.window->mapToGlobal(end));
     QTest::mouseMove(fixture.window, end);
     QTest::qWait(30);
     if (releaseIndex == 1) QVERIFY(fixture.window->property("menuBarPointerHasSelectedItem").toBool());
@@ -5748,8 +5769,10 @@ void F4OperationsQueueTests::menuBarClosingDoesNotFlashFirstRow()
     QTest::mouseMove(fixture.window, QPoint(fixture.window->width()-12, fixture.window->height()-12));
     QVERIFY(fixture.window->setProperty("menuBarOpenedByPointer", true));
     if (selectedIndex >= 0) {
+        QCursor::setPos(fixture.window->mapToGlobal(rowPoint));
         QTest::mouseMove(fixture.window, rowPoint);
         QTest::qWait(20);
+        QCursor::setPos(fixture.window->mapToGlobal(rowPoint + QPoint(3, 0)));
         QTest::mouseMove(fixture.window, rowPoint + QPoint(3, 0));
     }
     QTRY_COMPARE_WITH_TIMEOUT(overlay->property("visualSelectedIndex").toInt(), selectedIndex, 1000);

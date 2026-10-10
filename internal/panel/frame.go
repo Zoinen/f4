@@ -3041,7 +3041,12 @@ func (pf *PanelsFrame) InterceptPluginKey(e *vtinput.InputEvent) bool {
 	// easter egg belong to f4's panels, not to a program running in the
 	// terminal: Far Manager has Shift+F1..F3 of its own (#1376).
 	if pf.TerminalOwnsKeyboard() {
-		return false
+		// Plugin interception stands down, but the remote shell's interrupt
+		// still precedes configurable global hotkeys such as Panel.SplitReset.
+		ctrlC := e.VirtualKeyCode == vtinput.VK_C &&
+			e.ControlKeyState&(vtinput.LeftCtrlPressed|vtinput.RightCtrlPressed) != 0
+		unmodified := e.ControlKeyState&(vtinput.LeftAltPressed|vtinput.RightAltPressed|vtinput.ShiftPressed) == 0
+		return ctrlC && unmodified && pf.interruptRemotePTY(nil)
 	}
 	ctrl := (e.ControlKeyState & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed)) != 0
 	alt := (e.ControlKeyState & (vtinput.LeftAltPressed | vtinput.RightAltPressed)) != 0
@@ -7102,6 +7107,46 @@ func (pf *PanelsFrame) ShowDriveMenu(panelIdx int) {
 	pf.showDriveMenuAt(panelIdx, pf.driveMenuDefaultPos(panelIdx))
 }
 
+// RevealPanel makes the panel on side (0 left, 1 right) visible, as choosing
+// a location for it in Far or Norton Commander does: the drive menu used to
+// change a hidden panel's folder blind, and Ctrl+O, Ctrl+F1 or Ctrl+F2 was
+// needed to see the result (unxed/f4#1847). Panels hidden as a whole come
+// back through the same path as Ctrl+O, but only this side: the other one
+// stays hidden, as fromgate asked after trying the first fix (Alt+F1 shows
+// the left panel alone, Alt+F2 the right one); a single hidden side is
+// shown again.
+func (pf *PanelsFrame) RevealPanel(side int) {
+	mine, other := &pf.ShowLeftPanel, &pf.ShowRightPanel
+	if side == 1 {
+		mine, other = &pf.ShowRightPanel, &pf.ShowLeftPanel
+	}
+	if pf.ShowPanels && *mine {
+		return
+	}
+	if !pf.ShowPanels {
+		// Set the sides before Ctrl+O's path brings the panels back, so
+		// it lays out this side alone and does not show both.
+		wasMine, wasOther := *mine, *other
+		*mine, *other = true, false
+		pf.TogglePanelsVisibility()
+		if !pf.ShowPanels {
+			*mine, *other = wasMine, wasOther
+			return // panels are locked here (PanelsLocked)
+		}
+		pf.RefreshAll()
+		return
+	}
+	pf.ExitWide()
+	*mine = true
+	if pf.LastW > 0 && pf.LastH > 0 {
+		pf.ResizeConsole(pf.LastW, pf.LastH)
+	}
+	if vtui.FrameManager != nil {
+		vtui.FrameManager.HardRefresh()
+	}
+	pf.RefreshAll()
+}
+
 // driveMenuDefaultPos returns the drive-menu row the cursor should land on
 // when the menu opens. far2l positions the cursor on the drive the active
 // panel currently shows; for f4 that means: if the panel is on a real
@@ -7635,6 +7680,7 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 		}
 
 		if action, ok := menu.Items[idx].UserData.(func(*FileSystemPanel)); ok {
+			pf.RevealPanel(panelIdx)
 			action(fsp)
 		}
 	}

@@ -44,6 +44,7 @@ import (
 // renaming an existing connection already works (see above). Porting the
 // add/edit UI to the RPC surface is follow-up work, not part 1 of the plan.
 type RPCPlugin struct {
+	uriRPCState
 	plugin *Plugin
 
 	mu      sync.Mutex

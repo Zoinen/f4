@@ -62,6 +62,12 @@ FocusScope {
         else if (managedPresentation) bridge.collapseQuickView()
     }
     function handleKey(event, down) {
+        if (down && event.key === Qt.Key_Escape && !docked
+                && !managedPresentation && bridge) {
+            // Gallery's immediate close destroys the focused surface before
+            // key-up. Pair Escape ownership before invoking its close handler.
+            bridge.suppressKeyRelease(event.key)
+        }
         if (managedPresentation && event.key === Qt.Key_Q && (event.modifiers & Qt.ControlModifier)) {
             event.accepted = true
             if (keySink) keySink.sendQtKeyEvent(event.key, event.text, down, event.modifiers, event.nativeScanCode, event.isAutoRepeat)
@@ -265,11 +271,6 @@ FocusScope {
             // still emitting its completion signals.
             const owningBridge = host.bridge
             if (owningBridge) {
-                if (galleryViewer.immediateCloseRequested
-                        && typeof owningBridge.suppressKeyRelease
-                           === "function") {
-                    owningBridge.suppressKeyRelease(Qt.Key_Escape)
-                }
                 Qt.callLater(() => owningBridge.closeViewer())
             }
         }

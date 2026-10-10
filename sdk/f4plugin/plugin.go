@@ -298,6 +298,8 @@ func run(p Plugin, stdin io.Reader, stdout, stderr io.Writer) error {
 		_, _ = fmt.Fprintf(stderr, "f4rpc: %v\n", err)
 	}
 	host := &Host{sess: sess}
+	closeURIs := registerVFSURIs(sess, p)
+	defer closeURIs()
 
 	sess.Register("Plugin.Init", func(data msgpack.RawMessage) (any, error) {
 		drives, err := p.Init(host)

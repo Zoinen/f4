@@ -145,6 +145,17 @@ func (cl *CommandLine) ProcessKey(e *vtinput.InputEvent) bool {
 			vtui.DebugLog("[FIX:command-line-navigation] edge arrow stays in multiline input direction=%d", direction)
 			return true
 		}
+		if !shift && (e.VirtualKeyCode == vtinput.VK_UP || e.VirtualKeyCode == vtinput.VK_DOWN) {
+			// Only a single visual row falls back to history. Shift arrows
+			// and multiline edge arrows retain their selection/navigation roles.
+			if direction < 0 {
+				cl.Edit.HistoryUp()
+			} else {
+				cl.Edit.HistoryDown()
+			}
+			vtui.DebugLog("[FIX:command-line-navigation] arrow history direction=%d position=%d", direction, cl.Edit.HistoryPos)
+			return true
+		}
 	}
 	handled := cl.Edit.ProcessKey(e)
 	if handled && cl.Edit.HistoryPos != -1 {

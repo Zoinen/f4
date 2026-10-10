@@ -1,6 +1,7 @@
 package plughost
 
 import (
+	"context"
 	"errors"
 	"runtime"
 	"strconv"
@@ -80,6 +81,22 @@ func (g *uiGuard) Call(method string, params any, result any) error {
 	if onUIGoroutine() {
 		g.waiting.Add(1)
 		defer g.waiting.Add(-1)
+	}
+	return g.inner.Call(method, params, result)
+}
+
+func (g *uiGuard) CallContext(ctx context.Context, method string, params any, result any) error {
+	if onUIGoroutine() {
+		g.waiting.Add(1)
+		defer g.waiting.Add(-1)
+	}
+	if caller, ok := g.inner.(interface {
+		CallContext(context.Context, string, any, any) error
+	}); ok {
+		return caller.CallContext(ctx, method, params, result)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	return g.inner.Call(method, params, result)
 }

@@ -544,8 +544,8 @@ Popup {
 
             Text {
                 objectName: "panelThumbnailsError-" + Number(panel.side || 0)
-                visible: galleryController.panelPreferences
-                         && galleryController.panelPreferences.error !== ""
+                visible: Boolean(galleryController.panelPreferences
+                         && galleryController.panelPreferences.error !== "")
                 width: rendererMenu.availableWidth - hostWindow.snapPx(16)
                 anchors.horizontalCenter: parent.horizontalCenter
                 wrapMode: Text.Wrap

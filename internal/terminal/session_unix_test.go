@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -270,6 +271,28 @@ func TestAdoptClientTerminal_ForgetsFar2lNegotiation(t *testing.T) {
 // itself — an exec'd "sleep 30" would drop the extra argv and break the
 // identity check under test — so the script blocks on reading its stdin,
 // which the returned closer keeps open.
+// procDiagnosis describes a process from procfs for a failure message.
+func procDiagnosis(pid int) string {
+	var parts []string
+	// #nosec G304 -- path is derived from an integer pid.
+	if data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid)); err == nil {
+		parts = append(parts, fmt.Sprintf("cmdline %q", strings.ReplaceAll(string(data), "\x00", " ")))
+	} else {
+		parts = append(parts, "cmdline: "+err.Error())
+	}
+	// #nosec G304 -- path is derived from an integer pid.
+	if data, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid)); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			for _, key := range []string{"State:", "PPid:", "SigBlk:", "SigIgn:", "SigCgt:"} {
+				if strings.HasPrefix(line, key) {
+					parts = append(parts, strings.Join(strings.Fields(line), " "))
+				}
+			}
+		}
+	}
+	return strings.Join(parts, "; ")
+}
+
 func startFakeDaemon(t *testing.T, script string, args ...string) (*exec.Cmd, <-chan struct{}, *error) {
 	t.Helper()
 	argv := append([]string{"/bin/sh", "-c", script}, args...)
@@ -346,6 +369,10 @@ func TestStopSession_TerminatesDaemonAndRemovesFiles(t *testing.T) {
 	info := SessionInfo{PID: cmd.Process.Pid, Title: "fake", SockPath: sockPath}
 	jsonPath, startupPath, sudoPath, apPath := writeSessionFiles(t, info)
 
+	// Failed twice on CI (Race shard 09-10-2026, quick 10-10-2026) and never
+	// locally: whether stopSession recognised the daemon, and what the
+	// daemon looked like, tell which half of stopSession let it live.
+	matched := sessionProcessMatches(info)
 	stopAllSessions([]SessionInfo{info})
 
 	select {
@@ -354,7 +381,7 @@ func TestStopSession_TerminatesDaemonAndRemovesFiles(t *testing.T) {
 			t.Error("fake daemon exited cleanly; want killed by signal")
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("fake daemon still running after stopAllSessions")
+		t.Fatalf("fake daemon still running after stopAllSessions (recognised before the stop: %v; %s)", matched, procDiagnosis(info.PID))
 	}
 
 	for name, path := range map[string]string{

@@ -15,6 +15,7 @@
 #include <QQmlContext>
 #include <QQmlEngine>
 #include <QQuickView>
+#include <QSGRendererInterface>
 #include <QRectF>
 #include <QScopedPointer>
 #include <QScopeGuard>
@@ -171,6 +172,7 @@ private slots:
     void localProvisionalPreviewReplacesSourceImmediately();
     void sparseFinalWaitsForProvisionalPreviewFrame();
     void inFlightDirectoryOpenDefersSupersededSourceFinal();
+    void compactFinalStateCommitsDeferredProvisionalCatalog_data();
     void compactFinalStateCommitsDeferredProvisionalCatalog();
     void panelIdentityReplacementResetsSession();
     void rejectedCursorRestoresAuthoritativeState();
@@ -1352,6 +1354,17 @@ void F4GalleryBridgeTests::galleryRoutesOwnedAndCommanderKeys()
     QVERIFY(session);
     QSignalSpy actions(&bridge, &F4GalleryBridge::uiActionRequested);
 
+    // F3 must open the native image surface, not forward into a Go-only
+    // ImageView workspace which has no native semantic image projection.
+    QTest::keyClick(&view, Qt::Key_F3);
+    QVERIFY(bridge.viewerVisible());
+    QCOMPARE(bridge.viewerSide(), 0);
+    QCOMPARE(keyRecorder.count(Qt::Key_F3, true), 0);
+    QCOMPARE(keyRecorder.count(Qt::Key_F3, false), 0);
+    QCOMPARE(actions.size(), 0);
+    bridge.closeViewer();
+    QTRY_VERIFY(panel->property("activeFocus").toBool());
+
     // Exercise Return through the real embedded QML key path while the
     // image cursor is already authoritative. No identical semantic scene is
     // guaranteed after a no-op cursor request, so the viewer must open now
@@ -1508,10 +1521,9 @@ void F4GalleryBridgeTests::galleryRoutesOwnedAndCommanderKeys()
     QCOMPARE(action.value(QStringLiteral("cursorIndex")).toInt(), 2);
     actions.clear();
 
-    // Shift+spatial navigation stays inside Gallery and commits when Shift
-    // itself is released. The preceding Shift+PageUp already selected every
-    // selectable entry in this tiny fixture, so the original Zoin Gallery
-    // preview has no selection delta here and only the final cursor is sent.
+    // Shift+spatial navigation paints the anchor's inverse state and commits
+    // when Shift is released. Entry 2 is selected by the preceding range, so
+    // leaving that anchor deselects it and carries cursor 3 atomically.
     keyRecorder.clear();
     QTest::keyClick(&view, Qt::Key_Right, Qt::ShiftModifier);
     QCOMPARE(session->currentIndex(), 3);
@@ -1520,17 +1532,33 @@ void F4GalleryBridgeTests::galleryRoutesOwnedAndCommanderKeys()
     QTRY_COMPARE_WITH_TIMEOUT(actions.size(), 1, 1000);
     action = actions.at(0).at(0).toMap();
     QCOMPARE(action.value(QStringLiteral("action")).toString(),
-             QStringLiteral("panel.cursor"));
-    QCOMPARE(action.value(QStringLiteral("entryId")).toString(),
+             QStringLiteral("panel.setSelection"));
+    QCOMPARE(action.value(QStringLiteral("mode")).toString(), QStringLiteral("set"));
+    changes = action.value(QStringLiteral("changes")).toList();
+    QCOMPARE(changes.size(), 1);
+    QCOMPARE(changes.constFirst().toMap().value(QStringLiteral("entryId")).toString(),
+             QStringLiteral("entry:2"));
+    QVERIFY(!changes.constFirst().toMap().value(QStringLiteral("selected")).toBool());
+    QCOMPARE(action.value(QStringLiteral("cursorEntryId")).toString(),
              QStringLiteral("entry:3"));
+    QCOMPARE(action.value(QStringLiteral("cursorIndex")).toInt(), 3);
     actions.clear();
 
-    // A clamped move produces an empty range delta, exactly like the original
-    // preview model, and therefore sends no redundant semantic action.
+    // At the boundary, Shift still paints the current item even though the
+    // cursor cannot advance. The selected final row is therefore deselected.
     QTest::keyClick(&view, Qt::Key_Down, Qt::ShiftModifier);
     QCOMPARE(session->currentIndex(), 3);
     QCOMPARE(panel->property("selectionAnchorIndex").toInt(), 2);
-    QCOMPARE(actions.size(), 0);
+    QCOMPARE(actions.size(), 1);
+    action = actions.constFirst().constFirst().toMap();
+    QCOMPARE(action.value(QStringLiteral("action")).toString(),
+             QStringLiteral("panel.setSelection"));
+    changes = action.value(QStringLiteral("changes")).toList();
+    QCOMPARE(changes.size(), 1);
+    QCOMPARE(changes.constFirst().toMap().value(QStringLiteral("entryId")).toString(),
+             QStringLiteral("entry:3"));
+    QVERIFY(!changes.constFirst().toMap().value(QStringLiteral("selected")).toBool());
+    QVERIFY(!action.contains(QStringLiteral("cursorEntryId")));
     actions.clear();
 
     // Home/End use the same native range-preview contract. They previously
@@ -1544,7 +1572,15 @@ void F4GalleryBridgeTests::galleryRoutesOwnedAndCommanderKeys()
     QVERIFY(!actions.isEmpty());
     action = actions.constFirst().at(0).toMap();
     QCOMPARE(action.value(QStringLiteral("action")).toString(),
-             QStringLiteral("panel.cursor"));
+             QStringLiteral("panel.setSelection"));
+    changes = action.value(QStringLiteral("changes")).toList();
+    QCOMPARE(changes.size(), 1);
+    QCOMPARE(changes.constFirst().toMap().value(QStringLiteral("entryId")).toString(),
+             QStringLiteral("entry:2"));
+    QVERIFY(changes.constFirst().toMap().value(QStringLiteral("selected")).toBool());
+    QCOMPARE(action.value(QStringLiteral("cursorEntryId")).toString(),
+             QStringLiteral("entry:0"));
+    QCOMPARE(action.value(QStringLiteral("cursorIndex")).toInt(), 0);
     actions.clear();
 
     session->activateIndex(1);
@@ -1713,7 +1749,11 @@ void F4GalleryBridgeTests::galleryRoutesOwnedAndCommanderKeys()
     QCOMPARE(keyRecorder.count(Qt::Key_Tab, true, true), 1);
     QCOMPARE(keyRecorder.count(Qt::Key_Tab, false, false), 1);
 
-    QVERIFY(verifyForwarded("F3", Qt::Key_F3));
+    // Non-media F3 remains Go-owned; native image F3 is covered above.
+    const int mediaCursor = session->currentIndex();
+    session->activateIndex(0); // Synthetic parent row is not viewable media.
+    QVERIFY(verifyForwarded("non-media F3", Qt::Key_F3));
+    session->activateIndex(mediaCursor);
     QVERIFY(verifyForwarded("F5", Qt::Key_F5));
     QVERIFY(verifyForwarded("F8", Qt::Key_F8));
     QVERIFY(verifyForwarded("Ctrl+1", Qt::Key_1, Qt::ControlModifier));
@@ -1949,6 +1989,8 @@ void F4GalleryBridgeTests::galleryRoutesOwnedAndCommanderKeys()
                                  Qt::Key_Backspace));
     QVERIFY(!host->property("pendingCommanderInput").toBool());
     host->setProperty("commandLineHasText", false);
+    // Empty text and relinquishing command focus are separate acknowledgements.
+    host->setProperty("commandLineOwnsNavigation", false);
     actions.clear();
     keyRecorder.clear();
     QTest::keyClick(&view, Qt::Key_Space);
@@ -1971,10 +2013,12 @@ void F4GalleryBridgeTests::galleryRoutesOwnedAndCommanderKeys()
     // This guards against any semantic scene update changing routing before
     // the physical key is released.
     host->setProperty("commandLineHasText", true);
+    host->setProperty("commandLineOwnsNavigation", true);
     actions.clear();
     keyRecorder.clear();
     QTest::keyPress(&view, Qt::Key_Space);
     host->setProperty("commandLineHasText", false);
+    host->setProperty("commandLineOwnsNavigation", false);
     QTest::keyRelease(&view, Qt::Key_Space);
     QCOMPARE(keyRecorder.count(Qt::Key_Space, true), 1);
     QCOMPARE(keyRecorder.count(Qt::Key_Space, false), 1);
@@ -2201,12 +2245,7 @@ void F4GalleryBridgeTests::viewerOwnsEscapeAndZoom()
     GalleryKeyRecorder keyRecorder;
     QVERIFY(bridge.available());
     bridge.synchronizeScene(scene);
-    // Deliberately pass the preceding QML revision as well: the stable ID is
-    // authoritative, therefore a stale bound revision must not make this
-    // immediate path wait for a semantic scene that will never be emitted.
-    bridge.requestOpen(0, QStringLiteral("left:one"), 7, true, 41);
-    bridge.synchronizeScene(scene);
-    QVERIFY(bridge.viewerVisible());
+    QVERIFY(!bridge.viewerVisible());
 
     view.engine()->rootContext()->setContextProperty(QStringLiteral("viewerBridge"), &bridge);
     view.engine()->rootContext()->setContextProperty(QStringLiteral("viewerRecorder"), &keyRecorder);
@@ -2294,8 +2333,19 @@ void F4GalleryBridgeTests::viewerOwnsEscapeAndZoom()
     view.show();
     view.requestActivate();
 
-    QObject *viewer = rootObject->findChild<QObject *>(QStringLiteral("embeddedGalleryViewer"));
-    QVERIFY(viewer);
+    // Enter through the physical F3 adapter, with actual PNGs and the real
+    // viewer Loader. A changed workspace title alone cannot satisfy this.
+    QObject *panelHost = rootObject->findChild<QObject *>(QStringLiteral("panelLoader"))
+                             ->property("item").value<QObject *>();
+    QVERIFY(panelHost);
+    QVERIFY(QMetaObject::invokeMethod(panelHost, "forceActiveFocus"));
+    QTest::keyClick(&view, Qt::Key_F3);
+    QTRY_VERIFY(bridge.viewerVisible());
+    QCOMPARE(keyRecorder.count(Qt::Key_F3, true), 0);
+    QCOMPARE(keyRecorder.count(Qt::Key_F3, false), 0);
+    QObject *viewer = nullptr;
+    QTRY_VERIFY((viewer = rootObject->findChild<QObject *>(
+        QStringLiteral("embeddedGalleryViewer"))));
     QObject *viewport = viewer->findChild<QObject *>(
         QStringLiteral("galleryViewerViewport"));
     QVERIFY(viewport);
@@ -2303,9 +2353,6 @@ void F4GalleryBridgeTests::viewerOwnsEscapeAndZoom()
     QVERIFY(viewerLoader);
     QObject *viewerHost = viewerLoader->property("item").value<QObject *>();
     QVERIFY(viewerHost);
-    QObject *panelHost = rootObject->findChild<QObject *>(QStringLiteral("panelLoader"))
-                             ->property("item").value<QObject *>();
-    QVERIFY(panelHost);
     QTRY_COMPARE(viewerHost->property("sourcePanel").value<QObject *>(), panelHost);
     QTRY_COMPARE(viewer->property("sourcePanel").value<QObject *>(), panelHost);
     QVERIFY(QMetaObject::invokeMethod(viewerHost, "forceActiveFocus"));
@@ -2320,6 +2367,21 @@ void F4GalleryBridgeTests::viewerOwnsEscapeAndZoom()
                                  && session->imageOriginalSizeAt(1).height() > 1,
                              5000);
     QTRY_VERIFY_WITH_TIMEOUT(!viewer->property("transitioning").toBool(), 2000);
+    const auto viewerCenterColor = [&]() {
+        const QImage rendered = view.grabWindow();
+        return rendered.isNull() ? QColor()
+            : rendered.pixelColor(rendered.width() / 2, rendered.height() / 2);
+    };
+    // The full image must actually paint, not just mount a viewer/title while
+    // the panels remain underneath. This opaque PNG has a known center color.
+    if (view.rendererInterface()->graphicsApi() != QSGRendererInterface::Software)
+        QTRY_COMPARE_WITH_TIMEOUT(viewerCenterColor(), QColor(QStringLiteral("#4c8bf5")), 5000);
+    else {
+        // ViewerResample executes QSB shaders: software can validate mounting,
+        // decoding and focus, but cannot validate that shader's framebuffer.
+        QVERIFY(viewer->property("viewerContentVisible").toBool());
+        QVERIFY(viewerLoader->property("item").value<QQuickItem *>()->isVisible());
+    }
     const qreal initialZoom = viewer->property("zoomFactor").toReal();
     QVERIFY(initialZoom > 0);
 
@@ -3200,8 +3262,18 @@ void F4GalleryBridgeTests::inFlightDirectoryOpenDefersSupersededSourceFinal()
     QVERIFY(!bridge.m_inFlightPanelOpen.active);
 }
 
+void F4GalleryBridgeTests::compactFinalStateCommitsDeferredProvisionalCatalog_data()
+{
+    QTest::addColumn<bool>("vfsSource");
+    QTest::newRow("cold-local-deferred") << false;
+    QTest::newRow("vfs-placeholder-immediate") << true;
+}
+
 void F4GalleryBridgeTests::compactFinalStateCommitsDeferredProvisionalCatalog()
 {
+    QFETCH(bool, vfsSource);
+    const QString destinationPath = vfsSource
+        ? QStringLiteral("CloudFox:/$") : QStringLiteral("/tmp/cold-destination");
     QQmlEngine engine;
     F4GalleryBridge bridge(&engine);
     QVERIFY(bridge.available());
@@ -3218,8 +3290,11 @@ void F4GalleryBridgeTests::compactFinalStateCommitsDeferredProvisionalCatalog()
                                   .toMap().value(QStringLiteral("panels"))
                                   .toList().constFirst().toMap();
     provisional.insert(QStringLiteral("path"),
-                       QStringLiteral("CloudFox:/$"));
-    provisional.insert(QStringLiteral("sourceKind"), QStringLiteral("vfs"));
+                       destinationPath);
+    // Cold local replacement is deferred. VFS placeholders intentionally
+    // replace the old folder immediately and exercise a different contract.
+    provisional.insert(QStringLiteral("sourceKind"), vfsSource
+                       ? QStringLiteral("vfs") : QStringLiteral("local"));
     provisional.insert(QStringLiteral("previewCapable"), false);
     provisional.insert(QStringLiteral("catalogRevision"), qulonglong(43));
     provisional.insert(QStringLiteral("loading"), true);
@@ -3239,11 +3314,15 @@ void F4GalleryBridgeTests::compactFinalStateCommitsDeferredProvisionalCatalog()
     });
     bridge.synchronizePanelCatalog(provisional);
 
-    // The destination is still provisional, so the previous populated panel
-    // intentionally remains visible.
-    QCOMPARE(session->currentPath(), QStringLiteral("/tmp"));
-    QCOMPARE(session->catalogRevision(), qulonglong(42));
-    QCOMPARE(session->model()->rowCount(), 2);
+    if (vfsSource) {
+        QCOMPARE(session->currentPath(), destinationPath);
+        QCOMPARE(session->catalogRevision(), qulonglong(43));
+        QCOMPARE(session->model()->rowCount(), 1);
+    } else {
+        QCOMPARE(session->currentPath(), QStringLiteral("/tmp"));
+        QCOMPARE(session->catalogRevision(), qulonglong(42));
+        QCOMPARE(session->model()->rowCount(), 2);
+    }
 
     QVariantMap finalState = provisional;
     finalState.remove(QStringLiteral("entries"));
@@ -3258,7 +3337,7 @@ void F4GalleryBridgeTests::compactFinalStateCommitsDeferredProvisionalCatalog()
         {QStringLiteral("panel"), finalState},
     });
 
-    QCOMPARE(session->currentPath(), QStringLiteral("CloudFox:/$"));
+    QCOMPARE(session->currentPath(), destinationPath);
     QCOMPARE(session->catalogRevision(), qulonglong(43));
     QCOMPARE(session->model()->rowCount(), 1);
     QCOMPARE(session->entryIdAt(0), QStringLiteral("cloudfox:add"));
@@ -3934,6 +4013,8 @@ void F4GalleryBridgeTests::panelCatalogPatchLeavesOtherSessionUntouched()
     const qulonglong rightRevision = rightSession->catalogRevision();
     QSignalSpy leftReset(leftSession->model(),
                          &QAbstractItemModel::modelReset);
+    QSignalSpy leftInserted(leftSession->model(),
+                           &QAbstractItemModel::rowsInserted);
     QSignalSpy rightReset(rightSession->model(),
                           &QAbstractItemModel::modelReset);
     QSignalSpy rightChanged(rightSession->model(),
@@ -3947,7 +4028,12 @@ void F4GalleryBridgeTests::panelCatalogPatchLeavesOtherSessionUntouched()
     QCOMPARE(leftSession->model()->rowCount(), 2);
     QCOMPARE(leftSession->entryIdAt(1),
              QStringLiteral("panel-left-patch:entry:1"));
-    QCOMPARE(leftReset.size(), 1);
+    // A stable-prefix append must extend the target model without resetting
+    // it, while preserving the other session and all its rows untouched.
+    QCOMPARE(leftReset.size(), 0);
+    QCOMPARE(leftInserted.size(), 1);
+    QCOMPARE(leftInserted.constFirst().at(1).toInt(), 1);
+    QCOMPARE(leftInserted.constFirst().at(2).toInt(), 1);
     QCOMPARE(rightSession->model(), rightModel);
     QCOMPARE(rightSession->catalogRevision(), rightRevision);
     QCOMPARE(rightSession->model()->rowCount(), 1);
@@ -4855,7 +4941,19 @@ void F4GalleryBridgeTests::repeatedOpenReplaysAgainstUsefulLocalPreview()
     QQmlEngine engine;
     F4GalleryBridge bridge(&engine);
     QVERIFY(bridge.available());
-    bridge.synchronizeScene(testScene());
+    QVariantMap source = testScene();
+    QVariantMap sourceShell = source.value(QStringLiteral("shell")).toMap();
+    QVariantMap sourcePanel = sourceShell.value(QStringLiteral("panels"))
+                                  .toList().constFirst().toMap();
+    QVariantList sourceEntries = sourcePanel.value(QStringLiteral("entries")).toList();
+    QVariantMap sourceDirectory = sourceEntries.constFirst().toMap();
+    sourceDirectory.insert(QStringLiteral("isDir"), true);
+    sourceDirectory.insert(QStringLiteral("isImage"), false);
+    sourceEntries[0] = sourceDirectory;
+    sourcePanel.insert(QStringLiteral("entries"), sourceEntries);
+    sourceShell.insert(QStringLiteral("panels"), QVariantList{sourcePanel});
+    source.insert(QStringLiteral("shell"), sourceShell);
+    bridge.synchronizeScene(source);
     auto *session = qobject_cast<ZoinGallery::GallerySession *>(
         bridge.sessionForSide(0));
     QVERIFY(session);

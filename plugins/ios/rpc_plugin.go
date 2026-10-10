@@ -56,6 +56,7 @@ import (
 //     limitation (the same one dummy_rpc and cloudfox's RPCPlugin have),
 //     not something part 1 fixes.
 type RPCPlugin struct {
+	uriRPCState
 	manager *ManagerVFS
 	backend *nativeBackend
 

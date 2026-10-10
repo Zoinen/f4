@@ -240,39 +240,42 @@ Item {
         return textRendering.renderType === Number(value)
     }
 
+    function restoreTypographyAndLayout(saved) {
+        try {
+            hostWindow.typography.restore(saved.typography ? JSON.parse(saved.typography) : {})
+        } catch (error) {
+            console.warn("Invalid GUI typography preferences:", error)
+            hostWindow.typography.restore({})
+        }
+        showColumnSeparators = saved.showColumnSeparators === true
+                || String(saved.showColumnSeparators).toLowerCase() === "true"
+        const padding = Number(saved.panelColumnPadding)
+        headerVerticalSeparatorSpacing = saved.headerVerticalSeparatorSpacing === undefined
+                || saved.headerVerticalSeparatorSpacing === true
+                || String(saved.headerVerticalSeparatorSpacing).toLowerCase() === "true"
+        headerHorizontalSeparatorSpacing = saved.headerHorizontalSeparatorSpacing === undefined
+                || saved.headerHorizontalSeparatorSpacing === true
+                || String(saved.headerHorizontalSeparatorSpacing).toLowerCase() === "true"
+        columnSeparatorSpacing = saved.columnSeparatorSpacing === undefined
+                || saved.columnSeparatorSpacing === true
+                || String(saved.columnSeparatorSpacing).toLowerCase() === "true"
+        panelColumnPadding = Number.isFinite(padding)
+                ? Math.max(0, Math.min(24, Math.round(padding))) : 8
+        compactBreadcrumbs = saved.compactBreadcrumbs === undefined
+                || saved.compactBreadcrumbs === true
+                || String(saved.compactBreadcrumbs).toLowerCase() === "true"
+        commandLineGraphicalCursor = saved.commandLineGraphicalCursor === undefined
+                || saved.commandLineGraphicalCursor === true
+                || String(saved.commandLineGraphicalCursor).toLowerCase() === "true"
+    }
+
     function loadFromPersistence(colorsOnly = false) {
         if (!persistence)
             return false
         try {
             const saved = persistence.loadTheme()
-            if (!colorsOnly) {
-                try {
-                    hostWindow.typography.restore(saved.typography ? JSON.parse(saved.typography) : {})
-                } catch (error) {
-                    console.warn("Invalid GUI typography preferences:", error)
-                    hostWindow.typography.restore({})
-                }
-                showColumnSeparators = saved.showColumnSeparators === true
-                        || String(saved.showColumnSeparators).toLowerCase() === "true"
-                const padding = Number(saved.panelColumnPadding)
-                headerVerticalSeparatorSpacing = saved.headerVerticalSeparatorSpacing === undefined
-                        || saved.headerVerticalSeparatorSpacing === true
-                        || String(saved.headerVerticalSeparatorSpacing).toLowerCase() === "true"
-                headerHorizontalSeparatorSpacing = saved.headerHorizontalSeparatorSpacing === undefined
-                        || saved.headerHorizontalSeparatorSpacing === true
-                        || String(saved.headerHorizontalSeparatorSpacing).toLowerCase() === "true"
-                columnSeparatorSpacing = saved.columnSeparatorSpacing === undefined
-                        || saved.columnSeparatorSpacing === true
-                        || String(saved.columnSeparatorSpacing).toLowerCase() === "true"
-                panelColumnPadding = Number.isFinite(padding)
-                        ? Math.max(0, Math.min(24, Math.round(padding))) : 8
-                compactBreadcrumbs = saved.compactBreadcrumbs === undefined
-                        || saved.compactBreadcrumbs === true
-                        || String(saved.compactBreadcrumbs).toLowerCase() === "true"
-                commandLineGraphicalCursor = saved.commandLineGraphicalCursor === undefined
-                        || saved.commandLineGraphicalCursor === true
-                        || String(saved.commandLineGraphicalCursor).toLowerCase() === "true"
-            }
+            if (!colorsOnly)
+                restoreTypographyAndLayout(saved)
             const savedSchemaVersion = Number(saved.themeSchemaVersion || 0)
             let applied = false
             for (let index = 0; index < colorDefinitions.length; ++index) {

@@ -496,8 +496,14 @@ FocusScope {
         benchmarkTracingEnabled: host.benchmarkTracingEnabled
 
         onActivateRequested: {
-            if (host.bridge && (!host.panelActive || host.commandLineOwnsNavigation))
-                host.bridge.requestActivate(host.side)
+            // Row presses emit activation before their deferred cursor.
+            // Let that cursor carry inactive-panel activation atomically;
+            // only empty/current-row presses need a separate activation.
+            Qt.callLater(function() {
+                if (host.bridge && !host.pendingPointerActivation
+                        && (!host.panelActive || host.commandLineOwnsNavigation))
+                    host.bridge.requestActivate(host.side)
+            })
         }
         onCursorRequested: (entryId, index, deferCommit) => {
             if (!host.bridge)

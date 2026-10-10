@@ -34,8 +34,10 @@ Rectangle {
     readonly property real alignmentRevision:
         popupList.contentY + popupSurfaceItem.x + popupSurfaceItem.y + x + y
     transform: Translate {
-        x: overlayController.historyMenu ? hostWindow.iconPixelOffsetX(menuItem) : 0
-        y: overlayController.historyMenu ? hostWindow.iconPixelOffsetY(menuItem) : 0
+        x: overlayController.historyMenu
+           ? hostWindow.dialogPixelOffsetX(menuItem, hostWindow.contentItem) : 0
+        y: overlayController.historyMenu
+           ? hostWindow.dialogPixelOffsetY(menuItem, hostWindow.contentItem) : 0
     }
     color: modelData.index === overlayController.visualSelectedIndex
            && !modelData.separator

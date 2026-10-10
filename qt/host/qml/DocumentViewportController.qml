@@ -15,7 +15,8 @@ Item {
     property bool embedded: false
     property bool reportsNativeViewport: true
     property real nativeViewportHeight: -1
-    onNativeViewportHeightChanged: Qt.callLater(syncNativeViewport)
+    // Use the owned timer so deferred work expires with this controller.
+    onNativeViewportHeightChanged: controller.scheduleNativeViewportSync()
     property bool interactionActive: true
     property bool showsConsoleTopBar: false
     property bool terminalSurface: false
@@ -117,7 +118,10 @@ Item {
     }
 
     function syncNativeViewport() {
-        if (!reportsNativeViewport) return
+        if (!controller || !controller.componentReady
+                || !controller.reportsNativeViewport
+                || !controller.hostWindow || !controller.documentList)
+            return
         if (standaloneViewport) {
             const columns = Math.max(1, Math.floor(
                 standaloneViewportWidth / Math.max(1, documentCellWidth)))
@@ -141,11 +145,11 @@ Item {
         }
         if (!interactionActive
                 || (!terminalSurface && (embedded || !showsConsoleTopBar))) {
-            clearNativeViewport()
+            controller.clearNativeViewport()
             return
         }
         const target = hostWindow.cleanText(frame.id)
-        const rows = completeViewportRows()
+        const rows = controller.completeViewportRows()
         const viewportAction = terminalSurface
                 ? "terminal.viewport" : "document.viewport"
         if (target === "" || rows <= 0)

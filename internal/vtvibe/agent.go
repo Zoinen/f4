@@ -109,6 +109,9 @@ func (c Config) RunAgent(ctx context.Context, msgs []Message, tools []Tool, opts
 	if maxSteps <= 0 {
 		maxSteps = DefaultAgentSteps
 	}
+	if c.Kind == KindAnthropic {
+		return c.runAgentAnthropic(ctx, msgs, tools, opts, maxSteps)
+	}
 	byName := make(map[string]Tool, len(tools))
 	specs := make([]agentToolSpec, 0, len(tools))
 	for _, t := range tools {

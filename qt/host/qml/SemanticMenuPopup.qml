@@ -391,7 +391,7 @@ Item {
     }
 
     function syncListSelection() {
-        const wanted = Math.max(-1, Number(visualSelectedIndex))
+        const wanted = historyMenu ? -1 : Math.max(-1, Number(visualSelectedIndex))
         if (popupMenuList.currentIndex !== wanted) {
             const top = popupMenuList.contentY
             popupMenuList.currentIndex = wanted

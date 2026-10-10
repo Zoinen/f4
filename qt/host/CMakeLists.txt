@@ -994,7 +994,8 @@ endif()
 if(BUILD_TESTING)
   find_package(Qt6 COMPONENTS Test REQUIRED)
   # CTest capture paths are generated under the build tree, not the checkout.
-  file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/.diagnostics")
+  file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/.diagnostics"
+                      "${CMAKE_BINARY_DIR}/artifacts")
 
   find_program(F4_ARCHITECTURE_PYTHON NAMES python3 python)
   if(F4_ARCHITECTURE_PYTHON)
@@ -1658,8 +1659,9 @@ if(BUILD_TESTING)
       ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV};F4_GALLERY_VIDEO_CONTROLS_CAPTURE=${CMAKE_BINARY_DIR}/.diagnostics/gallery-video-controls-175.png")
   endif()
   add_test(NAME F4QuickViewSurfaceTest COMMAND F4QuickViewSurfaceTests)
+  # The aggregate includes regressions whose contract requires DPR 1.75.
   set_tests_properties(F4QuickViewSurfaceTest PROPERTIES
-    ENVIRONMENT "${F4_HOST_QML_TEST_ENV}"
+    ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
   )
   add_test(NAME F4GalleryVideoSettingsPixelGridTest
     COMMAND F4QuickViewSurfaceTests nativeSettingsPagePreservesConfigurator)

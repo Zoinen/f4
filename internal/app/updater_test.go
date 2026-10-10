@@ -83,6 +83,7 @@ func TestUpdater_CheckForUpdates_API(t *testing.T) {
 				TagName: "v9.9.9",
 				Assets: []update.Asset{
 					{Name: "f4-linux-amd64.tar.gz", BrowserDownloadURL: "http://mock/download"},
+					{Name: "f4-lite-linux-amd64.tar.gz", BrowserDownloadURL: "http://mock/download-lite"},
 				},
 			}
 			if err := json.NewEncoder(w).Encode(resp); err != nil {
@@ -264,6 +265,7 @@ func TestUpdater_UserDeclinesUpdate(t *testing.T) {
 			Assets: []update.Asset{
 				{Name: "f4-linux-amd64.tar.gz", BrowserDownloadURL: "http://mock"},
 				{Name: "f4-windows-amd64.zip", BrowserDownloadURL: "http://mock"},
+				{Name: "f4-lite-linux-amd64.tar.gz", BrowserDownloadURL: "http://mock-lite"},
 			},
 		}
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
@@ -343,6 +345,7 @@ func TestUpdater_ManualCheckIgnoresSessionDismiss(t *testing.T) {
 			Assets: []update.Asset{
 				{Name: "f4-linux-amd64.tar.gz", BrowserDownloadURL: "http://mock"},
 				{Name: "f4-windows-amd64.zip", BrowserDownloadURL: "http://mock"},
+				{Name: "f4-lite-linux-amd64.tar.gz", BrowserDownloadURL: "http://mock-lite"},
 			},
 		}
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
@@ -401,6 +404,7 @@ func TestUpdater_AutoCheckSkipsSessionDismiss(t *testing.T) {
 			Assets: []update.Asset{
 				{Name: "f4-linux-amd64.tar.gz", BrowserDownloadURL: "http://mock"},
 				{Name: "f4-windows-amd64.zip", BrowserDownloadURL: "http://mock"},
+				{Name: "f4-lite-linux-amd64.tar.gz", BrowserDownloadURL: "http://mock-lite"},
 			},
 		}
 		if err := json.NewEncoder(w).Encode(resp); err != nil {

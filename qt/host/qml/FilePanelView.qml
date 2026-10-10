@@ -50,17 +50,22 @@ Rectangle {
     property real topChromeOffset: nativeLayout ? 0 : ((panel.y || 0) <= 0 ? hostWindow.menuBarHeight : 0)
     readonly property bool panelIsActive:
         hostWindow.panelIsEffectivelyActive(panel)
-    TapHandler {
+    MouseArea {
+        anchors.fill: parent
+        z: 100
         objectName: "panelCommandFocusReturn-" + Number(panelRoot.panel.side || 0)
         enabled: panelRoot.visible
                  && hostWindow.commandLineFrame().ownsNavigation === true
                  && !hostWindow.hasBlockingOverlay()
                  && !panelRoot.viewerVisible
         acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
-        onPressedChanged: {
-            if (pressed)
-                hostWindow.action({action: "panel.activate", side: Number(panelRoot.panel.side || 0)}, true)
+        // Return command focus before chrome or renderer controls handle the
+        // same press. Reject our grab so their click/drag semantics survive.
+        onPressed: mouse => {
+            hostWindow.action({action: "panel.activate", side: Number(panelRoot.panel.side || 0)}, true)
+            mouse.accepted = false
         }
+        onWheel: wheel => { wheel.accepted = false }
     }
     readonly property bool viewerVisible: galleryController.viewerVisible === true
     property var registeredGalleryPanelHost: null
