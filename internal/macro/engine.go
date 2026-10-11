@@ -30,6 +30,17 @@ type MacroManager struct {
 	// macros. Recorded macros keep working either way: this is a second
 	// backend, not a replacement.
 	Lua *LuaMacroEngine
+
+	// OnLuaLoaded, when set, is called after the Lua engine has been built or
+	// rebuilt from disk (start, reload, recovery from a runaway macro), with
+	// the engine that is now current or nil. The host uses it to publish what
+	// the scripts declare beyond keys, such as MenuItem{} entries.
+	OnLuaLoaded func(*LuaMacroEngine)
+
+	// luaHost and luaDir are what the engine was last built from, so that an
+	// interrupted one can be rebuilt (RefreshInterruptedLua).
+	luaHost MacroHost
+	luaDir  string
 }
 
 func NewMacroManager(iniPath string) *MacroManager {

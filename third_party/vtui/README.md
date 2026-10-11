@@ -56,6 +56,7 @@ The framework abstracts the physical output through the `SurfaceRenderer` interf
 *   **Win32GuiRenderer:** A lightweight, pure-Go native Win32/GDI backend using standard Windows API (CreateWindowEx, BitBlt, SetDIBitsToDevice). Works across all Windows versions and runs out of the box under Wine without GPU or CGO dependencies.
 *   **GogpuRenderer:** A hardware-accelerated backend that draws directly to a GPU-backed window using the `gogpu` library. Provides crisp text rendering and high FPS.
 *   **EbitenRenderer:** A cgo-free backend built on [Ebitengine](https://ebitengine.org). The grid is rasterised on the CPU and uploaded as a single GPU texture per frame; an unchanged screen costs neither an upload nor a blit. Supports HiDPI and shares the geometric frame rasteriser with the X11 and Wayland backends. Its reason to exist is dependency independence: it needs neither cgo nor the gogpu stack, so `CGO_ENABLED=0` cross-compilation keeps working on Linux, Windows and macOS.
+*   **CocoaGuiRenderer:** A native macOS backend: an AppKit window driven through the Objective-C runtime with purego, no cgo. The grid is rasterised on the CPU by the same code as the Win32 backend and handed to Core Animation as a CoreGraphics image, so it needs no GPU stack either. `go run ./cmd/cocoa-smoke` checks it end to end; see [PLATFORMS.md](PLATFORMS.md).
 *   **X11/Wayland Renderers:** Native Unix backends that draw to software bitmapped windows without requiring a terminal emulator.
 *   **PureX11Renderer:** A 100% pure Go X11 backend using the XGB library and SHM. Experimental and requires further testing.
 
@@ -138,6 +139,7 @@ go run ./cmd/test-app --gui=gogpu     # Hardware-accelerated GPU window
 go run ./cmd/test-app --gui=x11       # Native X11 window
 go run ./cmd/test-app --gui=wayland   # Native Wayland window
 go run ./cmd/test-app --gui=ebiten    # Ebitengine window, no cgo required
+go run ./cmd/test-app --gui=cocoa     # Native macOS window, no cgo, no GPU
 ```
 
 ### Building the ebiten backend without cgo

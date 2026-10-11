@@ -3,12 +3,12 @@ package app
 import (
 	"fmt"
 	"github.com/unxed/f4/internal/panel"
-	"os"
 	"strings"
 
 	"github.com/unxed/f4/internal/action"
 	"github.com/unxed/f4/internal/i18n"
 	"github.com/unxed/f4/internal/keymap"
+	"github.com/unxed/f4/vfs/hostmode"
 	"github.com/unxed/vtui"
 )
 
@@ -154,7 +154,7 @@ func commandPalettePanelsContextEntries(pf *panel.PanelsFrame) []commandPaletteE
 					"Action.AI.ViewChat",
 				))
 				barKind := aiBarNone
-				if pnl.focusedLinkIdx == -2 {
+				if pnl.StatusBarFocused() {
 					barKind = pnl.barKind()
 				}
 				entries = append(entries, commandPaletteAIChatFocusedEntries(pf, pnl, barKind)...)
@@ -226,8 +226,8 @@ func commandPaletteAIChatFocusedEntries(pf *panel.PanelsFrame, pnl *AIChatPanel,
 		return nil
 	}
 	category := action.PlainLabel(i18n.Msg("Action.AI.ViewChat"))
-	if pnl.focusedLinkIdx == -1 {
-		draft := pnl.input.GetText()
+	if !pnl.LinkFocused() && !pnl.StatusBarFocused() {
+		draft := pnl.Input.GetText()
 		if strings.TrimSpace(draft) == "" {
 			return nil
 		}
@@ -243,12 +243,12 @@ func commandPaletteAIChatFocusedEntries(pf *panel.PanelsFrame, pnl *AIChatPanel,
 			category,
 			func() bool {
 				return commandPaletteAIChatPanelFocused(pf, pnl) &&
-					pnl.focusedLinkIdx == -1 && pnl.input.GetText() == draft
+					!pnl.LinkFocused() && !pnl.StatusBarFocused() && pnl.Input.GetText() == draft
 			},
 			"AI.InputLabel",
 		)}
 	}
-	if pnl.focusedLinkIdx == -2 {
+	if pnl.StatusBarFocused() {
 		if barKind == aiBarNone {
 			return nil
 		}
@@ -266,7 +266,7 @@ func commandPaletteAIChatFocusedEntries(pf *panel.PanelsFrame, pnl *AIChatPanel,
 		}
 		barStillFocused := func() bool {
 			return commandPaletteAIChatPanelFocused(pf, pnl) &&
-				pnl.focusedLinkIdx == -2 && pnl.barKind() == barKind
+				pnl.StatusBarFocused() && pnl.barKind() == barKind
 		}
 		entries := []commandPaletteEntry{commandPaletteLocalizedPanelKeyEntry(
 			pf,
@@ -299,15 +299,15 @@ func commandPaletteAIChatFocusedEntries(pf *panel.PanelsFrame, pnl *AIChatPanel,
 		return entries
 	}
 
-	linkIndex := pnl.focusedLinkIdx
-	if linkIndex < 0 || linkIndex >= len(pnl.visibleLinks) {
+	link, ok := pnl.FocusedLink()
+	if !ok {
 		return nil
 	}
-	linkTarget := pnl.visibleLinks[linkIndex].target
+	linkTarget := link.Target
 	linkStillFocused := func() bool {
+		current, ok := pnl.FocusedLink()
 		return commandPaletteAIChatPanelFocused(pf, pnl) &&
-			pnl.focusedLinkIdx == linkIndex && linkIndex < len(pnl.visibleLinks) &&
-			pnl.visibleLinks[linkIndex].target == linkTarget
+			ok && current.Target == linkTarget
 	}
 	return []commandPaletteEntry{
 		commandPaletteLocalizedPanelKeyEntry(
@@ -421,7 +421,7 @@ func commandPaletteBookmarkEntries(pf *panel.PanelsFrame) []commandPaletteEntry 
 			if !commandPaletteBookmarkFrameActive(pf) {
 				return false
 			}
-			home, _ := os.UserHomeDir()
+			home, _ := hostmode.UserHomeDir()
 			fsp := pf.GetActivePanel()
 			if home == "" || fsp == nil {
 				return false

@@ -66,6 +66,15 @@ func clampMouseCoord(v, size int) int {
 }
 
 func TranslateMouseInput(e *vtinput.InputEvent) string {
+	return TranslateMouseInputWithMode(e, true)
+}
+
+// TranslateMouseInputWithMode encodes a mouse event in the format selected by
+// the terminal application. SGR (DECSET 1006) is the unambiguous format used
+// by modern TUIs. Without it, VT mouse modes use the original X10 wire format;
+// this matters for native Windows console applications such as FAR running
+// behind ConPTY, which can request mouse tracking without requesting SGR.
+func TranslateMouseInputWithMode(e *vtinput.InputEvent, sgr bool) string {
 	cb := 0
 	isRelease := false
 	isMove := e.MouseEventFlags&vtinput.MouseMoved != 0
@@ -94,7 +103,23 @@ func TranslateMouseInput(e *vtinput.InputEvent) string {
 		cb += 32
 	} else {
 		if !e.KeyDown {
-			cb = 3 // Release
+			// SGR mouse mode identifies a release by the button that was
+			// released and the lowercase final byte. The legacy X10 format
+			// has only one release code, so keep its historical value there.
+			if sgr {
+				switch e.ButtonState {
+				case vtinput.FromLeft1stButtonPressed:
+					cb = 0
+				case vtinput.FromLeft2ndButtonPressed:
+					cb = 1
+				case vtinput.RightmostButtonPressed:
+					cb = 2
+				default:
+					cb = 3
+				}
+			} else {
+				cb = 3 // Release
+			}
 			isRelease = true
 		} else {
 			switch e.ButtonState {
@@ -124,6 +149,16 @@ func TranslateMouseInput(e *vtinput.InputEvent) string {
 	endChar := "M"
 	if isRelease {
 		endChar = "m"
+	}
+
+	if !sgr {
+		// X10 stores each coordinate in one byte after adding 32, so it can
+		// represent cells 0..223 only. Keep the event lossless on a larger
+		// terminal instead of wrapping a coordinate into another cell.
+		x, y := int(e.MouseX), int(e.MouseY)
+		if x >= 0 && x <= 223 && y >= 0 && y <= 223 {
+			return fmt.Sprintf("\x1b[M%c%c%c", cb+32, x+33, y+33)
+		}
 	}
 
 	return fmt.Sprintf("\x1b[<%d;%d;%d%s", cb, e.MouseX+1, e.MouseY+1, endChar)
@@ -264,6 +299,34 @@ func ctrlCharFromVK(vk uint16) int {
 	return -1
 }
 
+// win32UnicodeChar is the character field of a win32-input-mode record. A
+// console key event of Enter, Backspace, Tab, Escape or Space carries its
+// control character there, and a program that reads a line in cooked mode (as
+// DiskPart does) ignores such a key without it. Some backends deliver these
+// keys with no character, so it is filled in, unless Ctrl or Alt changes what
+// the key means (#207).
+func win32UnicodeChar(e *vtinput.InputEvent) rune {
+	if e.Char != 0 {
+		return e.Char
+	}
+	if e.ControlKeyState&(vtinput.LeftCtrlPressed|vtinput.RightCtrlPressed|vtinput.LeftAltPressed|vtinput.RightAltPressed) != 0 {
+		return 0
+	}
+	switch e.VirtualKeyCode {
+	case vtinput.VK_RETURN:
+		return '\r'
+	case vtinput.VK_BACK:
+		return '\b'
+	case vtinput.VK_TAB:
+		return '\t'
+	case vtinput.VK_ESCAPE:
+		return 0x1b
+	case vtinput.VK_SPACE:
+		return ' '
+	}
+	return 0
+}
+
 // TranslateInput converts f4 input events into ANSI sequences that interactive shell apps expect.
 func TranslateInput(e *vtinput.InputEvent, win32Mode bool, kittyFlags int, appCursorKeys bool) string {
 	if win32Mode && e.Type == vtinput.KeyEventType {
@@ -273,7 +336,7 @@ func TranslateInput(e *vtinput.InputEvent, win32Mode bool, kittyFlags int, appCu
 		}
 		// Format: CSI Vk ; Sc ; Uc ; Kd ; Cs ; Rc _
 		return fmt.Sprintf("\x1b[%d;%d;%d;%d;%d;%d_",
-			e.VirtualKeyCode, e.VirtualScanCode, e.Char, kd, e.ControlKeyState, e.RepeatCount)
+			e.VirtualKeyCode, e.VirtualScanCode, win32UnicodeChar(e), kd, e.ControlKeyState, e.RepeatCount)
 	}
 
 	if kittyFlags != 0 {

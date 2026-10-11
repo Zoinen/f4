@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/unxed/f4/internal/testutil"
 	"github.com/unxed/f4/sdk/f4settings"
+	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 )
 
@@ -128,5 +130,91 @@ func TestSettingsDriveLinkShortcutValidation(t *testing.T) {
 		if err := settingsValidateShortcut(value); err == nil {
 			t.Errorf("shortcut %q accepted", value)
 		}
+	}
+}
+
+// A click on a record selects it for the fields below, and the list has to
+// show which record that is: while it has the focus, and while one of those
+// fields has it. On the edit-coloured list the cursor used the dialog cursor
+// colour, which is the same black on cyan, so it could not be seen (#1148).
+func TestSettingsCollectionCursorIsVisible(t *testing.T) {
+	c, d := driveLinksCenter(t)
+	defer d.Close()
+	c.restrictTo("drives")
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(130, 35)
+	c.Show(scr)
+	control := func(id string) vtui.UIElement {
+		for _, row := range c.page.rows {
+			if row.control != nil && row.control.GetId() == id {
+				return row.control
+			}
+		}
+		t.Fatalf("no control %q on the page", id)
+		return nil
+	}
+	table := func() *vtui.Table { return control("collection:drive-links").(*vtui.Table) }
+	click := func(x, y int) {
+		c.ProcessMouse(&vtinput.InputEvent{Type: vtinput.MouseEventType, MouseX: testutil.Int16(x), MouseY: testutil.Int16(y), KeyDown: true, ButtonState: vtinput.FromLeft1stButtonPressed})
+		c.ProcessMouse(&vtinput.InputEvent{Type: vtinput.MouseEventType, MouseX: testutil.Int16(x), MouseY: testutil.Int16(y)})
+		c.Show(scr)
+	}
+	x, y, _, _ := table().GetPosition()
+	check := func(when string) {
+		t.Helper()
+		if table().SelectPos != 2 {
+			t.Fatalf("%s: the click selected record %d, not 2", when, table().SelectPos)
+		}
+		selected := scr.GetCell(x+1, y+2).Attributes
+		for _, row := range []int{0, 1} {
+			if scr.GetCell(x+1, y+row).Attributes == selected {
+				t.Fatalf("%s: the selected record is drawn like record %d", when, row)
+			}
+		}
+	}
+
+	click(x+1, y+2)
+	if !table().IsFocused() {
+		t.Fatal("the click did not focus the record list")
+	}
+	check("list focused")
+
+	name := control("record-field:drive-links:link.Name")
+	nx, ny, _, _ := name.GetPosition()
+	click(nx+1, ny)
+	if table().IsFocused() {
+		t.Fatal("the click on Link name left the focus on the record list")
+	}
+	check("field focused")
+}
+
+// The Settings button of a plugin opens that plugin's own settings: the fields
+// of its category whose ids carry its prefix, under its name (f4#918).
+func TestSettingsRestrictToOnePluginsFields(t *testing.T) {
+	fields := []f4settings.Field{
+		{ID: "visren.WordDiv", Category: "operations", Group: "Visual File Renamer", Label: f4settings.Text{English: "Word delimiters"}, Kind: f4settings.String},
+		{ID: "copy.Overwrite", Category: "operations", Group: "Copying", Label: f4settings.Text{English: "Overwrite"}, Kind: f4settings.String},
+	}
+	d := f4settings.NewDraft(map[string]string{"visren.WordDiv": " ", "copy.Overwrite": "ask"}, nil)
+	defer d.Close()
+	c := newSettingsCenter([]*settingsSession{{catalog: f4settings.Catalog{ID: "test", Categories: Categories, Fields: fields}, draft: d}})
+	c.SetPosition(0, 0, 129, 34)
+	c.fieldPrefix, c.fieldTitle = "visren.", "Visual File Renamer"
+	c.restrictTo("operations")
+
+	if c.category != "operations" || len(c.categories) != 1 {
+		t.Fatalf("scope = %q, %d categories", c.category, len(c.categories))
+	}
+	if title := c.windowTitle(); title != "Visual File Renamer" {
+		t.Errorf("window title = %q, want the plugin's name", title)
+	}
+	var ids []string
+	for _, r := range c.page.rows {
+		if !r.heading {
+			ids = append(ids, r.field.ID)
+		}
+	}
+	if len(ids) != 1 || ids[0] != "visren.WordDiv" {
+		t.Errorf("the page lists %v, want only the plugin's own field", ids)
 	}
 }

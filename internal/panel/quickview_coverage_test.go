@@ -157,7 +157,7 @@ func TestQuickViewSelectionAndDirectoryRenderingContracts(t *testing.T) {
 	q.scanStats = vfs.OpStats{Dirs: 3, Files: 4, Bytes: 100, DirBytes: 20, PhysicalBytes: 50}
 	q.scanClusterSize = 4096
 	q.scanDone = false
-	q.renderDir(&FileEntry{VFSItem: vfs.VFSItem{Name: "demo", IsDir: true}}, func(line string) { lines = append(lines, line) })
+	q.renderDir(&FileEntry{VFSItem: vfs.VFSItem{Name: "demo", IsDir: true}}, func(line string, _ uint64) { lines = append(lines, line) }, 0)
 	joined := strings.Join(lines, "\n")
 	if !strings.Contains(joined, "demo") || !strings.Contains(joined, "Files size") || !strings.Contains(joined, "Physical size") || !strings.Contains(joined, "Ratio") || !strings.Contains(joined, "4.0 KiB") || !strings.Contains(strings.ToLower(joined), "scanning") {
 		t.Fatalf("directory rendering omitted expected rows: %q", joined)
@@ -167,7 +167,7 @@ func TestQuickViewSelectionAndDirectoryRenderingContracts(t *testing.T) {
 	q.scanErr = errors.New("walk failed")
 	q.scanStats = vfs.OpStats{}
 	q.scanClusterSize = 0
-	q.renderDir(&FileEntry{VFSItem: vfs.VFSItem{Name: "broken", IsDir: true}}, func(line string) { lines = append(lines, line) })
+	q.renderDir(&FileEntry{VFSItem: vfs.VFSItem{Name: "broken", IsDir: true}}, func(line string, _ uint64) { lines = append(lines, line) }, 0)
 	joined = strings.Join(lines, "\n")
 	if !strings.Contains(joined, "broken") || !strings.Contains(joined, "walk failed") || strings.Contains(strings.ToLower(joined), "scanning") {
 		t.Fatalf("directory error rendering = %q", joined)

@@ -352,6 +352,8 @@ func TestDefaultSyncActionFollowsTheMode(t *testing.T) {
 		{SyncDiffers, false, SyncSkip},
 		{SyncDiffers, true, SyncCopyToRight},
 		{SyncLeftOnly, false, SyncCopyToRight},
+		{SyncLeftNewer, false, SyncCopyToRight},
+		{SyncLeftNewer, true, SyncCopyToRight},
 		{SyncRightOnly, false, SyncCopyToLeft},
 		{SyncRightOnly, true, SyncDeleteRight},
 		{SyncRightNewer, false, SyncCopyToLeft},
@@ -361,5 +363,98 @@ func TestDefaultSyncActionFollowsTheMode(t *testing.T) {
 		if got := DefaultSyncAction(c.state, c.asymmetric); got != c.want {
 			t.Errorf("DefaultSyncAction(%d, %v) = %d, want %d", c.state, c.asymmetric, got, c.want)
 		}
+	}
+}
+
+// A pair stamped at the same second with different sizes has no direction
+// (tested above), but once the timestamps differ too a later mtime still
+// says which copy is the edited one — even when that newer copy happens to
+// be the smaller of the two, which a size-based guess would get backwards.
+func TestBuildSyncPairsNewerTimeWithDifferentSizePicksTheNewerSideRegardlessOfSize(t *testing.T) {
+	left, right := t.TempDir(), t.TempDir()
+	syncWriteFile(t, left, "left-newer.txt", "abc", syncTestLate)
+	syncWriteFile(t, right, "left-newer.txt", "abcdefgh", syncTestEarly)
+	syncWriteFile(t, left, "right-newer.txt", "abcdefgh", syncTestEarly)
+	syncWriteFile(t, right, "right-newer.txt", "abc", syncTestLate)
+
+	pairs := syncPairsByRel(t, syncTestSides(t, left, right), syncTestOptions(), nil)
+
+	syncAssert(t, pairs, "left-newer.txt", SyncLeftNewer, SyncCopyToRight)
+	syncAssert(t, pairs, "right-newer.txt", SyncRightNewer, SyncCopyToLeft)
+}
+
+// "By content" reads the files that already look equal by name, time and
+// size, to find the ones that only look it. Ignoring dates never reaches
+// this check for a same-size pair — there a size match already means
+// equal — so this is the one combination that needs the default,
+// date-aware comparison to exercise it.
+func TestBuildSyncPairsByContentCatchesDifferingContentWhenMetadataMatches(t *testing.T) {
+	left, right := t.TempDir(), t.TempDir()
+	syncWriteFile(t, left, "f.txt", "aaaa", syncTestEarly)
+	syncWriteFile(t, right, "f.txt", "bbbb", syncTestEarly)
+
+	opts := syncTestOptions()
+	opts.ByContent = true
+	pairs := syncPairsByRel(t, syncTestSides(t, left, right), opts, nil)
+
+	syncAssert(t, pairs, "f.txt", SyncDiffers, SyncSkip)
+}
+
+// Size is what the confirmation dialog and the progress totals add up:
+// bytes move only on a copy, and only from the side being read.
+func TestSyncPairSizeReflectsTheActionsDirection(t *testing.T) {
+	p := SyncPair{
+		Left:  vfs.VFSItem{Size: 42},
+		Right: vfs.VFSItem{Size: 7},
+	}
+	cases := []struct {
+		action SyncAction
+		want   int64
+	}{
+		{SyncSkip, 0},
+		{SyncCopyToRight, 42},
+		{SyncCopyToLeft, 7},
+		{SyncDeleteRight, 0},
+		{SyncDeleteLeft, 0},
+	}
+	for _, c := range cases {
+		p.Action = c.action
+		if got := p.Size(); got != c.want {
+			t.Errorf("Size() with action %d = %d, want %d", c.action, got, c.want)
+		}
+	}
+}
+
+// A pair the right side alone holds cannot offer copying or deleting on
+// the left, since there is nothing there to act on.
+func TestSyncPairAllowedActionsRightOnly(t *testing.T) {
+	rightOnly := SyncPair{HasRight: true}
+	got := rightOnly.AllowedActions()
+	want := []SyncAction{SyncSkip, SyncCopyToLeft, SyncDeleteRight}
+	if len(got) != len(want) {
+		t.Fatalf("a right-only pair offers %v, want %v", got, want)
+	}
+	for i, a := range want {
+		if got[i] != a {
+			t.Errorf("action %d = %d, want %d", i, got[i], a)
+		}
+	}
+}
+
+// syncJoin walks the relative path one component at a time so that a
+// doubled or trailing separator in it never turns into an empty path
+// component being joined in.
+func TestSyncJoinBuildsThePathOneComponentAtATime(t *testing.T) {
+	root := t.TempDir()
+	v := compareTestVFS(t, root)
+
+	if got, want := syncJoin(v, root, "a/b"), v.Join(v.Join(root, "a"), "b"); got != want {
+		t.Errorf("syncJoin(%q, %q) = %q, want %q", root, "a/b", got, want)
+	}
+	if got := syncJoin(v, root, ""); got != root {
+		t.Errorf("syncJoin(%q, \"\") = %q, want the root itself", root, got)
+	}
+	if got, want := syncJoin(v, root, "a//b"), v.Join(v.Join(root, "a"), "b"); got != want {
+		t.Errorf("syncJoin(%q, %q) = %q, want %q", root, "a//b", got, want)
 	}
 }

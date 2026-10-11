@@ -191,6 +191,7 @@ Popup {
                         anchors.right: parent.right
                         anchors.rightMargin: hostWindow.snapPx(190)
                         anchors.verticalCenter: parent.verticalCenter
+                        height: hostWindow.snapPx(implicitHeight)
                         text: String(modelData.title || fieldId)
                         color: fileFieldColumnRow.selected
                                ? hostWindow.textColor : hostWindow.mutedText

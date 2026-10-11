@@ -21,12 +21,289 @@
 #include <QPainter>
 #include <QUuid>
 #include <QCursor>
+#include <functional>
 #ifdef Q_OS_WIN
 #include <qt_windows.h>
 #endif
 
 namespace {
 const char *sessionMime = "application/x-f4-drag-session";
+
+void populateDropRequest(QVariantMap &request, const QDropEvent &drop,
+                         const QVariantMap &source, bool internal, bool allowMove)
+{
+    if (internal) {
+        request.insert("source", source);
+        if (allowMove && (drop.modifiers() & Qt::ShiftModifier)
+            && !(drop.modifiers() & Qt::ControlModifier))
+            request.insert("operation", "move");
+    } else {
+        QStringList paths;
+        for (const auto &url : drop.mimeData()->urls()) paths.append(url.toLocalFile());
+        request.insert("paths", paths);
+    }
+}
+
+void acceptCommandLineDrop(F4GalleryBridge &bridge, QQuickItem &commandLine,
+                           QDropEvent &drop, const QVariantMap &source, bool internal)
+{
+    commandLine.setProperty("dropHovered", drop.type() != QEvent::Drop);
+    if (drop.type() == QEvent::Drop) {
+        QVariantMap request{{"action", "commandLine.dropPaths"}};
+        populateDropRequest(request, drop, source, internal, false);
+        emit bridge.uiActionRequested(request);
+        commandLine.forceActiveFocus();
+    }
+    drop.setDropAction(Qt::CopyAction);
+    drop.accept();
+}
+
+void acceptPanelDrop(F4GalleryBridge &bridge, QQuickItem &panel, QDropEvent &drop,
+                     QVariantMap target, const QVariantMap &source,
+                     bool internal, Qt::DropAction action)
+{
+    if (drop.type() != QEvent::Drop) {
+        panel.setProperty("dropHoverIndex", target.value("isDir").toBool()
+            ? target.value("index").toInt() : -1);
+    } else {
+        target.insert("action", "panel.dropFiles");
+        target.insert("operation", "copy");
+        populateDropRequest(target, drop, source, internal, true);
+        emit bridge.uiActionRequested(target);
+    }
+    drop.setDropAction(action);
+    drop.accept();
+}
+
+struct PreparedDragGesture {
+    bool &startupPending;
+    int &armedSide;
+    QVariantMap &source;
+    QString &requestId;
+    bool &prepared;
+    bool &thresholdPassed;
+    QList<QUrl> &urls;
+
+    void cancel()
+    {
+        startupPending = false;
+        armedSide = -1;
+        source.clear();
+        requestId.clear();
+    }
+
+    void reset()
+    {
+        cancel();
+        prepared = false;
+        thresholdPassed = false;
+        urls.clear();
+    }
+
+    void release(QObject *window, QEvent &event,
+                 const std::function<void(const QPointF &, Qt::KeyboardModifiers)> &finish)
+    {
+        if (startupPending && event.type() == QEvent::MouseButtonRelease) {
+            const auto &mouse = static_cast<QMouseEvent &>(event);
+            if (mouse.button() == Qt::LeftButton
+                && QGuiApplication::topLevelAt(mouse.globalPosition().toPoint()) == window)
+                finish(mouse.position(), mouse.modifiers());
+        }
+        cancel();
+    }
+
+    bool advance(const QMouseEvent &mouse, const QPointF &press,
+                 const std::function<void()> &start)
+    {
+        if (!(mouse.buttons() & Qt::LeftButton)) { armedSide = -1; return false; }
+        if ((mouse.position() - press).manhattanLength()
+            < QGuiApplication::styleHints()->startDragDistance()) return false;
+        thresholdPassed = true;
+        start();
+        return true;
+    }
+};
+
+void observeNativeDragEvent(QEvent &event, bool &entered, bool &released, bool &cancelled)
+{
+    if (event.type() == QEvent::DragEnter) entered = true;
+    if (event.type() == QEvent::MouseButtonRelease
+        && static_cast<QMouseEvent &>(event).button() == Qt::LeftButton) released = true;
+    if (event.type() == QEvent::KeyPress
+        && static_cast<QKeyEvent &>(event).key() == Qt::Key_Escape) cancelled = true;
+}
+
+void updateWorkspaceDrop(F4GalleryBridge &bridge, QDropEvent &drop,
+                         const QVariantMap &workspace, const QVariantMap &source,
+                         bool internal, QString &hoveredWorkspace)
+{
+    const QString id = workspace.value("target").toString();
+    if (drop.type() == QEvent::Drop) {
+        auto request = workspace;
+        request.insert("action", "workspace.dropFiles");
+        request.insert("operation", "copy");
+        populateDropRequest(request, drop, source, internal, true);
+        emit bridge.uiActionRequested(request);
+        hoveredWorkspace.clear();
+    } else if (id != hoveredWorkspace) {
+        hoveredWorkspace = id;
+        if (!workspace.value("active").toBool())
+            emit bridge.uiActionRequested({{"action", "workspace.dragActivate"}, {"target", id}});
+    }
+}
+
+struct WorkspaceDropState {
+    QString &hoveredWorkspace;
+    bool &internal;
+    QTimer *timer;
+};
+
+void acceptWorkspaceDrop(F4GalleryBridge &bridge, QDropEvent &drop,
+                         const QVariantMap &workspace, const QVariantMap &source,
+                         bool internal, Qt::DropAction action, WorkspaceDropState state,
+                         const std::function<void()> &refreshHighlight)
+{
+    updateWorkspaceDrop(bridge, drop, workspace, source, internal, state.hoveredWorkspace);
+    if (drop.type() != QEvent::Drop) {
+        state.internal = internal;
+        if (state.timer) state.timer->start();
+        refreshHighlight();
+    }
+    drop.setDropAction(action);
+    drop.accept();
+}
+
+bool ownsDragWindow(QObject *window, QQuickItem *workspaceBar, QQuickItem *commandLine,
+                    const std::array<QPointer<QQuickItem>, 2> &panels)
+{
+    bool ownsWindow = workspaceBar && workspaceBar->window() == window;
+    ownsWindow = ownsWindow || (commandLine && commandLine->window() == window);
+    for (const auto &item : panels)
+        ownsWindow = ownsWindow || (item && item->window() == window);
+    return ownsWindow;
+}
+
+struct PreparedPanelDrag {
+    QVariantMap source;
+    QList<QUrl> urls;
+    bool complete = false;
+};
+
+template <typename Catalog>
+PreparedPanelDrag preparePanelDragSource(QVariantMap source, const Catalog &state,
+                                         Qt::KeyboardModifiers modifiers)
+{
+    const auto id = source.value("entryId").toString();
+    QStringList ids;
+#ifdef Q_OS_MACOS
+    const bool singleItem = modifiers.testFlag(Qt::MetaModifier);
+#else
+    const bool singleItem = modifiers.testFlag(Qt::AltModifier);
+#endif
+    if (!singleItem && state.selectedEntryIds.contains(id)) ids = state.selectedEntryIdList;
+    else ids.append(id);
+    source.insert("entryIds", ids);
+    PreparedPanelDrag result{source, {}, false};
+    // Complete local selections need no round trip; Go resolves off-page entries.
+    if (state.sourceKind == "local") {
+        for (const auto &entryId : ids) {
+            for (const auto &value : state.entries) {
+                const auto row = value.toMap();
+                if (row.value("entryId").toString() != entryId) continue;
+                result.urls.append(QUrl::fromLocalFile(
+                    QDir(state.currentPath).filePath(row.value("name").toString())));
+                break;
+            }
+        }
+        result.complete = result.urls.size() == ids.size();
+    }
+    return result;
+}
+
+#ifdef Q_OS_WIN
+class WindowsDragFeedback {
+public:
+    WindowsDragFeedback(QDrag &drag, QQuickWindow &window,
+                        const std::function<bool()> &internalTarget)
+    {
+        const auto dpr = window.devicePixelRatio();
+        const auto previewSize = drag.pixmap().deviceIndependentSize();
+        const auto copyCursor = F4NativeDragVisuals::windowsDragCursorPixmap(
+            dpr, previewSize, drag.hotSpot(), Qt::CopyAction);
+        const auto moveCursor = F4NativeDragVisuals::windowsDragCursorPixmap(
+            dpr, previewSize, drag.hotSpot(), Qt::MoveAction);
+        drag.setDragCursor(copyCursor, Qt::CopyAction);
+        drag.setDragCursor(moveCursor, Qt::MoveAction);
+        drag.setDragCursor(F4NativeDragVisuals::windowsDragCursorPixmap(
+            dpr, previewSize, drag.hotSpot(), Qt::IgnoreAction), Qt::IgnoreAction);
+        // Internal moves remain Go-owned; OLE only advertises Copy.
+        auto updateFeedback = [&drag, internalTarget, copyCursor, moveCursor] {
+            const auto mods = QGuiApplication::queryKeyboardModifiers();
+            const bool move = internalTarget() && (mods & Qt::ShiftModifier)
+                && !(mods & Qt::ControlModifier);
+            drag.setDragCursor(move ? moveCursor : copyCursor, Qt::CopyAction);
+        };
+        m_timer.setInterval(16);
+        QObject::connect(&m_timer, &QTimer::timeout, &drag, updateFeedback);
+        updateFeedback();
+        m_timer.start();
+    }
+private:
+    QTimer m_timer;
+};
+
+struct NativeDragObservation {
+    bool &entered;
+    bool &released;
+    bool &cancelled;
+};
+
+Qt::DropAction executeWindowsDrag(QDrag &drag, QQuickWindow &window,
+                                  NativeDragObservation observation,
+                                  const std::function<bool()> &finishInternalDrop)
+{
+    Qt::DropAction finished = Qt::IgnoreAction;
+    bool missedRelease = false;
+    int releasedPolls = 0;
+    QTimer releaseWatchdog;
+    releaseWatchdog.setInterval(75);
+    QObject::connect(&releaseWatchdog, &QTimer::timeout, &drag, [&] {
+        if (GetAsyncKeyState(VK_LBUTTON) & 0x8000) {
+            releasedPolls = 0;
+        } else if (++releasedPolls >= 2) {
+            // Normal OLE completion returns before this grace period.
+            missedRelease = true;
+            releaseWatchdog.stop();
+            QDrag::cancel();
+        }
+    });
+    auto finishReleasedInternalDrop = [&] {
+        if (observation.cancelled || (GetAsyncKeyState(VK_ESCAPE) & 0x8000)
+            || QGuiApplication::topLevelAt(QCursor::pos()) != &window) {
+            if (qEnvironmentVariableIsSet("VTUI_DEBUG"))
+                qInfo() << "QT_DND: internal finish wrong window/cancel" << observation.cancelled
+                        << QGuiApplication::topLevelAt(QCursor::pos()) << &window;
+            return;
+        }
+        if (finishInternalDrop()) finished = Qt::CopyAction;
+    };
+    // A release before OLE's first poll cannot start a desktop transaction.
+    if (!(GetAsyncKeyState(VK_LBUTTON) & 0x8000)) {
+        finishReleasedInternalDrop();
+    } else {
+        releaseWatchdog.start();
+        finished = drag.exec(Qt::CopyAction, Qt::CopyAction);
+        releaseWatchdog.stop();
+        if (!(GetAsyncKeyState(VK_LBUTTON) & 0x8000)) observation.released = true;
+        // Recover an observed startup release, never Escape or rejected OLE entry.
+        const bool startupReleased = observation.released
+            && !observation.entered && !observation.cancelled;
+        if ((missedRelease || startupReleased) && finished == Qt::IgnoreAction)
+            finishReleasedInternalDrop();
+    }
+    return finished;
+}
+#endif
 }
 
 void F4GalleryBridge::registerDragPanel(int side, QQuickItem *item)
@@ -229,20 +506,10 @@ bool F4GalleryBridge::finishInternalDrop(QObject *window, const QPointF &positio
 bool F4GalleryBridge::eventFilter(QObject *object, QEvent *event)
 {
     if (!qobject_cast<QQuickWindow *>(object)) return QObject::eventFilter(object, event);
-    bool ownsWindow = m_dragWorkspaceBar && m_dragWorkspaceBar->window() == object;
-    ownsWindow = ownsWindow || (m_dragCommandLine && m_dragCommandLine->window() == object);
-    for (const auto &item : m_dragPanels)
-        ownsWindow = ownsWindow || (item && item->window() == object);
-    if (!ownsWindow) return QObject::eventFilter(object, event);
-    if (m_nativeDragActive) {
-        if (event->type() == QEvent::DragEnter) m_nativeDragEntered = true;
-        if (event->type() == QEvent::MouseButtonRelease
-            && static_cast<QMouseEvent *>(event)->button() == Qt::LeftButton)
-            m_nativeDragReleased = true;
-        if (event->type() == QEvent::KeyPress
-            && static_cast<QKeyEvent *>(event)->key() == Qt::Key_Escape)
-            m_nativeDragCancelled = true;
-    }
+    if (!ownsDragWindow(object, m_dragWorkspaceBar, m_dragCommandLine, m_dragPanels))
+        return QObject::eventFilter(object, event);
+    if (m_nativeDragActive)
+        observeNativeDragEvent(*event, m_nativeDragEntered, m_nativeDragReleased, m_nativeDragCancelled);
     if (event->type() == QEvent::DragLeave) { clearDropHighlight(); m_dragHoveredWorkspace.clear(); return false; }
     if (event->type() == QEvent::DragEnter || event->type() == QEvent::DragMove
         || event->type() == QEvent::Drop) {
@@ -253,54 +520,16 @@ bool F4GalleryBridge::eventFilter(QObject *object, QEvent *event)
             m_dragHoveredWorkspace.clear();
             const auto accepted = acceptNativeDrop(drop->mimeData(), drop->possibleActions(), Qt::NoModifier);
             if (accepted == Qt::IgnoreAction) { drop->ignore(); return true; }
-            m_dragCommandLine->setProperty("dropHovered", event->type() != QEvent::Drop);
-            if (event->type() == QEvent::Drop) {
-                QVariantMap request{{"action", "commandLine.dropPaths"}};
-                if (internal) request.insert("source", m_dragSource);
-                else {
-                    QStringList paths;
-                    for (const auto &url : drop->mimeData()->urls()) paths.append(url.toLocalFile());
-                    request.insert("paths", paths);
-                }
-                emit uiActionRequested(request);
-                m_dragCommandLine->forceActiveFocus();
-            }
-            drop->setDropAction(Qt::CopyAction);
-            drop->accept();
+            acceptCommandLineDrop(*this, *m_dragCommandLine, *drop, m_dragSource, internal);
             return true;
         }
         const auto workspace = dragWorkspaceHit(object, drop->position());
         const auto action = acceptNativeDrop(drop->mimeData(), drop->possibleActions(), drop->modifiers());
         if (!workspace.isEmpty() && action != Qt::IgnoreAction) {
             clearDropHighlight();
-            const QString id = workspace.value("target").toString();
-            if (event->type() == QEvent::Drop) {
-                auto request = workspace;
-                request.insert("action", "workspace.dropFiles");
-                request.insert("operation", "copy");
-                if (!m_dragToken.isEmpty() && drop->mimeData()->data(sessionMime) == m_dragToken.toUtf8()) {
-                    request.insert("source", m_dragSource);
-                    if ((drop->modifiers() & Qt::ShiftModifier) && !(drop->modifiers() & Qt::ControlModifier))
-                        request.insert("operation", "move");
-                } else {
-                    QStringList paths;
-                    for (const auto &url : drop->mimeData()->urls()) paths.append(url.toLocalFile());
-                    request.insert("paths", paths);
-                }
-                emit uiActionRequested(request);
-                m_dragHoveredWorkspace.clear();
-            } else if (id != m_dragHoveredWorkspace) {
-                m_dragHoveredWorkspace = id;
-                if (!workspace.value("active").toBool())
-                    emit uiActionRequested({{"action", "workspace.dragActivate"}, {"target", id}});
-            }
-            if (event->type()!=QEvent::Drop) {
-                m_workspaceDropInternal=internal;
-                if (m_workspaceDropTimer) m_workspaceDropTimer->start();
-                refreshWorkspaceDropHighlight();
-            }
-            drop->setDropAction(action);
-            drop->accept();
+            acceptWorkspaceDrop(*this, *drop, workspace, m_dragSource, internal, action,
+                {m_dragHoveredWorkspace, m_workspaceDropInternal, m_workspaceDropTimer},
+                [this] { refreshWorkspaceDropHighlight(); });
             return true;
         }
         m_dragHoveredWorkspace.clear();
@@ -312,88 +541,38 @@ bool F4GalleryBridge::eventFilter(QObject *object, QEvent *event)
         clearDropHighlight();
         if (target.isEmpty() || action == Qt::IgnoreAction
             || !dropTargetAllowed(target,internal)) { drop->ignore(); return true; }
-        if (event->type() != QEvent::Drop) {
-            m_dragPanels[side]->setProperty("dropHoverIndex", target.value("isDir").toBool() ? target.value("index").toInt() : -1);
-        } else {
-            target.insert("action", "panel.dropFiles");
-            target.insert("operation", "copy");
-            if (!m_dragToken.isEmpty() && drop->mimeData()->data(sessionMime) == m_dragToken.toUtf8()) {
-                target.insert("source", m_dragSource);
-                if ((drop->modifiers() & Qt::ShiftModifier) && !(drop->modifiers() & Qt::ControlModifier))
-                    target.insert("operation", "move");
-            } else {
-                QStringList paths;
-                for (const auto &url : drop->mimeData()->urls()) paths.append(url.toLocalFile());
-                target.insert("paths", paths);
-            }
-            emit uiActionRequested(target);
-        }
-        drop->setDropAction(action);
-        drop->accept();
+        acceptPanelDrop(*this, *m_dragPanels[side], *drop, target, m_dragSource, internal, action);
         return true;
     }
     if (m_nativeDragActive) return false;
+    PreparedDragGesture gesture{m_nativeDragStartupPending, m_dragArmedSide,
+        m_dragSource, m_dragRequestId, m_dragPrepared, m_dragThresholdPassed, m_preparedDragUrls};
     if (m_nativeDragStartupPending && event->type() == QEvent::KeyPress
         && static_cast<QKeyEvent *>(event)->key() == Qt::Key_Escape) {
-        m_nativeDragStartupPending = false;
-        m_dragArmedSide = -1;
-        m_dragSource.clear();
-        m_dragRequestId.clear();
+        gesture.cancel();
         return true;
     }
     if (event->type() == QEvent::MouseButtonRelease || event->type() == QEvent::WindowDeactivate) {
-        if (m_nativeDragStartupPending && event->type() == QEvent::MouseButtonRelease) {
-            const auto *mouse = static_cast<QMouseEvent *>(event);
-            if (mouse->button() == Qt::LeftButton
-                && QGuiApplication::topLevelAt(mouse->globalPosition().toPoint()) == object)
-                finishInternalDrop(object, mouse->position(), mouse->modifiers());
-        }
-        m_nativeDragStartupPending = false;
-        m_dragArmedSide = -1;
-        m_dragSource.clear();
-        m_dragRequestId.clear();
+        gesture.release(object, *event, [this, object](const QPointF &position, Qt::KeyboardModifiers mods) {
+            finishInternalDrop(object, position, mods);
+        });
     }
     if (event->type() == QEvent::MouseButtonPress) {
         auto *mouse = static_cast<QMouseEvent *>(event);
-        m_dragArmedSide = -1;
-        m_nativeDragStartupPending = false;
-        m_dragSource.clear();
-        m_dragPrepared = false;
-        m_dragThresholdPassed = false;
-        m_preparedDragUrls.clear();
-        m_dragRequestId.clear();
+        gesture.reset();
         if (mouse->button() != Qt::LeftButton) return false;
         int side;
         auto source = dragHit(object, mouse->position(), &side);
         const auto id = source.value("entryId").toString();
         if (id.isEmpty() || source.value("name").toString() == "..") return false;
-        const auto &state = m_panelSessions.catalog(side);
-        QStringList ids;
-#ifdef Q_OS_MACOS
-        const bool singleItem = mouse->modifiers().testFlag(Qt::MetaModifier);
-#else
-        const bool singleItem = mouse->modifiers().testFlag(Qt::AltModifier);
-#endif
-        if (!singleItem && state.selectedEntryIds.contains(id)) ids = state.selectedEntryIdList;
-        else ids.append(id);
-        source.insert("entryIds", ids);
+        const auto prepared = preparePanelDragSource(
+            source, m_panelSessions.catalog(side), mouse->modifiers());
+        source = prepared.source;
         m_dragSource = source;
         m_dragArmedSide = side;
         m_dragPress = mouse->position();
-        // A complete local selection is already in the authoritative catalog.
-        // Use it immediately for quick gestures; Go resolves off-page entries.
-        if (state.sourceKind == "local") {
-            for (const auto &id : ids) {
-                for (const auto &v : state.entries) {
-                    const auto row = v.toMap();
-                    if (row.value("entryId").toString() != id) continue;
-                    m_preparedDragUrls.append(QUrl::fromLocalFile(
-                        QDir(state.currentPath).filePath(row.value("name").toString())));
-                    break;
-                }
-            }
-            m_dragPrepared = m_preparedDragUrls.size() == ids.size();
-        }
+        m_preparedDragUrls = prepared.urls;
+        m_dragPrepared = prepared.complete;
         m_dragRequestId = QUuid::createUuid().toString(QUuid::WithoutBraces);
         prepareDragPreview(m_dragPanels[side]);
         auto request = source;
@@ -402,12 +581,8 @@ bool F4GalleryBridge::eventFilter(QObject *object, QEvent *event)
         emit uiActionRequested(request);
     }
     if (event->type() == QEvent::MouseMove && m_dragArmedSide >= 0) {
-        auto *mouse = static_cast<QMouseEvent *>(event);
-        if (!(mouse->buttons() & Qt::LeftButton)) { m_dragArmedSide = -1; return false; }
-        if ((mouse->position() - m_dragPress).manhattanLength() < QGuiApplication::styleHints()->startDragDistance()) return false;
-        m_dragThresholdPassed = true;
-        startPreparedDrag();
-        return true;
+        return gesture.advance(*static_cast<QMouseEvent *>(event), m_dragPress,
+                               [this] { startPreparedDrag(); });
     }
     return QObject::eventFilter(object, event);
 }
@@ -507,96 +682,27 @@ void F4GalleryBridge::startPreparedDrag()
         QMetaObject::invokeMethod(m_dragPanels[side], "endNativeDragPointer");
         QDrag drag(window);
         drag.setMimeData(mime);
-        const qreal dpr = window->devicePixelRatio();
         drag.setPixmap(F4NativeDragVisuals::withFileName(m_dragPreviewPixmap,
             m_dragSource.value("name").toString(), ids.size(),
             QGuiApplication::styleHints()->colorScheme()==Qt::ColorScheme::Dark));
         drag.setHotSpot(m_dragPreviewHotSpot);
 #ifdef Q_OS_WIN
-        const auto previewSize=drag.pixmap().deviceIndependentSize();
-        const auto copyCursor=F4NativeDragVisuals::windowsDragCursorPixmap(dpr,previewSize,drag.hotSpot(),Qt::CopyAction);
-        const auto moveCursor=F4NativeDragVisuals::windowsDragCursorPixmap(dpr,previewSize,drag.hotSpot(),Qt::MoveAction);
-        drag.setDragCursor(copyCursor,Qt::CopyAction);
-        drag.setDragCursor(moveCursor,Qt::MoveAction);
-        drag.setDragCursor(F4NativeDragVisuals::windowsDragCursorPixmap(dpr,previewSize,drag.hotSpot(),Qt::IgnoreAction),Qt::IgnoreAction);
-        // Internal Shift-move is Go-owned. Keep external OLE Copy-only, but
-        // replace its cursor artwork when the internal receiver will move.
-        // Qt Windows GiveFeedback checks the pixmap cache key on every poll.
-        QTimer actionFeedback;
-        actionFeedback.setInterval(16);
-        auto updateFeedback=[&] {
-            const auto mods=QGuiApplication::queryKeyboardModifiers();
-            bool internalTarget=false;
-            if (QGuiApplication::topLevelAt(QCursor::pos())==window) {
-                const QPointF point=window->mapFromGlobal(QCursor::pos());
-                int targetSide=-1;
-                internalTarget=!dragWorkspaceHit(window,point).isEmpty();
-                if (!internalTarget) {
-                    const auto target=dragHit(window,point,&targetSide);
-                    internalTarget=dropTargetAllowed(target,true);
-                }
-            }
-            const bool move=internalTarget && (mods&Qt::ShiftModifier) && !(mods&Qt::ControlModifier);
-            drag.setDragCursor(move?moveCursor:copyCursor,Qt::CopyAction);
-        };
-        connect(&actionFeedback,&QTimer::timeout,&drag,updateFeedback);
-        updateFeedback();
-        actionFeedback.start();
-#endif
-        // The desktop may only copy. Internal Shift-move is selected by our
-        // receiver; a native move is never advertised to external receivers.
-        Qt::DropAction finished = Qt::IgnoreAction;
-#ifdef Q_OS_WIN
-        bool missedRelease = false;
-        int releasedPolls = 0;
-        QTimer releaseWatchdog;
-        releaseWatchdog.setInterval(75);
-        connect(&releaseWatchdog, &QTimer::timeout, &drag, [&] {
-            if (GetAsyncKeyState(VK_LBUTTON) & 0x8000) {
-                releasedPolls = 0;
-            } else if (++releasedPolls >= 2) {
-                // Normal OLE completion returns before this grace period.
-                missedRelease = true;
-                releaseWatchdog.stop();
-                QDrag::cancel();
-            }
+        WindowsDragFeedback actionFeedback(drag, *window, [&] {
+            if (QGuiApplication::topLevelAt(QCursor::pos()) != window) return false;
+            const QPointF point = window->mapFromGlobal(QCursor::pos());
+            if (!dragWorkspaceHit(window, point).isEmpty()) return true;
+            int targetSide = -1;
+            return dropTargetAllowed(dragHit(window, point, &targetSide), true);
         });
-        // Windows' OLE source learns its initial button state on its first
-        // poll. If the physical release already happened while processing
-        // queued input / preparing the preview, DoDragDrop never sees a
-        // held button and waits for a second click. Complete only an internal
-        // drop in that case; there is no desktop transaction to acknowledge.
-        auto finishReleasedInternalDrop = [&] {
-            if (m_nativeDragCancelled || (GetAsyncKeyState(VK_ESCAPE) & 0x8000)
-                || QGuiApplication::topLevelAt(QCursor::pos()) != window) {
-                if (qEnvironmentVariableIsSet("VTUI_DEBUG")) qInfo() << "QT_DND: internal finish wrong window/cancel" << m_nativeDragCancelled << QGuiApplication::topLevelAt(QCursor::pos()) << window;
-                return;
-            }
-            if (finishInternalDrop(window, window->mapFromGlobal(QCursor::pos()), QGuiApplication::queryKeyboardModifiers())) {
-                finished = Qt::CopyAction;
-            }
-        };
-        if (!(GetAsyncKeyState(VK_LBUTTON) & 0x8000)) {
-            finishReleasedInternalDrop();
-        } else
+        const auto finished = executeWindowsDrag(drag, *window,
+            {m_nativeDragEntered, m_nativeDragReleased, m_nativeDragCancelled}, [&] {
+                return finishInternalDrop(window, window->mapFromGlobal(QCursor::pos()),
+                                          QGuiApplication::queryKeyboardModifiers());
+            });
+#else
+        // Native receivers may only copy; Go owns internal Shift-move.
+        const auto finished = drag.exec(Qt::CopyAction, Qt::CopyAction);
 #endif
-        {
-#ifdef Q_OS_WIN
-            releaseWatchdog.start();
-#endif
-            finished = drag.exec(Qt::CopyAction, Qt::CopyAction);
-#ifdef Q_OS_WIN
-            releaseWatchdog.stop();
-            if (!(GetAsyncKeyState(VK_LBUTTON) & 0x8000))
-                m_nativeDragReleased = true;
-            // Qt's Windows startup waits for a further WM_MOUSEMOVE. If the
-            // async preparation consumed the last held-button move, it can
-            // process the release and return E_FAIL before OLE ever starts.
-            // Recover that observed release, never an Escape or rejected OLE drop.
-            if ((missedRelease || nativeDragStartupWasReleased()) && finished == Qt::IgnoreAction)
-                finishReleasedInternalDrop();
-#endif
-        }
         if (auto *grabber = window->mouseGrabberItem()) grabber->ungrabMouse();
         if (qEnvironmentVariableIsSet("VTUI_DEBUG"))
             qInfo() << "QT_DND: native drag finished" << finished << "cursor" << window->mapFromGlobal(QCursor::pos())

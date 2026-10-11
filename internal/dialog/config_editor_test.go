@@ -53,3 +53,40 @@ func TestConfigEditorTitleMarksHiddenRows(t *testing.T) {
 		t.Fatalf("configEditorTitle(true) = %q, want %q", marked, plain+" *")
 	}
 }
+
+func TestConfigEditorDescriptionLeadsWithNameAndDefault(t *testing.T) {
+	row := configEditorRows(
+		[]config.Option{{Section: "Editor", Key: "TabSize", Value: "8"}},
+		[]config.Option{{Section: "Editor", Key: "TabSize", Value: "4"}},
+	)[0]
+	row.doc = ConfigOptionDoc{Label: "Tab width", Description: "Set tab-stop width."}
+	got := configEditorDescription(row)
+	if !strings.HasPrefix(got, "Tab width. ") || !strings.Contains(got, "4") || !strings.HasSuffix(got, "\nSet tab-stop width.") {
+		t.Fatalf("description = %q", got)
+	}
+
+	// Without a label or a text the default is still said, and the proxy
+	// password stays masked there too.
+	row = configEditorRows(
+		[]config.Option{{Section: "Proxy", Key: "Password", Value: "c2VjcmV0"}},
+		[]config.Option{{Section: "Proxy", Key: "Password", Value: "ZGVm"}},
+	)[0]
+	if got := configEditorDescription(row); strings.Contains(got, "ZGVm") || !strings.Contains(got, "********") || strings.Contains(got, "\n") {
+		t.Fatalf("password description = %q", got)
+	}
+}
+
+func TestConfigEditorTextLinesKeepTheListUsable(t *testing.T) {
+	for _, tc := range []struct{ needed, rows, maxH, want int }{
+		{0, 100, 40, 0}, // nothing to say
+		{1, 100, 40, 2}, // far2l's minimum of two lines
+		{6, 100, 40, 6},
+		{6, 100, 10, 4}, // 10 = 2 borders + 3 list rows + separator + 4
+		{6, 1, 10, 6},   // a one-row list needs one row only
+		{6, 100, 6, 0},  // no room for text under three list rows
+	} {
+		if got := configEditorTextLines(tc.needed, tc.rows, tc.maxH); got != tc.want {
+			t.Errorf("configEditorTextLines(%d, %d, %d) = %d, want %d", tc.needed, tc.rows, tc.maxH, got, tc.want)
+		}
+	}
+}

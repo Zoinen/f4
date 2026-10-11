@@ -1,7 +1,10 @@
+//go:build !lite
+
 package editor
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -76,6 +79,56 @@ func TestCheckColorerSource_LoadsEveryType(t *testing.T) {
 	}
 	if check.Types != 1 || len(labels) != 1 || labels[0] != "user: Check test" {
 		t.Errorf("types = %d, progress = %q; want the user's one type", check.Types, labels)
+	}
+}
+
+// Issue #277: "Check all schemes" got slower call after call, because every
+// type it loaded stayed in the same colorer4go session, and colorer4go's HRC
+// engine re-links and rebuilds the search dispatch table of every scheme ever
+// loaded in a session after each single one it loads — not just the new one.
+// One synthetic file type per file, as the real catalog has, reproduces the
+// same shape: each is loaded from its own, not-yet-parsed file, so each
+// LoadFileType call is a genuine top-level parse that would re-process every
+// earlier type's scheme if the fix were reverted to one shared session.
+//
+// A wall-clock assertion here would catch that regression too, but it would
+// also fail under CI's own load unrelated to the code under test. Counting
+// how many colorer4go sessions the check opened does not: it is exactly
+// checkAllBatchSize types per session, however fast or slow one call is.
+func TestCheckColorerSource_BatchesLargeCatalogs(t *testing.T) {
+	const n = checkAllBatchSize*2 + 5 // two full batches plus a partial one
+	user := t.TempDir()
+	for i := 0; i < n; i++ {
+		name := fmt.Sprintf("checktest%d", i)
+		writeUserHRC(t, user, name+".hrc", fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<hrc version="take5" xmlns="http://colorer.sf.net/2003/hrc">
+  <prototype name="%[1]s" group="batch" description="Batch test %[1]s">
+    <location link="%[1]s.hrc"/>
+    <filename>/\.%[1]s$/</filename>
+  </prototype>
+  <type name="%[1]s">
+    <scheme name="%[1]s"/>
+  </type>
+</hrc>
+`, name))
+	}
+	src := ColorerSource{ConfigsDir: checkConfigs(t), UserHRC: user}
+
+	var labels []string
+	check := CheckColorerSource(context.Background(), src, "", true, func(done, total int, label string) {
+		labels = append(labels, label)
+	})
+	if !check.Clean() {
+		t.Fatalf("check = %+v, want a clean one", check)
+	}
+	if check.Types != n {
+		t.Fatalf("Types = %d, want %d", check.Types, n)
+	}
+	if len(labels) != n {
+		t.Fatalf("progress calls = %d, want %d", len(labels), n)
+	}
+	if wantSessions := (n + checkAllBatchSize - 1) / checkAllBatchSize; check.sessions != wantSessions {
+		t.Errorf("sessions opened = %d, want %d (batches of %d): a single shared session for the whole catalog is exactly the #277 regression this guards against", check.sessions, wantSessions, checkAllBatchSize)
 	}
 }
 

@@ -20,6 +20,11 @@ func ConfigureExternalEditorProcess(cmd *exec.Cmd) {
 		// starts.
 		return
 	}
+	if inheritsControllingTTY(cmd.Stdin) {
+		// f4 itself runs on this terminal: the editor shares our session and
+		// controlling terminal. Setsid+Setctty would fail with EPERM here.
+		return
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setsid:  true,
 		Setctty: true,

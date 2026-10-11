@@ -491,6 +491,8 @@ private slots:
     void styledDocumentRunsAreVisible();
     void compactDocumentUpdatesKeepViewportActive();
     void closingDocumentDoesNotReprojectItsRows();
+    void editorSelectionSurvivesDelegateDetachment();
+    void nativeViewportSyncDoesNotOutliveController();
     void unrelatedStreamsDoNotReprojectDocumentRows();
     void openingDocumentHasNoStaleOrUnpositionedFrame_data();
     void openingDocumentHasNoStaleOrUnpositionedFrame();
@@ -2097,6 +2099,70 @@ void F4DocumentSurfaceTests::closingDocumentDoesNotReprojectItsRows()
     QVERIFY(!fixture.surface->isVisible());
     QCOMPARE(frames.size(), 0);
     QCOMPARE(fixture.surface->property("poolSlotWriteCount").toInt(), writes);
+}
+
+void F4DocumentSurfaceTests::editorSelectionSurvivesDelegateDetachment()
+{
+    QStringList warnings;
+    DocumentFixture fixture(documentScene(editorFrame(0, 120, 0, 1)));
+    QVERIFY(fixture.ready());
+    QTRY_VERIFY(fixture.surface->property("windowInitialized").toBool());
+    QTest::qWait(80);
+    QQuickItem *selection = nullptr;
+    QList<QQuickItem *> pending{fixture.surface};
+    while (!pending.isEmpty() && !selection) {
+        auto *item = pending.takeLast();
+        pending.append(item->childItems());
+        if (item->objectName() == "documentEditorSelectionClip")
+            selection = item;
+    }
+    QVERIFY(selection);
+    auto *row = selection->parentItem();
+    QVERIFY(row);
+    QVERIFY(row->height() > 0);
+    QCOMPARE(selection->height(), row->height());
+
+    connect(&fixture.engine, &QQmlEngine::warnings, this,
+            [&warnings](const QList<QQmlError> &errors) {
+        for (const auto &error : errors)
+            warnings.append(error.toString());
+    });
+    // Repeater removes its visual parent before disposing of a selection.
+    // The row still owns its geometry during this cleanup interval.
+    selection->setParentItem(nullptr);
+    QCoreApplication::processEvents();
+    const qreal detachedHeight = selection->height();
+    selection->setParentItem(row);
+    QCoreApplication::processEvents();
+    QVERIFY2(warnings.isEmpty(), qPrintable(warnings.join('\n')));
+    QCOMPARE(detachedHeight, row->height());
+    QCOMPARE(selection->height(), row->height());
+    qInfo() << "[FIX:document-row] selection height survives visual detachment";
+}
+
+void F4DocumentSurfaceTests::nativeViewportSyncDoesNotOutliveController()
+{
+    QStringList warnings;
+    DocumentFixture fixture(documentScene(terminalFrame(0, 60, 0, 1)));
+    QVERIFY(fixture.ready());
+    QTRY_VERIFY(fixture.surface->property("windowInitialized").toBool());
+    connect(&fixture.engine, &QQmlEngine::warnings, this,
+            [&warnings](const QList<QQmlError> &errors) {
+        for (const auto &error : errors) {
+            if (error.url().fileName() == "DocumentViewportController.qml")
+                warnings.append(error.toString());
+        }
+    });
+    fixture.surface->setProperty("nativeViewportHeight", 200);
+    fixture.surface->setProperty("nativeViewportHeight", 240);
+    // Destroy the callback's owner before the deferred geometry sync runs.
+    delete fixture.window;
+    fixture.window = nullptr;
+    const auto actionsAtDestruction = fixture.shell.actions.size();
+    QTest::qWait(30);
+    QVERIFY2(warnings.isEmpty(), qPrintable(warnings.join('\n')));
+    QCOMPARE(fixture.shell.actions.size(), actionsAtDestruction);
+    qInfo() << "[FIX:document-viewport] pending sync expires with its controller";
 }
 
 void F4DocumentSurfaceTests::unrelatedStreamsDoNotReprojectDocumentRows()

@@ -1,0 +1,14 @@
+# Summary: Tests that the patcher fails when a modification is invalid.
+# Plan:
+#   1. This patch file is missing an ACTION directive before `snippet`.
+#      The patch should fail with an INVALID_PATCH_FILE error.
+
+12e22025 AP 3.1
+
+12e22025 FILE
+dummy.txt
+
+12e22025 snippet
+dummy
+12e22025 content
+new content

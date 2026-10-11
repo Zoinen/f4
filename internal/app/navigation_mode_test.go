@@ -1,7 +1,6 @@
 package app
 
 import (
-	"github.com/unxed/f4/internal/cmdline"
 	"github.com/unxed/f4/internal/config"
 	"github.com/unxed/f4/internal/panel"
 	"github.com/unxed/f4/internal/paneltest"
@@ -10,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/unxed/f4/internal/terminal"
 	"github.com/unxed/f4/internal/testutil"
 	"github.com/unxed/f4/internal/theme"
 	"github.com/unxed/f4/vfs"
@@ -77,29 +75,25 @@ func newSearchFirstTestFrame(t *testing.T) (*panel.PanelsFrame, *panel.FileSyste
 	t.Helper()
 	t.Cleanup(paneltest.SwapFrameManager(t))
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
-	left := panel.NewFileSystemPanel(0, 0, 40, 20, vfs.NewOSVFS(t.TempDir()))
+	pf := panel.NewPanelsFrame()
+	t.Cleanup(pf.Close)
+	pf.ActiveIdx = 0
+	pf.ShowPanels, pf.ShowLeftPanel, pf.ShowRightPanel = true, true, true
+	pf.ShowKeyBar = true
+	// These routing tests supply their own history, not the persisted provider.
+	pf.CmdLine.Edit.HistoryID = ""
+	pf.ResizeConsole(80, 25)
+	left := pf.Panels[0].(*panel.FileSystemPanel)
+	pf.SwitchToVFS(left, vfs.NewOSVFS(t.TempDir()))
 	paneltest.WaitForLoad(t, left)
-	right := panel.NewFileSystemPanel(40, 0, 40, 20, vfs.NewOSVFS(t.TempDir()))
+	right := pf.Panels[1].(*panel.FileSystemPanel)
+	pf.SwitchToVFS(right, vfs.NewOSVFS(t.TempDir()))
 	paneltest.WaitForLoad(t, right)
 	left.Entries = []*panel.FileEntry{{VFSItem: vfs.VFSItem{Name: "alpha.txt"}}, {VFSItem: vfs.VFSItem{Name: "beta.txt"}}}
 	right.Entries = []*panel.FileEntry{{VFSItem: vfs.VFSItem{Name: "right.txt"}}}
 	left.Refresh()
 	right.Refresh()
-	pf := &panel.PanelsFrame{
-		Panels:         [2]panel.Panel{left, right},
-		ActiveIdx:      0,
-		ShowPanels:     true,
-		ShowLeftPanel:  true,
-		ShowRightPanel: true,
-		ShowKeyBar:     true,
-		LastW:          80,
-		LastH:          25,
-		CmdLine:        cmdline.NewCommandLine("$ "),
-		TermView:       terminal.NewTerminalView(80, 24),
-	}
-	pf.CmdLine.SetPosition(0, 23, 79, 23)
 	pf.ApplyNavigationMode()
-	t.Cleanup(pf.Close)
 	return pf, left, right
 }
 

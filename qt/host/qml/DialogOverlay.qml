@@ -32,24 +32,28 @@ Item {
         }
 
         OutsideBand {
+            objectName: "dialogTabBackdrop"
             x: 0
             y: dialogOverlay.tabTop
             width: parent.width
             height: Math.max(0, dialogSurface.y - y)
         }
         OutsideBand {
+            objectName: "dialogTabBackdropLeft"
             x: 0
             y: dialogSurface.y
             width: Math.max(0, dialogSurface.x)
             height: dialogSurface.height
         }
         OutsideBand {
+            objectName: "dialogTabBackdropRight"
             x: dialogSurface.x + dialogSurface.width
             y: dialogSurface.y
             width: Math.max(0, parent.width - x)
             height: dialogSurface.height
         }
         OutsideBand {
+            objectName: "dialogTabBackdropBottom"
             x: 0
             y: dialogSurface.y + dialogSurface.height
             width: parent.width

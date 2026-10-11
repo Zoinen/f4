@@ -61,6 +61,14 @@ const HelperEndMarker = "F4EOF"
 // login noise cannot be mistaken for it.
 func ReadyMarker(token string) string { return "F4RDY" + token }
 
+// NativeHelloPrefix starts the one line a client sends to an f4 that serves
+// FISH+ itself (Server) in place of the shell bootstrap; the session token
+// follows it.
+const NativeHelloPrefix = "F4NATIVE "
+
+// NativeHelloLine is that line, newline included.
+func NativeHelloLine(token string) string { return NativeHelloPrefix + token + "\n" }
+
 // BootstrapLine is the single line that has to reach the remote shell
 // before the helper does.
 //

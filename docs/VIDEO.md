@@ -244,7 +244,7 @@ f4's own.
 
 Taken from Review's documentation only — `Review.hlf`, `Review-Macros.lua` and
 `Readme.txt`. The Pascal sources were not used. Same discipline as the far2l
-rule in `IMAGES_PLAN.md`: behaviour is a legitimate reference, code is not.
+rule in unxed/f4#1685: behaviour is a legitimate reference, code is not.
 
 **Media control**
 

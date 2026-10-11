@@ -439,6 +439,14 @@ func NewPTY() (*PTY, error) {
 	return newPTYWithAPI(api)
 }
 
+// ptyOutputPipeSize is the buffer of the pipe the ConPTY host writes its output
+// into. The default (0) is 4 KiB and the host writes synchronously, so on a
+// large output it waits on every refill until f4 has emptied the pipe. 256 KiB
+// lets it run ahead of the reader without holding much output back after an
+// interrupt (idea 1.3 of unxed/f4#1681; the probe tool uses 1 MiB for its own
+// measurements).
+const ptyOutputPipeSize = 256 << 10
+
 func newPTYWithAPI(api *conPTYAPI) (*PTY, error) {
 	var inPipeOur, inPipePty windows.Handle
 	var outPipeOur, outPipePty windows.Handle
@@ -449,7 +457,7 @@ func newPTYWithAPI(api *conPTYAPI) (*PTY, error) {
 		return nil, err
 	}
 	// outPipe: мы читаем, PTY пишет
-	if err := windows.CreatePipe(&outPipeOur, &outPipePty, nil, 0); err != nil {
+	if err := windows.CreatePipe(&outPipeOur, &outPipePty, nil, ptyOutputPipeSize); err != nil {
 		windows.CloseHandle(inPipePty)
 		windows.CloseHandle(inPipeOur)
 		return nil, err
@@ -481,14 +489,22 @@ func newPTYWithAPI(api *conPTYAPI) (*PTY, error) {
 	}, nil
 }
 
+// ptyTraceEnabled is read once: vtui.DebugLog formats its message and keeps it
+// in the in-memory log even when no log file is configured, so a per-chunk
+// trace would make the reader format and quote every read (unxed/f4#1681, idea
+// 1.4). The trace is written only when VTUI_DEBUG asks for a log at all.
+var ptyTraceEnabled = os.Getenv("VTUI_DEBUG") != ""
+
 func (p *PTY) Write(b []byte) (int, error) {
-	vtui.DebugLog("PTY_WIN_TRACE: Writing %d bytes: %q", len(b), string(b))
+	if ptyTraceEnabled {
+		vtui.DebugLog("PTY_WIN_TRACE: Writing %d bytes: %q", len(b), string(b))
+	}
 	return p.inWriter.Write(b)
 }
 
 func (p *PTY) Read(b []byte) (int, error) {
 	n, err := p.outReader.Read(b)
-	if n > 0 {
+	if n > 0 && ptyTraceEnabled {
 		vtui.DebugLog("PTY_WIN_TRACE: Read %d bytes: %q", n, string(b[:n]))
 	}
 	return n, err

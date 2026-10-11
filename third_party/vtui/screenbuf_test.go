@@ -183,6 +183,10 @@ func TestScreenBuf_OverlayMode(t *testing.T) {
 }
 
 func TestScreenBuf_Quantization(t *testing.T) {
+	// The application palette maps red and green onto low indices. In the
+	// 256-colour profile that must not matter: whether the terminal took
+	// those entries from OSC 4 is unknown, so quantization only picks the
+	// standard entries 16..255.
 	var pal [256]uint32
 	pal[10] = 0xFF0000 // Pure Red
 	pal[20] = 0x00FF00 // Pure Green
@@ -194,14 +198,14 @@ func TestScreenBuf_Quantization(t *testing.T) {
 	quantCache := make(map[uint32]uint8)
 	ansi := colorToANSI(false, rgbAttr, &pal, ColorProfile256, quantCache)
 
-	// Should quantize to index 10 (the closest match in our dummy palette)
-	want := "38;5;10"
-	if !contains(ansi, want) {
-		t.Errorf("Quantization failed. Expected to contain %q, got %q", want, ansi)
+	// 196 is 0xFF0000 in the standard cube.
+	want := "38;5;196"
+	if ansi != want {
+		t.Errorf("Quantization failed. Expected %q, got %q", want, ansi)
 	}
 
 	// Make sure the cache was populated
-	if quantCache[0xEE0000] != 10 {
+	if quantCache[0xEE0000] != 196 {
 		t.Error("Quantization cache was not updated")
 	}
 }
@@ -508,6 +512,13 @@ func TestAnsiRenderer_RuneWriting(t *testing.T) {
 }
 
 func TestAnsiRenderer_FreeBSDConsoleAvoidsPrivateModesAndOSC(t *testing.T) {
+	// The cursor colour the terminal was last sent is package-wide state that
+	// Suspend in other tests leaves as "unknown"; with it pending, the frame
+	// carries an OSC 112 this test is about to forbid. Start from a colour that
+	// has been sent.
+	cursorColorTestState(t)
+	cursorColorSent = CursorColor
+
 	oldFreeBSDConsole := IsFreeBSDConsole
 	IsFreeBSDConsole = true
 	defer func() { IsFreeBSDConsole = oldFreeBSDConsole }()

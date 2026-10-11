@@ -25,6 +25,11 @@ func RunInGUIWindow(cols, rows int, backend string, fontName string, fontSize fl
 	if backend == "ebiten" {
 		return runInEbitenWindow(cols, rows, fontName, fontSize, setupApp)
 	}
+	if backend == "cocoa" {
+		// The native AppKit window, macOS only. Elsewhere, and in a macOS
+		// build tagged vtui_nococoa, this reports that there is none.
+		return runInCocoaWindow(cols, rows, fontName, fontSize, setupApp)
+	}
 
 	if os.Getenv("WAYLAND_DISPLAY") != "" {
 		DebugLog("GUI: WAYLAND_DISPLAY detected, starting Wayland Host (default)")

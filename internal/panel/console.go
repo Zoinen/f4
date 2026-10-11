@@ -75,6 +75,56 @@ func (pf *PanelsFrame) OverlayLines() int {
 	return n
 }
 
+// updateConsoleOverlayModifiers keeps the manually rendered keybar in sync
+// with keyboard events after DrawConsoleOverlay unregisters FrameManager.KeyBar.
+// Some terminal hosts report the modifier bit one event late (or omit it on a
+// standalone modifier event), so the modifier key's own VK and KeyDown state
+// take precedence over ControlKeyState.
+func (pf *PanelsFrame) updateConsoleOverlayModifiers(e *vtinput.InputEvent) {
+	if e == nil {
+		return
+	}
+	if e.Type == vtinput.FocusEventType {
+		pf.consoleOverlayShift = false
+		pf.consoleOverlayCtrl = false
+		pf.consoleOverlayAlt = false
+		return
+	}
+	if e.Type != vtinput.KeyEventType {
+		return
+	}
+
+	pf.consoleOverlayShift = e.ControlKeyState&vtinput.ShiftPressed != 0
+	pf.consoleOverlayCtrl = e.ControlKeyState&(vtinput.LeftCtrlPressed|vtinput.RightCtrlPressed) != 0
+	pf.consoleOverlayAlt = e.ControlKeyState&(vtinput.LeftAltPressed|vtinput.RightAltPressed) != 0
+	switch e.VirtualKeyCode {
+	case vtinput.VK_SHIFT, vtinput.VK_LSHIFT, vtinput.VK_RSHIFT:
+		pf.consoleOverlayShift = e.KeyDown
+	case vtinput.VK_CONTROL, vtinput.VK_LCONTROL, vtinput.VK_RCONTROL:
+		pf.consoleOverlayCtrl = e.KeyDown
+	case vtinput.VK_MENU, vtinput.VK_LMENU, vtinput.VK_RMENU:
+		pf.consoleOverlayAlt = e.KeyDown
+	}
+}
+
+// consoleOverlayLabels selects the same precedence as vtui.KeyBar: Shift,
+// then Ctrl, then Alt, then the unmodified row.
+func consoleOverlayLabels(labels *vtui.KeySet, shift, ctrl, alt bool) vtui.KeyBarLabels {
+	if labels == nil {
+		return vtui.KeyBarLabels{}
+	}
+	if shift {
+		return labels.Shift
+	}
+	if ctrl {
+		return labels.Ctrl
+	}
+	if alt {
+		return labels.Alt
+	}
+	return labels.Normal
+}
+
 // overlayKeybarSlots lays the keybar out exactly the way vtui.KeyBar does, so
 // the console overlay and the panel keybar agree on slot width and label
 // truncation. The overlay used to hardcode five columns per label, which is why
@@ -138,7 +188,8 @@ func (pf *PanelsFrame) buildConsoleOverlayContent() terminal.ConsoleOverlayConte
 
 	if pf.ShowKeyBar && ov.Lines >= 2 {
 		if labels := pf.GetKeyLabels(); labels != nil {
-			ov.Keys = OverlayKeybarSlots(labels.Normal, pf.LastW)
+			active := consoleOverlayLabels(labels, pf.consoleOverlayShift, pf.consoleOverlayCtrl, pf.consoleOverlayAlt)
+			ov.Keys = OverlayKeybarSlots(active, pf.LastW)
 		}
 	}
 
@@ -270,6 +321,43 @@ func (pf *PanelsFrame) clearConsoleOverlay() {
 	vtui.WritePassthrough([]byte(sb.String()))
 }
 
+// clearGrownHostConsoleArea erases the rows and columns a host-console resize
+// newly exposed. A real terminal does not blank a window it enlarges -- it
+// just reveals more of its own buffer, holding whatever was last drawn there,
+// which while the host console is active (Busy, so FrameManager never Draws
+// or Flushes over it) is nothing f4 painted this session. Growing from a
+// smaller size Far started at back up to one f4's own panels once occupied is
+// exactly how the panels' own stale characters resurface (f4#1376). Mirrors
+// clearConsoleOverlay()'s row-erase technique -- \x1b[2K under a saved cursor
+// -- rather than inventing a second one; ordinary rows use it whole, and
+// surviving rows that only gained columns are erased from the old edge on.
+func (pf *PanelsFrame) clearGrownHostConsoleArea(oldW, oldH, w, h int) {
+	if oldW <= 0 || oldH <= 0 || w <= 0 || h <= 0 {
+		return
+	}
+	if w <= oldW && h <= oldH {
+		return
+	}
+	var sb strings.Builder
+	sb.WriteString("\x1b7")
+	if h > oldH {
+		for row := oldH + 1; row <= h; row++ {
+			fmt.Fprintf(&sb, "\x1b[%d;1H\x1b[0m\x1b[2K", row)
+		}
+	}
+	if w > oldW {
+		lastOldRow := oldH
+		if h < lastOldRow {
+			lastOldRow = h
+		}
+		for row := 1; row <= lastOldRow; row++ {
+			fmt.Fprintf(&sb, "\x1b[%d;%dH\x1b[0m\x1b[0K", row, oldW+1)
+		}
+	}
+	sb.WriteString("\x1b8")
+	vtui.WritePassthrough([]byte(sb.String()))
+}
+
 // drawHostConsoleOverlay is kept as the name used by the host console call sites.
 func (pf *PanelsFrame) drawHostConsoleOverlay() {
 	pf.DrawConsoleOverlay()
@@ -380,6 +468,21 @@ func (pf *PanelsFrame) handleHostConsoleTab(e *vtinput.InputEvent) bool {
 	return true
 }
 
+// HidePanelsForCommand hides the panels because a command was just written to
+// the shell's PTY, and in ShellModeHost hands the physical screen to the host
+// console with it. Every place that starts a command in the PTY must end with
+// this call, not with a bare ShowPanels = false: without EnterHostConsole the
+// host console is never marked active, so the host terminal is never asked
+// the child's queries (DA, DECRQM, colour palette) and the child waits on
+// replies nobody sends. Far Manager started by Enter on Far.exe hung on its
+// banner that way, while the same program typed on the command line ran (#1672).
+func (pf *PanelsFrame) HidePanelsForCommand() {
+	pf.ShowPanels = false
+	if pf.ShellMode == terminal.ShellModeHost {
+		pf.EnterHostConsole()
+	}
+}
+
 // enterHostConsole switches the physical terminal to the primary screen and activates
 // live passthrough of terminal.PTY output directly to the host console.
 func (pf *PanelsFrame) EnterHostConsole() {
@@ -418,6 +521,7 @@ func (pf *PanelsFrame) LeaveHostConsole() {
 		return
 	}
 	pf.HostConsoleActive = false
+	pf.resetHostConsoleReplyState()
 	pf.hostConsoleMu.Unlock()
 	pf.syncAutoCompleteSuppression()
 

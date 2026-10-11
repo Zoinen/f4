@@ -1,3 +1,5 @@
+//go:build !extralite
+
 // Do not rename this file to *_wasm.go. Go reads the _wasm suffix as an
 // implicit GOARCH constraint, so the file would silently drop out of the build
 // on every other architecture — the package still compiles, the WASM transport
@@ -71,11 +73,6 @@ func (p *WasmPlugin) permissionIdentity() PluginIdentity {
 // NewWasmPlugin prepares a plugin from a .wasm module.
 func NewWasmPlugin(path string) *WasmPlugin {
 	return &WasmPlugin{path: path}
-}
-
-// IsWasmEntrypoint reports whether an entrypoint is a bare WebAssembly module.
-func IsWasmEntrypoint(entrypoint string) bool {
-	return isBareEntrypointWithExt(entrypoint, ".wasm")
 }
 
 func (p *WasmPlugin) GetName() string {

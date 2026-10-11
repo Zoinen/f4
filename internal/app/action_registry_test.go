@@ -63,6 +63,19 @@ func TestActionRegistry(t *testing.T) {
 	}
 }
 func TestRegistry_HexModeAndWorkspaceActions(t *testing.T) {
+	viewHex, ok := GetAction("File.ViewHex")
+	if !ok {
+		t.Fatal("File.ViewHex should be registered")
+	}
+	if len(viewHex.DefaultKeys) != 1 || viewHex.DefaultKeys[0] != "AltF3" {
+		t.Fatalf("File.ViewHex default keys = %v, want [AltF3]", viewHex.DefaultKeys)
+	}
+	hm := keymap.NewHotkeyManager("")
+	hm.InitDefaults()
+	if got := hm.GetAction("Shell", "AltF3"); got != "File.ViewHex" {
+		t.Fatalf("Shell/AltF3 = %q, want File.ViewHex", got)
+	}
+
 	a, ok := GetAction("Editor.HexMode")
 	if !ok {
 		t.Fatal("Editor.HexMode should be registered")
@@ -74,6 +87,13 @@ func TestRegistry_HexModeAndWorkspaceActions(t *testing.T) {
 	_, ok = GetAction("Workspace.New")
 	if !ok {
 		t.Fatal("Workspace.New should be registered")
+	}
+	fork, ok := GetAction("Workspace.Fork")
+	if !ok {
+		t.Fatal("Workspace.Fork should be registered")
+	}
+	if len(fork.DefaultKeys) != 1 || fork.DefaultKeys[0] != "CtrlF11" {
+		t.Fatalf("Workspace.Fork default keys = %v, want [CtrlF11]", fork.DefaultKeys)
 	}
 }
 
@@ -98,6 +118,18 @@ func TestHotkeyManager_PanelPathDefaults(t *testing.T) {
 	}
 }
 
+func TestHotkeyManager_SyncPanelsDoesNotStealAltI(t *testing.T) {
+	hm := keymap.NewHotkeyManager("")
+	hm.InitDefaults()
+
+	if got := hm.GetAction("Shell", "AltI"); got == "Panel.SyncPanels" {
+		t.Fatal("Shell/AltI must remain available to panel fast find")
+	}
+	if got := hm.GetAction("Shell", "AltShiftI"); got != "Panel.SyncPanels" {
+		t.Fatalf("Shell/AltShiftI = %q, want Panel.SyncPanels", got)
+	}
+}
+
 func TestHotkeyManager_ViewerEditorSearchDirections(t *testing.T) {
 	hm := keymap.NewHotkeyManager("")
 	hm.InitDefaults()
@@ -106,7 +138,8 @@ func TestHotkeyManager_ViewerEditorSearchDirections(t *testing.T) {
 		area, key, want string
 	}{
 		{"Editor", "CtrlEnter", "Editor.SearchForward"},
-		{"Editor", "CtrlShiftEnter", "Editor.SearchPrevious"},
+		{"Editor", "AltF7", "Editor.SearchPrevious"},
+		{"Editor", "CtrlShiftEnter", "Editor.InsertPassivePanelFileName"},
 		{"Viewer", "CtrlEnter", "Viewer.SearchNext"},
 		{"Viewer", "CtrlShiftEnter", "Viewer.SearchPrevious"},
 	}
@@ -293,6 +326,28 @@ func TestPanelViewShortcutsReserveCtrl4ForWide(t *testing.T) {
 		}
 		if len(action.DefaultKeys) != 1 || action.DefaultKeys[0] != key {
 			t.Errorf("%s keys = %v, want [%s]", name, action.DefaultKeys, key)
+		}
+	}
+}
+
+func TestUpstreamPanelModesCoexistWithQtGalleryShortcuts(t *testing.T) {
+	for _, name := range []string{"Panel.ViewMode5", "Panel.ViewMode6", "Panel.ViewMode7"} {
+		act, ok := GetAction(name)
+		if !ok || act.Handler == nil {
+			t.Fatalf("upstream panel mode %s is unavailable", name)
+		}
+		if len(act.DefaultKeys) != 0 {
+			t.Errorf("%s steals a Qt gallery shortcut: %v", name, act.DefaultKeys)
+		}
+	}
+	for name, key := range map[string]string{
+		"Panel.ViewMode8": "Ctrl8",
+		"Panel.ViewMode9": "Ctrl9",
+		"Panel.ViewMode0": "Ctrl0",
+	} {
+		act, ok := GetAction(name)
+		if !ok || len(act.DefaultKeys) != 1 || act.DefaultKeys[0] != key {
+			t.Errorf("%s keys = %v, want [%s]", name, act.DefaultKeys, key)
 		}
 	}
 }

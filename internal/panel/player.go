@@ -94,6 +94,8 @@ const (
 
 const playerControlRows = 5 // title, time/info, spectrum×2, buttons
 
+const playerSeekStep = 5 * time.Second
+
 func NewPlayerPanel(src *FileSystemPanel) *PlayerPanel {
 	x1, y1, x2, y2 := src.GetPosition()
 	pp := &PlayerPanel{
@@ -416,6 +418,18 @@ func (pp *PlayerPanel) PlayFile(files []string, pos int) bool {
 	return true
 }
 
+// AutoPlayFile follows the file-panel cursor without restarting a track when
+// an arrow key merely hits the edge of the list.
+func (pp *PlayerPanel) AutoPlayFile(files []string, pos int) bool {
+	if pp.Engine == nil || pos < 0 || pos >= len(files) {
+		return false
+	}
+	if pp.current != nil && pp.current.Path == files[pos] && pp.Engine.IsLoaded() {
+		return false
+	}
+	return pp.PlayFile(files, pos)
+}
+
 // StopIfPlaying stops playback when the current track is one of paths.
 // The delete action calls it before removing files: an open file cannot be
 // deleted on Windows, and a player that carries on reading a file that is
@@ -599,13 +613,17 @@ func (pp *PlayerPanel) globalChar(ch rune) bool {
 func (pp *PlayerPanel) controlKey(e *vtinput.InputEvent, ctrl bool) bool {
 	switch e.VirtualKeyCode {
 	case vtinput.VK_LEFT:
-		if pp.button == playerBtnVolume {
+		if !ctrl && pp.Engine.IsLoaded() {
+			pp.Engine.Seek(-playerSeekStep)
+		} else if pp.button == playerBtnVolume {
 			pp.adjustVolume(-0.05)
 		} else if pp.button > 0 {
 			pp.button--
 		}
 	case vtinput.VK_RIGHT:
-		if pp.button == playerBtnVolume {
+		if !ctrl && pp.Engine.IsLoaded() {
+			pp.Engine.Seek(playerSeekStep)
+		} else if pp.button == playerBtnVolume {
 			pp.adjustVolume(+0.05)
 		} else {
 			pp.button++
@@ -636,6 +654,16 @@ func (pp *PlayerPanel) playlistKey(e *vtinput.InputEvent, ctrl bool) bool {
 	}
 	if pp.cursor < 0 {
 		return pp.controlKey(e, ctrl)
+	}
+	if !ctrl && pp.Engine.IsLoaded() {
+		switch e.VirtualKeyCode {
+		case vtinput.VK_LEFT:
+			pp.Engine.Seek(-playerSeekStep)
+			return true
+		case vtinput.VK_RIGHT:
+			pp.Engine.Seek(playerSeekStep)
+			return true
+		}
 	}
 	row := pp.rows[pp.cursor]
 	it := row.item

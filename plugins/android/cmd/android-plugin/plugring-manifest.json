@@ -1,0 +1,11 @@
+{
+    "id": "android",
+    "name": "Android devices (ADB)",
+    "version": "0.0.0-part3-published-not-installable",
+    "author": "unxed",
+    "description": "Browse Android devices known to the local ADB server as a top-level f4 drive (shell-v2/FISH+ or ADB Sync). Ships as a native subprocess plugin so a lite build (f4#1178) does not have to carry it in its own binary.",
+    "url": "https://github.com/unxed/f4/releases/download/{release}/android-plugin-{os}-{arch}.tgz",
+    "entrypoint": "android-plugin",
+    "category": "filesystem",
+    "runtimes": ["native"]
+}

@@ -41,6 +41,10 @@ func TestNewHostMethodsBasicHandlers(t *testing.T) {
 	if got := callHostMethod(t, methods["Host.GetVersion"], nil); got != "test-version" {
 		t.Fatalf("Host.GetVersion = %v", got)
 	}
+	languages, ok := callHostMethod(t, methods["Host.Language"], nil).([]string)
+	if !ok || len(languages) == 0 || languages[len(languages)-1] != "en" {
+		t.Fatalf("Host.Language = %v, want codes ending in en", languages)
+	}
 	if got := callHostMethod(t, methods["Host.RunAction"], "open"); got != true {
 		t.Fatalf("Host.RunAction = %v", got)
 	}

@@ -77,6 +77,8 @@ func handlePanelsAppCommand(pf *panel.PanelsFrame, cmd int, args any) bool {
 		return ActionBackground()
 	case appcmd.CmWorkspaceNew:
 		return ActionWorkspaceNew()
+	case appcmd.CmWorkspaceNewTerminal:
+		return panel.ActionWorkspaceNewTerminal()
 	}
 	return false
 }

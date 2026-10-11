@@ -52,6 +52,24 @@ const (
 	ColEditorCrosshair
 	ColEditorStatus
 	ColEditorScrollbar
+	ColEditorWrapMark
+	ColEditorSelectedText
+	ColCommandLinePath
+	ColCommandLineUser
+
+	// Chroma (plugins/chroma) syntax-highlighting token colors. f4#1470:
+	// these used to be a hardcoded palette independent of the active theme;
+	// they are now theme slots like everything else here, with defaults
+	// below matching that old hardcoded palette so a theme that does not
+	// override them (Classic) still looks the way it always did.
+	ColEditorSyntaxComment
+	ColEditorSyntaxKeyword
+	ColEditorSyntaxString
+	ColEditorSyntaxNumber
+	ColEditorSyntaxOperator
+	ColEditorSyntaxFunction
+	ColEditorSyntaxVariable
+	ColEditorSyntaxHeading
 
 	ColDialogSettingsBackground
 
@@ -136,6 +154,31 @@ func SetDefaultF4Palette() {
 	vtui.Palette[ColEditorCrosshair] = vtui.SetRGBBoth(0, 0xD3D7CF, 0x222222)
 	vtui.Palette[ColEditorStatus] = vtui.Palette[ColViewerStatus]
 	vtui.Palette[ColEditorScrollbar] = vtui.Palette[ColPanelScrollbar]
+	// far2l marks a wrapped (not a real newline) row end with a small
+	// arrow-like glyph; reuse the viewer's own continuation-arrow colour.
+	vtui.Palette[ColEditorWrapMark] = vtui.Palette[ColViewerArrows]
+	// Selected text of the editor: the colour the editor always used for it, that of a
+	// selection in a dialog's edit line (see InheritsFrom on its slot).
+	vtui.Palette[ColEditorSelectedText] = vtui.Palette[vtui.ColDialogEditSelected]
+	// The command line's prompt: the path and the user@host part, each with a slot of
+	// its own (f4#234). The path used to wear CommandLine.Prefix and the user part
+	// a green nothing could change; those are the defaults.
+	vtui.Palette[ColCommandLinePath] = vtui.Palette[ColCommandLinePrompt]
+	vtui.Palette[ColCommandLineUser] = vtui.SetRGBFore(vtui.Palette[ColCommandLinePrompt], 0x8AE234)
+
+	// Chroma syntax colors (f4#1470): only the foreground half is ever read
+	// (plugins/chroma.GetSyntaxAttr paints it over the editor's own base
+	// attribute), but both halves are set for FormatFarColor/ExportColors.
+	// These values are exactly the old hardcoded plugins/chroma.SyntaxMap
+	// palette, so a theme that leaves them unset (Classic) is unchanged.
+	vtui.Palette[ColEditorSyntaxComment] = vtui.SetRGBBoth(0, 0x555753, black) // Gray
+	vtui.Palette[ColEditorSyntaxKeyword] = vtui.SetRGBBoth(0, 0x729FCF, black) // Light Blue
+	vtui.Palette[ColEditorSyntaxString] = vtui.SetRGBBoth(0, 0x8AE234, black)  // Green
+	vtui.Palette[ColEditorSyntaxNumber] = vtui.SetRGBBoth(0, 0xAD7FA8, black)  // Purple
+	vtui.Palette[ColEditorSyntaxOperator] = vtui.SetRGBBoth(0, 0xFFFFFF, black)
+	vtui.Palette[ColEditorSyntaxFunction] = vtui.SetRGBBoth(0, 0xFCE94F, black) // Yellow
+	vtui.Palette[ColEditorSyntaxVariable] = vtui.SetRGBBoth(0, 0xEEEEEC, black) // Near White
+	vtui.Palette[ColEditorSyntaxHeading] = vtui.SetRGBBoth(0, 0x729FCF, black)
 
 	// White reads over every background the far palette puts under the caret.
 	vtui.Palette[ColTerminalCursor] = vtui.SetRGBBoth(0, 0xFFFFFF, 0)
@@ -147,6 +190,30 @@ type ColorSlot struct {
 	Group        string
 	ConstantName string
 	Aliases      []string
+
+	// InheritsBackgroundFrom names another slot's Canonical key. When a
+	// theme file sets no expression for this slot at all (not even via an
+	// alias), the slot's background is copied from that other slot's
+	// resolved background instead of keeping whatever the palette array
+	// happened to already hold at that index.
+	//
+	// far2l themes are one row per element (f4#1232), so an older theme
+	// authored before this slot existed simply has no row for it. Without
+	// this, such a theme leaves the slot on a stray leftover color that
+	// has nothing to do with the theme (f4#1232: Viewer.Scrollbar and
+	// Editor.Scrollbar showed the built-in default's blue in themes that
+	// never mention them). Themes that DO set the slot are unaffected:
+	// this only fills in slots no theme file ever addressed.
+	InheritsBackgroundFrom string
+
+	// InheritsFrom names another slot's Canonical key. When a theme file sets
+	// no expression for this slot at all, the whole colour (foreground and
+	// background) is copied from that other slot. It is for a slot that was
+	// split off an element which already had its colour: the new row is
+	// optional, and a theme that lacks it looks exactly as before (f4#234:
+	// Editor.Text.Selected is the colour of Dialog.Edit.Selected until a theme
+	// says otherwise).
+	InheritsFrom string
 }
 
 var ColorGroups = []string{
@@ -267,6 +334,8 @@ var ColorSlots = []ColorSlot{
 	// Command line Group
 	{Canonical: "CommandLine", Index: ColCommandLineText, Group: "Command line", ConstantName: "ColCommandLineText", Aliases: []string{"CommandLine.Text"}},
 	{Canonical: "CommandLine.Prefix", Index: ColCommandLinePrompt, Group: "Command line", ConstantName: "ColCommandLinePrompt", Aliases: []string{"CommandLine.Prompt"}},
+	{Canonical: "CommandLine.Path", Index: ColCommandLinePath, Group: "Command line", ConstantName: "ColCommandLinePath", InheritsFrom: "CommandLine.Prefix"},
+	{Canonical: "CommandLine.User", Index: ColCommandLineUser, Group: "Command line", ConstantName: "ColCommandLineUser", Aliases: []string{"CommandLine.Prompt.User"}, InheritsBackgroundFrom: "CommandLine.Prefix"},
 	{Canonical: "CommandLine.Selected", Index: ColCommandLineSelectedText, Group: "Command line", ConstantName: "ColCommandLineSelectedText", Aliases: []string{"CommandLine.SelectedText", "CommandLine.Text.Selected"}},
 	{Canonical: "CommandLine.Prompt.Inactive", Index: ColCommandLineInactivePrompt, Group: "Command line", ConstantName: "ColCommandLineInactivePrompt"},
 	{Canonical: "CommandLine.UserScreen", Index: ColCommandLineUserScreen, Group: "Command line", ConstantName: "ColCommandLineUserScreen"},
@@ -275,14 +344,27 @@ var ColorSlots = []ColorSlot{
 	{Canonical: "Viewer.Text", Index: ColViewerText, Group: "Viewer", ConstantName: "ColViewerText"},
 	{Canonical: "Viewer.Text.Selected", Index: ColViewerSelectedText, Group: "Viewer", ConstantName: "ColViewerSelectedText"},
 	{Canonical: "Viewer.Status", Index: ColViewerStatus, Group: "Viewer", ConstantName: "ColViewerStatus"},
-	{Canonical: "Viewer.Arrows", Index: ColViewerArrows, Group: "Viewer", ConstantName: "ColViewerArrows"},
-	{Canonical: "Viewer.Scrollbar", Index: ColViewerScrollbar, Group: "Viewer", ConstantName: "ColViewerScrollbar"},
+	{Canonical: "Viewer.Arrows", Index: ColViewerArrows, Group: "Viewer", ConstantName: "ColViewerArrows", InheritsBackgroundFrom: "Viewer.Text"},
+	{Canonical: "Viewer.Scrollbar", Index: ColViewerScrollbar, Group: "Viewer", ConstantName: "ColViewerScrollbar", InheritsBackgroundFrom: "Viewer.Text"},
 
 	// Editor Group
 	{Canonical: "Editor.Text", Index: ColEditorText, Group: "Editor", ConstantName: "ColEditorText"},
 	{Canonical: "Editor.Occurrence", Index: ColEditorOccurrence, Group: "Editor", ConstantName: "ColEditorOccurrence", Aliases: []string{"Editor.Text.Occurrence"}},
-	{Canonical: "Editor.Scrollbar", Index: ColEditorScrollbar, Group: "Editor", ConstantName: "ColEditorScrollbar"},
+	{Canonical: "Editor.Scrollbar", Index: ColEditorScrollbar, Group: "Editor", ConstantName: "ColEditorScrollbar", InheritsBackgroundFrom: "Editor.Text"},
 	{Canonical: "Editor.Status", Index: ColEditorStatus, Group: "Editor", ConstantName: "ColEditorStatus"},
+	{Canonical: "Editor.WrapMark", Index: ColEditorWrapMark, Group: "Editor", ConstantName: "ColEditorWrapMark", InheritsBackgroundFrom: "Editor.Text"},
+	{Canonical: "Editor.Text.Selected", Index: ColEditorSelectedText, Group: "Editor", ConstantName: "ColEditorSelectedText", Aliases: []string{"Editor.Selected"}, InheritsFrom: "Dialog.Edit.Selected"},
+
+	// Editor.Syntax.* feed plugins/chroma's syntax highlighter (f4#1470),
+	// one slot per Chroma token category it distinguishes.
+	{Canonical: "Editor.Syntax.Comment", Index: ColEditorSyntaxComment, Group: "Editor", ConstantName: "ColEditorSyntaxComment"},
+	{Canonical: "Editor.Syntax.Keyword", Index: ColEditorSyntaxKeyword, Group: "Editor", ConstantName: "ColEditorSyntaxKeyword"},
+	{Canonical: "Editor.Syntax.String", Index: ColEditorSyntaxString, Group: "Editor", ConstantName: "ColEditorSyntaxString"},
+	{Canonical: "Editor.Syntax.Number", Index: ColEditorSyntaxNumber, Group: "Editor", ConstantName: "ColEditorSyntaxNumber"},
+	{Canonical: "Editor.Syntax.Operator", Index: ColEditorSyntaxOperator, Group: "Editor", ConstantName: "ColEditorSyntaxOperator"},
+	{Canonical: "Editor.Syntax.Function", Index: ColEditorSyntaxFunction, Group: "Editor", ConstantName: "ColEditorSyntaxFunction"},
+	{Canonical: "Editor.Syntax.Variable", Index: ColEditorSyntaxVariable, Group: "Editor", ConstantName: "ColEditorSyntaxVariable"},
+	{Canonical: "Editor.Syntax.Heading", Index: ColEditorSyntaxHeading, Group: "Editor", ConstantName: "ColEditorSyntaxHeading"},
 
 	// Help Group
 	{Canonical: "Help.Text", Index: vtui.ColHelpText, Group: "Help", ConstantName: "ColHelpText"},
@@ -367,6 +449,7 @@ func FinishColors() {
 	if _, explicit := colorSourceExpressions["Dialog.Settings.Background"]; !explicit {
 		vtui.Palette[ColDialogSettingsBackground] = 0
 	}
+	applyBackgroundInheritance()
 	// Terminal history uses indexed background color 0 for default and blank cells.
 	// Keep it in sync with the configurable user-screen background.
 	vtui.ThemePalette[0] = vtui.GetRGBBack(vtui.Palette[ColCommandLineUserScreen])
@@ -383,6 +466,50 @@ func FinishColors() {
 	cursorFg, _ := GetColorRGBBoth(vtui.Palette[ColTerminalCursor])
 	vtui.CursorColor = int(cursorFg)
 	vtui.DebugLog("COLORS: cursor color #%06X", cursorFg)
+
+	// Surface any harsh chroma/hue clash the finished palette still has
+	// (f4#363). Contrast is handled above by AdjustContrastLevels, on its
+	// own looser terms; see ColorValidationRules for why this does not
+	// re-check WCAG on top of that.
+	notifyColorIssues(ValidateActiveColors())
+}
+
+// applyBackgroundInheritance fills in the background of every slot with an
+// InheritsBackgroundFrom target that no loaded theme layer addressed at all,
+// copying it from that target slot's own (already layered) background. See
+// the field's doc comment on ColorSlot for why this exists (f4#1232).
+func applyBackgroundInheritance() {
+	for _, slot := range ColorSlots {
+		if slot.InheritsFrom != "" {
+			if _, explicit := colorSourceExpressions[slot.Canonical]; !explicit {
+				if targetIndex, ok := colorMap[slot.InheritsFrom]; ok {
+					vtui.Palette[slot.Index] = vtui.Palette[targetIndex]
+				}
+			}
+			continue
+		}
+		if slot.InheritsBackgroundFrom == "" {
+			continue
+		}
+		if _, explicit := colorSourceExpressions[slot.Canonical]; explicit {
+			continue
+		}
+		targetIndex, ok := colorMap[slot.InheritsBackgroundFrom]
+		if !ok {
+			continue
+		}
+		vtui.Palette[slot.Index] = copyBackground(vtui.Palette[slot.Index], vtui.Palette[targetIndex])
+	}
+}
+
+// copyBackground returns attr with its background replaced by src's
+// background (index or RGB, whichever src uses), leaving attr's own
+// foreground and style flags untouched.
+func copyBackground(attr, src uint64) uint64 {
+	if src&vtui.IsBgRGB != 0 {
+		return vtui.SetRGBBack(attr, vtui.GetRGBBack(src))
+	}
+	return vtui.SetIndexBack(attr, vtui.GetIndexBack(src))
 }
 
 // FormatFarColor serializes a vtui palette color attribute to a farcolors.ini string.
@@ -401,6 +528,22 @@ func FormatFarColor(attr uint64) string {
 	}
 
 	return fmt.Sprintf("foreground:#%06x | background:#%06x", fg, bg)
+}
+
+// exportSlotValue is the text a farcolors.ini line gives slot: its colour in
+// the current palette, "inherit" for the two optional surfaces that follow
+// their parent, or the expression the colour was taken from when the palette
+// still holds exactly that.
+func exportSlotValue(slot ColorSlot) string {
+	attr := vtui.Palette[slot.Index]
+	value := FormatFarColor(attr)
+	if (slot.Index == vtui.ColDialogIndicatorBackground || slot.Index == ColDialogSettingsBackground) && attr == 0 {
+		value = "inherit"
+	}
+	if source, ok := colorSourceExpressions[slot.Canonical]; ok && colorSourcePalette[slot.Canonical] == attr {
+		value = source
+	}
+	return value
 }
 
 // ExportColors writes the current palette to a farcolors.ini file.
@@ -429,15 +572,7 @@ func ExportColors(path string) error {
 			return slots[i].Canonical < slots[j].Canonical
 		})
 		for _, slot := range slots {
-			attr := vtui.Palette[slot.Index]
-			value := FormatFarColor(attr)
-			if (slot.Index == vtui.ColDialogIndicatorBackground || slot.Index == ColDialogSettingsBackground) && attr == 0 {
-				value = "inherit"
-			}
-			if source, ok := colorSourceExpressions[slot.Canonical]; ok && colorSourcePalette[slot.Canonical] == attr {
-				value = source
-			}
-			fmt.Fprintf(&sb, "%s = %s\n", slot.Canonical, value)
+			fmt.Fprintf(&sb, "%s = %s\n", slot.Canonical, exportSlotValue(slot))
 		}
 	}
 
@@ -483,6 +618,47 @@ func CorrectContrast(fg, bg uint32) uint32 {
 	return toRGB24(newFg)
 }
 
+// OnBackgroundOf is attr moved onto the background of bg: attr's foreground
+// and style over bg's background. An attr already on that background comes
+// back as it is. Otherwise, with contrast correction on, the foreground is
+// corrected for the new pair, as ApplyContrast does for the palette: bg may
+// come from somewhere that pass never saw, a Colorer style's own background.
+func OnBackgroundOf(attr, bg uint64) uint64 {
+	_, from := GetColorRGBBoth(attr)
+	_, to := GetColorRGBBoth(bg)
+	if from == to {
+		return attr
+	}
+	if bg&vtui.IsBgRGB != 0 {
+		attr = vtui.SetRGBBack(attr, vtui.GetRGBBack(bg))
+	} else {
+		attr = vtui.SetIndexBack(attr, vtui.GetIndexBack(bg))
+	}
+	if config.App.EnforceColorCorrection {
+		fg, back := GetColorRGBBoth(attr)
+		if nfg := CorrectContrast(fg, back); nfg != fg {
+			attr = vtui.SetRGBFore(attr, nfg)
+		}
+	}
+	return attr
+}
+
+// OnTextBackground is palette entry idx for an element drawn beside a text
+// area whose theme entry is textIdx, when the text is actually drawn over
+// text. A theme that gives the element the text's background means it to
+// sit on the text, so it follows the background the text really has, a
+// Colorer style's own for instance, instead of showing as a stripe of the
+// theme's (#1232). A theme that sets the element apart keeps it apart.
+func OnTextBackground(idx, textIdx int, text uint64) uint64 {
+	attr := vtui.Palette[idx]
+	_, own := GetColorRGBBoth(attr)
+	_, themeText := GetColorRGBBoth(vtui.Palette[textIdx])
+	if own != themeText {
+		return attr
+	}
+	return OnBackgroundOf(attr, text)
+}
+
 // isFrameLineSlot reports whether a slot colours frame lines, which far2l
 // leaves out of contrast correction: it skips every key ending in ".Box". The
 // table column separator is such a line too, but it lost the suffix when
@@ -490,6 +666,18 @@ func CorrectContrast(fg, bg uint32) uint32 {
 // start rewriting its foreground.
 func isFrameLineSlot(slot ColorSlot) bool {
 	return strings.HasSuffix(slot.Canonical, ".Box") || slot.Index == vtui.ColTableBox
+}
+
+// isSyntaxColorSlot reports whether a slot is one of the Editor.Syntax.*
+// colors plugins/chroma paints over the editor's real, per-line base
+// attribute (f4#1470). The slot's own "background" half is just filler kept
+// for FormatFarColor/ExportColors: GetSyntaxAttr always discards it in favor
+// of whatever background that line already has (selection, cursor row,
+// etc.), so pairing it with that filler for contrast correction would be
+// meaningless — much like Terminal.Cursor below, which has no background of
+// its own either.
+func isSyntaxColorSlot(slot ColorSlot) bool {
+	return strings.HasPrefix(slot.Canonical, "Editor.Syntax.")
 }
 
 func AdjustContrastLevels() {
@@ -506,7 +694,7 @@ func AdjustContrastLevels() {
 		if slot.Index == ColTerminalCursor || slot.Index == vtui.ColDialogIndicatorBackground || slot.Index == ColDialogSettingsBackground {
 			continue
 		}
-		if isFrameLineSlot(slot) || done[slot.Index] {
+		if isFrameLineSlot(slot) || isSyntaxColorSlot(slot) || done[slot.Index] {
 			continue
 		}
 		done[slot.Index] = true

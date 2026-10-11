@@ -28,6 +28,7 @@ func (p *ID3EditorPlugin) Init(api vfs.HostAPI) error {
 			Description:    "Edit ID3 metadata of the selected MP3 file",
 			DescriptionKey: "ID3Editor.Command.Edit.Desc",
 			SearchKeys:     []string{"ID3Editor.Title", "ID3Editor.FieldTitle", "ID3Editor.FieldArtist"},
+			Enabled:        canHandleEdit,
 			Run:            p.handleEdit,
 		})
 		if err != nil {
@@ -56,6 +57,37 @@ func (p *ID3EditorPlugin) GetName() string {
 	return "ID3 Tag Editor"
 }
 
+// isSupportedID3Extension reports whether name's extension is one the ID3
+// Tag Editor knows how to read. handleEdit's own guard below and the
+// Enabled predicate registered in Init (f4#1356) both call this, so "which
+// files this plugin supports" has exactly one definition instead of two
+// that could silently drift apart.
+func isSupportedID3Extension(name string) bool {
+	return strings.ToLower(filepath.Ext(name)) == ".mp3"
+}
+
+// canHandleEdit reports whether handleEdit would actually open the editor
+// for app's current active panel and selection, without any of its side
+// effects (no message dialogs). It backs the plugin command's Enabled
+// predicate (f4#1356): a menu item/command-palette entry with Enabled
+// returning false is dimmed instead of popping an error dialog when the
+// command plainly cannot apply — non-local panel, nothing selected, or a
+// selection that is not an MP3 file.
+func canHandleEdit(app vfs.App) bool {
+	activeVFS := app.GetActivePanelVFS()
+	if activeVFS == nil {
+		return false
+	}
+	if _, isLocal := activeVFS.(*vfs.OSVFS); !isLocal {
+		return false
+	}
+	names := app.GetSelectedNames()
+	if len(names) == 0 {
+		return false
+	}
+	return isSupportedID3Extension(names[0])
+}
+
 func (p *ID3EditorPlugin) handleEdit(app vfs.App) {
 	activeVFS := app.GetActivePanelVFS()
 	if activeVFS == nil {
@@ -77,8 +109,7 @@ func (p *ID3EditorPlugin) handleEdit(app vfs.App) {
 	}
 
 	name := names[0]
-	ext := strings.ToLower(filepath.Ext(name))
-	if ext != ".mp3" {
+	if !isSupportedID3Extension(name) {
 		// Same rationale as the SelectFile hint above.
 		vtui.ShowMessage(" ID3 Editor ", vtui.Msg("ID3Editor.OnlyMP3"), []string{"&Ok"})
 		return

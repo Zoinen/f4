@@ -7,45 +7,49 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 func main() {
 	var (
-		probe               = flag.Bool("probe", false, "run the pinned-host probe with live resize")
-		probeStatic         = flag.Bool("probe-static", false, "run the pinned-host probe without live resize")
-		gate                = flag.Bool("gate", false, "run the complete standalone native gate")
-		seeds               = flag.Bool("seeds", false, "run the 300-session native seed stage")
-		seed                = flag.Uint64("seed", 0, "run one deterministic native seed")
-		partial             = flag.Bool("partial", false, "run resize during an incomplete line")
-		commandProbe        = flag.Bool("command-probe", false, "measure recursive dir output on the pinned host")
-		commandCompare      = flag.Bool("command-compare", false, "compare recursive dir through pinned host with redirected output")
-		commandCompareWidth = flag.Int("command-compare-width", 80, "pinned-host capture width for -command-compare")
-		commandSuite        = flag.Bool("command-suite", false, "verify echo, type, findstr, and PowerShell commands")
-		tabsProbe           = flag.Bool("tabs-probe", false, "verify tab-stop rendering in isolation")
-		linkProbe           = flag.Bool("link-probe", false, "verify OSC 8 rendering in isolation")
-		progressProbe       = flag.Bool("progress-probe", false, "verify in-place progress rendering")
-		unicodeProbe        = flag.Bool("unicode-probe", false, "verify Unicode and ZWJ round-trip")
-		clearProbe          = flag.Bool("clear-probe", false, "verify Clear-Host emits and applies ESC[3J")
-		scrollProbe         = flag.Bool("scroll-probe", false, "verify consumer scrollback and piece-table eviction")
-		emptyProbe          = flag.Bool("empty-probe", false, "verify an empty child emits no empty frame")
-		reflowProbe         = flag.Bool("reflow-probe", false, "verify consumer reflow after a static pinned-host session")
-		lifecycleProbe      = flag.Bool("lifecycle-probe", false, "verify pinned-host lifecycle and close-order cleanup")
-		edgeProbe           = flag.Bool("edge-probe", false, "verify trailing spaces, cursor blink, and child auto-wrap semantics")
-		quirkProbe          = flag.Bool("quirk-probe", false, "compare pinned-host resize behavior with and without resizeQuirk")
-		probeHost           = flag.String("probe-host", "", "verified pinned OpenConsole.exe")
-		reportPath          = flag.String("report", "", "report path")
-		emitProbe           = flag.Bool("emit-probe", false, "internal child mode for the pinned-host probe")
-		emitWidth           = flag.Int("emit-probe-width", 0, "internal child workload width")
-		emitSeed            = flag.String("emit-seed", "", "internal child deterministic seed")
-		emitPartial         = flag.Bool("emit-partial", false, "internal child incomplete-line workload")
-		emitAlternate       = flag.Bool("emit-alternate", false, "internal child alternate-screen workload")
-		emitControl         = flag.Bool("emit-control", false, "internal child control-sequence workload")
-		emitSemantic        = flag.Bool("emit-semantic", false, "internal child isolated semantic workload")
-		emitSemanticKind    = flag.String("emit-semantic-kind", "tabs", "internal semantic workload kind")
-		emitEdge            = flag.Bool("emit-edge", false, "internal child trailing-space and control workload")
-		emitQuirk           = flag.Bool("emit-quirk", false, "internal child resizeQuirk workload")
-		emitReflow          = flag.Bool("emit-reflow", false, "internal child static reflow workload")
-		emitScroll          = flag.Bool("emit-scroll", false, "internal child static scrollback workload")
+		probe                = flag.Bool("probe", false, "run the pinned-host probe with live resize")
+		probeStatic          = flag.Bool("probe-static", false, "run the pinned-host probe without live resize")
+		gate                 = flag.Bool("gate", false, "run the complete standalone native gate")
+		seeds                = flag.Bool("seeds", false, "run the 300-session native seed stage")
+		seed                 = flag.Uint64("seed", 0, "run one deterministic native seed")
+		partial              = flag.Bool("partial", false, "run resize during an incomplete line")
+		commandProbe         = flag.Bool("command-probe", false, "measure recursive dir output on the pinned host")
+		commandCompare       = flag.Bool("command-compare", false, "compare recursive dir through pinned host with redirected output")
+		commandCompareWidth  = flag.Int("command-compare-width", 80, "pinned-host capture width for -command-compare")
+		commandTiming        = flag.Bool("command-timing", false, "time recursive dir through the pinned host at several buffer heights, against a redirected run")
+		commandTimingHeights = flag.String("command-timing-heights", "25,100,1000,9000", "comma-separated session heights for -command-timing")
+		commandSuite         = flag.Bool("command-suite", false, "verify echo, type, findstr, and PowerShell commands")
+		tabsProbe            = flag.Bool("tabs-probe", false, "verify tab-stop rendering in isolation")
+		linkProbe            = flag.Bool("link-probe", false, "verify OSC 8 rendering in isolation")
+		progressProbe        = flag.Bool("progress-probe", false, "verify in-place progress rendering")
+		unicodeProbe         = flag.Bool("unicode-probe", false, "verify Unicode and ZWJ round-trip")
+		passthroughProbe     = flag.Bool("passthrough-probe", false, "measure which sixel, kitty, iTerm2 and OSC sequences reach the consumer through the pinned host")
+		clearProbe           = flag.Bool("clear-probe", false, "verify Clear-Host emits and applies ESC[3J")
+		scrollProbe          = flag.Bool("scroll-probe", false, "verify consumer scrollback and piece-table eviction")
+		emptyProbe           = flag.Bool("empty-probe", false, "verify an empty child emits no empty frame")
+		reflowProbe          = flag.Bool("reflow-probe", false, "verify consumer reflow after a static pinned-host session")
+		lifecycleProbe       = flag.Bool("lifecycle-probe", false, "verify pinned-host lifecycle and close-order cleanup")
+		edgeProbe            = flag.Bool("edge-probe", false, "verify trailing spaces, cursor blink, and child auto-wrap semantics")
+		quirkProbe           = flag.Bool("quirk-probe", false, "compare pinned-host resize behavior with and without resizeQuirk")
+		probeHost            = flag.String("probe-host", "", "verified pinned OpenConsole.exe")
+		reportPath           = flag.String("report", "", "report path")
+		emitProbe            = flag.Bool("emit-probe", false, "internal child mode for the pinned-host probe")
+		emitWidth            = flag.Int("emit-probe-width", 0, "internal child workload width")
+		emitSeed             = flag.String("emit-seed", "", "internal child deterministic seed")
+		emitPartial          = flag.Bool("emit-partial", false, "internal child incomplete-line workload")
+		emitAlternate        = flag.Bool("emit-alternate", false, "internal child alternate-screen workload")
+		emitControl          = flag.Bool("emit-control", false, "internal child control-sequence workload")
+		emitSemantic         = flag.Bool("emit-semantic", false, "internal child isolated semantic workload")
+		emitSemanticKind     = flag.String("emit-semantic-kind", "tabs", "internal semantic workload kind")
+		emitEdge             = flag.Bool("emit-edge", false, "internal child trailing-space and control workload")
+		emitQuirk            = flag.Bool("emit-quirk", false, "internal child resizeQuirk workload")
+		emitReflow           = flag.Bool("emit-reflow", false, "internal child static reflow workload")
+		emitScroll           = flag.Bool("emit-scroll", false, "internal child static scrollback workload")
 	)
 	flag.Parse()
 	if *seed == 0 {
@@ -157,6 +161,16 @@ func main() {
 		}
 		return
 	}
+	if *commandTiming {
+		heights, err := parseTimingHeights(*commandTimingHeights)
+		if err != nil {
+			fail(err)
+		}
+		if err := runNativeCommandTiming(*probeHost, *reportPath, *commandCompareWidth, heights); err != nil {
+			fail(err)
+		}
+		return
+	}
 	if *commandSuite {
 		if err := runNativeCommandSuite(*probeHost, *reportPath); err != nil {
 			fail(err)
@@ -175,6 +189,12 @@ func main() {
 			kind = "unicode"
 		}
 		if err := runNativeSemanticProbe(*probeHost, *reportPath, kind); err != nil {
+			fail(err)
+		}
+		return
+	}
+	if *passthroughProbe {
+		if err := runNativePassthroughProbe(*probeHost, *reportPath); err != nil {
 			fail(err)
 		}
 		return
@@ -248,4 +268,16 @@ func writeJSON(path string, value any) error {
 func fail(err error) {
 	fmt.Fprintln(os.Stderr, "pinned-conpty-probe:", err)
 	os.Exit(1)
+}
+
+func parseTimingHeights(list string) ([]int, error) {
+	var heights []int
+	for _, field := range strings.Split(list, ",") {
+		height, err := strconv.Atoi(strings.TrimSpace(field))
+		if err != nil || height < 1 || height > 32767 {
+			return nil, fmt.Errorf("-command-timing-heights: %q is not a height from 1 to 32767", field)
+		}
+		heights = append(heights, height)
+	}
+	return heights, nil
 }

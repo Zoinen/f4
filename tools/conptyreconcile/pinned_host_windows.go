@@ -289,7 +289,7 @@ func createPinnedPseudoConsoleWithQuirk(hostPath string, width, height int, resi
 	if err := windows.CreatePipe(&inPseudo, &inOur, nil, 0); err != nil {
 		return nil, fmt.Errorf("CreatePipe(input): %w", err)
 	}
-	if err := windows.CreatePipe(&outOur, &outPseudo, nil, 0); err != nil {
+	if err := windows.CreatePipe(&outOur, &outPseudo, nil, pinnedHostOutputPipeSize); err != nil {
 		_ = windows.CloseHandle(inPseudo)
 		_ = windows.CloseHandle(inOur)
 		return nil, fmt.Errorf("CreatePipe(output): %w", err)

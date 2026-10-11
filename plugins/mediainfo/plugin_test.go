@@ -88,6 +88,11 @@ func TestPluginRegistersAndUnregistersEveryContribution(t *testing.T) {
 	if len(host.commands) != 2 || host.commands[0].ID != panelCommandID || host.commands[1].ID != configCommandID {
 		t.Fatalf("commands = %#v", host.commands)
 	}
+	// Enabled dims the menu item/command-palette entry instead of letting
+	// it pop an error dialog on a directory selection (f4#1356).
+	if host.commands[0].Enabled == nil {
+		t.Fatal("panel command has no Enabled predicate")
+	}
 	if host.quick == nil || host.quick.Name() != quickViewID {
 		t.Fatalf("quick provider = %#v", host.quick)
 	}

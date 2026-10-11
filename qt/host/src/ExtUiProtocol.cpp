@@ -4,6 +4,22 @@
 
 namespace
 {
+bool hasOnlyEnvelopeFields(const QVariantMap &wireMessage)
+{
+    static const QSet<QString> envelopeKeys = {
+        QStringLiteral("type"), QStringLiteral("version"),
+        QStringLiteral("sequence"), QStringLiteral("streamId"),
+        QStringLiteral("revision"), QStringLiteral("baseRevision"),
+        QStringLiteral("kind"), QStringLiteral("payload"),
+    };
+    for (auto it = wireMessage.cbegin(); it != wireMessage.cend(); ++it) {
+        if (!envelopeKeys.contains(it.key())) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool nonNegativeInteger(const QVariant &value, quint64 *result)
 {
     bool ok = false;
@@ -57,17 +73,9 @@ bool isSemanticPayloadType(const QString &type)
 Inspection StreamRegistry::inspect(const QVariantMap &wireMessage)
 {
     Inspection result;
-    static const QSet<QString> envelopeKeys = {
-        QStringLiteral("type"), QStringLiteral("version"),
-        QStringLiteral("sequence"), QStringLiteral("streamId"),
-        QStringLiteral("revision"), QStringLiteral("baseRevision"),
-        QStringLiteral("kind"), QStringLiteral("payload"),
-    };
-    for (auto it = wireMessage.cbegin(); it != wireMessage.cend(); ++it) {
-        if (!envelopeKeys.contains(it.key())) {
-            result.error = QStringLiteral("Unknown ExtUI v4 envelope field");
-            return result;
-        }
+    if (!hasOnlyEnvelopeFields(wireMessage)) {
+        result.error = QStringLiteral("Unknown ExtUI v4 envelope field");
+        return result;
     }
 
     quint64 version = 0;

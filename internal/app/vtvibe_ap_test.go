@@ -8,11 +8,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/unxed/f4/internal/config"
 	"github.com/unxed/f4/internal/panel"
+	"github.com/unxed/f4/internal/paneltest"
 	"github.com/unxed/f4/internal/vtvibe"
+	"github.com/unxed/f4/internal/vtvibe/ap"
 	"github.com/unxed/f4/vfs"
+	"github.com/unxed/vtui"
 )
 
 func TestAIDownload(t *testing.T) {
@@ -89,88 +93,111 @@ func writeVtvibeINI(t *testing.T, contents string) string {
 	return path
 }
 
-func TestAIEnsurePatcher_ConfigCacheAndDownload(t *testing.T) {
-	setupPortableIni(t, "0")
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/valid":
-			_, _ = w.Write([]byte("def apply_patch():\n    pass\n"))
-		case "/bad":
-			_, _ = w.Write([]byte("not an ap patcher"))
-		default:
-			w.WriteHeader(http.StatusInternalServerError)
+func TestAIPatchExitCode(t *testing.T) {
+	cases := []struct {
+		status ap.Status
+		want   int
+	}{
+		{ap.StatusSuccess, 0},
+		{ap.StatusPartial, 2},
+		{ap.StatusFailed, 1},
+		{ap.Status("unknown"), 1},
+	}
+	for _, c := range cases {
+		if got := aiPatchExitCode(c.status); got != c.want {
+			t.Errorf("aiPatchExitCode(%s) = %d, want %d", c.status, got, c.want)
 		}
-	}))
-	t.Cleanup(server.Close)
-
-	custom := filepath.Join(t.TempDir(), "custom-ap.py")
-	if err := os.WriteFile(custom, []byte("custom"), 0600); err != nil {
-		t.Fatalf("write custom patcher: %v", err)
-	}
-	writeVtvibeINI(t, "[general]\nap_patcher = "+custom+"\n")
-	updates := 0
-	got, err := aiEnsurePatcher(context.Background(), func(string, int) { updates++ })
-	if err != nil || got != custom {
-		t.Fatalf("configured patcher = %q, %v; want %q, nil", got, err, custom)
-	}
-	if updates != 0 {
-		t.Fatalf("configured patcher reported %d download updates; want none", updates)
-	}
-
-	if err := os.Remove(custom); err != nil {
-		t.Fatalf("remove custom patcher: %v", err)
-	}
-	if _, err := aiEnsurePatcher(context.Background(), func(string, int) {}); err == nil {
-		t.Fatal("missing configured patcher returned nil error")
-	}
-
-	cachePath := aiPatcherPath()
-	writeVtvibeINI(t, "[general]\nap_url = "+server.URL+"/valid\n")
-	updates = 0
-	got, err = aiEnsurePatcher(context.Background(), func(string, int) { updates++ })
-	if err != nil || got != cachePath {
-		t.Fatalf("downloaded patcher = %q, %v; want %q, nil", got, err, cachePath)
-	}
-	if updates != 1 {
-		t.Fatalf("download reported %d updates; want one", updates)
-	}
-	data, err := os.ReadFile(cachePath)
-	if err != nil || !strings.Contains(string(data), "def apply_patch(") {
-		t.Fatalf("cached patcher = %q, %v; want recognizable script", data, err)
-	}
-
-	updates = 0
-	if got, err := aiEnsurePatcher(context.Background(), func(string, int) { updates++ }); err != nil || got != cachePath {
-		t.Fatalf("cache hit = %q, %v; want %q, nil", got, err, cachePath)
-	}
-	if updates != 0 {
-		t.Fatalf("cache hit reported %d download updates; want none", updates)
-	}
-
-	if err := os.Remove(cachePath); err != nil {
-		t.Fatalf("remove cached patcher: %v", err)
-	}
-	writeVtvibeINI(t, "[general]\nap_url = "+server.URL+"/bad\n")
-	if _, err := aiEnsurePatcher(context.Background(), func(string, int) {}); err == nil {
-		t.Fatal("unrecognizable download returned nil error")
-	}
-	if _, err := os.Stat(cachePath); !os.IsNotExist(err) {
-		t.Fatalf("bad download left cache at %q, stat error %v", cachePath, err)
 	}
 }
 
-func TestAIPythonPath_HonorsConfiguredInterpreter(t *testing.T) {
-	setupPortableIni(t, "0")
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatalf("os.Executable: %v", err)
-	}
-	writeVtvibeINI(t, "[general]\npython = "+executable+"\n")
+func TestAIRunPatcherAppliesAndDryRuns(t *testing.T) {
+	t.Cleanup(paneltest.SwapFrameManager(t))
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	aiUndoTestStack(t)
 
-	got, err := aiPythonPath()
-	if err != nil || filepath.Clean(got) != filepath.Clean(executable) {
-		t.Fatalf("configured Python = %q, %v; want %q, nil", got, err, executable)
+	root := t.TempDir()
+	target := filepath.Join(root, "a.txt")
+	if err := os.WriteFile(target, []byte("line1\nline2\n"), 0600); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	patch := &vtvibe.Patch{
+		ID: "aa000001",
+		Text: "aa000001 AP 3.2\n\naa000001 FILE\na.txt\n\n" +
+			"aa000001 REPLACE\naa000001 snippet\nline1\naa000001 content\nLINE1\n\n" +
+			"aa000001 REPLACE\naa000001 snippet\nline2\naa000001 content\nLINE2\n",
+	}
+
+	pf := &panel.PanelsFrame{}
+	waitForResult := func() {
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			top := vtui.FrameManager.GetTopFrame()
+			// aiRunPatcher's progress dialog closes itself with Close(),
+			// which only sets its exit code (vtui's real event loop is
+			// what actually pops a Done frame, right after running the
+			// task/event that closed it - see frameManager.Step). This
+			// harness drains vtui.FrameManager.TaskChan directly (pumpFor)
+			// without going through that loop, so the closed progress
+			// dialog from THIS call, or a previous one right above it,
+			// can still be sitting on top, already Done, once its own
+			// result dialog (pushed on top of it) has been popped below.
+			// Skip any such leftover instead of mistaking it for a fresh
+			// result.
+			for top != nil && top.IsDone() {
+				vtui.FrameManager.RemoveFrame(top)
+				top = vtui.FrameManager.GetTopFrame()
+			}
+			// A lone, not-yet-done top frame is not necessarily the result:
+			// it is just as often aiRunPatcher's progress dialog, still
+			// running its worker. RunProgressTaskAfter closes the progress
+			// dialog and pushes the result dialog in the very same UI task
+			// (frame.go's `if dialogShown { dlg.Close() }; onComplete(err)`),
+			// so a genuine result never sits alone - it always lands on top
+			// of the now-Done progress dialog it replaced. Treating a lone
+			// frame as the result races the worker: on a slow poll tick the
+			// progress dialog can still be the only frame around (its own
+			// worker goroutine simply hasn't finished os.WriteFile/ap.Apply
+			// yet), and force-closing it here returns before that write ever
+			// runs, so the very next os.ReadFile in this test sees the old
+			// content. Wait for the two-deep shape instead: closed progress
+			// underneath, fresh result on top.
+			activeFrames := vtui.FrameManager.GetActiveFrames(vtui.FrameManager.ActiveIdx)
+			if top != nil && len(activeFrames) >= 2 {
+				top.Close()
+				vtui.FrameManager.RemoveFrame(top)
+				return
+			}
+			pumpFor(20 * time.Millisecond)
+		}
+		t.Fatal("aiRunPatcher never reported a result")
+	}
+
+	aiRunPatcher(pf, patch, root, true, nil)
+	waitForResult()
+	if got, err := os.ReadFile(target); err != nil || string(got) != "line1\nline2\n" {
+		t.Fatalf("dry run changed the file: %q, %v", got, err)
+	}
+	if aiTopUndo() != nil {
+		t.Fatal("a dry run recorded a transaction to undo")
+	}
+
+	// Only the second REPLACE is checked (the review screen's Options.Only):
+	// the first one must stay unapplied.
+	aiRunPatcher(pf, patch, root, false, map[ap.ModKey]bool{{FilePath: "a.txt", ModIdx: 1}: true})
+	waitForResult()
+	if got, err := os.ReadFile(target); err != nil || string(got) != "line1\nLINE2\n" {
+		t.Fatalf("applied file = %q, %v; want only the checked modification to have landed", got, err)
+	}
+	// The real run is on the undo stack (Ctrl+Z in the AI panel).
+	u := aiTopUndo()
+	if u == nil {
+		t.Fatal("a real run did not record its transaction")
+	}
+	if err := u.Revert(); err != nil {
+		t.Fatalf("Revert: %v", err)
+	}
+	if got, err := os.ReadFile(target); err != nil || string(got) != "line1\nline2\n" {
+		t.Fatalf("reverted file = %q, %v; want the original", got, err)
 	}
 }
 

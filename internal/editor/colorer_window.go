@@ -1,3 +1,5 @@
+//go:build !lite
+
 package editor
 
 import (
@@ -32,6 +34,10 @@ type windowColorizer struct {
 	jobs   chan windowJob
 	cancel context.CancelFunc
 	colors map[int64]windowColored // UI-owned: the last window highlighted
+	// UI-owned: what the lines of that window are drawn over, and whether
+	// a window has arrived yet.
+	base    uint64
+	baseSet bool
 }
 
 func (w *windowColorizer) Request(context []string, lines []viewer.WindowLine) {
@@ -57,6 +63,10 @@ func (w *windowColorizer) LineAttrs(offset int64, text string) []uint64 {
 	return nil
 }
 
+func (w *windowColorizer) BaseAttr() (uint64, bool) {
+	return w.base, w.baseSet
+}
+
 func (w *windowColorizer) Close() {
 	w.cancel()
 }
@@ -78,12 +88,13 @@ func NewWindowColorizer(path, firstLine string, base uint64, redraw func()) view
 	src := CurrentColorerSource()
 	scheme := config.App.EditorColorerScheme
 	colorerBase := ColorerEditorBaseAttr(base)
-	post := func(colors map[int64]windowColored) {
+	post := func(colors map[int64]windowColored, lineBase uint64) {
 		frames.PostTask(func() {
 			if ctx.Err() != nil {
 				return
 			}
 			w.colors = colors
+			w.base, w.baseSet = lineBase, true
 			if redraw != nil {
 				redraw()
 			}
@@ -102,6 +113,13 @@ func NewWindowColorizer(path, firstLine string, base uint64, redraw func()) view
 		// The rest of this goroutine serves the window until it is
 		// closed; only the session setup is counted.
 		colorerSetups.done()
+		// What the lines are drawn over: Colorer's are on its style's
+		// def:Text and the file type's colours, as colourWindowWithColorer
+		// draws them; Chroma's are on the viewer's base.
+		lineBase := base
+		if session != nil {
+			lineBase = settings.baseAttr(colorerBase)
+		}
 		var h vtui.Highlighter
 		if session == nil {
 			if h = vtui.GetHighlighter(path, ""); h == nil {
@@ -137,7 +155,7 @@ func NewWindowColorizer(path, firstLine string, base uint64, redraw func()) view
 			if ctx.Err() != nil {
 				return
 			}
-			post(colors)
+			post(colors, lineBase)
 		}
 	}()
 	return w

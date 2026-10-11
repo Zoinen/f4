@@ -1,4 +1,4 @@
-//go:build (linux || windows || darwin) && !android && (amd64 || arm64)
+//go:build (linux || windows || darwin) && !android && (amd64 || arm64) && !vtui_noebiten
 
 package vtui
 

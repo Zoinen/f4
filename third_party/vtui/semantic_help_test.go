@@ -8,6 +8,7 @@ func TestHelpViewSemanticContentAndNavigation(t *testing.T) {
 		Lines: []string{"^#Heading#", "Read ~Next~Next@ and <text>"}})
 	engine.AddTopic(&HelpTopic{Name: "Next", Lines: []string{"Destination"}})
 	view := NewHelpView(engine, "Contents")
+	view.ResizeConsole(80, 25)
 	node := semanticFrame(&SemanticContext{}, view)
 	if node["kind"] != "dialog" || node["layout"] != "help" {
 		t.Fatalf("help is not a native dialog: %v", node)

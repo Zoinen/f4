@@ -17,10 +17,6 @@ import (
 	"golang.org/x/text/encoding"
 	"golang.org/x/text/encoding/charmap"
 	"golang.org/x/text/encoding/htmlindex"
-	"golang.org/x/text/encoding/japanese"
-	"golang.org/x/text/encoding/korean"
-	"golang.org/x/text/encoding/simplifiedchinese"
-	"golang.org/x/text/encoding/traditionalchinese"
 	"golang.org/x/text/encoding/unicode"
 	"golang.org/x/text/encoding/unicode/utf32"
 )
@@ -122,15 +118,8 @@ func init() {
 		{ID: 28604, Name: "ISO-8859-14 (Celtic)", Enc: charmap.ISO8859_14, group: codepageOther},
 		{ID: 28605, Name: "ISO-8859-15 (Western)", Enc: charmap.ISO8859_15, group: codepageOther},
 		{ID: 28606, Name: "ISO-8859-16 (Central European)", Enc: charmap.ISO8859_16, group: codepageOther},
-		{ID: 932, Name: "Shift JIS (Japanese)", Enc: japanese.ShiftJIS, group: codepageOther},
-		{ID: 50220, Name: "ISO-2022-JP (Japanese)", Enc: japanese.ISO2022JP, group: codepageOther},
-		{ID: 51932, Name: "EUC-JP (Japanese)", Enc: japanese.EUCJP, group: codepageOther},
-		{ID: 51949, Name: "EUC-KR (Korean)", Enc: korean.EUCKR, group: codepageOther},
-		{ID: 936, Name: "GBK (Simplified Chinese)", Enc: simplifiedchinese.GBK, group: codepageOther},
-		{ID: 52936, Name: "HZ-GB-2312 (Simplified Chinese)", Enc: simplifiedchinese.HZGB2312, group: codepageOther},
-		{ID: 54936, Name: "GB18030 (Simplified Chinese)", Enc: simplifiedchinese.GB18030, group: codepageOther},
-		{ID: 950, Name: "Big5 (Traditional Chinese)", Enc: traditionalchinese.Big5, group: codepageOther},
 	}
+	otherCodepages = append(otherCodepages, cjkCodepages()...)
 	// platformCodepages asks FindCodepage which ids are already covered, so
 	// the list it consults has to be in place before it runs.
 	AvailableCodepages = append(systemCodepageEntries(), otherCodepages...)

@@ -21,16 +21,6 @@ func TestAIPatchTargetDirSkipsNonLocalPanels(t *testing.T) {
 	}
 }
 
-func TestAIPythonPathReportsMissingInterpreter(t *testing.T) {
-	setupPortableIni(t, "0")
-	t.Setenv("PATH", t.TempDir())
-	writeVtvibeINI(t, "[general]\n")
-
-	if got, err := aiPythonPath(); err == nil || got != "" {
-		t.Fatalf("aiPythonPath() = %q, %v; want no interpreter error", got, err)
-	}
-}
-
 func TestAIShowPatchResultStatesAndAttachReport(t *testing.T) {
 	t.Cleanup(paneltest.SwapFrameManager(t))
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
@@ -46,7 +36,7 @@ func TestAIShowPatchResultStatesAndAttachReport(t *testing.T) {
 		{name: "partial", exit: 2, output: "partly applied"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			aiShowPatchResult(nil, t.TempDir(), tc.dry, tc.exit, tc.output)
+			aiShowPatchResult(nil, t.TempDir(), tc.dry, tc.exit, tc.output, nil)
 			top := vtui.FrameManager.GetTopFrame()
 			if top == nil {
 				t.Fatal("patch result did not open a message")
@@ -61,7 +51,7 @@ func TestAIShowPatchResultStatesAndAttachReport(t *testing.T) {
 	if err := os.WriteFile(reportPath, []byte("report"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	aiShowPatchResult(nil, reportDir, false, 1, "failed output")
+	aiShowPatchResult(nil, reportDir, false, 1, "failed output", nil)
 	top := vtui.FrameManager.GetTopFrame()
 	dlg, ok := top.(*vtui.Window)
 	if !ok {

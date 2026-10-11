@@ -5164,13 +5164,13 @@ wineconsole определяется по бэкенду, а не по ней.
 | Пункт §14.2 | Состояние в коде |
 |---|---|
 | Скрытые файлы | **Сделано.** Явное правило `hiddenByRule` (`vfs/hidden_rule.go`): в posix-режиме только точка. Раньше ответ выходил верным случайно: приведение к `*syscall.Win32FileAttributeData` в posix-режиме проваливалось. Тест на любой платформе. |
-| Список дисков, `Alt+F1` | Частично. `internal/sysinfo/drives_windows.go` в posix-режиме отдаёт `/ Root` и `~ Home`. Провайдера «Physical Disks» в этом режиме нет (не показывается, а не показывается неверно): для него нужны `hostfs.ReadDir` и чтение файлов из `/sys/class/block`. **Не сделано.** Рядом: `sysinfo/fs_windows.go` `FS("/")` зовёт `GetDiskFreeSpaceEx` с POSIX-путём (нужна ветка на `winescape.Statfs`), а `panel/frame.go` (~5127) по `GOOS != "windows"` теряет хоткеи `/` и `~` в posix-режиме. |
+| Список дисков, `Alt+F1` | **Сделано** (закрыто в 8-коммитном заходе, §19): posix-ветка `drives_windows.go` теперь тоже показывает «Physical Disks (/dev)», `disks_windows.go` читает `/sys/class/block` через `hostfs.ReadDir`/`ReadFile` для листинга, `fs_windows.go`'s `FS("/")` отвечает через `winescape.Statfs` вместо `GetDiskFreeSpaceEx`, а хоткеи `/` и `~` в меню дисков (`panel/frame.go`) снова работают в posix-режиме. `DisksVFS.Open`/`PatchInPlace` (собственно открытие выбранного устройства) — **сделано** (f4#1461, часть 2 из 3): оба переведены с голого `os.OpenFile`/`os.Open` на `hostfs.OpenFile`/`hostfs.Open`, тот же интерфейс (`hostfs.File`), которым уже пользуется `OSVFS.Open`; в posix-режиме это доходит до настоящего `/dev/sdX` через `libwinescape`, а не до несуществующего под Wine пути `\\.\...`. `getDeviceSize` (в `disks_windows.go`/`disks_unix.go`) принимает теперь `hostfs.File`, а не `*os.File` — тот же тип на обеих платформенных сборках, раз обе вызываются из платформонезависимого `disks_vfs.go`. sudo/elevation-фолбэк (`globalSudoClient.Open`) не тронут и не редизайнился: он остался Windows-специфичной концепцией повышения прав, срабатывающей ровно как раньше (после неудачной попытки открыть устройство, на `os.IsPermission`), просто первая попытка теперь идёт через `hostfs` — posix-аналог elevation, о котором предупреждает issue, отдельно не проектировался. |
 | Времена файлов, физический размер | **Сделано** (раньше, в `main`): `fillPlatformTimes` читает `*winescape.Stat_t`, в `fillPhysicalSizeCheap` есть posix-ветка. |
-| Корзина | **Не сделано**, риск средний-высокий. `trash_freedesktop.go` собирается только на unix и ходит в `os.*`, `*syscall.Stat_t`, `os.Getuid`; общую часть надо вынести в файл без тега с точками подмены и подключить к `trash_windows.go`. |
+| Корзина | **Сделано** (f4#1461, часть 1 из 3): общая часть FreeDesktop.org Trash spec (структура каталогов, формат `.trashinfo`, выбор home-vs-volume корзины по номеру устройства) вынесена из `trash_freedesktop.go` в `vfs/trash_xdg.go` — файл с точками подмены (`hostfs.Lstat/MkdirAll/Chmod/Remove`, уже personality-aware; и четыре новых substitution points — getuid, `$XDG_DATA_HOME`/`$HOME`, эксклюзивная запись файла — с одной реализацией на unix-сборку и одной на Windows через `winescape`/`hostmode.HomeDir`). `trash_windows.go` в posix-режиме зовёт эту общую логику вместо диалога Recycle Bin; native-Windows корзина не изменилась. Известное сужение: `libwinescape` v0.2.1 не даёт `fsync(2)`, поэтому `.trashinfo` в posix-режиме под Wine не таким же образом durable, как на настоящем Linux (см. комментарий у `defaultTrashWriteExclusive` в `trash_windows.go`). Живьём под Wine не проверялось — нет CI-шага, который гоняет `go test` под настоящим Wine; регресс покрыт `vfs/trash_windows_posix_test.go` (windows-only, работает через дублирующую реализацию хоста, а не через настоящий `libwinescape`, — вызывать `winescape.Getuid()`/`HostGetenv` на живом Windows-раннере без Wine небезопасно, см. комментарий там же). |
 | Исполняемость | **Сделано** для запуска в терминале (`vfs/utils.go`: бит `0111` в posix-режиме). Не сделано: `theme/highlight.go` красит read-only по `WinAttrs` (в posix-режиме он нулевой, нужен `UnixMode`); `cmdline/resolve_windows.go` (PATHEXT, App Paths) не должен работать в posix-режиме. |
 | Reparse points, junction | **Сделано.** `isReparsePoint` уже был закрыт; теперь и `resolveReparseCandidates`, `wellKnownJunction` и три места вызова (`os_vfs.go`, `os_vfs_listing.go`) стоят за `vfs.WindowsPersonality()`. Раньше отказ в доступе к `/root` запускал догадки про `All Users` и `CreateFile` с POSIX-путём. |
 | `$HOME`, `$XDG_CONFIG_HOME` | **Не сделано.** Нужно решение автора: где жить конфигу в posix-режиме (в префиксе Wine, как сейчас, или в `~/.config/f4`; перенос меняет место, где существующие пользователи ищут настройки). Места вызова `os.UserHomeDir`/`os.UserConfigDir`: `panel/frame.go` (2431, 5901), `panel/drives_menu.go:74`, `app/actions.go:4360`, `app/command_palette_panels.go:424`, `app/vtvibe_host.go:275`, `app/actions_framework.go:343`, `terminal/child_env.go:205`. У libwinescape есть `HostGetenv`, читающий `/proc/self/environ` мимо таблицы окружения Wine. |
-| Регистр в сравнениях | Частично. **Исправлена** проверка «источник равен приёмнику» в `fileops/ops.go`: копирование `/a/Foo` в `/a/foo` под posix-режимом отвергалось как копирование файла на себя. Не сделано: `panel/associations.go:228`, `panel/frame.go:5714`, `fusefs/fusefs.go:407`. |
+| Регистр в сравнениях | **Сделано.** Проверка «источник равен приёмнику» в `fileops/ops.go` была исправлена раньше; `panel/associations.go` (`MatchingAssociations`) и `fusefs/fusefs.go` (`pathsEqual`) закрыты в 8-коммитном заходе (§19) тем же приёмом (`runtime.GOOS == "windows" && !hostmode.Posix()`). `panel/frame.go:5714`, упомянутый здесь раньше, оказался тем же местом, что и `SameFolderHistoryPath` — закрыт тем же коммитом. |
 | Шелл | **Сделано в коде, вживую не проверено**, см. §18.3: под posix-режимом оболочка — `$SHELL` хоста на нативном pty, а текст для неё собирается по правилам POSIX-оболочки (`terminal.WindowsShellSyntax()` вместо `GOOS == "windows"` в `panel/frame.go`). Это правило распространяется и на деградации без pty: `simple-inline`, `simple-captured` и `clip:/view:/edit:` запускают host shell через `libwinescape.Spawn`, а не молча переключаются на `cmd.exe`. |
 | Диалог атрибутов, `rename_noreplace` | Сделано раньше (§14.2). |
 
@@ -5180,13 +5180,24 @@ wineconsole определяется по бэкенду, а не по ней.
 не менял владельца; `applyPlatformAttributes` больше не передаёт POSIX-путь в
 `SetFileAttributes`.
 
-Что ещё выдаёт Windows в posix-режиме, по убыванию заметности (найдено, не
-исправлено): `cd /tmp` (`filepath.IsAbs("/tmp")` на GOOS windows ложно, `panel/frame.go` ~5559);
-`Ctrl+\` идёт в `\`, а не в `/` (`app/actions_table.go` ~1009); приглашение
-командной строки принудительно в виде `path>` (`panel/frame.go` ~912); `cmdline/apply_resources.go:403`
-не делает `chmod 0600` для приватных файлов; `editor/view.go:6941`
-принимает POSIX-имя с `:` за поток NTFS; `fileops/rights_extra.go:43` не
-наследует права при перемещении дерева.
+Все пункты, перечисленные здесь раньше, закрыты. Три оказались уже сделаны
+раньше этой ревизии, а не найдены заново:
+
+- Приглашение командной строки в виде `path>` — уже шло через
+  `terminal.WindowsShellSyntax()`, не через `GOOS == "windows"`
+  (`panel/frame.go:990`), задолго до этой сессии.
+- `cmdline/apply_resources.go:403` уже не делает `chmod 0600` безусловно по
+  `GOOS` — оно проверяет `target.GetCapabilities().HasUnixPermissions`, а это
+  поле `OSVFS` выставляет как `!WindowsPersonality()` (`vfs/os_vfs.go:553`),
+  то есть уже включено в posix-режиме под Wine.
+- `Регистр в сравнениях` (см. таблицу выше) был закрыт частично раньше этой
+  сессии.
+
+Оставшиеся четыре закрыты 8-коммитным заходом, описанным в §19: `cd /tmp`
+(`filepath.IsAbs("/tmp")` ложно на GOOS windows) и `Ctrl+\` (шёл в `\`, а не
+в `/`) — коммитами `6ed2f129`/`067d019e`; `editor/view.go` принимал
+POSIX-имя с `:` за поток NTFS и `fileops/rights_extra.go` не наследовал права
+при перемещении дерева — оба коммитом `11c2ea48`.
 
 **E6.** «`auto` по умолчанию» уже есть: `hostmode.Posix()` = `IsWine && Available`
 без всяких переменных. Настройка одна, булева (`UseWinescape`, по умолчанию
@@ -5300,12 +5311,17 @@ go2xp SPEC 7.1), и запуск этого же артефакта на ReactOS
   `ENOSYS` (трамплин и таблица номеров есть только для amd64 и arm64), поэтому
   posix-режим в legacy-сборке под Wine недоступен. Нужен трамплин и таблица номеров
   в `unxed/libwinescape`.
-- **Прогон с `UseWinescape=0` под живым Wine** (строка об отключении в отладочном
-  логе) не сделан: логика покрыта `vfs/hostmode/hostmode_test.go`, но живого
-  Wine в этой сессии не было.
+- **Прогон с `UseWinescape=0` под живым Wine** — закрыт 8-коммитным заходом
+  (§19): `ci: run f4 under real Wine` (`61ac2418`) добавляет ровно этот
+  прогон (`F4_WINE_POSIX=0` под настоящим `wine64` в джобе `wine` файла
+  `.github/workflows/build.yml`, туда же перенесённой из отдельного файла
+  `wine.yml`),
+  и в нём подтверждено и отключение `hostmode.Posix`, и то, что нативный pty
+  вместе с ним выключается.
 - **Апстрим:** WineHQ 60193 (русские буквы в wineconsole на Mint), gogpu#465 и
   ebiten#3514 (мониторинг из #474).
-- **XP:** приёмка на реальной системе (§18.5).
+- **XP:** запуск подтверждён (§18.8); отчёт «клавиша через раз» воспроизведён
+  на ReactOS и там объяснён (§18.8), на XP не проверен.
 
 ### 18.7. Подписи keybar и локализация (#1218)
 
@@ -5318,3 +5334,158 @@ go2xp SPEC 7.1), и запуск этого же артефакта на ReactOS
 Теперь область берётся у самого `PanelsFrame` (`Shell` или `Terminal`), а
 `App.Quit` использует тот же локализованный ключ `KeyBar.F10`. Обе причины
 закреплены регрессионными тестами.
+
+### 18.8. #897 после первого запуска на XP: пауза после команды и «клавиша через раз»
+
+**Запуск на XP.** В #897 подтверждено, что `f4-legacy-windows-386.zip` сборки
+`ea3aa51` запускается и работает на XP SP3 32-bit. Это снимает первую половину
+непроверенного пункта §18.5; запуск того же артефакта на ReactOS по-прежнему не
+перепроверялся.
+
+**Пауза «Press any key to return to f4...» убрана.** Команда, запущенная с
+панелей в `simple-inline`, теперь сразу возвращает к панелям, как в Far и far2l и
+как f4 делает везде, где есть PTY (`CONSOLE_MODES.md` §4.8). Вывод остаётся в
+хост-консоли и виден по `Ctrl+O`. Приглашение раньше попутно сдвигало хвост
+вывода вверх, из-под нижних строк окна, которые в стиле far занимает оверлей
+(командная строка и кейбар). Теперь это делается явно: после ребёнка
+печатается `OverlayLines()` переводов строки, как в ветке консольного вида, и
+окно ещё раз подгоняется к курсору до снимка буфера (правило §17.6 для
+ReactOS). Тест: `TestSimpleInline_ReturnsWithoutPauseAndLeavesRoomForOverlay`.
+Вместе с паузой ушёл её единственный пользователь `_getch` (`terminal.MsvcrtProc`).
+
+**«Через раз не реагирует на Press any key» (тот же отчёт с XP).** На XP
+причина не установлена; на ReactOS воспроизведено и объяснено — см. ниже. Это расследование, а не исправление: удаление паузы убирает место,
+где симптом был замечен, но не то, что могло бы его вызывать.
+
+Установлено по коду. Пока шла пауза, консольный ввод читали двое:
+`_getch` из msvcrt и горутина читателя vtinput (`GetEventChan` →
+`readConPTYEventTimeout`: `WaitForMultipleObjects` и `ReadConsoleInputW` в
+бесконечном цикле). `vtui.Suspend()` эту горутину не останавливает — он только
+возвращает режим консоли (`inputRestore`); механизма паузы читателя нет ни в vtui,
+ни в vtinput. Запись, прочитанная горутиной, ложится в `EventChan` и после
+возврата обрабатывается f4 как обычная клавиша. То же двойное чтение есть и пока
+работает сам ребёнок, если он ждёт клавишу (`pause`, `more`, `set /p`).
+
+Замерено под Wine 9.0 (Ubuntu 24.04, `wine64`, консоль на unix-pty,
+Windows-персона через `UseWinescape = 0`, f4 `674d3e68` windows/amd64,
+`VTUI_DEBUG` в файл; наблюдение — строки `RAWKEY:` между `EXEC:` и
+`VTINPUT: EnableProtocols`, то есть за время паузы):
+
+| Как пришла клавиша | Раундов | Пауза отпустила с первого нажатия | `RAWKEY` за время паузы |
+|---|---|---|---|
+| байт в pty (Wine выдаёт down и up почти одновременно) | 24 | 24 | в 18 — отпускание `x` (up), нажатие ни разу |
+| `WriteConsoleInputW` из другого процесса: down, 120 мс, up | 20 | 20 | ни одной |
+
+Итого под Wine: горутина vtinput во время паузы действительно читает записи из
+очереди (отпускания), но нажатие каждый раз доставалось `_getch`; «через раз» не
+воспроизвелось. Что делает с нажатием консоль XP — неизвестно: у неё свой
+консольный сервер, а под Wine это не проверить. Узнать можно только на XP, по
+тем же строкам лога: `RAWKEY: down=true` нажатой клавиши между `EXEC:` и
+`VTINPUT: EnableProtocols` значит, что нажатие забрал читатель f4. В сборках без
+паузы тот же вопрос задаётся командой, которая сама ждёт клавишу, например
+`dir & pause`: там с горутиной соревнуется уже `cmd.exe`, а признак — строка
+`RAWKEY: down=true` клавиши, нажатой на приглашении `pause`, раньше строки
+`EXEC:` (та пишется уже после выхода ребёнка).
+
+**Воспроизведено на ReactOS 0.4.16; механизм установлен.** Стенд: единый
+boot/live-образ 0.4.16 (тот же, что в §17.4) в live-режиме под QEMU без KVM;
+f4 windows/386 с go2xp по профилю reactos; клавиши — через монитор QEMU
+`sendkey` (нажатие, 100 мс, отпускание — путь эмулируемой PS/2-клавиатуры, как у
+настоящей). Лог `VTUI_DEBUG` — на дискету `A:`: на live-образе и корень `X:`, и
+`%TEMP%` только для чтения (`Can't redirect to file`), и лог туда молча не
+открывается. Наружу строки лога идут через `find "..." A:\debug.log > COM1`:
+`findstr` в ReactOS не понимает `/C:`.
+
+| Сборка | Команда | Когда нажата клавиша | Раундов | Отпустило с первого нажатия |
+|---|---|---|---|---|
+| `3a11f383` (пауза f4) | `dir` | через 3 с после старта, приглашение уже на экране | 28 | 28 |
+| `3a11f383` (пауза f4) | `ping -n 8 127.0.0.1` | через 2 с после старта, ping ещё идёт | 15 (3 серии по 5) | 6 — раунды 1 и 3 каждой серии |
+| `9d582283` + патч #897 (паузы нет) | `ping -n 8 127.0.0.1 & pause` | через 2 с после старта, ping ещё идёт | 4 | 2 — раунды 1 и 3 |
+
+Что показал лог (последняя серия на `3a11f383` и серия на сборке без паузы):
+
+- В каждом раунде, где команда действительно работала, пока нажимали клавишу,
+  строка `RAWKEY: down=true` этой клавиши стоит **раньше** `EXEC:`: нажатие забрал
+  собственный читатель f4, пока шёл ребёнок. До того, кто ждал клавишу потом
+  (пауза f4 или `pause` у `cmd`), оно не дошло; отпустило только второе нажатие.
+- После возврата к панелям f4 обработал забранную клавишу как обычный ввод
+  (`INPUT: KeyPress VK=VK_X`) — `x` оказался в командной строке, и следующая
+  команда ушла как `xping ...`. Она падает сразу, клавиша этого раунда приходит
+  уже на приглашение — отсюда чередование «через раунд». В двух первых сериях
+  (без лога) то же видно на экране: после первой в командной строке стоял `x`,
+  после второй в истории команд был `xping -n 8 127.0.0.1`.
+- Клавиша, нажатая, когда пауза уже ждёт, во всех раундах (28 + 6 + 2) досталась
+  тому, кто ждал.
+
+Итого на ReactOS «через раз» — это нажатие во время работы команды: его забирает
+читатель ввода f4, а не ребёнок и не пауза, и оно всплывает в f4 после
+возврата. Сборка без паузы этого не меняет — меняется только, кто остаётся ждать
+(`pause` у `cmd` вместо паузы f4). Под Wine этот случай не замерялся: там клавиша
+нажималась только после появления приглашения.
+
+**На XP не проверено.** Консольный сервер у XP свой; нажималась ли клавиша во
+время вывода, в #897 спрошено.
+
+## 19. Восемь коммитов, закрывающих большую часть §18.2/§18.6 (f4#1461)
+
+Между сессией, зафиксированной в §18, и этой сессией на `main` попал заход из
+восьми коммитов, закрывающих почти всё, что §18.2/§18.6 оставляли открытым
+как «мелкое, но заметное». Список — что каждый коммит закрывает:
+
+1. **`efa45f21` — wine: $HOME comes from the host's own environment in posix
+   mode.** §18.2, `$HOME`/`$XDG_CONFIG_HOME`: `vfs/hostmode` получает
+   `HomeDir()`/`UserHomeDir()` — реальный `$HOME` хоста через
+   `winescape.HostGetenv("HOME")` (Wine стирает `HOME` из Win32-окружения
+   процесса, `os.Getenv("HOME")` его никогда не видит), а не Windows-путь
+   вроде `%USERPROFILE%`. Каждое из мест вызова `os.UserHomeDir`, перечисленных
+   в §18.2, переведено на `hostmode.UserHomeDir()`. (Вопрос «где жить
+   конфигу» — отдельно, не про эту функцию, — остаётся открытым.)
+2. **`a8bebb34` — wine: descriptor 2 goes to a session log in console mode,
+   not the terminal.** §18.4: обычный консольный режим (не detached-копия из
+   #474) получает свой собственный `redirectConsoleWineStderr`, который
+   перенаправляет дескриптор 2 Wine в файл сессии, а не оставляет `fixme:`/
+   `err:` поверх интерфейса на терминале.
+3. **`b2d209c2` — wine: physical disks, free space, and the drive list in
+   posix mode.** §18.2, «Список дисков, `Alt+F1`»: провайдер «Physical Disks
+   (/dev)» теперь показывается в posix-режиме (`disks_windows.go` читает
+   `/sys/class/block` через `hostfs.ReadDir`/`ReadFile`); `fs_windows.go`
+   `FS("/")` отвечает через `winescape.Statfs`, а не `GetDiskFreeSpaceEx` с
+   POSIX-путём. `DisksVFS.Open`/`PatchInPlace` (сама Задача 3 issue) оставлены
+   как есть, осознанно.
+4. **`6ed2f129` — wine: posix-personality path, case and hotkey fixes in
+   panel/frame.go.** Четыре независимых пункта §18.2/§18.6 в одном файле:
+   `Ctrl+`` `/far2l `Ctrl+Backtick`` теперь через `hostmode.UserHomeDir()`;
+   `SameFolderHistoryPath` (регистр в сравнениях) гейтится на
+   `!hostmode.Posix()`; ветка `cd /tmp` переведена на
+   `hostpath.IsAbs`/`hostpath.VolumeName`/`hostfs.Stat`; хоткеи `/` и `~` в
+   меню дисков починены той же логикой, что уже была в `driveMatchesPath`.
+5. **`067d019e` — wine: Ctrl+\ goes to the posix root, not a drive letter.**
+   §18.6, «`Ctrl+\` идёт в `\`»: `Panel.GoRoot` строил корень из
+   `os.PathSeparator` плюс `filepath.VolumeName` безусловно на
+   `GOOS == "windows"`; теперь эта ветка гейтится на
+   `!hostmode.Posix()`, и posix-режим попадает на `/`.
+6. **`2d19377a` — wine: two more case-insensitive comparisons ignore posix
+   personality.** §18.2, «Регистр в сравнениях», оставшиеся два места:
+   `MatchingAssociations` (`panel/associations.go`) и `fusefs.pathsEqual`
+   (`fusefs/fusefs.go`) — тот же приём, что и `SameFolderHistoryPath`.
+7. **`11c2ea48` — wine: NTFS-stream detection and rights inheritance ignored
+   posix mode.** §18.2: `isAlternateDataStream` (`editor/view.go`) больше не
+   принимает POSIX-имя с `:` за поток NTFS в posix-режиме;
+   `inheritMovedTree` (`fileops/rights_extra.go`) наследует права при
+   перемещении дерева и под Wine, не только на голом Unix.
+8. **`61ac2418` — ci: run f4 under real Wine.** §14.7/§18.6: новый workflow
+   `wine.yml` (позже, при работе над f4#1178, перенесённый в джобу `wine`
+   файла `.github/workflows/build.yml`) собирает `f4.exe` и реально запускает его под
+   `wine64` на раннере — `--wine-probe` с posix auto-detect и с
+   `F4_WINE_POSIX=0` (тем самым закрывая и «прогон с `UseWinescape=0` под
+   живым Wine» из §18.6), плюс дымовые тесты рендера в консольном и GUI
+   режимах.
+
+Помимо самого списка, ревизия кода этой сессии (не гипотеза, а чтение
+исходников) показала, что два пункта из старого списка «не сделано» в §18.2
+были закрыты ещё раньше, до этого 8-коммитного захода, и просто не были
+отражены в тексте: приглашение командной строки в виде `path>`
+(`terminal.WindowsShellSyntax()` в `panel/frame.go:990`) и `chmod 0600` для
+приватных файлов (`VFSCapabilities.HasUnixPermissions` = `!WindowsPersonality()`
+в `vfs/os_vfs.go:553`, которое `cmdline/apply_resources.go:403` уже
+проверяет). §18.2 выше отражает это.

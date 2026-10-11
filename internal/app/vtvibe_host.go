@@ -3,8 +3,19 @@ package app
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"sort"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
 	"github.com/unxed/f4/internal/action"
 	"github.com/unxed/f4/internal/config"
+	"github.com/unxed/f4/internal/dialog"
 	"github.com/unxed/f4/internal/editor"
 	"github.com/unxed/f4/internal/i18n"
 	"github.com/unxed/f4/internal/ini"
@@ -13,26 +24,16 @@ import (
 	"github.com/unxed/f4/internal/viewer"
 	"github.com/unxed/f4/internal/vtvibe"
 	"github.com/unxed/f4/vfs"
+	"github.com/unxed/f4/vfs/hostmode"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"runtime"
-	"sort"
-	"strings"
-	"sync"
 )
 
 // vtvibe is the AI panel of f4. This file is the only place where it touches
 // the core: it publishes the ai:// drive, the "ai:" command prefix and the
 // registry actions. Everything else lives in the vtvibe package.
 
-const (
-	vtvibeIniName        = "vtvibe.ini"
-	vtvibeDefaultBaseURL = "https://generativelanguage.googleapis.com/v1beta/openai"
-	vtvibeDefaultModel   = vtvibe.DefaultModel
-)
+const vtvibeIniName = "vtvibe.ini"
 
 var (
 	vtvibeOnce    sync.Once
@@ -41,8 +42,25 @@ var (
 
 // aiSession returns the single dialog shared by every ai:// mount.
 func aiSession() *vtvibe.Session {
-	vtvibeOnce.Do(func() { vtvibeSession = vtvibe.NewSession() })
+	vtvibeOnce.Do(func() {
+		vtvibeSession = vtvibe.NewSession()
+		// The dialog outlives f4: it is read back from disk here and saved
+		// after every change (f4#1842, stage H3).
+		if err := vtvibeSession.SetStorePath(vtvibeDialogPath()); err != nil {
+			vtui.DebugLog("AI: dialog not restored: %v", err)
+		}
+	})
 	return vtvibeSession
+}
+
+// vtvibeDialogPath is the current dialog's file; finished dialogs are moved
+// to vtvibeArchiveDir by ai:new.
+func vtvibeDialogPath() string {
+	return filepath.Join(config.GetF4ConfigDir(), "ai", "dialog.json")
+}
+
+func vtvibeArchiveDir() string {
+	return filepath.Join(config.GetF4ConfigDir(), "ai", "dialogs")
 }
 
 func vtvibeIniPath() string {
@@ -52,13 +70,23 @@ func vtvibeIniPath() string {
 // vtvibeConfig re-reads the settings on every use, so editing vtvibe.ini or
 // exporting a key does not need a restart.
 func vtvibeConfig() (vtvibe.Config, string) {
+	cfg, keySource, _ := vtvibeProviderConfig()
+	return cfg, keySource
+}
+
+// vtvibeProviderConfig is vtvibeConfig together with the preset it used: the
+// provider chosen in vtvibe.ini decides the address, the default model and
+// which environment variables carry the key (#1842).
+func vtvibeProviderConfig() (vtvibe.Config, string, vtvibe.Provider) {
 	ini := ini.Load(vtvibeIniPath())
+	provider := vtvibe.ResolveProvider(ini.GetString("general", "provider", ""), ini.GetString("general", "base_url", ""))
 	cfg := vtvibe.Config{
-		BaseURL: ini.GetString("general", "base_url", vtvibeDefaultBaseURL),
-		Model:   ini.GetString("general", "model", vtvibeDefaultModel),
+		Kind:    provider.Kind,
+		BaseURL: provider.Endpoint(ini.GetString("general", "base_url", "")),
+		Model:   provider.EffectiveModel(ini.GetString("general", "model", "")),
 	}
 	keySource := ""
-	for _, name := range []string{"GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY"} {
+	for _, name := range provider.KeyEnv {
 		if v := strings.TrimSpace(os.Getenv(name)); v != "" {
 			cfg.APIKey, keySource = v, name
 			break
@@ -70,7 +98,7 @@ func vtvibeConfig() (vtvibe.Config, string) {
 		}
 	}
 	aiSession().SetStatus(vtvibe.Status{BaseURL: cfg.BaseURL, Model: cfg.Model, KeySource: keySource})
-	return cfg, keySource
+	return cfg, keySource, provider
 }
 
 // vtvibeSaveSetting rewrites one key of vtvibe.ini, keeping the rest.
@@ -163,6 +191,18 @@ func init() {
 		MenuSubPath: "AI",
 		Visible:     func() bool { return aiSession().LastPatch() != nil },
 		Handler:     withAI(func(pf *panel.PanelsFrame) { aiApplyPatch(pf) }),
+	})
+	RegisterAction(action.Action{
+		Name:        "AI.UndoPatch",
+		Area:        "Shell",
+		Label:       "Undo AP Patch",
+		LabelKey:    "Action.AI.UndoPatch",
+		Description: "Put back the files the last applied ap patch changed",
+		DescKey:     "Action.AI.UndoPatch.Desc",
+		MenuPath:    "Commands",
+		MenuSubPath: "AI",
+		Visible:     func() bool { return aiTopUndo() != nil },
+		Handler:     withAI(func(pf *panel.PanelsFrame) { aiUndoPatch(pf) }),
 	})
 	RegisterAction(action.Action{
 		Name:        "AI.Setup",
@@ -270,7 +310,7 @@ func aiTogglePanel(pf *panel.PanelsFrame) {
 				}
 				target := panel.AIPrevPath[i]
 				if target == "" {
-					target, _ = os.UserHomeDir()
+					target, _ = hostmode.UserHomeDir()
 				}
 				pf.SwitchToVFS(fsp, vfs.NewOSVFS(target))
 				pf.ActiveIdx = 1 - i
@@ -326,6 +366,10 @@ func AiSetViewModePanel(pf *panel.PanelsFrame, idx int, path string, isChat bool
 }
 
 func aiNewSession(pf *panel.PanelsFrame) {
+	if _, err := aiSession().Archive(vtvibeArchiveDir()); err != nil {
+		aiShowError(err)
+		return
+	}
 	aiSession().Reset(true)
 	vtvibeConfig()
 	pf.RefreshAll()
@@ -460,10 +504,10 @@ func aiAskAction() bool {
 				if len(ctxParts) > 0 {
 					prompt = "[" + strings.Join(ctxParts, ", ") + "]\n"
 				}
-				cp.input.SetText(prompt)
+				cp.Input.SetText(prompt)
 				lines := len(strings.Split(prompt, "\n"))
 				if lines > 0 {
-					cp.input.SetCursorPos(lines-1, 0)
+					cp.Input.SetCursorPos(lines-1, 0)
 				}
 				cp.ScrollToBottom()
 			}
@@ -523,10 +567,34 @@ func aiCommand(app vfs.App, arg string) {
 		aiNewSession(pf)
 	case lower == "apply" || lower == "patch":
 		aiApplyPatch(pf)
+	case lower == "undo":
+		aiUndoPatch(pf)
 	case lower == "ap" || lower == "spec":
 		aiAttachAPSpec(pf)
 	case lower == "key":
 		aiSetupDialog(pf)
+	case lower == "task" || strings.HasPrefix(lower, "task "):
+		aiTaskCommand(pf, arg[len("task"):])
+	case lower == "orders":
+		aiOrdersCommand(pf, "orders", "")
+	case strings.HasPrefix(lower, "done "):
+		aiOrdersCommand(pf, "done", arg[len("done "):])
+	case strings.HasPrefix(lower, "undone "):
+		aiOrdersCommand(pf, "undone", arg[len("undone "):])
+	case lower == "dialogs":
+		aiDialogsMenu(pf)
+	case strings.HasPrefix(arg, "/") && !strings.HasPrefix(arg, "//"):
+		aiUserCommand(pf, arg[1:])
+	case lower == "cost":
+		aiCostCommand(pf)
+	case lower == "gates" || strings.HasPrefix(lower, "gates "):
+		aiGatesCommand(pf, arg[len("gates"):])
+	case lower == "token" || strings.HasPrefix(lower, "token "):
+		aiTokenCommand(pf, arg[len("token"):])
+	case lower == "mode" || strings.HasPrefix(lower, "mode "):
+		aiModeCommand(pf, arg[len("mode"):])
+	case lower == "bot" || strings.HasPrefix(lower, "bot "):
+		aiBotCommand(pf, arg[len("bot"):])
 	case lower == "models":
 		aiListModels(pf)
 	case lower == "model":
@@ -548,14 +616,19 @@ func aiCommand(app vfs.App, arg string) {
 // aiSend runs the round trip through the background task manager: the UI
 // thread never blocks and Cancel actually cancels the HTTP request.
 func aiSend(pf *panel.PanelsFrame, question string) {
-	cfg, keySource := vtvibeConfig()
-	if cfg.APIKey == "" && keySource == "" && !strings.Contains(cfg.BaseURL, "127.0.0.1") &&
-		!strings.Contains(cfg.BaseURL, "localhost") {
+	cfg, keySource, provider := vtvibeProviderConfig()
+	if cfg.APIKey == "" && keySource == "" && provider.NeedsKey(cfg.BaseURL) {
 		vtui.FrameManager.PostTask(func() {
+			if provider.ID != vtvibe.ProviderGemini {
+				// The prompt offers a free Google AI Studio key; for any other
+				// service only the setup dialog makes sense.
+				aiSetupDialog(pf)
+				return
+			}
 			dlg := vtui.ShowMessage(i18n.Msg("AI.Title"), i18n.Msg("AI.NoKeyBrowserPrompt"), []string{i18n.Msg("AI.BtnGetToken"), i18n.Msg("vtui.Cancel")})
 			dlg.OnResult = func(code int) {
 				if code == 0 {
-					openBrowser("https://aistudio.google.com/apikey")
+					openBrowser(provider.KeyURL)
 					aiSetupDialog(pf)
 				}
 			}
@@ -568,11 +641,28 @@ func aiSend(pf *panel.PanelsFrame, question string) {
 	}
 
 	session := aiSession()
+	aiRunWork(pf, session, func(ctx context.Context) (vtvibe.WorkEnd, error) {
+		return session.Work(ctx, cfg, question, vtvibeNonstopDefault())
+	})
+}
+
+// aiRunWork runs one piece of the dialog's work (a message of the user, or
+// going on after the workers reported) behind the progress dialog; the tasks
+// the model handed to workers on the way are offered to the user afterwards.
+func aiRunWork(pf *panel.PanelsFrame, session *vtvibe.Session, work func(ctx context.Context) (vtvibe.WorkEnd, error)) {
+	// The manager may hand tasks to workers (f4#1842, stage H5).
+	session.SetDelegation(true)
+	session.SetOnUpdate(aiStreamRedraw(vtui.FrameManager, pf))
 	pf.RunProgressTask(i18n.Msg("AI.Title"), i18n.Msg("AI.Sending"), false,
 		func(ctx context.Context, update func(msg string, percent int)) error {
-			return session.Ask(ctx, cfg, question)
+			end, err := work(ctx)
+			if err == nil && end == vtvibe.WorkRoundLimit {
+				session.Note("assistant", fmt.Sprintf(i18n.Msg("AI.NonstopRoundLimit"), vtvibe.MaxNonstopRounds))
+			}
+			return err
 		},
 		func(err error) {
+			delegations := session.TakeDelegations()
 			if err != nil {
 				if err == context.Canceled {
 					return
@@ -589,8 +679,37 @@ func aiSend(pf *panel.PanelsFrame, question string) {
 			} else if path := aiLastAnswerPath(session); path != "" {
 				ActionOpenViewer(pf, vtvibe.NewVFS(session), path)
 			}
+			if len(delegations) > 0 {
+				aiDelegate(pf, session, delegations)
+			}
 		})
 }
+
+// aiStreamRedraw shows a streamed answer as it grows (f4#1842, stage H2).
+// Pieces arrive many times a second from the request's goroutine; the chat
+// is redrawn at most every aiStreamRedrawEvery, and the completion handler
+// draws the final state, so a skipped last piece is never lost.
+func aiStreamRedraw(manager interface{ PostTask(func()) }, pf *panel.PanelsFrame) func() {
+	var last atomic.Int64
+	return func() {
+		now := time.Now().UnixNano()
+		if prev := last.Load(); now-prev < int64(aiStreamRedrawEvery) || !last.CompareAndSwap(prev, now) {
+			return
+		}
+		manager.PostTask(func() {
+			if pf.AltPanels[pf.ActiveIdx] != nil {
+				if cp, ok := pf.AltPanels[pf.ActiveIdx].(*AIChatPanel); ok {
+					cp.ScrollToBottom()
+				}
+			}
+			if vtui.FrameManager != nil {
+				vtui.FrameManager.Redraw()
+			}
+		})
+	}
+}
+
+var aiStreamRedrawEvery = 80 * time.Millisecond
 
 // aiLastAnswerPath is the chat file the reply was just written to.
 func aiLastAnswerPath(s *vtvibe.Session) string {
@@ -603,10 +722,10 @@ func aiLastAnswerPath(s *vtvibe.Session) string {
 
 func aiListModels(pf *panel.PanelsFrame) {
 	cfg, _ := vtvibeConfig()
-	var models []string
+	var models []vtvibe.ModelInfo
 	pf.RunProgressTask(i18n.Msg("AI.Title"), i18n.Msg("AI.Sending"), false,
 		func(ctx context.Context, update func(msg string, percent int)) error {
-			list, err := cfg.Models(ctx)
+			list, err := cfg.ModelsWithInfo(ctx)
 			models = list
 			return err
 		},
@@ -621,11 +740,76 @@ func aiListModels(pf *panel.PanelsFrame) {
 				vtui.ShowMessage(i18n.Msg("AI.Title"), i18n.Msg("AI.NoModels"), []string{i18n.Msg("vtui.Ok")})
 				return
 			}
-			if len(models) > 40 {
-				models = models[:40]
-			}
-			vtui.ShowMessage(i18n.Msg("AI.Title"), strings.Join(models, "\n"), []string{i18n.Msg("vtui.Ok")})
+			aiModelsMenu(pf, models, cfg.Model)
 		})
+}
+
+// aiModelsMenu lists the models, free ones first, the current one marked;
+// Enter switches the dialog to the chosen one (f4#1842, stage H9: the other
+// harnesses pick the model from a menu in the chat).
+func aiModelsMenu(pf *panel.PanelsFrame, models []vtvibe.ModelInfo, current string) {
+	ordered := aiModelsInOrder(models)
+	lines := aiModelLines(ordered, len(ordered))
+	menu := vtui.NewVMenu(i18n.Msg("AI.ModelsTitle"))
+	width := vtui.StringWidth(i18n.Msg("AI.ModelsTitle")) + 6
+	for i, line := range lines {
+		mark := "  "
+		if ordered[i].ID == current {
+			mark = "* "
+		}
+		width = max(width, vtui.StringWidth(line)+8)
+		menu.AddItem(vtui.MenuItem{Text: dialog.EscapeAmpersand(mark + line)})
+	}
+	menu.OnAction = func(idx int) {
+		menu.Close()
+		if idx < 0 || idx >= len(ordered) || ordered[idx].ID == current {
+			return
+		}
+		if err := vtvibeSaveSetting("model", ordered[idx].ID); err != nil {
+			aiShowError(err)
+			return
+		}
+		vtvibeConfig()
+		aiSession().Note("assistant", fmt.Sprintf(i18n.Msg("AI.ModelSwitched"), ordered[idx].ID))
+		aiBotRefresh(pf)
+	}
+	aiShowMenu(menu, width, len(ordered))
+}
+
+// aiModelsInOrder puts the free models first, keeping the service's order
+// within each group, as aiModelLines prints them.
+func aiModelsInOrder(models []vtvibe.ModelInfo) []vtvibe.ModelInfo {
+	out := make([]vtvibe.ModelInfo, 0, len(models))
+	for _, free := range []bool{true, false} {
+		for _, m := range models {
+			if m.Free == free {
+				out = append(out, m)
+			}
+		}
+	}
+	return out
+}
+
+// aiModelLines lists free models first, marked, so they stay in sight when
+// a service such as OpenRouter offers hundreds and the list is cut (f4#1842).
+func aiModelLines(models []vtvibe.ModelInfo, limit int) []string {
+	lines := make([]string, 0, len(models))
+	for _, free := range []bool{true, false} {
+		for _, m := range models {
+			if m.Free != free {
+				continue
+			}
+			if free {
+				lines = append(lines, fmt.Sprintf(i18n.Msg("AI.ModelFree"), m.ID))
+			} else {
+				lines = append(lines, m.ID)
+			}
+		}
+	}
+	if len(lines) > limit {
+		lines = lines[:limit]
+	}
+	return lines
 }
 
 func aiShowError(err error) {

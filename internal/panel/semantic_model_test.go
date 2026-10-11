@@ -1623,6 +1623,14 @@ func TestPanelsFrameSemanticGalleryActionsUseStableIDsAndRevisions(t *testing.T)
 }
 
 func TestPanelsFrameSemanticGalleryLayoutActions(t *testing.T) {
+	t.Cleanup(swapFrameManager(t))
+	screen := vtui.NewSilentScreenBuf()
+	vtui.FrameManager.Init(screen)
+	screen.Renderer = galleryMenuRenderer{SurfaceRenderer: screen.Renderer, native: true}
+	presentation := config.App.GuiPresentation
+	config.App.GuiPresentation = config.GuiPresentationGUI
+	t.Cleanup(func() { config.App.GuiPresentation = presentation })
+
 	left := NewFileSystemPanel(0, 0, 40, 12, vfs.NewOSVFS(t.TempDir()))
 	right := NewFileSystemPanel(40, 0, 40, 12, vfs.NewOSVFS(t.TempDir()))
 	pf := &PanelsFrame{Panels: [2]Panel{left, right}, ActiveIdx: 0}
@@ -1746,7 +1754,7 @@ func TestPanelsFrameSemanticGalleryLayoutActions(t *testing.T) {
 		t.Fatal("unified renderer selection disturbed independent Wide layout")
 	}
 	pf.SetPanelViewMode(0, ViewModeBrief)
-	if !pf.Wide || pf.WidePanel != 0 ||
+	if !pf.Wide || pf.WidePanel != 0 || !left.Wide ||
 		left.GalleryLayoutMode != GalleryLayoutColumns ||
 		left.GalleryColumnCount != 3 {
 		t.Fatal("Columns 3 alias disturbed independent Wide layout")
@@ -1773,6 +1781,13 @@ func TestPanelsFrameSemanticGalleryLayoutActions(t *testing.T) {
 	pf.SetWidePanel(1)
 	if !pf.Wide || pf.WidePanel != 1 {
 		t.Fatal("Wide command did not select the requested panel")
+	}
+	// A terminal mode command retains upstream's split-layout contract;
+	// only native gallery aliases preserve the independent Wide toggle.
+	screen.Renderer = galleryMenuRenderer{SurfaceRenderer: screen.Renderer, native: false}
+	pf.SetPanelViewMode(1, ViewModeBrief)
+	if pf.Wide || right.Wide || right.ViewMode != ViewModeBrief {
+		t.Fatal("terminal Brief command did not restore split layout")
 	}
 }
 
@@ -2029,13 +2044,27 @@ func TestPanelsFrameSemanticPanelDriveMenu(t *testing.T) {
 	} else if menu.GetTitle() != i18n.Msg("Drive.Title") {
 		t.Fatalf("drive menu title = %q, want %q", menu.GetTitle(), i18n.Msg("Drive.Title"))
 	} else {
-		if len(menu.Items) == 0 || menu.Items[0].Icon != sysinfo.DriveMenuIconOtherPanel {
-			t.Fatalf("other-panel drive item lacks its semantic icon: %#v", menu.Items)
-		}
+		toolsRow, otherRow := -1, -1
+		otherLabel, _, _ := vtui.ParseAmpersandString(i18n.Msg("Panel.Other"))
 		for _, item := range menu.Items {
 			if !item.Separator && item.Icon == "" {
 				t.Fatalf("drive item %q lacks a semantic icon", item.Text)
 			}
+		}
+		for row, item := range menu.Items {
+			if item.Separator && item.Text == i18n.Msg("Drive.Tools") {
+				toolsRow = row
+			}
+			text, _, _ := vtui.ParseAmpersandString(item.Text)
+			if strings.TrimSpace(text) == strings.TrimSpace(otherLabel) {
+				otherRow = row
+				if item.Icon != sysinfo.DriveMenuIconOtherPanel {
+					t.Fatalf("other-panel drive icon = %q, want %q", item.Icon, sysinfo.DriveMenuIconOtherPanel)
+				}
+			}
+		}
+		if toolsRow < 0 || otherRow <= toolsRow {
+			t.Fatalf("Other panel must be in the reordered Tools section: tools=%d other=%d", toolsRow, otherRow)
 		}
 	}
 	vtui.FrameManager.Pop()

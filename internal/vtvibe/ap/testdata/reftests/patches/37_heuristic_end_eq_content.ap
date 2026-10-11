@@ -1,0 +1,16 @@
+# Test heuristic: snippet_tail == content.
+# The AI erroneously put the NEW value in snippet_tail.
+# The patcher should ignore snippet_tail and just replace "timeout = 10".
+
+37a00bbb AP 3.1
+
+37a00bbb FILE
+37_heuristic_end_eq_content.py
+
+37a00bbb REPLACE
+37a00bbb snippet
+    timeout = 10
+37a00bbb snippet_tail
+    timeout = 999
+37a00bbb content
+    timeout = 999

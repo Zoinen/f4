@@ -106,8 +106,8 @@ func TestTerminalEnv_ManageCursorDisabled(t *testing.T) {
 
 	// 2. Resume
 	Resume()
-	if strings.Contains(mock.builder.String(), seqBlinkingUnderline) {
-		t.Error("seqBlinkingUnderline sent even though ManageCursorStyle is false")
+	if strings.Contains(mock.builder.String(), cursorStyleSeq(CursorShapeUnderline, true)) {
+		t.Error("insert-caret DECSCUSR sent even though ManageCursorStyle is false")
 	}
 
 	mock.builder.Reset()
@@ -368,7 +368,7 @@ func TestAnsiRendererCursorStyle_ClassicConsoleSkipsDECSCUSR(t *testing.T) {
 	cursorStyleViaConsoleAPI = func() bool { return true }
 	defer func() { cursorStyleViaConsoleAPI = oldVia }()
 
-	for _, shape := range []CursorShape{CursorShapeUnderline, CursorShapeBlock} {
+	for _, shape := range []CursorShape{CursorShapeUnderline, CursorShapeBlock, CursorShapeBar} {
 		scr := NewScreenBuf()
 		var buf bytes.Buffer
 		scr.Writer = &buf
@@ -383,7 +383,7 @@ func TestAnsiRendererCursorStyle_ClassicConsoleSkipsDECSCUSR(t *testing.T) {
 		if !strings.Contains(out, "\x1b[?25h") {
 			t.Errorf("shape %d: cursor visibility (DECTCEM) not sent: %q", shape, out)
 		}
-		for _, seq := range []string{"\x1b[1 q", "\x1b[3 q", "\x1b]1337;CursorShape="} {
+		for _, seq := range []string{"\x1b[1 q", "\x1b[3 q", "\x1b[5 q", "\x1b]1337;CursorShape="} {
 			if strings.Contains(out, seq) {
 				t.Errorf("shape %d: %q sent to a classic console: %q", shape, seq, out)
 			}
@@ -417,8 +417,8 @@ func TestTerminalEnv_ClassicConsoleSkipsDECSCUSR(t *testing.T) {
 	consoleCursorTypeStale = false
 
 	Resume()
-	if strings.Contains(mock.builder.String(), seqBlinkingUnderline) {
-		t.Error("seqBlinkingUnderline sent to a classic console")
+	if strings.Contains(mock.builder.String(), cursorStyleSeq(CursorShapeUnderline, true)) {
+		t.Error("insert-caret DECSCUSR sent to a classic console")
 	}
 	if !consoleCursorTypeStale {
 		t.Error("Resume did not mark the console cursor type as stale")

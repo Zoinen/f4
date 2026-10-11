@@ -23,11 +23,11 @@ func TestAIChatPanel_Resize(t *testing.T) {
 	cp := NewAIChatPanel(fp)
 	cp.SetPosition(0, 0, 79, 23)
 
-	if cp.input.Y1 != 19 {
-		t.Errorf("Expected input Y1 to be 19, got %d", cp.input.Y1)
+	if cp.Input.Y1 != 19 {
+		t.Errorf("Expected input Y1 to be 19, got %d", cp.Input.Y1)
 	}
-	if cp.input.Y2 != 22 {
-		t.Errorf("Expected input Y2 to be 22, got %d", cp.input.Y2)
+	if cp.Input.Y2 != 22 {
+		t.Errorf("Expected input Y2 to be 22, got %d", cp.Input.Y2)
 	}
 	if cp.Kind() != "ai_chat" {
 		t.Errorf("Expected Kind 'ai_chat', got '%s'", cp.Kind())
@@ -76,7 +76,7 @@ func TestAIChatPanel_AttachedFilesBarFocusAndNavigation(t *testing.T) {
 		_ = w.Close()
 	}
 
-	// Press Up arrow from input row 0 -> should focus Attached Files Bar (focusedLinkIdx = -2)
+	// Press Up arrow from input row 0 -> should focus Attached Files Bar
 	upEvent := &vtinput.InputEvent{
 		Type:           vtinput.KeyEventType,
 		KeyDown:        true,
@@ -86,11 +86,11 @@ func TestAIChatPanel_AttachedFilesBarFocusAndNavigation(t *testing.T) {
 	if !cp.ProcessKey(upEvent) {
 		t.Fatal("Up arrow from input box should be handled")
 	}
-	if cp.focusedLinkIdx != -2 {
-		t.Fatalf("expected focusedLinkIdx = -2 (Attached Files Bar), got %d", cp.focusedLinkIdx)
+	if !cp.StatusBarFocused() {
+		t.Fatal("expected the Attached Files Bar to have focus")
 	}
 
-	// Press Down arrow -> should return focus to input box (focusedLinkIdx = -1)
+	// Press Down arrow -> should return focus to input box
 	downEvent := &vtinput.InputEvent{
 		Type:           vtinput.KeyEventType,
 		KeyDown:        true,
@@ -99,8 +99,8 @@ func TestAIChatPanel_AttachedFilesBarFocusAndNavigation(t *testing.T) {
 	if !cp.ProcessKey(downEvent) {
 		t.Fatal("Down arrow from Attached Files Bar should be handled")
 	}
-	if cp.focusedLinkIdx != -1 {
-		t.Fatalf("expected focusedLinkIdx = -1 (Input Box), got %d", cp.focusedLinkIdx)
+	if cp.StatusBarFocused() || cp.LinkFocused() {
+		t.Fatal("expected focus back on the input box")
 	}
 }
 func TestAIChatPanel_TabPassesThroughForPanelSwitching(t *testing.T) {

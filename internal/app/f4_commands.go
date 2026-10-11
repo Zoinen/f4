@@ -8,6 +8,7 @@ import (
 	"github.com/unxed/f4/internal/i18n"
 	"github.com/unxed/f4/internal/panel"
 	"github.com/unxed/f4/internal/plughost"
+	"github.com/unxed/f4/internal/settings"
 	"github.com/unxed/f4/internal/terminal"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtui"
@@ -69,9 +70,10 @@ func actionAbout() bool {
 }
 
 // actionConfigEditor is f4:config and Commands > Configuration editor. An
-// edit refreshes the application the way Settings Center's Apply does.
+// edit refreshes the application the way Settings Center's Apply does, and
+// Settings Center explains the keys it knows.
 func actionConfigEditor() bool {
-	dialog.ShowConfigEditor(settingsHost{}.ApplyRuntime)
+	dialog.ShowConfigEditor(settingsHost{}.ApplyRuntime, settings.ConfigOptionDoc)
 	return true
 }
 

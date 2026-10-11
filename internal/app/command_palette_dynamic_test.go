@@ -1,8 +1,12 @@
 package app
 
 import (
+	"context"
+	"encoding/json"
 	"github.com/unxed/f4/internal/panel"
 	"github.com/unxed/f4/internal/paneltest"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +20,7 @@ import (
 	"github.com/unxed/f4/internal/media"
 	"github.com/unxed/f4/internal/sysinfo"
 	"github.com/unxed/f4/internal/testutil"
+	"github.com/unxed/f4/internal/vtvibe"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
@@ -654,11 +659,46 @@ func TestCommandPaletteIndexesFocusedInfoAndAIChatCommands(t *testing.T) {
 		t.Fatal("unfocused InfoPanel exposed its copy command")
 	}
 
-	chat := &AIChatPanel{
-		focused:        true,
-		focusedLinkIdx: 0,
-		visibleLinks:   []chatLink{{target: "ai://out/result.txt"}},
+	// Build a real AIChatPanel with one context file attached (so it has a
+	// status bar) and one assistant turn containing a response link, then
+	// drive it through its real keyboard navigation instead of poking at
+	// vtui.ChatWindow's now-private focus state directly.
+	chatSession := vtvibe.NewSession()
+	chatVFS := vtvibe.NewVFS(chatSession)
+	if f, err := chatVFS.Create(context.Background(), "/ctx/main.go"); err == nil {
+		_, _ = f.Write([]byte("package main"))
+		_ = f.Close()
 	}
+	chatServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []any{map[string]any{"message": map[string]string{"content": "See ai://out/result.txt"}}},
+		})
+	}))
+	defer chatServer.Close()
+	if err := chatSession.Ask(context.Background(), vtvibe.Config{BaseURL: chatServer.URL, Model: "m", APIKey: "k"}, "q"); err != nil {
+		t.Fatal(err)
+	}
+
+	chatFP := panel.NewFileSystemPanel(0, 0, 80, 24, &aiVFSWrapper{AIVFS: chatVFS})
+	paneltest.WaitForLoad(t, chatFP)
+	chat := NewAIChatPanel(chatFP)
+	chat.SetPosition(0, 0, 79, 23)
+	chat.SetFocus(true)
+
+	chatScr := vtui.NewSilentScreenBuf()
+	chatScr.AllocBuf(80, 25)
+	chat.Show(chatScr)
+
+	// Input row 0, Up -> status bar (a context file is attached), Up again
+	// -> the one response link.
+	chat.Input.SetCursorPos(0, 0)
+	chat.ProcessKey(&vtinput.InputEvent{KeyDown: true, VirtualKeyCode: vtinput.VK_UP})
+	chat.ProcessKey(&vtinput.InputEvent{KeyDown: true, VirtualKeyCode: vtinput.VK_UP})
+	if link, ok := chat.FocusedLink(); !ok || link.Target != "ai://out/result.txt" {
+		t.Fatalf("expected the result.txt link focused, got %+v ok=%v", link, ok)
+	}
+
 	pf.AltPanels[0] = chat
 	linkEntries := commandPalettePanelsContextEntries(pf)
 	for _, id := range []string{"AI.CopyLastResponse", "AI.OpenFocusedLink", "AI.CopyFocusedLinkTarget"} {
@@ -670,7 +710,13 @@ func TestCommandPaletteIndexesFocusedInfoAndAIChatCommands(t *testing.T) {
 		t.Fatalf("Russian focused AI link query = %#v", results)
 	}
 
-	chat.focusedLinkIdx = -2
+	// Right from the (only) link, with the status bar present, wraps focus
+	// onto the bar.
+	chat.ProcessKey(&vtinput.InputEvent{KeyDown: true, VirtualKeyCode: vtinput.VK_RIGHT})
+	if !chat.StatusBarFocused() {
+		t.Fatal("expected the status bar focused after cycling past the last link")
+	}
+
 	patchEntries := commandPaletteAIChatFocusedEntries(pf, chat, aiBarPatch)
 	for _, id := range []string{"AI.ActivateFocusedBar", "AI.InspectFocusedPatch"} {
 		if !commandPaletteTestHasID(patchEntries, id) {
@@ -681,7 +727,7 @@ func TestCommandPaletteIndexesFocusedInfoAndAIChatCommands(t *testing.T) {
 	if !commandPaletteTestHasID(filesEntries, "AI.ActivateFocusedBar") || commandPaletteTestHasID(filesEntries, "AI.InspectFocusedPatch") {
 		t.Fatalf("focused AI files-bar commands = %#v", filesEntries)
 	}
-	chat.focused = false
+	chat.SetFocus(false)
 	if entries := commandPaletteAIChatFocusedEntries(pf, chat, aiBarPatch); len(entries) != 0 {
 		t.Fatalf("unfocused AI chat exposed focused commands: %#v", entries)
 	}

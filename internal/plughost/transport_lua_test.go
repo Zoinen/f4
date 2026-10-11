@@ -2,6 +2,7 @@ package plughost
 
 import (
 	"context"
+	"errors"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
@@ -9,6 +10,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/unxed/f4/internal/luaplug"
 )
 
 // luaTestHostAPI is a vfs.HostAPI that records what a plugin does instead of
@@ -225,5 +229,35 @@ func TestLuaPluginWithBrokenScriptFails(t *testing.T) {
 	if err := plugin.Init(newLuaTestHostAPI()); err == nil {
 		_ = plugin.Close() // Cleanup is secondary to the unexpected initialization success.
 		t.Fatal("a syntactically invalid plugin was loaded successfully")
+	}
+}
+
+// A call that hits the deadline leaves the interpreter unusable; the next call
+// runs the plugin in a new runtime instead of failing for good (#1686).
+func TestLuaPluginRestartsAfterItsCallDeadline(t *testing.T) {
+	path := writeLuaPlugin(t, `
+		local f4rpc = require('f4rpc')
+		local runs = 0
+		f4rpc.register("Plugin.Init", function() return {} end)
+		f4rpc.register("Test.Spin", function() while true do end end)
+		f4rpc.register("Test.Ping", function() runs = runs + 1; return "pong" .. runs end)
+	`)
+	plugin := NewLuaPlugin(path)
+	plugin.callTimeout = 100 * time.Millisecond
+	if err := plugin.Init(newLuaTestHostAPI()); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Cleanup(func() { _ = plugin.Close() })
+
+	var pong string
+	if err := plugin.Call("Test.Ping", nil, &pong); err != nil || pong != "pong1" {
+		t.Fatalf("first ping = %q, %v", pong, err)
+	}
+	if err := plugin.Call("Test.Spin", nil, nil); !errors.Is(err, luaplug.ErrInterrupted) {
+		t.Fatalf("the endless call returned %v, want ErrInterrupted", err)
+	}
+	// The next call runs in a fresh runtime: the script's state started over.
+	if err := plugin.Call("Test.Ping", nil, &pong); err != nil || pong != "pong1" {
+		t.Fatalf("ping after the deadline = %q, %v, want pong1 from a fresh runtime", pong, err)
 	}
 }

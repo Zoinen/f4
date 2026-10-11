@@ -367,3 +367,81 @@ func sameBackground(a, b uint64) bool {
 	}
 	return GetIndexBack(a) == GetIndexBack(b) && a&BackgroundIntensity == b&BackgroundIntensity
 }
+
+// Issue unxed/f4#320: the highlighted default button is what Enter presses,
+// also while a DropdownOnly combo box has the focus (far2l behaviour).
+func TestComboBox_DropdownOnlyEnterPressesDialogDefault(t *testing.T) {
+	SetDefaultPalette()
+	FrameManager.Init(NewSilentScreenBuf())
+
+	dlg := NewDialog(0, 0, 40, 10, "Enter")
+	cb := NewComboBox(2, 2, 20, []string{"A", "B"})
+	cb.DropdownOnly = true
+	pressed := false
+	ok := NewButton(2, 4, "OK")
+	ok.IsDefault = true
+	ok.OnClick = func() { pressed = true }
+	dlg.AddItem(cb)
+	dlg.AddItem(ok)
+	dlg.SetFocusedItem(cb)
+
+	dlg.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN})
+
+	if !pressed {
+		t.Error("Enter on a DropdownOnly combo box did not press the dialog's default button")
+	}
+	if top := FrameManager.GetTopFrame(); top != nil && top.GetType() == TypeMenu {
+		t.Error("Enter opened the dropdown although the dialog has a default button")
+	}
+}
+
+func TestComboBox_DropdownOnlyEnterInNestedGroupPressesDialogDefault(t *testing.T) {
+	SetDefaultPalette()
+	FrameManager.Init(NewSilentScreenBuf())
+
+	dlg := NewDialog(0, 0, 40, 10, "Enter")
+	page := NewGroup(1, 1, 30, 3)
+	cb := NewComboBox(2, 2, 20, []string{"A", "B"})
+	cb.DropdownOnly = true
+	page.AddItem(cb)
+	pressed := false
+	ok := NewButton(2, 6, "OK")
+	ok.IsDefault = true
+	ok.OnClick = func() { pressed = true }
+	dlg.AddItem(page)
+	dlg.AddItem(ok)
+	dlg.SetFocusedItem(page)
+	page.SetFocusedItem(cb)
+
+	dlg.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN})
+
+	if !pressed {
+		t.Error("Enter on a DropdownOnly combo box in a nested group did not press the dialog's default button")
+	}
+}
+
+// Without a default button, Enter must not fall through to the first
+// actionable button (TriggerDefaultAction's fallback): it opens the list.
+func TestComboBox_DropdownOnlyEnterWithoutDefaultOpensList(t *testing.T) {
+	SetDefaultPalette()
+	FrameManager.Init(NewSilentScreenBuf())
+
+	dlg := NewDialog(0, 0, 40, 10, "Enter")
+	cb := NewComboBox(2, 2, 20, []string{"A", "B"})
+	cb.DropdownOnly = true
+	clicked := false
+	other := NewButton(2, 4, "Clear")
+	other.OnClick = func() { clicked = true }
+	dlg.AddItem(cb)
+	dlg.AddItem(other)
+	dlg.SetFocusedItem(cb)
+
+	dlg.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN})
+
+	if clicked {
+		t.Error("Enter on a DropdownOnly combo box pressed a non-default button")
+	}
+	if top := FrameManager.GetTopFrame(); top == nil || top.GetType() != TypeMenu {
+		t.Error("Enter should open the dropdown when the dialog has no default button")
+	}
+}

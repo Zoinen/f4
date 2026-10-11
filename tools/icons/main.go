@@ -16,6 +16,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"image"
+	"image/draw"
 	"image/png"
 	"io"
 	"os"
@@ -31,6 +32,22 @@ const winresVersion = "v0.3.3"
 var sizes = []int{16, 24, 28, 30, 32, 36, 42, 48, 56, 64, 128, 256, 512, 1024}
 
 var windowsSizes = []int{16, 24, 28, 30, 32, 36, 42, 48, 56, 64, 128, 256}
+
+// macOS app icons follow Apple's grid: on a 1024-pixel canvas the body is
+// 824 pixels wide and centered, leaving 100 pixels of transparent margin on
+// every side. Every system icon is drawn that way, so the Dock, Finder and
+// Cmd-Tab size them alike. f4.svg fills its whole canvas, which suits Linux
+// and Windows; put into the icns unchanged it showed up about a quarter
+// larger than its neighbours wherever macOS used it as is (the icon stamped
+// onto a bare binary), and macOS 26 shrank and cropped it into a squircle
+// where it judged the bundle icon non-conforming.
+const (
+	macGridCanvas = 1024
+	macGridBody   = 824
+)
+
+// icnsSizes are the canvas sizes the icns container carries.
+var icnsSizes = []int{16, 32, 64, 128, 256, 512, 1024}
 
 func main() {
 	root, err := filepath.Abs(filepath.Join("..", ".."))
@@ -49,8 +66,18 @@ func main() {
 		check(writeFile(filepath.Join(outDir, fmt.Sprintf("f4-%d.png", size)), data))
 	}
 
+	macPNGs := make(map[int][]byte, len(icnsSizes))
+	for _, size := range icnsSizes {
+		body := macBodySize(size)
+		source, err := macSourceForBody(iconDir, body)
+		check(err)
+		data, err := renderPaddedPNG(source, size, body)
+		check(err)
+		macPNGs[size] = data
+	}
+
 	check(writeFile(filepath.Join(outDir, "f4.ico"), makeICO(pngs)))
-	check(writeFile(filepath.Join(outDir, "f4.icns"), makeICNS(pngs)))
+	check(writeFile(filepath.Join(outDir, "f4.icns"), makeICNS(macPNGs)))
 	check(makeWindowsResources(root, filepath.Join(outDir, "f4.ico")))
 	fmt.Println("generated platform icon resources")
 }
@@ -65,7 +92,66 @@ func sourceForSize(iconDir string, size int) (string, error) {
 	return filepath.Join(iconDir, "f4.svg"), nil
 }
 
+// macBodySize is the width of the icon body on a macOS canvas of the given
+// size, scaled from Apple's 824-of-1024 grid. The margin it leaves is kept
+// even on both sides so the body stays centered on whole pixels.
+func macBodySize(canvas int) int {
+	body := (canvas*macGridBody + macGridCanvas/2) / macGridCanvas
+	if (canvas-body)%2 != 0 {
+		body++
+	}
+	return body
+}
+
+// macSourceForBody picks the artwork for a macOS body of the given width.
+// The size-specific SVGs are hinted for small pixel grids, and the small
+// macOS bodies (14, 26, 52 pixels) fall between their sizes, so the nearest
+// one within a few pixels is used; larger bodies take f4.svg.
+func macSourceForBody(iconDir string, body int) (string, error) {
+	best, bestDiff := "", 5
+	for _, n := range []int{16, 24, 30, 32, 36, 42} {
+		diff := n - body
+		if diff < 0 {
+			diff = -diff
+		}
+		if diff >= bestDiff {
+			continue
+		}
+		specific := filepath.Join(iconDir, fmt.Sprintf("f4-%d.svg", n))
+		if _, err := os.Stat(specific); err == nil {
+			best, bestDiff = specific, diff
+		} else if !os.IsNotExist(err) {
+			return "", fmt.Errorf("inspect size-specific SVG %q: %w", specific, err)
+		}
+	}
+	if best != "" {
+		return best, nil
+	}
+	return filepath.Join(iconDir, "f4.svg"), nil
+}
+
 func renderPNG(source string, size int) ([]byte, error) {
+	img, err := renderImage(source, size)
+	if err != nil {
+		return nil, err
+	}
+	return encodePNG(img)
+}
+
+// renderPaddedPNG draws the artwork body pixels wide in the center of a
+// transparent canvas-sized image.
+func renderPaddedPNG(source string, canvas, body int) ([]byte, error) {
+	art, err := renderImage(source, body)
+	if err != nil {
+		return nil, err
+	}
+	img := image.NewRGBA(image.Rect(0, 0, canvas, canvas))
+	offset := (canvas - body) / 2
+	draw.Draw(img, art.Bounds().Add(image.Pt(offset, offset)), art, image.Point{}, draw.Src)
+	return encodePNG(img)
+}
+
+func renderImage(source string, size int) (*image.RGBA, error) {
 	f, err := os.Open(source)
 	if err != nil {
 		return nil, err
@@ -81,7 +167,10 @@ func renderPNG(source string, size int) ([]byte, error) {
 	scanner := rasterx.NewScannerGV(size, size, img, img.Bounds())
 	dasher := rasterx.NewDasher(size, size, scanner)
 	icon.Draw(dasher, 1)
+	return img, nil
+}
 
+func encodePNG(img image.Image) ([]byte, error) {
 	var out bytes.Buffer
 	encoder := png.Encoder{CompressionLevel: png.BestCompression}
 	if err := encoder.Encode(&out, img); err != nil {

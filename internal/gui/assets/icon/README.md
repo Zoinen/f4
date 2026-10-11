@@ -18,7 +18,9 @@ This command is cross-platform and only requires the Go toolchain. It creates:
 
 - PNG files at 16, 24, 28, 30, 32, 36, 42, 48, 56, 64, 128, 256, 512, and 1024 pixels for Linux and packaging;
 - a multi-resolution `f4.ico` for Windows;
-- a multi-resolution `f4.icns` for macOS;
+- a multi-resolution `f4.icns` for macOS, drawn on Apple's icon grid (an
+  824-pixel body centered on a 1024-pixel canvas, scaled for each size) so it
+  matches the size of other app icons in the Dock and Finder;
 - Windows resource objects for amd64 and arm64 builds.
 
 CI runs the same command and fails if the committed outputs are stale.

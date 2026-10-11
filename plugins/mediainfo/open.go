@@ -28,6 +28,38 @@ func (plugin *Plugin) openCurrent(app vfs.App) {
 	plugin.openPath(app, fs, fs.Join(fs.GetPath(), name))
 }
 
+// canOpenCurrent reports whether openCurrent would actually attempt to
+// analyze something right now, without any of openCurrent's side effects
+// (no dialogs, no VFS access). It backs the panel command's Enabled
+// predicate (f4#1356): Media Information stays dimmed while the selection
+// is a directory, the one case cheap enough to know before ever opening the
+// file. An unsupported format or a corrupt container can only be discovered
+// by actually parsing the file, so this deliberately does not attempt that
+// -- see the ticket discussion for why a full pre-check was ruled out.
+//
+// The directory check goes through vfs.SelectedIsDirHost rather than a new
+// Stat: PanelsFrame answers it from the panel's already-cached cursor entry,
+// but the interface is optional so a host that has no such cache (or is not
+// PanelsFrame at all) can simply not implement it. canOpenCurrent then
+// leaves the command enabled whenever known is false -- openCurrent's own
+// error dialog remains the fallback for whatever this predicate cannot rule
+// out in advance.
+func canOpenCurrent(app vfs.App) bool {
+	if app == nil || app.GetActivePanelVFS() == nil {
+		return false
+	}
+	name := app.GetSelectedName()
+	if name == "" {
+		return false
+	}
+	if host, ok := app.(vfs.SelectedIsDirHost); ok {
+		if isDir, known := host.GetSelectedIsDir(); known && isDir {
+			return false
+		}
+	}
+	return true
+}
+
 func (plugin *Plugin) handlePrefix(app vfs.App, rawArgument string) {
 	if strings.TrimSpace(rawArgument) == "" {
 		plugin.openCurrent(app)

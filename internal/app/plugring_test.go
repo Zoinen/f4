@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -32,6 +33,49 @@ func TestResolveAssetURL(t *testing.T) {
 	plain := "https://example.com/plugin.zip"
 	if plughost.ResolveAssetURL(plain) != plain {
 		t.Errorf("plughost.ResolveAssetURL altered a string without placeholders")
+	}
+}
+
+func TestResolvePlugRingAssetURLUsesMatchingFirstPartyRelease(t *testing.T) {
+	oldBuildVersion := buildVersion
+	t.Cleanup(func() { buildVersion = oldBuildVersion })
+
+	item := plughost.PlugRingItem{
+		FirstParty: true,
+		URL:        "https://github.com/unxed/f4/releases/download/{release}/android-plugin-{os}-{arch}.tgz",
+	}
+
+	tests := []struct {
+		name         string
+		buildVersion string
+		wantRelease  string
+	}{
+		{name: "nightly", wantRelease: "nightly"},
+		{name: "tagged prerelease", buildVersion: "v0.3.0-beta", wantRelease: "v0.3.0-beta"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buildVersion = tt.buildVersion
+			want := "https://github.com/unxed/f4/releases/download/" + tt.wantRelease +
+				"/android-plugin-" + runtime.GOOS + "-" + runtime.GOARCH + ".tgz"
+			if got := resolvePlugRingAssetURL(item); got != want {
+				t.Fatalf("resolvePlugRingAssetURL() = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestResolvePlugRingAssetURLDoesNotRewriteCommunityEntries(t *testing.T) {
+	oldBuildVersion := buildVersion
+	t.Cleanup(func() { buildVersion = oldBuildVersion })
+	buildVersion = "v0.3.0-beta"
+
+	item := plughost.PlugRingItem{
+		URL: "https://example.com/releases/{release}/plugin-{os}-{arch}.tgz",
+	}
+	want := "https://example.com/releases/{release}/plugin-" + runtime.GOOS + "-" + runtime.GOARCH + ".tgz"
+	if got := resolvePlugRingAssetURL(item); got != want {
+		t.Fatalf("resolvePlugRingAssetURL() = %q, want %q", got, want)
 	}
 }
 
@@ -161,6 +205,56 @@ func TestFetchCatalog_Dependencies(t *testing.T) {
 		t.Errorf("Dependencies parsing failed: %+v", items)
 	}
 }
+
+// TestPlugRingDialogShowsCloudfoxAsAnOrdinaryInstallableRow checks the
+// user-visible half of f4#1178 part 3: once the community catalog is merged
+// with plughost's first-party list, cloudfox appears in the table PlugRing
+// draws as a normal row -- not flagged "Unavailable" the way a plugin
+// needing a missing runtime would be, since a native binary is one f4 can
+// always launch (plughost.PlugRingItemRunsHere).
+func TestPlugRingDialogShowsCloudfoxAsAnOrdinaryInstallableRow(t *testing.T) {
+	merged := plughost.MergeFirstPartyPlugRingItems([]plughost.PlugRingItem{
+		{ID: "hello-plugring", Name: "Hello", Entrypoint: "hello.lua", Category: "tools"},
+	})
+	rows, shown := BuildPlugRingRows(merged, nil)
+
+	var cloudfoxRow *plughost.PlugRingItem
+	for i, item := range shown {
+		if item != nil && item.ID == "cloudfox" {
+			cloudfoxRow = shown[i]
+		}
+	}
+	if cloudfoxRow == nil {
+		t.Fatal("cloudfox is not among the rows PlugRing would draw")
+	}
+	if !cloudfoxRow.FirstParty {
+		t.Error("the row's item lost its FirstParty flag on the way through BuildPlugRingRows")
+	}
+
+	found := false
+	for _, row := range rows {
+		r, ok := row.(plugRingRow)
+		if ok && r.item.ID == "cloudfox" {
+			found = true
+			if r.status != "Not installed" {
+				t.Errorf("status = %q, want %q", r.status, "Not installed")
+			}
+			if r.note != "" {
+				t.Errorf("note = %q, want none: a native plugin always runs here", r.note)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no table row was built for cloudfox")
+	}
+}
+
+func TestPlugRingCatalogFetchUsesTheFirstPartyMergingWrapper(t *testing.T) {
+	if reflect.ValueOf(plugRingCatalog).Pointer() != reflect.ValueOf(plughost.FetchPlugRingCatalog).Pointer() {
+		t.Error("plugRingCatalog's default is not plughost.FetchPlugRingCatalog; the dialog would fetch the community catalog alone and never show cloudfox")
+	}
+}
+
 func TestGetInstalledPlugRingItems(t *testing.T) {
 	tmpDir := t.TempDir()
 	oldUserConfigDir := config.UserConfigDir

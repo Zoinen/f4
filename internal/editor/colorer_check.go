@@ -1,3 +1,5 @@
+//go:build !lite
+
 package editor
 
 import (
@@ -12,6 +14,24 @@ import (
 // The first ones name the broken file; a long tail only repeats that.
 const maxColorerCheckReports = 20
 
+// checkAllBatchSize bounds how many file types CheckColorerSource loads in one
+// colorer4go session before it closes that session and opens a fresh one.
+//
+// colorer4go's HRC engine keeps every scheme it has ever loaded, in the same
+// session, in one namespace, and re-links and re-builds the search dispatch
+// table of *all* of them — not just the one just loaded — after each single
+// LoadFileType call (HrcLibrary::Impl::updateLinks, called from parseHRC).
+// That cost is invisible in ordinary editing, where a session sees only the
+// handful of types its open files use, but "Check all schemes" loads every
+// type the catalog has, one after another, in the same session: each call
+// re-processes everything loaded before it, so the whole run is quadratic in
+// the number of types, and gets slower call after call instead of costing
+// roughly the same each time (#277). Recreating the session every
+// checkAllBatchSize types bounds how much accumulated state any single
+// LoadFileType call has to re-process, which turns the total cost back into
+// something that scales with the number of types, not its square.
+const checkAllBatchSize = 32
+
 // ColorerCheck is what loading a Colorer configuration found.
 type ColorerCheck struct {
 	// Err is why an editor could not highlight with this configuration: the
@@ -24,6 +44,11 @@ type ColorerCheck struct {
 	Reports []string
 	// Types is how many file types were loaded; zero without allTypes.
 	Types int
+	// sessions is how many colorer4go sessions the check opened: one, plus one
+	// more per checkAllBatchSize types beyond the first. Tests use it to catch
+	// a regression to a single session for every type (#277) without timing
+	// anything, since colorer4go's own per-type cost is what actually grows.
+	sessions int
 }
 
 // Clean reports whether nothing failed and nothing was reported.
@@ -63,20 +88,33 @@ func CheckColorerSource(ctx context.Context, src ColorerSource, scheme string, a
 
 	ensureRadiolaSchema(src.ConfigsDir)
 	opts := append([]colorer.Option{colorer.WithDiagnostics(level, collect)}, src.userOptions()...)
-	session, err := colorer.NewSession(ctx, "/base/catalog.xml", src.ConfigsDir, opts...)
+	if scheme == "" {
+		scheme = "default"
+	}
+	open := func() (*colorer.Session, error) {
+		s, err := colorer.NewSession(ctx, "/base/catalog.xml", src.ConfigsDir, opts...)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.SetHRD("rgb", scheme); err != nil {
+			s.Close()
+			return nil, fmt.Errorf("colour style %q: %w", scheme, err)
+		}
+		check.sessions++
+		return s, nil
+	}
+
+	session, err := open()
 	if err != nil {
 		check.Err = err
 		return check
 	}
-	defer session.Close()
+	defer func() {
+		if session != nil {
+			session.Close()
+		}
+	}()
 
-	if scheme == "" {
-		scheme = "default"
-	}
-	if err := session.SetHRD("rgb", scheme); err != nil {
-		check.Err = fmt.Errorf("colour style %q: %w", scheme, err)
-		return check
-	}
 	if !allTypes {
 		return check
 	}
@@ -90,6 +128,15 @@ func CheckColorerSource(ctx context.Context, src ColorerSource, scheme string, a
 		if err := ctx.Err(); err != nil {
 			check.Err = err
 			return check
+		}
+		if i > 0 && i%checkAllBatchSize == 0 {
+			session.Close()
+			session = nil
+			session, err = open()
+			if err != nil {
+				check.Err = err
+				return check
+			}
 		}
 		if progress != nil {
 			progress(i, len(types), ft.Group+": "+ft.Description)

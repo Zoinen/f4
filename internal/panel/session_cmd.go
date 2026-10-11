@@ -49,17 +49,75 @@ type cmdShellSession struct {
 	Pf *PanelsFrame
 
 	// promptSeq counts every prompt-end mark; sentSeq is its value when the
-	// line now running was typed. A prompt can only end that line if it was
-	// printed after it — a startup prompt still crossing ConPTY does not
-	// count.
+	// first of the lines now outstanding was typed. A prompt can only answer
+	// one of them if it was printed after that — a startup prompt still
+	// crossing ConPTY does not count.
 	promptSeq uint64
 	sentSeq   uint64
-	pending   bool // a typed line (command or directory sync) has no prompt yet
-	inBatch   bool // a .bat/.cmd file is being executed: nested cmd is not the shell
-	observed  terminal.PromptSnapshot
-	timer     *time.Timer
-	attempts  int
-	Closed    bool
+
+	// pendingLines counts typed lines (a directory sync, a command, or
+	// both queued back to back) whose own completion prompt has not been
+	// seen yet. f4 does not wait for one typed line to settle before typing
+	// the next: syncPTYDirectory's cwd ping runs at panel-path-change time,
+	// unconditionally, and a command the user runs can follow it within the
+	// same frame. On an ordinary shell the ping's prompt arrives long before
+	// anything else is typed, so this never exceeds 1. But when the shell is
+	// slow to print even its first prompt (a cold cmd.exe start took ~4s in
+	// the field, #1376), both lines can already be queued when it finally
+	// answers -- and a single "the most recent line" slot cannot tell the
+	// sync's own, perfectly ordinary completion prompt apart from the
+	// command's. Treated as the answer to whichever was tracked, it ended
+	// the command (dropped f4 back to its panels, and in ShellModeHost off
+	// the primary screen) while Far Manager had not even started. Each real
+	// settle now retires one outstanding line for every mark it turns out to
+	// answer (see skippedMarks below), and pendingLines only reaches zero
+	// once the last one still owed a prompt has had its turn.
+	//
+	// notedAtSeq is promptSeq's value the last time a line was typed. It is
+	// what tells the #1376 startup race (both lines queued while promptSeq
+	// is still the same, unanswered value) apart from a plain sequence of
+	// separate commands, each typed only after the previous one already got
+	// its own prompt mark -- a nested shell (#1376's own regression test,
+	// TestCmdSessionNestedCmdHoldsTerminal) held by a console child settles
+	// into "held", never released, but its prompt mark still lands and moves
+	// promptSeq. Without this, a command typed into that nested shell piled
+	// its line onto the still-outstanding, merely-held one instead of
+	// starting fresh, and the extra pendingLines it left behind was never
+	// anyone's to retire: nothing on the wire answers a line nobody
+	// remembers sending. pendingLines then never reached zero and the wait
+	// for the outer shell's own prompt, after the nested shell was long
+	// gone, never let go of the panels.
+	pendingLines int
+	notedAtSeq   uint64
+
+	// skippedMarks counts prompt marks that arrived while an earlier mark's
+	// settle() was still scheduled but had not run yet, so handleMark
+	// replaced it (#1376, the Host-mode report that survived the fix above):
+	// on a cold shell that queues both the sync ping and the command before
+	// printing anything, it can then answer both within a few milliseconds
+	// of each other -- well inside cmdPromptSettleDelay -- so the sync's
+	// mark's own timer never fires; the command's mark's timer, scheduled
+	// right after, cancels it first. settle() only ever runs for the mark
+	// whose timer actually fires, so retiring one line per settle() call
+	// left the sync's line stuck in pendingLines forever: nothing was ever
+	// going to answer it individually, and a stuck pendingLines wedges f4 in
+	// "Terminal (executing)" for good, since release() is the only thing
+	// that ever clears it and it is only reached at zero. skippedMarks is
+	// what tells this apart from the ordinary, well-separated case
+	// (TestCmdSessionTwoQueuedLinesEachNeedTheirOwnPrompt): a prompt whose
+	// own timer fires without being pre-empted answers exactly the one line
+	// it was scheduled for, but a mark that pre-empted N earlier ones
+	// answered N+1 lines that cmd, being a single serial shell, must have
+	// finished in order to have gotten this far -- so settle() retires
+	// 1+skippedMarks lines (capped at pendingLines) instead of exactly one,
+	// and resets the counter once spent.
+	skippedMarks int
+
+	inBatch  bool // a .bat/.cmd file is being executed: nested cmd is not the shell
+	observed terminal.PromptSnapshot
+	timer    *time.Timer
+	attempts int
+	Closed   bool
 }
 
 // cmdPromptSettleDelay is how long after a prompt mark the screen is first
@@ -121,6 +179,25 @@ func childHoldsTerminal(children []terminal.ChildProcess) bool {
 	return false
 }
 
+// heldByChild reports whether one of the shell's children still holds the
+// terminal, folding in the same batch exception the caller needs: in batch
+// mode a nested cmd.exe child is not "the shell now" -- the batch file will
+// continue after it exits, so the terminal is still held.
+func heldByChild(children []terminal.ChildProcess, inBatch bool) bool {
+	if childHoldsTerminal(children) {
+		return true
+	}
+	if !inBatch {
+		return false
+	}
+	for _, c := range children {
+		if !c.GUI && strings.ToLower(c.Name) == "cmd.exe" {
+			return true
+		}
+	}
+	return false
+}
+
 // promptShaped reports whether text is what cmd's $P$G leaves in front of the
 // cursor: a path with a drive, then ">". A batch line echo has the command
 // text after the ">", a `set /p` prompt has no drive, and program output that
@@ -134,21 +211,38 @@ func newCmdShellSession(pf *PanelsFrame) *cmdShellSession {
 	return &cmdShellSession{Pf: pf}
 }
 
-// noteSent records that a line was typed into the shell and that the
-// prompt f4 is waiting for has not been printed yet.
+// noteSent records that one more line was typed into the shell. It only
+// piles onto whatever is already outstanding when no prompt mark has
+// arrived since the previous line was typed -- the #1376 startup race,
+// where syncPTYDirectory's ping and the command right after it can both be
+// queued before the shell has printed a single byte. Once a mark has been
+// seen since, whatever was outstanding has already had the state machine's
+// attention (settled, held by a console child, still flickering -- settle
+// decides which), even if it did not release: this new line starts its own
+// fresh count rather than adding a line nobody will ever retire on its
+// behalf, which left pendingLines never reaching zero. Only the first line
+// of a fresh count sets sentSeq: it marks the threshold no prompt already
+// in flight can cross, and it must not move while later lines queue up
+// behind the first, or a prompt that only answers an earlier one would
+// start looking like it predates the newest line too.
 func (s *cmdShellSession) noteSent() {
 	if s == nil {
 		return
 	}
 	s.mu.Lock()
-	s.pending = true
-	s.sentSeq = s.promptSeq
-	if s.promptSeq == 0 {
-		// No prompt has been seen yet, so the shell's startup prompt is
-		// still on its way and will arrive after the line: it is not the
-		// answer to it.
-		s.sentSeq = 1
+	if s.pendingLines == 0 || s.promptSeq != s.notedAtSeq {
+		s.sentSeq = s.promptSeq
+		if s.promptSeq == 0 {
+			// No prompt has been seen yet, so the shell's startup prompt is
+			// still on its way and will arrive after the line: it is not the
+			// answer to it.
+			s.sentSeq = 1
+		}
+		s.pendingLines = 0
+		s.skippedMarks = 0
 	}
+	s.notedAtSeq = s.promptSeq
+	s.pendingLines++
 	s.mu.Unlock()
 	s.Pf.noteLocalShellBusy(true)
 }
@@ -173,7 +267,7 @@ func (s *cmdShellSession) idle() bool {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return !s.pending
+	return s.pendingLines == 0
 }
 
 func (s *cmdShellSession) close() {
@@ -186,6 +280,39 @@ func (s *cmdShellSession) close() {
 		s.timer.Stop()
 	}
 	s.mu.Unlock()
+}
+
+// childOwnsCommandMarks reports whether an OSC 133 C or D that just crossed
+// the local shell's output belongs to a console program running inside the
+// shell rather than to the shell. cmd.exe under the PROMPT f4 gives it prints
+// A and B only, and completion of a typed line is this session's to decide
+// from B. A console child that speaks shell integration itself prints its own
+// C and D, though: Far Manager 3 wraps every command run from its command
+// line in D, A, B, C ... D (#1376). Taken for cmd's, Far's first D ended the
+// line that started Far, and f4's panels and hotkeys came back over a Far
+// that was still running.
+//
+// It runs on the goroutine that parses the terminal output.
+func (s *cmdShellSession) childOwnsCommandMarks() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	closed, inBatch := s.Closed, s.inBatch
+	s.mu.Unlock()
+	if closed {
+		return false
+	}
+	inspector, ok := s.Pf.localPTY().(childInspector)
+	if !ok {
+		return false
+	}
+	children := inspector.ChildProcesses()
+	if !heldByChild(children, inBatch) {
+		return false
+	}
+	vtui.DebugLog("CMD_SESSION: OSC 133 C/D printed by child %v, not by the shell; ignored", children)
+	return true
 }
 
 // handleMark runs on the terminal.PTY goroutine for every OSC 133 mark of the local
@@ -204,7 +331,15 @@ func (s *cmdShellSession) handleMark(mark string, snap terminal.PromptSnapshot) 
 	s.attempts = 0
 	seq := s.promptSeq
 	if s.timer != nil {
-		s.timer.Stop()
+		// Stop reports whether the previous mark's settle was still
+		// scheduled and got cancelled here, rather than having already run
+		// (or already fired and be running right now): only then did this
+		// new mark rob it of its own look at the screen, so only then does
+		// it owe skippedMarks a line (see the skippedMarks field doc above
+		// and settle()'s retire step below).
+		if s.timer.Stop() {
+			s.skippedMarks++
+		}
 	}
 	s.timer = time.AfterFunc(cmdPromptSettleDelay, func() { s.settle(seq) })
 	s.mu.Unlock()
@@ -233,7 +368,7 @@ func (s *cmdShellSession) settle(seq uint64) {
 			s.mu.Unlock()
 			return
 		}
-		previous, sentSeq, pending := s.observed, s.sentSeq, s.pending
+		previous, sentSeq, pendingLines := s.observed, s.sentSeq, s.pendingLines
 		inBatch := s.inBatch
 		s.mu.Unlock()
 
@@ -275,31 +410,58 @@ func (s *cmdShellSession) settle(seq uint64) {
 			return
 		}
 
-		if pending && seq <= sentSeq {
+		if pendingLines > 0 && seq <= sentSeq {
 			// This prompt was printed before the line we typed; the shell has
 			// not even started on it. The prompt for our line will come.
 			vtui.DebugLog("CMD_SESSION: prompt %d predates the typed line (sent=%d), ignoring", seq, sentSeq)
 			return
 		}
 
+		// children is captured here so it can be logged below whichever way
+		// this comes out (held, or falling through to settled/release):
+		// f4#1376's residual "cls inside Far still drops to f4" report went
+		// through four earlier rounds, PRs #1451/#1495/#1498/#1608, each
+		// fixing a real but distinct bug in this file; a fifth confirmed
+		// cause -- the mark-coalescing bug retired at the bottom of this
+		// function, see skippedMarks' field doc -- reproduced in every one of
+		// the field's Host-mode debug logs, with no Far involved at all, so
+		// it is unlikely to be the whole story behind every report filed
+		// against this ticket. One candidate this scan still cannot rule out
+		// from the code alone is that ChildProcesses -- a live, uncached,
+		// direct-children-only Toolhelp32 scan of the *outer* shell --
+		// momentarily does not list the console child (Far) at exactly the
+		// moment Far spawns its own grandchild (a console command or program
+		// run from inside it). Logging what this scan actually returned
+		// right at the settle/release decision, instead of only when it
+		// holds, is what the next --debug capture of the report needs: if
+		// `children` reads empty on the very call that releases the wait
+		// while Far is still visibly running on screen, that confirms this
+		// function as the source; if it is never empty, the drop is not
+		// coming from here at all.
+		var children []terminal.ChildProcess
 		if inspector, ok := pf.localPTY().(childInspector); ok {
-			children := inspector.ChildProcesses()
-			held := childHoldsTerminal(children)
-			if !held && inBatch {
-				// In batch mode a nested cmd.exe child is not "the
-				// shell now": the batch file will continue after it
-				// exits, so the terminal is still held.
-				for _, c := range children {
-					if !c.GUI && strings.ToLower(c.Name) == "cmd.exe" {
-						held = true
-						break
-					}
-				}
-			}
-			if held {
+			children = inspector.ChildProcesses()
+			if heldByChild(children, inBatch) {
 				vtui.DebugLog("CMD_SESSION: prompt %d held by child %v, rechecking", seq, children)
 				s.mu.Lock()
 				if !s.Closed && seq == s.promptSeq {
+					// Reset the attempt counter for the same reason
+					// rescheduleWhileBusy and retryOrRelease's own veto do:
+					// a console child genuinely holding the terminal is not
+					// "stuck settling", so whatever budget an earlier,
+					// unrelated bit of flicker already spent must not carry
+					// into whatever flicker comes next. Without this, Far
+					// Manager (#1376) sitting at its own idle, prompt-shaped
+					// command line -- unchanged and held for as long as the
+					// user takes before typing anything -- silently freezes
+					// the counter wherever settling into that steady state
+					// left it, so the very next flicker (`cls` redrawing
+					// that same line) can reach retryOrRelease's
+					// bound-exceeded fallback, and therefore have to trust a
+					// single, uncached child-process scan, after only one or
+					// two looks instead of the intended ~cmdPromptMaxAttempts
+					// of them.
+					s.attempts = 0
 					s.timer = time.AfterFunc(cmdPromptRecheckDelay, func() { s.settle(seq) })
 				}
 				s.mu.Unlock()
@@ -307,7 +469,38 @@ func (s *cmdShellSession) settle(seq uint64) {
 			}
 		}
 
-		vtui.DebugLog("CMD_SESSION: prompt %d settled (sent=%d pending=%v)", seq, sentSeq, pending)
+		// This settle answers one outstanding line for its own mark, plus
+		// one more for every earlier mark that never got its own settle
+		// call because this one's timer pre-empted it (skippedMarks,
+		// handleMark). cmd is a single serial shell: it cannot have printed
+		// this many real prompts since sentSeq without having finished that
+		// many typed lines in order, even though this session only watched
+		// the last one settle (#1376 -- see skippedMarks' field doc for the
+		// Host-mode report this fixes). The count is capped at pendingLines
+		// so a skip left over from a mark that turned out to predate the
+		// typed lines (sentSeq's own veto above) cannot retire a line that
+		// was never sent. The execution ends once this reaches zero; if it
+		// does not, the next real prompt mark schedules another settle via
+		// handleMark, which will retire what is left the same way.
+		s.mu.Lock()
+		retired := 0
+		if !s.Closed && seq == s.promptSeq && s.pendingLines > 0 {
+			retired = 1 + s.skippedMarks
+			if retired > s.pendingLines {
+				retired = s.pendingLines
+			}
+			s.pendingLines -= retired
+			s.skippedMarks = 0
+		}
+		remaining := s.pendingLines
+		s.mu.Unlock()
+
+		if remaining > 0 {
+			vtui.DebugLog("CMD_SESSION: prompt %d settled %d of the outstanding lines (sent=%d children=%v), %d left", seq, retired, sentSeq, children, remaining)
+			return
+		}
+
+		vtui.DebugLog("CMD_SESSION: prompt %d settled (sent=%d children=%v)", seq, sentSeq, children)
 		s.release()
 	})
 }
@@ -332,6 +525,16 @@ func (s *cmdShellSession) rescheduleWhileBusy(seq uint64) {
 // rather than holding matters because a stuck wait leaves pf.executing set,
 // and isPtyBusy reports that as busy, disabling every hotkey gated on a quiet
 // terminal (Esc) while leaving the ungated ones (Ctrl+O) alive.
+//
+// But a console child that is still running is never "stuck settling" --
+// it is simply busy, exactly like the held branch in settle() below, and
+// must get the same veto before the bound gives up on it. Without this, a
+// full-screen program with no alternate screen of its own (Far Manager,
+// #1376) whose own command line happens to look prompt-shaped (a bare
+// "C:\path>") can flicker across a few looks while it repaints -- `cls`
+// clears and redraws that exact line -- and exhausting the retry budget
+// then released the wait and handed the terminal back to f4 while Far was
+// still very much running.
 func (s *cmdShellSession) retryOrRelease(seq uint64) {
 	s.mu.Lock()
 	if s.Closed || seq != s.promptSeq {
@@ -344,8 +547,31 @@ func (s *cmdShellSession) retryOrRelease(seq uint64) {
 		s.mu.Unlock()
 		return
 	}
+	inBatch := s.inBatch
 	s.mu.Unlock()
-	vtui.DebugLog("CMD_SESSION: prompt %d never settled, releasing the wait", seq)
+
+	// children is logged below either way, for the same #1376 diagnostic
+	// reason settle() now logs it at its own settled/release call: the open
+	// question after four earlier fix rounds (#1451/#1495/#1498/#1608) is
+	// whether this live, uncached, direct-children-only scan of the outer
+	// shell ever reads empty here while Far is still genuinely running --
+	// which is what the next --debug capture of the report needs to show.
+	var children []terminal.ChildProcess
+	if inspector, ok := s.Pf.localPTY().(childInspector); ok {
+		children = inspector.ChildProcesses()
+	}
+	if heldByChild(children, inBatch) {
+		vtui.DebugLog("CMD_SESSION: prompt %d flickering but held by a child, rechecking", seq)
+		s.mu.Lock()
+		if !s.Closed && seq == s.promptSeq {
+			s.attempts = 0
+			s.timer = time.AfterFunc(cmdPromptRecheckDelay, func() { s.settle(seq) })
+		}
+		s.mu.Unlock()
+		return
+	}
+
+	vtui.DebugLog("CMD_SESSION: prompt %d never settled, releasing the wait (children=%v)", seq, children)
 	s.release()
 }
 
@@ -353,7 +579,8 @@ func (s *cmdShellSession) retryOrRelease(seq uint64) {
 func (s *cmdShellSession) release() {
 	pf := s.Pf
 	s.mu.Lock()
-	s.pending = false
+	s.pendingLines = 0
+	s.skippedMarks = 0
 	s.inBatch = false
 	s.mu.Unlock()
 	pf.ShellPromptReady = true

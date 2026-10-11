@@ -275,6 +275,16 @@ func (r *AnsiRenderer) RenderGraphics(layer *GraphicsLayer, buf, shadow []CharIn
 		cw, ch := layer.CellSize()
 		r.gfxList, _ = layer.Snapshot(r.gfxList)
 		r.gfxSixel.Render(&r.frameOut, r.gfxList, cw, ch)
+	case GraphicsITerm2:
+		if r.gfxITerm2 == nil {
+			r.gfxITerm2 = newITerm2Encoder()
+		}
+		if force {
+			r.gfxITerm2.Reset()
+		}
+		cw, ch := layer.CellSize()
+		r.gfxList, _ = layer.Snapshot(r.gfxList)
+		r.gfxITerm2.Render(&r.frameOut, r.gfxList, cw, ch)
 	case GraphicsExternal:
 		if ext := layer.External(); ext != nil {
 			cw, ch := layer.CellSize()
@@ -289,10 +299,10 @@ func (r *AnsiRenderer) RenderGraphics(layer *GraphicsLayer, buf, shadow []CharIn
 		r.gfxFar2l.Render(&r.frameOut, r.gfxList)
 	}
 
-	// Both protocols move the text cursor (kitty places relative to it, sixel
-	// leaves it below the image), so PrepareFlush must re-emit the cursor
+	// All three move the text cursor (kitty places relative to it, sixel and
+	// iTerm2 leave it below the image), so PrepareFlush must re-emit the cursor
 	// report this frame.
-	if proto == GraphicsKitty || proto == GraphicsSixel {
+	if proto == GraphicsKitty || proto == GraphicsSixel || proto == GraphicsITerm2 {
 		r.termCursorInvalid = true
 	}
 }

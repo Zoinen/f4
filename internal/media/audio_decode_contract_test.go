@@ -1,3 +1,5 @@
+//go:build !noffi && !lite && !android && (windows || ((linux || darwin || freebsd) && (amd64 || arm64)))
+
 package media
 
 import (

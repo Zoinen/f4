@@ -7,12 +7,11 @@ import (
 )
 
 const (
-	seqAltScreenOn       = "\x1b[?1049h\x1b[2J\x1b[H"
-	seqAltScreenOff      = "\x1b[?1049l"
-	seqAutoWrapOff       = "\x1b[?7l"
-	seqAutoWrapOn        = "\x1b[?7h"
-	seqBlinkingUnderline = "\x1b[3 q"
-	seqDefaultCursor     = "\x1b[0 q"
+	seqAltScreenOn   = "\x1b[?1049h\x1b[2J\x1b[H"
+	seqAltScreenOff  = "\x1b[?1049l"
+	seqAutoWrapOff   = "\x1b[?7l"
+	seqAutoWrapOn    = "\x1b[?7h"
+	seqDefaultCursor = "\x1b[0 q"
 	// The cursor is the one glyph on screen the application does not paint
 	// itself, so its color comes from the terminal's own theme and can land
 	// anywhere -- including on top of the background the application chose.
@@ -209,6 +208,20 @@ func Suspend() {
 	termMu.Lock()
 	defer termMu.Unlock()
 	if isPrepared {
+		// Restore the input mode FIRST, before the writes below. On Windows
+		// the console host re-announces the mouse modes to the terminal when
+		// SetConsoleMode changes the mouse-related flags (microsoft/terminal
+		// #9970), and that request reaches the terminal only with the next
+		// write to the console (microsoft/terminal #15711) -- f4's own
+		// leaveHostConsole re-announces before the redraw it ends with for
+		// the same reason. With inputRestore last, the mouse-off announcement
+		// stayed pending once the process exited: the terminal kept sending
+		// mouse reports into a console whose mode the reader had already
+		// handed back, and the prompt echoed them as text.
+		if inputRestore != nil {
+			inputRestore()
+			inputRestore = nil
+		}
 		out := getTermOut()
 		vt := consoleUsesVT()
 		modernVT := vt && !IsFreeBSDConsole
@@ -251,10 +264,6 @@ func Suspend() {
 		// or re-attach, leaving the session with default colors.
 		if FrameManager != nil && FrameManager.scr != nil {
 			FrameManager.scr.InvalidateHostPalette()
-		}
-		if inputRestore != nil {
-			inputRestore()
-			inputRestore = nil
 		}
 		isPrepared = false
 	}
@@ -344,7 +353,8 @@ func resumeLocked(withAltScreen bool) error {
 		consoleCursorTypeStale = true
 		cursorColorSent = -2
 		if modernVT && ManageCursorStyle && !cursorStyleViaConsoleAPI() {
-			out.WriteString(seqBlinkingUnderline)
+			// The insert-mode caret, until the first frame says otherwise.
+			out.WriteString(cursorStyleSeq(InsertCursorShape(), CursorBlinks()))
 		}
 		out.Sync()
 		isPrepared = true

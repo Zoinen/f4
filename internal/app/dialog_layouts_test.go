@@ -94,7 +94,6 @@ func TestAllDialogs_LayoutValidation(t *testing.T) {
 		"panel.historyforward":             true,
 		"file.view":                        true, // async launch
 		"file.edit":                        true, // async launch
-		"file.new":                         true, // async launch
 		"file.attributes":                  true, // async launch
 		"file.findduplicates":              true, // async launch
 		"term.viewlog":                     true, // async launch
@@ -191,6 +190,11 @@ func TestAllDialogs_LayoutValidation(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			rules := vtui.DefaultLayoutRules
 			rules.MaxWidth = 120 // Allow configurator/large dialogs to exceed default 78 columns
+			if name == "Panel.SelectGroup" || name == "Panel.DeselectGroup" || name == "File.New" {
+				// Compact input dialogs deliberately place the prompt and buttons
+				// immediately inside the frame, with no blank rows above/below.
+				rules.FrameClearanceY = 0
+			}
 			baseStrings := vtui.SnapshotStrings()
 			defer vtui.ReplaceStrings(baseStrings)
 

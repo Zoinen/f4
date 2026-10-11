@@ -88,6 +88,7 @@ func TestCurrentExtensionSelectionRespectsAutoFilter(t *testing.T) {
 		{VFSItem: vfs.VFSItem{Name: "hidden.txt"}},
 	})
 	fp.FastFindMode = true
+	fp.autoFilterMode = true
 	fp.FastFindStr = "visible"
 	fp.refilterEntries()
 	if len(fp.Entries) != 1 {

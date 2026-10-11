@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Assemble the small, user-facing release set from CI artifacts.
+"""Assemble the complete updater-compatible release set from CI artifacts.
 
 The build matrix intentionally produces more artifacts than a release should
 expose: sidecar Qt trees are useful for CI diagnostics, while portable Qt
@@ -15,6 +15,10 @@ import pathlib
 import shutil
 import tarfile
 import zipfile
+
+
+PLUGIN_PLATFORMS = ("linux-amd64", "linux-arm64", "windows-amd64", "darwin-amd64")
+PLUGINS = ("cloudfox", "android", "ios")
 
 
 def require_file(path: pathlib.Path) -> pathlib.Path:
@@ -50,6 +54,7 @@ def verify_app_archive(path: pathlib.Path) -> None:
     required = {
         "F4.app/Contents/MacOS/f4",
         "F4.app/Contents/MacOS/f4-qt-host",
+        "F4.app/Contents/Resources/AppIcon.icns",
         "F4.app/Contents/Resources/qt.conf",
     }
     if not required.issubset(members):
@@ -84,6 +89,15 @@ def package_release(input_root: pathlib.Path, output_root: pathlib.Path) -> list
         copy_once(source, destination)
         verify_single_file_archive(destination, member)
 
+        # Installed Windows updaters prefer .7z. Never publish the normal
+        # matrix's terminal-only .7z beside the portable Qt .zip.
+        if platform == "windows":
+            sevenzip_name = f"f4-windows-{arch}.7z"
+            sevenzip_source = find_artifact_file(
+                input_root, f"f4-portable-windows-{arch}", sevenzip_name
+            )
+            copy_once(sevenzip_source, output_root / sevenzip_name)
+
     # macOS's release unit is the complete classic bundle.  Keep the ordinary
     # CLI tarballs too: Homebrew and the existing macOS updater intentionally
     # use those instead of installing a GUI application into bin/.
@@ -106,6 +120,15 @@ def package_release(input_root: pathlib.Path, output_root: pathlib.Path) -> list
         )
         copy_once(cli_source, output_root / cli_name)
 
+    # Portable Qt targets glibc 2.27, not musl. Keep the normal matrix's
+    # glibc/musl-smoke-tested universal launcher available under the explicit
+    # musl updater suffix rather than sending Alpine users the Qt launcher.
+    for arch in ("amd64", "arm64"):
+        source = find_artifact_file(
+            input_root, f"f4-linux-{arch}", f"f4-linux-{arch}.tar.gz"
+        )
+        copy_once(source, output_root / f"f4-linux-musl-{arch}.tar.gz")
+
     # Preserve the useful non-desktop targets from the normal Go matrix.  Do
     # not expose Qt sidecar archives, raw portable launchers, or a second copy
     # of a primary asset.  These are all archives users can actually run;
@@ -117,13 +140,22 @@ def package_release(input_root: pathlib.Path, output_root: pathlib.Path) -> list
         name = source.name
         if name in primary_names or name.startswith("f4-qt-"):
             continue
-        if not name.endswith((".tar.gz", ".zip", ".deb")):
+        if not name.endswith((".tar.gz", ".zip", ".7z", ".deb")):
             continue
         destination = output_root / name
         if destination.exists():
             continue
         shutil.copy2(source, destination)
         primary_names.add(name)
+
+    # Require every standalone plugin matrix cell. The .tgz extension is an
+    # updater compatibility boundary: old f4 builds misread plugin .tar.gz
+    # assets as application updates (#1656).
+    for plugin in PLUGINS:
+        for platform in PLUGIN_PLATFORMS:
+            stem = f"{plugin}-plugin-{platform}"
+            source = find_artifact_file(input_root, stem, stem + ".tgz")
+            copy_once(source, output_root / source.name)
 
     assets = sorted(output_root.iterdir())
     if not assets:

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/unxed/f4/internal/numeric"
 	"github.com/unxed/f4/internal/panel"
 	"github.com/unxed/f4/internal/paneltest"
 	"github.com/unxed/f4/internal/vtvibe"
@@ -69,17 +70,18 @@ func TestAIChatPanelRichMarkdownRenderingAndBusyState(t *testing.T) {
 	cp := NewAIChatPanel(fp)
 	cp.SetPosition(0, 0, 33, 23)
 	cp.SetFocus(true)
-	cp.updateLines()
-	if len(cp.lines) < 5 {
-		t.Fatalf("rich reply produced too few chat lines: %d", len(cp.lines))
+
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	cp.Show(scr)
+
+	visible := cp.VisibleLinks()
+	if len(visible) == 0 {
+		t.Fatal("Show did not collect visible markdown links")
 	}
 	var targets []string
-	for _, line := range cp.lines {
-		for _, target := range line.targets {
-			if target != "" {
-				targets = append(targets, target)
-			}
-		}
+	for _, l := range visible {
+		targets = append(targets, l.Target)
 	}
 	joinedTargets := strings.Join(targets, "\n")
 	for _, want := range []string{"ai://ctx/readme.txt", "ai://out/result.go", "ai://out/generated.go"} {
@@ -87,44 +89,72 @@ func TestAIChatPanelRichMarkdownRenderingAndBusyState(t *testing.T) {
 			t.Fatalf("rendered links do not contain %q: %q", want, joinedTargets)
 		}
 	}
-
-	scr := vtui.NewSilentScreenBuf()
-	scr.AllocBuf(80, 25)
-	cp.Show(scr)
-	if len(cp.visibleLinks) == 0 {
-		t.Fatal("Show did not collect visible markdown links")
-	}
 	if cp.barKind() != aiBarPatch {
 		t.Fatalf("barKind = %d, want patch bar", cp.barKind())
 	}
 
+	// Reach the readme.txt link the same way the user would: Up from the
+	// input's first row goes to the status bar (a patch is attached), Up
+	// again from there lands on the last visible link.
+	cp.Input.SetCursorPos(0, 0)
+	if !cp.ProcessKey(&vtinput.InputEvent{KeyDown: true, VirtualKeyCode: vtinput.VK_UP}) || !cp.StatusBarFocused() {
+		t.Fatal("Up from input row 0 should focus the patch status bar")
+	}
+	if !cp.ProcessKey(&vtinput.InputEvent{KeyDown: true, VirtualKeyCode: vtinput.VK_UP}) || !cp.LinkFocused() {
+		t.Fatal("Up from the status bar should focus a response link")
+	}
+
 	// Exercise link focus, copy-key handling, paging, horizontal selection,
 	// and the mouse path without requiring a real panels frame to navigate.
-	cp.focusedLinkIdx = 0
 	if !cp.ProcessKey(&vtinput.InputEvent{KeyDown: true, VirtualKeyCode: vtinput.VK_F5}) {
 		t.Fatal("F5 on a response link was not handled")
 	}
 	if !cp.ProcessKey(&vtinput.InputEvent{KeyDown: true, VirtualKeyCode: vtinput.VK_RIGHT}) {
 		t.Fatal("right-arrow link navigation was not handled")
 	}
-	cp.focusedLinkIdx = 0
 	if !cp.ProcessKey(&vtinput.InputEvent{KeyDown: true, VirtualKeyCode: vtinput.VK_ESCAPE}) {
 		t.Fatal("Escape did not return focus to input")
 	}
-	cp.topPos = 20
-	if !cp.ProcessKey(&vtinput.InputEvent{KeyDown: true, VirtualKeyCode: vtinput.VK_PRIOR}) || cp.topPos < 0 {
-		t.Fatal("PageUp was not handled")
+	if cp.LinkFocused() || cp.StatusBarFocused() {
+		t.Fatal("Escape should leave focus on the input box")
 	}
 	if !cp.ProcessKey(&vtinput.InputEvent{KeyDown: true, VirtualKeyCode: vtinput.VK_NEXT}) {
 		t.Fatal("PageDown was not handled")
+	}
+	if !cp.ProcessKey(&vtinput.InputEvent{KeyDown: true, VirtualKeyCode: vtinput.VK_PRIOR}) {
+		t.Fatal("PageUp was not handled")
 	}
 	if !cp.ProcessKey(&vtinput.InputEvent{KeyDown: true, VirtualKeyCode: vtinput.VK_LEFT, ControlKeyState: vtinput.ShiftPressed}) {
 		t.Fatal("Shift+Left was not handled")
 	}
 
-	cp.visibleLinks = []chatLink{{row: 1, col: 1, width: 5, target: "ai://ctx/readme.txt"}}
-	if !cp.ProcessMouse(&vtinput.InputEvent{Type: vtinput.MouseEventType, KeyDown: true, MouseX: 2, MouseY: 2, ButtonState: vtinput.FromLeft1stButtonPressed}) || cp.focusedLinkIdx != 0 {
-		t.Fatalf("mouse link focus = %d", cp.focusedLinkIdx)
+	// Click exactly on the rendered readme.txt link and confirm it takes
+	// focus, using the real coordinates Show just laid out.
+	var readmeLink vtui.ChatLink
+	found := false
+	for _, l := range visible {
+		if l.Target == "ai://ctx/readme.txt" {
+			readmeLink = l
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("readme.txt link missing from the visible set")
+	}
+	mx, ok := numeric.BoundedInt16(cp.X1 + 1 + readmeLink.Col)
+	if !ok {
+		t.Fatal("link column out of int16 range")
+	}
+	my, ok := numeric.BoundedInt16(cp.Y1 + 1 + readmeLink.Row)
+	if !ok {
+		t.Fatal("link row out of int16 range")
+	}
+	if !cp.ProcessMouse(&vtinput.InputEvent{Type: vtinput.MouseEventType, KeyDown: true, MouseX: mx, MouseY: my, ButtonState: vtinput.FromLeft1stButtonPressed}) {
+		t.Fatal("click on the readme.txt link was not handled")
+	}
+	if link, ok := cp.FocusedLink(); !ok || link.Target != "ai://ctx/readme.txt" {
+		t.Fatalf("mouse click did not focus the readme.txt link, got %+v ok=%v", link, ok)
 	}
 	if !cp.ProcessMouse(&vtinput.InputEvent{Type: vtinput.MouseEventType, WheelDirection: -1}) {
 		t.Fatal("mouse wheel down was not handled")
@@ -143,7 +173,10 @@ func TestAIChatPanelRichMarkdownRenderingAndBusyState(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("second request did not reach the test server")
 	}
-	cp.updateLines()
+	cp.Show(scr)
+	if !cp.Busy {
+		t.Fatal("Show should have picked up the session's busy state")
+	}
 	close(releaseBusy)
 	if err := <-errCh; err != nil {
 		t.Fatal(err)
@@ -193,7 +226,7 @@ func TestAIChatPanelFormattingAndSessionSelectionContracts(t *testing.T) {
 
 	s := vtvibe.NewSession()
 	fp := &panel.FileSystemPanel{Vfs: &aiVFSWrapper{AIVFS: vtvibe.NewVFS(s)}}
-	cp := &AIChatPanel{src: fp, focusedLinkIdx: -1}
+	cp := &AIChatPanel{src: fp}
 	if cp.getSession() != s {
 		t.Fatal("wrapper session was not selected")
 	}
@@ -208,7 +241,34 @@ func TestAIChatPanelFormattingAndSessionSelectionContracts(t *testing.T) {
 	if (&AIChatPanel{}).GetSelectedName() != "" {
 		t.Fatal("nil chat source returned a selection")
 	}
-	if (&AIChatPanel{}).ProcessKey(&vtinput.InputEvent{KeyDown: true, VirtualKeyCode: vtinput.VK_DOWN}) {
+
+	unfocused := &AIChatPanel{ChatWindow: vtui.NewChatWindow(0, 0, 10, 10, "")}
+	if unfocused.ProcessKey(&vtinput.InputEvent{KeyDown: true, VirtualKeyCode: vtinput.VK_DOWN}) {
 		t.Fatal("unfocused chat panel handled a key")
+	}
+}
+
+// extraChatOutputLink is the AI-specific ExtraLink hook wired into
+// NewAIChatPanel; test it directly since vtui's own ChatWindow tests only
+// cover the generic ExtraLink mechanism, not this fenced-code convention.
+func TestExtraChatOutputLink(t *testing.T) {
+	for _, tc := range []struct {
+		line       string
+		wantTarget string
+		wantOK     bool
+	}{
+		{"```go:generated.go", "ai://out/generated.go", true},
+		{"```go:ai://out/generated.go", "ai://out/generated.go", true},
+		{"```go:ai://generated.go", "ai://out/generated.go", true},
+		{"```go:/out/generated.go", "ai://out/generated.go", true},
+		{"```go:out/generated.go", "ai://out/generated.go", true},
+		{"```go", "", false},
+		{"not a fence", "", false},
+		{"```go:", "", false},
+	} {
+		label, target, ok := extraChatOutputLink(tc.line)
+		if ok != tc.wantOK || target != tc.wantTarget || (ok && label != target) {
+			t.Errorf("extraChatOutputLink(%q) = (%q, %q, %v), want (_, %q, %v)", tc.line, label, target, ok, tc.wantTarget, tc.wantOK)
+		}
 	}
 }

@@ -143,7 +143,8 @@ type HighlighterProvider interface {
 	Create(filename string, content string) Highlighter
 }
 
-// SurfaceRenderer определяет, как логический буфер CharInfo переносится на экран.
+// CursorShape is the picture of the text caret. Text-entry widgets pick one
+// through InsertCursorShape and OvertypeCursorShape; see cursor_style.go.
 type CursorShape int
 
 const (

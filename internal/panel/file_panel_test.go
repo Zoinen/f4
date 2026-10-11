@@ -2982,13 +2982,14 @@ func TestFileSystemPanel_FastFind_Rendering(t *testing.T) {
 		t.Error("FastFind search string 'test' not found in ScreenBuf")
 	}
 
-	inputX, inputY := fp.X1+11, fp.Y2-1
+	// The query starts in the first cell of the edit field, right after the border (f4#1131).
+	inputX, inputY := fp.X1+10, fp.Y2-1
 	matchingAttr := scr.GetCell(inputX, inputY).Attributes
 	if got, want := vtui.GetRGBFore(matchingAttr), vtui.GetRGBFore(vtui.Palette[vtui.ColMenuHighlight]); got != want {
 		t.Fatalf("matching query foreground = %#06x, want %#06x", got, want)
 	}
-	if got, want := vtui.GetRGBBack(matchingAttr), vtui.GetRGBBack(vtui.Palette[vtui.ColDialogText]); got != want {
-		t.Fatalf("matching query background = %#06x, want dialog background %#06x", got, want)
+	if got, want := vtui.GetRGBBack(matchingAttr), vtui.GetRGBBack(vtui.Palette[vtui.ColDialogEdit]); got != want {
+		t.Fatalf("matching query background = %#06x, want dialog edit background %#06x", got, want)
 	}
 
 	fp.FastFindStr = "*test"
@@ -3006,7 +3007,7 @@ func TestFileSystemPanel_FastFind_Rendering(t *testing.T) {
 	if got, want := vtui.GetRGBFore(missingAttr), vtui.GetRGBFore(vtui.Palette[theme.ColPanelFastFindNoMatch]); got != want {
 		t.Fatalf("missing query foreground = %#06x, want %#06x", got, want)
 	}
-	if got, want := vtui.GetRGBBack(missingAttr), vtui.GetRGBBack(vtui.Palette[vtui.ColDialogText]); got != want {
+	if got, want := vtui.GetRGBBack(missingAttr), vtui.GetRGBBack(vtui.Palette[vtui.ColDialogEdit]); got != want {
 		t.Fatalf("missing query background = %#06x, want dialog background %#06x", got, want)
 	}
 }
@@ -3217,6 +3218,29 @@ func TestFileSystemPanel_MaskSelection(t *testing.T) {
 	}
 }
 
+func TestFileSystemPanel_TempPanelMaskSelectionUsesBasename(t *testing.T) {
+	fp := &FileSystemPanel{
+		Vfs:   new(TempPanelVFS),
+		Table: vtui.NewTable(0, 0, 10, 10, nil),
+		Entries: []*FileEntry{
+			{VFSItem: vfs.VFSItem{Name: ".."}},
+			{VFSItem: vfs.VFSItem{Name: "/home/user/notes/readme.txt"}},
+			{VFSItem: vfs.VFSItem{Name: `C:\\work\\source.go`}},
+			{VFSItem: vfs.VFSItem{Name: "/home/user/notes/image.png"}},
+		},
+	}
+
+	fp.ApplyMaskSelection("*.txt", true)
+	if !fp.Entries[1].Selected || fp.Entries[2].Selected || fp.Entries[3].Selected {
+		t.Fatalf("Temp Panel mask selection selected wrong entries: %+v", fp.Entries)
+	}
+
+	fp.ApplyMaskSelection("*.txt", false)
+	if fp.Entries[1].Selected {
+		t.Fatal("Temp Panel mask deselection did not clear the matching file")
+	}
+}
+
 func TestFileSystemPanel_TitleDoesNotContainSortIndicator(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	v := vfs.NewOSVFS(t.TempDir())
@@ -3377,6 +3401,105 @@ func TestFileSystemPanel_Sorting(t *testing.T) {
 	}
 }
 
+// TestFileSystemPanel_SortNumeric covers f4#1471: with SortNumeric on, name
+// sort must treat the leading track number as a number ("2" before "10")
+// instead of comparing it as plain text ("10" before "2").
+func TestFileSystemPanel_SortNumeric(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	v := vfs.NewOSVFS(t.TempDir())
+	fp := NewFileSystemPanel(0, 0, 80, 24, v)
+	waitForLoad(t, fp)
+
+	fp.Entries = []*FileEntry{
+		{VFSItem: vfs.VFSItem{Name: ".."}},
+		{VFSItem: vfs.VFSItem{Name: "10.Track_10"}},
+		{VFSItem: vfs.VFSItem{Name: "1.Track_1"}},
+		{VFSItem: vfs.VFSItem{Name: "2.Track_2"}},
+	}
+
+	fp.SortMode = SortName
+	fp.SortReverse = false
+	fp.SortNumeric = false
+	fp.SortEntries()
+	// Plain text order does not know "10" is bigger than "2" — that is
+	// precisely the bug reported in f4#1471.
+	gotPlain := []string{fp.Entries[1].Name, fp.Entries[2].Name, fp.Entries[3].Name}
+	wantNumeric := []string{"1.Track_1", "2.Track_2", "10.Track_10"}
+	if reflect.DeepEqual(gotPlain, wantNumeric) {
+		t.Fatalf("plain name sort = %v already numeric; test no longer reproduces the bug", gotPlain)
+	}
+
+	fp.SortNumeric = true
+	fp.SortEntries()
+	gotNumeric := []string{fp.Entries[1].Name, fp.Entries[2].Name, fp.Entries[3].Name}
+	if !reflect.DeepEqual(gotNumeric, wantNumeric) {
+		t.Fatalf("numeric name sort = %v, want %v", gotNumeric, wantNumeric)
+	}
+
+	// SetSortNumeric/ToggleSortNumeric flip the flag the same way the
+	// UseSortGroups setters do, and are a no-op on a nil panel.
+	var nilPanel *FileSystemPanel
+	nilPanel.SetSortNumeric(true)
+	nilPanel.ToggleSortNumeric()
+
+	fp.SetSortNumeric(false)
+	if fp.SortNumeric {
+		t.Error("SetSortNumeric(false) left SortNumeric set")
+	}
+	fp.ToggleSortNumeric()
+	if !fp.SortNumeric {
+		t.Error("ToggleSortNumeric did not turn numeric sort on")
+	}
+}
+
+// Shift+F12 (f4 selected-first): marked entries sort ahead of unmarked ones,
+// but ".." keeps its leading position the way it does under every other sort.
+func TestFileSystemPanel_SortSelectedFirst(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	v := vfs.NewOSVFS(t.TempDir())
+	fp := NewFileSystemPanel(0, 0, 80, 24, v)
+	waitForLoad(t, fp)
+
+	fp.Entries = []*FileEntry{
+		{VFSItem: vfs.VFSItem{Name: ".."}},
+		{VFSItem: vfs.VFSItem{Name: "a.txt"}, Selected: true},
+		{VFSItem: vfs.VFSItem{Name: "b.txt"}, Selected: false},
+		{VFSItem: vfs.VFSItem{Name: "c.txt"}, Selected: true},
+	}
+
+	fp.SortMode = SortName
+	fp.SortReverse = false
+	fp.SortSelectedFirst = false
+	fp.SortEntries()
+	gotPlain := []string{fp.Entries[1].Name, fp.Entries[2].Name, fp.Entries[3].Name}
+	if want := []string{"a.txt", "b.txt", "c.txt"}; !reflect.DeepEqual(gotPlain, want) {
+		t.Fatalf("plain name sort = %v, want %v", gotPlain, want)
+	}
+
+	fp.SortSelectedFirst = true
+	fp.SortEntries()
+	gotSelectedFirst := []string{fp.Entries[0].Name, fp.Entries[1].Name, fp.Entries[2].Name, fp.Entries[3].Name}
+	wantSelectedFirst := []string{"..", "a.txt", "c.txt", "b.txt"}
+	if !reflect.DeepEqual(gotSelectedFirst, wantSelectedFirst) {
+		t.Fatalf("selected-first sort = %v, want %v", gotSelectedFirst, wantSelectedFirst)
+	}
+
+	// SetSortSelectedFirst/ToggleSortSelectedFirst flip the flag the same way
+	// the SortNumeric setters do, and are a no-op on a nil panel.
+	var nilPanel *FileSystemPanel
+	nilPanel.SetSortSelectedFirst(true)
+	nilPanel.ToggleSortSelectedFirst()
+
+	fp.SetSortSelectedFirst(false)
+	if fp.SortSelectedFirst {
+		t.Error("SetSortSelectedFirst(false) left SortSelectedFirst set")
+	}
+	fp.ToggleSortSelectedFirst()
+	if !fp.SortSelectedFirst {
+		t.Error("ToggleSortSelectedFirst did not turn selected-first on")
+	}
+}
+
 func TestFileSystemPanel_SetSortModeUsesModeDefaultDirection(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	fp := NewFileSystemPanel(0, 0, 80, 24, vfs.NewNullVFS(0))
@@ -3534,7 +3657,8 @@ func TestFileSystemPanel_HeaderSortMappingAllViewModes(t *testing.T) {
 			fp.Resize(80, 12)
 			x := fp.Table.X1
 			for column, want := range tc.want {
-				mode, ok := fp.headerSortModeAt(x, fp.Table.Y1)
+				labelStart, _ := fp.headerLabelSpan(column)
+				mode, ok := fp.headerSortModeAt(x+labelStart, fp.Table.Y1)
 				if !ok || mode != want {
 					t.Fatalf("column %d maps to %v,%v; want %v,true", column, mode, ok, want)
 				}
@@ -3592,7 +3716,7 @@ drain:
 	fp.EnqueueDirectoryLoad(func() {})
 	done := make(chan struct{})
 	go func() {
-		fp.LoadWorkerWG.Wait()
+		fp.WaitForIdle()
 		close(done)
 	}()
 	waitForPanelSignal(t, done, "directory worker to stop")

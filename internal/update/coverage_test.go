@@ -54,6 +54,11 @@ func TestUpdateHelpersCoverChannelsAndAssets(t *testing.T) {
 	if got := assetSuffixes("android", "arm64", ""); !reflect.DeepEqual(got, []string{"-termux-arm64.tar.gz"}) {
 		t.Fatalf("Android asset suffixes = %v", got)
 	}
+	// The armv7 Termux asset is published as f4-termux-arm.* (build.yml
+	// build-termux names it after GOARCH); the updater must ask for that.
+	if got := assetSuffixes("android", "arm", ""); !reflect.DeepEqual(got, []string{"-termux-arm.tar.gz"}) {
+		t.Fatalf("Android arm asset suffixes = %v", got)
+	}
 	if got := assetSuffixes("linux", "amd64", "musl"); !reflect.DeepEqual(got, []string{
 		"-linux-musl-amd64.tar.gz",
 		"-linux-amd64.tar.gz",
@@ -201,9 +206,9 @@ func TestUpdateCheckAndDownloadUseSelectedRelease(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/latest":
-			_, _ = io.WriteString(w, `{"tag_name":"v2.0.0","published_at":"2026-08-22T00:00:00Z","assets":[{"name":"f4-linux-amd64.tar.gz","browser_download_url":"https://example/stable"}]}`)
+			_, _ = io.WriteString(w, `{"tag_name":"v2.0.0","published_at":"2026-08-22T00:00:00Z","assets":[{"name":"`+testLinuxAssetName()+`","browser_download_url":"https://example/stable"}]}`)
 		case "/tags/nightly":
-			_, _ = io.WriteString(w, `{"tag_name":"nightly","body":"**Commit:** `+"`nightly-sha`"+`\n**Built on:** `+"`2026-08-23T06:49:17Z`"+`","assets":[{"name":"f4-linux-amd64.tar.gz","browser_download_url":"https://example/archive","updated_at":"2026-08-24T00:00:00Z"}]}`)
+			_, _ = io.WriteString(w, `{"tag_name":"nightly","body":"**Commit:** `+"`nightly-sha`"+`\n**Built on:** `+"`2026-08-23T06:49:17Z`"+`","assets":[{"name":"`+testLinuxAssetName()+`","browser_download_url":"https://example/archive","updated_at":"2026-08-24T00:00:00Z"}]}`)
 		case "/archive":
 			w.Header().Set("Content-Length", "4")
 			_, _ = io.WriteString(w, "data")

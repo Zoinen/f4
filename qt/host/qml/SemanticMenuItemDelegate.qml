@@ -34,8 +34,10 @@ Rectangle {
     readonly property real alignmentRevision:
         popupList.contentY + popupSurfaceItem.x + popupSurfaceItem.y + x + y
     transform: Translate {
-        x: overlayController.historyMenu ? hostWindow.iconPixelOffsetX(menuItem) : 0
-        y: overlayController.historyMenu ? hostWindow.iconPixelOffsetY(menuItem) : 0
+        x: overlayController.historyMenu
+           ? hostWindow.dialogPixelOffsetX(menuItem, hostWindow.contentItem) : 0
+        y: overlayController.historyMenu
+           ? hostWindow.dialogPixelOffsetY(menuItem, hostWindow.contentItem) : 0
     }
     color: modelData.index === overlayController.visualSelectedIndex
            && !modelData.separator
@@ -153,7 +155,7 @@ Rectangle {
         readonly property bool centeredLabel: !overlayController.dropdownMode && modelData.header !== true
         anchors.top: centeredLabel ? undefined : parent.top
         anchors.bottom: centeredLabel ? undefined : parent.bottom
-        height: implicitHeight
+        height: hostWindow.snapPx(implicitHeight)
         y: hostWindow.snapPx((parent.height - menuLabelMetrics.tightBoundingRect.height) / 2
                             - menuLabelMetrics.tightBoundingRect.y - baselineOffset)
         anchors.topMargin: menuItem.dropdownTextLayout

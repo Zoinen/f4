@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/unxed/f4/internal/action"
+	"github.com/unxed/f4/internal/i18n"
 	"github.com/unxed/f4/internal/keymap"
 )
 
@@ -42,6 +43,51 @@ func TestPanelsFrameKeyBarKeepsItsOwnActionLabelsBehindAnotherFrame(t *testing.T
 		}
 		if got := labels.Normal[9]; got != "Quit" {
 			t.Errorf("ShowPanels=%v: F10 label = %q, want %q", showPanels, got, "Quit")
+		}
+	}
+}
+
+// TestPanelsFrameTerminalKeyBarFallbacksAreLocalized guards the f4#1218
+// follow-up found while re-checking the ticket: the Shift+F6/Shift+F9/
+// Ctrl+F12 slots in GetKeyLabels' fallback vtui.KeySet were plain English
+// string literals ("Rename", "Save", "Close"), never routed through
+// i18n.Msg. File.Rename and Panel.SortMenu only bind Ctrl+F12/Shift+F6 in
+// the "Shell" area (no DefaultAreas entry adds "Terminal"), so
+// keymap.KeyBarLabelsForArea falls through to these literals whenever the
+// panels are hidden (Ctrl+O) -- showing English regardless of the active
+// language, in the one GetKeyLabels() caption path the LabelKey-based
+// scanners (TestActionLabelKeysResolve, TestCtrlRowActionsHaveLabelKey)
+// cannot see, because no Action.LabelKey is involved at all.
+func TestPanelsFrameTerminalKeyBarFallbacksAreLocalized(t *testing.T) {
+	previousHotkeys := keymap.GlobalHotkeysMgr
+	t.Cleanup(func() {
+		keymap.GlobalHotkeysMgr = previousHotkeys
+		i18n.InitLang("", "", "")
+	})
+
+	// No bindings anywhere: every resolve() call in KeyBarLabelsForArea must
+	// fall back to the literal fallbacks vtui.KeySet carries.
+	keymap.GlobalHotkeysMgr = &keymap.HotkeyManager{Bindings: map[string]map[string]string{}}
+	i18n.InitLang("ru", "", "")
+
+	pf := &PanelsFrame{ShowPanels: false} // Terminal area
+	labels := pf.GetKeyLabels()
+
+	cases := []struct {
+		name    string
+		got     string
+		english string
+	}{
+		{"Shift+F6", labels.Shift[5], "Rename"},
+		{"Shift+F9", labels.Shift[8], "Save"},
+		{"Ctrl+F12", labels.Ctrl[11], "Close"},
+	}
+	for _, tc := range cases {
+		if tc.got == tc.english {
+			t.Errorf("%s fallback label = %q, still the untranslated English literal regardless of locale", tc.name, tc.got)
+		}
+		if tc.got == "" {
+			t.Errorf("%s fallback label is empty, want a localized caption", tc.name)
 		}
 	}
 }

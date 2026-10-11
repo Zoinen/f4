@@ -54,10 +54,21 @@ type Far2lHistoryFile interface {
 // ImportFar2lHistory reads a far2l SavedHistory block. path names the file only
 // so that a failure can say which one.
 func ImportFar2lHistory(ini Far2lHistoryFile, path string) ([]HistoryRecord, error) {
-	linesStr := ini.GetString("SavedHistory", "Lines", "")
-	extrasStr := ini.GetString("SavedHistory", "Extras", "")
-	locksStr := ini.GetString("SavedHistory", "Locks", "")
-	timesStr := ini.GetString("SavedHistory", "Times", "")
+	return importFar2lHistorySection(ini, path, "SavedHistory")
+}
+
+// ImportFar2lFolderHistory reads the folder-history block written by far2l.
+// Folder history has the same record encoding as command history, but lives in
+// its own section and file.
+func ImportFar2lFolderHistory(ini Far2lHistoryFile, path string) ([]HistoryRecord, error) {
+	return importFar2lHistorySection(ini, path, "SavedFolderHistory")
+}
+
+func importFar2lHistorySection(ini Far2lHistoryFile, path, section string) ([]HistoryRecord, error) {
+	linesStr := ini.GetString(section, "Lines", "")
+	extrasStr := ini.GetString(section, "Extras", "")
+	locksStr := ini.GetString(section, "Locks", "")
+	timesStr := ini.GetString(section, "Times", "")
 
 	if linesStr == "" {
 		return nil, fmt.Errorf("no Lines found in %s", path)

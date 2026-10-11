@@ -160,6 +160,9 @@ func SetCursorStyleOS(visible bool, shape CursorShape) {
 		info.visible = 0
 	}
 
+	// The console API describes a cursor by its height alone, so there is no
+	// vertical bar and no blink switch here: CursorShapeBar gets the
+	// underline size, and blinking stays whatever the console does.
 	if shape == CursorShapeBlock {
 		info.size = 100
 	} else {

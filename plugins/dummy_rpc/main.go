@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"path"
@@ -26,7 +27,14 @@ type DummyPlugin struct {
 	open   map[uint32]string // ID -> Path
 	mu     sync.Mutex
 	nextID uint32
+	// count is the sample panel's state: F5 increments it, Shift+F8 resets
+	// it and is declared disabled while there is nothing to reset.
+	count int
 }
+
+// dummyPanelID is the sample panel that shows how an RPC plugin declares
+// panel keys (f4plugin.PanelKeyProvider).
+const dummyPanelID = "dummy-rpc.counter"
 
 func (p *DummyPlugin) Init(host *f4plugin.Host) ([]string, error) {
 	p.host = host
@@ -94,6 +102,72 @@ func (p *DummyPlugin) showHello() error {
 	}
 	p.host.Message("Hello! You invoked the Dummy RPC panel command.")
 	return nil
+}
+
+func (p *DummyPlugin) PanelDescriptors() []f4plugin.PanelDescriptor {
+	return []f4plugin.PanelDescriptor{{
+		ID:          dummyPanelID,
+		Title:       "Dummy RPC counter",
+		Description: "Sample RPC panel with its own keybar keys",
+	}}
+}
+
+func (p *DummyPlugin) OpenPanel(id string, _ f4plugin.PanelContext) ([]byte, error) {
+	if id != dummyPanelID {
+		return nil, fmt.Errorf("unknown panel %q", id)
+	}
+	return p.counterDocument()
+}
+
+// PanelKeys declares F5 and Shift+F8. f4 captions them in its keybar, runs
+// them before its own hotkeys while the panel has the focus, and sends them
+// here as ordinary key events.
+func (p *DummyPlugin) PanelKeys(id string) []f4plugin.PanelKey {
+	if id != dummyPanelID {
+		return nil
+	}
+	p.mu.Lock()
+	empty := p.count == 0
+	p.mu.Unlock()
+	return []f4plugin.PanelKey{
+		{VK: vtinput.VK_F5, Label: "Count"},
+		{VK: vtinput.VK_F8, Mods: uint32(vtinput.ShiftPressed), Label: "Reset", Disabled: empty},
+	}
+}
+
+func (p *DummyPlugin) HandlePanelEvent(request f4plugin.PanelEventRequest) (f4plugin.PanelEventResponse, error) {
+	if request.ID != dummyPanelID || request.Kind != "key" {
+		return f4plugin.PanelEventResponse{}, nil
+	}
+	keys := p.PanelKeys(request.ID)
+	p.mu.Lock()
+	switch {
+	case keys[0].Matches(request.Event):
+		p.count++
+	case keys[1].Matches(request.Event):
+		p.count = 0
+	default:
+		p.mu.Unlock()
+		return f4plugin.PanelEventResponse{}, nil
+	}
+	p.mu.Unlock()
+	document, err := p.counterDocument()
+	return f4plugin.PanelEventResponse{Handled: true, Document: document}, err
+}
+
+func (p *DummyPlugin) ClosePanel(string) error { return nil }
+
+func (p *DummyPlugin) counterDocument() ([]byte, error) {
+	p.mu.Lock()
+	count := p.count
+	p.mu.Unlock()
+	return json.Marshal(map[string]any{
+		"vuiVersion": 1,
+		"root": map[string]any{
+			"type":  "Dialog",
+			"props": map[string]any{"title": fmt.Sprintf("Dummy RPC counter: %d", count)},
+		},
+	})
 }
 
 func (p *DummyPlugin) OnHotkey(vk uint16, mods uint32) error {

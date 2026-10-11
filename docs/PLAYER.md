@@ -11,10 +11,10 @@ text below predates this and still says MP3 in places.
 The entry point for the player work. Written so that it can be continued
 with nothing but the repository at hand. Related reading:
 
-- `IMAGES_PLAN.md` — the same kind of document for pictures; the rules in
+- unxed/f4#1685 — the same kind of document for pictures; the rules in
   its section 1 (tests with every patch, English commit messages, nothing
   copied from far2l) apply here unchanged.
-- `IDEAS.md` — the far2l extensions / FISH+ transport ideas that the "over
+- unxed/f4#1680 — the far2l extensions / FISH+ transport ideas that the "over
   the network" part below builds on.
 - `plugins/id3editor` — the ID3 tag editor; the player reuses its
   `unxed/id3-go` dependency for playlist names.
@@ -158,7 +158,7 @@ In rough order of value per hour:
 7. **M3U import/export** so a playlist folder can be shared; `F5` of an
    `.m3u` file should expand into a folder.
 8. **Cover art** in the control block when the terminal has a graphics
-   protocol — the image pipeline from `IMAGES_PLAN.md` already caches
+   protocol — the image pipeline from unxed/f4#1685 already caches
    decoded pictures; ID3 APIC frames are what `id3-go` exposes.
 
 ## 4. Over the network — thoughts for later
@@ -172,7 +172,7 @@ other way:
 - **Local file, remote speakers** — playing on the machine that runs the
   terminal while f4 runs on a server — is the interesting one, and the one
   that needs a transport. The natural vehicle is the far2l terminal
-  extensions channel that `IDEAS.md` already proposes for drag and drop and
+  extensions channel that unxed/f4#1680 already proposes for drag and drop and
   for VTUI-apps-as-panels: add a request that opens an *audio sink* on the
   terminal side (`rate`, `channels`, `format`) and a stream of PCM (or,
   better, of the undecoded MP3 frames, which are 10× smaller and let the

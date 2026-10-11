@@ -585,18 +585,16 @@ func (t *Table) DisplayObject(scr *ScreenBuf) {
 	// Ensure margins are in sync with ShowHeader/ShowScrollBar before rendering
 	t.SetPosition(t.X1, t.Y1, t.X2, t.Y2)
 
-	yOffset := 0
-
 	// 1. Draw the QuickSearch line above everything else
 	if t.QuickSearch {
 		t.drawSearchLine(scr)
-		yOffset++
 	}
+	yOffset := t.headerY() - t.Y1
 
 	// 2. Draw Header
 	widths := t.resolvedWidths()
 	if t.ShowHeader {
-		t.drawRow(scr, t.Y1+yOffset, -1, -1, Palette[t.ColorTitleIdx], widths)
+		t.drawRow(scr, t.headerY(), -1, -1, Palette[t.ColorTitleIdx], widths)
 		yOffset++
 	}
 
@@ -628,10 +626,8 @@ func (t *Table) DisplayObject(scr *ScreenBuf) {
 		p := NewPainter(scr)
 		currX := t.X1
 		sepChar := boxSymbols[bsV] // │
-		sepY1 := t.Y1
-		if t.QuickSearch {
-			sepY1++ // do not cross the search line
-		}
+		// Separators start at the header and never cross the search line.
+		sepY1 := t.headerY()
 		for i := 0; i < len(t.Columns)-1; i++ {
 			currX += widths[i]
 			p.Fill(currX, sepY1, currX, t.Y2, sepChar, Palette[t.ColorBoxIdx])
@@ -958,7 +954,9 @@ func (t *Table) ProcessMouse(e *vtinput.InputEvent) bool {
 	if e.Type == vtinput.MouseEventType && e.ButtonState == vtinput.FromLeft1stButtonPressed && IsMousePress(e) {
 		// Click on a column header toggles sorting (only when Sortable).
 		// Clicks on separator cells are consumed but do not change the sort.
-		if t.Sortable && t.ShowHeader && int(e.MouseY) == t.Y1 &&
+		// The header sits below the QuickSearch line when there is one; a
+		// click on the search line is not a header click (f4 #312).
+		if t.Sortable && t.ShowHeader && int(e.MouseY) == t.headerY() &&
 			int(e.MouseX) >= t.X1 && int(e.MouseX) <= t.X2 {
 			widths := t.resolvedWidths()
 			currX := t.X1
@@ -1007,6 +1005,17 @@ func (t *Table) ProcessMouse(e *vtinput.InputEvent) bool {
 	return handled
 }
 
+// headerY is the screen row of the column header (or, without a header, of
+// the first data row): right below the QuickSearch line when it is on, else
+// the top row. Drawing and mouse hit-testing both use it, so the row that
+// looks like the header is the row that sorts.
+func (t *Table) headerY() int {
+	if t.QuickSearch {
+		return t.Y1 + 1
+	}
+	return t.Y1
+}
+
 func (t *Table) SetPosition(x1, y1, x2, y2 int) {
 	t.MarginTop = map[bool]int{true: 1, false: 0}[t.ShowHeader] + map[bool]int{true: 1, false: 0}[t.QuickSearch]
 	t.MarginBottom = 0
@@ -1042,7 +1051,7 @@ func (t *Table) drawSearchLine(scr *ScreenBuf) {
 
 	if t.IsFocused() {
 		scr.SetCursorVisible(true)
-		scr.SetCursorShape(CursorShapeUnderline)
+		scr.SetCursorShape(InsertCursorShape())
 		cursorX := t.X1 + 2 + StringWidth(string(t.searchRunes[t.searchLeft:t.searchCursor]))
 		if cursorX > t.X2 {
 			cursorX = t.X2

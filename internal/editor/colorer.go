@@ -1,17 +1,26 @@
+//go:build !lite
+
 package editor
 
 import (
 	"context"
-	colorer "github.com/unxed/colorer4go"
-	colorerdata "github.com/unxed/f4/internal/colorer"
-	"github.com/unxed/f4/internal/config"
-	"github.com/unxed/vtui"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
+
+	colorer "github.com/unxed/colorer4go"
+	colorerdata "github.com/unxed/f4/internal/colorer"
+	"github.com/unxed/f4/internal/config"
+	"github.com/unxed/f4/internal/toast"
+	"github.com/unxed/f4/vfs/hostmode"
+	"github.com/unxed/vtui"
 )
 
 const (
@@ -138,9 +147,9 @@ func colorerRegionRunes(start, end, lineRunes int) (int, int, bool) {
 }
 
 var (
-	colorerPoolMu  sync.Mutex
-	colorerIdle    *colorer.Session
-	colorerIdleSource ColorerSource
+	colorerPoolMu        sync.Mutex
+	colorerIdle          *colorer.Session
+	colorerIdleSource    ColorerSource
 	colorerRegionCacheMu sync.RWMutex
 	colorerRegionCache   = make(map[string]colorerRegionCacheEntry)
 )
@@ -267,6 +276,161 @@ type ColorerSource struct {
 	UserHRCSettings string
 }
 
+var colorerPercentVar = regexp.MustCompile(`%([A-Za-z_][A-Za-z0-9_]*)%`)
+
+// expandColorerUserPath resolves what a user writes in a path setting: a
+// leading ~ for the home folder, $NAME and ${NAME}, and %NAME% on Windows. The
+// library is handed a plain path, and "stat ~/.config/...: no such file" was
+// the answer to a path that was perfectly good in a shell (#277). Names that are
+// not set are left as written.
+func expandColorerUserPath(path string) string {
+	if runtime.GOOS == "windows" {
+		path = colorerPercentVar.ReplaceAllStringFunc(path, func(m string) string {
+			if value, ok := os.LookupEnv(m[1 : len(m)-1]); ok {
+				return value
+			}
+			return m
+		})
+	}
+	path = os.Expand(path, func(name string) string {
+		if value, ok := os.LookupEnv(name); ok {
+			return value
+		}
+		return "$" + name
+	})
+	if path == "~" || strings.HasPrefix(path, "~/") || strings.HasPrefix(path, `~\`) {
+		if home, err := hostmode.UserHomeDir(); err == nil && home != "" {
+			return filepath.Join(home, path[1:])
+		}
+	}
+	return path
+}
+
+// colorerLocationTagRe matches a <location> element in an hrd-sets XML file,
+// whichever attributes it carries and whether or not it self-closes.
+var colorerLocationTagRe = regexp.MustCompile(`<location(?:\s[^>]*)?/?>`)
+
+// colorerLinkAttrRe matches that element's link attribute and captures its
+// value, single or double quoted.
+var colorerLinkAttrRe = regexp.MustCompile(`\blink\s*=\s*(?:"([^"]*)"|'([^']*)')`)
+
+// colorerUserHRDCacheDirName is where materializeUserHRDPath copies the
+// files a user's hrd-sets <location link> points to. It lives inside the
+// Colorer configuration directory's own "base" folder — the one directory
+// Colorer resolves every <location link> against, no matter which file
+// contains the element (see materializeUserHRDPath) — under a name no
+// catalog uses.
+const colorerUserHRDCacheDirName = ".f4-user-hrd-cache"
+
+// materializeUserHRDPath works around a Colorer limitation reported in
+// f4#277 by montoner0: a <location link> in an hrd-sets file — the format
+// EditorColorerUserHrd loads when it names a single XML file rather than a
+// folder of standalone .hrd files — resolves against catalog.xml's own
+// directory, never against the file that contains the link (traced to
+// ParserFactory::Impl::fillMapper in colorer4go's vendored Colorer-library,
+// which always resolves hrd_location entries against base_catalog_path).
+// HRC schemes have no such problem: HrcLibraryImpl resolves a scheme's
+// <location link> against the file that contains it, via
+// XmlInputSource::createRelative, which is exactly what this function gives
+// hrd-sets files by another route.
+//
+// A user file that lives anywhere else on disk and links to a sibling .hrd
+// file by a plain relative path could therefore never find it. This copies
+// every such link's target into configsDir/base/.f4-user-hrd-cache — inside
+// the directory Colorer does resolve links against — and hands Colorer a
+// rewritten copy of the file whose links point there instead. What is left
+// untouched, on purpose:
+//
+//   - a folder of standalone .hrd files: each names itself in its own root
+//     element and carries no <location> indirection to fix;
+//   - a link that is empty, absolute, a URL, or uses an XML entity such as
+//     &hrd; — only catalog.xml's own DOCTYPE defines those, and a link
+//     written that way already means "resolve me against the catalog",
+//     which keeps working exactly as before.
+//
+// Anything this function cannot read, parse or copy falls back to the
+// original path, which is always a valid, if limited, answer — today's
+// behaviour.
+func materializeUserHRDPath(configsDir, userHRDPath string) string {
+	info, err := os.Stat(userHRDPath)
+	if err != nil || info.IsDir() {
+		return userHRDPath
+	}
+	data, err := os.ReadFile(userHRDPath)
+	if err != nil {
+		return userHRDPath
+	}
+	origDir := filepath.Dir(userHRDPath)
+	cacheDir := filepath.Join(configsDir, "base", colorerUserHRDCacheDirName)
+	newContent, changed := rewriteUserHRDLocationLinks(data, origDir, cacheDir)
+	if !changed {
+		return userHRDPath
+	}
+	if err := os.MkdirAll(cacheDir, 0700); err != nil {
+		return userHRDPath
+	}
+	topPath := filepath.Join(cacheDir, "top-"+filepath.Base(userHRDPath))
+	// #nosec G703 -- cacheDir is fixed (configsDir/base/.f4-user-hrd-cache) and
+	// filepath.Base strips any ".."/separator the setting could carry, so this
+	// cannot write outside cacheDir.
+	if err := os.WriteFile(topPath, newContent, 0600); err != nil {
+		return userHRDPath
+	}
+	return topPath
+}
+
+// rewriteUserHRDLocationLinks rewrites every plain relative <location link>
+// in content — an hrd-sets file whose own directory is origDir — to point
+// into cacheDir instead, copying each link's target there under an
+// ASCII-safe generated name (Colorer's legacy strings read a file name as
+// CP1251, same limit as EditorColorerUserHrd itself). A link this function
+// does not rewrite, and every other byte of content, is returned unchanged;
+// changed is false when nothing needed rewriting, in which case the caller
+// keeps the original file.
+func rewriteUserHRDLocationLinks(content []byte, origDir, cacheDir string) ([]byte, bool) {
+	changed := false
+	n := 0
+	out := colorerLocationTagRe.ReplaceAllFunc(content, func(tag []byte) []byte {
+		loc := colorerLinkAttrRe.FindSubmatchIndex(tag)
+		if loc == nil {
+			return tag
+		}
+		start, end := loc[2], loc[3]
+		if start < 0 {
+			start, end = loc[4], loc[5]
+		}
+		link := string(tag[start:end])
+		if link == "" || strings.ContainsRune(link, '&') || filepath.IsAbs(link) || strings.Contains(link, "://") {
+			return tag
+		}
+		srcPath := filepath.Join(origDir, filepath.FromSlash(link))
+		if srcInfo, statErr := os.Stat(srcPath); statErr != nil || srcInfo.IsDir() {
+			return tag
+		}
+		data, readErr := os.ReadFile(srcPath)
+		if readErr != nil {
+			return tag
+		}
+		n++
+		cacheName := fmt.Sprintf("link%d.hrd", n)
+		if mkErr := os.MkdirAll(cacheDir, 0700); mkErr != nil {
+			return tag
+		}
+		// #nosec G703 -- cacheName is generated here from n and a fixed
+		// extension, not from link, so it cannot carry a traversal segment.
+		if writeErr := os.WriteFile(filepath.Join(cacheDir, cacheName), data, 0600); writeErr != nil {
+			return tag
+		}
+		changed = true
+		newTag := make([]byte, 0, len(tag)+len(colorerUserHRDCacheDirName)+len(cacheName))
+		newTag = append(newTag, tag[:start]...)
+		newTag = append(newTag, colorerUserHRDCacheDirName+"/"+cacheName...)
+		newTag = append(newTag, tag[end:]...)
+		return newTag
+	})
+	return out, changed
+}
+
 // CurrentColorerSource is the source the applied configuration names.
 func CurrentColorerSource() ColorerSource {
 	return ColorerSource{
@@ -290,13 +454,14 @@ func (src ColorerSource) userOptions() []colorer.Option {
 		opts = append(opts, colorer.WithHRCSettings(settings))
 	}
 	if src.UserHRD != "" {
-		opts = append(opts, colorer.WithUserHRD(src.UserHRD))
+		hrdPath := expandColorerUserPath(src.UserHRD)
+		opts = append(opts, colorer.WithUserHRD(materializeUserHRDPath(src.ConfigsDir, hrdPath)))
 	}
 	if src.UserHRC != "" {
-		opts = append(opts, colorer.WithUserHRC(src.UserHRC))
+		opts = append(opts, colorer.WithUserHRC(expandColorerUserPath(src.UserHRC)))
 	}
 	if src.UserHRCSettings != "" {
-		opts = append(opts, colorer.WithUserHRCSettings(src.UserHRCSettings))
+		opts = append(opts, colorer.WithUserHRCSettings(expandColorerUserPath(src.UserHRCSettings)))
 	}
 	return opts
 }
@@ -676,6 +841,7 @@ func newColorerHighlighter(ev *EditorView, filename, firstLine string, fallback 
 		activeScheme, generation := activeColorerScheme()
 		if hErr := session.SetHRD("rgb", activeScheme); hErr != nil {
 			vtui.DebugLog("COLORER: Colour style %q failed for %q, using the fallback highlighter: %v", activeScheme, filename, hErr)
+			notifyColorerSchemeFailure(fmt.Sprintf("Colorer: colour style %q failed for %s: %v", activeScheme, filename, hErr))
 			session.Close()
 			if !ch.closed {
 				ch.useFallback(ev)
@@ -689,6 +855,13 @@ func newColorerHighlighter(ev *EditorView, filename, firstLine string, fallback 
 		settings := readColorerTypeSettings(session)
 		vtui.DebugLog("COLORER: SelectType(%q, len=%d) -> selected=%v, err=%v", filename, len(firstLine), selected, sErr)
 		if sErr != nil || !selected {
+			// selected==false with a nil error just means the catalog has no
+			// scheme for this file (a plain .txt file, say): expected, and
+			// not worth a toast. A non-nil error is Colorer actually failing
+			// to select a type it should have been able to.
+			if sErr != nil {
+				notifyColorerSchemeFailure(fmt.Sprintf("Colorer: could not select a syntax scheme for %s: %v", filename, sErr))
+			}
 			session.Close()
 			if !ch.closed {
 				ch.useFallback(ev)
@@ -728,6 +901,22 @@ func newColorerHighlighter(ev *EditorView, filename, firstLine string, fallback 
 	return ch
 }
 
+// colorerSchemeFailureToastDuration is how long the toast raised by
+// notifyColorerSchemeFailure stays up. A var, like other toast durations in
+// this codebase (e.g. processEnvironmentFailureToastDuration), so a test can
+// shorten it.
+var colorerSchemeFailureToastDuration = 4 * time.Second
+
+// notifyColorerSchemeFailure surfaces a Colorer scheme-selection or
+// colour-style failure to the user. debug.log already has the same failure,
+// logged right before this is called with more detail (including, for a
+// SelectType failure, the C++ exception's throw site); without this, an
+// editor quietly falling back to another highlighter was the only visible
+// sign anything had gone wrong (f4#306).
+func notifyColorerSchemeFailure(message string) {
+	toast.Show(message, colorerSchemeFailureToastDuration)
+}
+
 func (ch *ColorerHighlighter) useFallback(ev *EditorView) {
 	vtui.FrameManager.PostTask(func() {
 		if !ch.starting || ch.closed || ch.disabled {
@@ -749,6 +938,12 @@ func (ch *ColorerHighlighter) useFallback(ev *EditorView) {
 		}
 		vtui.FrameManager.Redraw()
 	})
+}
+
+// colorerStaleLine is one line's colours kept from before an edit.
+type colorerStaleLine struct {
+	attrs []uint64
+	bg    uint64
 }
 
 type ColorerHighlighter struct {
@@ -776,6 +971,14 @@ type ColorerHighlighter struct {
 	// regionCache holds each parsed line's regions, kept and evicted with
 	// attrCache, for select region.
 	regionCache map[int][]colorerRegionSpan
+
+	// stale holds the colours an edit dropped. Fresh colours come from the
+	// worker a moment later; until then the old ones are drawn instead of
+	// plain text, so a keystroke does not blink every line below it (#1230).
+	// lineCount is the document's line count when the colours were last
+	// current, to tell how far an edit moved the lines below it.
+	stale     map[int]colorerStaleLine
+	lineCount int
 
 	// The type the user picked from the list of types, "" to choose by file
 	// name; and the type the file name chose. Both UI-owned. workerFileType
@@ -893,7 +1096,7 @@ func (ch *ColorerHighlighter) HighlightLine(idx int, line string, baseAttr uint6
 	// a bounded snapshot of the required context and the worker does all WASM
 	// calls asynchronously.
 	ch.queueLine(idx, line, baseAttr)
-	return nil
+	return ch.stale[idx].attrs
 }
 
 // colorerContextPlan decides how the session gets to idx: fed forward from
@@ -932,12 +1135,127 @@ func colorerForgetPlan(parsedIdx, forgottenUpTo int) (keepFrom int, do bool) {
 // DropFrom forgets everything the highlighter knows from line idx on. An edit
 // invalidates the colours below it, and it invalidates the session itself
 // whenever the session has already parsed past that line: its cache cannot be
-// unwound, only thrown away.
+// unwound, only thrown away. Nothing is kept to draw in the meantime; that is
+// for DropAfterEdit, where the old colours are still a good guess.
 func (ch *ColorerHighlighter) DropFrom(idx int) {
 	if idx < 0 {
 		idx = 0
 	}
 	ch.dropCacheFrom(idx)
+	for key := range ch.stale {
+		if key >= idx {
+			delete(ch.stale, key)
+		}
+	}
+	ch.abandonWork()
+}
+
+// DropAfterEdit is DropFrom for a text edit at line idx that leaves the
+// document with lineCount lines. The colours it drops are kept, moved along
+// with the lines they belonged to, and drawn until the worker has the new ones:
+// without that every keystroke would show the lines below it as plain text for
+// a moment (#1230).
+func (ch *ColorerHighlighter) DropAfterEdit(idx, lineCount int) {
+	if idx < 0 {
+		idx = 0
+	}
+	delta := 0
+	if ch.lineCount > 0 {
+		delta = lineCount - ch.lineCount
+	}
+	ch.lineCount = lineCount
+	ch.keepStale(idx, delta)
+	ch.dropCacheFrom(idx)
+	ch.abandonWork()
+}
+
+// DropAfterReplace is DropAfterEdit for Undo and Redo, which put back an
+// earlier text without saying what changed. The colours of every line are kept
+// to draw until the worker has fresh ones (else the whole screen blinks plain,
+// #1230); the lines from idx on, where the change begins, move by the change in
+// the line count, and those above it stay where they are. Everything is
+// recomputed from the top: none of it is trusted as current.
+func (ch *ColorerHighlighter) DropAfterReplace(idx, lineCount int) {
+	if idx < 0 {
+		idx = 0
+	}
+	delta := 0
+	if ch.lineCount > 0 {
+		delta = lineCount - ch.lineCount
+	}
+	ch.lineCount = lineCount
+
+	old := make(map[int]colorerStaleLine, len(ch.stale)+len(ch.attrCache))
+	for key, line := range ch.stale {
+		old[key] = line
+	}
+	for key, attrs := range ch.attrCache {
+		old[key] = colorerStaleLine{attrs: attrs, bg: ch.bgCache[key]}
+	}
+	ch.stale = make(map[int]colorerStaleLine, len(old))
+	// The lines that moved go in first, so that one that lands on a line above
+	// the change does not displace what has always been there.
+	for key, line := range old {
+		if key >= idx {
+			if to := key + delta; to >= idx {
+				ch.stale[to] = line
+			}
+		}
+	}
+	for key, line := range old {
+		if key < idx {
+			ch.stale[key] = line
+		}
+	}
+	ch.dropCacheFrom(0)
+	ch.abandonWork()
+}
+
+// noteLineCount records the line count the cached colours belong to. The
+// editor calls it every frame, so an edit sees how many lines it added or
+// removed.
+func (ch *ColorerHighlighter) noteLineCount(n int) {
+	ch.lineCount = n
+}
+
+// keepStale moves the colours of lines idx and below, fresh or already stale,
+// into the stale set, delta lines further down (up, if negative). The edited
+// line keeps its old colours in place as well: the text of it changed, but
+// most of it is where it was.
+func (ch *ColorerHighlighter) keepStale(idx, delta int) {
+	moved := make(map[int]colorerStaleLine)
+	for key, line := range ch.stale {
+		if key >= idx {
+			moved[key] = line
+			delete(ch.stale, key)
+		}
+	}
+	for key, attrs := range ch.attrCache {
+		if key >= idx {
+			moved[key] = colorerStaleLine{attrs: attrs, bg: ch.bgCache[key]}
+		}
+	}
+	if len(moved) == 0 {
+		return
+	}
+	if ch.stale == nil {
+		ch.stale = make(map[int]colorerStaleLine, len(moved))
+	}
+	for key, line := range moved {
+		if to := key + delta; to >= idx {
+			ch.stale[to] = line
+		}
+	}
+	if line, ok := moved[idx]; ok {
+		if _, taken := ch.stale[idx]; !taken {
+			ch.stale[idx] = line
+		}
+	}
+}
+
+// abandonWork throws away what the worker was doing: the results of a job in
+// flight describe text that is gone, and the session is re-anchored next frame.
+func (ch *ColorerHighlighter) abandonWork() {
 	// An edit moves the text a pair search walks; its tokens are stale, and
 	// so is an outline collected so far.
 	ch.pairSearch = nil
@@ -951,17 +1269,11 @@ func (ch *ColorerHighlighter) DropFrom(idx int) {
 }
 
 func (ch *ColorerHighlighter) GetLineBackground(idx int, defaultAttr uint64) uint64 {
-	if ch.bgCache == nil {
-		return defaultAttr
-	}
-	if idx < ch.parsedIdx-100 {
-		if bg, ok := ch.bgCache[idx]; ok {
-			return bg
-		}
-		return defaultAttr
-	}
 	if bg, ok := ch.bgCache[idx]; ok {
 		return bg
+	}
+	if line, ok := ch.stale[idx]; ok {
+		return line.bg
 	}
 	return defaultAttr
 }
@@ -994,6 +1306,7 @@ func (ch *ColorerHighlighter) storeAttrs(idx int, attrs []uint64, bg uint64, pai
 	}
 	ch.attrCache[idx] = attrs
 	ch.bgCache[idx] = bg
+	delete(ch.stale, idx)
 	delete(ch.outlineCache, idx)
 	delete(ch.regionCache, idx)
 	if len(pairs) > 0 {
@@ -1047,6 +1360,7 @@ func (ch *ColorerHighlighter) Close() error {
 	ch.outlineCache = nil
 	ch.outlineBuild = nil
 	ch.regionCache = nil
+	ch.stale = nil
 	ch.parsedIdx = 0
 	if closer, ok := ch.fallback.(io.Closer); ok {
 		closer.Close()

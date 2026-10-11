@@ -58,8 +58,8 @@ func (fp *FileSystemPanel) syncGroupedCursor(visual int) {
 		}
 	}
 	rel := visual - top + fp.stickyGroupRows(top)
-	if fp.FastFindMode && height > 2 && rel%height >= height-2 {
-		top += rel%height - (height - 3)
+	if covered := fp.fastFindBoxHeight() - 1; fp.FastFindMode && height > covered && rel%height >= height-covered {
+		top += rel%height - (height - covered - 1)
 		top = min(top, visual)
 		rel = visual - top + fp.stickyGroupRows(top)
 	}
@@ -120,7 +120,7 @@ func (fp *FileSystemPanel) groupHeadingAt(x, y int) bool {
 			return false
 		}
 	}
-	row = fp.viewportDisplayRow(fp.Table.TopPos+row, column)
+	row = fp.viewportDisplayRow(fp.Table.TopPos+row, fp.stripeOfColumn(column))
 	return row >= 0 && row < len(fp.displayRows) && fp.displayRows[row].entry < 0
 }
 
@@ -130,10 +130,11 @@ func (fp *FileSystemPanel) drawGroupHeadings(scr *vtui.ScreenBuf) {
 	}
 	height := fp.Table.ViewHeight
 	left := fp.Table.X1
-	for column := 0; column < fp.gridColumnCount(); column++ {
+	stripes := fp.gridColumnCount()
+	for column := 0; column < stripes; column++ {
 		width := fp.Table.X2 - fp.Table.X1 + 1
-		if fp.gridColumnCount() > 1 {
-			width = fp.Table.Columns[column].Width
+		if stripes > 1 {
+			width = fp.stripeWidth(column)
 		}
 		for offset := 0; offset < height; offset++ {
 			row := fp.viewportDisplayRow(fp.Table.TopPos+offset, column)

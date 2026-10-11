@@ -409,6 +409,17 @@ func (uiPermissionPrompt) Ask(req PermissionRequest) bool {
 		return false
 	}
 
+	// The dialog is shown by the UI goroutine, so a caller that is the UI
+	// goroutine would wait the whole timeout for a task only it could run
+	// (f4#1710: installing the Android plugin froze f4 for two minutes). Refuse
+	// at once and say why instead; callers that load a plugin do it off the UI
+	// goroutine. The goroutine is known only once something has learned it.
+	if onUIGoroutine() {
+		vtui.DebugLog("PERMISSIONS: %s asked to %s on the UI goroutine, which cannot show the question; refused",
+			req.Plugin, permissionTitle(req.Permission))
+		return false
+	}
+
 	answer := make(chan bool, 1)
 	vtui.FrameManager.PostTask(func() {
 		dlg := vtui.ShowMessage(" Plugin permission ", PermissionRequestText(req), []string{"&Allow", "&Deny"})
@@ -445,6 +456,7 @@ func PluginPermissions() *PermissionStore {
 // plugin rather than one per permission, so that a refusal in this run is
 // remembered across everything the plugin goes on to try.
 func newPluginGate(identity PluginIdentity) *PermissionGate {
+	learnUIGoroutine() // so a prompt asked on it can be refused, not waited for
 	return NewPermissionGate(identity, PluginPermissions(), uiPermissionPrompt{})
 }
 

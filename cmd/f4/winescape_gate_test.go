@@ -33,17 +33,21 @@ import (
 const winescapeImportPath = "github.com/unxed/libwinescape/go"
 
 var winescapeImporters = map[string]string{
-	"internal/app/bootstrap_detach_windows.go":      "asks hostmode.Allowed() before redirecting Wine's fd 2",
-	"internal/terminal/native_command_windows.go":   "native simple/captured commands; every use is gated by hostmode.Posix()",
-	"internal/terminal/pty_wine_windows.go":         "the native terminal; every use is gated by hostmode.Posix() (winePTYUsable)",
-	"internal/terminal/wineprobe_escape_windows.go": "diagnostics only; reports hostmode.Posix() and Allowed()",
-	"vfs/hostfs/errno_windows.go":                   "error translation for hostfs; reached only through it",
-	"vfs/hostfs/hostfs_windows.go":                  "every libwinescape call sits behind hostmode.Posix()",
-	"vfs/hostfs/hostfs_winescape.go":                "the posix backend of hostfs; reached only when hostmode.Posix()",
-	"vfs/hostmode/hostmode.go":                      "the decision itself: Allowed(), then the probe",
-	"vfs/os_vfs_physical_windows.go":                "branches on hostmode.Posix()",
-	"vfs/os_vfs_windows.go":                         "names the *winescape.Stat_t type in an assertion; makes no calls",
-	"vfs/rename_noreplace_windows.go":               "branches on hostmode.Posix()",
+	"internal/app/bootstrap_detach_windows.go":             "asks hostmode.Allowed() before redirecting Wine's fd 2",
+	"internal/sysinfo/fs_windows.go":                       "FS()'s posix branch, gated by hostmode.Posix()",
+	"internal/terminal/native_command_windows.go":          "native simple/captured commands; every use is gated by hostmode.Posix()",
+	"internal/terminal/pty_wine_windows.go":                "the native terminal; every use is gated by hostmode.Posix() (winePTYUsable)",
+	"internal/terminal/wineprobe_escape_windows.go":        "diagnostics only; reports hostmode.Posix() and Allowed()",
+	"vfs/hostfs/errno_windows.go":                          "error translation for hostfs; reached only through it",
+	"vfs/hostfs/hostfs_windows.go":                         "every libwinescape call sits behind hostmode.Posix()",
+	"vfs/hostfs/hostfs_winescape.go":                       "the posix backend of hostfs; reached only when hostmode.Posix()",
+	"internal/winex11drag/wineconn.go":                     "#566 step 2, opening the X11 connection; asks hostmode.Posix() as its first line",
+	"vfs/hostmode/hostmode.go":                             "the decision itself: Allowed(), then the probe",
+	"vfs/os_vfs_physical_windows.go":                       "branches on hostmode.Posix()",
+	"vfs/os_vfs_windows.go":                                "names the *winescape.Stat_t type in an assertion; makes no calls",
+	"vfs/rename_noreplace_windows.go":                      "branches on hostmode.Posix()",
+	"vfs/trash_windows.go":                                 "posix-personality trash; every winescape call sits behind hostmode.Posix()",
+	"third_party/vtui/graphics_probe_winescape_windows.go": "both graphics entry points require the default-off WinescapeGraphicsProbeEnabled opt-in and winescapeAvailable(); f4 does not enable the opt-in",
 }
 
 func TestLibwinescapeImportersAreAccountedFor(t *testing.T) {

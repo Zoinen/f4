@@ -3,7 +3,6 @@
     .
     ├── ansi_writer.go
     ├── ARCHITECTURE.md
-    ├── ARCH_PROPOSALS.md
     ├── autocomplete.go
     ├── autocomplete_test.go
     ├── autolayout.go

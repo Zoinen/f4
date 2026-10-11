@@ -349,5 +349,25 @@ var discoverFallbackPaths = func(r rune) []string {
 	for _, path := range fontconfigPathsForRune(r) {
 		add(path)
 	}
+	// Where fontconfig answers, it has already named every installed font
+	// that carries r. Where it does not, the curated names above are
+	// guesses about this machine, and a guess that missed is exactly the
+	// case worth spending a scan of the installed fonts on.
+	if !fontconfigAvailable() {
+		for _, path := range installedFontPathsForRune(r) {
+			add(path)
+		}
+	}
 	return found
+}
+
+// scriptNameForRune names r's Unicode script, for the log line that reports a
+// rune no font renders. A rune belongs to at most one script table.
+func scriptNameForRune(r rune) string {
+	for name, table := range unicode.Scripts {
+		if unicode.Is(table, r) {
+			return name
+		}
+	}
+	return "unknown script"
 }

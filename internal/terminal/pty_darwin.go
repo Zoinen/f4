@@ -32,34 +32,36 @@ func NewPTY() (*PTY, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Put the master fd in non-blocking mode *before* wrapping it in
-	// os.NewFile, same as every other platform; see pty_unix.go. Go only
-	// registers a descriptor with the runtime poller when it is already
-	// non-blocking at NewFile time. Setting it afterwards leaves os.File
-	// in raw-syscall mode reading a non-blocking fd: every Read returns
-	// EAGAIN immediately, and the terminal read loop treats that as fatal,
-	// so the console goes permanently dark. The TIOCPTY* ioctls below take
-	// the raw masterFd, so the ordering does not affect them.
-	if err := unix.SetNonblock(masterFd, true); err != nil {
-		unix.Close(masterFd)
-		return nil, err
-	}
-	master := os.NewFile(uintptr(masterFd), "/dev/ptmx")
 
+	// Unlike every other platform here (see pty_unix.go / pty_linux.go), the
+	// master fd is deliberately kept blocking, and unwrapped in an os.File,
+	// through the whole grantpt/unlockpt/get-slave-name/open-slave handshake
+	// below. Darwin's /dev/ptmx driver is not safe to hand to the Go runtime
+	// poller mid-handshake: registering the fd with kqueue (which is what
+	// os.NewFile does the moment the fd is non-blocking) before TIOCPTYUNLK
+	// has run races the driver's own bookkeeping for the pair and can corrupt
+	// it, later surfacing as ENOTTY/EBADF out of an otherwise ordinary read
+	// or ioctl -- see golang/go#22099 and creack/pty#52 / creack/pty#53.
+	// Neither Apple's own libc (grantpt.c/pty.c in apple-oss-distributions/
+	// Libc) nor creack/pty ever makes the master non-blocking at this stage;
+	// this file used to, because the code was copied from the Linux branch,
+	// where it is required. The race is intermittent -- recent macOS runners
+	// under CI here don't seem to catch it -- but it doesn't need to occur
+	// on every host to require avoiding it.
 	if _, _, e := syscall.Syscall(syscall.SYS_IOCTL, uintptr(masterFd), unix.TIOCPTYGRANT, 0); e != 0 {
-		master.Close()
+		unix.Close(masterFd)
 		return nil, e
 	}
 
 	if _, _, e := syscall.Syscall(syscall.SYS_IOCTL, uintptr(masterFd), unix.TIOCPTYUNLK, 0); e != 0 {
-		master.Close()
+		unix.Close(masterFd)
 		return nil, e
 	}
 
 	ptyName := make([]byte, 128)
 	// #nosec G103 -- ioctl writes at most the 128-byte ptyName buffer during this synchronous syscall.
 	if _, _, e := syscall.Syscall(syscall.SYS_IOCTL, uintptr(masterFd), unix.TIOCPTYGNAME, uintptr(unsafe.Pointer(&ptyName[0]))); e != 0 {
-		master.Close()
+		unix.Close(masterFd)
 		return nil, e
 	}
 
@@ -71,9 +73,22 @@ func NewPTY() (*PTY, error) {
 
 	slaveFd, err := unix.Open(slaveName, unix.O_RDWR|unix.O_NOCTTY|unix.O_CLOEXEC, 0)
 	if err != nil {
-		master.Close()
+		unix.Close(masterFd)
 		return nil, err
 	}
+
+	// Only now, with the pty pair fully established (grantpt/unlockpt done,
+	// slave opened), is it safe to switch the master to non-blocking mode
+	// and hand it to os.NewFile -- same reasoning as pty_unix.go: Go only
+	// registers a descriptor with the runtime poller when it is already
+	// non-blocking at NewFile time, and the read loop in frame.go relies on
+	// PTY.Close() closing this os.File to unblock a pending Master.Read().
+	if err := unix.SetNonblock(masterFd, true); err != nil {
+		unix.Close(masterFd)
+		unix.Close(slaveFd)
+		return nil, err
+	}
+	master := os.NewFile(uintptr(masterFd), "/dev/ptmx")
 	slave := os.NewFile(uintptr(slaveFd), slaveName)
 
 	p := &PTY{
@@ -117,11 +132,12 @@ func (p *PTY) Wait() error {
 }
 
 func (p *PTY) Run(name string, args ...string) error {
+	args = historyQuietArgs(name, args)
 	p.Cmd = exec.Command(name, args...)
 	p.Cmd.Stdin = p.Slave
 	p.Cmd.Stdout = p.Slave
 	p.Cmd.Stderr = p.Slave
-	p.Cmd.Env = TerminalChildEnv()
+	p.Cmd.Env = historyQuietEnv(name, args, TerminalChildEnv())
 	p.Cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setsid:  true,
 		Setctty: true,

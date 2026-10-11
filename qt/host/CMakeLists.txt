@@ -993,6 +993,9 @@ endif()
 
 if(BUILD_TESTING)
   find_package(Qt6 COMPONENTS Test REQUIRED)
+  # CTest capture paths are generated under the build tree, not the checkout.
+  file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/.diagnostics"
+                      "${CMAKE_BINARY_DIR}/artifacts")
 
   find_program(F4_ARCHITECTURE_PYTHON NAMES python3 python)
   if(F4_ARCHITECTURE_PYTHON)
@@ -1128,7 +1131,12 @@ if(BUILD_TESTING)
       target_link_libraries(MacSystemButtonLayoutTests PRIVATE
         Qt6::Quick Qt6::Test QWindowKit::Quick "-framework AppKit")
       add_test(NAME MacSystemButtonLayoutTest COMMAND MacSystemButtonLayoutTests)
-      set_tests_properties(MacSystemButtonLayoutTest PROPERTIES LABELS "native-macos")
+      # AppKit traffic-light assertions require Cocoa's native NSView handle;
+      # an inherited offscreen platform supplies no AppKit window to inspect.
+      set_tests_properties(MacSystemButtonLayoutTest PROPERTIES
+        LABELS "native-macos"
+        ENVIRONMENT "QT_QPA_PLATFORM=cocoa"
+      )
     endif()
     add_executable(MacApplicationIconTests
       tests/MacApplicationIconTests.mm
@@ -1656,8 +1664,9 @@ if(BUILD_TESTING)
       ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV};F4_GALLERY_VIDEO_CONTROLS_CAPTURE=${CMAKE_BINARY_DIR}/.diagnostics/gallery-video-controls-175.png")
   endif()
   add_test(NAME F4QuickViewSurfaceTest COMMAND F4QuickViewSurfaceTests)
+  # The aggregate includes regressions whose contract requires DPR 1.75.
   set_tests_properties(F4QuickViewSurfaceTest PROPERTIES
-    ENVIRONMENT "${F4_HOST_QML_TEST_ENV}"
+    ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
   )
   add_test(NAME F4GalleryVideoSettingsPixelGridTest
     COMMAND F4QuickViewSurfaceTests nativeSettingsPagePreservesConfigurator)
@@ -2028,6 +2037,7 @@ if(BUILD_TESTING)
   qt6_add_resources(F4GalleryBridgeTests f4_gallery_bridge_test_qml
     PREFIX "/F4QtHost"
     FILES
+	  qml/F4ToolTip.qml
       qml/GalleryPanelHost.qml
       qml/GalleryPanelHostAdapter.qml
       qml/GalleryPanelInputRouter.qml
@@ -2123,6 +2133,7 @@ if(BUILD_TESTING)
   qt6_add_resources(F4GalleryPointerTests f4_gallery_pointer_test_qml
     PREFIX "/F4QtHost"
     FILES
+	  qml/F4ToolTip.qml
       qml/QuickViewController.qml
       qml/GalleryPanelHost.qml
       qml/GalleryPanelHostAdapter.qml

@@ -63,7 +63,8 @@ func TestWin32DnD_BuildHDROP(t *testing.T) {
 	}
 	defer procGlobalUnlock.Call(hGlobal)
 
-	df := (*dropFiles)(unsafe.Pointer(ptr))
+	base := winPtr(ptr)
+	df := (*dropFiles)(base)
 	if df.pFiles != uint32(unsafe.Sizeof(dropFiles{})) {
 		t.Errorf("pFiles offset = %d, want %d", df.pFiles, unsafe.Sizeof(dropFiles{}))
 	}
@@ -71,7 +72,7 @@ func TestWin32DnD_BuildHDROP(t *testing.T) {
 		t.Errorf("fWide = %d, want 1 (Unicode)", df.fWide)
 	}
 
-	rawChars := (*uint16)(unsafe.Pointer(ptr + uintptr(df.pFiles)))
+	rawChars := (*uint16)(unsafe.Add(base, df.pFiles))
 	str1 := syscall.UTF16ToString(unsafe.Slice(rawChars, 100))
 	if str1 != "C:\\test1.txt" {
 		t.Errorf("first path = %q, want 'C:\\test1.txt'", str1)
@@ -86,14 +87,15 @@ func TestWin32DnD_DataObjectAndDropSourceLifecycle(t *testing.T) {
 
 	// QueryInterface
 	var pObj uintptr
-	hr := comDataObjectQueryInterface(dataObj.toIUnknown(), &iidIDataObject, &pObj)
-	if hr != sOK || pObj == 0 {
-		t.Fatalf("QueryInterface for IDataObject failed: hr=0x%X", hr)
+	hr := comDataObjectQueryInterface(dataObj, &iidIDataObject, &pObj)
+	if hr != sOK || pObj != dataObj.toIUnknown() {
+		t.Fatalf("QueryInterface for IDataObject failed: hr=0x%X object=0x%X, want the data object 0x%X",
+			hr, pObj, dataObj.toIUnknown())
 	}
 	if dataObj.refCount != 2 {
 		t.Errorf("dataObj refCount after QueryInterface = %d, want 2", dataObj.refCount)
 	}
-	comDataObjectRelease(dataObj.toIUnknown())
+	comDataObjectRelease(dataObj)
 
 	// QueryGetData
 	fe := formatEtc{cfFormat: cfHDROP, tymed: tymedHGLOBAL}
@@ -140,19 +142,29 @@ func TestWin32DnD_EnumeratorSurvivesBeingHandedOut(t *testing.T) {
 			comLiveCount(), before+2)
 	}
 
+	// The address handed out must be the very object the registry holds.
+	// Resolving it there, rather than rebuilding a pointer from pEnum,
+	// proves that and keeps a Go address from being made out of an integer.
+	comLiveMu.Lock()
+	enum, ok := comLive[pEnum].(*comEnumFormatEtc)
+	comLiveMu.Unlock()
+	if !ok {
+		t.Fatalf("EnumFormatEtc handed out 0x%X, which is not a retained enumerator", pEnum)
+	}
+
 	var fetched uint32
 	var got formatEtc
-	if hr := comEnumFormatEtcNext(pEnum, 1, &got, &fetched); hr != sOK || fetched != 1 {
+	if hr := comEnumFormatEtcNext(enum, 1, &got, &fetched); hr != sOK || fetched != 1 {
 		t.Fatalf("Next returned hr=0x%X fetched=%d, want S_OK and 1", hr, fetched)
 	}
 	if got.cfFormat != cfHDROP {
 		t.Errorf("first advertised format = %d, want CF_HDROP", got.cfFormat)
 	}
 
-	if n := comEnumFormatEtcRelease(pEnum); n != 0 {
+	if n := comEnumFormatEtcRelease(enum); n != 0 {
 		t.Errorf("enumerator refCount after release = %d, want 0", n)
 	}
-	if n := comDataObjectRelease(dataObj.toIUnknown()); n != 0 {
+	if n := comDataObjectRelease(dataObj); n != 0 {
 		t.Errorf("data object refCount after release = %d, want 0", n)
 	}
 	if comLiveCount() != before {

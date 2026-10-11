@@ -1,4 +1,32 @@
+import copy
 from typing import Optional, List, Dict, Any
+
+
+def diff_trees(old: Dict[str, Any], new: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
+    """Diffs two virtual trees by (type, id) and returns the patch ops that turn
+    the mounted tree into the new one: one `set` per element whose props changed.
+    Returns None when the trees differ in structure (other type, id, layout or
+    number of children, or changed props on an element without an id): such a
+    change needs the frame to be mounted again."""
+    ops: List[Dict[str, Any]] = []
+    return ops if _diff_node(old, new, ops) else None
+
+
+def _diff_node(old: Dict[str, Any], new: Dict[str, Any], ops: List[Dict[str, Any]]) -> bool:
+    if old.get("type") != new.get("type") or old.get("id") != new.get("id"):
+        return False
+    if old.get("layout") != new.get("layout"):
+        return False
+    old_props, new_props = old.get("props") or {}, new.get("props") or {}
+    if old_props != new_props:
+        if set(old_props) - set(new_props) or not new.get("id"):
+            return False
+        changed = {k: v for k, v in new_props.items() if old_props.get(k) != v}
+        ops.append({"kind": "set", "id": new["id"], "props": changed})
+    old_children, new_children = old.get("children") or [], new.get("children") or []
+    if len(old_children) != len(new_children):
+        return False
+    return all(_diff_node(a, b, ops) for a, b in zip(old_children, new_children))
 
 class DialogContext:
     def __init__(self, ui: 'Ui', title: str, w: int, h: int):
@@ -112,6 +140,15 @@ class Ui:
         if not self._mounted:
             self.session.mount(self._root_id, self._current_root)
             self._mounted = True
+        else:
+            ops = diff_trees(self._mounted_root, self._current_root)
+            if ops is None:
+                # The structure changed: replace the frame with the new tree.
+                self.session.send({"op": "close", "frameId": self._root_id})
+                self.session.mount(self._root_id, self._current_root)
+            elif ops:
+                self.session.patch(self._root_id, ops)
+        self._mounted_root = copy.deepcopy(self._current_root)
         self._clicked_ids.clear()
 
     def _process_event(self, ev: Dict[str, Any]):

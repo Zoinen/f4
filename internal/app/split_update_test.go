@@ -23,15 +23,21 @@ func TestSplitUpdatePostedActionSkipsRedraw(t *testing.T) {
 	original := config.App
 	t.Cleanup(func() { config.App = original })
 	config.App.AutoSaveSettings = false
-	pf, _, _ := newSearchFirstTestFrame(t)
+	pf, left, right := newSearchFirstTestFrame(t)
 	pf.MenuBar = vtui.NewMenuBar(nil)
 	pf.KeyBar = vtui.NewKeyBar()
 	vtui.FrameManager.Screen().AllocBuf(80, 25)
 	vtui.FrameManager.Push(pf)
+	left.WaitForIdle()
+	right.WaitForIdle()
 	renderer := &splitUpdateRenderer{}
 	vtui.FrameManager.Screen().Renderer = renderer
-	for len(vtui.FrameManager.RedrawChan) > 0 {
-		<-vtui.FrameManager.RedrawChan
+	// Initial activation and directory publication own their redraws; finish
+	// those tasks before measuring the split action's render boundary.
+	for len(vtui.FrameManager.PriorityTaskChan) > 0 ||
+		len(vtui.FrameManager.TaskChan) > 0 ||
+		len(vtui.FrameManager.RedrawChan) > 0 {
+		vtui.FrameManager.Step(0)
 	}
 	vtui.FrameManager.Step(0)
 	renderer.renders, renderer.exports, renderer.skipped = 0, 0, 0

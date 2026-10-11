@@ -382,8 +382,8 @@ Rectangle {
         id: commandScrollBar
         objectName: "commandLineScrollBar"
         hostWindow: commandLineRoot.hostWindow
-        anchors.top: inputViewport.top
-        anchors.bottom: inputViewport.bottom
+        anchors.top: commandPresentation.top
+        anchors.bottom: commandPresentation.bottom
         anchors.right: commandPresentation.right
         thickness: 12
         orientation: Qt.Vertical

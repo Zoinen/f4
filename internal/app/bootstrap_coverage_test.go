@@ -1,3 +1,5 @@
+//go:build !tty_only
+
 package app
 
 import (

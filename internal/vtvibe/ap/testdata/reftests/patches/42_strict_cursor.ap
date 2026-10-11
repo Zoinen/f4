@@ -1,0 +1,16 @@
+42a00042 AP 3.1
+
+42a00042 FILE
+42_strict_cursor.py
+
+42a00042 REPLACE
+42a00042 snippet
+print("Unique Line")
+42a00042 content
+    print("This change succeeds and moves the cursor forward.")
+
+42a00042 REPLACE
+42a00042 snippet
+print("Line at top")
+42a00042 content
+# This change should fail because the snippet is before the cursor now.

@@ -104,6 +104,7 @@ f4/
 │   ├── update/                    # self-update, elevation, helper args
 │   ├── fusefs/                    # FUSE mounting
 │   ├── textlayout/                # text layout and wrapping
+│   ├── diffview/                  # side-by-side compare-by-content view
 │   ├── vtvibe/                    # vtvibe session/provider layer
 │   │
 │   │  # layer 0 — leaves; each may import internal/ini and nothing else of ours
@@ -127,6 +128,7 @@ f4/
 │   ├── semantic/                  # the GUI semantic protocol's shared fields
 │   ├── sheet/                     # spreadsheet mode
 │   ├── sysinfo/                   # cpu / mem / fs / gpu info, drives
+│   ├── textdiff/                  # Myers line diff for the compare-by-content view
 │   ├── textsearch/                # text search
 │   ├── theme/                     # colours, colour space, styles + embedded styles/
 │   ├── toast/                     # transient notifications
@@ -310,15 +312,17 @@ silence; this prose can, and the check for that is at the end of this section.
 
 **Layer 0 — leaves, importing no package of ours but `internal/ini`:**
 `vfs`, `sdk`, `internal/action`, `internal/appcmd`, `internal/colorer`,
-`internal/config`, `internal/history`, `internal/i18n`, `internal/ini`,
-`internal/keymap`, `internal/luaplug`, `internal/netproxy`, `internal/numeric`,
-`internal/piecetable`, `internal/semantic`, `internal/sheet`,
-`internal/sysinfo`, `internal/testutil`, `internal/textsearch`,
-`internal/theme`, `internal/toast`, `internal/ttyx`, `internal/unpack`,
-`internal/wincon`, `internal/winshell`, `internal/navtrace`, `internal/mediatiming`.
+`internal/config`, `internal/frameborder`, `internal/history`, `internal/i18n`,
+`internal/ini`, `internal/keymap`, `internal/luaplug`, `internal/netproxy`,
+`internal/numeric`, `internal/piecetable`, `internal/semantic`, `internal/sheet`,
+`internal/sysinfo`, `internal/testutil`, `internal/textdiff`,
+`internal/textsearch`, `internal/theme`, `internal/toast`, `internal/ttyx`,
+`internal/unpack`, `internal/vtvibe/ap`, `internal/wheel`, `internal/wincon`,
+`internal/winshell`, `internal/navtrace`, `internal/mediatiming`.
 
 **Layer 1 — subsystems over the leaves:** `internal/fileops`,
 `internal/fusefs` → `vfs`, `internal/textlayout` → `internal/piecetable`,
+`internal/diffview` → `internal/textdiff`, `internal/theme`, `internal/i18n`,
 `internal/update`, `internal/vtvibe` → `vfs`.
 
 **Layer 2 — plugins and hosts:** `plugins/*` → `vfs`, `sdk`, `internal/*`;

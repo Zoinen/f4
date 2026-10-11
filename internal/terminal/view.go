@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mattn/go-runewidth"
@@ -11,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/unxed/f4/internal/piecetable"
+	"github.com/unxed/f4/internal/terminal/far2ldnd"
 	"github.com/unxed/f4/internal/textlayout"
 	"github.com/unxed/f4/internal/theme"
 	"github.com/unxed/f4/internal/viewer"
@@ -81,28 +83,59 @@ type TerminalView struct {
 	Win32InputMode        bool
 	BracketedPasteMode    bool
 	ApplicationCursorKeys bool
-	KittyFlags            int
-	KittyFlagsStack       []int
-	AutoWrap              bool
-	SixelDisplayMode      bool
-	MouseTrackingMode     int
-	MouseSGRMode          bool
+	// KittyFlags is written by the ansi-parsing goroutine (handleCSI in
+	// ansi.go, on the local shell's PTY read loop -- see InitPTY in
+	// internal/panel/frame.go) and read from the UI goroutine's key-handling
+	// path (frame.go's HandleKey, hotkey_conditions.go) as well as by tests
+	// driving InitPTY end to end, so unlike the rest of this grid/session
+	// state it needs its own cross-goroutine synchronization rather than
+	// tv.mu: an atomic.Int32, mirroring how AnsiParser guards its own
+	// cross-goroutine flags (syncEchoTracked/syncEchoArms in ansi.go).
+	KittyFlags      atomic.Int32
+	KittyFlagsStack []int
+	// kittyBeforeCommand and kittyCommandRunning scope the shell's own kitty
+	// flags to its prompt: they hold the flags in force when a command started
+	// (OSC 133;C) so that the command runs with none and the shell gets them
+	// back when it ends (OSC 133;D). See HandleOSC133.
+	kittyBeforeCommand  atomic.Int32
+	kittyCommandRunning atomic.Bool
+	AutoWrap            bool
+	SixelDisplayMode    bool
+	MouseTrackingMode   int
+	MouseSGRMode        bool
 
 	clipboardChunks []byte
 	ClipboardReader func() string
 	ClipboardWriter func(string)
 	Pty             PtyBackend
 	kitty           *KittyGraphics
-	Images          []terminalImage
-	kittyKeySeq     uint64
-	CellW           int
-	CellH           int
+	// Unicode placeholders (kitty_placeholder.go): the virtual placements a
+	// program has made, what the marks after each placeholder cell said, and
+	// the placeholder the next mark belongs to.
+	virtual     map[uint32]kittyVirtual
+	phMeta      map[*vtui.CharInfo]map[int]placeholderCell
+	phLast      placeholderRun
+	Images      []terminalImage
+	kittyKeySeq uint64
+	CellW       int
+	CellH       int
 
 	Muted               bool
 	pendingCleanCommand string
 	lastCharWasCR       bool
 	// A primary-screen resize can be followed by ED2 before ConPTY redraws;
 	// suppressing that erase prevents reflowed rows being duplicated in history.
+
+	// DefaultColors draws the terminal's default foreground and background
+	// as the host terminal's own default colours (see hostDefaultColors),
+	// for the mirror of a host console shown beside a hidden panel (#1675).
+	DefaultColors bool
+
+	// syncScrollBudget is how many scrolls caused by a line feed on the last
+	// row are still to be kept out after an excised directory-sync echo, and
+	// syncScrollUntil is when the budget lapses whatever happens (#1673).
+	syncScrollBudget int
+	syncScrollUntil  time.Time
 
 	// reflow makes a width change re-wrap the primary screen and GridHistory
 	// by the view's own wrap flags; see view_reflow.go. The owner sets it per
@@ -120,6 +153,10 @@ type TerminalView struct {
 	// Access is protected by mu because layout and PTY parsing run separately.
 	promptOverlaysLastRow bool
 	authCache             map[string]int
+
+	// dnd is the terminal side of the far2l drag-and-drop protocol, see
+	// far2l_dnd.go. It guards itself.
+	dnd dndServer
 
 	OnTitleChange func(string)
 	OnBusyChange  func(bool)
@@ -178,6 +215,84 @@ func (tv *TerminalView) CopySelectionToClipboard(text string) {
 	SetF4Clipboard(text)
 }
 
+func (tv *TerminalView) CloneStateFrom(other *TerminalView) {
+	other.FlushLog()
+	other.mu.Lock()
+	defer other.mu.Unlock()
+	tv.mu.Lock()
+	defer tv.mu.Unlock()
+
+	// 1. Match dimensions and re-allocate grids
+	tv.Width = other.Width
+	tv.Height = other.Height
+
+	allocGrid := func(src [][]vtui.CharInfo) [][]vtui.CharInfo {
+		dst := make([][]vtui.CharInfo, len(src))
+		for y := range src {
+			dst[y] = make([]vtui.CharInfo, len(src[y]))
+			copy(dst[y], src[y])
+		}
+		return dst
+	}
+	tv.Lines = allocGrid(other.Lines)
+	tv.AltLines = allocGrid(other.AltLines)
+	tv.WrapFlags = make([]bool, len(other.WrapFlags))
+	copy(tv.WrapFlags, other.WrapFlags)
+	tv.reflow = other.reflow
+
+	tv.GridHistory = make([][]vtui.CharInfo, len(other.GridHistory))
+	for i := range other.GridHistory {
+		tv.GridHistory[i] = make([]vtui.CharInfo, len(other.GridHistory[i]))
+		copy(tv.GridHistory[i], other.GridHistory[i])
+	}
+	tv.GridHistoryWrap = make([]bool, len(other.GridHistoryWrap))
+	copy(tv.GridHistoryWrap, other.GridHistoryWrap)
+
+	// 2. Deep copy the PieceTable (History)
+	bytes, _ := other.Pt.Bytes()
+	tv.Pt = piecetable.New(bytes)
+
+	// 3. Re-initialize indices and engine to point to the NEW pt
+	tv.Li = piecetable.NewLineIndex()
+	tv.Li.Rebuild(tv.Pt)
+	tv.Engine = textlayout.NewWrapEngine(tv.Pt, tv.Li)
+	tv.Engine.SetWidth(tv.Width)
+
+	// 4. Copy terminal state metadata
+	tv.styles = append([]StyleChange(nil), other.styles...)
+	tv.authCache = make(map[string]int)
+	for k, v := range other.authCache {
+		tv.authCache[k] = v
+	}
+	tv.lastAttr = other.lastAttr
+	tv.Palette = other.Palette
+	tv.CursorX, tv.CursorY = other.CursorX, other.CursorY
+	tv.CursorVisible = other.CursorVisible
+	tv.UseAltScreen = other.UseAltScreen
+	tv.ScrollTop, tv.ScrollBottom = other.ScrollTop, other.ScrollBottom
+	tv.KittyFlags.Store(other.KittyFlags.Load())
+	tv.KittyFlagsStack = append([]int(nil), other.KittyFlagsStack...)
+	// Selection coordinates belong to the old viewport and are not part of
+	// the cloned terminal state. Keeping them would paint a stale highlight
+	// over the clone's first screen.
+	tv.SelActive = false
+	// The PTY is an ownership handle, not terminal display state. A cloned
+	// PanelsFrame starts its own shell asynchronously; copying this field would
+	// briefly route input from the clone into the source workspace until that
+	// shell wins the race.
+	tv.Images = append([]terminalImage(nil), other.Images...)
+
+	vtui.DebugLog("TERM_VIEW: CloneStateFrom completed. Cleaning active row for new shell.")
+
+	// Clear the active visual row and reset horizontal cursor
+	if tv.CursorY >= 0 && tv.CursorY < len(tv.Lines) {
+		for x := range tv.Lines[tv.CursorY] {
+			tv.Lines[tv.CursorY][x] = vtui.CharInfo{Char: ' ', Attributes: DefaultTermAttr}
+		}
+	}
+	tv.CursorX = 0
+}
+
 func (tv *TerminalView) ResetBuffer(w, h int) {
 	tv.mu.Lock()
 	defer tv.mu.Unlock()
@@ -215,6 +330,7 @@ func (tv *TerminalView) ResetBuffer(w, h int) {
 	tv.AltLines = makeBuf()
 	tv.WrapFlags = make([]bool, h)
 	tv.Images = nil
+	tv.virtual, tv.phMeta, tv.phLast = nil, nil, placeholderRun{}
 
 	// Сброс параметров прокрутки и курсора
 	tv.Width, tv.Height = w, h
@@ -500,6 +616,9 @@ func (tv *TerminalView) PutChar(r rune, attr uint64) {
 		return
 	}
 
+	if r != '\r' && r != '\n' {
+		tv.syncScrollBudget = 0
+	}
 	if r == '\r' {
 		// vtui.DebugLog("TERM_VIEW: CR (CursorX: %d -> 0)", tv.CursorX)
 		tv.CursorX = 0
@@ -533,6 +652,11 @@ func (tv *TerminalView) PutChar(r rune, attr uint64) {
 	if r < 0x20 {
 		return
 	}
+	// A mark after a Unicode placeholder belongs to it and takes no cell.
+	if tv.placeholderMark(r) {
+		return
+	}
+	tv.phLast = placeholderRun{}
 
 	w := runewidth.RuneWidth(r)
 	if w <= 0 {
@@ -576,15 +700,44 @@ func (tv *TerminalView) PutChar(r rune, attr uint64) {
 		for i := 1; i < w; i++ {
 			buf[tv.CursorY][tv.CursorX+i] = vtui.CharInfo{Char: vtui.WideCharFiller, Attributes: attr}
 		}
+		if r == kittyPlaceholderRune {
+			tv.placeholderStarted(tv.CursorY, tv.CursorX)
+		}
 		tv.CursorX += w
 		tv.suppressEraseHistory = false
 	}
 	tv.lastCharWasCR = false
 }
 
+// syncScrollWindow bounds how long after an excised sync echo the scrolls of
+// its two line feeds are still kept out.
+const syncScrollWindow = time.Second
+
+// SuppressSyncScroll keeps the next n line-feed scrolls off the screen. It is
+// called when f4 has cut the echo of its own directory-sync line out of the
+// stream: the echo's row is erased, cmd.exe then ends that line and prints a
+// blank one before the prompt, and on the bottom row each of those scrolls
+// the console up for output the user never sees -- so every panel toggle that
+// changed the directory moved the console one line up (#1673). The prompt is
+// drawn on the erased row instead, which is where ConPTY draws it too. Text
+// arriving ends the exemption; so does the time window.
+func (tv *TerminalView) SuppressSyncScroll(n int) {
+	tv.mu.Lock()
+	defer tv.mu.Unlock()
+	tv.syncScrollBudget = n
+	tv.syncScrollUntil = time.Now().Add(syncScrollWindow)
+}
+
 func (tv *TerminalView) newline() {
 	// vtui.DebugLog("TERM: newline at Y=%d (ScrollBottom=%d)", tv.CursorY, tv.ScrollBottom)
 	tv.CursorX = 0
+	if tv.syncScrollBudget > 0 && tv.CursorY == tv.ScrollBottom && !tv.UseAltScreen {
+		if time.Now().Before(tv.syncScrollUntil) {
+			tv.syncScrollBudget--
+			return
+		}
+		tv.syncScrollBudget = 0
+	}
 	tv.CursorY++
 	if tv.CursorY > tv.ScrollBottom {
 		tv.scrollUp(tv.ScrollTop, tv.ScrollBottom, 1)
@@ -906,6 +1059,38 @@ func (tv *TerminalView) EraseDisplay(mode int, attr uint64) {
 				}
 			}
 		}
+	case 1:
+		// ED 1 ("Erase Above"): everything from the top-left corner through
+		// the cursor, inclusive, is blanked; rows below the cursor are left
+		// untouched. This mirrors case 0 (erase from cursor to the bottom)
+		// and EraseLine's own mode 1, which already implements the
+		// equivalent "start of line to cursor" rule. It was missing here,
+		// so a program sending CSI 1 J (e.g. `clear` on some shells, or an
+		// editor repainting the top of the screen) saw no effect at all.
+		if tv.CursorY >= 0 && tv.CursorY < tv.Height {
+			line := buf[tv.CursorY]
+			end := tv.CursorX + 1
+			if end > len(line) {
+				end = len(line)
+			}
+			for j := 0; j < end; j++ {
+				line[j] = vtui.CharInfo{Char: ' ', Attributes: attr}
+			}
+			if !tv.UseAltScreen {
+				tv.WrapFlags[tv.CursorY] = false
+			}
+		}
+		for i := 0; i < tv.CursorY; i++ {
+			if i >= 0 && i < len(buf) {
+				line := buf[i]
+				for j := range line {
+					line[j] = vtui.CharInfo{Char: ' ', Attributes: attr}
+				}
+				if !tv.UseAltScreen {
+					tv.WrapFlags[i] = false
+				}
+			}
+		}
 	}
 }
 
@@ -999,7 +1184,11 @@ func (tv *TerminalView) Show(scr *vtui.ScreenBuf) {
 		tv.kittyRecomputeSpans()
 	}
 
-	scr.FillRect(tv.X1, tv.Y1, tv.X1+tv.Width-1, tv.Y1+tv.Height-1, ' ', DefaultTermAttr)
+	fillAttr := DefaultTermAttr
+	if tv.DefaultColors {
+		fillAttr = hostDefaultColors(fillAttr)
+	}
+	scr.FillRect(tv.X1, tv.Y1, tv.X1+tv.Width-1, tv.Y1+tv.Height-1, ' ', fillAttr)
 
 	buf := tv.Lines
 	if tv.UseAltScreen {
@@ -1059,6 +1248,16 @@ func (tv *TerminalView) Show(scr *vtui.ScreenBuf) {
 		// Проверка выхода за пределы экрана
 		if drawY >= tv.Y1 && drawY <= tv.Y1+tv.Height-1 {
 			drawLine := append([]vtui.CharInfo(nil), line...)
+			for i := range drawLine {
+				if drawLine[i].Char == kittyPlaceholderRune {
+					drawLine[i].Char = ' ' // the picture is drawn over the cell
+				}
+			}
+			if tv.DefaultColors {
+				for i := range drawLine {
+					drawLine[i].Attributes = hostDefaultColors(drawLine[i].Attributes)
+				}
+			}
 			viewer.ApplyURLHoverAttr(drawLine, viewer.UrlCellRangesFromCells(line), tv.hoverURL)
 			scr.Write(tv.X1, drawY, drawLine)
 		}
@@ -1727,9 +1926,49 @@ func (tv *TerminalView) ResetKeyboardProtocols() {
 	tv.mu.Lock()
 	defer tv.mu.Unlock()
 	tv.Win32InputMode = false
-	tv.KittyFlags = 0
+	tv.KittyFlags.Store(0)
+	tv.kittyCommandRunning.Store(false)
 	tv.ApplicationCursorKeys = false
 }
+
+// KittyEnableDisambiguateSeq is the request a program writes to its own
+// stdout to opt into the kitty keyboard protocol's "disambiguate escape
+// codes" flag (bit 1 of the flag set): CSI = 1 ; 1 u, mode 1 ("set"),
+// replacing whatever flags were active with just that bit. It is the same
+// sequence far2l sends on its own when it starts.
+//
+// f4#128, RUP step 1: rather than only reacting to a nested program's own
+// request, f4 feeds this exact sequence through the ordinary ansi parser (the
+// one that would parse it out of a real program's output) right after a
+// fresh local shell's PTY comes up, before any output of its own has
+// arrived. A bare bash/zsh never sends this itself, so without this a plain
+// shell session never gets a Ctrl+Tab distinguishable from Tab (see
+// ResetKeyboardProtocols and the Ctrl+Tab-forwarding check in
+// internal/panel/frame.go) until some nested program (far2l) requests the
+// protocol on its own.
+//
+// Only the disambiguate bit is set, deliberately the narrowest flag the
+// protocol offers: it is enough to tell Ctrl+Tab apart from Tab, and it
+// leaves the "report event types" / "report all keys" / "report associated
+// text" bits off, which otherwise would turn ordinary key-up events and
+// plain typing into escape codes a bare shell never asked to parse either.
+//
+// Known limitation: this only ever changes what TerminalView believes,
+// which is accurate for f4's own emulation (nothing here depends on the
+// real host terminal that f4 itself runs inside, and there is no risk of a
+// false positive from *that* direction -- f4 is both the "sender" and the
+// "receiver" of this sequence, in-process). What it cannot promise is that
+// whatever the shell is currently running actually understands the
+// resulting CSI-u encoding for a chord it did not itself negotiate: a
+// bare readline (bash/zsh, or a plain `python3`/`mysql` prompt started
+// inside that shell) does not parse kitty's disambiguated Ctrl+<letter>
+// codes, so those specific chords can misbehave in such a program for as
+// long as nothing else has overridden these flags. There is no
+// confirmation/query round trip here to gate on -- building one (and,
+// longer term, scoping the flag to only be active while the shell itself
+// is at its prompt, the way kitty's own shell integration pushes and pops
+// it around running a foreign command) is left to a later step.
+const KittyEnableDisambiguateSeq = "\x1b[=1;1u"
 
 func (tv *TerminalView) IsModal() bool         { return false }
 func (tv *TerminalView) RequestFocus() bool    { return true }
@@ -1751,7 +1990,9 @@ func (tv *TerminalView) HandleFar2lAPC(s string) {
 			_, _ = tv.Pty.Write([]byte("\x1b_far2lok\x07"))
 		}
 	} else if s == "far2l0" {
-		// Disable
+		// Switching the extensions off revokes every drop offer (§ 12 of
+		// the DnD specification).
+		tv.dndReset()
 	} else if s == "far2lok" {
 		// Acknowledgement from the host terminal. This is not for the internal shell to process visually.
 		// Consume and do nothing.
@@ -1759,6 +2000,13 @@ func (tv *TerminalView) HandleFar2lAPC(s string) {
 		b64 := s[6:]
 		if m := len(b64) % 4; m != 0 {
 			b64 += strings.Repeat("=", 4-m)
+		}
+		// A DnD request is recognised by its last bytes and checked against
+		// its frame limit before the rest is decoded; its replies keep the
+		// order of the requests. The wire length counts ESC _ and a BEL.
+		if rid, cmd, ok := dndPeek(b64); ok && cmd == far2ldnd.InteractDND {
+			tv.dndAccept(rid, len("\x1b_")+len(s)+1, b64)
+			return
 		}
 		decoded, _ := base64.StdEncoding.DecodeString(b64)
 		if len(decoded) > 0 {
@@ -1896,10 +2144,24 @@ func (tv *TerminalView) HandleOSC133(payload string) {
 		if cleanCmd != "" {
 			tv.PrintCleanCommand(cleanCmd)
 		}
+		// The flags now in force are the shell's own (f4 seeds them for a fresh
+		// local shell, KittyEnableDisambiguateSeq). A command the shell starts
+		// does not speak the protocol, so Ctrl+C must reach it as 0x03, not as
+		// CSI 99;5u (f4#1693); a program that wants the protocol asks for it
+		// itself after this point.
+		if !tv.kittyCommandRunning.Swap(true) {
+			tv.kittyBeforeCommand.Store(tv.KittyFlags.Swap(0))
+		}
+		tv.SetMuted(false)
 		if tv.OnBusyChange != nil {
 			tv.OnBusyChange(true)
 		}
 	} else if payload == "D" || strings.HasPrefix(payload, "D;") {
+		// Whatever the command left switched on is dropped, and the shell's
+		// own flags come back for its prompt.
+		if tv.kittyCommandRunning.Swap(false) {
+			tv.KittyFlags.Store(tv.kittyBeforeCommand.Load())
+		}
 		tv.EnsureFreshPromptLine()
 		if tv.OnBusyChange != nil {
 			tv.OnBusyChange(false)
@@ -1943,6 +2205,10 @@ func (tv *TerminalView) EnsureFreshPromptLine() {
 	tv.NextLine()
 }
 func (tv *TerminalView) ProcessFar2lInteract(data []byte) {
+	if n := len(data); n >= 2 && data[n-2] == far2ldnd.InteractDND {
+		tv.dndServe(data)
+		return
+	}
 	stk := (*vtinput.Far2lStack)(&data)
 	id := stk.PopU8()
 	cmd := stk.PopU8()

@@ -5,7 +5,8 @@ works one layer below: it substitutes one key for another as the keystroke
 arrives, before anything in f4 has looked at it. Two problems need that layer.
 
 Before reaching for either file: **`Ctrl+Shift+P` opens the command palette**,
-which finds any command by name and shows the key it currently sits on. On a
+which finds any command by name and shows the key it currently sits on;
+`Ctrl+K` on a result assigns a key to that command. On a
 legacy terminal that cannot distinguish `Ctrl+Shift+letter` from `Ctrl+letter`,
 use the built-in **`Ctrl+Alt+P`** fallback — and in an X11 session the real
 `Ctrl+Shift+P` is taken from the X server instead, so it works there even on a
@@ -65,6 +66,10 @@ No leading space is inserted, so an already typed path prefix stays attached
 to the filename. While Fast Find is active, `Ctrl+Enter` still finds the next
 match instead of inserting a filename.
 
+In the autofilter window (a lone Alt, or Panel.AutoFilter), `Ctrl+E` flips the
+"Exact match" option shown on the window's second line, as a click on that line
+does; the option is the same one as Settings > Panels > "Strict quick search"
+and is saved at once.
 ## The file
 
 `keymap.ini` lives in the profile directory next to `hotkeys.ini`
@@ -175,6 +180,38 @@ one is built in and does not have to be written out by hand — see
 [Mac keyboard mode](MACKEYS.md). A rule here still wins over it, so a key you
 have remapped yourself keeps what you gave it.
 
+## Example: matching keys from another file manager
+
+`keymap.ini` swaps *keys*, not commands, so giving f4 a layout that matches
+muscle memory from Total Commander, an older Far build, or anything else is
+the same recipe regardless of where the habit comes from: for every command
+whose old key differs from f4's, find the key f4 already has it on and add
+one line teaching the old key to reach it too.
+
+`Ctrl+Shift+P` is the fastest way to find that key: it looks commands up by
+name and shows the chord currently bound to each one. Say your fingers
+expect a chord for some command — open the palette, find that command by
+name, note the key it already answers to in f4, and add a line teaching your
+old chord to reach it too:
+
+```ini
+[Shell]
+<your old chord>=<the key the palette showed>
+```
+
+For "Swap Panels", for instance, f4's own default already happens to be
+`Ctrl+U`, so nothing would be needed there — but the same one-line recipe
+covers whichever commands your particular habit does expect somewhere else.
+
+Repeat for every other command your muscle memory expects on a different
+key. There is no separate "Total Commander preset" to keep in sync here:
+each command keeps working under its own key exactly as before, and this
+file only teaches the old chord to reach it too — the same mechanism as the
+multiplexer and F-row workarounds earlier in this document, just aimed at a
+different habit. See also `Options > Hotkey Configuration` in the next
+section if what you actually want is to give a command a *new* key rather
+than have an old one reach its current one.
+
 ## Choosing between the two files
 
 Rebinding a command is still the better tool when a command is what you want
@@ -221,3 +258,35 @@ report this chord.
 view and expand controls). The file area uses the released space. The preference
 is saved; it is also available under Panels → File listing. **Ctrl+B** continues
 to toggle the bottom function-key bar.
+
+### Panel clipboard paste
+
+`Panel.Paste` defaults to Ctrl+V and Shift+Insert and can be remapped through the
+normal action hotkey settings. In panels it saves clipboard images or offers an
+image/text choice; text-only clipboard data goes to the command line. See
+[Clipboard images](SETTINGS_CENTER.md#clipboard-images) for encoding and naming
+preferences. Editor and dialog clipboard shortcuts keep their existing actions.
+
+### Panel file clipboard (f4#1767)
+
+`Panel.CopyFilesToClipboard` (Ctrl+C) and `Panel.CutFilesToClipboard` remember the
+selected files of the active panel, or the file under the cursor when nothing is
+marked; the Files menu lists both. The files stay where they are. The next
+`Panel.Paste` (Ctrl+V, Shift+Insert) copies them, or, after a cut, moves them, into
+the directory of the active panel through the same file operations as F5 and F6, so
+the usual queue, conflict questions and progress apply. A copy can be pasted again;
+a cut is spent by the first paste.
+
+The paths of the files are put on the system clipboard as text, one per line, and
+as the platform's file representation where it is available (`text/uri-list` on
+Unix and `CF_HDROP` on Windows). That representation lets a file manager paste
+files copied in f4, while f4 can also paste local files copied in another file
+manager. A remembered f4 paste recognizes its files by the clipboard contents;
+if the clipboard holds anything else by then, the remembered files are forgotten
+and the paste is an ordinary text or image paste. While the command line holds
+text, Ctrl+C and Ctrl+V stay with the command line, and the paste is a text paste.
+
+Cut has no default key because Ctrl+X belongs to the command line history; bind it, or
+any other key, in `Options > Hotkey Configuration`. The remembered files are kept
+inside f4, while the native file clipboard additionally carries the cut/copy
+state where the platform exposes it.

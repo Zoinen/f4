@@ -979,6 +979,92 @@ func TestEditorView_WordWrapScrolling(t *testing.T) {
 	}
 }
 
+func TestEditorView_WheelScrollsViewBeforeMovingCursor(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	var text strings.Builder
+	for i := 0; i < 12; i++ {
+		if i > 0 {
+			text.WriteByte('\n')
+		}
+		fmt.Fprintf(&text, "line %d", i)
+	}
+
+	ev := NewEditorView(piecetable.New([]byte(text.String())), nil, "test.txt")
+	defer ev.Close()
+	ev.SetPosition(0, 0, 79, 3)
+	ev.Engine.SetWidth(80)
+	ev.CursorLine = 0
+	ev.CursorPos = 0
+	ev.EnsureCursorVisible()
+
+	if !ev.scrollWheelLines(2) {
+		t.Fatal("initial wheel movement was not reported")
+	}
+	if ev.ScrollTopRow != 2 || ev.CursorLine != 2 {
+		t.Fatalf("after initial wheel: top=%d cursor=%d, want top=2 cursor=2", ev.ScrollTopRow, ev.CursorLine)
+	}
+
+	if !ev.scrollWheelLines(20) {
+		t.Fatal("wheel movement to the end was not reported")
+	}
+	if ev.ScrollTopRow != 9 || ev.CursorLine != 11 {
+		t.Fatalf("at the end: top=%d cursor=%d, want top=9 cursor=11", ev.ScrollTopRow, ev.CursorLine)
+	}
+
+	if !ev.scrollWheelLines(-20) {
+		t.Fatal("wheel movement back to the start was not reported")
+	}
+	if ev.ScrollTopRow != 0 || ev.CursorLine != 0 {
+		t.Fatalf("at the start: top=%d cursor=%d, want top=0 cursor=0", ev.ScrollTopRow, ev.CursorLine)
+	}
+}
+
+func TestEditorView_WheelScrollKeepsSelection(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	var text strings.Builder
+	for i := 0; i < 12; i++ {
+		if i > 0 {
+			text.WriteByte('\n')
+		}
+		fmt.Fprintf(&text, "line %d", i)
+	}
+
+	ev := NewEditorView(piecetable.New([]byte(text.String())), nil, "test.txt")
+	defer ev.Close()
+	ev.SetPosition(0, 0, 79, 3)
+	ev.Engine.SetWidth(80)
+	ev.CursorLine = 1
+	ev.CursorPos = len("line 1")
+	ev.SelActive = true
+	ev.SelAnchorOffset = 0
+	ev.EnsureCursorVisible()
+
+	minBefore, maxBefore := ev.GetSelectionRange()
+	if !ev.scrollWheelLines(2) {
+		t.Fatal("selection wheel movement was not reported")
+	}
+	minAfter, maxAfter := ev.GetSelectionRange()
+	if ev.ScrollTopRow != 2 {
+		t.Fatalf("selection wheel top=%d, want 2", ev.ScrollTopRow)
+	}
+	if ev.CursorLine != 1 || ev.CursorPos != len("line 1") {
+		t.Fatalf("selection wheel moved cursor to line=%d pos=%d", ev.CursorLine, ev.CursorPos)
+	}
+	if minAfter != minBefore || maxAfter != maxBefore {
+		t.Fatalf("selection changed from [%d:%d] to [%d:%d]", minBefore, maxBefore, minAfter, maxAfter)
+	}
+
+	if !ev.scrollWheelLines(-2) {
+		t.Fatal("selection wheel movement back was not reported")
+	}
+	minAfter, maxAfter = ev.GetSelectionRange()
+	if ev.ScrollTopRow != 0 || minAfter != minBefore || maxAfter != maxBefore {
+		t.Fatalf("selection changed while scrolling back: top=%d range=[%d:%d]", ev.ScrollTopRow, minAfter, maxAfter)
+	}
+}
+
 func TestEditorView_WordWrapInfiniteLoop(t *testing.T) {
 	// Text with wide character
 	Pt := piecetable.New([]byte("A世B"))
@@ -5628,6 +5714,40 @@ func TestEditorView_MouseSelection_Release(t *testing.T) {
 	}
 }
 
+func TestEditorView_MouseSelection_ReleaseKeepsDraggedSelection(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	Pt := piecetable.New([]byte("data to copy"))
+	ev := NewEditorView(Pt, nil, "")
+	defer ev.Close()
+	ev.SetPosition(0, 0, 80, 24)
+
+	ev.ProcessMouse(&vtinput.InputEvent{
+		Type: vtinput.MouseEventType, KeyDown: true,
+		MouseX: 0, MouseY: 1, ButtonState: vtinput.FromLeft1stButtonPressed,
+	})
+
+	// X11/Konsole can report drag motion without the held-button bit.
+	ev.ProcessMouse(&vtinput.InputEvent{
+		Type: vtinput.MouseEventType, KeyDown: false,
+		MouseX: 4, MouseY: 1, MouseEventFlags: vtinput.MouseMoved,
+	})
+	ev.ProcessMouse(&vtinput.InputEvent{
+		Type: vtinput.MouseEventType, KeyDown: false,
+		MouseX: 4, MouseY: 1,
+	})
+
+	if ev.mouseSelecting {
+		t.Fatal("linear mouse gesture should be released")
+	}
+	if !ev.SelActive {
+		t.Fatal("dragged selection should remain active after mouse release")
+	}
+	min, max := ev.GetSelectionRange()
+	if min != 0 || max != 4 {
+		t.Fatalf("dragged selection range = %d:%d, want 0:4", min, max)
+	}
+}
+
 // TestEditorView_InsertTextAtCursor covers the shared insert path
 // the new Ctrl+[/Ctrl+]/Ctrl+Enter shortcuts use — appends bytes
 // at cursor, updates line index, advances cursor by len(data).
@@ -5785,5 +5905,202 @@ func TestEditor_LineTextForHighlight(t *testing.T) {
 	}
 	if _, ok := ev.lineTextForHighlight(-1); ok {
 		t.Error("a negative line must not report success")
+	}
+}
+
+// f4 #1415: shouldDrawWrapMark says a row carries the "this is a wrap, not
+// the line's real end" mark exactly when it is not the logical line's last
+// fragment and there is a free cell at maxX to put it in.
+func TestShouldDrawWrapMark(t *testing.T) {
+	cases := []struct {
+		name            string
+		fIdx, fragCount int
+		startX, maxX    int
+		want            bool
+	}{
+		{"first of two fragments, room to spare", 0, 2, 5, 7, true},
+		{"first of two fragments, exact fit, no room", 0, 2, 8, 7, false},
+		{"middle of three fragments, room to spare", 1, 3, 5, 7, true},
+		{"the line's last fragment never gets the mark", 1, 2, 5, 7, false},
+		{"a line with a single fragment never wraps", 0, 1, 5, 7, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldDrawWrapMark(tc.fIdx, tc.fragCount, tc.startX, tc.maxX); got != tc.want {
+				t.Errorf("shouldDrawWrapMark(%d, %d, %d, %d) = %v, want %v", tc.fIdx, tc.fragCount, tc.startX, tc.maxX, got, tc.want)
+			}
+		})
+	}
+}
+
+// f4 #1415: a wrapped row (word wrap broke the line, not a real newline)
+// ends with a marker glyph in ColEditorWrapMark, like far2l's, so it reads
+// as "the line keeps going" rather than the file's actual line end. This
+// exercises the real render path (DisplayObject -> ScreenBuf), not just the
+// shouldDrawWrapMark decision above, so a wiring mistake (wrong column,
+// wrong color slot, or the mark leaking onto the line's real last row)
+// would still be caught.
+//
+// Row 0 is the top bar, not text (see occurrenceEditor's comment in
+// editor_occurrence_test.go), so the text area starts at screen row 1. The
+// editor also always reserves its rightmost column for the scrollbar gutter
+// -- even on a line count too short to ever need scrolling, since NewEditorView
+// allocates the scrollbar unconditionally and DisplayObject's width
+// computation subtracts a column for it whenever it's non-nil -- so with
+// X1=0, X2=7 the text area is 7 columns wide (0..6), not 8.
+func TestEditorView_WordWrapDrawsWrapMark(t *testing.T) {
+	theme.SetDefaultF4Palette()
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	// Effective text width 7 (see above): "aaaaa " (6 cols) is the last word
+	// boundary that fits, so the first visual row wraps there with 1 blank
+	// column to spare; the long second word ("bbbbbbbbbb") hard-wraps across
+	// the rows after it.
+	Pt := piecetable.New([]byte("aaaaa bbbbbbbbbb"))
+	ev := NewEditorView(Pt, nil, "")
+	defer ev.Close()
+	ev.WordWrap = true
+	ev.SetPosition(0, 0, 7, 10) // X1=0, X2=7 -> 8 raw columns, 7 of them text
+
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(8, 11)
+	ev.Show(scr)
+
+	frags := ev.Engine.GetFragments(0)
+	if len(frags) < 2 {
+		t.Fatalf("expected the line to wrap into at least 2 fragments, got %d", len(frags))
+	}
+
+	const (
+		firstTextRow = 1 // row 0 is the top bar
+		lastTextCol  = 6 // column 7 is the scrollbar gutter
+	)
+	wrapMark := vtui.Palette[theme.ColEditorWrapMark]
+	row0 := scr.GetCell(lastTextCol, firstTextRow)
+	if rune(row0.Char) != '»' || row0.Attributes != wrapMark { // #nosec G115 -- Char holds a rendered rune, well within int32 range.
+		t.Errorf("wrapped row 0 last cell = %q attr %x, want '»' in ColEditorWrapMark (%x)", rune(row0.Char), row0.Attributes, wrapMark) // #nosec G115 -- same as above.
+	}
+
+	lastFragRow := firstTextRow + len(frags) - 1
+	lastCell := scr.GetCell(lastTextCol, lastFragRow)
+	if rune(lastCell.Char) == '»' { // #nosec G115 -- Char holds a rendered rune, well within int32 range.
+		t.Errorf("the line's actual last row must not carry the wrap mark, got %q", rune(lastCell.Char))
+	}
+}
+
+// f4 #1415 follow-up: a hard, mid-word wrap fills every column of the row it
+// lands on, so shouldDrawWrapMark's glyph has nowhere to go -- reported as
+// "resizing the editor makes the mark disappear from some wrapped rows"
+// (montoner0/DkmS1953 on the ticket). An earlier fix reserved a column for
+// the glyph by shrinking the wrap engine's width whenever word wrap was on,
+// but CI caught it moving every wrap point in the file and broke
+// TestEditorView_WordWrapNavigation / TestEditorView_WordJumps_VisualWrap; it
+// was reverted in e9999e6b. This exercises the follow-up fix instead:
+// wrapMarkNeedsOverlay retints the column's own character rather than
+// reserving a spare one, so every continuation row carries some form of the
+// mark and no column of any row's text moves.
+func TestEditorView_WordWrapMarksExactFillContinuationRow(t *testing.T) {
+	theme.SetDefaultF4Palette()
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	// Same effective width (7) and setup as TestEditorView_WordWrapDrawsWrapMark,
+	// but 14 'b's instead of 10: they hard-wrap into exactly two 7-column
+	// rows with zero columns to spare in either one. The first of those two
+	// is a continuation (more text follows on the next row) with nowhere
+	// for the glyph -- exactly the reported bug. The second is the line's
+	// real last fragment and must still carry no mark at all.
+	src := "aaaaa bbbbbbbbbbbbbb"
+	Pt := piecetable.New([]byte(src))
+	ev := NewEditorView(Pt, nil, "")
+	defer ev.Close()
+	ev.WordWrap = true
+	ev.SetPosition(0, 0, 7, 10) // X1=0, X2=7 -> 8 raw columns, 7 of them text
+
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(8, 11)
+	ev.Show(scr)
+
+	frags := ev.Engine.GetFragments(0)
+	if len(frags) != 3 {
+		t.Fatalf("expected 3 fragments (\"aaaaa \", 7 b's, 7 b's), got %d", len(frags))
+	}
+
+	// The wrap points themselves must be exactly what plain full-width
+	// (unreserved) greedy word-wrap at width 7 produces -- i.e. unaffected
+	// by the marker fix. This is the "no column shifted" guarantee: the
+	// byte offset where each visual row's text starts is checked against
+	// the source string directly, not just against pre-fix behaviour.
+	wantStarts := []int{0, 6, 13} // "aaaaa " (0..5), then 7 b's, then 7 b's
+	for i, frag := range frags {
+		if frag.ByteOffsetStart != wantStarts[i] {
+			t.Errorf("fragment %d starts at byte %d, want %d (source: %q)", i, frag.ByteOffsetStart, wantStarts[i], src)
+		}
+	}
+
+	const (
+		firstTextRow = 1 // row 0 is the top bar
+		lastTextCol  = 6 // column 7 is the scrollbar gutter
+	)
+	wrapMark := vtui.Palette[theme.ColEditorWrapMark]
+
+	// Row 0 ("aaaaa "): unchanged glyph-in-spare-cell behaviour.
+	row0 := scr.GetCell(lastTextCol, firstTextRow)
+	if rune(row0.Char) != '»' || row0.Attributes != wrapMark { // #nosec G115 -- see above.
+		t.Errorf("row 0 last cell = %q attr %x, want '»' in ColEditorWrapMark (%x)", rune(row0.Char), row0.Attributes, wrapMark) // #nosec G115 -- see above.
+	}
+
+	// Row 1 (first 7 b's, a continuation with no spare column): the fix
+	// under test. The glyph cannot land here without eating a real
+	// character, so the cell must still hold 'b' -- the same byte the
+	// source has at this column -- with only its colour changed to mark
+	// the wrap.
+	row1 := scr.GetCell(lastTextCol, firstTextRow+1)
+	if rune(row1.Char) != 'b' { // #nosec G115 -- see above.
+		t.Errorf("row 1 last cell char = %q, want unchanged 'b' (marker must not replace or shift text)", rune(row1.Char)) // #nosec G115 -- see above.
+	}
+	if row1.Attributes != wrapMark {
+		t.Errorf("row 1 last cell attr = %x, want ColEditorWrapMark (%x) -- exact-fill continuation row must still carry a mark", row1.Attributes, wrapMark)
+	}
+
+	// Row 2 (last 7 b's, the line's real last fragment): no mark of either
+	// kind, and the text is untouched.
+	row2 := scr.GetCell(lastTextCol, firstTextRow+2)
+	if rune(row2.Char) != 'b' { // #nosec G115 -- see above.
+		t.Errorf("row 2 last cell char = %q, want unchanged 'b'", rune(row2.Char)) // #nosec G115 -- see above.
+	}
+	if row2.Attributes == wrapMark {
+		t.Errorf("row 2 (the line's actual end) must not carry the wrap mark")
+	}
+}
+
+// f4 #1415: wrapMarkNeedsOverlay is the decision behind the fallback in
+// TestEditorView_WordWrapMarksExactFillContinuationRow -- it fires exactly
+// when shouldDrawWrapMark would not (same fragment, same row), so between
+// the two every continuation row is covered by one or the other and the
+// line's own last fragment is covered by neither.
+func TestWrapMarkNeedsOverlay(t *testing.T) {
+	cases := []struct {
+		name            string
+		fIdx, fragCount int
+		startX, maxX    int
+		want            bool
+	}{
+		{"first of two fragments, room to spare: glyph handles it, not overlay", 0, 2, 5, 7, false},
+		{"first of two fragments, exact fit: overlay picks up where glyph can't", 0, 2, 8, 7, true},
+		{"middle of three fragments, exact fit", 1, 3, 8, 7, true},
+		{"the line's last fragment never gets a mark, exact fit or not", 1, 2, 8, 7, false},
+		{"a line with a single fragment never wraps", 0, 1, 8, 7, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := wrapMarkNeedsOverlay(tc.fIdx, tc.fragCount, tc.startX, tc.maxX)
+			if got != tc.want {
+				t.Errorf("wrapMarkNeedsOverlay(%d, %d, %d, %d) = %v, want %v", tc.fIdx, tc.fragCount, tc.startX, tc.maxX, got, tc.want)
+			}
+			// The two helpers must never both fire for the same row.
+			if got && shouldDrawWrapMark(tc.fIdx, tc.fragCount, tc.startX, tc.maxX) {
+				t.Errorf("wrapMarkNeedsOverlay and shouldDrawWrapMark both true for (%d, %d, %d, %d)", tc.fIdx, tc.fragCount, tc.startX, tc.maxX)
+			}
+		})
 	}
 }

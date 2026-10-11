@@ -8,6 +8,7 @@ import (
 	"github.com/unxed/f4/internal/fileops"
 	"github.com/unxed/f4/internal/fusefs"
 	"github.com/unxed/f4/internal/semantic"
+	"github.com/unxed/f4/internal/terminal"
 	"github.com/unxed/f4/internal/testutil"
 	"github.com/unxed/f4/internal/theme"
 )
@@ -31,6 +32,9 @@ func installTestSeams() {
 	// may fork the user's shell.
 	DefaultExternalUICommandRunner = func(string, []string, string) error { return nil }
 	SpawnLocalShellPTY = false
+
+	// Copying files to the clipboard must not write the runner's real one.
+	terminal.DisableSystemFileClipboard()
 }
 
 func unmountTestFilesystems() error {

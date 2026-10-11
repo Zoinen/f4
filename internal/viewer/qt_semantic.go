@@ -78,7 +78,7 @@ func (vv *ViewerView) HandleSemanticAction(action map[string]any) bool {
 		return true
 	case "viewer.copySelection":
 		if !vv.HexMode && !vv.DecodeMode {
-			if text := semanticViewerSelectionText(action); text != "" {
+			if text := semanticViewerSelectionText(action, vv.AnsiMode); text != "" {
 				if semantic.Bool(action["block"]) {
 					vtui.DebugLog("[FIX:text-block-selection] viewer copy rows=%d block=true bytes=%d",
 						len(semantic.AppMapSlice(action["rows"])), len(text))
@@ -91,7 +91,7 @@ func (vv *ViewerView) HandleSemanticAction(action map[string]any) bool {
 	return false
 }
 
-func semanticViewerSelectionText(action map[string]any) string {
+func semanticViewerSelectionText(action map[string]any, ansi ...bool) string {
 	var rows []any
 	switch value := action["rows"].(type) {
 	case []any:
@@ -123,6 +123,11 @@ func semanticViewerSelectionText(action map[string]any) string {
 		start := max(0, min(width, semantic.Int(row["start"])))
 		end := max(start, min(width, semantic.Int(row["end"])))
 		cells, _ := viewerTextCellsAt(text, vtui.Palette[theme.ColViewerText], effectiveViewerTabSize(), width, origin)
+		if len(ansi) > 0 && ansi[0] {
+			base := vtui.Palette[theme.ColViewerText]
+			state := base
+			cells, _ = ansiRowCellsAt([]byte(text), base, &state, effectiveViewerTabSize(), width, origin)
+		}
 		for column := start; column < end; column++ {
 			if column < len(cells) {
 				out.WriteString(vtui.CellString(cells[column].Char))
@@ -355,7 +360,7 @@ func (vv *ViewerView) semanticWrappedRowStart(offset int64, width int) (int64, b
 
 	started, processed, iterations := time.Now(), 0, 0
 	for seek.curr < offset && seek.curr < vv.Backend.Size() {
-		data, err := vv.Backend.ReadAt(seek.curr, max(4, width*4))
+		data, err := vv.Backend.ReadAt(seek.curr, max(4, vv.rowReadSize(width)))
 		if err == piecetable.ErrLoading {
 			return offset, false
 		}
@@ -367,7 +372,7 @@ func (vv *ViewerView) semanticWrappedRowStart(offset int64, width int) (int64, b
 			return offset, false
 		}
 		vv.semanticLoadError = ""
-		scan := scanViewerText(data, width, true, seek.currColumn, 0, false)
+		scan := scanViewerTextMode(data, width, true, seek.currColumn, 0, false, vv.AnsiMode)
 		if scan.lineLen <= 0 {
 			vv.semanticLoadError = "wrapped row resolver made no source progress"
 			return offset, false

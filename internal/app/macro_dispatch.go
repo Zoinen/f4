@@ -56,6 +56,17 @@ func macroCurrentArea() string {
 	return "Other"
 }
 
+// pluginPanelStandsDown reports whether the hotkey that resolved to
+// actionName must yield to a panel plugin owning the keyboard in the panels
+// frame on top (panel.PanelsFrame.PluginPanelStandsDown).
+func pluginPanelStandsDown(actionName string) bool {
+	if vtui.FrameManager == nil {
+		return false
+	}
+	pf, ok := vtui.FrameManager.GetTopFrame().(*panel.PanelsFrame)
+	return ok && pf.PluginPanelStandsDown(actionName)
+}
+
 // menuBarRaisedOver reports a main menu bar that is up without a dropdown over
 // top, the frame that shows it. vtui's frame manager hands such a bar every key
 // the EventFilter lets through (the menu interception in dispatchEvent, under
@@ -71,7 +82,7 @@ func menuBarRaisedOver(top vtui.Frame) bool {
 	return !top.IsModal() || top.GetMenuBar() == menu
 }
 
-// isPanelFastFindToggleKey identifies contextual panel-toggle keys owned by
+// IsPanelFastFindToggleKey identifies contextual panel-toggle keys owned by
 // Fast Find. They must reach panel.PanelsFrame before macros and configurable
 // hotkeys, otherwise Esc/Del -> Panel.Toggle hides the panels first.
 func IsPanelFastFindToggleKey(e *vtinput.InputEvent) bool {
@@ -104,10 +115,37 @@ func IsPanelFastFindActive() bool {
 	return fsp != nil && fsp.FastFindMode
 }
 
+func macroCommandLine() string {
+	area := macroCurrentArea()
+	if area != "Shell" && area != "Terminal" {
+		return ""
+	}
+	pf := panel.FindPanelsFrameAnyScreen()
+	if pf == nil || pf.CmdLine == nil {
+		return ""
+	}
+	return pf.CmdLine.Edit.GetText()
+}
+
+// macroCommandLineOwnsDeletion reports whether e is a plain Backspace or Delete
+// that the command line of the panels takes because it holds text.
+func macroCommandLineOwnsDeletion(area string, e *vtinput.InputEvent) bool {
+	if area != "Shell" && area != "Terminal" {
+		return false
+	}
+	pf := panel.FindPanelsFrameAnyScreen()
+	return pf != nil && pf.CommandLineOwnsDeletion(e)
+}
+
 func macroFilter(m *macro.MacroManager, e *vtinput.InputEvent) bool {
 	if e.Type != vtinput.KeyEventType {
 		return false
 	}
+
+	// Wayland reports the translated keysym for the active layout. Restore the
+	// physical Latin VK before remaps and native handlers inspect the event, so
+	// Ctrl+N remains Ctrl+N when the Russian layout produces Ctrl+т.
+	keymap.NormalizeLayoutShortcut(e)
 
 	// The user's key remap (keymap.ini) substitutes the key before anything
 	// else sees the event, so macros, plugin interception, configurable
@@ -193,7 +231,14 @@ func macroFilter(m *macro.MacroManager, e *vtinput.InputEvent) bool {
 	// Check if this key triggers a macro
 	keyStr := keymap.EventToFarString(e)
 
-	if areaMacros, ok := m.Macros[currentArea]; ok {
+	// Backspace and Delete edit a command line that holds text before any
+	// remapped hotkey, and a recorded macro on the same key is no exception:
+	// a user who bound Backspace to "up one folder" for an empty command line
+	// otherwise lost it for editing as soon as the macro was played back
+	// from the key (f4#1797).
+	commandLineEdits := macroCommandLineOwnsDeletion(currentArea, e)
+
+	if areaMacros, ok := m.Macros[currentArea]; ok && !commandLineEdits {
 		if seq, ok := areaMacros[keyStr]; ok {
 			vtui.DebugLog("MACRO: Playing back macro for %s in area %s", keyStr, currentArea)
 			vtui.FrameManager.InjectEvents(seq)
@@ -201,7 +246,7 @@ func macroFilter(m *macro.MacroManager, e *vtinput.InputEvent) bool {
 		}
 	}
 
-	if commonMacros, ok := m.Macros["Common"]; ok {
+	if commonMacros, ok := m.Macros["Common"]; ok && !commandLineEdits {
 		if seq, ok := commonMacros[keyStr]; ok {
 			vtui.DebugLog("MACRO: Playing back macro for %s in area Common", keyStr)
 			vtui.FrameManager.InjectEvents(seq)
@@ -209,8 +254,12 @@ func macroFilter(m *macro.MacroManager, e *vtinput.InputEvent) bool {
 		}
 	}
 
+	// A macro that hit its deadline left the interpreter unusable; build a new
+	// one before offering it this key.
+	m.RefreshInterruptedLua()
+
 	// Recorded macros win over scripted ones, as they do in Far.
-	if m.Lua != nil && m.Lua.Trigger(currentArea, e) {
+	if m.Lua != nil && m.Lua.TriggerWithCommandLine(currentArea, e, macroCommandLine()) {
 		vtui.DebugLog("MACRO: Running Lua macro for %s in area %s", keyStr, currentArea)
 		return true
 	}
@@ -254,11 +303,17 @@ func macroFilter(m *macro.MacroManager, e *vtinput.InputEvent) bool {
 			// line while remaining persisted for that menu and its display.
 			// A chord assigned in the hotkey dialog (Ctrl+F9 and friends) is a
 			// real hotkey and keeps being dispatched here.
-			if keymap.IsPluginActionName(actionName) && panel.IsPluginMenuHotkey(keyStr) {
+			if isMenuAcceleratorAction(actionName, keyStr) {
 				return false
 			}
 			if strings.EqualFold(actionName, "none") {
 				return true // Intercept and silence (explicitly unbound)
+			}
+			// A panel plugin owns the keyboard and this binding acts on the
+			// file panel hidden under it: hand the key to the frame, which
+			// routes it to the plugin's ProcessKey (vfs.PanelKeyProvider).
+			if pluginPanelStandsDown(actionName) {
+				return false
 			}
 			vtui.DebugLog("HOTKEY: Executing action %s for %s in area %s", actionName, keyStr, currentArea)
 			// A configured binding owns the event even when its action cannot
@@ -269,6 +324,17 @@ func macroFilter(m *macro.MacroManager, e *vtinput.InputEvent) bool {
 			RunAction(actionName)
 			return true
 		}
+	}
+
+	// A held Ctrl+W auto-repeats while the exit confirmation dialog is up and
+	// the repeats pile up in the event channel. They must die here: the
+	// close-active-screen fallback below this filter would re-emit CmQuit and
+	// stack another copy of the dialog (one Cancel per queued repeat), and
+	// with several workspaces it would close one behind the modal dialog.
+	if e.VirtualKeyCode == vtinput.VK_W &&
+		(e.ControlKeyState&(vtinput.LeftCtrlPressed|vtinput.RightCtrlPressed)) != 0 &&
+		panel.QuitConfirmationOpen() {
+		return true
 	}
 
 	return false
@@ -297,11 +363,16 @@ func macroLookupHotkey(m *macro.MacroManager, e *vtinput.InputEvent) bool {
 	// Plugin menu accelerators are activated by the F11 menu's ampersand
 	// hotkeys. They are deliberately not global Shell hotkeys, so an injected
 	// key (for example from a key-bar click) must not bypass that rule either.
-	if keymap.IsPluginActionName(actionName) && panel.IsPluginMenuHotkey(keyStr) {
+	if isMenuAcceleratorAction(actionName, keyStr) {
 		return false
 	}
 	if strings.EqualFold(actionName, "none") {
 		return true
+	}
+	// Same stand-down as in Filter: an injected key (a keybar click) must
+	// not reach a file action the plugin panel has hidden either.
+	if pluginPanelStandsDown(actionName) {
+		return false
 	}
 	vtui.DebugLog("HOTKEY: Injected %s → action %s in area %s", keyStr, actionName, area)
 	// The injected path has the same ownership rule as Filter: once a
@@ -309,4 +380,9 @@ func macroLookupHotkey(m *macro.MacroManager, e *vtinput.InputEvent) bool {
 	// frame below it.
 	RunAction(actionName)
 	return true
+}
+
+func isMenuAcceleratorAction(actionName, key string) bool {
+	return (keymap.IsPluginActionName(actionName) || keymap.IsDriveMenuActionName(actionName)) &&
+		panel.IsPluginMenuHotkey(key)
 }

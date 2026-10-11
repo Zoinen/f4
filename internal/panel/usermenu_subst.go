@@ -18,15 +18,19 @@ import (
 //	!!              literal '!'
 //	!.!             file name under cursor (with extension)
 //	!`!             extension of the cursor file, including the dot
-//	!\!             current panel directory
+//	!\ or !\!       current panel directory
 //	!&              space-joined basenames of marked files (or cursor file)
 //	!@!             path of a temp file containing one marked basename per line
 //	!?title?init!   prompt the user for input; init is the prefilled value
 //	!#              switch subsequent tokens to the passive panel
 //	!^              switch subsequent tokens back to the active panel
 //	!~!             file name under cursor without extension
-//	!/!             current directory path without trailing slash
+//	!/ or !/!       current directory path without trailing slash
 //	!:              current drive letter or scheme with colon
+//
+// !\ and !/ close with '!' only to delimit an immediately following token
+// (e.g. "!/!.!" is the directory then the file name); on their own the
+// closing '!' is optional, matching far2l's fnparce.cpp.
 //
 // Shell variable references such as $VAR and ${VAR} are intentionally passed
 // through unchanged. The command is expanded by the target shell; resolving
@@ -157,12 +161,23 @@ func SubstFileName(cmd string, ctx *SubstContext) SubstResult {
 		}
 		// !/!  →  current directory path without trailing slash
 		if strings.HasPrefix(rest, "!/!") {
-			dir := panel.CurDir
-			if len(dir) > 1 && (strings.HasSuffix(dir, "/") || strings.HasSuffix(dir, "\\")) {
-				dir = dir[:len(dir)-1]
-			}
-			out.WriteString(dir)
+			out.WriteString(trimTrailingSlash(panel.CurDir))
 			i += 3
+			continue
+		}
+		// !\  / !/  (bare, no closing '!') → same as above. far2l's fnparce.cpp
+		// treats the closing '!' as optional: it only matters to delimit an
+		// immediately following token (e.g. "!/!.!" is the path token then the
+		// filename token), so a standalone "!/" with nothing else after it is
+		// already a complete, valid token (f4 #1395).
+		if strings.HasPrefix(rest, "!\\") {
+			out.WriteString(panel.CurDir)
+			i += 2
+			continue
+		}
+		if strings.HasPrefix(rest, "!/") {
+			out.WriteString(trimTrailingSlash(panel.CurDir))
+			i += 2
 			continue
 		}
 		// !:  →  current drive letter or scheme with colon (e.g. C:)
@@ -247,6 +262,16 @@ func splitPromptBody(body string) (title, init string, hasInit bool) {
 		return body, "", false
 	}
 	return body[:q], body[q+1:], true
+}
+
+// trimTrailingSlash drops one trailing path separator, so "!/"/"!/!" never
+// hand the shell a directory with a doubled slash when it's joined with more
+// path text.
+func trimTrailingSlash(dir string) string {
+	if len(dir) > 1 && (strings.HasSuffix(dir, "/") || strings.HasSuffix(dir, "\\")) {
+		return dir[:len(dir)-1]
+	}
+	return dir
 }
 
 func marked(p *PanelSnapshot) []string {

@@ -140,6 +140,102 @@ func TestX11RendererKeepsPartialWindowMarginsCleared(t *testing.T) {
 	}
 }
 
+// stalePixel reports the first pixel of img outside the gridW x gridH area
+// that is not opaque black, or ok=false when the margins are clean.
+func stalePixel(img *image.RGBA, gridW, gridH int) (x, y int, ok bool) {
+	for y := 0; y < img.Rect.Dy(); y++ {
+		for x := 0; x < img.Rect.Dx(); x++ {
+			if x < gridW && y < gridH {
+				continue
+			}
+			p := img.Pix[y*img.Stride+x*4:]
+			if p[0] != 0 || p[1] != 0 || p[2] != 0 || p[3] != 255 {
+				return x, y, true
+			}
+		}
+	}
+	return 0, 0, false
+}
+
+func redCells(n int) []CharInfo {
+	buf := make([]CharInfo, n)
+	for i := range buf {
+		buf[i].Attributes = SetRGBBack(IsBgRGB, 0xff0000)
+	}
+	return buf
+}
+
+func TestClearFrameMargins(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 13, 7))
+	for i := range img.Pix {
+		img.Pix[i] = 0xcc
+	}
+	clearFrameMargins(img, 10, 6)
+	if x, y, stale := stalePixel(img, 10, 6); stale {
+		t.Fatalf("margin pixel (%d,%d) was not cleared", x, y)
+	}
+	if got := img.Pix[5*img.Stride+9*4]; got != 0xcc {
+		t.Errorf("a pixel inside the grid was touched: %#x", got)
+	}
+
+	// A grid at least as large as the image has no margin to clear.
+	full := image.NewRGBA(image.Rect(0, 0, 4, 4))
+	for i := range full.Pix {
+		full.Pix[i] = 0xcc
+	}
+	clearFrameMargins(full, 8, 8)
+	if full.Pix[0] != 0xcc || full.Pix[len(full.Pix)-1] != 0xcc {
+		t.Error("nothing should be cleared when the grid covers the image")
+	}
+	clearFrameMargins(nil, 1, 1) // must not panic
+}
+
+// f4 #283: the FrameManager can render once more for the previous, larger grid
+// after the window has shrunk. That frame is clipped to the new image and
+// fills the partial bottom row and right column; the smaller frame that
+// follows draws whole cells only and used to leave them showing, as a nearly
+// whole second key bar one pixel under a row boundary.
+func TestX11RendererClearsMarginsFilledByALargerFrame(t *testing.T) {
+	const (
+		windowWidth  = 14 // 2 cells of 5 and 4 px of margin
+		windowHeight = 8  // 2 cells of 3 and 2 px of margin
+		cellWidth    = 5
+		cellHeight   = 3
+	)
+	host := &X11Host{
+		width:      windowWidth,
+		height:     windowHeight,
+		cellW:      cellWidth,
+		cellH:      cellHeight,
+		dirtyLines: make([]bool, windowHeight),
+	}
+	renderer := NewX11Renderer(host, nil)
+
+	large := redCells(3 * 3)
+	renderer.Render(large, make([]CharInfo, len(large)), 3, 3, true)
+	// (13,6) is in the bottom margin and the right margin of the 2x2 grid.
+	if got := host.imgBuf.Pix[6*host.imgBuf.Stride+13*4]; got != 0xff {
+		t.Fatalf("setup: the larger frame did not reach the margin: %#x", got)
+	}
+	for i := range host.dirtyLines {
+		host.dirtyLines[i] = false
+	}
+
+	small := redCells(2 * 2)
+	renderer.Render(small, make([]CharInfo, len(small)), 2, 2, true)
+	if x, y, stale := stalePixel(host.imgBuf, 2*cellWidth, 2*cellHeight); stale {
+		t.Fatalf("stale pixel at (%d,%d) outside the smaller grid", x, y)
+	}
+	if got := host.imgBuf.Pix[0]; got != 0xff {
+		t.Errorf("the smaller frame was not drawn: %#x", got)
+	}
+	for y, dirty := range host.dirtyLines {
+		if !dirty {
+			t.Errorf("line %d was not marked for upload; the cleared margin would not reach the window", y)
+		}
+	}
+}
+
 func TestX11Host_SendEvent_ClosedChannelSafety(t *testing.T) {
 	pr, pw := io.Pipe()
 	defer pw.Close()
@@ -319,5 +415,87 @@ func TestX11Host_MouseStateTracking(t *testing.T) {
 		}
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("Button release event was not sent")
+	}
+}
+
+// SetFont reloads the font and pushes the new cell size to the renderer and
+// the screen's graphics layer, without touching the grid geometry -- the
+// window resize (through ConfigureWindow, which needs a live X connection,
+// absent in this unit test) is the only thing that follows the cell size,
+// not cols/rows (vtui #136).
+func TestX11Host_SetFont(t *testing.T) {
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(10, 5)
+
+	host := &X11Host{
+		cols:     10,
+		rows:     5,
+		cellW:    1,
+		cellH:    1,
+		fontName: "old-font",
+		fontSize: 12,
+		dpi:      72.0,
+		scr:      scr,
+	}
+	renderer := NewX11Renderer(host, nil)
+	renderer.glyphCache[glyphKey{}] = &image.RGBA{}
+	renderer.gfxKnown = true
+	host.renderer = renderer
+
+	_, wantCellW, wantCellH := loadBestFont("NonExistentFontAtAll", 20, 72.0)
+
+	if renderer.face != nil {
+		t.Fatal("setup: renderer already has a face before SetFont")
+	}
+	host.SetFont("NonExistentFontAtAll", 20)
+
+	if host.fontName != "NonExistentFontAtAll" || host.fontSize != 20 {
+		t.Fatalf("fontName/fontSize = %q/%v, want NonExistentFontAtAll/20", host.fontName, host.fontSize)
+	}
+	if host.cellW != wantCellW || host.cellH != wantCellH {
+		t.Fatalf("host cell size = %dx%d, want %dx%d", host.cellW, host.cellH, wantCellW, wantCellH)
+	}
+	if cw, ch := scr.Graphics().CellSize(); cw != wantCellW || ch != wantCellH {
+		t.Fatalf("screen cell size = %dx%d, want %dx%d", cw, ch, wantCellW, wantCellH)
+	}
+	if renderer.face == nil {
+		t.Error("renderer face was not set")
+	}
+	if len(renderer.glyphCache) != 0 {
+		t.Errorf("glyphCache not cleared: %d entries left", len(renderer.glyphCache))
+	}
+	if renderer.gfxKnown {
+		t.Error("gfxKnown not reset after font change")
+	}
+	if host.cols != 10 || host.rows != 5 {
+		t.Fatalf("grid = %dx%d, want unchanged 10x5", host.cols, host.rows)
+	}
+}
+
+// A host without a live X connection (no native window yet, as in the test
+// above) must not panic when SetFont is called -- mirrors the "testable
+// before a native window exists" contract Win32GuiHost.ResizeGrid
+// documents, and WaylandHost.SetFont's own test.
+func TestX11Host_SetFontWithoutConn(t *testing.T) {
+	host := &X11Host{fontName: "old-font", fontSize: 12, dpi: 72.0}
+	host.SetFont("NonExistentFontAtAll", 20)
+	if host.fontName != "NonExistentFontAtAll" {
+		t.Errorf("fontName = %q, want NonExistentFontAtAll", host.fontName)
+	}
+}
+
+// X11Renderer.SetFont is the fontSetter entry point frameManager.SetFont
+// dispatches to (see TestFrameManagerSetFont_UsesRenderer); it always
+// reports true and forwards straight to X11Host.SetFont.
+func TestX11Renderer_SetFont(t *testing.T) {
+	host := &X11Host{fontName: "old-font", fontSize: 12, dpi: 72.0}
+	renderer := NewX11Renderer(host, nil)
+	host.renderer = renderer
+
+	if ok := renderer.SetFont("NonExistentFontAtAll", 20); !ok {
+		t.Error("X11Renderer.SetFont = false, want true")
+	}
+	if host.fontName != "NonExistentFontAtAll" || host.fontSize != 20 {
+		t.Fatalf("fontName/fontSize = %q/%v, want NonExistentFontAtAll/20", host.fontName, host.fontSize)
 	}
 }

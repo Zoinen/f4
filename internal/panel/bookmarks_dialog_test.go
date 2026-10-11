@@ -2,6 +2,7 @@ package panel
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/unxed/f4/internal/testutil"
@@ -135,4 +136,22 @@ func TestBookmarksDialog_OpenBuildsMenu(t *testing.T) {
 		t.Fatalf("open cursor = %d, want 4", d.menu.SelectPos)
 	}
 	vtui.FrameManager.Pop()
+}
+
+func TestBookmarkEditKeepsThePanelPlugin(t *testing.T) {
+	var set BookmarkSet
+	set[3] = Bookmark{Path: "/repo", Plugin: bookmarkPanelPluginPrefix + "git", PluginData: "state"}
+	set.SetPathKeepingPlugin(3, "/other")
+	if got := set[3]; got.Path != "/other" || got.Plugin != bookmarkPanelPluginPrefix+"git" || got.PluginData != "state" {
+		t.Fatalf("editing the path lost the plugin: %+v", got)
+	}
+	set.SetPathKeepingPlugin(-1, "/x")
+	set.SetPathKeepingPlugin(len(set), "/x")
+
+	if title := bookmarkEditTitle(set[3]); !strings.Contains(title, "[git]") {
+		t.Fatalf("the edit title should name the plugin: %q", title)
+	}
+	if title := bookmarkEditTitle(Bookmark{Path: "/plain"}); strings.Contains(title, "[") {
+		t.Fatalf("a plain bookmark has no plugin in its title: %q", title)
+	}
 }

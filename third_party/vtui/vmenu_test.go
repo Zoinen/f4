@@ -696,3 +696,103 @@ func TestVMenuCustomSubmenuFrameLifecycle(t *testing.T) {
 		}
 	}
 }
+
+// f4 #452: with far2l's "Loop list scrolling" off, a held arrow stops at the
+// first or last item, while a separate press still wraps (Far Manager 3).
+// The keys go through dispatchEvent so the repeat detection is exercised too.
+func TestVMenu_HeldArrowStopsAtEdgeWithoutLoopScroll(t *testing.T) {
+	oldFM := FrameManager
+	fm := &frameManager{}
+	fm.Init(NewSilentScreenBuf())
+	FrameManager = fm
+	defer func() { FrameManager = oldFM }()
+	defer SetMenuLoopScroll(MenuLoopScroll())
+
+	fm.Push(newMockFrame(0, 0, 40, 20, false))
+	menu := NewVMenu("Menu")
+	menu.AddItem(MenuItem{Text: "One"})
+	menu.AddItem(MenuItem{Text: "Two"})
+	menu.AddItem(MenuItem{Text: "Three"})
+	menu.SetPosition(10, 5, 30, 9)
+	menu.SetSelectPos(1)
+	fm.Push(menu)
+
+	send := func(vk uint16, down, legacy bool) {
+		fm.dispatchEvent(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: down, VirtualKeyCode: vk, IsLegacy: legacy}, false)
+	}
+	expect := func(step string, want int) {
+		t.Helper()
+		if menu.SelectPos != want {
+			t.Fatalf("%s: SelectPos = %d, want %d", step, menu.SelectPos, want)
+		}
+		if !menu.Wrap {
+			t.Fatalf("%s: Wrap was left off", step)
+		}
+	}
+
+	SetMenuLoopScroll(false)
+	send(vtinput.VK_DOWN, true, false)
+	expect("press Down", 2)
+	send(vtinput.VK_DOWN, true, false)
+	expect("hold Down on the last item", 2)
+	send(vtinput.VK_DOWN, true, false)
+	expect("keep holding Down", 2)
+	send(vtinput.VK_DOWN, false, false)
+	send(vtinput.VK_DOWN, true, false)
+	expect("release and press Down again wraps", 0)
+	send(vtinput.VK_DOWN, false, false)
+
+	send(vtinput.VK_UP, true, false)
+	expect("press Up on the first item wraps", 2)
+	send(vtinput.VK_UP, true, false)
+	expect("hold Up", 1)
+	send(vtinput.VK_UP, true, false)
+	expect("hold Up", 0)
+	send(vtinput.VK_UP, true, false)
+	expect("hold Up on the first item", 0)
+	send(vtinput.VK_UP, false, false)
+
+	// A legacy terminal reports no releases, so no press counts as held.
+	send(vtinput.VK_UP, true, true)
+	expect("legacy Up wraps", 2)
+	send(vtinput.VK_DOWN, true, true)
+	expect("legacy Down wraps", 0)
+	send(vtinput.VK_DOWN, true, true)
+	expect("legacy Down", 1)
+	send(vtinput.VK_DOWN, true, true)
+	expect("legacy Down", 2)
+	send(vtinput.VK_DOWN, true, true)
+	expect("legacy Down on the last item wraps", 0)
+
+	// With the option on, the default, a held arrow loops as before.
+	SetMenuLoopScroll(true)
+	send(vtinput.VK_UP, true, false)
+	expect("press Up wraps", 2)
+	send(vtinput.VK_UP, true, false)
+	expect("hold Up", 1)
+	send(vtinput.VK_UP, true, false)
+	expect("hold Up", 0)
+	send(vtinput.VK_UP, true, false)
+	expect("hold Up on the first item loops", 2)
+}
+
+// A menu scrollbar sits on the menu frame, so it must follow the menu palette
+// rather than the shared list scrollbar color (f4 issue #261).
+func TestVMenu_ScrollBarUsesMenuScrollbarColor(t *testing.T) {
+	SetDefaultPalette()
+	Palette[ColScrollBar] = SetRGBBoth(0, 0xC0C0C0, 0x0000A0)
+	Palette[ColMenuScrollbar] = SetRGBBoth(0, 0x123456, 0xABCDEF)
+	t.Cleanup(SetDefaultPalette)
+
+	m := NewVMenu("Long")
+	for i := 0; i < 30; i++ {
+		m.AddItem(MenuItem{Text: "item"})
+	}
+	m.SetPosition(0, 0, 20, 10)
+
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(22, 12)
+	m.Show(scr)
+
+	checkCell(t, scr, 20, 1, ScrollUpArrow, Palette[ColMenuScrollbar])
+}

@@ -83,9 +83,9 @@ Hotkeys provide the fastest way to activate a specific function.
 #### Dropdowns (`ComboBox`)
 
 *   **Interaction:** Combines an `Edit` field with a hidden `VMenu`.
-*   **Activation:** `Alt+Down` or clicking the down arrow (`↓`) icon opens the list.
+*   **Activation:** `Ctrl+Down` or clicking the down arrow (`↓`) icon opens the list.
 *   **Selection:** Selecting an item from the list automatically populates the `Edit` field and returns focus to it.
-*   **`DropdownOnly` Mode:** If enabled, the user cannot type custom text and must select from the provided options using `Enter` or the mouse.
+*   **`DropdownOnly` Mode:** If enabled, the user cannot type custom text and must select from the provided options. As in `far2l`, `Enter` presses the dialog's default button; the list opens with `Ctrl+Down` or the mouse. Only when the dialog has no default button does `Enter` open the list.
 
 #### File Panels (`f4` Specific)
 
@@ -105,6 +105,7 @@ File panels are a special, highly optimized version of a `Table`.
     *   **Multi-level `Esc`:** `Esc` closes an open submenu but keeps the `MenuBar` active. A second `Esc` deactivates the `MenuBar` entirely.
 *   **`VMenu` (Vertical/Submenu):**
     *   **As a Submenu:** If opened from a `MenuBar`, `Left`/`Right` closes the current submenu and opens the adjacent one from the `MenuBar`. `Up` on the first item or `Down` on the last item wraps around within the `VMenu` to provide fast circular access.
+    *   **Held arrows:** With `SetMenuLoopScroll(false)` (far2l's "Loop list scrolling" turned off) an arrow key that is being held stops on the first or last item of a wrapping `VMenu`; only a separate press wraps, as in Far Manager 3. A press counts as held when the previous key-down was the same key with no key-up in between, which is far2l's rule; input without key-up events (legacy terminal sequences) never counts as held.
     *   **As a Standalone Dialog:** If opened as a context menu (not tied to a `MenuBar`), its boundary behavior follows the standard `Tier 2` rule: `Up` on the first item or `Down` on the last will pass focus to the previous/next element in the parent dialog.
 *   **Rationale:** This dual behavior makes menus feel integrated when part of a larger structure, but behave like any other standard list widget when used for context-specific actions.
 

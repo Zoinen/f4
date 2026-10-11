@@ -9,6 +9,7 @@ import (
 // Help uses the dialog stream with an owner-declared layout. Only visible rows
 // cross the wire; the engine retains topic/history/link and scroll ownership.
 func (hv *HelpView) SemanticNode(ctx *SemanticContext) map[string]any {
+	hv.rewrapOnResize()
 	x1, y1, x2, y2 := hv.GetPosition()
 	node := map[string]any{
 		"id": SemanticID(hv), "kind": "dialog", "layout": "help",
@@ -141,6 +142,11 @@ func (hv *HelpView) lineSpans(line string, lineIndex int) []helpSpan {
 	}
 	runes := []rune(line)
 	for i := 0; i < len(runes); i++ {
+		if runes[i] == helpLiteral && i+1 < len(runes) {
+			i++
+			text.WriteRune(runes[i])
+			continue
+		}
 		switch runes[i] {
 		case '#':
 			flush()

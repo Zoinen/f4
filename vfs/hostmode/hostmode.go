@@ -1,8 +1,16 @@
+//go:build !lite
+
 // Package hostmode holds the single, once-decided answer to "which
 // personality does the file layer run in" (WINE.md §13, Part E): posix
 // (real POSIX paths and syscalls via libwinescape) or windows (today's
 // Win32/os.* behavior, unchanged). vfs/hostfs and vfs/hostpath both consult
 // it so the decision is made in exactly one place, not duplicated.
+//
+// A lite build never links libwinescape at all (see hostmode_lite.go): Wine
+// support is out of scope for a lite build ("no separate Wine-specific code
+// or the winescape dependency" per f4#1178), and this package is the single
+// point of truth for that dependency, exactly as its own doc comment above
+// already says for the posix/windows decision.
 package hostmode
 
 import (
@@ -105,4 +113,43 @@ func Posix() bool {
 			isWine, available, hostOS, posix)
 	})
 	return posix
+}
+
+// HomeDir answers "$HOME" for posix personality (WINE.md §18.2, "$HOME,
+// $XDG_CONFIG_HOME"): the host's real Unix home directory, read straight from
+// the host environment via libwinescape's /proc/self/environ path, bypassing
+// Wine's own Win32 environment block entirely.
+//
+// That bypass is not a style choice: Wine's get_initial_environment
+// (dlls/ntdll/unix/env.c) treats HOME as one of exactly four Unix-only
+// variables -- alongside PATH, TEMP and TMP -- that it strips from the Win32
+// process environment on principle, so os.Getenv("HOME") and os.UserHomeDir()
+// never see it under Wine at all; only the WINE-prefixed shadow (WINEHOMEDIR)
+// crosses over, and that is Wine's prefix-relative notion of home, not the
+// host user's.
+//
+// The second result is false when there is nothing to report: either the
+// file layer is not in posix personality, or (rarely) the host process
+// itself has no HOME set. Either way the caller's existing os.UserHomeDir()
+// fallback is the right answer, exactly as it was before Part E -- see
+// UserHomeDir below for the drop-in version of that pattern.
+func HomeDir() (string, bool) {
+	if !Posix() {
+		return "", false
+	}
+	home := winescape.HostGetenv("HOME")
+	return home, home != ""
+}
+
+// UserHomeDir is a drop-in replacement for os.UserHomeDir: it answers with
+// the host's real $HOME while the file layer runs in posix personality (see
+// HomeDir), and falls back to os.UserHomeDir() in every other case --
+// native Windows, native Unix, or Windows persona under Wine -- so a caller
+// that only ever meant "the directory the user thinks of as home" can switch
+// unconditionally without a branch of its own.
+func UserHomeDir() (string, error) {
+	if home, ok := HomeDir(); ok {
+		return home, nil
+	}
+	return os.UserHomeDir()
 }

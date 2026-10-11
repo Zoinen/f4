@@ -226,7 +226,9 @@ Rectangle {
                 + rawStartX)
             y: 0
             width: Math.max(0, snappedEndX - x)
-            height: parent.height
+            // Repeater detaches this item before disposal; the row still owns
+            // its height throughout that cleanup interval.
+            height: documentRow.height
             visible: documentRow.loaded && editorSelectionClip.modelData.valid
             color: documentRow.hostWindow.cleanText(
                        documentRow.documentRoot.cursorFrame.selectionBackground)

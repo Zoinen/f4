@@ -24,17 +24,37 @@ import (
 	"github.com/unxed/f4/internal/toast"
 	"github.com/unxed/f4/internal/viewer"
 	"github.com/unxed/f4/vfs"
+	"github.com/unxed/f4/vfs/hostmode"
 	"github.com/unxed/vtui"
 )
+
+// actionKeepsFastFind lists the actions that leave a search or filter window
+// open: they act on the program window, not on the panels, so the user is not
+// leaving the search by them. Alt+F9 (maximize or restore the window) closed
+// the filter before this (f4#1131).
+func actionKeepsFastFind(name string) bool {
+	return strings.EqualFold(name, "App.ToggleWindowSize")
+}
 
 // RunAction executes an action by name if it exists.
 func RunAction(name string) bool {
 	if a, ok := action.Lookup(name); ok && a.Handler != nil {
+		// An action with Enabled()==false is refused here regardless of how
+		// the call arrived -- menu OnClick, a hotkey resolved by
+		// HotkeyManager, a key-bar click synthesized into the same hotkey,
+		// or the command palette. This is the single choke point that turns
+		// the old "silent no-op" (f4#1356: Ctrl+A / F5 / F6 / F8 with no
+		// target quietly doing nothing) into a command that visibly can't be
+		// invoked: Handler never runs and nothing is shown, matching the
+		// dimmed menu item and key-bar F-key Enabled also produces.
+		if a.Enabled != nil && !a.Enabled() {
+			return false
+		}
 		// Fast Find is a transient panel input mode. Any action means the user
 		// is leaving it, including actions that replace a file panel in place
 		// (Info/Quick View) and therefore do not push a focus-stealing frame.
 		fastFindCanceled := false
-		if !strings.EqualFold(name, CommandPaletteActionName) {
+		if !strings.EqualFold(name, CommandPaletteActionName) && !actionKeepsFastFind(name) {
 			if pf := panel.FindPanelsFrame(); pf != nil {
 				fastFindCanceled = pf.CancelFastFind()
 			}
@@ -64,6 +84,257 @@ func GetAction(name string) (action.Action, bool) {
 		return panel.PluginActionForName(name)
 	}
 	return a, ok
+}
+
+// activePanelHasSelectionTarget reports whether the active panel's selection
+// (or, with nothing marked, its cursor) names anything at all: at least one
+// marked entry, or the cursor on something other than "..".
+// FileSystemPanel.GetSelectedNames already encodes this exact rule (used by
+// actionFileAttributes, actionCopyMove and actionDeleteWithDisposition to
+// decide whether they have a target); this is the Enabled predicate wired
+// directly to File.Attributes, File.Delete and File.DeletePermanent, and
+// folded into fileCopyMoveEnabled below for File.Copy/File.Move, so the menu
+// item and F-key dim and the hotkey stops short of the handler instead of
+// the handler quietly returning early (f4#1356).
+func activePanelHasSelectionTarget() bool {
+	pf := panel.FindPanelsFrame()
+	if pf == nil {
+		return false
+	}
+	fsp := pf.GetActivePanel()
+	if fsp == nil {
+		return false
+	}
+	return len(fsp.GetSelectedNames()) > 0
+}
+
+// fileCopyMoveEnabled extends activePanelHasSelectionTarget with the one
+// extra case actionCopyMove itself refuses even when a target exists: the
+// passive panel is the music player playlist (*panel.PlayerPanel), which is
+// not a place to copy or move real files into. F6 (isMove) is always
+// refused there -- the player never removes anything from the source
+// directory -- and F5 is refused too when the source is not a local
+// filesystem, since the player can only add local paths to its playlist.
+// This mirrors actionCopyMove's own Player.MoveRefused / Player.LocalOnly
+// branches so File.Copy/File.Move's menu item and F5/F6 key dim to match,
+// instead of the hotkey opening one of those error dialogs for a move/copy
+// that can never succeed (f4#1356, part 3).
+func fileCopyMoveEnabled(isMove bool) func() bool {
+	return func() bool {
+		pf := panel.FindPanelsFrame()
+		if pf == nil || pf.ActiveIdx < 0 || pf.ActiveIdx > 1 {
+			return false
+		}
+		// With the tree (Ctrl+T) focused, F5/F6 target its highlighted node
+		// rather than the inactive panel, taking the selection from the
+		// other, still-visible panel that opened it -- see
+		// treeCopyMoveTarget's own doc comment (f4#1602 part 3).
+		if treeAlt, treeSrc := treeCopyMoveTarget(pf); treeAlt != nil {
+			return treeSrc != nil && len(treeSrc.GetSelectedNames()) > 0 && treeAlt.SelectedPath() != ""
+		}
+		if !activePanelHasSelectionTarget() {
+			return false
+		}
+		if _, ok := pf.AltPanels[1-pf.ActiveIdx].(*panel.PlayerPanel); !ok {
+			return true
+		}
+		if isMove {
+			return false
+		}
+		fsp := pf.GetActivePanel()
+		if fsp == nil {
+			return false
+		}
+		_, isLocal := fsp.Vfs.(*vfs.OSVFS)
+		return isLocal
+	}
+}
+
+// fileDeleteEnabled is the Enabled predicate for File.Delete (F8) and
+// File.DeletePermanent (Shift+Del), extending activePanelHasSelectionTarget
+// with the tree case the same way fileCopyMoveEnabled already does for
+// F5/F6: with the tree (Ctrl+T) focused, F8/Del target its highlighted node
+// directly (actionDeleteWithDisposition's own focusedTreePanel branch), not
+// the active panel's own selection, so gating on activePanelHasSelectionTarget
+// alone would leave the key wrongly disabled whenever the real panel
+// underneath the tree happens to have its cursor on ".." -- the one case
+// its own cursor fallback refuses (FileSystemPanel.GetSelectedNames) -- even
+// though the tree itself has a perfectly good node highlighted (f4#1602,
+// part 5 of N).
+func fileDeleteEnabled() bool {
+	pf := panel.FindPanelsFrame()
+	if pf == nil {
+		return false
+	}
+	if t := focusedTreePanel(pf); t != nil {
+		return !t.IsRootSelected() && t.SelectedPath() != ""
+	}
+	return activePanelHasSelectionTarget()
+}
+
+// cursorEntryEnabled is the Enabled predicate for F3 and F4 (and View in Hex):
+// the cursor of the active panel is on an entry, and not on "..". A folder
+// stays allowed on purpose: F3 on a folder is its size and F4 on one its
+// attributes, as in Far; ".." is the one row those keys have nothing to work
+// on (f4#1356).
+func cursorEntryEnabled() bool {
+	pf := panel.FindPanelsFrame()
+	if pf == nil {
+		return false
+	}
+	fsp := pf.GetActivePanel()
+	if fsp == nil {
+		return false
+	}
+	idx := fsp.GetCursorIndex()
+	return idx >= 0 && idx < len(fsp.Entries) && fsp.Entries[idx].Name != ".."
+}
+
+// viewEnabled is the Enabled predicate for F3: the cursor of the active panel
+// is on an entry. Unlike F4 it is also live on "..", where F3 sizes the folder
+// the panel shows (f4#1795).
+func viewEnabled() bool {
+	pf := panel.FindPanelsFrame()
+	if pf == nil {
+		return false
+	}
+	fsp := pf.GetActivePanel()
+	if fsp == nil {
+		return false
+	}
+	idx := fsp.GetCursorIndex()
+	return idx >= 0 && idx < len(fsp.Entries)
+}
+
+// cursorOnDirectory reports whether the cursor of the active panel stands on
+// a folder, the case where F4 opens its attributes instead of an editor.
+func cursorOnDirectory() bool {
+	pf := panel.FindPanelsFrame()
+	if pf == nil {
+		return false
+	}
+	fsp := pf.GetActivePanel()
+	if fsp == nil {
+		return false
+	}
+	idx := fsp.GetCursorIndex()
+	return idx >= 0 && idx < len(fsp.Entries) && fsp.Entries[idx].Name != ".." && fsp.Entries[idx].IsDir
+}
+
+// editKeyBarLabel is what the F4 slot of the key bar says: "Edit" for a file
+// (the static label), "Attr" when the cursor is on a folder (f4#1794).
+func editKeyBarLabel() string {
+	if cursorOnDirectory() {
+		return i18n.Msg("KeyBar.F4Attr")
+	}
+	return ""
+}
+
+// viewKeyBarLabel is what the F3 slot of the key bar says: "View" for a file
+// (the static label), "Size" when the cursor is on a folder, because F3 on a
+// folder works out its size (f4#1795).
+func viewKeyBarLabel() string {
+	// On "..", too, F3 sizes a folder (the one the panel shows): f4#1795.
+	if pf := panel.FindPanelsFrame(); pf != nil {
+		if fsp := pf.GetActivePanel(); fsp != nil {
+			if idx := fsp.GetCursorIndex(); idx >= 0 && idx < len(fsp.Entries) && fsp.Entries[idx].IsDir {
+				return i18n.Msg("KeyBar.F3Size")
+			}
+		}
+	}
+	return ""
+}
+
+// entryNamed finds the entry with the given name. With no selection the one
+// name asked about is the cursor's, so that is looked at before the listing is
+// walked (f4#1832).
+func entryNamed(fsp *panel.FileSystemPanel, name string) *panel.FileEntry {
+	if idx := fsp.GetCursorIndex(); idx >= 0 && idx < len(fsp.Entries) && fsp.Entries[idx].Name == name {
+		return fsp.Entries[idx]
+	}
+	for _, e := range fsp.Entries {
+		if e.Name == name {
+			return e
+		}
+	}
+	return nil
+}
+
+// oneRegularFileEnabled is the Enabled predicate for the commands that make a
+// copy of exactly one regular file (Encode/Decode as Base64): one entry
+// selected, and it is not a folder or "..". FileSystemPanel.GetSelectedNames
+// already leaves ".." out (f4#1356).
+func oneRegularFileEnabled() bool {
+	pf := panel.FindPanelsFrame()
+	if pf == nil {
+		return false
+	}
+	fsp := pf.GetActivePanel()
+	if fsp == nil {
+		return false
+	}
+	names := fsp.GetSelectedNames()
+	if len(names) != 1 {
+		return false
+	}
+	if e := entryNamed(fsp, names[0]); e != nil {
+		return !e.IsDir
+	}
+	return false
+}
+
+// symlinkEditEnabled is the Enabled predicate for File.EditSymlink. It
+// mirrors actionEditSymlink's own three refusal branches -- exactly one
+// target selected (SymlinkEdit.OneFile), that target actually is a symlink
+// (SymlinkEdit.NotSymlink), and the panel's VFS implements SymlinkVFS
+// (SymlinkEdit.Unsupported) -- one of the two control examples viklequick
+// named in f4#1356 itself. Unlike actionEditSymlink, which confirms
+// IsSymlink with a fresh Lstat before opening the dialog, this runs
+// synchronously on every menu build and keypress, so it reads the
+// VFSItem.IsSymlink flag the last directory listing already cached on the
+// entry instead of doing I/O.
+func symlinkEditEnabled() bool {
+	pf := panel.FindPanelsFrame()
+	if pf == nil {
+		return false
+	}
+	fsp := pf.GetActivePanel()
+	if fsp == nil || fsp.Vfs == nil {
+		return false
+	}
+	names := fsp.GetSelectedNames()
+	if len(names) != 1 {
+		return false
+	}
+	if _, ok := fsp.Vfs.(vfs.SymlinkVFS); !ok {
+		return false
+	}
+	if e := entryNamed(fsp, names[0]); e != nil {
+		return e.IsSymlink
+	}
+	return false
+}
+
+// shareLinkEnabled is the Enabled predicate for File.Share. The action's own
+// Visible predicate already keeps the menu item off panels whose VFS does
+// not implement vfs.ShareLinkProvider; this repeats that check (Enabled is
+// consulted independently of Visible, see action.Action.Enabled) and adds
+// the one refusal actionShareLink still has left after that: exactly one
+// entry must be selected, or it shows the "Share.SelectOne" error dialog
+// instead of running (f4#1356).
+func shareLinkEnabled() bool {
+	pf := panel.FindPanelsFrame()
+	if pf == nil {
+		return false
+	}
+	fsp := pf.GetActivePanel()
+	if fsp == nil || fsp.Vfs == nil {
+		return false
+	}
+	if _, ok := fsp.Vfs.(vfs.ShareLinkProvider); !ok {
+		return false
+	}
+	return len(fsp.GetSelectedNames()) == 1
 }
 
 // cursorOnParent reports whether the panel's cursor sits on the ".."
@@ -173,19 +444,41 @@ func init() {
 		Description: "Configure the size boundaries for panel groups",
 		DescKey:     "Group.Settings.Desc"})
 
+	// Menu items run synchronously from vtui's VMenu callback, before the menu
+	// frame is removed. In that window GetTopFrame is the menu rather than the
+	// editor that owns it, so resolve the active screen's editor underneath a
+	// menu overlay as well.
+	editorForAction := func() *editor.EditorView {
+		if vtui.FrameManager == nil {
+			return nil
+		}
+		if ev, ok := vtui.FrameManager.GetTopFrame().(*editor.EditorView); ok {
+			return ev
+		}
+		top := vtui.FrameManager.GetTopFrame()
+		if top == nil || top.GetType() != vtui.TypeMenu {
+			return nil
+		}
+		index := vtui.FrameManager.ActiveIdx
+		if index < 0 || index >= len(vtui.FrameManager.Screens) {
+			return nil
+		}
+		screen := vtui.FrameManager.Screens[index]
+		for i := len(screen.Frames) - 1; i >= 0; i-- {
+			if ev, ok := screen.Frames[i].(*editor.EditorView); ok && !ev.IsDone() {
+				return ev
+			}
+		}
+		return nil
+	}
+
 	// withMultiEditor is for the handful of actions that know about the
 	// multi-caret set and act on it themselves.
 	withMultiEditor := func(fn func(ev *editor.EditorView)) func() bool {
 		return func() bool {
-			if vtui.FrameManager == nil {
-				return false
-			}
-			frames := vtui.FrameManager.GetActiveFrames(vtui.FrameManager.ActiveIdx)
-			for i := len(frames) - 1; i >= 0; i-- {
-				if ev, ok := frames[i].(*editor.EditorView); ok {
-					fn(ev)
-					return true
-				}
+			if ev := editorForAction(); ev != nil {
+				fn(ev)
+				return true
 			}
 			return false
 		}
@@ -223,7 +516,7 @@ func init() {
 			if vtui.FrameManager == nil {
 				return false
 			}
-			if ev, ok := vtui.FrameManager.GetTopFrame().(*editor.EditorView); ok {
+			if ev := editorForAction(); ev != nil {
 				return fn(ev)
 			}
 			return false
@@ -359,7 +652,17 @@ func init() {
 		NativeKeys:  []string{"CtrlN:TerminalCtrlNWorkspace"},
 		Handler:     ActionWorkspaceNew,
 	})
-	RegisterAction(action.Action{
+	registerAction(action.Action{
+		Name:        "Workspace.Fork",
+		Area:        "Common",
+		Label:       "Fork Workspace",
+		LabelKey:    "Action.Workspace.Fork",
+		Description: "Clone the current panels into a new workspace",
+		DescKey:     "Action.Workspace.Fork.Desc",
+		DefaultKeys: []string{"CtrlF11"},
+		Handler:     ActionWorkspaceNew,
+	})
+	registerAction(action.Action{
 		Name:        "Workspace.NewTerminal",
 		Area:        "Common",
 		Label:       "Terminal in New Workspace",
@@ -453,9 +756,54 @@ func init() {
 		DescKey:     "Action.File.View.Desc",
 		DefaultKeys: []string{"F3", "Num5"},
 		MenuPath:    "Files",
+		Enabled:     viewEnabled,
+		KeyBarLabel: viewKeyBarLabel,
 		Handler:     withPF(func(pf *panel.PanelsFrame) { ActionViewFile(pf) }),
 	})
-	RegisterAction(action.Action{
+	registerAction(action.Action{
+		Name:        "File.ViewHex",
+		Area:        "Shell",
+		Label:       "View in Hex",
+		LabelKey:    "Action.File.ViewHex",
+		Description: "Open the selected file in the hex viewer",
+		DescKey:     "Action.File.ViewHex.Desc",
+		DefaultKeys: []string{"AltF3"},
+		Enabled:     cursorEntryEnabled,
+		Handler:     withPF(func(pf *panel.PanelsFrame) { actionViewFileHex(pf) }),
+	})
+	// Ctrl+Space: the size of the folder under the cursor, in any VFS -- an
+	// archive included, where the scan walks the archive's own listing and
+	// extracts nothing (M-Commander parity, f4#1670). F3 on a folder does the
+	// same; this is the key that does nothing else.
+	registerAction(action.Action{
+		Name:        "Panel.CalcDirSize",
+		Area:        "Shell",
+		Label:       "Calculate folder size",
+		LabelKey:    "Action.Panel.CalcDirSize",
+		Description: "Calculate the size of the folder under the cursor",
+		DescKey:     "Action.Panel.CalcDirSize.Desc",
+		DefaultKeys: []string{"CtrlSpace:NoTerminalApp"},
+		Handler:     withPF(func(pf *panel.PanelsFrame) { actionCalcDirSizeAtCursor(pf) }),
+	})
+	registerAction(action.Action{
+		Name:        "File.AssemblyInfo",
+		Area:        "Shell",
+		Label:       "Assembly Info",
+		LabelKey:    "Action.File.AssemblyInfo",
+		Description: "Show the identity, references, types and resources of a .NET assembly",
+		DescKey:     "Action.File.AssemblyInfo.Desc",
+		Handler:     withPF(func(pf *panel.PanelsFrame) { actionAssemblyInfo(pf) }),
+	})
+	registerAction(action.Action{
+		Name:        "File.PDFText",
+		Area:        "Shell",
+		Label:       "PDF Text",
+		LabelKey:    "Action.File.PDFText",
+		Description: "Show the text of the PDF file under the cursor page by page",
+		DescKey:     "Action.File.PDFText.Desc",
+		Handler:     withPF(func(pf *panel.PanelsFrame) { actionPDFText(pf) }),
+	})
+	registerAction(action.Action{
 		Name:        "File.Edit",
 		Area:        "Shell",
 		Label:       "Edit",
@@ -464,6 +812,8 @@ func init() {
 		DescKey:     "Action.File.Edit.Desc",
 		DefaultKeys: []string{"F4"},
 		MenuPath:    "Files",
+		Enabled:     cursorEntryEnabled,
+		KeyBarLabel: editKeyBarLabel,
 		Handler:     withPF(func(pf *panel.PanelsFrame) { ActionEditFile(pf) }),
 	})
 	RegisterAction(action.Action{
@@ -473,12 +823,50 @@ func init() {
 		LabelKey:     "Action.File.New",
 		Description:  "Create and open a new file in editor",
 		DescKey:      "Action.File.New.Desc",
-		DefaultKeys:  []string{"ShiftF4:NoAltScreenApp"},
+		DefaultKeys:  []string{"ShiftF4:NoTerminalApp"},
 		DefaultAreas: []string{"Terminal"},
 		MenuPath:     "Files",
 		Handler:      withPF(func(pf *panel.PanelsFrame) { ActionNewFile(pf) }),
 	})
-	RegisterAction(action.Action{
+
+	registerAction(action.Action{
+		Name:        "Panel.Paste",
+		Area:        "Shell",
+		Label:       "Paste from clipboard",
+		LabelKey:    "Action.Panel.Paste",
+		Description: "Paste clipboard text or save a clipboard image into the active panel",
+		DescKey:     "Action.Panel.Paste.Desc",
+		DefaultKeys: []string{"CtrlV", "ShiftIns"},
+		Handler:     func() bool { return panel.ActionPasteClipboard(panel.FindPanelsFrame()) },
+	})
+	registerAction(action.Action{
+		Name:        "Panel.CopyFilesToClipboard",
+		Area:        "Shell",
+		Label:       "Copy files to clipboard",
+		LabelKey:    "Action.Panel.CopyFilesToClipboard",
+		Description: "Remember the selected files; paste (Ctrl+V) copies them into the active panel",
+		DescKey:     "Action.Panel.CopyFilesToClipboard.Desc",
+		// Ctrl+C is the default only because the command line, which owns it
+		// while it holds text, makes the action unavailable.
+		DefaultKeys: []string{"CtrlC"},
+		MenuPath:    "Files",
+		Enabled:     func() bool { return panel.PanelCanCopyFilesToClipboard(panel.FindPanelsFrame()) },
+		Handler:     func() bool { return panel.ActionCopyFilesToClipboard(panel.FindPanelsFrame(), false) },
+	})
+	registerAction(action.Action{
+		Name:        "Panel.CutFilesToClipboard",
+		Area:        "Shell",
+		Label:       "Cut files to clipboard",
+		LabelKey:    "Action.Panel.CutFilesToClipboard",
+		Description: "Remember the selected files; paste (Ctrl+V) moves them into the active panel",
+		DescKey:     "Action.Panel.CutFilesToClipboard.Desc",
+		// No default key: Ctrl+X belongs to the command line history, and the
+		// action can be bound to it, or to any other key, in Hotkey Configuration.
+		MenuPath: "Files",
+		Enabled:  func() bool { return panel.PanelCanCopyFilesToClipboard(panel.FindPanelsFrame()) },
+		Handler:  func() bool { return panel.ActionCopyFilesToClipboard(panel.FindPanelsFrame(), true) },
+	})
+	registerAction(action.Action{
 		Name:        "File.ApplyCommand",
 		Area:        "Shell",
 		Label:       "Apply command",
@@ -488,6 +876,7 @@ func init() {
 		DefaultKeys: []string{"CtrlG"},
 		MenuPath:    "Files",
 		Visible:     panel.PanelCanApplyCommand,
+		Enabled:     panel.PanelCanApplyCommand,
 		Handler: func() bool {
 			if pf := panel.FindPanelsFrame(); pf != nil {
 				panel.ActionApplyCommand(pf)
@@ -506,7 +895,8 @@ func init() {
 		DefaultKeys:         []string{"F5"},
 		MenuPath:            "Files",
 		MenuSeparatorBefore: true,
-		Handler:             withPF(func(pf *panel.PanelsFrame) { ActionCopyMove(pf, false) }),
+		Enabled:             fileCopyMoveEnabled(false),
+		Handler:             withPF(func(pf *panel.PanelsFrame) { actionCopyMove(pf, false) }),
 	})
 	RegisterAction(action.Action{
 		Name:        "File.CopyInPlace",
@@ -528,7 +918,11 @@ func init() {
 		DescKey:     "Action.File.Move.Desc",
 		DefaultKeys: []string{"F6"},
 		MenuPath:    "Files",
-		Handler:     withPF(func(pf *panel.PanelsFrame) { ActionCopyMove(pf, true) }),
+		Enabled:     fileCopyMoveEnabled(true),
+		// The menu says "Rename or move"; a key-bar slot is too short for that and
+		// lost its tail ("Rename or"). The slot has its own short caption (f4#891).
+		KeyBarLabel: func() string { return i18n.Msg("KeyBar.F6") },
+		Handler:     withPF(func(pf *panel.PanelsFrame) { actionCopyMove(pf, true) }),
 	})
 	RegisterAction(action.Action{
 		Name:        "File.CreateLink",
@@ -539,6 +933,7 @@ func init() {
 		DescKey:     "Action.File.CreateLink.Desc",
 		DefaultKeys: []string{"AltF6"},
 		MenuPath:    "Files",
+		Enabled:     activePanelHasSelectionTarget,
 		Handler:     withPF(func(pf *panel.PanelsFrame) { actionCreateLink(pf) }),
 	})
 	RegisterAction(action.Action{
@@ -549,6 +944,7 @@ func init() {
 		Description: "Edit the target of the selected symbolic link",
 		DescKey:     "Action.File.EditSymlink.Desc",
 		MenuPath:    "Files",
+		Enabled:     symlinkEditEnabled,
 		Handler:     withPF(func(pf *panel.PanelsFrame) { actionEditSymlink(pf) }),
 	})
 	RegisterAction(action.Action{
@@ -560,6 +956,7 @@ func init() {
 		DescKey:     "Action.File.Rename.Desc",
 		DefaultKeys: []string{"ShiftF6"},
 		MenuPath:    "Files",
+		Enabled:     activePanelHasSelectionTarget,
 		Handler:     withPF(func(pf *panel.PanelsFrame) { ActionRename(pf) }),
 	})
 	RegisterAction(action.Action{
@@ -569,7 +966,7 @@ func init() {
 		LabelKey:     "Menu.Files.MkDir",
 		Description:  "Create a new directory",
 		DescKey:      "Action.File.MakeDir.Desc",
-		DefaultKeys:  []string{"F7:NoAltScreenApp"},
+		DefaultKeys:  []string{"F7:NoTerminalApp"},
 		DefaultAreas: []string{"Terminal"},
 		MenuPath:     "Files",
 		Handler:      withPF(func(pf *panel.PanelsFrame) { ActionMkDir(pf) }),
@@ -583,6 +980,7 @@ func init() {
 		DescKey:     "Action.File.Delete.Desc",
 		DefaultKeys: []string{"F8"},
 		MenuPath:    "Files",
+		Enabled:     fileDeleteEnabled,
 		Handler:     withPF(func(pf *panel.PanelsFrame) { ActionDelete(pf) }),
 	})
 	RegisterAction(action.Action{
@@ -594,6 +992,7 @@ func init() {
 		DescKey:     "Action.File.DeletePermanent.Desc",
 		DefaultKeys: []string{"ShiftDel", "ShiftNumDel"},
 		MenuPath:    "Files",
+		Enabled:     fileDeleteEnabled,
 		Handler:     withPF(func(pf *panel.PanelsFrame) { actionDeletePermanent(pf) }),
 	})
 	RegisterAction(action.Action{
@@ -606,6 +1005,7 @@ func init() {
 		DefaultKeys:         []string{"CtrlA"},
 		MenuPath:            "Files",
 		MenuSeparatorBefore: true,
+		Enabled:             activePanelHasSelectionTarget,
 		Handler:             withPF(func(pf *panel.PanelsFrame) { actionFileAttributes(pf) }),
 	})
 	RegisterAction(action.Action{
@@ -628,6 +1028,7 @@ func init() {
 			_, ok := pnl.Vfs.(vfs.ShareLinkProvider)
 			return ok
 		},
+		Enabled: shareLinkEnabled,
 		Handler: withPF(func(pf *panel.PanelsFrame) { actionShareLink(pf) }),
 	})
 	RegisterAction(action.Action{
@@ -698,13 +1099,13 @@ func init() {
 		Handler: withPF(func(pf *panel.PanelsFrame) {
 			if fsp := pf.GetActivePanel(); fsp != nil {
 				var maskEdit *vtui.Edit
-				dlg := vtui.InputBox(i18n.Msg("Select.Title"), i18n.Msg("Select.Mask"), "*", func(mask string) {
+				dlg := dialog.MaskInputBox(i18n.Msg("Select.Title"), i18n.Msg("Select.Mask"), "*", func(mask string) {
 					history.CommitHistory(maskEdit, mask)
 					fsp.ApplyMaskSelection(mask, true)
 				})
 				// Plain DIF_HISTORY, as in far2l: the dialog opens on "*"
 				// rather than on whatever was selected last time.
-				maskEdit = history.AttachHistory(history.InputBoxEdit(dlg), history.FileMasksHistoryID)
+				maskEdit = history.AttachHistory(history.InputBoxEdit(dlg.Window), history.FileMasksHistoryID)
 			}
 		}),
 	})
@@ -720,11 +1121,11 @@ func init() {
 		Handler: withPF(func(pf *panel.PanelsFrame) {
 			if fsp := pf.GetActivePanel(); fsp != nil {
 				var maskEdit *vtui.Edit
-				dlg := vtui.InputBox(i18n.Msg("Deselect.Title"), i18n.Msg("Select.Mask"), "*", func(mask string) {
+				dlg := dialog.MaskInputBox(i18n.Msg("Deselect.Title"), i18n.Msg("Select.Mask"), "*", func(mask string) {
 					history.CommitHistory(maskEdit, mask)
 					fsp.ApplyMaskSelection(mask, false)
 				})
-				maskEdit = history.AttachHistory(history.InputBoxEdit(dlg), history.FileMasksHistoryID)
+				maskEdit = history.AttachHistory(history.InputBoxEdit(dlg.Window), history.FileMasksHistoryID)
 			}
 		}),
 	})
@@ -842,7 +1243,7 @@ func init() {
 		LabelKey:     "Action.Panel.UserMenu",
 		Description:  "Show the user menu",
 		DescKey:      "Action.Panel.UserMenu.Desc",
-		DefaultKeys:  []string{"F2:NoAltScreenApp"},
+		DefaultKeys:  []string{"F2:NoTerminalApp"},
 		DefaultAreas: []string{"Terminal"},
 		MenuPath:     "Commands",
 		Handler:      withPF(func(pf *panel.PanelsFrame) { panel.ShowUserMenu(pf) }),
@@ -857,7 +1258,41 @@ func init() {
 		MenuPath:    "Commands",
 		Handler:     withPF(func(pf *panel.PanelsFrame) { panel.ShowFileAssociations(pf) }),
 	})
-	RegisterAction(action.Action{
+	registerAction(action.Action{
+		Name:        "Panel.Base64EncodeFile",
+		Area:        "Shell",
+		Label:       "Encode selected file as Base64",
+		LabelKey:    "Action.Panel.Base64EncodeFile",
+		Description: "Create a Base64 copy of the selected file",
+		DescKey:     "Action.Panel.Base64EncodeFile.Desc",
+		MenuPath:    "Commands",
+		Enabled:     oneRegularFileEnabled,
+		Handler: withPF(func(pf *panel.PanelsFrame) {
+			if path, err := panel.TransformSelectedFileBase64(pf, true); err != nil {
+				vtui.ShowMessage(i18n.Msg("Panel.Base64.Title"), err.Error(), []string{i18n.Msg("vtui.Ok")})
+			} else {
+				vtui.ShowMessage(i18n.Msg("Panel.Base64.Title"), fmt.Sprintf(i18n.Msg("Panel.Base64.Created"), path), []string{i18n.Msg("vtui.Ok")})
+			}
+		}),
+	})
+	registerAction(action.Action{
+		Name:        "Panel.Base64DecodeFile",
+		Area:        "Shell",
+		Label:       "Decode selected Base64 file",
+		LabelKey:    "Action.Panel.Base64DecodeFile",
+		Description: "Create a decoded copy of the selected Base64 file",
+		DescKey:     "Action.Panel.Base64DecodeFile.Desc",
+		MenuPath:    "Commands",
+		Enabled:     oneRegularFileEnabled,
+		Handler: withPF(func(pf *panel.PanelsFrame) {
+			if path, err := panel.TransformSelectedFileBase64(pf, false); err != nil {
+				vtui.ShowMessage(i18n.Msg("Panel.Base64.Title"), err.Error(), []string{i18n.Msg("vtui.Ok")})
+			} else {
+				vtui.ShowMessage(i18n.Msg("Panel.Base64.Title"), fmt.Sprintf(i18n.Msg("Panel.Base64.Created"), path), []string{i18n.Msg("vtui.Ok")})
+			}
+		}),
+	})
+	registerAction(action.Action{
 		Name:                "File.Find",
 		Area:                "Shell",
 		Label:               "Find File",
@@ -891,7 +1326,18 @@ func init() {
 		Visible:     panelCanCompareFolders,
 		Handler:     withPF(func(pf *panel.PanelsFrame) { ShowCompareFoldersDialog(pf) }),
 	})
-	RegisterAction(action.Action{
+	registerAction(action.Action{
+		Name:        "Panel.CompareFilesByContent",
+		Area:        "Shell",
+		Label:       "Compare Files by Content",
+		LabelKey:    "Menu.Commands.CompareFilesByContent",
+		Description: "Show a line-by-line, side-by-side comparison of the two files under the cursor",
+		DescKey:     "Action.Panel.CompareFilesByContent.Desc",
+		MenuPath:    "Commands",
+		Visible:     panelCanCompareFilesByContent,
+		Handler:     withPF(func(pf *panel.PanelsFrame) { actionCompareFilesByContent(pf) }),
+	})
+	registerAction(action.Action{
 		Name:        "Panel.SyncDirs",
 		Area:        "Shell",
 		Label:       "Synchronize Dirs",
@@ -957,7 +1403,27 @@ func init() {
 		MenuPath:    "Commands",
 		Handler:     withPF(func(pf *panel.PanelsFrame) { panel.ActionOpenTempPanel(pf) }),
 	})
-	RegisterAction(action.Action{
+	registerAction(action.Action{
+		Name:        "Panel.Calculator",
+		Area:        "Shell",
+		Label:       "Calculator",
+		LabelKey:    "Menu.Commands.Calculator",
+		Description: "Open the built-in calculator",
+		DescKey:     "Action.Panel.Calculator.Desc",
+		MenuPath:    "Commands",
+		Handler:     func() bool { showCalculatorDialog(); return true },
+	})
+	registerAction(action.Action{
+		Name:        "Panel.Calendar",
+		Area:        "Shell",
+		Label:       "Calendar",
+		LabelKey:    "Menu.Commands.Calendar",
+		Description: "Open the built-in calendar",
+		DescKey:     "Action.Panel.Calendar.Desc",
+		MenuPath:    "Commands",
+		Handler:     func() bool { showCalendarDialog(); return true },
+	})
+	registerAction(action.Action{
 		Name:                "Panel.CommandHistory",
 		Area:                "Shell",
 		Label:               "Command History",
@@ -990,9 +1456,16 @@ func init() {
 		Description: "Show viewer and editor history",
 		DescKey:     "Action.Panel.ViewerEditorHistory.Desc",
 		DefaultKeys: []string{"AltF11"},
-		MenuPath:    "Commands",
-		MenuSubPath: "History",
-		Handler:     withPF(func(pf *panel.PanelsFrame) { actionViewerEditorHistory(pf) }),
+		// Reachable from inside the editor/viewer too (#408): same key, same
+		// dialog, resolved through withPF's FindPanelsFrameAnyScreen the way
+		// the editor/viewer already reach their owning panel for other
+		// purposes (e.g. switching back to it). Ctrl+F10/Enter inside the
+		// dialog keep acting on that panel exactly as they do when the
+		// dialog is opened from a panel.
+		DefaultAreas: []string{"Editor", "Viewer"},
+		MenuPath:     "Commands",
+		MenuSubPath:  "History",
+		Handler:      withPF(func(pf *panel.PanelsFrame) { actionViewerEditorHistory(pf) }),
 	})
 	RegisterAction(action.Action{
 		Name:        "History.ImportFar2l",
@@ -1035,7 +1508,33 @@ func init() {
 			})
 		}),
 	})
-	RegisterAction(action.Action{
+	registerAction(action.Action{
+		Name:        "History.ImportFar2lFolders",
+		Area:        "Shell",
+		Label:       "Import far2l Folder History",
+		Description: "Import folder history from far2l (.hst)",
+		MenuPath:    "Commands",
+		MenuSubPath: "History",
+		Handler:     withPF(func(pf *panel.PanelsFrame) { actionImportFar2lFolderHistory(pf) }),
+	})
+	registerAction(action.Action{
+		Name:        "History.ImportShell",
+		Area:        "Shell",
+		Label:       "Import Shell History",
+		Description: "Import command history from the current shell (bash/zsh)",
+		MenuPath:    "Commands",
+		MenuSubPath: "History",
+		Handler:     withPF(func(pf *panel.PanelsFrame) { actionImportShellHistory(pf) }),
+	})
+	registerAction(action.Action{
+		Name:        "Settings.ImportFar2l",
+		Area:        "Shell",
+		Label:       "Import far2l Settings",
+		Description: "Import compatible settings from far2l (.ini)",
+		MenuPath:    "Commands",
+		Handler:     withPF(func(pf *panel.PanelsFrame) { actionImportFar2lSettings(pf) }),
+	})
+	registerAction(action.Action{
 		Name:        "Panel.GoParent",
 		Area:        "Shell",
 		Label:       "Parent Folder",
@@ -1082,7 +1581,14 @@ func init() {
 		Handler: withPF(func(pf *panel.PanelsFrame) {
 			if fsp := pf.GetActivePanel(); fsp != nil {
 				rootPath := "/"
-				if runtime.GOOS == "windows" {
+				// WINE.md §18.6, "Ctrl+\\": posix personality means a real
+				// POSIX root, not a drive letter -- os.PathSeparator on
+				// GOOS=windows is '\\' regardless of personality, and
+				// filepath.VolumeName would answer the wineprefix's own
+				// notion of a drive even for a path that has none in
+				// posix mode. Leave rootPath at "/" there, exactly as on
+				// the Linux build.
+				if runtime.GOOS == "windows" && !hostmode.Posix() {
 					rootPath = string(os.PathSeparator)
 					if _, isOS := fsp.Vfs.(*vfs.OSVFS); isOS {
 						rootPath = filepath.VolumeName(fsp.Vfs.GetPath()) + string(os.PathSeparator)
@@ -1238,21 +1744,30 @@ func init() {
 				terminal.SetF4Clipboard(pf.CmdLine.Edit.GetText())
 				return
 			}
-			if fsp := pf.GetActivePanel(); fsp != nil {
-				idx := fsp.GetCursorIndex()
-				if idx < 0 || idx >= len(fsp.Entries) {
-					return
-				}
-				name := fsp.Entries[idx].Name
-				if name == ".." {
-					// far2l docs: with the cursor on ".." this hotkey
-					// treats it as the name of the current folder.
-					// Mirrors far2l's PointToName(GetCurDir()) branch
-					// in FileList::CopyNames() (FullPathName=false).
-					name = fsp.Vfs.Base(fsp.Vfs.GetPath())
-				}
-				terminal.SetF4Clipboard(name)
+			fsp := pf.GetActivePanel()
+			if fsp == nil {
+				return
 			}
+			// far2l/Far3: with the command line empty, marked files take
+			// priority over the cursor item (f4 #1408) — same names,
+			// newline-joined, as Panel.CopySelectedNames below.
+			if names := fsp.GetMarkedNames(); len(names) > 0 {
+				terminal.SetClipboardAsync(strings.Join(names, "\n"))
+				return
+			}
+			idx := fsp.GetCursorIndex()
+			if idx < 0 || idx >= len(fsp.Entries) {
+				return
+			}
+			name := fsp.Entries[idx].Name
+			if name == ".." {
+				// far2l docs: with the cursor on ".." this hotkey
+				// treats it as the name of the current folder.
+				// Mirrors far2l's PointToName(GetCurDir()) branch
+				// in FileList::CopyNames() (FullPathName=false).
+				name = fsp.Vfs.Base(fsp.Vfs.GetPath())
+			}
+			terminal.SetF4Clipboard(name)
 		}),
 	})
 	RegisterAction(action.Action{
@@ -1362,7 +1877,42 @@ func init() {
 		},
 		Handler: withPF(func(pf *panel.PanelsFrame) { vtui.FrameManager.EmitCommand(appcmd.CmSortGroups, nil) }),
 	})
-	RegisterAction(action.Action{
+	registerAction(action.Action{
+		Name:        "Panel.SortNumeric",
+		Area:        "Shell",
+		Label:       "Numeric Sort",
+		LabelKey:    "Menu.SortNumeric",
+		Description: "Sort names by treating digit runs as numbers",
+		DescKey:     "Action.Panel.SortNumeric.Desc",
+		Checked: func() bool {
+			pf := panel.FindPanelsFrameAnyScreen()
+			if pf == nil {
+				return false
+			}
+			fsp := pf.GetActivePanel()
+			return fsp != nil && fsp.SortNumeric
+		},
+		Handler: withPF(func(pf *panel.PanelsFrame) { vtui.FrameManager.EmitCommand(appcmd.CmSortNumeric, nil) }),
+	})
+	registerAction(action.Action{
+		Name:        "Panel.SortSelectedFirst",
+		Area:        "Shell",
+		Label:       "Selected First",
+		LabelKey:    "Menu.SortSelectedFirst",
+		Description: "Sort marked entries ahead of unmarked ones",
+		DescKey:     "Action.Panel.SortSelectedFirst.Desc",
+		DefaultKeys: []string{"ShiftF12"},
+		Checked: func() bool {
+			pf := panel.FindPanelsFrameAnyScreen()
+			if pf == nil {
+				return false
+			}
+			fsp := pf.GetActivePanel()
+			return fsp != nil && fsp.SortSelectedFirst
+		},
+		Handler: withPF(func(pf *panel.PanelsFrame) { vtui.FrameManager.EmitCommand(appcmd.CmSortSelectedFirst, nil) }),
+	})
+	registerAction(action.Action{
 		Name:                "Panel.SortMenu",
 		Area:                "Shell",
 		Label:               "Sort Modes",
@@ -1396,7 +1946,17 @@ func init() {
 		MenuSeparatorBefore: true,
 		Handler:             withPF(func(pf *panel.PanelsFrame) { ActionPanelSettings(pf) }),
 	})
-	RegisterAction(action.Action{
+	registerAction(action.Action{
+		Name:        "Settings.PanelModes",
+		Area:        "Shell",
+		Label:       "File Panel Modes",
+		LabelKey:    "Menu.PanelModes",
+		Description: "Edit the columns of the file panel modes",
+		DescKey:     "Action.Settings.PanelModes.Desc",
+		MenuPath:    "Options",
+		Handler:     withPF(func(pf *panel.PanelsFrame) { panel.ShowPanelModesMenu(pf) }),
+	})
+	registerAction(action.Action{
 		Name:        "Settings.Editor",
 		Area:        "Shell",
 		Label:       "Editor Settings",
@@ -1571,7 +2131,7 @@ func init() {
 		LabelKey:     "Action.App.SaveSettings",
 		Description:  "Save settings and session",
 		DescKey:      "Action.App.SaveSettings.Desc",
-		DefaultKeys:  []string{"ShiftF9:NoAltScreenApp"},
+		DefaultKeys:  []string{"ShiftF9:NoTerminalApp"},
 		DefaultAreas: []string{"Terminal"},
 		MenuPath:     "Options",
 		Handler: withPF(func(pf *panel.PanelsFrame) {
@@ -1621,14 +2181,15 @@ func init() {
 		}),
 	})
 	RegisterAction(action.Action{
-		Name:        "Panel.ToggleKeyBar",
-		Area:        "Shell",
-		Label:       "Toggle KeyBar",
-		LabelKey:    "Action.Panel.ToggleKeyBar",
-		Description: "Show or hide the KeyBar",
-		DescKey:     "Action.Panel.ToggleKeyBar.Desc",
-		DefaultKeys: []string{"CtrlB"},
-		MenuPath:    "Options",
+		Name:         "Panel.ToggleKeyBar",
+		Area:         "Shell",
+		Label:        "Toggle KeyBar",
+		LabelKey:     "Action.Panel.ToggleKeyBar",
+		Description:  "Show or hide the KeyBar",
+		DescKey:      "Action.Panel.ToggleKeyBar.Desc",
+		DefaultKeys:  []string{"CtrlB"},
+		MenuPath:     "Options",
+		DefaultAreas: []string{"Editor", "Viewer"},
 		Handler: withPF(func(pf *panel.PanelsFrame) {
 			pf.ShowKeyBar = !pf.ShowKeyBar
 			pf.ResizeConsole(pf.LastW, pf.LastH)
@@ -1666,7 +2227,17 @@ func init() {
 		Description: "Refresh panel contents",
 		DescKey:     "Action.Panel.Rescan.Desc",
 		DefaultKeys: []string{"CtrlR"},
-		Handler:     withPF(func(pf *panel.PanelsFrame) { pf.RefreshAll() }),
+		Handler: withPF(func(pf *panel.PanelsFrame) {
+			// far2l's own Ctrl+R on its tree panel re-reads the tree itself,
+			// not the (still-visible, but not what the user is looking at
+			// right now) panel behind it -- see TreePanel.Rescan's doc
+			// comment (f4#1602 part 6).
+			if t := focusedTreePanel(pf); t != nil {
+				t.Rescan()
+				return
+			}
+			pf.RefreshAll()
+		}),
 	})
 	RegisterAction(action.Action{
 		Name:        "Panel.Swap",
@@ -1681,78 +2252,68 @@ func init() {
 		Name:        "Panel.Toggle",
 		Area:        "Shell",
 		Label:       "Toggle Panels",
+		LabelKey:    "Action.Panel.Toggle",
 		Description: "Show or hide panels",
 		DescKey:     "Action.Panel.Toggle.Desc",
-		// NoAltScreenApp, not the stricter NoTerminalApp: a blocked CLI tool
-		// or a GUI program holding the PTY must never lock the panels away,
-		// so Ctrl+O still reaches f4 while a child is merely busy (#50). The
-		// cost is that mc, whose own Ctrl+O leaves the alternate screen, hands
-		// f4 the next press (#249) -- the lock-out is the worse of the two.
-		DefaultKeys:  []string{"CtrlO:NoAltScreenApp", "Esc:EscToggle", "Del:EscToggle", "NumDel:EscToggle"},
+		// Ctrl+O belongs to the program running in the terminal, as in far2l:
+		// mc (#249) and Far Manager (#1376) use it themselves, so it stands
+		// down under NoTerminalApp while a child is busy. A blocked CLI tool
+		// or a GUI program holding the PTY must still never lock the panels
+		// away (#50), so Ctrl+Alt+Z -- far2l's key for leaving a running
+		// command -- raises them under the looser NoAltScreenApp, in every
+		// state where Ctrl+O used to. Both are ordinary bindings and can be
+		// reassigned in the hotkey settings.
+		DefaultKeys:  []string{"CtrlO:NoTerminalApp", "CtrlAltZ:NoAltScreenApp", "Esc:EscToggle", "Del:EscToggle", "NumDel:EscToggle"},
 		DefaultAreas: []string{"Terminal"},
 		Handler: withPF(func(pf *panel.PanelsFrame) {
 			pf.TogglePanelsVisibility()
 		}),
 	})
 	registerAction(action.Action{
+		Name:         "Panel.ToggleWorkspace",
+		Area:         "Editor",
+		Label:        "Toggle panels",
+		Description:  "Show or hide the panels behind the editor",
+		DefaultKeys:  []string{"CtrlO"},
+		DefaultAreas: []string{"Viewer"},
+		MenuPath:     "Options",
+		HideFromMenu: true,
+		Handler:      withPF(func(pf *panel.PanelsFrame) { pf.TogglePanelsVisibility() }),
+	})
+	registerAction(action.Action{
 		Name:         "Panel.ToggleLeftPanel",
 		Area:         "Shell",
 		Label:        "Toggle Left Panel",
+		LabelKey:     "Action.Panel.ToggleLeftPanel",
 		Description:  "Show or hide the left panel",
 		DescKey:      "Action.Panel.ToggleLeftPanel.Desc",
-		DefaultKeys:  []string{"CtrlF1:NoAltScreenApp"},
+		DefaultKeys:  []string{"CtrlF1:NoTerminalApp"},
 		DefaultAreas: []string{"Terminal"},
 		Handler: withPF(func(pf *panel.PanelsFrame) {
-			allPanelsHidden := !pf.ShowLeftPanel && !pf.ShowRightPanel
-			pf.ExitWide()
-			pf.ShowLeftPanel = !pf.ShowLeftPanel
-			if !pf.ShowLeftPanel && pf.ActiveIdx == 0 && pf.ShowRightPanel {
-				pf.ActiveIdx = 1
-			}
-			if !pf.ShowLeftPanel && !pf.ShowRightPanel {
-				pf.ShowPanels = false
-			} else if allPanelsHidden {
-				pf.ShowPanels = true
-			}
-			if pf.LastW > 0 && pf.LastH > 0 {
-				pf.ResizeConsole(pf.LastW, pf.LastH)
-			}
-			vtui.FrameManager.HardRefresh()
+			toggleSidePanel(pf, 0)
 		}),
 	})
 	registerAction(action.Action{
 		Name:         "Panel.ToggleRightPanel",
 		Area:         "Shell",
 		Label:        "Toggle Right Panel",
+		LabelKey:     "Action.Panel.ToggleRightPanel",
 		Description:  "Show or hide the right panel",
 		DescKey:      "Action.Panel.ToggleRightPanel.Desc",
-		DefaultKeys:  []string{"CtrlF2:NoAltScreenApp"},
+		DefaultKeys:  []string{"CtrlF2:NoTerminalApp"},
 		DefaultAreas: []string{"Terminal"},
 		Handler: withPF(func(pf *panel.PanelsFrame) {
-			allPanelsHidden := !pf.ShowLeftPanel && !pf.ShowRightPanel
-			pf.ExitWide()
-			pf.ShowRightPanel = !pf.ShowRightPanel
-			if !pf.ShowRightPanel && pf.ActiveIdx == 1 && pf.ShowLeftPanel {
-				pf.ActiveIdx = 0
-			}
-			if !pf.ShowLeftPanel && !pf.ShowRightPanel {
-				pf.ShowPanels = false
-			} else if allPanelsHidden {
-				pf.ShowPanels = true
-			}
-			if pf.LastW > 0 && pf.LastH > 0 {
-				pf.ResizeConsole(pf.LastW, pf.LastH)
-			}
-			vtui.FrameManager.HardRefresh()
+			toggleSidePanel(pf, 1)
 		}),
 	})
 	RegisterAction(action.Action{
 		Name:         "Panel.TogglePassivePanel",
 		Area:         "Shell",
 		Label:        "Toggle Passive Panel",
+		LabelKey:     "Action.Panel.TogglePassivePanel",
 		Description:  "Show or hide the passive panel",
 		DescKey:      "Action.Panel.TogglePassivePanel.Desc",
-		DefaultKeys:  []string{"CtrlP:NoAltScreenApp"},
+		DefaultKeys:  []string{"CtrlP:NoTerminalApp"},
 		DefaultAreas: []string{"Terminal"},
 		Handler: withPF(func(pf *panel.PanelsFrame) {
 			pf.ExitWide()
@@ -1792,7 +2353,20 @@ func init() {
 			pf.ToggleAltPanel("quick_view", func(src *panel.FileSystemPanel) panel.AltPanel { return panel.NewQuickViewPanel(src) })
 		}),
 	})
-	RegisterAction(action.Action{
+	registerAction(action.Action{
+		Name:        "Panel.AutoFilter",
+		Area:        "Shell",
+		Label:       "Autofilter",
+		Description: "Open or close the panel autofilter",
+		DescKey:     "Action.Panel.AutoFilter.Desc",
+		// A lone Alt press does the same when the autofilter option is on;
+		// this key is for terminals that never report Alt on its own.
+		DefaultKeys: []string{"CtrlAltF"},
+		Handler: withPF(func(pf *panel.PanelsFrame) {
+			pf.ToggleAutoFilter()
+		}),
+	})
+	registerAction(action.Action{
 		Name:        "Panel.Player",
 		Area:        "Shell",
 		Label:       "Player",
@@ -1804,7 +2378,19 @@ func init() {
 			pf.ToggleAltPanel("player", func(src *panel.FileSystemPanel) panel.AltPanel { return panel.NewPlayerPanel(src) })
 		}),
 	})
-	RegisterAction(action.Action{
+	registerAction(action.Action{
+		Name:        "Panel.Tree",
+		Area:        "Shell",
+		Label:       "Tree",
+		LabelKey:    "Menu.Panel.Tree",
+		Description: "Toggle the directory tree panel",
+		DescKey:     "Action.Panel.Tree.Desc",
+		DefaultKeys: []string{"CtrlT"},
+		Handler: withPF(func(pf *panel.PanelsFrame) {
+			pf.ToggleAltPanel("tree", func(src *panel.FileSystemPanel) panel.AltPanel { return panel.NewTreePanel(src) })
+		}),
+	})
+	registerAction(action.Action{
 		Name:        "Panel.SplitLeft",
 		Area:        "Shell",
 		Label:       "Move Split Left",
@@ -1961,7 +2547,7 @@ func init() {
 		Label:       "Sync Panels",
 		Description: "Open the active panel's directory in the passive panel",
 		DescKey:     "Action.Panel.SyncPanels.Desc",
-		DefaultKeys: []string{"AltI"},
+		DefaultKeys: []string{"AltShiftI"},
 		Handler:     withPF(func(pf *panel.PanelsFrame) { pf.SyncPassivePanel() }),
 	})
 	RegisterAction(action.Action{
@@ -1970,7 +2556,7 @@ func init() {
 		Label:       "Toggle Bytes Format",
 		Description: "Flip number formatting in info and quick view panels",
 		DescKey:     "Action.Panel.ToggleInfoBytes.Desc",
-		DefaultKeys: []string{"B:AltPanelVisible"},
+		DefaultKeys: []string{"B:AltPanelFocused"},
 		Handler: withPF(func(pf *panel.PanelsFrame) {
 			config.App.InfoPanelBytes = !config.App.InfoPanelBytes
 			config.RequestSaveConfig()
@@ -2079,10 +2665,39 @@ func init() {
 			pf.UpdateMenuCheckmarks()
 		}),
 	})
-	RegisterAction(action.Action{
+	// far2l's other six panel modes, Ctrl+5 .. Ctrl+9 and Ctrl+0 (f4 #1400).
+	for _, spec := range []struct {
+		name, label, description, descKey, key string
+		mode                                   panel.ViewMode
+	}{
+		{"Panel.ViewMode5", "Panel Mode 5", "Set active panel to panel mode 5", "Action.Panel.ViewMode5.Desc", "Ctrl5", panel.ViewMode5},
+		{"Panel.ViewMode6", "Panel Mode 6", "Set active panel to panel mode 6", "Action.Panel.ViewMode6.Desc", "Ctrl6", panel.ViewMode6},
+		{"Panel.ViewMode7", "Panel Mode 7", "Set active panel to panel mode 7", "Action.Panel.ViewMode7.Desc", "Ctrl7", panel.ViewMode7},
+		{"Panel.ViewMode8", "Panel Mode 8", "Set active panel to panel mode 8", "Action.Panel.ViewMode8.Desc", "Ctrl8", panel.ViewMode8},
+		{"Panel.ViewMode9", "Panel Mode 9", "Set active panel to panel mode 9", "Action.Panel.ViewMode9.Desc", "Ctrl9", panel.ViewMode9},
+		{"Panel.ViewMode0", "Panel Mode 0", "Set active panel to panel mode 0", "Action.Panel.ViewMode0.Desc", "Ctrl0", panel.ViewMode0},
+	} {
+		registerAction(action.Action{
+			Name:        spec.name,
+			Area:        "Shell",
+			Label:       spec.label,
+			Description: spec.description,
+			DescKey:     spec.descKey,
+			DefaultKeys: func() []string {
+				if spec.mode == panel.ViewMode5 || spec.mode == panel.ViewMode6 || spec.mode == panel.ViewMode7 {
+					return nil // Ctrl+5..7 retain the Qt gallery shortcuts.
+				}
+				return []string{spec.key}
+			}(),
+			Visible: func() bool { return !isAIPanelActive() },
+			Handler: withPF(func(pf *panel.PanelsFrame) { pf.SetPanelViewMode(pf.ActiveIdx, spec.mode) }),
+		})
+	}
+	registerAction(action.Action{
 		Name:        "Panel.SortByName",
 		Area:        "Shell",
 		Label:       "Sort by Name",
+		LabelKey:    "Action.Panel.SortByName",
 		Description: "Sort panel by name",
 		DescKey:     "Action.Panel.SortByName.Desc",
 		DefaultKeys: []string{"CtrlF3"},
@@ -2092,6 +2707,7 @@ func init() {
 		Name:        "Panel.SortByExt",
 		Area:        "Shell",
 		Label:       "Sort by Extension",
+		LabelKey:    "Action.Panel.SortByExt",
 		Description: "Sort panel by extension",
 		DescKey:     "Action.Panel.SortByExt.Desc",
 		DefaultKeys: []string{"CtrlF4"},
@@ -2101,6 +2717,7 @@ func init() {
 		Name:        "Panel.SortByTime",
 		Area:        "Shell",
 		Label:       "Sort by Time",
+		LabelKey:    "Action.Panel.SortByTime",
 		Description: "Sort panel by modification time",
 		DescKey:     "Action.Panel.SortByTime.Desc",
 		DefaultKeys: []string{"CtrlF5"},
@@ -2110,6 +2727,7 @@ func init() {
 		Name:        "Panel.SortBySize",
 		Area:        "Shell",
 		Label:       "Sort by Size",
+		LabelKey:    "Action.Panel.SortBySize",
 		Description: "Sort panel by size",
 		DescKey:     "Action.Panel.SortBySize.Desc",
 		DefaultKeys: []string{"CtrlF6"},
@@ -2119,6 +2737,7 @@ func init() {
 		Name:        "Panel.SortUnsorted",
 		Area:        "Shell",
 		Label:       "Unsorted",
+		LabelKey:    "Action.Panel.SortUnsorted",
 		Description: "Disable panel sorting",
 		DescKey:     "Action.Panel.SortUnsorted.Desc",
 		DefaultKeys: []string{"CtrlF7"},
@@ -2131,7 +2750,7 @@ func init() {
 		LabelKey:     "Menu.Left.DriveMenu",
 		Description:  "Show the drive menu for the left panel",
 		DescKey:      "Action.Panel.LeftDriveMenu.Desc",
-		DefaultKeys:  []string{"AltF1:NoAltScreenApp", "CtrlShiftLeft:NoAltScreenApp"},
+		DefaultKeys:  []string{"AltF1:NoTerminalApp", "CtrlShiftLeft:NoTerminalApp"},
 		DefaultAreas: []string{"Terminal"},
 		Handler:      withPF(func(pf *panel.PanelsFrame) { pf.ShowDriveMenu(0) }),
 	})
@@ -2142,7 +2761,7 @@ func init() {
 		LabelKey:     "Menu.Right.DriveMenu",
 		Description:  "Show the drive menu for the right panel",
 		DescKey:      "Action.Panel.RightDriveMenu.Desc",
-		DefaultKeys:  []string{"AltF2:NoAltScreenApp", "CtrlShiftRight:NoAltScreenApp"},
+		DefaultKeys:  []string{"AltF2:NoTerminalApp", "CtrlShiftRight:NoTerminalApp"},
 		DefaultAreas: []string{"Terminal"},
 		Handler:      withPF(func(pf *panel.PanelsFrame) { pf.ShowDriveMenu(1) }),
 	})
@@ -2224,7 +2843,7 @@ func init() {
 		DefaultKeys: []string{"CtrlVK_DB"},
 		Handler: withPF(func(pf *panel.PanelsFrame) {
 			if fsp := pf.VisualLeftFSP(); fsp != nil {
-				pf.InsertPathToCmdLine(fsp.Vfs.GetPath())
+				pf.InsertDirPathToCmdLine(fsp.Vfs.GetPath())
 			}
 		}),
 	})
@@ -2237,7 +2856,7 @@ func init() {
 		DefaultKeys: []string{"CtrlVK_DD"},
 		Handler: withPF(func(pf *panel.PanelsFrame) {
 			if fsp := pf.VisualRightFSP(); fsp != nil {
-				pf.InsertPathToCmdLine(fsp.Vfs.GetPath())
+				pf.InsertDirPathToCmdLine(fsp.Vfs.GetPath())
 			}
 		}),
 	})
@@ -2248,7 +2867,7 @@ func init() {
 		LabelKey:     "KeyBar.F10",
 		Description:  "Quit f4",
 		DescKey:      "Action.App.Quit.Desc",
-		DefaultKeys:  []string{"F10:NoAltScreenApp"},
+		DefaultKeys:  []string{"F10:NoTerminalApp"},
 		DefaultAreas: []string{"Terminal"},
 		Handler:      func() bool { return vtui.FrameManager.EmitCommand(vtui.CmQuit, nil) },
 	})
@@ -2309,7 +2928,22 @@ func init() {
 		MenuPath:    "File",
 		Handler:     withEditor(func(ev *editor.EditorView) { ev.ShowSaveAsDialog() }),
 	})
-	RegisterAction(action.Action{
+	registerAction(action.Action{
+		Name:        "Editor.SaveAndQuit",
+		Area:        "Editor",
+		Label:       "Save and quit",
+		Description: "Save the file and close the editor",
+		DefaultKeys: []string{"ShiftF10"},
+		MenuPath:    "File",
+		Handler: withEditor(func(ev *editor.EditorView) {
+			if ev.Modified {
+				ev.SaveToFile(func() { ev.Close() })
+			} else {
+				ev.Close()
+			}
+		}),
+	})
+	registerAction(action.Action{
 		Name:        "Editor.SwitchToViewer",
 		Area:        "Editor",
 		Label:       "Switch to Viewer",
@@ -2320,7 +2954,35 @@ func init() {
 		MenuPath:    "File",
 		Handler:     withEditor(func(ev *editor.EditorView) { ActionSwitchEditorToViewer(ev) }),
 	})
-	RegisterAction(action.Action{
+	registerAction(action.Action{
+		Name:        "Editor.MarkdownPreview",
+		Area:        "Editor",
+		Label:       "Markdown preview",
+		LabelKey:    "Action.Editor.MarkdownPreview",
+		Description: "Show the text being edited as formatted Markdown, including unsaved changes",
+		DescKey:     "Action.Editor.MarkdownPreview.Desc",
+		DefaultKeys: []string{"ShiftF3"},
+		MenuPath:    "File",
+		Enabled:     editorState(func(ev *editor.EditorView) bool { return isMarkdownFile(ev.FilePath) }),
+		Handler:     withEditor(func(ev *editor.EditorView) { actionEditorMarkdownPreview(ev) }),
+	})
+	registerAction(action.Action{
+		Name:        "Editor.MarkdownSplit",
+		Area:        "Editor",
+		Label:       "Markdown preview beside the editor",
+		LabelKey:    "Action.Editor.MarkdownSplit",
+		Description: "Show or hide a live formatted Markdown preview in the right half of the editor",
+		DescKey:     "Action.Editor.MarkdownSplit.Desc",
+		DefaultKeys: []string{"AltShiftF3"},
+		MenuPath:    "File",
+		Enabled:     editorState(func(ev *editor.EditorView) bool { return isMarkdownFile(ev.FilePath) }),
+		Handler: withEditor(func(ev *editor.EditorView) {
+			if ev != nil && ev.Pt != nil && isMarkdownFile(ev.FilePath) {
+				ev.ToggleMarkdownSplit()
+			}
+		}),
+	})
+	registerAction(action.Action{
 		Name:        "Editor.Quit",
 		Area:        "Editor",
 		Label:       "Quit",
@@ -2339,7 +3001,7 @@ func init() {
 		LabelKey:    "Action.Editor.Undo",
 		Description: "Undo last change",
 		DescKey:     "Action.Editor.Undo.Desc",
-		DefaultKeys: []string{"CtrlZ"},
+		DefaultKeys: []string{"CtrlZ", "AltBS"},
 		MenuPath:    "Edit",
 		Handler:     withEditor(func(ev *editor.EditorView) { ev.Undo() }),
 	})
@@ -2404,7 +3066,16 @@ func init() {
 			}
 		}),
 	})
-	RegisterAction(action.Action{
+	registerAction(action.Action{
+		Name:        "Editor.AppendBlock",
+		Area:        "Editor",
+		Label:       "Append block to clipboard",
+		Description: "Append the selected block to the clipboard",
+		DefaultKeys: []string{"CtrlAdd"},
+		MenuPath:    "Edit",
+		Handler:     withEditor(func(ev *editor.EditorView) { ev.AppendSelectionToClipboard() }),
+	})
+	registerAction(action.Action{
 		Name:        "Editor.SelectAll",
 		Area:        "Editor",
 		Label:       "Select All",
@@ -2423,7 +3094,16 @@ func init() {
 			ev.EnsureCursorVisible()
 		}),
 	})
-	RegisterAction(action.Action{
+	registerAction(action.Action{
+		Name:        "Editor.ClearSelection",
+		Area:        "Editor",
+		Label:       "Clear selection",
+		Description: "Clear the current block selection",
+		DefaultKeys: []string{"CtrlU"},
+		MenuPath:    "Edit",
+		Handler:     withEditor(func(ev *editor.EditorView) { ev.ClearSelection() }),
+	})
+	registerAction(action.Action{
 		Name:        "Editor.DeleteLine",
 		Area:        "Editor",
 		Label:       "Delete Line",
@@ -2434,7 +3114,70 @@ func init() {
 		MenuPath:    "Edit",
 		Handler:     withEditor(func(ev *editor.EditorView) { ev.DeleteCurrentLine() }),
 	})
-	RegisterAction(action.Action{
+	registerAction(action.Action{
+		Name:        "Editor.DeleteToLineEnd",
+		Area:        "Editor",
+		Label:       "Delete to line end",
+		Description: "Delete from the cursor to the end of the line",
+		DefaultKeys: []string{"CtrlK", "AltD"},
+		MenuPath:    "Edit",
+		Handler:     withEditor(func(ev *editor.EditorView) { ev.DeleteToLineEnd() }),
+	})
+	registerAction(action.Action{
+		Name:        "Editor.DeleteWordBackward",
+		Area:        "Editor",
+		Label:       "Delete word backward",
+		Description: "Delete the word to the left of the cursor",
+		DefaultKeys: []string{"CtrlBS"},
+		MenuPath:    "Edit",
+		Handler:     withEditor(func(ev *editor.EditorView) { ev.DeleteWordBackward() }),
+	})
+	registerAction(action.Action{
+		Name:        "Editor.DeleteBlock",
+		Area:        "Editor",
+		Label:       "Delete block",
+		Description: "Delete the selected block",
+		DefaultKeys: []string{"CtrlD"},
+		MenuPath:    "Edit",
+		Handler:     withEditor(func(ev *editor.EditorView) { ev.DeleteSelection() }),
+	})
+	registerAction(action.Action{
+		Name:        "Editor.CopyBlockToCursor",
+		Area:        "Editor",
+		Label:       "Copy block to cursor",
+		Description: "Copy the selected block to the cursor",
+		DefaultKeys: []string{"CtrlP"},
+		MenuPath:    "Edit",
+		Handler:     withEditor(func(ev *editor.EditorView) { ev.CopySelectionToCursor() }),
+	})
+	registerAction(action.Action{
+		Name:        "Editor.MoveBlockToCursor",
+		Area:        "Editor",
+		Label:       "Move block to cursor",
+		Description: "Move the selected block to the cursor",
+		DefaultKeys: []string{"CtrlM"},
+		MenuPath:    "Edit",
+		Handler:     withEditor(func(ev *editor.EditorView) { ev.MoveSelectionToCursor() }),
+	})
+	registerAction(action.Action{
+		Name:        "Editor.ShiftBlockLeft",
+		Area:        "Editor",
+		Label:       "Shift block left",
+		Description: "Decrease indentation of the current or selected lines",
+		DefaultKeys: []string{"AltU"},
+		MenuPath:    "Edit",
+		Handler:     withEditor(func(ev *editor.EditorView) { ev.ShiftCurrentOrSelectedLines(true) }),
+	})
+	registerAction(action.Action{
+		Name:        "Editor.ShiftBlockRight",
+		Area:        "Editor",
+		Label:       "Shift block right",
+		Description: "Increase indentation of the current or selected lines",
+		DefaultKeys: []string{"AltI"},
+		MenuPath:    "Edit",
+		Handler:     withEditor(func(ev *editor.EditorView) { ev.ShiftCurrentOrSelectedLines(false) }),
+	})
+	registerAction(action.Action{
 		Name:        "Editor.DuplicateLine",
 		Area:        "Editor",
 		Label:       "Duplicate Line",
@@ -2461,7 +3204,29 @@ func init() {
 		MenuPath:    "Edit",
 		Handler:     withMultiEditor(func(ev *editor.EditorView) { ev.AddCursorAtNextOccurrence() }),
 	})
-	RegisterAction(action.Action{
+	registerAction(action.Action{
+		Name:        "Editor.SkipOccurrence",
+		Area:        "Editor",
+		Label:       "Skip Occurrence",
+		LabelKey:    "Action.Editor.SkipOccurrence",
+		Description: "Move the last added cursor to the next copy of the selected text, without keeping the one it leaves",
+		DescKey:     "Action.Editor.SkipOccurrence.Desc",
+		DefaultKeys: []string{"CtrlAltShiftN"},
+		MenuPath:    "Edit",
+		Handler:     withMultiEditor(func(ev *editor.EditorView) { ev.SkipOccurrence() }),
+	})
+	registerAction(action.Action{
+		Name:        "Editor.RemoveLastOccurrence",
+		Area:        "Editor",
+		Label:       "Remove Last Occurrence",
+		LabelKey:    "Action.Editor.RemoveLastOccurrence",
+		Description: "Take back the last added cursor and go back to the previous copy",
+		DescKey:     "Action.Editor.RemoveLastOccurrence.Desc",
+		DefaultKeys: []string{"CtrlAltShiftU"},
+		MenuPath:    "Edit",
+		Handler:     withMultiEditor(func(ev *editor.EditorView) { ev.RemoveLastOccurrence() }),
+	})
+	registerAction(action.Action{
 		Name:        "Editor.SelectAllOccurrences",
 		Area:        "Editor",
 		Label:       "Select All Occurrences",
@@ -2496,7 +3261,25 @@ func init() {
 		MenuPath:    "Edit",
 		Handler:     withEditor(func(ev *editor.EditorView) { ev.MoveLines(1) }),
 	})
-	RegisterAction(action.Action{
+	registerAction(action.Action{
+		Name:        "Editor.MoveToScreenTop",
+		Area:        "Editor",
+		Label:       "Move to screen top",
+		Description: "Move the cursor to the first visible screen line",
+		DefaultKeys: []string{"CtrlN"},
+		MenuPath:    "Edit",
+		Handler:     withEditor(func(ev *editor.EditorView) { ev.MoveToScreenEdge(false) }),
+	})
+	registerAction(action.Action{
+		Name:        "Editor.MoveToScreenBottom",
+		Area:        "Editor",
+		Label:       "Move to screen bottom",
+		Description: "Move the cursor to the last visible screen line",
+		DefaultKeys: []string{"CtrlE"},
+		MenuPath:    "Edit",
+		Handler:     withEditor(func(ev *editor.EditorView) { ev.MoveToScreenEdge(true) }),
+	})
+	registerAction(action.Action{
 		Name:        "Editor.Base64Menu",
 		Area:        "Editor",
 		Label:       "Base64 Tools",
@@ -2534,7 +3317,41 @@ func init() {
 			}
 		}),
 	})
-	RegisterAction(action.Action{
+	registerAction(action.Action{
+		Name:        "Editor.CalculateExpression",
+		Area:        "Editor",
+		Label:       "Calculate selection",
+		LabelKey:    "Action.Editor.CalculateExpression",
+		Description: "Evaluate the selected arithmetic expression and replace it with the result",
+		DescKey:     "Action.Editor.CalculateExpression.Desc",
+		MenuPath:    "Edit",
+		Handler: withEditor(func(ev *editor.EditorView) {
+			result, err := ev.CalculateSelection()
+			if err != nil {
+				vtui.ShowMessage(i18n.Msg("Editor.Calculator.Title"), err.Error(), []string{i18n.Msg("vtui.Ok")})
+				return
+			}
+			toast.Show(fmt.Sprintf(i18n.Msg("Editor.Calculator.Result"), result), 2*time.Second)
+		}),
+	})
+	registerAction(action.Action{
+		Name:        "Editor.AmountInWords",
+		Area:        "Editor",
+		Label:       "Amount in words",
+		LabelKey:    "Action.Editor.AmountInWords",
+		Description: "Replace the selected number or amount of money (1234.56 rub, $12.50, 99 EUR) with it written in words",
+		DescKey:     "Action.Editor.AmountInWords.Desc",
+		MenuPath:    "Edit",
+		Handler: withEditor(func(ev *editor.EditorView) {
+			result, err := ev.AmountInWordsSelection()
+			if err != nil {
+				vtui.ShowMessage(i18n.Msg("Editor.AmountInWords.Title"), err.Error(), []string{i18n.Msg("vtui.Ok")})
+				return
+			}
+			toast.Show(result, 2*time.Second)
+		}),
+	})
+	registerAction(action.Action{
 		Name:                "Editor.SortLines",
 		Area:                "Editor",
 		Label:               "Sort lines",
@@ -2713,7 +3530,7 @@ func init() {
 		LabelKey:    "Action.Editor.SearchPrevious",
 		Description: "Continue search backwards",
 		DescKey:     "Action.Editor.SearchPrevious.Desc",
-		DefaultKeys: []string{"CtrlShiftEnter"},
+		DefaultKeys: []string{"AltF7"},
 		Handler:     withEditor(func(ev *editor.EditorView) { repeatEditorSearchDirection(ev, true) }),
 	})
 
@@ -2789,9 +3606,12 @@ func init() {
 		DefaultKeys: []string{"ShiftF4"},
 		MenuPath:    "Options",
 		Handler: withEditor(func(ev *editor.EditorView) {
-			// The mode is a property of the file, not of the view, so it
-			// is switched wherever the editor is: the toast says what the
-			// decode view will read the bytes as.
+			// The mode only means something in the decode view: outside it
+			// the key does nothing, rather than announcing a disassembler
+			// that is not on screen (f4#1704).
+			if !ev.DecodeMode {
+				return
+			}
 			mode := ev.CycleDisasmMode()
 			toast.Show(fmt.Sprintf(i18n.Msg("Viewer.DisasmBits"), mode), time.Second)
 			vtui.FrameManager.Redraw()
@@ -2809,7 +3629,18 @@ func init() {
 		Checked:     editorState(func(ev *editor.EditorView) bool { return ev.ShowWhitespaces }),
 		Handler:     withEditor(func(ev *editor.EditorView) { ev.ShowWhitespaces = !ev.ShowWhitespaces }),
 	})
-	RegisterAction(action.Action{
+	registerAction(action.Action{
+		Name:        "Editor.ShowControlChars",
+		Area:        "Editor",
+		Label:       "Show Control Characters",
+		LabelKey:    "Action.Editor.ShowControlChars",
+		Description: "Toggle visible control characters",
+		DescKey:     "Action.Editor.ShowControlChars.Desc",
+		MenuPath:    "Options",
+		Checked:     editorState(func(ev *editor.EditorView) bool { return ev.ShowControlChars }),
+		Handler:     withEditor(func(ev *editor.EditorView) { ev.ShowControlChars = !ev.ShowControlChars }),
+	})
+	registerAction(action.Action{
 		Name:        "Editor.CodepageNext",
 		Area:        "Editor",
 		Label:       "Next Codepage",
@@ -2884,6 +3715,7 @@ func init() {
 		LabelKey:    "Action.Editor.InsertActivePanelFileName",
 		Description: "Insert the active panel's current file name at cursor",
 		DescKey:     "Action.Editor.InsertActivePanelFileName.Desc",
+		DefaultKeys: []string{"ShiftEnter"},
 		MenuPath:    "Insert",
 		Handler: withEditor(func(ev *editor.EditorView) {
 			if s := panel.ActivePanelNameForEditor(); s != "" {
@@ -2891,16 +3723,47 @@ func init() {
 			}
 		}),
 	})
-	RegisterAction(action.Action{
+	registerAction(action.Action{
+		Name:        "Editor.InsertPassivePanelFileName",
+		Area:        "Editor",
+		Label:       "Insert passive panel file name",
+		Description: "Insert the passive panel's current file name at the cursor",
+		DefaultKeys: []string{"CtrlShiftEnter"},
+		MenuPath:    "Insert",
+		Handler: withEditor(func(ev *editor.EditorView) {
+			if s := panel.PassivePanelNameForEditor(); s != "" {
+				ev.InsertTextAtCursor([]byte(s))
+			}
+		}),
+	})
+	registerAction(action.Action{
+		Name:        "Editor.InsertFullFilePath",
+		Area:        "Editor",
+		Label:       "Insert full editor file path",
+		Description: "Insert the full path of the file being edited",
+		DefaultKeys: []string{"CtrlF"},
+		MenuPath:    "Insert",
+		Handler:     withEditor(func(ev *editor.EditorView) { ev.InsertTextAtCursor([]byte(ev.FilePath)) }),
+	})
+	registerAction(action.Action{
 		Name:        "Editor.DeleteSpacersForward",
 		Area:        "Editor",
 		Label:       "Delete Word Forward",
 		LabelKey:    "Action.Editor.DeleteSpacersForward",
 		Description: "Delete spaces and word forward",
 		DescKey:     "Action.Editor.DeleteSpacersForward.Desc",
-		DefaultKeys: []string{"CtrlDel"},
+		DefaultKeys: []string{"CtrlT", "CtrlDel"},
 		MenuPath:    "Insert",
 		Handler:     withEditor(func(ev *editor.EditorView) { ev.DeleteSpacersForward() }),
+	})
+	registerAction(action.Action{
+		Name:        "Editor.ToggleStatusBar",
+		Area:        "Editor",
+		Label:       "Toggle editor status bar",
+		Description: "Show or hide the editor title and status bar",
+		DefaultKeys: []string{"CtrlShiftB"},
+		MenuPath:    "Options",
+		Handler:     withEditor(func(ev *editor.EditorView) { ev.ToggleStatusBar() }),
 	})
 
 	// --- Viewer actions ---
@@ -2926,7 +3789,25 @@ func init() {
 		MenuPath:    "File",
 		Handler:     withViewer(func(vv *viewer.ViewerView) { vv.Reload() }),
 	})
-	RegisterAction(action.Action{
+	registerAction(action.Action{
+		Name:        "Viewer.ToggleHighlighting",
+		Area:        "Viewer",
+		Label:       "Toggle syntax highlighting",
+		LabelKey:    "Action.Viewer.ToggleHighlighting",
+		Description: "Turn this viewer's syntax highlighting on or off (f4 #1413)",
+		DescKey:     "Action.Viewer.ToggleHighlighting.Desc",
+		DefaultKeys: []string{"CtrlL"},
+		MenuPath:    "File",
+		Handler: withViewer(func(vv *viewer.ViewerView) {
+			if config.App.ViewerHighlighting == config.ViewerHighlightAll {
+				config.App.ViewerHighlighting = config.ViewerHighlightOff
+			} else {
+				config.App.ViewerHighlighting = config.ViewerHighlightAll
+			}
+			vv.RefreshHighlighting()
+		}),
+	})
+	registerAction(action.Action{
 		Name:        "Viewer.Quit",
 		Area:        "Viewer",
 		Label:       "Quit",
@@ -2971,7 +3852,19 @@ func init() {
 			vtui.FrameManager.Redraw()
 		}),
 	})
-	RegisterAction(action.Action{
+	registerAction(action.Action{
+		Name:        "Viewer.MarkdownFormatted",
+		Area:        "Viewer",
+		Label:       "Markdown",
+		LabelKey:    "Action.Viewer.MarkdownFormatted",
+		Description: "Switch a Markdown file from the text/hex viewer back to the formatted view (the reverse of that view's own F4)",
+		DescKey:     "Action.Viewer.MarkdownFormatted.Desc",
+		DefaultKeys: []string{"ShiftF3"},
+		MenuPath:    "View",
+		Enabled:     viewerState(func(vv *viewer.ViewerView) bool { return isMarkdownFile(vv.Path) }),
+		Handler:     withViewer(func(vv *viewer.ViewerView) { actionSwitchViewerToMarkdown(vv) }),
+	})
+	registerAction(action.Action{
 		Name:        "Viewer.DisasmMode",
 		Area:        "Viewer",
 		Label:       "Disassembler mode",
@@ -2981,13 +3874,31 @@ func init() {
 		DefaultKeys: []string{"ShiftF4"},
 		MenuPath:    "View",
 		Handler: withViewer(func(vv *viewer.ViewerView) {
+			if !vv.DecodeMode {
+				return
+			}
 			mode := vv.CycleDisasmMode()
 			toast.Show(fmt.Sprintf(i18n.Msg("Viewer.DisasmBits"), mode), time.Second)
 			vtui.FrameManager.Redraw()
 		}),
 	})
 
-	RegisterAction(action.Action{
+	registerAction(action.Action{
+		Name:        "Viewer.AnsiMode",
+		Area:        "Viewer",
+		Label:       "Terminal colors",
+		LabelKey:    "Action.Viewer.AnsiMode",
+		Description: "Draw the colour escape sequences of terminal output as colours",
+		DescKey:     "Action.Viewer.AnsiMode.Desc",
+		DefaultKeys: []string{"CtrlF8"},
+		MenuPath:    "View",
+		Checked:     viewerState(func(vv *viewer.ViewerView) bool { return vv.AnsiMode }),
+		Handler: withViewer(func(vv *viewer.ViewerView) {
+			vv.AnsiMode = !vv.AnsiMode
+			vtui.FrameManager.Redraw()
+		}),
+	})
+	registerAction(action.Action{
 		Name:        "Viewer.Search",
 		Area:        "Viewer",
 		Label:       "Search",
@@ -3058,6 +3969,7 @@ func init() {
 		LabelKey:    "Menu.EditorSettings",
 		Description: "Open editor settings dialog",
 		DescKey:     "Action.Settings.Editor.Desc",
+		DefaultKeys: []string{"AltShiftF9"},
 		MenuPath:    "Options",
 		Handler:     withPF(func(pf *panel.PanelsFrame) { ActionEditorSettings(pf) }),
 	})
@@ -3071,4 +3983,51 @@ func init() {
 		MenuPath:    "Options",
 		Handler:     withPF(func(pf *panel.PanelsFrame) { dialog.ShowViewerSettings() }),
 	})
+}
+
+// toggleSidePanel implements Ctrl+F1 (side 0, left) and Ctrl+F2 (side 1,
+// right); the two keys drive their own panel independently (f4#1621).
+//
+// While the panels frame is hidden (Esc/Ctrl+O/Del flip only pf.ShowPanels and
+// leave the per-side flags stale) or both sides were switched off one by one
+// (issue #927), the press shows only its own side and clears the other one, so
+// Ctrl+F1 then Ctrl+F2 (or the other way round) brings the panels back one at a
+// time. With something already on screen it is the plain toggle of that side.
+//
+// ShellModeHost keeps the running shell on the host's own screen while the
+// panels are hidden and hands the physical screen back only through
+// EnterHostConsole/LeaveHostConsole (the pair TogglePanelsVisibility uses), so
+// every real change of pf.ShowPanels must go through it, else Ctrl+F1/Ctrl+F2
+// look like no-ops in "Host with overlay"/"Host without overlay".
+func toggleSidePanel(pf *panel.PanelsFrame, side int) {
+	showPanelsBefore := pf.ShowPanels
+	pf.ExitWide()
+	mine, other := &pf.ShowLeftPanel, &pf.ShowRightPanel
+	if side == 1 {
+		mine, other = other, mine
+	}
+	if !showPanelsBefore {
+		*mine, *other = true, false
+		pf.ActiveIdx = side
+		pf.ShowPanels = true
+	} else {
+		*mine = !*mine
+		if !*mine && pf.ActiveIdx == side && *other {
+			pf.ActiveIdx = 1 - side
+		}
+		if !*mine && !*other {
+			pf.ShowPanels = false
+		}
+	}
+	if pf.LastW > 0 && pf.LastH > 0 {
+		pf.ResizeConsole(pf.LastW, pf.LastH)
+	}
+	if pf.ShowPanels != showPanelsBefore {
+		if pf.ShowPanels {
+			pf.LeaveHostConsole()
+		} else {
+			pf.EnterHostConsole()
+		}
+	}
+	vtui.FrameManager.HardRefresh()
 }

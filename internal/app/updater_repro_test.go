@@ -98,8 +98,8 @@ func TestUpdateFailureMessageRepro(t *testing.T) {
 	vtui.FrameManager.Init(scr)
 
 	// 6. Run update logic
-	// We call performUpdate directly as it's the one handling the installation.
-	// Since performUpdate is internal and runs in a goroutine via RunProgressTask,
+	// We call PerformUpdate directly as it's the one handling the installation.
+	// Since PerformUpdate is internal and runs in a goroutine via RunProgressTask,
 	// we need a panel.PanelsFrame to host it.
 	pf := panel.NewPanelsFrame()
 	pf.ResizeConsole(80, 25)

@@ -84,9 +84,19 @@ type browser struct {
 	query       *vtui.MultiLineEdit
 	status      *vtui.Text
 	closed      bool
+	// onClose runs once the client has closed, when whoever opened it wants
+	// to know. The database panel reads its tables again then.
+	onClose func()
 }
 
 func newBrowser(app vfs.App, session *databaseSession, tables []string) *browser {
+	return newBrowserAt(app, session, tables, "")
+}
+
+// newBrowserAt opens the client on initialTable when the database has it, and
+// on the first table otherwise. Enter on a table in the database panel lands
+// here with the table's name.
+func newBrowserAt(app vfs.App, session *databaseSession, tables []string, initialTable string) *browser {
 	width, height := 110, 32
 	if vtui.FrameManager != nil {
 		if maxWidth := vtui.FrameManager.GetScreenSize() - 2; maxWidth > 20 && width > maxWidth {
@@ -179,13 +189,23 @@ func newBrowser(app vfs.App, session *databaseSession, tables []string) *browser
 		}
 		b.closed = true
 		b.session.Close()
+		if b.onClose != nil {
+			b.onClose()
+		}
 	}
 
 	b.frame = &browserWindow{Window: b.dialog, browser: b}
 
 	if len(b.tables) > 0 {
-		b.tableList.SetSelectPos(0)
-		b.loadTable(b.tables[0])
+		first := 0
+		for index, table := range b.tables {
+			if table == initialTable {
+				first = index
+				break
+			}
+		}
+		b.tableList.SetSelectPos(first)
+		b.loadTable(b.tables[first])
 	} else {
 		b.setStatus(sqliteText("SQLite.NoTables", "The database has no user tables or views.", "В базе нет пользовательских таблиц или представлений."))
 	}

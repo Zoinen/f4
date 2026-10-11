@@ -95,7 +95,8 @@ func (plugin *Plugin) Init(api vfs.HostAPI) error {
 		Visible: func(vfs.App) bool {
 			return plugin.settings().ShowInPluginMenu
 		},
-		Run: plugin.openCurrent,
+		Enabled: canOpenCurrent,
+		Run:     plugin.openCurrent,
 	})
 	if err != nil {
 		return rollback(fmt.Errorf("MediaInfo: register panel command: %w", err))

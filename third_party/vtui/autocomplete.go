@@ -47,6 +47,13 @@ var PathHintProvider func(edit *Edit, word string, from, to int) []AutoCompleteI
 // each panel, then history) contributes up to this many rows.
 var autoCompleteMaxVisible = 5
 
+// autoCompleteFooter is the key hint drawn into the bottom border. The menu
+// is never narrower than it needs to show the hint whole (f4 #1155): a history
+// of short commands used to leave a 24-cell menu that cut it off mid-word.
+// Shift+Del drops the picked entry and Del clears the whole list, in that
+// order as in f4's own history lists (f4 #1155).
+const autoCompleteFooter = "Up/Down Enter Esc Tab Shift+Del Del"
+
 // autoCompletePerCategory selects how the visible height is computed:
 // false = the whole list shares one window of autoCompleteMaxVisible rows,
 // true = each category shows up to autoCompleteMaxVisible rows of its own.
@@ -77,6 +84,7 @@ type AutoCompleteMenu struct {
 	hasPathItems   bool
 	originalText   string
 	originalCursor int
+	chosen         bool
 }
 
 func NewAutoCompleteMenu(edit *Edit) *AutoCompleteMenu {
@@ -101,6 +109,7 @@ func NewAutoCompleteMenu(edit *Edit) *AutoCompleteMenu {
 		ac.accept(idx, true)
 	}
 	ac.lb.OnSelect = func(idx int) { ac.Preview(idx) }
+	ac.showCursor(false)
 	ac.AddItem(ac.lb)
 
 	ac.UpdateMatches()
@@ -159,12 +168,60 @@ func (ac *AutoCompleteMenu) HasMatches() bool {
 	return len(ac.Matches) > 0
 }
 
-// SelectPos returns the index of the currently selected item in the menu.
+// SelectPos returns the index of the currently selected item, or -1 while
+// the user has not picked one. Renderers use it to paint the cursor row, so
+// an unconfirmed list must report no selection.
 func (ac *AutoCompleteMenu) SelectPos() int {
-	if ac.lb != nil {
+	if ac.lb != nil && ac.chosen {
 		return ac.lb.SelectPos
 	}
 	return -1
+}
+
+// showCursor decides whether the list box cursor is visible. Without an
+// explicit pick the cursor row is drawn in the ordinary item color, so the
+// menu cannot look as if one entry were already selected.
+func (ac *AutoCompleteMenu) showCursor(on bool) {
+	if ac.lb == nil {
+		return
+	}
+	if on {
+		ac.lb.ColorSelectedTextIdx = ColMenuBarSelected
+		return
+	}
+	ac.lb.ColorSelectedTextIdx = ac.lb.ColorTextIdx
+}
+
+// edgeItem returns the first (down) or last (up) selectable item index, or
+// -1 when the list holds nothing selectable.
+func (ac *AutoCompleteMenu) edgeItem(down bool) int {
+	for i := range ac.items {
+		idx := i
+		if !down {
+			idx = len(ac.items) - 1 - i
+		}
+		if ac.lb.IsSelectable(idx) {
+			return idx
+		}
+	}
+	return -1
+}
+
+// choose moves the cursor to idx and marks the selection as the user's own.
+func (ac *AutoCompleteMenu) choose(idx int) {
+	if idx < 0 {
+		return
+	}
+	ac.chosen = true
+	ac.showCursor(true)
+	ac.lb.SetSelectPos(idx)
+}
+
+// dropChoice forgets the current pick. Editing the text invalidates it: the
+// entry that was highlighted may not even match what is typed now.
+func (ac *AutoCompleteMenu) dropChoice() {
+	ac.chosen = false
+	ac.showCursor(false)
 }
 
 // IsBusy reports true if the underlying frame is busy (e.g. PanelsFrame in console view),
@@ -262,7 +319,7 @@ func (ac *AutoCompleteMenu) UpdateMatches() {
 	if text != "" {
 		matcher := NewFuzzyMatcher(text, false)
 		if ac.Edit.StrictAutoComplete {
-			matcher.maxDistance = 0
+			matcher.Strict()
 		}
 		seen := make(map[string]bool)
 		type histMatch struct {
@@ -349,6 +406,12 @@ func (ac *AutoCompleteMenu) UpdateMatches() {
 	}
 
 	ac.reposition()
+	if ac.Edit.AutoCompletePreview {
+		// The opt-in preview row represents the text already in the field,
+		// so revealing it does not pick an unsolicited history suggestion.
+		ac.chosen = true
+		ac.showCursor(true)
+	}
 }
 
 // reposition places the menu next to the text cursor: below the edit line,
@@ -373,6 +436,11 @@ func (ac *AutoCompleteMenu) reposition() {
 	h := vis + 2
 
 	w := 24
+	// Painter.DrawTitle keeps a corner and a padding cell on each side of the
+	// title, so the hint needs four cells more than its own width.
+	if fw := StringWidth(autoCompleteFooter) + 4; fw > w {
+		w = fw
+	}
 	for i := range ac.items {
 		if iw := runewidth.StringWidth(ac.items[i].Text) + 2; iw > w {
 			w = iw
@@ -534,9 +602,8 @@ func (ac *AutoCompleteMenu) Show(scr *ScreenBuf) {
 		}
 	}
 
-	footer := " Up/Down Enter Esc Tab Shift+Del "
 	p := NewPainter(scr)
-	p.DrawTitle(ac.X1, ac.Y2, ac.X2, footer, Palette[ColDialogBoxTitle])
+	p.DrawTitle(ac.X1, ac.Y2, ac.X2, autoCompleteFooter, Palette[ColDialogBoxTitle])
 
 	if ac.Edit.curPos > len(ac.Edit.text) {
 		ac.Edit.curPos = len(ac.Edit.text)
@@ -573,13 +640,32 @@ func (ac *AutoCompleteMenu) ProcessKey(e *vtinput.InputEvent) bool {
 	}
 
 	switch e.VirtualKeyCode {
-	case vtinput.VK_UP, vtinput.VK_DOWN, vtinput.VK_PRIOR, vtinput.VK_NEXT:
+	case vtinput.VK_UP, vtinput.VK_PRIOR:
+		if !ac.chosen {
+			// The first arrow press only reveals the cursor. It lands on an
+			// edge item instead of stepping away from a row the user never
+			// saw as selected.
+			ac.choose(ac.edgeItem(false))
+			return true
+		}
+		return ac.lb.ProcessKey(e)
+	case vtinput.VK_DOWN, vtinput.VK_NEXT:
+		if !ac.chosen {
+			ac.choose(ac.edgeItem(true))
+			return true
+		}
 		return ac.lb.ProcessKey(e)
 	case vtinput.VK_ESCAPE:
 		ac.Close()
 		return true
 	case vtinput.VK_TAB:
-		ac.accept(ac.lb.SelectPos, false)
+		// Tab is a completion request in itself, so it may take the top
+		// match without a prior pick.
+		idx := ac.lb.SelectPos
+		if !ac.chosen {
+			idx = ac.edgeItem(true)
+		}
+		ac.accept(idx, false)
 		return true
 	case vtinput.VK_RETURN:
 		modifiers := vtinput.ShiftPressed | vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed |
@@ -591,12 +677,26 @@ func (ac *AutoCompleteMenu) ProcessKey(e *vtinput.InputEvent) bool {
 			}
 			return true
 		}
+		if !ac.chosen {
+			// Nothing was picked from the list, so the typed text is what
+			// the user meant. Step aside and let the frame below act on the
+			// Enter, instead of substituting the top match for it.
+			ac.Close()
+			if (e.ControlKeyState&vtinput.ShiftPressed) == 0 && FrameManager != nil {
+				FrameManager.InjectEvents([]*vtinput.InputEvent{
+					{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN},
+				})
+			}
+			return true
+		}
 		inject := (e.ControlKeyState & vtinput.ShiftPressed) == 0
 		ac.accept(ac.lb.SelectPos, inject)
 		return true
 	case vtinput.VK_DELETE:
 		if (e.ControlKeyState & vtinput.ShiftPressed) != 0 {
-			if ac.lb.SelectPos >= 0 && ac.lb.SelectPos < len(ac.items) {
+			// Dropping an entry is destructive, so it needs a pick of its
+			// own rather than whatever the hidden cursor happens to sit on.
+			if ac.chosen && ac.lb.SelectPos >= 0 && ac.lb.SelectPos < len(ac.items) {
 				it := ac.items[ac.lb.SelectPos]
 				// Only legacy history items can be removed from history.
 				if !it.Separator && it.ReplaceTo <= it.ReplaceFrom && (!ac.Edit.AutoCompletePreview || ac.lb.SelectPos != 0) {
@@ -621,6 +721,23 @@ func (ac *AutoCompleteMenu) ProcessKey(e *vtinput.InputEvent) bool {
 			}
 			return true
 		}
+		// Plain Del on a history entry the user picked clears the whole list,
+		// as it does in every other history list (f4 #1155). Without a pick
+		// the focus is still on the text, and Del edits it.
+		if ac.chosen && (e.ControlKeyState&(vtinput.LeftCtrlPressed|vtinput.RightCtrlPressed|vtinput.LeftAltPressed|vtinput.RightAltPressed)) == 0 &&
+			ac.lb.SelectPos >= 0 && ac.lb.SelectPos < len(ac.items) {
+			it := ac.items[ac.lb.SelectPos]
+			if !it.Separator && it.ReplaceTo <= it.ReplaceFrom {
+				ac.Edit.clearHistory(func() {
+					ac.dropChoice()
+					ac.UpdateMatches()
+					if !ac.HasMatches() {
+						ac.Close()
+					}
+				})
+				return true
+			}
+		}
 	}
 
 	oldText := ac.Edit.GetText()
@@ -631,6 +748,7 @@ func (ac *AutoCompleteMenu) ProcessKey(e *vtinput.InputEvent) bool {
 			if newText == "" {
 				ac.Close()
 			} else {
+				ac.dropChoice()
 				ac.UpdateMatches()
 				if !ac.HasMatches() {
 					ac.Close()
@@ -642,7 +760,14 @@ func (ac *AutoCompleteMenu) ProcessKey(e *vtinput.InputEvent) bool {
 }
 
 func (ac *AutoCompleteMenu) ProcessMouse(e *vtinput.InputEvent) bool {
+	// A press on a row is a pick by hand; wheel scrolling is not, so the
+	// cursor stays hidden until a row is actually clicked.
+	clicked := e.Type == vtinput.MouseEventType && e.KeyDown && e.ButtonState != 0 &&
+		e.WheelDirection == 0 && ac.lb.GetClickIndex(int(e.MouseY)) >= 0
 	if ac.lb.ProcessMouse(e) {
+		if clicked && ac.lb.IsSelectable(ac.lb.SelectPos) {
+			ac.choose(ac.lb.SelectPos)
+		}
 		return true
 	}
 	// Consume all mouse events within the menu bounds to prevent

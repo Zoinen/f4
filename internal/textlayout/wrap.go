@@ -808,6 +808,9 @@ func (we *WrapEngine) updateRowOffsets() {
 }
 
 func (we *WrapEngine) ensureRowCountCache(until int) {
+	if !we.wordWrap {
+		return
+	}
 	we.updateRowOffsets()
 	until = min(until, we.Li.LineCount()-1)
 	for we.validUntil < until {
@@ -876,6 +879,9 @@ func (we *WrapEngine) GetRowOffset(logLineIdx int) int {
 	if logLineIdx < 0 {
 		return 0
 	}
+	if !we.wordWrap {
+		return min(logLineIdx, we.Li.LineCount())
+	}
 	we.ensureRowCountCache(logLineIdx - 1)
 	if logLineIdx >= len(we.rowOffsets) {
 		return we.totalRows
@@ -938,7 +944,10 @@ func (we *WrapEngine) LogicalToVisual(byteOffset int) (visualRow, visualCol int)
 			fragments = we.projectedFragments(logLineIdx)
 		}
 	}
-	totalRow := we.rowOffsets[logLineIdx]
+	totalRow := logLineIdx
+	if we.wordWrap {
+		totalRow = we.rowOffsets[logLineIdx]
+	}
 
 	if len(fragments) > 0 {
 		lastFrag := fragments[len(fragments)-1]

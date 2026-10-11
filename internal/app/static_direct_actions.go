@@ -55,6 +55,13 @@ var fixedPanelViewActionSpecs = []fixedPanelViewActionSpec{
 	{id: "ViewMedium", label: "Medium", labelKey: "Menu.Left.Medium", descKey: "Action.Panel.ViewMedium.Desc", mode: panel.ViewModeMedium},
 	{id: "ViewDetailed", label: "Detailed", labelKey: "Menu.Left.Detailed", descKey: "Action.Panel.ViewDetailed.Desc", mode: panel.ViewModeDetailed},
 	{id: "ViewWide", label: "Wide", labelKey: "Menu.Left.Wide", descKey: "Action.Panel.ViewWide.Desc", mode: panel.ViewModeWide},
+	// far2l's other six panel modes (f4#410), named by their mode slot.
+	{id: "ViewMode5", label: "Full screen details", labelKey: "Panel.Modes.Mode5", descKey: "Action.Panel.ViewMode5.Desc", mode: panel.ViewMode5},
+	{id: "ViewMode6", label: "Full", labelKey: "Panel.Modes.Mode6", descKey: "Action.Panel.ViewMode6.Desc", mode: panel.ViewMode6},
+	{id: "ViewMode7", label: "Medium with sizes", labelKey: "Panel.Modes.Mode7", descKey: "Action.Panel.ViewMode7.Desc", mode: panel.ViewMode7},
+	{id: "ViewMode8", label: "File owners", labelKey: "Panel.Modes.Mode8", descKey: "Action.Panel.ViewMode8.Desc", mode: panel.ViewMode8},
+	{id: "ViewMode9", label: "Permissions", labelKey: "Panel.Modes.Mode9", descKey: "Action.Panel.ViewMode9.Desc", mode: panel.ViewMode9},
+	{id: "ViewMode0", label: "Alternative full", labelKey: "Panel.Modes.Mode0", descKey: "Action.Panel.ViewMode0.Desc", mode: panel.ViewMode0},
 }
 
 var fixedPanelSortActionSpecs = []fixedPanelSortActionSpec{
@@ -89,10 +96,10 @@ func fixedPanelViewChecked(index int, mode panel.ViewMode) bool {
 	if !ok {
 		return false
 	}
-	if mode == panel.ViewModeWide {
-		return pf.Wide && pf.WidePanel == index
+	if pf.Wide && pf.WidePanel == index {
+		return fsp.WideViewMode() == mode
 	}
-	return (!pf.Wide || pf.WidePanel != index) && fsp.ViewMode == mode
+	return fsp.ViewMode == mode
 }
 
 func fixedPanelSortChecked(index int, mode panel.SortMode) bool {
@@ -115,16 +122,42 @@ func runFixedPanelSortGroups(index int) bool {
 	return true
 }
 
+func fixedPanelSortNumericChecked(index int) bool {
+	_, fsp, ok := fixedRegularPanel(index)
+	return ok && fsp.SortNumeric
+}
+
+func runFixedPanelSortNumeric(index int) bool {
+	pf, fsp, ok := fixedRegularPanel(index)
+	if !ok {
+		return false
+	}
+	fsp.ToggleSortNumeric()
+	pf.UpdateMenuCheckmarks()
+	return true
+}
+
+func fixedPanelSortSelectedFirstChecked(index int) bool {
+	_, fsp, ok := fixedRegularPanel(index)
+	return ok && fsp.SortSelectedFirst
+}
+
+func runFixedPanelSortSelectedFirst(index int) bool {
+	pf, fsp, ok := fixedRegularPanel(index)
+	if !ok {
+		return false
+	}
+	fsp.ToggleSortSelectedFirst()
+	pf.UpdateMenuCheckmarks()
+	return true
+}
+
 func runFixedPanelView(index int, mode panel.ViewMode) bool {
 	pf, _, ok := fixedRegularPanel(index)
 	if !ok {
 		return false
 	}
-	if mode == panel.ViewModeWide {
-		pf.SetWidePanel(index)
-	} else {
-		pf.SetPanelViewMode(index, mode)
-	}
+	pf.SetPanelViewMode(index, mode)
 	return true
 }
 
@@ -291,6 +324,40 @@ func init() {
 			},
 			Checked: func() bool { return fixedPanelSortGroupsChecked(side.index) },
 			Handler: func() bool { return runFixedPanelSortGroups(side.index) },
+		})
+
+		registerAction(action.Action{
+			Name:         "Panel." + side.id + ".SortNumeric",
+			Area:         "Shell",
+			Label:        "Numeric Sort",
+			LabelKey:     "Menu.SortNumeric",
+			Description:  fmt.Sprintf("Sort the %s panel by treating digit runs in names as numbers", strings.ToLower(side.id)),
+			DescKey:      "Action.Panel.SortNumeric.Desc",
+			MenuPath:     side.menuPath,
+			HideFromMenu: true,
+			Visible: func() bool {
+				_, _, ok := fixedRegularPanel(side.index)
+				return ok
+			},
+			Checked: func() bool { return fixedPanelSortNumericChecked(side.index) },
+			Handler: func() bool { return runFixedPanelSortNumeric(side.index) },
+		})
+
+		registerAction(action.Action{
+			Name:         "Panel." + side.id + ".SortSelectedFirst",
+			Area:         "Shell",
+			Label:        "Selected First",
+			LabelKey:     "Menu.SortSelectedFirst",
+			Description:  fmt.Sprintf("Sort marked entries of the %s panel ahead of unmarked ones", strings.ToLower(side.id)),
+			DescKey:      "Action.Panel.SortSelectedFirst.Desc",
+			MenuPath:     side.menuPath,
+			HideFromMenu: true,
+			Visible: func() bool {
+				_, _, ok := fixedRegularPanel(side.index)
+				return ok
+			},
+			Checked: func() bool { return fixedPanelSortSelectedFirstChecked(side.index) },
+			Handler: func() bool { return runFixedPanelSortSelectedFirst(side.index) },
 		})
 
 		for _, aiView := range fixedAIViewActionSpecs {

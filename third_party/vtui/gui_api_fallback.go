@@ -20,6 +20,9 @@ func RunInGUIWindow(cols, rows int, backend string, fontName string, fontSize fl
 	if backend == "ebiten" {
 		return runInEbitenWindow(cols, rows, fontName, fontSize, setupApp)
 	}
+	if backend == "cocoa" {
+		return runInCocoaWindow(cols, rows, fontName, fontSize, setupApp)
+	}
 	if backend == "gogpu" || backend == "" {
 		if IsWine() && backend == "" {
 			if err := runInWin32Window(cols, rows, fontName, fontSize, setupApp); err == nil {

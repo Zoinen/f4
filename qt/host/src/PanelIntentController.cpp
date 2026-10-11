@@ -1,20 +1,11 @@
 #include "PanelIntentController.h"
 
-PanelIntentController::PanelIntentController(QObject *parent)
-    : QObject(parent)
+namespace
 {
-    qRegisterMetaType<PanelIntent>();
-}
-
-void PanelIntentController::dispatch(const PanelIntent &intent)
-{
-    emit intentRequested(intent);
-}
-
-QVariantMap PanelIntentController::toWireMap(const PanelIntent &intent)
+QString wireAction(PanelIntent::Kind kind)
 {
     QString action;
-    switch (intent.kind) {
+    switch (kind) {
     case PanelIntent::Kind::Activate:
         action = QStringLiteral("panel.activate");
         break;
@@ -43,9 +34,25 @@ QVariantMap PanelIntentController::toWireMap(const PanelIntent &intent)
         action = QStringLiteral("panel.sortMenu");
         break;
     }
+    return action;
+}
+}
 
+PanelIntentController::PanelIntentController(QObject *parent)
+    : QObject(parent)
+{
+    qRegisterMetaType<PanelIntent>();
+}
+
+void PanelIntentController::dispatch(const PanelIntent &intent)
+{
+    emit intentRequested(intent);
+}
+
+QVariantMap PanelIntentController::toWireMap(const PanelIntent &intent)
+{
     QVariantMap wire{
-        {QStringLiteral("action"), action},
+        {QStringLiteral("action"), wireAction(intent.kind)},
         {QStringLiteral("side"), intent.side},
     };
     if (!intent.entryId.isEmpty()) {

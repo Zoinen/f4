@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -185,6 +186,31 @@ func TestProtocol_QuitBeforeRunDoesNotDeadlock(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("quit deadlocked before frame manager Run")
+	}
+}
+
+func TestProtocol_HandlerValidationAndDescribe(t *testing.T) {
+	var out bytes.Buffer
+	ps := &ProtocolSession{out: &out}
+	if err := ps.handleMessage(&DownMessage{Op: "mount"}); err == nil || !strings.Contains(err.Error(), "missing tree") {
+		t.Fatalf("mount without tree error = %v", err)
+	}
+	if err := ps.handleMessage(&DownMessage{Op: "unknown"}); err == nil || !strings.Contains(err.Error(), "unknown operation") {
+		t.Fatalf("unknown operation error = %v", err)
+	}
+	if err := ps.handleMessage(&DownMessage{Op: "hello", Seq: 7}); err != nil {
+		t.Fatalf("hello: %v", err)
+	}
+	if err := ps.handleMessage(&DownMessage{Op: "describe", Seq: 8}); err != nil {
+		t.Fatalf("describe: %v", err)
+	}
+	decoder := json.NewDecoder(&out)
+	var welcome, description UpMessage
+	if err := decoder.Decode(&welcome); err != nil || welcome.Op != "welcome" || welcome.ReplyTo != 7 {
+		t.Fatalf("welcome = %#v, err %v", welcome, err)
+	}
+	if err := decoder.Decode(&description); err != nil || description.Op != "description" || description.ReplyTo != 8 || description.Value == nil {
+		t.Fatalf("description = %#v, err %v", description, err)
 	}
 }
 

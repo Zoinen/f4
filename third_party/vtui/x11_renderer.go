@@ -7,6 +7,7 @@ import (
 	"image/color"
 	"time"
 
+	"github.com/jezek/xgb"
 	"github.com/jezek/xgb/xproto"
 	"golang.org/x/image/font"
 	"golang.org/x/image/math/fixed"
@@ -31,6 +32,10 @@ type X11Renderer struct {
 
 	stats renderStats
 
+	// frameW and frameH are the cell size of the frame rendered last, so a
+	// frame of another size is known to need its margins cleared.
+	frameW, frameH int
+
 	gfxList  []ImagePlacement
 	gfxCache nativeGraphicsCache
 	gfxGen   uint64
@@ -51,6 +56,23 @@ func NewX11Renderer(host *X11Host, face font.Face) *X11Renderer {
 func (r *X11Renderer) SetPalette(pal *[256]uint32) {
 }
 
+// setFace replaces the rasterizer after a font hot-swap (vtui #136). The
+// caller holds host.mu, which also protects rendering.
+func (r *X11Renderer) setFace(face font.Face) {
+	r.face = face
+	r.glyphCache = make(map[glyphKey]*image.RGBA)
+	r.gfxKnown = false
+}
+
+// SetFont changes the font of the already-open window without recreating
+// it: see X11Host.SetFont. It always reports true, since Wayland and X11
+// are, as of this part, the GUI backends implementing font hot-swap (vtui
+// #136).
+func (r *X11Renderer) SetFont(fontName string, fontSize float64) bool {
+	r.host.SetFont(fontName, fontSize)
+	return true
+}
+
 func (r *X11Renderer) ResizeWindow(cols, rows int) {
 	r.host.mu.Lock()
 	conn := r.host.conn
@@ -62,41 +84,105 @@ func (r *X11Renderer) ResizeWindow(cols, rows int) {
 	if conn == nil || screen == nil {
 		return
 	}
-
+	atoms, ok := x11MaximizeAtoms(conn)
+	if !ok {
+		return
+	}
 	// Посылаем ClientMessage родителю (Window Manager) для нативного разворачивания/восстановления
+	x11SendMaximized(conn, wid, screen.Root, atoms, cols > initialCols)
+}
+
+// ToggleMaximized is far2l's Alt+F9 on X11: maximize the window, or restore
+// it when it is maximized already. Whether it is comes from the window
+// manager's own _NET_WM_STATE, so a window maximized with the title bar
+// button is restored, not maximized again.
+func (r *X11Renderer) ToggleMaximized() bool {
+	r.host.mu.Lock()
+	conn := r.host.conn
+	wid := r.host.wid
+	screen := r.host.screen
+	r.host.mu.Unlock()
+
+	if conn == nil || screen == nil {
+		return false
+	}
+	atoms, ok := x11MaximizeAtoms(conn)
+	if !ok {
+		DebugLog("X11: toggle maximized: cannot intern the _NET_WM_STATE atoms")
+		return false
+	}
+	maximized := false
+	reply, err := xproto.GetProperty(conn, false, wid, atoms.state, xproto.AtomAtom, 0, 64).Reply()
+	if err != nil {
+		DebugLog("X11: toggle maximized: reading _NET_WM_STATE failed: %v", err)
+	} else if reply.Format == 32 {
+		maximized = netWMStateMaximized(reply.Value, atoms.maxVert, atoms.maxHorz)
+	}
+	DebugLog("X11: toggle maximized: window manager reports maximized=%v", maximized)
+	x11SendMaximized(conn, wid, screen.Root, atoms, !maximized)
+	return true
+}
+
+type x11MaxAtoms struct {
+	state, maxVert, maxHorz xproto.Atom
+}
+
+func x11MaximizeAtoms(conn *xgb.Conn) (x11MaxAtoms, bool) {
 	stateAtom, _ := xproto.InternAtom(conn, false, 13, "_NET_WM_STATE").Reply()
 	maxVertAtom, _ := xproto.InternAtom(conn, false, 28, "_NET_WM_STATE_MAXIMIZED_VERT").Reply()
 	maxHorzAtom, _ := xproto.InternAtom(conn, false, 28, "_NET_WM_STATE_MAXIMIZED_HORZ").Reply()
-
-	if stateAtom != nil && maxVertAtom != nil && maxHorzAtom != nil {
-		action := 0 // _NET_WM_STATE_REMOVE (восстановить)
-		if cols > initialCols {
-			action = 1 // _NET_WM_STATE_ADD (развернуть)
-		}
-
-		var data8 [20]byte
-		put32 := func(b []byte, v uint32) {
-			b[0] = byte(v)
-			b[1] = byte(v >> 8)
-			b[2] = byte(v >> 16)
-			b[3] = byte(v >> 24)
-		}
-		put32(data8[0:], uint32(action))
-		put32(data8[4:], uint32(maxVertAtom.Atom))
-		put32(data8[8:], uint32(maxHorzAtom.Atom))
-		put32(data8[12:], 1)
-
-		ev := xproto.ClientMessageEvent{
-			Format: 32,
-			Window: wid,
-			Type:   stateAtom.Atom,
-			Data:   xproto.ClientMessageDataUnion{Data8: data8[:]},
-		}
-
-		xproto.SendEvent(conn, false, screen.Root,
-			xproto.EventMaskSubstructureRedirect|xproto.EventMaskSubstructureNotify,
-			string(ev.Bytes()))
+	if stateAtom == nil || maxVertAtom == nil || maxHorzAtom == nil {
+		return x11MaxAtoms{}, false
 	}
+	return x11MaxAtoms{state: stateAtom.Atom, maxVert: maxVertAtom.Atom, maxHorz: maxHorzAtom.Atom}, true
+}
+
+// x11SendMaximized asks the window manager (EWMH _NET_WM_STATE client
+// message) to add or remove both maximized states in one request.
+func x11SendMaximized(conn *xgb.Conn, wid, root xproto.Window, atoms x11MaxAtoms, maximize bool) {
+	var action uint32 // _NET_WM_STATE_REMOVE (восстановить)
+	if maximize {
+		action = 1 // _NET_WM_STATE_ADD (развернуть)
+	}
+
+	var data8 [20]byte
+	put32 := func(b []byte, v uint32) {
+		b[0] = byte(v)
+		b[1] = byte(v >> 8)
+		b[2] = byte(v >> 16)
+		b[3] = byte(v >> 24)
+	}
+	put32(data8[0:], action)
+	put32(data8[4:], uint32(atoms.maxVert))
+	put32(data8[8:], uint32(atoms.maxHorz))
+	put32(data8[12:], 1)
+
+	ev := xproto.ClientMessageEvent{
+		Format: 32,
+		Window: wid,
+		Type:   atoms.state,
+		Data:   xproto.ClientMessageDataUnion{Data8: data8[:]},
+	}
+
+	xproto.SendEvent(conn, false, root,
+		xproto.EventMaskSubstructureRedirect|xproto.EventMaskSubstructureNotify,
+		string(ev.Bytes()))
+}
+
+// netWMStateMaximized reports whether a _NET_WM_STATE value (ATOM[], format
+// 32, in xgb's byte order) lists both maximized states. A window maximized
+// in one direction only is not maximized.
+func netWMStateMaximized(value []byte, vert, horz xproto.Atom) bool {
+	var hasVert, hasHorz bool
+	for i := 0; i+4 <= len(value); i += 4 {
+		switch xproto.Atom(xgb.Get32(value[i:])) {
+		case vert:
+			hasVert = true
+		case horz:
+			hasHorz = true
+		}
+	}
+	return hasVert && hasHorz
 }
 
 func (r *X11Renderer) SetCursor(x, y int, visible bool, shape CursorShape) {
@@ -178,14 +264,7 @@ func (r *X11Renderer) Render(buf, shadow []CharInfo, w, h int, forceRedraw bool)
 	r.host.mu.Lock()
 	defer r.host.mu.Unlock()
 
-	now := time.Now()
-	if now.Sub(r.lastBlinkTime) >= 500*time.Millisecond {
-		r.blinkState = !r.blinkState
-		r.lastBlinkTime = r.lastBlinkTime.Add(500 * time.Millisecond)
-		if now.Sub(r.lastBlinkTime) >= 500*time.Millisecond {
-			r.lastBlinkTime = now
-		}
-	}
+	stepSoftwareBlink(&r.blinkState, &r.lastBlinkTime, time.Now())
 
 	cursorVisible := r.cursorVis && r.blinkState
 
@@ -204,9 +283,9 @@ func (r *X11Renderer) Render(buf, shadow []CharInfo, w, h int, forceRedraw bool)
 	}
 	if r.host.imgBuf == nil || r.host.imgBuf.Bounds().Dx() != windowWidth || r.host.imgBuf.Bounds().Dy() != windowHeight {
 		r.host.imgBuf = image.NewRGBA(image.Rect(0, 0, windowWidth, windowHeight))
-		if r.host.shmSeg == 0 {
-			r.host.bgraBuf = make([]byte, len(r.host.imgBuf.Pix))
-		}
+		// The shared segment is kept while the new size fits it; a size
+		// that does not switches the host to core PutImage (f4 #1626).
+		r.host.ensureBGRABufLocked()
 		r.host.dirtyLines = make([]bool, windowHeight)
 		for i := range r.host.dirtyLines {
 			r.host.dirtyLines[i] = true
@@ -217,6 +296,17 @@ func (r *X11Renderer) Render(buf, shadow []CharInfo, w, h int, forceRedraw bool)
 	r.w, r.h = w, h
 	img := r.host.imgBuf
 	cw, ch := r.host.cellW, r.host.cellH
+
+	// Whatever lies outside the grid of this frame is blank, whatever an
+	// earlier frame of another size left there (see clearFrameMargins).
+	if cw > 0 && ch > 0 && (forceRedraw || w != r.frameW || h != r.frameH) {
+		clearFrameMargins(img, w*cw, h*ch)
+		for i := range r.host.dirtyLines {
+			r.host.dirtyLines[i] = true
+		}
+		r.frameW, r.frameH = w, h
+		forceRedraw = true
+	}
 
 	for y := 0; y < h; y++ {
 		r.stats.totalRows++
@@ -298,6 +388,27 @@ func (r *X11Renderer) Render(buf, shadow []CharInfo, w, h int, forceRedraw bool)
 					continue
 				}
 
+				if IsSymChar(currCell.Char) && sx+2 < spanW && currX+2 < w {
+					if sym, symOk := symGlyphAt(currCell.Char, buf[cIdx+1].Char, buf[cIdx+2].Char); symOk {
+						cpx := currX * cw
+						cfg, _ := r.getCellColors(currCell)
+						if drawSymGlyphRaster(img, sym, cpx, py, cw*3, ch, r.host.scale, cfg) {
+							r.stats.glyphs++
+							if currCell.Attributes&CommonLvbUnderscore != 0 {
+								drawUnderline(img, cpx, py, cw*3, ch, r.host.scale, cfg)
+							}
+							for k := 0; k < 3; k++ {
+								colX := currX + k
+								if cursorVisible && y == r.cursorY && r.cursorX == colX {
+									invertCursorRect(img.Pix, img.Stride, img.Rect.Max.X, img.Rect.Max.Y, colX*cw, py, r.cursorShape, cw, ch, r.host.scale > 1)
+								}
+							}
+							sx += 3
+							continue
+						}
+					}
+				}
+
 				char := CellBaseRune(currCell.Char)
 				_, rw := CellSpanAt(buf, w, currX, y)
 
@@ -317,35 +428,7 @@ func (r *X11Renderer) Render(buf, shadow []CharInfo, w, h int, forceRedraw bool)
 				}
 
 				if cursorVisible && y == r.cursorY && r.cursorX >= currX && r.cursorX < currX+rw {
-					var startY int
-					if r.cursorShape == CursorShapeBlock {
-						startY = 0
-					} else {
-						thickness := 2
-						if r.host.scale > 1 {
-							thickness = 4
-						}
-						startY = ch - thickness
-					}
-					for iy := startY; iy < ch; iy++ {
-						pixelY := py + iy
-						if pixelY < 0 || pixelY >= img.Rect.Max.Y {
-							continue
-						}
-						rowStart := pixelY * img.Stride
-						for ix := 0; ix < cw*rw; ix++ {
-							pixelX := cpx + ix
-							if pixelX < 0 || pixelX >= img.Rect.Max.X {
-								continue
-							}
-							off := rowStart + pixelX*4
-							if off+2 < len(img.Pix) {
-								img.Pix[off] = 255 - img.Pix[off]
-								img.Pix[off+1] = 255 - img.Pix[off+1]
-								img.Pix[off+2] = 255 - img.Pix[off+2]
-							}
-						}
-					}
+					invertCursorRect(img.Pix, img.Stride, img.Rect.Max.X, img.Rect.Max.Y, cpx, py, r.cursorShape, cw*rw, ch, r.host.scale > 1)
 				}
 				sx += rw
 			}

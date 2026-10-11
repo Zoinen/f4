@@ -2,6 +2,8 @@
 
 The built-in terminal in `f4` is one of its most complex components. This document serves as a comprehensive guide for human developers and AI assistants. It explains the fundamental challenges of cross-platform terminal emulation (specifically Windows ConPTY), analyzes how industry-leading terminal emulators solve them, and justifies the final architectural design chosen for `f4`.
 
+> Stray text, stray paths or stray line feeds in the terminal, and the shell's directory following the panel: read `docs/TERMINAL_JUNK_LOG.md` in full first.
+
 ## 0. Philosophy: why this component exists at all
 
 far2l proved, by existing, several hypotheses nobody had even ventured before
@@ -137,7 +139,7 @@ commands.
     re-wraps the primary screen and `GridHistory` (`reflowResizeLocked` in
     `internal/terminal/view_reflow.go`) for the local shell on Unix, and on
     Windows when the shell runs in the downloaded ConPTY package, which passes
-    long lines through (`CONPTY_LINE_WRAP_FINDINGS.md`). Only rows the view
+    long lines through (unxed/f4#1687). Only rows the view
     wrapped itself are joined; a line the stream ended stays ended at every
     width. Output of remote shells, the in-box ConPTY and the alternate screen
     are not reflowed. A height-only change never reflows: it moves rows
@@ -256,6 +258,10 @@ panel switching between two live shells: the modes of the one being left stay
 on for the one being entered. Doing that properly means keeping the modes per
 session rather than per `TerminalView`.
 
+### The shell's kitty flags are scoped to its prompt (f4#1693)
+
+For a fresh local shell f4 turns on the kitty keyboard protocol's disambiguate flag itself (`KittyEnableDisambiguateSeq`), so that Ctrl+Tab can be told from Tab at the prompt. A bare readline-based shell does not ask for it, and neither does what it runs: `cat` or `ping` are not told that keys now arrive as `CSI u`, so Ctrl+C reached them as `CSI 99;5u` and was printed instead of interrupting. With the shell's OSC 133 marks the flags are now scoped to the prompt: `OSC 133;C` (a command starts) saves the flags and clears them, `OSC 133;D` (it ended) restores the shell's own and drops whatever the command left switched on. A program that speaks the protocol (far2l) asks for it itself after it started, so it keeps working. A shell without OSC 133 marks gets no such scoping: the flag stays on for the whole session. The key code of a Ctrl+letter is the letter (`CSI 99;5u` for Ctrl+C), never the control character (`3`); Ctrl+I, Ctrl+M and Ctrl+H keep the codes of Tab, Enter and Backspace.
+
 3.  **ConPTY Isolation:** ConPTY frequently forces full screen redraws. The VTE Mirror restricts ConPTY's chaos to a fixed-size sandbox (the viewport). The permanent log is immune to cursor-jumping artifacts because lines are only saved when they are mathematically guaranteed to be finished (pushed off the top).
 3.  **Golang GC Efficiency:** Go's Garbage Collector handles large contiguous byte slices (`PieceTable` chunks) orders of magnitude better than deep hierarchies of small, pointer-heavy objects (`[]Cell` for infinite scrollback).
 
@@ -273,6 +279,8 @@ Do not attempt to "optimize" or change the following behaviors without consultin
     If the window is minimized, Windows may send a resize event for `0x0`. Passing this to ConPTY will crash it or corrupt its internal state.
 *   **Rule 5: The Shell's Exit Is Not an EOF.**
     ConPTY keeps the output pipe open after the client process has exited; it only closes when `ClosePseudoConsole` is called. A read loop that waits for EOF to learn that the shell is gone waits forever. `f4` therefore waits on the shell's process handle (`PTY.watchExit`) and closes the pseudoconsole itself when the process ends, while the read loop keeps draining the pipe (`ClosePseudoConsole` flushes the last output and does not return until it is read). The case that found this: `exit` inside a batch file ends `cmd.exe` itself (only `exit /b` ends just the batch), and until the watcher existed `f4` sat behind a dead shell with the panels hidden and nothing for Ctrl+C or Ctrl+Break to reach (#409). When the read loop does end, `PanelsFrame.localShellGone` ends the command, brings the panels back and starts a fresh shell, keeping what the old one left on screen.
+*   **Rule 6: A Console Child's OSC 133 Marks Are Not cmd's.**
+    The `PROMPT` f4 gives `cmd.exe` prints OSC 133 `A` and `B` only, and the cmd session (`internal/panel/session_cmd.go`) decides from `B`, with its console-child veto, when a typed line is over. Programs that speak shell integration print their own marks through the same pipe: Far Manager 3 wraps every command run from its own command line in `D`, `A`, `B`, `C` … `D;<exit code>` (`far/console.cpp`, `console::start_prompt` … `command_finished`). A `C` or `D` that arrives while a console child holds the terminal therefore belongs to that child and must not touch f4's execution state (`cmdShellSession.childOwnsCommandMarks`). Taken for cmd's, Far's first `D` ended the line that had started Far, and the first `dir` or `cls` typed into Far brought f4's panels and hotkeys back over a Far that was still running (#1376).
 
 ## 6. Inspiring Features for Future Implementation
 
@@ -408,7 +416,7 @@ Read this list before concluding that something is broken.
     cursor rule above, a shell prompt that lands on the last row of an image is
     invisible rather than punched through. Fixing it properly means either a
     negative z index, which vtui cannot express yet (see the entry in
-    `IMAGES_PLAN.md` section 8), or per-row image slices of the kind Windows
+    unxed/f4#1685 section 8), or per-row image slices of the kind Windows
     Terminal keeps.
 *   **No byte of child output is ever held back, and that shapes a heuristic.**
     `exciseWindowsSync` hides the background `cd` command that keeps the panel

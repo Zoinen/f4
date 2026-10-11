@@ -33,6 +33,7 @@ const (
 	AttrSystem
 	AttrArchive
 	AttrSymlink
+	AttrJunction
 )
 
 type DateType int
@@ -73,6 +74,16 @@ type HighlightRule struct {
 
 	// Каскадная обработка (Continue Processing)
 	ContinueProcessing bool
+
+	// UseDefaults makes the rule an override of the built-in colours of its
+	// attribute (f4#912): it does not take part in the first-match walk, so its
+	// place in the file does not matter, and it paints only the colour states it
+	// names, leaving the rest to the rules of the active colour style.
+	UseDefaults bool
+	// implicitClear is set by CombineRules on an override: the attributes that
+	// outrank the rule's own (see overrideTier), so a Directory override does
+	// not repaint a symlink to a directory.
+	implicitClear AttrFlags
 
 	// maskIndex is prepared when the complete rule list is combined. It is an
 	// immutable acceleration structure for the common exact/suffix masks; the
@@ -134,7 +145,7 @@ func (index *highlightMaskIndex) matches(name string, ignoreCase bool) bool {
 	}
 	if strings.ContainsAny(lookup, "\\/") {
 		for _, mask := range index.masks {
-			matched, err := filepath.Match(mask, lookup)
+			matched, err := filepathMatchFn(mask, lookup)
 			if err == nil && matched {
 				return true
 			}
@@ -163,7 +174,7 @@ func (index *highlightMaskIndex) matches(name string, ignoreCase bool) bool {
 		dot += next + 1
 	}
 	for _, mask := range index.fallback {
-		matched, err := filepath.Match(mask, lookup)
+		matched, err := filepathMatchFn(mask, lookup)
 		if err == nil && matched {
 			return true
 		}
@@ -172,10 +183,12 @@ func (index *highlightMaskIndex) matches(name string, ignoreCase bool) bool {
 }
 
 type FileHighlighter struct {
-	UserRules  []HighlightRule
-	ThemeRules []HighlightRule
-	Rules      []HighlightRule
-	Revision   int64
+	UserRules        []HighlightRule
+	ThemeRules       []HighlightRule
+	overrides        []HighlightRule
+	Rules            []HighlightRule
+	Revision         int64
+	hasVolatileRules bool
 
 	matchCacheMu       sync.RWMutex
 	matchCacheRevision int64
@@ -186,7 +199,8 @@ type FileHighlighter struct {
 	semanticStyleCache         map[string]semanticStyleCacheValue
 }
 
-const maxHighlightMatchCacheEntries = 8192
+const highlightCacheMaxEntries = 4096
+const maxHighlightMatchCacheEntries = highlightCacheMaxEntries
 
 const maxSemanticStyleCacheEntries = 8192
 
@@ -206,6 +220,8 @@ type highlightMatchCacheKey struct {
 	IsDir         bool
 	IsHidden      bool
 	IsExecutable  bool
+	IsSymlink     bool
+	ReparseTag    uint32
 	MetadataKnown bool
 }
 
@@ -236,18 +252,98 @@ func (fh *FileHighlighter) LoadThemeRules(ini *ini.File) {
 	fh.CombineRules()
 }
 
+// Attribute tiers of the UseDefaults overrides, highest first (f4#912): a
+// junction outranks a symlink, a symlink outranks a hidden or system item, and
+// those outrank an ordinary directory. A rule that names none of them is
+// outside the ladder and is applied first, under all of them.
+const (
+	tierJunction = iota
+	tierSymlink
+	tierHiddenSystem
+	tierDirectory
+	tierOther
+)
+
+func overrideTier(r *HighlightRule) int {
+	switch {
+	case r.AttrSet&AttrJunction != 0:
+		return tierJunction
+	case r.AttrSet&AttrSymlink != 0:
+		return tierSymlink
+	case r.AttrSet&(AttrHidden|AttrSystem) != 0:
+		return tierHiddenSystem
+	case r.AttrSet&AttrDirectory != 0:
+		return tierDirectory
+	}
+	return tierOther
+}
+
+// outranking is what an override of the given tier must not match: the
+// attributes of the tiers above it.
+func outranking(tier int) AttrFlags {
+	var flags AttrFlags
+	if tier > tierJunction && tier != tierOther {
+		flags |= AttrJunction
+	}
+	if tier > tierSymlink && tier != tierOther {
+		flags |= AttrSymlink
+	}
+	if tier > tierHiddenSystem && tier != tierOther {
+		flags |= AttrHidden | AttrSystem
+	}
+	return flags
+}
+
 func (fh *FileHighlighter) CombineRules() {
 	fh.Rules = nil
+	var plain, overrides []HighlightRule
+	for _, r := range fh.UserRules {
+		if r.UseDefaults {
+			r.implicitClear = outranking(overrideTier(&r))
+			overrides = append(overrides, r)
+		} else {
+			plain = append(plain, r)
+		}
+	}
 	if config.App.HighlightPriority == 1 { // Theme wins
 		fh.Rules = append(fh.Rules, fh.ThemeRules...)
-		fh.Rules = append(fh.Rules, fh.UserRules...)
+		fh.Rules = append(fh.Rules, plain...)
 	} else { // User wins
-		fh.Rules = append(fh.Rules, fh.UserRules...)
+		fh.Rules = append(fh.Rules, plain...)
 		fh.Rules = append(fh.Rules, fh.ThemeRules...)
 	}
-	fh.Revision = highlightRulesRevision(fh.Rules)
+	// The overrides are applied last, lowest tier first and, inside a tier,
+	// the later section first, so that the highest tier and the earliest
+	// section decide a colour both name.
+	sort.SliceStable(overrides, func(i, j int) bool {
+		return overrideTier(&overrides[i]) > overrideTier(&overrides[j])
+	})
+	for start := 0; start < len(overrides); {
+		end := start
+		for end < len(overrides) && overrideTier(&overrides[end]) == overrideTier(&overrides[start]) {
+			end++
+		}
+		for i, j := start, end-1; i < j; i, j = i+1, j-1 {
+			overrides[i], overrides[j] = overrides[j], overrides[i]
+		}
+		start = end
+	}
+	fh.overrides = overrides
+	fh.hasVolatileRules = false
+	for _, rules := range [][]HighlightRule{fh.Rules, fh.overrides} {
+		for _, rule := range rules {
+			if rule.DateRelative && (rule.DateAfterDur > 0 || rule.DateBeforeDur > 0) {
+				fh.hasVolatileRules = true
+			}
+		}
+	}
+
+	fh.Revision = highlightRulesRevision(append(append([]HighlightRule(nil), fh.Rules...), fh.overrides...))
 	for i := range fh.Rules {
 		fh.Rules[i].maskIndex = compileHighlightMaskIndex(fh.Rules[i])
+	}
+	for i := range fh.overrides {
+		fh.overrides[i].maskIndex = compileHighlightMaskIndex(fh.overrides[i])
 	}
 	fh.clearMatchCache()
 	vtui.DebugLog("HIGHLIGHT: Loaded %d file highlighting rules", len(fh.Rules))
@@ -388,6 +484,7 @@ func parseRuleSectionsAt(ini *ini.File, prefix, baseDir string) []ruleSection {
 		}
 
 		rule.ContinueProcessing = ini.GetString(secName, "ContinueProcessing", "0") == "1"
+		rule.UseDefaults = ini.GetString(secName, "UseDefaults", "0") == "1"
 
 		rule.Mark = ini.GetString(secName, "Mark", "")
 		if rule.Mark == "" {
@@ -434,14 +531,21 @@ func highlightMatchKey(item *vfs.VFSItem, metadataKnown bool) highlightMatchCach
 		IsDir:         item.IsDir,
 		IsHidden:      item.IsHidden,
 		IsExecutable:  item.IsExecutable,
+		IsSymlink:     item.IsSymlink,
+		ReparseTag:    item.ReparseTag,
 		MetadataKnown: metadataKnown,
 	}
 }
 
 func (fh *FileHighlighter) hasRelativeDateRules() bool {
-	for i := range fh.Rules {
-		if fh.Rules[i].DateRelative {
-			return true
+	if fh.Revision != 0 {
+		return fh.hasVolatileRules
+	}
+	for _, rules := range [][]HighlightRule{fh.Rules, fh.overrides} {
+		for _, rule := range rules {
+			if rule.DateRelative && (rule.DateAfterDur > 0 || rule.DateBeforeDur > 0) {
+				return true
+			}
 		}
 	}
 	return false
@@ -493,7 +597,25 @@ func (fh *FileHighlighter) computeMatchedRuleIndices(item *vfs.VFSItem, metadata
 			break
 		}
 	}
+	return fh.appendMatchedOverrides(matched, item, metadataKnown, false)
+}
+
+func (fh *FileHighlighter) appendMatchedOverrides(matched []int, item *vfs.VFSItem, metadataKnown, semanticHidden bool) []int {
+	for i := range fh.overrides {
+		rule := &fh.overrides[i]
+		if semanticHidden && rule.AttrSet&AttrHidden != 0 {
+			continue
+		}
+		if rule.Match(item, metadataKnown) {
+			matched = append(matched, len(fh.Rules)+i)
+		}
+	}
 	return matched
+}
+
+// matchedRulesCached shares the metadata-aware cache with semantic rendering.
+func (fh *FileHighlighter) matchedRulesCached(item *vfs.VFSItem) []int {
+	return fh.matchedRuleIndices(item, true)
 }
 
 func (fh *FileHighlighter) semanticMatchedRuleIndices(item *vfs.VFSItem, metadataKnown bool) []int {
@@ -518,7 +640,7 @@ func (fh *FileHighlighter) semanticMatchedRuleIndices(item *vfs.VFSItem, metadat
 			break
 		}
 	}
-	return matched
+	return fh.appendMatchedOverrides(matched, item, metadataKnown, true)
 }
 
 func normalizeHighlightIconURL(raw, baseDir string) string {
@@ -608,10 +730,15 @@ func parseAttrFlags(s string) AttrFlags {
 			flags |= AttrArchive
 		case "symlink", "link", "sym", "l":
 			flags |= AttrSymlink
+		case "junction", "junc", "j":
+			flags |= AttrJunction
 		}
 	}
 	return flags
 }
+
+// filepathMatchFn allows tests to count fallback glob evaluations.
+var filepathMatchFn = filepath.Match
 
 // hasDeferredPredicate reports whether this rule filters on data that a
 // panel's fast base pass never has (size, dates, and the readonly/system/
@@ -620,8 +747,8 @@ func parseAttrFlags(s string) AttrFlags {
 // produce a wrong color rather than merely no color yet (a zero time.Time,
 // for instance, satisfies almost any "before date X" rule).
 func (r *HighlightRule) hasDeferredPredicate() bool {
-	const deferredAttrs = AttrExecutable | AttrReadOnly | AttrSystem | AttrArchive
-	if r.AttrSet&deferredAttrs != 0 || r.AttrClear&deferredAttrs != 0 {
+	const deferredAttrs = AttrExecutable | AttrReadOnly | AttrSystem | AttrArchive | AttrJunction
+	if r.AttrSet&deferredAttrs != 0 || (r.AttrClear|r.implicitClear)&deferredAttrs != 0 {
 		return true
 	}
 	if r.SizeAbove > 0 || r.SizeBelow > 0 {
@@ -641,8 +768,9 @@ func (r *HighlightRule) hasDeferredPredicate() bool {
 // either the correct color or none — never a wrong one. The metadata pass
 // (metadataKnown true) re-evaluates every rule against the complete item and
 // its result overwrites the provisional one.
-func (r *HighlightRule) Match(item *vfs.VFSItem, metadataKnown bool) bool {
-	if !metadataKnown && r.hasDeferredPredicate() {
+// Omitting metadataKnown preserves the fully loaded Match(item) contract.
+func (r *HighlightRule) Match(item *vfs.VFSItem, metadataKnown ...bool) bool {
+	if len(metadataKnown) > 0 && !metadataKnown[0] && r.hasDeferredPredicate() {
 		return false
 	}
 	// Определение платформозависимых флагов "на лету"
@@ -677,20 +805,24 @@ func (r *HighlightRule) Match(item *vfs.VFSItem, metadataKnown bool) bool {
 			return isArchive == set
 		case AttrSymlink:
 			return item.IsSymlink == set
+		case AttrJunction:
+			// Only a Windows directory junction or volume mount point;
+			// Symlink keeps matching every link, a junction included.
+			return (vfs.LinkKindOf(item) == vfs.LinkJunction) == set
 		}
 		return true
 	}
 
 	// Проверка AttrSet (должны присутствовать)
-	for _, f := range []AttrFlags{AttrDirectory, AttrHidden, AttrExecutable, AttrReadOnly, AttrSystem, AttrArchive, AttrSymlink} {
+	for _, f := range []AttrFlags{AttrDirectory, AttrHidden, AttrExecutable, AttrReadOnly, AttrSystem, AttrArchive, AttrSymlink, AttrJunction} {
 		if r.AttrSet&f != 0 && !matchAttr(f, true) {
 			return false
 		}
 	}
 
 	// Проверка AttrClear (должны отсутствовать)
-	for _, f := range []AttrFlags{AttrDirectory, AttrHidden, AttrExecutable, AttrReadOnly, AttrSystem, AttrArchive, AttrSymlink} {
-		if r.AttrClear&f != 0 && !matchAttr(f, false) {
+	for _, f := range []AttrFlags{AttrDirectory, AttrHidden, AttrExecutable, AttrReadOnly, AttrSystem, AttrArchive, AttrSymlink, AttrJunction} {
+		if (r.AttrClear|r.implicitClear)&f != 0 && !matchAttr(f, false) {
 			return false
 		}
 	}
@@ -748,12 +880,38 @@ func (r *HighlightRule) Match(item *vfs.VFSItem, metadataKnown bool) bool {
 		if r.IgnoreCase {
 			m = strings.ToLower(m)
 		}
-		matched, err := filepath.Match(m, name)
+		matched, err := filepathMatchFn(m, name)
 		if err == nil && matched {
 			return true
 		}
 	}
 	return false
+}
+
+// colorFor is the colour expression a rule keeps for one of the four states.
+// Each of the four states answers only to its own key, as in far2l, where
+// every state starts from its own panel colour (hilight.cpp, FarColor[]). A
+// selected file under the cursor that fell back to SelectedColor was painted
+// exactly like the selection around it once that colour had a background, and
+// the cursor disappeared (#1150).
+func (r *HighlightRule) colorFor(isSelected, isCursor bool) string {
+	switch {
+	case isCursor && isSelected:
+		return r.SelectedCursorStr
+	case isCursor:
+		return r.CursorStr
+	case isSelected:
+		return r.SelectedStr
+	}
+	return r.NormalStr
+}
+
+// ruleAt resolves an index from matchedRules into either list.
+func (fh *FileHighlighter) ruleAt(idx int) *HighlightRule {
+	if idx >= len(fh.Rules) {
+		return &fh.overrides[idx-len(fh.Rules)]
+	}
+	return &fh.Rules[idx]
 }
 
 func (fh *FileHighlighter) GetColor(item *vfs.VFSItem, defaultAttr uint64, isSelected, isCursor bool) uint64 {
@@ -763,46 +921,18 @@ func (fh *FileHighlighter) GetColor(item *vfs.VFSItem, defaultAttr uint64, isSel
 	attr := defaultAttr
 	matchedAny := false
 
-	// Every GetColor caller renders a fully-loaded panel entry (text-mode
-	// rendering and path hints never see a deferred/partial VFSItem).
-	for _, ruleIndex := range fh.matchedRuleIndices(item, true) {
-		rule := fh.Rules[ruleIndex]
-		colorExpr := ""
-		// Each of the four states answers only to its own key, as in far2l.
-		if isCursor {
-			if isSelected {
-				if rule.SelectedCursorStr != "" {
-					colorExpr = rule.SelectedCursorStr
-				}
-			} else if rule.CursorStr != "" {
-				colorExpr = rule.CursorStr
-			}
-		} else if isSelected {
-			if rule.SelectedStr != "" {
-				colorExpr = rule.SelectedStr
-			}
-		} else if rule.NormalStr != "" {
-			colorExpr = rule.NormalStr
-		}
-
+	// matchedRulesCached does the part of this that used to run
+	// filepath.Match against every rule on every call — the traversal it
+	// returns already stops exactly where the loop below used to return
+	// (at the first non-cascading match, or at the end of Rules), because
+	// that stopping point never depended on isSelected/isCursor/defaultAttr
+	// to begin with, only on rule.Match and rule.ContinueProcessing (#884).
+	for _, idx := range fh.matchedRulesCached(item) {
+		rule := fh.ruleAt(idx)
+		colorExpr := rule.colorFor(isSelected, isCursor)
 		if colorExpr != "" {
 			attr = ParseFarColor(colorExpr, attr)
 			matchedAny = true
-		}
-
-		// Если каскадная обработка выключена, сразу возвращаем результат
-		if !rule.ContinueProcessing {
-			if matchedAny {
-				if config.App.EnforceColorCorrection {
-					fg, bg := GetColorRGBBoth(attr)
-					nfg := CorrectContrast(fg, bg)
-					if nfg != fg {
-						attr = vtui.SetRGBFore(attr, nfg)
-					}
-				}
-				return attr
-			}
-			return defaultAttr
 		}
 	}
 
@@ -824,29 +954,27 @@ func (fh *FileHighlighter) GetMarker(item *vfs.VFSItem) string {
 	if item.Name == ".." {
 		return ""
 	}
-	for _, ruleIndex := range fh.matchedRuleIndices(item, true) {
-		rule := fh.Rules[ruleIndex]
-		if rule.Mark != "" {
-			return rule.Mark
+	// See GetColor: matchedRulesCached's trace already stops exactly where
+	// this loop used to (the first non-cascading match, or the end of
+	// Rules), so replaying it here needs no ContinueProcessing check of its
+	// own.
+	matched := fh.matchedRulesCached(item)
+	// A UseDefaults override is applied last, so its mark wins; the one applied
+	// last is the one that decides.
+	for i := len(matched) - 1; i >= 0 && matched[i] >= len(fh.Rules); i-- {
+		if mark := fh.ruleAt(matched[i]).Mark; mark != "" {
+			return mark
 		}
-		if !rule.ContinueProcessing {
+	}
+	for _, idx := range matched {
+		if idx >= len(fh.Rules) {
 			break
+		}
+		if fh.Rules[idx].Mark != "" {
+			return fh.Rules[idx].Mark
 		}
 	}
 	return ""
-}
-
-func highlightRuleColor(rule HighlightRule, selected, cursor bool) string {
-	if cursor && selected && rule.SelectedCursorStr != "" {
-		return rule.SelectedCursorStr
-	}
-	if cursor && rule.CursorStr != "" {
-		return rule.CursorStr
-	}
-	if selected && rule.SelectedStr != "" {
-		return rule.SelectedStr
-	}
-	return rule.NormalStr
 }
 
 func semanticColorPatch(expr string) extui.HighlightColorPatchModel {
@@ -957,30 +1085,28 @@ func (fh *FileHighlighter) SemanticStyle(item *vfs.VFSItem, metadataKnown bool) 
 	}
 	fh.semanticStyleCacheMu.RUnlock()
 	for _, ruleIndex := range matched {
-		rule := fh.Rules[ruleIndex]
+		rule := *fh.ruleAt(ruleIndex)
+		isOverride := ruleIndex >= len(fh.Rules)
 		style.Groups = append(style.Groups, extui.HighlightGroupModel{
 			ID:   rule.RuleID,
 			Name: rule.Name,
 		})
-		if style.Icon == "" && rule.IconURL != "" {
+		if (style.Icon == "" || isOverride) && rule.IconURL != "" {
 			style.Icon = rule.IconURL
 			style.IconKey = semanticHighlightIconKey(rule.IconURL)
 		}
 		if !parentEntry {
-			if style.Marker == "" && rule.Mark != "" {
+			if (style.Marker == "" || isOverride) && rule.Mark != "" {
 				style.Marker = rule.Mark
 			}
 			mergeHighlightPatch(&style.Normal,
-				semanticColorPatch(highlightRuleColor(rule, false, false)))
+				semanticColorPatch(rule.colorFor(false, false)))
 			mergeHighlightPatch(&style.Selected,
-				semanticColorPatch(highlightRuleColor(rule, true, false)))
+				semanticColorPatch(rule.colorFor(true, false)))
 			mergeHighlightPatch(&style.Cursor,
-				semanticColorPatch(highlightRuleColor(rule, false, true)))
+				semanticColorPatch(rule.colorFor(false, true)))
 			mergeHighlightPatch(&style.SelectedCursor,
-				semanticColorPatch(highlightRuleColor(rule, true, true)))
-		}
-		if !rule.ContinueProcessing {
-			break
+				semanticColorPatch(rule.colorFor(true, true)))
 		}
 	}
 	if item.IconKey != "" && !parentEntry {

@@ -93,6 +93,13 @@ func (tv *TerminalView) kittyPut(img *kittyImage, cmd kittyCommand) string {
 	tv.mu.Lock()
 	defer tv.mu.Unlock()
 
+	// A virtual placement shows nothing itself; Unicode placeholders in the
+	// text refer to it.
+	if cmd.Int('U', 0) == 1 {
+		tv.noteVirtualPlacement(img, cmd)
+		return ""
+	}
+
 	p := terminalImage{
 		ImageID:   img.ID,
 		Number:    img.Number,
@@ -320,6 +327,7 @@ func kittyContainsID(list []uint32, id uint32) bool {
 func (tv *TerminalView) kittyDropImage(id uint32) {
 	tv.mu.Lock()
 	defer tv.mu.Unlock()
+	delete(tv.virtual, id)
 	kept := make([]terminalImage, 0, len(tv.Images))
 	for _, p := range tv.Images {
 		if p.ImageID != id {
@@ -396,6 +404,7 @@ func (tv *TerminalView) kittyResizePlacements(shift, height int) {
 // the visual gravity shift the text is drawn with, so that a picture and the
 // text around it never drift apart.
 func (tv *TerminalView) kittyDrawPlacements(scr *vtui.ScreenBuf, offset int) {
+	tv.drawPlaceholders(scr, offset)
 	if len(tv.Images) == 0 || !scr.SupportsGraphics() {
 		return
 	}

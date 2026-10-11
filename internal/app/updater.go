@@ -3,12 +3,15 @@ package app
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
+	"strings"
+	"time"
+
 	"github.com/unxed/f4/internal/config"
 	"github.com/unxed/f4/internal/panel"
 	"github.com/unxed/f4/internal/update"
 	"github.com/unxed/vtui"
-	"strings"
-	"time"
 )
 
 // sessionDismissedUpdateKey remembers which update the user
@@ -82,6 +85,13 @@ func ShouldCheck() bool {
 }
 
 func CheckForUpdates(pf *panel.PanelsFrame, manual bool) {
+	checkForUpdates(pf, manual, false)
+}
+
+// checkForUpdates is CheckForUpdates for a caller that knows the user has just
+// picked a different channel: moving from nightly to stable then offers the
+// stable release even when it is older than the running build (#1218).
+func checkForUpdates(pf *panel.PanelsFrame, manual, switchedChannel bool) {
 	if !manual && !ShouldCheck() {
 		return
 	}
@@ -92,7 +102,9 @@ func CheckForUpdates(pf *panel.PanelsFrame, manual bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cand, err := update.Check(ctx, updateSettings(), currentBuild())
+	cfg := updateSettings()
+	cfg.SwitchedChannel = switchedChannel
+	cand, err := update.Check(ctx, cfg, currentBuild())
 	if err != nil {
 		ReportUpdateError(manual, err.Error())
 		return
@@ -118,7 +130,7 @@ func CheckForUpdates(pf *panel.PanelsFrame, manual bool) {
 	}
 
 	vtui.FrameManager.PostTask(func() {
-		msg := fmt.Sprintf("An update is available: %s\n\nDo you want to download and install it now?", cand.DisplayVersion)
+		msg := updatePromptText(cand)
 		dlg := vtui.ShowMessage(" Auto Update ", msg, []string{"&Yes", "&No"})
 		dlg.OnResult = func(code int) {
 			if code == 0 {
@@ -136,6 +148,16 @@ func CheckForUpdates(pf *panel.PanelsFrame, manual bool) {
 	})
 }
 
+// updatePromptText words the offer. A stable release offered after a move
+// from nightly can be older than the running build, and the user should know
+// that before agreeing to it.
+func updatePromptText(cand update.Candidate) string {
+	if cand.OlderThanRunning {
+		return fmt.Sprintf("The stable channel offers %s.\nIt is older than the build you are running.\n\nDo you want to download and install it now?", cand.DisplayVersion)
+	}
+	return fmt.Sprintf("An update is available: %s\n\nDo you want to download and install it now?", cand.DisplayVersion)
+}
+
 func ReportUpdateError(manual bool, msg string) {
 	vtui.DebugLog("UPDATER ERROR: %s", msg)
 	if manual {
@@ -145,10 +167,34 @@ func ReportUpdateError(manual bool, msg string) {
 	}
 }
 
+func restartCommand(executable string, args []string, workingDir string) *exec.Cmd {
+	cmd := update.SelfCommand(executable, args...)
+	cmd.Dir = workingDir
+	return cmd
+}
+
+func startUpdatedF4() error {
+	executable, err := update.Executable()
+	if err != nil {
+		return fmt.Errorf("cannot locate the updated f4 executable: %w", err)
+	}
+	workingDir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("cannot preserve the working directory: %w", err)
+	}
+	cmd := restartCommand(executable, os.Args[1:], workingDir)
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("cannot restart the updated f4: %w", err)
+	}
+	return nil
+}
+
 func PerformUpdate(pf *panel.PanelsFrame, cand update.Candidate) {
 	if pf == nil {
 		return
 	}
+	previousLastVersion := config.App.LastUpdateVersion
+	backupPath := ""
 	pf.RunProgressTask(" Updating f4 ", "Downloading...", false, func(ctx context.Context, updateProgress func(msg string, percent int)) error {
 		if _, err := update.TargetDir(); err != nil {
 			return err
@@ -163,13 +209,31 @@ func PerformUpdate(pf *panel.PanelsFrame, cand update.Candidate) {
 
 		updateProgress("Extracting and installing...", -1)
 
+		backupPath, err = update.BackupExecutable()
+		if err != nil {
+			return fmt.Errorf("failed to back up executable: %w\n(Close other f4 instances, check Task Manager for ghost f4 processes, or try running as admin/root)", err)
+		}
+
 		if err := update.Install(data, cand.ArchiveKind); err != nil {
 			return fmt.Errorf("failed to extract/install update: %w\n(Close other f4 instances, check Task Manager for ghost f4 processes, or try running as admin/root)", err)
+		}
+
+		// A build that does not start here is not kept: the error path below
+		// puts this one back, which can still fetch the fix.
+		updateProgress("Checking the new build...", -1)
+		if err := update.CheckInstalled(); err != nil {
+			return fmt.Errorf("%w\nThe previous build has been put back.", err)
 		}
 
 		return nil
 	}, func(err error) {
 		if err != nil {
+			if backupPath != "" {
+				if restoreErr := update.RestoreExecutable(backupPath); restoreErr != nil {
+					err = fmt.Errorf("%v; rollback failed: %w", err, restoreErr)
+				}
+				backupPath = ""
+			}
 			if err != context.Canceled {
 				vtui.ShowMessage(" Update Failed ", err.Error(), []string{"&Ok"})
 			}
@@ -179,11 +243,27 @@ func PerformUpdate(pf *panel.PanelsFrame, cand update.Candidate) {
 		config.App.LastUpdateVersion = cand.UpdateKey
 		config.SaveConfig()
 
-		dlg := vtui.ShowMessage(" Update Successful ", "f4 has been updated successfully.\nPlease restart the application to apply changes.", []string{"E&xit now", "&Later"})
+		dlg := vtui.ShowMessage(" Update Successful ", "f4 has been updated successfully.\nRestart the application now to apply changes?", []string{"&Restart now", "&Later"})
 		dlg.OnResult = func(code int) {
 			if code == 0 {
+				if err := startUpdatedF4(); err != nil {
+					if restoreErr := update.RestoreExecutable(backupPath); restoreErr != nil {
+						err = fmt.Errorf("%v; rollback failed: %w", err, restoreErr)
+					}
+					config.App.LastUpdateVersion = previousLastVersion
+					config.SaveConfig()
+					backupPath = ""
+					vtui.ShowMessage(" Update Failed ", err.Error(), []string{"&Ok"})
+					return
+				}
+				if err := update.RemoveExecutableBackup(backupPath); err != nil {
+					vtui.DebugLog("UPDATER: %v", err)
+				}
+				backupPath = ""
 				panel.CancelOperationsForShutdown()
 				vtui.FrameManager.Shutdown()
+			} else if err := update.RemoveExecutableBackup(backupPath); err != nil {
+				vtui.DebugLog("UPDATER: %v", err)
 			}
 		}
 	})

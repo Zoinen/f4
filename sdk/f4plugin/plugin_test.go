@@ -348,3 +348,110 @@ func TestRunRegistersProviderExtensions(t *testing.T) {
 		t.Fatalf("Plugin.ClosePanel: %v", err)
 	}
 }
+
+type keyedPanelPlugin struct {
+	providerPlugin
+	events []vtinput.InputEvent
+}
+
+func (p *keyedPanelPlugin) PanelKeys(id string) []PanelKey {
+	if id != "panel" {
+		return nil
+	}
+	// The set depends on state, like a real panel's would: F8 is enabled
+	// only once F5 ran.
+	return []PanelKey{
+		{VK: vtinput.VK_F5, Label: "Count"},
+		{VK: vtinput.VK_F8, Mods: uint32(vtinput.ShiftPressed), Label: "Reset", Disabled: len(p.events) == 0},
+	}
+}
+
+func (p *keyedPanelPlugin) HandlePanelEvent(request PanelEventRequest) (PanelEventResponse, error) {
+	p.events = append(p.events, request.Event)
+	return PanelEventResponse{Handled: true, Document: []byte("doc")}, nil
+}
+
+func TestPanelKeysTravelWithPanelAnswers(t *testing.T) {
+	plugin := &keyedPanelPlugin{}
+	h := newHarness(t, plugin)
+
+	var opened struct {
+		Document []byte
+		Keys     []PanelKey
+		HasKeys  bool
+	}
+	if err := h.client.Call("Plugin.OpenPanel", struct{ ID string }{ID: "panel"}, &opened); err != nil {
+		t.Fatalf("Plugin.OpenPanel: %v", err)
+	}
+	if !opened.HasKeys || len(opened.Keys) != 2 || opened.Keys[0].Label != "Count" || !opened.Keys[1].Disabled {
+		t.Fatalf("open answer keys = %+v (HasKeys %v)", opened.Keys, opened.HasKeys)
+	}
+
+	// A disabled declared key is consumed by the SDK even if a host that
+	// predates panel keys forwards it: HandlePanelEvent never sees it.
+	shiftF8 := vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_F8,
+		ControlKeyState: vtinput.ShiftPressed | vtinput.NumLockOn}
+	var response PanelEventResponse
+	if err := h.client.Call("Plugin.PanelEvent", PanelEventRequest{ID: "panel", Kind: "key", Event: shiftF8}, &response); err != nil {
+		t.Fatalf("Plugin.PanelEvent(disabled): %v", err)
+	}
+	if !response.Handled || len(response.Document) != 0 || len(plugin.events) != 0 {
+		t.Fatalf("disabled key: response %+v, events %d", response, len(plugin.events))
+	}
+
+	f5 := vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_F5}
+	response = PanelEventResponse{}
+	if err := h.client.Call("Plugin.PanelEvent", PanelEventRequest{ID: "panel", Kind: "key", Event: f5}, &response); err != nil {
+		t.Fatalf("Plugin.PanelEvent(F5): %v", err)
+	}
+	if !response.Handled || string(response.Document) != "doc" || len(plugin.events) != 1 {
+		t.Fatalf("F5: response %+v, events %d", response, len(plugin.events))
+	}
+	if !response.HasKeys || len(response.Keys) != 2 || response.Keys[1].Disabled {
+		t.Fatalf("F5 did not refresh the key set: %+v", response.Keys)
+	}
+
+	response = PanelEventResponse{}
+	if err := h.client.Call("Plugin.PanelEvent", PanelEventRequest{ID: "panel", Kind: "key", Event: shiftF8}, &response); err != nil {
+		t.Fatalf("Plugin.PanelEvent(enabled): %v", err)
+	}
+	if len(plugin.events) != 2 || !plugin.events[1].KeyDown || plugin.events[1].VirtualKeyCode != vtinput.VK_F8 {
+		t.Fatalf("enabled Shift+F8 did not reach the plugin: %+v", plugin.events)
+	}
+}
+
+func TestPanelWithoutKeysKeepsTheOldAnswerShape(t *testing.T) {
+	h := newHarness(t, &providerPlugin{})
+	var opened map[string]any
+	if err := h.client.Call("Plugin.OpenPanel", struct{ ID string }{ID: "panel"}, &opened); err != nil {
+		t.Fatalf("Plugin.OpenPanel: %v", err)
+	}
+	if _, ok := opened["HasKeys"]; ok {
+		t.Fatalf("a plugin without PanelKeyProvider declared keys: %v", opened)
+	}
+	var event PanelEventResponse
+	if err := h.client.Call("Plugin.PanelEvent", PanelEventRequest{ID: "panel", Kind: "key"}, &event); err != nil {
+		t.Fatalf("Plugin.PanelEvent: %v", err)
+	}
+	if event.HasKeys || event.Keys != nil {
+		t.Fatalf("a plugin without PanelKeyProvider declared keys: %+v", event)
+	}
+}
+
+func TestPanelKeyMatchesFoldsModifiers(t *testing.T) {
+	key := PanelKey{VK: vtinput.VK_F3, Mods: uint32(vtinput.LeftCtrlPressed)}
+	event := vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_F3,
+		ControlKeyState: vtinput.RightCtrlPressed | vtinput.CapsLockOn}
+	if !key.Matches(event) {
+		t.Fatal("right Ctrl with CapsLock did not match a Ctrl declaration")
+	}
+	event.ControlKeyState |= vtinput.ShiftPressed
+	if key.Matches(event) {
+		t.Fatal("Ctrl+Shift matched a Ctrl declaration")
+	}
+	event.ControlKeyState = vtinput.LeftCtrlPressed
+	event.KeyDown = false
+	if key.Matches(event) {
+		t.Fatal("a key-up event matched")
+	}
+}

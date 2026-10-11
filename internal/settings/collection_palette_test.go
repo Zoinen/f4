@@ -35,7 +35,7 @@ func TestSettingsCollectionInputSurfacePalette(t *testing.T) {
 	scr := vtui.NewSilentScreenBuf()
 	scr.AllocBuf(150, 40)
 	for iteration := 0; iteration < 2; iteration++ {
-		for _, slot := range []int{vtui.ColDialogText, vtui.ColDialogEdit, vtui.ColDialogSelectedButton, vtui.ColDialogHighlightText, vtui.ColDialogHighlightSelectedButton, vtui.ColDialogBox, vtui.ColDialogBoxTitle} {
+		for _, slot := range []int{vtui.ColDialogText, vtui.ColDialogEdit, vtui.ColDialogSelectedButton, vtui.ColDialogComboSelectedText, vtui.ColDialogHighlightText, vtui.ColDialogHighlightSelectedButton, vtui.ColDialogBox, vtui.ColDialogBoxTitle} {
 			vtui.Palette[slot] = vtui.SetRGBBoth(0, testutil.Uint32(0x8090a0+slot*100+iteration*0x101010), testutil.Uint32(0x102030+slot*100+iteration*0x101010))
 		}
 		for _, active := range []bool{false, true} {
@@ -51,8 +51,10 @@ func TestSettingsCollectionInputSurfacePalette(t *testing.T) {
 				c.Show(scr)
 				for row := 0; row < 2; row++ {
 					want := vtui.Palette[vtui.ColDialogEdit]
-					if row == 0 && active {
-						want = vtui.Palette[vtui.ColDialogSelectedButton]
+					// Row 0 is the cursor: it is marked in the combo cursor
+					// colour whether or not the list has the focus (#1148).
+					if row == 0 {
+						want = vtui.Palette[vtui.ColDialogComboSelectedText]
 					}
 					if query != "" {
 						want = vtui.DimColor(vtui.DimColor(want))

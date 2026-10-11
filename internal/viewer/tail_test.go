@@ -452,3 +452,91 @@ func TestViewerFollowingPaintsNoEmptyOrLoadingFrame(t *testing.T) {
 		})
 	}
 }
+
+// A viewer read from the top of a log that keeps growing must not blink. Every
+// growth drops the window cache, and the frame painted right after it used to
+// show "[ Loading... ]" in place of the text until the window came back -- the
+// whole viewer flickering about once a second on f4's own debug.log (#1624).
+// The viewer is not at the end, so it does not follow: the text on screen stays
+// the same, and so must every frame painted while the file grows.
+func TestViewerGrowingFileReadFromTopPaintsNoLoadingFrame(t *testing.T) {
+	for _, hex := range []bool{false, true} {
+		name := "text"
+		if hex {
+			name = "hex"
+		}
+		t.Run(name, func(t *testing.T) {
+			const width, height = 60, 8
+			rec := &frameRecorder{}
+			scr := vtui.NewSilentScreenBuf()
+			scr.Renderer = rec
+			scr.AllocBuf(width, height)
+			vtui.FrameManager.Init(scr)
+
+			root := t.TempDir()
+			path := filepath.Join(root, "log.txt")
+			var initial strings.Builder
+			for i := 0; i < 30; i++ {
+				fmt.Fprintf(&initial, "old line %02d\n", i)
+			}
+			if err := os.WriteFile(path, []byte(initial.String()), 0600); err != nil {
+				t.Fatal(err)
+			}
+
+			vv, err := NewViewerView(context.Background(), vfs.NewOSVFS(root), path)
+			if err != nil {
+				t.Fatalf("NewViewerView: %v", err)
+			}
+			defer vv.Close()
+			vv.HexMode = hex
+			vv.ResizeConsole(width, height)
+			vtui.FrameManager.AddScreen(vv)
+
+			run := func(d time.Duration) {
+				for deadline := time.Now().Add(d); time.Now().Before(deadline); {
+					vtui.FrameManager.Step(5 * time.Millisecond)
+				}
+			}
+			want := "old line 00"
+			if hex {
+				want = "0000000000:"
+			}
+			deadline := time.Now().Add(3 * time.Second)
+			for !screenContains(scr, want) || vv.Busy {
+				if time.Now().After(deadline) {
+					t.Fatal("timed out waiting for the top of the file to come on screen")
+				}
+				run(20 * time.Millisecond)
+			}
+			run(100 * time.Millisecond)
+			if vv.eofVisible {
+				t.Fatal("the whole file fits on screen; the test would be following, not reading from the top")
+			}
+			topBefore := vv.TopOffset
+
+			start := rec.count()
+			for i := 0; i < 4; i++ {
+				appendTo(t, path, fmt.Sprintf("new line %d\n", i))
+				run(viewerTailPollInterval + 150*time.Millisecond)
+			}
+
+			frames := rec.since(start)
+			if len(frames) == 0 {
+				t.Fatal("nothing was painted while the file grew")
+			}
+			for i, rows := range frames {
+				if !strings.Contains(rows[1], want) {
+					t.Fatalf("frame %d of %d lost the first row of the file:\n%s", i, len(frames), strings.Join(rows, "\n"))
+				}
+				for _, row := range rows {
+					if strings.Contains(row, "Loading") {
+						t.Fatalf("frame %d of %d painted a loading placeholder:\n%s", i, len(frames), strings.Join(rows, "\n"))
+					}
+				}
+			}
+			if vv.TopOffset != topBefore {
+				t.Fatalf("viewport moved from %d to %d while the reader was at the top", topBefore, vv.TopOffset)
+			}
+		})
+	}
+}

@@ -22,5 +22,8 @@ func unavailableGUIBackendError(backend string, ffiAvailable bool) error {
 }
 
 func checkGUIBackendAvailability(backend string) error {
+	if !BackendBuilt(backend) {
+		return fmt.Errorf("GUI backend %q is not built into the lite build; use --gui=x11, --gui=wayland, --gui=win32 or --gui=cocoa, or --tty=ansi", backend)
+	}
 	return unavailableGUIBackendError(backend, ffiAvailableForGUI())
 }

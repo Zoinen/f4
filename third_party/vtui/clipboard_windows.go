@@ -76,12 +76,9 @@ func setOSClipboard(text string) bool {
 		return false
 	}
 
-	// Copy memory safely without CGO
-	src := unsafe.Pointer(&u16[0])
-	var i uintptr
-	for i = 0; i < size; i++ {
-		*(*byte)(unsafe.Pointer(ptr + i)) = *(*byte)(unsafe.Pointer(uintptr(src) + i))
-	}
+	// Copy memory safely without CGO. ptr is GlobalLock's view of the
+	// HGLOBAL, memory outside the Go heap, and holds exactly len(u16) units.
+	copy(unsafe.Slice((*uint16)(winPtr(ptr)), len(u16)), u16)
 	procGlobalUnlock.Call(hMem)
 
 	rSet, _, _ := procSetClipboardData.Call(CF_UNICODETEXT, hMem)
@@ -117,10 +114,12 @@ func getOSClipboard() (string, bool) {
 	}
 	defer procGlobalUnlock.Call(hMem)
 
-	// Read UTF-16 string until null terminator
+	// Read UTF-16 string until null terminator. base is GlobalLock's view of
+	// the system-owned HGLOBAL.
+	base := winPtr(ptr)
 	var text []uint16
 	for i := 0; ; i++ {
-		val := *(*uint16)(unsafe.Pointer(ptr + uintptr(i)*2))
+		val := *(*uint16)(unsafe.Add(base, i*2))
 		if val == 0 {
 			break
 		}

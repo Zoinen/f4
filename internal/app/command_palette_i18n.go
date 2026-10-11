@@ -19,7 +19,7 @@ var commandPaletteTranslationsCache struct {
 	byKey      map[string][]string
 }
 
-// resetCommandPaletteTranslations invalidates installed-pack aliases. A
+// ResetCommandPaletteTranslations invalidates installed-pack aliases. A
 // language reload does that on its own through i18n.Generation; this is for a
 // test that installs a pack behind the cache's back.
 func ResetCommandPaletteTranslations() {

@@ -146,8 +146,17 @@ func (cb *ComboBox) ProcessKey(e *vtinput.InputEvent) bool {
 		return true
 	}
 
-	// In DropdownOnly mode Enter opens the list
+	// In DropdownOnly mode Enter belongs to the dialog when it has a default
+	// button, as in far2l, where Enter on a DI_COMBOBOX falls through to the
+	// DefaultButton branch of Dialog::ProcessKey. The highlighted default
+	// button is thus what Enter presses; Ctrl+Down still opens the list.
+	// Without a default button there is nothing to accept, so Enter opens
+	// the list instead of reaching TriggerDefaultAction's first-button
+	// fallback.
 	if e.VirtualKeyCode == vtinput.VK_RETURN && cb.DropdownOnly {
+		if btn := cb.dialogDefaultButton(); btn != nil {
+			return btn.ProcessKey(e)
+		}
 		cb.Open()
 		return true
 	}
@@ -160,6 +169,41 @@ func (cb *ComboBox) ProcessKey(e *vtinput.InputEvent) bool {
 	}
 
 	return false
+}
+
+// dialogDefaultButton returns the enabled default button of the outermost
+// container that owns cb, or nil when there is none.
+func (cb *ComboBox) dialogDefaultButton() *Button {
+	var root Container
+	var owner CommandHandler = cb.owner
+	for owner != nil {
+		if c, ok := owner.(Container); ok {
+			root = c
+		}
+		o, ok := owner.(interface{ GetOwner() CommandHandler })
+		if !ok {
+			break
+		}
+		owner = o.GetOwner()
+	}
+	if root == nil {
+		return nil
+	}
+	return findDefaultButton(root)
+}
+
+func findDefaultButton(c Container) *Button {
+	for _, item := range c.GetChildren() {
+		if btn, ok := item.(*Button); ok && btn.IsDefault && !btn.IsDisabled() {
+			return btn
+		}
+		if sub, ok := item.(Container); ok {
+			if btn := findDefaultButton(sub); btn != nil {
+				return btn
+			}
+		}
+	}
+	return nil
 }
 
 func (cb *ComboBox) ProcessMouse(e *vtinput.InputEvent) bool {

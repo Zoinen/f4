@@ -1,4 +1,4 @@
-//go:build (linux || windows || darwin) && !android && (amd64 || arm64)
+//go:build (linux || windows || darwin) && !android && (amd64 || arm64) && !vtui_noebiten
 
 package vtui
 
@@ -116,14 +116,7 @@ func (r *EbitenRenderer) Render(buf, shadow []CharInfo, w, h int, forceRedraw bo
 	// The blink phase advances on wall clock, not on frame count, so that a
 	// backend running at 60fps and one running at 15fps blink alike. Only a
 	// visible caret makes the phase change worth a repaint.
-	now := time.Now()
-	if now.Sub(r.lastBlinkTime) >= 500*time.Millisecond {
-		r.blinkState = !r.blinkState
-		r.lastBlinkTime = r.lastBlinkTime.Add(500 * time.Millisecond)
-		if now.Sub(r.lastBlinkTime) >= 500*time.Millisecond {
-			r.lastBlinkTime = now
-		}
-	}
+	stepSoftwareBlink(&r.blinkState, &r.lastBlinkTime, time.Now())
 	cursorVisible := r.cursorVis && r.blinkState
 
 	pixW, pixH := w*r.cellW, h*r.cellH
@@ -184,6 +177,26 @@ func (r *EbitenRenderer) Render(buf, shadow []CharInfo, w, h int, forceRedraw bo
 				if curr.Char == WideCharFiller {
 					sx++
 					continue
+				}
+
+				if IsSymChar(curr.Char) && sx+2 < spanW && currX+2 < w {
+					if sym, symOk := symGlyphAt(curr.Char, buf[rowOff+currX+1].Char, buf[rowOff+currX+2].Char); symOk {
+						px, py := currX*r.cellW, y*r.cellH
+						symFg, _ := r.getCellColors(curr)
+						if drawSymGlyphRaster(img, sym, px, py, r.cellW*3, r.cellH, r.scale, symFg) {
+							if curr.Attributes&CommonLvbUnderscore != 0 {
+								drawUnderline(img, px, py, r.cellW*3, r.cellH, r.scale, symFg)
+							}
+							for k := 0; k < 3; k++ {
+								colX := currX + k
+								if cursorVisible && y == r.cursorY && r.cursorX == colX {
+									r.invertCursor(img, colX*r.cellW, y*r.cellH, 1)
+								}
+							}
+							sx += 3
+							continue
+						}
+					}
 				}
 
 				_, rw := CellSpanAt(buf, w, currX, y)
@@ -301,40 +314,11 @@ func (r *EbitenRenderer) drawCachedGlyph(img *image.RGBA, cellVal uint64, px, py
 	}
 }
 
-// invertCursor inverts the cell under the caret, matching the X11 backend so
-// the caret stays visible whatever colours the cell happens to carry.
+// invertCursor inverts the caret's part of the cell under it, with the
+// geometry every pixel renderer shares (see cursorCellRect), so the caret
+// stays visible whatever colours the cell happens to carry.
 func (r *EbitenRenderer) invertCursor(img *image.RGBA, px, py, rw int) {
-	// Same geometry as the X11 backend: a block fills the cell, anything else
-	// is an underline two pixels tall, four when the display is scaled, so it
-	// stays visible on a HiDPI screen instead of thinning to a hair.
-	startY := 0
-	if r.cursorShape != CursorShapeBlock {
-		thickness := 2
-		if r.scale > 1 {
-			thickness = 4
-		}
-		startY = r.cellH - thickness
-		if startY < 0 {
-			startY = 0
-		}
-	}
-	for iy := startY; iy < r.cellH; iy++ {
-		if py+iy >= img.Rect.Dy() {
-			break
-		}
-		row := (py + iy) * img.Stride
-		for ix := 0; ix < r.cellW*rw; ix++ {
-			if px+ix >= img.Rect.Dx() {
-				break
-			}
-			off := row + (px+ix)*4
-			if off+2 < len(img.Pix) {
-				img.Pix[off] = 255 - img.Pix[off]
-				img.Pix[off+1] = 255 - img.Pix[off+1]
-				img.Pix[off+2] = 255 - img.Pix[off+2]
-			}
-		}
-	}
+	invertCursorRect(img.Pix, img.Stride, img.Rect.Dx(), img.Rect.Dy(), px, py, r.cursorShape, r.cellW*rw, r.cellH, r.scale > 1)
 }
 
 // RenderGraphics implements GraphicsRenderer, drawing the image layer over
@@ -388,6 +372,33 @@ func (r *EbitenRenderer) SetCursor(x, y int, visible bool, shape CursorShape) {
 // renderer holding a second copy that could drift out of date.
 func (r *EbitenRenderer) SetPalette(pal *[256]uint32) {}
 
+// setFace installs a newly loaded face and cell size, dropping the
+// glyph cache keyed by the old font (see drawCachedGlyph) and the
+// graphics-layer generation stamp; Render's own pixW/pixH check (the cell
+// size changing means the framebuffer's size does too) takes care of
+// forcing the actual repaint. The caller is EbitenHost.SetFont (vtui #136).
+func (r *EbitenRenderer) setFace(face font.Face, cellW, cellH int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.face = face
+	r.cellW, r.cellH = cellW, cellH
+	r.glyphCache = make(map[glyphKey]*image.RGBA)
+	r.gfxKnown = false
+}
+
+// SetFont changes the font of the already-open window without recreating
+// it: see EbitenHost.SetFont. It always reports true when there is a host
+// to forward to -- gogpu and ebiten are, as of this part, the GUI backends
+// implementing font hot-swap (vtui #136) -- and false only for a renderer
+// built without one.
+func (r *EbitenRenderer) SetFont(fontName string, fontSize float64) bool {
+	if r.host == nil {
+		return false
+	}
+	r.host.SetFont(fontName, fontSize)
+	return true
+}
+
 func (r *EbitenRenderer) SetWindowTitle(title string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -410,6 +421,20 @@ func (r *EbitenRenderer) ResizeWindow(cols, rows int) {
 	if host != nil && cw > 0 && ch > 0 {
 		host.requestSize(cols*cw, rows*ch)
 	}
+}
+
+// ToggleMaximized maximizes the window or restores it. Ebitengine's window
+// functions are concurrent-safe, and the host makes the window resizable,
+// which MaximizeWindow requires.
+func (r *EbitenRenderer) ToggleMaximized() bool {
+	maximized := ebiten.IsWindowMaximized()
+	DebugLog("EBITEN: toggle maximized: ebiten reports maximized=%v", maximized)
+	if maximized {
+		ebiten.RestoreWindow()
+	} else {
+		ebiten.MaximizeWindow()
+	}
+	return true
 }
 
 // WindowPosition returns the current desktop position of the Ebitengine

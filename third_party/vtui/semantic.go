@@ -442,6 +442,11 @@ func handleSemanticChildrenAction(children []UIElement, target string, action ma
 }
 
 // --- Реализация семантики для базовых компонентов vtui ---
+//
+// A disabled control ignores semantic actions exactly as it ignores the
+// keyboard and the mouse: an external GUI or an automation script must not be
+// able to toggle, select, edit or focus what the user cannot. SetDisabled drops
+// focus for the same reason, so "focus" on a disabled control is refused too.
 
 func (w *Window) SemanticNode(ctx *SemanticContext) map[string]any {
 	x1, y1, x2, y2 := w.GetPosition()
@@ -614,11 +619,14 @@ func (b *Button) SemanticNode(ctx *SemanticContext) map[string]any {
 		"disabled": b.IsDisabled(),
 		"text":     b.caption,
 		"hotkey":   stringOrEmpty(b.hotkey),
-		"default":  b.IsDefault,
+		"default":  b.IsEnterDefault(),
 	}
 }
 
 func (b *Button) HandleSemanticAction(action map[string]any) bool {
+	if b.IsDisabled() {
+		return false
+	}
 	switch semanticString(action["action"]) {
 	case "activate", "control.activate":
 		return b.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN})
@@ -649,6 +657,9 @@ func (cb *Checkbox) SemanticNode(ctx *SemanticContext) map[string]any {
 }
 
 func (cb *Checkbox) HandleSemanticAction(action map[string]any) bool {
+	if cb.IsDisabled() {
+		return false
+	}
 	switch semanticString(action["action"]) {
 	case "toggle", "control.toggle":
 		cb.Toggle()
@@ -680,6 +691,9 @@ func (cg *CheckGroup) SemanticNode(ctx *SemanticContext) map[string]any {
 }
 
 func (cg *CheckGroup) HandleSemanticAction(action map[string]any) bool {
+	if cg.IsDisabled() {
+		return false
+	}
 	switch semanticString(action["action"]) {
 	case "select", "control.select":
 		idx := semanticInt(action["index"])
@@ -716,6 +730,9 @@ func (rg *RadioGroup) SemanticNode(ctx *SemanticContext) map[string]any {
 }
 
 func (rg *RadioGroup) HandleSemanticAction(action map[string]any) bool {
+	if rg.IsDisabled() {
+		return false
+	}
 	switch semanticString(action["action"]) {
 	case "select", "control.select":
 		idx := semanticInt(action["index"])
@@ -816,6 +833,9 @@ func (cb *ComboBox) SemanticNode(ctx *SemanticContext) map[string]any {
 }
 
 func (cb *ComboBox) HandleSemanticAction(action map[string]any) bool {
+	if cb.IsDisabled() {
+		return false
+	}
 	switch semanticString(action["action"]) {
 	case "open", "control.open":
 		cb.Open()
@@ -992,6 +1012,8 @@ func (m *VMenu) HandleSemanticAction(action map[string]any) bool {
 		case "menu_activate", "menu.activate":
 			idx := semanticInt(action["index"])
 			if idx >= 0 && idx < len(m.Items) && !m.Items[idx].Separator {
+				// The index names an entry of the full list.
+				m.ClearFilter()
 				m.SetSelectPos(idx)
 				return m.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN})
 			}
@@ -1061,38 +1083,35 @@ func semanticMenuBar(mb *MenuBar) map[string]any {
 }
 
 func semanticKeyBar(kb *KeyBar) map[string]any {
-	labels := kb.Normal
-	icons := kb.NormalIcons
-	modifier := "normal"
-	if kb.shiftState {
-		labels = kb.Shift
-		icons = kb.ShiftIcons
-		modifier = "shift"
-	} else if kb.ctrlState {
-		labels = kb.Ctrl
-		icons = kb.CtrlIcons
-		modifier = "ctrl"
-	} else if kb.altState {
-		labels = kb.Alt
-		icons = kb.AltIcons
-		modifier = "alt"
-	}
+	labels, disabled, modifier := kb.activeRow()
 	variants := []struct {
 		modifier string
 		labels   KeyBarLabels
 		icons    KeyBarIconNames
+		disabled KeyBarDisabled
 	}{
-		{modifier: "normal", labels: kb.Normal, icons: kb.NormalIcons},
-		{modifier: "shift", labels: kb.Shift, icons: kb.ShiftIcons},
-		{modifier: "ctrl", labels: kb.Ctrl, icons: kb.CtrlIcons},
-		{modifier: "alt", labels: kb.Alt, icons: kb.AltIcons},
+		{modifier: "normal", labels: kb.Normal, icons: kb.NormalIcons, disabled: kb.NormalDisabled},
+		{modifier: "shift", labels: kb.Shift, icons: kb.ShiftIcons, disabled: kb.ShiftDisabled},
+		{modifier: "ctrl", labels: kb.Ctrl, icons: kb.CtrlIcons, disabled: kb.CtrlDisabled},
+		{modifier: "alt", labels: kb.Alt, icons: kb.AltIcons, disabled: kb.AltDisabled},
+		{modifier: "ctrl+shift", labels: kb.CtrlShift, icons: kb.CtrlShiftIcons, disabled: kb.CtrlShiftDisabled},
+		{modifier: "alt+shift", labels: kb.AltShift, icons: kb.AltShiftIcons, disabled: kb.AltShiftDisabled},
+		{modifier: "ctrl+alt", labels: kb.CtrlAlt, icons: kb.CtrlAltIcons, disabled: kb.CtrlAltDisabled},
+	}
+	var icons KeyBarIconNames
+	for _, variant := range variants {
+		if variant.modifier == modifier {
+			icons = variant.icons
+			break
+		}
 	}
 	items := make([]map[string]any, 0, len(labels))
 	for i, label := range labels {
 		item := map[string]any{
-			"index": i,
-			"key":   fmt.Sprintf("F%d", i+1),
-			"text":  label,
+			"index":    i,
+			"key":      fmt.Sprintf("F%d", i+1),
+			"text":     label,
+			"disabled": disabled[i],
 		}
 		if icons[i] != "" {
 			item["icon"] = icons[i]
@@ -1105,6 +1124,7 @@ func semanticKeyBar(kb *KeyBar) map[string]any {
 			alternative := map[string]any{
 				"modifier": variant.modifier,
 				"text":     variant.labels[i],
+				"disabled": variant.disabled[i],
 			}
 			if variant.icons[i] != "" {
 				alternative["icon"] = variant.icons[i]

@@ -17,6 +17,30 @@ import (
 // fields, as it does after Settings Center's Apply.
 type ConfigEditorApply func(before config.F4Config, changed []string)
 
+// ConfigOptionDoc is what f4:config says about one settings.ini key: far2l's
+// description and help_topic of a far:config entry (#1177).
+type ConfigOptionDoc struct {
+	// Label is the name Settings Center gives the option, when the key
+	// stores exactly one.
+	Label string
+	// Description is shown under the list while the key is selected.
+	Description string
+	// HelpTopic is the closest help topic, opened by Shift+F1. Empty means
+	// f4:config's own topic.
+	HelpTopic string
+}
+
+// ConfigOptionDocs looks up what to say about a key. The composition root
+// supplies it: the texts belong to Settings Center, above this package.
+type ConfigOptionDocs func(section, key string) ConfigOptionDoc
+
+// configEditorHelpTopic is f4:config's own help topic, far2l's FarConfig.
+const configEditorHelpTopic = "SpecCmd"
+
+// configEditorMaxTextLines caps the description area under the list, which
+// is sized for the longest description so that the list does not jump.
+const configEditorMaxTextLines = 8
+
 // configEditorState is what survives the editor closing and reopening around
 // an edit: the two view toggles and the row the user was on.
 type configEditorState struct {
@@ -30,6 +54,7 @@ type configEditorRow struct {
 	option     config.Option
 	def        string
 	hasDefault bool
+	doc        ConfigOptionDoc
 }
 
 func (r configEditorRow) name() string { return r.option.Section + "." + r.option.Key }
@@ -54,18 +79,21 @@ func (r configEditorRow) mark() string {
 // ShowConfigEditor opens f4:config, modelled on far2l's far:config: every key
 // f4 writes to settings.ini, marked when it differs from the default. Enter,
 // F4 or a double click edit a value, Del resets it, Ctrl+H keeps only the
-// changed rows and Ctrl+A aligns the names on the dot.
-func ShowConfigEditor(apply ConfigEditorApply) {
-	showConfigEditor(apply, configEditorState{})
+// changed rows and Ctrl+A aligns the names on the dot. Under the list the
+// selected key is explained, and Shift+F1 opens its closest help topic, as
+// Far 3's far:config does.
+func ShowConfigEditor(apply ConfigEditorApply, docs ConfigOptionDocs) {
+	showConfigEditor(apply, docs, configEditorState{})
 }
 
-func showConfigEditor(apply ConfigEditorApply, st configEditorState) {
+func showConfigEditor(apply ConfigEditorApply, docs ConfigOptionDocs, st configEditorState) {
 	if vtui.FrameManager == nil {
 		return
 	}
 	hint := i18n.Msg("ConfigEditor.Hint")
 	menu := vtui.NewVMenu(i18n.Msg("ConfigEditor.Title"))
 	menu.SetBottomTitle(hint)
+	menu.SetHelp(configEditorHelpTopic)
 	// A single click only moves the selection; a double click edits.
 	menu.IgnoreSingleClick = true
 	defaults := config.Options(config.DefaultConfig())
@@ -79,6 +107,11 @@ func showConfigEditor(apply ConfigEditorApply, st configEditorState) {
 	}
 	fill := func() {
 		rows = configEditorRows(config.Options(config.App), defaults)
+		if docs != nil {
+			for i := range rows {
+				rows[i].doc = docs(rows[i].option.Section, rows[i].option.Key)
+			}
+		}
 		var lines []string
 		lines, index = configEditorLines(rows, st)
 		menu.SetTitle(configEditorTitle(st.hideUnchanged))
@@ -95,27 +128,48 @@ func showConfigEditor(apply ConfigEditorApply, st configEditorState) {
 				w = lw
 			}
 		}
+		// Descriptions read badly in a narrow column.
+		w = max(w, configEditorMinWidth)
 		if maxW := scrW - 4; maxW >= 20 && w > maxW {
 			w = maxW
 		} else if w > scrW {
 			w = scrW
 		}
+
+		descriptions := make([]string, len(lines))
+		textLines := 0
+		for i, row := range index {
+			descriptions[i] = configEditorDescription(rows[row])
+			textLines = max(textLines, len(vtui.WrapText(descriptions[i], configEditorTextWidth(w))))
+		}
+		textLines = min(textLines, configEditorMaxTextLines)
+
 		h := len(lines) + 2
-		if maxH := scrH - 4; maxH >= 3 && h > maxH {
+		maxH := scrH - 4
+		if maxH < 3 {
+			maxH = scrH
+		}
+		textLines = configEditorTextLines(textLines, len(lines), maxH)
+		if textLines > 0 {
+			h += textLines + 1
+		}
+		if h > maxH {
 			h = maxH
-		} else if h > scrH {
-			h = scrH
 		}
 		if h < 3 {
 			h = 3
 		}
 
 		items := make([]vtui.MenuItem, 0, len(lines))
-		for _, line := range lines {
-			items = append(items, vtui.MenuItem{Text: strings.ReplaceAll(vtui.TruncateMiddle(line, w-chrome), "&", "&&")})
+		for i, line := range lines {
+			items = append(items, vtui.MenuItem{
+				Text:        strings.ReplaceAll(vtui.TruncateMiddle(line, w-chrome), "&", "&&"),
+				Description: descriptions[i],
+			})
 		}
 		menu.Items = items
 		menu.ItemCount = len(items)
+		menu.SetBottomTextLines(textLines)
 		x, y := (scrW-w)/2, (scrH-h)/2
 		if x < 0 {
 			x = 0
@@ -143,13 +197,26 @@ func showConfigEditor(apply ConfigEditorApply, st configEditorState) {
 		}
 		row := rows[index[pos]]
 		st.selected = row.name()
-		editConfigOption(row, apply, func() { showConfigEditor(apply, st) })
+		editConfigOption(row, apply, func() { showConfigEditor(apply, docs, st) })
 	}
 	menu.OnKeyDown = func(e *vtinput.InputEvent) bool {
 		ctrl := e.ControlKeyState&(vtinput.LeftCtrlPressed|vtinput.RightCtrlPressed) != 0
 		alt := e.ControlKeyState&(vtinput.LeftAltPressed|vtinput.RightAltPressed) != 0
 		shift := e.ControlKeyState&vtinput.ShiftPressed != 0
 		switch {
+		case e.VirtualKeyCode == vtinput.VK_F1 && shift && !ctrl && !alt:
+			// Far 3's far:config opens the help of the option under the
+			// cursor on Shift+F1; F1 alone is the editor's own topic.
+			topic := configEditorHelpTopic
+			if pos := menu.SelectPos; pos >= 0 && pos < len(index) {
+				if t := rows[index[pos]].doc.HelpTopic; t != "" && vtui.GlobalHelpEngine != nil && vtui.GlobalHelpEngine.GetTopic(t) != nil {
+					topic = t
+				}
+			}
+			if vtui.GlobalHelpEngine != nil {
+				vtui.FrameManager.Push(vtui.NewHelpView(vtui.GlobalHelpEngine, topic))
+			}
+			return true
 		case e.VirtualKeyCode == vtinput.VK_F4 && !ctrl:
 			// far2l opens the editor on F4, Shift+F4 and Alt+F4 alike.
 			return menu.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN})
@@ -190,6 +257,49 @@ func showConfigEditor(apply ConfigEditorApply, st configEditorState) {
 		return false
 	}
 	vtui.FrameManager.Push(menu)
+}
+
+// configEditorMinWidth is the narrowest the editor gets when the screen has
+// room: the width of a far2l dialog, so descriptions keep a readable line.
+const configEditorMinWidth = 76
+
+// configEditorTextWidth is what the description area of a menu w columns
+// wide wraps to: vtui's VMenu.BottomTextWidth.
+func configEditorTextWidth(w int) int {
+	return max(1, w-4)
+}
+
+// configEditorTextLines sizes the description area: the lines the longest
+// description needs, at least two as in far2l, and never so many that fewer
+// than three list rows remain in a box maxH rows high. Zero means no area.
+func configEditorTextLines(needed, rows, maxH int) int {
+	if needed <= 0 {
+		return 0
+	}
+	lines := max(needed, 2)
+	// Border, list rows, separator, text, border.
+	if spare := maxH - 2 - min(rows, 3) - 1; lines > spare {
+		lines = spare
+	}
+	return max(lines, 0)
+}
+
+// configEditorDescription is what the area under the list says about a row:
+// the option's name and the default on the first line, far2l's
+// "Section.Key (type, saved)" line, and the explanation after it.
+func configEditorDescription(row configEditorRow) string {
+	def := i18n.Msg("ConfigEditor.NoDefault")
+	if row.hasDefault {
+		def = configEditorShownValue(row.option.Section, row.option.Key, row.def)
+	}
+	head := fmt.Sprintf(i18n.Msg("ConfigEditor.DefaultPrompt"), def)
+	if row.doc.Label != "" {
+		head = row.doc.Label + ". " + head
+	}
+	if row.doc.Description == "" {
+		return head
+	}
+	return head + "\n" + row.doc.Description
 }
 
 // configEditorTitle marks the title while unchanged rows are hidden, as

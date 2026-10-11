@@ -90,7 +90,7 @@ func TestBuildVersionOverridesVCSMetadata(t *testing.T) {
 
 	buildVersion = "v0.2.0-beta"
 	if got := GetCurrentVersion(); got != buildVersion {
-		t.Fatalf("getCurrentVersion() = %q, want %q", got, buildVersion)
+		t.Fatalf("GetCurrentVersion() = %q, want %q", got, buildVersion)
 	}
 	if got := getShortVersionInfo(); got != buildVersion {
 		t.Fatalf("getShortVersionInfo() = %q, want %q", got, buildVersion)

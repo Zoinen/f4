@@ -5,7 +5,10 @@ import (
 	"strings"
 )
 
-const HelperFlag = "--update-helper"
+const (
+	HelperFlag        = "--update-helper"
+	RestoreHelperFlag = "--update-restore-helper"
+)
 
 // ParseHelperArgs extracts the private command line used by the
 // elevated updater. It deliberately accepts the flag only when it is the
@@ -29,4 +32,25 @@ func ParseHelperArgs(args []string) (archivePath, archiveKind string, found bool
 		return archivePath, archiveKind, true, nil
 	}
 	return "", "", false, nil
+}
+
+// ParseRestoreHelperArgs extracts the private command line used to restore a
+// failed update from an elevated helper process.
+func ParseRestoreHelperArgs(args []string) (backupPath string, found bool, err error) {
+	for i, arg := range args {
+		if arg != RestoreHelperFlag {
+			continue
+		}
+		if len(args) != i+2 {
+			return "", true, fmt.Errorf("%s requires backup path", RestoreHelperFlag)
+		}
+		var helperArgs [1]string
+		copy(helperArgs[:], args[i+1:])
+		backupPath = strings.TrimSpace(helperArgs[0])
+		if backupPath == "" {
+			return "", true, fmt.Errorf("%s requires non-empty backup path", RestoreHelperFlag)
+		}
+		return backupPath, true, nil
+	}
+	return "", false, nil
 }

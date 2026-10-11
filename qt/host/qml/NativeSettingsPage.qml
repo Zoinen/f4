@@ -1,3 +1,5 @@
+pragma ComponentBehavior: Bound
+
 import QtQuick
 
 // Frontend-owned content. No descriptors, values or controls cross ExtUI.

@@ -658,6 +658,11 @@ $Panel Navigation Keys
   Ctrl+Shift+= / Ctrl+Shift+- - Select / deselect by mask
   Alt+=         - Invert selection
   Numpad 5      - View file (also F3; Num Lock may be on or off)
+  Ctrl+Space    - Calculate the size of the folder under the cursor (archives too;
+                  F3 on a folder does the same: the key bar then reads Size,
+                  and when the count is done a message names the folder, its
+                  size and how many files and folders it holds, while the
+                  size itself appears in the size column)
 
 Extension selection is a standard Far Manager command. The main-keyboard
 aliases make it available without a numpad. Matching ignores case and uses
@@ -882,7 +887,11 @@ command line. f4 handles them itself; they never reach the shell.
                * when it differs from its default. Also Commands >
                Configuration editor. Enter or F4 edit a value, Del resets it,
                Ctrl+H keeps only the changed keys, Ctrl+A aligns the names on
-               the dot.
+               the dot. Under the list the key under the cursor is
+               explained: its name, its default and the description Settings
+               Center gives it; keys Settings Center does not show are
+               described in English, as in far2l. Shift+F1 opens the help
+               topic closest to the key.
 
 An unknown f4: command shows the list of the commands that exist.
 
@@ -950,3 +959,23 @@ Copy completed terminal output from the current tab into new tabs. Each tab star
 After Apply, the change affects tabs opened later without restarting. Existing tabs keep their history. The idle shell prompt, running programs and shell state are not copied.
 
 [Panel] InheritTerminalHistory = 0 / 1 (settings.ini)
+
+@ClipboardImages
+$Clipboard images
+  In panels, Ctrl+V and Shift+Insert save an image from the clipboard into
+  the active folder. With both text and an image, choose Save image, Paste
+  text, or Cancel. The dialog shows a scrollable text preview.
+
+  File operations / Clipboard images in Settings controls PNG/JPEG output,
+  lossless PNG compression, JPEG quality, filename prefix, stem template,
+  and minimum digit width. Defaults produce screenshot001.png.
+
+  The stem template accepts Ctrl+G scalar substitutions and input prompts.
+  !{prefix}! inserts the literal prefix, and exactly one !{seq}! inserts the
+  number. Digit format 000 pads to three digits. The image extension is
+  appended automatically. Lists and paths are not permitted.
+
+  The next number is the greatest matching number in the complete folder
+  plus one. Existing files are never overwritten. The new image receives
+  focus; existing marked files remain marked. Unsupported destinations
+  show an explanation.

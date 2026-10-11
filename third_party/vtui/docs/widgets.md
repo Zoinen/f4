@@ -52,6 +52,19 @@ Action push button
 
 ---
 
+### `Canvas`
+
+RGBA image placement over the terminal cell grid
+
+*Inherits:* `Widget`
+
+**Default Geometry:**
+- `sizeHint`: 40 × 12 cells
+- `minSize`: 1 × 1 cells
+- `sizePolicy`: h=`expanding`, v=`expanding`
+
+---
+
 ### `CheckGroup`
 
 Independent checkbox cluster in a grid

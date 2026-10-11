@@ -259,11 +259,20 @@ type FileOpState struct {
 	Buffer       []byte
 	IsMove       bool
 	S2SDir       int // 0: unknown, 1: push, 2: pull, 3: disabled
+	// S2SUsePassword is set once a server-to-server transfer only succeeds
+	// with a saved password for its second hop (see vfs.SecondHopPasswordProvider
+	// and vfs.SecondHopSecretStager), so later files in the same operation go
+	// straight to that path instead of re-probing the key/agent attempt that
+	// already failed for this pair of hosts.
+	S2SUsePassword bool
 	// AccessRights is the F5/F6 "Access rights" choice for this operation.
 	AccessRights AccessRightsMode
 	// parentRights caches destination folder permissions for the inherit
 	// mode. See parentRights() for why it needs no lock.
 	parentRights map[string]uint32
+	// parentOwners caches destination folder ownership for the inherit
+	// mode (f4#1503), the same way parentRights caches its permission bits.
+	parentOwners map[string]parentOwnerInfo
 
 	// The other choices of the F5/F6 dialog (#722); FileOpOptions says what
 	// each of them means.
@@ -554,6 +563,11 @@ func executeFileOpAtWithOptions(pf vtui.Frame, srcVfs, dstVfs vfs.VFS, srcBasePa
 			}
 		}
 
+		// Computed once per operation, not per item: srcBasePath and
+		// dirToEnsure are the same source/destination directories for
+		// every name in this batch, and dirToEnsure is now known to exist.
+		sameDeviceMove := isMove && sameDeviceForMove(ctx, srcVfs, srcBasePath, dstVfs, dirToEnsure)
+
 		var totalStats vfs.OpStats
 		scanErr := error(nil)
 		lastScanUpdate := startTime
@@ -765,7 +779,7 @@ func executeFileOpAtWithOptions(pf vtui.Frame, srcVfs, dstVfs vfs.VFS, srcBasePa
 				targetItemPath = dstVfs.Join(destPath, targetName)
 			}
 
-			if isMove && vfs.SameSession(srcVfs, dstVfs) {
+			if isMove && (vfs.SameSession(srcVfs, dstVfs) || sameDeviceMove) {
 				renamed, err := tryOptimizedRename(ctx, srcVfs, dstVfs, srcPath, targetItemPath)
 				if err != nil {
 					return err
@@ -1233,6 +1247,52 @@ func shouldDisplayFileOpError(err error) bool {
 	return !errors.Is(err, context.Canceled)
 }
 
+// sameDeviceForMove reports whether srcDirPath (on srcVFS) and dstDirPath
+// (on dstVFS) sit on the same underlying filesystem device, so a move
+// between them can take the instant tryOptimizedRename path instead of
+// scanning, copying and deleting the whole tree.
+//
+// vfs.SameSession alone misses the common case: the two panels are two
+// independent *vfs.OSVFS instances with no shared session identity, even
+// when they both read the very same local disk — so a move between two
+// panels on one filesystem always fell back to scan+copy+delete (#1635),
+// exactly the far2l pain point the ticket points at as reference. far2l's
+// own answer (far2l/src/mix/drivemix.cpp, CheckDisksProps with
+// CHECKEDPROPS_ISSAMEDISK) is to compare raw device ids (stat's st_dev)
+// instead of any session/connection notion, which is what this mirrors —
+// through vfs.FileIdentifier, the same (device, inode) capability OSVFS
+// already exposes for hard-link dedup (os_vfs_physical_unix.go on POSIX via
+// Stat_t.Dev, os_vfs_physical_windows.go on Windows via the NTFS volume
+// serial number).
+//
+// It returns false, never an error, whenever a device id isn't available
+// (a remote VFS, a platform whose OSVFS leaves FileIdentity unimplemented,
+// or a Stat failure): callers then simply keep the existing
+// scan+copy+delete path. A device match here is a fast pre-check, not a
+// guarantee — tryOptimizedRename still asks the destination VFS to rename,
+// and a race between this check and that rename (e.g. a remount) surfaces
+// as an ordinary rename failure, which the caller already falls back on
+// the same way it does for any other tryOptimizedRename failure.
+func sameDeviceForMove(ctx context.Context, srcVFS vfs.VFS, srcDirPath string, dstVFS vfs.VFS, dstDirPath string) bool {
+	srcIdf, ok := srcVFS.(vfs.FileIdentifier)
+	if !ok {
+		return false
+	}
+	dstIdf, ok := dstVFS.(vfs.FileIdentifier)
+	if !ok {
+		return false
+	}
+	srcDev, _, ok := srcIdf.FileIdentity(ctx, srcDirPath)
+	if !ok {
+		return false
+	}
+	dstDev, _, ok := dstIdf.FileIdentity(ctx, dstDirPath)
+	if !ok {
+		return false
+	}
+	return srcDev == dstDev
+}
+
 // tryOptimizedRename renames into a proven-empty destination or changes the case
 // of the same local directory entry using the VFS's no-replace operation. A remote
 // Stat failure is not evidence of absence, and an uncertain mutation must not
@@ -1311,6 +1371,53 @@ func foldOSPathCase(cleanSrc, cleanDst string, caseInsensitive bool) (string, st
 		return strings.ToLower(cleanSrc), strings.ToLower(cleanDst)
 	}
 	return cleanSrc, cleanDst
+}
+
+// s2sPasswordAttempt extends a failed key/agent-based server-to-server probe
+// with a password-based one (f4#370): when target's own saved connection
+// carries a password AND its "password auth for server-to-server transfers"
+// setting is on -- both are target's own business through
+// vfs.SecondHopPasswordProvider, not this function's -- it stages that
+// password on the executing side (vfs.SecondHopSecretStager) and reruns
+// scpCmd through sshpass -f, which reads the secret from a private file
+// rather than scpCmd's own text, an environment variable a sibling process
+// could inspect, or a log line.
+//
+// attempted is false whenever this path is unavailable at all: no saved
+// password (which, by construction, also covers the setting being off, its
+// default), or rner cannot stage a secret for itself. The caller's existing
+// fallback -- stream the file through the client -- is exactly as if this
+// function did not exist.
+func s2sPasswordAttempt(ctx context.Context, rner vfs.CommandRunner, target vfs.VFS, dir, scpCmd string) (code int, err error, attempted bool) {
+	provider, ok := target.(vfs.SecondHopPasswordProvider)
+	if !ok {
+		return 0, nil, false
+	}
+	password, ok := provider.SecondHopPassword()
+	if !ok {
+		return 0, nil, false
+	}
+	stager, ok := rner.(vfs.SecondHopSecretStager)
+	if !ok {
+		return 0, nil, false
+	}
+	ref, cleanup, err := stager.StageSecret(ctx, password)
+	if err != nil {
+		vtui.DebugLog("FILEOP: Server-to-server password staging failed: %v", err)
+		return 0, nil, false
+	}
+	defer cleanup(context.WithoutCancel(ctx))
+	vtui.DebugLog("FILEOP: Attempting server-to-server transfer with a saved password for the second hop")
+	code, err = rner.RunCommand(ctx, dir, "sshpass -f "+posixSingleQuoteArg(ref)+" "+scpCmd, nil)
+	return code, err, true
+}
+
+// posixSingleQuoteArg wraps s in single quotes for a POSIX shell command
+// line. s here is always a path this same process just asked the remote
+// host to mktemp for it, never externally supplied, but quoting it properly
+// regardless costs nothing and avoids relying on that assumption forever.
+func posixSingleQuoteArg(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
 }
 func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs vfs.VFS, destPath string, state *FileOpState, depth int) (resultErr error) {
 	if depth > 1000 {
@@ -1419,8 +1526,11 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 			// its own inherited permissions before they are copied into it.
 			// The other two modes keep applying the source's permissions
 			// after the walk, where a read-only source folder cannot stop
-			// the walk from writing into the copy.
-			_ = dstVfs.SetAttributes(ctx, destPath, vfs.VFSItem{UnixMode: dirRights, Uid: -1, Gid: -1})
+			// the walk from writing into the copy. The owner rides along the
+			// same way (f4#1503): "Inherit" promises the destination's
+			// owner, not just its mode.
+			dirUid, dirGid, _ := inheritedOwner(ctx, state, dstVfs, destPath)
+			_ = dstVfs.SetAttributes(ctx, destPath, vfs.VFSItem{UnixMode: dirRights, Uid: dirUid, Gid: dirGid})
 		}
 		if state.AccessRights == AccessRightsInherit {
 			applyPlatformRights(ctx, state, srcVfs, srcPath, dstVfs, destPath)
@@ -1444,9 +1554,11 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 			}
 		}
 		itemToSet := stat
-		itemToSet.Uid = -1
-		itemToSet.Gid = -1
+		itemToSet.Uid, itemToSet.Gid = -1, -1
 		itemToSet.UnixMode = dirRights
+		if state.AccessRights == AccessRightsInherit {
+			itemToSet.Uid, itemToSet.Gid, _ = inheritedOwner(ctx, state, dstVfs, destPath)
+		}
 		_ = dstVfs.SetAttributes(ctx, destPath, itemToSet)
 		if state.AccessRights == AccessRightsCopy {
 			applyPlatformRights(ctx, state, srcVfs, srcPath, dstVfs, destPath)
@@ -1622,13 +1734,30 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 
 						scpCmd := fmt.Sprintf("scp -o ConnectTimeout=10 -P %s -o StrictHostKeyChecking=no -p %q %s",
 							port, srcPath, scpDst)
-						vtui.DebugLog("FILEOP: Attempting server-to-server push: %s", scpCmd)
-						codePush, errPush := rner.RunCommand(ctx, srcVfs.Dir(srcPath), scpCmd, nil)
-						if errPush == nil && codePush == 0 {
-							pushed = true
-							state.S2SDir = 1
-						} else {
-							vtui.DebugLog("FILEOP: Server-to-server push failed (code: %d): %v", codePush, errPush)
+
+						if !state.S2SUsePassword {
+							vtui.DebugLog("FILEOP: Attempting server-to-server push: %s", scpCmd)
+							codePush, errPush := rner.RunCommand(ctx, srcVfs.Dir(srcPath), scpCmd, nil)
+							if errPush == nil && codePush == 0 {
+								pushed = true
+								state.S2SDir = 1
+							} else {
+								vtui.DebugLog("FILEOP: Server-to-server push failed (code: %d): %v", codePush, errPush)
+							}
+						}
+
+						if !pushed {
+							codePush, errPush, attempted := s2sPasswordAttempt(ctx, rner, dstVfs, srcVfs.Dir(srcPath), scpCmd)
+							if attempted {
+								if errPush == nil && codePush == 0 {
+									pushed = true
+									state.S2SDir = 1
+									state.S2SUsePassword = true
+									vtui.DebugLog("FILEOP: Server-to-server push succeeded using a saved password for the second hop")
+								} else {
+									vtui.DebugLog("FILEOP: Server-to-server push with saved password failed (code: %d): %v", codePush, errPush)
+								}
+							}
 						}
 					}
 				}
@@ -1648,13 +1777,30 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 
 						scpCmd := fmt.Sprintf("scp -o ConnectTimeout=10 -P %s -o StrictHostKeyChecking=no -p %s %q",
 							port, scpSrc, destPathForFile)
-						vtui.DebugLog("FILEOP: Attempting server-to-server pull: %s", scpCmd)
-						codePull, errPull := rner.RunCommand(ctx, dstVfs.Dir(destPathForFile), scpCmd, nil)
-						if errPull == nil && codePull == 0 {
-							pulled = true
-							state.S2SDir = 2
-						} else {
-							vtui.DebugLog("FILEOP: Server-to-server pull failed (code: %d): %v", codePull, errPull)
+
+						if !state.S2SUsePassword {
+							vtui.DebugLog("FILEOP: Attempting server-to-server pull: %s", scpCmd)
+							codePull, errPull := rner.RunCommand(ctx, dstVfs.Dir(destPathForFile), scpCmd, nil)
+							if errPull == nil && codePull == 0 {
+								pulled = true
+								state.S2SDir = 2
+							} else {
+								vtui.DebugLog("FILEOP: Server-to-server pull failed (code: %d): %v", codePull, errPull)
+							}
+						}
+
+						if !pulled {
+							codePull, errPull, attempted := s2sPasswordAttempt(ctx, rner, srcVfs, dstVfs.Dir(destPathForFile), scpCmd)
+							if attempted {
+								if errPull == nil && codePull == 0 {
+									pulled = true
+									state.S2SDir = 2
+									state.S2SUsePassword = true
+									vtui.DebugLog("FILEOP: Server-to-server pull succeeded using a saved password for the second hop")
+								} else {
+									vtui.DebugLog("FILEOP: Server-to-server pull with saved password failed (code: %d): %v", codePull, errPull)
+								}
+							}
 						}
 					}
 				}
@@ -1830,9 +1976,11 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 
 	if copySuccess {
 		itemToSet := stat
-		itemToSet.Uid = -1
-		itemToSet.Gid = -1
+		itemToSet.Uid, itemToSet.Gid = -1, -1
 		itemToSet.UnixMode = destinationRights(ctx, state, dstVfs, destPathForFile, stat.UnixMode, false, destinationExisted)
+		if state.AccessRights == AccessRightsInherit {
+			itemToSet.Uid, itemToSet.Gid, _ = inheritedOwner(ctx, state, dstVfs, destPathForFile)
+		}
 		_ = dstVfs.SetAttributes(ctx, destPathForFile, itemToSet)
 		applyPlatformRights(ctx, state, srcVfs, srcPath, dstVfs, destPathForFile)
 		state.fileCopied(srcPath, destPathForFile)

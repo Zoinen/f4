@@ -1,0 +1,11 @@
+{
+    "id": "cloudfox",
+    "name": "Cloud storage (CloudFox)",
+    "version": "0.0.0-part3-published-not-installable",
+    "author": "unxed",
+    "description": "S3, Google Drive, Yandex Disk and WebDAV as a top-level f4 drive. Ships as a native subprocess plugin so a lite build (f4#1178) does not have to carry the cloud SDKs in its own binary.",
+    "url": "https://github.com/unxed/f4/releases/download/{release}/cloudfox-plugin-{os}-{arch}.tgz",
+    "entrypoint": "cloudfox-plugin",
+    "category": "filesystem",
+    "runtimes": ["native"]
+}

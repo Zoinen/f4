@@ -13,7 +13,7 @@ import (
 // are configured by hand, and config.NormalizeStartupGuiBackend keeps letting them
 // through.
 var (
-	startupGuiBackends = []string{"win32", "gogpu", "ebiten", "x11", "wayland"}
+	startupGuiBackends = []string{"win32", "gogpu", "ebiten", "x11", "wayland", "cocoa"}
 	startupTTYBackends = []string{"ansi", "winapi"}
 )
 

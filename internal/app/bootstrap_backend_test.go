@@ -49,6 +49,8 @@ func TestNormalizeStartupGuiBackend(t *testing.T) {
 		{value: "x11", want: "x11"},
 		{value: "wayland", want: "wayland"},
 		{value: "ebiten", want: "ebiten"},
+		{value: "cocoa", want: "cocoa"},
+		{value: " COCOA ", want: "cocoa"},
 		// Every documented Win32 spelling collapses to one stored name.
 		{value: "win32", want: "win32"},
 		{value: "winapi", want: "win32"},
@@ -126,6 +128,18 @@ func TestStartupChoiceHelpers(t *testing.T) {
 	guiChoices := startupBackendChoices(startupGuiBackends)
 	if len(guiChoices) != len(startupGuiBackends)+1 || guiChoices[0] != "" {
 		t.Fatalf("startupBackendChoices = %q, want a leading auto entry", guiChoices)
+	}
+	// The settings dialog must offer the native macOS backend by name
+	// (f4#1571): vtui's own auto-detection never picks it, so a user who
+	// wants it has no other way to configure it as their default.
+	found := false
+	for _, backend := range startupGuiBackends {
+		if backend == "cocoa" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("startupGuiBackends = %q, want \"cocoa\" among them", startupGuiBackends)
 	}
 	// The helper must not alias the package-level slice it copies from.
 	guiChoices[1] = "mutated"

@@ -69,16 +69,17 @@ func (a readerAtAdapter) ReadAt(p []byte, off int64) (int, error) {
 }
 
 type ArchiveVFS struct {
-	mu          sync.Mutex
-	parent      vfs.VFS
-	arcPath     string
-	backingPath string
-	displayName string
-	format      string
-	sfxOffset   int64
-	sfxSuffix   string
-	innerPath   string
-	password    string
+	mu           sync.Mutex
+	parent       vfs.VFS
+	arcPath      string
+	backingPath  string
+	displayName  string
+	format       string
+	readerBacked bool
+	sfxOffset    int64
+	sfxSuffix    string
+	innerPath    string
+	password     string
 	// passwordGen counts installed password changes so a concurrent operation
 	// that failed with an older password can retry without a second prompt.
 	passwordGen int
@@ -116,12 +117,32 @@ func (v *ArchiveVFS) ensureFSLocked() error {
 	if v.cleanupTimer == nil || v.activePath() == "" {
 		return fmt.Errorf("archive VFS is closed")
 	}
+	if v.readerBacked {
+		reopened, streamFormat, err := openReaderBackedArchiveFS(context.Background(), v.parent, v.arcPath, v.displayName)
+		if err != nil {
+			return err
+		}
+		v.fsys = reopened
+		if streamFormat != "" {
+			v.format = streamFormat
+		}
+		return nil
+	}
 	reopened, err := openArchiveFileSystem(context.Background(), v.activePath(), v.displayName, v.password)
 	if err != nil {
 		return err
 	}
 	v.fsys = reopened
 	return nil
+}
+
+func (v *ArchiveVFS) bindStreamContext(ctx context.Context) {
+	v.mu.Lock()
+	fsys := v.fsys
+	v.mu.Unlock()
+	if binder, ok := fsys.(interface{ setContext(context.Context) }); ok {
+		binder.setContext(ctx)
+	}
 }
 
 func (v *ArchiveVFS) cancelCleanupLocked() {
@@ -158,6 +179,18 @@ func NewArchiveVFSContext(ctx context.Context, parent vfs.VFS, archivePath strin
 		displayName = path.Base(strings.ReplaceAll(archivePath, "\\", "/"))
 	}
 	format := archive.DetectFormat(displayName)
+	if hasVirtualParent(parent) {
+		if fsys, streamFormat, streamErr := openReaderBackedArchiveFS(ctx, parent, archivePath, displayName); streamErr == nil {
+			if streamFormat != "" {
+				format = streamFormat
+			}
+			return &ArchiveVFS{
+				parent: parent, arcPath: canonicalPath, displayName: displayName,
+				format: format, password: "", innerPath: ".", fsys: fsys,
+				readerBacked: true,
+			}, nil
+		}
+	}
 	var finalPath string
 	var closer io.Closer
 	var sfxOffset int64
@@ -446,7 +479,7 @@ func archiveExtractionTarget(dstVfs vfs.VFS, dstDir, name, innerPath string) (st
 		return "", err
 	}
 
-	target := dstVfs.Join(dstDir, filepath.FromSlash(relative))
+	target := dstVfs.Join(dstDir, relative)
 	baseAbs, err := dstVfs.Abs(dstDir)
 	if err != nil {
 		return "", fmt.Errorf("resolve archive extraction destination: %w", err)
@@ -484,6 +517,37 @@ func (v *ArchiveVFS) LocalArchivePath() (string, bool) {
 		return "", false
 	}
 	return path, true
+}
+
+// selectedTestPaths turns the panel's marked names -- relative to the
+// directory currently being browsed inside the archive -- into the archive
+// root-relative set actionTestArchive restricts a test to. It builds that set
+// exactly the way copyBulkFrom does for "extract marked only" below, so a
+// marked directory's whole subtree is tested, not only the entry itself. A
+// name that fails cleanArchiveExtractionPath is dropped rather than aborting
+// the test: marked names always come from entries the panel already listed.
+// Empty names yields a nil map, meaning "test the whole archive" (f4#1250).
+func (v *ArchiveVFS) selectedTestPaths(names []string) map[string]bool {
+	if len(names) == 0 {
+		return nil
+	}
+	v.mu.Lock()
+	innerPath := v.innerPath
+	v.mu.Unlock()
+
+	selected := make(map[string]bool, len(names))
+	for _, name := range names {
+		fullInner := strings.ReplaceAll(name, "\\", "/")
+		if innerPath != "." && innerPath != "" {
+			fullInner = path.Join(innerPath, fullInner)
+		}
+		cleanSelected, err := cleanArchiveExtractionPath(fullInner)
+		if err != nil {
+			continue
+		}
+		selected[cleanSelected] = true
+	}
+	return selected
 }
 
 func (v *ArchiveVFS) IsAbs(candidate string) bool {
@@ -566,6 +630,9 @@ func (v *ArchiveVFS) ReadDir(ctx context.Context, path string, onChunk func([]vf
 		return pathErr
 	}
 
+	if binder, ok := v.fsys.(interface{ setContext(context.Context) }); ok {
+		binder.setContext(ctx)
+	}
 	entries, err := fs.ReadDir(v.fsys, fsPath)
 	if err != nil {
 		v.finishNonHandleOperationLocked()
@@ -640,6 +707,9 @@ func (v *ArchiveVFS) Stat(ctx context.Context, path string) (vfs.VFSItem, error)
 		return vfs.VFSItem{}, pathErr
 	}
 
+	if binder, ok := v.fsys.(interface{ setContext(context.Context) }); ok {
+		binder.setContext(ctx)
+	}
 	info, err := fs.Stat(v.fsys, fsPath)
 	if err != nil {
 		v.finishNonHandleOperationLocked()
@@ -668,21 +738,23 @@ func (v *ArchiveVFS) Stat(ctx context.Context, path string) (vfs.VFSItem, error)
 }
 
 type archiveReadWrapper struct {
-	v          *ArchiveVFS
-	once       sync.Once
-	mu         sync.Mutex
-	f          fs.File
-	fsPath     string
-	size       int64
-	crc32      uint32
-	hasCRC32   bool
-	tmpFile    *os.File
-	tmpPath    string
-	extracted  bool
-	extracting bool
-	doneChan   chan struct{}
-	err        error
-	readPos    int64
+	v            *ArchiveVFS
+	once         sync.Once
+	mu           sync.Mutex
+	f            fs.File
+	fsPath       string
+	size         int64
+	crc32        uint32
+	hasCRC32     bool
+	tmpFile      *os.File
+	tmpPath      string
+	extracted    bool
+	extracting   bool
+	doneChan     chan struct{}
+	err          error
+	readPos      int64
+	streamReadAt bool
+	seq          seqMemberReader
 }
 
 func archiveFileCRC(info fs.FileInfo) (uint32, bool) {
@@ -745,21 +817,26 @@ func seekArchiveFile(file fs.File, offset int64) error {
 		return err
 	}
 
+	return discardArchiveBytes(file, offset)
+}
+
+// discardArchiveBytes reads and drops n bytes of file.
+func discardArchiveBytes(file fs.File, n int64) error {
 	discard := make([]byte, 32*1024)
-	for offset > 0 {
+	for n > 0 {
 		want := int64(len(discard))
-		if want > offset {
-			want = offset
+		if want > n {
+			want = n
 		}
-		n, err := file.Read(discard[:want])
-		offset -= int64(n)
+		got, err := file.Read(discard[:want])
+		n -= int64(got)
 		if err != nil {
-			if err == io.EOF && offset > 0 {
+			if err == io.EOF && n > 0 {
 				return io.ErrUnexpectedEOF
 			}
 			return err
 		}
-		if n == 0 {
+		if got == 0 {
 			return io.ErrUnexpectedEOF
 		}
 	}
@@ -783,6 +860,7 @@ func (w *archiveReadWrapper) Close() error {
 			w.tmpFile = nil
 		}
 		w.mu.Unlock()
+		w.seq.Close()
 		w.v.decrementActive()
 	})
 	return nil
@@ -1180,17 +1258,93 @@ func (v *ArchiveVFS) fallbackOpenMemberSequential(ctx context.Context, fsPath st
 }
 
 func (w *archiveReadWrapper) ReadAt(ctx context.Context, p []byte, off int64) (int, error) {
+	w.mu.Lock()
+	streamReadAt := w.streamReadAt
+	extracted := w.extracted
+	tmp := w.tmpFile
+	w.mu.Unlock()
+	if extracted && tmp != nil {
+		return tmp.ReadAt(p, off)
+	}
+	if streamReadAt {
+		return w.readAtFromStream(ctx, p, off)
+	}
 	if err := w.materialize(ctx, false); err != nil {
 		return 0, err
 	}
 	w.mu.Lock()
-	tmp := w.tmpFile
+	tmp = w.tmpFile
 	w.mu.Unlock()
 
 	if ctx.Err() != nil {
 		return 0, ctx.Err()
 	}
 	return tmp.ReadAt(p, off)
+}
+
+func (w *archiveReadWrapper) readAtFromStream(ctx context.Context, p []byte, off int64) (int, error) {
+	if off < 0 {
+		return 0, fmt.Errorf("negative member read offset %d", off)
+	}
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	w.mu.Lock()
+	if w.extracted && w.tmpFile != nil {
+		tmp := w.tmpFile
+		w.mu.Unlock()
+		return tmp.ReadAt(p, off)
+	}
+	v := w.v
+	fsPath := w.fsPath
+	size := w.size
+	w.mu.Unlock()
+	if v == nil {
+		return 0, errors.New("archive member has no owner")
+	}
+	if size >= 0 && off >= size {
+		return 0, io.EOF
+	}
+
+	v.bindStreamContext(ctx)
+	v.mu.Lock()
+	fsys := v.fsys
+	v.mu.Unlock()
+	if fsys == nil {
+		return 0, errors.New("archive filesystem is unavailable")
+	}
+	seqPos := w.seq.Position()
+	if seqPos > 0 && off < seqPos {
+		// ZIP and similar formats inspect the end-of-file directory first and
+		// then seek back to the local header. Replaying a sequential parent
+		// member for every such read is quadratic in the member size. Switch
+		// once to the existing private materialization path; sequential reads
+		// keep the reader-backed, no-temp fast path.
+		if err := w.materialize(ctx, false); err != nil {
+			return 0, err
+		}
+		w.mu.Lock()
+		tmp := w.tmpFile
+		w.mu.Unlock()
+		if tmp == nil {
+			return 0, errors.New("archive member did not materialize")
+		}
+		return tmp.ReadAt(p, off)
+	}
+	w.seq.setOpen(func() (fs.File, error) {
+		v.mu.Lock()
+		current := v.fsys
+		v.mu.Unlock()
+		if current == nil {
+			return nil, errors.New("archive filesystem is unavailable")
+		}
+		return current.Open(fsPath)
+	})
+	n, err := w.seq.ReadAt(p, off)
+	return n, v.memberReadError(err)
 }
 
 func (w *archiveReadWrapper) Read(ctx context.Context, p []byte) (int, error) {
@@ -1211,6 +1365,9 @@ func (w *archiveReadWrapper) Read(ctx context.Context, p []byte) (int, error) {
 	f := w.f
 	v := w.v
 	w.mu.Unlock()
+	if v != nil {
+		v.bindStreamContext(ctx)
+	}
 
 	// 7z may return a full-sized, garbage payload with EOF for a wrong
 	// password when its headers remain visible, and a ZipCrypto member whose
@@ -1426,6 +1583,7 @@ func (v *ArchiveVFS) Open(ctx context.Context, path string) (vfs.ReadAtCloser, e
 	v.activeCount++
 	fsys := v.fsys
 	v.mu.Unlock()
+	v.bindStreamContext(ctx)
 
 	var update vfs.ProgressCallback
 	if val := ctx.Value(vfs.ProgressKey); val != nil {
@@ -1622,12 +1780,13 @@ func (v *ArchiveVFS) Open(ctx context.Context, path string) (vfs.ReadAtCloser, e
 	}
 
 	return &archiveReadWrapper{
-		v:        v,
-		f:        srcFile,
-		fsPath:   fsPath,
-		size:     size,
-		crc32:    expectedCRC,
-		hasCRC32: hasExpectedCRC,
+		v:            v,
+		f:            srcFile,
+		fsPath:       fsPath,
+		size:         size,
+		crc32:        expectedCRC,
+		hasCRC32:     hasExpectedCRC,
+		streamReadAt: streamReadRequested(ctx),
 	}, nil
 }
 
@@ -1926,17 +2085,15 @@ func (v *ArchiveVFS) GetCapabilities() vfs.VFSCapabilities {
 	return vfs.VFSCapabilities{HasRandomAccess: true, HasUnixPermissions: runtime.GOOS != "windows", ReadAccess: vfs.ReadAccessMaterializeOnce, StorageClass: vfs.StorageClassVirtual}
 }
 
-// ReadHead serves vfs.HeadReader, and a ZIP can serve it. Whatever the
-// archive file itself came from, it is read through a local backing file --
-// the parent's own path when that parent is on disk, a materialization of it
-// otherwise -- and a ZIP member is decoded as it is read, so asking for the
-// first block costs the first block and reaches no network.
+// ReadHead serves vfs.HeadReader. A ZIP on the existing local/materialized
+// path is decoded as it is read, while a reader-backed nested archive can
+// serve the same head through its generic stream filesystem. In both cases
+// asking for the first block does not require materializing the member first.
 //
-// Every other format declines. A member of a RAR, and of anything else that
-// arrives through the generic reader, is unpacked whole into a temporary file
-// before the first byte of it can be handed back: asking such a backend for
-// 256 KiB would quietly charge the member's full size in time and in disk,
-// and the caller asked precisely because it cannot afford that.
+// Every other format on the existing local/materialized path declines. A
+// reader-backed nested archive can also serve this head through its generic
+// stream filesystem, so content detection can continue across a compressed
+// TAR boundary without creating a temporary member.
 //
 // Which it is follows the backing file and the reader that was opened over
 // it, never this archive's declared format: that one comes from the name, and
@@ -1963,7 +2120,11 @@ func (v *ArchiveVFS) ReadHead(ctx context.Context, path string, p []byte) (int, 
 	v.mu.Lock()
 	// The same question zipperarchive.OpenFS asks of the same path, so the
 	// answer is the reader it built and not a second guess at it.
-	if archive.DetectFormat(v.backingPath) != "zip" {
+	format := v.format
+	if format == "" {
+		format = archive.DetectFormat(v.backingPath)
+	}
+	if format != "zip" && !v.readerBacked {
 		v.mu.Unlock()
 		return 0, vfs.ErrHeadUnavailable
 	}
@@ -1985,6 +2146,7 @@ func (v *ArchiveVFS) ReadHead(ctx context.Context, path string, p []byte) (int, 
 	fsys := v.fsys
 	v.mu.Unlock()
 	defer v.decrementActive()
+	v.bindStreamContext(ctx)
 
 	file, err := fsys.Open(fsPath)
 	if err != nil {
@@ -2074,8 +2236,24 @@ func (v *ArchiveVFS) Clone() vfs.VFS {
 	}
 	parent, arcPath, backingPath := v.parent, v.arcPath, v.backingPath
 	displayName, format, password, innerPath := v.displayName, v.format, v.password, v.innerPath
+	readerBacked := v.readerBacked
 	sfxOffset, sfxSuffix := v.sfxOffset, v.sfxSuffix
 	v.mu.Unlock()
+
+	if readerBacked {
+		fsys, streamFormat, err := openReaderBackedArchiveFS(context.Background(), parent, arcPath, displayName)
+		if err != nil {
+			return vfs.NewNullVFS(0)
+		}
+		if streamFormat != "" {
+			format = streamFormat
+		}
+		return &ArchiveVFS{
+			parent: parent, arcPath: arcPath, displayName: displayName,
+			format: format, password: password, innerPath: innerPath,
+			fsys: fsys, readerBacked: true,
+		}
+	}
 
 	var finalPath string
 	var closer io.Closer

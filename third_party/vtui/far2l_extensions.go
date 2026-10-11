@@ -203,6 +203,18 @@ func ResetFar2lNegotiation() {
 	fm.far2lEnabled.Store(Far2lEnabled)
 }
 
+// Far2lNegotiated reports whether the terminal behind this process has
+// acknowledged the far2l extensions: it answered the announcement, so an APC
+// request sent to it is understood rather than ignored or printed. Unlike the
+// Far2lEnabled startup default, which only says the application is willing
+// to try, this is true only after the acknowledgement, and false again behind
+// a native window or after ResetFar2lNegotiation. Code that starts a protocol
+// of its own on this channel (a far2l DND binding, say) checks it first.
+func Far2lNegotiated() bool {
+	fm := FrameManager
+	return fm != nil && !noTerminalBehind.Load() && fm.far2lNegotiated.Load()
+}
+
 func far2lEnabledFor(fm *frameManager) bool {
 	// A native window has no terminal to answer an APC request, and every
 	// far2l clipboard call would spend its full timeout waiting for a reply

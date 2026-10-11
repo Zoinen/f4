@@ -102,14 +102,14 @@ func formatAttributesCSI(buf []byte, attr, lastAttr uint64, activePal *[256]uint
 
 	revFlipped := IsFreeBSDSyscons && (attr^lastAttr)&CommonLvbReverse != 0
 
-	fgMask := IsFgRGB | (0xFF << 16)
-	if resetTriggered || revFlipped || attr&fgMask != lastAttr&fgMask || (attr&IsFgRGB != 0 && GetRGBFore(attr) != GetRGBFore(lastAttr)) {
+	fgMask := IsFgRGB | ForegroundDefault | (0xFF << 16)
+	if resetTriggered || revFlipped || attr&fgMask != lastAttr&fgMask || (attr&IsFgRGB != 0 && attr&ForegroundDefault == 0 && GetRGBFore(attr) != GetRGBFore(lastAttr)) {
 		writeSep()
 		n += writeColorANSI(buf[n:], false, attr, activePal, profile, quantCache)
 	}
 
-	bgMask := IsBgRGB | (0xFF << 40)
-	if resetTriggered || revFlipped || attr&bgMask != lastAttr&bgMask || (attr&IsBgRGB != 0 && GetRGBBack(attr) != GetRGBBack(lastAttr)) {
+	bgMask := IsBgRGB | BackgroundDefault | (0xFF << 40)
+	if resetTriggered || revFlipped || attr&bgMask != lastAttr&bgMask || (attr&IsBgRGB != 0 && attr&BackgroundDefault == 0 && GetRGBBack(attr) != GetRGBBack(lastAttr)) {
 		writeSep()
 		n += writeColorANSI(buf[n:], true, attr, activePal, profile, quantCache)
 	}
@@ -132,6 +132,14 @@ func writeColorANSI(dst []byte, isBg bool, attr uint64, activePal *[256]uint32, 
 		src = !src
 	}
 
+	// The terminal's own default colour: SGR 39 / 49, whatever the profile.
+	if src && attr&BackgroundDefault != 0 || !src && attr&ForegroundDefault != 0 {
+		if isBg {
+			return copy(dst, "49")
+		}
+		return copy(dst, "39")
+	}
+
 	var rgbVal uint32
 	var idxVal uint8
 	if src {
@@ -148,19 +156,7 @@ func writeColorANSI(dst []byte, isBg bool, attr uint64, activePal *[256]uint32, 
 	}
 	if attr&flag != 0 {
 		if profile != ColorProfileTrueColor {
-			if quantCache == nil {
-				idxVal = findNearestColor(rgbVal, activePal, 256)
-			} else if cachedIdx, ok := quantCache[rgbVal]; ok {
-				idxVal = cachedIdx
-			} else {
-				maxColors := 256
-				if profile == ColorProfile16 {
-					maxColors = 16
-				}
-				idxVal = findNearestColor(rgbVal, activePal, maxColors)
-				quantCache[rgbVal] = idxVal
-			}
-			idxVal = clampSysconsBg(isBg, idxVal)
+			idxVal = clampSysconsBg(isBg, quantizeRGB(rgbVal, activePal, profile, quantCache))
 			if profile == ColorProfile16 {
 				return copy(dst, idxTo16ColorANSI(isBg, idxVal))
 			}
@@ -168,6 +164,21 @@ func writeColorANSI(dst []byte, isBg bool, attr uint64, activePal *[256]uint32, 
 		}
 		r, g, b := rgb(rgbVal)
 		return appendColorRGB(dst, isBg, r, g, b)
+	}
+
+	// A palette index is sent as such only where the terminal is known to show
+	// the colour the application palette gives it. Redefining the terminal's
+	// palette with OSC 4 is not something a terminal has to support: PuTTY and
+	// KiTTY answer an OSC 4 query but ignore an OSC 4 that sets a colour, so
+	// there index 0 stayed black while f4 asked for dark grey (unxed/f4#107).
+	// Where the profile can express the colour directly, it is written directly.
+	if profile != ColorProfile16 && activePal != nil && !paletteIndexPortable(idxVal, activePal) {
+		rgbVal = activePal[idxVal]
+		if profile == ColorProfileTrueColor {
+			r, g, b := rgb(rgbVal)
+			return appendColorRGB(dst, isBg, r, g, b)
+		}
+		return appendColor256(dst, isBg, quantizeRGB(rgbVal, activePal, profile, quantCache))
 	}
 
 	idxVal = clampSysconsBg(isBg, idxVal)
@@ -245,15 +256,51 @@ func idxTo16ColorANSI(isBg bool, idx uint8) string {
 	return idx16FG[idx]
 }
 
+// paletteIndexPortable reports whether palette entry idx can be sent to the
+// terminal as a bare index in the 256-colour and true colour profiles: the
+// entry lies in the 6x6x6 cube or the grey ramp (16..255), which terminals
+// fill in the same standard way, and the application palette has not changed
+// it. The first 16 entries are the terminal's own colour scheme and differ
+// from one terminal to the next, so they never qualify.
+func paletteIndexPortable(idx uint8, pal *[256]uint32) bool {
+	return idx >= 16 && pal[idx] == XTerm256Palette[idx]
+}
+
+// quantizeRGB picks the palette index that stands in for rgbVal in a profile
+// without true colour. The 16-colour profile has nothing but the first 16
+// entries to work with, and relies on OSC 4 having loaded activePal into them.
+// The 256-colour profile uses the standard entries 16..255 only, so that the
+// result does not depend on whether the terminal honoured OSC 4.
+func quantizeRGB(rgbVal uint32, activePal *[256]uint32, profile ColorProfile, quantCache map[uint32]uint8) uint8 {
+	if idx, ok := quantCache[rgbVal]; ok {
+		return idx
+	}
+	var idx uint8
+	if profile == ColorProfile16 {
+		idx = findNearestColor(rgbVal, activePal, 16)
+	} else {
+		idx = findNearestColorIn(rgbVal, &XTerm256Palette, 16, 256)
+	}
+	if quantCache != nil {
+		quantCache[rgbVal] = idx
+	}
+	return idx
+}
+
 func findNearestColor(rgbVal uint32, pal *[256]uint32, maxColors int) uint8 {
+	return findNearestColorIn(rgbVal, pal, 0, maxColors)
+}
+
+// findNearestColorIn returns the entry of pal[from:to] closest to rgbVal.
+func findNearestColorIn(rgbVal uint32, pal *[256]uint32, from, to int) uint8 {
 	if pal == nil {
 		pal = &XTerm256Palette
 	}
 	r, g, b := rgb(rgbVal)
-	var bestIdx uint8 = 0
+	var bestIdx = uint8(from)
 	var bestDist int = 1000000
 
-	for i := 0; i < maxColors; i++ {
+	for i := from; i < to; i++ {
 		pr, pg, pb := rgb(pal[i])
 		dr := int(r) - int(pr)
 		dg := int(g) - int(pg)

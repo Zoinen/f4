@@ -209,6 +209,14 @@ func (c *fontFallbackChain) faceFor(r rune) any {
 		return f
 	}
 	f := c.resolveLocked(r)
+	if f == nil {
+		// The end of the walk is the one answer the log never carried:
+		// "no fallback for U+0710" and "the fallback was found and then
+		// dropped" left the same silence behind them. Memoisation keeps
+		// this to one line per rune.
+		DebugLog("%s: no font renders U+%04X (%s), %d fonts consulted",
+			c.logTag, r, scriptNameForRune(r), len(c.entries))
+	}
 	if c.resolved == nil {
 		c.resolved = make(map[rune]any, 256)
 	}
@@ -620,9 +628,11 @@ func loadBestFont(fontName string, size float64, dpi float64) (font.Face, int, i
 		advance, _ := face.GlyphAdvance('A')
 		cellW = advance.Ceil()
 
-		msg := fmt.Sprintf("GUI_FONT: Successfully loaded %s (%dx%d)", path, cellW, cellH)
-		fmt.Fprintln(os.Stderr, msg)
-		DebugLog("%s", msg)
+		// The debug log only. An application's stderr is usually its crash
+		// log (SetupStderrLog), and a crash log with anything in it is kept
+		// on exit: this line alone left a "crash" behind after every clean
+		// GUI session (f4 #474).
+		DebugLog("GUI_FONT: Successfully loaded %s (%dx%d)", path, cellW, cellH)
 		primaryFace = face
 		break
 	}

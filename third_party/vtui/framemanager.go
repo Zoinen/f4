@@ -239,6 +239,7 @@ type postedTaskExecution struct {
 
 // frameManager manages multiple screens and the main application loop.
 type frameManager struct {
+	renderLogCount           uint
 	Screens                  []*AppScreen
 	ActiveIdx                int
 	activationHistory        []*AppScreen
@@ -355,6 +356,7 @@ type frameManager struct {
 	eventSink                 func(UIEvent)
 	eventSinkMu               sync.RWMutex
 	hostMode                  bool
+	keyRepeat                 keyRepeatState
 }
 
 // SetHostMode configures whether FrameManager keeps running when frames slice is initially empty (used by vtui-host).
@@ -825,6 +827,7 @@ func (fm *frameManager) Init(scr *ScreenBuf) {
 	fm.activationTraversal = nil
 	fm.activationTraversalIndex = 0
 	fm.mousePositionKnown = false
+	fm.keyRepeat = keyRepeatState{}
 	fm.WorkspaceTabMode = WorkspaceTabsMultiple
 	fm.WorkspaceCtrlTabMode = WorkspaceCtrlTabDirect
 	fm.WorkspaceAltNumberSwitch = false
@@ -2661,18 +2664,6 @@ func (fm *frameManager) ResizeWindow(cols, rows int) {
 	}
 }
 
-type windowMaximizer interface {
-	ToggleMaximized() bool
-}
-
-func (fm *frameManager) ToggleWindowMaximized() bool {
-	if fm.scr == nil || fm.scr.Renderer == nil {
-		return false
-	}
-	r, ok := fm.scr.Renderer.(windowMaximizer)
-	return ok && r.ToggleMaximized()
-}
-
 func rendererWantsPeriodicRedraw(renderer SurfaceRenderer) bool {
 	if renderer, ok := renderer.(PeriodicRedrawRenderer); ok {
 		return renderer.WantsPeriodicRedraw()
@@ -2683,6 +2674,32 @@ func rendererWantsPeriodicRedraw(renderer SurfaceRenderer) bool {
 func rendererUsesEventDrivenResize(renderer SurfaceRenderer) bool {
 	if renderer, ok := renderer.(EventDrivenResizeRenderer); ok {
 		return renderer.UsesEventDrivenResize()
+	}
+	return false
+}
+
+// fontSetter is implemented by renderers that can hot-swap the font of an
+// already-open native window: reload the face, recompute the cell size and
+// repaint, without recreating the window. Not every GUI backend supports
+// this yet (vtui #136); a renderer that does not implement it leaves the
+// setting exactly where it is, and the caller (as of writing, f4's "Шрифт"
+// settings group) treats the change as needing a restart.
+type fontSetter interface {
+	// SetFont reports whether it applied the change.
+	SetFont(fontName string, fontSize float64) bool
+}
+
+// SetFont changes the font of an already-open GUI window, without
+// recreating it, when the active backend supports live font changes. It
+// reports false when the backend does not (yet) support this, in which case
+// the caller should fall back to whatever it does today -- typically
+// telling the user the change needs a restart.
+func (fm *frameManager) SetFont(fontName string, fontSize float64) bool {
+	if fm.scr == nil || fm.scr.Renderer == nil {
+		return false
+	}
+	if r, ok := fm.scr.Renderer.(fontSetter); ok {
+		return r.SetFont(fontName, fontSize)
 	}
 	return false
 }
@@ -2798,6 +2815,15 @@ func (fm *frameManager) semanticMenuInputCanPublish(before, after semanticMenuIn
 	return false
 }
 
+// SetFont changes the font of the active GUI window; see
+// frameManager.SetFont.
+func SetFont(fontName string, fontSize float64) bool {
+	if FrameManager != nil {
+		return FrameManager.SetFont(fontName, fontSize)
+	}
+	return false
+}
+
 func (fm *frameManager) publishSemanticMenuState() bool {
 	if fm == nil || fm.scr == nil || fm.scr.Renderer == nil {
 		return false
@@ -2848,8 +2874,13 @@ func (fm *frameManager) refreshKeyBarState() {
 		if ks := fm.frames[i].GetKeyLabels(); ks != nil {
 			fm.KeyBar.Normal, fm.KeyBar.Shift = ks.Normal, ks.Shift
 			fm.KeyBar.Ctrl, fm.KeyBar.Alt = ks.Ctrl, ks.Alt
+			fm.KeyBar.CtrlShift, fm.KeyBar.AltShift, fm.KeyBar.CtrlAlt = ks.CtrlShift, ks.AltShift, ks.CtrlAlt
+			fm.KeyBar.NormalDisabled, fm.KeyBar.ShiftDisabled = ks.NormalDisabled, ks.ShiftDisabled
+			fm.KeyBar.CtrlDisabled, fm.KeyBar.AltDisabled = ks.CtrlDisabled, ks.AltDisabled
+			fm.KeyBar.CtrlShiftDisabled, fm.KeyBar.AltShiftDisabled, fm.KeyBar.CtrlAltDisabled = ks.CtrlShiftDisabled, ks.AltShiftDisabled, ks.CtrlAltDisabled
 			fm.KeyBar.NormalIcons, fm.KeyBar.ShiftIcons = ks.NormalIcons, ks.ShiftIcons
 			fm.KeyBar.CtrlIcons, fm.KeyBar.AltIcons = ks.CtrlIcons, ks.AltIcons
+			fm.KeyBar.CtrlShiftIcons, fm.KeyBar.AltShiftIcons, fm.KeyBar.CtrlAltIcons = ks.CtrlShiftIcons, ks.AltShiftIcons, ks.CtrlAltIcons
 			break
 		}
 	}
@@ -3089,6 +3120,38 @@ func (fm *frameManager) runQueuedTask(task func()) {
 	}
 }
 
+// windowMaximizer is implemented by renderers that draw into a native window
+// the platform can maximize.
+type windowMaximizer interface {
+	// ToggleMaximized maximizes the window, or restores it when it is
+	// maximized already. It reports false when it could not ask for either.
+	ToggleMaximized() bool
+}
+
+// ToggleWindowMaximized is far2l's Alt+F9 (ToggleVideoMode): maximize the
+// window f4 is drawn in, or restore it when it is maximized already.
+//
+// A GUI backend toggles its own window. In a terminal, the windows within
+// reach are a classic Windows console window and, under a pseudoconsole, the
+// terminal window that owns it (Windows Terminal); both are maximized the way
+// Far Manager does it. It reports false when nothing could be asked -- a
+// terminal emulator on another platform, a pseudoconsole without an owner --
+// so the caller can fall back to something weaker, like the xterm resize
+// sequence.
+func (fm *frameManager) ToggleWindowMaximized() bool {
+	if fm.scr != nil && fm.scr.Renderer != nil {
+		if r, ok := fm.scr.Renderer.(windowMaximizer); ok {
+			return r.ToggleMaximized()
+		}
+	}
+	if ActiveBackend() != "" {
+		// A GUI host whose renderer cannot maximize: the console behind it,
+		// if any, is not the window the user is looking at.
+		return false
+	}
+	return toggleConsoleMaximizedOS()
+}
+
 // Stop signals the main loop to exit.
 func (fm *frameManager) Stop() {
 	DebugLog("FM: Stop() requested. Deactivating menus and exiting loop.")
@@ -3147,6 +3210,15 @@ func (fm *frameManager) Run(readers ...*vtinput.Reader) {
 
 	if len(readers) > 0 && readers[0] != nil {
 		fm.Reader = readers[0]
+		// Nothing has read stdin yet -- the pump starts with GetEventChan
+		// below -- so everything the console accumulated while the
+		// application was starting up is still in the input buffer: mouse
+		// reports the terminal kept sending (it was told about the mouse
+		// by the previous occupant of the console) plus native mouse
+		// records from this application's own init. Drop it all: it was
+		// aimed at a reader that did not exist yet, and the panel would
+		// otherwise show it as typed text or act on phantom clicks.
+		vtinput.DrainInput()
 		fm.EventChan = readers[0].GetEventChan()
 		defer readers[0].Close()
 	}
@@ -3175,6 +3247,11 @@ func (fm *frameManager) Run(readers ...*vtinput.Reader) {
 		fm.running.Store(false)
 		if fm.shutdown.Load() {
 			fm.finishShutdown()
+			// Suspend's writes above flushed the mouse-off announcement to
+			// the terminal; drop whatever it sent before that arrived, plus
+			// anything that raced in behind it, so the shell prompt that
+			// takes the console next starts with an empty input buffer.
+			vtinput.DrainInput()
 		} else if fm.scr != nil {
 			fm.scr.SetCursorVisible(true)
 			// Skip the flush if Suspend already restored the terminal: this
@@ -3371,6 +3448,9 @@ func (fm *frameManager) Run(readers ...*vtinput.Reader) {
 	}
 }
 
+// renderLogEvery is how many renders pass between two debug lines.
+const renderLogEvery = 300
+
 func (fm *frameManager) renderPhase() {
 	if len(fm.frames) == 0 {
 		return
@@ -3429,8 +3509,11 @@ func (fm *frameManager) renderPhase() {
 	}
 	renderPhaseStart := time.Now()
 	if fm.scr != nil && fm.scr.Renderer != nil {
-		// Only log periodically to avoid performance hit
-		if (time.Now().UnixMilli()/1000)%5 == 0 {
+		// Only log periodically to avoid performance hit. A counter, not the
+		// wall clock: which second a render fell in decided whether this line
+		// ran, and with it the coverage of the package from run to run.
+		fm.renderLogCount++
+		if fm.renderLogCount%renderLogEvery == 1 {
 			DebugLog("FM: renderPhase() for screen %dx%d, stack depth: %d, top frame: %q",
 				fm.scr.width, fm.scr.height, len(fm.frames), fm.frames[len(fm.frames)-1].GetTitle())
 		}
@@ -3461,6 +3544,18 @@ func (fm *frameManager) renderPhase() {
 	// If the frame is "busy" (e.g., mass insertion in progress), skip drawing
 	// and Flush to avoid flickering and save CPU.
 	if !topFrame.IsBusy() {
+		// This is exactly the "large multi-step redraw" the render lock
+		// (f4#254) exists for: the frame stack, menu bar, key bar, status
+		// line, toast and workspace chrome below are painted through many
+		// separate ScreenBuf.Write/FillRect/ApplyColor calls. Lock defers
+		// any actual flush to the backend until Unlock, at the bottom of
+		// this block, so nothing -- not even a Flush called concurrently
+		// from elsewhere while this composition is in progress -- can
+		// observe or present a half-drawn intermediate frame while an
+		// entire panel is toggled (e.g. Ctrl+O).
+		fm.scr.Lock()
+		defer fm.scr.Unlock()
+
 		// Cleanup orphaned menus safely outside the frames iteration loop
 		// to avoid "index out of range" during rendering.
 		fm.cleanupOrphanedMenus()
@@ -3609,7 +3704,8 @@ func (fm *frameManager) renderPhase() {
 			}
 		}
 
-		fm.scr.Flush()
+		// fm.scr.Unlock() (deferred above) delivers the fully composed
+		// frame here.
 	}
 	renderPhaseDur := time.Since(renderPhaseStart)
 	if renderPhaseDur > 10*time.Millisecond {
@@ -3683,6 +3779,7 @@ func (fm *frameManager) dispatchEventWithPaste(ev *vtinput.InputEvent, is_inject
 	if fm.isDuplicateMouseMove(ev) {
 		return false
 	}
+	fm.keyRepeat.observe(ev, is_injected)
 	DebugLog("FM_DISPATCH: Received event: %s", ev.String())
 	// Translator Tool: Ctrl+Alt+RightClick
 	if ev.Type == vtinput.MouseEventType && ev.ButtonState == vtinput.RightmostButtonPressed && ev.KeyDown {
@@ -3815,29 +3912,37 @@ func (fm *frameManager) dispatchEventWithPaste(ev *vtinput.InputEvent, is_inject
 	// Update KeyBar modifiers automatically if present.
 	// Reset modifiers to a clean state on FocusEvents to prevent modifiers
 	// from getting stuck during focus transitions (such as system layout switching).
+	//
+	// Only a modifier key's own event may light a row up (LatchModifiers);
+	// every other event may only put one out (SetModifiers). A terminal
+	// without key release reporting delivers Shift+F1 as one F1 keypress
+	// carrying the Shift bit and says nothing at all when Shift is let go, so
+	// a row lit from that bit would never be put out again. See the
+	// SetModifiers comment and f4 issue #983.
 	if fm.KeyBar != nil {
 		if ev.Type == vtinput.FocusEventType {
-			fm.KeyBar.SetModifiers(false, false, false)
+			fm.KeyBar.LatchModifiers(false, false, false)
 		} else {
 			shift := (ev.ControlKeyState & vtinput.ShiftPressed) != 0
 			ctrl := (ev.ControlKeyState & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed)) != 0
 			alt := (ev.ControlKeyState & (vtinput.LeftAltPressed | vtinput.RightAltPressed)) != 0
 
 			// Workaround for X11/macOS where the event's modifier state reflects the
-			// logical state *prior* to the keypress/keyrelease of the modifier itself.
-			if ev.Type == vtinput.KeyEventType {
-				if ev.VirtualKeyCode == vtinput.VK_SHIFT || ev.VirtualKeyCode == vtinput.VK_LSHIFT || ev.VirtualKeyCode == vtinput.VK_RSHIFT {
-					shift = ev.KeyDown
-				}
-				if ev.VirtualKeyCode == vtinput.VK_CONTROL || ev.VirtualKeyCode == vtinput.VK_LCONTROL || ev.VirtualKeyCode == vtinput.VK_RCONTROL {
-					ctrl = ev.KeyDown
-				}
-				if ev.VirtualKeyCode == vtinput.VK_MENU || ev.VirtualKeyCode == vtinput.VK_LMENU || ev.VirtualKeyCode == vtinput.VK_RMENU {
-					alt = ev.KeyDown
-				}
+			// logical state *prior* to the keypress/keyrelease of the modifier itself:
+			// the modifier the event is about comes from KeyDown, its companions
+			// from the reported state.
+			switch {
+			case ev.Type != vtinput.KeyEventType:
+				fm.KeyBar.SetModifiers(shift, ctrl, alt)
+			case ev.VirtualKeyCode == vtinput.VK_SHIFT || ev.VirtualKeyCode == vtinput.VK_LSHIFT || ev.VirtualKeyCode == vtinput.VK_RSHIFT:
+				fm.KeyBar.LatchModifiers(ev.KeyDown, ctrl, alt)
+			case ev.VirtualKeyCode == vtinput.VK_CONTROL || ev.VirtualKeyCode == vtinput.VK_LCONTROL || ev.VirtualKeyCode == vtinput.VK_RCONTROL:
+				fm.KeyBar.LatchModifiers(shift, ev.KeyDown, alt)
+			case ev.VirtualKeyCode == vtinput.VK_MENU || ev.VirtualKeyCode == vtinput.VK_LMENU || ev.VirtualKeyCode == vtinput.VK_RMENU:
+				fm.KeyBar.LatchModifiers(shift, ctrl, ev.KeyDown)
+			default:
+				fm.KeyBar.SetModifiers(shift, ctrl, alt)
 			}
-
-			fm.KeyBar.SetModifiers(shift, ctrl, alt)
 		}
 	}
 

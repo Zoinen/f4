@@ -6,7 +6,7 @@ import (
 	"github.com/unxed/vtui"
 )
 
-// keyRemapSuspended answers keymap.Suspended: with the panels hidden and an
+// KeyRemapSuspended answers keymap.Suspended: with the panels hidden and an
 // AltScreen program or a busy child running, every key is forwarded to that
 // program verbatim, and substituting there would send vim or htop a chord the
 // user never pressed. It is the same handover the noaltscreenapp and

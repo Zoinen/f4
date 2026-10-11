@@ -285,7 +285,26 @@ Item {
     }
 
     function handlePressed(event) {
-        if (isPasteShortcut(event)) {
+        const session = galleryPanel.session
+        const index = galleryPanel.controller.currentIndex
+        if (event.key === Qt.Key_F3 && event.modifiers === Qt.NoModifier
+                && bridge && hostCapabilities.viewer && session
+                && panel.previewCapable !== false
+                && index >= 0 && session.isViewableAt(index)) {
+            // F3 on native media must not create a Go ImageView workspace:
+            // that terminal graphics surface has no Qt semantic projection.
+            bridge.suppressKeyRelease(event.key)
+            if (adapter.benchmarkTraceOutputEnabled
+                    && typeof bridge.recordBenchmarkStage === "function")
+                bridge.recordBenchmarkStage(side, "gallery.viewer.shortcut", {
+                    "fix": "[FIX:native-f3-viewer]", "key": event.key,
+                    "entryId": session.entryIdAt(index)
+                })
+            bridge.requestOpen(side, session.entryIdAt(index),
+                               session.sourceIndexAt(index), true,
+                               Number(session.catalogRevision), event.isAutoRepeat)
+            event.accepted = true
+        } else if (isPasteShortcut(event)) {
             if (keySink)
                 keySink.sendClipboardPaste()
             event.accepted = true

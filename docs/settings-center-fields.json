@@ -140,6 +140,16 @@
     "unavailable": ""
   },
   {
+    "category": "startup",
+    "description": "When f4 is started from a terminal, open the current folder in both panels, as mc does. Off restores the panels of the last session, as far2l and Far do. Folders named on the command line always win: with this on the other panel shows the current folder, with it off the other panel stays as it was.",
+    "group": "Launch defaults",
+    "id": "StartInCurrentFolder",
+    "kind": "boolean",
+    "label": "Open the current folder at start",
+    "timing": "restart",
+    "unavailable": ""
+  },
+  {
     "category": "workspaces",
     "description": "Show tabs always, only with multiple workspaces, while Ctrl is held, or never.",
     "group": "Tab presentation",
@@ -311,12 +321,32 @@
   },
   {
     "category": "panels",
+    "description": "Keep the file index of an opened tar archive in the cache, so opening it again is instant. Off rebuilds the index each time the archive is opened: slower, but never out of date.",
+    "group": "Directory loading",
+    "id": "ArchiveTarIndexCache",
+    "kind": "boolean",
+    "label": "Cache tar archive indexes",
+    "timing": "live",
+    "unavailable": ""
+  },
+  {
+    "category": "panels",
     "description": "Replace the listing only when all directory results are ready and bypass cached previews. Off permits incremental results. It does not block all UI work.",
     "group": "Directory loading",
     "id": "SyncPanelLoad",
     "kind": "boolean",
     "label": "Wait for complete directory listing",
     "timing": "next directory load",
+    "unavailable": ""
+  },
+  {
+    "category": "panels",
+    "description": "Re-read a panel showing a local directory when files appear, vanish or change there, keeping the cursor and selection. Uses the system's change notifications where available and periodic comparison elsewhere; archives, plugin and remote panels are never watched.",
+    "group": "Directory loading",
+    "id": "WatchDirectories",
+    "kind": "boolean",
+    "label": "Refresh panels when files change",
+    "timing": "live",
     "unavailable": ""
   },
   {
@@ -721,6 +751,16 @@
   },
   {
     "category": "editor",
+    "description": "Draw control characters as one-cell symbols such as ␀ and ␛ in newly opened editors, instead of a placeholder. The Editor > Options toggle changes it for one editor.",
+    "group": "Visual aids",
+    "id": "EditorShowControlChars",
+    "kind": "boolean",
+    "label": "Show control characters",
+    "timing": "new editors",
+    "unavailable": ""
+  },
+  {
+    "category": "editor",
     "description": "Select no guide, a vertical guide, a horizontal guide, or both. Colorer can supply guide colors but the behavior is editor-wide.",
     "group": "Visual aids",
     "id": "EditorCrossMode",
@@ -1007,6 +1047,16 @@
     "kind": "boolean",
     "label": "Inherit terminal history in new tabs",
     "timing": "new workspaces",
+    "unavailable": ""
+  },
+  {
+    "category": "terminal",
+    "description": "In the host console modes, draw the console f4 shows beside a hidden panel (Ctrl+F1, Ctrl+F2) in the host terminal's own default colours, so a translucent or themed terminal shows through instead of a black rectangle. Off keeps the black background. No effect in the embedded terminal.",
+    "group": "Presentation",
+    "id": "HostConsoleDefaultColors",
+    "kind": "boolean",
+    "label": "Keep host console default colors",
+    "timing": "live",
     "unavailable": ""
   },
   {

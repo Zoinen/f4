@@ -165,3 +165,29 @@ func TestMenuItemsWidthCountsSubMenuMarker(t *testing.T) {
 		t.Errorf("width with the submenu marker = %d, want more than %d", nested, plain)
 	}
 }
+
+// A nested menu takes every color of its parent; the scrollbar is one of them,
+// or a menu with its own palette opens a nested menu with a foreign stripe.
+func TestVMenuNestedMenuInheritsScrollBarColor(t *testing.T) {
+	mb := newSubMenuTestBar(t, 80, 25, []MenuItem{
+		{Text: "History", SubItems: []MenuItem{{Text: "Command history"}}},
+	})
+	mb.ActivateSubMenu(0)
+
+	dropdown, ok := mb.activeSubMenu.(*VMenu)
+	if !ok {
+		t.Fatal("menu bar did not open a VMenu")
+	}
+	dropdown.ScrollBar.ColorIdx = ColDialogComboScrollbar
+	dropdown.SetSelectPos(0)
+	if !dropdown.ProcessKey(key(vtinput.VK_RIGHT)) {
+		t.Fatal("Right on a submenu heading was not handled")
+	}
+	nested := dropdown.activeSub
+	if nested == nil {
+		t.Fatal("Right did not open the nested menu")
+	}
+	if got := nested.ScrollBar.ColorIdx; got != ColDialogComboScrollbar {
+		t.Fatalf("nested menu scrollbar color slot = %d, want %d", got, ColDialogComboScrollbar)
+	}
+}

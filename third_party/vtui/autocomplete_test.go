@@ -1,17 +1,37 @@
 package vtui
 
 import (
-	"github.com/unxed/vtinput"
+	"strings"
 	"testing"
+
+	"github.com/unxed/vtinput"
 )
 
 func TestAutoComplete_SelectPos(t *testing.T) {
 	SetDefaultPalette()
+	FrameManager.Init(NewSilentScreenBuf())
 	edit := NewEdit(0, 0, 20, "l")
 	edit.History = []string{"ls -la", "ls"}
 	ac := NewAutoCompleteMenu(edit)
+	// Nothing is selected until the user says so.
+	if ac.SelectPos() != -1 {
+		t.Errorf("Expected no initial selection, got %d", ac.SelectPos())
+	}
+
+	ac.ProcessKey(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_DOWN,
+	})
 	if ac.SelectPos() != 0 {
-		t.Errorf("Expected initial SelectPos 0, got %d", ac.SelectPos())
+		t.Errorf("First Down should select the top item, got %d", ac.SelectPos())
+	}
+
+	// Up from no selection reaches the other end of the list.
+	ac2 := NewAutoCompleteMenu(edit)
+	ac2.ProcessKey(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_UP,
+	})
+	if ac2.SelectPos() != 1 {
+		t.Errorf("First Up should select the last item, got %d", ac2.SelectPos())
 	}
 }
 
@@ -71,7 +91,9 @@ func TestAutoComplete_IsBusyInheritance(t *testing.T) {
 	SetDefaultPalette()
 	fm := NewFrameManager()
 	fm.Init(NewSilentScreenBuf())
+	savedFM := FrameManager
 	FrameManager = fm
+	t.Cleanup(func() { FrameManager = savedFM })
 
 	busyUnder := &busyFrame{Busy: true}
 	fm.Push(busyUnder)
@@ -140,10 +162,13 @@ func TestAutoComplete_TabCompletion(t *testing.T) {
 	ac := NewAutoCompleteMenu(edit)
 	FrameManager.Push(ac)
 
-	// Navigate to second item
-	ac.ProcessKey(&vtinput.InputEvent{
-		Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_DOWN,
-	})
+	// Navigate to second item: the first Down only reveals the cursor on
+	// the top match, the second one steps down from it.
+	for i := 0; i < 2; i++ {
+		ac.ProcessKey(&vtinput.InputEvent{
+			Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_DOWN,
+		})
+	}
 
 	// Press Tab
 	ac.ProcessKey(&vtinput.InputEvent{
@@ -180,18 +205,79 @@ func TestAutoComplete_ReturnLogic(t *testing.T) {
 		VirtualKeyCode: vtinput.VK_RETURN,
 	})
 
-	// 1. Текст должен замениться на подсказку
-	if edit.GetText() != "go run ." {
-		t.Errorf("Enter should update text even without navigation. Got %q", edit.GetText())
+	// 1. Набранное остаётся набранным: незапрошенная подстановка из истории
+	//    подтверждала бы не то, что человек ввёл.
+	if edit.GetText() != "g" {
+		t.Errorf("Enter without a pick must keep the typed text. Got %q", edit.GetText())
 	}
 
-	// 2. Должно быть инжектировано событие Enter для выполнения
+	// 2. Enter уходит вниз, к диалогу или командной строке
 	if len(fm.injectedEvents) == 0 || fm.injectedEvents[0].VirtualKeyCode != vtinput.VK_RETURN {
-		t.Error("Enter should inject Return event for immediate execution")
+		t.Error("Enter should be handed to the frame below the menu")
 	}
 
 	if !ac.IsDone() {
 		t.Error("Menu should close on Enter")
+	}
+}
+
+func TestAutoComplete_ReturnAfterExplicitPick(t *testing.T) {
+	SetDefaultPalette()
+	fm := FrameManager
+	fm.Init(NewSilentScreenBuf())
+	fm.injectedEvents = nil
+
+	edit := NewEdit(0, 10, 20, "g")
+	edit.History = []string{"go run ."}
+
+	ac := NewAutoCompleteMenu(edit)
+	fm.Push(ac)
+
+	ac.ProcessKey(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_DOWN,
+	})
+	ac.ProcessKey(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN,
+	})
+
+	if edit.GetText() != "go run ." {
+		t.Errorf("Enter after Down should take the picked entry. Got %q", edit.GetText())
+	}
+	if len(fm.injectedEvents) == 0 || fm.injectedEvents[0].VirtualKeyCode != vtinput.VK_RETURN {
+		t.Error("Enter on a picked entry should still execute it")
+	}
+}
+
+func TestAutoComplete_TypingForgetsThePick(t *testing.T) {
+	SetDefaultPalette()
+	fm := FrameManager
+	fm.Init(NewSilentScreenBuf())
+	fm.injectedEvents = nil
+
+	edit := NewEdit(0, 10, 20, "g")
+	edit.History = []string{"git status", "go run ."}
+	edit.ClearSelection() // as if "g" had just been typed into an empty field
+
+	ac := NewAutoCompleteMenu(edit)
+	fm.Push(ac)
+
+	ac.ProcessKey(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_DOWN,
+	})
+	// One more character: the highlighted entry is no longer what the user
+	// is aiming at, so the selection goes away with it.
+	ac.ProcessKey(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true, Char: 'o',
+	})
+	if ac.SelectPos() != -1 {
+		t.Errorf("Typing should drop the selection, got %d", ac.SelectPos())
+	}
+
+	ac.ProcessKey(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN,
+	})
+	if edit.GetText() != "go" {
+		t.Errorf("Enter should confirm the typed text, got %q", edit.GetText())
 	}
 }
 
@@ -207,7 +293,10 @@ func TestAutoComplete_ShiftEnter(t *testing.T) {
 	ac := NewAutoCompleteMenu(edit)
 	fm.Push(ac)
 
-	// Нажимаем Shift+Enter
+	// Выбираем запись явно, затем Shift+Enter
+	ac.ProcessKey(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_DOWN,
+	})
 	ac.ProcessKey(&vtinput.InputEvent{
 		Type:            vtinput.KeyEventType,
 		KeyDown:         true,
@@ -226,6 +315,36 @@ func TestAutoComplete_ShiftEnter(t *testing.T) {
 	}
 }
 
+func TestAutoComplete_ShiftEnterWithoutPickLeavesTextAlone(t *testing.T) {
+	SetDefaultPalette()
+	fm := FrameManager
+	fm.Init(NewSilentScreenBuf())
+	fm.injectedEvents = nil
+
+	edit := NewEdit(0, 10, 20, "g")
+	edit.History = []string{"go run ."}
+
+	ac := NewAutoCompleteMenu(edit)
+	fm.Push(ac)
+
+	ac.ProcessKey(&vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_RETURN,
+		ControlKeyState: vtinput.ShiftPressed,
+	})
+
+	if edit.GetText() != "g" {
+		t.Errorf("Shift+Enter without a pick must keep the typed text. Got %q", edit.GetText())
+	}
+	if len(fm.injectedEvents) != 0 {
+		t.Error("Shift+Enter must never execute")
+	}
+	if !ac.IsDone() {
+		t.Error("Menu should close on Shift+Enter")
+	}
+}
+
 func TestAutoComplete_ShiftDelete(t *testing.T) {
 	SetDefaultPalette()
 	GlobalHistoryProvider = &mockHistoryProvider{storage: make(map[string][]string)}
@@ -236,11 +355,22 @@ func TestAutoComplete_ShiftDelete(t *testing.T) {
 
 	ac := NewAutoCompleteMenu(edit)
 
-	// Remove first item via Shift+Del
-	ac.ProcessKey(&vtinput.InputEvent{
+	delEvent := &vtinput.InputEvent{
 		Type: vtinput.KeyEventType, KeyDown: true,
 		VirtualKeyCode: vtinput.VK_DELETE, ControlKeyState: vtinput.ShiftPressed,
+	}
+
+	// Without a pick of its own, Shift+Del has nothing to remove.
+	ac.ProcessKey(delEvent)
+	if len(edit.History) != 2 {
+		t.Fatalf("Shift+Del removed an entry nobody selected: %v", edit.History)
+	}
+
+	// Pick the first item, then remove it
+	ac.ProcessKey(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_DOWN,
 	})
+	ac.ProcessKey(delEvent)
 
 	if len(edit.History) != 1 || edit.History[0] != "rm test.txt" {
 		t.Errorf("History item was not removed. Current history: %v", edit.History)
@@ -342,7 +472,7 @@ func TestAutoComplete_PathHintMerge(t *testing.T) {
 	}
 
 	// Down from 1 must skip the separator and land on the history item
-	ac.lb.SetSelectPos(1)
+	ac.choose(1)
 	ac.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_DOWN})
 	if ac.lb.SelectPos != 3 {
 		t.Errorf("Down should skip the separator: SelectPos=%d, want 3", ac.lb.SelectPos)
@@ -482,6 +612,44 @@ func TestAutoComplete_NearCursorPosition(t *testing.T) {
 	_, ay21, _, _ := ac2.GetPosition()
 	if ay21 >= edit2.Y1 {
 		t.Errorf("Menu should flip above the edit near the bottom edge: y1=%d, edit y=%d", ay21, edit2.Y1)
+	}
+}
+
+// f4 #1155: a history of short commands left a 24-cell menu whose bottom
+// border cut the key hint off after "Up/Down Enter Esc T".
+func TestAutoComplete_FooterFitsShortHistory(t *testing.T) {
+	SetDefaultPalette()
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(100, 40)
+	FrameManager.Init(scr)
+
+	edit := NewEdit(10, 20, 60, "e")
+	edit.History = []string{"edit.exe"}
+	ac := NewAutoCompleteMenu(edit)
+	defer ac.Close()
+	if !ac.HasMatches() {
+		t.Fatal(`expected "edit.exe" to match "e"`)
+	}
+
+	x1, _, x2, y2 := ac.GetPosition()
+	if want := StringWidth(autoCompleteFooter) + 4; x2-x1+1 < want {
+		t.Errorf("menu width %d cannot hold the key hint, want at least %d", x2-x1+1, want)
+	}
+
+	ac.Show(scr)
+	var bottom strings.Builder
+	for x := x1; x <= x2; x++ {
+		bottom.WriteRune(rune(scr.GetCell(x, y2).Char))
+	}
+	if !strings.Contains(bottom.String(), autoCompleteFooter) {
+		t.Errorf("bottom border %q does not carry the whole key hint %q", bottom.String(), autoCompleteFooter)
+	}
+}
+
+// f4 #1155: the hint lists both delete keys, the way f4's history dialogs do.
+func TestAutoComplete_FooterListsBothDeleteKeys(t *testing.T) {
+	if !strings.Contains(autoCompleteFooter, "Shift+Del Del") {
+		t.Errorf("key hint %q should list Shift+Del and Del", autoCompleteFooter)
 	}
 }
 
@@ -703,5 +871,124 @@ func TestAutoCompletePathPreviewUsesOriginalSpan(t *testing.T) {
 	ac.Preview(0)
 	if edit.GetText() != "app abc --flag" {
 		t.Fatal("original arguments lost")
+	}
+}
+
+// f4 #1155: a plain Del on a history entry the user picked clears the whole
+// list after a confirmation, like Del in every other history list. With no
+// pick the focus is still on the text and Del edits it.
+func TestAutoComplete_DeleteClearsHistoryOncePicked(t *testing.T) {
+	SetDefaultPalette()
+	fm := FrameManager
+	fm.Init(NewSilentScreenBuf())
+	mock := &mockHistoryProvider{storage: map[string][]string{"dlg": {"rm -rf /", "rm test.txt"}}}
+	GlobalHistoryProvider = mock
+	defer func() { GlobalHistoryProvider = nil }()
+
+	edit := NewEdit(0, 0, 20, "rm")
+	edit.History = []string{"rm -rf /", "rm test.txt"}
+	edit.HistoryID = "dlg"
+	edit.ClearSelection() // a fresh Edit has its text selected, and Del would eat all of it
+	edit.curPos = 0
+	ac := NewAutoCompleteMenu(edit)
+	fm.Push(ac)
+
+	press := func(vk uint16) {
+		ac.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vk})
+	}
+
+	press(vtinput.VK_DELETE)
+	if edit.GetText() != "m" || len(edit.History) != 2 || fm.GetTopFrame() != Frame(ac) {
+		t.Fatalf("Del without a pick should edit the text: text %q, history %v", edit.GetText(), edit.History)
+	}
+
+	press(vtinput.VK_DOWN)
+	press(vtinput.VK_DELETE)
+	confirm := fm.GetTopFrame()
+	if confirm == Frame(ac) {
+		t.Fatal("Del on a picked entry should ask before clearing the history")
+	}
+	if len(edit.History) != 2 {
+		t.Fatalf("Del cleared the history before it was confirmed: %v", edit.History)
+	}
+	confirm.SetExitCode(1) // Cancel
+	if len(edit.History) != 2 || len(mock.storage["dlg"]) != 2 || ac.IsDone() {
+		t.Fatalf("a cancelled clear changed something: history %v, saved %v, menu done %v",
+			edit.History, mock.storage["dlg"], ac.IsDone())
+	}
+
+	press(vtinput.VK_DELETE)
+	confirm = fm.GetTopFrame()
+	if confirm == Frame(ac) {
+		t.Fatal("Del should ask before clearing the history")
+	}
+	confirm.SetExitCode(0) // Ok
+	if len(edit.History) != 0 || len(mock.storage["dlg"]) != 0 {
+		t.Fatalf("a confirmed clear left entries behind: history %v, saved %v", edit.History, mock.storage["dlg"])
+	}
+	if !ac.IsDone() {
+		t.Error("the menu should close once its history is cleared")
+	}
+}
+
+// The host may own the clearing (f4 keeps pinned entries): its hook replaces
+// the built-in dialog, and the menu catches up with what it leaves behind.
+func TestAutoComplete_DeleteUsesClearHistoryHook(t *testing.T) {
+	SetDefaultPalette()
+	fm := FrameManager
+	fm.Init(NewSilentScreenBuf())
+
+	edit := NewEdit(0, 0, 20, "rm")
+	edit.History = []string{"rm pinned", "rm other"}
+	asked := 0
+	edit.ClearHistory = func(done func()) {
+		asked++
+		edit.History = []string{"rm pinned"}
+		done()
+	}
+	ac := NewAutoCompleteMenu(edit)
+	fm.Push(ac)
+
+	ac.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_DOWN})
+	ac.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_DELETE})
+
+	if asked != 1 || fm.GetTopFrame() != Frame(ac) {
+		t.Fatalf("hook asked %d times, top frame is the menu: %v", asked, fm.GetTopFrame() == Frame(ac))
+	}
+	if len(ac.Matches) != 1 || ac.Matches[0] != "rm pinned" || ac.IsDone() {
+		t.Errorf("menu did not catch up with the kept entries: %v, done %v", ac.Matches, ac.IsDone())
+	}
+	if ac.SelectPos() != -1 {
+		t.Error("the pick should be forgotten after the list changed under it")
+	}
+}
+
+// f4 #1155: "*.d" is not a typo of "*.xls". A strict field lists only entries
+// that contain what was typed, where the default menu forgives one mistake.
+func TestAutoComplete_StrictListsOnlyContainingEntries(t *testing.T) {
+	SetDefaultPalette()
+	history := []string{"*.xls", "*.txt", "*.d"}
+
+	loose := NewEdit(0, 0, 20, "*.d")
+	loose.History = history
+	if n := len(NewAutoCompleteMenu(loose).Matches); n != 3 {
+		t.Fatalf("default menu should stay typo tolerant, got %d matches", n)
+	}
+
+	strict := NewEdit(0, 0, 20, "*.d")
+	strict.History = history
+	strict.StrictAutoComplete = true
+	if got := NewAutoCompleteMenu(strict).Matches; len(got) != 1 || got[0] != "*.d" {
+		t.Fatalf("strict menu should list only *.d, got %v", got)
+	}
+
+	strict.History = []string{"*.xls", "*.txt"}
+	if NewAutoCompleteMenu(strict).HasMatches() {
+		t.Error("strict menu should not open when nothing contains the typed text")
+	}
+
+	strict.SetText("*.T")
+	if got := NewAutoCompleteMenu(strict).Matches; len(got) != 1 || got[0] != "*.txt" {
+		t.Errorf("strict matching should still ignore case, got %v", got)
 	}
 }

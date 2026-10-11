@@ -84,7 +84,7 @@ func TestSemanticKeyBarExportsIconForActiveModifier(t *testing.T) {
 		t.Fatalf("normal key-bar alternatives = %#v", normalItems[0])
 	}
 
-	kb.SetModifiers(false, true, false)
+	kb.LatchModifiers(false, true, false)
 	ctrl := semanticKeyBar(kb)
 	ctrlItems := ctrl["items"].([]map[string]any)
 	if ctrl["modifier"] != "ctrl" || ctrlItems[0]["icon"] != "panel-left" {

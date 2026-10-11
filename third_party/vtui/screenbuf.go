@@ -645,6 +645,40 @@ func rgb(c uint32) (r, g, b byte) {
 	return byte((c >> 16) & 0xFF), byte((c >> 8) & 0xFF), byte(c & 0xFF)
 }
 
+// Lock suspends frame delivery: Flush keeps composing (or, while locked,
+// skips composing altogether -- see composeFrame) but nothing reaches the
+// Renderer until the matching Unlock call drops the counter back to zero.
+//
+// This is the render lock from f4#254: X11/Wayland reported tearing and
+// half-drawn intermediate frames while rapidly toggling panels (holding
+// Ctrl+O). Bracket a large multi-step redraw -- one that paints an entire
+// panel across many separate Write/FillRect calls -- with Lock/Unlock so no
+// caller of Flush observes, and no backend presents, a partially composed
+// frame. Calls nest: Unlock only re-enables delivery once every matching
+// Lock has been undone, so a redraw that starts while another is still
+// locked is safely deferred rather than racing it for the display.
+func (s *ScreenBuf) Lock() {
+	s.mu.Lock()
+	s.lockCount++
+	s.mu.Unlock()
+}
+
+// Unlock reverses one Lock call. Once every matching Lock has been undone
+// (the counter reaches zero) it flushes immediately, delivering whatever
+// frame is now fully composed instead of waiting for some unrelated later
+// Flush call to notice.
+func (s *ScreenBuf) Unlock() {
+	s.mu.Lock()
+	if s.lockCount > 0 {
+		s.lockCount--
+	}
+	unlocked := s.lockCount == 0
+	s.mu.Unlock()
+	if unlocked {
+		s.Flush()
+	}
+}
+
 // Flush синхронизирует состояние виртуального буфера с физическим экраном через Renderer.
 //
 // The frame is composed while holding mu and delivered after releasing it.
@@ -669,6 +703,11 @@ func (s *ScreenBuf) Flush() {
 // the result, or nil when there is nothing to deliver (or when the renderer
 // writes on its own, as the GUI backends do). Everything it touches is
 // protected by mu; the returned closure touches none of it.
+//
+// While lockCount is positive (see Lock/Unlock) this returns nil without
+// touching the Renderer at all: the pending state keeps accumulating in buf,
+// and the first Flush after the matching Unlock composes and delivers it in
+// one step.
 func (s *ScreenBuf) composeFrame() func() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -791,15 +830,43 @@ type AnsiRenderer struct {
 	lastSentCursorX, lastSentCursorY int
 	lastSentCursorVis                bool
 	lastSentCursorShape              CursorShape
+	lastSentCursorBlink              bool
 	termCursorInvalid                bool
 	firstInit                        bool
 
-	gfxProto GraphicsProtocol
-	gfxGen   uint64
-	gfxKitty *kittyEncoder
-	gfxSixel *sixelEncoder
-	gfxFar2l *far2lEncoder
-	gfxList  []ImagePlacement
+	gfxProto  GraphicsProtocol
+	gfxGen    uint64
+	gfxKitty  *kittyEncoder
+	gfxSixel  *sixelEncoder
+	gfxITerm2 *iterm2Encoder
+	gfxFar2l  *far2lEncoder
+	gfxList   []ImagePlacement
+
+	// The application palette the previous frame was written with. Outside
+	// the 16-colour profile palette-indexed cells reach the terminal as the
+	// colours they resolve to (see writeColorANSI), so the terminal no longer
+	// repaints them when the palette changes: the renderer has to.
+	palSeen bool
+	palNil  bool
+	palLast [256]uint32
+}
+
+// paletteChanged records the application palette of the frame being rendered
+// and reports whether it differs from the one the previous frame was written
+// with, in which case cells whose colours come from it are stale on screen.
+// In the 16-colour profile the cells carry bare indices and OSC 4 recolours
+// them, as before, so it never reports a change there.
+func (r *AnsiRenderer) paletteChanged(pal *[256]uint32) bool {
+	if r.parent.ColorProfile == ColorProfile16 {
+		return false
+	}
+	changed := r.palSeen && ((pal == nil) != r.palNil || (pal != nil && *pal != r.palLast))
+	r.palSeen = true
+	r.palNil = pal == nil
+	if pal != nil {
+		r.palLast = *pal
+	}
+	return changed
 }
 
 func (r *AnsiRenderer) SetPalette(pal *[256]uint32) {
@@ -841,7 +908,16 @@ func (r *AnsiRenderer) SetPalette(pal *[256]uint32) {
 
 // isGhostProneText reports Unicode that can shift width through font
 // fallback; box/block runes are fixed single-column cells that never shift.
+// A SymCharFlag token is judged by the classic rune it expands to, so a
+// checkbox/radio cell is exactly as ghost-prone as the literal character it
+// used to hold.
 func isGhostProneText(ch uint64) bool {
+	if IsSymChar(ch) {
+		// #nosec G115 -- CellBaseRune returns one of the fixed classic runes a
+		// symbol token expands to (e.g. '[', 'x', '('), always a small
+		// non-negative code point; widening to uint64 is lossless.
+		return isGhostProneText(uint64(CellBaseRune(ch)))
+	}
 	if ch < 0x80 {
 		return false
 	}
@@ -861,8 +937,18 @@ func isGhostProneText(ch uint64) bool {
 // go-runewidth widens Cyrillic in an East Asian locale, the terminal need not.
 func cellAdvanceTrusted(ch uint64, wide bool) bool {
 	switch {
+	case IsFreeBSDSyscons:
+		// The renderer writes exactly one byte per column there and the
+		// console advances one column per byte (syscons_text.go).
+		return true
 	case wide:
 		return false
+	case IsSymChar(ch):
+		// Judge a checkbox/radio token by the classic rune it expands to,
+		// exactly as if the literal character were still stored here.
+		// #nosec G115 -- see isGhostProneText: always a small non-negative
+		// classic code point.
+		return cellAdvanceTrusted(uint64(CellBaseRune(ch)), false)
 	case ch < 0x80:
 		return true
 	case ch >= 0x2500 && ch <= 0x259F:
@@ -878,6 +964,16 @@ func cellAdvanceTrusted(ch uint64, wide bool) bool {
 }
 
 func (r *AnsiRenderer) Render(buf, shadow []CharInfo, w, h int, force bool) {
+	var activePal *[256]uint32
+	if r.parent.ActivePalette != nil {
+		activePal = r.parent.ActivePalette
+	} else {
+		activePal = r.parent.ThemePalette
+	}
+	if r.paletteChanged(activePal) {
+		force = true
+	}
+
 	needsDraw := force
 	if !needsDraw {
 		for i := 0; i < w*h; i++ {
@@ -900,13 +996,6 @@ func (r *AnsiRenderer) Render(buf, shadow []CharInfo, w, h int, force bool) {
 	lastX, lastY := -1, -1
 	resync := false
 	r.lastAttr = ^uint64(0)
-
-	var activePal *[256]uint32
-	if r.parent.ActivePalette != nil {
-		activePal = r.parent.ActivePalette
-	} else {
-		activePal = r.parent.ThemePalette
-	}
 
 	for y := 0; y < h; y++ {
 		rowOff := y * w
@@ -989,7 +1078,10 @@ func (r *AnsiRenderer) Render(buf, shadow []CharInfo, w, h int, force bool) {
 				r.frameOut.WriteByte(' ')
 			} else if char < 0x80 {
 				r.frameOut.WriteByte(byte(char))
-			} else if IsCompChar(char) {
+			} else if IsFreeBSDSyscons {
+				// Every byte is a cell there: see syscons_text.go.
+				sysconsCell(&r.frameOut, char, x+1 < w && buf[idx+1].Char == WideCharFiller)
+			} else if IsCompChar(char) || IsSymChar(char) {
 				r.frameOut.WriteString(CellString(char))
 			} else {
 				r.frameOut.WriteRune(rune(char))
@@ -1068,7 +1160,8 @@ func (r *AnsiRenderer) PrepareFlush() func() {
 	// consumed once actually written, so flipping ManageCursorStyle back on at
 	// runtime still delivers the color.
 	colorPending := ManageCursorStyle && !cursorStyleViaConsoleAPI() && CursorColor != cursorColorSent
-	if !r.firstInit || r.termCursorInvalid || r.cursorX != r.lastSentCursorX || r.cursorY != r.lastSentCursorY || r.cursorVis != r.lastSentCursorVis || r.cursorShape != r.lastSentCursorShape || colorPending {
+	blink := CursorBlinks()
+	if !r.firstInit || r.termCursorInvalid || r.cursorX != r.lastSentCursorX || r.cursorY != r.lastSentCursorY || r.cursorVis != r.lastSentCursorVis || r.cursorShape != r.lastSentCursorShape || blink != r.lastSentCursorBlink || colorPending {
 		if colorPending {
 			if CursorColor >= 0 {
 				_, _ = fmt.Fprintf(&r.frameOut, seqCursorColor, CursorColor&0xFFFFFF)
@@ -1093,17 +1186,17 @@ func (r *AnsiRenderer) PrepareFlush() func() {
 			// stream: see cursorStyleViaConsoleAPI.
 			if ManageCursorStyle && !cursorStyleViaConsoleAPI() {
 				if os.Getenv("TERM") == "linux" {
+					// The Linux console's cursor sizes (CSI ? Ps c) have
+					// no vertical bar and no blink control: a bar is drawn
+					// the way an underline is.
 					if r.cursorShape == CursorShapeBlock {
 						r.frameOut.WriteString("\x1b[?6c")
 					} else {
 						r.frameOut.WriteString("\x1b[?3c")
 					}
 				} else {
-					if r.cursorShape == CursorShapeBlock {
-						r.frameOut.WriteString("\x1b[1 q\x1b]1337;CursorShape=0\x07")
-					} else {
-						r.frameOut.WriteString("\x1b[3 q\x1b]1337;CursorShape=2\x07")
-					}
+					r.frameOut.WriteString(cursorStyleSeq(r.cursorShape, blink))
+					r.frameOut.WriteString(cursorShapeOSC1337(r.cursorShape))
 				}
 			}
 		} else {
@@ -1116,6 +1209,7 @@ func (r *AnsiRenderer) PrepareFlush() func() {
 		r.lastSentCursorY = r.cursorY
 		r.lastSentCursorVis = r.cursorVis
 		r.lastSentCursorShape = r.cursorShape
+		r.lastSentCursorBlink = blink
 		r.termCursorInvalid = false
 		r.firstInit = true
 	}
@@ -1199,7 +1293,7 @@ func ScreenRow(scr *ScreenBuf, y, x1, x2 int) string {
 		}
 		if cell.Char == 0 {
 			sb.WriteByte(' ')
-		} else if IsCompChar(cell.Char) {
+		} else if IsCompChar(cell.Char) || IsSymChar(cell.Char) {
 			sb.WriteString(CellString(cell.Char))
 		} else {
 			sb.WriteRune(rune(cell.Char))

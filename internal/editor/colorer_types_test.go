@@ -1,3 +1,5 @@
+//go:build !lite
+
 package editor
 
 import (
@@ -222,6 +224,9 @@ func TestNewWindowColorizer(t *testing.T) {
 	if w.LineAttrs(16, "changed") != nil {
 		t.Error("colours returned for a line whose text changed")
 	}
+	if base, ok := w.BaseAttr(); !ok || base != 7 {
+		t.Errorf("BaseAttr %#x, %v; want the viewer's base 0x7 once lines arrived", base, ok)
+	}
 	w.Close()
 
 	config.App.EditorHighlighter = "Colorer"
@@ -234,6 +239,9 @@ func TestNewWindowColorizer(t *testing.T) {
 	pumpUntil(t, "the Colorer window", func() bool { return w.LineAttrs(0, "fn alpha") != nil })
 	if got := w.LineAttrs(0, "fn alpha"); len(got) != 8 {
 		t.Errorf("Colorer attrs %d, want 8", len(got))
+	}
+	if _, ok := w.BaseAttr(); !ok {
+		t.Error("no BaseAttr once the Colorer window arrived")
 	}
 }
 

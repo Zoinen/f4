@@ -14,6 +14,7 @@ import (
 
 const (
 	gogpuWindowClass = "GoGPUWindow"
+	win32WindowClass = "VTUI_WIN32_GUI"
 	appIconResource  = 1
 
 	imageIcon    = 1
@@ -32,20 +33,20 @@ const (
 )
 
 var (
-	iconUser32                    = windows.NewLazySystemDLL("user32.dll")
-	iconKernel32                  = windows.NewLazySystemDLL("kernel32.dll")
-	iconDWMAPI                    = windows.NewLazySystemDLL("dwmapi.dll")
-	procIconEnumWindows           = iconUser32.NewProc("EnumWindows")
-	procIconGetWindowThreadPID    = iconUser32.NewProc("GetWindowThreadProcessId")
-	procIconGetClassNameW         = iconUser32.NewProc("GetClassNameW")
-	procIconIsWindow              = iconUser32.NewProc("IsWindow")
-	procIconGetDPIForWindow       = iconUser32.NewProc("GetDpiForWindow")
-	procIconLoadImageW            = iconUser32.NewProc("LoadImageW")
-	procIconSendMessageW          = iconUser32.NewProc("SendMessageW")
-	procIconGetModuleHandleW      = iconKernel32.NewProc("GetModuleHandleW")
-	procIconGetConsoleWindow      = iconKernel32.NewProc("GetConsoleWindow")
-	procDwmSetWindowAttribute     = iconDWMAPI.NewProc("DwmSetWindowAttribute")
-	findGogpuWindowCallbackHandle = syscall.NewCallback(findGogpuWindowCallback)
+	iconUser32                 = windows.NewLazySystemDLL("user32.dll")
+	iconKernel32               = windows.NewLazySystemDLL("kernel32.dll")
+	iconDWMAPI                 = windows.NewLazySystemDLL("dwmapi.dll")
+	procIconEnumWindows        = iconUser32.NewProc("EnumWindows")
+	procIconGetWindowThreadPID = iconUser32.NewProc("GetWindowThreadProcessId")
+	procIconGetClassNameW      = iconUser32.NewProc("GetClassNameW")
+	procIconIsWindow           = iconUser32.NewProc("IsWindow")
+	procIconGetDPIForWindow    = iconUser32.NewProc("GetDpiForWindow")
+	procIconLoadImageW         = iconUser32.NewProc("LoadImageW")
+	procIconSendMessageW       = iconUser32.NewProc("SendMessageW")
+	procIconGetModuleHandleW   = iconKernel32.NewProc("GetModuleHandleW")
+	procIconGetConsoleWindow   = iconKernel32.NewProc("GetConsoleWindow")
+	procDwmSetWindowAttribute  = iconDWMAPI.NewProc("DwmSetWindowAttribute")
+	findWindowCallbackHandle   = syscall.NewCallback(findWindowsAppWindowCallback)
 )
 
 type windowsTheme uint8
@@ -61,14 +62,14 @@ type windowSearch struct {
 	hwnd uintptr
 }
 
-// startWindowsWindowIconManager fills two gaps in gogpu's Windows backend: it
+// startWindowsWindowIconManager fills two gaps in the Windows GUI backends: it
 // assigns the embedded icon to the HWND and opts the native title bar into the
 // current Windows light/dark app theme. Polling lets both settings follow DPI
-// and theme changes without replacing gogpu's window procedure.
+// and theme changes without replacing the backend's window procedure.
 func startWindowsWindowIconManager() func() {
 	pid := uint32(os.Getpid())
 	return startWindowsWindowAppearanceManager(func() uintptr {
-		return findGogpuWindow(pid)
+		return findWindowsAppWindow(pid)
 	}, false)
 }
 
@@ -210,10 +211,10 @@ func applyWindowTheme(hwnd uintptr, theme windowsTheme) bool {
 	return int32(hresult) >= 0
 }
 
-func findGogpuWindow(pid uint32) uintptr {
+func findWindowsAppWindow(pid uint32) uintptr {
 	search := windowSearch{pid: pid}
 	procIconEnumWindows.Call(
-		findGogpuWindowCallbackHandle,
+		findWindowCallbackHandle,
 		uintptr(unsafe.Pointer(&search)),
 	)
 	return search.hwnd
@@ -225,15 +226,19 @@ func findGogpuWindow(pid uint32) uintptr {
 // would still lose the provenance that vet's unsafeptr check and the runtime's
 // checkptr instrumentation both look for. syscall.NewCallback accepts any
 // pointer-sized non-float argument, so the signature stays valid.
-func findGogpuWindowCallback(hwnd uintptr, data unsafe.Pointer) uintptr {
+func findWindowsAppWindowCallback(hwnd uintptr, data unsafe.Pointer) uintptr {
 	search := (*windowSearch)(data)
 	var pid uint32
 	procIconGetWindowThreadPID.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
-	if pid != search.pid || windowClassName(hwnd) != gogpuWindowClass {
+	if pid != search.pid || !isWindowsAppWindowClass(windowClassName(hwnd)) {
 		return 1
 	}
 	search.hwnd = hwnd
 	return 0
+}
+
+func isWindowsAppWindowClass(className string) bool {
+	return className == gogpuWindowClass || className == win32WindowClass
 }
 
 func windowClassName(hwnd uintptr) string {

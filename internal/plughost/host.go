@@ -28,10 +28,11 @@ var pluginInitTimeout = 15 * time.Second
 // else.
 func startPluginSession(sess *f4rpc.Session, api vfs.HostAPI, name string, bridge *ffibridge.Bridge, onServeExit func(error)) (vfs.Registration, error) {
 	registrations := &PluginSessionRegistrations{}
+	back := newUIGuard(sess)
 	sess.OnError = func(err error) {
 		vtui.DebugLog("RPC Plugin %q: %v", name, err)
 	}
-	for method, handler := range newHostMethods(api, sess, name, bridge) {
+	for method, handler := range newHostMethods(api, back, name, bridge) {
 		sess.Register(method, handler)
 	}
 
@@ -60,18 +61,18 @@ func startPluginSession(sess *f4rpc.Session, api vfs.HostAPI, name string, bridg
 		return nil, fmt.Errorf("Plugin.Init timed out after %s", pluginInitTimeout)
 	}
 
-	if err := RegisterRPCPluginCommands(api, sess, name, res.Commands, registrations); err != nil {
+	if err := RegisterRPCPluginCommands(api, back, name, res.Commands, registrations); err != nil {
 		registrations.Unregister()
 		return nil, err
 	}
-	if err := RegisterRPCPluginPanels(api, sess, name, res.Panels, registrations); err != nil {
+	if err := RegisterRPCPluginPanels(api, back, name, res.Panels, registrations); err != nil {
 		registrations.Unregister()
 		return nil, err
 	}
 	for _, drive := range res.Drives {
 		driveName := drive // closure capture
 		api.RegisterDrive(driveName, func() vfs.VFS {
-			return NewRPCVFS(sess, driveName)
+			return NewRPCVFS(back, driveName)
 		})
 	}
 	return registrations, nil
@@ -119,6 +120,13 @@ func newHostMethods(api vfs.HostAPI, back PluginTransport, name string, bridge *
 
 	methods["Host.GetVersion"] = func(data msgpack.RawMessage) (any, error) {
 		return api.GetVersion(), nil
+	}
+	// Host.Language is the interface language for a plugin that localizes its
+	// own dialogs and messages (f4#272): the codes to try in order, the
+	// interface language first, then its fallback, then "en". The language can
+	// change while f4 runs, so a plugin asks when it builds a text, not once.
+	methods["Host.Language"] = func(data msgpack.RawMessage) (any, error) {
+		return pluginCommandLanguageCandidates(), nil
 	}
 	methods["Host.RunAction"] = func(data msgpack.RawMessage) (any, error) {
 		var req string
@@ -214,6 +222,9 @@ func newHostMethods(api vfs.HostAPI, back PluginTransport, name string, bridge *
 	methods["Host.InputBox"] = func(data msgpack.RawMessage) (any, error) {
 		var req InputBoxReq
 		msgpack.Unmarshal(data, &req)
+		if uiBlockedFor(back) {
+			return nil, errUIBlocked
+		}
 		resChan := make(chan string, 1)
 		vtui.FrameManager.PostTask(func() {
 			vtui.InputBox(req.Title, req.Prompt, req.Default, func(s string) {
@@ -226,6 +237,9 @@ func newHostMethods(api vfs.HostAPI, back PluginTransport, name string, bridge *
 	methods["Host.Menu"] = func(data msgpack.RawMessage) (any, error) {
 		var req MenuReq
 		msgpack.Unmarshal(data, &req)
+		if uiBlockedFor(back) {
+			return nil, errUIBlocked
+		}
 		resChan := make(chan int, 1)
 		vtui.FrameManager.PostTask(func() {
 			if app := currentApp(); app != nil {

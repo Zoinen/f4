@@ -78,6 +78,63 @@ func TestForcedMouseSelectionLeavesOtherMouseGesturesAlone(t *testing.T) {
 	}
 }
 
+func TestForcedMouseSelectionLeavesVisibleKeyBarClickAlone(t *testing.T) {
+	t.Cleanup(paneltest.SwapFrameManager(t))
+	setupGrabberScreen(t)
+	vtui.FrameManager.Push(vtui.NewDesktop())
+
+	keyBar := vtui.NewKeyBar()
+	keyBar.SetPosition(0, testGrabberH-1, testGrabberW-1, testGrabberH-1)
+	keyBar.SetVisible(true)
+	vtui.FrameManager.KeyBar = keyBar
+
+	press := mouseEvent(1, testGrabberH-1, vtinput.FromLeft1stButtonPressed, false, true)
+	press.ControlKeyState = vtinput.ShiftPressed
+	if handleForcedMouseSelectionEvent(press) {
+		t.Fatal("Shift+click on the visible key bar must reach KeyBar.ProcessMouse")
+	}
+	if _, ok := vtui.FrameManager.GetTopFrame().(*GrabberFrame); ok {
+		t.Fatal("Shift+click on the visible key bar unexpectedly opened a grabber")
+	}
+}
+
+func TestForcedMouseSelectionDragThroughKeyBarCopiesKeyBarRow(t *testing.T) {
+	t.Cleanup(paneltest.SwapFrameManager(t))
+	scr := setupGrabberScreen(t)
+	attr := vtui.SetRGBBoth(0, 0xFFFFFF, 0x000000)
+	scr.Write(0, testGrabberH-1, vtui.StringToCharInfo("F1 Help / F2 View", attr))
+	vtui.FrameManager.Push(vtui.NewDesktop())
+
+	keyBar := vtui.NewKeyBar()
+	keyBar.SetPosition(0, testGrabberH-1, testGrabberW-1, testGrabberH-1)
+	keyBar.SetVisible(true)
+	vtui.FrameManager.KeyBar = keyBar
+
+	press := mouseEvent(0, 0, vtinput.FromLeft1stButtonPressed, false, true)
+	press.ControlKeyState = vtinput.ShiftPressed
+	if !handleForcedMouseSelectionEvent(press) {
+		t.Fatal("Shift+left-click should start screen selection")
+	}
+	grabber, ok := vtui.FrameManager.GetTopFrame().(*GrabberFrame)
+	if !ok {
+		t.Fatalf("top frame = %T, want *GrabberFrame", vtui.FrameManager.GetTopFrame())
+	}
+	if vtui.FrameManager.KeyBar != nil {
+		t.Fatal("active grabber must own pointer motion instead of the key bar")
+	}
+
+	grabber.ProcessMouse(mouseEvent(testGrabberW-1, testGrabberH-1, vtinput.FromLeft1stButtonPressed, true, true))
+	grabber.ProcessMouse(mouseEvent(testGrabberW-1, testGrabberH-1, 0, false, false))
+	if got := grabber.copyText(); got != "hello world\nsecond line trailing spaces\nthird\n\n\nF1 Help / F2 View" {
+		t.Fatalf("selection through key bar = %q", got)
+	}
+
+	grabber.cancel()
+	if vtui.FrameManager.KeyBar != keyBar {
+		t.Fatal("key bar was not restored after grabber exit")
+	}
+}
+
 func TestForcedMouseSelectionDoesNotNestGrabbers(t *testing.T) {
 	t.Cleanup(paneltest.SwapFrameManager(t))
 	setupGrabberScreen(t)

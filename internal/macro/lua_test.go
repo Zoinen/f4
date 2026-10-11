@@ -279,6 +279,35 @@ func TestMacroConditionAccepts(t *testing.T) {
 	}
 }
 
+func TestMacroEmptyCommandLineFlag(t *testing.T) {
+	host := newFakeMacroHost()
+	host.cmdLine = "typed command"
+	Engine := newTestMacroEngine(t, host, `
+		ran = false
+		Macro { area = "Shell"; key = "Del";
+			flags = "EmptyCommandLine EnableOutput";
+			action = function() ran = true end }
+	`)
+
+	if Engine.TriggerWithCommandLine("Shell", keymap.ParseFarKey("Del"), host.cmdLine) {
+		t.Fatal("EmptyCommandLine macro consumed Del with non-empty command line")
+	}
+	if got := macroGlobals(t, Engine, "ran")["ran"]; got == lua.LTrue {
+		t.Fatal("EmptyCommandLine macro ran with non-empty command line")
+	}
+
+	host.cmdLine = ""
+	if !Engine.TriggerWithCommandLine("Shell", keymap.ParseFarKey("Del"), host.cmdLine) {
+		t.Fatal("EmptyCommandLine macro did not consume Del on an empty command line")
+	}
+	if !Engine.WaitIdle(5 * time.Second) {
+		t.Fatal("EmptyCommandLine macro did not finish in time")
+	}
+	if got := macroGlobals(t, Engine, "ran")["ran"]; got != lua.LTrue {
+		t.Fatal("EmptyCommandLine macro did not run on an empty command line")
+	}
+}
+
 func TestMacroAKeyAndExit(t *testing.T) {
 	host := newFakeMacroHost()
 	Engine := newTestMacroEngine(t, host, `
@@ -597,5 +626,516 @@ func TestMacroExplicitRunReportsBusy(t *testing.T) {
 	}
 	if Engine.RunExact("Shell", "CtrlX") {
 		t.Fatal("RunExact reported success while the macro engine was busy")
+	}
+}
+
+func TestMacroMenuItemIsListedAndRuns(t *testing.T) {
+	host := newFakeMacroHost()
+	Engine := newTestMacroEngine(t, host, `
+		MenuItem { description = "Say hello"; action = function(menu, area)
+			__menu, __area = menu, area
+		end }
+		MenuItem { description = "Disks only"; menu = "Disks"; area = "Shell"; action = function() end }
+		MenuItem { description = "No action" }
+		MenuItem { action = function() end }
+	`)
+
+	items := Engine.MenuItems("Plugins", "Shell")
+	if len(items) != 1 || items[0].Description != "Say hello" {
+		t.Fatalf("Plugins menu items = %+v, want only \"Say hello\"", items)
+	}
+	if got := Engine.MenuItems("disks", "shell"); len(got) != 1 || got[0].Description != "Disks only" {
+		t.Fatalf("Disks menu items = %+v", got)
+	}
+	if got := Engine.MenuItems("Disks", "Editor"); len(got) != 0 {
+		t.Fatalf("an item bound to Shell is offered in the Editor: %+v", got)
+	}
+	if Engine.RunMenuItem(99, "Plugins", "Shell") || Engine.RunMenuItem(-1, "Plugins", "Shell") {
+		t.Fatal("RunMenuItem accepted an id that does not exist")
+	}
+	if !Engine.RunMenuItem(items[0].ID, "Plugins", "Shell") {
+		t.Fatal("RunMenuItem refused a listed item")
+	}
+	if !Engine.WaitIdle(5 * time.Second) {
+		t.Fatal("the menu item never finished")
+	}
+	got := macroGlobals(t, Engine, "__menu", "__area")
+	if lua.LVAsString(got["__menu"]) != "Plugins" || lua.LVAsString(got["__area"]) != "Shell" {
+		t.Fatalf("action got menu=%v area=%v", got["__menu"], got["__area"])
+	}
+	if (*LuaMacroEngine)(nil).MenuItems("Plugins", "Shell") != nil || (*LuaMacroEngine)(nil).RunMenuItem(0, "", "") {
+		t.Fatal("a nil engine has menu items")
+	}
+}
+
+func TestMacroCommandLineIsListedAndRuns(t *testing.T) {
+	host := newFakeMacroHost()
+	Engine := newTestMacroEngine(t, host, `
+		CommandLine { description = "Echo"; prefixes = "Echo:say"; action = function(prefix, text)
+			__prefix, __text = prefix, text
+		end }
+		CommandLine { prefixes = "" ; action = function() end }
+		CommandLine { prefixes = "nope" }
+	`)
+
+	got := Engine.CommandLinePrefixes()
+	if len(got) != 2 || got[0].Prefix != "echo" || got[1].Prefix != "say" || got[0].Description != "Echo" {
+		t.Fatalf("prefixes = %+v, want echo and say of one declaration", got)
+	}
+	if Engine.RunCommandLine(9, "echo", "x") || Engine.RunCommandLine(-1, "echo", "x") {
+		t.Fatal("RunCommandLine accepted an id that does not exist")
+	}
+	if !Engine.RunCommandLine(got[1].ID, "say", "hello world") {
+		t.Fatal("RunCommandLine refused a listed declaration")
+	}
+	if !Engine.WaitIdle(5 * time.Second) {
+		t.Fatal("the command never finished")
+	}
+	values := macroGlobals(t, Engine, "__prefix", "__text")
+	if lua.LVAsString(values["__prefix"]) != "say" || lua.LVAsString(values["__text"]) != "hello world" {
+		t.Fatalf("action got prefix=%v text=%v", values["__prefix"], values["__text"])
+	}
+	if (*LuaMacroEngine)(nil).CommandLinePrefixes() != nil || (*LuaMacroEngine)(nil).RunCommandLine(0, "", "") {
+		t.Fatal("a nil engine has command lines")
+	}
+}
+
+func TestMacroEventExitFARRuns(t *testing.T) {
+	host := newFakeMacroHost()
+	Engine := newTestMacroEngine(t, host, `
+		__n = 0
+		Event { group = "ExitFAR"; description = "first"; action = function(group) __n = __n + 1; __group = group end }
+		Event { group = "exitfar"; action = function() __n = __n + 10 end }
+		Event { group = "DialogEvent"; action = function() __n = __n + 100 end }
+		Event { group = "ExitFAR" }
+		Event { action = function() end }
+	`)
+
+	if got := Engine.RunEvents("ExitFAR", 5*time.Second); got != 2 {
+		t.Fatalf("RunEvents ran %d actions, want the 2 declared for ExitFAR", got)
+	}
+	values := macroGlobals(t, Engine, "__n", "__group")
+	if lua.LVAsNumber(values["__n"]) != 11 || lua.LVAsString(values["__group"]) != "ExitFAR" {
+		t.Fatalf("n=%v group=%v, want 11 and ExitFAR", values["__n"], values["__group"])
+	}
+	if Engine.RunEvents("Nothing", time.Second) != 0 || (*LuaMacroEngine)(nil).RunEvents("ExitFAR", time.Second) != 0 {
+		t.Fatal("events ran for a group nobody declared, or on a nil engine")
+	}
+	host.mu.Lock()
+	logged := len(host.logs)
+	host.mu.Unlock()
+	if logged < 3 {
+		t.Errorf("the unsupported group and the two malformed declarations were not logged (%d entries)", logged)
+	}
+}
+
+func TestMacroManagerRunExitEventsIsSafe(t *testing.T) {
+	(*MacroManager)(nil).RunExitEvents()
+	(&MacroManager{}).RunExitEvents()
+}
+
+// dialogHost is a fake host that can also ask the user something.
+type dialogHost struct {
+	*fakeMacroHost
+	inputText  string
+	inputOK    bool
+	menuAnswer int
+	asked      []string
+	delay      time.Duration // how long the user takes
+}
+
+func (h *dialogHost) InputBox(title, prompt, initial string) (string, bool) {
+	h.asked = append(h.asked, title+"|"+prompt+"|"+initial)
+	time.Sleep(h.delay)
+	return h.inputText, h.inputOK
+}
+
+func (h *dialogHost) Menu(title string, items []string) int {
+	h.asked = append(h.asked, title+"|"+strings.Join(items, ","))
+	time.Sleep(h.delay)
+	return h.menuAnswer
+}
+
+func TestMacroFarInputBoxAndMenu(t *testing.T) {
+	host := &dialogHost{fakeMacroHost: newFakeMacroHost(), inputText: "typed", inputOK: true, menuAnswer: 1}
+	Engine := newTestMacroEngine(t, host, `
+		Macro { area = "Shell"; key = "CtrlT"; action = function()
+			__text = far.InputBox("Title", "Prompt:", "start")
+			__item, __pos = far.Menu({ Title = "Pick" }, { "one", { text = "two" }, "three" })
+			__empty = far.Menu({ Title = "None" }, {})
+		end }
+	`)
+	if !fireMacro(t, Engine, "CtrlT") {
+		t.Fatal("macro not consumed")
+	}
+	if !Engine.WaitIdle(5 * time.Second) {
+		t.Fatal("macro never finished")
+	}
+	values := macroGlobals(t, Engine, "__text", "__item", "__pos", "__empty")
+	if lua.LVAsString(values["__text"]) != "typed" {
+		t.Errorf("InputBox = %v", values["__text"])
+	}
+	if item, ok := values["__item"].(*lua.LTable); !ok || lua.LVAsString(item.RawGetString("text")) != "two" || lua.LVAsNumber(values["__pos"]) != 2 {
+		t.Errorf("Menu = %v at %v, want the second item at 2", values["__item"], values["__pos"])
+	}
+	if values["__empty"] != lua.LNil {
+		t.Errorf("a menu with no items answered %v", values["__empty"])
+	}
+	if len(host.asked) != 2 || host.asked[0] != "Title|Prompt:|start" || host.asked[1] != "Pick|one,two,three" {
+		t.Errorf("asked %v", host.asked)
+	}
+
+	// Cancelled.
+	host.inputOK, host.menuAnswer = false, -1
+	fireMacro(t, Engine, "CtrlT")
+	Engine.WaitIdle(5 * time.Second)
+	values = macroGlobals(t, Engine, "__text", "__item")
+	if values["__text"] != lua.LNil || values["__item"] != lua.LNil {
+		t.Errorf("cancelled dialogs answered %v and %v", values["__text"], values["__item"])
+	}
+}
+
+// A host that cannot ask gets nils, not a failing macro.
+func TestMacroFarDialogsWithoutAHostThatAsks(t *testing.T) {
+	Engine := newTestMacroEngine(t, newFakeMacroHost(), `
+		Macro { area = "Shell"; key = "CtrlT"; action = function()
+			__a = far.InputBox("t", "p")
+			__b = far.Menu({}, { "x" })
+			__done = true
+		end }
+	`)
+	fireMacro(t, Engine, "CtrlT")
+	Engine.WaitIdle(5 * time.Second)
+	values := macroGlobals(t, Engine, "__a", "__b", "__done")
+	if values["__a"] != lua.LNil || values["__b"] != lua.LNil || values["__done"] != lua.LTrue {
+		t.Errorf("a = %v, b = %v, done = %v", values["__a"], values["__b"], values["__done"])
+	}
+}
+
+// The time the user spends in a dialog does not count against the macro's
+// deadline; the same delay in the script itself does.
+func TestMacroDeadlineStandsStillWhileADialogWaits(t *testing.T) {
+	old := macroCallTimeout
+	macroCallTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { macroCallTimeout = old })
+
+	host := &dialogHost{fakeMacroHost: newFakeMacroHost(), inputText: "ok", inputOK: true, menuAnswer: 0, delay: 800 * time.Millisecond}
+	Engine := newTestMacroEngine(t, host, `
+		Macro { area = "Shell"; key = "CtrlT"; action = function()
+			__text = far.InputBox("a", "b")
+			__item = far.Menu({}, { "x" })
+			__after = true
+		end }
+	`)
+	fireMacro(t, Engine, "CtrlT")
+	if !Engine.WaitIdle(10 * time.Second) {
+		t.Fatal("macro never finished")
+	}
+	if Engine.Interrupted() {
+		t.Fatal("the macro was interrupted for the time the user took")
+	}
+	values := macroGlobals(t, Engine, "__text", "__after")
+	if lua.LVAsString(values["__text"]) != "ok" || values["__after"] != lua.LTrue {
+		t.Fatalf("text=%v after=%v", values["__text"], values["__after"])
+	}
+}
+
+func waitForGlobal(t *testing.T, Engine *LuaMacroEngine, name string, ok func(lua.LValue) bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if ok(macroGlobals(t, Engine, name)[name]) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("global %s never got the expected value", name)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestMacroFarTimerTicksAndStops(t *testing.T) {
+	host := newFakeMacroHost()
+	Engine := newTestMacroEngine(t, host, `
+		__n = 0
+		__timer = far.Timer(20, function(t)
+			__n = __n + 1
+			__self = (t == __timer)
+			if __n == 3 then t.Enabled = false end
+		end)
+		__interval = __timer.Interval
+		__bad = far.Timer(10, function() error("boom") end)
+	`)
+	waitForGlobal(t, Engine, "__n", func(v lua.LValue) bool { return lua.LVAsNumber(v) >= 3 })
+	time.Sleep(150 * time.Millisecond)
+	values := macroGlobals(t, Engine, "__n", "__self", "__interval")
+	if n := lua.LVAsNumber(values["__n"]); n != 3 {
+		t.Errorf("the timer ran %v times, want exactly 3 (it disabled itself)", n)
+	}
+	if values["__self"] != lua.LTrue || lua.LVAsNumber(values["__interval"]) != 20 {
+		t.Errorf("callback argument / interval: %v %v", values["__self"], values["__interval"])
+	}
+	host.mu.Lock()
+	logged := len(host.logs)
+	host.mu.Unlock()
+	if logged == 0 {
+		t.Error("a failing timer callback was not logged")
+	}
+
+	// Enabled again, then closed for good.
+	if err := Engine.LoadString("more.lua", `__timer.Enabled = true; __n = 0; __timer.Interval = 1; __timer:Close()`); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(150 * time.Millisecond)
+	if n := lua.LVAsNumber(macroGlobals(t, Engine, "__n")["__n"]); n != 0 {
+		t.Errorf("a closed timer ticked %v times", n)
+	}
+}
+
+func TestMacroFarGetConfig(t *testing.T) {
+	host := &configHost{fakeMacroHost: newFakeMacroHost()}
+	Engine := newTestMacroEngine(t, host, `
+		__tab = far.GetConfig("Editor.TabSize")
+		__flag = far.GetConfig("Editor.AutoIndent")
+		__unknown = far.GetConfig("No.Such")
+	`)
+	values := macroGlobals(t, Engine, "__tab", "__flag", "__unknown")
+	if lua.LVAsNumber(values["__tab"]) != 8 || values["__flag"] != lua.LTrue || values["__unknown"] != lua.LNil {
+		t.Errorf("GetConfig: %v %v %v", values["__tab"], values["__flag"], values["__unknown"])
+	}
+	plain := newTestMacroEngine(t, newFakeMacroHost(), `__x = far.GetConfig("Editor.TabSize")`)
+	if macroGlobals(t, plain, "__x")["__x"] != lua.LNil {
+		t.Error("a host without settings answered")
+	}
+}
+
+type configHost struct{ *fakeMacroHost }
+
+func (h *configHost) ConfigValue(key string) (any, bool) {
+	switch key {
+	case "Editor.TabSize":
+		return int64(8), true
+	case "Editor.AutoIndent":
+		return true, true
+	}
+	return nil, false
+}
+
+// Far 3's own macros open with globals like these; a file that trips over one
+// loses all its Macro{} entries.
+func TestMacroFar3LoadTimeGlobalsLetAFileLoad(t *testing.T) {
+	host := newFakeMacroHost()
+	host.panels[true] = MacroPanelInfo{Bof: true, Eof: false, SelCount: 2, Visible: true}
+	Engine := newTestMacroEngine(t, host, `
+		local F = far.Flags
+		local WIF_MODAL = far.Flags.WIF_MODAL
+		local GUID = win.Uuid(far.Guids.MakeFolderId)
+		__guid = GUID
+		__samegui = (far.Guids.MakeFolderId == far.Guids.MakeFolderId)
+		__diff = (far.Guids.A ~= far.Guids.B)
+		__flag = band(APanel.OPIFlags, far.Flags.OPIF_REALNAMES)
+		Macro { area = "Shell"; key = "CtrlT"; condition = function()
+			return not APanel.Plugin and APanel.FilePanel and Menu.Id ~= far.Guids.ScreensSwitchId and Dlg.Id == ""
+		end; action = function()
+			__bof, __eof, __sel = Object.Bof, Object.Eof, APanel.Selected
+			__state = band(Editor.State, 3) + Viewer.State + Mouse.X + Editor.Pos
+			__value = Menu.Value
+		end }
+	`)
+	if Engine.Count() != 1 {
+		t.Fatalf("Count = %d: the file did not load", Engine.Count())
+	}
+	if !fireMacro(t, Engine, "CtrlT") {
+		t.Fatal("macro not consumed")
+	}
+	Engine.WaitIdle(5 * time.Second)
+	v := macroGlobals(t, Engine, "__guid", "__samegui", "__diff", "__flag", "__bof", "__eof", "__sel", "__state", "__value")
+	if len(lua.LVAsString(v["__guid"])) != 36 || v["__samegui"] != lua.LTrue || v["__diff"] != lua.LTrue {
+		t.Errorf("guids: %v %v %v", v["__guid"], v["__samegui"], v["__diff"])
+	}
+	if lua.LVAsNumber(v["__flag"]) != 0 || v["__bof"] != lua.LTrue || v["__eof"] != lua.LFalse || v["__sel"] != lua.LTrue ||
+		lua.LVAsNumber(v["__state"]) != 0 || lua.LVAsString(v["__value"]) != "" {
+		t.Errorf("values: %v", v)
+	}
+}
+
+// panelHost is a fake host with panels of rows.
+type panelHost struct {
+	*fakeMacroHost
+	rows    map[bool][]MacroPanelEntry
+	path    map[bool]string
+	pos     map[bool]int
+	gotName string
+}
+
+func (h *panelHost) PanelEntry(active bool, i int) (MacroPanelEntry, bool) {
+	rows := h.rows[active]
+	if i < 1 || i > len(rows) {
+		return MacroPanelEntry{}, false
+	}
+	return rows[i-1], true
+}
+func (h *panelHost) SetPanelPath(active bool, p string) bool { h.path[active] = p; return p != "" }
+func (h *panelHost) SetPanelPos(active bool, i int) bool     { h.pos[active] = i; return i > 0 }
+func (h *panelHost) SetPanelName(active bool, n string) bool { h.gotName = n; return n != "" }
+
+func TestMacroFar3PanelAPI(t *testing.T) {
+	base := newFakeMacroHost()
+	base.panels[true] = MacroPanelInfo{Path: "/home", ItemCount: 3, CurPos: 2, TopPos: 1, SelCount: 1}
+	host := &panelHost{fakeMacroHost: base,
+		rows: map[bool][]MacroPanelEntry{true: {{Name: "..", IsDir: true}, {Name: "a.txt", Size: 12, Selected: true}, {Name: "dir", IsDir: true}}},
+		path: map[bool]string{}, pos: map[bool]int{}}
+	Engine := newTestMacroEngine(t, host, `
+		local ACTIVE_NEW, ACTIVE_OLD = 1, 0
+		local info = panel.GetPanelInfo(nil, ACTIVE_NEW)
+		__items, __cur, __type = info.ItemsNumber, info.CurrentItem, info.PanelType
+		__dir = panel.GetPanelDirectory(nil, ACTIVE_NEW).Name
+		__item = panel.GetPanelItem(nil, ACTIVE_NEW, 2)
+		__name, __attr, __size, __sel = Panel.Item(ACTIVE_OLD, 2, 0), Panel.Item(ACTIVE_OLD, 3, 2), Panel.Item(ACTIVE_OLD, 2, 6), Panel.Item(ACTIVE_OLD, 2, 8)
+		__none = Panel.Item(ACTIVE_OLD, 9, 0)
+		__set = panel.SetPanelDirectory(nil, ACTIVE_NEW, "/tmp")
+		__pos = Panel.SetPosIdx(ACTIVE_OLD, 3)
+		__ok = Panel.SetPos(ACTIVE_OLD, "a.txt")
+		__setpath = Panel.SetPath(ACTIVE_OLD, "/var", "x")
+		__exist = panel.CheckPanelsExist()
+		panel.RedrawPanel(nil, ACTIVE_NEW, { CurrentItem = 1 })
+	`)
+	v := macroGlobals(t, Engine, "__items", "__cur", "__type", "__dir", "__item", "__name", "__attr", "__size", "__sel", "__none", "__set", "__pos", "__ok", "__setpath", "__exist")
+	if lua.LVAsNumber(v["__items"]) != 3 || lua.LVAsNumber(v["__cur"]) != 2 || lua.LVAsNumber(v["__type"]) != 1 || lua.LVAsString(v["__dir"]) != "/home" {
+		t.Errorf("info: %v", v)
+	}
+	if it, ok := v["__item"].(*lua.LTable); !ok || lua.LVAsString(it.RawGetString("FileName")) != "a.txt" || lua.LVAsNumber(it.RawGetString("FileSize")) != 12 {
+		t.Errorf("GetPanelItem = %v", v["__item"])
+	}
+	if lua.LVAsString(v["__name"]) != "a.txt" || lua.LVAsNumber(v["__attr"]) != 0x10 || lua.LVAsNumber(v["__size"]) != 12 || v["__sel"] != lua.LTrue || v["__none"] != lua.LNil {
+		t.Errorf("Panel.Item: %v", v)
+	}
+	if v["__set"] != lua.LTrue || lua.LVAsNumber(v["__pos"]) != 3 || v["__ok"] != lua.LTrue || v["__setpath"] != lua.LTrue || v["__exist"] != lua.LTrue {
+		t.Errorf("setters: %v", v)
+	}
+	if host.path[true] != "/var" {
+		t.Errorf("the last directory set was %v, want /var (Panel.SetPath came after SetPanelDirectory)", host.path)
+	}
+	if host.pos[true] != 1 || host.gotName != "x" {
+		t.Errorf("pos=%v name=%q (RedrawPanel goes to row 1, SetPath's third argument names a row)", host.pos, host.gotName)
+	}
+}
+
+type editorHost struct {
+	*fakeMacroHost
+	info MacroEditorInfo
+	ok   bool
+}
+
+func (h *editorHost) EditorInfo() (MacroEditorInfo, bool) { return h.info, h.ok }
+
+func TestMacroEditorGetInfo(t *testing.T) {
+	host := &editorHost{fakeMacroHost: newFakeMacroHost(), ok: true,
+		info: MacroEditorInfo{FileName: "/tmp/a.txt", CurLine: 7, CurPos: 3, TotalLines: 40, TabSize: 4}}
+	Engine := newTestMacroEngine(t, host, `
+		local info = editor.GetInfo()
+		__file, __line, __col, __total, __tab, __opts = info.FileName, info.CurLine, info.CurPos, info.TotalLines, info.TabSize, info.Options
+	`)
+	v := macroGlobals(t, Engine, "__file", "__line", "__col", "__total", "__tab", "__opts")
+	if lua.LVAsString(v["__file"]) != "/tmp/a.txt" || lua.LVAsNumber(v["__line"]) != 7 || lua.LVAsNumber(v["__col"]) != 3 ||
+		lua.LVAsNumber(v["__total"]) != 40 || lua.LVAsNumber(v["__tab"]) != 4 || lua.LVAsNumber(v["__opts"]) != 0 {
+		t.Errorf("GetInfo: %v", v)
+	}
+
+	host.ok = false
+	none := newTestMacroEngine(t, host, `__n = editor.GetInfo()`)
+	if macroGlobals(t, none, "__n")["__n"] != lua.LNil {
+		t.Error("GetInfo answered with no editor open")
+	}
+	plain := newTestMacroEngine(t, newFakeMacroHost(), `__n = editor.GetInfo()`)
+	if macroGlobals(t, plain, "__n")["__n"] != lua.LNil {
+		t.Error("a host with no editors answered")
+	}
+}
+
+type clipHost struct {
+	*fakeMacroHost
+	text string
+}
+
+func (h *clipHost) SetClipboard(t string) { h.text = t }
+func (h *clipHost) Clipboard() string     { return h.text }
+
+func TestMacroClipboardFsplitAndPostmacro(t *testing.T) {
+	host := &clipHost{fakeMacroHost: newFakeMacroHost()}
+	Engine := newTestMacroEngine(t, host, `
+		Macro { area = "Shell"; key = "CtrlT"; action = function()
+			__copied = far.CopyToClipboard("hello")
+			__pasted = far.PasteFromClipboard()
+			__name = mf.fsplit("C:\\dir\\sub\\file.tar.gz", 4 + 8)
+			__dir = mf.fsplit("/a/b/c.txt", 2)
+			__all = mf.fsplit("D:/x/y.z")
+			__bare = mf.fsplit("noext", 4 + 8)
+			__order = ""
+			mf.postmacro(function(a, b) __order = __order .. "P" .. a .. b end, 1, 2)
+			__order = __order .. "M"
+		end }
+	`)
+	fireMacro(t, Engine, "CtrlT")
+	Engine.WaitIdle(5 * time.Second)
+	v := macroGlobals(t, Engine, "__copied", "__pasted", "__name", "__dir", "__all", "__bare", "__order")
+	if v["__copied"] != lua.LTrue || lua.LVAsString(v["__pasted"]) != "hello" || host.text != "hello" {
+		t.Errorf("clipboard: %v %v %q", v["__copied"], v["__pasted"], host.text)
+	}
+	if lua.LVAsString(v["__name"]) != "file.tar.gz" || lua.LVAsString(v["__dir"]) != "/a/b/" ||
+		lua.LVAsString(v["__all"]) != "D:/x/y.z" || lua.LVAsString(v["__bare"]) != "noext" {
+		t.Errorf("fsplit: %v %v %v %v", v["__name"], v["__dir"], v["__all"], v["__bare"])
+	}
+	if lua.LVAsString(v["__order"]) != "MP12" {
+		t.Errorf("postmacro ran %q, want the macro first (M) then the posted call (P12)", lua.LVAsString(v["__order"]))
+	}
+
+	plain := newTestMacroEngine(t, newFakeMacroHost(), `__c = far.CopyToClipboard("x"); __p = far.PasteFromClipboard()`)
+	pv := macroGlobals(t, plain, "__c", "__p")
+	if pv["__c"] != lua.LFalse || pv["__p"] != lua.LNil {
+		t.Errorf("a host with no clipboard: %v %v", pv["__c"], pv["__p"])
+	}
+}
+
+func TestMacroRegexNew(t *testing.T) {
+	host := newFakeMacroHost()
+	Engine := newTestMacroEngine(t, host, `
+		local upper = regex.new("^\\U+$")            -- Far's \U: not an upper-case letter
+		__u1, __u2 = upper:match("abc123"), upper:match("Abc")
+		local ext = regex.new([=[
+			(\w+)     # the name
+			\. (\w+)  # the extension
+		]=], "x")
+		__n, __e = ext:match("dir/report.txt")
+		__first, __last = ext:find("dir/report.txt")
+		local words = regex.new("\\i+", "i")
+		__all = ""
+		for w in words:gmatch("ab cd_ ef") do __all = __all .. "[" .. w .. "]" end
+		local sub, count = regex.new("(a)(b)"):gsub("abab xab", "%2%1")
+		__sub, __cnt = sub, count
+		local viaFn = regex.new("\\d+"):gsub("a1b22", function(d) return "<" .. d .. ">" end)
+		__fn = viaFn
+		local lookbehind = regex.new("(?<=x)y")       -- RE2 has no look-behind
+		__never = lookbehind:match("xy")
+		__ok = true
+	`)
+	v := macroGlobals(t, Engine, "__u1", "__u2", "__n", "__e", "__first", "__last", "__all", "__sub", "__cnt", "__fn", "__never", "__ok")
+	if lua.LVAsString(v["__u1"]) != "abc123" || v["__u2"] != lua.LNil {
+		t.Errorf("\\U: %v %v", v["__u1"], v["__u2"])
+	}
+	if lua.LVAsString(v["__n"]) != "report" || lua.LVAsString(v["__e"]) != "txt" || lua.LVAsNumber(v["__first"]) != 5 || lua.LVAsNumber(v["__last"]) != 14 {
+		t.Errorf("extended match: %v %v %v %v", v["__n"], v["__e"], v["__first"], v["__last"])
+	}
+	if lua.LVAsString(v["__all"]) != "[ab][cd_][ef]" || lua.LVAsString(v["__sub"]) != "baba xba" || lua.LVAsNumber(v["__cnt"]) != 3 || lua.LVAsString(v["__fn"]) != "a<1>b<22>" {
+		t.Errorf("gmatch/gsub: %v %v %v %v", v["__all"], v["__sub"], v["__cnt"], v["__fn"])
+	}
+	if v["__never"] != lua.LNil || v["__ok"] != lua.LTrue {
+		t.Errorf("an unsupported pattern broke the file: never=%v ok=%v", v["__never"], v["__ok"])
+	}
+	host.mu.Lock()
+	logged := len(host.logs)
+	host.mu.Unlock()
+	if logged == 0 {
+		t.Error("the pattern RE2 cannot compile was not logged")
 	}
 }

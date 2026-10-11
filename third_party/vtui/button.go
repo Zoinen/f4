@@ -10,6 +10,18 @@ type Button struct {
 	caption      string
 	mouseArmed   bool
 	mousePressed bool
+	// implicitDefault is set by the dialog that holds the button when it flags
+	// no default button of its own and Enter falls back to this one: the
+	// button that gets the key is then drawn as the default, and the two are
+	// one decision instead of two (f4 #320).
+	implicitDefault bool
+}
+
+// IsEnterDefault reports whether Enter presses this button when the focused
+// control does not take the key: it is the dialog's flagged default button, or
+// the one the dialog falls back to when it flags none.
+func (b *Button) IsEnterDefault() bool {
+	return b.IsDefault || b.implicitDefault
 }
 
 func NewButton(x, y int, text string) *Button {
@@ -48,14 +60,53 @@ func (b *Button) DisplayObject(scr *ScreenBuf) {
 		return
 	}
 	normalIdx := ColDialogButton
-	if b.IsDefault {
+	if b.IsEnterDefault() {
 		normalIdx = ColDialogHighlightButton
 	}
 	n, h := b.GetStateAttrs(normalIdx, ColDialogSelectedButton, ColDialogHighlightButton, ColDialogHighlightSelectedButton)
 	if b.mousePressed {
 		n, h = b.GetStateAttrs(ColDialogSelectedButton, ColDialogSelectedButton, ColDialogHighlightSelectedButton, ColDialogHighlightSelectedButton)
 	}
-	NewPainter(scr).DrawHighlightedText(b.X1, b.Y1, b.cleanText, b.hotkeyPos, n, h)
+
+	// b.cleanText is "<left bracket><space><label><space><right bracket>":
+	// the decorative ears (2 cells each) are drawn as symbolic tokens, and
+	// the label between them keeps going through DrawHighlightedText exactly
+	// as before, just shifted by the 2 cells the left ear now occupies
+	// instead of literal text. hotkeyPos, like cleanText, is measured from
+	// the start of the whole decorated string, so it shifts by the same 2
+	// cells; it was never inside the ears (the hotkey is always a letter of
+	// the label), so subtracting 2 keeps pointing at the same rune.
+	//
+	// SetText always produces at least 4 runes (the two brackets and their
+	// two spaces), but a caller that reaches the embedded ScreenObject's
+	// SetText directly — bypassing Button's bracket-wrapping override, as
+	// generic property/reflection-driven code can — can leave cleanText
+	// shorter than that. Guard the slice instead of trusting the invariant,
+	// and fall back to drawing the raw text without carving out ears.
+	runes := []rune(b.cleanText)
+	if len(runes) < 4 {
+		p := NewPainter(scr)
+		p.DrawHighlightedText(b.X1, b.Y1, b.cleanText, b.hotkeyPos, n, h)
+		return
+	}
+	label := string(runes[2 : len(runes)-2])
+	labelHotkeyPos := b.hotkeyPos
+	if labelHotkeyPos >= 0 {
+		labelHotkeyPos -= 2
+	}
+
+	if roundedButtonsActive() {
+		// The default button in its idle state: no focus, no press. Its
+		// colours are then exactly the "normal" ones of ColDialogHighlightButton.
+		idleDefault := b.IsEnterDefault() && !b.mousePressed && n == b.GetStateAttr(normalIdx, normalIdx)
+		b.drawRoundedButton(scr, label, labelHotkeyPos, n, h, idleDefault)
+		return
+	}
+
+	p := NewPainter(scr)
+	p.DrawButtonEar(b.X1, b.Y1, SymButtonEarLeft, n)
+	p.DrawHighlightedText(b.X1+2, b.Y1, label, labelHotkeyPos, n, h)
+	p.DrawButtonEar(b.X1+2+StringWidth(label), b.Y1, SymButtonEarRight, n)
 }
 
 func (b *Button) ProcessKey(e *vtinput.InputEvent) bool {

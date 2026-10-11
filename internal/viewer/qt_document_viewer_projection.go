@@ -22,6 +22,7 @@ type viewerRowProjection struct {
 	cells           []vtui.CharInfo
 	cellByteOffsets []int
 	nextColumn      int
+	ansiAttr        uint64
 	links           []UrlCellRange
 }
 
@@ -41,7 +42,7 @@ type viewerWindowConstructionKey struct {
 	width, height, overscan    int
 	tabSize                    int
 	layout, geometry, request  uint64
-	hex, decode, wrap          bool
+	hex, decode, wrap, ansi    bool
 	disasmMode                 int
 	textAttr, arrowAttr        uint64
 	selectedAttr               uint64
@@ -64,6 +65,7 @@ type viewerWindowConstruction struct {
 	originReady, initialized, foundViewport bool
 	rows                                    []viewerConstructedRow
 	row                                     *viewerRowConstruction
+	ansiAttr                                uint64
 }
 
 func (vv *ViewerView) projectRow(offset int64, width int) (viewerRowProjection, error) {
@@ -79,12 +81,12 @@ func (vv *ViewerView) projectRowAt(offset int64, width, column int) (viewerRowPr
 	return vv.projectRowProgress(offset, width, column, &pending)
 }
 
-func (vv *ViewerView) projectRowProgress(offset int64, width, column int, pending **viewerRowConstruction) (viewerRowProjection, error) {
+func (vv *ViewerView) projectRowProgress(offset int64, width, column int, pending **viewerRowConstruction, ansiState ...*uint64) (viewerRowProjection, error) {
 	row := viewerRowProjection{end: offset}
 	if width <= 0 || offset >= vv.Backend.Size() {
 		return row, io.EOF
 	}
-	attr := vtui.Palette[theme.ColViewerText]
+	attr := vv.textAttr()
 	if vv.HexMode {
 		data, err := vv.Backend.ReadAt(offset, 16)
 		if err != nil && (err != io.EOF || len(data) == 0) {
@@ -183,31 +185,41 @@ func (vv *ViewerView) projectRowProgress(offset int64, width, column int, pendin
 	}
 	progress := *pending
 	if !progress.initialized {
-		data, err := vv.Backend.ReadAt(offset, max(4, width*4))
+		data, err := vv.Backend.ReadAt(offset, max(4, vv.rowReadSize(width)))
 		if err != nil && (err != io.EOF || len(data) == 0) {
 			return row, err
 		}
 		if len(data) == 0 {
 			return row, io.ErrUnexpectedEOF
 		}
-		scan := scanViewerText(data, width, vv.WrapMode, column, attr, true)
+		scan := scanViewerTextMode(data, width, vv.WrapMode, column, attr, true, vv.AnsiMode)
 		row.end = offset + int64(scan.lineLen)
 		row.text = string(data[:scan.textLen])
 		row.cells = scan.cells
 		row.cellByteOffsets = scan.cellByteOffsets
-		row.links = urlCellRanges(row.text, scan.cellByteOffsets)
+		row.ansiAttr = attr
+		if vv.AnsiMode {
+			if len(ansiState) > 0 {
+				row.ansiAttr = *ansiState[0]
+			}
+			row.cells, row.cellByteOffsets = ansiRowCellsAt(data[:scan.textLen], attr, &row.ansiAttr, effectiveViewerTabSize(), width, column)
+		}
+		row.links = urlCellRanges(row.text, row.cellByteOffsets)
 		if vv.LastSearchFound && vv.LastSearch != "" {
 			matchLength := vv.LastSearchMatchLen
 			if matchLength <= 0 {
 				matchLength = int64(len(vv.LastSearch))
 			}
-			applyViewerSearchAttr(row.cells, row.text, scan.cellByteOffsets,
+			applyViewerSearchAttr(row.cells, row.text, row.cellByteOffsets,
 				int(vv.LastSearchOffset-offset), int(vv.LastSearchOffset+matchLength-offset), vtui.Palette[theme.ColViewerSelectedText])
 		}
 		ApplyURLHoverAttr(row.cells, row.links, vv.hoverURL)
 		row.nextColumn = scan.nextColumn
 		progress.row, progress.initialized = row, true
 		if vv.WrapMode || scan.newline {
+			if len(ansiState) > 0 {
+				*ansiState[0] = row.ansiAttr
+			}
 			for len(row.cells) < width {
 				row.cells = append(row.cells, vtui.CharInfo{Char: ' ', Attributes: attr})
 			}
@@ -227,6 +239,16 @@ func (vv *ViewerView) projectRowProgress(offset int64, width, column int, pendin
 			}
 			if len(chunk) == 0 {
 				return row, io.ErrUnexpectedEOF
+			}
+			if vv.AnsiMode {
+				end := len(chunk)
+				if newline := bytes.IndexByte(chunk, '\n'); newline >= 0 {
+					end = newline + 1
+				}
+				_, _, sequences := stripANSI(chunk[:end])
+				for _, sequence := range sequences {
+					row.ansiAttr = applyANSISeq(row.ansiAttr, attr, sequence)
+				}
 			}
 			if end := bytes.IndexByte(chunk, '\n'); end >= 0 {
 				row.end += int64(end + 1)
@@ -248,6 +270,9 @@ func (vv *ViewerView) projectRowProgress(offset int64, width, column int, pendin
 		row.cells = append(row.cells, vtui.CharInfo{Char: ' ', Attributes: attr})
 	}
 	*pending = nil
+	if len(ansiState) > 0 {
+		*ansiState[0] = row.ansiAttr
+	}
 	return row, nil
 }
 
@@ -258,9 +283,9 @@ func (vv *ViewerView) constructionKey(top int64, width, height, overscan int) vi
 		tabSize: effectiveViewerTabSize(),
 		layout:  vv.SemanticLayoutRevision, geometry: vv.NativeViewportRevision,
 		request: vv.semanticWindowRequestGeneration,
-		hex:     vv.HexMode, decode: vv.DecodeMode, wrap: vv.WrapMode,
+		hex:     vv.HexMode, decode: vv.DecodeMode, wrap: vv.WrapMode, ansi: vv.AnsiMode,
 		disasmMode: vv.effectiveDisasmMode(),
-		textAttr:   vtui.Palette[theme.ColViewerText], arrowAttr: vtui.Palette[theme.ColViewerArrows],
+		textAttr:   vv.textAttr(), arrowAttr: vtui.Palette[theme.ColViewerArrows],
 		selectedAttr: vtui.Palette[theme.ColViewerSelectedText], search: vv.LastSearch,
 		searchOffset: vv.LastSearchOffset, searchLength: vv.LastSearchMatchLen, searchFound: vv.LastSearchFound, hoveredURL: vv.hoverURL}
 }
@@ -279,11 +304,12 @@ func (vv *ViewerView) ensureTextLayoutSettings() {
 	if vv.SemanticLayoutRevision == 0 {
 		vv.SemanticLayoutRevision = 1
 	}
-	if vv.layoutTabSize == tabSize {
+	if vv.layoutTabSize == tabSize && vv.layoutANSI == vv.AnsiMode {
 		return
 	}
 	previous := vv.layoutTabSize
 	vv.layoutTabSize = tabSize
+	vv.layoutANSI = vv.AnsiMode
 	if previous == 0 {
 		return
 	}
@@ -341,7 +367,7 @@ func (vv *ViewerView) constructWindow(width, height, overscan int, pending **vie
 	vv.ensureTextLayoutSettings()
 	key := vv.constructionKey(vv.TopOffset, width, height, overscan)
 	if *pending == nil || (*pending).key != key {
-		*pending = &viewerWindowConstruction{key: key, start: key.top}
+		*pending = &viewerWindowConstruction{key: key, start: key.top, ansiAttr: vv.textAttr()}
 	}
 	build := *pending
 	if !build.originReady {
@@ -403,7 +429,7 @@ func (vv *ViewerView) constructWindow(width, height, overscan int, pending **vie
 		build.current, build.initialized = build.start, true
 	}
 	for len(build.rows) < height+2*overscan && build.current < key.size {
-		row, err := vv.projectRowProgress(build.current, width, build.column, &build.row)
+		row, err := vv.projectRowProgress(build.current, width, build.column, &build.row, &build.ansiAttr)
 		if err != nil {
 			if build.foundViewport && len(build.rows)-build.viewportRow >= height {
 				vv.projectionContinuationPending = false
@@ -442,6 +468,21 @@ type viewerTextScan struct {
 // scanViewerText is the single source scan for byte boundaries, tab stops,
 // navigation and painted cells. origin is carried across soft wraps and reset
 // only by a real newline; emit=false resolves navigation without allocating.
+// ANSI stripping uses the same scanner and restores source byte coordinates.
+func scanViewerTextMode(data []byte, width int, wrap bool, origin int, attr uint64, emit, ansi bool) viewerTextScan {
+	if !ansi {
+		return scanViewerText(data, width, wrap, origin, attr, emit)
+	}
+	plain, original, _ := stripANSI(data)
+	scan := scanViewerText(plain, width, wrap, origin, attr, false)
+	scan.lineLen, scan.textLen = original[scan.lineLen], original[scan.textLen]
+	if emit {
+		state := attr
+		scan.cells, scan.cellByteOffsets = ansiRowCellsAt(data[:scan.textLen], attr, &state, effectiveViewerTabSize(), width, origin)
+	}
+	return scan
+}
+
 func scanViewerText(data []byte, width int, wrap bool, origin int, attr uint64, emit bool) viewerTextScan {
 	result := viewerTextScan{nextColumn: origin}
 	if width <= 0 {
@@ -530,7 +571,7 @@ func (vv *ViewerView) viewerRowOrigin(offset int64, width int) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	scan := scanViewerText(data, max(1, len(data)*8), false, vv.SemanticWrapSeek.resolvedColumn, 0, false)
+	scan := scanViewerTextMode(data, max(1, len(data)*8), false, vv.SemanticWrapSeek.resolvedColumn, 0, false, vv.AnsiMode)
 	return scan.nextColumn, nil
 }
 

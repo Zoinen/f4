@@ -69,3 +69,35 @@ func TestHostConsole_LeaveRestoresMouseTracking(t *testing.T) {
 		t.Fatalf("mouse tracking disabled after being re-enabled: %q", written)
 	}
 }
+
+// TestHidePanelsForCommand pins #1672: hiding the panels for a command enters
+// the host console in ShellModeHost, and only there.
+func TestHidePanelsForCommand(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mode terminal.ShellMode
+		want bool
+	}{
+		{"host", terminal.ShellModeHost, true},
+		{"own", terminal.ShellModeOwn, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+			theme.SetDefaultF4Palette()
+			pf := NewPanelsFrame()
+			defer pf.Close()
+			pf.ShellMode = tc.mode
+			pf.ResizeConsole(80, 25)
+			pf.ShowPanels = true
+
+			pf.HidePanelsForCommand()
+
+			if pf.ShowPanels {
+				t.Error("the panels must be hidden")
+			}
+			if got := pf.IsHostConsoleActive(); got != tc.want {
+				t.Errorf("IsHostConsoleActive() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

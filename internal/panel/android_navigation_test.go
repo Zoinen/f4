@@ -45,7 +45,7 @@ func TestAndroidParentNavigationShowsCachedDevicesDuringDiscovery(t *testing.T) 
 			fp.CancelLoad()
 		}
 		fp.StopLoadingAnimation()
-		fp.LoadWorkerWG.Wait()
+		fp.WaitForIdle()
 	})
 	waitForLoad(t, fp)
 	child := &trackedMountedVFS{NullVFS: vfs.NewNullVFS(0), parent: manager}

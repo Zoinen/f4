@@ -361,55 +361,15 @@ ApplicationWindow {
     color: useTransparentWindowBackground ? "transparent"
                                           : windowBackgroundColor
 
-    function fontRenderTypeOption(value) {
-        const options = fontRenderTypeOptions || []
-        for (let index = 0; index < options.length; ++index) {
-            if (Number(options[index].value) === Number(value))
-                return options[index]
-        }
-        return options.length > 0 ? options[0] : ({})
-    }
+    function fontRenderTypeOption(value) { return preferenceController.fontRenderTypeOption(value) }
+    function mouseWheelModeOption(value) { return preferenceController.mouseWheelModeOption(value) }
+    function iconSetOption(value) { return preferenceController.iconSetOption(value) }
+    function setMouseWheelMode(value) { return preferenceController.setMouseWheelMode(value) }
+    function setIconSet(value) { return preferenceController.setIconSet(value) }
 
-    function mouseWheelModeOption(value) {
-        const options = mouseWheelModeOptions || []
-        for (let index = 0; index < options.length; ++index) {
-            if (String(options[index].value) === String(value))
-                return options[index]
-        }
-        return options.length > 0 ? options[options.length - 1] : ({})
-    }
-
-    function iconSetOption(value) {
-        const options = iconSetOptions || []
-        for (let index = 0; index < options.length; ++index) {
-            if (String(options[index].value) === String(value))
-                return options[index]
-        }
-        return options.length > 0 ? options[0] : ({})
-    }
-
-    function setMouseWheelMode(value) {
-        const normalized = String(value || "").toLowerCase()
-        for (let index = 0; index < mouseWheelModeOptions.length; ++index) {
-            if (String(mouseWheelModeOptions[index].value) === normalized) {
-                mouseWheelMode = normalized
-                return true
-            }
-        }
-        return false
-    }
-
-    function setIconSet(value) {
-        const normalized = String(value || "").trim().toLowerCase()
-        for (let index = 0; index < iconSetOptions.length; ++index) {
-            if (String(iconSetOptions[index].value) !== normalized)
-                continue
-            if (!iconProvider || iconProvider.name === undefined)
-                return false
-            iconProvider.name = normalized
-            return iconSetName === normalized
-        }
-        return false
+    HostPreferenceController {
+        id: preferenceController
+        hostWindow: host
     }
 
     property list<NativeSettingsPage> nativeSettingsPages: []
@@ -778,21 +738,7 @@ ApplicationWindow {
     }
 
     function applyPlatformWindowEffects() {
-        if (!windowAgentReady || !useMacNativeTitleBar
-                || !supportsTransparentWindowBackground)
-            return
-        windowAgent.setWindowAttribute("blur-effect", "none")
-        windowAgent.setWindowAttribute("glass-corner-radius", 0)
-        windowAgent.setWindowAttribute("glass-tint-color", "none")
-        const glassApplied = windowAgent.setWindowAttribute(
-                                 "glass-effect", macWindowGlassEffect) === true
-        const applied = glassApplied || windowAgent.setWindowAttribute(
-                            "blur-effect", macWindowFallbackBlurEffect) === true
-        isQWKLegacy = !applied
-        if (!applied && macWindowEffectApplyAttempts < 10) {
-            ++macWindowEffectApplyAttempts
-            macWindowEffectRetryTimer.restart()
-        }
+        windowEffects.applyPlatformWindowEffects()
     }
 
     Component.onCompleted: {
@@ -800,30 +746,7 @@ ApplicationWindow {
         ZG.Style.isDarkTheme = true
         loadThemeFromPersistence()
         captureRetainedSurfaces()
-        if (!f4UsesQwk)
-            return
-        windowAgent.setup(host)
-        windowAgentReady = true
-        if (Qt.platform.os === "windows") {
-            isQWKLegacy = supportsTransparentWindowBackground
-                    ? windowAgent.setWindowAttribute("mica-alt", true) !== true
-                    : true
-        } else if (useMacNativeTitleBar) {
-            if (supportsTransparentWindowBackground)
-                applyPlatformWindowEffects()
-            else
-                isQWKLegacy = true
-        }
-        if (titleBarItem)
-            windowAgent.setTitleBar(titleBarItem)
-        if (Qt.platform.os !== "osx" && appIconItem)
-            windowAgent.setHitTestVisible(appIconItem)
-        if (workspaceBarItem) {
-            windowAgent.setHitTestVisible(workspaceBarItem)
-            workspaceBarHitTestRegistered = true
-        }
-        if (useMacNativeTitleBar && macSystemButtonAreaItem)
-            windowAgent.setSystemButtonArea(macSystemButtonAreaItem)
+        windowEffects.initialize()
     }
 
     onClosing: {
@@ -835,11 +758,11 @@ ApplicationWindow {
         id: windowAgent
     }
 
-    Timer {
-        id: macWindowEffectRetryTimer
-        interval: 100
-        repeat: false
-        onTriggered: host.applyPlatformWindowEffects()
+    HostWindowEffects {
+        id: windowEffects
+        hostWindow: host
+        windowAgent: host.nativeWindowAgent
+        usesQwk: f4UsesQwk
     }
 
     HostPresentationUtilities {

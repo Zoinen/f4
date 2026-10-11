@@ -8,6 +8,7 @@ import (
 
 	"github.com/mattn/go-runewidth"
 	"github.com/unxed/f4/internal/action"
+	"github.com/unxed/f4/internal/config"
 	"github.com/unxed/f4/internal/i18n"
 	"github.com/unxed/f4/internal/keymap"
 	"github.com/unxed/f4/internal/macro"
@@ -16,6 +17,76 @@ import (
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 )
+
+// pluginMenuBottomHint is drawn on the lower border of the F11 menu, so that the
+// hotkey assignment on F4 (and removal on Del) is not known only to those who
+// read the ticket it was asked for in.
+const pluginMenuBottomHint = " Del F4 F9 "
+
+// declaredHotkeyString turns the shortcut a plugin declares for a command
+// ("Shift+F1") into the string the hotkey manager spells that key with
+// ("ShiftF1"), or "" when it does not name a key.
+func declaredHotkeyString(declared string) string {
+	declared = strings.ReplaceAll(strings.TrimSpace(declared), "+", "")
+	if declared == "" {
+		return ""
+	}
+	e := keymap.ParseFarKey(declared)
+	if e == nil || e.VirtualKeyCode == 0 && e.Char == 0 {
+		return ""
+	}
+	return keymap.EventToHotkeyString(e)
+}
+
+// PluginDefaultKeyOff reports whether the user removed the default hotkey a
+// plugin brings with it (config PluginDefaultHotkeysOff).
+func PluginDefaultKeyOff(key string) bool {
+	if key == "" {
+		return false
+	}
+	for _, off := range strings.Split(config.App.PluginDefaultHotkeysOff, ";") {
+		if strings.EqualFold(strings.TrimSpace(off), key) {
+			return true
+		}
+	}
+	return false
+}
+
+// pluginLabelHotkeyOffKey is the PluginDefaultHotkeysOff entry that switches off
+// the letter a plugin marks with an ampersand in the label of the entry named
+// actionName. It cannot clash with a key spelling: those never hold a colon.
+func pluginLabelHotkeyOffKey(actionName string) string {
+	return "amp:" + actionName
+}
+
+// pluginLabelHotkey is the letter a plugin label marks with an ampersand, or
+// zero when it marks none or the user switched it off.
+func pluginLabelHotkey(actionName, label string) rune {
+	if PluginDefaultKeyOff(pluginLabelHotkeyOffKey(actionName)) {
+		return 0
+	}
+	_, hotkey, _ := vtui.ParseAmpersandString(label)
+	return pluginMenuHotkeyRune(string(hotkey))
+}
+
+// SetPluginDefaultKeyOff removes a plugin's default hotkey from use, or gives
+// it back, and saves the setting.
+func SetPluginDefaultKeyOff(key string, off bool) {
+	if key == "" || PluginDefaultKeyOff(key) == off {
+		return
+	}
+	var kept []string
+	for _, k := range strings.Split(config.App.PluginDefaultHotkeysOff, ";") {
+		if k = strings.TrimSpace(k); k != "" && !strings.EqualFold(k, key) {
+			kept = append(kept, k)
+		}
+	}
+	if off {
+		kept = append(kept, key)
+	}
+	config.App.PluginDefaultHotkeysOff = strings.Join(kept, ";")
+	config.SaveConfig()
+}
 
 func PluginActionForName(name string) (action.Action, bool) {
 	rawName := strings.TrimSpace(name)
@@ -133,9 +204,12 @@ func IsPluginMenuHotkey(key string) bool { return pluginMenuHotkeyRune(key) != 0
 type PluginMenuEntry struct {
 	Label      string
 	ActionName string
-	Declared   string // shortcut declared by the plugin itself
-	Chord      string
-	Hotkey     string
+	// CommandID is the registered plugin command behind the entry; empty for a
+	// row a plugin added with RegisterPluginMenuItem.
+	CommandID string
+	Declared  string // shortcut declared by the plugin itself
+	Chord     string
+	Hotkey    string
 }
 
 // applyBinding splits what is currently configured for the entry into an
@@ -151,6 +225,9 @@ func (e *PluginMenuEntry) applyBinding() {
 		return
 	}
 	declared := strings.TrimSpace(e.Declared)
+	if PluginDefaultKeyOff(declaredHotkeyString(declared)) {
+		return // the user removed the plugin's own default
+	}
 	if r := pluginMenuHotkeyRune(declared); r != 0 {
 		e.Hotkey = string(r)
 		return
@@ -190,7 +267,7 @@ func resolvePluginMenuHotkeys(entries []PluginMenuEntry) {
 		if entries[i].Hotkey != "" || entries[i].Chord != "" {
 			continue
 		}
-		if _, hotkey, _ := vtui.ParseAmpersandString(entries[i].Label); hotkey != 0 {
+		if hotkey := pluginLabelHotkey(entries[i].ActionName, entries[i].Label); hotkey != 0 {
 			entries[i].Hotkey = claim(string(hotkey))
 		}
 	}
@@ -209,6 +286,7 @@ func buildPluginMenuEntries(items []plughost.PluginMenuItem, commands []vfs.Plug
 		entries = append(entries, PluginMenuEntry{
 			Label:      plughost.PluginCommandDisplayLabel(command),
 			ActionName: keymap.PluginCommandActionName(command.ID),
+			CommandID:  command.ID,
 			Declared:   command.Shortcut,
 		})
 	}
@@ -282,24 +360,28 @@ func PluginActionDefaultShortcut(name string) string {
 
 func assignPluginHotkey(actionName, label string, onComplete func()) {
 	hm := keymap.GlobalHotkeysMgr
-	if hm == nil || vtui.FrameManager == nil || !keymap.IsPluginActionName(actionName) {
+	if hm == nil || vtui.FrameManager == nil || !isMenuHotkeyActionName(actionName) {
 		return
 	}
-	vtui.FrameManager.Push(NewPluginHotkeyAssignFrame(hm, actionName, label, onComplete))
+	showPluginHotkeyDialog(hm, actionName, label, onComplete)
+}
+
+func isMenuHotkeyActionName(name string) bool {
+	return keymap.IsPluginActionName(name) || keymap.IsDriveMenuActionName(name)
 }
 
 // bindPluginMenuHotkey stores a letter for the entry. A letter identifies
 // exactly one row, so it is taken away from whoever held it, and the entry
 // loses whatever it held before: one hot key per plugin, as in Far.
 func bindPluginMenuHotkey(hm *keymap.HotkeyManager, actionName string, r rune) bool {
-	if hm == nil || r == 0 || !keymap.IsPluginActionName(actionName) {
+	if hm == nil || r == 0 || !isMenuHotkeyActionName(actionName) {
 		return false
 	}
 	key := string(unicode.ToUpper(r))
 	for _, area := range []string{"Shell", "Common"} {
 		for boundKey, binding := range hm.Bindings[area] {
 			name := strings.SplitN(binding, ":", 2)[0]
-			if !keymap.IsPluginActionName(name) {
+			if !isMenuHotkeyActionName(name) {
 				continue
 			}
 			if strings.EqualFold(boundKey, key) || strings.EqualFold(name, actionName) {
@@ -345,6 +427,10 @@ type PluginHotkeyAssignFrame struct {
 	hm         *keymap.HotkeyManager
 	actionName string
 	onComplete func()
+	// declaredKey is the hotkey the plugin brings with it, in the hotkey
+	// manager's spelling, when nothing is configured and the user has not
+	// removed it: it is what the plugin menu shows and what Del removes.
+	declaredKey string
 }
 
 func NewPluginHotkeyAssignFrame(hm *keymap.HotkeyManager, actionName, label string, onComplete func()) *PluginHotkeyAssignFrame {
@@ -360,6 +446,9 @@ func NewPluginHotkeyAssignFrame(hm *keymap.HotkeyManager, actionName, label stri
 	current := i18n.Msg("Plugins.HotkeyNone")
 	if _, key := keymap.ConfiguredHotkeyBinding(hm, actionName); key != "" {
 		current = keymap.FormatKeyForUI(key)
+	} else if def := declaredHotkeyString(PluginActionDefaultShortcut(actionName)); def != "" && !PluginDefaultKeyOff(def) {
+		f.declaredKey = def
+		current = keymap.FormatKeyForUI(def)
 	}
 	lines := []string{
 		cleanLabel,
@@ -398,6 +487,11 @@ func (f *PluginHotkeyAssignFrame) ProcessKey(e *vtinput.InputEvent) bool {
 		changed := false
 		if area, key := keymap.ConfiguredHotkeyBinding(f.hm, f.actionName); key != "" {
 			changed = keymap.DeletePluginHotkey(f.hm, area, key)
+		} else if f.declaredKey != "" {
+			// The plugin's own default: it cannot be unbound in the hotkey
+			// manager (it is not there), so it is switched off.
+			SetPluginDefaultKeyOff(f.declaredKey, true)
+			changed = true
 		}
 		f.finish(changed)
 		return true
@@ -432,10 +526,13 @@ func PluginMenuKeyLabels(pf *PanelsFrame) *vtui.KeySet {
 		if base := pf.GetKeyLabels(); base != nil {
 			labels := *base
 			labels.Normal[3] = "F4"
+			labels.Normal[8] = "F9"
 			return &labels
 		}
 	}
-	return &vtui.KeySet{Normal: vtui.KeyBarLabels{"", "", "", "F4"}}
+	labels := &vtui.KeySet{Normal: vtui.KeyBarLabels{"", "", "", "F4"}}
+	labels.Normal[8] = "F9"
+	return labels
 }
 
 // PluginHotkeyActionsSnapshot includes commands that are currently hidden from
@@ -464,4 +561,16 @@ func PluginHotkeyActionsSnapshot() []action.Action {
 		}
 	}
 	return actions
+}
+
+// commandsForPluginMenu drops the commands that are not meant for the F11 menu
+// (vfs.PluginCommand.NotInPluginMenu).
+func commandsForPluginMenu(commands []vfs.PluginCommand) []vfs.PluginCommand {
+	out := make([]vfs.PluginCommand, 0, len(commands))
+	for _, c := range commands {
+		if !c.NotInPluginMenu {
+			out = append(out, c)
+		}
+	}
+	return out
 }

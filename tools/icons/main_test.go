@@ -149,3 +149,39 @@ func fakeImages() map[int][]byte {
 	}
 	return images
 }
+
+func TestMacBodySizeFollowsAppleGrid(t *testing.T) {
+	want := map[int]int{1024: 824, 512: 412, 256: 206, 128: 104, 64: 52, 32: 26, 16: 14}
+	for canvas, body := range want {
+		if got := macBodySize(canvas); got != body {
+			t.Errorf("macBodySize(%d) = %d, want %d", canvas, got, body)
+		}
+		if (canvas-macBodySize(canvas))%2 != 0 {
+			t.Errorf("macBodySize(%d) leaves an uneven margin", canvas)
+		}
+	}
+}
+
+func TestRenderPaddedPNGLeavesTransparentMargin(t *testing.T) {
+	source := filepath.Join("..", "..", "internal", "gui", "assets", "icon", "f4.svg")
+	data, err := renderPaddedPNG(source, 128, macBodySize(128))
+	if err != nil {
+		t.Fatal(err)
+	}
+	img, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := img.Bounds(); b.Dx() != 128 || b.Dy() != 128 {
+		t.Fatalf("canvas = %v, want 128x128", b)
+	}
+	margin := (128 - macBodySize(128)) / 2
+	for _, p := range []image.Point{{0, 0}, {margin - 1, 64}, {64, margin - 1}, {127 - margin + 1, 64}, {64, 127}} {
+		if _, _, _, a := img.At(p.X, p.Y).RGBA(); a != 0 {
+			t.Errorf("pixel %v in the margin has alpha %d, want 0", p, a)
+		}
+	}
+	if _, _, _, a := img.At(64, 64).RGBA(); a == 0 {
+		t.Error("center of the body is transparent")
+	}
+}

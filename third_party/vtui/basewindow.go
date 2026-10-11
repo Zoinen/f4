@@ -184,6 +184,9 @@ func (bw *BaseWindow) Show(scr *ScreenBuf) {
 		scr.Write(bw.X1+2, bw.Y1, StringToCharInfo(numStr, Palette[bw.frame.ColorBoxIdx]))
 	}
 
+	// Enter's target is decided by TriggerDefaultAction; draw the same one.
+	bw.rootGroup.syncImplicitDefault()
+
 	// A short modal dialog can retain full-size contents and scroll them
 	// through its smaller visible viewport. Normal windows keep their existing
 	// drawing behaviour.
@@ -316,8 +319,13 @@ func (bw *BaseWindow) ToggleZoom() {
 		if FrameManager.scr != nil {
 			h = FrameManager.scr.height
 		}
-		bw.MoveRelative(-bw.X1, -bw.Y1)
-		bw.ChangeSize(w, h-1)
+		// The bottom row belongs to the key bar and the top rows to the
+		// workspace tab strip: drawWorkspaceTabs runs last in Redraw and fills
+		// its row unconditionally, so a window zoomed onto row 0 loses its top
+		// border and title to it (f4 issue #1144).
+		top := FrameManager.WorkspaceTopInset()
+		bw.MoveRelative(-bw.X1, top-bw.Y1)
+		bw.ChangeSize(w, h-1-top)
 	}
 }
 

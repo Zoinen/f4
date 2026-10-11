@@ -100,8 +100,9 @@ func TestNetFoxPluginRegistersContextualPanelCommands(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if host.uriCalls != 2 {
-		t.Fatalf("URI registrations = %d, want 2", host.uriCalls)
+	// net:// restores saved connections; sftp://, scp:// and smb:// open transports.
+	if host.uriCalls != netFoxURIRegistrationsForTest {
+		t.Fatalf("URI registrations = %d, want %d", host.uriCalls, netFoxURIRegistrationsForTest)
 	}
 	if host.driveName != "NetFox" || host.driveFactory == nil {
 		t.Fatalf("drive registration = %q, hasFactory=%t", host.driveName, host.driveFactory != nil)

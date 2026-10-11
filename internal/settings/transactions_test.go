@@ -50,7 +50,7 @@ func TestSettingsCollectionFocusAndSemanticRendering(t *testing.T) {
 	fieldRow := c.page.rows[len(c.page.rows)-1]
 	fieldRow.field.Unavailable = "Retained compatibility setting"
 	for iteration := 0; iteration < 2; iteration++ {
-		for j, id := range []int{vtui.ColDialogText, vtui.ColDialogSelectedButton, vtui.ColDialogHighlightText, vtui.ColDialogHighlightSelectedButton, vtui.ColDialogBox, vtui.ColDialogEdit, vtui.ColDialogEditSelected, vtui.ColDialogEditUnchanged} {
+		for j, id := range []int{vtui.ColDialogText, vtui.ColDialogSelectedButton, vtui.ColDialogHighlightText, vtui.ColDialogHighlightSelectedButton, vtui.ColDialogBox, vtui.ColDialogEdit, vtui.ColDialogEditSelected, vtui.ColDialogEditUnchanged, vtui.ColDialogComboSelectedText} {
 			vtui.Palette[id] = uint64(0x21 + j + iteration*16)
 		}
 		c.query = "Record 1"
@@ -69,7 +69,8 @@ func TestSettingsCollectionFocusAndSemanticRendering(t *testing.T) {
 		if attr := scr.GetCell(table.X1, table.Y1).Attributes; attr != vtui.DimColor(vtui.Palette[vtui.ColDialogEdit]) {
 			t.Fatalf("theme %d nonmatching record: %x", iteration, attr)
 		}
-		if attr := scr.GetCell(table.X1, table.Y1+1).Attributes; attr != vtui.Palette[vtui.ColDialogSelectedButton] {
+		// Record lists mark their cursor in the combo cursor colour (#1148).
+		if attr := scr.GetCell(table.X1, table.Y1+1).Attributes; attr != vtui.Palette[vtui.ColDialogComboSelectedText] {
 			t.Fatalf("theme %d selected matching record: %x", iteration, attr)
 		}
 		c.help.text = strings.Repeat("Long explanation with enough words to require independent scrolling. ", 50)
@@ -262,52 +263,6 @@ func TestSettingsRecordStorePartialFailureAndRevision(t *testing.T) {
 	_ = os.WriteFile(b, []byte("concurrent"), 0600)
 	if len(d.Validate()) == 0 {
 		t.Fatal("concurrent source revision ignored")
-	}
-}
-
-// The installed catalog (far2l's colorer/configs) lists its colour styles
-// through external XML entities such as &catalog-rgb;. The encoding/xml reader
-// this used to be stopped at the first one, and the Settings Center offered no
-// styles at all. Colorer reads the catalog now, and brings the user's own
-// colour styles along (issue #277).
-func TestSettingsSchemeEnumerationAndWorktreeIdentity(t *testing.T) {
-	oldCatalog, oldUserHrd := config.App.EditorColorerCatalog, config.App.EditorColorerUserHrd
-	defer func() { config.App.EditorColorerCatalog, config.App.EditorColorerUserHrd = oldCatalog, oldUserHrd }()
-	dir := t.TempDir()
-	config.App.EditorColorerCatalog = dir
-	base := filepath.Join(dir, "base")
-	_ = os.MkdirAll(filepath.Join(base, "hrd"), 0700)
-	_ = os.WriteFile(filepath.Join(base, "catalog.xml"), []byte(`<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE catalog [
-    <!ENTITY hrd "hrd">
-    <!ENTITY catalog-rgb SYSTEM "hrd/catalog-rgb.xml">
-]>
-<catalog xmlns="http://colorer.github.io/schema/v1/catalog">
-    <hrc-sets/>
-    <hrd-sets>
-        &catalog-rgb;
-    </hrd-sets>
-</catalog>
-`), 0600)
-	_ = os.WriteFile(filepath.Join(base, "hrd", "catalog-rgb.xml"), []byte(`
-        <hrd class="rgb" name="first" description="First scheme">
-            <location link="&hrd;/first.hrd"/>
-        </hrd>
-        <hrd class="text" name="other" description="Other">
-            <location link="&hrd;/first.hrd"/>
-        </hrd>
-`), 0600)
-	_ = os.WriteFile(filepath.Join(base, "hrd", "first.hrd"), []byte(`<hrd xmlns="http://colorer.sf.net/2003/hrd"/>`), 0600)
-	user := t.TempDir()
-	_ = os.WriteFile(filepath.Join(user, "mine.hrd"), []byte(`<hrd xmlns="http://colorer.sf.net/2003/hrd" class="rgb" name="mine" description="My style"/>`), 0600)
-	config.App.EditorColorerUserHrd = user
-
-	names := map[string]bool{}
-	for _, scheme := range settingsColorerSchemes() {
-		names[scheme.Name] = true
-	}
-	if !names["first"] || !names["mine"] || names["other"] {
-		t.Fatalf("styles listed: %v; want first and mine, and no text-class style", names)
 	}
 }
 
