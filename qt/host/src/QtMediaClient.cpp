@@ -113,6 +113,21 @@ public:
     {
     }
 
+    void setInteractiveResource(const QString &resourceId)
+    {
+        m_interactiveResource = resourceId;
+        m_focusPending = true;
+        flushInteractiveFocus();
+    }
+
+    void flushInteractiveFocus()
+    {
+        if (m_ready && m_focusPending
+            && sendMap({{QStringLiteral("type"), QStringLiteral("focus")},
+                        {QStringLiteral("resourceId"), m_interactiveResource}}))
+            m_focusPending = false;
+    }
+
     void configure(QVariantMap advertisement)
     {
         const int protocol = advertisement.value(
@@ -451,6 +466,7 @@ private:
                 [this]() { processInput(); });
         connect(m_socket, &QTcpSocket::bytesWritten, this,
                 [this](qint64) {
+                    flushInteractiveFocus();
                     flushPendingAcks();
                     flushPendingReleases();
                 });
@@ -716,6 +732,10 @@ private:
                 std::min(m_maxChunkSize,
                          qint64(MaxMediaFrameSize - 1024)));
             m_ready = true;
+            if (!m_interactiveResource.isEmpty())
+                setInteractiveResource(m_interactiveResource);
+            else
+                flushInteractiveFocus();
             m_handshakeDeadline = QDeadlineTimer(QDeadlineTimer::Forever);
             m_reconnectDelayMs = 100;
             notifyReady();
@@ -1131,6 +1151,8 @@ private:
     int m_reconnectDelayMs = 100;
     bool m_configured = false;
     bool m_ready = false;
+    QString m_interactiveResource;
+    bool m_focusPending = false;
     bool m_handlingDisconnect = false;
     bool m_flushingReleases = false;
     bool m_releaseOverflowReported = false;
@@ -1282,6 +1304,16 @@ void QtMediaClient::cancel(const QString &requestId)
     if (m_worker && !requestId.isEmpty()) {
         QMetaObject::invokeMethod(m_worker,
             [worker = m_worker, requestId]() { worker->cancel(requestId); });
+    }
+}
+
+void QtMediaClient::setInteractiveResource(const QString &resourceId)
+{
+    if (m_worker) {
+        QMetaObject::invokeMethod(m_worker,
+            [worker = m_worker, resourceId]() {
+                worker->setInteractiveResource(resourceId);
+            });
     }
 }
 

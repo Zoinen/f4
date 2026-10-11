@@ -95,6 +95,11 @@ F4ImageSourceProvider::F4ImageSourceProvider(QtMediaClient *client)
 {
 }
 
+void F4ImageSourceProvider::setInteractiveResource(const QString &resourceId)
+{
+    if (m_client) m_client->setInteractiveResource(resourceId);
+}
+
 ZoinGallery::ImageSourceReadResult F4ImageSourceProvider::readRange(
     const ZoinGallery::ImageSourceDescriptor &source,
     qint64 offset, qint64 length,

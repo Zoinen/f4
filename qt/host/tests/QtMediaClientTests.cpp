@@ -293,7 +293,34 @@ private slots:
     void blockingMaterializeTimeoutReleasesLateAcknowledgedLease();
     void releaseSurvivesBackpressureReconnectAndReconfiguration();
     void pendingMediaNeverBlocksControlScenes();
+    void interactiveFocusSurvivesHandshakeAndCanBeCleared();
 };
+
+void QtMediaClientTests::interactiveFocusSurvivesHandshakeAndCanBeCleared()
+{
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+    QtMediaClient client;
+    client.setInteractiveResource("opened-image");
+    client.configure(advertisement(server.serverPort()));
+    QTRY_VERIFY(server.hasPendingConnections());
+    QScopedPointer<QTcpSocket> peer(server.nextPendingConnection());
+    QByteArray payload;
+    QVERIFY(takeFrame(peer.data(), &payload));
+    QCOMPARE(stringField(payload, "type"), QString("hello"));
+    sendFrame(peer.data(), mediaHello());
+    QTRY_VERIFY(client.ready());
+    QVERIFY(takeFrame(peer.data(), &payload));
+    QCOMPARE(stringField(payload, "type"), QString("focus"));
+    QCOMPARE(stringField(payload, "resourceId"), QString("opened-image"));
+    client.setInteractiveResource("next-image");
+    QVERIFY(takeFrame(peer.data(), &payload));
+    QCOMPARE(stringField(payload, "resourceId"), QString("next-image"));
+    client.setInteractiveResource({});
+    QVERIFY(takeFrame(peer.data(), &payload));
+    QCOMPARE(stringField(payload, "type"), QString("focus"));
+    QVERIFY(stringField(payload, "resourceId").isEmpty());
+}
 
 void QtMediaClientTests::directoryPreviewUsesLeaseAcknowledgement()
 {

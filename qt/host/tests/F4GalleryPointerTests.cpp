@@ -304,6 +304,7 @@ private slots:
     void androidDriveSwitchClearsPreviousCatalogImmediately();
     void revisionOnlyRefreshDoesNotStartPresentationTransaction();
     void sparseRefreshReachesGalleryAndCrossesPagingThreshold();
+    void sameRevisionCompletionPatchExpandsSparseCatalog();
     void nativeDropUsesIdentityAndSnappedOutline();
     void columnsLabelsStaySnappedDuringPanelResize();
     void nativeWorkspaceHoverAndDrop();
@@ -2522,6 +2523,31 @@ void F4GalleryPointerTests::sameFolderRefreshKeepsGalleryObjects()
     QCOMPARE(model->rowCount(),3);
     QCOMPARE(model->data(model->index(1,0),role),survivor);
     QCOMPARE(session->panelScrollOffset(),31.0);
+}
+
+void F4GalleryPointerTests::sameRevisionCompletionPatchExpandsSparseCatalog()
+{
+    QQuickView view;
+    F4GalleryBridge bridge(view.engine());
+    auto scene = galleryScene(3);
+    auto shell = scene.value("shell").toMap();
+    auto panel = shell.value("panels").toList().first().toMap();
+    panel["catalogProvisional"] = true;
+    panel["totalCount"] = 3;
+    shell["panels"] = QVariantList{panel};
+    scene["shell"] = shell;
+    bridge.synchronizeScene(scene);
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(bridge.sessionForSide(0));
+    QVERIFY(session);
+    QCOMPARE(session->model()->rowCount(), 3);
+    bridge.synchronizePanelState({
+        {"op", "state_update"}, {"side", 0}, {"panelId", panel.value("id")},
+        {"catalogRevision", panel.value("catalogRevision")},
+        {"panel", QVariantMap{{"catalogProvisional", false},
+                              {"catalogRowsDeferred", true},
+                              {"totalCount", 6275}, {"loading", false}}},
+    });
+    QCOMPARE(session->model()->rowCount(), 6275);
 }
 
 void F4GalleryPointerTests::sparseRefreshReachesGalleryAndCrossesPagingThreshold()
