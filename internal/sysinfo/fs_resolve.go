@@ -1,7 +1,6 @@
 package sysinfo
 
 import (
-	"path/filepath"
 	"sync"
 	"time"
 )
@@ -10,13 +9,14 @@ import (
 // text, so a folder reached through a junction or symlink reported the
 // disk holding the link instead of the disk the link leads to (Linux's
 // statfs and Far both follow the link). resolveForVolume gives FS the
-// path with links expanded. The panel footer asks for the free space on
+// path with links expanded — symlinks and, on Windows, junctions too
+// (finalPath; f4#1835). The panel footer asks for the free space on
 // every redraw, so the answer is kept for a moment rather than walking
 // the path again each time.
 const resolveCacheTTL = 2 * time.Second
 
 var (
-	evalSymlinks = filepath.EvalSymlinks
+	evalSymlinks = finalPath
 	resolveClock = time.Now
 
 	resolveMu    sync.Mutex

@@ -17,6 +17,7 @@ import (
 	"github.com/unxed/f4/internal/dialog"
 	"github.com/unxed/f4/internal/editor"
 	"github.com/unxed/f4/internal/fileops"
+	"github.com/unxed/f4/internal/findfile"
 	"github.com/unxed/f4/internal/history"
 	"github.com/unxed/f4/internal/i18n"
 	"github.com/unxed/f4/internal/keymap"
@@ -537,6 +538,32 @@ func init() {
 
 	// --- Common actions (available in every area) ---
 	RegisterAction(action.Action{
+		Name: "FindFile.Stop", Area: "Common",
+		Label: "Stop File Search", LabelKey: "Action.FindFile.Stop",
+		Description: "Stop the active file search and keep its results", DescKey: "Action.FindFile.Stop.Desc",
+		DefaultKeys:  []string{"CtrlShiftF7"},
+		HideFromMenu: true,
+		Visible: func() bool {
+			if vtui.FrameManager == nil {
+				return false
+			}
+			w, ok := vtui.FrameManager.GetTopFrame().(*findfile.SearchResultsWindow)
+			return ok && w.Running()
+		},
+		Handler: func() bool {
+			if vtui.FrameManager == nil {
+				return false
+			}
+			w, ok := vtui.FrameManager.GetTopFrame().(*findfile.SearchResultsWindow)
+			if !ok {
+				return false
+			}
+			w.Stop()
+			return true
+		},
+	})
+
+	RegisterAction(action.Action{
 		Name:        "App.ScreenGrab",
 		Area:        "Common",
 		Label:       "Screen Grab",
@@ -837,7 +864,9 @@ func init() {
 		Description: "Paste clipboard text or save a clipboard image into the active panel",
 		DescKey:     "Action.Panel.Paste.Desc",
 		DefaultKeys: []string{"CtrlV", "ShiftIns"},
-		Handler:     func() bool { return panel.ActionPasteClipboard(panel.FindPanelsFrame()) },
+		// Next to Copy/Cut files to clipboard in the Files menu (f4#1767).
+		MenuPath: "Files",
+		Handler:  func() bool { return panel.ActionPasteClipboard(panel.FindPanelsFrame()) },
 	})
 	registerAction(action.Action{
 		Name:        "Panel.CopyFilesToClipboard",
@@ -1190,6 +1219,21 @@ func init() {
 		Handler: withPF(func(pf *panel.PanelsFrame) {
 			if fsp := pf.GetActivePanel(); fsp != nil {
 				fsp.RestoreSelection()
+			}
+		}),
+	})
+	RegisterAction(action.Action{
+		Name:        "Panel.SelectFromClipboard",
+		Area:        "Shell",
+		Label:       "Select from clipboard",
+		LabelKey:    "Action.Panel.SelectFromClipboard",
+		Description: "Select panel items whose names are on the clipboard",
+		DescKey:     "Action.Panel.SelectFromClipboard.Desc",
+		DefaultKeys: []string{"CtrlS:NoTerminalApp"},
+		MenuPath:    "Files",
+		Handler: withPF(func(pf *panel.PanelsFrame) {
+			if fsp := pf.GetActivePanel(); fsp != nil {
+				fsp.SelectFromClipboard(vtui.GetClipboard())
 			}
 		}),
 	})

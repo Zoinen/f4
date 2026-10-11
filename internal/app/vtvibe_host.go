@@ -78,6 +78,14 @@ func vtvibeConfig() (vtvibe.Config, string) {
 // provider chosen in vtvibe.ini decides the address, the default model and
 // which environment variables carry the key (#1842).
 func vtvibeProviderConfig() (vtvibe.Config, string, vtvibe.Provider) {
+	cfg, keySource, provider := vtvibeReadConfig()
+	aiSession().SetStatus(vtvibe.Status{BaseURL: cfg.BaseURL, Model: cfg.Model, KeySource: keySource})
+	return cfg, keySource, provider
+}
+
+// vtvibeReadConfig reads the settings alone, without touching the panel's
+// dialog: f4 --ai uses it before any UI exists.
+func vtvibeReadConfig() (vtvibe.Config, string, vtvibe.Provider) {
 	ini := ini.Load(vtvibeIniPath())
 	provider := vtvibe.ResolveProvider(ini.GetString("general", "provider", ""), ini.GetString("general", "base_url", ""))
 	cfg := vtvibe.Config{
@@ -97,7 +105,6 @@ func vtvibeProviderConfig() (vtvibe.Config, string, vtvibe.Provider) {
 			cfg.APIKey, keySource = v, vtvibeIniName
 		}
 	}
-	aiSession().SetStatus(vtvibe.Status{BaseURL: cfg.BaseURL, Model: cfg.Model, KeySource: keySource})
 	return cfg, keySource, provider
 }
 
@@ -585,6 +592,10 @@ func aiCommand(app vfs.App, arg string) {
 		aiDialogsMenu(pf)
 	case strings.HasPrefix(arg, "/") && !strings.HasPrefix(arg, "//"):
 		aiUserCommand(pf, arg[1:])
+	case lower == "allow":
+		aiAllowCommand(pf)
+	case lower == "mcp":
+		aiMCPCommand()
 	case lower == "cost":
 		aiCostCommand(pf)
 	case lower == "gates" || strings.HasPrefix(lower, "gates "):

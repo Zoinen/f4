@@ -87,6 +87,7 @@ f4/
 │   ├── panel/                     # file panels, sorting, navigation, quick view, info
 │   ├── editor/                    # F4 editor on top of internal/piecetable
 │   ├── viewer/                    # F3 viewer, hex, disasm
+│   ├── findfile/                   # live Find File search, results and root-child progress
 │   ├── dialog/                    # modal dialogs and help
 │   ├── settings/                  # settings catalog, transactions and Settings Center
 │   ├── cmdline/                   # command line, prefixes, apply-command

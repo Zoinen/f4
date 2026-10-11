@@ -94,7 +94,7 @@ func TestWorkersGetTheNewTools(t *testing.T) {
 	for _, tool := range WorkTools(t.TempDir()) {
 		names[tool.Name] = true
 	}
-	for _, want := range []string{"shell", "read_file", "write_file", "edit_file", "grep", "find_files"} {
+	for _, want := range []string{"shell", "read_file", "write_file", "edit_file", "grep", "find_files", "fetch_url"} {
 		if !names[want] {
 			t.Errorf("no %s tool", want)
 		}

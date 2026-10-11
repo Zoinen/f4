@@ -36,7 +36,7 @@ func TestCommandLineSemanticClickFocus(t *testing.T) {
 	}
 	frame.CmdLine.Edit.History = []string{"example command"}
 	frame.CmdLine.Edit.SetText("example")
-	suggestions := vtui.NewAutoCompleteMenu(frame.CmdLine.Edit)
+	suggestions := cmdline.NewCompletionMenu(frame.CmdLine.Edit)
 	vtui.FrameManager.Push(suggestions)
 	frame.HandleSemanticAction(map[string]any{"action": "panel.activate", "side": frame.ActiveIdx})
 	if !suggestions.IsDone() {

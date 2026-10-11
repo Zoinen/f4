@@ -80,7 +80,8 @@ func (pf *PanelsFrame) TogglePanelsVisibility() {
 	// The console always owns command input. Preserve the explicit panel-mode
 	// target so returning to search-first panels can hide the input again.
 	if pf.CmdLine != nil {
-		pf.CmdLine.SetFocus(!pf.SearchFirstMode() || !pf.ShowPanels || pf.CommandLineFocused)
+		pf.CmdLine.SetFocus(pf.IsFocused() &&
+			(!pf.SearchFirstMode() || !pf.ShowPanels || pf.CommandLineFocused))
 	}
 }
 

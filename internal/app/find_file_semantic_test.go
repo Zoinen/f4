@@ -49,8 +49,19 @@ func TestFindFileCompletionPublishesResultsWithoutInput(t *testing.T) {
 	for time.Now().Before(deadline) {
 		vtui.FrameManager.Step(time.Millisecond)
 		for _, dialog := range semantic.AppMapSlice(renderer.scene["dialogs"]) {
-			if strings.TrimSpace(semantic.String(dialog["title"])) == strings.TrimSpace(i18n.Msg("FindFile.SearchResultsTitle")) {
-				return
+			if strings.TrimSpace(semantic.String(dialog["title"])) == strings.TrimSpace(i18n.Msg("FindFile.Completed")) {
+				for _, control := range semantic.AppMapSlice(dialog["children"]) {
+					if control["kind"] != "table" {
+						continue
+					}
+					rows := semantic.AppMapSlice(control["rows"])
+					if len(rows) == 1 && len(semantic.AppStringSlice(rows[0]["cells"])) > 0 &&
+						semantic.AppStringSlice(rows[0]["cells"])[0] == "match.txt" {
+						return
+					}
+					t.Fatalf("completed search did not publish its result row: %#v", rows)
+				}
+				t.Fatalf("completed search did not publish its table: %#v", dialog)
 			}
 		}
 	}

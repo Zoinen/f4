@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/unxed/f4/internal/config"
@@ -40,6 +41,7 @@ func aiBotCommand(pf *panel.PanelsFrame, arg string) {
 	case "stop":
 		go func() {
 			stopped := aiBot.Stop()
+			aiBotMCP.finish() // a round stopped halfway leaves its servers running
 			manager.PostTask(func() {
 				if stopped {
 					aiSession().Note("assistant", i18n.Msg("AI.BotStopped"))
@@ -71,8 +73,15 @@ func aiBotCommand(pf *panel.PanelsFrame, arg string) {
 		// Rounds go step by step in clean contexts unless "whole" was asked
 		// for (f4#1842, stage H7).
 		aiBot.SetStepped(!whole)
+		aiBot.SetToolWrapper(func(tools []vtvibe.Tool) []vtvibe.Tool {
+			return aiWithApproval(manager, func() string { return i18n.Msg("AI.BotLabel") }, tools)
+		})
 		err := aiBot.Start(source, pause, dir, config,
-			func() []vtvibe.Tool { return vtvibe.DialogTools(vtvibeDialogControls(manager, pf)) },
+			func() []vtvibe.Tool {
+				// Each round gets the MCP servers of ai/mcp.json afresh,
+				// started in the bot's folder (f4#1842, stage H9).
+				return append(vtvibe.DialogTools(vtvibeDialogControls(manager, pf)), aiBotMCP.begin(dir)...)
+			},
 			func(n int) {
 				manager.PostTask(func() {
 					aiSession().Note("assistant", fmt.Sprintf(i18n.Msg("AI.BotRoundStart"), n, source))
@@ -81,6 +90,9 @@ func aiBotCommand(pf *panel.PanelsFrame, arg string) {
 			},
 			func(r vtvibe.BotRound) {
 				text := aiBotRoundText(r)
+				if problems := aiBotMCP.finish(); problems != "" {
+					text += "\n\n" + problems
+				}
 				model := config().Model
 				manager.PostTask(func() {
 					// The bot's spending counts for the dialog (f4#1842, H9).
@@ -211,10 +223,15 @@ func aiGitHubToken(session *vtvibe.Session) (token, source string) {
 	if t := session.GitHubToken(); t != "" {
 		return t, i18n.Msg("AI.TokenFromDialog")
 	}
-	if t := strings.TrimSpace(ini.Load(vtvibeIniPath()).GetString("general", "github_token", "")); t != "" {
+	if t := aiSettingsGitHubToken(); t != "" {
 		return t, i18n.Msg("AI.TokenFromSettings")
 	}
 	return "", ""
+}
+
+// aiSettingsGitHubToken is the token of Settings → AI alone.
+func aiSettingsGitHubToken() string {
+	return strings.TrimSpace(ini.Load(vtvibeIniPath()).GetString("general", "github_token", ""))
 }
 
 // aiTokenCommand is ai:token: it tells where the dialog's GitHub token comes
@@ -566,10 +583,18 @@ func aiTaskCommand(pf *panel.PanelsFrame, arg string) {
 	lower := strings.ToLower(arg)
 	switch {
 	case arg == "":
-		vtui.ShowMessage(i18n.Msg("AI.Title"), aiTasksText(aiWorkers.Running()), []string{i18n.Msg("vtui.Ok")})
+		vtui.ShowMessage(i18n.Msg("AI.Title"), aiTasksText(aiWorkers.Running(), aiManagers.running()), []string{i18n.Msg("vtui.Ok")})
 		return
 	case strings.HasPrefix(lower, "stop "):
-		id, err := strconv.Atoi(strings.TrimPrefix(strings.TrimSpace(arg[len("stop "):]), "#"))
+		which := strings.TrimPrefix(strings.TrimSpace(lower[len("stop "):]), "#")
+		if rest, ok := strings.CutPrefix(which, "m"); ok {
+			// A worker manager: it and every worker it started.
+			if id, err := strconv.Atoi(rest); err != nil || !aiManagers.stop(id) {
+				vtui.ShowMessage(i18n.Msg("AI.Title"), i18n.Msg("AI.TaskUnknown"), []string{i18n.Msg("vtui.Ok")})
+			}
+			return
+		}
+		id, err := strconv.Atoi(which)
 		if err != nil || !aiWorkers.Stop(id) {
 			vtui.ShowMessage(i18n.Msg("AI.Title"), i18n.Msg("AI.TaskUnknown"), []string{i18n.Msg("vtui.Ok")})
 		}
@@ -605,21 +630,31 @@ func aiTaskCommand(pf *panel.PanelsFrame, arg string) {
 // worker succeeds: right for a task the user gave with ai:task, while an
 // order the manager split up is closed by the manager. done, if set, runs on
 // the UI thread after the report.
-func aiStartWorker(pf *panel.PanelsFrame, manager interface{ PostTask(func()) }, session *vtvibe.Session, task, dir string, order int, closeOrder bool, done func()) {
+func aiStartWorker(pf *panel.PanelsFrame, manager interface{ PostTask(func()) }, session *vtvibe.Session, task, dir string, order int, closeOrder bool, done func(vtvibe.WorkerResult)) int {
 	config := aiAgentConfig(session)
 	// The worker's file changes are journaled so ai:task undo N can put
 	// them back (f4#1842, stage H9).
 	journal := &vtvibe.Journal{}
+	// The MCP servers of ai/mcp.json run for this task, in its folder.
+	mcp := &aiMCPRun{dir: dir}
+	var label atomic.Value // the worker's name for the approval question, once known
+	label.Store(i18n.Msg("AI.WorkerLabel"))
 	tools := func() []vtvibe.Tool {
-		return vtvibe.WithJournal(vtvibe.WorkTools(dir, config().ToolEnv...), dir, journal)
+		list := append(vtvibe.WithJournal(vtvibe.WorkTools(dir, config().ToolEnv...), dir, journal), mcp.tools()...)
+		return aiWithApproval(manager, func() string { return label.Load().(string) }, list)
 	}
 	aiWorkers.SetGates(vtvibe.GateRules{User: aiGateRules, Learned: aiLearnedRules, Learn: aiLearnRule})
+	// The tokens are counted for the model the task started on, read now:
+	// once a stopped worker winds down, nothing of it reads the settings.
+	model := config().Model
 	id := aiWorkers.Start(task, dir, config, tools, func(r vtvibe.WorkerResult) {
 		text := aiTaskResultText(r, order)
+		if problems := mcp.close(); problems != "" {
+			text += "\n\n" + problems
+		}
 		if n := len(journal.Files()); n > 0 {
 			text += "\n\n" + fmt.Sprintf(i18n.Msg("AI.TaskUndoHint"), n, r.ID)
 		}
-		model := config().Model
 		manager.PostTask(func() {
 			session.AddSpent(model, r.Usage)
 			if r.Err == nil && closeOrder {
@@ -628,10 +663,11 @@ func aiStartWorker(pf *panel.PanelsFrame, manager interface{ PostTask(func()) },
 			session.Note("assistant", text)
 			aiBotRefresh(pf)
 			if done != nil {
-				done()
+				done(r)
 			}
 		})
 	})
+	label.Store(fmt.Sprintf(i18n.Msg("AI.WorkerLabelN"), id))
 	aiJournals.Store(id, journal)
 	if order > 0 {
 		session.Note("assistant", fmt.Sprintf(i18n.Msg("AI.TaskStarted"), id, order, task))
@@ -639,6 +675,204 @@ func aiStartWorker(pf *panel.PanelsFrame, manager interface{ PostTask(func()) },
 		session.Note("assistant", fmt.Sprintf(i18n.Msg("AI.WorkerStarted"), id, task))
 	}
 	aiBotRefresh(pf)
+	return id
+}
+
+// vtvibeMCPPath is the MCP servers' configuration, in the format Claude
+// Code uses (f4#1842, stage H9).
+func vtvibeMCPPath() string {
+	return filepath.Join(config.GetF4ConfigDir(), "ai", "mcp.json")
+}
+
+// aiMCPRun starts the configured MCP servers for one worker task, the first
+// time it asks for tools, and stops them when the task is over.
+type aiMCPRun struct {
+	dir     string
+	once    sync.Once
+	mu      sync.Mutex
+	clients []*vtvibe.MCPClient
+	list    []vtvibe.Tool
+	errs    []error
+}
+
+func (m *aiMCPRun) tools() []vtvibe.Tool {
+	m.once.Do(func() {
+		servers, err := vtvibe.LoadMCPConfig(vtvibeMCPPath())
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if err != nil {
+			m.errs = append(m.errs, err)
+			return
+		}
+		ctx := context.Background()
+		for name, s := range servers {
+			c, err := vtvibe.StartMCP(ctx, name, s, m.dir)
+			if err != nil {
+				m.errs = append(m.errs, err)
+				continue
+			}
+			m.clients = append(m.clients, c)
+		}
+		var errs []error
+		m.list, errs = vtvibe.MCPTools(ctx, m.clients)
+		m.errs = append(m.errs, errs...)
+	})
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.list
+}
+
+// close stops the servers and tells what went wrong with them, if anything.
+func (m *aiMCPRun) close() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, c := range m.clients {
+		c.Close()
+	}
+	m.clients = nil
+	if len(m.errs) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(i18n.Msg("AI.MCPProblems"), errors.Join(m.errs...))
+}
+
+// vtvibeAskEach is Settings → AI → "Ask before each command" (f4#1842,
+// stage H9): off, one confirmation covers a whole task or bot.
+func vtvibeAskEach() bool {
+	return ini.Load(vtvibeIniPath()).GetString("general", "ask_each", "false") == "true"
+}
+
+// vtvibeAllowPath is the allow list: one rule a line — a tool name or glob,
+// or a shell command prefix.
+func vtvibeAllowPath() string {
+	return filepath.Join(config.GetF4ConfigDir(), "ai", "allow.txt")
+}
+
+var aiAllowMu sync.Mutex
+
+func aiAllowList() vtvibe.AllowList {
+	return vtvibe.AllowList{
+		Rules: func() []string {
+			data, err := os.ReadFile(vtvibeAllowPath()) // #nosec G304 G703 -- f4's own configuration file
+			if err != nil {
+				return nil
+			}
+			return strings.Split(string(data), "\n")
+		},
+		Add: func(rule string) {
+			aiAllowMu.Lock()
+			defer aiAllowMu.Unlock()
+			data, _ := os.ReadFile(vtvibeAllowPath()) // #nosec G304 G703 -- see above
+			text := strings.TrimRight(string(data), "\n")
+			if text != "" {
+				text += "\n"
+			}
+			_ = config.WriteUserFileAtomically(vtvibeAllowPath(), []byte(text+rule+"\n"), 0o600)
+		},
+	}
+}
+
+// aiWithApproval makes tools ask before each change when the setting is on.
+// The question is posted to the UI thread; the tool's goroutine waits for
+// the answer or for its task to be stopped.
+func aiWithApproval(manager interface{ PostTask(func()) }, who func() string, tools []vtvibe.Tool) []vtvibe.Tool {
+	if !vtvibeAskEach() {
+		return tools
+	}
+	approve := func(ctx context.Context, tool, summary string) (vtvibe.Approval, error) {
+		answer := make(chan vtvibe.Approval, 1)
+		manager.PostTask(func() {
+			text := fmt.Sprintf(i18n.Msg("AI.ApproveQuestion"), who(), tool, vtui.TruncateMiddle(summary, 400))
+			dlg := vtui.ShowMessage(i18n.Msg("AI.Title"), dialog.EscapeAmpersand(text),
+				[]string{i18n.Msg("AI.ApproveOnce"), i18n.Msg("AI.ApproveAlways"), i18n.Msg("AI.ApproveDeny")})
+			dlg.OnResult = func(code int) {
+				a := vtvibe.Deny
+				switch code {
+				case 0:
+					a = vtvibe.AllowOnce
+				case 1:
+					a = vtvibe.AllowAlways
+				}
+				// The first answer counts: closing the window reports again
+				// (-1), and a second send must not block the UI thread.
+				select {
+				case answer <- a:
+				default:
+				}
+			}
+		})
+		select {
+		case a := <-answer:
+			return a, nil
+		case <-ctx.Done():
+			return vtvibe.Deny, ctx.Err()
+		}
+	}
+	return vtvibe.WithApproval(tools, approve, aiAllowList())
+}
+
+// aiAllowCommand is ai:allow: the allow list in the editor.
+func aiAllowCommand(pf *panel.PanelsFrame) {
+	path := vtvibeAllowPath()
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		if err := config.WriteUserFileAtomically(path, nil, 0o600); err != nil {
+			aiShowError(err)
+			return
+		}
+	}
+	ActionOpenEditor(pf, vfs.NewOSVFS(filepath.Dir(path)), path)
+}
+
+// aiBotMCPRounds keeps the MCP servers of the bot's current round: begun
+// when the round asks for its tools, finished with the round's report or
+// when the bot is stopped.
+type aiBotMCPRounds struct {
+	mu  sync.Mutex
+	cur *aiMCPRun
+}
+
+var aiBotMCP aiBotMCPRounds
+
+func (b *aiBotMCPRounds) begin(dir string) []vtvibe.Tool {
+	b.mu.Lock()
+	if b.cur != nil {
+		_ = b.cur.close()
+	}
+	b.cur = &aiMCPRun{dir: dir}
+	run := b.cur
+	b.mu.Unlock()
+	return run.tools()
+}
+
+func (b *aiBotMCPRounds) finish() string {
+	b.mu.Lock()
+	run := b.cur
+	b.cur = nil
+	b.mu.Unlock()
+	if run == nil {
+		return ""
+	}
+	return run.close()
+}
+
+// aiMCPCommand is ai:mcp: the configured MCP servers and where they are set.
+func aiMCPCommand() {
+	path := vtvibeMCPPath()
+	servers, err := vtvibe.LoadMCPConfig(path)
+	if err != nil {
+		aiShowError(err)
+		return
+	}
+	text := fmt.Sprintf(i18n.Msg("AI.MCPNone"), path)
+	if len(servers) > 0 {
+		names := make([]string, 0, len(servers))
+		for name, s := range servers {
+			names = append(names, name+": "+strings.Join(append([]string{s.Command}, s.Args...), " "))
+		}
+		sort.Strings(names)
+		text = fmt.Sprintf(i18n.Msg("AI.MCPList"), strings.Join(names, "\n"), path)
+	}
+	vtui.ShowMessage(i18n.Msg("AI.Title"), dialog.EscapeAmpersand(text), []string{i18n.Msg("vtui.Ok")})
 }
 
 // aiJournals keeps each worker's journal by its id, for ai:task undo N.
@@ -700,7 +934,7 @@ func aiDelegate(pf *panel.PanelsFrame, session *vtvibe.Session, delegations []vt
 		}
 		left := len(delegations)
 		for _, d := range delegations {
-			aiStartWorker(pf, manager, session, d.Task, dir, d.Order, false, func() {
+			aiStartManager(pf, manager, session, d.Task, dir, func() {
 				if left--; left == 0 && aiNonstop(session) && !session.Busy() {
 					aiRunWork(pf, session, func(ctx context.Context) (vtvibe.WorkEnd, error) {
 						c, _ := vtvibeConfig()
@@ -749,20 +983,27 @@ func aiTaskResultText(r vtvibe.WorkerResult, order int) string {
 	return sb.String()
 }
 
-func aiTasksText(running map[int]string) string {
-	if len(running) == 0 {
+func aiTasksText(running, managers map[int]string) string {
+	if len(running) == 0 && len(managers) == 0 {
 		return i18n.Msg("AI.NoTasks")
 	}
-	ids := make([]int, 0, len(running))
-	for id := range running {
-		ids = append(ids, id)
+	var lines []string
+	for _, id := range sortedIDs(managers) {
+		lines = append(lines, fmt.Sprintf(i18n.Msg("AI.ManagerLine"), id, orderLine(managers[id])))
 	}
-	sort.Ints(ids)
-	lines := make([]string, 0, len(ids))
-	for _, id := range ids {
+	for _, id := range sortedIDs(running) {
 		lines = append(lines, fmt.Sprintf("#%d %s", id, orderLine(running[id])))
 	}
 	return dialog.EscapeAmpersand(strings.Join(lines, "\n"))
+}
+
+func sortedIDs(m map[int]string) []int {
+	ids := make([]int, 0, len(m))
+	for id := range m {
+		ids = append(ids, id)
+	}
+	sort.Ints(ids)
+	return ids
 }
 
 func orderLine(text string) string {
@@ -771,4 +1012,129 @@ func orderLine(text string) string {
 		r = append(r[:70], '…')
 	}
 	return string(r)
+}
+
+// aiStartManager hands a task of the main dialog to a worker manager of its
+// own (f4#1842, docs/VTVIBE.md § 19a.2): it splits the task, runs the parts
+// on workers — each started the way ai:task starts one, journal, MCP servers
+// and approval included — and its one report goes to the dialog. done is
+// called on the UI goroutine when it has reported.
+func aiStartManager(pf *panel.PanelsFrame, manager interface{ PostTask(func()) }, session *vtvibe.Session, task, dir string, done func()) {
+	config := aiAgentConfig(session)
+	ctx, cancel := context.WithCancel(context.Background())
+	run := aiManagers.add(task, cancel)
+	session.Note("assistant", fmt.Sprintf(i18n.Msg("AI.ManagerStarted"), run.id, task))
+	aiBotRefresh(pf)
+	go func() {
+		defer aiManagers.remove(run.id)
+		work := func(ctx context.Context, subtask string) vtvibe.WorkerResult {
+			reported := make(chan vtvibe.WorkerResult, 1)
+			manager.PostTask(func() {
+				if ctx.Err() != nil {
+					reported <- vtvibe.WorkerResult{Task: subtask, Err: ctx.Err()}
+					return
+				}
+				run.addWorker(aiStartWorker(pf, manager, session, subtask, dir, 0, false, func(r vtvibe.WorkerResult) { reported <- r }))
+			})
+			select {
+			case r := <-reported:
+				return r
+			case <-ctx.Done():
+				return vtvibe.WorkerResult{Task: subtask, Err: ctx.Err()}
+			}
+		}
+		result := vtvibe.RunWorkerManager(ctx, config, task, vtvibe.DefaultParallelWorkers, work)
+		cancel()
+		// The workers' tokens were counted as each reported; only the
+		// manager's own are left.
+		own := result.Usage
+		for _, w := range result.Workers {
+			own.In -= w.Usage.In
+			own.Out -= w.Usage.Out
+		}
+		model := config().Model
+		text := fmt.Sprintf(i18n.Msg("AI.ManagerReport"), len(result.Workers), strings.TrimSpace(result.Report))
+		if result.Err != nil {
+			text = fmt.Sprintf(i18n.Msg("AI.ManagerFailed"), result.Err, len(result.Workers))
+		}
+		manager.PostTask(func() {
+			session.AddSpent(model, own)
+			session.Note("assistant", text)
+			aiBotRefresh(pf)
+			if done != nil {
+				done()
+			}
+		})
+	}()
+}
+
+// aiManagers are the worker managers at work: ai:task lists them as mN, and
+// ai:task stop mN stops one together with the workers it started.
+var aiManagers aiManagerSet
+
+type aiManagerSet struct {
+	mu   sync.Mutex
+	next int
+	runs map[int]*aiManagerRun
+}
+
+type aiManagerRun struct {
+	id      int
+	task    string
+	cancel  context.CancelFunc
+	mu      sync.Mutex
+	workers []int
+}
+
+func (r *aiManagerRun) addWorker(id int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.workers = append(r.workers, id)
+}
+
+func (m *aiManagerSet) add(task string, cancel context.CancelFunc) *aiManagerRun {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.runs == nil {
+		m.runs = map[int]*aiManagerRun{}
+	}
+	m.next++
+	run := &aiManagerRun{id: m.next, task: task, cancel: cancel}
+	m.runs[run.id] = run
+	return run
+}
+
+func (m *aiManagerSet) remove(id int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.runs, id)
+}
+
+func (m *aiManagerSet) running() map[int]string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make(map[int]string, len(m.runs))
+	for id, r := range m.runs {
+		out[id] = r.task
+	}
+	return out
+}
+
+// stop cancels the manager and stops its workers; false when there is no
+// manager id.
+func (m *aiManagerSet) stop(id int) bool {
+	m.mu.Lock()
+	run := m.runs[id]
+	m.mu.Unlock()
+	if run == nil {
+		return false
+	}
+	run.cancel()
+	run.mu.Lock()
+	workers := append([]int(nil), run.workers...)
+	run.mu.Unlock()
+	for _, w := range workers {
+		aiWorkers.Stop(w)
+	}
+	return true
 }

@@ -1,6 +1,7 @@
 package nativeui
 
 import (
+	"github.com/unxed/f4/internal/cmdline"
 	"github.com/unxed/f4/internal/config"
 	"github.com/unxed/f4/internal/dialog"
 	"github.com/unxed/f4/internal/fileops"
@@ -608,7 +609,7 @@ func appActiveAutocompleteMenus() appAutocompleteMenus {
 	}
 	var out appAutocompleteMenus
 	for index, frame := range vtui.FrameManager.GetActiveFrames(vtui.FrameManager.ActiveIdx) {
-		ac, ok := frame.(*vtui.AutoCompleteMenu)
+		ac, ok := cmdline.AsCompletionMenu(frame)
 		if !ok || !ac.HasMatches() {
 			continue
 		}

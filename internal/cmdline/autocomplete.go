@@ -9,7 +9,7 @@ func CloseActiveAutocompleteMenus() {
 		return
 	}
 	for _, frame := range vtui.FrameManager.GetActiveFrames(vtui.FrameManager.ActiveIdx) {
-		if _, ok := frame.(*vtui.AutoCompleteMenu); ok {
+		if _, ok := AsCompletionMenu(frame); ok {
 			frame.Close()
 		}
 	}

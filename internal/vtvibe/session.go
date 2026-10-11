@@ -82,6 +82,9 @@ type Session struct {
 	delegations []Delegation
 	// spent is what the dialog has spent, by model (usage.go).
 	spent map[string]Usage
+	// applied lists the ap patches of the model's answers the user applied
+	// (compact.go).
+	applied []AppliedPatch
 }
 
 // PatchModePrompt is appended to the system prompt once the human attached the
@@ -149,6 +152,7 @@ func (s *Session) reset() {
 	s.githubToken = ""
 	s.delegations = nil
 	s.spent = nil
+	s.applied = nil
 	_ = s.tree.mkdirAll(ctxDir)
 	_ = s.tree.mkdirAll(chatDir)
 	_ = s.tree.mkdirAll(outDir)
@@ -281,50 +285,89 @@ func (s *Session) ask(ctx context.Context, cfg Config, question string, order bo
 		s.mu.Unlock()
 	}()
 
-	system := cfg.System
-	if system == "" {
-		system = DefaultSystemPrompt
+	base := cfg.System
+	if base == "" {
+		base = DefaultSystemPrompt
 	}
-	if pack := s.Pack(); pack != "" {
-		system += "\n\nFiles the user attached to this dialog:\n\n" + pack
-	}
+	var tail strings.Builder
 	if apMode {
-		system += "\n\n" + PatchModePrompt
+		tail.WriteString("\n\n" + PatchModePrompt)
 	}
-	system += "\n\n" + ModelNotice(cfg.Model)
+	tail.WriteString("\n\n" + ModelNotice(cfg.Model))
 	if orders != "" {
-		system += "\n\n" + orders
+		tail.WriteString("\n\n" + orders)
 	}
 	if delegate {
-		system += "\n\n" + managerPrompt()
+		tail.WriteString("\n\n" + managerPrompt())
 	}
 	if extra != "" {
-		system += "\n\n" + extra
+		tail.WriteString("\n\n" + extra)
 	}
 
-	msgs := make([]Message, 0, len(history)+2)
-	msgs = append(msgs, Message{Role: "system", Content: system})
-	for _, t := range history {
-		if t.Text == "RCtrl+A to hide" {
-			continue
+	// The request is built for a level of shortening (compact.go): 0 sends
+	// the dialog as it is, 1 shortens the model's earlier answers, 2 also
+	// leaves out the attached files nobody mentioned lately.
+	level := 0
+	var keep func(rel string) bool
+	var notes map[string]string
+	refusedNote := ""
+	images := s.Images()
+	send := func() (string, Usage, error) {
+		system := base
+		if pack := s.packFor(keep); pack != "" {
+			system += "\n\nFiles the user attached to this dialog:\n\n" + pack
 		}
-		msgs = append(msgs, Message{Role: t.Role, Content: t.Text})
+		system += tail.String() + refusedNote
+		msgs := append([]Message{{Role: "system", Content: system}}, historyMessages(history, level > 0, notes)...)
+		msgs = append(msgs, Message{Role: "user", Content: question, Images: images})
+		reply, usage, err := cfg.ChatStream(ctx, msgs, func(piece string) {
+			s.mu.Lock()
+			s.pending += piece
+			notify := s.onUpdate
+			s.mu.Unlock()
+			if notify != nil {
+				notify()
+			}
+		})
+		if err != nil {
+			s.mu.Lock()
+			s.pending = ""
+			s.mu.Unlock()
+		}
+		return reply, usage, err
 	}
-	msgs = append(msgs, Message{Role: "user", Content: question})
-
-	reply, usage, err := cfg.ChatStream(ctx, msgs, func(piece string) {
-		s.mu.Lock()
-		s.pending += piece
-		notify := s.onUpdate
-		s.mu.Unlock()
-		if notify != nil {
-			notify()
+	reply, usage, err := send()
+	if err != nil && len(images) > 0 && !contextExhausted(err) && ctx.Err() == nil {
+		// The model may not take pictures: ask once more without them and
+		// let it tell the user so (image.go).
+		refusedNote = "\n\n" + imagesRefusedPrompt(images)
+		images = nil
+		reply, usage, err = send()
+	}
+	var leftOut []string
+	if err != nil && contextExhausted(err) && ctx.Err() == nil {
+		// Too long for the model: send it again with the model's own
+		// earlier answers shortened, the user's words in full (H4); code
+		// of a patch the user applied becomes the commit it went into.
+		level = 1
+		notes = s.appliedNotes(ctx)
+		reply, usage, err = send()
+	}
+	if err != nil && contextExhausted(err) && ctx.Err() == nil {
+		// Still too long: leave out the attached files nobody mentioned
+		// in the question or the user's latest messages (§ 19a.3).
+		level = 2
+		keep, leftOut = s.relevantFiles(question, history)
+		if keep != nil {
+			images = keepImages(images, keep)
+			reply, usage, err = send()
 		}
-	})
+	}
+	if err != nil && level > 0 && contextExhausted(err) {
+		err = errStillTooLong(err)
+	}
+	compacted := level > 0
 	if err != nil {
-		s.mu.Lock()
-		s.pending = ""
-		s.mu.Unlock()
 		return "", err
 	}
 
@@ -340,6 +383,9 @@ func (s *Session) ask(ctx context.Context, cfg Config, question string, order bo
 	}
 	s.appendTurn(Turn{Role: "user", Text: question, Time: time.Now()})
 	s.appendTurn(Turn{Role: "assistant", Text: reply, Time: time.Now()})
+	if compacted {
+		s.appendTurn(Turn{Role: "assistant", Text: compactNoteFor(leftOut), Time: time.Now()})
+	}
 	s.usage = usage
 	s.addSpentLocked(cfg.Model, usage)
 	s.saveArtifacts(reply)
@@ -525,4 +571,10 @@ How to use this panel
   ai:new                    start a fresh dialog
 `)
 	_ = s.tree.writeFile(sessionFile, []byte(sb.String()))
+}
+
+// AskOnce sends one message the way f4 --ai does: the answer comes back as
+// the model gave it, and the message does not enter the register of orders.
+func (s *Session) AskOnce(ctx context.Context, cfg Config, question string) (string, error) {
+	return s.ask(ctx, cfg, question, false, "")
 }

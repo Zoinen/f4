@@ -1097,10 +1097,7 @@ func (v *FishVFS) FindFiles(ctx context.Context, dir string, q vfs.FindQuery) ([
 	}
 	out := make([]vfs.FoundEntry, 0, len(entries))
 	for _, e := range entries {
-		item := v.entryToItem(e)
-		item.Name = path.Base(e.Name)
-		item.IsHidden = strings.HasPrefix(item.Name, ".")
-		out = append(out, vfs.FoundEntry{Path: v.publicPath(e.Name), Item: item})
+		out = append(out, v.foundFishEntry(e))
 	}
 	return out, nil
 }

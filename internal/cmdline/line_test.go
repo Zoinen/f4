@@ -188,7 +188,7 @@ func TestCommandLine_AutoCompleteDisabled(t *testing.T) {
 
 	// 3. Проверяем, что меню автодополнения НЕ появилось в FrameManager
 	top := vtui.FrameManager.GetTopFrame()
-	if _, isAc := top.(*vtui.AutoCompleteMenu); isAc {
+	if _, isAc := AsCompletionMenu(top); isAc {
 		t.Error("AutoCompleteMenu was shown even though CommandLineAutoComplete is false")
 	}
 }
@@ -218,7 +218,7 @@ func TestCommandLine_NoAutoCompleteMenuWhenDisabled(t *testing.T) {
 	}
 
 	top := vtui.FrameManager.GetTopFrame()
-	if _, isAc := top.(*vtui.AutoCompleteMenu); isAc {
+	if _, isAc := AsCompletionMenu(top); isAc {
 		t.Error("AutoCompleteMenu was shown even though CommandLineAutoComplete is false")
 	}
 }
@@ -243,7 +243,7 @@ func TestCommandLine_AutoCompleteSuppressed(t *testing.T) {
 	})
 
 	top := vtui.FrameManager.GetTopFrame()
-	if _, isAc := top.(*vtui.AutoCompleteMenu); isAc {
+	if _, isAc := AsCompletionMenu(top); isAc {
 		t.Error("AutoCompleteMenu was shown even though AutoCompleteSuppressed is true")
 	}
 }
@@ -276,7 +276,7 @@ func TestCommandLine_AutoCompleteStillOpensWhenAllowed(t *testing.T) {
 	cl.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, Char: 'l'})
 
 	top := vtui.FrameManager.GetTopFrame()
-	if _, isAc := top.(*vtui.AutoCompleteMenu); !isAc {
+	if _, isAc := AsCompletionMenu(top); !isAc {
 		t.Fatal("opting out of the widget trigger also killed the command line's own menu")
 	}
 	vtui.FrameManager.Pop()

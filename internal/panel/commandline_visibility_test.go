@@ -3,6 +3,7 @@ package panel
 import (
 	"testing"
 
+	"github.com/unxed/f4/internal/cmdline"
 	"github.com/unxed/f4/internal/config"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
@@ -62,7 +63,7 @@ func TestSearchFirstAutocompleteTildeTogglesFocus(t *testing.T) {
 	pf.ShowPanels = true
 	pf.SetCommandLineFocus(true)
 	pf.CmdLine.Edit.SetText("pending")
-	suggestions := vtui.NewAutoCompleteMenu(pf.CmdLine.Edit)
+	suggestions := cmdline.NewCompletionMenu(pf.CmdLine.Edit)
 	vtui.FrameManager.Push(suggestions)
 	if !pf.HandleAutocompleteFocusToggle(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_OEM_3, Char: '`'}) {
 		t.Fatal("autocomplete consumed focus toggle")
@@ -139,6 +140,7 @@ func TestSearchFirstConsoleToggleRestoresCommandCursor(t *testing.T) {
 	pf, _ := panelsFrameWithMouseSelect(t)
 	pf.ShowPanels = true
 	pf.SetCommandLineFocus(false)
+	vtui.FrameManager.Push(pf)
 	for cycle := 0; cycle < 3; cycle++ {
 		pf.TogglePanelsVisibility()
 		if !pf.CmdLine.IsFocused() || pf.CommandLineFocused {

@@ -2,6 +2,7 @@ package nativeui
 
 import (
 	"fmt"
+	"github.com/unxed/f4/internal/cmdline"
 	"github.com/unxed/f4/internal/config"
 	"github.com/unxed/f4/internal/fileops"
 	"github.com/unxed/f4/internal/navtrace"
@@ -95,7 +96,7 @@ func BuildAppIncrementalScene(ctx *vtui.SemanticContext) (*appIncrementalScene, 
 		if menu, _ := FrameVMenu(frame); menu != nil {
 			continue
 		}
-		if _, ok := frame.(*vtui.AutoCompleteMenu); ok {
+		if _, ok := cmdline.AsCompletionMenu(frame); ok {
 			continue
 		}
 		if panels, ok := frame.(*panel.PanelsFrame); ok {

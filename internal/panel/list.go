@@ -729,19 +729,23 @@ type FileSystemPanel struct {
 	loadQueueMu                   sync.Mutex
 	loadWorkerActive              bool
 	pendingDirectoryLoad          *directoryLoadRequest
-	benchmarkLoadTrace            *navtrace.NavigationBenchmarkTrace
-	ProviderOpenTask              *vtui.TaskContext
-	providerOpenDialog            *vtui.Window
-	directoryErrorDialog          *vtui.Window
-	ProviderOpenTarget            string
-	ProviderOpenSourceSelect      string
-	providerOpenResult            func(bool) bool
-	PendingSelection              string
-	ProviderEntryName             string // name of entry used to enter a provider VFS (e.g. NetFox connection name)
-	suppressFolderHistoryPath     string // one-shot: history/menu navigation must not reorder MRU
-	suppressFolderHistoryToken    uint64 // binds suppression to one specific asynchronous directory load
-	FastFindMode                  bool
-	FastFindStr                   string
+	// A cancelled local read can wait on sudo; remote reads must drain first.
+	pendingDetachable          bool
+	runningDetachable          bool
+	loadWorkerGen              uint64
+	benchmarkLoadTrace         *navtrace.NavigationBenchmarkTrace
+	ProviderOpenTask           *vtui.TaskContext
+	providerOpenDialog         *vtui.Window
+	directoryErrorDialog       *vtui.Window
+	ProviderOpenTarget         string
+	ProviderOpenSourceSelect   string
+	providerOpenResult         func(bool) bool
+	PendingSelection           string
+	ProviderEntryName          string // name of entry used to enter a provider VFS (e.g. NetFox connection name)
+	suppressFolderHistoryPath  string // one-shot: history/menu navigation must not reorder MRU
+	suppressFolderHistoryToken uint64 // binds suppression to one specific asynchronous directory load
+	FastFindMode               bool
+	FastFindStr                string
 	// The complete file list stays in unfilteredEntries while either the
 	// quick-search or field filter narrows Entries.
 	autoFilterOn           bool
@@ -1829,6 +1833,25 @@ func (fp *FileSystemPanel) SetViewMode(mode ViewMode) {
 	fp.Wide = false
 	fp.configureCellSelection()
 	fp.Resize(fp.X2-fp.X1+1, fp.Y2-fp.Y1+1)
+	fp.reloadForLinkCounts()
+}
+
+// reloadForLinkCounts reads the directory again when the mode now shows the
+// "LN" column and the listing on screen was loaded without the counts, which
+// only a load asks for (f4#1861).
+func (fp *FileSystemPanel) reloadForLinkCounts() {
+	if _, ok := fp.Vfs.(linkCountFiller); !ok {
+		return
+	}
+	if !panelColumnsShow(PanelViewModeSettings(fp.EffectiveViewMode()).Columns, LinkCountColumn) {
+		return
+	}
+	for _, e := range fp.AllEntries() {
+		if !e.IsDir && e.Name != ".." && !e.HasMetadata(vfs.MetadataNlink) {
+			fp.ReadDirectory()
+			return
+		}
+	}
 }
 
 // mouseEntryIndex returns the entry under the mouse. Multi-column panel modes
@@ -3197,10 +3220,14 @@ func (fp *FileSystemPanel) ReadDirectory() {
 // cancelled by readDirectoryEx; it may still need to drain one FISH+ response,
 // after which only the most recent path is allowed to start.
 func (fp *FileSystemPanel) EnqueueDirectoryLoad(load func()) {
-	fp.enqueueDirectoryLoadWithBenchmark(nil, load)
+	fp.enqueueDirectoryLoad(load, false)
 }
 
-func (fp *FileSystemPanel) enqueueDirectoryLoadWithBenchmark(benchmark *navtrace.NavigationBenchmarkTrace, load func()) {
+func (fp *FileSystemPanel) enqueueDirectoryLoad(load func(), detachable bool) {
+	fp.enqueueDirectoryLoadWithBenchmark(nil, load, detachable)
+}
+
+func (fp *FileSystemPanel) enqueueDirectoryLoadWithBenchmark(benchmark *navtrace.NavigationBenchmarkTrace, load func(), detachable bool) {
 	request := &directoryLoadRequest{load: load, benchmark: benchmark}
 	if benchmark != nil {
 		request.enqueuedNs = navtrace.NavigationBenchmarkMonotonicNs()
@@ -3212,12 +3239,21 @@ func (fp *FileSystemPanel) enqueueDirectoryLoadWithBenchmark(benchmark *navtrace
 			replaced.benchmark.Event("load.queue.superseded", "go.worker",
 				"supersededBy", navtrace.NavigationBenchmarkTraceName(benchmark))
 		}
-		fp.pendingDirectoryLoad = request
-		fp.loadQueueMu.Unlock()
-		return
+		if !fp.runningDetachable {
+			fp.pendingDirectoryLoad, fp.pendingDetachable = request, detachable
+			fp.loadQueueMu.Unlock()
+			return
+		}
+		// Its cancelled context rejects stale results; the new worker owns
+		// the queue while the local read finishes independently.
+		fp.loadWorkerGen++
+		fp.pendingDirectoryLoad = nil
+	} else {
+		fp.loadWorkerActive = true
+		fp.loadIdleCh = make(chan struct{})
 	}
-	fp.loadWorkerActive = true
-	fp.loadIdleCh = make(chan struct{})
+	fp.runningDetachable = detachable
+	gen := fp.loadWorkerGen
 	// Every worker is also counted process-wide. A worker reads globals while
 	// it runs -- config.App and vtui.FrameManager, and the frame manager's task
 	// queue when it posts back -- so anything that replaces one of those has to
@@ -3240,7 +3276,13 @@ func (fp *FileSystemPanel) enqueueDirectoryLoadWithBenchmark(benchmark *navtrace
 			next.load()
 
 			fp.loadQueueMu.Lock()
+			if fp.loadWorkerGen != gen {
+				// Left behind: a newer worker owns the queue.
+				fp.loadQueueMu.Unlock()
+				return
+			}
 			next = fp.pendingDirectoryLoad
+			fp.runningDetachable = fp.pendingDetachable
 			fp.pendingDirectoryLoad = nil
 			if next == nil {
 				fp.loadWorkerActive = false
@@ -3862,6 +3904,16 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 		return fileops.SameFolderHistoryPath(loadVFS.GetPath(), path)
 	}
 
+	linkCounter, _ := loadVFS.(linkCountFiller)
+	if !panelColumnsShow(PanelViewModeSettings(fp.EffectiveViewMode()).Columns, LinkCountColumn) {
+		linkCounter = nil
+	}
+	_, localLoad := loadVFS.(*vfs.OSVFS)
+	if linkCounter != nil {
+		// Link counts are enriched with the complete catalog, not a sparse
+		// preview whose direct source writer bypasses the per-item callback.
+		useWindowedRead = false
+	}
 	fp.enqueueDirectoryLoadWithBenchmark(benchmark, func() {
 		if ctx.Err() != nil {
 			if benchmark != nil {
@@ -4231,6 +4283,9 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 		}
 
 		publishCatalogChunk := func(chunk []vfs.VFSItem, authoritativeBase bool) {
+			if linkCounter != nil && ctx.Err() == nil {
+				linkCounter.FillLinkCounts(ctx, path, chunk)
+			}
 			chunkCount++
 			chunkIndex := chunkCount
 			if benchmark != nil {
@@ -4269,6 +4324,9 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 		}
 
 		mergeMetadataChunk := func(chunk []vfs.VFSItem) {
+			if linkCounter != nil && ctx.Err() == nil {
+				linkCounter.FillLinkCounts(ctx, path, chunk)
+			}
 			metadataChunkCount++
 			if ctx.Err() != nil {
 				return
@@ -4773,7 +4831,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 			}
 			return
 		})
-	})
+	}, localLoad)
 }
 
 func (fp *FileSystemPanel) watchDirectoryChanges(
@@ -6556,6 +6614,18 @@ func (fp *FileSystemPanel) GetMarkedNames() []string {
 		}
 	}
 	return names
+}
+
+// GetMarkedFolderPaths returns explicitly marked directories in panel order.
+// The cursor alone and directory symlinks do not define a search scope.
+func (fp *FileSystemPanel) GetMarkedFolderPaths() []string {
+	paths := make([]string, 0)
+	for _, entry := range fp.Entries {
+		if entry.Selected && entry.IsDir && !entry.IsSymlink && entry.Name != ".." {
+			paths = append(paths, fp.Vfs.Join(fp.Vfs.GetPath(), entry.Name))
+		}
+	}
+	return paths
 }
 
 // ReplaceMarkedNames atomically replaces the explicit panel selection.

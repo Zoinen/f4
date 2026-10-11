@@ -295,6 +295,8 @@ github.com/unxed/vtui v0.1.357-0.20260919112309-9d93c9606f8d h1:JJwAsMasvu2YyjA1
 github.com/unxed/vtui v0.1.357-0.20260919112309-9d93c9606f8d/go.mod h1:PlSowvK+7wehtSmYxT32cRpxMxs5WYA5P6y1g7yJsCU=
 github.com/unxed/vtui v0.1.399-0.20261009152503-8b34a0d98bcb h1:Wk4xtip2gZ/qoYi5nzuqfTHhm23PEfw+ph9PJRhbfMo=
 github.com/unxed/vtui v0.1.399-0.20261009152503-8b34a0d98bcb/go.mod h1:7Tvdt30+JdMYLVn4jkrTkjx1KmSHHs9NHoBXq5Tz2aM=
+github.com/unxed/vtui v0.1.399-0.20261010103808-dfe5aecda6e6 h1:E7WBHgsiqhkdmrQVOCnqiLWK2mYibqjzFDj9gwFi1+U=
+github.com/unxed/vtui v0.1.399-0.20261010103808-dfe5aecda6e6/go.mod h1:7Tvdt30+JdMYLVn4jkrTkjx1KmSHHs9NHoBXq5Tz2aM=
 github.com/unxed/wayland v0.0.0-20260906012106-4096eafdd7f4 h1:gryo9ojSjn9S9aYHpHQSAYJPW4zU8faQsKopxiFVCiw=
 github.com/unxed/wayland v0.0.0-20260906012106-4096eafdd7f4/go.mod h1:ZPUsmrcHQDH9q26qvwrrlCJpo4HjfNiAZvbbWrLMMBo=
 github.com/unxed/winkeys v0.1.1 h1:CeRhzQLrZtO2aVq8C8gPX1ySdbbvPombbUZ15cRjFTI=

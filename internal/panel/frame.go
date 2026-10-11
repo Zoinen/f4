@@ -799,7 +799,7 @@ func (pf *PanelsFrame) HandleAutocompleteFocusToggle(e *vtinput.InputEvent) bool
 		vtui.FrameManager == nil {
 		return false
 	}
-	if _, ok := vtui.FrameManager.GetTopFrame().(*vtui.AutoCompleteMenu); !ok {
+	if _, ok := cmdline.AsCompletionMenu(vtui.FrameManager.GetTopFrame()); !ok {
 		return false
 	}
 	pf.SetCommandLineFocus(false)
@@ -825,7 +825,7 @@ func (pf *PanelsFrame) SetCommandLineFocus(focused bool) {
 		pf.CmdLine.SetVisible(!nowHidden)
 		pf.ResizeConsole(pf.LastW, pf.LastH)
 	}
-	pf.CmdLine.SetFocus(focused)
+	pf.CmdLine.SetFocus(focused || (!pf.ShowPanels && pf.IsFocused()))
 	for i, panel := range pf.Panels {
 		if panel == nil {
 			continue
@@ -3015,6 +3015,13 @@ func (pf *PanelsFrame) Show(scr *vtui.ScreenBuf) {
 	// and semantic transitions resolve this ownership before any painting.
 	if vtui.FrameManager.GetTopFrameType() == vtui.TypeUser+1 {
 		vtui.FrameManager.KeyBar = pf.GetKeyBar()
+		if vtui.FrameManager.KeyBar == nil && pf.ShellMode == terminal.ShellModeOwn &&
+			!pf.ShowPanels && !pf.TermView.OnAltScreen() && pf.TermView.Y2 < pf.LastH-1 {
+			previousOverlay := scr.OverlayMode
+			scr.SetOverlayMode(false)
+			scr.FillRect(0, pf.TermView.Y2+1, pf.LastW-1, pf.LastH-1, ' ', terminal.DefaultTermAttr)
+			scr.SetOverlayMode(previousOverlay)
+		}
 	}
 
 }
@@ -3260,7 +3267,7 @@ func (pf *PanelsFrame) VetoActionKey(e *vtinput.InputEvent) bool {
 	// An active AutoCompleteMenu must consume Esc, arrows, and Enter
 	// before any global action (such as Esc:EscToggle) can intercept it.
 	if vtui.FrameManager != nil {
-		if _, isAc := vtui.FrameManager.GetTopFrame().(*vtui.AutoCompleteMenu); isAc {
+		if _, isAc := cmdline.AsCompletionMenu(vtui.FrameManager.GetTopFrame()); isAc {
 			return true
 		}
 	}
@@ -4303,7 +4310,7 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 			return true
 		} else {
 			if config.App.CommandLineAutoComplete && !pf.CmdLine.IsEmpty() {
-				acMenu := vtui.NewAutoCompleteMenu(pf.CmdLine.Edit)
+				acMenu := cmdline.NewCompletionMenu(pf.CmdLine.Edit)
 				if acMenu.HasMatches() {
 					vtui.FrameManager.Push(acMenu)
 					return true
@@ -4316,7 +4323,7 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 			}
 		}
 		if config.App.CommandLineAutoComplete && !pf.CmdLine.IsEmpty() {
-			acMenu := vtui.NewAutoCompleteMenu(pf.CmdLine.Edit)
+			acMenu := cmdline.NewCompletionMenu(pf.CmdLine.Edit)
 			if acMenu.HasMatches() {
 				vtui.FrameManager.Push(acMenu)
 				return true

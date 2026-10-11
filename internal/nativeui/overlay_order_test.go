@@ -3,6 +3,7 @@ package nativeui
 import (
 	"testing"
 
+	"github.com/unxed/f4/internal/cmdline"
 	"github.com/unxed/f4/internal/panel"
 	"github.com/unxed/f4/internal/semantic"
 	"github.com/unxed/vtui"
@@ -63,7 +64,7 @@ func TestPluginHotkeyDialogPreservesMixedOverlayStack(t *testing.T) {
 	}
 	edit := vtui.NewEdit(0, 0, 40, "git st")
 	edit.History = []string{"git status", "git stash"}
-	autocomplete := vtui.NewAutoCompleteMenu(edit)
+	autocomplete := cmdline.NewCompletionMenu(edit)
 	vtui.FrameManager.Push(autocomplete)
 	for _, projection := range []string{"complete", "incremental", "menus"} {
 		var state map[string]any

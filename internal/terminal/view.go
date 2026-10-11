@@ -174,6 +174,12 @@ type TerminalView struct {
 	selEndY    int
 	SelBlock   bool
 	showOffset int // last vertical "visual gravity" offset applied in Show
+	// gravityLow is the lowest row the primary screen has reached since it
+	// was last cleared, reset or resized. Gravity measures from it, not from
+	// the lowest row that holds text right now: a program redrawing its
+	// progress erases the rows below and writes them again, and measuring
+	// from the text alone made the whole screen jump down and back (f4#1749).
+	gravityLow int
 	hoverURL   string
 }
 
@@ -300,6 +306,7 @@ func (tv *TerminalView) ResetBuffer(w, h int) {
 	// RIS replaces both terminal screens, so any screen-coordinate selection
 	// from before the reset is no longer meaningful.
 	tv.SelActive = false
+	tv.gravityLow = 0
 
 	// Инициализация PieceTable (только один раз)
 	if tv.Pt == nil {
@@ -1006,6 +1013,10 @@ func (tv *TerminalView) EraseDisplay(mode int, attr uint64) {
 		// screen-coordinate selection over the newly cleared contents.
 		tv.SelActive = false
 	}
+	if (mode == 2 || mode == 3) && !tv.UseAltScreen {
+		// A cleared screen starts over: what comes next sinks to the bottom.
+		tv.gravityLow = 0
+	}
 
 	if (mode == 2 || mode == 3) && !tv.UseAltScreen && !tv.suppressEraseHistory {
 		// Сохраняем экран в историю перед очисткой (игнорируя пустоту снизу)
@@ -1217,6 +1228,11 @@ func (tv *TerminalView) Show(scr *vtui.ScreenBuf) {
 				lowestRow = bottom
 			}
 		}
+		// Rows erased for a redraw keep their place, as on a real screen.
+		if tv.gravityLow > lowestRow && tv.gravityLow < tv.Height {
+			lowestRow = tv.gravityLow
+		}
+		tv.gravityLow = lowestRow
 		// Visual Gravity: сдвигаем весь активный рендер вниз, если он не достает до дна
 		if lowestRow < tv.Height-1 {
 			offset = (tv.Height - 1) - lowestRow
@@ -1673,6 +1689,7 @@ func (tv *TerminalView) Resize(w, h int) {
 	// Resizing changes the mapping between screen coordinates and grid cells;
 	// retaining the old selection is what lets it spill into a new layout.
 	tv.SelActive = false
+	tv.gravityLow = 0
 
 	tv.Engine.SetWidth(w)
 
