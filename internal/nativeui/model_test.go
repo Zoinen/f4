@@ -8,6 +8,19 @@ import (
 	testing "testing"
 )
 
+func TestInfoPanelUsageSurvivesSceneProjection(t *testing.T) {
+	input := map[string]any{"rows": []map[string]any{{
+		"kind": "usage", "label": "RAM", "percent": 75,
+		"totalText": "Total: 4 GiB", "usedText": "Used: 3 GiB", "freeText": "Free: 1 GiB",
+	}}}
+	row := appInfoPanelFromLegacy(input).ToMap()["rows"].([]map[string]any)[0]
+	for key, value := range input["rows"].([]map[string]any)[0] {
+		if row[key] != value {
+			t.Fatalf("usage field %s = %v, want %v", key, row[key], value)
+		}
+	}
+}
+
 func TestAppPanelFromLegacySortDirectionFallback(t *testing.T) {
 	for _, tc := range []struct {
 		mode          string
@@ -537,6 +550,62 @@ func TestAppEnrichLegacyTextWidgetsExportsPassiveLabels(t *testing.T) {
 	nestedChildren := children[1]["children"].([]map[string]any)
 	if nestedChildren[0]["kind"] != "text" || nestedChildren[0]["text"] != "ABC" {
 		t.Fatalf("nested vertical label was not enriched: %#v", nestedChildren[0])
+	}
+}
+
+func TestAppEnrichLegacySeparatorsPreservesDialogControls(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		text   string
+		hidden bool
+		nested bool
+	}{
+		{name: "plain"},
+		{name: "caption", text: "Found: 10 files"},
+		{name: "hidden", hidden: true},
+		{name: "nested", nested: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			separator := vtui.NewSeparator(
+				4, 6, 30, true, false,
+			)
+			separator.SetText(tc.text)
+			if tc.hidden {
+				separator.SetVisible(false)
+			}
+			window := vtui.NewDialog(
+				2, 3, 36, 12, "Find File",
+			)
+			if tc.nested {
+				group := vtui.NewGroup(3, 4, 32, 6)
+				group.AddItem(separator)
+				window.AddItem(group)
+			} else {
+				window.AddItem(separator)
+			}
+			node := window.SemanticNode(&vtui.SemanticContext{Width: 80, Height: 25})
+			appEnrichLegacyTextWidgets(node, map[string]vtui.UIElement{
+				vtui.SemanticID(separator): separator,
+			})
+			projected := appDialogFromLegacy(node).ToMap()
+			controls := semantic.AppMapSlice(projected["children"])
+			if tc.nested {
+				controls = semantic.AppMapSlice(controls[0]["children"])
+			}
+			if len(controls) != 1 {
+				t.Fatalf("separator controls = %#v", controls)
+			}
+			got := controls[0]
+			if got["kind"] != "separator" || got["id"] != vtui.SemanticID(separator) {
+				t.Fatalf("separator lost its native kind or identity: %#v", got)
+			}
+			if got["text"] != tc.text || got["visible"] != !tc.hidden {
+				t.Fatalf("separator caption/visibility = %#v", got)
+			}
+			if got["x"] != 4 || got["y"] != 6 || got["w"] != 30 || got["h"] != 1 {
+				t.Fatalf("separator geometry = %#v", got)
+			}
+		})
 	}
 }
 

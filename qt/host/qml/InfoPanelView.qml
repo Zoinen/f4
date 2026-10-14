@@ -55,10 +55,13 @@ Rectangle {
         boundsBehavior: Flickable.StopAtBounds
 
         delegate: Item {
+            id: infoRow
             required property var modelData
+            required property int index
             width: ListView.view.width
             height: modelData.kind === "blank" ? 10
                     : modelData.kind === "section" ? 30
+                    : modelData.kind === "usage" ? usageContent.implicitHeight + 8
                     : Math.max(25, infoValue.implicitHeight + 8)
 
             RowLayout {
@@ -102,6 +105,89 @@ Rectangle {
                     font.bold: true
                 }
                 Rectangle { height: 1; color: hostWindow.dialogAccent; Layout.fillWidth: true }
+            }
+
+            RowLayout {
+                anchors.fill: parent
+                spacing: 10
+                visible: modelData.kind === "usage"
+
+                Text {
+                    text: hostWindow.cleanText(infoRow.modelData.label)
+                    color: hostWindow.mutedText
+                    font.pixelSize: hostWindow.uiTextSize(12)
+                    Layout.preferredWidth: Math.min(150, Math.max(80, infoRows.width * 0.34))
+                    elide: Text.ElideRight
+                }
+
+                ColumnLayout {
+                    id: usageContent
+                    Layout.fillWidth: true
+                    spacing: 4
+
+                    Text {
+                        text: hostWindow.cleanText(infoRow.modelData.totalText)
+                        color: hostWindow.textColor
+                        font.pixelSize: hostWindow.uiTextSize(12)
+                        Layout.fillWidth: true
+                        horizontalAlignment: Text.AlignHCenter
+                        elide: Text.ElideMiddle
+                    }
+
+                    T.ProgressBar {
+                        id: usageBar
+                        objectName: "infoUsageBar-" + infoRoot.side + "-" + infoRow.index
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: Math.max(20, usagePercent.implicitHeight + 4)
+                        from: 0
+                        to: 100
+                        value: Math.max(0, Math.min(100, Number(infoRow.modelData.percent) || 0))
+                        padding: 0
+                        Accessible.name: infoRow.modelData.label + ": " + value + "%"
+                        background: Rectangle {
+                            radius: 3
+                            color: hostWindow.themePaletteObject.panelProgressTrackColor
+                        }
+                        contentItem: Item {
+                            Rectangle {
+                                width: parent.width * usageBar.visualPosition
+                                height: parent.height
+                                radius: 3
+                                color: hostWindow.themePaletteObject.panelProgressFillColor
+                            }
+                            Text {
+                                id: usagePercent
+                                anchors.centerIn: parent
+                                text: Math.round(usageBar.value) + "%"
+                                color: hostWindow.textColor
+                                font.pixelSize: hostWindow.uiTextSize(12)
+                            }
+                        }
+                        Component.onCompleted: {
+                            console.debug("[FIX:info-usage]", infoRow.modelData.label, value)
+                        }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Text {
+                            text: hostWindow.cleanText(infoRow.modelData.usedText)
+                            color: hostWindow.textColor
+                            font.pixelSize: hostWindow.uiTextSize(12)
+                            Layout.fillWidth: true
+                            elide: Text.ElideMiddle
+                        }
+                        Text {
+                            text: hostWindow.cleanText(infoRow.modelData.freeText)
+                            color: hostWindow.textColor
+                            font.pixelSize: hostWindow.uiTextSize(12)
+                            Layout.fillWidth: true
+                            horizontalAlignment: Text.AlignRight
+                            elide: Text.ElideMiddle
+                        }
+                    }
+                }
             }
         }
     }

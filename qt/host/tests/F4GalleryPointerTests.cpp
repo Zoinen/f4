@@ -8,6 +8,7 @@
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QMimeData>
+#include <QMetaProperty>
 #include <QElapsedTimer>
 #include <QFileInfo>
 #include <QImage>
@@ -36,6 +37,8 @@
 #include <atomic>
 #include <map>
 #include <string>
+
+#include "F4GalleryIconResizeFixture.h"
 
 namespace
 {
@@ -288,6 +291,13 @@ class F4GalleryPointerTests final : public QObject
     Q_OBJECT
 
 private slots:
+    void iconsArtworkFillsSlotAfterLargeRasterArrives_data();
+    void iconsArtworkFillsSlotAfterLargeRasterArrives();
+    void zoinIconsPreserveNativeAspectInEveryView();
+    void galleryEntryPreviewRetainsOnlySameEntryDuringAsyncResize_data();
+    void galleryEntryPreviewRetainsOnlySameEntryDuringAsyncResize();
+    void compactThumbnailRetainsSameEntryDuringAsyncResize_data();
+    void compactThumbnailRetainsSameEntryDuringAsyncResize();
     void fullNameTooltipUsesCompleteCatalogNameAndPhysicalPixels();
     void transitionCaptionFindsGridIconsAndMasonryLabels();
     void viewerTransitionDurationDefaultsToNormalWithDebugOptIn();
@@ -337,6 +347,297 @@ private slots:
 void F4GalleryPointerTests::initTestCase()
 {
     QStandardPaths::setTestModeEnabled(true);
+}
+
+void F4GalleryPointerTests::zoinIconsPreserveNativeAspectInEveryView()
+{
+    for (int mode : {0, 1, 2, 3, 4, 5}) {
+        GalleryIconResizeFixture fixture;
+        QTRY_VERIFY(fixture.component.isReady());
+        QObject *root = fixture.component.create();
+        QVERIFY(root);
+        auto *entry = root->findChild<QObject *>("resizeEntry");
+        entry->setProperty("presentationMode", mode);
+        entry->setProperty("visualRow", QVariantMap{
+            {"valid", true}, {"entryId", "zoin-folder"}, {"text", ""},
+            {"isFolder", true}, {"iconPath", "qrc:/F4QtHost/icons/zoin/folder.svg"}});
+        fixture.view.setContent(QUrl("inline:GalleryIconResize.qml"), &fixture.component, root);
+        fixture.view.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&fixture.view));
+        for (const QSize slot : {QSize(128, 96), QSize(384, 288)}) {
+            fixture.view.resize(slot);
+            QQuickItem *image = nullptr;
+            QTRY_VERIFY((image = root->findChild<QQuickItem *>("gallerySourceColorIcon-0")));
+            QTRY_COMPARE(image->property("status").toInt(), 1);
+            const qreal ratio = image->property("paintedWidth").toReal()
+                / image->property("paintedHeight").toReal();
+            QVERIFY2(qAbs(ratio - 20.0 / 16.0) < 0.02,
+                     qPrintable(QString("mode %1: folder aspect %2").arg(mode).arg(ratio)));
+            const qreal dpr = fixture.view.devicePixelRatio();
+            const qreal paintedWidth = image->property("paintedWidth").toReal();
+            const qreal paintedHeight = image->property("paintedHeight").toReal();
+            qInfo() << "[FIX:zoin-resolution]" << mode << slot << "DPR" << dpr
+                    << "raster request" << image->property("sourceSize")
+                    << "painted" << paintedWidth * dpr << paintedHeight * dpr;
+            // A non-square SVG fitted into the slot can require resampling.
+            // Nearest-neighbor filtering destroys its antialiased contours.
+            QVERIFY2(image->property("smooth").toBool(),
+                     "Native-aspect colored icons must retain antialiasing when fitted");
+        }
+    }
+}
+
+void F4GalleryPointerTests::iconsArtworkFillsSlotAfterLargeRasterArrives_data()
+{
+    QTest::addColumn<QString>("mode");
+    QTest::addColumn<int>("modeValue");
+    QTest::addColumn<QString>("iconKey");
+    for (const QString &mode : {QStringLiteral("icons"), QStringLiteral("grid")})
+        for (const QString &icon : {QStringLiteral("folder"), QStringLiteral("folder-up"),
+                                   QStringLiteral("file")})
+            QTest::newRow(qPrintable(mode + u'-' + icon)) << mode << (mode == "icons" ? 4 : 3) << icon;
+}
+
+void F4GalleryPointerTests::iconsArtworkFillsSlotAfterLargeRasterArrives()
+{
+    QFETCH(QString, mode);
+    QFETCH(int, modeValue);
+    QFETCH(QString, iconKey);
+    GalleryIconResizeFixture fixture;
+    QTRY_VERIFY(fixture.component.isReady());
+    QObject *root = fixture.component.create();
+    QVERIFY(root);
+    root->setProperty("presentationMode", mode);
+    auto *entry = root->findChild<QObject *>("resizeEntry");
+    QVERIFY(entry->setProperty("presentationMode", modeValue));
+    QVERIFY(entry->setProperty("visualRow", QVariantMap{
+        {"valid", true}, {"entryId", "test-icon"}, {"text", ""},
+        {"isFolder", iconKey.startsWith("folder")}, {"iconKey", iconKey}}));
+    fixture.view.setContent(QUrl("inline:GalleryIconResize.qml"), &fixture.component, root);
+    fixture.view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&fixture.view));
+    for (const QSize slot : {QSize(128, 96), QSize(384, 288), QSize(512, 384)}) {
+        fixture.view.resize(slot);
+        QTRY_VERIFY(fixture.icon());
+        QTRY_COMPARE(fixture.icon()->property("status").toInt(), 1);
+        QTest::qWait(100);
+        const QImage capture = fixture.view.grabWindow();
+        QRect ink;
+        for (int y = 0; y < capture.height(); ++y) {
+            for (int x = 0; x < capture.width(); ++x) {
+                const QColor color = capture.pixelColor(x, y);
+                if ((color.green() > color.red() + 20 && color.blue() > color.red() + 20)
+                    || (color.red() > color.green() + 20 && color.red() > color.blue() + 20))
+                    ink |= QRect(x, y, 1, 1);
+            }
+        }
+        auto *leaf = fixture.icon();
+        const auto *available = leaf->parentItem()->parentItem();
+        QCOMPARE(leaf->width(), available->width());
+        QCOMPARE(leaf->height(), available->height());
+        qInfo() << "[icon-fit]" << slot << ink << leaf->size()
+                << leaf->property("paintedWidth") << leaf->property("paintedHeight")
+                << leaf->property("sourceSize");
+        QVERIFY(!ink.isEmpty());
+        const QSize raster = leaf->property("sourceSize").toSize();
+        QCOMPARE(raster, QSize(qRound(leaf->width()), qRound(leaf->height())));
+        QVERIFY(qAbs(leaf->property("paintedWidth").toReal() - leaf->width()) < 0.01);
+        QVERIFY(qAbs(leaf->property("paintedHeight").toReal() - leaf->height()) < 0.01);
+        QVERIFY2(qAbs(ink.height() - leaf->height() * fixture.view.devicePixelRatio()) <= 2
+                    || qAbs(ink.width() - leaf->width() * fixture.view.devicePixelRatio()) <= 2,
+                 "Ready icon artwork must fill one slot axis without distorting aspect ratio");
+        const QString error = fixture.readyLeafGeometryError(leaf);
+        QVERIFY2(error.isEmpty(), qPrintable(error));
+    }
+}
+
+void F4GalleryPointerTests::galleryEntryPreviewRetainsOnlySameEntryDuringAsyncResize_data()
+{
+    QTest::addColumn<int>("replacement");
+    QTest::newRow("same-entry-resize") << 0;
+    QTest::newRow("replacement-clears-old-entry") << 1;
+    QTest::newRow("replacement-with-same-url") << 2;
+}
+
+void F4GalleryPointerTests::galleryEntryPreviewRetainsOnlySameEntryDuringAsyncResize()
+{
+    QFETCH(int, replacement);
+    GalleryIconResizeFixture fixture;
+    if (!qFuzzyCompare(fixture.view.devicePixelRatio(), 1.75))
+        QSKIP("Run this rendered regression with QT_SCALE_FACTOR=1.75");
+    QVERIFY(fixture.captures.isValid());
+    fixture.captures.setAutoRemove(false);
+    QTRY_VERIFY(fixture.component.status() != QQmlComponent::Loading);
+    QVERIFY2(fixture.component.isReady(), qPrintable(fixture.component.errorString()));
+    QObject *root = fixture.component.create();
+    QVERIFY2(root, qPrintable(fixture.component.errorString()));
+    fixture.view.setContent(QUrl("inline:GalleryIconResize.qml"), &fixture.component, root);
+    fixture.view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&fixture.view));
+    QTRY_VERIFY(fixture.icon());
+    QTRY_COMPARE(fixture.icon()->property("status").toInt(), 1); // Image.Ready
+    QPointer<QQuickItem> warmedIcon = fixture.icon();
+    const QUrl originalSource = warmedIcon->property("source").toUrl();
+    auto *entry = root->findChild<QObject *>("resizeEntry");
+    QVERIFY(entry);
+    QCOMPARE(entry->property("entryId").toString(), QStringLiteral("folder-A"));
+    QVERIFY(fixture.capture("before") > 0);
+    QString geometryError = fixture.readyLeafGeometryError(warmedIcon);
+    QVERIFY2(geometryError.isEmpty(), qPrintable(geometryError));
+    const auto notifySignal = [&warmedIcon](const char *property) {
+        const QMetaObject *meta = warmedIcon->metaObject();
+        return meta->property(meta->indexOfProperty(property)).notifySignal();
+    };
+    QSignalSpy statuses(warmedIcon, notifySignal("status"));
+    QSignalSpy sources(warmedIcon, notifySignal("source"));
+    auto *blocker = root->findChild<QObject *>("resizeBlockerImage");
+    QVERIFY(blocker);
+    const auto unblock = qScopeGuard([&] { fixture.gate->release.release(); });
+    QVERIFY(blocker->setProperty("source", QUrl("image://resize-blocker/hold")));
+    QTRY_VERIFY(fixture.gate->started.load());
+    fixture.view.resize(176, 192);
+    QCoreApplication::processEvents();
+    const QUrl resizedSource = fixture.icon()->property("source").toUrl();
+    if (replacement) {
+        root->setProperty("sourceAtIdentityNotification", "unobserved");
+        root->setProperty("sourceAtRowNotification", "unobserved");
+        // A's size-97 request is already queued behind the blocker when B
+        // takes this same delegate. Releasing the gate completes that old work.
+        QVERIFY(entry->setProperty("visualRow", QVariantMap{
+            {"valid", true}, {"entryId", "file-B"}, {"text", ""},
+            {"isFolder", replacement == 2},
+            {"iconKey", replacement == 2 ? "folder" : "file-text"}}));
+    }
+    QCoreApplication::processEvents();
+    QTRY_VERIFY(fixture.icon());
+    QCOMPARE(fixture.icon()->property("status").toInt(), 2); // Image.Loading
+    QVERIFY(fixture.icon()->property("source").toUrl() != originalSource);
+    const int loadingPixels = fixture.capture("resized-loading");
+    fixture.gate->release.release();
+    QTRY_COMPARE(fixture.icon()->property("status").toInt(), 1);
+    QVERIFY(fixture.capture("ready") > 0);
+    geometryError = fixture.readyLeafGeometryError(fixture.icon());
+    QVERIFY2(geometryError.isEmpty(), qPrintable(geometryError));
+    QVERIFY(statuses.isValid());
+    QVERIFY(sources.isValid());
+    QVERIFY(!statuses.isEmpty());
+    QVERIFY(!sources.isEmpty());
+    if (replacement) {
+        QCOMPARE(entry->property("entryId").toString(), QStringLiteral("file-B"));
+        QVERIFY(fixture.icon() != warmedIcon.data());
+        qInfo() << "[gallery-icon-identity] source at identity/row notifications"
+                << root->property("sourceAtIdentityNotification")
+                << root->property("sourceAtRowNotification")
+                << "guard at identity/row notifications"
+                << root->property("changingAtIdentityNotification")
+                << root->property("changingAtRowNotification");
+        QCOMPARE(loadingPixels, 0); // Never paint folder-A as file-B loads.
+        QCOMPARE(root->property("sourceAtIdentityNotification").toString(), QString());
+        QCOMPARE(root->property("sourceAtRowNotification").toString(), QString());
+        QVERIFY(root->property("changingAtIdentityNotification").toBool());
+        QVERIFY(root->property("changingAtRowNotification").toBool());
+        QVERIFY(!entry->property("visualIdentityChanging").toBool());
+        if (replacement == 2) {
+            QCOMPARE(fixture.icon()->property("source").toUrl(), resizedSource);
+        } else {
+            QCOMPARE(fixture.cyanPixels, 0); // A's delayed folder result did not repaint B.
+            QVERIFY(fixture.redPixels > 0);
+        }
+    } else {
+        QCOMPARE(entry->property("entryId").toString(), QStringLiteral("folder-A"));
+        QCOMPARE(fixture.icon(), warmedIcon.data());
+        QVERIFY2(loadingPixels > 0, "Same-entry resize discarded the warmed icon texture while Loading");
+    }
+    fixture.finishCaptures();
+}
+
+void F4GalleryPointerTests::compactThumbnailRetainsSameEntryDuringAsyncResize_data()
+{
+    QTest::addColumn<int>("presentationMode");
+    QTest::addColumn<bool>("replaceIdentity");
+    QTest::newRow("details") << 2 << false;
+    QTest::newRow("icons") << 4 << false;
+    QTest::newRow("details-replacement-same-url") << 2 << true;
+    QTest::newRow("icons-replacement-same-url") << 4 << true;
+}
+
+void F4GalleryPointerTests::compactThumbnailRetainsSameEntryDuringAsyncResize()
+{
+    QFETCH(int, presentationMode);
+    QFETCH(bool, replaceIdentity);
+    GalleryIconResizeFixture fixture;
+    if (!qFuzzyCompare(fixture.view.devicePixelRatio(), 1.75))
+        QSKIP("Run this rendered regression with QT_SCALE_FACTOR=1.75");
+    QVERIFY(fixture.captures.isValid());
+    fixture.captures.setAutoRemove(false);
+    QTRY_VERIFY(fixture.component.status() != QQmlComponent::Loading);
+    QVERIFY2(fixture.component.isReady(), qPrintable(fixture.component.errorString()));
+    QObject *root = fixture.component.create();
+    QVERIFY2(root, qPrintable(fixture.component.errorString()));
+    fixture.view.setContent(QUrl("inline:GalleryIconResize.qml"), &fixture.component, root);
+    auto *entry = root->findChild<QObject *>("resizeEntry");
+    QVERIFY(entry);
+    const QUrl thumbnailSource = fixture.icons.rasterizedLucideSource(
+        "folder", 70, 1.75, QColor("#00a080"));
+    QVERIFY(entry->setProperty("presentationMode", presentationMode));
+    QVERIFY(entry->setProperty("visualRow", QVariantMap{
+        {"valid", true}, {"entryId", "image-A"}, {"text", ""},
+        {"isImage", true}, {"imageDimensionsKnown", true},
+        {"imageIdUrl", thumbnailSource.toString()}}));
+    fixture.view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&fixture.view));
+    QQuickItem *image = nullptr;
+    QTRY_VERIFY((image = fixture.compactImage()));
+    QTRY_COMPARE(image->property("status").toInt(), 1);
+    QPointer<QQuickItem> warmedImage = image;
+    root->setProperty("inspectThumbnail", true);
+    const QSize originalSize = image->property("sourceSize").toSize();
+    QVERIFY(fixture.capture("compact-before", image) > 0);
+    QString geometryError = fixture.readyLeafGeometryError(image);
+    QVERIFY2(geometryError.isEmpty(), qPrintable(geometryError));
+    auto *blocker = root->findChild<QObject *>("resizeBlockerImage");
+    QVERIFY(blocker);
+    const auto unblock = qScopeGuard([&] { fixture.gate->release.release(); });
+    QVERIFY(blocker->setProperty("source", QUrl("image://resize-blocker/hold")));
+    QTRY_VERIFY(fixture.gate->started.load());
+    fixture.view.resize(176, 240);
+    QCoreApplication::processEvents();
+    QCOMPARE(fixture.compactImage(), image);
+    QCOMPARE(image->property("source").toUrl(), thumbnailSource);
+    QCOMPARE(entry->property("entryId").toString(), QStringLiteral("image-A"));
+    QVERIFY(image->property("sourceSize").toSize() != originalSize);
+    if (replaceIdentity) {
+        root->setProperty("sourceAtIdentityNotification", "unobserved");
+        root->setProperty("sourceAtRowNotification", "unobserved");
+        QVERIFY(entry->setProperty("visualRow", QVariantMap{
+            {"valid", true}, {"entryId", "image-B"}, {"text", ""},
+            {"isImage", true}, {"imageDimensionsKnown", true},
+            {"imageIdUrl", thumbnailSource.toString()}}));
+        QTRY_VERIFY((image = fixture.compactImage()));
+        QVERIFY(image != warmedImage.data()); // Inspect B, not a deferred-delete A leaf.
+        QCOMPARE(root->property("sourceAtIdentityNotification").toString(), QString());
+        QCOMPARE(root->property("sourceAtRowNotification").toString(), QString());
+        QVERIFY(root->property("changingAtIdentityNotification").toBool());
+        QVERIFY(root->property("changingAtRowNotification").toBool());
+    }
+    QCOMPARE(image->property("status").toInt(), 2);
+    const int loadingPixels = fixture.capture("compact-resized-loading", image);
+    fixture.gate->release.release();
+    QTRY_COMPARE(image->property("status").toInt(), 1);
+    QVERIFY(fixture.capture("compact-ready", image) > 0);
+    geometryError = fixture.readyLeafGeometryError(image);
+    QVERIFY2(geometryError.isEmpty(), qPrintable(geometryError));
+    QCOMPARE(image->property("source").toUrl(), thumbnailSource);
+    QCOMPARE(entry->property("entryId").toString(),
+             replaceIdentity ? QStringLiteral("image-B") : QStringLiteral("image-A"));
+    if (replaceIdentity) {
+        QCOMPARE(loadingPixels, 0);
+        QVERIFY(!entry->property("visualIdentityChanging").toBool());
+    } else {
+        QCOMPARE(image, warmedImage.data());
+        QVERIFY2(loadingPixels > 0, "Same-entry sourceSize resize discarded the compact thumbnail while Loading");
+    }
+    fixture.finishCaptures();
 }
 
 void F4GalleryPointerTests::quickViewHoverDoesNotMoveCursorOrFocus()
@@ -1127,13 +1428,8 @@ void F4GalleryPointerTests::masonryCursorHighlightsFilenameBackground()
     QObject *host = nullptr;
     QTRY_VERIFY((host = loader->property("item").value<QObject *>()));
     auto backgroundForRow = [host](int row) -> QQuickItem * {
-        auto *label = host->findChild<QQuickItem *>(
-            QStringLiteral("galleryMasonryLabel-%1").arg(row));
-        if (!label || !label->parentItem()) return nullptr;
-        for (auto *leaf : label->parentItem()->childItems()) {
-            if (leaf != label && leaf->property("color").isValid()) return leaf;
-        }
-        return nullptr;
+        return host->findChild<QQuickItem *>(
+            QStringLiteral("galleryMasonryLabelBackground-%1").arg(row));
     };
     QTRY_VERIFY(backgroundForRow(2));
     const QColor cursor("#B33d5d7b");

@@ -80,8 +80,7 @@ ApplicationWindow {
         return "monospace"
     }
     readonly property int defaultMonospaceFontPixelSize:
-        Number(f4GuiFontPixelSize) > 0 ? Number(f4GuiFontPixelSize)
-                                       : (Qt.platform.os === "osx" ? 17 : 16)
+        typographySettings.defaultUiSize
     readonly property alias typography: typographySettings
     readonly property string uiFontFamily: typographySettings.effectiveUiFamily
     readonly property string guiMonospaceFontFamily: typographySettings.effectiveMonoFamily
@@ -97,11 +96,14 @@ ApplicationWindow {
     HostTypography {
         id: typographySettings
         defaultUiFamily: host.defaultUiFontFamily
+        defaultUiSize: Qt.platform.os === "osx"
+                       && typeof f4SystemUiFontPixelSize !== "undefined"
+                       && Number(f4SystemUiFontPixelSize) > 0
+                       ? Number(f4SystemUiFontPixelSize) : 13
         defaultMonoFamily: host.defaultMonospaceFontFamily
         defaultMonoSize: host.defaultMonospaceFontPixelSize
         platformMonoFamily: typeof f4SystemMonospaceFontFamily !== "undefined"
                             ? String(f4SystemMonospaceFontFamily) : "monospace"
-        platformMonoSize: Qt.platform.os === "osx" ? 17 : 16
     }
     readonly property string worktreeBranch:
         typeof f4WorktreeBranch !== "undefined"
@@ -163,11 +165,13 @@ ApplicationWindow {
         { value: "lucide", name: "Lucide",
           description: "Use bundled Lucide outline icons" },
         { value: "system", name: "Native",
-          description: "Use native platform file icons" }
+          description: "Use native platform file icons" },
+        { value: "zoin", name: "Zoin",
+          description: "Use colored file and folder icons with Lucide interface icons" }
     ]
     readonly property string iconSetName:
         iconProvider && iconProvider.name !== undefined
-        ? String(iconProvider.name) : "lucide"
+        ? String(iconProvider.name) : "zoin"
     readonly property string iconSetDescription:
         String(iconSetOption(iconSetName).description || "")
 
@@ -245,10 +249,14 @@ ApplicationWindow {
     property alias commandLineGraphicalCursor: themePalette.commandLineGraphicalCursor
     property alias compactBreadcrumbs: themePalette.compactBreadcrumbs
     property alias showColumnSeparators: themePalette.showColumnSeparators
+    property alias galleryDebugLayoutZones: themePalette.galleryDebugLayoutZones
     property alias headerVerticalSeparatorSpacing: themePalette.headerVerticalSeparatorSpacing
     property alias headerHorizontalSeparatorSpacing: themePalette.headerHorizontalSeparatorSpacing
     property alias columnSeparatorSpacing: themePalette.columnSeparatorSpacing
     property alias panelColumnPadding: themePalette.panelColumnPadding
+    property alias galleryCellHorizontalPadding: themePalette.galleryCellHorizontalPadding
+    property alias galleryCellVerticalPadding: themePalette.galleryCellVerticalPadding
+    property alias galleryCellCaptionSpacing: themePalette.galleryCellCaptionSpacing
     property alias galleryQuickSearchMatchColor:
         themePalette.galleryQuickSearchMatchColor
     property alias galleryDirectoryTextColor:

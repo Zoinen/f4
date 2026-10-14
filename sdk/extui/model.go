@@ -81,9 +81,13 @@ type InfoPanelModel struct {
 }
 
 type InfoPanelRowModel struct {
-	Kind  string
-	Label string
-	Value string
+	Kind      string
+	Label     string
+	Value     string
+	Percent   int
+	TotalText string
+	UsedText  string
+	FreeText  string
 }
 
 // QuickViewModel is the embedded Ctrl+Q panel.  Its chrome and source
@@ -913,11 +917,18 @@ func (p PanelLayoutModel) ToMap() M {
 func (p InfoPanelModel) ToMap() M {
 	rows := make([]M, 0, len(p.Rows))
 	for _, row := range p.Rows {
-		rows = append(rows, M{
+		node := M{
 			"kind":  row.Kind,
 			"label": row.Label,
 			"value": row.Value,
-		})
+		}
+		if row.Kind == "usage" {
+			node["percent"] = row.Percent
+			node["totalText"] = row.TotalText
+			node["usedText"] = row.UsedText
+			node["freeText"] = row.FreeText
+		}
+		rows = append(rows, node)
 	}
 	return M{
 		"id":         p.ID,

@@ -5,17 +5,18 @@ import QtQuick
 Item {
     id: typography
     property string uiFamily: ""
-    property int uiSize: 13
+    property int uiSize: defaultUiSize
     property string panelFamily: ""
-    property int panelSize: 13
+    property int panelSize: defaultUiSize
     property bool panelsLinked: true
     property string monoFamily: ""
     property int monoSize: 0
     property string defaultUiFamily: "sans-serif"
+    property int defaultUiSize: 13
     property string defaultMonoFamily: "monospace"
-    property int defaultMonoSize: 16
+    property int defaultMonoSize: defaultUiSize
     property string platformMonoFamily: defaultMonoFamily
-    property int platformMonoSize: defaultMonoSize
+    property int platformMonoSize: defaultUiSize
     readonly property string effectiveUiFamily: uiFamily || defaultUiFamily
     readonly property string effectivePanelFamily:
         panelsLinked ? effectiveUiFamily : (panelFamily || effectiveUiFamily)
@@ -37,14 +38,18 @@ Item {
     FontMetrics { id: panelMetrics; font: typography.panelFont }
 
     function snapshot() {
-        return {uiFamily, uiSize, panelFamily, panelSize, panelsLinked, monoFamily, monoSize}
+        return {uiFamily, uiSize: uiSize === defaultUiSize ? 0 : uiSize,
+                panelFamily, panelSize: panelSize === defaultUiSize ? 0 : panelSize,
+                panelsLinked, monoFamily, monoSize}
     }
     function restore(values) {
         const v = values || {}
         uiFamily = String(v.uiFamily || "")
-        uiSize = validSize(v.uiSize, 13)
+        if (validSize(v.uiSize, 0) > 0) uiSize = validSize(v.uiSize, 0)
+        else uiSize = Qt.binding(function() { return typography.defaultUiSize })
         panelFamily = String(v.panelFamily || "")
-        panelSize = validSize(v.panelSize, 13)
+        if (validSize(v.panelSize, 0) > 0) panelSize = validSize(v.panelSize, 0)
+        else panelSize = Qt.binding(function() { return typography.defaultUiSize })
         panelsLinked = v.panelsLinked !== false
         monoFamily = String(v.monoFamily || "")
         monoSize = validSize(v.monoSize, 0)
@@ -63,13 +68,15 @@ Item {
     function resetFont(role) {
         if (role === 0) {
             uiFamily = ""
-            uiSize = 13
+            uiSize = Qt.binding(function() { return typography.defaultUiSize })
         } else if (role === 1 && !panelsLinked) {
-            panelFamily = defaultUiFamily
-            panelSize = 13
+            panelFamily = Qt.binding(function() { return typography.defaultUiFamily })
+            panelSize = Qt.binding(function() { return typography.defaultUiSize })
         } else if (role === 2) {
-            monoFamily = platformMonoFamily
-            monoSize = platformMonoSize
+            monoFamily = Qt.binding(function() { return typography.platformMonoFamily })
+            // Keep the default sentinel so saving Reset still follows the
+            // detected base size after restarting or a system font change.
+            monoSize = 0
         }
     }
 }

@@ -75,6 +75,10 @@ type InfoPanel struct {
 	infoSnapshot   vfs.PanelInfoSnapshot
 	infoHasRefresh bool
 	infoRetryAfter time.Time
+	hostTask       *vtui.TaskContext
+	hostSnapshot   sysinfo.HostInfo
+	hostCache      *sysinfo.HostCache
+	hostRetryAfter time.Time
 }
 
 // infoRow captures one rendered line so the highlight (when focused)
@@ -213,6 +217,14 @@ func (ip *InfoPanel) cancelInfoRefresh() {
 // Close is called by PanelsFrame when Ctrl+L hides or replaces the panel.
 // Invalidate first so a completion already queued on the UI thread is stale.
 func (ip *InfoPanel) Close() {
+	if task := ip.hostTask; task != nil {
+		ip.hostTask = nil
+		task.Cancel()
+	}
+	ip.resetProviderInfo()
+}
+
+func (ip *InfoPanel) resetProviderInfo() {
 	ip.cancelInfoRefresh()
 	ip.infoKey = ""
 	ip.infoSource = nil
@@ -227,12 +239,12 @@ func (ip *InfoPanel) Close() {
 // stays in RefreshPanelInfo below.
 func (ip *InfoPanel) currentProviderInfo() (vfs.PanelInfoSnapshot, bool) {
 	if ip.src == nil || ip.src.Vfs == nil {
-		ip.Close()
+		ip.resetProviderInfo()
 		return vfs.PanelInfoSnapshot{}, false
 	}
 	provider, ok := ip.src.Vfs.(vfs.PanelInfoProvider)
 	if !ok {
-		ip.Close()
+		ip.resetProviderInfo()
 		return vfs.PanelInfoSnapshot{}, false
 	}
 
@@ -241,7 +253,7 @@ func (ip *InfoPanel) currentProviderInfo() (vfs.PanelInfoSnapshot, bool) {
 	req := vfs.PanelInfoRequest{Path: ip.src.Vfs.GetPath(), SelectedName: selected}
 	key := provider.PanelInfoKey(req)
 	if key == "" {
-		ip.Close()
+		ip.resetProviderInfo()
 		return vfs.PanelInfoSnapshot{}, false
 	}
 
@@ -765,6 +777,7 @@ func (ip *InfoPanel) Show(scr *vtui.ScreenBuf) {
 		}
 		row(i18n.Msg("InfoPanel.Computer"), hostname, true)
 		row(i18n.Msg("InfoPanel.User"), username, true)
+		ip.visitHostInfo(func(label, value string) { row(label, value, true) }, sectionHeader, blank)
 		blank()
 	}
 

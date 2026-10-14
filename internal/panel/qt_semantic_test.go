@@ -6,10 +6,31 @@ import (
 
 	"github.com/unxed/f4/internal/cmdline"
 	"github.com/unxed/f4/internal/config"
+	"github.com/unxed/f4/internal/i18n"
 	"github.com/unxed/f4/internal/semantic"
+	"github.com/unxed/f4/internal/sysinfo"
 	"github.com/unxed/f4/internal/terminal"
 	"github.com/unxed/vtui"
 )
+
+func TestInfoPanelSemanticDiskUsage(t *testing.T) {
+	frame, _ := panelsFrameWithMouseSelect(t)
+	source := frame.GetActivePanel()
+	if _, ok := sysinfo.FS(source.Vfs.GetPath()); !ok {
+		t.Skip("filesystem capacity unavailable")
+	}
+	model := NewInfoPanel(source).semanticModel(0, true).ToMap()
+	for _, row := range model["rows"].([]map[string]any) {
+		if row["label"] != i18n.Msg("InfoPanel.Space") {
+			continue
+		}
+		if row["kind"] != "usage" || row["totalText"] == "" || row["freeText"] == "" || row["usedText"] == "" {
+			t.Fatalf("incomplete usage row: %#v", row)
+		}
+		return
+	}
+	t.Fatal("disk usage meter missing from semantic panel")
+}
 
 func TestCommandLineSemanticClickFocus(t *testing.T) {
 	oldMode := config.App.NavigationMode

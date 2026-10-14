@@ -21,6 +21,28 @@ Item {
         return bottom
     }
     visible: false
+    FontMetrics { id: fieldFontMetrics; font: layout.hostWindow.font }
+
+    function presentationWidth(widget) {
+        const semanticWidth = hostWindow.pxW(Number(widget.w || 1))
+        // A one-cell hotkey field still needs the standard F4TextField's
+        // eight-pixel padding on both sides and room for the caret.
+        return widget.kind === "edit" && Number(widget.w) === 1
+            ? hostWindow.snapPx(Math.max(semanticWidth,
+                fieldFontMetrics.advanceWidth("W") + 16 + 2)) : semanticWidth
+    }
+
+    function horizontalExpansionBefore(widget) {
+        let extra = 0
+        for (const preceding of widgets) {
+            if (isContent(preceding) && preceding.kind === "edit"
+                    && Number(preceding.w) === 1
+                    && Number(preceding.y) === Number(widget.y)
+                    && Number(preceding.x) + 1 <= Number(widget.x))
+                extra += presentationWidth(preceding) - hostWindow.pxW(1)
+        }
+        return extra
+    }
 
     function isContent(widget) {
         return widget && widget.visible !== false

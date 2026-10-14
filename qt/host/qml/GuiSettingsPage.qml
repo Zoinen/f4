@@ -14,7 +14,8 @@ FocusScope {
     readonly property var preferenceKeys: [
         "fontRenderType", "mouseWheelMode", "galleryNeutralFileTextColors",
         "galleryShowSelectionBorders", "commandLineGraphicalCursor", "compactBreadcrumbs",
-        "showColumnSeparators", "panelColumnPadding", "iconSetName",
+        "showColumnSeparators", "galleryDebugLayoutZones", "panelColumnPadding", "galleryCellHorizontalPadding",
+        "galleryCellVerticalPadding", "galleryCellCaptionSpacing", "iconSetName",
         "headerVerticalSeparatorSpacing", "headerHorizontalSeparatorSpacing", "columnSeparatorSpacing"
     ]
     implicitWidth: hostWindow.snapPx(535)
@@ -428,6 +429,16 @@ FocusScope {
                 description: qsTr("Add space above and below the vertical lines between columns")
                 checked: hostWindow.columnSeparatorSpacing
                 onToggled: checked => hostWindow.columnSeparatorSpacing = checked
+            }
+
+            ThemeBooleanOption {
+                hostWindow: guiSettings.hostWindow
+                pixelGridRoot: guiSettings.contentItem
+                namePrefix: "themeGalleryDebugLayoutZones"
+                title: qsTr("Show cell layout debug zones")
+                description: qsTr("Overlay image and text bounds in every panel view (Ctrl+Alt+Shift+P)")
+                checked: hostWindow.galleryDebugLayoutZones
+                onToggled: checked => hostWindow.galleryDebugLayoutZones = checked
             }
 
             RowLayout {

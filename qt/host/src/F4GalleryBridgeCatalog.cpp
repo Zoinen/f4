@@ -159,6 +159,16 @@ QVariantMap resolveFileIconStyle(F4IconSet *iconSet, QVariantMap style,
     if (!iconSet) {
         return style;
     }
+    if (iconSet->zoin()) {
+        const bool parent = context.value(QStringLiteral("isUp")).toBool();
+        style.remove(QStringLiteral("iconKey"));
+        style.insert(QStringLiteral("icon"), iconSet->fileIconSource(
+            context.value(QStringLiteral("localPath")).toString(),
+            parent ? QStringLiteral("..") : context.value(QStringLiteral("name")).toString(),
+            parent || context.value(QStringLiteral("isDir")).toBool(),
+            GalleryIconLogicalSize, devicePixelRatio, mtimeNanos).toString());
+        return style;
+    }
     const QString configuredIcon =
         style.value(QStringLiteral("icon")).toString();
     const QString semanticIcon = style.value(QStringLiteral("iconKey")).toString();
@@ -171,6 +181,7 @@ QVariantMap resolveFileIconStyle(F4IconSet *iconSet, QVariantMap style,
         return style;
     }
     const bool replaceableIcon = configuredIcon.isEmpty()
+        || configuredIcon.startsWith(QStringLiteral("qrc:/F4QtHost/icons/zoin/"))
         || isZoinGalleryDefaultIcon(configuredIcon)
         || isF4SystemFileIcon(configuredIcon, iconSet->providerId())
         || (iconSet->system() && isF4BundledLucideIcon(configuredIcon));

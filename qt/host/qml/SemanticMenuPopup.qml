@@ -1,5 +1,4 @@
 pragma ComponentBehavior: Bound
-
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Controls.impl
@@ -306,13 +305,24 @@ Item {
                                     Number(index || 0)))
     }
 
+    function isSectionHeading(item) {
+        return item.header === true
+            || (item.separator === true && hostWindow.cleanText(item.text).trim() !== "")
+    }
+
+    function itemHeight(item) {
+        return item.separator && isSectionHeading(item)
+             ? hostWindow.snapPx(Math.max(menuSeparatorHeight, menuFontMetrics.height + 10))
+               + menuHeaderTopPadding
+             : isSectionHeading(item) ? menuHeaderHeight
+             : item.separator ? menuSeparatorHeight
+             : item.details && item.details.kind !== "history" ? driveRowHeight : effectiveMenuRowHeight
+    }
+
     function itemHeightAt(index) {
         if (index < 0 || index >= effectiveItems.length)
             return effectiveMenuRowHeight
-        const item = effectiveItems[index]
-        return item.separator ? menuSeparatorHeight
-             : item.header === true ? menuHeaderHeight
-             : item.details && item.details.kind !== "history" ? driveRowHeight : effectiveMenuRowHeight
+        return itemHeight(effectiveItems[index])
     }
 
     function heightBeforeIndex(index) {

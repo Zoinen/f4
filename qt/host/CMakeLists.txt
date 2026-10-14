@@ -633,6 +633,21 @@ set(F4_STREAMLINE_ICON_NAMES
   apple-logo.svg
   microsoft-windows-logo.svg
 )
+add_executable(F4PrepareFileIcons EXCLUDE_FROM_ALL tools/PrepareFileIcons.cpp)
+target_link_libraries(F4PrepareFileIcons PRIVATE Qt6::Core Qt6::Gui Qt6::Svg)
+add_executable(F4PrepareZoinIcons EXCLUDE_FROM_ALL tools/PrepareZoinIcons.cpp)
+target_link_libraries(F4PrepareZoinIcons PRIVATE Qt6::Core Qt6::Gui Qt6::Svg)
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/icons/files/names.txt" F4_FILE_ICON_NAMES)
+set(F4_FILE_ICONS "${CMAKE_CURRENT_SOURCE_DIR}/icons/files/names.txt")
+file(GLOB F4_ZOIN_ICONS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/icons/zoin/*.svg")
+list(APPEND F4_ZOIN_ICONS
+  "${CMAKE_CURRENT_SOURCE_DIR}/icons/zoin/manifest.json"
+  "${CMAKE_CURRENT_SOURCE_DIR}/icons/zoin/ICON_LICENSES.txt")
+foreach(stroke_step RANGE 1 8)
+  foreach(icon_name IN LISTS F4_FILE_ICON_NAMES)
+    list(APPEND F4_FILE_ICONS "${CMAKE_CURRENT_SOURCE_DIR}/icons/files/${stroke_step}/${icon_name}.svg")
+  endforeach()
+endforeach()
 set(F4_STREAMLINE_ICONS ${F4_STREAMLINE_ICON_NAMES})
 list(TRANSFORM F4_STREAMLINE_ICONS PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/icons/streamline/")
 
@@ -1160,6 +1175,12 @@ if(BUILD_TESTING)
     set_tests_properties(MacApplicationIconTest PROPERTIES
       ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
     )
+    add_test(NAME MacImageColorSpaceTest COMMAND MacApplicationIconTests
+      nativeImageFormatKeepsColorSpaceAlive nativeImageKeepsColorSpaceAlive)
+    set_tests_properties(MacImageColorSpaceTest PROPERTIES
+      LABELS "native-macos"
+      ENVIRONMENT "QT_QPA_PLATFORM=offscreen;DYLD_INSERT_LIBRARIES=/usr/lib/libgmalloc.dylib"
+    )
 
     add_executable(MacApplicationMenuTests
       tests/MacApplicationMenuTests.mm
@@ -1193,6 +1214,16 @@ if(BUILD_TESTING)
   endif()
 
   function(f4_add_icon_test_resources target)
+    qt6_add_resources(${target} ${target}_f4_zoin_icons
+      PREFIX "/F4QtHost/icons/zoin"
+      BASE "${CMAKE_CURRENT_SOURCE_DIR}/icons/zoin"
+      FILES ${F4_ZOIN_ICONS}
+    )
+    qt6_add_resources(${target} ${target}_f4_file_icons
+      PREFIX "/F4QtHost/icons/files"
+      BASE "${CMAKE_CURRENT_SOURCE_DIR}/icons/files"
+      FILES ${F4_FILE_ICONS}
+    )
     qt6_add_resources(${target} ${target}_f4_lucide_icons
       PREFIX "/F4QtHost/icons/lucide"
       BASE "${CMAKE_CURRENT_SOURCE_DIR}/icons/lucide"
@@ -1752,7 +1783,9 @@ if(BUILD_TESTING)
   )
   add_test(NAME F4NativeFontPolicyPixelGridTest
     COMMAND F4QuickViewSurfaceTests
-      nativeFontRolesUsePlatformDefaultsAt175Percent)
+      nativeFontRolesUsePlatformDefaultsAt175Percent
+      guiFontDefaultsAndResetFollowSystemSizes
+      guiFontsLinkPersistAndPreview)
   set_tests_properties(F4NativeFontPolicyPixelGridTest PROPERTIES
     ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
   )
@@ -1772,6 +1805,16 @@ if(BUILD_TESTING)
   set_tests_properties(F4NativeSettingsPixelGridTest PROPERTIES
     ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../.."
+  )
+  add_test(NAME F4GalleryCellPaddingPixelGridTest
+    COMMAND F4QuickViewSurfaceTests galleryCellPaddingTitleBarControlIsLiveAndPersisted)
+  set_tests_properties(F4GalleryCellPaddingPixelGridTest PROPERTIES
+    ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
+  )
+  add_test(NAME F4DialogSeparatorsPixelGridTest
+    COMMAND F4QuickViewSurfaceTests dialogSeparatorsRenderOnPhysicalPixels)
+  set_tests_properties(F4DialogSeparatorsPixelGridTest PROPERTIES
+    ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"
   )
   add_test(NAME F4QuickViewIconSetSettingsTest
     COMMAND F4QuickViewSurfaceTests themeDialogIconSetControlIsLiveAndPersisted)
@@ -2164,6 +2207,13 @@ if(BUILD_TESTING)
   add_test(NAME F4GalleryPointerTest COMMAND F4GalleryPointerTests)
   set_tests_properties(F4GalleryPointerTest PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins;QML_IMPORT_PATH=${ZoinGallery_QML_IMPORT_PATH}"
+  )
+  add_test(NAME F4GalleryPreviewResizeDpr175Test COMMAND F4GalleryPointerTests
+    iconsArtworkFillsSlotAfterLargeRasterArrives
+    galleryEntryPreviewRetainsOnlySameEntryDuringAsyncResize
+    compactThumbnailRetainsSameEntryDuringAsyncResize)
+  set_tests_properties(F4GalleryPreviewResizeDpr175Test PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_SCALE_FACTOR=1.75;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins;QML_IMPORT_PATH=${ZoinGallery_QML_IMPORT_PATH}"
   )
 endif()
 

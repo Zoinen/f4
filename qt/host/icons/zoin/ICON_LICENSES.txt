@@ -1,0 +1,297 @@
+ICON COPYRIGHTS, LICENSES AND SOURCES
+====================================
+
+Scope: the 30 SVG files directly in this folder. Subfolders, backups, previews and earlier candidates are excluded.
+Prepared: 2026-10-14.
+
+The references below identify upstream artwork used as a basis. Local files may have been recolored, reshaped, simplified, or combined with original artwork. These notices apply to the relevant third-party portions; they do not assign a license to user-authored artwork.
+
+THIRD-PARTY ARTWORK
+-------------------
+
+c.svg
+  Original collection: Devicon
+  Copyright (c) 2015 konpa
+  License: MIT
+  Reference: https://github.com/devicons/devicon/blob/6a37858047b0e8d9c9c0e68f4a071fc410652e89/icons/cplusplus/cplusplus-original.svg
+  Adaptation: the Devicon C++ hexagon/C geometry with the plus marks removed; colors flattened and internal seam eliminated. The earlier Simple Icons C candidate was replaced and is not the basis of this file.
+
+claude.svg
+  Original collection: Symbols for VS Code
+  Copyright (c) 2020-22 Miguel Solorio
+  License: MIT
+  Reference: https://github.com/miguelsolorio/vscode-symbols/blob/ab3c31d3bf63d29b77db3aaf59ca4aae203eacf6/src/icons/files/claude.svg
+  Adaptation: local color, opacity and/or SVG structure changes; upstream artwork remains the basis.
+
+cpp.svg
+  Original collection: Devicon
+  Copyright (c) 2015 konpa
+  License: MIT
+  Reference: https://github.com/devicons/devicon/blob/6a37858047b0e8d9c9c0e68f4a071fc410652e89/icons/cplusplus/cplusplus-original.svg
+  Adaptation: Devicon C++ geometry, flattened to one color with the internal seam eliminated.
+
+database.svg
+  Original collection: Fluent UI System Icons
+  Copyright (c) 2020 Microsoft Corporation
+  License: MIT
+  Reference: https://github.com/microsoft/fluentui-system-icons/blob/a347af95478f989038cccbf085978865264c048a/assets/Database/SVG/ic_fluent_database_20_filled.svg
+  Adaptation: local color, opacity and/or SVG structure changes; upstream artwork remains the basis.
+
+docker.svg
+  Original collection: Symbols for VS Code
+  Copyright (c) 2020-22 Miguel Solorio
+  License: MIT
+  Reference: https://github.com/miguelsolorio/vscode-symbols/blob/ab3c31d3bf63d29b77db3aaf59ca4aae203eacf6/src/icons/files/docker.svg
+  Adaptation: local color, opacity and/or SVG structure changes; upstream artwork remains the basis.
+
+font.svg
+  Original collection: VSCode Icons
+  Copyright The vscode-icons Contributors
+  License: MIT
+  Reference: https://github.com/vscode-icons/vscode-icons/blob/6c7a80c5f579de44f5512d0e63c3b0ef6b2514fd/icons/file_type_font.svg
+  Adaptation: local color, opacity and/or SVG structure changes; upstream artwork remains the basis.
+
+git.svg
+  Original collection: Symbols for VS Code
+  Copyright (c) 2020-22 Miguel Solorio
+  License: MIT
+  Reference: https://github.com/miguelsolorio/vscode-symbols/blob/ab3c31d3bf63d29b77db3aaf59ca4aae203eacf6/src/icons/files/git.svg
+  Adaptation: local color, opacity and/or SVG structure changes; upstream artwork remains the basis.
+
+go.svg
+  Original collection: VSCode Icons
+  Copyright The vscode-icons Contributors
+  License: MIT
+  Reference: https://github.com/vscode-icons/vscode-icons/blob/6c7a80c5f579de44f5512d0e63c3b0ef6b2514fd/icons/file_type_go.svg
+  Adaptation: local color, opacity and/or SVG structure changes; upstream artwork remains the basis.
+
+image.svg
+  Original collection: Fluent UI System Icons
+  Copyright (c) 2020 Microsoft Corporation
+  License: MIT
+  Reference: https://github.com/microsoft/fluentui-system-icons/blob/a347af95478f989038cccbf085978865264c048a/assets/Image/SVG/ic_fluent_image_20_filled.svg
+  Adaptation: local color, opacity and/or SVG structure changes; upstream artwork remains the basis.
+
+json.svg
+  Original collection: Symbols for VS Code
+  Copyright (c) 2020-22 Miguel Solorio
+  License: MIT
+  Reference: https://github.com/miguelsolorio/vscode-symbols/blob/ab3c31d3bf63d29b77db3aaf59ca4aae203eacf6/src/icons/files/brackets-orange.svg
+  Adaptation: local color, opacity and/or SVG structure changes; upstream artwork remains the basis.
+
+markdown.svg
+  Original collection: Symbols for VS Code
+  Copyright (c) 2020-22 Miguel Solorio
+  License: MIT
+  Reference: https://github.com/miguelsolorio/vscode-symbols/blob/ab3c31d3bf63d29b77db3aaf59ca4aae203eacf6/src/icons/files/markdown.svg
+  Adaptation: local color, opacity and/or SVG structure changes; upstream artwork remains the basis.
+
+npm.svg
+  Original collection: Symbols for VS Code
+  Copyright (c) 2020-22 Miguel Solorio
+  License: MIT
+  Reference: https://github.com/miguelsolorio/vscode-symbols/blob/ab3c31d3bf63d29b77db3aaf59ca4aae203eacf6/src/icons/files/npm.svg
+  Adaptation: local color, opacity and/or SVG structure changes; upstream artwork remains the basis.
+
+python.svg
+  Original collection: Material Icon Theme
+  Copyright (c) 2025 Material Extensions
+  License: MIT
+  Reference: https://github.com/material-extensions/vscode-material-icon-theme/blob/13025adc5ad10a5cc649528a2c1edec93069f1b9/icons/python.svg
+  Adaptation: local color, opacity and/or SVG structure changes; upstream artwork remains the basis.
+
+react.svg
+  Original collection: Material Icon Theme
+  Copyright (c) 2025 Material Extensions
+  License: MIT
+  Reference: https://github.com/material-extensions/vscode-material-icon-theme/blob/13025adc5ad10a5cc649528a2c1edec93069f1b9/icons/react.svg
+  Adaptation: local color, opacity and/or SVG structure changes; upstream artwork remains the basis.
+
+ruby.svg
+  Original collection: Symbols for VS Code
+  Copyright (c) 2020-22 Miguel Solorio
+  License: MIT
+  Reference: https://github.com/miguelsolorio/vscode-symbols/blob/ab3c31d3bf63d29b77db3aaf59ca4aae203eacf6/src/icons/files/ruby.svg
+  Adaptation: Symbols Ruby artwork; masked facet strokes converted into clipped filled paths.
+
+rust.svg
+  Original collection: VSCode Icons
+  Copyright The vscode-icons Contributors
+  License: MIT
+  Reference: https://github.com/vscode-icons/vscode-icons/blob/6c7a80c5f579de44f5512d0e63c3b0ef6b2514fd/icons/file_type_rust.svg
+  Adaptation: local color, opacity and/or SVG structure changes; upstream artwork remains the basis.
+
+svg.svg
+  Original collection: Fluent UI System Icons
+  Copyright (c) 2020 Microsoft Corporation
+  License: MIT
+  Reference: https://github.com/microsoft/fluentui-system-icons/blob/a347af95478f989038cccbf085978865264c048a/assets/Shapes/SVG/ic_fluent_shapes_20_filled.svg
+  Adaptation: local color, opacity and/or SVG structure changes; upstream artwork remains the basis.
+
+swift.svg
+  Original collection: Material Icon Theme
+  Copyright (c) 2025 Material Extensions
+  License: MIT
+  Reference: https://github.com/material-extensions/vscode-material-icon-theme/blob/13025adc5ad10a5cc649528a2c1edec93069f1b9/icons/swift.svg
+  Adaptation: local color, opacity and/or SVG structure changes; upstream artwork remains the basis.
+
+table.svg
+  Original collection: Fluent UI System Icons
+  Copyright (c) 2020 Microsoft Corporation
+  License: MIT
+  Reference: https://github.com/microsoft/fluentui-system-icons/blob/a347af95478f989038cccbf085978865264c048a/assets/Document%20Table/SVG/ic_fluent_document_table_20_filled.svg
+  Adaptation: Fluent Document Table grid, resized and combined with the user-authored default.svg document body and folded corner. The user-authored parts have no specified license; the MIT notice applies to the Fluent-derived grid.
+
+yml.svg
+  Original collection: Lucide
+  Copyright (c) 2026 Lucide Icons and Contributors
+  License: ISC
+  Reference: https://github.com/lucide-icons/lucide/blob/dab294f313897bacaa968b725b3259fa37c17bd1/icons/workflow.svg
+  Adaptation: local color, opacity and/or SVG structure changes; upstream artwork remains the basis.
+
+FULL THIRD-PARTY LICENSE NOTICES
+-------------------------------
+
+Devicon — MIT
+=============
+The MIT License (MIT)
+
+Copyright (c) 2015 konpa
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+Fluent UI System Icons — MIT
+============================
+MIT License
+
+Copyright (c) 2020 Microsoft Corporation
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Lucide — ISC
+============
+ISC License
+
+Copyright (c) 2026 Lucide Icons and Contributors
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+Material Icon Theme — MIT
+=========================
+The MIT License (MIT)
+Copyright (c) 2025 Material Extensions
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+Symbols for VS Code — MIT
+=========================
+MIT License
+
+Copyright (c) 2020-22 Miguel Solorio
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+VSCode Icons — MIT
+==================
+The MIT License (MIT)
+
+Copyright The vscode-icons Contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+CUSTOM-ARTWORK DEDICATION
+-------------------------
+Original SVG artwork: bash.svg, css.svg, javascript.svg, typescript.svg, html.svg.
+
+To the extent copyright applies, this newly authored artwork is dedicated to the public domain under CC0 1.0 Universal:
+https://creativecommons.org/publicdomain/zero/1.0/
+
+The badges contain generic letters and a shell prompt, independently drawn without copying third-party SVG paths or using font glyphs. This dedication covers these five custom files only.
+
+
+FOLDER-UP DERIVATIVE
+--------------------
+folder-up.svg
+  Origin: user-authored folder.svg with an original upward-arrow cutout created in this conversation.
+  Copyright: the user for the folder shape.
+  License: the user-authored base has no specified license; no external artwork or font glyphs used for the arrow.
+  No external source reference.
+
+END OF NOTICES

@@ -132,6 +132,7 @@ Item {
             height: Math.ceil(implicitHeight * hostWindow.dpr) / hostWindow.dpr
             text: menuOverlay.menuTitleText
             textFormat: Text.PlainText
+            horizontalAlignment: Text.AlignLeft
             color: hostWindow.textColor
             font.family: hostWindow.font.family
             font.pixelSize: (hostWindow ? hostWindow.uiTextSize(14) : 14)

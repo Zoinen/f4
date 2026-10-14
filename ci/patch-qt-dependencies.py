@@ -528,6 +528,44 @@ def _patch_quick_package_guard(text: str) -> str:
     )
 
 
+_MACOS_COLORSPACE_MARKER = "# f4: retain macOS image color space through native conversion"
+_MACOS_COLORSPACE_REPLACEMENTS = (
+    ("painting/qcoregraphics.mm",
+     "        colorSpace, bitmapInfo, 0, nullptr,",
+     "        CGColorSpaceRetain(colorSpace), bitmapInfo, 0, nullptr,"),
+    ("painting/qcoregraphics.mm",
+     "    context = CGBitmapContextCreate((void *)image->bits(),",
+     "    QCFType<CGColorSpaceRef> colorSpace = cgImageFormat->colorSpace;\n"
+     "    context = CGBitmapContextCreate((void *)image->bits(),"),
+    ("image/qimage_darwin.mm",
+     "    // Create a data provider that owns a copy of the QImage",
+     "    QCFType<CGColorSpaceRef> colorSpace = cgImageFormat->colorSpace;\n\n"
+     "    // Create a data provider that owns a copy of the QImage"),
+    ("text/coretext/qfontengine_coretext.mm",
+     "    QCFType<CGContextRef> ctx = CGBitmapContextCreate(im.bits(),",
+     "    QCFType<CGColorSpaceRef> colorSpace = cgImageFormat->colorSpace;\n"
+     "    QCFType<CGContextRef> ctx = CGBitmapContextCreate(im.bits(),"),
+    ("painting/qcoregraphics_p.h",
+     "Q_GUI_EXPORT std::optional<vImage_CGImageFormat> qt_mac_cgImageFormatForImage",
+     "// The returned format owns its colorSpace; the caller must release it.\n"
+     "Q_GUI_EXPORT std::optional<vImage_CGImageFormat> qt_mac_cgImageFormatForImage"),
+)
+_MACOS_COLORSPACE_SOURCE_PATCH = "        " + _MACOS_COLORSPACE_MARKER + "\n" + "".join(
+    "        replace_in_file(self, os.path.join(self.source_folder, 'qtbase', 'src', 'gui', "
+    + repr(path) + "), " + repr(before) + ", " + repr(after) + ", strict=True)\n"
+    for path, before, after in _MACOS_COLORSPACE_REPLACEMENTS
+)
+
+
+def _patch_macos_colorspace(text: str) -> str:
+    if _MACOS_COLORSPACE_MARKER in text:
+        return text
+    if text.count(_FFMPEG_SOURCE_ANCHOR) != 1:
+        raise RuntimeError("Qt recipe source patch anchor changed")
+    return text.replace(_FFMPEG_SOURCE_ANCHOR,
+                        _FFMPEG_SOURCE_ANCHOR + _MACOS_COLORSPACE_SOURCE_PATCH)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("recipe", type=Path)
@@ -550,6 +588,8 @@ def main() -> None:
             "[FIX] Qt Linux audio recipe bridges WrapPulseAudio to "
             "Conan's pulseaudio::pulse target"
         )
+    patched = _patch_macos_colorspace(patched)
+    print("[FIX:mac-color-space] Qt recipe retains native image color spaces")
     if patched != text:
         args.recipe.write_text(patched, encoding="utf-8")
 

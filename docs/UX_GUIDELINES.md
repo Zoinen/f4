@@ -104,6 +104,7 @@ Hotkeys provide the fastest way to activate a specific function.
 
 *   **Workspace scope:** A blocking dialog belongs to its originating tab. The Qt backdrop intercepts input only within that tab's content without darkening it; tabs and window controls remain accessible. Modal popups also leave the background undimmed. Background task results stay in their owning workspace without activating it. Editor and viewer search progress and result dialogs preserve the document underneath them.
 *   **Dialog-only workspaces:** Transparent workspaces such as Find File remain native Qt surfaces when their controls support native rendering. Progress and result updates are delivered without waiting for a console cell frame. Retained panels preserve their command-line visibility and height while the dialog workspace has no command-line stream. Explicit text presentation and unsupported controls retain the console fallback.
+*   **Section separators:** Native Qt dialogs retain the noninteractive horizontal separators from the semantic control tree, including nested and explicitly hidden controls. A caption sits centered in the line with a gap on either side, rather than overlapping the stroke or becoming a separate row. Rules are one physical pixel thick; the rules and caption text stay aligned to whole physical pixels at fractional scaling.
 *   **Search progress:** Show the cancelable search progress popup only when the search is still running after 150 ms. Quick searches complete without changing focus or exposing a modal progress frame. Completion or cancellation suppresses any pending popup, including an already queued display callback.
 *   `Enter`: Triggers the "default" action. This is either the button marked as `IsDefault`, or the first actionable button in the tab order if none is marked. This applies even if an `Edit` field is focused.
 *   `Esc`: Closes the window or dialog.
@@ -155,6 +156,32 @@ path hints and `NewEdit` history. Select/Deselect Group open 40 cells wide.
 #### File Panels (`f4` Specific)
 
 File panels are a special, highly optimized version of a `Table`.
+
+The native Qt Ctrl+L information panel shows capacity meters for filesystem
+space, physical memory and paging space. Each meter preserves the console's
+Total, used percentage, Used and Free information and uses the panel progress
+palette. Byte/human-readable units follow the existing B toggle.
+
+On macOS, the information panel reads physical RAM and swap directly from
+Mach/sysctl, and volume name, UUID, filename-component limit and mount/case
+flags from native filesystem APIs. The serial-number row contains the volume
+UUID, not a hardware serial. Available RAM includes free and inactive pages;
+speculative pages are already counted in Mach's free count. It is a capacity
+estimate, not Activity Monitor's memory-pressure measurement.
+
+The macOS general section also shows the system-reported computer model,
+chip, OS version/build and hardware architecture (including when
+running under Rosetta). Each display has its own name, physical-pixel resolution
+and approximate diagonal from Core Graphics, marked `~`; unavailable dimensions
+are omitted. Core Graphics may estimate dimensions when EDID is unavailable.
+Marketing OS codenames are not guessed. The system-profiler snapshot is collected
+off the UI thread with cancellation and a five-second deadline, retained between
+renders and refreshed at most once per 30 seconds while the info panel is shown.
+The cache outlives the panel: reopening Ctrl+L immediately displays the last
+successful snapshot, even if it is stale and a background refresh is running.
+Technical model identifiers and duplicate architecture names are not displayed.
+Built-in display names use the descriptive system-profiler display type rather
+than its legacy "Color LCD" product label; external names remain unchanged.
 
 *   `Up`/`Down`, `PgUp`/`PgDn`: Navigate vertically within the current column.
 *   `Left`/`Right`: Jump one full page (view height) up or down within the *current column*. If at the top/bottom, jump to the top/bottom of the adjacent column. **These keys do not change the active panel.**

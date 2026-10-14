@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QColor>
+#include <QCache>
 #include <QIcon>
 #include <QImage>
 #include <QList>
@@ -76,6 +77,7 @@ private:
                                QSize *size);
 
     std::unique_ptr<F4IconProviderBackend> m_backend;
+    QCache<qint64, QRect> m_nativeArtworkBounds{4096};
     bool m_testPatternEnabled = false;
     std::mutex m_mutex;
 };
@@ -94,6 +96,7 @@ public:
     enum IconSet {
         Lucide,
         System,
+        Zoin,
     };
     Q_ENUM(IconSet)
 
@@ -106,7 +109,8 @@ public:
     // Lucide SVGs are masks and are intentionally tinted by QML. Native file
     // icons may contain several colors and must be displayed by an Image
     // without IconLabel.icon.color/SourceIn recoloring.
-    bool fileIconsAreFullColor() const { return system(); }
+    bool fileIconsAreFullColor() const { return m_iconSet != Lucide; }
+    bool zoin() const { return m_iconSet == Zoin; }
     qulonglong revision() const { return m_revision; }
     QString providerId() const { return m_providerId; }
 
@@ -157,6 +161,7 @@ private:
     void advanceRevision();
 
     QString m_providerId;
-    IconSet m_iconSet = Lucide;
+    QList<QPair<QString, QString>> m_zoinFileIconPatterns;
+    IconSet m_iconSet = Zoin;
     qulonglong m_revision = 1;
 };

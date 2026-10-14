@@ -9,6 +9,11 @@ This directory contains the Qt/QML sidecar renderer for `f4 --gui=qt`.
 Portable Linux and Windows release binaries request this backend by default;
 the Go core does not link Qt and starts `f4-qt-host` as a separate process.
 
+GUI monospace text uses the detected base interface font size by default,
+while retaining its separate fixed-pitch family. Its Reset button restores that
+same default size; saved explicit sizes remain independent. A saved Reset keeps
+following the platform default rather than freezing its current numeric value.
+
 Native menus and dialogs carry optional `stackOrder`, a shared one-based,
 bottom-to-top position in Go's frame stack. Complete, incremental, and menu-only
 publications preserve it so dialogs opened by menus and menus opened by dialogs
@@ -127,6 +132,16 @@ On macOS, add `-s:h os.version=13.0` to the Conan command. The recipe enforces
 that target so Qt and every native dependency match the host's deployment
 minimum.
 
+The patched Qt 6.11.1 recipe retains the CoreGraphics color space returned by
+its image-format helper until each image, drawing-context, or CoreText caller
+has created its native object. Unpatched Qt releases the space too early;
+CoreGraphics' ICC cache can mask the dangling pointer until cache eviction,
+including while Cocoa creates a cursor when Settings opens. Run
+`bash ci/patch-qt-recipe.sh` before resolving fresh Qt packages. Stale binary
+recipes without this ownership fix must not be reused for macOS builds.
+`MacImageColorSpaceTest` verifies cache eviction with GuardMalloc enabled;
+the existing icon suite also checks ordinary native-image conversion.
+
 QWindowKit is enabled by default, matching the standalone ZoinGallery build.
 The helper clones QWindowKit with submodules from its `main` branch and uses
 the same Quick-only settings: widgets, examples, and documentation are off.
@@ -137,10 +152,10 @@ window-agent fallback.
 
 ## Icon sets
 
-The QML frontend offers **Lucide** (the default) and **Native** in the GUI
-settings category. The choice is stored as `iconSet = lucide|system` in
-`gui_theme.ini` and is applied live; the legacy `QmlIconSet` value remains a
-startup fallback. The selection does not affect the terminal or other external
+The QML frontend offers **Zoin** (the default), **Lucide** and **Native** in the GUI
+settings category. The choice is stored as `iconSet = zoin|lucide|system` in
+`gui_theme.ini` and is applied live. Legacy Go icon preferences do not override
+the GUI-owned default or saved selection. The selection does not affect the terminal or other external
 UI renderers.
 
 System file icons come from Qt Gui's platform file-icon provider. Qt delegates
@@ -151,6 +166,24 @@ or vector artwork is selected before it becomes a Qt Quick texture. Missing
 theme or remote-file icons fall back to the matching bundled Lucide glyph.
 
 ### Bundled icon assets
+
+The separate **Zoin** icon theme uses bundled colored file and folder SVGs in
+`icons/zoin`. Its manifest matches exact filenames before extension patterns,
+with extension and generic-file fallbacks. Folder artwork includes a transparent
+parent-arrow cutout. Menus and buttons retain Lucide icons; thumbnails stay
+unchanged. Select the theme in GUI settings; the choice is persisted alongside
+Lucide and Native. No external directory or environment override is needed.
+See `icons/zoin/ICON_LICENSES.txt` for source provenance and licensing notices;
+these notices are bundled with the icons. The manifest references only the
+current assets. Removed specialized types use remaining extension matches or
+the generic file icon. Existing saved `codex` selections migrate to `zoin`.
+
+Zoin SVGs use tight rectangular viewports and matching intrinsic dimensions.
+Fully transparent outer margins are removed offline; all panel modes fit
+the native artwork aspect without stretching. Colors, translucent paths, and transparent cutouts
+are unchanged. To prepare updated assets offline, build `F4PrepareZoinIcons`
+and run it with `qt/host/icons/zoin` as its argument. Commit the resulting SVGs;
+the application never scans or crops these assets at runtime.
 
 All other Qt menu and chrome icons use the vendored Lucide set in
 `icons/lucide`. The Android, iOS, and Windows locations entries in the disk
@@ -223,6 +256,10 @@ underlying call returns. Listing and preview leases use the media connection's
 existing acknowledgement, release and reconnect protocol. Main-catalog commits
 do not release preview-owned image references.
 
+The GUI category includes an off-by-default "Show cell layout debug zones"
+option for translucent image/text bounds in every panel view. Physical
+Ctrl+Alt+Shift+P toggles it live for both panels and saves the preference.
+
 The GUI, Gallery & cache and Terminal colors categories reuse the settings
 body's semantic category heading and Apply / OK / Cancel footer. Native page
 drafts survive switching categories; Apply and OK validate all visited native
@@ -230,6 +267,22 @@ pages before saving, while Cancel restores the GUI's live theme preview.
 Terminal colors are paired in two columns (normal and bright), with the preview
 using matching columns in two rows. These pages have no extra outer content
 inset. The standalone theme editor keeps its own window controls.
+
+Grid, Icons and Masonry share the Qt-owned `galleryCellHorizontalPadding`
+and `galleryCellVerticalPadding` preferences (each default 4, range 0–32 logical
+pixels). Temporary **Horizontal** and **Vertical** cell-padding sliders at the
+right of the tab bar preview both panels immediately and save on release.
+The shared `galleryCellCaptionSpacing` preference (default 3, range 0–32)
+has a **Caption gap** slider. It separates previews from filenames in Grid and
+Icons and standalone icons/folder previews from captions in Masonry. Masonry
+image-overlay captions remain overlays; their top padding uses the caption gap,
+with no bottom text padding. Gap changes reuse wrapped text metrics.
+Files, folder previews and captions use the same per-edge insets.
+Horizontal changes remeasure Icons' wrapped captions; vertical changes reuse
+those line counts. Masonry includes both insets in its justified-row calculation
+to keep each image's aspect ratio. Contained folder-collage cells keep their own
+spacing rather than inheriting their parent's padding.
+Details and Columns continue to use their independent `panelColumnPadding`.
 
 The native Settings category **Gallery & cache** controls the image and folder
 preview caches (Off / On / Cache only), layout resize animation and display-color
@@ -370,6 +423,16 @@ three-column column-major layout, Details, uniform Grid, and large Icons.
 Layout choice, column count and each strategy's density are saved independently
 per panel. Switching strategies preserves the authoritative f4 cursor and
 selection without reapplying the catalog.
+
+Same-entry resizes retain the currently displayed icon or compact thumbnail
+while Qt asynchronously prepares its replacement raster. Reassigning a pooled
+delegate to another stable entry ID resets its shared preview before snapshot
+notifications, including when the replacement has the same icon URL. The icon
+leaf is recreated only for that identity change because Qt's `IconImage` does
+not clear its previous raster reliably for an empty source. Same-entry retention
+uses Qt's existing image storage, not another application cache or image copy.
+`F4GalleryPreviewResizeDpr175Test` captures the intermediate loading frame
+and checks replacement safety and physical-pixel alignment at 175% scale.
 
 **View → Thumbnails** is an independent per-panel preference, on by default
 and saved across restarts. Turning it off hides image, video, and folder

@@ -66,10 +66,14 @@ Item {
     property bool commandLineGraphicalCursor: true
     property bool compactBreadcrumbs: true
     property bool showColumnSeparators: false
+    property bool galleryDebugLayoutZones: false
     property bool headerVerticalSeparatorSpacing: true
     property bool headerHorizontalSeparatorSpacing: true
     property bool columnSeparatorSpacing: true
     property int panelColumnPadding: 8
+    property int galleryCellHorizontalPadding: 4
+    property int galleryCellVerticalPadding: 4
+    property int galleryCellCaptionSpacing: 3
     property color galleryQuickSearchMatchColor: "#c678dd"
     property color galleryDirectoryTextColor: "#98d8ff"
     property color galleryFolderIconColor: "#5ab2f1"
@@ -209,6 +213,9 @@ Item {
             detailsExtensionMinimumWidth: palette.hostWindow.typography.extensionWidth
             columnPadding: palette.hostWindow.snapPx(
                                  palette.panelColumnPadding)
+            cellHorizontalPadding: palette.galleryCellHorizontalPadding
+            cellVerticalPadding: palette.galleryCellVerticalPadding
+            cellCaptionSpacing: palette.galleryCellCaptionSpacing
             detailsIconSlotSize: palette.hostWindow.snapPx(16)
             detailsIconSize: palette.hostWindow.snapPx(16)
             detailsIconVerticalPadding: Math.max(0,
@@ -249,7 +256,12 @@ Item {
         }
         showColumnSeparators = saved.showColumnSeparators === true
                 || String(saved.showColumnSeparators).toLowerCase() === "true"
+        galleryDebugLayoutZones = saved.galleryDebugLayoutZones === true
+                || String(saved.galleryDebugLayoutZones).toLowerCase() === "true"
         const padding = Number(saved.panelColumnPadding)
+        const cellPadding = Number(saved.galleryCellHorizontalPadding)
+        const verticalCellPadding = Number(saved.galleryCellVerticalPadding)
+        const captionSpacing = Number(saved.galleryCellCaptionSpacing)
         headerVerticalSeparatorSpacing = saved.headerVerticalSeparatorSpacing === undefined
                 || saved.headerVerticalSeparatorSpacing === true
                 || String(saved.headerVerticalSeparatorSpacing).toLowerCase() === "true"
@@ -261,6 +273,12 @@ Item {
                 || String(saved.columnSeparatorSpacing).toLowerCase() === "true"
         panelColumnPadding = Number.isFinite(padding)
                 ? Math.max(0, Math.min(24, Math.round(padding))) : 8
+        galleryCellHorizontalPadding = Number.isFinite(cellPadding)
+                ? Math.max(0, Math.min(32, Math.round(cellPadding))) : 4
+        galleryCellVerticalPadding = Number.isFinite(verticalCellPadding)
+                ? Math.max(0, Math.min(32, Math.round(verticalCellPadding))) : 4
+        galleryCellCaptionSpacing = Number.isFinite(captionSpacing)
+                ? Math.max(0, Math.min(32, Math.round(captionSpacing))) : 3
         compactBreadcrumbs = saved.compactBreadcrumbs === undefined
                 || saved.compactBreadcrumbs === true
                 || String(saved.compactBreadcrumbs).toLowerCase() === "true"
@@ -361,10 +379,14 @@ Item {
         values.commandLineGraphicalCursor = commandLineGraphicalCursor
         values.compactBreadcrumbs = compactBreadcrumbs
         values.showColumnSeparators = showColumnSeparators
+        values.galleryDebugLayoutZones = galleryDebugLayoutZones
         values.headerVerticalSeparatorSpacing = headerVerticalSeparatorSpacing
         values.headerHorizontalSeparatorSpacing = headerHorizontalSeparatorSpacing
         values.columnSeparatorSpacing = columnSeparatorSpacing
         values.panelColumnPadding = panelColumnPadding
+        values.galleryCellHorizontalPadding = galleryCellHorizontalPadding
+        values.galleryCellVerticalPadding = galleryCellVerticalPadding
+        values.galleryCellCaptionSpacing = galleryCellCaptionSpacing
         values.themeSchemaVersion = schemaVersion
         values.typography = JSON.stringify(hostWindow.typography.snapshot())
         return persistence.saveTheme(values)
@@ -385,10 +407,14 @@ Item {
         commandLineGraphicalCursor = true
         compactBreadcrumbs = true
         showColumnSeparators = false
+        galleryDebugLayoutZones = false
         headerVerticalSeparatorSpacing = true
         headerHorizontalSeparatorSpacing = true
         columnSeparatorSpacing = true
         panelColumnPadding = 8
+        galleryCellHorizontalPadding = 4
+        galleryCellVerticalPadding = 4
+        galleryCellCaptionSpacing = 3
         hostWindow.typography.restore({})
     }
 

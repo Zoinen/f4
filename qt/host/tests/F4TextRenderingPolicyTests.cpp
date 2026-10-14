@@ -1,6 +1,7 @@
 #include "F4TextRenderingPolicy.h"
 
 #include <QGuiApplication>
+#include <QEvent>
 #include <QQmlComponent>
 #include <QQmlEngine>
 #include <QQuickItem>
@@ -15,10 +16,20 @@ class F4TextRenderingPolicyTests final : public QObject
 
 private slots:
     void defaultIsNative();
+    void observesApplicationFontChange();
     void exposesEveryQtRenderType();
     void updatesExistingQmlTextItems();
     void rejectsUnknownRenderType();
 };
+
+void F4TextRenderingPolicyTests::observesApplicationFontChange()
+{
+    F4TextRenderingPolicy policy;
+    QSignalSpy changed(&policy, &F4TextRenderingPolicy::platformFontChanged);
+    QEvent event(QEvent::ApplicationFontChange);
+    QCoreApplication::sendEvent(qGuiApp, &event);
+    QCOMPARE(changed.count(), 1);
+}
 
 void F4TextRenderingPolicyTests::defaultIsNative()
 {

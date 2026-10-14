@@ -131,6 +131,36 @@ func TestProgressPercentageAndCountersLayout(t *testing.T) {
 	}
 }
 
+func TestResultsSeparatorExportsLiveCaption(t *testing.T) {
+	setupUI(t)
+	w := newWindow(vfs.NewOSVFS(t.TempDir()), Host{}, true)
+	provider, ok := any(w.tableSeparator).(vtui.SemanticProvider)
+	if !ok {
+		t.Fatal("result counts separator has no semantic projection")
+	}
+	ctx := &vtui.SemanticContext{Width: 80, Height: 25}
+	for _, count := range []int64{0, 10} {
+		w.progress.Found = count
+		w.refreshState(nil)
+		node := provider.SemanticNode(ctx)
+		if node["kind"] != "separator" || node["id"] != vtui.SemanticID(w.tableSeparator) {
+			t.Fatalf("result counts lost their separator identity: %#v", node)
+		}
+		if node["text"] != w.status.GetText() || strings.TrimSpace(w.status.GetText()) == "" {
+			t.Fatalf("result counts caption not exported: %#v", node)
+		}
+		x1, y1, x2, y2 := w.tableSeparator.GetPosition()
+		if node["x"] != x1 || node["y"] != y1 || node["w"] != x2-x1+1 || node["h"] != y2-y1+1 {
+			t.Fatalf("result separator geometry changed: %#v", node)
+		}
+	}
+
+	w.tableSeparator.SetVisible(false)
+	if node := provider.SemanticNode(ctx); node["visible"] != false {
+		t.Fatalf("hidden result counts separator became visible: %#v", node)
+	}
+}
+
 func TestFrozenRequestRetainsReadableThemeColors(t *testing.T) {
 	setupUI(t)
 	previous := append([]uint64(nil), vtui.Palette...)

@@ -61,6 +61,16 @@ qt6_add_resources(f4-qt-host f4_lucide_icons
   BASE "${F4_QT_HOST_ROOT}/icons/lucide"
   FILES ${F4_LUCIDE_ICONS}
 )
+qt6_add_resources(f4-qt-host f4_file_icons
+  PREFIX "/F4QtHost/icons/files"
+  BASE "${F4_QT_HOST_ROOT}/icons/files"
+  FILES ${F4_FILE_ICONS}
+)
+qt6_add_resources(f4-qt-host f4_zoin_icons
+  PREFIX "/F4QtHost/icons/zoin"
+  BASE "${F4_QT_HOST_ROOT}/icons/zoin"
+  FILES ${F4_ZOIN_ICONS}
+)
 
 qt6_add_resources(f4-qt-host f4_gallery_lucide_icons
   PREFIX "/F4QtHost/icons/lucide-gallery"

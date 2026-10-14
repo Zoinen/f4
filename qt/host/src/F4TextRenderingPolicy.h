@@ -24,6 +24,10 @@ public:
 
 signals:
     void renderTypeChanged();
+    void platformFontChanged();
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
     void applyToExistingItems() const;

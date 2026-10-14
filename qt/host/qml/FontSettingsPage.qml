@@ -110,7 +110,8 @@ Item {
                         toolTipText: qsTr("Reset font and size to platform default: %1, %2 px")
                             .arg(group.index === 2 ? page.typography.platformMonoFamily
                                                    : page.typography.defaultUiFamily)
-                            .arg(group.index === 2 ? page.typography.platformMonoSize : 13)
+                            .arg(group.index === 2 ? page.typography.platformMonoSize
+                                                   : page.typography.defaultUiSize)
                         onClicked: page.typography.resetFont(group.index)
                     }
                     F4Button {

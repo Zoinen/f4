@@ -6,10 +6,10 @@ package sysinfo
 type FSInfo struct {
 	Total, Free uint64
 	Type        string // e.g. "ext4" / "NTFS"; "" when the OS doesn't tell us
-	Label       string // populated on Windows
-	Serial      string // populated on Windows
+	Label       string // volume name on Windows and macOS
+	Serial      string // volume serial on Windows; volume UUID on macOS
 	Mount       string // mount point / drive root
-	MaxFilename int    // Statfs.Namelen on Linux, MAX_PATH-derived on Windows
-	Flags       string // "rw,relatime" (Linux) / decoded volume flags (Windows)
+	MaxFilename int    // filesystem filename-component limit
+	Flags       string // decoded mount and/or volume capability flags
 	ClusterSize uint64 // fs cluster / block size in bytes; 0 = unknown
 }

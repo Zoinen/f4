@@ -12,6 +12,8 @@ Item {
     id: titleBar
     readonly property bool retainsFocusOnShellRefresh:
         minimizeButton.pressed || maximizeButton.pressed || closeButton.pressed
+        || horizontalCellPaddingControl.pressed || verticalCellPaddingControl.pressed
+        || captionSpacingControl.pressed
     required property ApplicationWindow hostWindow
     required property Item semanticLayer
     required property QtObject nativeWindowAgent
@@ -126,8 +128,8 @@ Item {
         id: workspaceBar
         hostWindow: titleBar.hostWindow
         availableWidth: Math.max(0, (worktreeBranchLabel.visible
-                                    ? Math.min(queueButton.x, worktreeBranchLabel.x)
-                                    : queueButton.x) - x - hostWindow.contentSpacing)
+                                    ? Math.min(cellPaddingControl.x, worktreeBranchLabel.x)
+                                    : cellPaddingControl.x) - x - hostWindow.contentSpacing)
         nativeWindowAgent: titleBar.nativeWindowAgent
         nativeWindowAgentReady: titleBar.nativeWindowAgentReady
         usesQwk: titleBar.usesQwk
@@ -135,6 +137,43 @@ Item {
                              ? hostWindow.macTitleBarLeftPadding
                              : (appIcon.visible ? appIcon.x + appIcon.width : 0)
                                + hostWindow.contentSpacing)
+    }
+
+    // Temporary live layout control, independent of compact-list column padding.
+    Row {
+        id: cellPaddingControl
+        objectName: "galleryCellPaddingControl"
+        x: hostWindow.snapPx(queueButton.x - width - hostWindow.contentSpacing)
+        y: hostWindow.snapPx((titleBar.height - height) / 2)
+        height: hostWindow.snapPx(28)
+        spacing: hostWindow.snapPx(12)
+        z: 3
+
+        GalleryCellPaddingControl {
+            id: horizontalCellPaddingControl
+            hostWindow: titleBar.hostWindow
+            nativeWindowAgent: titleBar.nativeWindowAgent
+            nativeWindowAgentReady: titleBar.nativeWindowAgentReady
+            usesQwk: titleBar.usesQwk
+        }
+
+        GalleryCellPaddingControl {
+            id: verticalCellPaddingControl
+            hostWindow: titleBar.hostWindow
+            nativeWindowAgent: titleBar.nativeWindowAgent
+            nativeWindowAgentReady: titleBar.nativeWindowAgentReady
+            usesQwk: titleBar.usesQwk
+            kind: "vertical"
+        }
+
+        GalleryCellPaddingControl {
+            id: captionSpacingControl
+            hostWindow: titleBar.hostWindow
+            nativeWindowAgent: titleBar.nativeWindowAgent
+            nativeWindowAgentReady: titleBar.nativeWindowAgentReady
+            usesQwk: titleBar.usesQwk
+            kind: "caption"
+        }
     }
 
     ToolButton {

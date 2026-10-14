@@ -485,6 +485,7 @@ void F4GalleryBridgeTests::panelIconsKeepNativeRasterAtMixedDpi()
     QVERIFY(QTest::qWaitForWindowExposed(&view));
     auto *gallery = host->findChild<QQuickItem *>("embeddedGalleryPanel");
     QVERIFY(gallery);
+    gallery->setProperty("debugLayoutZones", false);
 
     for (int columns : {3, 2, 3}) {
         gallery->setProperty("columnCount", columns);

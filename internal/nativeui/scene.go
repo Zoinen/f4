@@ -17,6 +17,7 @@ import (
 )
 
 var fileFieldProjectionLog sync.Once
+var separatorProjectionLog sync.Once
 
 func init() {
 	vtui.AppSceneAdapter = BuildAppSceneFromLegacy
@@ -332,6 +333,15 @@ func appEnrichLegacyTextWidgets(node map[string]any, elements map[string]vtui.UI
 			case *vtui.VText:
 				node["kind"] = "text"
 				node["text"] = label.Content
+			case *vtui.Separator:
+				node["kind"] = "separator"
+				node["text"] = label.GetText()
+				if os.Getenv("VTUI_DEBUG") != "" {
+					separatorProjectionLog.Do(func() {
+						vtui.DebugLog("[FIX:dialog-separators] projected id=%s width=%d",
+							semantic.String(node["id"]), semantic.Int(node["w"]))
+					})
+				}
 			}
 		}
 	}
@@ -752,9 +762,13 @@ func appInfoPanelFromLegacy(node map[string]any) extui.InfoPanelModel {
 	}
 	for _, row := range semantic.AppMapSlice(node["rows"]) {
 		panel.Rows = append(panel.Rows, extui.InfoPanelRowModel{
-			Kind:  semantic.String(row["kind"]),
-			Label: semantic.String(row["label"]),
-			Value: semantic.String(row["value"]),
+			Kind:      semantic.String(row["kind"]),
+			Label:     semantic.String(row["label"]),
+			Value:     semantic.String(row["value"]),
+			Percent:   semantic.Int(row["percent"]),
+			TotalText: semantic.String(row["totalText"]),
+			UsedText:  semantic.String(row["usedText"]),
+			FreeText:  semantic.String(row["freeText"]),
 		})
 	}
 	return panel

@@ -88,6 +88,8 @@ Item {
                         && !hostWindow.hasBlockingOverlay())
                 item.keySink = panelSurface.focusTarget
                 item.theme = Qt.binding(() => panelSurface.galleryTheme)
+                if (typeof item.debugLayoutZones !== "undefined")
+                    item.debugLayoutZones = Qt.binding(() => hostWindow.galleryDebugLayoutZones)
                 item.metrics = Qt.binding(() => panelSurface.galleryMetrics)
                 if (typeof item.groupHeaderBackdropColor !== "undefined")
                     item.groupHeaderBackdropColor = Qt.binding(() => {

@@ -78,6 +78,7 @@ set(F4_HOST_QML_FILES
   qml/SemanticMenuBar.qml
   qml/ApplicationMenuPopup.qml
   qml/ShellTitleBar.qml
+  qml/GalleryCellPaddingControl.qml
   qml/WorkspaceTabs.qml
   qml/DialogCheckBox.qml
   qml/DialogRadioButton.qml

@@ -1,6 +1,7 @@
 #include "F4TextRenderingPolicy.h"
 
 #include <QGuiApplication>
+#include <QEvent>
 #include <QMetaProperty>
 #include <QQuickItem>
 #include <QQuickWindow>
@@ -26,6 +27,15 @@ F4TextRenderingPolicy::F4TextRenderingPolicy(QObject *parent)
     // creates any text items so their initial render type is deterministic.
     QQuickWindow::setTextRenderType(
         QQuickWindow::NativeTextRendering);
+    if (qGuiApp)
+        qGuiApp->installEventFilter(this);
+}
+
+bool F4TextRenderingPolicy::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched == qGuiApp && event->type() == QEvent::ApplicationFontChange)
+        emit platformFontChanged();
+    return QObject::eventFilter(watched, event);
 }
 
 int F4TextRenderingPolicy::renderType() const

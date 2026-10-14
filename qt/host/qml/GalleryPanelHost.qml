@@ -7,6 +7,7 @@ import ZoinGallery.Native 1.0 as ZGN
 FocusScope {
     id: host
     property bool dropInputEnabled: true
+    property bool debugLayoutZones: false
     property Item dropPanelSurface: null
     property bool dropTabHover: false
     property int dropHoverIndex: -2
@@ -426,6 +427,7 @@ FocusScope {
         liveSelectionUpdates: true
         id: embeddedGalleryPanel
         objectName: "embeddedGalleryPanel"
+        debugLayoutZones: host.debugLayoutZones
         anchors.fill: parent
         session: host.session
         fileFieldDescriptors: host.panel.fileFieldDescriptors || []

@@ -3,6 +3,11 @@
 #include <QAbstractFileIconProvider>
 #include <QByteArray>
 #include <QColor>
+#include <QDir>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QDebug>
 #include <QEvent>
 #include <QFile>
 #include <QFileInfo>
@@ -382,14 +387,28 @@ QString resourceFileName(const QUrl &url)
         : url.toString();
 }
 
-QImage imageAtPhysicalSize(const QPixmap &pixmap, const QSize &targetSize)
+QRect nonTransparentBounds(const QImage &image)
 {
-    if (pixmap.isNull() || targetSize.width() <= 0
+    QRect bounds;
+    const QImage pixels = image.convertToFormat(QImage::Format_ARGB32);
+    for (int y = 0; y < pixels.height(); ++y) {
+        const auto *row = reinterpret_cast<const QRgb *>(pixels.constScanLine(y));
+        for (int x = 0; x < pixels.width(); ++x) {
+            // No threshold: even alpha=1 belongs to the native shadow.
+            if (qAlpha(row[x]) != 0)
+                bounds = bounds.united(QRect(x, y, 1, 1));
+        }
+    }
+    return bounds;
+}
+
+QImage imageAtPhysicalSize(QImage source, const QSize &targetSize)
+{
+    if (source.isNull() || targetSize.width() <= 0
         || targetSize.height() <= 0) {
         return {};
     }
 
-    QImage source = pixmap.toImage();
     // QQuickImageProvider receives physical sourceSize pixels. Qt Quick owns
     // their device-independent interpretation, so do not let the QImage's DPR
     // apply a second scale when it becomes a scene-graph texture.
@@ -456,14 +475,25 @@ qreal normalizedLucideStrokeWidth(qreal strokeWidth)
 
 QImage renderLucideImage(const QString &iconName, const QSize &targetSize,
                          int logicalSize, const QColor &tint,
-                         qreal strokeWidth)
+                         qreal strokeWidth, bool fileArtwork, bool alignBottom)
 {
     if (targetSize.width() <= 0 || targetSize.height() <= 0) {
         return {};
     }
-    const QUrl source = F4IconProvider::lucideSource(iconName, logicalSize);
+    QUrl source = F4IconProvider::lucideSource(iconName, logicalSize);
+    bool prepared = false;
+    if (fileArtwork && !isStreamlineIconName(iconName)) {
+        const qreal effectiveStroke = strokeWidth > 0 ? strokeWidth
+            : (logicalSize >= LargeLucideIconThreshold ? 1.0 : 2.0);
+        const QUrl fileSource(QStringLiteral("qrc:/F4QtHost/icons/files/%1/%2.svg")
+            .arg(qRound(effectiveStroke * 2)).arg(iconName));
+        if (QFile::exists(resourceFileName(fileSource))) {
+            source = fileSource;
+            prepared = true;
+        }
+    }
     QSvgRenderer renderer;
-    if (strokeWidth > 0.0 && !isStreamlineIconName(iconName)) {
+    if (!prepared && strokeWidth > 0.0 && !isStreamlineIconName(iconName)) {
         QFile svgFile(resourceFileName(source));
         if (!svgFile.open(QIODevice::ReadOnly)) {
             return {};
@@ -487,7 +517,20 @@ QImage renderLucideImage(const QString &iconName, const QSize &targetSize,
     if (!painter.isActive()) {
         return {};
     }
-    renderer.render(&painter, QRectF(QPointF(0, 0), QSizeF(targetSize)));
+    QRectF renderRect(QPointF(0, 0), QSizeF(targetSize));
+    if (fileArtwork) {
+        const QSizeF artwork = renderer.viewBoxF().size();
+        if (!artwork.isEmpty()) {
+            const qreal scale = std::min(targetSize.width() / artwork.width(),
+                                         targetSize.height() / artwork.height());
+            const QSizeF fitted = artwork * scale;
+            renderRect = QRectF((targetSize.width() - fitted.width()) / 2,
+                (targetSize.height() - fitted.height()) / (alignBottom ? 1 : 2),
+                fitted.width(), fitted.height());
+        }
+    }
+    painter.setRenderHint(QPainter::Antialiasing);
+    renderer.render(&painter, renderRect);
     painter.end();
     tintMask(image, tint);
     return image;
@@ -651,7 +694,9 @@ QImage F4IconProvider::renderLucideRequest(
     QImage image = renderLucideImage(
         normalizedIconName(request.primary), request.targetSize,
         request.logicalSize,
-        tint.isValid() ? tint : fallbackTintColor(), request.strokeWidth);
+        tint.isValid() ? tint : fallbackTintColor(), request.strokeWidth,
+        queryValue(request.query, QStringLiteral("fileArt")) == u"1",
+        queryValue(request.query, QStringLiteral("alignBottom")) == u"1");
     if (size && !image.isNull()) {
         *size = image.size();
     }
@@ -703,7 +748,22 @@ QImage F4IconProvider::renderNativeRequest(
             request.renderDevicePixelRatio, QIcon::Normal, QIcon::Off);
         pixmap = paletteTintedMask(std::move(pixmap));
     }
-    QImage image = imageAtPhysicalSize(pixmap, request.targetSize);
+    QImage artwork = pixmap.toImage();
+    if (request.route == QStringLiteral("file") && !artwork.isNull()) {
+        // Native artwork is dynamic, unlike our pre-normalized SVG assets.
+        // Cache its bounds per bitmap; layout and theme/menu icons never scan.
+        const qint64 key = pixmap.cacheKey();
+        const QRect *cachedBounds = m_nativeArtworkBounds.object(key);
+        if (!cachedBounds) {
+            m_nativeArtworkBounds.insert(key, new QRect(nonTransparentBounds(artwork)));
+            cachedBounds = m_nativeArtworkBounds.object(key);
+        }
+        if (cachedBounds && !cachedBounds->isEmpty()
+            && *cachedBounds != artwork.rect()) {
+            artwork = artwork.copy(*cachedBounds);
+        }
+    }
+    QImage image = imageAtPhysicalSize(artwork, request.targetSize);
     if (size && !image.isNull()) {
         *size = image.size();
     }
@@ -949,6 +1009,21 @@ F4IconSet::F4IconSet(QString providerId, QObject *parent)
     : QObject(parent)
     , m_providerId(normalizedProviderId(std::move(providerId)))
 {
+    QFile manifest(QStringLiteral(":/F4QtHost/icons/zoin/manifest.json"));
+    if (manifest.open(QIODevice::ReadOnly)) {
+        const auto entries = QJsonDocument::fromJson(manifest.readAll())
+            .object().value("icons").toArray();
+        for (const auto &entry : entries) {
+            const auto record = entry.toObject();
+            if (record.value("kind").toString() != QStringLiteral("file type"))
+                continue;
+            const QString path = QStringLiteral(":/F4QtHost/icons/zoin/")
+                + QFileInfo(record.value("file").toString()).fileName();
+            if (!QFile::exists(path)) continue;
+            for (const auto &pattern : record.value("examples").toArray())
+                m_zoinFileIconPatterns.append({pattern.toString(), path});
+        }
+    }
     if (qGuiApp) {
         qGuiApp->installEventFilter(this);
     }
@@ -956,6 +1031,7 @@ F4IconSet::F4IconSet(QString providerId, QObject *parent)
 
 QString F4IconSet::name() const
 {
+    if (zoin()) return QStringLiteral("zoin");
     return m_iconSet == System
         ? QStringLiteral("system")
         : QStringLiteral("lucide");
@@ -963,7 +1039,7 @@ QString F4IconSet::name() const
 
 void F4IconSet::setIconSet(IconSet iconSet)
 {
-    if (iconSet != Lucide && iconSet != System) {
+    if (iconSet != Lucide && iconSet != System && iconSet != Zoin) {
         iconSet = Lucide;
     }
     if (m_iconSet == iconSet) {
@@ -976,9 +1052,9 @@ void F4IconSet::setIconSet(IconSet iconSet)
 
 void F4IconSet::setName(const QString &setName)
 {
-    setIconSet(normalizedSetName(setName) == QStringLiteral("system")
-                   ? System
-                   : Lucide);
+    const QString normalized = normalizedSetName(setName);
+    setIconSet(normalized == QStringLiteral("system") ? System
+        : normalized == QStringLiteral("zoin") ? Zoin : Lucide);
 }
 
 QUrl F4IconSet::iconSource(const QString &rawName,
@@ -992,7 +1068,7 @@ QUrl F4IconSet::iconSource(const QString &rawName,
     if (isStreamlineIconName(iconName)) {
         return streamlineSource(iconName);
     }
-    if (m_iconSet == Lucide) {
+    if (m_iconSet != System) {
         return F4IconProvider::lucideSource(iconName, logicalSize);
     }
     return systemIconSource(QStringLiteral("theme"),
@@ -1076,19 +1152,39 @@ QUrl F4IconSet::fileIconSource(const QString &localPath,
                                qreal devicePixelRatio,
                                qulonglong version) const
 {
+    if (zoin() && directory) {
+        const QDir icons(QStringLiteral(":/F4QtHost/icons/zoin"));
+        const QString key = fileName == QStringLiteral("..")
+            ? QStringLiteral("folder-up") : QStringLiteral("folder");
+        const QString path = icons.filePath(key + QStringLiteral(".svg"));
+        if (QFile::exists(path)) return QUrl(QStringLiteral("qrc") + path);
+    }
+    if (zoin() && !directory) {
+        // Exact configuration filenames take priority over extension patterns.
+        for (bool exact : {true, false}) {
+            for (const auto &pattern : m_zoinFileIconPatterns) {
+                if ((!pattern.first.contains('*')) == exact
+                    && QDir::match(pattern.first, fileName))
+                    return QUrl(QStringLiteral("qrc") + pattern.second);
+            }
+        }
+        const QDir icons(QStringLiteral(":/F4QtHost/icons/zoin"));
+        const QString suffix = QFileInfo(fileName).suffix().toLower();
+        for (const QString &name : {suffix, QStringLiteral("default")}) {
+            const QString path = icons.filePath(name + QStringLiteral(".svg"));
+            if (!name.isEmpty() && QFile::exists(path))
+                return QUrl(QStringLiteral("qrc") + path);
+        }
+    }
     const QString fallback = F4IconProvider::lucideFileIconName(fileName,
                                                                 directory);
-    if (m_iconSet == Lucide) {
-        if (F4IconProvider::normalizedLogicalSize(logicalSize)
-            >= LargeLucideIconThreshold) {
-            return systemIconSource(
+    if (m_iconSet != System) {
+        return systemIconSource(
                 QStringLiteral("lucide"),
                 F4IconProvider::encodeRouteValue(fallback),
                 logicalSize,
                 devicePixelRatio,
-                0);
-        }
-        return F4IconProvider::lucideSource(fallback, logicalSize);
+                0, {{QStringLiteral("fileArt"), QStringLiteral("1")}});
     }
     return systemIconSource(
         QStringLiteral("file"),
@@ -1114,10 +1210,12 @@ QString F4IconSet::defaultProviderId()
 
 QString F4IconSet::normalizedSetName(QStringView rawName)
 {
-    return rawName.toString().trimmed().compare(
-               QStringLiteral("system"), Qt::CaseInsensitive) == 0
-        ? QStringLiteral("system")
-        : QStringLiteral("lucide");
+    const QString name = rawName.toString().trimmed().toLower();
+    if (name.isEmpty()) return QStringLiteral("zoin");
+    // Preserve the previously saved name of the renamed theme.
+    if (name == QStringLiteral("codex")) return QStringLiteral("zoin");
+    return name == QStringLiteral("system") || name == QStringLiteral("zoin")
+        ? name : QStringLiteral("lucide");
 }
 
 bool F4IconSet::eventFilter(QObject *watched, QEvent *event)

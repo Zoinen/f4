@@ -18,6 +18,35 @@ patcher = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(patcher)
 
 
+class MacColorSpaceRecipePatchTests(unittest.TestCase):
+    def test_recipe_patch_is_idempotent_and_valid_python(self) -> None:
+        recipe = "def source(self):\n" + patcher._FFMPEG_SOURCE_ANCHOR
+        patched = patcher._patch_macos_colorspace(recipe)
+        ast.parse(patched)
+        self.assertEqual(patcher._patch_macos_colorspace(patched), patched)
+        self.assertIn("CGColorSpaceRetain(colorSpace)", patched)
+        self.assertEqual(patched.count("QCFType<CGColorSpaceRef> colorSpace = cgImageFormat->colorSpace"), 3)
+
+    def test_source_patch_applies_to_all_consumers(self) -> None:
+        sources: dict[str, str] = {}
+        for path, before, _ in patcher._MACOS_COLORSPACE_REPLACEMENTS:
+            sources[path] = sources.get(path, "") + before + "\n"
+
+        def replace_in_file(_recipe, path, before, after, strict):
+            relative = str(pathlib.Path(path).relative_to("qtbase/src/gui"))
+            self.assertTrue(strict)
+            self.assertEqual(sources[relative].count(before), 1)
+            sources[relative] = sources[relative].replace(before, after)
+
+        recipe = type("Recipe", (), {"source_folder": ""})()
+        code = "def source(self):\n" + patcher._MACOS_COLORSPACE_SOURCE_PATCH
+        namespace = {"os": __import__("os"), "replace_in_file": replace_in_file}
+        exec(code, namespace)
+        namespace["source"](recipe)
+        for path, _, after in patcher._MACOS_COLORSPACE_REPLACEMENTS:
+            self.assertIn(after, sources[path])
+
+
 class LinuxAudioRecipePatchTests(unittest.TestCase):
     def recipe_skeleton(self) -> str:
         return "".join(

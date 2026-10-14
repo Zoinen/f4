@@ -32,6 +32,8 @@ Item {
         ? hostWindow.snapPx(hostWindow.pxX(Number(inlineLabel.x) - originX)
                             + inlineLabelMeasure.contentWidth + 12)
         : hostWindow.pxX((widget.x || 0) - originX)
+          + (dialogLayout && typeof dialogLayout.horizontalExpansionBefore === "function"
+             ? dialogLayout.horizontalExpansionBefore(widget) : 0)
     property int originX: 0
     property int originY: 0
     property real maximumWidth: Number.POSITIVE_INFINITY
@@ -51,7 +53,8 @@ Item {
     y: dialogLayout ? dialogLayout.widgetTop(widget) - dialogLayout.rowTop(originY + 1)
                     : hostWindow.dialogWidgetVisualTop(
            (widget.y || 0) - originY - 1, widget)
-    width: Math.min(hostWindow.pxW(widget.w || 1), maximumWidth)
+    width: Math.min(dialogLayout && typeof dialogLayout.presentationWidth === "function"
+                    ? dialogLayout.presentationWidth(widget) : hostWindow.pxW(widget.w || 1), maximumWidth)
     height: visualHeight
     visible: widget.visible !== false
     clip: false
@@ -88,6 +91,7 @@ Item {
             case "edit": return editDelegate
             case "multiLineEdit": return multilineDelegate
             case "text": return textDelegate
+            case "separator": return separatorDelegate
             case "progressBar": return progressDelegate
             case "radioGroup": return choiceDelegate
             case "checkGroup": return choiceDelegate
@@ -289,6 +293,57 @@ Item {
                        dialogText, hostWindow.contentItem)
                 y: hostWindow.dialogPixelOffsetY(
                        dialogText, hostWindow.contentItem)
+            }
+        }
+    }
+
+    Component {
+        id: separatorDelegate
+        Item {
+            id: separatorControl
+            readonly property bool hasCaption: String(widget.text || "").length > 0
+            readonly property real captionGap: hostWindow.snapPx(8)
+
+            Text {
+                id: separatorCaption
+                objectName: "dialogWidget-" + hostWindow.cleanText(widget.id) + "SeparatorText"
+                x: hostWindow.snapPx((separatorControl.width - width) / 2)
+                y: hostWindow.snapPx((separatorControl.height - height) / 2)
+                width: hostWindow.snapPx(Math.min(implicitWidth, separatorControl.width))
+                height: Math.ceil(implicitHeight * hostWindow.dpr) / hostWindow.dpr
+                visible: separatorControl.hasCaption
+                text: String(widget.text || "")
+                textFormat: Text.PlainText
+                font: hostWindow.font
+                color: hostWindow.mutedText
+                elide: Text.ElideRight
+                transform: Translate {
+                    x: hostWindow.dialogPixelOffsetX(separatorCaption, hostWindow.contentItem)
+                    y: hostWindow.dialogPixelOffsetY(separatorCaption, hostWindow.contentItem)
+                }
+            }
+
+            Repeater {
+                model: 2
+                Rectangle {
+                    id: separatorLine
+                    required property int index
+                    objectName: "dialogWidget-" + hostWindow.cleanText(widget.id) + "SeparatorLine-" + index
+                    x: index === 0 ? 0
+                        : hostWindow.snapPx(separatorCaption.x + separatorCaption.width + separatorControl.captionGap)
+                    y: hostWindow.snapPx((separatorControl.height - height) / 2)
+                    width: hostWindow.snapPx(Math.max(0, separatorControl.hasCaption
+                        ? (index === 0 ? separatorCaption.x - separatorControl.captionGap
+                           : separatorControl.width - x)
+                        : (index === 0 ? separatorControl.width : 0)))
+                    height: 1 / hostWindow.dpr
+                    visible: width > 0
+                    color: hostWindow.controlBorder
+                    transform: Translate {
+                        x: hostWindow.dialogPixelOffsetX(separatorLine, hostWindow.contentItem)
+                        y: hostWindow.dialogPixelOffsetY(separatorLine, hostWindow.contentItem)
+                    }
+                }
             }
         }
     }

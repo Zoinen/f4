@@ -12,6 +12,9 @@ Rectangle {
     required property Item popupList
     required property var scrollBar
     required property var modelData
+    readonly property bool sectionHeading: overlayController.isSectionHeading(modelData)
+    readonly property real separatorTopPadding: modelData.separator && sectionHeading
+        ? overlayController.menuHeaderTopPadding : 0
     readonly property bool historyRow: !!modelData.details && modelData.details.kind === "history"
     readonly property var dropdownTextLayout: overlayController.dropdownMode
         && overlayController.dropdownAnchor
@@ -22,11 +25,7 @@ Rectangle {
     width: overlayController.dropdownMode
            ? overlayController.dropdownAnchorRect.width
            : ListView.view.width - overlayController.menuEdgeInset
-    height: modelData.separator
-            ? overlayController.menuSeparatorHeight
-            : modelData.header === true
-              ? overlayController.menuHeaderHeight
-              : modelData.details && !historyRow ? overlayController.driveRowHeight : overlayController.effectiveMenuRowHeight
+    height: overlayController.itemHeight(modelData)
     radius: 4
     // ListView can position recycled rows at fractional physical coordinates
     // during polish, after the normal leaf alignment pass. Correct the shared
@@ -43,18 +42,6 @@ Rectangle {
            && !modelData.separator
            && modelData.header !== true
            ? hostWindow.selectedBg : "transparent"
-
-    Rectangle {
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.leftMargin: 8
-        anchors.rightMargin: 8
-        anchors.verticalCenter: parent.verticalCenter
-        height: 1
-        color: hostWindow.separatorColor
-        opacity: 0.68
-        visible: modelData.separator === true
-    }
 
     Item {
         id: historyContent
@@ -148,19 +135,23 @@ Rectangle {
                     + hostWindow.cleanText(overlayController.frame.id)
                     + "-" + Number(modelData.index)
         anchors.left: parent.left
-        anchors.right: overlayController.dropdownMode ? parent.right : shortcut.left
+        anchors.right: overlayController.dropdownMode || modelData.separator ? parent.right : shortcut.left
         anchors.rightMargin: menuItem.dropdownTextLayout
             ? parent.width - menuItem.dropdownTextLayout.x
-              - menuItem.dropdownTextLayout.width : 0
-        readonly property bool centeredLabel: !overlayController.dropdownMode && modelData.header !== true
+              - menuItem.dropdownTextLayout.width
+            : modelData.separator ? hostWindow.snapPx(10) : 0
+        readonly property bool centeredLabel: !overlayController.dropdownMode
+            && (!menuItem.sectionHeading || modelData.separator === true)
         anchors.top: centeredLabel ? undefined : parent.top
         anchors.bottom: centeredLabel ? undefined : parent.bottom
         height: hostWindow.snapPx(implicitHeight)
-        y: hostWindow.snapPx((parent.height - menuLabelMetrics.tightBoundingRect.height) / 2
+        y: hostWindow.snapPx(menuItem.separatorTopPadding
+                            + (parent.height - menuItem.separatorTopPadding
+                               - menuLabelMetrics.tightBoundingRect.height) / 2
                             - menuLabelMetrics.tightBoundingRect.y - baselineOffset)
         anchors.topMargin: menuItem.dropdownTextLayout
                            ? menuItem.dropdownTextLayout.y
-                           : modelData.header === true
+                           : menuItem.sectionHeading
                            ? overlayController.menuHeaderTopPadding
                            : 0
         // Match the collapsed ComboBox's Text layout exactly. Moving the
@@ -173,10 +164,11 @@ Rectangle {
         rightPadding: menuItem.dropdownTextLayout ? menuItem.dropdownTextLayout.rightPadding : 0
         anchors.leftMargin: menuItem.dropdownTextLayout ? menuItem.dropdownTextLayout.x
                             : overlayController.dropdownMode ? 0
-                            : modelData.header === true
-                            ? hostWindow.snapPx(10)
+                            : menuItem.sectionHeading
+                            ? hostWindow.snapPx(12) - overlayController.menuEdgeInset
                             : overlayController.menuLabelInset
         verticalAlignment: Text.AlignVCenter
+        horizontalAlignment: Text.AlignLeft
         text: {
             if (menuItem.historyRow) return ""
             var label = hostWindow.cleanText(modelData.text)
@@ -188,23 +180,50 @@ Rectangle {
                                      modelData.hotkey)
         }
         textFormat: overlayController.dropdownMode ? Text.PlainText : Text.StyledText
-        color: modelData.disabled || modelData.header === true
+        color: modelData.disabled || menuItem.sectionHeading
                ? hostWindow.mutedText : hostWindow.textColor
         font: {
             if (menuItem.dropdownTextLayout)
                 return menuItem.dropdownTextLayout.font
             // Clone the value: mutating a QML font reference changes its owner.
             var defaultFont = Qt.font(hostWindow.font)
-            defaultFont.bold = modelData.header === true
+            defaultFont.bold = menuItem.sectionHeading
             return defaultFont
         }
-        visible: !modelData.separator && !modelData.details
+        visible: (!modelData.separator || menuItem.sectionHeading) && !modelData.details
         elide: Text.ElideRight
         transform: Translate {
             x: hostWindow.dialogPixelOffsetX(
                    menuItemText, hostWindow.contentItem)
             y: hostWindow.dialogPixelOffsetY(
                    menuItemText, hostWindow.contentItem)
+        }
+    }
+
+    Repeater {
+        model: menuItem.modelData.separator === true ? 2 : 0
+        delegate: Rectangle {
+            id: separatorRule
+            required property int index
+            objectName: "semanticMenuSeparator-" + hostWindow.cleanText(overlayController.frame.id)
+                + "-" + Number(menuItem.modelData.index) + "-" + index
+            readonly property real captionWidth: menuItem.sectionHeading
+                ? Math.min(menuItemText.implicitWidth, parent.width - hostWindow.snapPx(32)) : 0
+            readonly property real inset: hostWindow.snapPx(8)
+            readonly property real captionEnd: menuItemText.x + captionWidth + inset
+            width: hostWindow.snapPx(Math.max(0, menuItem.sectionHeading
+                ? index === 0 ? 0 : parent.width - inset - captionEnd
+                : parent.width / 2 - inset))
+            x: index === 0 ? inset : parent.width - inset - width
+            y: hostWindow.snapPx(menuItem.separatorTopPadding
+                + (parent.height - menuItem.separatorTopPadding - height) / 2)
+            height: 1 / hostWindow.dpr
+            color: hostWindow.separatorColor
+            opacity: 0.68
+            transform: Translate {
+                x: hostWindow.dialogPixelOffsetX(separatorRule, hostWindow.contentItem)
+                y: hostWindow.dialogPixelOffsetY(separatorRule, hostWindow.contentItem)
+            }
         }
     }
 

@@ -374,12 +374,7 @@ public:
     QString name() const { return m_name; }
     void setName(const QString &name)
     {
-        const QString normalized = name.trimmed().compare(
-                                       QStringLiteral("system"),
-                                       Qt::CaseInsensitive)
-                == 0
-            ? QStringLiteral("system")
-            : QStringLiteral("lucide");
+        const QString normalized = F4IconSet::normalizedSetName(name);
         if (m_name == normalized)
             return;
         m_name = normalized;
@@ -388,7 +383,7 @@ public:
         emit revisionChanged();
     }
     bool system() const { return m_name == QStringLiteral("system"); }
-    bool fileIconsAreFullColor() const { return system(); }
+    bool fileIconsAreFullColor() const { return m_name != QStringLiteral("lucide"); }
 
     Q_INVOKABLE QUrl iconSource(const QString &name, int, qreal) const
     {
@@ -1005,6 +1000,9 @@ private slots:
     void chromeIconsUseMatchingPhysicalTargetSizes();
     void panelDriveButtonUsesPathIconAndRequestsDriveMenu();
     void driveMenuIconsUseSemanticModelAndLiveTheme();
+    void titledMenuSeparatorsRenderAsHeadings();
+    void singleCharacterDialogFieldKeepsGlyphAndLabelVisible();
+    void dialogSeparatorsRenderOnPhysicalPixels();
     void standaloneMenuTitleKeepsEmptyMenuAndActionsUsable();
     void attachedMenusDoNotShowStandaloneTitles_data();
     void attachedMenusDoNotShowStandaloneTitles();
@@ -1036,9 +1034,12 @@ private slots:
     void modalDialogDoesNotDarkenBackground();
     void activeMenuBarOwnsNavigationWithoutPopup();
     void columnSeparatorsDefaultOff();
+    void layoutDebugZonesDefaultOffAndToggle();
     void columnPaddingPreviewAndPersistence();
+    void galleryCellPaddingTitleBarControlIsLiveAndPersisted();
     void editableComboCompletesFontNames();
     void guiFontsLinkPersistAndPreview();
+    void guiFontDefaultsAndResetFollowSystemSizes();
     void interfaceFontUpdatesChrome();
     void automaticColumnsFollowPanelFont();
     void quickSearchPaletteDefaultAndResetArePink();
@@ -1077,6 +1078,7 @@ private slots:
     void autocompleteMultilineRowsDoNotOverlap();
     void widePanelDoesNotRevealTerminalBackdrop();
     void shortenedPanelsRevealTerminalRows();
+    void infoPanelUsageMeters();
     void mediaInfoReportShowsAndScrollsAt175Percent();
     void semanticTableDialog();
     void terminalScrollBarStaysInsideTheExposedPanelSide();
@@ -3118,6 +3120,14 @@ void F4QuickViewSurfaceTests::nativeFontRolesUsePlatformDefaultsAt175Percent()
     fixture.window->resize(1200, 700);
     QCoreApplication::processEvents();
 
+    auto *fonts = fixture.window->property("typography").value<QObject *>();
+    QVERIFY(fonts);
+    fixture.engine.rootContext()->setContextProperty(
+        QStringLiteral("f4GuiFontPixelSize"), 17);
+    fonts->setProperty("defaultUiSize", 15);
+    QCOMPARE(fixture.window->property("guiMonospaceFontPixelSize").toInt(), 15);
+    QCOMPARE(fonts->property("platformMonoSize").toInt(), 15);
+
     QCOMPARE(fixture.window->property("uiFontFamily").toString(),
              uiFontFamily);
     QCOMPARE(fixture.window->property("guiMonospaceFontFamily").toString(),
@@ -3137,6 +3147,7 @@ void F4QuickViewSurfaceTests::nativeFontRolesUsePlatformDefaultsAt175Percent()
     QCOMPARE(uiLeaf->property("font").value<QFont>().family(), uiFontFamily);
     QCOMPARE(fixedLeaf->property("font").value<QFont>().family(),
              fixedFontFamily);
+    QCOMPARE(fixedLeaf->property("font").value<QFont>().pixelSize(), 15);
 
     QQuickItem *const content = fixture.window->contentItem();
     const auto verifyLeaf = [content, dpr](QQuickItem *leaf) {
@@ -3151,6 +3162,10 @@ void F4QuickViewSurfaceTests::nativeFontRolesUsePlatformDefaultsAt175Percent()
                  qPrintable(details));
         QVERIFY2(qAbs(physical.y() - qRound64(physical.y())) < 0.001,
                  qPrintable(details));
+        QVERIFY2(qAbs(leaf->width() * dpr - qRound64(leaf->width() * dpr)) < 0.001,
+                 qPrintable(leaf->objectName()));
+        QVERIFY2(qAbs(leaf->height() * dpr - qRound64(leaf->height() * dpr)) < 0.001,
+                 qPrintable(leaf->objectName()));
         QCOMPARE(leaf->mapToItem(content, QPointF(1, 0)) - origin,
                  QPointF(1, 0));
         QCOMPARE(leaf->mapToItem(content, QPointF(0, 1)) - origin,
@@ -3721,11 +3736,13 @@ void F4QuickViewSurfaceTests::themeDialogIconSetControlIsLiveAndPersisted()
              QStringLiteral("Lucide"));
     const QVariantList options =
         fixture.window->property("iconSetOptions").toList();
-    QCOMPARE(options.size(), 2);
+    QCOMPARE(options.size(), 3);
     QCOMPARE(options.at(0).toMap().value(QStringLiteral("value")).toString(),
              QStringLiteral("lucide"));
     QCOMPARE(options.at(1).toMap().value(QStringLiteral("value")).toString(),
              QStringLiteral("system"));
+    QCOMPARE(options.at(2).toMap().value(QStringLiteral("value")).toString(),
+             QStringLiteral("zoin"));
 
     QVERIFY(QMetaObject::invokeMethod(
         fixture.window, "setIconSet", Q_ARG(QVariant, QStringLiteral("system"))));
@@ -3752,6 +3769,16 @@ void F4QuickViewSurfaceTests::themeDialogIconSetControlIsLiveAndPersisted()
         QStringLiteral("system"), 1000);
     QCOMPARE(fixture.icons.name(), QStringLiteral("system"));
     QVERIFY(fixture.shell.actions.isEmpty());
+
+    QVERIFY(QMetaObject::invokeMethod(
+        fixture.window, "setIconSet", Q_ARG(QVariant, QStringLiteral("zoin"))));
+    QTRY_COMPARE(combo->property("currentText").toString(), QStringLiteral("Zoin"));
+    QVERIFY(QMetaObject::invokeMethod(fixture.window, "saveThemeToPersistence"));
+    QCOMPARE(fixture.themePersistence.theme().value(QStringLiteral("iconSet")).toString(),
+             QStringLiteral("zoin"));
+    fixture.icons.setName("lucide");
+    QVERIFY(QMetaObject::invokeMethod(fixture.window, "loadThemeFromPersistence"));
+    QTRY_COMPARE(fixture.icons.name(), QStringLiteral("zoin"));
 
     dialog->hide();
 }
@@ -7980,6 +8007,160 @@ void F4QuickViewSurfaceTests::panelDriveButtonUsesPathIconAndRequestsDriveMenu()
     QCOMPARE(action.value(QStringLiteral("side")).toInt(), 1);
 }
 
+void F4QuickViewSurfaceTests::singleCharacterDialogFieldKeepsGlyphAndLabelVisible()
+{
+    auto scene = shellScene();
+    scene.insert("dialogs", QVariantList{QVariantMap{
+        {"id", "plugin-hotkey"}, {"kind", "dialog"}, {"title", "Assign plugin hot key"},
+        {"x", 20}, {"y", 10}, {"w", 45}, {"h", 7}, {"modal", true},
+        {"children", QVariantList{
+            QVariantMap{{"id", "hotkey-prompt"}, {"kind", "text"}, {"text", "Enter hot key (letter or digit)"}, {"x", 22}, {"y", 11}, {"w", 32}, {"h", 1}},
+            QVariantMap{{"id", "hotkey-edit"}, {"kind", "edit"}, {"text", "A"}, {"focused", true}, {"cursor", 0}, {"x", 22}, {"y", 12}, {"w", 1}, {"h", 1}},
+            QVariantMap{{"id", "hotkey-name"}, {"kind", "text"}, {"text", "Android"}, {"x", 24}, {"y", 12}, {"w", 7}, {"h", 1}},
+            QVariantMap{{"id", "hotkey-note"}, {"kind", "text"}, {"text", "Type a character, or Del to clear"}, {"x", 22}, {"y", 13}, {"w", 34}, {"h", 1}}
+        }}
+    }});
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    auto *root = fixture.window->contentItem();
+    QQuickItem *input = nullptr;
+    QTRY_VERIFY((input = visualItemWithObjectName(root, "dialogWidget-hotkey-editEditTextInput")));
+    QCOMPARE(input->property("text").toString(), QString("A"));
+    const auto glyphWidth = QFontMetricsF(input->property("font").value<QFont>()).horizontalAdvance("A");
+    QTRY_VERIFY(input->width() >= glyphWidth + 1);
+    auto *field = visualItemWithObjectName(root, "dialogWidget-hotkey-editEdit");
+    auto *label = visualItemWithObjectName(root, "dialogWidget-hotkey-nameText");
+    QVERIFY(field);
+    QVERIFY(label);
+    QVERIFY(label->mapToScene(QPointF()).x()
+            >= field->mapToScene(QPointF(field->width(), 0)).x() + 4);
+    qInfo() << "[FIX:single-character-field] text viewport width" << input->width()
+            << "glyph width" << glyphWidth;
+}
+
+void F4QuickViewSurfaceTests::dialogSeparatorsRenderOnPhysicalPixels()
+{
+    auto scene = shellScene();
+    scene.insert("dialogs", QVariantList{QVariantMap{
+        {"id", "find-file-separators"}, {"kind", "dialog"}, {"title", "Find File"},
+        {"x", 12}, {"y", 4}, {"w", 76}, {"h", 16}, {"modal", true},
+        {"children", QVariantList{
+            QVariantMap{{"id", "find-mask"}, {"kind", "edit"}, {"text", "*.jpg"}, {"x", 14}, {"y", 5}, {"w", 72}, {"h", 1}},
+            QVariantMap{{"id", "find-plain-rule"}, {"kind", "separator"}, {"x", 14}, {"y", 7}, {"w", 72}, {"h", 1}},
+            QVariantMap{{"id", "find-current"}, {"kind", "text"}, {"text", "Scanning /Pictures"}, {"x", 14}, {"y", 9}, {"w", 72}, {"h", 1}},
+            QVariantMap{{"id", "find-caption-rule"}, {"kind", "separator"}, {"text", "Found: 10 files"}, {"x", 14}, {"y", 11}, {"w", 72}, {"h", 1}},
+            QVariantMap{{"id", "find-hidden-rule"}, {"kind", "separator"}, {"visible", false}, {"x", 14}, {"y", 13}, {"w", 72}, {"h", 1}}
+        }}
+    }});
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    auto *root = fixture.window->contentItem();
+    QQuickItem *plain = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT((plain = visualItemWithObjectName(root, "dialogWidget-find-plain-ruleSeparatorLine-0")), 1500);
+    auto *left = visualItemWithObjectName(root, "dialogWidget-find-caption-ruleSeparatorLine-0");
+    auto *right = visualItemWithObjectName(root, "dialogWidget-find-caption-ruleSeparatorLine-1");
+    auto *caption = visualItemWithObjectName(root, "dialogWidget-find-caption-ruleSeparatorText");
+    QVERIFY(left);
+    QVERIFY(right);
+    QVERIFY(caption);
+    QVERIFY(plain->isVisible());
+    QVERIFY(left->isVisible());
+    QVERIFY(right->isVisible());
+    QCOMPARE(caption->property("text").toString(), QString("Found: 10 files"));
+    const qreal dpr = fixture.window->devicePixelRatio();
+    for (auto *leaf : {plain, left, right, caption}) {
+        const QPointF origin = leaf->mapToItem(root, QPointF{});
+        QVERIFY2(qAbs(origin.x() * dpr - qRound64(origin.x() * dpr)) < 0.001,
+                 qPrintable(leaf->objectName() + " x=" + QString::number(origin.x() * dpr)));
+        QVERIFY2(qAbs(origin.y() * dpr - qRound64(origin.y() * dpr)) < 0.001,
+                 qPrintable(leaf->objectName() + " y=" + QString::number(origin.y() * dpr)));
+        QVERIFY(qAbs(leaf->width() * dpr - qRound64(leaf->width() * dpr)) < 0.001);
+        QVERIFY(qAbs(leaf->height() * dpr - qRound64(leaf->height() * dpr)) < 0.001);
+        QCOMPARE(leaf->mapToItem(root, QPointF(1, 0)) - origin, QPointF(1, 0));
+        QCOMPARE(leaf->mapToItem(root, QPointF(0, 1)) - origin, QPointF(0, 1));
+    }
+    QCOMPARE(plain->height() * dpr, qreal(1));
+    QVERIFY(left->mapToScene(QPointF(left->width(), 0)).x()
+            < caption->mapToScene(QPointF{}).x());
+    QVERIFY(right->mapToScene(QPointF{}).x()
+            > caption->mapToScene(QPointF(caption->width(), 0)).x());
+    const QImage rendered = fixture.window->grabWindow();
+    QVERIFY(!rendered.isNull());
+    const QString capturePath = qEnvironmentVariable("F4_DIALOG_SEPARATOR_CAPTURE");
+    if (!capturePath.isEmpty())
+        QVERIFY(rendered.save(capturePath));
+    for (auto *line : {plain, left, right}) {
+        const QPointF origin = line->mapToItem(root, QPointF{});
+        const QPoint sample(qRound((origin.x() + line->width() / 2) * dpr),
+                            qRound(origin.y() * dpr));
+        QVERIFY(rendered.rect().contains(sample));
+        QCOMPARE(rendered.pixelColor(sample), line->property("color").value<QColor>());
+    }
+    auto *hidden = visualItemWithObjectName(root, "dialogWidget-find-hidden-ruleSeparatorLine-0");
+    QVERIFY(!hidden || !hidden->isVisible());
+    qInfo() << "[FIX:dialog-separators] DPR" << dpr
+            << "plain rule physical origin" << plain->mapToScene(QPointF{}) * dpr
+            << "caption physical origin" << caption->mapToScene(QPointF{}) * dpr;
+}
+
+void F4QuickViewSurfaceTests::titledMenuSeparatorsRenderAsHeadings()
+{
+    QVariantMap scene = shellScene({}, 0);
+    scene.insert("menus", QVariantList{QVariantMap{
+        {"id", "separator-test"}, {"kind", "menu"}, {"role", "vmenu"},
+        {"x", 5}, {"y", 4}, {"w", 35}, {"h", 8}, {"selected", 1},
+        {"viewHeight", 6}, {"items", QVariantList{
+            QVariantMap{{"index", 0}, {"text", "Local volumes"}, {"separator", true}},
+            QVariantMap{{"index", 1}, {"text", "Macintosh HD"}},
+            QVariantMap{{"index", 2}, {"text", ""}, {"separator", true}},
+            QVariantMap{{"index", 3}, {"text", "Plugins"}, {"separator", true}},
+            QVariantMap{{"index", 4}, {"text", "Android"}},
+        }}
+    }});
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    auto *root = fixture.window->contentItem();
+    QQuickItem *heading = nullptr;
+    QTRY_VERIFY((heading = visualItemWithObjectName(root, "semanticMenuItemText-separator-test-0")));
+    QTRY_VERIFY(heading->isVisible());
+    QCOMPARE(heading->property("text").toString(), QString("Local volumes"));
+    QVERIFY(heading->property("font").value<QFont>().bold());
+    auto *row = visualItemWithObjectName(root, "semanticMenuItem-separator-test-0");
+    auto *plain = visualItemWithObjectName(root, "semanticMenuItem-separator-test-2");
+    QVERIFY(row);
+    QVERIFY(plain);
+    QVERIFY(row->height() > plain->height());
+    QVERIFY(row->height() >= heading->implicitHeight());
+    QCOMPARE(row->property("color").value<QColor>(), QColor(Qt::transparent));
+    const auto position = heading->mapToScene(QPointF());
+    const qreal dpr = fixture.window->devicePixelRatio();
+    QVERIFY(qAbs(position.x() * dpr - qRound(position.x() * dpr)) < .001);
+    QVERIFY(qAbs(position.y() * dpr - qRound(position.y() * dpr)) < .001);
+    QCOMPARE(heading->property("horizontalAlignment").toInt(), int(Qt::AlignLeft));
+    auto *leftRule = visualItemWithObjectName(root, "semanticMenuSeparator-separator-test-0-0");
+    auto *rightRule = visualItemWithObjectName(root, "semanticMenuSeparator-separator-test-0-1");
+    QVERIFY(leftRule);
+    QVERIFY(rightRule);
+    QVERIFY(rightRule->y() + rightRule->height() / 2 > row->height() / 2 + 2);
+    const qreal captionLeft = position.x();
+    const qreal captionRight = captionLeft + heading->implicitWidth();
+    QCOMPARE(leftRule->width(), qreal(0));
+    QVERIFY(rightRule->mapToScene(QPointF()).x() > captionRight);
+    auto *emptyText = visualItemWithObjectName(root, "semanticMenuItemText-separator-test-2");
+    QVERIFY(emptyText);
+    QVERIFY(!emptyText->isVisible());
+    fixture.shell.actions.clear();
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+                     row->mapToScene(QPointF(row->width() / 2, row->height() / 2)).toPoint());
+    QTest::qWait(30);
+    for (const auto &action : fixture.shell.actions) {
+        QVERIFY(action.value("action").toString() != "menu.activate");
+        QVERIFY(action.value("action").toString() != "menu.select");
+    }
+    qInfo() << "[FIX:titled-menu-separators] heading and plain separator heights"
+            << row->height() << plain->height();
+}
+
 void F4QuickViewSurfaceTests::driveMenuIconsUseSemanticModelAndLiveTheme()
 {
     QVariantMap scene = shellScene({}, 0);
@@ -8172,6 +8353,7 @@ void F4QuickViewSurfaceTests::standaloneMenuTitleKeepsEmptyMenuAndActionsUsable(
     QTRY_VERIFY(title->isVisible());
     QTRY_VERIFY(hint->isVisible());
     QCOMPARE(title->property("text").toString(), QStringLiteral("Main menu"));
+    QCOMPARE(title->property("horizontalAlignment").toInt(), int(Qt::AlignLeft));
     QCOMPARE(title->property("textFormat").toInt(), int(Qt::PlainText));
     QCOMPARE(list->property("count").toInt(), 0);
     const auto titleBottom = [&] {
@@ -11267,6 +11449,30 @@ void F4QuickViewSurfaceTests::shortenedPanelsRevealTerminalRows()
     fixture.window->grabWindow().save("D:/Code/f4-zoin/.diagnostics/shortened-alternate-panels-175.png");
 }
 
+void F4QuickViewSurfaceTests::infoPanelUsageMeters()
+{
+    auto scene = shellScene();
+    auto shell = scene.value("shell").toMap();
+    QVariantList rows;
+    for (const auto percent : {0, 50, 100}) {
+        rows.append(QVariantMap{{"kind", "usage"}, {"label", "Space"},
+            {"percent", percent}, {"totalText", "Total: 100 GiB"},
+            {"usedText", "Used: 50 GiB"}, {"freeText", "Free: 50 GiB"}});
+    }
+    shell.insert("infoPanels", QVariantList{QVariantMap{{"side", 0},
+        {"title", "Information"}, {"rows", rows}}});
+    scene.insert("shell", shell);
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    for (int i = 0; i < 3; ++i) {
+        QQuickItem *bar = nullptr;
+        QTRY_VERIFY((bar = visualItemWithObjectName(fixture.window->contentItem(),
+            QString("infoUsageBar-0-%1").arg(i))) != nullptr);
+        QTRY_VERIFY(bar->isVisible() && bar->width() > 0 && bar->height() > 0);
+        QCOMPARE(bar->property("value").toInt(), i * 50);
+    }
+}
+
 void F4QuickViewSurfaceTests::widePanelDoesNotRevealTerminalBackdrop()
 {
     QVariantMap scene = shellScene();
@@ -12287,6 +12493,62 @@ void F4QuickViewSurfaceTests::automaticColumnsFollowPanelFont()
     QVERIFY(object->property("sizeWidth").toReal() > linkedWidth);
 }
 
+void F4QuickViewSurfaceTests::guiFontDefaultsAndResetFollowSystemSizes()
+{
+    QQmlEngine engine;
+    QQmlComponent component(&engine, QUrl("qrc:/F4QtHost/qml/HostTypography.qml"));
+    QScopedPointer<QObject> fonts(component.createWithInitialProperties({
+        {"defaultUiFamily", "Helvetica"}, {"defaultUiSize", 12},
+        {"defaultMonoFamily", "Menlo"}}));
+    QVERIFY2(fonts, qPrintable(component.errorString()));
+    QCOMPARE(fonts->property("uiSize").toInt(), 12);
+    QCOMPARE(fonts->property("effectivePanelSize").toInt(), 12);
+    QCOMPARE(fonts->property("effectiveMonoSize").toInt(), 12);
+    QCOMPARE(fonts->property("platformMonoSize").toInt(), 12);
+    QCOMPARE(fonts->property("effectiveMonoFamily").toString(), QString("Menlo"));
+    fonts->setProperty("defaultUiSize", 15);
+    QCOMPARE(fonts->property("uiSize").toInt(), 15);
+    QCOMPARE(fonts->property("effectiveMonoSize").toInt(), 15);
+    QVERIFY(QQmlProperty::write(fonts.data(), QStringLiteral("uiSize"), 21));
+    fonts->setProperty("defaultUiSize", 16);
+    QCOMPARE(fonts->property("uiSize").toInt(), 21);
+    QCOMPARE(fonts->property("effectiveMonoSize").toInt(), 16);
+    QVERIFY(QMetaObject::invokeMethod(fonts.data(), "resetFont", Q_ARG(QVariant, 0)));
+    QCOMPARE(fonts->property("uiSize").toInt(), 16);
+    QVERIFY(QMetaObject::invokeMethod(fonts.data(), "setLinked", Q_ARG(QVariant, false)));
+    QVERIFY(QQmlProperty::write(fonts.data(), QStringLiteral("panelSize"), 24));
+    QVERIFY(QMetaObject::invokeMethod(fonts.data(), "resetFont", Q_ARG(QVariant, 1)));
+    fonts->setProperty("defaultUiSize", 18);
+    QCOMPARE(fonts->property("uiSize").toInt(), 18);
+    QCOMPARE(fonts->property("effectivePanelSize").toInt(), 18);
+    QVERIFY(QQmlProperty::write(fonts.data(), QStringLiteral("monoSize"), 25));
+    fonts->setProperty("defaultUiSize", 19);
+    QCOMPARE(fonts->property("effectiveMonoSize").toInt(), 25);
+    QVERIFY(QMetaObject::invokeMethod(fonts.data(), "resetFont", Q_ARG(QVariant, 2)));
+    QCOMPARE(fonts->property("effectiveMonoSize").toInt(), 19);
+    QVariant resetSnapshot;
+    QVERIFY(QMetaObject::invokeMethod(fonts.data(), "snapshot", Q_RETURN_ARG(QVariant, resetSnapshot)));
+    const QVariantMap resetValues = resetSnapshot.toMap();
+    QVERIFY(resetValues.contains("monoSize"));
+    QCOMPARE(resetValues.value("monoSize").toInt(), 0);
+    fonts->setProperty("defaultUiSize", 20);
+    QCOMPARE(fonts->property("effectiveMonoSize").toInt(), 20);
+    QVERIFY(QMetaObject::invokeMethod(fonts.data(), "restore", Q_ARG(QVariant, resetSnapshot)));
+    QCOMPARE(fonts->property("effectiveMonoSize").toInt(), 20);
+    const QVariant defaults = QVariantMap{
+        {"uiSize", 0}, {"panelSize", 0}, {"panelsLinked", false}};
+    QVERIFY(QMetaObject::invokeMethod(fonts.data(), "restore", Q_ARG(QVariant, defaults)));
+    fonts->setProperty("defaultUiSize", 19);
+    QCOMPARE(fonts->property("uiSize").toInt(), 19);
+    QCOMPARE(fonts->property("effectivePanelSize").toInt(), 19);
+    QCOMPARE(fonts->property("effectiveMonoSize").toInt(), 19);
+    const QVariant custom = QVariantMap{{"monoSize", 23}, {"monoFamily", "Courier New"}};
+    QVERIFY(QMetaObject::invokeMethod(fonts.data(), "restore", Q_ARG(QVariant, custom)));
+    fonts->setProperty("defaultUiSize", 21);
+    QCOMPARE(fonts->property("effectiveMonoSize").toInt(), 23);
+    QCOMPARE(fonts->property("effectiveMonoFamily").toString(), QString("Courier New"));
+}
+
 void F4QuickViewSurfaceTests::guiFontsLinkPersistAndPreview()
 {
     const QFont originalFont = QGuiApplication::font();
@@ -12412,7 +12674,7 @@ void F4QuickViewSurfaceTests::guiFontsLinkPersistAndPreview()
         const char *familyProperty = role == 0 ? "effectiveUiFamily" : role == 1 ? "effectivePanelFamily" : "effectiveMonoFamily";
         const char *sizeProperty = role == 0 ? "uiSize" : role == 1 ? "effectivePanelSize" : "effectiveMonoSize";
         QTRY_COMPARE(fonts->property(familyProperty).toString(), family);
-        QCOMPARE(fonts->property(sizeProperty).toInt(), role == 2 ? fonts->property("platformMonoSize").toInt() : 13);
+        QCOMPARE(fonts->property(sizeProperty).toInt(), role == 2 ? fonts->property("platformMonoSize").toInt() : fonts->property("defaultUiSize").toInt());
         QTest::qWait(100);
     }
     QVERIFY(QMetaObject::invokeMethod(fonts, "setLinked", Q_ARG(QVariant, true)));
@@ -12421,6 +12683,45 @@ void F4QuickViewSurfaceTests::guiFontsLinkPersistAndPreview()
     QCOMPARE(fonts->property("uiSize").toInt(), 22);
     QCOMPARE(fonts->property("monoSize").toInt(), 20);
     QVERIFY(!fonts->property("panelsLinked").toBool());
+}
+
+void F4QuickViewSurfaceTests::layoutDebugZonesDefaultOffAndToggle()
+{
+    QuickViewFixture fixture(shellScene(), true);
+    QVERIFY(fixture.window);
+    ZoinGallery::RuntimeOptions options;
+    options.persistentCache = false;
+    auto *runtime = ZoinGallery::GalleryRuntime::install(&fixture.engine, options);
+    auto *session = runtime->createExternalSession("layout-debug-zones");
+    const auto shutdown = qScopeGuard([&] { runtime->shutdown(); });
+    fixture.gallery.showPanel(QUrl("qrc:/F4QtHost/qml/GalleryPanelHost.qml"), session);
+    QVERIFY(!fixture.window->property("galleryDebugLayoutZones").toBool());
+    auto *shortcut = fixture.window->findChild<QObject *>("galleryDebugLayoutZonesShortcut");
+    QVERIFY(shortcut);
+    QVERIFY(!shortcut->property("autoRepeat").toBool());
+    QList<QObject *> galleries;
+    for (int side = 0; side < 2; ++side) {
+        auto *content = fixture.item(QStringLiteral("galleryPanelContent-%1").arg(side));
+        QVERIFY(content);
+        QObject *host = nullptr;
+        QTRY_VERIFY((host = content->property("item").value<QObject *>()));
+        auto *gallery = host->property("galleryPanel").value<QObject *>();
+        QVERIFY(gallery);
+        galleries.append(gallery);
+    }
+    for (auto *gallery : galleries)
+        QVERIFY(!gallery->property("debugLayoutZones").toBool());
+    QVERIFY(QMetaObject::invokeMethod(shortcut, "activated"));
+    QVERIFY(fixture.window->property("galleryDebugLayoutZones").toBool());
+    for (auto *gallery : galleries)
+        QTRY_VERIFY(gallery->property("debugLayoutZones").toBool());
+    QVERIFY(fixture.window->setProperty("galleryDebugLayoutZones", false));
+    QVERIFY(QMetaObject::invokeMethod(fixture.window, "loadThemeFromPersistence"));
+    QVERIFY(fixture.window->property("galleryDebugLayoutZones").toBool());
+    QVERIFY(QMetaObject::invokeMethod(shortcut, "activated"));
+    QVERIFY(!fixture.window->property("galleryDebugLayoutZones").toBool());
+    for (auto *gallery : galleries)
+        QTRY_VERIFY(!gallery->property("debugLayoutZones").toBool());
 }
 
 void F4QuickViewSurfaceTests::columnSeparatorsDefaultOff()
@@ -12529,6 +12830,100 @@ void F4QuickViewSurfaceTests::editableComboCompletesFontNames()
     QCOMPARE(input->mapToScene({1, 0}) - origin, QPointF(1, 0));
     QCOMPARE(input->mapToScene({0, 1}) - origin, QPointF(0, 1));
     QVERIFY(fixture.window->grabWindow().save(QDir::temp().filePath("f4-font-search.png")));
+}
+
+void F4QuickViewSurfaceTests::galleryCellPaddingTitleBarControlIsLiveAndPersisted()
+{
+    QuickViewFixture fixture(shellScene(), false, true);
+    QVERIFY(fixture.window);
+    QCOMPARE(fixture.window->property("galleryCellHorizontalPadding").toInt(), 4);
+    QCOMPARE(fixture.window->property("galleryCellVerticalPadding").toInt(), 4);
+    QCOMPARE(fixture.window->property("galleryCellCaptionSpacing").toInt(), 3);
+    auto *captionSlider = fixture.item("galleryCellCaptionSpacingSlider");
+    auto *captionLabel = fixture.item("galleryCellCaptionSpacingLabel");
+    auto *captionValue = fixture.item("galleryCellCaptionSpacingValue");
+    QVERIFY(captionSlider && captionLabel && captionValue);
+    auto *verticalSlider = fixture.item("galleryCellVerticalPaddingSlider");
+    auto *verticalLabel = fixture.item("galleryCellVerticalPaddingLabel");
+    auto *verticalValue = fixture.item("galleryCellVerticalPaddingValue");
+    QVERIFY(verticalSlider && verticalLabel && verticalValue);
+    auto *slider = fixture.item("galleryCellPaddingSlider");
+    auto *label = fixture.item("galleryCellPaddingLabel");
+    auto *value = fixture.item("galleryCellPaddingValue");
+    QVERIFY(slider && label && value);
+    QTRY_VERIFY(slider->isVisible());
+    QCOMPARE(slider->property("from").toInt(), 0);
+    QCOMPARE(slider->property("to").toInt(), 32);
+    slider->forceActiveFocus();
+    QTest::keyClick(fixture.window, Qt::Key_Right);
+    QTRY_COMPARE(fixture.window->property("galleryCellHorizontalPadding").toInt(), 5);
+    QCOMPARE(value->property("text").toString(), QString("5 px"));
+    QCOMPARE(fixture.themePersistence.theme().value("galleryCellHorizontalPadding").toInt(), 5);
+    QCOMPARE(fixture.window->property("panelColumnPadding").toInt(), 8);
+    auto *metrics = fixture.window->property("galleryPresentationMetrics").value<QObject *>();
+    QVERIFY(metrics);
+    QCOMPARE(metrics->property("cellHorizontalPadding").toInt(), 5);
+    QCOMPARE(metrics->property("cellVerticalPadding").toInt(), 4);
+    verticalSlider->forceActiveFocus();
+    QTest::keyClick(fixture.window, Qt::Key_Right);
+    QTRY_COMPARE(fixture.window->property("galleryCellVerticalPadding").toInt(), 5);
+    QCOMPARE(verticalValue->property("text").toString(), QString("5 px"));
+    QCOMPARE(metrics->property("cellVerticalPadding").toInt(), 5);
+    QCOMPARE(fixture.themePersistence.theme().value("galleryCellVerticalPadding").toInt(), 5);
+    QCOMPARE(fixture.window->property("galleryCellHorizontalPadding").toInt(), 5);
+    captionSlider->forceActiveFocus();
+    QTest::keyClick(fixture.window, Qt::Key_Right);
+    QTRY_COMPARE(fixture.window->property("galleryCellCaptionSpacing").toInt(), 4);
+    QCOMPARE(captionValue->property("text").toString(), QString("4 px"));
+    QCOMPARE(metrics->property("cellCaptionSpacing").toInt(), 4);
+    QCOMPARE(fixture.themePersistence.theme().value("galleryCellCaptionSpacing").toInt(), 4);
+    fixture.window->setProperty("galleryCellHorizontalPadding", 0);
+    QVERIFY(QMetaObject::invokeMethod(fixture.window, "loadThemeFromPersistence"));
+    QCOMPARE(fixture.window->property("galleryCellHorizontalPadding").toInt(), 5);
+    QCOMPARE(fixture.window->property("galleryCellVerticalPadding").toInt(), 5);
+    QCOMPARE(fixture.window->property("galleryCellCaptionSpacing").toInt(), 4);
+    fixture.themePersistence.setTheme({{"galleryCellHorizontalPadding", "999"},
+                                       {"galleryCellVerticalPadding", "999"},
+                                       {"galleryCellCaptionSpacing", "999"}});
+    QVERIFY(QMetaObject::invokeMethod(fixture.window, "loadThemeFromPersistence"));
+    QCOMPARE(fixture.window->property("galleryCellHorizontalPadding").toInt(), 32);
+    QCOMPARE(fixture.window->property("galleryCellVerticalPadding").toInt(), 32);
+    QCOMPARE(fixture.window->property("galleryCellCaptionSpacing").toInt(), 32);
+    fixture.themePersistence.setTheme({});
+    QVERIFY(QMetaObject::invokeMethod(fixture.window, "loadThemeFromPersistence"));
+    QCOMPARE(fixture.window->property("galleryCellHorizontalPadding").toInt(), 4);
+    QCOMPARE(fixture.window->property("galleryCellVerticalPadding").toInt(), 4);
+    QCOMPARE(fixture.window->property("galleryCellCaptionSpacing").toInt(), 3);
+    const qreal dpr = fixture.window->devicePixelRatio();
+    auto *handle = slider->property("handle").value<QQuickItem *>();
+    auto *track = slider->property("background").value<QQuickItem *>();
+    QVERIFY(handle && track);
+    QVERIFY(!track->childItems().isEmpty() && !track->childItems().first()->childItems().isEmpty());
+    auto *trackRectangle = track->childItems().first()->childItems().first();
+    auto *verticalHandle = verticalSlider->property("handle").value<QQuickItem *>();
+    auto *verticalTrack = verticalSlider->property("background").value<QQuickItem *>();
+    QVERIFY(verticalHandle && verticalTrack);
+    QVERIFY(!verticalTrack->childItems().isEmpty()
+        && !verticalTrack->childItems().first()->childItems().isEmpty());
+    auto *verticalTrackRectangle = verticalTrack->childItems().first()->childItems().first();
+    auto *captionHandle = captionSlider->property("handle").value<QQuickItem *>();
+    auto *captionTrack = captionSlider->property("background").value<QQuickItem *>();
+    QVERIFY(captionHandle && captionTrack);
+    QVERIFY(!captionTrack->childItems().isEmpty()
+        && !captionTrack->childItems().first()->childItems().isEmpty());
+    auto *captionTrackRectangle = captionTrack->childItems().first()->childItems().first();
+    for (auto *leaf : {label, value, handle, trackRectangle, verticalLabel,
+                       verticalValue, verticalHandle, verticalTrackRectangle,
+                       captionLabel, captionValue, captionHandle, captionTrackRectangle}) {
+        const QPointF origin = leaf->mapToScene({});
+        QVERIFY2(qAbs(origin.x() * dpr - qRound(origin.x() * dpr)) < .01, qPrintable(leaf->objectName()));
+        QVERIFY(qAbs(origin.y() * dpr - qRound(origin.y() * dpr)) < .01);
+        QVERIFY(qAbs(leaf->width() * dpr - qRound(leaf->width() * dpr)) < .01);
+        QVERIFY(qAbs(leaf->height() * dpr - qRound(leaf->height() * dpr)) < .01);
+        QCOMPARE(leaf->mapToScene({1, 0}) - origin, QPointF(1, 0));
+        QCOMPARE(leaf->mapToScene({0, 1}) - origin, QPointF(0, 1));
+    }
+    QVERIFY(!fixture.window->grabWindow().isNull());
 }
 
 void F4QuickViewSurfaceTests::columnPaddingPreviewAndPersistence()

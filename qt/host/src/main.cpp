@@ -253,7 +253,7 @@ int main(int argc, char *argv[])
     const QCommandLineOption nonceOption(QStringLiteral("f4-ext-nonce"), QStringLiteral("One-time handshake nonce."), QStringLiteral("nonce"));
     const QCommandLineOption colsOption(QStringLiteral("f4-ext-cols"), QStringLiteral("Initial grid columns."), QStringLiteral("cols"), QStringLiteral("100"));
     const QCommandLineOption rowsOption(QStringLiteral("f4-ext-rows"), QStringLiteral("Initial grid rows."), QStringLiteral("rows"), QStringLiteral("30"));
-    const QCommandLineOption iconSetOption(QStringLiteral("f4-icon-set"), QStringLiteral("QML icon set: lucide or system."), QStringLiteral("icon-set"), QStringLiteral("lucide"));
+    const QCommandLineOption iconSetOption(QStringLiteral("f4-icon-set"), QStringLiteral("QML icon set: lucide, system, or zoin."), QStringLiteral("icon-set"), QStringLiteral("zoin"));
     const QCommandLineOption fontFamilyOption(QStringLiteral("f4-font-family"), QStringLiteral("GUI monospace font family or font-file path."), QStringLiteral("family"));
 #if defined(Q_OS_MACOS)
     const QString defaultFontSize = QStringLiteral("17");
@@ -436,8 +436,6 @@ int main(int argc, char *argv[])
                      &app, [](const QString &message) {
         qWarning().noquote() << "f4 media channel:" << message;
     });
-    QObject::connect(&controller, &QtShellController::qmlIconSetChanged,
-                     &iconSet, &F4IconSet::setName);
     QObject::connect(&controller, &QtShellController::panelActivationChanged,
                      &galleryBridge,
                      &F4GalleryBridge::synchronizePanelActivation);
@@ -489,10 +487,6 @@ int main(int argc, char *argv[])
             galleryBridge.synchronizePanelCatalog(panel);
         }
     }
-    if (!controller.chromeState()->qmlIconSet().isEmpty()) {
-        iconSet.setName(controller.chromeState()->qmlIconSet());
-    }
-
     const QString guiSettingsPath = parser.value(windowGeometryFileOption).isEmpty()
         ? QDir(QCoreApplication::applicationDirPath()).filePath("gui_theme.ini")
         : QDir(QFileInfo(parser.value(windowGeometryFileOption)).absolutePath()).filePath("gui_theme.ini");
@@ -500,6 +494,10 @@ int main(int argc, char *argv[])
         QDir(QCoreApplication::applicationDirPath()).filePath("gui_theme.ini"));
     F4TextRenderingPolicy textRenderingPolicy;
     const QVariantMap savedTheme = themePersistence.loadTheme();
+    // GUI preferences own the theme and its default, not the legacy Go value.
+    iconSet.setName(savedTheme.value(QStringLiteral("iconSet")).toString());
+    if (qEnvironmentVariableIsSet("VTUI_DEBUG"))
+        qInfo() << "[FIX:zoin-default] GUI icon theme:" << iconSet.name();
     const QString savedRenderType = savedTheme.value(
         QStringLiteral("fontRenderType")).toString();
     if (!savedRenderType.isEmpty())
@@ -523,6 +521,34 @@ int main(int argc, char *argv[])
         QStringLiteral("f4SystemMonospaceFontFamily"),
         systemMonospaceFontFamily);
     engine.rootContext()->setContextProperty(QStringLiteral("f4GuiFontPixelSize"), guiFontSize);
+    engine.rootContext()->setContextProperty(QStringLiteral("f4GuiFontSizeExplicit"), parser.isSet(fontSizeOption));
+#if defined(Q_OS_MACOS)
+    // QFontInfo resolves point-sized native fonts to Qt logical pixels.
+    // Display scaling is applied by Qt separately; never multiply by DPR.
+    const auto publishSystemFontSizes = [&engine]() {
+        const QFont baseFont = QFontDatabase::systemFont(QFontDatabase::GeneralFont);
+        const int basePixelSize = QFontInfo(baseFont).pixelSize();
+        engine.rootContext()->setContextProperty(
+            QStringLiteral("f4SystemUiFontFamily"),
+            renderedFontFamily(baseFont, QStringLiteral("sans-serif")));
+        engine.rootContext()->setContextProperty(
+            QStringLiteral("f4SystemUiFontPixelSize"),
+            basePixelSize);
+        engine.rootContext()->setContextProperty(
+            QStringLiteral("f4SystemMonospaceFontPixelSize"),
+            basePixelSize);
+        if (qEnvironmentVariableIsSet("VTUI_DEBUG"))
+            qInfo() << "[FIX:monospace-base-size] default UI/monospace px="
+                    << basePixelSize;
+    };
+    publishSystemFontSizes();
+    QObject::connect(&textRenderingPolicy, &F4TextRenderingPolicy::platformFontChanged, &engine,
+                    publishSystemFontSizes);
+    if (!parser.isSet(fontSizeOption)) {
+        engine.rootContext()->setContextProperty(QStringLiteral("f4GuiFontPixelSize"),
+            QFontInfo(QFontDatabase::systemFont(QFontDatabase::GeneralFont)).pixelSize());
+    }
+#endif
     QStringList monospaceFamilies;
     for (const QString &family : QFontDatabase::families()) {
         if (QFontDatabase::isFixedPitch(family))

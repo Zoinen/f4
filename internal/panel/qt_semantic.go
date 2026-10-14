@@ -167,6 +167,15 @@ func (ip *InfoPanel) semanticModel(side int, active bool) extui.InfoPanelModel {
 	blank := func() {
 		model.Rows = append(model.Rows, extui.InfoPanelRowModel{Kind: "blank"})
 	}
+	usage := func(label string, total, available uint64) {
+		_, percent := panelInfoUsageMetrics(total, available, 100)
+		model.Rows = append(model.Rows, extui.InfoPanelRowModel{
+			Kind: "usage", Label: label, Percent: percent,
+			TotalText: i18n.Msg("InfoPanel.TotalShort") + ": " + formatBytes(total),
+			UsedText:  i18n.Msg("InfoPanel.UsedShort") + ": " + formatBytes(panelInfoUsedBytes(total, available)),
+			FreeText:  i18n.Msg("InfoPanel.Free") + ": " + formatBytes(available),
+		})
+	}
 
 	hostname, _ := os.Hostname()
 	username := ""
@@ -175,6 +184,9 @@ func (ip *InfoPanel) semanticModel(side int, active bool) extui.InfoPanelModel {
 	}
 	row(i18n.Msg("InfoPanel.Computer"), hostname)
 	row(i18n.Msg("InfoPanel.User"), username)
+	if snapshot, _ := ip.currentProviderInfo(); !snapshot.Authoritative {
+		ip.visitHostInfo(row, section, blank)
+	}
 	blank()
 
 	path := ""
@@ -187,8 +199,7 @@ func (ip *InfoPanel) semanticModel(side int, active bool) extui.InfoPanelModel {
 			fsTitle = fmt.Sprintf("%s (%s)", fsTitle, fs.Type)
 		}
 		section(fsTitle)
-		row(i18n.Msg("InfoPanel.Total"), formatBytes(fs.Total))
-		row(i18n.Msg("InfoPanel.Free"), formatBytes(fs.Free))
+		usage(i18n.Msg("InfoPanel.Space"), fs.Total, fs.Free)
 		if fs.Label != "" {
 			row(i18n.Msg("InfoPanel.Label"), fs.Label)
 		}
@@ -213,9 +224,7 @@ func (ip *InfoPanel) semanticModel(side int, active bool) extui.InfoPanelModel {
 	if mem, ok := sysinfo.Mem(); ok {
 		blank()
 		section(i18n.Msg("InfoPanel.MemoryTitle"))
-		row(i18n.Msg("InfoPanel.MemLoad"), fmt.Sprintf("%d%%", mem.LoadPercent))
-		row(i18n.Msg("InfoPanel.MemTotal"), formatBytes(mem.Total))
-		row(i18n.Msg("InfoPanel.MemFree"), formatBytes(mem.Free))
+		usage(i18n.Msg("InfoPanel.Memory"), mem.Total, mem.Free)
 		if mem.Shared > 0 {
 			row(i18n.Msg("InfoPanel.MemShared"), formatBytes(mem.Shared))
 		}
@@ -223,8 +232,7 @@ func (ip *InfoPanel) semanticModel(side int, active bool) extui.InfoPanelModel {
 			row(i18n.Msg("InfoPanel.MemBuffered"), formatBytes(mem.Buffered))
 		}
 		if mem.SwapTotal > 0 {
-			row(i18n.Msg("InfoPanel.SwapTotal"), formatBytes(mem.SwapTotal))
-			row(i18n.Msg("InfoPanel.SwapFree"), formatBytes(mem.SwapFree))
+			usage(i18n.Msg("InfoPanel.PagingFile"), mem.SwapTotal, mem.SwapFree)
 		}
 	}
 	return model

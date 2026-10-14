@@ -2,7 +2,7 @@ package sysinfo
 
 // MemInfo describes overall system memory. Fields are 0 if the OS
 // couldn't supply them. Per-OS implementations of MemInfo live in
-// mem_info_{linux,windows,other}.go.
+// mem_{linux,windows,darwin,other}.go.
 type MemInfo struct {
 	Total, Free uint64 // bytes
 	Shared      uint64

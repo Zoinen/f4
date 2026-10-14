@@ -13,6 +13,18 @@ Item {
     height: 0
 
     Shortcut {
+        objectName: "galleryDebugLayoutZonesShortcut"
+        // Qt swaps Control/Meta on macOS; Meta means the physical Control key.
+        sequence: Qt.platform.os === "osx" ? "Meta+Alt+Shift+P" : "Ctrl+Alt+Shift+P"
+        context: Qt.WindowShortcut
+        autoRepeat: false
+        onActivated: {
+            shortcuts.hostWindow.galleryDebugLayoutZones = !shortcuts.hostWindow.galleryDebugLayoutZones
+            shortcuts.hostWindow.saveThemeToPersistence()
+        }
+    }
+
+    Shortcut {
         sequence: "Shift+F12"
         context: Qt.ApplicationShortcut
         enabled: !shortcuts.galleryController.viewerVisible

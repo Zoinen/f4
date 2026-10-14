@@ -8,6 +8,9 @@
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QIconEngine>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QPainter>
 #include <QQmlComponent>
 #include <QQmlEngine>
@@ -17,6 +20,7 @@
 #include <QScopeGuard>
 #include <QSignalSpy>
 #include <QSvgRenderer>
+#include <QTemporaryDir>
 #include <QUrlQuery>
 #include <QtTest>
 
@@ -147,6 +151,18 @@ public:
     }
 };
 
+class PaddedArtworkBackend final : public F4IconProviderBackend
+{
+public:
+    explicit PaddedArtworkBackend(const QImage &image)
+        : icon(QPixmap::fromImage(image)) {}
+    QIcon iconForName(const QString &) const override { return icon; }
+    QIcon iconForFile(const QString &, const QString &, bool) const override
+    { return icon; }
+private:
+    QIcon icon;
+};
+
 QImage renderTintedSvgReference(const QString &iconName,
                                 int logicalSize,
                                 const QSize &physicalSize,
@@ -229,6 +245,8 @@ class F4IconProviderTests final : public QObject
     Q_OBJECT
 
 private slots:
+    void preparedFileIconsFitFinalPhysicalSlot();
+    void preparedFileIconResourcesPreserveChromeOriginals();
     void requestsAlwaysRunOffTheGuiThread();
     void routeValuesRoundTripWithoutUrlAmbiguity();
     void routeValuesRejectNonCanonicalInput();
@@ -250,9 +268,88 @@ private slots:
     void zeroRequestedSizeUsesLogicalFallback();
     void requestedPhysicalSizeOverridesStaleDevicePixelRatio();
     void nativePlatformFileIconSmoke();
+    void nativeArtworkTrimsOnlyZeroAlpha_data();
+    void nativeArtworkTrimsOnlyZeroAlpha();
+    void zoinIconsAreBundledAndIndependent();
+    void zoinArtworkHasTightNativeBounds();
+    void zoinManifestReferencesBundledAssets();
+    void zoinIsDefault();
     void renderingUsesLogicalSizeAndDevicePixelRatio_data();
     void renderingUsesLogicalSizeAndDevicePixelRatio();
 };
+
+void F4IconProviderTests::preparedFileIconsFitFinalPhysicalSlot()
+{
+    F4IconProvider provider;
+    for (const QString &name : {QStringLiteral("folder"), QStringLiteral("folder-up"),
+                               QStringLiteral("file")}) {
+        QSize size;
+        const QImage image = provider.requestImage(
+            QStringLiteral("lucide/%1?size=160&dpr=1.75&fileArt=1&alignBottom=1")
+                .arg(F4IconProvider::encodeRouteValue(name)),
+            &size, QSize(280, 210));
+        QVERIFY(!image.isNull());
+        QRect ink;
+        for (int y = 0; y < image.height(); ++y) {
+            for (int x = 0; x < image.width(); ++x) {
+                if (image.pixelColor(x, y).alpha() > 0)
+                    ink |= QRect(x, y, 1, 1);
+            }
+        }
+        QCOMPARE(image.size(), QSize(280, 210));
+        QVERIFY(qAbs(ink.height() - 210) <= 1);
+        QCOMPARE(size, image.size());
+        bool hasAntialiasing = false;
+        for (int y = 0; y < image.height(); ++y)
+            for (int x = 0; x < image.width(); ++x) {
+                const int alpha = image.pixelColor(x, y).alpha();
+                hasAntialiasing |= alpha > 0 && alpha < 255;
+            }
+        QVERIFY(hasAntialiasing);
+    }
+}
+
+void F4IconProviderTests::preparedFileIconResourcesPreserveChromeOriginals()
+{
+    QFile manifest(":/F4QtHost/icons/files/names.txt");
+    QVERIFY(manifest.open(QIODevice::ReadOnly));
+    const auto names = QString::fromUtf8(manifest.readAll()).split(u'\n', Qt::SkipEmptyParts);
+    F4IconProvider provider;
+    F4IconSet icons;
+    for (const QString &name : names) {
+        QFile original(QString(":/F4QtHost/icons/lucide/%1.svg").arg(name));
+        QVERIFY(original.open(QIODevice::ReadOnly));
+        const QByteArray originalSvg = original.readAll();
+        QCOMPARE(icons.iconSource(name, 16, 1).toString(),
+                 QString("qrc:/F4QtHost/icons/lucide/%1.svg").arg(name));
+        for (int step = 1; step <= 8; ++step) {
+            QFile prepared(QString(":/F4QtHost/icons/files/%1/%2.svg").arg(step).arg(name));
+            QVERIFY(prepared.open(QIODevice::ReadOnly));
+            const QByteArray preparedSvg = prepared.readAll();
+            QCOMPARE(preparedSvg.mid(preparedSvg.indexOf('>') + 1),
+                     originalSvg.mid(originalSvg.indexOf('>') + 1));
+            QSvgRenderer svg(preparedSvg);
+            QVERIFY2(svg.isValid(), qPrintable(name));
+            const QRectF viewBox = svg.viewBoxF();
+            const QImage image = provider.requestImage(
+                QString("lucide/%1?size=160&fileArt=1&strokeWidth=%2")
+                    .arg(F4IconProvider::encodeRouteValue(name)).arg(step / 2.0),
+                nullptr, QSize(280, 280));
+            QVERIFY(!image.isNull());
+            QRect ink;
+            for (int y = 0; y < image.height(); ++y)
+                for (int x = 0; x < image.width(); ++x)
+                    if (image.pixelColor(x, y).alpha() > 0)
+                        ink |= QRect(x, y, 1, 1);
+            QVERIFY2(ink.width() >= 279 || ink.height() >= 279, qPrintable(name));
+            const qreal expectedRatio = viewBox.width() / viewBox.height();
+            QVERIFY2(qAbs(qreal(ink.width()) / ink.height() - expectedRatio) < 0.03,
+                     qPrintable(QString("%1 stroke=%2 viewBox=%3x%4 ink=%5x%6")
+                        .arg(name).arg(step / 2.0).arg(viewBox.width()).arg(viewBox.height())
+                        .arg(ink.width()).arg(ink.height())));
+        }
+    }
+}
 
 void F4IconProviderTests::requestsAlwaysRunOffTheGuiThread()
 {
@@ -381,6 +478,7 @@ void F4IconProviderTests::lucideSourcesAndFileClassification()
     F4IconSet icons;
     QCOMPARE(icons.iconSource(QStringLiteral("terminal"), 20, 2.0).toString(),
              QStringLiteral("qrc:/F4QtHost/icons/lucide/square-terminal.svg"));
+    icons.setName("lucide");
     const QUrl gallerySource = icons.fileIconSource(
         QString(), QStringLiteral("a.zip"), false, 64, 2.0);
     QCOMPARE(gallerySource.scheme(), QStringLiteral("image"));
@@ -487,6 +585,7 @@ void F4IconProviderTests::largeLucideRouteRendersAVisibleDprAwareFallback()
 {
     F4IconProvider provider(std::make_unique<NullBackend>());
     F4IconSet icons(QStringLiteral("test-icons"));
+    icons.setName("lucide");
     const QUrl source = icons.fileIconSource(
         QString(), QStringLiteral("archive.zip"), false, 128, 2.0);
 
@@ -818,10 +917,10 @@ void F4IconProviderTests::iconSetPropertiesAndRevision()
     QSignalSpy setSpy(&icons, &F4IconSet::iconSetChanged);
     QSignalSpy revisionSpy(&icons, &F4IconSet::revisionChanged);
 
-    QCOMPARE(icons.iconSet(), F4IconSet::Lucide);
-    QCOMPARE(icons.name(), QStringLiteral("lucide"));
+    QCOMPARE(icons.iconSet(), F4IconSet::Zoin);
+    QCOMPARE(icons.name(), QStringLiteral("zoin"));
     QVERIFY(!icons.system());
-    QVERIFY(!icons.fileIconsAreFullColor());
+    QVERIFY(icons.fileIconsAreFullColor());
     QCOMPARE(icons.revision(), qulonglong(1));
 
     icons.setName(QStringLiteral("SyStEm"));
@@ -986,6 +1085,165 @@ void F4IconProviderTests::requestedPhysicalSizeOverridesStaleDevicePixelRatio()
     QCOMPARE(image.size(), QSize(32, 32));
     QCOMPARE(record->renderedLogicalSize, QSize(16, 16));
     QCOMPARE(record->renderedDevicePixelRatio, qreal(2));
+}
+
+void F4IconProviderTests::zoinArtworkHasTightNativeBounds()
+{
+    const QDir directory(QStringLiteral(":/F4QtHost/icons/zoin"));
+    const QStringList names = directory.entryList({"*.svg"}, QDir::Files);
+    QVERIFY(!names.isEmpty());
+    for (const QString &name : names) {
+        QSvgRenderer svg(directory.filePath(name));
+        QVERIFY2(svg.isValid(), qPrintable(name));
+        QFile file(directory.filePath(name));
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        const QString source = QString::fromUtf8(file.readAll());
+        const auto width = QRegularExpression(R"svg(\bwidth="([^"]+)")svg").match(source);
+        const auto height = QRegularExpression(R"svg(\bheight="([^"]+)")svg").match(source);
+        QVERIFY(width.hasMatch() && height.hasMatch());
+        QCOMPARE(width.captured(1).toDouble(), svg.viewBoxF().width());
+        QCOMPARE(height.captured(1).toDouble(), svg.viewBoxF().height());
+        QImage image(512, 512, QImage::Format_ARGB32);
+        image.fill(Qt::transparent);
+        QPainter painter(&image);
+        svg.render(&painter);
+        painter.end();
+        QRect ink;
+        for (int y = 0; y < image.height(); ++y)
+            for (int x = 0; x < image.width(); ++x)
+                if (image.pixelColor(x, y).alpha() > 0)
+                    ink |= QRect(x, y, 1, 1);
+        QVERIFY2(std::min(ink.width(), ink.height()) >= 510,
+                 qPrintable(QString("%1: artwork only %2x%3 inside 512x512")
+                     .arg(name).arg(ink.width()).arg(ink.height())));
+        QVERIFY2(qAbs(ink.left() - (511 - ink.right())) <= 2, qPrintable(name));
+        QVERIFY2(qAbs(ink.top() - (511 - ink.bottom())) <= 2, qPrintable(name));
+    }
+}
+
+void F4IconProviderTests::zoinIconsAreBundledAndIndependent()
+{
+    F4IconSet icons;
+    icons.setName("lucide");
+    const QUrl lucideFolder = icons.fileIconSource("/test", "test", true, 64, 2);
+    const QUrl menuFolder = icons.iconSource("folder", 16, 1);
+    icons.setName(" ZoIn ");
+    QCOMPARE(icons.name(), QStringLiteral("zoin"));
+    QCOMPARE(F4IconSet::normalizedSetName(u" CoDeX "), QStringLiteral("zoin"));
+    icons.setName("lucide");
+    icons.setName("codex");
+    QCOMPARE(icons.name(), QStringLiteral("zoin"));
+    QVERIFY(icons.fileIconsAreFullColor());
+    QVERIFY(!icons.system());
+    auto source = [&](const QString &name, bool directory = false) {
+        return icons.fileIconSource("/test/" + name, name, directory, 64, 2);
+    };
+    QCOMPARE(source("test.json"), QUrl("qrc:/F4QtHost/icons/zoin/json.svg"));
+    QCOMPARE(source(".babelrc.json"), QUrl("qrc:/F4QtHost/icons/zoin/json.svg"));
+    QCOMPARE(source("unknown.xyz"), QUrl("qrc:/F4QtHost/icons/zoin/default.svg"));
+    QCOMPARE(source("test", true), QUrl("qrc:/F4QtHost/icons/zoin/folder.svg"));
+    QCOMPARE(source("..", true), QUrl("qrc:/F4QtHost/icons/zoin/folder-up.svg"));
+    QCOMPARE(icons.iconSource("folder", 16, 1), menuFolder);
+    for (const QString &name : {"test.json", ".babelrc.json", "unknown.xyz"}) {
+        const QUrl url = source(name);
+        QFile file(":" + url.path());
+        QVERIFY(file.exists());
+        QSvgRenderer svg(":" + url.path());
+        QVERIFY(svg.isValid());
+    }
+    icons.setName("lucide");
+    QCOMPARE(F4IconProvider::routeId(source("test", true)).section('?', 0, 0),
+             F4IconProvider::routeId(lucideFolder).section('?', 0, 0));
+    QVERIFY(!icons.fileIconsAreFullColor());
+    icons.setName("system");
+    QVERIFY(icons.system());
+    QVERIFY(source("test", true).toString().startsWith("image://"));
+}
+
+void F4IconProviderTests::zoinIsDefault()
+{
+    F4IconSet icons;
+    QCOMPARE(icons.name(), QStringLiteral("zoin"));
+    QCOMPARE(F4IconSet::normalizedSetName(u""), QStringLiteral("zoin"));
+    icons.setName("lucide");
+    QCOMPARE(icons.name(), QStringLiteral("lucide"));
+}
+
+void F4IconProviderTests::zoinManifestReferencesBundledAssets()
+{
+    const QDir directory(QStringLiteral(":/F4QtHost/icons/zoin"));
+    QFile manifest(directory.filePath("manifest.json"));
+    QVERIFY(manifest.open(QIODevice::ReadOnly));
+    QJsonParseError error;
+    const auto document = QJsonDocument::fromJson(manifest.readAll(), &error);
+    QCOMPARE(error.error, QJsonParseError::NoError);
+    const auto entries = document.object().value("icons").toArray();
+    QVERIFY(!entries.isEmpty());
+    F4IconSet icons;
+    icons.setName("zoin");
+    QSet<QString> referenced;
+    for (const auto &entry : entries) {
+        const auto record = entry.toObject();
+        const auto file = record.value("file").toString();
+        QVERIFY2(QFile::exists(directory.filePath(file)), qPrintable(file));
+        referenced.insert(file);
+    }
+    const auto names = directory.entryList({"*.svg"}, QDir::Files);
+    QCOMPARE(referenced, QSet<QString>(names.begin(), names.end()));
+    QVERIFY(QFile::exists(directory.filePath("ICON_LICENSES.txt")));
+    for (const auto &name : {"photo.JPG", "README.md", "script.sh", "file.txt",
+                             "source.cpp", "package.json", "component.tsx",
+                             ".babelrc.json", "vite.config.js", "removed.astro"}) {
+        const auto url = icons.fileIconSource("/test", name, false, 64, 2);
+        QVERIFY2(QFile::exists(":" + url.path()), name);
+    }
+    QCOMPARE(icons.fileIconSource("/test", "photo.JPG", false, 64, 2),
+             QUrl("qrc:/F4QtHost/icons/zoin/image.svg"));
+    QCOMPARE(icons.fileIconSource("/test", "README.md", false, 64, 2),
+             QUrl("qrc:/F4QtHost/icons/zoin/markdown.svg"));
+}
+
+void F4IconProviderTests::nativeArtworkTrimsOnlyZeroAlpha_data()
+{
+    QTest::addColumn<int>("shadowAlpha");
+    QTest::newRow("transparent-padding") << 0;
+    QTest::newRow("faint-shadow") << 1;
+    QTest::newRow("translucent-shadow") << 64;
+    QTest::newRow("opaque-edge") << 255;
+    QTest::newRow("empty-artwork") << -1;
+}
+
+void F4IconProviderTests::nativeArtworkTrimsOnlyZeroAlpha()
+{
+    QFETCH(int, shadowAlpha);
+    QImage original(24, 24, QImage::Format_ARGB32);
+    original.fill(Qt::transparent);
+    if (shadowAlpha >= 0) {
+        QPainter painter(&original);
+        painter.fillRect(QRect(6, 6, 12, 12), QColor(220, 42, 52));
+        painter.end();
+        original.setPixelColor(5, 5, QColor(35, 112, 214, shadowAlpha));
+        original.setPixelColor(18, 18, QColor(35, 112, 214, shadowAlpha));
+    }
+    F4IconProvider provider(std::make_unique<PaddedArtworkBackend>(original));
+    F4IconSet icons(QStringLiteral("test-icons"));
+    icons.setIconSet(F4IconSet::System);
+    const QString fileRoute = F4IconProvider::routeId(
+        icons.fileIconSource(QStringLiteral("/test"), QStringLiteral("test"), true, 24, 1));
+    const QImage result = provider.requestImage(fileRoute, nullptr, {});
+    QCOMPARE(result.size(), QSize(24, 24));
+    QCOMPARE(result.pixelColor(0, 0).alpha(), std::max(0, shadowAlpha == 0 ? 255 : shadowAlpha));
+    QCOMPARE(result.pixelColor(23, 23).alpha(), result.pixelColor(0, 0).alpha());
+    QCOMPARE(provider.requestImage(fileRoute, nullptr, {}), result);
+
+    // The same padded icon used by a menu must remain untouched.
+    const QImage theme = provider.requestImage(F4IconProvider::routeId(
+        icons.iconSource(QStringLiteral("folder"), 24, 1)), nullptr, {});
+    QCOMPARE(theme.pixelColor(0, 0).alpha(), 0);
+    if (shadowAlpha < 0)
+        QCOMPARE(theme.pixelColor(6, 6).alpha(), 0);
+    else
+        QCOMPARE(theme.pixelColor(6, 6), QColor(220, 42, 52));
 }
 
 void F4IconProviderTests::nativePlatformFileIconSmoke()

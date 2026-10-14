@@ -113,6 +113,8 @@ Rectangle {
     }
 
     function isContent(widget) { return contentLayout.isContent(widget) }
+    function presentationWidth(widget) { return contentLayout.presentationWidth(widget) }
+    function horizontalExpansionBefore(widget) { return contentLayout.horizontalExpansionBefore(widget) }
     function visualHeight(widget) { return contentLayout.visualHeight(widget) }
 
     function contentX(widget) {

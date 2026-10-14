@@ -81,6 +81,26 @@ func (s *resultsSeparator) Show(scr *vtui.ScreenBuf) {
 	}
 }
 
+func (s *resultsSeparator) SemanticNode(_ *vtui.SemanticContext) map[string]any {
+	x1, y1, x2, y2 := s.GetPosition()
+	text := ""
+	if s.caption != nil {
+		text = s.caption.GetText()
+	}
+	return map[string]any{
+		"id":       vtui.SemanticID(s),
+		"kind":     "separator",
+		"text":     text,
+		"x":        x1,
+		"y":        y1,
+		"w":        x2 - x1 + 1,
+		"h":        y2 - y1 + 1,
+		"visible":  s.IsVisible(),
+		"focused":  s.IsFocused(),
+		"disabled": s.IsDisabled(),
+	}
+}
+
 type requestControl struct {
 	element        vtui.UIElement
 	x1, y1, x2, y2 int
