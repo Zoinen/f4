@@ -29,6 +29,8 @@ Item {
     property real leadingIconSize: 14
     property bool semanticFocus: false
     property bool remoteControlled: false
+    readonly property bool editingFocus: control.remoteControlled
+        ? control.semanticFocus : (innerInput.activeFocus || control.semanticFocus)
     property int remoteCursorPosition: 0
     property bool remoteCursorVisible: false
     property int cursorActivityRevision: 0
@@ -267,7 +269,7 @@ Item {
                : "#18202a"
         border.width: control.hostWindow ? control.hostWindow.separatorWidth : 1
         border.color: {
-            if (control.enabled && (innerInput.activeFocus || control.semanticFocus))
+            if (control.enabled && control.editingFocus)
                 return control.hostWindow ? control.hostWindow.dialogAccent : "#2c7be5"
             return control.hostWindow ? control.hostWindow.controlBorder : "#25303d"
         }
@@ -404,7 +406,8 @@ Item {
                     color: control.hostWindow
                        ? (control.enabled ? control.hostWindow.textColor : control.hostWindow.mutedText)
                        : (control.enabled ? "#ffffff" : "#666666")
-                    opacity: blinkOn ? 1.0 : 0.0
+                    opacity: control.enabled && control.editingFocus
+                             && innerInput.cursorVisible && blinkOn ? 1.0 : 0.0
                     function restartBlink() {
                         textCursorBlinkController.restart()
                     }
@@ -430,8 +433,7 @@ Item {
                         active: customCursor.visible
                                 && control.visible
                                 && innerInput.cursorVisible
-                                && (innerInput.activeFocus
-                                    || control.semanticFocus)
+                                && control.editingFocus
                                 && (!control.hostWindow
                                     || control.hostWindow.active)
                                 && !editMenu.visible

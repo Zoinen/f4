@@ -56,7 +56,7 @@ find_package(JPEG REQUIRED)
 find_package(libjpeg-turbo REQUIRED)
 
 set(F4_QT_HOST_COMPONENTS
-  Core Concurrent Gui Qml Quick QuickControls2 Network Svg)
+  Core Concurrent Gui Qml Quick QuickControls2 Network Svg QuickVectorImage)
 if(F4_ENABLE_VIDEO_THUMBNAILS)
   list(APPEND F4_QT_HOST_COMPONENTS Multimedia)
 endif()

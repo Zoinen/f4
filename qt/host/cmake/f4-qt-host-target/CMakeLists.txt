@@ -238,6 +238,8 @@ if(F4_QT_STATIC)
     Qt6::qtquick2plugin
     Qt6::quickwindow
     Qt6::effectsplugin
+    Qt6::qquickvectorimageplugin
+    Qt6::qquickvectorimagehelpersplugin
     Qt6::qmlshapesplugin
     Qt6::qquicklayoutsplugin
     Qt6::qtquicktemplates2plugin
