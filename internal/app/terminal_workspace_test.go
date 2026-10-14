@@ -100,9 +100,17 @@ func TestWorkspaceNewTerminalMenuItemOpensTerminalWorkspace(t *testing.T) {
 	pf.ShellMode = terminal.ShellModeOwn
 	fm.Push(pf)
 
-	item, ok := findMenuItemByCommand(pf.LeftMenu().SubItems, appcmd.CmWorkspaceNewTerminal)
+	oldItems := panel.BuildMenuBarItems
+	panel.BuildMenuBarItems = BuildMenuBarItems
+	t.Cleanup(func() { panel.BuildMenuBarItems = oldItems })
+	// The row is in the Files menu since f4#1784 (it was in the Left one).
+	var bar []vtui.MenuItem
+	for _, m := range pf.BuildMenuItems() {
+		bar = append(bar, m.SubItems...)
+	}
+	item, ok := findMenuItemByCommand(bar, appcmd.CmWorkspaceNewTerminal)
 	if !ok {
-		t.Fatal("left panel menu has no \"Terminal in New Workspace\" item")
+		t.Fatal("the menu bar has no \"Terminal in New Workspace\" item")
 	}
 	if item.OnClick != nil {
 		// Side menu items dispatch through their Command field, not OnClick;

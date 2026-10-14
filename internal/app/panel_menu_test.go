@@ -71,8 +71,27 @@ func findSideDriveMenuItem(items []vtui.MenuItem, label, shortcut string, comman
 	return false
 }
 
-func TestPanelsFrame_SideMenuExposesWorkspaceHotkeys(t *testing.T) {
-	items := (&panel.PanelsFrame{}).LeftMenu().SubItems
+func TestPanelsFrame_FilesMenuExposesWorkspaceHotkeys(t *testing.T) {
+	oldItems := panel.BuildMenuBarItems
+	panel.BuildMenuBarItems = BuildMenuBarItems
+	t.Cleanup(func() { panel.BuildMenuBarItems = oldItems })
+	// f4#1784 (Alexey5112): the workspace rows, Background and Exit end the
+	// Files menu; the Left menu is about the left panel only.
+	pf := &panel.PanelsFrame{ShowPanels: true}
+	for _, item := range pf.LeftMenu().SubItems {
+		if item.Command == appcmd.CmWorkspaceNew || item.Command == vtui.CmQuit || item.Command == appcmd.CmBackground {
+			t.Errorf("the Left menu still has %q", item.Text)
+		}
+	}
+	var items []vtui.MenuItem
+	for _, m := range pf.BuildMenuItems() {
+		if m.Label == i18n.Msg("Menu.Shell.Files") || plainMenuText(m.Label) == plainMenuText(i18n.Msg("Menu.Shell.Files")) {
+			items = m.SubItems
+		}
+	}
+	if n := len(items); n < 6 || items[n-1].Command != vtui.CmQuit || !items[n-6].Separator {
+		t.Fatalf("the Files menu does not end with a separator and the session rows: %+v", items)
+	}
 	for _, tc := range []struct {
 		command  int
 		label    string
@@ -97,7 +116,7 @@ func TestPanelsFrame_SideMenuExposesWorkspaceHotkeys(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Errorf("left menu has no workspace command %d", tc.command)
+			t.Errorf("Files menu has no workspace command %d", tc.command)
 		}
 	}
 }
@@ -116,12 +135,17 @@ func TestPanelsFrame_GetMenuBarKeepsNativeWorkspaceHotkeys(t *testing.T) {
 	vtui.FrameManager.Push(menuFrame)
 	t.Cleanup(func() { vtui.FrameManager.Pop() })
 
+	oldItems := panel.BuildMenuBarItems
+	panel.BuildMenuBarItems = BuildMenuBarItems
+	t.Cleanup(func() { panel.BuildMenuBarItems = oldItems })
 	find := func(command int) *vtui.MenuItem {
 		menu := pf.GetMenuBar()
-		for i := range menu.Items[0].SubItems {
-			item := &menu.Items[0].SubItems[i]
-			if item.Command == command {
-				return item
+		for m := range menu.Items {
+			for i := range menu.Items[m].SubItems {
+				item := &menu.Items[m].SubItems[i]
+				if item.Command == command {
+					return item
+				}
 			}
 		}
 		return nil
@@ -129,13 +153,13 @@ func TestPanelsFrame_GetMenuBarKeepsNativeWorkspaceHotkeys(t *testing.T) {
 
 	if item := find(appcmd.CmWorkspaceNew); item == nil || item.Shortcut != "Ctrl+N" {
 		if item == nil {
-			t.Fatal("Left menu has no New workspace item after GetMenuBar refresh")
+			t.Fatal("the menu bar has no New workspace item after GetMenuBar refresh")
 		}
 		t.Fatalf("New workspace shortcut after GetMenuBar refresh = %q, want Ctrl+N", item.Shortcut)
 	}
 	if item := find(appcmd.CmWorkspaceClose); item == nil || item.Shortcut != "Ctrl+W" {
 		if item == nil {
-			t.Fatal("Left menu has no Close workspace item after GetMenuBar refresh")
+			t.Fatal("the menu bar has no Close workspace item after GetMenuBar refresh")
 		}
 		t.Fatalf("Close workspace shortcut after GetMenuBar refresh = %q, want Ctrl+W", item.Shortcut)
 	}
@@ -143,7 +167,7 @@ func TestPanelsFrame_GetMenuBarKeepsNativeWorkspaceHotkeys(t *testing.T) {
 	keymap.GlobalHotkeysMgr.Bind("Shell", "CtrlN", "None")
 	if item := find(appcmd.CmWorkspaceNew); item == nil || item.Shortcut != "" {
 		if item == nil {
-			t.Fatal("Left menu lost New workspace item after explicit unbind")
+			t.Fatal("the menu bar lost New workspace item after explicit unbind")
 		}
 		t.Fatalf("explicitly unbound New workspace shortcut = %q, want empty", item.Shortcut)
 	}

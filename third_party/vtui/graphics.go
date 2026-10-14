@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // GraphicsProtocol identifies the transport used to get pixel data onto the
@@ -334,6 +335,11 @@ type ImagePlacement struct {
 
 	ZIndex int
 	Opaque bool
+
+	// Covered is filled in by GraphicsLayer.Snapshot: the cells something
+	// painted after this placement covers (see graphics_cover.go). Nil
+	// when nothing does. It is never stored in the layer itself.
+	Covered *CoverMask
 }
 
 // Source resolves the effective source rectangle, clamped to the surface.
@@ -398,6 +404,15 @@ type GraphicsLayer struct {
 	frameMode bool
 	seen      map[string]bool
 	byKey     map[string]uint32
+
+	// live lists, in order, the placements declared in the current pass;
+	// liveCount mirrors its length for ScreenBuf's lock-free fast path.
+	// pendingCovers is gathered during the pass, covers is the last
+	// complete pass's result (graphics_cover.go).
+	live          []uint32
+	liveCount     atomic.Int32
+	pendingCovers map[uint32]*CoverMask
+	covers        map[uint32]*CoverMask
 }
 
 // Protocol returns the active protocol, detecting it on first use.
@@ -515,6 +530,7 @@ func (g *GraphicsLayer) EffectiveCellSize() (int, int) {
 func (g *GraphicsLayer) Add(p ImagePlacement) uint32 {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	p.Covered = nil
 	g.nextID++
 	p.ID = g.nextID
 	g.placements = append(g.placements, p)
@@ -533,6 +549,7 @@ func (g *GraphicsLayer) Update(id uint32, mutate func(*ImagePlacement)) bool {
 		if g.placements[i].ID == id {
 			mutate(&g.placements[i])
 			g.placements[i].ID = id
+			g.placements[i].Covered = nil
 			g.repaint = true
 			g.gen++
 			return true
@@ -605,11 +622,28 @@ func (g *GraphicsLayer) Invalidate() {
 }
 
 // Snapshot copies the placements into dst (which may be reused between
-// frames) sorted back to front, and returns the current generation.
+// frames) sorted back to front, and returns the current generation. Each
+// copy carries its Covered mask. The native protocol draws around covered
+// cells and darkens shaded ones; every other transport cannot cut a picture
+// per cell, so a partly covered placement reaches it as crops of its
+// uncovered rectangles, and a shadow is ignored.
 func (g *GraphicsLayer) Snapshot(dst []ImagePlacement) ([]ImagePlacement, uint64) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	dst = append(dst[:0], g.placements...)
+	native := g.protocolValid && g.protocol == GraphicsNative
+	dst = dst[:0]
+	for _, p := range g.placements {
+		p.Covered = g.covers[p.ID]
+		switch {
+		case p.Covered.Full():
+		case native || !p.Covered.AnyCovered():
+			// A terminal cannot darken a picture, so a shadow alone
+			// leaves it whole there.
+			dst = append(dst, p)
+		default:
+			dst = append(dst, splitCovered(p)...)
+		}
+	}
 	sort.SliceStable(dst, func(i, j int) bool {
 		if dst[i].ZIndex != dst[j].ZIndex {
 			return dst[i].ZIndex < dst[j].ZIndex
@@ -627,6 +661,12 @@ func (g *GraphicsLayer) BeginFrame() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.frameMode = true
+	g.live = g.live[:0]
+	g.liveCount.Store(0)
+	if g.pendingCovers == nil {
+		g.pendingCovers = make(map[uint32]*CoverMask)
+	}
+	clear(g.pendingCovers)
 	if g.seen == nil {
 		g.seen = make(map[string]bool)
 	}
@@ -650,6 +690,7 @@ func (g *GraphicsLayer) DrawImage(key string, p ImagePlacement) uint32 {
 		g.byKey = make(map[string]uint32)
 	}
 	g.seen[key] = true
+	p.Covered = nil
 
 	if id, ok := g.byKey[key]; ok {
 		for i := range g.placements {
@@ -660,6 +701,7 @@ func (g *GraphicsLayer) DrawImage(key string, p ImagePlacement) uint32 {
 					g.gen++
 					g.repaint = true
 				}
+				g.markLive(id)
 				return id
 			}
 		}
@@ -670,7 +712,26 @@ func (g *GraphicsLayer) DrawImage(key string, p ImagePlacement) uint32 {
 	g.placements = append(g.placements, p)
 	g.byKey[key] = p.ID
 	g.gen++
+	g.markLive(p.ID)
 	return p.ID
+}
+
+// markLive starts tracking what is painted over placement id in this pass.
+func (g *GraphicsLayer) markLive(id uint32) {
+	if !g.frameMode {
+		return
+	}
+	// A placement declared twice in one pass is painted at its last
+	// declaration; whatever covered it before no longer does.
+	for i, live := range g.live {
+		if live == id {
+			g.live = append(g.live[:i], g.live[i+1:]...)
+			delete(g.pendingCovers, id)
+			break
+		}
+	}
+	g.live = append(g.live, id)
+	g.liveCount.Store(int32(len(g.live))) //nolint:gosec // G115: a handful of placements per frame
 }
 
 // EndFrame drops every keyed placement that was not re-declared during the
@@ -682,6 +743,8 @@ func (g *GraphicsLayer) EndFrame() {
 		return
 	}
 	g.frameMode = false
+	g.liveCount.Store(0)
+	g.commitCovers()
 
 	for key, id := range g.byKey {
 		if g.seen[key] {

@@ -90,7 +90,8 @@ func TestEditorCopyPasteActionsWorkWhileEditMenuIsOpen(t *testing.T) {
 	}
 }
 
-func TestEditorAmountInWordsActionReplacesSelection(t *testing.T) {
+// f4#1463 (DkmS1953): the words go to the clipboard and the number stays.
+func TestEditorAmountInWordsActionCopiesTheWords(t *testing.T) {
 	ev := newActionTestEditor(t, "5 руб")
 	vtui.FrameManager.Push(ev)
 	ev.SelActive = true
@@ -101,8 +102,11 @@ func TestEditorAmountInWordsActionReplacesSelection(t *testing.T) {
 	if !RunAction("Editor.AmountInWords") {
 		t.Fatal("Editor.AmountInWords did not run on the editor")
 	}
-	if got, want := ev.GetText(), "пять рублей"; got != want {
+	if got, want := ev.GetText(), "5 руб"; got != want {
 		t.Fatalf("text after Editor.AmountInWords = %q, want %q", got, want)
+	}
+	if got, want := vtui.GetClipboard(), "пять рублей"; got != want {
+		t.Fatalf("clipboard after Editor.AmountInWords = %q, want %q", got, want)
 	}
 }
 
@@ -210,8 +214,6 @@ func TestHotkeyDelAliasesResolve(t *testing.T) {
 	cases := []struct{ area, key, want string }{
 		{"Editor", "ShiftDel", "Editor.Cut"},
 		{"Editor", "ShiftNumDel", "Editor.Cut"},
-		{"Editor", "CtrlDel", "Editor.DeleteSpacersForward"},
-		{"Editor", "CtrlNumDel", "Editor.DeleteSpacersForward"},
 	}
 	for _, c := range cases {
 		if got := hm.GetAction(c.area, c.key); got != c.want {
@@ -223,6 +225,11 @@ func TestHotkeyDelAliasesResolve(t *testing.T) {
 	hm.Bind("Editor", "ShiftNumDel", "Editor.Copy")
 	if got := hm.GetAction("Editor", "ShiftNumDel"); got != "Editor.Copy" {
 		t.Errorf("explicit binding overridden by alias: got %q", got)
+	}
+	for _, key := range []string{"CtrlDel", "CtrlNumDel"} {
+		if got := hm.GetAction("Editor", key); got != "" {
+			t.Errorf("GetAction(%q, %q) = %q, want no action so the editor handles Ctrl+Del", "Editor", key, got)
+		}
 	}
 }
 

@@ -208,6 +208,12 @@ func Suspend() {
 	termMu.Lock()
 	defer termMu.Unlock()
 	if isPrepared {
+		// far2l keeps vtui's images over its own UI until they are deleted,
+		// and only while its extensions are on: inputRestore below turns
+		// them off, so the deletes go out, flushed, before it.
+		if out := getTermOut(); dropFar2lHostImages(out) {
+			_ = out.Sync()
+		}
 		// Restore the input mode FIRST, before the writes below. On Windows
 		// the console host re-announces the mouse modes to the terminal when
 		// SetConsoleMode changes the mouse-related flags (microsoft/terminal
@@ -382,6 +388,9 @@ func SetAltScreen(enable bool) {
 	if inAltScreen != enable {
 		inAltScreen = enable
 		out := getTermOut()
+		if !enable {
+			dropFar2lHostImages(out)
+		}
 		vt := consoleUsesVT()
 		modernVT := vt && !IsFreeBSDConsole
 		if enable {

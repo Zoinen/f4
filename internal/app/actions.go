@@ -1066,7 +1066,7 @@ func prepareEditorDocumentWithEncoding(ctx context.Context, v vfs.VFS, path stri
 					pt = piecetable.New(data[dataOffset:])
 				}
 			}
-			if pt == nil && encoding.memoryMap {
+			if pt == nil && encoding.memoryMap && editor.CanMemoryMapFile(ctx, v, path) {
 				var mapErr error
 				mapped, mapErr = editor.MapEditorFileWithOffset(v, f, dataOffset)
 				if mapErr != nil && mapErr != editor.ErrNotMappable {
@@ -1649,7 +1649,7 @@ func ActionSwitchViewerToEditor(vv *viewer.ViewerView) {
 	}
 
 	if cpID == 65001 {
-		if config.App.EditorMemoryMap {
+		if config.App.EditorMemoryMap && editor.CanMemoryMapFile(ctx, vv.VFS, vv.Path) {
 			var mapErr error
 			mapped, mapErr = editor.MapEditorFileWithOffset(vv.VFS, f, dataOffset)
 			if mapErr != nil && mapErr != editor.ErrNotMappable {
@@ -3256,7 +3256,10 @@ func actionCreateLink(pf *panel.PanelsFrame) {
 		initialDest += sep
 	}
 
-	dlg := vtui.NewCenteredDialog(52, 11, i18n.Msg("Link.Title"))
+	// The radio options use the room reserved for the old dropdown list, so
+	// all link types stay visible without covering the buttons (f4#1861).
+	const linkDialogWidth, linkDialogHeight = 52, 16
+	dlg := vtui.NewCenteredDialog(linkDialogWidth, linkDialogHeight, i18n.Msg("Link.Title"))
 	dlg.ShowClose = true
 
 	promptLbl := vtui.NewLabel(0, 0, prompt, nil)
@@ -3271,11 +3274,8 @@ func actionCreateLink(pf *panel.PanelsFrame) {
 		i18n.Msg("Link.TypeJunction"),
 		i18n.Msg("Link.TypeHardlink"),
 	}
-	comboType := vtui.NewComboBox(0, 0, 32, linkTypes)
-	comboType.DropdownOnly = true
-	comboType.Menu.SetSelectPos(0)
-	comboType.Edit.SetText(linkTypes[0])
-	lblType := vtui.NewLabel(0, 0, i18n.Msg("Link.Type"), comboType)
+	linkTypeGroup := vtui.NewRadioGroup(0, 0, 1, linkTypes)
+	lblType := vtui.NewLabel(0, 0, i18n.Msg("Link.Type"), linkTypeGroup)
 
 	btnOk := vtui.NewButton(0, 0, i18n.Msg("Link.Btn"))
 	btnOk.IsDefault = true
@@ -3283,7 +3283,7 @@ func actionCreateLink(pf *panel.PanelsFrame) {
 
 	btnOk.OnClick = func() {
 		dest := editDest.GetText()
-		linkType := comboType.Menu.SelectPos
+		linkType := linkTypeGroup.Selected
 		dlg.Close()
 		if dest == "" {
 			return
@@ -3353,29 +3353,27 @@ func actionCreateLink(pf *panel.PanelsFrame) {
 	}
 	btnCancel.OnClick = func() { dlg.Close() }
 
+	dlg.AddItem(lblType)
+	dlg.AddItem(linkTypeGroup)
+	sepButtons := vtui.NewSeparator(0, 0, linkDialogWidth, true, true)
+	dlg.AddItem(sepButtons)
 	dlg.AddItem(btnOk)
 	dlg.AddItem(btnCancel)
-	dlg.AddItem(lblType)
-	dlg.AddItem(comboType)
 
-	vbox := vtui.NewVBoxLayout(dlg.X1+2, dlg.Y1+2, 52-4, 11-4)
+	vbox := vtui.NewVBoxLayout(dlg.X1+2, dlg.Y1+2, linkDialogWidth-4, linkDialogHeight-4)
 	vbox.Add(promptLbl, vtui.Margins{}, vtui.AlignLeft)
 	vbox.Add(editDest, vtui.Margins{Top: 1}, vtui.AlignFill)
 
-	rowType := vtui.NewHBoxLayout(0, 0, 52-4, 1)
-	rowType.Add(lblType, vtui.Margins{Right: 1}, vtui.AlignLeft)
-	rowType.Add(comboType, vtui.Margins{}, vtui.AlignFill)
-
-	hbox := vtui.NewHBoxLayout(0, 0, 52-4, 1)
+	hbox := vtui.NewHBoxLayout(0, 0, linkDialogWidth-4, 1)
 	hbox.HorizontalAlign = vtui.AlignCenter
 	hbox.Spacing = 2
 	hbox.Add(btnOk, vtui.Margins{}, vtui.AlignTop)
 	hbox.Add(btnCancel, vtui.Margins{}, vtui.AlignTop)
 
-	// Keep the action row above the link-type selector. ComboBox.Open() places
-	// its popup below the field, so the popup cannot cover these buttons.
-	vbox.Add(hbox, vtui.Margins{Top: 1}, vtui.AlignFill)
-	vbox.Add(rowType, vtui.Margins{Top: 1}, vtui.AlignFill)
+	vbox.Add(lblType, vtui.Margins{Top: 1}, vtui.AlignLeft)
+	vbox.Add(linkTypeGroup, vtui.Margins{}, vtui.AlignLeft)
+	vbox.Add(sepButtons, vtui.Margins{Top: 1, Left: -2, Right: -2}, vtui.AlignFill)
+	vbox.Add(hbox, vtui.Margins{}, vtui.AlignFill)
 	vbox.Apply()
 	dlg.SetFocusedItem(editDest)
 
@@ -4115,15 +4113,11 @@ func ActionMkDir(pf *panel.PanelsFrame) {
 		}
 
 		if mode == 0 { // Queue
-			rk := fileops.GetResourceKey(activeVfs)
-			var keys []string
-			if rk != "" {
-				keys = append(keys, rk)
-			}
+			// MkDir does not conflict with copying on the same disk — no resource key needed.
 			task := &fileops.QueueTask{
 				Type:       "MkDir",
 				Desc:       desc,
-				ResKeys:    keys,
+				ResKeys:    nil,
 				Run:        runFunc,
 				OnComplete: onDone,
 			}
@@ -5686,6 +5680,7 @@ func ActionAppearanceSettings(pf *panel.PanelsFrame) {
 		i18n.Msg("AppearanceSettings.WorkspaceTabsMultiple"),
 		i18n.Msg("AppearanceSettings.WorkspaceTabsCtrl"),
 		i18n.Msg("AppearanceSettings.WorkspaceTabsNever"),
+		i18n.Msg("AppearanceSettings.WorkspaceTabsWhileCtrl"),
 	}
 	comboWorkspaceTabs := vtui.NewComboBox(0, 0, 30, workspaceTabModes)
 	comboWorkspaceTabs.DropdownOnly = true

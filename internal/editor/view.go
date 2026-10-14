@@ -2623,8 +2623,12 @@ func (ev *EditorView) processKeyInner(e *vtinput.InputEvent) bool {
 			if LookupHotkey(e) {
 				return true
 			}
-			ev.DeleteWordBackward()
-			return true
+			// At the start of a line Ctrl+Backspace is Backspace and joins
+			// the line to the one above, as in far2l (editor.cpp, KEY_CTRLBS).
+			if ev.CursorPos > 0 || ev.CursorVirtualSpaces > 0 || ev.SelActive || ev.RectSelActive {
+				ev.DeleteWordBackward()
+				return true
+			}
 		}
 		// A vertical block is a selection too. It lives in rectSelActive
 		// rather than selActive, and checking only the latter is what made
@@ -2690,8 +2694,12 @@ func (ev *EditorView) processKeyInner(e *vtinput.InputEvent) bool {
 			ev.EnsureCursorVisible()
 			return true
 		}
-		if ctrl && !shift && !alt {
-			ev.DeleteSpacersForward()
+		// Ctrl+Del deletes the word to the right (f4#1729). At the end of a
+		// line it is Del and joins the next line, as in far2l (editor.cpp,
+		// KEY_CTRLDEL).
+		if ctrl && !shift && !alt && (ev.SelActive || ev.RectSelActive ||
+			(ev.CursorVirtualSpaces == 0 && ev.CursorPos < ev.GetLineLength(ev.CursorLine))) {
+			ev.DeleteWordForward()
 			ev.updateDesiredVisualCol()
 			ev.EnsureCursorVisible()
 			return true
@@ -6278,7 +6286,8 @@ func (ev *EditorView) saveToFile(afterSave func(), fullWrite bool) {
 				// as mappable as the one that was opened, and dropping to the
 				// chunk buffer here would quietly cost every later search the
 				// copy that mapping avoids.
-				if ev.Mapped != nil && config.App.EditorMemoryMap {
+				if ev.Mapped != nil && config.App.EditorMemoryMap &&
+					CanMemoryMapFile(ctx.Context, ev.Vfs, finalFilePath) {
 					mapOffset := int64(0)
 					if newUTF8BOM {
 						mapOffset = vfs.UTF8BOMSize

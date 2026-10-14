@@ -315,6 +315,7 @@ func (s *ScreenBuf) ApplyShadow(x1, y1, x2, y2 int) {
 		return
 	}
 
+	s.graphics.shadeCells(x1, y1, x2, y2)
 	for y := y1; y <= y2; y++ {
 		offset := y*s.width + x1
 		for x := 0; x <= x2-x1; x++ {
@@ -386,6 +387,7 @@ func (s *ScreenBuf) Write(x, y int, text []CharInfo) {
 		return
 	}
 
+	s.graphics.coverCells(x, y, x+len(text)-1, y)
 	offset := y*s.width + x
 	if s.OverlayMode && s.ThemePalette != nil {
 		for i, ci := range text {
@@ -442,6 +444,7 @@ func (s *ScreenBuf) ApplyColor(x1, y1, x2, y2 int, attributes uint64) {
 		return
 	}
 
+	s.graphics.coverCells(x1, y1, x2, y2)
 	attributes = s.resolveAttr(attributes)
 	for y := y1; y <= y2; y++ {
 		offset := y*s.width + x1
@@ -479,6 +482,7 @@ func (s *ScreenBuf) FillRect(x1, y1, x2, y2 int, char rune, attributes uint64) {
 		return
 	}
 
+	s.graphics.coverCells(x1, y1, x2, y2)
 	attributes = s.resolveAttr(attributes)
 	cell := CharInfo{Char: uint64(char), Attributes: attributes}
 	for y := y1; y <= y2; y++ {

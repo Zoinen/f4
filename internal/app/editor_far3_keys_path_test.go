@@ -66,4 +66,16 @@ func TestEditorFAR3KeysWorkThroughTheKeyPath(t *testing.T) {
 	if got := text(ev); !strings.HasPrefix(got, "hello") || strings.Contains(got, "world") {
 		t.Errorf("Ctrl+Backspace left %q, want the word before the cursor gone", got)
 	}
+
+	// Ctrl+Delete must reach EditorView.ProcessKey, not the separate
+	// DeleteSpacersForward action (which intentionally stays on Ctrl+T).
+	if got := keymap.GlobalHotkeysMgr.GetAction("Editor", "CtrlDel"); got != "" {
+		t.Fatalf("Ctrl+Delete resolves to %q and would bypass the editor's word-delete handler", got)
+	}
+	ev = open("say hello world\n")
+	ev.CursorPos = len("say ")
+	press(ev, vtinput.VK_DELETE, 0)
+	if got := text(ev); got != "say world\n" {
+		t.Errorf("Ctrl+Delete left %q, want %q", got, "say world\n")
+	}
 }

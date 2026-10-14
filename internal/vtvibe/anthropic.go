@@ -69,8 +69,8 @@ func (c Config) anthropicParams(msgs []Message) anthropic.BetaMessageNewParams {
 }
 
 func (c Config) chatAnthropic(ctx context.Context, msgs []Message) (string, Usage, error) {
-	if c.APIKey == "" && !isLocal(c.BaseURL) {
-		return "", Usage{}, ErrNoKey
+	if err := c.checkReady(); err != nil {
+		return "", Usage{}, err
 	}
 	client := c.anthropicClient()
 	reply, err := client.Beta.Messages.New(ctx, c.anthropicParams(msgs))

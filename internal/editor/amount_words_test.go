@@ -7,7 +7,7 @@ import (
 	"github.com/unxed/f4/internal/piecetable"
 )
 
-func TestEditorAmountInWordsSelectionReplacesWithWords(t *testing.T) {
+func TestEditorAmountInWordsSelectionLeavesTheText(t *testing.T) {
 	const text = "21 руб 50 коп"
 	ev := NewEditorView(piecetable.New([]byte(text)), nil, "test.txt")
 	defer ev.Close()
@@ -18,8 +18,8 @@ func TestEditorAmountInWordsSelectionReplacesWithWords(t *testing.T) {
 		t.Fatalf("AmountInWordsSelection: %v", err)
 	}
 	const want = "двадцать один рубль"
-	if got != want || ev.GetText() != want {
-		t.Fatalf("result %q, text %q; want %q", got, ev.GetText(), want)
+	if got != want || ev.GetText() != text {
+		t.Fatalf("result %q, text %q; want %q and the text as it was", got, ev.GetText(), want)
 	}
 }
 

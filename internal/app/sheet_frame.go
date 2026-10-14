@@ -240,7 +240,15 @@ func (sf *SheetFrame) Show(scr *vtui.ScreenBuf) {
 		if layout.col == sf.cur.Col {
 			attr = cursorAttr
 		}
-		p.DrawString(layout.x, sf.headerY(), sheet.FitText(sheet.ColumnName(layout.col), layout.width, sheet.JustifyCenter), attr)
+		nameWidth := layout.width
+		headerSeparator := sf.doc.Separators && layout.x+layout.width-1 < sf.X2-1
+		if headerSeparator {
+			nameWidth--
+		}
+		p.DrawString(layout.x, sf.headerY(), sheet.FitText(sheet.ColumnName(layout.col), nameWidth, sheet.JustifyCenter), attr)
+		if headerSeparator {
+			p.DrawString(layout.x+layout.width-1, sf.headerY(), string(sheet.ColumnSeparator), attr)
+		}
 	}
 
 	// Grid body.
@@ -260,12 +268,13 @@ func (sf *SheetFrame) Show(scr *vtui.ScreenBuf) {
 			case sf.marking && block.Contains(layout.col, row):
 				attr = blockAttr
 			}
-			text := sf.doc.FitCell(layout.col, row)
-			if len([]rune(text)) > layout.width {
-				text = sheet.FitText(text, layout.width, sf.justifyOf(layout.col, row))
+			textWidth := layout.width
+			separator := sf.doc.Separators && layout.x+layout.width-1 < sf.X2-1
+			if separator {
+				textWidth--
 			}
-			p.DrawString(layout.x, y, sheet.FitText(text, layout.width, sheet.JustifyLeft), attr)
-			if sf.doc.Separators && layout.x+layout.width-1 < sf.X2-1 {
+			p.DrawString(layout.x, y, sf.doc.FitCellWidth(layout.col, row, textWidth), attr)
+			if separator {
 				p.DrawString(layout.x+layout.width-1, y, string(sheet.ColumnSeparator), attr)
 			}
 		}
@@ -286,13 +295,6 @@ func (sf *SheetFrame) Show(scr *vtui.ScreenBuf) {
 		scr.SetCursorPos(cursorX, sf.inputLineY())
 		scr.SetCursorVisible(true)
 	}
-}
-
-func (sf *SheetFrame) justifyOf(col, row int) sheet.Justify {
-	if cell := sf.doc.Cell(col, row); cell != nil {
-		return cell.Justify
-	}
-	return sheet.JustifyLeft
 }
 
 // currentText is what the input line shows: the pending edit while typing, the
@@ -626,9 +628,18 @@ func sheetSave(sf *SheetFrame, path string) {
 	}
 	path = sheetResolvePath(path)
 	var err error
-	switch strings.ToLower(filepath.Ext(path)) {
+	switch ext := strings.ToLower(filepath.Ext(path)); ext {
 	case ".xlsx":
 		err = sf.doc.SaveXLSX(path)
+	case ".csv", ".tsv", ".tab":
+		// A CSV file is saved as CSV: the native format written under
+		// the .csv name replaced the user's data with a database file no
+		// other program reads (f4#1892). A tab-separated name gets tabs
+		// unless the sheet already has a delimiter other than the comma.
+		if ext != ".csv" && sf.doc.CSVSeparator == ',' {
+			sf.doc.CSVSeparator = '\t'
+		}
+		err = exportSheetCSV(sf.doc, path)
 	default:
 		err = sf.doc.Save(context.Background(), path)
 	}
@@ -651,7 +662,7 @@ func sheetOpen(sf *SheetFrame, path string) {
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".xlsx":
 		loaded, err = sheet.LoadXLSX(path)
-	case ".csv":
+	case ".csv", ".tsv", ".tab":
 		loaded, err = loadSheetCSV(path)
 	default:
 		loaded, err = sheet.Load(context.Background(), path)

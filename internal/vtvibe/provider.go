@@ -48,6 +48,10 @@ var (
 	// ErrNoKey is returned when no API key could be resolved. The host turns
 	// it into a localized hint instead of a raw error string.
 	ErrNoKey = errors.New("vtvibe: no API key configured")
+	// ErrNoModel is returned when no model is set and the service has no
+	// default one, as with a custom address (f4#1842: a request with an
+	// empty model came back as MODEL_NOT_FOUND).
+	ErrNoModel = errors.New("vtvibe: no model chosen")
 	// ErrBusy is returned while a request for this session is still running.
 	ErrBusy = errors.New("vtvibe: a request is already running")
 )
@@ -87,6 +91,43 @@ type chatResponse struct {
 type apiError struct {
 	Message string `json:"message"`
 	Status  string `json:"status"`
+	// Code is a number for some services and a string for others; it is
+	// what is left to show when the message is empty (bothub:
+	// {"code":"MODEL_NOT_FOUND","message":""}).
+	Code json.RawMessage `json:"code"`
+}
+
+// text is the message, or the code when the service sent no message.
+func (e *apiError) text() string {
+	if e.Message != "" {
+		return e.Message
+	}
+	code := strings.Trim(strings.TrimSpace(string(e.Code)), `"`)
+	if code == "null" {
+		return ""
+	}
+	return code
+}
+
+// HTTPStatus is the HTTP status of a request that failed with one, or 0.
+func HTTPStatus(err error) int {
+	var se *statusError
+	if errors.As(err, &se) {
+		return se.code
+	}
+	return 0
+}
+
+// checkReady is the common check before a request: a key where the service
+// needs one, and a model.
+func (c Config) checkReady() error {
+	if c.APIKey == "" && !isLocal(c.BaseURL) {
+		return ErrNoKey
+	}
+	if strings.TrimSpace(c.Model) == "" {
+		return ErrNoModel
+	}
+	return nil
 }
 
 // Chat sends the whole conversation and returns the reply text.
@@ -94,8 +135,8 @@ func (c Config) Chat(ctx context.Context, msgs []Message) (string, Usage, error)
 	if c.Kind == KindAnthropic {
 		return c.chatAnthropic(ctx, msgs)
 	}
-	if c.APIKey == "" && !isLocal(c.BaseURL) {
-		return "", Usage{}, ErrNoKey
+	if err := c.checkReady(); err != nil {
+		return "", Usage{}, err
 	}
 	req := chatRequest{Model: c.Model, Messages: msgs}
 	if strings.Contains(strings.ToLower(c.Model), "gemini") {
@@ -122,8 +163,8 @@ func (c Config) Chat(ctx context.Context, msgs []Message) (string, Usage, error)
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return "", Usage{}, fmt.Errorf("cannot parse the reply: %w", err)
 	}
-	if parsed.Error != nil && parsed.Error.Message != "" {
-		return "", Usage{}, errors.New(parsed.Error.Message)
+	if parsed.Error != nil && parsed.Error.text() != "" {
+		return "", Usage{}, errors.New(parsed.Error.text())
 	}
 	if len(parsed.Choices) == 0 {
 		return "", Usage{}, errors.New("the model returned no answer")
@@ -189,8 +230,8 @@ func (c Config) ModelsWithInfo(ctx context.Context) ([]ModelInfo, error) {
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return nil, err
 	}
-	if parsed.Error != nil && parsed.Error.Message != "" {
-		return nil, errors.New(parsed.Error.Message)
+	if parsed.Error != nil && parsed.Error.text() != "" {
+		return nil, errors.New(parsed.Error.text())
 	}
 	out := make([]ModelInfo, 0, len(parsed.Data))
 	for _, m := range parsed.Data {
@@ -290,7 +331,7 @@ func (e *statusError) Error() string {
 		Error *apiError `json:"error"`
 	}
 	if json.Unmarshal(e.body, &parsed) == nil && parsed.Error != nil {
-		msg = parsed.Error.Message
+		msg = parsed.Error.text()
 	}
 	if msg == "" {
 		msg = strings.TrimSpace(string(e.body))

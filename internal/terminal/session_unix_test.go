@@ -319,7 +319,33 @@ func startFakeDaemon(t *testing.T, script string, args ...string) (*exec.Cmd, <-
 		<-done
 		_ = stdin.Close()
 	})
+	waitForCmdline(t, cmd.Process.Pid, script)
 	return cmd, done, &waitErr
+}
+
+// waitForCmdline waits until /proc/<pid>/cmdline shows want. cmd.Start returns
+// once the child has left the parent's memory, but the kernel writes the new
+// program's arguments a little later in exec; a check in between read an
+// empty command line, did not recognise the daemon and left it running (Race
+// shard 3, train #1872, after two earlier CI failures). A real daemon has been
+// running for a long time when f4 stops it.
+func waitForCmdline(t *testing.T, pid int, want string) {
+	t.Helper()
+	path := fmt.Sprintf("/proc/%d/cmdline", pid)
+	if _, err := os.Stat(path); err != nil {
+		return // no procfs: nothing reads the command line
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		data, err := os.ReadFile(path) // #nosec G304 -- path is built from an integer pid.
+		if err == nil && strings.Contains(string(data), want) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("fake daemon %d never showed %q in its command line (%q, %v)", pid, want, data, err)
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 func writeSessionFiles(t *testing.T, info SessionInfo) (jsonPath, startupPath, sudoPath, apPath string) {
@@ -369,9 +395,9 @@ func TestStopSession_TerminatesDaemonAndRemovesFiles(t *testing.T) {
 	info := SessionInfo{PID: cmd.Process.Pid, Title: "fake", SockPath: sockPath}
 	jsonPath, startupPath, sudoPath, apPath := writeSessionFiles(t, info)
 
-	// Failed twice on CI (Race shard 09-10-2026, quick 10-10-2026) and never
-	// locally: whether stopSession recognised the daemon, and what the
-	// daemon looked like, tell which half of stopSession let it live.
+	// Whether stopSession recognised the daemon, and what the daemon looked
+	// like, tell which half of stopSession let it live. That showed a daemon
+	// checked before exec had written its arguments (waitForCmdline).
 	matched := sessionProcessMatches(info)
 	stopAllSessions([]SessionInfo{info})
 

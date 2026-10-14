@@ -33,6 +33,8 @@ func (ev *EditorView) AmountInWordsSelection() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	ev.replaceRange(from, to, []byte(words))
+	// The selection stays: the words go to the clipboard, and the user puts
+	// them where the document wants them, often next to the number in
+	// brackets (DkmS1953, f4#1463).
 	return words, nil
 }

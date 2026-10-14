@@ -464,6 +464,9 @@ func TestSettingsEmbeddedHotkeyConfiguratorDraft(t *testing.T) {
 	manager := keymap.NewHotkeyManager(filepath.Join(t.TempDir(), "hotkeys.ini"))
 	keymap.GlobalHotkeysMgr = manager
 	t.Cleanup(func() { keymap.GlobalHotkeysMgr = previous })
+	// The window lists the Colorer schemes in the background; that listing
+	// must not outlive the test (it raced with the next one, main 059c5e62d).
+	t.Cleanup(settings.WaitSchemeRefreshes)
 	screen := vtui.NewSilentScreenBuf()
 	screen.AllocBuf(160, 40)
 	vtui.FrameManager.Init(screen)

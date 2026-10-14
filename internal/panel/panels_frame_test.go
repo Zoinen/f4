@@ -339,10 +339,10 @@ func TestPanelsFrame_DriveMenuListsAssignedBookmarks(t *testing.T) {
 
 	row := -1
 	for i, it := range menu.Items {
-		if strings.HasPrefix(it.Text, "&6  ") {
+		if strings.HasPrefix(it.Text, "&6 ") {
 			row = i
 		}
-		for _, empty := range []string{"&0  ", "&1  ", "&9  "} {
+		for _, empty := range []string{"&0 ", "&1 ", "&9 "} {
 			if strings.HasPrefix(it.Text, empty) {
 				t.Errorf("unassigned slot listed: %q", it.Text)
 			}

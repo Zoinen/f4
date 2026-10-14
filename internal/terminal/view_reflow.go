@@ -353,6 +353,12 @@ func (tv *TerminalView) reflowResizeLocked(w, h int) {
 	tv.kittyRecomputeSpans()
 
 	tv.trimGridHistoryLocked()
+	if !tv.UseAltScreen {
+		// The next host frame may clear and repaint the resized viewport. Its
+		// old rows are already represented by the reflow result, so do not
+		// append that repaint to logical history a second time.
+		tv.suppressEraseHistory = true
+	}
 	vtui.DebugLog("REFLOW_RESIZE: %dx%d -> %dx%d; history %d -> %d rows (%d laid out), cursor (%d,%d)",
 		oldW, oldH, w, h, historyBefore, len(tv.GridHistory), historyRows, tv.CursorX, tv.CursorY)
 }

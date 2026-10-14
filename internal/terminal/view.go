@@ -1005,6 +1005,24 @@ func (tv *TerminalView) EraseDisplay(mode int, attr uint64) {
 	// vtui.DebugLog("TERM_VIEW: EraseDisplay mode=%d", mode)
 	tv.mu.Lock()
 	defer tv.mu.Unlock()
+	tv.eraseDisplayLocked(mode, attr)
+}
+
+// EraseDisplayNoHistory clears the viewport like EraseDisplay but never
+// pushes the erased rows to scrollback. The resize path uses it right before
+// ResizePseudoConsole: the host repaints its whole buffer after the PTY
+// resize, so keeping the old rows would only duplicate what the repaint
+// re-creates (#1673).
+func (tv *TerminalView) EraseDisplayNoHistory(mode int, attr uint64) {
+	tv.mu.Lock()
+	defer tv.mu.Unlock()
+	saved := tv.suppressEraseHistory
+	tv.suppressEraseHistory = true
+	defer func() { tv.suppressEraseHistory = saved }()
+	tv.eraseDisplayLocked(mode, attr)
+}
+
+func (tv *TerminalView) eraseDisplayLocked(mode int, attr uint64) {
 	if tv.Muted {
 		return
 	}

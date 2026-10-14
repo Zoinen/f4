@@ -188,6 +188,7 @@ func TestIssue1229CaseOnlyRenameOntoAnotherFileAsks(t *testing.T) {
 func TestIssue1229CaseOnlyRenameWithNothingInTheWayJustRenames(t *testing.T) {
 	pf, fsp, dir := setupRenameConflict(t)
 
+	before := vtui.FrameManager.GetTopFrame()
 	renameEntry(pf, fsp, "a.txt", "A.txt")
 	pumpUntil(t, "the rename", func() bool {
 		// #nosec G304 G703 -- the path is inside the private test temp directory.
@@ -202,7 +203,13 @@ func TestIssue1229CaseOnlyRenameWithNothingInTheWayJustRenames(t *testing.T) {
 		}
 		return false
 	})
-	if dlg, ok := vtui.FrameManager.GetTopFrame().(*vtui.Window); ok && dlg.OnResult != nil {
+	// Only the rename's own question counts: a new warning on top. Any window
+	// with OnResult used to, and on CI (windows/amd64, 12-10-2026) a dialog
+	// from an earlier test's leftover task failed the test after the rename
+	// had already happened.
+	top := vtui.FrameManager.GetTopFrame()
+	if dlg, ok := top.(*vtui.Window); ok && top != before && dlg.OnResult != nil &&
+		strings.TrimSpace(dlg.GetTitle()) == strings.TrimSpace(i18n.Msg("Warning.Title")) {
 		t.Fatal("asked to overwrite although nothing was in the way")
 	}
 }

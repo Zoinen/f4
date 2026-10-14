@@ -163,9 +163,16 @@ func TestMappedEditor_EditsAndSaves(t *testing.T) {
 	if string(got) != "XYZ hello world\n" {
 		t.Errorf("content = %q, want %q", got, "XYZ hello world\n")
 	}
-	// The save reopens the file, and a mapped editor stays mapped afterwards
-	// rather than dropping to the chunk buffer.
-	if ev.Mapped == nil {
+	// Windows deliberately reopens editable files through the async buffer:
+	// even a path reached through SUBST can alias a file held by a mapping.
+	if runtime.GOOS == "windows" {
+		if ev.Mapped != nil {
+			t.Error("Windows editor kept a mapping across save")
+		}
+		if ev.AsyncBuf == nil {
+			t.Error("Windows editor did not fall back to the async buffer after save")
+		}
+	} else if ev.Mapped == nil {
 		t.Error("the editor lost its mapping across a save")
 	}
 	assertNoEditorTempSiblings(t, path)

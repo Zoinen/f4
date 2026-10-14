@@ -22,6 +22,7 @@ type mockFrame struct {
 	tabMarker          string
 	surfaceKind        string
 	resizedW, resizedH int
+	onResize           func(w, h int)
 }
 
 type periodicRedrawTestRenderer struct {
@@ -209,6 +210,9 @@ func (f *closeVetoFrame) Close() {
 }
 func (m *mockFrame) ResizeConsole(w, h int) {
 	m.resizedW, m.resizedH = w, h
+	if m.onResize != nil {
+		m.onResize(w, h)
+	}
 }
 
 func newMockFrame(x, y, w, h int, modal bool) *mockFrame {
@@ -2447,9 +2451,14 @@ func TestFrameManager_SizePolling(t *testing.T) {
 	defer func() { GetTerminalSize = oldGetSize }()
 
 	var mockW, mockH atomic.Int64
+	sizeRead := make(chan struct{}, 1)
 	mockW.Store(80)
 	mockH.Store(24)
 	GetTerminalSize = func() (int, int, error) {
+		select {
+		case sizeRead <- struct{}{}:
+		default:
+		}
 		return int(mockW.Load()), int(mockH.Load()), nil
 	}
 
@@ -2460,6 +2469,15 @@ func TestFrameManager_SizePolling(t *testing.T) {
 
 	f1 := &mockFrame{}
 	fm.Push(f1)
+	resized := make(chan struct{}, 1)
+	f1.onResize = func(w, h int) {
+		if w == 100 && h == 30 {
+			select {
+			case resized <- struct{}{}:
+			default:
+			}
+		}
+	}
 
 	done := make(chan struct{})
 	pr, pw := io.Pipe()
@@ -2470,15 +2488,29 @@ func TestFrameManager_SizePolling(t *testing.T) {
 		close(done)
 	}()
 
-	// Wait for loop and polling goroutine to start
-	time.Sleep(50 * time.Millisecond)
+	// Wait for the polling goroutine to take its initial size sample before
+	// changing the mock; otherwise a slow runner can make the change its baseline.
+	select {
+	case <-sizeRead:
+	case <-time.After(2 * time.Second):
+		fm.Stop()
+		_ = pw.Close()
+		<-done
+		t.Fatal("terminal-size poller did not take its initial sample")
+	}
 
 	// Change mock size to trigger polling mechanism
 	mockW.Store(100)
 	mockH.Store(30)
 
-	// Wait for the polling interval (200ms) + buffer time
-	time.Sleep(300 * time.Millisecond)
+	select {
+	case <-resized:
+	case <-time.After(2 * time.Second):
+		fm.Stop()
+		_ = pw.Close()
+		<-done
+		t.Fatal("terminal-size poller did not resize the frame")
+	}
 
 	fm.Stop()
 	pw.Close()
@@ -3182,6 +3214,49 @@ func TestFrameManager_OnCtrlTabsArmAfterFirstCtrlTab(t *testing.T) {
 	}, false)
 	if fm.workspaceTabsVisible() || fm.WorkspaceTopInset() != 0 {
 		t.Fatal("releasing Ctrl should hide workspace tabs again")
+	}
+}
+
+// f4#1870: WorkspaceTabsWhileCtrl shows the strip for as long as Ctrl alone
+// is held, without waiting for Ctrl+Tab, and Alt+digit still switches while
+// it is up; WorkspaceTabsOnCtrl keeps waiting for Ctrl+Tab (f4#496).
+func TestFrameManager_WhileCtrlTabsShowOnPlainCtrl(t *testing.T) {
+	scr := NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	fm := &frameManager{}
+	fm.Init(scr)
+	fm.Push(newMockFrame(0, 0, 80, 25, false))
+	fm.AddScreenBackground(newMockFrame(0, 0, 80, 25, false))
+	fm.ConfigureWorkspaceTabs(WorkspaceTabsWhileCtrl, WorkspaceCtrlTabDirect)
+	if fm.workspaceTabsVisible() || fm.WorkspaceTopInset() != 0 {
+		t.Fatal("tabs shown before Ctrl was pressed")
+	}
+
+	fm.dispatchEvent(&vtinput.InputEvent{
+		Type:            vtinput.KeyEventType,
+		KeyDown:         true,
+		VirtualKeyCode:  vtinput.VK_CONTROL,
+		ControlKeyState: vtinput.LeftCtrlPressed,
+	}, false)
+	if !fm.workspaceTabsVisible() || fm.WorkspaceTopInset() != 1 {
+		t.Fatal("holding Ctrl alone should reveal workspace tabs in this mode")
+	}
+	fm.ConfigureWorkspaceTabOverlay(true)
+	if !fm.workspaceTabsVisible() || fm.WorkspaceTopInset() != 0 {
+		t.Fatal("as an overlay the strip stays visible and takes no row")
+	}
+	fm.ConfigureWorkspaceTabOverlay(false)
+
+	fm.dispatchEvent(&vtinput.InputEvent{
+		Type:           vtinput.KeyEventType,
+		KeyDown:        false,
+		VirtualKeyCode: vtinput.VK_CONTROL,
+	}, false)
+	if fm.workspaceTabsVisible() || fm.WorkspaceTopInset() != 0 {
+		t.Fatal("releasing Ctrl should hide workspace tabs again")
+	}
+	if got := fm.semanticWorkspaceTabs()["mode"]; got != "ctrl" {
+		t.Errorf("semantic mode = %v, want ctrl", got)
 	}
 }
 

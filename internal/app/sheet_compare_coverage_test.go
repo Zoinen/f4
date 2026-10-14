@@ -83,8 +83,8 @@ func TestSheetExportNamesAndMenuEntries(t *testing.T) {
 	}
 
 	entries := sheetMenuEntries()
-	if len(entries) != 23 {
-		t.Fatalf("sheetMenuEntries() returned %d entries, want 23", len(entries))
+	if len(entries) != 24 {
+		t.Fatalf("sheetMenuEntries() returned %d entries, want 24", len(entries))
 	}
 	for i, entry := range entries {
 		if entry.label == "" || entry.run == nil {

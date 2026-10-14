@@ -133,7 +133,7 @@ func (fm *frameManager) semanticWorkspaceTabs() map[string]any {
 	switch fm.WorkspaceTabMode {
 	case WorkspaceTabsAlways:
 		mode = "always"
-	case WorkspaceTabsOnCtrl:
+	case WorkspaceTabsOnCtrl, WorkspaceTabsWhileCtrl:
 		mode = "ctrl"
 	}
 

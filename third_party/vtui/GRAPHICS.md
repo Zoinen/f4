@@ -45,7 +45,37 @@ whenever the text below it was repainted — `GraphicsLayer.DirtyUnder` reports
 exactly that, and the generation counter covers everything else. A forced
 redraw (resize, `HardReset`, reattach) additionally tells the terminal to drop
 every image it holds for us, otherwise stale placements would float over the
-freshly painted screen.## Native backends
+freshly painted screen.## What lies on top: the painter's order
+
+A placement declared with `DrawImage` belongs to the frame painting it at that
+moment. Frames are painted bottom-up, so anything written into the picture's
+cells later in the same pass — a menu, a dialog and its shadow, a toast — lies
+on top of it. `ScreenBuf` reports every `Write`, `FillRect`, `ApplyColor` and
+`ApplyShadow` to the layer, which records the cells each earlier placement
+loses in a `CoverMask`; `Snapshot` hands it over as `ImagePlacement.Covered`.
+
+* The native backends draw the picture only in uncovered cells, one row run at
+  a time. In gogpu this matters twice over: `gg` draws all text after all
+  fills and images, so a picture drawn across a menu would also show the
+  menu's text through it.
+* Terminal protocols cannot leave cells out of a picture, so `Snapshot` hands
+  them a partly covered placement as crops: its uncovered cells split into a
+  few rectangles, each a placement of its own showing the part of the source
+  the whole placement shows there. A cover too ragged for `maxCoverCrops`
+  holds the picture back until it clears.
+* A frame's shadow (`ApplyShadow`) shades a cell instead of covering it: the
+  native backends draw the picture there darkened to the 3/8 the shadow
+  leaves text cells; terminals, which cannot darken a picture, ignore it.
+  Painting over a shadow covers the cell; a shadow over a cover leaves it
+  covered.
+* A change in any mask bumps the generation, so every backend redraws.
+* Placements added with `Add` live outside the painting pass and are never
+  covered; the order applies to `DrawImage` only.
+
+Text written into the picture's cells *before* `DrawImage` stays under it,
+which is how a panel keeps its own blank cells under its picture.
+
+## Native backends
 
 The X11, Wayland and gogpu backends own an RGBA framebuffer, so they take the
 `GraphicsNative` path: the surface is resampled once to its on screen pixel

@@ -2,6 +2,7 @@ package vtui
 
 import (
 	"strconv"
+	"sync"
 
 	"github.com/unxed/vtinput"
 )
@@ -33,6 +34,7 @@ func (e *far2lEncoder) Reset(out *byteBuffer) {
 		e.delete(out, id)
 	}
 	e.active = make(map[uint32]struct{})
+	far2lHostImages.set(e.active)
 }
 
 func (e *far2lEncoder) Render(out *byteBuffer, list []ImagePlacement) {
@@ -60,6 +62,50 @@ func (e *far2lEncoder) Render(out *byteBuffer, list []ImagePlacement) {
 		e.set(out, p)
 	}
 	e.active = next
+	far2lHostImages.set(next)
+}
+
+// far2lHostImages mirrors what the encoder last left on far2l's screen. far2l
+// keeps an image until it is deleted, wherever its own UI goes, so Suspend
+// deletes these on the way out (see dropFar2lHostImages); otherwise the last
+// picture outlives f4 and stays over far2l's panels.
+var far2lHostImages far2lHostSet
+
+type far2lHostSet struct {
+	mu  sync.Mutex
+	ids []uint32
+}
+
+func (s *far2lHostSet) set(active map[uint32]struct{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ids = s.ids[:0]
+	for id := range active {
+		s.ids = append(s.ids, id)
+	}
+}
+
+func (s *far2lHostSet) take() []uint32 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ids := s.ids
+	s.ids = nil
+	return ids
+}
+
+// dropFar2lHostImages deletes every image vtui left on far2l's screen and
+// reports whether there were any. After a Resume the next frame is a forced
+// redraw, which sends them again.
+func dropFar2lHostImages(out interface{ WriteString(string) (int, error) }) bool {
+	ids := far2lHostImages.take()
+	for _, id := range ids {
+		stk := &vtinput.Far2lStack{}
+		stk.PushString(far2lImageIdentity(id))
+		stk.PushU8(far2lImageDelete)
+		stk.PushU8(far2lImageCategory)
+		_, _ = out.WriteString(string(far2lInteractionPayload(stk)))
+	}
+	return len(ids) > 0
 }
 
 func far2lPlacementValid(p *ImagePlacement) bool {

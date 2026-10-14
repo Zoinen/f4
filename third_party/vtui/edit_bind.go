@@ -62,3 +62,46 @@ func (t *Text) BindText(prop vreactive.Property[string]) func() {
 	}
 	return vreactive.BindTo(prop, t.SetText)
 }
+
+// BindSelected binds the selected item of the radio group to an int property
+// in both directions: the item with the property's index is selected (and
+// gets the focus mark), and choosing an item updates the property. An index
+// outside the items leaves no item selected and the focus where it was, as
+// SetData does. The returned function undoes the binding and restores the
+// previous OnChange.
+func (rg *RadioGroup) BindSelected(prop vreactive.Property[int]) func() {
+	if rg == nil || prop == nil {
+		return func() {}
+	}
+	previous := rg.OnChange
+	return vreactive.TwoWayBind(prop,
+		func() int { return rg.Selected },
+		func(index int) {
+			rg.Selected = index
+			if index >= 0 && index < len(rg.Items) {
+				rg.focusIdx = index
+			}
+			rg.NotifyChange()
+		},
+		func(onChange func(int)) func() {
+			rg.OnChange = func(index int) {
+				if previous != nil {
+					previous(index)
+				}
+				onChange(index)
+			}
+			return func() { rg.OnChange = previous }
+		})
+}
+
+// BindPercent makes the progress bar follow an int property (0..100, clamped
+// by SetPercent): the current value is shown at once and every later change
+// too. Combined with Property.SetBehavior the bar animates; from a background
+// goroutine change the property with vreactive.SafeSet so the bar is updated
+// on the UI thread. The returned function undoes the binding.
+func (pb *ProgressBar) BindPercent(prop vreactive.Property[int]) func() {
+	if pb == nil || prop == nil {
+		return func() {}
+	}
+	return vreactive.BindTo(prop, pb.SetPercent)
+}

@@ -141,3 +141,70 @@ func TestScreenBufFlushFar2lGraphics(t *testing.T) {
 		t.Fatal("far2l renderer did not append an APC to the frame")
 	}
 }
+
+// far2l keeps an image until it is deleted, so leaving f4 (Suspend) must
+// delete what the encoder left on far2l's screen; otherwise the last picture
+// stays over far2l's own panels (f4#1885).
+func TestFar2lImagesDroppedOnSuspend(t *testing.T) {
+	oldID := far2lIDCounter.Load()
+	far2lIDCounter.Store(0)
+	t.Cleanup(func() { far2lIDCounter.Store(oldID) })
+	t.Cleanup(func() { far2lHostImages.take() })
+
+	e := newFar2lEncoder()
+	var out byteBuffer
+	e.Render(&out, []ImagePlacement{{ID: 7, Surface: NewImageSurface(1, 1), Cols: 1, Rows: 1}})
+
+	var sb strings.Builder
+	dropFar2lHostImages(&sb)
+	stk := decodeFar2lAPC(t, sb.String())
+	_ = stk.PopU8()
+	if stk.PopU8() != far2lImageCategory || stk.PopU8() != far2lImageDelete || stk.PopString() != far2lImageIdentity(7) {
+		t.Fatalf("Suspend did not delete the image left on far2l's screen: %q", sb.String())
+	}
+
+	sb.Reset()
+	dropFar2lHostImages(&sb)
+	if sb.Len() != 0 {
+		t.Fatalf("a second drop must send nothing, sent %q", sb.String())
+	}
+
+	e.Render(&out, nil)
+	dropFar2lHostImages(&sb)
+	if sb.Len() != 0 {
+		t.Fatalf("nothing left on screen, yet the drop sent %q", sb.String())
+	}
+}
+
+// Suspend deletes far2l's images before inputRestore turns far2l's
+// extensions off: far2l ignores the delete once they are off, and quitting
+// f4 with a picture in the quick view left it on screen (f4#1885).
+func TestSuspendDropsFar2lImagesBeforeLeavingExtensions(t *testing.T) {
+	mock := &mockTermOut{}
+	oldGetTermOut := getTermOut
+	getTermOut = func() interface {
+		WriteString(string) (int, error)
+		Sync() error
+	} {
+		return mock
+	}
+	t.Cleanup(func() { getTermOut = oldGetTermOut })
+	oldUsesVT := consoleUsesVT
+	consoleUsesVT = func() bool { return true }
+	t.Cleanup(func() { consoleUsesVT = oldUsesVT })
+	t.Cleanup(func() { far2lHostImages.take() })
+
+	var out byteBuffer
+	newFar2lEncoder().Render(&out, []ImagePlacement{{ID: 5, Surface: NewImageSurface(1, 1), Cols: 1, Rows: 1}})
+
+	isPrepared = true
+	inputRestore = func() { _, _ = mock.WriteString("<far2l off>") }
+	t.Cleanup(func() { isPrepared = false; inAltScreen = false; inputRestore = nil })
+	Suspend()
+
+	written := mock.builder.String()
+	del, off := strings.Index(written, "\x1b_far2l:"), strings.Index(written, "<far2l off>")
+	if del < 0 || off < 0 || del > off {
+		t.Fatalf("the image delete must reach far2l before its extensions go off: %q", written)
+	}
+}

@@ -26,7 +26,7 @@ func TestPanelsFrameMenusAndNavigationContracts(t *testing.T) {
 	}
 	pf.Panels[0] = &FileSystemPanel{Vfs: &mockTitleVFS{OSVFS: *vfs.NewOSVFS(t.TempDir()), title: "ai"}}
 	pf.Panels[1] = &FileSystemPanel{Vfs: &mockTitleVFS{OSVFS: *vfs.NewOSVFS(t.TempDir()), title: "ai"}}
-	if left, right := pf.LeftMenu(), pf.RightMenu(); len(left.SubItems) != 12 || len(right.SubItems) != 6 {
+	if left, right := pf.LeftMenu(), pf.RightMenu(); len(left.SubItems) != 6 || len(right.SubItems) != 6 {
 		t.Fatalf("AI side menus changed shape: left=%d right=%d", len(left.SubItems), len(right.SubItems))
 	}
 	pf.ShowPanels = false

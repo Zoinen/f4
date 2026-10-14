@@ -219,6 +219,32 @@ func (s *Session) ContextFiles() []string {
 	return out
 }
 
+// AddContextFile puts a file into /ctx under name -- or under name with a
+// number added, when a file by that name is there already -- and returns the
+// name it got. The clipboard paste of the AI panel attaches files this way
+// (f4#1842).
+func (s *Session) AddContextFile(name string, data []byte) (string, error) {
+	name = path.Base(strings.ReplaceAll(name, "\\", "/"))
+	if name == "" || name == "." || name == "/" || name == ".." {
+		name = "clipboard"
+	}
+	s.treeMu.RLock()
+	defer s.treeMu.RUnlock()
+	ext := path.Ext(name)
+	stem := strings.TrimSuffix(name, ext)
+	candidate := name
+	for i := 2; ; i++ {
+		if _, exists := s.tree.stat(ctxDir + "/" + candidate); !exists {
+			break
+		}
+		candidate = fmt.Sprintf("%s (%d)%s", stem, i, ext)
+	}
+	if err := s.tree.writeFile(ctxDir+"/"+candidate, data); err != nil {
+		return "", err
+	}
+	return candidate, nil
+}
+
 // LastPatch returns the ap patch of the most recent answer, or nil when that
 // answer carried none. The panel asks on every redraw: an answer without a
 // patch takes the button away again.

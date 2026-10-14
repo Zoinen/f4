@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/unxed/f4/internal/config"
 	"github.com/unxed/f4/internal/editor"
 	"github.com/unxed/f4/internal/i18n"
 	"github.com/unxed/f4/internal/keymap"
+	"github.com/unxed/f4/internal/panel"
 	"github.com/unxed/f4/internal/theme"
 	"github.com/unxed/f4/internal/wheel"
 	"github.com/unxed/f4/sdk/f4settings"
@@ -29,18 +31,40 @@ type settingsRow struct {
 	controlX, controlY int
 	controlWidth       int
 	gap                int
-	read               func() string
-	write              func(string)
-	traceRecord        string // record ID for diagnostics when the row edits a collection record
-	values             func() map[string]string
-	matchFunc          func() bool
-	unavailableReason  string
+	// padTop is the number of blank lines above the row.
+	padTop            int
+	read              func() string
+	write             func(string)
+	traceRecord       string // record ID for diagnostics when the row edits a collection record
+	values            func() map[string]string
+	matchFunc         func() bool
+	unavailableReason string
 }
 
 // Keep the familiar checkbox label on the control, wrapping only when needed.
 type settingsCheckbox struct {
 	*vtui.Checkbox
 	lines []string
+
+	// boxOnly leaves a click on the label to select the row: only the
+	// "[x]" itself toggles it (the drive menu's Tools page, f4#1148).
+	boxOnly bool
+	// onFocused is called when the check box gets the focus.
+	onFocused func()
+}
+
+func (b *settingsCheckbox) ProcessMouse(e *vtinput.InputEvent) bool {
+	if b.boxOnly && (int(e.MouseY) != b.Y1 || int(e.MouseX) >= b.X1+3) {
+		return false
+	}
+	return b.Checkbox.ProcessMouse(e)
+}
+
+func (b *settingsCheckbox) SetFocus(f bool) {
+	b.Checkbox.SetFocus(f)
+	if f && b.onFocused != nil {
+		b.onFocused()
+	}
 }
 
 func (b *settingsCheckbox) Show(scr *vtui.ScreenBuf) {
@@ -162,6 +186,14 @@ func (v *settingsViewport) SetPosition(x1, y1, x2, y2 int) {
 			if r.field.Label.Resolve(config.App.Language, i18n.Msg) == box.title {
 				r.label = nil
 			}
+		case *panel.HotkeyEdit:
+			// "Hot key:" and the one-character field one column after it
+			// on the same line (mitek1977-coder, f4#1148).
+			label := r.field.Label.Resolve(config.App.Language, i18n.Msg)
+			r.label = []string{label}
+			r.controlX = vtui.StringWidth(label) + 1
+			r.controlWidth = 1
+			r.gap = 0
 		case *settingsEdit:
 			width := r.field.InputWidth
 			if width == 0 && r.field.Kind == f4settings.Integer {
@@ -178,12 +210,14 @@ func (v *settingsViewport) SetPosition(x1, y1, x2, y2 int) {
 			}
 		}
 		if b, ok := r.control.(*settingsCheckbox); ok {
-			b.lines = settingsWrap(r.field.Label.Resolve(config.App.Language, i18n.Msg), max(1, x2-x1-9))
+			r.controlX = settingsFieldIndent(r.field.ID)
+			b.lines = settingsWrap(r.field.Label.Resolve(config.App.Language, i18n.Msg), max(1, x2-x1-9-r.controlX))
 			b.SetText(b.lines[0])
 			r.label = nil
 			r.controlHeight = len(b.lines)
 			r.gap = 0
 		}
+		v.total += r.padTop
 		r.y = v.total
 		r.controlY = len(r.label)
 		if r.controlX > 0 {
@@ -283,6 +317,36 @@ func settingsDimRect(scr *vtui.ScreenBuf, x1, y1, x2, y2 int) {
 		}
 	}
 }
+
+// neighbourGroupControl is the first control that can take the focus in the
+// group after (direction 1) or before (-1) the group of the focused control,
+// or nil when there is no such group on the page.
+func (v *settingsViewport) neighbourGroupControl(direction int) vtui.UIElement {
+	if v.fullPage != nil {
+		return nil
+	}
+	focused := v.GetFocusedItem()
+	current := -1
+	for i, box := range v.boxes {
+		for _, r := range box.rows {
+			if r.control != nil && r.control == focused {
+				current = i
+			}
+		}
+	}
+	if current < 0 {
+		return nil
+	}
+	for i := current + direction; i >= 0 && i < len(v.boxes); i += direction {
+		for _, r := range v.boxes[i].rows {
+			if r.control != nil && r.control.CanFocus() && !r.control.IsDisabled() {
+				return r.control
+			}
+		}
+	}
+	return nil
+}
+
 func (v *settingsViewport) notifyFocus() {
 	focused := v.GetFocusedItem()
 	for _, r := range v.rows {
@@ -314,11 +378,38 @@ func (v *settingsViewport) ProcessKey(e *vtinput.InputEvent) bool {
 	if v.fullPage != nil {
 		return v.fullPage.ProcessKey(e)
 	}
-	v.WrapFocus = true
+	// Up on the first setting and Down on the last one do not go round the
+	// page: they are reported as not handled, and the window moves the focus
+	// to the next group, the search field above or the buttons below
+	// (f4#1899, point 6).
+	v.WrapFocus = false
 	handled := v.Group.ProcessKey(e)
 	v.notifyFocus()
-	if e.KeyDown && (e.VirtualKeyCode == vtinput.VK_UP || e.VirtualKeyCode == vtinput.VK_DOWN || e.VirtualKeyCode == vtinput.VK_LEFT || e.VirtualKeyCode == vtinput.VK_RIGHT) {
+	if e.KeyDown && (e.VirtualKeyCode == vtinput.VK_UP || e.VirtualKeyCode == vtinput.VK_DOWN) {
+		return handled
+	}
+	if e.KeyDown && (e.VirtualKeyCode == vtinput.VK_LEFT || e.VirtualKeyCode == vtinput.VK_RIGHT) {
 		return true
+	}
+	// PgUp: if not at top, scroll to top; if at top, let parent handle focus movement.
+	if e.KeyDown && e.VirtualKeyCode == vtinput.VK_PRIOR {
+		if v.scroll > 0 {
+			v.scroll = 0
+			v.positionRows()
+			v.notifyFocus()
+			return true
+		}
+		return false
+	}
+	// PgDown: if not at bottom, scroll to bottom; if at bottom, let parent handle.
+	if e.KeyDown && e.VirtualKeyCode == vtinput.VK_NEXT {
+		if v.scroll < v.bar.Max {
+			v.scroll = v.bar.Max
+			v.positionRows()
+			v.notifyFocus()
+			return true
+		}
+		return false
 	}
 	return handled
 }
@@ -402,7 +493,16 @@ func newSettingsHelp() *settingsHelp {
 	h.bar.OnScroll = func(n int) { h.top = n }
 	return h
 }
-func (h *settingsHelp) CanFocus() bool { return !h.IsDisabled() }
+
+// CanFocus is true only while the description does not fit: a block with
+// nothing to scroll is no stop for Tab or the arrows (f4#1899, point 5).
+func (h *settingsHelp) CanFocus() bool { return !h.IsDisabled() && h.maxTop() > 0 }
+
+// maxTop is the last line the description can start from.
+func (h *settingsHelp) maxTop() int {
+	lines := settingsWrap(h.text, max(1, h.X2-h.X1))
+	return max(0, len(lines)-(h.Y2-h.Y1+1))
+}
 func (h *settingsHelp) Show(scr *vtui.ScreenBuf) {
 	if h.IsDisabled() {
 		return
@@ -418,6 +518,11 @@ func (h *settingsHelp) Show(scr *vtui.ScreenBuf) {
 		scr.Write(h.X1, h.Y1+i-h.top, vtui.StringToCharInfo(lines[i], vtui.Palette[vtui.ColDialogText]))
 	}
 	h.bar.SetPosition(h.X2, h.Y1, h.X2, h.Y2)
+	// The scroll bar is the only mark of the focus on this block.
+	h.bar.ColorIdx = vtui.ColDialogBox
+	if h.IsFocused() {
+		h.bar.ColorIdx = vtui.ColDialogHighlightText
+	}
 	h.bar.PgStep = height
 	h.bar.SetParams(h.top, 0, max(0, len(lines)-height))
 	if len(lines) > height {
@@ -431,15 +536,28 @@ func (h *settingsHelp) ProcessKey(e *vtinput.InputEvent) bool {
 	if !e.KeyDown {
 		return false
 	}
+	// Up on the first line and Down on the last one are not handled: the
+	// window moves the focus on, as on the settings page.
+	last := h.maxTop()
 	switch e.VirtualKeyCode {
 	case vtinput.VK_DOWN:
+		if h.top >= last {
+			return false
+		}
 		h.top++
 	case vtinput.VK_UP:
-		h.top = max(0, h.top-1)
+		if h.top <= 0 {
+			return false
+		}
+		h.top--
 	case vtinput.VK_NEXT:
-		h.top += max(1, h.Y2-h.Y1)
+		h.top = min(last, h.top+max(1, h.Y2-h.Y1))
 	case vtinput.VK_PRIOR:
 		h.top = max(0, h.top-(h.Y2-h.Y1))
+	case vtinput.VK_HOME:
+		h.top = 0
+	case vtinput.VK_END:
+		h.top = last
 	default:
 		return false
 	}
@@ -562,7 +680,6 @@ var lastSettingsOffsets = map[string]int{}
 
 type settingsCenter struct {
 	recordOnly                            bool
-	onApplied                             func()
 	recordTitle                           string
 	hotkeyPage                            vtui.UIElement
 	searchCacheQuery, searchCacheLanguage string
@@ -584,6 +701,13 @@ type settingsCenter struct {
 	offsets                 map[string]int
 	closed                  bool
 	scoped                  bool
+	// onApplied runs after Apply or OK has written every change.
+	onApplied func()
+	// driveToolSelected is the field of the tool last selected on the drive
+	// menu's Tools page, the one Up and Down move and whose hot key the
+	// "Hot key:" field shows (f4#1148).
+	driveToolSelected string
+	driveToolHotkey   *panel.HotkeyEdit
 	// fullLists shows the record lists of a page in full, not in five rows.
 	fullLists bool
 	// fieldPrefix and fieldTitle narrow a scoped window further, to the fields
@@ -695,6 +819,8 @@ func newSettingsCenter(sessions []*settingsSession) *settingsCenter {
 			if !c.recordOnly {
 				if !c.fullLists {
 					lastSettingsCategory = c.category
+				} else if isDriveChooserPage(c.category) {
+					lastDriveChooserPage = c.category
 				}
 				c.offsets[c.category] = c.page.scroll
 				lastSettingsOffsets = map[string]int{}
@@ -817,11 +943,7 @@ func (c *settingsCenter) ResizeConsole(w, h int) {
 		dw, dh := min(w, max(72, w/2)), min(h, max(22, h*3/4))
 		c.SetPosition((w-dw)/2, (h-dh)/2, (w+dw)/2-1, (h+dh)/2-1)
 		c.positioned = true
-		if w < c.minSettingsScreenWidth() || h < smallSettingsScreenHeight {
-			c.SavedBounds = &vtui.Rect{X1: c.X1, Y1: c.Y1, X2: c.X2, Y2: c.Y2}
-			top := vtui.FrameManager.WorkspaceTopInset()
-			c.SetPosition(0, top, w-1, max(top, h-2))
-		}
+		c.maximizeForCategory()
 	} else if c.SavedBounds != nil {
 		// Match vtui's BaseWindow.ToggleZoom: the workspace tab strip owns the
 		// rows above and the key bar owns the row below, and both are drawn
@@ -832,6 +954,19 @@ func (c *settingsCenter) ResizeConsole(w, h int) {
 	} else {
 		c.fitBounds()
 	}
+}
+
+// maximizeForCategory expands the dialog when the newly selected page needs
+// more room than its ordinary window can provide. In particular, users often
+// open Settings on another page and navigate to Hotkeys afterwards (#1239).
+func (c *settingsCenter) maximizeForCategory() {
+	if !c.positioned || c.SavedBounds != nil ||
+		(c.screenW >= c.minSettingsScreenWidth() && c.screenH >= smallSettingsScreenHeight) {
+		return
+	}
+	c.SavedBounds = &vtui.Rect{X1: c.X1, Y1: c.Y1, X2: c.X2, Y2: c.Y2}
+	top := vtui.FrameManager.WorkspaceTopInset()
+	c.SetPosition(0, top, c.screenW-1, max(top, c.screenH-2))
 }
 
 func (c *settingsCenter) SetPosition(x1, y1, x2, y2 int) {
@@ -1024,12 +1159,25 @@ func (c *settingsCenter) ProcessKey(e *vtinput.InputEvent) bool {
 		if !c.previous.IsDisabled() {
 			panes = append(panes, c.previous, c.next)
 		}
-		panes = append(panes, c.sidebar, c.page, c.apply, c.ok, c.cancel)
+		panes = append(panes, c.sidebar, c.page)
+		if c.help.CanFocus() {
+			panes = append(panes, c.help)
+		}
+		panes = append(panes, c.apply, c.ok, c.cancel)
 		focused := c.GetFocusedItem()
 		if e.VirtualKeyCode == vtinput.VK_TAB {
 			direction := 1
 			if e.ControlKeyState&vtinput.ShiftPressed != 0 {
 				direction = -1
+			}
+			// On a page of several groups Tab goes to the next group first
+			// and leaves the page after the last one (f4#1899, point 2).
+			if focused == c.page {
+				if target := c.page.neighbourGroupControl(direction); target != nil {
+					c.page.SetFocusedItem(target)
+					c.page.notifyFocus()
+					return true
+				}
 			}
 			c.movePaneFocus(panes, focused, direction)
 			return true
@@ -1067,18 +1215,66 @@ func (c *settingsCenter) ProcessKey(e *vtinput.InputEvent) bool {
 					}
 					return true
 				}
-				c.page.ProcessKey(e)
+				// PgUp at top of page -> move focus to sidebar (left half).
+				if e.VirtualKeyCode == vtinput.VK_PRIOR && e.KeyDown {
+					if !c.page.ProcessKey(e) {
+						c.SetFocusedItem(c.sidebar)
+						return true
+					}
+					return true
+				}
+				// PgDown at bottom of page -> move focus to help/buttons area.
+				if e.VirtualKeyCode == vtinput.VK_NEXT && e.KeyDown {
+					if !c.page.ProcessKey(e) {
+						if c.help.CanFocus() {
+							c.SetFocusedItem(c.help)
+						} else if c.apply.CanFocus() {
+							c.SetFocusedItem(c.apply)
+						}
+						return true
+					}
+					return true
+				}
+				if !c.page.ProcessKey(e) && e.KeyDown {
+					switch e.VirtualKeyCode {
+					case vtinput.VK_DOWN:
+						c.movePaneFocus([]vtui.UIElement{c.apply, c.ok, c.cancel}, nil, 1)
+					case vtinput.VK_UP:
+						c.SetFocusedItem(c.search)
+					}
+				}
 				return true
 			case c.help:
-				c.help.ProcessKey(e)
+				if !c.help.ProcessKey(e) && e.KeyDown {
+					switch e.VirtualKeyCode {
+					case vtinput.VK_DOWN:
+						c.movePaneFocus([]vtui.UIElement{c.apply, c.ok, c.cancel}, nil, 1)
+					case vtinput.VK_UP:
+						if c.page.CanFocus() {
+							c.SetFocusedItem(c.page)
+							c.page.notifyFocus()
+						}
+					}
+				}
 				return true
 			default:
 				direction := 1
 				if e.VirtualKeyCode == vtinput.VK_UP || e.VirtualKeyCode == vtinput.VK_LEFT {
 					direction = -1
 				}
+				if e.VirtualKeyCode == vtinput.VK_UP && (focused == c.apply || focused == c.ok || focused == c.cancel) && c.page.CanFocus() {
+					// Up from the buttons goes back to the settings above.
+					c.SetFocusedItem(c.page)
+					c.page.notifyFocus()
+					return true
+				}
 				if focused == c.clearSearch || focused == c.previous || focused == c.next {
 					c.movePaneFocus([]vtui.UIElement{c.clearSearch, c.previous, c.next}, focused, direction)
+				} else if horizontal := e.VirtualKeyCode == vtinput.VK_LEFT || e.VirtualKeyCode == vtinput.VK_RIGHT; horizontal && !c.hasButtonBeyond(focused, direction) {
+					// Right on the last button and Left on the first leave the
+					// row the way Tab and Shift+Tab do, instead of going round
+					// it (f4#1899, points 3 and 4).
+					c.movePaneFocus(panes, focused, direction)
 				} else {
 					c.movePaneFocus([]vtui.UIElement{c.apply, c.ok, c.cancel}, focused, direction)
 				}
@@ -1089,6 +1285,27 @@ func (c *settingsCenter) ProcessKey(e *vtinput.InputEvent) bool {
 	handled := c.BaseWindow.ProcessKey(e)
 	c.syncWindowBounds()
 	return handled
+}
+
+// hasButtonBeyond reports whether Apply, OK and Cancel have a button that can
+// take the focus past focused in direction, without going round the row.
+func (c *settingsCenter) hasButtonBeyond(focused vtui.UIElement, direction int) bool {
+	buttons := []vtui.UIElement{c.apply, c.ok, c.cancel}
+	index := -1
+	for i, b := range buttons {
+		if b == focused {
+			index = i
+		}
+	}
+	if index < 0 {
+		return true
+	}
+	for i := index + direction; i >= 0 && i < len(buttons); i += direction {
+		if buttons[i].CanFocus() && !buttons[i].IsDisabled() {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *settingsCenter) movePaneFocus(items []vtui.UIElement, focused vtui.UIElement, direction int) {
@@ -1255,6 +1472,7 @@ func (c *settingsCenter) selectCategory(id string) {
 		c.offsets[c.category] = c.page.scroll
 	}
 	c.category = id
+	c.maximizeForCategory()
 	c.page.Group = vtui.NewGroup(c.page.X1, c.page.Y1, c.page.X2-c.page.X1+1, c.page.Y2-c.page.Y1+1)
 	c.page.SetId("settings-page")
 	c.page.SetOwner(c.Window)
@@ -1312,6 +1530,9 @@ func (c *settingsCenter) selectCategory(id string) {
 	if c.fieldPrefix == "" {
 		c.addCollections(id)
 		c.addCommands(id)
+		if id == driveToolsPage {
+			c.addDriveToolMoves(id)
+		}
 	}
 	c.layoutWindow()
 	c.page.scroll = c.offsets[id]
@@ -1354,6 +1575,14 @@ func (c *settingsCenter) makeControl(r *settingsRow) vtui.UIElement {
 	var control vtui.UIElement
 	switch f.Kind {
 	case f4settings.Chord:
+		if f.InputWidth == 1 {
+			// One key, no Capture: a letter or a digit replaces it,
+			// Delete clears it (the Links page, f4#1148).
+			e := panel.NewHotkeyEdit(value)
+			e.OnChange = change
+			control = e
+			break
+		}
 		control = newSettingsChord(value, change)
 	case f4settings.Multiline:
 		e := vtui.NewMultiLineEdit(0, 0, 20, 4, value)
@@ -1361,11 +1590,18 @@ func (c *settingsCenter) makeControl(r *settingsRow) vtui.UIElement {
 		r.controlHeight = 4
 		control = e
 	case f4settings.Boolean:
-		b := &settingsCheckbox{Checkbox: vtui.NewCheckbox(0, 0, f.Label.Resolve(config.App.Language, i18n.Msg), false)}
+		b := &settingsCheckbox{Checkbox: vtui.NewCheckbox(0, 0, f.Label.Resolve(config.App.Language, i18n.Msg), false), boxOnly: settingsCheckboxBoxOnly(f.ID)}
 		if value == "true" {
 			b.State = 1
 		}
 		b.OnChange = func(n int) { change(strconv.FormatBool(n == 1)) }
+		if b.boxOnly {
+			id := f.ID
+			b.onFocused = func() {
+				c.driveToolSelected = id
+				c.showDriveToolHotkey()
+			}
+		}
 		control = b
 	case f4settings.ChoiceKind:
 		f = settingsFieldChoiceHelp(f)
@@ -1464,11 +1700,11 @@ func (c *settingsCenter) commit(closeAfter bool) {
 			return
 		}
 		if index >= len(c.sessions) {
+			c.status = Phrase("Settings applied.")
+			c.rebuildCategory()
 			if c.onApplied != nil {
 				c.onApplied()
 			}
-			c.status = Phrase("Settings applied.")
-			c.rebuildCategory()
 			if closeAfter {
 				c.Close()
 			}
@@ -1790,12 +2026,25 @@ func showSettingsCenter(sessions []*settingsSession, category, collection, recor
 	return true
 }
 
+// schemeRefreshes counts the background scheme listings still running. A
+// listing starts a Colorer session, which reads process-wide state such as
+// os.Stdout, so a test that opens this window waits for it before it ends
+// (main 059c5e62d, 14-10-2026: the listing outlived its test and raced with
+// the next test putting os.Stdout back).
+var schemeRefreshes sync.WaitGroup
+
+// WaitSchemeRefreshes returns once every background scheme listing has read
+// what it needed; their results may still be on their way to the UI thread.
+func WaitSchemeRefreshes() { schemeRefreshes.Wait() }
+
 // Catalogs can live on an unavailable network share. Enumerate their labels
 // outside the UI thread and ignore results after the editing session closes.
 func (c *settingsCenter) refreshSchemeChoices() {
 	source := editor.CurrentColorerSource()
+	schemeRefreshes.Add(1)
 	vtui.RunAsync(func(task *vtui.TaskContext) {
 		schemes := editor.ListColorerSchemesFor(source)
+		schemeRefreshes.Done()
 		task.RunOnUI(func() {
 			if c.closed || source != editor.CurrentColorerSource() {
 				return

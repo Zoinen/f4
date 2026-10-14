@@ -62,9 +62,17 @@ func startLocalConPTY(t *testing.T) *panel.PanelsFrame {
 	return pf
 }
 
+// localConPTYStartTimeout is how long cmd.exe gets to start in a ConPTY and
+// print its first prompt. Five seconds was not enough on the windows/arm64
+// runner with the rest of the package's tests running beside it (main
+// 60ee6e81a, 14-10-2026: "startup prompt did not arrive" at 5.03s, with no
+// change near the terminal). The wait ends as soon as the prompt is there,
+// so a long limit costs nothing when the shell is quick.
+const localConPTYStartTimeout = 30 * time.Second
+
 func waitForLocalConPTYPrompt(t *testing.T, pf *panel.PanelsFrame, previous terminal.PtyBackend) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(localConPTYStartTimeout)
 	for pf.GetActivePTY() == nil || pf.GetActivePTY() == previous {
 		drainFrameTasks()
 		if time.Now().After(deadline) {
@@ -72,7 +80,7 @@ func waitForLocalConPTYPrompt(t *testing.T, pf *panel.PanelsFrame, previous term
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	promptDeadline := time.Now().Add(5 * time.Second)
+	promptDeadline := time.Now().Add(localConPTYStartTimeout)
 	for !pf.ShellPromptReady {
 		drainFrameTasks()
 		if time.Now().After(promptDeadline) {

@@ -1150,14 +1150,13 @@ func ShowAttributesWindowsWithPropertiesForTargets(
 		}
 	}
 
-	// f4#1861: a file with several hard links lists all its names, as far3
-	// does; the count alone would not tell where the others are.
+	// f4#1861: a file with several hard links lists all its names in a
+	// drop-down list, as far3 does; the count alone would not tell where the
+	// others are. One row however many names there are, so the dialog keeps
+	// its size (DkmS1953).
 	linkNames := attributesHardLinkNames(v, path, item, multiple)
 	if len(linkNames) > 0 {
-		height += 2 + min(len(linkNames), maxShownLinkNames)
-		if len(linkNames) > maxShownLinkNames {
-			height++
-		}
+		height += 2 // a blank row and the list
 	}
 
 	dlg := vtui.NewCenteredDialog(width, height, i18n.Msg("Attributes.Title"))
@@ -1197,21 +1196,27 @@ func ShowAttributesWindowsWithPropertiesForTargets(
 	}
 
 	if len(linkNames) > 0 {
-		lblLinks := vtui.NewText(0, 0, fmt.Sprintf(i18n.Msg("Attributes.HardLinks"), len(linkNames)), vtui.Palette[vtui.ColDialogText])
-		dlg.AddItem(lblLinks)
-		mainVBox.Add(lblLinks, vtui.Margins{Top: 1}, vtui.AlignLeft)
-		for i, name := range linkNames {
-			text := "  " + vtui.TruncateMiddle(name, 52)
-			if i == maxShownLinkNames {
-				text = fmt.Sprintf(i18n.Msg("Attributes.HardLinksMore"), len(linkNames)-maxShownLinkNames)
-			}
-			lbl := vtui.NewText(0, 0, text, vtui.Palette[vtui.ColDialogText])
-			dlg.AddItem(lbl)
-			mainVBox.Add(lbl, vtui.Margins{}, vtui.AlignLeft)
-			if i == maxShownLinkNames {
-				break
+		// Not DropdownOnly: the field takes a selection, so a name can be
+		// copied with Ctrl+Ins. What is typed there is never saved.
+		comboLinks := vtui.NewComboBox(0, 0, 30, linkNames)
+		comboLinks.Menu.SetSelectPos(0)
+		comboLinks.Edit.SetText(linkNames[0])
+		// A name chosen from the list is selected in the field, ready for
+		// Ctrl+Ins (DkmS1953, f4#1861). It is not put on the clipboard by
+		// itself: that would replace what is there without being asked.
+		comboLinks.Menu.OnAction = func(idx int) {
+			if idx >= 0 && idx < len(linkNames) {
+				comboLinks.Edit.SetText(linkNames[idx])
+				comboLinks.Edit.SelectAll()
 			}
 		}
+		lblLinks := vtui.NewLabel(0, 0, fmt.Sprintf(i18n.Msg("Attributes.HardLinks"), len(linkNames)), comboLinks)
+		rowLinks := vtui.NewHBoxLayout(0, 0, 54, 1)
+		rowLinks.Add(lblLinks, vtui.Margins{Right: 1}, vtui.AlignLeft)
+		rowLinks.Add(comboLinks, vtui.Margins{}, vtui.AlignFill)
+		dlg.AddItem(lblLinks)
+		dlg.AddItem(comboLinks)
+		mainVBox.Add(rowLinks, vtui.Margins{Top: 1}, vtui.AlignFill)
 	}
 
 	gbAttr := vtui.NewGroupBox(0, 0, 54, 6, " "+i18n.Msg("Attributes.Flags")+" ")
@@ -1470,10 +1475,6 @@ func ShowAttributesWindowsWithPropertiesForTargets(
 	btnCancel.OnClick = func() { dlg.Close() }
 	vtui.FrameManager.Push(dlg)
 }
-
-// maxShownLinkNames is how many names of a hard-linked file the dialog
-// lists before it only says how many more there are.
-const maxShownLinkNames = 4
 
 // attributesHardLinkNames is every name of the file when it has more than
 // one and the file system can tell them (vfs.OSVFS on Windows).

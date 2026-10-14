@@ -55,8 +55,8 @@ func (c Config) ChatStream(ctx context.Context, msgs []Message, onDelta func(str
 	if c.Kind == KindAnthropic {
 		return c.chatAnthropicStream(ctx, msgs, onDelta)
 	}
-	if c.APIKey == "" && !isLocal(c.BaseURL) {
-		return "", Usage{}, ErrNoKey
+	if err := c.checkReady(); err != nil {
+		return "", Usage{}, err
 	}
 	text, usage, err := c.chatOpenAIStream(ctx, msgs, onDelta)
 	if errors.Is(err, errStreamRefused) {
@@ -118,8 +118,8 @@ func (c Config) chatOpenAIStream(ctx context.Context, msgs []Message, onDelta fu
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			continue // keep-alives and comments some proxies insert
 		}
-		if chunk.Error != nil && chunk.Error.Message != "" {
-			return "", usage, errors.New(chunk.Error.Message)
+		if chunk.Error != nil && chunk.Error.text() != "" {
+			return "", usage, errors.New(chunk.Error.text())
 		}
 		if chunk.Usage != nil {
 			usage = Usage{In: chunk.Usage.PromptTokens, Out: chunk.Usage.CompletionTokens}
@@ -149,8 +149,8 @@ func parseChatResponse(raw []byte, onDelta func(string)) (string, Usage, error) 
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return "", Usage{}, fmt.Errorf("cannot parse the reply: %w", err)
 	}
-	if parsed.Error != nil && parsed.Error.Message != "" {
-		return "", Usage{}, errors.New(parsed.Error.Message)
+	if parsed.Error != nil && parsed.Error.text() != "" {
+		return "", Usage{}, errors.New(parsed.Error.text())
 	}
 	if len(parsed.Choices) == 0 {
 		return "", Usage{}, errors.New("the model returned no answer")
@@ -167,8 +167,8 @@ func parseChatResponse(raw []byte, onDelta func(string)) (string, Usage, error) 
 // chatAnthropicStream streams through the SDK and keeps the whole message
 // with Accumulate, so the usage and a refusal are read as Chat reads them.
 func (c Config) chatAnthropicStream(ctx context.Context, msgs []Message, onDelta func(string)) (string, Usage, error) {
-	if c.APIKey == "" && !isLocal(c.BaseURL) {
-		return "", Usage{}, ErrNoKey
+	if err := c.checkReady(); err != nil {
+		return "", Usage{}, err
 	}
 	client := c.anthropicClient()
 	stream := client.Beta.Messages.NewStreaming(ctx, c.anthropicParams(msgs))

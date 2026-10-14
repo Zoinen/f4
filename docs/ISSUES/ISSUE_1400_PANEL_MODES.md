@@ -55,7 +55,7 @@ last one is shortened and then dropped, as far2l does.
 | `DM`, `DC`, `DA`, `DE` | modified, created, accessed, changed | `B` short date, `M` month name |
 | `A` | Unix permissions or Windows attributes | |
 | `O`, `U` | owner, group | `L` accepted |
-| `LN` | hard link count | |
+| `LN` | hard link count (symbolic links are not included) | |
 
 A group of types that repeats forms stripes: `N,N,N` is Brief, `N,S,N,S` is
 two stripes of a name and a size. Files flow down a stripe and on to the next,

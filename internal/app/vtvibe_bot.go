@@ -1045,6 +1045,10 @@ func aiStartManager(pf *panel.PanelsFrame, manager interface{ PostTask(func()) }
 		}
 		result := vtvibe.RunWorkerManager(ctx, config, task, vtvibe.DefaultParallelWorkers, work)
 		cancel()
+		// Off the list before the report is posted: whoever handles the
+		// report (ai:task, the dialog, a test) must not still see the
+		// manager at work. The deferred remove only covers a panic.
+		aiManagers.remove(run.id)
 		// The workers' tokens were counted as each reported; only the
 		// manager's own are left.
 		own := result.Usage

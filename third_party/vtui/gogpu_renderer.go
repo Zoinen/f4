@@ -3,6 +3,7 @@
 package vtui
 
 import (
+	"image"
 	"image/color"
 	"math"
 	"os"
@@ -898,7 +899,23 @@ func (r *GogpuRenderer) drawFrame(dc *gg.Context, w, h int) gogpuFrameStats {
 		}
 
 		dc.SetRGBA(1, 1, 1, 1)
-		dc.DrawImage(gg.ImageBufFromImage(entry.asImage()), float64(px), float64(py))
+		buf := gg.ImageBufFromImage(entry.asImage())
+		if !p.Covered.Any() {
+			dc.DrawImage(buf, float64(px), float64(py))
+			continue
+		}
+		// gg draws all text after all fills and images, whatever order
+		// they were issued in, so a picture drawn over a menu would still
+		// show the menu's text through it. Leaving the covered cells out
+		// is what keeps the menu whole (f4#1885). For the same reason a
+		// shadow cannot be laid over the picture as a fill: fills go
+		// under images. Shaded cells take a darkened copy instead.
+		open := func(col, row int) bool { return !p.Covered.Covered(col, row) && !p.Covered.Shaded(col, row) }
+		r.drawImageSpans(dc, buf, cellSpans(p, r.cellW, r.cellH, open), px, py)
+		if p.Covered.shaded > 0 {
+			dark := gg.ImageBufFromImage(entry.asShadedImage())
+			r.drawImageSpans(dc, dark, cellSpans(p, r.cellW, r.cellH, p.Covered.Shaded), px, py)
+		}
 	}
 
 	cursorVisible := r.cursorVis && r.blinkState
@@ -915,6 +932,22 @@ func (r *GogpuRenderer) drawFrame(dc *gg.Context, w, h int) gogpuFrameStats {
 		dc.Fill()
 	}
 	return prof
+}
+
+// drawImageSpans draws the parts of buf, laid out at (px, py), that fall in
+// spans.
+func (r *GogpuRenderer) drawImageSpans(dc *gg.Context, buf *gg.ImageBuf, spans []image.Rectangle, px, py int) {
+	for _, span := range spans {
+		src := span.Sub(image.Pt(px, py))
+		dc.DrawImageEx(buf, gg.DrawImageOptions{
+			X: float64(span.Min.X), Y: float64(span.Min.Y),
+			DstWidth: float64(span.Dx()), DstHeight: float64(span.Dy()),
+			SrcRect:       &src,
+			Interpolation: gg.InterpNearest,
+			Opacity:       1.0,
+			BlendMode:     gg.BlendNormal,
+		})
+	}
 }
 
 func drawGogpuUnderline(dc *gg.Context, x, y, width, height float64, fg color.RGBA) {

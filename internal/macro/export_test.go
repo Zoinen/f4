@@ -40,6 +40,46 @@ func TestRecordedMacroRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRecordedMacroPreservesTextCaseAcrossFormats(t *testing.T) {
+	var events []*vtinput.InputEvent
+	for _, char := range "tEsT ПрИвЕт" {
+		if char == ' ' {
+			events = append(events, keymap.ParseFarKey("Space"))
+		} else {
+			events = append(events, keymap.ParseFarKey(string(char)))
+		}
+	}
+
+	source := RecordedMacroToLua("Shell", "CtrlA", "mixed case", events)
+	if !strings.Contains(source, `Keys("t E s T Space П р И в Е т")`) {
+		t.Fatalf("export did not preserve the recorded characters:\n%s", source)
+	}
+	host := newFakeMacroHost()
+	engine := newTestMacroEngine(t, host, source)
+	fireMacro(t, engine, "CtrlA")
+	got := make([]rune, len(host.injected))
+	for i, event := range host.injected {
+		got[i] = event.Char
+	}
+	if gotText := string(got); gotText != "tEsT ПрИвЕт" {
+		t.Fatalf("Lua replay produced %q, want %q", gotText, "tEsT ПрИвЕт")
+	}
+
+	path := filepath.Join(t.TempDir(), "macros.ini")
+	manager := NewMacroManager(path)
+	manager.Macros["Shell"] = map[string][]*vtinput.InputEvent{"CtrlA": events}
+	manager.Save()
+	reloaded := NewMacroManager(path)
+	seq := reloaded.Macros["Shell"]["CtrlA"]
+	got = make([]rune, len(seq))
+	for i, event := range seq {
+		got[i] = event.Char
+	}
+	if gotText := string(got); gotText != "tEsT ПрИвЕт" {
+		t.Fatalf("INI reload produced %q, want %q", gotText, "tEsT ПрИвЕт")
+	}
+}
+
 func TestRecordedMacroDefaults(t *testing.T) {
 	source := RecordedMacroToLua("", "CtrlB", "", nil)
 	Engine := newTestMacroEngine(t, newFakeMacroHost(), source)

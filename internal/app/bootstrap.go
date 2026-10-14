@@ -379,7 +379,7 @@ func Main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(2)
 		}
-		if err := vfs.RunElevatedDispatcher(sock, token, nil); err != nil {
+		if err := vfs.RunElevatedDispatcher(sock, token, vfs.ElevatedFileOps); err != nil {
 			fmt.Fprintf(os.Stderr, "f4 elevated dispatcher failed: %v\n", err)
 			os.Exit(1)
 		}

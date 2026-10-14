@@ -36,6 +36,12 @@ const (
 	WorkspaceTabsMultiple
 	WorkspaceTabsOnCtrl
 	WorkspaceTabsNever
+	// WorkspaceTabsWhileCtrl shows the strip for as long as Ctrl alone is
+	// held, without the Ctrl+Tab WorkspaceTabsOnCtrl waits for (f4#1870).
+	// It comes last so the stored values of the other modes keep meaning
+	// what they meant; it does flicker on every Ctrl shortcut, which is why
+	// WorkspaceTabsOnCtrl stopped doing this (f4#496).
+	WorkspaceTabsWhileCtrl
 )
 
 // WorkspaceCtrlTabMode controls whether Ctrl+Tab cycles immediately or opens
@@ -489,7 +495,7 @@ func (fm *frameManager) tickAnimations() {
 func (fm *frameManager) WorkspaceTopInset() int {
 	if fm.WorkspaceTabMode == WorkspaceTabsAlways ||
 		(fm.WorkspaceTabMode == WorkspaceTabsMultiple && len(fm.Screens) > 1) ||
-		(fm.WorkspaceTabMode == WorkspaceTabsOnCtrl && fm.ctrlPressed && fm.workspaceTabPreview && !fm.WorkspaceTabOverlay) {
+		(fm.transientWorkspaceStripShown() && !fm.WorkspaceTabOverlay) {
 		return 1
 	}
 	return 0
@@ -498,7 +504,7 @@ func (fm *frameManager) WorkspaceTopInset() int {
 // ConfigureWorkspaceTabs applies workspace presentation and Ctrl+Tab policy.
 // Frames are resized because the persistent modes can add or remove a top row.
 func (fm *frameManager) ConfigureWorkspaceTabs(tabMode WorkspaceTabMode, ctrlTabMode WorkspaceCtrlTabMode) {
-	if tabMode < WorkspaceTabsAlways || tabMode > WorkspaceTabsNever {
+	if tabMode < WorkspaceTabsAlways || tabMode > WorkspaceTabsWhileCtrl {
 		tabMode = WorkspaceTabsMultiple
 	}
 	if ctrlTabMode < WorkspaceCtrlTabDirect || ctrlTabMode > WorkspaceCtrlTabMenu {
@@ -1982,11 +1988,28 @@ func (fm *frameManager) workspaceTabsVisible() bool {
 		return true
 	case WorkspaceTabsMultiple:
 		return len(fm.Screens) > 1
-	case WorkspaceTabsOnCtrl:
-		return fm.ctrlPressed && fm.workspaceTabPreview
+	case WorkspaceTabsOnCtrl, WorkspaceTabsWhileCtrl:
+		return fm.transientWorkspaceStripShown()
 	default:
 		return false
 	}
+}
+
+// transientWorkspaceTabMode reports a mode whose strip comes and goes with Ctrl.
+func (fm *frameManager) transientWorkspaceTabMode() bool {
+	return fm.WorkspaceTabMode == WorkspaceTabsOnCtrl || fm.WorkspaceTabMode == WorkspaceTabsWhileCtrl
+}
+
+// transientWorkspaceStripShown reports the Ctrl strip up: Ctrl is held and,
+// in WorkspaceTabsOnCtrl, Ctrl+Tab has been pressed since.
+func (fm *frameManager) transientWorkspaceStripShown() bool {
+	switch fm.WorkspaceTabMode {
+	case WorkspaceTabsOnCtrl:
+		return fm.ctrlPressed && fm.workspaceTabPreview
+	case WorkspaceTabsWhileCtrl:
+		return fm.ctrlPressed
+	}
+	return false
 }
 
 func (fm *frameManager) drawWorkspaceTabs() {
@@ -3974,13 +3997,13 @@ func (fm *frameManager) dispatchEventWithPaste(ev *vtinput.InputEvent, is_inject
 		fm.syncTransientWorkspaceTabs(wasTabsVisible)
 	} else if ev.Type == vtinput.KeyEventType {
 		wasCtrlPressed := fm.ctrlPressed
+		wasTabsVisible := fm.transientWorkspaceStripShown()
 		ctrl := (ev.ControlKeyState & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed)) != 0
 		if ev.VirtualKeyCode == vtinput.VK_CONTROL || ev.VirtualKeyCode == vtinput.VK_LCONTROL || ev.VirtualKeyCode == vtinput.VK_RCONTROL {
 			ctrl = ev.KeyDown
 		}
 		fm.ctrlPressed = ctrl
-		if wasCtrlPressed != fm.ctrlPressed && fm.WorkspaceTabMode == WorkspaceTabsOnCtrl {
-			wasTabsVisible := wasCtrlPressed && fm.workspaceTabPreview
+		if wasCtrlPressed != fm.ctrlPressed && fm.transientWorkspaceTabMode() {
 			if !fm.ctrlPressed {
 				fm.workspaceTabPreview = false
 			}
@@ -4049,7 +4072,7 @@ func (fm *frameManager) dispatchEventWithPaste(ev *vtinput.InputEvent, is_inject
 		alt := mods&(vtinput.LeftAltPressed|vtinput.RightAltPressed) != 0
 		ctrl := mods&(vtinput.LeftCtrlPressed|vtinput.RightCtrlPressed) != 0
 		shift := mods&vtinput.ShiftPressed != 0
-		validModifiers := alt && !shift && (!ctrl || fm.WorkspaceTabMode == WorkspaceTabsOnCtrl)
+		validModifiers := alt && !shift && (!ctrl || fm.transientWorkspaceTabMode())
 		if validModifiers {
 			if fm.switchScreenNumber(int(ev.VirtualKeyCode - vtinput.VK_0)) {
 				return true

@@ -59,19 +59,23 @@ func WriteFileSafe(targetPath string, r io.Reader, mode os.FileMode) error {
 		_ = vfs.GetSudoClient().MkDir(dir, 0755)
 	}
 
-	var f *os.File
+	var f io.WriteCloser
 	f, err = os.OpenFile(targetPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
 	if err != nil && os.IsPermission(err) && vfs.GetSudoClient().IsAvailable() {
-		vtui.DebugLog("UPDATER: Permission denied for %q, attempting elevated write via sudo...", targetPath)
-		f, err = vfs.GetSudoClient().Open(targetPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, uint32(mode))
+		vtui.DebugLog("UPDATER: Permission denied for %q, attempting elevated write...", targetPath)
+		// CreateFile, not Open: on Windows no descriptor crosses from the
+		// elevated dispatcher, the contents go by requests (f4#1768).
+		f, err = vfs.GetSudoClient().CreateFile(targetPath, uint32(mode))
 	}
 
 	if err != nil {
 		return err
 	}
-	defer func() { _ = f.Close() }()
-
 	_, err = io.Copy(f, r)
+	// The elevated writer sends what is left at Close, so its error counts.
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
 	if err != nil {
 		return err
 	}

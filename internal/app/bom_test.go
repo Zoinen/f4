@@ -9,12 +9,13 @@ import (
 	"github.com/unxed/vtui"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
 func TestShowEditor_UTF8BOMIsNotDisplayedOrLostOnSave(t *testing.T) {
 	for _, memoryMap := range []bool{false, true} {
-		t.Run(map[bool]string{false: "async", true: "mapped"}[memoryMap], func(t *testing.T) {
+		t.Run(map[bool]string{false: "async", true: "mapping requested"}[memoryMap], func(t *testing.T) {
 			vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 			testutil.DrainPendingTasks()
 
@@ -54,11 +55,11 @@ func TestShowEditor_UTF8BOMIsNotDisplayedOrLostOnSave(t *testing.T) {
 			if ev.HexMode {
 				t.Fatal("BOM-marked UTF-8 text opened in hex mode")
 			}
-			if memoryMap && ev.Mapped == nil {
-				t.Fatal("mapped editor fell back to async buffer")
+			if memoryMap && runtime.GOOS != "windows" && ev.Mapped == nil {
+				t.Fatal("editor did not use the requested mapping")
 			}
-			if !memoryMap && ev.Mapped != nil {
-				t.Fatal("non-mapped editor unexpectedly created a mapping")
+			if (!memoryMap || runtime.GOOS == "windows") && ev.Mapped != nil {
+				t.Fatal("non-mappable editor unexpectedly created a mapping")
 			}
 
 			got, err := ev.Pt.GetRange(0, ev.Pt.Size())

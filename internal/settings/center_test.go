@@ -449,18 +449,27 @@ func TestSettingsPaneKeyboardPolicy(t *testing.T) {
 	c.selectCategory("panels")
 	c.SetFocusedItem(c.page)
 	first, last := c.page.rows[1].control, c.page.rows[3].control
+	// f4#1899, point 6: the page does not go round. Up on the first setting
+	// reaches the search field, Down on the last one the buttons, and Up
+	// from the buttons comes back to the last setting.
 	c.page.SetFocusedItem(first)
 	key(vtinput.VK_UP, false)
-	if c.GetFocusedItem() != c.page || c.page.GetFocusedItem() != last {
-		t.Fatal("Up must wrap inside content")
+	if c.GetFocusedItem() != c.search {
+		t.Fatalf("Up on the first setting went to %T, want the search field", c.GetFocusedItem())
 	}
-	key(vtinput.VK_DOWN, false)
-	if c.GetFocusedItem() != c.page || c.page.GetFocusedItem() != first {
-		t.Fatal("Down must wrap inside content")
-	}
+	c.SetFocusedItem(c.page)
+	c.page.SetFocusedItem(first)
 	key(vtinput.VK_DOWN, false)
 	if c.page.GetFocusedItem() != last {
 		t.Fatal("navigation must skip unavailable setting")
+	}
+	key(vtinput.VK_DOWN, false)
+	if c.GetFocusedItem() != c.apply {
+		t.Fatalf("Down on the last setting went to %T, want Apply", c.GetFocusedItem())
+	}
+	key(vtinput.VK_UP, false)
+	if c.GetFocusedItem() != c.page || c.page.GetFocusedItem() != last {
+		t.Fatal("Up from Apply did not come back to the last setting")
 	}
 	key(vtinput.VK_LEFT, false)
 	if c.GetFocusedItem() != c.sidebar {
@@ -484,6 +493,22 @@ func TestSettingsPaneKeyboardPolicy(t *testing.T) {
 	key(vtinput.VK_DOWN, false)
 	if c.GetFocusedItem() != c.apply {
 		t.Fatal("arrows escaped bottom buttons")
+	}
+	// f4#1899, points 3 and 4: Left on the first button and Right on the
+	// last one leave the row as Shift+Tab and Tab do.
+	key(vtinput.VK_RIGHT, false)
+	if c.GetFocusedItem() != c.ok {
+		t.Fatal("Right on Apply did not reach OK")
+	}
+	key(vtinput.VK_RIGHT, false)
+	key(vtinput.VK_RIGHT, false)
+	if c.GetFocusedItem() != c.search {
+		t.Fatalf("Right on Cancel went to %T %s, want the first control, as Tab", c.GetFocusedItem(), c.GetFocusedItem().GetId())
+	}
+	c.SetFocusedItem(c.apply)
+	key(vtinput.VK_LEFT, false)
+	if c.GetFocusedItem() != c.page {
+		t.Fatalf("Left on Apply went to %T %s, want the page, as Shift+Tab", c.GetFocusedItem(), c.GetFocusedItem().GetId())
 	}
 	for _, cat := range c.categories {
 		if got := c.categoryLabel(cat.ID); got != cat.Label.Resolve(config.App.Language, i18n.Msg) {
@@ -823,6 +848,28 @@ func TestSettingsCenterOpensMaximizedForHotkeysAtItsComputedThreshold(t *testing
 	}
 }
 
+func TestSettingsCenterMaximizesWhenNavigatingToHotkeys(t *testing.T) {
+	previousHost := host
+	fake := hotkeyTableSizeFakeHost{minPageWidth: 60}
+	Configure(fake)
+	t.Cleanup(func() { Configure(previousHost) })
+
+	d, _ := (coreSettingsProvider{}).Begin(context.Background())
+	defer d.Close()
+	c := newSettingsCenter([]*settingsSession{{catalog: (coreSettingsProvider{}).Catalog(), draft: d}})
+	threshold := minScreenWidthForWindow(fake.minPageWidth + c.categorySidebarNaturalWidth() + 1 + 4)
+	width := threshold - 1
+	c.ResizeConsole(width, 60)
+	if c.SavedBounds != nil {
+		t.Fatal("ordinary settings page should start at its ordinary size in a large terminal")
+	}
+
+	c.selectCategory("hotkeys")
+	if c.SavedBounds == nil || c.X1 != 0 || c.X2 != width-1 || c.Y1 != 0 || c.Y2 != 58 {
+		t.Fatalf("navigating to Hotkeys left the dialog at %d,%d–%d,%d with saved bounds %v; want a maximized dialog", c.X1, c.Y1, c.X2, c.Y2, c.SavedBounds)
+	}
+}
+
 // A long operation says what it is doing in the status row while it runs, and
 // the row is empty again when it has finished without error (#277).
 func TestSettingsCenterShowsAnOperationsProgress(t *testing.T) {
@@ -861,5 +908,114 @@ func TestSettingsCenterShowsAnOperationsProgress(t *testing.T) {
 	pump(func() bool { return c.running == nil })
 	if c.status != "" {
 		t.Fatalf("the progress line stayed after the operation finished: %q", c.status)
+	}
+}
+
+// f4#1899 (point 5): a description longer than its block can be scrolled
+// from the keyboard. Tab stops on it after the page; Up/Down/Home/End
+// scroll it; past its first and last line the arrows go on to the page
+// and to the buttons.
+func TestSettingsHelpScrollsFromTheKeyboard(t *testing.T) {
+	d, _ := (coreSettingsProvider{}).Begin(context.Background())
+	defer d.Close()
+	c := newSettingsCenter([]*settingsSession{{catalog: (coreSettingsProvider{}).Catalog(), draft: d}})
+	c.selectCategory("panels")
+	c.ResizeConsole(130, 35)
+	c.SetPosition(0, 0, 129, 34)
+	key := func(k uint16) {
+		c.ProcessKey(&vtinput.InputEvent{KeyDown: true, VirtualKeyCode: k})
+	}
+	c.help.text = strings.Repeat("A long description line that wraps. ", 120)
+	c.help.top = 0
+	if !c.help.CanFocus() || c.help.maxTop() == 0 {
+		t.Fatal("a description that does not fit cannot take the focus")
+	}
+	c.SetFocusedItem(c.page)
+	c.page.SetFocusedItem(lastPageControl(c))
+	key(vtinput.VK_TAB)
+	if c.GetFocusedItem() != c.help {
+		t.Fatalf("Tab from the page went to %T, want the description", c.GetFocusedItem())
+	}
+	key(vtinput.VK_DOWN)
+	if c.help.top != 1 {
+		t.Fatalf("Down scrolled to line %d, want 1", c.help.top)
+	}
+	key(vtinput.VK_END)
+	if c.help.top != c.help.maxTop() {
+		t.Fatalf("End scrolled to line %d, want %d", c.help.top, c.help.maxTop())
+	}
+	key(vtinput.VK_DOWN)
+	if c.GetFocusedItem() != c.apply {
+		t.Fatalf("Down on the last line went to %T, want Apply", c.GetFocusedItem())
+	}
+	c.SetFocusedItem(c.help)
+	key(vtinput.VK_HOME)
+	key(vtinput.VK_UP)
+	if c.GetFocusedItem() != c.page {
+		t.Fatalf("Up on the first line went to %T, want the page", c.GetFocusedItem())
+	}
+
+	c.help.text = "Short."
+	if c.help.CanFocus() {
+		t.Error("a description that fits still takes the focus")
+	}
+}
+
+// lastPageControl is the last control of the page that can take the focus.
+func lastPageControl(c *settingsCenter) vtui.UIElement {
+	var last vtui.UIElement
+	for _, r := range c.page.rows {
+		if r.control != nil && r.control.CanFocus() && !r.control.IsDisabled() {
+			last = r.control
+		}
+	}
+	return last
+}
+
+// f4#1899 (point 2): on a page of several groups Tab goes to the first
+// control of the next group and Shift+Tab to that of the previous one;
+// Tab in the last group leaves the page.
+func TestSettingsTabMovesBetweenGroups(t *testing.T) {
+	d, _ := (coreSettingsProvider{}).Begin(context.Background())
+	defer d.Close()
+	c := newSettingsCenter([]*settingsSession{{catalog: (coreSettingsProvider{}).Catalog(), draft: d}})
+	c.selectCategory("panels")
+	c.ResizeConsole(130, 35)
+	c.SetPosition(0, 0, 129, 34)
+	key := func(shift bool) {
+		ev := &vtinput.InputEvent{KeyDown: true, VirtualKeyCode: vtinput.VK_TAB}
+		if shift {
+			ev.ControlKeyState = vtinput.ShiftPressed
+		}
+		c.ProcessKey(ev)
+	}
+	var firsts []vtui.UIElement
+	for _, box := range c.page.boxes {
+		for _, r := range box.rows {
+			if r.control != nil && r.control.CanFocus() && !r.control.IsDisabled() {
+				firsts = append(firsts, r.control)
+				break
+			}
+		}
+	}
+	if len(firsts) < 2 {
+		t.Skipf("the panels page has %d groups; the test needs two", len(firsts))
+	}
+	c.SetFocusedItem(c.page)
+	c.page.SetFocusedItem(firsts[0])
+	for i := 1; i < len(firsts); i++ {
+		key(false)
+		if c.GetFocusedItem() != c.page || c.page.GetFocusedItem() != firsts[i] {
+			t.Fatalf("Tab %d did not reach the first control of group %d", i, i)
+		}
+	}
+	key(true)
+	if c.page.GetFocusedItem() != firsts[len(firsts)-2] {
+		t.Fatal("Shift+Tab did not go back to the previous group")
+	}
+	c.page.SetFocusedItem(firsts[len(firsts)-1])
+	key(false)
+	if c.GetFocusedItem() == c.page {
+		t.Fatal("Tab in the last group did not leave the page")
 	}
 }

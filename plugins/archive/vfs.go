@@ -755,6 +755,15 @@ type archiveReadWrapper struct {
 	readPos      int64
 	streamReadAt bool
 	seq          seqMemberReader
+	// fStreamed is set once Read has streamed from f, so f no longer starts
+	// at the member's first byte. fTaken is set once materialization reads
+	// from f itself; Read then waits for the private copy instead of
+	// streaming from the same handle. A fresh, unshared f is what lets
+	// materialization skip reopening the member: for a solid 7z block a
+	// reopen decodes everything stored before the member a second time
+	// (f4#1731).
+	fStreamed bool
+	fTaken    bool
 }
 
 func archiveFileCRC(info fs.FileInfo) (uint32, bool) {
@@ -801,6 +810,8 @@ func (w *archiveReadWrapper) reopenAfterPassword(ctx context.Context, cause erro
 	w.mu.Lock()
 	old := w.f
 	w.f = replacement
+	w.fStreamed = false
+	w.fTaken = false
 	w.mu.Unlock()
 	if old != nil {
 		_ = old.Close() // The replaced archive member was read-only.
@@ -914,6 +925,12 @@ func (w *archiveReadWrapper) extractToTempRandom(ctx context.Context) error {
 		if err == nil {
 			src = w.f
 		}
+	} else if w.f != nil && !w.fStreamed && !w.fTaken {
+		// Nobody has read this handle yet, so it still starts at the
+		// member's first byte. Reopening instead would make a solid 7z
+		// decode the whole block up to the member once more (f4#1731).
+		src = w.f
+		w.fTaken = true
 	}
 	w.mu.Unlock()
 
@@ -996,6 +1013,7 @@ func (w *archiveReadWrapper) extractToTempRandom(ctx context.Context) error {
 				if retryErr := w.reopenAfterPassword(ctx, errRead); retryErr == nil {
 					w.mu.Lock()
 					src = w.f
+					w.fTaken = true
 					w.mu.Unlock()
 					if seeker, ok := src.(io.Seeker); ok {
 						if _, err := seeker.Seek(0, io.SeekStart); err != nil {
@@ -1362,7 +1380,6 @@ func (w *archiveReadWrapper) Read(ctx context.Context, p []byte) (int, error) {
 		return tmp.Read(p)
 	}
 
-	f := w.f
 	v := w.v
 	w.mu.Unlock()
 	if v != nil {
@@ -1384,6 +1401,23 @@ func (w *archiveReadWrapper) Read(ctx context.Context, p []byte) (int, error) {
 		w.mu.Unlock()
 		return tmp.Read(p)
 	}
+
+	w.mu.Lock()
+	if w.extracted || w.fTaken {
+		// Materialization is reading this very handle; take the bytes from
+		// its private copy instead of racing it for the same stream.
+		w.mu.Unlock()
+		if err := w.materialize(ctx, false); err != nil {
+			return 0, err
+		}
+		w.mu.Lock()
+		tmp := w.tmpFile
+		w.mu.Unlock()
+		return tmp.Read(p)
+	}
+	f := w.f
+	w.fStreamed = true
+	w.mu.Unlock()
 
 	var n int
 	var err error
@@ -1417,6 +1451,7 @@ func (w *archiveReadWrapper) Read(ctx context.Context, p []byte) (int, error) {
 		}
 		w.mu.Lock()
 		f = w.f
+		w.fStreamed = true
 		position := w.readPos
 		w.mu.Unlock()
 		if err := seekArchiveFile(f, position); err != nil {

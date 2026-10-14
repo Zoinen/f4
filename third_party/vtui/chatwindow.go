@@ -1,6 +1,7 @@
 package vtui
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -152,10 +153,14 @@ type ChatWindow struct {
 	// link. Returning ok == false leaves the line alone.
 	ExtraLink func(line string) (label, target string, ok bool)
 
-	topPos         int
-	lines          []chatWinLine
-	visibleLinks   []ChatLink
-	focusedLinkIdx int // -1: Input has focus. -2: StatusBar has focus. >=0: that link has focus.
+	topPos            int
+	lines             []chatWinLine
+	visibleLinks      []ChatLink
+	focusedLinkIdx    int // -1: Input has focus. -2: StatusBar has focus. >=0: that link has focus.
+
+	// turnsFingerprintStr is a cheap fingerprint of Turns to avoid re-wrapping
+	// on every frame when the conversation hasn't changed.
+	turnsFingerprintStr string
 }
 
 // NewChatWindow creates a chat control occupying (x1,y1)-(x2,y2). Like
@@ -214,10 +219,10 @@ func (cw *ChatWindow) SetFocus(f bool) {
 	}
 }
 
-// ScrollToBottom recomputes wrapped lines and scrolls to show the last page
-// of the message history. Hosts call it right after appending a turn.
+// ScrollToBottom recomputes wrapped lines (if needed) and scrolls to show the
+// last page of the message history. Hosts call it right after appending a turn.
 func (cw *ChatWindow) ScrollToBottom() {
-	cw.updateLines()
+	cw.maybeUpdateLines()
 	h := cw.Input.Y1 - cw.Y1 - 2
 	maxTop := len(cw.lines) - h
 	if maxTop > 0 {
@@ -729,11 +734,33 @@ func (cw *ChatWindow) updateLines() {
 	cw.lines = lines
 }
 
+// maybeUpdateLines recomputes wrapped lines only when Turns have changed.
+// It uses a cheap fingerprint (length + hash of last turn text) to avoid
+// re-wrapping the entire conversation on every frame.
+func (cw *ChatWindow) maybeUpdateLines() {
+	fp := cw.computeTurnsFingerprint()
+	if fp == cw.turnsFingerprintStr {
+		return
+	}
+	cw.turnsFingerprintStr = fp
+	cw.updateLines()
+}
+
+// computeTurnsFingerprint returns a cheap fingerprint of the current Turns.
+func (cw *ChatWindow) computeTurnsFingerprint() string {
+	if len(cw.Turns) == 0 {
+		return "empty"
+	}
+	last := cw.Turns[len(cw.Turns)-1]
+	// Fingerprint: number of turns + length of last turn text + busy state
+	return fmt.Sprintf("%d|%d|%v", len(cw.Turns), len(last.Text), cw.Busy)
+}
+
 // Show draws Frame, the message history (scrolled to topPos), the optional
 // StatusBar strip, and Input, in that order.
 func (cw *ChatWindow) Show(scr *ScreenBuf) {
 	cw.Frame.Show(scr)
-	cw.updateLines()
+	cw.maybeUpdateLines()
 
 	x1, y1 := cw.X1+1, cw.Y1+1
 	x2 := cw.X2 - 1

@@ -120,8 +120,9 @@ func coreSettingsStaticFields() []f4settings.Field {
 		fields = append(fields, f4settings.Field{ID: fmt.Sprintf("HistoryShowTimes.%d", i), Category: "history", Group: "Presentation", Label: f4settings.Text{English: label}, Description: f4settings.Text{English: "Choose the timestamp presentation independently for this history."}, Kind: f4settings.ChoiceKind, Choices: settingsChoices("0:Date and time;1:Date;2:None"), Timing: "new history dialogs"})
 	}
 	driveDescriptions := []string{"Add the drive-kind column.", "Display the filesystem volume label.", "This stored compatibility flag currently has no consumer.", "Display filesystem type.", "Display total and free capacity columns.", "Use fractional human-readable capacity instead of integer binary units.", "Display the mount target when different from the drive path.", "Include registered plugin drives and providers.", "Order plugin drive rows by their assigned shortcut.", "Include removable drives.", "Include optical drives.", "Include mapped and network drives.", "This stored compatibility flag has no consumer. SUBST detection runs independently.", "Include saved bookmarks and links."}
+	driveLabels := []string{"Show disk type", "Show disk label", "Use shell name", "Show file system type", "Show size", "Show size float", "Show network path", "Show tools", "Sort tools by hot key", "Show removable drive parameters", "Show CD drive parameters", "Show remote drive parameters", "Detect virtual drives", "Show bookmarks"}
 	for i, spec := range panel.DriveMenuOptionSpecs {
-		f := f4settings.Field{ID: fmt.Sprintf("DriveMenuOptions.%d", i), Category: "drives", Group: "Drive entries", Label: f4settings.Text{English: strings.TrimPrefix(spec.Label, "Drive."), Key: spec.Label}, Description: f4settings.Text{English: driveDescriptions[i]}, Kind: f4settings.Boolean, Timing: "next drive menu"}
+		f := f4settings.Field{ID: driveMenuOptionFieldID(spec.Label), Category: "drives", Group: "Drive entries", Label: f4settings.Text{English: driveLabels[i], Key: spec.Label}, Description: f4settings.Text{English: driveDescriptions[i]}, Kind: f4settings.Boolean, Timing: "next drive menu"}
 		if i == 2 || i == 12 {
 			f.Unavailable = driveDescriptions[i]
 		}
@@ -395,4 +396,16 @@ func (p coreSettingsProvider) Begin(context.Context) (*f4settings.Draft, error) 
 // installation. It starts Colorer on a cache miss; call it off the UI thread.
 func settingsColorerSchemes() []editor.ColorerScheme {
 	return editor.ListColorerSchemesFor(editor.CurrentColorerSource())
+}
+
+// driveMenuOptionFieldID is the settings field of the drive menu option whose
+// label key is label: DriveMenuOptions.N, N being its place in
+// panel.DriveMenuOptionSpecs, as it is stored.
+func driveMenuOptionFieldID(label string) string {
+	for i, spec := range panel.DriveMenuOptionSpecs {
+		if spec.Label == label {
+			return fmt.Sprintf("DriveMenuOptions.%d", i)
+		}
+	}
+	return ""
 }

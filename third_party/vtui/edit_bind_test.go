@@ -3,6 +3,7 @@ package vtui
 import (
 	"testing"
 
+	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui/vreactive"
 )
 
@@ -107,4 +108,75 @@ func TestTextBindTextFollowsTheProperty(t *testing.T) {
 	if tx.cleanText == "three" {
 		t.Fatal("the text still follows the property after unbind")
 	}
+}
+
+func TestRadioGroupBindSelectedFollowsAndUpdatesTheProperty(t *testing.T) {
+	SetDefaultPalette()
+	prop := vreactive.NewProperty(2)
+	rg := NewRadioGroup(0, 0, 1, []string{"&One", "&Two", "T&hree"})
+	var previous []int
+	rg.OnChange = func(index int) { previous = append(previous, index) }
+
+	unbind := rg.BindSelected(prop)
+	if rg.Selected != 2 || rg.focusIdx != 2 {
+		t.Fatalf("the property (2) is applied at once: Selected = %d, focus = %d", rg.Selected, rg.focusIdx)
+	}
+	prop.Set(0)
+	if rg.Selected != 0 || rg.focusIdx != 0 {
+		t.Fatalf("after the property went 0: Selected = %d, focus = %d", rg.Selected, rg.focusIdx)
+	}
+	// An index outside the items selects nothing and keeps the focus in range.
+	prop.Set(7)
+	if rg.Selected != 7 || rg.focusIdx != 0 {
+		t.Fatalf("out of range: Selected = %d, focus = %d", rg.Selected, rg.focusIdx)
+	}
+
+	// Choosing an item with the keyboard updates the property and still
+	// reaches the handler that was there.
+	rg.focusIdx = 1
+	rg.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_SPACE})
+	if prop.Get() != 1 {
+		t.Fatalf("property after choosing item 1 = %d", prop.Get())
+	}
+	if len(previous) == 0 || previous[len(previous)-1] != 1 {
+		t.Fatalf("the previous OnChange handler was not called: %v", previous)
+	}
+
+	unbind()
+	prop.Set(2)
+	if rg.Selected == 2 {
+		t.Fatal("the group still follows the property after unbind")
+	}
+	before := len(previous)
+	rg.OnChange(0)
+	if len(previous) != before+1 || prop.Get() != 2 {
+		t.Fatal("unbind must restore the previous handler and stop feeding the property")
+	}
+}
+
+func TestProgressBarBindPercentFollowsTheProperty(t *testing.T) {
+	prop := vreactive.NewProperty(40)
+	pb := NewProgressBar(0, 0, 10)
+	unbind := pb.BindPercent(prop)
+	if pb.Percent != 40 {
+		t.Fatalf("percent = %d, want the property's value at once", pb.Percent)
+	}
+	prop.Set(150)
+	if pb.Percent != 100 {
+		t.Fatalf("percent after 150 = %d, want it clamped to 100", pb.Percent)
+	}
+	unbind()
+	prop.Set(5)
+	if pb.Percent != 100 {
+		t.Fatal("the bar still follows the property after unbind")
+	}
+}
+
+func TestBindSelectionAndProgressWithNothingIsHarmless(t *testing.T) {
+	var rg *RadioGroup
+	rg.BindSelected(vreactive.NewProperty(0))()
+	NewRadioGroup(0, 0, 1, []string{"a"}).BindSelected(nil)()
+	var pb *ProgressBar
+	pb.BindPercent(vreactive.NewProperty(0))()
+	NewProgressBar(0, 0, 5).BindPercent(nil)()
 }

@@ -478,8 +478,27 @@ func TestCreateDefaultHighlightIniDocumentsColorOptions(t *testing.T) {
 			t.Errorf("generated highlight.ini still advertises the old color name %q", key)
 		}
 	}
-	if got := strings.Count(content, "# [Highlight_"); got != 2 {
-		t.Errorf("generated highlight.ini has %d examples, want 2", got)
+	if got := strings.Count(content, "# [Highlight_"); got != 3 {
+		t.Errorf("generated highlight.ini has %d highlight examples, want 3", got)
+	}
+	// f4#912 (mitek1977-coder): every example is at the end of the comments,
+	// after the description of the sort groups, and the two sort-group
+	// examples are comments only: one Highlight section with Group and one
+	// dedicated SortGroup section.
+	if strings.Contains(content, "\n[") {
+		t.Error("generated highlight.ini contains an active section")
+	}
+	if got := strings.Count(content, "# Group = "); got != 2 {
+		t.Errorf("generated highlight.ini has %d sort-group examples, want 2", got)
+	}
+	if !strings.Contains(content, "# [SortGroup_") {
+		t.Error("generated highlight.ini has no dedicated sort-group example")
+	}
+	if !strings.HasSuffix(strings.TrimSuffix(content, "\n"), "#") {
+		t.Error("generated highlight.ini must end its comments with a standalone # separator")
+	}
+	if first, desc := strings.Index(content, "# [Highlight_"), strings.Index(content, "Sort groups put files of one kind together"); first < desc {
+		t.Errorf("the first example (at %d) is above the description of the sort groups (at %d)", first, desc)
 	}
 
 	// The ordinary colors take a background just like the cursor ones, and the
@@ -1055,5 +1074,36 @@ func TestRefreshHighlightIniHeaderLeavesOtherFilesAlone(t *testing.T) {
 	after, _ := os.ReadFile(fresh)
 	if string(before) != string(after) {
 		t.Error("the stock file must stay byte-for-byte the same")
+	}
+}
+
+// f4#1870: the tab strip shown while a plain Ctrl is held is a mode of its
+// own, saved as "whilectrl"; "ctrl" stays the Ctrl+Tab mode of vtui#496.
+func TestConfig_WorkspaceTabModeWhileCtrlRoundTrips_Issue1870(t *testing.T) {
+	userIniPath := filepath.Join(t.TempDir(), "settings.ini")
+	origUserPathFunc := GetUserConfigIniPath
+	origPathsFunc := GetConfigIniPaths
+	oldCfg := App
+	defer func() {
+		GetUserConfigIniPath = origUserPathFunc
+		GetConfigIniPaths = origPathsFunc
+		App = oldCfg
+	}()
+	GetUserConfigIniPath = func() string { return userIniPath }
+	GetConfigIniPaths = func() []string { return []string{userIniPath} }
+
+	App.WorkspaceTabMode = int(vtui.WorkspaceTabsWhileCtrl)
+	SaveConfig()
+	data, err := os.ReadFile(userIniPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "WorkspaceTabMode = whilectrl") {
+		t.Fatalf("saved settings do not name the mode whilectrl:\n%s", data)
+	}
+	App.WorkspaceTabMode = int(vtui.WorkspaceTabsOnCtrl)
+	LoadConfig()
+	if App.WorkspaceTabMode != int(vtui.WorkspaceTabsWhileCtrl) {
+		t.Fatalf("WorkspaceTabMode after load = %d, want WorkspaceTabsWhileCtrl %d", App.WorkspaceTabMode, vtui.WorkspaceTabsWhileCtrl)
 	}
 }

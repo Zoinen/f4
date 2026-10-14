@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"fmt"
 	"github.com/unxed/f4/internal/i18n"
 	"github.com/unxed/f4/internal/panel"
@@ -87,18 +88,37 @@ func sheetResolvePath(path string) string {
 	return sheetPathIn(sheetDirectory(), path)
 }
 
-// loadSheetCSV reads a CSV file into a fresh sheet.
-func loadSheetCSV(path string) (*sheet.Sheet, error) {
-	File, err := os.Open(path)
+// loadSheetCSV reads a CSV file into a fresh sheet, with the field delimiter
+// guessed from the file (tab, semicolon or comma, f4#1892).
+func loadSheetCSV(path string) (*sheet.Sheet, error) { return loadSheetCSVWith(path, 0) }
+
+// loadSheetCSVWith reads a CSV file with the delimiter sep, or the guessed one
+// when sep is 0. The sheet keeps the delimiter, so an export writes it back.
+func loadSheetCSVWith(path string, sep rune) (*sheet.Sheet, error) {
+	data, err := os.ReadFile(path) // #nosec G304 -- the file the user opened.
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = File.Close() }()
+	if sep == 0 {
+		sep = sheet.DetectCSVSeparator(data[:min(len(data), 64*1024)])
+	}
 	target := sheet.New()
-	if err := target.ImportCSV(File); err != nil {
+	target.CSVSeparator = sep
+	if err := target.ImportCSV(bytes.NewReader(data)); err != nil {
 		return nil, err
 	}
+	// Just read from disk: nothing to save yet.
+	target.Modified = false
 	return target, nil
+}
+
+// sheetIsCSVPath reports whether the sheet's file is read as CSV.
+func sheetIsCSVPath(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".csv", ".tsv", ".tab":
+		return true
+	}
+	return false
 }
 
 // exportSheetCSV writes the displayed values of a sheet as CSV.
@@ -332,6 +352,58 @@ func showSheetWidthDialog(sf *SheetFrame) {
 }
 
 // showSheetFormatDialog is the cell/block format editor.
+// showSheetCSVSeparatorDialog lets the user change the CSV field delimiter.
+func showSheetCSVSeparatorDialog(sf *SheetFrame) {
+	sep := sf.Document().CSVSeparator
+	var initial string
+	switch sep {
+	case '\t':
+		initial = "tab"
+	case ';':
+		initial = "semicolon"
+	case ' ':
+		initial = "space"
+	default:
+		initial = "comma"
+	}
+	askSheetPathLike(i18n.Msg("Sheet.CSVSeparatorTitle"),
+		i18n.Msg("Sheet.CSVSeparatorPrompt"), initial, 12, func(text string) {
+			text = strings.TrimSpace(strings.ToLower(text))
+			var r rune
+			switch text {
+			case "comma", ",":
+				r = ','
+			case "tab", "\\t", "t":
+				r = '\t'
+			case "semicolon", ";":
+				r = ';'
+			case "space", " ":
+				r = ' '
+			default:
+				return
+			}
+			if r == sf.Document().CSVSeparator {
+				return
+			}
+			// A CSV file opened and not edited since is read again with
+			// the new delimiter: the point of choosing one is to see the
+			// columns of a file it was guessed wrong for (f4#1892).
+			if sheetIsCSVPath(sf.path) && !sf.Document().Modified {
+				loaded, err := loadSheetCSVWith(sf.path, r)
+				if err != nil {
+					vtui.ShowMessage(i18n.Msg("Sheet.Title"), err.Error(), []string{i18n.Msg("vtui.Ok")})
+					return
+				}
+				sf.doc = loaded
+				sf.cur = sheet.Point{}
+				sf.delta = sheet.Point{}
+				sf.marking = false
+				return
+			}
+			sf.Document().CSVSeparator = r
+		})
+}
+
 func showSheetFormatDialog(sf *SheetFrame) {
 	dlg := vtui.NewCenteredDialog(50, 18, i18n.Msg("Sheet.FormatTitle"))
 	dlg.ShowClose = true
@@ -576,6 +648,7 @@ func sheetMenuEntries() []sheetMenuEntry {
 		{i18n.Msg("Sheet.MenuSeparators"), "Alt-S", func(sf *SheetFrame) {
 			sf.Document().Separators = !sf.Document().Separators
 		}},
+		{i18n.Msg("Sheet.MenuCSVSeparator"), "", showSheetCSVSeparatorDialog},
 		{i18n.Msg("Sheet.MenuInsertRow"), "Alt-I", func(sf *SheetFrame) { sf.Document().InsertRow(sf.Cursor().Row) }},
 		{i18n.Msg("Sheet.MenuInsertColumn"), "Alt-C", func(sf *SheetFrame) { sf.Document().InsertColumn(sf.Cursor().Col) }},
 		{i18n.Msg("Sheet.MenuDeleteRow"), "Alt-L", func(sf *SheetFrame) { sf.Document().DeleteRow(sf.Cursor().Row) }},

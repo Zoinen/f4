@@ -65,7 +65,7 @@ var commandPaletteAuditClasses = map[string]bool{
 // one package to another; it never removes one. A smaller number here means an
 // audit entry was dropped together with its subject, which the set comparison
 // below cannot see because both sides shrink at once.
-const commandPaletteF4Surfaces = 75
+const commandPaletteF4Surfaces = 78
 
 // commandPaletteTargetPackage named the package each audited cmd/f4 file would
 // end up in once the split reached it, so an audit key survived the move that
@@ -112,6 +112,9 @@ var commandPaletteProcessKeyAudit = map[string]commandPaletteSurfaceAudit{
 	"app.(*markdownView).ProcessKey": {
 		class: paletteAuditModalLocal, rationale: "the formatted Markdown view is a read-only frame F3 opens on a Markdown file in place of the text viewer; F3/F10 close it and F4 goes back to the text view, local to it like the text viewer's own mode switch, and scrolling is HelpView's",
 	},
+	"macro.(*macroKeyEdit).ProcessKey": {
+		class: paletteAuditModalLocal, rationale: "the key field of the macro assign dialog (Ctrl+., f4#1870) takes the pressed key as the macro's key instead of typing; it means nothing outside that dialog",
+	},
 	"editor.(*EditorView).ProcessKey": {
 		class: paletteAuditActionArea, rationale: "editor commands are registered actions; raw text and cursor editing remain local primitives",
 	},
@@ -150,6 +153,9 @@ var commandPaletteProcessKeyAudit = map[string]commandPaletteSurfaceAudit{
 	},
 	"panel.(*toolsOptionsList).ProcessKey": {
 		class: paletteAuditModalLocal, rationale: "the list of the F11 tools window switches a tool on or off and selects its row locally; it is not a global command surface",
+	},
+	"panel.(*HotkeyEdit).ProcessKey": {
+		class: paletteAuditModalLocal, rationale: "the Hot key field of the drive menu's Tools page takes a letter, a digit or Delete locally and is not a global command surface",
 	},
 	"panel.(*pluginHotkeyEdit).ProcessKey": {
 		class: paletteAuditModalLocal, rationale: "the one-character field of the plugin hotkey dialog takes a letter, a digit or Delete locally and is not a global command surface",
@@ -273,6 +279,9 @@ var commandPaletteNewVMenuAudit = map[string]commandPaletteSurfaceAudit{
 	},
 	"panel.showModeColumnsEditor#1": {
 		class: paletteAuditModalLocal, rationale: "the type picker of the column list inside the panel mode dialog (Settings.PanelModes, f4#410); it only chooses which column the local list adds",
+	},
+	"panel.showModeColumnsEditor#2": {
+		class: paletteAuditModalLocal, rationale: "the modifier picker after a column type in the same list (SC, SE, DMB..., f4#410); it only chooses which variant of that column the local list adds",
 	},
 	"app.actionFoldersHistory#1": {
 		class: paletteAuditDynamicAction, rationale: "the registered folder-history action opens a runtime history list",

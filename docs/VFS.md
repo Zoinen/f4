@@ -87,7 +87,7 @@ Panel actions pass their originating frame to queued operations. Interactive
 conflict dialogs belong to that workspace, not the queue worker's frame:
 otherwise a hidden confirmation can retain resource reservations indefinitely.
 
-## Elevated dispatcher on Windows (f4#1768, in progress)
+## Elevated dispatcher on Windows (f4#1768)
 
 On Unix a root dispatcher, started through `sudo`, answers the file operations a
 user was refused; the socket's file permissions are what keep other users off
@@ -106,7 +106,19 @@ What is done: the authenticated channel, and the dispatcher itself:
 `f4 --elevated-dispatcher <socket> <token>` (accepted only as the whole tail of
 the command line) listens on the socket, serves the one client with the token and
 exits when it leaves; `LaunchElevatedDispatcher` starts it through
-`ShellExecute "runas"`, which is where UAC asks. Still to come, one part at a time:
-the operations it serves, and the prompt in panels and in the editor that offers to
-retry a refused operation as administrator. Until the last part lands the Windows build still
-reports elevation as unavailable.
+`ShellExecute "runas"`, which is where UAC asks. It serves the path operations
+(`ElevatedFileOps`: Stat, ReadDir, MkDir, Remove, Rename, SetAttributes, links)
+and file contents in chunks of up to 4 MiB (`CmdReadAt`, `CmdWriteAt`); errors
+travel as a code (`SudoResponse.Errno`), not as Windows message text.
+
+On Windows the client is on: when an `OSVFS` operation is refused, `SudoClient`
+first asks the user whether to continue as administrator (`Elevation.*`
+messages, `confirmElevation`), and only after a yes starts the dispatcher, so
+UAC asks. The yes holds until f4 exits; a no is not remembered, like a cancelled
+sudo password. `Open` and `Create` on this path read and write through
+`elevatedFile` and `elevatedWriter` (`vfs/sudo_elevated_file.go`);
+`SudoClient.Open`, which hands out a descriptor, is refused up front. A create
+that must not replace (`O_EXCL`, the editor's staged sibling when it saves)
+makes the empty file through the dispatcher first (`SudoWriteExclusive`), so a
+taken name fails at `Create` and the editor's temp-then-rename save works
+elevated. Still to come: checks on Windows 10/11 and Server 2019.

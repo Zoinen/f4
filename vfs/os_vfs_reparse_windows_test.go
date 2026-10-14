@@ -72,3 +72,55 @@ func TestOSVFS_ReparseTagTellsJunctionFromSymlink(t *testing.T) {
 	}
 	check("ReadDir symlink", items["symlink"], ReparseTagSymlink, LinkSymlink)
 }
+
+// TestOSVFS_DanglingJunctionIsADirectory: a junction whose target does not
+// exist must still classify as a directory (IO_REPARSE_TAG_MOUNT_POINT is
+// only ever placed on directories). Otherwise the panel draws the row as a
+// file, Enter falls into the file-open path, and the failure is silent --
+// the Public\Documents "My Music"/"My Pictures" junctions on machines where
+// the Public targets were removed.
+func TestOSVFS_DanglingJunctionIsADirectory(t *testing.T) {
+	if hostmode.Posix() {
+		t.Skip("the posix personality has no reparse points")
+	}
+	root := t.TempDir()
+	junction := filepath.Join(root, "dangling")
+	target := filepath.Join(root, "missing-target")
+	// mklink /J does not require the target to exist.
+	mklink := exec.Command("cmd")
+	mklink.SysProcAttr = &syscall.SysProcAttr{CmdLine: `cmd /s /c "mklink /J "` + junction + `" "` + target + `""`}
+	if out, err := mklink.CombinedOutput(); err != nil {
+		t.Fatalf("mklink /J: %v: %s", err, out)
+	}
+
+	v := NewOSVFS(root)
+	items := make(map[string]VFSItem)
+	if err := v.ReadDir(context.Background(), root, func(chunk []VFSItem) {
+		for _, it := range chunk {
+			items[it.Name] = it
+		}
+	}); err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	it, ok := items["dangling"]
+	if !ok {
+		t.Fatal("dangling junction not listed")
+	}
+	if !it.IsDir {
+		t.Errorf("ReadDir: dangling junction IsDir=false, want true (item %+v)", it)
+	}
+	if it.ReparseTag != ReparseTagMountPoint {
+		t.Errorf("ReadDir: ReparseTag=%#x, want %#x", it.ReparseTag, ReparseTagMountPoint)
+	}
+
+	if it, err := v.Lstat(context.Background(), junction); err != nil {
+		t.Errorf("Lstat: %v", err)
+	} else if !it.IsDir {
+		t.Errorf("Lstat: dangling junction IsDir=false, want true (item %+v)", it)
+	}
+	if it, err := v.Stat(context.Background(), junction); err != nil {
+		t.Errorf("Stat: %v", err)
+	} else if !it.IsDir {
+		t.Errorf("Stat: dangling junction IsDir=false, want true (item %+v)", it)
+	}
+}

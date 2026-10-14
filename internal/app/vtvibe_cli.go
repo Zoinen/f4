@@ -134,6 +134,8 @@ func runAICLI(args []string, stdin io.Reader, stdout, stderr io.Writer, readConf
 	if err != nil {
 		if errors.Is(err, vtvibe.ErrNoKey) {
 			_, _ = fmt.Fprintln(stderr, "f4 --ai: no API key: set the key variable of the provider or the key in Settings → AI")
+		} else if errors.Is(err, vtvibe.ErrNoModel) {
+			_, _ = fmt.Fprintln(stderr, "f4 --ai: no model chosen: pass --ai-model or set the model in Settings → AI")
 		} else {
 			_, _ = fmt.Fprintf(stderr, "f4 --ai: %v\n", err)
 		}
@@ -206,6 +208,8 @@ func runAIBotCLI(parsed aiCLIArgs, cfg vtvibe.Config, stdout, stderr io.Writer) 
 	if err != nil {
 		if errors.Is(err, vtvibe.ErrNoKey) {
 			_, _ = fmt.Fprintln(stderr, "f4 --ai-bot: no API key: set the key variable of the provider or the key in Settings → AI")
+		} else if errors.Is(err, vtvibe.ErrNoModel) {
+			_, _ = fmt.Fprintln(stderr, "f4 --ai-bot: no model chosen: pass --ai-model or set the model in Settings → AI")
 		} else {
 			_, _ = fmt.Fprintf(stderr, "f4 --ai-bot: %v\n", err)
 		}

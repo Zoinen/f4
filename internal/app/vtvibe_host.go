@@ -2,7 +2,9 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -825,8 +827,18 @@ func aiModelLines(models []vtvibe.ModelInfo, limit int) []string {
 
 func aiShowError(err error) {
 	msg := err.Error()
-	if err == vtvibe.ErrNoKey {
+	switch {
+	case err == vtvibe.ErrNoKey:
 		msg = i18n.Msg("AI.NoKey")
+	case errors.Is(err, vtvibe.ErrNoModel):
+		msg = i18n.Msg("AI.NoModel")
+	case vtvibe.HTTPStatus(err) == http.StatusNotFound:
+		// A service answers 404 for a model it does not have (f4#1842,
+		// bothub: MODEL_NOT_FOUND); the error alone does not say which
+		// model was asked for.
+		if cfg, _, _ := vtvibeReadConfig(); cfg.Model != "" {
+			msg += "\n\n" + fmt.Sprintf(i18n.Msg("AI.ModelNotFoundHint"), cfg.Model)
+		}
 	}
 	if len(msg) > 600 {
 		msg = msg[:600] + "..."

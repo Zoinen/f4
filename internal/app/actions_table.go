@@ -3383,7 +3383,7 @@ func init() {
 		Area:        "Editor",
 		Label:       "Amount in words",
 		LabelKey:    "Action.Editor.AmountInWords",
-		Description: "Replace the selected number or amount of money (1234.56 rub, $12.50, 99 EUR) with it written in words",
+		Description: "Copy the selected number or amount of money (1234.56 rub, $12.50, 99 EUR), written in words, to the clipboard",
 		DescKey:     "Action.Editor.AmountInWords.Desc",
 		MenuPath:    "Edit",
 		Handler: withEditor(func(ev *editor.EditorView) {
@@ -3392,7 +3392,8 @@ func init() {
 				vtui.ShowMessage(i18n.Msg("Editor.AmountInWords.Title"), err.Error(), []string{i18n.Msg("vtui.Ok")})
 				return
 			}
-			toast.Show(result, 2*time.Second)
+			terminal.SetF4Clipboard(result)
+			toast.Show(fmt.Sprintf(i18n.Msg("Editor.AmountInWords.Copied"), result), 3*time.Second)
 		}),
 	})
 	registerAction(action.Action{
@@ -3796,7 +3797,7 @@ func init() {
 		LabelKey:    "Action.Editor.DeleteSpacersForward",
 		Description: "Delete spaces and word forward",
 		DescKey:     "Action.Editor.DeleteSpacersForward.Desc",
-		DefaultKeys: []string{"CtrlT", "CtrlDel"},
+		DefaultKeys: []string{"CtrlT"},
 		MenuPath:    "Insert",
 		Handler:     withEditor(func(ev *editor.EditorView) { ev.DeleteSpacersForward() }),
 	})
@@ -3960,7 +3961,7 @@ func init() {
 		LabelKey:    "Action.Viewer.SearchNext",
 		Description: "Continue search forwards",
 		DescKey:     "Action.Viewer.SearchNext.Desc",
-		DefaultKeys: []string{"CtrlEnter"},
+		DefaultKeys: []string{"CtrlEnter", "ShiftF7"},
 		MenuPath:    "Search",
 		Handler:     withViewer(func(vv *viewer.ViewerView) { actionViewerSearchAgain(vv, false) }),
 	})

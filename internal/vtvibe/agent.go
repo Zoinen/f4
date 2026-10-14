@@ -133,8 +133,8 @@ func textPtr(s string) *string { return &s }
 // RunAgent runs msgs through the model, executing the tool calls it makes,
 // until it answers with text. It returns that text and the summed usage.
 func (c Config) RunAgent(ctx context.Context, msgs []Message, tools []Tool, opts AgentOptions) (string, Usage, error) {
-	if c.APIKey == "" && !isLocal(c.BaseURL) {
-		return "", Usage{}, ErrNoKey
+	if err := c.checkReady(); err != nil {
+		return "", Usage{}, err
 	}
 	maxSteps := opts.MaxSteps
 	if maxSteps <= 0 {
@@ -183,8 +183,8 @@ func (c Config) RunAgent(ctx context.Context, msgs []Message, tools []Tool, opts
 		if err := json.Unmarshal(raw, &parsed); err != nil {
 			return "", usage, fmt.Errorf("cannot parse the reply: %w", err)
 		}
-		if parsed.Error != nil && parsed.Error.Message != "" {
-			return "", usage, errors.New(parsed.Error.Message)
+		if parsed.Error != nil && parsed.Error.text() != "" {
+			return "", usage, errors.New(parsed.Error.text())
 		}
 		usage.In += parsed.Usage.PromptTokens
 		usage.Out += parsed.Usage.CompletionTokens

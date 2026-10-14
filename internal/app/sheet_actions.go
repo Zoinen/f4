@@ -89,7 +89,7 @@ func selectedSpreadsheetPath() string {
 	}
 	path = filepath.Clean(path)
 	switch strings.ToLower(filepath.Ext(path)) {
-	case ".xlsx", ".csv":
+	case ".xlsx", ".csv", ".tsv", ".tab":
 		return path
 	// .f4s is what the native format used to be called. Sheets written under
 	// the old name keep opening; IsSheetFile is what decides in every case.
