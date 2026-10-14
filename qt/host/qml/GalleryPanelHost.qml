@@ -424,6 +424,7 @@ FocusScope {
     }
 
     ZG.GalleryPanel {
+        showTransparentGrid: host.bridge && host.bridge.settings ? host.bridge.settings.showCheckerboard !== false : true
         liveSelectionUpdates: true
         id: embeddedGalleryPanel
         objectName: "embeddedGalleryPanel"

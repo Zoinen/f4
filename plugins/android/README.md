@@ -18,6 +18,8 @@ in order: `F4_ADB_PATH`, `PATH`, `ANDROID_SDK_ROOT/platform-tools`,
 (`~/Library/Android/sdk/platform-tools` on macOS, `~/Android/Sdk/platform-tools`
 on Unix, or `%LOCALAPPDATA%/Android/Sdk/platform-tools` on Windows). Platform
 Tools are not downloaded or bundled.
+On Windows, starting or restarting ADB runs in the background without opening
+a console window.
 Wireless devices that have already been connected to the same ADB server are
 listed in exactly the same way as USB devices.
 

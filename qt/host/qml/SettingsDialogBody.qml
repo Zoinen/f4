@@ -47,7 +47,13 @@ Item {
         }
         hostWindow.action({target: widget.id, action: "control.activate"})
     }
+    readonly property var searchToolIcons: ({
+        "search-clear": "x", "search-previous": "chevron-up", "search-next": "chevron-down"
+    })
     function displayWidget(widget) {
+        const toolIcon = searchToolIcons[widget.layoutRole]
+        if (toolIcon)
+            return Object.assign({}, widget, {text: "", iconName: toolIcon, toolTipText: widget.text})
         if (widget.layoutRole === "navigation") return categoryWidget(widget)
         if (nativePage && widget.layoutRole === "content-title")
             return Object.assign({}, widget, {text: nativePage.title, hotkey: "", dimmed: false})
@@ -128,18 +134,24 @@ Item {
     readonly property real buttonWidth: hostWindow.snapPx(Math.min(104, (width - gap * 2) / 3))
     readonly property bool hasMatches: widgets.some(w => w.layoutRole === "search-matches" && w.visible !== false)
     readonly property bool hasClear: widgets.some(w => w.layoutRole === "search-clear" && w.visible !== false)
+    TextMetrics {
+        id: searchLabelMetrics
+        font: body.hostWindow.font
+        text: String((body.widgets.find(w => w.layoutRole === "search-label") || {}).text || "")
+    }
+    readonly property real searchLabelWidth: hostWindow.snapPx(Math.min(navigationWidth, searchLabelMetrics.advanceWidth + gap))
     readonly property real searchY: lineHeight + hostWindow.snapPx(4)
-    readonly property real navigationY: searchY + controlHeight + gap + (hasMatches ? lineHeight : 0)
+    readonly property real navigationY: searchY + controlHeight + gap
 
     function rectangle(role) {
         const tools = (hasClear ? controlHeight : 0) + (hasMatches ? 2 * controlHeight : 0)
         switch (role) {
-        case "search-label": return Qt.rect(0, 0, navigationWidth, lineHeight)
+        case "search-label": return Qt.rect(0, 0, hasMatches ? searchLabelWidth : navigationWidth, lineHeight)
         case "search": return Qt.rect(0, searchY, Math.max(1, navigationWidth - tools), controlHeight)
         case "search-clear": return Qt.rect(navigationWidth - tools, searchY, controlHeight, controlHeight)
         case "search-previous": return Qt.rect(navigationWidth - 2 * controlHeight, searchY, controlHeight, controlHeight)
         case "search-next": return Qt.rect(navigationWidth - controlHeight, searchY, controlHeight, controlHeight)
-        case "search-matches": return Qt.rect(0, searchY + controlHeight + gap, navigationWidth, lineHeight)
+        case "search-matches": return Qt.rect(searchLabelWidth, 0, Math.max(1, navigationWidth - searchLabelWidth), lineHeight)
         case "navigation": return Qt.rect(0, navigationY, navigationWidth, Math.max(1, paneBottom - navigationY))
         case "content-title": return Qt.rect(mainX, 0, nativePage ? mainWidth : pageWidth, lineHeight)
         case "content": return Qt.rect(mainX, pageY, pageWidth, pageHeight)

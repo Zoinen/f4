@@ -29,10 +29,14 @@ func (c *settingsCenter) SemanticNode(ctx *vtui.SemanticContext) map[string]any 
 	for _, child := range children {
 		if child["id"] == vtui.SemanticID(c.sidebar) {
 			icons := make([]string, len(c.categories))
+			states := make([]map[string]any, len(c.categories))
+			searching := strings.TrimSpace(c.query) != ""
 			for i, category := range c.categories {
 				icons[i] = settingsCategoryIcon(category.ID)
+				states[i] = map[string]any{"dimmed": searching && c.categoryMatches(category.ID) == 0}
 			}
 			child["itemIcons"] = icons
+			child["itemStates"] = states
 			break
 		}
 	}

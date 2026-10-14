@@ -25,6 +25,7 @@
 #include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QFont>
+#include <QFontDatabase>
 #include <QFontMetricsF>
 #include <QGuiApplication>
 #include <QImage>
@@ -931,6 +932,7 @@ private slots:
     void compiledHostLoadsItsQmlModule();
     void expandedViewerKeepsWorkspaceChromeAccessible();
     void cachedGalleryViewerCentersFirstNativeZoomAt175Percent();
+    void viewerCheckerboardToggleUpdatesPanels();
     void quickViewRetainsViewerAcrossPresentationChanges();
     void semanticSceneGatesOnlyGridRendering();
     void semanticHorizontalSplitStaysOnNativeSurface();
@@ -1169,6 +1171,9 @@ void F4QuickViewSurfaceTests::compiledHostLoadsItsQmlModule()
 
 void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
 {
+#ifdef Q_OS_WIN
+    QVERIFY(QFontDatabase::addApplicationFont("C:/Windows/Fonts/segoeui.ttf") >= 0);
+#endif
     QTemporaryDir settingsDirectory;
     QVERIFY(settingsDirectory.isValid());
     const auto previousFormat = QSettings::defaultFormat();
@@ -1318,6 +1323,14 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
     QVERIFY(folderMode);
     QVERIFY(conversion);
     QVERIFY(animation);
+    auto *checkerboard = visualItemWithObjectName(galleryPage, "galleryShowCheckerboard");
+    QVERIFY(checkerboard);
+    checkerboard->forceActiveFocus();
+    const bool checkerboardBefore = checkerboard->property("checked").toBool();
+    QTest::keyClick(fixture.window, Qt::Key_Space);
+    QCOMPARE(checkerboard->property("checked").toBool(), !checkerboardBefore);
+    QCOMPARE(galleryPage->property("draft").value<QJSValue>().toVariant().toMap().value("showCheckerboard").toBool(), !checkerboardBefore);
+    QTest::keyClick(fixture.window, Qt::Key_Space);
     QCOMPARE(imageMode->property("count").toInt(), 3);
     QCOMPARE(folderMode->property("count").toInt(), 3);
     QVERIFY(conversion->property("checkState").isValid());
@@ -6857,6 +6870,70 @@ void F4QuickViewSurfaceTests::workspaceTabWheelActivatesAdjacentTabs()
     sendAngleWheel(fixture.window, position, -120);
     QTest::qWait(50);
     QCOMPARE(fixture.shell.actions.size(), 0);
+}
+
+void F4QuickViewSurfaceTests::viewerCheckerboardToggleUpdatesPanels()
+{
+    QTemporaryDir directory;
+    const auto oldFormat = QSettings::defaultFormat();
+    const auto oldOrganization = QCoreApplication::organizationName();
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, directory.path());
+    QCoreApplication::setOrganizationName("F4CheckerboardTest");
+    const auto restoreSettings = qScopeGuard([&] {
+        QSettings::setDefaultFormat(oldFormat);
+        QCoreApplication::setOrganizationName(oldOrganization);
+    });
+    const QString imagePath = directory.filePath("transparent.png");
+    QImage image(240, 160, QImage::Format_ARGB32_Premultiplied);
+    image.fill(QColor(255, 0, 0, 128));
+    QVERIFY(image.save(imagePath));
+    QuickViewFixture fixture(shellScene(), true);
+    QVERIFY(fixture.window);
+    ZoinGallery::RuntimeOptions options;
+    options.persistentCache = false;
+    auto *runtime = ZoinGallery::GalleryRuntime::install(&fixture.engine, options);
+    auto *preferences = qobject_cast<ZoinGallery::GalleryPreferences *>(runtime->preferences());
+    QVERIFY(preferences);
+    const bool oldValue = preferences->showCheckerboard();
+    const auto restore = qScopeGuard([&] { preferences->setShowCheckerboard(oldValue); runtime->shutdown(); });
+    preferences->setShowCheckerboard(true);
+    fixture.gallery.preferences = preferences;
+    auto *session = runtime->createExternalSession("checkerboard");
+    QVERIFY(session->applyExternalCatalog({QVariantMap{
+        {"entryId", "image"}, {"index", 0}, {"name", "transparent.png"},
+        {"localPath", imagePath}, {"isImage", true}, {"size", QFileInfo(imagePath).size()}
+    }}, 1));
+    QVERIFY(session->applyExternalState("image", 0, {}, 1));
+    session->setViewerOpen(true);
+    fixture.gallery.showPanel(QUrl("qrc:/F4QtHost/qml/GalleryPanelHost.qml"), session);
+    QQuickItem *panel = nullptr;
+    QTRY_VERIFY((panel = visualItemWithObjectName(fixture.window->contentItem(), "embeddedGalleryPanel")));
+    fixture.gallery.showViewer(QUrl("qrc:/F4QtHost/qml/GalleryViewerHost.qml"), session);
+    QQuickItem *viewer = nullptr;
+    QTRY_VERIFY((viewer = visualItemWithObjectName(fixture.window->contentItem(), "embeddedGalleryViewer")));
+    auto *viewport = viewer->property("flickableArea").value<QQuickItem *>();
+    QVERIFY(viewport);
+    QTRY_VERIFY(viewport->property("imageTextureReady").toBool());
+    QCOMPARE(viewport->property("checkerboardEnabled").toBool(), true);
+    QCOMPARE(panel->property("showTransparentGrid").toBool(), true);
+    viewer->forceActiveFocus();
+    fixture.shell.clearActions();
+    QSignalSpy changes(preferences, &ZoinGallery::GalleryPreferences::changed);
+    QVERIFY(viewer->hasActiveFocus());
+    QTest::keyClick(fixture.window, Qt::Key_F12);
+    QCOMPARE(changes.count(), 1);
+    QVERIFY(!preferences->showCheckerboard());
+    QCOMPARE(viewport->property("checkerboardEnabled").toBool(), false);
+    QCOMPARE(panel->property("showTransparentGrid").toBool(), false);
+    QKeyEvent repeated(QEvent::KeyPress, Qt::Key_F12, Qt::NoModifier, QString(), true);
+    QCoreApplication::sendEvent(fixture.window, &repeated);
+    QVERIFY(!preferences->showCheckerboard());
+    QTest::keyClick(fixture.window, Qt::Key_F12);
+    QVERIFY(preferences->showCheckerboard());
+    QCOMPARE(viewport->property("checkerboardEnabled").toBool(), true);
+    QCOMPARE(panel->property("showTransparentGrid").toBool(), true);
+    QVERIFY(fixture.shell.actions.isEmpty());
 }
 
 void F4QuickViewSurfaceTests::quickViewRetainsViewerAcrossPresentationChanges()

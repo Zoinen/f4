@@ -7,6 +7,8 @@ Q_IMPORT_PLUGIN(QtQuick2Plugin)
 Q_IMPORT_PLUGIN(QtQuick_WindowPlugin)
 Q_IMPORT_PLUGIN(QtQuickEffectsPlugin)
 Q_IMPORT_PLUGIN(QmlShapesPlugin)
+Q_IMPORT_PLUGIN(QtQuickVectorImagePlugin)
+Q_IMPORT_PLUGIN(QtQuickVectorImageHelpersPlugin)
 Q_IMPORT_PLUGIN(QtQuickLayoutsPlugin)
 Q_IMPORT_PLUGIN(QtQuickTemplates2Plugin)
 Q_IMPORT_PLUGIN(QtQuickControls2ImplPlugin)
@@ -31,6 +33,8 @@ static void initializeStaticQmlResources()
     Q_INIT_RESOURCE(qmake_QtQuick_Window);
     Q_INIT_RESOURCE(qmake_QtQuick_Effects);
     Q_INIT_RESOURCE(qmake_QtQuick_Shapes);
+    Q_INIT_RESOURCE(qmake_QtQuick_VectorImage);
+    Q_INIT_RESOURCE(qmake_QtQuick_VectorImage_Helpers);
     Q_INIT_RESOURCE(qmake_QtQuick_Layouts);
     Q_INIT_RESOURCE(qmake_QtQuick_Templates);
     Q_INIT_RESOURCE(qmake_QtQuick_Controls_impl);

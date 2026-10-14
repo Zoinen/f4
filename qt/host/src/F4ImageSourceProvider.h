@@ -14,6 +14,7 @@ class F4ImageSourceProvider final
     : public ZoinGallery::ImageSourceProvider
 {
 public:
+    void setInteractiveResource(const QString &resourceId) override;
     explicit F4ImageSourceProvider(QtMediaClient *client);
 
     ZoinGallery::ImageSourceReadResult readRange(

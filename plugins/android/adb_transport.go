@@ -1035,7 +1035,7 @@ func findADBExecutable() (string, error) {
 }
 
 func startInstalledADB(ctx context.Context, adbPath string) error {
-	command := exec.CommandContext(ctx, adbPath, "start-server")
+	command := installedADBCommand(ctx, adbPath, "start-server")
 	output, err := command.CombinedOutput()
 	if err == nil {
 		return nil
@@ -1052,7 +1052,7 @@ func startInstalledADB(ctx context.Context, adbPath string) error {
 
 func restartInstalledADB(ctx context.Context, adbPath string) error {
 	for _, action := range []string{"kill-server", "start-server"} {
-		command := exec.CommandContext(ctx, adbPath, action)
+		command := installedADBCommand(ctx, adbPath, action)
 		output, err := command.CombinedOutput()
 		if err == nil {
 			continue
@@ -1067,4 +1067,10 @@ func restartInstalledADB(ctx context.Context, adbPath string) error {
 		return fmt.Errorf("adb %s: %w: %s", action, err, message)
 	}
 	return nil
+}
+
+func installedADBCommand(ctx context.Context, adbPath string, args ...string) *exec.Cmd {
+	command := exec.CommandContext(ctx, adbPath, args...)
+	configureADBCommand(command)
+	return command
 }

@@ -204,6 +204,8 @@ Item {
                     height: tableControl.rowHeight
                     color: index === tableRows.currentIndex ? hostWindow.selectedBg : "transparent"
                     readonly property string iconName: (widget.itemIcons || [])[index] || ""
+                    readonly property bool dimmed: ((widget.itemStates || [])[index] || {}).dimmed === true
+                    readonly property color foregroundColor: dimmed ? hostWindow.mutedText : hostWindow.textColor
                     readonly property real iconSpace: iconName !== "" ? hostWindow.snapPx(24) : 0
                     HostPixelAlignedImage {
                         objectName: "dialogWidget-" + widget.id + "TableItemIcon-" + tableRow.index
@@ -213,7 +215,7 @@ Item {
                         width: hostWindow.snapPx(16)
                         height: width
                         visible: tableRow.iconName !== ""
-                        source: visible ? hostWindow.lucideIconSource(tableRow.iconName, 16, hostWindow.textColor) : ""
+                        source: visible ? hostWindow.lucideIconSource(tableRow.iconName, 16, tableRow.foregroundColor) : ""
                         sourceSize: Qt.size(width * hostWindow.dpr, height * hostWindow.dpr)
                     }
                     Repeater {
@@ -228,7 +230,7 @@ Item {
                             height: tableRow.height
                             text: tableRow.modelData.cells[index] || ""
                             font: hostWindow.font
-                            color: hostWindow.textColor
+                            color: tableRow.foregroundColor
                             elide: Text.ElideRight
                             verticalAlignment: Text.AlignVCenter
                             transform: Translate {
@@ -374,6 +376,9 @@ Item {
                         + "Button"
             hostWindow: widgetRoot.hostWindow
             text: hostWindow.cleanText(widget.text)
+            toolTipText: hostWindow.cleanText(widget.toolTipText)
+            iconSource: widget.iconName
+                ? hostWindow.lucideIconSource(widget.iconName, 14, hostWindow.textColor) : ""
             mnemonicHotkey: hostWindow.cleanText(widget.hotkey)
             enabled: widget.disabled !== true
             semanticFocus: widget.focused === true

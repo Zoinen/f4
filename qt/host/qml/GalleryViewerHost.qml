@@ -62,6 +62,13 @@ FocusScope {
         else if (managedPresentation) bridge.collapseQuickView()
     }
     function handleKey(event, down) {
+        if (event.key === Qt.Key_F12 && event.modifiers === Qt.NoModifier
+                && bridge && bridge.settings) {
+            event.accepted = true
+            if (down && !event.isAutoRepeat)
+                bridge.settings.showCheckerboard = !bridge.settings.showCheckerboard
+            return true
+        }
         if (down && event.key === Qt.Key_Escape && !docked
                 && !managedPresentation && bridge) {
             // Gallery's immediate close destroys the focused surface before
@@ -162,8 +169,8 @@ FocusScope {
     // the safety net for an older module or a future unhandled key: no press or
     // release may bubble into f4 while the full-area viewer owns the surface.
     Keys.priority: Keys.AfterItem
-    Keys.onPressed: event => { event.accepted = true }
-    Keys.onReleased: event => { event.accepted = true }
+    Keys.onPressed: event => { host.handleKey(event, true); event.accepted = true }
+    Keys.onReleased: event => { host.handleKey(event, false); event.accepted = true }
 
     // The panel exposes its cursor underlay during the handoff, so its own
     // selection surface becomes transparent. Carry the fill in the moving
@@ -226,6 +233,7 @@ FocusScope {
         videoPlaybackMode: host.videoPlaybackMode
         videoIconSources: host.videoIconSources
         playbackPresentationVisible: host.playbackPresentationVisible
+        checkerboardEnabled: host.bridge && host.bridge.settings ? host.bridge.settings.showCheckerboard !== false : true
         hostKeyHandler: host.handleKey
         hostDoubleClickHandler: () => {
             if (!host.docked) return false

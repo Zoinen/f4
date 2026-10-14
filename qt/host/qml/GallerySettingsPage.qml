@@ -227,12 +227,22 @@ Item {
         checked: page.draft.animateResizing === true
         onToggled: page.change("animateResizing", checked)
     }
+    F4CheckBox {
+        id: checkerboard
+        objectName: "galleryShowCheckerboard"
+        hostWindow: page.hostWindow
+        focusPolicy: Qt.StrongFocus
+        x: 0; y: page.px(animation.y + animation.height + page.gap); width: page.innerWidth
+        text: qsTr("Checkerboard in viewer and panels (F12)")
+        checked: page.draft.showCheckerboard !== false
+        onToggled: page.change("showCheckerboard", checked)
+    }
     Copy {
         id: fullVideoPlaybackTitle
         identity: "galleryFullVideoPlaybackTitle"
         visible: page.videoPlaybackAvailable
         height: visible ? page.px(18) : 0
-        x: page.px(0); y: page.px(animation.y + animation.height + page.gap)
+        x: page.px(0); y: page.px(checkerboard.y + checkerboard.height + page.gap)
         width: page.innerWidth
         text: qsTr("Full viewer video playback")
         font.bold: true

@@ -25,6 +25,8 @@ struct F4GalleryBridge::PanelStatePatchContext
     bool nextMetadataDeferred = false;
     qulonglong nextMetadataRevision = 0;
     bool nextCatalogProvisional = false;
+    bool nextCatalogRowsDeferred = false;
+    int nextTotalCount = 0;
     QString nextGalleryLayoutMode;
     bool enteringDetails = false;
     bool metadataStreamChanged = false;
@@ -155,6 +157,10 @@ void F4GalleryBridge::derivePanelStateValues(
     context->nextGalleryLayoutMode = context->panel.value(
         QStringLiteral("galleryLayoutMode"), state.galleryLayoutMode)
                                                 .toString();
+    context->nextCatalogRowsDeferred = context->panel.value(
+        QStringLiteral("catalogRowsDeferred"), state.catalogRowsDeferred).toBool();
+    context->nextTotalCount = context->panel.value(
+        QStringLiteral("totalCount"), state.totalCount).toInt();
     context->enteringDetails = state.galleryLayoutMode
             != QStringLiteral("details")
         && context->nextGalleryLayoutMode == QStringLiteral("details");
@@ -287,7 +293,9 @@ bool F4GalleryBridge::applyPanelStateCatalogOptions(
     if (!context->session
         || (!context->metadataStreamChanged
             && context->nextCatalogProvisional
-                == state.catalogProvisional)) {
+                == state.catalogProvisional
+            && context->nextCatalogRowsDeferred == state.catalogRowsDeferred
+            && context->nextTotalCount == state.totalCount)) {
         return true;
     }
     return context->session->applyExternalCatalog(
@@ -304,8 +312,10 @@ bool F4GalleryBridge::applyPanelStateCatalogOptions(
              QVariant::fromValue<qulonglong>(
                  context->nextMetadataRevision)},
             {QStringLiteral("catalogRowsDeferred"),
-             state.catalogRowsDeferred},
-            {QStringLiteral("totalCount"), state.totalCount},
+             context->nextCatalogRowsDeferred},
+            {QStringLiteral("totalCount"), context->nextTotalCount},
+            {QStringLiteral("cursorEntryId"), context->appliedCursorEntryId},
+            {QStringLiteral("cursorIndex"), context->appliedCursorIndex},
         });
 }
 
@@ -331,6 +341,8 @@ void F4GalleryBridge::commitPanelStatePatch(
     state.loading = context->panel.value(
         QStringLiteral("loading"), state.loading).toBool();
     state.catalogProvisional = context->nextCatalogProvisional;
+    state.catalogRowsDeferred = context->nextCatalogRowsDeferred;
+    state.totalCount = context->nextTotalCount;
     state.metadataDeferred = context->nextMetadataDeferred;
     state.metadataRevision = context->nextMetadataDeferred
         ? context->nextMetadataRevision : 0;

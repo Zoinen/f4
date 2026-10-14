@@ -119,7 +119,8 @@ Item {
                 objectName: root.objectName + "Cursor"
                 width: root.hostWindow.separatorWidth
                 color: root.hostWindow.textColor
-                opacity: blink.blinkOn ? 1 : 0
+                opacity: root.enabled && root.widget.focused === true
+                         && editor.cursorVisible && blink.blinkOn ? 1 : 0
                 ActivityBoundedCursorBlink {
                     id: blink
                     active: caret.visible && root.enabled && root.widget.focused === true

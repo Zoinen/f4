@@ -48,11 +48,19 @@ func TestSettingsCategoryIconsAndSelection(t *testing.T) {
 				continue
 			}
 			icons, _ := node["itemIcons"].([]string)
+			states, _ := node["itemStates"].([]map[string]any)
+			if len(states) != len(catalog.Categories) {
+				t.Fatalf("missing category search states: %d", len(states))
+			}
 			rows, _ := node["rows"].([]map[string]any)
 			if len(icons) != len(catalog.Categories) || len(rows) != len(icons) {
 				t.Fatalf("category rows/icons mismatch: %d rows, %d icons", len(rows), len(icons))
 			}
 			for i, category := range catalog.Categories {
+				wantDimmed := query != "" && center.categoryMatches(category.ID) == 0
+				if states[i]["dimmed"] != wantDimmed {
+					t.Errorf("category %s dimmed = %v, want %v", category.ID, states[i]["dimmed"], wantDimmed)
+				}
 				if icons[i] == "" || (category.ID != "contributed" && icons[i] == "file-cog") {
 					t.Errorf("category %s has no dedicated icon", category.ID)
 				}

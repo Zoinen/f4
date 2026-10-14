@@ -1854,7 +1854,7 @@ func (s *extUiMediaServer) accept() {
 
 		client := &extUiMediaConn{
 			conn: conn, broker: s.broker, cancels: make(map[string]*extUiMediaRequestState),
-			provisional: make(map[string]*extUiMediaProvisionalLease), sem: make(chan struct{}, 8),
+			provisional: make(map[string]*extUiMediaProvisionalLease),
 		}
 		s.mu.Lock()
 		delete(s.pending, conn)
@@ -1897,7 +1897,7 @@ type extUiMediaConn struct {
 	mu          sync.Mutex
 	cancels     map[string]*extUiMediaRequestState
 	provisional map[string]*extUiMediaProvisionalLease // request id -> unacknowledged lease
-	sem         chan struct{}
+	admission   extUiMediaAdmission
 	closed      bool
 	requestWG   sync.WaitGroup
 	shutdown    sync.Once
@@ -1936,6 +1936,8 @@ func (s *extUiMediaServer) serve(conn net.Conn, client *extUiMediaConn) {
 			client.start(message)
 		case "cancel":
 			client.cancel(extUiString(message, "requestId"))
+		case "focus":
+			client.admission.setFocus(extUiString(message, "resourceId"))
 		case "ack":
 			client.ack(message)
 		case "release":
@@ -1999,13 +2001,13 @@ func (c *extUiMediaConn) start(message map[string]any) {
 			c.handleDirectoryPreview(ctx, requestID, message)
 			return
 		}
-		select {
-		case c.sem <- struct{}{}:
+		release, err := c.admission.acquire(ctx, extUiString(message, "resourceId"))
+		if err == nil {
 			startedNs := navtrace.NavigationBenchmarkMonotonicNs()
 			mediatiming.MediaTimingEmitAt(ctx, "server.request.admitted", "go.media", startedNs,
 				"operation", op, "resourceId", extUiString(message, "resourceId"),
 				"queueNs", startedNs-queuedNs)
-		case <-ctx.Done():
+		} else {
 			mediatiming.MediaTimingEmit(ctx, "server.request.cancelled_in_queue", "go.media",
 				"operation", op, "resourceId", extUiString(message, "resourceId"),
 				"queueNs", navtrace.NavigationBenchmarkMonotonicNs()-queuedNs)
@@ -2013,7 +2015,7 @@ func (c *extUiMediaConn) start(message map[string]any) {
 			c.finishRequest(requestID, state)
 			return
 		}
-		defer func() { <-c.sem }()
+		defer release()
 		defer c.finishRequest(requestID, state)
 		c.handle(ctx, requestID, message)
 	}()

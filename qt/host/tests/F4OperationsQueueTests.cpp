@@ -795,6 +795,7 @@ private slots:
     void settingsListScrollingAndTouch();
     void semanticTableWheelPreservesMagnitude();
     void settingsCategoryIconsStayPixelAligned();
+    void settingsSearchToolsUseIcons();
     void settingsResizeKeepsChromeAndScrollsContent_data();
     void settingsResizeKeepsChromeAndScrollsContent();
     void overlayModelPreservesIdentityAndExitLifecycle();
@@ -4176,6 +4177,17 @@ void F4OperationsQueueTests::dialogTextCursorBlinkSettlesAndFocusStopsIt()
     QTRY_VERIFY_WITH_TIMEOUT(
         !cursor->property("blinkTimerRunning").toBool(), 500);
     QVERIFY(cursor->property("blinkOn").toBool());
+    QTRY_COMPARE(cursor->opacity(), 0.0);
+    // Native pointer focus may remain in the previous read-only input while
+    // the semantic dialog has already moved to another control with Tab.
+    auto *nativeInput = visualItem(fixture.window->contentItem(),
+        QStringLiteral("dialogWidget-appearance-editEditTextInput"));
+    QVERIFY(nativeInput);
+    nativeInput->forceActiveFocus();
+    QTRY_VERIFY(nativeInput->hasActiveFocus());
+    QVERIFY(!edit->property("editingFocus").toBool());
+    QTRY_COMPARE(cursor->opacity(), 0.0);
+    QVERIFY(!cursor->property("blinkTimerRunning").toBool());
 }
 
 void F4OperationsQueueTests::semanticDialogEditShowsRemoteAndNativeSelection()
@@ -5148,6 +5160,84 @@ void F4OperationsQueueTests::settingsListScrollingAndTouch()
     }
 }
 
+void F4OperationsQueueTests::settingsSearchToolsUseIcons()
+{
+    auto scene = panelScene();
+    auto dialog = QJsonDocument::fromJson(R"({"kind":"dialog","id":"settings-search","layout":"settings","title":"Settings",
+      "x":0,"y":0,"w":100,"h":35,"children":[
+      {"id":"search-label","kind":"text","layoutRole":"search-label","text":"Search:"},
+      {"id":"search","kind":"edit","layoutRole":"search","text":"font","focused":true},
+      {"id":"clear","kind":"button","layoutRole":"search-clear","text":"Clear search"},
+      {"id":"previous","kind":"button","layoutRole":"search-previous","text":"Previous match"},
+      {"id":"next","kind":"button","layoutRole":"search-next","text":"Next match"},
+      {"id":"matches","kind":"text","layoutRole":"search-matches","text":"Matches: 1"},
+      {"id":"categories","kind":"table","layoutRole":"navigation","cursor":0,"showHeader":false,
+       "columns":[{"width":0}],"rows":[{"cells":["Appearance"]}],"itemIcons":["palette"],"itemStates":[{"dimmed":true}]}
+    ]})").object().toVariantMap();
+    scene["dialogs"] = QVariantList{dialog};
+    QueueFixture fixture(scene, false, true);
+    auto *root = fixture.window->contentItem();
+    auto *searchLabel = visualItem(root, "dialogWidget-search-labelText");
+    auto *matchesLabel = visualItem(root, "dialogWidget-matchesText");
+    QVERIFY(searchLabel && matchesLabel);
+    QTRY_VERIFY(qAbs(searchLabel->mapToItem(root, QPointF()).y()
+                     - matchesLabel->mapToItem(root, QPointF()).y()) < .02);
+    QVERIFY(matchesLabel->mapToItem(root, QPointF()).x()
+            > searchLabel->mapToItem(root, QPointF()).x() + searchLabel->property("contentWidth").toReal());
+    for (auto *leaf : {searchLabel, matchesLabel}) {
+        const QPointF origin = leaf->mapToItem(root, QPointF());
+        const auto physical = origin * fixture.window->devicePixelRatio();
+        QVERIFY(qAbs(physical.x() - qRound64(physical.x())) < .02);
+        QVERIFY(qAbs(physical.y() - qRound64(physical.y())) < .02);
+        QCOMPARE(leaf->mapToItem(root, QPointF(1,0)) - origin, QPointF(1,0));
+        QCOMPARE(leaf->mapToItem(root, QPointF(0,1)) - origin, QPointF(0,1));
+    }
+    const QStringList ids{"clear", "previous", "next"};
+    const QStringList icons{"x", "chevron-up", "chevron-down"};
+    for (int i = 0; i < ids.size(); ++i) {
+        auto *button = visualItem(root, "dialogWidget-" + ids[i] + "Button");
+        QVERIFY(button);
+        QCOMPARE(button->property("text").toString(), QString());
+        QVERIFY(!button->property("toolTipText").toString().isEmpty());
+        auto *icon = visualItem(root, button->objectName() + "Icon");
+        QVERIFY(icon);
+        QTRY_COMPARE(icon->property("status").toInt(), 1);
+        QCOMPARE(F4IconProvider::decodeRouteValue(icon->property("source").toUrl().path().section('/', -1)), icons[i]);
+        const QPointF origin = icon->mapToItem(root, QPointF());
+        const auto physical = origin * fixture.window->devicePixelRatio();
+        QVERIFY(qAbs(physical.x() - qRound64(physical.x())) < .02);
+        QVERIFY(qAbs(physical.y() - qRound64(physical.y())) < .02);
+        QCOMPARE(icon->mapToItem(root, QPointF(1,0)) - origin, QPointF(1,0));
+        QCOMPARE(icon->mapToItem(root, QPointF(0,1)) - origin, QPointF(0,1));
+    }
+    auto *label = visualItem(root, "dialogWidget-categoriesTableCell-0-0");
+    auto *categoryIcon = visualItem(root, "dialogWidget-categoriesTableItemIcon-0");
+    QVERIFY(label && categoryIcon);
+    QCOMPARE(label->property("color"), fixture.window->property("mutedText"));
+    const auto mutedSource = categoryIcon->property("source").toUrl();
+    for (auto *leaf : {label, categoryIcon}) {
+        const QPointF origin = leaf->mapToItem(root, QPointF());
+        const auto physical = origin * fixture.window->devicePixelRatio();
+        QVERIFY(qAbs(physical.x() - qRound64(physical.x())) < .02);
+        QVERIFY(qAbs(physical.y() - qRound64(physical.y())) < .02);
+        QCOMPARE(leaf->mapToItem(root, QPointF(1,0)) - origin, QPointF(1,0));
+        QCOMPARE(leaf->mapToItem(root, QPointF(0,1)) - origin, QPointF(0,1));
+    }
+    const auto capture = fixture.window->grabWindow();
+    QVERIFY(!capture.isNull());
+    if (qEnvironmentVariableIsSet("F4_SETTINGS_SEARCH_CAPTURE"))
+        QVERIFY(capture.save(qEnvironmentVariable("F4_SETTINGS_SEARCH_CAPTURE")));
+    auto children = dialog.value("children").toList();
+    auto categories = children.last().toMap();
+    categories["itemStates"] = QVariantList{QVariantMap{{"dimmed", false}}};
+    children.last() = categories;
+    dialog["children"] = children;
+    scene["dialogs"] = QVariantList{dialog};
+    fixture.shell.setScene(scene);
+    QTRY_COMPARE(label->property("color"), fixture.window->property("textColor"));
+    QTRY_VERIFY(categoryIcon->property("source").toUrl() != mutedSource);
+}
+
 void F4OperationsQueueTests::settingsCategoryIconsStayPixelAligned()
 {
     const QStringList icons{"palette", "circle-play", "panels-top-left", "columns-2", "hard-drive", "copy",
@@ -6089,4 +6179,14 @@ void F4OperationsQueueTests::multilineDialogEditor()
     QVERIFY2(captureDirectory.isValid(), "Could not create multiline capture directory");
     const auto capturePath = captureDirectory.filePath("multiline.png");
     QVERIFY2(fixture.window->grabWindow().save(capturePath), qPrintable(capturePath));
+    auto children = dialog.value("children").toList();
+    auto inputWidget = children.constFirst().toMap();
+    inputWidget["focused"] = false;
+    children[0] = inputWidget;
+    dialog["children"] = children;
+    scene["dialogs"] = QVariantList{dialog};
+    fixture.shell.setScene(scene);
+    QQuickItem *caret = nullptr;
+    QTRY_VERIFY((caret = visualItem(root, "dialogWidget-commandMultiLineCursor")));
+    QTRY_COMPARE(caret->opacity(), 0.0);
 }

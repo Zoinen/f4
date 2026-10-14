@@ -43,6 +43,7 @@ public:
 
     void configure(const QVariantMap &advertisement);
     void clearConfiguration();
+    void setInteractiveResource(const QString &resourceId);
 
     QString readRange(const QString &resourceId, qint64 offset,
                       qint64 length, int timeoutMs = 15000);
