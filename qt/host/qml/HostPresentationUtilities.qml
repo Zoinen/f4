@@ -15,11 +15,12 @@ QtObject {
     }
 
     function snapPx(value) {
-        return Math.round(Number(value || 0) * hostWindow.dpr) / hostWindow.dpr
+        const dpr = hostWindow.dpr
+        return hostWindow.pixelGrid ? hostWindow.pixelGrid.snap(Number(value || 0))
+                                   : Math.round(Number(value || 0) * dpr) / dpr
     }
 
-    // The attached property observes the final scene in one native pass after
-    // layout. Reading it does not subscribe every leaf to every ancestor size.
+    // The attached adapter returns cached fitting from the shared dirty grid.
     function dialogPixelOffsetX(item, target) {
         return item && target ? item.ScenePixelAlignment.offset.x : 0
     }
@@ -29,39 +30,27 @@ QtObject {
     }
 
     function iconPixelOffsetX(item) {
-        if (!item || !item.parent || !hostWindow.contentItem)
-            return 0
-        const layoutRevision = hostWindow.width + hostWindow.height
-                + hostWindow.panelSplitRatio + item.alignmentRevision
-        const scenePoint = item.parent.mapToItem(hostWindow.contentItem,
-                                                 item.x, item.y)
-        return snapPx(scenePoint.x) - scenePoint.x + layoutRevision * 0
+        return item ? item.ScenePixelAlignment.offset.x : 0
     }
 
     function iconPixelOffsetY(item) {
-        if (!item || !item.parent || !hostWindow.contentItem)
-            return 0
-        const layoutRevision = hostWindow.width + hostWindow.height
-                + hostWindow.panelSplitRatio + item.alignmentRevision
-        const scenePoint = item.parent.mapToItem(hostWindow.contentItem,
-                                                 item.x, item.y)
-        return snapPx(scenePoint.y) - scenePoint.y + layoutRevision * 0
+        return item ? item.ScenePixelAlignment.offset.y : 0
     }
 
     function pxX(value) {
-        return Math.round((value || 0) * hostWindow.cw)
+        return snapPx((value || 0) * hostWindow.cw)
     }
 
     function pxY(value) {
-        return Math.round((value || 0) * hostWindow.ch)
+        return snapPx((value || 0) * hostWindow.ch)
     }
 
     function pxW(value) {
-        return Math.max(1, Math.round((value || 0) * hostWindow.cw))
+        return Math.max(1, snapPx((value || 0) * hostWindow.cw))
     }
 
     function pxH(value) {
-        return Math.max(1, Math.round((value || 0) * hostWindow.ch))
+        return Math.max(1, snapPx((value || 0) * hostWindow.ch))
     }
 
     function nativePanelSplitPosition() {

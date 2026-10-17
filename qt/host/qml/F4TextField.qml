@@ -63,23 +63,9 @@ Item {
     // those margins interactive as well: when a drag starts just inside the
     // border, Qt otherwise has no TextInput hit target and cannot establish a
     // selection anchor even though the cursor is already shown as an I-beam.
-    // mapToItem() itself is not a reactive dependency. Include the complete
-    // layout chain in a revision so the margin hit areas are recomputed after
-    // the RowLayout has received its real width/height (rather than staying
-    // at the zero-sized value observed during component construction).
-    readonly property real textInputLayoutRevision: {
-        var revision = control.width + control.height
-        var item = innerInput
-        for (var depth = 0; item && depth < 10; ++depth) {
-            revision += item.x + item.y + item.width + item.height
-            item = item.parent
-        }
-        return revision
-    }
-    readonly property real textInputLeftEdge: {
-        const revision = textInputLayoutRevision
-        return innerInput.mapToItem(control, 0, 0).x + revision * 0
-    }
+    // These are local layout edges: scrolling ancestors cannot change them.
+    readonly property real textInputLeftEdge:
+        fieldRow.x + inputArea.x + innerInput.x
     readonly property real textInputRightEdge:
         textInputLeftEdge + innerInput.width
 
@@ -278,6 +264,7 @@ Item {
     }
 
     RowLayout {
+        id: fieldRow
         anchors.fill: parent
         anchors.leftMargin: control.snap(8)
         anchors.rightMargin: control.snap(8) + control.trailingInset
@@ -298,6 +285,7 @@ Item {
         }
 
         Item {
+            id: inputArea
             Layout.fillWidth: true
             Layout.fillHeight: true
 

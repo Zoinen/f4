@@ -1889,8 +1889,10 @@ void F4QuickViewSurfaceTests::galleryVideoControlsStayOnPhysicalPixelGridAt175Pe
     checkGrid();
 
     root->setPosition(QPointF(0.3, 0.2));
+    QTest::qWait(40); // Fit the dirty scope before the next scene sync.
     checkGrid(true);
     root->setPosition(QPointF(0, 0));
+    QTest::qWait(40);
     checkGrid();
 
     const QImage beforeFlight = window.grabWindow();
@@ -7537,6 +7539,7 @@ void F4QuickViewSurfaceTests::workspaceTabTextParentsStayOnPhysicalPixelGrid()
         QVERIFY(qAbs(tabs->x() - leftInset - fixture.window->property("contentSpacing").toReal()) < 1.0 / dpr);
     }
     QVERIFY(tabs->x() + tabs->width() <= queue->x());
+    QTest::qWait(40); // Inspect the first settled, synchronized layout.
     for (const auto &name : {"workspace-tab-title-workspace-tab-1", "workspace-tab-number-workspace-tab-1",
                             "workspace-tab-icon-workspace-tab-1", "workspace-close-workspace-tab-1", "workspaceNewIcon"}) {
         auto *leaf = visualItemWithObjectNamePrefix(rootItem, QString::fromLatin1(name));
@@ -9528,7 +9531,11 @@ void F4QuickViewSurfaceTests::nestedMenuAnchorsHeadersTagsAndChevronsOnPhysicalP
     QVERIFY(tagDot->isVisible());
     QCOMPARE(tagDot->property("color").value<QColor>(), QColor("#ff453a"));
     QVERIFY(headerText->property("font").value<QFont>().bold());
-    QCOMPARE(headerText->x(), qRound(10 * fixture.window->devicePixelRatio()) / fixture.window->devicePixelRatio());
+    // The heading's inset is relative to the popup edge, including its content
+    // inset. Its local x is not the final scene-space placement.
+    const qreal headingInset = headerText->mapToItem(visualRoot, QPointF()).x()
+        - childPopup->mapToItem(visualRoot, QPointF()).x();
+    QVERIFY(qAbs(headingInset - 12) <= 1 / fixture.window->devicePixelRatio());
     QVERIFY(headerText->y() > 0);
 
     const QPointF parentOrigin = parentPopup->mapToItem(visualRoot, QPointF{});

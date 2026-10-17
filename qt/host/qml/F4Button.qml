@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
+import ZoinGallery.PixelGrid 1.0 as Grid
 import QtQuick.Layouts
 import QtQuick.Controls
 import QtQuick.Controls.Basic as T
@@ -30,7 +31,8 @@ T.Button {
         if (variant === "tool" && text === "")
             return implicitHeight
         const contentW = btnRow.implicitWidth + (variant === "tool" ? 12 : 20)
-        return snap(Math.max(contentW, variant === "tool" ? 0 : 80))
+        return hostWindow ? hostWindow.capacityPx(Math.max(contentW, variant === "tool" ? 0 : 80))
+                          : Math.ceil(Math.max(contentW, variant === "tool" ? 0 : 80))
     }
     Layout.preferredHeight: implicitHeight
     Layout.preferredWidth: implicitWidth
@@ -46,7 +48,7 @@ T.Button {
         hostWindow: control.hostWindow
     }
 
-    contentItem: Item {
+    contentItem: Grid.PixelGridScope {
         id: buttonContentItem
         objectName: control.objectName ? (control.objectName + "ContentItem")
                                        : "buttonContentItem"
@@ -59,13 +61,12 @@ T.Button {
                                            : "buttonContent"
             width: implicitWidth
             height: implicitHeight
-            // centerIn rounds an odd-sized RowLayout to an integer logical
-            // coordinate. At fractional DPR that moves the whole label away
-            // from the actual button center. The row is a layout-only item;
-            // keep its exact geometric center and pixel-align its painted
-            // text/icon children independently below.
-            x: (parent.width - width) / 2
-            y: (parent.height - height) / 2
+            // Capacity and centering use integer physical pixels. Leaf fitting
+            // handles the remaining Qt layout distribution only when it changes.
+            x: control.hostWindow ? control.hostWindow.centerPx(parent.width, width)
+                                  : Math.floor((parent.width - width) / 2)
+            y: control.hostWindow ? control.hostWindow.centerPx(parent.height, height)
+                                  : Math.floor((parent.height - height) / 2)
             spacing: btnIcon.visible && btnText.visible ? control.snap(6) : 0
 
             HostPixelAlignedImage {

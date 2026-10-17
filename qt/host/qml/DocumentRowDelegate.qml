@@ -134,16 +134,8 @@ Rectangle {
                     font.underline: runSegment.runData.underline === true
                     font.strikeout: runSegment.runData.strikeout === true
                     transform: Translate {
-                        x: documentRow.documentRoot.bodyPixelOffsetX(
-                               documentRow.documentList.x
-                               + documentRow.documentList.contentItem.x
-                               + documentRow.x + runRow.x + runSegment.x
-                               + runLabel.x)
-                        y: documentRow.documentRoot.bodyPixelOffsetY(
-                               documentRow.documentList.y
-                               + documentRow.documentList.contentItem.y
-                               + documentRow.y + runRow.y + runSegment.y
-                               + runLabel.y)
+                        x: documentRow.documentRoot.pixelOffsetX(runLabel)
+                        y: documentRow.documentRoot.pixelOffsetY(runLabel)
                     }
                 }
             }
@@ -175,14 +167,8 @@ Rectangle {
         elide: Text.ElideRight
         z: 1
         transform: Translate {
-            x: documentRow.documentRoot.bodyPixelOffsetX(
-                   documentRow.documentList.x
-                   + documentRow.documentList.contentItem.x + documentRow.x
-                   + plainDocumentText.x)
-            y: documentRow.documentRoot.bodyPixelOffsetY(
-                   documentRow.documentList.y
-                   + documentRow.documentList.contentItem.y + documentRow.y
-                   + plainDocumentText.y)
+            x: documentRow.documentRoot.pixelOffsetX(plainDocumentText)
+            y: documentRow.documentRoot.pixelOffsetY(plainDocumentText)
         }
     }
 
@@ -216,14 +202,8 @@ Rectangle {
                 + editorSelectionClip.modelData.end
                   * documentRow.documentRoot.terminalCellWidth
             readonly property real snappedEndX:
-                rawEndX + documentRow.documentRoot.bodyPixelOffsetX(
-                    documentRow.documentList.x
-                    + documentRow.documentList.contentItem.x + documentRow.x
-                    + rawEndX)
-            x: rawStartX + documentRow.documentRoot.bodyPixelOffsetX(
-                documentRow.documentList.x
-                + documentRow.documentList.contentItem.x + documentRow.x
-                + rawStartX)
+                documentRow.hostWindow.snapPx(rawEndX)
+            x: documentRow.hostWindow.snapPx(rawStartX)
             y: 0
             width: Math.max(0, snappedEndX - x)
             // Repeater detaches this item before disposal; the row still owns
@@ -264,14 +244,8 @@ Rectangle {
                     documentRow.documentRoot.cursorFrame.selectionStrikeout
                     === true
                 transform: Translate {
-                    x: documentRow.documentRoot.bodyPixelOffsetX(
-                           documentRow.documentList.x
-                           + documentRow.documentList.contentItem.x + documentRow.x
-                           + editorSelectionClip.x + editorSelectedText.x)
-                    y: documentRow.documentRoot.bodyPixelOffsetY(
-                           documentRow.documentList.y
-                           + documentRow.documentList.contentItem.y + documentRow.y
-                           + editorSelectionClip.y + editorSelectedText.y)
+                    x: documentRow.documentRoot.pixelOffsetX(editorSelectedText)
+                    y: documentRow.documentRoot.pixelOffsetY(editorSelectedText)
                 }
             }
         }

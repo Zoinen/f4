@@ -180,36 +180,12 @@ Rectangle {
         Math.max(1, (standaloneViewport || terminalSurface)
                                       ? documentCellProbe.implicitWidth / 64
                                       : documentFontMetrics.advanceWidth("M"))
-    // Share the ancestor-to-window dependency chain once. Body text depends
-    // only on this origin and its known local layout; repeating a 12-parent
-    // dependency walk for every glyph run turns a row commit into a web of
-    // unnecessary binding reevaluations.
-    readonly property point pixelGridOrigin: {
-        let revision = hostWindow.width + hostWindow.height + hostWindow.dpr
-        let ancestor = documentRoot
-        while (ancestor && ancestor !== hostWindow.contentItem) {
-            revision += ancestor.x + ancestor.y + ancestor.width + ancestor.height
-            ancestor = ancestor.parent
-        }
-        const origin = documentRoot.mapToItem(hostWindow.contentItem, 0, 0)
-        return Qt.point(origin.x + revision * 0, origin.y)
-    }
-
-    function bodyPixelOffsetX(localX) {
-        const origin = pixelGridOrigin.x + localX
-        return (standaloneViewport || terminalSurface) && !kineticActive ? hostWindow.snapPx(origin) - origin : 0
-    }
-    function bodyPixelOffsetY(localY) {
-        const origin = pixelGridOrigin.y + localY
-        return (standaloneViewport || terminalSurface) && !kineticActive ? hostWindow.snapPx(origin) - origin : 0
-    }
-
     function pixelOffsetX(item) {
-        return (standaloneViewport || terminalSurface) && !kineticActive
+        return (standaloneViewport || terminalSurface)
                 ? hostWindow.dialogPixelOffsetX(item, hostWindow.contentItem) : 0
     }
     function pixelOffsetY(item) {
-        return (standaloneViewport || terminalSurface) && !kineticActive
+        return (standaloneViewport || terminalSurface)
                 ? hostWindow.dialogPixelOffsetY(item, hostWindow.contentItem) : 0
     }
 

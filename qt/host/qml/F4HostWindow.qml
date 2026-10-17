@@ -130,7 +130,8 @@ ApplicationWindow {
     readonly property real titleBarContentVerticalOffset: 1
 
     property alias windowBackgroundColor: themePalette.windowBackgroundColor
-    readonly property real dpr: screen ? screen.devicePixelRatio : 1.0
+    readonly property var pixelGrid: contentItem ? contentItem.ScenePixelAlignment.grid : null
+    readonly property real dpr: pixelGrid ? pixelGrid.dpr : (screen ? screen.devicePixelRatio : 1.0)
     readonly property int fontRenderType:
         typeof qtTextRendering !== "undefined" && qtTextRendering
         ? qtTextRendering.renderType : Text.NativeRendering
@@ -391,6 +392,15 @@ ApplicationWindow {
 
     function snapPx(value) {
         return presentationUtilities.snapPx(value)
+    }
+    function capacityPx(value) {
+        const ratio = dpr
+        return pixelGrid ? pixelGrid.capacity(value) : Math.ceil(value * ratio) / ratio
+    }
+    function centerPx(outer, inner) {
+        const ratio = dpr
+        return pixelGrid ? pixelGrid.center(outer, inner)
+                         : Math.floor((Math.round(outer * ratio) - Math.round(inner * ratio)) / 2) / ratio
     }
     function dialogPixelOffsetX(item, target) {
         return presentationUtilities.dialogPixelOffsetX(item, target)

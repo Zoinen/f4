@@ -4,9 +4,9 @@
 #include <QPointF>
 #include <QPointer>
 #include <QtQml>
+#include <ZoinGallery/PixelGrid.h>
 
 class QQuickItem;
-class ScenePixelAlignmentPass;
 
 // A translation in the item parent's coordinates, evaluated after layout and
 // before scene synchronization. No scale or raster resampling is introduced.
@@ -17,19 +17,20 @@ class ScenePixelAlignment : public QObject
     QML_ATTACHED(ScenePixelAlignment)
     QML_UNCREATABLE("Use the attached offset on a visual item")
     Q_PROPERTY(QPointF offset READ offset NOTIFY offsetChanged)
+    Q_PROPERTY(ZoinGallery::PixelGridContext *grid READ grid NOTIFY gridChanged)
 public:
     explicit ScenePixelAlignment(QObject *parent = nullptr);
     ~ScenePixelAlignment() override;
     static ScenePixelAlignment *qmlAttachedProperties(QObject *object);
-    QPointF offset() const { return m_offset; }
+    QPointF offset() const;
+    ZoinGallery::PixelGridContext *grid() const;
     QQuickItem *item() const;
     void align();
 signals:
     void offsetChanged();
+    void gridChanged();
 private:
-    void attachWindow();
     QPointer<QQuickItem> m_item;
-    QPointer<ScenePixelAlignmentPass> m_pass;
-    QPointF m_offset;
+    QPointer<ZoinGallery::PixelGridAlignment> m_alignment;
 };
 QML_DECLARE_TYPEINFO(ScenePixelAlignment, QML_HAS_ATTACHED_PROPERTIES)
