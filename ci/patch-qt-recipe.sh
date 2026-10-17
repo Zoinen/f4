@@ -83,6 +83,7 @@ if candidates:
             grep -Fq 'find_package(ffmpeg CONFIG QUIET)' "${reusable_qt_recipe}/conanfile.py" && \
             grep -Fq 'TARGET ffmpeg::${_lowerComponent}' "${reusable_qt_recipe}/conanfile.py" && \
             grep -Fq '#ifndef V4L2_PIX_FMT_BGRA32' "${reusable_qt_recipe}/conanfile.py" && \
+            grep -Fq '# f4: balance Qt Quick batch root order reservations' "${reusable_qt_recipe}/conanfile.py" && \
             { [[ "${target_os}" != "Macos" ]] || \
               grep -Fq '# f4: retain macOS image color space through native conversion' "${reusable_qt_recipe}/conanfile.py"; } && \
             grep -Fq '"ffmpeg::avcodec"' "${reusable_qt_recipe}/conanfile.py" && \
@@ -156,6 +157,8 @@ fi
 grep -Fq 'self.requires("freetype/2.13.2")' \
     "${qt_recipe_copy}/conanfile.py"
 grep -Fq '# f4: retain macOS image color space through native conversion' \
+    "${qt_recipe_copy}/conanfile.py"
+grep -Fq '# f4: balance Qt Quick batch root order reservations' \
     "${qt_recipe_copy}/conanfile.py"
 grep -Fq '"with_ffmpeg": [True, False]' \
     "${qt_recipe_copy}/conanfile.py"

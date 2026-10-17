@@ -566,6 +566,41 @@ def _patch_macos_colorspace(text: str) -> str:
                         _FFMPEG_SOURCE_ANCHOR + _MACOS_COLORSPACE_SOURCE_PATCH)
 
 
+_QUICK_BATCH_ORDERS_MARKER = "# f4: balance Qt Quick batch root order reservations"
+_QUICK_BATCH_ORDERS_BEFORE = (
+    "                BatchRootInfo *info = batchRootInfo(e->root);\n"
+    "                info->availableOrders++;\n"
+)
+_QUICK_BATCH_ORDERS_AFTER = (
+    "                BatchRootInfo *info = batchRootInfo(e->root);\n"
+    "                // Mirror the ancestor reservations in Updater::visitGeometryNode().\n"
+    "                while (info) {\n"
+    "                    ++info->availableOrders;\n"
+    "                    info = info->parentRoot ? batchRootInfo(info->parentRoot) : nullptr;\n"
+    "                }\n"
+)
+_QUICK_BATCH_ORDERS_SOURCE_PATCH = (
+    "        " + _QUICK_BATCH_ORDERS_MARKER + "\n"
+    "        replace_in_file(\n"
+    "            self,\n"
+    "            os.path.join(self.source_folder, 'qtdeclarative', 'src', 'quick',\n"
+    "                         'scenegraph', 'coreapi', 'qsgbatchrenderer.cpp'),\n"
+    f"            {_QUICK_BATCH_ORDERS_BEFORE!r},\n"
+    f"            {_QUICK_BATCH_ORDERS_AFTER!r},\n"
+    "            strict=True,\n"
+    "        )\n"
+)
+
+
+def _patch_quick_batch_orders(text: str) -> str:
+    if _QUICK_BATCH_ORDERS_MARKER in text:
+        return text
+    if text.count(_FFMPEG_SOURCE_ANCHOR) != 1:
+        raise SystemExit("unexpected Qt recipe: batch root source patch anchor is absent or ambiguous")
+    return text.replace(_FFMPEG_SOURCE_ANCHOR,
+                        _FFMPEG_SOURCE_ANCHOR + _QUICK_BATCH_ORDERS_SOURCE_PATCH)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("recipe", type=Path)
@@ -590,6 +625,8 @@ def main() -> None:
         )
     patched = _patch_macos_colorspace(patched)
     print("[FIX:mac-color-space] Qt recipe retains native image color spaces")
+    patched = _patch_quick_batch_orders(patched)
+    print("[FIX:quick-batch-orders] Qt Quick returns ancestor render-order reservations")
     if patched != text:
         args.recipe.write_text(patched, encoding="utf-8")
 

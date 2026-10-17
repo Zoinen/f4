@@ -55,12 +55,12 @@ Item {
         anchors.alignWhenCentered: false
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.verticalCenter: parent.verticalCenter
-        width: hostWindow.snapPx(Math.min(
-            Math.max(0, parent.width - hostWindow.contentSpacing * 2),
-            implicitWidth))
+        width: Math.min(
+            hostWindow.snapPx(Math.max(0, parent.width - hostWindow.contentSpacing * 2)),
+            Math.ceil(implicitWidth * hostWindow.dpr) / hostWindow.dpr)
         height: hostWindow.snapPx(implicitHeight)
         text: hostWindow.worktreeBranchName
-        visible: text !== "" && text !== "zoin"
+        visible: text !== ""
         color: hostWindow.chromeText
         font.pixelSize: hostWindow.semanticTextFontPixelSize
         font.family: hostWindow.uiFontFamily

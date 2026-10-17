@@ -18,6 +18,37 @@ patcher = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(patcher)
 
 
+class QuickBatchRootOrderPatchTests(unittest.TestCase):
+    def test_recipe_patch_is_idempotent_and_valid_python(self) -> None:
+        recipe = "def source(self):\n" + patcher._FFMPEG_SOURCE_ANCHOR
+        patched = patcher._patch_quick_batch_orders(recipe)
+        ast.parse(patched)
+        self.assertEqual(patcher._patch_quick_batch_orders(patched), patched)
+        self.assertIn(patcher._QUICK_BATCH_ORDERS_MARKER, patched)
+
+    def test_source_patch_balances_every_ancestor_reservation(self) -> None:
+        source = patcher._QUICK_BATCH_ORDERS_BEFORE
+
+        def replace_in_file(_recipe, path, before, after, strict):
+            nonlocal source
+            self.assertEqual(pathlib.Path(path).as_posix(),
+                             "qtdeclarative/src/quick/scenegraph/coreapi/qsgbatchrenderer.cpp")
+            self.assertTrue(strict)
+            self.assertEqual(source.count(before), 1)
+            source = source.replace(before, after)
+
+        recipe = type("Recipe", (), {"source_folder": ""})()
+        namespace = {"os": __import__("os"), "replace_in_file": replace_in_file}
+        exec("def source(self):\n" + patcher._QUICK_BATCH_ORDERS_SOURCE_PATCH, namespace)
+        namespace["source"](recipe)
+        self.assertEqual(source, patcher._QUICK_BATCH_ORDERS_AFTER)
+        self.assertIn("info->parentRoot", source)
+
+    def test_unknown_recipe_source_anchor_is_rejected(self) -> None:
+        with self.assertRaisesRegex(SystemExit, "source patch anchor"):
+            patcher._patch_quick_batch_orders("def source(self):\n    pass\n")
+
+
 class MacColorSpaceRecipePatchTests(unittest.TestCase):
     def test_recipe_patch_is_idempotent_and_valid_python(self) -> None:
         recipe = "def source(self):\n" + patcher._FFMPEG_SOURCE_ANCHOR
@@ -33,7 +64,7 @@ class MacColorSpaceRecipePatchTests(unittest.TestCase):
             sources[path] = sources.get(path, "") + before + "\n"
 
         def replace_in_file(_recipe, path, before, after, strict):
-            relative = str(pathlib.Path(path).relative_to("qtbase/src/gui"))
+            relative = pathlib.Path(path).relative_to("qtbase/src/gui").as_posix()
             self.assertTrue(strict)
             self.assertEqual(sources[relative].count(before), 1)
             sources[relative] = sources[relative].replace(before, after)

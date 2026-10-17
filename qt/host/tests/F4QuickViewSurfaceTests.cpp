@@ -1096,12 +1096,23 @@ void F4QuickViewSurfaceTests::qmlImportsWithoutInstalledQt()
     QQmlEngine engine;
     engine.setImportPathList({QStringLiteral("qrc:/qt-project.org/imports"),
                               QStringLiteral("qrc:/qt/qml")});
+    QTemporaryDir vectorDirectory;
+    QVERIFY(vectorDirectory.isValid());
+    const QString vectorPath = vectorDirectory.filePath(QStringLiteral("portable.svg"));
+    QFile vectorFile(vectorPath);
+    QVERIFY(vectorFile.open(QIODevice::WriteOnly));
+    QVERIFY(vectorFile.write("<svg xmlns='http://www.w3.org/2000/svg' width='16' height='12'>"
+                             "<path d='M0 0H16V12H0Z' fill='red'/></svg>") > 0);
+    vectorFile.close();
+    engine.rootContext()->setContextProperty(QStringLiteral("portableVectorSource"),
+                                             QUrl::fromLocalFile(vectorPath));
     QQmlComponent component(&engine);
     QByteArray source = R"(
         import QtQuick
         import QtQuick.Controls
         import QtQuick.Layouts
         import QtQuick.Shapes
+        import QtQuick.VectorImage
         import QtQuick.Effects
         Item {
             Connections { target: null }
@@ -1109,6 +1120,7 @@ void F4QuickViewSurfaceTests::qmlImportsWithoutInstalledQt()
             ListModel { ListElement { title: "item" } }
             RowLayout { Button { text: "OK" } ComboBox { model: ["one", "two"] } }
             Shape { }
+            VectorImage { objectName: "portableVectorImage"; source: portableVectorSource }
             MultiEffect { }
         }
     )";
@@ -1119,6 +1131,10 @@ void F4QuickViewSurfaceTests::qmlImportsWithoutInstalledQt()
     component.setData(source, QUrl(QStringLiteral("qrc:/portable-import-test.qml")));
     QScopedPointer<QObject> object(component.create());
     QVERIFY2(object, qPrintable(component.errorString()));
+    auto *vector = object->findChild<QQuickItem *>(QStringLiteral("portableVectorImage"));
+    QVERIFY(vector);
+    QTRY_COMPARE(vector->implicitWidth(), 16.0);
+    QTRY_COMPARE(vector->implicitHeight(), 12.0);
 }
 
 void F4QuickViewSurfaceTests::compiledHostLoadsItsQmlModule()
@@ -7616,12 +7632,26 @@ void F4QuickViewSurfaceTests::worktreeBranchAppearsCenteredInTitleBar()
     QCOMPARE(branchLabel->mapToItem(rootItem, QPointF(1, 0)) - branchOrigin, QPointF(1, 0));
     QCOMPARE(branchLabel->mapToItem(rootItem, QPointF(0, 1)) - branchOrigin, QPointF(0, 1));
     fixture.window->setProperty("worktreeBranchName", QStringLiteral("zoin"));
-    QTRY_VERIFY(!branchLabel->isVisible());
+    QTRY_VERIFY(branchLabel->isVisible());
+    QTest::qWait(50);
+    QVERIFY2(!branchLabel->property("truncated").toBool(),
+             qPrintable(QStringLiteral("branch text clipped: width=%1, implicitWidth=%2, DPR=%3")
+                            .arg(branchLabel->width(), 0, 'f', 6)
+                            .arg(branchLabel->implicitWidth(), 0, 'f', 6)
+                            .arg(dpr, 0, 'f', 2)));
+    const QPointF zoinOrigin = branchLabel->mapToItem(rootItem, QPointF{});
+    verifyWholePhysicalCoordinate(zoinOrigin.x(), QStringLiteral("zoin label scene x"));
+    verifyWholePhysicalCoordinate(zoinOrigin.y(), QStringLiteral("zoin label scene y"));
+    QCOMPARE(branchLabel->mapToItem(rootItem, QPointF(1, 0)) - zoinOrigin, QPointF(1, 0));
+    QCOMPARE(branchLabel->mapToItem(rootItem, QPointF(0, 1)) - zoinOrigin, QPointF(0, 1));
+    QVERIFY(qAbs(zoinOrigin.x() + branchLabel->width()/2 - titleBarCenter) <= .5/dpr + .001);
     const auto capture = fixture.window->grabWindow();
     QVERIFY(!capture.isNull());
-    capture.save("D:/Code/f4-zoin/.diagnostics/hidden-zoin-title-175.png");
+    QVERIFY(capture.save("D:/Code/f4-zoin/.diagnostics/worktree-zoin-title-175.png"));
     fixture.window->setProperty("worktreeBranchName", QStringLiteral("Zoin"));
     QTRY_VERIFY(branchLabel->isVisible());
+    fixture.window->setProperty("worktreeBranchName", QString{});
+    QTRY_VERIFY(!branchLabel->isVisible());
 }
 
 void F4QuickViewSurfaceTests::chromeIconsUseMatchingPhysicalTargetSizes()
