@@ -1020,8 +1020,27 @@ F4IconSet::F4IconSet(QString providerId, QObject *parent)
             const QString path = QStringLiteral(":/F4QtHost/icons/zoin/")
                 + QFileInfo(record.value("file").toString()).fileName();
             if (!QFile::exists(path)) continue;
-            for (const auto &pattern : record.value("examples").toArray())
-                m_zoinFileIconPatterns.append({pattern.toString(), path});
+            for (const auto &pattern : record.value("examples").toArray()) {
+                const QString text = pattern.toString();
+                FileIconPattern compiled{{}, path, !text.contains(u'*')};
+                // QDir::match recompiles every wildcard for every catalog row.
+                // Keep its filter splitting, case folding and priority exactly,
+                // but compile the immutable manifest only once.
+                for (const auto &filter : QDir::nameFiltersFromString(text)) {
+                    const bool suffix = filter.startsWith(u'*');
+                    const QString literal = suffix ? filter.sliced(1) : filter;
+                    if (!literal.contains(u'*') && !literal.contains(u'?')
+                        && !literal.contains(u'[') && !literal.contains(u']')) {
+                        compiled.filters.append({{}, literal, suffix});
+                    } else {
+                        auto expression = QRegularExpression::fromWildcard(
+                            filter, Qt::CaseInsensitive);
+                        expression.optimize();
+                        compiled.filters.append({std::move(expression), {}, false});
+                    }
+                }
+                m_zoinFileIconPatterns.append(std::move(compiled));
+            }
         }
     }
     if (qGuiApp) {
@@ -1163,9 +1182,21 @@ QUrl F4IconSet::fileIconSource(const QString &localPath,
         // Exact configuration filenames take priority over extension patterns.
         for (bool exact : {true, false}) {
             for (const auto &pattern : m_zoinFileIconPatterns) {
-                if ((!pattern.first.contains('*')) == exact
-                    && QDir::match(pattern.first, fileName))
-                    return QUrl(QStringLiteral("qrc") + pattern.second);
+                if (pattern.exact != exact) continue;
+                for (const auto &filter : pattern.filters) {
+                    bool match;
+                    if (filter.literal.isNull()) {
+                        match = filter.expression.match(fileName).hasMatch();
+                    } else if (!filter.suffix) {
+                        match = fileName.compare(filter.literal, Qt::CaseInsensitive) == 0;
+                    } else if (fileName.contains(u'/') || fileName.contains(u'\\')) {
+                        match = QDir::match(u'*' + filter.literal, fileName);
+                    } else {
+                        match = fileName.endsWith(filter.literal, Qt::CaseInsensitive);
+                    }
+                    if (match)
+                        return QUrl(QStringLiteral("qrc") + pattern.path);
+                }
             }
         }
         const QDir icons(QStringLiteral(":/F4QtHost/icons/zoin"));

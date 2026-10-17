@@ -274,6 +274,7 @@ private slots:
     void zoinArtworkHasTightNativeBounds();
     void zoinManifestReferencesBundledAssets();
     void zoinIsDefault();
+    void zoinCatalogClassificationBudget();
     void renderingUsesLogicalSizeAndDevicePixelRatio_data();
     void renderingUsesLogicalSizeAndDevicePixelRatio();
 };
@@ -1160,6 +1161,23 @@ void F4IconProviderTests::zoinIconsAreBundledAndIndependent()
     QVERIFY(source("test", true).toString().startsWith("image://"));
 }
 
+void F4IconProviderTests::zoinCatalogClassificationBudget()
+{
+    F4IconSet icons;
+    QStringList names;
+    for (int i = 0; i < 184; ++i)
+        names.append(QStringLiteral("IMG_%1.CR2").arg(i));
+    QElapsedTimer timer;
+    timer.start();
+    for (const QString &name : names)
+        QVERIFY(!icons.fileIconSource({}, name, false, 64, 1.75).isEmpty());
+    const qint64 elapsed = timer.nsecsElapsed();
+    qInfo() << "184 cold file-icon classifications (ns):" << elapsed;
+    QVERIFY2(elapsed < 6250000,
+             qPrintable(QStringLiteral("Catalog icon classification exceeded one 160 Hz frame: %1 ms")
+                            .arg(elapsed / 1e6)));
+}
+
 void F4IconProviderTests::zoinIsDefault()
 {
     F4IconSet icons;
@@ -1182,11 +1200,22 @@ void F4IconProviderTests::zoinManifestReferencesBundledAssets()
     F4IconSet icons;
     icons.setName("zoin");
     QSet<QString> referenced;
+    QList<QPair<QString, QString>> patterns;
+    QStringList probes;
     for (const auto &entry : entries) {
         const auto record = entry.toObject();
         const auto file = record.value("file").toString();
         QVERIFY2(QFile::exists(directory.filePath(file)), qPrintable(file));
         referenced.insert(file);
+        if (record.value("kind").toString() == QStringLiteral("file type")) {
+            for (const auto &example : record.value("examples").toArray()) {
+                const auto pattern = example.toString();
+                patterns.append({pattern, directory.filePath(file)});
+                QString probe = pattern;
+                probe.replace(u'*', QStringLiteral("sample"));
+                probes << probe << probe.toUpper() << QStringLiteral("prefix") + probe;
+            }
+        }
     }
     const auto names = directory.entryList({"*.svg"}, QDir::Files);
     QCOMPARE(referenced, QSet<QString>(names.begin(), names.end()));
@@ -1201,6 +1230,21 @@ void F4IconProviderTests::zoinManifestReferencesBundledAssets()
              QUrl("qrc:/F4QtHost/icons/zoin/image.svg"));
     QCOMPARE(icons.fileIconSource("/test", "README.md", false, 64, 2),
              QUrl("qrc:/F4QtHost/icons/zoin/markdown.svg"));
+    for (const auto &probe : probes) {
+        QString expected;
+        for (bool exact : {true, false}) {
+            for (const auto &pattern : patterns) {
+                if ((!pattern.first.contains(u'*')) == exact
+                    && QDir::match(pattern.first, probe)) {
+                    expected = QStringLiteral("qrc") + pattern.second;
+                    break;
+                }
+            }
+            if (!expected.isEmpty()) break;
+        }
+        if (!expected.isEmpty())
+            QCOMPARE(icons.fileIconSource({}, probe, false, 64, 1.75), QUrl(expected));
+    }
 }
 
 void F4IconProviderTests::nativeArtworkTrimsOnlyZeroAlpha_data()

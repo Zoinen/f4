@@ -8,6 +8,7 @@
 #include <QObject>
 #include <QPair>
 #include <QQuickImageProvider>
+#include <QRegularExpression>
 #include <QString>
 #include <QStringView>
 #include <QUrl>
@@ -161,7 +162,17 @@ private:
     void advanceRevision();
 
     QString m_providerId;
-    QList<QPair<QString, QString>> m_zoinFileIconPatterns;
+    struct FileIconPattern {
+        struct Filter {
+            QRegularExpression expression;
+            QString literal;
+            bool suffix = false;
+        };
+        QList<Filter> filters;
+        QString path;
+        bool exact;
+    };
+    QList<FileIconPattern> m_zoinFileIconPatterns;
     IconSet m_iconSet = Zoin;
     qulonglong m_revision = 1;
 };

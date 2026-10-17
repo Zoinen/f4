@@ -1095,7 +1095,8 @@ void F4QuickViewSurfaceTests::qmlImportsWithoutInstalledQt()
 #endif
     QQmlEngine engine;
     engine.setImportPathList({QStringLiteral("qrc:/qt-project.org/imports"),
-                              QStringLiteral("qrc:/qt/qml")});
+                              QStringLiteral("qrc:/qt/qml"), QStringLiteral("qrc:/")});
+    ZoinGallery::GalleryRuntime::registerTypes();
     QTemporaryDir vectorDirectory;
     QVERIFY(vectorDirectory.isValid());
     const QString vectorPath = vectorDirectory.filePath(QStringLiteral("portable.svg"));
@@ -1114,6 +1115,7 @@ void F4QuickViewSurfaceTests::qmlImportsWithoutInstalledQt()
         import QtQuick.Shapes
         import QtQuick.VectorImage
         import QtQuick.Effects
+        import ZoinGallery
         Item {
             Connections { target: null }
             Timer { interval: 100 }
@@ -1135,6 +1137,23 @@ void F4QuickViewSurfaceTests::qmlImportsWithoutInstalledQt()
     QVERIFY(vector);
     QTRY_COMPARE(vector->implicitWidth(), 16.0);
     QTRY_COMPARE(vector->implicitHeight(), 12.0);
+    // Finish stock VectorImage's synchronous generation before starting the
+    // gallery worker: Qt's internal generator shares mutable static storage.
+    QQmlComponent preparedComponent(&engine);
+    preparedComponent.setData(R"(
+        import QtQuick
+        import ZoinGallery
+        GalleryVectorImage { width: 16; height: 12; source: portableVectorSource }
+    )", QUrl(QStringLiteral("qrc:/portable-prepared-vector-test.qml")));
+    QScopedPointer<QObject> preparedObject(preparedComponent.create());
+    QVERIFY2(preparedObject, qPrintable(preparedComponent.errorString()));
+    auto *prepared = qobject_cast<QQuickItem *>(preparedObject.data());
+    QVERIFY(prepared);
+    QQuickWindow window;
+    window.resize(32, 24);
+    prepared->setParentItem(window.contentItem());
+    window.show();
+    QTRY_COMPARE_WITH_TIMEOUT(prepared->property("sourceStatus").toInt(), 1, 5000);
 }
 
 void F4QuickViewSurfaceTests::compiledHostLoadsItsQmlModule()
