@@ -667,6 +667,35 @@ def _patch_quick_stable_intervals(text: str) -> str:
     return text[:end] + source_patch + text[end:]
 
 
+_QUICK_BUFFER_POOL_FIT_MARKER = "# f4: prefer pooled buffers with sufficient capacity"
+_QUICK_BUFFER_POOL_FIT_BEFORE = '''                if (!buffer->buf
+                    || (testBuffer->size() >= expectedSize && testBuffer->size() < buffer->buf->size())'''
+_QUICK_BUFFER_POOL_FIT_AFTER = '''                if (!buffer->buf
+                    || (testBuffer->size() >= expectedSize && buffer->buf->size() < expectedSize)
+                    || (testBuffer->size() >= expectedSize && testBuffer->size() < buffer->buf->size())'''
+_QUICK_BUFFER_POOL_FIT_SOURCE_PATCH = (
+    "        " + _QUICK_BUFFER_POOL_FIT_MARKER + "\n"
+    "        from conan.tools.files import load, save\n"
+    "        _f4_pool_path = os.path.join(self.source_folder, 'qtdeclarative',\n"
+    "                                    'src', 'quick', 'scenegraph', 'coreapi', 'qsgbatchrenderer.cpp')\n"
+    "        _f4_pool_source = load(self, _f4_pool_path)\n"
+    f"        _f4_pool_before = {_QUICK_BUFFER_POOL_FIT_BEFORE!r}\n"
+    f"        _f4_pool_after = {_QUICK_BUFFER_POOL_FIT_AFTER!r}\n"
+    "        if _f4_pool_source.count(_f4_pool_before) != 1:\n"
+    "            raise RuntimeError('Qt Quick buffer-pool fit source anchor changed or is ambiguous')\n"
+    "        save(self, _f4_pool_path, _f4_pool_source.replace(_f4_pool_before, _f4_pool_after))\n"
+)
+
+
+def _patch_quick_buffer_pool_fit(text: str) -> str:
+    if _QUICK_BUFFER_POOL_FIT_MARKER in text:
+        return text
+    if text.count(_FFMPEG_SOURCE_ANCHOR) != 1:
+        raise SystemExit("unexpected Qt recipe: source patch anchor is absent or ambiguous")
+    return text.replace(_FFMPEG_SOURCE_ANCHOR,
+                        _FFMPEG_SOURCE_ANCHOR + _QUICK_BUFFER_POOL_FIT_SOURCE_PATCH)
+
+
 _QUICK_CHILD_WINDOW_STACKING_MARKER = "# f4: skip child-window stacking walks without native children"
 _QUICK_CHILD_WINDOW_STACKING_BEFORE = '''    if (!item) {
         qCDebug(lcQuickWindow) << "Updating child window stacking order for" << q;
@@ -736,6 +765,8 @@ def main() -> None:
     print("[FIX:quick-blocked-opacity] Qt Quick ignores opacity outside its renderer tree")
     patched = _patch_quick_stable_intervals(patched)
     print("[FIX:quick-stable-intervals] Qt Quick retains unchanged batches and owns free order intervals")
+    patched = _patch_quick_buffer_pool_fit(patched)
+    print("[FIX:quick-buffer-pool-fit] Qt Quick selects reusable buffers before growing undersized ones")
     patched = _patch_quick_child_window_stacking(patched)
     print("[FIX:quick-child-window-stacking] Qt Quick skips scene walks without native child windows")
     if patched != text:

@@ -148,8 +148,8 @@ private:
 
 class UploadGateTile final : public QQuickItem {
 public:
-    UploadGateTile(QQuickItem *parent, QColor color, int vertices = 16384)
-        : QQuickItem(parent), color(color), vertices(vertices) {
+    UploadGateTile(QQuickItem *parent, QColor color, int vertices = 16384, int indexes = 6)
+        : QQuickItem(parent), color(color), vertices(vertices), indexes(indexes) {
         setFlag(ItemHasContents);
         setSize(QSizeF(16, 16));
     }
@@ -160,7 +160,7 @@ protected:
         // A large allocation with only four referenced vertices exercises
         // upload admission without adding expensive overdraw to this fixture.
         auto *geometry = new QSGGeometry(QSGGeometry::defaultAttributes_Point2D(),
-                                        vertices, 6, QSGGeometry::UnsignedIntType);
+                                        vertices, indexes, QSGGeometry::UnsignedIntType);
         geometry->setDrawingMode(QSGGeometry::DrawTriangles);
         auto *vertices = geometry->vertexDataAsPoint2D();
         for (int i = 0; i < geometry->vertexCount(); ++i) vertices[i].set(0, 0);
@@ -168,7 +168,8 @@ protected:
         vertices[2].set(16, 16);
         vertices[3].set(0, 16);
         const quint32 indices[] = {0, 1, 2, 0, 2, 3};
-        memcpy(geometry->indexData(), indices, sizeof(indices));
+        auto *indexData = geometry->indexDataAsUInt();
+        for (int i = 0; i < indexes; ++i) indexData[i] = indices[i % 6];
         auto *material = new QSGFlatColorMaterial;
         material->setColor(color);
         material->setFlag(QSGMaterial::NoBatching);
@@ -181,6 +182,7 @@ protected:
 private:
     QColor color;
     int vertices;
+    int indexes;
 };
 
 class GateRenderNode final : public QSGRenderNode {
@@ -216,6 +218,108 @@ private slots:
         previousMessageHandler = qInstallMessageHandler(watchUploads);
     }
     void cleanupTestCase() { qInstallMessageHandler(previousMessageHandler); }
+
+    void recycledBufferUsesAvailableCapacity_data() {
+        QTest::addColumn<QList<int>>("capacities");
+        QTest::addColumn<int>("expectedIndex");
+        QTest::addColumn<bool>("indexBuffer");
+        for (bool index : {false, true}) {
+            const QByteArray prefix = index ? "index-" : "vertex-";
+            QTest::newRow((prefix + "undersized-before-exact").constData())
+                << QList<int>{16, 128, 64} << 2 << index;
+            QTest::newRow((prefix + "undersized-before-best").constData())
+                << QList<int>{16, 128, 96} << 2 << index;
+            QTest::newRow((prefix + "adequate-before-smaller").constData())
+                << QList<int>{128, 16, 96} << 2 << index;
+            QTest::newRow((prefix + "largest-undersized").constData())
+                << QList<int>{16, 32, 48} << 2 << index;
+        }
+    }
+
+    void recycledBufferUsesAvailableCapacity() {
+        if (!qEnvironmentVariableIsSet("ZOIN_TEST_NATIVE_RENDERER"))
+            QSKIP("Requires a native Qt Quick renderer");
+        QFETCH(QList<int>, capacities);
+        QFETCH(int, expectedIndex);
+        QFETCH(bool, indexBuffer);
+        QQuickWindow window;
+        window.resize(96, 64);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        window.grabWindow();
+        QVERIFY(window.rhi());
+        const auto api = window.rendererInterface()->graphicsApi();
+        if (qEnvironmentVariable("ZOIN_EXPECT_TEST_API") == "d3d11")
+            QCOMPARE(api, QSGRendererInterface::Direct3D11);
+        if (qEnvironmentVariable("ZOIN_EXPECT_TEST_API") == "opengl")
+            QCOMPARE(api, QSGRendererInterface::OpenGL);
+        auto *tile = new UploadGateTile(window.contentItem(), Qt::red, 8, 16);
+        tile->setObjectName("pooledBufferTile");
+        tile->setPosition(QPointF(8, 8));
+        std::atomic<bool> injected = false;
+        std::atomic<bool> completed = false;
+        bool allocationsReady = true;
+        bool poolInitiallyEmpty = false;
+        bool selectedExpected = false;
+        int remainingCount = -1;
+        quint32 remainingCost = 0;
+        QList<QRhiBuffer *> buffers;
+        const auto before = connect(&window, &QQuickWindow::beforeRendering, &window, [&] {
+            if (injected.load()) return;
+            auto *renderer = static_cast<QSGBatchRenderer::Renderer *>(
+                QQuickWindowPrivate::get(&window)->renderer);
+            auto *pool = indexBuffer ? &renderer->m_iboPool : &renderer->m_vboPool;
+            auto *cost = indexBuffer ? &renderer->m_iboPoolCost : &renderer->m_vboPoolCost;
+            poolInitiallyEmpty = pool->isEmpty() && *cost == 0;
+            if (!poolInitiallyEmpty) {
+                completed = true;
+                return;
+            }
+            auto *rhi = window.rhi();
+            for (const int capacity : capacities) {
+                auto *buffer = rhi->newBuffer(QRhiBuffer::Dynamic,
+                    indexBuffer ? QRhiBuffer::IndexBuffer : QRhiBuffer::VertexBuffer, capacity);
+                allocationsReady &= buffer->create();
+                buffers.append(buffer);
+                pool->add(buffer);
+                *cost += capacity;
+            }
+            injected = true;
+        }, Qt::DirectConnection);
+        const auto after = connect(&window, &QQuickWindow::afterRendering, &window, [&] {
+            if (!injected.load() || completed.load()) return;
+            auto *renderer = static_cast<QSGBatchRenderer::Renderer *>(
+                QQuickWindowPrivate::get(&window)->renderer);
+            if (renderer->m_opaqueBatches.size() != 1) return;
+            const auto *batch = renderer->m_opaqueBatches.at(0);
+            const auto &upload = indexBuffer ? batch->ibo : batch->vbo;
+            selectedExpected = upload.buf == buffers.at(expectedIndex);
+            remainingCount = indexBuffer ? renderer->m_iboPool.size() : renderer->m_vboPool.size();
+            remainingCost = indexBuffer ? renderer->m_iboPoolCost : renderer->m_vboPoolCost;
+            completed = true;
+        }, Qt::DirectConnection);
+        const auto cleanup = qScopeGuard([&] { disconnect(before); disconnect(after); });
+        window.update();
+        const QImage image = window.grabWindow();
+        QVERIFY(completed.load());
+        QVERIFY(poolInitiallyEmpty);
+        QVERIFY(allocationsReady);
+        QVERIFY2(selectedExpected, "Resized an undersized buffer despite a better pooled buffer");
+        QCOMPARE(remainingCount, capacities.size() - 1);
+        quint32 expectedCost = 0;
+        for (int i = 0; i < capacities.size(); ++i)
+            if (i != expectedIndex) expectedCost += capacities.at(i);
+        QCOMPARE(remainingCost, expectedCost);
+        const qreal dpr = window.devicePixelRatio();
+        if (qEnvironmentVariableIsSet("ZOIN_EXPECT_TEST_DPR"))
+            QCOMPARE(dpr, qEnvironmentVariable("ZOIN_EXPECT_TEST_DPR").toDouble());
+        const QPointF origin = tile->mapToScene(QPointF());
+        QVERIFY(qAbs(origin.x() * dpr - qRound(origin.x() * dpr)) < .001);
+        QVERIFY(qAbs(origin.y() * dpr - qRound(origin.y() * dpr)) < .001);
+        QCOMPARE(tile->mapToScene(QPointF(1, 0)) - origin, QPointF(1, 0));
+        QCOMPARE(tile->mapToScene(QPointF(0, 1)) - origin, QPointF(0, 1));
+        QCOMPARE(image.pixelColor(qRound(12 * dpr), qRound(12 * dpr)), QColor(Qt::red));
+    }
 
     void vectorUploadRootsAvoidUnrelatedFullRebuilds() {
         if (!qEnvironmentVariableIsSet("ZOIN_TEST_NATIVE_RENDERER"))

@@ -66,6 +66,22 @@ inside an SVG remains authored raster content.
 
 ## Native batch retention
 
+The portable Qt recipe also corrects vertex/index buffer-pool selection. A
+buffer with enough capacity takes precedence over an undersized one, regardless
+of pool order; the existing smallest-adequate/largest-undersized rules then
+apply. This avoids needless growth when reusable capacity is already present,
+without increasing pool limits or changing buffer types. See
+`profiler/reports/buffer-pool-fit-2026-10-18.md` for native regressions, live
+missed-fit counts and the remaining frame-time limitations.
+
+Panel fallback icons coalesce source, extent and tint changes into the next
+Quick polish pass through `GalleryIconImage`. A row commit does not rasterize
+every intermediate size. Empty sources clear outgoing pixels immediately;
+the final icon is loaded before scene synchronization. This does not change
+SVG file presentation or interface icons. See
+`profiler/reports/icon-raster-coalescing-2026-10-18.md` for regression and
+scrolling measurements, including the remaining spikes.
+
 The portable Qt recipe skips the native child-window stacking tree walk when
 the Quick window has no native child windows. If any native child exists, Qt's
 original recursive ordering and raise behavior remain intact. This avoids a

@@ -19,6 +19,56 @@ patcher = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(patcher)
 
 
+class QuickBufferPoolFitPatchTests(unittest.TestCase):
+    def test_recipe_is_idempotent_self_contained_and_composes(self):
+        recipe = "def source(self):\n" + patcher._FFMPEG_SOURCE_ANCHOR
+        recipe = patcher._patch_quick_batch_orders(recipe)
+        recipe = patcher._patch_quick_blocked_opacity(recipe)
+        recipe = patcher._patch_quick_stable_intervals(recipe)
+        recipe = patcher._patch_quick_child_window_stacking(recipe)
+        patched = patcher._patch_quick_buffer_pool_fit(recipe)
+        ast.parse(patched)
+        self.assertEqual(patcher._patch_quick_buffer_pool_fit(patched), patched)
+        self.assertIn(patcher._QUICK_STABLE_INTERVALS_MARKER, patched)
+        self.assertIn(patcher._QUICK_CHILD_WINDOW_STACKING_MARKER, patched)
+        self.assertNotIn("artifacts/", patched)
+
+    def execute(self, source):
+        self.saved = []
+        def load(_recipe, path):
+            self.assertEqual(pathlib.Path(path).as_posix(),
+                "qtdeclarative/src/quick/scenegraph/coreapi/qsgbatchrenderer.cpp")
+            return source
+        def save(_recipe, path, value):
+            self.saved.append(value)
+        body = patcher._QUICK_BUFFER_POOL_FIT_SOURCE_PATCH.replace(
+            "        from conan.tools.files import load, save\n", "")
+        namespace = dict(os=__import__("os"), load=load, save=save)
+        exec("def source(self):\n" + body, namespace)
+        namespace["source"](type("Recipe", (), {"source_folder": ""})())
+        return self.saved[0]
+
+    def test_source_patch_preserves_the_rest_of_selection(self):
+        original = "select() {\n" + patcher._QUICK_BUFFER_POOL_FIT_BEFORE + "\n    remainingSelection();\n}\n"
+        expected = original.replace(patcher._QUICK_BUFFER_POOL_FIT_BEFORE,
+                                    patcher._QUICK_BUFFER_POOL_FIT_AFTER)
+        self.assertEqual(self.execute(original), expected)
+        self.assertEqual(len(self.saved), 1)
+
+    def test_source_drift_is_rejected_without_saving(self):
+        for source in ("changed", patcher._QUICK_BUFFER_POOL_FIT_BEFORE * 2):
+            with self.subTest(source=source):
+                with self.assertRaisesRegex(RuntimeError, "source anchor changed or is ambiguous"):
+                    self.execute(source)
+                self.assertEqual(self.saved, [])
+
+    def test_recipe_anchor_is_required_and_unambiguous(self):
+        for recipe in ("def source(self):\n    pass\n",
+                       "def source(self):\n" + patcher._FFMPEG_SOURCE_ANCHOR * 2):
+            with self.subTest(recipe=recipe), self.assertRaisesRegex(SystemExit, "source patch anchor"):
+                patcher._patch_quick_buffer_pool_fit(recipe)
+
+
 class QuickChildWindowStackingPatchTests(unittest.TestCase):
     def test_recipe_is_idempotent_and_composes_with_existing_patches(self):
         recipe = "def source(self):\n" + patcher._FFMPEG_SOURCE_ANCHOR
