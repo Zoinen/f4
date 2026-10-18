@@ -34,6 +34,7 @@
 #include <ZoinGallery/GallerySession.h>
 #include <ZoinGallery/GalleryCatalogSource.h>
 #include "../../../third_party/ZoinGallery/tests/DirectoryPreviewFixture.h"
+#include "../../../third_party/ZoinGallery/GalleryDelegateItem.h"
 
 class GalleryKeyRecorder final : public QObject
 {
@@ -118,6 +119,8 @@ private slots:
     void initTestCase();
     void panelIconsKeepNativeRasterAtMixedDpi();
     void nativeFileIconsDoNotKeepFallbackUnderlay();
+    void nativeFileIconsSurviveFailedThumbnail_data();
+    void nativeFileIconsSurviveFailedThumbnail();
     void frameTraceUsesDirectSwapBoundaryAcrossQueuedDelivery();
     void documentWindowTraceWaitsForCommittedRenderSync();
     void stableActionsCarryRevisions();
@@ -624,6 +627,115 @@ void F4GalleryBridgeTests::nativeFileIconsDoNotKeepFallbackUnderlay()
         "native source=%1 fallback source=%2")
         .arg(native->property("source").toUrl().toString())
         .arg(fallback->property("source").toUrl().toString())));
+}
+
+void F4GalleryBridgeTests::nativeFileIconsSurviveFailedThumbnail_data()
+{
+    QTest::addColumn<int>("mode");
+    QTest::newRow("masonry") << 0;
+    QTest::newRow("columns") << 1;
+    QTest::newRow("details") << 2;
+    QTest::newRow("grid") << 3;
+    QTest::newRow("icons") << 4;
+}
+
+void F4GalleryBridgeTests::nativeFileIconsSurviveFailedThumbnail()
+{
+    QFETCH(int, mode);
+    QTemporaryDir directory;
+    QQuickView view;
+    view.resize(360, 260);
+    view.setColor(QColor("#191d23"));
+    F4IconSet icons;
+    icons.setIconSet(F4IconSet::System);
+    view.engine()->addImageProvider(icons.providerId(), new F4IconProvider({}, true));
+    view.engine()->addImportPath(QStringLiteral(":"));
+    view.engine()->addImportPath(QStringLiteral("qrc:/qt/qml"));
+    ZoinGallery::RuntimeOptions options;
+    options.persistentCache = false;
+    auto *runtime = ZoinGallery::GalleryRuntime::install(view.engine(), options);
+    QVERIFY(runtime);
+    const auto shutdown = qScopeGuard([&] { runtime->shutdown(); });
+    QQmlComponent component(view.engine());
+    component.setData(R"QML(
+        import QtQuick
+        import ZoinGallery
+        Item {
+            width: 360; height: 260
+            property alias slot: slot
+            property alias panel: panel
+            GalleryPanel { id: panel; visible: false }
+            GalleryEntryDelegateBase {
+                id: slot; panelRoot: panel; viewIndex: 0; sourceIndex: 0
+                x: 13.2; y: 17.3; width: 220; height: 180
+                masonryGeometryReady: true
+            }
+        }
+    )QML", QUrl(QStringLiteral("inline:FailedThumbnailNativeIcon.qml")));
+    QTRY_VERIFY(component.status() != QQmlComponent::Loading);
+    QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+    auto *root = qobject_cast<QQuickItem *>(component.create());
+    QVERIFY2(root, qPrintable(component.errorString()));
+    auto *slot = qobject_cast<GalleryDelegateItem *>(
+        root->property("slot").value<QObject *>());
+    QVERIFY(slot);
+    slot->setPresentationMode(mode);
+    root->property("panel").value<QObject *>()->setProperty(
+        "devicePixelRatio", view.devicePixelRatio());
+    view.setContent(QUrl(QStringLiteral("inline:FailedThumbnailNativeIcon.qml")),
+                    &component, root);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+
+    const QUrl nativeSource = icons.fileIconSource(
+        directory.filePath("sample.bat"), QStringLiteral("sample.bat"), false,
+        128, view.devicePixelRatio());
+    QVariantMap row{{"valid", true}, {"entryId", "failed-thumbnail"},
+        {"text", "sample.bat"}, {"iconPath", nativeSource.toString()},
+        {"highlightForeground", "#59bd32"}, {"isImage", false},
+        {"imageIdUrl", QUrl::fromLocalFile(directory.filePath("missing.png")).toString()}};
+    slot->setVisualRow(row);
+    QQuickItem *thumbnail = nullptr;
+    QTRY_VERIFY((thumbnail = slot->findChild<QQuickItem *>("galleryThumbnailImage-0")));
+    QTRY_COMPARE(thumbnail->property("status").toInt(), 3); // Image.Error
+    QQuickItem *native = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT((native = slot->findChild<QQuickItem *>(
+        "gallerySourceColorIcon-0")), 3000);
+    QTRY_COMPARE(native->property("status").toInt(), 1); // Image.Ready
+    auto *gate = slot->findChild<QQuickItem *>("galleryFallbackDrawingGate-0");
+    QVERIFY(gate);
+    QTRY_VERIFY(!gate->property("sceneVisible").toBool());
+    QTest::qWait(100);
+    view.update();
+    const QImage frame = view.grabWindow();
+    QVERIFY(!frame.isNull());
+    const QPointF origin = native->mapToScene(QPointF());
+    const qreal dpr = view.devicePixelRatio();
+    QVERIFY(qAbs(origin.x() * dpr - qRound(origin.x() * dpr)) < .001);
+    QVERIFY(qAbs(origin.y() * dpr - qRound(origin.y() * dpr)) < .001);
+    QCOMPARE(native->mapToScene(QPointF(1, 0)) - origin, QPointF(1, 0));
+    QCOMPARE(native->mapToScene(QPointF(0, 1)) - origin, QPointF(0, 1));
+    const QPointF center = native->mapToScene(
+        QPointF(native->width() / 2, native->height() / 2)) * dpr;
+    QCOMPARE(frame.pixelColor(center.toPoint()), QColor(Qt::white));
+    if (qEnvironmentVariableIsSet("F4_NATIVE_ICON_CAPTURE"))
+        QVERIFY(frame.save(qEnvironmentVariable("F4_NATIVE_ICON_CAPTURE")
+                           + QStringLiteral("-%1.png").arg(mode)));
+
+    // A failed request must not be retried when the native icon becomes ready.
+    QCOMPARE(thumbnail->property("status").toInt(), 3);
+    QVERIFY(!gate->property("sceneVisible").toBool());
+    QImage photo(80, 40, QImage::Format_ARGB32);
+    photo.fill(Qt::red);
+    const QString photoPath = directory.filePath("photo.png");
+    QVERIFY(photo.save(photoPath));
+    row["entryId"] = "valid-thumbnail";
+    row["text"] = "photo.png";
+    row["isImage"] = true;
+    row["imageIdUrl"] = QUrl::fromLocalFile(photoPath).toString();
+    slot->setVisualRow(row);
+    QTRY_COMPARE(thumbnail->property("status").toInt(), 1);
+    QTRY_VERIFY(!slot->findChild<QQuickItem *>("gallerySourceColorIcon-0"));
 }
 
 void F4GalleryBridgeTests::documentWindowTraceWaitsForCommittedRenderSync()

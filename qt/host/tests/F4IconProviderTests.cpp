@@ -268,6 +268,8 @@ private slots:
     void zeroRequestedSizeUsesLogicalFallback();
     void requestedPhysicalSizeOverridesStaleDevicePixelRatio();
     void nativePlatformFileIconSmoke();
+    void nativeArtworkPreservesSourceResolution_data();
+    void nativeArtworkPreservesSourceResolution();
     void nativeArtworkTrimsOnlyZeroAlpha_data();
     void nativeArtworkTrimsOnlyZeroAlpha();
     void zoinIconsAreBundledAndIndependent();
@@ -1288,6 +1290,39 @@ void F4IconProviderTests::nativeArtworkTrimsOnlyZeroAlpha()
         QCOMPARE(theme.pixelColor(6, 6).alpha(), 0);
     else
         QCOMPARE(theme.pixelColor(6, 6), QColor(220, 42, 52));
+}
+
+void F4IconProviderTests::nativeArtworkPreservesSourceResolution_data()
+{
+    QTest::addColumn<int>("logicalSize");
+    QTest::addColumn<qreal>("dpr");
+    QTest::newRow("native-pixels") << 128 << qreal(1);
+    QTest::newRow("fractional-175") << 64 << qreal(1.75);
+}
+
+void F4IconProviderTests::nativeArtworkPreservesSourceResolution()
+{
+    QFETCH(int, logicalSize);
+    QFETCH(qreal, dpr);
+    // Shell artwork can occupy only part of its 256px image-list canvas.
+    // Its fine detail must survive cropping before fitting to the display.
+    QImage original(256, 256, QImage::Format_ARGB32_Premultiplied);
+    original.fill(Qt::transparent);
+    for (int y = 64; y < 192; ++y)
+        for (int x = 64; x < 192; ++x)
+            original.setPixelColor(x, y, (x + y) % 2 ? Qt::white : Qt::black);
+    F4IconProvider provider(std::make_unique<PaddedArtworkBackend>(original));
+    F4IconSet icons(QStringLiteral("test-icons"));
+    icons.setIconSet(F4IconSet::System);
+    const QSize physicalSize = F4IconProvider::physicalSize(logicalSize, dpr);
+    const QImage expected = original.copy(64, 64, 128, 128).scaled(
+        physicalSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    const auto source = icons.fileIconSource("/test", "detail.test", false,
+                                             logicalSize, dpr);
+    const QImage actual = provider.requestImage(
+        F4IconProvider::routeId(source), nullptr, physicalSize);
+    QCOMPARE(actual.convertToFormat(QImage::Format_ARGB32),
+             expected.convertToFormat(QImage::Format_ARGB32));
 }
 
 void F4IconProviderTests::nativePlatformFileIconSmoke()

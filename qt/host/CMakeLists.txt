@@ -2125,6 +2125,10 @@ if(BUILD_TESTING)
   f4_link_static_test_platform(F4GalleryBridgeTests)
   f4_link_static_test_qml_plugins(F4GalleryBridgeTests)
   add_test(NAME F4GalleryBridgeTest COMMAND F4GalleryBridgeTests)
+  add_test(NAME F4NativeIconFallbackPixelGridTest COMMAND F4GalleryBridgeTests
+    nativeFileIconsSurviveFailedThumbnail)
+  set_tests_properties(F4NativeIconFallbackPixelGridTest PROPERTIES
+    ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV};QT_QUICK_BACKEND=software")
   add_test(NAME F4GalleryMixedDpiPixelTest COMMAND F4GalleryBridgeTests
     panelIconsKeepNativeRasterAtMixedDpi)
   set_tests_properties(F4GalleryMixedDpiPixelTest PROPERTIES
