@@ -601,6 +601,40 @@ def _patch_quick_batch_orders(text: str) -> str:
                         _FFMPEG_SOURCE_ANCHOR + _QUICK_BATCH_ORDERS_SOURCE_PATCH)
 
 
+_QUICK_BLOCKED_OPACITY_MARKER = "# f4: ignore opacity outside Qt Quick's renderer tree"
+_QUICK_BLOCKED_OPACITY_BEFORE = (
+    "        // Force a batch rebuild if this includes an opacity change\n"
+    "        if (state & QSGNode::DirtyOpacity)\n"
+    "            m_rebuild |= FullRebuild;\n"
+)
+_QUICK_BLOCKED_OPACITY_AFTER = (
+    "        // A blocked ancestor can keep this node out of the renderer entirely.\n"
+    "        // Only an existing subtree has batches whose opacity must be rebuilt.\n"
+    "        if ((state & QSGNode::DirtyOpacity) && sn)\n"
+    "            m_rebuild |= FullRebuild;\n"
+)
+_QUICK_BLOCKED_OPACITY_SOURCE_PATCH = (
+    "        " + _QUICK_BLOCKED_OPACITY_MARKER + "\n"
+    "        replace_in_file(\n"
+    "            self,\n"
+    "            os.path.join(self.source_folder, 'qtdeclarative', 'src', 'quick',\n"
+    "                         'scenegraph', 'coreapi', 'qsgbatchrenderer.cpp'),\n"
+    f"            {_QUICK_BLOCKED_OPACITY_BEFORE!r},\n"
+    f"            {_QUICK_BLOCKED_OPACITY_AFTER!r},\n"
+    "            strict=True,\n"
+    "        )\n"
+)
+
+
+def _patch_quick_blocked_opacity(text: str) -> str:
+    if _QUICK_BLOCKED_OPACITY_MARKER in text:
+        return text
+    if text.count(_FFMPEG_SOURCE_ANCHOR) != 1:
+        raise SystemExit("unexpected Qt recipe: blocked opacity source patch anchor is absent or ambiguous")
+    return text.replace(_FFMPEG_SOURCE_ANCHOR,
+                        _FFMPEG_SOURCE_ANCHOR + _QUICK_BLOCKED_OPACITY_SOURCE_PATCH)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("recipe", type=Path)
@@ -627,6 +661,8 @@ def main() -> None:
     print("[FIX:mac-color-space] Qt recipe retains native image color spaces")
     patched = _patch_quick_batch_orders(patched)
     print("[FIX:quick-batch-orders] Qt Quick returns ancestor render-order reservations")
+    patched = _patch_quick_blocked_opacity(patched)
+    print("[FIX:quick-blocked-opacity] Qt Quick ignores opacity outside its renderer tree")
     if patched != text:
         args.recipe.write_text(patched, encoding="utf-8")
 

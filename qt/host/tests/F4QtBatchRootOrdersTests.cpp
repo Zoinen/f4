@@ -69,6 +69,76 @@ private:
 class F4QtBatchRootOrdersTests : public QObject {
     Q_OBJECT
 private slots:
+    void opacityInsideBlockedDrawingDoesNotRebuildUnrelatedBatches() {
+        if (!qEnvironmentVariableIsSet("ZOIN_TEST_NATIVE_RENDERER"))
+            QSKIP("Requires a native Qt Quick renderer");
+        QQuickWindow window;
+        window.resize(240, 200);
+        window.setColor(Qt::black);
+        auto *background = new ColorTile(window.contentItem(), Qt::red);
+        background->setSize(QSizeF(240, 200));
+        auto *clip = new QQuickItem(window.contentItem());
+        clip->setSize(QSizeF(240, 200));
+        clip->setClip(true);
+        auto *gate = new DrawingGate(clip);
+        gate->setSize(clip->size());
+        gate->showDrawing(false);
+        auto *hidden = new ColorTile(gate, Qt::blue);
+        hidden->setPosition(QPointF(20, 20));
+        hidden->setSize(QSizeF(80, 40));
+        hidden->setOpacity(0);
+        std::atomic<int> frames = 0;
+        std::atomic<int> completeRebuilds = 0;
+        connect(&window, &QQuickWindow::afterSynchronizing, &window, [&] {
+            auto *renderer = static_cast<QSGBatchRenderer::Renderer *>(QQuickWindowPrivate::get(&window)->renderer);
+            if (renderer && renderer->m_rebuild == QSGBatchRenderer::Renderer::FullRebuild)
+                ++completeRebuilds;
+        }, Qt::DirectConnection);
+        connect(&window, &QQuickWindow::afterRendering, &window, [&] { ++frames; }, Qt::DirectConnection);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        const auto renderNext = [&] {
+            const int previous = frames.load();
+            window.update();
+            return QTest::qWaitFor([&] { return frames.load() > previous; }, 3000);
+        };
+        QVERIFY(renderNext());
+        const QImage baseline = window.grabWindow();
+        QVERIFY(!baseline.isNull());
+        QCOMPARE(baseline.pixelColor(qRound(40*window.devicePixelRatio()),
+                                    qRound(40*window.devicePixelRatio())), QColor(Qt::red));
+        for (int cycle = 0; cycle < 3; ++cycle) {
+            int previousRebuilds = completeRebuilds.load();
+            hidden->setOpacity(1);
+            QVERIFY(renderNext());
+            QVERIFY2(completeRebuilds.load() == previousRebuilds,
+                     "An opacity change in an already blocked subtree rebuilt unrelated batches");
+            QCOMPARE(window.grabWindow(), baseline);
+            previousRebuilds = completeRebuilds.load();
+            hidden->setOpacity(0);
+            QVERIFY(renderNext());
+            QCOMPARE(completeRebuilds.load(), previousRebuilds);
+            QCOMPARE(window.grabWindow(), baseline);
+        }
+        gate->showDrawing(true);
+        hidden->setOpacity(1);
+        QVERIFY(renderNext());
+        const QImage revealed = window.grabWindow();
+        QCOMPARE(revealed.pixelColor(qRound(40*window.devicePixelRatio()),
+                                    qRound(40*window.devicePixelRatio())), QColor(Qt::blue));
+        // Visible opacity changes must still update blending and drawing order.
+        for (qreal opacity : {0.5, 0.0, 1.0, 0.0, 0.5, 1.0}) {
+            hidden->setOpacity(opacity);
+            QVERIFY(renderNext());
+            const auto rendered = window.grabWindow();
+            const auto color = rendered.pixelColor(qRound(40*window.devicePixelRatio()),
+                                                   qRound(40*window.devicePixelRatio()));
+            QVERIFY(qAbs(color.red()-qRound(255*(1-opacity))) <= 1);
+            QCOMPARE(color.green(), 0);
+            QVERIFY(qAbs(color.blue()-qRound(255*opacity)) <= 1);
+        }
+    }
+
     void repeatedDrawingVisibilityReturnsAncestorReservations() {
         if (!qEnvironmentVariableIsSet("ZOIN_TEST_NATIVE_RENDERER"))
             QSKIP("Requires a native Qt Quick renderer");

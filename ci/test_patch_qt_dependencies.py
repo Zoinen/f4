@@ -49,6 +49,40 @@ class QuickBatchRootOrderPatchTests(unittest.TestCase):
             patcher._patch_quick_batch_orders("def source(self):\n    pass\n")
 
 
+class QuickBlockedOpacityPatchTests(unittest.TestCase):
+    def test_recipe_patch_is_idempotent_and_composes_with_order_fix(self) -> None:
+        recipe = "def source(self):\n" + patcher._FFMPEG_SOURCE_ANCHOR
+        recipe = patcher._patch_quick_batch_orders(recipe)
+        patched = patcher._patch_quick_blocked_opacity(recipe)
+        ast.parse(patched)
+        self.assertEqual(patcher._patch_quick_blocked_opacity(patched), patched)
+        self.assertIn(patcher._QUICK_BATCH_ORDERS_MARKER, patched)
+        self.assertIn(patcher._QUICK_BLOCKED_OPACITY_MARKER, patched)
+
+    def test_strict_source_patch_preserves_existing_subtree_rebuild(self) -> None:
+        source = patcher._QUICK_BLOCKED_OPACITY_BEFORE
+
+        def replace_in_file(_recipe, path, before, after, strict):
+            nonlocal source
+            self.assertEqual(pathlib.Path(path).as_posix(),
+                             "qtdeclarative/src/quick/scenegraph/coreapi/qsgbatchrenderer.cpp")
+            self.assertTrue(strict)
+            self.assertEqual(source.count(before), 1)
+            source = source.replace(before, after)
+
+        recipe = type("Recipe", (), {"source_folder": ""})()
+        namespace = {"os": __import__("os"), "replace_in_file": replace_in_file}
+        exec("def source(self):\n" + patcher._QUICK_BLOCKED_OPACITY_SOURCE_PATCH, namespace)
+        namespace["source"](recipe)
+        self.assertEqual(source, patcher._QUICK_BLOCKED_OPACITY_AFTER)
+        self.assertIn("&& sn", source)
+        self.assertIn("m_rebuild |= FullRebuild", source)
+
+    def test_unknown_recipe_anchor_is_rejected(self) -> None:
+        with self.assertRaisesRegex(SystemExit, "source patch anchor"):
+            patcher._patch_quick_blocked_opacity("def source(self):\n    pass\n")
+
+
 class MacColorSpaceRecipePatchTests(unittest.TestCase):
     def test_recipe_patch_is_idempotent_and_valid_python(self) -> None:
         recipe = "def source(self):\n" + patcher._FFMPEG_SOURCE_ANCHOR
