@@ -667,6 +667,45 @@ def _patch_quick_stable_intervals(text: str) -> str:
     return text[:end] + source_patch + text[end:]
 
 
+_QUICK_CHILD_WINDOW_STACKING_MARKER = "# f4: skip child-window stacking walks without native children"
+_QUICK_CHILD_WINDOW_STACKING_BEFORE = '''    if (!item) {
+        qCDebug(lcQuickWindow) << "Updating child window stacking order for" << q;
+'''
+_QUICK_CHILD_WINDOW_STACKING_AFTER = '''    if (!item) {
+        bool hasChildWindow = false;
+        for (QWindow *childWindow : QGuiApplication::allWindows()) {
+            if (childWindow->parent() == q) {
+                hasChildWindow = true;
+                break;
+            }
+        }
+        if (!hasChildWindow)
+            return;
+        qCDebug(lcQuickWindow) << "Updating child window stacking order for" << q;
+'''
+_QUICK_CHILD_WINDOW_STACKING_SOURCE_PATCH = (
+    "        " + _QUICK_CHILD_WINDOW_STACKING_MARKER + "\n"
+    "        from conan.tools.files import load, save\n"
+    "        _f4_window_path = os.path.join(self.source_folder, 'qtdeclarative',\n"
+    "                                      'src', 'quick', 'items', 'qquickwindow.cpp')\n"
+    "        _f4_window_source = load(self, _f4_window_path)\n"
+    f"        _f4_window_before = {_QUICK_CHILD_WINDOW_STACKING_BEFORE!r}\n"
+    f"        _f4_window_after = {_QUICK_CHILD_WINDOW_STACKING_AFTER!r}\n"
+    "        if _f4_window_source.count(_f4_window_before) != 1:\n"
+    "            raise RuntimeError('Qt Quick child-window stacking source anchor changed or is ambiguous')\n"
+    "        save(self, _f4_window_path, _f4_window_source.replace(_f4_window_before, _f4_window_after))\n"
+)
+
+
+def _patch_quick_child_window_stacking(text: str) -> str:
+    if _QUICK_CHILD_WINDOW_STACKING_MARKER in text:
+        return text
+    if text.count(_FFMPEG_SOURCE_ANCHOR) != 1:
+        raise SystemExit("unexpected Qt recipe: source patch anchor is absent or ambiguous")
+    return text.replace(_FFMPEG_SOURCE_ANCHOR,
+                        _FFMPEG_SOURCE_ANCHOR + _QUICK_CHILD_WINDOW_STACKING_SOURCE_PATCH)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("recipe", type=Path)
@@ -697,6 +736,8 @@ def main() -> None:
     print("[FIX:quick-blocked-opacity] Qt Quick ignores opacity outside its renderer tree")
     patched = _patch_quick_stable_intervals(patched)
     print("[FIX:quick-stable-intervals] Qt Quick retains unchanged batches and owns free order intervals")
+    patched = _patch_quick_child_window_stacking(patched)
+    print("[FIX:quick-child-window-stacking] Qt Quick skips scene walks without native child windows")
     if patched != text:
         args.recipe.write_text(patched, encoding="utf-8")
 

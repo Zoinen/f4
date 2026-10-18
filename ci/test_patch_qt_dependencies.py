@@ -19,6 +19,55 @@ patcher = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(patcher)
 
 
+class QuickChildWindowStackingPatchTests(unittest.TestCase):
+    def test_recipe_is_idempotent_and_composes_with_existing_patches(self):
+        recipe = "def source(self):\n" + patcher._FFMPEG_SOURCE_ANCHOR
+        recipe = patcher._patch_quick_batch_orders(recipe)
+        recipe = patcher._patch_quick_blocked_opacity(recipe)
+        recipe = patcher._patch_quick_stable_intervals(recipe)
+        patched = patcher._patch_quick_child_window_stacking(recipe)
+        ast.parse(patched)
+        self.assertEqual(patcher._patch_quick_child_window_stacking(patched), patched)
+        self.assertIn(patcher._QUICK_STABLE_INTERVALS_MARKER, patched)
+        self.assertNotIn("artifacts/", patched)
+
+    def execute(self, source):
+        self.saved = []
+        def load(_recipe, path):
+            self.assertEqual(pathlib.Path(path).as_posix(),
+                             "qtdeclarative/src/quick/items/qquickwindow.cpp")
+            return source
+        def save(_recipe, path, value):
+            self.saved.append(value)
+        body = patcher._QUICK_CHILD_WINDOW_STACKING_SOURCE_PATCH.replace(
+            "        from conan.tools.files import load, save\n", "")
+        namespace = dict(os=__import__("os"), load=load, save=save)
+        exec("def source(self):\n" + body, namespace)
+        namespace["source"](type("Recipe", (), {"source_folder": ""})())
+        return self.saved[0]
+
+    def test_source_patch_retains_the_existing_stacking_walk(self):
+        original = ("void update() {\n" + patcher._QUICK_CHILD_WINDOW_STACKING_BEFORE
+                    + "        item = contentItem;\n    }\n    walkChildren(item);\n}\n")
+        expected = original.replace(patcher._QUICK_CHILD_WINDOW_STACKING_BEFORE,
+                                    patcher._QUICK_CHILD_WINDOW_STACKING_AFTER)
+        self.assertEqual(self.execute(original), expected)
+        self.assertEqual(len(self.saved), 1)
+
+    def test_source_drift_is_rejected_without_saving(self):
+        for source in ("changed", patcher._QUICK_CHILD_WINDOW_STACKING_BEFORE * 2):
+            with self.subTest(source=source):
+                with self.assertRaisesRegex(RuntimeError, "source anchor changed or is ambiguous"):
+                    self.execute(source)
+                self.assertEqual(self.saved, [])
+
+    def test_recipe_anchor_is_required_and_unambiguous(self):
+        for recipe in ("def source(self):\n    pass\n",
+                       "def source(self):\n" + patcher._FFMPEG_SOURCE_ANCHOR * 2):
+            with self.subTest(recipe=recipe), self.assertRaisesRegex(SystemExit, "source patch anchor"):
+                patcher._patch_quick_child_window_stacking(recipe)
+
+
 class QuickBatchRootOrderPatchTests(unittest.TestCase):
     def test_recipe_patch_is_idempotent_and_valid_python(self) -> None:
         recipe = "def source(self):\n" + patcher._FFMPEG_SOURCE_ANCHOR

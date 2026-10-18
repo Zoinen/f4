@@ -22,9 +22,12 @@ namespace {
 
 std::atomic<quintptr> watchedRoot = 0;
 std::atomic<quint64> watchedUploads = 0;
+std::atomic<bool> watchFullRebuilds = false;
+std::atomic<int> fullRebuilds = 0;
 QtMessageHandler previousMessageHandler = nullptr;
 
 void watchUploads(QtMsgType type, const QMessageLogContext &context, const QString &message) {
+    if (watchFullRebuilds && message.contains("rebuild: full")) ++fullRebuilds;
     const auto root = watchedRoot.load();
     if (root && message.contains("[  upload]")
         && message.contains(QStringLiteral("root: 0x%1").arg(root, 0, 16)))
@@ -213,6 +216,76 @@ private slots:
         previousMessageHandler = qInstallMessageHandler(watchUploads);
     }
     void cleanupTestCase() { qInstallMessageHandler(previousMessageHandler); }
+
+    void vectorUploadRootsAvoidUnrelatedFullRebuilds() {
+        if (!qEnvironmentVariableIsSet("ZOIN_TEST_NATIVE_RENDERER"))
+            QSKIP("Requires a native Qt Quick renderer");
+        QQuickWindow window;
+        window.resize(192, 96);
+        window.setColor(Qt::blue);
+        auto *outer = new QQuickItem(window.contentItem());
+        outer->setSize(QSizeF(192, 96));
+        outer->setClip(true);
+        auto *sibling = new ColorTile(outer, Qt::green, true);
+        sibling->setObjectName(QStringLiteral("vectorRootRetainedSibling"));
+        sibling->setPosition(QPointF(96, 16));
+        sibling->setSize(QSizeF(32, 32));
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        for (int i = 0; i < 3; ++i) window.grabWindow();
+        QQuickItem *gate = nullptr;
+        std::atomic<bool> supported = false;
+        const auto sync = connect(&window, &QQuickWindow::beforeSynchronizing, &window, [&] {
+            const auto *api = static_cast<const F4VectorUploadGateInterface *>(
+                window.rendererInterface()->getResource(&window, "f4.vectorUploadGate.v2"));
+            supported = api && api->version == 2 && api->size >= sizeof(*api);
+            if (supported && gate)
+                api->configure(QQuickItemPrivate::get(gate)->itemNode(), 1, true, true, 100, false);
+        }, Qt::DirectConnection);
+        const auto cleanup = qScopeGuard([&] {
+            watchFullRebuilds = false;
+            disconnect(sync);
+        });
+        for (int cycle = 0; cycle < 16; ++cycle) {
+            fullRebuilds = 0;
+            watchFullRebuilds = true;
+            gate = new QQuickItem(outer);
+            gate->setSize(QSizeF(8, 8));
+            auto *inside = new ColorTile(gate, Qt::red, true);
+            inside->setObjectName(QStringLiteral("vectorRootInsertedLeaf"));
+            inside->setPosition(QPointF(16, 16));
+            inside->setSize(QSizeF(32, 32));
+            QImage image;
+            for (int i = 0; i < 5; ++i) {
+                window.update();
+                image = window.grabWindow();
+            }
+            QVERIFY(supported.load());
+            QCOMPARE(image.pixelColor(qRound(24 * window.devicePixelRatio()),
+                                      qRound(24 * window.devicePixelRatio())), QColor(Qt::red));
+            QCOMPARE(fullRebuilds.load(), 0);
+            for (auto *leaf : {inside, sibling}) {
+                const QPointF origin = leaf->mapToScene(QPointF());
+                const QPointF physical = origin * window.devicePixelRatio();
+                QVERIFY(qAbs(physical.x() - qRound(physical.x())) < 0.0001);
+                QVERIFY(qAbs(physical.y() - qRound(physical.y())) < 0.0001);
+                QCOMPARE(leaf->mapToScene(QPointF(1, 0)) - origin, QPointF(1, 0));
+                QCOMPARE(leaf->mapToScene(QPointF(0, 1)) - origin, QPointF(0, 1));
+            }
+            fullRebuilds = 0;
+            delete gate;
+            gate = nullptr;
+            for (int i = 0; i < 3; ++i) {
+                window.update();
+                image = window.grabWindow();
+            }
+            QCOMPARE(image.pixelColor(qRound(24 * window.devicePixelRatio()),
+                                      qRound(24 * window.devicePixelRatio())), QColor(Qt::blue));
+            QCOMPARE(image.pixelColor(qRound(104 * window.devicePixelRatio()),
+                                      qRound(24 * window.devicePixelRatio())), QColor(Qt::green));
+            QCOMPARE(fullRebuilds.load(), 0);
+        }
+    }
 
     void vectorUploadTransformIsolatesSmallSurfaceWithoutClipping() {
         if (!qEnvironmentVariableIsSet("ZOIN_TEST_NATIVE_RENDERER"))
@@ -562,10 +635,13 @@ private slots:
     void unchangedSubrootKeepsUploadedGeometry_data() {
         QTest::addColumn<bool>("unmerged");
         QTest::addColumn<bool>("moveRange");
-        QTest::newRow("merged") << false << false;
-        QTest::newRow("unmerged") << true << false;
-        QTest::newRow("merged-order-change") << false << true;
-        QTest::newRow("unmerged-order-change") << true << true;
+        QTest::addColumn<bool>("forceFull");
+        QTest::newRow("merged") << false << false << false;
+        QTest::newRow("unmerged") << true << false << false;
+        QTest::newRow("merged-order-change") << false << true << false;
+        QTest::newRow("unmerged-order-change") << true << true << false;
+        QTest::newRow("merged-full-order-change") << false << true << true;
+        QTest::newRow("unmerged-full-order-change") << true << true << true;
     }
 
     void unchangedSubrootKeepsUploadedGeometry() {
@@ -573,6 +649,7 @@ private slots:
             QSKIP("Requires a native Qt Quick renderer");
         QFETCH(bool, unmerged);
         QFETCH(bool, moveRange);
+        QFETCH(bool, forceFull);
         watchedRoot = 0;
         watchedUploads = 0;
         QQuickWindow window;
@@ -591,7 +668,8 @@ private slots:
         stable->setClip(true);
         auto *blue = new ColorTile(stable, QColor(0, 0, 255, 128), unmerged);
         blue->setSize(QSizeF(48, 48));
-        auto *overlap = new ColorTile(stable, QColor(0, 0, 255, 128), unmerged);
+        // Distinct materials keep the unmerged rows in single-element batches.
+        auto *overlap = new ColorTile(stable, QColor(0, 0, unmerged ? 254 : 255, 128), unmerged);
         overlap->setPosition(QPointF(16, 16));
         overlap->setSize(QSizeF(48, 48));
         auto *lastRoot = new QQuickItem(window.contentItem());
@@ -610,11 +688,14 @@ private slots:
         std::atomic<bool> merged = false;
         std::atomic<int> sceneOrders = 0;
         std::atomic<bool> validRanges = true;
+        std::atomic<bool> requestFull = false;
         connect(&window, &QQuickWindow::beforeRendering, &window, [&] {
             auto *renderer = static_cast<QSGBatchRenderer::Renderer *>(
                 QQuickWindowPrivate::get(&window)->renderer);
             auto *clip = QQuickItemPrivate::get(stable)->clipNode();
             watchedRoot = renderer && clip ? quintptr(renderer->m_nodes.value(clip)) : 0;
+            if (renderer && requestFull.exchange(false))
+                renderer->m_rebuild = QSGBatchRenderer::Renderer::FullRebuild;
         }, Qt::DirectConnection);
         connect(&window, &QQuickWindow::afterRendering, &window, [&] {
             auto *renderer = static_cast<QSGBatchRenderer::Renderer *>(
@@ -662,8 +743,9 @@ private slots:
         added->setPosition(QPointF(160, 0));
         added->setSize(QSizeF(32, 32));
         if (moveRange) added->stackBefore(stable);
+        requestFull = forceFull;
         const auto after = window.grabWindow();
-        if (moveRange) QVERIFY(uploads.load() > initialUploads);
+        if (moveRange && !unmerged) QVERIFY(uploads.load() > initialUploads);
         else QCOMPARE(uploads.load(), initialUploads);
         const qreal dpr = window.devicePixelRatio();
         const QRect retainedRect(qRound(32*dpr), qRound(32*dpr), qRound(80*dpr), qRound(80*dpr));

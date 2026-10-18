@@ -66,6 +66,20 @@ inside an SVG remains authored raster content.
 
 ## Native batch retention
 
+The portable Qt recipe skips the native child-window stacking tree walk when
+the Quick window has no native child windows. If any native child exists, Qt's
+original recursive ordering and raise behavior remain intact. This avoids a
+whole-item-tree scan during delegate and vector-scene changes without changing
+layout, pixel alignment or rendering priorities. See the measured limits in
+`profiler/reports/child-window-stacking-2026-10-18.md`.
+
+Idle panel vector surfaces retain the size, DPR, crop mode and checkerboard
+state of their last host. Releasing a surface into the bounded scene cache
+does not resize it to a placeholder square or switch it to DPR 1. Reusing it
+in an equivalent host preserves geometry; a different live host still supplies
+its current presentation properties. Revision pinning, cancellation and cache
+eviction limits are unchanged.
+
 The portable Qt recipe applies `ci/qt_quick_stable_intervals.py` after the
 existing drawing-order and blocked-opacity corrections. Each scene-graph root
 owns its free drawing-order interval; exhausted roots borrow capacity from

@@ -1644,6 +1644,29 @@ if(BUILD_TESTING)
   endif()
 
   find_package(Qt6 ${Qt6_VERSION} REQUIRED COMPONENTS QuickPrivate)
+  qt_add_executable(F4QtChildWindowStackingTests
+    tests/F4QtChildWindowStackingTests.cpp)
+  set_property(TARGET F4QtChildWindowStackingTests PROPERTY
+    QT_QML_MODULE_NO_IMPORT_SCAN TRUE)
+  qt_import_plugins(F4QtChildWindowStackingTests NO_DEFAULT)
+  target_link_libraries(F4QtChildWindowStackingTests PRIVATE
+    Qt6::Quick
+    Qt6::QuickPrivate
+    Qt6::Test)
+  if(F4_QT_STATIC)
+    target_sources(F4QtChildWindowStackingTests PRIVATE
+      $<TARGET_OBJECTS:F4StaticQtTestPluginImports>)
+    target_link_libraries(F4QtChildWindowStackingTests PRIVATE
+      Qt6::QOffscreenIntegrationPlugin)
+    if(WIN32)
+      target_link_libraries(F4QtChildWindowStackingTests PRIVATE
+        Qt6::QWindowsIntegrationPlugin Usp10 Rpcrt4)
+    endif()
+  endif()
+  add_test(NAME F4QtChildWindowStackingTest COMMAND F4QtChildWindowStackingTests)
+  set_tests_properties(F4QtChildWindowStackingTest PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_CONTROLS_STYLE=Basic")
+
   qt_add_executable(F4QtBatchRootOrdersTests
     tests/F4QtBatchRootOrdersTests.cpp)
   # This native scene fixture has no QML; scanning the host directory would
