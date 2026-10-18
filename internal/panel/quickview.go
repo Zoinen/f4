@@ -984,8 +984,9 @@ func (q *QuickViewPanel) dirSummary(name string) []quickViewDirRow {
 	// (32 bytes an entry on APFS, a 4 KiB block on ext4) is no data of the
 	// files; it was added here and made the quick view disagree with F3
 	// on the same folder (f4#2005). The room folders take on the disk is
-	// in "Physical size".
-	logical := stats.Bytes
+	// in "Physical size". Panel.DirSizeCountsFolders adds it here and to
+	// F3 alike, as far2l does.
+	logical := stats.FilesSize(config.App.DirSizeCountsFolders)
 	field(i18n.Msg("QuickView.FilesSize"), formatBytes(numeric.NonNegativeUint64(logical)))
 	// Physical size + Ratio need per-item on-disk footprint. Stub /
 	// remote VFSes leave PhysicalBytes at 0 during the whole scan —

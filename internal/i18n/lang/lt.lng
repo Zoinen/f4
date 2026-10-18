@@ -1373,6 +1373,8 @@ SettingsCenter.Text.0e4099db7c96f9790d58c7f60474fc244441ea5323aee647a18a2499fee7
 SettingsCenter.Text.0e57cb642215e608ec972192bae01df76de89a2557833d9102c1ca8ea647adba=S3 galutinio taško papildomas sertifikavimo institucijos failas.
 SettingsCenter.Text.0e66373f45dcf3dd656151e519f7ee5e3d558d9c22cb87df339bbdd2b6c6a3c1=Labelė
 SettingsCenter.Text.0e92a613c94e34374670a92e49372b5ede4cbdb729c677d1dbc68029e2e07cd5=SSH privatus raktas
+SettingsCenter.Text.ef05c31fec7ae81c53401997ed157a099b2a711f4733a641858b0a17052dc5f0=Pradinis aplankas
+SettingsCenter.Text.fb2da669b96bab8d237c18434eb74f9e66985731b7b2a5d41b902660c3b6e7eb=Serverio aplankas, kuriame atidaromas ryšys. Tuščia: namų aplankas.
 SettingsCenter.Text.0eeb1d929037afd546218148dde1e1e218e18f5ac88d4d8a7c45e6f42f64b9f0=Pasirinkite Chroma, Colorer arba be pabrėžimo naujai atidarytiems redaktoriams. Kaloratoriui reikia įdiegti schemą ir gali būti užtrauktas, kai jis nėra prieinamas.
 SettingsCenter.Text.0ffc5e815b4583d9a31aba53f49e7f6e05f09f428832466717a1a8926141b29a=naujosios operacijos
 SettingsCenter.Text.100acc106eedb660131924a5d61e98001090c6250c13da01d7dad778b9685444=Nustatymas
@@ -2222,6 +2224,8 @@ SettingsCenter.TreeRootWholeVolume.Label=Medžio šaknimi laikyti visą tomą
 SettingsCenter.TreeRootWholeVolume.Description=Atveria katalogų medį (Ctrl+T) nuo šaltinio skydelio viso dabartinio tomo šaknies, kaip far2l. Išjungus atveria nuo šaltinio skydelio dabartinio katalogo šaknies.
 SettingsCenter.TreeExplorerMode.Label=Medis kaip Naršyklėje
 SettingsCenter.TreeExplorerMode.Description=Kol katalogų medis (Ctrl+T) atidarytas, jį atidaręs skydelis rodo aplanką po medžio žymekliu, o Enter pereina į šį skydelį neuždarydamas medžio. Išjungus medis veikia kaip far2l: Enter įeina į aplanką ir uždaro medį.
+SettingsCenter.DirSizeCountsFolders.Label=Aplanko dydis skaičiuoja ir pačius aplankus
+SettingsCenter.DirSizeCountsFolders.Description=Aplanko dydis (F3, greita peržiūra) prideda ir dydį, kurį failų sistema skiria patiems aplankams, kaip far2l. Išjungta: tik failai, kaip skaičiuoja find.
 SettingsCenter.GlyphStyle.Label=Rėmelių ir valdiklių simboliai
 SettingsCenter.GlyphStyle.Description=Kaip grafiniai langai piešia rėmelius, žymimuosius langelius ir pasirinkimo mygtukus: „Klasikinis“ palieka kampuotus kampus ir [x] langelius, „Suapvalintas“ piešia suapvalintus kampus ir apvalius mygtukus. Teksto terminalams tai įtakos neturi.
 SettingsCenter.Text.0a62cd800f27098e67ad0232c3648442a21795b2038a8e16c9a8f15424ded110=Suapvalintas

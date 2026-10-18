@@ -54,6 +54,7 @@ func openSMBConfig(ctx context.Context, parent vfs.VFS, cfg NetFoxConfig) (vfs.V
 			return nil, err
 		}
 	}
+	enterStartPath(v, cfg)
 	return v, nil
 }
 

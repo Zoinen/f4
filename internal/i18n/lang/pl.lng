@@ -1376,6 +1376,8 @@ SettingsCenter.Text.0e4099db7c96f9790d58c7f60474fc244441ea5323aee647a18a2499fee7
 SettingsCenter.Text.0e57cb642215e608ec972192bae01df76de89a2557833d9102c1ca8ea647adba=Dodatkowy plik autoryzacji certyfikatu dla punktu końcowego S3.
 SettingsCenter.Text.0e66373f45dcf3dd656151e519f7ee5e3d558d9c22cb87df339bbdd2b6c6a3c1=Etykieta
 SettingsCenter.Text.0e92a613c94e34374670a92e49372b5ede4cbdb729c677d1dbc68029e2e07cd5=Klucz prywatny SSH
+SettingsCenter.Text.ef05c31fec7ae81c53401997ed157a099b2a711f4733a641858b0a17052dc5f0=Folder startowy
+SettingsCenter.Text.fb2da669b96bab8d237c18434eb74f9e66985731b7b2a5d41b902660c3b6e7eb=Folder na serwerze, w którym otwiera się połączenie. Puste: folder domowy.
 SettingsCenter.Text.0eeb1d929037afd546218148dde1e1e218e18f5ac88d4d8a7c45e6f42f64b9f0=Wybierz Chroma, Colorer lub bez podkreślania dla nowo otwartych redaktorów. Kolorator potrzebuje zainstalowanych systemów i może zawrócić, gdy nie jest dostępny.
 SettingsCenter.Text.0ffc5e815b4583d9a31aba53f49e7f6e05f09f428832466717a1a8926141b29a=nowe operacje
 SettingsCenter.Text.100acc106eedb660131924a5d61e98001090c6250c13da01d7dad778b9685444=Załadowanie katalogu
@@ -2225,6 +2227,8 @@ SettingsCenter.TreeRootWholeVolume.Label=Zakorzeń drzewo w całym woluminie
 SettingsCenter.TreeRootWholeVolume.Description=Otwiera drzewo katalogów (Ctrl+T) od korzenia całego bieżącego woluminu panelu źródłowego, tak jak far2l. Wyłączone otwiera je od bieżącego katalogu panelu źródłowego.
 SettingsCenter.TreeExplorerMode.Label=Drzewo jak w Eksploratorze
 SettingsCenter.TreeExplorerMode.Description=Gdy drzewo katalogów (Ctrl+T) jest otwarte, panel, który je otworzył, pokazuje folder pod kursorem drzewa, a Enter przechodzi do tego panelu bez zamykania drzewa. Wyłączone: drzewo działa jak w far2l, Enter przechodzi do folderu i zamyka drzewo.
+SettingsCenter.DirSizeCountsFolders.Label=Rozmiar folderu liczy także same foldery
+SettingsCenter.DirSizeCountsFolders.Description=Rozmiar folderu (F3, szybki podgląd) dolicza też rozmiar, który system plików nadaje samym folderom, jak w far2l. Wyłączone: tylko pliki, tak jak liczy je find.
 SettingsCenter.GlyphStyle.Label=Glify ramek i kontrolek
 SettingsCenter.GlyphStyle.Description=Jak okna graficzne rysują ramki, pola wyboru i przyciski opcji: Klasyczny zachowuje kanciaste rogi i pola [x], Zaokrąglony rysuje zaokrąglone rogi i okrągłe przyciski. Terminale tekstowe nie są objęte.
 SettingsCenter.Text.0a62cd800f27098e67ad0232c3648442a21795b2038a8e16c9a8f15424ded110=Zaokrąglony

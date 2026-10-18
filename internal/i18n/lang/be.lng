@@ -1376,6 +1376,8 @@ SettingsCenter.Text.0e4099db7c96f9790d58c7f60474fc244441ea5323aee647a18a2499fee7
 SettingsCenter.Text.0e57cb642215e608ec972192bae01df76de89a2557833d9102c1ca8ea647adba=Дадатковы файл сертыфіката для канчатковай кропкі S3.
 SettingsCenter.Text.0e66373f45dcf3dd656151e519f7ee5e3d558d9c22cb87df339bbdd2b6c6a3c1=Этыкетка
 SettingsCenter.Text.0e92a613c94e34374670a92e49372b5ede4cbdb729c677d1dbc68029e2e07cd5=Закрыты ключ  SSH
+SettingsCenter.Text.ef05c31fec7ae81c53401997ed157a099b2a711f4733a641858b0a17052dc5f0=Пачатковая папка
+SettingsCenter.Text.fb2da669b96bab8d237c18434eb74f9e66985731b7b2a5d41b902660c3b6e7eb=Папка на серверы, у якой адкрываецца злучэнне. Пуста — хатняя папка.
 SettingsCenter.Text.0eeb1d929037afd546218148dde1e1e218e18f5ac88d4d8a7c45e6f42f64b9f0=Выберыце Chroma, Colorer або без вылучэння для нядаўна адкрытых рэдактараў. Colorer патрабуе ўсталяваных схем і можа вярнуцца, калі яны будуць недаступныя.
 SettingsCenter.Text.0ffc5e815b4583d9a31aba53f49e7f6e05f09f428832466717a1a8926141b29a=новыя аперацыі
 SettingsCenter.Text.100acc106eedb660131924a5d61e98001090c6250c13da01d7dad778b9685444=Загрузка каталога
@@ -2225,6 +2227,8 @@ SettingsCenter.TreeRootWholeVolume.Label=Адкрываць дрэва ад ко
 SettingsCenter.TreeRootWholeVolume.Description=Адкрывае дрэва каталогаў (Ctrl+T) ад кораня ўсяго бягучага тома зыходнай панэлі, як у far2l. Выключана — адкрывае ад бягучага каталога зыходнай панэлі.
 SettingsCenter.TreeExplorerMode.Label=Дрэва як у Правадніку
 SettingsCenter.TreeExplorerMode.Description=Пакуль адкрытае дрэва каталогаў (Ctrl+T), панэль, якая яго адкрыла, паказвае каталог пад курсорам дрэва, а Enter пераводзіць фокус у гэтую панэль, не закрываючы дрэва. Выключана — дрэва працуе як у far2l: Enter пераходзіць у каталог і закрывае дрэва.
+SettingsCenter.DirSizeCountsFolders.Label=Памер папкі ўключае самі папкі
+SettingsCenter.DirSizeCountsFolders.Description=Памер папкі (F3, хуткі прагляд) дадае і памер, які файлавая сістэма адводзіць самім папкам, як у far2l. Выключана — толькі файлы, як лічыць find.
 SettingsCenter.GlyphStyle.Label=Рамкі і элементы кіравання
 SettingsCenter.GlyphStyle.Description=Як графічныя вокны малююць рамкі, сцяжкі і пераключальнікі: «Класіка» пакідае прамыя куты і скрыначкі [x], «Закругленыя» малюе закругленыя куты і круглыя кнопкі. Тэкставыя тэрміналы не змяняюцца.
 SettingsCenter.Text.0a62cd800f27098e67ad0232c3648442a21795b2038a8e16c9a8f15424ded110=Закругленыя

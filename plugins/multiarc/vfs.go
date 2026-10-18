@@ -359,6 +359,9 @@ func (v *MultiArcVFS) Open(ctx context.Context, p string) (vfs.ReadAtCloser, err
 
 func (v *MultiArcVFS) ParentVFS() vfs.VFS { return v.parent }
 
+// ShowsArchiveContents: copying out of an archive is extracting (vfs.ArchiveContentsVFS).
+func (v *MultiArcVFS) ShowsArchiveContents() bool { return true }
+
 func (v *MultiArcVFS) Clone() vfs.VFS {
 	return &MultiArcVFS{
 		parent: v.parent, localPath: v.localPath, displayName: v.displayName,

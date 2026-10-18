@@ -134,10 +134,18 @@ func TestDriveMenuWatchRebuildsTheOpenMenu(t *testing.T) {
 			task()
 		case <-poll.C:
 		}
-		if top, ok := driveMenuFromFrame(vtui.FrameManager.GetTopFrame()); ok && top != first {
-			for _, it := range top.Items {
+		// The rebuilt menu is looked for in the whole stack, not only on top:
+		// the rebuild keeps a window that was over the menu over it, and a
+		// window another test left (its "Failed to read directory", train
+		// unxed/f4#2063) is one.
+		for _, f := range vtui.FrameManager.GetActiveFrames(vtui.FrameManager.ActiveIdx) {
+			menu, ok := driveMenuFromFrame(f)
+			if !ok || menu == first {
+				continue
+			}
+			for _, it := range menu.Items {
 				if strings.Contains(it.Text, "USB stick") {
-					top.Close()
+					menu.Close()
 					return
 				}
 			}

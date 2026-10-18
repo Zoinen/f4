@@ -193,6 +193,7 @@ type FileHighlighter struct {
 	matchCacheMu       sync.RWMutex
 	matchCacheRevision int64
 	matchCache         map[highlightMatchCacheKey][]int
+	cacheFor           ruleListID
 
 	semanticStyleCacheMu       sync.RWMutex
 	semanticStyleCacheRevision int64
@@ -546,10 +547,28 @@ func parseRuleSectionsAt(ini *ini.File, prefix, baseDir string) []ruleSection {
 	return rules
 }
 
+// ruleListID also detects direct replacement or reslicing without CombineRules.
+type ruleListID struct {
+	rules, overrides   *HighlightRule
+	nRules, nOverrides int
+}
+
+func (fh *FileHighlighter) ruleListID() ruleListID {
+	id := ruleListID{nRules: len(fh.Rules), nOverrides: len(fh.overrides)}
+	if len(fh.Rules) > 0 {
+		id.rules = &fh.Rules[0]
+	}
+	if len(fh.overrides) > 0 {
+		id.overrides = &fh.overrides[0]
+	}
+	return id
+}
+
 func (fh *FileHighlighter) clearMatchCache() {
 	fh.matchCacheMu.Lock()
 	fh.matchCache = nil
 	fh.matchCacheRevision = fh.Revision
+	fh.cacheFor = fh.ruleListID()
 	fh.matchCacheMu.Unlock()
 	fh.semanticStyleCacheMu.Lock()
 	fh.semanticStyleCache = nil
@@ -602,8 +621,9 @@ func (fh *FileHighlighter) matchedRuleIndices(item *vfs.VFSItem, metadataKnown b
 	}
 
 	key := highlightMatchKey(item, metadataKnown)
+	id := fh.ruleListID()
 	fh.matchCacheMu.RLock()
-	if fh.matchCacheRevision == fh.Revision {
+	if fh.matchCacheRevision == fh.Revision && fh.cacheFor == id {
 		if cached, ok := fh.matchCache[key]; ok {
 			fh.matchCacheMu.RUnlock()
 			return cached
@@ -613,9 +633,10 @@ func (fh *FileHighlighter) matchedRuleIndices(item *vfs.VFSItem, metadataKnown b
 
 	matched := fh.computeMatchedRuleIndices(item, metadataKnown)
 	fh.matchCacheMu.Lock()
-	if fh.matchCacheRevision != fh.Revision || len(fh.matchCache) >= maxHighlightMatchCacheEntries {
+	if fh.matchCacheRevision != fh.Revision || fh.cacheFor != id || len(fh.matchCache) >= maxHighlightMatchCacheEntries {
 		fh.matchCache = make(map[highlightMatchCacheKey][]int)
 		fh.matchCacheRevision = fh.Revision
+		fh.cacheFor = id
 	} else if fh.matchCache == nil {
 		fh.matchCache = make(map[highlightMatchCacheKey][]int)
 	}

@@ -55,6 +55,12 @@ func startLocalConPTY(t *testing.T) *panel.PanelsFrame {
 	panel.SpawnLocalShellPTY = true
 	config.App.ConsoleMode = "own"
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	// Init keeps the task queue, and tasks other tests left in it would run
+	// below, on this frame. TestQueuedTrashUsesActionBoundaryPathSnapshot and
+	// TestPanelsFrame_AIHotkeyCanBeUnbound leave one each, and with both
+	// before it the startup prompt never arrived (main cfd559df0,
+	// -shuffle=1792292986636179300, windows/amd64 and windows/arm64).
+	drainFrameTasks()
 
 	pf := panel.NewPanelsFrame()
 	pf.ResizeConsole(80, 25)

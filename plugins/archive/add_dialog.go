@@ -273,6 +273,7 @@ type addArchiveDialog struct {
 	deleteProfile *vtui.Button
 	create        *vtui.Button
 	saveDefaults  *vtui.Button
+	cancel        *vtui.Button
 }
 
 func newAddArchiveDialog(initialName string, done func(addArchiveSettings), sourceIsFile ...bool) *addArchiveDialog {
@@ -381,11 +382,11 @@ func newAddArchiveDialog(initialName string, done func(addArchiveSettings), sour
 	d.create = vtui.NewButton(0, d.dlg.Y2-2, vtui.Msg("Archive.Add.Create"))
 	d.create.IsDefault = true
 	d.saveDefaults = vtui.NewButton(0, d.dlg.Y2-2, vtui.Msg("Archive.Add.SaveSettings"))
-	cancel := vtui.NewButton(0, d.dlg.Y2-2, vtui.Msg("vtui.Cancel"))
+	d.cancel = vtui.NewButton(0, d.dlg.Y2-2, vtui.Msg("vtui.Cancel"))
 	buttons := vtui.NewHBoxLayout(d.dlg.X1+1, d.dlg.Y2-2, w-2, 1)
 	buttons.HorizontalAlign = vtui.AlignCenter
 	buttons.Spacing = 2
-	for _, b := range []*vtui.Button{d.create, d.saveDefaults, cancel} {
+	for _, b := range []*vtui.Button{d.create, d.cancel, d.saveDefaults} {
 		d.dlg.AddItem(b)
 		buttons.Add(b, vtui.Margins{}, vtui.AlignTop)
 	}
@@ -445,7 +446,7 @@ func newAddArchiveDialog(initialName string, done func(addArchiveSettings), sour
 		}
 		toast.Show(vtui.Msg("Archive.Add.SettingsSaved"), 2*time.Second)
 	}
-	cancel.OnClick = func() { d.dlg.Close() }
+	d.cancel.OnClick = func() { d.dlg.Close() }
 	d.dlg.SetFocusedItem(d.name)
 	return d
 }

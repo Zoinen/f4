@@ -1294,6 +1294,8 @@ SettingsCenter.Text.0e4099db7c96f9790d58c7f60474fc244441ea5323aee647a18a2499fee7
 SettingsCenter.Text.0e57cb642215e608ec972192bae01df76de89a2557833d9102c1ca8ea647adba=附加证书授权文件 S3 终点.
 SettingsCenter.Text.0e66373f45dcf3dd656151e519f7ee5e3d558d9c22cb87df339bbdd2b6c6a3c1=标签
 SettingsCenter.Text.0e92a613c94e34374670a92e49372b5ede4cbdb729c677d1dbc68029e2e07cd5=SSH 个人钥匙
+SettingsCenter.Text.ef05c31fec7ae81c53401997ed157a099b2a711f4733a641858b0a17052dc5f0=起始文件夹
+SettingsCenter.Text.fb2da669b96bab8d237c18434eb74f9e66985731b7b2a5d41b902660c3b6e7eb=连接打开时所在的服务器文件夹。留空：主文件夹。
 SettingsCenter.Text.0eeb1d929037afd546218148dde1e1e218e18f5ac88d4d8a7c45e6f42f64b9f0=选择 Chroma,Colorer或没有突出的新开设编辑器. 配色器需要安装的方案,并且在不可使用时可能会倒退.
 SettingsCenter.Text.0ffc5e815b4583d9a31aba53f49e7f6e05f09f428832466717a1a8926141b29a=新运营
 SettingsCenter.Text.100acc106eedb660131924a5d61e98001090c6250c13da01d7dad778b9685444=目录加载
@@ -2143,6 +2145,8 @@ SettingsCenter.TreeRootWholeVolume.Label=将树面板的根设为整个卷
 SettingsCenter.TreeRootWholeVolume.Description=像 far2l 一样，从源面板整个当前卷的根打开目录树 (Ctrl+T)。关闭时改为从源面板当前目录的根打开。
 SettingsCenter.TreeExplorerMode.Label=像资源管理器一样的树
 SettingsCenter.TreeExplorerMode.Description=目录树 (Ctrl+T) 打开期间，打开它的面板显示树光标所在的文件夹，Enter 切换到该面板而不关闭树。关闭时，树的行为与 far2l 相同：Enter 进入文件夹并关闭树。
+SettingsCenter.DirSizeCountsFolders.Label=文件夹大小包含文件夹本身
+SettingsCenter.DirSizeCountsFolders.Description=文件夹大小（F3、快速查看）还会加上文件系统分配给文件夹本身的大小，与 far2l 相同。关闭时只统计文件，与 find 相同。
 SettingsCenter.GlyphStyle.Label=边框与控件符号
 SettingsCenter.GlyphStyle.Description=图形窗口如何绘制边框、复选框和单选按钮：“经典”保留直角和 [x] 方框，“圆角”绘制圆角边框和圆形按钮。文本终端不受影响。
 SettingsCenter.Text.0a62cd800f27098e67ad0232c3648442a21795b2038a8e16c9a8f15424ded110=圆角

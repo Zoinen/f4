@@ -54,6 +54,7 @@ var actionMenuOrder = []string{
 	"File.DeletePermanent",
 	"File.Attributes",
 	"File.SystemProperties",
+	"File.ExplorerMenu",
 	"File.Share",
 	"Panel.SystemExplorer",
 	"Panel.OpenAssociated",

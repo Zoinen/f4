@@ -2548,7 +2548,7 @@ func unknownSizeNote(stats vfs.OpStats) string {
 // dirSizeResult is the line shown once a folder has been sized: its name, its
 // size and how many files and folders were counted in it.
 func dirSizeResult(name string, stats vfs.OpStats) string {
-	return fmt.Sprintf(i18n.Msg("Panel.DirSizeResultFmt"), name, numeric.FormatSize(stats.Bytes), stats.Files, stats.Dirs)
+	return fmt.Sprintf(i18n.Msg("Panel.DirSizeResultFmt"), name, numeric.FormatSize(stats.FilesSize(config.App.DirSizeCountsFolders)), stats.Files, stats.Dirs)
 }
 
 // actionCalcDirSizeAtCursor is Ctrl+Space: it sizes the folder under the
@@ -2593,7 +2593,7 @@ func actionCalcDirSize(pf *panel.PanelsFrame, fsp *panel.FileSystemPanel, idx in
 			return vfs.CalculateStats(ctx, fsp.Vfs, targetPath, []string{""}, cb)
 		},
 		func(totalStats vfs.OpStats) {
-			entry.Size = totalStats.Bytes
+			entry.Size = totalStats.FilesSize(config.App.DirSizeCountsFolders)
 			entry.SizeCalculated = true
 			// The size lands in the size column and nothing is said about it: a
 			// message that has to be waited out or dismissed was not wanted
@@ -2657,7 +2657,7 @@ func actionCalcDirSizes(pf *panel.PanelsFrame, fsp *panel.FileSystemPanel, entri
 				cursorEntry = fsp.Entries[idx]
 			}
 			for i, entry := range entries {
-				entry.Size = results[i].Bytes
+				entry.Size = results[i].FilesSize(config.App.DirSizeCountsFolders)
 				entry.SizeCalculated = true
 			}
 			if note := unknownSizeNote(total); note != "" {
@@ -6197,26 +6197,62 @@ func actionFileAttributes(pf *panel.PanelsFrame) {
 	})
 }
 
-// actionFileSystemProperties opens the system properties of the item under
-// the cursor, the window the attributes dialog's button opens, straight from
-// the panel (f4#2041). On ".." it is the folder the panel shows.
-func actionFileSystemProperties(pf *panel.PanelsFrame) {
+// cursorOSPath is the path in the operating system of the item under the
+// cursor of a local panel, or of the folder it shows when the cursor is on
+// "..". ok is false for any other panel.
+func cursorOSPath(pf *panel.PanelsFrame) (path string, ok bool) {
 	fsp := pf.GetActivePanel()
 	if fsp == nil || fsp.Vfs == nil || !fileops.IsLocalOSVFS(fsp.Vfs) {
-		return
+		return "", false
 	}
-	path := fsp.Vfs.GetPath()
+	path = fsp.Vfs.GetPath()
 	if name := fsp.GetRawSelectedName(); name != "" && name != ".." {
 		path = fsp.Vfs.Join(path, name)
 	}
 	abs, err := fsp.Vfs.Abs(path)
 	if err != nil {
 		vtui.ShowMessage(" Error ", err.Error(), []string{"&Ok"})
+		return "", false
+	}
+	return abs, true
+}
+
+// actionFileSystemProperties opens the system properties of the item under
+// the cursor, the window the attributes dialog's button opens, straight from
+// the panel (f4#2041). On ".." it is the folder the panel shows.
+func actionFileSystemProperties(pf *panel.PanelsFrame) {
+	path, ok := cursorOSPath(pf)
+	if !ok {
 		return
 	}
-	if err := dialog.DefaultNativePropertiesOpener(abs); err != nil {
+	if err := dialog.DefaultNativePropertiesOpener(path); err != nil {
 		vtui.ShowMessage(" Error ", err.Error(), []string{"&Ok"})
 	}
+}
+
+// explorerMenuShower shows the Explorer context menu; a variable so that a
+// test need not open one.
+var explorerMenuShower = showExplorerMenu
+
+// actionFileExplorerMenu shows the Explorer context menu of the item under
+// the cursor, as the EMenu plugin does in Far 3 (f4#2041). The menu waits on
+// a thread of its own; the panels are reread after it, since its commands
+// can rename, delete or create files.
+func actionFileExplorerMenu(pf *panel.PanelsFrame) {
+	path, ok := cursorOSPath(pf)
+	if !ok {
+		return
+	}
+	frames := vtui.FrameManager
+	go func() {
+		err := explorerMenuShower(path)
+		frames.PostTask(func() {
+			if err != nil {
+				vtui.ShowMessage(" Error ", err.Error(), []string{"&Ok"})
+			}
+			pf.RefreshAll()
+		})
+	}()
 }
 
 func actionEditSymlink(pf *panel.PanelsFrame) {

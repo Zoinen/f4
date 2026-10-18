@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/mattn/go-runewidth"
 	"github.com/unxed/f4/vfs"
@@ -122,6 +123,7 @@ func showConnectionDialog(app vfs.App, nf *NetFoxVFS, oldName string) {
 	editUser := vtui.NewEdit(0, 0, 40, cfg.User)
 	editPass := vtui.NewPasswordEdit(0, 0, 40, cfg.Pass)
 	editKeyPath := vtui.NewEdit(0, 0, 40, cfg.KeyPath)
+	editPath := vtui.NewEdit(0, 0, 40, cfg.Path)
 	editTimeout := vtui.NewEdit(0, 0, 10, cfg.Timeout)
 	if editTimeout.GetText() == "" {
 		editTimeout.SetText("15")
@@ -174,6 +176,7 @@ func showConnectionDialog(app vfs.App, nf *NetFoxVFS, oldName string) {
 	vbox.Add(makeRow(vtui.Msg("NetFox.LabelUser"), editUser), vtui.Margins{Top: 0}, vtui.AlignFill)
 	vbox.Add(makeRow(vtui.Msg("NetFox.LabelPassword"), editPass), vtui.Margins{Top: 0}, vtui.AlignFill)
 	vbox.Add(makeRow(vtui.Msg("NetFox.LabelKeyPath"), editKeyPath), vtui.Margins{Top: 0}, vtui.AlignFill)
+	vbox.Add(makeRow(vtui.Msg("NetFox.LabelPath"), editPath), vtui.Margins{Top: 0}, vtui.AlignFill)
 	vbox.Add(makeRow(vtui.Msg("NetFox.LabelTimeout"), editTimeout), vtui.Margins{Top: 0}, vtui.AlignFill)
 	vbox.Add(makeRow(vtui.Msg("NetFox.LabelCodepage"), comboCp), vtui.Margins{Top: 0}, vtui.AlignFill)
 	vbox.Apply()
@@ -264,6 +267,7 @@ func showConnectionDialog(app vfs.App, nf *NetFoxVFS, oldName string) {
 		cfg.User = editUser.GetText()
 		cfg.Pass = editPass.GetText()
 		cfg.KeyPath = editKeyPath.GetText()
+		cfg.Path = strings.TrimSpace(editPath.GetText())
 		cfg.Timeout = editTimeout.GetText()
 		cfg.Codepage = ""
 		cpSel := comboCp.Menu.SelectPos

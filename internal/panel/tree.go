@@ -248,6 +248,12 @@ type TreePanel struct {
 	Table   *vtui.Table
 	Focused bool
 
+	// viewScrolled is set when the wheel or the scroll bar moved the view
+	// off the cursor: only then may Up/Down pull the cursor back into view
+	// (pullCursorIntoView). Without it a cursor that merely has not been
+	// scrolled to yet -- a panel that was not laid out -- would be moved.
+	viewScrolled bool
+
 	root  string
 	items []treeItem
 }
@@ -270,6 +276,9 @@ func NewTreePanel(src *FileSystemPanel) *TreePanel {
 	t.Table.ColorTextIdx = theme.ColPanelText
 	t.Table.ColorItemSelectTextIdx = theme.ColPanelSelectedText
 	t.Table.ColorBoxIdx = theme.ColPanelBox
+	t.Table.ShowScrollBar = true
+	// Dragging the bar moves the view only, like the wheel (scrollViewBy).
+	t.Table.ScrollBar.OnScroll = func(top int) { t.scrollViewBy(top - t.Table.TopPos) }
 
 	t.items = []treeItem{{name: t.root, path: t.root, depth: 0, parentIndex: -1, expandable: true, collapsed: true}}
 	t.expandAt(0)
@@ -549,6 +558,38 @@ func (t *TreePanel) setCursor(idx int) {
 	t.Table.EnsureVisible()
 }
 
+// scrollViewBy shifts the visible rows by delta without touching the cursor.
+func (t *TreePanel) scrollViewBy(delta int) {
+	maxTop := max(t.Table.ItemCount-t.Table.ViewHeight, 0)
+	t.Table.TopPos = min(max(t.Table.TopPos+delta, 0), maxTop)
+	t.viewScrolled = true
+}
+
+// pullCursorIntoView puts a cursor that scrolling took off screen onto the
+// nearest visible row, the top one if it is above the view, the bottom one if
+// below, and reports whether it did: that key press is spent on the return
+// (f4#1602). The cursor on screen leaves the key to Table.
+func (t *TreePanel) pullCursorIntoView() bool {
+	scrolled := t.viewScrolled
+	t.viewScrolled = false
+	if !scrolled {
+		return false
+	}
+	top, bottom := t.Table.TopPos, t.Table.TopPos+t.Table.ViewHeight-1
+	if t.Table.ViewHeight <= 0 || t.Table.ItemCount == 0 {
+		return false
+	}
+	switch pos := t.Table.SelectPos; {
+	case pos < top:
+		t.Table.SelectPos = top
+	case pos > bottom:
+		t.Table.SelectPos = min(bottom, t.Table.ItemCount-1)
+	default:
+		return false
+	}
+	return true
+}
+
 func (t *TreePanel) syncRows() {
 	rows := make([]vtui.TableRow, len(t.items))
 	for i, it := range t.items {
@@ -617,6 +658,10 @@ func (t *TreePanel) processKey(e *vtinput.InputEvent) bool {
 		case vtinput.VK_RETURN:
 			t.activateSelected()
 			return true
+		case vtinput.VK_UP, vtinput.VK_DOWN:
+			if t.pullCursorIntoView() {
+				return true
+			}
 		case vtinput.VK_RIGHT:
 			idx := t.cursorIndex()
 			if idx >= 0 && t.items[idx].expandable && t.items[idx].collapsed {
@@ -641,6 +686,17 @@ func (t *TreePanel) processKey(e *vtinput.InputEvent) bool {
 }
 
 func (t *TreePanel) ProcessMouse(e *vtinput.InputEvent) bool {
+	if e.Type == vtinput.MouseEventType && e.WheelDirection != 0 && t.Table.HitTest(int(e.MouseX), int(e.MouseY)) {
+		// The wheel only scrolls the tree (f4#1602): the cursor stays on its
+		// folder, even off screen, so the files of the opposite panel are not
+		// listed for every row the wheel passes.
+		lines := vtui.WheelLinesPerNotch()
+		if e.WheelDirection > 0 {
+			lines = -lines
+		}
+		t.scrollViewBy(lines)
+		return true
+	}
 	before := t.SelectedPath()
 	handled := t.Table.ProcessMouse(e)
 	if t.toggleOnMouse(e) {

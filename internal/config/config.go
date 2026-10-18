@@ -514,6 +514,7 @@ type F4Config struct {
 	EditorAutoComplete         bool
 	EditorAutoCompleteMask     string
 	TreeExplorerMode           bool // Ctrl+T tree like Explorer's: the panel that opened it follows the tree's cursor (f4#1602)
+	DirSizeCountsFolders       bool // include the size of folders themselves when calculating folder sizes
 	// ArchiveEnterExcludeMask names the files Enter must not open as an
 	// archive even when their content is one. It is a far2l file mask, so
 	// "|" still carves an exception out of it.
@@ -1073,6 +1074,7 @@ func parseConfigInto(cfg *F4Config, merged *ini.File) {
 	cfg.InfoPanelCPUGPU = merged.GetString("Panel", "InfoPanelCPUGPU", "0") == "1"
 	cfg.TreeRootWholeVolume = merged.GetString("Panel", "TreeRootWholeVolume", "1") == "1"
 	cfg.TreeExplorerMode = merged.GetString("Panel", "TreeExplorerMode", "0") == "1"
+	cfg.DirSizeCountsFolders = merged.GetString("Panel", "DirSizeCountsFolders", "0") == "1"
 	cfg.EscTogglePanels = merged.GetString("Panel", "EscTogglePanels", "1") == "1"
 	cfg.TerminalCtrlNWorkspace = merged.GetString("Panel", "TerminalCtrlNWorkspace", "1") == "1"
 	cfg.InheritTerminalHistory = merged.GetString("Panel", "InheritTerminalHistory", "0") == "1"
@@ -1443,6 +1445,7 @@ func SerializeSettingsConfig(cfg F4Config) []byte {
 	fmt.Fprintf(&sb, "InfoPanelCPUGPU = %d\n", map[bool]int{true: 1, false: 0}[cfg.InfoPanelCPUGPU])
 	fmt.Fprintf(&sb, "TreeRootWholeVolume = %d\n", map[bool]int{true: 1, false: 0}[cfg.TreeRootWholeVolume])
 	fmt.Fprintf(&sb, "TreeExplorerMode = %d\n", map[bool]int{true: 1, false: 0}[cfg.TreeExplorerMode])
+	fmt.Fprintf(&sb, "DirSizeCountsFolders = %d\n", map[bool]int{true: 1, false: 0}[cfg.DirSizeCountsFolders])
 	fmt.Fprintf(&sb, "EscTogglePanels = %d\n", map[bool]int{true: 1, false: 0}[cfg.EscTogglePanels])
 	fmt.Fprintf(&sb, "TerminalCtrlNWorkspace = %d\n", map[bool]int{true: 1, false: 0}[cfg.TerminalCtrlNWorkspace])
 	fmt.Fprintf(&sb, "InheritTerminalHistory = %d\n", map[bool]int{true: 1, false: 0}[cfg.InheritTerminalHistory])

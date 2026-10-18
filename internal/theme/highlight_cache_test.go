@@ -233,3 +233,41 @@ NormalColor = foreground:#0000FF
 		t.Error("a junction with the same name as a cached symlink kept the plain color")
 	}
 }
+
+// TestGetColorCacheFollowsRulesReplacedDirectly: Rules replaced without
+// CombineRules (as tests do to set rules of their own and put the old ones
+// back) must not leave a cache filled against the old list. With it, GetColor
+// indexed past the end of the new list and panicked (train unxed/f4#2063).
+func TestGetColorCacheFollowsRulesReplacedDirectly(t *testing.T) {
+	vtui.SetDefaultPalette()
+	SetDefaultF4Palette()
+	highlighter := &FileHighlighter{}
+	highlighter.LoadFromIni(ini.Parse(strings.NewReader(`[Highlight_0]
+Name = Plain
+Mask = *.txt
+NormalColor = foreground:#0000FF
+
+[Highlight_1]
+Name = Sources
+Mask = *.go
+NormalColor = foreground:#00FF00
+`)))
+	item := vfs.VFSItem{Name: "main.go", Size: 42}
+	if fg := vtui.GetRGBFore(highlighter.GetColor(&item, 0, false, false)); fg != 0x00FF00 {
+		t.Fatalf("GetColor foreground = %06X, want 00FF00", fg)
+	}
+
+	saved := highlighter.Rules
+	highlighter.Rules = saved[:1] // the cache holds index 1, which is gone now
+	if fg := vtui.GetRGBFore(highlighter.GetColor(&item, 0, false, false)); fg == 0x00FF00 {
+		t.Errorf("GetColor kept the color of a rule that is no longer there")
+	}
+	highlighter.Rules = []HighlightRule{saved[1]}
+	if fg := vtui.GetRGBFore(highlighter.GetColor(&item, 0, false, false)); fg != 0x00FF00 {
+		t.Errorf("GetColor after the rules were put in place = %06X, want 00FF00", fg)
+	}
+	highlighter.Rules = saved
+	if fg := vtui.GetRGBFore(highlighter.GetColor(&item, 0, false, false)); fg != 0x00FF00 {
+		t.Errorf("GetColor after the rules were put back = %06X, want 00FF00", fg)
+	}
+}

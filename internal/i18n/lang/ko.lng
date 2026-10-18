@@ -1368,6 +1368,8 @@ SettingsCenter.Text.0e4099db7c96f9790d58c7f60474fc244441ea5323aee647a18a2499fee7
 SettingsCenter.Text.0e57cb642215e608ec972192bae01df76de89a2557833d9102c1ca8ea647adba=S3 엔드포인트에 대한 추가 인증자 권한 파일
 SettingsCenter.Text.0e66373f45dcf3dd656151e519f7ee5e3d558d9c22cb87df339bbdd2b6c6a3c1=라벨
 SettingsCenter.Text.0e92a613c94e34374670a92e49372b5ede4cbdb729c677d1dbc68029e2e07cd5=SSH 개인 키
+SettingsCenter.Text.ef05c31fec7ae81c53401997ed157a099b2a711f4733a641858b0a17052dc5f0=시작 폴더
+SettingsCenter.Text.fb2da669b96bab8d237c18434eb74f9e66985731b7b2a5d41b902660c3b6e7eb=연결이 열릴 서버의 폴더입니다. 비워 두면 홈 폴더입니다.
 SettingsCenter.Text.0eeb1d929037afd546218148dde1e1e218e18f5ac88d4d8a7c45e6f42f64b9f0=새로 열린 편집기에 대해 크로마, 컬러러 또는 강조 표시 없음을 선택합니다. Colorer에는 설치된 스키마가 필요하며 사용할 수 없을 때 대체될 수 있습니다.
 SettingsCenter.Text.0ffc5e815b4583d9a31aba53f49e7f6e05f09f428832466717a1a8926141b29a=새로운 사업
 SettingsCenter.Text.100acc106eedb660131924a5d61e98001090c6250c13da01d7dad778b9685444=디렉토리 로딩
@@ -2217,6 +2219,8 @@ SettingsCenter.TreeRootWholeVolume.Label=트리 패널의 루트를 전체 볼�
 SettingsCenter.TreeRootWholeVolume.Description=far2l처럼 원본 패널의 전체 현재 볼륨을 루트로 디렉터리 트리(Ctrl+T)를 엽니다. 끄면 대신 원본 패널의 현재 디렉터리를 루트로 엽니다.
 SettingsCenter.TreeExplorerMode.Label=탐색기 같은 트리
 SettingsCenter.TreeExplorerMode.Description=디렉터리 트리(Ctrl+T)가 열려 있는 동안, 트리를 연 패널이 트리 커서 아래의 폴더를 보여 주고 Enter는 트리를 닫지 않고 그 패널로 이동합니다. 끄면 트리가 far2l처럼 동작합니다. Enter로 폴더에 들어가고 트리를 닫습니다.
+SettingsCenter.DirSizeCountsFolders.Label=폴더 크기에 폴더 자체도 포함
+SettingsCenter.DirSizeCountsFolders.Description=폴더 크기(F3, 빠른 보기)에 파일 시스템이 폴더 자체에 부여하는 크기도 더합니다(far2l과 같음). 끄면 find처럼 파일만 계산합니다.
 SettingsCenter.GlyphStyle.Label=프레임 및 컨트롤 글리프
 SettingsCenter.GlyphStyle.Description=그래픽 창이 프레임, 체크박스, 라디오 버튼을 그리는 방식입니다. 「클래식」은 각진 모서리와 [x] 상자를 유지하고, 「둥근 모서리」는 둥근 모서리와 둥근 버튼을 그립니다. 텍스트 터미널에는 영향을 주지 않습니다.
 SettingsCenter.Text.0a62cd800f27098e67ad0232c3648442a21795b2038a8e16c9a8f15424ded110=둥근 모서리

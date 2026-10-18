@@ -1297,6 +1297,8 @@ SettingsCenter.Text.0e4099db7c96f9790d58c7f60474fc244441ea5323aee647a18a2499fee7
 SettingsCenter.Text.0e57cb642215e608ec972192bae01df76de89a2557833d9102c1ca8ea647adba=További tanúsítvány-hatósági fájl a S3 végponthoz.
 SettingsCenter.Text.0e66373f45dcf3dd656151e519f7ee5e3d558d9c22cb87df339bbdd2b6c6a3c1=címke
 SettingsCenter.Text.0e92a613c94e34374670a92e49372b5ede4cbdb729c677d1dbc68029e2e07cd5=SSH privát kulcs
+SettingsCenter.Text.ef05c31fec7ae81c53401997ed157a099b2a711f4733a641858b0a17052dc5f0=Kezdőmappa
+SettingsCenter.Text.fb2da669b96bab8d237c18434eb74f9e66985731b7b2a5d41b902660c3b6e7eb=A kiszolgáló mappája, amelyben a kapcsolat megnyílik. Üres: a saját mappa.
 SettingsCenter.Text.0eeb1d929037afd546218148dde1e1e218e18f5ac88d4d8a7c45e6f42f64b9f0=Az újonnan megnyitott szerkesztőknél válassza a Chroma, Colorer vagy a kiemelés nélküli lehetőséget. A Colorerhez telepített sémákra van szükség, és visszaeshet, ha nem érhető el.
 SettingsCenter.Text.0ffc5e815b4583d9a31aba53f49e7f6e05f09f428832466717a1a8926141b29a=új műveletek
 SettingsCenter.Text.100acc106eedb660131924a5d61e98001090c6250c13da01d7dad778b9685444=Címtár betöltése
@@ -2146,6 +2148,8 @@ SettingsCenter.TreeRootWholeVolume.Label=A könyvtárfa gyökereztetése a telje
 SettingsCenter.TreeRootWholeVolume.Description=A könyvtárfát (Ctrl+T) a forrás panel teljes aktuális kötetének gyökerén nyitja meg, ahogy a far2l is teszi. Kikapcsolva helyette a forrás panel aktuális könyvtárának gyökerén nyitja meg.
 SettingsCenter.TreeExplorerMode.Label=Fa az Intézőhöz hasonlóan
 SettingsCenter.TreeExplorerMode.Description=Amíg a könyvtárfa (Ctrl+T) nyitva van, az azt megnyitó panel a fa kurzora alatti mappát mutatja, az Enter pedig erre a panelre lép a fa bezárása nélkül. Kikapcsolva a fa a far2l-hez hasonlóan működik: az Enter belép a mappába és bezárja a fát.
+SettingsCenter.DirSizeCountsFolders.Label=A mappaméret a mappákat is számolja
+SettingsCenter.DirSizeCountsFolders.Description=A mappa mérete (F3, gyorsnézet) hozzáadja azt a méretet is, amelyet a fájlrendszer magának a mappának ad, mint a far2l. Kikapcsolva: csak a fájlok, ahogy a find számolja.
 SettingsCenter.GlyphStyle.Label=Keretek és vezérlők jelei
 SettingsCenter.GlyphStyle.Description=Hogyan rajzolják a grafikus ablakok a kereteket, jelölőnégyzeteket és választógombokat: a Klasszikus megtartja a szögletes sarkokat és a [x] négyzeteket, a Lekerekített lekerekített sarkokat és kerek gombokat rajzol. A szöveges terminálokat ez nem érinti.
 SettingsCenter.Text.0a62cd800f27098e67ad0232c3648442a21795b2038a8e16c9a8f15424ded110=Lekerekített

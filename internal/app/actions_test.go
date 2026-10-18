@@ -3350,17 +3350,42 @@ type mockExtractionVFS struct {
 
 func (m *mockExtractionVFS) ParentVFS() vfs.VFS { return m.parent }
 
+func (m *mockExtractionVFS) ShowsArchiveContents() bool { return true }
+
+// mockRemoteVFS has a parent to go back to, as an sftp connection of NetFox
+// has, and shows no archive.
+type mockRemoteVFS struct {
+	vfs.VFS
+	parent vfs.VFS
+}
+
+func (m *mockRemoteVFS) ParentVFS() vfs.VFS { return m.parent }
+
 func TestExecuteFileOp_ContextualTitles(t *testing.T) {
+	srcDir := t.TempDir()
+	parent := vfs.NewOSVFS(srcDir)
+	runContextualTitleCopy(t, srcDir, &mockExtractionVFS{VFS: parent, parent: parent}, "Extracting")
+}
+
+// f4#1894 (nz256): copying from a file server through NetFox sftp was titled
+// "Extracting", because the sftp VFS has a parent. Only an archive is
+// extracted from.
+func TestExecuteFileOp_RemoteSourceIsCopying(t *testing.T) {
+	srcDir := t.TempDir()
+	parent := vfs.NewOSVFS(srcDir)
+	runContextualTitleCopy(t, srcDir, &mockRemoteVFS{VFS: parent, parent: parent}, "Copying")
+}
+
+// runContextualTitleCopy copies data.txt from srcVfs (showing srcDir) to a
+// local directory and checks that the progress window is titled want.
+func runContextualTitleCopy(t *testing.T, srcDir string, srcVfs vfs.VFS, want string) {
+	t.Helper()
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	theme.SetDefaultF4Palette()
 
-	srcDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(srcDir, "data.txt"), []byte("data"), 0600); err != nil {
 		t.Fatal(err)
 	}
-
-	parent := vfs.NewOSVFS(srcDir)
-	srcVfs := &mockExtractionVFS{VFS: parent, parent: parent}
 	dstVfs := vfs.NewOSVFS(t.TempDir())
 
 	done := make(chan struct{})
@@ -3374,13 +3399,15 @@ func TestExecuteFileOp_ContextualTitles(t *testing.T) {
 		select {
 		case task := <-vtui.FrameManager.TaskChan:
 			task()
-			top := vtui.FrameManager.GetTopFrame()
-			if top != nil && strings.Contains(top.GetTitle(), "Extracting") {
-				dlg = top.(*fileops.FileOpProgressDialog)
+			if top, ok := vtui.FrameManager.GetTopFrame().(*fileops.FileOpProgressDialog); ok {
+				dlg = top
 			}
 		case <-appeared:
-			t.Fatal("Timeout waiting for Extracting dialog to appear")
+			t.Fatalf("Timeout waiting for the %s dialog to appear", want)
 		}
+	}
+	if title := dlg.GetTitle(); !strings.Contains(title, want) {
+		t.Errorf("progress window title = %q, want %q", title, want)
 	}
 
 	// Wait for the dialog this test created, not for the frame stack to empty.

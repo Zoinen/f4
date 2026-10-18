@@ -1373,6 +1373,8 @@ SettingsCenter.Text.0e4099db7c96f9790d58c7f60474fc244441ea5323aee647a18a2499fee7
 SettingsCenter.Text.0e57cb642215e608ec972192bae01df76de89a2557833d9102c1ca8ea647adba=S3 এন্ডপয়েন্টের জন্য অতিরিক্ত সার্টিফিকেট-কর্তৃপক্ষ ফাইল।
 SettingsCenter.Text.0e66373f45dcf3dd656151e519f7ee5e3d558d9c22cb87df339bbdd2b6c6a3c1=লেবেল
 SettingsCenter.Text.0e92a613c94e34374670a92e49372b5ede4cbdb729c677d1dbc68029e2e07cd5=SSH ব্যক্তিগত কী
+SettingsCenter.Text.ef05c31fec7ae81c53401997ed157a099b2a711f4733a641858b0a17052dc5f0=শুরুর ফোল্ডার
+SettingsCenter.Text.fb2da669b96bab8d237c18434eb74f9e66985731b7b2a5d41b902660c3b6e7eb=সার্ভারের যে ফোল্ডারে সংযোগ খোলে। খালি: হোম ফোল্ডার।
 SettingsCenter.Text.0eeb1d929037afd546218148dde1e1e218e18f5ac88d4d8a7c45e6f42f64b9f0=নতুন খোলা সম্পাদকদের জন্য Chroma, Colorer বা কোন হাইলাইটিং বেছে নিন। কালারের ইনস্টল করা স্কিমা প্রয়োজন এবং অনুপলব্ধ হলে ফিরে যেতে পারে।
 SettingsCenter.Text.0ffc5e815b4583d9a31aba53f49e7f6e05f09f428832466717a1a8926141b29a=নতুন অপারেশন
 SettingsCenter.Text.100acc106eedb660131924a5d61e98001090c6250c13da01d7dad778b9685444=ডিরেক্টরি লোড হচ্ছে
@@ -2222,6 +2224,8 @@ SettingsCenter.TreeRootWholeVolume.Label=ট্রি প্যানেলক�
 SettingsCenter.TreeRootWholeVolume.Description=উৎস প্যানেলের সম্পূর্ণ বর্তমান ভলিউমের মূল থেকে ডিরেক্টরি ট্রি (Ctrl+T) খোলে, far2l-এর মতো। বন্ধ থাকলে পরিবর্তে উৎস প্যানেলের বর্তমান ডিরেক্টরির মূল থেকে খোলে।
 SettingsCenter.TreeExplorerMode.Label=এক্সপ্লোরারের মতো ট্রি
 SettingsCenter.TreeExplorerMode.Description=ডিরেক্টরি ট্রি (Ctrl+T) খোলা থাকাকালীন, যে প্যানেল এটি খুলেছে সেটি ট্রির কার্সরের নিচের ফোল্ডার দেখায়, এবং Enter ট্রি বন্ধ না করে সেই প্যানেলে চলে যায়। বন্ধ থাকলে ট্রি far2l-এর মতো কাজ করে: Enter ফোল্ডারে যায় এবং ট্রি বন্ধ করে।
+SettingsCenter.DirSizeCountsFolders.Label=ফোল্ডারের আকারে ফোল্ডার নিজেরাও গণ্য হয়
+SettingsCenter.DirSizeCountsFolders.Description=ফোল্ডারের আকারে (F3, দ্রুত দেখা) ফাইল সিস্টেম ফোল্ডারগুলোকে নিজে যে আকার দেয় তা-ও যোগ হয়, far2l-এর মতো। বন্ধ থাকলে শুধু ফাইল, find যেভাবে গোনে।
 SettingsCenter.GlyphStyle.Label=ফ্রেম ও নিয়ন্ত্রণের প্রতীক
 SettingsCenter.GlyphStyle.Description=গ্রাফিক্যাল উইন্ডো কীভাবে ফ্রেম, চেকবক্স ও রেডিও বোতাম আঁকে: «ক্লাসিক» চৌকো কোণ ও [x] বাক্স রাখে, «গোলাকার» গোলাকার কোণ ও গোল বোতাম আঁকে। টেক্সট টার্মিনালে কোনো পরিবর্তন হয় না।
 SettingsCenter.Text.0a62cd800f27098e67ad0232c3648442a21795b2038a8e16c9a8f15424ded110=গোলাকার

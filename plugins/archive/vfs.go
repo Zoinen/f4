@@ -1826,6 +1826,9 @@ func (v *ArchiveVFS) Open(ctx context.Context, path string) (vfs.ReadAtCloser, e
 }
 
 func (v *ArchiveVFS) ParentVFS() vfs.VFS { return v.parent }
+
+// ShowsArchiveContents: copying out of an archive is extracting (vfs.ArchiveContentsVFS).
+func (v *ArchiveVFS) ShowsArchiveContents() bool { return true }
 func (v *ArchiveVFS) Join(elements ...string) string {
 	if len(elements) == 0 {
 		return ""

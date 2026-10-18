@@ -4911,6 +4911,14 @@ func (pf *PanelsFrame) ProcessMouse(e *vtinput.InputEvent) bool {
 			if pf.SearchFirstMode() {
 				pf.SetCommandLineFocus(false)
 			}
+			// The release of the button has no button held and would not
+			// come back here, so the gesture is captured as on a file
+			// panel: a drag of the tree's scroll bar never ended, and every
+			// later click scrolled the tree by its distance from the middle
+			// (mitek1977-coder, f4#1602).
+			if e.KeyDown && e.MouseEventFlags&vtinput.MouseMoved == 0 {
+				pf.PanelMouseCapture = pf.AltPanels[i]
+			}
 			// Give the alt panel a chance to handle it (future
 			// row-picking, etc.); return true either way — the
 			// event does not fall through.

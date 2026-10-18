@@ -439,3 +439,13 @@ func TestGenericScan_HardLinkDedup(t *testing.T) {
 		t.Errorf("dedup: Bytes=%d, want 8192 (only original's bytes)", dedup.Bytes)
 	}
 }
+
+func TestOpStatsFilesSize(t *testing.T) {
+	s := OpStats{Bytes: 100, DirBytes: 20}
+	if got := s.FilesSize(false); got != 100 {
+		t.Fatalf("files only: got %d, want 100", got)
+	}
+	if got := s.FilesSize(true); got != 120 {
+		t.Fatalf("with folders: got %d, want 120", got)
+	}
+}

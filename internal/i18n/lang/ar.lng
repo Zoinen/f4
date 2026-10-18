@@ -1330,6 +1330,8 @@ SettingsCenter.Text.0e4099db7c96f9790d58c7f60474fc244441ea5323aee647a18a2499fee7
 SettingsCenter.Text.0e57cb642215e608ec972192bae01df76de89a2557833d9102c1ca8ea647adba=ملف مرجع الشهادة الإضافي لنقطة نهاية S3.
 SettingsCenter.Text.0e66373f45dcf3dd656151e519f7ee5e3d558d9c22cb87df339bbdd2b6c6a3c1=تسمية
 SettingsCenter.Text.0e92a613c94e34374670a92e49372b5ede4cbdb729c677d1dbc68029e2e07cd5=SSH المفتاح الخاص
+SettingsCenter.Text.ef05c31fec7ae81c53401997ed157a099b2a711f4733a641858b0a17052dc5f0=مجلد البدء
+SettingsCenter.Text.fb2da669b96bab8d237c18434eb74f9e66985731b7b2a5d41b902660c3b6e7eb=المجلد على الخادم الذي يفتح فيه الاتصال. فارغ: المجلد الرئيسي.
 SettingsCenter.Text.0eeb1d929037afd546218148dde1e1e218e18f5ac88d4d8a7c45e6f42f64b9f0=اختر Chroma أو Colorer أو بدون تمييز للمحررين الذين تم فتحهم حديثًا. يحتاج Colorer إلى مخططات مثبتة وقد يتراجع عندما لا يكون متاحًا.
 SettingsCenter.Text.0ffc5e815b4583d9a31aba53f49e7f6e05f09f428832466717a1a8926141b29a=عمليات جديدة
 SettingsCenter.Text.100acc106eedb660131924a5d61e98001090c6250c13da01d7dad778b9685444=جارٍ تحميل الدليل
@@ -2179,6 +2181,8 @@ SettingsCenter.TreeRootWholeVolume.Label=تجذير لوحة الشجرة عند
 SettingsCenter.TreeRootWholeVolume.Description=يجذّر شجرة الدليل (Ctrl+T) عند جذر وحدة التخزين الحالية بأكملها للوحة المصدر، كما يفعل far2l. عند الإيقاف يجذّرها بدلاً من ذلك عند الدليل الحالي للوحة المصدر.
 SettingsCenter.TreeExplorerMode.Label=شجرة مثل المستكشف
 SettingsCenter.TreeExplorerMode.Description=ما دامت شجرة الدليل (Ctrl+T) مفتوحة، تعرض اللوحة التي فتحتها المجلد الموجود تحت مؤشر الشجرة، وينتقل Enter إلى تلك اللوحة دون إغلاق الشجرة. عند الإيقاف تعمل الشجرة كما في far2l: يدخل Enter المجلد ويغلق الشجرة.
+SettingsCenter.DirSizeCountsFolders.Label=حجم المجلد يشمل المجلدات نفسها
+SettingsCenter.DirSizeCountsFolders.Description=يضيف حجم المجلد (F3، العرض السريع) الحجم الذي يمنحه نظام الملفات للمجلدات نفسها، كما يفعل far2l. عند الإيقاف: الملفات فقط، كما يحسبها find.
 SettingsCenter.GlyphStyle.Label=رموز الإطارات وعناصر التحكم
 SettingsCenter.GlyphStyle.Description=كيف ترسم النوافذ الرسومية الإطارات ومربعات الاختيار وأزرار الاختيار: «كلاسيك» يُبقي الزوايا المربعة والمربعات [x]، و«مستدير» يرسم زوايا مستديرة وأزرارًا دائرية. لا تتأثر الطرفيات النصية.
 SettingsCenter.Text.0a62cd800f27098e67ad0232c3648442a21795b2038a8e16c9a8f15424ded110=مستدير

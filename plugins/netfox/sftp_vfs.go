@@ -925,6 +925,7 @@ func (p *sftpProvider) Open(ctx context.Context, parent vfs.VFS, pth string) (vf
 				}
 				cfg.Port = port
 				configureNetFoxConnection(fish, connection, "sftp/fish+", cfg)
+				enterStartPath(fish, cfg)
 				return fish, nil
 			}
 			return nil, fmt.Errorf("netfox: SFTP failed for OpenSSH profile and FISH+ fallback failed: %w (FISH+: %v)", err, fishErr)
@@ -937,6 +938,7 @@ func (p *sftpProvider) Open(ctx context.Context, parent vfs.VFS, pth string) (vf
 	}
 	cfg.Port = port
 	configureNetFoxConnection(res, connection, "sftp", cfg)
+	enterStartPath(res, cfg)
 	return res, nil
 }
 

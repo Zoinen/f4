@@ -3502,6 +3502,12 @@ func TestFileSystemPanel_SortSelectedFirst(t *testing.T) {
 	if !fp.SortSelectedFirst {
 		t.Error("ToggleSortSelectedFirst did not turn selected-first on")
 	}
+	// Both setters read the directory again. A read still running when the
+	// test returns finds its TempDir gone and posts "Failed to read
+	// directory" to the shared task queue, where the next test that runs
+	// tasks shows it (main cfd559df0: the window covered the menu of
+	// TestDriveMenuWatchRebuildsTheOpenMenu).
+	waitForLoad(t, fp)
 }
 
 func TestFileSystemPanel_SetSortModeUsesModeDefaultDirection(t *testing.T) {

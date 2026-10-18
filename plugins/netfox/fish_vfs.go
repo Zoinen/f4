@@ -1662,6 +1662,7 @@ func (p *fishProvider) Open(ctx context.Context, parent vfs.VFS, pth string) (vf
 	}
 	cfg.Port = port
 	configureNetFoxConnection(res, connection, "fish+", cfg)
+	enterStartPath(res, cfg)
 	return res, nil
 }
 

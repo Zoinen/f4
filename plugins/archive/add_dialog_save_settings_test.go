@@ -39,3 +39,14 @@ func TestAddArchiveDialogSaveSettings(t *testing.T) {
 		t.Fatal("creating an archive dropped the saved settings")
 	}
 }
+
+// "Save settings" stands to the right of "Cancel", not between "Create" and
+// "Cancel" (f4#2002, mitek1977-coder 18-10-2026), and Tab goes in that order.
+func TestAddArchiveDialogButtonOrder(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	d := newAddArchiveDialog("docs.zip", func(addArchiveSettings) {})
+	if d.create.X1 >= d.cancel.X1 || d.cancel.X1 >= d.saveDefaults.X1 {
+		t.Fatalf("button columns: create %d, cancel %d, save settings %d; want create < cancel < save settings",
+			d.create.X1, d.cancel.X1, d.saveDefaults.X1)
+	}
+}

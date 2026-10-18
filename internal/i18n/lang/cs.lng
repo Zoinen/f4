@@ -1376,6 +1376,8 @@ SettingsCenter.Text.0e4099db7c96f9790d58c7f60474fc244441ea5323aee647a18a2499fee7
 SettingsCenter.Text.0e57cb642215e608ec972192bae01df76de89a2557833d9102c1ca8ea647adba=Další soubor certifikační autority pro koncový bod S3.
 SettingsCenter.Text.0e66373f45dcf3dd656151e519f7ee5e3d558d9c22cb87df339bbdd2b6c6a3c1=Štítek
 SettingsCenter.Text.0e92a613c94e34374670a92e49372b5ede4cbdb729c677d1dbc68029e2e07cd5=Soukromý klíč  SSH
+SettingsCenter.Text.ef05c31fec7ae81c53401997ed157a099b2a711f4733a641858b0a17052dc5f0=Počáteční složka
+SettingsCenter.Text.fb2da669b96bab8d237c18434eb74f9e66985731b7b2a5d41b902660c3b6e7eb=Složka na serveru, ve které se připojení otevře. Prázdné: domovská složka.
 SettingsCenter.Text.0eeb1d929037afd546218148dde1e1e218e18f5ac88d4d8a7c45e6f42f64b9f0=Vyberte Chroma, Colorer nebo žádné zvýraznění pro nově otevřené editory. Colorer potřebuje nainstalovaná schémata a může se vrátit, když není k dispozici.
 SettingsCenter.Text.0ffc5e815b4583d9a31aba53f49e7f6e05f09f428832466717a1a8926141b29a=nové operace
 SettingsCenter.Text.100acc106eedb660131924a5d61e98001090c6250c13da01d7dad778b9685444=Načítání adresáře
@@ -2225,6 +2227,8 @@ SettingsCenter.TreeRootWholeVolume.Label=Zakořenit strom v celém svazku
 SettingsCenter.TreeRootWholeVolume.Description=Otevře strom adresářů (Ctrl+T) od kořene celého aktuálního svazku zdrojového panelu, stejně jako far2l. Vypnuto jej místo toho otevře od aktuálního adresáře zdrojového panelu.
 SettingsCenter.TreeExplorerMode.Label=Strom jako v Průzkumníkovi
 SettingsCenter.TreeExplorerMode.Description=Dokud je strom adresářů (Ctrl+T) otevřený, panel, který ho otevřel, zobrazuje složku pod kurzorem stromu a Enter přejde do tohoto panelu bez zavření stromu. Vypnuto: strom funguje jako ve far2l, Enter přejde do složky a strom zavře.
+SettingsCenter.DirSizeCountsFolders.Label=Velikost složky zahrnuje i samotné složky
+SettingsCenter.DirSizeCountsFolders.Description=Velikost složky (F3, rychlé zobrazení) zahrne i velikost, kterou souborový systém přiděluje samotným složkám, jako ve far2l. Vypnuto: jen soubory, jak je počítá find.
 SettingsCenter.GlyphStyle.Label=Rámečky a ovládací prvky
 SettingsCenter.GlyphStyle.Description=Jak grafická okna kreslí rámečky, zaškrtávací políčka a přepínače: Classic ponechá hranaté rohy a políčka [x], Zaoblené kreslí zaoblené rohy a kulatá tlačítka. Textové terminály se nemění.
 SettingsCenter.Text.0a62cd800f27098e67ad0232c3648442a21795b2038a8e16c9a8f15424ded110=Zaoblené

@@ -1373,6 +1373,8 @@ SettingsCenter.Text.0e4099db7c96f9790d58c7f60474fc244441ea5323aee647a18a2499fee7
 SettingsCenter.Text.0e57cb642215e608ec972192bae01df76de89a2557833d9102c1ca8ea647adba=Täiendav sertifikaadi volituse fail lõpp-punkti S3 jaoks.
 SettingsCenter.Text.0e66373f45dcf3dd656151e519f7ee5e3d558d9c22cb87df339bbdd2b6c6a3c1=silt
 SettingsCenter.Text.0e92a613c94e34374670a92e49372b5ede4cbdb729c677d1dbc68029e2e07cd5=SSH privaatvõti
+SettingsCenter.Text.ef05c31fec7ae81c53401997ed157a099b2a711f4733a641858b0a17052dc5f0=Algkaust
+SettingsCenter.Text.fb2da669b96bab8d237c18434eb74f9e66985731b7b2a5d41b902660c3b6e7eb=Serveri kaust, milles ühendus avaneb. Tühi: kodukaust.
 SettingsCenter.Text.0eeb1d929037afd546218148dde1e1e218e18f5ac88d4d8a7c45e6f42f64b9f0=Valige äsja avatud toimetajate jaoks Chroma, Colorer või ilma esiletõstmiseta. Värvija vajab installitud skeeme ja võib tagasi kukkuda, kui see pole saadaval.
 SettingsCenter.Text.0ffc5e815b4583d9a31aba53f49e7f6e05f09f428832466717a1a8926141b29a=uued toimingud
 SettingsCenter.Text.100acc106eedb660131924a5d61e98001090c6250c13da01d7dad778b9685444=Kataloogi laadimine
@@ -2222,6 +2224,8 @@ SettingsCenter.TreeRootWholeVolume.Label=Ava puu kogu köite juurest
 SettingsCenter.TreeRootWholeVolume.Description=Avab kataloogipuu (Ctrl+T) lähtepaneeli kogu praeguse köite juurest, nii nagu far2l. Väljalülitatuna avab selle lähtepaneeli praeguse kataloogi juurest.
 SettingsCenter.TreeExplorerMode.Label=Puu nagu Exploreris
 SettingsCenter.TreeExplorerMode.Description=Kui kataloogipuu (Ctrl+T) on avatud, näitab selle avanud paneel puu kursori all olevat kausta ja Enter liigub sellesse paneeli puud sulgemata. Väljas töötab puu nagu far2l-is: Enter siseneb kausta ja sulgeb puu.
+SettingsCenter.DirSizeCountsFolders.Label=Kausta suurus loeb ka kaustad ise
+SettingsCenter.DirSizeCountsFolders.Description=Kausta suurus (F3, kiirvaade) lisab ka suuruse, mille failisüsteem kaustadele endile annab, nagu far2l. Väljas: ainult failid, nagu find neid loeb.
 SettingsCenter.GlyphStyle.Label=Raamide ja juhtelementide sümbolid
 SettingsCenter.GlyphStyle.Description=Kuidas graafilised aknad joonistavad raame, märkeruute ja raadionuppe: Classic jätab ruudukujulised nurgad ja [x]-ruudud, Ümardatud joonistab ümarad nurgad ja ümmargused nupud. Tekstiterminale see ei mõjuta.
 SettingsCenter.Text.0a62cd800f27098e67ad0232c3648442a21795b2038a8e16c9a8f15424ded110=Ümardatud

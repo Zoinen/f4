@@ -659,6 +659,7 @@ func (p *ftpProvider) Open(ctx context.Context, parent vfs.VFS, pth string) (vfs
 	}
 	cfg.Port = port
 	configureNetFoxConnection(res, connection, "ftp", cfg)
+	enterStartPath(res, cfg)
 	return res, nil
 }
 

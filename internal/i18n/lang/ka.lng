@@ -1373,6 +1373,8 @@ SettingsCenter.Text.0e4099db7c96f9790d58c7f60474fc244441ea5323aee647a18a2499fee7
 SettingsCenter.Text.0e57cb642215e608ec972192bae01df76de89a2557833d9102c1ca8ea647adba=დამატებითი სერტიფიკატის ავტორიტეტის ფაილი S3-ის საბოლოო წერტილისთვის.
 SettingsCenter.Text.0e66373f45dcf3dd656151e519f7ee5e3d558d9c22cb87df339bbdd2b6c6a3c1=ეტიკეტი
 SettingsCenter.Text.0e92a613c94e34374670a92e49372b5ede4cbdb729c677d1dbc68029e2e07cd5=SSH კერძო გასაღები
+SettingsCenter.Text.ef05c31fec7ae81c53401997ed157a099b2a711f4733a641858b0a17052dc5f0=საწყისი საქაღალდე
+SettingsCenter.Text.fb2da669b96bab8d237c18434eb74f9e66985731b7b2a5d41b902660c3b6e7eb=სერვერის საქაღალდე, რომელშიც კავშირი იხსნება. ცარიელი: საშინაო საქაღალდე.
 SettingsCenter.Text.0eeb1d929037afd546218148dde1e1e218e18f5ac88d4d8a7c45e6f42f64b9f0=აირჩიეთ Chroma, Colorer ან ხაზგასმის გარეშე ახლად გახსნილი რედაქტორებისთვის. Colorer-ს სჭირდება დაინსტალირებული სქემები და შეიძლება უკან დაბრუნდეს, როცა მიუწვდომელია.
 SettingsCenter.Text.0ffc5e815b4583d9a31aba53f49e7f6e05f09f428832466717a1a8926141b29a=ახალი ოპერაციები
 SettingsCenter.Text.100acc106eedb660131924a5d61e98001090c6250c13da01d7dad778b9685444=დირექტორია იტვირთება
@@ -2222,6 +2224,8 @@ SettingsCenter.TreeRootWholeVolume.Label=ხის ძირად მთელ�
 SettingsCenter.TreeRootWholeVolume.Description=ხსნის დირექტორიების ხეს (Ctrl+T) წყარო პანელის მთელი მიმდინარე ტომის ძირიდან, far2l-ის მსგავსად. გამორთულობისას ხსნის წყარო პანელის მიმდინარე დირექტორიის ძირიდან.
 SettingsCenter.TreeExplorerMode.Label=ხე, როგორც Explorer-ში
 SettingsCenter.TreeExplorerMode.Description=სანამ საქაღალდეების ხე (Ctrl+T) ღიაა, მისი გამხსნელი პანელი აჩვენებს ხის კურსორის ქვეშ მყოფ საქაღალდეს, ხოლო Enter გადადის ამ პანელზე ხის დახურვის გარეშე. გამორთულისას ხე მუშაობს როგორც far2l-ში: Enter შედის საქაღალდეში და ხურავს ხეს.
+SettingsCenter.DirSizeCountsFolders.Label=საქაღალდის ზომა თავად საქაღალდეებსაც ითვლის
+SettingsCenter.DirSizeCountsFolders.Description=საქაღალდის ზომა (F3, სწრაფი ნახვა) მოიცავს იმ ზომასაც, რომელსაც ფაილური სისტემა თავად საქაღალდეებს აძლევს, როგორც far2l-ში. გამორთული: მხოლოდ ფაილები, როგორც find ითვლის.
 SettingsCenter.GlyphStyle.Label=ჩარჩოებისა და მართვის ელემენტების გლიფები
 SettingsCenter.GlyphStyle.Description=როგორ ხატავენ გრაფიკული ფანჯრები ჩარჩოებს, ჩამრთველებსა და რადიოღილაკებს: «კლასიკური» ინარჩუნებს კვადრატულ კუთხეებსა და [x] უჯრებს, «დამრგვალებული» ხატავს მომრგვალებულ კუთხეებსა და მრგვალ ღილაკებს. ტექსტურ ტერმინალებზე გავლენა არ აქვს.
 SettingsCenter.Text.0a62cd800f27098e67ad0232c3648442a21795b2038a8e16c9a8f15424ded110=დამრგვალებული

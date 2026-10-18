@@ -1376,6 +1376,8 @@ SettingsCenter.Text.0e4099db7c96f9790d58c7f60474fc244441ea5323aee647a18a2499fee7
 SettingsCenter.Text.0e57cb642215e608ec972192bae01df76de89a2557833d9102c1ca8ea647adba=Archivo de autoridad de certificación adicional para el punto final S3.
 SettingsCenter.Text.0e66373f45dcf3dd656151e519f7ee5e3d558d9c22cb87df339bbdd2b6c6a3c1=Etiqueta
 SettingsCenter.Text.0e92a613c94e34374670a92e49372b5ede4cbdb729c677d1dbc68029e2e07cd5=SSH clave privada
+SettingsCenter.Text.ef05c31fec7ae81c53401997ed157a099b2a711f4733a641858b0a17052dc5f0=Carpeta inicial
+SettingsCenter.Text.fb2da669b96bab8d237c18434eb74f9e66985731b7b2a5d41b902660c3b6e7eb=Carpeta del servidor en la que se abre la conexión. Vacío: la carpeta personal.
 SettingsCenter.Text.0eeb1d929037afd546218148dde1e1e218e18f5ac88d4d8a7c45e6f42f64b9f0=Elija Chroma, Colorer o sin resaltado para los editores recién abiertos. Colorer necesita esquemas instalados y puede recurrir a ellos cuando no esté disponible.
 SettingsCenter.Text.0ffc5e815b4583d9a31aba53f49e7f6e05f09f428832466717a1a8926141b29a=nuevas operaciones
 SettingsCenter.Text.100acc106eedb660131924a5d61e98001090c6250c13da01d7dad778b9685444=Cargando directorio
@@ -2225,6 +2227,8 @@ SettingsCenter.TreeRootWholeVolume.Label=Anclar el árbol al volumen completo
 SettingsCenter.TreeRootWholeVolume.Description=Ancla el árbol de directorios (Ctrl+T) a todo el volumen actual del panel de origen, como hace far2l. Desactivado lo ancla al directorio actual del panel de origen.
 SettingsCenter.TreeExplorerMode.Label=Árbol como en el Explorador
 SettingsCenter.TreeExplorerMode.Description=Mientras el árbol de directorios (Ctrl+T) está abierto, el panel que lo abrió muestra la carpeta bajo el cursor del árbol, y Enter pasa a ese panel sin cerrar el árbol. Desactivado, el árbol funciona como en far2l: Enter entra en la carpeta y cierra el árbol.
+SettingsCenter.DirSizeCountsFolders.Label=El tamaño de la carpeta cuenta las propias carpetas
+SettingsCenter.DirSizeCountsFolders.Description=El tamaño de una carpeta (F3, vista rápida) suma también el tamaño que el sistema de archivos da a las propias carpetas, como hace far2l. Desactivado: solo archivos, como los cuenta find.
 SettingsCenter.GlyphStyle.Label=Glifos de marcos y controles
 SettingsCenter.GlyphStyle.Description=Cómo dibujan las ventanas gráficas los marcos, las casillas y los botones de opción: Clásico mantiene las esquinas cuadradas y las casillas [x], Redondeado dibuja esquinas redondeadas y botones redondos. Los terminales de texto no se ven afectados.
 SettingsCenter.Text.0a62cd800f27098e67ad0232c3648442a21795b2038a8e16c9a8f15424ded110=Redondeado

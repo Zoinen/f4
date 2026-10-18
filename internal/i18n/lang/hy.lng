@@ -1294,6 +1294,8 @@ SettingsCenter.Text.0e4099db7c96f9790d58c7f60474fc244441ea5323aee647a18a2499fee7
 SettingsCenter.Text.0e57cb642215e608ec972192bae01df76de89a2557833d9102c1ca8ea647adba=S3- ի վերջնական կետի համար հավելյալ վկայականի լիազորության ֆայլ:
 SettingsCenter.Text.0e66373f45dcf3dd656151e519f7ee5e3d558d9c22cb87df339bbdd2b6c6a3c1=Տեղեկագիր
 SettingsCenter.Text.0e92a613c94e34374670a92e49372b5ede4cbdb729c677d1dbc68029e2e07cd5=SSH գաղտնի բանալին
+SettingsCenter.Text.ef05c31fec7ae81c53401997ed157a099b2a711f4733a641858b0a17052dc5f0=Սկզբնական թղթապանակ
+SettingsCenter.Text.fb2da669b96bab8d237c18434eb74f9e66985731b7b2a5d41b902660c3b6e7eb=Սերվերի թղթապանակը, որում բացվում է կապը։ Դատարկ՝ տնային թղթապանակը։
 SettingsCenter.Text.0eeb1d929037afd546218148dde1e1e218e18f5ac88d4d8a7c45e6f42f64b9f0=Ընտրեք Chroma, Colorer կամ առանց ընդգծման նոր բացված խմբագրողների համար: Գույնավորիչը պետք է տեղադրված սխեմաներ ունենա եւ կարող է վերադառնալ, երբ չի հասանելի:
 SettingsCenter.Text.0ffc5e815b4583d9a31aba53f49e7f6e05f09f428832466717a1a8926141b29a=նոր գործողություններ
 SettingsCenter.Text.100acc106eedb660131924a5d61e98001090c6250c13da01d7dad778b9685444=Գնացքի բեռում
@@ -2143,6 +2145,8 @@ SettingsCenter.TreeRootWholeVolume.Label=Ծառը արմատավորել ամբ�
 SettingsCenter.TreeRootWholeVolume.Description=Արմատավորում է գրացուցակների ծառը (Ctrl+T) սկզբնաղբյուր վահանակի ամբողջ ընթացիկ հատորում, ինչպես far2l-ը: Անջատված վիճակում փոխարենը արմատավորում է այն սկզբնաղբյուր վահանակի ընթացիկ գրացուցակում:
 SettingsCenter.TreeExplorerMode.Label=Ծառ՝ ինչպես Explorer-ում
 SettingsCenter.TreeExplorerMode.Description=Քանի դեռ թղթապանակների ծառը (Ctrl+T) բաց է, այն բացած վահանակը ցույց է տալիս ծառի կուրսորի տակ գտնվող թղթապանակը, իսկ Enter-ն անցնում է այդ վահանակ՝ առանց ծառը փակելու։ Անջատված վիճակում ծառն աշխատում է ինչպես far2l-ում. Enter-ը մտնում է թղթապանակ և փակում ծառը։
+SettingsCenter.DirSizeCountsFolders.Label=Թղթապանակի չափը ներառում է նաև թղթապանակները
+SettingsCenter.DirSizeCountsFolders.Description=Թղթապանակի չափը (F3, արագ դիտում) գումարում է նաև այն չափը, որը ֆայլային համակարգը տալիս է հենց թղթապանակներին, ինչպես far2l-ում։ Անջատված՝ միայն ֆայլերը, ինչպես հաշվում է find-ը։
 SettingsCenter.GlyphStyle.Label=Շրջանակների և կառավարման տարրերի նշաններ
 SettingsCenter.GlyphStyle.Description=Ինչպես են գրաֆիկական պատուհանները նկարում շրջանակները, նշման վանդակները և ռադիոկոճակները. «Կլասիկ»-ը պահում է ուղիղ անկյունները և [x] վանդակները, «Կլորացված»-ը նկարում է կլորացված անկյուններ և կլոր կոճակներ։ Տեքստային տերմինալները չեն փոխվում։
 SettingsCenter.Text.0a62cd800f27098e67ad0232c3648442a21795b2038a8e16c9a8f15424ded110=Կլորացված

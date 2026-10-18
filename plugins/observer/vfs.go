@@ -551,6 +551,9 @@ func (v *ObserverVFS) SetAttributes(ctx context.Context, path string, item vfs.V
 
 func (v *ObserverVFS) ParentVFS() vfs.VFS { return v.parent }
 
+// ShowsArchiveContents: copying out of an archive or an image is extracting (vfs.ArchiveContentsVFS).
+func (v *ObserverVFS) ShowsArchiveContents() bool { return true }
+
 // Clone reopens the same container from scratch -- a fresh Module instance,
 // a fresh temp directory, a fresh GetItem walk -- because a Module instance
 // is not safe for concurrent use (runtime.go) and the second panel or a

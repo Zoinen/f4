@@ -1052,6 +1052,18 @@ func init() {
 		Handler:     withPF(func(pf *panel.PanelsFrame) { actionFileSystemProperties(pf) }),
 	})
 	RegisterAction(action.Action{
+		Name:        "File.ExplorerMenu",
+		Area:        "Shell",
+		Label:       "Explorer context menu",
+		LabelKey:    "Action.File.ExplorerMenu",
+		Description: "Show the Explorer context menu of the item under the cursor",
+		DescKey:     "Action.File.ExplorerMenu.Desc",
+		MenuPath:    "Files",
+		Visible:     func() bool { return runtime.GOOS == "windows" },
+		Enabled:     activePanelHasSelectionTarget,
+		Handler:     withPF(func(pf *panel.PanelsFrame) { actionFileExplorerMenu(pf) }),
+	})
+	RegisterAction(action.Action{
 		Name:        "File.Share",
 		Area:        "Shell",
 		Label:       "Share...",

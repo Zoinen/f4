@@ -397,6 +397,11 @@ func TestTreePanel_EnterNavigatesSourceAndCloses(t *testing.T) {
 	if pf.AltPanels[opp] != nil {
 		t.Errorf("tree should have closed itself, AltPanels[%d] = %v", opp, pf.AltPanels[opp])
 	}
+	// The source panel reads child now. Returning before the read ends lets
+	// it find its TempDir gone and post "Failed to read directory" to the
+	// shared task queue, for whichever test runs tasks next (train
+	// unxed/f4#2063: TestDriveMenuWatchRebuildsTheOpenMenu).
+	waitForLoad(t, src)
 }
 
 // TestTreeCollapse_ForgetsCachedDescendants checks the treeExpandCache side
@@ -760,5 +765,178 @@ NormalColor = foreground:#00FF00
 	}
 	if got := (treeItem{name: "sub", path: filepath.Join(dir, "sub"), depth: 2}).ruleName(); got != "sub" {
 		t.Errorf("ruleName of a child = %q, want its own name", got)
+	}
+}
+
+// tallTreeSetup is a NewTreePanel on a directory of 30 folders, expanded and
+// laid out in ten rows, with the cursor on the first of them.
+func tallTreeSetup(t *testing.T) *TreePanel {
+	t.Helper()
+	resetTreeExpandCache(t)
+	wholeVolume := config.App.TreeRootWholeVolume
+	config.App.TreeRootWholeVolume = false
+	t.Cleanup(func() { config.App.TreeRootWholeVolume = wholeVolume })
+	root := t.TempDir()
+	for i := 0; i < 30; i++ {
+		if err := os.Mkdir(filepath.Join(root, "dir"+string(rune('a'+i/10))+string(rune('0'+i%10))), 0o700); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+	}
+	fsp := NewFileSystemPanel(0, 0, 40, 20, vfs.NewOSVFS(root))
+	waitForLoad(t, fsp)
+	tp := NewTreePanel(fsp)
+	tp.expandAt(tp.cursorIndex())
+	tp.syncRows()
+	tp.SetPosition(0, 0, 39, 11)
+	tp.setCursor(tp.cursorIndex() + 1)
+	tp.Table.TopPos = tp.Table.SelectPos
+	return tp
+}
+
+// TestTreeWheelAndScrollBarScrollOnlyTheView_Issue1602: the wheel and the
+// scroll bar shift the tree and leave the cursor on its folder, off screen if
+// need be (part 16), and the bar is there when the tree does not fit.
+func TestTreeWheelAndScrollBarScrollOnlyTheView_Issue1602(t *testing.T) {
+	tp := tallTreeSetup(t)
+	if !tp.Table.ShowScrollBar {
+		t.Fatal("the tree has no scroll bar")
+	}
+	cursor, top := tp.Table.SelectPos, tp.Table.TopPos
+	wheel := func(dir int) {
+		t.Helper()
+		tp.ProcessMouse(&vtinput.InputEvent{Type: vtinput.MouseEventType, WheelDirection: dir,
+			MouseX: 5, MouseY: 5})
+	}
+	wheel(-1)
+	if tp.Table.TopPos <= top {
+		t.Errorf("wheel down left the view at %d (was %d)", tp.Table.TopPos, top)
+	}
+	if tp.Table.SelectPos != cursor {
+		t.Errorf("wheel down moved the cursor from %d to %d", cursor, tp.Table.SelectPos)
+	}
+	for i := 0; i < 400; i++ {
+		wheel(-1)
+	}
+	if want := tp.Table.ItemCount - tp.Table.ViewHeight; tp.Table.TopPos != want {
+		t.Errorf("the wheel stopped at %d, want the last full page at %d", tp.Table.TopPos, want)
+	}
+	for i := 0; i < 800; i++ {
+		wheel(1)
+	}
+	if tp.Table.TopPos != 0 || tp.Table.SelectPos != cursor {
+		t.Errorf("wheel up: view %d cursor %d, want view 0 cursor %d", tp.Table.TopPos, tp.Table.SelectPos, cursor)
+	}
+	tp.Table.ScrollBar.OnScroll(7)
+	if tp.Table.TopPos != 7 || tp.Table.SelectPos != cursor {
+		t.Errorf("scroll bar: view %d cursor %d, want view 7 cursor %d", tp.Table.TopPos, tp.Table.SelectPos, cursor)
+	}
+}
+
+// TestTreeKeyPullsAScrolledOffCursorToTheEdge_Issue1602: a cursor that scrolling
+// took off screen goes to the nearest visible row on Up/Down, and that key
+// press is the whole move.
+func TestTreeKeyPullsAScrolledOffCursorToTheEdge_Issue1602(t *testing.T) {
+	key := func(vk uint16) *vtinput.InputEvent {
+		return &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vk}
+	}
+	tp := tallTreeSetup(t)
+	tp.Table.TopPos = tp.Table.SelectPos + 5 // the cursor is above the view
+	tp.viewScrolled = true                   // ... because the wheel scrolled it
+	tp.ProcessKey(key(vtinput.VK_UP))
+	if tp.Table.SelectPos != tp.Table.TopPos {
+		t.Errorf("Up: cursor %d, want the top row %d", tp.Table.SelectPos, tp.Table.TopPos)
+	}
+	tp = tallTreeSetup(t)
+	tp.Table.TopPos = 0
+	tp.Table.SelectPos = tp.Table.TopPos + tp.Table.ViewHeight + 4 // below the view
+	tp.viewScrolled = true
+	tp.ProcessKey(key(vtinput.VK_DOWN))
+	if want := tp.Table.TopPos + tp.Table.ViewHeight - 1; tp.Table.SelectPos != want {
+		t.Errorf("Down: cursor %d, want the bottom row %d", tp.Table.SelectPos, want)
+	}
+	before := tp.Table.SelectPos
+	tp.ProcessKey(key(vtinput.VK_UP))
+	if tp.Table.SelectPos != before-1 {
+		t.Errorf("Up with the cursor on screen: cursor %d, want %d", tp.Table.SelectPos, before-1)
+	}
+}
+
+// A cursor off the view that no scrolling put there (a tree that was not laid
+// out when the cursor was revealed) is an ordinary Up/Down, not a pull to the
+// edge: TestActionCopyMove_TreeDestination and two more in internal/app
+// stepped from "from" to "to" and landed on "proc".
+func TestTreeKeyDoesNotPullACursorNobodyScrolledOff_Issue1602(t *testing.T) {
+	tp := tallTreeSetup(t)
+	tp.Table.TopPos = tp.Table.SelectPos + 5
+	tp.viewScrolled = false
+	before := tp.Table.SelectPos
+	tp.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_UP})
+	if tp.Table.SelectPos != before-1 {
+		t.Errorf("Up without scrolling: cursor %d, want %d", tp.Table.SelectPos, before-1)
+	}
+}
+
+// TestTreeScrollBarDragEndsOnRelease_Issue1602 (mitek1977-coder): after the
+// scroll bar of the tree was dragged, every click on the tree scrolled it by
+// the distance from the middle of the panel. The release of the button came
+// to PanelsFrame with no button held, was not routed to the tree, and the bar
+// stayed captured; the gesture is now captured as on a file panel.
+func TestTreeScrollBarDragEndsOnRelease_Issue1602(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	theme.SetDefaultF4Palette()
+	pf := NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+	pf.ShowPanels, pf.ShowLeftPanel, pf.ShowRightPanel = true, true, true
+
+	tp := tallTreeSetup(t)
+	x1, y1, x2, y2 := pf.Panels[0].GetPosition()
+	tp.SetPosition(x1, y1, x2, y2)
+	tp.Table.TopPos = 0
+	pf.AltPanels[0] = tp
+	pf.ActiveIdx = 0
+
+	// Drawing colours the rows through the shared highlighter, which tests
+	// that swap its rules and put them back can leave with a cache that no
+	// longer fits them (train unxed/f4#2063: an index out of range in
+	// GetColor). This test is about the mouse; it draws with none.
+	oldHighlighter := theme.GlobalFileHighlighter
+	theme.GlobalFileHighlighter = &theme.FileHighlighter{}
+	t.Cleanup(func() { theme.GlobalFileHighlighter = oldHighlighter })
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(80, 25)
+	tp.Show(scr) // the bar takes its place and range when the table is drawn
+	bar := tp.Table.ScrollBar
+	if bar == nil || !tp.Table.ShowScrollBar {
+		t.Fatal("the tree has no scroll bar")
+	}
+	mouse := func(x, y int, button uint32, down bool, flags uint32) {
+		t.Helper()
+		pf.ProcessMouse(&vtinput.InputEvent{Type: vtinput.MouseEventType, KeyDown: down, ButtonState: button,
+			MouseEventFlags: flags, MouseX: testutil.Int16(x), MouseY: testutil.Int16(y)})
+	}
+	barY := bar.Y1 + 2
+	mouse(bar.X1, barY, vtinput.FromLeft1stButtonPressed, true, 0)
+	if !bar.IsMouseCaptured() {
+		t.Fatal("a press on the scroll bar did not start a gesture on it")
+	}
+	mouse(bar.X1, barY+3, vtinput.FromLeft1stButtonPressed, true, vtinput.MouseMoved)
+	mouse(bar.X1, barY+3, 0, false, 0)
+	if bar.IsMouseCaptured() {
+		t.Fatal("the scroll bar is still captured after the button was released")
+	}
+	if pf.PanelMouseCapture != nil {
+		t.Fatalf("the gesture is still captured by %T after the release", pf.PanelMouseCapture)
+	}
+
+	top := tp.Table.TopPos
+	rowY := tp.Table.Y1 + 1
+	mouse(tp.Table.X1+8, rowY, vtinput.FromLeft1stButtonPressed, true, 0)
+	mouse(tp.Table.X1+8, rowY, 0, false, 0)
+	if tp.Table.TopPos != top {
+		t.Errorf("a click on a row after the drag scrolled the tree from %d to %d", top, tp.Table.TopPos)
+	}
+	if want := tp.Table.GetClickIndex(rowY); tp.Table.SelectPos != want {
+		t.Errorf("the click put the cursor on row %d, want the clicked row %d", tp.Table.SelectPos, want)
 	}
 }

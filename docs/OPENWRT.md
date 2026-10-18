@@ -103,6 +103,17 @@ binary size, not memory, since the embedded translations are read lazily.
 
 The `openwrt` workflow prints these numbers for every run.
 
+Fourth run, on main 9a69223b99 (18-10-2026, run
+https://github.com/unxed/f4/actions/runs/39085674919), after the East Asian
+tables left the extra-lite build: all eight jobs pass. amd64 binaries: lite
+59 736 329 bytes, extralite 39 178 505 bytes (42 111 241 in the third run);
+first output 151 / 157 ms, panel listed 814 ms for both, peak RSS 41 192 /
+37 372 KB. Extra-lite `.ipk` packages: mipsel_24kc 10 962 278 bytes,
+arm_cortex-a7_neon-vfpv4 11 490 692, aarch64_generic 11 632 096, x86_64
+12 831 892. The lite amd64 binary is about 12 MB larger than in the third run
+(47 534 345); that growth has not been examined yet. The compressed-size table
+below is from before this run.
+
 Compressed sizes, which are what an `.ipk` or a squashfs image carries
 (bytes, `gzip -9` / `xz -9e`), lite and extralite, after the collation and
 East Asian code page slice:
@@ -259,8 +270,8 @@ keeps the tables out under the same tag.
 no `x/text/encoding/{japanese,korean,simplifiedchinese,traditionalchinese,
 htmlindex,ianaindex}`. Size of the extra-lite linux/amd64 binary built with
 `-ldflags "-s -w" -trimpath`: 39 964 937 bytes before, 39 198 985 after
-(-766 KB). The `openwrt` workflow has not been run on this change yet: the
-sizes and timings earlier in this document are from before it.
+(-766 KB). The fourth `openwrt` run under "Measurements" is the first one
+with it.
 
 ## Not done: `net/http`
 

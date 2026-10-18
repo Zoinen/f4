@@ -13,8 +13,10 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/unxed/f4/internal/netproxy"
+	"github.com/unxed/f4/internal/toast"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtui"
 )
@@ -29,6 +31,10 @@ type NetFoxConfig struct {
 	Timeout  string            `json:"Timeout,omitempty"`
 	Codepage string            `json:"Codepage,omitempty"`
 	Options  map[string]string `json:"Options,omitempty"`
+	// Path is the folder the connection opens in, like the path of a Far
+	// connection (nz256, f4#1894); empty opens where the server puts a new
+	// session, the home folder of the user as a rule.
+	Path string `json:"Path,omitempty"`
 
 	// Proxy overrides f4's app-wide proxy for this site alone. ProxyMode 0
 	// is netproxy.ModeGlobal, so connections saved before this existed —
@@ -53,6 +59,24 @@ func (c NetFoxConfig) Proxy() netproxy.Settings {
 		Pass: c.ProxyPass,
 	})
 }
+
+// enterStartPath moves a fresh connection into its saved folder
+// (NetFoxConfig.Path). A folder that is not there, or is not a folder,
+// leaves the connection where it is: it still works, the panel shows the
+// folder it is in, and a toast says why it is not the saved one.
+func enterStartPath(v vfs.VFS, cfg NetFoxConfig) {
+	p := strings.TrimSpace(cfg.Path)
+	if p == "" {
+		return
+	}
+	if err := v.SetPath(p); err != nil {
+		vtui.DebugLog("NETFOX: the start folder %q of %s: %v", p, cfg.Host, err)
+		startPathToast(fmt.Sprintf(vtui.Msg("NetFox.StartFolderMissing"), p, v.GetPath()))
+	}
+}
+
+// startPathToast shows the toast of enterStartPath; a test reads it here.
+var startPathToast = func(message string) { toast.Show(message, 5*time.Second) }
 
 type NetFoxVFS struct {
 	mu           sync.Mutex

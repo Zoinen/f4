@@ -1035,6 +1035,8 @@ SettingsCenter.Text.0e4099db7c96f9790d58c7f60474fc244441ea5323aee647a18a2499fee7
 SettingsCenter.Text.0e57cb642215e608ec972192bae01df76de89a2557833d9102c1ca8ea647adba=S3 एंडपॉइंट के लिए अतिरिक्त प्रमाण पत्र प्राधिकरण फ़ाइल।
 SettingsCenter.Text.0e66373f45dcf3dd656151e519f7ee5e3d558d9c22cb87df339bbdd2b6c6a3c1=लेबल
 SettingsCenter.Text.0e92a613c94e34374670a92e49372b5ede4cbdb729c677d1dbc68029e2e07cd5=SSH निजी कुंजी
+SettingsCenter.Text.ef05c31fec7ae81c53401997ed157a099b2a711f4733a641858b0a17052dc5f0=प्रारंभिक फ़ोल्डर
+SettingsCenter.Text.fb2da669b96bab8d237c18434eb74f9e66985731b7b2a5d41b902660c3b6e7eb=सर्वर पर वह फ़ोल्डर जिसमें कनेक्शन खुलता है। खाली: होम फ़ोल्डर।
 SettingsCenter.Text.0eeb1d929037afd546218148dde1e1e218e18f5ac88d4d8a7c45e6f42f64b9f0=नए खुले संपादकों के लिए क्रोमा, कलरर या नो हाइलाइटिंग चुनें। कलरर को स्थापित स्कीमा की आवश्यकता होती है और अनुपलब्ध होने पर वह वापस आ सकता है।
 SettingsCenter.Text.0ffc5e815b4583d9a31aba53f49e7f6e05f09f428832466717a1a8926141b29a=नई गतिविधियाँ
 SettingsCenter.Text.100acc106eedb660131924a5d61e98001090c6250c13da01d7dad778b9685444=निर्देशिका लोड हो रही है
@@ -1884,6 +1886,8 @@ SettingsCenter.TreeRootWholeVolume.Label=ट्री पैनल को पू
 SettingsCenter.TreeRootWholeVolume.Description=स्रोत पैनल के संपूर्ण वर्तमान वॉल्यूम की जड़ पर निर्देशिका ट्री (Ctrl+T) खोलता है, जैसे far2l करता है। बंद होने पर यह इसके बजाय स्रोत पैनल की वर्तमान निर्देशिका की जड़ पर खोलता है।
 SettingsCenter.TreeExplorerMode.Label=एक्सप्लोरर जैसा ट्री
 SettingsCenter.TreeExplorerMode.Description=जब तक डायरेक्टरी ट्री (Ctrl+T) खुला है, उसे खोलने वाला पैनल ट्री के कर्सर के नीचे वाला फ़ोल्डर दिखाता है, और Enter ट्री बंद किए बिना उस पैनल पर चला जाता है। बंद होने पर ट्री far2l की तरह काम करता है: Enter फ़ोल्डर में जाता है और ट्री बंद करता है।
+SettingsCenter.DirSizeCountsFolders.Label=फ़ोल्डर के आकार में फ़ोल्डर स्वयं भी गिने जाते हैं
+SettingsCenter.DirSizeCountsFolders.Description=फ़ोल्डर के आकार (F3, त्वरित दृश्य) में वह आकार भी जुड़ता है जो फ़ाइल सिस्टम फ़ोल्डरों को स्वयं देता है, जैसा far2l करता है। बंद: केवल फ़ाइलें, जैसा find गिनता है।
 SettingsCenter.GlyphStyle.Label=फ़्रेम और नियंत्रण के प्रतीक
 SettingsCenter.GlyphStyle.Description=ग्राफ़िकल विंडो फ़्रेम, चेकबॉक्स और रेडियो बटन कैसे बनाती हैं: «क्लासिक» चौकोर कोने और [x] बॉक्स रखता है, «गोल» गोल कोने और गोल बटन बनाता है। टेक्स्ट टर्मिनल प्रभावित नहीं होते।
 SettingsCenter.Text.0a62cd800f27098e67ad0232c3648442a21795b2038a8e16c9a8f15424ded110=गोल

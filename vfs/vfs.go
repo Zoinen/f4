@@ -244,6 +244,22 @@ type ReadAccessProfiler interface {
 	ReadAccessProfile() ReadAccessProfile
 }
 
+// ArchiveContentsVFS marks a backend that shows the contents of an archive
+// file. Copying out of it is unpacking and copying into it is packing, and
+// the progress window says so ("Extracting", "Archiving"). Having a parent to
+// go back to is not enough: an sftp or ftp connection and a phone have one
+// too, and copying from them is copying (nz256, f4#1894).
+type ArchiveContentsVFS interface {
+	ShowsArchiveContents() bool
+}
+
+// ShowsArchiveContents reports whether v is an ArchiveContentsVFS that says
+// so.
+func ShowsArchiveContents(v VFS) bool {
+	a, ok := v.(ArchiveContentsVFS)
+	return ok && a.ShowsArchiveContents()
+}
+
 // ConcurrentVFS marks a backend whose independent VFS calls may run at the
 // same time. The FUSE bridge serializes calls by default because most VFS
 // implementations were designed around one UI-thread conversation. A

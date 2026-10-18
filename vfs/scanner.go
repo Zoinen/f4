@@ -22,6 +22,17 @@ type OpStats struct {
 	UnknownSizeFiles int64
 }
 
+// FilesSize is the size of the files in the subtree. With withFolders it also
+// counts the size a file system gives the folders themselves (32 bytes an
+// entry on APFS, a 4 KiB block on ext4), which is how far2l sums a folder
+// ("Panel.DirSizeCountsFolders", f4#2005).
+func (s OpStats) FilesSize(withFolders bool) int64 {
+	if withFolders {
+		return s.Bytes + s.DirBytes
+	}
+	return s.Bytes
+}
+
 // Add merges another OpStats into the current one.
 func (s *OpStats) Add(other OpStats) {
 	s.Bytes += other.Bytes
