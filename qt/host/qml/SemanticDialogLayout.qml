@@ -194,7 +194,7 @@ Item {
         return rowEdges[Math.min(row, rowEdges.length - 1)]
     }
     function widgetHeight(widget) {
-        return widget.kind === "group"
+        return widget.kind === "group" || widget.kind === "table"
             ? rowTop(Number(widget.y || 0) + Math.max(1, Number(widget.h || 1))) - rowTop(Number(widget.y || 0))
             : visualHeight(widget)
     }

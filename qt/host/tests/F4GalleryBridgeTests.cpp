@@ -1620,36 +1620,37 @@ void F4GalleryBridgeTests::galleryRoutesOwnedAndCommanderKeys()
                            QStringLiteral("entry:3")}));
     actions.clear();
 
-    // Only Alt zoom shortcuts belong to the gallery. Commander shortcuts
-    // retain both their press and release events, including Ctrl variants.
+    // Qt Control is Command on macOS. Require Command+Option (Ctrl+Alt
+    // elsewhere), leaving Option-only selection shortcuts to the commander.
+    const auto panelZoomModifiers = Qt::ControlModifier | Qt::AltModifier;
     keyRecorder.clear();
     QCOMPARE(panel->property("thumbnailHeight").toInt(), 150);
-    QTest::keyClick(&view, Qt::Key_Equal, Qt::AltModifier);
+    QTest::keyClick(&view, Qt::Key_Equal, panelZoomModifiers);
     const int zoomedThumbnailHeight =
         panel->property("thumbnailHeight").toInt();
     QVERIFY(zoomedThumbnailHeight > 150);
     QCOMPARE(keyRecorder.count(Qt::Key_Equal, true), 0);
-    QTest::keyClick(&view, Qt::Key_0, Qt::AltModifier);
+    QTest::keyClick(&view, Qt::Key_0, panelZoomModifiers);
     QCOMPARE(panel->property("thumbnailHeight").toInt(), 150);
     QCOMPARE(keyRecorder.count(Qt::Key_0, true), 0);
     QTest::keyClick(&view, Qt::Key_Equal,
-                    Qt::AltModifier | Qt::ShiftModifier);
+                    panelZoomModifiers | Qt::ShiftModifier);
     QCOMPARE(panel->property("thumbnailHeight").toInt(),
              zoomedThumbnailHeight);
     QCOMPARE(keyRecorder.count(Qt::Key_Equal, true), 0);
-    QTest::keyClick(&view, Qt::Key_0, Qt::AltModifier);
+    QTest::keyClick(&view, Qt::Key_0, panelZoomModifiers);
     QCOMPARE(panel->property("thumbnailHeight").toInt(), 150);
 
-    for (auto modifiers : {Qt::AltModifier | Qt::ShiftModifier,
-                           Qt::AltModifier | Qt::KeypadModifier}) {
+    for (auto modifiers : {panelZoomModifiers | Qt::ShiftModifier,
+                           panelZoomModifiers | Qt::KeypadModifier}) {
         keyRecorder.clear();
         QTest::keyClick(&view, Qt::Key_Plus, modifiers);
         QVERIFY(panel->property("thumbnailHeight").toInt() > 150);
         const int beforeMinus = panel->property("thumbnailHeight").toInt();
         QTest::keyClick(&view, Qt::Key_Minus,
-                        Qt::AltModifier | Qt::KeypadModifier);
+                        panelZoomModifiers | Qt::KeypadModifier);
         QVERIFY(panel->property("thumbnailHeight").toInt() < beforeMinus);
-        QTest::keyClick(&view, Qt::Key_0, Qt::AltModifier);
+        QTest::keyClick(&view, Qt::Key_0, panelZoomModifiers);
         QCOMPARE(panel->property("thumbnailHeight").toInt(), 150);
         for (auto key : {Qt::Key_Plus, Qt::Key_Minus, Qt::Key_0}) {
             QCOMPARE(keyRecorder.count(key, true), 0);
@@ -1671,7 +1672,7 @@ void F4GalleryBridgeTests::galleryRoutesOwnedAndCommanderKeys()
     QTRY_COMPARE(panel->property("density").toReal(), qreal(61.0));
     actions.clear();
     keyRecorder.clear();
-    QTest::keyClick(&view, Qt::Key_Equal, Qt::AltModifier);
+    QTest::keyClick(&view, Qt::Key_Equal, panelZoomModifiers);
     QTRY_COMPARE(panel->property("density").toReal(), qreal(63.0));
     QTRY_COMPARE_WITH_TIMEOUT(actions.size(), 1, 3000);
     QVariantMap compactDensityAction = actions.takeFirst().at(0).toMap();
@@ -1680,9 +1681,9 @@ void F4GalleryBridgeTests::galleryRoutesOwnedAndCommanderKeys()
     QCOMPARE(compactDensityAction.value(QStringLiteral("layoutMode")).toString(),
              QStringLiteral("details"));
     QCOMPARE(compactDensityAction.value(QStringLiteral("density")).toInt(), 63);
-    QTest::keyClick(&view, Qt::Key_Minus, Qt::AltModifier);
+    QTest::keyClick(&view, Qt::Key_Minus, panelZoomModifiers);
     QTRY_COMPARE(panel->property("density").toReal(), qreal(61.0));
-    QTest::keyClick(&view, Qt::Key_0, Qt::AltModifier);
+    QTest::keyClick(&view, Qt::Key_0, panelZoomModifiers);
     QTRY_VERIFY_WITH_TIMEOUT(
         qAbs(panel->property("density").toReal() - 22.0) < 0.001, 3000);
     QCOMPARE(keyRecorder.count(Qt::Key_Equal, true), 0);
@@ -1767,7 +1768,9 @@ void F4GalleryBridgeTests::galleryRoutesOwnedAndCommanderKeys()
                                Qt::KeyboardModifiers(Qt::ShiftModifier),
                                Qt::KeyboardModifiers(Qt::ControlModifier),
                                Qt::ControlModifier | Qt::ShiftModifier,
-                               Qt::ControlModifier | Qt::AltModifier,
+                               Qt::KeyboardModifiers(Qt::AltModifier),
+                               Qt::AltModifier | Qt::ShiftModifier,
+                               Qt::MetaModifier | Qt::AltModifier,
                                Qt::KeyboardModifiers(Qt::MetaModifier),
                                Qt::KeyboardModifiers(Qt::KeypadModifier),
                                Qt::ControlModifier | Qt::KeypadModifier}) {
@@ -1776,7 +1779,9 @@ void F4GalleryBridgeTests::galleryRoutesOwnedAndCommanderKeys()
             QVERIFY(verifyForwarded("Commander selection operators", key, modifiers));
         }
     }
-    QVERIFY(verifyForwarded("Ctrl+Alt+Minus", Qt::Key_Minus,
+    QVERIFY(verifyForwarded("Alt+Minus", Qt::Key_Minus, Qt::AltModifier));
+    QVERIFY(verifyForwarded("Alt+0", Qt::Key_0, Qt::AltModifier));
+    QVERIFY(verifyForwarded("Ctrl+Alt+Asterisk", Qt::Key_Asterisk,
                             Qt::ControlModifier | Qt::AltModifier));
     QVERIFY(verifyForwarded("Ctrl+Shift+Minus", Qt::Key_Minus,
                             Qt::ControlModifier | Qt::ShiftModifier));

@@ -411,10 +411,12 @@ avoid mixing independently buffered writers. The automatic navigation runner
 accepts `F4_NAV_BENCHMARK_LAYOUT=masonry` and `F4_NAV_BENCHMARK_SETTLE_MS=1500`
 alongside its existing target, cycles and warmup options.
 
-Panel thumbnail/row sizing uses **Alt+Plus** (also Alt+Equal), **Alt+Minus**,
-and **Alt+0** to reset the current layout's density. Shift is accepted when
-typing Plus, and keypad operators work too. Plain and Ctrl/Meta-modified
-operators are forwarded to F4 with their matching key releases. Image-viewer
+Panel thumbnail/row sizing uses **Command+Option+Plus** (also Equal),
+**Command+Option+Minus**, and **Command+Option+0** to reset the current layout's
+density on macOS (**Ctrl+Alt** on other platforms). Shift is accepted when
+typing Plus, and keypad operators work too. Option/Alt-only selection shortcuts,
+including Alt+Equal for inversion, and other operator combinations are forwarded
+to F4 with their matching key releases. Image-viewer
 shortcuts are unchanged. Opt-in navigation tracing records handled panel zoom
 shortcuts as `gallery.zoom.shortcut`.
 
@@ -580,3 +582,47 @@ slider. Loop changes apply during playback, including clips already fully
 buffered by the decoder. The native loop queue keeps frame delivery continuous
 at each boundary. Disabling loop finishes the current iteration; enabling it
 on an ended clip resumes playback, while paused clips stay paused.
+
+### Semantic dialog layout
+
+Semantic dialog tables fill their allocated row span rather than centering a
+shorter terminal-height surface within it. This keeps the command palette's
+results close to the query field. Adjacent `>` edit prompts are presented as
+the bundled Lucide `chevron-right` glyph, with icon-aware label spacing;
+the original console text and semantic input data are unchanged.
+
+### macOS scroll diagnostics
+
+macOS panel trackpad pixel deltas (including native momentum) are applied
+directly in all five presentation modes, without restarting an easing animation
+for every packet. Angle-only mouse-wheel input retains easing. A trackpad
+gesture interrupts any pending wheel animation at the current visible offset.
+Phase-bearing trackpad gestures can rubber-band up to 120 logical pixels past
+either edge, with 0.25 initial edge response and increasing resistance. The
+280 ms return starts immediately on release, not after momentum dies out.
+Old momentum packets cannot interrupt or restart that return; a new direct
+finger update takes ownership again. Begin freezes an active return immediately,
+including zero-delta contact. A direct Update stops it at that visible pose;
+an inertial continuation resumes the existing spring without restarting it.
+Columns uses its horizontal axis. Gesture-end/idle recovery and explicit
+placement, mode/session changes or hiding the panel clear the transient stretch;
+only the clamped offset is persisted. Mouse-wheel and keyboard movement retain
+hard bounds.
+
+Set `F4_SCROLL_TRACE` to an absolute JSONL output path when launching the Qt
+host (or its parent f4 process). Unset by default, this installs no recorder.
+The app-local AppKit monitor and Qt event filter observe wheel deltas and
+phases without consuming events. The trace also records Low Power Mode,
+viewport positions, frame-swap timestamps and UI heartbeats during gestures
+and a two-second tail. No paths, filenames, commands or keystrokes are recorded.
+Frame timestamps are captured on the emitting thread; records are buffered and
+written after idle or at exit. Recording is bounded to 200,000 records per
+launch, with explicit dropped-record markers. It never requests extra frames;
+the diagnostic heartbeat itself does add a temporary 16 ms UI timer.
+
+For comparison, use the same populated panel, layout and zoom, away from scroll
+boundaries. With Low Power Mode off, perform five flicks separated by three
+seconds, then one slow continuous gesture. Enable Low Power Mode and repeat;
+the trace records the power state automatically. Keep the app open and allow
+at least three seconds after the last gesture for flushing. AppKit events
+represent application delivery, not raw device samples.

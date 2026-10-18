@@ -30,7 +30,8 @@ Item {
     }
     readonly property real horizontalPosition: inlineLabel
         ? hostWindow.snapPx(hostWindow.pxX(Number(inlineLabel.x) - originX)
-                            + inlineLabelMeasure.contentWidth + 12)
+                            + (inlineLabel.iconName ? hostWindow.snapPx(16)
+                                                    : inlineLabelMeasure.contentWidth) + 12)
         : hostWindow.pxX((widget.x || 0) - originX)
           + (dialogLayout && typeof dialogLayout.horizontalExpansionBefore === "function"
              ? dialogLayout.horizontalExpansionBefore(widget) : 0)
@@ -282,14 +283,25 @@ Item {
             id: dialogText
             objectName: "dialogWidget-" + hostWindow.cleanText(widget.id)
                         + "Text"
-            text: widget.wrapText === true || !widget.hotkey ? String(widget.text || widget.typeName || "")
-                  : hostWindow.mnemonicText(widget.text || widget.typeName, widget.hotkey)
+            text: widget.iconName ? "" : (widget.wrapText === true || !widget.hotkey
+                  ? String(widget.text || widget.typeName || "")
+                  : hostWindow.mnemonicText(widget.text || widget.typeName, widget.hotkey))
             textFormat: widget.wrapText === true || !widget.hotkey ? Text.PlainText : Text.StyledText
             wrapMode: widget.wrapText === true ? Text.Wrap : Text.NoWrap
             color: widget.disabled ? hostWindow.mutedText : hostWindow.textColor
             font: hostWindow.font
             elide: widget.wrapText === true ? Text.ElideNone : Text.ElideRight
             verticalAlignment: Text.AlignVCenter
+            HostPixelAlignedImage {
+                objectName: "dialogWidget-" + hostWindow.cleanText(widget.id) + "TextIcon"
+                hostWindow: widgetRoot.hostWindow
+                anchors.verticalCenter: parent.verticalCenter
+                width: hostWindow.snapPx(16)
+                height: width
+                visible: !!widget.iconName
+                source: visible ? hostWindow.lucideIconSource(widget.iconName, 16, dialogText.color) : ""
+                sourceSize: Qt.size(width * hostWindow.dpr, height * hostWindow.dpr)
+            }
             transform: Translate {
                 x: hostWindow.dialogPixelOffsetX(
                        dialogText, hostWindow.contentItem)

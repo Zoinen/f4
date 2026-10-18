@@ -134,10 +134,10 @@ Item {
         const modifiers = event.modifiers
                 & (Qt.ShiftModifier | Qt.ControlModifier
                    | Qt.AltModifier | Qt.MetaModifier)
-        // Reserve only Alt for panel sizing; Ctrl/Meta and plain keypad
-        // operators must reach the commander's selection and hotkey handling.
-        if (!(modifiers & Qt.AltModifier)
-                || (modifiers & (Qt.ControlModifier | Qt.MetaModifier)))
+        // Qt Control is Command on macOS. Option alone belongs to selection.
+        const zoomModifiers = Qt.ControlModifier | Qt.AltModifier
+        if ((modifiers & zoomModifiers) !== zoomModifiers
+                || (modifiers & Qt.MetaModifier))
             return false
         if (modifiers & Qt.ShiftModifier)
             return event.key === Qt.Key_Plus || event.key === Qt.Key_Equal
@@ -312,7 +312,7 @@ Item {
             if (adapter.benchmarkTraceOutputEnabled && bridge
                     && typeof bridge.recordBenchmarkStage === "function") {
                 bridge.recordBenchmarkStage(side, "gallery.zoom.shortcut", {
-                    "fix": "[FIX:panel-alt-zoom]",
+                    "fix": "[FIX:panel-command-option-zoom]",
                     "key": event.key,
                     "modifiers": event.modifiers,
                     "density": galleryPanel.density

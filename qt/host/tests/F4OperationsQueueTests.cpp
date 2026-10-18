@@ -828,6 +828,7 @@ private slots:
     void semanticOverlayDialogStreamClearsWithoutStaleOverlay();
     void menuChildDialogFollowsGoStackOrder();
     void semanticDialogRowsExpandForNativeControls();
+    void commandPaletteInputHasCompactGapAndLucidePrompt();
     void environmentManagerDialogUsesExpandedRows();
     void semanticListCheckboxesAndDimming();
     void semanticListRepeatPreservesRowsAndImmediateCursor();
@@ -3451,6 +3452,41 @@ void F4OperationsQueueTests::environmentManagerDialogUsesExpandedRows()
     QVERIFY(!rendered.isNull());
     if (!qEnvironmentVariable("F4_DIALOG_CAPTURE").isEmpty())
         QVERIFY(rendered.save(qEnvironmentVariable("F4_DIALOG_CAPTURE")));
+}
+
+void F4OperationsQueueTests::commandPaletteInputHasCompactGapAndLucidePrompt()
+{
+    const auto dialog = QJsonDocument::fromJson(R"({
+        "id":"palette","kind":"dialog","title":"Command Palette",
+        "x":0,"y":0,"w":90,"h":38,"showClose":true,"children":[
+          {"id":"prompt","kind":"text","text":">","x":2,"y":2,"w":1,"h":1},
+          {"id":"query","kind":"edit","text":"","x":4,"y":2,"w":84,"h":1},
+          {"id":"commands","kind":"table","x":2,"y":4,"w":86,"h":30,
+           "showHeader":true,"columns":[{"title":"Command","width":60}],
+           "items":["Help"],"selected":0}
+        ]})").object().toVariantMap();
+    QueueFixture fixture(panelScene());
+    QVERIFY(fixture.window);
+    auto scene = panelScene();
+    scene.insert("dialogs", QVariantList{dialog});
+    fixture.shell.setScene(scene);
+    auto *root = fixture.window->contentItem();
+    QQuickItem *edit = nullptr;
+    QQuickItem *table = nullptr;
+    QQuickItem *icon = nullptr;
+    QTRY_VERIFY((edit = visualItem(root, "dialogWidget-queryRoot")));
+    QTRY_VERIFY((table = visualItem(root, "dialogWidget-commandsRoot")));
+    QTRY_VERIFY((icon = visualItem(root, "dialogWidget-promptTextIcon")));
+    const qreal gap = table->mapToScene(QPointF()).y()
+        - edit->mapToScene(QPointF(0, edit->height())).y();
+    QVERIFY2(gap >= 0 && gap <= 28, qPrintable(QString("input/table gap=%1").arg(gap)));
+    QVERIFY(icon->isVisible());
+    QVERIFY(icon->property("source").toUrl().toString().contains("chevron-right"));
+    auto *prompt = visualItem(root, "dialogWidget-promptText");
+    QVERIFY(prompt);
+    QCOMPARE(prompt->property("text").toString(), QString());
+    QVERIFY(edit->mapToScene(QPointF()).x()
+            >= icon->mapToScene(QPointF(icon->width(), 0)).x() + 8);
 }
 
 void F4OperationsQueueTests::semanticDialogRowsExpandForNativeControls()

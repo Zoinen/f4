@@ -507,6 +507,8 @@ if(APPLE)
     "${CMAKE_CURRENT_SOURCE_DIR}/src/MacApplicationMenu.mm"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/MacPlatformServices.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/MacPlatformServices.mm"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/MacScrollDiagnostics.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/MacScrollDiagnostics.mm"
   )
 endif()
 
@@ -1211,6 +1213,15 @@ if(BUILD_TESTING)
       "-framework Network"
     )
     add_test(NAME MacPlatformServicesTest COMMAND MacPlatformServicesTests)
+    add_executable(MacScrollDiagnosticsTests
+      tests/MacScrollDiagnosticsTests.cpp
+      src/MacScrollDiagnostics.h
+      src/MacScrollDiagnostics.mm
+    )
+    target_include_directories(MacScrollDiagnosticsTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(MacScrollDiagnosticsTests PRIVATE
+      Qt6::Core Qt6::Gui Qt6::Quick Qt6::Test "-framework AppKit")
+    add_test(NAME MacScrollDiagnosticsTest COMMAND MacScrollDiagnosticsTests)
   endif()
 
   function(f4_add_icon_test_resources target)

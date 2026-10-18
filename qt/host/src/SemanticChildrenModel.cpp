@@ -51,8 +51,25 @@ QHash<int, QByteArray> SemanticChildrenModel::roleNames() const
     return {{Qt::UserRole, "widgetData"}, {Qt::UserRole + 1, "labelData"}};
 }
 
-void SemanticChildrenModel::setWidgets(const QVariantList &widgets)
+void SemanticChildrenModel::setWidgets(const QVariantList &sourceWidgets)
 {
+    auto widgets = sourceWidgets;
+    // A command prompt immediately preceding an editor is a native icon,
+    // not a terminal glyph. Resolve this relationship once, outside delegates.
+    for (int row = 0; row < sourceWidgets.size(); ++row) {
+        const auto label = inlineLabel(sourceWidgets, sourceWidgets[row].toMap());
+        if (label.value("text").toString().trimmed() != ">")
+            continue;
+        for (int prefix = 0; prefix < widgets.size(); ++prefix) {
+            if (sourceWidgets[prefix].toMap() != label)
+                continue;
+            auto projected = label;
+            if (projected.value("iconName").toString().isEmpty())
+                projected.insert("iconName", "chevron-right");
+            widgets[prefix] = projected;
+            break;
+        }
+    }
     if (widgets == m_widgets)
         return;
     QStringList keys;

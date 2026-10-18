@@ -13,6 +13,7 @@
 #if defined(Q_OS_MACOS)
 #include "MacApplicationMenu.h"
 #include "MacPlatformServices.h"
+#include "MacScrollDiagnostics.h"
 #endif
 
 #include <QCommandLineOption>
@@ -607,6 +608,7 @@ int main(int argc, char *argv[])
                     rootWindow, parser.value(windowGeometryFileOption));
 #if defined(Q_OS_MACOS)
             const QPointer<QQuickWindow> settingsWindow(rootWindow);
+            MacScrollDiagnostics::start(rootWindow, qEnvironmentVariable("F4_SCROLL_TRACE"));
             const auto showApplicationSettings = [settingsWindow]() {
                 if (!settingsWindow) {
                     return;
