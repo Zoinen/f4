@@ -52,7 +52,7 @@ the command marks or unmarks folders instead. The parent entry is never marked,
 and autofilter-hidden rows are left alone. `Ctrl+M` restores the previous marks.
 
 `Ctrl+Shift+=` and `Ctrl+Shift+-` open the selection and deselection mask dialogs;
-`Alt+=` inverts selection. `Numpad 5` opens the viewer with Num Lock on or off,
+`Alt+=` and `Ctrl+Shift+8` (the main-keyboard `*` on layouts where `*` is Shift+8) invert selection. `Numpad 5` opens the viewer with Num Lock on or off,
 while `F3` remains the primary viewer shortcut. All of these are configurable
 panel actions. OEM keys use names such as `CtrlVK_BB` and `CtrlVK_BD` in
 `hotkeys.ini`, and the UI displays them as `Ctrl+=` and `Ctrl+-`.

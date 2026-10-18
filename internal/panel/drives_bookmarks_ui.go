@@ -307,6 +307,32 @@ func moveDriveBookmark(bookmarks []DriveBookmark, index, delta int) ([]DriveBook
 	return moved, true
 }
 
+// moveBookmarkSlotInFile swaps a slot of the folder bookmarks with the nearest
+// assigned slot in the direction of delta (the drive menu lists assigned slots
+// only, so that is the row the user sees it pass) and saves the table. It
+// reports false when there is no such slot.
+func moveBookmarkSlotInFile(slot, delta int) (bool, error) {
+	set, err := LoadBookmarks(BookmarksFilePath())
+	if err != nil {
+		return false, err
+	}
+	if slot < 0 || slot >= len(set) {
+		return false, nil
+	}
+	step := 1
+	if delta < 0 {
+		step = -1
+	}
+	for next := slot + step; next >= 0 && next < len(set); next += step {
+		if set[next].IsEmpty() {
+			continue
+		}
+		set.SwapSlots(slot, next)
+		return true, SaveBookmarks(BookmarksFilePath(), set)
+	}
+	return false, nil
+}
+
 // moveDriveBookmarkInFile moves one link of the saved list by delta places
 // and saves the new order, so that it is remembered.
 func moveDriveBookmarkInFile(index, delta int) (bool, error) {

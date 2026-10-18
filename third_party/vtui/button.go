@@ -10,6 +10,7 @@ type Button struct {
 	caption      string
 	mouseArmed   bool
 	mousePressed bool
+	mouseHovered bool
 	// implicitDefault is set by the dialog that holds the button when it flags
 	// no default button of its own and Enter falls back to this one: the
 	// button that gets the key is then drawn as the default, and the two are
@@ -99,7 +100,7 @@ func (b *Button) DisplayObject(scr *ScreenBuf) {
 		// The default button in its idle state: no focus, no press. Its
 		// colours are then exactly the "normal" ones of ColDialogHighlightButton.
 		idleDefault := b.IsEnterDefault() && !b.mousePressed && n == b.GetStateAttr(normalIdx, normalIdx)
-		b.drawRoundedButton(scr, label, labelHotkeyPos, n, h, idleDefault)
+		b.drawRoundedButton(scr, label, labelHotkeyPos, n, h, idleDefault, b.mouseHovered && !b.mousePressed)
 		return
 	}
 
@@ -153,11 +154,18 @@ func (b *Button) ProcessMouse(e *vtinput.InputEvent) bool {
 	return false
 }
 
+// SetMouseHovered updates the pointer-hover state used by graphical rounded
+// buttons. Groups call it while routing cell-based mouse-move events.
+func (b *Button) SetMouseHovered(hovered bool) {
+	b.mouseHovered = hovered && !b.IsDisabled()
+}
+
 func (b *Button) SetDisabled(d bool) {
 	b.ScreenObject.SetDisabled(d)
 	if d {
 		b.mouseArmed = false
 		b.mousePressed = false
+		b.mouseHovered = false
 	}
 }
 

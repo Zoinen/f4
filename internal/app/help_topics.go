@@ -43,8 +43,15 @@ func InitHelpSystem() {
 	// embedded English help remains the baseline, while help/en.hlf can provide
 	// user-specific topics and corrections.
 	if config.App.UseLocalLanguageFiles || (lang != "en" && lang != "eng") {
-		candidates := make([]string, 0, 1+len(i18n.ExecutableResourceDirs()))
-		for _, resourceDir := range i18n.ExecutableResourceDirs() {
+		exeDir := config.ExecutableDir()
+		resourceDirs := []string{exeDir}
+		// Resolve the real executable before locating a macOS bundle's resources,
+		// so launches through PATH or a symlink retain the bundle lookup too.
+		if filepath.Base(exeDir) == "MacOS" && filepath.Base(filepath.Dir(exeDir)) == "Contents" {
+			resourceDirs = append([]string{filepath.Join(filepath.Dir(exeDir), "Resources")}, resourceDirs...)
+		}
+		candidates := make([]string, 0, 1+len(resourceDirs))
+		for _, resourceDir := range resourceDirs {
 			candidates = append(candidates, filepath.Join(resourceDir, "help", lang+".hlf"))
 		}
 		candidates = append(candidates, filepath.Join("help", lang+".hlf")) // Fallback for "go run ." development

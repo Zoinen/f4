@@ -83,6 +83,9 @@ func TestIsMenuComment(t *testing.T) {
 		{"REMOVE", false}, // no separator after REM
 		{":: shell-style comment", true},
 		{":single colon", false},
+		{"#sudo -- no longer needed", true},
+		{"# spaced comment", true},
+		{"#", true},
 		{"normal command", false},
 		{"  REM indented", false}, // caller strips spaces first
 	}
@@ -364,6 +367,28 @@ func TestUserMenu_ExecuteCommands(t *testing.T) {
 		t.Error("Comments (REM / ::) were erroneously sent to term.PTY execution")
 	}
 }
+
+// f4#2037: a leading "#" comment line must not swallow the commands after it.
+func TestUserMenu_HashCommentLineIsSkipped(t *testing.T) {
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	theme.SetDefaultF4Palette()
+
+	pf := setupMockPanelsFrame(t)
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+	pty := pf.Pty.(*mockPty)
+
+	executeMenuCommands(pf, []string{"#sudo -- not needed anymore", "reboot"})
+
+	written := string(pty.written)
+	if !strings.Contains(written, "reboot") {
+		t.Errorf("command after a # comment line was not dispatched: %q", written)
+	}
+	if strings.Contains(written, "sudo") {
+		t.Errorf("# comment line was sent to the command line: %q", written)
+	}
+}
+
 func TestUserMenu_ExecuteMultipleCommands(t *testing.T) {
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	theme.SetDefaultF4Palette()

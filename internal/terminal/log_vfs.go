@@ -27,7 +27,7 @@ func NewTerminalLogVFS(tv *TerminalView, fallback func() []byte) *TerminalLogVFS
 	if tv == nil {
 		return v
 	}
-	snapshot := tv.terminalLogSnapshot()
+	snapshot := tv.terminalLogANSISnapshot()
 	v.data = snapshot.data
 	v.initialOffset = snapshot.viewportOffset
 	v.immutableSnapshot = true
@@ -80,7 +80,8 @@ func (v *TerminalLogVFS) SetAttributes(ctx context.Context, path string, item vf
 func (v *TerminalLogVFS) GetCapabilities() vfs.VFSCapabilities {
 	return vfs.VFSCapabilities{HasRandomAccess: true, HasUnixPermissions: false, ReadAccess: vfs.ReadAccessDirectLocal, StorageClass: vfs.StorageClassVirtual}
 }
-func (v *TerminalLogVFS) IsReadOnly() bool { return true }
+func (v *TerminalLogVFS) IsReadOnly() bool   { return true }
+func (v *TerminalLogVFS) ANSIViewMode() bool { return true }
 func (v *TerminalLogVFS) Search(ctx context.Context, path string, pattern string) (chan int64, error) {
 	return nil, nil
 }
@@ -98,7 +99,7 @@ func (v *TerminalLogVFS) Open(ctx context.Context, path string) (vfs.ReadAtClose
 	if v.tv == nil && v.fallback == nil {
 		return &terminalLogWrapper{}, nil
 	}
-	src := func() []byte { return v.tv.GetAllLogBytes() }
+	src := func() []byte { return v.tv.GetAllLogANSIBytes() }
 	if v.fallback != nil {
 		src = v.fallback
 	}

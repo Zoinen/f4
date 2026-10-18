@@ -854,21 +854,20 @@ func TestEdit_RightArrow_FullSelection_StaysInFocus(t *testing.T) {
 		t.Errorf("Cursor moved unexpectedly: %d", e.curPos)
 	}
 }
-func TestEdit_FullSelectionColorsOnlyTextPortion(t *testing.T) {
+func TestEdit_FullSelectionUsesSelectionColorOnlyForText(t *testing.T) {
 	preserveTestPalette(t)
 	SetDefaultPalette()
 	Palette[ColDialogEdit] = SetRGBBoth(0, 0xEEEEEC, 0x37322C)
-	Palette[ColDialogEditUnchanged] = SetRGBBoth(0, 0x2E2A24, 0xE6B450)
+	Palette[ColDialogEditSelected] = SetRGBBoth(0, 0x2E2A24, 0xE6B450)
 
 	scr := NewSilentScreenBuf()
 	scr.AllocBuf(20, 1)
 
 	e := NewEdit(0, 0, 20, "abc")
-	e.SelectAll()
 	e.Show(scr)
 
 	normalBg := GetRGBBack(Palette[ColDialogEdit])
-	selectedBg := GetRGBBack(Palette[ColDialogEditUnchanged])
+	selectedBg := GetRGBBack(Palette[ColDialogEditSelected])
 
 	for x := 0; x < 3; x++ {
 		cellBg := GetRGBBack(scr.GetCell(x, 0).Attributes)

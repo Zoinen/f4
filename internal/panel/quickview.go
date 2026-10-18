@@ -9,7 +9,6 @@ import (
 	"hash/fnv"
 	"io"
 	"io/fs"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -980,18 +979,13 @@ func (q *QuickViewPanel) dirSummary(name string) []quickViewDirRow {
 	writeLine("")
 	field(i18n.Msg("QuickView.FolderCount"), fmt.Sprint(dirs))
 	field(i18n.Msg("QuickView.FileCount"), fmt.Sprint(stats.Files))
-	// "Files size" adds dir-inode Sizes to file bytes — that's what
-	// far2l puts in "Размер файлов" (see far2l/src/dirinfo.cpp:
-	// FileSize += FindData.nFileSize for directories). On Windows,
-	// though, Far/Explorer count only file bytes: child dirs report
-	// Size 0 via ReadDir, and the sole non-zero contributor is the
-	// scanned root itself — os.Stat of a directory returns a 4096
-	// index size via GetFileInformationByHandle. Drop DirBytes there
-	// so the total matches the platform's native tools.
-	logical := stats.Bytes + stats.DirBytes
-	if runtime.GOOS == "windows" {
-		logical = stats.Bytes
-	}
+	// "Files size" is the sum of the files, as F3 on the folder shows it
+	// and as find counts it. The size a file system gives a folder itself
+	// (32 bytes an entry on APFS, a 4 KiB block on ext4) is no data of the
+	// files; it was added here and made the quick view disagree with F3
+	// on the same folder (f4#2005). The room folders take on the disk is
+	// in "Physical size".
+	logical := stats.Bytes
 	field(i18n.Msg("QuickView.FilesSize"), formatBytes(numeric.NonNegativeUint64(logical)))
 	// Physical size + Ratio need per-item on-disk footprint. Stub /
 	// remote VFSes leave PhysicalBytes at 0 during the whole scan —

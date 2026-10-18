@@ -111,13 +111,13 @@ func editPanelViewMode(pf *PanelsFrame, pos int) {
 
 	const width = 64
 	// Rows the vbox stacks: five label/edit pairs, the status line's
-	// Columns... button, two checkboxes and the button row (14) plus the
-	// blank row before each group after the first and before that button
-	// (7). The frame, the row under the title and the row over the bottom
+	// Columns... button, three checkboxes and the button row (15) plus the
+	// blank row before each group after the first and before the status-columns button
+	// and button row (7). The frame, the row under the title and the row over the bottom
 	// frame add four more. The dialog used to be 20 rows tall, three short
 	// of that, so the button row landed below the bottom frame and only
 	// the modal clip kept it on screen.
-	const contentRows = 14 + 7
+	const contentRows = 15 + 7
 	height := 4 + contentRows
 	// On a console shorter than the dialog the frame would be drawn past
 	// its bottom row; the modal viewport then scrolls the controls instead.
@@ -146,6 +146,10 @@ func editPanelViewMode(pf *PanelsFrame, pos int) {
 	if settings.UppercaseDirs {
 		chkUppercaseDirs.State = 1
 	}
+	chkShowInfoLine := vtui.NewCheckbox(0, 0, i18n.Msg("Panel.Modes.ShowInfoLine"), false)
+	if panelModeShowsInfoLine(mode) {
+		chkShowInfoLine.State = 1
+	}
 	btnOk := vtui.NewButton(0, 0, i18n.Msg("vtui.Ok"))
 	btnOk.IsDefault = true
 	btnReset := vtui.NewButton(0, 0, i18n.Msg("Panel.Modes.Reset"))
@@ -173,6 +177,7 @@ func editPanelViewMode(pf *PanelsFrame, pos int) {
 	dlg.AddItem(btnStatusColumns)
 	dlg.AddItem(chkFullScreen)
 	dlg.AddItem(chkUppercaseDirs)
+	dlg.AddItem(chkShowInfoLine)
 	// Tab walks the controls in the order they are added, so the buttons go in
 	// the order they stand on the row: Columns... used to come after Cancel
 	// (f4#410).
@@ -195,6 +200,7 @@ func editPanelViewMode(pf *PanelsFrame, pos int) {
 	vbox.Add(btnStatusColumns, vtui.Margins{Top: 1}, vtui.AlignLeft)
 	vbox.Add(chkFullScreen, vtui.Margins{Top: 1}, vtui.AlignLeft)
 	vbox.Add(chkUppercaseDirs, vtui.Margins{}, vtui.AlignLeft)
+	vbox.Add(chkShowInfoLine, vtui.Margins{}, vtui.AlignLeft)
 	btnRow := vtui.NewHBoxLayout(0, 0, width-6, 1)
 	btnRow.HorizontalAlign = vtui.AlignCenter
 	btnRow.Spacing = 2
@@ -261,6 +267,8 @@ func editPanelViewMode(pf *PanelsFrame, pos int) {
 			UppercaseDirs: chkUppercaseDirs.State != 0,
 			StatusColumns: status,
 		}
+		showInfoLine := chkShowInfoLine.State != 0
+		changed.ShowInfoLine = &showInfoLine
 		finish(changed, false)
 	}
 

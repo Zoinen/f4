@@ -1,6 +1,7 @@
 package viewer
 
 import (
+	"bytes"
 	"path"
 	"strings"
 
@@ -123,15 +124,18 @@ func parseANSIParams(b []byte) (params []int, ok bool) {
 
 // layoutViewerTextRowANSI is layoutViewerTextRow for text that may hold
 // escape sequences: the row is laid out on the text without them and the
-// counts are carried back to data.
+// counts are carried back to data. The row ends right after its last
+// character, so the sequences before the first character of the next row
+// start that row: a line of a terminal log that begins with a colour keeps it
+// (f4#1929).
 func layoutViewerTextRowANSI(data []byte, width, tabSize int, wrap, ansi bool) viewerTextRow {
 	if !ansi {
 		return layoutViewerTextRow(data, width, tabSize, wrap)
 	}
 	plain, orig, _ := stripANSI(data)
 	row := layoutViewerTextRow(plain, width, tabSize, wrap)
-	if row.lineLen >= 0 && row.lineLen < len(orig) {
-		row.lineLen = orig[row.lineLen]
+	if row.lineLen > 0 && row.lineLen <= len(plain) {
+		row.lineLen = orig[row.lineLen-1] + 1
 	}
 	if row.textLen >= 0 && row.textLen < len(orig) {
 		row.textLen = orig[row.textLen]
@@ -273,4 +277,72 @@ func isANSIFileName(name string) bool {
 		return true
 	}
 	return false
+}
+
+func ansiViewMode(path string, source any) bool {
+	if isANSIFileName(path) {
+		return true
+	}
+	provider, ok := source.(interface{ ANSIViewMode() bool })
+	return ok && provider.ANSIViewMode()
+}
+
+// ansiScanChunk is how many bytes ansiStateAt reads at a time.
+const ansiScanChunk = 1 << 16
+
+// ansiStateOver returns the colours in force after data: every SGR sequence
+// of data applied in turn to state.
+func ansiStateOver(data []byte, base, state uint64) uint64 {
+	_, _, seqs := stripANSI(data)
+	for _, s := range seqs {
+		state = applyANSISeq(state, base, s)
+	}
+	return state
+}
+
+// ansiStateAt returns the colours in force at the byte offset off of the
+// file, found by reading the colour sequences before it: a window that opens
+// in the middle of the file continues the colours of the lines above it
+// instead of starting from the plain ones. The result of the last call is
+// kept, so scrolling down reads only the bytes between the two windows; the
+// scan stops at a line break, where no sequence is cut.
+func (vv *ViewerView) ansiStateAt(off int64, base uint64) uint64 {
+	size := vv.Backend.Size()
+	if off > size {
+		off = size
+	}
+	pos, state := int64(0), base
+	c := vv.ansiCache
+	if c.valid && c.base == base && c.size == size && c.off <= off {
+		pos, state = c.off, c.state
+	}
+	for pos < off {
+		n := off - pos
+		if n > ansiScanChunk {
+			n = ansiScanChunk
+		}
+		data, err := vv.Backend.ReadAt(pos, int(n))
+		if err != nil || len(data) == 0 {
+			return base
+		}
+		if pos+int64(len(data)) < off {
+			// Cut the chunk at its last line break so that no sequence is
+			// split between two chunks.
+			if i := bytes.LastIndexByte(data, '\n'); i >= 0 {
+				data = data[:i+1]
+			}
+		}
+		state = ansiStateOver(data, base, state)
+		pos += int64(len(data))
+	}
+	vv.ansiCache = ansiStateCache{valid: true, base: base, size: size, off: off, state: state}
+	return state
+}
+
+// ansiStateCache remembers the result of the last ansiStateAt.
+type ansiStateCache struct {
+	valid     bool
+	base      uint64
+	size, off int64
+	state     uint64
 }

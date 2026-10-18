@@ -97,9 +97,9 @@ func TestSudoClientAsksBeforeUACOncePerSession(t *testing.T) {
 		return errors.New("UAC elevation was canceled")
 	}
 	asked, agree := 0, false
-	confirmElevation = func() bool {
+	confirmElevation = func() (bool, bool) {
 		asked++
-		return agree
+		return agree, false
 	}
 
 	c := &SudoClient{appPath: "f4.exe"}
@@ -128,13 +128,23 @@ func TestAskElevationOnUIWaitsForTheAnswer(t *testing.T) {
 	vtui.FrameManager = &vtui.FrameManagerType{}
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 
+	type answer struct{ agree, remember bool }
 	for _, tc := range []struct {
 		code int
-		want bool
-	}{{0, true}, {1, false}, {-1, false}} {
-		got := make(chan bool, 1)
+		tick bool
+		want answer
+	}{
+		{0, false, answer{true, false}},
+		{0, true, answer{true, true}},   // f4#1768 step 6b: the box keeps the rights until f4 exits
+		{1, true, answer{false, false}}, // Cancel with the box ticked remembers nothing
+		{-1, false, answer{false, false}},
+	} {
+		got := make(chan answer, 1)
 		before := vtui.FrameManager.GetTopFrame()
-		go func() { got <- askElevationOnUI() }()
+		go func() {
+			agree, remember := askElevationOnUI()
+			got <- answer{agree, remember}
+		}()
 		var dlg *vtui.Window
 		deadline := time.Now().Add(5 * time.Second)
 		for dlg == nil && time.Now().Before(deadline) {
@@ -150,12 +160,23 @@ func TestAskElevationOnUIWaitsForTheAnswer(t *testing.T) {
 		if dlg == nil {
 			t.Fatal("no question was shown")
 		}
+		if tc.tick {
+			ticked := false
+			for _, child := range dlg.GetChildren() {
+				if box, ok := child.(*vtui.Checkbox); ok {
+					box.State, ticked = 1, true
+				}
+			}
+			if !ticked {
+				t.Fatal("the question has no box to tick")
+			}
+		}
 		dlg.OnResult(tc.code)
 		dlg.Close()
 		select {
-		case ok := <-got:
-			if ok != tc.want {
-				t.Errorf("answer %d: got %v, want %v", tc.code, ok, tc.want)
+		case a := <-got:
+			if a != tc.want {
+				t.Errorf("answer %d, box %v: got %+v, want %+v", tc.code, tc.tick, a, tc.want)
 			}
 		case <-time.After(5 * time.Second):
 			t.Fatalf("answer %d did not reach the caller", tc.code)

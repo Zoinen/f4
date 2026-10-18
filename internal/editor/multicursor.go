@@ -457,8 +457,7 @@ func (ev *EditorView) moveCarets(move func(off, desiredCol int) int, keepDesired
 	primaryOff := ev.caretOffset()
 	if selecting {
 		if !ev.SelActive {
-			ev.SelActive = true
-			ev.SelAnchorOffset = primaryOff
+			ev.StartSelection(primaryOff)
 		}
 	} else {
 		ev.SelActive = false
@@ -598,9 +597,8 @@ func (ev *EditorView) normalizeExtraCarets() {
 			// anchor that is farther away.
 			if caret.hasSel {
 				if !ev.SelActive || farther(primary, ev.SelAnchorOffset, caret.anchor) {
-					ev.SelAnchorOffset = caret.anchor
+					ev.StartSelection(caret.anchor)
 				}
-				ev.SelActive = true
 			}
 			continue
 		}

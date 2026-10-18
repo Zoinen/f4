@@ -77,3 +77,39 @@ func TestSudoOpenCancellablePassesTheResultOn(t *testing.T) {
 		t.Fatal("a refused open should be an error")
 	}
 }
+
+// The size scan of F3 lists folders through sudo; Cancel has to release it
+// while the password dialog is still pending (f4#1993).
+func TestSudoReadDirCancellableReturnsWhenCancelled(t *testing.T) {
+	old := globalSudoClient
+	t.Cleanup(func() { globalSudoClient = old })
+	globalSudoClient = hangingDispatcher(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := sudoReadDirCancellable(ctx, "/root")
+		done <- err
+	}()
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("sudoReadDirCancellable = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelling did not release the caller")
+	}
+}
+
+// Without a cancel the result of the listing is passed on as it is.
+func TestSudoReadDirCancellablePassesTheResultOn(t *testing.T) {
+	old := globalSudoClient
+	t.Cleanup(func() { globalSudoClient = old })
+	globalSudoClient = answeringDispatcher(t, "permission denied")
+
+	if _, err := sudoReadDirCancellable(context.Background(), "/root"); err == nil {
+		t.Fatal("a refused listing should be an error")
+	}
+}

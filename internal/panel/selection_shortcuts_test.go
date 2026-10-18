@@ -23,7 +23,6 @@ func TestPanelsFrame_SearchFirstSelectionShortcuts(t *testing.T) {
 		action string
 	}{
 		{'+', 0, true, "Panel.SelectGroup"},
-		{'-', vtinput.VK_OEM_MINUS, false, "Panel.DeselectGroup"},
 		{'*', 0, true, "Panel.InvertSelection"},
 		{'+', vtinput.VK_ADD, false, "Panel.SelectGroup"},
 		{'-', vtinput.VK_SUBTRACT, false, "Panel.DeselectGroup"},

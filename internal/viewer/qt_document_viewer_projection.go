@@ -426,6 +426,9 @@ func (vv *ViewerView) constructWindow(width, height, overscan int, pending **vie
 			build.start, build.column = previous.offset, previous.column
 			build.preceding++
 		}
+		if vv.AnsiMode && !key.hex && !key.decode && build.start > 0 {
+			build.ansiAttr = vv.ansiStateAt(build.start, vv.textAttr())
+		}
 		build.current, build.initialized = build.start, true
 	}
 	for len(build.rows) < height+2*overscan && build.current < key.size {

@@ -1039,8 +1039,12 @@ func actionAddArchive(app vfs.App) {
 	// (f4#1504). Only an explicit multi-selection keeps the old directory-
 	// derived suggestion, since there is no single item to name it after.
 	var arcName string
+	sourceIsFile := false
 	if len(names) == 1 {
 		arcName = names[0]
+		if info, err := activeVfs.Stat(context.Background(), activeVfs.Join(activeVfs.GetPath(), names[0])); err == nil {
+			sourceIsFile = !info.IsDir
+		}
 	} else {
 		arcName = activeVfs.Base(activeVfs.GetPath())
 		if arcName == "." || arcName == "" {
@@ -1049,10 +1053,15 @@ func actionAddArchive(app vfs.App) {
 	}
 	arcName += ".zip"
 
-	app.InputBox(" Add to archive ", "Archive name:", arcName, func(name string) {
-		if name == "" {
-			return
-		}
+	// What was marked is unmarked once it is in the archive, as after a
+	// copy (f4#2002).
+	selection := captureAddArchiveSelection(app, names)
+
+	// The window with the format, level, method and solid (f4#2002) in
+	// place of the plain name prompt.
+	showAddArchiveDialog(app, arcName, sourceIsFile, func(settings addArchiveSettings) {
+		name := settings.Name
+		opts := settings.options()
 		fullArcPath := activeVfs.Join(activeVfs.GetPath(), name)
 
 		go func() {
@@ -1081,14 +1090,20 @@ func actionAddArchive(app vfs.App) {
 				waitLock = (res == 0)
 			}
 
-			if _, err := activeVfs.Stat(context.Background(), fullArcPath); err == nil {
+			if _, err := activeVfs.Stat(context.Background(), settings.archiveFile(fullArcPath)); err == nil {
 				msg := "The target archive already exists.\nDo you want to overwrite it?"
 				if app.Message(" Warning ", msg, []string{"&Yes", "&No"}) != 0 {
 					return
 				}
 			}
 
-			app.RunAdvancedProgressTask(" Archiving... ", false, func(ctx context.Context, reporter vfs.TaskReporter) (retErr error) {
+			// archived is what went into the archive and skipped what could
+			// not be read, for "Delete files after archiving" and "Skip files
+			// that cannot be read" (f4#2002, part 4).
+			var archived map[string]os.FileInfo
+			var walkedDirs []string
+			skipped := 0
+			writeArchive := func(ctx context.Context, reporter vfs.TaskReporter) (retErr error) {
 				if waitLock {
 					reporter.UpdateTransfer("Waiting", "in queue...", -1, "", -1, "")
 					vfs.GlobalArchiveLockManager.Lock(absArcPath)
@@ -1108,8 +1123,24 @@ func actionAddArchive(app vfs.App) {
 					if osvfs, ok := activeVfs.(*vfs.OSVFS); ok {
 						absPath, _ := osvfs.Abs(fullPath)
 						if err := filepath.Walk(absPath, func(p string, fi os.FileInfo, e error) error {
+							if e == nil && settings.SkipUnreadable && fi.Mode().IsRegular() {
+								e = checkReadable(p)
+							}
 							if e != nil {
-								return e
+								if !settings.SkipUnreadable {
+									return e
+								}
+								skipped++
+								if fi != nil && fi.IsDir() && p != absPath {
+									return filepath.SkipDir
+								}
+								return nil
+							}
+							if fi.IsDir() {
+								walkedDirs = append(walkedDirs, p)
+							}
+							if !settings.wants(fi) {
+								return nil
 							}
 							fileMap[p] = fi
 							if !fi.IsDir() {
@@ -1122,7 +1153,8 @@ func actionAddArchive(app vfs.App) {
 					}
 				}
 
-				a, err := archive.NewArchiver(fullArcPath, activeVfs.GetPath(), archive.Options{Xattrs: false})
+				archived = fileMap
+				a, err := archive.NewArchiver(fullArcPath, activeVfs.GetPath(), opts)
 				if err != nil {
 					return err
 				}
@@ -1187,12 +1219,43 @@ func actionAddArchive(app vfs.App) {
 				}()
 
 				return a.Archive(ctx, fileMap)
+			}
+			app.RunAdvancedProgressTask(" Archiving... ", false, func(ctx context.Context, reporter vfs.TaskReporter) error {
+				if err := writeArchive(ctx, reporter); err != nil {
+					return err
+				}
+				// A format whose archiver writes no volumes is cut into
+				// them once it is complete (f4#2002, part 3).
+				if settings.postSplit() {
+					reporter.UpdateTransfer("Archiving", "volumes...", -1, "", -1, "")
+					if err := splitIntoVolumes(ctx, absArcPath, settings.VolumeSize); err != nil {
+						return err
+					}
+				} else if settings.VolumeSize > 0 {
+					if err := collapseSingleVolume(absArcPath); err != nil {
+						return err
+					}
+				}
+				if settings.DeleteAfter {
+					reporter.UpdateTransfer("Archiving", "deleting...", -1, "", -1, "")
+					return deleteArchived(archived, walkedDirs)
+				}
+				return nil
 			}, func(err error) {
 				if err != nil && err != context.Canceled {
 					go app.Message(" Error ", fmt.Sprintf("Archiving failed:\n%v", err), []string{"&Ok"})
+				} else if err == nil && skipped > 0 {
+					go app.Message(vtui.Msg("Archive.Add.Title"), fmt.Sprintf(vtui.Msg("Archive.Add.Skipped"), skipped), []string{"&Ok"})
 				}
 				if err == nil {
-					app.SetPendingSelection(name)
+					target := settings.archiveFile(name)
+					if _, statErr := os.Stat(absArcPath); statErr == nil {
+						target = name // it came out as one volume
+					}
+					app.SetPendingSelection(target)
+					for _, token := range selection {
+						token.Clear()
+					}
 				}
 				app.RefreshAll()
 			})

@@ -45,11 +45,13 @@ func TestFar2lInteract_Timeout(t *testing.T) {
 	var reply *vtinput.Far2lStack
 	done := make(chan bool)
 	go func() {
-		reply = Far2lInteract(stk, true)
+		reply = Far2lInteractTimeout(stk, true, 200*time.Millisecond)
 		done <- true
 	}()
 
-	// Wait for timeout (we use short timeout in mock or just check time elapsed)
+	// The guard only catches a real hang: it must be far above the interaction
+	// timeout, because far2lInteractMu is shared with other tests' goroutines
+	// and a loaded macOS runner can delay this one past a tight deadline.
 	select {
 	case <-done:
 		if reply != nil {
@@ -58,7 +60,7 @@ func TestFar2lInteract_Timeout(t *testing.T) {
 		if time.Since(start) < 100*time.Millisecond {
 			t.Error("Timeout happened too fast")
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("Interaction did not timeout, it hung")
 	}
 }
@@ -589,7 +591,7 @@ func TestSetFar2lClipboard(t *testing.T) {
 				if ok != tc.wantOK {
 					t.Errorf("SetFar2lClipboard() = %v, want %v", ok, tc.wantOK)
 				}
-			case <-time.After(3 * time.Second):
+			case <-time.After(30 * time.Second):
 				t.Fatal("SetFar2lClipboard did not return")
 			}
 		})
@@ -693,7 +695,7 @@ func TestGetFar2lClipboard(t *testing.T) {
 				if res.ok != tc.wantOK || res.text != tc.wantText {
 					t.Errorf("GetFar2lClipboard() = (%q, %v), want (%q, %v)", res.text, res.ok, tc.wantText, tc.wantOK)
 				}
-			case <-time.After(3 * time.Second):
+			case <-time.After(30 * time.Second):
 				t.Fatal("GetFar2lClipboard did not return")
 			}
 		})

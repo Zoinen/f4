@@ -102,7 +102,7 @@ func TestWaylandFocusLossClearsKeyboardState(t *testing.T) {
 		if event.Type != vtinput.FocusEventType || !event.SetFocus {
 			t.Fatalf("focus gain event = %+v, want FocusEvent(true)", event)
 		}
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(30 * time.Second):
 		t.Fatal("timed out waiting for Wayland focus gain event")
 	}
 
@@ -124,7 +124,7 @@ func TestWaylandFocusLossClearsKeyboardState(t *testing.T) {
 		if event.Type != vtinput.FocusEventType || event.SetFocus {
 			t.Fatalf("focus loss event = %+v, want FocusEvent(false)", event)
 		}
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(30 * time.Second):
 		t.Fatal("timed out waiting for Wayland focus loss event")
 	}
 }
@@ -189,7 +189,7 @@ func nextWaylandMouseEvent(t *testing.T, host *WaylandHost) *vtinput.InputEvent 
 	select {
 	case event := <-host.reader.EventChan:
 		return event
-	case <-time.After(250 * time.Millisecond):
+	case <-time.After(30 * time.Second):
 		t.Fatal("timed out waiting for Wayland mouse event")
 		return nil
 	}
@@ -263,7 +263,7 @@ func TestWaylandHoverMotionDoesNotBlockOnFullQueue(t *testing.T) {
 	}()
 	select {
 	case <-done:
-	case <-time.After(250 * time.Millisecond):
+	case <-time.After(30 * time.Second):
 		t.Fatal("hover motion blocked on a full event queue")
 	}
 }

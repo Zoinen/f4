@@ -16,6 +16,7 @@ func TestSelectionKeyNames(t *testing.T) {
 		{key: "CtrlShift+", want: "CtrlShiftVK_BB"},
 		{key: "CtrlShift_", want: "CtrlShiftVK_BD"},
 		{key: "Alt=", want: "AltVK_BB"},
+		{key: "CtrlShift8", want: "CtrlShift8"},
 		{key: "CtrlAdd", want: "CtrlAdd"},
 		{key: "CtrlSubtract", want: "CtrlSubtract"},
 		{key: "Num5", want: "Num5"},

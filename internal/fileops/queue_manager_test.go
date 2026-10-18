@@ -11,6 +11,7 @@ import (
 	"github.com/unxed/vtui"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"runtime/pprof"
 	"strings"
@@ -167,7 +168,7 @@ func TestQueueManager_ConflictDetection(t *testing.T) {
 	completed := make(chan struct{})
 	task := &QueueTask{
 		Type:    "Copy",
-		ResKeys: []string{GetResourceKey(v)},
+		ResKeys: GetResourceKeys(v),
 		Preconditions: []OpPrecondition{
 			{Vfs: v, Path: path, MTime: st.MTime, Size: st.Size, IsDir: false},
 		},
@@ -177,9 +178,8 @@ func TestQueueManager_ConflictDetection(t *testing.T) {
 
 	// Блокируем очередь, чтобы задача не запустилась мгновенно
 	qm.Mu.Lock()
-	qm.activeKeys["local_disk"] = true // Предполагаем linux ресурс ключ
-	if runtime.GOOS == "windows" {
-		qm.activeKeys[filepath.VolumeName(tmp)] = true
+	for _, k := range GetResourceKeys(v) {
+		qm.activeKeys[k] = true
 	}
 	qm.Mu.Unlock()
 
@@ -525,15 +525,15 @@ func (m *mockVFSWithParent) GetPath() string {
 func TestQueueManager_ArchiveResourceKey(t *testing.T) {
 	// Create parent OSVFS pointing to a local temp directory
 	parent := vfs.NewOSVFS(t.TempDir())
-	expectedKey := GetResourceKey(parent)
+	expectedKeys := GetResourceKeys(parent)
 
 	// Create mock nested VFS mimicking an active ArchiveVFS
 	child := &mockVFSWithParent{parent: parent}
 
 	// Verify that the child's resource key matches the parent's (physical disk locking)
-	key := GetResourceKey(child)
-	if key != expectedKey {
-		t.Errorf("Expected resource key %q, got %q (failed to inherit ParentVFS disk lock)", expectedKey, key)
+	keys := GetResourceKeys(child)
+	if !reflect.DeepEqual(keys, expectedKeys) {
+		t.Errorf("Expected resource keys %q, got %q (failed to inherit ParentVFS disk lock)", expectedKeys, keys)
 	}
 }
 

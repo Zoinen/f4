@@ -75,6 +75,7 @@ WatchDirectories|panels|Directory loading|Refresh panels when files change|Re-re
 InfoPanelCPUGPU|panels|Information panels|Show CPU and GPU information|Include locally collected CPU and GPU sections when the information provider does not supply authoritative information.||live
 InfoPanelBytes|panels|Information panels|Show sizes in bytes|Display raw bytes instead of human-readable sizes in information and quick-view panels.||live
 TreeRootWholeVolume|panels|Directory tree|Root the tree panel at the whole volume|Root the Ctrl+T tree panel at the source panel's whole current volume, as far2l does. Off roots it at the source panel's current directory instead.||next tree open
+TreeExplorerMode|panels|Directory tree|Tree like Explorer's|While the Ctrl+T tree is open, the panel that opened it shows the folder under the tree's cursor, and Enter moves to that panel without closing the tree. Off, the tree works as in far2l: Enter goes to the folder and closes the tree.||live
 NavigationMode|panels|Typing and focus|Panel navigation|Classic types into the command line. Vim adds j/k and double dd/cc/mm actions. Search-first separates filename-search and command focus.|0:Classic;1:Vim;2:Search first|live
 PanelGroupSmallMiB|panels|Grouping|Small group limit (MiB)|Inclusive upper size bound for Small. The three group limits must be positive and strictly increasing.||live
 PanelGroupMediumMiB|panels|Grouping|Medium group limit (MiB)|Inclusive upper size bound for Medium. Applies to logical size and size on disk.||live
@@ -104,6 +105,7 @@ ClipboardImagePrefix|operations|Clipboard images|Filename prefix|Literal filenam
 ClipboardImageTemplate|operations|Clipboard images|Filename stem template|Ctrl+G scalar substitutions and prompts, with exactly one !{seq}! token. !{prefix}! inserts the prefix. The image extension is appended automatically.||new operations
 ClipboardImageDigitFormat|operations|Clipboard images|Digit format|A run of zeros gives the minimum number of sequence digits, for example 000 produces 001.||new operations
 FileOpPathDisplay|operations|Execution|Progress path display|Show the current name, full path, or source and destination paths in operation progress.|0:Name;1:Full path;2:Source and destination|live
+ElevationIdleSeconds|operations|Execution|Administrator rights idle time (seconds)|Windows: after this many seconds without an operation that needs administrator rights, f4 drops them and the next such operation asks again. 0 keeps them until f4 exits.||live
 CopyAccessRights|operations|Execution|Access rights of copies|Permissions a copied file or folder receives. The copy dialog starts from this value and stores the choice made there.|0:Default;1:Copy from source;2:Inherit from destination|new operations
 ApplyCommandParallelism|operations|Execution|Concurrent Apply commands|Maximum concurrent commands in Apply command. Zero means unlimited. The initial default is the logical CPU count.||new operations
 ConfirmCopy|operations|Confirmations|Confirm copy|Show the copy destination and options dialog before an ordinary copy.||new operations
@@ -127,6 +129,7 @@ EditorTabSize|editor|Text input|Tab width|Set tab-stop width for newly opened ed
 EditorExpandTabs|editor|Text input|Tab key inserts|Insert a literal tab or spaces to the next tab stop. Legacy New and All modes currently have identical insertion behavior; existing tabs are not converted.|0:Tab character;1:Spaces;2:Spaces (legacy All)|new editors
 EditorAutoIndent|editor|Text input|Automatic indentation|Copy the current line's leading spaces and tabs when inserting a newline.||new editors
 EditorCursorBeyondEOL|editor|Text input|Cursor beyond end of line|Allow virtual space after the line end. Inserting text pads the gap with spaces.||new editors
+EditorPersistentBlocks|editor|Text input|Persistent blocks|Keep a selected block when the cursor moves away; typing, Enter and Backspace then work at the cursor and leave the block. Ctrl+P copies and Ctrl+M moves the block to the cursor, Del deletes it, Ctrl+U removes the selection.||live
 EditorUseEditorConfig|editor|Text input|Read adjacent .editorconfig|Apply matching indent_style, indent_size and tab_width from .editorconfig beside the opened file. Parent-directory discovery and the full standard are not implemented.||new editors
 EditorAutoComplete|editor|Completion|Editor completion|Enable completion in newly opened named files whose basenames match the configured masks.||new editors
 EditorAutoCompleteMask|editor|Completion|Completion filename masks|Semicolon-separated, case-insensitive filename patterns selecting files eligible for editor completion.||new editors

@@ -8,11 +8,13 @@ import (
 // CheckGroup is a cluster of checkboxes managed as a single widget.
 type CheckGroup struct {
 	ScreenObject
-	Items     []string
-	States    []bool
-	focusIdx  int
-	Columns   int
-	colWidths []int
+	Items        []string
+	States       []bool
+	focusIdx     int
+	Columns      int
+	colWidths    []int
+	mouseHovered bool
+	hoverIdx     int
 }
 
 func (cg *CheckGroup) GetData() any {
@@ -34,7 +36,7 @@ func (cg *CheckGroup) SetData(val any) {
 }
 
 func NewCheckGroup(x, y, cols int, items []string) *CheckGroup {
-	cg := &CheckGroup{Items: items, States: make([]bool, len(items))}
+	cg := &CheckGroup{Items: items, States: make([]bool, len(items)), hoverIdx: -1}
 	cg.canFocus = true
 	if cols < 1 {
 		cols = 1
@@ -76,6 +78,10 @@ func (cg *CheckGroup) DisplayObject(scr *ScreenBuf) {
 		if cg.IsDisabled() {
 			curAttr, curHigh = DimColor(curAttr), DimColor(curHigh)
 		}
+		hovered := cg.mouseHovered && cg.hoverIdx == i && roundedButtonsActive()
+		if hovered {
+			curAttr, curHigh = roundedControlHoverAttr(curAttr), roundedControlHoverAttr(curHigh)
+		}
 
 		sym := SymCheckboxOff
 		if cg.States[i] {
@@ -92,7 +98,11 @@ func (cg *CheckGroup) DisplayObject(scr *ScreenBuf) {
 		// "[x]" (3 cells) plus the padding space that used to be part of the
 		// literal "[ ] "/"[x] " prefix, then the item text.
 		p := NewPainter(scr)
-		p.DrawSymGlyph(cx, cg.Y1+row, sym, curAttr)
+		indicator := DialogIndicatorAttr(curAttr, cg.IsFocused() && i == cg.focusIdx)
+		if hovered {
+			indicator = roundedControlHoverAttr(indicator)
+		}
+		p.DrawSymGlyph(cx, cg.Y1+row, sym, indicator)
 		p.DrawString(cx+3, cg.Y1+row, " ", curAttr)
 		p.DrawStringHighlighted(cx+4, cg.Y1+row, itm, curAttr, curHigh)
 	}
@@ -142,6 +152,20 @@ func (cg *CheckGroup) ProcessMouse(e *vtinput.InputEvent) bool {
 	if cg.IsDisabled() {
 		return false
 	}
+	if e.Type == vtinput.MouseEventType && e.MouseEventFlags&vtinput.MouseMoved != 0 {
+		idx := -1
+		mx, my := int(e.MouseX), int(e.MouseY)
+		if cg.HitTest(mx, my) {
+			idx = getGridIndexFromMouse(cg.X1, cg.Y1, mx, my, cg.Columns, cg.colWidths)
+			if idx < 0 || idx >= len(cg.Items) {
+				idx = -1
+			}
+		}
+		if idx != cg.hoverIdx {
+			cg.hoverIdx = idx
+			return true
+		}
+	}
 	if e.ButtonState == vtinput.FromLeft1stButtonPressed && e.KeyDown {
 		mx, my := int(e.MouseX), int(e.MouseY)
 		if cg.HitTest(mx, my) {
@@ -154,4 +178,13 @@ func (cg *CheckGroup) ProcessMouse(e *vtinput.InputEvent) bool {
 		}
 	}
 	return false
+}
+
+// SetMouseHovered tracks whether the pointer is inside this group. ProcessMouse
+// keeps hoverIdx aligned with the individual option under the pointer.
+func (cg *CheckGroup) SetMouseHovered(hovered bool) {
+	cg.mouseHovered = hovered && !cg.IsDisabled()
+	if !cg.mouseHovered {
+		cg.hoverIdx = -1
+	}
 }

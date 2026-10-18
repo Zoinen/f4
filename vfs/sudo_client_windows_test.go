@@ -13,9 +13,9 @@ import (
 func TestSudoClient_WindowsElevatesWithoutDescriptors(t *testing.T) {
 	oldConfirm := confirmElevation
 	t.Cleanup(func() { confirmElevation = oldConfirm })
-	confirmElevation = func() bool {
+	confirmElevation = func() (bool, bool) {
 		t.Error("the user was asked to elevate for an Open that cannot work")
-		return false
+		return false, false
 	}
 	client := &SudoClient{}
 	if !client.IsAvailable() {

@@ -351,6 +351,7 @@ the same for a single run.
 *   **Built-in Terminal:** A fully-fledged built-in terminal running underneath the panels, just like `far2l`.
 *   **VTE Mirror Architecture:** The built-in terminal maintains its own parsed grid, while host-console mode can mirror the same PTY stream directly to the terminal. Read the [Terminal Architecture Guide](TERMINAL.md) for details.
 *   **Windows Strategy:** f4 supports both recent Windows terminals and environments where ConPTY is unavailable. Native Windows console mode uses the Windows Console API, and the Win32/GDI GUI backend works without a host terminal; under Wine, f4 can use the same Win32 GUI path or the `win32`/`winapi` console backend. ConPTY is therefore an optional integration path, not a prerequisite for running f4 on Windows.
+*   **ConEmu:** if double-clicking a folder or `..` only selects its name and does not open it, turn off *Settings → Mark/Copy → Intelligent mode* in ConEmu: it intercepts the double click for text selection before f4 receives the mouse event (f4#1959).
 
 ### Plugin Architecture (Out-of-Process RPC)
 

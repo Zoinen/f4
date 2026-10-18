@@ -124,9 +124,21 @@ type EditorView struct {
 	// glyphs of the Unicode Control Pictures block (U+2400..), so a NUL or ESC in
 	// a file is told apart from every other unprintable. Display only: widths,
 	// cursor columns and the file's bytes are unchanged (unxed/f4#1667).
-	ShowControlChars  bool
-	SelActive         bool
-	SelAnchorOffset   int // Абсолютное смещение начала выделения
+	ShowControlChars bool
+	SelActive        bool
+	SelAnchorOffset  int // Абсолютное смещение начала выделения
+	// selFrozen marks a persistent block (EditorPersistentBlocks, f4#1729):
+	// the selection stays from SelAnchorOffset to selEndOffset while the
+	// cursor moves, and edits elsewhere shift both ends.
+	selFrozen    bool
+	selEndOffset int
+	// rectFrozen is the same for the vertical block: its far corner stays
+	// at rectEndLine/rectEndCol, and rectLines is the line count the last
+	// edit left, to move the block along when lines come or go above it.
+	rectFrozen        bool
+	rectEndLine       int
+	rectEndCol        int
+	rectLines         int
 	editorBookmarks   [10]int
 	editorBookmarkSet [10]bool
 	// extraCursors holds the secondary carets of a multi-caret edit, sorted
@@ -156,16 +168,29 @@ type EditorView struct {
 	hoverURLStart           int
 	editSession             int // Unique ID to fence background tasks
 	mouseSelecting          bool
+	// mouseKeptBlock is the persistent block a click put aside: a click
+	// that turns out not to be a drag gives it back (f4#1729).
+	mouseKeptBlock  bool
+	mouseKeptAnchor int
+	mouseKeptEnd    int
+	// mouseKeptRect is the same for a persistent vertical block.
+	mouseKeptRect                          bool
+	mouseKeptRectLine, mouseKeptRectCol    int
+	mouseKeptRectEndLine, mouseKeptRectEnd int
 
 	// wheelCoast is what a fast wheel spin leaves behind: lines the editor
 	// still owes the cursor (see internal/wheel).
 	wheelCoast wheel.Coast
 
-	pasting     bool
-	Saving      bool
-	edited      bool
-	pasteBuffer []rune
-	AsyncBuf    *AsyncBuffer
+	pasting bool
+	Saving  bool
+	edited  bool
+	// readOnlyConsent is set once the user answered Save to the question
+	// asked before writing over a read-only file (f4#1981); it is not asked
+	// again for this editor.
+	readOnlyConsent bool
+	pasteBuffer     []rune
+	AsyncBuf        *AsyncBuffer
 	// mapped is the file itself, mapped read-only, when the editor could take
 	// that route: the piece table's original buffer is then a window onto it
 	// rather than a copy assembled from chunks. Nil for everything else.
@@ -566,6 +591,7 @@ func NewEditorViewWith(pt *piecetable.PieceTable, v vfs.VFS, path string, useEdi
 		BinaryFile:          editorBufferHasNUL(pt),
 		semanticExtentKnown: semanticExtentKnown,
 	}
+	ev.Li.OnEdit = ev.shiftFrozenBlock
 	if ev.TabSize <= 0 {
 		ev.TabSize = 8
 	}
@@ -694,7 +720,12 @@ func (ev *EditorView) SetText(text string) {
 	ev.codepageRaw = nil
 	ev.InvalidateDocumentMapping()
 
-	ev.Pt = piecetable.New([]byte(text))
+	// Keep the original and append-only buffers: save patches interpret
+	// Original pieces as ranges of the opened file, and undo snapshots refer
+	// to these same buffers. A new table would mislabel replacement text as
+	// unchanged disk bytes and invalidate the existing undo history.
+	ev.Pt.Delete(0, ev.Pt.Size())
+	ev.Pt.Insert(0, []byte(text))
 	ev.noteIndexRebuilt(ev.Li.Rebuild(ev.Pt))
 	ev.CursorLine = 0
 	ev.CursorPos = 0
@@ -2249,16 +2280,28 @@ func (ev *EditorView) processKeyInner(e *vtinput.InputEvent) bool {
 		ev.rectSelFocusColSet = false
 		if alt {
 			ev.SelActive = false
-			if !ev.RectSelActive {
-				ev.RectSelActive = true
-				ev.rectSelStartLine = ev.CursorLine
-				ev.rectSelStartCol = ev.getVisualColOf(ev.CursorLine, ev.CursorPos)
+			if !ev.RectSelActive || ev.rectFrozen {
+				ev.StartRectSelection(ev.CursorLine, ev.getVisualColOf(ev.CursorLine, ev.CursorPos))
 			}
 		} else if shift {
 			ev.RectSelActive = false
-			if !ev.SelActive {
-				ev.SelActive = true
-				ev.SelAnchorOffset = ev.Li.GetLineOffset(ev.CursorLine) + ev.CursorPos
+			if !ev.SelActive || ev.selFrozen {
+				ev.StartSelection(ev.Li.GetLineOffset(ev.CursorLine) + ev.CursorPos)
+			}
+		} else if config.App.EditorPersistentBlocks && ev.SelActive {
+			// A persistent block stays where it is when the cursor
+			// moves on (f4#1729).
+			if !ev.selFrozen {
+				ev.selEndOffset = ev.Li.GetLineOffset(ev.CursorLine) + ev.CursorPos
+				ev.selFrozen = true
+			}
+			ev.RectSelActive = false
+		} else if config.App.EditorPersistentBlocks && ev.RectSelActive {
+			if !ev.rectFrozen {
+				ev.rectEndLine = ev.CursorLine
+				ev.rectEndCol = ev.getVisualColOf(ev.CursorLine, ev.CursorPos)
+				ev.rectLines = ev.Li.LineCount()
+				ev.rectFrozen = true
 			}
 		} else {
 			ev.SelActive = false
@@ -2625,7 +2668,7 @@ func (ev *EditorView) processKeyInner(e *vtinput.InputEvent) bool {
 			}
 			// At the start of a line Ctrl+Backspace is Backspace and joins
 			// the line to the one above, as in far2l (editor.cpp, KEY_CTRLBS).
-			if ev.CursorPos > 0 || ev.CursorVirtualSpaces > 0 || ev.SelActive || ev.RectSelActive {
+			if ev.CursorPos > 0 || ev.CursorVirtualSpaces > 0 || ev.selectionTakesInput() {
 				ev.DeleteWordBackward()
 				return true
 			}
@@ -2633,7 +2676,7 @@ func (ev *EditorView) processKeyInner(e *vtinput.InputEvent) bool {
 		// A vertical block is a selection too. It lives in rectSelActive
 		// rather than selActive, and checking only the latter is what made
 		// Del eat the character under the cursor while a block was up.
-		if ev.SelActive || ev.RectSelActive {
+		if ev.selectionTakesInput() {
 			ev.DeleteSelection()
 		} else {
 			offset := ev.Li.GetLineOffset(ev.CursorLine) + ev.CursorPos
@@ -2697,7 +2740,7 @@ func (ev *EditorView) processKeyInner(e *vtinput.InputEvent) bool {
 		// Ctrl+Del deletes the word to the right (f4#1729). At the end of a
 		// line it is Del and joins the next line, as in far2l (editor.cpp,
 		// KEY_CTRLDEL).
-		if ctrl && !shift && !alt && (ev.SelActive || ev.RectSelActive ||
+		if ctrl && !shift && !alt && (ev.selectionTakesInput() ||
 			(ev.CursorVirtualSpaces == 0 && ev.CursorPos < ev.GetLineLength(ev.CursorLine))) {
 			ev.DeleteWordForward()
 			ev.updateDesiredVisualCol()
@@ -2733,7 +2776,7 @@ func (ev *EditorView) processKeyInner(e *vtinput.InputEvent) bool {
 	case vtinput.VK_RETURN:
 		ev.noteBufferEdit()
 		ev.saveUndo(opOther)
-		if ev.SelActive || ev.RectSelActive {
+		if ev.selectionTakesInput() {
 			ev.inGroup = true
 			ev.DeleteSelection()
 			ev.inGroup = false
@@ -2788,7 +2831,7 @@ func (ev *EditorView) processKeyInner(e *vtinput.InputEvent) bool {
 		if !shift && !ctrl && !alt {
 			ev.noteBufferEdit()
 			ev.saveUndo(opTyping)
-			if ev.SelActive || ev.RectSelActive {
+			if ev.selectionTakesInput() {
 				ev.inGroup = true
 				ev.DeleteSelection()
 				ev.inGroup = false
@@ -2834,7 +2877,7 @@ func (ev *EditorView) processKeyInner(e *vtinput.InputEvent) bool {
 	if e.Char != 0 && !ctrl {
 		ev.noteBufferEdit()
 		ev.saveUndo(opTyping)
-		if ev.SelActive || ev.RectSelActive {
+		if ev.selectionTakesInput() {
 			ev.inGroup = true
 			ev.DeleteSelection()
 			ev.inGroup = false
@@ -3078,7 +3121,8 @@ func (ev *EditorView) fillCellsSpan(target []vtui.CharInfo, data []byte, default
 		}
 
 		if ev.RectSelActive {
-			minY, maxY := ev.rectSelStartLine, ev.CursorLine
+			endLine, _ := ev.rectSelEnd()
+			minY, maxY := ev.rectSelStartLine, endLine
 			if minY > maxY {
 				minY, maxY = maxY, minY
 			}
@@ -3564,7 +3608,19 @@ func (ev *EditorView) ProcessMouse(e *vtinput.InputEvent) bool {
 			ev.mouseSelecting = false
 			if ev.SelActive && ev.SelAnchorOffset == ev.Li.GetLineOffset(ev.CursorLine)+ev.CursorPos {
 				ev.SelActive = false
+				if ev.mouseKeptBlock {
+					// A click, not a drag: the persistent block stays.
+					ev.SelActive, ev.selFrozen = true, true
+					ev.SelAnchorOffset, ev.selEndOffset = ev.mouseKeptAnchor, ev.mouseKeptEnd
+				}
+				if ev.mouseKeptRect {
+					ev.StartRectSelection(ev.mouseKeptRectLine, ev.mouseKeptRectCol)
+					ev.rectEndLine, ev.rectEndCol = ev.mouseKeptRectEndLine, ev.mouseKeptRectEnd
+					ev.rectLines = ev.Li.LineCount()
+					ev.rectFrozen = true
+				}
 			}
+			ev.mouseKeptBlock, ev.mouseKeptRect = false, false
 			vtui.FrameManager.Redraw()
 			return true
 		}
@@ -3652,6 +3708,15 @@ func (ev *EditorView) ProcessMouse(e *vtinput.InputEvent) bool {
 					ev.mouseWordSelecting = false
 				}
 				if !ev.SelActive || e.MouseEventFlags&vtinput.MouseMoved == 0 {
+					ev.mouseKeptBlock = ev.SelActive && ev.selFrozen
+					if ev.mouseKeptBlock {
+						ev.mouseKeptAnchor, ev.mouseKeptEnd = ev.SelAnchorOffset, ev.selEndOffset
+					}
+					ev.mouseKeptRect = ev.RectSelActive && ev.rectFrozen
+					if ev.mouseKeptRect {
+						ev.mouseKeptRectLine, ev.mouseKeptRectCol = ev.rectSelStartLine, ev.rectSelStartCol
+						ev.mouseKeptRectEndLine, ev.mouseKeptRectEnd = ev.rectEndLine, ev.rectEndCol
+					}
 					ev.SelActive = false
 					ev.RectSelActive = false
 					ev.rectSelFocusColSet = false
@@ -3660,8 +3725,7 @@ func (ev *EditorView) ProcessMouse(e *vtinput.InputEvent) bool {
 					ev.updateDesiredVisualCol()
 
 					if e.MouseEventFlags&vtinput.MouseMoved == 0 {
-						ev.SelActive = true
-						ev.SelAnchorOffset = offset
+						ev.StartSelection(offset)
 						ev.mouseSelecting = true
 					}
 				} else if ev.SelActive && e.MouseEventFlags&vtinput.MouseMoved != 0 {
@@ -3694,9 +3758,7 @@ func (ev *EditorView) ProcessMouse(e *vtinput.InputEvent) bool {
 				ev.updateDesiredVisualCol()
 
 				if e.MouseEventFlags&vtinput.MouseMoved == 0 {
-					ev.RectSelActive = true
-					ev.rectSelStartLine = ev.CursorLine
-					ev.rectSelStartCol = visualCol
+					ev.StartRectSelection(ev.CursorLine, visualCol)
 					ev.mouseRectSelecting = true
 				}
 			} else if ev.RectSelActive && e.MouseEventFlags&vtinput.MouseMoved != 0 {
@@ -5768,8 +5830,7 @@ func (ev *EditorView) selectWordUnderCursor() {
 			endOff += utf8.RuneLen(lineRunes[i])
 		}
 
-		ev.SelActive = true
-		ev.SelAnchorOffset = lineStart + startOff
+		ev.StartSelection(lineStart + startOff)
 		ev.CursorPos = endOff
 		ev.updateDesiredVisualCol()
 		ev.EnsureCursorVisible()
@@ -5966,7 +6027,38 @@ func (ev *EditorView) SaveToFile(afterSave func()) {
 	if rv, ok := ev.Vfs.(interface{ IsReadOnly() bool }); ok && rv.IsReadOnly() {
 		return
 	}
+	if !ev.readOnlyConsent && ev.fileIsReadOnly() {
+		// The save goes through a new file renamed over the old one, which
+		// the file's own permissions do not stop: without the question a
+		// read-only file was rewritten silently (f4#1981), as Far asks first.
+		dlg := vtui.ShowMessageEx(i18n.Msg("Editor.ReadOnlySaveTitle"),
+			fmt.Sprintf(i18n.Msg("Editor.ReadOnlySaveText"), vtui.TruncateMiddle(ev.Vfs.Base(ev.FilePath), 40)),
+			[]string{i18n.Msg("Editor.ReadOnlySaveButton"), i18n.Msg("vtui.Cancel")}, vtui.MessageWarn)
+		dlg.OnResult = func(res int) {
+			if res != 0 {
+				return
+			}
+			ev.readOnlyConsent = true
+			ev.saveToFile(afterSave, false)
+		}
+		return
+	}
 	ev.saveToFile(afterSave, false)
+}
+
+// fileIsReadOnly reports whether the local file being edited has no write
+// permission at all: the read-only attribute on Windows, no w bit on Unix.
+// A new file and a file that cannot be looked at are not read-only here; the
+// save itself reports what goes wrong with them.
+func (ev *EditorView) fileIsReadOnly() bool {
+	if ev.FilePath == "" || ev.CreateNewTarget || !fileops.IsLocalOSVFS(ev.Vfs) {
+		return false
+	}
+	info, err := os.Stat(ev.FilePath)
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	return info.Mode().Perm()&0o222 == 0
 }
 
 // saveToFile writes the buffer to ev.FilePath. fullWrite disables the
@@ -6405,11 +6497,82 @@ func (ev *EditorView) saveToFile(afterSave func(), fullWrite bool) {
 	})
 }
 
+// StartSelection starts a linear selection from anchor to the cursor. Every
+// place that starts one goes through it, so whatever a selection keeps besides
+// its anchor is reset in one place (persistent blocks, f4#1729).
+func (ev *EditorView) StartSelection(anchor int) {
+	ev.SelActive = true
+	ev.SelAnchorOffset = anchor
+	ev.selFrozen = false
+}
+
+// selectionTakesInput is true when typing, Enter, Tab and Backspace replace
+// the selection rather than work at the cursor: always, except for a
+// persistent block (f4#1729).
+func (ev *EditorView) selectionTakesInput() bool {
+	return (ev.SelActive && !ev.selFrozen) || (ev.RectSelActive && !ev.rectFrozen)
+}
+
+// StartRectSelection starts a vertical block at line and visual column col,
+// its far corner following the cursor.
+func (ev *EditorView) StartRectSelection(line, col int) {
+	ev.RectSelActive = true
+	ev.rectSelStartLine = line
+	ev.rectSelStartCol = col
+	ev.rectFrozen = false
+}
+
+// rectSelEnd is the far corner of the vertical block: the cursor, or where a
+// persistent block was left (f4#1729).
+func (ev *EditorView) rectSelEnd() (line, col int) {
+	if ev.rectFrozen {
+		return ev.rectEndLine, ev.rectEndCol
+	}
+	return ev.CursorLine, ev.getVisualColOf(ev.CursorLine, ev.CursorPos)
+}
+
+// shiftFrozenBlock keeps a persistent block on its text when the buffer
+// changes at offset by delta bytes (LineIndex.OnEdit).
+func (ev *EditorView) shiftFrozenBlock(offset, delta int) {
+	if ev.rectFrozen {
+		// Lines that come or go above a vertical block move it.
+		lines := ev.Li.LineCount()
+		if moved := lines - ev.rectLines; moved != 0 && offset <= ev.Li.GetLineOffset(min(ev.rectSelStartLine, ev.rectEndLine)) {
+			ev.rectSelStartLine += moved
+			ev.rectEndLine += moved
+		}
+		ev.rectLines = lines
+	}
+	if !ev.selFrozen {
+		return
+	}
+	shift := func(pos int) int {
+		if delta > 0 {
+			if pos >= offset {
+				return pos + delta
+			}
+			return pos
+		}
+		if pos >= offset-delta {
+			return pos + delta
+		}
+		if pos > offset {
+			return offset
+		}
+		return pos
+	}
+	ev.SelAnchorOffset = shift(ev.SelAnchorOffset)
+	ev.selEndOffset = shift(ev.selEndOffset)
+}
+
 func (ev *EditorView) GetSelectionRange() (int, int) {
 	if !ev.SelActive {
 		return 0, 0
 	}
 	cursorOffset := ev.Li.GetLineOffset(ev.CursorLine) + ev.CursorPos
+	if ev.selFrozen {
+		cursorOffset = min(max(ev.selEndOffset, 0), ev.Pt.Size())
+	}
 	min, max := ev.SelAnchorOffset, cursorOffset
 	if min > max {
 		min, max = max, min
@@ -6429,7 +6592,7 @@ func (ev *EditorView) InsertTextAtCursor(data []byte) {
 	}
 	ev.noteBufferEdit()
 	ev.saveUndo(opOther)
-	if ev.SelActive || ev.RectSelActive {
+	if ev.selectionTakesInput() {
 		ev.inGroup = true
 		ev.DeleteSelection()
 		ev.inGroup = false
@@ -6489,7 +6652,8 @@ func (ev *EditorView) DeleteSpacersForward() {
 func (ev *EditorView) CopySelection() {
 	if ev.RectSelActive {
 		GlobalLastClipboardWasRectangular = true
-		minY, maxY := ev.rectSelStartLine, ev.CursorLine
+		endLine, _ := ev.rectSelEnd()
+		minY, maxY := ev.rectSelStartLine, endLine
 		if minY > maxY {
 			minY, maxY = maxY, minY
 		}
@@ -6671,7 +6835,8 @@ func (ev *EditorView) PasteText(text string) {
 
 func (ev *EditorView) DeleteSelection() {
 	if ev.RectSelActive {
-		minY, maxY := ev.rectSelStartLine, ev.CursorLine
+		endLine, _ := ev.rectSelEnd()
+		minY, maxY := ev.rectSelStartLine, endLine
 		if minY > maxY {
 			minY, maxY = maxY, minY
 		}
@@ -6814,7 +6979,8 @@ func (ev *EditorView) preferredLineEnding(line int) []byte {
 // that line: Shift+Down over one line selects one line, not two.
 func (ev *EditorView) selectedLineSpan() (int, int) {
 	if ev.RectSelActive {
-		first, last := ev.rectSelStartLine, ev.CursorLine
+		endLine, _ := ev.rectSelEnd()
+		first, last := ev.rectSelStartLine, endLine
 		if first > last {
 			first, last = last, first
 		}
@@ -7521,8 +7687,7 @@ func (ev *EditorView) Search(pattern string, caseSensitive, reverse, regexp, who
 // selectFoundPattern selects a match found by Search or FindAll: the match
 // becomes the active selection and the cursor lands at its end.
 func (ev *EditorView) selectFoundPattern(off, length int) {
-	ev.SelActive = true
-	ev.SelAnchorOffset = off
+	ev.StartSelection(off)
 
 	end := off + length
 	// A search reads the whole buffer, so it can find a match in text the
@@ -7700,6 +7865,9 @@ func (ev *EditorView) rectSelectionColumns() (int, int) {
 	start, focus := ev.rectSelStartCol, ev.getVisualColOf(ev.CursorLine, ev.CursorPos)
 	if ev.rectSelFocusColSet {
 		focus = ev.rectSelFocusCol
+	}
+	if ev.rectFrozen {
+		focus = ev.rectEndCol
 	}
 	if start > focus {
 		start, focus = focus, start

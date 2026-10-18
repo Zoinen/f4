@@ -3,10 +3,14 @@ package app
 import (
 	"github.com/unxed/f4/internal/editor"
 	"github.com/unxed/f4/internal/keymap"
+	"github.com/unxed/f4/internal/panel"
+	"github.com/unxed/f4/internal/paneltest"
 	"github.com/unxed/f4/internal/piecetable"
+	"github.com/unxed/f4/internal/terminal"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 	"testing"
+	"time"
 )
 
 // Editor tests whose subject is the action, not the editor: each fetches a
@@ -18,6 +22,7 @@ import (
 // cannot import another's tests.
 func newActionTestEditor(t *testing.T, text string) *editor.EditorView {
 	t.Helper()
+	discardStaleUITasks()
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	ev := editor.NewEditorView(piecetable.New([]byte(text)), nil, "test.txt")
 	t.Cleanup(ev.Close)
@@ -227,8 +232,8 @@ func TestHotkeyDelAliasesResolve(t *testing.T) {
 		t.Errorf("explicit binding overridden by alias: got %q", got)
 	}
 	for _, key := range []string{"CtrlDel", "CtrlNumDel"} {
-		if got := hm.GetAction("Editor", key); got != "" {
-			t.Errorf("GetAction(%q, %q) = %q, want no action so the editor handles Ctrl+Del", "Editor", key, got)
+		if got := hm.GetAction("Editor", key); got != "Editor.DeleteWordForward" {
+			t.Errorf("GetAction(%q, %q) = %q, want Editor.DeleteWordForward", "Editor", key, got)
 		}
 	}
 }
@@ -242,6 +247,7 @@ func TestEditorFAR3HotkeysResolve(t *testing.T) {
 		"CtrlK":          "Editor.DeleteToLineEnd",
 		"AltD":           "Editor.DeleteToLineEnd",
 		"CtrlBS":         "Editor.DeleteWordBackward",
+		"CtrlDel":        "Editor.DeleteWordForward",
 		"CtrlT":          "Editor.DeleteSpacersForward",
 		"CtrlD":          "Editor.DeleteBlock",
 		"CtrlP":          "Editor.CopyBlockToCursor",
@@ -258,5 +264,148 @@ func TestEditorFAR3HotkeysResolve(t *testing.T) {
 		if got := hm.GetAction("Editor", key); got != want {
 			t.Errorf("Editor/%s = %q, want %q", key, got, want)
 		}
+	}
+}
+
+func TestEditorCtrlOOpensSwitchableTerminalWorkspace(t *testing.T) {
+	fm := vtui.FrameManager
+	ev := newActionTestEditor(t, "text")
+
+	pf := panel.NewPanelsFrame()
+	defer pf.Close()
+	pf.ResizeConsole(80, 25)
+	pf.ShellMode = terminal.ShellModeOwn
+	fm.Push(pf)
+	fm.Push(ev)
+
+	if !RunAction("Panel.ToggleWorkspace") {
+		t.Fatal("Ctrl+O workspace action was not handled from the editor")
+	}
+	if len(fm.Screens) != 2 {
+		t.Fatalf("Ctrl+O created %d workspaces, want a separate terminal workspace", len(fm.Screens))
+	}
+	clone, ok := fm.GetTopFrame().(*panel.PanelsFrame)
+	if !ok || clone == pf {
+		t.Fatalf("active workspace frame = %T, want a forked terminal PanelsFrame", fm.GetTopFrame())
+	}
+	defer clone.Close()
+	if clone.ShowPanels {
+		t.Error("new terminal workspace still shows panels")
+	}
+	if !pf.ShowPanels {
+		t.Error("opening the terminal workspace hid the original panels")
+	}
+	paneltest.WaitForLoad(t, pf.Panels[0].(*panel.FileSystemPanel))
+	paneltest.WaitForLoad(t, pf.Panels[1].(*panel.FileSystemPanel))
+	paneltest.WaitForLoad(t, clone.Panels[0].(*panel.FileSystemPanel))
+	paneltest.WaitForLoad(t, clone.Panels[1].(*panel.FileSystemPanel))
+}
+
+// discardStaleUITasks drops the UI tasks earlier tests left queued: Init does
+// not empty TaskChan, and a macro test's assign dialog or " Macro " message
+// would otherwise be pushed over this test's editor the first time a helper
+// pumps the queue (f4 train #1995, darwin/arm64). TaskChan is fed by a pump
+// goroutine, so an empty select with default can miss a task that is queued
+// but not offered yet: the queue counts as empty after a short quiet spell.
+func discardStaleUITasks() {
+	for {
+		select {
+		case <-vtui.FrameManager.TaskChan:
+		case <-time.After(20 * time.Millisecond):
+			return
+		}
+	}
+}
+
+// newEditorConsoleWorkspaces is the layout F4 produces: the panels in one
+// workspace and the editor opened from them in a workspace of its own.
+func newEditorConsoleWorkspaces(t *testing.T) (*panel.PanelsFrame, *editor.EditorView) {
+	t.Helper()
+	ev := newActionTestEditor(t, "text")
+	pf := panel.NewPanelsFrame()
+	t.Cleanup(pf.Close)
+	pf.ResizeConsole(80, 25)
+	pf.ShellMode = terminal.ShellModeOwn
+	vtui.FrameManager.Push(pf)
+	vtui.FrameManager.AddScreen(ev)
+	paneltest.WaitForLoad(t, pf.Panels[0].(*panel.FileSystemPanel))
+	paneltest.WaitForLoad(t, pf.Panels[1].(*panel.FileSystemPanel))
+	if top := vtui.FrameManager.GetTopFrame(); top != vtui.Frame(ev) {
+		title := ""
+		if top != nil {
+			title = top.GetTitle()
+		}
+		t.Fatalf("setup: top frame %T %q, want the editor", top, title)
+	}
+	if fm := vtui.FrameManager; len(fm.Screens) != 2 || fm.ActiveIdx != 1 {
+		t.Fatalf("setup: %d workspaces, active %d; want the editor in its own workspace, active", len(fm.Screens), fm.ActiveIdx)
+	}
+	return pf, ev
+}
+
+// f4#1973: Ctrl+O in the editor peeks at the console of the workspace the
+// editor was opened from, and Ctrl+O there returns to the editor with the
+// panels shown again.
+func TestEditorCtrlOShowsConsoleOfOriginWorkspaceAndReturns(t *testing.T) {
+	fm := vtui.FrameManager
+	pf, _ := newEditorConsoleWorkspaces(t)
+
+	if !RunAction("Panel.ToggleWorkspace") {
+		t.Fatal("Ctrl+O workspace action was not handled from the editor")
+	}
+	if len(fm.Screens) != 2 {
+		t.Fatalf("Ctrl+O created a workspace: %d workspaces, want the two there were", len(fm.Screens))
+	}
+	if fm.ActiveIdx != 0 || fm.GetTopFrame() != vtui.Frame(pf) {
+		t.Fatalf("after Ctrl+O the active workspace is %d (top %T), want the panels' workspace 0", fm.ActiveIdx, fm.GetTopFrame())
+	}
+	if pf.ShowPanels {
+		t.Fatal("Ctrl+O from the editor left the origin workspace showing panels, not its console")
+	}
+
+	if !RunAction("Panel.Toggle") {
+		t.Fatal("Ctrl+O was not handled in the console")
+	}
+	if fm.ActiveIdx != 1 {
+		t.Fatalf("second Ctrl+O switched to workspace %d, want back to the editor (1)", fm.ActiveIdx)
+	}
+	if !pf.ShowPanels {
+		t.Error("second Ctrl+O did not give the panels back")
+	}
+}
+
+// Ctrl+Tab to the editor and Ctrl+O again must not forget that the panels were
+// visible before the first Ctrl+O.
+func TestEditorCtrlOAfterCtrlTabStillRestoresPanels(t *testing.T) {
+	fm := vtui.FrameManager
+	pf, _ := newEditorConsoleWorkspaces(t)
+
+	RunAction("Panel.ToggleWorkspace")
+	fm.SwitchScreen(1) // Ctrl+Tab back to the editor, console still open
+	RunAction("Panel.ToggleWorkspace")
+	if fm.ActiveIdx != 0 || pf.ShowPanels {
+		t.Fatalf("second Ctrl+O from the editor: workspace %d, ShowPanels=%t; want the console of workspace 0", fm.ActiveIdx, pf.ShowPanels)
+	}
+	RunAction("Panel.Toggle")
+	if fm.ActiveIdx != 1 || !pf.ShowPanels {
+		t.Fatalf("return to the editor: workspace %d, ShowPanels=%t; want the editor with the panels restored", fm.ActiveIdx, pf.ShowPanels)
+	}
+}
+
+// The editor closed while its console peek was still open: Ctrl+O is then the
+// ordinary panels toggle again.
+func TestConsoleCtrlOWithoutEditorTogglesPanels(t *testing.T) {
+	fm := vtui.FrameManager
+	pf, _ := newEditorConsoleWorkspaces(t)
+
+	RunAction("Panel.ToggleWorkspace")
+	fm.CloseScreen(1)
+	fm.SwitchScreen(0)
+	if pf.ShowPanels {
+		t.Fatal("setup: panels are visible, want the console")
+	}
+	RunAction("Panel.Toggle")
+	if !pf.ShowPanels || fm.ActiveIdx != 0 {
+		t.Fatalf("Ctrl+O after the editor closed: ShowPanels=%t, workspace %d; want the panels back in workspace 0", pf.ShowPanels, fm.ActiveIdx)
 	}
 }

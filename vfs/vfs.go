@@ -8,6 +8,7 @@ import (
 	"os"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/unxed/vtinput"
@@ -151,8 +152,13 @@ type VFSItem struct {
 	// too, and writing that back on every attribute change would be noise.
 	SetBTime bool
 	UnixMode uint32 // Raw numeric mode for chmod
-	Uid, Gid int    // Ownership
-	WinAttrs uint32 // Windows file attributes
+	// SetUnixMode asks SetAttributes to write UnixMode even when it is 000.
+	// Without it a zero mode means "leave the mode alone", which the copy
+	// relies on; the attributes dialog sets it, so removing the last
+	// permission of a file (-r-------- to ----------) is applied (f4#1981).
+	SetUnixMode bool
+	Uid, Gid    int    // Ownership
+	WinAttrs    uint32 // Windows file attributes
 	// Nlink is the number of hard links to the file (far3's "LN" panel
 	// column). 1 for an ordinary file with no extra links.
 	Nlink uint64
@@ -513,6 +519,15 @@ type OptimisticPathSetter interface {
 // extensions. Returning an empty string asks the host to use Base(srcPath).
 type TransferNameProvider interface {
 	TransferName(srcPath string, dst VFS) string
+}
+
+// TransferContentProvider lets a source VFS hand over, for a copy into
+// another file system, the whole content of the one file to create for an
+// item, a directory included: the registry exports a key with all its
+// subkeys as one .reg file (f4#242). ok false copies the item as it is; the
+// name of the file comes from TransferNameProvider.
+type TransferContentProvider interface {
+	TransferContent(ctx context.Context, srcPath string, dst VFS) (content []byte, ok bool, err error)
 }
 
 // ShareRole is the effective access granted by a share link. Providers expose
@@ -1277,13 +1292,47 @@ func WithoutElevation(ctx context.Context) context.Context {
 }
 
 // ElevationAllowed reports whether a refused call made with ctx may be
-// retried through sudo.
+// retried through sudo: not when the caller ruled it out, and not once the
+// password was refused earlier in the same operation (WithElevationScope).
 func ElevationAllowed(ctx context.Context) bool {
 	if ctx == nil {
 		return true
 	}
-	off, _ := ctx.Value(noElevationKeyType{}).(bool)
-	return !off
+	if off, _ := ctx.Value(noElevationKeyType{}).(bool); off {
+		return false
+	}
+	if scope := elevationScopeOf(ctx); scope != nil && scope.declined.Load() {
+		return false
+	}
+	return true
+}
+
+type elevationScopeKeyType struct{}
+
+// elevationScope is one operation the user started: a size count (F3, the
+// quick view), a copy, a search. Once the sudo password is refused inside
+// it, the rest of the operation goes on without elevation and does not ask
+// again, however long it runs; the next operation asks once more (f4#1998).
+type elevationScope struct {
+	declined atomic.Bool
+}
+
+// WithElevationScope starts an operation scope in ctx, or keeps the one
+// ctx already belongs to, so that an operation made of several scans stays
+// one operation.
+func WithElevationScope(ctx context.Context) context.Context {
+	if elevationScopeOf(ctx) != nil {
+		return ctx
+	}
+	return context.WithValue(ctx, elevationScopeKeyType{}, &elevationScope{})
+}
+
+func elevationScopeOf(ctx context.Context) *elevationScope {
+	if ctx == nil {
+		return nil
+	}
+	scope, _ := ctx.Value(elevationScopeKeyType{}).(*elevationScope)
+	return scope
 }
 
 type ProgressCallback func(msg string, percent int)

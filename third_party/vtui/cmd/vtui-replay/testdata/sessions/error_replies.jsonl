@@ -1,0 +1,7 @@
+{"time":0.001,"dir":"down","msg":{"op":"hello","seq":1,"version":1}}
+{"time":0.003,"dir":"up","msg":{"op":"welcome","replyTo":1,"version":1}}
+{"time":0.005,"dir":"down","msg":{"op":"frobnicate","seq":2}}
+{"time":0.006,"dir":"up","msg":{"op":"error","replyTo":2,"code":"HANDLER_ERROR","size":[0,0],"need":[0,0],"message":"unknown operation: \"frobnicate\""}}
+{"time":0.008,"dir":"down","msg":{"op":"mount","seq":3,"frameId":"noTree"}}
+{"time":0.009,"dir":"up","msg":{"op":"error","replyTo":3,"code":"HANDLER_ERROR","size":[0,0],"need":[0,0],"message":"mount: missing tree"}}
+{"time":0.012,"dir":"down","msg":{"op":"quit"}}

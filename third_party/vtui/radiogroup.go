@@ -8,16 +8,18 @@ import (
 // RadioGroup is a cluster of radio buttons where only one can be selected.
 type RadioGroup struct {
 	ScreenObject
-	Items     []string
-	Selected  int
-	focusIdx  int
-	OnChange  func(int)
-	Columns   int
-	colWidths []int
+	Items        []string
+	Selected     int
+	focusIdx     int
+	OnChange     func(int)
+	Columns      int
+	colWidths    []int
+	mouseHovered bool
+	hoverIdx     int
 }
 
 func NewRadioGroup(x, y, cols int, items []string) *RadioGroup {
-	rg := &RadioGroup{Items: items}
+	rg := &RadioGroup{Items: items, hoverIdx: -1}
 	rg.canFocus = true
 	if cols < 1 {
 		cols = 1
@@ -60,6 +62,10 @@ func (rg *RadioGroup) DisplayObject(scr *ScreenBuf) {
 		if rg.IsDisabled() {
 			curAttr, curHigh = DimColor(curAttr), DimColor(curHigh)
 		}
+		hovered := rg.mouseHovered && rg.hoverIdx == i && roundedButtonsActive()
+		if hovered {
+			curAttr, curHigh = roundedControlHoverAttr(curAttr), roundedControlHoverAttr(curHigh)
+		}
 
 		sym := SymRadioOff
 		if i == rg.Selected {
@@ -75,7 +81,11 @@ func (rg *RadioGroup) DisplayObject(scr *ScreenBuf) {
 
 		// "( )" (3 cells) plus the padding space that used to be part of the
 		// literal "( ) "/"(•) " prefix, then the item text.
-		p.DrawSymGlyph(cx, rg.Y1+row, sym, curAttr)
+		indicator := DialogIndicatorAttr(curAttr, rg.IsFocused() && i == rg.focusIdx)
+		if hovered {
+			indicator = roundedControlHoverAttr(indicator)
+		}
+		p.DrawSymGlyph(cx, rg.Y1+row, sym, indicator)
 		p.DrawString(cx+3, rg.Y1+row, " ", curAttr)
 		p.DrawStringHighlighted(cx+4, rg.Y1+row, itm, curAttr, curHigh)
 	}
@@ -156,6 +166,20 @@ func (rg *RadioGroup) ProcessMouse(e *vtinput.InputEvent) bool {
 	if rg.IsDisabled() {
 		return false
 	}
+	if e.Type == vtinput.MouseEventType && e.MouseEventFlags&vtinput.MouseMoved != 0 {
+		idx := -1
+		mx, my := int(e.MouseX), int(e.MouseY)
+		if rg.HitTest(mx, my) {
+			idx = getGridIndexFromMouse(rg.X1, rg.Y1, mx, my, rg.Columns, rg.colWidths)
+			if idx < 0 || idx >= len(rg.Items) {
+				idx = -1
+			}
+		}
+		if idx != rg.hoverIdx {
+			rg.hoverIdx = idx
+			return true
+		}
+	}
 	if e.Type == vtinput.MouseEventType && e.ButtonState == vtinput.FromLeft1stButtonPressed && e.KeyDown {
 		mx, my := int(e.MouseX), int(e.MouseY)
 		if rg.HitTest(mx, my) {
@@ -174,4 +198,13 @@ func (rg *RadioGroup) ProcessMouse(e *vtinput.InputEvent) bool {
 		}
 	}
 	return false
+}
+
+// SetMouseHovered tracks whether the pointer is inside this group. ProcessMouse
+// keeps hoverIdx aligned with the individual option under the pointer.
+func (rg *RadioGroup) SetMouseHovered(hovered bool) {
+	rg.mouseHovered = hovered && !rg.IsDisabled()
+	if !rg.mouseHovered {
+		rg.hoverIdx = -1
+	}
 }

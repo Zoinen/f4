@@ -107,6 +107,9 @@ func (s *cmdShellSim) wait(d time.Duration) {
 		testutil.DrainUITasks()
 		time.Sleep(5 * time.Millisecond)
 	}
+	// A timer may post its UI task during the final sleep. Drain once more
+	// so the test does not mistake that scheduling boundary for a lost task.
+	testutil.DrainUITasks()
 }
 
 // prompt sends what PROMPT=$E]133;A$E\$P$G$E]133;B$E\ produces, in the order
@@ -141,13 +144,28 @@ func (s *cmdShellSim) run(command string) {
 	s.feed(command + "\r\n")
 }
 
-// settledWithin is the time a prompt may take to end an execution without
-// falling back to the release: the first look plus one re-look for the build
-// that delivers the text late, with slack for the test scheduler.
-const settledWithin = 120 * time.Millisecond
+// settledWithin bounds prompt completion well below the five-second stuck-
+// prompt fallback while leaving Windows CI enough scheduling slack for the
+// timer and queued UI task, including the build that delivers text late.
+const settledWithin = 500 * time.Millisecond
+
+// settledGrace is extra time given to an execution that is expected to have
+// ended. A loaded Windows runner stretches the 20ms timers of the sim well past
+// settledWithin (main 72bdcb32d: two attempts in a row, while the same tree
+// passed in the train), and the end is only a timer firing a little late. It
+// stays well below the release (cmdPromptMaxAttempts looks, 400ms with the
+// sim's delays), so a prompt that only the release would end still fails.
+const settledGrace = 250 * time.Millisecond
 
 func (s *cmdShellSim) expectExecuting(want bool, what string) {
 	s.t.Helper()
+	if !want {
+		deadline := time.Now().Add(settledGrace)
+		for s.pf.Executing && time.Now().Before(deadline) {
+			testutil.DrainUITasks()
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
 	if s.pf.Executing != want {
 		s.t.Errorf("[%s] %s: executing=%v, want %v", s.build.name, what, s.pf.Executing, want)
 	}

@@ -513,6 +513,7 @@ type F4Config struct {
 	ApplyCommandParallelism    int  // 0 = unlimited; absent config defaults to runtime.NumCPU()
 	EditorAutoComplete         bool
 	EditorAutoCompleteMask     string
+	TreeExplorerMode           bool // Ctrl+T tree like Explorer's: the panel that opened it follows the tree's cursor (f4#1602)
 	// ArchiveEnterExcludeMask names the files Enter must not open as an
 	// archive even when their content is one. It is a far2l file mask, so
 	// "|" still carves an exception out of it.
@@ -544,6 +545,7 @@ type F4Config struct {
 	EditorExpandTabs                int
 	EditorAutoIndent                bool
 	EditorCursorBeyondEOL           bool
+	EditorPersistentBlocks          bool
 	EditorTabSize                   int
 	EditorUseEditorConfig           bool
 	EditorCrosshair                 bool
@@ -601,6 +603,10 @@ type F4Config struct {
 	// never queues) to WheelAccelerationMax. The spin window, the coast
 	// step and its delay are tuned in code, see internal/wheel.
 	WheelAcceleration int
+	// ElevationIdleSeconds: how long the elevated helper of Windows (UAC) may
+	// stay without requests before f4 closes it and asks again next time;
+	// 0 keeps administrator rights until f4 exits (f4#1768).
+	ElevationIdleSeconds int
 	// Path hints (autocomplete in path inputs and the command line).
 	PathHintTimeout     int  // seconds for a VFS ReadDir behind a hint
 	PathHintFullPath    bool // show full paths in the hint, false = final element only
@@ -634,6 +640,7 @@ type F4Config struct {
 	AutoSaveCurrentPanel         bool
 	AutoSaveGUIWindow            bool
 	DefaultFileOpMode            int
+	QueueSmallOpsBypass          bool // small files in the queue need not wait for a long operation (f4#1894)
 	FileOpPathDisplay            int
 	ClipboardImageFormat         string
 	ClipboardImagePNGCompression string
@@ -807,6 +814,7 @@ var App = F4Config{
 	ApplyCommandParallelism:    runtime.NumCPU(),
 	EditorAutoComplete:         true,
 	EditorAutoCompleteMask:     "*.go;*.c;*.cpp;*.h;*.hpp;*.py;*.js;*.ts;*.rs;*.java;*.sh;*.txt;*.md;*.html;*.css;*.json",
+	TreeExplorerMode:           false,
 	// far2l's KnownDocumentTypes (multiarc/src/MultiArc.cpp), the list it
 	// refuses to sink into on Enter "even while its really archive", plus
 	// .epub, which f4 issue #1184 named and far2l's list does not.
@@ -818,6 +826,7 @@ var App = F4Config{
 	EditorExpandTabs:                0,
 	EditorAutoIndent:                true,
 	EditorCursorBeyondEOL:           false,
+	EditorPersistentBlocks:          false,
 	EditorTabSize:                   4,
 	EditorUseEditorConfig:           true,
 	EditorCrosshair:                 false,
@@ -856,6 +865,7 @@ var App = F4Config{
 	WheelTableUp:                    0,
 	WheelTableDown:                  0,
 	WheelAcceleration:               WheelAccelerationDefault,
+	ElevationIdleSeconds:            DefaultElevationIdleSeconds,
 	PathHintTimeout:                 2,
 	PathHintFullPath:                false,
 	PathHintSource:                  2,
@@ -882,6 +892,7 @@ var App = F4Config{
 	AutoSaveCurrentPanel:            true,
 	AutoSaveGUIWindow:               true,
 	DefaultFileOpMode:               0,
+	QueueSmallOpsBypass:             true,
 	FileOpPathDisplay:               0,
 	ClipboardImageFormat:            "png",
 	ClipboardImagePNGCompression:    "default",
@@ -1061,6 +1072,7 @@ func parseConfigInto(cfg *F4Config, merged *ini.File) {
 	cfg.InfoPanelBytes = merged.GetString("Panel", "InfoPanelBytes", "0") == "1"
 	cfg.InfoPanelCPUGPU = merged.GetString("Panel", "InfoPanelCPUGPU", "0") == "1"
 	cfg.TreeRootWholeVolume = merged.GetString("Panel", "TreeRootWholeVolume", "1") == "1"
+	cfg.TreeExplorerMode = merged.GetString("Panel", "TreeExplorerMode", "0") == "1"
 	cfg.EscTogglePanels = merged.GetString("Panel", "EscTogglePanels", "1") == "1"
 	cfg.TerminalCtrlNWorkspace = merged.GetString("Panel", "TerminalCtrlNWorkspace", "1") == "1"
 	cfg.InheritTerminalHistory = merged.GetString("Panel", "InheritTerminalHistory", "0") == "1"
@@ -1106,6 +1118,7 @@ func parseConfigInto(cfg *F4Config, merged *ini.File) {
 		cfg.ApplyCommandParallelism = runtime.NumCPU()
 	}
 	_, _ = fmt.Sscanf(merged.GetString("Panel", "DefaultFileOpMode", "0"), "%d", &cfg.DefaultFileOpMode)
+	cfg.QueueSmallOpsBypass = merged.GetString("Panel", "QueueSmallOpsBypass", "1") != "0"
 	cfg.ConfirmCopy = merged.GetString("System", "ConfirmCopy", "1") == "1"
 	cfg.ConfirmMove = merged.GetString("System", "ConfirmMove", "1") == "1"
 	cfg.ConfirmDelete = merged.GetString("System", "ConfirmDelete", "1") == "1"
@@ -1195,6 +1208,7 @@ func parseConfigInto(cfg *F4Config, merged *ini.File) {
 	_, _ = fmt.Sscanf(merged.GetString("Editor", "ExpandTabs", "0"), "%d", &cfg.EditorExpandTabs)
 	cfg.EditorAutoIndent = merged.GetString("Editor", "AutoIndent", "1") == "1"
 	cfg.EditorCursorBeyondEOL = merged.GetString("Editor", "CursorBeyondEOL", "0") == "1"
+	cfg.EditorPersistentBlocks = merged.GetString("Editor", "PersistentBlocks", "0") == "1"
 	cfg.EditorUseEditorConfig = merged.GetString("Editor", "UseEditorConfig", "1") == "1"
 	cfg.EditorCrosshair = merged.GetString("Editor", "Crosshair", "0") == "1"
 	cfg.EditorShowControlChars = merged.GetString("Editor", "ShowControlChars", "0") == "1"
@@ -1241,6 +1255,13 @@ func parseConfigInto(cfg *F4Config, merged *ini.File) {
 	// [Mouse] — the strength of the fast-spin ramp; its shape is tuned in
 	// code (see internal/wheel), and the value is clamped into its range.
 	cfg.WheelAcceleration = loadWheelInt(merged, "Acceleration", WheelAccelerationDefault, WheelAccelerationMin, WheelAccelerationMax)
+
+	// [Elevation]
+	cfg.ElevationIdleSeconds = DefaultElevationIdleSeconds
+	_, _ = fmt.Sscanf(merged.GetString("Elevation", "IdleSeconds", strconv.Itoa(DefaultElevationIdleSeconds)), "%d", &cfg.ElevationIdleSeconds)
+	if cfg.ElevationIdleSeconds < 0 {
+		cfg.ElevationIdleSeconds = 0
+	}
 
 	// [PathHints]
 	cfg.PathHintTimeout = 2
@@ -1421,6 +1442,7 @@ func SerializeSettingsConfig(cfg F4Config) []byte {
 	fmt.Fprintf(&sb, "InfoPanelBytes = %d\n", map[bool]int{true: 1, false: 0}[cfg.InfoPanelBytes])
 	fmt.Fprintf(&sb, "InfoPanelCPUGPU = %d\n", map[bool]int{true: 1, false: 0}[cfg.InfoPanelCPUGPU])
 	fmt.Fprintf(&sb, "TreeRootWholeVolume = %d\n", map[bool]int{true: 1, false: 0}[cfg.TreeRootWholeVolume])
+	fmt.Fprintf(&sb, "TreeExplorerMode = %d\n", map[bool]int{true: 1, false: 0}[cfg.TreeExplorerMode])
 	fmt.Fprintf(&sb, "EscTogglePanels = %d\n", map[bool]int{true: 1, false: 0}[cfg.EscTogglePanels])
 	fmt.Fprintf(&sb, "TerminalCtrlNWorkspace = %d\n", map[bool]int{true: 1, false: 0}[cfg.TerminalCtrlNWorkspace])
 	fmt.Fprintf(&sb, "InheritTerminalHistory = %d\n", map[bool]int{true: 1, false: 0}[cfg.InheritTerminalHistory])
@@ -1452,6 +1474,7 @@ func SerializeSettingsConfig(cfg F4Config) []byte {
 	fmt.Fprintf(&sb, "SearchExactOnHit = %d\n", map[bool]int{true: 1, false: 0}[cfg.SearchExactOnHit])
 	fmt.Fprintf(&sb, "ApplyCommandParallelism = %d\n", cfg.ApplyCommandParallelism)
 	fmt.Fprintf(&sb, "DefaultFileOpMode = %d\n", cfg.DefaultFileOpMode)
+	fmt.Fprintf(&sb, "QueueSmallOpsBypass = %d\n", map[bool]int{true: 1, false: 0}[cfg.QueueSmallOpsBypass])
 	fmt.Fprintf(&sb, "FileOpPathDisplay = %d\n", cfg.FileOpPathDisplay)
 	fmt.Fprintf(&sb, "CopyAccessRights = %d\n", cfg.CopyAccessRights)
 
@@ -1519,6 +1542,7 @@ func SerializeSettingsConfig(cfg F4Config) []byte {
 	fmt.Fprintf(&sb, "ExpandTabs = %d\n", cfg.EditorExpandTabs)
 	fmt.Fprintf(&sb, "AutoIndent = %d\n", map[bool]int{true: 1, false: 0}[cfg.EditorAutoIndent])
 	fmt.Fprintf(&sb, "CursorBeyondEOL = %d\n", map[bool]int{true: 1, false: 0}[cfg.EditorCursorBeyondEOL])
+	fmt.Fprintf(&sb, "PersistentBlocks = %d\n", map[bool]int{true: 1, false: 0}[cfg.EditorPersistentBlocks])
 	fmt.Fprintf(&sb, "UseEditorConfig = %d\n", map[bool]int{true: 1, false: 0}[cfg.EditorUseEditorConfig])
 	fmt.Fprintf(&sb, "Crosshair = %d\n", map[bool]int{true: 1, false: 0}[cfg.EditorCrosshair])
 	fmt.Fprintf(&sb, "ShowControlChars = %d\n", map[bool]int{true: 1, false: 0}[cfg.EditorShowControlChars])
@@ -1565,6 +1589,8 @@ func SerializeSettingsConfig(cfg F4Config) []byte {
 	fmt.Fprintf(&sb, "TableUp = %d\n", cfg.WheelTableUp)
 	fmt.Fprintf(&sb, "TableDown = %d\n", cfg.WheelTableDown)
 	fmt.Fprintf(&sb, "Acceleration = %d\n", cfg.WheelAcceleration)
+	sb.WriteString("\n[Elevation]\n")
+	fmt.Fprintf(&sb, "IdleSeconds = %d\n", cfg.ElevationIdleSeconds)
 	sb.WriteString("\n[PathHints]\n")
 	fmt.Fprintf(&sb, "Timeout = %d\n", cfg.PathHintTimeout)
 	fmt.Fprintf(&sb, "FullPath = %d\n", map[bool]int{true: 1, false: 0}[cfg.PathHintFullPath])

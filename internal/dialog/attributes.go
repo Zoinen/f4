@@ -91,6 +91,9 @@ func applyUnixAttributesToOne(ctx context.Context, v vfs.VFS, path string, item 
 		item.BTime, item.SetBTime = edit.btime, true
 	}
 	item.UnixMode = (item.UnixMode & edit.keepMode) | (edit.mode &^ edit.keepMode)
+	// The mode the dialog computed is written even when it is 000 (f4#1981),
+	// where the object's own mode was known to compute it from.
+	item.SetUnixMode = item.HasMetadata(vfs.MetadataPermissions)
 	if err := v.SetAttributes(ctx, path, item); err != nil {
 		return fmt.Errorf("%s: %w", path, err)
 	}
@@ -334,6 +337,62 @@ func replaceLinkTarget(ctx context.Context, v vfs.VFS, path, newTarget string, j
 	return fmt.Errorf("create symlink %q: %w (original target restored)", path, createErr)
 }
 
+// Windows file attributes the dialog edits through SetFileAttributes besides
+// Read only, Hidden, System and Archive (f4#1931).
+const (
+	winAttrTemporary         = 0x00000100
+	winAttrOffline           = 0x00001000
+	winAttrNotContentIndexed = 0x00002000
+	winAttrPinned            = 0x00080000
+	winAttrUnpinned          = 0x00100000
+)
+
+// isCloudFileItem reports whether the object belongs to a cloud files
+// provider (OneDrive and the like): it carries the cloud reparse tag
+// (IO_REPARSE_TAG_CLOUD, 0x9000?01A) or one of the attributes only such files
+// have. Pinned and Unpinned mean nothing, and are refused by Windows, on any
+// other file.
+func isCloudFileItem(item vfs.VFSItem) bool {
+	const cloudAttrs = winAttrPinned | winAttrUnpinned | 0x00040000 | 0x00400000
+	return item.WinAttrs&cloudAttrs != 0 || item.ReparseTag&0xFFFF0FFF == 0x9000001A
+}
+
+// cloudAttributesAvailable reports whether Pinned and Unpinned can be set for
+// the whole selection: every object has to be a cloud file.
+func cloudAttributesAvailable(targets []AttributesTarget) bool {
+	for _, target := range targets {
+		if !isCloudFileItem(target.Item) {
+			return false
+		}
+	}
+	return len(targets) > 0
+}
+
+// applyFlagState records the state of a three-state box in the edit: a mixed
+// box, or one that cannot be used, leaves the flag as each object has it.
+func (e *windowsAttributesEdit) applyFlagState(bit uint32, state int, unavailable bool) {
+	switch {
+	case unavailable || state == 2:
+		e.keepWinAttrs |= bit
+	case state == 1:
+		e.winAttrs |= bit
+	}
+}
+
+// excludeEachOther makes checking either box clear the other one.
+func excludeEachOther(a, b *vtui.Checkbox) {
+	a.OnChange = func(state int) {
+		if state == 1 {
+			b.State = 0
+		}
+	}
+	b.OnChange = func(state int) {
+		if state == 1 {
+			a.State = 0
+		}
+	}
+}
+
 // windowsAttributesEdit is the Windows dialog's counterpart of
 // unixAttributesEdit: only what the user changed, the rest stays per object.
 type windowsAttributesEdit struct {
@@ -346,10 +405,18 @@ type windowsAttributesEdit struct {
 	// platform can set one (vfs.OSVFS.SupportsSetBTime; f4#1404).
 	setBTime bool
 	btime    time.Time
-	// winAttrs holds the new ordinary flags, keepWinAttrs the ordinary flags
-	// each object keeps.
-	winAttrs     uint32
-	keepWinAttrs uint32
+	// winAttrs holds the new editable flags, keepWinAttrs the flags each
+	// object keeps. Most advanced flags are display-only; Not Content Indexed,
+	// Temporary, Offline, Pinned and Unpinned are editable through
+	// SetFileAttributes.
+	winAttrs       uint32
+	keepWinAttrs   uint32
+	setCompression bool
+	compressed     bool
+	setSparse      bool
+	sparse         bool
+	setEncryption  bool
+	encrypted      bool
 	// setUnixMode is set where Read only is carried by the mode as well
 	// (native Windows semantics); the mode then follows the Read only box.
 	setUnixMode bool
@@ -357,8 +424,32 @@ type windowsAttributesEdit struct {
 }
 
 func setWindowsAttributesForTargets(ctx context.Context, v vfs.VFS, targets []AttributesTarget, edit windowsAttributesEdit) error {
-	const editableWinAttrs = uint32(1 | 2 | 4 | 32)
+	const editableWinAttrs = uint32(1 | 2 | 4 | 32 | winAttrTemporary | winAttrOffline |
+		winAttrNotContentIndexed | winAttrPinned | winAttrUnpinned)
 	for _, target := range targets {
+		// EFS encryption and NTFS compression are mutually exclusive. When
+		// the user switches from encrypted to compressed, decrypt first;
+		// when switching the other way, the compression call must come first.
+		if edit.setEncryption && !edit.encrypted {
+			if err := setWindowsFileEncryption(v, target.Path, false); err != nil {
+				return fmt.Errorf("%s: %w", target.Path, err)
+			}
+		}
+		if edit.setSparse {
+			if err := setWindowsFileSparse(v, target.Path, edit.sparse); err != nil {
+				return fmt.Errorf("%s: %w", target.Path, err)
+			}
+		}
+		if edit.setCompression {
+			if err := setWindowsFileCompression(v, target.Path, edit.compressed); err != nil {
+				return fmt.Errorf("%s: %w", target.Path, err)
+			}
+		}
+		if edit.setEncryption && edit.encrypted {
+			if err := setWindowsFileEncryption(v, target.Path, edit.encrypted); err != nil {
+				return fmt.Errorf("%s: %w", target.Path, err)
+			}
+		}
 		item := target.Item
 		if edit.setMTime {
 			item.MTime = edit.mtime
@@ -372,11 +463,33 @@ func setWindowsAttributesForTargets(ctx context.Context, v vfs.VFS, targets []At
 		if edit.setUnixMode {
 			item.UnixMode = edit.unixMode
 		}
-		// The dialog edits only the four ordinary Windows flags. Keep
-		// directory/reparse/compression and other provider-specific flags from
-		// each target instead of copying those of the first selected object.
+		// Keep directory/reparse/compression and other provider-specific flags
+		// from each target instead of copying those of the first selected one.
+		if edit.setCompression {
+			item.WinAttrs &^= 0x00000800
+			if edit.compressed {
+				item.WinAttrs |= 0x00000800
+			}
+		}
+		if edit.setSparse {
+			item.WinAttrs &^= 0x00000200
+			if edit.sparse {
+				item.WinAttrs |= 0x00000200
+			}
+		}
+		if edit.setEncryption {
+			item.WinAttrs &^= 0x00004000
+			if edit.encrypted {
+				item.WinAttrs |= 0x00004000
+			}
+		}
 		editable := editableWinAttrs &^ edit.keepWinAttrs
 		item.WinAttrs = (item.WinAttrs &^ editable) | (edit.winAttrs & editable)
+		// Pinned and Unpinned exclude each other; the dialog keeps the pair
+		// consistent, this refuses a combination that would reach Windows.
+		if item.WinAttrs&(winAttrPinned|winAttrUnpinned) == winAttrPinned|winAttrUnpinned {
+			return fmt.Errorf("%s: %s", target.Path, i18n.Msg("Attributes.PinnedExclusive"))
+		}
 		if err := v.SetAttributes(ctx, target.Path, item); err != nil {
 			return fmt.Errorf("%s: %w", target.Path, err)
 		}
@@ -617,7 +730,8 @@ func (mixedOctalValidator) Error(owner vtui.Frame) {
 	vtui.ShowMessageOn(owner, i18n.Msg("Error.Title"), i18n.Msg("Attributes.OctalMixedError"), []string{i18n.Msg("vtui.Ok")})
 }
 
-// windowsAdvancedFlags are the flags the Windows dialog shows but does not edit.
+// windowsAdvancedFlags are Windows file attributes listed separately from the four
+// common editable checkboxes in the dialog.
 var windowsAdvancedFlags = []struct {
 	bit  uint32
 	name string
@@ -629,26 +743,34 @@ var windowsAdvancedFlags = []struct {
 	{0x00001000, "Offline"},
 	{0x00002000, "Not Content Indexed"},
 	{0x00000010, "Directory"},
+	{0x00000040, "Device"},
+	{0x00008000, "Integrity stream"},
+	{0x00010000, "Virtual"},
+	{0x00020000, "No scrub data"},
+	{0x00040000, "Recall on open"},
+	{0x00080000, "Pinned"},
+	{0x00100000, "Unpinned"},
+	{0x00200000, "Strictly sequential"},
+	{0x00400000, "Recall on data access"},
 }
 
-// windowsAdvancedFlagsText lists the advanced flags of the selection. A flag
-// only some of the objects have is marked "(?)", the way a mixed checkbox
-// shows "?".
-func windowsAdvancedFlagsText(targets []AttributesTarget) string {
+// windowsAdvancedFlagsLines lists every known Windows file attribute, including
+// unset ones, so users can distinguish "not set" from "not supported". A
+// mixed selection uses "?", matching the three-state checkboxes above.
+func windowsAdvancedFlagsLines(targets []AttributesTarget) []string {
 	winAttrs := func(item vfs.VFSItem) uint32 { return item.WinAttrs }
-	var names []string
+	lines := make([]string, 0, len(windowsAdvancedFlags))
 	for _, flag := range windowsAdvancedFlags {
+		state := "no"
 		switch mixedAttributeState(targets, flag.bit, winAttrs) {
 		case 1:
-			names = append(names, flag.name)
+			state = "yes"
 		case 2:
-			names = append(names, flag.name+" (?)")
+			state = "?"
 		}
+		lines = append(lines, flag.name+": "+state)
 	}
-	if len(names) == 0 {
-		return "None"
-	}
-	return strings.Join(names, ", ")
+	return lines
 }
 
 func ShowAttributesUnix(refresh func(), v vfs.VFS, path string, item vfs.VFSItem) {
@@ -1091,6 +1213,15 @@ func mixedAttributeState(targets []AttributesTarget, bit uint32, value func(vfs.
 	return 0
 }
 
+func allTargetsAreFiles(targets []AttributesTarget) bool {
+	for _, target := range targets {
+		if target.Item.IsDir || target.Item.IsSymlink {
+			return false
+		}
+	}
+	return true
+}
+
 var DefaultNativePropertiesOpener = showNativePropertiesOS
 
 // ShowAttributesWindowsWithProperties keeps the native shell boundary
@@ -1116,7 +1247,10 @@ func ShowAttributesWindowsWithPropertiesForTargets(
 	path := targets[0].Path
 	item := targets[0].Item
 	multiple := len(targets) > 1
-	width, height := 60, 22
+	width, height := 60, 26
+	showCompression := runtime.GOOS == "windows" && fileops.IsLocalOSVFS(v) && !hostmode.Posix()
+	showEncryption := showCompression
+	showSparse := showCompression && allTargetsAreFiles(targets)
 
 	// Read-only Created/Accessed rows (f4#1404 follow-up). No "Changed" row
 	// here: Windows has no ctime-shaped "metadata changed" timestamp to show,
@@ -1219,11 +1353,13 @@ func ShowAttributesWindowsWithPropertiesForTargets(
 		mainVBox.Add(rowLinks, vtui.Margins{Top: 1}, vtui.AlignFill)
 	}
 
-	gbAttr := vtui.NewGroupBox(0, 0, 54, 6, " "+i18n.Msg("Attributes.Flags")+" ")
+	// The ordinary flags sit in two columns and the advanced ones in two more,
+	// so the many editable NTFS flags fit a 25-line terminal (f4#1931).
+	gbAttr := vtui.NewGroupBox(0, 0, 54, 4, " "+i18n.Msg("Attributes.Flags")+" ")
 	dlg.AddItem(gbAttr)
 	mainVBox.Add(gbAttr, vtui.Margins{Top: 1}, vtui.AlignFill)
 
-	gbAdv := vtui.NewGroupBox(0, 0, 54, 3, " "+i18n.Msg("Attributes.AdvancedFlags")+" ")
+	gbAdv := vtui.NewGroupBox(0, 0, 54, 8, " "+i18n.Msg("Attributes.AdvancedFlags")+" ")
 	dlg.AddItem(gbAdv)
 	mainVBox.Add(gbAdv, vtui.Margins{Top: 1}, vtui.AlignFill)
 
@@ -1342,7 +1478,10 @@ func ShowAttributesWindowsWithPropertiesForTargets(
 	rowBtns.Apply()
 
 	// Apply second pass for GroupBox
-	gbVBox := vtui.NewVBoxLayout(gbAttr.X1+2, gbAttr.Y1+1, gbAttr.X2-gbAttr.X1-4, 4)
+	const flagsColumnWidth = 33
+	gbVBox := vtui.NewVBoxLayout(gbAttr.X1+2, gbAttr.Y1+1, flagsColumnWidth, 2)
+	gbVBoxRight := vtui.NewVBoxLayout(gbAttr.X1+2+flagsColumnWidth, gbAttr.Y1+1, gbAttr.X2-gbAttr.X1-4-flagsColumnWidth, 2)
+	var compressionCheckbox, encryptionCheckbox, sparseCheckbox *vtui.Checkbox
 	chkRO := vtui.NewCheckbox(0, 0, i18n.Msg("Attributes.ReadOnly"), multiple)
 	chkHD := vtui.NewCheckbox(0, 0, i18n.Msg("Attributes.Hidden"), multiple)
 	chkSY := vtui.NewCheckbox(0, 0, i18n.Msg("Attributes.System"), multiple)
@@ -1359,18 +1498,104 @@ func ShowAttributesWindowsWithPropertiesForTargets(
 	gbAttr.AddItem(chkAR)
 	gbVBox.Add(chkRO, vtui.Margins{}, vtui.AlignLeft)
 	gbVBox.Add(chkHD, vtui.Margins{}, vtui.AlignLeft)
-	gbVBox.Add(chkSY, vtui.Margins{}, vtui.AlignLeft)
-	gbVBox.Add(chkAR, vtui.Margins{}, vtui.AlignLeft)
+	gbVBoxRight.Add(chkSY, vtui.Margins{}, vtui.AlignLeft)
+	gbVBoxRight.Add(chkAR, vtui.Margins{}, vtui.AlignLeft)
 	gbVBox.Apply()
+	gbVBoxRight.Apply()
 
-	lblAdv := vtui.NewText(0, 0, vtui.TruncateMiddle(windowsAdvancedFlagsText(targets), 50), vtui.Palette[vtui.ColDialogText])
-	gbAdv.AddItem(lblAdv)
-	gbAdvVBox := vtui.NewVBoxLayout(gbAdv.X1+2, gbAdv.Y1+1, gbAdv.X2-gbAdv.X1-4, 1)
-	gbAdvVBox.Add(lblAdv, vtui.Margins{}, vtui.AlignLeft)
+	chkNotContentIndexed := vtui.NewCheckbox(0, 0, i18n.Msg("Attributes.NotContentIndexed"), multiple)
+	chkNotContentIndexed.State = mixedAttributeState(targets, 0x00002000, func(item vfs.VFSItem) uint32 { return item.WinAttrs })
+	gbAdv.AddItem(chkNotContentIndexed)
+	// Left column: Not Content Indexed and the NTFS controls; right column:
+	// Temporary, Offline, Pinned and Unpinned. Four rows of boxes, then the
+	// scrollable list of every known flag.
+	gbAdvVBox := vtui.NewVBoxLayout(gbAdv.X1+2, gbAdv.Y1+1, flagsColumnWidth, 4)
+	gbAdvVBoxRight := vtui.NewVBoxLayout(gbAdv.X1+2+flagsColumnWidth, gbAdv.Y1+1, gbAdv.X2-gbAdv.X1-3-flagsColumnWidth, 4)
+	gbAdvVBoxList := vtui.NewVBoxLayout(gbAdv.X1+2, gbAdv.Y1+5, gbAdv.X2-gbAdv.X1-3, 2)
+	gbAdvVBox.Add(chkNotContentIndexed, vtui.Margins{}, vtui.AlignLeft)
+	flagsList := vtui.NewListBox(0, 0, 50, 2, windowsAdvancedFlagsLines(targets))
+	flagsList.ShowScrollBar = true
+	if flagsList.ScrollBar != nil {
+		flagsList.ScrollBar.ColorIdx = vtui.ColDialogBox
+	}
+	if showCompression {
+		chkCompressed := vtui.NewCheckbox(0, 0, i18n.Msg("Attributes.Compressed"), mixedAttributeState(targets, 0x00000800, func(item vfs.VFSItem) uint32 { return item.WinAttrs }) == 1)
+		chkCompressed.State = mixedAttributeState(targets, 0x00000800, func(item vfs.VFSItem) uint32 { return item.WinAttrs })
+		gbAdv.AddItem(chkCompressed)
+		gbAdvVBox.Add(chkCompressed, vtui.Margins{}, vtui.AlignLeft)
+		compressionCheckbox = chkCompressed
+	}
+	if showEncryption {
+		state := mixedAttributeState(targets, 0x00004000, func(item vfs.VFSItem) uint32 { return item.WinAttrs })
+		chkEncrypted := vtui.NewCheckbox(0, 0, i18n.Msg("Attributes.Encrypted"), state == 1)
+		chkEncrypted.State = state
+		gbAdv.AddItem(chkEncrypted)
+		gbAdvVBox.Add(chkEncrypted, vtui.Margins{}, vtui.AlignLeft)
+		encryptionCheckbox = chkEncrypted
+	}
+	if showSparse {
+		state := mixedAttributeState(targets, 0x00000200, func(item vfs.VFSItem) uint32 { return item.WinAttrs })
+		chkSparse := vtui.NewCheckbox(0, 0, i18n.Msg("Attributes.Sparse"), state == 1)
+		chkSparse.State = state
+		gbAdv.AddItem(chkSparse)
+		gbAdvVBox.Add(chkSparse, vtui.Margins{}, vtui.AlignLeft)
+		sparseCheckbox = chkSparse
+	}
+	type extraFlagBox struct {
+		box         *vtui.Checkbox
+		bit         uint32
+		unavailable bool
+	}
+	cloud := cloudAttributesAvailable(targets)
+	var extraFlags []extraFlagBox
+	for _, f := range []struct {
+		key   string
+		bit   uint32
+		cloud bool
+	}{
+		{"Attributes.Temporary", winAttrTemporary, false},
+		{"Attributes.Offline", winAttrOffline, false},
+		{"Attributes.Pinned", winAttrPinned, true},
+		{"Attributes.Unpinned", winAttrUnpinned, true},
+	} {
+		chk := vtui.NewCheckbox(0, 0, i18n.Msg(f.key), multiple)
+		chk.State = mixedAttributeState(targets, f.bit, func(item vfs.VFSItem) uint32 { return item.WinAttrs })
+		unavailable := f.cloud && !cloud
+		chk.SetDisabled(unavailable)
+		gbAdv.AddItem(chk)
+		gbAdvVBoxRight.Add(chk, vtui.Margins{}, vtui.AlignLeft)
+		extraFlags = append(extraFlags, extraFlagBox{box: chk, bit: f.bit, unavailable: unavailable})
+	}
+	excludeEachOther(extraFlags[2].box, extraFlags[3].box)
+	gbAdv.AddItem(flagsList)
+	gbAdvVBoxList.Add(flagsList, vtui.Margins{}, vtui.AlignFill)
 	gbAdvVBox.Apply()
+	gbAdvVBoxRight.Apply()
+	gbAdvVBoxList.Apply()
 
 	btnSet.OnClick = func() {
 		var edit windowsAttributesEdit
+		if compressionCheckbox != nil {
+			state := compressionCheckbox.State
+			if state != mixedAttributeState(targets, 0x00000800, func(item vfs.VFSItem) uint32 { return item.WinAttrs }) {
+				edit.setCompression = true
+				edit.compressed = state == 1
+			}
+		}
+		if encryptionCheckbox != nil {
+			state := encryptionCheckbox.State
+			if state != mixedAttributeState(targets, 0x00004000, func(item vfs.VFSItem) uint32 { return item.WinAttrs }) {
+				edit.setEncryption = true
+				edit.encrypted = state == 1
+			}
+		}
+		if sparseCheckbox != nil {
+			state := sparseCheckbox.State
+			if state != mixedAttributeState(targets, 0x00000200, func(item vfs.VFSItem) uint32 { return item.WinAttrs }) {
+				edit.setSparse = true
+				edit.sparse = state == 1
+			}
+		}
 		if text := editMTime.GetText(); text != initialMTime {
 			nt, err := time.ParseInLocation(attributesTimeFormat, text, time.Local)
 			if err != nil {
@@ -1441,6 +1666,10 @@ func ShowAttributesWindowsWithPropertiesForTargets(
 			case 1:
 				edit.winAttrs |= flag.bit
 			}
+		}
+		edit.applyFlagState(winAttrNotContentIndexed, chkNotContentIndexed.State, false)
+		for _, f := range extraFlags {
+			edit.applyFlagState(f.bit, f.box.State, f.unavailable)
 		}
 
 		newLinkTarget := ""

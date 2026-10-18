@@ -336,7 +336,7 @@ func startNewSession() {
 	// loop above waits only for the socket itself. Losing that race is
 	// silent — serverPID stays 0 and SIGWINCH is simply never forwarded, so
 	// a fresh session never learns that the terminal was resized.
-	RunClient(sockPath, cmd.Process.Pid)
+	runClient(sockPath, cmd.Process.Pid, true)
 }
 
 // daemonStartTimeout bounds the wait for a daemon that is neither up nor dead:
@@ -405,7 +405,16 @@ func removeStartupLog(path string) {
 }
 
 func RunClient(sockPath string, serverPID int) {
-	vtui.DebugLog("CLIENT: Start RunClient, target socket: %s", sockPath)
+	runClient(sockPath, serverPID, false)
+}
+
+// runClient attaches this terminal to the daemon at sockPath. fresh is true
+// when this very process has just started that daemon: the datagram says so
+// (attachFreshLine), and the daemon then knows the session exists for this
+// launch alone -- `f4 -e file` ends it when the editor is closed, instead of
+// leaving a session nobody asked for (issue #1974).
+func runClient(sockPath string, serverPID int, fresh bool) {
+	vtui.DebugLog("CLIENT: Start RunClient, target socket: %s (fresh daemon: %v)", sockPath, fresh)
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		vtui.DebugLog("CLIENT: WARNING: os.Stdin (fd %d) is not a terminal!", os.Stdin.Fd())
 	}
@@ -456,6 +465,9 @@ func RunClient(sockPath string, serverPID int) {
 	startLeft, startRight := App.StartupDirs()
 	payload := attachPayload(App.EditFilePath(), startLeft, startRight, App.ViewFilePaths())
 	payload = append(payload, attachClientIdentity(os.Getpid(), os.Getenv)...)
+	if fresh {
+		payload = append(payload, attachFreshLine...)
+	}
 	n, oobn, err := conn.WriteMsgUnix(payload, oob, raddr)
 	if err != nil {
 		vtui.DebugLog("CLIENT: ATTACH FAILURE: Failed to send FDs to daemon at %s: %v", sockPath, err)
@@ -521,6 +533,25 @@ type attachRequest struct {
 	startRight         string
 	clientPID          int
 	clientEnv          map[string]string
+	fresh              bool
+}
+
+// attachFreshLine is the datagram line that tells the daemon its first client
+// is the process that started it. A client that does not send it -- an older
+// binary, or one attaching to a session that was already running -- is a
+// guest: it may leave, but the session is not its to end.
+const attachFreshLine = "\nFRESH"
+
+func setClientOwnsSession(owns bool) { clientOwnsSession.Store(owns) }
+
+// parseAttachFresh reports whether msg carries attachFreshLine.
+func parseAttachFresh(msg string) bool {
+	for _, line := range strings.Split(msg, "\n")[1:] {
+		if line == "FRESH" {
+			return true
+		}
+	}
+	return false
 }
 
 // attachClientIdentity is who is attaching, for the one part of the daemon
@@ -693,6 +724,7 @@ func RunServer(sockPath string) {
 				startRight:         startRight,
 				clientPID:          clientPID,
 				clientEnv:          clientEnv,
+				fresh:              parseAttachFresh(string(buf[:n])),
 			}
 
 			// Preempt the current attached session (if any) so the new client takes over.
@@ -815,6 +847,7 @@ func RunServer(sockPath string) {
 		// the way to here because the files need a frame something has
 		// actually rendered to; the terminal is attached, sized and drawing
 		// by this point.
+		setClientOwnsSession(req.fresh)
 		App.ClientAttached(attachStartLeft, attachStartRight, attachEditPath, req.viewPaths)
 
 		// The key combinations a TTY cannot carry, taken from the X

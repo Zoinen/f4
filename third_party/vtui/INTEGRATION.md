@@ -1,5 +1,83 @@
 # Vendored vtui integration
 
+## Integration on 2026-10-18
+
+Upstream changes from `v0.1.401-0.20261014072919-7d739400a85c` to
+`v0.1.411` were integrated into the existing fork. The upstream delta was
+listed with `git diff --no-index --name-status`; each of its 33 modified files
+was merged with `git merge-file -p ours base theirs`, and its 10 new files were
+added intact. All edits were applied with `apply_patch`. No textual conflicts
+occurred. Applied contents were checked against the captured merge results;
+all 43 match, allowing a final newline in Markdown.
+
+The existing multiline/native editor, semantic scene/task lifecycle, workspace
+activation, menus and keybar patches remain. The upstream delta adds rounded
+control hover state, selection-color correction, persistent random far2l
+clipboard IDs, Sixel row-redraw preservation, ANSI output capture and X11 drag
+source APIs (including borrowed pointer and excluded targets).
+
+Validation: changed Go files were formatted with `gofmt`; scoped
+`git diff --check` passed. Both commands passed with the system Go build cache:
+
+- From this module: `CGO_ENABLED=0 go test -mod=readonly ./... -count=1 -timeout=4m`.
+- From the parent module: `CGO_ENABLED=0 go test -mod=readonly github.com/unxed/vtui -count=1 -timeout=4m`.
+
+No application was launched or stopped. Cross-platform compilation, live Qt
+rendering and live X11/Wine drag validation remain with the coordinating agent.
+The vendored workflow received upstream's download retries while retaining its
+existing fork configuration. Module dependency files were unchanged.
+
+Files integrated in this update (relative to this directory):
+
+- `.github/workflows/ci.yml` (modified).
+- `DRAGDROP.md` (modified).
+- `bindings.md` (modified).
+- `button.go` (modified).
+- `button_rounded.go` (modified).
+- `button_rounded_test.go` (modified).
+- `checkbox.go` (modified).
+- `checkgroup.go` (modified).
+- `cmd/vtui-replay/main_test.go` (modified).
+- `cmd/vtui-replay/testdata/sessions/error_replies.jsonl` (added).
+- `cmd/vtui-replay/testdata/sessions/handshake_mount_close.jsonl` (added).
+- `commands_test.go` (added).
+- `edit.go` (modified).
+- `edit_test.go` (modified).
+- `far2l_clientid.go` (added).
+- `far2l_clientid_test.go` (added).
+- `far2l_extensions.go` (modified).
+- `far2l_extensions_test.go` (modified).
+- `framemanager_test.go` (modified).
+- `gogpu_host_test.go` (modified).
+- `graphics_cover.go` (modified).
+- `graphics_external_test.go` (modified).
+- `graphics_far2l.go` (modified).
+- `graphics_sixel_rowredraw_test.go` (added).
+- `group.go` (modified).
+- `group_test.go` (modified).
+- `properties_test.go` (modified).
+- `radiobutton.go` (modified).
+- `radiogroup.go` (modified).
+- `rounded_control_hover_test.go` (added).
+- `screenbuf.go` (modified).
+- `screenbuf_cursor_test.go` (modified).
+- `screenbuf_test.go` (modified).
+- `tasks_test.go` (modified).
+- `terminal_env_test.go` (modified).
+- `validator_test.go` (modified).
+- `vui_loader_test.go` (added).
+- `wayland_host_test.go` (modified).
+- `x11_dragsource.go` (added).
+- `x11_dragsource_live_test.go` (added).
+- `x11_host_test.go` (modified).
+- `x11_xdnd.go` (modified).
+- `x11_xdnd_test.go` (modified).
+
+The integration record `INTEGRATION.md` was also updated. Nothing was staged
+or committed.
+
+## Prior integration history
+
 The fork's recorded upstream base is `v0.1.328` (f4 merge `6a6c4abe59d65060d2e6f237f346051539270cc0`). Upstream changes through `8b34a0d98bcb` (`v0.1.399-0.20261009152503-8b34a0d98bcb`) were integrated by a three-way source comparison with that base and the current fork. The vendored directory is not a Git repository.
 
 The integration retains the fork's semantic scene/task lifecycle, lazy and custom-frame submenus, stable row replacement, native editor behavior, rectangular selection, help rendering, and keybar icon metadata. Upstream source, tests and widget documentation were brought forward; upstream CI workflows and deletions of historical review documents were excluded.

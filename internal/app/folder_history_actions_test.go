@@ -50,3 +50,13 @@ func TestFolderHistoryActionsRegistered(t *testing.T) {
 		t.Errorf("History actions missing from Commands menu: %v", commands)
 	}
 }
+
+func TestPlayerSeekActionsRegistered(t *testing.T) {
+	hm := keymap.NewHotkeyManager("")
+	if got := hm.GetAction("Shell", "CtrlAltLeft"); got != "Panel.Player.SeekBack" {
+		t.Errorf("Ctrl+Alt+Left should seek backward, got %q", got)
+	}
+	if got := hm.GetAction("Shell", "CtrlAltRight"); got != "Panel.Player.SeekForward" {
+		t.Errorf("Ctrl+Alt+Right should seek forward, got %q", got)
+	}
+}

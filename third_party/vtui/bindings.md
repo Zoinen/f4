@@ -172,6 +172,7 @@ All core changes are additive. No existing public signatures are broken.
 
 ## M7 — Tooling [COMPLETE]
 - Session recording via `VTUI_RECORD=session.jsonl`.
+- Raw terminal output capture via `VTUI_VT_OUTPUT_LOG=output.ansi` (ANSI renderer bytes; distinct from the host protocol recording).
 - Deterministic playback and response verification tool `cmd/vtui-replay`.
 - Asciicast v2 exporter `cmd/vtui-cast`.
 

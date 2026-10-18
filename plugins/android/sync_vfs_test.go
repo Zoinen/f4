@@ -509,3 +509,40 @@ func TestSyncVFSCreatePrivateCommandFileUsesSendMode0600(t *testing.T) {
 		t.Fatalf("private send = path %q mode %#o data %q", client.sendPath, client.sendMode, client.files[client.sendPath])
 	}
 }
+
+func TestSyncReadFileSequentialReadAtKeepsStreaming(t *testing.T) {
+	data := []byte("abcdefgh")
+	client := &fakeSyncFS{
+		entries: map[string]SyncEntry{"/file": {Name: "file", Mode: 0100644, Size: uint64(len(data))}},
+		files:   map[string][]byte{"/file": data},
+	}
+	opened, err := newSyncVFS(nil, "serial", "phone", client, nil).Open(context.Background(), "/file")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	file := opened.(*syncReadFile)
+	defer func() { _ = file.Close() }()
+
+	block := make([]byte, 3)
+	for _, step := range []struct {
+		off  int64
+		want string
+	}{{0, "abc"}, {3, "def"}} {
+		if n, err := file.ReadAt(context.Background(), block, step.off); err != nil || n != 3 || string(block) != step.want {
+			t.Fatalf("ReadAt(%d) = %d, %v, %q", step.off, n, err, block)
+		}
+	}
+	if client.receiveCall != 1 || file.temp != nil {
+		t.Fatalf("sequential ReadAt did not stream: calls=%d temp=%v", client.receiveCall, file.temp)
+	}
+	n, err := file.ReadAt(context.Background(), block, 6)
+	if n != 2 || err != io.EOF || string(block[:n]) != "gh" {
+		t.Fatalf("last ReadAt = %d, %v, %q", n, err, block[:n])
+	}
+	if n, err := file.ReadAt(context.Background(), block, 8); n != 0 || err != io.EOF {
+		t.Fatalf("ReadAt at the end = %d, %v, want 0, EOF", n, err)
+	}
+	if client.receiveCall != 1 {
+		t.Fatalf("the end of the file started another RECV: calls=%d", client.receiveCall)
+	}
+}

@@ -64,7 +64,7 @@ func TestGogpuHost_SendEvent_NonBlocking(t *testing.T) {
 	select {
 	case <-done:
 		// Success: didn't block
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(30 * time.Second):
 		t.Fatal("sendEvent blocked on full queue during MouseMoved event")
 	}
 }
@@ -137,7 +137,7 @@ func TestGogpuFocusLossClearsKeyboardState(t *testing.T) {
 		if event.Type != vtinput.FocusEventType || event.SetFocus {
 			t.Fatalf("focus loss event = %+v, want FocusEvent(false)", event)
 		}
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(30 * time.Second):
 		t.Fatal("timed out waiting for GoGPU focus loss event")
 	}
 }

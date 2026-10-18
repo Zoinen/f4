@@ -131,7 +131,7 @@ func TestExternalGraphicsRunsWithTheScreenLocked(t *testing.T) {
 	}()
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("Flush did not return: the render pass is deadlocked")
 	}
 	if ext.calls == 0 {

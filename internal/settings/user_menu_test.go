@@ -121,7 +121,9 @@ func TestUserMenuMultilineSemanticCommand(t *testing.T) {
 
 func TestFar3MenuImportStagesUntilApply(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "main_menu.ini")
-	provider := coreRecordSettingsProvider{stores: []settingsRecordStore{newUserMenuSettingsStore(settingsMenuSource{"main", "Global user menu", path, panel.MenuModeMain})}}
+	provider := coreRecordSettingsProvider{stores: []settingsRecordStore{newUserMenuSettingsStore(settingsMenuSource{
+		id: "main", label: "Global user menu", path: path, mode: panel.MenuModeMain,
+	})}}
 	draft, err := provider.Begin(context.Background())
 	if err != nil {
 		t.Fatal(err)

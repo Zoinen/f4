@@ -986,6 +986,8 @@ $Clipboard images
 $Panel modes
   A panel mode is a set of columns. Ctrl+1..Ctrl+0 switch modes; the mode
   list (F9, Options, File panel modes) edits them: Enter opens a mode.
+  Each mode can show or hide the focused-file status line independently;
+  an unchanged mode follows the global panel setting.
 
   Column types and Column widths are comma separated lists that match
   by position. Columns... and Status line columns... edit them as a
@@ -1014,4 +1016,3 @@ $Panel modes
   dropped.
   A repeated group of types forms stripes: N,N,N is three name stripes,
   N,S,N,S two stripes of a name and a size.
-

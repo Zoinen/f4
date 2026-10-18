@@ -7,9 +7,10 @@ import (
 // Checkbox represents a flag with 2 or 3 states.
 type Checkbox struct {
 	ScreenObject
-	State      int  // 0 - Unchecked, 1 - Checked, 2 - Undefined (3-state)
-	ThreeState bool // Enable support for the third state
-	OnChange   func(int)
+	State        int  // 0 - Unchecked, 1 - Checked, 2 - Undefined (3-state)
+	ThreeState   bool // Enable support for the third state
+	OnChange     func(int)
+	mouseHovered bool
 }
 
 func NewCheckbox(x, y int, text string, threeState bool) *Checkbox {
@@ -37,6 +38,10 @@ func (cb *Checkbox) DisplayObject(scr *ScreenBuf) {
 		return
 	}
 	n, h := cb.GetStateAttrs(ColDialogText, ColDialogSelectedButton, ColDialogHighlightText, ColDialogHighlightSelectedButton)
+	hovered := cb.mouseHovered && roundedButtonsActive()
+	if hovered {
+		n, h = roundedControlHoverAttr(n), roundedControlHoverAttr(h)
+	}
 
 	sym := SymCheckboxOff
 	if cb.State == 1 {
@@ -50,9 +55,19 @@ func (cb *Checkbox) DisplayObject(scr *ScreenBuf) {
 	// space keeps the plain text attribute, exactly as the previous literal
 	// "[x] " prefix did when its first 3 cells were redrawn on top.
 	p := NewPainter(scr)
-	p.DrawSymGlyph(cb.X1, cb.Y1, sym, DialogIndicatorAttr(n, cb.IsFocused()))
+	indicator := DialogIndicatorAttr(n, cb.IsFocused())
+	if hovered {
+		indicator = roundedControlHoverAttr(indicator)
+	}
+	p.DrawSymGlyph(cb.X1, cb.Y1, sym, indicator)
 	p.DrawString(cb.X1+3, cb.Y1, " ", n)
 	p.DrawHighlightedText(cb.X1+4, cb.Y1, cb.cleanText, cb.hotkeyPos, n, h)
+}
+
+// SetMouseHovered updates the pointer-hover state used by rounded graphical
+// controls. Text terminals and the classic style remain unchanged.
+func (cb *Checkbox) SetMouseHovered(hovered bool) {
+	cb.mouseHovered = hovered && !cb.IsDisabled()
 }
 
 func (cb *Checkbox) ProcessKey(e *vtinput.InputEvent) bool {

@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/unxed/f4/internal/config"
 	"github.com/unxed/f4/internal/panel"
 	"github.com/unxed/f4/internal/update"
@@ -13,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -610,5 +612,35 @@ func TestUpdatePromptTextNamesOlderStableRelease(t *testing.T) {
 	newer := updatePromptText(update.Candidate{DisplayVersion: "v0.4.0", NeedsUpdate: true})
 	if !strings.HasPrefix(newer, "An update is available: v0.4.0") {
 		t.Fatalf("update prompt = %q", newer)
+	}
+}
+
+func TestLaunchRestart_LogsEveryStep(t *testing.T) {
+	oldLog, oldStart := restartLog, startRestart
+	defer func() { restartLog, startRestart = oldLog, oldStart }()
+
+	var lines []string
+	restartLog = func(format string, a ...any) { lines = append(lines, fmt.Sprintf(format, a...)) }
+
+	startRestart = func(*exec.Cmd) (int, error) { return 4242, nil }
+	if err := launchRestart("/tmp/f4", []string{"--gui"}, "/tmp/work"); err != nil {
+		t.Fatalf("launchRestart: %v", err)
+	}
+	want := []string{
+		`UPDATER: restarting /tmp/f4 ["--gui"] (dir "/tmp/work")`,
+		"UPDATER: restart started pid=4242",
+	}
+	if !reflect.DeepEqual(lines, want) {
+		t.Fatalf("log = %q, want %q", lines, want)
+	}
+
+	lines = nil
+	startRestart = func(*exec.Cmd) (int, error) { return 0, errors.New("access denied") }
+	err := launchRestart("/tmp/f4", nil, "/tmp/work")
+	if err == nil || !strings.Contains(err.Error(), "access denied") {
+		t.Fatalf("launchRestart error = %v, want one that wraps the start error", err)
+	}
+	if len(lines) != 2 || lines[1] != "UPDATER: restart failed: access denied" {
+		t.Fatalf("log = %q, want the restart line and the failure", lines)
 	}
 }

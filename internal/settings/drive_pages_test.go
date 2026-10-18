@@ -211,9 +211,20 @@ func TestDriveChooserWindowListsTheToolsOnItsToolsPage(t *testing.T) {
 		}
 	}
 	// The built-in tools come first, as in the drive menu (mitek1977-coder,
-	// f4#1148); Windows Registry among them only where there is one.
+	// f4#1148): Physical Disks, the first tool by default, then Other panel and
+	// Temporary panel, Windows Registry among them only where there is one.
+	hasPhysicalDisks := false
+	for _, drive := range sysinfo.GetPlatformDrives() {
+		hasPhysicalDisks = hasPhysicalDisks || strings.Contains(drive.Name, "Physical Disks")
+	}
+	if hasPhysicalDisks {
+		if len(labels) == 0 || !strings.HasPrefix(labels[0], "Physical Disks") {
+			t.Fatalf("tool check boxes = %v, want Physical Disks first", labels)
+		}
+		labels = labels[1:]
+	}
 	want := "[Other panel Temporary panel A Alpha tool Beta tool]"
-	if len(labels) == 5 {
+	if len(labels) == 6 {
 		want = "[Other panel Temporary panel Windows Registry A Alpha tool Beta tool]"
 	}
 	if fmt.Sprint(labels) != want {
@@ -222,8 +233,8 @@ func TestDriveChooserWindowListsTheToolsOnItsToolsPage(t *testing.T) {
 }
 
 // f4#1148 (mitek1977-coder): Drive options names its check boxes in words
-// (12.10 list, point 5), leaves out the tool and bookmark options, which the
-// Tools, Bookmarks and Links pages already cover, says nothing about when an
+// (12.10 list, point 5), leaves out the tool options, which the Tools page
+// already covers (Show Bookmarks is on the Bookmarks page), says nothing about when an
 // option takes effect, and does not list the tools again.
 func TestDriveOptionsPageNamesAndNoToolsList(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
@@ -256,6 +267,56 @@ func TestDriveOptionsPageNamesAndNoToolsList(t *testing.T) {
 		"Detect virtual drives]"
 	if fmt.Sprint(names) != want {
 		t.Errorf("check boxes = %v\nwant %s", names, want)
+	}
+}
+
+// f4#1148 (mitek1977-coder): "Show size float" sits four columns in under
+// "Show size" and is grayed out while "Show size" is off.
+func TestDriveOptionsShowSizeFloatDependsOnShowSize(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	if !OpenCategoryOnly("drives") {
+		t.Fatal("the window did not open")
+	}
+	c, ok := vtui.FrameManager.GetTopFrame().(*settingsCenter)
+	if !ok {
+		t.Fatalf("top frame is %T", vtui.FrameManager.GetTopFrame())
+	}
+	defer vtui.FrameManager.Pop()
+	c.SetPosition(0, 0, 129, 44)
+	c.selectCategory(driveOptionsPage)
+
+	var size, float *settingsRow
+	for _, row := range c.page.rows {
+		switch row.field.ID {
+		case driveMenuOptionFieldID("Drive.ShowSize"):
+			size = row
+		case driveMenuOptionFieldID("Drive.ShowSizeFloat"):
+			float = row
+		}
+	}
+	if size == nil || float == nil {
+		t.Fatal("Show size or Show size float is not on the page")
+	}
+	if float.controlX != 4 || size.controlX != 0 {
+		t.Errorf("indents: Show size %d, Show size float %d; want 0 and 4", size.controlX, float.controlX)
+	}
+	box := size.control.(*settingsCheckbox)
+	scr := vtui.NewSilentScreenBuf()
+	scr.AllocBuf(130, 45)
+	set := func(on bool) {
+		if (box.State == 1) != on {
+			box.Toggle()
+		}
+		c.Show(scr)
+	}
+	set(false)
+	if !float.control.IsDisabled() {
+		t.Error("Show size float is available with Show size off")
+	}
+	set(true)
+	if float.control.IsDisabled() {
+		t.Error("Show size float is grayed out with Show size on")
 	}
 }
 
@@ -636,5 +697,64 @@ func TestDriveLinksPageHotKeyField(t *testing.T) {
 	}
 	if len(links) != 1 || !strings.EqualFold(links[0].Hotkey, "Q") {
 		t.Errorf("links after Apply = %+v, want Home with hot key Q", links)
+	}
+}
+
+// f4#1148 (mitek1977-coder, 15.10 list, point 2): the Bookmarks page of the
+// F9 window has "Show Bookmarks" over the list of the folder bookmark slots,
+// one blank line between them, and the box clears the drive menu's option;
+// the Drive options page does not repeat it.
+func TestDriveBookmarksPageShowBookmarksSwitch(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	if !OpenCategoryOnly("drives") {
+		t.Fatal("the window did not open")
+	}
+	c, ok := vtui.FrameManager.GetTopFrame().(*settingsCenter)
+	if !ok {
+		t.Fatalf("top frame is %T", vtui.FrameManager.GetTopFrame())
+	}
+	defer vtui.FrameManager.Pop()
+	c.SetPosition(0, 0, 129, 44)
+	id := driveMenuOptionFieldID("Drive.ShowBookmarks")
+
+	c.selectCategory(driveOptionsPage)
+	for _, row := range c.page.rows {
+		if row.field.ID == id {
+			t.Fatal("Show Bookmarks is still on the Drive options page")
+		}
+	}
+
+	c.selectCategory(driveBookmarksPage)
+	var box, list *settingsRow
+	for _, row := range c.page.rows {
+		switch {
+		case row.field.ID == id:
+			box = row
+		case row.control != nil && row.control.GetId() == "collection:bookmarks":
+			list = row
+		}
+	}
+	if box == nil || list == nil {
+		t.Fatalf("Bookmarks page: Show Bookmarks %v, bookmark list %v", box != nil, list != nil)
+	}
+	check, ok := box.control.(*settingsCheckbox)
+	if !ok {
+		t.Fatalf("Show Bookmarks is a %T, want a check box", box.control)
+	}
+	if got := strings.TrimSpace(check.lines[0]); got != "Show bookmarks" {
+		t.Errorf("check box label = %q, want %q", got, "Show bookmarks")
+	}
+	if box.y >= list.y {
+		t.Fatalf("Show Bookmarks (line %d) is not above the list (line %d)", box.y, list.y)
+	}
+	if gap := list.y - (box.y + box.height); gap != 1 {
+		t.Errorf("%d blank lines between Show Bookmarks and the list, want 1", gap)
+	}
+
+	// Apply writes the switch into the drive menu's options.
+	check.OnChange(0)
+	if got := box.session.draft.Values[id]; got != "false" {
+		t.Errorf("draft value after unchecking = %q, want false", got)
 	}
 }

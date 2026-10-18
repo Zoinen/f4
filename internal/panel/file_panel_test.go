@@ -3399,6 +3399,10 @@ func TestFileSystemPanel_Sorting(t *testing.T) {
 	if !fp.SortReverse {
 		t.Error("SetSortMode(Name) second call should toggle reverse to true")
 	}
+	// SetSortMode rereads the directory: let those reads finish while the
+	// directory still exists, or their error window lands on top of the
+	// frames of a later test.
+	waitForLoad(t, fp)
 }
 
 // TestFileSystemPanel_SortNumeric covers f4#1471: with SortNumeric on, name

@@ -95,6 +95,16 @@ type x11Dnd struct {
 	// host that has to be told the button it never saw released is up. A
 	// source that owns no UI leaves it nil.
 	srcReleased func()
+	// srcBorrowed means somebody else holds the pointer for the whole
+	// gesture, a Wine window that took it at the button press, so a drag
+	// out neither grabs it nor lets go of it. The owner reports the pointer
+	// through srcMotion and srcRelease instead.
+	srcBorrowed bool
+	// srcSkip, when set, names windows that are never a drop target even
+	// though they announce XdndAware: the owner's own windows, which a Wine
+	// program would otherwise offer its drag to through the host's X server
+	// while the program itself is the one waiting on that drag.
+	srcSkip func(xproto.Window) bool
 }
 
 // newX11Dnd interns the atoms and marks the window as a drop target. It
@@ -545,16 +555,17 @@ func (d *x11Dnd) startDrag(payload DragPayload, allowed DropAction) (DropAction,
 		return DropNone, ErrDragBusy
 	}
 	result := make(chan DropAction, 1)
+	// The state is reset before srcActive goes up: the goroutine that feeds
+	// the pointer starts as soon as DraggingOut says so.
+	d.srcTarget = 0
+	d.srcVersion = 0
+	d.srcStatus = DropNone
+	d.srcDropped = false
 	d.srcActive = true
 	d.srcData = data
 	d.srcAllowed = allowed
 	d.srcResult = result
 	d.srcMu.Unlock()
-
-	d.srcTarget = 0
-	d.srcVersion = 0
-	d.srcStatus = DropNone
-	d.srcDropped = false
 
 	acts := make([]byte, 4)
 	xgb.Put32(acts, uint32(d.a.actCopy))
@@ -562,10 +573,7 @@ func (d *x11Dnd) startDrag(payload DragPayload, allowed DropAction) (DropAction,
 		xproto.AtomAtom, 32, 1, acts)
 	xproto.SetSelectionOwner(d.conn, d.srcWindow, d.a.selection, xproto.TimeCurrentTime)
 
-	mask := uint16(xproto.EventMaskButtonRelease | xproto.EventMaskPointerMotion)
-	if _, err := xproto.GrabPointer(d.conn, false, d.srcWindow, mask,
-		xproto.GrabModeAsync, xproto.GrabModeAsync,
-		xproto.Window(0), xproto.Cursor(0), xproto.TimeCurrentTime).Reply(); err != nil {
+	if err := d.grabSourcePointer(); err != nil {
 		d.finishSource(DropNone)
 		return DropNone, err
 	}
@@ -579,6 +587,27 @@ func (d *x11Dnd) startDrag(payload DragPayload, allowed DropAction) (DropAction,
 		d.abortSource()
 		return DropNone, nil
 	}
+}
+
+// grabSourcePointer takes the pointer for the drag, unless it is borrowed.
+func (d *x11Dnd) grabSourcePointer() error {
+	if d.srcBorrowed {
+		return nil
+	}
+	mask := uint16(xproto.EventMaskButtonRelease | xproto.EventMaskPointerMotion)
+	_, err := xproto.GrabPointer(d.conn, false, d.srcWindow, mask,
+		xproto.GrabModeAsync, xproto.GrabModeAsync,
+		xproto.Window(0), xproto.Cursor(0), xproto.TimeCurrentTime).Reply()
+	return err
+}
+
+// ungrabSourcePointer hands the pointer back, unless it is borrowed: then it
+// was never ours to give.
+func (d *x11Dnd) ungrabSourcePointer(t xproto.Timestamp) {
+	if d.srcBorrowed {
+		return
+	}
+	xproto.UngrabPointer(d.conn, t)
 }
 
 // draggingOut reports whether the pointer currently belongs to a drag of
@@ -628,7 +657,7 @@ func (d *x11Dnd) srcMotion(rootX, rootY int, t xproto.Timestamp) {
 // UI is told the button is up: it never saw the release, since every event
 // of the drag was kept away from it.
 func (d *x11Dnd) srcRelease(t xproto.Timestamp) {
-	xproto.UngrabPointer(d.conn, t)
+	d.ungrabSourcePointer(t)
 
 	if d.srcReleased != nil {
 		d.srcReleased()
@@ -695,7 +724,7 @@ func (d *x11Dnd) sendSourceLeave() {
 }
 
 func (d *x11Dnd) abortSource() {
-	xproto.UngrabPointer(d.conn, xproto.TimeCurrentTime)
+	d.ungrabSourcePointer(xproto.TimeCurrentTime)
 	if d.srcTarget != 0 {
 		d.sendSourceLeave()
 	}
@@ -739,6 +768,9 @@ func (d *x11Dnd) findTarget(rootX, rootY int) (xproto.Window, int) {
 			break
 		}
 		w = reply.Child
+		if d.srcSkip != nil && d.srcSkip(w) {
+			continue
+		}
 		if v := d.awareVersion(w); v > 0 {
 			return w, v
 		}

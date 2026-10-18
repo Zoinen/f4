@@ -57,6 +57,15 @@ To support features like word wrapping and fast navigation in the Editor, `f4` p
 ## Why this matters for FISH+
 This architecture was specifically chosen to support the **FISH+** protocol (see [FISH+.md](FISH+.md)). By allowing operations to be partial, cancellable, and asynchronous, we can offload heavy computations (like searching or indexing) to the remote server while keeping the local `f4` instance lightweight and fast.
 
+## Editor save patches
+
+For raw UTF-8 files, the editor can save a piece table as original file ranges
+plus new bytes through `InPlacePatcher` or `DeltaWriter`. Original ranges must
+always refer to the opened file, never to replacement text. Whole-buffer edits
+such as Replace All therefore delete and insert into the existing table rather
+than rebasing its original buffer. This also preserves the buffers referenced by
+undo and redo snapshots.
+
 ## Metadata availability and panel grouping
 
 `VFSItem.KnownMetadata` is an additive `MetadataFields` bit mask. Providers should
@@ -114,11 +123,39 @@ travel as a code (`SudoResponse.Errno`), not as Windows message text.
 On Windows the client is on: when an `OSVFS` operation is refused, `SudoClient`
 first asks the user whether to continue as administrator (`Elevation.*`
 messages, `confirmElevation`), and only after a yes starts the dispatcher, so
-UAC asks. The yes holds until f4 exits; a no is not remembered, like a cancelled
-sudo password. `Open` and `Create` on this path read and write through
+UAC asks. The yes holds while the dispatcher works: after `[Elevation]
+IdleSeconds` of `settings.ini` (120 by default; f4:config) without a request
+the client closes it (`ElevationIdle`, `closeIfIdle`), the dispatcher exits
+with its client, and the next refused operation asks again, as Far does. A
+request in progress is never cut: the timer waits for it and starts over. 0
+keeps the dispatcher until f4 exits, and so does the box "Do not ask again
+until f4 exits" in the question (off by default; `remember`, f4#1768 step
+6b). A no is not remembered, like a cancelled sudo password. `Open` and `Create` on this path read and write through
 `elevatedFile` and `elevatedWriter` (`vfs/sudo_elevated_file.go`);
 `SudoClient.Open`, which hands out a descriptor, is refused up front. A create
 that must not replace (`O_EXCL`, the editor's staged sibling when it saves)
 makes the empty file through the dispatcher first (`SudoWriteExclusive`), so a
 taken name fails at `Create` and the editor's temp-then-rename save works
 elevated. Still to come: checks on Windows 10/11 and Server 2019.
+
+On Unix, cancelling an operation while it waits for the sudo password withdraws
+the prompt. This also applies to elevated mutations such as delete and rename,
+not only directory reads and file opens; withdrawal is not recorded as a
+password refusal (f4#1993).
+
+## Copying to the null device (f4#1966)
+
+F5 onto the null device reads every selected file (folders recursively) and
+keeps nothing, as in far2l: a quick way to check that the files on a flash
+drive are readable. The destination is recognised by `IsNullDeviceDest`
+(`internal/fileops/null_device.go`): `/dev/null`, `\\.\nul`, `\\?\nul` (a
+trailing separator is fine) everywhere, and the bare `nul` / `nul:` on Windows
+only — on other systems `nul` stays an ordinary file name. The copy then runs
+against `discardVFS`, which accepts any folder or file below its root and
+stores nothing, so the progress dialog, read errors and the "ignore errors"
+report work as for any other copy. A move onto the null device is not turned
+into a copy: it would delete the sources after "copying" them into nothing, so
+F6 is refused up front with a message pointing at F5 (check readability) and F8
+(delete). Nothing is asked and nothing is touched: before this, Linux took
+`/dev/null` for an existing file, offered to overwrite it and asked for the root
+password to replace the device node.

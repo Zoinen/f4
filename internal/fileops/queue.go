@@ -4,12 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/unxed/f4/internal/config"
 	"github.com/unxed/f4/internal/i18n"
 	"github.com/unxed/f4/internal/theme"
 	"github.com/unxed/f4/internal/toast"
@@ -214,6 +213,10 @@ type QueueTask struct {
 
 	Preconditions []OpPrecondition
 	ResKeys       []string
+	// Paths are what the task reads or writes. A small task whose paths do
+	// not meet those of the running tasks starts without waiting for its
+	// resource keys (f4#1894); a task with no paths is taken to touch all.
+	Paths []string
 
 	Run         func(ctx context.Context, reporter TaskReporter, anchor vtui.Frame) error
 	OpenDetails func(anchor vtui.Frame)
@@ -232,6 +235,10 @@ type QueueTask struct {
 	completionOnce sync.Once
 	finalizeOnce   sync.Once
 	frameManager   *vtui.FrameManagerType
+
+	// bypass is set, under the manager's Mu, on a small task started while
+	// its resource keys were taken: it holds no keys and releases none.
+	bypass bool
 }
 
 func (t *QueueTask) finalize() {
@@ -388,12 +395,11 @@ func QueueTaskCancellable(state string) bool {
 }
 
 type OpQueueManager struct {
-	// When both manager and task state are needed, lock mu before QueueTask.mu.
+	// When both manager and task state are needed, lock Mu before QueueTask.Mu.
 	Mu             sync.Mutex
 	tasks          []*QueueTask
 	nextID         int
 	activeKeys     map[string]bool
-	wake           chan struct{}
 	frame          *QueueFrame
 	refreshPending bool
 	workerWake     chan struct{}
@@ -420,9 +426,8 @@ var queueWorkerOnce sync.Once
 // worker is started at most once per process, so every entry point may call it
 // without checking whether another already did.
 //
-// Enqueueing before it runs is safe and stays safe: wake is buffered and
-// workerLoop has a periodic fallback, so a task queued ahead of the worker is
-// picked up on the first cycle.
+// Enqueueing before it runs is safe: workerWake is buffered, so the worker
+// consumes the pending wake as soon as it starts.
 func StartQueueWorker() {
 	queueWorkerOnce.Do(func() {
 		go GlobalQueueManager.workerLoop()
@@ -469,22 +474,6 @@ func (qm *OpQueueManager) RequestRefreshOn(frames *vtui.FrameManagerType) {
 	})
 }
 
-func GetResourceKey(v vfs.VFS) string {
-	if v == nil {
-		return ""
-	}
-	if _, ok := v.(*vfs.OSVFS); ok {
-		if runtime.GOOS == "windows" {
-			return filepath.VolumeName(v.GetPath())
-		}
-		return "local_disk"
-	}
-	if parent := v.ParentVFS(); parent != nil {
-		return GetResourceKey(parent)
-	}
-	return fmt.Sprintf("%p", v)
-}
-
 func (qm *OpQueueManager) Enqueue(task *QueueTask) {
 	frames := vtui.FrameManager
 	qm.Mu.Lock()
@@ -495,6 +484,8 @@ func (qm *OpQueueManager) Enqueue(task *QueueTask) {
 	task.Mu.Unlock()
 	task.ctx, task.cancel = context.WithCancel(context.Background())
 	task.frameManager = frames
+	// One queued operation asks for the sudo password at most once (f4#1998).
+	task.ctx = vfs.WithElevationScope(task.ctx)
 	qm.tasks = append(qm.tasks, task)
 	qm.Mu.Unlock()
 	qm.wakeWorker()
@@ -751,32 +742,7 @@ func (qm *OpQueueManager) workerLoopOn(wake <-chan struct{}, stop <-chan struct{
 
 		for {
 			qm.Mu.Lock()
-			var toRun *QueueTask
-			for _, t := range qm.tasks {
-				t.Mu.Lock()
-				isQueued := t.State == "Queued"
-				t.Mu.Unlock()
-
-				if isQueued {
-					canRun := true
-					for _, rk := range t.ResKeys {
-						if qm.activeKeys[rk] {
-							canRun = false
-							break
-						}
-					}
-					if canRun {
-						toRun = t
-						for _, rk := range t.ResKeys {
-							qm.activeKeys[rk] = true
-						}
-						t.Mu.Lock()
-						t.State = "Starting"
-						t.Mu.Unlock()
-						break
-					}
-				}
-			}
+			toRun := qm.nextRunnable()
 			qm.Mu.Unlock()
 
 			if toRun != nil {
@@ -792,6 +758,121 @@ func (qm *OpQueueManager) workerLoopOn(wake <-chan struct{}, stop <-chan struct{
 			break
 		}
 	}
+}
+
+// A queued task is small enough to start beside a long one on the same
+// device when it copies, moves or deletes at most this many files, and no
+// folders, of at most this many bytes in all (f4#1894).
+const (
+	queueSmallMaxFiles = 100
+	queueSmallMaxBytes = 16 << 20
+)
+
+// nextRunnable claims the first queued task that may start now and marks it
+// Starting. A task starts when its resource keys are free; a small one also
+// starts while they are taken, unless that is turned off or its paths meet
+// those of a running task. A task that takes its keys still waits for the
+// small tasks started that way whose paths it meets. qm.Mu must be held.
+func (qm *OpQueueManager) nextRunnable() *QueueTask {
+	for _, t := range qm.tasks {
+		t.Mu.Lock()
+		isQueued := t.State == "Queued"
+		t.Mu.Unlock()
+		if !isQueued {
+			continue
+		}
+		keysFree := true
+		for _, rk := range t.ResKeys {
+			if qm.activeKeys[rk] {
+				keysFree = false
+				break
+			}
+		}
+		bypass := false
+		switch {
+		case keysFree:
+			if qm.meetsRunning(t, true) {
+				continue
+			}
+		case config.App.QueueSmallOpsBypass && smallQueueTask(t) && !qm.meetsRunning(t, false):
+			bypass = true
+		default:
+			continue
+		}
+		if !bypass {
+			for _, rk := range t.ResKeys {
+				qm.activeKeys[rk] = true
+			}
+		}
+		t.bypass = bypass
+		t.Mu.Lock()
+		t.State = "Starting"
+		t.Mu.Unlock()
+		return t
+	}
+	return nil
+}
+
+// meetsRunning reports whether the paths of t meet those of a task already
+// started, or only of those started as small ones. qm.Mu must be held.
+func (qm *OpQueueManager) meetsRunning(t *QueueTask, onlyBypass bool) bool {
+	for _, r := range qm.tasks {
+		if r == t || (onlyBypass && !r.bypass) {
+			continue
+		}
+		r.Mu.Lock()
+		running := queueTaskActive(r.State) && r.State != "Queued"
+		r.Mu.Unlock()
+		if running && queuePathsMeet(t.Paths, r.Paths) {
+			return true
+		}
+	}
+	return false
+}
+
+// smallQueueTask reports whether t is a few files and no folders: the
+// Preconditions are what was selected, as it was when the task was queued.
+func smallQueueTask(t *QueueTask) bool {
+	if len(t.Paths) == 0 || len(t.Preconditions) == 0 || len(t.Preconditions) > queueSmallMaxFiles {
+		return false
+	}
+	var total int64
+	for _, pc := range t.Preconditions {
+		if pc.IsDir {
+			return false
+		}
+		total += pc.Size
+		if total > queueSmallMaxBytes {
+			return false
+		}
+	}
+	return true
+}
+
+// queuePathsMeet reports whether a path of one list is a path of the other
+// or lies under it. An empty list meets everything.
+func queuePathsMeet(a, b []string) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return true
+	}
+	for _, p := range a {
+		for _, q := range b {
+			if queuePathWithin(p, q) || queuePathWithin(q, p) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// queuePathWithin reports whether p is dir or lies under it. Case and the
+// kind of separator are ignored: a false match only makes a task wait.
+func queuePathWithin(p, dir string) bool {
+	norm := func(s string) string {
+		return strings.TrimRight(strings.ToLower(strings.ReplaceAll(s, "\\", "/")), "/")
+	}
+	p, dir = norm(p), norm(dir)
+	return p == dir || strings.HasPrefix(p, dir+"/")
 }
 
 func (qm *OpQueueManager) executeTask(t *QueueTask) {
@@ -881,8 +962,10 @@ func (qm *OpQueueManager) executeTask(t *QueueTask) {
 	t.Mu.Unlock()
 
 	qm.Mu.Lock()
-	for _, rk := range t.ResKeys {
-		qm.activeKeys[rk] = false
+	if !t.bypass {
+		for _, rk := range t.ResKeys {
+			qm.activeKeys[rk] = false
+		}
 	}
 	qm.Mu.Unlock()
 	qm.wakeWorker()
@@ -1194,7 +1277,7 @@ func NewQueueManagerWithTasks(tasks ...*QueueTask) *OpQueueManager {
 	return &OpQueueManager{
 		tasks:      append([]*QueueTask(nil), tasks...),
 		activeKeys: make(map[string]bool),
-		wake:       make(chan struct{}, 1),
+		workerWake: make(chan struct{}, 1),
 	}
 }
 

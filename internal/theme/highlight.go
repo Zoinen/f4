@@ -225,6 +225,44 @@ type highlightMatchCacheKey struct {
 	MetadataKnown bool
 }
 
+// highlightCacheKey captures every field HighlightRule.Match reads off a
+// vfs.VFSItem. Two items with equal keys are, by construction, items Match
+// cannot tell apart — Match is a pure function of exactly these fields (plus
+// the rule set and, for a DateRelative rule, the current time, which is why
+// hasVolatileRules bypasses the cache instead of trying to key on "now") — so
+// caching on this key alone can never serve one item's result for another.
+type highlightCacheKey struct {
+	name         string
+	isDir        bool
+	isHidden     bool
+	isExecutable bool
+	isSymlink    bool
+	reparseTag   uint32
+	winAttrs     uint32
+	unixMode     uint32
+	size         int64
+	mtimeNano    int64
+	ctimeNano    int64
+	atimeNano    int64
+}
+
+func highlightCacheKeyFor(item *vfs.VFSItem) highlightCacheKey {
+	return highlightCacheKey{
+		name:         item.Name,
+		isDir:        item.IsDir,
+		isHidden:     item.IsHidden,
+		isExecutable: item.IsExecutable,
+		isSymlink:    item.IsSymlink,
+		reparseTag:   item.ReparseTag,
+		winAttrs:     item.WinAttrs,
+		unixMode:     item.UnixMode,
+		size:         item.Size,
+		mtimeNano:    item.MTime.UnixNano(),
+		ctimeNano:    item.CTime.UnixNano(),
+		atimeNano:    item.ATime.UnixNano(),
+	}
+}
+
 var GlobalFileHighlighter *FileHighlighter
 
 func init() {

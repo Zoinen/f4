@@ -239,6 +239,13 @@ func openArchiveFileSystem(ctx context.Context, localPath, displayName, password
 		switch format.(type) {
 		case archives.Rar, *archives.Rar:
 			return newRARArchiveFileSystem(localPath, password)
+		case archives.SevenZip, *archives.SevenZip:
+			// One sevenzip.Reader for the life of the filesystem (#1731). If its
+			// headers cannot be read (for example a wrong password for encrypted
+			// headers) the generic filesystem below reports it as before.
+			if sz, szErr := newSevenZipFileSystem(localPath, password); szErr == nil {
+				return sz, nil
+			}
 		}
 	}
 	indexPath := tarIndexPath(localPath)

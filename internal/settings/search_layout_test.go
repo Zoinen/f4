@@ -114,8 +114,11 @@ func TestSettingsSidebarSearchAndContentSurface(t *testing.T) {
 				if got != want {
 					t.Fatalf("content/focus palette %x want %x", got, want)
 				}
-				x, y, _, _ = c.page.rows[2].control.GetPosition()
-				if scr.GetCell(x, y).Attributes != vtui.Palette[vtui.ColDialogEdit] {
+				// The last cell of the field lies past its text, so the initial
+				// selection of the text (drawn in the selection colour since
+				// vtui v0.1.405) does not hide whether the surface was overwritten.
+				_, y, x2, _ := c.page.rows[2].control.GetPosition()
+				if scr.GetCell(x2, y).Attributes != vtui.Palette[vtui.ColDialogEdit] {
 					t.Fatal("input surface overwritten")
 				}
 				border := scr.GetCell(c.page.X1, c.Y1+3).Attributes

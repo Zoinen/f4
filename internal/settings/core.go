@@ -126,6 +126,17 @@ func coreSettingsStaticFields() []f4settings.Field {
 		if i == 2 || i == 12 {
 			f.Unavailable = driveDescriptions[i]
 		}
+		if spec.Label == "Drive.ShowSizeFloat" {
+			// It only changes how the size columns are written
+			// (mitek1977-coder, f4#1148).
+			size := driveMenuOptionFieldID("Drive.ShowSize")
+			f.Enabled = func(values map[string]string) string {
+				if values[size] != "true" {
+					return "Available only while the size is shown."
+				}
+				return ""
+			}
+		}
 		fields = append(fields, f)
 	}
 	for i := range fields {

@@ -193,7 +193,7 @@ share of the function tables along) and says what was decided.
 | `net/http`, `crypto/tls`, `crypto/x509`, `net` | 0.75 | kept | updater, PlugRing catalog, AI provider, proxy setting import them: seven packages, removing them takes those features away |
 | editor, viewer, disassembler, Markdown (`editor`, `viewer`, `x/arch/x86asm`, `goldmark`) | 0.6 | kept | mc's editor and viewer; disassembly and Markdown are f4's own |
 | Chroma lexers and regexp engines (`chroma`, `regexp2`, `coregex`) | 0.7 | kept | syntax highlighting, which mc has |
-| East Asian encoding tables (`x/text/encoding/{japanese,korean,simplifiedchinese,traditionalchinese}`) | 0.56 | kept, for now | linked through `unxed/localecp` (see "Not done: the East Asian tables"); a patch is ready |
+| East Asian encoding tables (`x/text/encoding/{japanese,korean,simplifiedchinese,traditionalchinese}`) | 0.56 | removed from extralite | see "The East Asian tables"; the lite and full builds keep them for the East Asian code pages |
 | crypto internals (`nistec`, `edwards25519`, `chacha20poly1305`) | 0.31 | kept | TLS and SSH host keys |
 | terminal emulator (`internal/terminal`, `keytrans`) | 0.3 | kept | mc's subshell counterpart |
 | NetFox FISH+ and multiarc | 0.3 | kept | mc's FISH/SFTP and archive file systems |
@@ -241,16 +241,26 @@ before the parity slices), 803 ms to the listing, peak RSS 35 680 KB; lite
 48 300 297 bytes, 848 ms, 38 636 KB. mc 4.8.30 on the same runner class was
 1 140 880 bytes, 190 ms, 10 928 KB.
 
-## Not done: the East Asian tables still in the binary
+## The East Asian tables
 
-The extra-lite build leaves the East Asian code pages out of f4's own list, but
-their tables (about 0.6 MB) stay linked because `golang.org/x/text/encoding/
-htmlindex` pulls in every encoding and is imported by f4's dependency
-`github.com/unxed/localecp` (`localecp.go`, to turn a locale's charset name into
-an encoding), and, in f4 itself, by `vfs/codepages.go` and `codepages_unix.go`.
-Removing them from f4 alone changes nothing (measured: 37 286 153 bytes before
-and after). Getting them out needs a build-tag split inside `localecp`, a new
-tag of it and a `go.mod` bump in f4, for 1.6% of the size; not done.
+The extra-lite build leaves the East Asian code pages out of f4's own list
+(`vfs/codepages_nocjk.go`), and since f4#1671 their tables are out of the
+binary as well. Two indexes in `vfs` still linked them: the WHATWG index
+(`x/text/encoding/htmlindex`), which f4 asked only for "us-ascii", and the IANA
+index (`x/text/encoding/ianaindex`), which named the encoding of the system
+locale; each index imports every encoding it lists. "us-ascii" is now named
+directly (`charmap.Windows1252`, which is what the WHATWG index returns), and
+the extra-lite build names the single-byte encodings of a locale from its own
+table (`vfs/codepages_iana_names.go`, the names the IANA index gives them; a
+test of the full build checks the two agree). `unxed/localecp` v0.1.7 already
+keeps the tables out under the same tag.
+
+`go list -deps -tags lite,extralite,vtui_noebiten,vtui_nogogpu ./cmd/f4` lists
+no `x/text/encoding/{japanese,korean,simplifiedchinese,traditionalchinese,
+htmlindex,ianaindex}`. Size of the extra-lite linux/amd64 binary built with
+`-ldflags "-s -w" -trimpath`: 39 964 937 bytes before, 39 198 985 after
+(-766 KB). The `openwrt` workflow has not been run on this change yet: the
+sizes and timings earlier in this document are from before it.
 
 ## Not done: `net/http`
 

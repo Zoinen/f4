@@ -139,6 +139,22 @@ func NewInfoPanel(src *FileSystemPanel) *InfoPanel {
 	return ip
 }
 
+// deviceLabel renders the storage class as "SSD (nvme0n1)", "network (nfs4)"
+// or just the localized "unknown".
+func deviceLabel(d sysinfo.DeviceInfo) string {
+	class := d.Class.String()
+	switch d.Class {
+	case sysinfo.DeviceNetwork:
+		class = i18n.Msg("InfoPanel.DeviceNetwork")
+	case sysinfo.DeviceUnknown:
+		class = i18n.Msg("InfoPanel.DeviceUnknown")
+	}
+	if d.Name == "" {
+		return class
+	}
+	return fmt.Sprintf("%s (%s)", class, d.Name)
+}
+
 // gpuModelLabel renders a GPU's model. A probe that could not read a vendor
 // string reports a catalogue key instead, and resolving it is the panel's job:
 // the probes must not reach into localization.
@@ -835,6 +851,9 @@ func (ip *InfoPanel) Show(scr *vtui.ScreenBuf) {
 		row(i18n.Msg("InfoPanel.CurrentDir"), path, true)
 		if fs.Mount != "" && fs.Mount != path {
 			row(i18n.Msg("InfoPanel.Mount"), fs.Mount, true)
+		}
+		if dev, ok := sysinfo.Device(path); ok {
+			row(i18n.Msg("InfoPanel.Device"), deviceLabel(dev), true)
 		}
 		if fs.MaxFilename > 0 {
 			row(i18n.Msg("InfoPanel.MaxFilename"), fmt.Sprintf("%d", fs.MaxFilename), true)

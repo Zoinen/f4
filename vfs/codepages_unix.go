@@ -10,7 +10,6 @@ import (
 
 	"github.com/unxed/localecp"
 	"golang.org/x/text/encoding"
-	"golang.org/x/text/encoding/ianaindex"
 )
 
 func platformCodepages() []Codepage {
@@ -26,7 +25,7 @@ func systemCodepageNames() (string, string) {
 }
 
 func codepageIDForEncoding(enc encoding.Encoding, fallback int) int {
-	name, err := ianaindex.IANA.Name(enc)
+	name, err := ianaName(enc)
 	if err != nil {
 		return fallback
 	}

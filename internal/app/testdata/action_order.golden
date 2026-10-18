@@ -32,6 +32,7 @@ File.MakeDir
 File.Delete
 File.DeletePermanent
 File.Attributes
+File.SystemProperties
 File.Share
 Panel.SystemExplorer
 Panel.OpenAssociated
@@ -147,6 +148,8 @@ Panel.InfoPanel
 Panel.QuickView
 Panel.AutoFilter
 Panel.Player
+Panel.Player.SeekBack
+Panel.Player.SeekForward
 Panel.Tree
 Panel.SplitLeft
 Panel.SplitRight
@@ -206,6 +209,7 @@ Editor.ClearSelection
 Editor.DeleteLine
 Editor.DeleteToLineEnd
 Editor.DeleteWordBackward
+Editor.DeleteWordForward
 Editor.DeleteBlock
 Editor.CopyBlockToCursor
 Editor.MoveBlockToCursor

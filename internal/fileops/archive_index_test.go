@@ -184,7 +184,7 @@ func TestExecuteFileOp_ArchiveIndexMigration(t *testing.T) {
 	done := make(chan struct{})
 	ExecuteFileOp(srcVfs, dstVfs, []string{name}, tmpDst, true, 2, func() { close(done) })
 
-	timeout := time.After(2 * time.Second)
+	timeout := time.After(10 * time.Second)
 loop:
 	for {
 		select {

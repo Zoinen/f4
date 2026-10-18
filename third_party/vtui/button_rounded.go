@@ -22,6 +22,9 @@ const (
 	roundedButtonLighten = 0.20
 	// roundedButtonDarken is how far a light background moves towards black.
 	roundedButtonDarken = 0.25
+	// roundedButtonHover is the subtle pointer-hover tint, applied after the
+	// ordinary button tint and in the same direction.
+	roundedButtonHover = 0.08
 	// roundedButtonMinContrast is the WCAG contrast ratio the caption keeps
 	// against the tinted block (AA for normal text); a disabled button, whose
 	// dimmed caption is meant to look faded, keeps roundedButtonDisabledContrast.
@@ -81,6 +84,21 @@ func roundedButtonBack(bg uint32) uint32 {
 	return mixRGB(bg, 0xFFFFFF, roundedButtonLighten)
 }
 
+func roundedButtonHoverBack(bg uint32) uint32 {
+	if relativeLuminanceRGB(bg) > roundedButtonLightLuminance {
+		return mixRGB(bg, 0x000000, roundedButtonHover)
+	}
+	return mixRGB(bg, 0xFFFFFF, roundedButtonHover)
+}
+
+// roundedControlHoverAttr applies the same subtle, contrast-preserving hover
+// tint used by rounded buttons to a regular control attribute.
+func roundedControlHoverAttr(attr uint64) uint64 {
+	bg := roundedButtonHoverBack(attrColorRGB(attr, true))
+	fg := readableOn(attrColorRGB(attr, false), bg, roundedButtonMinContrast)
+	return SetRGBBoth(attr, fg, bg)
+}
+
 // readableOn returns fg, nudged towards white or black (whichever contrasts
 // with bg) just far enough that its contrast ratio against bg reaches minRatio;
 // fg itself when it is readable already.
@@ -105,7 +123,7 @@ func readableOn(fg, bg uint32, minRatio float64) uint32 {
 // tinted background, caption colour kept readable, caption underlined when
 // underline is set (the ears are blank, so they are not).
 func roundedButtonAttr(attr uint64, disabled, underline bool) uint64 {
-	return roundedButtonAttrAccent(attr, disabled, underline, false)
+	return roundedButtonAttrAccent(attr, disabled, underline, false, false)
 }
 
 // roundedButtonAttrAccent is roundedButtonAttr for a button that is the
@@ -113,10 +131,13 @@ func roundedButtonAttr(attr uint64, disabled, underline bool) uint64 {
 // own foreground, the colour a theme gives a default button, so the button
 // stands out by its block and not by a caption colour the contrast correction
 // would flatten.
-func roundedButtonAttrAccent(attr uint64, disabled, underline, accent bool) uint64 {
+func roundedButtonAttrAccent(attr uint64, disabled, underline, accent, hovered bool) uint64 {
 	bg := roundedButtonBack(attrColorRGB(attr, true))
 	if accent && !disabled {
 		bg = mixRGB(bg, attrColorRGB(attr, false), roundedButtonAccentMix)
+	}
+	if hovered && !disabled {
+		bg = roundedButtonHoverBack(bg)
 	}
 	want := roundedButtonMinContrast
 	if disabled {
@@ -135,11 +156,11 @@ func roundedButtonAttrAccent(attr uint64, disabled, underline, accent bool) uint
 //
 // accent marks the dialog's default button in its idle state (not focused, not
 // pressed), whose block takes the theme's accent colour.
-func (b *Button) drawRoundedButton(scr *ScreenBuf, label string, hotkeyPos int, n, h uint64, accent bool) {
+func (b *Button) drawRoundedButton(scr *ScreenBuf, label string, hotkeyPos int, n, h uint64, accent, hovered bool) {
 	disabled := b.IsDisabled()
-	blankN := roundedButtonAttrAccent(n, disabled, false, accent)
-	labelN := roundedButtonAttrAccent(n, disabled, true, accent)
-	labelH := roundedButtonAttrAccent(h, disabled, true, accent)
+	blankN := roundedButtonAttrAccent(n, disabled, false, accent, hovered)
+	labelN := roundedButtonAttrAccent(n, disabled, true, accent, hovered)
+	labelH := roundedButtonAttrAccent(h, disabled, true, accent, hovered)
 
 	p := NewPainter(scr)
 	blank := []CharInfo{{Char: uint64(' '), Attributes: blankN}, {Char: uint64(' '), Attributes: blankN}}

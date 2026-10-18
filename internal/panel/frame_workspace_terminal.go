@@ -129,3 +129,83 @@ func ActionWorkspaceNewTerminal() bool {
 	panels := FindPanelsFrameAnyScreen()
 	return panels != nil && panels.forkTerminalWorkspace()
 }
+
+// editorConsoleReturn remembers the editor whose Ctrl+O brought this
+// workspace's console into view, and whether that Ctrl+O also hid the panels.
+type editorConsoleReturn struct {
+	editor        vtui.Frame
+	restorePanels bool
+}
+
+// screenIndexOfFrame is the workspace that holds frame, or -1.
+func screenIndexOfFrame(frame vtui.Frame) int {
+	if vtui.FrameManager == nil || frame == nil {
+		return -1
+	}
+	for i, screen := range vtui.FrameManager.Screens {
+		if screen == nil {
+			continue
+		}
+		for _, f := range screen.Frames {
+			if f == frame {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// ActionEditorShowConsole is Ctrl+O in a full-screen editor (#1973). The editor
+// lives in a workspace of its own, so the console that matters is the one of
+// the workspace it was opened from: this switches there with the panels hidden
+// -- a peek, as in Far -- and ReturnToEditorFromConsole, the next Ctrl+O, goes
+// back to the editor and gives the panels back. It reports false when there is
+// no other workspace with panels to peek at (the editor shares its workspace
+// with them); the caller then falls back to a terminal workspace of its own.
+func ActionEditorShowConsole(ed vtui.Frame) bool {
+	fm := vtui.FrameManager
+	pf := FindPanelsFrameAnyScreen()
+	if fm == nil || pf == nil {
+		return false
+	}
+	pfIdx, edIdx := screenIndexOfFrame(pf), screenIndexOfFrame(ed)
+	if pfIdx < 0 || edIdx < 0 || pfIdx == edIdx {
+		return false
+	}
+	// Ctrl+O pressed again after a round trip through Ctrl+Tab finds the panels
+	// already hidden by the first press; they are still the editor's to restore.
+	restore := pf.ShowPanels
+	if prev := pf.editorReturn; prev != nil && prev.editor == ed {
+		restore = prev.restorePanels
+	}
+	// The switch comes first so that hiding the panels, with its per-shell-mode
+	// work, runs against the workspace the user is now looking at -- the order
+	// forkTerminalWorkspace relies on too.
+	fm.SwitchScreen(pfIdx)
+	if pf.ShowPanels {
+		pf.TogglePanelsVisibility()
+	}
+	pf.editorReturn = &editorConsoleReturn{editor: ed, restorePanels: restore && !pf.ShowPanels}
+	return true
+}
+
+// ReturnToEditorFromConsole is the Ctrl+O that undoes ActionEditorShowConsole:
+// it shows the panels again if that hid them and switches back to the editor.
+// It reports false when the console was not opened from an editor, or the
+// editor is gone, and the caller then toggles the panels as usual.
+func (pf *PanelsFrame) ReturnToEditorFromConsole() bool {
+	ret := pf.editorReturn
+	if ret == nil {
+		return false
+	}
+	pf.editorReturn = nil
+	edIdx := screenIndexOfFrame(ret.editor)
+	if edIdx < 0 {
+		return false
+	}
+	if ret.restorePanels && !pf.ShowPanels {
+		pf.TogglePanelsVisibility()
+	}
+	vtui.FrameManager.SwitchScreen(edIdx)
+	return true
+}

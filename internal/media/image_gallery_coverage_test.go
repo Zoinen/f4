@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/unxed/f4/internal/testutil"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
@@ -189,6 +190,7 @@ func TestImageViewShowTileSkipsPlacementWithoutGraphicsSupport(t *testing.T) {
 // tile with no preview inside the file falls back to decoding it whole, and
 // the result lands on the UI thread rather than the worker that decoded it.
 func TestImageViewRequestThumbFallsBackToFullDecode(t *testing.T) {
+	t.Cleanup(testutil.SwapFrameManager(t))
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	asked := withStubPipeline(t, 6, 6)
 
@@ -233,6 +235,10 @@ func TestImageViewRequestThumbFallsBackToFullDecode(t *testing.T) {
 // A picture that fails both as a preview and as a whole decode must leave
 // the tile empty rather than crash or post a stale result.
 func TestImageViewRequestThumbGivesUpWhenDecodeFails(t *testing.T) {
+	// A fresh manager has a task queue of its own: Init keeps the old queue, so
+	// a decode an earlier test left running would post its tile here and look
+	// like this view's (f4 train #1996, darwin/arm64, shuffled order).
+	t.Cleanup(testutil.SwapFrameManager(t))
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 
 	old := ImagePipe

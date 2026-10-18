@@ -113,7 +113,7 @@ Before finalizing the `f4` architecture, we analyzed the source code of the most
 3.  **Soft Wrap Detection:** If text hits the right edge of the viewport, the `WrapFlags[y]` boolean is set to `true` for that row.
 4.  **GridHistory (The Staging Area):** When a line is pushed off the top of the Active Grid (due to scrolling or vertical shrink), it is not immediately serialized. Instead, it enters a `GridHistory` buffer (up to 2000 lines). This allows instant, lossless restoration of the screen when the terminal window is enlarged vertically.
 5.  **Extrusion (Linearization):** When the `GridHistory` overflows, the oldest lines are stripped of trailing spaces and permanently serialized into `f4`'s internal `PieceTable` byte stream.
-6.  **Reconstruction:** To view the log (`Ctrl+O`), `f4` simply concatenates: `PieceTable` + `GridHistory` + `ActiveGrid`.
+6.  **Reconstruction:** To view the log (`Ctrl+O`, then `F3`), `f4` concatenates `PieceTable` + `GridHistory` + `ActiveGrid` and inserts SGR colour changes from the saved cell attributes. The viewer consumes those sequences without displaying them as text.
 
 The Qt projection keeps saved history and the occupied live rows contiguous.
 Bottom alignment belongs to the viewport; it must not insert empty rows between

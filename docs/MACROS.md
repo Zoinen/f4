@@ -6,6 +6,14 @@ f4 has two kinds of macros.
 want repeated, press `Ctrl+.` again and assign them a shortcut. Nothing to
 learn, nothing to write.
 
+The window that opens asks for a description of the macro and for its key:
+press the key you want in the key field (any key or combination works), or
+open the list next to the field with `Ctrl+Down` or a click on its arrow and
+pick one. The list holds common combinations that nothing uses in the current
+area: the function keys with and without Shift, Ctrl and Alt, and Ctrl or Alt
+with a letter or a digit. Keys already taken by another macro or by an f4
+command are not in it.
+
 **Scripted macros** are written in Lua and can decide things: which file the
 cursor is on, whether the command line is empty, which panel is active. They
 are compatible with Far Manager and far2m, so a macro collection you already

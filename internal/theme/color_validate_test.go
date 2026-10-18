@@ -45,6 +45,7 @@ func TestValidateActiveColors_ShippedStylesPassClean(t *testing.T) {
 	defer func() { UserColorOverridesPath = oldPath }()
 
 	for _, style := range AvailableColorStyles() {
+		config.App.ColorStyle = style.Name
 		if err := ApplyColorStyle(style.Name); err != nil {
 			t.Fatalf("ApplyColorStyle(%q): %v", style.Name, err)
 		}
@@ -92,6 +93,34 @@ func TestValidateActiveColors_FlagsSyntheticClash(t *testing.T) {
 	if !found {
 		t.Errorf("expected a harsh-color-clash error naming Panel.Text, got: %v", errs)
 	}
+}
+
+func TestValidateActiveColorsChecksFastFindCompositeContrast(t *testing.T) {
+	oldPath := UserColorOverridesPath
+	UserColorOverridesPath = func() string { return filepath.Join(t.TempDir(), "none.ini") }
+	defer func() { UserColorOverridesPath = oldPath }()
+	if err := ApplyColorStyle("Radiola"); err != nil {
+		t.Fatal(err)
+	}
+	config.App.ColorStyle = "Radiola"
+	saved := append([]uint64(nil), vtui.Palette...)
+	defer func() { vtui.Palette = saved }()
+
+	if errs := ValidateActiveColors(); len(errs) != 0 {
+		t.Fatalf("Radiola fast-find composite colors should pass contrast validation: %v", errs)
+	}
+
+	// The rendered query uses Menu.Highlight's foreground on Dialog.Edit's
+	// background, not the background stored in Menu.Highlight itself.
+	vtui.Palette[vtui.ColDialogEdit] = vtui.SetRGBBoth(0, 0xeeeeec, 0xdbd3c4)
+	vtui.Palette[vtui.ColMenuHighlight] = vtui.SetRGBBoth(0, 0xa04020, 0xdbd3c4)
+	errs := ValidateActiveColors()
+	for _, err := range errs {
+		if strings.Contains(err.Error(), "Menu.Highlight on Dialog.Edit") && strings.Contains(err.Error(), "low fast-find text contrast") {
+			return
+		}
+	}
+	t.Fatalf("expected low-contrast fast-find composite warning, got %v", errs)
 }
 
 // TestNotifyColorIssues_RaisesARealToast exercises notifyColorIssues against

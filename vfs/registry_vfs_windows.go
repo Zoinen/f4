@@ -395,6 +395,123 @@ func (v *RegistryVFS) Create(ctx context.Context, p string) (io.WriteCloser, err
 	return &registryValueWriter{segments: append([]string(nil), segments...)}, nil
 }
 
+// registryExportMaxDepth bounds the walk of a key exported to .reg; the
+// registry itself nests keys at most 512 deep.
+const registryExportMaxDepth = 512
+
+var (
+	_ TransferNameProvider    = (*RegistryVFS)(nil)
+	_ TransferContentProvider = (*RegistryVFS)(nil)
+)
+
+// TransferName names the file that a key or a value becomes when it is
+// copied out of the registry: "<name>.reg" (f4#242). A hive keeps its name
+// and is copied as a folder of .reg files.
+func (v *RegistryVFS) TransferName(p string, _ VFS) string {
+	segments, err := registryPathSegments(p)
+	if err != nil || len(segments) < 2 {
+		return ""
+	}
+	return registryDisplayName(segments[len(segments)-1]) + ".reg"
+}
+
+// TransferContent is the .reg file of a key with all its subkeys, or of one
+// value under its key, for a copy out of the registry (f4#242).
+func (v *RegistryVFS) TransferContent(ctx context.Context, p string, _ VFS) ([]byte, bool, error) {
+	segments, err := registryPathSegments(p)
+	if err != nil || len(segments) < 2 {
+		return nil, false, nil
+	}
+	hive, ok := registryHiveByName(segments[0])
+	if !ok {
+		return nil, false, nil
+	}
+	regPath := func(segments []string) string {
+		return strings.Join(append([]string{hive.name}, segments[1:]...), `\`)
+	}
+
+	if key, owned, keyErr := openRegistryKey(segments); keyErr == nil {
+		var keys []regExportKey
+		err := exportRegistryKey(ctx, key, regPath(segments), &keys, 0)
+		if owned {
+			_ = key.Close()
+		}
+		if err != nil {
+			return nil, false, err
+		}
+		return encodeRegFile(keys), true, nil
+	} else if !errors.Is(keyErr, os.ErrNotExist) {
+		return nil, false, keyErr
+	}
+
+	parent, owned, err := openRegistryKey(segments[:len(segments)-1])
+	if err != nil {
+		return nil, false, err
+	}
+	if owned {
+		defer func() { _ = parent.Close() }()
+	}
+	name := registryValueName(segments[len(segments)-1])
+	data, valueType, err := readRegistryValue(parent, name)
+	if err != nil {
+		return nil, false, registryVFSMapError(err)
+	}
+	return encodeRegFile([]regExportKey{{
+		Path:   regPath(segments[:len(segments)-1]),
+		Values: []regExportValue{{Name: name, Type: valueType, Data: data}},
+	}}), true, nil
+}
+
+// exportRegistryKey appends the key and then its subkeys, each in the order
+// of their names, the order regedit exports them in. A value or a subkey
+// that disappears during the walk is left out; any other error stops it.
+func exportRegistryKey(ctx context.Context, key registry.Key, path string, out *[]regExportKey, depth int) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if depth > registryExportMaxDepth {
+		return fmt.Errorf("registry key %s is nested too deep", path)
+	}
+	names, err := key.ReadValueNames(0)
+	if err != nil {
+		return registryVFSMapError(err)
+	}
+	sort.Strings(names)
+	values := make([]regExportValue, 0, len(names))
+	for _, name := range names {
+		data, valueType, err := readRegistryValue(key, name)
+		if errors.Is(err, registry.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return registryVFSMapError(err)
+		}
+		values = append(values, regExportValue{Name: name, Type: valueType, Data: data})
+	}
+	*out = append(*out, regExportKey{Path: path, Values: values})
+
+	subkeys, err := key.ReadSubKeyNames(0)
+	if err != nil {
+		return registryVFSMapError(err)
+	}
+	sort.Strings(subkeys)
+	for _, name := range subkeys {
+		sub, err := registry.OpenKey(key, name, registry.READ)
+		if errors.Is(err, registry.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("%s\\%s: %w", path, name, err)
+		}
+		err = exportRegistryKey(ctx, sub, path+`\`+name, out, depth+1)
+		_ = sub.Close()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (v *RegistryVFS) SetAttributes(ctx context.Context, _ string, _ VFSItem) error {
 	return registryVFSReadOnlyError(ctx)
 }

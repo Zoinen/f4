@@ -75,3 +75,40 @@ func TestAttachClientIdentityKeepsValuesOnOneLine(t *testing.T) {
 		t.Fatalf("pid = %d, want 9", pid)
 	}
 }
+
+// A client that started the daemon says so, after the identity, and the daemon
+// must read it past the edit path and the other lines (issue #1974). Without
+// the line -- an older client, or one joining a running session -- the client
+// is a guest.
+func TestAttachFreshRoundTrip(t *testing.T) {
+	identity := string(attachClientIdentity(5, func(string) string { return "" }))
+	fresh := string(attachPayload("/tmp/file.txt", "", "", nil)) + identity + attachFreshLine
+	guest := string(attachPayload("/tmp/file.txt", "", "", nil)) + identity
+
+	if !parseAttachFresh(fresh) {
+		t.Error("the FRESH line was not read")
+	}
+	if parseAttachFresh(guest) {
+		t.Error("a client that did not say it started the daemon was taken for its owner")
+	}
+	if parseAttachFresh("ATTACH /tmp/FRESH") {
+		t.Error("a file named FRESH on the first line is not the marker")
+	}
+	if edit, _, _, _ := parseAttachPayload(fresh); edit != "/tmp/file.txt" {
+		t.Errorf("edit path = %q, the marker must not change it", edit)
+	}
+	if pid, _ := parseAttachClientIdentity(fresh); pid != 5 {
+		t.Errorf("pid = %d, the marker must not change it", pid)
+	}
+}
+
+func TestClientOwnsSessionFollowsTheAttach(t *testing.T) {
+	t.Cleanup(func() { setClientOwnsSession(true) })
+	if !ClientOwnsSession() {
+		t.Fatal("a process that is its own session must own it")
+	}
+	setClientOwnsSession(false)
+	if ClientOwnsSession() {
+		t.Fatal("a guest was taken for the owner")
+	}
+}

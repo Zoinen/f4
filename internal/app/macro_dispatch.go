@@ -138,6 +138,9 @@ func macroCommandLineOwnsDeletion(area string, e *vtinput.InputEvent) bool {
 }
 
 func macroFilter(m *macro.MacroManager, e *vtinput.InputEvent) bool {
+	if e.Type == vtinput.MouseEventType {
+		return macroMouseWheel(m, e)
+	}
 	if e.Type != vtinput.KeyEventType {
 		return false
 	}
@@ -343,6 +346,24 @@ func macroFilter(m *macro.MacroManager, e *vtinput.InputEvent) bool {
 // ToggleRecording is shared by the native Ctrl+. handler and the command
 // palette. Stopping remains deferred so the assignment dialog is pushed only
 // after the current input dispatch (or palette close) has completed.
+// macroMouseWheel plays the recorded macro bound to a turn of the mouse
+// wheel, MsWheelUp or MsWheelDown with the modifiers held (f4#1870). While a
+// macro is recorded or assigned the wheel scrolls as usual.
+func macroMouseWheel(m *macro.MacroManager, e *vtinput.InputEvent) bool {
+	key := keymap.MouseWheelToFarString(e)
+	if key == "" || m.Recording || m.Assigning {
+		return false
+	}
+	for _, area := range []string{macroCurrentArea(), "Common"} {
+		if seq, ok := m.Macros[area][key]; ok {
+			vtui.DebugLog("MACRO: Playing back macro for %s in area %s", key, area)
+			vtui.FrameManager.InjectEvents(seq)
+			return true
+		}
+	}
+	return false
+}
+
 func macroLookupHotkey(m *macro.MacroManager, e *vtinput.InputEvent) bool {
 	if m == nil || e == nil || e.Type != vtinput.KeyEventType || !e.KeyDown {
 		return false

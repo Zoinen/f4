@@ -541,6 +541,16 @@ func (pp *PlayerPanel) adjustVolume(delta float64) {
 	pp.Engine.SetVolume(pp.Engine.Volume() + delta)
 }
 
+// SeekBy moves the current track by delta. It is also used by the file-panel
+// shortcuts, where the player is open but does not have keyboard focus.
+func (pp *PlayerPanel) SeekBy(delta time.Duration) bool {
+	if pp.Engine == nil || !pp.Engine.IsLoaded() {
+		return false
+	}
+	pp.Engine.Seek(delta)
+	return true
+}
+
 // ---- keys ------------------------------------------------------------
 
 func (pp *PlayerPanel) ProcessKey(e *vtinput.InputEvent) bool {

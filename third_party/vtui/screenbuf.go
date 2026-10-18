@@ -823,9 +823,10 @@ func (b *byteBuffer) Bytes() []byte {
 
 // AnsiRenderer implements SurfaceRenderer via ESC sequences.
 type AnsiRenderer struct {
-	parent   *ScreenBuf
-	lastAttr uint64
-	frameOut byteBuffer
+	parent          *ScreenBuf
+	lastAttr        uint64
+	frameOut        byteBuffer
+	vtOutputLogPath string
 
 	cursorX, cursorY int
 	cursorVis        bool
@@ -1000,6 +1001,7 @@ func (r *AnsiRenderer) Render(buf, shadow []CharInfo, w, h int, force bool) {
 	lastX, lastY := -1, -1
 	resync := false
 	r.lastAttr = ^uint64(0)
+	var imageCells []bool
 
 	for y := 0; y < h; y++ {
 		rowOff := y * w
@@ -1041,10 +1043,21 @@ func (r *AnsiRenderer) Render(buf, shadow []CharInfo, w, h int, force bool) {
 			startX = firstDiff
 			endX = lastDiff
 		}
+		// A row redrawn in full still leaves out the unchanged cells a
+		// picture shows in: the picture lies over them in the terminal.
+		underImage := false
+		if rowHasGhost && !force {
+			if imageCells == nil {
+				imageCells = make([]bool, w)
+			} else {
+				clear(imageCells)
+			}
+			underImage = r.parent.graphics.openImageCells(y, imageCells)
+		}
 
 		for x := startX; x <= endX; x++ {
 			idx := rowOff + x
-			if !force && !rowHasGhost && buf[idx] == shadow[idx] {
+			if !force && (!rowHasGhost || underImage && imageCells[x]) && buf[idx] == shadow[idx] {
 				continue
 			}
 
@@ -1266,6 +1279,7 @@ func (r *AnsiRenderer) write(s string) {
 		}
 		written, err := io.WriteString(w, s[:n])
 		if written > 0 {
+			r.recordVTOutput(s[:written])
 			s = s[written:]
 		}
 		if err != nil {
@@ -1274,6 +1288,35 @@ func (r *AnsiRenderer) write(s string) {
 		if written == 0 {
 			return
 		}
+	}
+}
+
+// recordVTOutput copies bytes successfully written by the ANSI renderer to an
+// optional diagnostic file. It is intentionally separate from VTUI_RECORD,
+// which records the vtui-host protocol rather than terminal escape output.
+func (r *AnsiRenderer) recordVTOutput(s string) {
+	path := os.Getenv("VTUI_VT_OUTPUT_LOG")
+	if path == "" || s == "" {
+		return
+	}
+
+	flags := os.O_CREATE | os.O_WRONLY | os.O_APPEND
+	if path != r.vtOutputLogPath {
+		flags = os.O_CREATE | os.O_WRONLY | os.O_TRUNC
+		r.vtOutputLogPath = path
+	}
+	f, err := os.OpenFile(path, flags, 0o600) // #nosec G703 -- this diagnostic destination is explicitly chosen by the local operator via VTUI_VT_OUTPUT_LOG
+	if err != nil {
+		DebugLog("ANSI_OUTPUT_LOG: open %q: %v", path, err)
+		return
+	}
+	_, writeErr := io.WriteString(f, s)
+	closeErr := f.Close()
+	if writeErr != nil {
+		DebugLog("ANSI_OUTPUT_LOG: write %q: %v", path, writeErr)
+	}
+	if closeErr != nil {
+		DebugLog("ANSI_OUTPUT_LOG: close %q: %v", path, closeErr)
 	}
 }
 

@@ -98,6 +98,12 @@ func (s *far2lHostSet) take() []uint32 {
 // redraw, which sends them again.
 func dropFar2lHostImages(out interface{ WriteString(string) (int, error) }) bool {
 	ids := far2lHostImages.take()
+	// A Win32 console buffer is painted, not interpreted as text, so far2l's
+	// escape would land in it as junk characters; far2l itself only exists
+	// behind a VT stream. The set is emptied either way.
+	if !consoleUsesVT() {
+		return false
+	}
 	for _, id := range ids {
 		stk := &vtinput.Far2lStack{}
 		stk.PushString(far2lImageIdentity(id))

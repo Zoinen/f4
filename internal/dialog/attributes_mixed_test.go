@@ -3,6 +3,7 @@ package dialog
 import (
 	"context"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -385,6 +386,52 @@ func TestAttributesDialog_UnixTypedMixedDigitKeepsBits(t *testing.T) {
 	}
 }
 
+func TestAllTargetsAreFiles(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		targets []AttributesTarget
+		want    bool
+	}{
+		{name: "single file", targets: []AttributesTarget{{Item: vfs.VFSItem{}}}, want: true},
+		{name: "multiple files", targets: []AttributesTarget{{Item: vfs.VFSItem{}}, {Item: vfs.VFSItem{}}}, want: true},
+		{name: "directory", targets: []AttributesTarget{{Item: vfs.VFSItem{IsDir: true}}}},
+		{name: "symlink", targets: []AttributesTarget{{Item: vfs.VFSItem{IsSymlink: true}}}},
+		{name: "mixed", targets: []AttributesTarget{{Item: vfs.VFSItem{}}, {Item: vfs.VFSItem{IsDir: true}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := allTargetsAreFiles(tc.targets); got != tc.want {
+				t.Errorf("allTargetsAreFiles() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAttributesDialog_SparseCheckboxForLocalFiles(t *testing.T) {
+	if runtime.GOOS != "windows" || hostmode.Posix() {
+		t.Skip("requires native Windows")
+	}
+	fm := vtui.FrameManager
+	fm.Init(vtui.NewSilentScreenBuf())
+	v := vfs.NewOSVFS(t.TempDir())
+	targets := []AttributesTarget{
+		{Path: "a.txt", Item: vfs.VFSItem{Name: "a.txt", WinAttrs: 0x200}},
+		{Path: "b.txt", Item: vfs.VFSItem{Name: "b.txt"}},
+	}
+	ShowAttributesWindowsWithPropertiesForTargets(nil, v, targets, func(string) error { return nil })
+	dlg := fm.GetTopFrame().(vtui.Container)
+	var sparse *vtui.Checkbox
+	walkUI(dlg.(vtui.UIElement), func(el vtui.UIElement) bool {
+		if chk, ok := el.(*vtui.Checkbox); ok && chk.GetText() == i18n.Msg("Attributes.Sparse") {
+			sparse = chk
+		}
+		return true
+	})
+	if sparse == nil || sparse.State != 2 {
+		t.Fatalf("Sparse checkbox = %v, want a mixed-state checkbox", sparse)
+	}
+	fm.Pop()
+}
+
 func TestAttributesDialog_WindowsMultipleSelectionDescribesSelection(t *testing.T) {
 	fm := vtui.FrameManager
 	fm.Init(vtui.NewSilentScreenBuf())
@@ -399,7 +446,7 @@ func TestAttributesDialog_WindowsMultipleSelectionDescribesSelection(t *testing.
 	firstTime := time.Date(2001, 2, 3, 4, 5, 6, 789, time.Local)
 	secondTime := time.Date(2011, 12, 13, 14, 15, 16, 17, time.Local)
 	targets := []AttributesTarget{
-		{Path: "dir", Item: vfs.VFSItem{Name: "dir", IsDir: true, WinAttrs: 0x10, UnixMode: 0755, MTime: firstTime}},
+		{Path: "dir", Item: vfs.VFSItem{Name: "dir", IsDir: true, WinAttrs: 0x4010, UnixMode: 0755, MTime: firstTime}},
 		{Path: "packed.txt", Item: vfs.VFSItem{Name: "packed.txt", WinAttrs: 0x800, UnixMode: 0600, MTime: secondTime}},
 	}
 
@@ -407,17 +454,25 @@ func TestAttributesDialog_WindowsMultipleSelectionDescribesSelection(t *testing.
 	dlg := fm.GetTopFrame().(vtui.Container)
 	var texts []string
 	var editMTime *vtui.Edit
-	var chkHidden *vtui.Checkbox
+	var chkHidden, chkNotContentIndexed, chkEncrypted *vtui.Checkbox
 	var setButton, securityButton *vtui.Button
+	var flagsList *vtui.ListBox
 	walkUI(dlg.(vtui.UIElement), func(el vtui.UIElement) bool {
 		switch c := el.(type) {
 		case *vtui.Text:
 			texts = append(texts, c.GetText())
 		case *vtui.Edit:
 			editMTime = c
+		case *vtui.ListBox:
+			flagsList = c
 		case *vtui.Checkbox:
-			if strings.Contains(c.GetText(), i18n.Msg("Attributes.Hidden")) {
+			switch {
+			case strings.Contains(c.GetText(), i18n.Msg("Attributes.Hidden")):
 				chkHidden = c
+			case c.GetText() == "Not Content Indexed":
+				chkNotContentIndexed = c
+			case c.GetText() == i18n.Msg("Attributes.Encrypted"):
+				chkEncrypted = c
 			}
 		case *vtui.Button:
 			switch {
@@ -429,17 +484,30 @@ func TestAttributesDialog_WindowsMultipleSelectionDescribesSelection(t *testing.
 		}
 		return true
 	})
-	if editMTime == nil || chkHidden == nil || setButton == nil || securityButton == nil {
+	if editMTime == nil || chkHidden == nil || chkNotContentIndexed == nil || setButton == nil || securityButton == nil || flagsList == nil {
 		t.Fatal("Windows multiple-selection dialog controls not found")
+	}
+	if runtime.GOOS == "windows" && !hostmode.Posix() {
+		if chkEncrypted == nil || chkEncrypted.State != 2 {
+			t.Fatalf("Encrypted checkbox = %v, want mixed state for the selection", chkEncrypted)
+		}
+	} else if chkEncrypted != nil {
+		t.Fatal("Encrypted checkbox must be hidden outside native local Windows filesystems")
 	}
 	all := strings.Join(texts, "\n")
 	if !strings.Contains(all, attributesSelectionSummary(targets)) {
 		t.Errorf("dialog lacks the selection summary %q:\n%s", attributesSelectionSummary(targets), all)
 	}
-	for _, want := range []string{"Compressed (?)", "Directory (?)"} {
-		if !strings.Contains(all, want) {
-			t.Errorf("advanced flags lack %q:\n%s", want, all)
+	if !flagsList.ShowScrollBar {
+		t.Error("advanced attributes list has no scrollbar")
+	}
+	for _, want := range []string{"Compressed: ?", "Directory: ?", "Device: no", "Recall on data access: no"} {
+		if !slices.Contains(flagsList.Items, want) {
+			t.Errorf("advanced attributes list lacks %q: %v", want, flagsList.Items)
 		}
+	}
+	if len(flagsList.Items) != 16 {
+		t.Errorf("advanced attributes count = %d, want 16", len(flagsList.Items))
 	}
 	if got := editMTime.GetText(); got != "" {
 		t.Errorf("last write field = %q, want blank for a multiple selection", got)
@@ -449,6 +517,7 @@ func TestAttributesDialog_WindowsMultipleSelectionDescribesSelection(t *testing.
 	}
 
 	chkHidden.State = 1
+	chkNotContentIndexed.State = 1
 	setButton.OnClick()
 	runUITasksUntil(t, fm.TaskChan, dlg.(vtui.Frame).IsDone)
 
@@ -462,7 +531,7 @@ func TestAttributesDialog_WindowsMultipleSelectionDescribesSelection(t *testing.
 		if !got.MTime.Equal(target.Item.MTime) {
 			t.Errorf("%s: mtime = %v, want its own %v", target.Path, got.MTime, target.Item.MTime)
 		}
-		if want := target.Item.WinAttrs | 2; got.WinAttrs != want {
+		if want := target.Item.WinAttrs | 2 | 0x2000; got.WinAttrs != want {
 			t.Errorf("%s: attributes = %#x, want %#x", target.Path, got.WinAttrs, want)
 		}
 		wantMode := target.Item.UnixMode

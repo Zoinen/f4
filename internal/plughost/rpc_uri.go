@@ -1,6 +1,7 @@
 package plughost
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -162,7 +163,8 @@ func (v *rpcURIVFS) Create(ctx context.Context, p string) (io.WriteCloser, error
 	if err := v.call(ctx, f4plugin.URIRequest{Operation: "create", Path: p}, &file); err != nil {
 		return nil, err
 	}
-	return &rpcWriteWrapper{sess: &uriFileTransport{mount: v, file: file.ID}}, nil
+	sink := &rpcWriteSink{sess: &uriFileTransport{mount: v, file: file.ID}}
+	return &rpcWriteWrapper{sink: sink, buffer: bufio.NewWriterSize(sink, 256*1024)}, nil
 }
 func (v *rpcURIVFS) Search(context.Context, string, string) (chan int64, error) { return nil, nil }
 func (v *rpcURIVFS) Close() error {

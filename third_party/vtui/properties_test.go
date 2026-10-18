@@ -318,3 +318,121 @@ func TestScreenObjectProperties_Defaults(t *testing.T) {
 		t.Errorf("GetProperty(stretch) after setting 0 = %+v, ok=%v, want 1", v, ok)
 	}
 }
+
+func TestGeneratedProperties_UncoveredWidgets(t *testing.T) {
+	type propertyCase struct {
+		name  string
+		value PropValue
+		want  PropValue
+	}
+	type widgetCase struct {
+		name       string
+		widget     PropertyAccess
+		properties []propertyCase
+	}
+
+	SetDefaultPalette()
+	table := NewTable(0, 0, 10, 5, nil)
+	table.SetRows([]TableRow{mockRow{col1: "a"}, mockRow{col1: "b"}, mockRow{col1: "c"}})
+	menu := NewVMenu("old")
+	menu.AddItem(MenuItem{Text: "first"})
+	menu.AddItem(MenuItem{Text: "second"})
+	widgets := []widgetCase{
+		{name: "BorderedFrame", widget: NewBorderedFrame(0, 0, 10, 5, 2, "old"), properties: []propertyCase{
+			{"boxType", PropValInt(3), PropValInt(3)},
+			{"showClose", PropValBool(true), PropValBool(true)},
+			{"title", PropValString("new"), PropValString("new")},
+		}},
+		{name: "CheckGroup", widget: NewCheckGroup(0, 0, 2, []string{"a"}), properties: []propertyCase{
+			{"columns", PropValInt(3), PropValInt(3)},
+			{"items", PropValStringList([]string{"x", "y"}), PropValStringList([]string{"x", "y"})},
+			{"data", PropValInt(2), PropValInt(2)},
+		}},
+		{name: "ComboBox", widget: NewComboBox(0, 0, 10, []string{"a"}), properties: []propertyCase{
+			{"dropdownOnly", PropValBool(true), PropValBool(true)},
+			{"items", PropValStringList([]string{"x", "y"}), PropValStringList([]string{"x", "y"})},
+			{"text", PropValString("value"), PropValString("value")},
+		}},
+		{name: "Edit", widget: NewEdit(0, 0, 10, ""), properties: []propertyCase{
+			{"historyId", PropValString("history"), PropValString("history")},
+			{"showHistoryButton", PropValBool(true), PropValBool(true)},
+		}},
+		{name: "GroupBox", widget: NewGroupBox(0, 0, 10, 5, "old"), properties: []propertyCase{
+			{"title", PropValString("new"), PropValString("new")},
+		}},
+		{name: "MultiLineEdit", widget: NewMultiLineEdit(0, 0, 10, 5, ""), properties: []propertyCase{
+			{"text", PropValString("line 1\nline 2"), PropValString("line 1\nline 2")},
+		}},
+		{name: "ProgressBar", widget: NewProgressBar(0, 0, 10), properties: []propertyCase{
+			{"percent", PropValInt(42), PropValInt(42)},
+		}},
+		{name: "RadioButton", widget: NewRadioButton(0, 0, "old", false), properties: []propertyCase{
+			{"selected", PropValBool(true), PropValBool(true)},
+			{"text", PropValString("new"), PropValString("new")},
+		}},
+		{name: "Separator", widget: NewSeparator(0, 0, 10, false, false), properties: []propertyCase{
+			{"connectLeft", PropValBool(true), PropValBool(true)},
+			{"connectRight", PropValBool(true), PropValBool(true)},
+		}},
+		{name: "Table", widget: table, properties: []propertyCase{
+			{"quickSearch", PropValBool(true), PropValBool(true)},
+			{"selected", PropValInt(2), PropValInt(2)},
+			{"showHeader", PropValBool(true), PropValBool(true)},
+			{"showSeparators", PropValBool(true), PropValBool(true)},
+			{"sortable", PropValBool(true), PropValBool(true)},
+		}},
+		{name: "Text", widget: NewText(0, 0, "old", 0), properties: []propertyCase{
+			{"text", PropValString("new"), PropValString("new")},
+		}},
+		{name: "VMenu", widget: menu, properties: []propertyCase{
+			{"selected", PropValInt(1), PropValInt(1)},
+			{"title", PropValString("new"), PropValString("new")},
+		}},
+		{name: "Window", widget: NewWindow(0, 0, 10, 5, "old"), properties: []propertyCase{
+			{"autoSize", PropValBool(true), PropValBool(false)},
+			{"center", PropValBool(false), PropValBool(true)},
+			{"isWarning", PropValBool(true), PropValBool(true)},
+			{"showClose", PropValBool(true), PropValBool(true)},
+			{"showZoom", PropValBool(true), PropValBool(true)},
+			{"title", PropValString("new"), PropValString("new")},
+		}},
+	}
+
+	for _, tc := range widgets {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, property := range tc.properties {
+				t.Run(property.name, func(t *testing.T) {
+					wrongType := PropValInt(1)
+					switch property.value.Kind {
+					case PropInt, PropString:
+						wrongType = PropValBool(true)
+					case PropBool, PropStringList:
+						wrongType = PropValString("wrong type")
+					}
+					if err := tc.widget.SetProperty(property.name, wrongType); !errors.Is(err, ErrPropertyType) {
+						t.Fatalf("SetProperty(%q) wrong-type error = %v, want ErrPropertyType", property.name, err)
+					}
+					if err := tc.widget.SetProperty(property.name, property.value); err != nil {
+						t.Fatalf("SetProperty(%q): %v", property.name, err)
+					}
+					got, ok := tc.widget.GetProperty(property.name)
+					if !ok || !reflect.DeepEqual(got, property.want) {
+						t.Fatalf("GetProperty(%q) = (%+v, %v), want (%+v, true)", property.name, got, ok, property.want)
+					}
+				})
+			}
+			if err := tc.widget.SetProperty("visible", PropValBool(false)); err != nil {
+				t.Errorf("inherited SetProperty(visible): %v", err)
+			}
+			if got, ok := tc.widget.GetProperty("visible"); !ok || !reflect.DeepEqual(got, PropValBool(false)) {
+				t.Errorf("inherited GetProperty(visible) = (%+v, %v), want (false, true)", got, ok)
+			}
+			if err := tc.widget.SetProperty("unknown", PropValString("value")); !errors.Is(err, ErrUnknownProperty) {
+				t.Errorf("unknown SetProperty error = %v, want ErrUnknownProperty", err)
+			}
+			if _, ok := tc.widget.GetProperty("unknown"); ok {
+				t.Error("unknown GetProperty returned ok=true")
+			}
+		})
+	}
+}

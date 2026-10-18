@@ -1,6 +1,7 @@
 package plughost
 
 import (
+	"bufio"
 	"context"
 	"io"
 	"path"
@@ -67,11 +68,16 @@ func (w *rpcFileWrapper) Close() error {
 }
 
 type rpcWriteWrapper struct {
+	sink   *rpcWriteSink
+	buffer *bufio.Writer
+}
+
+type rpcWriteSink struct {
 	sess PluginTransport
 	id   uint32
 }
 
-func (w *rpcWriteWrapper) Write(p []byte) (int, error) {
+func (w *rpcWriteSink) Write(p []byte) (int, error) {
 	req := WriteReq{ID: w.id, Data: p}
 	err := w.sess.Call("VFS.Write", req, nil)
 	if err != nil {
@@ -80,9 +86,17 @@ func (w *rpcWriteWrapper) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+func (w *rpcWriteWrapper) Write(p []byte) (int, error) {
+	return w.buffer.Write(p)
+}
+
 func (w *rpcWriteWrapper) Close() error {
-	req := CloseReq{ID: w.id}
-	return w.sess.Call("VFS.CloseFile", req, nil)
+	flushErr := w.buffer.Flush()
+	closeErr := w.sink.sess.Call("VFS.CloseFile", CloseReq{ID: w.sink.id}, nil)
+	if flushErr != nil {
+		return flushErr
+	}
+	return closeErr
 }
 
 func NewRPCVFS(sess PluginTransport, driveName string) *RPCVFS {
@@ -207,7 +221,8 @@ func (v *RPCVFS) Create(ctx context.Context, p string) (io.WriteCloser, error) {
 	if err != nil {
 		return nil, rpcVFSError(err)
 	}
-	return &rpcWriteWrapper{sess: v.sess, id: res.ID}, nil
+	sink := &rpcWriteSink{sess: v.sess, id: res.ID}
+	return &rpcWriteWrapper{sink: sink, buffer: bufio.NewWriterSize(sink, 256*1024)}, nil
 }
 
 func (v *RPCVFS) ParentVFS() vfs.VFS {

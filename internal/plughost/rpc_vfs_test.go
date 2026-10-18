@@ -1,6 +1,7 @@
 package plughost
 
 import (
+	"bytes"
 	"context"
 	"github.com/unxed/f4/internal/testutil"
 	"github.com/unxed/f4/vfs"
@@ -45,6 +46,53 @@ func TestRPCVFS_ReadDir(t *testing.T) {
 	}
 	if received[0].Name != "virtual_file.txt" || received[0].Size != 4096 {
 		t.Errorf("Unexpected item data: %+v", received[0])
+	}
+}
+
+func TestRPCVFS_CreateBuffersSmallWrites(t *testing.T) {
+	clientSess, serverSess := testutil.RPCSessionPair(t)
+	var got []byte
+	writes, closes := 0, 0
+	serverSess.Register("VFS.Create", func(data msgpack.RawMessage) (any, error) {
+		return OpenRes{ID: 7}, nil
+	})
+	serverSess.Register("VFS.Write", func(data msgpack.RawMessage) (any, error) {
+		var req WriteReq
+		if err := msgpack.Unmarshal(data, &req); err != nil {
+			return nil, err
+		}
+		writes++
+		got = append(got, req.Data...)
+		return nil, nil
+	})
+	serverSess.Register("VFS.CloseFile", func(data msgpack.RawMessage) (any, error) {
+		closes++
+		return nil, nil
+	})
+
+	w, err := NewRPCVFS(clientSess, "dummy").Create(context.Background(), "/file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, part := range []string{"first ", "second ", "third"} {
+		if n, err := w.Write([]byte(part)); err != nil || n != len(part) {
+			t.Fatalf("Write() = (%d, %v), want (%d, nil)", n, err, len(part))
+		}
+	}
+	if writes != 0 {
+		t.Fatalf("small writes made %d RPC calls before Close, want 0", writes)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if writes != 1 {
+		t.Errorf("Close flushed with %d RPC writes, want 1", writes)
+	}
+	if closes != 1 {
+		t.Errorf("Close made %d remote close calls, want 1", closes)
+	}
+	if want := []byte("first second third"); !bytes.Equal(got, want) {
+		t.Errorf("remote data = %q, want %q", got, want)
 	}
 }
 

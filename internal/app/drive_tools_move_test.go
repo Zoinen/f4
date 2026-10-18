@@ -32,9 +32,9 @@ func keepDriveToolsOrderFile(t *testing.T) {
 	})
 }
 
-// f4#1148: Ctrl+Up and Ctrl+Down on a tool row of the drive menu move it and
-// store the order.
-func TestDriveMenuCtrlUpDownMovesTheToolRow(t *testing.T) {
+// f4#1148: Shift+Up and Shift+Down on a tool row of the drive menu move it
+// and store the order.
+func TestDriveMenuShiftUpDownMovesTheToolRow(t *testing.T) {
 	keepDriveToolsOrderFile(t)
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	oldDrives := sysinfo.DriveRegistrySnapshot()
@@ -74,7 +74,7 @@ func TestDriveMenuCtrlUpDownMovesTheToolRow(t *testing.T) {
 	press := func(vk uint16) bool {
 		handled := menu.ProcessKey(&vtinput.InputEvent{
 			Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vk,
-			ControlKeyState: vtinput.LeftCtrlPressed,
+			ControlKeyState: vtinput.ShiftPressed,
 		})
 		pump() // the menu is closed and opened again in the new order
 		return handled
@@ -99,11 +99,11 @@ func TestDriveMenuCtrlUpDownMovesTheToolRow(t *testing.T) {
 	// A plugin's row moves up past its neighbour.
 	menu.SetSelectPos(row("Beta tool"))
 	if !press(vtinput.VK_UP) {
-		t.Fatal("Ctrl+Up was not consumed by the drive menu")
+		t.Fatal("Shift+Up was not consumed by the drive menu")
 	}
 	order := stored()
 	if index(order, "Beta tool") < 0 || index(order, "Beta tool") > index(order, "Alpha tool") {
-		t.Fatalf("stored order after Ctrl+Up on Beta = %q, want Beta before Alpha", order)
+		t.Fatalf("stored order after Shift+Up on Beta = %q, want Beta before Alpha", order)
 	}
 
 	// The menu is rebuilt in that order, and a built-in row moves down past a
@@ -143,14 +143,14 @@ func TestDriveMenuCtrlUpDownMovesTheToolRow(t *testing.T) {
 	}
 	order = stored()
 	if index(order, "@other-panel") < index(order, "Beta tool") {
-		t.Fatalf("Other panel is still above Beta after repeated Ctrl+Down: %q", order)
+		t.Fatalf("Other panel is still above Beta after repeated Shift+Down: %q", order)
 	}
 }
 
 // With "sort plugins by hotkey" on, the plugin tools sit in name order and a
 // move would be undone at once; the menu says so instead of doing nothing
 // (f4#1148).
-func TestDriveMenuCtrlUpOnSortedToolsExplainsWhy(t *testing.T) {
+func TestDriveMenuShiftUpOnSortedToolsExplainsWhy(t *testing.T) {
 	keepDriveToolsOrderFile(t)
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	oldDrives := sysinfo.DriveRegistrySnapshot()
@@ -175,9 +175,9 @@ func TestDriveMenuCtrlUpOnSortedToolsExplainsWhy(t *testing.T) {
 	}
 	if !menu.ProcessKey(&vtinput.InputEvent{
 		Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_UP,
-		ControlKeyState: vtinput.LeftCtrlPressed,
+		ControlKeyState: vtinput.ShiftPressed,
 	}) {
-		t.Fatal("Ctrl+Up was not consumed")
+		t.Fatal("Shift+Up was not consumed")
 	}
 	if _, stillMenu := paneltest.DriveMenuFromFrame(vtui.FrameManager.GetTopFrame()); stillMenu {
 		t.Fatal("nothing told the user why the tool did not move")

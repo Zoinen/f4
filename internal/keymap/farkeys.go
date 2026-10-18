@@ -140,6 +140,33 @@ var farKeyNames = map[uint16]string{
 	vtinput.VK_NUMPAD5:  "Num5",
 	vtinput.VK_DECIMAL:  "Decimal",
 	vtinput.VK_DIVIDE:   "Divide",
+	vtinput.VK_APPS:     "Apps",
+}
+
+// MouseWheelToFarString names a turn of the mouse wheel the way Far does,
+// "MsWheelUp" or "MsWheelDown" after the modifiers held, so that a macro can
+// be bound to it (f4#1870). Any other event is "".
+func MouseWheelToFarString(e *vtinput.InputEvent) string {
+	if e == nil || e.Type != vtinput.MouseEventType || e.WheelDirection == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	mods := NormalizeMods(e.ControlKeyState)
+	if mods.Contains(vtinput.LeftCtrlPressed) {
+		sb.WriteString("Ctrl")
+	}
+	if mods.Contains(vtinput.LeftAltPressed) {
+		sb.WriteString("Alt")
+	}
+	if mods.Contains(vtinput.ShiftPressed) {
+		sb.WriteString("Shift")
+	}
+	if e.WheelDirection > 0 {
+		sb.WriteString("MsWheelUp")
+	} else {
+		sb.WriteString("MsWheelDown")
+	}
+	return sb.String()
 }
 
 func EventToFarString(e *vtinput.InputEvent) string {

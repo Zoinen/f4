@@ -1,5 +1,7 @@
 package plughost
 
+import "sync/atomic"
+
 // f4's first-party PlugRing catalog: native plugins this repository builds,
 // tests and releases itself, offered through the same PlugRing "download and
 // install in one click" UI as a community entry, but never through
@@ -71,6 +73,33 @@ const androidPlugRingVersion = "0.0.0-part3-published-not-installable"
 // cloudFoxPlugRingVersion for the release URL selection rule.
 const iosPlugRingVersion = "0.0.0-part3-published-not-installable"
 
+// firstPartyBuildStamp is the identity of the f4 build doing the installing
+// (a release tag or a commit), set by the application at start-up.
+//
+// A first-party plugin is built from the same commit as the f4 binary and
+// published next to it, so a plugin installed by an older f4 is an older
+// plugin. The manifest versions above never change, so without the stamp
+// PlugRing never saw an installed plugin as outdated: a fix inside a plugin
+// (the Android upload over ADB Sync, unxed/f4#1761) reached nobody who had
+// installed it before.
+var firstPartyBuildStamp atomic.Value // string
+
+// SetFirstPartyBuildStamp makes every first-party entry's Version carry the
+// identity of this f4 build. An empty stamp leaves the manifest versions as
+// they are.
+func SetFirstPartyBuildStamp(stamp string) {
+	firstPartyBuildStamp.Store(stamp)
+}
+
+// firstPartyVersion is the version PlugRing compares an installed first-party
+// plugin against: the manifest version plus the build stamp.
+func firstPartyVersion(manifestVersion string) string {
+	if stamp, _ := firstPartyBuildStamp.Load().(string); stamp != "" {
+		return manifestVersion + "+" + stamp
+	}
+	return manifestVersion
+}
+
 // FirstPartyPlugRingItems returns f4's own first-party PlugRing catalog. It
 // is a plain function, not a package-level var, so nothing outside this file
 // can mutate the shared list a caller got back from an earlier call.
@@ -79,7 +108,7 @@ func FirstPartyPlugRingItems() []PlugRingItem {
 		{
 			ID:      "cloudfox",
 			Name:    "Cloud storage (CloudFox)",
-			Version: cloudFoxPlugRingVersion,
+			Version: firstPartyVersion(cloudFoxPlugRingVersion),
 			Author:  "unxed",
 			Description: "S3, Google Drive, Yandex Disk and WebDAV as a top-level f4 drive. " +
 				"Ships as a native subprocess plugin so a lite build (f4#1178) does not have " +
@@ -98,7 +127,7 @@ func FirstPartyPlugRingItems() []PlugRingItem {
 		{
 			ID:      "android",
 			Name:    "Android devices (ADB)",
-			Version: androidPlugRingVersion,
+			Version: firstPartyVersion(androidPlugRingVersion),
 			Author:  "unxed",
 			Description: "Browse Android devices known to the local ADB server as a top-level f4 " +
 				"drive (shell-v2/FISH+ or ADB Sync). Ships as a native subprocess plugin, same " +
@@ -116,7 +145,7 @@ func FirstPartyPlugRingItems() []PlugRingItem {
 		{
 			ID:      "ios",
 			Name:    "Apple mobile devices (iOS)",
-			Version: iosPlugRingVersion,
+			Version: firstPartyVersion(iosPlugRingVersion),
 			Author:  "unxed",
 			Description: "Browse an iPhone or iPad's Media export, applications and crash " +
 				"reports as a top-level f4 drive over usbmuxd. Ships as a native subprocess " +

@@ -27,6 +27,20 @@ func TestDriveMenuCaptionsLiveInTheSeparators(t *testing.T) {
 		{Name: "Alpha", Factory: func() vfs.VFS { return nil }},
 		{Name: "Beta", Factory: func() vfs.VFS { return nil }},
 	})
+	oldPlatformDrives, oldKind, oldFS := driveMenuPlatformDrives, driveMenuRowKind, driveMenuRowFS
+	t.Cleanup(func() {
+		driveMenuPlatformDrives, driveMenuRowKind, driveMenuRowFS = oldPlatformDrives, oldKind, oldFS
+	})
+	driveMenuPlatformDrives = func() []sysinfo.DriveEntry {
+		return []sysinfo.DriveEntry{
+			{Name: "C:"},
+			{Name: "Windows Registry"},
+		}
+	}
+	driveMenuRowKind = func(_, _ string) driveMenuKind { return driveMenuKindFixed }
+	driveMenuRowFS = func(string) (sysinfo.FSInfo, bool) {
+		return sysinfo.FSInfo{Label: "System", Type: "NTFS", Total: 100, Free: 50}, true
+	}
 
 	pf.ShowDriveMenu(0)
 	menu, ok := driveMenuFromFrame(vtui.FrameManager.GetTopFrame())
@@ -56,16 +70,29 @@ func TestDriveMenuCaptionsLiveInTheSeparators(t *testing.T) {
 	builtin := map[string]bool{
 		strings.TrimSpace(strings.ReplaceAll(i18n.Msg("Panel.Other"), "&", "")):     true,
 		strings.TrimSpace(strings.ReplaceAll(i18n.Msg("TempPanel.Drive"), "&", "")): true,
-		"Windows Registry": true,
+		"Windows Registry":      true,
+		"Physical Disks (/dev)": true, // a tool since f4#1148
+		"Physical Disks":        true,
+	}
+	// A tool row is just its name; platform-drive columns must not follow the
+	// Windows Registry entry after it is moved to the Tools section.
+	rowName := func(text string) string {
+		name, _, _ := strings.Cut(strings.ReplaceAll(text, "&", ""), "│")
+		return strings.TrimSpace(name)
 	}
 	first := tools + 1
-	for first < len(menu.Items) && builtin[strings.TrimSpace(strings.ReplaceAll(menu.Items[first].Text, "&", ""))] {
+	for first < len(menu.Items) && builtin[rowName(menu.Items[first].Text)] {
 		first++
 	}
 	if first == tools+1 {
 		t.Fatalf("the built-in tools are not first under the Tools rule: %q", menu.Items[tools+1].Text)
 	}
-	if next := strings.TrimSpace(strings.ReplaceAll(menu.Items[first].Text, "&", "")); next != "Alpha" {
+	for _, item := range menu.Items {
+		if rowName(item.Text) == "Windows Registry" && strings.Contains(item.Text, "│") {
+			t.Fatalf("Windows Registry tool row includes drive-column separators: %q", item.Text)
+		}
+	}
+	if next := rowName(menu.Items[first].Text); next != "Alpha" {
 		t.Fatalf("the row after the built-in tools is %q, want the first plugin tool", next)
 	}
 	for _, item := range menu.Items {
@@ -83,7 +110,7 @@ func TestDriveMenuCaptionsLiveInTheSeparators(t *testing.T) {
 
 // f4#1148 (mitek1977-coder): the bookmark slots get their caption in the rule
 // above them, like Tools and Links; the slot digit is one space from the path,
-// as on the Tools and Links rows; and the bottom line lists Ctrl+Up/Down
+// as on the Tools and Links rows; and the bottom line lists Shift+Up/Down
 // rather than the second key for Ins.
 func TestDriveMenuBookmarksCaptionAndSpacing(t *testing.T) {
 	cfg := t.TempDir()
@@ -123,7 +150,9 @@ func TestDriveMenuBookmarksCaptionAndSpacing(t *testing.T) {
 	if rule := menu.Items[row-1]; !rule.Separator || rule.Text != caption {
 		t.Errorf("the rule above the bookmarks is %+v, want a separator captioned %q", rule, caption)
 	}
-	if want := "&3 " + dialog.EscapeAmpersand(dialog.TruncPathLeft(place, 64)); menu.Items[row].Text != want {
+	// The path is cut to the box (f4#1148), so compare with it cut the same way.
+	boxWidth := menu.X2 - menu.X1 + 1
+	if want := "&3 " + dialog.EscapeAmpersand(dialog.TruncPathLeft(place, boxWidth-driveMenuBoxChrome-2)); menu.Items[row].Text != want {
 		t.Errorf("bookmark row %q, want %q", menu.Items[row].Text, want)
 	}
 
@@ -131,7 +160,7 @@ func TestDriveMenuBookmarksCaptionAndSpacing(t *testing.T) {
 	if !ok {
 		t.Fatalf("top frame is %T", top)
 	}
-	if strings.Contains(frame.bottomHint, "Ctrl+N") || !strings.HasSuffix(strings.TrimSpace(frame.bottomHint), "Ctrl+Up/Down") {
-		t.Errorf("bottom line %q: want no Ctrl+N and Ctrl+Up/Down at the end", frame.bottomHint)
+	if strings.Contains(frame.bottomHint, "Ctrl+N") || !strings.HasSuffix(strings.TrimSpace(frame.bottomHint), "Shift+Up/Down") {
+		t.Errorf("bottom line %q: want no Ctrl+N and Shift+Up/Down at the end", frame.bottomHint)
 	}
 }

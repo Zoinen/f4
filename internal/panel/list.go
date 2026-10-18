@@ -18,7 +18,6 @@ import (
 
 	"github.com/mattn/go-runewidth"
 	"github.com/unxed/f4/internal/history"
-	"github.com/unxed/f4/internal/macro"
 	"github.com/unxed/f4/internal/sysinfo"
 	"golang.org/x/text/collate"
 	"golang.org/x/text/language"
@@ -26,13 +25,16 @@ import (
 	"github.com/unxed/f4/internal/config"
 	"github.com/unxed/f4/internal/fileops"
 	"github.com/unxed/f4/internal/i18n"
+	"github.com/unxed/f4/internal/macro"
 	"github.com/unxed/f4/internal/media"
 	"github.com/unxed/f4/internal/navtrace"
 	"github.com/unxed/f4/internal/semantic"
+	"github.com/unxed/f4/internal/terminal"
 	"github.com/unxed/f4/internal/theme"
 	"github.com/unxed/f4/internal/wheel"
 	"github.com/unxed/f4/sdk/extui"
 	"github.com/unxed/f4/vfs"
+	"github.com/unxed/f4/vfs/hostmode"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 	"runtime"
@@ -3098,6 +3100,12 @@ func (fp *FileSystemPanel) updateTitle(err error) {
 			if prefix := tp.GetTitle(); prefix != "" {
 				title = prefix + ":" + title
 			}
+		} else if _, local := fp.Vfs.(*vfs.OSVFS); local && !terminal.WindowsShellSyntax() {
+			// The home directory as "~", like the prompt of the command line
+			// (f4#1924); a Windows-style shell shows the full path there too.
+			if home, _ := hostmode.UserHomeDir(); home != "" {
+				title = homeTildePath(title, home)
+			}
 		}
 	}
 
@@ -3110,6 +3118,23 @@ func (fp *FileSystemPanel) updateTitle(err error) {
 	}
 	fp.currentTitle = title
 	fp.Frame.SetTitle("")
+}
+
+// homeTildePath writes the home directory at the start of p as "~": the home
+// itself becomes "~", a path inside it "~/rest". Another directory that only
+// shares the prefix (/home/user2 for /home/user) is left as it is.
+func homeTildePath(p, home string) string {
+	home = strings.TrimRight(home, "/")
+	if home == "" {
+		return p
+	}
+	if p == home {
+		return "~"
+	}
+	if strings.HasPrefix(p, home+"/") {
+		return "~" + p[len(home):]
+	}
+	return p
 }
 
 func (fp *FileSystemPanel) StopLoadingAnimation() {
@@ -5024,12 +5049,14 @@ func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 	}
 	freeSpaceStr := ""
 	if _, isLocal := fp.Vfs.(*vfs.OSVFS); isLocal {
-		if info, ok := sysinfo.FS(fp.Vfs.GetPath()); ok {
-			freeSpaceStr = formatBytes(info.Free)
+		// Drawn on every frame: FreeBytes skips the /proc/mounts lookup that
+		// FS does for the mount point and type, which this line never shows.
+		if free, ok := sysinfo.FreeBytes(fp.Vfs.GetPath()); ok {
+			freeSpaceStr = formatBytes(free)
 		}
 	}
 
-	if config.App.ShowPanelFileInfo && fp.Y2-fp.Y1+1 > 6 {
+	if panelModeShowsInfoLine(fp.EffectiveViewMode()) && fp.Y2-fp.Y1+1 > 6 {
 		p := vtui.NewPainter(scr)
 		attrBox := vtui.Palette[theme.ColPanelBox]
 		// far2l paints the per-file status line with COL_PANELTEXT;
@@ -5063,6 +5090,11 @@ func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 			}
 
 			rightStr := fmt.Sprintf("%s  %s", sizeStr, dateStr)
+			if owner := statusLineOwnerText(fp.Vfs, e); owner != "" {
+				// Who owns the file, as far2l shows it, between the size
+				// (or the link target) and the date (f4#1962).
+				rightStr = fmt.Sprintf("%s  %s  %s", sizeStr, owner, dateStr)
+			}
 
 			if fp.Vfs != nil && fp.Vfs.GetPath() == "net://" {
 				rightStr = ""
@@ -5115,7 +5147,7 @@ func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 	// separator above the status line, and the panel total stays on the
 	// bottom border underneath it. Only with the status line off do they
 	// share the bottom border, where the selection summary wins (#394).
-	fileInfoShown := config.App.ShowPanelFileInfo && fp.Y2-fp.Y1+1 > 6
+	fileInfoShown := panelModeShowsInfoLine(fp.EffectiveViewMode()) && fp.Y2-fp.Y1+1 > 6
 	availBottom := fp.X2 - fp.X1 - 1
 
 	selStr := ""
@@ -5157,10 +5189,11 @@ func (fp *FileSystemPanel) Show(scr *vtui.ScreenBuf) {
 	// The panel total keeps the centre and its own colour; the entry under
 	// the cursor is pinned to the left corner behind a ▸ marker. Both are in
 	// exact bytes, the way far2l and the Size column spell them, and so is
-	// the selected-files line. Directories say <DIR>/UP-DIR instead. When
-	// the far2l status line is switched on it already states all of this
-	// right above, so the marker steps aside.
-	if !config.App.ShowPanelFileInfo && fp.gridColumnCount() > 1 {
+	// the selected-files line. Folders, links and ".." name their kind
+	// instead, the way the Size column does. When the far2l status line is
+	// switched on it already states all of this right above, so the marker
+	// steps aside.
+	if !panelModeShowsInfoLine(fp.EffectiveViewMode()) && fp.gridColumnCount() > 1 {
 		if idx := fp.GetCursorIndex(); idx >= 0 && idx < len(fp.Entries) {
 			e := fp.Entries[idx]
 			curStr := entrySizeText(e)
@@ -5707,7 +5740,7 @@ func (fp *FileSystemPanel) SetPosition(x1, y1, x2, y2 int) {
 	fp.ScreenObject.SetPosition(x1, y1, x2, y2)
 	fp.Frame.SetPosition(x1, y1, x2, y2)
 	// Table stays inside the frame, reserving space for status info only when enabled.
-	if config.App.ShowPanelFileInfo && y2-y1+1 > 6 {
+	if panelModeShowsInfoLine(fp.EffectiveViewMode()) && y2-y1+1 > 6 {
 		fp.Table.SetPosition(x1+1, y1+1, x2-1, y2-3)
 	} else {
 		fp.Table.SetPosition(x1+1, y1+1, x2-1, y2-1)

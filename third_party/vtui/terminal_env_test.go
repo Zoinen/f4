@@ -268,6 +268,12 @@ func TestTerminalEnv_NoVTWhenWin32ConsoleOwnsScreen(t *testing.T) {
 		mock.builder.Reset()
 	}
 
+	// Images vtui left on far2l's screen must not make Suspend/SetAltScreen
+	// write their delete escapes either: the set is global, so which earlier
+	// test left something in it must not matter (shuffled CI order did).
+	far2lHostImages.set(map[uint32]struct{}{7: {}})
+	t.Cleanup(func() { far2lHostImages.take() })
+
 	isPrepared = false
 	inAltScreen = false
 	inputRestore = nil

@@ -14,6 +14,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -338,6 +339,26 @@ func TransferItemName(srcVFS vfs.VFS, srcPath string, dstVFS vfs.VFS, fallback s
 	return name
 }
 
+// transferQueuePaths lists what a queued copy or move touches: every source
+// item and the entry it lands as. Under a mask the names are made at run
+// time, so the destination folder stands for them.
+func transferQueuePaths(srcVfs vfs.VFS, srcBasePath string, names []string, dstVfs vfs.VFS, destPath string, isTargetDir bool, mask string) []string {
+	var paths []string
+	for _, name := range names {
+		srcPath := srcVfs.Join(srcBasePath, name)
+		paths = append(paths, srcPath)
+		switch {
+		case !isTargetDir:
+			paths = append(paths, destPath)
+		case mask != "":
+			paths = append(paths, destPath)
+		default:
+			paths = append(paths, dstVfs.Join(destPath, TransferItemName(srcVfs, srcPath, dstVfs, name)))
+		}
+	}
+	return paths
+}
+
 // transferItemNameForMask applies a rename mask to the name that far2l would
 // feed to ConvertWildcards. A selected item can be represented by a path (for
 // example in a search or temporary panel), but the mask is applied to its
@@ -491,6 +512,21 @@ func executeFileOpAtWithOptions(pf vtui.Frame, srcVfs, dstVfs vfs.VFS, srcBasePa
 	// A wildcard in the last component is a rename mask, as in far2l: the
 	// files land in the directory before it, under names the mask generates.
 	// Taken literally it would instead create a file called "*.1".
+	// The null device takes a copy and keeps nothing (far2l's "copy to nul",
+	// f4#1966). A move would delete the sources after "copying" them into it,
+	// so it is refused before anything is asked or touched: left alone, the
+	// move treated /dev/null as an existing file, offered to overwrite it and
+	// asked for the root password to replace the device node.
+	nullDest := IsNullDeviceDest(destInput, runtime.GOOS)
+	if isMove && nullDest {
+		vtui.ShowMessage(" "+strings.TrimSpace(i18n.Msg("Error.Title"))+" ", i18n.Msg("FileOp.MoveToNullDevice"), []string{i18n.Msg("vtui.Ok")})
+		if onComplete != nil {
+			onComplete()
+		}
+		return
+	}
+	toNull := nullDest
+
 	mask := destMask(destInput)
 	if mask != "" {
 		destInput = destWithoutMask(destInput)
@@ -498,8 +534,11 @@ func executeFileOpAtWithOptions(pf vtui.Frame, srcVfs, dstVfs vfs.VFS, srcBasePa
 
 	names = append([]string(nil), names...)
 	dstVfs, destPath := resolveFileOpDestinationAt(srcVfs, dstVfs, srcBasePath, destInput)
+	if toNull {
+		dstVfs, destPath = discardVFS{}, "/"
+	}
 
-	isTargetDir := len(names) > 1 || mask != ""
+	isTargetDir := len(names) > 1 || mask != "" || toNull
 	if !isTargetDir {
 		if strings.HasSuffix(destInput, "/") || strings.HasSuffix(destInput, "\\") {
 			isTargetDir = true
@@ -578,7 +617,7 @@ func executeFileOpAtWithOptions(pf vtui.Frame, srcVfs, dstVfs vfs.VFS, srcBasePa
 				reporter.UpdateScan(currentPath, stats.Files, stats.Dirs)
 			}
 		}
-		bulkCopyEligible := !isMove && mask == "" && !SameVFSInstance(srcVfs, dstVfs) && transferNamesAreIdentity(srcVfs, dstVfs, srcBasePath, names) && opts.bulkCompatible()
+		bulkCopyEligible := !isMove && !toNull && mask == "" && !SameVFSInstance(srcVfs, dstVfs) && transferNamesAreIdentity(srcVfs, dstVfs, srcBasePath, names) && opts.bulkCompatible()
 		if _, ok := srcVfs.(vfs.BulkCopierAt); ok && bulkCopyEligible {
 			if bulkScanner, ok := srcVfs.(vfs.BulkScannerAt); ok {
 				totalStats, scanErr = bulkScanner.ScanBulkAt(ctx, srcBasePath, names, scanCallback)
@@ -851,20 +890,17 @@ func executeFileOpAtWithOptions(pf vtui.Frame, srcVfs, dstVfs vfs.VFS, srcBasePa
 	}
 
 	if mode == 0 { // Queue
-		rk1 := GetResourceKey(srcVfs)
-		rk2 := GetResourceKey(dstVfs)
-		var keys []string
-		if rk1 != "" {
-			keys = append(keys, rk1)
-		}
-		if rk2 != "" && rk2 != rk1 {
-			keys = append(keys, rk2)
+		keys := ResourceKeysFor(srcVfs, dstVfs)
+		var paths []string
+		if len(preconds) == len(names) {
+			paths = transferQueuePaths(srcVfs, srcBasePath, names, dstVfs, destPath, isTargetDir, mask)
 		}
 		task := &QueueTask{
 			Type:          actionDesc,
 			Desc:          desc,
 			Preconditions: preconds,
 			ResKeys:       keys,
+			Paths:         paths,
 			Run:           runFunc,
 		}
 		task.OnComplete = func() {
@@ -1150,20 +1186,23 @@ func ExecuteDeleteOpWithDispositionAt(activeVfs vfs.VFS, basePath string, names 
 	}
 
 	if mode == 0 { // Queue
-		rk := GetResourceKey(activeVfs)
-		var keys []string
-		if rk != "" {
-			keys = append(keys, rk)
-		}
+		keys := ResourceKeysFor(activeVfs)
 		taskType := "Delete"
 		if toTrash {
 			taskType = "Trash"
+		}
+		var paths []string
+		if len(preconds) == len(names) {
+			for _, pc := range preconds {
+				paths = append(paths, pc.Path)
+			}
 		}
 		task := &QueueTask{
 			Type:          taskType,
 			Desc:          desc,
 			Preconditions: preconds,
 			ResKeys:       keys,
+			Paths:         paths,
 			Run:           runFunc,
 			OnComplete:    onComplete,
 		}
@@ -1427,6 +1466,13 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 		return ctx.Err()
 	}
 
+	srcVfs, err := withTransferContent(ctx, srcVfs, srcPath, dstVfs)
+	if err != nil {
+		if state.tolerateRead(srcPath, err) {
+			return nil
+		}
+		return err
+	}
 	stat, err := srcVfs.Stat(ctx, srcPath)
 	if err != nil {
 		if state.tolerateRead(srcPath, err) {
@@ -1555,6 +1601,7 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 		}
 		itemToSet := stat
 		itemToSet.Uid, itemToSet.Gid = -1, -1
+		withSourceBirthTime(&itemToSet, srcVfs, srcPath, dstVfs)
 		itemToSet.UnixMode = dirRights
 		if state.AccessRights == AccessRightsInherit {
 			itemToSet.Uid, itemToSet.Gid, _ = inheritedOwner(ctx, state, dstVfs, destPath)
@@ -1977,6 +2024,7 @@ func recursiveCopy(ctx context.Context, srcVfs vfs.VFS, srcPath string, dstVfs v
 	if copySuccess {
 		itemToSet := stat
 		itemToSet.Uid, itemToSet.Gid = -1, -1
+		withSourceBirthTime(&itemToSet, srcVfs, srcPath, dstVfs)
 		itemToSet.UnixMode = destinationRights(ctx, state, dstVfs, destPathForFile, stat.UnixMode, false, destinationExisted)
 		if state.AccessRights == AccessRightsInherit {
 			itemToSet.Uid, itemToSet.Gid, _ = inheritedOwner(ctx, state, dstVfs, destPathForFile)

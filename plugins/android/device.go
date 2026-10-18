@@ -106,6 +106,9 @@ type hybridDeviceOpener struct {
 	openSync      func(context.Context, vfs.VFS, DeviceInfo, map[string]bool) (vfs.VFS, error)
 	pool          *fishSessionPool
 	info          *deviceInfoService
+	// uploads returns the Sync client that should carry file uploads on a FISH+
+	// device (fish_upload.go); nil keeps every upload on the FISH+ session.
+	uploads func(DeviceInfo, map[string]bool) syncFS
 }
 
 func (o *hybridDeviceOpener) OpenDevice(ctx context.Context, parent vfs.VFS, device DeviceInfo) (vfs.VFS, error) {
@@ -134,7 +137,13 @@ func (o *hybridDeviceOpener) OpenDevice(ctx context.Context, parent vfs.VFS, dev
 			if fish, ok := mounted.(*netfox.FishVFS); ok && o.configureFish != nil {
 				o.configureFish(fish, device, features)
 			}
-			return attachAndroidPanelInfo(mounted, o.info.provider(device, "FISH+", fishBackendDetail(mounted))), nil
+			detail := fishBackendDetail(mounted)
+			if o.uploads != nil {
+				if wrapped := withSyncUploads(mounted, o.uploads(device, features)); wrapped != mounted {
+					mounted, detail = wrapped, detail+", upload=ADB Sync, download=ADB Sync"
+				}
+			}
+			return attachAndroidPanelInfo(mounted, o.info.provider(device, "FISH+", detail)), nil
 		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
@@ -337,13 +346,9 @@ func NewPlugin() *Plugin {
 				}
 				return newSyncHybridReadFile(syncBackend, target), nil
 			})
-			fish.SetCreateProvider("adb-sync", func(ctx context.Context, target string) (io.WriteCloser, error) {
-				target, err := mutationPath(target)
-				if err != nil {
-					return nil, err
-				}
-				return client.Send(ctx, target, 0644, time.Now())
-			})
+		},
+		uploads: func(device DeviceInfo, features map[string]bool) syncFS {
+			return syncClientFS{client: NewSyncClient(server, device.Serial, features)}
 		},
 	}
 	return &Plugin{Source: serverDeviceSource{server: server}, Opener: opener, closer: pool, info: info}

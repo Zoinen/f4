@@ -230,6 +230,33 @@ func (g *GraphicsLayer) markCells(x1, y1, x2, y2 int, state cellCover) {
 	}
 }
 
+// openImageCells sets dst[x] for the cells of screen row y in which a
+// placement shows its picture, that is every cell of it nothing was painted
+// over, and reports whether there is one. dst is the row, one entry per
+// column; the caller clears it. A text renderer leaves such a cell alone
+// while its text is unchanged: the terminal shows the picture there, and
+// writing the cell again would put the text background over the picture
+// until the picture is sent again (f4#1885).
+func (g *GraphicsLayer) openImageCells(y int, dst []bool) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	found := false
+	for i := range g.placements {
+		p := &g.placements[i]
+		if y < p.Row || y >= p.Row+p.Rows {
+			continue
+		}
+		m := g.covers[p.ID]
+		for x := max(p.Col, 0); x < p.Col+p.Cols && x < len(dst); x++ {
+			if !m.Covered(x, y) {
+				dst[x] = true
+				found = true
+			}
+		}
+	}
+	return found
+}
+
 func (g *GraphicsLayer) placementByID(id uint32) *ImagePlacement {
 	for i := range g.placements {
 		if g.placements[i].ID == id {

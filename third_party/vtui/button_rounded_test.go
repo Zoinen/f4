@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/unxed/vtinput"
 )
 
 // roundedButtonEnv selects a graphical backend and the given glyph style for
@@ -116,6 +118,42 @@ func TestButtonRounded_TintDirection(t *testing.T) {
 	}
 }
 
+func TestButtonRounded_HoverTintPreservesContrast(t *testing.T) {
+	for _, c := range []struct{ fg, bg uint32 }{
+		{0xFFFFFF, 0x101010},
+		{0x202020, 0xE0E0E0},
+		{0x909090, 0xAAAAAA},
+	} {
+		attr := SetRGBBoth(0, c.fg, c.bg)
+		base := roundedButtonAttrAccent(attr, false, true, false, false)
+		hover := roundedButtonAttrAccent(attr, false, true, false, true)
+		baseBG, hoverBG := attrColorRGB(base, true), attrColorRGB(hover, true)
+		if baseBG == hoverBG {
+			t.Errorf("hover did not tint button background %06X", c.bg)
+		}
+		if got := contrastRatioRGB(attrColorRGB(hover, false), hoverBG); got < roundedButtonMinContrast {
+			t.Errorf("hover caption contrast = %.2f, want >= %.1f", got, roundedButtonMinContrast)
+		}
+	}
+}
+
+func TestButtonRounded_GroupMouseMoveTracksHoveredButton(t *testing.T) {
+	roundedButtonEnv(t, "gogpu", GlyphStyleRounded)
+	g := NewGroup(0, 0, 20, 4)
+	b := NewButton(2, 1, "OK")
+	g.AddItem(b)
+	if !g.ProcessMouse(&vtinput.InputEvent{Type: vtinput.MouseEventType, MouseX: 3, MouseY: 1, MouseEventFlags: vtinput.MouseMoved}) {
+		t.Fatal("entering a button should request a redraw")
+	}
+	if !b.mouseHovered {
+		t.Fatal("button was not marked hovered")
+	}
+	g.ProcessMouse(&vtinput.InputEvent{Type: vtinput.MouseEventType, MouseX: 15, MouseY: 2, MouseEventFlags: vtinput.MouseMoved})
+	if b.mouseHovered {
+		t.Fatal("button remained hovered after pointer left it")
+	}
+}
+
 func TestButtonRounded_CaptionContrastIsCorrected(t *testing.T) {
 	// Grey on grey is unreadable once the block is tinted: the caption must
 	// be pushed towards black on a light block and towards white on a dark one.
@@ -212,8 +250,8 @@ func TestButtonRounded_DefaultStaysRecognisableWithThemeColours(t *testing.T) {
 		normal := SetRGBBoth(0, c.fg, c.buttonBg)
 		def := SetRGBBoth(0, c.accent, c.buttonBg)
 
-		n := roundedButtonAttrAccent(normal, false, true, false)
-		d := roundedButtonAttrAccent(def, false, true, true)
+		n := roundedButtonAttrAccent(normal, false, true, false, false)
+		d := roundedButtonAttrAccent(def, false, true, true, false)
 		nb, db := attrColorRGB(n, true), attrColorRGB(d, true)
 		if nb == db {
 			t.Errorf("%s: default block %06X equals the ordinary one", c.name, db)

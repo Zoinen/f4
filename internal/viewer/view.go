@@ -57,6 +57,9 @@ type ViewerView struct {
 	DisasmMode int
 	TopOffset  int64 // Current byte offset of the first visible line
 
+	// ansiCache keeps the last ansiStateAt result (see ansi.go).
+	ansiCache ansiStateCache
+
 	// For Text mode: offsets of lines currently on screen
 	LineOffsets    []int64
 	rowCells       []vtui.CharInfo
@@ -227,10 +230,10 @@ func NewViewerView(ctx context.Context, v vfs.VFS, path string) (*ViewerView, er
 		Codepage:               cpID,
 		SemanticLayoutRevision: 1,
 		layoutTabSize:          effectiveViewerTabSize(),
-		layoutANSI:             isANSIFileName(path),
+		layoutANSI:             ansiViewMode(path, v),
 		HexAuto:                binary,
 		DisasmMode:             DetectX86Mode(header),
-		AnsiMode:               isANSIFileName(path),
+		AnsiMode:               ansiViewMode(path, v),
 	}
 	vv.ScrollBar = vtui.NewScrollBar(0, 0, 0)
 	vv.ScrollBar.ColorIdx = theme.ColViewerScrollbar

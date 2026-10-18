@@ -20,6 +20,8 @@ func DriveToolActionName(key string) string {
 		return keymap.DriveMenuActionName("temporary")
 	case driveToolKeyRegistry:
 		return keymap.DriveMenuActionName("platform.windows-registry")
+	case driveToolKeyPhysicalDisks:
+		return keymap.DriveMenuActionName("platform.physical-disks")
 	}
 	return keymap.DriveMenuActionName("tool." + driveToolCleanName(key))
 }

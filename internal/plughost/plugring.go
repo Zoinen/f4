@@ -109,8 +109,7 @@ func FetchCatalog(ctx context.Context) ([]PlugRingItem, error) {
 // This stays a separate function rather than folding the merge into
 // FetchCatalog itself so that FetchCatalog keeps meaning exactly what its own
 // tests pin: the community catalog, byte for byte, with nothing added. A
-// caller that wants that alone -- CheckForPluginUpdates, the tests -- keeps
-// calling FetchCatalog; the interactive dialog calls this instead.
+// caller that wants that alone -- the tests -- keeps calling FetchCatalog; the interactive dialog calls this instead.
 func FetchPlugRingCatalog(ctx context.Context) ([]PlugRingItem, error) {
 	items, err := FetchCatalog(ctx)
 	if err != nil {
@@ -162,7 +161,9 @@ func CheckForPluginUpdates() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		items, err := FetchCatalog(ctx)
+		// First-party plugins included: they ship with the f4 build, and a
+		// new build means a new plugin (SetFirstPartyBuildStamp).
+		items, err := FetchPlugRingCatalog(ctx)
 		if err != nil {
 			return
 		}

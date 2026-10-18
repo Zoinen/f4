@@ -371,6 +371,11 @@ const StartupAutoBackend = "auto"
 // gone to sleep on a malformed file is forever.
 const DefaultImageExternalTimeout = 20
 
+// DefaultElevationIdleSeconds is how long the elevated helper of Windows may
+// stay idle before f4 closes it and asks for administrator rights again
+// (f4#1768).
+const DefaultElevationIdleSeconds = 120
+
 // The parsed form of App.ImageDecoderPriority. The raw string is the
 // setting; this is what a reader of the setting actually needs, so it lives
 // beside it rather than in the package that sorts decoders.

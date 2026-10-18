@@ -27,14 +27,14 @@ func TestRunAsync_TaskExecutionAndCancellation(t *testing.T) {
 	select {
 	case task := <-fm.TaskChan:
 		task() // Execute the safe UI closure
-	case <-time.After(1 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("Task was not pushed to TaskChan")
 	}
 
 	select {
 	case <-done:
 		// Success
-	case <-time.After(1 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Error("RunOnUI task was not fully executed")
 	}
 

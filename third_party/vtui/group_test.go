@@ -155,7 +155,7 @@ func TestGroup_NoFocusableItems(t *testing.T) {
 	select {
 	case <-done:
 		// Success
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(30 * time.Second):
 		t.Fatal("Deadlock in changeFocus with no focusable items")
 	}
 

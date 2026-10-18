@@ -212,7 +212,7 @@ func newDriveToolsSession() (*settingsSession, error) {
 
 // addDriveToolMoves puts Up and Down under the tools of the Tools page: they
 // move the tool last selected there one place in the drive menu's order, as
-// Ctrl+Up/Down does in the menu itself (mitek1977-coder, f4#1148).
+// Shift+Up/Down does in the menu itself (mitek1977-coder, f4#1148).
 func (c *settingsCenter) addDriveToolMoves(category string) {
 	for _, s := range c.sessions {
 		if _, ok := s.provider.(driveToolsProvider); !ok {

@@ -267,3 +267,65 @@ func TestFirstPartyArchivesAreNotTakenForF4(t *testing.T) {
 		}
 	}
 }
+
+// TestFirstPartyVersionFollowsTheBuild pins unxed/f4#1761: a first-party
+// plugin is built with the f4 binary, so its version has to change with the
+// build. Otherwise an installed plugin never looks outdated and a fix inside
+// it reaches only the users who install it afterwards.
+func TestFirstPartyVersionFollowsTheBuild(t *testing.T) {
+	t.Cleanup(func() { SetFirstPartyBuildStamp("") })
+
+	versions := func() map[string]string {
+		got := map[string]string{}
+		for _, item := range FirstPartyPlugRingItems() {
+			got[item.ID] = item.Version
+		}
+		return got
+	}
+
+	SetFirstPartyBuildStamp("")
+	bare := versions()
+	for id, want := range map[string]string{
+		"cloudfox": cloudFoxPlugRingVersion,
+		"android":  androidPlugRingVersion,
+		"ios":      iosPlugRingVersion,
+	} {
+		if bare[id] != want {
+			t.Errorf("%s without a stamp: version = %q, want the manifest version %q", id, bare[id], want)
+		}
+	}
+
+	SetFirstPartyBuildStamp("cba20e7")
+	old := versions()
+	if want := androidPlugRingVersion + "+cba20e7"; old["android"] != want {
+		t.Errorf("android with a stamp: version = %q, want %q", old["android"], want)
+	}
+
+	SetFirstPartyBuildStamp("61ef7cc")
+	newer := versions()
+	for id := range bare {
+		if newer[id] == old[id] {
+			t.Errorf("%s: a new f4 build keeps the version %q, so an installed copy is never offered as an update", id, newer[id])
+		}
+	}
+}
+
+// TestFirstPartyVersionReachesTheMergedCatalog checks the list the dialog and
+// the update check really use, not just FirstPartyPlugRingItems.
+func TestFirstPartyVersionReachesTheMergedCatalog(t *testing.T) {
+	t.Cleanup(func() { SetFirstPartyBuildStamp("") })
+	SetFirstPartyBuildStamp("cba20e7")
+
+	var seen bool
+	for _, item := range MergeFirstPartyPlugRingItems(nil) {
+		if item.ID == "android" {
+			seen = true
+			if !strings.HasSuffix(item.Version, "+cba20e7") {
+				t.Errorf("android in the merged catalog: version = %q, want the build stamp", item.Version)
+			}
+		}
+	}
+	if !seen {
+		t.Fatal("android is not in the merged catalog")
+	}
+}

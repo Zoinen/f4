@@ -545,6 +545,29 @@ func TestAnsiRenderer_FreeBSDConsoleAvoidsPrivateModesAndOSC(t *testing.T) {
 	}
 }
 
+func TestAnsiRendererCopiesVTOutputToFile(t *testing.T) {
+	path := t.TempDir() + "/vt-output.bin"
+	if err := os.WriteFile(path, []byte("stale"), 0o600); err != nil {
+		t.Fatalf("seed VT output log: %v", err)
+	}
+	t.Setenv("VTUI_VT_OUTPUT_LOG", path)
+
+	scr := NewScreenBuf()
+	var output bytes.Buffer
+	scr.Writer = &output
+	scr.AllocBuf(2, 1)
+	scr.Write(0, 0, []CharInfo{{Char: 'O'}, {Char: 'K'}})
+	scr.Flush()
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read VT output log: %v", err)
+	}
+	if string(got) != output.String() {
+		t.Fatalf("VT output log = %q, want renderer output %q", got, output.String())
+	}
+}
+
 func TestScreenRow(t *testing.T) {
 	scr := NewSilentScreenBuf()
 	scr.AllocBuf(10, 2)

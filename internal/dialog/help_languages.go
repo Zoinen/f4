@@ -16,7 +16,7 @@ func ListAvailableHelpLanguages() []i18n.Language {
 	for _, resourceDir := range i18n.ExecutableResourceDirs() {
 		dirs = append(dirs, filepath.Join(resourceDir, "help"))
 	}
-	dirs = append(dirs, userDir, "help")
+	dirs = append(dirs, helpSearchDirs(config.ExecutablePath(), userDir)...)
 	seen := map[string]bool{"en": true}
 
 	for _, d := range dirs {
@@ -36,4 +36,11 @@ func ListAvailableHelpLanguages() []i18n.Language {
 		}
 	}
 	return langs
+}
+
+func helpSearchDirs(exePath, userDir string) []string {
+	if resolved, err := filepath.EvalSymlinks(exePath); err == nil {
+		exePath = resolved
+	}
+	return []string{filepath.Join(filepath.Dir(exePath), "help"), userDir, "help"}
 }

@@ -168,6 +168,9 @@ type PanelViewSettings struct {
 	Name       string
 	Columns    []PanelColumn
 	FullScreen bool
+	// ShowInfoLine overrides the global focused-file status-line setting for
+	// this mode. Nil keeps the global setting, preserving older panel_modes.ini.
+	ShowInfoLine *bool
 	// UppercaseDirs paints directory names in uppercase without changing the
 	// names used for sorting, navigation, selection or filesystem operations.
 	UppercaseDirs bool
@@ -181,6 +184,10 @@ type PanelViewSettings struct {
 func (s PanelViewSettings) clone() PanelViewSettings {
 	s.Columns = append([]PanelColumn(nil), s.Columns...)
 	s.StatusColumns = append([]PanelColumn(nil), s.StatusColumns...)
+	if s.ShowInfoLine != nil {
+		show := *s.ShowInfoLine
+		s.ShowInfoLine = &show
+	}
 	return s
 }
 
@@ -422,6 +429,16 @@ func PanelViewModeSettings(mode ViewMode) PanelViewSettings {
 	return defaultPanelViewSettings[mode].clone()
 }
 
+// panelModeShowsInfoLine reports whether the focused-file status line is
+// visible in mode. A per-mode choice takes precedence over the global default.
+func panelModeShowsInfoLine(mode ViewMode) bool {
+	settings := PanelViewModeSettings(mode)
+	if settings.ShowInfoLine != nil {
+		return *settings.ShowInfoLine
+	}
+	return config.App.ShowPanelFileInfo
+}
+
 // PanelViewModeCustomName is the name the user gave a mode, or "" when the
 // mode keeps the built-in name of its slot.
 func PanelViewModeCustomName(mode ViewMode) string {
@@ -498,7 +515,7 @@ func loadPanelViewModes(path string) ([PanelViewModeCount]*PanelViewSettings, er
 	defer f.Close()
 
 	type rawMode struct {
-		name, columns, widths, fullScreen, uppercaseDirs, statusColumns, statusWidths string
+		name, columns, widths, fullScreen, uppercaseDirs, showInfoLine, statusColumns, statusWidths string
 	}
 	var raw [PanelViewModeCount]*rawMode
 	var current *rawMode
@@ -542,6 +559,8 @@ func loadPanelViewModes(path string) ([PanelViewModeCount]*PanelViewSettings, er
 			current.fullScreen = strings.TrimSpace(value)
 		case "UppercaseDirs":
 			current.uppercaseDirs = strings.TrimSpace(value)
+		case "ShowInfoLine":
+			current.showInfoLine = strings.TrimSpace(value)
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -562,6 +581,10 @@ func loadPanelViewModes(path string) ([PanelViewModeCount]*PanelViewSettings, er
 			Columns:       columns,
 			FullScreen:    mode.fullScreen == "1",
 			UppercaseDirs: mode.uppercaseDirs == "1",
+		}
+		if mode.showInfoLine == "0" || mode.showInfoLine == "1" {
+			show := mode.showInfoLine == "1"
+			override.ShowInfoLine = &show
 		}
 		if mode.statusColumns != "" {
 			if status, err := TextToViewSettings(mode.statusColumns, mode.statusWidths); err != nil {
@@ -600,6 +623,13 @@ func savePanelViewModes(path string) error {
 			uppercaseDirs = 1
 		}
 		fmt.Fprintf(&buf, "Columns=%s\nColumnWidths=%s\nFullScreen=%d\nUppercaseDirs=%d\n", types, widths, fullScreen, uppercaseDirs)
+		if settings.ShowInfoLine != nil {
+			showInfoLine := 0
+			if *settings.ShowInfoLine {
+				showInfoLine = 1
+			}
+			fmt.Fprintf(&buf, "ShowInfoLine=%d\n", showInfoLine)
+		}
 		if len(settings.StatusColumns) > 0 {
 			statusTypes, statusWidths := ViewSettingsToText(settings.StatusColumns)
 			fmt.Fprintf(&buf, "StatusColumns=%s\nStatusColumnWidths=%s\n", statusTypes, statusWidths)
@@ -1157,6 +1187,20 @@ var panelOwnerNames sync.Map // "u:<id>" or "g:<id>" -> name
 // panelOwnerText names the owner or group of an entry. Names are looked up
 // only for the local filesystem: a remote host's ids mean nothing in the
 // local user database, so they stay numbers.
+// statusLineOwnerText is "owner group" of e for the status line under the
+// panel, or "" when the file system does not report them (Windows, most
+// plugin panels) or for "..". f4#1962.
+func statusLineOwnerText(filesystem vfs.VFS, e *FileEntry) string {
+	owner := panelOwnerText(filesystem, e, false)
+	if owner == "" {
+		return ""
+	}
+	if group := panelOwnerText(filesystem, e, true); group != "" {
+		return owner + " " + group
+	}
+	return owner
+}
+
 func panelOwnerText(filesystem vfs.VFS, e *FileEntry, group bool) string {
 	if e.Name == ".." {
 		return ""

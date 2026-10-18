@@ -3,7 +3,9 @@ package panel
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -187,12 +189,84 @@ func loadRootForMode(mode MenuMode, path string) []UserMenuItem {
 // on-disk format that source uses (flat INI for the main menu, FarMenu.ini
 // text for the per-directory and near-binary files).
 func SaveRootForMode(mode MenuMode, path string, items []UserMenuItem) error {
+	if err := backupMenuFile(path); err != nil {
+		return err
+	}
 	switch mode {
 	case MenuModeMain:
 		return SaveMainMenu(path, items)
 	default:
 		return saveFarMenuFile(path, items)
 	}
+}
+
+// SaveRootForModeVFS is the VFS-aware counterpart used by Settings Center
+// when the local menu lives in a directory that needs sudo. Create carries
+// the same elevation fallback as the rest of the local file operations.
+func SaveRootForModeVFS(ctx context.Context, fs vfs.VFS, mode MenuMode, path string, items []UserMenuItem) error {
+	if mode == MenuModeMain || fs == nil {
+		return SaveRootForMode(mode, path, items)
+	}
+	var buf bytes.Buffer
+	if err := WriteFarMenu(&buf, items); err != nil {
+		return err
+	}
+	if err := backupMenuFileVFS(ctx, fs, path); err != nil {
+		return err
+	}
+	f, err := fs.Create(ctx, path)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(f, &buf); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// menuBackupSuffix names the copy a menu file is kept as before f4 writes
+// over it: one version back, next to the file, so a change made from the
+// menu can be undone by hand (f4#2036).
+const menuBackupSuffix = ".bak"
+
+// backupMenuFile copies the menu file about to be replaced to its backup.
+// A file that does not exist yet has nothing to keep.
+func backupMenuFile(path string) error {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return config.WriteUserFileAtomically(path+menuBackupSuffix, data, 0o600)
+}
+
+// backupMenuFileVFS is backupMenuFile through fs, for a menu file that
+// needs elevation to be written.
+func backupMenuFileVFS(ctx context.Context, fs vfs.VFS, path string) error {
+	if _, err := fs.Stat(ctx, path); err != nil {
+		return nil
+	}
+	r, err := fs.Open(ctx, path)
+	if err != nil {
+		return err
+	}
+	data, err := io.ReadAll(contextReader{ctx: ctx, reader: r})
+	_ = r.Close()
+	if err != nil {
+		return err
+	}
+	w, err := fs.Create(ctx, path+menuBackupSuffix)
+	if err != nil {
+		return err
+	}
+	if _, err := w.Write(data); err != nil {
+		_ = w.Close()
+		return err
+	}
+	return w.Close()
 }
 
 // defaultSavePath returns the path Ctrl+F4 should open in the editor
@@ -368,6 +442,23 @@ func (s *userMenuState) saveRoot() bool {
 	return true
 }
 
+// shownItems is items with their labels as the menu shows them: the
+// metasymbols expanded for the panels as they are now. Editing and running
+// keep working on items, so a label is saved as it was written.
+func (s *userMenuState) shownItems(items []UserMenuItem) []UserMenuItem {
+	if s.Pf == nil {
+		return items
+	}
+	ctx := &SubstContext{Active: snapshotPanel(s.Pf, s.Pf.ActiveIdx), Passive: snapshotPanel(s.Pf, 1-s.Pf.ActiveIdx)}
+	shown := append([]UserMenuItem(nil), items...)
+	for i := range shown {
+		if !shown[i].IsSeparator() {
+			shown[i].Label = SubstMenuLabel(shown[i].Label, ctx)
+		}
+	}
+	return shown
+}
+
 func (s *userMenuState) pushLevel(items []UserMenuItem, title string, initialSelect int) {
 	menu := vtui.NewVMenu(" " + title + " ")
 	history.MarkUserMenu(menu)
@@ -376,8 +467,9 @@ func (s *userMenuState) pushLevel(items []UserMenuItem, title string, initialSel
 	// vtui already handles single-char (&-prefixed) hotkeys natively.
 	fnKeyTarget := map[uint32]int{}
 
+	shown := s.shownItems(items)
 	hasSubmenus := false
-	for i, it := range items {
+	for i, it := range shown {
 		if it.IsSeparator() {
 			// Carry UserData so Del / Ctrl+up/down can find the items
 			// index from the UI index uniformly across all entries.
@@ -400,7 +492,7 @@ func (s *userMenuState) pushLevel(items []UserMenuItem, title string, initialSel
 		menu.AddItem(mi)
 	}
 
-	w, h := menuSize(s.Pf, menu.GetItemCount(), items, hasSubmenus)
+	w, h := menuSize(s.Pf, menu.GetItemCount(), shown, hasSubmenus)
 	x := (s.Pf.LastW - w) / 2
 	y := (s.Pf.LastH - h) / 2
 	if x < 0 {
@@ -903,10 +995,16 @@ func showEditItemDialog(s *userMenuState, current *vtui.VMenu, items []UserMenuI
 
 		var newItem UserMenuItem
 		if isSubmenu {
+			sub := []UserMenuItem{}
+			if !isCreate && idx >= 0 && idx < len(items) && items[idx].Submenu != nil {
+				// The editor shows a group's hotkey and label only, so
+				// what is in the group stays as it was (f4#2036).
+				sub = items[idx].Submenu
+			}
 			newItem = UserMenuItem{
 				HotKey:  hkey,
 				Label:   lbl,
-				Submenu: []UserMenuItem{},
+				Submenu: sub,
 			}
 		} else {
 			newItem = UserMenuItem{
@@ -1280,8 +1378,13 @@ func (pf *PanelsFrame) runMenuCommandSteps(steps []string) {
 	}
 }
 
+// IsMenuComment reports whether a trimmed menu command line is a comment:
+// "::" and REM (cmd style) or "#" (shell style, as in far2l menus). The
+// lines are joined into one command, so an unskipped "#..." line would turn
+// the rest of the item into a shell comment (f4#2037). A "#!" shebang is
+// handled before this check by userMenuInterpreter.
 func IsMenuComment(line string) bool {
-	if strings.HasPrefix(line, "::") {
+	if strings.HasPrefix(line, "::") || strings.HasPrefix(line, "#") {
 		return true
 	}
 	if len(line) < 3 {

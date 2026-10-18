@@ -13,6 +13,29 @@ import (
 // the filesystem holding path. ok=false if the value can't be
 // determined (path missing, non-local backend, etc.).
 func FS(path string) (FSInfo, bool) {
+	info, ok := statfsInfo(path)
+	if !ok {
+		return FSInfo{}, false
+	}
+	// Enrich with mount point / fs type / flags from /proc/mounts when
+	// available (Linux). Non-fatal on other unices — /proc simply
+	// doesn't exist and the extra fields stay empty.
+	enrichFromProcMounts(path, &info)
+	return info, true
+}
+
+// FreeBytes reports the space available to an unprivileged user on the
+// filesystem holding path. It does a single statfs and, unlike FS, does not
+// read and parse /proc/mounts, so it is cheap enough for code that runs on
+// every redraw (the panel footer): on a slow CPU the mount table lookup made
+// each frame cost milliseconds (unxed/f4#1758).
+func FreeBytes(path string) (uint64, bool) {
+	info, ok := statfsInfo(path)
+	return info.Free, ok
+}
+
+// statfsInfo fills the fields that one statfs call supplies.
+func statfsInfo(path string) (FSInfo, bool) {
 	if path == "" {
 		return FSInfo{}, false
 	}
@@ -21,17 +44,12 @@ func FS(path string) (FSInfo, bool) {
 		return FSInfo{}, false
 	}
 	bs := uint64(st.Bsize)
-	info := FSInfo{
+	return FSInfo{
 		Total:       uint64(st.Blocks) * bs,
 		Free:        uint64(st.Bavail) * bs,
 		MaxFilename: int(st.Namelen),
 		ClusterSize: bs,
-	}
-	// Enrich with mount point / fs type / flags from /proc/mounts when
-	// available (Linux). Non-fatal on other unices — /proc simply
-	// doesn't exist and the extra fields stay empty.
-	enrichFromProcMounts(path, &info)
-	return info, true
+	}, true
 }
 
 func enrichFromProcMounts(path string, info *FSInfo) {

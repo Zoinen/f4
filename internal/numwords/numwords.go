@@ -307,8 +307,13 @@ func detect(rest string, def Lang) (*currency, Lang, error) {
 		}
 		return false
 	}
+	// A dollar sign is an unambiguous English currency marker, regardless of
+	// the application's default language.
+	if has("$") {
+		lang = EN
+	}
 	switch {
-	case has("руб", "rub", "₽", "коп", "kop"):
+	case has("руб", "rub", "rur", "₽", "коп", "kop"):
 		return &rouble, lang, nil
 	case has("$", "usd", "дол", "dol"):
 		return &dollar, lang, nil

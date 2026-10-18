@@ -1,6 +1,7 @@
 package vtui
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -203,4 +204,49 @@ func TestValidatorEdgeCases(t *testing.T) {
 			t.Error("& marker should reject a non-letter")
 		}
 	})
+}
+
+func TestValidatorErrorsShowHelpfulMessages(t *testing.T) {
+	cases := []struct {
+		name      string
+		validator Validator
+		title     string
+		message   string
+	}{
+		{"integer range", &IntRangeValidator{Min: 1, Max: 9, Title: "Choose a number"}, "Choose a number", "between 1 and 9"},
+		{"regex default", &RegexValidator{}, " Invalid Input ", "Input does not match required format."},
+		{"filter default", &FilterValidator{}, " Invalid Input ", "Input contains invalid characters."},
+		{"lookup default", &LookupValidator{}, " Invalid Input ", "Value is not in the list of allowed items."},
+		{"octal", &OctalValidator{MaxDigits: 3}, " Invalid Input ", "Use only digits 0-7."},
+		{"mask default", &MaskValidator{Mask: "##-??"}, " Invalid Input ", "Input must match the pattern:"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			SetDefaultPalette()
+			FrameManager.Init(NewSilentScreenBuf())
+			owner := NewWindow(0, 0, 40, 10, "Owner")
+			FrameManager.Push(owner)
+
+			tc.validator.Error(owner)
+
+			dlg, ok := FrameManager.GetTopFrame().(*Window)
+			if !ok {
+				t.Fatalf("top frame = %T, want validation dialog", FrameManager.GetTopFrame())
+			}
+			if dlg.frame.title != tc.title {
+				t.Errorf("dialog title = %q, want %q", dlg.frame.title, tc.title)
+			}
+
+			var text []string
+			for _, child := range dlg.GetChildren() {
+				if line, ok := child.(*Text); ok {
+					text = append(text, line.GetText())
+				}
+			}
+			if got := strings.Join(text, "\n"); !strings.Contains(got, tc.message) {
+				t.Errorf("dialog message %q does not contain %q", got, tc.message)
+			}
+		})
+	}
 }

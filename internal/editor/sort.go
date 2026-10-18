@@ -180,13 +180,10 @@ func (ev *EditorView) SortLines(ascending, caseSensitive bool) error {
 	ev.CursorLine = cursorLine
 	ev.CursorPos = min(cursorPos, ev.GetLineLength(cursorLine))
 	if selectionWasActive {
-		ev.SelActive = true
-		ev.SelAnchorOffset = selectionAnchor
+		ev.StartSelection(selectionAnchor)
 	}
 	if rectSelectionWasActive {
-		ev.RectSelActive = true
-		ev.rectSelStartLine = rectStartLine
-		ev.rectSelStartCol = rectStartCol
+		ev.StartRectSelection(rectStartLine, rectStartCol)
 	}
 	ev.updateDesiredVisualCol()
 	ev.EnsureCursorVisible()

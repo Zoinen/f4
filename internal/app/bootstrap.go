@@ -31,6 +31,7 @@ import (
 	"github.com/unxed/f4/internal/theme"
 	"github.com/unxed/f4/internal/update"
 	"github.com/unxed/f4/internal/viewer"
+	"github.com/unxed/f4/internal/winex11drag"
 	"github.com/unxed/f4/internal/winshell"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/f4/vfs/hostmode"
@@ -271,7 +272,7 @@ func openStartupFilesIn(pf *panel.PanelsFrame, viewPaths []string, editPath stri
 		openViewFileIn(pf, path)
 	}
 	if editPath != "" {
-		openEditFileIn(pf, editPath)
+		openStartupEditFileIn(pf, editPath)
 	}
 }
 
@@ -395,6 +396,9 @@ func Main() {
 	}
 	absExecPath, _ := filepath.Abs(execPath)
 	vfs.InitSudoClient(absExecPath, "")
+	// The UAC helper is closed after this long idle (f4#1768); read on each
+	// use, so a change in f4:config applies at once.
+	vfs.ElevationIdle = func() time.Duration { return time.Duration(config.App.ElevationIdleSeconds) * time.Second }
 
 	// The elevated dispatcher inherits F4_ASKPASS_PARENT from the client that
 	// started sudo. Dispatcher mode must win over askpass mode; otherwise the
@@ -464,6 +468,7 @@ func Main() {
 			}
 		}
 		panel.ShutdownProcessEnvironmentRuntime()
+		removeOpenedCopies()
 		if fileops.GlobalFileState != nil {
 			fileops.GlobalFileState.Flush()
 		}
@@ -1001,6 +1006,7 @@ func shouldTryGui() bool {
 // they need the frames that SetupUI creates.
 func setupGuiUI() {
 	SetupUI()
+	winex11drag.Install()
 	openStartupFilesIfRequested()
 }
 
@@ -1485,6 +1491,7 @@ func setupUI(firstRunStyle func() (string, bool)) {
 	// Background update check
 	if config.App.UpdateInterval > 0 {
 		go CheckForUpdates(panels, false)
+		StampFirstPartyPlugins()
 		go plughost.CheckForPluginUpdates()
 	}
 }

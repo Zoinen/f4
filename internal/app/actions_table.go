@@ -26,6 +26,7 @@ import (
 	"github.com/unxed/f4/internal/viewer"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/f4/vfs/hostmode"
+	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 )
 
@@ -1038,6 +1039,19 @@ func init() {
 		Handler:             withPF(func(pf *panel.PanelsFrame) { actionFileAttributes(pf) }),
 	})
 	RegisterAction(action.Action{
+		Name:        "File.SystemProperties",
+		Area:        "Shell",
+		Label:       "System properties",
+		LabelKey:    "Action.File.SystemProperties",
+		Description: "Open the system properties of the item under the cursor",
+		DescKey:     "Action.File.SystemProperties.Desc",
+		DefaultKeys: []string{"Apps"},
+		MenuPath:    "Files",
+		Visible:     func() bool { return runtime.GOOS == "windows" },
+		Enabled:     activePanelHasSelectionTarget,
+		Handler:     withPF(func(pf *panel.PanelsFrame) { actionFileSystemProperties(pf) }),
+	})
+	RegisterAction(action.Action{
 		Name:        "File.Share",
 		Area:        "Shell",
 		Label:       "Share...",
@@ -1199,7 +1213,7 @@ func init() {
 		LabelKey:    "Action.Panel.InvertSelection",
 		Description: "Invert file selection",
 		DescKey:     "Action.Panel.InvertSelection.Desc",
-		DefaultKeys: []string{"Multiply", "AltVK_BB"},
+		DefaultKeys: []string{"Multiply", "AltVK_BB", "CtrlShift8"},
 		MenuPath:    "Files",
 		Handler: withPF(func(pf *panel.PanelsFrame) {
 			if fsp := pf.GetActivePanel(); fsp != nil {
@@ -2310,6 +2324,10 @@ func init() {
 		DefaultKeys:  []string{"CtrlO:NoTerminalApp", "CtrlAltZ:NoAltScreenApp", "Esc:EscToggle", "Del:EscToggle", "NumDel:EscToggle"},
 		DefaultAreas: []string{"Terminal"},
 		Handler: withPF(func(pf *panel.PanelsFrame) {
+			// The console peek Ctrl+O opened from an editor ends in the editor (#1973).
+			if pf.ReturnToEditorFromConsole() {
+				return
+			}
 			pf.TogglePanelsVisibility()
 		}),
 	})
@@ -2322,7 +2340,20 @@ func init() {
 		DefaultAreas: []string{"Viewer"},
 		MenuPath:     "Options",
 		HideFromMenu: true,
-		Handler:      withPF(func(pf *panel.PanelsFrame) { pf.TogglePanelsVisibility() }),
+		Handler: withPF(func(pf *panel.PanelsFrame) {
+			if ed, editing := vtui.FrameManager.GetTopFrame().(*editor.EditorView); editing {
+				// Toggling the panels behind the editor would hide the console
+				// in the editor's own workspace (#1973). Show the console of the
+				// workspace the editor was opened from instead; only an editor
+				// that shares its workspace with the panels gets a terminal
+				// workspace of its own.
+				if !panel.ActionEditorShowConsole(ed) {
+					panel.ActionWorkspaceNewTerminal()
+				}
+				return
+			}
+			pf.TogglePanelsVisibility()
+		}),
 	})
 	registerAction(action.Action{
 		Name:         "Panel.ToggleLeftPanel",
@@ -2423,13 +2454,53 @@ func init() {
 		}),
 	})
 	registerAction(action.Action{
+		Name:        "Panel.Player.SeekBack",
+		Area:        "Shell",
+		Label:       "Seek Back 5 Seconds",
+		LabelKey:    "Action.Panel.Player.SeekBack",
+		Description: "Seek backward while the file panel has focus",
+		DescKey:     "Action.Panel.Player.SeekBack.Desc",
+		DefaultKeys: []string{"CtrlAltLeft"},
+		MenuPath:    "Commands",
+		MenuSubPath: "Player",
+		Handler: withPF(func(pf *panel.PanelsFrame) {
+			if pf.ActiveIdx < 0 || pf.ActiveIdx >= len(pf.AltPanels) {
+				return
+			}
+			if player, ok := pf.AltPanels[pf.ActiveIdx].(*panel.PlayerPanel); ok {
+				player.SeekBy(-5 * time.Second)
+			}
+		}),
+	})
+	registerAction(action.Action{
+		Name:        "Panel.Player.SeekForward",
+		Area:        "Shell",
+		Label:       "Seek Forward 5 Seconds",
+		LabelKey:    "Action.Panel.Player.SeekForward",
+		Description: "Seek forward while the file panel has focus",
+		DescKey:     "Action.Panel.Player.SeekForward.Desc",
+		DefaultKeys: []string{"CtrlAltRight"},
+		MenuPath:    "Commands",
+		MenuSubPath: "Player",
+		Handler: withPF(func(pf *panel.PanelsFrame) {
+			if pf.ActiveIdx < 0 || pf.ActiveIdx >= len(pf.AltPanels) {
+				return
+			}
+			if player, ok := pf.AltPanels[pf.ActiveIdx].(*panel.PlayerPanel); ok {
+				player.SeekBy(5 * time.Second)
+			}
+		}),
+	})
+	registerAction(action.Action{
 		Name:        "Panel.Tree",
 		Area:        "Shell",
 		Label:       "Tree",
 		LabelKey:    "Menu.Panel.Tree",
 		Description: "Toggle the directory tree panel",
 		DescKey:     "Action.Panel.Tree.Desc",
-		DefaultKeys: []string{"CtrlT"},
+		// Alt+F10 is where Far kept its folder tree; Ctrl+T stays first so
+		// the menu keeps showing it.
+		DefaultKeys: []string{"CtrlT", "AltF10"},
 		Handler: withPF(func(pf *panel.PanelsFrame) {
 			pf.ToggleAltPanel("tree", func(src *panel.FileSystemPanel) panel.AltPanel { return panel.NewTreePanel(src) })
 		}),
@@ -3130,8 +3201,7 @@ func init() {
 		MenuPath:    "Edit",
 		Handler: withEditor(func(ev *editor.EditorView) {
 			ev.RectSelActive = false
-			ev.SelActive = true
-			ev.SelAnchorOffset = 0
+			ev.StartSelection(0)
 			lastLine := ev.Li.LineCount() - 1
 			ev.CursorLine = lastLine
 			ev.CursorPos = ev.GetLineLength(lastLine)
@@ -3175,6 +3245,24 @@ func init() {
 		DefaultKeys: []string{"CtrlBS"},
 		MenuPath:    "Edit",
 		Handler:     withEditor(func(ev *editor.EditorView) { ev.DeleteWordBackward() }),
+	})
+	registerAction(action.Action{
+		Name:        "Editor.DeleteWordForward",
+		Area:        "Editor",
+		Label:       "Delete word forward",
+		Description: "Delete the word to the right of the cursor",
+		DefaultKeys: []string{"CtrlDel"},
+		MenuPath:    "Edit",
+		Handler: withEditor(func(ev *editor.EditorView) {
+			if !ev.SelActive && !ev.RectSelActive && ev.CursorVirtualSpaces == 0 &&
+				ev.CursorPos >= ev.GetLineLength(ev.CursorLine) {
+				ev.ProcessKey(&vtinput.InputEvent{
+					Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_DELETE,
+				})
+				return
+			}
+			ev.DeleteWordForward()
+		}),
 	})
 	registerAction(action.Action{
 		Name:        "Editor.DeleteBlock",

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mattn/go-runewidth"
+	"github.com/unxed/f4/internal/config"
 	"github.com/unxed/f4/internal/fileops"
 	"github.com/unxed/f4/internal/i18n"
 	"github.com/unxed/f4/vfs"
@@ -319,7 +320,8 @@ func TestPanelModesFileRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	panelViewModes.overrides[ViewMode7] = &PanelViewSettings{Columns: columns, FullScreen: true, UppercaseDirs: true}
+	showInfoLine := false
+	panelViewModes.overrides[ViewMode7] = &PanelViewSettings{Columns: columns, FullScreen: true, UppercaseDirs: true, ShowInfoLine: &showInfoLine}
 	if err := savePanelViewModes(path); err != nil {
 		t.Fatalf("save: %v", err)
 	}
@@ -329,7 +331,8 @@ func TestPanelModesFileRoundTrip(t *testing.T) {
 	}
 	if text := string(data); !strings.Contains(text, "[Panel/ViewModes/Mode7]") ||
 		!strings.Contains(text, "Columns=N,SC,DM") || !strings.Contains(text, "ColumnWidths=0,11,16") ||
-		!strings.Contains(text, "FullScreen=1") || !strings.Contains(text, "UppercaseDirs=1") || strings.Contains(text, "Mode1]") {
+		!strings.Contains(text, "FullScreen=1") || !strings.Contains(text, "UppercaseDirs=1") ||
+		!strings.Contains(text, "ShowInfoLine=0") || strings.Contains(text, "Mode1]") {
 		t.Fatalf("panel_modes.ini:\n%s", text)
 	}
 	loaded, err := loadPanelViewModes(path)
@@ -342,7 +345,7 @@ func TestPanelModesFileRoundTrip(t *testing.T) {
 		}
 	}
 	got := loaded[ViewMode7]
-	if got == nil || !got.FullScreen || !got.UppercaseDirs {
+	if got == nil || !got.FullScreen || !got.UppercaseDirs || got.ShowInfoLine == nil || *got.ShowInfoLine {
 		t.Fatalf("mode 7 = %+v", got)
 	}
 	if types, widths := ViewSettingsToText(got.Columns); types != "N,SC,DM" || widths != "0,11,16" {
@@ -356,6 +359,29 @@ func TestPanelModesFileRoundTrip(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("panel_modes.ini still exists: %v", err)
+	}
+}
+
+func TestPanelModeInfoLineOverride(t *testing.T) {
+	resetPanelViewModes(true)
+	defer resetPanelViewModes(true)
+	was := config.App.ShowPanelFileInfo
+	defer func() { config.App.ShowPanelFileInfo = was }()
+
+	config.App.ShowPanelFileInfo = true
+	if !panelModeShowsInfoLine(ViewModeDetailed) {
+		t.Fatal("unmodified mode should follow the enabled global setting")
+	}
+	hide := false
+	panelViewModes.overrides[ViewModeDetailed] = &PanelViewSettings{ShowInfoLine: &hide}
+	if panelModeShowsInfoLine(ViewModeDetailed) {
+		t.Fatal("per-mode off should override the enabled global setting")
+	}
+	show := true
+	panelViewModes.overrides[ViewModeDetailed].ShowInfoLine = &show
+	config.App.ShowPanelFileInfo = false
+	if !panelModeShowsInfoLine(ViewModeDetailed) {
+		t.Fatal("per-mode on should override the disabled global setting")
 	}
 }
 

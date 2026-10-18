@@ -1,0 +1,6 @@
+{"time":0.001,"dir":"down","msg":{"op":"hello","seq":1,"version":1}}
+{"time":0.003,"dir":"up","msg":{"op":"welcome","replyTo":1,"version":1}}
+{"time":0.005,"dir":"down","msg":{"op":"mount","frameId":"goldenDlg","tree":{"type":"Dialog","id":"goldenDlg","props":{"title":"Golden"}}}}
+{"time":0.008,"dir":"down","msg":{"op":"message","frameId":"goldenMsg","title":"Info","text":"hello","buttons":["&Ok"]}}
+{"time":0.012,"dir":"down","msg":{"op":"close","frameId":"goldenDlg"}}
+{"time":0.015,"dir":"down","msg":{"op":"quit"}}

@@ -1,3 +1,5 @@
+//go:build !extralite
+
 package plughost
 
 import (

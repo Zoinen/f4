@@ -52,6 +52,13 @@ jobs:
         with:
           go-version: '1.26.x'
 
+      # proxy.golang.org sometimes drops a module download with a stream
+      # error (14-10-2026: Build (solaris/amd64) turned main red on it), which
+      # says nothing about the code. Fetch modules with retries up front so the
+      # real build or test step only ever sees a warm cache.
+      - name: Download modules
+        run: for i in 1 2 3 4; do go mod download && exit 0; sleep $((i * 10)); done; exit 1
+
       - name: Test
         run: go test -count=1 -timeout 4m ./...
 
@@ -68,6 +75,13 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26.x'
+
+      # proxy.golang.org sometimes drops a module download with a stream
+      # error (14-10-2026: Build (solaris/amd64) turned main red on it), which
+      # says nothing about the code. Fetch modules with retries up front so the
+      # real build or test step only ever sees a warm cache.
+      - name: Download modules
+        run: for i in 1 2 3 4; do go mod download && exit 0; sleep $((i * 10)); done; exit 1
 
       - run: go test -race -count=1 -timeout 15m ./...
 
@@ -273,6 +287,13 @@ jobs:
         with:
           go-version: '1.26.x'
 
+      # proxy.golang.org sometimes drops a module download with a stream
+      # error (14-10-2026: Build (solaris/amd64) turned main red on it), which
+      # says nothing about the code. Fetch modules with retries up front so the
+      # real build or test step only ever sees a warm cache.
+      - name: Download modules
+        run: for i in 1 2 3 4; do go mod download && exit 0; sleep $((i * 10)); done; exit 1
+
       # These tags and compiler flags come from f4, not from configurations
       # vtui selects itself. f4 builds vtui statically, against musl, and with
       # stubs instead of goffi where purego does not implement the calling
@@ -371,6 +392,13 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26.x'
+
+      # proxy.golang.org sometimes drops a module download with a stream
+      # error (14-10-2026: Build (solaris/amd64) turned main red on it), which
+      # says nothing about the code. Fetch modules with retries up front so the
+      # real build or test step only ever sees a warm cache.
+      - name: Download modules
+        run: for i in 1 2 3 4; do go mod download && exit 0; sleep $((i * 10)); done; exit 1
 
       # f4's static and musl configurations, along with its target platforms,
       # make these downstream settings part of vtui's supported surface even

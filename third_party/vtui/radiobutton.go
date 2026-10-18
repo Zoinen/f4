@@ -8,8 +8,9 @@ import (
 // RadioButton represents an individual radio button widget.
 type RadioButton struct {
 	ScreenObject
-	Selected bool
-	OnChange func(bool)
+	Selected     bool
+	OnChange     func(bool)
+	mouseHovered bool
 }
 
 func NewRadioButton(x, y int, text string, selected bool) *RadioButton {
@@ -33,6 +34,10 @@ func (rb *RadioButton) DisplayObject(scr *ScreenBuf) {
 		return
 	}
 	n, h := rb.GetStateAttrs(ColDialogText, ColDialogSelectedButton, ColDialogHighlightText, ColDialogHighlightSelectedButton)
+	hovered := rb.mouseHovered && roundedButtonsActive()
+	if hovered {
+		n, h = roundedControlHoverAttr(n), roundedControlHoverAttr(h)
+	}
 
 	sym := SymRadioOff
 	if rb.Selected {
@@ -44,9 +49,19 @@ func (rb *RadioButton) DisplayObject(scr *ScreenBuf) {
 	// space keeps the plain text attribute, exactly as the previous literal
 	// "( ) " prefix did when its first 3 cells were redrawn on top.
 	p := NewPainter(scr)
-	p.DrawSymGlyph(rb.X1, rb.Y1, sym, DialogIndicatorAttr(n, rb.IsFocused()))
+	indicator := DialogIndicatorAttr(n, rb.IsFocused())
+	if hovered {
+		indicator = roundedControlHoverAttr(indicator)
+	}
+	p.DrawSymGlyph(rb.X1, rb.Y1, sym, indicator)
 	p.DrawString(rb.X1+3, rb.Y1, " ", n)
 	p.DrawHighlightedText(rb.X1+4, rb.Y1, rb.cleanText, rb.hotkeyPos, n, h)
+}
+
+// SetMouseHovered updates the pointer-hover state used by rounded graphical
+// controls. Text terminals and the classic style remain unchanged.
+func (rb *RadioButton) SetMouseHovered(hovered bool) {
+	rb.mouseHovered = hovered && !rb.IsDisabled()
 }
 
 func (rb *RadioButton) ProcessKey(e *vtinput.InputEvent) bool {

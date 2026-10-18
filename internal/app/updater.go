@@ -173,20 +173,45 @@ func restartCommand(executable string, args []string, workingDir string) *exec.C
 	return cmd
 }
 
+// restartLog and startRestart are variables so that a test can observe the
+// diagnostic lines and replace the real process start.
+var (
+	restartLog   = vtui.DebugLog
+	startRestart = func(cmd *exec.Cmd) (int, error) {
+		if err := cmd.Start(); err != nil {
+			return 0, err
+		}
+		return cmd.Process.Pid, nil
+	}
+)
+
+// launchRestart starts the new f4 and writes every step to debug.log: a
+// successful start is otherwise invisible, and "Restart" that sometimes does
+// not bring up a new copy (f4#1817) could not be told apart from a failed one.
+func launchRestart(executable string, args []string, workingDir string) error {
+	cmd := restartCommand(executable, args, workingDir)
+	restartLog("UPDATER: restarting %s %q (dir %q)", executable, args, workingDir)
+	pid, err := startRestart(cmd)
+	if err != nil {
+		restartLog("UPDATER: restart failed: %v", err)
+		return fmt.Errorf("cannot restart the updated f4: %w", err)
+	}
+	restartLog("UPDATER: restart started pid=%d", pid)
+	return nil
+}
+
 func startUpdatedF4() error {
 	executable, err := update.Executable()
 	if err != nil {
+		restartLog("UPDATER: restart failed: %v", err)
 		return fmt.Errorf("cannot locate the updated f4 executable: %w", err)
 	}
 	workingDir, err := os.Getwd()
 	if err != nil {
+		restartLog("UPDATER: restart failed: %v", err)
 		return fmt.Errorf("cannot preserve the working directory: %w", err)
 	}
-	cmd := restartCommand(executable, os.Args[1:], workingDir)
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("cannot restart the updated f4: %w", err)
-	}
-	return nil
+	return launchRestart(executable, os.Args[1:], workingDir)
 }
 
 func PerformUpdate(pf *panel.PanelsFrame, cand update.Candidate) {

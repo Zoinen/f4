@@ -3699,9 +3699,21 @@ jobs:
       if: steps.paths.outputs.relevant == 'yes'
       uses: cachix/install-nix-action@v31
 
+    # `nix flake check` downloads flake inputs and substitutes from cache.nixos.org
+    # and github.com, and a transient network error there turned the whole job
+    # red on trains, same as the Go proxy did for `go mod tidy` above. The check
+    # itself is deterministic, so a failure is retried a few times instead of
+    # the job being re-run by hand.
     - name: Run the flake checks
       if: steps.paths.outputs.relevant == 'yes'
-      run: nix flake check -L
+      shell: bash
+      run: |
+        for attempt in 1 2 3; do
+          nix flake check -L && exit 0
+          echo "nix flake check failed (attempt $attempt of 3); retrying"
+          sleep $((attempt * 20))
+        done
+        exit 1
 
     - name: Evaluate the module for macOS
       # A Linux runner skips the darwin outputs entirely, including the
@@ -3895,6 +3907,22 @@ jobs:
           cat Profile/logs/debug.log
           exit 1
         fi
+
+    # Drag-out acceptance (issue #566): f4's Wine GUI starts a drag, a bare
+    # XDND target on the same Xvfb must receive the file as text/uri-list.
+    # Informational until the panel positioning has proven stable over several
+    # runs; the script's logs (window geometry, per-row attempts, the received
+    # list) land in the wine-logs artifact. The build below overrides the
+    # job-wide GOOS=windows: the target is a Linux X11 client.
+    - name: XDND drag-out to an X11 target (win32 GUI backend)
+      continue-on-error: true
+      run: |
+        set -euo pipefail
+        sudo apt-get install -y -qq --no-install-recommends xdotool
+        GOOS=linux go build -trimpath -o build/xdndtarget ./tools/xdndtarget
+        mkdir -p wine-logs/xdnd
+        xvfb-run --auto-servernum -s "-screen 0 1280x1024x24" -- \
+          bash tools/wine-xdnd-drag.sh "$PWD/build" "$PWD/wine-logs/xdnd"
 
     - uses: actions/upload-artifact@v7
       if: always()

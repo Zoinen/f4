@@ -19,6 +19,9 @@ func TestTerminalLogVFS_VFSInterface(t *testing.T) {
 	tv.FlushLog()
 
 	v := &TerminalLogVFS{tv: tv}
+	if !v.ANSIViewMode() {
+		t.Fatal("Terminal Log must request the viewer's ANSI mode")
+	}
 
 	// 1. Тест IsAtRoot
 	if !v.IsAtRoot() {

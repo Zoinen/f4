@@ -206,3 +206,30 @@ NormalColor = foreground:#0000FF
 		t.Fatalf("GetMarker after mtime changed = %q, want %q (stale cache would return no match)", marker, "N")
 	}
 }
+
+// TestHighlightCacheDistinguishesJunctionFromSymlink: a Junction rule matches
+// by the reparse tag, so a junction and a symlink that share a name and every
+// other attribute must not be served one cached verdict (f4#1602, part 15).
+func TestHighlightCacheDistinguishesJunctionFromSymlink(t *testing.T) {
+	vtui.SetDefaultPalette()
+	SetDefaultF4Palette()
+
+	highlighter := &FileHighlighter{}
+	highlighter.LoadFromIni(ini.Parse(strings.NewReader(`[Highlight_0]
+Name = Junctions
+IncludeAttributes = Junction
+NormalColor = foreground:#0000FF
+`)))
+
+	symlink := vfs.VFSItem{Name: "link", IsDir: true, IsSymlink: true}
+	junction := symlink
+	junction.ReparseTag = vfs.ReparseTagMountPoint
+
+	plain := vtui.Palette[ColPanelText]
+	if got := highlighter.GetColor(&symlink, plain, false, false); got != plain {
+		t.Fatalf("a symlink took the junction color %#x", got)
+	}
+	if got := highlighter.GetColor(&junction, plain, false, false); got == plain {
+		t.Error("a junction with the same name as a cached symlink kept the plain color")
+	}
+}

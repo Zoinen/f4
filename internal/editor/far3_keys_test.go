@@ -127,3 +127,30 @@ func TestFAR3Bookmarks(t *testing.T) {
 		t.Fatalf("bookmark restored %d:%d, want 1:2", ev.CursorLine, ev.CursorPos)
 	}
 }
+
+// The hotkey dispatcher calls DeleteWordBackward itself, before ProcessKey,
+// so the join at the start of a line has to be done by the method (f4#1729).
+func TestDeleteWordBackwardJoinsLinesAtTheLineStart_Issue1729(t *testing.T) {
+	for _, tc := range []struct{ name, text, want string }{
+		{"lf", "one\ntwo", "onetwo"},
+		{"crlf", "one\r\ntwo", "onetwo"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ev := newFAR3Editor(t, tc.text)
+			ev.CursorLine, ev.CursorPos = 1, 0
+			ev.DeleteWordBackward()
+			if got := ev.GetText(); got != tc.want {
+				t.Fatalf("text %q, want %q", got, tc.want)
+			}
+			if ev.CursorLine != 0 || ev.CursorPos != len("one") {
+				t.Fatalf("cursor %d:%d, want 0:3", ev.CursorLine, ev.CursorPos)
+			}
+		})
+	}
+
+	first := newFAR3Editor(t, "one\ntwo")
+	first.DeleteWordBackward()
+	if got := first.GetText(); got != "one\ntwo" {
+		t.Fatalf("at the very start of the text: %q, want it unchanged", got)
+	}
+}

@@ -80,7 +80,7 @@ func TestDriveMenuBookmarksComeAfterTheTools(t *testing.T) {
 // f4#1148: with every tool hidden on the Tools page the menu has no Tools rule
 // with nothing under it.
 func TestDriveMenuHasNoToolsRuleWithoutTools(t *testing.T) {
-	_, menu, _ := driveMenuSectionsSetup(t, []string{driveToolKeyOtherPanel, driveToolKeyTemporaryPanel, driveToolKeyRegistry, "Alpha", "Beta"})
+	_, menu, _ := driveMenuSectionsSetup(t, []string{driveToolKeyPhysicalDisks, driveToolKeyOtherPanel, driveToolKeyTemporaryPanel, driveToolKeyRegistry, "Alpha", "Beta"})
 	if _, ok := ruleRows(menu)[strings.TrimSpace(i18n.Msg("Drive.Tools"))]; ok {
 		t.Fatal("the Tools rule is shown with every tool hidden")
 	}
@@ -143,5 +143,53 @@ func drainDriveMenuTasks() {
 		default:
 			return
 		}
+	}
+}
+
+// f4#1148 (mitek1977-coder): Shift+Up and Shift+Down move a folder bookmark of
+// the drive menu past its neighbour and save the table; Ctrl+Down does not.
+func TestDriveMenuShiftDownMovesTheBookmark(t *testing.T) {
+	pf, menu, placeA := driveMenuSectionsSetup(t, nil)
+	placeB := t.TempDir()
+	if err := os.WriteFile(BookmarksFilePath(),
+		[]byte("[3]\nPath="+placeA+"\nPlugin=\nPluginData=\nPluginFile=\n[5]\nPath="+placeB+"\nPlugin=\nPluginData=\nPluginFile=\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	menu.Close()
+	pf.ShowDriveMenu(0)
+	menu, ok := driveMenuFromFrame(vtui.FrameManager.GetTopFrame())
+	if !ok {
+		t.Fatal("no drive menu on top")
+	}
+	// The row is found by its slot digit: the menu cuts a long path from
+	// the left, and the temporary directories of macOS and Windows are long.
+	row := -1
+	for i, item := range menu.Items {
+		if strings.HasPrefix(item.Text, "&3 ") {
+			row = i
+		}
+	}
+	if row < 0 {
+		t.Fatal("no row for bookmark slot 3")
+	}
+	menu.SetSelectPos(row)
+	paths := func() [2]string {
+		set, err := LoadBookmarks(BookmarksFilePath())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return [2]string{set[3].Path, set[5].Path}
+	}
+	down := func(state vtinput.ControlKeyState) {
+		menu.OnKeyDown(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_DOWN, ControlKeyState: state})
+	}
+
+	down(vtinput.LeftCtrlPressed)
+	if got := paths(); got != [2]string{placeA, placeB} {
+		t.Errorf("after Ctrl+Down slots 3 and 5 hold %v, want them unmoved", got)
+	}
+	down(vtinput.ShiftPressed)
+	if got := paths(); got != [2]string{placeB, placeA} {
+		t.Errorf("after Shift+Down slots 3 and 5 hold %v, want them swapped", got)
 	}
 }

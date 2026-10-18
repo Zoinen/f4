@@ -4,12 +4,15 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"runtime"
 	"strconv"
 	"time"
 
 	"github.com/jezek/xgb"
 	winescape "github.com/unxed/libwinescape/go"
+	"github.com/unxed/vtui"
 
 	"github.com/unxed/f4/vfs/hostmode"
 )
@@ -50,6 +53,7 @@ func OpenWineX11Connection() (*xgb.Conn, error) {
 	}
 
 	display := winescape.HostGetenv("DISPLAY")
+	vtui.DebugLog("WINEX11DRAG: DISPLAY=%q", display)
 	spec, err := ParseDisplay(display)
 	if err != nil {
 		return nil, fmt.Errorf("winex11drag: %w", err)
@@ -63,12 +67,14 @@ func OpenWineX11Connection() (*xgb.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
+	vtui.DebugLog("WINEX11DRAG: Xauthority cookie read, dialing %s", sockPath)
 
 	sock, err := winescape.DialUnix(sockPath)
 	if err != nil {
 		return nil, fmt.Errorf("winex11drag: dialing %s: %w", sockPath, err)
 	}
 
+	vtui.DebugLog("WINEX11DRAG: socket connected, X11 setup handshake")
 	conn, err := xgb.NewConnNetWithCookieHex(wrapWineConn(sock), hex.EncodeToString(cookie))
 	if err != nil {
 		_ = sock.Close()
@@ -90,17 +96,20 @@ func hostXauthCookie(spec DisplaySpec) ([]byte, error) {
 		path = home + "/.Xauthority"
 	}
 
+	vtui.DebugLog("WINEX11DRAG: opening the Xauthority file %q", path)
 	f, err := winescape.OpenFile(path, winescape.O_RDONLY, 0)
 	if err != nil {
 		return nil, fmt.Errorf("winex11drag: opening %s: %w", path, err)
 	}
 	defer func() { _ = f.Close() }()
 
-	entries, err := ParseXauthority(f)
+	vtui.DebugLog("WINEX11DRAG: Xauthority file open, parsing")
+	entries, err := ParseXauthority(eofReader{f})
 	if err != nil {
 		return nil, fmt.Errorf("winex11drag: parsing %s: %w", path, err)
 	}
 
+	vtui.DebugLog("WINEX11DRAG: Xauthority parsed, %d entries", len(entries))
 	cookie, ok := FindMagicCookie(entries, strconv.Itoa(spec.Display))
 	if !ok {
 		return nil, fmt.Errorf("winex11drag: no MIT-MAGIC-COOKIE-1 entry for display %d in %s", spec.Display, path)
@@ -123,6 +132,66 @@ type wineConn struct {
 // and so a future caller of DialUnix elsewhere in this package (e.g. step 4's
 // selection window) can reuse the same wrapper.
 func wrapWineConn(f *winescape.File) net.Conn { return wineConn{File: f} }
+
+// eofReader turns the (0, nil) that winescape.File.Read returns at end of file
+// into io.EOF. winescape reports a raw read(2) count and never io.EOF, and
+// io.ReadFull -- hence binary.Read and ParseXauthority -- retries a (0, nil)
+// read forever, so without this the first read past the last Xauthority record
+// hangs the drag (issue #566, Wine probe: the log stopped after "DISPLAY=").
+type eofReader struct{ r io.Reader }
+
+func (e eofReader) Read(p []byte) (int, error) {
+	n, err := e.r.Read(p)
+	if n == 0 && err == nil && len(p) > 0 {
+		return 0, io.EOF
+	}
+	return n, err
+}
+
+// wineReadSlice is how long one poll(2) of the X socket may block. A raw
+// libwinescape syscall bypasses the Go runtime's entersyscall/exitsyscall, so a
+// thread parked in read(2) keeps its P: the first stop-the-world (a GC cycle
+// started by the allocations of the gesture) then waits for that P until the X
+// server happens to send something, and the whole process -- the main loop and
+// the heartbeat included -- stands still (issue #566: the Wine freeze snapshot
+// shows one thread in unix_stream_read_generic and every other thread idle). The
+// wait is therefore sliced, and between slices the thread is back in Go code,
+// where the scheduler can stop it.
+const wineReadSlice = 10 * time.Millisecond
+
+// waitReadable returns once fd has data, a hang-up or an error to report,
+// sleeping in poll(2) at most wineReadSlice at a time and yielding between
+// slices. A host where poll is unavailable (winescape.ErrUnavailable) returns
+// nil at once: the caller then does the plain blocking read it always did.
+func waitReadable(fd int, poll func([]winescape.PollFd, time.Duration) (int, error)) error {
+	fds := []winescape.PollFd{{Fd: int32(fd), Events: winescape.POLLIN}} //nolint:gosec // a host file descriptor is far below 2^31
+	for {
+		n, err := poll(fds, wineReadSlice)
+		if errors.Is(err, winescape.ErrUnavailable) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if n > 0 {
+			return nil
+		}
+		runtime.Gosched()
+	}
+}
+
+// Read is the socket read of an X connection: it waits for data in short poll
+// slices (see wineReadSlice), then reads. A (0, nil) from read(2) there means
+// the server closed the connection, which xgb must see as io.EOF instead of
+// spinning on an empty read.
+func (c wineConn) Read(p []byte) (int, error) {
+	if len(p) > 0 {
+		if err := waitReadable(c.Fd(), winescape.Poll); err != nil {
+			return 0, err
+		}
+	}
+	return eofReader{c.File}.Read(p)
+}
 
 func (wineConn) LocalAddr() net.Addr              { return wineConnAddr{} }
 func (wineConn) RemoteAddr() net.Addr             { return wineConnAddr{} }

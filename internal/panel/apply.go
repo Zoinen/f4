@@ -792,7 +792,7 @@ func (s *ApplyCommandSession) enqueue(request cmdline.ApplyBatchRequest, model *
 	preconditions := s.QueuePreconditions()
 	task := &fileops.QueueTask{
 		Type: i18n.Msg("ApplyCommand.QueueType"), Desc: fmt.Sprintf(i18n.Msg("ApplyCommand.QueueDescriptionFmt"), len(s.Targets)),
-		Preconditions: preconditions, ResKeys: []string{fileops.GetResourceKey(s.Active.PanelVFS)},
+		Preconditions: preconditions, ResKeys: fileops.ResourceKeysFor(s.Active.PanelVFS),
 	}
 	task.Run = func(ctx context.Context, reporter fileops.TaskReporter, _ vtui.Frame) error {
 		defer s.releaseCapturedVFSes()

@@ -236,21 +236,33 @@ type MacroAssignFrame struct {
 	*vtui.Window
 	Mgr      *MacroManager
 	desc     *vtui.Edit
-	keyField *macroKeyEdit
+	keyField *macroKeyCombo
 	ok       *vtui.Button
 }
 
-// macroKeyEdit shows the key pressed in it instead of typing: every key but
-// Esc, Tab included, can be a macro's key. After a key it hands the focus to
-// OK, so Enter confirms.
-type macroKeyEdit struct {
-	*vtui.Edit
+// macroKeyCombo is the key field of the dialog: it shows the key pressed in it
+// instead of typing, and drops down a list of common keys nothing else uses
+// (Ctrl+Down, the arrow or a click), so that a free key can be picked rather
+// than found by trial (DkmS1953, f4#1870). Every key but Esc, Tab included,
+// can be a macro's key; Ctrl+Down alone opens the list. After a key it hands
+// the focus to OK, so Enter confirms.
+type macroKeyCombo struct {
+	*vtui.ComboBox
 	key     string
 	onKey   func()
 	capture func(e *vtinput.InputEvent) string
 }
 
-func (k *macroKeyEdit) ProcessKey(e *vtinput.InputEvent) bool {
+// setKey makes key the macro's key, whether it was pressed or picked.
+func (k *macroKeyCombo) setKey(key string) {
+	k.key = key
+	k.Edit.SetText(key)
+	if k.onKey != nil {
+		k.onKey()
+	}
+}
+
+func (k *macroKeyCombo) ProcessKey(e *vtinput.InputEvent) bool {
 	if e.Type != vtinput.KeyEventType || !e.KeyDown || e.VirtualKeyCode == vtinput.VK_ESCAPE {
 		return false
 	}
@@ -261,11 +273,14 @@ func (k *macroKeyEdit) ProcessKey(e *vtinput.InputEvent) bool {
 		vtinput.VK_CAPITAL, vtinput.VK_NUMLOCK, vtinput.VK_SCROLL:
 		return true
 	}
-	k.key = k.capture(e)
-	k.SetText(k.key)
-	if k.onKey != nil {
-		k.onKey()
+	mods := e.ControlKeyState
+	if e.VirtualKeyCode == vtinput.VK_DOWN &&
+		mods&(vtinput.LeftCtrlPressed|vtinput.RightCtrlPressed) != 0 &&
+		mods&(vtinput.LeftAltPressed|vtinput.RightAltPressed|vtinput.ShiftPressed) == 0 {
+		k.Open()
+		return true
 	}
+	k.setKey(k.capture(e))
 	return true
 }
 
@@ -285,7 +300,18 @@ func NewMacroAssignFrame(m *MacroManager) *MacroAssignFrame {
 		vtui.StringWidth(strings.ReplaceAll(i18n.Msg("Macro.AssignPrompt"), "&", ""))) + 2
 	fieldWidth := width - 5 - labelWidth
 	f.desc = vtui.NewEdit(0, 0, fieldWidth, "")
-	f.keyField = &macroKeyEdit{Edit: vtui.NewEdit(0, 0, fieldWidth, ""), capture: keymap.EventToFarString}
+	area := m.StartArea
+	if area == "" {
+		area = "Common"
+	}
+	combo := vtui.NewComboBox(0, 0, fieldWidth, m.FreeKeys(area, keymap.GlobalHotkeysMgr))
+	combo.Menu.SetTitle(i18n.Msg("Macro.AssignFreeKeys"))
+	f.keyField = &macroKeyCombo{ComboBox: combo, capture: keymap.EventToFarString}
+	combo.Menu.OnAction = func(i int) {
+		if i >= 0 && i < len(combo.Menu.Items) {
+			f.keyField.setKey(combo.Menu.Items[i].Text)
+		}
+	}
 	f.ok = vtui.NewButton(0, 0, i18n.Msg("vtui.Ok"))
 	f.ok.IsDefault = true
 	cancel := vtui.NewButton(0, 0, i18n.Msg("vtui.Cancel"))

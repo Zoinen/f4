@@ -112,8 +112,8 @@ var commandPaletteProcessKeyAudit = map[string]commandPaletteSurfaceAudit{
 	"app.(*markdownView).ProcessKey": {
 		class: paletteAuditModalLocal, rationale: "the formatted Markdown view is a read-only frame F3 opens on a Markdown file in place of the text viewer; F3/F10 close it and F4 goes back to the text view, local to it like the text viewer's own mode switch, and scrolling is HelpView's",
 	},
-	"macro.(*macroKeyEdit).ProcessKey": {
-		class: paletteAuditModalLocal, rationale: "the key field of the macro assign dialog (Ctrl+., f4#1870) takes the pressed key as the macro's key instead of typing; it means nothing outside that dialog",
+	"macro.(*macroKeyCombo).ProcessKey": {
+		class: paletteAuditModalLocal, rationale: "the key field of the macro assign dialog (Ctrl+., f4#1870) takes the pressed key as the macro's key instead of typing, and Ctrl+Down drops down the free keys; it means nothing outside that dialog",
 	},
 	"editor.(*EditorView).ProcessKey": {
 		class: paletteAuditActionArea, rationale: "editor commands are registered actions; raw text and cursor editing remain local primitives",

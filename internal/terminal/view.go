@@ -498,6 +498,11 @@ func (tv *TerminalView) terminalLogSnapshot() terminalLogSnapshot {
 	tv.mu.Lock()
 	defer tv.mu.Unlock()
 
+	return tv.terminalLogSnapshotLocked()
+}
+
+// terminalLogSnapshotLocked requires tv.mu to be held by the caller.
+func (tv *TerminalView) terminalLogSnapshotLocked() terminalLogSnapshot {
 	layout := tv.semanticLayoutUnsafe()
 	targetRow := tv.semanticScrollTop
 	if layout.totalRows > 0 {
@@ -2337,17 +2342,15 @@ func (tv *TerminalView) ProcessFar2lInteract(data []byte) {
 			_ = stk.PopString()
 			reply.PushU32(0xC000)
 		}
-	case 'w': // Window size
-		reply.PushU16(ptyPixels(tv.Height))
+	case 'w': // GET_WINDOW_MAXSIZE: far2l pops the height first, then the width
 		reply.PushU16(ptyPixels(tv.Width))
+		reply.PushU16(ptyPixels(tv.Height))
 	case 'h': // Cursor height
 		_ = stk.PopU8()
-	case 'n': // Desktop notification
-		text := stk.PopString()
+	case 'n': // Desktop notification: the title is on top of the stack, then the text
 		title := stk.PopString()
-		vtui.FrameManager.PostTask(func() {
-			toast.Show(title+": "+text, 3*time.Second)
-		})
+		text := stk.PopString()
+		far2lNotify(title, text)
 	case 'f': // FKey titles
 		for i := 0; i < 12; i++ {
 			state := stk.PopU8()
@@ -2380,13 +2383,24 @@ func (tv *TerminalView) ProcessFar2lInteract(data []byte) {
 	}
 }
 
+// far2lNotify shows a desktop notification that the guest asked for. It is a
+// variable so that tests can see what was asked.
+var far2lNotify = func(title, text string) {
+	vtui.FrameManager.PostTask(func() {
+		toast.Show(title+": "+text, 3*time.Second)
+	})
+}
+
+// SendFar2lTerminalSize sends the in-band terminal size event. far2l pops the
+// event code, then the height, then the width, and its Base64 decoder stops at
+// a colon, so the event carries none: ESC _ f2l<base64> BEL (VTExts.md 4.2, 6).
 func (tv *TerminalView) SendFar2lTerminalSize() {
 	stk := vtinput.Far2lStack{}
-	stk.PushU16(ptyPixels(tv.Height))
 	stk.PushU16(ptyPixels(tv.Width))
+	stk.PushU16(ptyPixels(tv.Height))
 	stk.PushU8('S')
 	b64 := base64.StdEncoding.EncodeToString(stk)
 	if tv.Pty != nil {
-		_, _ = tv.Pty.Write([]byte("\x1b_f2l:" + b64 + "\x07"))
+		_, _ = tv.Pty.Write([]byte("\x1b_f2l" + b64 + "\x07"))
 	}
 }

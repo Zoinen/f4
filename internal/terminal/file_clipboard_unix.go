@@ -4,8 +4,10 @@ package terminal
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -43,6 +45,23 @@ func setFileClipboard(ctx context.Context, _ string, paths []string, cut bool) e
 	return cmd.Run()
 }
 
+// parseFileClipboardJSON decodes the JSON array of paths the macOS reader
+// prints, keeping absolute paths only: a relative one cannot be told from a
+// name and means nothing to a file operation.
+func parseFileClipboardJSON(data []byte) []string {
+	var raw []string
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil
+	}
+	var paths []string
+	for _, p := range raw {
+		if filepath.IsAbs(p) {
+			paths = append(paths, filepath.Clean(p))
+		}
+	}
+	return paths
+}
+
 func readFileClipboard(ctx context.Context) ([]string, bool, error) {
 	var candidates []struct {
 		name  string
@@ -68,6 +87,8 @@ func readFileClipboard(ctx context.Context) ([]string, bool, error) {
 			{"xclip", []string{"-selection", "clipboard", "-t", "x-special/gnome-copied-files", "-o"}, true},
 			{"xclip", []string{"-selection", "clipboard", "-t", "text/uri-list", "-o"}, false},
 		}
+	case runtime.GOOS == "darwin":
+		return readDarwinFileClipboard(ctx)
 	default:
 		return nil, false, errFileClipboardUnavailable
 	}

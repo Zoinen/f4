@@ -60,17 +60,30 @@ func wordEndForward(line []rune, pos int) int {
 }
 
 // DeleteWordBackward implements FAR's Ctrl+Backspace on the current line
-// (wordStartBackward). At the start of a line there is nothing to delete
-// here; the caller treats the key as Backspace, which joins the lines, as
-// far2l does.
+// (wordStartBackward). At the start of a line it is Backspace and joins the
+// line to the one above, as in far2l. This has to happen here: the hotkey
+// dispatcher runs the action before EditorView.ProcessKey sees the key, so a
+// no-op at the line start would swallow it (f4#1729).
 func (ev *EditorView) DeleteWordBackward() {
-	if ev.SelActive || ev.RectSelActive {
+	if ev.selectionTakesInput() {
 		ev.DeleteSelection()
 		return
 	}
+	hadVirtualSpaces := ev.CursorVirtualSpaces > 0
 	ev.CursorVirtualSpaces = 0
 	pos := ev.CursorPos
 	if pos <= 0 {
+		if ev.CursorLine > 0 && !hadVirtualSpaces {
+			lineStart := ev.Li.GetLineOffset(ev.CursorLine)
+			eolLen := 1
+			if lineStart >= 2 {
+				prefix, _ := ev.Pt.GetRange(lineStart-2, 2)
+				if len(prefix) == 2 && prefix[0] == '\r' && prefix[1] == '\n' {
+					eolLen = 2
+				}
+			}
+			ev.deleteRange(lineStart-eolLen, lineStart)
+		}
 		return
 	}
 	lineStart := ev.Li.GetLineOffset(ev.CursorLine)
@@ -84,7 +97,7 @@ func (ev *EditorView) DeleteWordBackward() {
 // (wordEndForward). At the end of a line it does nothing; the caller treats
 // the key as Del, which joins the lines, as far2l does.
 func (ev *EditorView) DeleteWordForward() {
-	if ev.SelActive || ev.RectSelActive {
+	if ev.selectionTakesInput() {
 		ev.DeleteSelection()
 		return
 	}
@@ -127,6 +140,8 @@ func (ev *EditorView) deleteRange(start, end int) {
 
 func (ev *EditorView) ClearSelection() {
 	ev.SelActive = false
+	ev.selFrozen = false
+	ev.rectFrozen = false
 	ev.RectSelActive = false
 	if vtui.FrameManager != nil {
 		vtui.FrameManager.Redraw()

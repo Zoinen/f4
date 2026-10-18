@@ -135,7 +135,13 @@ debug.log, and which line is *missing* says where the gesture died:
 - Windows under Wine: a drag out reaches other Wine windows only. Wine
   bridges XDND into OLE for drops coming in, but has no bridge the other
   way, so a payload offered to a native X11 application finds no target and
-  the pointer says no. That is upstream, not here
+  the pointer says no. That is upstream, not here. The XDND source half is
+  exported as X11DragSource for a program that talks to the real X server
+  itself (f4 does, through libwinescape): it needs only a connection and a
+  window of its own, and BorrowPointer makes it leave the pointer alone, since
+  Wine holds it from the button press and the server refuses a second grab;
+  SkipTargets keeps the drag off the program's own windows, which the host's
+  X server would otherwise offer it while the program waits on the gesture
 - macOS outside gogpu: planned
 - terminals: no protocol exists; nothing is registered, so both directions
   are reported as unsupported rather than half working

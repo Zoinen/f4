@@ -49,6 +49,9 @@ func TestArchiveVFS_RetriesExternalEncrypted7zWithoutProgress(t *testing.T) {
 
 func createExternalEncrypted7z(t *testing.T) string {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("requires external 7z command")
+	}
 	sevenZip, err := exec.LookPath("7z")
 	if err != nil {
 		t.Skip("7z command is not installed")

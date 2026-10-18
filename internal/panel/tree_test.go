@@ -4,9 +4,13 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/unxed/f4/internal/config"
+	"github.com/unxed/f4/internal/ini"
+	"github.com/unxed/f4/internal/testutil"
+	"github.com/unxed/f4/internal/theme"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
@@ -111,6 +115,37 @@ func TestTreeExpandCollapse_SpliceLogic(t *testing.T) {
 	tp.expandAt(2)
 	if tp.items[2].expandable {
 		t.Error("childB has no subdirectories; expandAt should have cleared expandable")
+	}
+}
+
+func TestTreeShowsDirectorySymlinksWithoutFollowingThem(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("directory symlinks unavailable: %v", err)
+	}
+
+	tp := newBareTreePanel(root)
+	tp.expandAt(0)
+	idx := tp.findChild(0, "link")
+	if idx < 0 {
+		t.Fatal("directory symlink is missing from the tree")
+	}
+	item := tp.items[idx]
+	if !item.vfsItem.IsDir || !item.vfsItem.IsSymlink || vfs.LinkKindOf(&item.vfsItem) != vfs.LinkSymlink {
+		t.Fatalf("directory symlink metadata = %+v", item.vfsItem)
+	}
+	if item.expandable {
+		t.Fatal("directory symlink must be a leaf to prevent cycles")
+	}
+	before := len(tp.items)
+	tp.expandAt(idx)
+	if len(tp.items) != before {
+		t.Fatal("expanding a directory symlink followed its target")
 	}
 }
 
@@ -481,5 +516,249 @@ func TestNewTreePanel_ResumesExpandedBranchesAcrossInstances(t *testing.T) {
 	}
 	if second.items[deepIdx2].collapsed {
 		t.Error("a freshly opened tree panel should resume \"other/deep\" already expanded too")
+	}
+}
+
+// explorerTreeSetup opens a tree beside src the way Ctrl+T does, with the
+// cursor on the root row and two child folders under it.
+func explorerTreeSetup(t *testing.T) (*PanelsFrame, *FileSystemPanel, *TreePanel, string, string) {
+	t.Helper()
+	pf := setupMockPanelsFrame(t)
+	vtui.FrameManager.Push(pf)
+	t.Cleanup(func() { vtui.FrameManager.RemoveFrame(pf) })
+
+	root := t.TempDir()
+	first, second := filepath.Join(root, "a"), filepath.Join(root, "b")
+	for _, dir := range []string{first, second} {
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+	}
+	src := NewFileSystemPanel(0, 0, 40, 20, vfs.NewOSVFS(root))
+	waitForLoad(t, src)
+	pf.Panels[pf.ActiveIdx] = src
+
+	tp := newBareTreePanel(root)
+	tp.src = src
+	tp.expandAt(0)
+	tp.syncRows()
+	opp := 1 - pf.ActiveIdx
+	pf.AltPanels[opp] = tp
+	pf.ActiveIdx = opp
+	return pf, src, tp, first, second
+}
+
+func TestTreeExplorerModeShowsTheFolderUnderTheCursor_Issue1602(t *testing.T) {
+	saved := config.App.TreeExplorerMode
+	t.Cleanup(func() { config.App.TreeExplorerMode = saved })
+	down := &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_DOWN}
+
+	config.App.TreeExplorerMode = false
+	_, src, tp, _, _ := explorerTreeSetup(t)
+	start := src.Vfs.GetPath()
+	tp.ProcessKey(down)
+	if got := src.Vfs.GetPath(); got != start {
+		t.Fatalf("with the setting off the panel moved to %q", got)
+	}
+
+	config.App.TreeExplorerMode = true
+	pf, src, tp, first, second := explorerTreeSetup(t)
+	tp.ProcessKey(down)
+	if got := src.Vfs.GetPath(); got != first {
+		t.Fatalf("after Down the panel shows %q, want %q", got, first)
+	}
+	tp.ProcessKey(down)
+	if got := src.Vfs.GetPath(); got != second {
+		t.Fatalf("after the second Down the panel shows %q, want %q", got, second)
+	}
+
+	opp := pf.ActiveIdx
+	tp.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN})
+	if pf.AltPanels[opp] != tp {
+		t.Errorf("Enter closed the tree")
+	}
+	if pf.Panels[pf.ActiveIdx] != Panel(src) {
+		t.Errorf("Enter did not move to the panel with the files")
+	}
+	if got := src.Vfs.GetPath(); got != second {
+		t.Errorf("after Enter the panel shows %q, want %q", got, second)
+	}
+}
+
+// TestTreeMouseExpandCollapse_Issue1602: a click on the "+"/"-" marker of a
+// folder, or a double click on its name, opens and closes it like Right and
+// Left; one click on the name only moves the cursor.
+func TestTreeMouseExpandCollapse_Issue1602(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "childA", "grandchild"), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "childB"), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	tp := newBareTreePanel(root)
+	tp.Table.ShowHeader = false
+	tp.Table.SetPosition(0, 0, 39, 9)
+	tp.expandAt(0)
+	tp.syncRows()
+
+	click := func(row, x int, flags uint32) {
+		t.Helper()
+		down := &vtinput.InputEvent{Type: vtinput.MouseEventType, KeyDown: true,
+			ButtonState: vtinput.FromLeft1stButtonPressed, MouseEventFlags: flags,
+			MouseX: testutil.Int16(x), MouseY: testutil.Int16(row)}
+		tp.ProcessMouse(down)
+		tp.ProcessMouse(&vtinput.InputEvent{Type: vtinput.MouseEventType, MouseX: down.MouseX, MouseY: down.MouseY})
+	}
+	childA := func() treeItem { return tp.items[1] }
+
+	// childA is row 1 at depth 1: "├─" takes two columns, the marker is columns 2-3.
+	if len(tp.items) != 3 || !childA().collapsed {
+		t.Fatalf("setup: items %d, childA collapsed %v", len(tp.items), childA().collapsed)
+	}
+	click(1, 6, 0)
+	if len(tp.items) != 3 || !childA().collapsed {
+		t.Errorf("a single click on the name changed the tree: %d items", len(tp.items))
+	}
+	click(1, 2, 0)
+	if len(tp.items) != 4 || childA().collapsed {
+		t.Errorf("a click on the + marker did not expand childA: %d items", len(tp.items))
+	}
+	click(1, 2, 0)
+	if len(tp.items) != 3 || !childA().collapsed {
+		t.Errorf("a click on the - marker did not collapse childA: %d items", len(tp.items))
+	}
+	click(1, 6, vtinput.DoubleClick)
+	if len(tp.items) != 4 || childA().collapsed {
+		t.Errorf("a double click on the name did not expand childA: %d items", len(tp.items))
+	}
+	click(1, 2, vtinput.DoubleClick)
+	if len(tp.items) != 4 {
+		t.Errorf("the second press of a double click on the marker toggled again: %d items", len(tp.items))
+	}
+	click(1, 6, vtinput.DoubleClick)
+	if len(tp.items) != 3 || !childA().collapsed {
+		t.Errorf("a double click on the name did not collapse childA: %d items", len(tp.items))
+	}
+}
+
+// TestTreeRowTakesTheDirectoryHighlightColor_Issue1602: the tree paints a folder
+// with the color the highlight rules give a directory, not the plain panel text
+// color (part 13).
+func TestTreeRowTakesTheDirectoryHighlightColor_Issue1602(t *testing.T) {
+	vtui.SetDefaultPalette()
+	theme.SetDefaultF4Palette()
+	oldRules, oldUser := theme.GlobalFileHighlighter.Rules, theme.GlobalFileHighlighter.UserRules
+	defer func() {
+		theme.GlobalFileHighlighter.Rules = oldRules
+		theme.GlobalFileHighlighter.UserRules = oldUser
+	}()
+	theme.GlobalFileHighlighter.LoadFromIni(ini.Parse(strings.NewReader(`[Highlight_0]
+Name = Directories
+IncludeAttributes = Directory
+NormalColor = foreground:#00FF00
+`)))
+
+	plain := vtui.Palette[theme.ColPanelText]
+	row := treeItem{name: "work", path: "/work", depth: 1}
+	got := row.GetCellAttr(0, plain)
+	if got == plain {
+		t.Fatal("a folder row kept the plain panel text color despite the directory rule")
+	}
+	if want := theme.GlobalFileHighlighter.GetColor(&vfs.VFSItem{Name: "work", IsDir: true}, plain, false, false); got != want {
+		t.Errorf("tree row color %#x differs from the file panel's directory color %#x", got, want)
+	}
+
+}
+
+func TestTreeRowUsesSymlinkAndJunctionHighlightColors(t *testing.T) {
+	vtui.SetDefaultPalette()
+	theme.SetDefaultF4Palette()
+	oldRules, oldUser := theme.GlobalFileHighlighter.Rules, theme.GlobalFileHighlighter.UserRules
+	defer func() {
+		theme.GlobalFileHighlighter.Rules = oldRules
+		theme.GlobalFileHighlighter.UserRules = oldUser
+	}()
+	theme.GlobalFileHighlighter.LoadFromIni(ini.Parse(strings.NewReader(`[Highlight_0]
+Name = Directories
+IncludeAttributes = Directory
+NormalColor = foreground:#00FF00
+ContinueProcessing = 1
+
+[Highlight_1]
+Name = Symlinks
+IncludeAttributes = Symlink
+NormalColor = foreground:#FF0000
+ContinueProcessing = 1
+
+[Highlight_2]
+Name = Junctions
+IncludeAttributes = Junction
+NormalColor = foreground:#0000FF
+`)))
+
+	plain := vtui.Palette[theme.ColPanelText]
+	rows := []struct {
+		name string
+		item vfs.VFSItem
+	}{
+		{name: "symlink", item: vfs.VFSItem{Name: "symlink", IsDir: true, IsSymlink: true}},
+		{name: "junction", item: vfs.VFSItem{Name: "junction", IsDir: true, IsSymlink: true, ReparseTag: vfs.ReparseTagMountPoint}},
+	}
+	colors := make(map[string]uint64)
+	for _, tc := range rows {
+		row := treeItem{name: tc.name, depth: 1, vfsItem: tc.item}
+		got := row.GetCellAttr(0, plain)
+		want := theme.GlobalFileHighlighter.GetColor(&tc.item, plain, false, false)
+		if got != want || got == plain {
+			t.Errorf("%s tree color = %#x, want highlighted %#x", tc.name, got, want)
+		}
+		colors[tc.name] = got
+	}
+	if colors["symlink"] == colors["junction"] {
+		t.Errorf("symlink and junction colors are indistinguishable: %#x", colors["symlink"])
+	}
+}
+
+// TestTreeRootRowTakesTheFolderColor_Issue1602: the root row (the disk name, or
+// the current directory when the tree is not rooted at the whole volume) is
+// labelled with its full path, which a "*" mask does not match, so it kept the
+// plain text color. It must get the same color as any other folder (part 15).
+func TestTreeRootRowTakesTheFolderColor_Issue1602(t *testing.T) {
+	vtui.SetDefaultPalette()
+	theme.SetDefaultF4Palette()
+	oldRules, oldUser := theme.GlobalFileHighlighter.Rules, theme.GlobalFileHighlighter.UserRules
+	defer func() {
+		theme.GlobalFileHighlighter.Rules = oldRules
+		theme.GlobalFileHighlighter.UserRules = oldUser
+	}()
+	theme.GlobalFileHighlighter.LoadFromIni(ini.Parse(strings.NewReader(`[Highlight_0]
+Name = Directories
+IncludeAttributes = Directory
+NormalColor = foreground:#00FF00
+`)))
+
+	plain := vtui.Palette[theme.ColPanelText]
+	dir := t.TempDir()
+	folder := (&treeItem{name: filepath.Base(dir), path: dir, depth: 1}).GetCellAttr(0, plain)
+	if folder == plain {
+		t.Fatal("a folder row kept the plain panel text color despite the directory rule")
+	}
+	volume := filepath.VolumeName(dir) + string(filepath.Separator)
+	for _, root := range []string{volume, dir, dir + string(filepath.Separator)} {
+		row := treeItem{name: root, path: root, depth: 0, parentIndex: -1}
+		if got := row.GetCellAttr(0, plain); got != folder {
+			t.Errorf("root row %q color = %#x, want the folder color %#x", root, got, folder)
+		}
+	}
+
+	if got, want := (treeItem{path: dir}).ruleName(), filepath.Base(dir); got != want {
+		t.Errorf("ruleName of the root %q = %q, want its last element %q", dir, got, want)
+	}
+	if got, want := (treeItem{path: volume}).ruleName(), strings.TrimRight(filepath.VolumeName(volume), `/\`); got != want {
+		t.Errorf("ruleName of the volume root %q = %q, want the bare drive name %q", volume, got, want)
+	}
+	if got := (treeItem{name: "sub", path: filepath.Join(dir, "sub"), depth: 2}).ruleName(); got != "sub" {
+		t.Errorf("ruleName of a child = %q, want its own name", got)
 	}
 }

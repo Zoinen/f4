@@ -66,3 +66,23 @@ func TestEnrichFromProcMountsPicksLongestPrefix(t *testing.T) {
 		t.Error("enrichFromProcMounts did not resolve a mount point for /")
 	}
 }
+
+func TestFreeBytes(t *testing.T) {
+	if _, ok := FreeBytes(""); ok {
+		t.Error("FreeBytes(\"\") ok = true, want false")
+	}
+	if _, ok := FreeBytes("/this/path/should/not/exist/on/the/ci/runner"); ok {
+		t.Error("FreeBytes(missing) ok = true, want false")
+	}
+	free, ok := FreeBytes("/")
+	if !ok {
+		t.Fatal("FreeBytes(\"/\") ok = false, want true")
+	}
+	info, ok := FS("/")
+	if !ok {
+		t.Fatal("FS(\"/\") ok = false, want true")
+	}
+	if free > info.Total {
+		t.Errorf("FreeBytes = %d, more than the filesystem size %d", free, info.Total)
+	}
+}

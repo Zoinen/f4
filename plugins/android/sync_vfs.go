@@ -654,6 +654,10 @@ func (f *syncReadFile) ReadAccessProfile() vfs.ReadAccessProfile {
 func (f *syncReadFile) Read(ctx context.Context, p []byte) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	return f.readLocked(ctx, p)
+}
+
+func (f *syncReadFile) readLocked(ctx context.Context, p []byte) (int, error) {
 	if f.closed {
 		return 0, os.ErrClosed
 	}
@@ -793,10 +797,30 @@ func (f *syncReadFile) ReadAt(ctx context.Context, p []byte, off int64) (int, er
 		int64(len(p)) <= int64(syncHybridPrefixLimit)-off {
 		return f.readPrefixRange(ctx, p, off)
 	}
+	if f.temp == nil && !f.hybridPrefixes && off == f.offset {
+		// A sequential reader (a copy asks for the next block each time) keeps
+		// streaming; copying the whole file to a temporary file first would
+		// delay the first byte and double the disk traffic.
+		return f.readFullLocked(ctx, p)
+	}
 	if err := f.materialize(ctx); err != nil {
 		return 0, err
 	}
 	return f.temp.ReadAt(p, off)
+}
+
+// readFullLocked fills p from the stream like io.ReaderAt: a short count comes
+// with the error that ended the stream.
+func (f *syncReadFile) readFullLocked(ctx context.Context, p []byte) (int, error) {
+	total := 0
+	for total < len(p) {
+		n, err := f.readLocked(ctx, p[total:])
+		total += n
+		if err != nil {
+			return total, err
+		}
+	}
+	return total, nil
 }
 
 func (f *syncReadFile) Close() error {

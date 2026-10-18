@@ -28,6 +28,7 @@ func TestGenerateKeysHelpTopic(t *testing.T) {
 		"Alt+BS / Ctrl+Z - Undo last change",
 		"Ctrl+V / Shift+Ins - Paste text from clipboard",
 		"F4             - Toggle hex view",
+		"Ctrl+Del       - Delete the word to the right of the cursor",
 		"Alt+Ins        - Select and copy a screen region",
 	} {
 		if !strings.Contains(joined, want) {

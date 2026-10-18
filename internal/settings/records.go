@@ -3,8 +3,10 @@ package settings
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"github.com/unxed/f4/internal/action"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -14,6 +16,7 @@ import (
 	"github.com/unxed/f4/internal/panel"
 	"github.com/unxed/f4/internal/sysinfo"
 	"github.com/unxed/f4/sdk/f4settings"
+	"github.com/unxed/f4/vfs"
 )
 
 type settingsRecordStore struct {
@@ -21,6 +24,7 @@ type settingsRecordStore struct {
 	path       string
 	load       func() ([]f4settings.Record, error)
 	save       func([]f4settings.Record) error
+	revision   func(context.Context) (string, error)
 	validate   func([]f4settings.Record) error
 	afterSave  func([]f4settings.Record)
 }
@@ -41,6 +45,30 @@ func settingsFileRevision(path string) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("%x", sha256.Sum256(data)), nil
+}
+
+func settingsFileRevisionVFS(ctx context.Context, fs vfs.VFS, path string) (string, error) {
+	f, err := fs.Open(ctx, path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "missing", nil
+		}
+		return "", err
+	}
+	defer func() { _ = f.Close() }()
+	data := make([]byte, f.Size())
+	n, err := f.ReadAt(ctx, data, 0)
+	if err != nil && (err != io.EOF || n != len(data)) {
+		return "", err
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(data[:n])), nil
+}
+
+func (s settingsRecordStore) fileRevision(ctx context.Context) (string, error) {
+	if s.revision != nil {
+		return s.revision(ctx)
+	}
+	return settingsFileRevision(s.path)
 }
 
 func newCoreRecordSettingsProvider() coreRecordSettingsProvider {
@@ -101,7 +129,7 @@ func newCoreRecordSettingsProvider() coreRecordSettingsProvider {
 		return panel.SaveBookmarks(bookmarkPath, items)
 	}})
 	toolVisibilityPath := panel.DriveToolsVisibilityFilePath()
-	toolVisibility := recordCollection("drive-tools", "drives", "Tools", "Choose which registered drive-menu tools are shown.", "tool.Name", []f4settings.Field{
+	toolVisibility := recordCollection("drive-tools", "drives", "Tools & Plugins", "Choose which registered drive-menu tools are shown.", "tool.Name", []f4settings.Field{
 		recordField("tool.Name", "Tool", "Registered drive-menu tool.", f4settings.String),
 		recordField("tool.Enabled", "Enabled", "Show this tool in the drive menu.", f4settings.Boolean),
 	})
@@ -265,23 +293,31 @@ func settingsValidateShortcut(value string) error {
 }
 
 func (p *coreRecordSettingsProvider) addUserMenuStores() {
-	sources := []settingsMenuSource{{"main", "Global user menu", panel.MainMenuFilePath(), panel.MenuModeMain}}
+	sources := []settingsMenuSource{{id: "main", label: "Global user menu", path: panel.MainMenuFilePath(), mode: panel.MenuModeMain}}
 	if exe, err := os.Executable(); err == nil {
-		sources = append(sources, settingsMenuSource{"binary", "Executable user menu", filepath.Join(filepath.Dir(exe), panel.FarMenuFileName), panel.MenuModeFar})
+		sources = append(sources, settingsMenuSource{id: "binary", label: "Executable user menu", path: filepath.Join(filepath.Dir(exe), panel.FarMenuFileName), mode: panel.MenuModeFar})
 	}
 	dir, _ := os.Getwd()
+	var localFS vfs.VFS
 	if pf := panel.FindPanelsFrameAnyScreen(); pf != nil {
 		if fsp, ok := pf.Panels[pf.ActiveIdx].(*panel.FileSystemPanel); ok && fsp.Vfs != nil {
-			if st, err := os.Stat(fsp.Vfs.GetPath()); err == nil && st.IsDir() {
+			if _, ok := fsp.Vfs.(*vfs.OSVFS); ok {
 				dir = fsp.Vfs.GetPath()
+				localFS = fsp.Vfs
 			}
 		}
 	}
-	local, found := panel.FindLocalFarMenu(dir)
+	var local string
+	var found bool
+	if localFS != nil {
+		local, found = panel.FindLocalFarMenuVFS(context.Background(), localFS, dir)
+	} else {
+		local, found = panel.FindLocalFarMenu(dir)
+	}
 	if !found {
 		local = filepath.Join(dir, panel.FarMenuFileName)
 	}
-	sources = append(sources, settingsMenuSource{"local", "Local/ancestor user menu", local, panel.MenuModeLocal})
+	sources = append(sources, settingsMenuSource{id: "local", label: "Local/ancestor user menu", path: local, mode: panel.MenuModeLocal, filesystem: localFS})
 	for _, src := range sources {
 		p.stores = append(p.stores, newUserMenuSettingsStore(src))
 	}
@@ -290,6 +326,7 @@ func (p *coreRecordSettingsProvider) addUserMenuStores() {
 type settingsMenuSource struct {
 	id, label, path string
 	mode            panel.MenuMode
+	filesystem      vfs.VFS
 }
 
 func newUserMenuSettingsStore(src settingsMenuSource) settingsRecordStore {
@@ -302,11 +339,17 @@ func newUserMenuSettingsStore(src settingsMenuSource) settingsRecordStore {
 		var err error
 		if src.mode == panel.MenuModeMain {
 			items, err = panel.LoadMainMenu(src.path)
+		} else if src.filesystem != nil {
+			items, err = panel.LoadFarMenuFileVFS(context.Background(), src.filesystem, src.path)
 		} else {
 			items, err = panel.LoadFarMenuFile(src.path)
-			if os.IsNotExist(err) {
-				err = nil
-			}
+		}
+		// A user menu file that is not there is an empty menu, whichever way it
+		// was looked for: through the panel's file system the error used to
+		// reach the Settings window as "open C:\FarMenu.ini: cannot find the
+		// file" (f4#1976, mitek1977-coder).
+		if src.mode != panel.MenuModeMain && errors.Is(err, os.ErrNotExist) {
+			err = nil
 		}
 		var rows []f4settings.Record
 		var walk func([]panel.UserMenuItem, string)
@@ -319,10 +362,18 @@ func newUserMenuSettingsStore(src settingsMenuSource) settingsRecordStore {
 		}
 		walk(items, "")
 		return rows, err
+	}, revision: func(ctx context.Context) (string, error) {
+		if src.mode != panel.MenuModeMain && src.filesystem != nil {
+			return settingsFileRevisionVFS(ctx, src.filesystem, src.path)
+		}
+		return settingsFileRevision(src.path)
 	}, validate: func(rows []f4settings.Record) error { _, err := settingsMenuTree(rows, prefix); return err }, save: func(rows []f4settings.Record) error {
 		items, err := settingsMenuTree(rows, prefix)
 		if err != nil {
 			return err
+		}
+		if src.mode != panel.MenuModeMain && src.filesystem != nil {
+			return panel.SaveRootForModeVFS(context.Background(), src.filesystem, src.mode, src.path, items)
 		}
 		return panel.SaveRootForMode(src.mode, src.path, items)
 	}}
@@ -385,7 +436,7 @@ func (p coreRecordSettingsProvider) Begin(context.Context) (*f4settings.Draft, e
 			return nil, err
 		}
 		records[s.collection.ID] = rows
-		rev, err := settingsFileRevision(s.path)
+		rev, err := s.fileRevision(context.Background())
 		if err != nil {
 			return nil, err
 		}
@@ -399,7 +450,7 @@ func (p coreRecordSettingsProvider) Begin(context.Context) (*f4settings.Draft, e
 			if !d.Dirty(id) {
 				continue
 			}
-			revision, err := settingsFileRevision(s.path)
+			revision, err := s.fileRevision(context.Background())
 			if err != nil {
 				failures[id] = err
 			} else if revision != revisions[id] {
@@ -436,7 +487,7 @@ func (p coreRecordSettingsProvider) Begin(context.Context) (*f4settings.Draft, e
 				result.Errors[id] = err
 				break
 			}
-			if rev, err := settingsFileRevision(s.path); err != nil || rev != revisions[id] {
+			if rev, err := s.fileRevision(ctx); err != nil || rev != revisions[id] {
 				if err == nil {
 					err = settingsError("source changed before saving: %s", s.path)
 				}
@@ -458,7 +509,7 @@ func (p coreRecordSettingsProvider) Begin(context.Context) (*f4settings.Draft, e
 				result.Records[row.ID] = row
 			}
 			result.Applied = append(result.Applied, id)
-			revisions[id], _ = settingsFileRevision(s.path)
+			revisions[id], _ = s.fileRevision(ctx)
 		}
 		return result
 	}

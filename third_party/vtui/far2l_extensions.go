@@ -73,9 +73,7 @@ func far2lInteractionPayloadLocked(stk *vtinput.Far2lStack) (uint8, []byte) {
 }
 
 // SetFar2lClipboard attempts to set the clipboard using far2l extensions.
-// clientID far2l terminal requires 32-256 chars for security handshake.
-const clientID = "vtui-stateful-terminal-client-persistent-id-32chars"
-
+// The clipboard handshake uses far2lClientID (32-256 chars, see far2l_clientid.go).
 func SetFar2lClipboard(text string) bool {
 	fm := FrameManager
 	enabled := far2lEnabledFor(fm)
@@ -85,10 +83,10 @@ func SetFar2lClipboard(text string) bool {
 	}
 	// 1. Open
 	stk := &vtinput.Far2lStack{}
-	stk.PushString(clientID)
+	stk.PushString(far2lClientID())
 	stk.PushU8('o') // FARTTY_INTERACT_CLIP_OPEN
 	stk.PushU8('c') // FARTTY_INTERACT_CLIPBOARD
-	DebugLog("VTUI_FAR2L: Requesting CLIP_OPEN with ID %q...", clientID)
+	DebugLog("VTUI_FAR2L: Requesting CLIP_OPEN with ID %q...", far2lClientID())
 	reply := far2lInteractTimeout(fm, stk, true, 15*time.Second)
 
 	if reply != nil {
@@ -144,7 +142,7 @@ func GetFar2lClipboard() (string, bool) {
 	}
 
 	stk := &vtinput.Far2lStack{}
-	stk.PushString(clientID)
+	stk.PushString(far2lClientID())
 	stk.PushU8('o')
 	stk.PushU8('c')
 	reply := far2lInteractTimeout(fm, stk, true, 15*time.Second)

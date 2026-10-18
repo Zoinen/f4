@@ -113,8 +113,12 @@ func (v *DisksVFS) Open(ctx context.Context, path string) (ReadAtCloser, error) 
 		f, err = hostfs.Open(prepareOSPath(devPath))
 	}
 
-	if err != nil && os.IsPermission(err) && globalSudoClient.IsAvailable() {
-		sudoF, sudoErr := globalSudoClient.Open(prepareOSPath(devPath), os.O_RDWR, 0)
+	if mayElevate(ctx, err) {
+		var sudoF *os.File
+		var sudoErr error
+		before := globalSudoClient.declines.Load()
+		defer noteElevationRefusal(ctx, before)
+		sudoF, sudoErr = globalSudoClient.Open(prepareOSPath(devPath), os.O_RDWR, 0)
 		if sudoErr == nil {
 			size, sizeErr := getDeviceSize(devPath, sudoF)
 			if sizeErr != nil {
@@ -167,8 +171,15 @@ func (v *DisksVFS) PatchInPlace(ctx context.Context, path string, pieces []Patch
 	var f hostfs.File
 	var err error
 	f, err = hostfs.OpenFile(prepareOSPath(devPath), os.O_RDWR, 0)
-	if err != nil && os.IsPermission(err) && globalSudoClient.IsAvailable() {
-		f, err = globalSudoClient.Open(prepareOSPath(devPath), os.O_RDWR, 0)
+	if mayElevate(ctx, err) {
+		var sudoF *os.File
+		err = elevatedCall(ctx, func() (e error) {
+			sudoF, e = globalSudoClient.Open(prepareOSPath(devPath), os.O_RDWR, 0)
+			return e
+		})
+		if err == nil {
+			f = sudoF
+		}
 	}
 	if err != nil {
 		return displayPathError(err)

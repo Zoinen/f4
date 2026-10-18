@@ -95,7 +95,12 @@ type ImageView struct {
 	SlideStop chan struct{}
 
 	OnClose  func()
-	OnSelect func(path string, selected bool)
+	OnSelect func(Path string, Selected bool)
+
+	// OnDelete removes a picture from the disk for F8: it asks the reader
+	// first and calls removed once the file is really gone. Without it F8
+	// does nothing, as there is nobody who knows how files are deleted.
+	OnDelete func(Path string, removed func())
 }
 
 // NewImageView loads and decodes the file. Decoding happens here rather than
@@ -861,6 +866,12 @@ func (iv *ImageView) ProcessKey(e *vtinput.InputEvent) bool {
 	if e == nil || !e.KeyDown {
 		return false
 	}
+	mods := e.ControlKeyState & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed |
+		vtinput.LeftAltPressed | vtinput.RightAltPressed | vtinput.ShiftPressed)
+	if e.VirtualKeyCode == vtinput.VK_F8 && mods == 0 {
+		iv.deleteCurrent()
+		return true
+	}
 	if iv.Gal != nil && iv.galleryKey(e) {
 		return true
 	}
@@ -982,6 +993,62 @@ func (iv *ImageView) ProcessKey(e *vtinput.InputEvent) bool {
 	return false
 }
 
+// deleteCurrent asks for the picture under the gallery cursor, or the one on
+// screen, to be deleted (f4#1991). Del keeps unpicking, as in the gallery.
+func (iv *ImageView) deleteCurrent() {
+	if iv.OnDelete == nil {
+		return
+	}
+	target := iv.Path
+	if iv.Gal != nil {
+		target = iv.GalleryPath()
+	}
+	if target == "" {
+		return
+	}
+	iv.OnDelete(target, func() { iv.Forget(target) })
+}
+
+// Forget drops a picture that is no longer on the disk. The one on screen
+// gives way to the next picture, or to the previous one at the end of the
+// list; the viewer closes when nothing is left to show.
+func (iv *ImageView) Forget(Path string) {
+	ImagePipe.Invalidate(iv.vfs, Path)
+	delete(iv.Selected, Path)
+	idx := -1
+	for i, sibling := range iv.siblings {
+		if sibling == Path {
+			idx = i
+			break
+		}
+	}
+	if idx >= 0 {
+		iv.siblings = append(iv.siblings[:idx:idx], iv.siblings[idx+1:]...)
+		if iv.Index > idx {
+			iv.Index--
+		}
+		if g := iv.Gal; g != nil && g.Cursor > idx {
+			g.Cursor--
+		}
+	}
+	if g := iv.Gal; g != nil && g.Cursor >= len(iv.siblings) {
+		g.Cursor = len(iv.siblings) - 1
+	}
+	if Path != iv.Path {
+		return
+	}
+	if len(iv.siblings) == 0 {
+		iv.Close()
+		return
+	}
+	next := idx
+	if next < 0 || next >= len(iv.siblings) {
+		next = len(iv.siblings) - 1
+	}
+	iv.Index = next
+	iv.open(iv.siblings[next])
+}
+
 func (iv *ImageView) HandleCommand(cmd int, args any) bool {
 	if cmd == vtui.CmClose {
 		iv.Close()
@@ -1008,10 +1075,17 @@ func (iv *ImageView) Close() {
 func (iv *ImageView) GetKeyLabels() *vtui.KeySet {
 	return &vtui.KeySet{
 		Normal: vtui.KeyBarLabels{
-			"", "", "", "", "", "", "", "", "", i18n.Msg("KeyBar.F10"),
+			"", "", "", "", "", "", "", iv.deleteLabel(), "", i18n.Msg("KeyBar.F10"),
 		},
 		NormalIcons: vtui.KeyBarIconNames{"", "", "", "", "", "", "", "", "", "x", "", ""},
 	}
+}
+
+func (iv *ImageView) deleteLabel() string {
+	if iv.OnDelete == nil {
+		return ""
+	}
+	return i18n.Msg("KeyBar.F8")
 }
 
 func (iv *ImageView) GetType() vtui.FrameType { return vtui.TypeUser + 7 }

@@ -21,6 +21,7 @@ type Group struct {
 	WrapFocus    bool
 	links        []autoLink
 	mouseCapture UIElement
+	mouseHovered UIElement
 	autoCounters map[string]int
 	ids          map[string]bool
 }
@@ -299,6 +300,20 @@ func (g *Group) ReleaseMouseCapture() {
 
 // ProcessMouse handles mouse events by hit-testing child elements.
 func (g *Group) ProcessMouse(e *vtinput.InputEvent) bool {
+	hoverChanged := false
+	if e.Type == vtinput.MouseEventType && e.MouseEventFlags&vtinput.MouseMoved != 0 {
+		next := g.GetElementAt(int(e.MouseX), int(e.MouseY))
+		if next != g.mouseHovered {
+			hoverChanged = true
+			if setter, ok := g.mouseHovered.(interface{ SetMouseHovered(bool) }); ok {
+				setter.SetMouseHovered(false)
+			}
+			g.mouseHovered = next
+			if setter, ok := next.(interface{ SetMouseHovered(bool) }); ok {
+				setter.SetMouseHovered(true)
+			}
+		}
+	}
 	if g.mouseCapture != nil {
 		g.mouseCapture.ProcessMouse(e)
 		if IsMouseRelease(e) {
@@ -341,7 +356,7 @@ func (g *Group) ProcessMouse(e *vtinput.InputEvent) bool {
 			// Это позволяет клику дойти до фона окна (BaseWindow) и инициировать перетаскивание.
 		}
 	}
-	return false
+	return hoverChanged
 }
 
 func (g *Group) changeFocus(direction int) bool {

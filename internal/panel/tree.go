@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -11,6 +12,7 @@ import (
 	"github.com/unxed/f4/internal/config"
 	"github.com/unxed/f4/internal/i18n"
 	"github.com/unxed/f4/internal/theme"
+	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 )
@@ -100,6 +102,10 @@ type treeItem struct {
 	// -1 for the root. Used to find a node's contiguous descendant run
 	// (collapseAt) and to fix up indices after a splice (spliceChildren).
 	parentIndex int
+	// vfsItem carries directory/link attributes used by highlight.ini. The tree
+	// keeps links to directories as leaf rows so following one cannot create a
+	// cycle in the volume tree.
+	vfsItem vfs.VFSItem
 	// expandable is true while this directory might still have
 	// subdirectories. It starts optimistic (every directory is assumed
 	// expandable) and is corrected to false the first time expandAt
@@ -149,6 +155,51 @@ func (it treeItem) GetCellText(int) string {
 	b.WriteString(it.name)
 	return b.String()
 }
+
+// GetCellAttr implements vtui.CellColorableRow: a tree row is a directory, so
+// it takes the color the file panels give a directory by the highlight rules
+// (highlight.ini, Settings Center), cursor and inactive-cursor states included
+// (f4#1602, part 13). The connectors and the +/- marker share the row's color.
+func (it treeItem) GetCellAttr(_ int, defaultAttr uint64) uint64 {
+	if theme.GlobalFileHighlighter == nil {
+		return defaultAttr
+	}
+	isCursor := defaultAttr == vtui.Palette[theme.ColPanelCursor] ||
+		defaultAttr == vtui.Palette[theme.ColPanelSelectedCursor] ||
+		defaultAttr == vtui.Palette[theme.ColPanelInactiveCursor] ||
+		defaultAttr == vtui.Palette[theme.ColPanelInactiveSelectedCursor]
+	item := it.vfsItem
+	item.Name = it.ruleName()
+	item.IsDir = true
+	item.IsHidden = item.IsHidden || (runtime.GOOS != "windows" && strings.HasPrefix(item.Name, "."))
+	return theme.GlobalFileHighlighter.GetColor(&item, defaultAttr, false, isCursor)
+}
+
+// ruleName is the name the highlight rules' masks are matched against. A child
+// row's name is already a bare directory name. The root row is labelled with
+// its whole path ("/", "C:\", "/home/me"), and a mask such as "*" never matches
+// across a path separator, so the root (the disk name) was left uncolored
+// instead of taking the folder color (f4#1602, part 15). The root is matched
+// by its last path element, as the same folder is in a file panel; a volume
+// root has none, so it gets the bare drive name ("C:", "" on POSIX).
+func (it treeItem) ruleName() string {
+	if it.depth > 0 {
+		return it.name
+	}
+	vol := filepath.VolumeName(it.path)
+	if trimmed := trimPathSeparators(it.path[len(vol):]); trimmed != "" {
+		return filepath.Base(trimmed)
+	}
+	name := trimPathSeparators(vol)
+	if i := strings.LastIndexFunc(name, isPathSeparatorRune); i >= 0 {
+		name = name[i+1:]
+	}
+	return name
+}
+
+func isPathSeparatorRune(r rune) bool { return r == '/' || r == os.PathSeparator }
+
+func trimPathSeparators(s string) string { return strings.TrimRightFunc(s, isPathSeparatorRune) }
 
 // TreePanel is far2l/DOS Navigator's directory tree (far2l: Alt+F10; DOS
 // Navigator has an equivalent tree view), bound to Ctrl+T -- see AltPanel's
@@ -264,29 +315,30 @@ func treeVolumeRoot(path string) string {
 	return string(filepath.Separator)
 }
 
-// scanChildDirs lists dir's immediate subdirectories, sorted
-// case-insensitively. A symlink to a directory reports IsDir() == false on
-// the fs.DirEntry os.ReadDir returns (its type bit is DT_LNK, not DT_DIR,
-// on the platforms f4 targets), so this walk skips symlinked directories
-// rather than following them into a possible cycle, with no separate check
-// needed.
-func scanChildDirs(dir string) []string {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
+// scanChildDirs lists immediate directories and links to directories, sorted
+// case-insensitively. OSVFS supplies the same IsDir/IsSymlink/ReparseTag
+// metadata as file panels; links are shown but never expanded, avoiding
+// cycles through symlinks or junctions.
+func scanChildDirs(dir string) []vfs.VFSItem {
+	var entries []vfs.VFSItem
+	if err := vfs.NewOSVFS(dir).ReadDir(context.Background(), dir, func(batch []vfs.VFSItem) {
+		entries = append(entries, batch...)
+	}); err != nil {
 		return nil
 	}
-	names := make([]string, 0, len(entries))
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
+	directories := make([]vfs.VFSItem, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir {
+			directories = append(directories, entry)
 		}
-		names = append(names, e.Name())
-		if len(names) >= treeChildScanCap {
+		if len(directories) >= treeChildScanCap {
 			break
 		}
 	}
-	sort.Slice(names, func(i, j int) bool { return strings.ToLower(names[i]) < strings.ToLower(names[j]) })
-	return names
+	sort.Slice(directories, func(i, j int) bool {
+		return strings.ToLower(directories[i].Name) < strings.ToLower(directories[j].Name)
+	})
+	return directories
 }
 
 // expandAt reads items[at]'s immediate subdirectories (if any) and splices
@@ -301,22 +353,24 @@ func (t *TreePanel) expandAt(at int) {
 	if !item.expandable || !item.collapsed {
 		return
 	}
-	names := scanChildDirs(item.path)
-	if len(names) == 0 {
+	entries := scanChildDirs(item.path)
+	if len(entries) == 0 {
 		item.expandable = false
 		return
 	}
 
-	children := make([]treeItem, len(names))
-	for i, name := range names {
-		last := append(append([]bool{}, item.last...), i == len(names)-1)
+	children := make([]treeItem, len(entries))
+	for i, entry := range entries {
+		link := vfs.LinkKindOf(&entry) != vfs.LinkNone
+		last := append(append([]bool{}, item.last...), i == len(entries)-1)
 		children[i] = treeItem{
-			name:        name,
-			path:        filepath.Join(item.path, name),
+			name:        entry.Name,
+			path:        filepath.Join(item.path, entry.Name),
 			depth:       item.depth + 1,
 			parentIndex: at,
-			expandable:  true,
-			collapsed:   true,
+			vfsItem:     entry,
+			expandable:  !link,
+			collapsed:   !link,
 			last:        last,
 		}
 	}
@@ -379,19 +433,11 @@ func (t *TreePanel) collapseAt(at int) {
 // somehow still reached -- rather than fail the whole tree open.
 //
 // Matching each chain component against the already-expanded children
-// (findChild) is name-based, which two platform quirks can defeat even
-// though target names a real, existing directory the source panel is
-// already sitting in (see f4#1602's tracking comment for the CI failure
-// this fixes): a path component that is itself a symlink to a directory
-// (macOS routes every os.TempDir()-derived path through /var, itself a
-// symlink to /private/var, and scanChildDirs deliberately never lists a
-// symlinked directory -- see its own doc comment -- to avoid following one
-// into a cycle during ordinary browsing), and a short (8.3-style) Windows
-// path component (e.g. "RUNNER~1" for "runneradmin", which is what GitHub's
-// Windows runners set %TEMP% to) that never appears literally in
-// os.ReadDir's listing either. revealChild covers both by falling back to
-// os.Stat, which -- unlike scanChildDirs -- follows a symlink and accepts a
-// short name.
+// (findChild) is name-based, which a short (8.3-style) Windows path component
+// (e.g. "RUNNER~1" for "runneradmin", which GitHub's Windows runners set
+// %TEMP% to) can defeat even though target names a real directory. Symlink
+// directories now appear as leaf rows, so the path chain can still be
+// revealed through one without making ordinary expansion follow it.
 func (t *TreePanel) revealPath(target string) {
 	if idx := t.resolvePath(target); idx != -1 {
 		t.setCursor(idx)
@@ -453,17 +499,11 @@ func pathNamesEqual(a, b string) bool {
 	return a == b
 }
 
-// revealChild splices in a single node for name under items[parent], for
-// the case findChild alone cannot handle: name is a real subdirectory of
-// items[parent].path that scanChildDirs's own listing does not surface
-// (see revealPath's doc comment for why -- a symlinked directory on macOS,
-// a short Windows name). os.Stat, unlike os.ReadDir's DirEntry, follows a
-// symlink and accepts a short name, so it can confirm the directory exists
-// without needing it to appear in that filtered listing -- and because this
-// single bounded lookup is anchored to the one already-real target path
-// revealPath is unwinding, not a general directory walk, following that
-// one symlink here carries none of scanChildDirs's own cycle risk. Returns
-// -1 if name is not actually a subdirectory there.
+// revealChild splices in a single node for a real subdirectory under
+// items[parent] when its spelling does not match a listed child (notably an
+// 8.3-style Windows path). This bounded lookup is anchored to the target path
+// revealPath is unwinding, rather than a general directory walk. Returns -1
+// if name is not actually a subdirectory there.
 func (t *TreePanel) revealChild(parent int, name string) int {
 	path := filepath.Join(t.items[parent].path, name)
 	info, err := os.Stat(path)
@@ -565,6 +605,13 @@ func (t *TreePanel) SetFocus(f bool) {
 func (t *TreePanel) IsFocused() bool { return t.Focused }
 
 func (t *TreePanel) ProcessKey(e *vtinput.InputEvent) bool {
+	before := t.SelectedPath()
+	handled := t.processKey(e)
+	t.followCursor(before)
+	return handled
+}
+
+func (t *TreePanel) processKey(e *vtinput.InputEvent) bool {
 	if e != nil && e.KeyDown {
 		switch e.VirtualKeyCode {
 		case vtinput.VK_RETURN:
@@ -593,7 +640,67 @@ func (t *TreePanel) ProcessKey(e *vtinput.InputEvent) bool {
 	return t.Table.ProcessKey(e)
 }
 
-func (t *TreePanel) ProcessMouse(e *vtinput.InputEvent) bool { return t.Table.ProcessMouse(e) }
+func (t *TreePanel) ProcessMouse(e *vtinput.InputEvent) bool {
+	before := t.SelectedPath()
+	handled := t.Table.ProcessMouse(e)
+	if t.toggleOnMouse(e) {
+		handled = true
+	}
+	t.followCursor(before)
+	return handled
+}
+
+// toggleOnMouse expands or collapses the folder under the mouse, as Right
+// and Left do (f4#1602: the tree could only be opened with the keys): a left
+// click on the "+"/"-" marker of a row, or a double click on the rest of it.
+// A double click on the marker is the second toggle of the same gesture --
+// the first press has already done it -- so it is left alone. Table has
+// already moved the cursor onto the clicked row.
+func (t *TreePanel) toggleOnMouse(e *vtinput.InputEvent) bool {
+	if e.Type != vtinput.MouseEventType || e.ButtonState != vtinput.FromLeft1stButtonPressed || !vtui.IsMousePress(e) {
+		return false
+	}
+	if !t.Table.HitTest(int(e.MouseX), int(e.MouseY)) || t.Table.GetClickIndex(int(e.MouseY)) < 0 {
+		return false
+	}
+	idx := t.cursorIndex()
+	if idx < 0 || !t.items[idx].expandable {
+		return false
+	}
+	markerX := t.Table.X1 + t.items[idx].depth*2
+	onMarker := int(e.MouseX) >= markerX && int(e.MouseX) <= markerX+1
+	double := e.MouseEventFlags&vtinput.DoubleClick != 0
+	if onMarker == double {
+		return false
+	}
+	if t.items[idx].collapsed {
+		t.expandAt(idx)
+	} else {
+		t.collapseAt(idx)
+	}
+	t.syncRows()
+	t.setCursor(idx)
+	return true
+}
+
+// followCursor shows the folder under the cursor in the panel that opened
+// the tree when the tree works like Explorer's (TreeExplorerMode, f4#1602):
+// the tree on one side, the files of the folder chosen in it on the other.
+// A folder the panel cannot list leaves the panel where it was, without a
+// message: the cursor only passes over it.
+func (t *TreePanel) followCursor(before string) {
+	if !config.App.TreeExplorerMode || t.src == nil {
+		return
+	}
+	path := t.SelectedPath()
+	if path == "" || path == before {
+		return
+	}
+	if pf := FindPanelsFrameAnyScreen(); pf != nil {
+		var refused error
+		pf.navigateToPath(t.src, path, &refused)
+	}
+}
 
 func (t *TreePanel) GetSelectedName() string {
 	idx := t.cursorIndex()
@@ -832,6 +939,16 @@ func (t *TreePanel) activateSelected() {
 		return
 	}
 	pf.NavigateToPath(t.src, path)
+	if config.App.TreeExplorerMode {
+		// Like Explorer's: Enter goes over to the files of the folder and
+		// the tree stays open beside them.
+		for i, p := range pf.Panels {
+			if p == Panel(t.src) {
+				pf.ActiveIdx = i
+			}
+		}
+		return
+	}
 	pf.ToggleAltPanel("tree", nil)
 }
 

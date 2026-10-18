@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"github.com/unxed/f4/internal/config"
 	"github.com/unxed/f4/internal/dialog"
@@ -20,6 +22,7 @@ const (
 	driveMenuKindFixed
 	driveMenuKindRemovable
 	driveMenuKindCD
+	driveMenuKindDVD
 	driveMenuKindRemote
 	driveMenuKindSubstitute
 	driveMenuKindPhysical
@@ -58,6 +61,47 @@ func driveMenuNameWithoutMarker(name string) string {
 // through F4. Unlike platform drives, these rows intentionally have no
 // default letter; PluginMenuItemText keeps the shortcut in a stable column
 // and preserves the same one-character accelerator behavior as F11.
+// driveMenuBoxChrome is what a row of the drive menu takes beside its text:
+// the two borders, the blank before the text and the one blank after the
+// longest row (f4#1148: "the right border one character after the last
+// character").
+const driveMenuBoxChrome = 4
+
+// driveMenuBoxWidth is the width of the drive menu box: the widest row of the
+// Drive, Tools and Links sections plus driveMenuBoxChrome. The rows in skip
+// (the bookmarks) do not count: their paths are cut to the box afterwards. A
+// section rule or a caption (the title, the key hint at the bottom) is never
+// cut, so the box is at least as wide as each of them needs.
+func driveMenuBoxWidth(items []vtui.MenuItem, skip map[int]int, captions ...string) int {
+	w := 0
+	need := func(n int) {
+		if n > w {
+			w = n
+		}
+	}
+	for _, caption := range captions {
+		need(vtui.StringWidth(caption) + 4) // Painter.DrawTitle keeps a title whole in a box 4 wider
+	}
+	for i, it := range items {
+		if _, ok := skip[i]; ok {
+			continue
+		}
+		clean, _, _ := vtui.ParseAmpersandString(it.Text)
+		if it.Separator {
+			need(vtui.StringWidth(clean) + 6) // the rule draws its caption with a blank on each side
+			continue
+		}
+		need(vtui.StringWidth(clean) + driveMenuBoxChrome)
+	}
+	return w
+}
+
+// driveMenuBookmarkText is the row of the folder bookmark in slot: its hotkey
+// digit and the path, cut on the left to width columns.
+func driveMenuBookmarkText(slot int, path string, width int) string {
+	return fmt.Sprintf("&%d %s", slot, dialog.EscapeAmpersand(dialog.TruncPathLeft(path, width)))
+}
+
 func driveMenuAssignableText(actionName, label string) string {
 	shortcut := PluginActionConfiguredKey(actionName)
 	if shortcut == "" {
@@ -111,14 +155,35 @@ func driveMenuInfoPathFor(drv sysinfo.DriveEntry) string {
 	return driveMenuInfoPath(drv.Name)
 }
 
+// isPhysicalDisksDrive reports whether a platform drive is the Physical Disks
+// provider, listed among the tools of the drive menu (f4#1148).
+func isPhysicalDisksDrive(name string) bool {
+	return strings.Contains(strings.ToLower(name), "physical disk")
+}
+
 func driveMenuKindFor(name, path string) driveMenuKind {
-	if strings.Contains(strings.ToLower(name), "physical disk") {
+	if isPhysicalDisksDrive(name) {
 		return driveMenuKindPhysical
 	}
 	if path == "" {
 		return driveMenuKindUnknown
 	}
 	return driveMenuPlatformKind(path)
+}
+
+// fileDeviceDVD is FILE_DEVICE_DVD, the device type an optical drive that
+// reads DVDs reports for IOCTL_STORAGE_GET_MEDIA_TYPES_EX; a CD-only drive
+// reports FILE_DEVICE_CD_ROM.
+const fileDeviceDVD = 0x33
+
+// driveMenuOpticalKind tells a DVD drive from a CD drive by the device type
+// the drive reports, so that the menu says DVD-ROM rather than CD-ROM for it
+// (mitek1977-coder, f4#1148). A drive that does not answer stays a CD.
+func driveMenuOpticalKind(deviceType uint32, known bool) driveMenuKind {
+	if known && deviceType == fileDeviceDVD {
+		return driveMenuKindDVD
+	}
+	return driveMenuKindCD
 }
 
 func driveMenuKindLabel(kind driveMenuKind) string {
@@ -129,6 +194,8 @@ func driveMenuKindLabel(kind driveMenuKind) string {
 		return i18n.Msg("Drive.TypeRemovable")
 	case driveMenuKindCD:
 		return i18n.Msg("Drive.TypeCD")
+	case driveMenuKindDVD:
+		return i18n.Msg("Drive.TypeDVD")
 	case driveMenuKindRemote:
 		return i18n.Msg("Drive.TypeRemote")
 	case driveMenuKindPhysical:
@@ -173,11 +240,21 @@ type driveMenuPlatformColumn struct {
 // driveMenuPlatformRowFor collects the metadata for one built-in drive. sysinfo.FsInfo
 // is deliberately used only for built-in local rows: plugin VFSes can be
 // remote and may block while resolving their metadata.
+// driveMenuRowKind and driveMenuRowFS are driveMenuKindFor and sysinfo.FS;
+// variables so a test can give a drive a kind and a file system.
+var (
+	driveMenuRowKind = driveMenuKindFor
+	driveMenuRowFS   = sysinfo.FS
+	// driveMenuPlatformDrives is sysinfo.GetPlatformDrives, the Drive section
+	// of the menu; a variable for the same reason.
+	driveMenuPlatformDrives = sysinfo.GetPlatformDrives
+)
+
 func driveMenuPlatformRowFor(drv sysinfo.DriveEntry, options uint32) DriveMenuPlatformRow {
 	row := DriveMenuPlatformRow{Base: driveMenuBaseName(drv.Name)}
 	path := driveMenuInfoPathFor(drv)
 	row.isDrive = path != ""
-	kind := driveMenuKindFor(drv.Name, path)
+	kind := driveMenuRowKind(drv.Name, path)
 	row.icon = driveMenuKindIcon(kind)
 	if path == "" && drv.Icon != "" {
 		row.icon = drv.Icon
@@ -189,16 +266,17 @@ func driveMenuPlatformRowFor(drv sysinfo.DriveEntry, options uint32) DriveMenuPl
 
 	info, infoOK := sysinfo.FSInfo{}, false
 	if path != "" {
-		info, infoOK = sysinfo.FS(path)
+		info, infoOK = driveMenuRowFS(path)
 	}
 	if infoOK {
-		if driveMenuOptionEnabled(options, config.DriveMenuShowLabel) && info.Label != "" {
+		parameters := driveMenuKindShowsParameters(kind, options)
+		if parameters && driveMenuOptionEnabled(options, config.DriveMenuShowLabel) && info.Label != "" {
 			row.Label = info.Label
 		}
-		if driveMenuOptionEnabled(options, config.DriveMenuShowFilesystem) && info.Type != "" {
+		if parameters && driveMenuOptionEnabled(options, config.DriveMenuShowFilesystem) && info.Type != "" {
 			row.Filesystem = info.Type
 		}
-		if driveMenuOptionEnabled(options, config.DriveMenuShowSize) {
+		if parameters && driveMenuOptionEnabled(options, config.DriveMenuShowSize) {
 			decimal := driveMenuOptionEnabled(options, config.DriveMenuShowSizeFloat)
 			row.totalBytes, row.freeBytes = info.Total, info.Free
 			row.Total = DriveMenuSize(info.Total, decimal)
@@ -280,25 +358,29 @@ func DriveMenuPlatformRowsText(rows []DriveMenuPlatformRow, options uint32) []st
 	}
 
 	texts := make([]string, len(rows))
+	anyDetails := false
+	for _, columns := range rowColumns {
+		if driveMenuPlatformRowHasDetails(columns) {
+			anyDetails = true
+			break
+		}
+	}
 	for i, row := range rows {
 		columns := rowColumns[i]
-		if !driveMenuPlatformRowHasDetails(columns) {
+		if !anyDetails || len(columns) == 0 {
 			texts[i] = row.Base
 			continue
 		}
+		// Keep every configured column on every drive row. In particular, a
+		// removable/CD/remote drive with hidden parameters still needs the same
+		// separators as neighboring rows for the columns to read as solid rules.
 		last := len(columns) - 1
-		for column := last; column >= 0; column-- {
-			if columns[column].text != "" {
-				last = column
-				break
-			}
-		}
 		parts := make([]string, 1, last+2)
 		parts[0] = row.Base
 		for column := 0; column <= last; column++ {
 			parts = append(parts, driveMenuPadColumn(columns[column], columnWidths[column], column == last))
 		}
-		texts[i] = strings.Join(parts, " | ")
+		texts[i] = strings.Join(parts, " │ ")
 	}
 	return texts
 }
@@ -325,12 +407,15 @@ func DriveMenuOptionsDialogSize() (int, int) {
 	return width, len(DriveMenuOptionSpecs) + 7
 }
 
-func driveMenuPlatformItemVisible(drv sysinfo.DriveEntry, options uint32) bool {
-	kind := driveMenuKindFor(drv.Name, driveMenuInfoPathFor(drv))
+// driveMenuKindShowsParameters reports whether the drive menu shows the label,
+// the file system and the size of a drive of this kind. "Show removable / CD /
+// remote drive parameters" hide only those: the drive itself always stays in
+// the list (mitek1977-coder, f4#1148).
+func driveMenuKindShowsParameters(kind driveMenuKind, options uint32) bool {
 	switch kind {
 	case driveMenuKindRemovable:
 		return driveMenuOptionEnabled(options, config.DriveMenuShowRemovable)
-	case driveMenuKindCD:
+	case driveMenuKindCD, driveMenuKindDVD:
 		return driveMenuOptionEnabled(options, config.DriveMenuShowCD)
 	case driveMenuKindRemote:
 		return driveMenuOptionEnabled(options, config.DriveMenuShowRemote)
@@ -361,6 +446,98 @@ func RefreshDriveMenuBelow(settings vtui.Frame) {
 	}
 }
 
+// driveMenuWatchEvery is how often an open drive menu looks for drives that
+// came or went: a USB stick plugged in or pulled out (mitek1977-coder,
+// f4#1148). 0 turns the watch off.
+var driveMenuWatchEvery = 2 * time.Second
+
+// driveListSignature is what the drive menu compares to see that the drives
+// changed: their names and the paths it reads their parameters from.
+func driveListSignature(drives []sysinfo.DriveEntry) string {
+	var b strings.Builder
+	for _, d := range drives {
+		b.WriteString(d.Name)
+		b.WriteByte(0)
+		b.WriteString(d.InfoPath)
+		b.WriteByte(0)
+	}
+	return b.String()
+}
+
+// watchDriveList looks at the drives every driveMenuWatchEvery while menu is
+// open and rebuilds it when they change (refreshDriveMenuIfChanged). The list
+// is read off the UI goroutine, since a slow drive may keep it waiting; the
+// menu is rebuilt on it.
+func (pf *PanelsFrame) watchDriveList(panelIdx int, menu *vtui.VMenu, signature string) {
+	fm, every, list := vtui.FrameManager, driveMenuWatchEvery, driveMenuPlatformDrives
+	if fm == nil || every <= 0 {
+		return
+	}
+	var stopped atomic.Bool
+	go func() {
+		ticker := time.NewTicker(every)
+		defer ticker.Stop()
+		for range ticker.C {
+			if stopped.Load() {
+				return
+			}
+			current := driveListSignature(list())
+			fm.PostTask(func() {
+				if !pf.refreshDriveMenuIfChanged(panelIdx, menu, signature, current) {
+					stopped.Store(true)
+				}
+			})
+		}
+	}()
+}
+
+// refreshDriveMenuIfChanged rebuilds menu when the drives changed from
+// signature to current, keeping the cursor on the row it was on and any
+// window opened over the menu (the settings of the drive chooser) on top of
+// it. It reports whether menu should still be watched: false once it is
+// closed or replaced by the rebuilt one, which has a watch of its own.
+func (pf *PanelsFrame) refreshDriveMenuIfChanged(panelIdx int, menu *vtui.VMenu, signature, current string) bool {
+	fm := vtui.FrameManager
+	if fm == nil || menu.IsDone() {
+		return false
+	}
+	frames := fm.GetActiveFrames(fm.ActiveIdx)
+	at := -1
+	for i, f := range frames {
+		if dm, ok := f.(*DriveMenuFrame); ok && dm.VMenu == menu {
+			at = i
+		}
+	}
+	if at < 0 {
+		return false
+	}
+	if current == signature {
+		return true
+	}
+	row := ""
+	if menu.SelectPos >= 0 && menu.SelectPos < len(menu.Items) {
+		row = menu.Items[menu.SelectPos].Text
+	}
+	above := append([]vtui.Frame(nil), frames[at+1:]...)
+	for i := len(above) - 1; i >= 0; i-- {
+		fm.RemoveFrame(above[i])
+	}
+	fm.RemoveFrame(frames[at])
+	pf.showDriveMenuAt(panelIdx, menu.SelectPos)
+	if rebuilt, ok := fm.GetTopFrame().(*DriveMenuFrame); ok {
+		for i, it := range rebuilt.Items {
+			if row != "" && it.Text == row {
+				rebuilt.SetSelectPos(i)
+				break
+			}
+		}
+	}
+	for _, f := range above {
+		fm.Push(f)
+	}
+	return false
+}
+
 func (pf *PanelsFrame) openDriveMenuOptions(panelIdx int, menu *vtui.VMenu) {
 	// The menu is built once, from the settings of the moment: rebuild it
 	// when the window opened below applies new ones. The window is taken off
@@ -376,10 +553,13 @@ func (pf *PanelsFrame) openDriveMenuOptions(panelIdx int, menu *vtui.VMenu) {
 		if n < 2 || frames[n-1] != settings {
 			return
 		}
+		// Not the menu F9 was pressed in: watchDriveList may have rebuilt
+		// it since, when a drive came or went.
 		under, ok := frames[n-2].(*DriveMenuFrame)
-		if !ok || under.VMenu != current || current.IsDone() {
+		if !ok || under.IsDone() {
 			return
 		}
+		current = under.VMenu
 		pos := current.SelectPos
 		fm.RemoveFrame(settings)
 		fm.RemoveFrame(under)
@@ -455,7 +635,7 @@ func driveMenuKindIcon(kind driveMenuKind) string {
 		return "hard-drive"
 	case driveMenuKindRemovable:
 		return "usb-flash-drive"
-	case driveMenuKindCD:
+	case driveMenuKindCD, driveMenuKindDVD:
 		return "disc"
 	case driveMenuKindRemote:
 		return "network"

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/unxed/f4/internal/dialog"
+	"github.com/unxed/f4/internal/i18n"
 	"github.com/unxed/f4/internal/panel"
 	"github.com/unxed/f4/internal/paneltest"
 	"github.com/unxed/f4/vfs"
@@ -1148,7 +1149,7 @@ func TestAttributesDialog_SecurityButton(t *testing.T) {
 	walkUI(dlg.(vtui.UIElement), func(el vtui.UIElement) bool {
 		if b, ok := el.(*vtui.Button); ok {
 			clean, _, _ := vtui.ParseAmpersandString(b.GetText())
-			if strings.Contains(clean, "Security") {
+			if want, _, _ := vtui.ParseAmpersandString(i18n.Msg("Attributes.BtnSecurity")); strings.Contains(clean, want) {
 				btnSec = b
 			}
 		}
@@ -1189,7 +1190,7 @@ func TestAttributesDialog_SecurityButton(t *testing.T) {
 	walkUI(dlgNull.(vtui.UIElement), func(el vtui.UIElement) bool {
 		if b, ok := el.(*vtui.Button); ok {
 			clean, _, _ := vtui.ParseAmpersandString(b.GetText())
-			if strings.Contains(clean, "Security") {
+			if want, _, _ := vtui.ParseAmpersandString(i18n.Msg("Attributes.BtnSecurity")); strings.Contains(clean, want) {
 				btnSecNull = b
 			}
 		}

@@ -2,8 +2,10 @@ package theme
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/unxed/f4/internal/config"
 	"github.com/unxed/f4/internal/toast"
 	"github.com/unxed/vtui"
 )
@@ -55,7 +57,41 @@ func colorSlotNames() []string {
 // results somewhere other than a toast — can call it directly.
 func ValidateActiveColors() []error {
 	pairs := vtui.PaletteColorPairs(vtui.Palette, colorSlotNames())
-	return vtui.ValidateColorsWithRules(pairs, ColorValidationRules)
+	errs := vtui.ValidateColorsWithRules(pairs, ColorValidationRules)
+	return append(errs, validateFastFindContrast()...)
+}
+
+// Fast-find text is composed at draw time: its foreground comes from either
+// Panel.FastFindNoMatch or Menu.Highlight, while its background is always
+// Dialog.Edit. Validate those rendered pairs explicitly; the generic palette
+// validator only sees each slot's own stored foreground/background pair.
+func validateFastFindContrast() []error {
+	// This check closes the specific gap reported for Radiola. The other
+	// shipped styles intentionally use their own fast-find colors and are not
+	// part of that change; validating those here would introduce startup
+	// warnings for unrelated, pre-existing theme choices.
+	if !strings.EqualFold(strings.TrimSpace(config.App.ColorStyle), "Radiola") {
+		return nil
+	}
+
+	const minContrast = 4.5
+	background := vtui.GetRGBBack(vtui.Palette[vtui.ColDialogEdit])
+	checks := []struct {
+		name string
+		attr uint64
+	}{
+		{"Panel.FastFindNoMatch on Dialog.Edit", vtui.Palette[ColPanelFastFindNoMatch]},
+		{"Menu.Highlight on Dialog.Edit", vtui.Palette[vtui.ColMenuHighlight]},
+	}
+	var errs []error
+	for _, check := range checks {
+		foreground := vtui.GetRGBFore(check.attr)
+		ratio := wcagComputeContrast(toRGBF(foreground), toRGBF(background))
+		if ratio < minContrast {
+			errs = append(errs, vtui.ColorError{Message: fmt.Sprintf("[%s] low fast-find text contrast: %.2f:1 (want %.1f:1)", check.name, ratio, minContrast)})
+		}
+	}
+	return errs
 }
 
 // notifyColorIssues surfaces color-scheme problems ValidateActiveColors

@@ -7,7 +7,6 @@ import (
 	"github.com/unxed/f4/internal/appcmd"
 	"github.com/unxed/f4/internal/cmdline"
 	"github.com/unxed/f4/internal/config"
-	"github.com/unxed/f4/internal/dialog"
 	"github.com/unxed/f4/internal/editor"
 	"github.com/unxed/f4/internal/fileops"
 	"github.com/unxed/f4/internal/history"
@@ -345,6 +344,9 @@ type PanelsFrame struct {
 	// TerminalOnly marks a workspace opened by Ctrl+Shift+O: a console with no
 	// panels to come back to (issue #128). See PanelsLocked.
 	TerminalOnly bool
+	// editorReturn is set while Ctrl+O from an editor shows this workspace's
+	// console; the next Ctrl+O goes back to that editor (#1973).
+	editorReturn *editorConsoleReturn
 	// managedExecStartedAt/managedExecIdleStreak back the #1603 job-control
 	// debounce in pollManagedExecutionDebounce: see that method's doc comment.
 	managedExecStartedAt  time.Time
@@ -4198,7 +4200,7 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 					wrapped := terminal.ManagedForegroundCommand(sqCmd)
 					if path != "" {
 						sqPath := strings.ReplaceAll(path, "'", "'\\''")
-						fullWireCmd = fmt.Sprintf(" set +H; cd '%s' && %s\r", sqPath, wrapped)
+						fullWireCmd = fmt.Sprintf(" %s\r", terminal.ManagedForegroundCommandInDirectory("'"+sqPath+"'", sqCmd))
 					} else {
 						fullWireCmd = " " + wrapped + "\r"
 					}
@@ -4250,6 +4252,9 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 			}
 
 			if isWindowsShell && integration == nil {
+				if cmdline.IsBatchCommand(cmd) {
+					pf.CmdSession.NoteBatchExecution()
+				}
 				pf.NoteLocalShellLineSent(activePty)
 			}
 			if integration != nil || (!isWindowsShell && isBackground) {
@@ -4308,10 +4313,12 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 	// Selection by mask (+, -, *) typed as plain characters on an empty
 	// command line. The gray numpad keys are bound to the corresponding
 	// actions (Panel.SelectGroup / DeselectGroup / InvertSelection);
-	// both paths are suspended while fast find is active.
+	// both paths are suspended while fast find is active. The character
+	// path is only a fallback for terminals that do not say which key was
+	// pressed (maskCharFallbackApplies, f4#1989).
 	if pf.ShowPanels && (!pf.SearchFirstMode() || !pf.CommandLineFocused) &&
 		!alt && !ctrl && pf.CmdLine.IsEmpty() && pf.focusedPluginPanel() == nil {
-		if e.Char == '+' || e.Char == '-' || e.Char == '*' {
+		if (e.Char == '+' || e.Char == '-' || e.Char == '*') && maskCharFallbackApplies(e) {
 			isFastFind := false
 			if fsp := pf.GetActivePanel(); fsp != nil && fsp.FastFindMode {
 				isFastFind = true
@@ -5245,6 +5252,18 @@ func QuitConfirmationOpen() bool {
 	return false
 }
 
+// QuitNow ends the session the way a confirmed exit does -- operations
+// cancelled, the workspace saved, the shell stopped -- without asking.
+func (pf *PanelsFrame) QuitNow() {
+	CancelOperationsForShutdown()
+	SaveSession()
+	if pty := pf.takeLocalPTY(); pty != nil {
+		_ = pty.Close()
+	}
+	ShutdownProcessEnvironmentRuntime()
+	vtui.FrameManager.Shutdown()
+}
+
 // HandleCommand intercepts global commands (like CmQuit or appcmd.CmCopy)
 // sent by menus or other views.
 func (pf *PanelsFrame) HandleCommand(cmd int, args any) bool {
@@ -5273,23 +5292,11 @@ func (pf *PanelsFrame) HandleCommand(cmd int, args any) bool {
 			}
 			dlg.OnResult = func(code int) {
 				if code == 0 {
-					CancelOperationsForShutdown()
-					SaveSession()
-					if pty := pf.takeLocalPTY(); pty != nil {
-						pty.Close()
-					}
-					ShutdownProcessEnvironmentRuntime()
-					vtui.FrameManager.Shutdown()
+					pf.QuitNow()
 				}
 			}
 		} else {
-			CancelOperationsForShutdown()
-			SaveSession()
-			if pty := pf.takeLocalPTY(); pty != nil {
-				pty.Close()
-			}
-			ShutdownProcessEnvironmentRuntime()
-			vtui.FrameManager.Shutdown()
+			pf.QuitNow()
 		}
 		return true
 
@@ -5996,7 +6003,7 @@ func (pf *PanelsFrame) RunProgressTaskAfterContext(lifetime context.Context, del
 				return true
 			})
 		}
-		err := worker(ctx.Context, update)
+		err := worker(vfs.WithElevationScope(ctx.Context), update)
 		close(done)
 		if showTimer != nil {
 			showTimer.Stop()
@@ -6082,7 +6089,7 @@ func (pf *PanelsFrame) RunAdvancedProgressTask(title string, forked bool, worker
 	uiFrames.PostTask(showDialog)
 
 	taskCtx = vtui.RunAsync(func(ctx *vtui.TaskContext) {
-		err := worker(ctx.Context, reporter)
+		err := worker(vfs.WithElevationScope(ctx.Context), reporter)
 		close(done)
 		ctx.RunOnUI(func() {
 			reporter.Stop()
@@ -7268,9 +7275,6 @@ func (pf *PanelsFrame) driveMenuDefaultPos(panelIdx int) int {
 	cur := osVFS.GetPath()
 	row := 0
 	for _, drv := range sysinfo.GetPlatformDrives() {
-		if !driveMenuPlatformItemVisible(drv, config.App.DriveMenuOptions) {
-			continue
-		}
 		if strings.EqualFold(driveMenuNameWithoutMarker(drv.Name), "Windows Registry") {
 			continue
 		}
@@ -7314,13 +7318,10 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 	// filesystem types and free space reflect the current state. Collect all
 	// rows first: the formatter needs the whole list to align its columns.
 	driveMenuOptions := config.App.DriveMenuOptions
-	platformDrives := make([]sysinfo.DriveEntry, 0)
-	for _, drv := range sysinfo.GetPlatformDrives() {
-		if !driveMenuPlatformItemVisible(drv, driveMenuOptions) {
-			continue
-		}
-		platformDrives = append(platformDrives, drv)
-	}
+	// Every drive is listed; the removable, CD and remote options only hide
+	// the parameters of such a drive (driveMenuKindShowsParameters, f4#1148).
+	platformDrives := append([]sysinfo.DriveEntry(nil), driveMenuPlatformDrives()...)
+	driveSignature := driveListSignature(platformDrives)
 	platformRows := make([]DriveMenuPlatformRow, len(platformDrives))
 	for i, drv := range platformDrives {
 		platformRows[i] = driveMenuPlatformRowFor(drv, driveMenuOptions)
@@ -7333,13 +7334,19 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 	mountRows := map[int]int{}
 	var registryDrive *sysinfo.DriveEntry
 	registryName := ""
+	var physicalDrive *sysinfo.DriveEntry
 	for i, drv := range platformDrives {
 		factory := drv.Factory
 		name := platformNames[i]
 		if strings.EqualFold(driveMenuNameWithoutMarker(drv.Name), "Windows Registry") {
 			// A tool, not a drive: it is listed in the Tools section (f4#1148).
 			registryDrive = &platformDrives[i]
-			registryName = name
+			registryName = driveMenuNameWithoutMarker(drv.Name)
+			continue
+		}
+		if isPhysicalDisksDrive(drv.Name) {
+			// A tool as well, the first of them by default (f4#1148).
+			physicalDrive = &platformDrives[i]
 			continue
 		}
 		// WINE.md §18.2, "список дисков, Alt+F1": posix personality has no
@@ -7391,7 +7398,7 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 			})
 		}
 	}
-	// toolRows maps a menu row to the key of its tool, for Ctrl+Up and Ctrl+Down
+	// toolRows maps a menu row to the key of its tool, for Shift+Up and Shift+Down
 	// on the tool rows (#1148). Every row of the Tools section is a tool: the
 	// built-in ones (Other panel, Temporary panel, the registry) are ordered
 	// together with the plugins', each under a key no plugin name can have.
@@ -7403,7 +7410,20 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 		}
 		// None has an automatic accelerator; F4 can assign one to each, just
 		// like to the plugin tools below (f4#1148).
-		rows := []toolRow{
+		var rows []toolRow
+		if physicalDrive != nil {
+			rows = append(rows, toolRow{key: driveToolKeyPhysicalDisks, add: func() {
+				physicalAction := DriveToolActionName(driveToolKeyPhysicalDisks)
+				label := driveMenuNameWithoutMarker(physicalDrive.Name)
+				driveHotkeyRows[menu.GetItemCount()] = physicalAction
+				driveHotkeyLabels[menu.GetItemCount()] = label
+				physicalFactory := physicalDrive.Factory
+				menu.AddItem(vtui.MenuItem{Text: driveMenuAssignableText(physicalAction, label), Icon: physicalDrive.Icon, UserData: func(fsp *FileSystemPanel) {
+					pf.SwitchToVFS(fsp, physicalFactory())
+				}})
+			}})
+		}
+		rows = append(rows, []toolRow{
 			{key: driveToolKeyOtherPanel, add: func() {
 				otherAction := DriveToolActionName(driveToolKeyOtherPanel)
 				driveHotkeyRows[menu.GetItemCount()] = otherAction
@@ -7430,7 +7450,7 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 					pf.SwitchToVFS(fsp, NewTempPanelVFS(nil, GlobalTempPanelStore, 0))
 				}})
 			}},
-		}
+		}...)
 		if registryDrive != nil {
 			rows = append(rows, toolRow{key: driveToolKeyRegistry, add: func() {
 				registryAction := DriveToolActionName(driveToolKeyRegistry)
@@ -7464,7 +7484,7 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 				}})
 			}})
 		}
-		// The order the user chose with Ctrl+Up / Ctrl+Down, for every tool;
+		// The order the user chose with Shift+Up / Shift+Down, for every tool;
 		// the sorted-by-name option keeps the plugins in name order instead.
 		if !driveMenuOptionEnabled(driveMenuOptions, config.DriveMenuSortPluginsByHotkey) {
 			if order, err := LoadDriveToolsOrder(DriveToolsOrderFilePath()); err != nil {
@@ -7512,7 +7532,8 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 	// the same menu (panels/panel.cpp, AddBookmarkItems) with the slot
 	// digit as the hotkey, so Alt+F1 followed by 6 lands on slot 6.
 	// Unassigned slots are left out.
-	bookmarkRows := map[int]int{} // menu row -> slot, for the keys below
+	bookmarkRows := map[int]int{}     // menu row -> slot, for the keys below
+	bookmarkPaths := map[int]string{} // menu row -> path, cut to the box once its width is known
 	if driveMenuOptionEnabled(driveMenuOptions, config.DriveMenuShowBookmarks) {
 		if set, err := LoadBookmarks(BookmarksFilePath()); err == nil {
 			firstBookmark := true
@@ -7529,8 +7550,9 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 				path := bookmark.Path
 				usedHotkeys[rune('0'+i)] = true
 				bookmarkRows[menu.GetItemCount()] = i
+				bookmarkPaths[menu.GetItemCount()] = path
 				menu.AddItem(vtui.MenuItem{
-					Text: fmt.Sprintf("&%d %s", i, dialog.EscapeAmpersand(dialog.TruncPathLeft(path, 64))),
+					Text: driveMenuBookmarkText(i, path, 64),
 					Icon: sysinfo.DriveMenuIconBookmark,
 					UserData: func(fsp *FileSystemPanel) {
 						pf.NavigateToBookmark(fsp, bookmark)
@@ -7543,33 +7565,40 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 	// 5. Named folder links. These are deliberately separate from
 	// bookmarks.ini: the latter is far2l's ten-slot RCtrl bookmark table,
 	// while this list is the DiskMenuEditor-style, unbounded drive-menu list.
+	// They are shown whatever "Show bookmarks" says: that switch is for the
+	// slots above only (f4#1148, list of 16.10, point 4).
 	driveBookmarkRows := map[int]int{} // menu row -> named bookmark index
-	driveBookmarks := []DriveBookmark(nil)
-	if driveMenuOptionEnabled(driveMenuOptions, config.DriveMenuShowBookmarks) {
-		var err error
-		driveBookmarks, err = LoadDriveBookmarks(DriveBookmarksFilePath())
-		if err != nil {
-			vtui.DebugLog("DRIVE BOOKMARKS: load %q failed: %v", DriveBookmarksFilePath(), err)
-			driveBookmarks = nil
-		}
-		// The caption sits in the rule itself, as the menu title does, and
-		// takes no row of its own (#1148).
-		menu.AddItem(vtui.MenuItem{Separator: true, Text: i18n.Msg("Drive.Links")})
-		for index, bookmark := range driveBookmarks {
-			bookmark := bookmark
-			driveBookmarkRows[menu.GetItemCount()] = index
-			menu.AddItem(vtui.MenuItem{
-				Text: DriveBookmarkMenuText(bookmark),
-				Icon: sysinfo.DriveMenuIconBookmark,
-				UserData: func(fsp *FileSystemPanel) {
-					pf.NavigateToBookmark(fsp, Bookmark{Path: bookmark.Path})
-				},
-			})
-		}
+	driveBookmarks, err := LoadDriveBookmarks(DriveBookmarksFilePath())
+	if err != nil {
+		vtui.DebugLog("DRIVE BOOKMARKS: load %q failed: %v", DriveBookmarksFilePath(), err)
+		driveBookmarks = nil
+	}
+	// The caption sits in the rule itself, as the menu title does, and
+	// takes no row of its own (#1148).
+	menu.AddItem(vtui.MenuItem{Separator: true, Text: i18n.Msg("Drive.Links")})
+	for index, bookmark := range driveBookmarks {
+		bookmark := bookmark
+		driveBookmarkRows[menu.GetItemCount()] = index
+		menu.AddItem(vtui.MenuItem{
+			Text: DriveBookmarkMenuText(bookmark),
+			Icon: sysinfo.DriveMenuIconBookmark,
+			UserData: func(fsp *FileSystemPanel) {
+				pf.NavigateToBookmark(fsp, Bookmark{Path: bookmark.Path})
+			},
+		})
 	}
 
+	// A moved row reopens the menu: the old menu is closed in the same task
+	// that opens the new one, so no frame without a menu is drawn between
+	// them (the window flickered on every move, mitek1977-coder, f4#1148).
+	// Until then moving swallows the keys that still reach the old menu, as
+	// a held Shift+Down repeats.
+	moving := false
 	// Обработка физических клавиш / и ~ (layout-independent)
 	menu.OnKeyDown = func(e *vtinput.InputEvent) bool {
+		if moving {
+			return true
+		}
 		// far2l binds three keys on the bookmark rows of this menu
 		// (panels/panel.cpp:544-600): Ins opens the bookmarks dialog, F4
 		// opens it on the slot under the cursor, Del clears that slot.
@@ -7586,12 +7615,10 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 			pf.openDriveBookmarkEditor(panelIdx, menu, driveBookmarks, -1, reopen)
 			return true
 		}
-		// Ctrl+Up and Ctrl+Down move the tool row under the cursor, a built-in
-		// one or a plugin's, one place up or down within the tools, and the new
-		// order is saved (#1148).
-		if e.KeyDown && (e.VirtualKeyCode == vtinput.VK_UP || e.VirtualKeyCode == vtinput.VK_DOWN) &&
-			e.ControlKeyState&(vtinput.LeftCtrlPressed|vtinput.RightCtrlPressed) != 0 &&
-			e.ControlKeyState&(vtinput.LeftAltPressed|vtinput.RightAltPressed|vtinput.ShiftPressed) == 0 {
+		// Shift+Up and Shift+Down move the tool row under the cursor, a
+		// built-in one or a plugin's, one place up or down within the tools,
+		// and the new order is saved (#1148).
+		if isDriveMenuMoveKey(e) {
 			if key, ok := toolRows[menu.SelectPos]; ok {
 				// The sorted-by-name option puts the plugin tools in name order
 				// itself, so a move would be undone at once; say so instead of
@@ -7614,17 +7641,18 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 				if moved, err := moveDriveToolInFile(shown, key, delta); err != nil {
 					vtui.ShowMessageOn(menu, i18n.Msg("DriveLink.ErrorTitle"), fmt.Sprintf(i18n.Msg("DriveLink.SaveError"), err), []string{"&Ok"})
 				} else if moved {
-					menu.Close()
-					vtui.FrameManager.PostTask(func() { pf.showDriveMenuAt(panelIdx, pos+delta) })
+					moving = true
+					vtui.FrameManager.PostTask(func() {
+						menu.Close()
+						pf.showDriveMenuAt(panelIdx, pos+delta)
+					})
 				}
 				return true
 			}
 		}
-		// Ctrl+Up and Ctrl+Down move the link under the cursor one place up or
-		// down, and the new order is saved (#1148).
-		if e.KeyDown && (e.VirtualKeyCode == vtinput.VK_UP || e.VirtualKeyCode == vtinput.VK_DOWN) &&
-			e.ControlKeyState&(vtinput.LeftCtrlPressed|vtinput.RightCtrlPressed) != 0 &&
-			e.ControlKeyState&(vtinput.LeftAltPressed|vtinput.RightAltPressed|vtinput.ShiftPressed) == 0 {
+		// Shift+Up and Shift+Down move the link under the cursor one place up
+		// or down, and the new order is saved (#1148).
+		if isDriveMenuMoveKey(e) {
 			if index, ok := driveBookmarkRows[menu.SelectPos]; ok {
 				delta := 1
 				if e.VirtualKeyCode == vtinput.VK_UP {
@@ -7634,8 +7662,33 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 				if moved, err := moveDriveBookmarkInFile(index, delta); err != nil {
 					vtui.ShowMessageOn(menu, i18n.Msg("DriveLink.ErrorTitle"), fmt.Sprintf(i18n.Msg("DriveLink.SaveError"), err), []string{"&Ok"})
 				} else if moved {
-					menu.Close()
-					vtui.FrameManager.PostTask(func() { pf.showDriveMenuAt(panelIdx, pos+delta) })
+					moving = true
+					vtui.FrameManager.PostTask(func() {
+						menu.Close()
+						pf.showDriveMenuAt(panelIdx, pos+delta)
+					})
+				}
+				return true
+			}
+		}
+		// Shift+Up and Shift+Down move the folder bookmark under the cursor
+		// one place up or down among the listed ones, and the new order is
+		// saved (#1148).
+		if isDriveMenuMoveKey(e) {
+			if slot, ok := bookmarkRows[menu.SelectPos]; ok {
+				delta := 1
+				if e.VirtualKeyCode == vtinput.VK_UP {
+					delta = -1
+				}
+				pos := menu.SelectPos
+				if moved, err := moveBookmarkSlotInFile(slot, delta); err != nil {
+					vtui.ShowMessageOn(menu, i18n.Msg("Bookmarks.Title"), fmt.Sprintf(i18n.Msg("Bookmarks.SaveError"), err), []string{"&Ok"})
+				} else if moved {
+					moving = true
+					vtui.FrameManager.PostTask(func() {
+						menu.Close()
+						pf.showDriveMenuAt(panelIdx, pos+delta)
+					})
 				}
 				return true
 			}
@@ -7751,20 +7804,15 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 
 	menu.SetSelectPos(selectPos)
 
-	// Bookmark rows carry paths, so the box no longer fits a fixed width.
-	w, h := 26, menu.GetItemCount()+2
-	for _, it := range menu.Items {
-		clean, _, _ := vtui.ParseAmpersandString(it.Text)
-		padding := 6
-		if it.Icon != "" {
-			padding += 2
-		}
-		if iw := runewidth.StringWidth(clean) + padding; iw > w {
-			w = iw
-		}
-	}
+	// The box is as wide as the Drive, Tools and Links rows with one blank
+	// after the longest; the bookmark paths are cut to it instead of
+	// widening it (f4#1148).
+	w, h := driveMenuBoxWidth(menu.Items, bookmarkRows, i18n.Msg("Drive.Title"), i18n.Msg("Drive.BottomHint")), menu.GetItemCount()+2
 	if pf.LastW > 0 && w > pf.LastW-4 {
 		w = pf.LastW - 4
+	}
+	for row, slot := range bookmarkRows {
+		menu.Items[row].Text = driveMenuBookmarkText(slot, bookmarkPaths[row], w-driveMenuBoxChrome-2)
 	}
 	if pf.LastH > 0 && h > pf.LastH-2 {
 		h = pf.LastH - 2
@@ -7802,6 +7850,7 @@ func (pf *PanelsFrame) showDriveMenuAt(panelIdx, selectPos int) {
 		}
 	}
 	vtui.FrameManager.PushMenu(&DriveMenuFrame{VMenu: menu, bottomHint: i18n.Msg("Drive.BottomHint")})
+	pf.watchDriveList(panelIdx, menu, driveSignature)
 }
 
 // clearBookmarkSlot empties one slot straight from the drive menu, which
@@ -8353,7 +8402,8 @@ func (pf *PanelsFrame) MoveFolderHistory(fsp *FileSystemPanel, direction int) bo
 
 // parseDirChangeCommand recognizes the directory-change commands the command
 // line intercepts itself rather than handing to the shell: "cd <path>",
-// "chdir <path>", "cd /d <path>" (Windows), "cd..", "cd\\", "cd/" and bare
+// "chdir <path>", "cd /d <path>" (Windows), "cd..", "cd\\", "cd/", a bare
+// "cd" (the home directory, outside Windows) and bare
 // drive letters ("C:", "D:\\") on Windows. It returns the target path with
 // surrounding quotes removed. The user menu uses the same test so that a
 // "cd" line inside a multi-command menu item moves the panel exactly like a
@@ -8390,6 +8440,12 @@ func parseDirChangeCommand(trimmedCmd string) (targetPath string, ok bool) {
 	}
 	if lowerCmd == "cd.." || lowerCmd == "cd .." {
 		return "..", true
+	}
+	// A bare "cd" in a Unix shell goes to the home directory, as "cd ~" does
+	// (f4#1980); the panel has to follow it. cmd.exe only prints the current
+	// directory for it, so there it stays the shell's.
+	if lowerCmd == "cd" && !windowsShell {
+		return "~", true
 	}
 	if lowerCmd == "cd/" || (windowsShell && lowerCmd == "cd\\") {
 		return string(os.PathSeparator), true
@@ -8551,4 +8607,31 @@ func (pf *PanelsFrame) swapPanelSizes() {
 	config.App.LeftHeightDecrement = pf.LeftHeightDecrement
 	config.App.RightHeightDecrement = pf.RightHeightDecrement
 	config.RequestSaveConfig()
+}
+
+// isDriveMenuMoveKey is Shift+Up or Shift+Down, which move the tool or the
+// link under the cursor of the drive menu; the bookmark dialog moves its rows
+// with the same keys (mitek1977-coder, f4#1148).
+func isDriveMenuMoveKey(e *vtinput.InputEvent) bool {
+	return e.KeyDown && (e.VirtualKeyCode == vtinput.VK_UP || e.VirtualKeyCode == vtinput.VK_DOWN) &&
+		e.ControlKeyState&vtinput.ShiftPressed != 0 &&
+		e.ControlKeyState&(vtinput.LeftCtrlPressed|vtinput.RightCtrlPressed|vtinput.LeftAltPressed|vtinput.RightAltPressed) == 0
+}
+
+// maskCharFallbackApplies reports whether a '+', '-' or '*' character on an
+// empty command line may select by mask by its character alone. Terminals
+// that report the physical key (X11, kitty, win32-input, GUI) send the gray
+// numpad keys as VK_ADD/VK_SUBTRACT/VK_MULTIPLY, which are bound to the
+// actions; the same character from the main keyboard carries another virtual
+// key and belongs to the command line. Only events of the legacy character
+// parser, or without any virtual key, take the character path (f4#1989).
+func maskCharFallbackApplies(e *vtinput.InputEvent) bool {
+	if e.IsLegacy || e.VirtualKeyCode == 0 {
+		return true
+	}
+	switch e.VirtualKeyCode {
+	case vtinput.VK_ADD, vtinput.VK_SUBTRACT, vtinput.VK_MULTIPLY:
+		return true
+	}
+	return false
 }

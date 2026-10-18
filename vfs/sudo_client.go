@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -22,9 +23,46 @@ type SudoClient struct {
 	appPath  string
 	askPass  string // Command to run for asking password
 	attempts int
-	// consented: the user agreed to elevate through UAC in this session
-	// (f4#1768); later connects go straight to UAC.
+	// consented: the user agreed to elevate through UAC (f4#1768); later
+	// connects go straight to UAC until the elevated dispatcher is closed as
+	// idle (ElevationIdle), after which the user is asked again.
 	consented bool
+	// lastUsed and idle: when the elevated dispatcher last answered, and the
+	// timer that closes it once it has been idle for ElevationIdle.
+	lastUsed time.Time
+	idle     elevationTimer
+	// remember: the user ticked "do not ask again until f4 exits" (f4#1768,
+	// step 6b); the idle timer is off for the rest of the session.
+	remember bool
+	// declines counts the times the user cancelled the password dialog. An
+	// elevated call made for an operation compares it before and after: a
+	// refusal while it waited ends elevation for the rest of that operation
+	// (WithElevationScope, f4#1998).
+	declines atomic.Int64
+	// withdrawPrompt closes the password dialog that is on screen now, or is
+	// nil when there is none (f4#1993). Its own mutex, not c.mu: Connect
+	// holds c.mu for as long as the dialog is open.
+	promptMu       sync.Mutex
+	withdrawPrompt func()
+}
+
+// WithdrawPrompt closes the password dialog if one is open, for an operation
+// that was cancelled while it waited on that dialog (F3 on a folder, then Esc
+// in "Calculating Size..."). Without it the dialog stayed up, or came back
+// over the editor, long after the user had cancelled the work that asked for
+// it (f4#1993). A withdrawn dialog is not a refusal: it silences nothing.
+// The dialog may have been asked for by another operation; that one is
+// refused and asks again when it is retried.
+func (c *SudoClient) WithdrawPrompt() {
+	if c == nil {
+		return
+	}
+	c.promptMu.Lock()
+	withdraw := c.withdrawPrompt
+	c.promptMu.Unlock()
+	if withdraw != nil {
+		c.RunOnUI(withdraw)
+	}
 }
 
 var globalSudoClient *SudoClient
@@ -285,6 +323,7 @@ func (c *SudoClient) SendRequest(req SudoRequest) (SudoResponse, *os.File, error
 		c.conn = nil
 		return SudoResponse{}, nil, err
 	}
+	c.armIdleLocked()
 
 	if resp.Error != "" {
 		if f != nil {

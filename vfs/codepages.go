@@ -16,7 +16,6 @@ import (
 	"github.com/unxed/vtui"
 	"golang.org/x/text/encoding"
 	"golang.org/x/text/encoding/charmap"
-	"golang.org/x/text/encoding/htmlindex"
 	"golang.org/x/text/encoding/unicode"
 	"golang.org/x/text/encoding/unicode/utf32"
 )
@@ -67,7 +66,10 @@ var AvailableCodepages []Codepage
 const UTF8BOMSize = 3
 
 func init() {
-	ascii, _ := htmlindex.Get("us-ascii")
+	// The WHATWG index, which f4 read this from, maps "us-ascii" to
+	// windows-1252; naming it here keeps that index, and with it every East
+	// Asian table, out of the extra-lite binary (f4#1671).
+	ascii := charmap.Windows1252
 	systemANSI, systemOEM = systemCodepageIDs()
 	systemANSIEncoding, systemOEMEncoding = localecp.ANSIEncoding, localecp.OEMEncoding
 	detectedANSI, detectedOEM = systemANSI, systemOEM

@@ -314,9 +314,12 @@ func (v *OSVFS) ReadDir(ctx context.Context, path string, onChunk func([]VFSItem
 		}
 	}
 	if err != nil {
-		if os.IsPermission(err) && globalSudoClient.IsAvailable() {
+		if mayElevate(ctx, err) {
 			vtui.DebugLog("VFS: Permission denied for ReadDir(%q), attempting sudo...", dirPath)
-			items, sudoErr := globalSudoClient.ReadDir(prepareOSPath(dirPath))
+			items, sudoErr := sudoReadDirCancellable(ctx, prepareOSPath(dirPath))
+			if errors.Is(sudoErr, context.Canceled) || errors.Is(sudoErr, context.DeadlineExceeded) {
+				return sudoErr
+			}
 			if sudoErr == nil {
 				vtui.DebugLog("VFS: Sudo ReadDir(%q) SUCCESS, items: %d", dirPath, len(items))
 				if len(items) > 0 && onChunk != nil {
@@ -720,9 +723,11 @@ func (v *OSVFS) Stat(ctx context.Context, path string) (VFSItem, error) {
 	preparedPath := prepareOSPath(path)
 	linkInfo, err := hostfs.Lstat(preparedPath)
 	if err != nil {
-		if os.IsPermission(err) && globalSudoClient.IsAvailable() {
+		if mayElevate(ctx, err) {
 			vtui.DebugLog("VFS: Permission denied for Stat(%q), attempting sudo...", path)
+			before := globalSudoClient.declines.Load()
 			item, sudoErr := globalSudoClient.Stat(prepareOSPath(path))
+			noteElevationRefusal(ctx, before)
 			if sudoErr == nil {
 				vtui.DebugLog("VFS: Sudo Stat(%q) SUCCESS", path)
 				return item, nil
@@ -789,8 +794,10 @@ func (v *OSVFS) Lstat(ctx context.Context, path string) (VFSItem, error) {
 	preparedPath := prepareOSPath(absPath)
 	info, err := hostfs.Lstat(preparedPath)
 	if err != nil {
-		if os.IsPermission(err) && globalSudoClient.IsAvailable() {
+		if mayElevate(ctx, err) {
+			before := globalSudoClient.declines.Load()
 			item, sudoErr := globalSudoClient.Stat(prepareOSPath(path))
+			noteElevationRefusal(ctx, before)
 			if sudoErr == nil {
 				return item, nil
 			}
@@ -847,9 +854,9 @@ func (v *OSVFS) MkDir(ctx context.Context, path string) error {
 		return ctx.Err()
 	}
 	err := hostfs.MkdirAll(prepareOSPath(path), 0755)
-	if err != nil && os.IsPermission(err) && globalSudoClient.IsAvailable() {
+	if mayElevate(ctx, err) {
 		vtui.DebugLog("VFS: Permission denied for MkDir(%q), attempting sudo...", path)
-		return displayPathError(globalSudoClient.MkDir(prepareOSPath(path), 0755))
+		return displayPathError(elevatedCall(ctx, func() error { return globalSudoClient.MkDir(prepareOSPath(path), 0755) }))
 	}
 	return displayPathError(err)
 }
@@ -859,8 +866,8 @@ func (v *OSVFS) Remove(ctx context.Context, path string) error {
 		return ctx.Err()
 	}
 	err := hostfs.RemoveAll(prepareOSPath(path))
-	if err != nil && os.IsPermission(err) && globalSudoClient.IsAvailable() {
-		return displayPathError(globalSudoClient.Remove(prepareOSPath(path)))
+	if mayElevate(ctx, err) {
+		return displayPathError(elevatedCall(ctx, func() error { return globalSudoClient.Remove(prepareOSPath(path)) }))
 	}
 	return displayPathError(err)
 }
@@ -873,8 +880,8 @@ func (v *OSVFS) Rename(ctx context.Context, old, new string) error {
 		return v.RenameNoReplace(ctx, old, new)
 	}
 	err := hostfs.Rename(prepareOSPath(old), prepareOSPath(new))
-	if err != nil && os.IsPermission(err) && globalSudoClient.IsAvailable() {
-		return displayPathError(globalSudoClient.Rename(prepareOSPath(old), prepareOSPath(new)))
+	if mayElevate(ctx, err) {
+		return displayPathError(elevatedCall(ctx, func() error { return globalSudoClient.Rename(prepareOSPath(old), prepareOSPath(new)) }))
 	}
 	return displayPathError(err)
 }
@@ -888,9 +895,11 @@ func (v *OSVFS) RenameNoReplace(ctx context.Context, old, new string) error {
 		return ctx.Err()
 	}
 	err := renameNoReplace(prepareOSPath(old), prepareOSPath(new))
-	if err != nil && os.IsPermission(err) && globalSudoClient.IsAvailable() {
+	if mayElevate(ctx, err) {
 		vtui.DebugLog("VFS: Permission denied for RenameNoReplace(%q), attempting sudo...", old)
-		return displayPathError(globalSudoClient.RenameNoReplace(prepareOSPath(old), prepareOSPath(new)))
+		return displayPathError(elevatedCall(ctx, func() error {
+			return globalSudoClient.RenameNoReplace(prepareOSPath(old), prepareOSPath(new))
+		}))
 	}
 	return displayPathError(err)
 }
@@ -912,7 +921,7 @@ func (v *OSVFS) SetAttributes(ctx context.Context, path string, item VFSItem) er
 
 	// Try native first
 	var errMode error
-	if item.UnixMode != 0 && !danglingLink {
+	if (item.UnixMode != 0 || item.SetUnixMode) && !danglingLink {
 		errMode = hostfs.Chmod(prepareOSPath(path), os.FileMode(item.UnixMode))
 	}
 
@@ -943,9 +952,9 @@ func (v *OSVFS) SetAttributes(ctx context.Context, path string, item VFSItem) er
 	errPlat := applyPlatformAttributes(prepareOSPath(path), item)
 
 	// If any operation failed due to permissions, try sudo
-	if (os.IsPermission(errMode) || os.IsPermission(errOwn) || os.IsPermission(errTime) || os.IsPermission(errPlat)) && globalSudoClient.IsAvailable() {
+	if (os.IsPermission(errMode) || os.IsPermission(errOwn) || os.IsPermission(errTime) || os.IsPermission(errPlat)) && ElevationAllowed(ctx) && globalSudoClient.IsAvailable() {
 		vtui.DebugLog("VFS: SetAttributes permission denied, trying sudo for %q", path)
-		return displayPathError(globalSudoClient.SetAttributes(prepareOSPath(path), item))
+		return displayPathError(elevatedCall(ctx, func() error { return globalSudoClient.SetAttributes(prepareOSPath(path), item) }))
 	}
 
 	if errMode != nil {
@@ -1115,7 +1124,7 @@ func (v *OSVFS) Open(ctx context.Context, path string) (ReadAtCloser, error) {
 			vtui.DebugLog("VFS: Permission denied for Open(%q); the caller ruled out sudo", path)
 			return nil, displayPathError(err)
 		}
-		if os.IsPermission(err) && globalSudoClient.IsAvailable() {
+		if mayElevate(ctx, err) {
 			vtui.DebugLog("VFS: Permission denied for Open(%q), attempting sudo...", path)
 			// SudoClient.Open's first call spawns the elevated dispatcher via
 			// "sudo -A" and can then sit for a long time on a slow PAM prompt
@@ -1175,6 +1184,40 @@ func (v *OSVFS) Open(ctx context.Context, path string) (ReadAtCloser, error) {
 	return &osFileWrapper{File: f, size: size, localPath: prepareOSPath(path)}, nil
 }
 
+// mayElevate reports whether a call that err refused may be retried through
+// sudo for the operation of ctx: the refusal is one of rights, the
+// operation has not had the password refused already, and sudo is there.
+// Every elevated retry in this file goes through it, so that one refused
+// password ends elevation for a whole delete, move or copy, not only for a
+// scan (f4#1998).
+func mayElevate(ctx context.Context, err error) bool {
+	return err != nil && os.IsPermission(err) && ElevationAllowed(ctx) && globalSudoClient.IsAvailable()
+}
+
+// elevatedCall makes one elevated call for the operation of ctx and, when the
+// user refused the password while it waited, ends elevation for the rest of
+// that operation.
+func elevatedCall(ctx context.Context, call func() error) error {
+	before := globalSudoClient.declines.Load()
+	// Connect can be blocked in the password prompt, which has no context of
+	// its own. Withdraw that prompt when the operation is cancelled, just as
+	// the cancellable Open and ReadDir paths do (f4#1993).
+	stopWithdraw := context.AfterFunc(ctx, globalSudoClient.WithdrawPrompt)
+	defer stopWithdraw()
+	err := call()
+	noteElevationRefusal(ctx, before)
+	return err
+}
+
+// noteElevationRefusal ends elevation for the rest of the operation of ctx
+// when the user cancelled the password dialog since before was read: one
+// refusal is enough for one operation (f4#1998).
+func noteElevationRefusal(ctx context.Context, before int64) {
+	if scope := elevationScopeOf(ctx); scope != nil && globalSudoClient.declines.Load() != before {
+		scope.declined.Store(true)
+	}
+}
+
 // sudoOpenCancellable is globalSudoClient.Open that gives up when ctx is
 // cancelled. The elevated open can wait a long time on a PAM prompt or the
 // password dialog and takes no context, so the Cancel button of the progress
@@ -1186,19 +1229,50 @@ func sudoOpenCancellable(ctx context.Context, path string) (*os.File, error) {
 		err error
 	}
 	done := make(chan result, 1)
+	before := globalSudoClient.declines.Load()
 	go func() {
 		f, err := globalSudoClient.Open(path, os.O_RDONLY, 0)
+		noteElevationRefusal(ctx, before)
 		done <- result{f, err}
 	}()
 	select {
 	case r := <-done:
 		return r.f, r.err
 	case <-ctx.Done():
+		globalSudoClient.WithdrawPrompt()
 		go func() {
 			if r := <-done; r.err == nil && r.f != nil {
 				_ = r.f.Close()
 			}
 		}()
+		return nil, ctx.Err()
+	}
+}
+
+// sudoReadDirCancellable is globalSudoClient.ReadDir that gives up when ctx is
+// cancelled. A directory the user cannot read is listed through the elevated
+// dispatcher, whose first request waits on the password dialog; the scan that
+// asked (F3 on a folder, "Calculating Size...") could not be stopped while
+// that dialog was pending, and went on to ask again for the next folder
+// (f4#1993). The caller is released at once; the listing that is still going
+// on is discarded when it ends.
+func sudoReadDirCancellable(ctx context.Context, path string) ([]VFSItem, error) {
+	type result struct {
+		items []VFSItem
+		err   error
+	}
+	done := make(chan result, 1)
+	before := globalSudoClient.declines.Load()
+	go func() {
+		items, err := globalSudoClient.ReadDir(path)
+		noteElevationRefusal(ctx, before)
+		done <- result{items, err}
+	}()
+	select {
+	case r := <-done:
+		return r.items, r.err
+	case <-ctx.Done():
+		globalSudoClient.WithdrawPrompt()
 		return nil, ctx.Err()
 	}
 }
@@ -1227,7 +1301,7 @@ func (v *OSVFS) Create(ctx context.Context, path string) (io.WriteCloser, error)
 		createMode = 0o600
 	}
 	f, err := hostfs.OpenFile(prepared, flags, createMode)
-	if err != nil && os.IsPermission(err) && globalSudoClient.IsAvailable() {
+	if mayElevate(ctx, err) {
 		vtui.DebugLog("VFS: Permission denied for Create(%q), attempting sudo...", path)
 		if connectsByUAC() {
 			// Written by requests through the elevated dispatcher (f4#1768).
@@ -1235,7 +1309,7 @@ func (v *OSVFS) Create(ctx context.Context, path string) (io.WriteCloser, error)
 			// file there first, so a taken name fails here and not at Close;
 			// a device is left to the local error.
 			if flags&os.O_EXCL != 0 {
-				if exErr := globalSudoClient.CreateExclusive(prepared, uint32(createMode)); exErr != nil {
+				if exErr := elevatedCall(ctx, func() error { return globalSudoClient.CreateExclusive(prepared, uint32(createMode)) }); exErr != nil {
 					return nil, displayPathError(exErr)
 				}
 				w := newElevatedWriter(globalSudoClient, prepared, uint32(createMode))
@@ -1247,7 +1321,11 @@ func (v *OSVFS) Create(ctx context.Context, path string) (io.WriteCloser, error)
 			}
 			return newElevatedWriter(globalSudoClient, prepared, uint32(createMode)), nil
 		}
-		sudoF, sudoErr := globalSudoClient.Open(prepared, flags, uint32(createMode))
+		var sudoF *os.File
+		sudoErr := elevatedCall(ctx, func() (err error) {
+			sudoF, err = globalSudoClient.Open(prepared, flags, uint32(createMode))
+			return err
+		})
 		return sudoF, displayPathError(sudoErr)
 	}
 	if err != nil {
@@ -1468,9 +1546,9 @@ func (v *OSVFS) Symlink(ctx context.Context, target, linkPath string) error {
 	// ordinary target text.
 	target = decodeMappedPathSegments(target)
 	err = hostfs.Symlink(target, prepareOSPath(abs))
-	if err != nil && os.IsPermission(err) && globalSudoClient.IsAvailable() {
+	if mayElevate(ctx, err) {
 		vtui.DebugLog("VFS: Permission denied for Symlink(%q), attempting sudo...", linkPath)
-		return displayPathError(globalSudoClient.Symlink(target, prepareOSPath(abs)))
+		return displayPathError(elevatedCall(ctx, func() error { return globalSudoClient.Symlink(target, prepareOSPath(abs)) }))
 	}
 	return displayPathError(err)
 }
@@ -1502,9 +1580,11 @@ func (v *OSVFS) Hardlink(ctx context.Context, target, linkPath string) error {
 		return err
 	}
 	err = hostfs.Link(prepareOSPath(absTarget), prepareOSPath(absLink))
-	if err != nil && os.IsPermission(err) && globalSudoClient.IsAvailable() {
+	if mayElevate(ctx, err) {
 		vtui.DebugLog("VFS: Permission denied for Hardlink(%q), attempting sudo...", linkPath)
-		return displayPathError(globalSudoClient.Hardlink(prepareOSPath(absTarget), prepareOSPath(absLink)))
+		return displayPathError(elevatedCall(ctx, func() error {
+			return globalSudoClient.Hardlink(prepareOSPath(absTarget), prepareOSPath(absLink))
+		}))
 	}
 	return displayPathError(err)
 }

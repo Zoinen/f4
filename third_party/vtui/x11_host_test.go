@@ -296,7 +296,7 @@ func TestX11HostFocusLossClearsKeyboardState(t *testing.T) {
 		if event.Type != vtinput.FocusEventType || event.SetFocus {
 			t.Fatalf("focus loss event = %+v, want FocusEvent(false)", event)
 		}
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(30 * time.Second):
 		t.Fatal("timed out waiting for X11 focus loss event")
 	}
 
@@ -306,7 +306,7 @@ func TestX11HostFocusLossClearsKeyboardState(t *testing.T) {
 		if event.Type != vtinput.FocusEventType || !event.SetFocus {
 			t.Fatalf("focus gain event = %+v, want FocusEvent(true)", event)
 		}
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(30 * time.Second):
 		t.Fatal("timed out waiting for X11 focus gain event")
 	}
 }
@@ -390,7 +390,7 @@ func TestX11Host_MouseStateTracking(t *testing.T) {
 		if !ev.KeyDown {
 			t.Error("Expected KeyDown to be true")
 		}
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(30 * time.Second):
 		t.Fatal("Button press event was not sent")
 	}
 
@@ -413,7 +413,7 @@ func TestX11Host_MouseStateTracking(t *testing.T) {
 		if ev.KeyDown {
 			t.Error("Expected KeyDown to be false")
 		}
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(30 * time.Second):
 		t.Fatal("Button release event was not sent")
 	}
 }

@@ -350,11 +350,7 @@ func (e *Edit) DisplayObject(scr *ScreenBuf) {
 
 		attr := defaultAttr
 		if e.selStart != -1 && runeIdx >= e.selStart && runeIdx < e.selEnd {
-			selectedIdx := e.ColorSelectedIdx
-			if e.clearFlag {
-				selectedIdx = e.ColorUnchangedIdx
-			}
-			attr = e.GetStateAttr(selectedIdx, selectedIdx)
+			attr = e.GetStateAttr(e.ColorSelectedIdx, e.ColorSelectedIdx)
 		}
 		if e.IsDisabled() {
 			attr = DimColor(attr)

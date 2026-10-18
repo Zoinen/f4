@@ -3,7 +3,9 @@ package terminal
 import (
 	"context"
 	"errors"
+	"fmt"
 	"image"
+	"os/exec"
 	"testing"
 
 	"github.com/unxed/goclip"
@@ -43,5 +45,25 @@ func TestReadClipboardContentsUsesActualImageTextAndPreservesTextFallback(t *tes
 	goclip.SetActiveDriver(&imageClipboardFixture{err: failure})
 	if _, err := ReadClipboardContents(context.Background()); !errors.Is(err, failure) {
 		t.Fatal("image read error hidden", err)
+	}
+}
+
+// On macOS goclip reads images through osascript, which exits 1 when the
+// pasteboard holds text, files or nothing. That must not block pasting them
+// (f4#2007); a failure to run the reader at all still must be shown.
+func TestReadClipboardContentsImageReaderExitMeansNoImage(t *testing.T) {
+	before := goclip.ActiveDriver()
+	defer goclip.SetActiveDriver(before)
+	exit := fmt.Errorf("reading clipboard via /usr/bin/osascript: %w", &exec.ExitError{})
+	goclip.SetActiveDriver(&imageClipboardFixture{err: exit})
+	vtui.SetClipboard("typed text")
+	got, err := ReadClipboardContents(context.Background())
+	if err != nil || got.Image != nil || got.Text != "typed text" {
+		t.Fatalf("reader exit = %+v, %v", got, err)
+	}
+	missing := fmt.Errorf("reading clipboard via /usr/bin/osascript: %w", &exec.Error{Name: "osascript", Err: exec.ErrNotFound})
+	goclip.SetActiveDriver(&imageClipboardFixture{err: missing})
+	if _, err := ReadClipboardContents(context.Background()); !errors.Is(err, exec.ErrNotFound) {
+		t.Fatal("reader that cannot start was hidden", err)
 	}
 }

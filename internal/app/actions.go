@@ -769,41 +769,7 @@ func actionEditFileExternal(pf *panel.PanelsFrame, v vfs.VFS, path string, size 
 			}
 			return err
 		}
-		defer func() { _ = src.Close() }()
-
-		dst, err := os.Create(tmpPath)
-		if err != nil {
-			return err
-		}
-		closeDst := fileops.CloseOnce(dst)
-		defer func() { _ = closeDst() }()
-
-		buf := make([]byte, 128*1024)
-		var downloaded int64
-		for {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			n, err := src.Read(ctx, buf)
-			if n > 0 {
-				if _, werr := dst.Write(buf[:n]); werr != nil {
-					return werr
-				}
-				downloaded += int64(n)
-				pct := 0
-				if size > 0 {
-					pct = int((downloaded * 100) / size)
-				}
-				update("Downloading...", pct)
-			}
-			if err != nil {
-				if err == io.EOF {
-					break
-				}
-				return err
-			}
-		}
-		return closeDst()
+		return copyVFSFileToLocal(ctx, src, tmpPath, size, update)
 	}, func(err error) {
 		if err != nil && err != context.Canceled {
 			vtui.ShowMessage(" Error ", fmt.Sprintf("Failed to download file:\n%v", err), []string{"&Ok"})
@@ -1157,6 +1123,7 @@ func showPreparedEditor(pf *panel.PanelsFrame, v vfs.VFS, path string, prepared 
 	ev.ResizeConsole(pf.LastW, pf.LastH)
 	applyInitialEditorOffset(ev, v)
 	ev.StartIndexing()
+	ev.OnClose = takeStartupEditorHook(v, path)
 
 	vtui.FrameManager.AddScreen(ev)
 }
@@ -1903,11 +1870,67 @@ func tryOpenImageViewer(pf *panel.PanelsFrame, v vfs.VFS, path string) bool {
 					}
 				}
 			}
+			if v != nil {
+				iv.OnDelete = func(target string, removed func()) {
+					imageViewDelete(pf, v, target, removed)
+				}
+			}
 			iv.ResizeConsole(pf.LastW, pf.LastH)
 			vtui.FrameManager.AddScreen(iv)
 		})
 	})
 	return true
+}
+
+// imageViewDelete is F8 in the picture viewer (f4#1991): the same question
+// and the same Recycle Bin preference as F8 on the panel, for the one file on
+// screen. The panel underneath is read again once the file is gone.
+func imageViewDelete(pf *panel.PanelsFrame, v vfs.VFS, target string, removed func()) {
+	disposition := vfs.DeletePermanently
+	titleKey, confirmKey, buttonKey := "Delete.Title", "Delete.ConfirmPermanent", "Delete.Btn"
+	if config.App.UseTrash {
+		disposition = vfs.DeleteToTrash
+		titleKey, confirmKey, buttonKey = "Trash.Title", "Trash.Confirm", "Trash.Btn"
+	}
+	run := func() {
+		vtui.RunAsync(func(ctx *vtui.TaskContext) {
+			err := fileops.DeletePathWithDisposition(ctx.Context, v, target, disposition)
+			ctx.RunOnUI(func() {
+				if err != nil {
+					if errors.Is(err, vfs.ErrTrashUnsupported) {
+						err = fmt.Errorf("%s", i18n.Msg("Trash.Unsupported"))
+					}
+					vtui.ShowMessageEx(i18n.Msg(titleKey), fmt.Sprintf(i18n.Msg("Delete.OperationFailed"), err),
+						[]string{"&Ok"}, vtui.MessageWarn)
+					return
+				}
+				removed()
+				if pf != nil {
+					pf.RefreshAll()
+				}
+				vtui.FrameManager.Redraw()
+			})
+		})
+	}
+	if !config.App.ConfirmDelete {
+		run()
+		return
+	}
+	kind := vtui.MessageInfo
+	if disposition == vfs.DeletePermanently {
+		kind = vtui.MessageWarn
+	}
+	buttons := []string{i18n.Msg(buttonKey), i18n.Msg("vtui.Cancel")}
+	dlg := vtui.ShowMessageEx(i18n.Msg(titleKey),
+		fmt.Sprintf(i18n.Msg(confirmKey), vtui.TruncateMiddle(v.Base(target), 40)), buttons, kind)
+	if children := dlg.GetChildren(); config.App.DeleteCancelFocused && len(children) > 0 {
+		dlg.SetFocusedItem(children[len(children)-1])
+	}
+	dlg.OnResult = func(res int) {
+		if res == 0 {
+			run()
+		}
+	}
 }
 
 // imageSiblingPaths lists the pictures next to this one, in the order the
@@ -2353,9 +2376,7 @@ func ActionExecute(pf *panel.PanelsFrame, v vfs.VFS, dir, name, path string) {
 			})
 		} else {
 			if _, isLocal := v.(*vfs.OSVFS); !isLocal {
-				ctx.RunOnUI(func() {
-					vtui.ShowMessage(" Error ", "Cannot execute non-runnable files on a remote file system.", []string{"&Ok"})
-				})
+				ctx.RunOnUI(func() { openRemoteWithAssociation(pf, v, path) })
 				return
 			}
 			command, args, ok := panel.AssociatedFileCommand(path)
@@ -2709,7 +2730,8 @@ func actionRunSizeScan(pf *panel.PanelsFrame, fsp *panel.FileSystemPanel, scan p
 	taskCtx = vtui.RunAsync(func(ctx *vtui.TaskContext) {
 		var totalStats vfs.OpStats
 		lastScanUpdate := time.Now()
-		totalStats, scanErr := scan(ctx.Context, func(currentPath string, stats vfs.OpStats) {
+		// Several marked folders are one count, asking for the password once.
+		totalStats, scanErr := scan(vfs.WithElevationScope(ctx.Context), func(currentPath string, stats vfs.OpStats) {
 			now := time.Now()
 			if now.Sub(lastScanUpdate) > 50*time.Millisecond {
 				lastScanUpdate = now
@@ -6173,6 +6195,28 @@ func actionFileAttributes(pf *panel.PanelsFrame) {
 			dialog.ShowAttributesDialogForTargets(pf.RefreshAll, fsp.Vfs, targets)
 		})
 	})
+}
+
+// actionFileSystemProperties opens the system properties of the item under
+// the cursor, the window the attributes dialog's button opens, straight from
+// the panel (f4#2041). On ".." it is the folder the panel shows.
+func actionFileSystemProperties(pf *panel.PanelsFrame) {
+	fsp := pf.GetActivePanel()
+	if fsp == nil || fsp.Vfs == nil || !fileops.IsLocalOSVFS(fsp.Vfs) {
+		return
+	}
+	path := fsp.Vfs.GetPath()
+	if name := fsp.GetRawSelectedName(); name != "" && name != ".." {
+		path = fsp.Vfs.Join(path, name)
+	}
+	abs, err := fsp.Vfs.Abs(path)
+	if err != nil {
+		vtui.ShowMessage(" Error ", err.Error(), []string{"&Ok"})
+		return
+	}
+	if err := dialog.DefaultNativePropertiesOpener(abs); err != nil {
+		vtui.ShowMessage(" Error ", err.Error(), []string{"&Ok"})
+	}
 }
 
 func actionEditSymlink(pf *panel.PanelsFrame) {

@@ -25,7 +25,7 @@ func OpenUserMenu(state panel.MenuSettingsSource, current *vtui.VMenu, index int
 	}
 	prefix := "menu." + scope + "."
 	collection := "usermenu." + scope
-	store := newUserMenuSettingsStore(settingsMenuSource{scope, state.RootTitle, state.SourcePath, state.Mode})
+	store := newUserMenuSettingsStore(settingsMenuSource{id: scope, label: state.RootTitle, path: state.SourcePath, mode: state.Mode})
 	target := ""
 	parent := ""
 	var rows []f4settings.Record

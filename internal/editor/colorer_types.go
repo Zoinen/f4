@@ -378,9 +378,8 @@ func (ev *EditorView) ColorerSelectRegion() {
 	}
 	lineStart := ev.Li.GetLineOffset(ev.CursorLine)
 	ev.RectSelActive = false
-	ev.SelAnchorOffset = lineStart + byteIndexAtRune(line, region.start)
+	ev.StartSelection(lineStart + byteIndexAtRune(line, region.start))
 	ev.CursorPos = byteIndexAtRune(line, region.end)
-	ev.SelActive = true
 	ev.EnsureCursorVisible()
 	if vtui.FrameManager != nil {
 		vtui.FrameManager.Redraw()

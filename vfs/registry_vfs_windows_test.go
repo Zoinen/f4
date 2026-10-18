@@ -412,3 +412,74 @@ func TestParseRegistryMultiStringValueEmpty(t *testing.T) {
 		t.Fatalf("parseRegistryMultiStringValue = %#v, want empty", got)
 	}
 }
+
+func TestRegistryVFSExportsAKeyAndAValueAsReg_Issue242(t *testing.T) {
+	key, keyPath, keyURI := newRegistryVFSTestKey(t)
+	defer func() { _ = key.Close() }()
+	if err := key.SetStringValue("", "default"); err != nil {
+		t.Fatal(err)
+	}
+	if err := key.SetDWordValue("Count", 42); err != nil {
+		t.Fatal(err)
+	}
+	sub, _, err := registry.CreateKey(key, "Sub", registry.ALL_ACCESS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = registry.DeleteKey(registry.CURRENT_USER, keyPath+`\Sub`) })
+	if err := sub.SetExpandStringValue("Path", `%TEMP%\x`); err != nil {
+		t.Fatal(err)
+	}
+	_ = sub.Close()
+
+	v := NewRegistryVFS()
+	ctx := context.Background()
+	decode := func(data []byte) string {
+		t.Helper()
+		if !bytes.HasPrefix(data, []byte{0xFF, 0xFE}) {
+			t.Fatalf("no UTF-16LE byte order mark")
+		}
+		words := make([]uint16, (len(data)-2)/2)
+		for i := range words {
+			words[i] = binary.LittleEndian.Uint16(data[2+2*i:])
+		}
+		return string(utf16.Decode(words))
+	}
+
+	if name := v.TransferName(keyURI, nil); name != keyURI[strings.LastIndex(keyURI, "/")+1:]+".reg" {
+		t.Errorf("TransferName of the key = %q", name)
+	}
+	content, ok, err := v.TransferContent(ctx, keyURI, nil)
+	if err != nil || !ok {
+		t.Fatalf("TransferContent of the key: %v, %v", ok, err)
+	}
+	full := `HKEY_CURRENT_USER\` + keyPath
+	want := "Windows Registry Editor Version 5.00\r\n\r\n" +
+		"[" + full + "]\r\n" +
+		"@=\"default\"\r\n" +
+		"\"Count\"=dword:0000002a\r\n" +
+		"\r\n" +
+		"[" + full + `\Sub` + "]\r\n" +
+		regValueLine(regExportValue{Name: "Path", Type: regTypeExpandSZ, Data: utf16NulString(`%TEMP%\x`)}) + "\r\n" +
+		"\r\n"
+	if got := decode(content); got != want {
+		t.Errorf("the key:\n%q\nwant\n%q", got, want)
+	}
+
+	valueURI := v.Join(keyURI, "Count")
+	if name := v.TransferName(valueURI, nil); name != "Count.reg" {
+		t.Errorf("TransferName of the value = %q", name)
+	}
+	content, ok, err = v.TransferContent(ctx, valueURI, nil)
+	if err != nil || !ok {
+		t.Fatalf("TransferContent of the value: %v, %v", ok, err)
+	}
+	want = "Windows Registry Editor Version 5.00\r\n\r\n[" + full + "]\r\n\"Count\"=dword:0000002a\r\n\r\n"
+	if got := decode(content); got != want {
+		t.Errorf("the value:\n%q\nwant\n%q", got, want)
+	}
+
+	if _, ok, _ := v.TransferContent(ctx, v.Join(registryVFSRoot, "HKEY_CURRENT_USER"), nil); ok {
+		t.Errorf("a whole hive was exported as one file")
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -123,6 +124,8 @@ func (c *SudoClient) handleAskpassRequest(conn net.Conn) {
 	c.attempts++
 
 	resChan := make(chan string, 1)
+	// withdrawn: the dialog was closed by WithdrawPrompt, not by the user.
+	var withdrawn atomic.Bool
 
 	// We need to show the dialog on the UI thread
 	c.RunOnUI(func() {
@@ -157,21 +160,33 @@ func (c *SudoClient) handleAskpassRequest(conn net.Conn) {
 		vbox.Apply()
 
 		btnOk.OnClick = func() {
+			c.setPrompt(nil)
 			resChan <- edit.GetText()
 			dlg.Close()
 		}
 		btnCancel.OnClick = func() {
+			c.setPrompt(nil)
 			resChan <- ""
 			dlg.Close()
 		}
 		dlg.OnResult = func(code int) {
 			if code < 0 {
+				c.setPrompt(nil)
 				select {
 				case resChan <- "":
 				default:
 				}
 			}
 		}
+		c.setPrompt(func() {
+			withdrawn.Store(true)
+			c.setPrompt(nil)
+			select {
+			case resChan <- "":
+			default:
+			}
+			dlg.Close()
+		})
 
 		if vtui.FrameManager != nil {
 			// The request above was logged when it arrived; this line is
@@ -188,9 +203,25 @@ func (c *SudoClient) handleAskpassRequest(conn net.Conn) {
 		if _, err := conn.Write([]byte(password)); err != nil {
 			vtui.DebugLog("SUDO_CLIENT: Failed to send password to helper: %v", err)
 		}
+	} else if withdrawn.Load() {
+		vtui.DebugLog("SUDO_CLIENT: Password dialog withdrawn: the operation that asked was cancelled.")
 	} else {
 		vtui.DebugLog("SUDO_CLIENT: Password dialog cancelled by user.")
+		c.markDeclined()
 	}
+}
+
+// setPrompt records how to close the password dialog that was just shown;
+// nil when it has gone.
+func (c *SudoClient) setPrompt(withdraw func()) {
+	c.promptMu.Lock()
+	c.withdrawPrompt = withdraw
+	c.promptMu.Unlock()
+}
+
+// markDeclined records that the user cancelled the password dialog.
+func (c *SudoClient) markDeclined() {
+	c.declines.Add(1)
 }
 
 // Dummy for SudoClient to satisfy RunOnUI if not imported
