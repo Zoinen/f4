@@ -1,0 +1,400 @@
+diff --git a/qt/host/tests/F4QtBatchRootOrdersTests.cpp b/qt/host/tests/F4QtBatchRootOrdersTests.cpp
+index 9b071b14e..989e804dc 100644
+--- a/qt/host/tests/F4QtBatchRootOrdersTests.cpp
++++ b/qt/host/tests/F4QtBatchRootOrdersTests.cpp
+@@ -1,6 +1,8 @@
+ #include <QQuickItem>
+ #include <QQuickWindow>
+ #include <QSGSimpleRectNode>
++#include <QSGMaterial>
++#include <QSGClipNode>
+ #include <QSGTransformNode>
+ #include <QScopeGuard>
+ #include <QtTest>
+@@ -15,6 +17,18 @@
+ 
+ namespace {
+ 
++std::atomic<quintptr> watchedRoot = 0;
++std::atomic<quint64> watchedUploads = 0;
++QtMessageHandler previousMessageHandler = nullptr;
++
++void watchUploads(QtMsgType type, const QMessageLogContext &context, const QString &message) {
++    const auto root = watchedRoot.load();
++    if (root && message.contains("[  upload]")
++        && message.contains(QStringLiteral("root: 0x%1").arg(root, 0, 16)))
++        ++watchedUploads;
++    if (previousMessageHandler) previousMessageHandler(type, context, message);
++}
++
+ class DrawingNode final : public QSGTransformNode {
+ public:
+     bool isSubtreeBlocked() const override { return blocked; }
+@@ -49,19 +63,81 @@ private:
+ 
+ class ColorTile final : public QQuickItem {
+ public:
+-    ColorTile(QQuickItem *parent, const QColor &color) : QQuickItem(parent), color(color) {
++    ColorTile(QQuickItem *parent, const QColor &color, bool noBatch = false)
++        : QQuickItem(parent), color(color), noBatch(noBatch) {
+         setFlag(ItemHasContents);
+     }
++    void setColor(const QColor &value) { color = value; update(); }
+ protected:
+     QSGNode *updatePaintNode(QSGNode *node, UpdatePaintNodeData *) override {
+         auto *rect = static_cast<QSGSimpleRectNode *>(node);
+         if (!rect) rect = new QSGSimpleRectNode;
+         rect->setRect(boundingRect());
+         rect->setColor(color);
++        rect->material()->setFlag(QSGMaterial::NoBatching, noBatch);
+         return rect;
+     }
+ private:
+     QColor color;
++    bool noBatch;
++};
++
++class EphemeralClip final : public QQuickItem {
++public:
++    explicit EphemeralClip(QQuickItem *parent) : QQuickItem(parent) { setFlag(ItemHasContents); }
++    void cycle() { pending = true; update(); }
++protected:
++    QSGNode *updatePaintNode(QSGNode *root, UpdatePaintNodeData *) override {
++        if (!root) root = new QSGNode;
++        if (pending) {
++            auto *clip = new QSGClipNode;
++            clip->setIsRectangular(true);
++            clip->setClipRect(QRectF(0, 0, 4, 4));
++            root->appendChildNode(clip);
++            clip->appendChildNode(new QSGSimpleRectNode(QRectF(0, 0, 4, 4), Qt::cyan));
++            root->removeChildNode(clip);
++            delete clip;
++            pending = false;
++        }
++        return root;
++    }
++private:
++    bool pending = false;
++};
++
++class NestedClipTile final : public QQuickItem {
++public:
++    NestedClipTile(QQuickItem *parent, bool stencil) : QQuickItem(parent), stencil(stencil) {
++        setFlag(ItemHasContents);
++        setSize(QSizeF(96, 96));
++    }
++protected:
++    QSGNode *updatePaintNode(QSGNode *node, UpdatePaintNodeData *) override {
++        if (node) return node;
++        auto *clip = new QSGClipNode;
++        clip->setIsRectangular(!stencil);
++        clip->setClipRect(boundingRect());
++        if (stencil) {
++            auto *geometry = new QSGGeometry(QSGGeometry::defaultAttributes_Point2D(), 4);
++            geometry->setDrawingMode(QSGGeometry::DrawTriangleStrip);
++            auto *vertices = geometry->vertexDataAsPoint2D();
++            vertices[0].set(0, 0);
++            vertices[1].set(96, 0);
++            vertices[2].set(0, 96);
++            vertices[3].set(64, 96);
++            clip->setGeometry(geometry);
++            clip->setFlag(QSGNode::OwnsGeometry);
++        }
++        auto *nested = new QSGClipNode;
++        nested->setIsRectangular(true);
++        nested->setClipRect(QRectF(8, 8, 80, 80));
++        clip->appendChildNode(nested);
++        nested->appendChildNode(new QSGSimpleRectNode(QRectF(0, 0, 96, 96), Qt::green));
++        nested->appendChildNode(new QSGSimpleRectNode(QRectF(24, 24, 48, 48), QColor(0, 0, 255, 128)));
++        return clip;
++    }
++private:
++    bool stencil;
+ };
+ 
+ } // namespace
+@@ -69,6 +145,284 @@ private:
+ class F4QtBatchRootOrdersTests : public QObject {
+     Q_OBJECT
+ private slots:
++    void initTestCase() {
++        qputenv("QSG_RENDERER_DEBUG", "render");
++        previousMessageHandler = qInstallMessageHandler(watchUploads);
++    }
++    void cleanupTestCase() { qInstallMessageHandler(previousMessageHandler); }
++
++    void repeatedClipLifecycle_data() {
++        QTest::addColumn<bool>("stencil");
++        QTest::newRow("scissor") << false;
++        QTest::newRow("stencil") << true;
++    }
++
++    void repeatedClipLifecycle() {
++        if (!qEnvironmentVariableIsSet("ZOIN_TEST_NATIVE_RENDERER"))
++            QSKIP("Requires a native Qt Quick renderer");
++        QFETCH(bool, stencil);
++        QQuickWindow window;
++        window.resize(544, 272);
++        window.setColor(Qt::black);
++        QList<QQuickItem *> parents;
++        for (int side = 0; side < 2; ++side) {
++            auto *parent = new QQuickItem(window.contentItem());
++            parent->setPosition(QPointF(16 + side*256, 16));
++            parent->setSize(QSizeF(240, 240));
++            parent->setClip(true);
++            parents.append(parent);
++            for (int i = 0; i < 128; ++i) {
++                auto *tile = new ColorTile(parent, side ? Qt::yellow : Qt::red);
++                tile->setSize(parent->size());
++            }
++            auto *stable = new QQuickItem(parent);
++            stable->setPosition(QPointF(16, 16));
++            stable->setSize(QSizeF(80, 80));
++            stable->setClip(true);
++            auto *blue = new ColorTile(stable, QColor(0, 0, 255, 128));
++            blue->setSize(stable->size());
++        }
++        std::atomic<bool> validRanges = true;
++        std::atomic<int> maximumOrders = 0;
++        connect(&window, &QQuickWindow::afterRendering, &window, [&] {
++            auto *renderer = static_cast<QSGBatchRenderer::Renderer *>(
++                QQuickWindowPrivate::get(&window)->renderer);
++            if (!renderer) return;
++            maximumOrders = qMax(maximumOrders.load(), renderer->m_nextRenderOrder);
++            for (auto *node : std::as_const(renderer->m_nodes)) {
++                if (node->type() == QSGNode::ClipNodeType || node->isBatchRoot) {
++                    const auto *info = node->rootInfo();
++                    if (info->availableOrders < 0 || info->firstOrder < 0
++                        || info->lastOrder < info->firstOrder) validRanges = false;
++                    if (info->parentRoot) {
++                        const auto *outer = info->parentRoot->rootInfo();
++                        if (info->firstOrder < outer->firstOrder || info->lastOrder > outer->lastOrder)
++                            validRanges = false;
++                    }
++                } else if (node->type() == QSGNode::GeometryNodeType) {
++                    const auto *element = node->element();
++                    if (element && !element->removed && element->root) {
++                        const auto *info = element->root->rootInfo();
++                        if (element->order <= info->firstOrder || element->order > info->lastOrder)
++                            validRanges = false;
++                    }
++                }
++            }
++        }, Qt::DirectConnection);
++        window.show();
++        QVERIFY(QTest::qWaitForWindowExposed(&window));
++        const QImage baseline = window.grabWindow();
++        QVERIFY(!baseline.isNull());
++        const qreal dpr = window.devicePixelRatio();
++        if (qEnvironmentVariableIsSet("ZOIN_EXPECT_TEST_DPR"))
++            QCOMPARE(dpr, qEnvironmentVariable("ZOIN_EXPECT_TEST_DPR").toDouble());
++        QImage initialLeft;
++        QImage initialRight;
++        int warmedOrderBound = 0;
++        for (int cycle = 0; cycle < 32; ++cycle) {
++            auto *branch = new NestedClipTile(parents[0], stencil);
++            branch->setPosition(QPointF(128, 128));
++            const QImage left = window.grabWindow();
++            if (!cycle) initialLeft = left;
++            else QCOMPARE(left, initialLeft);
++            // This point is inside the rectangular clip but outside the trapezoid.
++            QCOMPARE(left.pixelColor(qRound(228*dpr), qRound(224*dpr)),
++                     QColor(stencil ? Qt::red : Qt::green));
++            branch->setParentItem(parents[1]);
++            const QImage right = window.grabWindow();
++            if (!cycle) initialRight = right;
++            else QCOMPARE(right, initialRight);
++            branch->setVisible(false);
++            QCOMPARE(window.grabWindow(), baseline);
++            branch->setVisible(true);
++            QCOMPARE(window.grabWindow(), initialRight);
++            branch->setParentItem(parents[0]);
++            QCOMPARE(window.grabWindow(), initialLeft);
++            delete branch;
++            QCOMPARE(window.grabWindow(), baseline);
++            QVERIFY2(validRanges.load(), "Clip lifecycle produced an invalid drawing-order interval");
++            if (cycle == 1) warmedOrderBound = maximumOrders.load();
++            if (cycle > 1) QCOMPARE(maximumOrders.load(), warmedOrderBound);
++        }
++        QVERIFY(initialLeft.save(stencil ? "retained-stencil-lifecycle-175.png"
++                                        : "retained-scissor-lifecycle-175.png"));
++    }
++
++    void unchangedSubrootKeepsUploadedGeometry_data() {
++        QTest::addColumn<bool>("unmerged");
++        QTest::addColumn<bool>("moveRange");
++        QTest::addColumn<bool>("forceFull");
++        QTest::newRow("merged") << false << false << false;
++        QTest::newRow("unmerged") << true << false << false;
++        QTest::newRow("merged-order-change") << false << true << false;
++        QTest::newRow("unmerged-order-change") << true << true << false;
++        QTest::newRow("merged-full-order-change") << false << true << true;
++        QTest::newRow("unmerged-full-order-change") << true << true << true;
++    }
++
++    void unchangedSubrootKeepsUploadedGeometry() {
++        if (!qEnvironmentVariableIsSet("ZOIN_TEST_NATIVE_RENDERER"))
++            QSKIP("Requires a native Qt Quick renderer");
++        QFETCH(bool, unmerged);
++        QFETCH(bool, moveRange);
++        QFETCH(bool, forceFull);
++        watchedRoot = 0;
++        watchedUploads = 0;
++        QQuickWindow window;
++        window.resize(320, 240);
++        window.setColor(Qt::black);
++        auto *parent = new QQuickItem(window.contentItem());
++        parent->setSize(QSizeF(240, 200));
++        parent->setClip(true);
++        for (int i = 0; i < 100; ++i) {
++            auto *red = new ColorTile(parent, Qt::red);
++            red->setSize(parent->size());
++        }
++        auto *stable = new QQuickItem(parent);
++        stable->setPosition(QPointF(32, 32));
++        stable->setSize(QSizeF(80, 80));
++        stable->setClip(true);
++        auto *blue = new ColorTile(stable, QColor(0, 0, 255, 128), unmerged);
++        blue->setSize(QSizeF(48, 48));
++        // Distinct materials keep the unmerged rows in single-element batches.
++        auto *overlap = new ColorTile(stable, QColor(0, 0, unmerged ? 254 : 255, 128), unmerged);
++        overlap->setPosition(QPointF(16, 16));
++        overlap->setSize(QSizeF(48, 48));
++        auto *lastRoot = new QQuickItem(window.contentItem());
++        lastRoot->setPosition(QPointF(256, 0));
++        lastRoot->setSize(QSizeF(64, 64));
++        lastRoot->setClip(true);
++        auto *yellow = new ColorTile(lastRoot, Qt::yellow);
++        yellow->setSize(lastRoot->size());
++        auto *transient = new QQuickItem(parent);
++        transient->setPosition(QPointF(160, 80));
++        transient->setSize(QSizeF(32, 32));
++        transient->setClip(true);
++        auto *ephemeral = new EphemeralClip(parent);
++        ephemeral->setSize(QSizeF(4, 4));
++        std::atomic<quint64> uploads = 0;
++        std::atomic<bool> merged = false;
++        std::atomic<int> sceneOrders = 0;
++        std::atomic<bool> validRanges = true;
++        std::atomic<bool> requestFull = false;
++        connect(&window, &QQuickWindow::beforeRendering, &window, [&] {
++            auto *renderer = static_cast<QSGBatchRenderer::Renderer *>(
++                QQuickWindowPrivate::get(&window)->renderer);
++            auto *clip = QQuickItemPrivate::get(stable)->clipNode();
++            watchedRoot = renderer && clip ? quintptr(renderer->m_nodes.value(clip)) : 0;
++            if (renderer && requestFull.exchange(false))
++                renderer->m_rebuild = QSGBatchRenderer::Renderer::FullRebuild;
++        }, Qt::DirectConnection);
++        connect(&window, &QQuickWindow::afterRendering, &window, [&] {
++            auto *renderer = static_cast<QSGBatchRenderer::Renderer *>(
++                QQuickWindowPrivate::get(&window)->renderer);
++            auto *paint = QQuickItemPrivate::get(blue)->paintNode;
++            if (!renderer || !paint) return;
++            uploads = watchedUploads.load();
++            sceneOrders = renderer->m_nextRenderOrder;
++            for (auto *node : std::as_const(renderer->m_nodes)) {
++                if (node->type() == QSGNode::ClipNodeType || node->isBatchRoot) {
++                    const auto *info = node->rootInfo();
++                    if (info->availableOrders < 0 || info->firstOrder < 0
++                        || info->lastOrder < info->firstOrder) validRanges = false;
++                    if (info->parentRoot) {
++                        const auto *outer = info->parentRoot->rootInfo();
++                        if (info->firstOrder < outer->firstOrder || info->lastOrder > outer->lastOrder)
++                            validRanges = false;
++                    }
++                } else if (node->type() == QSGNode::GeometryNodeType) {
++                    const auto *element = node->element();
++                    if (element && !element->removed && element->root) {
++                        const auto *info = element->root->rootInfo();
++                        if (element->order <= info->firstOrder || element->order > info->lastOrder)
++                            validRanges = false;
++                    }
++                }
++            }
++            auto *shadow = renderer->m_nodes.value(paint);
++            if (shadow && shadow->element() && shadow->element()->batch) {
++                auto *batch = shadow->element()->batch;
++                merged = batch->merged;
++            }
++        }, Qt::DirectConnection);
++        window.show();
++        QVERIFY(QTest::qWaitForWindowExposed(&window));
++        const auto before = window.grabWindow();
++        QVERIFY(!before.isNull());
++        qInfo() << "Actual DPR" << window.devicePixelRatio();
++        if (qEnvironmentVariableIsSet("ZOIN_EXPECT_TEST_DPR"))
++            QCOMPARE(window.devicePixelRatio(), qEnvironmentVariable("ZOIN_EXPECT_TEST_DPR").toDouble());
++        QCOMPARE(merged.load(), !unmerged);
++        const auto initialUploads = uploads.load();
++        QVERIFY(initialUploads > 0);
++        auto *added = new ColorTile(parent, Qt::green);
++        added->setPosition(QPointF(160, 0));
++        added->setSize(QSizeF(32, 32));
++        if (moveRange) added->stackBefore(stable);
++        requestFull = forceFull;
++        const auto after = window.grabWindow();
++        if (moveRange && !unmerged) QVERIFY(uploads.load() > initialUploads);
++        else QCOMPARE(uploads.load(), initialUploads);
++        const qreal dpr = window.devicePixelRatio();
++        const QRect retainedRect(qRound(32*dpr), qRound(32*dpr), qRound(80*dpr), qRound(80*dpr));
++        QCOMPARE(after.copy(retainedRect), before.copy(retainedRect));
++        QCOMPARE(after.pixelColor(qRound(168*dpr), qRound(8*dpr)), QColor(Qt::green));
++        for (auto *leaf : {static_cast<QQuickItem *>(blue), static_cast<QQuickItem *>(overlap),
++                           static_cast<QQuickItem *>(added), static_cast<QQuickItem *>(yellow)}) {
++            const auto origin = leaf->mapToScene(QPointF());
++            QVERIFY(qAbs(origin.x()*dpr-qRound(origin.x()*dpr)) < .001);
++            QVERIFY(qAbs(origin.y()*dpr-qRound(origin.y()*dpr)) < .001);
++            QCOMPARE(leaf->mapToScene(QPointF(1, 0))-origin, QPointF(1, 0));
++            QCOMPARE(leaf->mapToScene(QPointF(0, 1))-origin, QPointF(0, 1));
++        }
++        QVERIFY(after.save(unmerged ? "retained-unmerged-root-175.png" : "retained-merged-root-175.png"));
++        const auto retainedUploads = uploads.load();
++        blue->setWidth(40);
++        blue->update();
++        const auto resized = window.grabWindow();
++        QVERIFY(uploads.load() > retainedUploads);
++        QCOMPARE(resized.pixelColor(qRound(76*dpr), qRound(40*dpr)), QColor(Qt::red));
++        blue->setWidth(48);
++        blue->update();
++        QCOMPARE(window.grabWindow().copy(retainedRect), before.copy(retainedRect));
++        blue->setColor(QColor(0, 255, 0, 128));
++        const auto recolored = window.grabWindow().pixelColor(qRound(40*dpr), qRound(40*dpr));
++        QVERIFY(qAbs(recolored.red()-127) <= 1 && qAbs(recolored.green()-128) <= 1);
++        QCOMPARE(recolored.blue(), 0);
++        blue->setColor(QColor(0, 0, 255, 128));
++        QCOMPARE(window.grabWindow().copy(retainedRect), before.copy(retainedRect));
++        delete overlap;
++        const auto single = window.grabWindow().pixelColor(qRound(60*dpr), qRound(60*dpr));
++        QVERIFY(qAbs(single.red()-127) <= 1 && qAbs(single.blue()-128) <= 1);
++        QCOMPARE(single.green(), 0);
++        const auto beforeGrowthUploads = uploads.load();
++        const auto beforeGrowthOrders = sceneOrders.load();
++        for (int i = 0; i < 16; ++i) {
++            auto *temporary = new ColorTile(transient, Qt::yellow);
++            temporary->setSize(transient->size());
++        }
++        const auto withTransient = window.grabWindow();
++        QCOMPARE(uploads.load(), beforeGrowthUploads);
++        QCOMPARE(sceneOrders.load(), beforeGrowthOrders);
++        QVERIFY(validRanges.load());
++        QCOMPARE(withTransient.pixelColor(qRound(168*dpr), qRound(88*dpr)), QColor(Qt::yellow));
++        const auto beforeRemovalUploads = uploads.load();
++        const auto beforeRemovalOrders = sceneOrders.load();
++        delete transient;
++        const auto withoutTransient = window.grabWindow();
++        QCOMPARE(uploads.load(), beforeRemovalUploads);
++        QCOMPARE(sceneOrders.load(), beforeRemovalOrders);
++        QCOMPARE(withoutTransient.copy(retainedRect), withTransient.copy(retainedRect));
++        QCOMPARE(withoutTransient.pixelColor(qRound(168*dpr), qRound(88*dpr)), QColor(Qt::red));
++        QVERIFY(validRanges.load());
++        const auto beforeEphemeralUploads = uploads.load();
++        const auto beforeEphemeralOrders = sceneOrders.load();
++        ephemeral->cycle();
++        QCOMPARE(window.grabWindow(), withoutTransient);
++        QCOMPARE(uploads.load(), beforeEphemeralUploads);
++        QCOMPARE(sceneOrders.load(), beforeEphemeralOrders);
++    }
++
+     void opacityInsideBlockedDrawingDoesNotRebuildUnrelatedBatches() {
+         if (!qEnvironmentVariableIsSet("ZOIN_TEST_NATIVE_RENDERER"))
+             QSKIP("Requires a native Qt Quick renderer");

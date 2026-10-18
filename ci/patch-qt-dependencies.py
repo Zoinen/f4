@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import runpy
 
 
 _ANCHOR = '            self.requires("freetype/[>=2.13 <3]")\n'
@@ -635,6 +636,37 @@ def _patch_quick_blocked_opacity(text: str) -> str:
                         _FFMPEG_SOURCE_ANCHOR + _QUICK_BLOCKED_OPACITY_SOURCE_PATCH)
 
 
+_QUICK_STABLE_INTERVALS_MARKER = "# f4: retain unchanged Qt Quick batches with owned order intervals"
+
+
+def _patch_quick_stable_intervals(text: str) -> str:
+    if _QUICK_STABLE_INTERVALS_MARKER in text:
+        return text
+    predecessors = (_QUICK_BATCH_ORDERS_SOURCE_PATCH, _QUICK_BLOCKED_OPACITY_SOURCE_PATCH)
+    if any(text.count(part) != 1 for part in predecessors):
+        raise SystemExit("unexpected Qt recipe: stable intervals predecessor anchor is absent or ambiguous")
+    replacements = runpy.run_path(
+        str(Path(__file__).with_name("qt_quick_stable_intervals.py"))
+    )["REPLACEMENTS"]
+    # Export the data into the recipe itself. Source preparation may happen on
+    # another machine without this repository or its helper files available.
+    source_patch = (
+        "        " + _QUICK_STABLE_INTERVALS_MARKER + "\n"
+        "        from conan.tools.files import load, save\n"
+        "        _f4_quick_path = os.path.join(self.source_folder, 'qtdeclarative',\n"
+        "                                     'src', 'quick', 'scenegraph', 'coreapi',\n"
+        "                                     'qsgbatchrenderer.cpp')\n"
+        "        _f4_quick_source = load(self, _f4_quick_path)\n"
+        f"        for _f4_before, _f4_after in {replacements!r}:\n"
+        "            if _f4_quick_source.count(_f4_before) != 1:\n"
+        "                raise RuntimeError('Qt Quick stable intervals source anchor changed or is ambiguous')\n"
+        "            _f4_quick_source = _f4_quick_source.replace(_f4_before, _f4_after)\n"
+        "        save(self, _f4_quick_path, _f4_quick_source)\n"
+    )
+    end = max(text.index(part) + len(part) for part in predecessors)
+    return text[:end] + source_patch + text[end:]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("recipe", type=Path)
@@ -663,6 +695,8 @@ def main() -> None:
     print("[FIX:quick-batch-orders] Qt Quick returns ancestor render-order reservations")
     patched = _patch_quick_blocked_opacity(patched)
     print("[FIX:quick-blocked-opacity] Qt Quick ignores opacity outside its renderer tree")
+    patched = _patch_quick_stable_intervals(patched)
+    print("[FIX:quick-stable-intervals] Qt Quick retains unchanged batches and owns free order intervals")
     if patched != text:
         args.recipe.write_text(patched, encoding="utf-8")
 

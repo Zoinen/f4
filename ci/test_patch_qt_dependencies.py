@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import pathlib
+import runpy
 import shutil
 import subprocess
 import tempfile
@@ -81,6 +82,85 @@ class QuickBlockedOpacityPatchTests(unittest.TestCase):
     def test_unknown_recipe_anchor_is_rejected(self) -> None:
         with self.assertRaisesRegex(SystemExit, "source patch anchor"):
             patcher._patch_quick_blocked_opacity("def source(self):\n    pass\n")
+
+
+class QuickStableIntervalsPatchTests(unittest.TestCase):
+    def recipe(self):
+        text = "def source(self):\n" + patcher._FFMPEG_SOURCE_ANCHOR
+        text = patcher._patch_quick_batch_orders(text)
+        return patcher._patch_quick_blocked_opacity(text)
+
+    def test_recipe_is_idempotent_self_contained_and_ordered(self):
+        patched = patcher._patch_quick_stable_intervals(self.recipe())
+        ast.parse(patched)
+        self.assertEqual(patcher._patch_quick_stable_intervals(patched), patched)
+        marker = patched.index(patcher._QUICK_STABLE_INTERVALS_MARKER)
+        self.assertGreater(marker, patched.index(patcher._QUICK_BATCH_ORDERS_MARKER))
+        self.assertGreater(marker, patched.index(patcher._QUICK_BLOCKED_OPACITY_MARKER))
+        self.assertNotIn("run_path", patched)
+        self.assertNotIn("artifacts/", patched)
+
+    def test_missing_predecessor_or_ambiguous_anchor_is_rejected(self):
+        for text in ("def source(self):\n    pass\n",
+                     "def source(self):\n" + patcher._FFMPEG_SOURCE_ANCHOR,
+                     self.recipe() + patcher._QUICK_BATCH_ORDERS_SOURCE_PATCH):
+            with self.subTest(text=text), self.assertRaisesRegex(SystemExit, "stable intervals"):
+                patcher._patch_quick_stable_intervals(text)
+
+    def execute(self, source):
+        saved = []
+        def replace_in_file(_recipe, path, before, after, strict):
+            nonlocal source
+            self.assertTrue(strict)
+            self.assertEqual(source.count(before), 1)
+            source = source.replace(before, after)
+        def load(_recipe, path):
+            self.assertEqual(pathlib.Path(path).as_posix(),
+                             "qtdeclarative/src/quick/scenegraph/coreapi/qsgbatchrenderer.cpp")
+            return source
+        def save(_recipe, path, value):
+            saved.append(value)
+        # Execute the actual generated body without depending on a Conan install.
+        # Only the local import is supplied by this test; replacement logic is real.
+        body = patcher._patch_quick_stable_intervals(self.recipe()).replace(
+            "        from conan.tools.files import load, save\n", "")
+        namespace = dict(os=__import__("os"), load=load, save=save,
+                         replace_in_file=replace_in_file, apply_conandata_patches=lambda _: None)
+        exec(body, namespace)
+        recipe = type("Recipe", (), {"source_folder": ""})()
+        namespace["source"](recipe)
+        self.assertEqual(len(saved), 1)
+        return saved[0]
+
+    def fixture(self):
+        replacements = runpy.run_path(str(SCRIPT.with_name("qt_quick_stable_intervals.py")))["REPLACEMENTS"]
+        self.assertIn("#define DECLARE_DEBUG_VAR(variable) " + chr(92) + "\n", replacements[0][0])
+        source = "\n// fixture gap\n".join(before for before, _ in replacements)
+        # The retained patch consumes the earlier ancestor-accounting correction.
+        source = source.replace(patcher._QUICK_BATCH_ORDERS_AFTER,
+                                patcher._QUICK_BATCH_ORDERS_BEFORE)
+        source += "\n" + patcher._QUICK_BLOCKED_OPACITY_BEFORE
+        return source, replacements
+
+    def test_source_composition_retains_batches_and_balances_intervals(self):
+        source, replacements = self.fixture()
+        expected = source.replace(patcher._QUICK_BATCH_ORDERS_BEFORE,
+                                  patcher._QUICK_BATCH_ORDERS_AFTER).replace(
+                                      patcher._QUICK_BLOCKED_OPACITY_BEFORE,
+                                      patcher._QUICK_BLOCKED_OPACITY_AFTER)
+        for before, after in replacements:
+            self.assertEqual(expected.count(before), 1)
+            expected = expected.replace(before, after)
+        self.assertEqual(self.execute(source), expected)
+        self.assertIn("f4PendingClips.remove(this)", expected)
+
+    def test_changed_or_duplicate_source_anchor_is_rejected_before_save(self):
+        source, replacements = self.fixture()
+        before = replacements[0][0]
+        for broken in (source.replace(before, "// upstream changed\n"), source + before):
+            with self.subTest(duplicate=broken.endswith(before)), self.assertRaisesRegex(
+                    RuntimeError, "Qt Quick stable intervals source anchor"):
+                self.execute(broken)
 
 
 class MacColorSpaceRecipePatchTests(unittest.TestCase):

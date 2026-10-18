@@ -64,6 +64,32 @@ particular, blur/filter effects can be omitted by the Qt 6.11 curve renderer;
 this is visible on SVG files with authored shadows/glow. Embedded raster content
 inside an SVG remains authored raster content.
 
+## Native batch retention
+
+The portable Qt recipe applies `ci/qt_quick_stable_intervals.py` after the
+existing drawing-order and blocked-opacity corrections. Each scene-graph root
+owns its free drawing-order interval; exhausted roots borrow capacity from
+ancestors, and removed or unpublished clips return their reservations.
+Unchanged native batches survive a partial render-list rebuild when their
+root range, members, element orders and global depth normalization remain
+unchanged. Ordinary dirty geometry still uploads. Visualizer and render-node
+cases retain Qt's invalidation path.
+
+Buffers remain with their original Qt batch. This avoids the corruption found
+in the rejected buffer-handoff experiment. Batch invalidation during removal
+uses Qt's deferred cleanup, rather than immediately recycling nodes that Qt
+can still reference. This changes neither vector source ownership nor bitmap
+cache policy. Large first-time geometry uploads can still exceed a frame;
+batch retention is not an upload budget or a guarantee of 160 Hz.
+
+The exported Conan recipe embeds all replacement data, checks every source
+anchor exactly once before writing the completed source, and rejects source
+drift. CI native-package cache keys include that data. The corresponding
+native test covers retained uploads, geometry/material mutations, changed
+drawing order, opacity, clip reparenting and repeated scissor/stencil lifetime
+changes. Its hardware-renderer assertions require
+`ZOIN_TEST_NATIVE_RENDERER=1`; offscreen-only test runs skip those assertions.
+
 ## Verification
 
 GallerySessionTest covers local and virtual SVG/SVGZ acquisition, malformed
