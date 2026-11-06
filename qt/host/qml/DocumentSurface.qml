@@ -12,6 +12,10 @@ Rectangle {
     property string surfaceObjectName: "documentSurface"
     objectName: surfaceObjectName
     property var frame: ({})
+    readonly property string documentKind: frame.kind || ""
+    readonly property int rendererColumns: Math.max(0, Number(presentationFrame.viewportColumns || 0))
+    readonly property string runDefaultBackground:
+        hostWindow.cleanText(presentationFrame.defaultBackground).toLowerCase()
     // Standalone F3/F4 owns the full application surface. Embedded
     // Quick View is already laid out between its own header and footer,
     // so applying the global menu/keybar insets there would double-pad it.
@@ -77,6 +81,19 @@ Rectangle {
     property alias terminalFollowTailInitialized: viewportController.terminalFollowTailInitialized
     readonly property var presentationFrame: viewportController.presentationFrame
     readonly property var selectionCursorFrame: editorPointerController.blockPreview || cursorFrame
+    readonly property int editorSelectionOverlayCount: {
+        if (documentKind !== "editor" || presentationFrame.hexMode === true
+                || presentationFrame.decodeMode === true)
+            return 0
+        const carets = cursorFrame.secondaryCarets || []
+        if (selectionCursorFrame.selection === true || selectionCursorFrame.rectSelection === true)
+            return 1 + carets.length
+        for (const caret of carets) {
+            if (caret.selection === true || caret.rectSelection === true)
+                return 1 + carets.length
+        }
+        return 0
+    }
     readonly property var cursorFrame:
         hostWindow.documentSurfaceStateOverride !== null
         && hostWindow.cleanText(hostWindow.documentSurfaceStateOverride.id)
@@ -186,43 +203,18 @@ Rectangle {
         Math.max(1, (standaloneViewport || terminalSurface)
                                       ? documentCellProbe.implicitWidth / 64
                                       : documentFontMetrics.advanceWidth("M"))
-    // Share the ancestor-to-window dependency chain once. Body text depends
-    // only on this origin and its known local layout; repeating a 12-parent
-    // dependency walk for every glyph run turns a row commit into a web of
-    // unnecessary binding reevaluations.
-    readonly property point pixelGridOrigin: {
-        let revision = hostWindow.width + hostWindow.height + hostWindow.dpr
-        let ancestor = documentRoot
-        while (ancestor && ancestor !== hostWindow.contentItem) {
-            revision += ancestor.x + ancestor.y + ancestor.width + ancestor.height
-            ancestor = ancestor.parent
-        }
-        const origin = documentRoot.mapToItem(hostWindow.contentItem, 0, 0)
-        return Qt.point(origin.x + revision * 0, origin.y)
-    }
-
-    function bodyPixelOffsetX(localX) {
-        const origin = pixelGridOrigin.x + localX
-        return (standaloneViewport || terminalSurface) && !kineticActive ? hostWindow.snapPx(origin) - origin : 0
-    }
-    function bodyPixelOffsetY(localY) {
-        const origin = pixelGridOrigin.y + localY
-        return (standaloneViewport || terminalSurface) && !kineticActive ? hostWindow.snapPx(origin) - origin : 0
-    }
-
     function pixelOffsetX(item) {
-        return (standaloneViewport || terminalSurface) && !kineticActive
+        return (standaloneViewport || terminalSurface)
                 ? hostWindow.dialogPixelOffsetX(item, hostWindow.contentItem) : 0
     }
     function pixelOffsetY(item) {
-        return (standaloneViewport || terminalSurface) && !kineticActive
+        return (standaloneViewport || terminalSurface)
                 ? hostWindow.dialogPixelOffsetY(item, hostWindow.contentItem) : 0
     }
 
     function runBackground(value) {
         var background = hostWindow.cleanText(value).toLowerCase()
-        var defaultBackground = hostWindow.cleanText(
-                    presentationFrame.defaultBackground).toLowerCase()
+        var defaultBackground = runDefaultBackground
         if ((defaultBackground !== ""
                 && background === defaultBackground)
                 || background === "#000000"

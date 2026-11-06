@@ -217,3 +217,52 @@ func TestSemanticEditorOccurrenceSelectionInvalidatesCachedRows(t *testing.T) {
 		t.Fatal("occurrence selection allowed scalar-only cursor update")
 	}
 }
+
+func TestSemanticEditorMultilineDragUsesCursorPatchWithOccurrenceMarking(t *testing.T) {
+	old := config.App.EditorMarkOccurrences
+	config.App.EditorMarkOccurrences = true
+	t.Cleanup(func() { config.App.EditorMarkOccurrences = old })
+	ev := projectionTestEditor(t, "word word\nsecond line\nthird line")
+	ev.EnsureEngineWidth()
+	ev.SelActive, ev.SelAnchorOffset = true, 0
+	ev.CursorLine, ev.CursorPos = 1, 3
+	guard := ev.editorCursorStateGuard()
+	if !guard.eligible {
+		t.Fatal("multiline drag unnecessarily requires styled row projection")
+	}
+	ev.CursorLine, ev.CursorPos = 2, 4
+	if !guard.canPublish(ev, true) {
+		t.Fatal("multiline drag cannot publish selection scalars")
+	}
+	ev.CursorLine, ev.CursorPos = 0, 4
+	if guard.canPublish(ev, true) {
+		t.Fatal("new occurrence highlighting must update styled rows")
+	}
+	guard = ev.editorCursorStateGuard()
+	ev.CursorLine, ev.CursorPos = 2, 4
+	if guard.canPublish(ev, true) {
+		t.Fatal("removing occurrence highlighting must update styled rows")
+	}
+}
+
+func TestSemanticEditorRealCursorStateMatchesCompactProtocol(t *testing.T) {
+	ev := projectionTestEditor(t, "first line\nsecond line")
+	ev.EnsureEngineWidth()
+	ev.SelActive, ev.SelAnchorOffset = true, 0
+	ev.CursorLine, ev.CursorPos = 1, 3
+	state := ev.semanticCursorState(ev.semanticSurfaceWidth())
+	compact := state.compactMap()
+	compact["documentKey"] = "editor-state-test"
+	compact["layoutRevision"] = uint64(1)
+	compact["windowGeneration"] = uint64(1)
+	compact["topBarRight"] = "UTF-8"
+	if !semantic.SemanticEditorSurfaceStateValid(compact) {
+		t.Fatal("real editor state is rejected by the compact protocol")
+	}
+	if _, exists := compact["rectSelection"]; exists {
+		t.Fatal("compact state includes styled rectangular selection")
+	}
+	if _, exists := state.ToMap()["rectSelection"]; !exists {
+		t.Fatal("full editor projection lost rectangular selection state")
+	}
+}

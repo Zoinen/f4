@@ -1,0 +1,34 @@
+--- a/src/qml/jsruntime/qv4qobjectwrapper.cpp
++++ b/src/qml/jsruntime/qv4qobjectwrapper.cpp
+@@ -40,6 +40,7 @@
+ #include <QtCore/qloggingcategory.h>
+ #include <QtCore/qmetaobject.h>
+ #include <QtCore/qqueue.h>
++#include <QtCore/qelapsedtimer.h>
+ #include <QtCore/qtimer.h>
+ #include <QtCore/qtypes.h>
+ #include <QtCore/qvarlengtharray.h>
+@@ -1491,6 +1492,8 @@
+ 
+ static void markChildQObjectsRecursively(QObject *parent, MarkStack *markStack)
+ {
++    QElapsedTimer timer; timer.start();
++    int visited = 0;
+     QQueue<QObject *> queue;
+     queue.append(parent->children());
+ 
+@@ -1498,9 +1501,14 @@
+         QObject *child = queue.dequeue();
+         if (!child)
+             continue;
++        ++visited;
+         QObjectWrapper::markWrapper(child, markStack);
+         queue.append(child->children());
+     }
++    const qint64 elapsed = timer.nsecsElapsed();
++    if (visited > 100 || elapsed > 100000)
++        qInfo().noquote() << "F4_GC_ROOT" << parent->metaObject()->className()
++            << parent->objectName() << "children" << visited << "ns" << elapsed;
+ }
+ 
+ void Heap::QObjectWrapper::markObjects(Heap::Base *that, MarkStack *markStack)

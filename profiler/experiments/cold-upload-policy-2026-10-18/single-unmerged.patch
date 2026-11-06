@@ -1,0 +1,85 @@
+--- a/src/quick/scenegraph/coreapi/qsgbatchrenderer.cpp
++++ b/src/quick/scenegraph/coreapi/qsgbatchrenderer.cpp
+@@ -102,6 +102,28 @@
+ const float OPAQUE_LIMIT                = 0.999f;
+ 
+ const uint DYNAMIC_VERTEX_INDEX_BUFFER_THRESHOLD = 4;
++
++// Unmerged uploads contain raw geometry, not baked transforms or z orders.
++// A single permanently-unmergeable element can keep its own buffers when only
++// the drawing-order numbering changes. Ordinary dirty flags still win.
++static bool f4RetainSingleUnmergedBatch(const Batch *batch, bool depth)
++{
++    if (batch->merged || batch->needsUpload || batch->isRenderNode || !batch->first)
++        return false;
++    const Element *element = batch->first;
++    if (element->removed || element->nextInBatch || element->batch != batch
++        || element->root != batch->root)
++        return false;
++    const QSGGeometryNode *node = element->node;
++    const auto flags = node->activeMaterial()->flags();
++    if (node->geometry()->indexType() != QSGGeometry::UnsignedIntType
++        && !(flags & QSGMaterial::NoBatching))
++        return false;
++    const bool opaque = depth && node->inheritedOpacity() > OPAQUE_LIMIT
++        && !(flags & QSGMaterial::Blending);
++    return opaque == batch->isOpaque;
++}
++
+ const int VERTEX_BUFFER_BINDING = 0;
+ const int ZORDER_BUFFER_BINDING = VERTEX_BUFFER_BINDING + 1;
+ 
+@@ -1779,6 +1801,12 @@
+     }
+     std::sort(changedOrders.begin(), changedOrders.end());
+     const auto retainBatch = [&](Batch *batch) {
++        if (m_visualizer->mode() == Visualizer::VisualizeNothing
++            && previousOrders.contains(batch->first)
++            && f4RetainSingleUnmergedBatch(batch, useDepthBuffer())) {
++            batch->lastOrderInBatch = batch->first->order;
++            return true;
++        }
+         if (m_nextRenderOrder != maxRenderOrder || batch->isRenderNode || !batch->first
+             || m_visualizer->mode() != Visualizer::VisualizeNothing)
+             return false;
+@@ -1810,19 +1838,31 @@
+ 
+ void Renderer::buildRenderListsFromScratch()
+ {
++    QList<Batch *> previousBatches;
++    for (auto *batches : {&m_opaqueBatches, &m_alphaBatches}) {
++        for (int i = 0; i < batches->size(); ++i)
++            previousBatches.append(batches->at(i));
++        batches->reset();
++    }
+     m_opaqueRenderList.reset();
+     m_alphaRenderList.reset();
+-
+-    for (int i=0; i<m_opaqueBatches.size(); ++i)
+-        invalidateAndRecycleBatch(m_opaqueBatches.at(i));
+-    for (int i=0; i<m_alphaBatches.size(); ++i)
+-        invalidateAndRecycleBatch(m_alphaBatches.at(i));
+-    m_opaqueBatches.reset();
+-    m_alphaBatches.reset();
+-
+     m_nextRenderOrder = 0;
+-
+     buildRenderLists(rootNode());
++
++    QSet<Element *> survivingElements;
++    for (const auto *list : {&m_opaqueRenderList, &m_alphaRenderList})
++        for (int i = 0; i < list->size(); ++i)
++            survivingElements.insert(list->at(i));
++    for (Batch *batch : std::as_const(previousBatches)) {
++        if (m_visualizer->mode() == Visualizer::VisualizeNothing
++            && survivingElements.contains(batch->first)
++            && f4RetainSingleUnmergedBatch(batch, useDepthBuffer())) {
++            batch->lastOrderInBatch = batch->first->order;
++            (batch->isOpaque ? m_opaqueBatches : m_alphaBatches).add(batch);
++        } else {
++            invalidateAndRecycleBatch(batch);
++        }
++    }
+ }
+ 
+ void Renderer::invalidateBatchAndOverlappingRenderOrders(Batch *batch)

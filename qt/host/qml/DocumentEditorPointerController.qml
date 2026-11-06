@@ -28,15 +28,20 @@ Item {
     property var blockPreview: null
     property var blockAnchor: null
     property real lastAbsoluteRow: 0
+    property real lastAbsoluteColumn: 0
 
     function updateBlockPreview(action) {
         if (action.phase === "press") {
             blockPreview = null
-            blockAnchor = action.alt && action.button === "left"
-                ? { row: lastAbsoluteRow, column: action.column + (action.scrollLeft || 0) } : null
+            blockAnchor = action.button === "left" && !action.ctrl && !action.doubleClick
+                ? { row: lastAbsoluteRow,
+                    column: action.alt ? action.column + (action.scrollLeft || 0) : lastAbsoluteColumn,
+                    rectangular: action.alt } : null
         } else if (action.moved && blockAnchor !== null) {
             blockPreview = Object.assign({}, cursorState, {
-                rectSelection: true, selection: false,
+                rectSelection: blockAnchor.rectangular, selection: !blockAnchor.rectangular,
+                selectionAnchorRow: blockAnchor.row, selectionAnchorColumn: blockAnchor.column,
+                cursorAbsoluteRow: lastAbsoluteRow, cursorAbsoluteColumn: lastAbsoluteColumn,
                 rectAnchorRow: blockAnchor.row, rectAnchorColumn: blockAnchor.column,
                 rectFocusRow: lastAbsoluteRow,
                 rectFocusColumn: Math.max(0, action.column + (action.scrollLeft || 0))
@@ -47,11 +52,22 @@ Item {
     function acknowledgeBlockPreview() {
         if (activePointer !== null || blockPreview === null)
             return
-        if (cursorState.rectSelection === true
+        const rectangularMatch = blockPreview.rectSelection === true
+                && cursorState.rectSelection === true
                 && cursorState.rectAnchorRow === blockPreview.rectAnchorRow
                 && cursorState.rectAnchorColumn === blockPreview.rectAnchorColumn
                 && cursorState.rectFocusRow === blockPreview.rectFocusRow
-                && cursorState.rectFocusColumn === blockPreview.rectFocusColumn)
+                && cursorState.rectFocusColumn === blockPreview.rectFocusColumn
+        const streamMatch = blockPreview.selection === true
+                // Go resolves exact byte/character boundaries (tabs and wide
+                // characters). Hand those columns back when the endpoint row
+                // arrives, rather than retaining a guessed column forever.
+                && (cursorState.selection === true
+                    ? cursorState.selectionAnchorRow === blockPreview.selectionAnchorRow
+                    : blockPreview.selectionAnchorRow === blockPreview.cursorAbsoluteRow
+                      && blockPreview.selectionAnchorColumn === blockPreview.cursorAbsoluteColumn)
+                && cursorState.cursorAbsoluteRow === blockPreview.cursorAbsoluteRow
+        if (rectangularMatch || streamMatch)
             blockPreview = null
     }
     onCursorStateChanged: acknowledgeBlockPreview()
@@ -99,6 +115,8 @@ Item {
                                    ? viewportController.appliedViewportStart
                                    : Number(frame.viewportStart || 0))))
         lastAbsoluteRow = absoluteRow
+        lastAbsoluteColumn = Math.max(0, column + (viewportController.standaloneViewport
+                                ? viewportController.appliedScrollLeft : Number(frame.scrollLeft || 0)))
         lastMouseColumn = column
         lastMouseRow = row
         const buttons = phase === "release" ? Qt.NoButton
@@ -119,11 +137,15 @@ Item {
         if (viewportController.standaloneViewport) {
             if (!viewportController.windowInitialized || rows.length === 0)
                 return null
-            const displayedRow = rows[Math.max(0, Math.min(
-                                        windowIndex, rows.length - 1))]
+            const displayedRow = viewportController.committedRowAt(
+                        Math.max(0, Math.min(windowIndex, rows.length - 1)))
+            if (displayedRow === null || displayedRow.offset === undefined)
+                return null
+            if (displayedRow.visualWidth !== undefined)
+                lastAbsoluteColumn = Math.min(lastAbsoluteColumn, Number(displayedRow.visualWidth))
             action.documentKey = viewportController.appliedDocumentKey
             action.layoutRevision = viewportController.appliedLayoutRevision
-            action.rowOffset = Number(displayedRow.offset || 0)
+            action.rowOffset = Number(displayedRow.offset)
             action.scrollLeft = viewportController.appliedScrollLeft
         }
         lastMouseAction = action
@@ -144,7 +166,8 @@ Item {
         const actionMap = mouseAction(mouse, phase, moved, doubleClick)
         if (actionMap === null)
             return
-        updateBlockPreview(actionMap)
+        updateBlockPreview(phase === "release"
+            ? Object.assign({}, actionMap, { moved: blockAnchor !== null }) : actionMap)
         if (phase === "press")
             viewportController.cancelPendingIntent()
         if (viewportController.standaloneViewport && phase !== "release") {

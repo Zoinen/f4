@@ -88,6 +88,47 @@ func TestReloadSameDirectoryKeepsRowsAndCursor(t *testing.T) {
 	}
 }
 
+func TestReturnBeforeChildCatalogCommitsDoesNotRetainChildRows(t *testing.T) {
+	oldConfig := config.App
+	t.Cleanup(func() { config.App = oldConfig })
+	config.App.SyncPanelLoad = false
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+
+	parent := t.TempDir()
+	child := filepath.Join(parent, "child")
+	if err := os.Mkdir(child, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	fp := NewFileSystemPanel(0, 0, 80, 25, vfs.NewOSVFS(parent))
+	t.Cleanup(func() {
+		if fp.CancelLoad != nil {
+			fp.CancelLoad()
+		}
+		fp.StopLoadingAnimation()
+	})
+	waitForLoad(t, fp)
+
+	if err := fp.SetKnownDirectoryPath(child); err != nil {
+		t.Fatal(err)
+	}
+	fp.ReadDirectory()
+	// A preview from the child can be interactive before its final listing commits.
+	fp.Entries = append(fp.Entries, &FileEntry{VFSItem: vfs.VFSItem{Name: "inside.txt"}})
+	if err := fp.SetKnownDirectoryPath(parent); err != nil {
+		t.Fatal(err)
+	}
+	fp.PendingSelection = "child"
+	fp.ReadDirectory()
+	keptChildRows := indexOfRow(fp, "inside.txt") >= 0
+	waitForLoad(t, fp)
+	if keptChildRows {
+		t.Fatal("the parent read kept rows from the child's preview")
+	}
+	if name := fp.GetRawSelectedName(); name != "child" {
+		t.Fatalf("parent cursor = %q, want child", name)
+	}
+}
+
 // TestNavigationToParentKeepsRowsUnderSyncLoad is the Ctrl+PgUp half of the
 // jump: with SyncPanelLoad on, leaving a directory replaced the rows with a
 // ".." skeleton and parked the cursor on it until the parent's listing

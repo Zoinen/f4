@@ -5,6 +5,7 @@ import (
 	semantic "github.com/unxed/f4/internal/semantic"
 	extui "github.com/unxed/f4/sdk/extui"
 	vtui "github.com/unxed/vtui"
+	"reflect"
 	testing "testing"
 )
 
@@ -362,6 +363,7 @@ func TestBuildAppSceneFromLegacyKeepsShellTerminalInsideShell(t *testing.T) {
 					"id":           "shell-terminal",
 					"kind":         "terminal",
 					"title":        "ls",
+					"columns":      120,
 					"busy":         false,
 					"contentStart": int64(20),
 					"rows": []map[string]any{
@@ -384,6 +386,9 @@ func TestBuildAppSceneFromLegacyKeepsShellTerminalInsideShell(t *testing.T) {
 	terminal := shell["terminal"].(map[string]any)
 	if terminal["id"] != "shell-terminal" || terminal["title"] != "ls" {
 		t.Fatalf("unexpected shell terminal: %#v", terminal)
+	}
+	if terminal["columns"] != 120 {
+		t.Fatalf("terminal columns = %v, want 120", terminal["columns"])
 	}
 	if terminal["contentStart"] != int64(20) {
 		t.Fatalf("terminal leading-padding boundary was not preserved: %#v", terminal["contentStart"])
@@ -461,6 +466,31 @@ func TestAppWorkspaceTabsExposeTypedLucideIcons(t *testing.T) {
 	}
 	if semantic.AppBool(tabs[4]["closable"]) {
 		t.Fatal("active operations queue tab remained closable")
+	}
+}
+
+func TestAppWorkspaceTabsHeaderMatchesFullScene(t *testing.T) {
+	t.Parallel()
+	legacy := map[string]any{
+		"workspaceTabs": map[string]any{
+			"tabs": []map[string]any{
+				{"index": 0, "number": 1, "surfaceKind": "panels", "marker": "P", "text": "P photos"},
+				{"index": 1, "number": 2, "surfaceKind": "terminal", "marker": "T", "text": "Terminal"},
+				{"index": 2, "number": 3, "surfaceKind": "editor", "marker": "E", "text": "notes.md"},
+			},
+		},
+		"screens": []map[string]any{
+			{"number": 1, "frames": []map[string]any{{"kind": "panels", "showPanels": true}}},
+			{"number": 2, "frames": []map[string]any{{"kind": "panels", "showPanels": false}}},
+			{"number": 3, "frames": []map[string]any{{"kind": "editor"}}},
+		},
+	}
+	header := map[string]any{"workspaceTabs": legacy["workspaceTabs"]}
+	fullTabs := appQueueAwareWorkspaceTabs(legacy)
+	headerTabs := appSemanticRootFromHeader(header).WorkspaceTabs
+	if !reflect.DeepEqual(headerTabs, fullTabs) {
+		t.Fatalf("workspace tabs differ between header and full scene\nheader: %#v\nfull:   %#v",
+			headerTabs, fullTabs)
 	}
 }
 

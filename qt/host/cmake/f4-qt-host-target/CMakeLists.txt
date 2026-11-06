@@ -24,17 +24,15 @@ foreach(qml_file IN LISTS F4_HOST_QML_FILES)
     PROPERTIES QT_RESOURCE_ALIAS "${qml_file}")
 endforeach()
 
-add_executable(f4-qt-host ${F4_QT_HOST_SOURCES})
+qt_add_executable(f4-qt-host MANUAL_FINALIZATION ${F4_QT_HOST_SOURCES})
 
-if(F4_QT_STATIC AND MSVC AND CMAKE_GENERATOR STREQUAL "Ninja")
-  # Ninja puts the final object and the complete static dependency closure on
-  # one response-file line. link.exe truncates that line around 16 KiB, so
-  # split CMake's multi-space argument separators just before linking.
-  add_custom_command(TARGET f4-qt-host PRE_LINK
-    COMMAND "${CMAKE_COMMAND}"
-      "-DRSP_FILE=${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/f4-qt-host.rsp"
-      -P "${F4_QT_HOST_ROOT}/cmake/SplitMsvcLinkResponse.cmake"
-    VERBATIM)
+if(WIN32)
+  set_property(TARGET f4-qt-host PROPERTY WIN32_EXECUTABLE TRUE)
+  if(MSVC)
+    # Keep the existing main(argc, argv) entry while suppressing a console
+    # window when the Go launcher starts this graphical helper.
+    target_link_options(f4-qt-host PRIVATE "/ENTRY:mainCRTStartup")
+  endif()
 endif()
 
 # Qt's metatype and QML registration rules must be created in the same CMake

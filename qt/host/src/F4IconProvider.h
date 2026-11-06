@@ -10,6 +10,7 @@
 #include <QObject>
 #include <QPair>
 #include <QQuickImageProvider>
+#include <QRegularExpression>
 #include <QString>
 #include <QStringView>
 #include <QUrl>

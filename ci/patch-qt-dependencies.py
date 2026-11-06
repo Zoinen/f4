@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import runpy
 
 
 _ANCHOR = '            self.requires("freetype/[>=2.13 <3]")\n'
@@ -528,6 +529,29 @@ def _patch_quick_package_guard(text: str) -> str:
     )
 
 
+_WINDOWS_HDR_COORDINATES_MARKER = "# f4: map HDR output coordinates relative to their screen"
+_WINDOWS_HDR_COORDINATES_SOURCE_PATCH = '''        # f4: map HDR output coordinates relative to their screen
+        _f4_hdr_path = os.path.join(self.source_folder, 'qtbase', 'src', 'gui',
+                                   'rhi', 'qdxgihdrinfo.cpp')
+        replace_in_file(self, _f4_hdr_path,
+                        '#include "qdxgihdrinfo_p.h"',
+                        '#include "qdxgihdrinfo_p.h"\\n#include <QtGui/private/qhighdpiscaling_p.h>')
+        replace_in_file(self, _f4_hdr_path,
+                        '    QRect wr = w->geometry();\\n'
+                        '    wr = QRect(wr.topLeft() * w->devicePixelRatio(), wr.size() * w->devicePixelRatio());',
+                        '    const QRect wr = QHighDpi::toNativePixels(w->geometry(), w);')
+'''
+
+
+def _patch_windows_hdr_coordinates(text: str) -> str:
+    if _WINDOWS_HDR_COORDINATES_MARKER in text:
+        return text
+    if text.count(_FFMPEG_SOURCE_ANCHOR) != 1:
+        raise SystemExit("unexpected Qt recipe: HDR coordinate patch anchor is absent or ambiguous")
+    return text.replace(_FFMPEG_SOURCE_ANCHOR,
+                        _FFMPEG_SOURCE_ANCHOR + _WINDOWS_HDR_COORDINATES_SOURCE_PATCH)
+
+
 _MACOS_COLORSPACE_MARKER = "# f4: retain macOS image color space through native conversion"
 _MACOS_COLORSPACE_REPLACEMENTS = (
     ("painting/qcoregraphics.mm",
@@ -566,6 +590,309 @@ def _patch_macos_colorspace(text: str) -> str:
                         _FFMPEG_SOURCE_ANCHOR + _MACOS_COLORSPACE_SOURCE_PATCH)
 
 
+_QUICK_BATCH_ORDERS_MARKER = "# f4: balance Qt Quick batch root order reservations"
+_QUICK_BATCH_ORDERS_BEFORE = (
+    "                BatchRootInfo *info = batchRootInfo(e->root);\n"
+    "                info->availableOrders++;\n"
+)
+_QUICK_BATCH_ORDERS_AFTER = (
+    "                BatchRootInfo *info = batchRootInfo(e->root);\n"
+    "                // Mirror the ancestor reservations in Updater::visitGeometryNode().\n"
+    "                while (info) {\n"
+    "                    ++info->availableOrders;\n"
+    "                    info = info->parentRoot ? batchRootInfo(info->parentRoot) : nullptr;\n"
+    "                }\n"
+)
+_QUICK_BATCH_ORDERS_SOURCE_PATCH = (
+    "        " + _QUICK_BATCH_ORDERS_MARKER + "\n"
+    "        replace_in_file(\n"
+    "            self,\n"
+    "            os.path.join(self.source_folder, 'qtdeclarative', 'src', 'quick',\n"
+    "                         'scenegraph', 'coreapi', 'qsgbatchrenderer.cpp'),\n"
+    f"            {_QUICK_BATCH_ORDERS_BEFORE!r},\n"
+    f"            {_QUICK_BATCH_ORDERS_AFTER!r},\n"
+    "            strict=True,\n"
+    "        )\n"
+)
+
+
+def _patch_quick_batch_orders(text: str) -> str:
+    if _QUICK_BATCH_ORDERS_MARKER in text:
+        return text
+    if text.count(_FFMPEG_SOURCE_ANCHOR) != 1:
+        raise SystemExit("unexpected Qt recipe: batch root source patch anchor is absent or ambiguous")
+    return text.replace(_FFMPEG_SOURCE_ANCHOR,
+                        _FFMPEG_SOURCE_ANCHOR + _QUICK_BATCH_ORDERS_SOURCE_PATCH)
+
+
+_QUICK_BLOCKED_OPACITY_MARKER = "# f4: ignore opacity outside Qt Quick's renderer tree"
+_QUICK_BLOCKED_OPACITY_BEFORE = (
+    "        // Force a batch rebuild if this includes an opacity change\n"
+    "        if (state & QSGNode::DirtyOpacity)\n"
+    "            m_rebuild |= FullRebuild;\n"
+)
+_QUICK_BLOCKED_OPACITY_AFTER = (
+    "        // A blocked ancestor can keep this node out of the renderer entirely.\n"
+    "        // Only an existing subtree has batches whose opacity must be rebuilt.\n"
+    "        if ((state & QSGNode::DirtyOpacity) && sn)\n"
+    "            m_rebuild |= FullRebuild;\n"
+)
+_QUICK_BLOCKED_OPACITY_SOURCE_PATCH = (
+    "        " + _QUICK_BLOCKED_OPACITY_MARKER + "\n"
+    "        replace_in_file(\n"
+    "            self,\n"
+    "            os.path.join(self.source_folder, 'qtdeclarative', 'src', 'quick',\n"
+    "                         'scenegraph', 'coreapi', 'qsgbatchrenderer.cpp'),\n"
+    f"            {_QUICK_BLOCKED_OPACITY_BEFORE!r},\n"
+    f"            {_QUICK_BLOCKED_OPACITY_AFTER!r},\n"
+    "            strict=True,\n"
+    "        )\n"
+)
+
+
+def _patch_quick_blocked_opacity(text: str) -> str:
+    if _QUICK_BLOCKED_OPACITY_MARKER in text:
+        return text
+    if text.count(_FFMPEG_SOURCE_ANCHOR) != 1:
+        raise SystemExit("unexpected Qt recipe: blocked opacity source patch anchor is absent or ambiguous")
+    return text.replace(_FFMPEG_SOURCE_ANCHOR,
+                        _FFMPEG_SOURCE_ANCHOR + _QUICK_BLOCKED_OPACITY_SOURCE_PATCH)
+
+
+_QUICK_STABLE_INTERVALS_MARKER = "# f4: retain unchanged Qt Quick batches with owned order intervals"
+
+
+def _patch_quick_stable_intervals(text: str) -> str:
+    replacements = runpy.run_path(
+        str(Path(__file__).with_name("qt_quick_stable_intervals.py"))
+    )["REPLACEMENTS"]
+    # Export the data into the recipe itself. Source preparation may happen on
+    # another machine without this repository or its helper files available.
+    source_patch = (
+        "        " + _QUICK_STABLE_INTERVALS_MARKER + "\n"
+        "        from conan.tools.files import load, save\n"
+        "        _f4_quick_path = os.path.join(self.source_folder, 'qtdeclarative',\n"
+        "                                     'src', 'quick', 'scenegraph', 'coreapi',\n"
+        "                                     'qsgbatchrenderer.cpp')\n"
+        "        _f4_quick_source = load(self, _f4_quick_path)\n"
+        f"        for _f4_before, _f4_after in {replacements!r}:\n"
+        "            if _f4_quick_source.count(_f4_before) != 1:\n"
+        "                raise RuntimeError('Qt Quick stable intervals source anchor changed or is ambiguous')\n"
+        "            _f4_quick_source = _f4_quick_source.replace(_f4_before, _f4_after)\n"
+        "        save(self, _f4_quick_path, _f4_quick_source)\n"
+    )
+    if _QUICK_STABLE_INTERVALS_MARKER in text:
+        start_marker = "        " + _QUICK_STABLE_INTERVALS_MARKER + "\n"
+        end_marker = "        save(self, _f4_quick_path, _f4_quick_source)\n"
+        if text.count(start_marker) != 1 or text.count(end_marker) != 1:
+            raise SystemExit("unexpected Qt recipe: stable intervals refresh anchors are absent or ambiguous")
+        start = text.index(start_marker)
+        end = text.index(end_marker) + len(end_marker)
+        if end <= start:
+            raise SystemExit("unexpected Qt recipe: stable intervals refresh anchors are out of order")
+        return text[:start] + source_patch + text[end:]
+    predecessors = (_QUICK_BATCH_ORDERS_SOURCE_PATCH, _QUICK_BLOCKED_OPACITY_SOURCE_PATCH)
+    if any(text.count(part) != 1 for part in predecessors):
+        raise SystemExit("unexpected Qt recipe: stable intervals predecessor anchor is absent or ambiguous")
+    end = max(text.index(part) + len(part) for part in predecessors)
+    return text[:end] + source_patch + text[end:]
+
+
+_QUICK_BUFFER_POOL_FIT_MARKER = "# f4: prefer pooled buffers with sufficient capacity"
+_QUICK_BUFFER_POOL_FIT_BEFORE = '''                if (!buffer->buf
+                    || (testBuffer->size() >= expectedSize && testBuffer->size() < buffer->buf->size())'''
+_QUICK_BUFFER_POOL_FIT_AFTER = '''                if (!buffer->buf
+                    || (testBuffer->size() >= expectedSize && buffer->buf->size() < expectedSize)
+                    || (testBuffer->size() >= expectedSize && testBuffer->size() < buffer->buf->size())'''
+_QUICK_BUFFER_POOL_FIT_SOURCE_PATCH = (
+    "        " + _QUICK_BUFFER_POOL_FIT_MARKER + "\n"
+    "        from conan.tools.files import load, save\n"
+    "        _f4_pool_path = os.path.join(self.source_folder, 'qtdeclarative',\n"
+    "                                    'src', 'quick', 'scenegraph', 'coreapi', 'qsgbatchrenderer.cpp')\n"
+    "        _f4_pool_source = load(self, _f4_pool_path)\n"
+    f"        _f4_pool_before = {_QUICK_BUFFER_POOL_FIT_BEFORE!r}\n"
+    f"        _f4_pool_after = {_QUICK_BUFFER_POOL_FIT_AFTER!r}\n"
+    "        if _f4_pool_source.count(_f4_pool_before) != 1:\n"
+    "            raise RuntimeError('Qt Quick buffer-pool fit source anchor changed or is ambiguous')\n"
+    "        save(self, _f4_pool_path, _f4_pool_source.replace(_f4_pool_before, _f4_pool_after))\n"
+)
+
+
+def _patch_quick_buffer_pool_fit(text: str) -> str:
+    if _QUICK_BUFFER_POOL_FIT_MARKER in text:
+        return text
+    if text.count(_FFMPEG_SOURCE_ANCHOR) != 1:
+        raise SystemExit("unexpected Qt recipe: source patch anchor is absent or ambiguous")
+    return text.replace(_FFMPEG_SOURCE_ANCHOR,
+                        _FFMPEG_SOURCE_ANCHOR + _QUICK_BUFFER_POOL_FIT_SOURCE_PATCH)
+
+
+_QUICK_UPLOAD_POLICY_MARKER = "# f4: retain vector batches and bound initial upload work"
+
+
+def _quick_upload_policy_source_patch() -> str:
+    replacements = runpy.run_path(
+        str(Path(__file__).with_name("qt_quick_upload_policy.py"))
+    )["REPLACEMENTS"]
+    return (
+        "        " + _QUICK_UPLOAD_POLICY_MARKER + "\n"
+        "        from conan.tools.files import load, save\n"
+        "        _f4_upload_sources = []\n"
+        f"        for _f4_name, _f4_changes in {replacements!r}:\n"
+        "            _f4_path = os.path.join(self.source_folder, 'qtdeclarative', 'src',\n"
+        "                                    'quick', 'scenegraph', 'coreapi', _f4_name)\n"
+        "            _f4_source = load(self, _f4_path)\n"
+        "            for _f4_before, _f4_after in _f4_changes:\n"
+        "                if _f4_source.count(_f4_before) != 1:\n"
+        "                    raise RuntimeError('Qt Quick upload policy source anchor changed or is ambiguous')\n"
+        "                _f4_source = _f4_source.replace(_f4_before, _f4_after)\n"
+        "            _f4_upload_sources.append((_f4_path, _f4_source))\n"
+        "        for _f4_path, _f4_source in _f4_upload_sources:\n"
+        "            save(self, _f4_path, _f4_source)\n"
+    )
+
+
+def _patch_quick_upload_policy(text: str) -> str:
+    if _QUICK_UPLOAD_POLICY_MARKER in text:
+        start_marker = "        " + _QUICK_UPLOAD_POLICY_MARKER + "\n"
+        end_marker = ("        for _f4_path, _f4_source in _f4_upload_sources:\n"
+                      "            save(self, _f4_path, _f4_source)\n")
+        if text.count(start_marker) != 1 or text.count(end_marker) != 1:
+            raise SystemExit("unexpected Qt recipe: upload policy refresh anchor is absent or ambiguous")
+        start = text.index(start_marker)
+        end = text.index(end_marker) + len(end_marker)
+        if end <= start:
+            raise SystemExit("unexpected Qt recipe: upload policy refresh anchors are out of order")
+        return text[:start] + _quick_upload_policy_source_patch() + text[end:]
+    predecessors = (
+        _QUICK_BUFFER_POOL_FIT_SOURCE_PATCH,
+        "        save(self, _f4_quick_path, _f4_quick_source)\n",
+    )
+    if (_QUICK_STABLE_INTERVALS_MARKER not in text
+            or any(text.count(part) != 1 for part in predecessors)):
+        raise SystemExit("unexpected Qt recipe: upload policy predecessor anchor is absent or ambiguous")
+    end = max(text.index(part) + len(part) for part in predecessors)
+    return text[:end] + _quick_upload_policy_source_patch() + text[end:]
+
+
+_QUICK_CHILD_WINDOW_STACKING_MARKER = "# f4: skip child-window stacking walks without native children"
+_QUICK_CHILD_WINDOW_STACKING_BEFORE = '''    if (!item) {
+        qCDebug(lcQuickWindow) << "Updating child window stacking order for" << q;
+'''
+_QUICK_CHILD_WINDOW_STACKING_AFTER = '''    if (!item) {
+        bool hasChildWindow = false;
+        for (QWindow *childWindow : QGuiApplication::allWindows()) {
+            if (childWindow->parent() == q) {
+                hasChildWindow = true;
+                break;
+            }
+        }
+        if (!hasChildWindow)
+            return;
+        qCDebug(lcQuickWindow) << "Updating child window stacking order for" << q;
+'''
+_QUICK_CHILD_WINDOW_STACKING_SOURCE_PATCH = (
+    "        " + _QUICK_CHILD_WINDOW_STACKING_MARKER + "\n"
+    "        from conan.tools.files import load, save\n"
+    "        _f4_window_path = os.path.join(self.source_folder, 'qtdeclarative',\n"
+    "                                      'src', 'quick', 'items', 'qquickwindow.cpp')\n"
+    "        _f4_window_source = load(self, _f4_window_path)\n"
+    f"        _f4_window_before = {_QUICK_CHILD_WINDOW_STACKING_BEFORE!r}\n"
+    f"        _f4_window_after = {_QUICK_CHILD_WINDOW_STACKING_AFTER!r}\n"
+    "        if _f4_window_source.count(_f4_window_before) != 1:\n"
+    "            raise RuntimeError('Qt Quick child-window stacking source anchor changed or is ambiguous')\n"
+    "        save(self, _f4_window_path, _f4_window_source.replace(_f4_window_before, _f4_window_after))\n"
+)
+
+
+def _patch_quick_child_window_stacking(text: str) -> str:
+    if _QUICK_CHILD_WINDOW_STACKING_MARKER in text:
+        return text
+    if text.count(_FFMPEG_SOURCE_ANCHOR) != 1:
+        raise SystemExit("unexpected Qt recipe: source patch anchor is absent or ambiguous")
+    return text.replace(_FFMPEG_SOURCE_ANCHOR,
+                        _FFMPEG_SOURCE_ANCHOR + _QUICK_CHILD_WINDOW_STACKING_SOURCE_PATCH)
+
+
+_QUICK_ANIMATION_CLOCK_MARKER = "# f4: expose precise render-animation callback clock"
+
+
+def _quick_animation_clock_source_patch() -> str:
+    replacements = runpy.run_path(
+        str(Path(__file__).with_name("qt_quick_animation_clock.py"))
+    )["REPLACEMENTS"]
+    return (
+        "        " + _QUICK_ANIMATION_CLOCK_MARKER + "\n"
+        "        from conan.tools.files import load, save\n"
+        "        _f4_clock_sources = []\n"
+        f"        for _f4_name, _f4_changes in {replacements!r}:\n"
+        "            _f4_path = os.path.join(self.source_folder, 'qtdeclarative', 'src',\n"
+        "                                    'quick', 'scenegraph', _f4_name)\n"
+        "            _f4_source = load(self, _f4_path)\n"
+        "            for _f4_before, _f4_after in _f4_changes:\n"
+        "                if _f4_source.count(_f4_before) != 1:\n"
+        "                    raise RuntimeError('Qt Quick animation clock source anchor changed or is ambiguous')\n"
+        "                _f4_source = _f4_source.replace(_f4_before, _f4_after)\n"
+        "            _f4_clock_sources.append((_f4_path, _f4_source))\n"
+        "        for _f4_path, _f4_source in _f4_clock_sources:\n"
+        "            save(self, _f4_path, _f4_source)\n"
+    )
+
+
+def _patch_quick_animation_clock(text: str) -> str:
+    block = _quick_animation_clock_source_patch()
+    if _QUICK_ANIMATION_CLOCK_MARKER in text:
+        begin = "        " + _QUICK_ANIMATION_CLOCK_MARKER + "\n"
+        end = "        for _f4_path, _f4_source in _f4_clock_sources:\n            save(self, _f4_path, _f4_source)\n"
+        if text.count(begin) != 1 or text.count(end) != 1:
+            raise SystemExit("unexpected Qt recipe: animation clock refresh anchors are ambiguous")
+        start, stop = text.index(begin), text.index(end) + len(end)
+        if stop <= start:
+            raise SystemExit("unexpected Qt recipe: animation clock refresh anchors are out of order")
+        return text[:start] + block + text[stop:]
+    end = "        for _f4_path, _f4_source in _f4_upload_sources:\n            save(self, _f4_path, _f4_source)\n"
+    if text.count(end) != 1:
+        raise SystemExit("unexpected Qt recipe: animation clock predecessor anchor is absent or ambiguous")
+    return text.replace(end, end + block)
+
+
+_QML_SIGNAL_MASK_MARKER = "# f4: reduce conservative QML signal-mask collisions"
+
+
+def _qml_signal_mask_source_patch() -> str:
+    replacements = runpy.run_path(
+        str(Path(__file__).with_name("qt_qml_signal_policy.py"))
+    )["REPLACEMENTS"]
+    return (
+        "        " + _QML_SIGNAL_MASK_MARKER + "\n"
+        "        from conan.tools.files import load, save\n"
+        "        _f4_signal_path = os.path.join(self.source_folder, 'qtdeclarative',\n"
+        "                                       'src', 'qml', 'qml', 'qqmlengine.cpp')\n"
+        "        _f4_signal_source = load(self, _f4_signal_path)\n"
+        f"        for _f4_before, _f4_after in {replacements!r}:\n"
+        "            if _f4_signal_source.count(_f4_before) != 1:\n"
+        "                raise RuntimeError('Qt QML signal-mask source anchor changed or is ambiguous')\n"
+        "            _f4_signal_source = _f4_signal_source.replace(_f4_before, _f4_after)\n"
+        "        save(self, _f4_signal_path, _f4_signal_source)\n"
+    )
+
+
+def _patch_qml_signal_mask(text: str) -> str:
+    block = _qml_signal_mask_source_patch()
+    if _QML_SIGNAL_MASK_MARKER in text:
+        begin = "        " + _QML_SIGNAL_MASK_MARKER + "\n"
+        end = "        save(self, _f4_signal_path, _f4_signal_source)\n"
+        if text.count(begin) != 1 or text.count(end) != 1:
+            raise SystemExit("unexpected Qt recipe: QML signal-mask refresh anchors are ambiguous")
+        start, stop = text.index(begin), text.index(end) + len(end)
+        if stop <= start:
+            raise SystemExit("unexpected Qt recipe: QML signal-mask refresh anchors are out of order")
+        return text[:start] + block + text[stop:]
+    if text.count(_FFMPEG_SOURCE_ANCHOR) != 1:
+        raise SystemExit("unexpected Qt recipe: source patch anchor is absent or ambiguous")
+    return text.replace(_FFMPEG_SOURCE_ANCHOR, _FFMPEG_SOURCE_ANCHOR + block)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("recipe", type=Path)
@@ -589,7 +916,23 @@ def main() -> None:
             "Conan's pulseaudio::pulse target"
         )
     patched = _patch_macos_colorspace(patched)
+    patched = _patch_windows_hdr_coordinates(patched)
     print("[FIX:mac-color-space] Qt recipe retains native image color spaces")
+    patched = _patch_quick_batch_orders(patched)
+    print("[FIX:quick-batch-orders] Qt Quick returns ancestor render-order reservations")
+    patched = _patch_quick_blocked_opacity(patched)
+    print("[FIX:quick-blocked-opacity] Qt Quick ignores opacity outside its renderer tree")
+    patched = _patch_quick_stable_intervals(patched)
+    print("[FIX:quick-stable-intervals] Qt Quick retains unchanged batches and owns free order intervals")
+    patched = _patch_quick_buffer_pool_fit(patched)
+    print("[FIX:quick-buffer-pool-fit] Qt Quick selects reusable buffers before growing undersized ones")
+    patched = _patch_quick_upload_policy(patched)
+    patched = _patch_quick_animation_clock(patched)
+    print("[FIX:quick-upload-policy] Qt Quick retains vector batches and bounds initial upload work")
+    patched = _patch_quick_child_window_stacking(patched)
+    print("[FIX:quick-child-window-stacking] Qt Quick skips scene walks without native child windows")
+    patched = _patch_qml_signal_mask(patched)
+    print("[FIX:qml-signal-mask] Qt QML reduces unobserved cross-thread signal forwarding")
     if patched != text:
         args.recipe.write_text(patched, encoding="utf-8")
 

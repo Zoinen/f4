@@ -1,6 +1,6 @@
 # SVG rendering
 
-SVG and SVGZ file previews use Qt 6.11 VectorImage with the curve renderer in
+SVG and SVGZ file previews use Qt 6.11's VectorImage scene generator and curve renderer in
 Details, Columns, Grid, Icons, Masonry, and the flat image viewer. Interface
 icons retain their existing rendering path. SVG rendering is automatic and adds
 no semantic wire field. The shared transparency checkerboard preference is
@@ -9,9 +9,11 @@ for the viewer and both panels, and saves it across restarts.
 
 ## Source ownership and scheduling
 
-VectorSource validates the document and intrinsic dimensions on an existing
-image worker. Virtual sources use ImageSourceProvider materialization and retain
-its lease. Sources are keyed by the existing immutable source revision. The
+VectorSource validates the document and intrinsic dimensions and prepares Qt's
+vector QML scene on an existing image worker. Its immutable temporary directory
+owns the generated scene and copies of authored raster image elements. Virtual
+sources use ImageSourceProvider materialization and retain its lease. Sources
+are keyed by the existing immutable source revision. The
 decode manager reuses weak handles; VectorSourcePin gives each QML surface an
 independent strong handle, including during viewer transitions. Catalog
 retention is bounded by recent revisions, visible/overscan rows and viewer
@@ -22,6 +24,19 @@ comes first, followed by alternating next/previous candidates. Failed documents
 do not consume the successful-image prefetch budget. Vectors bypass raster
 thumbnail restoration and Fit/Native bitmap frames. Zoom and resize reuse the
 surface and acquired source.
+
+Qt 6.11's generator has shared mutable internal storage, so generation is
+serialized with priority and cancellation checks. Waiting active-viewer work
+overtakes thumbnail work; neighbor requests retain their ordinal. Every gallery
+generation call uses this gate. Do not add a concurrent stock VectorImage source
+assignment on the GUI thread without addressing Qt's shared storage.
+
+VectorSourcePin loads the prepared component with asynchronous compilation;
+GalleryVectorImage uses asynchronous Loader incubation instead of VectorImage's
+synchronous loadFile path. A pending component owns the source handle until
+compilation finishes, independently of a cancelled or destroyed surface. A
+generation token rejects stale completions. Fresh per-revision directories
+avoid stale QQmlEngine directory listings. No new Go wire fields are needed.
 
 The viewer prepares a replacement scene in a second vector surface while the
 current scene remains visible. GalleryVectorSwap commits only a ready surface
@@ -49,6 +64,62 @@ particular, blur/filter effects can be omitted by the Qt 6.11 curve renderer;
 this is visible on SVG files with authored shadows/glow. Embedded raster content
 inside an SVG remains authored raster content.
 
+## Native batch retention
+
+The portable Qt recipe also corrects vertex/index buffer-pool selection. A
+buffer with enough capacity takes precedence over an undersized one, regardless
+of pool order; the existing smallest-adequate/largest-undersized rules then
+apply. This avoids needless growth when reusable capacity is already present,
+without increasing pool limits or changing buffer types. See
+`profiler/reports/buffer-pool-fit-2026-10-18.md` for native regressions, live
+missed-fit counts and the remaining frame-time limitations.
+
+Panel fallback icons coalesce source, extent and tint changes into the next
+Quick polish pass through `GalleryIconImage`. A row commit does not rasterize
+every intermediate size. Empty sources clear outgoing pixels immediately;
+the final icon is loaded before scene synchronization. This does not change
+SVG file presentation or interface icons. See
+`profiler/reports/icon-raster-coalescing-2026-10-18.md` for regression and
+scrolling measurements, including the remaining spikes.
+
+The portable Qt recipe skips the native child-window stacking tree walk when
+the Quick window has no native child windows. If any native child exists, Qt's
+original recursive ordering and raise behavior remain intact. This avoids a
+whole-item-tree scan during delegate and vector-scene changes without changing
+layout, pixel alignment or rendering priorities. See the measured limits in
+`profiler/reports/child-window-stacking-2026-10-18.md`.
+
+Idle panel vector surfaces retain the size, DPR, crop mode and checkerboard
+state of their last host. Releasing a surface into the bounded scene cache
+does not resize it to a placeholder square or switch it to DPR 1. Reusing it
+in an equivalent host preserves geometry; a different live host still supplies
+its current presentation properties. Revision pinning, cancellation and cache
+eviction limits are unchanged.
+
+The portable Qt recipe applies `ci/qt_quick_stable_intervals.py` after the
+existing drawing-order and blocked-opacity corrections. Each scene-graph root
+owns its free drawing-order interval; exhausted roots borrow capacity from
+ancestors, and removed or unpublished clips return their reservations.
+Unchanged native batches survive a partial render-list rebuild when their
+root range, members, element orders and global depth normalization remain
+unchanged. Ordinary dirty geometry still uploads. Visualizer and render-node
+cases retain Qt's invalidation path.
+
+Buffers remain with their original Qt batch. This avoids the corruption found
+in the rejected buffer-handoff experiment. Batch invalidation during removal
+uses Qt's deferred cleanup, rather than immediately recycling nodes that Qt
+can still reference. This changes neither vector source ownership nor bitmap
+cache policy. Large first-time geometry uploads can still exceed a frame;
+batch retention is not an upload budget or a guarantee of 160 Hz.
+
+The exported Conan recipe embeds all replacement data, checks every source
+anchor exactly once before writing the completed source, and rejects source
+drift. CI native-package cache keys include that data. The corresponding
+native test covers retained uploads, geometry/material mutations, changed
+drawing order, opacity, clip reparenting and repeated scissor/stencil lifetime
+changes. Its hardware-renderer assertions require
+`ZOIN_TEST_NATIVE_RENDERER=1`; offscreen-only test runs skip those assertions.
+
 ## Verification
 
 GallerySessionTest covers local and virtual SVG/SVGZ acquisition, malformed
@@ -59,13 +130,16 @@ panel modes. At DPR 1.75, tests check scene-space origins and unit transforms of
 vector surfaces and actual visible caption/secondary-text leaves, and capture
 rendered output including small SVG text and thin strokes.
 
-The synthetic acquisition/scroll/navigation trace measured 16 SVG metadata
+Before worker scene generation was added, a synthetic acquisition/scroll/navigation trace measured 16 SVG metadata
 operations: median 0.428 ms, maximum 0.571 ms, including worker source acquisition;
 SVG validation alone had median 0.201 ms, maximum 0.368 ms. The small-caption
 surface fixture took 24 ms to become ready including asynchronous scene
 preparation. These are local/test-provider measurements, not Android transport
 latency guarantees. Timing uses the existing F4_MEDIA_TIMING_TRACE path and the
-surface sceneGenerationMs property.
+surface sceneGenerationMs property. Those timings describe the earlier
+validation-only acquisition path, not the current worker generation cost. See
+[the integrated scrolling report](../profiler/reports/vector-worker-integration-2026-10-17.md)
+for current measurements and remaining frame spikes.
 
 Portable Windows verification includes qmlImportsWithoutInstalledQt, the system
 DLL import audit, regenerated embedded host payload, and launch from the single

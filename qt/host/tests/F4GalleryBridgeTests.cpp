@@ -35,6 +35,7 @@
 #include <ZoinGallery/GallerySession.h>
 #include <ZoinGallery/GalleryCatalogSource.h>
 #include "../../../third_party/ZoinGallery/tests/DirectoryPreviewFixture.h"
+#include "../../../third_party/ZoinGallery/GalleryDelegateItem.h"
 
 class GalleryKeyRecorder final : public QObject
 {
@@ -120,6 +121,8 @@ private slots:
     void initTestCase();
     void panelIconsKeepNativeRasterAtMixedDpi();
     void nativeFileIconsDoNotKeepFallbackUnderlay();
+    void nativeFileIconsSurviveFailedThumbnail_data();
+    void nativeFileIconsSurviveFailedThumbnail();
     void frameTraceUsesDirectSwapBoundaryAcrossQueuedDelivery();
     void documentWindowTraceWaitsForCommittedRenderSync();
     void stableActionsCarryRevisions();
@@ -161,6 +164,7 @@ private slots:
     void rapidSwipeKeepsCursorAcrossDelayedReplies_data();
     void rapidSwipeKeepsCursorAcrossDelayedReplies();
     void panelCatalogRowsRequestStartsAtFirstMissingRow();
+    void masonryBackfillsBeyondTheViewportAfterItsFirstFrame();
     void rejectedPanelCatalogRowsRetryWhileSourceLoads();
     void groupedCatalogPagesInstallAtomically();
     void groupedCatalogPagesAllowParentEntry();
@@ -647,6 +651,115 @@ void F4GalleryBridgeTests::nativeFileIconsDoNotKeepFallbackUnderlay()
         "native source=%1 fallback source=%2")
         .arg(native->property("source").toUrl().toString())
         .arg(fallback->property("source").toUrl().toString())));
+}
+
+void F4GalleryBridgeTests::nativeFileIconsSurviveFailedThumbnail_data()
+{
+    QTest::addColumn<int>("mode");
+    QTest::newRow("masonry") << 0;
+    QTest::newRow("columns") << 1;
+    QTest::newRow("details") << 2;
+    QTest::newRow("grid") << 3;
+    QTest::newRow("icons") << 4;
+}
+
+void F4GalleryBridgeTests::nativeFileIconsSurviveFailedThumbnail()
+{
+    QFETCH(int, mode);
+    QTemporaryDir directory;
+    QQuickView view;
+    view.resize(360, 260);
+    view.setColor(QColor("#191d23"));
+    F4IconSet icons;
+    icons.setIconSet(F4IconSet::System);
+    view.engine()->addImageProvider(icons.providerId(), new F4IconProvider({}, true));
+    view.engine()->addImportPath(QStringLiteral(":"));
+    view.engine()->addImportPath(QStringLiteral("qrc:/qt/qml"));
+    ZoinGallery::RuntimeOptions options;
+    options.persistentCache = false;
+    auto *runtime = ZoinGallery::GalleryRuntime::install(view.engine(), options);
+    QVERIFY(runtime);
+    const auto shutdown = qScopeGuard([&] { runtime->shutdown(); });
+    QQmlComponent component(view.engine());
+    component.setData(R"QML(
+        import QtQuick
+        import ZoinGallery
+        Item {
+            width: 360; height: 260
+            property alias slot: slot
+            property alias panel: panel
+            GalleryPanel { id: panel; visible: false }
+            GalleryEntryDelegateBase {
+                id: slot; panelRoot: panel; viewIndex: 0; sourceIndex: 0
+                x: 13.2; y: 17.3; width: 220; height: 180
+                masonryGeometryReady: true
+            }
+        }
+    )QML", QUrl(QStringLiteral("inline:FailedThumbnailNativeIcon.qml")));
+    QTRY_VERIFY(component.status() != QQmlComponent::Loading);
+    QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+    auto *root = qobject_cast<QQuickItem *>(component.create());
+    QVERIFY2(root, qPrintable(component.errorString()));
+    auto *slot = qobject_cast<GalleryDelegateItem *>(
+        root->property("slot").value<QObject *>());
+    QVERIFY(slot);
+    slot->setPresentationMode(mode);
+    root->property("panel").value<QObject *>()->setProperty(
+        "devicePixelRatio", view.devicePixelRatio());
+    view.setContent(QUrl(QStringLiteral("inline:FailedThumbnailNativeIcon.qml")),
+                    &component, root);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+
+    const QUrl nativeSource = icons.fileIconSource(
+        directory.filePath("sample.bat"), QStringLiteral("sample.bat"), false,
+        128, view.devicePixelRatio());
+    QVariantMap row{{"valid", true}, {"entryId", "failed-thumbnail"},
+        {"text", "sample.bat"}, {"iconPath", nativeSource.toString()},
+        {"highlightForeground", "#59bd32"}, {"isImage", false},
+        {"imageIdUrl", QUrl::fromLocalFile(directory.filePath("missing.png")).toString()}};
+    slot->setVisualRow(row);
+    QQuickItem *thumbnail = nullptr;
+    QTRY_VERIFY((thumbnail = slot->findChild<QQuickItem *>("galleryThumbnailImage-0")));
+    QTRY_COMPARE(thumbnail->property("status").toInt(), 3); // Image.Error
+    QQuickItem *native = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT((native = slot->findChild<QQuickItem *>(
+        "gallerySourceColorIcon-0")), 3000);
+    QTRY_COMPARE(native->property("status").toInt(), 1); // Image.Ready
+    auto *gate = slot->findChild<QQuickItem *>("galleryFallbackDrawingGate-0");
+    QVERIFY(gate);
+    QTRY_VERIFY(!gate->property("sceneVisible").toBool());
+    QTest::qWait(100);
+    view.update();
+    const QImage frame = view.grabWindow();
+    QVERIFY(!frame.isNull());
+    const QPointF origin = native->mapToScene(QPointF());
+    const qreal dpr = view.devicePixelRatio();
+    QVERIFY(qAbs(origin.x() * dpr - qRound(origin.x() * dpr)) < .001);
+    QVERIFY(qAbs(origin.y() * dpr - qRound(origin.y() * dpr)) < .001);
+    QCOMPARE(native->mapToScene(QPointF(1, 0)) - origin, QPointF(1, 0));
+    QCOMPARE(native->mapToScene(QPointF(0, 1)) - origin, QPointF(0, 1));
+    const QPointF center = native->mapToScene(
+        QPointF(native->width() / 2, native->height() / 2)) * dpr;
+    QCOMPARE(frame.pixelColor(center.toPoint()), QColor(Qt::white));
+    if (qEnvironmentVariableIsSet("F4_NATIVE_ICON_CAPTURE"))
+        QVERIFY(frame.save(qEnvironmentVariable("F4_NATIVE_ICON_CAPTURE")
+                           + QStringLiteral("-%1.png").arg(mode)));
+
+    // A failed request must not be retried when the native icon becomes ready.
+    QCOMPARE(thumbnail->property("status").toInt(), 3);
+    QVERIFY(!gate->property("sceneVisible").toBool());
+    QImage photo(80, 40, QImage::Format_ARGB32);
+    photo.fill(Qt::red);
+    const QString photoPath = directory.filePath("photo.png");
+    QVERIFY(photo.save(photoPath));
+    row["entryId"] = "valid-thumbnail";
+    row["text"] = "photo.png";
+    row["isImage"] = true;
+    row["imageIdUrl"] = QUrl::fromLocalFile(photoPath).toString();
+    slot->setVisualRow(row);
+    QTRY_COMPARE(thumbnail->property("status").toInt(), 1);
+    QTRY_VERIFY(!slot->findChild<QQuickItem *>("gallerySourceColorIcon-0"));
 }
 
 void F4GalleryBridgeTests::documentWindowTraceWaitsForCommittedRenderSync()
@@ -5256,6 +5369,48 @@ void F4GalleryBridgeTests::panelCatalogRowsRequestStartsAtFirstMissingRow()
     QCOMPARE(state.catalogRowsRequestLimit, 64);
 }
 
+void F4GalleryBridgeTests::masonryBackfillsBeyondTheViewportAfterItsFirstFrame()
+{
+    F4GalleryBridge bridge(nullptr);
+    auto &state = bridge.m_panelSessions.catalog(0);
+    state.initialized = state.active = state.previewCapable = true;
+    state.catalogRowsDeferred = state.metadataDeferred = true;
+    state.panelId = QStringLiteral("photos");
+    state.galleryLayoutMode = QStringLiteral("masonry");
+    state.totalCount = 802;
+    state.catalogRowsVisibleFirst = 0;
+    state.catalogRowsVisibleLast = 35;
+    for (int row = 0; row < 128; ++row) {
+        QVERIFY(F4GalleryBridge::setCatalogEntry(state, row, QVariantMap{
+            {QStringLiteral("entryId"), QString::number(row)},
+            {QStringLiteral("index"), row},
+        }));
+    }
+    QSignalSpy requests(&bridge, &F4GalleryBridge::panelCatalogRowsRequested);
+    state.metadataAwaitingFrame = true;
+    bridge.requestPanelCatalogRows(0);
+    QCOMPARE(requests.size(), 0);
+    state.metadataAwaitingFrame = false;
+    state.galleryLayoutMode = QStringLiteral("details");
+    bridge.requestPanelCatalogRows(0);
+    QCOMPARE(requests.size(), 0);
+    state.galleryLayoutMode = QStringLiteral("masonry");
+    bridge.requestPanelCatalogRows(0);
+    QCOMPARE(requests.size(), 1);
+    QCOMPARE(state.catalogRowsRequestOffset, 128);
+    QCOMPARE(state.catalogRowsRequestLimit, 64);
+
+    state.metadataVisibleFirst = 0;
+    state.metadataVisibleLast = 35;
+    state.metadataPendingRanges = {{128, 192}};
+    int offset = -1, limit = -1;
+    bool urgent = true;
+    QVERIFY(bridge.choosePanelCatalogMetadataRange(0, &offset, &limit, &urgent));
+    QCOMPARE(offset, 128);
+    QVERIFY(limit > 0);
+    QVERIFY(!urgent);
+}
+
 void F4GalleryBridgeTests::rejectedPanelCatalogRowsRetryWhileSourceLoads()
 {
     F4GalleryBridge bridge(nullptr);
@@ -6068,6 +6223,19 @@ void F4GalleryBridgeTests::galleryPresentationStateCommitsSynchronouslyInOneLayo
         embeddedPanel->property("presentationMode").toString(),
         QStringLiteral("icons"), 3000);
     QTRY_COMPARE_WITH_TIMEOUT(layout->property("count").toInt(), 140, 3000);
+
+    QSignalSpy rendererTransactions(host.data(),
+                                    SIGNAL(applyingRendererStateChanged()));
+    QVERIFY(rendererTransactions.isValid());
+    const QVariantMap equivalentOverlay = {
+        {QStringLiteral("id"), panel.value(QStringLiteral("id"))},
+        {QStringLiteral("catalogRevision"),
+         panel.value(QStringLiteral("catalogRevision"))},
+        {QStringLiteral("galleryLayoutRevision"), 1},
+    };
+    QVERIFY(host->setProperty("layoutState", equivalentOverlay));
+    QVERIFY(host->setProperty("layoutState", QVariant{}));
+    QCOMPARE(rendererTransactions.size(), 0);
 
     const auto switchLayoutOverlay = [&](const QString &mode,
                                          int columnCount,

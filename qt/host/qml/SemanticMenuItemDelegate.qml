@@ -27,11 +27,7 @@ Rectangle {
            : ListView.view.width - overlayController.menuEdgeInset
     height: overlayController.itemHeight(modelData)
     radius: 4
-    // ListView can position recycled rows at fractional physical coordinates
-    // during polish, after the normal leaf alignment pass. Correct the shared
-    // row immediately as its scroll position changes, before drawing its text.
-    readonly property real alignmentRevision:
-        popupList.contentY + popupSurfaceItem.x + popupSurfaceItem.y + x + y
+    // Cached local fitting is independent of the shared scrolling root.
     transform: Translate {
         x: overlayController.historyMenu
            ? hostWindow.dialogPixelOffsetX(menuItem, hostWindow.contentItem) : 0
@@ -332,9 +328,6 @@ Rectangle {
         y: hostWindow.snapPx((parent.height - height) / 2)
         width: hostWindow.snapPx(15)
         height: hostWindow.snapPx(15)
-        property real alignmentRevision:
-            popupSurfaceItem.x + popupSurfaceItem.y
-            + popupList.contentY + parent.y
         transform: Translate {
             x: hostWindow.iconPixelOffsetX(leadingMenuIcon)
             y: hostWindow.iconPixelOffsetY(leadingMenuIcon)
@@ -363,9 +356,6 @@ Rectangle {
         color: hostWindow.cleanText(modelData.iconColor) !== ""
                ? hostWindow.cleanText(modelData.iconColor)
                : hostWindow.textColor
-        property real alignmentRevision:
-            popupSurfaceItem.x + popupSurfaceItem.y
-            + popupList.contentY + parent.y
         transform: Translate {
             x: hostWindow.iconPixelOffsetX(menuItemColor)
             y: hostWindow.iconPixelOffsetY(menuItemColor)
@@ -392,9 +382,6 @@ Rectangle {
         font.pixelSize: (hostWindow ? hostWindow.uiTextSize(17) : 17)
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment: Text.AlignVCenter
-        property real alignmentRevision:
-            popupSurfaceItem.x + popupSurfaceItem.y
-            + popupList.contentY + parent.y
         transform: Translate {
             x: hostWindow.iconPixelOffsetX(menuItemChevron)
             y: hostWindow.iconPixelOffsetY(menuItemChevron)

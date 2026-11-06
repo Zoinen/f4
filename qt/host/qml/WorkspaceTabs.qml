@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
+import ZoinGallery.PixelGrid 1.0 as Grid
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Shapes
@@ -430,7 +431,7 @@ Item {
                                     workspaceTab.labelColor)
                     }
 
-                    Item {
+                    Grid.PixelGridScope {
                         id: workspaceLabel
                         objectName: "workspace-tab-label-"
                                     + workspaceTab.objectName

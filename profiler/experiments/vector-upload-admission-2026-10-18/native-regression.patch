@@ -1,0 +1,302 @@
+--- a/qt/host/tests/F4QtBatchRootOrdersTests.cpp
++++ b/qt/host/tests/F4QtBatchRootOrdersTests.cpp
+@@ -2,6 +2,8 @@
+ #include <QQuickWindow>
+ #include <QSGSimpleRectNode>
+ #include <QSGMaterial>
++#include <QSGFlatColorMaterial>
++#include <QSGRenderNode>
+ #include <QSGClipNode>
+ #include <QSGTransformNode>
+ #include <QScopeGuard>
+@@ -14,6 +16,7 @@
+ #undef private
+ 
+ #include <atomic>
++#include "VectorUploadGateProtocol.h"
+ 
+ namespace {
+ 
+@@ -140,6 +143,66 @@
+     bool stencil;
+ };
+ 
++class UploadGateTile final : public QQuickItem {
++public:
++    UploadGateTile(QQuickItem *parent, QColor color, int vertices = 16384)
++        : QQuickItem(parent), color(color), vertices(vertices) {
++        setFlag(ItemHasContents);
++        setSize(QSizeF(16, 16));
++    }
++protected:
++    QSGNode *updatePaintNode(QSGNode *node, UpdatePaintNodeData *) override {
++        if (node) return node;
++        auto *result = new QSGGeometryNode;
++        // A large allocation with only four referenced vertices exercises
++        // upload admission without adding expensive overdraw to this fixture.
++        auto *geometry = new QSGGeometry(QSGGeometry::defaultAttributes_Point2D(),
++                                        vertices, 6, QSGGeometry::UnsignedIntType);
++        geometry->setDrawingMode(QSGGeometry::DrawTriangles);
++        auto *vertices = geometry->vertexDataAsPoint2D();
++        for (int i = 0; i < geometry->vertexCount(); ++i) vertices[i].set(0, 0);
++        vertices[1].set(16, 0);
++        vertices[2].set(16, 16);
++        vertices[3].set(0, 16);
++        const quint32 indices[] = {0, 1, 2, 0, 2, 3};
++        memcpy(geometry->indexData(), indices, sizeof(indices));
++        auto *material = new QSGFlatColorMaterial;
++        material->setColor(color);
++        material->setFlag(QSGMaterial::NoBatching);
++        result->setGeometry(geometry);
++        result->setMaterial(material);
++        result->setFlag(QSGNode::OwnsGeometry);
++        result->setFlag(QSGNode::OwnsMaterial);
++        return result;
++    }
++private:
++    QColor color;
++    int vertices;
++};
++
++class GateRenderNode final : public QSGRenderNode {
++public:
++    explicit GateRenderNode(std::atomic<int> *calls) : calls(calls) {}
++    StateFlags changedStates() const override { return {}; }
++    RenderingFlags flags() const override { return BoundedRectRendering; }
++    QRectF rect() const override { return QRectF(0, 0, 16, 16); }
++    void render(const RenderState *) override { ++*calls; }
++private:
++    std::atomic<int> *calls;
++};
++
++class GateRenderItem final : public QQuickItem {
++public:
++    GateRenderItem(QQuickItem *parent, std::atomic<int> *calls) : QQuickItem(parent), calls(calls) {
++        setFlag(ItemHasContents);
++    }
++    QSGNode *updatePaintNode(QSGNode *node, UpdatePaintNodeData *) override {
++        return node ? node : new GateRenderNode(calls);
++    }
++private:
++    std::atomic<int> *calls;
++};
++
+ } // namespace
+ 
+ class F4QtBatchRootOrdersTests : public QObject {
+@@ -150,6 +213,197 @@
+         previousMessageHandler = qInstallMessageHandler(watchUploads);
+     }
+     void cleanupTestCase() { qInstallMessageHandler(previousMessageHandler); }
++
++    void vectorUploadGateDefersDrawingUntilComplete() {
++        if (!qEnvironmentVariableIsSet("ZOIN_TEST_NATIVE_RENDERER"))
++            QSKIP("Requires a native Qt Quick renderer");
++        QQuickWindow window;
++        window.resize(256, 160);
++        window.setColor(Qt::black);
++        auto *background = new ColorTile(window.contentItem(), Qt::blue);
++        background->setSize(QSizeF(256, 160));
++        auto *gate = new QQuickItem(window.contentItem());
++        gate->setPosition(QPointF(16, 16));
++        gate->setSize(QSizeF(192, 128));
++        gate->setClip(true);
++        gate->setVisible(false);
++        std::atomic<int> renderNodeCalls = 0;
++        QList<QQuickItem *> leaves;
++        for (int i = 0; i < 24; ++i) {
++            auto *tile = new UploadGateTile(gate, QColor(200 + i, 0, 0));
++            tile->setObjectName(QStringLiteral("uploadGateTile-%1").arg(i));
++            tile->setPosition(QPointF((i % 8)*24, (i / 8)*24));
++            leaves.append(tile);
++        }
++        new GateRenderItem(gate, &renderNodeCalls);
++        const F4VectorUploadGateInterface *api = nullptr;
++        std::atomic<bool> supported = false;
++        std::atomic<bool> uploadReady = false;
++        std::atomic<bool> present = false;
++        std::atomic<bool> cpuComplete = true;
++        std::atomic<quint64> generation = 1;
++        std::atomic<int> priority = 0;
++        std::atomic<bool> staleGenerationReady = false;
++        std::atomic<bool> viewerReady = false;
++        std::atomic<bool> removedRootReady = false;
++        std::atomic<QSGNode *> removedRoot = nullptr;
++        QQuickItem *viewerGate = nullptr;
++        std::atomic<int> maximumUploadsPerFrame = 0;
++        QSGNode *registeredRoot = nullptr;
++        connect(&window, &QQuickWindow::beforeRendering, &window, [&] {
++            api = static_cast<const F4VectorUploadGateInterface *>(
++                window.rendererInterface()->getResource(&window, "f4.vectorUploadGate.v1"));
++            supported = api && api->version == 1;
++            if (!supported || !gate) return;
++            auto *clip = QQuickItemPrivate::get(gate)->clipNode();
++            if (!clip) return;
++            registeredRoot = clip;
++            api->configure(clip, generation.load(), cpuComplete.load(), present.load(),
++                           priority.load(), false);
++            if (viewerGate) {
++                if (auto *viewerClip = QQuickItemPrivate::get(viewerGate)->clipNode())
++                    api->configure(viewerClip, 1, true, false, 0, false);
++            }
++            auto *renderer = static_cast<QSGBatchRenderer::Renderer *>(
++                QQuickWindowPrivate::get(&window)->renderer);
++            watchedRoot = renderer ? quintptr(renderer->m_nodes.value(clip)) : 0;
++            watchedUploads = 0;
++        }, Qt::DirectConnection);
++        connect(&window, &QQuickWindow::afterRendering, &window, [&] {
++            if (!supported) return;
++            if (removedRoot.load()) removedRootReady = api->ready(removedRoot.load(), 2);
++            if (!registeredRoot) return;
++            maximumUploadsPerFrame = qMax(maximumUploadsPerFrame.load(), int(watchedUploads.load()));
++            uploadReady = api->ready(registeredRoot, generation.load());
++            if (generation.load() != 1) staleGenerationReady = api->ready(registeredRoot, 1);
++            if (viewerGate) {
++                auto *clip = QQuickItemPrivate::get(viewerGate)->clipNode();
++                viewerReady = clip && api->ready(clip, 1);
++            }
++        }, Qt::DirectConnection);
++        window.show();
++        QVERIFY(QTest::qWaitForWindowExposed(&window));
++        const QImage backgroundOnly = window.grabWindow();
++        QVERIFY(supported.load());
++        gate->setVisible(true);
++        int frames = 0;
++        while (!uploadReady.load() && frames++ < 64) {
++            QCOMPARE(window.grabWindow(), backgroundOnly);
++        }
++        QVERIFY(uploadReady.load());
++        QVERIFY(frames >= 2);
++        QVERIFY(maximumUploadsPerFrame.load() > 0 && maximumUploadsPerFrame.load() <= 5);
++        QCOMPARE(renderNodeCalls.load(), 0);
++        qInfo() << "Admission captures" << frames << "maximum uploaded batches per frame"
++                << maximumUploadsPerFrame.load();
++        QCOMPARE(window.grabWindow(), backgroundOnly);
++        present = true;
++        const auto completed = window.grabWindow();
++        QVERIFY(renderNodeCalls.load() > 0);
++        const qreal dpr = window.devicePixelRatio();
++        if (qEnvironmentVariableIsSet("ZOIN_EXPECT_TEST_DPR"))
++            QCOMPARE(dpr, qEnvironmentVariable("ZOIN_EXPECT_TEST_DPR").toDouble());
++        for (auto *leaf : leaves) {
++            const auto origin = leaf->mapToItem(window.contentItem(), QPointF());
++            QVERIFY(qAbs(origin.x()*dpr-qRound(origin.x()*dpr)) < .001);
++            QVERIFY(qAbs(origin.y()*dpr-qRound(origin.y()*dpr)) < .001);
++            QCOMPARE(leaf->mapToItem(window.contentItem(), QPointF(1, 0))-origin, QPointF(1, 0));
++            QCOMPARE(leaf->mapToItem(window.contentItem(), QPointF(0, 1))-origin, QPointF(0, 1));
++        }
++        for (int i = 0; i < 24; ++i)
++            QCOMPARE(completed.pixelColor(qRound((24+(i%8)*24)*dpr),
++                                          qRound((24+(i/8)*24)*dpr)), QColor(200+i, 0, 0));
++        QVERIFY(completed.save("vector-upload-gate-complete-175.png"));
++        // Old readiness must not publish another generation, and CPU completion
++        // is independently required even if the old buffers are already resident.
++        generation = 2;
++        cpuComplete = false;
++        present = false;
++        for (int i = 0; i < 3; ++i) QCOMPARE(window.grabWindow(), backgroundOnly);
++        QVERIFY(!uploadReady.load());
++        QVERIFY(!staleGenerationReady.load());
++        cpuComplete = true;
++        frames = 0;
++        while (!uploadReady.load() && frames++ < 64)
++            QCOMPARE(window.grabWindow(), backgroundOnly);
++        QVERIFY(uploadReady.load());
++        present = true;
++        QCOMPARE(window.grabWindow(), completed);
++        removedRoot = registeredRoot;
++        delete gate;
++        gate = nullptr;
++        registeredRoot = nullptr;
++        QCOMPARE(window.grabWindow(), backgroundOnly);
++        QVERIFY(!removedRootReady.load());
++        removedRoot = nullptr;
++
++        // A later viewer request must overtake a panel request still being
++        // uploaded. Both remain invisible until independently complete.
++        const auto makeGate = [&](int x) {
++            auto *item = new QQuickItem(window.contentItem());
++            item->setPosition(QPointF(x, 16));
++            item->setSize(QSizeF(96, 128));
++            item->setClip(true);
++            for (int i = 0; i < 24; ++i) {
++                auto *tile = new UploadGateTile(item, QColor(200+i, 0, 0));
++                tile->setPosition(QPointF((i%4)*24, (i/4)*20));
++            }
++            return item;
++        };
++        gate = makeGate(16);
++        generation = 3;
++        present = false;
++        priority = 20;
++        uploadReady = false;
++        QCOMPARE(window.grabWindow(), backgroundOnly);
++        QVERIFY(!uploadReady.load());
++        viewerGate = makeGate(144);
++        frames = 0;
++        while (!viewerReady.load() && frames++ < 64)
++            QCOMPARE(window.grabWindow(), backgroundOnly);
++        QVERIFY(viewerReady.load());
++        QVERIFY(!uploadReady.load());
++        // Cancel unfinished panel work. A subsequent frame must not reuse its
++        // readiness or try to process batches belonging to the removed subtree.
++        delete gate;
++        gate = nullptr;
++        delete viewerGate;
++        viewerGate = nullptr;
++        registeredRoot = nullptr;
++        QCOMPARE(window.grabWindow(), backgroundOnly);
++
++        // One allocation can exceed the soft byte budget. Admit it alone so it
++        // makes progress rather than waiting forever for a larger frame budget.
++        gate = new QQuickItem(window.contentItem());
++        gate->setSize(QSizeF(96, 96));
++        gate->setClip(true);
++        new UploadGateTile(gate, Qt::red, 262144);
++        generation = 4;
++        uploadReady = false;
++        frames = 0;
++        while (!uploadReady.load() && frames++ < 8)
++            QCOMPARE(window.grabWindow(), backgroundOnly);
++        QVERIFY(uploadReady.load());
++        delete gate;
++        gate = nullptr;
++        registeredRoot = nullptr;
++        QCOMPARE(window.grabWindow(), backgroundOnly);
++
++        // Valid empty documents have no upload work and must still finish.
++        gate = new QQuickItem(window.contentItem());
++        gate->setSize(QSizeF(96, 96));
++        gate->setClip(true);
++        generation = 5;
++        uploadReady = false;
++        frames = 0;
++        while (!uploadReady.load() && frames++ < 8)
++            QCOMPARE(window.grabWindow(), backgroundOnly);
++        QVERIFY(uploadReady.load());
++        delete gate;
++        gate = nullptr;
++        registeredRoot = nullptr;
++        QCOMPARE(window.grabWindow(), backgroundOnly);
++    }
+ 
+     void repeatedClipLifecycle_data() {
+         QTest::addColumn<bool>("stencil");
+--- /dev/null
++++ b/qt/host/tests/VectorUploadGateProtocol.h
+@@ -0,0 +1,15 @@
++#pragma once
++#include <QtCore/qglobal.h>
++
++QT_BEGIN_NAMESPACE
++class QSGNode;
++
++// Optional renderer capability. Every function is render-thread only.
++struct F4VectorUploadGateInterface {
++    quint32 version;
++    void (*configure)(QSGNode *root, quint64 generation, bool cpuComplete,
++                      bool present, int priority, bool previouslyPrepared);
++    void (*remove)(QSGNode *root);
++    bool (*ready)(QSGNode *root, quint64 generation);
++};
++QT_END_NAMESPACE

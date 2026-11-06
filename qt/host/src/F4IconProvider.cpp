@@ -795,9 +795,26 @@ QImage F4IconProvider::renderNativeRequest(
     }
     QPixmap pixmap;
     if (!icon.isNull()) {
-        pixmap = icon.pixmap(
-            QSize(request.logicalSize, request.logicalSize),
-            request.renderDevicePixelRatio, QIcon::Normal, QIcon::Off);
+        if (request.route == QStringLiteral("file")) {
+            // Bitmap-backed QIcons resize before returning a pixmap. Preserve
+            // their largest source canvas until after trimming native padding;
+            // shrinking first and enlarging the cropped result loses detail.
+            const auto sizes = icon.availableSizes(QIcon::Normal, QIcon::Off);
+            QSize largest(0, 0);
+            for (const QSize &candidate : sizes) {
+                if (qint64(candidate.width()) * candidate.height()
+                    > qint64(largest.width()) * largest.height()) {
+                    largest = candidate;
+                }
+            }
+            if (!largest.isEmpty())
+                pixmap = icon.pixmap(largest, 1.0, QIcon::Normal, QIcon::Off);
+        }
+        if (pixmap.isNull()) {
+            pixmap = icon.pixmap(
+                QSize(request.logicalSize, request.logicalSize),
+                request.renderDevicePixelRatio, QIcon::Normal, QIcon::Off);
+        }
     }
     if (pixmap.isNull()) {
         QIcon fallbackIcon(resourceFileName(lucideSource(
@@ -823,6 +840,12 @@ QImage F4IconProvider::renderNativeRequest(
         }
     }
     QImage image = imageAtPhysicalSize(artwork, request.targetSize);
+    if (request.route == QStringLiteral("file")
+        && qEnvironmentVariableIsSet("F4_NATIVE_ICON_DEBUG")) {
+        qDebug() << "[FIX] native-icon-resolution" << request.primary
+                 << "source" << pixmap.size() << "cropped" << artwork.size()
+                 << "target" << request.targetSize;
+    }
     if (size && !image.isNull()) {
         *size = image.size();
     }

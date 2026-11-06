@@ -114,6 +114,10 @@ ExtUiTransport::ExtUiTransport(QObject *parent)
     , m_socket(new QTcpSocket(this))
 {
     m_socket->setReadBufferSize(static_cast<qint64>(MaxMessageSize) + 4);
+    connect(m_socket, &QTcpSocket::connected, this, [this] {
+        m_socket->setSocketOption(QAbstractSocket::LowDelayOption, 1);
+        m_socket->setSocketOption(QAbstractSocket::ReceiveBufferSizeSocketOption, 1024 * 1024);
+    });
     connect(m_socket, &QTcpSocket::connected,
             this, &ExtUiTransport::connectedToPeer);
     connect(m_socket, &QTcpSocket::readyRead,

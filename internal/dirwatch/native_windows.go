@@ -16,41 +16,35 @@ const windowsFilter = windows.FILE_NOTIFY_CHANGE_FILE_NAME | windows.FILE_NOTIFY
 
 // newNativeSource watches dir with a change-notification handle
 // (FindFirstChangeNotification), which is signalled on any of the changes
-// above without saying which; that is all the debounce loop needs. The reader
-// waits with a short timeout so that close can stop it.
+// above without saying which; that is all the debounce loop needs. Wait on
+// both the notification and a stop event so Close can wake an idle reader.
 func newNativeSource(dir string) (*rawSource, error) {
 	h, err := windows.FindFirstChangeNotification(dir, false, windowsFilter)
 	if err != nil {
 		return nil, err
 	}
+	stop, err := windows.CreateEvent(nil, 1, 0, nil)
+	if err != nil {
+		_ = windows.FindCloseChangeNotification(h)
+		return nil, err
+	}
 	events := make(chan struct{}, 1)
-	stop := make(chan struct{})
 	finished := make(chan struct{})
 	var once sync.Once
 	go func() {
 		defer close(finished)
 		defer func() { _ = windows.FindCloseChangeNotification(h) }()
+		handles := []windows.Handle{stop, h}
 		for {
+			result, err := windows.WaitForMultipleObjects(handles, false, windows.INFINITE)
+			if err != nil || result != windows.WAIT_OBJECT_0+1 {
+				return
+			}
 			select {
-			case <-stop:
-				return
+			case events <- struct{}{}:
 			default:
 			}
-			r, err := windows.WaitForSingleObject(h, 100)
-			if err != nil {
-				return
-			}
-			switch r {
-			case windows.WAIT_OBJECT_0:
-				select {
-				case events <- struct{}{}:
-				default:
-				}
-				if err := windows.FindNextChangeNotification(h); err != nil {
-					return
-				}
-			case uint32(windows.WAIT_TIMEOUT):
-			default:
+			if err := windows.FindNextChangeNotification(h); err != nil {
 				return
 			}
 		}
@@ -59,8 +53,11 @@ func newNativeSource(dir string) (*rawSource, error) {
 		events: events,
 		native: true,
 		close: func() {
-			once.Do(func() { close(stop) })
-			<-finished
+			once.Do(func() {
+				_ = windows.SetEvent(stop)
+				<-finished
+				_ = windows.CloseHandle(stop)
+			})
 		},
 	}, nil
 }

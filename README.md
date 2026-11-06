@@ -490,6 +490,8 @@ While `tcell` and `tview` are industry standards for Go-based terminal applicati
 
 ### Performance Notes
 
+For Qt panel rendering, see the [performance findings and maintenance guide](docs/PANEL_RENDERING_PERFORMANCE.md).
+
 **Instant Bracketed Paste**
 To achieve near-instantaneous pasting text via terminal Paste feature for large clipboard buffers (comparable to `far2l`), `f4` utilizes several coordinated strategies:
 1.  **Atomic Commits:** The `EditorView` detects `PasteStart` and `PasteEnd` events. Instead of modifying the data model byte-by-byte, it accumulates incoming text in a temporary buffer and performs a single, atomic insertion into the `PieceTable`.

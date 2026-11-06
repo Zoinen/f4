@@ -11,6 +11,8 @@ Item {
     property real viewportHeight: 0
     property int slotWriteCount: 0
     property bool nativeRows: false
+    property string nativeDocumentKey: ""
+    property real nativeDocumentRevision: 0
     // Exactly one model belongs to this physical pool, even if its surface
     // mode changes. Rebinding nativeRows must not allocate another row store.
     readonly property var nativeModel: qtShell.surfaceRegistry.createDocumentRowsModel(pool)
@@ -79,14 +81,22 @@ Item {
             rowsModel.commit()
     }
 
+    function moveWindow(sourceStart, count, destinationStart) {
+        return nativeRows && rowsModel.moveWindow(sourceStart, count, destinationStart)
+    }
+
     function replaceWindow(start, rows, previousStart, previousEnd,
                            forceReplacement, clearOutside) {
         if (!nativeRows)
             return -1
-        const writes = rowsModel.replaceWindow(start, rows,
+        const writes = nativeDocumentKey !== ""
+            ? qtShell.surfaceRegistry.replaceDocumentWindow(rowsModel, nativeDocumentKey,
+                nativeDocumentRevision, start, previousStart, previousEnd,
+                forceReplacement === true, clearOutside === true)
+            : rowsModel.replaceWindow(start, rows,
             previousStart, previousEnd, forceReplacement === true,
             clearOutside === true)
-        slotWriteCount += writes
+        slotWriteCount += Math.max(0, writes)
         return writes
     }
 

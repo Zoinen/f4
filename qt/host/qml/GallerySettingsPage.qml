@@ -50,6 +50,11 @@ Item {
             status = qsTr("Disk cache size must be between 64 and 65536 MiB.")
             return false
         }
+        if (!Number.isInteger(draft.thumbnailMemoryLimitMiB)
+                || draft.thumbnailMemoryLimitMiB < 16 || draft.thumbnailMemoryLimitMiB > 16384) {
+            status = qsTr("Thumbnail memory cache size must be between 16 and 16384 MiB.")
+            return false
+        }
         return true
     }
     function applyDraft() {
@@ -129,13 +134,39 @@ Item {
                 height: parent.height; radius: height / 2; color: page.hostWindow.dialogAccent
             }
         }
-        Copy { identity: "galleryCacheRamInfo"; x: page.gap; y: page.px(79); font.pixelSize: (hostWindow ? hostWindow.uiTextSize(11) : 11); color: page.hostWindow.mutedText; text: qsTr("256 MiB shared memory cache · 128 recent folder collages per panel") }
+        Copy { identity: "galleryCacheRamInfo"; x: page.gap; y: page.px(79); font.pixelSize: (hostWindow ? hostWindow.uiTextSize(11) : 11); color: page.hostWindow.mutedText; text: qsTr("128 recent folder collages per panel") }
+    }
+
+    Copy {
+        id: memoryLimitTitle
+        identity: "galleryThumbnailMemoryLimitTitle"
+        x: 0; y: page.px(usage.y + usage.height + page.gap); width: page.innerWidth
+        text: qsTr("Thumbnail memory limit (MiB)")
+        font.bold: true
+    }
+    F4TextField {
+        id: memoryLimit
+        objectName: "galleryThumbnailMemoryLimitInput"
+        hostWindow: page.hostWindow
+        x: 0; y: page.px(memoryLimitTitle.y + memoryLimitTitle.height + page.px(6)); width: page.innerWidth
+        text: String(page.draft.thumbnailMemoryLimitMiB ?? 256)
+        validator: IntValidator { bottom: 16; top: 16384 }
+        inputMethodHints: Qt.ImhDigitsOnly
+        onTextEdited: page.change("thumbnailMemoryLimitMiB", text === "" ? "" : Number(text))
+    }
+    Copy {
+        id: memoryLimitHelp
+        identity: "galleryThumbnailMemoryLimitHelp"
+        x: 0; y: page.px(memoryLimit.y + memoryLimit.height + page.px(6)); width: page.innerWidth
+        text: qsTr("Shared by both panels. Applies immediately. Default 256 MiB.")
+        color: page.hostWindow.mutedText
+        font.pixelSize: page.hostWindow.uiTextSize(11)
     }
 
     Copy {
         id: imageModeTitle
         identity: "galleryImageModeTitle"; text: qsTr("Image cache"); font.bold: true
-        x: 0; y: usage.y + usage.height + page.gap; width: page.innerWidth
+        x: 0; y: page.px(memoryLimitHelp.y + memoryLimitHelp.height + page.gap); width: page.innerWidth
     }
     F4ComboBox {
         id: imageMode
