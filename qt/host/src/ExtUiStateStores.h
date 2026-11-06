@@ -24,12 +24,18 @@ public:
     Q_INVOKABLE void set(int slot, const QVariantMap &value);
     Q_INVOKABLE int replaceWindow(int start, const QVariantList &rows,
                                   int previousStart, int previousEnd,
-                                  bool forceReplacement, bool clearOutside);
+                                  bool forceReplacement, bool clearOutside,
+                                  bool retainInactiveRows = false);
     Q_INVOKABLE void commit();
+    Q_INVOKABLE bool moveWindow(int sourceStart, int count, int destinationStart);
 signals:
     void countChanged();
 private:
-    struct Slot { bool loaded = false; QVariantMap row; bool changed = false; };
+    struct Slot {
+        bool loaded = false;
+        QVariantMap row;
+        int changedRoles = 0;
+    };
     QList<Slot> m_slots;
     int m_changedFirst = -1;
     int m_changedLast = -1;
@@ -209,12 +215,19 @@ public:
     QVariantMap documentMetadata() const;
     Q_INVOKABLE QVariant documentWindowRows(const QString &documentKey,
                                             qulonglong publication) const;
+    Q_INVOKABLE QVariant documentWindowCoordinates(const QString &documentKey,
+                                                    qulonglong publication) const;
+    Q_INVOKABLE int replaceDocumentWindow(QObject *model, const QString &documentKey,
+                                         qulonglong publication, int start,
+                                         int previousStart, int previousEnd,
+                                         bool forceReplacement, bool clearOutside) const;
     QVariantMap operationsQueue() const { return m_operationsQueue; }
     bool hasShell() const { return !m_shell.isEmpty(); }
     bool hasDocument() const { return !m_document.isEmpty(); }
     bool hasOperationsQueue() const { return !m_operationsQueue.isEmpty(); }
 
     void applyShell(const QVariantMap &shell, qulonglong revision);
+    void applyCompactShell(const QVariantMap &shell, qulonglong revision);
     // Catalog frames have their own notification lane. Keep the row-free
     // descriptor in the retained shell current without invalidating the
     // complete shell/panel QML projection a second time.

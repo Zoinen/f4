@@ -3237,6 +3237,10 @@ func (fp *FileSystemPanel) ReadDirectory() {
 	keepEntries := fileops.SameVFSInstance(fp.committedListingVFS, fp.Vfs) &&
 		fp.committedListingPath == path
 	if !keepEntries {
+		// Entries can be replaced by a preview before the next listing commits.
+		// Returning to the old path in that interval cannot reuse those rows.
+		fp.committedListingVFS = nil
+		fp.committedListingPath = ""
 		showUpEntry := !fp.Vfs.IsAtRoot() || fp.Vfs.ParentVFS() != nil
 		keepEntries = fp.restoreCachedDirectory(fp.Vfs, path, showUpEntry)
 	}

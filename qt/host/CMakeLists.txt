@@ -38,6 +38,19 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_AUTOMOC ON)
 
+if(MSVC AND WIN32)
+  # MSVC can truncate the leading argument of a long LF-only response line.
+  # Normalize a temporary copy, retaining all CMake-generated link inputs.
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  if(NOT DEFINED CMAKE_CXX_LINKER_LAUNCHER AND
+     DEFINED ENV{CMAKE_CXX_LINKER_LAUNCHER})
+    set(CMAKE_CXX_LINKER_LAUNCHER "$ENV{CMAKE_CXX_LINKER_LAUNCHER}")
+  endif()
+  list(PREPEND CMAKE_CXX_LINKER_LAUNCHER
+    "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../ci/msvc_link_response.py")
+endif()
+
 # Qt discovers its JPEG dependency from inside a helper function. Conan's
 # generated FindJPEG module creates directory-scoped imported targets and
 # then guards itself against a second include, so ZoinGallery cannot see
@@ -1325,6 +1338,11 @@ if(BUILD_TESTING)
       if(F4_ENABLE_VIDEO_THUMBNAILS)
         target_link_libraries(${target} PRIVATE
           ${F4_QT_STATIC_VIDEO_LINKS})
+        if(F4_QT_USES_FFMPEG_BACKEND)
+          # The static Multimedia graph needs the codec targets' complete
+          # dependency closure (including iconv), even in non-player tests.
+          target_link_libraries(${target} PRIVATE ${F4_FFMPEG_TARGETS})
+        endif()
       endif()
       if(WIN32)
         target_link_libraries(${target} PRIVATE
@@ -1676,6 +1694,94 @@ if(BUILD_TESTING)
       ENVIRONMENT "QT_QPA_FONTDIR=$ENV{SystemRoot}/Fonts")
   endif()
 
+  find_package(Qt6 ${Qt6_VERSION} REQUIRED COMPONENTS QuickPrivate)
+  qt_add_executable(F4QtChildWindowStackingTests
+    tests/F4QtChildWindowStackingTests.cpp)
+  set_property(TARGET F4QtChildWindowStackingTests PROPERTY
+    QT_QML_MODULE_NO_IMPORT_SCAN TRUE)
+  qt_import_plugins(F4QtChildWindowStackingTests NO_DEFAULT)
+  target_link_libraries(F4QtChildWindowStackingTests PRIVATE
+    Qt6::Quick
+    Qt6::QuickPrivate
+    Qt6::Test)
+  if(F4_QT_STATIC)
+    target_sources(F4QtChildWindowStackingTests PRIVATE
+      $<TARGET_OBJECTS:F4StaticQtTestPluginImports>)
+    target_link_libraries(F4QtChildWindowStackingTests PRIVATE
+      Qt6::QOffscreenIntegrationPlugin)
+    if(WIN32)
+      target_link_libraries(F4QtChildWindowStackingTests PRIVATE
+        Qt6::QWindowsIntegrationPlugin Usp10 Rpcrt4)
+    endif()
+  endif()
+  add_test(NAME F4QtChildWindowStackingTest COMMAND F4QtChildWindowStackingTests)
+  set_tests_properties(F4QtChildWindowStackingTest PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_CONTROLS_STYLE=Basic")
+
+  qt_add_executable(F4QtBatchRootOrdersTests
+    tests/F4QtBatchRootOrdersTests.cpp)
+  # This native scene fixture has no QML; scanning the host directory would
+  # import the application's controls and multimedia plugins into it.
+  set_property(TARGET F4QtBatchRootOrdersTests PROPERTY
+    QT_QML_MODULE_NO_IMPORT_SCAN TRUE)
+  qt_import_plugins(F4QtBatchRootOrdersTests NO_DEFAULT)
+  target_link_libraries(F4QtBatchRootOrdersTests PRIVATE
+    Qt6::Quick
+    Qt6::QuickPrivate
+    Qt6::Test)
+  if(F4_QT_STATIC)
+    target_sources(F4QtBatchRootOrdersTests PRIVATE
+      $<TARGET_OBJECTS:F4StaticQtTestPluginImports>)
+    target_link_libraries(F4QtBatchRootOrdersTests PRIVATE
+      Qt6::QOffscreenIntegrationPlugin)
+    if(WIN32)
+      target_link_libraries(F4QtBatchRootOrdersTests PRIVATE
+        Qt6::QWindowsIntegrationPlugin Usp10 Rpcrt4)
+    endif()
+  endif()
+  add_test(NAME F4QtBatchRootOrdersTest COMMAND F4QtBatchRootOrdersTests)
+  set_tests_properties(F4QtBatchRootOrdersTest PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_CONTROLS_STYLE=Basic;QT_SCALE_FACTOR=1.75;QT_SCALE_FACTOR_ROUNDING_POLICY=PassThrough")
+
+  qt_add_executable(F4QtQmlSignalMaskTests
+    tests/F4QtQmlSignalMaskTests.cpp
+    tests/QmlSignalSource.h)
+  # The fixture registers its two QML types directly and uses QCoreApplication.
+  set_property(TARGET F4QtQmlSignalMaskTests PROPERTY
+    QT_QML_MODULE_NO_IMPORT_SCAN TRUE)
+  qt_import_plugins(F4QtQmlSignalMaskTests NO_DEFAULT)
+  target_link_libraries(F4QtQmlSignalMaskTests PRIVATE
+    Qt6::QuickPrivate
+    Qt6::Test)
+  add_test(NAME F4QtQmlSignalMaskTest COMMAND F4QtQmlSignalMaskTests)
+
+  qt_add_executable(F4QtCurvePreprocessTests
+    tests/F4QtCurvePreprocessTests.cpp)
+  # The Qt 6.11 private stroke material header concatenates QStringView values.
+  target_compile_definitions(F4QtCurvePreprocessTests PRIVATE QT_USE_QSTRINGBUILDER)
+  # This native scene fixture has no QML; scanning the host directory would
+  # import the application's controls and multimedia plugins into it.
+  set_property(TARGET F4QtCurvePreprocessTests PROPERTY
+    QT_QML_MODULE_NO_IMPORT_SCAN TRUE)
+  qt_import_plugins(F4QtCurvePreprocessTests NO_DEFAULT)
+  target_link_libraries(F4QtCurvePreprocessTests PRIVATE
+    Qt6::Quick
+    Qt6::QuickPrivate
+    Qt6::Test)
+  if(F4_QT_STATIC)
+    target_sources(F4QtCurvePreprocessTests PRIVATE
+      $<TARGET_OBJECTS:F4StaticQtTestPluginImports>)
+    target_link_libraries(F4QtCurvePreprocessTests PRIVATE
+      Qt6::QOffscreenIntegrationPlugin)
+    if(WIN32)
+      target_link_libraries(F4QtCurvePreprocessTests PRIVATE
+        Qt6::QWindowsIntegrationPlugin Usp10 Rpcrt4)
+    endif()
+  endif()
+  add_test(NAME F4QtCurvePreprocessTest COMMAND F4QtCurvePreprocessTests)
+  set_tests_properties(F4QtCurvePreprocessTest PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_CONTROLS_STYLE=Basic;QT_SCALE_FACTOR=1.75;QT_SCALE_FACTOR_ROUNDING_POLICY=PassThrough")
+
   add_executable(F4QuickViewSurfaceTests
     tests/F4QuickViewSurfaceTests.cpp
     src/WindowGeometryPersistence.h
@@ -1707,6 +1813,7 @@ if(BUILD_TESTING)
   target_link_libraries(F4QuickViewSurfaceTests PRIVATE
     Qt6::Core
     Qt6::Gui
+    Qt6::GuiPrivate
     Qt6::Qml
     Qt6::Quick
     Qt6::QuickControls2
@@ -2132,6 +2239,10 @@ if(BUILD_TESTING)
   f4_link_static_test_platform(F4GalleryBridgeTests)
   f4_link_static_test_qml_plugins(F4GalleryBridgeTests)
   add_test(NAME F4GalleryBridgeTest COMMAND F4GalleryBridgeTests)
+  add_test(NAME F4NativeIconFallbackPixelGridTest COMMAND F4GalleryBridgeTests
+    nativeFileIconsSurviveFailedThumbnail)
+  set_tests_properties(F4NativeIconFallbackPixelGridTest PROPERTIES
+    ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV};QT_QUICK_BACKEND=software")
   add_test(NAME F4GalleryMixedDpiPixelTest COMMAND F4GalleryBridgeTests
     panelIconsKeepNativeRasterAtMixedDpi)
   set_tests_properties(F4GalleryMixedDpiPixelTest PROPERTIES

@@ -1,11 +1,13 @@
 package chroma
 
 import (
+	"container/list"
 	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/unxed/f4/internal/theme"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtui"
+	"sync"
 )
 
 // Plugin is the internal plugin wrapper for the Chroma syntax highlighter.
@@ -88,17 +90,73 @@ func (p *ChromaProvider) Create(filename string, content string) vtui.Highlighte
 
 // ChromaHighlighter implements vtui.Highlighter.
 type ChromaHighlighter struct {
-	lexer chroma.Lexer
+	lexer      chroma.Lexer
+	mu         sync.Mutex
+	cache      map[string]*list.Element
+	order      list.List
+	cacheBytes int
 }
 
-func (c *ChromaHighlighter) Highlight(line string, prevState any, baseAttr uint64) ([]uint64, any) {
+type cachedLine struct {
+	text   string
+	tokens []chroma.Token
+	bytes  int
+}
+
+func (c *ChromaHighlighter) tokens(line string) ([]chroma.Token, error) {
+	c.mu.Lock()
+	if entry := c.cache[line]; entry != nil {
+		c.order.MoveToFront(entry)
+		tokens := entry.Value.(cachedLine).tokens
+		c.mu.Unlock()
+		return tokens, nil
+	}
+	c.mu.Unlock()
 	iterator, err := c.lexer.Tokenise(nil, line)
+	if err != nil {
+		return nil, err
+	}
+	tokens := iterator.Tokens()
+	size := len(line) + 64 + len(tokens)*32
+	for _, token := range tokens {
+		size += len(token.Value)
+	}
+	const budget = 4 * 1024 * 1024
+	if size > budget {
+		return tokens, nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cache == nil {
+		c.cache = make(map[string]*list.Element)
+	}
+	if c.cache[line] != nil {
+		return tokens, nil
+	}
+	for c.order.Len() >= 2048 || c.cacheBytes+size > budget {
+		old := c.order.Back()
+		value := old.Value.(cachedLine)
+		delete(c.cache, value.text)
+		c.cacheBytes -= value.bytes
+		c.order.Remove(old)
+	}
+	c.cache[line] = c.order.PushFront(cachedLine{line, tokens, size})
+	c.cacheBytes += size
+	return tokens, nil
+}
+
+// StateIndependent reports that Highlight does not consume or produce a
+// cross-line parser state. Editors need not build a background state chain.
+func (c *ChromaHighlighter) StateIndependent() bool { return true }
+
+func (c *ChromaHighlighter) Highlight(line string, prevState any, baseAttr uint64) ([]uint64, any) {
+	tokens, err := c.tokens(line)
 	if err != nil {
 		return nil, nil
 	}
 
 	var attrs []uint64
-	for _, token := range iterator.Tokens() {
+	for _, token := range tokens {
 		attr := GetSyntaxAttr(token.Type, baseAttr)
 		runes := []rune(token.Value)
 		for range runes {

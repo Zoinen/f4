@@ -1,0 +1,376 @@
+--- a/src/quick/scenegraph/coreapi/qsgbatchrenderer.cpp
++++ b/src/quick/scenegraph/coreapi/qsgbatchrenderer.cpp
+@@ -4,6 +4,25 @@
+ // SPDX-License-Identifier: LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
+ 
+ #include "qsgbatchrenderer_p.h"
++#include <QtCore/QSharedPointer>
++#include <QtCore/qglobal.h>
++
++QT_BEGIN_NAMESPACE
++class QSGNode;
++
++// Optional renderer capability. Every function is render-thread only.
++struct F4VectorUploadGateInterface {
++    quint32 version;
++    quint32 size;
++    void (*configure)(QSGNode *root, quint64 generation, bool cpuComplete,
++                      bool present, int priority, bool previouslyPrepared);
++    void (*remove)(QSGNode *root);
++    bool (*ready)(QSGNode *root, quint64 generation);
++    bool (*needsFrame)(QSGNode *root, quint64 generation);
++    bool (*failed)(QSGNode *root, quint64 generation);
++};
++QT_END_NAMESPACE
++
+ 
+ #include <qmath.h>
+ 
+@@ -102,6 +121,154 @@
+ const float OPAQUE_LIMIT                = 0.999f;
+ 
+ const uint DYNAMIC_VERTEX_INDEX_BUFFER_THRESHOLD = 4;
++
++// Included inside QSGBatchRenderer for an isolated, opt-in experiment.
++struct F4VectorGate {
++    quint64 generation = 0, sequence = 0;
++    bool cpuComplete = false, present = false, ready = false, pending = false, failed = false;
++    int priority = 0;
++    QHash<Batch *, Element *> warmed;
++};
++static thread_local QHash<QSGNode *, QSharedPointer<F4VectorGate>> f4VectorGates;
++static thread_local quint64 f4VectorGateSequence = 0;
++
++static void f4ConfigureVectorGate(QSGNode *root, quint64 generation, bool complete,
++                                  bool present, int priority, bool prepared)
++{
++    auto &gate = f4VectorGates[root];
++    const bool changed = !gate || gate->generation != generation;
++    if (changed) {
++        gate = QSharedPointer<F4VectorGate>::create();
++        gate->generation = generation;
++        gate->sequence = ++f4VectorGateSequence;
++    }
++    gate->cpuComplete = complete;
++    gate->present = present;
++    gate->priority = priority;
++    gate->ready |= prepared;
++    if (changed && root->type() == QSGNode::TransformNodeType)
++        root->markDirty(QSGNode::DirtyForceUpdate);
++}
++
++static void f4RemoveVectorGate(QSGNode *root) { f4VectorGates.remove(root); }
++static bool f4VectorGateReady(QSGNode *root, quint64 generation)
++{
++    const auto gate = f4VectorGates.value(root);
++    return gate && gate->generation == generation && gate->ready;
++}
++
++static bool f4VectorGateNeedsFrame(QSGNode *root, quint64 generation)
++{
++    const auto gate = f4VectorGates.value(root);
++    return gate && gate->generation == generation && gate->pending && !gate->failed;
++}
++static bool f4VectorGateFailed(QSGNode *root, quint64 generation)
++{
++    const auto gate = f4VectorGates.value(root);
++    return gate && gate->generation == generation && gate->failed;
++}
++
++void *f4VectorUploadGateInterface()
++{
++    static F4VectorUploadGateInterface api{
++        2, sizeof(F4VectorUploadGateInterface), f4ConfigureVectorGate, f4RemoveVectorGate,
++        f4VectorGateReady, f4VectorGateNeedsFrame, f4VectorGateFailed};
++    return &api;
++}
++
++struct F4VectorGateFrame {
++    QHash<Batch *, QSharedPointer<F4VectorGate>> owners;
++    QHash<F4VectorGate *, QHash<Batch *, Element *>> current;
++    QList<QSharedPointer<F4VectorGate>> active;
++    QSet<Batch *> admitted;
++
++    F4VectorGateFrame(const QHash<QSGNode *, Node *> &nodes,
++                      const QDataBuffer<Batch *> &opaque, const QDataBuffer<Batch *> &alpha)
++    {
++        bool needsGate = false;
++        for (auto it = f4VectorGates.cbegin(); it != f4VectorGates.cend(); ++it) {
++            if ((!it.value()->ready || !it.value()->present) && nodes.contains(it.key())) {
++                active.append(it.value());
++                needsGate = true;
++            }
++        }
++        if (!needsGate) return;
++        for (const auto *batches : {&opaque, &alpha}) {
++            for (int i = 0; i < batches->size(); ++i) {
++                Batch *batch = batches->at(i);
++                if (!batch->first) continue;
++                QSharedPointer<F4VectorGate> gate;
++                QSGNode *firstNode = batch->isRenderNode
++                    ? static_cast<QSGNode *>(static_cast<RenderNodeElement *>(batch->first)->renderNode)
++                    : static_cast<QSGNode *>(batch->first->node);
++                for (QSGNode *node = firstNode; node; node = node->parent()) {
++                    auto found = f4VectorGates.constFind(node);
++                    if (found != f4VectorGates.cend()) { gate = found.value(); break; }
++                }
++                if (!gate || (gate->ready && gate->present)) continue;
++                owners.insert(batch, gate);
++                current[gate.data()].insert(batch, batch->first);
++                if (gate->warmed.value(batch) != batch->first
++                    || (!batch->isRenderNode && batch->needsUpload && !empty(batch)))
++                    gate->warmed.remove(batch);
++            }
++        }
++        for (const auto &gate : std::as_const(active)) {
++            const auto members = current.value(gate.data());
++            for (auto it = gate->warmed.begin(); it != gate->warmed.end();) {
++                if (members.value(it.key()) != it.value()) it = gate->warmed.erase(it);
++                else ++it;
++            }
++        }
++    }
++
++    static bool empty(Batch *batch)
++    {
++        if (batch->isRenderNode) return false;
++        for (Element *element = batch->first; element; element = element->nextInBatch)
++            if (element->node->geometry()->vertexCount()) return false;
++        return true;
++    }
++    static quint64 estimate(Batch *batch)
++    {
++        if (batch->isRenderNode || !batch->needsUpload) return 0;
++        quint64 result = 0;
++        for (Element *element = batch->first; element; element = element->nextInBatch) {
++            const auto *geometry = element->node->geometry();
++            result += quint64(geometry->vertexCount()) * (geometry->sizeOfVertex() + 4);
++            result += quint64(geometry->indexCount()) * geometry->sizeOfIndex();
++        }
++        return result;
++    }
++    F4VectorGate *owner(Batch *batch) const { return owners.value(batch).data(); }
++    bool shouldPrepare(Batch *batch) const
++    {
++        const auto *gate = owner(batch);
++        return !gate || (!gate->failed && ((gate->ready && gate->present) || admitted.contains(batch)));
++    }
++    bool recordPreparation(Batch *batch, bool ok)
++    {
++        auto *gate = owner(batch);
++        if (!gate) return true;
++        const bool buffersValid = batch->isRenderNode || empty(batch)
++            || (batch->vbo.buf && (!batch->ibo.size || batch->ibo.buf));
++        if ((!ok && !empty(batch)) || !buffersValid) gate->failed = true;
++        if (!gate->ready && !gate->failed && (ok || empty(batch)))
++            gate->warmed.insert(batch, batch->first);
++        return gate->ready && gate->present;
++    }
++    void finish()
++    {
++        for (const auto &gate : std::as_const(active)) {
++            gate->pending = !gate->ready && !gate->failed
++                && gate->warmed != current.value(gate.data());
++            if (!gate->ready && !gate->failed && gate->cpuComplete
++                && gate->warmed == current.value(gate.data()))
++                gate->ready = true;
++        }
++    }
++};
++
+ const int VERTEX_BUFFER_BINDING = 0;
+ const int ZORDER_BUFFER_BINDING = VERTEX_BUFFER_BINDING + 1;
+ 
+@@ -527,6 +694,9 @@
+     bool dirty = n->dirtyState & QSGNode::DirtyMatrix;
+ 
+     QSGTransformNode *tn = static_cast<QSGTransformNode *>(n->sgNode);
++    if (!n->isBatchRoot && f4VectorGates.contains(tn))
++        renderer->turnNodeIntoBatchRoot(n);
++
+ 
+     if (n->isBatchRoot) {
+         if (m_added > 0 && m_roots.last())
+@@ -961,6 +1131,10 @@
+ Renderer::~Renderer()
+ {
+     f4PendingClips.remove(this);
++    for (auto it = f4VectorGates.begin(); it != f4VectorGates.end();) {
++        if (m_nodes.contains(it.key())) it = f4VectorGates.erase(it);
++        else ++it;
++    }
+     if (m_rhi) {
+         // Clean up batches and buffers
+         for (int i = 0; i < m_opaqueBatches.size(); ++i)
+@@ -1309,6 +1483,8 @@
+ 
+ void Renderer::nodeWasRemoved(Node *node)
+ {
++    const bool f4WasVectorRoot = f4VectorGates.contains(node->sgNode);
++    f4RemoveVectorGate(node->sgNode);
+     // Prefix traversal as removeBatchRootFromParent below removes nodes
+     // in a bottom-up manner. Note that we *cannot* use SHADOWNODE_TRAVERSE
+     // here, because we delete 'child' (when recursed, down below), so we'd
+@@ -1338,8 +1514,8 @@
+ 
+         }
+ 
+-    } else if (node->type() == QSGNode::ClipNodeType) {
+-        const auto *info = node->clipInfo();
++    } else if (node->type() == QSGNode::ClipNodeType || (node->isBatchRoot && f4WasVectorRoot)) {
++        const auto *info = node->rootInfo();
+         Node *parent = info->parentRoot;
+         const qint64 allocation = qint64(info->lastOrder) - info->firstOrder;
+         const qint64 parentAvailable = parent ? qint64(parent->rootInfo()->availableOrders) + allocation : -1;
+@@ -1381,7 +1557,8 @@
+         }
+         if (pendingState != f4PendingClips.end()) pendingState->remove(node);
+         removeBatchRootFromParent(node);
+-        delete node->clipInfo();
++        if (node->type() == QSGNode::ClipNodeType) delete node->clipInfo();
++        else delete node->rootInfo();
+         m_taggedRoots.remove(node);
+ 
+     } else if (node->isBatchRoot) {
+@@ -1416,7 +1593,27 @@
+ void Renderer::turnNodeIntoBatchRoot(Node *node)
+ {
+     if (Q_UNLIKELY(debug_change())) qDebug(" - new batch root");
+-    m_rebuild |= FullRebuild;
++    bool f4FundedRoot = false;
++    if (f4VectorGates.contains(node->sgNode) && !(m_rebuild & BuildRenderLists)) {
++        Node *funder = nullptr;
++        Node *assigned = nullptr;
++        for (Node *parent = node->parent(); parent; parent = parent->parent()) {
++            if (parent->type() != QSGNode::ClipNodeType && !parent->isBatchRoot) continue;
++            const auto *info = parent->rootInfo();
++            if (!assigned && info->firstOrder >= 0) assigned = parent;
++            if (!funder && info->availableOrders > 0) funder = parent;
++        }
++        if (funder && assigned) {
++            const int padding = qMin(64, funder->rootInfo()->availableOrders);
++            funder->rootInfo()->availableOrders -= padding;
++            batchRootInfo(node)->availableOrders = padding;
++            f4PendingClips[this].insert(node, {funder, padding});
++            m_taggedRoots << funder << assigned;
++            m_rebuild |= BuildRenderListsForTaggedRoots;
++            f4FundedRoot = true;
++        }
++    }
++    if (!f4FundedRoot) m_rebuild |= FullRebuild;
+     node->isBatchRoot = true;
+     node->becameBatchRoot = true;
+ 
+@@ -3958,19 +4155,48 @@
+     m_vertexUploadPool.reset();
+     m_indexUploadPool.reset();
+ 
++    F4VectorGateFrame f4GateFrame(m_nodes, m_opaqueBatches, m_alphaBatches);
+     if (Q_UNLIKELY(debug_upload())) qDebug("Uploading Opaque Batches:");
+     for (int i=0; i<m_opaqueBatches.size(); ++i) {
+         Batch *b = m_opaqueBatches.at(i);
+-        uploadBatch(b);
++        const auto *gate = f4GateFrame.owner(b);
++        if (!gate || gate->ready) uploadBatch(b);
+     }
+     if (Q_UNLIKELY(debug_render())) ctx->timeUploadOpaque = ctx->timer.restart();
+ 
+     if (Q_UNLIKELY(debug_upload())) qDebug("Uploading Alpha Batches:");
+     for (int i=0; i<m_alphaBatches.size(); ++i) {
+         Batch *b = m_alphaBatches.at(i);
+-        uploadBatch(b);
++        const auto *gate = f4GateFrame.owner(b);
++        if (!gate || gate->ready) uploadBatch(b);
+     }
+     if (Q_UNLIKELY(debug_render())) ctx->timeUploadAlpha = ctx->timer.restart();
++
++    QList<Batch *> f4Pending;
++    for (auto it = f4GateFrame.owners.cbegin(); it != f4GateFrame.owners.cend(); ++it)
++        if (!it.value()->ready && !it.value()->failed && !it.value()->warmed.contains(it.key()))
++            f4Pending.append(it.key());
++    std::sort(f4Pending.begin(), f4Pending.end(), [&](Batch *a, Batch *b) {
++        const auto *ga = f4GateFrame.owner(a);
++        const auto *gb = f4GateFrame.owner(b);
++        if (ga->priority != gb->priority) return ga->priority < gb->priority;
++        if (ga->sequence != gb->sequence) return ga->sequence < gb->sequence;
++        return a->first->order < b->first->order;
++    });
++    QElapsedTimer f4AdmissionClock;
++    f4AdmissionClock.start();
++    quint64 f4Bytes = 0;
++    for (Batch *batch : std::as_const(f4Pending)) {
++        const quint64 bytes = F4VectorGateFrame::estimate(batch);
++        if (!f4GateFrame.admitted.isEmpty()
++            && (f4GateFrame.admitted.size() >= 32 || f4Bytes + bytes > 1024*1024
++                || f4AdmissionClock.nsecsElapsed() >= 2000000))
++            break;
++        uploadBatch(batch);
++        f4Bytes += bytes;
++        f4GateFrame.admitted.insert(batch);
++    }
++
+ 
+     if (Q_UNLIKELY(debug_render())) {
+         qDebug().nospace() << "Rendering:" << Qt::endl
+@@ -4018,13 +4244,14 @@
+     if (Q_LIKELY(renderOpaque)) {
+         for (int i = 0, ie = m_opaqueBatches.size(); i != ie; ++i) {
+             Batch *b = m_opaqueBatches.at(i);
++            if (!f4GateFrame.shouldPrepare(b)) continue;
+             PreparedRenderBatch renderBatch;
+             bool ok;
+             if (b->merged)
+                 ok = prepareRenderMergedBatch(b, &renderBatch);
+             else
+                 ok = prepareRenderUnmergedBatch(b, &renderBatch);
+-            if (ok)
++            if (f4GateFrame.recordPreparation(b, ok) && ok)
+                 ctx->opaqueRenderBatches.append(renderBatch);
+         }
+     }
+@@ -4048,6 +4275,7 @@
+     if (Q_LIKELY(renderAlpha)) {
+         for (int i = 0, ie = m_alphaBatches.size(); i != ie; ++i) {
+             Batch *b = m_alphaBatches.at(i);
++            if (!f4GateFrame.shouldPrepare(b)) continue;
+             PreparedRenderBatch renderBatch;
+             bool ok;
+             if (b->merged)
+@@ -4056,7 +4284,7 @@
+                 ok = prepareRhiRenderNode(b, &renderBatch);
+             else
+                 ok = prepareRenderUnmergedBatch(b, &renderBatch);
+-            if (ok)
++            if (f4GateFrame.recordPreparation(b, ok) && ok)
+                 ctx->alphaRenderBatches.append(renderBatch);
+         }
+     }
+@@ -4072,6 +4300,7 @@
+         m_visualizer->prepareVisualize();
+ 
+     renderTarget().cb->resourceUpdate(m_resourceUpdates);
++    f4GateFrame.finish();
+     m_resourceUpdates = nullptr;
+ }
+ 
+--- a/src/quick/scenegraph/coreapi/qsgrendererinterface.cpp
++++ b/src/quick/scenegraph/coreapi/qsgrendererinterface.cpp
+@@ -4,6 +4,8 @@
+ #include "qsgrendererinterface.h"
+ 
+ QT_BEGIN_NAMESPACE
++
++namespace QSGBatchRenderer { void *f4VectorUploadGateInterface(); }
+ 
+ /*!
+     \class QSGRendererInterface
+@@ -223,7 +225,8 @@
+ void *QSGRendererInterface::getResource(QQuickWindow *window, const char *resource) const
+ {
+     Q_UNUSED(window);
+-    Q_UNUSED(resource);
++    if (resource && qstrcmp(resource, "f4.vectorUploadGate.v2") == 0)
++        return QSGBatchRenderer::f4VectorUploadGateInterface();
+     return nullptr;
+ }
+ 

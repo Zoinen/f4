@@ -372,7 +372,7 @@ void QtShellController::applyCompactFieldsToTypedState(
     shell.insert(QStringLiteral("panels"), descriptors);
     m_shellState->applyShell(shell, revision);
     if (!replacePanelDescriptor) {
-        m_surfaceRegistry->applyShell(shell, revision);
+        m_surfaceRegistry->applyCompactShell(shell, revision);
     }
 
     if (message.contains(QStringLiteral("workspaceTabs"))) {

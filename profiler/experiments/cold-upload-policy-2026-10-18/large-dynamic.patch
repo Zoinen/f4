@@ -1,0 +1,11 @@
+--- a/src/quick/scenegraph/coreapi/qsgbatchrenderer.cpp
++++ b/src/quick/scenegraph/coreapi/qsgbatchrenderer.cpp
+@@ -1088,7 +1088,7 @@
+     // when there are no buffers to recycle.
+     QDataBuffer<QRhiBuffer *> *bufferPool = isIndexBuf ? &m_iboPool : &m_vboPool;
+     if (!buffer->buf && bufferPool->isEmpty()) {
+-        buffer->buf = m_rhi->newBuffer(QRhiBuffer::Immutable,
++        buffer->buf = m_rhi->newBuffer(m_rhi->backend() == QRhi::D3D11 && buffer->size >= 65536 ? QRhiBuffer::Dynamic : QRhiBuffer::Immutable,
+                                        isIndexBuf ? QRhiBuffer::IndexBuffer : QRhiBuffer::VertexBuffer,
+                                        buffer->size);
+         if (!buffer->buf->create()) {

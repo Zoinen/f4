@@ -176,11 +176,19 @@ checkboxes inside section titles; older clients retain the ordinary child.
 
 System file icons come from Qt Gui's platform file-icon provider. Qt delegates
 that lookup to Finder/NSWorkspace on macOS, the Shell image lists on Windows,
-and the current MIME/XDG icon theme on Linux. The host requests each `QIcon`
-at the delegate's logical size and device-pixel ratio so native multi-resolution
-or vector artwork is selected before it becomes a Qt Quick texture. Missing
+and the current MIME/XDG icon theme on Linux. The host preserves the largest
+available bitmap until after cropping transparent margins, then fits it once
+to the delegate's physical pixel size. Icons with no advertised bitmap sizes
+are requested at the delegate's logical size and device-pixel ratio. Missing
 theme or remote-file icons fall back to the theme's declarative generic artwork,
 without activating Lucide's file-classification rules.
+An unreadable thumbnail falls back to the selected full-color file icon rather
+than leaving a highlight-tinted generic placeholder. The failed thumbnail stays
+settled so loading its replacement icon does not retry the same failed decode.
+`F4NativeIconFallbackPixelGridTest` covers this transition and delegate reuse in
+all five panel layouts at 175% scale.
+`nativeArtworkPreservesSourceResolution` checks fine bitmap detail at 100% and
+175% scale. Set `F4_NATIVE_ICON_DEBUG=1` to log source, cropped, and target sizes.
 
 ### Bundled icon assets
 

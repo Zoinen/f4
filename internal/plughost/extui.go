@@ -1947,7 +1947,7 @@ func (r *ExtUiRenderer) WantsEditorSyntaxFade() bool {
 }
 
 // CanDeferCoveredTerminalRedraw proves that raw shell bytes changed only a
-// terminal which the last delivered app scene completely covers with both file
+// terminal which the last delivered app scene completely covers with file
 // panels. The terminal parser keeps the new rows in memory; an input/task that
 // exposes the terminal still performs an ordinary render and publishes the
 // latest state. A negotiated cell fallback is covered too: it paints those
@@ -2687,7 +2687,7 @@ type semanticPanelCatalogDiff struct {
 var semanticHiddenTerminalPresentationKeys = map[string]struct{}{
 	"cursorX": {}, "cursorY": {}, "cursorAbsoluteRow": {},
 	"cursorVisible": {}, "rows": {}, "windowStart": {}, "windowEnd": {},
-	"viewportStart": {}, "viewportSpan": {}, "contentExtent": {},
+	"viewportStart": {}, "viewportSpan": {}, "contentStart": {}, "contentExtent": {},
 	"viewportRow": {}, "viewportRows": {}, "windowGeneration": {},
 	"windowContentKey": {}, "windowRows": {},
 }
@@ -2702,24 +2702,27 @@ var semanticHiddenTerminalPresentationKeys = map[string]struct{}{
 // and publishes the latest rows before the terminal can become visible.
 func semanticCoveredTerminalID(previousShell, currentShell map[string]any) (string, bool) {
 	for _, shell := range []map[string]any{previousShell, currentShell} {
-		if shell == nil || semantic.String(shell["mode"]) != "panels" ||
-			!ExtUiAnyBool(shell["showPanels"]) ||
-			!ExtUiAnyBool(shell["showLeftPanel"]) ||
-			!ExtUiAnyBool(shell["showRightPanel"]) ||
-			ExtUiAnyBool(shell["wide"]) {
+		if shell == nil || semantic.String(shell["mode"]) != "panels" || !ExtUiAnyBool(shell["showPanels"]) {
 			return "", false
 		}
 		terminalActive, present := shell["terminalActive"].(bool)
 		if !present || terminalActive {
 			return "", false
 		}
-		// A shortened panel reveals the terminal beneath it, so terminal rows are
-		// no longer a hidden presentation detail and must not be deferred.
-		if layout, ok := shell["panelLayout"].(map[string]any); ok {
-			if semantic.Int(layout["leftBottomInsetRows"]) != 0 ||
-				semantic.Int(layout["rightBottomInsetRows"]) != 0 {
+		// A full-height wide panel covers both halves of the backdrop.
+		layout := semantic.AppMap(shell["panelLayout"])
+		leftFullHeight := semantic.Int(layout["leftBottomInsetRows"]) == 0
+		rightFullHeight := semantic.Int(layout["rightBottomInsetRows"]) == 0
+		if ExtUiAnyBool(shell["wide"]) {
+			value, present := shell["widePanel"]
+			side := semantic.Int(value)
+			fullHeight := side == 0 && leftFullHeight || side == 1 && rightFullHeight
+			if !present || !fullHeight {
 				return "", false
 			}
+		} else if !leftFullHeight || !rightFullHeight ||
+			!ExtUiAnyBool(shell["showLeftPanel"]) || !ExtUiAnyBool(shell["showRightPanel"]) {
+			return "", false
 		}
 	}
 	previousTerminal, previousOK := previousShell["terminal"].(map[string]any)
@@ -4357,6 +4360,9 @@ func RunExternalUI(cols, rows int, execPath string, args []string) error {
 		if err != nil {
 			errCh <- err
 			return
+		}
+		if tcp, ok := conn.(*net.TCPConn); ok {
+			_ = tcp.SetWriteBuffer(1024 * 1024)
 		}
 		connCh <- conn
 	}()

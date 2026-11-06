@@ -16,6 +16,25 @@ class F4WindowsApplicationIconTests final : public QObject
 {
     Q_OBJECT
 private slots:
+    void executableUsesWindowsGuiSubsystem()
+    {
+        QFile host(QString::fromUtf8(F4_ICON_HOST));
+        QVERIFY(host.open(QIODevice::ReadOnly));
+        const auto dos = host.read(64);
+        QCOMPARE(dos.size(), 64);
+        QCOMPARE(dos.first(2), QByteArray("MZ"));
+        const auto peOffset = qFromLittleEndian<quint32>(dos.constData() + 60);
+        QVERIFY(host.seek(peOffset));
+        QCOMPARE(host.read(4), QByteArray("PE\0\0", 4));
+        // Subsystem follows the 24-byte PE/COFF header and 68 optional bytes
+        // in both PE32 and PE32+; inspect the built host, not this test binary.
+        QVERIFY(host.seek(peOffset + 24 + 68));
+        const auto subsystem = host.read(2);
+        QCOMPARE(subsystem.size(), 2);
+        QCOMPARE(qFromLittleEndian<quint16>(subsystem.constData()),
+                 quint16(IMAGE_SUBSYSTEM_WINDOWS_GUI));
+    }
+
     void nativeTaskbarUsesGoIconSize()
     {
         if (QGuiApplication::platformName() != QStringLiteral("windows"))

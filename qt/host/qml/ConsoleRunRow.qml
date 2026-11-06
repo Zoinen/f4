@@ -12,12 +12,6 @@ Item {
     property real fallbackFontPixelSize: hostWindow.guiMonospaceFontPixelSize
     property real horizontalInset: 8
     property bool pixelAligned: false
-    function alignedOffset(item, axis, value) {
-        const revision = width + height + x + y + hostWindow.width + hostWindow.height
-        const origin = item.parent.mapToItem(hostWindow.contentItem, 0, 0)
-        const offset = axis === "x" ? origin.x : origin.y
-        return hostWindow.snapPx(offset + value) - offset + revision * 0
-    }
 
     function runBackground(value) {
         if (ignoreRunBackground)
@@ -59,9 +53,12 @@ Item {
                 Text {
                     id: consoleRunLabel
                     objectName: pixelAligned ? "commandLinePromptRun" + index : ""
-                    x: pixelAligned ? alignedOffset(consoleRunLabel, "x", 0) : 0
-                    y: pixelAligned ? alignedOffset(consoleRunLabel, "y", (parent.height-height)/2)
-                                    : (parent.height-height)/2
+                    x: 0
+                    y: (parent.height-height)/2
+                    transform: Translate {
+                        x: pixelAligned ? hostWindow.dialogPixelOffsetX(consoleRunLabel, hostWindow.contentItem) : 0
+                        y: pixelAligned ? hostWindow.dialogPixelOffsetY(consoleRunLabel, hostWindow.contentItem) : 0
+                    }
                     text: hostWindow.cleanText(modelData.text)
                     color: hostWindow.cleanText(modelData.foreground) !== ""
                            ? modelData.foreground : hostWindow.textColor
@@ -82,8 +79,11 @@ Item {
         anchors.right: parent.right
         anchors.leftMargin: horizontalInset
         anchors.rightMargin: horizontalInset
-        y: pixelAligned ? alignedOffset(fallbackRunLabel, "y", (parent.height-height)/2)
-                        : (parent.height-height)/2
+        y: (parent.height-height)/2
+        transform: Translate {
+            x: pixelAligned ? hostWindow.dialogPixelOffsetX(fallbackRunLabel, hostWindow.contentItem) : 0
+            y: pixelAligned ? hostWindow.dialogPixelOffsetY(fallbackRunLabel, hostWindow.contentItem) : 0
+        }
         visible: !runs || runs.length === 0
         text: fallbackText
         color: hostWindow.textColor

@@ -294,12 +294,15 @@ private slots:
     void zeroRequestedSizeUsesLogicalFallback();
     void requestedPhysicalSizeOverridesStaleDevicePixelRatio();
     void nativePlatformFileIconSmoke();
+    void nativeArtworkPreservesSourceResolution_data();
+    void nativeArtworkPreservesSourceResolution();
     void nativeArtworkTrimsOnlyZeroAlpha_data();
     void nativeArtworkTrimsOnlyZeroAlpha();
     void zoinIconsAreBundledAndIndependent();
     void zoinArtworkHasTightNativeBounds();
     void zoinManifestReferencesBundledAssets();
     void zoinIsDefault();
+    void zoinCatalogClassificationBudget();
     void renderingUsesLogicalSizeAndDevicePixelRatio_data();
     void renderingUsesLogicalSizeAndDevicePixelRatio();
 };
@@ -342,15 +345,18 @@ void F4IconProviderTests::preparedFileIconResourcesPreserveChromeOriginals()
     const auto names = QString::fromUtf8(manifest.readAll()).split(u'\n', Qt::SkipEmptyParts);
     F4IconProvider provider;
     F4IconSet icons;
-    for (const QString &name : names) {
-        QFile original(QString(":/F4QtHost/icons/lucide/%1.svg").arg(name));
-        QVERIFY(original.open(QIODevice::ReadOnly));
+    for (const QString &rawName : names) {
+        const QString name = rawName.trimmed();
+        // The shared factory can canonicalize an old artwork name to its
+        // group alias. Chrome must still use the original (unprepared) SVG.
+        const QUrl chromeSource = icons.iconSource(name, 16, 1);
+        QVERIFY(chromeSource.toString().startsWith("qrc:/F4QtHost/icons/lucide/"));
+        QFile original(":" + chromeSource.path());
+        QVERIFY2(original.open(QIODevice::ReadOnly), qPrintable(chromeSource.toString()));
         const QByteArray originalSvg = original.readAll();
-        QCOMPARE(icons.iconSource(name, 16, 1).toString(),
-                 QString("qrc:/F4QtHost/icons/lucide/%1.svg").arg(name));
         for (int step = 1; step <= 8; ++step) {
             QFile prepared(QString(":/F4QtHost/icons/files/%1/%2.svg").arg(step).arg(name));
-            QVERIFY(prepared.open(QIODevice::ReadOnly));
+            QVERIFY2(prepared.open(QIODevice::ReadOnly), qPrintable(prepared.fileName()));
             const QByteArray preparedSvg = prepared.readAll();
             QCOMPARE(preparedSvg.mid(preparedSvg.indexOf('>') + 1),
                      originalSvg.mid(originalSvg.indexOf('>') + 1));
@@ -1191,6 +1197,23 @@ void F4IconProviderTests::zoinIconsAreBundledAndIndependent()
     QVERIFY(source("test", true).toString().startsWith("image://"));
 }
 
+void F4IconProviderTests::zoinCatalogClassificationBudget()
+{
+    F4IconSet icons;
+    QStringList names;
+    for (int i = 0; i < 184; ++i)
+        names.append(QStringLiteral("IMG_%1.CR2").arg(i));
+    QElapsedTimer timer;
+    timer.start();
+    for (const QString &name : names)
+        QVERIFY(!icons.fileIconSource({}, name, false, 64, 1.75).isEmpty());
+    const qint64 elapsed = timer.nsecsElapsed();
+    qInfo() << "184 cold file-icon classifications (ns):" << elapsed;
+    QVERIFY2(elapsed < 6250000,
+             qPrintable(QStringLiteral("Catalog icon classification exceeded one 160 Hz frame: %1 ms")
+                            .arg(elapsed / 1e6)));
+}
+
 void F4IconProviderTests::zoinIsDefault()
 {
     F4IconSet icons;
@@ -1280,6 +1303,39 @@ void F4IconProviderTests::nativeArtworkTrimsOnlyZeroAlpha()
         QCOMPARE(theme.pixelColor(6, 6).alpha(), 0);
     else
         QCOMPARE(theme.pixelColor(6, 6), QColor(220, 42, 52));
+}
+
+void F4IconProviderTests::nativeArtworkPreservesSourceResolution_data()
+{
+    QTest::addColumn<int>("logicalSize");
+    QTest::addColumn<qreal>("dpr");
+    QTest::newRow("native-pixels") << 128 << qreal(1);
+    QTest::newRow("fractional-175") << 64 << qreal(1.75);
+}
+
+void F4IconProviderTests::nativeArtworkPreservesSourceResolution()
+{
+    QFETCH(int, logicalSize);
+    QFETCH(qreal, dpr);
+    // Shell artwork can occupy only part of its 256px image-list canvas.
+    // Its fine detail must survive cropping before fitting to the display.
+    QImage original(256, 256, QImage::Format_ARGB32_Premultiplied);
+    original.fill(Qt::transparent);
+    for (int y = 64; y < 192; ++y)
+        for (int x = 64; x < 192; ++x)
+            original.setPixelColor(x, y, (x + y) % 2 ? Qt::white : Qt::black);
+    F4IconProvider provider(std::make_unique<PaddedArtworkBackend>(original));
+    F4IconSet icons(QStringLiteral("test-icons"));
+    icons.setIconSet(F4IconSet::System);
+    const QSize physicalSize = F4IconProvider::physicalSize(logicalSize, dpr);
+    const QImage expected = original.copy(64, 64, 128, 128).scaled(
+        physicalSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    const auto source = icons.fileIconSource("/test", "detail.test", false,
+                                             logicalSize, dpr);
+    const QImage actual = provider.requestImage(
+        F4IconProvider::routeId(source), nullptr, physicalSize);
+    QCOMPARE(actual.convertToFormat(QImage::Format_ARGB32),
+             expected.convertToFormat(QImage::Format_ARGB32));
 }
 
 void F4IconProviderTests::nativePlatformFileIconSmoke()

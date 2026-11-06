@@ -255,6 +255,20 @@ void F4GalleryBridge::requestPanelCatalogRows(int side)
             break;
         }
     }
+    if (missing < 0 && state.active && !state.loading
+        && !state.catalogProvisional && !state.metadataAwaitingFrame
+        && !m_metadataInputBusy && state.previewCapable
+        && state.galleryLayoutMode == QStringLiteral("masonry")) {
+        // After the first viewport, feed the remaining layout inputs in
+        // bounded pages, independently of where the user scrolls next.
+        while (state.catalogRowsBackfillCursor < state.totalCount
+               && catalogRowLoaded(state, state.catalogRowsBackfillCursor)) {
+            ++state.catalogRowsBackfillCursor;
+        }
+        if (state.catalogRowsBackfillCursor < state.totalCount) {
+            missing = state.catalogRowsBackfillCursor;
+        }
+    }
     if (missing < 0) {
         return;
     }
@@ -264,8 +278,11 @@ void F4GalleryBridge::requestPanelCatalogRows(int side)
     // rows, including every visible delegate. Start at the first actual hole
     // so page responses contain only new viewport data.
     const int offset = missing;
-    const int limit = qMin(CatalogRowsPageSize,
-                           state.totalCount - offset);
+    int limit = 1;
+    while (limit < CatalogRowsPageSize && offset + limit < state.totalCount
+           && !catalogRowLoaded(state, offset + limit)) {
+        ++limit;
+    }
     if (limit <= 0) {
         return;
     }
@@ -511,6 +528,15 @@ bool F4GalleryBridge::choosePanelCatalogMetadataRange(
         }
     }
 
+    // The gallery's catalog-wide aspect pass also needs descriptors for
+    // offscreen rows. Use the existing frame-paced metadata channel.
+    if (state.active && !state.catalogProvisional && state.previewCapable
+        && state.galleryLayoutMode == QStringLiteral("masonry")) {
+        const MetadataRange &range = state.metadataPendingRanges.constFirst();
+        *offset = range.begin;
+        *limit = qMin(CatalogMetadataChunkLimit, range.end - range.begin);
+        return *limit > 0;
+    }
     return false;
 }
 

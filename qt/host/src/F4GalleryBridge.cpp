@@ -196,6 +196,8 @@ F4GalleryBridge::F4GalleryBridge(QQmlEngine *engine, QObject *parent,
     m_metadataIdleTimer->setInterval(CatalogMetadataInputIdleMs);
     connect(m_metadataIdleTimer, &QTimer::timeout, this, [this]() {
         m_metadataInputBusy = false;
+        schedulePanelCatalogRowsRequest(0);
+        schedulePanelCatalogRowsRequest(1);
         schedulePanelCatalogMetadataRequest();
     });
     m_suppressedKeyReleaseTimer = new QTimer(this);
@@ -219,10 +221,10 @@ F4GalleryBridge::F4GalleryBridge(QQmlEngine *engine, QObject *parent,
     ZoinGallery::RuntimeOptions options;
     options.providerPrefix = QStringLiteral("f4-zoingallery");
     options.storageNamespace = QStringLiteral("f4-qt-host");
-    // Four workers leave one source-read lane and three decode/cache lanes.
-    // DecodeManager starts each lane only on its first task, so constructing
-    // the bridge no longer creates one OS thread per logical CPU.
+    // Keep panel and source-I/O concurrency bounded. The active Fit window
+    // can also use lazy workers dedicated to cache lookup and pixel decode.
     options.maxDecodeThreads = 4;
+    options.expandViewerFitWorkers = true;
     options.persistentCache = true;
 #if defined(F4_QT_USE_FFMPEG_PLUGIN)
     options.enableVideoPlayback = true;
@@ -509,6 +511,7 @@ void F4GalleryBridge::releaseFrameBoundMetadata(
         }
         state.metadataAwaitingFrame = false;
         state.metadataRequiredRenderSyncSerial = 0;
+        schedulePanelCatalogRowsRequest(side);
         metadataBecameEligible = true;
     }
     if (metadataBecameEligible) {

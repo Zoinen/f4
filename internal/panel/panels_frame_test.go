@@ -63,6 +63,16 @@ func TestPanelsFrame_WorkspaceTabTitleUsesFolderNames(t *testing.T) {
 	if strings.Contains(title, root) {
 		t.Fatalf("workspace tab title contains parent path: %q", title)
 	}
+	for side, want := range []string{"left-leaf", "right-leaf"} {
+		pf.SetWidePanel(side)
+		if got := pf.GetWorkspaceTabTitle(); got != want {
+			t.Fatalf("wide panel %d tab title = %q, want %q", side, got, want)
+		}
+	}
+	pf.ExitWide()
+	if got := pf.GetWorkspaceTabTitle(); got != title {
+		t.Fatalf("restored split tab title = %q, want %q", got, title)
+	}
 }
 
 func TestPanelsFrame_WorkspaceMenuInfoUsesFullPanelPaths(t *testing.T) {
@@ -82,6 +92,17 @@ func TestPanelsFrame_WorkspaceMenuInfoUsesFullPanelPaths(t *testing.T) {
 	info := pf.GetWorkspaceMenuInfo()
 	if info.Icon != "P" || info.Primary != leftPath || info.Secondary != rightPath {
 		t.Fatalf("workspace menu info = %#v, want full left/right paths", info)
+	}
+	for side, path := range []string{leftPath, rightPath} {
+		pf.SetWidePanel(side)
+		want := vtui.WorkspaceMenuInfo{Icon: "P", Primary: path}
+		if got := pf.GetWorkspaceMenuInfo(); got != want {
+			t.Fatalf("wide panel %d menu info = %#v, want %#v", side, got, want)
+		}
+	}
+	pf.ExitWide()
+	if got := pf.GetWorkspaceMenuInfo(); got != info {
+		t.Fatalf("restored split menu info = %#v, want %#v", got, info)
 	}
 
 	pf.ShowPanels = false
@@ -4562,6 +4583,9 @@ func TestPanelsFrame_PanelActivationFastPathEligibility(t *testing.T) {
 	pf.Wide = true
 	if pf.panelActivationFastPathEligible() {
 		t.Fatal("wide panels used the split-panel activation fast path")
+	}
+	if !pf.panelCatalogFastPathEligible(0) || pf.panelCatalogFastPathEligible(1) {
+		t.Fatal("only the visible active panel should publish a catalog directly in wide mode")
 	}
 	pf.Wide = false
 

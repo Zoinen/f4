@@ -1,0 +1,1067 @@
+diff --git a/qtdeclarative/src/quick/items/qquickimage.cpp b/qtdeclarative/src/quick/items/qquickimage.cpp
+index e1030d9..d9ac0ba 100644
+--- a/qtdeclarative/src/quick/items/qquickimage.cpp
++++ b/qtdeclarative/src/quick/items/qquickimage.cpp
+@@ -3,6 +3,7 @@
+ // Qt-Security score:significant reason:default
+ 
+ #include "qquickimage_p.h"
++#include "qquickpixelgrid_p.h"
+ #include "qquickimage_p_p.h"
+ 
+ #include <QtQuick/qsgtextureprovider.h>
+@@ -835,6 +836,8 @@ QSGNode *QQuickImage::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *)
+                   sourceRect.width() / nsWidth,
+                   sourceRect.height() / nsHeight);
+ 
++    targetRect = QQuickPixelGridPrivate::snapRect(this, targetRect);
++
+     if (targetRect.isEmpty()
+         || !qt_is_finite(targetRect.width()) || !qt_is_finite(targetRect.height())
+         || nsrect.isEmpty()
+diff --git a/qtdeclarative/src/quick/items/qquickitem.cpp b/qtdeclarative/src/quick/items/qquickitem.cpp
+index 6b51199..fdb5021 100644
+--- a/qtdeclarative/src/quick/items/qquickitem.cpp
++++ b/qtdeclarative/src/quick/items/qquickitem.cpp
+@@ -35,6 +35,7 @@
+ #include <private/qqmlopenmetaobject_p.h>
+ #include <QtQuick/private/qquickstate_p.h>
+ #include <private/qquickitem_p.h>
++#include "qquickpixelgrid_p.h"
+ #include <QtQuick/private/qquickaccessibleattached_p.h>
+ #include <QtQuick/private/qquickhoverhandler_p.h>
+ #include <QtQuick/private/qquickpointerhandler_p.h>
+@@ -55,9 +56,14 @@
+ #endif
+ 
+ #include <QtCore/qpointer.h>
++#include <QtGui/QScreen>
++#include <QtQuick/qsgrendererinterface.h>
+ 
+ #include <algorithm>
+ #include <limits>
++#include <cmath>
++#include <functional>
++#include <QtCore/QHash>
+ 
+ // XXX todo Check that elements that create items handle memory correctly after visual ownership change
+ 
+@@ -68,6 +74,368 @@ Q_LOGGING_CATEGORY(lcVP, "qt.quick.viewport")
+ Q_STATIC_LOGGING_CATEGORY(lcEffClip, "qt.quick.effectiveclip")
+ Q_STATIC_LOGGING_CATEGORY(lcChangeListeners, "qt.quick.item.changelisteners")
+ 
++namespace QQuickPixelGridPrivate {
++
++static constexpr auto enabledProperty = "_f4.qtQuickPixelGrid.enabled";
++static constexpr qreal gridTolerance = 0.000001;
++static QHash<QQuickWindow *, QMetaObject::Connection> screenDpiConnections;
++
++struct PresentationGeometry
++{
++    QPointF origin;
++    QPointF snappedOrigin;
++    QPointF correction;
++    QPointF translation;
++    bool supported = true;
++};
++
++struct GeometryEntry
++{
++    PresentationGeometry geometry;
++    quint64 generation = 0;
++};
++
++struct SyncCache
++{
++    QQuickWindow *window = nullptr;
++    QQuickItem *root = nullptr;
++    qreal dpr = 1;
++    bool enabled = false;
++    bool pixelCenterEdges = false;
++    quint64 generation = 0;
++    QHash<const QQuickItem *, GeometryEntry> entries;
++};
++
++static thread_local SyncCache syncCache;
++
++SyncScope::SyncScope(QQuickWindow *window)
++{
++    // Nested synchronization uses uncached geometry for another window.
++    if (syncCache.window)
++        return;
++    ownsScope = true;
++    syncCache.window = window;
++    syncCache.root = window->contentItem();
++    syncCache.dpr = window->effectiveDevicePixelRatio();
++    syncCache.enabled = window->property(enabledProperty).toBool();
++    syncCache.pixelCenterEdges = window->rendererInterface()->graphicsApi()
++        != QSGRendererInterface::Software;
++    ++syncCache.generation;
++}
++
++SyncScope::~SyncScope()
++{
++    if (!ownsScope)
++        return;
++    // Retain hash storage for the next frame, but never retain unused/deleted
++    // item entries indefinitely. Keys are compared only, never dereferenced.
++    syncCache.entries.removeIf([](QHash<const QQuickItem *, GeometryEntry>::iterator entry) {
++        return entry->generation != syncCache.generation;
++    });
++    syncCache.window = nullptr;
++    syncCache.root = nullptr;
++}
++
++static void invalidateSyncCache()
++{
++    // updatePaintNode implementations can dirty items during synchronization.
++    // Do not let an earlier lookup survive such a change, including reparenting.
++    if (syncCache.window)
++        ++syncCache.generation;
++}
++
++static qreal physicalSnap(qreal value, qreal dpr, QQuickWindow *window)
++{
++    if (dpr <= 0)
++        return value;
++    const bool pixelCenterEdges = window && (window == syncCache.window
++        ? syncCache.pixelCenterEdges
++        : window->rendererInterface()->graphicsApi() != QSGRendererInterface::Software);
++    if (pixelCenterEdges) {
++        // Match Qt's aliased GPU rectangle coverage at a pixel-center tie:
++        // a leading edge at N + 0.5 already covers pixel N (top/left rule).
++        // qRound would move that crisp edge forward and shrink the rectangle.
++        // Keep ties stable across equivalent floating-point ancestor sums.
++        return std::ceil(value * dpr - qreal(0.5) - gridTolerance) / dpr;
++    }
++    // Qt's software adaptation uses the QPainter rounding convention instead.
++    // Stabilize exact half-pixel sums in the same way as the hardware path.
++    const qreal physical = value * dpr;
++    return qreal(qRound64(physical + std::copysign(gridTolerance, physical))) / dpr;
++}
++
++static bool localGeometry(const QQuickItem *item, QPointF *translation)
++{
++    auto *priv = QQuickItemPrivate::get(const_cast<QQuickItem *>(item));
++    if (!qFuzzyIsNull(priv->rotation()) || !qFuzzyCompare(priv->scale(), qreal(1)))
++        return false;
++#if QT_CONFIG(quick_shadereffect)
++    if (priv->layer() && priv->layer()->enabled())
++        return false;
++#endif
++
++    // A QML/C++ QQuickItem subclass with its own scene-graph renderer is
++    // outside this prototype's primitive coverage. The regular Qt Quick
++    // leaves below are handled in their own updatePaintNode implementations.
++    if (item->flags().testFlag(QQuickItem::ItemHasContents)
++        && !item->inherits("QQuickRectangle")
++        && !item->inherits("QQuickBorderImage")
++        && !item->inherits("QQuickAnimatedImage")
++        && !item->inherits("QQuickImage")
++        && !item->inherits("QQuickText")
++        && !item->inherits("QQuickTextInput")
++        && !item->inherits("QQuickTextEdit")
++#if QT_CONFIG(quick_shadereffect)
++        && !isRectangularShaderEffect(item)
++#endif
++        ) {
++        return false;
++    }
++
++    const qreal x = priv->x.valueBypassingBindings();
++    const qreal y = priv->y.valueBypassingBindings();
++    if (priv->transforms.isEmpty()) {
++        *translation = QPointF(x, y);
++        return true;
++    }
++
++    QMatrix4x4 matrix;
++    if (x || y)
++        matrix.translate(x, y);
++    for (int index = priv->transforms.size() - 1; index >= 0; --index)
++        priv->transforms.at(index)->applyTo(&matrix);
++
++    const QTransform transform = matrix.toTransform();
++    if (!transform.isAffine())
++        return false;
++    const QPointF origin = transform.map(QPointF(0, 0));
++    *translation = origin;
++    const QPointF unitX = transform.map(QPointF(1, 0)) - origin;
++    const QPointF unitY = transform.map(QPointF(0, 1)) - origin;
++    return std::abs(unitX.x() - 1) <= gridTolerance
++        && std::abs(unitX.y()) <= gridTolerance
++        && std::abs(unitY.x()) <= gridTolerance
++        && std::abs(unitY.y() - 1) <= gridTolerance;
++}
++
++static PresentationGeometry presentationGeometry(const QQuickItem *item,
++                                                 QQuickWindow *window, qreal dpr)
++{
++    const bool cached = window && window == syncCache.window;
++    const QQuickItem *root = cached ? syncCache.root : (window ? window->contentItem() : nullptr);
++    if (!item || item == root)
++        return {};
++    if (cached) {
++        const auto found = syncCache.entries.constFind(item);
++        if (found != syncCache.entries.cend() && found->generation == syncCache.generation)
++            return found->geometry;
++    }
++
++    // Copy the parent result: inserting a child can rehash the table. No
++    // references into the hash may survive the recursive lookup or insertion.
++    const auto parent = presentationGeometry(item->parentItem(), window, dpr);
++    PresentationGeometry result;
++    QPointF translation;
++    result.supported = parent.supported && localGeometry(item, &translation);
++    if (result.supported) {
++        result.origin = parent.origin + translation;
++        result.snappedOrigin = QPointF(physicalSnap(result.origin.x(), dpr, window),
++                                       physicalSnap(result.origin.y(), dpr, window));
++        result.correction = (result.snappedOrigin - result.origin)
++            - (parent.snappedOrigin - parent.origin);
++        result.translation = result.snappedOrigin - parent.snappedOrigin;
++    }
++    if (cached)
++        syncCache.entries.insert(item, {result, syncCache.generation});
++    return result;
++}
++
++static qreal effectiveDpr(const QQuickItem *item)
++{
++    QQuickWindow *window = item ? item->window() : nullptr;
++    if (window && window == syncCache.window)
++        return syncCache.dpr;
++    return window ? window->effectiveDevicePixelRatio() : 1;
++}
++
++bool isEnabled(const QQuickItem *item)
++{
++    QQuickWindow *window = item ? item->window() : nullptr;
++    if (window && window == syncCache.window)
++        return syncCache.enabled;
++    return window && window->property(enabledProperty).toBool();
++}
++
++bool isSupported(const QQuickItem *item)
++{
++    if (!item)
++        return false;
++    return presentationGeometry(item, item->window(), effectiveDpr(item)).supported;
++}
++
++bool presentationTranslation(const QQuickItem *item, QPointF *translation)
++{
++    if (!isEnabled(item) || item == item->window()->contentItem())
++        return false;
++    auto *priv = QQuickItemPrivate::get(const_cast<QQuickItem *>(item));
++    if (!priv->transforms.isEmpty() || priv->rotation() != 0 || priv->scale() != 1)
++        return false;
++    const auto geometry = presentationGeometry(item, item->window(), effectiveDpr(item));
++    if (!geometry.supported)
++        return false;
++    *translation = geometry.translation;
++    return true;
++}
++
++QPointF localCorrection(const QQuickItem *item)
++{
++    if (!isEnabled(item))
++        return {};
++    return presentationGeometry(item, item->window(), effectiveDpr(item)).correction;
++}
++
++QPointF snapPoint(const QQuickItem *item, const QPointF &point)
++{
++    if (!isEnabled(item))
++        return point;
++    const qreal dpr = effectiveDpr(item);
++    const auto geometry = presentationGeometry(item, item->window(), dpr);
++    if (!geometry.supported)
++        return point;
++    return QPointF(physicalSnap(geometry.origin.x() + point.x(), dpr, item->window()) - geometry.snappedOrigin.x(),
++                   physicalSnap(geometry.origin.y() + point.y(), dpr, item->window()) - geometry.snappedOrigin.y());
++}
++
++QRectF snapRect(const QQuickItem *item, const QRectF &rect)
++{
++    if (!isEnabled(item))
++        return rect;
++    const qreal dpr = effectiveDpr(item);
++    const auto geometry = presentationGeometry(item, item->window(), dpr);
++    if (!geometry.supported)
++        return rect;
++    const QPointF origin = geometry.origin;
++    const qreal snappedX = geometry.snappedOrigin.x();
++    const qreal snappedY = geometry.snappedOrigin.y();
++    QQuickWindow *window = item->window();
++    const qreal left = physicalSnap(origin.x() + rect.left(), dpr, window) - snappedX;
++    const qreal right = physicalSnap(origin.x() + rect.right(), dpr, window) - snappedX;
++    const qreal top = physicalSnap(origin.y() + rect.top(), dpr, window) - snappedY;
++    const qreal bottom = physicalSnap(origin.y() + rect.bottom(), dpr, window) - snappedY;
++    return QRectF(QPointF(left, top), QPointF(right, bottom)).normalized();
++}
++
++static void enqueuePresentationSubtree(QQuickItem *item, bool repaint)
++{
++    if (!item)
++        return;
++    auto *priv = QQuickItemPrivate::get(item);
++    priv->dirtyAttributes |= QQuickItemPrivate::Transform;
++    if (repaint)
++        priv->dirtyAttributes |= QQuickItemPrivate::Content | QQuickItemPrivate::Clip;
++    // Rounding can change containment near an edge. Recompute the input
++    // pruning hint lazily, without repeating logical transform notifications.
++    priv->eventHandlingChildrenWithinBounds = false;
++    priv->eventHandlingChildrenWithinBoundsSet = false;
++    if (priv->window && priv->componentComplete)
++        priv->addToDirtyList();
++    for (QQuickItem *child : std::as_const(priv->childItems))
++        enqueuePresentationSubtree(child, repaint);
++}
++
++void invalidateSubtree(QQuickItem *item)
++{
++    invalidateSyncCache();
++    enqueuePresentationSubtree(item, true);
++}
++
++} // namespace QQuickPixelGridPrivate
++
++namespace QtQuickPixelGrid {
++
++void setEnabled(QQuickWindow *window, bool enabled)
++{
++    if (!window)
++        return;
++    window->setProperty(QQuickPixelGridPrivate::enabledProperty, enabled);
++    if (QQuickPixelGridPrivate::syncCache.window == window)
++        QQuickPixelGridPrivate::syncCache.enabled = enabled;
++    QQuickPixelGridPrivate::invalidateSubtree(window->contentItem());
++
++    if (!window->property("_f4.qtQuickPixelGrid.watchersInstalled").toBool()) {
++        window->setProperty("_f4.qtQuickPixelGrid.watchersInstalled", true);
++        QObject::connect(window, &QWindow::screenChanged, window,
++                         [window](QScreen *screen) {
++            if (auto previous = QQuickPixelGridPrivate::screenDpiConnections.take(window); previous)
++                QObject::disconnect(previous);
++            if (screen) {
++                auto connection = QObject::connect(
++                    screen, &QScreen::logicalDotsPerInchChanged, window,
++                    [window] {
++                        if (QtQuickPixelGrid::isEnabled(window))
++                            QQuickPixelGridPrivate::invalidateSubtree(window->contentItem());
++                    });
++                QQuickPixelGridPrivate::screenDpiConnections.insert(window, connection);
++            }
++            if (QtQuickPixelGrid::isEnabled(window))
++                QQuickPixelGridPrivate::invalidateSubtree(window->contentItem());
++        });
++        if (QScreen *screen = window->screen()) {
++            auto connection = QObject::connect(
++                screen, &QScreen::logicalDotsPerInchChanged, window,
++                [window] {
++                    if (QtQuickPixelGrid::isEnabled(window))
++                        QQuickPixelGridPrivate::invalidateSubtree(window->contentItem());
++                });
++            QQuickPixelGridPrivate::screenDpiConnections.insert(window, connection);
++        }
++        QObject::connect(window, &QObject::destroyed, [](QObject *object) {
++            QQuickPixelGridPrivate::screenDpiConnections.remove(
++                static_cast<QQuickWindow *>(object));
++        });
++    }
++}
++
++bool isEnabled(const QQuickWindow *window)
++{
++    return window && window->property(QQuickPixelGridPrivate::enabledProperty).toBool();
++}
++
++QRectF presentationBounds(const QQuickItem *item)
++{
++    if (!item)
++        return {};
++    QQuickWindow *window = item->window();
++    if (!window)
++        return item->boundingRect();
++    const QRectF local = QQuickPixelGridPrivate::snapRect(item, item->boundingRect());
++    const QPointF topLeft = const_cast<QQuickItem *>(item)->mapToItem(
++        window->contentItem(), local.topLeft());
++    return QRectF(topLeft, local.size());
++}
++
++QStringList unsupportedItems(const QQuickWindow *window)
++{
++    QStringList result;
++    if (!window)
++        return result;
++    std::function<void(QQuickItem *)> visit = [&](QQuickItem *item) {
++        if (!QQuickPixelGridPrivate::isSupported(item)) {
++            QString name = item->objectName();
++            if (name.isEmpty())
++                name = QString::fromLatin1(item->metaObject()->className());
++            if (!result.contains(name))
++                result.append(name);
++        }
++        for (QQuickItem *child : item->childItems())
++            visit(child);
++    };
++    visit(window->contentItem());
++    return result;
++}
++
++} // namespace QtQuickPixelGrid
++
+ // after 100ms, a mouse/non-mouse cursor conflict is resolved in favor of the mouse handler
+ static const quint64 kCursorOverrideTimeout = 100;
+ 
+@@ -3239,6 +3607,12 @@ void QQuickItemPrivate::itemToParentTransform(QTransform *t) const
+ #ifdef QT_BUILD_INTERNAL
+     ++itemToParentTransform_counter;
+ #endif
++    Q_Q(const QQuickItem);
++    QPointF presentation;
++    if (QQuickPixelGridPrivate::presentationTranslation(q, &presentation)) {
++        t->translate(presentation.x(), presentation.y());
++        return;
++    }
+     /* Read the current x and y values. As this is an internal method,
+        we don't care about it being usable in bindings. Instead, we
+        care about performance here, and thus we read the value with
+@@ -3265,6 +3639,10 @@ void QQuickItemPrivate::itemToParentTransform(QTransform *t) const
+         t->rotate(rotation());
+         t->translate(-tp.x(), -tp.y());
+     }
++
++    const QPointF pixelGridCorrection = QQuickPixelGridPrivate::localCorrection(q);
++    if (!pixelGridCorrection.isNull())
++        t->translate(pixelGridCorrection.x(), pixelGridCorrection.y());
+ }
+ 
+ /*!
+@@ -5963,7 +6341,8 @@ QRectF QQuickItem::boundingRect() const
+ QRectF QQuickItem::clipRect() const
+ {
+     Q_D(const QQuickItem);
+-    QRectF ret(0, 0, d->width.valueBypassingBindings(), d->height.valueBypassingBindings());
++    QRectF ret = QQuickPixelGridPrivate::snapRect(
++        this, QRectF(0, 0, d->width.valueBypassingBindings(), d->height.valueBypassingBindings()));
+     if (flags().testFlag(QQuickItem::ItemObservesViewport)) {
+         if (QQuickItem *viewport = viewportItem()) {
+             // if the viewport is already "this", there's nothing to intersect;
+@@ -5972,7 +6351,7 @@ QRectF QQuickItem::clipRect() const
+                 return ret;
+             const auto mappedViewportRect = mapRectFromItem(viewport, viewport->clipRect());
+             qCDebug(lcVP) << this << "intersecting" << viewport << mappedViewportRect << ret << "->" << mappedViewportRect.intersected(ret);
+-            return mappedViewportRect.intersected(ret);
++            return QQuickPixelGridPrivate::snapRect(this, mappedViewportRect.intersected(ret));
+         }
+     }
+     return ret;
+@@ -6979,6 +7358,7 @@ QString QQuickItemPrivate::dirtyToString() const
+ void QQuickItemPrivate::dirty(DirtyType type)
+ {
+     Q_Q(QQuickItem);
++    QQuickPixelGridPrivate::invalidateSyncCache();
+     if (!(dirtyAttributes & type) || (window && !prevDirtyItem)) {
+         dirtyAttributes |= type;
+         if (window && componentComplete) {
+@@ -6988,6 +7368,16 @@ void QQuickItemPrivate::dirty(DirtyType type)
+     }
+     if (type & (TransformOrigin | Transform | BasicTransform | Position | Size | Clip))
+         transformChanged(q);
++
++    // Qt already notifies transform observers for the ancestor's logical move.
++    // Only enqueue descendant presentation nodes here; dirty(Transform) on
++    // every child would repeat observer delivery and ancestor containment walks.
++    if (window && (type & TransformUpdateMask) && QQuickPixelGridPrivate::isEnabled(q)) {
++        eventHandlingChildrenWithinBounds = false;
++        eventHandlingChildrenWithinBoundsSet = false;
++        for (QQuickItem *child : std::as_const(childItems))
++            QQuickPixelGridPrivate::enqueuePresentationSubtree(child, false);
++    }
+ }
+ 
+ void QQuickItemPrivate::addToDirtyList()
+@@ -8901,9 +9291,12 @@ bool QQuickItem::contains(const QPointF &point) const
+         return res;
+     }
+ 
+-    qreal x = point.x();
+-    qreal y = point.y();
+-    return x >= 0 && y >= 0 && x < d->width && y < d->height;
++    const QRectF bounds = QQuickPixelGridPrivate::snapRect(
++        this, QRectF(0, 0, d->width, d->height));
++    const qreal x = point.x();
++    const qreal y = point.y();
++    return x >= bounds.left() && y >= bounds.top()
++        && x < bounds.right() && y < bounds.bottom();
+ }
+ 
+ /*!
+diff --git a/qtdeclarative/src/quick/items/qquickpixelgrid_p.h b/qtdeclarative/src/quick/items/qquickpixelgrid_p.h
+new file mode 100644
+index 0000000..709daa6
+--- /dev/null
++++ b/qtdeclarative/src/quick/items/qquickpixelgrid_p.h
+@@ -0,0 +1,54 @@
++// SPDX-License-Identifier: LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
++#pragma once
++
++#include <QtCore/QPointF>
++#include <QtCore/QRectF>
++#include <QtCore/QStringList>
++#include <QtQuick/qtquickglobal.h>
++
++QT_BEGIN_NAMESPACE
++
++class QQuickItem;
++class QQuickWindow;
++class QSGInternalRectangleNode;
++
++namespace QQuickPixelGridPrivate {
++
++// Cache only while the GUI thread is blocked by scene synchronization. Input
++// mapping outside this scope always observes the current logical geometry.
++class SyncScope
++{
++public:
++    explicit SyncScope(QQuickWindow *window);
++    ~SyncScope();
++    Q_DISABLE_COPY_MOVE(SyncScope)
++
++private:
++    bool ownsScope = false;
++};
++
++bool isEnabled(const QQuickItem *item);
++bool isSupported(const QQuickItem *item);
++// Default vertex stage and Qt's built-in rectangular grid only. Arbitrary
++// vertex shaders and custom meshes can change the geometry after this point.
++bool isRectangularShaderEffect(const QQuickItem *item);
++bool presentationTranslation(const QQuickItem *item, QPointF *translation);
++QPointF localCorrection(const QQuickItem *item);
++QPointF snapPoint(const QQuickItem *item, const QPointF &point);
++QRectF snapRect(const QQuickItem *item, const QRectF &rect);
++void setSoftwareRectanglePresentation(QSGInternalRectangleNode *node,
++                                      const QRectF &rect, bool enabled);
++void invalidateSubtree(QQuickItem *item);
++
++} // namespace QQuickPixelGridPrivate
++
++namespace QtQuickPixelGrid {
++
++Q_QUICK_EXPORT void setEnabled(QQuickWindow *window, bool enabled);
++Q_QUICK_EXPORT bool isEnabled(const QQuickWindow *window);
++Q_QUICK_EXPORT QRectF presentationBounds(const QQuickItem *item);
++Q_QUICK_EXPORT QStringList unsupportedItems(const QQuickWindow *window);
++
++} // namespace QtQuickPixelGrid
++
++QT_END_NAMESPACE
+diff --git a/qtdeclarative/src/quick/items/qquickrectangle.cpp b/qtdeclarative/src/quick/items/qquickrectangle.cpp
+index 215efa3..74cdefb 100644
+--- a/qtdeclarative/src/quick/items/qquickrectangle.cpp
++++ b/qtdeclarative/src/quick/items/qquickrectangle.cpp
+@@ -3,11 +3,14 @@
+ // Qt-Security score:significant reason:default
+ 
+ #include "qquickrectangle_p.h"
++#include "qquickpixelgrid_p.h"
+ #include "qquickrectangle_p_p.h"
+ 
+ #include <QtQml/qqmlinfo.h>
+ 
+ #include <QtQuick/private/qsgcontext_p.h>
++#include <QtQuick/qquickwindow.h>
++#include <QtQuick/qsgrendererinterface.h>
+ #include <private/qsgadaptationlayer_p.h>
+ 
+ #include <private/qqmlmetatype_p.h>
+@@ -776,7 +779,13 @@ QSGNode *QQuickRectangle::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData
+     QSGInternalRectangleNode *rectangle = static_cast<QSGInternalRectangleNode *>(oldNode);
+     if (!rectangle) rectangle = d->sceneGraphContext()->createInternalRectangleNode();
+ 
+-    rectangle->setRect(QRectF(0, 0, width(), height()));
++    const QRectF presentationRect = QQuickPixelGridPrivate::snapRect(
++        this, QRectF(0, 0, width(), height()));
++    if (window()->rendererInterface()->graphicsApi() == QSGRendererInterface::Software) {
++        QQuickPixelGridPrivate::setSoftwareRectanglePresentation(rectangle, presentationRect,
++            QQuickPixelGridPrivate::isEnabled(this) && QQuickPixelGridPrivate::isSupported(this));
++    }
++    rectangle->setRect(presentationRect);
+     rectangle->setColor(d->color);
+ 
+     if (d->pen && d->pen->isValid()) {
+diff --git a/qtdeclarative/src/quick/items/qquickshadereffect.cpp b/qtdeclarative/src/quick/items/qquickshadereffect.cpp
+index e4e9648..2de2c92 100644
+--- a/qtdeclarative/src/quick/items/qquickshadereffect.cpp
++++ b/qtdeclarative/src/quick/items/qquickshadereffect.cpp
+@@ -6,9 +6,17 @@
+ #include <private/qsgcontextplugin_p.h>
+ #include <private/qsgrhisupport_p.h>
+ #include <private/qquickwindow_p.h>
++#include "qquickpixelgrid_p.h"
+ 
+ QT_BEGIN_NAMESPACE
+ 
++bool QQuickPixelGridPrivate::isRectangularShaderEffect(const QQuickItem *item)
++{
++    const auto *effect = qobject_cast<const QQuickShaderEffect *>(item);
++    return effect && effect->vertexShader().isEmpty()
++        && effect->mesh().metaType() == QMetaType::fromType<QSize>();
++}
++
+ /*!
+     \qmltype ShaderEffect
+     \nativetype QQuickShaderEffect
+@@ -889,6 +897,9 @@ void QQuickShaderEffectPrivate::setVertexShader(const QUrl &fileUrl)
+ 
+     m_vertShader = fileUrl;
+ 
++    if (QQuickPixelGridPrivate::isEnabled(q))
++        QQuickPixelGridPrivate::invalidateSubtree(q);
++
+     m_vertNeedsUpdate = true;
+     if (q->isComponentComplete())
+         maybeUpdateShaders();
+@@ -949,6 +960,8 @@ void QQuickShaderEffectPrivate::setMesh(const QVariant &mesh)
+     }
+ 
+     m_dirty |= QSGShaderEffectNode::DirtyShaderMesh;
++    if (QQuickPixelGridPrivate::isEnabled(q))
++        QQuickPixelGridPrivate::invalidateSubtree(q);
+     q->update();
+ 
+     emit q->meshChanged();
+@@ -1070,8 +1083,21 @@ QSGNode *QQuickShaderEffectPrivate::handleUpdatePaintNode(QSGNode *oldNode, QQui
+         m_dirty |= QSGShaderEffectNode::DirtyShaderGeometry;
+     }
+ 
++    const QRectF rect = QQuickPixelGridPrivate::snapRect(
++        q, QRectF(0, 0, q->width(), q->height()));
++    if (!m_mesh && node->geometry() && node->geometry()->vertexCount() > 0) {
++        // The default grid stores its top-left and bottom-right vertices first
++        // and last. Compare the float values the mesh writer actually emits.
++        // This also restores logical bounds when the window policy is disabled.
++        const auto *vertices = node->geometry()->vertexDataAsTexturedPoint2D();
++        const auto &first = vertices[0];
++        const auto &last = vertices[node->geometry()->vertexCount() - 1];
++        if (first.x != float(rect.left()) || first.y != float(rect.top())
++            || last.x != float(rect.left()) + float(rect.width())
++            || last.y != float(rect.top()) + float(rect.height()))
++            m_dirty |= QSGShaderEffectNode::DirtyShaderGeometry;
++    }
+     if (m_dirty & QSGShaderEffectNode::DirtyShaderGeometry) {
+-        const QRectF rect(0, 0, q->width(), q->height());
+         QQuickShaderEffectMesh *mesh = m_mesh ? m_mesh : &m_defaultMesh;
+         QSGGeometry *geometry = node->geometry();
+ 
+diff --git a/qtdeclarative/src/quick/items/qquicktext.cpp b/qtdeclarative/src/quick/items/qquicktext.cpp
+index 5a65f17..986619c 100644
+--- a/qtdeclarative/src/quick/items/qquicktext.cpp
++++ b/qtdeclarative/src/quick/items/qquicktext.cpp
+@@ -3,6 +3,7 @@
+ // Qt-Security score:critical reason:data-parser
+ 
+ #include "qquicktext_p.h"
++#include "qquickpixelgrid_p.h"
+ #include "qquicktext_p_p.h"
+ 
+ #include <private/qqmldebugserviceinterfaces_p.h>
+@@ -2643,26 +2644,30 @@ QSGNode *QQuickText::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *data
+         node->setViewport(clipRect());
+         const qreal dx = QQuickTextUtil::alignedX(d->layedOutTextRect.width(), d->availableWidth(), effectiveHAlign()) + leftPadding();
+         d->ensureDoc();
+-        node->addTextDocument(QPointF(dx, dy), d->extra->doc);
++        node->addTextDocument(QQuickPixelGridPrivate::snapPoint(this, QPointF(dx, dy)), d->extra->doc);
+     } else if (d->layedOutTextRect.width() > 0) {
+         if (flags().testFlag(ItemObservesViewport))
+             node->setViewport(clipRect());
+         else
+             node->setViewport(QRectF{});
+         const qreal dx = QQuickTextUtil::alignedX(d->lineWidth, d->availableWidth(), effectiveHAlign()) + leftPadding();
++        const QPointF textOrigin = QQuickPixelGridPrivate::snapPoint(this, QPointF(dx, dy));
++        const QPointF textCorrection = textOrigin - QPointF(dx, dy);
+         int unelidedLineCount = d->lineCount;
+         if (d->elideLayout)
+             unelidedLineCount -= 1;
+         if (unelidedLineCount > 0)
+-            node->addTextLayout(QPointF(dx, dy), &d->layout, -1, -1,0, unelidedLineCount);
++            node->addTextLayout(textOrigin, &d->layout, -1, -1,0, unelidedLineCount);
+ 
+         if (d->elideLayout)
+-            node->addTextLayout(QPointF(dx, dy), d->elideLayout.get());
++            node->addTextLayout(textOrigin, d->elideLayout.get());
+ 
+         if (d->extra.isAllocated()) {
+             for (QQuickStyledTextImgTag *img : std::as_const(d->extra->visibleImgTags)) {
+                 if (img->pix && img->pix->isReady())
+-                    node->addImage(QRectF(img->pos.x() + dx, img->pos.y() + dy, img->size.width(), img->size.height()), img->pix->image());
++                    node->addImage(QRectF(img->pos.x() + dx + textCorrection.x(),
++                                          img->pos.y() + dy + textCorrection.y(),
++                                          img->size.width(), img->size.height()), img->pix->image());
+             }
+         }
+     }
+diff --git a/qtdeclarative/src/quick/items/qquicktextedit.cpp b/qtdeclarative/src/quick/items/qquicktextedit.cpp
+index 614395a..62121f5 100644
+--- a/qtdeclarative/src/quick/items/qquicktextedit.cpp
++++ b/qtdeclarative/src/quick/items/qquicktextedit.cpp
+@@ -3,6 +3,7 @@
+ // Qt-Security score:critical reason:data-parser
+ 
+ #include "qquicktextedit_p.h"
++#include "qquickpixelgrid_p.h"
+ #include "qquicktextedit_p_p.h"
+ #include "qquicktextcontrol_p.h"
+ #include "qquicktextdocument_p.h"
+@@ -2490,6 +2491,7 @@ QSGNode *QQuickTextEdit::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *
+         int currentNodeSize = 0;
+         int nodeStart = firstDirtyPos;
+         QPointF basePosition(d->xoff, d->yoff);
++        basePosition = QQuickPixelGridPrivate::snapPoint(this, basePosition);
+         QMatrix4x4 basePositionMatrix;
+         basePositionMatrix.translate(basePosition.x(), basePosition.y());
+         rootNode->setMatrix(basePositionMatrix);
+diff --git a/qtdeclarative/src/quick/items/qquicktextinput.cpp b/qtdeclarative/src/quick/items/qquicktextinput.cpp
+index b72bb22..5275fe0 100644
+--- a/qtdeclarative/src/quick/items/qquicktextinput.cpp
++++ b/qtdeclarative/src/quick/items/qquicktextinput.cpp
+@@ -3,6 +3,7 @@
+ // Qt-Security score:significant reason:default
+ 
+ #include "qquicktextinput_p.h"
++#include "qquickpixelgrid_p.h"
+ #include "qquicktextinput_p_p.h"
+ #include "qquickwindow.h"
+ 
+@@ -878,7 +879,10 @@ QRectF QQuickTextInput::cursorRectangle() const
+         else
+             w = QFontMetrics(font()).horizontalAdvance(QLatin1Char(' ')); // in sync with QTextLine::draw()
+     }
+-    return QRectF(x, y, w, l.height());
++    QRectF cursorRect(x, y, w, l.height());
++    if (QQuickPixelGridPrivate::isEnabled(this))
++        cursorRect = QQuickPixelGridPrivate::snapRect(this, cursorRect);
++    return cursorRect;
+ }
+ 
+ /*!
+@@ -1958,6 +1962,17 @@ QSGNode *QQuickTextInput::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData
+ 
+     const bool showCursor = !isReadOnly() && d->cursorItem == nullptr && d->cursorVisible && d->m_blinkStatus;
+ 
++    QPointF layoutOffset(leftPadding(), topPadding());
++    if (d->autoScroll && d->m_textLayout.lineCount() > 0) {
++        QFontMetricsF fm(d->font);
++        layoutOffset += -QPointF(d->hscroll,
++                                 d->vscroll + d->m_textLayout.lineAt(0).ascent() - fm.ascent());
++    } else {
++        layoutOffset += -QPointF(d->hscroll, d->vscroll);
++    }
++    const QPointF snappedLayoutOffset = QQuickPixelGridPrivate::snapPoint(this, layoutOffset);
++    const QPointF pixelGridTextCorrection = snappedLayoutOffset - layoutOffset;
++
+     if (!d->textLayoutDirty && oldNode != nullptr) {
+         if (showCursor)
+             node->setCursor(cursorRectangle(), d->color);
+@@ -1978,21 +1993,12 @@ QSGNode *QQuickTextInput::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData
+         else
+             node->setViewport(QRectF{});
+ 
+-        QPointF offset(leftPadding(), topPadding());
+-        if (d->autoScroll && d->m_textLayout.lineCount() > 0) {
+-            QFontMetricsF fm(d->font);
+-            // the y offset is there to keep the baseline constant in case we have script changes in the text.
+-            offset += -QPointF(d->hscroll, d->vscroll + d->m_textLayout.lineAt(0).ascent() - fm.ascent());
+-        } else {
+-            offset += -QPointF(d->hscroll, d->vscroll);
+-        }
+-
+         if (!d->m_textLayout.text().isEmpty()
+ #if QT_CONFIG(im)
+                 || !d->m_textLayout.preeditAreaText().isEmpty()
+ #endif
+                 ) {
+-            node->addTextLayout(offset, &d->m_textLayout,
++            node->addTextLayout(snappedLayoutOffset, &d->m_textLayout,
+                                 d->selectionStart(),
+                                 d->selectionEnd() - 1); // selectionEnd() returns first char after
+                                                         // selection
+diff --git a/qtdeclarative/src/quick/items/qquickwindow.cpp b/qtdeclarative/src/quick/items/qquickwindow.cpp
+index a8bbb72..1b71907 100644
+--- a/qtdeclarative/src/quick/items/qquickwindow.cpp
++++ b/qtdeclarative/src/quick/items/qquickwindow.cpp
+@@ -6,6 +6,7 @@
+ #include "qquickwindow_p.h"
+ 
+ #include "qquickitem.h"
++#include "qquickpixelgrid_p.h"
+ #include "qquickitem_p.h"
+ #include "qquickevents_p_p.h"
+ #include "qquickmousearea_p.h"
+@@ -563,7 +564,10 @@ void QQuickWindowPrivate::syncSceneGraph()
+         softwareRenderer->markDirty();
+     }
+ 
+-    updateDirtyNodes();
++    {
++        QQuickPixelGridPrivate::SyncScope pixelGridSync(q);
++        updateDirtyNodes();
++    }
+ 
+     animationController->afterNodeSync();
+ 
+@@ -2205,26 +2209,47 @@ void QQuickWindowPrivate::updateDirtyNode(QQuickItem *item)
+ 
+         QMatrix4x4 matrix;
+ 
+-        if (itemPriv->x != 0. || itemPriv->y != 0.)
+-            matrix.translate(itemPriv->x, itemPriv->y);
+-
+-        for (int ii = itemPriv->transforms.size() - 1; ii >= 0; --ii)
+-            itemPriv->transforms.at(ii)->applyTo(&matrix);
++        QPointF presentation;
++        const bool alignedTranslation = QQuickPixelGridPrivate::presentationTranslation(item, &presentation);
++        if (alignedTranslation) {
++            // One conversion to float preserves identical matrices while the
++            // snapped local position is unchanged. Adding a separately rounded
++            // logical position and correction introduces numerical jitter.
++            matrix.translate(presentation.x(), presentation.y());
++        } else {
++            if (itemPriv->x != 0. || itemPriv->y != 0.)
++                matrix.translate(itemPriv->x, itemPriv->y);
++
++            for (int ii = itemPriv->transforms.size() - 1; ii >= 0; --ii)
++                itemPriv->transforms.at(ii)->applyTo(&matrix);
++
++            if (itemPriv->scale() != 1. || itemPriv->rotation() != 0.) {
++                QPointF origin = item->transformOriginPoint();
++                matrix.translate(origin.x(), origin.y());
++                if (itemPriv->scale() != 1.)
++                    matrix.scale(itemPriv->scale(), itemPriv->scale());
++                if (itemPriv->rotation() != 0.)
++                    matrix.rotate(itemPriv->rotation(), 0, 0, 1);
++                matrix.translate(-origin.x(), -origin.y());
++            }
+ 
+-        if (itemPriv->scale() != 1. || itemPriv->rotation() != 0.) {
+-            QPointF origin = item->transformOriginPoint();
+-            matrix.translate(origin.x(), origin.y());
+-            if (itemPriv->scale() != 1.)
+-                matrix.scale(itemPriv->scale(), itemPriv->scale());
+-            if (itemPriv->rotation() != 0.)
+-                matrix.rotate(itemPriv->rotation(), 0, 0, 1);
+-            matrix.translate(-origin.x(), -origin.y());
++            // QQuickItemPrivate::itemToParentTransform() uses the same
++            // per-edge correction for item mapping and input; mirror it in the
++            // scene-graph node path used by normal rendering and grabWindow().
++            const QPointF pixelGridCorrection = QQuickPixelGridPrivate::localCorrection(item);
++            if (!pixelGridCorrection.isNull())
++                matrix.translate(pixelGridCorrection.x(), pixelGridCorrection.y());
+         }
+ 
+-        itemPriv->itemNode()->setMatrix(matrix);
++        auto *node = itemPriv->itemNode();
++        // QSGTransformNode::setMatrix marks DirtyMatrix unconditionally.
++        if (!alignedTranslation || node->matrix() != matrix)
++            node->setMatrix(matrix);
+     }
+ 
+-    const bool clipEffectivelyChanged = dirty & (QQuickItemPrivate::Clip | QQuickItemPrivate::Window);
++    const bool clipEffectivelyChanged = (dirty & (QQuickItemPrivate::Clip | QQuickItemPrivate::Window))
++        || (item->clip() && (dirty & QQuickItemPrivate::TransformUpdateMask)
++            && QQuickPixelGridPrivate::isEnabled(item));
+     if (clipEffectivelyChanged) {
+         QSGNode *parent = itemPriv->opacityNode() ? (QSGNode *)itemPriv->opacityNode()
+                                                   : (QSGNode *)itemPriv->itemNode();
+@@ -2248,8 +2273,11 @@ void QQuickWindowPrivate::updateDirtyNode(QQuickItem *item)
+         } else if (bool updateClipNode = item->clip() && itemPriv->clipNode() != nullptr;
+                    updateClipNode) {
+             QQuickDefaultClipNode *clip = itemPriv->clipNode();
+-            clip->setClipRect(item->clipRect());
+-            clip->update();
++            const QRectF rect = item->clipRect();
++            if (clip->clipRect() != rect) {
++                clip->setClipRect(rect);
++                clip->update();
++            }
+         } else if (bool removeClipNode = !item->clip() && itemPriv->clipNode() != nullptr;
+                    removeClipNode) {
+             QQuickDefaultClipNode *clip = itemPriv->clipNode();
+@@ -2396,7 +2424,18 @@ void QQuickWindowPrivate::updateDirtyNode(QQuickItem *item)
+             itemPriv->opacityNode()->setOpacity(opacity);
+     }
+ 
+-    if (dirty & QQuickItemPrivate::ContentUpdateMask) {
++    // An ancestor translation can change the rounded width/height of a shader
++    // quad without changing any of its logical properties. Revisit that node;
++    // the shader path compares its existing vertices before uploading geometry.
++    bool shaderPresentationDirty = false;
++#if QT_CONFIG(quick_shadereffect)
++    shaderPresentationDirty = !(dirty & QQuickItemPrivate::ContentUpdateMask)
++        && (dirty & QQuickItemPrivate::TransformUpdateMask)
++        && (itemPriv->flags & QQuickItem::ItemHasContents)
++        && item->inherits("QQuickShaderEffect")
++        && QQuickPixelGridPrivate::isEnabled(item);
++#endif
++    if ((dirty & QQuickItemPrivate::ContentUpdateMask) || shaderPresentationDirty) {
+ 
+         if (itemPriv->flags & QQuickItem::ItemHasContents) {
+             updatePaintNodeData.transformNode = itemPriv->itemNode();
+diff --git a/qtdeclarative/src/quick/scenegraph/adaptations/software/qsgsoftwareinternalrectanglenode.cpp b/qtdeclarative/src/quick/scenegraph/adaptations/software/qsgsoftwareinternalrectanglenode.cpp
+index cf44ea4..a4fe5c5 100644
+--- a/qtdeclarative/src/quick/scenegraph/adaptations/software/qsgsoftwareinternalrectanglenode.cpp
++++ b/qtdeclarative/src/quick/scenegraph/adaptations/software/qsgsoftwareinternalrectanglenode.cpp
+@@ -2,12 +2,34 @@
+ // SPDX-License-Identifier: LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
+ 
+ #include "qsgsoftwareinternalrectanglenode_p.h"
++#include "../../../items/qquickpixelgrid_p.h"
++#include <QtCore/QHash>
+ #include <qmath.h>
+ 
+ #include <QtGui/QPainter>
+ 
+ QT_BEGIN_NAMESPACE
+ 
++// Keep the fractional logical rectangle separately: changing the existing
++// QRect member would change the ABI of the installed Qt class. These nodes
++// are created, rendered and destroyed on their window's scene-graph thread.
++static thread_local QHash<const QSGSoftwareInternalRectangleNode *, QRectF> pixelGridRects;
++
++void QQuickPixelGridPrivate::setSoftwareRectanglePresentation(
++    QSGInternalRectangleNode *node, const QRectF &rect, bool enabled)
++{
++    auto *softwareNode = static_cast<QSGSoftwareInternalRectangleNode *>(node);
++    const auto it = pixelGridRects.constFind(softwareNode);
++    if (enabled) {
++        if (it != pixelGridRects.cend() && *it == rect)
++            return;
++        pixelGridRects.insert(softwareNode, rect);
++    } else if (!pixelGridRects.remove(softwareNode)) {
++        return;
++    }
++    softwareNode->markDirty(QSGNode::DirtyMaterial);
++}
++
+ QSGSoftwareInternalRectangleNode::QSGSoftwareInternalRectangleNode()
+     : m_penWidth(0)
+     , m_radius(0)
+@@ -29,6 +51,11 @@ QSGSoftwareInternalRectangleNode::QSGSoftwareInternalRectangleNode()
+     setGeometry((QSGGeometry*)1);
+ }
+ 
++QSGSoftwareInternalRectangleNode::~QSGSoftwareInternalRectangleNode()
++{
++    pixelGridRects.remove(this);
++}
++
+ void QSGSoftwareInternalRectangleNode::setRect(const QRectF &rect)
+ {
+     QRect alignedRect = rect.toAlignedRect();
+@@ -269,7 +296,8 @@ void QSGSoftwareInternalRectangleNode::update()
+     }
+ 
+     if (!m_stops.isEmpty()) {
+-        QLinearGradient gradient(QPoint(0,0), QPoint(m_vertical ? 0 : m_rect.width(), m_vertical ? m_rect.height() : 0));
++        const QRectF bounds = rect();
++        QLinearGradient gradient(QPointF(0, 0), QPointF(m_vertical ? 0 : bounds.width(), m_vertical ? bounds.height() : 0));
+         gradient.setStops(m_stops);
+         m_brush = QBrush(gradient);
+     } else {
+@@ -346,9 +374,9 @@ void QSGSoftwareInternalRectangleNode::paint(QPainter *painter)
+             && !m_isTopRightRadiusSet
+             && !m_isBottomLeftRadiusSet
+             && !m_isBottomRightRadiusSet) {
+-            paintRectangle(painter, m_rect);
++            paintRectangle(painter, rect());
+         } else {
+-            paintRectangleIndividualCorners(painter, m_rect);
++            paintRectangleIndividualCorners(painter, rect());
+         }
+     }
+ }
+@@ -377,11 +405,11 @@ bool QSGSoftwareInternalRectangleNode::isOpaque() const
+ 
+ QRectF QSGSoftwareInternalRectangleNode::rect() const
+ {
+-    //TODO: double check that this is correct.
+-    return m_rect;
++    const auto it = pixelGridRects.constFind(this);
++    return it == pixelGridRects.cend() ? QRectF(m_rect) : *it;
+ }
+ 
+-void QSGSoftwareInternalRectangleNode::paintRectangle(QPainter *painter, const QRect &rect)
++void QSGSoftwareInternalRectangleNode::paintRectangle(QPainter *painter, const QRectF &rect)
+ {
+     //Radius should never exceeds half of the width or half of the height
+     int radius = qFloor(qMin(qMin(rect.width(), rect.height()) * 0.5, m_radius));
+@@ -502,7 +530,7 @@ void QSGSoftwareInternalRectangleNode::paintRectangle(QPainter *painter, const Q
+     painter->setRenderHints(previousRenderHints);
+ }
+ 
+-void QSGSoftwareInternalRectangleNode::paintRectangleIndividualCorners(QPainter *painter, const QRect &rect)
++void QSGSoftwareInternalRectangleNode::paintRectangleIndividualCorners(QPainter *painter, const QRectF &rect)
+ {
+     QPainterPath path;
+ 
+@@ -523,7 +551,8 @@ void QSGSoftwareInternalRectangleNode::paintRectangleIndividualCorners(QPainter
+     const float innerRadiusBL = qMin(qMin(rect.width(), rect.height()) * 0.5f, radiusBL - w);
+     const float innerRadiusBR = qMin(qMin(rect.width(), rect.height()) * 0.5f, radiusBR - w);
+ 
+-    QRect rect2 = rect.adjusted(0, 0, 1, 1);
++    // QRectF already has exclusive right/bottom edges. QRect needed +1 here.
++    const QRectF rect2 = rect;
+ 
+     path.moveTo(rect2.topRight() - QPointF(radiusTR, -w));
+     if (innerRadiusTR > 0.)
+@@ -578,7 +607,8 @@ void QSGSoftwareInternalRectangleNode::paintRectangleIndividualCorners(QPainter
+ void QSGSoftwareInternalRectangleNode::generateCornerPixmap()
+ {
+     //Generate new corner Pixmap
+-    int radius = qFloor(qMin(qMin(m_rect.width(), m_rect.height()) * 0.5, m_radius));
++    const QRectF bounds = rect();
++    int radius = qFloor(qMin(qMin(bounds.width(), bounds.height()) * 0.5, m_radius));
+     const auto width = qRound(radius * 2 * m_devicePixelRatio);
+ 
+     if (m_cornerPixmap.width() != width)
+diff --git a/qtdeclarative/src/quick/scenegraph/adaptations/software/qsgsoftwareinternalrectanglenode_p.h b/qtdeclarative/src/quick/scenegraph/adaptations/software/qsgsoftwareinternalrectanglenode_p.h
+index 39c05ba..7963d3b 100644
+--- a/qtdeclarative/src/quick/scenegraph/adaptations/software/qsgsoftwareinternalrectanglenode_p.h
++++ b/qtdeclarative/src/quick/scenegraph/adaptations/software/qsgsoftwareinternalrectanglenode_p.h
+@@ -27,6 +27,7 @@ class QSGSoftwareInternalRectangleNode : public QSGInternalRectangleNode
+ {
+ public:
+     QSGSoftwareInternalRectangleNode();
++    ~QSGSoftwareInternalRectangleNode() override;
+ 
+     void setRect(const QRectF &rect) override;
+     void setColor(const QColor &color) override;
+@@ -53,8 +54,8 @@ public:
+     bool isOpaque() const;
+     QRectF rect() const;
+ private:
+-    void paintRectangle(QPainter *painter, const QRect &rect);
+-    void paintRectangleIndividualCorners(QPainter *painter, const QRect &rect);
++    void paintRectangle(QPainter *painter, const QRectF &rect);
++    void paintRectangleIndividualCorners(QPainter *painter, const QRectF &rect);
+     void generateCornerPixmap();
+ 
+     QRect m_rect;
+diff --git a/qtdeclarative/src/quick/scenegraph/adaptations/software/qsgsoftwarerenderablenode.cpp b/qtdeclarative/src/quick/scenegraph/adaptations/software/qsgsoftwarerenderablenode.cpp
+index 33874b4..bdca2ac 100644
+--- a/qtdeclarative/src/quick/scenegraph/adaptations/software/qsgsoftwarerenderablenode.cpp
++++ b/qtdeclarative/src/quick/scenegraph/adaptations/software/qsgsoftwarerenderablenode.cpp
+@@ -118,7 +118,9 @@ void QSGSoftwareRenderableNode::update()
+     case QSGSoftwareRenderableNode::Image:
+         m_isOpaque = !m_handle.imageNode->pixmap().hasAlphaChannel();
+ 
+-        boundingRect = m_handle.imageNode->rect().toRect();
++        // Keep fractional logical extents until after the scene/DPR transform.
++        // Rounding here can clip a physical edge pixel (48 px / 1.75, for example).
++        boundingRect = m_handle.imageNode->rect();
+         break;
+     case QSGSoftwareRenderableNode::Painter:
+         if (m_handle.painterNode->opaquePainting())

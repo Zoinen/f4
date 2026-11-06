@@ -2,8 +2,11 @@
 #include "NavigationBenchmarkTrace.h"
 
 #include <QMetaType>
+#include <QCryptographicHash>
+#include <QDataStream>
 
 #include <functional>
+#include <algorithm>
 
 namespace
 {
@@ -281,6 +284,75 @@ void CommandLineStateStore::reset()
     applyFrame({}, m_revision + 1);
 }
 
+namespace {
+bool sameDocumentRowPresentation(QVariantMap first, QVariantMap second)
+{
+    if (first == second)
+        return true;
+    // The producer's index is relative to its moving window. Neither it nor
+    // its content hash is painted; compare the authoritative payload itself.
+    first.remove(QStringLiteral("index"));
+    second.remove(QStringLiteral("index"));
+    first.remove(QStringLiteral("contentKey"));
+    second.remove(QStringLiteral("contentKey"));
+    return first == second;
+}
+
+QString inlineEditorMarkup(const QVariantMap &row, const QString &defaultBackground)
+{
+    const auto runs = row.value(QStringLiteral("runs")).toList();
+    if (runs.isEmpty())
+        return {};
+    const auto flag = [](const QVariantMap &run, const char *name) {
+        const auto value = run.value(QLatin1String(name));
+        return value.metaType().id() == QMetaType::Bool && value.toBool();
+    };
+    const auto spacesOnly = [](const QString &text) {
+        return std::all_of(text.cbegin(), text.cend(), [](QChar ch) { return ch == QLatin1Char(' '); });
+    };
+    QList<QVariantMap> values;
+    values.reserve(runs.size());
+    for (const auto &value : runs) {
+        const auto run = value.toMap();
+        const auto text = run.value(QStringLiteral("text")).toString();
+        const auto background = run.value(QStringLiteral("background")).toString().toLower();
+        if (run.value(QStringLiteral("foreground")).toString().isEmpty()
+                || (!background.isEmpty() && background != defaultBackground
+                    && background != QLatin1String("transparent")
+                    && background != QLatin1String("#000000")
+                    && background != QLatin1String("#ff000000")
+                    && background != QLatin1String("black")))
+            return {};
+        for (const QChar ch : text) {
+            if (ch.unicode() < 0x20 || ch.unicode() > 0x7e)
+                return {};
+        }
+        values.append(run);
+    }
+    qsizetype last = values.size() - 1;
+    while (last >= 0 && !flag(values.at(last), "underline")
+            && !flag(values.at(last), "strikeout")
+            && spacesOnly(values.at(last).value(QStringLiteral("text")).toString()))
+        --last;
+    QString result;
+    for (qsizetype i = 0; i <= last; ++i) {
+        const auto &run = values.at(i);
+        QString text = run.value(QStringLiteral("text")).toString();
+        if (i == last && !flag(run, "underline") && !flag(run, "strikeout")) {
+            while (text.endsWith(QLatin1Char(' '))) text.chop(1);
+        }
+        text = text.toHtmlEscaped().replace(QLatin1Char(' '), QStringLiteral("&nbsp;"));
+        if (flag(run, "bold")) text = QStringLiteral("<b>") + text + QStringLiteral("</b>");
+        if (flag(run, "underline")) text = QStringLiteral("<u>") + text + QStringLiteral("</u>");
+        if (flag(run, "strikeout")) text = QStringLiteral("<s>") + text + QStringLiteral("</s>");
+        result += QStringLiteral("<font color=\"")
+            + run.value(QStringLiteral("foreground")).toString().toHtmlEscaped()
+            + QStringLiteral("\">") + text + QStringLiteral("</font>");
+    }
+    return result.isEmpty() ? QStringLiteral("<font></font>") : result;
+}
+}
+
 int DocumentRowsModel::rowCount(const QModelIndex &parent) const
 {
     return parent.isValid() ? 0 : m_slots.size();
@@ -332,39 +404,47 @@ void DocumentRowsModel::set(int slot, const QVariantMap &value)
         return;
     if (m_changedFirst < 0 && F4NavigationBenchmarkTrace::enabled())
         m_updateStartedNs = F4NavigationBenchmarkTrace::monotonicNanoseconds();
+    target.changedRoles |= (target.loaded != loaded ? 1 : 0)
+                         | (target.row != row ? 2 : 0);
     target.loaded = loaded;
     target.row = row;
-    target.changed = true;
     m_changedFirst = m_changedFirst < 0 ? slot : qMin(m_changedFirst, slot);
     m_changedLast = qMax(m_changedLast, slot);
 }
 
 int DocumentRowsModel::replaceWindow(int start, const QVariantList &rows,
                                      int previousStart, int previousEnd,
-                                     bool forceReplacement, bool clearOutside)
+                                     bool forceReplacement, bool clearOutside,
+                                     bool retainInactiveRows)
 {
     if (start < 0 || start + rows.size() > m_slots.size())
         return 0;
     const int end = start + rows.size();
     int writes = 0;
-    const auto replaceSlot = [this, &writes](int slot, bool loaded,
+    const auto replaceSlot = [this, &writes, retainInactiveRows](int slot, bool loaded,
                                              const QVariantMap &row,
                                              bool force) {
         auto &target = m_slots[slot];
         if (!force && target.loaded == loaded) {
-            if (!loaded)
+            if (!loaded && (retainInactiveRows || target.row.isEmpty()))
                 return;
             // contentKey is a cross-process optimization hint, not the row
             // payload. Never suppress an authoritative nested run/style
             // mutation merely because a producer reused a stale key.
-            if (target.row == row)
+            if (sameDocumentRowPresentation(target.row, row)) {
+                target.row = row;
                 return;
+            }
         }
         if (m_changedFirst < 0 && F4NavigationBenchmarkTrace::enabled())
             m_updateStartedNs = F4NavigationBenchmarkTrace::monotonicNanoseconds();
+        const bool replaceRow = loaded || !retainInactiveRows;
+        const bool rowChanged = replaceRow && !sameDocumentRowPresentation(target.row, row);
+        target.changedRoles |= (force || target.loaded != loaded ? 1 : 0)
+                             | (force || rowChanged ? 2 : 0);
         target.loaded = loaded;
-        target.row = row;
-        target.changed = true;
+        if (replaceRow)
+            target.row = row;
         m_changedFirst = m_changedFirst < 0 ? slot : qMin(m_changedFirst, slot);
         m_changedLast = qMax(m_changedLast, slot);
         ++writes;
@@ -390,28 +470,58 @@ void DocumentRowsModel::commit()
     m_changedFirst = m_changedLast = -1;
     const bool tracing = F4NavigationBenchmarkTrace::enabled();
     const qint64 beginNs = tracing ? F4NavigationBenchmarkTrace::monotonicNanoseconds() : 0;
+    int rowDataChanges = 0;
     // Disjoint edge updates must not invalidate unchanged visible rows.
     for (int start = first; start <= last;) {
-        if (!m_slots.at(start).changed) {
+        if (!m_slots.at(start).changedRoles) {
             ++start;
             continue;
         }
         int end = start;
-        while (end < last && m_slots.at(end + 1).changed)
+        const int roles = m_slots.at(start).changedRoles;
+        while (end < last && m_slots.at(end + 1).changedRoles == roles)
             ++end;
+        if (roles & 2) rowDataChanges += end - start + 1;
         for (int slot = start; slot <= end; ++slot)
-            m_slots[slot].changed = false;
-        emit dataChanged(index(start), index(end), {LoadedRole, RowDataRole});
+            m_slots[slot].changedRoles = 0;
+        QList<int> changedRoles;
+        if (roles & 1) changedRoles.append(LoadedRole);
+        if (roles & 2) changedRoles.append(RowDataRole);
+        emit dataChanged(index(start), index(end), changedRoles);
         start = end + 1;
     }
     if (tracing) {
         F4NavigationBenchmarkTrace::event(QStringLiteral("qt.document.rows.committed"), {}, {
             {QStringLiteral("first"), first}, {QStringLiteral("last"), last},
             {QStringLiteral("capacity"), m_slots.size()},
+            {QStringLiteral("rowDataChanges"), rowDataChanges},
             {QStringLiteral("updateNs"), beginNs - m_updateStartedNs},
             {QStringLiteral("notificationNs"), F4NavigationBenchmarkTrace::monotonicNanoseconds() - beginNs},
         });
     }
+}
+
+bool DocumentRowsModel::moveWindow(int sourceStart, int count, int destinationStart)
+{
+    if (count <= 0 || sourceStart < 0 || destinationStart < 0
+            || sourceStart + count > m_slots.size()
+            || destinationStart + count > m_slots.size())
+        return false;
+    if (sourceStart == destinationStart)
+        return true;
+    commit();
+    const int destinationChild = destinationStart > sourceStart
+        ? destinationStart + count : destinationStart;
+    if (!beginMoveRows({}, sourceStart, sourceStart + count - 1, {}, destinationChild))
+        return false;
+    if (destinationStart < sourceStart)
+        std::rotate(m_slots.begin() + destinationStart, m_slots.begin() + sourceStart,
+                    m_slots.begin() + sourceStart + count);
+    else
+        std::rotate(m_slots.begin() + sourceStart, m_slots.begin() + sourceStart + count,
+                    m_slots.begin() + destinationStart + count);
+    endMoveRows();
+    return true;
 }
 
 QObject *SurfaceRegistry::createDocumentRowsModel(QObject *owner)
@@ -456,6 +566,26 @@ void SurfaceRegistry::applyShell(const QVariantMap &shell,
         m_shell = bounded;
         emit shellChanged();
     }
+}
+
+void SurfaceRegistry::applyCompactShell(const QVariantMap &shell,
+                                        qulonglong revision)
+{
+    const QVariantMap bounded = withoutCatalogPayload(shell);
+    const auto surfaceFields = [](QVariantMap state) {
+        state.remove(QStringLiteral("activePanel"));
+        state.remove(QStringLiteral("title"));
+        return state;
+    };
+    if (bounded.isEmpty() != m_shell.isEmpty()
+        || surfaceFields(bounded) != surfaceFields(m_shell)) {
+        applyShell(shell, revision);
+        return;
+    }
+    // The typed shell store already publishes activation and title.
+    m_shell = bounded;
+    advanceRevision(revision, &m_shellRevision,
+                    [this] { emit shellRevisionChanged(); });
 }
 
 void SurfaceRegistry::adoptShellPanelDescriptor(
@@ -515,6 +645,13 @@ QVariantMap SurfaceRegistry::documentMetadata() const
         metadata.remove(QStringLiteral("windowRows"));
         metadata.insert(QStringLiteral("nativeWindowRows"), true);
         metadata.insert(QStringLiteral("nativeWindowRevision"), m_documentPublication);
+        if (metadata.value(QStringLiteral("windowContentKey")).toString().isEmpty()) {
+            QByteArray content;
+            QDataStream stream(&content, QIODevice::WriteOnly);
+            stream << m_document.value(QStringLiteral("windowRows"));
+            metadata.insert(QStringLiteral("nativeWindowContentKey"),
+                QString::fromLatin1(QCryptographicHash::hash(content, QCryptographicHash::Sha256).toHex()));
+        }
     }
     return metadata;
 }
@@ -528,6 +665,44 @@ QVariant SurfaceRegistry::documentWindowRows(const QString &documentKey,
     if (publication != m_documentPublication || documentKey != currentKey)
         return {};
     return m_document.value(QStringLiteral("windowRows"));
+}
+
+QVariant SurfaceRegistry::documentWindowCoordinates(const QString &documentKey,
+                                                    qulonglong publication) const
+{
+    const QVariant rows = documentWindowRows(documentKey, publication);
+    if (!rows.isValid())
+        return {};
+    QVariantList coordinates;
+    for (const auto &value : rows.toList()) {
+        const auto row = value.toMap();
+        coordinates.append(row.value(QStringLiteral("visualRow")));
+    }
+    return coordinates;
+}
+
+int SurfaceRegistry::replaceDocumentWindow(QObject *model, const QString &documentKey,
+                                           qulonglong publication, int start,
+                                           int previousStart, int previousEnd,
+                                           bool forceReplacement, bool clearOutside) const
+{
+    auto *rowsModel = qobject_cast<DocumentRowsModel *>(model);
+    const QVariant rows = documentWindowRows(documentKey, publication);
+    if (!rowsModel || !rows.isValid())
+        return -1;
+    auto presentationRows = rows.toList();
+    if (m_document.value(QStringLiteral("kind")) == QStringLiteral("editor")
+            && m_document.value(QStringLiteral("viewportColumns")).toInt() > 0) {
+        const auto background = m_document.value(QStringLiteral("defaultBackground")).toString().toLower();
+        for (auto &value : presentationRows) {
+            auto row = value.toMap();
+            row.insert(QStringLiteral("_inlineMarkup"), inlineEditorMarkup(row, background));
+            value = row;
+        }
+    }
+    return rowsModel->replaceWindow(start, presentationRows, previousStart, previousEnd,
+                                    forceReplacement, clearOutside,
+                                    m_document.value(QStringLiteral("kind")) == QStringLiteral("editor"));
 }
 
 void SurfaceRegistry::applyOperationsQueue(const QVariantMap &queue,

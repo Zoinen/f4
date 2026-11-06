@@ -1,6 +1,7 @@
 #include "F4IconProvider.h"
 #include "WindowGeometryPersistence.h"
 #include <QSGRendererInterface>
+#include <rhi/qshader.h>
 #include "PointerRowAnchor.h"
 #include "DummyQWK.h"
 #include "F4PanelPreferences.h"
@@ -16,6 +17,7 @@
 #include <QColor>
 #include <QDir>
 #include <QElapsedTimer>
+#include <QTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
@@ -930,6 +932,7 @@ private slots:
 #endif
     void initTestCase();
     void qmlImportsWithoutInstalledQt();
+    void galleryShadersContainOpenGlVariants();
     void unchangedPanelDescriptorsDoNotRepublishNativePanels();
     void compiledHostLoadsItsQmlModule();
     void expandedViewerKeepsWorkspaceChromeAccessible();
@@ -1090,6 +1093,29 @@ private slots:
     void shortTerminalHistoryStaysAtBottom();
 };
 
+void F4QuickViewSurfaceTests::galleryShadersContainOpenGlVariants()
+{
+    ZoinGallery::GalleryRuntime::registerTypes();
+    for (const auto *name : {"vector_checkerboard.frag", "shader.frag",
+                             "viewer_resample.vert", "viewer_resample.frag",
+                             "sphere.frag", "outline.frag"}) {
+        QFile file(QStringLiteral(":/ZoinGallery/resources/%1.qsb").arg(name));
+        QVERIFY2(file.open(QIODevice::ReadOnly), qPrintable(file.fileName()));
+        const QShader shader = QShader::fromSerialized(file.readAll());
+        QVERIFY(shader.isValid());
+        bool desktop = false, es = false;
+        for (const QShaderKey &key : shader.availableShaders()) {
+            if (key.source() != QShader::GlslShader) continue;
+            desktop |= key.sourceVersion().version() == 150
+                && !key.sourceVersion().flags().testFlag(QShaderVersion::GlslEs);
+            es |= key.sourceVersion().version() == 300
+                && key.sourceVersion().flags().testFlag(QShaderVersion::GlslEs);
+        }
+        QVERIFY2(desktop, qPrintable(file.fileName() + " lacks GLSL 150"));
+        QVERIFY2(es, qPrintable(file.fileName() + " lacks GLSL ES 300"));
+    }
+}
+
 void F4QuickViewSurfaceTests::qmlImportsWithoutInstalledQt()
 {
 #ifndef QT_STATIC
@@ -1097,21 +1123,38 @@ void F4QuickViewSurfaceTests::qmlImportsWithoutInstalledQt()
 #endif
     QQmlEngine engine;
     engine.setImportPathList({QStringLiteral("qrc:/qt-project.org/imports"),
-                              QStringLiteral("qrc:/qt/qml")});
+                              QStringLiteral("qrc:/qt/qml"), QStringLiteral("qrc:/")});
+    ZoinGallery::GalleryRuntime::registerTypes();
+    QTemporaryDir vectorDirectory;
+    QVERIFY(vectorDirectory.isValid());
+    const QString vectorPath = vectorDirectory.filePath(QStringLiteral("portable.svg"));
+    QFile vectorFile(vectorPath);
+    QVERIFY(vectorFile.open(QIODevice::WriteOnly));
+    QVERIFY(vectorFile.write("<svg xmlns='http://www.w3.org/2000/svg' width='16' height='12'>"
+                             "<path d='M0 0H16V12H0Z' fill='red'/></svg>") > 0);
+    vectorFile.close();
+    engine.rootContext()->setContextProperty(QStringLiteral("portableVectorSource"),
+                                             QUrl::fromLocalFile(vectorPath));
     QQmlComponent component(&engine);
     QByteArray source = R"(
         import QtQuick
         import QtQuick.Controls
         import QtQuick.Layouts
         import QtQuick.Shapes
+        import QtQuick.VectorImage
         import QtQuick.Effects
+        import ZoinGallery
         Item {
             Connections { target: null }
             Timer { interval: 100 }
             ListModel { ListElement { title: "item" } }
             RowLayout { Button { text: "OK" } ComboBox { model: ["one", "two"] } }
             Shape { }
+            VectorImage { objectName: "portableVectorImage"; source: portableVectorSource }
             MultiEffect { }
+            GalleryLayoutDebugZone { objectName: "portableDebugZone"; width: 16; height: 12; visible: false }
+            GalleryPanel { id: portablePanel; visible: false }
+            GalleryEntryDelegateBase { objectName: "portableEntry"; panelRoot: portablePanel; width: 32; height: 24; viewIndex: 0; sourceIndex: 0 }
         }
     )";
 #if defined(F4_QT_HAS_MULTIMEDIA_QML)
@@ -1121,6 +1164,39 @@ void F4QuickViewSurfaceTests::qmlImportsWithoutInstalledQt()
     component.setData(source, QUrl(QStringLiteral("qrc:/portable-import-test.qml")));
     QScopedPointer<QObject> object(component.create());
     QVERIFY2(object, qPrintable(component.errorString()));
+    auto *debugZone = object->findChild<QQuickItem *>(QStringLiteral("portableDebugZone"));
+    QVERIFY(debugZone);
+    QVERIFY(!debugZone->findChild<QQuickItem *>(QStringLiteral("portableDebugZonePaint")));
+    debugZone->setVisible(true);
+    QTRY_VERIFY(debugZone->findChild<QQuickItem *>(QStringLiteral("portableDebugZonePaint")));
+    auto *portableEntry = object->findChild<QQuickItem *>(QStringLiteral("portableEntry"));
+    QVERIFY(portableEntry);
+    QQuickItem *visualHost = nullptr;
+    QTRY_VERIFY((visualHost = portableEntry->findChild<QQuickItem *>(QStringLiteral("galleryEntryModeHost-0"))));
+    QObject *entryVisual = nullptr;
+    QTRY_VERIFY((entryVisual = visualHost->property("item").value<QObject *>()));
+    QCOMPARE(entryVisual->property("entry").value<QObject *>(), portableEntry);
+    auto *vector = object->findChild<QQuickItem *>(QStringLiteral("portableVectorImage"));
+    QVERIFY(vector);
+    QTRY_COMPARE(vector->implicitWidth(), 16.0);
+    QTRY_COMPARE(vector->implicitHeight(), 12.0);
+    // Finish stock VectorImage's synchronous generation before starting the
+    // gallery worker: Qt's internal generator shares mutable static storage.
+    QQmlComponent preparedComponent(&engine);
+    preparedComponent.setData(R"(
+        import QtQuick
+        import ZoinGallery
+        GalleryVectorImage { width: 16; height: 12; source: portableVectorSource }
+    )", QUrl(QStringLiteral("qrc:/portable-prepared-vector-test.qml")));
+    QScopedPointer<QObject> preparedObject(preparedComponent.create());
+    QVERIFY2(preparedObject, qPrintable(preparedComponent.errorString()));
+    auto *prepared = qobject_cast<QQuickItem *>(preparedObject.data());
+    QVERIFY(prepared);
+    QQuickWindow window;
+    window.resize(32, 24);
+    prepared->setParentItem(window.contentItem());
+    window.show();
+    QTRY_COMPARE_WITH_TIMEOUT(prepared->property("sourceStatus").toInt(), 1, 5000);
 }
 
 void F4QuickViewSurfaceTests::compiledHostLoadsItsQmlModule()
@@ -1296,6 +1372,8 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
     auto *galleryPreferences = qobject_cast<ZoinGallery::GalleryPreferences *>(fixture.gallery.preferences);
     QVERIFY(galleryPreferences);
     QTRY_VERIFY(!galleryPreferences->busy());
+    constexpr qint64 bytesPerMiB = 1024 * 1024;
+    QCOMPARE(galleryRuntime->thumbnailCacheByteBudget(), 256 * bytesPerMiB);
     QCOMPARE(galleryPreferences->values().value("videoPlaybackMode").toString(),
              QStringLiteral("autoplay-muted"));
     auto *fullVideoMode = visualItemWithObjectName(
@@ -1360,6 +1438,20 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
     const auto draftValues = [&]() {
         return galleryPage->property("draft").value<QJSValue>().toVariant().toMap();
     };
+    auto *memoryLimitInput = visualItemWithObjectName(
+        galleryPage, "galleryThumbnailMemoryLimitInputTextInput");
+    QVERIFY(memoryLimitInput);
+    QCOMPARE(memoryLimitInput->property("text").toString(), QStringLiteral("256"));
+    memoryLimitInput->forceActiveFocus();
+    QTest::keyClick(fixture.window, Qt::Key_A, Qt::ControlModifier);
+    QTest::keyClick(fixture.window, Qt::Key_Delete);
+    QCOMPARE(memoryLimitInput->property("text").toString(), QString());
+    QVariant validDraft;
+    QVERIFY(QMetaObject::invokeMethod(galleryPage, "validateDraft", Q_RETURN_ARG(QVariant, validDraft)));
+    QVERIFY(!validDraft.toBool());
+    QCOMPARE(galleryRuntime->thumbnailCacheByteBudget(), 256 * bytesPerMiB);
+    QVERIFY(QMetaObject::invokeMethod(galleryPage, "resetDraft"));
+    QCOMPARE(memoryLimitInput->property("text").toString(), QStringLiteral("256"));
     imageMode->forceActiveFocus();
     QTest::keyClick(fixture.window, Qt::Key_End);
     QCOMPARE(imageMode->property("currentIndex").toInt(), 2);
@@ -1405,8 +1497,8 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
     QVERIFY(visualItemWithObjectName(galleryPage, "galleryDecoderFormats-0"));
     const auto galleryCapture = qEnvironmentVariable("F4_GALLERY_SETTINGS_CAPTURE");
     if (!galleryCapture.isEmpty()) {
-        const auto captureAndVerifyVideoLabels = [&](const QString &capturePath,
-                                                     const QStringList &names) {
+        const auto captureAndVerifyLabels = [&](const QString &capturePath,
+                                                const QStringList &names) {
             const QImage capture = fixture.window->grabWindow();
             QVERIFY(!capture.isNull());
             QVERIFY(capture.save(capturePath));
@@ -1453,14 +1545,25 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
                         <= galleryViewport->height());
             QTest::qWait(150);
         };
+        auto *memoryLimitTitle = visualItemWithObjectName(
+            galleryPage, "galleryThumbnailMemoryLimitTitle");
+        QVERIFY(memoryLimitTitle);
+        scrollLabelIntoView(memoryLimitTitle);
+        inspect(inspect, memoryLimitTitle);
+        inspect(inspect, memoryLimitInput);
+        captureAndVerifyLabels(
+            galleryCapture + QStringLiteral("-thumbnail-memory.png"),
+            {QStringLiteral("galleryThumbnailMemoryLimitTitle"),
+             QStringLiteral("galleryThumbnailMemoryLimitInputTextInput"),
+             QStringLiteral("galleryThumbnailMemoryLimitHelp")});
         scrollLabelIntoView(fullVideoModeText);
-        captureAndVerifyVideoLabels(
+        captureAndVerifyLabels(
             galleryCapture,
             {QStringLiteral("galleryFullVideoPlaybackTitle"),
              QStringLiteral("galleryFullVideoPlaybackModeText")});
 
         scrollLabelIntoView(quickVideoModeText);
-        captureAndVerifyVideoLabels(
+        captureAndVerifyLabels(
             galleryCapture + QStringLiteral("-quick-video.png"),
             {QStringLiteral("galleryQuickVideoPlaybackTitle"),
              QStringLiteral("galleryQuickVideoPlaybackModeText")});
@@ -1494,8 +1597,19 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
         Q_ARG(QVariant, QStringLiteral("videoPlaybackMode")),
         Q_ARG(QVariant, QStringLiteral("manual"))));
     galleryPage->setProperty("quickViewDraft", editedQuickView);
+    memoryLimitInput->forceActiveFocus();
+    QTest::keyClick(fixture.window, Qt::Key_A, Qt::ControlModifier);
+    for (auto key : {Qt::Key_1, Qt::Key_0, Qt::Key_2, Qt::Key_4})
+        QTest::keyClick(fixture.window, key);
+    QCOMPARE(draftValues().value("thumbnailMemoryLimitMiB").toInt(), 1024);
+    QCOMPARE(galleryRuntime->thumbnailCacheByteBudget(), 256 * bytesPerMiB);
+    QSignalSpy memoryBudgetChanged(galleryRuntime,
+        &ZoinGallery::GalleryRuntime::thumbnailCacheByteBudgetChanged);
     QVERIFY(QMetaObject::invokeMethod(galleryPage, "applyDraft"));
     QVERIFY(!galleryPage->property("dirty").toBool());
+    QCOMPARE(memoryBudgetChanged.count(), 1);
+    QCOMPARE(galleryRuntime->thumbnailCacheByteBudget(), 1024 * bytesPerMiB);
+    QCOMPARE(settings.value("Cache/thumbnailMemoryLimitMiB").toInt(), 1024);
     QCOMPARE(galleryPreferences->values().value("videoPlaybackMode").toString(),
              QStringLiteral("manual"));
     QCOMPARE(quickPreferences.values().value("videoPlaybackMode").toString(),
@@ -1508,20 +1622,23 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
     QCOMPARE(restartedQuickPreferences.values().value("videoPlaybackMode").toString(),
              QStringLiteral("autoplay-sound"));
     QQmlEngine restartedGalleryEngine;
-    galleryOptions.persistentCache = false;
+    galleryOptions.persistentCache = true;
     auto *restartedGalleryRuntime = ZoinGallery::GalleryRuntime::install(
         &restartedGalleryEngine, galleryOptions);
     auto *restartedGalleryPreferences = qobject_cast<
         ZoinGallery::GalleryPreferences *>(restartedGalleryRuntime->preferences());
     QVERIFY(restartedGalleryPreferences);
+    QCOMPARE(restartedGalleryRuntime->thumbnailCacheByteBudget(), 1024 * bytesPerMiB);
     QCOMPARE(restartedGalleryPreferences->values()
                  .value("videoPlaybackMode").toString(),
              QStringLiteral("manual"));
     QVERIFY(builtin->property("checked").toBool());
     QVERIFY(!hover->property("checked").toBool());
-    for (auto it = retainedGalleryDraft.cbegin(); it != retainedGalleryDraft.cend(); ++it)
+    for (auto it = retainedGalleryDraft.cbegin(); it != retainedGalleryDraft.cend(); ++it) {
+        if (it.key() == QStringLiteral("thumbnailMemoryLimitMiB")) continue;
         QVERIFY(QMetaObject::invokeMethod(galleryPage, "change",
             Q_ARG(QVariant, it.key()), Q_ARG(QVariant, it.value())));
+    }
     galleryViewport->setProperty("contentY", qMax(0.0, quickHeading->y() - 120));
     QTest::qWait(150);
     inspect(inspect, galleryPage);
@@ -1802,6 +1919,52 @@ void F4QuickViewSurfaceTests::galleryVideoControlsStayOnPhysicalPixelGridAt175Pe
                  iconSource(QStringLiteral("play")));
     QTRY_COMPARE(muteIcon->property("source").toUrl(),
                  iconSource(QStringLiteral("volume-x")));
+    const auto videoItem = [&](const QString &name) {
+        return visualItemWithObjectName(window.contentItem(), name);
+    };
+    auto *bar = videoItem(QStringLiteral("galleryVideoControlsBar"));
+    auto *volumeProgress = videoItem(QStringLiteral("galleryVideoVolumeProgress"));
+    auto *volumeHandle = videoItem(QStringLiteral("galleryVideoVolumeHandle"));
+    QVERIFY(bar && volumeProgress && volumeHandle);
+    QCOMPARE(volumeProgress->property("color").value<QColor>(), QColor("#a1a5aa"));
+    QCOMPARE(volumeHandle->property("color").value<QColor>(), QColor("#b7bbc0"));
+    const auto centerY = [&](QQuickItem *item) {
+        return item->mapToItem(window.contentItem(), QPointF(0, item->height() / 2)).y();
+    };
+    for (const QString &name : {QStringLiteral("galleryVideoSeekTrack"),
+                                QStringLiteral("galleryVideoSeekHandle"),
+                                QStringLiteral("galleryVideoVolumeTrack"),
+                                QStringLiteral("galleryVideoVolumeHandle")}) {
+        auto *item = videoItem(name);
+        QVERIFY(item);
+        const qreal offsetPx = (centerY(item) - centerY(bar)) * window.devicePixelRatio();
+        QVERIFY2(qAbs(offsetPx) <= 0.501,
+                 qPrintable(QStringLiteral("%1 center offset is %2 physical px")
+                                .arg(name).arg(offsetPx)));
+    }
+    auto *spinner = videoItem(QStringLiteral("galleryViewerBusyIndicator"));
+    QVERIFY(spinner && !spinner->isVisible());
+    controller.state = QStringLiteral("loading");
+    emit controller.changed();
+    QTRY_VERIFY(spinner->isVisible());
+    controller.state = QStringLiteral("ready");
+    controller.playing = true;
+    emit controller.changed();
+    QVERIFY(spinner->isVisible());
+    controller.playing = false;
+    emit controller.changed();
+    QTRY_VERIFY(!spinner->isVisible());
+    controller.state = QStringLiteral("failed");
+    const auto volumePixel = [&](const QImage &image) {
+        const QPointF sample = volumeProgress->mapToItem(window.contentItem(),
+            QPointF(volumeProgress->width() / 2, volumeProgress->height() / 2));
+        return image.pixelColor(qRound(sample.x() * window.devicePixelRatio()),
+                                qRound(sample.y() * window.devicePixelRatio()));
+    };
+    QTest::qWait(50);
+    const QImage mutedCapture = window.grabWindow();
+    QVERIFY(!mutedCapture.isNull());
+    QCOMPARE(volumePixel(mutedCapture), QColor("#a1a5aa"));
     controller.playing = true;
     controller.muted = false;
     emit controller.changed();
@@ -1809,6 +1972,8 @@ void F4QuickViewSurfaceTests::galleryVideoControlsStayOnPhysicalPixelGridAt175Pe
                  iconSource(QStringLiteral("pause")));
     QTRY_COMPARE(muteIcon->property("source").toUrl(),
                  iconSource(QStringLiteral("volume-2")));
+    QCOMPARE(volumeProgress->property("color").value<QColor>(), QColor("#75b9ff"));
+    QCOMPARE(volumeHandle->property("color").value<QColor>(), QColor("#d4e9ff"));
     QTest::qWait(100);
 
     QQuickItem *loopButton = visualItemWithObjectName(
@@ -1875,8 +2040,10 @@ void F4QuickViewSurfaceTests::galleryVideoControlsStayOnPhysicalPixelGridAt175Pe
     checkGrid();
 
     root->setPosition(QPointF(0.3, 0.2));
+    QTest::qWait(40); // Fit the dirty scope before the next scene sync.
     checkGrid(true);
     root->setPosition(QPointF(0, 0));
+    QTest::qWait(40);
     checkGrid();
 
     const QImage beforeFlight = window.grabWindow();
@@ -1900,10 +2067,12 @@ void F4QuickViewSurfaceTests::galleryVideoControlsStayOnPhysicalPixelGridAt175Pe
     QTest::qWait(100);
     const QImage capture = window.grabWindow();
     QVERIFY(!capture.isNull());
+    QCOMPARE(volumePixel(capture), QColor("#75b9ff"));
     const QString capturePath = qEnvironmentVariable(
         "F4_GALLERY_VIDEO_CONTROLS_CAPTURE");
     if (!capturePath.isEmpty()) {
         QVERIFY(beforeFlight.save(capturePath + QStringLiteral(".before.png")));
+        QVERIFY(mutedCapture.save(capturePath + QStringLiteral(".muted.png")));
         QVERIFY(capture.save(capturePath));
     }
     for (const QString &name : {QStringLiteral("galleryVideoPlayButtonIcon"),
@@ -2040,6 +2209,22 @@ void F4QuickViewSurfaceTests::galleryVideoControlsReceiveMouseClicks()
 
 void F4QuickViewSurfaceTests::galleryVideoPointerEventsReachEmbeddedViewer()
 {
+    const QString videoPath = QFINDTESTDATA(
+        "../../../third_party/ZoinGallery/tests/data/gallery-video-playback.mp4");
+    QVERIFY(!videoPath.isEmpty());
+    QElapsedTimer clock;
+    clock.start();
+    QTimer heartbeat;
+    heartbeat.setInterval(10);
+    heartbeat.setTimerType(Qt::PreciseTimer);
+    qint64 lastTick = 0;
+    qint64 longestGap = 0;
+    connect(&heartbeat, &QTimer::timeout, this, [&] {
+        const qint64 now = clock.elapsed();
+        longestGap = qMax(longestGap, now - lastTick);
+        lastTick = now;
+    });
+    heartbeat.start();
     QQmlEngine engine;
     engine.addImportPath(QStringLiteral(":"));
     ZoinGallery::RuntimeOptions options;
@@ -2055,7 +2240,7 @@ void F4QuickViewSurfaceTests::galleryVideoPointerEventsReachEmbeddedViewer()
         {QStringLiteral("entryId"), QStringLiteral("video")},
         {QStringLiteral("index"), 0},
         {QStringLiteral("name"), QStringLiteral("video.mp4")},
-        {QStringLiteral("localPath"), QStringLiteral("Z:/missing/video.mp4")},
+        {QStringLiteral("localPath"), videoPath},
         {QStringLiteral("isDir"), false},
         {QStringLiteral("isImage"), true},
         {QStringLiteral("thumbnailKind"), QStringLiteral("video")},
@@ -2079,7 +2264,7 @@ void F4QuickViewSurfaceTests::galleryVideoPointerEventsReachEmbeddedViewer()
                 anchors.fill: parent
                 session: testVideoSession
                 managedPresentation: true
-                videoPlaybackMode: "manual"
+                videoPlaybackMode: "autoplay-muted"
                 onPresentationCloseRequested: root.closeRequests++
                 onFullscreenToggleRequested: root.fullscreenRequests++
             }
@@ -2100,9 +2285,14 @@ void F4QuickViewSurfaceTests::galleryVideoPointerEventsReachEmbeddedViewer()
     QVERIFY(viewer);
     QTRY_VERIFY_WITH_TIMEOUT(viewer->property("currentIsVideo").toBool(),
                              5000);
-    QTRY_VERIFY_WITH_TIMEOUT(root->findChild<QQuickItem *>(
-                                 QStringLiteral("galleryVideoPlaybackSurface")),
-                             5000);
+    QQuickItem *videoSurface = nullptr;
+    QTRY_VERIFY_WITH_TIMEOUT((videoSurface = root->findChild<QQuickItem *>(
+                                 QStringLiteral("galleryVideoPlaybackSurface"))), 5000);
+    QTRY_VERIFY_WITH_TIMEOUT(videoSurface->property("hasDecodedFrame").toBool(), 10000);
+    heartbeat.stop();
+    qInfo() << "Video first frame ms" << clock.elapsed()
+            << "largest GUI timer gap ms" << longestGap;
+    QVERIFY2(longestGap < 1000, "The GUI event loop stalled while opening the video");
 
     const QPoint viewportPoint(320, 170);
     QTest::mouseClick(&window, Qt::LeftButton, Qt::NoModifier, viewportPoint);
@@ -7523,6 +7713,7 @@ void F4QuickViewSurfaceTests::workspaceTabTextParentsStayOnPhysicalPixelGrid()
         QVERIFY(qAbs(tabs->x() - leftInset - fixture.window->property("contentSpacing").toReal()) < 1.0 / dpr);
     }
     QVERIFY(tabs->x() + tabs->width() <= queue->x());
+    QTest::qWait(40); // Inspect the first settled, synchronized layout.
     for (const auto &name : {"workspace-tab-title-workspace-tab-1", "workspace-tab-number-workspace-tab-1",
                             "workspace-tab-icon-workspace-tab-1", "workspace-close-workspace-tab-1", "workspaceNewIcon"}) {
         auto *leaf = visualItemWithObjectNamePrefix(rootItem, QString::fromLatin1(name));
@@ -7618,12 +7809,26 @@ void F4QuickViewSurfaceTests::worktreeBranchAppearsCenteredInTitleBar()
     QCOMPARE(branchLabel->mapToItem(rootItem, QPointF(1, 0)) - branchOrigin, QPointF(1, 0));
     QCOMPARE(branchLabel->mapToItem(rootItem, QPointF(0, 1)) - branchOrigin, QPointF(0, 1));
     fixture.window->setProperty("worktreeBranchName", QStringLiteral("zoin"));
-    QTRY_VERIFY(!branchLabel->isVisible());
+    QTRY_VERIFY(branchLabel->isVisible());
+    QTest::qWait(50);
+    QVERIFY2(!branchLabel->property("truncated").toBool(),
+             qPrintable(QStringLiteral("branch text clipped: width=%1, implicitWidth=%2, DPR=%3")
+                            .arg(branchLabel->width(), 0, 'f', 6)
+                            .arg(branchLabel->implicitWidth(), 0, 'f', 6)
+                            .arg(dpr, 0, 'f', 2)));
+    const QPointF zoinOrigin = branchLabel->mapToItem(rootItem, QPointF{});
+    verifyWholePhysicalCoordinate(zoinOrigin.x(), QStringLiteral("zoin label scene x"));
+    verifyWholePhysicalCoordinate(zoinOrigin.y(), QStringLiteral("zoin label scene y"));
+    QCOMPARE(branchLabel->mapToItem(rootItem, QPointF(1, 0)) - zoinOrigin, QPointF(1, 0));
+    QCOMPARE(branchLabel->mapToItem(rootItem, QPointF(0, 1)) - zoinOrigin, QPointF(0, 1));
+    QVERIFY(qAbs(zoinOrigin.x() + branchLabel->width()/2 - titleBarCenter) <= .5/dpr + .001);
     const auto capture = fixture.window->grabWindow();
     QVERIFY(!capture.isNull());
-    capture.save("D:/Code/f4-zoin/.diagnostics/hidden-zoin-title-175.png");
+    QVERIFY(capture.save("D:/Code/f4-zoin/.diagnostics/worktree-zoin-title-175.png"));
     fixture.window->setProperty("worktreeBranchName", QStringLiteral("Zoin"));
     QTRY_VERIFY(branchLabel->isVisible());
+    fixture.window->setProperty("worktreeBranchName", QString{});
+    QTRY_VERIFY(!branchLabel->isVisible());
 }
 
 void F4QuickViewSurfaceTests::chromeIconsUseMatchingPhysicalTargetSizes()
@@ -9500,7 +9705,11 @@ void F4QuickViewSurfaceTests::nestedMenuAnchorsHeadersTagsAndChevronsOnPhysicalP
     QVERIFY(tagDot->isVisible());
     QCOMPARE(tagDot->property("color").value<QColor>(), QColor("#ff453a"));
     QVERIFY(headerText->property("font").value<QFont>().bold());
-    QCOMPARE(headerText->x(), qRound(10 * fixture.window->devicePixelRatio()) / fixture.window->devicePixelRatio());
+    // The heading's inset is relative to the popup edge, including its content
+    // inset. Its local x is not the final scene-space placement.
+    const qreal headingInset = headerText->mapToItem(visualRoot, QPointF()).x()
+        - childPopup->mapToItem(visualRoot, QPointF()).x();
+    QVERIFY(qAbs(headingInset - 12) <= 1 / fixture.window->devicePixelRatio());
     QVERIFY(headerText->y() > 0);
 
     const QPointF parentOrigin = parentPopup->mapToItem(visualRoot, QPointF{});
@@ -12768,6 +12977,10 @@ void F4QuickViewSurfaceTests::layoutDebugZonesDefaultOffAndToggle()
 {
     QuickViewFixture fixture(shellScene(), true);
     QVERIFY(fixture.window);
+    auto *paddingControls = fixture.item("galleryCellPaddingControl");
+    QVERIFY(paddingControls);
+    QVERIFY(!paddingControls->isVisible());
+    QVERIFY(!fixture.item("galleryCellPaddingSlider"));
     ZoinGallery::RuntimeOptions options;
     options.persistentCache = false;
     auto *runtime = ZoinGallery::GalleryRuntime::install(&fixture.engine, options);
@@ -12792,6 +13005,10 @@ void F4QuickViewSurfaceTests::layoutDebugZonesDefaultOffAndToggle()
         QVERIFY(!gallery->property("debugLayoutZones").toBool());
     QVERIFY(QMetaObject::invokeMethod(shortcut, "activated"));
     QVERIFY(fixture.window->property("galleryDebugLayoutZones").toBool());
+    QTRY_VERIFY(paddingControls->isVisible());
+    QTRY_VERIFY(fixture.item("galleryCellPaddingSlider"));
+    QTRY_VERIFY(fixture.item("galleryCellVerticalPaddingSlider"));
+    QTRY_VERIFY(fixture.item("galleryCellCaptionSpacingSlider"));
     for (auto *gallery : galleries)
         QTRY_VERIFY(gallery->property("debugLayoutZones").toBool());
     QVERIFY(fixture.window->setProperty("galleryDebugLayoutZones", false));
@@ -12799,6 +13016,8 @@ void F4QuickViewSurfaceTests::layoutDebugZonesDefaultOffAndToggle()
     QVERIFY(fixture.window->property("galleryDebugLayoutZones").toBool());
     QVERIFY(QMetaObject::invokeMethod(shortcut, "activated"));
     QVERIFY(!fixture.window->property("galleryDebugLayoutZones").toBool());
+    QTRY_VERIFY(!paddingControls->isVisible());
+    QTRY_VERIFY(!fixture.item("galleryCellPaddingSlider"));
     for (auto *gallery : galleries)
         QTRY_VERIFY(!gallery->property("debugLayoutZones").toBool());
 }

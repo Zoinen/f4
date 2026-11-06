@@ -666,9 +666,18 @@ func (pf *PanelsFrame) SearchFirstMode() bool {
 }
 
 func (pf *PanelsFrame) panelActivationFastPathEligible() bool {
-	if !pf.ShowPanels || pf.Wide ||
-		!pf.ShowLeftPanel || !pf.ShowRightPanel ||
-		pf.AltPanels[0] != nil || pf.AltPanels[1] != nil {
+	return !pf.Wide && pf.panelCatalogFastPathEligible(pf.ActiveIdx)
+}
+
+func (pf *PanelsFrame) panelCatalogFastPathEligible(side int) bool {
+	if !pf.ShowPanels || pf.AltPanels[0] != nil || pf.AltPanels[1] != nil {
+		return false
+	}
+	if pf.Wide {
+		if side != pf.WidePanel || side != pf.ActiveIdx {
+			return false
+		}
+	} else if !pf.ShowLeftPanel || !pf.ShowRightPanel {
 		return false
 	}
 	for _, panel := range pf.Panels {
@@ -698,8 +707,7 @@ func publishPanelCatalogImmediate(fp *FileSystemPanel, benchmark *navtrace.Navig
 			owner = candidate
 		}
 	}
-	if owner == nil || frames[len(frames)-1] != owner ||
-		!owner.panelActivationFastPathEligible() {
+	if owner == nil || frames[len(frames)-1] != owner {
 		return false
 	}
 	side := -1
@@ -709,7 +717,7 @@ func publishPanelCatalogImmediate(fp *FileSystemPanel, benchmark *navtrace.Navig
 			break
 		}
 	}
-	if side < 0 {
+	if side < 0 || !owner.panelCatalogFastPathEligible(side) {
 		return false
 	}
 	activeSide := owner.ActiveIdx
@@ -6821,6 +6829,9 @@ func (pf *PanelsFrame) GetWorkspaceTabTitle() string {
 		return path
 	}
 
+	if pf.Wide {
+		return panelPath(pf.Panels[pf.WidePanel])
+	}
 	return panelPath(pf.Panels[0]) + " ─ " + panelPath(pf.Panels[1])
 }
 
@@ -6874,6 +6885,12 @@ func (pf *PanelsFrame) GetWorkspaceMenuInfo() vtui.WorkspaceMenuInfo {
 		return path
 	}
 
+	if pf.Wide {
+		return vtui.WorkspaceMenuInfo{
+			Icon:    "P",
+			Primary: panelPath(pf.Panels[pf.WidePanel]),
+		}
+	}
 	return vtui.WorkspaceMenuInfo{
 		Icon:      "P",
 		Primary:   panelPath(pf.Panels[0]),

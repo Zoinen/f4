@@ -64,6 +64,16 @@ func (state semanticEditorCursorState) ToMap() map[string]any {
 	}
 }
 
+func (state semanticEditorCursorState) compactMap() map[string]any {
+	result := state.ToMap()
+	// Rectangular selection belongs to the styled row projection. The compact
+	// protocol accepts only the stream-selection/caret whitelist.
+	for _, key := range []string{"rectSelection", "rectAnchorRow", "rectAnchorColumn", "rectFocusRow", "rectFocusColumn"} {
+		delete(result, key)
+	}
+	return result
+}
+
 func (ev *EditorView) semanticSurfaceWidth() int {
 	return ev.viewportWidth()
 }
@@ -148,7 +158,7 @@ func (ev *EditorView) queueSemanticCursorState() bool {
 		return false
 	}
 	state := ev.semanticCursorState(ev.semanticSurfaceWidth())
-	stateMap := state.ToMap()
+	stateMap := state.compactMap()
 	stateMap["layoutRevision"] = ev.semanticLayoutRevision
 	stateMap["windowGeneration"] = ev.semanticWindowGeneration
 	stateMap["documentKey"] = vtui.SemanticID(ev)

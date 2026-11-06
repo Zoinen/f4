@@ -223,6 +223,8 @@ artifacts/       # build artifacts
 | --- | --- | --- |
 | README | `README.md` | Project overview, downloads, backends, philosophy |
 | Subsystem docs | `docs/*.md` | VFS, PLUGINS, MACROS, KEYMAP, TERMINAL, CONPTY, WINCON, UX_GUIDELINES and others |
+| Pixel grid | `docs/PIXEL_GRID.md` | Shared cached physical-pixel layout and motion boundaries for Qt and ZoinGallery |
+| Panel performance | `docs/PANEL_RENDERING_PERFORMANCE.md` | Measured bottlenecks, retained optimizations, rejected experiments and validation guidance |
 | File fields | `docs/FILE_FIELDS.md` | Typed file metadata, EXIF, Qt panel behavior, cache, and incomplete reads |
 | Updater | `docs/UPDATER.md` | Release asset names as an interface with every installed f4, the release check, the rollback |
 | Archive libraries | `docs/ARCHIVE_DEPENDENCIES.md` | The chain of archive libraries (zipper, zip, tar, xz, sevenzip, archives, rardecode) and the rules for updating them |

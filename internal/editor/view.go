@@ -999,6 +999,9 @@ func usesStateChain(h vtui.Highlighter) bool {
 	if h == nil {
 		return false
 	}
+	if independent, ok := h.(interface{ StateIndependent() bool }); ok && independent.StateIndependent() {
+		return false
+	}
 	_, isColorer := h.(*ColorerHighlighter)
 	return !isColorer
 }
@@ -1953,7 +1956,7 @@ func (ev *EditorView) editorCursorStateGuard() editorCursorPatchGuard {
 		return guard
 	}
 	showHorzCross, showVertCross, _, _ := EditorCrossAttrs()
-	if (config.App.EditorMarkOccurrences && ev.SelActive) || showHorzCross || showVertCross || ev.RectSelActive ||
+	if len(ev.occurrenceNeedle()) != 0 || showHorzCross || showVertCross || ev.RectSelActive ||
 		len(ev.acMatches) != 0 || ev.pasting || ev.Saving || ev.TargetLine != -1 ||
 		ev.HexMode || ev.DecodeMode {
 		return guard
@@ -1991,7 +1994,7 @@ func (guard editorCursorPatchGuard) canPublish(ev *EditorView, handled bool) boo
 		return false
 	}
 	showHorzCross, showVertCross, _, _ := EditorCrossAttrs()
-	return !(config.App.EditorMarkOccurrences && ev.SelActive) && !showHorzCross && !showVertCross &&
+	return len(ev.occurrenceNeedle()) == 0 && !showHorzCross && !showVertCross &&
 		guard.editSession == ev.editSession &&
 		guard.scrollTop == ev.ScrollTopRow && guard.scrollLeft == ev.ScrollLeft &&
 		guard.windowGeneration == ev.semanticWindowGeneration &&

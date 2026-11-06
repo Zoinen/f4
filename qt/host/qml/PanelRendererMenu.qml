@@ -39,12 +39,8 @@ Popup {
     readonly property real menuItemHeight: hostWindow.snapPx(31)
 
     function pixelOffset(item, horizontal) {
-        let revision = item.x + item.y
-        for (let ancestor = item.parent; ancestor; ancestor = ancestor.parent)
-            revision += ancestor.x + ancestor.y
-        const point = item.parent.mapToItem(hostWindow.contentItem, item.x, item.y)
-        const value = horizontal ? point.x : point.y
-        return hostWindow.snapPx(value) - value + revision * 0
+        return horizontal ? hostWindow.dialogPixelOffsetX(item, hostWindow.contentItem)
+                          : hostWindow.dialogPixelOffsetY(item, hostWindow.contentItem)
     }
 
     function firstKeyboardIndex() {

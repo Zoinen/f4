@@ -178,6 +178,38 @@ func TestSemanticPanelCatalogPatchDefersOnlyCoveredTerminalPresentation(t *testi
 	}
 }
 
+func TestSemanticPanelCatalogPatchRecognizesWidePanelCoverage(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		leftInset         int
+		rightInset        int
+		wantCompactUpdate bool
+	}{
+		{name: "full width and height", wantCompactUpdate: true},
+		{name: "inset on hidden side", rightInset: 3, wantCompactUpdate: true},
+		{name: "inset exposes terminal", leftInset: 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wideScene := func(path string, revision, contentStart int64) map[string]any {
+				legacy := productionPanelCatalogLegacy(path, revision, revision, false, "..")
+				shell := legacy["frames"].([]map[string]any)[0]
+				shell["wide"] = true
+				shell["widePanel"] = 0
+				shell["panelLayout"] = map[string]any{
+					"leftBottomInsetRows": tc.leftInset, "rightBottomInsetRows": tc.rightInset,
+				}
+				productionPanelCatalogTerminal(legacy)["contentStart"] = contentStart
+				return projectSceneForTest(nil, legacy)
+			}
+			previous := wideScene(`D:\photos`, 10, 2)
+			current := wideScene(`D:\photos\2026`, 11, 3)
+			if _, ok := semanticPanelCatalogPatch(previous, current); ok != tc.wantCompactUpdate {
+				t.Fatalf("compact catalog update = %v, want %v", ok, tc.wantCompactUpdate)
+			}
+		})
+	}
+}
+
 func TestExtUiRenderer_HiddenTerminalLogicalChangesForceFullScene(t *testing.T) {
 	tests := []struct {
 		name   string

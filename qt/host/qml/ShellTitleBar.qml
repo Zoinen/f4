@@ -12,8 +12,8 @@ Item {
     id: titleBar
     readonly property bool retainsFocusOnShellRefresh:
         minimizeButton.pressed || maximizeButton.pressed || closeButton.pressed
-        || horizontalCellPaddingControl.pressed || verticalCellPaddingControl.pressed
-        || captionSpacingControl.pressed
+        || (cellPaddingControl.status === Loader.Ready
+            && cellPaddingControl.item.pressed)
     required property ApplicationWindow hostWindow
     required property Item semanticLayer
     required property QtObject nativeWindowAgent
@@ -55,12 +55,12 @@ Item {
         anchors.alignWhenCentered: false
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.verticalCenter: parent.verticalCenter
-        width: hostWindow.snapPx(Math.min(
-            Math.max(0, parent.width - hostWindow.contentSpacing * 2),
-            implicitWidth))
+        width: Math.min(
+            hostWindow.snapPx(Math.max(0, parent.width - hostWindow.contentSpacing * 2)),
+            Math.ceil(implicitWidth * hostWindow.dpr) / hostWindow.dpr)
         height: hostWindow.snapPx(implicitHeight)
         text: hostWindow.worktreeBranchName
-        visible: text !== "" && text !== "zoin"
+        visible: text !== ""
         color: hostWindow.chromeText
         font.pixelSize: hostWindow.semanticTextFontPixelSize
         font.family: hostWindow.uiFontFamily
@@ -127,9 +127,11 @@ Item {
     WorkspaceTabs {
         id: workspaceBar
         hostWindow: titleBar.hostWindow
+        readonly property real controlsLeftEdge: cellPaddingControl.visible
+            ? cellPaddingControl.x : queueButton.x
         availableWidth: Math.max(0, (worktreeBranchLabel.visible
-                                    ? Math.min(cellPaddingControl.x, worktreeBranchLabel.x)
-                                    : cellPaddingControl.x) - x - hostWindow.contentSpacing)
+                                    ? Math.min(controlsLeftEdge, worktreeBranchLabel.x)
+                                    : controlsLeftEdge) - x - hostWindow.contentSpacing)
         nativeWindowAgent: titleBar.nativeWindowAgent
         nativeWindowAgentReady: titleBar.nativeWindowAgentReady
         usesQwk: titleBar.usesQwk
@@ -139,40 +141,46 @@ Item {
                                + hostWindow.contentSpacing)
     }
 
-    // Temporary live layout control, independent of compact-list column padding.
-    Row {
+    Loader {
         id: cellPaddingControl
         objectName: "galleryCellPaddingControl"
-        x: hostWindow.snapPx(queueButton.x - width - hostWindow.contentSpacing)
-        y: hostWindow.snapPx((titleBar.height - height) / 2)
-        height: hostWindow.snapPx(28)
-        spacing: hostWindow.snapPx(12)
+        active: titleBar.hostWindow.galleryDebugLayoutZones
+        visible: status === Loader.Ready
+        x: titleBar.hostWindow.snapPx(queueButton.x - width - titleBar.hostWindow.contentSpacing)
+        y: titleBar.hostWindow.snapPx((titleBar.height - height) / 2)
         z: 3
 
-        GalleryCellPaddingControl {
-            id: horizontalCellPaddingControl
-            hostWindow: titleBar.hostWindow
-            nativeWindowAgent: titleBar.nativeWindowAgent
-            nativeWindowAgentReady: titleBar.nativeWindowAgentReady
-            usesQwk: titleBar.usesQwk
-        }
+        sourceComponent: Row {
+            readonly property bool pressed: horizontalPadding.pressed
+                || verticalPadding.pressed || captionSpacing.pressed
+            height: titleBar.hostWindow.snapPx(28)
+            spacing: titleBar.hostWindow.snapPx(12)
 
-        GalleryCellPaddingControl {
-            id: verticalCellPaddingControl
-            hostWindow: titleBar.hostWindow
-            nativeWindowAgent: titleBar.nativeWindowAgent
-            nativeWindowAgentReady: titleBar.nativeWindowAgentReady
-            usesQwk: titleBar.usesQwk
-            kind: "vertical"
-        }
+            GalleryCellPaddingControl {
+                id: horizontalPadding
+                hostWindow: titleBar.hostWindow
+                nativeWindowAgent: titleBar.nativeWindowAgent
+                nativeWindowAgentReady: titleBar.nativeWindowAgentReady
+                usesQwk: titleBar.usesQwk
+            }
 
-        GalleryCellPaddingControl {
-            id: captionSpacingControl
-            hostWindow: titleBar.hostWindow
-            nativeWindowAgent: titleBar.nativeWindowAgent
-            nativeWindowAgentReady: titleBar.nativeWindowAgentReady
-            usesQwk: titleBar.usesQwk
-            kind: "caption"
+            GalleryCellPaddingControl {
+                id: verticalPadding
+                hostWindow: titleBar.hostWindow
+                nativeWindowAgent: titleBar.nativeWindowAgent
+                nativeWindowAgentReady: titleBar.nativeWindowAgentReady
+                usesQwk: titleBar.usesQwk
+                kind: "vertical"
+            }
+
+            GalleryCellPaddingControl {
+                id: captionSpacing
+                hostWindow: titleBar.hostWindow
+                nativeWindowAgent: titleBar.nativeWindowAgent
+                nativeWindowAgentReady: titleBar.nativeWindowAgentReady
+                usesQwk: titleBar.usesQwk
+                kind: "caption"
+            }
         }
     }
 
