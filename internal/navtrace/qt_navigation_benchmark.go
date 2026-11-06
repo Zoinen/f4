@@ -1,6 +1,7 @@
 package navtrace
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"github.com/unxed/f4/internal/semantic"
@@ -154,11 +155,20 @@ func NavigationBenchmarkConfigureOutput() func() {
 	}
 	navigationBenchmarkOutput.Lock()
 	previous := navigationBenchmarkOutput.writer
-	navigationBenchmarkOutput.writer = file
+	var sink io.Writer = file
+	var buffered *bufio.Writer
+	if os.Getenv("F4_NAV_BENCHMARK_BUFFERED") == "1" {
+		buffered = bufio.NewWriterSize(file, 1024*1024)
+		sink = buffered
+	}
+	navigationBenchmarkOutput.writer = sink
 	navigationBenchmarkOutput.Unlock()
 	return func() {
 		navigationBenchmarkOutput.Lock()
-		if navigationBenchmarkOutput.writer == file {
+		if buffered != nil {
+			_ = buffered.Flush()
+		}
+		if navigationBenchmarkOutput.writer == sink {
 			navigationBenchmarkOutput.writer = previous
 		}
 		navigationBenchmarkOutput.Unlock()
@@ -306,6 +316,8 @@ func NavigationBenchmarkTraceForKey(message map[string]any, timing *NavigationBe
 		action = "key.escape"
 	case vtinput.VK_RIGHT:
 		action = "key.right"
+	case vtinput.VK_NEXT:
+		action = "key.pagedown"
 	default:
 		return nil
 	}

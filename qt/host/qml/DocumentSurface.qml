@@ -12,6 +12,10 @@ Rectangle {
     property string surfaceObjectName: "documentSurface"
     objectName: surfaceObjectName
     property var frame: ({})
+    readonly property string documentKind: frame.kind || ""
+    readonly property int rendererColumns: Math.max(0, Number(presentationFrame.viewportColumns || 0))
+    readonly property string runDefaultBackground:
+        hostWindow.cleanText(presentationFrame.defaultBackground).toLowerCase()
     // Standalone F3/F4 owns the full application surface. Embedded
     // Quick View is already laid out between its own header and footer,
     // so applying the global menu/keybar insets there would double-pad it.
@@ -77,6 +81,19 @@ Rectangle {
     property alias terminalFollowTailInitialized: viewportController.terminalFollowTailInitialized
     readonly property var presentationFrame: viewportController.presentationFrame
     readonly property var selectionCursorFrame: editorPointerController.blockPreview || cursorFrame
+    readonly property int editorSelectionOverlayCount: {
+        if (documentKind !== "editor" || presentationFrame.hexMode === true
+                || presentationFrame.decodeMode === true)
+            return 0
+        const carets = cursorFrame.secondaryCarets || []
+        if (selectionCursorFrame.selection === true || selectionCursorFrame.rectSelection === true)
+            return 1 + carets.length
+        for (const caret of carets) {
+            if (caret.selection === true || caret.rectSelection === true)
+                return 1 + carets.length
+        }
+        return 0
+    }
     readonly property var cursorFrame:
         hostWindow.documentSurfaceStateOverride !== null
         && hostWindow.cleanText(hostWindow.documentSurfaceStateOverride.id)
@@ -191,8 +208,7 @@ Rectangle {
 
     function runBackground(value) {
         var background = hostWindow.cleanText(value).toLowerCase()
-        var defaultBackground = hostWindow.cleanText(
-                    presentationFrame.defaultBackground).toLowerCase()
+        var defaultBackground = runDefaultBackground
         if ((defaultBackground !== ""
                 && background === defaultBackground)
                 || background === "#000000"

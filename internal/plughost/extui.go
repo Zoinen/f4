@@ -4350,6 +4350,9 @@ func RunExternalUI(cols, rows int, execPath string, args []string) error {
 			errCh <- err
 			return
 		}
+		if tcp, ok := conn.(*net.TCPConn); ok {
+			_ = tcp.SetWriteBuffer(1024 * 1024)
+		}
 		connCh <- conn
 	}()
 

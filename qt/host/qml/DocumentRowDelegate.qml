@@ -18,7 +18,12 @@ Rectangle {
     property bool countedAsLive: true
     // Live delegate text remains active for loaded slots so viewport rebases
     // and navigation updates do not blank the text between placement and render.
-    readonly property bool contentActive: loaded
+    readonly property bool contentActive: loaded || documentRoot.documentKind === "editor"
+    readonly property string editorMarkup:
+        documentRoot.documentKind === "editor" && documentRoot.rendererColumns > 0
+        ? rowData._inlineMarkup || "" : ""
+    onRowDataChanged: runRow.forceLayout()
+    onLoadedChanged: runRow.forceLayout()
     width: ListView.view.width
     height: documentRoot.rowHeight
     color: "transparent"
@@ -40,42 +45,25 @@ Rectangle {
         }
     }
 
-    Item {
+    Row {
         id: runRow
         anchors.left: parent.left
         anchors.leftMargin: documentRow.documentRoot.textHorizontalInset
         height: parent.height
         z: 1
         visible: documentRow.loaded
+                 && documentRow.editorMarkup === ""
                  && documentRow.rowData.runs !== undefined
                  && documentRow.rowData.runs.length > 0
-
-        function runOffset(targetIndex) {
-            if (targetIndex <= 0)
-                return 0
-            let offset = 0
-            const runs = documentRow.rowData.runs || []
-            const cellWidth = Number(documentRow.documentRoot.terminalCellWidth || 0)
-            for (let i = 0; i < targetIndex && i < runs.length; i++) {
-                const r = runs[i]
-                if (r) {
-                    const item = runRepeater.itemAt(i)
-                    if (item && item.width > 0) {
-                        offset += item.width
-                    } else {
-                        offset += Math.max(0, Number((r.text || "").length) * cellWidth)
-                    }
-                }
-            }
-            return offset
-        }
 
         Repeater {
             id: runRepeater
             // A new array value is not a new set of visual objects. Keep the
             // same run leaves while their count is stable; data/style bindings
             // update them in place.
-            model: (documentRow.documentRoot.standaloneViewport
+            model: documentRow.editorMarkup !== "" ? 0 : documentRow.documentRoot.documentKind === "editor"
+                   ? (documentRow.rowData.runs || []).length
+                   : (documentRow.documentRoot.standaloneViewport
                     || documentRow.documentRoot.terminalSurface)
                    ? (documentRow.loaded
                       ? (documentRow.rowData.runs || []).length : 0)
@@ -87,7 +75,6 @@ Rectangle {
                 required property int index
                 readonly property var runData:
                     (documentRow.rowData.runs || [])[index] || ({})
-                x: runRow.runOffset(index)
                 height: runRow.height
                 width: Math.max(runLabel.implicitWidth,
                                 Number((runSegment.runData.text || "").length)
@@ -146,25 +133,30 @@ Rectangle {
         id: plainDocumentText
         objectName: "documentPlainText"
         anchors.left: parent.left
-        anchors.right: parent.right
         anchors.verticalCenter: parent.verticalCenter
         anchors.leftMargin: documentRow.documentRoot.textHorizontalInset
-        anchors.rightMargin: documentRow.documentRoot.textHorizontalInset
-                             + documentRow.documentRoot.documentGutterWidth
+        // Tight native-text bounds avoid rasterizing the empty viewport tail.
+        // Allocate complete physical pixels once when the text width changes.
+        width: documentRow.editorMarkup !== ""
+            ? Math.ceil(implicitWidth * documentRow.hostWindow.dpr) / documentRow.hostWindow.dpr
+            : Math.max(0, documentRow.width
+                       - documentRow.documentRoot.textHorizontalInset * 2
+                       - documentRow.documentRoot.documentGutterWidth)
         visible: documentRow.loaded
-                 && (!documentRow.rowData.runs
+                 && (documentRow.editorMarkup !== "" || !documentRow.rowData.runs
                      || documentRow.rowData.runs.length === 0)
         // Styled runs already own their text layout. An invisible fallback
         // must not concatenate and shape the same row again.
-        text: documentRow.contentActive && (!documentRow.rowData.runs
+        text: documentRow.editorMarkup !== "" ? documentRow.editorMarkup
+              : documentRow.contentActive && (!documentRow.rowData.runs
                    || documentRow.rowData.runs.length === 0)
               ? documentRow.hostWindow.rowText(documentRow.rowData) : ""
-        textFormat: Text.PlainText
+        textFormat: documentRow.editorMarkup !== "" ? Text.StyledText : Text.PlainText
         renderType: documentRow.hostWindow.fontRenderType
         color: documentRow.hostWindow.textColor
         font.family: documentRow.hostWindow.guiMonospaceFontFamily
         font.pixelSize: documentRow.hostWindow.guiMonospaceFontPixelSize
-        elide: Text.ElideRight
+        elide: documentRow.editorMarkup !== "" ? Text.ElideNone : Text.ElideRight
         z: 1
         transform: Translate {
             x: documentRow.documentRoot.pixelOffsetX(plainDocumentText)
@@ -173,17 +165,16 @@ Rectangle {
     }
 
     readonly property var terminalSelectionRange:
-        documentRoot.terminalSelectionRangeForRow(
+        documentRoot.terminalSurface ? documentRoot.terminalSelectionRangeForRow(
             loaded ? Number(rowData.visualRow || 0) : -1, width)
+            : ({valid: false, start: 0, end: 0})
     readonly property var viewerSelectionRange:
-        documentRoot.viewerSelectionRangeForRow(loaded ? rowData : null)
-    readonly property var editorSelectionRange:
-        documentRoot.editorSelectionRangeForRow(
-            loaded ? Number(rowData.visualRow || 0) : -1,
-            loaded ? Number(rowData.visualWidth || 0) : 0)
+        documentRoot.viewerSelectionEnabled
+        ? documentRoot.viewerSelectionRangeForRow(loaded ? rowData : null)
+        : ({valid: false, start: 0, end: 0})
 
     Repeater {
-        model: 1 + (documentRow.documentRoot.cursorFrame.secondaryCarets || []).length
+        model: documentRow.documentRoot.editorSelectionOverlayCount
         delegate: Rectangle {
             required property int index
             readonly property var modelData: documentRow.documentRoot.editorSelectionRangeForRow(

@@ -184,6 +184,7 @@ Item {
     }
 
     function sourceRows() { return windowPresenter.sourceRows() }
+    function committedRowAt(index) { return windowPresenter.committedRowAt(index) }
     function windowSignature(rows) { return windowPresenter.windowSignature(rows) }
     function clamp(value, minimum, maximum) { return windowPresenter.clamp(value, minimum, maximum) }
     function rowExtent(index, rows) { return windowPresenter.rowExtent(index, rows) }

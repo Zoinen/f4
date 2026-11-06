@@ -5,6 +5,7 @@ import QtQuick.Controls
 
 Item {
     id: presenter
+    objectName: "documentWindowPresenter"
 
     required property ApplicationWindow hostWindow
     required property ListView documentList
@@ -67,6 +68,10 @@ Item {
     height: 0
 
     function sourceRows() {
+        if (frame.nativeWindowRows === true && frame.kind === "editor"
+                && Number(frame.viewportColumns || 0) > 0)
+            return qtShell.surfaceRegistry.documentWindowCoordinates(
+                documentKey, frame.nativeWindowRevision)
         if (frame.nativeWindowRows === true)
             return qtShell.surfaceRegistry.documentWindowRows(
                 documentKey, frame.nativeWindowRevision)
@@ -79,7 +84,24 @@ Item {
             return hostWindow.cleanText(frame.windowStart) + ":"
                     + hostWindow.cleanText(frame.windowEnd) + ":" + contentKey
         }
+        if (frame.nativeWindowRows === true)
+            return "native:" + String(frame.nativeWindowContentKey || frame.nativeWindowRevision)
         return JSON.stringify(rows || [])
+    }
+
+    function committedRowAt(index) {
+        if (index < 0 || index >= displayedRows.length)
+            return null
+        // Compact coordinates describe layout only. Pointer source anchors
+        // must come from the same committed native slots as the delegates.
+        if (typeof displayedRows[index] !== "number")
+            return displayedRows[index]
+        const slot = loadedSlotStart + index
+        if (slot < loadedSlotStart || slot >= loadedSlotEnd
+                || slot >= rowsModel.count)
+            return null
+        const entry = rowsModel.get(slot)
+        return entry.loaded === true ? entry.rowData : null
     }
 
     function clamp(value, minimum, maximum) {
@@ -90,6 +112,8 @@ Item {
         const source = rows || displayedRows
         if (!source || index < 0 || index >= source.length)
             return 0
+        if (typeof source[index] === "number")
+            return Number(source[index])
         const row = source[index] || ({})
         return presentationFrame.scrollUnit === "rows"
                 ? Number(row.visualRow || 0) : Number(row.offset || 0)
@@ -99,6 +123,8 @@ Item {
         const source = rows || displayedRows
         if (!source || index < 0 || index >= source.length)
             return rowExtent(index, source)
+        if (typeof source[index] === "number")
+            return Number(source[index]) + 1
         const row = source[index] || ({})
         if (presentationFrame.scrollUnit === "rows")
             return Number(row.visualRow || 0) + 1
@@ -239,12 +265,19 @@ Item {
         const source = rows || displayedRows
         if (!source || source.length === 0)
             return -1
-        for (let index = 0; index < source.length; ++index) {
+        let low = 0
+        let high = source.length - 1
+        while (low <= high) {
+            const index = Math.floor((low + high) / 2)
             const start = rowExtent(index, source)
             const end = rowEndExtent(index, source)
             if (Math.abs(start - extent) < 0.000001
                     || (extent >= start && extent < end))
                 return index
+            if (extent < start)
+                high = index - 1
+            else
+                low = index + 1
         }
         return -1
     }
@@ -305,31 +338,41 @@ Item {
     }
 
     function mergeRowsWithoutRebase(nextRows, retainLiveUnion) {
+        if (!nextRows || nextRows.length === 0)
+            return false
         if (!displayedRows || displayedRows.length === 0) {
             recenterRows(nextRows, Number(frame.viewportStart || 0), 0)
             return true
         }
 
-        let oldIndex = -1
-        let nextIndex = -1
-        for (let index = 0; index < nextRows.length && nextIndex < 0; ++index) {
-            const extent = rowExtent(index, nextRows)
-            const found = indexForExtent(extent, displayedRows)
-            if (found >= 0
-                    && Math.abs(rowExtent(found, displayedRows) - extent)
-                       < 0.000001) {
-                oldIndex = found
-                nextIndex = index
-            }
-        }
-        if (oldIndex < 0)
+        const oldFirst = rowExtent(0, displayedRows)
+        const nextFirst = rowExtent(0, nextRows)
+        const oldIndex = nextFirst >= oldFirst ? indexForExtent(nextFirst, displayedRows) : 0
+        const nextIndex = nextFirst >= oldFirst ? 0 : indexForExtent(oldFirst, nextRows)
+        if (oldIndex < 0 || nextIndex < 0
+                || Math.abs(rowExtent(oldIndex, displayedRows) - rowExtent(nextIndex, nextRows)) >= 0.000001)
             return false
 
-        const nextStart = loadedSlotStart + oldIndex - nextIndex
-        const nextEnd = nextStart + nextRows.length
+        let nextStart = loadedSlotStart + oldIndex - nextIndex
+        let nextEnd = nextStart + nextRows.length
+        if ((nextStart < 0 || nextEnd > rowPoolController.count)
+                && standaloneViewport && frame.kind === "editor"
+                && !documentList.moving && !coordinator.wheelGestureActive) {
+            const count = loadedSlotEnd - loadedSlotStart
+            const centered = Math.max(0, Math.floor((rowPoolController.count - count) / 2))
+            if (rowPoolController.moveWindow(loadedSlotStart, count, centered)) {
+                loadedSlotStart = centered
+                loadedSlotEnd = centered + count
+                nextStart = centered + oldIndex - nextIndex
+                nextEnd = nextStart + nextRows.length
+            }
+        }
         if (nextStart < 0 || nextEnd > rowPoolController.count)
             return false
-        if (retainLiveUnion !== true && Math.abs(oldIndex - nextIndex) > 5)
+        // Editor page navigation can reuse the overlap just like a line step.
+        // Pool bounds above still trigger a rebase when its spare slots run out.
+        if (frame.kind !== "editor" && retainLiveUnion !== true
+                && Math.abs(oldIndex - nextIndex) > 5)
             return false
 
         const unionStart = Math.min(loadedSlotStart, nextStart)
@@ -474,9 +517,13 @@ Item {
                 return
             }
         }
-        documentList.positionViewAtIndex(modelIndex, ListView.Beginning)
-        documentList.forceLayout()
-        const item = itemForModelIndex(modelIndex)
+        const prepared = standaloneViewport && frame.kind === "editor"
+                && !documentList.moving ? itemForModelIndex(modelIndex) : null
+        if (prepared === null) {
+            documentList.positionViewAtIndex(modelIndex, ListView.Beginning)
+            documentList.forceLayout()
+        }
+        const item = prepared !== null ? prepared : itemForModelIndex(modelIndex)
         const itemHeight = item !== null && item.height > 0 ? item.height : rowHeight
         const itemY = item !== null ? item.y : modelCoordinateForIndex(modelIndex)
         documentList.contentY = itemY + fraction * itemHeight
@@ -727,6 +774,9 @@ Item {
         id: rowPoolController
         hostWindow: presenter.hostWindow
         nativeRows: presenter.nativeRowStorage
+        nativeDocumentKey: presenter.frame.nativeWindowRows === true
+                           && presenter.frame.kind === "editor" ? presenter.documentKey : ""
+        nativeDocumentRevision: Number(presenter.frame.nativeWindowRevision || 0)
         rowHeight: presenter.rowHeight
         viewportHeight: presenter.documentList.height
     }

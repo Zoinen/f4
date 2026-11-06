@@ -215,6 +215,7 @@ QVariantList editorRows(int firstRow, int count)
     for (int index = 0; index < count; ++index) {
         const int visualRow = firstRow + index;
         rows.append(QVariantMap{
+            {QStringLiteral("index"), index},
             {QStringLiteral("visualRow"), visualRow},
             {QStringLiteral("offset"), visualRow * 500 + 37},
             {QStringLiteral("endOffset"), visualRow * 500 + 137},
@@ -463,6 +464,7 @@ class F4DocumentSurfaceTests final : public QObject
 
 private slots:
     void initTestCase();
+    void orderedDocumentExtentLookupIsBounded();
     void documentLeavesStayOnPhysicalPixelGridAt175Percent();
     void documentMarkupIsAlwaysLiteral();
     void denseDocumentOpenPresentationTiming();
@@ -474,6 +476,7 @@ private slots:
     void shortEditorSelectionDoesNotScroll();
     void editorRectangularSelectionCoversEmptyRows();
     void editorBlockDragFeedbackDoesNotWaitForBackend();
+    void editorStreamDragFeedbackDoesNotWaitForBackend();
     void nativeDocumentModelLifetimeMatchesPhysicalPool();
     void standaloneMetadataDoesNotCarryRowPayload();
     void sameDocumentWindowsDoNotResetShellInteraction();
@@ -482,6 +485,14 @@ private slots:
     void streamSelectionStateKeepsBaseRowsAndSuffixPixelsStable();
     void nativeStyledRunMutationIgnoresStaleContentKey();
     void recenteredWindowReplacesEachSlotOnlyOnce();
+    void editorPageDownReusesOverlappingPoolSlots();
+    void styledRunPlacementReadsGrowLinearly();
+    void nativeEditorRowsStayInCpp();
+    void repeatedEditorPlacementDoesNotMoveViewport();
+    void editorPageNavigationWrapsPoolWithoutRebuildingRows();
+    void nativeRowMovesPreservePersistentIndexes();
+    void unselectedEditorRowsDoNotCreateSelectionSurfaces();
+    void inlineEditorTextUsesNaturalPhysicalBounds();
     void scrollbarLatestIntentAndLayoutEpochCommitAtomically();
     void homeEndRetiresQueuedScrollIntentBeforeForwarding();
     void homeEndKeepsPendingScrollWhenOverlayOwnsInput();
@@ -504,6 +515,7 @@ private slots:
     void middleButtonAutoScrollsStandaloneDocuments_data();
     void middleButtonAutoScrollsStandaloneDocuments();
     void middleButtonAutoScrollsEmbeddedTerminal();
+    void editorPointerEventsAreForwardedAsSemanticMouseActions_data();
     void editorPointerEventsAreForwardedAsSemanticMouseActions();
     void editorEdgeSelectionUsesCommittedSourceFragments();
     void fractionalPixelWheelCoalescesUntilAckAndPreservesAnchor();
@@ -634,6 +646,33 @@ void F4DocumentSurfaceTests::documentLeavesStayOnPhysicalPixelGridAt175Percent()
     const QString capturePath = qEnvironmentVariable("F4_DOCUMENT_PIXEL_CAPTURE");
     if (!capturePath.isEmpty())
         QVERIFY(capture.save(capturePath));
+}
+
+void F4DocumentSurfaceTests::orderedDocumentExtentLookupIsBounded()
+{
+    DocumentFixture fixture(documentScene(editorFrame(0, 60, 0, 1)));
+    QVERIFY(fixture.ready());
+    QTRY_VERIFY(fixture.surface->property("windowInitialized").toBool());
+    auto surface = fixture.engine.newQObject(fixture.surface);
+    auto lookup = surface.property("indexForExtent");
+    QVERIFY(lookup.isCallable());
+    auto rows = fixture.engine.evaluate(R"JS(
+        var extentReads = 0;
+        Array.from({length:4096}, (_,i) => ({
+            get visualRow() { ++extentReads; return i*2; }
+        }))
+    )JS");
+    QVERIFY2(!rows.isError(),qPrintable(rows.toString()));
+    for (const auto &pair : {qMakePair(8190.0,4095), qMakePair(8190.5,4095),
+                            qMakePair(8191.0,-1), qMakePair(-1.0,-1),
+                            qMakePair(101.0,-1), qMakePair(100.25,50)}) {
+        fixture.engine.globalObject().setProperty("extentReads",0);
+        const auto result = lookup.callWithInstance(surface,{QJSValue(pair.first),rows});
+        QVERIFY2(!result.isError(),qPrintable(result.toString()));
+        QCOMPARE(result.toInt(),pair.second);
+        const int reads = fixture.engine.globalObject().property("extentReads").toInt();
+        QVERIFY2(reads < 64,qPrintable(QString("extent lookup read %1 rows").arg(reads)));
+    }
 }
 
 void F4DocumentSurfaceTests::documentMarkupIsAlwaysLiteral()
@@ -1146,6 +1185,70 @@ void F4DocumentSurfaceTests::editorBlockDragFeedbackDoesNotWaitForBackend()
     QTRY_VERIFY(!fixture.surface->property("selectionCursorFrame").toMap().value("rectSelection").toBool());
 }
 
+void F4DocumentSurfaceTests::editorStreamDragFeedbackDoesNotWaitForBackend()
+{
+    auto frame = editorFrame(200, 60, 200, 1);
+    frame.insert("viewportColumns", 80);
+    auto rows = frame.value("windowRows").toList();
+    for (auto &value : rows) {
+        auto row = value.toMap();
+        row.insert("visualWidth", 40);
+        value = row;
+    }
+    frame.insert("windowRows", rows);
+    DocumentFixture fixture(documentScene(frame));
+    QVERIFY(fixture.ready());
+    QTRY_VERIFY(fixture.surface->property("windowInitialized").toBool());
+    const qreal height = fixture.surface->property("rowHeight").toReal();
+    const qreal cell = fixture.surface->property("terminalCellWidth").toReal();
+    const qreal inset = fixture.surface->property("textHorizontalInset").toReal();
+    auto send = [&](int row, int column, const QString &phase) {
+        QVariantMap point{{"x", inset + (column + 0.25) * cell}, {"y", height * (row + 0.5)},
+            {"button", int(Qt::LeftButton)}, {"buttons", phase == "release" ? 0 : int(Qt::LeftButton)},
+            {"modifiers", 0}};
+        return QMetaObject::invokeMethod(fixture.surface, "sendEditorMouse", Qt::DirectConnection,
+            Q_ARG(QVariant, point), Q_ARG(QVariant, phase),
+            Q_ARG(QVariant, phase == "move"), Q_ARG(QVariant, false));
+    };
+    QVERIFY(send(4, 3, "press"));
+    QElapsedTimer timer;
+    qint64 total = 0, worst = 0;
+    for (int i = 0; i < 500; ++i) {
+        const int row = 1 + i % 8;
+        timer.start();
+        QVERIFY(send(row, 5, "move"));
+        const auto selection = fixture.surface->property("selectionCursorFrame").toMap();
+        QVERIFY2(selection.value("selection").toBool(), "drag feedback waited for backend echo");
+        QCOMPARE(selection.value("selectionAnchorRow").toInt(), 204);
+        QCOMPARE(selection.value("selectionAnchorColumn").toInt(), 3);
+        QCOMPARE(selection.value("cursorAbsoluteRow").toInt(), 200 + row);
+        QCOMPARE(selection.value("cursorAbsoluteColumn").toInt(), 5);
+        const auto elapsed = timer.nsecsElapsed();
+        total += elapsed;
+        worst = qMax(worst, elapsed);
+    }
+    qInfo() << "STREAM_EDITOR mouse-to-selection synchronous us average" << total / 500.0 / 1000
+            << "max" << worst / 1000.0;
+    QVERIFY(send(6, 75, "release"));
+    QCOMPARE(fixture.surface->property("selectionCursorFrame").toMap().value("cursorAbsoluteColumn").toInt(), 40);
+    frame.insert("selection", true);
+    frame.insert("selectionAnchorRow", 204);
+    frame.insert("selectionAnchorColumn", 3);
+    frame.insert("cursorAbsoluteRow", 205);
+    frame.insert("cursorAbsoluteColumn", 5);
+    fixture.shell.setScene(documentScene(frame));
+    QCoreApplication::processEvents();
+    QCOMPARE(fixture.surface->property("selectionCursorFrame").toMap().value("cursorAbsoluteRow").toInt(), 206);
+    frame.insert("cursorAbsoluteRow", 206);
+    // The backend can snap a guessed cell column to a character boundary.
+    frame.insert("cursorAbsoluteColumn", 39);
+    fixture.shell.setScene(documentScene(frame));
+    QCoreApplication::processEvents();
+    frame.insert("selection", false);
+    fixture.shell.setScene(documentScene(frame));
+    QTRY_VERIFY(!fixture.surface->property("selectionCursorFrame").toMap().value("selection").toBool());
+}
+
 void F4DocumentSurfaceTests::nativeStyledRunMutationIgnoresStaleContentKey()
 {
     auto frame = editorFrame(0, 80, 0, 1);
@@ -1578,6 +1681,229 @@ void F4DocumentSurfaceTests::recenteredWindowReplacesEachSlotOnlyOnce()
                  QString("replace-once-new"));
     QCOMPARE(fixture.surface->property("poolSlotWriteCount").toInt(), 80);
     QCOMPARE(fixture.surface->property("displayedRows").toList(), frame.value("windowRows").toList());
+}
+
+void F4DocumentSurfaceTests::editorPageDownReusesOverlappingPoolSlots()
+{
+    DocumentFixture fixture(documentScene(editorFrame(0, 60, 20, 1)));
+    QVERIFY(fixture.ready());
+    QTRY_VERIFY(fixture.surface->property("windowInitialized").toBool());
+    const int firstSlot = fixture.surface->property("loadedSlotStart").toInt();
+    fixture.surface->setProperty("poolSlotWriteCount", 0);
+    fixture.shell.setScene(documentScene(editorFrame(20, 60, 40, 2)));
+    QTRY_COMPARE(fixture.surface->property("appliedWindowGeneration").toInt(), 2);
+    QCOMPARE(fixture.surface->property("loadedSlotStart").toInt(), firstSlot + 20);
+    QCOMPARE(fixture.surface->property("poolSlotWriteCount").toInt(), 40);
+}
+
+void F4DocumentSurfaceTests::styledRunPlacementReadsGrowLinearly()
+{
+    DocumentFixture fixture(documentScene(editorFrame(0, 60, 0, 1)));
+    QVERIFY(fixture.ready());
+    QTRY_VERIFY(fixture.surface->property("windowInitialized").toBool());
+    QQuickItem *row = nullptr;
+    QList<QQuickItem *> pending{fixture.surface};
+    while (!pending.isEmpty()) {
+        auto *item = pending.takeLast();
+        pending.append(item->childItems());
+        if (item->objectName() == "documentRowDelegate"
+                && item->property("loaded").toBool()
+                && item->property("index").toInt()
+                    == fixture.surface->property("loadedSlotStart").toInt()) {
+            row = item;
+            break;
+        }
+    }
+    QVERIFY(row);
+    const auto data = fixture.engine.evaluate(R"JS(
+        var runReads = 0;
+        var measuredRuns = Array.from({length:128}, () => ({text:"abc ", foreground:"#eeeeee"}));
+        var countedRuns = [];
+        for (let i = 0; i < measuredRuns.length; ++i)
+            Object.defineProperty(countedRuns, i, {get() { ++runReads; return measuredRuns[i]; }});
+        ({visualRow:0, runs:countedRuns})
+    )JS");
+    QVERIFY2(!data.isError(), qPrintable(data.toString()));
+    QVERIFY(row->setProperty("rowData", QVariant::fromValue(data)));
+    QCoreApplication::processEvents();
+    QVERIFY(!fixture.window->grabWindow().isNull());
+    const int reads = fixture.engine.globalObject().property("runReads").toInt();
+    qInfo() << "128 syntax runs indexed reads" << reads;
+    QVERIFY(reads >= 128);
+    QVERIFY2(reads < 128 * 16,
+             qPrintable(QString("128 runs required %1 indexed reads").arg(reads)));
+}
+
+void F4DocumentSurfaceTests::nativeEditorRowsStayInCpp()
+{
+    const auto frame = editorFrame(0, 60, 0, 1);
+    DocumentFixture fixture(documentScene(frame));
+    QVERIFY(fixture.ready());
+    QTRY_VERIFY(fixture.surface->property("windowInitialized").toBool());
+    auto *registry = fixture.shell.surfaceRegistry();
+    const auto publication = registry->documentMetadata().value("nativeWindowRevision").toULongLong();
+    const auto key = frame.value("id").toString();
+    const auto coordinates = registry->documentWindowCoordinates(key, publication).toList();
+    QCOMPARE(coordinates.size(), 60);
+    QCOMPARE(coordinates.first().toInt(), 0);
+    QCOMPARE(coordinates.last().toInt(), 59);
+    DocumentRowsModel model;
+    model.ensureCapacity(100);
+    QCOMPARE(registry->replaceDocumentWindow(&model, key, publication, 10, 0, 0, false, true), 60);
+    QCOMPARE(model.get(10).value("rowData"), frame.value("windowRows").toList().first());
+    model.commit();
+    QSignalSpy changes(&model, &QAbstractItemModel::dataChanged);
+    registry->applyDocument(editorFrame(20, 60, 20, 2), registry->documentRevision() + 1);
+    QVERIFY(!registry->documentWindowCoordinates(key, publication).isValid());
+    QCOMPARE(registry->replaceDocumentWindow(&model, key, publication, 0, 10, 70, false, true), -1);
+    QCOMPARE(model.get(10).value("rowData"), frame.value("windowRows").toList().first());
+    const auto nextPublication = registry->documentMetadata().value("nativeWindowRevision").toULongLong();
+    QCOMPARE(registry->replaceDocumentWindow(&model, key, nextPublication,
+                                              30, 10, 70, false, true), 40);
+    model.commit();
+    QVERIFY(!model.get(10).value("loaded").toBool());
+    QCOMPARE(model.get(10).value("rowData"), frame.value("windowRows").toList().first());
+    QCOMPARE(changes.size(), 2);
+    QCOMPARE(changes.first().at(2).value<QList<int>>(), QList<int>{DocumentRowsModel::LoadedRole});
+}
+
+void F4DocumentSurfaceTests::repeatedEditorPlacementDoesNotMoveViewport()
+{
+    DocumentFixture fixture(documentScene(editorFrame(0, 60, 20, 1)));
+    QVERIFY(fixture.ready());
+    QTRY_VERIFY(fixture.surface->property("windowInitialized").toBool());
+    auto *presenter = fixture.surface->findChild<QObject *>("documentWindowPresenter");
+    QVERIFY(presenter);
+    auto surface = fixture.engine.newQObject(presenter);
+    auto place = surface.property("placeAtExtent");
+    QVERIFY(place.isCallable());
+    QVERIFY(!place.callWithInstance(surface, {QJSValue(20), QJSValue(.25)}).isError());
+    QSignalSpy moved(fixture.list, SIGNAL(contentYChanged()));
+    QVERIFY(moved.isValid());
+    for (int i = 0; i < 20; ++i)
+        QVERIFY(!place.callWithInstance(surface, {QJSValue(20), QJSValue(.25)}).isError());
+    QCOMPARE(moved.size(), 0);
+}
+
+void F4DocumentSurfaceTests::editorPageNavigationWrapsPoolWithoutRebuildingRows()
+{
+    DocumentFixture fixture(documentScene(editorFrame(0, 60, 20, 1, 10000)));
+    QVERIFY(fixture.ready());
+    QTRY_VERIFY(fixture.surface->property("windowInitialized").toBool());
+    auto *model = fixture.surface->findChild<DocumentRowsModel *>();
+    QVERIFY(model);
+    const int capacity = model->rowCount();
+    QSignalSpy moves(model, &QAbstractItemModel::rowsMoved);
+    for (int page = 1; page <= 12; ++page) {
+        fixture.surface->setProperty("poolSlotWriteCount", 0);
+        fixture.shell.setScene(documentScene(editorFrame(page * 20, 60, page * 20 + 20,
+                                                         page + 1, 10000)));
+        QTRY_COMPARE(fixture.surface->property("appliedWindowGeneration").toInt(), page + 1);
+        QCOMPARE(fixture.surface->property("poolSlotWriteCount").toInt(), 40);
+        QCOMPARE(model->rowCount(), capacity);
+    }
+    QVERIFY(moves.size() > 0);
+}
+
+void F4DocumentSurfaceTests::nativeRowMovesPreservePersistentIndexes()
+{
+    DocumentRowsModel model;
+    model.ensureCapacity(10);
+    model.set(4, {{"loaded", true}, {"rowData", QVariantMap{{"text", "retained"}}}});
+    model.commit();
+    const QPersistentModelIndex item(model.index(4));
+    QSignalSpy changes(&model, &QAbstractItemModel::dataChanged);
+    QVERIFY(model.moveWindow(4, 2, 1));
+    QCOMPARE(item.row(), 1);
+    QCOMPARE(item.data(DocumentRowsModel::RowDataRole).toMap().value("text").toString(), QString("retained"));
+    QVERIFY(model.moveWindow(1, 2, 6));
+    QCOMPARE(item.row(), 6);
+    QCOMPARE(item.data(DocumentRowsModel::RowDataRole).toMap().value("text").toString(), QString("retained"));
+    QCOMPARE(changes.size(), 0);
+    QCOMPARE(model.rowCount(), 10);
+    QVERIFY(!model.moveWindow(8, 3, 0));
+}
+
+void F4DocumentSurfaceTests::unselectedEditorRowsDoNotCreateSelectionSurfaces()
+{
+    auto frame = editorFrame(0, 60, 0, 1);
+    DocumentFixture fixture(documentScene(frame));
+    QVERIFY(fixture.ready());
+    QTRY_VERIFY(fixture.surface->property("windowInitialized").toBool());
+    auto countClips = [&fixture]() {
+        int count = 0;
+        QList<QQuickItem *> pending{fixture.surface};
+        while (!pending.isEmpty()) {
+            auto *item = pending.takeLast();
+            pending.append(item->childItems());
+            if (item->objectName() == "documentEditorSelectionClip") ++count;
+        }
+        return count;
+    };
+    QCOMPARE(countClips(), 0);
+    frame.insert("selection", true);
+    frame.insert("selectionAnchorRow", 0);
+    frame.insert("selectionAnchorColumn", 0);
+    fixture.shell.setScene(documentScene(frame));
+    QTRY_VERIFY(countClips() > 0);
+    frame.insert("selection", false);
+    fixture.shell.setScene(documentScene(frame));
+    QTRY_COMPARE(countClips(), 0);
+}
+
+void F4DocumentSurfaceTests::inlineEditorTextUsesNaturalPhysicalBounds()
+{
+    auto frame = editorFrame(0, 60, 0, 1);
+    frame.insert("viewportColumns", 80);
+    frame.insert("defaultBackground", "#232323");
+    auto rows = frame.value("windowRows").toList();
+    auto first = rows.first().toMap();
+    first.remove("text");
+    first.insert("runs", QVariantList{
+        QVariantMap{{"text", "  <b>&\""}, {"foreground", "#39dc85"}, {"background", "#232323"}},
+        QVariantMap{{"text", " tail "}, {"foreground", "#ffffff"}, {"background", "#232323"}, {"underline", true}, {"bold", true}},
+        QVariantMap{{"text", QString(256, ' ')}, {"foreground", "#ffffff"}, {"background", "#232323"}},
+    });
+    rows[0] = first;
+    frame.insert("windowRows", rows);
+    DocumentFixture fixture(documentScene(frame));
+    QVERIFY(fixture.ready());
+    QTRY_VERIFY(fixture.surface->property("windowInitialized").toBool());
+    QTest::qWait(50);
+    QQuickItem *text = nullptr;
+    QList<QQuickItem *> pending{fixture.surface};
+    while (!pending.isEmpty()) {
+        auto *item = pending.takeLast();
+        pending.append(item->childItems());
+        if (item->objectName() == "documentPlainText" && item->isVisible()
+                && item->property("text").toString().contains("&lt;b&gt;")) {
+            text = item;
+            break;
+        }
+    }
+    QVERIFY(text);
+    const auto markup = text->property("text").toString();
+    QVERIFY(markup.contains("&nbsp;&nbsp;&lt;b&gt;&amp;&quot;"));
+    QVERIFY(markup.contains("<u><b>tail&nbsp;</b></u>")
+            || markup.contains("<u><b>&nbsp;tail&nbsp;</b></u>"));
+    QVERIFY(markup.size() < 300);
+    QCOMPARE(fixture.shell.surfaceRegistry()->document().value("windowRows").toList().first(), QVariant(first));
+    const qreal dpr = fixture.window->devicePixelRatio();
+    QVERIFY2(text->width() <= text->implicitWidth() + 1.0 / dpr + .001,
+             qPrintable(QString("inline width %1, natural width %2").arg(text->width()).arg(text->implicitWidth())));
+    const auto origin = text->mapToItem(fixture.window->contentItem(), QPointF());
+    const auto physical = origin * dpr;
+    QVERIFY(qAbs(physical.x() - qRound64(physical.x())) < .001);
+    QVERIFY(qAbs(physical.y() - qRound64(physical.y())) < .001);
+    QVERIFY(qAbs(text->width() * dpr - qRound64(text->width() * dpr)) < .001);
+    QCOMPARE(text->mapToItem(fixture.window->contentItem(), QPointF(1, 0)) - origin, QPointF(1, 0));
+    QCOMPARE(text->mapToItem(fixture.window->contentItem(), QPointF(0, 1)) - origin, QPointF(0, 1));
+    const QString output = qEnvironmentVariable("F4_INLINE_PIXEL_CAPTURE");
+    if (!output.isEmpty()) {
+        const auto image = fixture.window->grabWindow();
+        QVERIFY(image.save(output));
+        QVERIFY(image.copy(0, 0, qMin(700, image.width()), qMin(300, image.height())).save(output + ".detail.png"));
+    }
 }
 
 void F4DocumentSurfaceTests::denseDocumentOpenPresentationTiming()
@@ -2104,7 +2430,11 @@ void F4DocumentSurfaceTests::closingDocumentDoesNotReprojectItsRows()
 void F4DocumentSurfaceTests::editorSelectionSurvivesDelegateDetachment()
 {
     QStringList warnings;
-    DocumentFixture fixture(documentScene(editorFrame(0, 120, 0, 1)));
+    QVariantMap frame = editorFrame(0, 120, 0, 1);
+    frame.insert("selection", true);
+    frame.insert("selectionAnchorRow", 0);
+    frame.insert("selectionAnchorColumn", 0);
+    DocumentFixture fixture(documentScene(frame));
     QVERIFY(fixture.ready());
     QTRY_VERIFY(fixture.surface->property("windowInitialized").toBool());
     QTest::qWait(80);
@@ -2547,9 +2877,22 @@ void F4DocumentSurfaceTests::finalViewportAlignsLastRowBelowFractionalBottom()
                    + fixture.list->height() + 0.01);
 }
 
+void F4DocumentSurfaceTests::editorPointerEventsAreForwardedAsSemanticMouseActions_data()
+{
+    QTest::addColumn<bool>("compactRows");
+    QTest::addColumn<int>("firstRow");
+    QTest::newRow("legacy-row-maps") << false << 0;
+    QTest::newRow("native-compact-rows") << true << 0;
+    QTest::newRow("native-paged-rows") << true << 200;
+}
+
 void F4DocumentSurfaceTests::editorPointerEventsAreForwardedAsSemanticMouseActions()
 {
-    QVariantMap frame = editorFrame(0, 40, 0, 1);
+    QFETCH(bool, compactRows);
+    QFETCH(int, firstRow);
+    QVariantMap frame = editorFrame(firstRow, 40, firstRow, 1);
+    if (compactRows)
+        frame.insert("viewportColumns", 80);
     frame.insert("documentKey", "source-fragment-editor");
     frame.insert("layoutRevision", 9);
     frame.insert("scrollLeft", 17);
@@ -2578,7 +2921,7 @@ void F4DocumentSurfaceTests::editorPointerEventsAreForwardedAsSemanticMouseActio
     QCOMPARE(press.value(QStringLiteral("row")).toInt(), 1);
     QCOMPARE(press.value("documentKey").toString(), QString("source-fragment-editor"));
     QCOMPARE(press.value("layoutRevision").toInt(), 9);
-    QCOMPARE(press.value("rowOffset").toInt(), 537);
+    QCOMPARE(press.value("rowOffset").toInt(), (firstRow + 1) * 500 + 37);
     QCOMPARE(press.value("scrollLeft").toInt(), 17);
     QVERIFY(!fixture.surface->property("windowRequestPending").toBool());
     QCOMPARE(fixture.surface->property("requestedGeneration").toInt(), pendingGeneration);
@@ -2586,6 +2929,8 @@ void F4DocumentSurfaceTests::editorPointerEventsAreForwardedAsSemanticMouseActio
     QCOMPARE(fixture.shell.actions.constLast().value(QStringLiteral("phase")),
              QStringLiteral("release"));
     QVariantMap canceled = editorFrame(180, 40, 200, pendingGeneration);
+    if (compactRows)
+        canceled.insert("viewportColumns", 80);
     canceled.insert("documentKey", "source-fragment-editor");
     canceled.insert("layoutRevision", 9);
     canceled.insert("scrollLeft", 17);
@@ -4662,7 +5007,8 @@ void F4DocumentSurfaceTests::shortEditorSelectionDoesNotScroll()
             pending.append(item->childItems());
             if (item->objectName() == "documentRowDelegate"
                     && item->property("loaded").toBool()
-                    && item->property("rowData").toMap().value("visualRow").toInt() == 0)
+                    && item->property("index").toInt()
+                        == fixture.surface->property("loadedSlotStart").toInt())
                 return item->mapToItem(fixture.list, QPointF()).y();
         }
         return -99999.0;
