@@ -4,6 +4,8 @@ Code=fi
 Author=f4 Team
 
 [Strings]
+Action.File.ContextMenu=Tiedoston pikavalikko…
+Action.File.ContextMenu.Desc=Näytä valittujen tiedostojen pikavalikko
 VisRen.Menu=Tiedostojen &visuaalinen nimeäminen
 VisRen.Title=Tiedostojen visuaalinen nimeäminen
 VisRen.HostUnsupported=Tämä F4-isäntä ei tue VisRen UI -siltaa.

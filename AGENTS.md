@@ -1,5 +1,17 @@
 # Local workspace instructions
 
+## Canonical macOS workspace
+
+- `/Users/zoin/Documents/f4-zoin` on branch `zoin` is the primary macOS
+  checkout. Its `.git` owns the shared repository; Android and QRhi/Metal stay
+  in their separate experimental worktrees.
+- Build the local Go executable as `f4-zoin` and the matching Qt host in
+  `qt/host/build-dev`. Launch with `./run-f4.command`, which resolves this
+  checkout relative to itself and uses the normal application profile.
+- Do not recreate or launch from retired `qt-run-current` or `Documents/f4`
+  checkouts. Local dependency packages live in `.codex-build/dependencies`;
+  migration recovery material lives in ignored `.local-archive`.
+
 ## Mandatory portable-build policy
 
 - Before changing, running, debugging, or reviewing any build, packaging,
@@ -130,6 +142,7 @@ internal/        # everything the application is, in layers
   plughost/      #   layer 2: the plugin host and its registries
   gui/           #   layer 2: the GUI backends
   fileops/       #   layer 1: file operations and the operation queue
+  filemenu/      #   layer 1: isolated native desktop file menu helpers
   update/        #   layer 1: the updater
   fusefs/        #   layer 1: FUSE mounting
   textlayout/    #   layer 1: text layout and wrapping
@@ -229,7 +242,9 @@ artifacts/       # build artifacts
 | `.ai-factory/ARCHITECTURE.md` | Architecture pattern, boundaries and dependency rules |
 | `.ai-factory/rules/base.md` | Detected code conventions: naming, errors, logging, tests |
 | `.ai-factory/config.yaml` | AI Factory configuration: paths, language, git workflow |
-| `.mcp.json` | MCP servers for this project: the gopls Go language server |
+| `.agents/skills/` | Project-local AI skills, including the Qt Company skill pack pinned in `qt-agent-skills-source.md` |
+| `.codex/config.toml` | Project-scoped Codex MCP configuration for Qt documentation lookup |
+| `.mcp.json` | MCP servers for compatible clients: gopls and Qt documentation lookup |
 
 ## Agent Rules
 
@@ -258,6 +273,12 @@ artifacts/       # build artifacts
 - The server follows edits on its own; there is nothing to rebuild after a rebase.
 - Grep stays the right tool for text that is not a symbol: comments, error
   strings, build tags, config keys.
+
+### Qt documentation MCP
+
+- The project-scoped `qt-docs` MCP server provides current Qt API documentation
+  lookup from `https://qt-docs-mcp.qt.io/mcp`; use it when current Qt API details
+  need confirmation.
 
 ### Where new code goes
 

@@ -4,6 +4,8 @@ Code=he
 Author=f4 Team
 
 [Strings]
+Action.File.ContextMenu=תפריט הקשר לקבצים…
+Action.File.ContextMenu.Desc=הצגת תפריט ההקשר של הקבצים שנבחרו
 VisRen.Menu=כלי שינוי שם ויזוא&לי
 VisRen.Title=כלי שינוי שם ויזואלי
 VisRen.HostUnsupported=מארח F4 זה אינו מספק גשר ממשק משתמש VisRen.

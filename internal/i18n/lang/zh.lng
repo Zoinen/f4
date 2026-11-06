@@ -4,6 +4,8 @@ Code=zh
 Author=f4 Team
 
 [Strings]
+Action.File.ContextMenu=文件上下文菜单…
+Action.File.ContextMenu.Desc=显示所选文件的上下文菜单
 VisRen.Menu=可视化文件重命名(&V)
 VisRen.Title=可视化文件重命名
 VisRen.HostUnsupported=此 F4 主机不提供 VisRen UI 桥接。

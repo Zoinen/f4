@@ -4,6 +4,8 @@ Code=lv
 Author=f4 Team
 
 [Strings]
+Action.File.ContextMenu=Faila kontekstizvēlne…
+Action.File.ContextMenu.Desc=Parādīt atlasīto failu kontekstizvēlni
 VisRen.Menu=Vizuālā &pārdēvēšana
 VisRen.Title=Vizuālā pārdēvēšana
 VisRen.HostUnsupported=Šī F4 versija nenodrošina VisRen saskarni.

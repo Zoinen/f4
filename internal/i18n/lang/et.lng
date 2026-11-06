@@ -4,6 +4,8 @@ Code=et
 Author=f4 Team
 
 [Strings]
+Action.File.ContextMenu=Faili kontekstimenüü…
+Action.File.ContextMenu.Desc=Kuva valitud failide kontekstimenüü
 VisRen.Menu=Visuaalne &ümbernimetamine
 VisRen.Title=Visuaalne ümbernimetamine
 VisRen.HostUnsupported=See f4 versioon ei toeta VisReni liidest.

@@ -4,6 +4,8 @@ Code=tr
 Author=f4 Team
 
 [Strings]
+Action.File.ContextMenu=Dosya bağlam menüsü…
+Action.File.ContextMenu.Desc=Seçili dosyaların bağlam menüsünü göster
 VisRen.Menu=&Görsel Dosya Yeniden Adlandırma
 VisRen.Title=Görsel Dosya Yeniden Adlandırma
 VisRen.HostUnsupported=Bu F4 ana makinesi VisRen arayüzünü desteklemiyor.

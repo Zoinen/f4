@@ -17,6 +17,7 @@ import (
 	"github.com/unxed/f4/internal/dialog"
 	"github.com/unxed/f4/internal/editor"
 	"github.com/unxed/f4/internal/filegroups"
+	"github.com/unxed/f4/internal/filemenu"
 	"github.com/unxed/f4/internal/fileops"
 	"github.com/unxed/f4/internal/fusefs"
 	"github.com/unxed/f4/internal/gui"
@@ -345,6 +346,9 @@ func Main() {
 	}
 	defer winshell.ShutdownDefaultClient()
 
+	if len(os.Args) == 2 && os.Args[1] == filemenu.HelperFlag {
+		os.Exit(filemenu.Serve(os.Stdin, os.Stdout))
+	}
 	vtui.AppName = "f4"
 	vtui.AppID = "org.unxed.f4"
 	setProcessName()
@@ -456,11 +460,14 @@ func Main() {
 	navtrace.NavigationBenchmarkEmit("", "trace.ready", "go.main",
 		"stderr", os.Stderr.Name())
 	vtui.DebugLog("MAIN: Starting with args: %v", os.Args)
+	config.LoadConfig() // Load config early to apply GUI font settings
+	filemenu.EnablePreparation()
 
 	defer func() {
 		terminalDNDStop()
 		macro.MacroMgr.RunExitEvents()
 		SaveSession() // Гарантирует сохранение размеров и путей при любом выходе
+		filemenu.Close()
 		if plughost.GlobalPluginManager != nil {
 			plughost.GlobalPluginManager.CloseAll()
 		}
@@ -1412,7 +1419,9 @@ func setupUI(firstRunStyle func() (string, bool)) {
 	terminalDNDStop = startTerminalDNDBinding(terminal.RealDNDClient(), vtui.Far2lNegotiated)
 	panel.EnableTreeExpandPersistence(filepath.Join(config.GetF4ConfigDir(), "tree_expanded.txt"))
 	previousEventFilter := vtui.FrameManager.EventFilter
+	darwinMouseModifiers := darwinMouseModifierTracker{}
 	vtui.FrameManager.EventFilter = func(e *vtinput.InputEvent) bool {
+		darwinMouseModifiers.normalize(e, vtui.ActiveBackend())
 		// INPUT_DND (unxed/f4#1628) is the one far2l "f2l" event
 		// vtinput.ParseFar2lAPC does not already translate into a plain
 		// key/mouse/resize InputEvent of its own, so it is still sitting

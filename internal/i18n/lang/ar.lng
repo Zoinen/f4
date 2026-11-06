@@ -4,6 +4,8 @@ Code=ar
 Author=f4 Team
 
 [Strings]
+Action.File.ContextMenu=قائمة سياق الملف…
+Action.File.ContextMenu.Desc=عرض قائمة السياق للملفات المحددة
 VisRen.Menu=أداة إعادة التسمية ال&بصرية
 VisRen.Title=أداة إعادة التسمية البصرية
 VisRen.HostUnsupported=هذا المضيف لـ F4 لا يوفر جسر واجهة المستخدم VisRen.
