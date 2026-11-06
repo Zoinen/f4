@@ -228,7 +228,9 @@ artifacts/       # build artifacts
 | `.ai-factory/ARCHITECTURE.md` | Architecture pattern, boundaries and dependency rules |
 | `.ai-factory/rules/base.md` | Detected code conventions: naming, errors, logging, tests |
 | `.ai-factory/config.yaml` | AI Factory configuration: paths, language, git workflow |
-| `.mcp.json` | MCP servers for this project: the gopls Go language server |
+| `.agents/skills/` | Project-local AI skills, including the Qt Company skill pack pinned in `qt-agent-skills-source.md` |
+| `.codex/config.toml` | Project-scoped Codex MCP configuration for Qt documentation lookup |
+| `.mcp.json` | MCP servers for compatible clients: gopls and Qt documentation lookup |
 
 ## Agent Rules
 
@@ -257,6 +259,12 @@ artifacts/       # build artifacts
 - The server follows edits on its own; there is nothing to rebuild after a rebase.
 - Grep stays the right tool for text that is not a symbol: comments, error
   strings, build tags, config keys.
+
+### Qt documentation MCP
+
+- The project-scoped `qt-docs` MCP server provides current Qt API documentation
+  lookup from `https://qt-docs-mcp.qt.io/mcp`; use it when current Qt API details
+  need confirmation.
 
 ### Where new code goes
 
