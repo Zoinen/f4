@@ -47,6 +47,7 @@ func (fp *FileSystemPanel) AllEntries() []*FileEntry {
 // one. Directory loads go through here instead of assigning fp.Entries, so a
 // load cannot overwrite the rows an active filter is holding back.
 func (fp *FileSystemPanel) setEntries(entries []*FileEntry) {
+	fp.restoreDirectorySizes(entries)
 	fp.entriesRevision++
 	if fp.autoFilterOn || fp.fileFieldFilterActive {
 		fp.unfilteredEntries = entries
@@ -59,6 +60,7 @@ func (fp *FileSystemPanel) setEntries(entries []*FileEntry) {
 // addEntries appends rows to the complete list. A chunked load calls it once
 // per chunk, so the visible list is re-derived per chunk rather than per row.
 func (fp *FileSystemPanel) addEntries(entries ...*FileEntry) {
+	fp.restoreDirectorySizes(entries)
 	fp.entriesRevision++
 	if fp.autoFilterOn || fp.fileFieldFilterActive {
 		fp.unfilteredEntries = append(fp.unfilteredEntries, entries...)

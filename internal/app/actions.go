@@ -2588,13 +2588,15 @@ func actionCalcDirSize(pf *panel.PanelsFrame, fsp *panel.FileSystemPanel, idx in
 	basePath := fsp.Vfs.GetPath()
 
 	var targetPath = fsp.Vfs.Join(basePath, name)
+	source := fsp.Vfs
 	actionRunSizeScan(pf, fsp,
 		func(ctx context.Context, cb vfs.ScanCallback) (vfs.OpStats, error) {
-			return vfs.CalculateStats(ctx, fsp.Vfs, targetPath, []string{""}, cb)
+			return fsp.CalculateDirectorySize(ctx, source, targetPath, cb)
 		},
 		func(totalStats vfs.OpStats) {
 			entry.Size = totalStats.FilesSize(config.App.DirSizeCountsFolders)
 			entry.SizeCalculated = true
+			entry.SizeApproximate = false
 			// The size lands in the size column and nothing is said about it: a
 			// message that has to be waited out or dismissed was not wanted
 			// (f4#1795). Only a number that is a lower bound is announced, since
@@ -2634,12 +2636,13 @@ func actionCalcDirSizes(pf *panel.PanelsFrame, fsp *panel.FileSystemPanel, entri
 		return
 	}
 	basePath := fsp.Vfs.GetPath()
+	source := fsp.Vfs
 	results := make([]vfs.OpStats, len(entries))
 	actionRunSizeScan(pf, fsp,
 		func(ctx context.Context, cb vfs.ScanCallback) (vfs.OpStats, error) {
 			var total vfs.OpStats
 			for i, entry := range entries {
-				stats, err := vfs.CalculateStats(ctx, fsp.Vfs, fsp.Vfs.Join(basePath, entry.Name), []string{""}, cb)
+				stats, err := fsp.CalculateDirectorySize(ctx, source, source.Join(basePath, entry.Name), cb)
 				if err != nil {
 					return total, err
 				}
@@ -2659,6 +2662,7 @@ func actionCalcDirSizes(pf *panel.PanelsFrame, fsp *panel.FileSystemPanel, entri
 			for i, entry := range entries {
 				entry.Size = results[i].FilesSize(config.App.DirSizeCountsFolders)
 				entry.SizeCalculated = true
+				entry.SizeApproximate = false
 			}
 			if note := unknownSizeNote(total); note != "" {
 				toast.Show(note, 5*time.Second)
@@ -2692,6 +2696,7 @@ func actionCalcTempPanelSize(pf *panel.PanelsFrame, fsp *panel.FileSystemPanel, 
 
 func actionCalcPanelSize(pf *panel.PanelsFrame, fsp *panel.FileSystemPanel) {
 	basePath := fsp.Vfs.GetPath()
+	source := fsp.Vfs
 	var names []string
 	for _, entry := range fsp.AllEntries() {
 		if entry != nil && entry.Name != ".." {
@@ -2700,7 +2705,7 @@ func actionCalcPanelSize(pf *panel.PanelsFrame, fsp *panel.FileSystemPanel) {
 	}
 	actionRunSizeScan(pf, fsp,
 		func(ctx context.Context, cb vfs.ScanCallback) (vfs.OpStats, error) {
-			return vfs.CalculateStats(ctx, fsp.Vfs, basePath, names, cb)
+			return fsp.CalculateDirectorySizes(ctx, source, basePath, names, cb)
 		},
 		func(totalStats vfs.OpStats) {
 			if fsp.Vfs.GetPath() != basePath {

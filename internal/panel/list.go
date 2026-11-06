@@ -48,6 +48,7 @@ type FileEntry struct {
 	Selected                bool
 	PrevSelected            bool // snapshot of Selected taken by SaveSelection; swapped in by RestoreSelection (Ctrl+M)
 	SizeCalculated          bool
+	SizeApproximate         bool // restored from an earlier recursive scan
 	sourceOrder             uint64
 	FileFields              map[string]extui.FileFieldValue
 	FileFieldsComplete      bool
@@ -811,6 +812,8 @@ type FileSystemPanel struct {
 	SortSelectedFirst bool
 
 	lastDirMTime time.Time
+	sizeCacheMu  sync.Mutex
+	sizeCache    map[directorySizeKey]map[string]directorySize
 
 	isCheckingRefresh bool
 	currentTitle      string
@@ -1056,6 +1059,7 @@ func (fp *FileSystemPanel) freshDirectoryEntries(items []vfs.VFSItem, showUpEntr
 		fp.applyPersistentSelection(entry, filesystem, path)
 		entries = append(entries, entry)
 	}
+	fp.restoreDirectorySizesFor(filesystem, path, entries, config.App.DirSizeCountsFolders)
 	fp.sortCatalogEntries(entries, time.Now())
 	return entries
 }
@@ -3791,6 +3795,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 	// Background directory work must use one immutable settings/renderer
 	// snapshot; tests and runtime settings can replace the globals meanwhile.
 	loadSyncPanel := config.App.SyncPanelLoad || keepEntries
+	loadSizeCountsFolders := config.App.DirSizeCountsFolders
 	loadShowHidden := config.App.ShowHiddenFiles
 	loadFrames := vtui.FrameManager
 	if benchmark != nil {
@@ -3968,6 +3973,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				return
 			}
 			previewEntries := fileEntriesFromItems(chunk, loadShowHidden, loadRevealName)
+			fp.restoreDirectorySizesFor(loadVFS, path, previewEntries, loadSizeCountsFolders)
 			if len(previewEntries) == 0 || ctx.Err() != nil {
 				return
 			}
@@ -4049,6 +4055,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				return
 			}
 			windowEntries := fileEntriesFromItems(window.Entries, loadShowHidden, loadRevealName)
+			fp.restoreDirectorySizesFor(loadVFS, path, windowEntries, loadSizeCountsFolders)
 			target := loadPendingSelection
 			targetFound := target == "" || target == ".." && showUpEntry
 			if !targetFound {
@@ -4141,6 +4148,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				return
 			}
 			preSorted := false
+			fp.restoreDirectorySizesFor(loadVFS, path, newEntries, loadSizeCountsFolders)
 			if authoritativeBase && len(newEntries) > 1 {
 				sortStartedNs := navtrace.NavigationBenchmarkMonotonicNs()
 				sorter := FileSystemPanel{
@@ -4438,6 +4446,9 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 						continue
 					}
 					entry := byName[item.Name]
+					if entry.IsDir && entry.SizeCalculated {
+						item.Size = entry.Size
+					}
 					entry.VFSItem = item
 				}
 				if fp.GroupBy != GroupNone {
@@ -4636,6 +4647,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 					fp.applyPersistentSelection(entry, loadVFS, path)
 					newEntries = append(newEntries, entry)
 				}
+				fp.restoreDirectorySizesFor(loadVFS, path, newEntries, loadSizeCountsFolders)
 				fp.sortCatalogEntries(newEntries, time.Now())
 				if fp.autoFilterOn {
 					// A same-directory refresh keeps the filter open. Replace its

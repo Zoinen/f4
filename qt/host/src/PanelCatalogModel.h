@@ -20,6 +20,7 @@ public:
     };
 
     bool rowLoaded(int row) const;
+    bool hasMetadataViewport() const;
     int entryCount() const;
     QVariantMap entryAt(int row) const;
     bool setEntry(int row, const QVariant &entry);
@@ -60,6 +61,12 @@ public:
     qulonglong metadataRevision = 0;
     int metadataRequestOffset = -1;
     int metadataRequestLimit = 0;
+    // Actual painted range survives metadata-only refreshes. Cursor fallback
+    // ranges must never replace it, and another catalog cannot inherit it.
+    QString metadataViewportPath;
+    qulonglong metadataViewportCatalogRevision = 0;
+    int metadataViewportFirst = -1;
+    int metadataViewportLast = -1;
     int metadataVisibleFirst = -1;
     int metadataVisibleLast = -1;
     int metadataUrgentBudget = 0;

@@ -1,5 +1,13 @@
 #include "PanelCatalogModel.h"
 
+bool PanelCatalogModel::hasMetadataViewport() const
+{
+    return metadataViewportFirst >= 0
+        && metadataViewportLast >= metadataViewportFirst
+        && metadataViewportPath == currentPath
+        && metadataViewportCatalogRevision == catalogRevision;
+}
+
 bool PanelCatalogModel::rowLoaded(int row) const
 {
     return !entryAt(row).value(QStringLiteral("entryId")).toString().isEmpty();

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"github.com/unxed/f4/internal/cmdline"
 	"github.com/unxed/f4/internal/config"
-	"github.com/unxed/f4/internal/fileops"
 	"github.com/unxed/f4/internal/i18n"
 	"github.com/unxed/f4/internal/macro"
 	"github.com/unxed/f4/internal/media"
@@ -1284,6 +1283,9 @@ func (fp *FileSystemPanel) semanticFingerprintsForEntries(entries []*FileEntry) 
 		if entry.SizeCalculated {
 			metadataFlags |= 1 << 2
 		}
+		if entry.SizeApproximate {
+			metadataFlags |= 1 << 4
+		}
 		// A known empty file and a not-yet-enriched base row both carry Size=0.
 		// Keep that distinction in MetadataRevision so the later zero-byte
 		// enrichment invalidates an in-flight provisional metadata snapshot.
@@ -1633,11 +1635,12 @@ func (fp *FileSystemPanel) semanticStaticPanelData(sourceKind string) *semanticP
 }
 
 type semanticPanelMetadataEntry struct {
-	index          int
-	entryID        string
-	logicalPath    string
-	item           vfs.VFSItem
-	sizeCalculated bool
+	index           int
+	entryID         string
+	logicalPath     string
+	item            vfs.VFSItem
+	sizeCalculated  bool
+	sizeApproximate bool
 }
 
 type semanticPanelMetadataSnapshot struct {
@@ -1703,11 +1706,12 @@ func (fp *FileSystemPanel) publishSemanticMetadataSnapshot(panelID string, baseE
 	for index, entry := range fp.Entries {
 		base := baseEntries[index]
 		snapshot.entries = append(snapshot.entries, semanticPanelMetadataEntry{
-			index:          index,
-			entryID:        base.EntryID,
-			logicalPath:    base.Path,
-			item:           entry.VFSItem,
-			sizeCalculated: entry.SizeCalculated,
+			index:           index,
+			entryID:         base.EntryID,
+			logicalPath:     base.Path,
+			item:            entry.VFSItem,
+			sizeCalculated:  entry.SizeCalculated,
+			sizeApproximate: entry.SizeApproximate,
 		})
 		if !entry.IsDir {
 			snapshot.totalSize += entry.Size
@@ -1793,7 +1797,7 @@ func BuildPanelCatalogMetadataChunk(panelID, path string, catalogRevision, metad
 		if highlightStyleID != "" {
 			chunk.HighlightStyles[highlightStyleID] = highlightStyle
 		}
-		entry := FileEntry{VFSItem: source.item, SizeCalculated: source.sizeCalculated}
+		entry := FileEntry{VFSItem: source.item, SizeCalculated: source.sizeCalculated, SizeApproximate: source.sizeApproximate}
 		mtimeNanos := semantic.SemanticMTimeNanos(source.item.MTime)
 		chunk.Entries = append(chunk.Entries, extui.FileEntryMetadataModel{
 			Index:            source.index,
@@ -2953,7 +2957,7 @@ func semanticFileSize(entry *FileEntry) string {
 	}
 	if entry.IsDir {
 		if entry.SizeCalculated {
-			return fileops.FormatIntWithSpaces(entry.Size)
+			return guiSizeText(entry.Size, entry.SizeApproximate)
 		}
 		if entry.Name == ".." {
 			return i18n.Msg("Panel.UpDir")
@@ -2964,7 +2968,7 @@ func semanticFileSize(entry *FileEntry) string {
 	if size < 0 {
 		return ""
 	}
-	return fileops.FormatIntWithSpaces(size)
+	return guiSizeText(size, false)
 }
 
 func sortModeName(mode SortMode) string {

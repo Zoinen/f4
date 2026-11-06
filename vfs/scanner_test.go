@@ -449,3 +449,62 @@ func TestOpStatsFilesSize(t *testing.T) {
 		t.Fatalf("with folders: got %d, want 120", got)
 	}
 }
+
+func TestCalculateStatsDirectorySizesUsesSingleGenericWalk(t *testing.T) {
+	root := t.TempDir()
+	child := filepath.Join(root, "child")
+	if err := os.Mkdir(child, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(child, "file"), []byte("abc"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	fs := &mockFastVFS{OSVFS: *NewOSVFS(root)}
+	sizes := make(map[string]int64)
+	stats, err := CalculateStatsWithOptions(context.Background(), fs, root, []string{""}, ScanOptions{
+		FollowSymlinkDirs: true,
+		OnDirectorySize: func(path string, stats OpStats) {
+			if _, exists := sizes[path]; exists {
+				t.Fatalf("directory reported twice: %q", path)
+			}
+			sizes[path] = stats.Bytes
+		},
+	}, nil)
+	if err != nil || fs.scanCalled || stats.Bytes != 3 || len(sizes) != 2 || sizes[root] != 3 || sizes[child] != 3 {
+		t.Fatalf("scan stats=%+v err=%v fast=%v sizes=%v", stats, err, fs.scanCalled, sizes)
+	}
+}
+
+type unreadableSizeVFS struct {
+	VFS
+	blocked string
+}
+
+func (v *unreadableSizeVFS) ReadDir(ctx context.Context, path string, cb func([]VFSItem)) error {
+	if path == v.blocked {
+		return os.ErrPermission
+	}
+	return v.VFS.ReadDir(ctx, path, cb)
+}
+
+func TestCalculateStatsDirectorySizesSkipsIncompleteSubtrees(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"blocked", "empty"} {
+		if err := os.Mkdir(filepath.Join(root, name), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fs := &unreadableSizeVFS{VFS: NewOSVFS(root), blocked: filepath.Join(root, "blocked")}
+	sizes := make(map[string]int64)
+	stats, err := CalculateStatsWithOptions(context.Background(), fs, root, []string{""}, ScanOptions{
+		OnDirectorySize: func(path string, stats OpStats) { sizes[path] = stats.Bytes },
+	}, nil)
+	// Historical partial totals still return successfully, but neither the
+	// unreadable child nor its parent may supply a cached size.
+	if err != nil || stats.Dirs != 3 || len(sizes) != 1 {
+		t.Fatalf("stats=%+v err=%v sizes=%v", stats, err, sizes)
+	}
+	if size, ok := sizes[filepath.Join(root, "empty")]; !ok || size != 0 {
+		t.Fatalf("completed empty folder missing: %v", sizes)
+	}
+}

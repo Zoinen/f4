@@ -82,6 +82,10 @@ type FileIdentifier interface {
 // path); consumers that want find/far2l-style semantics should flip
 // the flags explicitly.
 type ScanOptions struct {
+	// OnDirectorySize reports completed subtrees during the same walk. It
+	// excludes inaccessible, cancelled and unknown-size subtrees. FastScanner
+	// cannot provide per-directory results, so this opts into the generic walk.
+	OnDirectorySize func(path string, stats OpStats)
 	// FollowSymlinkDirs decides how symlinks that resolve to a
 	// directory are treated. true (default via plain CalculateStats):
 	// recurse into the target — same tree walked twice if the link
@@ -130,7 +134,7 @@ func CalculateStatsWithOptions(ctx context.Context, v VFS, basePath string, name
 	// A scan is one operation: one refused password ends elevation for all
 	// of it (f4#1998).
 	ctx = WithElevationScope(ctx)
-	if opts.FollowSymlinkDirs {
+	if opts.FollowSymlinkDirs && opts.OnDirectorySize == nil {
 		// Historical path — try the FastScanner shortcut for VFSes
 		// that implement it (they can offload the walk to the server).
 		if fs, ok := v.(FastScanner); ok {
@@ -154,11 +158,16 @@ type inodeKey struct {
 	Dev, Ino uint64
 }
 
+type scanState struct {
+	seen       map[inodeKey]struct{}
+	incomplete uint64
+}
+
 func genericScan(ctx context.Context, v VFS, basePath string, names []string, opts ScanOptions, cb ScanCallback) (OpStats, error) {
 	var totalStats OpStats
-	var seen map[inodeKey]struct{}
+	state := &scanState{}
 	if opts.DedupInodes {
-		seen = make(map[inodeKey]struct{})
+		state.seen = make(map[inodeKey]struct{})
 	}
 
 	for _, name := range names {
@@ -183,7 +192,7 @@ func genericScan(ctx context.Context, v VFS, basePath string, names []string, op
 			return totalStats, fmt.Errorf("%s: %w", fullPath, err)
 		}
 
-		err = scanRecursive(ctx, v, fullPath, itemStat, &totalStats, cb, 0, opts, seen)
+		err = scanRecursive(ctx, v, fullPath, itemStat, &totalStats, cb, 0, opts, state)
 		if err != nil {
 			return totalStats, err
 		}
@@ -192,7 +201,7 @@ func genericScan(ctx context.Context, v VFS, basePath string, names []string, op
 	return totalStats, nil
 }
 
-func scanRecursive(ctx context.Context, v VFS, currentPath string, item VFSItem, stats *OpStats, cb ScanCallback, depth int, opts ScanOptions, seen map[inodeKey]struct{}) error {
+func scanRecursive(ctx context.Context, v VFS, currentPath string, item VFSItem, stats *OpStats, cb ScanCallback, depth int, opts ScanOptions, state *scanState) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -211,7 +220,7 @@ func scanRecursive(ctx context.Context, v VFS, currentPath string, item VFSItem,
 	// A hard-linked file reached through multiple paths in the same
 	// walk should count once (its blocks are on disk once). Symlinks
 	// each have their own inode so this never dedups them.
-	if seen != nil {
+	if state.seen != nil {
 		// Unix stamps (Device, Inode) during ReadDir for free; Windows'
 		// FindNextFile can't, so resolve identity lazily via the optional
 		// FileIdentifier capability — one GetFileInformationByHandle per
@@ -229,10 +238,10 @@ func scanRecursive(ctx context.Context, v VFS, currentPath string, item VFSItem,
 		}
 		if item.Device != 0 || item.Inode != 0 {
 			key := inodeKey{item.Device, item.Inode}
-			if _, dup := seen[key]; dup {
+			if _, dup := state.seen[key]; dup {
 				return nil
 			}
-			seen[key] = struct{}{}
+			state.seen[key] = struct{}{}
 		}
 	}
 
@@ -280,6 +289,8 @@ func scanRecursive(ctx context.Context, v VFS, currentPath string, item VFSItem,
 	}
 
 	// It's a directory
+	start := *stats
+	startIncomplete := state.incomplete
 	stats.Dirs++
 	stats.DirBytes += item.Size
 	stats.PhysicalBytes += item.PhysicalSize
@@ -297,6 +308,7 @@ func scanRecursive(ctx context.Context, v VFS, currentPath string, item VFSItem,
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		state.incomplete++
 		return nil
 	}
 
@@ -310,9 +322,21 @@ func scanRecursive(ctx context.Context, v VFS, currentPath string, item VFSItem,
 		// must be able to abort the whole walk. Per-directory ReadDir
 		// failures inside the recursion are already swallowed above,
 		// so this only forwards genuine "abort" conditions.
-		if err := scanRecursive(ctx, v, childPath, child, stats, cb, depth+1, opts, seen); err != nil {
+		if err := scanRecursive(ctx, v, childPath, child, stats, cb, depth+1, opts, state); err != nil {
 			return err
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if opts.OnDirectorySize != nil && state.incomplete == startIncomplete && stats.UnknownSizeFiles == start.UnknownSizeFiles {
+		opts.OnDirectorySize(currentPath, OpStats{
+			Bytes:         stats.Bytes - start.Bytes,
+			DirBytes:      stats.DirBytes - start.DirBytes,
+			PhysicalBytes: stats.PhysicalBytes - start.PhysicalBytes,
+			Files:         stats.Files - start.Files,
+			Dirs:          stats.Dirs - start.Dirs,
+		})
 	}
 
 	return nil

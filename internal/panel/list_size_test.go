@@ -138,3 +138,24 @@ func TestFileSystemPanel_CalculatedPanelTotalUsesStatusAndBorder(t *testing.T) {
 		t.Fatalf("calculated size missing from compact bottom line: %q", got)
 	}
 }
+
+func TestQtSizeColumnFitsElevenCharacters(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		size int64
+		want string
+	}{
+		{"bytes", 999999999, "999 999 999"},
+		{"K", 1000000000, "976 562 K"},
+		{"last K", 10239999999, "9 999 999 K"},
+		{"first M", 10240000000, "9 765 M"},
+		{"G", 1 << 50, "1 048 576 G"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := &FileEntry{VFSItem: vfs.VFSItem{Name: "file", Size: tc.size, SizeKnown: true}}
+			if got := semanticFileSize(e); got != tc.want || len(got) > 11 {
+				t.Fatalf("Qt size=%d: got %q, want %q within 11 characters", tc.size, got, tc.want)
+			}
+		})
+	}
+}

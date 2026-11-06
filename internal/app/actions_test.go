@@ -4342,3 +4342,33 @@ func TestActionCreateLink_RelativeNameIsNextToTheSource(t *testing.T) {
 		t.Fatal("hl.txt is not a hard link to text.txt")
 	}
 }
+
+func TestActionCalcDirSizeRefreshesApproximateSize(t *testing.T) {
+	t.Cleanup(paneltest.SwapFrameManager(t))
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	root := t.TempDir()
+	child := filepath.Join(root, "child")
+	if err := os.Mkdir(child, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(child, "file"), []byte("abc"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	fp := panel.NewFileSystemPanel(0, 0, 80, 20, vfs.NewOSVFS(root))
+	paneltest.WaitForLoad(t, fp)
+	entry := &panel.FileEntry{VFSItem: vfs.VFSItem{Name: "child", IsDir: true, Size: 999}, SizeCalculated: true, SizeApproximate: true}
+	fp.Entries = []*panel.FileEntry{entry}
+	actionCalcDirSize(nil, fp, 0)
+	timeout := time.After(5 * time.Second)
+	for entry.SizeApproximate {
+		select {
+		case task := <-vtui.FrameManager.TaskChan:
+			task()
+		case <-timeout:
+			t.Fatal("F3 did not finish")
+		}
+	}
+	if entry.Size != 3 || !entry.SizeCalculated || strings.HasPrefix(entry.GetCellText(1), "~") {
+		t.Fatalf("F3 result: %+v", entry)
+	}
+}

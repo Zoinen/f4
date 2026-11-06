@@ -365,6 +365,10 @@ void F4GalleryBridge::reportMetadataVisibleRange(
         state.catalogRowsVisibleLast = boundedLast;
         schedulePanelCatalogRowsRequest(side);
     }
+    state.metadataViewportPath = state.currentPath;
+    state.metadataViewportCatalogRevision = state.catalogRevision;
+    state.metadataViewportFirst = boundedFirst;
+    state.metadataViewportLast = boundedLast;
     if (!state.metadataDeferred || state.metadataComplete) {
         return;
     }
@@ -421,6 +425,14 @@ void F4GalleryBridge::resetPanelCatalogMetadataPlan(
         state.metadataVisibleFirst = qMax(0, cursor - radius);
         state.metadataVisibleLast = qMin(
             entryCount - 1, cursor + radius - 1);
+    }
+    if (state.hasMetadataViewport()) {
+        state.metadataVisibleFirst = state.metadataViewportFirst;
+        state.metadataVisibleLast = state.metadataViewportLast;
+        if (F4NavigationBenchmarkTrace::enabled()) {
+            qInfo() << "[FIX:metadata-viewport] retained" << side
+                    << state.metadataVisibleFirst << state.metadataVisibleLast;
+        }
     }
     state.metadataComplete = state.metadataPendingRanges.isEmpty();
     state.metadataAwaitingFrame = awaitFirstFrame
@@ -589,8 +601,10 @@ void F4GalleryBridge::prioritizePanelCatalogMetadataRow(int side, int row)
     }
     const int radius = CatalogMetadataChunkLimit
         * CatalogMetadataCursorWindowChunks / 2;
-    state.metadataVisibleFirst = qMax(0, row - radius);
-    state.metadataVisibleLast = qMin(entryCount - 1, row + radius - 1);
+    if (!state.hasMetadataViewport()) {
+        state.metadataVisibleFirst = qMax(0, row - radius);
+        state.metadataVisibleLast = qMin(entryCount - 1, row + radius - 1);
+    }
     state.metadataUrgentBudget = 1;
     schedulePanelCatalogMetadataRequest();
 }

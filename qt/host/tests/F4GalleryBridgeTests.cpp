@@ -143,9 +143,12 @@ private slots:
     void hostRuntimeDefersBoundedDecodeWorkers();
     void initialCatalogAppliesAppearanceInsideReset();
     void deferredMetadataIsFrameGatedRevisionedAndChunked();
+    void deferredDirectorySizesPreserveAuthoritativeText();
     void staleMetadataFrameFallbackCannotReleaseNewerChunk();
     void deferredMetadataPrioritizesCursorAndVisibleRange();
     void enteringDetailsReprioritizesDeferredVisibleMetadata();
+    void metadataRefreshRetainsVisibleRowsBeyondCursorWindow_data();
+    void metadataRefreshRetainsVisibleRowsBeyondCursorWindow();
     void malformedMetadataRetriesThenReleasesGlobalSlot();
     void metadataBackgroundWaitsForInputIdle();
     void deferredMetadataWaitsForLoadingFalseFullScene();
@@ -3665,6 +3668,95 @@ void F4GalleryBridgeTests::deferredMetadataIsFrameGatedRevisionedAndChunked()
     QCOMPARE(resetSpy.size(), 0);
 }
 
+void F4GalleryBridgeTests::deferredDirectorySizesPreserveAuthoritativeText()
+{
+    const QList<qint64> sizes{1234, 1000000000LL, 1000000000000LL,
+                             1000000000000000LL};
+    const QStringList exactText{QStringLiteral("1 234"),
+                               QStringLiteral("976 562 K"),
+                               QStringLiteral("953 674 M"),
+                               QStringLiteral("931 322 G")};
+    QVariantMap panel = deferredPanel(
+        QStringLiteral("panel-directory-sizes"), 0, true, sizes.size(), 51, 71);
+    QVariantList baseEntries = panel.value(QStringLiteral("entries")).toList();
+    for (int row = 0; row < baseEntries.size(); ++row) {
+        QVariantMap entry = baseEntries.at(row).toMap();
+        entry.insert(QStringLiteral("isDir"), true);
+        baseEntries[row] = entry;
+    }
+    panel.insert(QStringLiteral("entries"), baseEntries);
+    const auto sceneFor = [](const QVariantMap &value) {
+        return QVariantMap{
+            {QStringLiteral("schema"), QStringLiteral("app")},
+            {QStringLiteral("shell"), QVariantMap{
+                 {QStringLiteral("panels"), QVariantList{value}},
+             }},
+        };
+    };
+    const auto responseFor = [&](const QVariantMap &request, bool approximate) {
+        QVariantMap response = deferredMetadataResponse(request, sizes.size(), 91);
+        QVariantList entries = response.value(QStringLiteral("entries")).toList();
+        for (int row = 0; row < entries.size(); ++row) {
+            QVariantMap entry = entries.at(row).toMap();
+            entry.insert(QStringLiteral("size"), sizes.at(row));
+            entry.insert(QStringLiteral("sizeText"),
+                         (approximate ? QStringLiteral("~") : QString())
+                             + exactText.at(row));
+            entries[row] = entry;
+        }
+        response.insert(QStringLiteral("entries"), entries);
+        return response;
+    };
+
+    QQmlEngine engine;
+    F4IconSet icons(QStringLiteral("directory-size-test-icons"));
+    F4GalleryBridge bridge(&engine, nullptr, &icons);
+    QVERIFY(bridge.available());
+    QSignalSpy requests(&bridge, &F4GalleryBridge::panelCatalogMetadataRequested);
+    bridge.synchronizeScene(sceneFor(panel));
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(
+        bridge.sessionForSide(0));
+    QVERIFY(session);
+    const int snapshotRole = session->model()->roleNames().key(
+        QByteArrayLiteral("visualSnapshot"), -1);
+    QVERIFY(snapshotRole >= 0);
+    const auto displayedSize = [&](int row) {
+        return session->model()->data(session->model()->index(row, 0), snapshotRole)
+            .toMap().value(QStringLiteral("displayFields")).toMap()
+            .value(QStringLiteral("sizeText")).toString();
+    };
+    QSignalSpy resets(session->model(), &QAbstractItemModel::modelReset);
+
+    bridge.notifyRenderSynchronized();
+    bridge.notifyFrameSwapped(1);
+    QTRY_COMPARE(requests.size(), 1);
+    const QVariantMap approximateRequest = requests.constLast().constFirst().toMap();
+    bridge.handlePanelCatalogMetadataMessage(responseFor(approximateRequest, true));
+    for (int row = 0; row < sizes.size(); ++row) {
+        QCOMPARE(displayedSize(row), QStringLiteral("~") + exactText.at(row));
+        QVERIFY(displayedSize(row).size() <= 11);
+    }
+
+    // F3 can confirm exactly the same byte count. Its new metadata revision
+    // must replace the cached label without rebuilding the directory catalog.
+    panel.insert(QStringLiteral("metadataRevision"), qulonglong(72));
+    bridge.synchronizeScene(sceneFor(panel));
+    bridge.notifyRenderSynchronized();
+    bridge.notifyFrameSwapped(2);
+    QTRY_COMPARE(requests.size(), 2);
+    const QVariantMap exactRequest = requests.constLast().constFirst().toMap();
+    QCOMPARE(exactRequest.value(QStringLiteral("catalogRevision")),
+             approximateRequest.value(QStringLiteral("catalogRevision")));
+    QCOMPARE(exactRequest.value(QStringLiteral("metadataRevision")).toULongLong(),
+             qulonglong(72));
+    bridge.handlePanelCatalogMetadataMessage(responseFor(exactRequest, false));
+    for (int row = 0; row < sizes.size(); ++row) {
+        QCOMPARE(displayedSize(row), exactText.at(row));
+        QVERIFY(displayedSize(row).size() <= 11);
+    }
+    QCOMPARE(resets.size(), 0);
+}
+
 void F4GalleryBridgeTests::staleMetadataFrameFallbackCannotReleaseNewerChunk()
 {
     constexpr int EntryCount = 24;
@@ -3836,6 +3928,60 @@ void F4GalleryBridgeTests::enteringDetailsReprioritizesDeferredVisibleMetadata()
                                            .constFirst().toMap();
     QCOMPARE(detailsRequest.value(QStringLiteral("offset")).toInt(), 32);
     QCOMPARE(detailsRequest.value(QStringLiteral("limit")).toInt(), 8);
+}
+
+void F4GalleryBridgeTests::metadataRefreshRetainsVisibleRowsBeyondCursorWindow_data()
+{
+    QTest::addColumn<QString>("update");
+    QTest::newRow("metadata-patch") << QStringLiteral("patch");
+    QTest::newRow("metadata-scene") << QStringLiteral("scene");
+    QTest::newRow("cursor-priority") << QStringLiteral("cursor");
+}
+
+void F4GalleryBridgeTests::metadataRefreshRetainsVisibleRowsBeyondCursorWindow()
+{
+    QFETCH(QString, update);
+    constexpr int Count = 64;
+    QVariantMap panel = deferredPanel(
+        QStringLiteral("panel-viewport-refresh"), 0, true, Count, 84, 104);
+    panel.insert(QStringLiteral("galleryLayoutMode"), QStringLiteral("details"));
+    QQmlEngine engine;
+    F4GalleryBridge bridge(&engine);
+    QSignalSpy requests(&bridge, &F4GalleryBridge::panelCatalogMetadataRequested);
+    bridge.synchronizeScene({{"schema", "app"},
+        {"shell", QVariantMap{{"panels", QVariantList{panel}}}}});
+    // A tall Details viewport includes files past the fallback 32-row window.
+    bridge.reportMetadataVisibleRange(0, 0, 47, 84);
+    // Async filesystem enrichment changes metadata, without changing layout.
+    // No visibleIndexesChanged signal is expected for this update.
+    if (update == QStringLiteral("scene")) {
+        panel.insert(QStringLiteral("metadataRevision"), qulonglong(105));
+        bridge.synchronizeScene({{"schema", "app"},
+            {"shell", QVariantMap{{"panels", QVariantList{panel}}}}});
+    } else {
+        bridge.synchronizePanelState({{"op", "state_update"}, {"side", 0},
+            {"panelId", "panel-viewport-refresh"}, {"catalogRevision", qulonglong(84)},
+            {"panel", QVariantMap{{"metadataDeferred", true},
+                {"metadataRevision", qulonglong(update == "cursor" ? 104 : 105)},
+                {"cursor", 0}, {"cursorEntryId", "panel-viewport-refresh:entry:0"}}}});
+    }
+    bridge.notifyRenderSynchronized();
+    bridge.notifyFrameSwapped(1);
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(bridge.sessionForSide(0));
+    QVERIFY(session);
+    for (int chunk = 0; chunk < 6; ++chunk) {
+        QTRY_COMPARE(requests.size(), chunk + 1);
+        const QVariantMap request = requests.constLast().constFirst().toMap();
+        QCOMPARE(request.value("offset").toInt(), chunk * 8);
+        QCOMPARE(request.value("limit").toInt(), 8);
+        bridge.handlePanelCatalogMetadataMessage(deferredMetadataResponse(request, Count, 111));
+        bridge.notifyRenderSynchronized();
+        bridge.notifyFrameSwapped(chunk + 2);
+    }
+    QVERIFY(!session->localPathAt(47).isEmpty());
+    QVERIFY(session->localPathAt(48).isEmpty());
+    QTest::qWait(40);
+    QCOMPARE(requests.size(), 6); // Offscreen rows remain dormant.
 }
 
 void F4GalleryBridgeTests::malformedMetadataRetriesThenReleasesGlobalSlot()

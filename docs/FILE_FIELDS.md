@@ -120,6 +120,38 @@ requests. Only headers intersecting the viewport have QML visuals. The file
 geometry includes the header space, so scrolling and page navigation continue
 to use file indexes while skipping the header area.
 
+## Calculated directory sizes
+
+F3 records every completed directory total in a panel-owned in-memory hash map,
+qualified by VFS/session identity and absolute path. Each value holds payload
+and directory-entry bytes, so the `DirSizeCountsFolders` preference still applies.
+Parent paths are stored once per VFS/session and directory; child totals are
+indexed by their existing names. Restoring a listing normalizes its parent once
+outside the cache lock, then performs name lookups without allocating full child
+paths. A miss for the parent returns without walking the listing.
+The cache retains no file rows or second directory listing. Cancelled,
+inaccessible and unknown-size subtrees are not published. F3 uses one generic
+walk; remote FastScanner backends cannot return these per-directory results.
+
+Navigation restores these hints with `~`, including during bounded, phased and
+cached directory loads. Phased filesystem metadata preserves the restored total.
+A fresh F3, including a multi-folder scan, replaces the total and clears `~`.
+Metadata revisions include the approximation flag, so an unchanged byte count
+still updates the visible label. Both immutable snapshots and live paged metadata
+preserve the flag; Qt displays the authoritative `sizeText` without reformatting.
+
+GUI entry sizes use spaced groups of three digits and whole binary units. The
+complete string, including `~` and the suffix, is at most 11 characters. For
+example: `999 999 999`, `976 562 K`, `9 999 999 K`, then `9 765 M`.
+Further units are G/T/P/E. Unit changes truncate fractional digits. Unknown file
+sizes and unmeasured directory sizes retain their existing blank/type labels.
+
+Qt retains the reported visible metadata range across metadata-only revisions
+and cursor prioritization. The range is qualified by path and catalog revision;
+a new directory uses its own viewport. Visible sizes continue loading in bounded
+eight-row asynchronous chunks after the first frame, pausing during input.
+Offscreen rows stay dormant until scrolling brings them into view.
+
 ## Pixel geometry and scrolling
 
 The semantic column schema marks default widths with `autoWidth`. Qt measures
