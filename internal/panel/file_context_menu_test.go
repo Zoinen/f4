@@ -67,6 +67,38 @@ func TestFileContextMenuAnchorTracksVisibleCursor(t *testing.T) {
 	}
 }
 
+func TestFileContextMenuClickTargetsFinderStyleSelection(t *testing.T) {
+	_, fp := menuTestPanels(t)
+	fp.Table = vtui.NewTable(1, 1, 38, 8, nil)
+	fp.ViewMode = ViewModeDetailed
+	fp.Table.ViewHeight = 6
+	fp.Table.MarginTop = 1
+	fp.SetItemSelected(1, true)
+
+	if !targetFileContextMenuClick(fp, 5, 4) {
+		t.Fatal("click on file row was rejected")
+	}
+	if fp.GetCursorIndex() != 2 || fp.Entries[1].Selected {
+		t.Fatalf("unselected target did not replace selection: cursor=%d selected=%v", fp.GetCursorIndex(), fp.GetSelectedNames())
+	}
+
+	fp.SetItemSelected(1, true)
+	fp.SetItemSelected(2, true)
+	if !targetFileContextMenuClick(fp, 5, 3) {
+		t.Fatal("click in marked selection was rejected")
+	}
+	if got := fp.GetSelectedNames(); !reflect.DeepEqual(got, []string{"α & 'one.txt", "two.txt"}) {
+		t.Fatalf("marked selection was not preserved: %v", got)
+	}
+
+	if targetFileContextMenuClick(fp, 5, 2) {
+		t.Fatal("parent row accepted as file context target")
+	}
+	if targetFileContextMenuClick(fp, 5, 20) {
+		t.Fatal("empty panel area accepted as file context target")
+	}
+}
+
 func TestFileContextMenuPlacementUsesExplicitAnchorAndClamps(t *testing.T) {
 	t.Cleanup(swapFrameManager(t))
 	scr := vtui.NewSilentScreenBuf()
@@ -81,6 +113,13 @@ func TestFileContextMenuPlacementUsesExplicitAnchorAndClamps(t *testing.T) {
 	placeFileMenu(m, 79, 24)
 	if x, y, x2, y2 := m.GetPosition(); x < 0 || y < 0 || x2 >= 80 || y2 >= 25 {
 		t.Fatalf("outside viewport: %d,%d,%d,%d", x, y, x2, y2)
+	}
+}
+
+func TestFileContextMenuClickAnchorStartsBelowClickedRow(t *testing.T) {
+	x, y := fileContextMenuClickAnchor(12, 7)
+	if x != 12 || y != 8 {
+		t.Fatalf("click anchor = %d,%d, want 12,8", x, y)
 	}
 }
 

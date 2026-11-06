@@ -2,8 +2,9 @@
 
 Use **Files → File Context Menu…**, the command palette, or **Apps** in a
 file panel. The shortcut is configurable and is not claimed in editors,
-dialogs or embedded terminal applications. Right-click and Shift+F10 retain
-their existing meanings.
+dialogs or embedded terminal applications. On macOS, **Control-click** a file
+to open the menu at the pointer. Right-click and Shift+F10 retain their existing
+meanings.
 
 Keyboard invocation anchors the popup below the focused panel row, accounting
 for scrolling and multi-column views. The anchor is captured before background
@@ -11,7 +12,7 @@ work starts. Native popups receive desktop coordinates from the host window;
 when the host cannot reliably expose them (for example, a terminal emulator),
 F4 shows its own menu at the same cell position. Menus fit within the screen.
 The explicit-position entry point accepts mouse cell and desktop coordinates
-for future mouse invocation; right-click behavior is unchanged.
+for macOS Control-click invocation; right-click behavior is unchanged.
 Windows maps the cell anchor through the rendered client area, so zoom and
 display scaling do not reuse nominal font dimensions. Pending native requests
 draw no loading dialog; Escape still cancels them.

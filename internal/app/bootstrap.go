@@ -1419,7 +1419,9 @@ func setupUI(firstRunStyle func() (string, bool)) {
 	terminalDNDStop = startTerminalDNDBinding(terminal.RealDNDClient(), vtui.Far2lNegotiated)
 	panel.EnableTreeExpandPersistence(filepath.Join(config.GetF4ConfigDir(), "tree_expanded.txt"))
 	previousEventFilter := vtui.FrameManager.EventFilter
+	darwinMouseModifiers := darwinMouseModifierTracker{}
 	vtui.FrameManager.EventFilter = func(e *vtinput.InputEvent) bool {
+		darwinMouseModifiers.normalize(e, vtui.ActiveBackend())
 		// INPUT_DND (unxed/f4#1628) is the one far2l "f2l" event
 		// vtinput.ParseFar2lAPC does not already translate into a plain
 		// key/mouse/resize InputEvent of its own, so it is still sitting

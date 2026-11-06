@@ -8,6 +8,7 @@ import (
 	"github.com/unxed/f4/internal/cmdline"
 	"github.com/unxed/f4/internal/config"
 	"github.com/unxed/f4/internal/editor"
+	"github.com/unxed/f4/internal/filemenu"
 	"github.com/unxed/f4/internal/fileops"
 	"github.com/unxed/f4/internal/history"
 	"github.com/unxed/f4/internal/i18n"
@@ -5026,6 +5027,20 @@ func (pf *PanelsFrame) ProcessMouse(e *vtinput.InputEvent) bool {
 				vtui.FrameManager.Redraw()
 			} else if pf.SearchFirstMode() && e.ButtonState != 0 && pf.CommandLineFocused {
 				pf.SetCommandLineFocus(false)
+			}
+			if isInitialPress && isFileContextMenuClick(e) {
+				if fsp, ok := p.(*FileSystemPanel); ok && targetFileContextMenuClick(fsp, mx, my) {
+					menuX, menuY := fileContextMenuClickAnchor(mx, my)
+					position := filemenu.PanelPoint(
+						menuX,
+						menuY,
+						vtui.FrameManager.GetScreenSize(),
+						vtui.FrameManager.GetScreenHeight(),
+					)
+					vtui.DebugLog("[FIX] file context menu click anchor: click=%d,%d menu=%d,%d", mx, my, menuX, menuY)
+					ShowFileContextMenuAt(pf, menuX, menuY, position)
+					return true
+				}
 			}
 			if isInitialPress {
 				pf.PanelMouseCapture = p

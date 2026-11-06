@@ -230,7 +230,28 @@ func ShowFileContextMenu(pf *PanelsFrame) {
 	ShowFileContextMenuAt(pf, x, y, position)
 }
 
-// ShowFileContextMenuAt accepts an explicit anchor for future mouse dispatch.
+// targetFileContextMenuClick applies Finder-style targeting before a native
+// context menu is opened. A click outside a file row, or on "..", is not a
+// file context click. Clicking within an existing marked selection preserves
+// that selection; clicking elsewhere retargets the menu to the clicked item.
+func targetFileContextMenuClick(fp *FileSystemPanel, x, y int) bool {
+	idx := fp.mouseEntryIndex(x, y)
+	if idx < 0 || fp.Entries[idx].Name == ".." {
+		return false
+	}
+	if !fp.Entries[idx].Selected {
+		fp.SetAllItemsSelected(false)
+	}
+	fp.SetCursorIndex(idx)
+	fp.Refresh()
+	return true
+}
+
+func fileContextMenuClickAnchor(x, y int) (int, int) {
+	return x, y + 1
+}
+
+// ShowFileContextMenuAt accepts an explicit mouse or keyboard anchor.
 // Cell coordinates place the fallback; desktop coordinates place native menus.
 func ShowFileContextMenuAt(pf *PanelsFrame, x, y int, position filemenu.Point) {
 	if activeFileMenu != nil && !activeFileMenu.IsDone() {
