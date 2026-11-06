@@ -787,6 +787,7 @@ void F4GalleryBridge::commitPanelSyncState(PanelSyncContext *context)
     state.groupReverse = context->groupReverse;
     state.groupFoldersSeparately = context->groupFoldersSeparately;
     if (context->catalogPayloadChanged) {
+        state.catalogRowsBackfillCursor = 0;
         resetPanelGroupPage(context->side);
         state.groupCatalogRejected = false;
         state.groupsDeferred = context->groupsDeferred;

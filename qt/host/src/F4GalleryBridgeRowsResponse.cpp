@@ -1,6 +1,7 @@
 #include "F4GalleryBridge.h"
 
 #include <ZoinGallery/GallerySession.h>
+#include <QTimer>
 
 class F4GalleryRowsResponseReducer
 {
@@ -159,7 +160,10 @@ void F4GalleryRowsResponseReducer::finish()
             m_side, m_offset, m_offset + m_limit);
     }
     clearRequest();
-    m_bridge.schedulePanelCatalogRowsRequest(m_side);
+    // Give each catalog page a turn to publish before starting another.
+    QTimer::singleShot(16, &m_bridge, [bridge = &m_bridge, side = m_side]() {
+        bridge->schedulePanelCatalogRowsRequest(side);
+    });
     m_bridge.schedulePanelCatalogMetadataRequest();
     const auto phase = m_bridge.m_navigationBenchmark.phase;
     if (m_bridge.m_navigationBenchmark.enabled

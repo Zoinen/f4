@@ -158,6 +158,7 @@ private slots:
     void rapidSwipeKeepsCursorAcrossDelayedReplies_data();
     void rapidSwipeKeepsCursorAcrossDelayedReplies();
     void panelCatalogRowsRequestStartsAtFirstMissingRow();
+    void masonryBackfillsBeyondTheViewportAfterItsFirstFrame();
     void rejectedPanelCatalogRowsRetryWhileSourceLoads();
     void groupedCatalogPagesInstallAtomically();
     void groupedCatalogPagesAllowParentEntry();
@@ -5153,6 +5154,48 @@ void F4GalleryBridgeTests::panelCatalogRowsRequestStartsAtFirstMissingRow()
     QCOMPARE(state.catalogRowsRequestLimit, 64);
 }
 
+void F4GalleryBridgeTests::masonryBackfillsBeyondTheViewportAfterItsFirstFrame()
+{
+    F4GalleryBridge bridge(nullptr);
+    auto &state = bridge.m_panelSessions.catalog(0);
+    state.initialized = state.active = state.previewCapable = true;
+    state.catalogRowsDeferred = state.metadataDeferred = true;
+    state.panelId = QStringLiteral("photos");
+    state.galleryLayoutMode = QStringLiteral("masonry");
+    state.totalCount = 802;
+    state.catalogRowsVisibleFirst = 0;
+    state.catalogRowsVisibleLast = 35;
+    for (int row = 0; row < 128; ++row) {
+        QVERIFY(F4GalleryBridge::setCatalogEntry(state, row, QVariantMap{
+            {QStringLiteral("entryId"), QString::number(row)},
+            {QStringLiteral("index"), row},
+        }));
+    }
+    QSignalSpy requests(&bridge, &F4GalleryBridge::panelCatalogRowsRequested);
+    state.metadataAwaitingFrame = true;
+    bridge.requestPanelCatalogRows(0);
+    QCOMPARE(requests.size(), 0);
+    state.metadataAwaitingFrame = false;
+    state.galleryLayoutMode = QStringLiteral("details");
+    bridge.requestPanelCatalogRows(0);
+    QCOMPARE(requests.size(), 0);
+    state.galleryLayoutMode = QStringLiteral("masonry");
+    bridge.requestPanelCatalogRows(0);
+    QCOMPARE(requests.size(), 1);
+    QCOMPARE(state.catalogRowsRequestOffset, 128);
+    QCOMPARE(state.catalogRowsRequestLimit, 64);
+
+    state.metadataVisibleFirst = 0;
+    state.metadataVisibleLast = 35;
+    state.metadataPendingRanges = {{128, 192}};
+    int offset = -1, limit = -1;
+    bool urgent = true;
+    QVERIFY(bridge.choosePanelCatalogMetadataRange(0, &offset, &limit, &urgent));
+    QCOMPARE(offset, 128);
+    QVERIFY(limit > 0);
+    QVERIFY(!urgent);
+}
+
 void F4GalleryBridgeTests::rejectedPanelCatalogRowsRetryWhileSourceLoads()
 {
     F4GalleryBridge bridge(nullptr);
@@ -5965,6 +6008,19 @@ void F4GalleryBridgeTests::galleryPresentationStateCommitsSynchronouslyInOneLayo
         embeddedPanel->property("presentationMode").toString(),
         QStringLiteral("icons"), 3000);
     QTRY_COMPARE_WITH_TIMEOUT(layout->property("count").toInt(), 140, 3000);
+
+    QSignalSpy rendererTransactions(host.data(),
+                                    SIGNAL(applyingRendererStateChanged()));
+    QVERIFY(rendererTransactions.isValid());
+    const QVariantMap equivalentOverlay = {
+        {QStringLiteral("id"), panel.value(QStringLiteral("id"))},
+        {QStringLiteral("catalogRevision"),
+         panel.value(QStringLiteral("catalogRevision"))},
+        {QStringLiteral("galleryLayoutRevision"), 1},
+    };
+    QVERIFY(host->setProperty("layoutState", equivalentOverlay));
+    QVERIFY(host->setProperty("layoutState", QVariant{}));
+    QCOMPARE(rendererTransactions.size(), 0);
 
     const auto switchLayoutOverlay = [&](const QString &mode,
                                          int columnCount,

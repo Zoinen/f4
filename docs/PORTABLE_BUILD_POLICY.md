@@ -74,9 +74,17 @@ single-file runtime contract.
 - Build the Go launcher with `CGO_ENABLED=0`.
 - Build Qt and the complete application-owned native dependency graph into one
   `f4-qt-host.exe`, using the static MSVC runtime.
+- Use the Windows GUI PE subsystem for that host so starting the Qt frontend
+  does not open a second console window. Verify the built artifact with
+  `F4WindowsApplicationIconTests executableUsesWindowsGuiSubsystem`.
 - Embed the compressed host in `f4.exe`; do not ship Qt DLL, QML, or plugin
   directories beside it.
 - Audit imports so only Windows system DLLs remain.
+
+MSVC links use `ci/msvc_link_response.py` to normalize temporary response-file
+copies to CRLF. This avoids the reproduced truncation of a leading object path
+on a long LF-only line. It preserves argument bytes and order, leaves CMake's
+generated files intact, and applies to the host and its test targets.
 
 ## Static QML resource verification
 

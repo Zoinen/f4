@@ -14,6 +14,7 @@ private slots:
     void extractsOnlyFixedShellRoles();
     void unchangedStateDoesNotInvalidateBindings();
     void surfaceRegistryRejectsCatalogPayloads();
+    void compactShellUpdatesPreserveProjection();
     void overlayUpdatesDoNotInvalidateSurfaces();
     void staleDialogRevisionDoesNotRestoreOlderGeometry();
     void overlayRevisionIsPublishedAfterDialogPayload();
@@ -145,6 +146,26 @@ void ShellStateStoreTests::surfaceRegistryRejectsCatalogPayloads()
     QVERIFY(!storedPanel.contains(QStringLiteral("entries")));
     QVERIFY(!storedPanel.contains(QStringLiteral("highlightStyles")));
     QCOMPARE(registry.dynamicPropertyNames().size(), 0);
+}
+
+void ShellStateStoreTests::compactShellUpdatesPreserveProjection()
+{
+    SurfaceRegistry registry;
+    QVariantMap shell{{"id", "shell"}, {"activePanel", 0}, {"title", "left"}};
+    registry.applyShell(shell, 1);
+    QSignalSpy changes(&registry, &SurfaceRegistry::shellChanged);
+    shell["activePanel"] = 1;
+    shell["title"] = "right";
+
+    registry.applyCompactShell(shell, 2);
+    QCOMPARE(changes.size(), 0);
+    QCOMPARE(registry.shell(), shell);
+    QCOMPARE(registry.shellRevision(), quint64(2));
+
+    shell["wide"] = true;
+    registry.applyCompactShell(shell, 3);
+    QCOMPARE(changes.size(), 1);
+    QCOMPARE(registry.shell(), shell);
 }
 
 void ShellStateStoreTests::overlayUpdatesDoNotInvalidateSurfaces()

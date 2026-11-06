@@ -50,7 +50,7 @@ capture video frames. Track fields describe the active video and audio tracks
 file size and duration, including container overhead; stream bitrates come from
 track metadata. Unsupported, missing, zero, or non-finite values stay blank.
 
-Video metadata uses the `video-metadata-v1` cache schema. A cache hit restores
+Video metadata uses the `video-metadata-v2` cache schema. A cache hit restores
 values and completion without opening the source. If cached thumbnail pixels
 survive but metadata is absent, the same worker loads metadata and reuses those
 pixels. Source-access failures remain unread. Completed fields are retained for
@@ -58,6 +58,47 @@ the same source version when a delayed thumbnail or placeholder carries an
 incomplete read. Cached video pixels restore native dimensions and completed fields before
 publication; their preview dimensions never replace completed native metadata.
 Identical metadata does not invalidate settled thumbnail geometry.
+
+Video presentation combines the stream's surface rotation and mirroring with
+the frame's presentation transform. Posters crop the visible viewport after
+mapping it through the surface transform already applied by Qt's image
+conversion. Display dimensions retain the resulting orientation, including
+metadata-only refreshes. The video thumbnail and poster cache revisions exclude
+older artifacts that omitted stream rotation or cropped rotated frames into
+squares.
+
+HLG and PQ video are converted to the same 100-nit SDR presentation in the
+viewer and cached previews, including BT.2020 to sRGB conversion. The video
+shader applies tone mapping before filtering, also when reusing its linear
+conversion texture. Opaque P010/P016 frames stay opaque in previews: Qt's GPU
+image conversion can otherwise place tone-mapping luminance in their alpha
+channel. CPU image-conversion fallback also applies HDR-to-SDR processing.
+
+On Windows, HDR video also offers an explicit HDR button when the current
+display supports HDR. It opens a separate fullscreen FP16 scRGB surface;
+the main window and ordinary playback retain their SDR swapchain and shader.
+The HDR shader decodes PQ to absolute luminance and HLG using the 1000-nit
+reference OOTF, preserving BT.2020 gamut in linear scRGB (1.0 = 80 nits).
+FFmpeg's original video planes remain on the GPU; no SDR image conversion or
+eight-bit intermediate is used for that output. Windows HDR is enabled only
+on request. Closing that surface, leaving fullscreen, or navigating to another
+file restores the previous display setting if F4 changed it. An already
+enabled system HDR setting is preserved. Cached posters remain SDR.
+
+The video controls fade out after three seconds without mouse movement in the
+viewer and fade back in on movement. Hovering the controls or dragging a slider
+keeps them visible. Leaving or deactivating the window cancels hiding. This
+behavior is shared by the ordinary viewer and the fullscreen HDR surface.
+Seek and volume hit areas span the full control-panel height while their
+visible tracks and handles stay centered.
+
+The Qt panel's disk cache keeps one WebP thumbnail per source revision and
+thumbnail transform. It replaces that entry when more pixels are available,
+up to 1024 pixels on the long edge. A frame at that limit satisfies subsequent
+panel requests of any size. Smaller requests reuse any stored frame that
+covers their fitted bounds. Older exact-size entries remain readable until
+ordinary eviction; resizing never creates another exact-size entry. The
+viewer's Fit frames and first-frame video posters are separate artifacts.
 
 ## Data path and identity
 

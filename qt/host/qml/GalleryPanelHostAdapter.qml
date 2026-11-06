@@ -440,9 +440,14 @@ Item {
     }
 
     function synchronizeLayout(panelState, rendererOverlay) {
-        applyRendererStateTo(
-                    galleryPanel,
-                    rendererStateFor(panelState, rendererOverlay), true)
+        const state = rendererStateFor(panelState, rendererOverlay)
+        if (galleryPanel
+                && rendererConfigSignature(state) === appliedRendererConfigSignature
+                && galleryPanel.presentationMode === presentationModeFor(state)
+                && Number(galleryPanel.columnCount) === columnCountFor(state)
+                && Math.abs(Number(galleryPanel.density) - densityFor(state)) <= 0.0001)
+            return
+        applyRendererStateTo(galleryPanel, state, true)
     }
 
     function forwardBenchmarkStage(stage, metadata) {

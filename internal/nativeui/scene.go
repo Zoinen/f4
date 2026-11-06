@@ -182,7 +182,7 @@ func appQueueAwareWorkspaceTabs(legacy map[string]any) map[string]any {
 
 	for screenIndex, screen := range semantic.AppMapSlice(legacy["screens"]) {
 		queueCanClose := true
-		surfaceKind, iconName := appWorkspaceTabPresentation(screen)
+		surfaceKind := appWorkspaceTabSurfaceKind(screen)
 		if surfaceKind == "operationsQueue" {
 			for _, frame := range semantic.AppMapSlice(screen["frames"]) {
 				if semantic.String(frame["kind"]) == "operationsQueue" {
@@ -197,16 +197,6 @@ func appQueueAwareWorkspaceTabs(legacy map[string]any) map[string]any {
 				(screenNumber > 0 && semantic.Int(tab["number"]) == screenNumber) {
 				if surfaceKind != "" {
 					tab["surfaceKind"] = surfaceKind
-					tab["iconName"] = iconName
-					if _, structuredMarker := tab["marker"]; structuredMarker {
-						// Current semantic scenes already split the frame kind
-						// into marker. Preserve legitimate titles such as
-						// "P projects" instead of treating their first letter
-						// as an old cell-renderer prefix.
-						tab["text"] = strings.TrimSpace(semantic.String(tab["text"]))
-					} else {
-						tab["text"] = appWorkspaceTabText(semantic.String(tab["text"]))
-					}
 				}
 				if surfaceKind == "operationsQueue" {
 					tab["closable"] = queueCanClose
@@ -215,35 +205,62 @@ func appQueueAwareWorkspaceTabs(legacy map[string]any) map[string]any {
 			}
 		}
 	}
+	// Header-only exports carry the surface kind on the tab itself. Keep the
+	// same icon and title projection when there are no screen frames to inspect.
+	for _, tab := range clonedTabs {
+		iconName := appWorkspaceTabIconName(semantic.String(tab["surfaceKind"]))
+		if iconName == "" {
+			continue
+		}
+		tab["iconName"] = iconName
+		if _, structuredMarker := tab["marker"]; structuredMarker {
+			// A structured marker is already separate from the file or folder title.
+			tab["text"] = strings.TrimSpace(semantic.String(tab["text"]))
+		} else {
+			tab["text"] = appWorkspaceTabText(semantic.String(tab["text"]))
+		}
+	}
 	out["tabs"] = clonedTabs
 	return out
 }
 
-func appWorkspaceTabPresentation(screen map[string]any) (kind, iconName string) {
+func appWorkspaceTabSurfaceKind(screen map[string]any) string {
 	frames := semantic.AppMapSlice(screen["frames"])
 	for index := len(frames) - 1; index >= 0; index-- {
 		frame := frames[index]
-		switch semantic.String(frame["kind"]) {
-		case "operationsQueue":
-			return "operationsQueue", "list-checks"
-		case "editor":
-			return "editor", "file-pen-line"
-		case "viewer":
-			return "viewer", "file-text"
-		case "terminal":
-			return "terminal", "square-terminal"
+		kind := semantic.String(frame["kind"])
+		switch kind {
+		case "operationsQueue", "editor", "viewer", "terminal":
+			return kind
 		case "panels", "shell":
 			terminalActive := semantic.AppBool(frame["terminalActive"])
 			if showPanels, present := frame["showPanels"]; present && !semantic.AppBool(showPanels) {
 				terminalActive = true
 			}
 			if terminalActive {
-				return "terminal", "square-terminal"
+				return "terminal"
 			}
-			return "panels", "panels-top-left"
+			return "panels"
 		}
 	}
-	return "", ""
+	return ""
+}
+
+func appWorkspaceTabIconName(kind string) string {
+	switch kind {
+	case "operationsQueue":
+		return "list-checks"
+	case "editor":
+		return "file-pen-line"
+	case "viewer":
+		return "file-text"
+	case "terminal":
+		return "square-terminal"
+	case "panels":
+		return "panels-top-left"
+	default:
+		return ""
+	}
 }
 
 func appWorkspaceTabText(title string) string {
@@ -1091,6 +1108,7 @@ func appTerminalFromLegacy(node map[string]any) extui.TerminalModel {
 	term := extui.TerminalModel{
 		ID:                semantic.String(node["id"]),
 		Title:             semantic.String(node["title"]),
+		Columns:           semantic.Int(node["columns"]),
 		DefaultBackground: semantic.String(node["defaultBackground"]),
 		Visible:           semantic.AppBoolDefault(node["visible"], true),
 		Focused:           semantic.AppBool(node["focused"]),

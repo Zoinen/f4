@@ -50,6 +50,7 @@ public:
     int catalogRowsRequestLimit = 0;
     int catalogRowsVisibleFirst = -1;
     int catalogRowsVisibleLast = -1;
+    int catalogRowsBackfillCursor = 0;
     int totalCount = 0;
     bool metadataDeferred = false;
     bool metadataComplete = true;

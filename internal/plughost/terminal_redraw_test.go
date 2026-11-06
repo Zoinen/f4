@@ -51,11 +51,20 @@ func TestExtUiRenderer_CoveredTerminalRedrawDeferralRequiresNegotiatedCoveredSce
 			want: false,
 		},
 		{
-			name: "wide panel exposes terminal area", suppressed: true,
+			name: "wide panel side missing", suppressed: true,
 			mutate: func(scene map[string]any) {
 				scene["shell"].(map[string]any)["wide"] = true
 			},
 			want: false,
+		},
+		{
+			name: "wide panel covers terminal", suppressed: true,
+			mutate: func(scene map[string]any) {
+				shell := scene["shell"].(map[string]any)
+				shell["wide"] = true
+				shell["widePanel"] = 0
+			},
+			want: true,
 		},
 		{
 			name: "terminal mode", suppressed: true,

@@ -227,6 +227,7 @@ public:
     bool hasOperationsQueue() const { return !m_operationsQueue.isEmpty(); }
 
     void applyShell(const QVariantMap &shell, qulonglong revision);
+    void applyCompactShell(const QVariantMap &shell, qulonglong revision);
     // Catalog frames have their own notification lane. Keep the row-free
     // descriptor in the retained shell current without invalidating the
     // complete shell/panel QML projection a second time.

@@ -104,7 +104,7 @@ Renderer::~Renderer()
         Node *assignedAncestor = nullptr;
         for (Node *parent = shadowParent; parent; parent = parent->parent()) {
             if (parent->type() != QSGNode::ClipNodeType && !parent->isBatchRoot) continue;
-            const auto *info = parent->rootInfo();
+            const auto *info = batchRootInfo(parent);
             if (!assignedAncestor && info->firstOrder >= 0) assignedAncestor = parent;
             if (!fundingRoot && info->availableOrders > 0) fundingRoot = parent;
         }

@@ -568,6 +568,26 @@ void SurfaceRegistry::applyShell(const QVariantMap &shell,
     }
 }
 
+void SurfaceRegistry::applyCompactShell(const QVariantMap &shell,
+                                        qulonglong revision)
+{
+    const QVariantMap bounded = withoutCatalogPayload(shell);
+    const auto surfaceFields = [](QVariantMap state) {
+        state.remove(QStringLiteral("activePanel"));
+        state.remove(QStringLiteral("title"));
+        return state;
+    };
+    if (bounded.isEmpty() != m_shell.isEmpty()
+        || surfaceFields(bounded) != surfaceFields(m_shell)) {
+        applyShell(shell, revision);
+        return;
+    }
+    // The typed shell store already publishes activation and title.
+    m_shell = bounded;
+    advanceRevision(revision, &m_shellRevision,
+                    [this] { emit shellRevisionChanged(); });
+}
+
 void SurfaceRegistry::adoptShellPanelDescriptor(
     int side, const QVariantMap &panel)
 {
