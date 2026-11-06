@@ -337,6 +337,18 @@ func BuildAppScenePatch(previous map[string]any, current *appIncrementalScene) (
 
 	previousShell, previousHasShell := previous["shell"].(map[string]any)
 	currentShell, currentHasShell := current.Scene["shell"].(map[string]any)
+	if previousHasShell && !currentHasShell {
+		surface, _ := current.Scene["surface"].(map[string]any)
+		switch semantic.String(surface["kind"]) {
+		case "viewer", "editor":
+			// Qt already retains the covered panels. Keep their immutable
+			// headers in the transport snapshot too, so Esc can reconcile IDs,
+			// catalog revisions and selection without rebuilding all rows.
+			// A changed revision still rejects the ordinary patch below.
+			current.Scene["shell"] = previousShell
+			return patch, nil, true
+		}
+	}
 	if previousHasShell != currentHasShell {
 		// A document can modify a file while the panels are hidden. The
 		// incremental shell carries only headers, so installing it on return

@@ -180,7 +180,7 @@ func TestAppScenePatchMenuDoesNotCarryLargePanelCatalogs(t *testing.T) {
 	}
 }
 
-func TestAppScenePatchReturnsFromEditorWithCatalogSnapshot(t *testing.T) {
+func TestAppScenePatchReturnsFromEditorWithoutResendingCatalog(t *testing.T) {
 	entries := make([]map[string]any, 10_000)
 	for index := range entries {
 		entries[index] = map[string]any{
@@ -213,7 +213,7 @@ func TestAppScenePatchReturnsFromEditorWithCatalogSnapshot(t *testing.T) {
 		t.Fatalf("panels -> editor transition rejected: ok=%v patch=%#v", ok, enterPatch)
 	}
 	if enterPatch.Root.Set["surface"] == nil ||
-		!incrementalTestContainsString(enterPatch.Root.Clear, "shell") {
+		incrementalTestContainsString(enterPatch.Root.Clear, "shell") {
 		t.Fatalf("panels -> editor patch has wrong root shape: %#v", enterPatch.Root)
 	}
 	if semanticValueContainsKey(enterPatch.ToMap(), "entries") {
@@ -223,8 +223,11 @@ func TestAppScenePatchReturnsFromEditorWithCatalogSnapshot(t *testing.T) {
 	returnScene := semantic.CompactAppSemanticScene(panelsScene)
 	returnPatch, acknowledgements, ok := BuildAppScenePatch(editorScene,
 		&appIncrementalScene{Scene: returnScene})
-	if ok || len(acknowledgements) != 0 {
-		t.Fatalf("editor -> panels must export catalog rows, got ok=%v patch=%#v", ok, returnPatch)
+	if !ok || len(acknowledgements) != 0 {
+		t.Fatalf("editor -> unchanged panels must reuse catalog rows, got ok=%v patch=%#v", ok, returnPatch)
+	}
+	if semanticValueContainsKey(returnPatch.ToMap(), "entries") {
+		t.Fatal("editor -> panels patch resent retained catalog rows")
 	}
 }
 

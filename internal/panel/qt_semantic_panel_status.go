@@ -105,19 +105,28 @@ func (fp *FileSystemPanel) enrichNativePanelStatus(model *extui.PanelModel) {
 			target, _ = vfs.Readlink(ctx, source, linkPath)
 			cancel()
 		}
-		frames.PostTask(func() {
-			cache.querying = false
-			if fp.Vfs != source || fp.Vfs.GetPath() != path {
-				frames.Redraw()
-				return
-			}
-			cache.path, cache.linkPath, cache.free, cache.freeKnown, cache.target = path, linkPath, free, known, target
-			cache.capacity, cache.source = capacity, source
-			cache.queriedAt = time.Now()
-			vtui.DebugLog("[FIX:panel-status] capacity refresh known=%t free=%d total=%d", known, free, capacity)
-			frames.Redraw()
+		frames.PostTaskWithRedrawDecision(func() bool {
+			return fp.completeNativeStatusQuery(source, path, linkPath, free, capacity, known, target)
 		})
 	}()
+}
+
+// Complete on the UI thread; identical refreshes only advance bookkeeping.
+func (fp *FileSystemPanel) completeNativeStatusQuery(source vfs.VFS, path, linkPath string, free, capacity uint64, known bool, target string) bool {
+	cache := &fp.nativeStatus
+	cache.querying = false
+	if fp.Vfs != source || fp.Vfs.GetPath() != path {
+		return false
+	}
+	changed := cache.source != source || cache.path != path || cache.linkPath != linkPath ||
+		cache.free != free || cache.capacity != capacity || cache.freeKnown != known || cache.target != target
+	cache.path, cache.linkPath, cache.free, cache.freeKnown, cache.target = path, linkPath, free, known, target
+	cache.capacity, cache.source = capacity, source
+	cache.queriedAt = time.Now()
+	if changed {
+		vtui.DebugLog("[FIX:panel-status] capacity refresh known=%t free=%d total=%d", known, free, capacity)
+	}
+	return changed
 }
 
 // Keep warm status aggregates O(changed rows), including during held gestures.

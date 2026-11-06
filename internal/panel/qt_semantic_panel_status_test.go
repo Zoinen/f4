@@ -177,3 +177,33 @@ func BenchmarkLiveSelectionTransaction(b *testing.B) {
 		})
 	}
 }
+
+func TestNativePanelStatusQueryRedrawDecision(t *testing.T) {
+	path := t.TempDir()
+	source := vfs.NewOSVFS(path)
+	fp := &FileSystemPanel{Vfs: source}
+	if !fp.completeNativeStatusQuery(source, path, "", 250, 1000, true, "") {
+		t.Fatal("initial capacity must be published")
+	}
+	before := fp.nativeStatus.queriedAt
+	fp.nativeStatus.querying = true
+	if fp.completeNativeStatusQuery(source, path, "", 250, 1000, true, "") {
+		t.Fatal("unchanged capacity must not redraw panels")
+	}
+	if fp.nativeStatus.querying || fp.nativeStatus.queriedAt.Before(before) {
+		t.Fatal("unchanged result must still finish and refresh the query timestamp")
+	}
+	if !fp.completeNativeStatusQuery(source, path, "", 200, 1000, true, "") {
+		t.Fatal("changed capacity must redraw")
+	}
+	if !fp.completeNativeStatusQuery(source, path, "link", 200, 1000, true, "target") {
+		t.Fatal("changed symlink target must redraw")
+	}
+	fp.Vfs = vfs.NewOSVFS(path)
+	if fp.completeNativeStatusQuery(source, path, "", 0, 0, false, "") {
+		t.Fatal("stale source result must not redraw")
+	}
+	if fp.nativeStatus.free != 200 {
+		t.Fatal("stale source overwrote capacity")
+	}
+}
