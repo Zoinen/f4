@@ -9,6 +9,12 @@ import QtQuick.Controls.impl
 T.ComboBox {
     id: control
 
+    readonly property var dialogColors: dialogColorContext.colors
+    DialogColorContext {
+        id: dialogColorContext
+        control: control
+    }
+
     property ApplicationWindow hostWindow: (control.Window.window as ApplicationWindow) || null
     property bool semanticFocus: false
     // Go owns editing for semantic controls.  Keep this presentation hint
@@ -92,18 +98,18 @@ T.ComboBox {
         radius: control.snap(4)
         color: {
             if (!control.enabled)
-                return control.hostWindow ? control.hostWindow.dialogBg : "#18202a"
+                return control.hostWindow ? control.dialogColors.dialogBg : "#18202a"
             if (control.down)
-                return control.hostWindow ? control.hostWindow.controlPressedBg : "#334455"
+                return control.hostWindow ? control.dialogColors.controlPressedBg : "#334455"
             if (control.hovered)
-                return control.hostWindow ? control.hostWindow.controlHoverBg : "#223344"
-            return control.hostWindow ? control.hostWindow.controlBg : "#18202a"
+                return control.hostWindow ? control.dialogColors.controlHoverBg : "#223344"
+            return control.hostWindow ? control.dialogColors.controlBg : "#18202a"
         }
         border.width: control.hostWindow ? control.hostWindow.separatorWidth : 1
         border.color: {
             if (control.enabled && (control.semanticFocus || control.visualFocus || control.activeFocus))
-                return control.hostWindow ? control.hostWindow.dialogAccent : "#2c7be5"
-            return control.hostWindow ? control.hostWindow.controlBorder : "#25303d"
+                return control.hostWindow ? control.dialogColors.dialogAccent : "#2c7be5"
+            return control.hostWindow ? control.dialogColors.controlBorder : "#25303d"
         }
     }
 
@@ -120,12 +126,13 @@ T.ComboBox {
             objectName: control.popupObjectNamePrefix
                        ? (control.popupObjectNamePrefix + "PopupBackground") : ""
             radius: control.snap(5)
-            color: control.hostWindow ? control.hostWindow.dialogHeaderBg : "#1c2430"
+            color: control.hostWindow ? control.dialogColors.dialogHeaderBg : "#1c2430"
             border.width: control.hostWindow ? control.hostWindow.separatorWidth : 1
-            border.color: control.hostWindow ? control.hostWindow.controlBorder : "#25303d"
+            border.color: control.hostWindow ? control.dialogColors.controlBorder : "#25303d"
         }
 
         contentItem: ListView {
+            readonly property var dialogColors: control.dialogColors
             objectName: control.popupObjectNamePrefix
                        ? (control.popupObjectNamePrefix + "PopupList") : ""
             clip: true
@@ -194,9 +201,9 @@ T.ComboBox {
         background: Rectangle {
             radius: control.snap(3)
             color: itemDelegate.highlighted
-                   ? (control.hostWindow ? control.hostWindow.selectedBg : "#2c7be5")
+                   ? (control.hostWindow ? control.dialogColors.selectedBg : "#2c7be5")
                    : itemDelegate.hovered
-                     ? (control.hostWindow ? control.hostWindow.controlHoverBg : "#223344") : "transparent"
+                     ? (control.hostWindow ? control.dialogColors.controlHoverBg : "#223344") : "transparent"
         }
     }
 

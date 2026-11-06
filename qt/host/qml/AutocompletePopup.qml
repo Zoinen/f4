@@ -5,6 +5,13 @@ import QtQuick.Controls
 
 Item {
     id: autocompleteOverlay
+
+    readonly property var dialogColors: dialogColorContext.colors
+    DialogColorContext {
+        id: dialogColorContext
+        control: autocompleteOverlay
+        anchor: autocompleteOverlay.inputAnchor
+    }
     objectName: "autocompleteOverlay"
     required property ApplicationWindow hostWindow
     required property Item menuBar
@@ -170,10 +177,10 @@ Item {
                         Math.max(80, autocompleteOverlay.contentWidth)))
         height: hostWindow.snapPx(Math.min(autocompleteOverlay.maxHeight,
             Math.max(autocompleteOverlay.rowHeight + 8, autocompleteOverlay.preferredHeight)))
-        color: "#202833"
+        color: dialogColorContext.tone("#202833")
         radius: 4
         border.width: 1
-        border.color: hostWindow.dialogAccent
+        border.color: autocompleteOverlay.dialogColors.dialogAccent
         clip: true
         z: 170
 
@@ -212,7 +219,7 @@ Item {
                     : autocompleteOverlay.rowHeight
                 radius: 3
                 color: index === autocompleteList.currentIndex
-                       ? hostWindow.selectedBg : "transparent"
+                       ? autocompleteOverlay.dialogColors.selectedBg : "transparent"
 
                 Row {
                     id: completionTextRow
@@ -235,7 +242,7 @@ Item {
                         height: hostWindow.snapPx(implicitHeight)
                         text: completionTextRow.fullText.substring(
                                   0, completionTextRow.matchingLength)
-                        color: hostWindow.dialogAccent
+                        color: autocompleteOverlay.dialogColors.dialogAccent
                         font.family: hostWindow.uiFontFamily
                         font.pixelSize: (hostWindow ? hostWindow.uiTextSize(13) : 13)
                     }
@@ -281,7 +288,7 @@ Item {
                                 const length = Math.max(0, completionTextRow.matchingLength - start)
                                 const prefix = hostWindow.richTextEscape(modelData.slice(0, length))
                                 const suffix = hostWindow.richTextEscape(modelData.slice(length))
-                                return '<font color="' + hostWindow.dialogAccent + '">'
+                                return '<font color="' + autocompleteOverlay.dialogColors.dialogAccent + '">'
                                     + prefix + '</font>' + suffix
                             }
                             textFormat: Text.StyledText

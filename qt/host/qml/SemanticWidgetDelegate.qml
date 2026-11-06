@@ -8,12 +8,19 @@ import QtQuick.Controls.impl as Impl
 
 Item {
     id: widgetRoot
+
+    readonly property var dialogColors: dialogColorContext.colors
+    DialogColorContext {
+        id: dialogColorContext
+        control: widgetRoot
+    }
     required property ApplicationWindow hostWindow
     property var widget: ({})
     property var tableRowAction: (action, index) => hostWindow.action({target: widget.id, action: action, index: index})
     property var buttonAction: () => hostWindow.action({target: widget.id, action: "control.activate"})
     property bool tableKeyboardNavigation: false
     property bool groupHeading: false
+    property bool leftAlignText: false
     property var dialogLayout: null
     property var labelData: ({})
     readonly property var inlineLabel: labelData && labelData.kind === "text" ? labelData : null
@@ -29,7 +36,7 @@ Item {
         elide: Text.ElideRight
         text: widgetRoot.inlineLabel
               ? (widgetRoot.inlineLabel.hotkey
-                 ? hostWindow.mnemonicText(widgetRoot.inlineLabel.text, widgetRoot.inlineLabel.hotkey)
+                 ? hostWindow.mnemonicTextWithAccent(widgetRoot.inlineLabel.text, widgetRoot.inlineLabel.hotkey, widgetRoot.dialogColors.dialogAccent)
                  : String(widgetRoot.inlineLabel.text || "")) : ""
         textFormat: widgetRoot.inlineLabel && widgetRoot.inlineLabel.hotkey ? Text.StyledText : Text.PlainText
         font: hostWindow.font
@@ -143,8 +150,8 @@ Item {
         anchors.verticalCenter: parent.verticalCenter
         width: hostWindow.snapPx(42); height: hostWindow.snapPx(28)
         radius: hostWindow.snapPx(3)
-        color: (widgetRoot.widget.colorPreview || {}).background || hostWindow.dialogBg
-        border.color: hostWindow.controlBorder
+        color: (widgetRoot.widget.colorPreview || {}).background || widgetRoot.dialogColors.dialogBg
+        border.color: widgetRoot.dialogColors.controlBorder
         Text {
             anchors.centerIn: parent
             text: "Aa"; font: widgetRoot.hostWindow.font
@@ -183,7 +190,7 @@ Item {
                     Rectangle {
                         objectName: "fileGroupPinnedSample-" + sampleTile.index
                         y: widgetRoot.hostWindow.snapPx(19); width: parent.width; height: widgetRoot.hostWindow.snapPx(25)
-                        radius: 3; color: sampleTile.preview.background || widgetRoot.hostWindow.controlBg
+                        radius: 3; color: sampleTile.preview.background || widgetRoot.dialogColors.controlBg
                         Impl.IconImage {
                             objectName: "fileGroupPinnedIcon-" + sampleTile.index
                             x: 4; y: 4; width: 16; height: 16
@@ -307,7 +314,7 @@ Item {
             Rectangle {
                 objectName: "dialogWidget-" + widget.id + "TableBackground"
                 anchors.fill: parent
-                color: tableControl.settingsNavigation ? "transparent" : hostWindow.controlPressedBg
+                color: tableControl.settingsNavigation ? "transparent" : widgetRoot.dialogColors.controlPressedBg
                 radius: hostWindow.snapPx(4)
             }
             function columnWidth(index) {
@@ -398,7 +405,7 @@ Item {
                     width: tableControl.availableWidth
                     height: tableControl.rowHeight
                     color: index === tableRows.currentIndex
-                        ? (tableControl.settingsNavigation ? hostWindow.controlHoverBg : hostWindow.selectedBg) : "transparent"
+                        ? (tableControl.settingsNavigation ? widgetRoot.dialogColors.controlHoverBg : widgetRoot.dialogColors.selectedBg) : "transparent"
                     readonly property string iconName: (widget.itemIcons || [])[index] || ""
                     readonly property bool filePreview: widget.layoutRole === "overview-table"
                     readonly property bool separator: !!modelData.separator
@@ -440,13 +447,13 @@ Item {
                             x: tableControl.columnX(index + 1)
                             width: 1 / hostWindow.dpr
                             height: tableRow.height
-                            color: hostWindow.controlBorder
+                            color: widgetRoot.dialogColors.controlBorder
                         }
                     }
                     Rectangle {
                         x: 0; y: 0; width: tableControl.columnWidth(0); height: parent.height
                         visible: tableRow.filePreview && !tableRow.separator
-                        color: tableRow.patch.background || (tableRow.cursor ? hostWindow.selectedBg : "transparent")
+                        color: tableRow.patch.background || (tableRow.cursor ? widgetRoot.dialogColors.selectedBg : "transparent")
                     }
                     Impl.IconImage {
                         objectName: "dialogWidget-" + widget.id + "TableItemIcon-" + tableRow.index
@@ -517,7 +524,7 @@ Item {
                     width: 1 / hostWindow.dpr
                     height: hostWindow.snapPx(Math.max(0, tableControl.height - y))
                     visible: widget.layoutRole !== "overview-table"
-                    color: hostWindow.controlBorder
+                    color: widgetRoot.dialogColors.controlBorder
                     z: 3
                     transform: Translate {
                         x: hostWindow.dialogPixelOffsetX(tableDivider, hostWindow.contentItem)
@@ -536,13 +543,14 @@ Item {
                         + "Text"
             text: widget.iconName ? "" : (widget.wrapText === true || !widget.hotkey
                   ? String(widget.text || widget.typeName || "")
-                  : hostWindow.mnemonicText(widget.text || widget.typeName, widget.hotkey))
+                  : hostWindow.mnemonicTextWithAccent(widget.text || widget.typeName, widget.hotkey, widgetRoot.dialogColors.dialogAccent))
             textFormat: widget.wrapText === true || !widget.hotkey ? Text.PlainText : Text.StyledText
             wrapMode: widget.wrapText === true ? Text.Wrap : Text.NoWrap
             color: widget.disabled ? hostWindow.mutedText : hostWindow.textColor
             font: hostWindow.font
             elide: widget.wrapText === true ? Text.ElideNone : Text.ElideRight
             verticalAlignment: Text.AlignVCenter
+            horizontalAlignment: !widgetRoot.leftAlignText && widget.horizontalAlignment === "center" ? Text.AlignHCenter : Text.AlignLeft
             HostPixelAlignedImage {
                 objectName: "dialogWidget-" + hostWindow.cleanText(widget.id) + "TextIcon"
                 hostWindow: widgetRoot.hostWindow
@@ -603,7 +611,7 @@ Item {
                         : (index === 0 ? separatorControl.width : 0)))
                     height: 1 / hostWindow.dpr
                     visible: width > 0
-                    color: hostWindow.controlBorder
+                    color: widgetRoot.dialogColors.controlBorder
                     transform: Translate {
                         x: hostWindow.dialogPixelOffsetX(separatorLine, hostWindow.contentItem)
                         y: hostWindow.dialogPixelOffsetY(separatorLine, hostWindow.contentItem)
@@ -701,7 +709,7 @@ Item {
             Rectangle {
                 objectName: "dialogWidget-" + widget.id + "ListBackground"
                 anchors.fill: parent
-                color: hostWindow.controlPressedBg
+                color: widgetRoot.dialogColors.controlPressedBg
                 radius: hostWindow.snapPx(4)
             }
             ListView {
@@ -741,9 +749,9 @@ Item {
                     radius: 4
                     color: widget.readOnly === true ? "transparent"
                            : index === widget.cursor
-                           ? hostWindow.selectedBg
+                           ? widgetRoot.dialogColors.selectedBg
                            : listHover.hovered
-                             ? hostWindow.controlHoverBg : "transparent"
+                             ? widgetRoot.dialogColors.controlHoverBg : "transparent"
                     // Keyboard repeat can outrun a color fade. Show the Go-owned
                     // cursor immediately, without fading the old and new rows.
                     F4CheckBox {
@@ -806,7 +814,7 @@ Item {
                         anchors.rightMargin: hostWindow.snapPx(8)
                         text: listRow.hasField ? String(listRow.field.value || "")
                               : widget.wrapText === true || listRow.checkable ? String(modelData)
-                              : hostWindow.mnemonicText(modelData, "")
+                              : hostWindow.mnemonicTextWithAccent(modelData, "", widgetRoot.dialogColors.dialogAccent)
                         textFormat: widget.wrapText === true || listRow.checkable ? Text.PlainText : Text.StyledText
                         wrapMode: widget.wrapText === true ? Text.Wrap : Text.NoWrap
                         color: hostWindow.textColor
@@ -856,8 +864,8 @@ Item {
                 border.width: listControl.semanticFocus
                               ? hostWindow.separatorWidth : 0
                 border.color: listControl.semanticFocus
-                              ? hostWindow.dialogAccent
-                              : hostWindow.controlBorder
+                              ? widgetRoot.dialogColors.dialogAccent
+                              : widgetRoot.dialogColors.controlBorder
                 transform: Translate {
                     x: hostWindow.dialogPixelOffsetX(
                            listFocusFrame, hostWindow.contentItem)
@@ -974,9 +982,9 @@ Item {
                 height: widget.bordered === true && groupContainer.contentBounds.height > 0
                     ? hostWindow.snapPx(groupContainer.contentBounds.height + 2 * groupContainer.contentPadding)
                     : Math.max(0, parent.height - y)
-                color: widget.bordered === true ? Qt.tint(hostWindow.dialogBg, Qt.rgba(1, 1, 1, 0.035)) : "transparent"
+                color: widget.bordered === true ? Qt.tint(widgetRoot.dialogColors.dialogBg, Qt.rgba(1, 1, 1, 0.035)) : "transparent"
                 border.width: 0
-                border.color: hostWindow.controlBorder
+                border.color: widgetRoot.dialogColors.controlBorder
                 radius: hostWindow.snapPx(10)
             }
 
@@ -999,7 +1007,7 @@ Item {
                     anchors.verticalCenter: parent.verticalCenter
                     width: parent.width
                     elide: Text.ElideRight
-                    text: widget.hotkey ? hostWindow.mnemonicText(widget.title, widget.hotkey) : String(widget.title || "")
+                    text: widget.hotkey ? hostWindow.mnemonicTextWithAccent(widget.title, widget.hotkey, widgetRoot.dialogColors.dialogAccent) : String(widget.title || "")
                     textFormat: widget.hotkey ? Text.StyledText : Text.PlainText
                     color: widget.dimmed === true ? hostWindow.mutedText : hostWindow.textColor
                     font.family: hostWindow.font.family

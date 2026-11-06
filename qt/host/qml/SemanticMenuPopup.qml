@@ -5,6 +5,14 @@ import QtQuick.Controls.impl
 
 Item {
     id: menuOverlay
+
+    readonly property var dialogColors: dialogColorContext.colors
+    DialogColorContext {
+        id: dialogColorContext
+        control: menuOverlay
+        anchor: menuOverlay.dropdownAnchor
+                || menuOverlay.hostWindow.dropdownAnchorForId(menuOverlay.frame.ownerId)
+    }
     required property ApplicationWindow hostWindow
     required property Item menuBar
     required property Item semanticLayer
@@ -667,7 +675,7 @@ Item {
             visible: false
             font: hostWindow.font
             textFormat: Text.StyledText
-            text: hostWindow.mnemonicText(menuOverlay.driveName(modelData.details), modelData.hotkey)
+            text: hostWindow.mnemonicTextWithAccent(menuOverlay.driveName(modelData.details), modelData.hotkey, menuOverlay.dialogColors.dialogAccent)
             readonly property real filesystemWidth: filesystemMeasurement.implicitWidth
             readonly property real capacityWidth: capacityMeasurement.implicitWidth
             Text {

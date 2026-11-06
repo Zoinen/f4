@@ -725,6 +725,9 @@ ApplicationWindow {
     function mnemonicText(value, hotkey) {
         return presentationUtilities.mnemonicText(value, hotkey)
     }
+    function mnemonicTextWithAccent(value, hotkey, accentColor) {
+        return presentationUtilities.mnemonicText(value, hotkey, accentColor)
+    }
     function runsText(runs) { return presentationUtilities.runsText(runs) }
     function rowText(row) { return presentationUtilities.rowText(row) }
 

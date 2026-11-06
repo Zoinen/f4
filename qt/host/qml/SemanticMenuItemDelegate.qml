@@ -6,6 +6,7 @@ import QtQuick.Controls.impl
 
 Rectangle {
     id: menuItem
+    readonly property var dialogColors: overlayController.dialogColors
     required property ApplicationWindow hostWindow
     required property Item overlayController
     required property Item popupSurfaceItem
@@ -37,7 +38,7 @@ Rectangle {
     color: modelData.index === overlayController.visualSelectedIndex
            && !modelData.separator
            && modelData.header !== true
-           ? hostWindow.selectedBg : "transparent"
+           ? menuItem.dialogColors.selectedBg : "transparent"
 
     Item {
         id: historyContent
@@ -78,7 +79,7 @@ Rectangle {
             const prefixEnd = commandColumns && key === "primary" ? (space < 0 ? letters.length : space) : 0
             return letters.map((letter, i) => {
                 const escaped = escapeText(letter)
-                const color = mask[i] === "1" ? hostWindow.dialogAccent : i < prefixEnd ? "#75d977" : ""
+                const color = mask[i] === "1" ? menuItem.dialogColors.dialogAccent : i < prefixEnd ? "#75d977" : ""
                 return color ? '<font color="' + color + '">' + escaped + '</font>' : escaped
             }).join("")
         }
@@ -172,8 +173,8 @@ Rectangle {
                 label = label.replace(/^\s+/, "")
             if (overlayController.dropdownMode)
                 return label
-            return hostWindow.mnemonicText(label,
-                                     modelData.hotkey)
+            return hostWindow.mnemonicTextWithAccent(label,
+                                     modelData.hotkey, menuItem.dialogColors.dialogAccent)
         }
         textFormat: overlayController.dropdownMode ? Text.PlainText : Text.StyledText
         color: modelData.disabled || menuItem.sectionHeading
@@ -214,7 +215,7 @@ Rectangle {
             y: hostWindow.snapPx(menuItem.separatorTopPadding
                 + (parent.height - menuItem.separatorTopPadding - height) / 2)
             height: 1 / hostWindow.dpr
-            color: hostWindow.separatorColor
+            color: menuItem.dialogColors.separatorColor
             opacity: 0.68
             transform: Translate {
                 x: hostWindow.dialogPixelOffsetX(separatorRule, hostWindow.contentItem)
@@ -263,7 +264,7 @@ Rectangle {
                                     - menuLabelMetrics.tightBoundingRect.y - baselineOffset)
                 width: modelData === "filesystem" ? driveContent.fsWidth
                        : capacity ? driveContent.capacityTextWidth : driveContent.nameWidth
-                text: modelData === "name" ? hostWindow.mnemonicText(overlayController.driveName(driveContent.details), menuItem.modelData.hotkey)
+                text: modelData === "name" ? hostWindow.mnemonicTextWithAccent(overlayController.driveName(driveContent.details), menuItem.modelData.hotkey, menuItem.dialogColors.dialogAccent)
                       : capacity ? overlayController.driveCapacityText(driveContent.details, true)
                       : String(driveContent.details[modelData] || "")
                 textFormat: modelData === "name" || capacity ? Text.StyledText : Text.PlainText
@@ -286,7 +287,7 @@ Rectangle {
             width: driveContent.barWidth
             height: hostWindow.snapPx(5)
             radius: height / 2
-            color: hostWindow.separatorColor
+            color: menuItem.dialogColors.separatorColor
             visible: driveContent.capacityKnown
             transform: Translate {
                 x: hostWindow.dialogPixelOffsetX(capacityTrack, hostWindow.contentItem)
@@ -297,7 +298,7 @@ Rectangle {
                 width: hostWindow.snapPx(parent.width * Math.max(0, Math.min(1, Number(driveContent.details.usedFraction || 0))))
                 height: parent.height
                 radius: parent.radius
-                color: hostWindow.dialogAccent
+                color: menuItem.dialogColors.dialogAccent
             }
         }
     }

@@ -7,6 +7,12 @@ import QtQuick.Controls
 // its visible controls, independent of terminal columns and wrapped lines.
 Item {
     id: root
+
+    readonly property var dialogColors: dialogColorContext.colors
+    DialogColorContext {
+        id: dialogColorContext
+        control: root
+    }
     required property ApplicationWindow hostWindow
     required property var widget
     property bool measuring: false

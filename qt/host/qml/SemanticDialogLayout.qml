@@ -13,6 +13,7 @@ Item {
     property int originY: 0
     property real maximumWidth: 1
     property bool naturalText: false
+    property var widthOverrides: ({})
     readonly property var rowEdges: calculateRowEdges()
     readonly property real contentHeight: {
         let bottom = 0
@@ -24,6 +25,8 @@ Item {
     FontMetrics { id: fieldFontMetrics; font: layout.hostWindow.font }
 
     function presentationWidth(widget) {
+        if (widget.kind === "text" && widget.horizontalAlignment === "center" && widget.wrapText !== true)
+            return hostWindow.capacityPx(fieldFontMetrics.advanceWidth(hostWindow.cleanText(widget.text || "")))
         const semanticWidth = hostWindow.pxW(Number(widget.w || 1))
         // A one-cell hotkey field still needs the standard F4TextField's
         // eight-pixel padding on both sides and room for the caret.
@@ -50,6 +53,8 @@ Item {
     }
 
     function availableWidth(widget) {
+        if (Number(widthOverrides[widget.id]) > 0)
+            return Number(widthOverrides[widget.id])
         if (widget.fillWidth === true)
             return Math.max(1, maximumWidth - hostWindow.pxX(Number(widget.x || 0) - originX) - hostWindow.pxW(2))
         if (naturalText && widget.kind === "text" && widget.wrapText === true)

@@ -291,7 +291,7 @@ QtObject {
                                .replace(/\"/g, "&quot;")
     }
 
-    function mnemonicText(value, hotkey) {
+    function mnemonicText(value, hotkey, accentColor) {
         const source = cleanText(value)
         const characters = []
         let mnemonicIndex = -1
@@ -327,7 +327,7 @@ QtObject {
         for (let index = 0; index < characters.length; ++index) {
             const escaped = richTextEscape(characters[index])
             result += index === mnemonicIndex
-                    ? "<font color=\"" + hostWindow.dialogAccent + "\">"
+                    ? "<font color=\"" + (accentColor === undefined ? hostWindow.dialogAccent : accentColor) + "\">"
                       + escaped + "</font>" : escaped
         }
         return result

@@ -7,6 +7,12 @@ import F4QtHost 1.0
 // from Qt's UTF-16 offsets into logical rune offsets before reaching the owner.
 Item {
     id: root
+
+    readonly property var dialogColors: dialogColorContext.colors
+    DialogColorContext {
+        id: dialogColorContext
+        control: root
+    }
     required property ApplicationWindow hostWindow
     required property var widget
     enabled: widget.disabled !== true
@@ -55,11 +61,11 @@ Item {
     Rectangle {
         anchors.fill: parent
         radius: root.hostWindow.snapPx(4)
-        color: !root.enabled ? root.hostWindow.dialogBg : hover.hovered
-            ? root.hostWindow.inputHoverBg : root.hostWindow.controlPressedBg
+        color: !root.enabled ? root.dialogColors.dialogBg : hover.hovered
+            ? root.dialogColors.inputHoverBg : root.dialogColors.controlPressedBg
         border.width: root.hostWindow.separatorWidth
         border.color: root.enabled && root.widget.focused
-            ? root.hostWindow.dialogAccent : root.hostWindow.controlBorder
+            ? root.dialogColors.dialogAccent : root.dialogColors.controlBorder
     }
     HoverHandler { id: hover }
     Flickable {
@@ -107,7 +113,7 @@ Item {
             persistentSelection: true
             font: root.hostWindow.font
             color: root.enabled ? root.hostWindow.textColor : root.hostWindow.mutedText
-            selectionColor: root.hostWindow.selectedBg
+            selectionColor: root.dialogColors.selectedBg
             selectedTextColor: root.hostWindow.textColor
             cursorVisible: root.enabled && root.widget.focused === true
             transform: Translate {

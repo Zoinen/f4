@@ -7,6 +7,12 @@ import QtQuick.Controls.Basic as T
 T.CheckBox {
     id: control
 
+    readonly property var dialogColors: dialogColorContext.colors
+    DialogColorContext {
+        id: dialogColorContext
+        control: control
+    }
+
     property ApplicationWindow hostWindow: (control.Window.window as ApplicationWindow) || null
     property bool semanticFocus: false
     property string mnemonicHotkey: ""
@@ -46,9 +52,9 @@ T.CheckBox {
                       : 0
         border.color: control.focusHighlighted
                       ? (control.hostWindow
-                         ? control.hostWindow.dialogAccent : "#2c7be5")
+                         ? control.dialogColors.dialogAccent : "#2c7be5")
                       : (control.hostWindow
-                         ? control.hostWindow.controlBorder : "#25303d")
+                         ? control.dialogColors.controlBorder : "#25303d")
         transform: Translate {
             x: control.hostWindow
                ? control.hostWindow.dialogPixelOffsetX(
@@ -80,18 +86,18 @@ T.CheckBox {
         }
         color: {
             if (control.checked)
-                return control.hostWindow ? control.hostWindow.dialogAccent : "#2c7be5"
+                return control.hostWindow ? control.dialogColors.dialogAccent : "#2c7be5"
             if (control.down)
-                return control.hostWindow ? control.hostWindow.controlPressedBg : "#334455"
+                return control.hostWindow ? control.dialogColors.controlPressedBg : "#334455"
             if (control.hovered)
-                return control.hostWindow ? control.hostWindow.controlHoverBg : "#223344"
-            return control.hostWindow ? control.hostWindow.controlBg : "#18202a"
+                return control.hostWindow ? control.dialogColors.controlHoverBg : "#223344"
+            return control.hostWindow ? control.dialogColors.controlBg : "#18202a"
         }
         border.width: control.hostWindow ? control.hostWindow.separatorWidth : 1
         border.color: {
             if (control.checked || control.semanticFocus)
-                return control.hostWindow ? control.hostWindow.dialogAccent : "#2c7be5"
-            return control.hostWindow ? control.hostWindow.controlBorder : "#25303d"
+                return control.hostWindow ? control.dialogColors.dialogAccent : "#2c7be5"
+            return control.hostWindow ? control.dialogColors.controlBorder : "#25303d"
         }
 
         HostPixelAlignedImage {
@@ -109,7 +115,7 @@ T.CheckBox {
             sourceSize: Qt.size(12, 12)
             source: control.hostWindow
                     ? control.hostWindow.lucideIconSource(
-                          "check", 12, control.hostWindow.dialogBg) : ""
+                          "check", 12, control.dialogColors.dialogBg) : ""
             visible: control.checkState === Qt.Checked
             smooth: false
             mipmap: false
@@ -125,7 +131,7 @@ T.CheckBox {
             radius: control.snap(1)
             visible: control.tristate
                      && control.checkState === Qt.PartiallyChecked
-            color: control.hostWindow ? control.hostWindow.dialogBg : "#0e1318"
+            color: control.hostWindow ? control.dialogColors.dialogBg : "#0e1318"
             transform: Translate {
                 x: control.hostWindow
                    ? control.hostWindow.dialogPixelOffsetX(
@@ -146,7 +152,7 @@ T.CheckBox {
                                        : "checkBoxText"
         leftPadding: control.indicator.width + control.spacing
         text: control.hostWindow
-              ? control.hostWindow.mnemonicText(control.text, control.mnemonicHotkey)
+              ? control.hostWindow.mnemonicTextWithAccent(control.text, control.mnemonicHotkey, control.dialogColors.dialogAccent)
               : control.text
         textFormat: Text.StyledText
         color: {

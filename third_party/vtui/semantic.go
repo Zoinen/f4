@@ -389,24 +389,35 @@ func semanticChildren(ctx *SemanticContext, children []UIElement) []map[string]a
 		if sp, ok := child.(SemanticProvider); ok {
 			if node := sp.SemanticNode(ctx); node != nil {
 				node["visible"] = semanticElementVisible(child)
+				if alignment := semanticElementHorizontalAlignment(child); alignment != "" {
+					node["horizontalAlignment"] = alignment
+				}
 				nodes = append(nodes, node)
 				continue
 			}
 		}
 		x1, y1, x2, y2 := child.GetPosition()
 		nodes = append(nodes, map[string]any{
-			"id":       SemanticID(child),
-			"kind":     "widget",
-			"x":        x1,
-			"y":        y1,
-			"w":        x2 - x1 + 1,
-			"h":        y2 - y1 + 1,
-			"visible":  semanticElementVisible(child),
-			"focused":  child.IsFocused(),
-			"disabled": child.IsDisabled(),
+			"horizontalAlignment": semanticElementHorizontalAlignment(child),
+			"id":                  SemanticID(child),
+			"kind":                "widget",
+			"x":                   x1,
+			"y":                   y1,
+			"w":                   x2 - x1 + 1,
+			"h":                   y2 - y1 + 1,
+			"visible":             semanticElementVisible(child),
+			"focused":             child.IsFocused(),
+			"disabled":            child.IsDisabled(),
 		})
 	}
 	return nodes
+}
+
+func semanticElementHorizontalAlignment(element UIElement) string {
+	if aligned, ok := element.(interface{ semanticHorizontalAlignment() string }); ok {
+		return aligned.semanticHorizontalAlignment()
+	}
+	return ""
 }
 
 func semanticElementVisible(element UIElement) bool {
@@ -468,6 +479,8 @@ func (w *Window) SemanticNode(ctx *SemanticContext) map[string]any {
 		"shadow":    w.HasShadow(),
 		"showClose": w.ShowClose,
 		"showZoom":  w.ShowZoom,
+		"isWarning": w.IsWarning,
+		"bodyIcon":  w.BodyIcon,
 	}
 	if w.rootGroup != nil {
 		children := semanticChildren(ctx, w.rootGroup.GetChildren())
@@ -475,7 +488,7 @@ func (w *Window) SemanticNode(ctx *SemanticContext) map[string]any {
 			// Export one original paragraph block; console labels are presentation
 			// artifacts, including any truncation imposed by terminal height.
 			body := map[string]any{"id": SemanticID(w) + "-message", "kind": "text",
-				"text": *w.messageText, "wrapText": true, "visible": true,
+				"text": *w.messageText, "wrapText": true, "visible": true, "horizontalAlignment": "center",
 				"x": x1 + 2, "y": y1 + 1, "w": max(1, x2-x1-3), "h": 1}
 			semantic := []map[string]any{body}
 			firstButtonY := -1

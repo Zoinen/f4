@@ -18,6 +18,12 @@ Rectangle {
     // semantic form controls. The content component owns only its body.
     property Component contentComponent: null
     readonly property bool customContent: contentComponent !== null
+    readonly property bool isWarning: frame.isWarning === true
+    property color accentColor: isWarning ? "#d47777" : hostWindow.dialogAccent
+    readonly property DialogPalette dialogColors: DialogPalette {
+        hostWindow: dialogRoot.hostWindow
+        accent: dialogRoot.accentColor
+    }
     property string backAction: hostWindow.cleanText(frame.backAction)
     property bool canGoBack: frame.canGoBack === true
     readonly property var paneSplit: frame.paneSplit || null
@@ -76,6 +82,24 @@ Rectangle {
         return items.length ? Math.max(...items.map(w => Number(w.x || 0) + Math.max(1, Number(w.w || 1)))) : contentLeft
     }
     readonly property real contentPadding: hostWindow.snapPx(24)
+    readonly property string bodyIconName: hostWindow.cleanText(frame.bodyIcon)
+    readonly property var messageWidgets: {
+        const items = (frame.children || []).filter(isContent)
+        const controls = items.filter(item => item.kind !== "text")
+        const end = controls.length ? Math.min(...controls.map(item => Number(item.y))) : Infinity
+        return items.filter(item => item.kind === "text" && Number(item.y) < end)
+    }
+    readonly property bool messageIconEnabled: bodyIconName !== "" && messageWidgets.length > 0
+    readonly property real bodyIconSize: hostWindow.snapPx(40)
+    readonly property real bodyIconGap: hostWindow.snapPx(16)
+    readonly property real messageTextWidth: Math.max(1, Math.min(
+        Math.max(1, ...messageWidgets.map(presentationWidth)),
+        width - 2 * contentPadding - bodyIconSize - bodyIconGap))
+    readonly property real messageGroupX: contentPadding
+    readonly property real messageTextX: messageGroupX + bodyIconSize + bodyIconGap
+    function isIconMessage(widget) {
+        return messageIconEnabled && messageWidgets.some(item => item.id === widget.id)
+    }
     readonly property var rowEdges: calculateRowEdges()
     readonly property real bodyContentHeight: settingsLayout || environmentProfilesLayout || customContent ? 0 : calculateBodyContentHeight()
     property real geometryLeft: 12
@@ -95,7 +119,8 @@ Rectangle {
     property real preferredWidth: customContent
         ? Math.min(availableWidth, Math.max(320, (customBody.item ? customBody.item.implicitWidth : 0) + 2 * contentPadding)) : settingsLayout
         ? Math.min(availableWidth, Math.max(640, availableWidth * 0.8)) : nativeLayout
-        ? Math.min(availableWidth, Math.max(320, hostWindow.pxW(contentRight - contentLeft) + 2 * contentPadding))
+        ? Math.min(availableWidth, Math.max(320, hostWindow.pxW(contentRight - contentLeft) + 2 * contentPadding
+            + (messageIconEnabled ? bodyIconSize + bodyIconGap : 0)))
         : Math.min(availableWidth, hostWindow.pxW(frame.w))
     property real preferredHeight: environmentProfilesLayout
         ? Math.min(availableHeight, Math.max(minimumDialogHeight, hostWindow.pxH(frame.h))) : customContent
@@ -111,6 +136,13 @@ Rectangle {
         originX: dialogRoot.contentLeft
         originY: Number(frame.y || 0) + 1
         maximumWidth: Math.max(1, dialogRoot.width - 2 * dialogRoot.contentPadding)
+        widthOverrides: {
+            const result = ({})
+            if (dialogRoot.messageIconEnabled)
+                for (const widget of dialogRoot.messageWidgets)
+                    result[widget.id] = dialogRoot.messageTextWidth
+            return result
+        }
     }
 
     function isContent(widget) { return contentLayout.isContent(widget) }
@@ -302,9 +334,9 @@ Rectangle {
                              : hostWindow.pxY(frame.y),
                              geometryTop,
                              Math.max(geometryTop, geometryBottom - height)))
-    color: externalBody ? "transparent" : hostWindow.dialogBg
+    color: externalBody ? "transparent" : dialogColors.dialogBg
     border.width: hostWindow.snapPx(1)
-    border.color: "#46586b"
+    border.color: dialogColors.chromeBorder
     radius: hostWindow.snapPx(9)
     clip: true
 
@@ -328,7 +360,7 @@ Rectangle {
         y: hostWindow.snapPx(1)
         width: parent.width - 2 * x
         height: hostWindow.snapPx(dialogRoot.settingsLayout && settingsBody.hasNavigation ? 52 : 43)
-        color: hostWindow.dialogHeaderBg
+        color: dialogRoot.dialogColors.dialogHeaderBg
         radius: hostWindow.snapPx(8)
 
         Rectangle {
@@ -346,7 +378,7 @@ Rectangle {
             anchors.right: parent.right
             anchors.bottom: parent.bottom
             height: hostWindow.snapPx(1)
-            color: hostWindow.separatorColor
+            color: dialogRoot.dialogColors.separatorColor
             opacity: 0.55
         }
 
@@ -687,6 +719,28 @@ Rectangle {
             width: dialogBody.width
             height: dialogBody.contentHeight
 
+            HostPixelAlignedImage {
+                objectName: "semanticDialogBodyIcon"
+                hostWindow: dialogRoot.hostWindow
+                visible: dialogRoot.messageIconEnabled
+                x: dialogRoot.messageGroupX
+                y: {
+                    const items = dialogRoot.messageWidgets
+                    if (!items.length) return 0
+                    const top = Math.min(...items.map(dialogRoot.widgetTop))
+                    return hostWindow.snapPx(Math.max(0, top
+                        - dialogRoot.rowTop(Number(frame.y || 0) + 1)))
+                }
+                width: dialogRoot.bodyIconSize
+                height: width
+                source: visible ? hostWindow.lucideIconSource(dialogRoot.bodyIconName,
+                    width, dialogRoot.dialogColors.dialogAccent) : ""
+                sourceSize: Qt.size(width, height)
+                fillMode: Image.PreserveAspectFit
+                asynchronous: true
+                smooth: false
+            }
+
             Repeater {
                 model: SemanticChildrenModel { widgets: dialogRoot.settingsLayout || dialogRoot.environmentProfilesLayout || dialogRoot.customContent ? [] : frame.children || [] }
                 delegate: SemanticWidgetDelegate {
@@ -695,12 +749,20 @@ Rectangle {
                     hostWindow: dialogRoot.hostWindow
                     dialogLayout: dialogRoot
                     widget: widgetData
+                    leftAlignText: dialogRoot.isIconMessage(widgetData)
                     visible: dialogRoot.isContent(widgetData)
                     originX: dialogRoot.contentLeft
                     originY: frame.y || 0
-                    x: widgetData.kind === "button" ? dialogRoot.contentX(widgetData)
+                    x: dialogRoot.isIconMessage(widgetData)
+                       ? dialogRoot.messageTextX
+                       : widgetData.horizontalAlignment === "center"
+                       ? hostWindow.snapPx((dialogBody.width - width) / 2)
+                       : widgetData.kind === "button" ? dialogRoot.contentX(widgetData)
                        : dialogRoot.contentPadding + horizontalPosition
-                    maximumWidth: Math.max(1, dialogBody.width - x - dialogRoot.contentPadding)
+                    maximumWidth: dialogRoot.isIconMessage(widgetData) ? dialogRoot.messageTextWidth
+                        : Math.max(1, widgetData.horizontalAlignment === "center"
+                        ? dialogBody.width - 2 * dialogRoot.contentPadding
+                        : dialogBody.width - x - dialogRoot.contentPadding)
                 }
             }
         }
@@ -720,7 +782,7 @@ Rectangle {
             text: hostWindow.cleanText(dialogRoot.paneSplit ? dialogRoot.paneSplit.leftTitle : "")
             width: Math.max(0, Math.min(paneHeaders.width, dialogRoot.paneDividerX - paneHeaders.x - hostWindow.snapPx(12)))
             height: Math.ceil(implicitHeight * hostWindow.dpr) / hostWindow.dpr
-            color: dialogRoot.paneSplit && dialogRoot.paneSplit.active === "left" ? hostWindow.dialogAccent : hostWindow.textColor
+            color: dialogRoot.paneSplit && dialogRoot.paneSplit.active === "left" ? dialogRoot.dialogColors.dialogAccent : hostWindow.textColor
             font.family: hostWindow.font.family
             font.pixelSize: hostWindow.font.pixelSize
             font.weight: Font.DemiBold
@@ -737,7 +799,7 @@ Rectangle {
             width: Math.max(0, paneHeaders.width - x)
             height: Math.ceil(implicitHeight * hostWindow.dpr) / hostWindow.dpr
             text: hostWindow.cleanText(dialogRoot.paneSplit ? dialogRoot.paneSplit.rightTitle : "")
-            color: dialogRoot.paneSplit && dialogRoot.paneSplit.active === "right" ? hostWindow.dialogAccent : hostWindow.textColor
+            color: dialogRoot.paneSplit && dialogRoot.paneSplit.active === "right" ? dialogRoot.dialogColors.dialogAccent : hostWindow.textColor
             font.family: hostWindow.font.family
             font.pixelSize: hostWindow.font.pixelSize
             font.weight: Font.DemiBold
@@ -755,7 +817,7 @@ Rectangle {
         y: paneHeaders.y
         width: hostWindow.separatorWidth
         height: Math.max(0, dialogKeyHints.y - y)
-        color: hostWindow.separatorColor
+        color: dialogRoot.dialogColors.separatorColor
         opacity: 0.55
     }
 
@@ -767,13 +829,13 @@ Rectangle {
         y: dialogRoot.height - height - hostWindow.snapPx(1)
         width: dialogRoot.width - 2 * x
         height: visible ? hintFlow.height + 2 * hostWindow.snapPx(hostWindow.actionBarVerticalMargin) : 0
-        color: hostWindow.dialogHeaderBg
+        color: dialogRoot.dialogColors.dialogHeaderBg
 
         Rectangle {
             objectName: "semanticDialogKeyHintsSeparator"
             width: parent.width
             height: hostWindow.separatorWidth
-            color: hostWindow.separatorColor
+            color: dialogRoot.dialogColors.separatorColor
             opacity: 0.55
         }
 
@@ -803,8 +865,8 @@ Rectangle {
                     shortcut: hostWindow.cleanText(modelData.key)
                     iconName: hostWindow.cleanText(modelData.icon)
                     labelColor: hostWindow.textColor
-                    shortcutColor: hostWindow.dialogAccent
-                    shortcutHoverColor: hostWindow.dialogAccent
+                    shortcutColor: dialogRoot.dialogColors.dialogAccent
+                    shortcutHoverColor: dialogRoot.dialogColors.dialogAccent
                     labelFont: hostWindow.font
                     shortcutFont: Qt.font({family: hostWindow.font.family,
                         pixelSize: hostWindow.font.pixelSize, weight: Font.DemiBold})

@@ -85,6 +85,13 @@ func (v *VBoxLayout) Apply() {
 		}
 
 		itm.Element.SetPosition(finalX, currY, finalX+finalW-1, currY+ih-1)
+		if target, ok := itm.Element.(interface{ setSemanticHorizontalAlignment(string) }); ok {
+			alignment := ""
+			if itm.Align == AlignCenter {
+				alignment = "center"
+			}
+			target.setSemanticHorizontalAlignment(alignment)
+		}
 
 		// If child is also a layout, trigger its recursive apply
 		if sub, ok := itm.Element.(interface{ Apply() }); ok {

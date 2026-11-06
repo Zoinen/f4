@@ -1039,6 +1039,9 @@ private slots:
     void uriBreadcrumbKeepsSchemeTogetherAndNavigates();
     void commandMenusKeepPanelCursorWhileBlockingInput();
     void modalDialogDoesNotDarkenBackground();
+    void warningDialogCentersControlsAt175Percent();
+    void deleteDialogIconStaysOnPixelGridAt175Percent();
+    void dialogAccentPropagatesWithoutChangingNormalColors();
     void activeMenuBarOwnsNavigationWithoutPopup();
     void columnSeparatorsDefaultOff();
     void layoutDebugZonesDefaultOffAndToggle();
@@ -13298,6 +13301,263 @@ void F4QuickViewSurfaceTests::activeMenuBarOwnsNavigationWithoutPopup()
         QTRY_VERIFY(host->property("panelActive").toBool());
         QTRY_VERIFY(host->hasActiveFocus());
     }
+}
+
+void F4QuickViewSurfaceTests::dialogAccentPropagatesWithoutChangingNormalColors()
+{
+    auto scene = shellScene({}, 0);
+    QVariantMap frame{{"id", "accent-scope"}, {"kind", "dialog"}, {"title", "Dialog"},
+        {"modal", true}, {"x", 20}, {"y", 8}, {"w", 50}, {"h", 15},
+        {"children", QVariantList{
+            QVariantMap{{"id", "scope-button"}, {"kind", "button"}, {"text", "Button"}, {"hotkey", "b"}, {"focused", true}, {"x", 24}, {"y", 10}, {"w", 12}, {"h", 1}},
+            QVariantMap{{"id", "scope-combo"}, {"kind", "comboBox"}, {"text", "Queue"}, {"dropdownOnly", true}, {"x", 24}, {"y", 12}, {"w", 30}, {"h", 1}},
+            QVariantMap{{"id", "scope-edit"}, {"kind", "edit"}, {"text", "Text"}, {"x", 24}, {"y", 14}, {"w", 30}, {"h", 1}},
+            QVariantMap{{"id", "scope-check"}, {"kind", "checkbox"}, {"text", "Checkbox"}, {"hotkey", "c"}, {"state", 1}, {"x", 24}, {"y", 16}, {"w", 30}, {"h", 1}}
+        }}};
+    QVariantMap sibling{{"id", "neutral-sibling"}, {"kind", "dialog"}, {"title", "Other dialog"},
+        {"x", 2}, {"y", 2}, {"w", 25}, {"h", 6}, {"children", QVariantList{
+            QVariantMap{{"id", "sibling-button"}, {"kind", "button"}, {"text", "Other"}, {"x", 4}, {"y", 4}, {"w", 12}, {"h", 1}}}}};
+    scene["dialogs"] = QVariantList{sibling, frame};
+    QuickViewFixture fixture(scene, false, true);
+    QVERIFY(fixture.window);
+    QCOMPARE(fixture.window->devicePixelRatio(), 1.75);
+    auto *root = fixture.window->contentItem();
+    QQuickItem *dialog = nullptr;
+    QTRY_VERIFY((dialog = visualItemWithObjectName(root, "semanticDialog-accent-scope")));
+    const QList<QPair<QString, QString>> samples{
+        {"semanticDialog-accent-scope", "dialogBg"}, {"dialogMoveHandle", "dialogHeaderBg"},
+        {"dialogWidget-scope-buttonButtonBackground", "controlBg"},
+        {"dialogWidget-scope-comboComboBoxBackground", "controlBg"},
+        {"dialogWidget-scope-editEditBackground", "controlPressedBg"},
+        {"dialogWidget-scope-checkCheckBoxIndicator", "dialogAccent"}};
+    QList<QColor> baseline;
+    for (const auto &sample : samples) {
+        auto *item = sample.first.startsWith("semanticDialog-") ? dialog : visualItemWithObjectName(dialog, sample.first);
+        QVERIFY2(item, qPrintable(sample.first));
+        baseline.append(item->property("color").value<QColor>());
+        QCOMPARE(baseline.last(), fixture.window->property(sample.second.toUtf8().constData()).value<QColor>());
+    }
+    auto *otherButton = visualItemWithObjectName(root, "dialogWidget-sibling-buttonButtonBackground");
+    QVERIFY(otherButton);
+    const QColor otherBaseline = otherButton->property("color").value<QColor>();
+    frame["isWarning"] = true;
+    scene["dialogs"] = QVariantList{sibling, frame};
+    fixture.shell.setScene(scene);
+    QTest::qWait(180);
+    for (const auto &sample : samples) {
+        auto *item = sample.first.startsWith("semanticDialog-") ? dialog : visualItemWithObjectName(dialog, sample.first);
+        QVERIFY(item);
+        const QColor color = item->property("color").value<QColor>();
+        QVERIFY2(color.red() > color.blue(), qPrintable(sample.first+" stayed "+color.name()));
+    }
+    QCOMPARE(fixture.window->property("controlBg").value<QColor>(), baseline[2]);
+    QCOMPARE(otherButton->property("color").value<QColor>(), otherBaseline);
+    const QString scopedAccent = dialog->property("accentColor").value<QColor>().name();
+    for (const auto &name : {"dialogWidget-scope-buttonButtonText", "dialogWidget-scope-checkCheckBoxText"}) {
+        auto *label = visualItemWithObjectName(dialog, name);
+        QVERIFY(label);
+        QVERIFY2(label->property("text").toString().contains("color=\""+scopedAccent+"\""), qPrintable(label->property("text").toString()));
+    }
+    for (const auto &name : {"dialogWidget-scope-buttonButtonText", "dialogWidget-scope-comboComboBoxText", "dialogWidget-scope-comboComboBoxIndicator", "dialogWidget-scope-editEditTextInput", "dialogWidget-scope-checkCheckBoxText", "dialogWidget-scope-checkCheckBoxCheckMark"}) {
+        auto *leaf = visualItemWithObjectName(dialog, name);
+        QVERIFY2(leaf && leaf->isVisible(), name);
+        const auto origin = leaf->mapToScene(QPointF());
+        for (qreal coordinate : {origin.x(), origin.y()})
+            QVERIFY2(qAbs(coordinate*1.75-qRound(coordinate*1.75)) < .01, name);
+        QCOMPARE(leaf->mapToScene(QPointF(1,0))-origin, QPointF(1,0));
+        QCOMPARE(leaf->mapToScene(QPointF(0,1))-origin, QPointF(0,1));
+    }
+    auto menu = titledUserMenu(QString(), true);
+    menu["presentation"] = "dropdown";
+    menu["ownerId"] = "scope-combo";
+    fixture.shell.setCommandMenus({menu});
+    QQuickItem *popup = nullptr;
+    QTRY_VERIFY((popup = visualItemWithObjectName(root, "semanticMenuPopup-user-menu")));
+    QTRY_VERIFY(popup->isVisible());
+    QVERIFY(popup->property("color").value<QColor>().red() > popup->property("color").value<QColor>().blue());
+    auto *selectedRow = visualItemWithObjectName(root, "semanticMenuItem-user-menu-0");
+    QVERIFY(selectedRow);
+    QTRY_VERIFY(selectedRow->property("color").value<QColor>().red() > selectedRow->property("color").value<QColor>().blue());
+    fixture.shell.setCommandMenus({});
+    menu.remove("presentation");
+    auto menuItems = menu.value("items").toList();
+    auto firstItem = menuItems[0].toMap();
+    firstItem["hotkey"] = "b";
+    menuItems[0] = firstItem;
+    menu["items"] = menuItems;
+    fixture.shell.setCommandMenus({menu});
+    QQuickItem *mnemonic = nullptr;
+    QTRY_VERIFY((mnemonic = visualItemWithObjectName(root, "semanticMenuItemText-user-menu-0")));
+    QTRY_VERIFY(mnemonic->property("text").toString().contains("color=\""+scopedAccent+"\""));
+    fixture.shell.setCommandMenus({});
+    QVERIFY(fixture.window->grabWindow().save(QDir::temp().filePath("f4-dialog-accent-175.png")));
+    frame["isWarning"] = false;
+    scene["dialogs"] = QVariantList{sibling, frame};
+    fixture.shell.setScene(scene);
+    QTest::qWait(180);
+    for (int i = 0; i < samples.size(); ++i) {
+        auto *item = samples[i].first.startsWith("semanticDialog-") ? dialog : visualItemWithObjectName(dialog, samples[i].first);
+        QVERIFY(item);
+        QCOMPARE(item->property("color").value<QColor>(), baseline[i]);
+    }
+    auto *normalButtonText = visualItemWithObjectName(dialog, "dialogWidget-scope-buttonButtonText");
+    QVERIFY(normalButtonText);
+    QVERIFY(normalButtonText->property("text").toString().contains("color=\""+fixture.window->property("dialogAccent").value<QColor>().name()+"\""));
+
+    // Standard dialog buttons share the combo's stable border and hover fill,
+    // including warning palettes and keyboard-focus highlighting.
+    auto children = frame.value("children").toList();
+    auto buttonModel = children[0].toMap();
+    buttonModel["focused"] = false;
+    children[0] = buttonModel;
+    frame["children"] = children;
+    for (bool warning : {false, true}) {
+        frame["isWarning"] = warning;
+        scene["dialogs"] = QVariantList{sibling, frame};
+        fixture.shell.setScene(scene);
+        QTest::qWait(120);
+        auto *button = visualItemWithObjectName(dialog, "dialogWidget-scope-buttonButton");
+        auto *combo = visualItemWithObjectName(dialog, "dialogWidget-scope-comboComboBox");
+        QVERIFY(button && combo);
+        auto *buttonBg = visualItemWithObjectName(dialog, "dialogWidget-scope-buttonButtonBackground");
+        auto *comboBg = visualItemWithObjectName(dialog, "dialogWidget-scope-comboComboBoxBackground");
+        QVERIFY(buttonBg && comboBg);
+        QTest::mouseMove(fixture.window, QPoint(2, 2));
+        QTRY_VERIFY(!button->property("hovered").toBool());
+        const QColor border = comboBg->property("testBorderColor").value<QColor>();
+        QTest::mouseMove(fixture.window, combo->mapToScene(QPointF(combo->width()/2, combo->height()/2)).toPoint());
+        QTRY_VERIFY(combo->property("hovered").toBool());
+        const QColor hoverFill = comboBg->property("color").value<QColor>();
+        QTest::mouseMove(fixture.window, button->mapToScene(QPointF(button->width()/2, button->height()/2)).toPoint());
+        QTRY_VERIFY(button->property("hovered").toBool());
+        QTRY_COMPARE(buttonBg->property("color").value<QColor>(), hoverFill);
+        QTRY_COMPARE(buttonBg->property("testBorderColor").value<QColor>(), border);
+        button->setProperty("semanticFocus", true);
+        combo->setProperty("semanticFocus", true);
+        QTRY_COMPARE(buttonBg->property("testBorderColor").value<QColor>(), comboBg->property("testBorderColor").value<QColor>());
+        button->setProperty("semanticFocus", false);
+        combo->setProperty("semanticFocus", false);
+        QVERIFY(fixture.window->grabWindow().save(QDir::temp().filePath(
+            warning ? "f4-dialog-button-hover-warning-175.png" : "f4-dialog-button-hover-175.png")));
+    }
+}
+
+void F4QuickViewSurfaceTests::deleteDialogIconStaysOnPixelGridAt175Percent()
+{
+    auto scene = shellScene({}, 0);
+    scene["dialogs"] = QVariantList{QVariantMap{
+        {"id", "delete-icon"}, {"kind", "dialog"}, {"title", "Delete"},
+        {"isWarning", true}, {"bodyIcon", "trash-2"}, {"modal", true}, {"x", 20}, {"y", 8}, {"w", 50}, {"h", 12},
+        {"children", QVariantList{
+            QVariantMap{{"id", "icon-message"}, {"kind", "text"}, {"text", "Permanently delete"}, {"horizontalAlignment", "center"}, {"x", 35}, {"y", 10}, {"w", 18}, {"h", 1}},
+            QVariantMap{{"id", "icon-note"}, {"kind", "text"}, {"text", "This action cannot be undone."}, {"horizontalAlignment", "center"}, {"x", 30}, {"y", 12}, {"w", 28}, {"h", 1}},
+            QVariantMap{{"id", "icon-cancel"}, {"kind", "button"}, {"text", "Cancel"}, {"x", 39}, {"y", 14}, {"w", 10}, {"h", 1}},
+            QVariantMap{{"id", "icon-mode"}, {"kind", "comboBox"}, {"text", "Queue"}, {"dropdownOnly", true}, {"horizontalAlignment", "center"}, {"x", 28}, {"y", 16}, {"w", 32}, {"h", 1}}
+        }}}};
+    QuickViewFixture fixture(scene, false, true);
+    QVERIFY(fixture.window);
+    const qreal dpr = fixture.window->devicePixelRatio();
+    QCOMPARE(dpr, 1.75);
+    auto *root = fixture.window->contentItem();
+    auto *dialog = visualItemWithObjectName(root, "semanticDialog-delete-icon");
+    QVERIFY(dialog);
+    auto *icon = visualItemWithObjectName(dialog, "semanticDialogBodyIcon");
+    QVERIFY2(icon && icon->isVisible(), "Delete confirmation must show a body icon");
+    QTRY_COMPARE(icon->property("status").toInt(), 1);
+    for (const QSize size : {QSize(901, 701), QSize(1101, 803)}) {
+        fixture.window->resize(size);
+        QTest::qWait(80);
+        QRectF messageBounds;
+        for (const auto &name : {"dialogWidget-icon-messageText", "dialogWidget-icon-noteText"}) {
+            auto *text = visualItemWithObjectName(dialog, name);
+            QVERIFY(text);
+            const auto bounds = text->mapRectToItem(dialog, text->boundingRect());
+            QCOMPARE(text->property("horizontalAlignment").toInt(), int(Qt::AlignLeft));
+            const qreal expectedTextX = dialog->property("contentPadding").toReal()
+                + icon->width() + dialog->property("bodyIconGap").toReal();
+            QVERIFY2(qAbs(bounds.left()-expectedTextX) <= 1/dpr,
+                     qPrintable(QString("%1 left=%2 expected=%3").arg(name).arg(bounds.left()).arg(expectedTextX)));
+            messageBounds = messageBounds.isNull() ? bounds : messageBounds.united(bounds);
+        }
+        const auto iconBounds = icon->mapRectToItem(dialog, icon->boundingRect());
+        auto *firstLine = visualItemWithObjectName(dialog, "dialogWidget-icon-messageText");
+        QVERIFY(firstLine);
+        // Text's ink bounds include font bearings; align its layout origin.
+        const qreal messageTop = firstLine->mapToItem(dialog, QPointF()).y();
+        const qreal iconTop = icon->mapToItem(dialog, QPointF()).y();
+        QVERIFY2(qAbs(iconTop-messageTop) <= 1/dpr,
+                 qPrintable(QString("Icon top=%1px, message origin=%2px")
+                     .arg(iconTop*dpr).arg(messageTop*dpr)));
+        QVERIFY(iconBounds.right() < messageBounds.left());
+        QVERIFY(qAbs(iconBounds.left()-dialog->property("contentPadding").toReal()) <= 1/dpr);
+        for (const auto &name : {"semanticDialogBodyIcon", "dialogWidget-icon-messageText", "dialogWidget-icon-noteText", "dialogWidget-icon-cancelButtonText", "dialogWidget-icon-modeComboBoxText", "dialogWidget-icon-modeComboBoxIndicator"}) {
+            auto *leaf = visualItemWithObjectName(dialog, name);
+            QVERIFY2(leaf && leaf->isVisible(), name);
+            const auto origin = leaf->mapToScene(QPointF());
+            for (qreal coordinate : {origin.x(), origin.y()})
+                QVERIFY2(qAbs(coordinate*dpr-qRound(coordinate*dpr)) < .01, name);
+            QCOMPARE(leaf->mapToScene(QPointF(1,0))-origin, QPointF(1,0));
+            QCOMPARE(leaf->mapToScene(QPointF(0,1))-origin, QPointF(0,1));
+        }
+    }
+    QVERIFY(fixture.window->grabWindow().save(QDir::temp().filePath("f4-delete-icon-175.png")));
+}
+
+void F4QuickViewSurfaceTests::warningDialogCentersControlsAt175Percent()
+{
+    auto scene = shellScene({}, 0);
+    scene.insert("dialogs", QVariantList{QVariantMap{
+        {"id", "warning-layout"}, {"kind", "dialog"}, {"title", "Delete"},
+        {"isWarning", true}, {"modal", true}, {"x", 20}, {"y", 8}, {"w", 50}, {"h", 12},
+        {"children", QVariantList{
+            QVariantMap{{"id", "delete-message"}, {"kind", "text"}, {"text", "Permanently delete"}, {"horizontalAlignment", "center"}, {"x", 35}, {"y", 10}, {"w", 18}, {"h", 1}},
+            QVariantMap{{"id", "delete-note"}, {"kind", "text"}, {"text", "This action cannot be undone."}, {"horizontalAlignment", "center"}, {"x", 30}, {"y", 12}, {"w", 28}, {"h", 1}},
+            QVariantMap{{"id", "delete-yes"}, {"kind", "button"}, {"text", "Delete"}, {"x", 35}, {"y", 14}, {"w", 8}, {"h", 1}},
+            QVariantMap{{"id", "delete-no"}, {"kind", "button"}, {"text", "Cancel"}, {"x", 45}, {"y", 14}, {"w", 8}, {"h", 1}},
+            QVariantMap{{"id", "delete-mode"}, {"kind", "comboBox"}, {"text", "Queue"}, {"dropdownOnly", true}, {"horizontalAlignment", "center"}, {"x", 28}, {"y", 16}, {"w", 32}, {"h", 1}}
+        }}}});
+    QuickViewFixture fixture(scene, false, true);
+    QVERIFY(fixture.window);
+    QCOMPARE(fixture.window->devicePixelRatio(), 1.75);
+    auto *root = fixture.window->contentItem();
+    QQuickItem *dialog = nullptr;
+    QTRY_VERIFY((dialog = visualItemWithObjectName(root, "semanticDialog-warning-layout")));
+    const QColor normal = fixture.window->property("dialogBg").value<QColor>();
+    const QColor warning = dialog->property("color").value<QColor>();
+    QVERIFY2(warning != normal && warning.red() > warning.blue(), "Warning dialog must use its danger tint");
+    for (int cycle = 0; cycle < 2; ++cycle) {
+        if (cycle) QVERIFY(QMetaObject::invokeMethod(dialog, "setUserGeometry", Q_ARG(QVariant, 90), Q_ARG(QVariant, 70), Q_ARG(QVariant, 520), Q_ARG(QVariant, 350)));
+        QTest::qWait(80);
+        for (const QString &id : {"delete-message", "delete-note", "delete-mode"}) {
+            auto *control = visualItemWithObjectName(dialog, "dialogWidget-"+id+"Root");
+            QVERIFY(control);
+            const QRectF bounds = control->mapRectToItem(dialog, control->boundingRect());
+            QVERIFY2(qAbs(bounds.center().x()-dialog->width()/2) <= 1/1.75,
+                     qPrintable(id+" center="+QString::number(bounds.center().x())+" expected="+QString::number(dialog->width()/2)));
+        }
+        auto *yes = visualItemWithObjectName(dialog, "dialogWidget-delete-yesRoot");
+        auto *no = visualItemWithObjectName(dialog, "dialogWidget-delete-noRoot");
+        QVERIFY(yes && no);
+        const auto buttons = yes->mapRectToItem(dialog, yes->boundingRect()).united(no->mapRectToItem(dialog, no->boundingRect()));
+        QVERIFY(qAbs(buttons.center().x()-dialog->width()/2) <= 1/1.75);
+        for (const auto &name : {"semanticDialogTitle", "dialogWidget-delete-messageText", "dialogWidget-delete-noteText", "dialogWidget-delete-yesButtonText", "dialogWidget-delete-noButtonText", "dialogWidget-delete-modeComboBoxText", "dialogWidget-delete-modeComboBoxIndicator"}) {
+            auto *leaf = visualItemWithObjectName(dialog, name);
+            QVERIFY2(leaf && leaf->isVisible(), name);
+            const auto origin = leaf->mapToItem(root, QPointF());
+            for (qreal coordinate : {origin.x(), origin.y()})
+                QVERIFY2(qAbs(coordinate*1.75-qRound(coordinate*1.75)) < .01, name);
+            QCOMPARE(leaf->mapToItem(root, QPointF(1,0))-origin, QPointF(1,0));
+            QCOMPARE(leaf->mapToItem(root, QPointF(0,1))-origin, QPointF(0,1));
+        }
+    }
+    QVERIFY(fixture.window->grabWindow().save(QDir::temp().filePath("f4-warning-dialog-175.png")));
+    auto dialogs = scene.value("dialogs").toList();
+    auto neutral = dialogs[0].toMap();
+    neutral["isWarning"] = false;
+    dialogs[0] = neutral;
+    scene["dialogs"] = dialogs;
+    fixture.shell.setScene(scene);
+    QTRY_COMPARE(dialog->property("color").value<QColor>(), normal);
 }
 
 void F4QuickViewSurfaceTests::modalDialogDoesNotDarkenBackground()

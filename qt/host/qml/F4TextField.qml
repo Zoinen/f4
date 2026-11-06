@@ -8,6 +8,12 @@ import QtQuick.Controls.Basic as T
 Item {
     id: control
 
+    readonly property var dialogColors: dialogColorContext.colors
+    DialogColorContext {
+        id: dialogColorContext
+        control: control
+    }
+
     property ApplicationWindow hostWindow: (control.Window.window as ApplicationWindow) || null
     property alias text: innerInput.text
     property alias placeholderText: placeholderLabel.text
@@ -256,7 +262,7 @@ Item {
         color: "transparent"
         antialiasing: true
         border.width: control.snap(control.focusRingWidth)
-        border.color: control.hostWindow ? control.hostWindow.dialogAccent : "#2c7be5"
+        border.color: control.hostWindow ? control.dialogColors.dialogAccent : "#2c7be5"
         opacity: 0.55
     }
 
@@ -269,15 +275,15 @@ Item {
         visible: control.hasBackground
         radius: control.snap(control.cornerRadius)
         color: control.hostWindow
-               ? (!control.enabled ? control.hostWindow.dialogBg
-                  : control.hovered ? control.hostWindow.inputHoverBg
-                                  : control.hostWindow.controlPressedBg)
+               ? (!control.enabled ? control.dialogColors.dialogBg
+                  : control.hovered ? control.dialogColors.inputHoverBg
+                                  : control.dialogColors.controlPressedBg)
                : "#18202a"
         border.width: control.hostWindow ? control.hostWindow.separatorWidth : 1
         border.color: {
             if (control.enabled && control.editingFocus)
-                return control.hostWindow ? control.hostWindow.dialogAccent : "#2c7be5"
-            return control.hostWindow ? control.hostWindow.controlBorder : "#25303d"
+                return control.hostWindow ? control.dialogColors.dialogAccent : "#2c7be5"
+            return control.hostWindow ? control.dialogColors.controlBorder : "#25303d"
         }
 
         Behavior on border.color { ColorAnimation { duration: 90 } }
@@ -356,7 +362,7 @@ Item {
                 color: control.hostWindow
                        ? (control.enabled ? control.hostWindow.textColor : control.hostWindow.mutedText)
                        : (control.enabled ? "#ffffff" : "#666666")
-                selectionColor: control.hostWindow ? control.hostWindow.selectedBg : "#2c7be5"
+                selectionColor: control.hostWindow ? control.dialogColors.selectedBg : "#2c7be5"
                 selectedTextColor: control.hostWindow ? control.hostWindow.textColor : "#ffffff"
                 font: control.hostWindow ? control.hostWindow.font : Qt.font({})
                 // A remote-controlled field is normally read-only because Go

@@ -625,6 +625,24 @@ on an ended clip resumes playback, while paused clips stay paused.
 
 ### Semantic dialog layout
 
+Dialogs export `isWarning` independently of their translated title. Each
+`GenericDialog` owns one `DialogPalette` controlled by its `accentColor`.
+Ordinary dialogs return the saved theme colors exactly. A changed accent
+rebases the hue/chroma of backgrounds, borders and selections while retaining
+their individual brightness and alpha; warning dialogs use a muted red accent.
+Shared controls inherit this scope through `DialogColorContext`. Detached
+dropdowns and completion popups use their registered field as the scope anchor.
+Mnemonic letters in controls and owned menus use the same scoped accent;
+unscoped chrome retains the global mnemonic color.
+An optional symbolic `bodyIcon` places a Lucide icon at the content's left
+margin, followed by a left-aligned introductory message block; action rows
+retain their independent centering.
+No global theme state is changed, and controls outside a dialog use the host
+palette directly. Centered VBox items and individual
+AutoLayout horizontal-centering constraints export `horizontalAlignment`.
+The Qt renderer centers those controls in its pixel-based content area and
+measures single-line labels using the GUI font instead of terminal columns.
+
 Semantic dialog tables fill their allocated row span rather than centering a
 shorter terminal-height surface within it. This keeps the command palette's
 results close to the query field. Adjacent `>` edit prompts are presented as

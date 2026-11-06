@@ -22,6 +22,21 @@ func TestInfoPanelUsageSurvivesSceneProjection(t *testing.T) {
 	}
 }
 
+func TestDialogWarningAndAlignmentSurviveTypedProjection(t *testing.T) {
+	input := map[string]any{"id": "delete", "kind": "dialog", "isWarning": true, "bodyIcon": "trash-2",
+		"children": []map[string]any{{"id": "mode", "kind": "comboBox", "horizontalAlignment": "center"}}}
+	dialog := appDialogFromLegacy(input)
+	if !dialog.IsWarning || dialog.BodyIcon != "trash-2" || dialog.Controls[0].HorizontalAlignment != "center" {
+		t.Fatalf("dialog intent lost in typed projection: %+v", dialog)
+	}
+	dialog.Legacy = nil
+	dialog.Controls[0].Legacy = nil
+	node := dialog.ToMap()
+	if node["isWarning"] != true || node["bodyIcon"] != "trash-2" || node["children"].([]map[string]any)[0]["horizontalAlignment"] != "center" {
+		t.Fatalf("dialog intent lost on serialization: %v", node)
+	}
+}
+
 func TestAppPanelFromLegacySortDirectionFallback(t *testing.T) {
 	for _, tc := range []struct {
 		mode          string

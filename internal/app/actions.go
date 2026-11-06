@@ -1923,6 +1923,7 @@ func imageViewDelete(pf *panel.PanelsFrame, v vfs.VFS, target string, removed fu
 	buttons := []string{i18n.Msg(buttonKey), i18n.Msg("vtui.Cancel")}
 	dlg := vtui.ShowMessageEx(i18n.Msg(titleKey),
 		fmt.Sprintf(i18n.Msg(confirmKey), vtui.TruncateMiddle(v.Base(target), 40)), buttons, kind)
+	dlg.BodyIcon = "trash-2"
 	if children := dlg.GetChildren(); config.App.DeleteCancelFocused && len(children) > 0 {
 		dlg.SetFocusedItem(children[len(children)-1])
 	}
@@ -3956,6 +3957,7 @@ func actionDeleteWithDisposition(pf *panel.PanelsFrame, disposition vfs.DeleteDi
 	// Moving an item to the Recycle Bin is recoverable, so keep that prompt on
 	// the neutral dialog palette. Only an irreversible deletion is an alarm.
 	dlg.IsWarning = disposition == vfs.DeletePermanently
+	dlg.BodyIcon = "trash-2"
 	vbox := vtui.NewVBoxLayout(dlg.X1+2, dlg.Y1+2, 50-4, (8+len(lines))-4)
 
 	for _, l := range lines {

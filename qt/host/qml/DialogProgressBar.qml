@@ -6,14 +6,20 @@ import QtQuick.Controls.Basic as T
 
 T.ProgressBar {
     id: dialogProgress
+
+    readonly property var dialogColors: dialogColorContext.colors
+    DialogColorContext {
+        id: dialogColorContext
+        control: dialogProgress
+    }
     required property ApplicationWindow hostWindow
 
     background: Rectangle {
         implicitHeight: 8
         radius: 4
-        color: hostWindow.controlPressedBg
+        color: dialogProgress.dialogColors.controlPressedBg
         border.width: 1
-        border.color: hostWindow.controlBorder
+        border.color: dialogProgress.dialogColors.controlBorder
     }
 
     contentItem: Item {
@@ -24,7 +30,7 @@ T.ProgressBar {
             width: dialogProgress.visualPosition * parent.width
             height: parent.height
             radius: 4
-            color: hostWindow.dialogAccent
+            color: dialogProgress.dialogColors.dialogAccent
         }
     }
 }

@@ -733,6 +733,9 @@ type KeyBarAlternativeModel struct {
 }
 
 type DialogModel struct {
+	// IsWarning selects warning chrome independently of the localized title.
+	IsWarning bool
+	BodyIcon  string
 	// StackOrder shares the same bottom-to-top frame order as MenuModel.
 	StackOrder int
 	// Layout selects an owner-declared native layout instead of terminal rows.
@@ -768,16 +771,18 @@ type DialogKeyHint struct {
 }
 
 type ControlModel struct {
-	CanUndo            bool
-	CanRedo            bool
-	FileGroupSample    bool
-	PreviewStyle       *HighlightStyleModel
-	PreviewName        string
-	PreviewCatalog     string
-	PreviewDirectory   bool
-	ColorMatrixCell    bool
-	ColorPreview       *HighlightColorPatchModel
-	FileGroupsOverview bool
+	// HorizontalAlignment carries explicit layout intent (currently "center").
+	HorizontalAlignment string
+	CanUndo             bool
+	CanRedo             bool
+	FileGroupSample     bool
+	PreviewStyle        *HighlightStyleModel
+	PreviewName         string
+	PreviewCatalog      string
+	PreviewDirectory    bool
+	ColorMatrixCell     bool
+	ColorPreview        *HighlightColorPatchModel
+	FileGroupsOverview  bool
 	// FullPage keeps an embedded table and its actions in the full Settings content area.
 	FullPage      bool
 	HeaderControl *ControlModel
@@ -1863,6 +1868,8 @@ func (d DialogModel) ToMap() M {
 		"busy":      d.Busy,
 		"progress":  d.Progress,
 		"showClose": d.ShowClose,
+		"isWarning": d.IsWarning,
+		"bodyIcon":  d.BodyIcon,
 		"children":  controlsToMaps(d.Controls),
 	}
 	if d.StackOrder > 0 {
@@ -1897,30 +1904,31 @@ func (d DialogModel) ToMap() M {
 
 func (c ControlModel) ToMap() M {
 	out := M{
-		"id":            c.ID,
-		"kind":          c.Kind,
-		"visible":       c.Visible,
-		"focused":       c.Focused,
-		"canUndo":       c.CanUndo,
-		"canRedo":       c.CanRedo,
-		"disabled":      c.Disabled,
-		"text":          c.Text,
-		"title":         c.Title,
-		"hotkey":        c.Hotkey,
-		"state":         c.State,
-		"threeState":    c.ThreeState,
-		"wrapText":      c.WrapText,
-		"scrollable":    c.Scrollable,
-		"scrollTop":     c.ScrollTop,
-		"contentHeight": c.ContentHeight,
-		"bordered":      c.Bordered,
-		"dimmed":        c.Dimmed,
-		"explainTarget": c.ExplainTarget,
-		"disabledItems": c.DisabledItems,
-		"default":       c.Default,
-		"password":      c.Password,
-		"cursor":        c.Cursor,
-		"left":          c.Left,
+		"horizontalAlignment": c.HorizontalAlignment,
+		"id":                  c.ID,
+		"kind":                c.Kind,
+		"visible":             c.Visible,
+		"focused":             c.Focused,
+		"canUndo":             c.CanUndo,
+		"canRedo":             c.CanRedo,
+		"disabled":            c.Disabled,
+		"text":                c.Text,
+		"title":               c.Title,
+		"hotkey":              c.Hotkey,
+		"state":               c.State,
+		"threeState":          c.ThreeState,
+		"wrapText":            c.WrapText,
+		"scrollable":          c.Scrollable,
+		"scrollTop":           c.ScrollTop,
+		"contentHeight":       c.ContentHeight,
+		"bordered":            c.Bordered,
+		"dimmed":              c.Dimmed,
+		"explainTarget":       c.ExplainTarget,
+		"disabledItems":       c.DisabledItems,
+		"default":             c.Default,
+		"password":            c.Password,
+		"cursor":              c.Cursor,
+		"left":                c.Left,
 	}
 	if c.FileGroupsOverview {
 		out["fileGroupsOverview"] = true

@@ -40,7 +40,11 @@ type ScreenObject struct {
 	maxH               int
 	sizeSpecH          *SizeSpec
 	sizeSpecV          *SizeSpec
+	semanticHAlign     string
 }
+
+func (so *ScreenObject) setSemanticHorizontalAlignment(value string) { so.semanticHAlign = value }
+func (so *ScreenObject) semanticHorizontalAlignment() string         { return so.semanticHAlign }
 
 // SetID sets the stable identifier for the element.
 func (so *ScreenObject) SetID(id string) {

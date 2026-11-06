@@ -7,6 +7,12 @@ import QtQuick.Controls.Basic as T
 T.RadioButton {
     id: control
 
+    readonly property var dialogColors: dialogColorContext.colors
+    DialogColorContext {
+        id: dialogColorContext
+        control: control
+    }
+
     property ApplicationWindow hostWindow: (control.Window.window as ApplicationWindow) || null
     property bool semanticFocus: false
     property bool wrapText: false
@@ -49,9 +55,9 @@ T.RadioButton {
                       : 0
         border.color: control.focusHighlighted
                       ? (control.hostWindow
-                         ? control.hostWindow.dialogAccent : "#2c7be5")
+                         ? control.dialogColors.dialogAccent : "#2c7be5")
                       : (control.hostWindow
-                         ? control.hostWindow.controlBorder : "#25303d")
+                         ? control.dialogColors.controlBorder : "#25303d")
         transform: Translate {
             x: control.hostWindow
                ? control.hostWindow.dialogPixelOffsetX(
@@ -83,16 +89,16 @@ T.RadioButton {
         }
         color: {
             if (control.down)
-                return control.hostWindow ? control.hostWindow.controlPressedBg : "#334455"
+                return control.hostWindow ? control.dialogColors.controlPressedBg : "#334455"
             if (control.hovered)
-                return control.hostWindow ? control.hostWindow.controlHoverBg : "#223344"
-            return control.hostWindow ? control.hostWindow.controlBg : "#18202a"
+                return control.hostWindow ? control.dialogColors.controlHoverBg : "#223344"
+            return control.hostWindow ? control.dialogColors.controlBg : "#18202a"
         }
         border.width: control.hostWindow ? control.hostWindow.separatorWidth : 1
         border.color: {
             if (control.checked || control.semanticFocus)
-                return control.hostWindow ? control.hostWindow.dialogAccent : "#2c7be5"
-            return control.hostWindow ? control.hostWindow.controlBorder : "#25303d"
+                return control.hostWindow ? control.dialogColors.dialogAccent : "#2c7be5"
+            return control.hostWindow ? control.dialogColors.controlBorder : "#25303d"
         }
 
         Rectangle {
@@ -104,7 +110,7 @@ T.RadioButton {
             height: control.snap(8)
             radius: width / 2
             visible: control.checked
-            color: control.hostWindow ? control.hostWindow.dialogAccent : "#2c7be5"
+            color: control.hostWindow ? control.dialogColors.dialogAccent : "#2c7be5"
             transform: Translate {
                 x: control.hostWindow
                    ? control.hostWindow.dialogPixelOffsetX(
@@ -125,7 +131,7 @@ T.RadioButton {
                                        : "radioButtonText"
         leftPadding: control.indicator.width + control.spacing
         text: control.plainText ? control.text : control.hostWindow
-              ? control.hostWindow.mnemonicText(control.text, control.mnemonicHotkey)
+              ? control.hostWindow.mnemonicTextWithAccent(control.text, control.mnemonicHotkey, control.dialogColors.dialogAccent)
               : control.text
         textFormat: control.plainText ? Text.PlainText : Text.StyledText
         wrapMode: control.wrapText ? Text.Wrap : Text.NoWrap

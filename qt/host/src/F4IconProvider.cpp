@@ -1225,8 +1225,13 @@ QVariantMap F4IconSet::resolveFileStyle(QVariantMap style, const QVariantMap &co
             return style;
         }
     }
-    // Other catalogs' compiled choices must not change Native marker behavior.
-    if (system() && !supplied && !style.value(QStringLiteral("marker")).toString().isEmpty()) {
+    // Other catalogs' compiled choices must not change Native file markers.
+    // A directory name can also match an executable/archive mask (Config.Msi);
+    // its marker must not suppress the native folder artwork.
+    if (system() && !supplied
+        && !context.value(QStringLiteral("isDir")).toBool()
+        && !context.value(QStringLiteral("isUp")).toBool()
+        && !style.value(QStringLiteral("marker")).toString().isEmpty()) {
         style.remove(QStringLiteral("icon"));
         style.remove(QStringLiteral("iconKey"));
         return style;

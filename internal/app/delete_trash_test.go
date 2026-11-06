@@ -198,6 +198,9 @@ func TestDeleteActionsExposeDistinctDispositions(t *testing.T) {
 
 	findButton := func(t *testing.T, want string) {
 		t.Helper()
+		if dlg, ok := vtui.FrameManager.GetTopFrame().(*vtui.Window); !ok || dlg.SemanticNode(&vtui.SemanticContext{})["bodyIcon"] != "trash-2" {
+			t.Fatal("delete confirmation must expose the trash-2 body icon")
+		}
 		dlg, ok := vtui.FrameManager.GetTopFrame().(vtui.Container)
 		if !ok {
 			t.Fatal("delete confirmation was not shown")

@@ -4,6 +4,8 @@ import "github.com/unxed/vtinput"
 
 // Window is a container for UI elements. It can be modal (Dialog) or non-modal.
 type Window struct {
+	// BodyIcon is an optional symbolic icon for native dialog presentations.
+	BodyIcon string
 	// Original message body, before console wrapping and truncation.
 	messageText *string
 	BaseWindow

@@ -7,6 +7,7 @@ import QtQuick.Controls.impl
 // Native menu viewport and chrome. Selection and protocol state stay in the overlay.
 Item {
     id: menuSurface
+    readonly property var dialogColors: menuOverlay.dialogColors
     required property Item menuOverlay
     readonly property var hostWindow: menuOverlay.hostWindow
     readonly property var menuBar: menuOverlay.menuBar
@@ -110,10 +111,10 @@ Item {
            : hostWindow.snapPx(menuOverlay.preferredPopupY(height))
         objectName: "semanticMenuPopup-"
                     + hostWindow.cleanText(menuOverlay.frame.id)
-        color: hostWindow.dialogHeaderBg
+        color: menuSurface.dialogColors.dialogHeaderBg
         border.width: menuOverlay.dropdownMode
                       ? hostWindow.separatorWidth : 1
-        border.color: hostWindow.controlBorder
+        border.color: menuSurface.dialogColors.controlBorder
         radius: menuOverlay.dropdownMode
                 ? 4 + 3 * menuOverlay.revealProgress : 7
         clip: true

@@ -294,6 +294,7 @@ private slots:
     void zeroRequestedSizeUsesLogicalFallback();
     void requestedPhysicalSizeOverridesStaleDevicePixelRatio();
     void nativePlatformFileIconSmoke();
+    void directoryMarkerDoesNotSuppressNativeIcon();
     void nativeArtworkPreservesSourceResolution_data();
     void nativeArtworkPreservesSourceResolution();
     void nativeArtworkTrimsOnlyZeroAlpha_data();
@@ -1338,6 +1339,29 @@ void F4IconProviderTests::nativeArtworkPreservesSourceResolution()
              expected.convertToFormat(QImage::Format_ARGB32));
 }
 
+void F4IconProviderTests::directoryMarkerDoesNotSuppressNativeIcon()
+{
+    F4IconSet icons(QStringLiteral("marker-icons"));
+    icons.setIconSet(F4IconSet::System);
+    const QVariantMap style{{"marker", "*"}};
+    const QVariantMap context{{"name", "Config.Msi"}, {"isDir", true},
+                              {"localPath", "C:/Config.Msi"}};
+    const auto resolved = icons.resolveFileStyle(style, context, 16, 1.75, 0, false);
+    const QUrl source = resolved.value("icon").toUrl();
+    QVERIFY2(!source.isEmpty(), "A filename marker must not hide a native directory icon");
+    QCOMPARE(source, icons.fileIconSource("C:/Config.Msi", "Config.Msi", true, 16, 1.75, 0));
+    QCOMPARE(resolved.value("marker").toString(), QString("*"));
+    auto up = context;
+    up["isDir"] = false;
+    up["isUp"] = true;
+    QVERIFY(!icons.resolveFileStyle(style, up, 16, 1.75, 0, false).value("icon").toString().isEmpty());
+    auto file = context;
+    file["isDir"] = false;
+    file["name"] = "installer.msi";
+    // Preserve explicitly configured marker presentation for regular files.
+    QVERIFY(icons.resolveFileStyle(style, file, 16, 1.75, 0, false).value("icon").toString().isEmpty());
+}
+
 void F4IconProviderTests::nativePlatformFileIconSmoke()
 {
     const QString platform = QGuiApplication::platformName();
@@ -1346,7 +1370,7 @@ void F4IconProviderTests::nativePlatformFileIconSmoke()
         QSKIP("Native file icons require the real desktop QPA plugin");
     }
 
-    const QString homePath = QDir::homePath();
+    const QString homePath = qEnvironmentVariable("F4_TEST_NATIVE_ICON_PATH", QDir::homePath());
     QAbstractFileIconProvider nativeSource;
     const QIcon nativeIcon = nativeSource.icon(QFileInfo(homePath));
     QVERIFY2(!nativeIcon.isNull(), qPrintable(
@@ -1364,6 +1388,11 @@ void F4IconProviderTests::nativePlatformFileIconSmoke()
     const QImage image = provider.requestImage(
         F4IconProvider::routeId(source), nullptr, {});
     QVERIFY(!image.isNull());
+    bool visible = false;
+    for (int y = 0; y < image.height(); ++y)
+        for (int x = 0; x < image.width(); ++x)
+            visible |= image.pixelColor(x, y).alpha() > 0;
+    QVERIFY2(visible, qPrintable("Native folder icon has no visible pixels: " + homePath));
 }
 
 void F4IconProviderTests::renderingUsesLogicalSizeAndDevicePixelRatio_data()

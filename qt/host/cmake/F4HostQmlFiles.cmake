@@ -2,6 +2,8 @@
 # Paths are relative to qt/host; production keeps these resource aliases even
 # though its CMake target is configured from a clean child directory.
 set(F4_HOST_QML_FILES
+  qml/DialogPalette.qml
+  qml/DialogColorContext.qml
   qml/SettingsHelpCard.qml
   qml/QuickViewController.qml
   qml/GallerySettingsPage.qml

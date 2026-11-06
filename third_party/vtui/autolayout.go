@@ -294,6 +294,9 @@ func (al *AutoLayout) SameHeight(elements ...UIElement) *AutoLayout {
 
 // CenterHorizontal centers el horizontally within the layout bounds.
 func (al *AutoLayout) CenterHorizontal(el UIElement) *AutoLayout {
+	if target, ok := el.(interface{ setSemanticHorizontalAlignment(string) }); ok {
+		target.setSemanticHorizontalAlignment("center")
+	}
 	ev := al.Var(el)
 	_ = al.solver.AddConstraint(kiwi.NewConstraint(ev.Left.Plus(ev.Right), kiwi.OpEq, al.BoundsLeft.Plus(al.BoundsRight)))
 	return al

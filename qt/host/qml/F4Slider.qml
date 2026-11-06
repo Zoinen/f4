@@ -7,6 +7,12 @@ import QtQuick.Controls.Basic as T
 T.Slider {
     id: control
 
+    readonly property var dialogColors: dialogColorContext.colors
+    DialogColorContext {
+        id: dialogColorContext
+        control: control
+    }
+
     property ApplicationWindow hostWindow: (control.Window.window as ApplicationWindow) || null
     property Component trackComponent: null
     property real trackHeight: 6
@@ -28,13 +34,13 @@ T.Slider {
         radius: width / 2
         color: {
             if (control.pressed)
-                return control.hostWindow ? control.hostWindow.dialogAccent : "#2c7be5"
+                return control.hostWindow ? control.dialogColors.dialogAccent : "#2c7be5"
             if (control.hovered)
-                return control.hostWindow ? Qt.lighter(control.hostWindow.dialogAccent, 1.2) : "#ffffff"
+                return control.hostWindow ? Qt.lighter(control.dialogColors.dialogAccent, 1.2) : "#ffffff"
             return "#ffffff"
         }
         border.width: control.hostWindow ? control.hostWindow.separatorWidth : 1
-        border.color: control.hostWindow ? control.hostWindow.controlBorder : "#334455"
+        border.color: control.hostWindow ? control.dialogColors.controlBorder : "#334455"
 
         Behavior on color { ColorAnimation { duration: 90 } }
     }
@@ -55,15 +61,15 @@ T.Slider {
             Rectangle {
                 anchors.fill: parent
                 radius: control.snap(height / 2)
-                color: control.hostWindow ? control.hostWindow.controlBg : "#18202a"
+                color: control.hostWindow ? control.dialogColors.controlBg : "#18202a"
                 border.width: control.hostWindow ? control.hostWindow.separatorWidth : 1
-                border.color: control.hostWindow ? control.hostWindow.controlBorder : "#25303d"
+                border.color: control.hostWindow ? control.dialogColors.controlBorder : "#25303d"
 
                 Rectangle {
                     width: control.snap(control.visualPosition * parent.width)
                     height: parent.height
                     radius: control.snap(height / 2)
-                    color: control.hostWindow ? control.hostWindow.dialogAccent : "#2c7be5"
+                    color: control.hostWindow ? control.dialogColors.dialogAccent : "#2c7be5"
                 }
             }
         }

@@ -9,6 +9,12 @@ import QtQuick.Controls.Basic as T
 T.Button {
     id: control
 
+    readonly property var dialogColors: dialogColorContext.colors
+    DialogColorContext {
+        id: dialogColorContext
+        control: control
+    }
+
     property ApplicationWindow hostWindow: (control.Window.window as ApplicationWindow) || null
     property string variant: "standard" // "standard", "accent", "tool", "flat"
     property string mnemonicHotkey: ""
@@ -19,6 +25,8 @@ T.Button {
     property string toolTipText: ""
     property bool semanticFocus: false
     readonly property bool focusHighlighted: semanticFocus || visualFocus || activeFocus
+    readonly property bool dropdownSurface: dialogColorContext.inherited !== null
+        && variant === "standard" && !highlighted
     function snap(val) {
         return hostWindow ? hostWindow.snapPx(val) : Math.round(val)
     }
@@ -92,7 +100,7 @@ T.Button {
                 objectName: control.objectName
                             ? (control.objectName + "Text") : "buttonText"
                 text: control.hostWindow
-                      ? control.hostWindow.mnemonicText(control.text, control.mnemonicHotkey)
+                      ? control.hostWindow.mnemonicTextWithAccent(control.text, control.mnemonicHotkey, control.dialogColors.dialogAccent)
                       : control.text
                 textFormat: control.hostWindow ? Text.StyledText : Text.PlainText
                 color: control.variant === "accent"
@@ -127,9 +135,9 @@ T.Button {
         color: {
             const isAccent = control.highlighted || control.variant === "accent"
             if (!control.enabled)
-                return control.hostWindow ? control.hostWindow.dialogBg : "#1e2630"
+                return control.hostWindow ? control.dialogColors.dialogBg : "#1e2630"
             if (isAccent) {
-                const baseAccent = control.hostWindow ? control.hostWindow.dialogAccent : "#2c7be5"
+                const baseAccent = control.hostWindow ? control.dialogColors.dialogAccent : "#2c7be5"
                 if (control.down)
                     return Qt.darker(baseAccent, 1.2)
                 if (control.hovered)
@@ -138,17 +146,17 @@ T.Button {
             }
             if (control.variant === "flat" || control.variant === "tool") {
                 if (control.down)
-                    return control.hostWindow ? control.hostWindow.controlPressedBg : "#334455"
+                    return control.hostWindow ? control.dialogColors.controlPressedBg : "#334455"
                 if (control.hovered)
-                    return control.hostWindow ? control.hostWindow.controlHoverBg : "#223344"
+                    return control.hostWindow ? control.dialogColors.controlHoverBg : "#223344"
                 return "transparent"
             }
             // Standard
             if (control.down)
-                return control.hostWindow ? control.hostWindow.controlPressedBg : "#334455"
+                return control.hostWindow ? control.dialogColors.controlPressedBg : "#334455"
             if (control.hovered)
-                return control.hostWindow ? control.hostWindow.controlHoverBg : "#223344"
-            return control.hostWindow ? control.hostWindow.controlBg : "#18202a"
+                return control.hostWindow ? control.dialogColors.controlHoverBg : "#223344"
+            return control.hostWindow ? control.dialogColors.controlBg : "#18202a"
         }
 
         border.width: {
@@ -159,14 +167,24 @@ T.Button {
             return control.hostWindow ? control.hostWindow.separatorWidth : 1
         }
         border.color: {
+            if (control.dropdownSurface)
+                return control.enabled && control.focusHighlighted
+                    ? (control.hostWindow ? control.dialogColors.dialogAccent : "#2c7be5")
+                    : (control.hostWindow ? control.dialogColors.controlBorder : "#25303d")
             if (control.focusHighlighted || control.highlighted || control.variant === "accent")
-                return control.hostWindow ? control.hostWindow.dialogAccent : "#2c7be5"
+                return control.hostWindow ? control.dialogColors.dialogAccent : "#2c7be5"
             if (control.hovered)
-                return control.hostWindow ? control.hostWindow.controlHoverBg : "#334455"
-            return control.hostWindow ? control.hostWindow.controlBorder : "#25303d"
+                return control.hostWindow ? control.dialogColors.controlHoverBg : "#334455"
+            return control.hostWindow ? control.dialogColors.controlBorder : "#25303d"
         }
 
-        Behavior on color { ColorAnimation { duration: 90 } }
-        Behavior on border.color { ColorAnimation { duration: 90 } }
+        Behavior on color {
+            enabled: !control.dropdownSurface
+            ColorAnimation { duration: 90 }
+        }
+        Behavior on border.color {
+            enabled: !control.dropdownSurface
+            ColorAnimation { duration: 90 }
+        }
     }
 }
