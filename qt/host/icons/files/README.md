@@ -4,6 +4,10 @@ These committed SVGs are separate from the original Lucide chrome icons.
 `names.txt` covers file-type/folder variants and virtual-panel device/action rows.
 Each numbered directory contains the same artwork with stroke width `number / 2`
 and a precomputed tight viewBox including the complete stroked contour.
+`group-names.txt` maps the 15 file-group catalog names to original Lucide source
+names. Prepared outputs use those canonical group names; the other 17 resources
+keep their source names. CMake preserves legacy QRC paths as aliases to the
+renamed files. The preparation tool and resource enumeration share this mapping.
 Original paths and aspect ratios are preserved. Menu/button/path-control icons
 continue to use `icons/lucide` or `lucide-gallery`, unchanged.
 

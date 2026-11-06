@@ -6,6 +6,12 @@ The VFS in `f4` is designed to be fully non-blocking. This architecture ensures 
 
 ## Device-qualified paths
 
+On macOS the drive menu reads the kernel mount table whenever opened and lists
+browsable volumes mounted below `/Volumes`, including removable media, disk
+images and network shares. Hidden system volumes are excluded. No restart is
+needed after mounting or unmounting; these entries navigate to the mounted
+filesystem, without advertising the Linux-only unmount action.
+
 Android and iOS publish `android://<device>/<path>` and
 `ios://<device>/<path>` addresses. `vfs.DevicePath` centralizes escaping and
 conversion to native POSIX paths. Use the mounted VFS's `Join`, `Base`, `Dir`,

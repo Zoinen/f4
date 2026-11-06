@@ -8,6 +8,21 @@ F4ComboBox {
     required property var widget
     enabled: widget.disabled !== true
     property string registeredOwnerId: ""
+    leadingPreviewWidth: widget.iconTheme !== undefined ? hostWindow.snapPx(28) : 0
+    HostPixelAlignedImage {
+        hostWindow: dialogCombo.hostWindow
+        visible: dialogCombo.leadingPreviewWidth > 0
+        x: dialogCombo.hostWindow.snapPx(6)
+        y: dialogCombo.hostWindow.snapPx((dialogCombo.height-height)/2)
+        width: dialogCombo.hostWindow.snapPx(22)
+        height: width
+        sourceSize: Qt.size(width*dialogCombo.hostWindow.dpr,height*dialogCombo.hostWindow.dpr)
+        fillMode: Image.PreserveAspectFit
+        source: visible && dialogCombo.hostWindow.iconProvider
+                ? dialogCombo.hostWindow.iconProvider.catalogIconSource(
+                      String(dialogCombo.widget.iconTheme),String(dialogCombo.widget.iconReference || ""),
+                      22,dialogCombo.hostWindow.dpr) : ""
+    }
 
     function syncDropdownRegistration() {
         if (!hostWindow

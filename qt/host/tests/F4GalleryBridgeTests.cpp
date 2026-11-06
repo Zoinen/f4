@@ -1,6 +1,7 @@
 #include "F4GalleryBridge.h"
 #include "F4IconProvider.h"
 #include "NavigationBenchmarkTrace.h"
+#include "../../../third_party/ZoinGallery/GalleryEntryVisual.h"
 
 #include <QAbstractItemModel>
 #include <QElapsedTimer>
@@ -114,6 +115,7 @@ class F4GalleryBridgeTests final : public QObject
     Q_OBJECT
 
 private slots:
+    void themeIconTintReachesDelegateVisual();
     void directoryAuthoritySurvivesBridgeAndOpenTargetsFolder();
     void initTestCase();
     void panelIconsKeepNativeRasterAtMixedDpi();
@@ -139,6 +141,7 @@ private slots:
     void galleryLayoutDensityAndSortActionsAreValidated();
     void galleryIconsFollowSharedIconSet();
     void deviceIconsSurviveIconSetChanges();
+    void fileGroupIconPriority();
     void deferredSystemCatalogSharesGenericFileAndFolderIcons();
     void hostRuntimeDefersBoundedDecodeWorkers();
     void initialCatalogAppliesAppearanceInsideReset();
@@ -191,6 +194,22 @@ private slots:
     void equalGalleryColumnSchemaDoesNotResetLayout();
     void loadsTwoSessionsAndWindowlessQml();
 };
+
+void F4GalleryBridgeTests::themeIconTintReachesDelegateVisual()
+{
+    GalleryEntryVisual visual;
+    QSignalSpy changes(&visual, &GalleryEntryVisual::styleChanged);
+    QVERIFY(!visual.tintIcon().isValid()); // Legacy clients retain their artwork defaults.
+    for (bool tint : {true, false, true}) {
+        visual.applySnapshot(QVariantMap{{"highlightStyle",QVariantMap{{"tintIcon",tint}}}});
+        QVERIFY(visual.tintIcon().isValid());
+        QCOMPARE(visual.tintIcon().toBool(),tint);
+    }
+    QCOMPARE(changes.count(),3);
+    visual.applySnapshot({});
+    QVERIFY(!visual.tintIcon().isValid());
+    QCOMPARE(changes.count(),4);
+}
 
 namespace
 {
@@ -448,6 +467,7 @@ void F4GalleryBridgeTests::panelIconsKeepNativeRasterAtMixedDpi()
         QSKIP("Run with mixed-dpi-screens.json: window DPR 1.75, maximum DPR 2");
 
     F4IconSet icons;
+    icons.setName(QStringLiteral("lucide")); // This test compares the Lucide raster, not the GUI default theme.
     auto *provider = new F4IconProvider;
     view.engine()->addImageProvider(icons.providerId(), provider);
     view.engine()->addImportPath(QStringLiteral(":"));
@@ -803,6 +823,42 @@ void F4GalleryBridgeTests::deviceIconsSurviveIconSetChanges()
     }
 }
 
+void F4GalleryBridgeTests::fileGroupIconPriority()
+{
+    for (auto mode : {F4IconSet::Lucide, F4IconSet::Zoin, F4IconSet::System}) {
+        for (bool supplied : {false, true}) {
+            for (bool overrideNative : {false, true}) {
+                QVariantMap scene = testScene();
+                QVariantMap shell = scene.value("shell").toMap();
+                QVariantMap panel = shell.value("panels").toList().first().toMap();
+                QVariantMap style{{"iconChoices", QVariantMap{{"*", QVariantMap{
+                    {"kind", "asset"}, {"value", "file-code"},
+                    {"groupId", "user-code"}, {"order", 0},
+                    {"overrideNative", overrideNative}}}}}};
+                if (supplied) { style.insert("iconSource", "plugin"); style.insert("iconKey", "smartphone"); }
+                panel.insert("highlightRevision", 1);
+                panel.insert("highlightStyles", QVariantMap{{"style", style}});
+                panel.insert("entries", QVariantList{QVariantMap{
+                    {"entryId", "entry"}, {"index", 0}, {"name", "test.bin"},
+                    {"localPath", "/tmp/test.bin"}, {"highlightStyleId", "style"}}});
+                shell.insert("panels", QVariantList{panel}); scene.insert("shell",shell);
+                QQmlEngine engine;
+                F4IconSet icons; icons.setIconSet(mode);
+                F4GalleryBridge bridge(&engine,nullptr,&icons); bridge.synchronizeScene(scene);
+                auto *session=qobject_cast<ZoinGallery::GallerySession *>(bridge.sessionForSide(0));
+                QVERIFY(session);
+                const int role=session->model()->roleNames().key("imageFileRole",-1);
+                auto *item=session->model()->data(session->model()->index(0,0),role).value<QObject *>();
+                QVERIFY(item);
+                const bool groupWins=overrideNative || (!supplied && mode!=F4IconSet::System);
+                if (groupWins) QCOMPARE(item->property("highlightStyle").toMap().value("iconSource").toString(),QStringLiteral("group"));
+                else if (supplied) QCOMPARE(item->property("iconPath").toString(),icons.iconSource("smartphone",128,qGuiApp->devicePixelRatio()).toString());
+                else QVERIFY(QUrl(item->property("iconPath").toString()).path().startsWith("/file/"));
+            }
+        }
+    }
+}
+
 void F4GalleryBridgeTests::galleryIconsFollowSharedIconSet()
 {
     QVariantMap scene = testScene();
@@ -813,6 +869,9 @@ void F4GalleryBridgeTests::galleryIconsFollowSharedIconSet()
     panel.insert(QStringLiteral("cursorEntryId"), QStringLiteral("plain"));
     panel.insert(QStringLiteral("highlightRevision"), qulonglong(73));
     panel.insert(QStringLiteral("highlightStyles"), QVariantMap{
+        {QStringLiteral("plain"), QVariantMap{
+             {QStringLiteral("iconChoices"), QVariantMap{{"lucide",QVariantMap{{"kind","asset"},{"value","text-files"}}}}},
+        }},
         {QStringLiteral("custom"), QVariantMap{
              {QStringLiteral("icon"),
               QStringLiteral("file:///tmp/user-highlight.svg")},
@@ -822,8 +881,10 @@ void F4GalleryBridgeTests::galleryIconsFollowSharedIconSet()
         }},
         {QStringLiteral("marker"), QVariantMap{
              {QStringLiteral("marker"), QStringLiteral("*")},
+             {QStringLiteral("iconChoices"), QVariantMap{{"lucide",QVariantMap{{"kind","asset"},{"value","executables"}}}}},
          }},
         {QStringLiteral("default"), QVariantMap{
+             {QStringLiteral("iconChoices"), QVariantMap{{"lucide",QVariantMap{{"kind","asset"},{"value","archives"}}}}},
              {QStringLiteral("icon"), QStringLiteral(
                   "qrc:/ZoinGallery/resources/FileIcon.svg")},
          }},
@@ -838,6 +899,7 @@ void F4GalleryBridgeTests::galleryIconsFollowSharedIconSet()
             {QStringLiteral("entryId"), QStringLiteral("plain")},
             {QStringLiteral("index"), 0},
             {QStringLiteral("name"), QStringLiteral("readme.txt")},
+            {QStringLiteral("highlightStyleId"), QStringLiteral("plain")},
             {QStringLiteral("localPath"), QStringLiteral("/tmp/readme.txt")},
             {QStringLiteral("mtimeNanos"), qulonglong(101)},
         },
@@ -884,6 +946,8 @@ void F4GalleryBridgeTests::galleryIconsFollowSharedIconSet()
 
     QQmlEngine engine;
     F4IconSet icons(QStringLiteral("bridge-test-icons"));
+    icons.setIconSet(F4IconSet::Lucide);
+    const qulonglong initialIconRevision = icons.revision();
     F4GalleryBridge bridge(&engine, nullptr, &icons);
     QVERIFY(bridge.available());
     bridge.synchronizeScene(scene);
@@ -951,11 +1015,11 @@ void F4GalleryBridgeTests::galleryIconsFollowSharedIconSet()
     QCOMPARE(query.queryItemValue(QStringLiteral("size")),
              QStringLiteral("128"));
     QCOMPARE(query.queryItemValue(QStringLiteral("revision")),
-             QStringLiteral("2"));
+             QString::number(initialIconRevision + 1));
     QCOMPARE(query.queryItemValue(QStringLiteral("version")),
              QStringLiteral("101"));
     QCOMPARE(query.queryItemValue(QStringLiteral("fallback")),
-             QStringLiteral("file-text"));
+             QStringLiteral("file")); // Resource fallback is not an inactive Lucide rule set.
     QCOMPARE(query.queryItemValue(QStringLiteral("dpr")).toDouble(),
              F4IconProvider::normalizedDevicePixelRatio(
                  qGuiApp->devicePixelRatio()));
@@ -971,7 +1035,7 @@ void F4GalleryBridgeTests::galleryIconsFollowSharedIconSet()
     QVERIFY(refreshedSource != systemSource);
     QCOMPARE(QUrlQuery(QUrl(refreshedSource)).queryItemValue(
                  QStringLiteral("revision")),
-             QStringLiteral("3"));
+             QString::number(initialIconRevision + 2));
 }
 
 void F4GalleryBridgeTests::hostRuntimeDefersBoundedDecodeWorkers()

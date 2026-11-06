@@ -15,6 +15,8 @@ Item {
     property var rowAction: (action, index) => hostWindow.action({target: widget.id, action: action, index: index})
     property bool keyboardNavigation: false
     property bool semanticWheel: false
+    property bool nativeWheel: false
+    property bool traceWheel: false
     property real checkboxLeft: 0
     property real checkboxWidth: 0
 
@@ -53,6 +55,25 @@ Item {
     enabled: widget.disabled !== true && widget.readOnly !== true
     property int lastPointerIndex: -1
     property real wheelRowRemainder: 0
+
+    WheelHandler {
+        enabled: root.nativeWheel
+        acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+        target: null
+        onWheel: event => {
+            const rows = Math.max(1, Number(Qt.styleHints.wheelScrollLines || 3))
+            const rowHeight = root.view.currentItem ? root.view.currentItem.height : root.hostWindow.ch
+            const delta = event.pixelDelta.y !== 0 ? event.pixelDelta.y : event.angleDelta.y / 120 * rows * rowHeight
+            const minimum = root.view.originY
+            const maximum = minimum + Math.max(0, root.view.contentHeight - root.view.height)
+            const previous = root.view.contentY
+            root.view.cancelFlick()
+            root.view.contentY = Math.max(minimum, Math.min(maximum, previous - delta))
+            if (root.traceWheel)
+                console.debug("[FIX:settings-scroll] wheel", root.widget.id, previous, root.view.contentY, event.phase)
+            event.accepted = true
+        }
+    }
 
     MouseArea {
         enabled: root.semanticWheel

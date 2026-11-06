@@ -9,6 +9,7 @@
 #include <QtQuick/QQuickItem>
 
 class QtShellController;
+class QHoverEvent;
 class QInputMethodEvent;
 class QKeyEvent;
 class QMouseEvent;
@@ -32,6 +33,8 @@ class VtuiGridItem : public QQuickItem
                WRITE setTerminalInputEnabled NOTIFY terminalInputEnabledChanged)
     Q_PROPERTY(bool renderingEnabled READ renderingEnabled
                WRITE setRenderingEnabled NOTIFY renderingEnabledChanged)
+    Q_PROPERTY(bool panelClipboardPasteEnabled READ panelClipboardPasteEnabled
+               WRITE setPanelClipboardPasteEnabled NOTIFY panelClipboardPasteEnabledChanged)
 
 public:
     explicit VtuiGridItem(QQuickItem *parent = nullptr);
@@ -55,6 +58,8 @@ public:
     void setTerminalInputEnabled(bool enabled);
     bool renderingEnabled() const { return m_renderingEnabled; }
     void setRenderingEnabled(bool enabled);
+    bool panelClipboardPasteEnabled() const { return m_panelClipboardPasteEnabled; }
+    void setPanelClipboardPasteEnabled(bool enabled);
 
     // Forward commander-owned shortcuts without moving focus back to the
     // hidden compatibility grid used by semantic QML surfaces.
@@ -70,8 +75,8 @@ public:
                                     quint32 nativeScanCode = 0,
                                     bool autoRepeat = false);
     // Semantic QML surfaces do not give this item keyboard focus, so their
-    // standard paste shortcuts must explicitly use the same clipboard path
-    // as keyPressEvent instead of sending a literal Ctrl/Cmd+V to Go.
+    // standard paste shortcuts explicitly share keyPressEvent's clipboard path.
+    // Panel images use the core shortcut; text retains the paste transaction.
     Q_INVOKABLE void sendClipboardPaste();
     Q_INVOKABLE QPoint pointerScreenPosition() const;
     Q_INVOKABLE bool pointerEventIsCurrent(QQuickItem *item, qreal x, qreal y);
@@ -94,6 +99,7 @@ signals:
     void inputMethodForwardingEnabledChanged();
     void terminalInputEnabledChanged();
     void renderingEnabledChanged();
+    void panelClipboardPasteEnabledChanged();
     // Emitted synchronously whenever text has actually been sent through the
     // terminal protocol. Semantic surfaces use this to bridge the short gap
     // before the next authoritative scene reflects command/fast-find input.
@@ -116,6 +122,8 @@ protected:
     void mousePressEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
+    void hoverEnterEvent(QHoverEvent *event) override;
+    void hoverMoveEvent(QHoverEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
     qulonglong retainedFrameRevision() const
     {
@@ -180,6 +188,7 @@ private:
     bool m_pointerInputEnabled = true;
     bool m_inputMethodForwardingEnabled = false;
     bool m_terminalInputEnabled = true;
+    bool m_panelClipboardPasteEnabled = false;
     bool m_renderingEnabled = true;
     quint32 m_lastNativeAltScanCode = 0;
     QHash<int, int> m_forwardedKeyModifiers;

@@ -888,6 +888,7 @@ SettingsCenter.AutoSavePanelSettings.Label=প্যানেল লেআউট
 SettingsCenter.Category.ai=কৃত্রিম বুদ্ধিমত্তা
 SettingsCenter.Category.appearance=চেহারা ও ভাষা
 SettingsCenter.Category.associations=ফাইল অ্যাসোসিয়েশন
+SettingsCenter.Category.filegroups=ফাইল গোষ্ঠী
 SettingsCenter.Category.drives=ড্রাইভ নির্বাচন
 SettingsCenter.DriveTab.Options=ড্রাইভ বিকল্প
 SettingsCenter.DriveTab.Bookmarks=বুকমার্ক

@@ -163,6 +163,9 @@ type TerminalView struct {
 	// OnShellMark receives every OSC 133 mark (A, B, C, D, E...) together
 	// with the cursor state at that moment. It runs on the PTY goroutine.
 	OnShellMark func(mark string, snap PromptSnapshot)
+	// OnShellSequence receives the complete OSC 133 payload in parser order,
+	// before subsequent bytes can mutate the display.
+	OnShellSequence func(payload string)
 	// OnCursorShown fires on DECTCEM set (ESC[?25h), the end of a ConPTY frame.
 	OnCursorShown func()
 
@@ -2175,6 +2178,9 @@ func (tv *TerminalView) PromptSnapshot() PromptSnapshot {
 
 func (tv *TerminalView) HandleOSC133(payload string) {
 	vtui.DebugLog("TERM_OSC133: %s", payload)
+	if tv.OnShellSequence != nil {
+		tv.OnShellSequence(payload)
+	}
 	if tv.OnShellMark != nil {
 		mark, _, _ := strings.Cut(payload, ";")
 		tv.OnShellMark(mark, tv.PromptSnapshot())

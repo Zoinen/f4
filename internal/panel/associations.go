@@ -22,11 +22,11 @@ type AssocKind int
 
 const (
 	AssocExecute AssocKind = 0 // Enter
-	AssocAltExec AssocKind = 1 // Ctrl+PgDn (reserved; not wired yet)
+	AssocAltExec AssocKind = 1 // Bindable alternate open; no default shortcut.
 	AssocView    AssocKind = 2 // F3
-	AssocAltView AssocKind = 3 // Alt+F3 (reserved; not wired yet)
+	AssocAltView AssocKind = 3 // Bindable alternate view; Alt+F3 remains hex view.
 	AssocEdit    AssocKind = 4 // F4
-	AssocAltEdit AssocKind = 5 // Alt+F4 (reserved; not wired yet)
+	AssocAltEdit AssocKind = 5 // Bindable alternate edit; no default shortcut.
 )
 
 const AssocKindCount = 6

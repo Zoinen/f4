@@ -2,6 +2,7 @@
 # Paths are relative to qt/host; production keeps these resource aliases even
 # though its CMake target is configured from a clean child directory.
 set(F4_HOST_QML_FILES
+  qml/SettingsHelpCard.qml
   qml/QuickViewController.qml
   qml/GallerySettingsPage.qml
   qml/HelpContent.qml
@@ -53,6 +54,10 @@ set(F4_HOST_QML_FILES
   qml/OperationsQueueController.qml
   qml/F4Button.qml
   qml/F4TextField.qml
+  qml/TextEditContextMenu.qml
+  qml/F4Menu.qml
+  qml/DropdownScrollView.qml
+  qml/DropdownWheelHandler.qml
   qml/F4CheckBox.qml
   qml/F4RadioButton.qml
   qml/F4ComboBox.qml

@@ -8,9 +8,113 @@ Up/Down navigation stays within its active pane; content controls wrap at the en
 
 Numeric fields use compact inline inputs. Providers can set the optional InputWidth character-width hint for short text values such as ports; it does not restrict stored value length. Long-text fields, including filename masks, paths and commands, retain full-width editors beneath their captions.
 
+File groups keeps Up/Down inside its compound editor, including at its first and
+last controls. Those boundary keys do not transfer focus to global search,
+categories or footer buttons. Tab/Shift+Tab remain explicit pane navigation;
+other categories retain their existing boundary behavior.
+
+File groups has a dedicated overview rather than an inline collection form.
+The expanding table shows evaluated sample appearance, masks/conditions and
+feature flags, without scope dividers or origin/status categories. Display order
+is reversed, putting general file/folder rules first without reversing priority.
+Its Icons selector chooses only the editing/preview artwork set. The independent
+Colours selector previews file colours by group name in the table and panels;
+Apply saves it and Cancel restores the last applied selection. It does not change
+the window/menu colour style. Current captures existing group colours; Zoin uses
+the base hues of its SVG artwork. Space/Insert mark samples, not real files.
+Enter/F4 opens a scratch child editor with Conditions, Appearance, Sorting and
+Associations on one scrolling page, without a category sidebar.
+Child OK merges into the parent draft; Cancel discards
+only child changes. Only the parent Apply writes configuration. Feature enable
+checkboxes are accessible group-box headers. Reset buttons/Ctrl+Backspace restore
+standard values. More holds samples, theme-set management and group reset.
+Restore standard set replaces the entire draft list after confirmation. Delete
+removes any group and its command sets; saved snapshots do not reinsert deleted
+standard groups on restart or update. Apply and Cancel retain their usual
+transactional behavior for reset, deletion and additions.
+The Go editor owns these interactions in both terminal and Qt presentation.
+The child editor also owns a retained four-state preview outside its scrolling
+page. Appearance uses compact inline colour expressions with effective swatches
+and adjacent resets, editing the selected file-colour theme's name-based entry.
+Preview updates only after a valid draft change; invalid
+expressions or masks preserve the last valid result. Scrolling fields does not
+scroll or recreate the pinned sample.
+
+Native scrolling owns its pixel offset while early control/font layout settles;
+geometry-only updates clamp it to valid bounds rather than restoring a stale
+Go scroll position. Repeated focus acknowledgements for the same field do not
+reveal that field again. Explicit scroll commands and actual focus transitions
+still move the page as needed.
+
 Russian labels, descriptions, choices, group names and operation messages are provided in `cmd/f4/lang/ru.lng`. Unkeyed provider text can resolve through `f4settings.ResourceKey`; provider-owned translations take precedence. Literal user values and external identifiers bypass translation. Formatted descriptions preserve arguments such as profile paths, and provider errors retain their English diagnostics and error chains while exposing localized display text. Russian coverage tests exercise core and all bundled providers.
 
 ## Semantic GUI presentation
+
+Qt Settings uses an edge-to-edge sidebar with macOS-reference geometry: 32-point
+rows, 20-point dark icon tiles with coloured glyphs, a 9-point row inset and a
+7-point icon-to-caption gap. Selected captions are bold and selected rows have
+an 8-point corner radius. Larger configured UI fonts expand rows as needed.
+The sidebar has a nominal width of 232 points, bounded by the available width.
+The window header displays the active section title (including frontend-owned
+pages); the content does not repeat it or reserve a separate title row.
+
+Qt text fields, panel path editing and the command line share
+`TextEditContextMenu`: an in-window menu using the panel dropdown colours,
+31-point rows, rounded selection and Lucide action icons. Read-only fields retain
+Copy and Select All. Local fields use native text undo/redo; Go-owned edits expose
+`canUndo`/`canRedo` and dispatch `control.undo`/`control.redo` to the shared editor.
+The command line exposes the same capabilities and `commandLine.undo`/`commandLine.redo`
+actions. Older clients can omit these optional fields and retain disabled actions.
+Command-line operations preserve Go selections,
+including original multiline text, and paste uses the shared clipboard path.
+Select All dispatches a direct command-line selection rather than the panel's
+Ctrl+A shortcut. Command completion aligns its text with the rendered input
+viewport after the prompt, including when the prompt is clipped on resize.
+Embedded ZoinGallery path fields delegate to this menu; their Qt built-in
+context menu is disabled so a single right click cannot open two menus.
+Menu hover over a disabled row clears the previous visual selection without
+activating that row; keyboard navigation resumes normal selection. Go-owned
+menus retain this suppression across delayed pointer acknowledgements.
+Dropdown menus are bounded by the available window height with an edge inset.
+Overflowing text, application, sort, renderer and combo menus expose a vertical
+scrollbar. Mouse wheels and touchpad pixel deltas scroll the menu, including at
+its boundaries without scrolling the panel underneath. Keyboard navigation keeps
+the active item visible; menus that fit do not reserve scrollbar space.
+
+Shared Go Edit history groups consecutive typing/deletion, treats each paste or
+selection replacement as one operation, restores cursor and linear/rectangular
+selection, and clears redo after a new mutation. It is bounded to 128 operations
+and 8 MiB of snapshot text. Password fields do not retain history. Programmatic
+`SetText` starts a new baseline; user `ReplaceText`, history picks and accepted
+completions are undoable. Completion previews do not alter history. Clearing a
+submitted command starts a new baseline, so Undo cannot resurrect old commands.
+Its 28-point capsule search field has a localized Search placeholder, a
+magnifying-glass icon and a 3-point outer focus ring.
+The global search remains Go-owned; match counts and previous/next/clear actions
+are retained. During a search, an unframed clear icon replaces the magnifier and
+previous/next icons occupy the trailing inset inside that same field. Their hit
+targets reserve text space; clearing restores the magnifier without resizing the
+field. Child editors without categories retain their normal content inset.
+
+Category wheels and touchpad pixel deltas scroll the local list, never select a
+different settings page. Keyboard arrows and explicit clicks still select pages.
+The scrollbar reaches the sidebar's right edge; category and sidebar painting
+remain inside the dialog's border, including the bottom rounded corner.
+
+All in-window Qt dialogs share platform-specific header controls: macOS has
+left-aligned traffic lights, while other platforms retain the right-aligned
+rectangular controls. Close and maximize/restore use the existing dialog actions
+and capabilities. Traffic lights use 14-logical-pixel antialiased circles with
+physical-pixel rims, subtle gradients and hover-only glyphs; unavailable controls
+use neutral gray rather than the application's blue tint. Minimize is disabled on macOS because these modal surfaces
+cannot be minimized independently of their parent window. Dragging, resizing,
+Escape and Apply/Cancel behavior are unchanged.
+
+The Settings footer uses Qt's DialogButtonBox with Apply, Accept and Reject
+roles, leaving its platform layout policy automatic. Windows uses OK / Cancel /
+Apply; macOS uses Apply / Cancel / OK; Linux follows the active Qt desktop
+policy. Labels, semantic IDs and draft actions remain Go-owned. Child editors
+omit Apply entirely rather than reserving a blank slot.
 
 Qt also contributes a frontend-owned **Terminal colors** page alongside GUI.
 It offers Modern (the global Windows console palette), Classic DOS colors,
@@ -65,7 +169,8 @@ clicks still activate, while a selection drag never activates a row.
 
 `extui.ControlModel.ItemIcons` / `itemIcons` carries optional Lucide names in
 list-item or table-row display order. Icons precede captions (the first cell in
-a table) without changing row height; blank entries have no icon. Settings owns
+a table); ordinary lists retain their row height, while the Qt Settings sidebar
+uses a minimum 32-logical-pixel row and dark tile with a coloured glyph. Blank entries have no icon. Settings owns
 the mapping from stable category IDs, preserving localized labels and search
 counts. All 18 core categories have distinct icons; contributed categories use
 `file-cog`. The additional `keyboard.svg` is from the same pinned Lucide 1.27.0
@@ -88,7 +193,16 @@ All preference edits are drafts across page changes. Apply validates changed pro
 
 Search matches all tokens across labels, descriptions, category/group names, choices and aliases. Record display names are searchable; credentials, arbitrary field values and command bodies are not. Nothing is filtered, moved, hidden, or disabled by search.
 
-The layout keeps search, categories and actions fixed. At 110 columns or wider the explanation pane is on the right; narrower screens place it below the independently scrolling page.
+The layout keeps search, categories and actions fixed. In the terminal, at 110
+columns or wider the explanation pane is on the right; narrower screens place it
+below the independently scrolling page. Qt places contextual help to the right
+when the content area is at least 720 logical pixels wide, otherwise below the
+page above the action buttons, in a subtly tinted rounded card. An information
+icon sits above the text in the right-side card, and beside the text in the
+bottom card. A bold heading, wrapped muted description and slightly darker
+timing text without a chip. Long explanations scroll inside the card without
+moving the settings page. Optional `helpTiming` metadata carries the localized
+timing separately; the full legacy help text remains available to older clients.
 
 ## Core scalar controls
 
@@ -578,9 +692,20 @@ Terminal coordinates remain unchanged. `SettingsDialogBody.qml` docks these
 regions using the live native rectangle throughout a resize, before the owner
 acknowledges the geometry. Search, navigation and footer do not participate in
 an outer Flickable. Content, description and the category list own their scroll
-ranges; help moves below content in a narrow window. Bordered group rows use
-12 DIP for the title and 8 DIP for otherwise empty rows, while actual controls
-still determine their required height.
+ranges; help moves below content in a narrow window. Across QML dialogs, group
+boxes use a rounded, subtly lighter surface without an outline. Their headings
+sit above the surface in bold, normal foreground text at the base font size;
+checkable headings retain their original control IDs and actions. The first row
+reserves the heading height plus a 4 DIP gap and 12 DIP content inset. Surfaces
+follow the actual visible native control bounds with equal 12 DIP top and bottom
+padding, rather than inheriting spare terminal rows. Otherwise empty box rows
+use 8 DIP, while actual controls still determine their required height. Settings
+uses 12 DIP right and bottom window insets. A scrolling content page reserves
+16 DIP before its scrollbar, with 4 DIP between the scrollbar and side help.
+Without a scrollbar, the content-to-help gutter matches the opposite sidebar-to-content
+gutter (24 DIP); below-content help retains balanced outer page gutters as well.
+Borderless semantic
+containers remain transparent; the terminal renderer keeps its original frames.
 
 `SemanticOverlayModel` retains window identity and closing dropdowns in a native
 QAbstractListModel. Its QVariant payload does not pass through QML ListModel's
@@ -676,6 +801,10 @@ commands, Assign/Unbind confirmation and area/condition/chord capture workflow.
 The old Settings.Hotkeys action and CmHotkeyConfig command open this tab. The
 inline binding record editor is replaced in the application UI. The table uses
 the whole content width; its description column replaces the side help pane.
+The semantic viewport preserves embedded full-page controls instead of rebuilding
+them as scalar form rows. Optional ExtUI `fullPage` metadata survives typed
+projection; Qt docks the table above its Assign/Unbind action row and keeps the
+original control IDs for selection, sorting, searching and activation.
 
 Editing retains a draft across category switches. Apply/OK persist changes and
 Cancel discards edits since the last Apply. Explicit unbinding retains the None

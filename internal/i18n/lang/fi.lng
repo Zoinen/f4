@@ -888,6 +888,7 @@ SettingsCenter.AutoSavePanelSettings.Label=Tallenna paneelin asettelu automaatti
 SettingsCenter.Category.ai=Tekoäly
 SettingsCenter.Category.appearance=Ulkoasu ja kieli
 SettingsCenter.Category.associations=Tiedostokytkennät
+SettingsCenter.Category.filegroups=Tiedostoryhmät
 SettingsCenter.Category.drives=Aseman valinta
 SettingsCenter.DriveTab.Options=Asemavalinnat
 SettingsCenter.DriveTab.Bookmarks=Kirjanmerkit

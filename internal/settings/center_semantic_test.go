@@ -3,6 +3,7 @@ package settings
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"reflect"
 	"strings"
@@ -16,6 +17,25 @@ import (
 	"github.com/unxed/vtui"
 )
 
+func TestSettingsHelpExportsCardPartsWithoutChangingTerminalText(t *testing.T) {
+	help := newSettingsHelp()
+	timing := fmt.Sprintf(Phrase("Takes effect: %s"), Phrase("live"))
+	help.text = "Language\n\nFirst paragraph.\n\nSecond paragraph.\n\n" + timing
+	node := help.SemanticNode(&vtui.SemanticContext{Width: 100, Height: 60})
+	if node["title"] != "Language" || node["helpTiming"] != timing {
+		t.Fatalf("missing structured card text: %v", node)
+	}
+	children := node["children"].([]map[string]any)
+	if len(children) != 1 || children[0]["text"] != help.text {
+		t.Fatal("legacy/terminal help text changed")
+	}
+	help.text = "Select a setting."
+	node = help.SemanticNode(&vtui.SemanticContext{Width: 100, Height: 60})
+	if node["title"] != nil || node["helpTiming"] != nil {
+		t.Fatal("empty selection retained stale help metadata")
+	}
+}
+
 func settingsSemanticNodes(node map[string]any) []map[string]any {
 	nodes := []map[string]any{node}
 	children, _ := node["children"].([]map[string]any)
@@ -23,6 +43,109 @@ func settingsSemanticNodes(node map[string]any) []map[string]any {
 		nodes = append(nodes, settingsSemanticNodes(child)...)
 	}
 	return nodes
+}
+
+func TestSettingsFullPageExportsHotkeyTable(t *testing.T) {
+	page := vtui.NewGroup(20, 3, 99, 25)
+	table := vtui.NewTable(20, 3, 99, 22, []vtui.TableColumn{
+		{Title: "Command"}, {Title: "Chord"}, {Title: "Area"}, {Title: "Condition"}, {Title: "Description"},
+	})
+	table.SetId("hotkey-table")
+	table.SetRows([]vtui.TableRow{settingsSemanticTableRow{"Open", "F3", "Shell", "", "View file"}})
+	assign := vtui.NewButton(20, 25, "Assign")
+	assign.SetId("hotkey-assign")
+	activated := false
+	assign.OnClick = func() { activated = true }
+	page.AddItem(table)
+	page.AddItem(assign)
+	view := newSettingsViewport()
+	view.SetId("settings-page")
+	view.fullPage = page
+	view.AddItem(page)
+	view.SetPosition(20, 3, 99, 25)
+	node := view.SemanticNode(&vtui.SemanticContext{})
+	var exportedTable, exportedButton map[string]any
+	for _, child := range settingsSemanticNodes(node) {
+		switch child["id"] {
+		case vtui.SemanticID(table):
+			exportedTable = child
+		case vtui.SemanticID(assign):
+			exportedButton = child
+		}
+	}
+	if exportedTable == nil || len(semantic.AppMapSlice(exportedTable["columns"])) != 5 {
+		t.Fatal("embedded hotkey table is missing from Settings semantic content")
+	}
+	if exportedButton == nil || node["id"] != vtui.SemanticID(view) {
+		t.Fatal("embedded page lost its action or Settings content identity")
+	}
+	rows := semantic.AppMapSlice(exportedTable["rows"])
+	if len(rows) != 1 || !reflect.DeepEqual(rows[0]["cells"], []string{"Open", "F3", "Shell", "", "View file"}) {
+		t.Fatal("embedded table lost its row content")
+	}
+	if !view.HandleSemanticAction(map[string]any{"target": vtui.SemanticID(assign), "action": "control.activate"}) || !activated {
+		t.Fatal("embedded Assign action did not reach its original owner")
+	}
+}
+
+type settingsSemanticTableRow []string
+
+func (row settingsSemanticTableRow) GetCellText(column int) string { return row[column] }
+
+func TestFileGroupChildSemanticFocusAfterScroll(t *testing.T) {
+	for _, sameTarget := range []bool{true, false} {
+		name := "changed target reveals field"
+		if sameTarget {
+			name = "same target acknowledgement preserves scroll"
+		}
+		t.Run(name, func(t *testing.T) {
+			_, view := setupFileGroupColorChild(t)
+			child := view.childEditor(0)
+			defer child.sessions[0].draft.Close()
+			child.SetPosition(0, 0, 99, 29)
+			page := child.page
+			initial := page.GetFocusedItem()
+			if initial == nil {
+				t.Fatal("child has no initial focus")
+			}
+			if !child.HandleSemanticAction(map[string]any{
+				"target": vtui.SemanticID(page), "action": "control.scroll", "value": 20,
+			}) || page.scroll != 20 {
+				t.Fatalf("scroll did not reach child viewport: %d", page.scroll)
+			}
+			var target *settingsRow
+			for _, row := range page.rows {
+				if row.control == nil || row.y >= page.scroll || !row.control.CanFocus() || row.control.IsDisabled() {
+					continue
+				}
+				if (row.control == initial) == sameTarget {
+					target = row
+					break
+				}
+			}
+			if target == nil {
+				t.Fatal("no suitable offscreen focus target")
+			}
+			if !child.HandleSemanticAction(map[string]any{
+				"target": vtui.SemanticID(target.control), "action": "control.focus",
+			}) {
+				t.Fatal("child rejected focus acknowledgement")
+			}
+			if page.GetFocusedItem() != target.control {
+				t.Fatal("focus did not reach intended field")
+			}
+			if sameTarget {
+				if page.scroll != 20 {
+					t.Fatalf("same-target focus acknowledgement snapped scroll from 20 to %d", page.scroll)
+				}
+				if got := semantic.Int(page.SemanticNode(&vtui.SemanticContext{})["scrollTop"]); got != 20 {
+					t.Fatalf("focus acknowledgement exported stale scrollTop: %d", got)
+				}
+			} else if target.y < page.scroll || target.y+target.height > page.scroll+page.Y2-page.Y1+1 {
+				t.Fatalf("changed focus target was not revealed: row=%d height=%d scroll=%d", target.y, target.height, page.scroll)
+			}
+		})
+	}
 }
 
 func TestSettingsCategoryIconsAndSelection(t *testing.T) {

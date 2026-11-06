@@ -206,6 +206,7 @@ func (ev *EditorView) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 		TopBarLeft:              topBarLeft,
 		TopBarRight:             topBarRight,
 		IconColor:               theme.SemanticFileIconColor(semantic.SemanticBaseName(ev.Vfs, ev.FilePath)),
+		FileStyle:               theme.SemanticFileStyle(semantic.SemanticBaseName(ev.Vfs, ev.FilePath)),
 		Busy:                    ev.IsBusy(),
 		Dirty:                   ev.Modified,
 		Saving:                  ev.Saving,

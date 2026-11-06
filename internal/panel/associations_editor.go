@@ -28,6 +28,10 @@ func ShowFileAssociations(pf *PanelsFrame) {
 	if pf == nil {
 		return
 	}
+	if AssociationGroups() != nil && OpenSettingsAt != nil {
+		OpenSettingsAt("filegroups", "filegroups", "", false)
+		return
+	}
 	path := AssociationsFilePath()
 	list, err := LoadAssociations(path)
 	if err != nil {

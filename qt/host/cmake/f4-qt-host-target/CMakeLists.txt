@@ -66,10 +66,16 @@ qt6_add_resources(f4-qt-host f4_file_icons
   BASE "${F4_QT_HOST_ROOT}/icons/files"
   FILES ${F4_FILE_ICONS}
 )
+f4_add_group_icon_resources(f4-qt-host)
 qt6_add_resources(f4-qt-host f4_zoin_icons
   PREFIX "/F4QtHost/icons/zoin"
   BASE "${F4_QT_HOST_ROOT}/icons/zoin"
   FILES ${F4_ZOIN_ICONS}
+)
+qt6_add_resources(f4-qt-host f4_file_group_defaults
+  PREFIX "/F4QtHost/icons"
+  BASE "${F4_QT_HOST_ROOT}/icons"
+  FILES "${F4_QT_HOST_ROOT}/icons/filegroups.default.ini"
 )
 
 qt6_add_resources(f4-qt-host f4_gallery_lucide_icons

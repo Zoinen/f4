@@ -135,11 +135,17 @@ Rectangle {
     readonly property int documentFileIconLogicalSize: 16
     readonly property url documentFileIconSource:
         showsConsoleTopBar
-        ? hostWindow.fileIconSource(documentFileLocalPath, documentFileName,
-                              false, documentFileIconLogicalSize, 0)
+        ? (typeof qtIcons.resolveFileStyle === "function"
+           ? qtIcons.resolveFileStyle(presentationFrame.fileStyle || {},
+                                  {localPath:documentFileLocalPath, name:documentFileName},
+                                  documentFileIconLogicalSize, hostWindow.iconDevicePixelRatio,
+                                  0, false).icon || ""
+           : hostWindow.fileIconSource(documentFileLocalPath, documentFileName,
+                                       false, documentFileIconLogicalSize, 0))
         : ""
     readonly property bool documentFileIconFullColor:
-        qtIcons.fileIconsAreFullColor === true
+        qtIcons.name === "system" || (presentationFrame.fileStyle || {}).tintIcon === false
+        || ((presentationFrame.fileStyle || {}).tintIcon === undefined && qtIcons.fileIconsAreFullColor === true)
     readonly property color documentFileIconColor:
         hostWindow.cleanText(presentationFrame.iconColor).trim() !== ""
         ? hostWindow.cleanText(presentationFrame.iconColor).trim()

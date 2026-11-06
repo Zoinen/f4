@@ -123,6 +123,10 @@ Rectangle {
 
         ZG.PathControl {
             id: panelPathControl
+            textContextMenuHandler: (field, point) => {
+                pathEditMenu.editor = field
+                pathEditMenu.openAt(field, point)
+            }
             objectName: "panelPathTitle-" + Number(panel.side || 0)
             anchors.left: panelDriveButton.right
             anchors.top: parent.top
@@ -334,6 +338,9 @@ Rectangle {
 
     Popup {
         id: sortMenu
+        height: Math.min(hostWindow.height - hostWindow.snapPx(12),
+                         sortMenuColumn.implicitHeight + topPadding + bottomPadding)
+        margins: hostWindow.snapPx(6)
         objectName: "panelSortMenu-" + Number(panel.side || 0)
         parent: Overlay.overlay
         width: Math.max(160, hostWindow.repeaterMaxImplicitWidth(
@@ -378,8 +385,15 @@ Rectangle {
             border.color: hostWindow.controlBorder
         }
 
-        contentItem: Column {
+        contentItem: DropdownScrollView {
+            id: sortScroll
+            menuObjectName: sortMenu.objectName
+            hostWindow: panelHeader.hostWindow
+            contentHeight: sortMenuColumn.implicitHeight
+
+        Column {
             id: sortMenuColumn
+            width: sortScroll.rowWidth
             spacing: 2
 
             Repeater {
@@ -396,7 +410,7 @@ Rectangle {
                     objectName: "panelSortChoice-"
                                 + hostWindow.cleanText(modelData.mode)
                                 + "-" + Number(panel.side || 0)
-                    width: sortMenu.availableWidth
+                    width: sortMenuColumn.width
                     // Content determines the menu's width (see
                     // sortMenu.contentWidth below); this row must
                     // never be narrower than what it needs.
@@ -569,6 +583,8 @@ Rectangle {
         }
     }
 
+    }
+
     ToolButton {
         id: presentationButton
         objectName: "panelRendererButton-" + Number(panel.side || 0)
@@ -664,6 +680,12 @@ Rectangle {
             sortMenu.close()
             rendererMenu.open()
         }
+    }
+
+    TextEditContextMenu {
+        id: pathEditMenu
+        objectName: "pathEditMenu-" + Number(panel.side || 0)
+        hostWindow: panelHeader.hostWindow
     }
 
     PanelRendererMenu {

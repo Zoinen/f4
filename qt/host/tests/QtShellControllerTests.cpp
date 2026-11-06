@@ -767,7 +767,8 @@ void QtShellControllerTests::initialHandshakeCompletesWithoutGuiEventLoop()
     QVERIFY(server.listen(QHostAddress::LocalHost, 0));
     QtShellController controller(
         QStringLiteral("127.0.0.1:%1").arg(server.serverPort()),
-        QStringLiteral("synchronous-handshake-test"), 80, 24);
+        QStringLiteral("synchronous-handshake-test"), 80, 24, nullptr,
+        QStringLiteral("zoin"));
 
     // Do not process Qt events here: this is the path used immediately before
     // QQmlApplicationEngine::load(). The blocking socket primitive must make
@@ -788,6 +789,8 @@ void QtShellControllerTests::initialHandshakeCompletesWithoutGuiEventLoop()
              QStringLiteral("hello"));
     QCOMPARE(QString::fromStdString(message.at("nonce").as<std::string>()),
              QStringLiteral("synchronous-handshake-test"));
+    QCOMPARE(QString::fromStdString(message.at("fileGroupIconTheme").as<std::string>()),
+             QStringLiteral("zoin"));
     const std::map<std::string, bool> capabilities =
         message.at("capabilities").as<std::map<std::string, bool>>();
     QCOMPARE(capabilities.at("panelCatalogMetadataV1"), true);
@@ -795,11 +798,12 @@ void QtShellControllerTests::initialHandshakeCompletesWithoutGuiEventLoop()
     QCOMPARE(capabilities.at("panelGroupingV1"), true);
     QCOMPARE(capabilities.at("documentViewportV1"), true);
     QCOMPARE(capabilities.at("panelFileFieldsV1"), true);
+    QCOMPARE(capabilities.at("fileGroupIconThemeV1"), true);
 #if defined(Q_OS_MACOS)
-    QCOMPARE(capabilities.size(), size_t(8));
+    QCOMPARE(capabilities.size(), size_t(9));
     QCOMPARE(capabilities.at("macPlatformServicesV1"), true);
 #else
-    QCOMPARE(capabilities.size(), size_t(7));
+    QCOMPARE(capabilities.size(), size_t(8));
 #endif
 
     QSignalSpy fatalErrors(&controller, &QtShellController::fatalError);
@@ -821,6 +825,21 @@ void QtShellControllerTests::initialHandshakeCompletesWithoutGuiEventLoop()
     QVERIFY(controller.waitForInitialHandshake(0));
     QVERIFY(!peer->waitForReadyRead(25));
     QVERIFY(peer->readAll().isEmpty());
+
+    for (const QString &theme : {QStringLiteral("lucide"), QStringLiteral("system"), QStringLiteral("zoin")}) {
+        controller.setFileGroupIconTheme(theme);
+        payload.clear();
+        QVERIFY(takePayload(peer, payload));
+        handle = msgpack::unpack(payload.constData(), static_cast<size_t>(payload.size()));
+        message.clear();
+        handle.get().convert(message);
+        QCOMPARE(message.size(), size_t(2));
+        QCOMPARE(QString::fromStdString(message.at("type").as<std::string>()), QStringLiteral("file_group_icon_theme"));
+        QCOMPARE(QString::fromStdString(message.at("iconTheme").as<std::string>()), theme);
+        QVERIFY(message.count("fileGroupDefaults") == 0);
+        controller.setFileGroupIconTheme(theme);
+        QVERIFY(!peer->waitForReadyRead(25));
+    }
 }
 
 void QtShellControllerTests::platformMessagesRouteOutsideQmlSurface()

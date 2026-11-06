@@ -888,6 +888,7 @@ SettingsCenter.AutoSavePanelSettings.Label=Automatiškai išsaugoti plokštės i
 SettingsCenter.Category.ai=Dirbtinis intelektas
 SettingsCenter.Category.appearance=Išvaizda ir kalba
 SettingsCenter.Category.associations=Failų susiejimai
+SettingsCenter.Category.filegroups=Failų grupės
 SettingsCenter.Category.drives=Disko pasirinkimas
 SettingsCenter.DriveTab.Options=Disko parinktys
 SettingsCenter.DriveTab.Bookmarks=Žymės

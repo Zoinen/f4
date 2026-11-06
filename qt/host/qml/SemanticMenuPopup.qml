@@ -285,6 +285,7 @@ Item {
         // rounding error.
         hostWindow.snapPx(dropdownAnchorRect.x - dropdownFrameX)
     property int pointerSelectedIndex: -1
+    property bool pointerOverInactiveRow: false
     property int semanticSelectedIndex: 0
     property int semanticTopIndex: 0
     property point pointerSelectionPosition: hostWindow.focusTarget.pointerScreenPosition()
@@ -293,7 +294,7 @@ Item {
         && hostWindow.menuPointerMenuIndex === effectiveMenuIndex
         ? hostWindow.menuPointerItemIndex : pointerSelectedIndex
     readonly property int visualSelectedIndex:
-        activePointerSelectedIndex >= 0
+        pointerOverInactiveRow ? -1 : activePointerSelectedIndex >= 0
         ? activePointerSelectedIndex
         : fromMenuBar && hostWindow.menuBarOpenedByPointer
           && !hostWindow.menuBarPointerHasSelectedItem ? -1
@@ -395,8 +396,10 @@ Item {
     }
 
     function syncFrameState() {
-        semanticSelectedIndex = Math.max(0,
-            Number(frame.selected || 0))
+        const selected = Math.max(0, Number(frame.selected || 0))
+        if (semanticSelectedIndex !== selected && activePointerSelectedIndex !== selected)
+            pointerOverInactiveRow = false
+        semanticSelectedIndex = selected
         semanticTopIndex = Math.max(0, Number(frame.top || 0))
     }
 
@@ -424,6 +427,8 @@ Item {
             // the console top here would undo the native containment above.
             if (!selectionChanged && !topChanged)
                 return
+            if (selectionChanged && !pointerAcknowledgement)
+                pointerOverInactiveRow = false
             semanticSelectedIndex = Math.max(0,
                 Number(states[i].selected || 0))
             semanticTopIndex = Math.max(0,

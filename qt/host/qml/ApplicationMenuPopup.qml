@@ -4,7 +4,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Controls.Basic as T
 
-T.Menu {
+F4Menu {
     id: applicationMenu
     required property ApplicationWindow hostWindow
     objectName: "applicationMenuPopup"
@@ -123,7 +123,7 @@ T.Menu {
         // Hidden menus need no delegates during a workspace activation.
         active: applicationMenu.visible
         model: applicationMenu.hostWindow.menuBarModel.items || []
-        delegate: T.Menu {
+        delegate: F4Menu {
             id: category
             required property var modelData
             objectName: "applicationSubmenu-" + Number(modelData.index)

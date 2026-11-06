@@ -64,6 +64,8 @@ func (cl *CommandLine) SemanticModel(ctx *vtui.SemanticContext) *extui.CommandLi
 		ID:                vtui.SemanticID(cl),
 		Visible:           cl.IsVisible(),
 		Focused:           cl.IsFocused(),
+		CanUndo:           cl.Edit.CanUndo(),
+		CanRedo:           cl.Edit.CanRedo(),
 		Multiline:         cl.Edit.Multiline,
 		WordWrap:          cl.Edit.WordWrap,
 		Prompt:            cl.Prompt,

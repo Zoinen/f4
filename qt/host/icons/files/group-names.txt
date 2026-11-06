@@ -1,0 +1,15 @@
+databases=database
+files=file
+parent-folder=folder-up
+folders=folder
+images=image
+text-files=file-text
+archives=file-archive
+executables=file-terminal
+audio=music
+video=video
+source-code=file-code
+books=book-open
+configuration=file-cog
+locked-files=file-lock
+temporary-files=file-clock

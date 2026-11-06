@@ -16,6 +16,7 @@ import (
 	"github.com/unxed/f4/internal/config"
 	"github.com/unxed/f4/internal/dialog"
 	"github.com/unxed/f4/internal/editor"
+	"github.com/unxed/f4/internal/filegroups"
 	"github.com/unxed/f4/internal/fileops"
 	"github.com/unxed/f4/internal/fusefs"
 	"github.com/unxed/f4/internal/gui"
@@ -27,6 +28,7 @@ import (
 	"github.com/unxed/f4/internal/macro"
 	"github.com/unxed/f4/internal/navtrace"
 	"github.com/unxed/f4/internal/plughost"
+	"github.com/unxed/f4/internal/settings"
 	"github.com/unxed/f4/internal/terminal"
 	"github.com/unxed/f4/internal/theme"
 	"github.com/unxed/f4/internal/update"
@@ -1279,17 +1281,42 @@ func setupUI(firstRunStyle func() (string, bool)) {
 
 	configDir := config.GetF4ConfigDir()
 
-	// Initialize File Highlighting
-	highlightPath := filepath.Join(configDir, "highlight.ini")
-	if _, err := os.Stat(highlightPath); os.IsNotExist(err) {
-		config.CreateDefaultHighlightIni(highlightPath)
-	} else if config.RefreshHighlightIniHeader(highlightPath) {
-		// The comments of a file made by an older f4 are brought up to date
-		// (f4#912); the rules under them are not touched.
-		vtui.DebugLog("highlight.ini: header comments refreshed")
+	// Reading/migrating a profile never writes it. Only Settings Apply publishes
+	// overrides, so an invalid or legacy document remains recoverable as-is.
+	factory, factoryErr := filegroups.FactoryGroups()
+	factory = append(settings.FileGroupFactoryContributions(), theme.FileGroupDefaults()...)
+	groupStore := filegroups.Store{
+		Path: filepath.Join(configDir, "highlight.ini"), AssociationsPath: panel.AssociationsFilePath(),
+		Defaults: factory, ThemeDefaults: settings.FileGroupThemeContributions(),
+		ColorDefaults: filegroups.FactoryColorThemes(), ColorStyle: config.App.ColorStyle,
 	}
-	if _, err := os.Stat(highlightPath); err == nil {
-		loadHighlightIni(ini.Load(highlightPath))
+	settings.ConfigureFileGroups(groupStore, nil)
+	if factoryErr != nil {
+		vtui.DebugLog("file groups: factory configuration: %v", factoryErr)
+	} else if tx, err := groupStore.Begin(); err != nil {
+		vtui.DebugLog("file groups: configuration not loaded: %v", err)
+		fmt.Fprintf(os.Stderr, "f4: file groups configuration not loaded: %v\n", err)
+	} else {
+		sortRevision := ""
+		changed := func(snapshot *filegroups.Snapshot) {
+			_ = theme.GlobalFileHighlighter.LoadFileGroups(snapshot)
+			_ = panel.GlobalSortGroups.LoadFileGroups(snapshot)
+			resort := sortRevision != snapshot.SortRevision()
+			sortRevision = snapshot.SortRevision()
+			panel.RefreshFileGroupAppearance(resort)
+		}
+		if runtime, err := filegroups.NewRuntime(tx.Groups(), changed, tx.Themes()); err != nil {
+			vtui.DebugLog("file groups: invalid configuration: %v", err)
+			fmt.Fprintf(os.Stderr, "f4: invalid file groups configuration: %v\n", err)
+		} else {
+			if err := runtime.ApplyColors(tx.Groups(), tx.Themes(), tx.ColorThemes(), tx.ColorThemeID()); err != nil {
+				vtui.DebugLog("file groups: invalid colour themes: %v", err)
+				fmt.Fprintf(os.Stderr, "f4: invalid file colour themes: %v\n", err)
+			}
+			settings.ConfigureFileGroups(groupStore, runtime)
+			panel.AssociationGroups = settings.CommittedFileGroups
+			changed(runtime.Committed())
+		}
 	}
 
 	// CrashDirFull задаётся рано (см. main()); здесь только повторная

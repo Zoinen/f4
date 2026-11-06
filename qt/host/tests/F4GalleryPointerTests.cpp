@@ -5,6 +5,7 @@
 #include "VtuiGridItem.h"
 
 #include <QDir>
+#include <QClipboard>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QMimeData>
@@ -13,6 +14,7 @@
 #include <QFileInfo>
 #include <QImage>
 #include <QHostAddress>
+#include <QHoverEvent>
 #include <QInputMethodEvent>
 #include <QPointer>
 #include <QQmlComponent>
@@ -291,6 +293,7 @@ class F4GalleryPointerTests final : public QObject
     Q_OBJECT
 
 private slots:
+    void folderIconsFollowGroupColorInEveryView();
     void iconsArtworkFillsSlotAfterLargeRasterArrives_data();
     void iconsArtworkFillsSlotAfterLargeRasterArrives();
     void zoinIconsPreserveNativeAspectInEveryView();
@@ -326,8 +329,10 @@ private slots:
     void semanticGridPointerGatePreservesKeyboardFocus();
     void hiddenSemanticGridDefersRenderingUntilFallbackEnabled();
     void semanticImeCommitUsesTextProtocol();
+    void imageClipboardPasteUsesShortcutProtocol();
     void semanticKeyRepeatSuppressesSyntheticRelease();
     void semanticGridForwardsConsolePointerEvents();
+    void consoleGridForwardsButtonlessHover();
     void viewerCaptureSurvivesHiddenGridFocusSlip();
     void quickSearchMatchMarkupTracksPanelStateAndPalette();
     void masonryCursorHighlightsFilenameBackground();
@@ -348,6 +353,55 @@ private slots:
 void F4GalleryPointerTests::initTestCase()
 {
     QStandardPaths::setTestModeEnabled(true);
+}
+
+void F4GalleryPointerTests::folderIconsFollowGroupColorInEveryView()
+{
+    for (int mode : {0, 1, 2, 3, 4, 5}) {
+        GalleryIconResizeFixture fixture;
+        QTRY_VERIFY(fixture.component.isReady());
+        QObject *root = fixture.component.create();
+        QVERIFY(root);
+        auto *entry = root->findChild<QObject *>("resizeEntry");
+        QVERIFY(entry);
+        entry->setProperty("presentationMode", mode);
+        fixture.view.setContent(QUrl("inline:GalleryIconResize.qml"), &fixture.component, root);
+        fixture.view.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&fixture.view));
+        for (const QString &key : {QStringLiteral("folder"), QStringLiteral("folder-up")}) {
+            for (const QString &color : {QStringLiteral("#5ab2f1"), QStringLiteral("#f79f57"),
+                                         QStringLiteral("#a040b0")}) {
+                entry->setProperty("visualRow", QVariantMap{
+                    {"valid", true}, {"entryId", "folder-A"}, {"text", ""},
+                    {"isFolder", true}, {"iconKey", key},
+                    {"highlightStyle", QVariantMap{{"normal", QVariantMap{{"foreground", color}}}}}});
+                QCOMPARE(entry->property("fallbackIconColor").value<QColor>(), QColor(color));
+                QTRY_VERIFY(fixture.icon());
+                QTRY_COMPARE(fixture.icon()->property("status").toInt(), 1);
+                QVERIFY(fixture.icon()->property("source").toUrl().toString()
+                            .contains(color.mid(1), Qt::CaseInsensitive));
+            }
+            root->setProperty("showCursor", true);
+            root->setProperty("visualCursorIndex", 0);
+            entry->setProperty("visualRow", QVariantMap{
+                {"valid", true}, {"entryId", "folder-A"}, {"text", ""},
+                {"isFolder", true}, {"iconKey", key},
+                {"highlightStyle", QVariantMap{
+                    {"normal", QVariantMap{{"foreground", "#5ab2f1"}}},
+                    {"cursor", QVariantMap{{"foreground", "#e0c040"}}}}}});
+            // Cursor text colours do not recolour the group's icon.
+            QCOMPARE(entry->property("fallbackIconColor").value<QColor>(), QColor("#5ab2f1"));
+            for (bool cursor : {false, true}) {
+                root->setProperty("showCursor", cursor);
+                entry->setProperty("visualRow", QVariantMap{
+                    {"valid", true}, {"entryId", "folder-A"}, {"text", ""},
+                    {"isFolder", true}, {"isSelected", true}, {"iconKey", key}});
+                QCOMPARE(entry->property("fallbackIconColor").value<QColor>(),
+                         root->property("markedTextColor").value<QColor>());
+            }
+            root->setProperty("showCursor", false);
+        }
+    }
 }
 
 void F4GalleryPointerTests::zoinIconsPreserveNativeAspectInEveryView()
@@ -944,6 +998,151 @@ void F4GalleryPointerTests::semanticKeyRepeatSuppressesSyntheticRelease()
     }
 }
 
+void F4GalleryPointerTests::imageClipboardPasteUsesShortcutProtocol()
+{
+    auto *clipboard = QGuiApplication::clipboard();
+    QVERIFY(clipboard);
+    auto *saved = new QMimeData;
+    if (const auto *original = clipboard->mimeData())
+        for (const auto &format : original->formats())
+            saved->setData(format, original->data(format));
+    const auto restore = qScopeGuard([&] { clipboard->setMimeData(saved); });
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+    QtShellController controller(QStringLiteral("127.0.0.1:%1").arg(server.serverPort()),
+                                  QStringLiteral("image-paste-test"), 80, 24);
+    QTRY_VERIFY(controller.connected());
+    QTRY_VERIFY(server.hasPendingConnections());
+    auto *peer = server.nextPendingConnection();
+    QVERIFY(peer);
+    QByteArray buffer, payload;
+    QVERIFY(takeProtocolPayload(peer, buffer, payload));
+    VtuiGridItem grid;
+    grid.setController(&controller);
+    QSignalSpy textForwarded(&grid, &VtuiGridItem::commanderTextInputForwarded);
+    grid.setPanelClipboardPasteEnabled(true);
+    QImage image(8, 8, QImage::Format_ARGB32);
+    image.fill(Qt::red);
+    for (bool withText : {false, true}) {
+        auto *mime = new QMimeData;
+        mime->setImageData(image);
+        if (withText) mime->setText("image alternative text");
+        clipboard->setMimeData(mime);
+        if (withText) {
+            grid.sendClipboardPaste();
+        } else {
+            QKeyEvent press(QEvent::KeyPress, Qt::Key_V, Qt::ControlModifier);
+            QCoreApplication::sendEvent(&grid, &press);
+            QKeyEvent release(QEvent::KeyRelease, Qt::Key_V, Qt::ControlModifier);
+            QCoreApplication::sendEvent(&grid, &release);
+        }
+        for (bool down : {true, false}) {
+            QVERIFY2(takeProtocolPayload(peer, buffer, payload), "image paste did not reach Go");
+            const auto handle = msgpack::unpack(payload.constData(), static_cast<std::size_t>(payload.size()));
+            std::map<std::string, msgpack::object> message;
+            handle.get().convert(message);
+            QCOMPARE(message.at("type").as<std::string>(), std::string("key"));
+            QCOMPARE(message.at("vk").as<int>(), int('V'));
+            QCOMPARE(message.at("mods").as<int>(), 8);
+            QCOMPARE(message.at("down").as<bool>(), down);
+        }
+        QCOMPARE(textForwarded.size(), 0);
+    }
+    clipboard->setText("echo one\necho two");
+    grid.sendClipboardPaste();
+    QVERIFY(takeProtocolPayload(peer, buffer, payload));
+    QCOMPARE(protocolStringFields(payload).value("type"), QString("paste"));
+    QCOMPARE(protocolStringFields(payload).value("text"), QString("echo one\necho two"));
+    QCOMPARE(textForwarded.size(), 1);
+    grid.setPanelClipboardPasteEnabled(false);
+    auto *mixed = new QMimeData;
+    mixed->setImageData(image);
+    mixed->setText("editor alternative text");
+    clipboard->setMimeData(mixed);
+    grid.sendClipboardPaste();
+    QVERIFY(takeProtocolPayload(peer, buffer, payload));
+    QCOMPARE(protocolStringFields(payload).value("type"), QString("paste"));
+    QCOMPARE(protocolStringFields(payload).value("text"), QString("editor alternative text"));
+    grid.setPanelClipboardPasteEnabled(true);
+    grid.setTerminalInputEnabled(false);
+    clipboard->setImage(image);
+    grid.sendClipboardPaste();
+    QTest::qWait(20);
+    buffer.append(peer->readAll());
+    QVERIFY(buffer.isEmpty());
+}
+
+void F4GalleryPointerTests::consoleGridForwardsButtonlessHover()
+{
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+    QtShellController controller(
+        QStringLiteral("127.0.0.1:%1").arg(server.serverPort()),
+        QStringLiteral("console-hover-test-nonce"), 80, 24);
+    QTRY_VERIFY(controller.connected());
+    QTRY_VERIFY(server.hasPendingConnections());
+    QTcpSocket *peer = server.nextPendingConnection();
+    QVERIFY(peer);
+
+    QByteArray buffer;
+    QByteArray payload;
+    QVERIFY(takeProtocolPayload(peer, buffer, payload));
+    QCOMPARE(protocolStringFields(payload).value("type"), QString("hello"));
+
+    VtuiGridItem grid;
+    grid.setController(&controller);
+    QVERIFY(QMetaObject::invokeMethod(
+        &grid, "handleMessage", Qt::DirectConnection,
+        Q_ARG(QVariantMap, terminalFrame('A'))));
+    const QPointF position(grid.cellWidth() * 2 + 0.25,
+                           grid.cellHeight() + 0.25);
+    const auto hover = [&](QEvent::Type type) {
+        QHoverEvent event(type, position, position,
+                           position - QPointF(1, 0), Qt::ShiftModifier);
+        QCoreApplication::sendEvent(&grid, &event);
+    };
+
+    // Shift+F12's console surface receives QHoverEvent for unpressed motion,
+    // not mouseMoveEvent. Preserve modifiers without synthesizing a click.
+    for (QEvent::Type type : {QEvent::HoverEnter, QEvent::HoverMove}) {
+        hover(type);
+        QVERIFY2(takeProtocolPayload(peer, buffer, payload),
+                 "buttonless console hover did not reach the Go input protocol");
+        const auto handle = msgpack::unpack(payload.constData(), payload.size());
+        std::map<std::string, msgpack::object> message;
+        handle.get().convert(message);
+        QCOMPARE(message.at("type").as<std::string>(), std::string("mouse"));
+        QCOMPARE(message.at("x").as<qint64>(), qint64(2));
+        QCOMPARE(message.at("y").as<qint64>(), qint64(1));
+        QCOMPARE(message.at("button").as<qint64>(), qint64(0));
+        QCOMPARE(message.at("flags").as<qint64>(), qint64(1));
+        QCOMPARE(message.at("down").as<bool>(), false);
+        QCOMPARE(message.at("mods").as<qint64>(), qint64(0x10));
+        QVERIFY(!grid.hasActiveFocus());
+    }
+
+    QMouseEvent press(QEvent::MouseButtonPress, position, position,
+                      Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(&grid, &press);
+    QVERIFY(takeProtocolPayload(peer, buffer, payload));
+    hover(QEvent::HoverMove);
+    QTest::qWait(30);
+    buffer.append(peer->readAll());
+    QVERIFY2(buffer.isEmpty(), "hover duplicated the active mouse-drag path");
+    QMouseEvent release(QEvent::MouseButtonRelease, position, position,
+                        Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(&grid, &release);
+    QVERIFY(takeProtocolPayload(peer, buffer, payload));
+
+    // Native QML surfaces own the pointer outside console fallback mode.
+    grid.setPointerInputEnabled(false);
+    hover(QEvent::HoverEnter);
+    hover(QEvent::HoverMove);
+    QTest::qWait(30);
+    buffer.append(peer->readAll());
+    QVERIFY2(buffer.isEmpty(), "semantic mode leaked hover to the console grid");
+}
+
 void F4GalleryPointerTests::semanticGridForwardsConsolePointerEvents()
 {
     QTcpServer server;
@@ -1046,8 +1245,26 @@ void F4GalleryPointerTests::semanticGridForwardsConsolePointerEvents()
     const QPoint nativePointer(
         qRound(nativeGrid->cellWidth() * 2 + 0.25),
         qRound(nativeGrid->cellHeight() + 0.25));
+    // A real window can deliver buttonless hover before a press, including
+    // HoverEnter on exposure. Validate those packets separately from buttons.
+    const auto takeButtonPayload = [&]() {
+        for (int count = 0; count < 8; ++count) {
+            if (!takeProtocolPayload(peer, wireBuffer, payload))
+                return false;
+            const auto handle = msgpack::unpack(payload.constData(), payload.size());
+            std::map<std::string, msgpack::object> message;
+            handle.get().convert(message);
+            if (message.at("type").as<std::string>() != "mouse")
+                return false;
+            if (message.at("flags").as<qint64>() != 1)
+                return true;
+            if (message.at("button").as<qint64>() != 0 || message.at("down").as<bool>())
+                return false;
+        }
+        return false;
+    };
     QTest::mousePress(&view, Qt::LeftButton, Qt::NoModifier, nativePointer);
-    QVERIFY(takeProtocolPayload(peer, wireBuffer, payload));
+    QVERIFY(takeButtonPayload());
     {
         const msgpack::object_handle handle = msgpack::unpack(
             payload.constData(), static_cast<std::size_t>(payload.size()));
@@ -1059,7 +1276,7 @@ void F4GalleryPointerTests::semanticGridForwardsConsolePointerEvents()
     }
     QTest::mouseRelease(&view, Qt::LeftButton, Qt::NoModifier,
                         nativePointer);
-    QVERIFY(takeProtocolPayload(peer, wireBuffer, payload));
+    QVERIFY(takeButtonPayload());
     {
         const msgpack::object_handle handle = msgpack::unpack(
             payload.constData(), static_cast<std::size_t>(payload.size()));
@@ -1104,6 +1321,8 @@ void F4GalleryPointerTests::viewerCaptureSurvivesHiddenGridFocusSlip()
     grid->setHeight(200);
     grid->setController(&controller);
     grid->setInputMethodForwardingEnabled(true);
+    // Match main.qml's hidden semantic grid: pointer events belong to the viewer.
+    grid->setPointerInputEnabled(false);
 
     F4GalleryBridge bridge(view.engine());
     QVERIFY(bridge.available());

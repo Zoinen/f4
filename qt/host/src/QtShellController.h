@@ -44,7 +44,8 @@ public:
                                const QString &nonce,
                                int cols,
                                int rows,
-                               QObject *parent = nullptr);
+                               QObject *parent = nullptr,
+                               const QString &fileGroupIconTheme = {});
     ~QtShellController() override;
 
     int initialCols() const { return m_initialCols; }
@@ -93,6 +94,7 @@ public:
     void setPlatformRequestHandler(
         std::function<void(const QVariantMap &)> handler);
     bool sendPlatformMessage(const QVariantMap &message);
+    void setFileGroupIconTheme(const QString &theme);
 
     // Opportunistically completes the initial loopback connection without
     // running a nested event loop. A timeout leaves the asynchronous socket
@@ -319,6 +321,7 @@ private:
     bool m_acceptDecodedFrames = true;
     bool m_protocolFailed = false;
     QString m_nonce;
+    QString m_fileGroupIconTheme;
     int m_initialCols = 100;
     int m_initialRows = 30;
     bool m_connected = false;

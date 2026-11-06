@@ -3,6 +3,7 @@ package settings
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,6 +27,7 @@ type settingsRow struct {
 	label              []string
 	y, height          int
 	heading            bool
+	checkableHeader    bool
 	match              bool
 	controlHeight      int
 	controlX, controlY int
@@ -216,6 +218,12 @@ func (v *settingsViewport) SetPosition(x1, y1, x2, y2 int) {
 			r.label = nil
 			r.controlHeight = len(b.lines)
 			r.gap = 0
+		}
+		if r.checkableHeader {
+			r.y, r.controlY, r.height = box.top, 0, 1
+			r.controlHeight = 1
+			r.label = nil
+			continue
 		}
 		v.total += r.padTop
 		r.y = v.total
@@ -679,12 +687,21 @@ var lastSettingsCategory string
 var lastSettingsOffsets = map[string]int{}
 
 type settingsCenter struct {
-	recordOnly                            bool
-	recordTitle                           string
-	hotkeyPage                            vtui.UIElement
-	searchCacheQuery, searchCacheLanguage string
-	categoryMatchCache                    map[string]int
-	recordMatchCache                      map[settingsRecordMatchKey]bool
+	fileGroupOverview                          *fileGroupsOverview
+	fileGroupEditor                            bool
+	fileGroupEditorID                          string
+	fileGroupAdvanced                          bool
+	fileGroupEditorSample                      *fileGroupEditorSample
+	fileGroupSample, fileGroupMatchResult      string
+	fileGroupResetSection, fileGroupResetField string
+	fileGroupSearch                            string
+	fileGroupScopeFilter                       string
+	recordOnly                                 bool
+	recordTitle                                string
+	hotkeyPage                                 vtui.UIElement
+	searchCacheQuery, searchCacheLanguage      string
+	categoryMatchCache                         map[string]int
+	recordMatchCache                           map[settingsRecordMatchKey]bool
 
 	*vtui.Window
 	sessions                []*settingsSession
@@ -747,6 +764,9 @@ func newSettingsCenter(sessions []*settingsSession) *settingsCenter {
 	seen := map[string]bool{}
 	for _, s := range sessions {
 		for _, cat := range s.catalog.Categories {
+			if cat.ID == "associations" && fileGroupStore.Path == filepath.Join(config.GetF4ConfigDir(), "highlight.ini") {
+				continue
+			}
 			if !seen[cat.ID] {
 				c.categories = append(c.categories, cat)
 				seen[cat.ID] = true
@@ -849,6 +869,9 @@ func newSettingsCenter(sessions []*settingsSession) *settingsCenter {
 // to, so a contextual entry point does not present itself as the whole of
 // Settings.
 func (c *settingsCenter) windowTitle() string {
+	if c.fileGroupEditor && len(c.sessions) > 0 {
+		return i18n.Msg("FileGroups.EditorTitle") + ": " + c.sessions[0].draft.Values["group.Name"]
+	}
 	if c.fieldTitle != "" {
 		return c.fieldTitle
 	}
@@ -988,9 +1011,16 @@ func (c *settingsCenter) layoutWindow() {
 	x0, y0 := c.X1, c.Y1
 	side := c.categorySidebarWidth() + 1
 	bottom := c.contentBottom()
-	if c.recordOnly {
-		c.page.SetPosition(x0+2, y0+1, c.X2-2, bottom-4)
-		c.help.SetPosition(x0+2, bottom-2, c.X2-2, bottom)
+	if c.recordOnly || c.fileGroupEditor {
+		if c.fileGroupEditor {
+			c.help.SetVisible(false)
+			c.help.SetDisabled(true)
+			c.fileGroupEditorSample.SetPosition(x0+2, y0+1, c.X2-2, y0+3)
+			c.page.SetPosition(x0+2, y0+5, c.X2-2, bottom)
+		} else {
+			c.page.SetPosition(x0+2, y0+1, c.X2-2, bottom-4)
+			c.help.SetPosition(x0+2, bottom-2, c.X2-2, bottom)
+		}
 		x := c.X2 - 1
 		for _, b := range []*vtui.Button{c.cancel, c.ok, c.apply} {
 			bw := vtui.StringWidth(b.GetCaption()) + 4
@@ -1003,9 +1033,13 @@ func (c *settingsCenter) layoutWindow() {
 	c.sidebar.SetPosition(x0+2, y0+4, x0+side, bottom)
 	c.layoutSearch()
 	px := x0 + side + 2
-	c.help.SetVisible(c.category != "hotkeys")
-	c.help.SetDisabled(c.category == "hotkeys")
-	if c.category == "hotkeys" {
+	hideHelp := c.category == "hotkeys" || c.fileGroupEditor
+	c.help.SetVisible(!hideHelp)
+	c.help.SetDisabled(hideHelp)
+	if c.fileGroupEditorSample != nil {
+		c.fileGroupEditorSample.SetPosition(px, y0+3, x0+w-3, y0+5)
+		c.page.SetPosition(px, y0+7, x0+w-3, bottom)
+	} else if c.category == "hotkeys" {
 		c.page.SetPosition(px, y0+3, x0+w-3, bottom)
 	} else if w >= 110 {
 		helpWidth := max(28, w/4)
@@ -1025,14 +1059,14 @@ func (c *settingsCenter) layoutWindow() {
 	c.layoutPage()
 }
 func (c *settingsCenter) Show(scr *vtui.ScreenBuf) {
-	if !c.recordOnly && (c.sidebar.X2-c.sidebar.X1+1 != c.categorySidebarWidth() || c.sidebar.Y2 != c.contentBottom()) {
+	if !c.recordOnly && !c.fileGroupEditor && (c.sidebar.X2-c.sidebar.X1+1 != c.categorySidebarWidth() || c.sidebar.Y2 != c.contentBottom()) {
 		c.layoutWindow()
 	}
 	c.refreshAvailability()
 	c.refreshChoiceHelp()
 	c.page.SetFocus(c.GetFocusedItem() == c.page)
 	c.BaseWindow.Show(scr)
-	if c.recordOnly {
+	if c.recordOnly || c.fileGroupEditor {
 		c.paintContentBackground(scr)
 		if c.status != "" {
 			scr.Write(c.X1+2, c.apply.Y1, vtui.StringToCharInfo(
@@ -1044,7 +1078,7 @@ func (c *settingsCenter) Show(scr *vtui.ScreenBuf) {
 	attr := vtui.Palette[vtui.ColDialogBox]
 	for y := c.Y1 + 1; y <= c.contentBottom(); y++ {
 		scr.Write(c.sidebar.X2+1, y, vtui.StringToCharInfo("│", attr))
-		if c.category != "hotkeys" && c.help.X1 > c.page.X2 {
+		if c.category != "hotkeys" && !c.fileGroupEditor && c.help.X1 > c.page.X2 {
 			scr.Write(c.help.X1-1, y, vtui.StringToCharInfo("│", attr))
 		}
 	}
@@ -1055,7 +1089,7 @@ func (c *settingsCenter) Show(scr *vtui.ScreenBuf) {
 		titleAttr = vtui.DimColor(titleAttr)
 	}
 	scr.Write(titleX, c.Y1+1, vtui.StringToCharInfo(title, titleAttr))
-	if c.category != "hotkeys" && c.help.X1 == c.page.X1 {
+	if c.category != "hotkeys" && !c.fileGroupEditor && c.help.X1 == c.page.X1 {
 		for x := c.page.X1; x <= c.help.X2; x++ {
 			scr.Write(x, c.help.Y1-1, vtui.StringToCharInfo("─", attr))
 		}
@@ -1103,6 +1137,14 @@ func (c *settingsCenter) categorySidebarWidth() int {
 	return min(c.categorySidebarNaturalWidth(), max(10, available))
 }
 func (c *settingsCenter) ProcessKey(e *vtinput.InputEvent) bool {
+	if c.fileGroupEditor && e.KeyDown && e.VirtualKeyCode == vtinput.VK_BACK && e.ControlKeyState&(vtinput.LeftCtrlPressed|vtinput.RightCtrlPressed) != 0 {
+		for _, row := range c.page.rows {
+			if row.control == c.page.GetFocusedItem() {
+				c.resetFileGroupEditorField(row.field.ID)
+				return true
+			}
+		}
+	}
 	if c.category == "hotkeys" && c.GetFocusedItem() == c.page && c.hotkeyPage != nil {
 		if e.KeyDown && (e.VirtualKeyCode == vtinput.VK_ESCAPE || e.VirtualKeyCode == vtinput.VK_TAB) {
 			if c.hotkeyPage.ProcessKey(e) {
@@ -1147,25 +1189,34 @@ func (c *settingsCenter) ProcessKey(e *vtinput.InputEvent) bool {
 		c.commit(false)
 		return true
 	}
-	if e.KeyDown && e.VirtualKeyCode == vtinput.VK_F && (e.ControlKeyState&(vtinput.LeftCtrlPressed|vtinput.RightCtrlPressed)) != 0 {
+	if !c.fileGroupEditor && e.KeyDown && e.VirtualKeyCode == vtinput.VK_F && (e.ControlKeyState&(vtinput.LeftCtrlPressed|vtinput.RightCtrlPressed)) != 0 {
 		c.SetFocusedItem(c.search)
 		return true
 	}
 	if e.KeyDown && e.ControlKeyState&(vtinput.LeftCtrlPressed|vtinput.RightCtrlPressed|vtinput.LeftAltPressed|vtinput.RightAltPressed) == 0 {
-		panes := []vtui.UIElement{c.search}
-		if !c.clearSearch.IsDisabled() {
+		panes := []vtui.UIElement{}
+		if !c.fileGroupEditor {
+			panes = append(panes, c.search)
+		}
+		if !c.fileGroupEditor && !c.clearSearch.IsDisabled() {
 			panes = append(panes, c.clearSearch)
 		}
-		if !c.previous.IsDisabled() {
+		if !c.fileGroupEditor && !c.previous.IsDisabled() {
 			panes = append(panes, c.previous, c.next)
 		}
-		panes = append(panes, c.sidebar, c.page)
+		if !c.fileGroupEditor {
+			panes = append(panes, c.sidebar)
+		}
+		panes = append(panes, c.page)
 		if c.help.CanFocus() {
 			panes = append(panes, c.help)
 		}
 		panes = append(panes, c.apply, c.ok, c.cancel)
 		focused := c.GetFocusedItem()
 		if e.VirtualKeyCode == vtinput.VK_TAB {
+			if focused == c.page && c.fileGroupOverview != nil && c.page.fullPage == c.fileGroupOverview && c.fileGroupOverview.ProcessKey(e) {
+				return true
+			}
 			direction := 1
 			if e.ControlKeyState&vtinput.ShiftPressed != 0 {
 				direction = -1
@@ -1210,7 +1261,7 @@ func (c *settingsCenter) ProcessKey(e *vtinput.InputEvent) bool {
 					if item := c.page.GetFocusedItem(); item != nil && item.ProcessKey(e) {
 						return true
 					}
-					if e.VirtualKeyCode == vtinput.VK_LEFT {
+					if !c.fileGroupEditor && e.VirtualKeyCode == vtinput.VK_LEFT {
 						c.SetFocusedItem(c.sidebar)
 					}
 					return true
@@ -1218,7 +1269,9 @@ func (c *settingsCenter) ProcessKey(e *vtinput.InputEvent) bool {
 				// PgUp at top of page -> move focus to sidebar (left half).
 				if e.VirtualKeyCode == vtinput.VK_PRIOR && e.KeyDown {
 					if !c.page.ProcessKey(e) {
-						c.SetFocusedItem(c.sidebar)
+						if !c.fileGroupEditor {
+							c.SetFocusedItem(c.sidebar)
+						}
 						return true
 					}
 					return true
@@ -1236,6 +1289,14 @@ func (c *settingsCenter) ProcessKey(e *vtinput.InputEvent) bool {
 					return true
 				}
 				if !c.page.ProcessKey(e) && e.KeyDown {
+					// File groups is a compound editor, not a linear settings
+					// form. Reaching its boundary must not select global search
+					// (and then categories on the next arrow). Tab remains the
+					// explicit way out of the page.
+					if c.category == "filegroups" || c.fileGroupEditor {
+						vtui.DebugLog("[FIX:file-groups-focus] retained page focus at vertical boundary key=%d", e.VirtualKeyCode)
+						return true
+					}
 					switch e.VirtualKeyCode {
 					case vtinput.VK_DOWN:
 						c.movePaneFocus([]vtui.UIElement{c.apply, c.ok, c.cancel}, nil, 1)
@@ -1473,11 +1534,30 @@ func (c *settingsCenter) selectCategory(id string) {
 	}
 	c.category = id
 	c.maximizeForCategory()
+	pageID := c.page.GetId()
 	c.page.Group = vtui.NewGroup(c.page.X1, c.page.Y1, c.page.X2-c.page.X1+1, c.page.Y2-c.page.Y1+1)
-	c.page.SetId("settings-page")
+	c.page.SetId(pageID)
 	c.page.SetOwner(c.Window)
 	c.page.rows = nil
 	c.page.fullPage = nil
+	if id == "filegroups" && !c.fileGroupEditor && !c.recordOnly {
+		for _, session := range c.sessions {
+			if session.catalog.ID != "core.filegroups" {
+				continue
+			}
+			if c.fileGroupOverview == nil {
+				c.fileGroupOverview = newFileGroupsOverview(c, session)
+			} else {
+				c.fileGroupOverview.refresh()
+			}
+			c.page.fullPage = c.fileGroupOverview
+			c.page.AddItem(c.fileGroupOverview)
+			c.page.SetFocusedItem(c.fileGroupOverview)
+			c.layoutWindow()
+			c.updateMatches()
+			return
+		}
+	}
 	if id == "hotkeys" {
 		if h, ok := host.(HotkeyPageHost); ok {
 			if c.hotkeyPage == nil {
@@ -1504,34 +1584,59 @@ func (c *settingsCenter) selectCategory(id string) {
 			return
 		}
 	}
-	group := ""
-	for _, s := range c.sessions {
-		for _, f := range s.catalog.Fields {
-			if f.Category != id {
-				continue
-			}
-			if c.fieldPrefix != "" && !strings.HasPrefix(f.ID, c.fieldPrefix) {
-				continue
-			}
-			if f.Group != group {
-				group = f.Group
-				c.page.rows = append(c.page.rows, &settingsRow{field: f4settings.Field{Category: id, Group: group, Label: f4settings.Text{English: c.groupLabel(group)}}, heading: true, match: true})
-			}
-			r := &settingsRow{field: f, session: s, match: true}
-			r.control = c.makeControl(r)
-			r.control.SetId("setting:" + f.ID)
-			if h, ok := r.control.(interface{ SetHelp(string) }); ok {
-				h.SetHelp("Setting." + f.ID)
-			}
-			c.page.AddItem(r.control)
-			c.page.rows = append(c.page.rows, r)
+	pageIDs := []string{id}
+	if c.fileGroupEditor {
+		// Category IDs remain valid deep links, but the child always exposes
+		// every section in one viewport, in the catalog's section order.
+		pageIDs = nil
+		for _, category := range c.categories {
+			pageIDs = append(pageIDs, category.ID)
 		}
 	}
-	if c.fieldPrefix == "" {
-		c.addCollections(id)
-		c.addCommands(id)
-		if id == driveToolsPage {
-			c.addDriveToolMoves(id)
+	for _, pageID := range pageIDs {
+		group := ""
+		for _, s := range c.sessions {
+			for _, f := range s.catalog.Fields {
+				if f.Category != pageID {
+					continue
+				}
+				if c.fileGroupEditor && !c.fileGroupAdvanced && isAdvancedFileGroupCondition(f.ID) {
+					continue
+				}
+				if c.fieldPrefix != "" && !strings.HasPrefix(f.ID, c.fieldPrefix) {
+					continue
+				}
+				if c.fileGroupEditor && !isFileGroupFeatureToggle(f.ID) && !fileGroupFeatureEnabled(s.draft.Values, f.Group) {
+					f.Unavailable = "Enable this feature in the section title to edit it."
+				}
+				if f.Group != group {
+					group = f.Group
+					c.page.rows = append(c.page.rows, &settingsRow{field: f4settings.Field{Category: pageID, Group: group, Label: f4settings.Text{English: c.groupLabel(group)}}, heading: true, match: true})
+				}
+				r := &settingsRow{field: f, session: s, match: true, checkableHeader: c.fileGroupEditor && isFileGroupFeatureToggle(f.ID)}
+				if c.fileGroupEditor {
+					r.read = func() string { return s.draft.Values[f.ID] }
+					r.write = func(value string) { s.draft.Values[f.ID] = value }
+					if f.ID == "filegroup.advanced" {
+						r.read = func() string { return strconv.FormatBool(c.fileGroupAdvanced) }
+						r.write = func(value string) { c.fileGroupAdvanced = value == "true" }
+					}
+				}
+				r.control = c.makeControl(r)
+				r.control.SetId("setting:" + f.ID)
+				if h, ok := r.control.(interface{ SetHelp(string) }); ok {
+					h.SetHelp("Setting." + f.ID)
+				}
+				c.page.AddItem(r.control)
+				c.page.rows = append(c.page.rows, r)
+			}
+		}
+		if c.fieldPrefix == "" {
+			c.addCollections(pageID)
+			c.addCommands(pageID)
+			if pageID == driveToolsPage {
+				c.addDriveToolMoves(pageID)
+			}
 		}
 	}
 	c.layoutWindow()
@@ -1567,10 +1672,21 @@ func (c *settingsCenter) makeControl(r *settingsRow) vtui.UIElement {
 		if f.Timing == "preview" && d.PreviewFunc != nil {
 			if err := d.PreviewFunc(d); err != nil {
 				c.status = settingsErrorText(err)
+			} else if c.fileGroupEditor {
+				c.status = ""
 			}
 		}
 		c.describe(r)
 		c.updateMatches()
+		if f.ID == "filegroups.scopeFilter" || f.ID == "group.IconTheme" {
+			c.rebuildCategory()
+		}
+		if c.fileGroupEditor && isFileGroupFeatureToggle(f.ID) {
+			c.rebuildCategory()
+		}
+		if f.ID == "filegroup.advanced" {
+			c.rebuildCategory()
+		}
 	}
 	var control vtui.UIElement
 	switch f.Kind {

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <QHash>
+
 #include <QColor>
 #include <QCache>
 #include <QIcon>
@@ -12,6 +14,7 @@
 #include <QStringView>
 #include <QUrl>
 #include <QUrlQuery>
+#include <QVariantMap>
 
 #include <memory>
 #include <mutex>
@@ -140,6 +143,15 @@ public:
                                     qreal devicePixelRatio,
                                     qulonglong version = 0) const;
     Q_INVOKABLE void refresh();
+    Q_INVOKABLE QUrl fileAssetSource(const QString &asset, int logicalSize, qreal devicePixelRatio) const;
+    Q_INVOKABLE QUrl catalogIconSource(const QString &theme, const QString &reference,
+                                       int logicalSize, qreal devicePixelRatio) const;
+    Q_INVOKABLE QVariantMap resolveFileStyle(QVariantMap style, const QVariantMap &context,
+                                             int logicalSize, qreal devicePixelRatio,
+                                             qulonglong mtimeNanos = 0, bool metadataDeferred = false) const;
+    Q_INVOKABLE QVariantMap previewFileStyle(const QString &catalog, QVariantMap style,
+                                             const QVariantMap &context, int logicalSize,
+                                             qreal devicePixelRatio);
 
     static QString defaultProviderId();
     static QString normalizedSetName(QStringView name);
@@ -161,7 +173,7 @@ private:
     void advanceRevision();
 
     QString m_providerId;
-    QList<QPair<QString, QString>> m_zoinFileIconPatterns;
     IconSet m_iconSet = Zoin;
     qulonglong m_revision = 1;
+    QHash<QString, F4IconSet *> m_previewSets;
 };

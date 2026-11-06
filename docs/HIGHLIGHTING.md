@@ -1,5 +1,9 @@
 # Custom File Highlighting in f4
 
+For the unified Settings editor, layered defaults, icons, associations and the
+version 2 document, see [File groups](FILE_GROUPS.md). The legacy INI rule syntax
+below remains supported by the in-memory migration path.
+
 `f4` features a highly flexible file highlighting system modeled after `far2l` and Far Manager. It allows you to colorize file entries and prepend custom visual markers on panels based on file names, glob masks, file sizes, timestamps, and cross-platform attributes.
 
 ---
@@ -10,7 +14,9 @@ Highlighting is configured via the `highlight.ini` file located in the `f4` conf
 * **Linux/macOS/BSD:** `~/.config/f4/highlight.ini`
 * **Windows:** `%APPDATA%\f4\highlight.ini` (or `f4/Profile/highlight.ini` in portable mode)
 
-On the very first launch, `f4` automatically generates a default, balanced `highlight.ini` file with basic rules for executables, archives, hidden files, and directories. You can modify this file to customize colors and visual marker glyphs.
+Factory rules are embedded or supplied by colour-style INI files. Startup reads
+existing user rules without rewriting them. The first successful Apply in File
+groups backs up legacy highlighting and publishes version 2 user overrides.
 
 ---
 
@@ -117,7 +123,7 @@ You can filter files by specifying the following flags in `IncludeAttributes` or
 * `System` (or `sys`): Match Windows system files.
 * `Archive` (or `arc`): Match Windows archive files.
 * `Symlink` (or `link`, `sym`, `l`): Match links of every kind, a Windows junction included.
-* `Junction` (or `junc`, `j`): Match only Windows directory junctions and volume mount points (nothing on other systems).
+* `Junction` (or `junc`, `j`): Match Windows directory junctions and volume mount points identified by VFS reparse metadata, including metadata supplied by a plugin on another host OS.
 
 ---
 

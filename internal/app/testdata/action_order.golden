@@ -17,6 +17,9 @@ Workspace.List
 Debug.ScreenDump
 File.View
 File.ViewHex
+File.AssociationAltExecute
+File.AssociationAltView
+File.AssociationAltEdit
 File.AssemblyInfo
 File.PDFText
 File.Edit
@@ -362,6 +365,7 @@ Settings.Category.hotkeys
 Settings.Category.terminal
 Settings.Category.history
 Settings.Category.associations
+Settings.Category.filegroups
 Settings.Category.menus
 Settings.Category.network
 Settings.Category.metadata

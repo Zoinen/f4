@@ -238,6 +238,19 @@ func (ip *InfoPanel) semanticModel(side int, active bool) extui.InfoPanelModel {
 }
 
 func (pf *PanelsFrame) HandleSemanticAction(action map[string]any) bool {
+	switch semantic.String(action["action"]) {
+	case "activate_panel", "panel.activate", "panel_cursor", "panel.cursor", "panel_pointer", "panel.pointer":
+		// Activation patches carry focus and prompt, but not contextual key
+		// labels. Check after both activation and the clicked cursor update;
+		// the target panel's previous cursor may describe a different type.
+		previousLabels := *pf.GetKeyLabels()
+		defer func() {
+			if previousLabels != *pf.GetKeyLabels() {
+				vtui.DebugLog("[FIX:panel-keybar] pointer context changed key labels; refreshing scene")
+				invalidateSemanticSceneUpdate()
+			}
+		}()
+	}
 	if name := semantic.String(action["action"]); name == "quickView.configure" || name == "quickView.preview" {
 		return pf.handleQuickViewPresentation(action)
 	}
@@ -253,6 +266,14 @@ func (pf *PanelsFrame) HandleSemanticAction(action map[string]any) bool {
 		return false
 	}
 	switch semantic.String(action["action"]) {
+	case "commandLine.undo", "commandLine.redo":
+		if pf.Closed || pf.CmdLine == nil || !pf.CmdLine.IsVisible() || !pf.CmdLine.IsFocused() {
+			return false
+		}
+		if semantic.String(action["action"]) == "commandLine.redo" {
+			return pf.CmdLine.Edit.Redo()
+		}
+		return pf.CmdLine.Edit.Undo()
 	case "panel.setSplit":
 		return pf.setSemanticSplit(action)
 	case "commandLine.focus":
@@ -1671,22 +1692,15 @@ func (fp *FileSystemPanel) unpublishSemanticMetadataSnapshot() {
 }
 
 func cloneSemanticFileHighlighter(source *theme.FileHighlighter) *theme.FileHighlighter {
-	if source == nil {
-		return nil
-	}
-	clone := &theme.FileHighlighter{Revision: source.Revision, Rules: make([]theme.HighlightRule, len(source.Rules))}
-	copy(clone.Rules, source.Rules)
-	for i := range clone.Rules {
-		clone.Rules[i].Masks = append([]string(nil), source.Rules[i].Masks...)
-	}
-	return clone
+	return source.Clone()
 }
 
 func (fp *FileSystemPanel) publishSemanticMetadataSnapshot(panelID string, baseEntries []extui.FileEntryModel) {
 	path := fp.Vfs.GetPath()
 	cache := fp.semanticMetadataSnapshot
 	if cache != nil && cache.panelID == panelID && cache.path == path &&
-		cache.catalogRevision == fp.catalogRevision && cache.metadataRevision == fp.metadataRevision {
+		cache.catalogRevision == fp.catalogRevision && cache.metadataRevision == fp.metadataRevision &&
+		cache.highlightRevision == semanticHighlighterRevision() {
 		semanticPanelMetadataSnapshots.Store(panelID, cache)
 		return
 	}
@@ -1944,8 +1958,8 @@ func (fp *FileSystemPanel) semanticPagedMetadataModelSignature(sourceKind string
 	if fp == nil || fp.Vfs == nil {
 		return ""
 	}
-	return fmt.Sprintf("%s\x00%T\x00%s\x00%d",
-		sourceKind, fp.Vfs, fp.Vfs.GetPath(), fp.mediaSourceEpoch)
+	return fmt.Sprintf("%s\x00%T\x00%s\x00%d\x00%d",
+		sourceKind, fp.Vfs, fp.Vfs.GetPath(), fp.mediaSourceEpoch, semanticHighlighterRevision())
 }
 
 func (fp *FileSystemPanel) ensureSemanticPagedRevisions(sourceKind string) {

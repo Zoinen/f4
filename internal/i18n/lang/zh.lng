@@ -809,6 +809,7 @@ SettingsCenter.AutoSavePanelSettings.Label=自动保存面板布局
 SettingsCenter.Category.ai=人工智能
 SettingsCenter.Category.appearance=外观与语言
 SettingsCenter.Category.associations=文件关联
+SettingsCenter.Category.filegroups=文件组
 SettingsCenter.Category.drives=驱动器选择
 SettingsCenter.DriveTab.Options=驱动器选项
 SettingsCenter.DriveTab.Bookmarks=书签

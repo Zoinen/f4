@@ -888,6 +888,7 @@ SettingsCenter.AutoSavePanelSettings.Label=შეინახეთ პანე
 SettingsCenter.Category.ai=ხელოვნური ინტელექტი
 SettingsCenter.Category.appearance=გარეგნობა და ენა
 SettingsCenter.Category.associations=ფაილების ასოციაციები
+SettingsCenter.Category.filegroups=ფაილების ჯგუფები
 SettingsCenter.Category.drives=დისკის არჩევა
 SettingsCenter.DriveTab.Options=დისკის პარამეტრები
 SettingsCenter.DriveTab.Bookmarks=სანიშნები

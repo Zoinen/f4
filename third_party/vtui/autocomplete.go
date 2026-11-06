@@ -521,7 +521,8 @@ func (ac *AutoCompleteMenu) accept(idx int, injectEnter bool) {
 			ac.Close()
 			return
 		}
-		e.SetText(ac.originalText)
+		e.setPreviewText(ac.originalText)
+		e.curPos = ac.originalCursor
 		injectEnter = false
 	}
 	legacy := it.ReplaceTo <= it.ReplaceFrom
@@ -535,9 +536,11 @@ func (ac *AutoCompleteMenu) accept(idx int, injectEnter bool) {
 		return
 	}
 	if legacy {
+		defer e.beginUndo("")()
 		e.SetText(it.Text)
 		e.curPos = len(e.text)
 	} else {
+		defer e.beginUndo("")()
 		newText := make([]rune, 0, len(e.text)+len([]rune(it.Text)))
 		newText = append(newText, e.text[:it.ReplaceFrom]...)
 		newText = append(newText, []rune(it.Text)...)
@@ -847,7 +850,7 @@ func (ac *AutoCompleteMenu) Preview(idx int) {
 	if !ac.Edit.AutoCompletePreview || idx < 0 || idx >= len(ac.items) || ac.items[idx].Separator {
 		return
 	}
-	ac.Edit.SetText(ac.CompletionText(idx))
+	ac.Edit.setPreviewText(ac.CompletionText(idx))
 	if idx == 0 {
 		ac.Edit.curPos = ac.originalCursor
 	}

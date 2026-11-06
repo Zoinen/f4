@@ -43,9 +43,65 @@
 
 namespace
 {
+bool isF4BundledLucideIcon(const QString &source)
+{
+    static const QString normalPrefix =
+        QStringLiteral("qrc:/F4QtHost/icons/lucide/");
+    static const QString galleryPrefix =
+        QStringLiteral("qrc:/F4QtHost/icons/lucide-gallery/");
+    return source.startsWith(normalPrefix)
+        || source.startsWith(galleryPrefix);
+}
 
+bool isZoinGalleryDefaultIcon(const QString &source)
+{
+    static const QSet<QString> defaults{
+        QStringLiteral("qrc:/ZoinGallery/resources/FileIcon.svg"),
+        QStringLiteral("qrc:/ZoinGallery/resources/FolderIcon.svg"),
+        QStringLiteral("qrc:/ZoinGallery/resources/ImageIcon.svg"),
+    };
+    return defaults.contains(source);
+}
+
+bool isF4SystemFileIcon(const QString &source, const QString &providerId)
+{
+    const QUrl url(source);
+    return url.scheme() == QStringLiteral("image")
+        && url.host().compare(providerId, Qt::CaseInsensitive) == 0
+        && url.path().startsWith(QStringLiteral("/file/"));
+}
+
+QString factoryCatalogReference(const QString &theme, const QString &key)
+{
+    static const QHash<QString, QString> references = [] {
+        QHash<QString, QString> result;
+        QFile file(QStringLiteral(":/F4QtHost/icons/filegroups.default.ini"));
+        if (!file.open(QIODevice::ReadOnly)) return result;
+        QString theme;
+        for (const auto &raw : file.readAll().split('\n')) {
+            const QString line = QString::fromUtf8(raw).trimmed();
+            if (line.startsWith(u'[')) {
+                theme = line.startsWith(QStringLiteral("[IconTheme.")) ? line.mid(11, line.size()-12) : QString();
+            } else if (!theme.isEmpty() && line.contains(u'=') && !line.startsWith(u'#')) {
+                const auto equal = line.indexOf(u'=');
+                result.insert(theme + u'/' + line.left(equal).trimmed(),line.mid(equal+1).trimmed());
+            }
+        }
+        return result;
+    }();
+    return references.value(theme+u'/'+key);
+}
+
+// Filename matching is Go-owned. Standalone callers receive only the declared
+// generic fallback; normal panel/header rows carry the compiled group choice.
+QString factoryFileIcon(const QString &name, bool directory, const QString &theme)
+{
+    const QString role = directory ? (name == QStringLiteral("..")
+        ? QStringLiteral("parent") : QStringLiteral("folder")) : QStringLiteral("file");
+    return factoryCatalogReference(theme, QStringLiteral("Fallback.") + role).mid(6);
+}
 #ifdef Q_OS_WIN
-// QAbstractFileIconProvider's Windows backend queries the shell
+// QAbstractFileIconProvider's Windows shell backend
 // (SHGetFileInfo/IExtractIcon), which needs COM initialized on the calling
 // thread. Qt Quick's asynchronous image-loader threads are not COM
 // initialized by default: the very first shell query on a fresh worker
@@ -97,6 +153,7 @@ constexpr qreal MaxLucideStrokeWidth = 4.0;
 const QSet<QString> &lucideIconNames()
 {
     static const QSet<QString> names{
+        QStringLiteral("info"),
         QStringLiteral("archive"),
         QStringLiteral("smartphone"),
         QStringLiteral("tablet"),
@@ -124,6 +181,11 @@ const QSet<QString> &lucideIconNames()
         QStringLiteral("columns-2"),
         QStringLiteral("columns-3"),
         QStringLiteral("copy"),
+        QStringLiteral("undo-2"),
+        QStringLiteral("redo-2"),
+        QStringLiteral("scissors"),
+        QStringLiteral("clipboard-paste"),
+        QStringLiteral("text-cursor-input"),
         QStringLiteral("database"),
         QStringLiteral("eye"),
         QStringLiteral("file"),
@@ -726,9 +788,6 @@ QImage F4IconProvider::renderNativeRequest(
             request.query, QStringLiteral("dir")) == QStringLiteral("1");
         fallbackName = normalizedIconName(queryValue(
             request.query, QStringLiteral("fallback")));
-        if (fallbackName == QStringLiteral("file")) {
-            fallbackName = lucideFileIconName(fileName, directory);
-        }
         icon = m_backend->iconForFile(
             request.primary, fileName, directory);
     } else {
@@ -886,104 +945,10 @@ QString F4IconProvider::normalizedIconName(QStringView rawName)
         : QStringLiteral("file");
 } // architecture-check: allow-function-lines flat immutable extension-to-icon table
 
-QString F4IconProvider::lucideFileIconName(QStringView rawFileName,
-                                           bool directory)
+QString F4IconProvider::lucideFileIconName(QStringView rawFileName, bool directory)
 {
-    const QString fileName = rawFileName.toString();
-    if (directory) {
-        return fileName == QStringLiteral("..")
-            ? QStringLiteral("folder-up")
-            : QStringLiteral("folder");
-    }
-
-    const QString suffix = QFileInfo(fileName).suffix().toLower();
-    static const QSet<QString> archiveExtensions{
-        QStringLiteral("7z"), QStringLiteral("bz2"), QStringLiteral("cab"),
-        QStringLiteral("cpio"), QStringLiteral("gz"), QStringLiteral("jar"),
-        QStringLiteral("lha"), QStringLiteral("lzh"), QStringLiteral("rar"),
-        QStringLiteral("rpm"), QStringLiteral("tar"), QStringLiteral("tgz"),
-        QStringLiteral("xz"), QStringLiteral("zip"), QStringLiteral("zst"),
-    };
-    static const QSet<QString> imageExtensions{
-        QStringLiteral("avif"), QStringLiteral("bmp"), QStringLiteral("dds"),
-        QStringLiteral("gif"), QStringLiteral("heic"), QStringLiteral("heif"),
-        QStringLiteral("ico"), QStringLiteral("jpeg"), QStringLiteral("jpg"),
-        QStringLiteral("jxl"), QStringLiteral("png"), QStringLiteral("qoi"),
-        QStringLiteral("svg"), QStringLiteral("tif"), QStringLiteral("tiff"),
-        QStringLiteral("webp"),
-    };
-    static const QSet<QString> audioExtensions{
-        QStringLiteral("aac"), QStringLiteral("aiff"), QStringLiteral("alac"),
-        QStringLiteral("flac"), QStringLiteral("m4a"), QStringLiteral("mid"),
-        QStringLiteral("midi"), QStringLiteral("mp3"), QStringLiteral("ogg"),
-        QStringLiteral("opus"), QStringLiteral("wav"), QStringLiteral("wma"),
-    };
-    static const QSet<QString> videoExtensions{
-        QStringLiteral("3gp"), QStringLiteral("avi"), QStringLiteral("flv"),
-        QStringLiteral("m4v"), QStringLiteral("mkv"), QStringLiteral("mov"),
-        QStringLiteral("mp4"), QStringLiteral("mpeg"), QStringLiteral("mpg"),
-        QStringLiteral("ogv"), QStringLiteral("webm"), QStringLiteral("wmv"),
-    };
-    static const QSet<QString> codeExtensions{
-        QStringLiteral("bash"), QStringLiteral("c"), QStringLiteral("cc"),
-        QStringLiteral("cmake"), QStringLiteral("cpp"), QStringLiteral("cs"),
-        QStringLiteral("css"), QStringLiteral("cxx"), QStringLiteral("go"),
-        QStringLiteral("h"), QStringLiteral("hpp"), QStringLiteral("html"),
-        QStringLiteral("java"), QStringLiteral("js"), QStringLiteral("jsx"),
-        QStringLiteral("kt"), QStringLiteral("lua"), QStringLiteral("m"),
-        QStringLiteral("mm"), QStringLiteral("php"), QStringLiteral("pl"),
-        QStringLiteral("py"), QStringLiteral("qml"), QStringLiteral("rb"),
-        QStringLiteral("rs"), QStringLiteral("sh"), QStringLiteral("swift"),
-        QStringLiteral("ts"), QStringLiteral("tsx"), QStringLiteral("vue"),
-        QStringLiteral("xml"), QStringLiteral("zig"), QStringLiteral("zsh"),
-    };
-    static const QSet<QString> textExtensions{
-        QStringLiteral("csv"), QStringLiteral("diff"), QStringLiteral("ini"),
-        QStringLiteral("log"), QStringLiteral("md"), QStringLiteral("nfo"),
-        QStringLiteral("patch"), QStringLiteral("rst"), QStringLiteral("tex"),
-        QStringLiteral("toml"), QStringLiteral("tsv"), QStringLiteral("txt"),
-        QStringLiteral("yaml"), QStringLiteral("yml"),
-    };
-    static const QSet<QString> bookExtensions{
-        QStringLiteral("azw"), QStringLiteral("azw3"), QStringLiteral("djvu"),
-        QStringLiteral("epub"), QStringLiteral("fb2"), QStringLiteral("mobi"),
-        QStringLiteral("pdf"),
-    };
-    static const QSet<QString> databaseExtensions{
-        QStringLiteral("db"), QStringLiteral("db3"), QStringLiteral("mdb"),
-        QStringLiteral("sqlite"), QStringLiteral("sqlite3"),
-    };
-    static const QSet<QString> configurationExtensions{
-        QStringLiteral("cfg"), QStringLiteral("conf"), QStringLiteral("json"),
-        QStringLiteral("plist"), QStringLiteral("properties"),
-    };
-    static const QSet<QString> lockedExtensions{
-        QStringLiteral("asc"), QStringLiteral("gpg"), QStringLiteral("key"),
-        QStringLiteral("pem"), QStringLiteral("pfx"), QStringLiteral("p12"),
-    };
-    static const QSet<QString> temporaryExtensions{
-        QStringLiteral("bak"), QStringLiteral("old"), QStringLiteral("tmp"),
-    };
-
-    static const QSet<QString> executableExtensions{
-        QStringLiteral("exe"), QStringLiteral("com"), QStringLiteral("bat"),
-        QStringLiteral("cmd"), QStringLiteral("msi"), QStringLiteral("appimage"),
-        QStringLiteral("run"), QStringLiteral("ps1"), QStringLiteral("sh"),
-        QStringLiteral("bash"), QStringLiteral("zsh"), QStringLiteral("fish"),
-    };
-    if (archiveExtensions.contains(suffix)) return QStringLiteral("file-archive");
-    if (executableExtensions.contains(suffix)) return QStringLiteral("file-terminal");
-    if (imageExtensions.contains(suffix)) return QStringLiteral("image");
-    if (audioExtensions.contains(suffix)) return QStringLiteral("music");
-    if (videoExtensions.contains(suffix)) return QStringLiteral("video");
-    if (codeExtensions.contains(suffix)) return QStringLiteral("file-code");
-    if (bookExtensions.contains(suffix)) return QStringLiteral("book-open");
-    if (databaseExtensions.contains(suffix)) return QStringLiteral("database");
-    if (configurationExtensions.contains(suffix)) return QStringLiteral("file-cog");
-    if (lockedExtensions.contains(suffix)) return QStringLiteral("file-lock");
-    if (temporaryExtensions.contains(suffix)) return QStringLiteral("file-clock");
-    if (textExtensions.contains(suffix)) return QStringLiteral("file-text");
-    return QStringLiteral("file");
+    const QString key = factoryFileIcon(rawFileName.toString(), directory, QStringLiteral("lucide"));
+    return factoryCatalogReference(QStringLiteral("lucide"), QStringLiteral("Asset.") + key).mid(6);
 }
 
 QUrl F4IconProvider::lucideSource(QStringView rawName, int logicalSize)
@@ -1009,21 +974,6 @@ F4IconSet::F4IconSet(QString providerId, QObject *parent)
     : QObject(parent)
     , m_providerId(normalizedProviderId(std::move(providerId)))
 {
-    QFile manifest(QStringLiteral(":/F4QtHost/icons/zoin/manifest.json"));
-    if (manifest.open(QIODevice::ReadOnly)) {
-        const auto entries = QJsonDocument::fromJson(manifest.readAll())
-            .object().value("icons").toArray();
-        for (const auto &entry : entries) {
-            const auto record = entry.toObject();
-            if (record.value("kind").toString() != QStringLiteral("file type"))
-                continue;
-            const QString path = QStringLiteral(":/F4QtHost/icons/zoin/")
-                + QFileInfo(record.value("file").toString()).fileName();
-            if (!QFile::exists(path)) continue;
-            for (const auto &pattern : record.value("examples").toArray())
-                m_zoinFileIconPatterns.append({pattern.toString(), path});
-        }
-    }
     if (qGuiApp) {
         qGuiApp->installEventFilter(this);
     }
@@ -1152,50 +1102,143 @@ QUrl F4IconSet::fileIconSource(const QString &localPath,
                                qreal devicePixelRatio,
                                qulonglong version) const
 {
-    if (zoin() && directory) {
-        const QDir icons(QStringLiteral(":/F4QtHost/icons/zoin"));
-        const QString key = fileName == QStringLiteral("..")
-            ? QStringLiteral("folder-up") : QStringLiteral("folder");
-        const QString path = icons.filePath(key + QStringLiteral(".svg"));
-        if (QFile::exists(path)) return QUrl(QStringLiteral("qrc") + path);
-    }
-    if (zoin() && !directory) {
-        // Exact configuration filenames take priority over extension patterns.
-        for (bool exact : {true, false}) {
-            for (const auto &pattern : m_zoinFileIconPatterns) {
-                if ((!pattern.first.contains('*')) == exact
-                    && QDir::match(pattern.first, fileName))
-                    return QUrl(QStringLiteral("qrc") + pattern.second);
-            }
-        }
-        const QDir icons(QStringLiteral(":/F4QtHost/icons/zoin"));
-        const QString suffix = QFileInfo(fileName).suffix().toLower();
-        for (const QString &name : {suffix, QStringLiteral("default")}) {
-            const QString path = icons.filePath(name + QStringLiteral(".svg"));
-            if (!name.isEmpty() && QFile::exists(path))
-                return QUrl(QStringLiteral("qrc") + path);
-        }
-    }
-    const QString fallback = F4IconProvider::lucideFileIconName(fileName,
-                                                                directory);
-    if (m_iconSet != System) {
-        return systemIconSource(
-                QStringLiteral("lucide"),
-                F4IconProvider::encodeRouteValue(fallback),
-                logicalSize,
-                devicePixelRatio,
-                0, {{QStringLiteral("fileArt"), QStringLiteral("1")}});
-    }
-    return systemIconSource(
-        QStringLiteral("file"),
-        F4IconProvider::encodeRouteValue(localPath),
-        logicalSize,
-        devicePixelRatio,
-        version,
+    const QString key = factoryFileIcon(fileName, directory, name());
+    if (!system()) return fileAssetSource(key, logicalSize, devicePixelRatio);
+    const QString fallback = factoryCatalogReference(name(), QStringLiteral("Asset.") + key).mid(6);
+    return systemIconSource(QStringLiteral("file"),
+        F4IconProvider::encodeRouteValue(localPath), logicalSize, devicePixelRatio, version,
         {{QStringLiteral("name"), F4IconProvider::encodeRouteValue(fileName)},
-         {QStringLiteral("dir"), directory ? QStringLiteral("1")
-                                            : QStringLiteral("0")},
+         {QStringLiteral("dir"), directory ? QStringLiteral("1") : QStringLiteral("0")},
          {QStringLiteral("fallback"), fallback}});
+}
+
+QUrl F4IconSet::fileAssetSource(const QString &asset, int logicalSize, qreal devicePixelRatio) const
+{
+    QString reference = factoryCatalogReference(name(), QStringLiteral("Asset.") + asset);
+    if (reference.isEmpty()) reference = factoryCatalogReference(name(), QStringLiteral("LegacyAsset.") + asset);
+    if (reference.isEmpty()) {
+        const QString fallback = factoryCatalogReference(name(), QStringLiteral("Fallback.file")).mid(6);
+        reference = factoryCatalogReference(name(), QStringLiteral("Asset.") + fallback);
+    }
+    if (reference.startsWith(QStringLiteral("qrc:"))) return QUrl(reference);
+    if (reference.startsWith(QStringLiteral("asset:"))) {
+        return rasterizedLucideSource(reference.mid(6), logicalSize, devicePixelRatio);
+    }
+    return rasterizedLucideSource(asset, logicalSize, devicePixelRatio);
+}
+
+QUrl F4IconSet::catalogIconSource(const QString &theme, const QString &reference,
+                                   int logicalSize, qreal devicePixelRatio) const
+{
+    if (reference.isEmpty() || reference==QStringLiteral("none")) return {};
+    if (reference.startsWith(QStringLiteral("asset:"))) {
+        const QString asset=reference.mid(6);
+        QString declared = factoryCatalogReference(theme,QStringLiteral("Asset.")+asset);
+        if (declared.isEmpty()) declared = factoryCatalogReference(theme,QStringLiteral("LegacyAsset.")+asset);
+        if (theme==QStringLiteral("zoin")) return QUrl(declared);
+        if (theme!=QStringLiteral("lucide") && theme!=QStringLiteral("system")) return {};
+        return rasterizedLucideSource(declared.startsWith(QStringLiteral("asset:")) ? declared.mid(6) : asset,logicalSize,devicePixelRatio);
+    }
+    if (reference.startsWith(QStringLiteral("native:"))) {
+        if (theme!=QStringLiteral("system")) return {};
+        return systemIconSource(QStringLiteral("theme"),F4IconProvider::encodeRouteValue(reference.mid(7)),logicalSize,devicePixelRatio,0);
+    }
+    if (reference.startsWith(QStringLiteral("file:"))) return QUrl::fromUserInput(reference.mid(5));
+    return QUrl::fromUserInput(reference);
+}
+
+QVariantMap F4IconSet::previewFileStyle(const QString &catalog, QVariantMap style,
+                                      const QVariantMap &context, int logicalSize,
+                                      qreal devicePixelRatio)
+{
+    if (catalog != QStringLiteral("lucide") && catalog != QStringLiteral("zoin")
+        && catalog != QStringLiteral("system")) {
+        style.remove(QStringLiteral("icon"));
+        return style;
+    }
+    auto *resolver = m_previewSets.value(catalog, nullptr);
+    if (!resolver) {
+        resolver = new F4IconSet(m_providerId, this);
+        resolver->setName(catalog);
+        m_previewSets.insert(catalog, resolver);
+    }
+    // Separate resolver context, shared policy: never change the live theme.
+    return resolver->resolveFileStyle(std::move(style), context, logicalSize,
+                                      devicePixelRatio, 0, false);
+}
+
+QVariantMap F4IconSet::resolveFileStyle(QVariantMap style, const QVariantMap &context,
+                                          int logicalSize, qreal devicePixelRatio,
+                                          qulonglong mtimeNanos, bool metadataDeferred) const
+{
+    const QVariantMap choices = style.value(QStringLiteral("iconChoices")).toMap();
+    QVariantMap choice = choices.value(name()).toMap();
+    const QVariantMap generic = choices.value(QStringLiteral("*")).toMap();
+    if (!generic.isEmpty() && (choice.isEmpty()
+        || generic.value(QStringLiteral("order")).toInt() < choice.value(QStringLiteral("order")).toInt())) {
+        choice = generic;
+    }
+    const bool supplied = style.value(QStringLiteral("iconSource")).toString() == QStringLiteral("plugin");
+    const bool overrideNative = choice.value(QStringLiteral("overrideNative")).toBool();
+    const QString configuredIcon = style.value(QStringLiteral("icon")).toString();
+    const QString semanticIcon = style.value(QStringLiteral("iconKey")).toString();
+    if (!choice.isEmpty() && ((!supplied && !system()) || overrideNative)) {
+        const QString kind = choice.value(QStringLiteral("kind")).toString();
+        const QString value = choice.value(QStringLiteral("value")).toString();
+        if (kind == QStringLiteral("none")) {
+            style.remove(QStringLiteral("icon"));
+            style.remove(QStringLiteral("iconKey"));
+            style.insert(QStringLiteral("iconSource"), QStringLiteral("group"));
+            return style;
+        }
+        QUrl source;
+        if (kind == QStringLiteral("asset")) source = fileAssetSource(value, logicalSize, devicePixelRatio);
+        else if (kind == QStringLiteral("file")) source = QUrl::fromUserInput(value);
+        else if (kind == QStringLiteral("native") && system()) source = iconSource(value, logicalSize, devicePixelRatio);
+        if (!source.isEmpty()) {
+            style.remove(QStringLiteral("iconKey"));
+            style.insert(QStringLiteral("icon"), source.toString());
+            style.insert(QStringLiteral("iconSource"), QStringLiteral("group"));
+            return style;
+        }
+    }
+    // Other catalogs' compiled choices must not change Native marker behavior.
+    if (system() && !supplied && !style.value(QStringLiteral("marker")).toString().isEmpty()) {
+        style.remove(QStringLiteral("icon"));
+        style.remove(QStringLiteral("iconKey"));
+        return style;
+    }
+    if (supplied || choices.isEmpty()) {
+        // Compatibility only: v1 styles had no provenance. New group choices
+        // never use URL heuristics to decide priority.
+        const bool legacyFallback = choices.isEmpty() && !supplied
+            && (isZoinGalleryDefaultIcon(configuredIcon)
+                || isF4SystemFileIcon(configuredIcon, providerId())
+                || (system() && isF4BundledLucideIcon(configuredIcon)));
+        if (!configuredIcon.isEmpty() && !legacyFallback) return style;
+        if (!semanticIcon.isEmpty()) {
+            style.insert(QStringLiteral("icon"), iconSource(semanticIcon, logicalSize, devicePixelRatio).toString());
+            if (system()) style.remove(QStringLiteral("iconKey"));
+            return style;
+        }
+    }
+    style.remove(QStringLiteral("iconKey"));
+    const bool isUp = context.value(QStringLiteral("isUp")).toBool();
+    const bool directory =
+        isUp || context.value(QStringLiteral("isDir")).toBool();
+    const QString fileName = isUp
+        ? QStringLiteral("..")
+        : context.value(QStringLiteral("name")).toString();
+    const bool genericSystemIcon = metadataDeferred && system();
+    const QUrl iconSource = fileIconSource(
+        genericSystemIcon
+            ? QString()
+            : context.value(QStringLiteral("localPath")).toString(),
+        genericSystemIcon ? QString() : fileName,
+        directory, logicalSize, devicePixelRatio,
+        genericSystemIcon ? 0 : mtimeNanos);
+    style.insert(QStringLiteral("icon"), iconSource.toString());
+    return style;
 }
 
 void F4IconSet::refresh()

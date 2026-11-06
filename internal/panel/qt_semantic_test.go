@@ -10,6 +10,7 @@ import (
 	"github.com/unxed/f4/internal/semantic"
 	"github.com/unxed/f4/internal/sysinfo"
 	"github.com/unxed/f4/internal/terminal"
+	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 )
 
@@ -65,6 +66,41 @@ func TestCommandLineSemanticClickFocus(t *testing.T) {
 	}
 	if frame.CommandLineFocused || !active.IsFocused() {
 		t.Fatal("panel activation did not restore panel focus")
+	}
+}
+
+func TestCommandLineUndoRedoSemanticAndKeyboard(t *testing.T) {
+	old := config.App
+	t.Cleanup(func() { config.App = old })
+	config.App.NavigationMode = config.NavigationSearchFirst
+	frame, _ := panelsFrameWithMouseSelect(t)
+	frame.ShowPanels = true
+	frame.CmdLine.SetVisible(true)
+	frame.SetCommandLineFocus(true)
+	frame.CmdLine.Edit.SetText("a😀bc")
+	frame.HandleSemanticAction(map[string]any{"action": "commandLine.select", "anchor": 1, "cursorPosition": 4})
+	frame.CmdLine.InsertString("X")
+	if !frame.CmdLine.SemanticModel(nil).CanUndo {
+		t.Fatal("command model lost undo availability")
+	}
+	if !frame.HandleSemanticAction(map[string]any{"action": "commandLine.undo"}) {
+		t.Fatal("undo action rejected")
+	}
+	model := frame.CmdLine.SemanticModel(nil)
+	if model.Text != "a😀bc" || model.SelectionStart != 1 || model.SelectionEnd != 4 || !model.CanRedo {
+		t.Fatalf("undo did not restore UTF-16 selection and redo: %+v", model)
+	}
+	if !frame.HandleSemanticAction(map[string]any{"action": "commandLine.redo"}) || frame.CmdLine.Edit.GetText() != "aXc" {
+		t.Fatal("redo action rejected or text incorrect")
+	}
+	frame.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true,
+		VirtualKeyCode: vtinput.VK_Z, ControlKeyState: vtinput.LeftCtrlPressed})
+	if frame.CmdLine.Edit.GetText() != "a😀bc" {
+		t.Fatal("panel swallowed keyboard undo")
+	}
+	frame.CmdLine.Clear()
+	if frame.CmdLine.SemanticModel(nil).CanUndo || frame.CmdLine.SemanticModel(nil).CanRedo {
+		t.Fatal("cleared command retained undo history")
 	}
 }
 

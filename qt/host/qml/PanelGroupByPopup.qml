@@ -121,6 +121,7 @@ Popup {
         clip: true
         contentWidth: availableWidth
         contentHeight: groupByColumn.implicitHeight
+        DropdownWheelHandler { viewport: groupByScroll.contentItem }
         ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
         ScrollBar.vertical: T.ScrollBar {
             parent: groupByScroll
@@ -263,11 +264,11 @@ Popup {
                     MouseArea {
                         id: groupChoicePointer
                         anchors.fill: parent
-                        enabled: !groupChoice.separator
                         hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onEntered: groupByPopup.currentIndex = index
+                        cursorShape: groupChoice.separator ? Qt.ArrowCursor : Qt.PointingHandCursor
+                        onEntered: groupByPopup.currentIndex = groupChoice.separator ? -1 : index
                         onClicked: {
+                            if (groupChoice.separator) return
                             panelView.chooseGrouping(modelData)
                             groupByPopup.close()
                             parentMenu.close()

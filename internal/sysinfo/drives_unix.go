@@ -34,8 +34,9 @@ func GetPlatformDrives() []DriveEntry {
 		label := filepath.Base(mountPoint)
 		drives = append(drives, DriveEntry{
 			Name:          fmt.Sprintf("%s (%s)", label, device),
+			Icon:          DriveMenuIconLocal,
 			InfoPath:      mountPoint,
-			UnmountDevice: device,
+			UnmountDevice: m.unmountDevice(),
 			Factory:       func() vfs.VFS { return vfs.NewOSVFS(mountPoint) },
 		})
 	}

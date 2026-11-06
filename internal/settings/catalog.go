@@ -21,6 +21,7 @@ var Categories = []f4settings.Category{
 	{ID: "terminal", Label: f4settings.Text{English: "Terminal & environment"}},
 	{ID: "history", Label: f4settings.Text{English: "History"}},
 	{ID: "associations", Label: f4settings.Text{English: "File associations"}},
+	{ID: "filegroups", Label: f4settings.Text{English: "File groups"}},
 	{ID: "menus", Label: f4settings.Text{English: "User menus & macros"}},
 	{ID: "network", Label: f4settings.Text{English: "Network & connections"}},
 	{ID: "metadata", Label: f4settings.Text{English: "Metadata & reports"}},

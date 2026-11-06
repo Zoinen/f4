@@ -157,6 +157,12 @@ F4HostWindow {
         pointerInputEnabled: root.needsFallbackGrid()
         inputMethodForwardingEnabled: root.galleryInputRoutingActive()
         terminalInputEnabled: !root.galleryViewerOwnsKeyboard()
+        panelClipboardPasteEnabled: root.isAppScene()
+            && root.shellFrame().showPanels !== false
+            && root.shellFrame().terminalBusy !== true
+            && !root.terminalActive() && !root.hasBlockingOverlay()
+            && !root.hasDocumentSurface() && !root.hasOperationsQueueSurface()
+            && !root.galleryViewerOwnsKeyboard()
         renderingEnabled: root.needsFallbackGrid()
         z: 0
         opacity: root.needsFallbackGrid() ? 1.0 : 0.0

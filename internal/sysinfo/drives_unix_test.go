@@ -42,14 +42,12 @@ func TestGetPlatformDrives(t *testing.T) {
 		t.Fatal("unsupported physical disk browser is exposed on macOS")
 	}
 
-	// Any entry beyond the three built-ins comes from a live mount point
-	// (UserMounts) and must carry the device/mount metadata that lets the
-	// drive menu offer to unmount it.
+	// Live mounts carry navigation metadata. Only Linux implements unmount.
 	for _, d := range drives {
 		if d.Name == "/ Root" || d.Name == "~ Home" || d.Name == "Physical Disks (/dev)" {
 			continue
 		}
-		if d.UnmountDevice == "" {
+		if runtime.GOOS == "linux" && d.UnmountDevice == "" {
 			t.Errorf("live mount entry %q has no UnmountDevice", d.Name)
 		}
 		if d.InfoPath == "" {

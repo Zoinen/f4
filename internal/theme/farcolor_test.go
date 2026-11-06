@@ -5,6 +5,29 @@ import (
 	"testing"
 )
 
+func TestValidateFarColor(t *testing.T) {
+	for _, tc := range []struct {
+		name, expression string
+		valid            bool
+	}{
+		{name: "explicit clear", expression: "", valid: true},
+		{name: "legacy names", expression: "F_WHITE | B_BLUE", valid: true},
+		{name: "palette reference", expression: "foreground:Panel.Text", valid: true},
+		{name: "both components", expression: "foreground:#112233 | background:#ABCDEF", valid: true},
+		{name: "partial rgb", expression: "foreground:#123", valid: false},
+		{name: "bad rgb", expression: "background:#nope00", valid: false},
+		{name: "unknown palette", expression: "foreground:Missing.Palette", valid: false},
+		{name: "trailing component", expression: "F_WHITE |", valid: false},
+		{name: "nested prefix", expression: "foreground:background:Panel.Text", valid: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := ValidateFarColor(tc.expression); (err == nil) != tc.valid {
+				t.Fatalf("ValidateFarColor(%q) = %v; valid=%v", tc.expression, err, tc.valid)
+			}
+		})
+	}
+}
+
 func TestParseFarColor(t *testing.T) {
 	vtui.SetDefaultPalette()
 	// The f4 slots live past vtui's own last colour, so the palette has to be

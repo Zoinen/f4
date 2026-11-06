@@ -96,7 +96,8 @@ var architectureLayers = map[string]int{
 	// question with no owner: the panel matches associations with it, the
 	// archive plugin asks it which names Enter must leave to their
 	// association, and neither may import the other.
-	"internal/filemask": 0,
+	"internal/filemask":   0,
+	"internal/filegroups": 0,
 
 	// Menu hotkeys made distinct once a menu is built. A leaf over vtui only.
 	"internal/menuhotkeys": 0,

@@ -41,11 +41,16 @@ func TryFileAssociation(pf *PanelsFrame, kind AssocKind) bool {
 		return false
 	}
 
-	list, err := LoadAssociations(AssociationsFilePath())
-	if err != nil || len(list) == 0 {
-		return false
+	var matches []FileAssoc
+	if snapshot := AssociationGroups(); snapshot != nil {
+		matches = matchingGroupAssociations(snapshot, &entry.VFSItem, kind)
+	} else {
+		list, err := LoadAssociations(AssociationsFilePath())
+		if err != nil {
+			return false
+		}
+		matches = MatchingAssociations(list, name, kind)
 	}
-	matches := MatchingAssociations(list, name, kind)
 	if len(matches) == 0 {
 		return false
 	}

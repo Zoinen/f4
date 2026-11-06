@@ -891,6 +891,7 @@ SettingsCenter.AutoSavePanelSettings.Label=Panel-Layout automatisch speichern
 SettingsCenter.Category.ai=Künstliche Intelligenz
 SettingsCenter.Category.appearance=Darstellung und Sprache
 SettingsCenter.Category.associations=Dateizuordnungen
+SettingsCenter.Category.filegroups=Dateigruppen
 SettingsCenter.Category.drives=Laufwerksauswahl
 SettingsCenter.DriveTab.Options=Laufwerksoptionen
 SettingsCenter.DriveTab.Bookmarks=Lesezeichen

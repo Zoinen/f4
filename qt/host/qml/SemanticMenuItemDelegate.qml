@@ -437,6 +437,7 @@ Rectangle {
     // same semantic selection/activation path.
     function selectFromGrab() {
         if (itemMouse.enabled) itemMouse.selectFromPointer()
+        else overlayController.pointerOverInactiveRow = true
     }
     function setGrabHover(hovered) {
         if (hovered && itemMouse.enabled && modelData.hasSubmenu === true)
@@ -480,6 +481,7 @@ Rectangle {
                  && modelData.header !== true
                  && !modelData.disabled
         function selectFromPointer() {
+            overlayController.pointerOverInactiveRow = false
             if (overlayController.fromMenuBar) {
                 hostWindow.menuBarPointerHasSelectedItem = true
                 if (hostWindow.menuPointerItemIndex < 0
@@ -529,5 +531,18 @@ Rectangle {
                 selectFromPointer()
         }
         onClicked: menuItem.activateFromPointer()
+    }
+
+    HoverHandler {
+        enabled: !itemMouse.enabled
+        target: null
+        onPointChanged: clearInactiveRow()
+        onHoveredChanged: clearInactiveRow()
+        function clearInactiveRow() {
+            if (hovered && overlayController.pointerActuallyMoved(parent, point.position)) {
+                overlayController.pointerOverInactiveRow = true
+                submenuHoverTimer.stop()
+            }
+        }
     }
 }

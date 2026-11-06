@@ -16,9 +16,13 @@ func (c *settingsCenter) SemanticNode(ctx *vtui.SemanticContext) map[string]any 
 	node := c.Window.SemanticNode(ctx)
 	node["layout"] = "settings"
 	children, _ := node["children"].([]map[string]any)
-	if c.recordOnly {
+	if c.recordOnly || c.fileGroupEditor {
 		children = nil
-		for _, item := range []vtui.UIElement{c.page, c.help, c.apply, c.ok, c.cancel} {
+		items := []vtui.UIElement{c.page, c.help, c.apply, c.ok, c.cancel}
+		if c.fileGroupEditorSample != nil {
+			items = append(items, c.fileGroupEditorSample)
+		}
+		for _, item := range items {
 			for _, child := range node["children"].([]map[string]any) {
 				if child["id"] == vtui.SemanticID(item) {
 					children = append(children, child)
@@ -40,13 +44,13 @@ func (c *settingsCenter) SemanticNode(ctx *vtui.SemanticContext) map[string]any 
 			break
 		}
 	}
-	if !c.recordOnly {
+	if !c.recordOnly && !c.fileGroupEditor {
 		children = append(children,
 			settingsCaption("settings-search-label", settingsText("Search", "Search:"), c.search.X1, c.Y1+1, c.sidebar.X2-c.sidebar.X1+1, 1),
 			settingsCaption("settings-category-title", c.categoryLabel(c.category), c.page.X1, c.Y1+1, c.page.X2-c.page.X1+1, 1),
 		)
 	}
-	if strings.TrimSpace(c.query) != "" {
+	if !c.fileGroupEditor && strings.TrimSpace(c.query) != "" {
 		count := 0
 		for _, category := range c.categories {
 			count += c.categoryMatches(category.ID)
@@ -69,8 +73,51 @@ func (c *settingsCenter) SemanticNode(ctx *vtui.SemanticContext) map[string]any 
 	}
 	for _, child := range children {
 		child["layoutRole"] = roles[semantic.String(child["id"])]
+		if c.fileGroupEditorSample != nil && child["id"] == vtui.SemanticID(c.fileGroupEditorSample) {
+			child["layoutRole"] = "editor-preview"
+		}
+	}
+	if c.fileGroupEditor {
+		node["settingsSectionsOnly"] = true
+		var mark func(map[string]any)
+		mark = func(n map[string]any) {
+			id := semantic.String(n["id"])
+			if strings.HasPrefix(id, "id:setting:group.") && n["kind"] != "text" {
+				n["resettable"] = true
+			}
+			field := strings.TrimPrefix(id, "id:setting:")
+			if state := fileGroupColourState(field); state >= 0 && n["kind"] == "edit" {
+				n["colorMatrixCell"] = true
+				n["items"] = fileGroupStateLabels()
+				if c.fileGroupEditorSample != nil {
+					patch := fileGroupColourPatches(c.fileGroupEditorSample.preview.style)[state]
+					n["colorPreview"] = map[string]any{"foreground": patch.Foreground, "background": patch.Background}
+				}
+			}
+			if header := semantic.AppMap(n["headerControl"]); len(header) > 0 {
+				mark(header)
+			}
+			for _, child := range semantic.AppMapSlice(n["children"]) {
+				mark(child)
+			}
+		}
+		for _, child := range children {
+			mark(child)
+		}
 	}
 	return node
+}
+
+func (c *settingsCenter) HandleSemanticAction(action map[string]any) bool {
+	if c.fileGroupEditor && semantic.String(action["action"]) == "control.reset" {
+		id := strings.TrimPrefix(semantic.String(action["target"]), "id:setting:")
+		if strings.HasPrefix(id, "group.") {
+			c.resetFileGroupEditorField(id)
+			return true
+		}
+		return false
+	}
+	return c.Window.HandleSemanticAction(action)
 }
 
 // Category IDs are stable across translations and search-result captions.
@@ -100,8 +147,16 @@ func settingsCategoryIcon(id string) string {
 		return "square-terminal"
 	case "history":
 		return "clock-3"
-	case "associations":
+	case "associations", "filegroups":
 		return "file-type"
+	case "filegroup-Conditions":
+		return "list-filter"
+	case "filegroup-Appearance":
+		return "palette"
+	case "filegroup-Sorting":
+		return "arrow-down-up"
+	case "filegroup-Associations":
+		return "square-terminal"
 	case "menus":
 		return "menu"
 	case "network":
@@ -126,6 +181,20 @@ func settingsCaption(id, text string, x, y, width, height int) map[string]any {
 
 func (v *settingsViewport) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 	node := v.Group.SemanticNode(ctx)
+	if _, ok := v.fullPage.(*fileGroupsOverview); ok {
+		return v.fullPage.(interface {
+			SemanticNode(*vtui.SemanticContext) map[string]any
+		}).SemanticNode(ctx)
+	}
+	if page, ok := v.fullPage.(interface {
+		SemanticNode(*vtui.SemanticContext) map[string]any
+	}); ok {
+		content := page.SemanticNode(ctx)
+		node["children"] = content["children"]
+		node["fullPage"] = true
+		vtui.DebugLog("[FIX:settings-full-page] exported page=%s", vtui.SemanticID(v.fullPage))
+		return node
+	}
 	// Coordinates inside a scrollable group describe its complete, unscrolled
 	// content. The frontend owns pixel layout; the core retains scroll/focus.
 	node["scrollable"], node["scrollTop"], node["contentHeight"] = true, v.scroll, v.total
@@ -157,6 +226,10 @@ func (v *settingsViewport) SemanticNode(ctx *vtui.SemanticContext) map[string]an
 				children = append(children, label)
 			}
 			if control := controls[vtui.SemanticID(row.control)]; control != nil {
+				if row.field.IconTheme != "" && row.read != nil {
+					control["iconTheme"] = row.field.IconTheme
+					control["iconReference"] = row.read()
+				}
 				kind := semantic.String(control["kind"])
 				control["fillWidth"] = row.controlWidth == 0 && (kind == "edit" || kind == "multiLineEdit" || kind == "button" || kind == "comboBox" || adaptiveChoices)
 				if adaptiveChoices {
@@ -177,6 +250,15 @@ func (v *settingsViewport) SemanticNode(ctx *vtui.SemanticContext) map[string]an
 			"title": box.title, "bordered": true, "visible": true, "dimmed": !matched,
 			"x": v.X1, "y": v.Y1 + box.top, "w": max(1, v.X2-v.X1-1), "h": box.bottom - box.top + 1,
 			"children": children}
+		for _, row := range box.rows {
+			if row.checkableHeader {
+				controls[vtui.SemanticID(row.control)]["text"] = box.title
+				group["headerControl"] = controls[vtui.SemanticID(row.control)]
+				// Keep the ordinary child for older semantic frontends. Qt docks
+				// this same control into the title instead of rendering it twice.
+				break
+			}
+		}
 		groups = append(groups, group)
 	}
 	node["children"] = groups
@@ -226,8 +308,18 @@ func (v *settingsViewport) HandleSemanticAction(action map[string]any) bool {
 		vtui.DebugLog("[FIX] SETTINGS: semantic page scroll=%d total=%d", v.scroll, v.total)
 		return true
 	}
+	focused := v.GetFocusedItem()
+	wasFocused := v.IsFocused()
 	if !v.Group.HandleSemanticAction(action) {
 		return false
+	}
+	name := semantic.String(action["action"])
+	if wasFocused && focused != nil && v.GetFocusedItem() == focused &&
+		(name == "control.focus" || name == "focus") && semantic.String(action["target"]) == vtui.SemanticID(focused) {
+		// Native focus acknowledgements can arrive after a touchpad scroll.
+		// Reaffirming the same field must not reveal it over the user's scroll.
+		vtui.DebugLog("[FIX:settings-scroll] same-target focus ack target=%s scroll=%d preserved", vtui.SemanticID(focused), v.scroll)
+		return true
 	}
 	v.notifyFocus()
 	return true
@@ -235,6 +327,16 @@ func (v *settingsViewport) HandleSemanticAction(action map[string]any) bool {
 
 func (h *settingsHelp) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 	node := h.Group.SemanticNode(ctx)
+	paragraphs := strings.Split(h.text, "\n\n")
+	if len(paragraphs) > 1 {
+		node["title"] = paragraphs[0]
+	}
+	timingPrefix := fmt.Sprintf(Phrase("Takes effect: %s"), "")
+	for _, paragraph := range paragraphs {
+		if strings.HasPrefix(paragraph, timingPrefix) {
+			node["helpTiming"] = paragraph
+		}
+	}
 	height := len(settingsWrap(h.text, max(1, h.X2-h.X1)))
 	node["scrollable"], node["scrollTop"], node["contentHeight"] = true, h.top, height
 	text := settingsCaption(vtui.SemanticID(h)+"-text", h.text, h.X1, h.Y1, h.X2-h.X1, height)

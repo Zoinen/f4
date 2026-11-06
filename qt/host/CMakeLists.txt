@@ -513,6 +513,7 @@ if(APPLE)
 endif()
 
 set(F4_LUCIDE_ICON_NAMES
+  info.svg
   archive.svg
   arrow-down.svg
   arrow-left.svg
@@ -538,6 +539,11 @@ set(F4_LUCIDE_ICON_NAMES
   columns-2.svg
   columns-3.svg
   copy.svg
+  undo-2.svg
+  redo-2.svg
+  scissors.svg
+  clipboard-paste.svg
+  text-cursor-input.svg
   database.svg
   eye.svg
   eye-off.svg
@@ -640,14 +646,17 @@ target_link_libraries(F4PrepareFileIcons PRIVATE Qt6::Core Qt6::Gui Qt6::Svg)
 add_executable(F4PrepareZoinIcons EXCLUDE_FROM_ALL tools/PrepareZoinIcons.cpp)
 target_link_libraries(F4PrepareZoinIcons PRIVATE Qt6::Core Qt6::Gui Qt6::Svg)
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/icons/files/names.txt" F4_FILE_ICON_NAMES)
-set(F4_FILE_ICONS "${CMAKE_CURRENT_SOURCE_DIR}/icons/files/names.txt")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/GroupIconResources.cmake")
+set(F4_FILE_ICONS "${CMAKE_CURRENT_SOURCE_DIR}/icons/files/names.txt"
+  "${F4_LUCIDE_GROUP_ICON_NAMES_FILE}")
 file(GLOB F4_ZOIN_ICONS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/icons/zoin/*.svg")
 list(APPEND F4_ZOIN_ICONS
   "${CMAKE_CURRENT_SOURCE_DIR}/icons/zoin/manifest.json"
   "${CMAKE_CURRENT_SOURCE_DIR}/icons/zoin/ICON_LICENSES.txt")
 foreach(stroke_step RANGE 1 8)
   foreach(icon_name IN LISTS F4_FILE_ICON_NAMES)
-    list(APPEND F4_FILE_ICONS "${CMAKE_CURRENT_SOURCE_DIR}/icons/files/${stroke_step}/${icon_name}.svg")
+    f4_prepared_file_icon_name("${icon_name}" prepared_name)
+    list(APPEND F4_FILE_ICONS "${CMAKE_CURRENT_SOURCE_DIR}/icons/files/${stroke_step}/${prepared_name}.svg")
   endforeach()
 endforeach()
 set(F4_STREAMLINE_ICONS ${F4_STREAMLINE_ICON_NAMES})
@@ -1225,6 +1234,12 @@ if(BUILD_TESTING)
   endif()
 
   function(f4_add_icon_test_resources target)
+    f4_add_group_icon_resources(${target})
+    qt6_add_resources(${target} ${target}_file_group_defaults
+      PREFIX "/F4QtHost/icons"
+      BASE "${CMAKE_CURRENT_SOURCE_DIR}/icons"
+      FILES "${CMAKE_CURRENT_SOURCE_DIR}/icons/filegroups.default.ini"
+    )
     qt6_add_resources(${target} ${target}_f4_zoin_icons
       PREFIX "/F4QtHost/icons/zoin"
       BASE "${CMAKE_CURRENT_SOURCE_DIR}/icons/zoin"
@@ -1256,6 +1271,13 @@ if(BUILD_TESTING)
       FILES "${CMAKE_CURRENT_SOURCE_DIR}/../../internal/gui/assets/icon/f4.svg"
     )
   endfunction()
+
+  add_executable(F4GroupIconResourceTests tests/F4GroupIconResourceTests.cpp)
+  target_link_libraries(F4GroupIconResourceTests PRIVATE Qt6::Core)
+  target_compile_definitions(F4GroupIconResourceTests PRIVATE
+    F4_ICON_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/icons")
+  f4_add_icon_test_resources(F4GroupIconResourceTests)
+  add_test(NAME F4GroupIconResourceTest COMMAND F4GroupIconResourceTests)
 
   if(TARGET ZoinGalleryMasonryLayoutModesTests)
     f4_add_icon_test_resources(ZoinGalleryMasonryLayoutModesTests)

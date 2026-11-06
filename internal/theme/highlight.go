@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/unxed/f4/internal/config"
+	"github.com/unxed/f4/internal/filegroups"
 	"github.com/unxed/f4/internal/ini"
 	"github.com/unxed/f4/internal/semantic"
 	"github.com/unxed/f4/sdk/extui"
@@ -45,6 +46,8 @@ const (
 )
 
 type HighlightRule struct {
+	Condition         *filegroups.Predicate `json:"-"`
+	SourceRevision    string
 	RuleID            string
 	Name              string
 	SortGroup         int
@@ -183,8 +186,11 @@ func (index *highlightMaskIndex) matches(name string, ignoreCase bool) bool {
 }
 
 type FileHighlighter struct {
+	fileGroups       *filegroups.Snapshot
 	UserRules        []HighlightRule
 	ThemeRules       []HighlightRule
+	baseThemeRules   []HighlightRule
+	activeColorStyle string
 	overrides        []HighlightRule
 	Rules            []HighlightRule
 	Revision         int64
@@ -282,12 +288,18 @@ func (fh *FileHighlighter) LoadUserRules(ini *ini.File) {
 // URLs against baseDir. Theme and user rules continue to share the upstream
 // priority/composition path.
 func (fh *FileHighlighter) LoadFromIniAt(ini *ini.File, baseDir string) {
+	fh.fileGroups = nil
 	fh.UserRules = parseHighlightRulesAt(ini, baseDir)
 	fh.CombineRules()
 }
 
 func (fh *FileHighlighter) LoadThemeRules(ini *ini.File) {
 	fh.ThemeRules = ParseHighlightRules(ini)
+	fh.baseThemeRules = append([]HighlightRule(nil), fh.ThemeRules...)
+	if fh.fileGroups != nil {
+		_ = fh.LoadFileGroups(fh.fileGroups)
+		return
+	}
 	fh.CombineRules()
 }
 
@@ -378,6 +390,10 @@ func (fh *FileHighlighter) CombineRules() {
 	}
 
 	fh.Revision = highlightRulesRevision(append(append([]HighlightRule(nil), fh.Rules...), fh.overrides...))
+	if fh.fileGroups != nil {
+		digest := sha256.Sum256([]byte(fmt.Sprint(fh.Revision, vtui.Palette) + fh.fileGroups.Revision()))
+		fh.Revision = int64(binary.BigEndian.Uint64(digest[:8]) & 0x7fffffffffffffff)
+	}
 	for i := range fh.Rules {
 		fh.Rules[i].maskIndex = compileHighlightMaskIndex(fh.Rules[i])
 	}
@@ -829,6 +845,10 @@ func (r *HighlightRule) hasDeferredPredicate() bool {
 // its result overwrites the provisional one.
 // Omitting metadataKnown preserves the fully loaded Match(item) contract.
 func (r *HighlightRule) Match(item *vfs.VFSItem, metadataKnown ...bool) bool {
+	known := len(metadataKnown) == 0 || metadataKnown[0]
+	if r.Condition != nil && !r.Condition.Match(item, known, time.Now()) {
+		return false
+	}
 	if len(metadataKnown) > 0 && !metadataKnown[0] && r.hasDeferredPredicate() {
 		return false
 	}
@@ -1037,28 +1057,17 @@ func (fh *FileHighlighter) GetMarker(item *vfs.VFSItem) string {
 }
 
 func semanticColorPatch(expr string) extui.HighlightColorPatchModel {
+	// Two distinct sentinels identify which components the existing colour
+	// parser actually sets, including palette references and explicit black.
+	const first, second uint32 = 0x010203, 0xFDFCFB
+	aFg, aBg := GetColorRGBBoth(ParseFarColor(expr, vtui.SetRGBBoth(0, first, first)))
+	bFg, bBg := GetColorRGBBoth(ParseFarColor(expr, vtui.SetRGBBoth(0, second, second)))
 	var patch extui.HighlightColorPatchModel
-	for _, rawPart := range strings.Split(expr, "|") {
-		part := strings.TrimSpace(rawPart)
-		if strings.HasPrefix(part, "foreground:#") && len(part) >= 18 {
-			if value, err := strconv.ParseUint(part[12:18], 16, 32); err == nil {
-				patch.Foreground = fmt.Sprintf("#%06X", value)
-			}
-			continue
-		}
-		if strings.HasPrefix(part, "background:#") && len(part) >= 18 {
-			if value, err := strconv.ParseUint(part[12:18], 16, 32); err == nil {
-				patch.Background = fmt.Sprintf("#%06X", value)
-			}
-			continue
-		}
-		if colorIndex, ok := namedColors[part]; ok {
-			if strings.HasPrefix(part, "F_") {
-				patch.Foreground = fmt.Sprintf("#%06X", Far2lPalette[colorIndex])
-			} else if strings.HasPrefix(part, "B_") {
-				patch.Background = fmt.Sprintf("#%06X", Far2lPalette[colorIndex>>4])
-			}
-		}
+	if aFg != first || bFg != second {
+		patch.Foreground = fmt.Sprintf("#%06X", aFg)
+	}
+	if aBg != first || bBg != second {
+		patch.Background = fmt.Sprintf("#%06X", aBg)
 	}
 	return patch
 }
@@ -1073,7 +1082,7 @@ func mergeHighlightPatch(target *extui.HighlightColorPatchModel, patch extui.Hig
 }
 
 func highlightStyleEmpty(style extui.HighlightStyleModel) bool {
-	return len(style.Groups) == 0 && style.Marker == "" && style.IconKey == "" && style.Icon == "" &&
+	return style.TintIcon == nil && len(style.IconChoices) == 0 && len(style.Groups) == 0 && style.Marker == "" && style.IconKey == "" && style.Icon == "" &&
 		style.Normal.Foreground == "" && style.Normal.Background == "" &&
 		style.Selected.Foreground == "" && style.Selected.Background == "" &&
 		style.Cursor.Foreground == "" && style.Cursor.Background == "" &&
@@ -1135,6 +1144,19 @@ func (fh *FileHighlighter) SemanticStyle(item *vfs.VFSItem, metadataKnown bool) 
 	matched := fh.semanticMatchedRuleIndices(item, metadataKnown)
 	cacheKey := semanticStyleCacheKey(matched, parentEntry)
 	cacheKey = item.IconKey + "\x00" + cacheKey
+	if fh.fileGroups != nil {
+		if tint, exists := fh.fileGroups.IconTint(); exists {
+			style.TintIcon = &tint
+		}
+		choices := fh.fileGroups.IconChoices(item, metadataKnown, time.Now())
+		style.IconChoices = make(map[string]extui.HighlightIconChoiceModel, len(choices))
+		for id, choice := range choices {
+			style.IconChoices[id] = extui.HighlightIconChoiceModel{Order: choice.Order, Kind: choice.Reference.Kind, Value: choice.Reference.Value, GroupID: choice.GroupID, OverrideNative: choice.OverrideNative}
+		}
+		// Icon-only conditions need their own identity, not the colour cascade's.
+		encoded, _ := json.Marshal(style.IconChoices)
+		cacheKey += "\x00" + string(encoded)
+	}
 	fh.semanticStyleCacheMu.RLock()
 	if fh.semanticStyleCacheRevision == fh.Revision {
 		if cached, ok := fh.semanticStyleCache[cacheKey]; ok {
@@ -1169,6 +1191,9 @@ func (fh *FileHighlighter) SemanticStyle(item *vfs.VFSItem, metadataKnown bool) 
 		}
 	}
 	if item.IconKey != "" && !parentEntry {
+		if fh.fileGroups != nil {
+			style.IconSource = "plugin"
+		}
 		style.IconKey = item.IconKey
 		style.Icon = ""
 	}

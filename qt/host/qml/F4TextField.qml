@@ -24,11 +24,17 @@ Item {
     property bool acceptableInput: innerInput.acceptableInput
 
     property bool hasBackground: true
+    property real cornerRadius: 4
+    property real focusRingWidth: 0
     readonly property bool hovered: control.enabled && fieldHover.hovered
     property url leadingIconSource: ""
     property real leadingIconSize: 14
     property bool semanticFocus: false
     property bool remoteControlled: false
+    property bool remoteCanUndo: false
+    property bool remoteCanRedo: false
+    signal remoteUndoRequested(bool redo)
+    property bool contextReadOnly: readOnly && !remoteControlled
     readonly property bool editingFocus: control.remoteControlled
         ? control.semanticFocus : (innerInput.activeFocus || control.semanticFocus)
     property int remoteCursorPosition: 0
@@ -36,6 +42,7 @@ Item {
     property int cursorActivityRevision: 0
     property bool continuousCursorBlink: false
     property real trailingInset: 0
+    property real leadingInset: 0
 
     signal accepted()
     signal textEdited()
@@ -255,13 +262,26 @@ Item {
     }
 
     Rectangle {
+        objectName: control.objectName + "FocusRing"
+        anchors.fill: parent
+        anchors.margins: -control.snap(control.focusRingWidth)
+        visible: control.enabled && control.editingFocus && control.focusRingWidth > 0
+        radius: control.snap(control.cornerRadius + control.focusRingWidth)
+        color: "transparent"
+        antialiasing: true
+        border.width: control.snap(control.focusRingWidth)
+        border.color: control.hostWindow ? control.hostWindow.dialogAccent : "#2c7be5"
+        opacity: 0.55
+    }
+
+    Rectangle {
         id: bgRect
         objectName: control.objectName ? (control.objectName + "Background")
                                        : "textFieldBackground"
         readonly property color testBorderColor: border.color
         anchors.fill: parent
         visible: control.hasBackground
-        radius: control.snap(4)
+        radius: control.snap(control.cornerRadius)
         color: control.hostWindow
                ? (!control.enabled ? control.hostWindow.dialogBg
                   : control.hovered ? control.hostWindow.inputHoverBg
@@ -279,7 +299,7 @@ Item {
 
     RowLayout {
         anchors.fill: parent
-        anchors.leftMargin: control.snap(8)
+        anchors.leftMargin: control.snap(8) + control.leadingInset
         anchors.rightMargin: control.snap(8) + control.trailingInset
         spacing: control.snap(6)
 
@@ -449,6 +469,7 @@ Item {
     }
 
     MouseArea {
+        id: fieldTextCursorArea
         objectName: control.objectName
                     ? (control.objectName + "TextCursorArea")
                     : "textFieldTextCursorArea"
@@ -460,8 +481,9 @@ Item {
         // hovering it instead of exposing the default arrow.
         cursorShape: Qt.IBeamCursor
         onClicked: (mouse) => {
-            if (mouse.button === Qt.RightButton && !control.readOnly) {
-                editMenu.popup()
+            if (mouse.button === Qt.RightButton && control.hostWindow) {
+                if (control.remoteControlled) control.pointerFocusRequested()
+                editMenu.openAt(fieldTextCursorArea, Qt.point(mouse.x, mouse.y))
             }
         }
     }
@@ -538,40 +560,35 @@ Item {
         onCanceled: control.cancelMarginPress(rightMarginSelectionArea)
     }
 
-    T.Menu {
+    TextEditContextMenu {
         id: editMenu
-        T.MenuItem {
-            text: qsTr("Cut")
-            enabled: innerInput.selectedText.length > 0 && !innerInput.readOnly
-            onTriggered: {
-                innerInput.cut()
-                innerInput.forceActiveFocus()
+        objectName: control.objectName + "EditMenu"
+        hostWindow: control.hostWindow
+        editor: innerInput
+        editable: !control.contextReadOnly
+        undoAvailable: editable && (control.remoteControlled ? control.remoteCanUndo : innerInput.canUndo)
+        redoAvailable: editable && (control.remoteControlled ? control.remoteCanRedo : innerInput.canRedo)
+        pasteAvailable: editable && (control.remoteControlled || innerInput.canPaste)
+        actionHandler: name => {
+            if (control.remoteControlled && (name === "undo" || name === "redo")) {
+                control.pointerFocusRequested()
+                control.remoteUndoRequested(name === "redo")
+                return
             }
-        }
-        T.MenuItem {
-            text: qsTr("Copy")
-            enabled: innerInput.selectedText.length > 0
-            onTriggered: {
-                innerInput.copy()
+            if (!control.remoteControlled || name === "selectAll") {
+                if (name === "selectAll") innerInput.selectAll()
+                else editMenu.activateNative(name)
                 innerInput.forceActiveFocus()
+                if (control.remoteControlled) control.pointerSelectionFinished()
+                return
             }
-        }
-        T.MenuItem {
-            text: qsTr("Paste")
-            enabled: innerInput.canPaste && !innerInput.readOnly
-            onTriggered: {
-                innerInput.paste()
-                innerInput.forceActiveFocus()
-            }
-        }
-        T.MenuSeparator {}
-        T.MenuItem {
-            text: qsTr("Select All")
-            enabled: innerInput.text.length > 0
-            onTriggered: {
-                innerInput.selectAll()
-                innerInput.forceActiveFocus()
-            }
+            control.pointerSelectionFinished()
+            const keys = {undo: Qt.Key_Z, redo: Qt.Key_Y, cut: Qt.Key_X,
+                copy: Qt.Key_C, paste: Qt.Key_V, delete: Qt.Key_Delete}
+            const event = {key: keys[name], modifiers: name === "delete" ? Qt.NoModifier : Qt.ControlModifier,
+                text: "", isAutoRepeat: false, accepted: false}
+            control.remoteKeyEvent(event, true)
+            control.remoteKeyEvent(event, false)
         }
     }
 }

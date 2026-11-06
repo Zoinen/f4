@@ -245,6 +245,32 @@ class F4IconProviderTests final : public QObject
     Q_OBJECT
 
 private slots:
+    void previewUsesIndependentCatalogAndSharedPriority()
+    {
+        F4IconSet icons;
+        icons.setName(QStringLiteral("zoin"));
+        QVariantMap choice{{"kind","asset"},{"value","file"},{"overrideNative",true}};
+        QVariantMap style{{"iconChoices",QVariantMap{{"lucide",choice}}}};
+        const QVariantMap context{{"name","sample.txt"},{"isDir",false}};
+        const auto rendered=icons.previewFileStyle(QStringLiteral("lucide"),style,context,24,1.75);
+        QVERIFY(!rendered.value("icon").toString().isEmpty());
+        QCOMPARE(icons.name(),QStringLiteral("zoin"));
+        choice.insert("kind","none");
+        style.insert("iconChoices",QVariantMap{{"lucide",choice}});
+        const auto blank=icons.previewFileStyle(QStringLiteral("lucide"),style,context,24,1.75);
+        QVERIFY(blank.value("icon").toString().isEmpty());
+        QCOMPARE(icons.name(),QStringLiteral("zoin"));
+        QVERIFY(icons.previewFileStyle(QString(),style,context,24,1.75).value("icon").toString().isEmpty());
+        icons.setName(QStringLiteral("lucide"));
+        const QVariantMap themeChoices{{"zoin",QVariantMap{{"kind","asset"},{"value","zip"}}},
+                                      {"lucide",QVariantMap{{"kind","asset"},{"value","archive"}}}};
+        const QVariantMap themeStyle{{"iconChoices",themeChoices}};
+        const auto zoin = icons.previewFileStyle("zoin",themeStyle,context,24,1.75);
+        QVERIFY(zoin.value("icon").toString().contains("/zoin/archives.svg"));
+        const auto lucide = icons.previewFileStyle("lucide",themeStyle,context,24,1.75);
+        QVERIFY(lucide.value("icon").toString() != zoin.value("icon").toString());
+        QCOMPARE(icons.name(),QStringLiteral("lucide")); // Preview never changes the panel's theme.
+    }
     void preparedFileIconsFitFinalPhysicalSlot();
     void preparedFileIconResourcesPreserveChromeOriginals();
     void requestsAlwaysRunOffTheGuiThread();
@@ -447,19 +473,19 @@ void F4IconProviderTests::lucideSourcesAndFileClassification()
     QCOMPARE(F4IconProvider::lucideFileIconName(u"..", true),
              QStringLiteral("folder-up"));
     QCOMPARE(F4IconProvider::lucideFileIconName(u"photo.JPEG", false),
-             QStringLiteral("image"));
+             QStringLiteral("file"));
     QCOMPARE(F4IconProvider::lucideFileIconName(u"source.QML", false),
-             QStringLiteral("file-code"));
+             QStringLiteral("file"));
     QCOMPARE(F4IconProvider::lucideFileIconName(u"manual.pdf", false),
-             QStringLiteral("book-open"));
+             QStringLiteral("file"));
     QCOMPARE(F4IconProvider::lucideFileIconName(u"unknown.bin", false),
              QStringLiteral("file"));
     QCOMPARE(F4IconProvider::lucideFileIconName(u"photos.ZIP", false),
-             QStringLiteral("file-archive"));
+             QStringLiteral("file"));
     for (const auto name : {u"app.EXE", u"tool.com", u"build.cmd", u"start.bat",
                            u"app.AppImage", u"setup.run", u"script.ps1", u"script.sh"}) {
         QCOMPARE(F4IconProvider::lucideFileIconName(name, false),
-                 QStringLiteral("file-terminal"));
+                 QStringLiteral("file"));
     }
     for (const auto name : {u"file-archive", u"file-terminal"}) {
         QCOMPARE(F4IconProvider::normalizedIconName(name), QString(name));
@@ -958,7 +984,7 @@ void F4IconProviderTests::iconSetPropertiesAndRevision()
              QString::number(icons.revision()));
     QCOMPARE(query.queryItemValue(QStringLiteral("version")), QStringLiteral("77"));
     QCOMPARE(query.queryItemValue(QStringLiteral("fallback")),
-             QStringLiteral("file-archive"));
+             QStringLiteral("file")); // Native never activates Lucide classification rules.
 }
 
 void F4IconProviderTests::diagnosticPatternIsOptInAndDprAware()
@@ -1138,11 +1164,16 @@ void F4IconProviderTests::zoinIconsAreBundledAndIndependent()
     auto source = [&](const QString &name, bool directory = false) {
         return icons.fileIconSource("/test/" + name, name, directory, 64, 2);
     };
-    QCOMPARE(source("test.json"), QUrl("qrc:/F4QtHost/icons/zoin/json.svg"));
-    QCOMPARE(source(".babelrc.json"), QUrl("qrc:/F4QtHost/icons/zoin/json.svg"));
-    QCOMPARE(source("unknown.xyz"), QUrl("qrc:/F4QtHost/icons/zoin/default.svg"));
-    QCOMPARE(source("test", true), QUrl("qrc:/F4QtHost/icons/zoin/folder.svg"));
-    QCOMPARE(source("..", true), QUrl("qrc:/F4QtHost/icons/zoin/folder-up.svg"));
+    // Without a Go-owned matching result, only generic fallbacks are allowed.
+    QCOMPARE(source("test.json"), QUrl("qrc:/F4QtHost/icons/zoin/files.svg"));
+    QCOMPARE(source(".babelrc.json"), QUrl("qrc:/F4QtHost/icons/zoin/files.svg"));
+    QCOMPARE(source("unknown.xyz"), QUrl("qrc:/F4QtHost/icons/zoin/files.svg"));
+    QCOMPARE(source("test", true), QUrl("qrc:/F4QtHost/icons/zoin/folders.svg"));
+    QCOMPARE(source("..", true), QUrl("qrc:/F4QtHost/icons/zoin/parent-folder.svg"));
+    const auto chosen = icons.resolveFileStyle(QVariantMap{{"iconChoices",QVariantMap{
+        {"zoin",QVariantMap{{"kind","asset"},{"value","json"}}}}}},
+        QVariantMap{{"name","test.json"}},64,2,0,false);
+    QCOMPARE(chosen.value("icon").toString(),QStringLiteral("qrc:/F4QtHost/icons/zoin/json.svg"));
     QCOMPARE(icons.iconSource("folder", 16, 1), menuFolder);
     for (const QString &name : {"test.json", ".babelrc.json", "unknown.xyz"}) {
         const QUrl url = source(name);
@@ -1189,7 +1220,12 @@ void F4IconProviderTests::zoinManifestReferencesBundledAssets()
         referenced.insert(file);
     }
     const auto names = directory.entryList({"*.svg"}, QDir::Files);
-    QCOMPARE(referenced, QSet<QString>(names.begin(), names.end()));
+    // Compatibility aliases remain addressable, but all resolve to canonical artwork.
+    for (const auto &name : names) {
+        const QUrl url = icons.catalogIconSource("zoin","asset:" + QFileInfo(name).completeBaseName(),24,1);
+        QVERIFY2(!url.isEmpty(),qPrintable(name));
+        QVERIFY2(referenced.contains(QFileInfo(url.path()).fileName()),qPrintable(name));
+    }
     QVERIFY(QFile::exists(directory.filePath("ICON_LICENSES.txt")));
     for (const auto &name : {"photo.JPG", "README.md", "script.sh", "file.txt",
                              "source.cpp", "package.json", "component.tsx",
@@ -1198,9 +1234,9 @@ void F4IconProviderTests::zoinManifestReferencesBundledAssets()
         QVERIFY2(QFile::exists(":" + url.path()), name);
     }
     QCOMPARE(icons.fileIconSource("/test", "photo.JPG", false, 64, 2),
-             QUrl("qrc:/F4QtHost/icons/zoin/image.svg"));
+             QUrl("qrc:/F4QtHost/icons/zoin/files.svg"));
     QCOMPARE(icons.fileIconSource("/test", "README.md", false, 64, 2),
-             QUrl("qrc:/F4QtHost/icons/zoin/markdown.svg"));
+             QUrl("qrc:/F4QtHost/icons/zoin/files.svg"));
 }
 
 void F4IconProviderTests::nativeArtworkTrimsOnlyZeroAlpha_data()

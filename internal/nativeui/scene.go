@@ -1046,6 +1046,7 @@ func appHighlightStyleFromLegacy(node map[string]any) extui.HighlightStyleModel 
 		}
 	}
 	style := extui.HighlightStyleModel{
+		IconSource:     semantic.String(node["iconSource"]),
 		Marker:         semantic.String(node["marker"]),
 		IconKey:        semantic.String(node["iconKey"]),
 		Icon:           semantic.String(node["icon"]),
@@ -1054,11 +1055,26 @@ func appHighlightStyleFromLegacy(node map[string]any) extui.HighlightStyleModel 
 		Cursor:         patch(node["cursor"]),
 		SelectedCursor: patch(node["selectedCursor"]),
 	}
+	if choices := semantic.AppMap(node["iconChoices"]); len(choices) > 0 {
+		style.IconChoices = map[string]extui.HighlightIconChoiceModel{}
+		for catalog, value := range choices {
+			choice := semantic.AppMap(value)
+			style.IconChoices[catalog] = extui.HighlightIconChoiceModel{
+				Kind: semantic.String(choice["kind"]), Value: semantic.String(choice["value"]),
+				GroupID: semantic.String(choice["groupId"]), Order: semantic.Int(choice["order"]),
+				OverrideNative: semantic.AppBool(choice["overrideNative"]),
+			}
+		}
+	}
 	for _, group := range semantic.AppMapSlice(node["groups"]) {
 		style.Groups = append(style.Groups, extui.HighlightGroupModel{
 			ID:   semantic.String(group["id"]),
 			Name: semantic.String(group["name"]),
 		})
+	}
+	if raw, exists := node["tintIcon"]; exists {
+		value := semantic.AppBool(raw)
+		style.TintIcon = &value
 	}
 	return style
 }
@@ -1068,6 +1084,8 @@ func appCommandLineFromLegacy(node map[string]any) extui.CommandLineModel {
 		ID:               semantic.String(node["id"]),
 		Visible:          semantic.AppBoolDefault(node["visible"], true),
 		Focused:          semantic.AppBool(node["focused"]),
+		CanUndo:          semantic.AppBool(node["canUndo"]),
+		CanRedo:          semantic.AppBool(node["canRedo"]),
 		OwnsNavigation:   semantic.AppBool(node["ownsNavigation"]),
 		Multiline:        semantic.AppBool(node["multiline"]),
 		WordWrap:         semantic.AppBool(node["wordWrap"]),
@@ -1397,35 +1415,58 @@ func appDialogFromLegacy(node map[string]any) extui.DialogModel {
 
 func appControlFromLegacy(node map[string]any) extui.ControlModel {
 	ctrl := extui.ControlModel{
-		LayoutRole:    semantic.String(node["layoutRole"]),
-		FillWidth:     semantic.AppBool(node["fillWidth"]),
-		ExplainTarget: semantic.String(node["explainTarget"]),
-		DisabledItems: semantic.AppIntSlice(node["disabledItems"]),
-		Scrollable:    semantic.AppBool(node["scrollable"]),
-		ScrollTop:     semantic.Int(node["scrollTop"]),
-		ContentHeight: semantic.Int(node["contentHeight"]),
-		Bordered:      semantic.AppBool(node["bordered"]),
-		Dimmed:        semantic.AppBool(node["dimmed"]),
-		WrapText:      semantic.AppBool(node["wrapText"]),
-		ID:            semantic.String(node["id"]),
-		Kind:          semantic.String(node["kind"]),
-		Visible:       semantic.AppBoolDefault(node["visible"], true),
-		Focused:       semantic.AppBool(node["focused"]),
-		Disabled:      semantic.AppBool(node["disabled"]),
-		Text:          semantic.String(node["text"]),
-		Title:         semantic.String(node["title"]),
-		Hotkey:        semantic.String(node["hotkey"]),
-		State:         semantic.Int(node["state"]),
-		ThreeState:    semantic.AppBool(node["threeState"]),
-		Default:       semantic.AppBool(node["default"]),
-		Password:      semantic.AppBool(node["password"]),
-		Cursor:        semantic.Int(node["cursor"]),
-		Left:          semantic.Int(node["left"]),
-		Selected:      semantic.AppIntSlice(node["selected"]),
-		Items:         semantic.AppStringSlice(node["items"]),
-		ItemIcons:     semantic.AppStringSlice(node["itemIcons"]),
-		Rows:          semantic.AppMapSlice(node["rows"]),
-		Legacy:        node,
+		LayoutRole:         semantic.String(node["layoutRole"]),
+		HelpTiming:         semantic.String(node["helpTiming"]),
+		FillWidth:          semantic.AppBool(node["fillWidth"]),
+		ExplainTarget:      semantic.String(node["explainTarget"]),
+		DisabledItems:      semantic.AppIntSlice(node["disabledItems"]),
+		Scrollable:         semantic.AppBool(node["scrollable"]),
+		ScrollTop:          semantic.Int(node["scrollTop"]),
+		ContentHeight:      semantic.Int(node["contentHeight"]),
+		Bordered:           semantic.AppBool(node["bordered"]),
+		Dimmed:             semantic.AppBool(node["dimmed"]),
+		WrapText:           semantic.AppBool(node["wrapText"]),
+		ID:                 semantic.String(node["id"]),
+		Kind:               semantic.String(node["kind"]),
+		Visible:            semantic.AppBoolDefault(node["visible"], true),
+		Focused:            semantic.AppBool(node["focused"]),
+		CanUndo:            semantic.AppBool(node["canUndo"]),
+		CanRedo:            semantic.AppBool(node["canRedo"]),
+		Disabled:           semantic.AppBool(node["disabled"]),
+		Text:               semantic.String(node["text"]),
+		Title:              semantic.String(node["title"]),
+		Hotkey:             semantic.String(node["hotkey"]),
+		State:              semantic.Int(node["state"]),
+		ThreeState:         semantic.AppBool(node["threeState"]),
+		Default:            semantic.AppBool(node["default"]),
+		Password:           semantic.AppBool(node["password"]),
+		Cursor:             semantic.Int(node["cursor"]),
+		Left:               semantic.Int(node["left"]),
+		Selected:           semantic.AppIntSlice(node["selected"]),
+		Items:              semantic.AppStringSlice(node["items"]),
+		ItemIcons:          semantic.AppStringSlice(node["itemIcons"]),
+		FileGroupsOverview: semantic.AppBool(node["fileGroupsOverview"]),
+		FullPage:           semantic.AppBool(node["fullPage"]),
+		Rows:               semantic.AppMapSlice(node["rows"]),
+		Legacy:             node,
+	}
+	if header := semantic.AppMap(node["headerControl"]); len(header) > 0 {
+		control := appControlFromLegacy(header)
+		ctrl.HeaderControl = &control
+	}
+	ctrl.FileGroupSample = semantic.AppBool(node["fileGroupSample"])
+	ctrl.PreviewName = semantic.String(node["previewName"])
+	ctrl.PreviewCatalog = semantic.String(node["previewCatalog"])
+	ctrl.PreviewDirectory = semantic.AppBool(node["previewDirectory"])
+	ctrl.ColorMatrixCell = semantic.AppBool(node["colorMatrixCell"])
+	if raw := semantic.AppMap(node["previewStyle"]); len(raw) > 0 {
+		style := appHighlightStyleFromLegacy(raw)
+		ctrl.PreviewStyle = &style
+	}
+	if raw := semantic.AppMap(node["colorPreview"]); len(raw) > 0 {
+		ctrl.ColorPreview = &extui.HighlightColorPatchModel{
+			Foreground: semantic.String(raw["foreground"]), Background: semantic.String(raw["background"]),
+		}
 	}
 	// Go-owned dropdowns publish choices in their separate menu scene. Avoid
 	// sending them twice and instantiating an unused native popup model.

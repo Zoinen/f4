@@ -8,6 +8,7 @@
 #include <QCoreApplication>
 #include <QDebug>
 #include <QElapsedTimer>
+#include <QFile>
 #include <QMetaObject>
 #include <QPointer>
 #include <QSet>
@@ -34,7 +35,8 @@ QtShellController::QtShellController(const QString &connectAddress,
                                      const QString &nonce,
                                      int cols,
                                      int rows,
-                                     QObject *parent)
+                                     QObject *parent,
+                                     const QString &fileGroupIconTheme)
     : QObject(parent)
     , m_shellState(new ShellStateStore(this))
     , m_chromeState(new ChromeStateStore(this))
@@ -44,6 +46,7 @@ QtShellController::QtShellController(const QString &connectAddress,
     , m_surfaceRegistry(new SurfaceRegistry(this))
     , m_transport(new ExtUiTransport(this))
     , m_nonce(nonce)
+    , m_fileGroupIconTheme(fileGroupIconTheme)
     , m_initialCols(cols)
     , m_initialRows(rows)
 {
@@ -521,6 +524,16 @@ void QtShellController::sendQuit()
     sendMessage({{QStringLiteral("type"), QStringLiteral("quit")}});
 }
 
+void QtShellController::setFileGroupIconTheme(const QString &theme)
+{
+    if (m_fileGroupIconTheme == theme) return;
+    m_fileGroupIconTheme = theme;
+    if (m_helloSent) {
+        sendMessage({{QStringLiteral("type"), QStringLiteral("file_group_icon_theme")},
+                     {QStringLiteral("iconTheme"), theme}});
+    }
+}
+
 void QtShellController::onConnected()
 {
     if (!m_connected) {
@@ -537,9 +550,16 @@ void QtShellController::onConnected()
 
     const int cellWidth = 10;
     const int cellHeight = 20;
+    QFile fileGroupDefaults(QStringLiteral(":/F4QtHost/icons/filegroups.default.ini"));
+    QString fileGroupData;
+    if (fileGroupDefaults.open(QIODevice::ReadOnly)) {
+        fileGroupData = QString::fromUtf8(fileGroupDefaults.readAll());
+    }
     const bool helloWritten = sendMessage({
         {QStringLiteral("type"), QStringLiteral("hello")},
         {QStringLiteral("nonce"), m_nonce},
+        {QStringLiteral("fileGroupDefaults"), fileGroupData},
+        {QStringLiteral("fileGroupIconTheme"), m_fileGroupIconTheme},
         {QStringLiteral("cols"), m_initialCols},
         {QStringLiteral("rows"), m_initialRows},
         {QStringLiteral("pixelWidth"), m_initialCols * cellWidth},
@@ -547,6 +567,7 @@ void QtShellController::onConnected()
         {QStringLiteral("cellWidth"), cellWidth},
         {QStringLiteral("cellHeight"), cellHeight},
         {QStringLiteral("capabilities"), QVariantMap{
+             {QStringLiteral("fileGroupIconThemeV1"), true},
              {QStringLiteral("panelCatalogMetadataV1"), true},
              {QStringLiteral("panelCatalogRowsV1"), true},
              {QStringLiteral("panelGroupingV1"), true},

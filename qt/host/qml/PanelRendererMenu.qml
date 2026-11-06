@@ -8,6 +8,9 @@ import ZoinGallery 1.0 as ZG
 
 Popup {
     id: rendererMenu
+    height: Math.min(hostWindow.height - hostWindow.snapPx(12),
+                     rendererMenuColumn.implicitHeight + topPadding + bottomPadding)
+    margins: hostWindow.snapPx(6)
     required property ApplicationWindow hostWindow
     required property Item panelView
     required property QtObject galleryController
@@ -27,6 +30,12 @@ Popup {
     z: 1001
     focus: true
     property int keyboardIndex: -1
+    function revealKeyboardIndex() {
+        const row = keyboardIndex < panelView.rendererChoices.length
+            ? rendererChoiceRepeater.itemAt(keyboardIndex)
+            : keyboardIndex === panelView.rendererChoices.length ? groupByRow : thumbnailsRow
+        if (keyboardIndex >= 0) rendererScroll.reveal(row)
+    }
     readonly property real menuItemHeight: hostWindow.snapPx(31)
 
     function pixelOffset(item, horizontal) {
@@ -56,11 +65,13 @@ Popup {
             next = (next + delta + count) % count
             if (next === groupByIndex || next === thumbnailsIndex) {
                 keyboardIndex = next
+                Qt.callLater(revealKeyboardIndex)
                 return
             }
             const item = rendererChoiceRepeater.itemAt(next)
             if (item && item.choiceEnabled) {
                 keyboardIndex = next
+                Qt.callLater(revealKeyboardIndex)
                 return
             }
         }
@@ -123,6 +134,7 @@ Popup {
         y = hostWindow.snapPx(Math.max(6, Math.min(hostWindow.height - height - 6,
                                 point.y)))
         keyboardIndex = firstKeyboardIndex()
+        Qt.callLater(revealKeyboardIndex)
         Qt.callLater(forceActiveFocus)
     }
     onClosed: {
@@ -149,8 +161,18 @@ Popup {
         border.color: hostWindow.controlBorder
     }
 
-    contentItem: Column {
+    contentItem: DropdownScrollView {
+        id: rendererScroll
+        menuObjectName: rendererMenu.objectName
+        hostWindow: rendererMenu.hostWindow
+        contentHeight: rendererMenuColumn.implicitHeight
+        focus: true
+        Keys.priority: Keys.BeforeItem
+        Keys.onPressed: event => rendererMenu.handleKey(event)
+
+    Column {
         id: rendererMenuColumn
+        width: rendererScroll.rowWidth
         focus: true
         Keys.onPressed: event => rendererMenu.handleKey(event)
         spacing: hostWindow.snapPx(2)
@@ -165,7 +187,7 @@ Popup {
                 required property var modelData
                 readonly property bool isHeading:
                     modelData.heading === true
-                width: rendererMenu.availableWidth
+                width: rendererMenuColumn.width
                 implicitWidth: isHeading
                     ? 16 + rendererHeadingLabel.implicitWidth
                     : 8 + rendererChoiceLeading.implicitWidth
@@ -315,14 +337,15 @@ Popup {
                         id: rendererChoicePointer
                         anchors.fill: parent
                         hoverEnabled: true
-                        enabled: rendererChoice.choiceEnabled
-                        cursorShape: enabled ? Qt.PointingHandCursor
+                        cursorShape: rendererChoice.choiceEnabled ? Qt.PointingHandCursor
                                              : Qt.ArrowCursor
                         onEntered: {
                             groupByPopup.close()
-                            rendererMenu.keyboardIndex = rendererChoice.index
+                            rendererMenu.keyboardIndex = rendererChoice.choiceEnabled
+                                ? rendererChoice.index : -1
                         }
                         onClicked: {
+                            if (!rendererChoice.choiceEnabled) return
                             panelView.chooseRenderer(rendererChoice.modelData)
                             rendererMenu.close()
                         }
@@ -334,7 +357,7 @@ Popup {
                 id: groupByRow
                 objectName: "panelRendererGroupByRow-"
                             + Number(panel.side || 0)
-                width: rendererMenu.availableWidth
+                width: rendererMenuColumn.width
                 height: rendererMenu.menuItemHeight
                 Accessible.role: Accessible.MenuItem
                 Accessible.name: "Group by"
@@ -448,7 +471,7 @@ Popup {
                 id: thumbnailsRow
                 objectName: "panelThumbnailsRow-" + Number(panel.side || 0)
                 property bool checked: panelView.thumbnailsEnabled()
-                width: rendererMenu.availableWidth
+                width: rendererMenuColumn.width
                 height: rendererMenu.menuItemHeight
                 Accessible.role: Accessible.MenuItem
                 Accessible.name: qsTr("Thumbnails")
@@ -731,6 +754,8 @@ Popup {
                 }
             }
         }
+
+    }
 
     PanelGroupByPopup {
         id: groupByPopup

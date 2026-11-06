@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/unxed/f4/internal/terminal"
+	"github.com/unxed/f4/vfs"
 )
 
 func TestLocalCommandLongInteractiveRoundTrip(t *testing.T) {
@@ -93,6 +94,18 @@ func TestLocalCommandLongInteractiveRoundTrip(t *testing.T) {
 		}
 		waitFor("BEGIN:" + payload + ":END")
 		cleanup()
+		environment, err := preparePOSIXProcessEnvironmentShellPayload([]vfs.ProcessEnvironmentChange{
+			{Name: "F4_PTY_ROUNDTRIP", Value: fmt.Sprint(i)},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(environment.cleanup)
+		if _, err := writeProcessEnvironmentPayload(p, environment.wire); err != nil {
+			t.Fatal(err)
+		}
+		waitFor("\x1b]133;E;" + environment.token + ";0\a")
+		environment.cleanup()
 	}
 }
 

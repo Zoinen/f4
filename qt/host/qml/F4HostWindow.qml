@@ -261,7 +261,6 @@ ApplicationWindow {
         themePalette.galleryQuickSearchMatchColor
     property alias galleryDirectoryTextColor:
         themePalette.galleryDirectoryTextColor
-    property alias galleryFolderIconColor: themePalette.galleryFolderIconColor
     property alias galleryCursorColor: themePalette.galleryCursorColor
     property alias galleryCursorBackgroundColor:
         themePalette.galleryCursorBackgroundColor

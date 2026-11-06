@@ -799,6 +799,20 @@ func init() {
 		Enabled:     cursorEntryEnabled,
 		Handler:     withPF(func(pf *panel.PanelsFrame) { actionViewFileHex(pf) }),
 	})
+	// Alternate association slots are bindable, but deliberately have no keys:
+	// Alt+F3 stays the hex viewer and platform shortcuts remain unchanged.
+	for _, alternate := range []struct {
+		name, label string
+		kind        panel.AssocKind
+	}{
+		{"File.AssociationAltExecute", "Alternate open association", panel.AssocAltExec},
+		{"File.AssociationAltView", "Alternate view association", panel.AssocAltView},
+		{"File.AssociationAltEdit", "Alternate edit association", panel.AssocAltEdit},
+	} {
+		registerAction(action.Action{Name: alternate.name, Area: "Shell", Label: alternate.label,
+			Description: alternate.label, Enabled: cursorEntryEnabled,
+			Handler: withPF(func(pf *panel.PanelsFrame) { panel.TryFileAssociation(pf, alternate.kind) })})
+	}
 	// Ctrl+Space: the size of the folder under the cursor, in any VFS -- an
 	// archive included, where the scan walks the archive's own listing and
 	// extracts nothing (M-Commander parity, f4#1670). F3 on a folder does the

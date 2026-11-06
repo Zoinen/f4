@@ -891,6 +891,7 @@ SettingsCenter.AutoSavePanelSettings.Label=Zapisać układ panelu automatycznie
 SettingsCenter.Category.ai=Sztuczna inteligencja
 SettingsCenter.Category.appearance=Wygląd i język
 SettingsCenter.Category.associations=Skojarzenia plików
+SettingsCenter.Category.filegroups=Grupy plików
 SettingsCenter.Category.drives=Wybór dysku
 SettingsCenter.DriveTab.Options=Opcje dysku
 SettingsCenter.DriveTab.Bookmarks=Zakładki

@@ -23,6 +23,8 @@ type MountEntry struct {
 	FSType string
 }
 
+func (m MountEntry) unmountDevice() string { return m.Device }
+
 // userMountRoots are where udisks2 (the mechanism behind GNOME's, KDE's and
 // most other desktops' automount-on-plug-in) and a manual admin mount both
 // put removable media. Anything outside these roots is a system mount --

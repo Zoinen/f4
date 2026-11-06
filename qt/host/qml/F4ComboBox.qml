@@ -17,6 +17,7 @@ T.ComboBox {
     // intentionally projects Go's text and selection state.
     property bool textEditable: false
     property bool externallyOwnedPopup: false
+    property real leadingPreviewWidth: 0
     signal externalPopupRequested()
 
     function snap(val) {
@@ -39,7 +40,7 @@ T.ComboBox {
         id: comboText
         objectName: control.objectName ? (control.objectName + "Text")
                                        : "comboBoxText"
-        leftPadding: control.snap(10)
+        leftPadding: control.snap(10 + control.leadingPreviewWidth)
         rightPadding: control.snap(30)
         text: control.displayText
         textFormat: Text.PlainText
@@ -110,7 +111,9 @@ T.ComboBox {
         enabled: !control.externallyOwnedPopup
         y: control.snap(control.height + 4)
         width: control.snap(control.width)
-        implicitHeight: control.snap(Math.min(contentItem.implicitHeight + 8, 240))
+        implicitHeight: control.snap(Math.min(contentItem.implicitHeight + 8,
+            control.hostWindow ? Math.max(1, control.hostWindow.height - 12) : 240))
+        margins: control.snap(6)
         padding: control.snap(4)
 
         background: Rectangle {
@@ -136,6 +139,7 @@ T.ComboBox {
             model: control.delegateModel
             currentIndex: control.highlightedIndex
             boundsBehavior: Flickable.StopAtBounds
+            DropdownWheelHandler { viewport: parent }
 
             ScrollBar.vertical: F4ScrollBar {
                 hostWindow: control.hostWindow

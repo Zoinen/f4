@@ -1,10 +1,44 @@
 package theme
 
 import (
+	"fmt"
 	"github.com/unxed/vtui"
 	"strconv"
 	"strings"
 )
+
+// ValidateFarColor checks editor input without changing the legacy parser's
+// tolerant handling of already stored expressions.
+func ValidateFarColor(expr string) error {
+	if strings.TrimSpace(expr) == "" {
+		return nil
+	}
+	for _, part := range strings.Split(expr, "|") {
+		token := strings.TrimSpace(part)
+		if _, ok := namedColors[token]; ok {
+			continue
+		}
+		component, value, hasComponent := strings.Cut(token, ":")
+		if !hasComponent {
+			value = token
+		}
+		value = strings.TrimSpace(value)
+		knownComponent := component == "foreground" || component == "background"
+		if hasComponent && !knownComponent {
+			return fmt.Errorf("invalid colour component %q", token)
+		}
+		if _, ok := colorMap[value]; ok {
+			continue
+		}
+		if hasComponent && strings.HasPrefix(value, "#") && len(value) == 7 {
+			if _, err := strconv.ParseUint(value[1:], 16, 24); err == nil {
+				continue
+			}
+		}
+		return fmt.Errorf("invalid colour component %q", token)
+	}
+	return nil
+}
 
 var namedColors = map[string]uint64{
 	"F_BLACK": 0, "F_BLUE": 1, "F_GREEN": 2, "F_CYAN": 3, "F_RED": 4, "F_MAGENTA": 5, "F_BROWN": 6, "F_LIGHTGRAY": 7,

@@ -76,7 +76,6 @@ Item {
     property int galleryCellCaptionSpacing: 3
     property color galleryQuickSearchMatchColor: "#c678dd"
     property color galleryDirectoryTextColor: "#98d8ff"
-    property color galleryFolderIconColor: "#5ab2f1"
     property color galleryCursorColor: "#1d5888"
     property color galleryCursorBackgroundColor: "#18456e"
     property color galleryCursorBorderColor: "#1d5888"
@@ -134,7 +133,6 @@ Item {
         { id: "galleryFolderTextColor", name: "Neutral Folder Text", group: "Panel Colors", defaultColor: "#ffffff" },
         { id: "galleryQuickSearchMatchColor", name: "Quick Search Match", group: "Panel Colors", defaultColor: "#c678dd" },
         { id: "galleryDirectoryTextColor", name: "Directory Text", group: "Panel Colors", defaultColor: "#98d8ff" },
-        { id: "galleryFolderIconColor", name: "Folder Icon", group: "Panel Colors", defaultColor: "#5ab2f1" },
         { id: "galleryCursorColor", name: "Card Cursor Fill", group: "Panel Colors", defaultColor: "#1d5888" },
         { id: "galleryCursorBackgroundColor", name: "Details Cursor Fill", group: "Panel Colors", defaultColor: "#18456e" },
         { id: "galleryCursorBorderColor", name: "Details Cursor Border", group: "Panel Colors", defaultColor: "#1d5888" },
@@ -189,7 +187,7 @@ Item {
             markedBackground: palette.galleryMarkedBackgroundColor
             markedText: palette.galleryMarkedTextColor
             directoryText: palette.galleryDirectoryTextColor
-            folderIcon: palette.galleryFolderIconColor
+            folderIcon: palette.galleryMutedTextColor
             itemBackground: palette.galleryItemBackgroundColor
             directoryBackground: palette.galleryDirectoryBackgroundColor
             itemHover: palette.galleryItemHoverColor

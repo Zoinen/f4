@@ -888,6 +888,7 @@ SettingsCenter.AutoSavePanelSettings.Label=Automatiski uzglabāt paneļu sastāv
 SettingsCenter.Category.ai=Mākslīgais intelekts
 SettingsCenter.Category.appearance=Izskats un valoda
 SettingsCenter.Category.associations=Failu asociācijas
+SettingsCenter.Category.filegroups=Failu grupas
 SettingsCenter.Category.drives=Diska izvēle
 SettingsCenter.DriveTab.Options=Diska opcijas
 SettingsCenter.DriveTab.Bookmarks=Grāmatzīmes

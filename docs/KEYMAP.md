@@ -1,5 +1,17 @@
 # Key remapping (`keymap.ini`)
 
+Go-owned Edit fields (including the command line) support `Ctrl+Z` for Undo and
+`Ctrl+Shift+Z` or `Ctrl+Y` for Redo. These are edit-control shortcuts, not new
+global command bindings. Existing editor and panel shortcuts keep their scopes.
+Qt text context menus invoke the same Go operations; native Qt-only fields keep
+their own native edit history.
+
+The panel F-bar is contextual: F3/F4 show View/Edit for files and Size/Attr for
+folders (F4 is unavailable on the parent row). Native mouse activation updates
+these captions after the clicked row becomes current. Compact focus-only
+updates remain valid only when the resulting key-bar labels, icons and enabled
+states are unchanged.
+
 `hotkeys.ini` and the Hotkey Configurator bind *commands* to keys. `keymap.ini`
 works one layer below: it substitutes one key for another as the keystroke
 arrives, before anything in f4 has looked at it. Two problems need that layer.
@@ -234,6 +246,11 @@ restores command focus; Qt reveals the prompt upward over 130 ms, while the
 console shows it immediately. Other navigation modes and the terminal view
 retain their prompt.
 
+In Search-first with panels visible, plain Enter belongs to the focused target.
+An inactive command draft is preserved while Enter opens the current panel item;
+it runs only after command input receives focus. Classic navigation and the
+terminal-only view retain their normal command submission behaviour.
+
 **Ctrl+tilde** switches between Search first and Classic navigation. The
 physical grave/tilde key works both without Shift (`CtrlVK_C0`) and with Shift
 (`CtrlShiftVK_C0`), including the Russian `ё` layout. The command is
@@ -266,6 +283,10 @@ normal action hotkey settings. In panels it saves clipboard images or offers an
 image/text choice; text-only clipboard data goes to the command line. See
 [Clipboard images](SETTINGS_CENTER.md#clipboard-images) for encoding and naming
 preferences. Editor and dialog clipboard shortcuts keep their existing actions.
+Qt forwards an image-bearing panel paste through the core Ctrl+V shortcut even
+when the visible command line owns keyboard focus. Text-only clipboard contents
+retain the multiline paste transaction. Terminal, document and modal-dialog
+contexts do not activate this panel-image route.
 
 ### Panel file clipboard (f4#1767)
 

@@ -380,8 +380,12 @@ type HighlightColorPatchModel struct {
 }
 
 type HighlightStyleModel struct {
-	Groups []HighlightGroupModel
-	Marker string
+	TintIcon   *bool  `json:",omitempty"`
+	IconSource string `json:",omitempty"`
+	// IconChoices is optional. Older clients can keep using Icon/IconKey.
+	IconChoices map[string]HighlightIconChoiceModel `json:",omitempty"`
+	Groups      []HighlightGroupModel
+	Marker      string
 	// IconKey is the presentation-neutral name of an icon supplied by the
 	// embedding shell (for example "folder-up").  Icon remains available for
 	// genuinely external/custom URLs; bundled host resource paths must not be
@@ -394,10 +398,18 @@ type HighlightStyleModel struct {
 	SelectedCursor HighlightColorPatchModel
 }
 
+type HighlightIconChoiceModel struct {
+	Order                int
+	Kind, Value, GroupID string
+	OverrideNative       bool
+}
+
 type CommandLineModel struct {
 	ID      string
 	Visible bool
 	Focused bool
+	CanUndo bool
+	CanRedo bool
 	// OwnsNavigation routes panel navigation keys to the command line even when empty.
 	OwnsNavigation    bool
 	AutoHide          bool
@@ -502,6 +514,7 @@ type SurfaceModel struct {
 	// An empty value means that the native frontend should use its ordinary
 	// file-icon color.
 	IconColor            string
+	FileStyle            *HighlightStyleModel
 	Busy                 bool
 	Dirty                bool
 	Saving               bool
@@ -755,7 +768,22 @@ type DialogKeyHint struct {
 }
 
 type ControlModel struct {
-	LayoutRole string
+	CanUndo            bool
+	CanRedo            bool
+	FileGroupSample    bool
+	PreviewStyle       *HighlightStyleModel
+	PreviewName        string
+	PreviewCatalog     string
+	PreviewDirectory   bool
+	ColorMatrixCell    bool
+	ColorPreview       *HighlightColorPatchModel
+	FileGroupsOverview bool
+	// FullPage keeps an embedded table and its actions in the full Settings content area.
+	FullPage      bool
+	HeaderControl *ControlModel
+	LayoutRole    string
+	// HelpTiming optionally separates localized timing from a help paragraph.
+	HelpTiming string
 	FillWidth  bool
 	// ExplainTarget identifies the owner of contextual help; hover never focuses it.
 	ExplainTarget string
@@ -1300,7 +1328,7 @@ func (s HighlightStyleModel) ToMap() M {
 	for _, group := range s.Groups {
 		groups = append(groups, M{"id": group.ID, "name": group.Name})
 	}
-	return M{
+	out := M{
 		"groups":         groups,
 		"marker":         s.Marker,
 		"iconKey":        s.IconKey,
@@ -1310,6 +1338,20 @@ func (s HighlightStyleModel) ToMap() M {
 		"cursor":         s.Cursor.ToMap(),
 		"selectedCursor": s.SelectedCursor.ToMap(),
 	}
+	if len(s.IconChoices) > 0 {
+		choices := M{}
+		for theme, choice := range s.IconChoices {
+			choices[theme] = M{"kind": choice.Kind, "value": choice.Value, "groupId": choice.GroupID, "overrideNative": choice.OverrideNative, "order": choice.Order}
+		}
+		out["iconChoices"] = choices
+	}
+	if s.IconSource != "" {
+		out["iconSource"] = s.IconSource
+	}
+	if s.TintIcon != nil {
+		out["tintIcon"] = *s.TintIcon
+	}
+	return out
 }
 
 func (c CommandLineModel) ToMap() M {
@@ -1318,6 +1360,8 @@ func (c CommandLineModel) ToMap() M {
 		"kind":             "commandLine",
 		"visible":          c.Visible,
 		"focused":          c.Focused,
+		"canUndo":          c.CanUndo,
+		"canRedo":          c.CanRedo,
 		"ownsNavigation":   c.OwnsNavigation,
 		"autoHide":         c.AutoHide,
 		"multiline":        c.Multiline,
@@ -1463,6 +1507,9 @@ func (d SurfaceModel) ToMap() M {
 	}
 	if d.IconColor != "" {
 		out["iconColor"] = d.IconColor
+	}
+	if d.FileStyle != nil {
+		out["fileStyle"] = d.FileStyle.ToMap()
 	}
 	return out
 }
@@ -1854,6 +1901,8 @@ func (c ControlModel) ToMap() M {
 		"kind":          c.Kind,
 		"visible":       c.Visible,
 		"focused":       c.Focused,
+		"canUndo":       c.CanUndo,
+		"canRedo":       c.CanRedo,
 		"disabled":      c.Disabled,
 		"text":          c.Text,
 		"title":         c.Title,
@@ -1873,6 +1922,34 @@ func (c ControlModel) ToMap() M {
 		"cursor":        c.Cursor,
 		"left":          c.Left,
 	}
+	if c.FileGroupsOverview {
+		out["fileGroupsOverview"] = true
+	}
+	if c.FullPage {
+		out["fullPage"] = true
+	}
+	if c.FileGroupSample {
+		out["fileGroupSample"] = true
+		out["previewName"] = c.PreviewName
+		out["previewDirectory"] = c.PreviewDirectory
+	}
+	if c.FileGroupSample || c.LayoutRole == "overview-table" {
+		out["previewCatalog"] = c.PreviewCatalog
+	}
+	if c.PreviewStyle != nil {
+		out["previewStyle"] = c.PreviewStyle.ToMap()
+	}
+	if c.ColorMatrixCell {
+		out["colorMatrixCell"] = true
+	}
+	if c.ColorPreview != nil {
+		out["colorPreview"] = map[string]any{
+			"foreground": c.ColorPreview.Foreground, "background": c.ColorPreview.Background,
+		}
+	}
+	if c.HeaderControl != nil {
+		out["headerControl"] = c.HeaderControl.ToMap()
+	}
 	if len(c.Selected) > 0 {
 		out["selected"] = c.Selected
 	}
@@ -1881,6 +1958,9 @@ func (c ControlModel) ToMap() M {
 	}
 	if c.LayoutRole != "" {
 		out["layoutRole"] = c.LayoutRole
+	}
+	if c.HelpTiming != "" {
+		out["helpTiming"] = c.HelpTiming
 	}
 	if len(c.Items) > 0 {
 		out["items"] = c.Items

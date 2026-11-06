@@ -11,6 +11,10 @@ Item {
     objectName: "dialogWidget-" + hostWindow.cleanText(widget.id) + "ViewportController"
     readonly property bool description: widget.layoutRole === "description"
     readonly property real padding: description ? 0 : hostWindow.snapPx(10)
+    readonly property real scrollbarContentGap: hostWindow.snapPx(Number(widget.scrollbarContentGap || 0))
+    readonly property real contentAreaWidth: Math.max(1, viewport.width
+        - (scrollBar.visible ? scrollBar.width + scrollbarContentGap
+                            : hostWindow.snapPx(Number(widget.unscrolledRightInset || 0))))
     readonly property real maximumScroll: Math.max(0, viewport.contentHeight - viewport.height)
     readonly property int semanticMaximum: Math.max(0, Number(widget.contentHeight || 0) - Number(widget.h || 1))
     property bool synchronizing: false
@@ -25,7 +29,7 @@ Item {
         naturalText: root.description
         originX: Number(root.widget.x || 0)
         originY: Number(root.widget.y || 0)
-        maximumWidth: Math.max(1, viewport.width - (scrollBar.visible ? scrollBar.width : 0))
+        maximumWidth: root.contentAreaWidth
     }
 
     function synchronizeScroll() {
@@ -41,6 +45,16 @@ Item {
         if (value !== semanticScroll)
             hostWindow.action({"target": widget.id, "action": "control.scroll", "value": value}, true)
     }
+    function clampScroll() {
+        // Layout can settle after native scrolling starts, before its debounced
+        // position reaches Go. New geometry must not restore that stale offset.
+        const bounded = Math.max(0, Math.min(maximumScroll, viewport.contentY))
+        if (Math.abs(bounded - viewport.contentY) < .001)
+            return
+        synchronizing = true
+        viewport.contentY = hostWindow.snapPx(bounded)
+        synchronizing = false
+    }
     function ensureFocusVisible() {
         if (!focused)
             return
@@ -52,7 +66,7 @@ Item {
             viewport.contentY = hostWindow.snapPx(Math.min(maximumScroll, bottom - viewport.height + padding))
     }
     onSemanticScrollChanged: Qt.callLater(synchronizeScroll)
-    onMaximumScrollChanged: Qt.callLater(synchronizeScroll)
+    onMaximumScrollChanged: Qt.callLater(clampScroll)
     onFocusedIDChanged: Qt.callLater(ensureFocusVisible)
     Component.onCompleted: Qt.callLater(synchronizeScroll)
 
@@ -78,6 +92,7 @@ Item {
         }
         ScrollBar.vertical: F4ScrollBar {
             id: scrollBar
+            objectName: "dialogWidget-" + root.hostWindow.cleanText(root.widget.id) + "ViewportScrollBar"
             policy: ScrollBar.AlwaysOn
             hostWindow: root.hostWindow
             visible: root.maximumScroll > 0
@@ -86,7 +101,7 @@ Item {
         Item {
             id: content
             y: root.padding
-            width: viewport.width - (scrollBar.visible ? scrollBar.width : 0)
+            width: root.contentAreaWidth
             height: metrics.contentHeight
             // Snap the scroll translation as a whole before native text, icons
             // and control backgrounds inherit it, including wheel rest states.

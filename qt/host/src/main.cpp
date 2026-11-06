@@ -355,7 +355,19 @@ int main(int argc, char *argv[])
     // the system transparency paths are disabled in the QML host.
     QQuickWindow::setDefaultAlphaBuffer(false);
 
-    QtShellController controller(connectAddress, nonce, cols, rows, &app);
+    // Resolve GUI-owned preferences before the handshake: the first Go scene
+    // must already evaluate the saved icon theme's complete group set.
+    const QString guiSettingsPath = parser.value(windowGeometryFileOption).isEmpty()
+        ? QDir(QCoreApplication::applicationDirPath()).filePath("gui_theme.ini")
+        : QDir(QFileInfo(parser.value(windowGeometryFileOption)).absolutePath()).filePath("gui_theme.ini");
+    F4ThemePersistence themePersistence(guiSettingsPath,
+        QDir(QCoreApplication::applicationDirPath()).filePath("gui_theme.ini"));
+    const QVariantMap savedTheme = themePersistence.loadTheme();
+    F4IconSet iconSet;
+    iconSet.setName(savedTheme.value(QStringLiteral("iconSet")).toString());
+    QtShellController controller(connectAddress, nonce, cols, rows, &app, iconSet.name());
+    QObject::connect(&iconSet, &F4IconSet::iconSetChanged, &controller,
+                     [&controller, &iconSet]() { controller.setFileGroupIconTheme(iconSet.name()); });
 #if defined(Q_OS_MACOS)
     MacPlatformServices macPlatformServices(
         [&controller](const QVariantMap &message) {
@@ -409,8 +421,6 @@ int main(int argc, char *argv[])
     QQmlApplicationEngine engine;
     engine.addImportPath(QStringLiteral(":/"));
 
-    F4IconSet iconSet;
-    iconSet.setName(parser.value(iconSetOption));
     const bool iconTestPatternEnabled =
         qEnvironmentVariableIntValue("F4_QT_ICON_TEST_PATTERN") != 0;
     auto *iconProvider = new F4IconProvider({}, iconTestPatternEnabled);
@@ -488,15 +498,7 @@ int main(int argc, char *argv[])
             galleryBridge.synchronizePanelCatalog(panel);
         }
     }
-    const QString guiSettingsPath = parser.value(windowGeometryFileOption).isEmpty()
-        ? QDir(QCoreApplication::applicationDirPath()).filePath("gui_theme.ini")
-        : QDir(QFileInfo(parser.value(windowGeometryFileOption)).absolutePath()).filePath("gui_theme.ini");
-    F4ThemePersistence themePersistence(guiSettingsPath,
-        QDir(QCoreApplication::applicationDirPath()).filePath("gui_theme.ini"));
     F4TextRenderingPolicy textRenderingPolicy;
-    const QVariantMap savedTheme = themePersistence.loadTheme();
-    // GUI preferences own the theme and its default, not the legacy Go value.
-    iconSet.setName(savedTheme.value(QStringLiteral("iconSet")).toString());
     if (qEnvironmentVariableIsSet("VTUI_DEBUG"))
         qInfo() << "[FIX:zoin-default] GUI icon theme:" << iconSet.name();
     const QString savedRenderType = savedTheme.value(

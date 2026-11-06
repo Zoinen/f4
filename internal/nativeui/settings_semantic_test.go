@@ -8,6 +8,27 @@ import (
 	"testing"
 )
 
+func TestEditProjectionPreservesUndoRedo(t *testing.T) {
+	for _, state := range []struct {
+		name       string
+		undo, redo bool
+	}{
+		{name: "undo", undo: true}, {name: "redo", redo: true}, {name: "both", undo: true, redo: true},
+	} {
+		t.Run(state.name, func(t *testing.T) {
+			node := map[string]any{"kind": "edit", "canUndo": state.undo, "canRedo": state.redo}
+			control := appControlFromLegacy(node)
+			control.Legacy = nil
+			wire := control.ToMap()
+			command := appCommandLineFromLegacy(node).ToMap()
+			if wire["canUndo"] != state.undo || wire["canRedo"] != state.redo ||
+				command["canUndo"] != state.undo || command["canRedo"] != state.redo {
+				t.Fatal("capabilities lost in typed projection")
+			}
+		})
+	}
+}
+
 func TestControlProjectionPreservesItemIcons(t *testing.T) {
 	want := []string{"palette", "", "keyboard"}
 	for _, kind := range []string{"listBox", "table"} {
@@ -23,6 +44,72 @@ func TestControlProjectionPreservesItemIcons(t *testing.T) {
 	control := appControlFromLegacy(map[string]any{"kind": "listBox"})
 	if _, exists := control.ToMap()["itemIcons"]; exists {
 		t.Fatal("unadorned lists should omit icon metadata")
+	}
+}
+
+func TestHighlightProjectionPreservesExplicitIconTint(t *testing.T) {
+	for _, tint := range []bool{false, true} {
+		t.Run(map[bool]string{false: "original colours", true: "tinted"}[tint], func(t *testing.T) {
+			style := appHighlightStyleFromLegacy(map[string]any{"tintIcon": tint})
+			if style.TintIcon == nil || *style.TintIcon != tint || style.ToMap()["tintIcon"] != tint {
+				t.Fatal("explicit tint policy lost on typed wire roundtrip")
+			}
+		})
+	}
+	if _, exists := appHighlightStyleFromLegacy(nil).ToMap()["tintIcon"]; exists {
+		t.Fatal("legacy appearance must not gain a synthetic opt-out")
+	}
+}
+
+func TestControlProjectionPreservesOverviewAndCheckableHeader(t *testing.T) {
+	control := appControlFromLegacy(map[string]any{"kind": "group", "fileGroupsOverview": true, "headerControl": map[string]any{"id": "enable", "kind": "checkbox", "state": 1, "text": "Highlighting"}})
+	control.Legacy = nil
+	if !control.FileGroupsOverview || control.HeaderControl == nil {
+		t.Fatal("typed extension missing")
+	}
+	projected := appControlFromLegacy(control.ToMap())
+	if !projected.FileGroupsOverview || projected.HeaderControl.State != 1 || projected.HeaderControl.ID != "enable" {
+		t.Fatal(projected)
+	}
+}
+
+func TestControlProjectionPreservesFullPage(t *testing.T) {
+	control := appControlFromLegacy(map[string]any{"id": "page", "kind": "group", "fullPage": true})
+	control.Legacy = nil
+	if control.ToMap()["fullPage"] != true {
+		t.Fatal("full-page layout lost on typed wire roundtrip")
+	}
+}
+
+func TestOverviewTablePreservesCatalogWithoutLegacyFields(t *testing.T) {
+	c := appControlFromLegacy(map[string]any{"kind": "table", "layoutRole": "overview-table", "previewCatalog": "zoin"})
+	c.Legacy = nil
+	if got := c.ToMap()["previewCatalog"]; got != "zoin" {
+		t.Fatalf("table catalog lost: %v", got)
+	}
+}
+
+func TestControlProjectionPreservesPinnedAppearanceAndMatrix(t *testing.T) {
+	style := map[string]any{"normal": map[string]any{"foreground": "#112233"},
+		"iconSource": "group", "iconChoices": map[string]any{"zoin": map[string]any{
+			"kind": "asset", "value": "file", "groupId": "example", "overrideNative": true,
+		}}}
+	c := appControlFromLegacy(map[string]any{"kind": "group", "fileGroupSample": true,
+		"previewStyle": style, "previewName": "example.txt", "previewCatalog": "zoin", "previewDirectory": true})
+	c.Legacy = nil
+	p := appControlFromLegacy(c.ToMap())
+	if !p.FileGroupSample || p.PreviewName != "example.txt" || p.PreviewCatalog != "zoin" || !p.PreviewDirectory {
+		t.Fatal("pinned preview fields lost")
+	}
+	if p.PreviewStyle.Normal.Foreground != "#112233" || !p.PreviewStyle.IconChoices["zoin"].OverrideNative {
+		t.Fatal("four-state appearance or icon priority lost")
+	}
+	m := appControlFromLegacy(map[string]any{"kind": "edit", "colorMatrixCell": true,
+		"colorPreview": map[string]any{"foreground": "#445566", "background": "#778899"}})
+	m.Legacy = nil
+	p = appControlFromLegacy(m.ToMap())
+	if !p.ColorMatrixCell || p.ColorPreview.Foreground != "#445566" || p.ColorPreview.Background != "#778899" {
+		t.Fatal("typed matrix swatch lost")
 	}
 }
 

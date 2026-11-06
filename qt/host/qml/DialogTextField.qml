@@ -7,8 +7,21 @@ F4TextField {
     id: dialogEdit
 
     required property var widget
+    contextReadOnly: widget.readOnly === true || widget.disabled === true
+    leadingIconSize: widget.iconTheme !== undefined ? 22 : 14
+    leadingIconSource: widget.iconTheme !== undefined && hostWindow.iconProvider
+                       && typeof hostWindow.iconProvider.catalogIconSource === "function"
+            ? hostWindow.iconProvider.catalogIconSource(
+                  widget.iconTheme === "*" ? hostWindow.iconProvider.name : String(widget.iconTheme),
+                  String(widget.iconReference || ""),22,hostWindow.dpr)
+            : widget.iconName ? hostWindow.lucideIconSource(widget.iconName, leadingIconSize, hostWindow.mutedText) : ""
+    placeholderText: String(widget.placeholderText || "")
+    cornerRadius: widget.cornerRadius !== undefined ? Number(widget.cornerRadius) : 4
+    focusRingWidth: Number(widget.focusRingWidth || 0)
+    Accessible.name: placeholderText
     readonly property alias indicator: historyIcon
-    trailingInset: widget.history === true ? hostWindow.snapPx(30) : 0
+    leadingInset: Number(widget.leadingInset || 0)
+    trailingInset: Number(widget.trailingInset || 0) + (widget.history === true ? hostWindow.snapPx(30) : 0)
     Item {
         id: historyButton
         objectName: dialogEdit.objectName + "HistoryButton"
@@ -47,6 +60,10 @@ F4TextField {
     }
     enabled: widget.disabled !== true
     remoteControlled: true
+    remoteCanUndo: widget.canUndo === true
+    remoteCanRedo: widget.canRedo === true
+    onRemoteUndoRequested: redo => hostWindow.action({target: widget.id,
+        action: redo ? "control.redo" : "control.undo"}, true)
     readOnly: true
     text: hostWindow.cleanText(widget.text)
     echoMode: widget.password ? TextInput.Password : TextInput.Normal

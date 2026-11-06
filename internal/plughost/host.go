@@ -27,6 +27,12 @@ var pluginInitTimeout = 15 * time.Second
 // so adding a transport is a matter of producing those streams and nothing
 // else.
 func startPluginSession(sess *f4rpc.Session, api vfs.HostAPI, name string, bridge *ffibridge.Bridge, onServeExit func(error)) (vfs.Registration, error) {
+	driveAPI := api
+	if intercepted, ok := api.(*extractedURIHost); ok {
+		// Preserve optional command/panel/settings capabilities for RPC too;
+		// only drive registration belongs to the deferred URI decorator.
+		api = intercepted.HostAPI
+	}
 	registrations := &PluginSessionRegistrations{}
 	back := newUIGuard(sess)
 	sess.OnError = func(err error) {
@@ -71,7 +77,7 @@ func startPluginSession(sess *f4rpc.Session, api vfs.HostAPI, name string, bridg
 	}
 	for _, drive := range res.Drives {
 		driveName := drive // closure capture
-		api.RegisterDrive(driveName, func() vfs.VFS {
+		driveAPI.RegisterDrive(driveName, func() vfs.VFS {
 			return NewRPCVFS(back, driveName)
 		})
 	}

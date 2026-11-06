@@ -809,6 +809,7 @@ SettingsCenter.AutoSavePanelSettings.Label=Ավտոմատ կերպով պահպ�
 SettingsCenter.Category.ai=Արհեստական բանականություն
 SettingsCenter.Category.appearance=Տեսք և լեզու
 SettingsCenter.Category.associations=Ֆայլերի ասոցիացիաներ
+SettingsCenter.Category.filegroups=Ֆայլերի խմբեր
 SettingsCenter.Category.drives=Սկավառակի ընտրություն
 SettingsCenter.DriveTab.Options=Սկավառակի ընտրանքներ
 SettingsCenter.DriveTab.Bookmarks=Էջանիշեր

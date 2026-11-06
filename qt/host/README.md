@@ -155,26 +155,43 @@ window-agent fallback.
 The QML frontend offers **Zoin** (the default), **Lucide** and **Native** in the GUI
 settings category. The choice is stored as `iconSet = zoin|lucide|system` in
 `gui_theme.ini` and is applied live. Legacy Go icon preferences do not override
-the GUI-owned default or saved selection. The selection does not affect the terminal or other external
-UI renderers.
+the GUI-owned default or saved selection. Shift+F12 retains that theme's active
+file groups even in console presentation; other standalone frontends use their
+own context (or the neutral `generic` set).
+
+The host loads the saved preference **before** its initial ExtUI hello. The
+optional `fileGroupIconTheme` field and `fileGroupIconThemeV1` capability identify
+the active Go-owned group set. Later switches send only a two-field
+`file_group_icon_theme` message with `iconTheme`; catalogs/defaults are sent once.
+Go evaluates universal groups before the selected theme and never evaluates
+another theme's rules as a resource fallback. See
+[File groups](../../docs/FILE_GROUPS.md) for Version 3, migration and preview rules.
+
+File groups Settings uses a Go-owned overview (`fileGroupsOverview`) rather than
+an inline property form. Optional table-row `appearance` uses the panel colour
+and icon resolver, with a separate `previewCatalog` so browsing a rule set cannot
+change the application theme. Stable semantic row models preserve local pixel
+scrolling across scene updates. Optional `headerControl` renders accessible
+checkboxes inside section titles; older clients retain the ordinary child.
 
 System file icons come from Qt Gui's platform file-icon provider. Qt delegates
 that lookup to Finder/NSWorkspace on macOS, the Shell image lists on Windows,
 and the current MIME/XDG icon theme on Linux. The host requests each `QIcon`
 at the delegate's logical size and device-pixel ratio so native multi-resolution
 or vector artwork is selected before it becomes a Qt Quick texture. Missing
-theme or remote-file icons fall back to the matching bundled Lucide glyph.
+theme or remote-file icons fall back to the theme's declarative generic artwork,
+without activating Lucide's file-classification rules.
 
 ### Bundled icon assets
 
 The separate **Zoin** icon theme uses bundled colored file and folder SVGs in
-`icons/zoin`. Its manifest matches exact filenames before extension patterns,
-with extension and generic-file fallbacks. Folder artwork includes a transparent
+`icons/zoin`. The shared `icons/filegroups.default.ini` matches exact filenames
+before extension patterns, with generic-file fallbacks. Folder artwork includes a transparent
 parent-arrow cutout. Menus and buttons retain Lucide icons; thumbnails stay
 unchanged. Select the theme in GUI settings; the choice is persisted alongside
 Lucide and Native. No external directory or environment override is needed.
 See `icons/zoin/ICON_LICENSES.txt` for source provenance and licensing notices;
-these notices are bundled with the icons. The manifest references only the
+these notices are bundled with the icons. The declarative catalog references only
 current assets. Removed specialized types use remaining extension matches or
 the generic file icon. Existing saved `codex` selections migrate to `zoin`.
 
@@ -380,6 +397,14 @@ the same resource preserves its geometry and pixels. Cold disk lookups run on
 the bounded Gallery cache worker; they do not block the Qt event loop. Missing
 or invalid EXIF orientation is normalized to unrotated before caching.
 
+Incremental catalog insertion preserves thumbnails attached synchronously by
+row observers. Row facades never delete provider pixels: the shared thumbnail
+cache and the viewer cache own their lifetimes, including when another panel
+or a folder preview still uses the same image. Regression coverage lives in
+`thumbnailAttachedDuringRowInsertionRetainsCacheOwnership`. Native shader pixel
+checks can run with `ZG_NATIVE_RENDER=1`; `ZG_PNG_PROBE` optionally supplies a
+specific PNG to the decode and rendering tests.
+
 Folder appearance does not wait for new QML image-ready notifications. Clearing image
 caches also clears the memory metadata tier. The opt-in media trace reports
 `qt.gallery.metadata.restored`, `qt.gallery.metadata_cache_batch` (memory), and
@@ -523,6 +548,13 @@ Plain list selection and drag scrolling retain their existing behavior.
 
 The protocol is a 4-byte big-endian length prefix followed by a MessagePack map.
 The host accepts the upstream ExtUI `--f4-ext-*` startup arguments and keeps the older `--f4-qt-*` names as a compatibility fallback. It renders vtui cells in a custom `VtuiGridItem` while using semantic `sdk/extui` scenes for QML-native panels, menus, dialogs, document surfaces, and future sibling modules such as a possible editable-package integration with `ZoinGallery`.
+
+In console presentation (Shift+F12), the grid forwards Qt hover-enter and
+hover-move events as buttonless console mouse moves. This keeps Settings hover
+help and console controls responsive without a click or keyboard-focus change.
+Native QML presentation disables this forwarding, and mouse drags retain their
+existing mouse-event path. Set `F4_TRACE_GRID_INPUT=1` before starting the host
+for opt-in `[FIX:qt-grid-hover]` cell-coordinate diagnostics.
 
 Protocol 3 installs one app-schema scene at semantic version 4 and then advances
 its monotonic `revision` with atomic `scene_patch` messages. Root and shell map

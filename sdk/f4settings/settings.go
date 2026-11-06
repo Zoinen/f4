@@ -105,7 +105,10 @@ type Field struct {
 	// InputWidth suggests a compact single-line editor for short values.
 	// It is a presentation hint in characters, not a validation or length limit.
 	InputWidth int
-	Choices    []Choice
+	// IconTheme optionally identifies an icon-reference editor. The string
+	// remains editable in a terminal; graphical clients may add an image preview.
+	IconTheme string
+	Choices   []Choice
 	// ChoicePresentation optionally requests "radio" or "dropdown". Empty lets
 	// the frontend expose small fixed lists as radios and longer lists as dropdowns.
 	ChoicePresentation string

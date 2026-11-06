@@ -144,9 +144,12 @@ Item {
                 while (rows.length < start + span)
                     rows.push(0)
                 for (let row = start; row < start + span; ++row) {
-                    const bordered = widget.kind === "group" && widget.bordered === true
+                    const group = widget.kind === "group"
+                    const headingHeight = widget.headerControl ? 32 : Math.max(22, fieldFontMetrics.height)
                     const height = flowing ? visualHeight(widget)
-                        : bordered ? hostWindow.snapPx(row === start ? 12 : 8) : base
+                        : group && row === start && widget.title
+                            ? hostWindow.snapPx(headingHeight) + hostWindow.snapPx(16)
+                        : group && widget.bordered === true ? hostWindow.snapPx(row === start ? 12 : 8) : base
                     rows[row] = Math.max(rows[row], height)
                 }
                 if (widget.kind !== "group")

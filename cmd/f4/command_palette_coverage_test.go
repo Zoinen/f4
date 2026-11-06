@@ -65,7 +65,7 @@ var commandPaletteAuditClasses = map[string]bool{
 // one package to another; it never removes one. A smaller number here means an
 // audit entry was dropped together with its subject, which the set comparison
 // below cannot see because both sides shrink at once.
-const commandPaletteF4Surfaces = 78
+const commandPaletteF4Surfaces = 80
 
 // commandPaletteTargetPackage named the package each audited cmd/f4 file would
 // end up in once the split reached it, so an audit key survived the move that
@@ -139,12 +139,14 @@ var commandPaletteProcessKeyAudit = map[string]commandPaletteSurfaceAudit{
 	"app.(*SheetFrame).ProcessKey": {
 		class: paletteAuditFrameProvider, rationale: "spreadsheet commands are supplied by commandPaletteSheetEntries; cell editing, cursor movement and block marking remain local primitives",
 	},
-	"settings.(*settingsCenter).ProcessKey":   {class: paletteAuditModalLocal, rationale: "Settings Center local search, editing, scrolling and pane navigation; Settings.Open is the registered entry point"},
-	"settings.(*settingsEdit).ProcessKey":     {class: paletteAuditModalLocal, rationale: "Settings Center local search, editing, scrolling and pane navigation; Settings.Open is the registered entry point"},
-	"app.(*hotkeyPage).ProcessKey":            {class: paletteAuditModalLocal, rationale: "the embedded Hotkey Configurator wraps local vertical focus; Settings.Open is its registered entry point"},
-	"settings.(*settingsHelp).ProcessKey":     {class: paletteAuditModalLocal, rationale: "Settings Center local search, editing, scrolling and pane navigation; Settings.Open is the registered entry point"},
-	"settings.(*settingsRadios).ProcessKey":   {class: paletteAuditModalLocal, rationale: "Settings Center local search, editing, scrolling and pane navigation; Settings.Open is the registered entry point"},
-	"settings.(*settingsViewport).ProcessKey": {class: paletteAuditModalLocal, rationale: "Settings Center local search, editing, scrolling and pane navigation; Settings.Open is the registered entry point"},
+	"settings.(*settingsCenter).ProcessKey":     {class: paletteAuditModalLocal, rationale: "Settings Center local search, editing, scrolling and pane navigation; Settings.Open is the registered entry point"},
+	"settings.(*fileGroupsOverview).ProcessKey": {class: paletteAuditModalLocal, rationale: "File groups overview tab navigation is local to the Settings modal editor"},
+	"settings.(*fileGroupsTable).ProcessKey":    {class: paletteAuditModalLocal, rationale: "File group preview marking and Enter/F4 editing are local to the Settings rule list, not panel commands"},
+	"settings.(*settingsEdit).ProcessKey":       {class: paletteAuditModalLocal, rationale: "Settings Center local search, editing, scrolling and pane navigation; Settings.Open is the registered entry point"},
+	"app.(*hotkeyPage).ProcessKey":              {class: paletteAuditModalLocal, rationale: "the embedded Hotkey Configurator wraps local vertical focus; Settings.Open is its registered entry point"},
+	"settings.(*settingsHelp).ProcessKey":       {class: paletteAuditModalLocal, rationale: "Settings Center local search, editing, scrolling and pane navigation; Settings.Open is the registered entry point"},
+	"settings.(*settingsRadios).ProcessKey":     {class: paletteAuditModalLocal, rationale: "Settings Center local search, editing, scrolling and pane navigation; Settings.Open is the registered entry point"},
+	"settings.(*settingsViewport).ProcessKey":   {class: paletteAuditModalLocal, rationale: "Settings Center local search, editing, scrolling and pane navigation; Settings.Open is the registered entry point"},
 	"dialog.(*HotkeyAssignFrame).ProcessKey": {
 		class: paletteAuditModalLocal, rationale: "the hotkey-capture dialog must consume the next key locally and is not a global command surface",
 	},

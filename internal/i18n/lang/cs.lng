@@ -891,6 +891,7 @@ SettingsCenter.AutoSavePanelSettings.Label=Automatické uložení rozložení pa
 SettingsCenter.Category.ai=Umělá inteligence
 SettingsCenter.Category.appearance=Vzhled a jazyk
 SettingsCenter.Category.associations=Přidružení souborů
+SettingsCenter.Category.filegroups=Skupiny souborů
 SettingsCenter.Category.drives=Výběr disku
 SettingsCenter.DriveTab.Options=Možnosti disku
 SettingsCenter.DriveTab.Bookmarks=Záložky

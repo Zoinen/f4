@@ -25,6 +25,21 @@ Item {
                 + "|" + String(frame.id || "")
     }
 
+    // PointerHandlers can passively observe presses through another dialog.
+    // Keep background dialogs rendered, but remove their input ownership while
+    // a newer modal dialog is present. Menus above that dialog remain active.
+    function blockedByDialog(frame) {
+        const key = frameKey(frame)
+        for (let i = frames.length - 1; i >= 0; --i) {
+            const candidate = frames[i]
+            if (frameKey(candidate) === key)
+                return false
+            if (candidate.kind !== "menu")
+                return true
+        }
+        return false
+    }
+
     function routeMenuBarPointer(windowX, windowY, released) {
         let handled = false
         for (let i = overlayRepeater.count - 1; i >= 0; --i) {
@@ -108,6 +123,7 @@ Item {
             }
 
             anchors.fill: parent
+            enabled: !isClosing && !overlayHost.blockedByDialog(frame)
             active: true
             sourceComponent: frame.kind === "menu"
                              ? (frame.role === "autocomplete"

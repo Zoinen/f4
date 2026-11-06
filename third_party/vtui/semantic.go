@@ -880,6 +880,8 @@ func (e *Edit) SemanticNode(ctx *SemanticContext) map[string]any {
 		"selectionStart":  e.selStart,
 		"selectionEnd":    e.selEnd,
 		"history":         e.ShowHistoryButton,
+		"canUndo":         e.CanUndo(),
+		"canRedo":         e.CanRedo(),
 	}
 	if e.blockSelection {
 		node["blockSelection"] = true
@@ -896,10 +898,15 @@ func (e *Edit) HandleSemanticAction(action map[string]any) bool {
 		return false
 	}
 	switch semanticString(action["action"]) {
+	case "control.undo":
+		return e.Undo()
+	case "control.redo":
+		return e.Redo()
 	case "control.history":
 		e.OpenHistory()
 		return true
 	case "select", "control.select":
+		e.undoMerge = false
 		anchor := e.semanticCursor(semanticInt(action["anchor"]))
 		cursor := e.semanticCursor(semanticInt(action["cursor"]))
 		block, _ := action["block"].(bool)
@@ -915,7 +922,7 @@ func (e *Edit) HandleSemanticAction(action map[string]any) bool {
 		DebugLog("[FIX:edit-native-selection] anchor=%d cursor=%d", e.selAnchor, e.curPos)
 		return true
 	case "set_text", "control.setText":
-		e.SetText(semanticString(action["text"]))
+		e.ReplaceText(semanticString(action["text"]))
 		if e.OnTextChange != nil {
 			e.OnTextChange(e.GetText())
 		}

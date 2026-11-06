@@ -1,6 +1,8 @@
 package panel
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/unxed/f4/internal/cmdline"
@@ -38,20 +40,70 @@ func TestSearchFirstUnfocusedCommandHidesOnlyWhenEmpty(t *testing.T) {
 	}
 }
 
-func TestSearchFirstRetainedCommandRunsFromPanel(t *testing.T) {
+func TestSearchFirstRetainedCommandDoesNotRunFromPanel(t *testing.T) {
 	original := config.App
 	t.Cleanup(func() { config.App = original })
 	config.App.NavigationMode = config.NavigationSearchFirst
 	pf, _ := panelsFrameWithMouseSelect(t)
+	t.Cleanup(pf.Close)
 	pf.ShowPanels = true
+	root := t.TempDir()
+	child := filepath.Join(root, "child")
+	if err := os.Mkdir(child, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	panel := pf.GetActivePanel()
+	if err := panel.SetKnownDirectoryPath(root); err != nil {
+		t.Fatal(err)
+	}
+	panel.ReadDirectory()
+	waitForLoad(t, panel)
+	panel.SelectName("child")
 	pf.SetCommandLineFocus(true)
-	pf.CmdLine.Edit.SetText("cd " + t.TempDir())
+	command := "cd " + t.TempDir()
+	pf.CmdLine.Edit.SetText(command)
 	pf.SetCommandLineFocus(false)
+	waitForLoad(t, panel)
+	panel.SelectName("child")
+	if panel.GetSelectedName() != "child" {
+		t.Fatalf("test cursor is on %q, expected child", panel.GetSelectedName())
+	}
 	if !pf.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN}) {
 		t.Fatal("Enter was not handled")
 	}
-	if !pf.CmdLine.IsEmpty() {
-		t.Fatal("Enter opened the selected panel item instead of executing retained command")
+	if pf.CmdLine.Edit.GetText() != command || pf.CommandLineFocused || !pf.ShowPanels {
+		t.Fatal("panel Enter changed or submitted the inactive command")
+	}
+	if panel.Vfs.GetPath() != child {
+		t.Fatalf("Enter did not activate the panel directory: %q", panel.Vfs.GetPath())
+	}
+}
+
+func TestEnterStillSubmitsOwnedCommand(t *testing.T) {
+	original := config.App
+	t.Cleanup(func() { config.App = original })
+	for _, test := range []struct {
+		name    string
+		mode    config.PanelNavigationMode
+		focused bool
+	}{
+		{name: "search-first focused", mode: config.NavigationSearchFirst, focused: true},
+		{name: "classic", mode: config.NavigationClassic},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config.App.NavigationMode = test.mode
+			pf, _ := panelsFrameWithMouseSelect(t)
+			t.Cleanup(pf.Close)
+			pf.ShowPanels = true
+			pf.SetCommandLineFocus(test.focused)
+			pf.CmdLine.Edit.SetText("cd " + t.TempDir())
+			pf.ProcessKey(&vtinput.InputEvent{
+				Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN,
+			})
+			if !pf.CmdLine.IsEmpty() {
+				t.Fatal("Enter did not submit the owned command")
+			}
+		})
 	}
 }
 

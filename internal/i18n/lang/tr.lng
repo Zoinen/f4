@@ -888,6 +888,7 @@ SettingsCenter.AutoSavePanelSettings.Label=Panel düzenini otomatik olarak kayde
 SettingsCenter.Category.ai=Yapay zekâ
 SettingsCenter.Category.appearance=Görünüm ve dil
 SettingsCenter.Category.associations=Dosya ilişkilendirmeleri
+SettingsCenter.Category.filegroups=Dosya grupları
 SettingsCenter.Category.drives=Sürücü seçimi
 SettingsCenter.DriveTab.Options=Sürücü seçenekleri
 SettingsCenter.DriveTab.Bookmarks=Yer imleri

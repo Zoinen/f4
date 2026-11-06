@@ -82,6 +82,7 @@ class TestGrid : public QQuickItem
                WRITE setTerminalInputEnabled)
     Q_PROPERTY(bool renderingEnabled READ renderingEnabled
                WRITE setRenderingEnabled)
+    Q_PROPERTY(bool panelClipboardPasteEnabled MEMBER m_panelClipboardPasteEnabled)
 
 public:
     Q_INVOKABLE QPoint pointerScreenPosition() const { return QCursor::pos(); }
@@ -140,6 +141,7 @@ private:
     bool m_inputMethodForwardingEnabled = false;
     bool m_terminalInputEnabled = true;
     bool m_renderingEnabled = true;
+    bool m_panelClipboardPasteEnabled = false;
 };
 
 class TestShell final : public TestExtUiStateController
@@ -3507,6 +3509,7 @@ void F4QuickViewSurfaceTests::themeConfiguratorExposesOnlyLiveColorProperties()
              QStringLiteral("markedBg"),
              QStringLiteral("markedText"),
              QStringLiteral("folderIconColor"),
+             QStringLiteral("galleryFolderIconColor"),
              QStringLiteral("panelBg"),
              QStringLiteral("panelBgAlt"),
              QStringLiteral("panelHeaderBg"),
@@ -3525,7 +3528,6 @@ void F4QuickViewSurfaceTests::themeConfiguratorExposesOnlyLiveColorProperties()
               QStringLiteral("separatorActiveColor"),
               QStringLiteral("galleryFileTextColor"),
               QStringLiteral("galleryFolderTextColor"),
-              QStringLiteral("galleryFolderIconColor"),
          }) {
         QVERIFY2(colorIds.contains(required), qPrintable(required));
     }

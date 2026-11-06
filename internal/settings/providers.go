@@ -76,6 +76,7 @@ type settingsSession struct {
 func beginSettingsSessions(ctx context.Context) ([]*settingsSession, error) {
 	coreCatalog := (coreSettingsProvider{}).Catalog()
 	providers := []f4settings.Provider{coreSettingsProvider{catalog: &coreCatalog}, newCoreRecordSettingsProvider(), aiSettingsProvider{}, hotkeySettingsProvider{}, settingsOperationsProvider{}, pluginSettingsProvider{}, &catalogSettingsProvider{}}
+	providers = append(providers, fileGroupsProvider{})
 	settingsProviders.RLock()
 	providers = append(providers, settingsProviders.providers...)
 	settingsProviders.RUnlock()
@@ -88,7 +89,7 @@ func beginSettingsSessions(ctx context.Context) ([]*settingsSession, error) {
 			}
 			return nil, err
 		}
-		sessions = append(sessions, &settingsSession{p, settingsCatalogChoiceHelp(p.Catalog()), d, i > 6})
+		sessions = append(sessions, &settingsSession{p, settingsCatalogChoiceHelp(p.Catalog()), d, i > 7})
 	}
 	return sessions, nil
 }

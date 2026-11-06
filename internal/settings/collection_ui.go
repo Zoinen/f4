@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 
 	"github.com/unxed/f4/internal/config"
+	"github.com/unxed/f4/internal/filegroups"
 	"github.com/unxed/f4/internal/i18n"
 	"github.com/unxed/f4/sdk/f4settings"
 	"github.com/unxed/vtui"
@@ -21,6 +22,9 @@ type settingsRecordRow struct {
 }
 
 func (r settingsRecordRow) GetCellText(int) string {
+	if r.collection.ID == "filegroups" {
+		return fileGroupRecordLabel(r.record)
+	}
 	if name := r.record.Values[r.collection.NameField]; name != "" {
 		return name
 	}
@@ -64,6 +68,13 @@ func (b *settingsButtonRow) SetPosition(x1, y1, x2, y2 int) {
 }
 
 func (c *settingsCenter) rebuildCategory() {
+	for _, session := range c.sessions {
+		if session.catalog.ID == "core.filegroups" && session.draft.PreviewFunc != nil {
+			if err := session.draft.PreviewFunc(session.draft); err != nil {
+				c.status = err.Error()
+			}
+		}
+	}
 	if c.recordOnly {
 		c.SetTitle(c.recordTitle)
 	} else {
@@ -101,6 +112,9 @@ func (c *settingsCenter) addCollections(category string) {
 			if col.Category != category {
 				continue
 			}
+			if col.ID == "filegroups" {
+				c.addFileGroupContext(s)
+			}
 			meta := f4settings.Field{ID: col.ID, Category: category, Group: col.Group, Label: col.Label, Description: col.Description}
 			listHeight := 5
 			if c.fullLists {
@@ -110,6 +124,8 @@ func (c *settingsCenter) addCollections(category string) {
 			table.ShowHeader = false
 			table.ShowSeparators = false
 			settingsDialogTable(table)
+			featureDisabled := c.fileGroupEditor && col.ID == "filegroups.commands" && !fileGroupFeatureEnabled(s.draft.Values, "Associations")
+			table.SetDisabled(featureDisabled)
 			// Record lists are editable settings surfaces, like the adjacent inputs.
 			table.ColorTextIdx = vtui.ColDialogEdit
 			// The cursor row is the record the fields below edit. The dialog
@@ -122,16 +138,37 @@ func (c *settingsCenter) addCollections(category string) {
 			table.AlwaysShowCursor = true
 			table.SetId("collection:" + col.ID)
 			var rows []vtui.TableRow
-			for _, record := range s.draft.Records[col.ID] {
+			visible := c.collectionRecordIndices(s, col.ID)
+			for _, index := range visible {
+				record := s.draft.Records[col.ID][index]
 				rows = append(rows, settingsRecordRow{c, col, record})
 			}
 			table.SetRows(rows)
 			key := "record:" + col.ID
 			selected := c.offsets[key]
-			if selected >= len(rows) {
-				selected = max(0, len(rows)-1)
+			visualSelected := 0
+			if len(visible) > 0 {
+				selected = visible[0]
+				for i, index := range visible {
+					if index == c.offsets[key] {
+						selected = index
+						visualSelected = i
+						break
+					}
+				}
+				c.offsets[key] = selected
 			}
-			table.SetSelectPos(selected)
+			table.SetSelectPos(visualSelected)
+			if col.ID == "filegroups" {
+				table.QuickSearch = true
+				table.SetSearchText(c.fileGroupSearch)
+				for position := 0; position < table.ItemCount; position++ {
+					if table.RowAt(position) == visualSelected {
+						table.SetSelectPos(position)
+						break
+					}
+				}
+			}
 			if c.fullLists {
 				// The whole list is on the page: the table must not scroll
 				// inside itself to keep a low row in sight (f4#1148).
@@ -147,8 +184,22 @@ func (c *settingsCenter) addCollections(category string) {
 				c.page.rows = append(c.page.rows, r)
 			}
 			table.OnSelect = func(i int) {
+				i = table.RowAt(i)
+				if i < 0 || i >= len(visible) {
+					return
+				}
+				i = visible[i]
 				if c.offsets[key] != i {
 					c.offsets[key] = i
+					c.rebuildCategory()
+				}
+			}
+			if col.ID == "filegroups" {
+				table.OnSearchChange = func(text string) {
+					c.fileGroupSearch = text
+					if row := table.RowAt(table.SelectPos); row >= 0 && row < len(visible) {
+						c.offsets[key] = visible[row]
+					}
 					c.rebuildCategory()
 				}
 			}
@@ -156,6 +207,7 @@ func (c *settingsCenter) addCollections(category string) {
 			bar.SetId("collection-actions:" + col.ID)
 			button := func(label string, run func()) {
 				b := vtui.NewButton(0, 0, Phrase(label))
+				b.SetDisabled(featureDisabled)
 				b.SetId(fmt.Sprintf("collection-action:%s:%d", col.ID, len(bar.buttons)))
 				b.OnClick = run
 				bar.buttons = append(bar.buttons, b)
@@ -163,6 +215,9 @@ func (c *settingsCenter) addCollections(category string) {
 			}
 			if !col.Fixed && !c.recordOnly {
 				button("Add", func() {
+					if col.ID == "filegroups" {
+						c.fileGroupSearch = ""
+					}
 					values := map[string]string{}
 					for _, f := range col.Fields {
 						value := f.Default
@@ -181,12 +236,36 @@ func (c *settingsCenter) addCollections(category string) {
 						values[f.ID] = value
 					}
 					record := f4settings.Record{ID: fmt.Sprintf("new:%s:%d", col.ID, settingsRecordCounter.Add(1)), Values: values}
-					s.draft.Records[col.ID] = append(s.draft.Records[col.ID], record)
+					if col.ID == "filegroups" || col.ID == "filegroups.commands" {
+						record.ID = filegroups.NewID()
+					}
+					if col.ID == "filegroups" {
+						record.Values["group.IconTheme"] = ""
+						if c.fileGroupScopeFilter == "theme" {
+							record.Values["group.IconTheme"] = fileGroupActiveTheme
+						}
+					}
+					if col.ID == "filegroups.commands" {
+						parents := s.draft.Records["filegroups"]
+						if len(parents) == 0 {
+							c.status = "Add a file group first."
+							return
+						}
+						record.Values["command.Group"] = parents[min(c.offsets["record:filegroups"], len(parents)-1)].ID
+					}
+					if col.ID == "filegroups" {
+						c.appendFileGroup(s, record)
+					} else {
+						s.draft.Records[col.ID] = append(s.draft.Records[col.ID], record)
+						c.offsets[key] = len(s.draft.Records[col.ID]) - 1
+					}
 					settingsTraceRecords(s, col.ID, "add", record.ID)
-					c.offsets[key] = len(s.draft.Records[col.ID]) - 1
 					c.rebuildCategory()
 				})
 				button("Delete", func() {
+					if len(visible) == 0 {
+						return
+					}
 					records := s.draft.Records[col.ID]
 					if selected >= len(records) {
 						return
@@ -209,6 +288,9 @@ func (c *settingsCenter) addCollections(category string) {
 						if selected < len(records) {
 							removed := records[selected].ID
 							s.draft.Records[col.ID] = append(records[:selected], records[selected+1:]...)
+							if col.ID == "filegroups" {
+								removeFileGroupCommands(s.draft, removed)
+							}
 							settingsTraceRecords(s, col.ID, "delete", removed)
 							c.rebuildCategory()
 						}
@@ -223,7 +305,14 @@ func (c *settingsCenter) addCollections(category string) {
 					}
 					button(label, func() {
 						records := s.draft.Records[col.ID]
-						next := selected + direction
+						next := -1
+						if position := visualSelected + direction; position >= 0 && position < len(visible) {
+							next = visible[position]
+						}
+						if col.ID == "filegroups" && selected >= 0 && selected < len(records) && next >= 0 &&
+							records[selected].Values["group.IconTheme"] != records[next].Values["group.IconTheme"] {
+							return
+						}
 						if selected >= 0 && selected < len(records) && next >= 0 && next < len(records) {
 							records[selected], records[next] = records[next], records[selected]
 							settingsTraceRecords(s, col.ID, "move "+label, records[next].ID)
@@ -241,6 +330,14 @@ func (c *settingsCenter) addCollections(category string) {
 
 			for _, action := range col.Actions {
 				button(action.Label.Resolve(config.App.Language, i18n.Msg), func() {
+					if len(visible) == 0 {
+						return
+					}
+					if action.ID == "filegroups.reset" {
+						c.resetFileGroup(s, selected)
+						c.rebuildCategory()
+						return
+					}
 					if action.RequiresApplied {
 						for _, session := range c.sessions {
 							if len(session.draft.Changed()) > 0 {
@@ -278,10 +375,26 @@ func (c *settingsCenter) addCollections(category string) {
 				c.page.AddItem(bar)
 				c.page.rows = append(c.page.rows, &settingsRow{field: f4settings.Field{Category: category, Group: col.Group, Label: f4settings.Text{English: "Edit records"}, Description: col.Description}, session: s, control: bar, match: true})
 			}
-			if selected < len(s.draft.Records[col.ID]) {
+			if len(visible) > 0 && selected < len(s.draft.Records[col.ID]) {
 				record := s.draft.Records[col.ID][selected]
 				for _, field := range col.Fields {
 					f := field
+					if featureDisabled {
+						f.Unavailable = "Enable associations to edit commands."
+					}
+					if f.ID == "group.IconTheme" {
+						f.Choices = []f4settings.Choice{
+							{Value: "", Label: f4settings.Text{English: "Universal"}},
+							{Value: fileGroupActiveTheme, Label: f4settings.Text{English: "Current theme: " + fileGroupThemeName(fileGroupActiveTheme), Literal: true}},
+						}
+					}
+					if f.ID == "command.Group" {
+						f.Choices = nil
+						for _, parentIndex := range c.collectionRecordIndices(s, "filegroups") {
+							parent := s.draft.Records["filegroups"][parentIndex]
+							f.Choices = append(f.Choices, f4settings.Choice{Value: parent.ID, Label: f4settings.Text{English: parent.Values["group.Name"], Literal: true}})
+						}
+					}
 					if strings.HasPrefix(col.ID, "usermenu.") && strings.HasSuffix(f.ID, ".Parent") {
 						prefix := strings.TrimSuffix(f.ID, "Parent")
 						f.Kind = f4settings.ChoiceKind
@@ -295,6 +408,9 @@ func (c *settingsCenter) addCollections(category string) {
 					}
 					f.Category = category
 					f.Group = col.Group
+					if col.ID == "filegroups" {
+						f.Group = fileGroupFieldSection(f.ID)
+					}
 					r := &settingsRow{field: f, session: s, match: true}
 					r.values = func() map[string]string { return record.Values }
 					r.matchFunc = func() bool {
@@ -303,8 +419,19 @@ func (c *settingsCenter) addCollections(category string) {
 						return c.matches(meta)
 					}
 					r.traceRecord = record.ID
-					r.read = func() string { return record.Values[f.ID] }
+					r.read = func() string {
+						if f.ID == "group.Enabled" {
+							if _, exists := record.Values[f.ID]; !exists {
+								return "true"
+							}
+						}
+						return record.Values[f.ID]
+					}
 					r.write = func(value string) {
+						if f.ID == "group.IconTheme" && record.Values[f.ID] != value {
+							c.moveFileGroupScope(s, record.ID, value)
+							return
+						}
 						record.Values[f.ID] = value
 						if col.ID == "bookmarks" {
 							record.Values["bookmark.Name"] = fmt.Sprintf("%d: %s", selected, record.Values["bookmark.Path"])
@@ -318,6 +445,9 @@ func (c *settingsCenter) addCollections(category string) {
 					c.page.AddItem(r.control)
 					c.page.rows = append(c.page.rows, r)
 				}
+			}
+			if col.ID == "filegroups" {
+				c.addFileGroupTools(s)
 			}
 		}
 	}

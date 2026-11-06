@@ -47,6 +47,7 @@ class TestGrid : public QQuickItem
                WRITE setTerminalInputEnabled)
     Q_PROPERTY(bool renderingEnabled READ renderingEnabled
                WRITE setRenderingEnabled)
+    Q_PROPERTY(bool panelClipboardPasteEnabled MEMBER m_panelClipboardPasteEnabled)
 
 public:
     Q_INVOKABLE QPoint pointerScreenPosition() const { return QCursor::pos(); }
@@ -95,6 +96,7 @@ private:
     bool m_inputMethodForwardingEnabled = false;
     bool m_terminalInputEnabled = true;
     bool m_renderingEnabled = true;
+    bool m_panelClipboardPasteEnabled = false;
 };
 
 class TestShell final : public TestExtUiStateController

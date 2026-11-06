@@ -615,19 +615,23 @@ func (pf *PanelsFrame) processEnvironmentShellOutput(data []byte) {
 	pf.processEnvironmentMu.Unlock()
 
 	for _, marker := range markers {
-		switch {
-		case marker == "C":
-			pf.noteLocalShellBusy(true)
-		case marker == "D" || strings.HasPrefix(marker, "D;"):
-			pf.noteLocalShellBusy(false)
-			processEnvironmentRunOnUIWithRedrawDecision(func() bool {
-				return pf.catchUpProcessEnvironment(true)
-			})
-		case strings.HasPrefix(marker, "E;"):
-			parts := strings.Split(strings.TrimPrefix(marker, "E;"), ";")
-			if len(parts) == 2 && (parts[1] == "0" || parts[1] == "1") {
-				pf.completeProcessEnvironmentShellUpdate(parts[0], parts[1] == "0")
-			}
+		pf.processEnvironmentShellMarker(marker)
+	}
+}
+
+func (pf *PanelsFrame) processEnvironmentShellMarker(marker string) {
+	switch {
+	case marker == "C":
+		pf.noteLocalShellBusy(true)
+	case marker == "D" || strings.HasPrefix(marker, "D;"):
+		pf.noteLocalShellBusy(false)
+		processEnvironmentRunOnUIWithRedrawDecision(func() bool {
+			return pf.catchUpProcessEnvironment(true)
+		})
+	case strings.HasPrefix(marker, "E;"):
+		parts := strings.Split(strings.TrimPrefix(marker, "E;"), ";")
+		if len(parts) == 2 && (parts[1] == "0" || parts[1] == "1") {
+			pf.completeProcessEnvironmentShellUpdate(parts[0], parts[1] == "0")
 		}
 	}
 }
@@ -660,6 +664,12 @@ func (pf *PanelsFrame) completeProcessEnvironmentShellUpdate(token string, succe
 	}
 	closed := pf.processEnvironmentClosed
 	pf.processEnvironmentMu.Unlock()
+	// Muting is parser state, not a UI task: restore it at the exact E marker
+	// so a prompt arriving in this same read is neither leaked nor swallowed.
+	if inFlight.muted && pf.TermView != nil {
+		pf.TermView.SetMuted(false)
+	}
+	vtui.DebugLog("[FIX:env-handoff] shell acknowledgement success=%v", success)
 
 	if inFlight.cleanup != nil {
 		inFlight.cleanup()
@@ -669,9 +679,6 @@ func (pf *PanelsFrame) completeProcessEnvironmentShellUpdate(token string, succe
 	}
 
 	release := func() {
-		if inFlight.muted && pf.TermView != nil {
-			pf.TermView.SetMuted(false)
-		}
 		if success {
 			pf.releaseDeferredProcessEnvironmentInput(true)
 		} else {
@@ -679,9 +686,6 @@ func (pf *PanelsFrame) completeProcessEnvironmentShellUpdate(token string, succe
 		}
 	}
 	if closed {
-		if inFlight.muted && pf.TermView != nil {
-			pf.TermView.SetMuted(false)
-		}
 		return
 	}
 	processEnvironmentRunOnUI(release)
@@ -804,10 +808,22 @@ func preparePOSIXProcessEnvironmentShellPayload(changes []vfs.ProcessEnvironment
 	if err != nil {
 		return processEnvironmentShellPayload{}, err
 	}
-	cleanup := func() { _ = os.Remove(scriptPath) }
+	// The value-free wrapper is itself over 1 KiB at normal profile paths.
+	// Stage it too: macOS may truncate interactive input while tty modes change.
+	command := strings.TrimSuffix(string(posixProcessEnvironmentCommand(scriptPath, token)), "\r")
+	argument, cleanupCommand, err := prepareLocalCommandEvaluation(command)
+	if err != nil {
+		_ = os.Remove(scriptPath)
+		return processEnvironmentShellPayload{}, err
+	}
+	cleanup := func() {
+		cleanupCommand()
+		_ = os.Remove(scriptPath)
+	}
 	return processEnvironmentShellPayload{
-		token:      token,
-		wire:       posixProcessEnvironmentCommand(scriptPath, token),
+		token: token,
+		wire: []byte(" if eval " + argument + "; then :; else printf '\\033]133;E;" +
+			token + ";1\\007'; fi\r"),
 		scriptPath: scriptPath,
 		cleanup:    cleanup,
 	}, nil

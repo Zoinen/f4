@@ -604,6 +604,11 @@ func newPanelsFrame(startShell bool) *PanelsFrame {
 		}
 	}
 	pf.TermView.OnBusyChange = pf.shellBusyChanged
+	pf.TermView.OnShellSequence = func(payload string) {
+		if pf.localShellIsActive() {
+			pf.processEnvironmentShellMarker(payload)
+		}
+	}
 	if terminal.WindowsShellSyntax() {
 		pf.CmdSession = newCmdShellSession(pf)
 		pf.TermView.OnShellMark = func(mark string, snap terminal.PromptSnapshot) {
@@ -1966,12 +1971,15 @@ func (pf *PanelsFrame) InitPTY() {
 // PTY read. Keeping it separate makes shell-mark/reflow behavior directly
 // testable without a live PTY.
 func (pf *PanelsFrame) consumeLocalOutput(p terminal.PtyBackend, data []byte) {
-	pf.processEnvironmentShellOutput(data)
-
 	pf.PtyMutex.Lock()
 	shouldProcess := pf.getActivePTYUnsafe() == p
 	reflow := pf.localReflow
 	pf.PtyMutex.Unlock()
+	// The active parser delivers markers in byte order. Looking ahead for E
+	// would unmute the wrapper's preceding echo in the same read buffer.
+	if !shouldProcess || pf.TermView == nil || pf.TermView.OnShellSequence == nil {
+		pf.processEnvironmentShellOutput(data)
+	}
 
 	if shouldProcess && pf.TermView != nil {
 		// One view serves the local shell and every remote one; the wrap
@@ -3974,10 +3982,11 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 		if ctrl || shift || alt {
 			return pf.processModifiedEnter(e)
 		}
-		// A retained command still owns Enter after search-first focus returns
-		// to the panel. Other navigation keys remain with the panel.
-		if !pf.CmdLine.IsEmpty() {
-			vtui.DebugLog("[FIX:search-first] Enter submits retained command (commandFocused=%v)", pf.CommandLineFocused)
+		// Search-first retains drafts while the panel owns focus. Only the
+		// focused input (or terminal-only mode) may submit that retained text.
+		commandOwnsEnter := !pf.SearchFirstMode() || pf.CommandLineFocused || !pf.ShowPanels
+		if !pf.CmdLine.IsEmpty() && commandOwnsEnter {
+			vtui.DebugLog("[FIX:search-first] Enter submits active command (commandFocused=%v)", pf.CommandLineFocused)
 			cmd := pf.CmdLine.Edit.GetText()
 			if cmdline.CommandHasUnmatchedQuote(cmd, terminal.WindowsShellSyntax()) {
 				vtui.ShowMessage(" Error ", "Unmatched quote in command. Close the quote and press Enter again.", []string{"&Ok"})
@@ -4278,7 +4287,7 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 			return true
 		} else {
 
-			// CommandLine is empty, panels are visible. A focused panel
+			// Panels own Enter, regardless of an inactive command draft. A focused panel
 			// plugin that did not claim Enter leaves it unclaimed: the file
 			// under the hidden file panel's cursor must not be entered or
 			// executed (vfs.PanelKeyProvider, f4#312).

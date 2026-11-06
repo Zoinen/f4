@@ -174,11 +174,13 @@ Rectangle {
         && !hostWindow.hasOperationsQueueSurface()
 
     Component.onCompleted: {
+        hostWindow.registerDropdownAnchor("commandLine.input", inputViewport)
         Qt.callLater(publishContentHeight)
         if (typeof qtGallery !== "undefined"
                 && typeof qtGallery.registerDragCommandLine === "function")
             qtGallery.registerDragCommandLine(commandLineRoot)
     }
+    Component.onDestruction: hostWindow.unregisterDropdownAnchor("commandLine.input", inputViewport)
 
     // A command-line patch changes text and caret position together.  A
     // TextInput may apply its own cursor reset while accepting the new
@@ -512,7 +514,7 @@ Rectangle {
         anchors.fill: parent
         z: 3
         enabled: commandLineRoot.dropInputEnabled
-        acceptedButtons: Qt.LeftButton
+        acceptedButtons: Qt.LeftButton | Qt.RightButton
         cursorShape: Qt.IBeamCursor
         property int selectionAnchor: -1
         property int wordAnchorStart: -1
@@ -551,6 +553,10 @@ Rectangle {
             hostWindow.action(action)
         }
         onPressed: mouse => {
+            if (mouse.button === Qt.RightButton) {
+                hostWindow.action({action: "commandLine.focus"})
+                return
+            }
             const point = commandInput.mapFromItem(commandLineFocusArea, mouse.x, mouse.y)
             const position = commandInput.positionAt(Math.max(0, point.x), Math.max(0, point.y))
             const now = Date.now()
@@ -614,7 +620,11 @@ Rectangle {
                 selectAt(selectionAnchor, position)
             }
         }
-        onReleased: {
+        onReleased: mouse => {
+            if (mouse.button === Qt.RightButton) {
+                commandEditMenu.openAt(commandLineFocusArea, Qt.point(mouse.x, mouse.y))
+                return
+            }
             const wasBlock = blockGesture
             selectionAnchor = -1
             blockGesture = false
@@ -638,5 +648,41 @@ Rectangle {
         anchors.top: parent.top
         height: hostWindow.separatorWidth
         color: hostWindow.separatorColor
+    }
+
+    TextEditContextMenu {
+        id: commandEditMenu
+        objectName: "commandLineEditMenu"
+        hostWindow: commandLineRoot.hostWindow
+        editable: commandLineRoot.dropInputEnabled
+        hasText: commandLineRoot.sourceText.length > 0
+        hasSelection: commandInput.selectionStart !== commandInput.selectionEnd
+            || commandLineRoot.displayedBlock.blockSelection === true
+        undoAvailable: editable && commandLineRoot.commandLine.canUndo === true
+        redoAvailable: editable && commandLineRoot.commandLine.canRedo === true
+        pasteAvailable: editable
+        actionHandler: name => {
+            const sink = hostWindow.focusTarget
+            if (!sink) return
+            hostWindow.action({action: "commandLine.focus"}, true)
+            if (name === "undo" || name === "redo") {
+                hostWindow.action({action: "commandLine." + name}, true)
+            } else if (name === "paste") {
+                sink.sendClipboardPaste()
+            } else if (name === "selectAll") {
+                commandLineRoot.blockPreview = null
+                commandInput.selectAll()
+                hostWindow.action({action: "commandLine.select", anchor: 0,
+                    cursorPosition: commandLineRoot.sourceText.length}, true)
+                console.debug("[FIX:command-line-select-all] selected input without panel shortcut")
+            } else {
+                const keys = {undo: Qt.Key_Z, redo: Qt.Key_Y, cut: Qt.Key_X,
+                    copy: Qt.Key_C, delete: Qt.Key_Delete}
+                const modifiers = name === "delete" ? Qt.NoModifier : Qt.ControlModifier
+                sink.sendQtKeyEvent(keys[name], "", true, modifiers, 0, false)
+                sink.sendQtKeyEvent(keys[name], "", false, modifiers, 0, false)
+            }
+            sink.forceActiveFocus()
+        }
     }
 }

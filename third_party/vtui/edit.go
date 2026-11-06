@@ -9,6 +9,10 @@ import (
 
 type Edit struct {
 	ScreenObject
+	undoChanges            []editUndoChange
+	redoChanges            []editUndoChange
+	undoDepth              int
+	undoMerge              bool
 	text                   []rune
 	curPos                 int // Logical position in the runes string
 	leftPos                int // Visual offset (scrolling)
@@ -417,6 +421,9 @@ func (e *Edit) GetText() string {
 
 // SetText replaces the content of the edit control.
 func (e *Edit) SetText(text string) {
+	if e.undoDepth == 0 {
+		e.resetUndo()
+	}
 	e.text = []rune(text)
 	e.curPos = len(e.text)
 	e.leftPos = 0
@@ -510,6 +517,7 @@ func (e *Edit) Valid(cmd int) bool {
 
 // InsertString inserts text at the current cursor position.
 func (e *Edit) InsertString(text string) {
+	defer e.beginUndo("")()
 	if e.clearFlag {
 		e.SetText("")
 		e.ClearSelection()
@@ -532,6 +540,11 @@ func (e *Edit) InsertString(text string) {
 }
 
 func (e *Edit) ProcessKey(event *vtinput.InputEvent) bool {
+	if kind, mutation := e.undoKeyKind(event); mutation {
+		defer e.beginUndo(kind)()
+	} else if event.Type == vtinput.KeyEventType && event.KeyDown && !e.pasting {
+		e.undoMerge = false
+	}
 	if event.Type == vtinput.KeyEventType && event.KeyDown {
 		DebugLog("EDIT_DEBUG: ProcessKey entry. Char:%d, VK:0x%X, Mods:0x%X", event.Char, event.VirtualKeyCode, event.ControlKeyState)
 	}
@@ -621,6 +634,22 @@ func (e *Edit) ProcessKey(event *vtinput.InputEvent) bool {
 	shift := (event.ControlKeyState & vtinput.ShiftPressed) != 0
 	ctrl := (event.ControlKeyState & (vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed)) != 0
 	alt := (event.ControlKeyState & (vtinput.LeftAltPressed | vtinput.RightAltPressed)) != 0
+	if ctrl && !alt {
+		switch event.VirtualKeyCode {
+		case vtinput.VK_Z:
+			if shift {
+				e.Redo()
+			} else {
+				e.Undo()
+			}
+			return true
+		case vtinput.VK_Y:
+			if !shift {
+				e.Redo()
+				return true
+			}
+		}
+	}
 	if e.blockSelection {
 		switch event.VirtualKeyCode {
 		case vtinput.VK_LEFT, vtinput.VK_RIGHT, vtinput.VK_HOME, vtinput.VK_END:
@@ -1055,6 +1084,7 @@ func (e *Edit) ClearSelection() {
 }
 
 func (e *Edit) DeleteBlock() {
+	defer e.beginUndo("")()
 	if e.blockSelection {
 		e.deleteMultilineBlock()
 		return
@@ -1140,7 +1170,7 @@ func (e *Edit) OpenHistory() {
 	// took for its default button: F7 created the folder the moment a name
 	// was picked from its history.
 	menu.OnAction = func(idx int) {
-		e.SetText(e.History[idx])
+		e.ReplaceText(e.History[idx])
 		e.SetFocus(true)
 		e.clearFlag = false
 		e.HistoryPos = -1
@@ -1171,7 +1201,7 @@ func (e *Edit) OpenHistory() {
 				return true
 			}
 			idx := menu.SelectPos
-			e.SetText(e.History[idx])
+			e.ReplaceText(e.History[idx])
 			e.SetFocus(true)
 			e.clearFlag = false
 			menu.Close()
@@ -1282,6 +1312,7 @@ func (e *Edit) AddHistory(text string) {
 	}
 }
 func (e *Edit) HistoryUp() {
+	defer e.beginUndo("")()
 	if len(e.History) == 0 {
 		return
 	}
@@ -1292,6 +1323,7 @@ func (e *Edit) HistoryUp() {
 }
 
 func (e *Edit) HistoryDown() {
+	defer e.beginUndo("")()
 	if e.HistoryPos > 0 {
 		e.HistoryPos--
 		e.SetText(e.History[e.HistoryPos])
@@ -1302,6 +1334,7 @@ func (e *Edit) HistoryDown() {
 }
 
 func (e *Edit) ProcessMouse(ev *vtinput.InputEvent) bool {
+	e.undoMerge = false
 	if e.IsDisabled() {
 		return false
 	}

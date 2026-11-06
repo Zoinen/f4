@@ -73,41 +73,45 @@ func (s settingsRecordStore) fileRevision(ctx context.Context) (string, error) {
 
 func newCoreRecordSettingsProvider() coreRecordSettingsProvider {
 	p := coreRecordSettingsProvider{}
-	assoc := recordCollection("associations", "associations", "File associations", "Ordered filename-mask rules. Changes are staged until Apply.", "assoc.Description", []f4settings.Field{recordField("assoc.Mask", "Filename mask", "Select filenames for which this association is considered.", f4settings.String), recordField("assoc.Description", "Description", "Name shown when several associations match.", f4settings.String)})
-	for i, name := range panel.AssocKeyName {
-		enabled := recordField("assoc."+name+"Enabled", "Enable "+name, "Enable this association command slot. An empty command is skipped.", f4settings.Boolean)
-		command := recordField("assoc."+name, name+" command", "Command dispatched for this slot, using the existing user-menu substitution machinery.", f4settings.Multiline)
-		if i%2 == 1 {
-			enabled.Unavailable = "Reserved compatibility slot; no current dispatcher."
-			command.Unavailable = enabled.Unavailable
+	// Keep the legacy codec available for import/export tests, but never expose
+	// a second writer once the unified runtime owns association dispatch.
+	if CommittedFileGroups() == nil {
+		assoc := recordCollection("associations", "associations", "File associations", "Ordered filename-mask rules. Changes are staged until Apply.", "assoc.Description", []f4settings.Field{recordField("assoc.Mask", "Filename mask", "Select filenames for which this association is considered.", f4settings.String), recordField("assoc.Description", "Description", "Name shown when several associations match.", f4settings.String)})
+		for i, name := range panel.AssocKeyName {
+			enabled := recordField("assoc."+name+"Enabled", "Enable "+name, "Enable this association command slot. An empty command is skipped.", f4settings.Boolean)
+			command := recordField("assoc."+name, name+" command", "Command dispatched for this slot, using the existing user-menu substitution machinery.", f4settings.Multiline)
+			if i%2 == 1 {
+				enabled.Unavailable = "Reserved compatibility slot; no current dispatcher."
+				command.Unavailable = enabled.Unavailable
+			}
+			assoc.Fields = append(assoc.Fields, enabled, command)
 		}
-		assoc.Fields = append(assoc.Fields, enabled, command)
+		path := panel.AssociationsFilePath()
+		p.stores = append(p.stores, settingsRecordStore{collection: assoc, path: path, load: func() ([]f4settings.Record, error) {
+			items, err := panel.LoadAssociations(path)
+			var rows []f4settings.Record
+			for i, item := range items {
+				values := map[string]string{"assoc.Mask": item.Mask, "assoc.Description": item.Description}
+				for j, name := range panel.AssocKeyName {
+					values["assoc."+name] = item.Commands[j]
+					values["assoc."+name+"Enabled"] = strconv.FormatBool(item.Enabled[j])
+				}
+				rows = append(rows, f4settings.Record{ID: fmt.Sprintf("association:%d", i), Values: values})
+			}
+			return rows, err
+		}, save: func(rows []f4settings.Record) error {
+			var items []panel.FileAssoc
+			for _, r := range rows {
+				item := panel.FileAssoc{Mask: r.Values["assoc.Mask"], Description: r.Values["assoc.Description"]}
+				for i, name := range panel.AssocKeyName {
+					item.Commands[i] = r.Values["assoc."+name]
+					item.Enabled[i] = r.Values["assoc."+name+"Enabled"] == "true"
+				}
+				items = append(items, item)
+			}
+			return panel.SaveAssociations(path, items)
+		}})
 	}
-	path := panel.AssociationsFilePath()
-	p.stores = append(p.stores, settingsRecordStore{collection: assoc, path: path, load: func() ([]f4settings.Record, error) {
-		items, err := panel.LoadAssociations(path)
-		var rows []f4settings.Record
-		for i, item := range items {
-			values := map[string]string{"assoc.Mask": item.Mask, "assoc.Description": item.Description}
-			for j, name := range panel.AssocKeyName {
-				values["assoc."+name] = item.Commands[j]
-				values["assoc."+name+"Enabled"] = strconv.FormatBool(item.Enabled[j])
-			}
-			rows = append(rows, f4settings.Record{ID: fmt.Sprintf("association:%d", i), Values: values})
-		}
-		return rows, err
-	}, save: func(rows []f4settings.Record) error {
-		var items []panel.FileAssoc
-		for _, r := range rows {
-			item := panel.FileAssoc{Mask: r.Values["assoc.Mask"], Description: r.Values["assoc.Description"]}
-			for i, name := range panel.AssocKeyName {
-				item.Commands[i] = r.Values["assoc."+name]
-				item.Enabled[i] = r.Values["assoc."+name+"Enabled"] == "true"
-			}
-			items = append(items, item)
-		}
-		return panel.SaveAssociations(path, items)
-	}})
 	bookmarkPath := panel.BookmarksFilePath()
 	bookmarks := recordCollection("bookmarks", "drives", "Folder bookmark slots", "Ten numbered directory slots. Reordering changes the digit shortcut. Existing Far plugin metadata is retained.", "bookmark.Name", []f4settings.Field{recordField("bookmark.Path", "Folder path", "Directory path or expandable path expression for this numbered slot.", f4settings.Path)})
 	bookmarks.Fixed = true

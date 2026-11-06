@@ -44,6 +44,9 @@ func redirectLegacySettingsActions() {
 }
 
 func init() {
+	settingsDeepLinks["panel.fileassociations"] = "filegroups"
+	plughost.ConfigureFileGroupCatalog = settings.ConfigureFileGroupCatalog
+	plughost.ConfigureFileGroupIconTheme = settings.SetFileGroupIconTheme
 	settings.Configure(settingsHost{})
 	registerSettingsRoutes()
 	redirectLegacySettingsActions()
@@ -73,6 +76,12 @@ func (*CoreAPI) OpenSettings(category, collection, record string, create bool) b
 var _ vfs.SettingsContributionHost = (*CoreAPI)(nil)
 
 func RegisterAction(a action.Action) {
+	if strings.EqualFold(a.Name, "Panel.FileAssociations") {
+		a.HideFromMenu = true
+		a.Handler = func() bool { return settings.OpenAt("filegroups", "filegroups", "", false) }
+		action.RegisterAction(a)
+		return
+	}
 	if category, ok := settingsDeepLinks[strings.ToLower(a.Name)]; ok {
 		a.HideFromMenu = true
 		a.Checked = nil

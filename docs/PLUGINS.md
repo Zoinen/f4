@@ -6,6 +6,11 @@ One protocol, several transports. The same plugin can run in its own process, co
 
 ## 1. The Transports
 
+In-process plugins receive the original host object so optional interfaces such
+as contributions, process environment and settings remain discoverable. The
+deferred URI host decorator is used only for RPC/WASM drive registration; session
+commands, panels and callbacks use the original host's capabilities.
+
 **Subprocess.** `f4` launches an executable and talks to it over pipes. Write the plugin in Go, Python, Rust, C++, Node.js or LuaJIT; anything that can read and write MessagePack on stdio works. The plugin is a native OS process with unrestricted access to the network, native libraries and the filesystem.
 
 **Embedded Lua.** `f4` runs a `.lua` plugin on a built-in interpreter, with no system Lua and no rocks to install. The plugin is a single file. `require('f4rpc')` resolves to a preloaded module, so a script written for the subprocess transport runs here unmodified.

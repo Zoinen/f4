@@ -550,6 +550,7 @@ SettingsCenter.AutoSavePanelSettings.Label=पैनल लेआउट को �
 SettingsCenter.Category.ai=कृत्रिम बुद्धिमत्ता
 SettingsCenter.Category.appearance=दिखावट और भाषा
 SettingsCenter.Category.associations=फ़ाइल संबद्धताएँ
+SettingsCenter.Category.filegroups=फ़ाइल समूह
 SettingsCenter.Category.drives=ड्राइव चयन
 SettingsCenter.DriveTab.Options=ड्राइव विकल्प
 SettingsCenter.DriveTab.Bookmarks=बुकमार्क

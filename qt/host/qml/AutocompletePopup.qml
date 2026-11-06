@@ -21,12 +21,21 @@ Item {
         return revision >= 0 ? hostWindow.dropdownAnchorForId(frame.ownerId) : null
     }
     property rect inputRect: Qt.rect(0, 0, 0, 0)
+    readonly property var commandInputAnchor: {
+        const revision = hostWindow.dropdownAnchorRevision
+        return revision >= 0 ? hostWindow.dropdownAnchorForId("commandLine.input") : null
+    }
+    property rect commandInputRect: Qt.rect(0, 0, 0, 0)
     function syncInputRect() {
         if (inputAnchor)
             inputRect = inputAnchor.mapToItem(hostWindow.contentItem, 0, 0,
                                              inputAnchor.width, inputAnchor.height)
+        if (commandInputAnchor)
+            commandInputRect = commandInputAnchor.mapToItem(hostWindow.contentItem, 0, 0,
+                commandInputAnchor.width, commandInputAnchor.height)
     }
     onInputAnchorChanged: Qt.callLater(syncInputRect)
+    onCommandInputAnchorChanged: Qt.callLater(syncInputRect)
 
     function preserveHoveredRow() {
         if (!hoveredRow)
@@ -79,10 +88,9 @@ Item {
                                              ? hostWindow.height - hostWindow.keyBarHeight()
                                                - hostWindow.commandLineHeight(hostWindow.shellFrame())
                                              : hostWindow.pxY(commandLine.y || 0)
-    // CommandLine exports the authoritative Edit start column.  Its
-    // prompt is monospaced, so translating that column with the same
-    // Configured monospace metrics used by ConsoleRunRow land on the exact input x.
-    readonly property real inputTextX: commandLineX
+    // The Qt prompt can be clipped and uses different metrics from the console.
+    // Anchor to its rendered input viewport; columns are only a legacy fallback.
+    readonly property real inputTextX: commandInputAnchor ? commandInputRect.x : commandLineX
                                        + hostWindow.commandLineLeftMargin
                                        + Number(commandLine.inputX || 0)
                                          * commandLineFontMetrics.advanceWidth("M")

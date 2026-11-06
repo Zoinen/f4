@@ -139,6 +139,7 @@ internal/        # everything the application is, in layers
   appcmd/        #     frame command constants
   colorer/       #     the colour scheme f4 installs for colorer4go
   config/        #     configuration and the profile directory
+  filegroups/    #     unified file-group definitions, INI layers and compiled matching
   history/       #     command, folder and view/edit history
   i18n/          #     the message catalogue and the .lng files
   ini/           #     the INI parser
@@ -214,6 +215,7 @@ artifacts/       # build artifacts
 | Archive libraries | `docs/ARCHIVE_DEPENDENCIES.md` | The chain of archive libraries (zipper, zip, tar, xz, sevenzip, archives, rardecode) and the rules for updating them |
 | Issue reviews | `docs/ISSUES/` | Per-issue solution reviews |
 | Spreadsheet | `docs/SPREADSHEET.md` | Spreadsheet mode specification |
+| File groups | `docs/FILE_GROUPS.md` | Single-page groups, reversed list, colour/icon themes and ExtUI |
 | Terminal junk log | `docs/TERMINAL_JUNK_LOG.md` | Stray paths, stray line feeds and the `f4_sync` directory sync in the embedded terminal. Read it whole before touching that area; never delete or prune it, add to it |
 
 ## AI Context Files

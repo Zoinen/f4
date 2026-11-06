@@ -39,6 +39,14 @@ const (
 	extUiPanelGroupingCapability        = "panelGroupingV1"
 )
 
+// ConfigureFileGroupCatalog is an optional composition seam for declarative
+// frontend defaults. The core does not require any frontend icon catalogs.
+var ConfigureFileGroupCatalog func(string) error
+
+// ConfigureFileGroupIconTheme is an optional frontend context extension. The
+// initial hello runs before SetupUI; subsequent updates run on the UI thread.
+var ConfigureFileGroupIconTheme func(string)
+
 // Deferred panel metadata is a required extension of the lockstep protocol. Keep the
 // process default conservative; RunExternalUI enables it only after the client
 // advertises the exact capability in its hello. Tests which exercise the native
@@ -4373,6 +4381,14 @@ func RunExternalUI(cols, rows int, execPath string, args []string) error {
 	if extUiString(hello, "type") != "hello" || extUiString(hello, "nonce") != nonce {
 		return fmt.Errorf("invalid extui hello")
 	}
+	if catalog := extUiString(hello, "fileGroupDefaults"); catalog != "" && ConfigureFileGroupCatalog != nil {
+		if err := ConfigureFileGroupCatalog(catalog); err != nil {
+			vtui.DebugLog("file groups: frontend defaults rejected: %v", err)
+		}
+	}
+	if ConfigureFileGroupIconTheme != nil {
+		ConfigureFileGroupIconTheme(extUiString(hello, "fileGroupIconTheme"))
+	}
 	panelCatalogMetadataV1 := extUiHelloCapability(
 		hello, extUiPanelCatalogMetadataCapability)
 	panelCatalogRowsV1 := extUiHelloCapability(
@@ -4651,6 +4667,14 @@ func (h *ExtUiHost) handleMessageWithBenchmark(msg map[string]any, timing *navtr
 					benchmark.Event("semantic_action.end", "go.ui", "action", benchmark.Action, "handled", handled)
 				}
 			})
+		}
+	case "file_group_icon_theme":
+		id := extUiString(msg, "iconTheme")
+		if len(id) > 256 || strings.ContainsAny(id, "\r\n\x00") {
+			return
+		}
+		if vtui.FrameManager != nil && ConfigureFileGroupIconTheme != nil {
+			vtui.FrameManager.PostTask(func() { ConfigureFileGroupIconTheme(id) })
 		}
 	case "quit":
 		if vtui.FrameManager != nil {

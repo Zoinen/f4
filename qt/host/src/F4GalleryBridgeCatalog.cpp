@@ -56,33 +56,6 @@ bool usefulLocalCatalogPreview(const QString &sourceKind,
     });
 }
 
-bool isF4BundledLucideIcon(const QString &source)
-{
-    static const QString normalPrefix =
-        QStringLiteral("qrc:/F4QtHost/icons/lucide/");
-    static const QString galleryPrefix =
-        QStringLiteral("qrc:/F4QtHost/icons/lucide-gallery/");
-    return source.startsWith(normalPrefix)
-        || source.startsWith(galleryPrefix);
-}
-
-bool isZoinGalleryDefaultIcon(const QString &source)
-{
-    static const QSet<QString> defaults{
-        QStringLiteral("qrc:/ZoinGallery/resources/FileIcon.svg"),
-        QStringLiteral("qrc:/ZoinGallery/resources/FolderIcon.svg"),
-        QStringLiteral("qrc:/ZoinGallery/resources/ImageIcon.svg"),
-    };
-    return defaults.contains(source);
-}
-
-bool isF4SystemFileIcon(const QString &source, const QString &providerId)
-{
-    const QUrl url(source);
-    return url.scheme() == QStringLiteral("image")
-        && url.host().compare(providerId, Qt::CaseInsensitive) == 0
-        && url.path().startsWith(QStringLiteral("/file/"));
-}
 
 bool catalogIntegerValue(const QVariant &value, qlonglong *result = nullptr)
 {
@@ -151,68 +124,11 @@ void insertCatalogDisplayFields(QVariantMap *entry,
 }
 
 QVariantMap resolveFileIconStyle(F4IconSet *iconSet, QVariantMap style,
-                                 const QVariantMap &context,
-                                 bool metadataDeferred,
-                                 qreal devicePixelRatio,
-                                 qulonglong mtimeNanos)
+                                 const QVariantMap &context, bool metadataDeferred,
+                                 qreal devicePixelRatio, qulonglong mtimeNanos)
 {
-    if (!iconSet) {
-        return style;
-    }
-    if (iconSet->zoin()) {
-        const bool parent = context.value(QStringLiteral("isUp")).toBool();
-        style.remove(QStringLiteral("iconKey"));
-        style.insert(QStringLiteral("icon"), iconSet->fileIconSource(
-            context.value(QStringLiteral("localPath")).toString(),
-            parent ? QStringLiteral("..") : context.value(QStringLiteral("name")).toString(),
-            parent || context.value(QStringLiteral("isDir")).toBool(),
-            GalleryIconLogicalSize, devicePixelRatio, mtimeNanos).toString());
-        return style;
-    }
-    const QString configuredIcon =
-        style.value(QStringLiteral("icon")).toString();
-    const QString semanticIcon = style.value(QStringLiteral("iconKey")).toString();
-    if (configuredIcon.isEmpty() && !semanticIcon.isEmpty()) {
-        style.insert(QStringLiteral("icon"), iconSet->iconSource(
-            semanticIcon, GalleryIconLogicalSize, devicePixelRatio).toString());
-        if (iconSet->system()) {
-            style.remove(QStringLiteral("iconKey"));
-        }
-        return style;
-    }
-    const bool replaceableIcon = configuredIcon.isEmpty()
-        || configuredIcon.startsWith(QStringLiteral("qrc:/F4QtHost/icons/zoin/"))
-        || isZoinGalleryDefaultIcon(configuredIcon)
-        || isF4SystemFileIcon(configuredIcon, iconSet->providerId())
-        || (iconSet->system() && isF4BundledLucideIcon(configuredIcon));
-    if (!replaceableIcon) {
-        return style;
-    }
-    if (iconSet->system()) {
-        style.remove(QStringLiteral("iconKey"));
-    }
-    const bool hasMarker = !style.value(
-        QStringLiteral("marker")).toString().isEmpty();
-    if (hasMarker && iconSet->system()) {
-        style.remove(QStringLiteral("icon"));
-        return style;
-    }
-    const bool isUp = context.value(QStringLiteral("isUp")).toBool();
-    const bool directory =
-        isUp || context.value(QStringLiteral("isDir")).toBool();
-    const QString fileName = isUp
-        ? QStringLiteral("..")
-        : context.value(QStringLiteral("name")).toString();
-    const bool genericSystemIcon = metadataDeferred && iconSet->system();
-    const QUrl iconSource = iconSet->fileIconSource(
-        genericSystemIcon
-            ? QString()
-            : context.value(QStringLiteral("localPath")).toString(),
-        genericSystemIcon ? QString() : fileName,
-        directory, GalleryIconLogicalSize, devicePixelRatio,
-        genericSystemIcon ? 0 : mtimeNanos);
-    style.insert(QStringLiteral("icon"), iconSource.toString());
-    return style;
+    return iconSet ? iconSet->resolveFileStyle(style, context, GalleryIconLogicalSize,
+                                              devicePixelRatio, mtimeNanos, metadataDeferred) : style;
 }
 
 QVariantMap normalizedCatalogEntry(

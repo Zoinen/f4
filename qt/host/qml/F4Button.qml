@@ -13,6 +13,7 @@ T.Button {
     property string mnemonicHotkey: ""
     property url iconSource: ""
     property real iconSize: 14
+    property real cornerRadius: 4
     property bool colorfulIcon: false
     property string toolTipText: ""
     property bool semanticFocus: false
@@ -121,7 +122,7 @@ T.Button {
         objectName: control.objectName ? (control.objectName + "Background")
                                        : "buttonBackground"
         readonly property color testBorderColor: border.color
-        radius: control.snap(4)
+        radius: control.snap(control.cornerRadius)
         color: {
             const isAccent = control.highlighted || control.variant === "accent"
             if (!control.enabled)

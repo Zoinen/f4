@@ -31,6 +31,7 @@ Rectangle {
     property bool nativeLayout: hostWindow.isAppScene()
     property bool userGeometrySet: false
     property bool maximized: false
+    property bool macWindowControls: Qt.platform.os === "osx"
     // A virtualized menu can supply its own body beneath the shared chrome.
     property bool externalBody: false
     property string closeAction: "dialog.close"
@@ -133,6 +134,19 @@ Rectangle {
         return Math.max(minimum, Math.min(maximum, value))
     }
 
+    function chromePixelOffset(item, horizontal) {
+        if (!item || !item.parent)
+            return 0
+        // Header glyphs and traffic lights: observe their small geometry chain directly
+        // when traffic lights change the control strip's origin and spacing.
+        let revision = dialogWindowButtons.placementRevision
+        for (let ancestor = item; ancestor && ancestor !== dialogRoot; ancestor = ancestor.parent)
+            revision += ancestor.x + ancestor.y + ancestor.width + ancestor.height
+        const point = item.parent.mapToItem(hostWindow.contentItem, item.x, item.y)
+        const value = horizontal ? point.x : point.y
+        return hostWindow.snapPx(value) - value + revision * 0
+    }
+
     function setUserGeometry(nextX, nextY, nextWidth, nextHeight) {
         maximized = false
         userGeometrySet = true
@@ -198,6 +212,8 @@ Rectangle {
     }
 
     function toggleMaximized() {
+        console.debug("[dialogs] toggle maximize", hostWindow.cleanText(frame.id), "restore", maximized,
+                      "macOS controls", macWindowControls)
         if (maximized) {
             const restore = restoredGeometry
             setUserGeometry(restore.x, restore.y,
@@ -311,7 +327,7 @@ Rectangle {
         x: hostWindow.snapPx(1)
         y: hostWindow.snapPx(1)
         width: parent.width - 2 * x
-        height: hostWindow.snapPx(43)
+        height: hostWindow.snapPx(dialogRoot.settingsLayout && settingsBody.hasNavigation ? 52 : 43)
         color: hostWindow.dialogHeaderBg
         radius: hostWindow.snapPx(8)
 
@@ -337,7 +353,8 @@ Rectangle {
         MouseArea {
             id: dialogMoveArea
             anchors.fill: parent
-            anchors.rightMargin: dialogWindowButtons.width
+            anchors.leftMargin: dialogRoot.macWindowControls ? dialogWindowButtons.x + dialogWindowButtons.width : 0
+            anchors.rightMargin: dialogRoot.macWindowControls ? 0 : dialogWindowButtons.width
             acceptedButtons: Qt.LeftButton
             hoverEnabled: true
             preventStealing: true
@@ -377,14 +394,20 @@ Rectangle {
             y: hostWindow.dialogPixelOffsetY(dialogTitle, hostWindow.contentItem)
         }
         anchors.left: parent.left
-        anchors.right: dialogWindowButtons.left
+        anchors.right: dialogRoot.macWindowControls ? parent.right : dialogWindowButtons.left
         anchors.top: dialogHeader.top
         height: Math.ceil(implicitHeight * hostWindow.dpr) / hostWindow.dpr
         anchors.topMargin: hostWindow.snapPx((dialogHeader.height - height) / 2)
         anchors.leftMargin: dialogBackButton.visible
                             ? hostWindow.snapPx(dialogBackButton.x + dialogBackButton.width + 8)
-                            : hostWindow.snapPx(18)
-        text: hostWindow.cleanText(frame.title)
+                            : dialogRoot.settingsLayout && settingsBody.hasNavigation
+                              ? settingsBody.mainX
+                              : dialogRoot.macWindowControls
+                                ? hostWindow.snapPx(dialogWindowButtons.x + dialogWindowButtons.width + 12)
+                                : hostWindow.snapPx(18)
+        anchors.rightMargin: dialogRoot.macWindowControls ? hostWindow.snapPx(18) : 0
+        text: dialogRoot.settingsLayout && settingsBody.hasNavigation && settingsBody.sectionTitle !== ""
+              ? settingsBody.sectionTitle : hostWindow.cleanText(frame.title)
         font.family: hostWindow.uiFontFamily
         color: hostWindow.textColor
         font.pixelSize: (hostWindow ? hostWindow.uiTextSize(14) : 14)
@@ -399,7 +422,8 @@ Rectangle {
         visible: dialogRoot.canGoBack && dialogRoot.backAction !== ""
         variant: "tool"
         flat: true
-        x: hostWindow.snapPx(8)
+        x: dialogRoot.macWindowControls
+            ? hostWindow.snapPx(dialogWindowButtons.x + dialogWindowButtons.width + 8) : hostWindow.snapPx(8)
         y: hostWindow.snapPx(dialogHeader.y + (dialogHeader.height - height) / 2)
         iconSource: hostWindow.semanticMenuIconSource("arrow-left", iconSize, hostWindow.textColor)
         Accessible.name: "Back"
@@ -409,29 +433,110 @@ Rectangle {
     Row {
         id: dialogWindowButtons
         anchors.top: dialogHeader.top
-        anchors.right: dialogHeader.right
+        x: dialogRoot.macWindowControls ? hostWindow.snapPx(12) : dialogHeader.x + dialogHeader.width - width
         height: dialogHeader.height
-        spacing: 0
+        spacing: dialogRoot.macWindowControls ? hostWindow.snapPx(2) : 0
+        layoutDirection: dialogRoot.macWindowControls ? Qt.RightToLeft : Qt.LeftToRight
+        readonly property real placementRevision: x + y + width + dialogRoot.x + dialogRoot.y + dialogRoot.width
+        HoverHandler { id: windowControlsHover }
 
         ZG.TitleButton {
             id: dialogMaximizeButton
             objectName: "dialogMaximizeButton"
-            visible: frame.showZoom === true
+            visible: dialogRoot.macWindowControls || frame.showZoom === true
+            enabled: frame.showZoom === true
+            Accessible.name: dialogRoot.maximized ? qsTr("Restore") : qsTr("Maximize")
             devicePixelRatio: hostWindow.iconDevicePixelRatio
             function iconPixelOffsetX(item) {
-                return hostWindow.dialogPixelOffsetX(item, hostWindow.contentItem)
+                return dialogRoot.chromePixelOffset(item, true)
             }
             function iconPixelOffsetY(item) {
-                return hostWindow.dialogPixelOffsetY(item, hostWindow.contentItem)
+                return dialogRoot.chromePixelOffset(item, false)
             }
-            implicitWidth: hostWindow.snapPx(42)
+            implicitWidth: hostWindow.snapPx(dialogRoot.macWindowControls ? 20 : 42)
             implicitHeight: dialogHeader.height
             opacity: 1
-            source: dialogRoot.maximized
+            source: dialogRoot.macWindowControls
+                    ? (windowControlsHover.hovered && enabled
+                       ? hostWindow.lucideIconSource("maximize-2", 10, "#a6195424") : "")
+                    : dialogRoot.maximized
                     ? "qrc:/ZoinGallery/resources/WindowRestore.svg"
                     : "qrc:/ZoinGallery/resources/WindowMaximize.svg"
-            icon.color: ZG.Style.text
+            icon.color: dialogRoot.macWindowControls
+                ? (windowControlsHover.hovered && enabled ? "#a6195424" : "transparent") : ZG.Style.text
+            background: Item {
+                Rectangle {
+                    id: maximizeBackground
+                    objectName: "dialogMaximizeBackground"
+                    antialiasing: dialogRoot.macWindowControls || radius > 0
+                    x: hostWindow.snapPx((parent.width - width) / 2)
+                    y: hostWindow.snapPx((parent.height - height) / 2)
+                    width: hostWindow.snapPx(dialogRoot.macWindowControls ? 14 : parent.width)
+                    height: dialogRoot.macWindowControls ? width : parent.height
+                    radius: dialogRoot.macWindowControls ? width / 2 : 0
+                    color: dialogRoot.macWindowControls
+                        ? (dialogMaximizeButton.enabled ? (dialogMaximizeButton.pressed ? "#20a432" : "#28c840") : "#5f6062")
+                        : dialogMaximizeButton.backgroundColor
+                    border.width: dialogRoot.macWindowControls ? 1 / hostWindow.iconDevicePixelRatio : 0
+                    border.pixelAligned: !dialogRoot.macWindowControls
+                    border.color: dialogMaximizeButton.enabled ? "#179b2e" : "#49494b"
+                    gradient: dialogRoot.macWindowControls ? macMaximizeGradient : null
+                    Gradient {
+                        id: macMaximizeGradient
+                        GradientStop {
+                            position: 0
+                            color: dialogMaximizeButton.enabled
+                                ? (dialogMaximizeButton.pressed ? "#27ae3b" : "#39d451")
+                                : "#6a6b6d"
+                        }
+                        GradientStop {
+                            position: 1
+                            color: dialogMaximizeButton.enabled
+                                ? (dialogMaximizeButton.pressed ? "#1b982d" : "#25bf3b")
+                                : "#5b5c5e"
+                        }
+                    }
+                    transform: Translate {
+                        x: dialogRoot.macWindowControls ? dialogRoot.chromePixelOffset(maximizeBackground, true) : 0
+                        y: dialogRoot.macWindowControls ? dialogRoot.chromePixelOffset(maximizeBackground, false) : 0
+                    }
+                }
+            }
             onClicked: dialogRoot.toggleMaximized()
+        }
+
+        ZG.TitleButton {
+            objectName: "dialogMinimizeButton"
+            visible: dialogRoot.macWindowControls
+            enabled: false // In-window modal dialogs cannot be minimized independently.
+            Accessible.name: qsTr("Minimize")
+            devicePixelRatio: hostWindow.iconDevicePixelRatio
+            implicitWidth: hostWindow.snapPx(20)
+            implicitHeight: dialogHeader.height
+            opacity: 1
+            source: ""
+            background: Item {
+                Rectangle {
+                    id: minimizeBackground
+                    objectName: "dialogMinimizeBackground"
+                    antialiasing: true
+                    x: dialogRoot.hostWindow.snapPx((parent.width - width) / 2)
+                    y: dialogRoot.hostWindow.snapPx((parent.height - height) / 2)
+                    width: hostWindow.snapPx(14); height: width; radius: width / 2
+                    color: "#5f6062"
+                    border.width: 1 / hostWindow.iconDevicePixelRatio
+                    border.pixelAligned: false
+                    border.color: "#49494b"
+                    gradient: Gradient {
+                        GradientStop { position: 0; color: "#6a6b6d" }
+                        GradientStop { position: 1; color: "#5b5c5e" }
+                    }
+                    transform: Translate {
+                        x: dialogRoot.chromePixelOffset(minimizeBackground, true)
+                        y: dialogRoot.chromePixelOffset(minimizeBackground, false)
+                    }
+                }
+            }
         }
 
         ZG.TitleButton {
@@ -439,18 +544,23 @@ Rectangle {
             objectName: "dialogCloseButton"
             devicePixelRatio: hostWindow.iconDevicePixelRatio
             function iconPixelOffsetX(item) {
-                return hostWindow.dialogPixelOffsetX(item, hostWindow.contentItem)
+                return dialogRoot.chromePixelOffset(item, true)
             }
             function iconPixelOffsetY(item) {
-                return hostWindow.dialogPixelOffsetY(item, hostWindow.contentItem)
+                return dialogRoot.chromePixelOffset(item, false)
             }
-            implicitWidth: hostWindow.snapPx(42)
+            implicitWidth: hostWindow.snapPx(dialogRoot.macWindowControls ? 20 : 42)
             implicitHeight: dialogHeader.height
             opacity: 1
-            visible: frame.showClose === true
-            source: "qrc:/ZoinGallery/resources/WindowClose.svg"
-            icon.color: hovered
-                        ? ZG.Style.closeButtonHoveredIcon : ZG.Style.text
+            visible: dialogRoot.macWindowControls || frame.showClose === true
+            enabled: frame.showClose === true
+            source: dialogRoot.macWindowControls
+                ? (windowControlsHover.hovered && enabled ? hostWindow.lucideIconSource("x", 10, "#a6641a15") : "")
+                : "qrc:/ZoinGallery/resources/WindowClose.svg"
+            Accessible.name: qsTr("Close")
+            icon.color: dialogRoot.macWindowControls
+                ? (windowControlsHover.hovered && enabled ? "#a6641a15" : "transparent")
+                : hovered ? ZG.Style.closeButtonHoveredIcon : ZG.Style.text
             backgroundColor: {
                 if (!enabled)
                     return "gray"
@@ -460,14 +570,44 @@ Rectangle {
                     return ZG.Style.closeButtonHovered
                 return "transparent"
             }
-            background: Rectangle {
-                id: closeBackground
-                objectName: "dialogCloseBackground"
-                color: dialogCloseButton.backgroundColor
-                topRightRadius: hostWindow.snapPx(dialogHeader.radius)
-                transform: Translate {
-                    x: hostWindow.dialogPixelOffsetX(closeBackground, hostWindow.contentItem)
-                    y: hostWindow.dialogPixelOffsetY(closeBackground, hostWindow.contentItem)
+            background: Item {
+                Rectangle {
+                    id: closeBackground
+                    objectName: "dialogCloseBackground"
+                    antialiasing: dialogRoot.macWindowControls || radius > 0
+                    x: hostWindow.snapPx((parent.width - width) / 2)
+                    y: hostWindow.snapPx((parent.height - height) / 2)
+                    width: hostWindow.snapPx(dialogRoot.macWindowControls ? 14 : parent.width)
+                    height: dialogRoot.macWindowControls ? width : parent.height
+                    color: dialogRoot.macWindowControls
+                        ? (dialogCloseButton.enabled
+                           ? (dialogCloseButton.pressed ? "#df4941" : "#ff5f57") : "#5f6062")
+                        : dialogCloseButton.backgroundColor
+                    radius: dialogRoot.macWindowControls ? width / 2 : 0
+                    topRightRadius: dialogRoot.macWindowControls ? radius : hostWindow.snapPx(dialogHeader.radius)
+                    border.width: dialogRoot.macWindowControls ? 1 / hostWindow.iconDevicePixelRatio : 0
+                    border.pixelAligned: !dialogRoot.macWindowControls
+                    border.color: dialogCloseButton.enabled ? "#db4c43" : "#49494b"
+                    gradient: dialogRoot.macWindowControls ? macCloseGradient : null
+                    Gradient {
+                        id: macCloseGradient
+                        GradientStop {
+                            position: 0
+                            color: dialogCloseButton.enabled
+                                ? (dialogCloseButton.pressed ? "#eb5a51" : "#ff746b")
+                                : "#6a6b6d"
+                        }
+                        GradientStop {
+                            position: 1
+                            color: dialogCloseButton.enabled
+                                ? (dialogCloseButton.pressed ? "#d84038" : "#fa574f")
+                                : "#5b5c5e"
+                        }
+                    }
+                    transform: Translate {
+                        x: dialogRoot.macWindowControls ? dialogRoot.chromePixelOffset(closeBackground, true) : hostWindow.dialogPixelOffsetX(closeBackground, hostWindow.contentItem)
+                        y: dialogRoot.macWindowControls ? dialogRoot.chromePixelOffset(closeBackground, false) : hostWindow.dialogPixelOffsetY(closeBackground, hostWindow.contentItem)
+                    }
                 }
             }
             onClicked: hostWindow.action({
@@ -480,13 +620,16 @@ Rectangle {
     SettingsDialogBody {
         id: settingsBody
         hostWindow: dialogRoot.hostWindow
-        rightGutter: dialogRoot.contentPadding
+        rightGutter: hostWindow.snapPx(12)
+        sectionsOnly: dialogRoot.frame.settingsSectionsOnly === true
         visible: dialogRoot.settingsLayout
         widgets: visible ? dialogRoot.frame.children || [] : []
         anchors.fill: parent
         anchors.margins: dialogRoot.contentPadding
-        anchors.topMargin: dialogHeader.height + dialogRoot.contentPadding + dialogRoot.paneHeaderHeight
-        anchors.bottomMargin: dialogRoot.contentPadding + dialogKeyHints.height
+        anchors.leftMargin: sectionsOnly ? dialogRoot.contentPadding : 0
+        anchors.rightMargin: rightGutter
+        anchors.topMargin: dialogHeader.height + (sectionsOnly ? dialogRoot.contentPadding : 0) + dialogRoot.paneHeaderHeight
+        anchors.bottomMargin: rightGutter + dialogKeyHints.height
         onCloseRequested: hostWindow.action({target: dialogRoot.frame.id, action: "dialog.close"})
     }
 

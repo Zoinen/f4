@@ -96,12 +96,23 @@ func (pm *PluginManager) keepPlugin(p Plugin) bool {
 
 func (pm *PluginManager) LoadExternalPlugin(path string) {
 	p := newPluginForEntrypoint("", path)
-	if err := p.Init(pm.api); err == nil {
+	if err := pm.initPlugin(p); err == nil {
 		if pm.keepPlugin(p) {
 			vtui.DebugLog("Loaded plugin: %s", p.GetName())
 		}
 	} else {
 		vtui.DebugLog("Failed plugin %s: %v", path, err)
+	}
+}
+
+func (pm *PluginManager) initPlugin(p Plugin) error {
+	// Only RPC transports need the drive interceptor. Passing a HostAPI
+	// decorator to Go plugins hides optional interfaces on the real host.
+	switch p.(type) {
+	case *RPCPlugin, *WasmPlugin:
+		return p.Init(pm.api)
+	default:
+		return p.Init(pm.api.(*extractedURIHost).HostAPI)
 	}
 }
 func (pm *PluginManager) loadPlugRing() {
@@ -113,7 +124,7 @@ func (pm *PluginManager) loadPlugRing() {
 			// but since NewRPCPlugin uses exec.Command directly, we pass the command.
 			// The RPCPlugin execution logic will need to handle splitting by spaces if it's a shell command.
 			p := newPluginForPlugRingItem(filepath.Join(plugringDir, id), item)
-			if err := p.Init(pm.api); err == nil {
+			if err := pm.initPlugin(p); err == nil {
 				if pm.keepPlugin(p) {
 					vtui.DebugLog("Loaded PlugRing RPC plugin: %s", p.GetName())
 				}
@@ -131,7 +142,7 @@ func (pm *PluginManager) LoadSinglePlugRingItem(item PlugRingItem) {
 	pluginDir := filepath.Join(plugringDir, item.ID)
 
 	p := newPluginForPlugRingItem(pluginDir, item)
-	if err := p.Init(pm.api); err == nil {
+	if err := pm.initPlugin(p); err == nil {
 		if pm.keepPlugin(p) {
 			vtui.DebugLog("Hot-loaded PlugRing RPC plugin: %s", p.GetName())
 		}
@@ -174,7 +185,7 @@ func (pm *PluginManager) loadInternal() {
 	plugins = append(plugins, optionalObserverPlugins()...)
 
 	for _, p := range plugins {
-		if err := p.Init(pm.api); err == nil {
+		if err := pm.initPlugin(p); err == nil {
 			if pm.keepPlugin(p) {
 				vtui.DebugLog("Loaded internal plugin: %s", p.GetName())
 			}

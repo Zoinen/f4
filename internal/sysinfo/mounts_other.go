@@ -1,4 +1,4 @@
-//go:build !linux && !windows
+//go:build !linux && !windows && !darwin
 
 package sysinfo
 
@@ -11,6 +11,8 @@ type MountEntry struct {
 	MountPoint string
 	FSType     string
 }
+
+func (m MountEntry) unmountDevice() string { return "" }
 
 // UserMounts returns no entries outside Linux, leaving darwin/BSD builds
 // behaving exactly as they did before this feature existed.

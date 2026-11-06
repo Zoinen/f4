@@ -255,6 +255,7 @@ func ApplyColorStyle(name string) error {
 		}
 	}
 	FinishColors()
+	GlobalFileHighlighter.activeColorStyle = themeStyle.Name
 	GlobalFileHighlighter.LoadThemeRules(themeStyle.ini)
 	configureWorkspaceTabColors()
 	return nil

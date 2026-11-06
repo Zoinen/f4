@@ -894,6 +894,7 @@ SettingsCenter.AutoSavePanelSettings.Label=Зберігайте оформлен
 SettingsCenter.Category.ai=Штучний інтелект
 SettingsCenter.Category.appearance=Вигляд і мова
 SettingsCenter.Category.associations=Асоціації файлів
+SettingsCenter.Category.filegroups=Групи файлів
 SettingsCenter.Category.drives=Вибір диска
 SettingsCenter.DriveTab.Options=Параметри дисків
 SettingsCenter.DriveTab.Bookmarks=Закладки

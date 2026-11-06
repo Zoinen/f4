@@ -233,6 +233,7 @@ func (vv *ViewerView) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 		TopBarLeft:              topBarLeft,
 		TopBarRight:             topBarRight,
 		IconColor:               theme.SemanticFileIconColor(semantic.SemanticBaseName(vv.VFS, vv.Path)),
+		FileStyle:               theme.SemanticFileStyle(semantic.SemanticBaseName(vv.VFS, vv.Path)),
 		HexMode:                 vv.HexMode,
 		DecodeMode:              vv.DecodeMode,
 		WrapMode:                vv.WrapMode,

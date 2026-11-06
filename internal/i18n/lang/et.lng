@@ -888,6 +888,7 @@ SettingsCenter.AutoSavePanelSettings.Label=Salvestage paneeli paigutus automaats
 SettingsCenter.Category.ai=Tehisintellekt
 SettingsCenter.Category.appearance=Välimus ja keel
 SettingsCenter.Category.associations=Failiseosed
+SettingsCenter.Category.filegroups=Failirühmad
 SettingsCenter.Category.drives=Ketta valik
 SettingsCenter.DriveTab.Options=Ketta valikud
 SettingsCenter.DriveTab.Bookmarks=Järjehoidjad

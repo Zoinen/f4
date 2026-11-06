@@ -314,6 +314,7 @@ silence; this prose can, and the check for that is at the end of this section.
 **Layer 0 — leaves, importing no package of ours but `internal/ini`:**
 `vfs`, `sdk`, `internal/action`, `internal/appcmd`, `internal/colorer`,
 `internal/config`, `internal/frameborder`, `internal/history`, `internal/i18n`,
+`internal/filegroups`,
 `internal/ini`, `internal/keymap`, `internal/luaplug`, `internal/netproxy`,
 `internal/numeric`, `internal/piecetable`, `internal/semantic`, `internal/sheet`,
 `internal/sysinfo`, `internal/testutil`, `internal/textdiff`,
@@ -481,6 +482,13 @@ means updating the `replace` directive that points at it (`go.mod:187`).
    information because every file there is one.
 
 ## Package Ownership
+
+`internal/filegroups` owns frontend-neutral file-group definitions, layered INI
+documents, compiled predicates, migration and immutable snapshots. It is layer 0,
+over configuration/INI and VFS metadata only. It never imports theme, panel,
+settings, Qt or the composition root. Theme and panel consume compiled groups;
+settings owns editing/preview transactions, and app only wires their seams.
+Icon catalogs are declarative contributions; image rendering remains frontend-owned.
 
 Every package answers for one subject, and every file belongs to exactly one
 package. The rules below are what keeps it that way.

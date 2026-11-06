@@ -4,11 +4,14 @@
 
 #include <QClipboard>
 #include <QCoreApplication>
+#include <QDebug>
 #include <QFontMetricsF>
 #include <QGuiApplication>
+#include <QHoverEvent>
 #include <QInputMethodEvent>
 #include <QKeyEvent>
 #include <QKeySequence>
+#include <QMimeData>
 #include <QPainter>
 #include <QQuickWindow>
 #include "PointerRowAnchor.h"
@@ -331,6 +334,14 @@ void VtuiGridItem::setRenderingEnabled(bool enabled)
     emit renderingEnabledChanged();
 }
 
+void VtuiGridItem::setPanelClipboardPasteEnabled(bool enabled)
+{
+    if (m_panelClipboardPasteEnabled == enabled)
+        return;
+    m_panelClipboardPasteEnabled = enabled;
+    emit panelClipboardPasteEnabledChanged();
+}
+
 bool VtuiGridItem::forwardKeyToController(int vk, int ch, bool down, int mods,
                                          bool repeat)
 {
@@ -420,6 +431,17 @@ void VtuiGridItem::sendClipboardPaste()
         return;
     }
     if (QClipboard *clipboard = QGuiApplication::clipboard()) {
+        const auto *mime = clipboard->mimeData();
+        if (m_panelClipboardPasteEnabled && mime && mime->hasImage()) {
+            // Go owns image decoding, image/text choice, file naming and save.
+            // A text-only paste packet cannot represent this clipboard content.
+            forwardKeyToController('V', 0, true, LeftCtrlPressed);
+            forwardKeyToController('V', 0, false, LeftCtrlPressed);
+            emit keyboardActivity();
+            if (qEnvironmentVariableIsSet("F4_TRACE_GRID_INPUT"))
+                qInfo() << "[FIX:panel-image-paste] forwarded clipboard shortcut";
+            return;
+        }
         const QString text = clipboard->text();
         if (!text.isEmpty()) {
             m_controller->sendPaste(text);
@@ -642,6 +664,29 @@ void VtuiGridItem::mouseMoveEvent(QMouseEvent *event)
         return;
     }
     sendMouseEvent(event, MouseMoved, event->buttons() != Qt::NoButton);
+    event->accept();
+}
+
+void VtuiGridItem::hoverEnterEvent(QHoverEvent *event)
+{
+    hoverMoveEvent(event);
+}
+
+void VtuiGridItem::hoverMoveEvent(QHoverEvent *event)
+{
+    if (!m_pointerInputEnabled || !m_controller || m_pressedButtonState != 0) {
+        event->ignore();
+        return;
+    }
+    // Qt Quick delivers unpressed motion as hover, while mouseMoveEvent owns
+    // dragging. Forward the former without synthesizing a press or taking focus.
+    const QPoint cell = cellForPosition(event->position());
+    m_controller->sendMouse(cell.x(), cell.y(), 0, MouseMoved, false,
+                            modifiersFromEvent(event->modifiers()));
+    static const bool trace = qEnvironmentVariableIsSet("F4_TRACE_GRID_INPUT");
+    if (trace) {
+        qInfo() << "[FIX:qt-grid-hover] forwarded console hover" << cell;
+    }
     event->accept();
 }
 

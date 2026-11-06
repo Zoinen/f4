@@ -1,6 +1,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QHash>
 #include <QImage>
 #include <QPainter>
 #include <QRegularExpression>
@@ -22,6 +23,18 @@ int main(int argc, char **argv)
     if (!manifest.open(QIODevice::ReadOnly))
         return 3;
     const auto names = QString::fromUtf8(manifest.readAll()).split(u'\n', Qt::SkipEmptyParts);
+    QFile groupNames(icons.filePath("files/group-names.txt"));
+    if (!groupNames.open(QIODevice::ReadOnly))
+        return 9;
+    QHash<QString, QString> outputNames;
+    const auto mappings = QString::fromUtf8(groupNames.readAll()).split(u'\n', Qt::SkipEmptyParts);
+    for (const auto &mapping : mappings) {
+        const auto parts = mapping.trimmed().split(u'=');
+        if (parts.size() != 2 || parts.at(0).isEmpty() || parts.at(1).isEmpty()
+            || outputNames.contains(parts.at(1)) || !names.contains(parts.at(1)))
+            return 10;
+        outputNames.insert(parts.at(1), parts.at(0));
+    }
     const QRegularExpression stroke(R"(stroke-width="[0-9.]+")");
     const QRegularExpression viewBox(R"(viewBox="[^"]+")");
     const QRegularExpression width(R"((?<![-\w])width="[^"]+")");
@@ -30,6 +43,7 @@ int main(int argc, char **argv)
     constexpr qreal canvasOrigin = -4;
     constexpr qreal canvasSpan = 32;
     for (const QString &name : names) {
+        const QString outputName = outputNames.value(name, name);
         QFile original(icons.filePath("lucide/" + name + ".svg"));
         if (!original.open(QIODevice::ReadOnly))
             return 4;
@@ -77,12 +91,12 @@ int main(int argc, char **argv)
             const QString directory = icons.filePath("files/" + QString::number(step));
             if (!QDir().mkpath(directory))
                 return 7;
-            QSaveFile output(directory + u'/' + name + ".svg");
+            QSaveFile output(directory + u'/' + outputName + ".svg");
             const QByteArray bytes = svg.toUtf8();
             if (!output.open(QIODevice::WriteOnly) || output.write(bytes) != bytes.size() || !output.commit())
                 return 8;
         }
-        QTextStream(stdout) << name << '\n';
+        QTextStream(stdout) << name << " -> " << outputName << '\n';
     }
     return 0;
 }

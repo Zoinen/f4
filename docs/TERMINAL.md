@@ -205,6 +205,20 @@ contents. The macOS integration regression sends 20 consecutive long commands
 through a real zsh PTY; additional shell tests compare staged and direct eval
 behavior in sh, bash, and zsh.
 
+Environment Manager's POSIX acknowledgement wrapper uses the same bounded
+private-file handoff. Although it contains no variable values, its repeated
+paths and status names can exceed 1024 bytes and hit that same tty limit.
+Failure to read the staged wrapper still acknowledges failure, including under
+`set -e`. Payload cleanup owns both the values file and the staged wrapper.
+
+Active local-shell OSC 133 markers are handled in ANSI parser byte order via
+`TerminalView.OnShellSequence`. Do not scan ahead for an environment `E` marker
+before displaying its read buffer: doing so unmutes the wrapper echo preceding
+that acknowledgement. Unmuting happens synchronously at `E`; deferred input
+delivery remains a UI task. Thus a prompt following `E` in the same read is
+visible while the technical echo before it stays hidden. Inactive local shells
+retain their separate marker scanner because they do not feed the shared view.
+
 ### The prompt row belongs to the prompt (`EnsureFreshPromptLine`)
 
 f4 hides the native shell prompt by painting its own command line over the
