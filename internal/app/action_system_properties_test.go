@@ -18,15 +18,15 @@ func TestAppsKeyHasAName(t *testing.T) {
 	}
 }
 
-// Apps opens the system properties of the item under the cursor, the
-// window behind the attributes dialog's button (f4#2041).
+// System properties remains a direct command after Apps moves to the
+// cross-platform file context menu.
 func TestAction_FileSystemProperties_OpensTheCursorItem(t *testing.T) {
 	a, ok := action.Lookup("File.SystemProperties")
 	if !ok {
 		t.Fatal("File.SystemProperties is not registered")
 	}
-	if len(a.DefaultKeys) != 1 || a.DefaultKeys[0] != "Apps" {
-		t.Fatalf("File.SystemProperties keys = %q, want Apps", a.DefaultKeys)
+	if len(a.DefaultKeys) != 0 {
+		t.Fatalf("File.SystemProperties must not compete with File.ContextMenu for Apps: %q", a.DefaultKeys)
 	}
 
 	tmp := t.TempDir()

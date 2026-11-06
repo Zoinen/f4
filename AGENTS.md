@@ -1,5 +1,17 @@
 # Local workspace instructions
 
+## Canonical macOS workspace
+
+- `/Users/zoin/Documents/f4-zoin` on branch `zoin` is the primary macOS
+  checkout. Its `.git` owns the shared repository; Android and QRhi/Metal stay
+  in their separate experimental worktrees.
+- Build the local Go executable as `f4-zoin` and the matching Qt host in
+  `qt/host/build-dev`. Launch with `./run-f4.command`, which resolves this
+  checkout relative to itself and uses the normal application profile.
+- Do not recreate or launch from retired `qt-run-current` or `Documents/f4`
+  checkouts. Local dependency packages live in `.codex-build/dependencies`;
+  migration recovery material lives in ignored `.local-archive`.
+
 ## Mandatory portable-build policy
 
 - Before changing, running, debugging, or reviewing any build, packaging,
