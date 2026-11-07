@@ -1835,6 +1835,10 @@ if(BUILD_TESTING)
       ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV};F4_GALLERY_VIDEO_CONTROLS_CAPTURE=${CMAKE_BINARY_DIR}/.diagnostics/gallery-video-controls-175.png")
   endif()
   add_test(NAME F4QuickViewSurfaceTest COMMAND F4QuickViewSurfaceTests)
+  add_test(NAME F4DetailsFileIconPixelGridTest
+    COMMAND F4QuickViewSurfaceTests rightPanelFileIconsKeepNativeRasterAt175Percent)
+  set_tests_properties(F4DetailsFileIconPixelGridTest PROPERTIES
+    ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}")
   # The aggregate includes regressions whose contract requires DPR 1.75.
   set_tests_properties(F4QuickViewSurfaceTest PROPERTIES
     ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV}"

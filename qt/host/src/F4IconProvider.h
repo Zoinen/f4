@@ -77,6 +77,7 @@ private:
                              QSize *size) const;
     QImage renderLucideRequest(const ImageRequest &request,
                                QSize *size) const;
+    QImage renderZoinFileRequest(const ImageRequest &request, QSize *size) const;
     QImage renderNativeRequest(const ImageRequest &request,
                                QSize *size);
 
@@ -137,6 +138,8 @@ public:
                                             const QColor &tint,
                                             qreal strokeWidth) const;
     Q_INVOKABLE qreal lucideStrokeWidth(qreal logicalSize) const;
+    Q_INVOKABLE QUrl compactFileArtworkSource(const QString &source, int logicalSize,
+                                             qreal devicePixelRatio) const;
     Q_INVOKABLE QUrl fileIconSource(const QString &localPath,
                                     const QString &fileName,
                                     bool directory,

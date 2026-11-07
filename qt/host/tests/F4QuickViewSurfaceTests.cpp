@@ -737,11 +737,14 @@ QQuickItem *visualItemWithSource(QQuickItem *root, const QUrl &source)
 }
 
 QImage renderSvgReference(const QUrl &source, const QSize &physicalSize,
-                          const QColor &tint, const QColor &background)
+                          const QColor &tint, const QColor &background,
+                          bool preserveAspect = false)
 {
     QSvgRenderer renderer(QStringLiteral(":") + source.path());
     if (!renderer.isValid() || !physicalSize.isValid())
         return {};
+    if (preserveAspect)
+        renderer.setAspectRatioMode(Qt::KeepAspectRatio);
 
     QImage icon(physicalSize, QImage::Format_ARGB32_Premultiplied);
     icon.fill(Qt::transparent);
@@ -1023,6 +1026,7 @@ private slots:
     void appIconMenuUsesSemanticCategoriesAndCommands();
     void shellSnapshotDoesNotRestorePreviousPanelDescriptor();
     void workspaceSwitchRetainsGalleryViewAt175Percent();
+    void rightPanelFileIconsKeepNativeRasterAt175Percent_data();
     void rightPanelFileIconsKeepNativeRasterAt175Percent();
     void nestedMenuAnchorsHeadersTagsAndChevronsOnPhysicalPixels();
     void nestedMenuHoverUsesDelayedSubmenuAction();
@@ -9273,20 +9277,34 @@ void F4QuickViewSurfaceTests::f9MenuOverlaysPathRowWithoutMovingContent()
     QCOMPARE(panel->size(), sizeBefore);
 }
 
+void F4QuickViewSurfaceTests::rightPanelFileIconsKeepNativeRasterAt175Percent_data()
+{
+    QTest::addColumn<QString>("asset");
+    QTest::newRow("lucide") << QString();
+    QTest::newRow("zoin-python") << QStringLiteral("python");
+    QTest::newRow("zoin-folder") << QStringLiteral("folders");
+}
+
 void F4QuickViewSurfaceTests::rightPanelFileIconsKeepNativeRasterAt175Percent()
 {
+    QFETCH(QString, asset);
     QuickViewFixture fixture(shellScene({}, 0), true);
     QVERIFY(fixture.window);
+    const qreal dpr = fixture.window->devicePixelRatio();
+    if (qAbs(dpr - 1.75) > .001)
+        QSKIP("Requires a 175% display");
     class DiagnosticIconProvider final : public QQuickImageProvider {
     public:
         DiagnosticIconProvider() : QQuickImageProvider(QQuickImageProvider::Image) {}
         QImage requestImage(const QString &id, QSize *size, const QSize &requested) override {
             auto result = provider.requestImage(id, size, requested);
             rasterSizes.insert(id, result.size());
+            ++requests[id];
             return result;
         }
         F4IconProvider provider;
         QMap<QString, QSize> rasterSizes;
+        QMap<QString, int> requests;
     };
     F4IconSet icons(QStringLiteral("right-grid-icons"));
     auto *provider = new DiagnosticIconProvider();
@@ -9297,9 +9315,18 @@ void F4QuickViewSurfaceTests::rightPanelFileIconsKeepNativeRasterAt175Percent()
     auto *runtime = ZoinGallery::GalleryRuntime::install(&fixture.engine, options);
     auto *session = runtime->createExternalSession("right-icon-grid-diagnostic");
     const auto shutdown = qScopeGuard([&] { runtime->shutdown(); });
+    QVariantMap style{{"iconKey", "folder"}};
+    const QUrl assetSource(QStringLiteral("qrc:/F4QtHost/icons/zoin/%1.svg").arg(asset));
+    const bool isFolder = asset != QStringLiteral("python");
+    if (!asset.isEmpty()) {
+        style = {{"icon", assetSource.toString()}, {"tintIcon", true},
+                 {"color", "#499eea"}, {"marker", "*"}};
+    }
     QVERIFY(session->applyExternalCatalog({QVariantMap{
-        {"entryId", "folder"}, {"index", 0}, {"name", "Folder"},
-        {"highlightStyle", QVariantMap{{"iconKey", "folder"}}}, {"isDir", true}}}, 1));
+        {"entryId", "icon"}, {"index", 0}, {"name", isFolder ? "Folder" : "1.py"},
+        {"highlightStyle", style}, {"isDir", isFolder}}, QVariantMap{
+        {"entryId", "second"}, {"index", 1}, {"name", "second.txt"}}}, 1));
+    QVERIFY(session->applyExternalState("second", 1, {}, 1));
     fixture.gallery.showPanel(QUrl("qrc:/F4QtHost/qml/GalleryPanelHost.qml"), session);
     auto *panel = fixture.item("filePanel-1");
     QVERIFY(panel);
@@ -9317,20 +9344,38 @@ void F4QuickViewSurfaceTests::rightPanelFileIconsKeepNativeRasterAt175Percent()
         QTest::qWait(150);
         auto *icon = visualItemWithObjectName(view, "galleryFallbackIcon-0");
         QVERIFY(icon);
-        const qreal dpr = fixture.window->devicePixelRatio();
+        QTRY_COMPARE(icon->property("status").toInt(), 1);
         const QPointF origin = icon->mapToScene(QPointF());
         qInfo() << "ICON-GRID" << width << "DPR" << dpr << "physical" << origin*dpr
                 << "extent" << icon->size()*dpr << "source" << icon->property("source");
-        QVERIFY(fixture.window->grabWindow().save(QString("/tmp/f4-right-icon-%1-175.png").arg(width)));
         QVERIFY2(qAbs(origin.x()*dpr-qRound64(origin.x()*dpr)) < .001
                  && qAbs(origin.y()*dpr-qRound64(origin.y()*dpr)) < .001,
                  qPrintable(QString("right icon physical origin %1,%2").arg(origin.x()*dpr).arg(origin.y()*dpr)));
         QCOMPARE(icon->mapToScene(QPointF(1,0))-origin, QPointF(1,0));
         QCOMPARE(icon->mapToScene(QPointF(0,1))-origin, QPointF(0,1));
         const QString route = F4IconProvider::routeId(icon->property("source").toUrl());
+        const QSize extent(qRound(icon->width()*dpr), qRound(icon->height()*dpr));
         QTRY_VERIFY(provider->rasterSizes.contains(route));
-        QCOMPARE(provider->rasterSizes.value(route),
-                 QSize(qRound(icon->width()*dpr), qRound(icon->height()*dpr)));
+        QCOMPARE(provider->rasterSizes.value(route), extent);
+        QCOMPARE(provider->requests.value(route), 1);
+        if (asset.isEmpty())
+            continue;
+
+        const QRect region((origin * dpr).toPoint(), extent);
+        const QImage frame = fixture.window->grabWindow();
+        QVERIFY(frame.rect().contains(region.adjusted(-1, 0, 0, 0)));
+        const auto background = frame.pixelColor(region.topLeft() - QPoint(1, 0));
+        const auto tint = icon->property("effectiveIconColor").value<QColor>();
+        const QImage actual = frame.copy(region);
+        const QImage expected = renderSvgReference(assetSource, extent, tint, background, true);
+        const QString capture = qEnvironmentVariable("ZOIN_PIXEL_CAPTURE_DIR");
+        if (!capture.isEmpty()) {
+            const QString prefix = QDir(capture).filePath(QString("%1-%2").arg(asset).arg(width));
+            QVERIFY(actual.save(prefix + "-actual.png"));
+            QVERIFY(expected.save(prefix + "-reference.png"));
+        }
+        const auto difference = exactImageDifference(actual, expected);
+        QVERIFY2(difference.isEmpty(), qPrintable(difference));
     }
 }
 

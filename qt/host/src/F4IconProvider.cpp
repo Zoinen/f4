@@ -535,6 +535,18 @@ qreal normalizedLucideStrokeWidth(qreal strokeWidth)
                       MinLucideStrokeWidth, MaxLucideStrokeWidth);
 }
 
+QRectF fitSvgArtwork(const QSizeF &artwork, const QSize &targetSize, bool alignBottom)
+{
+    if (artwork.isEmpty())
+        return QRectF(QPointF(), QSizeF(targetSize));
+    const qreal scale = std::min(targetSize.width() / artwork.width(),
+                                 targetSize.height() / artwork.height());
+    const QSizeF fitted = artwork * scale;
+    return QRectF((targetSize.width() - fitted.width()) / 2,
+                  (targetSize.height() - fitted.height()) / (alignBottom ? 1 : 2),
+                  fitted.width(), fitted.height());
+}
+
 QImage renderLucideImage(const QString &iconName, const QSize &targetSize,
                          int logicalSize, const QColor &tint,
                          qreal strokeWidth, bool fileArtwork, bool alignBottom)
@@ -579,18 +591,9 @@ QImage renderLucideImage(const QString &iconName, const QSize &targetSize,
     if (!painter.isActive()) {
         return {};
     }
-    QRectF renderRect(QPointF(0, 0), QSizeF(targetSize));
-    if (fileArtwork) {
-        const QSizeF artwork = renderer.viewBoxF().size();
-        if (!artwork.isEmpty()) {
-            const qreal scale = std::min(targetSize.width() / artwork.width(),
-                                         targetSize.height() / artwork.height());
-            const QSizeF fitted = artwork * scale;
-            renderRect = QRectF((targetSize.width() - fitted.width()) / 2,
-                (targetSize.height() - fitted.height()) / (alignBottom ? 1 : 2),
-                fitted.width(), fitted.height());
-        }
-    }
+    const QRectF renderRect = fileArtwork
+        ? fitSvgArtwork(renderer.viewBoxF().size(), targetSize, alignBottom)
+        : QRectF(QPointF(), QSizeF(targetSize));
     painter.setRenderHint(QPainter::Antialiasing);
     renderer.render(&painter, renderRect);
     painter.end();
@@ -658,9 +661,11 @@ QImage F4IconProvider::requestImage(const QString &id,
     if (m_testPatternEnabled) {
         return renderTestPattern(request, size);
     }
-    return request.route == QStringLiteral("lucide")
-        ? renderLucideRequest(request, size)
-        : renderNativeRequest(request, size);
+    if (request.route == QStringLiteral("lucide"))
+        return renderLucideRequest(request, size);
+    if (request.route == QStringLiteral("zoin"))
+        return renderZoinFileRequest(request, size);
+    return renderNativeRequest(request, size);
 }
 
 bool F4IconProvider::parseImageRequest(
@@ -762,6 +767,29 @@ QImage F4IconProvider::renderLucideRequest(
     if (size && !image.isNull()) {
         *size = image.size();
     }
+    return image;
+}
+
+QImage F4IconProvider::renderZoinFileRequest(const ImageRequest &request, QSize *size) const
+{
+    if (request.primary.contains(u'/') || request.primary.contains(u'\\'))
+        return {};
+    QSvgRenderer renderer(QStringLiteral(":/F4QtHost/icons/zoin/%1.svg").arg(request.primary));
+    if (!renderer.isValid())
+        return {};
+
+    // The default SVG image loader fits using an integer intrinsic size.
+    // The authored viewBox retains the exact aspect of tightly cropped art.
+    QImage image(request.targetSize, QImage::Format_ARGB32_Premultiplied);
+    if (image.isNull())
+        return {};
+    image.fill(Qt::transparent);
+    QPainter painter(&image);
+    painter.setRenderHint(QPainter::Antialiasing);
+    renderer.render(&painter, fitSvgArtwork(renderer.viewBoxF().size(), image.size(), false));
+    painter.end();
+    if (size)
+        *size = image.size();
     return image;
 }
 
@@ -1135,6 +1163,19 @@ QUrl F4IconSet::fileIconSource(const QString &localPath,
          {QStringLiteral("fallback"), fallback}});
 }
 
+QUrl F4IconSet::compactFileArtworkSource(const QString &source, int logicalSize,
+                                      qreal devicePixelRatio) const
+{
+    const auto prefix = QStringLiteral("qrc:/F4QtHost/icons/zoin/");
+    if (!source.startsWith(prefix) || !source.endsWith(QStringLiteral(".svg")))
+        return QUrl(source);
+    const auto asset = QStringView(source).sliced(prefix.size(), source.size() - prefix.size() - 4);
+    if (asset.isEmpty() || asset.contains(u'/') || asset.contains(u'\\'))
+        return QUrl(source);
+    return systemIconSource(QStringLiteral("zoin"), F4IconProvider::encodeRouteValue(asset),
+                            logicalSize, devicePixelRatio, 0);
+}
+
 QUrl F4IconSet::fileAssetSource(const QString &asset, int logicalSize, qreal devicePixelRatio) const
 {
     QString reference = factoryCatalogReference(name(), QStringLiteral("Asset.") + asset);
@@ -1224,17 +1265,6 @@ QVariantMap F4IconSet::resolveFileStyle(QVariantMap style, const QVariantMap &co
             style.insert(QStringLiteral("iconSource"), QStringLiteral("group"));
             return style;
         }
-    }
-    // Other catalogs' compiled choices must not change Native file markers.
-    // A directory name can also match an executable/archive mask (Config.Msi);
-    // its marker must not suppress the native folder artwork.
-    if (system() && !supplied
-        && !context.value(QStringLiteral("isDir")).toBool()
-        && !context.value(QStringLiteral("isUp")).toBool()
-        && !style.value(QStringLiteral("marker")).toString().isEmpty()) {
-        style.remove(QStringLiteral("icon"));
-        style.remove(QStringLiteral("iconKey"));
-        return style;
     }
     if (supplied || choices.isEmpty()) {
         // Compatibility only: v1 styles had no provenance. New group choices

@@ -294,7 +294,7 @@ private slots:
     void zeroRequestedSizeUsesLogicalFallback();
     void requestedPhysicalSizeOverridesStaleDevicePixelRatio();
     void nativePlatformFileIconSmoke();
-    void directoryMarkerDoesNotSuppressNativeIcon();
+    void markerDoesNotSuppressNativeIcon();
     void nativeArtworkPreservesSourceResolution_data();
     void nativeArtworkPreservesSourceResolution();
     void nativeArtworkTrimsOnlyZeroAlpha_data();
@@ -1339,7 +1339,7 @@ void F4IconProviderTests::nativeArtworkPreservesSourceResolution()
              expected.convertToFormat(QImage::Format_ARGB32));
 }
 
-void F4IconProviderTests::directoryMarkerDoesNotSuppressNativeIcon()
+void F4IconProviderTests::markerDoesNotSuppressNativeIcon()
 {
     F4IconSet icons(QStringLiteral("marker-icons"));
     icons.setIconSet(F4IconSet::System);
@@ -1355,11 +1355,12 @@ void F4IconProviderTests::directoryMarkerDoesNotSuppressNativeIcon()
     up["isDir"] = false;
     up["isUp"] = true;
     QVERIFY(!icons.resolveFileStyle(style, up, 16, 1.75, 0, false).value("icon").toString().isEmpty());
-    auto file = context;
-    file["isDir"] = false;
-    file["name"] = "installer.msi";
-    // Preserve explicitly configured marker presentation for regular files.
-    QVERIFY(icons.resolveFileStyle(style, file, 16, 1.75, 0, false).value("icon").toString().isEmpty());
+    const QVariantMap file{{"name", "1.py"}, {"isDir", false}, {"localPath", "C:/tmp/1.py"}};
+    const auto resolvedFile = icons.resolveFileStyle(style, file, 16, 1.75, 0, false);
+    const QUrl fileSource = resolvedFile.value("icon").toUrl();
+    QVERIFY(!fileSource.isEmpty());
+    QCOMPARE(fileSource, icons.fileIconSource("C:/tmp/1.py", "1.py", false, 16, 1.75, 0));
+    QCOMPARE(resolvedFile.value("marker").toString(), QString("*"));
 }
 
 void F4IconProviderTests::nativePlatformFileIconSmoke()
