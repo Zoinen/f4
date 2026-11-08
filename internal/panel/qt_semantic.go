@@ -1966,6 +1966,7 @@ func (fp *FileSystemPanel) ensureSemanticPagedRevisions(sourceKind string) {
 	if fp == nil {
 		return
 	}
+	fp.semanticPagedSourceKind = sourceKind
 	signature := fp.semanticPagedModelSignature(sourceKind)
 	catalogChanged := !fp.semanticCatalogInitialized ||
 		fp.semanticPublishedGeneration != fp.semanticCatalogGeneration ||
@@ -2218,6 +2219,10 @@ func (fp *FileSystemPanel) semanticPagedRows(offset, limit int) (
 			Path: logicalPath, IsDir: entry.IsDir, IsUp: entry.Name == "..",
 			IsHidden: entry.IsHidden, IsImage: isImage, ThumbnailKind: thumbnailKind, Selected: entry.Selected,
 			Version: version, Source: sourceModel, HighlightStyleID: highlightStyleID,
+			// These values are already in the row: no Stat, local-path lookup or
+			// deferred highlight evaluation is needed to show its size.
+			Size: semanticFileSizeValue(entry), SizeText: semanticFileSize(entry),
+			SizeCalculated:  entry.SizeCalculated,
 			DirectorySource: directorySource,
 		})
 	}
@@ -2317,6 +2322,18 @@ func LivePanelCatalogRowsRetryable(panelID, path string,
 func BuildLivePanelCatalogMetadataChunk(panelID, path string,
 	catalogRevision, metadataRevision int64, offset, limit int,
 ) (map[string]any, bool) {
+	return buildLivePanelCatalogMetadataChunk(panelID, path, catalogRevision, metadataRevision, offset, limit, false)
+}
+
+func BuildLivePanelCatalogSizesChunk(panelID, path string,
+	catalogRevision, metadataRevision int64, offset, limit int,
+) (map[string]any, bool) {
+	return buildLivePanelCatalogMetadataChunk(panelID, path, catalogRevision, metadataRevision, offset, limit, true)
+}
+
+func buildLivePanelCatalogMetadataChunk(panelID, path string,
+	catalogRevision, metadataRevision int64, offset, limit int, sizesOnly bool,
+) (map[string]any, bool) {
 	loaded, ok := semanticLivePanels.Load(panelID)
 	if !ok {
 		return nil, false
@@ -2341,7 +2358,14 @@ func BuildLivePanelCatalogMetadataChunk(panelID, path string,
 	if end > source.count() {
 		end = source.count()
 	}
-	sourceKind, _ := fp.semanticSourceInfo()
+	sourceKind := fp.semanticPagedSourceKind
+	if sizesOnly {
+		if sourceKind == "" {
+			return nil, false
+		}
+	} else {
+		sourceKind, _ = fp.semanticSourceInfo()
+	}
 	provider, _ := fp.Vfs.(vfs.LocalPathProvider)
 	chunk := extui.PanelCatalogMetadataModel{
 		PanelID: panelID, Path: path, CatalogRevision: catalogRevision,
@@ -2358,6 +2382,14 @@ func BuildLivePanelCatalogMetadataChunk(panelID, path string,
 			return nil, false
 		}
 		entryID, logicalPath := fp.semanticEntryMetadata(entry, sourceKind)
+		if sizesOnly {
+			chunk.Entries = append(chunk.Entries, extui.FileEntryMetadataModel{
+				Index: index, EntryID: entryID,
+				Size: semanticFileSizeValue(entry), SizeText: semanticFileSize(entry),
+			})
+			continue
+		}
+
 		localPath := ""
 		if provider != nil {
 			if resolved, err := provider.LocalPath(logicalPath); err == nil {

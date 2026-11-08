@@ -160,6 +160,7 @@ public slots:
     void notifyFrameSwapped(qulonglong synchronizedSerial);
 
 signals:
+    void renderFrameRequested();
     void uiActionRequested(const QVariantMap &action);
     void panelCatalogMetadataRequested(const QVariantMap &request);
     void panelCatalogRowsRequested(const QVariantMap &request);

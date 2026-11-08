@@ -53,14 +53,20 @@ Item {
         property real alignmentRevision: titleBar.width + titleBar.height
         // Center in scene space before the physical-pixel correction below.
         anchors.alignWhenCentered: false
-        anchors.horizontalCenter: parent.horizontalCenter
         anchors.verticalCenter: parent.verticalCenter
+        readonly property real availableLeft: workspaceBar.visible
+            ? workspaceBar.x + workspaceBar.width + hostWindow.contentSpacing
+            : hostWindow.contentSpacing
+        readonly property real availableRight: workspaceBar.controlsLeftEdge
+            - hostWindow.contentSpacing
         width: Math.min(
-            hostWindow.snapPx(Math.max(0, parent.width - hostWindow.contentSpacing * 2)),
+            hostWindow.snapPx(Math.max(0, availableRight - availableLeft)),
             Math.ceil(implicitWidth * hostWindow.dpr) / hostWindow.dpr)
+        x: hostWindow.snapPx(Math.max(availableLeft,
+            Math.min((titleBar.width - width) / 2, availableRight - width)))
         height: hostWindow.snapPx(implicitHeight)
         text: hostWindow.worktreeBranchName
-        visible: text !== ""
+        visible: text !== "" && width > 0
         color: hostWindow.chromeText
         font.pixelSize: hostWindow.semanticTextFontPixelSize
         font.family: hostWindow.uiFontFamily
@@ -129,9 +135,7 @@ Item {
         hostWindow: titleBar.hostWindow
         readonly property real controlsLeftEdge: cellPaddingControl.visible
             ? cellPaddingControl.x : queueButton.x
-        availableWidth: Math.max(0, (worktreeBranchLabel.visible
-                                    ? Math.min(controlsLeftEdge, worktreeBranchLabel.x)
-                                    : controlsLeftEdge) - x - hostWindow.contentSpacing)
+        availableWidth: Math.max(0, controlsLeftEdge - x - hostWindow.contentSpacing)
         nativeWindowAgent: titleBar.nativeWindowAgent
         nativeWindowAgentReady: titleBar.nativeWindowAgentReady
         usesQwk: titleBar.usesQwk

@@ -3,6 +3,7 @@
 package dirwatch
 
 import (
+	"os"
 	"sync"
 
 	"golang.org/x/sys/unix"
@@ -16,8 +17,8 @@ import (
 const kqueueNotes = unix.NOTE_WRITE | unix.NOTE_DELETE | unix.NOTE_RENAME |
 	unix.NOTE_ATTRIB | unix.NOTE_EXTEND | unix.NOTE_LINK | unix.NOTE_REVOKE
 
-// newNativeSource watches dir with kqueue; the reader waits with a short
-// timeout so that close can stop it.
+// newNativeSource watches dir with kqueue. Closing the wake pipe interrupts
+// the idle kernel wait immediately, without closing a descriptor still in use.
 func newNativeSource(dir string) (*rawSource, error) {
 	dfd, err := unix.Open(dir, unix.O_RDONLY|unix.O_CLOEXEC, 0)
 	if err != nil {
@@ -28,10 +29,19 @@ func newNativeSource(dir string) (*rawSource, error) {
 		_ = unix.Close(dfd)
 		return nil, err
 	}
-	var change unix.Kevent_t
-	unix.SetKevent(&change, dfd, unix.EVFILT_VNODE, unix.EV_ADD|unix.EV_CLEAR)
-	change.Fflags = kqueueNotes
-	if _, err := unix.Kevent(kq, []unix.Kevent_t{change}, nil, nil); err != nil {
+	wakeReader, wakeWriter, err := os.Pipe()
+	if err != nil {
+		_ = unix.Close(kq)
+		_ = unix.Close(dfd)
+		return nil, err
+	}
+	var changes [2]unix.Kevent_t
+	unix.SetKevent(&changes[0], dfd, unix.EVFILT_VNODE, unix.EV_ADD|unix.EV_CLEAR)
+	changes[0].Fflags = kqueueNotes
+	unix.SetKevent(&changes[1], int(wakeReader.Fd()), unix.EVFILT_READ, unix.EV_ADD|unix.EV_CLEAR)
+	if _, err := unix.Kevent(kq, changes[:], nil, nil); err != nil {
+		_ = wakeReader.Close()
+		_ = wakeWriter.Close()
 		_ = unix.Close(kq)
 		_ = unix.Close(dfd)
 		return nil, err
@@ -46,8 +56,8 @@ func newNativeSource(dir string) (*rawSource, error) {
 		defer func() {
 			_ = unix.Close(kq)
 			_ = unix.Close(dfd)
+			_ = wakeReader.Close()
 		}()
-		timeout := unix.NsecToTimespec(100 * 1000 * 1000)
 		out := make([]unix.Kevent_t, 4)
 		for {
 			select {
@@ -55,9 +65,14 @@ func newNativeSource(dir string) (*rawSource, error) {
 				return
 			default:
 			}
-			n, err := unix.Kevent(kq, nil, out, &timeout)
+			n, err := unix.Kevent(kq, nil, out, nil)
 			if err != nil && err != unix.EINTR {
 				return
+			}
+			select {
+			case <-stop:
+				return
+			default:
 			}
 			if n > 0 {
 				select {
@@ -71,7 +86,10 @@ func newNativeSource(dir string) (*rawSource, error) {
 		events: events,
 		native: true,
 		close: func() {
-			once.Do(func() { close(stop) })
+			once.Do(func() {
+				close(stop)
+				_ = wakeWriter.Close()
+			})
 			<-finished
 		},
 	}, nil

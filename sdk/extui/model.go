@@ -1212,6 +1212,16 @@ func (e FileEntryModel) MinimalToMap() M {
 		"isImage":          e.IsImage,
 		"selected":         e.Selected,
 	}
+	// A non-empty label proves a known value (including a real zero). Sizes
+	// already carried by the listing need no deferred filesystem work.
+	if e.SizeText != "" {
+		out["size"] = e.Size
+		out["sizeText"] = e.SizeText
+		if e.SizeCalculated {
+			out["sizeCalculated"] = true
+		}
+	}
+
 	if e.ThumbnailKind != "" {
 		out["thumbnailKind"] = e.ThumbnailKind
 	}

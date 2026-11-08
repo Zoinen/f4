@@ -1007,6 +1007,7 @@ private slots:
     void workspaceTabTextParentsStayOnPhysicalPixelGrid();
     void worktreeBranchAppearsCenteredInTitleBar();
     void worktreeBranchIsCenteredInTitleBar();
+    void workspaceTabsTakePriorityOverBranchAt175Percent();
     void chromeIconsUseMatchingPhysicalTargetSizes();
     void panelDriveButtonUsesPathIconAndRequestsDriveMenu();
     void driveMenuIconsUseSemanticModelAndLiveTheme();
@@ -2362,6 +2363,55 @@ void F4QuickViewSurfaceTests::worktreeBranchIsCenteredInTitleBar()
                             .arg(branchCenterX)
                             .arg(branchOrigin.x())
                             .arg(branchLabel->width())));
+}
+
+void F4QuickViewSurfaceTests::workspaceTabsTakePriorityOverBranchAt175Percent()
+{
+    auto scene = shellScene();
+    QVariantList tabs;
+    for (int i = 0; i < 3; ++i)
+        tabs.append(QVariantMap{{"id", QString::number(i)},
+            {"text", "A workspace with a long title"}, {"number", i + 1},
+            {"active", i == 0}});
+    scene.insert("workspaceTabs", QVariantMap{{"visible", true}, {"tabs", tabs}});
+    QuickViewFixture fixture(scene, false, true, QStringLiteral("feature/long-worktree-branch-name"));
+    QVERIFY(fixture.window);
+    fixture.window->resize(1200, 700);
+    const qreal dpr = fixture.window->devicePixelRatio();
+    QCOMPARE(dpr, 1.75);
+    auto *bar = fixture.item(QStringLiteral("workspaceBar"));
+    auto *branch = fixture.item(QStringLiteral("worktreeBranchLabel"));
+    auto *queue = fixture.item(QStringLiteral("operationsQueueButton"));
+    QVERIFY(bar);
+    QVERIFY(branch);
+    QVERIFY(queue);
+    QTest::qWait(150);
+    qInfo() << "tabs physical right" << bar->mapToScene({bar->width(), 0}).x() * dpr
+            << "branch physical left" << branch->mapToScene({}).x() * dpr;
+    QVERIFY(bar->property("availableWidth").toReal() > 1000);
+    for (int count : {3, 12}) {
+        while (tabs.size() < count)
+            tabs.append(QVariantMap{{"id", QString::number(tabs.size())},
+                {"text", "Additional workspace"}, {"number", tabs.size() + 1}});
+        scene.insert("workspaceTabs", QVariantMap{{"visible", true}, {"tabs", tabs}});
+        fixture.shell.setScene(scene);
+        QTest::qWait(150);
+        if (branch->isVisible()) {
+            QVERIFY(branch->mapToScene({}).x() >= bar->mapToScene({bar->width(), 0}).x());
+            QVERIFY(branch->mapToScene({branch->width(), 0}).x() <= queue->mapToScene({}).x());
+        }
+        for (const auto &name : {QStringLiteral("worktreeBranchLabel"),
+                QStringLiteral("workspace-tab-title-0"), QStringLiteral("workspace-tab-number-0")}) {
+            auto *leaf = visualItemWithObjectName(fixture.window->contentItem(), name);
+            QVERIFY2(leaf, qPrintable(name));
+            const auto origin = leaf->mapToScene({});
+            QVERIFY(qAbs(origin.x() * dpr - qRound(origin.x() * dpr)) < .01);
+            QVERIFY(qAbs(origin.y() * dpr - qRound(origin.y() * dpr)) < .01);
+            QCOMPARE(leaf->mapToScene({1, 0}) - origin, QPointF(1, 0));
+            QCOMPARE(leaf->mapToScene({0, 1}) - origin, QPointF(0, 1));
+        }
+        QVERIFY(fixture.window->grabWindow().save(QString("/tmp/f4-tabs-priority-%1.png").arg(count)));
+    }
 }
 
 void F4QuickViewSurfaceTests::semanticSceneGatesOnlyGridRendering()
@@ -7831,7 +7881,7 @@ void F4QuickViewSurfaceTests::worktreeBranchAppearsCenteredInTitleBar()
     QVERIFY(qAbs(zoinOrigin.x() + branchLabel->width()/2 - titleBarCenter) <= .5/dpr + .001);
     const auto capture = fixture.window->grabWindow();
     QVERIFY(!capture.isNull());
-    QVERIFY(capture.save("D:/Code/f4-zoin/.diagnostics/worktree-zoin-title-175.png"));
+    QVERIFY(capture.save(QDir::temp().filePath("worktree-zoin-title-175.png")));
     fixture.window->setProperty("worktreeBranchName", QStringLiteral("Zoin"));
     QTRY_VERIFY(branchLabel->isVisible());
     fixture.window->setProperty("worktreeBranchName", QString{});

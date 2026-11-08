@@ -40,6 +40,9 @@ func (Adapter) GroupPage(id, path string, revision int64, offset, limit int) (ma
 func (Adapter) LiveCatalogMetadata(id, path string, catalog, metadata int64, offset, limit int) (map[string]any, bool) {
 	return panel.BuildLivePanelCatalogMetadataChunk(id, path, catalog, metadata, offset, limit)
 }
+func (Adapter) LiveCatalogSizes(id, path string, catalog, metadata int64, offset, limit int) (map[string]any, bool) {
+	return panel.BuildLivePanelCatalogSizesChunk(id, path, catalog, metadata, offset, limit)
+}
 func (Adapter) CatalogMetadata(id, path string, catalog, metadata int64, offset, limit int) (map[string]any, bool) {
 	return panel.BuildPanelCatalogMetadataChunk(id, path, catalog, metadata, offset, limit)
 }

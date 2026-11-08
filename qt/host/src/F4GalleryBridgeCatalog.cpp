@@ -109,6 +109,14 @@ void insertCatalogDisplayFields(QVariantMap *entry,
             entry->insert(key, source.value(key));
         }
     }
+    // Explicit display fields are authoritative even while the remaining
+    // filesystem metadata is deferred. The gallery intentionally ignores
+    // deferred top-level size aliases, so supply the already-formatted label.
+    const QString sizeText = source.value(QStringLiteral("sizeText")).toString();
+    if (metadataDeferred && !sizeText.isEmpty()) {
+        entry->insert(QStringLiteral("displayFields"),
+                      QVariantMap{{QStringLiteral("sizeText"), sizeText}});
+    }
     if (source.contains(QStringLiteral("mtimeNanos"))) {
         entry->insert(QStringLiteral("mtimeNs"),
                       source.value(QStringLiteral("mtimeNanos")));

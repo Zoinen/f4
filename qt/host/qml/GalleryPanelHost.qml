@@ -370,9 +370,17 @@ FocusScope {
     Keys.onPressed: (event) => { host.keyboardInput(); inputRouter.handlePressed(event) }
     Keys.onReleased: (event) => inputRouter.handleReleased(event)
 
+    function reportSettledMetadataViewport() {
+        // Catalog synchronization can emit layout signals before the bridge
+        // commits its revision. Re-report after that transaction has settled,
+        // including navigation that leaves the numeric visible range unchanged.
+        embeddedGalleryPanel.publishMetadataVisibleRange()
+    }
+
     onPanelChanged: {
         inputRouter.reconcilePanelIdentity(host.panel)
         panelAdapter.synchronizePanel(host.panel, host.layoutState)
+        Qt.callLater(host.reportSettledMetadataViewport)
     }
     onLayoutStateChanged: {
         panelAdapter.synchronizeLayout(host.panel, host.layoutState)

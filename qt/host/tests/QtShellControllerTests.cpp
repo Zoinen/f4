@@ -2586,6 +2586,11 @@ void QtShellControllerTests::panelCatalogPatchUpdatesOnlyOnePanelWithoutSceneSig
                      QStringLiteral("txt"));
     nextEntry.insert(QStringLiteral("highlightStyleId"),
                      QStringLiteral("folder-accent"));
+    // Known sizes must not reject the compact frame and strand the panel on
+    // its previous catalog revision during a repeated folder visit.
+    nextEntry.insert(QStringLiteral("size"), 1234);
+    nextEntry.insert(QStringLiteral("sizeText"), QStringLiteral("1 234"));
+    nextEntry.insert(QStringLiteral("sizeCalculated"), false);
     nextEntries[0] = nextEntry;
     nextLeft.insert(QStringLiteral("entries"), nextEntries);
     // The deferred catalog's fast pass already knows name/dir-based styles.

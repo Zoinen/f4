@@ -66,6 +66,15 @@ objects. Retention without those resets produces ghost tiles, stale previews
 or incorrect hit targets. Keep visual overscan separate from metadata/decode
 look-ahead; enlarging the latter need not instantiate more QML objects.
 
+In the embedded Details view, finish path viewport placement at the closing
+edge of the host's catalog/presentation transaction. Path and catalog signals
+inside the held layout cannot place against final geometry; leaving placement
+to its timer exposes the pending-placement opacity guard as a blank frame.
+Place only after the native layout commits, without waiting for metadata or
+retaining the outgoing catalog. `folderNavigationCommitsVisibleViewportSynchronously`
+checks immediate current data, cursor visibility, empty destinations, and real
+text/icon leaf transforms and rendered output at 175% scale.
+
 Preserve persistent model identity for compatible sparse catalog extensions.
 A changed directory-preview descriptor is not automatically a new folder or a
 reason to cancel all row preparation. Genuine source/revision changes must still

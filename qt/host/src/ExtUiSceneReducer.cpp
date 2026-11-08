@@ -598,12 +598,24 @@ bool validPanelCatalogEnvelope(const QVariantMap &message,
                                .toString().isEmpty()))) {
                 return false;
             }
+            // Sizes already known to the core travel with the base catalog.
+            // Accept them without enabling expensive deferred path/style data.
+            qlonglong size = 0;
+            if ((entry.contains(QStringLiteral("size"))
+                 && (!integerValue(entry.value(QStringLiteral("size")), &size)
+                     || size < -1))
+                || (entry.contains(QStringLiteral("sizeText"))
+                    && entry.value(QStringLiteral("sizeText")).metaType().id()
+                        != QMetaType::QString)
+                || (entry.contains(QStringLiteral("sizeCalculated"))
+                    && entry.value(QStringLiteral("sizeCalculated")).metaType().id()
+                        != QMetaType::Bool)) {
+                return false;
+            }
             entryIds.insert(entryId);
             for (const QString &heavyKey : {
-                     QStringLiteral("localPath"), QStringLiteral("size"),
-                     QStringLiteral("sizeText"),
+                     QStringLiteral("localPath"),
                      QStringLiteral("isExecutable"),
-                     QStringLiteral("sizeCalculated"),
                      QStringLiteral("mtime"),
                      QStringLiteral("mtimeNanos"),
                      QStringLiteral("version"), QStringLiteral("mode")}) {

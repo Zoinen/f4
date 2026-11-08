@@ -11,6 +11,7 @@
 namespace
 {
 constexpr int CatalogMetadataChunkLimit = 8;
+constexpr int CatalogMetadataViewportLimit = 64;
 constexpr int CatalogMetadataFrameFallbackMs = 17;
 constexpr int CatalogMetadataCursorWindowChunks = 8;
 constexpr int CatalogMetadataMaxFailures = 2;
@@ -382,6 +383,7 @@ void F4GalleryBridge::reportMetadataVisibleRange(
         state.catalogRowsVisibleLast = boundedLast;
         schedulePanelCatalogRowsRequest(side);
     }
+    const bool hadViewport = state.hasMetadataViewport();
     state.metadataViewportPath = state.currentPath;
     state.metadataViewportCatalogRevision = state.catalogRevision;
     state.metadataViewportFirst = boundedFirst;
@@ -389,12 +391,13 @@ void F4GalleryBridge::reportMetadataVisibleRange(
     if (!state.metadataDeferred || state.metadataComplete) {
         return;
     }
-    if (state.metadataVisibleFirst == boundedFirst
+    if (hadViewport && state.metadataVisibleFirst == boundedFirst
         && state.metadataVisibleLast == boundedLast) {
         return;
     }
     state.metadataVisibleFirst = boundedFirst;
     state.metadataVisibleLast = boundedLast;
+    state.metadataViewportSizesDelivered = false;
     state.metadataUrgentBudget = 1;
     schedulePanelCatalogMetadataRequest();
 }
@@ -412,6 +415,7 @@ void F4GalleryBridge::resetPanelCatalogMetadataPlan(
     state.metadataRequestLimit = 0;
     state.metadataFailureCount = 0;
     state.metadataUrgentBudget = state.entries.isEmpty() ? 0 : 1;
+    state.metadataViewportSizesDelivered = false;
     state.metadataPendingRanges.clear();
     state.metadataVisibleFirst = -1;
     state.metadataVisibleLast = -1;
@@ -457,6 +461,11 @@ void F4GalleryBridge::resetPanelCatalogMetadataPlan(
     state.metadataRequiredRenderSyncSerial = state.metadataAwaitingFrame
         ? m_renderSyncSerial.load(std::memory_order_acquire) + 1
         : 0;
+    // A revision can replace identical rows without damaging the scene graph.
+    // Explicitly schedule the frame this gate requires, or it can wait forever.
+    if (state.metadataAwaitingFrame) {
+        emit renderFrameRequested();
+    }
 }
 
 bool F4GalleryBridge::choosePanelCatalogMetadataRange(
@@ -491,6 +500,22 @@ bool F4GalleryBridge::choosePanelCatalogMetadataRange(
     // makes them visible; crawling the complete catalog would turn a 30K-row
     // directory into thousands of needless IPC/model mutations.
     *urgent = false;
+    // A real viewport replaces the cursor estimate. Fetch its first screen in
+    // one bounded asynchronous transaction rather than one chunk per frame.
+    // The first-frame gate remains in requestPanelCatalogMetadata.
+    if (state.metadataUrgentBudget > 0 && state.hasMetadataViewport()
+        && !state.metadataViewportSizesDelivered) {
+        for (const MetadataRange &range : state.metadataPendingRanges) {
+            const int start = qMax(range.begin, state.metadataViewportFirst);
+            const int end = qMin(range.end, state.metadataViewportLast + 1);
+            if (start < end) {
+                *offset = start;
+                *limit = qMin(CatalogMetadataViewportLimit, end - start);
+                *urgent = true;
+                return true;
+            }
+        }
+    }
     if (state.metadataUrgentBudget > 0 && state.cursorIndex >= 0
         && chooseAt(state.cursorIndex, true)) {
         *urgent = true;
@@ -663,7 +688,7 @@ bool F4GalleryBridge::requestPanelCatalogMetadata(int side)
     state.metadataRequestInFlight = true;
     state.metadataRequestOffset = offset;
     state.metadataRequestLimit = limit;
-    emit panelCatalogMetadataRequested({
+    QVariantMap request{
         {QStringLiteral("panelId"), state.panelId},
         {QStringLiteral("path"), state.currentPath},
         {QStringLiteral("catalogRevision"),
@@ -672,7 +697,10 @@ bool F4GalleryBridge::requestPanelCatalogMetadata(int side)
          QVariant::fromValue<qulonglong>(state.metadataRevision)},
         {QStringLiteral("offset"), offset},
         {QStringLiteral("limit"), limit},
-    });
+    };
+    if (limit > CatalogMetadataChunkLimit)
+        request.insert(QStringLiteral("sizesOnly"), true);
+    emit panelCatalogMetadataRequested(request);
     return true;
 }
 

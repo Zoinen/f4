@@ -2334,3 +2334,69 @@ func TestPanelsFrameSemanticGridFallbackForUnsupportedPanelLayouts(t *testing.T)
 		t.Fatalf("quick-view unexpectedly requires fallback: %q", reason)
 	}
 }
+
+func TestPagedCatalogCarriesAlreadyKnownSizes(t *testing.T) {
+	fp := &FileSystemPanel{Vfs: vfs.NewOSVFS(t.TempDir()), Entries: []*FileEntry{
+		{VFSItem: vfs.VFSItem{Name: "known", Size: 1234, SizeKnown: true}},
+		{VFSItem: vfs.VFSItem{Name: "empty", SizeKnown: true}},
+		{VFSItem: vfs.VFSItem{Name: "unknown"}},
+		{VFSItem: vfs.VFSItem{Name: "folder", IsDir: true, Size: 9876}, SizeCalculated: true, SizeApproximate: true},
+	}}
+	rows, _, ok := fp.semanticPagedRows(0, 4)
+	if !ok {
+		t.Fatal("bounded catalog unavailable")
+	}
+	for index, want := range []string{"1 234", "0", "", "~9 876"} {
+		if rows[index].SizeText != want {
+			t.Errorf("row %d size = %q, want %q", index, rows[index].SizeText, want)
+		}
+	}
+	if rows[0].MinimalToMap()["sizeText"] != "1 234" || rows[1].MinimalToMap()["sizeText"] != "0" {
+		t.Fatal("known sizes did not reach the minimal wire catalog")
+	}
+	if _, exists := rows[2].MinimalToMap()["sizeText"]; exists {
+		t.Fatal("unknown size sent as known")
+	}
+	if rows[0].Size != 1234 || rows[1].Size != 0 || rows[2].Size != -1 {
+		t.Fatalf("size values = %v", rows)
+	}
+}
+
+type sizeOnlyCatalogVFS struct {
+	vfs.VFS
+	localPaths int
+}
+
+func (v *sizeOnlyCatalogVFS) LocalPath(path string) (string, error) {
+	v.localPaths++
+	return path, nil
+}
+
+func TestVisibleSizeChunkDoesNotResolvePathsOrHighlights(t *testing.T) {
+	source := &sizeOnlyCatalogVFS{VFS: vfs.NewOSVFS(t.TempDir())}
+	fp := &FileSystemPanel{Vfs: source, catalogRevision: 3, metadataRevision: 4, semanticPagedSourceKind: "local",
+		Entries: []*FileEntry{{VFSItem: vfs.VFSItem{Name: "known", Size: 1234, SizeKnown: true}}}}
+	id := vtui.SemanticID(fp)
+	semanticLivePanels.Store(id, fp)
+	t.Cleanup(func() { semanticLivePanels.Delete(id) })
+	chunk, ok := BuildLivePanelCatalogSizesChunk(id, source.GetPath(), 3, 4, 0, 1)
+	if !ok {
+		t.Fatal("size chunk rejected")
+	}
+	rows := semantic.AppMapSlice(chunk["entries"])
+	if len(rows) != 1 || rows[0]["sizeText"] != "1 234" {
+		t.Fatalf("sizes = %#v", rows)
+	}
+	if source.localPaths != 0 {
+		t.Fatal("size-only request resolved deferred paths")
+	}
+	if _, exists := chunk["highlightStyles"]; exists {
+		t.Fatal("size-only request resolved deferred highlights")
+	}
+	if _, ok := BuildLivePanelCatalogSizesChunk(id, source.GetPath(), 3, 5, 0, 1); ok {
+		t.Fatal("stale metadata request accepted")
+	}
+	if _, ok := BuildLivePanelCatalogMetadataChunk(id, source.GetPath(), 3, 4, 0, 1); !ok || source.localPaths != 2 {
+		t.Fatal("full metadata must retain its normal path resolution")
+	}
+}

@@ -7,6 +7,8 @@ class ExtUiSceneReducerTests final : public QObject
     Q_OBJECT
 
 private slots:
+    void catalogAcceptsKnownSizes_data();
+    void catalogAcceptsKnownSizes();
     void pathBarVisibilitySurvivesStatePatch();
     void dropCapabilitySurvivesStatePatch();
     void panelStatusSurvivesStatePatch();
@@ -17,6 +19,47 @@ private slots:
     void selectionPatchUsesLogicalCatalogRows_data();
     void selectionPatchUsesLogicalCatalogRows();
 };
+
+void ExtUiSceneReducerTests::catalogAcceptsKnownSizes_data()
+{
+    QTest::addColumn<QVariantMap>("sizeFields");
+    QTest::addColumn<bool>("accepted");
+    QTest::newRow("unknown") << QVariantMap{} << true;
+    QTest::newRow("empty-file") << QVariantMap{{"size", 0}, {"sizeText", "0"}} << true;
+    QTest::newRow("known-file") << QVariantMap{{"size", 1234}, {"sizeText", "1 234"}, {"sizeCalculated", false}} << true;
+    QTest::newRow("cached-directory") << QVariantMap{{"size", 9876}, {"sizeText", "~9 876"}, {"sizeCalculated", true}} << true;
+    QTest::newRow("large-file") << QVariantMap{{"size", QVariant::fromValue<qlonglong>(1LL << 40)}, {"sizeText", "1 073 741 K"}} << true;
+    QTest::newRow("parent-directory") << QVariantMap{{"size", -1}, {"sizeText", "Up"}} << true;
+    QTest::newRow("negative-size") << QVariantMap{{"size", -2}} << false;
+    QTest::newRow("string-size") << QVariantMap{{"size", "1234"}} << false;
+    QTest::newRow("numeric-text") << QVariantMap{{"sizeText", 1234}} << false;
+    QTest::newRow("string-calculated") << QVariantMap{{"sizeCalculated", "true"}} << false;
+    QTest::newRow("resolved-path-still-deferred") << QVariantMap{{"localPath", "/tmp/file"}} << false;
+}
+
+void ExtUiSceneReducerTests::catalogAcceptsKnownSizes()
+{
+    QFETCH(QVariantMap, sizeFields);
+    QFETCH(bool, accepted);
+    QVariantMap entry{{"index", 0}, {"entryId", "file"}, {"name", "file"},
+        {"isDir", false}, {"isUp", false}, {"isImage", false}, {"selected", false}};
+    entry.insert(sizeFields);
+    const QVariantMap panel{{"id", "left"}, {"side", 0}, {"kind", "filePanel"},
+        {"active", true}, {"path", "/tmp"}, {"catalogRevision", 2},
+        {"selectionRevision", 1}, {"metadataRevision", 2}, {"metadataDeferred", true},
+        {"totalCount", 1}, {"entries", QVariantList{entry}}};
+    const QVariantMap message{{"type", "panel_catalog"}, {"side", 0},
+        {"activePanel", 0}, {"panel", panel}};
+    const QVariantMap scene{{"shell", QVariantMap{{"activePanel", 0},
+        {"panels", QVariantList{panel}}}}};
+    int side = -1;
+    QVariantMap decoded;
+    QCOMPARE(ExtUiSceneReducer::validPanelCatalogEnvelope(message, scene, &side, &decoded), accepted);
+    if (accepted) {
+        QCOMPARE(side, 0);
+        QCOMPARE(decoded.value("entries").toList().first().toMap(), entry);
+    }
+}
 
 void ExtUiSceneReducerTests::pathBarVisibilitySurvivesStatePatch()
 {

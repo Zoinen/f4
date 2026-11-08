@@ -871,6 +871,7 @@ type FileSystemPanel struct {
 	semanticMetadataSnapshot       *semanticPanelMetadataSnapshot
 	semanticCatalogGeneration      uint64
 	semanticPublishedGeneration    uint64
+	semanticPagedSourceKind        string
 	semanticPagedSignature         string
 	semanticPagedMetadataSignature string
 	semanticPagedResourceRevision  int64

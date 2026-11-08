@@ -686,6 +686,10 @@ int main(int argc, char *argv[])
                 traceFrame(&QQuickWindow::afterRendering, QStringLiteral("qt.frame.render.end"));
                 traceFrame(&QQuickWindow::afterFrameEnd, QStringLiteral("qt.frame.end"));
             }
+            // Request after the catalog transaction has returned to the event
+            // loop, including commits that arrive while a frame is finishing.
+            QObject::connect(&galleryBridge, &F4GalleryBridge::renderFrameRequested,
+                             rootWindow, &QQuickWindow::update, Qt::QueuedConnection);
             QObject::connect(rootWindow, &QQuickWindow::afterSynchronizing,
                              &galleryBridge,
                              &F4GalleryBridge::notifyRenderSynchronized,

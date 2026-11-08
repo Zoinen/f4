@@ -189,9 +189,23 @@ sizes and unmeasured directory sizes retain their existing blank/type labels.
 
 Qt retains the reported visible metadata range across metadata-only revisions
 and cursor prioritization. The range is qualified by path and catalog revision;
-a new directory uses its own viewport. Visible sizes continue loading in bounded
-eight-row asynchronous chunks after the first frame, pausing during input.
-Offscreen rows stay dormant until scrolling brings them into view.
+a new directory uses its own viewport. Already-known sizes (including real zero-byte files and calculated folder hints)
+travel with the minimal catalog, so they can paint on its first frame without a
+second metadata request or a new filesystem read. Unknown sizes remain blank.
+The Qt compact-catalog validator accepts these size fields, including the `-1`
+unknown-size sentinel used by the parent-directory label. A catalog revision
+explicitly requests the render frame needed to release its metadata gate, even
+when replacing identical rows leaves the scene graph unchanged.
+After the first frame, the first urgent asynchronous metadata request covers the
+actual reported viewport, capped at 64 contiguous rows. This wide response
+uses an optional `sizesOnly` request and applies only size labels. Go reads
+those values from its existing revision-bound listing, skipping local-path
+resolution and highlighting. Native icons and the remaining metadata stay on
+the eight-row lane; the size response does not complete that deferred plan. Without a reported viewport, the cursor estimate keeps
+the eight-row fallback. Remaining chunks
+stay bounded to eight rows and pause during input. Offscreen rows stay dormant
+until scrolling brings them into view; filesystem enumeration and navigation
+never wait for a viewport metadata response.
 
 ## Pixel geometry and scrolling
 

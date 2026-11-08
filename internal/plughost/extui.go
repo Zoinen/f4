@@ -4797,7 +4797,16 @@ func (h *ExtUiHost) queuePanelGroupPage(msg map[string]any) bool {
 func (h *ExtUiHost) serveLivePanelCatalogMetadata(request map[string]any) {
 	catalogRevision := extUiInt64(request, "catalogRevision")
 	metadataRevision := extUiInt64(request, "metadataRevision")
-	response, ok := Presentation.LiveCatalogMetadata(
+	resolve := Presentation.LiveCatalogMetadata
+	if ExtUiBool(request, "sizesOnly") {
+		if sizes, available := Presentation.(interface {
+			LiveCatalogSizes(string, string, int64, int64, int, int) (map[string]any, bool)
+		}); available {
+			resolve = sizes.LiveCatalogSizes
+		}
+	}
+
+	response, ok := resolve(
 		extUiString(request, "panelId"), extUiString(request, "path"),
 		catalogRevision, metadataRevision,
 		ExtUiInt(request, "offset"), ExtUiInt(request, "limit"))

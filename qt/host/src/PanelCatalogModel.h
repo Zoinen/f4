@@ -71,6 +71,7 @@ public:
     int metadataVisibleFirst = -1;
     int metadataVisibleLast = -1;
     int metadataUrgentBudget = 0;
+    bool metadataViewportSizesDelivered = false;
     int metadataFailureCount = 0;
     QList<MetadataRange> metadataPendingRanges;
     QString galleryLayoutMode;

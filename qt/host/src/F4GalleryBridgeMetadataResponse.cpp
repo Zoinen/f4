@@ -7,7 +7,7 @@
 
 namespace
 {
-constexpr int CatalogMetadataChunkLimit = 8;
+constexpr int CatalogMetadataChunkLimit = 64;
 constexpr int CatalogMetadataFrameFallbackMs = 17;
 }
 
@@ -44,6 +44,7 @@ private:
     QVariantList m_sourceEntries;
     QVariantMap m_highlightStyles;
     bool m_final = false;
+    bool m_sizesOnly = false;
     int m_requestOffset = -1;
     int m_endOffset = -1;
     bool m_streamFinal = false;
@@ -104,6 +105,7 @@ bool F4GalleryMetadataResponseReducer::parseEnvelope()
     m_highlightStyles = stylesValue.toMap();
     m_final = m_message.value(QStringLiteral("final")).toBool();
     m_requestOffset = m_state->metadataRequestOffset;
+    m_sizesOnly = m_state->metadataRequestLimit > 8;
     m_endOffset = m_requestOffset + m_sourceEntries.size();
     return m_total == F4GalleryBridge::catalogEntryCount(*m_state)
         && m_sourceEntries.size() == m_limit
@@ -155,8 +157,23 @@ bool F4GalleryMetadataResponseReducer::applyToSession()
     }
     m_normalizeStartedNs = m_traceStages
         ? F4NavigationBenchmarkTrace::monotonicNanoseconds() : 0;
-    m_entries = m_bridge.normalizedMetadataEntries(
-        m_side, m_requestOffset, m_sourceEntries, m_highlightStyles);
+    if (m_sizesOnly) {
+        // The wide first viewport gets labels without synchronously resolving
+        // native icons. Leave its full metadata pending for the eight-row lane.
+        m_streamFinal = false;
+        for (const QVariant &value : m_sourceEntries) {
+            const QVariantMap source = value.toMap();
+            m_entries.append(QVariantMap{
+                {QStringLiteral("entryId"), source.value(QStringLiteral("entryId"))},
+                {QStringLiteral("index"), source.value(QStringLiteral("index"))},
+                {QStringLiteral("size"), source.value(QStringLiteral("size"))},
+                {QStringLiteral("sizeText"), source.value(QStringLiteral("sizeText"))},
+            });
+        }
+    } else {
+        m_entries = m_bridge.normalizedMetadataEntries(
+            m_side, m_requestOffset, m_sourceEntries, m_highlightStyles);
+    }
     m_normalizeCompletedNs = m_traceStages
         ? F4NavigationBenchmarkTrace::monotonicNanoseconds() : 0;
     if (!session || !session->applyExternalMetadata(
@@ -195,6 +212,9 @@ void F4GalleryMetadataResponseReducer::traceApplied() const
 
 bool F4GalleryMetadataResponseReducer::consumeRange()
 {
+    if (m_sizesOnly) {
+        return true;
+    }
     return m_bridge.consumePanelCatalogMetadataRange(
         m_side, m_requestOffset, m_endOffset);
 }
@@ -239,7 +259,12 @@ void F4GalleryMetadataResponseReducer::commitResponse()
     m_state->metadataRequestOffset = -1;
     m_state->metadataRequestLimit = 0;
     m_state->metadataFailureCount = 0;
-    m_state->highlightRevision = m_highlightRevision;
+    if (m_sizesOnly) {
+        m_state->metadataViewportSizesDelivered = true;
+    }
+    if (!m_sizesOnly) {
+        m_state->highlightRevision = m_highlightRevision;
+    }
     armFramePacing();
     if (m_streamFinal) {
         m_state->metadataComplete = true;

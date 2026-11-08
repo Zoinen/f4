@@ -419,6 +419,11 @@ Item {
         panelPresentationTransactionSwitchesMode = false
         try {
             galleryPanel.endPresentationStateUpdate(switchesMode)
+            // Path/catalog signals arrive while layout is held by this
+            // transaction. Place the committed viewport now, before a frame
+            // can paint the pending-placement opacity guard as an empty list.
+            if (galleryPanel.pathViewportPlacementPending)
+                galleryPanel.placeViewportForPathChange()
         } finally {
             applyingRendererState = false
             rendererTransactionStateChanged(false)

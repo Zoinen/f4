@@ -16,6 +16,8 @@ const QSet<QString> &catalogAppendEntryKeys()
         QStringLiteral("thumbnailKind"),
         QStringLiteral("isHidden"), QStringLiteral("selected"),
         QStringLiteral("highlightStyleId"), QStringLiteral("source"),
+        QStringLiteral("size"), QStringLiteral("sizeText"),
+        QStringLiteral("sizeCalculated"),
     };
     return keys;
 }
@@ -102,6 +104,14 @@ bool validCatalogAppendEntry(
         && entry.value(QStringLiteral("selected")).metaType().id()
             == QMetaType::Bool;
     if (!baseFieldsValid) {
+        return false;
+    }
+    if ((entry.contains(QStringLiteral("size"))
+         && !catalogAppendInteger(entry.value(QStringLiteral("size"))))
+        || (entry.contains(QStringLiteral("sizeText"))
+            && entry.value(QStringLiteral("sizeText")).metaType().id() != QMetaType::QString)
+        || (entry.contains(QStringLiteral("sizeCalculated"))
+            && entry.value(QStringLiteral("sizeCalculated")).metaType().id() != QMetaType::Bool)) {
         return false;
     }
     if (entry.contains(QStringLiteral("isHidden"))

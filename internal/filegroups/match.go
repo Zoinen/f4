@@ -32,11 +32,25 @@ type Predicate struct {
 type compiledMask struct {
 	expression *regexp.Regexp
 	lower      bool
+	literal    bool
+	wildcard   bool
+	prefix     string
+	suffix     string
 }
 
 func (m compiledMask) MatchString(name string) bool {
 	if m.lower {
 		name = strings.ToLower(name)
+	}
+	if m.literal {
+		if !m.wildcard {
+			return name == m.prefix
+		}
+		if len(name) < len(m.prefix)+len(m.suffix) ||
+			!strings.HasPrefix(name, m.prefix) || !strings.HasSuffix(name, m.suffix) {
+			return false
+		}
+		return !strings.ContainsRune(name[len(m.prefix):len(name)-len(m.suffix)], filepath.Separator)
 	}
 	return m.expression.MatchString(name)
 }
@@ -233,7 +247,14 @@ func compileMasks(raw string, ignore, legacy bool) ([]compiledMask, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid mask %q: %w", pattern, err)
 		}
-		result = append(result, compiledMask{expression: re, lower: ignore})
+		mask := compiledMask{expression: re, lower: ignore}
+		// Most icon masks are exact names or a single literal prefix/suffix.
+		// Keep classes, escapes and multiple wildcards on the regexp path.
+		if !strings.ContainsAny(pattern, "?[]\\") && strings.Count(pattern, "*") <= 1 {
+			mask.literal = true
+			mask.prefix, mask.suffix, mask.wildcard = strings.Cut(pattern, "*")
+		}
+		result = append(result, mask)
 	}
 	return result, nil
 }
