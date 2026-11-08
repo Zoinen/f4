@@ -82,6 +82,12 @@ func TestParseFarColor(t *testing.T) {
 	}
 }
 func TestFarColorComponentsPreserveUntouchedChannel(t *testing.T) {
+	previousPalette := vtui.Palette
+	t.Cleanup(func() { vtui.Palette = previousPalette })
+	vtui.SetDefaultPalette()
+	SetDefaultF4Palette()
+	vtui.Palette[ColPanelText] = vtui.SetRGBBoth(0, 0x111111, 0x222222)
+
 	for _, expr := range []string{
 		"", "F_WHITE | B_CYAN", "Panel.Text", "Panel.Text | foreground:#123456",
 		"background:#112233 | F_WHITE", "foreground:Panel.Text | background:#112233",
