@@ -8,12 +8,13 @@ import (
 // Unavailable text values remain inspectable without permitting draft edits.
 type settingsEdit struct {
 	*vtui.Edit
-	readOnly bool
+	readOnly               bool
+	disableWhenUnavailable bool
 }
 
 func (e *settingsEdit) SetDisabled(disabled bool) {
 	e.readOnly = disabled
-	e.Edit.SetDisabled(false)
+	e.Edit.SetDisabled(disabled && e.disableWhenUnavailable)
 }
 
 func (e *settingsEdit) ProcessKey(event *vtinput.InputEvent) bool {

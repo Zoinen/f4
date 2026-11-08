@@ -156,7 +156,7 @@ func roundedButtonAttrAccent(attr uint64, disabled, underline, accent, hovered b
 //
 // accent marks the dialog's default button in its idle state (not focused, not
 // pressed), whose block takes the theme's accent colour.
-func (b *Button) drawRoundedButton(scr *ScreenBuf, label string, hotkeyPos int, n, h uint64, accent, hovered bool) {
+func (b *ScreenObject) drawRoundedButton(scr *ScreenBuf, label string, hotkeyPos int, n, h uint64, accent, hovered bool) {
 	disabled := b.IsDisabled()
 	blankN := roundedButtonAttrAccent(n, disabled, false, accent, hovered)
 	labelN := roundedButtonAttrAccent(n, disabled, true, accent, hovered)

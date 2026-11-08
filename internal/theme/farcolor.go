@@ -2,9 +2,10 @@ package theme
 
 import (
 	"fmt"
-	"github.com/unxed/vtui"
 	"strconv"
 	"strings"
+
+	"github.com/unxed/vtui"
 )
 
 // ValidateFarColor checks editor input without changing the legacy parser's
@@ -25,7 +26,7 @@ func ValidateFarColor(expr string) error {
 		value = strings.TrimSpace(value)
 		knownComponent := component == "foreground" || component == "background"
 		if hasComponent && !knownComponent {
-			return fmt.Errorf("invalid colour component %q", token)
+			return fmt.Errorf("invalid color component %q", token)
 		}
 		if _, ok := colorMap[value]; ok {
 			continue
@@ -35,7 +36,7 @@ func ValidateFarColor(expr string) error {
 				continue
 			}
 		}
-		return fmt.Errorf("invalid colour component %q", token)
+		return fmt.Errorf("invalid color component %q", token)
 	}
 	return nil
 }
@@ -51,6 +52,25 @@ var namedColors = map[string]uint64{
 var Far2lPalette = []uint32{
 	0x000000, 0x0028A0, 0x00A000, 0x00A0A0, 0xA00000, 0xA000A0, 0xA0A000, 0xC0C0C0,
 	0x808080, 0x0055FF, 0x00FF00, 0x00FFFF, 0xFF0000, 0xFF00FF, 0xFFFF00, 0xFFFFFF,
+}
+
+// FarColorComponents returns the effective foreground and background tokens.
+// Palette references and legacy named colors retain their original meaning.
+func FarColorComponents(expr string) (foreground, background string) {
+	for _, part := range strings.Split(expr, "|") {
+		token := strings.TrimSpace(part)
+		switch {
+		case strings.HasPrefix(token, "foreground:"), strings.HasPrefix(token, "F_"):
+			foreground = token
+		case strings.HasPrefix(token, "background:"), strings.HasPrefix(token, "B_"):
+			background = token
+		default:
+			if _, ok := colorMap[token]; ok {
+				foreground, background = "foreground:"+token, "background:"+token
+			}
+		}
+	}
+	return foreground, background
 }
 
 // ParseFarColor converts an expression like "F_WHITE | B_CYAN" or "background:#000000" into a vtui attributes bitmask.

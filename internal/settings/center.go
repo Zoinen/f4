@@ -28,6 +28,9 @@ type settingsRow struct {
 	y, height          int
 	heading            bool
 	checkableHeader    bool
+	sectionHeading     bool
+	conditionToggle    bool
+	labelX, labelWidth int
 	match              bool
 	controlHeight      int
 	controlX, controlY int
@@ -84,21 +87,24 @@ type settingsViewport struct {
 	*vtui.Group
 	rows          []*settingsRow
 	scroll, total int
+	scrollRequest struct{ revision, top int }
 	bar           *vtui.ScrollBar
 	onFocus       func(*settingsRow)
 	boxes         []settingsGroupBox
 	groupLabel    func(string) string
 
 	// wheelCoast is what a fast wheel spin leaves behind: rows the list
-	// still owes the scroll position (see internal/wheel). lastMouseY is
-	// the pointer row of the last mouse event, so the coast can explain
-	// whatever it scrolls under a pointer that did not move (#1273).
-	wheelCoast wheel.Coast
-	lastMouseY int
+	// still owes the scroll position (see internal/wheel). The last mouse
+	// position lets the coast explain whichever field moves under it (#1273).
+	wheelCoast             wheel.Coast
+	lastMouseX, lastMouseY int
 }
 
 type settingsGroupBox struct {
 	title       string
+	section     string
+	left, width int
+	paired      bool
 	top, bottom int
 	rows        []*settingsRow
 }
@@ -121,34 +127,70 @@ func (v *settingsViewport) SetPosition(x1, y1, x2, y2 int) {
 	v.bar.SetPosition(x2, y1, x2, y2)
 	v.total = 0
 	v.boxes = nil
+	const columnGap = 3
+	fullWidth := max(1, x2-x1-1)
+	available := max(1, fullWidth-4)
+	halfWidth := (fullWidth - columnGap) / 2
+	splitConditions := available >= 128
+	nameTop, nameBottom := 0, 0
 	closeBox := func() {
 		box := &v.boxes[len(v.boxes)-1]
 		if len(box.rows) > 0 {
 			last := box.rows[len(box.rows)-1]
 			if !last.heading {
 				last.height -= last.gap
-				v.total -= last.gap
+				if last.y+last.height+last.gap == v.total {
+					v.total -= last.gap
+				}
 				last.gap = 0
 			}
 		}
+		v.total = max(v.total, box.top+1)
 		box.bottom = v.total
+		if box.section != "" {
+			box.bottom = box.top
+		}
 	}
 	group := ""
 	for _, r := range v.rows {
-		if len(v.boxes) == 0 || group != r.field.Group {
+		if len(v.boxes) == 0 || group != r.field.Group || r.sectionHeading {
 			if len(v.boxes) > 0 {
 				closeBox()
-				v.total += 2
+				previous := v.boxes[len(v.boxes)-1]
+				if previous.section == "" {
+					v.total += 2
+				}
+				if splitConditions && group == "File name matching" {
+					nameBottom = v.total
+					v.total = nameTop
+				}
+				if group == "Timestamps" {
+					v.total = max(v.total, nameBottom)
+				}
 			}
 			group = r.field.Group
 			title := group
 			if v.groupLabel != nil {
 				title = v.groupLabel(group)
 			}
-			if r.heading {
+			if r.heading || r.checkableHeader {
 				title = r.field.Label.Resolve(config.App.Language, i18n.Msg)
 			}
-			v.boxes = append(v.boxes, settingsGroupBox{title: title, top: v.total})
+			box := settingsGroupBox{title: title, top: v.total, width: fullWidth}
+			if r.conditionToggle && splitConditions {
+				box.width = halfWidth
+				if group == "File name matching" {
+					nameTop = box.top
+				} else {
+					box.left = halfWidth + columnGap
+					box.width = fullWidth - box.left
+				}
+			}
+			if r.sectionHeading {
+				box.section = r.field.Category
+			}
+			box.paired = r.conditionToggle && box.width-4 >= 56
+			v.boxes = append(v.boxes, box)
 			v.total++
 		}
 		box := &v.boxes[len(v.boxes)-1]
@@ -157,7 +199,40 @@ func (v *settingsViewport) SetPosition(x1, y1, x2, y2 int) {
 			r.y, r.height = box.top, 1
 			continue
 		}
-		r.label = settingsWrap(r.field.Label.Resolve(config.App.Language, i18n.Msg), max(1, x2-x1-5))
+		width := max(1, box.width-4)
+		r.labelX, r.labelWidth = 0, width
+		pairColumn := -1
+		colorState := fileGroupColourState(r.field.ID)
+		colorPair := r.field.Group == "Colors" && colorState >= 0 && width >= 56
+		singleDateRow := box.left > 0 && group == "Timestamps" && !r.checkableHeader
+		inlineDateLabels := singleDateRow && width >= 82
+		if singleDateRow {
+			column := len(box.rows) - 2
+			relativeWidth := max(18, width/4)
+			typeWidth := max(15, (width-relativeWidth-3)/3)
+			if inlineDateLabels {
+				typeWidth += 4
+			}
+			afterWidth := (width - typeWidth - relativeWidth - 3) / 2
+			starts := [4]int{0, typeWidth + 1, typeWidth + relativeWidth + 2, typeWidth + relativeWidth + afterWidth + 3}
+			ends := [4]int{typeWidth, starts[2] - 1, starts[3] - 1, width}
+			r.labelX, r.labelWidth = starts[column], ends[column]-starts[column]
+		} else if box.paired {
+			switch r.field.ID {
+			case "group.MaskSyntax", "group.IncludeAttributes", "group.SizeAbove", "group.DateType", "group.DateAfter":
+				pairColumn = 0
+			case "group.Case", "group.ExcludeAttributes", "group.SizeBelow", "group.DateRelative", "group.DateBefore":
+				pairColumn = 1
+			}
+		}
+		if colorPair {
+			pairColumn = colorState / 2
+		}
+		if pairColumn >= 0 {
+			r.labelWidth = (width - columnGap) / 2
+			r.labelX = pairColumn * (r.labelWidth + columnGap)
+		}
+		r.label = settingsWrap(r.field.Label.Resolve(config.App.Language, i18n.Msg), r.labelWidth)
 		r.controlX, r.gap = 0, 1
 		r.controlWidth = 0
 		// Action controls already name themselves; keep their metadata for
@@ -167,15 +242,22 @@ func (v *settingsViewport) SetPosition(x1, y1, x2, y2 int) {
 			r.label = nil
 			r.gap = 0
 		case *vtui.ComboBox:
-			width := max(1, x2-x1-5)
+			if box.left > 0 && isFileGroupAttributeField(r.field.ID) {
+				r.gap = 0
+				break
+			}
+			width := r.labelWidth
 			label := r.field.Label.Resolve(config.App.Language, i18n.Msg)
 			labelWidth := min(vtui.StringWidth(label), max(1, width/2))
 			r.label = settingsWrap(label, labelWidth)
 			r.controlX = labelWidth + 1
+			if r.field.InputWidth > 0 && box.rows[0].conditionToggle {
+				r.controlWidth = min(r.field.InputWidth, max(1, width-r.controlX))
+			}
 			r.gap = 0
 		case *settingsRadios:
 			radios := r.control.(*settingsRadios)
-			width := max(1, x2-x1-5)
+			width := r.labelWidth
 			label := r.field.Label.Resolve(config.App.Language, i18n.Msg)
 			labelWidth := vtui.StringWidth(label)
 			if labelWidth+1+radios.inlineWidth() <= width {
@@ -196,13 +278,27 @@ func (v *settingsViewport) SetPosition(x1, y1, x2, y2 int) {
 			r.controlX = vtui.StringWidth(label) + 1
 			r.controlWidth = 1
 			r.gap = 0
+		case *vtui.MultiLineEdit:
+			if r.field.ID == "group.Mask" {
+				r.controlHeight = 3
+				r.controlWidth = r.labelWidth
+				r.gap = 0
+			}
 		case *settingsEdit:
+			if r.field.ID == "group.Name" && box.rows[0].field.ID == "group.Enabled" {
+				r.label = nil
+				r.gap = 0
+				break
+			}
 			width := r.field.InputWidth
 			if width == 0 && r.field.Kind == f4settings.Integer {
 				width = 10
 			}
+			if width == 0 && box.rows[0].conditionToggle && group == "Timestamps" {
+				width = 24
+			}
 			if width > 0 {
-				available := max(3, x2-x1-5)
+				available := max(3, r.labelWidth)
 				r.controlWidth = min(width, max(1, available/2))
 				label := r.field.Label.Resolve(config.App.Language, i18n.Msg)
 				labelWidth := min(vtui.StringWidth(label), max(1, available-r.controlWidth-1))
@@ -211,9 +307,21 @@ func (v *settingsViewport) SetPosition(x1, y1, x2, y2 int) {
 				r.gap = 0
 			}
 		}
+		if singleDateRow {
+			r.controlX = 0
+			if _, checkbox := r.control.(*settingsCheckbox); !checkbox {
+				label := r.field.Label.Resolve(config.App.Language, i18n.Msg)
+				labelWidth := r.labelWidth
+				if inlineDateLabels {
+					labelWidth = min(vtui.StringWidth(label), r.labelWidth-11)
+					r.controlX = labelWidth + 1
+				}
+				r.label = []string{vtui.TruncateString(label, labelWidth, "…")}
+			}
+		}
 		if b, ok := r.control.(*settingsCheckbox); ok {
 			r.controlX = settingsFieldIndent(r.field.ID)
-			b.lines = settingsWrap(r.field.Label.Resolve(config.App.Language, i18n.Msg), max(1, x2-x1-9-r.controlX))
+			b.lines = settingsWrap(r.field.Label.Resolve(config.App.Language, i18n.Msg), max(1, r.labelWidth-4-r.controlX))
 			b.SetText(b.lines[0])
 			r.label = nil
 			r.controlHeight = len(b.lines)
@@ -223,10 +331,38 @@ func (v *settingsViewport) SetPosition(x1, y1, x2, y2 int) {
 			r.y, r.controlY, r.height = box.top, 0, 1
 			r.controlHeight = 1
 			r.label = nil
+			r.controlWidth = min(width, vtui.StringWidth(box.title)+4)
+			r.labelX, r.controlX = box.left, box.left
 			continue
+		}
+		if singleDateRow {
+			if len(box.rows) > 2 {
+				r.y = box.rows[1].y
+			} else {
+				r.y = v.total
+			}
+			r.controlWidth = r.labelWidth - r.controlX
+			r.labelX += box.left
+			r.controlX += r.labelX
+			r.controlY = 1
+			if inlineDateLabels {
+				r.controlY = 0
+			}
+			r.height = r.controlY + max(1, r.controlHeight)
+			r.gap = 0
+			v.total = max(v.total, r.y+r.height)
+			continue
+		}
+		if (pairColumn >= 0 || box.width != fullWidth) && r.controlWidth == 0 {
+			r.controlWidth = max(1, r.labelWidth-r.controlX)
 		}
 		v.total += r.padTop
 		r.y = v.total
+		if colorPair && pairColumn == 1 {
+			r.y = box.rows[len(box.rows)-3].y
+		} else if pairColumn == 1 {
+			r.y = box.rows[len(box.rows)-2].y
+		}
 		r.controlY = len(r.label)
 		if r.controlX > 0 {
 			r.controlY = 0
@@ -236,7 +372,9 @@ func (v *settingsViewport) SetPosition(x1, y1, x2, y2 int) {
 			r.height = max(r.height, r.controlY+max(1, r.controlHeight))
 		}
 		r.height += r.gap
-		v.total += r.height
+		r.labelX += box.left
+		r.controlX += r.labelX
+		v.total = max(v.total, r.y+r.height)
 	}
 	if len(v.boxes) > 0 {
 		closeBox()
@@ -280,8 +418,25 @@ func (v *settingsViewport) Show(scr *vtui.ScreenBuf) {
 			border, title = vtui.DimColor(border), vtui.DimColor(title)
 		}
 		top, bottom := v.Y1+box.top-v.scroll, v.Y1+box.bottom-v.scroll
-		painter.DrawBox(v.X1, top, v.X2-2, bottom, border, vtui.SingleBox)
-		painter.DrawTitle(v.X1, top, v.X2-2, vtui.TruncateString(box.title, max(1, v.X2-v.X1-5), "…"), title)
+		if box.section != "" {
+			label := vtui.TruncateString(box.title, max(1, v.X2-v.X1-10), "…")
+			start := v.X1 + 2
+			if box.rows[0].checkableHeader {
+				start += box.rows[0].controlWidth
+			} else {
+				scr.Write(start, top, vtui.StringToCharInfo(label, title))
+				start += vtui.StringWidth(label)
+			}
+			if start+1 <= v.X2-2 {
+				painter.DrawLine(start+1, top, v.X2-2, top, '─', border, false, false)
+			}
+			continue
+		}
+		left, right := v.X1+box.left, v.X1+box.left+box.width-1
+		painter.DrawBox(left, top, right, bottom, border, vtui.SingleBox)
+		if !box.rows[0].checkableHeader {
+			painter.DrawTitle(left, top, right, vtui.TruncateString(box.title, max(1, box.width-4), "…"), title)
+		}
 	}
 	for _, r := range v.rows {
 		if r.control != nil {
@@ -298,11 +453,11 @@ func (v *settingsViewport) Show(scr *vtui.ScreenBuf) {
 		if r.heading {
 			attr = vtui.Palette[vtui.ColDialogHighlightText]
 		}
-		if !r.match {
+		if !r.match || r.unavailableReason != "" {
 			attr = vtui.DimColor(attr)
 		}
 		for j, line := range r.label {
-			scr.Write(v.X1+2, y+j, vtui.StringToCharInfo(line, attr))
+			scr.Write(v.X1+2+r.labelX, y+j, vtui.StringToCharInfo(line, attr))
 		}
 		if r.control != nil {
 			r.control.Show(scr)
@@ -403,6 +558,8 @@ func (v *settingsViewport) ProcessKey(e *vtinput.InputEvent) bool {
 	if e.KeyDown && e.VirtualKeyCode == vtinput.VK_PRIOR {
 		if v.scroll > 0 {
 			v.scroll = 0
+			v.scrollRequest.revision++
+			v.scrollRequest.top = v.scroll
 			v.positionRows()
 			v.notifyFocus()
 			return true
@@ -413,6 +570,8 @@ func (v *settingsViewport) ProcessKey(e *vtinput.InputEvent) bool {
 	if e.KeyDown && e.VirtualKeyCode == vtinput.VK_NEXT {
 		if v.scroll < v.bar.Max {
 			v.scroll = v.bar.Max
+			v.scrollRequest.revision++
+			v.scrollRequest.top = v.scroll
 			v.positionRows()
 			v.notifyFocus()
 			return true
@@ -436,7 +595,7 @@ func (v *settingsViewport) ProcessMouse(e *vtinput.InputEvent) bool {
 		return false
 	}
 	if e.WheelDirection != 0 {
-		v.lastMouseY = int(e.MouseY)
+		v.lastMouseX, v.lastMouseY = int(e.MouseX), int(e.MouseY)
 		direction := 1
 		if e.WheelDirection > 0 {
 			direction = -1
@@ -451,7 +610,7 @@ func (v *settingsViewport) ProcessMouse(e *vtinput.InputEvent) bool {
 		return true
 	}
 	handled := v.Group.ProcessMouse(e)
-	v.describeRowAt(int(e.MouseY))
+	v.describeRowAt(int(e.MouseX), int(e.MouseY))
 	return handled
 }
 
@@ -466,18 +625,20 @@ func (v *settingsViewport) scrollWheelBy(step int) bool {
 		return false
 	}
 	v.positionRows()
-	v.describeRowAt(v.lastMouseY)
+	v.describeRowAt(v.lastMouseX, v.lastMouseY)
 	return true
 }
 
 // describeRowAt hands the setting drawn on screen row y to onFocus, which
 // shows what it does.
-func (v *settingsViewport) describeRowAt(y int) {
+func (v *settingsViewport) describeRowAt(x, y int) {
 	if v.onFocus == nil {
 		return
 	}
 	for _, r := range v.rows {
-		if y >= v.Y1+r.y-v.scroll && y < v.Y1+r.y+r.height-v.scroll {
+		left := v.X1 + 2 + r.labelX
+		if x >= left && x < left+r.labelWidth &&
+			y >= v.Y1+r.y-v.scroll && y < v.Y1+r.y+r.height-v.scroll {
 			v.onFocus(r)
 			return
 		}
@@ -690,7 +851,8 @@ type settingsCenter struct {
 	fileGroupOverview                          *fileGroupsOverview
 	fileGroupEditor                            bool
 	fileGroupEditorID                          string
-	fileGroupAdvanced                          bool
+	fileGroupConditionsEditable                map[string]bool
+	fileGroupCollapsed                         map[string]bool
 	fileGroupEditorSample                      *fileGroupEditorSample
 	fileGroupSample, fileGroupMatchResult      string
 	fileGroupResetSection, fileGroupResetField string
@@ -1595,32 +1757,53 @@ func (c *settingsCenter) selectCategory(id string) {
 	}
 	for _, pageID := range pageIDs {
 		group := ""
+		sectionTitle := strings.TrimPrefix(pageID, "filegroup-")
+		if c.fileGroupEditor && (sectionTitle == "Conditions" || sectionTitle == "Reset") {
+			c.page.rows = append(c.page.rows, &settingsRow{
+				field:   f4settings.Field{Category: pageID, Label: f4settings.Text{English: c.categoryLabel(pageID), Literal: true}},
+				heading: true, sectionHeading: true, match: true,
+			})
+		}
+		collapsed := c.fileGroupCollapsed[pageID]
 		for _, s := range c.sessions {
 			for _, f := range s.catalog.Fields {
 				if f.Category != pageID {
 					continue
 				}
-				if c.fileGroupEditor && !c.fileGroupAdvanced && isAdvancedFileGroupCondition(f.ID) {
-					continue
-				}
 				if c.fieldPrefix != "" && !strings.HasPrefix(f.ID, c.fieldPrefix) {
 					continue
 				}
-				if c.fileGroupEditor && !isFileGroupFeatureToggle(f.ID) && !fileGroupFeatureEnabled(s.draft.Values, f.Group) {
+				sectionToggle := c.fileGroupEditor && isFileGroupFeatureToggle(f.ID)
+				if collapsed && !sectionToggle {
+					continue
+				}
+				if c.fileGroupEditor && !sectionToggle && !fileGroupFeatureEnabled(s.draft.Values, sectionTitle) {
 					f.Unavailable = "Enable this feature in the section title to edit it."
 				}
-				if f.Group != group {
-					group = f.Group
-					c.page.rows = append(c.page.rows, &settingsRow{field: f4settings.Field{Category: pageID, Group: group, Label: f4settings.Text{English: c.groupLabel(group)}}, heading: true, match: true})
+				conditionToggle := ""
+				if c.fileGroupEditor {
+					conditionToggle = fileGroupConditionToggle(f)
 				}
-				r := &settingsRow{field: f, session: s, match: true, checkableHeader: c.fileGroupEditor && isFileGroupFeatureToggle(f.ID)}
+				nameHeader := c.fileGroupEditor && f.ID == "group.Enabled"
+				if !sectionToggle && f.Group != group {
+					group = f.Group
+					if conditionToggle != "" {
+						c.addFileGroupConditionToggle(s, f, conditionToggle)
+					} else if !nameHeader {
+						c.page.rows = append(c.page.rows, &settingsRow{field: f4settings.Field{Category: pageID, Group: group, Label: f4settings.Text{English: c.groupLabel(group)}}, heading: true, match: true})
+					}
+				}
+				if conditionToggle != "" && !c.fileGroupConditionsEditable[conditionToggle] {
+					f.Unavailable = "Check the group heading to edit these fields."
+				}
+				if sectionToggle {
+					f.Group = ""
+					f.Label = f4settings.Text{English: sectionTitle}
+				}
+				r := &settingsRow{field: f, session: s, match: true, checkableHeader: sectionToggle || nameHeader, sectionHeading: sectionToggle}
 				if c.fileGroupEditor {
 					r.read = func() string { return s.draft.Values[f.ID] }
 					r.write = func(value string) { s.draft.Values[f.ID] = value }
-					if f.ID == "filegroup.advanced" {
-						r.read = func() string { return strconv.FormatBool(c.fileGroupAdvanced) }
-						r.write = func(value string) { c.fileGroupAdvanced = value == "true" }
-					}
 				}
 				r.control = c.makeControl(r)
 				r.control.SetId("setting:" + f.ID)
@@ -1631,7 +1814,7 @@ func (c *settingsCenter) selectCategory(id string) {
 				c.page.rows = append(c.page.rows, r)
 			}
 		}
-		if c.fieldPrefix == "" {
+		if c.fieldPrefix == "" && !collapsed {
 			c.addCollections(pageID)
 			c.addCommands(pageID)
 			if pageID == driveToolsPage {
@@ -1659,6 +1842,11 @@ func (c *settingsCenter) makeControl(r *settingsRow) vtui.UIElement {
 			c.status = Phrase("Provider is no longer loaded.")
 			return
 		}
+		if r.conditionToggle {
+			r.write(v)
+			c.rebuildCategory()
+			return
+		}
 		old := d.Values[f.ID]
 		if r.read != nil {
 			old = r.read()
@@ -1682,9 +1870,6 @@ func (c *settingsCenter) makeControl(r *settingsRow) vtui.UIElement {
 			c.rebuildCategory()
 		}
 		if c.fileGroupEditor && isFileGroupFeatureToggle(f.ID) {
-			c.rebuildCategory()
-		}
-		if f.ID == "filegroup.advanced" {
 			c.rebuildCategory()
 		}
 	}
@@ -1738,7 +1923,7 @@ func (c *settingsCenter) makeControl(r *settingsRow) vtui.UIElement {
 		}
 		r.field.Choices = choices
 		if settingsUseRadios(f) {
-			radios := newSettingsRadios(labels, selected, func(i int) { change(choices[i].Value) })
+			radios := newSettingsRadios(labels, selected, f.ChoicePresentation == "buttons", func(i int) { change(choices[i].Value) })
 			radios.onExplain = func() { c.describe(r) }
 			control = radios
 			break
@@ -1777,6 +1962,10 @@ func (c *settingsCenter) makeControl(r *settingsRow) vtui.UIElement {
 		}
 		control = b
 	default:
+		if c.fileGroupEditor && isFileGroupAttributeField(f.ID) {
+			control = newFileGroupAttributeCombo(value, change)
+			break
+		}
 		var e *vtui.Edit
 		if f.Kind == f4settings.Secret {
 			e = vtui.NewPasswordEdit(0, 0, 20, value)
@@ -1784,7 +1973,7 @@ func (c *settingsCenter) makeControl(r *settingsRow) vtui.UIElement {
 			e = vtui.NewEdit(0, 0, 20, value)
 		}
 		e.OnTextChange = change
-		control = &settingsEdit{Edit: e}
+		control = &settingsEdit{Edit: e, disableWhenUnavailable: fileGroupConditionToggle(f) != ""}
 	}
 	r.unavailableReason = f.Unavailable
 	control.SetDisabled(f.Unavailable != "")

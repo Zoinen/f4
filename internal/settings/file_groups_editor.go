@@ -3,6 +3,7 @@ package settings
 import (
 	"context"
 	"maps"
+	"strconv"
 	"strings"
 
 	"github.com/unxed/f4/internal/config"
@@ -37,10 +38,21 @@ func (v *fileGroupsOverview) childEditor(index int) *settingsCenter {
 	scratch.Baseline = maps.Clone(scratch.Values)
 	cat := (fileGroupsProvider{}).Catalog()
 	cat.ID = "filegroups.editor"
-	cat.Categories = []f4settings.Category{}
-	for _, section := range []string{"Conditions", "Appearance", "Sorting", "Associations"} {
-		cat.Categories = append(cat.Categories, f4settings.Category{ID: "filegroup-" + section, Label: f4settings.Text{English: section}})
+	cat.Categories = []f4settings.Category{{ID: "filegroup-Identity", Label: f4settings.Text{English: "Group name"}}}
+	sections := []string{"Conditions", "Highlighting", "Icons", "Sorting", "Associations", "Reset"}
+	for _, section := range sections {
+		label := f4settings.Text{English: section}
+		if section == "Conditions" {
+			label = f4settings.Text{English: "Matching conditions", Key: "FileGroups.MatchingConditions"}
+		}
+		cat.Categories = append(cat.Categories, f4settings.Category{ID: "filegroup-" + section, Label: label})
 	}
+	cat.Groups = append(cat.Groups,
+		f4settings.Group{ID: "File name matching", Category: "filegroup-Conditions", Label: f4settings.Text{English: "Name", Key: "FileGroups.MatchName"}},
+		f4settings.Group{ID: "File attributes", Category: "filegroup-Conditions", Label: f4settings.Text{English: "Attributes", Key: "FileGroups.MatchAttributes"}},
+		f4settings.Group{ID: "File size", Category: "filegroup-Conditions", Label: f4settings.Text{English: "Size", Key: "FileGroups.MatchSize"}},
+		f4settings.Group{ID: "Timestamps", Category: "filegroup-Conditions", Label: f4settings.Text{English: "Date and time", Key: "FileGroups.MatchDateTime"}},
+	)
 	for _, collection := range cat.Collections {
 		if collection.ID != "filegroups" {
 			continue
@@ -48,6 +60,16 @@ func (v *fileGroupsOverview) childEditor(index int) *settingsCenter {
 		fields := collection.Fields
 		if colors == nil {
 			fields = fileGroupPaletteFields(fields, record.Values)
+		}
+		// The enable checkbox is the heading of the group name box.
+		for i, field := range fields {
+			if field.ID == "group.Enabled" {
+				ordered := make([]f4settings.Field, 0, len(fields))
+				ordered = append(ordered, field)
+				ordered = append(ordered, fields[:i]...)
+				fields = append(ordered, fields[i+1:]...)
+				break
+			}
 		}
 		for _, f := range fields {
 			if f.ID == "group.IconTheme" && record.Values[f.ID] == "" {
@@ -59,13 +81,25 @@ func (v *fileGroupsOverview) childEditor(index int) *settingsCenter {
 				f.InputWidth = 44
 			}
 			section := fileGroupFieldSection(f.ID)
-			if !strings.HasPrefix(f.Group, "Highlight conditions (") {
-				f.Group = section
-			}
-			if section == "Highlighting" || section == "Icons" {
-				section = "Appearance"
+			if strings.HasPrefix(f.Group, "Highlight conditions (") {
+				section = "Highlighting"
 			}
 			f.Category = "filegroup-" + section
+			f.Group = fileGroupEditorBox(f)
+			switch f.ID {
+			case "group.Enabled":
+				f.Label = cat.Categories[0].Label
+				f.Category = "filegroup-Identity"
+			case "group.Name", "group.IconTheme":
+				f.Category = "filegroup-Identity"
+			case "group.Mask":
+				f.Kind = f4settings.Multiline
+			case "group.MaskSyntax", "group.Case":
+				f.ChoicePresentation = "buttons"
+			case "group.DateType":
+				f.ChoicePresentation = "dropdown"
+				f.InputWidth = 24
+			}
 			if f.ID == "group.IconTheme" {
 				f.ChoicePresentation = "dropdown"
 				f.Choices = []f4settings.Choice{{Value: "", Label: f4settings.Text{English: "Universal"}}}
@@ -76,14 +110,11 @@ func (v *fileGroupsOverview) childEditor(index int) *settingsCenter {
 			cat.Fields = append(cat.Fields, f)
 		}
 	}
-	advanced := recordField("filegroup.advanced", "Advanced conditions", "Attributes, size and date restrictions. Existing restrictions are always preserved.", f4settings.Boolean)
-	advanced.Category = "filegroup-Conditions"
-	advanced.Group = "Conditions"
-	cat.Fields = append(cat.Fields, advanced)
 	collections := []f4settings.Collection{}
 	for _, col := range cat.Collections {
 		if col.ID == "filegroups.commands" {
 			col.Category = "filegroup-Associations"
+			col.Group = "Applications"
 			collections = append(collections, col)
 		}
 	}
@@ -183,9 +214,14 @@ func (v *fileGroupsOverview) childEditor(index int) *settingsCenter {
 	}
 	_ = scratch.PreviewFunc(scratch)
 	child.SetId("filegroup-editor:" + record.ID)
-	for key, value := range record.Values {
-		if isAdvancedFileGroupCondition(key) && value != "" && value != "0" && value != "false" {
-			child.fileGroupAdvanced = true
+	child.fileGroupConditionsEditable = map[string]bool{"filegroup.conditions.matching": true}
+	for _, field := range cat.Fields {
+		id := fileGroupConditionToggle(field)
+		value := strings.TrimSpace(record.Values[field.ID])
+		// Timestamp format and kind only affect an actual date bound.
+		if id != "" && value != "" && value != "0" &&
+			field.ID != "group.DateType" && field.ID != "group.DateRelative" {
+			child.fileGroupConditionsEditable[id] = true
 		}
 	}
 	child.offsets["record:filegroups"] = index
@@ -195,10 +231,12 @@ func (v *fileGroupsOverview) childEditor(index int) *settingsCenter {
 	child.ok.IsDefault = true
 	child.SetTitle(child.windowTitle())
 	child.ok.OnClick = func() { child.commit(true) }
-	for _, category := range cat.Categories {
-		section := category.ID
+	for _, title := range sections[:len(sections)-1] {
+		section := "filegroup-" + title
 		child.sessions[0].catalog.Commands = append(child.sessions[0].catalog.Commands, f4settings.Command{
-			ID: "filegroup.reset." + section, Category: section, Group: "Reset", Label: f4settings.Text{English: "Restore section to standard values"}, Run: func(context.Context) error {
+			ID: "filegroup.reset." + section, Category: "filegroup-Reset", Group: "Restore standard values",
+			Label: f4settings.Text{English: "Reset " + title},
+			Run: func(context.Context) error {
 				for _, f := range cat.Fields {
 					if f.Category == section {
 						child.resetFileGroupEditorFieldValue(f.ID)
@@ -215,6 +253,39 @@ func (v *fileGroupsOverview) childEditor(index int) *settingsCenter {
 	child.rebuildCategory()
 	child.SetFocusedItem(child.page)
 	return child
+}
+
+func fileGroupEditorBox(field f4settings.Field) string {
+	if strings.HasPrefix(field.Group, "Highlight conditions (") {
+		return field.Group
+	}
+	if fileGroupColourState(field.ID) >= 0 {
+		return "Colors"
+	}
+	switch fileGroupFieldKey(field.ID) {
+	case "Name", "IconTheme", "Enabled":
+		return "Group properties"
+	case "Mask", "MaskSyntax", "Case":
+		return "File name matching"
+	case "IncludeAttributes", "ExcludeAttributes":
+		return "File attributes"
+	case "SizeAbove", "SizeBelow":
+		return "File size"
+	case "DateType", "DateRelative", "DateAfter", "DateBefore":
+		return "Timestamps"
+	case "Sort.Number":
+		return "Sort priority"
+	case "OverrideNativeIcon":
+		return "Icon priority"
+	}
+	switch fileGroupFieldSection(field.ID) {
+	case "Highlighting":
+		return "Highlighting behavior"
+	case "Icons":
+		return "Artwork"
+	default:
+		return "Group properties"
+	}
 }
 
 func (v *fileGroupsOverview) openEditor(index int) {
@@ -277,9 +348,9 @@ func (v *fileGroupsOverview) openForm(title string, values map[string]string, ke
 		f := recordField(key, key, "", f4settings.String)
 		if key == "TintIcons" {
 			f.Kind = f4settings.Boolean
-			f.Label = f4settings.Text{English: "Tint icons with file colour"}
+			f.Label = f4settings.Text{English: "Tint icons with file color"}
 			if values["IconCatalog"] == "system" {
-				f.Unavailable = "Native icons always keep their original colours."
+				f.Unavailable = "Native icons always keep their original colors."
 			}
 		}
 		if key == "Result" {
@@ -418,14 +489,38 @@ func isFileGroupFeatureToggle(id string) bool {
 	return strings.HasSuffix(id, ".Enabled") && id != "group.Enabled"
 }
 
-func isAdvancedFileGroupCondition(id string) bool {
-	id = "group." + fileGroupFieldKey(id)
-	for _, key := range []string{"IncludeAttributes", "ExcludeAttributes", "SizeAbove", "SizeBelow", "DateType", "DateRelative", "DateAfter", "DateBefore"} {
-		if id == "group."+key {
-			return true
-		}
+func fileGroupConditionToggle(field f4settings.Field) string {
+	if field.Category != "filegroup-Conditions" {
+		return ""
 	}
-	return false
+	switch field.Group {
+	case "File name matching":
+		return "filegroup.conditions.matching"
+	case "File attributes":
+		return "filegroup.conditions.attributes"
+	case "File size":
+		return "filegroup.conditions.size"
+	case "Timestamps":
+		return "filegroup.conditions.timestamps"
+	}
+	return ""
+}
+
+func (c *settingsCenter) addFileGroupConditionToggle(s *settingsSession, field f4settings.Field, id string) {
+	row := &settingsRow{
+		field: f4settings.Field{
+			ID: id, Category: field.Category, Group: field.Group, Kind: f4settings.Boolean,
+			Label:       f4settings.Text{English: c.groupLabel(field.Group), Literal: true},
+			Description: f4settings.Text{English: "Enable editing for these fields. Saved conditions stay active."},
+		},
+		session: s, match: true, checkableHeader: true, conditionToggle: true,
+		read:  func() string { return strconv.FormatBool(c.fileGroupConditionsEditable[id]) },
+		write: func(value string) { c.fileGroupConditionsEditable[id] = value == "true" },
+	}
+	row.control = c.makeControl(row)
+	row.control.SetId("setting:" + id)
+	c.page.AddItem(row.control)
+	c.page.rows = append(c.page.rows, row)
 }
 
 func (c *settingsCenter) resetFileGroupEditorFieldValue(id string) {
@@ -454,6 +549,14 @@ func (c *settingsCenter) resetFileGroupEditorFieldValue(id string) {
 }
 
 func (c *settingsCenter) resetFileGroupEditorField(id string) {
+	for _, field := range c.sessions[0].catalog.Fields {
+		if field.ID == id {
+			if toggle := fileGroupConditionToggle(field); toggle != "" && !c.fileGroupConditionsEditable[toggle] {
+				return
+			}
+			break
+		}
+	}
 	c.resetFileGroupEditorFieldValue(id)
 	if c.sessions[0].draft.PreviewFunc != nil {
 		_ = c.sessions[0].draft.PreviewFunc(c.sessions[0].draft)

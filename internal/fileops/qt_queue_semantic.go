@@ -122,7 +122,7 @@ func (qf *QueueFrame) semanticModel() extui.OperationsQueueModel {
 			Index:           index,
 			Type:            task.Type,
 			Description:     task.Desc,
-			State:           task.State,
+			State:           queueStateLabel(task.State),
 			StateClass:      queueSemanticStateClass(task.State),
 			Action:          task.Action,
 			CurrentFile:     task.CurrentFile,
@@ -157,16 +157,16 @@ func (qf *QueueFrame) semanticModel() extui.OperationsQueueModel {
 		if item.Active {
 			model.ActiveCount++
 		}
-		switch item.State {
-		case "Queued":
+		switch item.StateClass {
+		case "queued":
 			model.QueuedCount++
-		case "Starting", "Scanning", "Running", "Cancelling":
+		case "starting", "scanning", "running", "cancelling":
 			model.RunningCount++
-		case "Done":
+		case "completed":
 			model.CompletedCount++
-		case "Error":
+		case "error":
 			model.ErrorCount++
-		case "Cancelled":
+		case "cancelled":
 			model.CancelledCount++
 		}
 		model.Items = append(model.Items, item)

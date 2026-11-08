@@ -635,6 +635,8 @@ ApplicationWindow {
     }
     function dialogWidgetVisualHeight(widget) {
         const semanticHeight = dialogWidgetSemanticHeight(widget)
+        if (widget && widget.colorMatrixCell === true)
+            return Math.max(semanticHeight, snapPx(40))
         return dialogWidgetUsesControlHeight(widget)
                 ? Math.max(semanticHeight, dialogControlHeight)
                 : semanticHeight

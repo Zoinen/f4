@@ -48,7 +48,8 @@ Rectangle {
         contentHeight: paragraphs.height
         boundsBehavior: Flickable.StopAtBounds
         clip: true
-        DropdownWheelHandler { viewport: viewport }
+        interactive: contentHeight > height
+        DialogWheelScroll { viewport: viewport; hostWindow: card.hostWindow }
         Column {
             id: paragraphs
             width: viewport.width - (scrollBar.visible ? scrollBar.width + card.hostWindow.snapPx(6) : 0)

@@ -29,17 +29,17 @@ import (
 // ValidateClipboardImageName rejects paths and nonportable filename characters.
 func ValidateClipboardImageName(name string) error {
 	if name == "" || name == "." || name == ".." || len(name) > 255 || strings.HasSuffix(name, ".") || strings.HasSuffix(name, " ") || strings.ContainsAny(name, `/\:<>"|?*`) {
-		return fmt.Errorf("invalid clipboard image filename %q", name)
+		return fmt.Errorf("invalid clipboard image file name %q", name)
 	}
 	for _, r := range name {
 		if unicode.IsControl(r) {
-			return fmt.Errorf("control characters are not allowed in filenames")
+			return fmt.Errorf("control characters are not allowed in file names")
 		}
 	}
 	base, _, _ := strings.Cut(strings.ToUpper(name), ".")
 	switch base {
 	case "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9":
-		return fmt.Errorf("reserved clipboard image filename %q", name)
+		return fmt.Errorf("reserved clipboard image file name %q", name)
 	}
 	return nil
 }

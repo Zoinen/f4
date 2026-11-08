@@ -59,6 +59,7 @@ set(F4_HOST_QML_FILES
   qml/TextEditContextMenu.qml
   qml/F4Menu.qml
   qml/DropdownScrollView.qml
+  qml/DialogWheelScroll.qml
   qml/DropdownWheelHandler.qml
   qml/F4CheckBox.qml
   qml/F4RadioButton.qml

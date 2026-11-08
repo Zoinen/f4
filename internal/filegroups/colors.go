@@ -47,7 +47,7 @@ func ValidateColorThemes(themes []ColorTheme) error {
 			return err
 		}
 		if seen[theme.ID] {
-			return fmt.Errorf("duplicate file colour theme %q", theme.ID)
+			return fmt.Errorf("duplicate file color theme %q", theme.ID)
 		}
 		seen[theme.ID] = true
 	}
@@ -102,7 +102,7 @@ func mergeColorThemes(defaults, overrides []ColorTheme) []ColorTheme {
 // root owns its view cache, so icon selection cannot recover an older colour set.
 func (s *Snapshot) WithColorThemes(themes []ColorTheme, selected string) (*Snapshot, error) {
 	if s == nil {
-		return nil, fmt.Errorf("cannot compose colours on a nil snapshot")
+		return nil, fmt.Errorf("cannot compose colors on a nil snapshot")
 	}
 	if err := ValidateColorThemes(themes); err != nil {
 		return nil, err

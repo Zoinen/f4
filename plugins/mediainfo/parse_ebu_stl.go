@@ -35,7 +35,7 @@ func parseEBUSTL(p *probe, _ []byte) error {
 	p.report.General.Format = "EBU STL"
 	p.report.General.FormatProfile = dfc
 	p.report.General.MIME = "application/x-ebu-stl"
-	p.addTag("", "Original programme title", cleanSTLField(gsi[16:48]))
+	p.addTag("", "Original program title", cleanSTLField(gsi[16:48]))
 	p.addTag("", "Original episode title", cleanSTLField(gsi[48:80]))
 	p.addTag("", "Language", cleanSTLField(gsi[14:16]))
 	p.addTag("", "Publisher", cleanSTLField(gsi[277:309]))

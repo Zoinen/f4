@@ -106,6 +106,9 @@ Item {
     }
     Repeater {
         id: choiceMeasures
+        property int revision: 0
+        onItemAdded: revision++
+        onItemRemoved: revision++
         model: layout.choiceGroups
         delegate: SemanticChoiceGroup {
             required property var modelData
@@ -118,7 +121,9 @@ Item {
 
     function visualHeight(widget) {
         if (widget.kind === "radioGroup" || widget.kind === "checkGroup") {
-            const measure = choiceMeasures.itemAt(choiceGroups.findIndex(group => group.id === widget.id))
+            // itemAt does not notify bindings when a measuring delegate appears.
+            const measure = choiceMeasures.revision > 0
+                ? choiceMeasures.itemAt(choiceGroups.findIndex(group => group.id === widget.id)) : null
             if (measure)
                 return hostWindow.snapPx(measure.implicitHeight)
         }
@@ -136,6 +141,7 @@ Item {
         const rows = []
         const controls = []
         const adaptiveChoices = []
+        const protectedRows = []
         const base = hostWindow.snapPx(Math.max(22, hostWindow.ch))
         function collect(children) {
             for (const widget of children) {
@@ -144,16 +150,19 @@ Item {
                 const start = Math.max(0, Number(widget.y || 0) - originY)
                 const flowing = naturalText && widget.kind === "text" && widget.wrapText === true
                 const span = flowing ? 1 : Math.max(1, Number(widget.h || 1))
-                if ((widget.kind === "radioGroup" || widget.kind === "checkGroup") && widget.title)
+                const choice = (widget.kind === "radioGroup" || widget.kind === "checkGroup") && widget.title
+                if (choice)
                     adaptiveChoices.push({start: start, span: span, widget: widget})
                 while (rows.length < start + span)
                     rows.push(0)
                 for (let row = start; row < start + span; ++row) {
                     const group = widget.kind === "group"
+                    if (!choice && (!group || row === start))
+                        protectedRows[row] = true
                     const headingHeight = widget.headerControl ? 32 : Math.max(22, fieldFontMetrics.height)
                     const height = flowing ? visualHeight(widget)
                         : group && row === start && widget.title
-                            ? hostWindow.snapPx(headingHeight) + hostWindow.snapPx(16)
+                            ? hostWindow.snapPx(headingHeight) + hostWindow.snapPx(widget.layoutRole === "section-header" ? 8 : 16)
                         : group && widget.bordered === true ? hostWindow.snapPx(row === start ? 12 : 8) : base
                     rows[row] = Math.max(rows[row], height)
                 }
@@ -164,11 +173,17 @@ Item {
             }
         }
         collect(widgets)
-        // A compound choice field owns its entire terminal row span. Its
-        // native layout may occupy one row even when the TUI needed several.
+        // Native choices can use fewer rows than the terminal. Keep rows
+        // occupied by a neighboring column, and share the tallest choice.
+        const choiceRows = []
         for (const field of adaptiveChoices) {
+            const height = visualHeight(field.widget) + hostWindow.snapPx(field.widget.compactChoices === true ? 14 : 8)
             for (let row = field.start; row < field.start + field.span; ++row)
-                rows[row] = row === field.start ? visualHeight(field.widget) + 8 : 0
+                choiceRows[row] = Math.max(choiceRows[row] || 0, row === field.start ? height : 0)
+        }
+        for (let row = 0; row < choiceRows.length; ++row) {
+            if (choiceRows[row] !== undefined)
+                rows[row] = Math.max(protectedRows[row] ? rows[row] : 0, choiceRows[row])
         }
         // Trim outer whitespace and compact each internal blank run.
         const first = rows.findIndex(height => height > 0)
@@ -202,13 +217,16 @@ Item {
         return rowEdges[Math.min(row, rowEdges.length - 1)]
     }
     function widgetHeight(widget) {
-        return widget.kind === "group" || widget.kind === "table"
+        return widget.kind === "group" || widget.kind === "table" || widget.maskChips != null
             ? rowTop(Number(widget.y || 0) + Math.max(1, Number(widget.h || 1))) - rowTop(Number(widget.y || 0))
             : visualHeight(widget)
     }
     function widgetTop(widget) {
         const start = rowTop(Number(widget.y || 0))
-        if (naturalText && widget.kind === "text" && widget.wrapText === true) return start
+        if (widget.compactChoices === true)
+            return start + hostWindow.snapPx(12)
+        if (naturalText && widget.kind === "text" && widget.wrapText === true)
+            return start
         const end = rowTop(Number(widget.y || 0) + Math.max(1, Number(widget.h || 1)))
         return hostWindow.snapPx(start + (widget.kind === "group" ? 0 : (end - start - widgetHeight(widget)) / 2))
     }

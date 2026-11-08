@@ -60,7 +60,7 @@ func compileFileGroupDraft(d *f4settings.Draft) (*filegroups.Snapshot, error) {
 				continue
 			}
 			if err := theme.ValidateFarColor(value); err != nil {
-				return nil, fmt.Errorf("colour theme %s, %s: %w", set.Name(), key, err)
+				return nil, fmt.Errorf("color theme %s, %s: %w", set.Name(), key, err)
 			}
 		}
 	}

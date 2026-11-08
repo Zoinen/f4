@@ -981,6 +981,19 @@ type QueueFrame struct {
 	Tasks []*QueueTask
 }
 
+// queueStateLabel is the display text. The state machine and semantic state
+// classes keep their established values.
+func queueStateLabel(state string) string {
+	switch state {
+	case "Cancelled":
+		return "Canceled"
+	case "Cancelling":
+		return "Canceling"
+	default:
+		return state
+	}
+}
+
 type queueRow struct {
 	task *QueueTask
 }
@@ -993,7 +1006,7 @@ func (r queueRow) GetCellText(col int) string {
 	case 0:
 		return fmt.Sprintf("%d", t.ID)
 	case 1:
-		return t.State
+		return queueStateLabel(t.State)
 	case 2:
 		return t.Type
 	case 3:

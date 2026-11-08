@@ -5,8 +5,10 @@ import (
 	"strings"
 
 	"github.com/unxed/f4/internal/config"
+	"github.com/unxed/f4/internal/filegroups"
 	"github.com/unxed/f4/internal/i18n"
 	"github.com/unxed/f4/internal/semantic"
+	"github.com/unxed/f4/internal/theme"
 	"github.com/unxed/vtui"
 )
 
@@ -82,12 +84,15 @@ func (c *settingsCenter) SemanticNode(ctx *vtui.SemanticContext) map[string]any 
 		var mark func(map[string]any)
 		mark = func(n map[string]any) {
 			id := semantic.String(n["id"])
-			if strings.HasPrefix(id, "id:setting:group.") && n["kind"] != "text" {
-				n["resettable"] = true
+			if section := semantic.String(n["sectionID"]); section != "" {
+				n["collapsible"] = true
+				n["collapsed"] = c.fileGroupCollapsed[section]
 			}
 			field := strings.TrimPrefix(id, "id:setting:")
 			if state := fileGroupColourState(field); state >= 0 && n["kind"] == "edit" {
 				n["colorMatrixCell"] = true
+				foreground, background := theme.FarColorComponents(semantic.String(n["text"]))
+				n["colorComponents"] = map[string]string{"foreground": foreground, "background": background}
 				n["items"] = fileGroupStateLabels()
 				if c.fileGroupEditorSample != nil {
 					patch := fileGroupColourPatches(c.fileGroupEditorSample.preview.style)[state]
@@ -109,6 +114,30 @@ func (c *settingsCenter) SemanticNode(ctx *vtui.SemanticContext) map[string]any 
 }
 
 func (c *settingsCenter) HandleSemanticAction(action map[string]any) bool {
+	if c.fileGroupEditor && action["action"] == "dialog.geometry" &&
+		action["target"] == vtui.SemanticID(c) {
+		w, h := semantic.Int(action["w"]), semantic.Int(action["h"])
+		if w < 1 || h < 1 {
+			return false
+		}
+		x, y := semantic.Int(action["x"]), semantic.Int(action["y"])
+		c.SetPosition(x, y, x+w-1, y+h-1)
+		return true
+	}
+	if c.fileGroupEditor && action["action"] == "control.toggleSection" {
+		for _, box := range c.page.boxes {
+			if box.section == "" || action["target"] != c.page.sectionID(box.section) {
+				continue
+			}
+			if c.fileGroupCollapsed == nil {
+				c.fileGroupCollapsed = make(map[string]bool)
+			}
+			c.fileGroupCollapsed[box.section] = !c.fileGroupCollapsed[box.section]
+			c.rebuildCategory()
+			return true
+		}
+		return false
+	}
 	if c.fileGroupEditor && semantic.String(action["action"]) == "control.reset" {
 		id := strings.TrimPrefix(semantic.String(action["target"]), "id:setting:")
 		if strings.HasPrefix(id, "group.") {
@@ -151,7 +180,7 @@ func settingsCategoryIcon(id string) string {
 		return "file-type"
 	case "filegroup-Conditions":
 		return "list-filter"
-	case "filegroup-Appearance":
+	case "filegroup-Highlighting":
 		return "palette"
 	case "filegroup-Sorting":
 		return "arrow-down-up"
@@ -198,6 +227,9 @@ func (v *settingsViewport) SemanticNode(ctx *vtui.SemanticContext) map[string]an
 	// Coordinates inside a scrollable group describe its complete, unscrolled
 	// content. The frontend owns pixel layout; the core retains scroll/focus.
 	node["scrollable"], node["scrollTop"], node["contentHeight"] = true, v.scroll, v.total
+	if v.scrollRequest.revision > 0 {
+		node["scrollRequest"] = map[string]any{"revision": v.scrollRequest.revision, "top": v.scrollRequest.top}
+	}
 	controls := map[string]map[string]any{}
 	children, _ := node["children"].([]map[string]any)
 	for _, control := range children {
@@ -215,14 +247,17 @@ func (v *settingsViewport) SemanticNode(ctx *vtui.SemanticContext) map[string]an
 			matched = matched || row.match
 			_, adaptiveChoices := row.control.(*settingsRadios)
 			if len(row.label) > 0 && !adaptiveChoices {
-				width := v.X2 - v.X1 - 5
-				if row.controlX > 0 {
-					width = row.controlX - 1
+				width := row.labelWidth
+				if row.controlX > row.labelX {
+					width = row.controlX - row.labelX - 1
 				}
-				label := settingsCaption(vtui.SemanticID(row.control)+"-label", row.field.Label.Resolve(config.App.Language, i18n.Msg), v.X1+2, v.Y1+row.y, width, len(row.label))
+				label := settingsCaption(vtui.SemanticID(row.control)+"-label", row.field.Label.Resolve(config.App.Language, i18n.Msg), v.X1+2+row.labelX, v.Y1+row.y, width, len(row.label))
 				label["wrapText"] = len(row.label) > 1
 				label["dimmed"] = !row.match
 				label["explainTarget"] = vtui.SemanticID(row.control)
+				if row.field.ID == "group.Mask" && box.rows[0].conditionToggle && !row.control.IsDisabled() {
+					label["focusTarget"] = vtui.SemanticID(row.control)
+				}
 				children = append(children, label)
 			}
 			if control := controls[vtui.SemanticID(row.control)]; control != nil {
@@ -230,13 +265,32 @@ func (v *settingsViewport) SemanticNode(ctx *vtui.SemanticContext) map[string]an
 					control["iconTheme"] = row.field.IconTheme
 					control["iconReference"] = row.read()
 				}
+				if row.field.ID == "group.Mask" && box.rows[0].conditionToggle {
+					values := row.session.draft.Values
+					control["maskChips"] = filegroups.MaskPreviewParts(values["group.Mask"], values["group.MaskSyntax"] == "legacy-glob")
+				}
 				kind := semantic.String(control["kind"])
 				control["fillWidth"] = row.controlWidth == 0 && (kind == "edit" || kind == "multiLineEdit" || kind == "button" || kind == "comboBox" || adaptiveChoices)
+				if row.field.Group == "Colors" && fileGroupColourState(row.field.ID) >= 0 && row.labelWidth < box.width-4 {
+					control["colorMatrixColumnWidth"] = row.labelWidth
+				}
 				if adaptiveChoices {
 					control["title"] = row.field.Label.Resolve(config.App.Language, i18n.Msg)
-					control["x"], control["y"] = v.X1+2, v.Y1+row.y
+					control["x"], control["y"] = v.X1+2+row.labelX, v.Y1+row.y
 					control["h"] = max(1, row.controlY+row.controlHeight)
-					control["w"] = max(1, v.X2-v.X1-5)
+					control["w"] = row.labelWidth
+					if box.paired && row.field.Group == "File name matching" {
+						// The three case options need more width than the two syntax options.
+						extra := row.labelWidth / 5
+						control["compactChoices"] = true
+						control["fillWidth"] = false
+						if row.field.ID == "group.Case" {
+							control["x"] = v.X1 + 2 + row.labelX - extra
+							control["w"] = row.labelWidth + extra
+						} else {
+							control["w"] = row.labelWidth - extra
+						}
+					}
 				}
 				control["dimmed"] = !row.match
 				control["explainTarget"] = vtui.SemanticID(row.control)
@@ -248,8 +302,26 @@ func (v *settingsViewport) SemanticNode(ctx *vtui.SemanticContext) map[string]an
 		}
 		group := map[string]any{"id": fmt.Sprintf("%s-group-%d", vtui.SemanticID(v), index), "kind": "group",
 			"title": box.title, "bordered": true, "visible": true, "dimmed": !matched,
-			"x": v.X1, "y": v.Y1 + box.top, "w": max(1, v.X2-v.X1-1), "h": box.bottom - box.top + 1,
+			"x": v.X1 + box.left, "y": v.Y1 + box.top, "w": box.width, "h": box.bottom - box.top + 1,
 			"children": children}
+		if box.width < max(1, v.X2-v.X1-1) {
+			group["conditionColumn"] = true
+		}
+		if box.section != "" {
+			group["id"] = v.sectionID(box.section)
+			group["sectionID"] = box.section
+			group["layoutRole"] = "section-header"
+			group["iconName"] = fileGroupSectionIcon(box.section)
+			group["bordered"] = false
+			group["dimmed"] = false
+		}
+		if box.rows[0].checkableHeader && !box.rows[0].sectionHeading {
+			group["id"] = vtui.SemanticID(v) + "-" + box.rows[0].field.ID
+			if box.rows[0].conditionToggle {
+				group["layoutRole"] = "condition-group"
+
+			}
+		}
 		for _, row := range box.rows {
 			if row.checkableHeader {
 				controls[vtui.SemanticID(row.control)]["text"] = box.title
@@ -263,6 +335,28 @@ func (v *settingsViewport) SemanticNode(ctx *vtui.SemanticContext) map[string]an
 	}
 	node["children"] = groups
 	return node
+}
+
+func (v *settingsViewport) sectionID(section string) string {
+	return vtui.SemanticID(v) + "-section-" + section
+}
+
+func fileGroupSectionIcon(section string) string {
+	switch section {
+	case "filegroup-Conditions":
+		return "list-checks"
+	case "filegroup-Highlighting":
+		return "palette"
+	case "filegroup-Icons":
+		return "images"
+	case "filegroup-Sorting":
+		return "arrow-down-a-z"
+	case "filegroup-Associations":
+		return "plug"
+	case "filegroup-Reset":
+		return "rotate-ccw"
+	}
+	return ""
 }
 
 // Only mutate freshly exported maps; the live Go controls keep their terminal

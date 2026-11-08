@@ -35,18 +35,26 @@ func TestFileGroupEditorRetainsPinnedPreviewAndCompactColourRows(t *testing.T) {
 			t.Fatalf("state %d lost resolved palette: %+v", i, patches[i])
 		}
 	}
-	child.selectCategory("filegroup-Appearance")
-	count := 0
+	child.selectCategory("filegroup-Highlighting")
+	var states [4]*settingsRow
 	for _, row := range child.page.rows {
-		if fileGroupColourState(row.field.ID) >= 0 {
-			count++
+		if state := fileGroupColourState(row.field.ID); state >= 0 {
+			states[state] = row
 			if row.controlY != 0 || row.controlX == 0 || row.height != 1 {
-				t.Fatalf("colour row is not compact/inline: %+v", row)
+				t.Fatalf("color row is not compact/inline: %+v", row)
 			}
 		}
 	}
-	if count != 4 {
-		t.Fatal("missing colour states")
+	for _, state := range states {
+		if state == nil {
+			t.Fatal("missing color state")
+		}
+	}
+	normal, marked, cursor, markedCursor := states[0], states[1], states[2], states[3]
+	if normal.y != cursor.y || marked.y != markedCursor.y || normal.y >= marked.y ||
+		normal.labelX != marked.labelX || cursor.labelX != markedCursor.labelX ||
+		normal.controlX+normal.controlWidth >= cursor.labelX {
+		t.Fatal("color states should form two columns with the cursor states on the right")
 	}
 	child.page.scroll = 10
 	child.page.positionRows()

@@ -1,6 +1,11 @@
 package panel
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/unxed/f4/internal/config"
+	"github.com/unxed/vtui"
+)
 
 // The autofilter is the panel's second way to look for a name, next to the
 // quick search: it hides every row that does not match instead of moving the
@@ -102,16 +107,30 @@ func (fp *FileSystemPanel) ToggleAutoFilter() {
 		fp.Refresh()
 		return
 	}
-	// A filter answers "which files have this in the name", so it starts
-	// unanchored. Seeding the '*' rather than special-casing the matcher keeps
-	// one meaning for the prefix: F2 still takes it off and narrows the filter
-	// to names starting with the query.
-	if !strings.HasPrefix(fp.FastFindStr, "*") {
+	// Without an explicit F2 choice, filters start in substring mode.
+	fp.FastFindStr = autoFilterQuery(fp.FastFindStr)
+	if config.App.PanelSearchMode != config.PanelSearchFromStart {
 		fp.FastFindStr = "*" + fp.FastFindStr
 	}
 	fp.FastFindMode = true
 	fp.autoFilterMode = true
 	fp.updateAutoFilter()
+}
+
+func (fp *FileSystemPanel) togglePanelSearchMode() {
+	before := config.App
+	if strings.HasPrefix(fp.FastFindStr, "*") {
+		fp.FastFindStr = autoFilterQuery(fp.FastFindStr)
+		config.App.PanelSearchMode = config.PanelSearchFromStart
+	} else {
+		fp.FastFindStr = "*" + fp.FastFindStr
+		config.App.PanelSearchMode = config.PanelSearchAnywhere
+	}
+	if before.PanelSearchMode != config.App.PanelSearchMode {
+		if err := config.WriteSettingsCandidate(before, config.App); err != nil {
+			vtui.DebugLog("CONFIG: Failed to save panel search mode: %v", err)
+		}
+	}
 }
 
 // refilterEntries brings the visible list in line with the current search

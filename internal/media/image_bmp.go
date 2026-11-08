@@ -54,7 +54,7 @@ func decodeBMP(data []byte) (*vtui.ImageSurface, error) {
 	switch bits {
 	case 1, 4, 8, 16, 24, 32:
 	default:
-		return nil, fmt.Errorf("unsupported colour depth of %d bits", bits)
+		return nil, fmt.Errorf("unsupported color depth of %d bits", bits)
 	}
 
 	var palette []qoiPixel

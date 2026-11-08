@@ -218,6 +218,11 @@ func ParseWorkspaceTabNumberingMode(value string) WorkspaceTabNumberingMode {
 type PanelNavigationMode int
 
 const (
+	PanelSearchFromStart = "prefix"
+	PanelSearchAnywhere  = "substring"
+)
+
+const (
 	NavigationClassic PanelNavigationMode = iota
 	NavigationVim
 	NavigationSearchFirst
@@ -501,8 +506,9 @@ type F4Config struct {
 	UsePromptFormat            bool
 	PromptFormat               string
 	NavigationMode             PanelNavigationMode
-	PanelAutoFilter            bool // a lone Alt press opens the panel autofilter (hides non-matching rows); Alt+letter stays the quick search
-	PanelStrictAutoFilter      bool // panel quick search/autofilter requires an exact match instead of tolerating one typo
+	PanelAutoFilter            bool   // a lone Alt press opens the panel autofilter (hides non-matching rows); Alt+letter stays the quick search
+	PanelStrictAutoFilter      bool   // panel quick search/autofilter requires an exact match instead of tolerating one typo
+	PanelSearchMode            string // last mode selected with F2, empty for the original defaults
 	PanelGroupSmallMiB         int
 	PanelGroupMediumMiB        int
 	PanelGroupLargeMiB         int
@@ -1104,6 +1110,11 @@ func parseConfigInto(cfg *F4Config, merged *ini.File) {
 	}
 	cfg.PanelAutoFilter = merged.GetString("Panel", "PanelAutoFilter", "0") == "1"
 	cfg.PanelStrictAutoFilter = merged.GetString("Panel", "PanelStrictAutoFilter", "0") == "1"
+	cfg.PanelSearchMode = ""
+	switch mode := merged.GetString("Panel", "PanelSearchMode", ""); mode {
+	case PanelSearchFromStart, PanelSearchAnywhere:
+		cfg.PanelSearchMode = mode
+	}
 	cfg.PanelGroupSmallMiB = parseGroupLimit(merged.GetString("Panel", "PanelGroupSmallMiB", "5"))
 	cfg.PanelGroupMediumMiB = parseGroupLimit(merged.GetString("Panel", "PanelGroupMediumMiB", "10"))
 	cfg.PanelGroupLargeMiB = parseGroupLimit(merged.GetString("Panel", "PanelGroupLargeMiB", "100"))
@@ -1468,6 +1479,7 @@ func SerializeSettingsConfig(cfg F4Config) []byte {
 	fmt.Fprintf(&sb, "NavigationMode = %s\n", cfg.NavigationMode.String())
 	fmt.Fprintf(&sb, "PanelAutoFilter = %d\n", map[bool]int{true: 1, false: 0}[cfg.PanelAutoFilter])
 	fmt.Fprintf(&sb, "PanelStrictAutoFilter = %d\n", map[bool]int{true: 1, false: 0}[cfg.PanelStrictAutoFilter])
+	fmt.Fprintf(&sb, "PanelSearchMode = %s\n", cfg.PanelSearchMode)
 	fmt.Fprintf(&sb, "PanelGroupSmallMiB = %d\nPanelGroupMediumMiB = %d\nPanelGroupLargeMiB = %d\n", cfg.PanelGroupSmallMiB, cfg.PanelGroupMediumMiB, cfg.PanelGroupLargeMiB)
 	fmt.Fprintf(&sb, "SearchCommandStayFocused = %d\n", map[bool]int{true: 1, false: 0}[cfg.SearchCommandStayFocused])
 	fmt.Fprintf(&sb, "SearchCommandHideUnfocused = %d\n", map[bool]int{true: 1, false: 0}[cfg.SearchCommandHideUnfocused])

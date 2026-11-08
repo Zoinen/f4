@@ -15,7 +15,10 @@ T.CheckBox {
 
     property ApplicationWindow hostWindow: (control.Window.window as ApplicationWindow) || null
     property bool semanticFocus: false
+    property bool fitFocusFrameToLabel: false
     property string mnemonicHotkey: ""
+    property string leadingIconName: ""
+    readonly property real leadingIconInset: leadingIconName ? leadingIcon.width + spacing : 0
     readonly property bool focusHighlighted:
         control.enabled
         && (control.semanticFocus || control.visualFocus || control.activeFocus)
@@ -42,7 +45,10 @@ T.CheckBox {
         readonly property real indicatorGap: control.snap(2)
         x: control.indicator.x - indicatorGap
         y: control.indicator.y - indicatorGap
-        width: control.snap(control.width) + indicatorGap
+        width: control.fitFocusFrameToLabel
+            ? control.snap(Math.min(control.width,
+                checkBoxText.x + checkBoxText.leftPadding + checkBoxText.contentWidth)) + 2 * indicatorGap
+            : control.snap(control.width) + indicatorGap
         height: control.indicator.height + 2 * indicatorGap
         color: "transparent"
         radius: control.snap(4)
@@ -146,11 +152,29 @@ T.CheckBox {
         Behavior on border.color { ColorAnimation { duration: 90 } }
     }
 
+    Loader {
+        id: leadingIcon
+        active: control.leadingIconName !== "" && control.hostWindow !== null
+        x: control.indicator.width + control.spacing
+        y: active ? control.hostWindow.centerPx(control.height, height) : 0
+        width: control.snap(16)
+        height: width
+        sourceComponent: HostPixelAlignedImage {
+            objectName: control.objectName + "LeadingIcon"
+            hostWindow: control.hostWindow
+            source: hostWindow.lucideIconSource(control.leadingIconName, 16, checkBoxText.color)
+            // Qt scales this logical request before calling the image provider.
+            sourceSize: Qt.size(16, 16)
+            opacity: checkBoxText.opacity
+            smooth: false
+        }
+    }
+
     contentItem: Text {
         id: checkBoxText
         objectName: control.objectName ? (control.objectName + "Text")
                                        : "checkBoxText"
-        leftPadding: control.indicator.width + control.spacing
+        leftPadding: control.indicator.width + control.spacing + control.leadingIconInset
         text: control.hostWindow
               ? control.hostWindow.mnemonicTextWithAccent(control.text, control.mnemonicHotkey, control.dialogColors.dialogAccent)
               : control.text

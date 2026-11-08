@@ -16,13 +16,22 @@ Item {
     required property ApplicationWindow hostWindow
     required property var widget
     enabled: widget.disabled !== true
+    readonly property bool maskField: widget.maskChips != null
+    readonly property bool showingChips: maskField && !(enabled && widget.focused === true)
+    readonly property real documentHeight: showingChips ? chips.implicitHeight : editor.contentHeight
     readonly property real padding: hostWindow.snapPx(8)
     readonly property real innerWidth: Math.max(1, width - 2 * padding)
     readonly property real innerHeight: Math.max(1, height - 2 * padding)
-    readonly property bool verticalOverflow: editor.contentHeight > innerHeight
-        - (editor.contentWidth > innerWidth ? horizontal.implicitHeight : 0)
-    readonly property bool horizontalOverflow: editor.contentWidth > innerWidth
+    readonly property bool verticalOverflow: documentHeight > innerHeight
+        - (!maskField && editor.contentWidth > innerWidth ? horizontal.implicitHeight : 0)
+    readonly property bool horizontalOverflow: !maskField && editor.contentWidth > innerWidth
         - (verticalOverflow ? vertical.implicitWidth : 0)
+    onShowingChipsChanged: {
+        viewport.contentX = 0
+        viewport.contentY = 0
+        if (!showingChips)
+            Qt.callLater(syncSelection)
+    }
     function nextRune(offset) {
         const high = editor.text.charCodeAt(offset)
         const low = editor.text.charCodeAt(offset + 1)
@@ -46,7 +55,7 @@ Item {
             editor.deselect()
             editor.cursorPosition = cursor
         }
-        if (widget.focused && !pointer.pressed) {
+        if (!showingChips && widget.focused && !pointer.pressed) {
             const rect = editor.positionToRectangle(cursor)
             if (rect.y < viewport.contentY) viewport.contentY = hostWindow.snapPx(rect.y)
             else if (rect.y + rect.height > viewport.contentY + viewport.height)
@@ -68,24 +77,34 @@ Item {
             ? root.dialogColors.dialogAccent : root.dialogColors.controlBorder
     }
     HoverHandler { id: hover }
+    MouseArea {
+        anchors.fill: parent
+        z: 1
+        visible: root.showingChips
+        enabled: root.enabled
+        onClicked: root.hostWindow.action({target: root.widget.id, action: "control.focus"})
+    }
     Flickable {
         id: viewport
         objectName: root.objectName + "Viewport"
         x: root.padding
         y: root.padding
-        width: Math.max(1, root.width - 2 * root.padding - (vertical.visible ? vertical.width : 0))
+        width: Math.max(1, root.width - 2 * root.padding - (root.maskField || vertical.visible ? vertical.width : 0))
         height: Math.max(1, root.height - 2 * root.padding - (horizontal.visible ? horizontal.height : 0))
         clip: true
         pixelAligned: true
         boundsBehavior: Flickable.StopAtBounds
-        contentWidth: Math.max(width, root.hostWindow.snapPx(editor.contentWidth + 2))
-        contentHeight: Math.max(height, root.hostWindow.snapPx(editor.contentHeight))
+        contentWidth: root.maskField ? width : Math.max(width, root.hostWindow.snapPx(editor.contentWidth + 2))
+        contentHeight: Math.max(height, root.hostWindow.capacityPx(root.documentHeight))
+        interactive: contentHeight > height || contentWidth > width
+        DialogWheelScroll { viewport: viewport; hostWindow: root.hostWindow; rowHeight: editor.font.pixelSize }
         ScrollBar.vertical: F4ScrollBar {
             id: vertical
             objectName: root.objectName + "VerticalScroll"
             hostWindow: root.hostWindow
             policy: ScrollBar.AlwaysOn
             visible: root.verticalOverflow
+            z: root.showingChips ? 2 : 0
             parent: root
             x: root.width - root.padding - width
             y: root.padding
@@ -101,14 +120,52 @@ Item {
             y: root.height - root.padding - height
             width: viewport.width
         }
+        Flow {
+            id: chips
+            objectName: root.objectName + "Chips"
+            visible: root.showingChips
+            width: viewport.width
+            spacing: root.hostWindow.snapPx(4)
+            Repeater {
+                model: root.maskField ? root.widget.maskChips : []
+                delegate: Rectangle {
+                    id: chip
+                    required property string modelData
+                    required property int index
+                    readonly property real inset: root.hostWindow.snapPx(6)
+                    width: Math.min(chips.width, root.hostWindow.capacityPx(chipLabel.implicitWidth + 2 * inset))
+                    height: root.hostWindow.capacityPx(chipLabel.implicitHeight + root.hostWindow.snapPx(6))
+                    radius: root.hostWindow.snapPx(4)
+                    color: root.enabled ? root.dialogColors.controlBg : root.dialogColors.dialogBg
+                    Text {
+                        id: chipLabel
+                        objectName: root.objectName + "ChipText-" + chip.index
+                        x: chip.inset
+                        y: root.hostWindow.centerPx(chip.height, height)
+                        width: Math.max(0, chip.width - 2 * chip.inset)
+                        height: root.hostWindow.capacityPx(implicitHeight)
+                        text: chip.modelData.replace(/\s*\n\s*/g, " ")
+                        font: root.hostWindow.font
+                        textFormat: Text.PlainText
+                        elide: Text.ElideRight
+                        color: root.enabled ? root.hostWindow.textColor : root.hostWindow.mutedText
+                        transform: Translate {
+                            x: chipLabel.ScenePixelAlignment.offset.x
+                            y: chipLabel.ScenePixelAlignment.offset.y
+                        }
+                    }
+                }
+            }
+        }
         TextEdit {
             id: editor
+            visible: !root.showingChips
             objectName: root.objectName + "TextEdit"
             width: viewport.width
             height: implicitHeight
             text: String(root.widget.text || "")
             textFormat: TextEdit.PlainText
-            wrapMode: TextEdit.NoWrap
+            wrapMode: root.maskField ? TextEdit.Wrap : TextEdit.NoWrap
             readOnly: true
             persistentSelection: true
             font: root.hostWindow.font
@@ -142,6 +199,7 @@ Item {
         }
         MouseArea {
             id: pointer
+            enabled: !root.showingChips
             anchors.fill: parent
             preventStealing: true
             cursorShape: Qt.IBeamCursor

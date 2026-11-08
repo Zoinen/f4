@@ -21,6 +21,10 @@ T.Button {
     property url iconSource: ""
     property real iconSize: 14
     property real cornerRadius: 4
+    property real topLeftRadius: cornerRadius
+    property real topRightRadius: cornerRadius
+    property real bottomLeftRadius: cornerRadius
+    property real bottomRightRadius: cornerRadius
     property bool colorfulIcon: false
     property string toolTipText: ""
     property bool semanticFocus: false
@@ -132,6 +136,10 @@ T.Button {
                                        : "buttonBackground"
         readonly property color testBorderColor: border.color
         radius: control.snap(control.cornerRadius)
+        topLeftRadius: control.snap(control.topLeftRadius)
+        topRightRadius: control.snap(control.topRightRadius)
+        bottomLeftRadius: control.snap(control.bottomLeftRadius)
+        bottomRightRadius: control.snap(control.bottomRightRadius)
         color: {
             const isAccent = control.highlighted || control.variant === "accent"
             if (!control.enabled)

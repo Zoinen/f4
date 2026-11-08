@@ -870,6 +870,7 @@ struct QuickViewFixture
         engine.rootContext()->setContextProperty(QStringLiteral("f4UsesQwk"),
                                                   usesQwk);
         DummyQWK::registerTypes(&engine);
+        ZoinGallery::GalleryRuntime::registerTypes();
         engine.load(QUrl(QStringLiteral("qrc:/F4QtHost/qml/main.qml")));
         if (engine.rootObjects().isEmpty())
             return;

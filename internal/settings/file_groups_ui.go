@@ -120,7 +120,7 @@ func (c *settingsCenter) addFileGroupTools(s *settingsSession) {
 		c.page.AddItem(r.control)
 		c.page.rows = append(c.page.rows, r)
 	}
-	add(recordField("filegroups.sample", "Sample filename", "Read-only evaluation; preview never executes a command.", f4settings.String), func() string { return c.fileGroupSample }, func(value string) { c.fileGroupSample = value })
+	add(recordField("filegroups.sample", "Sample file name", "Read-only evaluation; preview never executes a command.", f4settings.String), func() string { return c.fileGroupSample }, func(value string) { c.fileGroupSample = value })
 	test := vtui.NewButton(0, 0, i18n.Msg("FileGroups.TestMatch"))
 	test.OnClick = func() {
 		groups, err := recordsToGroups(s.draft.Records)

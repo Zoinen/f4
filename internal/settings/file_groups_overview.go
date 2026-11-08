@@ -277,7 +277,7 @@ func (v *fileGroupsOverview) refresh() {
 	v.colorIDs = []string{}
 	for _, set := range fileGroupDraftColorThemes(v.session.draft) {
 		v.colorIDs = append(v.colorIDs, set.ID)
-		label := "Colours: " + set.Name()
+		label := "Colors: " + set.Name()
 		v.colors.Menu.AddItem(vtui.MenuItem{Text: label})
 		if set.ID == fileGroupDraftColorThemeID(v.session.draft) {
 			v.colors.Menu.SetSelectPos(len(v.colorIDs) - 1)
@@ -287,7 +287,7 @@ func (v *fileGroupsOverview) refresh() {
 	selectedColor := fileGroupDraftColorThemeID(v.session.draft)
 	if selectedColor != "" && !slices.Contains(v.colorIDs, selectedColor) {
 		v.colorIDs = append(v.colorIDs, selectedColor)
-		label := "Colours: " + selectedColor + " (unavailable)"
+		label := "Colors: " + selectedColor + " (unavailable)"
 		v.colors.Menu.AddItem(vtui.MenuItem{Text: label})
 		v.colors.Menu.SetSelectPos(len(v.colorIDs) - 1)
 		v.colors.Edit.SetText(label)

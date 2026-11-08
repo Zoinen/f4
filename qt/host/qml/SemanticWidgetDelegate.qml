@@ -20,8 +20,13 @@ Item {
     property var buttonAction: () => hostWindow.action({target: widget.id, action: "control.activate"})
     property bool tableKeyboardNavigation: false
     property bool groupHeading: false
+    property string headingIconName: ""
     property bool leftAlignText: false
     property var dialogLayout: null
+    property real groupBodyGrowth: 0
+    property real verticalGrowth: 0
+    readonly property real naturalGroupHeight: presentation.item
+        && presentation.item.naturalGroupHeight !== undefined ? presentation.item.naturalGroupHeight : visualHeight
     property var labelData: ({})
     readonly property var inlineLabel: labelData && labelData.kind === "text" ? labelData : null
     FontMetrics { id: matrixLabelMetrics; font: widgetRoot.hostWindow.font }
@@ -69,7 +74,7 @@ Item {
            (widget.y || 0) - originY - 1, widget)
     width: widget.colorMatrixCell === true ? maximumWidth : Math.min(dialogLayout && typeof dialogLayout.presentationWidth === "function"
                     ? dialogLayout.presentationWidth(widget) : hostWindow.pxW(widget.w || 1), maximumWidth)
-    height: visualHeight
+    height: visualHeight + verticalGrowth
     visible: widget.visible !== false
     clip: false
     opacity: widget.dimmed === true && widget.kind !== "group" ? 0.5 : 1
@@ -97,14 +102,14 @@ Item {
     }
 
     Loader {
+        id: presentation
         anchors.fill: parent
-        anchors.rightMargin: hostWindow.snapPx((widget.resettable === true ? 32 : 0) + (widget.colorMatrixCell === true ? 48 : 0))
         sourceComponent: {
             if (widget.layoutRole === "description") return settingsHelpDelegate
             switch (widget.kind) {
             case "button": return buttonDelegate
             case "checkbox": return checkboxDelegate
-            case "edit": return editDelegate
+            case "edit": return widget.colorMatrixCell === true ? colorMatrixDelegate : editDelegate
             case "multiLineEdit": return multilineDelegate
             case "text": return textDelegate
             case "separator": return separatorDelegate
@@ -129,33 +134,238 @@ Item {
         }
     }
 
-    F4Button {
-        hostWindow: widgetRoot.hostWindow
-        visible: widgetRoot.widget.resettable === true
-        anchors.right: parent.right
-        anchors.top: parent.top
-        width: hostWindow.snapPx(28)
-        height: hostWindow.snapPx(28)
-        variant: "tool"
-        iconSource: hostWindow.lucideIconSource("rotate-ccw", 14, hostWindow.mutedText)
-        toolTipText: "Restore the standard value (Ctrl+Backspace)"
-        onClicked: hostWindow.action({target: widgetRoot.widget.id, action: "control.reset"})
-    }
+    Component {
+        id: colorMatrixDelegate
+        Item {
+            id: matrixCell
+            readonly property string namePrefix: "dialogWidget-" + hostWindow.cleanText(widget.id)
+            readonly property var preview: widget.colorPreview || ({})
+            readonly property bool inherited: String(widget.text || "").trim() === ""
+            readonly property bool available: enabled && widget.disabled !== true
+            function openPicker() {
+                hostWindow.action({target: widget.id, action: "control.focus"}, true)
+                picker.active = true
+            }
 
-    Rectangle {
-        objectName: "dialogWidget-" + widgetRoot.widget.id + "ColorSwatch"
-        visible: widgetRoot.widget.colorMatrixCell === true
-        anchors.right: parent.right
-        anchors.rightMargin: hostWindow.snapPx(widgetRoot.widget.resettable === true ? 34 : 0)
-        anchors.verticalCenter: parent.verticalCenter
-        width: hostWindow.snapPx(42); height: hostWindow.snapPx(28)
-        radius: hostWindow.snapPx(3)
-        color: (widgetRoot.widget.colorPreview || {}).background || widgetRoot.dialogColors.dialogBg
-        border.color: widgetRoot.dialogColors.controlBorder
-        Text {
-            anchors.centerIn: parent
-            text: "Aa"; font: widgetRoot.hostWindow.font
-            color: (widgetRoot.widget.colorPreview || {}).foreground || widgetRoot.hostWindow.textColor
+            Rectangle {
+                id: swatch
+                objectName: matrixCell.namePrefix + "ColorSwatch"
+                width: hostWindow.snapPx(Math.max(1, editColor.x - 8))
+                height: parent.height
+                radius: hostWindow.snapPx(4)
+                color: matrixCell.preview.background || widgetRoot.dialogColors.dialogBg
+                border.width: hostWindow.separatorWidth
+                border.color: widgetRoot.dialogColors.controlBorder
+                Text {
+                    id: swatchText
+                    objectName: swatch.objectName + "Text"
+                    x: hostWindow.snapPx(6)
+                    y: hostWindow.centerPx(parent.height, height)
+                    width: hostWindow.snapPx(Math.max(1, parent.width - 12))
+                    horizontalAlignment: Text.AlignHCenter
+                    elide: Text.ElideRight
+                    text: matrixCell.inherited ? qsTr("Inherited") : "Aa"
+                    font: hostWindow.font
+                    color: matrixCell.preview.foreground || hostWindow.textColor
+                    transform: Translate {
+                        x: hostWindow.dialogPixelOffsetX(swatchText, hostWindow.contentItem)
+                        y: hostWindow.dialogPixelOffsetY(swatchText, hostWindow.contentItem)
+                    }
+                }
+            }
+            DialogButton {
+                id: editColor
+                objectName: matrixCell.namePrefix + "ColorEditButton"
+                hostWindow: widgetRoot.hostWindow
+                text: qsTr("Edit…")
+                Accessible.name: qsTr("Edit %1 colors").arg(widgetRoot.inlineLabel ? widgetRoot.inlineLabel.text : "")
+                width: hostWindow.capacityPx(Math.max(54, matrixLabelMetrics.advanceWidth(text) + 16))
+                x: hostWindow.snapPx(Math.max(0, parent.width - width))
+                y: hostWindow.centerPx(parent.height, height)
+                height: implicitHeight
+                enabled: matrixCell.available
+                semanticFocus: widget.focused === true
+                onClicked: matrixCell.openPicker()
+            }
+            Shortcut {
+                sequences: ["Return", "Enter", "Space"]
+                enabled: matrixCell.visible && matrixCell.available && widget.focused === true && !picker.active
+                onActivated: matrixCell.openPicker()
+            }
+            Loader {
+                id: picker
+                active: false
+                sourceComponent: colorPicker
+                onLoaded: item.open()
+            }
+            Component {
+                id: colorPicker
+                Popup {
+                    id: colorDialog
+                    objectName: matrixCell.namePrefix + "ColorPicker"
+                    parent: Overlay.overlay
+                    focus: true
+                    x: hostWindow.centerPx(parent.width, width)
+                    y: hostWindow.centerPx(parent.height, height)
+                    width: hostWindow.snapPx(376)
+                    padding: hostWindow.snapPx(16)
+                    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+                    property string channel: "foreground"
+                    property string foreground: (widget.colorComponents || {}).foreground || ""
+                    property string backgroundToken: (widget.colorComponents || {}).background || ""
+                    readonly property string currentToken: channel === "foreground" ? foreground : backgroundToken
+                    readonly property var colors: ["#000000", "#0028a0", "#00a000", "#00a0a0", "#a00000", "#a000a0", "#a0a000", "#c0c0c0",
+                                                    "#808080", "#0055ff", "#00ff00", "#00ffff", "#ff0000", "#ff00ff", "#ffff00", "#ffffff"]
+                    function selectChannel(value) {
+                        channel = value
+                        hexColor.text = /^\w+:#([0-9a-f]{6})$/i.test(currentToken)
+                            ? currentToken.slice(currentToken.indexOf(":") + 1) : ""
+                    }
+                    function choose(value) {
+                        const token = value ? channel + ":" + value : ""
+                        if (channel === "foreground")
+                            foreground = token
+                        else
+                            backgroundToken = token
+                    }
+                    function accept() {
+                        const initial = widget.colorComponents || ({})
+                        if (foreground !== (initial.foreground || "") || backgroundToken !== (initial.background || ""))
+                            hostWindow.action({target: widget.id, action: "control.setText",
+                                text: [foreground, backgroundToken].filter(Boolean).join(" | ")})
+                        close()
+                    }
+                    onOpened: {
+                        selectChannel("foreground")
+                        textChannel.forceActiveFocus()
+                    }
+                    onClosed: picker.active = false
+                    background: Rectangle {
+                        color: widgetRoot.dialogColors.dialogBg
+                        border.width: hostWindow.separatorWidth
+                        border.color: widgetRoot.dialogColors.controlBorder
+                        radius: hostWindow.snapPx(8)
+                    }
+                    contentItem: Column {
+                        spacing: hostWindow.snapPx(10)
+                        readonly property bool retainsFocusOnDialogRefresh: true
+                        Text {
+                            id: pickerTitle
+                            objectName: matrixCell.namePrefix + "ColorPickerTitle"
+                            text: editColor.Accessible.name
+                            color: hostWindow.textColor
+                            font: hostWindow.font
+                            transform: Translate {
+                                x: hostWindow.dialogPixelOffsetX(pickerTitle, hostWindow.contentItem)
+                                y: hostWindow.dialogPixelOffsetY(pickerTitle, hostWindow.contentItem)
+                            }
+                        }
+                        Row {
+                            spacing: hostWindow.snapPx(8)
+                            DialogButton {
+                                id: textChannel
+                                objectName: matrixCell.namePrefix + "ColorTextChannel"
+                                hostWindow: widgetRoot.hostWindow
+                                focusPolicy: Qt.StrongFocus
+                                text: qsTr("Text")
+                                highlighted: colorDialog.channel === "foreground"
+                                onClicked: colorDialog.selectChannel("foreground")
+                            }
+                            DialogButton {
+                                objectName: matrixCell.namePrefix + "ColorBackgroundChannel"
+                                hostWindow: widgetRoot.hostWindow
+                                focusPolicy: Qt.StrongFocus
+                                text: qsTr("Background")
+                                highlighted: colorDialog.channel === "background"
+                                onClicked: colorDialog.selectChannel("background")
+                            }
+                        }
+                        Grid {
+                            columns: 8
+                            spacing: hostWindow.snapPx(6)
+                            Repeater {
+                                model: colorDialog.colors
+                                delegate: DialogButton {
+                                    id: preset
+                                    required property string modelData
+                                    required property int index
+                                    objectName: matrixCell.namePrefix + "ColorPreset-" + index
+                                    hostWindow: widgetRoot.hostWindow
+                                    focusPolicy: Qt.StrongFocus
+                                    width: hostWindow.snapPx(36)
+                                    height: hostWindow.snapPx(28)
+                                    Accessible.name: modelData
+                                    background: Rectangle {
+                                        readonly property bool emphasized: preset.focusHighlighted || preset.hovered
+                                            || hexColor.text.toLowerCase() === preset.modelData
+                                        color: preset.modelData
+                                        radius: hostWindow.snapPx(4)
+                                        border.width: emphasized ? hostWindow.snapPx(2) : hostWindow.separatorWidth
+                                        border.color: emphasized ? hostWindow.textColor : widgetRoot.dialogColors.controlBorder
+                                    }
+                                    onClicked: {
+                                        hexColor.text = modelData
+                                        colorDialog.choose(modelData)
+                                    }
+                                }
+                            }
+                        }
+                        Row {
+                            spacing: hostWindow.snapPx(8)
+                            F4TextField {
+                                id: hexColor
+                                objectName: matrixCell.namePrefix + "ColorHex"
+                                hostWindow: widgetRoot.hostWindow
+                                width: hostWindow.snapPx(116)
+                                height: hostWindow.snapPx(32)
+                                placeholderText: "#RRGGBB"
+                                Accessible.name: qsTr("Custom hex color")
+                                validator: RegularExpressionValidator { regularExpression: /^#[0-9a-f]{6}$/i }
+                                onTextEdited: if (acceptableInput || text === "") colorDialog.choose(text)
+                            }
+                            Rectangle {
+                                width: hostWindow.snapPx(32)
+                                height: width
+                                radius: hostWindow.snapPx(4)
+                                border.width: hostWindow.separatorWidth
+                                border.color: widgetRoot.dialogColors.controlBorder
+                                color: hexColor.acceptableInput ? hexColor.text : colorDialog.currentToken !== ""
+                                    ? (matrixCell.preview[colorDialog.channel] || widgetRoot.dialogColors.controlBg)
+                                    : widgetRoot.dialogColors.controlBg
+                            }
+                            DialogButton {
+                                objectName: matrixCell.namePrefix + "ColorInherit"
+                                hostWindow: widgetRoot.hostWindow
+                                focusPolicy: Qt.StrongFocus
+                                text: qsTr("Inherit")
+                                highlighted: colorDialog.currentToken === ""
+                                onClicked: {
+                                    hexColor.text = ""
+                                    colorDialog.choose("")
+                                }
+                            }
+                        }
+                        Row {
+                            spacing: hostWindow.snapPx(8)
+                            DialogButton {
+                                objectName: matrixCell.namePrefix + "ColorApply"
+                                hostWindow: widgetRoot.hostWindow
+                                focusPolicy: Qt.StrongFocus
+                                text: qsTr("OK")
+                                enabled: hexColor.text === "" || hexColor.acceptableInput
+                                onClicked: colorDialog.accept()
+                            }
+                            DialogButton {
+                                objectName: matrixCell.namePrefix + "ColorCancel"
+                                hostWindow: widgetRoot.hostWindow
+                                focusPolicy: Qt.StrongFocus
+                                text: qsTr("Cancel")
+                                onClicked: colorDialog.close()
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -381,7 +591,26 @@ Item {
                 clip: true
                 model: SemanticChildrenModel { widgets: widgetRoot.widget.rows || [] }
                 currentIndex: Number(widget.cursor || 0)
-                onCurrentIndexChanged: positionViewAtIndex(currentIndex, ListView.Contain)
+                highlightFollowsCurrentItem: false
+                onCurrentIndexChanged: if (!tableWheel.running) positionViewAtIndex(currentIndex, ListView.Contain)
+                interactive: contentHeight > height
+                DialogWheelScroll {
+                    id: tableWheel
+                    viewport: tableRows
+                    hostWindow: widgetRoot.hostWindow
+                    rowHeight: tableControl.rowHeight
+                    property real rowRemainder: 0
+                    onScrolled: rows => {
+                        if (widget.layoutRole === "overview-table" || tableControl.settingsNavigation || widget.disabled === true)
+                            return
+                        rowRemainder += rows
+                        const wholeRows = Math.trunc(rowRemainder)
+                        if (wholeRows !== 0) {
+                            rowRemainder -= wholeRows
+                            hostWindow.action({target: widget.id, action: "control.scroll", delta: wholeRows}, true)
+                        }
+                    }
+                }
                 // Passive hover/help/mark updates must not snap back to the
                 // keyboard cursor while the user scrolls the list independently.
                 onModelChanged: if (widget.layoutRole !== "overview-table" && !tableControl.settingsNavigation)
@@ -505,8 +734,6 @@ Item {
                 view: tableRows
                 rowAction: widgetRoot.tableRowAction
                 keyboardNavigation: widgetRoot.tableKeyboardNavigation
-                semanticWheel: widget.layoutRole !== "overview-table" && !tableControl.settingsNavigation
-                nativeWheel: tableControl.settingsNavigation
                 y: tableRows.y
                 width: tableControl.availableWidth
                 height: tableRows.height
@@ -546,11 +773,17 @@ Item {
                   : hostWindow.mnemonicTextWithAccent(widget.text || widget.typeName, widget.hotkey, widgetRoot.dialogColors.dialogAccent))
             textFormat: widget.wrapText === true || !widget.hotkey ? Text.PlainText : Text.StyledText
             wrapMode: widget.wrapText === true ? Text.Wrap : Text.NoWrap
-            color: widget.disabled ? hostWindow.mutedText : hostWindow.textColor
+            readonly property bool labelEnabled: enabled && widget.disabled !== true
+            color: labelEnabled ? hostWindow.textColor : hostWindow.mutedText
+            opacity: labelEnabled ? 1.0 : 0.55
             font: hostWindow.font
             elide: widget.wrapText === true ? Text.ElideNone : Text.ElideRight
             verticalAlignment: Text.AlignVCenter
             horizontalAlignment: !widgetRoot.leftAlignText && widget.horizontalAlignment === "center" ? Text.AlignHCenter : Text.AlignLeft
+            TapHandler {
+                enabled: dialogText.labelEnabled && !!widgetRoot.widget.focusTarget
+                onTapped: widgetRoot.hostWindow.action({target: widgetRoot.widget.focusTarget, action: "control.focus"})
+            }
             HostPixelAlignedImage {
                 objectName: "dialogWidget-" + hostWindow.cleanText(widget.id) + "TextIcon"
                 hostWindow: widgetRoot.hostWindow
@@ -671,6 +904,8 @@ Item {
                            italic: hostWindow.font.italic, bold: true})
                 : hostWindow.font
             text: hostWindow.cleanText(widget.text)
+            leadingIconName: widgetRoot.headingIconName
+            fitFocusFrameToLabel: widgetRoot.groupHeading
             mnemonicHotkey: hostWindow.cleanText(widget.hotkey)
             checked: widget.state === 1
             tristate: widget.threeState === true
@@ -720,6 +955,12 @@ Item {
                 boundsBehavior: Flickable.StopAtBounds
                 currentIndex: Number(widget.cursor || 0)
                 onCurrentIndexChanged: positionViewAtIndex(currentIndex, ListView.Contain)
+                interactive: contentHeight > height
+                DialogWheelScroll {
+                    viewport: listView
+                    hostWindow: widgetRoot.hostWindow
+                    rowHeight: listView.currentItem ? listView.currentItem.height : hostWindow.ch
+                }
                 ScrollBar.vertical: F4ScrollBar {
                     id: listScrollBar
                     objectName: "dialogWidget-" + widget.id + "ListScrollBar"
@@ -950,10 +1191,39 @@ Item {
         id: groupDelegate
         Item {
             id: groupContainer
+            readonly property bool conditionGroup: widget.layoutRole === "condition-group"
+            readonly property bool sectionHeading: widget.layoutRole === "section-header"
+            readonly property string sectionIconName: sectionHeading ? String(widget.iconName || "") : ""
+            readonly property real sectionIconInset: sectionIconName ? hostWindow.snapPx(16) + hostWindow.snapPx(9) : 0
             readonly property bool hasHeading: hostWindow.cleanText(widget.title) !== ""
             readonly property real headingHeight: hasHeading
                 ? hostWindow.snapPx(widget.headerControl ? 32 : Math.max(22, matrixLabelMetrics.height)) : 0
+            readonly property real headingGap: hostWindow.snapPx(10)
             readonly property real contentPadding: hostWindow.snapPx(12)
+            TextMetrics {
+                id: sectionTitleMetrics
+                font: groupTitle.font
+                text: groupContainer.sectionHeading || !!widgetRoot.widget.headerControl
+                    ? String(widgetRoot.widget.title || "") : ""
+            }
+            readonly property var fields: (widgetRoot.widget.children || []).filter(child =>
+                !widgetRoot.widget.headerControl || child.id !== widgetRoot.widget.headerControl.id)
+            readonly property var fieldLayout: conditionMetrics.item || widgetRoot.dialogLayout
+            readonly property real naturalGroupHeight: groupSurface.y + naturalBodyHeight
+            readonly property real naturalBodyHeight: widget.bordered === true && contentBounds.height > 0
+                ? hostWindow.snapPx(contentBounds.height + 2 * contentPadding)
+                : Math.max(0, widgetRoot.visualHeight - groupSurface.y)
+            Loader {
+                id: conditionMetrics
+                active: widgetRoot.widget.conditionColumn === true
+                sourceComponent: SemanticDialogLayout {
+                    hostWindow: widgetRoot.hostWindow
+                    widgets: groupContainer.fields
+                    originX: Number(widgetRoot.widget.x || 0)
+                    originY: Number(widgetRoot.widget.y || 0)
+                    maximumWidth: widgetRoot.width
+                }
+            }
             // Measure native control extents, not the terminal's spare rows:
             // an edit and a checkbox have different visual heights.
             readonly property rect contentBounds: {
@@ -964,7 +1234,7 @@ Item {
                     const child = loader ? loader.item : null
                     if (child && child.visible) {
                         top = Math.min(top, child.y)
-                        bottom = Math.max(bottom, child.y + child.height)
+                        bottom = Math.max(bottom, child.y + child.visualHeight)
                     }
                 }
                 return Qt.rect(0, Number.isFinite(top) ? top : 0, 0,
@@ -976,12 +1246,11 @@ Item {
                             + "GroupBorder"
                 readonly property color testBorderColor: border.color
                 readonly property real testBorderWidth: border.width
+                visible: !groupContainer.sectionHeading
                 x: 0
                 y: groupContainer.hasHeading ? groupContainer.headingHeight + hostWindow.snapPx(4) : 0
                 width: parent.width
-                height: widget.bordered === true && groupContainer.contentBounds.height > 0
-                    ? hostWindow.snapPx(groupContainer.contentBounds.height + 2 * groupContainer.contentPadding)
-                    : Math.max(0, parent.height - y)
+                height: groupContainer.naturalBodyHeight + widgetRoot.groupBodyGrowth
                 color: widget.bordered === true ? Qt.tint(widgetRoot.dialogColors.dialogBg, Qt.rgba(1, 1, 1, 0.035)) : "transparent"
                 border.width: 0
                 border.color: widgetRoot.dialogColors.controlBorder
@@ -992,20 +1261,37 @@ Item {
                 objectName: "dialogWidget-" + hostWindow.cleanText(widget.id) + "GroupTitleBackground"
                 anchors.left: parent.left
                 anchors.top: parent.top
-                anchors.leftMargin: hostWindow.snapPx(8)
+                anchors.leftMargin: groupContainer.sectionHeading ? 0 : hostWindow.snapPx(8)
                 width: Math.max(0, parent.width - hostWindow.snapPx(16))
                 height: groupContainer.headingHeight
+                readonly property real titleWidth: sectionDisclosure.visible
+                    ? Math.max(0, sectionDisclosure.x - groupContainer.headingGap) : width
                 color: "transparent"
                 visible: groupContainer.hasHeading
 
+                HostPixelAlignedImage {
+                    id: sectionIcon
+                    objectName: "dialogWidget-" + hostWindow.cleanText(widget.id) + "SectionIcon"
+                    hostWindow: widgetRoot.hostWindow
+                    visible: groupContainer.sectionIconName !== "" && !widget.headerControl
+                    y: hostWindow.centerPx(parent.height, height)
+                    width: hostWindow.snapPx(16)
+                    height: width
+                    source: visible ? hostWindow.lucideIconSource(groupContainer.sectionIconName, 16, groupTitle.color) : ""
+                    // Qt scales this logical request before calling the image provider.
+                    sourceSize: Qt.size(16, 16)
+                    smooth: false
+                }
                 Text {
                     id: groupTitle
                     objectName: "dialogWidget-"
                                 + hostWindow.cleanText(widget.id)
                                 + "GroupTitle"
-                    anchors.left: parent.left
+                    x: groupContainer.sectionIconInset
                     anchors.verticalCenter: parent.verticalCenter
-                    width: parent.width
+                    width: groupContainer.sectionHeading
+                        ? Math.max(0, Math.min(parent.titleWidth - x, hostWindow.capacityPx(sectionTitleMetrics.advanceWidth)))
+                        : parent.width
                     elide: Text.ElideRight
                     text: widget.hotkey ? hostWindow.mnemonicTextWithAccent(widget.title, widget.hotkey, widgetRoot.dialogColors.dialogAccent) : String(widget.title || "")
                     textFormat: widget.hotkey ? Text.StyledText : Text.PlainText
@@ -1024,34 +1310,80 @@ Item {
                 }
                 Loader {
                     id: headerToggle
-                    anchors.fill: parent
+                    width: widget.headerControl
+                        ? Math.min(parent.titleWidth, hostWindow.capacityPx(sectionTitleMetrics.advanceWidth)
+                            + hostWindow.snapPx(44) + groupContainer.sectionIconInset)
+                        : parent.width
+                    height: parent.height
                     active: !!widgetRoot.widget.headerControl
                     function loadHeader() { if (active && source.toString() === "") setSource(Qt.resolvedUrl("SemanticWidgetDelegate.qml"), {
                         hostWindow: widgetRoot.hostWindow, groupHeading: true,
+                        headingIconName: Qt.binding(() => groupContainer.sectionIconName),
                         widget: Qt.binding(() => widgetRoot.widget.headerControl || ({}))
                     }) }
                     Component.onCompleted: loadHeader()
                     onActiveChanged: loadHeader()
                     onLoaded: { item.x = 0; item.y = 0; item.width = Qt.binding(() => headerToggle.width); item.height = Qt.binding(() => headerToggle.height) }
                 }
+                DialogButton {
+                    id: sectionDisclosure
+                    objectName: "dialogWidget-" + hostWindow.cleanText(widget.id) + "SectionDisclosure"
+                    hostWindow: widgetRoot.hostWindow
+                    visible: groupContainer.sectionHeading && widget.collapsible === true
+                    variant: "tool"
+                    width: hostWindow.snapPx(26)
+                    height: width
+                    x: hostWindow.snapPx(parent.width - width)
+                    y: hostWindow.centerPx(parent.height, height)
+                    iconSource: visible ? hostWindow.lucideIconSource(
+                        widget.collapsed === true ? "chevron-down" : "chevron-up", iconSize, hostWindow.textColor) : ""
+                    Accessible.name: widget.collapsed === true ? qsTr("Expand %1").arg(widget.title)
+                                                               : qsTr("Collapse %1").arg(widget.title)
+                    onClicked: hostWindow.action({target: widget.id, action: "control.toggleSection"}, true)
+                }
+                Rectangle {
+                    id: sectionRule
+                    objectName: "dialogWidget-" + hostWindow.cleanText(widget.id) + "SectionRule"
+                    visible: groupContainer.sectionHeading && width > 0
+                    x: hostWindow.snapPx((headerToggle.active ? headerToggle.width : groupTitle.x + groupTitle.width)
+                                         + groupContainer.headingGap)
+                    y: hostWindow.snapPx((parent.height - height) / 2)
+                    width: hostWindow.snapPx(Math.max(0, (sectionDisclosure.visible
+                        ? sectionDisclosure.x - groupContainer.headingGap : parent.width) - x))
+                    height: 1 / hostWindow.dpr
+                    color: widgetRoot.dialogColors.controlBorder
+                    transform: Translate {
+                        x: hostWindow.dialogPixelOffsetX(sectionRule, hostWindow.contentItem)
+                        y: hostWindow.dialogPixelOffsetY(sectionRule, hostWindow.contentItem)
+                    }
+                }
             }
 
             Item {
                 width: parent.width
-                y: widget.bordered === true && groupContainer.contentBounds.height > 0
+                enabled: !groupContainer.conditionGroup || widgetRoot.widget.headerControl.state === 1
+                y: widget.bordered === true
+                    && groupContainer.contentBounds.height > 0
                     ? groupSurface.y + groupContainer.contentPadding - groupContainer.contentBounds.y : 0
                 Repeater {
                     id: groupChildren
-                    model: SemanticChildrenModel { widgets: (widgetRoot.widget.children || []).filter(child => !widgetRoot.widget.headerControl || child.id !== widgetRoot.widget.headerControl.id) }
+                    model: SemanticChildrenModel { widgets: groupContainer.fields }
                     delegate: Loader {
                         id: childLoader
                         required property var widgetData
                         required property var labelData
+                        readonly property real choiceOffset: widgetData.compactChoices === true
+                            ? widgetRoot.groupBodyGrowth : 0
+                        y: choiceOffset
 
                         readonly property real leftInset: item ? item.x
                             : hostWindow.pxX(Number(widgetData.x || 0) - Number(widgetRoot.widget.x || 0))
-                        readonly property real availableWidth: Math.max(1, widgetRoot.width - leftInset
-                            - (widgetRoot.widget.bordered === true ? hostWindow.pxW(2) : 0))
+                        readonly property real rightEdge: widgetRoot.width
+                            - (widgetRoot.widget.bordered === true ? hostWindow.pxW(2) : 0)
+                        readonly property real columnEdge: widgetData.colorMatrixColumnWidth > 0 && labelData.kind === "text"
+                            ? hostWindow.pxX(Number(labelData.x) - Number(widgetRoot.widget.x)
+                                            + Number(widgetData.colorMatrixColumnWidth)) : rightEdge
+                        readonly property real availableWidth: Math.max(1, Math.min(rightEdge, columnEdge) - leftInset)
                         width: widgetData.fillWidth === true || widgetData.colorMatrixCell === true ? availableWidth
                             : Math.min(hostWindow.pxW(widgetData.w || 1), availableWidth)
 
@@ -1060,7 +1392,9 @@ Item {
                         Component.onCompleted: setSource(
                             Qt.resolvedUrl("SemanticWidgetDelegate.qml"), {
                                 "hostWindow": widgetRoot.hostWindow,
-                                "dialogLayout": widgetRoot.dialogLayout,
+                                "dialogLayout": Qt.binding(() => groupContainer.fieldLayout),
+                                "verticalGrowth": Qt.binding(() => childLoader.widgetData.maskChips != null
+                                    ? widgetRoot.groupBodyGrowth : 0),
                                 "labelData": Qt.binding(() => childLoader.labelData),
                                 "widget": Qt.binding(() => childLoader.widgetData),
                                 // Coordinates remain absolute in the wire frame.

@@ -13,7 +13,7 @@ type FilenameTemplate struct {
 
 func CompileFilenameTemplate(source string) (*FilenameTemplate, error) {
 	if strings.IndexByte(source, 0) >= 0 {
-		return nil, fmt.Errorf("NUL is not allowed in a filename template")
+		return nil, fmt.Errorf("NUL is not allowed in a file name template")
 	}
 	p := applyCommandParser{source: source, panel: ApplyCommandPanelActive, allowPrompts: true, filename: true}
 	nodes, err := p.parse()
@@ -26,10 +26,10 @@ func CompileFilenameTemplate(source string) (*FilenameTemplate, error) {
 			switch node.kind {
 			case applyNodeText:
 				if !prompt && strings.ContainsAny(node.text, `/\:<>"|?*`+"\r\n") {
-					return fmt.Errorf("paths and invalid filename characters are not allowed in filename templates")
+					return fmt.Errorf("paths and invalid file name characters are not allowed in file name templates")
 				}
 			case applyNodeInlineList, applyNodeListFile:
-				return fmt.Errorf("lists are not allowed in filename templates")
+				return fmt.Errorf("lists are not allowed in file name templates")
 			case applyNodeFilenameSequence:
 				if prompt {
 					return fmt.Errorf("sequence is not allowed inside prompts")
@@ -51,7 +51,7 @@ func CompileFilenameTemplate(source string) (*FilenameTemplate, error) {
 		}
 	}
 	if sequence != 1 {
-		return nil, fmt.Errorf("filename template must contain exactly one !{seq}! token")
+		return nil, fmt.Errorf("file name template must contain exactly one !{seq}! token")
 	}
 	return &FilenameTemplate{compiled: &CompiledApplyCommand{source: source, nodes: nodes, prompts: p.prompts}}, nil
 }

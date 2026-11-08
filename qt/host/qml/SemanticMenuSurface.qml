@@ -46,10 +46,10 @@ Item {
         return Math.max(0, popupMenuList.count - 1)
     }
 
-    function commitNativeScrollTop() {
+    function commitNativeScrollTop(align = true) {
         const top = nativeTopIndex()
         menuOverlay.semanticTopIndex = top
-        popupMenuList.positionViewAtIndex(top, ListView.Beginning)
+        if (align) popupMenuList.positionViewAtIndex(top, ListView.Beginning)
         hostWindow.action({
             "target": menuOverlay.frame.id,
             "action": "menu.scroll",
@@ -111,6 +111,8 @@ Item {
            : hostWindow.snapPx(menuOverlay.preferredPopupY(height))
         objectName: "semanticMenuPopup-"
                     + hostWindow.cleanText(menuOverlay.frame.id)
+        visible: !menuOverlay.dropdownMode || (menuOverlay.dropdownPresentationInitialized
+                                                && menuOverlay.dropdownOpeningGeometryReady)
         color: menuSurface.dialogColors.dialogHeaderBg
         border.width: menuOverlay.dropdownMode
                       ? hostWindow.separatorWidth : 1
@@ -199,6 +201,18 @@ Item {
             highlightFollowsCurrentItem: !historyMenu
             boundsBehavior: Flickable.StopAtBounds
             interactive: popupMenuScrollBar.nativeOverflow
+            DialogWheelScroll {
+                viewport: popupMenuList
+                hostWindow: menuOverlay.hostWindow
+                rowHeight: menuOverlay.effectiveMenuRowHeight
+                containAtBounds: true
+                onScrolled: {
+                    popupMenuList.historyAnchorIndex = -1
+                    if (!running) menuWheelCommit.restart()
+                    else menuWheelCommit.stop()
+                }
+                onSettled: menuSurface.commitNativeScrollTop(false)
+            }
             transform: Translate {
                 y: menuOverlay.dropdownContentShift
             }
@@ -418,18 +432,10 @@ Item {
             z: 5
         }
 
-        MouseArea {
-            anchors.fill: popupMenuList
-            acceptedButtons: Qt.NoButton
-            onWheel: (wheel) => {
-                var delta = wheel.angleDelta.y > 0 ? -1 : 1
-                hostWindow.action({
-                    "target": menuOverlay.frame.id,
-                    "action": "menu.scroll",
-                    "delta": delta
-                }, true)
-                wheel.accepted = true
-            }
+        Timer {
+            id: menuWheelCommit
+            interval: 100
+            onTriggered: menuSurface.commitNativeScrollTop(false)
         }
 
         Text {

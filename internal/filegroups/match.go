@@ -8,6 +8,7 @@ import (
 	"maps"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -102,7 +103,7 @@ func CompilePredicate(fields map[string]string) (*Predicate, error) {
 		return nil, err
 	}
 	if len(p.include) == 0 {
-		return nil, fmt.Errorf("filename mask must not be empty")
+		return nil, fmt.Errorf("file name mask must not be empty")
 	}
 	if exclude != "" {
 		p.exclude, err = compileMasks(exclude, ignore, false)
@@ -181,30 +182,60 @@ func parseDuration(raw string) (time.Duration, error) {
 	return time.ParseDuration(raw)
 }
 
+type fileAttribute struct {
+	name    string
+	mask    uint32
+	aliases []string
+}
+
+var fileAttributes = [...]fileAttribute{
+	{name: "Directory", mask: attrDir, aliases: []string{"dir", "d"}},
+	{name: "Hidden", mask: attrHidden, aliases: []string{"h"}},
+	{name: "Executable", mask: attrExec, aliases: []string{"exec", "e"}},
+	{name: "ReadOnly", mask: attrReadOnly, aliases: []string{"ro"}},
+	{name: "System", mask: attrSystem, aliases: []string{"sys"}},
+	{name: "Archive", mask: attrArchive, aliases: []string{"arc"}},
+	{name: "Symlink", mask: attrSymlink, aliases: []string{"link", "sym", "l"}},
+	{name: "Junction", mask: attrJunction, aliases: []string{"junc", "j"}},
+}
+
+// AttributeNames returns the canonical names accepted in file group conditions.
+func AttributeNames() []string {
+	names := make([]string, 0, len(fileAttributes))
+	for _, attribute := range fileAttributes {
+		names = append(names, attribute.name)
+	}
+	return names
+}
+
+// CanonicalAttributeName resolves an INI name or alias, or returns an empty
+// string if the name is unknown.
+func CanonicalAttributeName(name string) string {
+	return lookupFileAttribute(name).name
+}
+
+func lookupFileAttribute(name string) fileAttribute {
+	name = strings.ToLower(name)
+	for _, attribute := range fileAttributes {
+		if strings.EqualFold(name, attribute.name) || slices.Contains(attribute.aliases, name) {
+			return attribute
+		}
+	}
+	return fileAttribute{}
+}
+
 func parseAttributes(raw string) (uint32, error) {
 	var result uint32
-	for _, name := range strings.Split(strings.ToLower(raw), ",") {
-		switch strings.TrimSpace(name) {
-		case "":
-		case "directory", "dir", "d":
-			result |= attrDir
-		case "hidden", "h":
-			result |= attrHidden
-		case "executable", "exec", "e":
-			result |= attrExec
-		case "readonly", "ro":
-			result |= attrReadOnly
-		case "system", "sys":
-			result |= attrSystem
-		case "archive", "arc":
-			result |= attrArchive
-		case "symlink", "link", "sym", "l":
-			result |= attrSymlink
-		case "junction", "junc", "j":
-			result |= attrJunction
-		default:
-			return 0, fmt.Errorf("unknown file attribute %q", name)
+	for _, token := range strings.Split(strings.ToLower(raw), ",") {
+		name := strings.TrimSpace(token)
+		if name == "" {
+			continue
 		}
+		attribute := lookupFileAttribute(name)
+		if attribute.mask == 0 {
+			return 0, fmt.Errorf("unknown file attribute %q", token)
+		}
+		result |= attribute.mask
 	}
 	return result, nil
 }
@@ -257,6 +288,23 @@ func compileMasks(raw string, ignore, legacy bool) ([]compiledMask, error) {
 		result = append(result, mask)
 	}
 	return result, nil
+}
+
+// MaskPreviewParts separates comma-delimited chips without splitting Far regular expressions.
+func MaskPreviewParts(raw string, legacy bool) []string {
+	var parts []string
+	if legacy {
+		parts = strings.Split(raw, ",")
+	} else {
+		parts = splitFarMasks(raw, ",", false)
+	}
+	chips := parts[:0]
+	for _, part := range parts {
+		if chip := strings.TrimSpace(part); chip != "" {
+			chips = append(chips, chip)
+		}
+	}
+	return chips
 }
 
 func splitFarMasks(raw, separators string, firstOnly bool) []string {

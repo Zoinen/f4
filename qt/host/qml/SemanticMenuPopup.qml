@@ -50,6 +50,11 @@ Item {
     property rect dropdownAnchorStableRect: Qt.rect(0, 0, 0, 0)
     readonly property bool dropdownAnchorReady:
         dropdownAnchor !== null && dropdownAnchorIndicatorReady
+    // A semantic menu can arrive before its native owner has completed layout.
+    // Wait for the mapped rectangle (and the combo's indicator) before showing it.
+    readonly property bool dropdownOpeningGeometryReady: dropdownAnchorGeometryReady
+        && dropdownAnchor !== null
+        && (dropdownAnchor.externallyOwnedPopup !== true || dropdownAnchorIndicatorReady)
     function fallbackDropdownAnchorRect() {
         const fallbackHeight = hostWindow.dialogControlHeight
         return Qt.rect(hostWindow.snapPx(hostWindow.pxX(frame.x)),
@@ -100,7 +105,7 @@ Item {
         if (!hostWindow || !hostWindow.active)
             return
         const anchor = dropdownAnchor
-        if (!anchor || !anchor.parent || !hostWindow.contentItem
+        if (!anchor || !anchor.parent || !anchor.visible || !hostWindow.contentItem
                 || typeof anchor.mapToItem !== "function")
             return
         const anchorMapped = anchor.mapToItem(hostWindow.contentItem, 0, 0)
@@ -358,7 +363,7 @@ Item {
     }
 
     function beginDropdownOpening() {
-        if (!dropdownMode)
+        if (!dropdownMode || !dropdownPresentationInitialized)
             return
         dropdownCloseAnimation.stop()
         closeContentShiftTarget = 0
@@ -368,26 +373,24 @@ Item {
     }
 
     function initializeDropdownPresentation() {
-        if (!componentReady || !dropdownMode
-                || dropdownPresentationInitialized)
+        if (!componentReady || !dropdownMode || !dropdownOpeningGeometryReady
+                || dropdownPresentationInitialized || closing)
             return
-        dropdownPresentationInitialized = true
         openingSelectedIndex = boundedItemIndex(
                     Math.max(0, Number(frame.selected || 0)))
         closingSelectedIndex = openingSelectedIndex
         closeContentShiftTarget = 0
         revealProgress = 0
         dropdownOpenSettled = false
+        popupMenuList.forceLayout()
         syncListSelection()
         initializeDropdownPosition()
-        if (closing)
-            beginDropdownClosing()
-        else
-            beginDropdownOpening()
+        dropdownPresentationInitialized = true
+        beginDropdownOpening()
     }
 
     function beginDropdownClosing() {
-        if (!dropdownMode) {
+        if (!dropdownMode || !dropdownPresentationInitialized) {
             closeAnimationFinished()
             return
         }
@@ -534,7 +537,6 @@ Item {
         else
             Qt.callLater(reconcilePointerState)
         Qt.callLater(refreshDropdownAnchorIndicator)
-        initializeDropdownPresentation()
     }
     onDropdownAnchorChanged: {
         // A new owner must not inherit the previous combo's indicator until
@@ -544,6 +546,10 @@ Item {
         Qt.callLater(refreshDropdownAnchorIndicator)
     }
     onDropdownAnchorRectChanged: Qt.callLater(refreshDropdownAnchorIndicator)
+    onDropdownOpeningGeometryReadyChanged: {
+        if (dropdownOpeningGeometryReady)
+            Qt.callLater(initializeDropdownPresentation)
+    }
     onDropdownModeChanged: {
         if (dropdownMode) {
             Qt.callLater(refreshDropdownAnchorIndicator)
@@ -564,8 +570,10 @@ Item {
             return
         if (closing)
             beginDropdownClosing()
-        else
+        else if (dropdownPresentationInitialized)
             beginDropdownOpening()
+        else
+            Qt.callLater(initializeDropdownPresentation)
     }
     Component.onCompleted: {
         syncFrameState()
@@ -573,7 +581,7 @@ Item {
         Qt.callLater(refreshDropdownAnchorIndicator)
         Qt.callLater(syncListSelection)
         Qt.callLater(reconcilePointerState)
-        initializeDropdownPresentation()
+        Qt.callLater(initializeDropdownPresentation)
     }
 
     Connections {

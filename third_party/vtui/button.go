@@ -96,18 +96,20 @@ func (b *Button) DisplayObject(scr *ScreenBuf) {
 		labelHotkeyPos -= 2
 	}
 
+	// The idle default uses the theme's accent in the rounded style.
+	idleDefault := b.IsEnterDefault() && !b.mousePressed && n == b.GetStateAttr(normalIdx, normalIdx)
+	b.drawButton(scr, label, labelHotkeyPos, n, h, idleDefault, b.mouseHovered && !b.mousePressed)
+}
+
+func (so *ScreenObject) drawButton(scr *ScreenBuf, label string, hotkeyPos int, n, h uint64, accent, hovered bool) {
 	if roundedButtonsActive() {
-		// The default button in its idle state: no focus, no press. Its
-		// colours are then exactly the "normal" ones of ColDialogHighlightButton.
-		idleDefault := b.IsEnterDefault() && !b.mousePressed && n == b.GetStateAttr(normalIdx, normalIdx)
-		b.drawRoundedButton(scr, label, labelHotkeyPos, n, h, idleDefault, b.mouseHovered && !b.mousePressed)
+		so.drawRoundedButton(scr, label, hotkeyPos, n, h, accent, hovered)
 		return
 	}
-
 	p := NewPainter(scr)
-	p.DrawButtonEar(b.X1, b.Y1, SymButtonEarLeft, n)
-	p.DrawHighlightedText(b.X1+2, b.Y1, label, labelHotkeyPos, n, h)
-	p.DrawButtonEar(b.X1+2+StringWidth(label), b.Y1, SymButtonEarRight, n)
+	p.DrawButtonEar(so.X1, so.Y1, SymButtonEarLeft, n)
+	p.DrawHighlightedText(so.X1+2, so.Y1, label, hotkeyPos, n, h)
+	p.DrawButtonEar(so.X1+2+StringWidth(label), so.Y1, SymButtonEarRight, n)
 }
 
 func (b *Button) ProcessKey(e *vtinput.InputEvent) bool {

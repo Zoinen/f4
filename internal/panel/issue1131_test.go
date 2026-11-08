@@ -276,3 +276,46 @@ func TestIssue1131FilterTakesOverQuickSearch(t *testing.T) {
 		t.Errorf("filter over the quick search shows %v", panelNames(fp))
 	}
 }
+
+func TestPanelSearchModeSurvivesReopeningAndReload(t *testing.T) {
+	oldConfig, oldUserPath, oldPaths := config.App, config.GetUserConfigIniPath, config.GetConfigIniPaths
+	t.Cleanup(func() {
+		config.App, config.GetUserConfigIniPath, config.GetConfigIniPaths = oldConfig, oldUserPath, oldPaths
+		config.ApplyProxySettings()
+	})
+	path := filepath.Join(t.TempDir(), "settings.ini")
+	config.GetUserConfigIniPath = func() string { return path }
+	config.GetConfigIniPaths = func() []string { return []string{path} }
+	config.App = config.DefaultConfig()
+	fp := newAutoFilterPanel(t)
+	toggle := &vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_F2}
+
+	typeIntoPanel(t, fp, "report")
+	fp.ProcessKey(toggle)
+	fp.ExitFastFind()
+	typeIntoPanel(t, fp, "report")
+	if got := fp.FastFindStr; got != "*report" {
+		t.Errorf("new quick search = %q, want *report", got)
+	}
+
+	fp.ExitFastFind()
+	config.App = config.DefaultConfig()
+	config.LoadConfig()
+	typeIntoPanel(t, fp, "report")
+	if got := fp.FastFindStr; got != "*report" {
+		t.Errorf("after reload quick search = %q, want *report", got)
+	}
+	openAutoFilter(t, fp)
+	if got := fp.FastFindStr; got != "*report" {
+		t.Fatalf("after reload filter query = %q, want *report", got)
+	}
+	fp.ProcessKey(toggle)
+	fp.ExitFastFind()
+	config.App = config.DefaultConfig()
+	config.LoadConfig()
+	openAutoFilter(t, fp)
+	typeIntoFilter(t, fp, "report")
+	if got := fp.FastFindStr; got != "report" {
+		t.Errorf("after switching back and reloading filter query = %q, want report", got)
+	}
+}

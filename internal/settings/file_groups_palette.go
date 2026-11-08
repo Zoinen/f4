@@ -13,7 +13,7 @@ import (
 var fileGroupEditorColorKeys = []string{"NormalColor", "SelectedColor", "CursorColor", "SelectedCursorColor"}
 
 // The form keeps four ordinary controls, but their storage belongs to the
-// selected colour theme. Each child owns its routing state and theme records.
+// selected color theme. Each child owns its routing state and theme records.
 type fileGroupEditorColors struct {
 	themeID, name string
 	loaded        map[string]string
@@ -157,7 +157,7 @@ func fileGroupPaletteFields(fields []f4settings.Field, values map[string]string)
 		result = append(result, field)
 	}
 	order := groupField(strings.TrimPrefix(prefix, "group.")+"Order", "Highlight priority",
-		"Order inside the current colour scheme's cascade. Lower numbers are processed first.", f4settings.Integer)
+		"Order inside the current color scheme's cascade. Lower numbers are processed first.", f4settings.Integer)
 	order.Group = "Highlighting"
 	result = append(result, order)
 	for _, field := range fields {
@@ -166,7 +166,7 @@ func fileGroupPaletteFields(fields []f4settings.Field, values map[string]string)
 		}
 		field.ID = prefix + fileGroupFieldKey(field.ID)
 		field.Label = f4settings.Text{English: "Highlight: " + field.Label.English}
-		field.Description = f4settings.Text{English: "Matching for the current colour scheme's highlighting only. " +
+		field.Description = f4settings.Text{English: "Matching for the current color scheme's highlighting only. " +
 			"The group's main conditions still control icons, sorting and associations."}
 		field.Group = "Highlight conditions (" + config.App.ColorStyle + ")"
 		result = append(result, field)

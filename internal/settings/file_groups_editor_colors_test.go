@@ -301,3 +301,23 @@ func TestFileGroupChildColorsEmptyThemeRecordsRetainLegacyPaletteControls(t *tes
 		t.Fatal("legacy edit escaped into colour themes")
 	}
 }
+
+func TestFileGroupColorPickerUpdatesDraftAndClearsOverride(t *testing.T) {
+	parent, view := setupFileGroupColorChild(t)
+	child := view.childEditor(0)
+	defer child.sessions[0].draft.Close()
+	scratch := child.sessions[0].draft
+	for _, value := range []string{"foreground:#ff0000", ""} {
+		if !child.HandleSemanticAction(map[string]any{
+			"target": "id:setting:group.NormalColor", "action": "control.setText", "text": value,
+		}) {
+			t.Fatal("color picker update was not handled")
+		}
+		if got := scratch.Values["group.NormalColor"]; got != value {
+			t.Fatalf("draft value = %q, want %q", got, value)
+		}
+	}
+	if got := parent.Records["filegroups.colorthemes"][1].Values["Color.text-files.NormalColor"]; got != "foreground:#112233" {
+		t.Fatalf("picker modified the saved theme before applying: %q", got)
+	}
+}

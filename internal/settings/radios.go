@@ -10,7 +10,7 @@ func settingsUseRadios(f f4settings.Field) bool {
 	if f.AllowCustom || f.ChoicePresentation == "dropdown" {
 		return false
 	}
-	return len(f.Choices) > 0 && (f.ChoicePresentation == "radio" || len(f.Choices) <= 5)
+	return len(f.Choices) > 0 && (f.ChoicePresentation == "radio" || f.ChoicePresentation == "buttons" || len(f.Choices) <= 5)
 }
 
 type settingsRadioOption struct {
@@ -30,15 +30,17 @@ func (b *settingsRadioOption) Show(scr *vtui.ScreenBuf) {
 
 type settingsRadios struct {
 	*vtui.Group
-	buttons   []*settingsRadioOption
-	hover     int
-	onExplain func()
+	buttons     []*settingsRadioOption
+	buttonStyle bool
+	hover       int
+	onExplain   func()
 }
 
-func newSettingsRadios(labels []string, selected int, change func(int)) *settingsRadios {
-	r := &settingsRadios{Group: vtui.NewGroup(0, 0, 20, 1), hover: -1}
+func newSettingsRadios(labels []string, selected int, buttonStyle bool, change func(int)) *settingsRadios {
+	r := &settingsRadios{Group: vtui.NewGroup(0, 0, 20, 1), hover: -1, buttonStyle: buttonStyle}
 	for i, label := range labels {
 		b := &settingsRadioOption{RadioButton: vtui.NewRadioButton(0, 0, label, i == selected), label: label}
+		b.ButtonStyle = buttonStyle
 		b.OnChange = func(on bool) {
 			if !on {
 				return
@@ -69,7 +71,11 @@ func (r *settingsRadios) layout(width int) int {
 	inline := r.inlineWidth() <= width
 	x, y := 0, 0
 	for _, b := range r.buttons {
-		b.lines = settingsWrap(b.label, max(1, width-4))
+		if r.buttonStyle {
+			b.lines = []string{vtui.TruncateString(b.label, max(1, width-4), "…")}
+		} else {
+			b.lines = settingsWrap(b.label, max(1, width-4))
+		}
 		b.SetText(b.lines[0])
 		b.dx, b.dy = x, y
 		if inline {
@@ -106,9 +112,9 @@ func (r *settingsRadios) helpIndex() int {
 }
 func (r *settingsRadios) ProcessKey(e *vtinput.InputEvent) bool {
 	r.hover = -1
-	// Left/Right retain the Settings Center's category/content pane navigation.
-	// Up/Down browse visible choices; Space selects without changing on focus.
-	if e.VirtualKeyCode == vtinput.VK_LEFT || e.VirtualKeyCode == vtinput.VK_RIGHT {
+	// Horizontal button groups browse with arrows. Ordinary radios leave
+	// Left/Right for category navigation. Space selects the focused choice.
+	if !r.buttonStyle && (e.VirtualKeyCode == vtinput.VK_LEFT || e.VirtualKeyCode == vtinput.VK_RIGHT) {
 		return false
 	}
 	return r.Group.ProcessKey(e)

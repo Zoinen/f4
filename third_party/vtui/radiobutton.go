@@ -8,7 +8,9 @@ import (
 // RadioButton represents an individual radio button widget.
 type RadioButton struct {
 	ScreenObject
-	Selected     bool
+	Selected bool
+	// ButtonStyle draws the choice as a push button with a persistent selected state.
+	ButtonStyle  bool
 	OnChange     func(bool)
 	mouseHovered bool
 }
@@ -33,6 +35,26 @@ func (rb *RadioButton) DisplayObject(scr *ScreenBuf) {
 	if !rb.IsVisible() {
 		return
 	}
+	if rb.ButtonStyle {
+		normal, highlight := ColDialogButton, ColDialogHighlightButton
+		if rb.Selected {
+			normal, highlight = ColDialogSelectedButton, ColDialogHighlightSelectedButton
+		}
+		n, h := rb.GetStateAttrs(normal, normal, highlight, highlight)
+		// The rounded renderer already tints button surfaces. Give inactive
+		// terminal segments the same tint so they stand apart from the dialog.
+		if !rb.Selected && !roundedButtonsActive() {
+			n = roundedButtonAttr(n, rb.IsDisabled(), false)
+			h = roundedButtonAttr(h, rb.IsDisabled(), false)
+		}
+		if rb.IsFocused() {
+			n |= CommonLvbUnderscore
+			h |= CommonLvbUnderscore
+		}
+		rb.drawButton(scr, rb.cleanText, rb.hotkeyPos, n, h, rb.Selected, rb.mouseHovered)
+		return
+	}
+
 	n, h := rb.GetStateAttrs(ColDialogText, ColDialogSelectedButton, ColDialogHighlightText, ColDialogHighlightSelectedButton)
 	hovered := rb.mouseHovered && roundedButtonsActive()
 	if hovered {

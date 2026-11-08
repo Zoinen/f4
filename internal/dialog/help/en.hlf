@@ -51,11 +51,11 @@ assigned menu letter can also activate it.
 ~Preview navigation, keyboard and mouse reference~VisRenPreview@
 ~Editing the rename list in the UTF-8 editor~VisRenEditor@
 ~Rename execution, errors, the log and Undo~VisRenRename@
-~Portable filename rules and important limitations~VisRenSafety@
+~Portable file name rules and important limitations~VisRenSafety@
 ~Practical recipes~VisRenExamples@
 
 The implementation follows FarPlugins VisRen 3.2.0, with stricter
-filename/editor validation, stable random values and portable metadata.
+file name/editor validation, stable random values and portable metadata.
 
 @VisRenQuickStart
 $VisRen: quick start and dialog fields
@@ -97,14 +97,14 @@ values when inserted.
 #Search controls#
 
 Search and replacement are applied after both masks have built one
-complete filename. Case sensitive is enabled initially. Regular
+complete file name. Case sensitive is enabled initially. Regular
 expression switches between literal search and regex mode. Details are
 in the Search topic.
 
 #Live preview and diagnostics#
 
 Every edit updates the preview. If a mask, range, counter, regex, or
-resulting filename is invalid, all destinations become <Error!>.
+resulting file name is invalid, all destinations become <Error!>.
 Rename and F4 Editor are disabled. F3 shows the actual diagnostic.
 
 The four edit fields use F4's history. Values used for Rename are added
@@ -207,11 +207,11 @@ If both [TL] and [TR] are present, [TL] has priority.
 
   1. Name and extension expressions are expanded.
   2. The two parts are joined with a dot when the extension is non-empty.
-  3. Search/Replace is applied to that complete filename.
+  3. Search/Replace is applied to that complete file name.
   4. The result is split again at its last dot.
   5. Transliteration is applied to the part whose mask requested it.
   6. The selected case transformation is applied last.
-  7. The final single filename component is validated.
+  7. The final single file name component is validated.
 
 This order matters. A case transform also affects replacement text
 inserted into its part, while Search can match the generated extension.
@@ -268,8 +268,8 @@ metadata, while upper-case [M]/[R] are transformation/random expressions.
 PE version data is parsed natively on every supported operating system. A
 file with no usable fixed version expands [V] to an empty string.
 
-Metadata text containing path separators or other forbidden filename
-characters is discarded or caught by final filename validation. Always
+Metadata text containing path separators or other forbidden file name
+characters is discarded or caught by final file name validation. Always
 inspect the preview when tags come from files you do not control.
 
 Press Backspace to return to the VisRen contents.
@@ -401,7 +401,7 @@ When the editor closes, VisRen requires:
   - exactly one or two quoted columns, according to the chosen mode;
   - no extra text outside quoted values;
   - an unchanged source column in two-column mode;
-  - one valid portable filename component for every destination.
+  - one valid portable file name component for every destination.
 
 Do not add or remove lines. In two-column mode, source identity and row
 order must stay exact; only destinations may change. In one-column mode,
@@ -473,9 +473,9 @@ if only part succeeds, while unresolved items remain marked.
 Press Backspace to return to the VisRen contents.
 
 @VisRenSafety
-$VisRen: filename safety and limitations
+$VisRen: file name safety and limitations
 
-Every changed destination must be one portable filename component. VisRen
+Every changed destination must be one portable file name component. VisRen
 rejects:
 
   - an empty name, "." or "..";
@@ -622,7 +622,7 @@ Ctrl+M.
 
 Sequential runs one command at a time. Parallel uses the selected worker
 limit. Queue runs one sequential batch in the background. All modes execute
-on the host that owns the active panel and provide one cancellable transcript.
+on the host that owns the active panel and provide one cancelable transcript.
 Commands are noninteractive and receive closed standard input.
 
 The transcript window can be resized or expanded with F5 and may be closed
@@ -981,7 +981,7 @@ $Clipboard images
   text, or Cancel. The dialog shows a scrollable text preview.
 
   File operations / Clipboard images in Settings controls PNG/JPEG output,
-  lossless PNG compression, JPEG quality, filename prefix, stem template,
+  lossless PNG compression, JPEG quality, file name prefix, stem template,
   and minimum digit width. Defaults produce screenshot001.png.
 
   The stem template accepts Ctrl+G scalar substitutions and input prompts.

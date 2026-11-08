@@ -109,7 +109,7 @@ type Field struct {
 	// remains editable in a terminal; graphical clients may add an image preview.
 	IconTheme string
 	Choices   []Choice
-	// ChoicePresentation optionally requests "radio" or "dropdown". Empty lets
+	// ChoicePresentation optionally requests "radio", "buttons", or "dropdown". Empty lets
 	// the frontend expose small fixed lists as radios and longer lists as dropdowns.
 	ChoicePresentation string
 	// AllowCustom permits a choice field to accept a value outside its list.

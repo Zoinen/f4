@@ -91,3 +91,34 @@ func TestPanelsFrameTerminalKeyBarFallbacksAreLocalized(t *testing.T) {
 		}
 	}
 }
+
+func TestPanelsFrameKeyBarF2FollowsFastFind(t *testing.T) {
+	i18n.InitLang("en", "", "")
+	t.Cleanup(func() { i18n.InitLang("", "", "") })
+	fsp := &FileSystemPanel{}
+	pf := &PanelsFrame{ShowPanels: true}
+	pf.Panels[0] = fsp
+	normal := pf.GetKeyLabels()
+
+	for _, filtering := range []bool{false, true} {
+		fsp.FastFindMode = true
+		fsp.autoFilterMode = filtering
+		for _, tc := range []struct{ query, label string }{
+			{"9564", "Search anywhere"},
+			{"*9564", "Search from start"},
+		} {
+			fsp.FastFindStr = tc.query
+			labels := pf.GetKeyLabels()
+			if got := labels.Normal[1]; got != tc.label {
+				t.Errorf("filtering=%v, query=%q: F2 = %q, want %q", filtering, tc.query, got, tc.label)
+			}
+			if labels.Shift[1] != normal.Shift[1] || labels.Ctrl[1] != normal.Ctrl[1] || labels.Alt[1] != normal.Alt[1] {
+				t.Error("modified F2 labels changed during search")
+			}
+		}
+	}
+	fsp.FastFindMode = false
+	if got := pf.GetKeyLabels().Normal[1]; got != normal.Normal[1] {
+		t.Errorf("after search: F2 = %q, want %q", got, normal.Normal[1])
+	}
+}

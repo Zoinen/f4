@@ -58,6 +58,7 @@ Item {
             return Object.assign({}, widget, {helpStacked: wideHelp})
         if (widget.layoutRole === "content")
             return Object.assign({}, widget, {
+                nativeScrollOwner: sectionsOnly,
                 scrollbarContentGap: hostWindow.snapPx(16),
                 unscrolledRightInset: hasNavigation ? (wideHelp ? 2 * gap - helpGap : gap) : 0
             })
@@ -293,6 +294,8 @@ Item {
         contentWidth: nativeContent.width
         contentHeight: nativeContent.height
         boundsBehavior: Flickable.StopAtBounds
+        interactive: contentHeight > height || contentWidth > width
+        DialogWheelScroll { viewport: nativeViewport; hostWindow: body.hostWindow }
         Item {
             id: nativeContent
             objectName: "nativeSettingsContent"

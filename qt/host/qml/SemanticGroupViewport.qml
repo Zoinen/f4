@@ -18,9 +18,37 @@ Item {
     readonly property real maximumScroll: Math.max(0, viewport.contentHeight - viewport.height)
     readonly property int semanticMaximum: Math.max(0, Number(widget.contentHeight || 0) - Number(widget.h || 1))
     property bool synchronizing: false
+    property var submittedScrolls: []
+    property int lastNativeScroll: -1
+    readonly property bool nativeScrollOwner: widget.nativeScrollOwner === true
+    readonly property int scrollRequestRevision: Number((widget.scrollRequest || {}).revision || 0)
     readonly property int semanticScroll: Number(widget.scrollTop || 0)
     readonly property var focused: widget.focused === true ? metrics.focusedWidget(widget.children || []) : null
     readonly property string focusedID: focused ? String(focused.id) : ""
+    readonly property var groups: widget.children || []
+    readonly property var conditionPlacement: {
+        const left = groups.findIndex(group => group.conditionColumn === true && group.x === widget.x)
+        if (left < 0)
+            return {tops: [], growth: 0, end: -1, shift: 0}
+        let end = left + 1
+        const tops = []
+        const top = metrics.widgetTop(groups[left])
+        const gap = hostWindow.snapPx(8)
+        let rightBottom = top
+        const leftItem = rows.revision > 0 ? rows.itemAt(left) : null
+        const leftBottom = top + (leftItem && leftItem.item ? leftItem.item.naturalGroupHeight : 0)
+        while (end < groups.length && groups[end].conditionColumn === true) {
+            const row = rows.itemAt(end)
+            tops[end] = rightBottom
+            rightBottom += (row && row.item ? row.item.naturalGroupHeight : 0) + gap
+            ++end
+        }
+        const bottom = Math.max(leftBottom, rightBottom - gap)
+        const nextTop = end < groups.length ? metrics.widgetTop(groups[end]) : metrics.contentHeight
+        return {tops: tops, growth: Math.max(0, bottom - leftBottom), end: end,
+                shift: bottom + hostWindow.snapPx(12) - nextTop}
+    }
+    readonly property real contentHeight: Math.max(0, metrics.contentHeight + conditionPlacement.shift)
 
     SemanticDialogLayout {
         id: metrics
@@ -32,18 +60,29 @@ Item {
         maximumWidth: root.contentAreaWidth
     }
 
-    function synchronizeScroll() {
+    function synchronizeScroll(top = semanticScroll) {
+        wheelScroll.cancel()
         synchronizing = true
         viewport.contentY = hostWindow.snapPx(semanticMaximum > 0
-                            ? maximumScroll * semanticScroll / semanticMaximum : 0)
+                            ? maximumScroll * Math.min(semanticMaximum, top) / semanticMaximum : 0)
         synchronizing = false
     }
     function commitScroll() {
         if (synchronizing || maximumScroll <= 0 || semanticMaximum <= 0)
             return
         const value = Math.round(viewport.contentY / maximumScroll * semanticMaximum)
-        if (value !== semanticScroll)
-            hostWindow.action({"target": widget.id, "action": "control.scroll", "value": value}, true)
+        if (nativeScrollOwner) {
+            if (value === lastNativeScroll)
+                return
+            lastNativeScroll = value
+        } else {
+            const lastSubmitted = submittedScrolls.length > 0
+                ? submittedScrolls[submittedScrolls.length - 1] : semanticScroll
+            if (value === lastSubmitted)
+                return
+            submittedScrolls.push(value)
+        }
+        hostWindow.action({"target": widget.id, "action": "control.scroll", "value": value}, true)
     }
     function clampScroll() {
         // Layout can settle after native scrolling starts, before its debounced
@@ -58,14 +97,41 @@ Item {
     function ensureFocusVisible() {
         if (!focused)
             return
-        const top = padding + metrics.widgetTop(focused)
-        const bottom = top + metrics.widgetHeight(focused)
-        if (top < viewport.contentY)
-            viewport.contentY = hostWindow.snapPx(Math.max(0, top - padding))
-        else if (bottom > viewport.contentY + viewport.height)
-            viewport.contentY = hostWindow.snapPx(Math.min(maximumScroll, bottom - viewport.height + padding))
+        // Use the displayed geometry when condition groups have independent
+        // row metrics and the semantic coordinates still describe the terminal.
+        const item = content.findDialogControl(focusedID)
+        const top = item ? item.mapToItem(content, 0, 0).y + padding : padding + metrics.widgetTop(focused)
+        const bottom = top + (item ? item.height : metrics.widgetHeight(focused))
+        if (top < viewport.contentY || bottom > viewport.contentY + viewport.height) {
+            wheelScroll.cancel()
+            viewport.contentY = hostWindow.snapPx(top < viewport.contentY
+                ? Math.max(0, top - padding) : Math.min(maximumScroll, bottom - viewport.height + padding))
+        }
     }
-    onSemanticScrollChanged: Qt.callLater(synchronizeScroll)
+    onScrollRequestRevisionChanged: {
+        if (nativeScrollOwner && scrollRequestRevision > 0) {
+            lastNativeScroll = -1
+            Qt.callLater(() => {
+                synchronizeScroll(Number(widget.scrollRequest.top))
+                commitScroll()
+            })
+        }
+    }
+    onSemanticScrollChanged: {
+        // In the single-page editor scrollTop is a mirror of the native
+        // viewport. A delayed frame must not drive the viewport backwards.
+        if (nativeScrollOwner)
+            return
+        // The core can coalesce updates and acknowledge a position after the
+        // user has already scrolled farther. Keep the native pixel position.
+        const acknowledged = submittedScrolls.indexOf(semanticScroll)
+        if (acknowledged >= 0) {
+            submittedScrolls = submittedScrolls.slice(acknowledged + 1)
+            return
+        }
+        submittedScrolls = []
+        Qt.callLater(synchronizeScroll)
+    }
     onMaximumScrollChanged: Qt.callLater(clampScroll)
     onFocusedIDChanged: Qt.callLater(ensureFocusVisible)
     Component.onCompleted: Qt.callLater(synchronizeScroll)
@@ -76,11 +142,22 @@ Item {
         anchors.fill: parent
         clip: true
         contentWidth: width
-        contentHeight: Math.max(height, root.hostWindow.snapPx(metrics.contentHeight + 2 * root.padding))
+        contentHeight: Math.max(height, root.hostWindow.snapPx(root.contentHeight + 2 * root.padding))
         boundsBehavior: Flickable.StopAtBounds
         pixelAligned: true
         flickableDirection: Flickable.VerticalFlick
         onMovementEnded: root.commitScroll()
+        interactive: root.maximumScroll > 0
+        DialogWheelScroll {
+            id: wheelScroll
+            viewport: viewport
+            hostWindow: root.hostWindow
+            onScrolled: {
+                if (running) scrollCommit.stop()
+                else scrollCommit.restart()
+            }
+            onSettled: root.commitScroll()
+        }
         onContentYChanged: {
             if (!root.synchronizing && (moving || scrollBar.pressed))
                 scrollCommit.restart()
@@ -102,29 +179,53 @@ Item {
             id: content
             y: root.padding
             width: root.contentAreaWidth
-            height: metrics.contentHeight
+            height: root.contentHeight
+            function findDialogControl(id) {
+                const name = "dialogWidget-" + root.hostWindow.cleanText(id) + "Root"
+                function find(item) {
+                    if (item.objectName === name)
+                        return item
+                    for (const child of item.children) {
+                        const control = find(child)
+                        if (control)
+                            return control
+                    }
+                    return null
+                }
+                return find(content)
+            }
             // Snap the scroll translation as a whole before native text, icons
             // and control backgrounds inherit it, including wheel rest states.
             readonly property point dialogPixelTranslation: Qt.point(pixelTranslation.x, pixelTranslation.y)
             transform: Translate {
                 id: pixelTranslation
                 x: root.hostWindow.dialogPixelOffsetX(content, root.hostWindow.contentItem)
-                y: root.hostWindow.dialogPixelOffsetY(content, root.hostWindow.contentItem)
+                y: wheelScroll.running ? 0 : root.hostWindow.dialogPixelOffsetY(content, root.hostWindow.contentItem)
             }
             Repeater {
-                model: SemanticChildrenModel { widgets: root.widget.children || [] }
+                id: rows
+                property int revision: 0
+                onItemAdded: revision++
+                onItemRemoved: revision++
+                model: SemanticChildrenModel { widgets: root.groups }
                 delegate: Loader {
                     id: childLoader
                     required property var widgetData
                     required property var labelData
+                    required property int index
+                    readonly property var placement: root.conditionPlacement
+                    y: placement.tops[index] !== undefined ? placement.tops[index] - metrics.widgetTop(widgetData)
+                        : placement.end >= 0 && index >= placement.end ? placement.shift : 0
                     readonly property real availableWidth: Math.max(1, content.width - root.hostWindow.pxX(Number(widgetData.x || 0) - Number(root.widget.x || 0)))
-                    width: root.description || widgetData.kind === "group" ? availableWidth
-                        : Math.min(root.hostWindow.pxW(widgetData.w || 1), availableWidth)
+                    width: root.description || (widgetData.kind === "group" && widgetData.conditionColumn !== true)
+                        ? availableWidth : Math.min(root.hostWindow.pxW(widgetData.w || 1), availableWidth)
                     Component.onCompleted: setSource(Qt.resolvedUrl("SemanticWidgetDelegate.qml"), {
                         "hostWindow": root.hostWindow,
                         "widget": Qt.binding(() => childLoader.widgetData),
                         "labelData": Qt.binding(() => childLoader.labelData),
                         "dialogLayout": metrics,
+                        "groupBodyGrowth": Qt.binding(() => childLoader.widgetData.conditionColumn === true
+                            && childLoader.widgetData.x === root.widget.x ? childLoader.placement.growth : 0),
                         "originX": Qt.binding(() => Number(root.widget.x || 0)),
                         "originY": Qt.binding(() => Number(root.widget.y || 0) - 1),
                         "maximumWidth": Qt.binding(() => childLoader.availableWidth)

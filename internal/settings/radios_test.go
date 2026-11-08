@@ -8,6 +8,7 @@ import (
 	"github.com/unxed/f4/internal/config"
 	"github.com/unxed/f4/internal/i18n"
 	"github.com/unxed/f4/internal/testutil"
+	"github.com/unxed/f4/internal/theme"
 	"github.com/unxed/f4/sdk/f4settings"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
@@ -170,7 +171,7 @@ func TestSettingsRadioCaptionThreeLayouts(t *testing.T) {
 	} {
 		config.App.Language = test.language
 		changed := false
-		radios := newSettingsRadios(test.labels, 1, func(int) { changed = true })
+		radios := newSettingsRadios(test.labels, 1, false, func(int) { changed = true })
 		v := newSettingsViewport()
 		row := &settingsRow{field: f4settings.Field{Group: "test", Label: f4settings.Text{English: test.caption, Literal: true}}, control: radios, match: true}
 		v.rows = []*settingsRow{row}
@@ -202,5 +203,84 @@ func TestSettingsRadioCaptionThreeLayouts(t *testing.T) {
 				t.Fatal("resizing changed selection")
 			}
 		}
+	}
+}
+
+func TestSettingsChoiceButtonsUseEveryConsoleTheme(t *testing.T) {
+	palette := append([]uint64(nil), vtui.Palette...)
+	glyphStyle, backend := vtui.CurrentGlyphStyle(), vtui.ActiveBackend()
+	t.Cleanup(func() {
+		_ = theme.ApplyColorStyle(config.App.ColorStyle)
+		copy(vtui.Palette, palette)
+		vtui.SetGlyphStyle(glyphStyle)
+		vtui.SetActiveBackend(backend)
+	})
+	for _, style := range theme.AvailableColorStyles() {
+		t.Run(style.Name, func(t *testing.T) {
+			if err := theme.ApplyColorStyle(style.Name); err != nil {
+				t.Fatal(err)
+			}
+			for _, mode := range []struct {
+				name    string
+				backend string
+				glyphs  vtui.GlyphStyle
+			}{
+				{"terminal", "", vtui.GlyphStyleClassic},
+				{"rounded", "gogpu", vtui.GlyphStyleRounded},
+			} {
+				t.Run(mode.name, func(t *testing.T) {
+					vtui.SetActiveBackend(mode.backend)
+					vtui.SetGlyphStyle(mode.glyphs)
+					selected := 0
+					control := newSettingsRadios([]string{"far", "legacy-glob"}, selected, true, func(i int) { selected = i })
+					control.SetFocus(false)
+					control.layout(40)
+					control.SetPosition(0, 0, 39, 0)
+					scr := vtui.NewSilentScreenBuf()
+					scr.AllocBuf(40, 1)
+					attrs := func() (uint64, uint64) {
+						control.Show(scr)
+						first, second := control.buttons[0], control.buttons[1]
+						return scr.GetCell(first.X1+2, 0).Attributes, scr.GetCell(second.X1+2, 0).Attributes
+					}
+					on, off := attrs()
+					if on == off {
+						t.Fatal("selected and unselected buttons look identical")
+					}
+					if mode.backend == "" && on != vtui.Palette[vtui.ColDialogSelectedButton] {
+						t.Fatal("selected button does not use the active dialog palette")
+					}
+					_, offBg := theme.GetColorRGBBoth(off)
+					for _, slot := range []int{vtui.ColDialogText, theme.ColDialogSettingsBackground} {
+						if vtui.Palette[slot] == 0 {
+							continue
+						}
+						_, dialogBg := theme.GetColorRGBBoth(vtui.Palette[slot])
+						if offBg == dialogBg {
+							t.Fatalf("inactive button and dialog have the same background #%06x", offBg)
+						}
+					}
+
+					control.SetFocus(true)
+					control.ProcessKey(&vtinput.InputEvent{KeyDown: true, VirtualKeyCode: vtinput.VK_RIGHT})
+					if control.GetFocusedItem() != control.buttons[1] || selected != 0 {
+						t.Fatal("arrow navigation should move focus without changing selection")
+					}
+					control.ProcessKey(&vtinput.InputEvent{KeyDown: true, VirtualKeyCode: vtinput.VK_SPACE})
+					if selected != 1 || control.buttons[0].Selected || !control.buttons[1].Selected {
+						t.Fatal("Space should select exactly one button")
+					}
+					control.SetFocus(false)
+					if gotOff, gotOn := attrs(); gotOff != off || gotOn != on {
+						t.Fatal("selection did not move the selected styling")
+					}
+					control.SetDisabled(true)
+					disabledOff, disabledOn := attrs()
+					if disabledOff == off || disabledOn == on {
+						t.Fatal("disabled buttons retain their enabled styling")
+					}
+				})
+			}
+		})
 	}
 }

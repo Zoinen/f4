@@ -429,10 +429,13 @@ func TestFileGroupOverviewSemanticAndHeaderControls(t *testing.T) {
 	}
 	child := v.childEditor(0)
 	defer child.sessions[0].draft.Close()
-	child.selectCategory("filegroup-Appearance")
+	child.selectCategory("filegroup-Highlighting")
 	projection := child.page.SemanticNode(&vtui.SemanticContext{})
 	var headers []map[string]any
 	for _, box := range semantic.AppMapSlice(projection["children"]) {
+		if box["layoutRole"] != "section-header" {
+			continue
+		}
 		if h := semantic.AppMap(box["headerControl"]); len(h) > 0 {
 			headers = append(headers, h)
 		}

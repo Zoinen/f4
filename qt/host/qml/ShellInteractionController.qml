@@ -298,12 +298,12 @@ Item {
                 && !sceneStore.hasOperationsQueueSurface()
     }
 
-    function nativeControlRetainsFocus() {
+    function nativeControlRetainsFocus(inDialog = false) {
         let item = hostWindow.activeFocusItem
         if (!item || !item.visible || !item.enabled)
             return false
         while (item && item !== hostWindow.contentItem) {
-            if (item.retainsFocusOnShellRefresh === true)
+            if (inDialog ? item.retainsFocusOnDialogRefresh === true : item.retainsFocusOnShellRefresh === true)
                 return true
             item = item.parent
         }
@@ -316,7 +316,8 @@ Item {
         if (hostWindow.queueDropdownOpen && !sceneStore.hasBlockingOverlay())
             return
         if (sceneStore.hasBlockingOverlay() || sceneStore.needsFallbackGrid()) {
-            focusTarget.forceActiveFocus()
+            if (!nativeControlRetainsFocus(true))
+                focusTarget.forceActiveFocus()
             return
         }
         // Activation and background panel updates can arrive after a click

@@ -81,7 +81,7 @@ Item {
     property color galleryCursorBorderColor: "#1d5888"
     property color galleryCardCursorBorderColor: "#2777b8"
     property color gallerySelectionColor: "#ffd43b"
-    property color galleryMarkedBackgroundColor: "#4f5037"
+    property color galleryMarkedBackgroundColor: "#51451b"
     property color galleryMarkedTextColor: "#ffd43b"
     property color galleryItemBackgroundColor: "#00000000"
     property color galleryDirectoryBackgroundColor: "#00000000"
@@ -138,7 +138,7 @@ Item {
         { id: "galleryCursorBorderColor", name: "Details Cursor Border", group: "Panel Colors", defaultColor: "#1d5888" },
         { id: "galleryCardCursorBorderColor", name: "Card Cursor Border", group: "Panel Colors", defaultColor: "#2777b8" },
         { id: "gallerySelectionColor", name: "Selection Border", group: "Panel Colors", defaultColor: "#ffd43b" },
-        { id: "galleryMarkedBackgroundColor", name: "Marked Row Background", group: "Panel Colors", defaultColor: "#4f5037" },
+        { id: "galleryMarkedBackgroundColor", name: "Marked Row Background", group: "Panel Colors", defaultColor: "#51451b" },
         { id: "galleryMarkedTextColor", name: "Marked Item Text", group: "Panel Colors", defaultColor: "#ffd43b" },
         { id: "galleryItemBackgroundColor", name: "Image Card Background", group: "Panel Colors", defaultColor: "#00000000" },
         { id: "galleryDirectoryBackgroundColor", name: "Directory Card Background", group: "Panel Colors", defaultColor: "#00000000" },

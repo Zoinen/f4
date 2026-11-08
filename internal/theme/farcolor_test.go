@@ -1,8 +1,10 @@
 package theme
 
 import (
-	"github.com/unxed/vtui"
+	"strings"
 	"testing"
+
+	"github.com/unxed/vtui"
 )
 
 func TestValidateFarColor(t *testing.T) {
@@ -77,5 +79,21 @@ func TestParseFarColor(t *testing.T) {
 	def := uint64(0x12345678)
 	if ParseFarColor("", def) != def {
 		t.Error("Empty expression should return default attribute")
+	}
+}
+func TestFarColorComponentsPreserveUntouchedChannel(t *testing.T) {
+	for _, expr := range []string{
+		"", "F_WHITE | B_CYAN", "Panel.Text", "Panel.Text | foreground:#123456",
+		"background:#112233 | F_WHITE", "foreground:Panel.Text | background:#112233",
+	} {
+		foreground, background := FarColorComponents(expr)
+		recombined := strings.Trim(strings.Join([]string{foreground, background}, " | "), " |")
+		if got, want := ParseFarColor(recombined, 7), ParseFarColor(expr, 7); got != want {
+			t.Errorf("%q decomposed to %q: attributes %x, want %x", expr, recombined, got, want)
+		}
+	}
+	foreground, background := FarColorComponents("Panel.Text | F_RED")
+	if foreground != "F_RED" || background != "background:Panel.Text" {
+		t.Fatalf("later foreground override lost: %q, %q", foreground, background)
 	}
 }

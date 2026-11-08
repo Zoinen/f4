@@ -1,5 +1,6 @@
 #include "PointerRowAnchor.h"
 #include "DummyQWK.h"
+#include <ZoinGallery/GalleryRuntime.h>
 #include "TestExtUiStateController.h"
 
 #include <QCoreApplication>
@@ -432,6 +433,7 @@ struct DocumentFixture {
         engine.rootContext()->setContextProperty(QStringLiteral("f4UsesQwk"),
                                                   false);
         DummyQWK::registerTypes(&engine);
+        ZoinGallery::GalleryRuntime::registerTypes();
         engine.load(QUrl(QStringLiteral("qrc:/F4QtHost/qml/main.qml")));
         if (engine.rootObjects().isEmpty())
             return;

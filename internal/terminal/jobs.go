@@ -239,7 +239,7 @@ func (r *BackgroundJobRegistry) Cancel(id int) bool {
 	var cancel func()
 	if e != nil && !e.state.Done {
 		cancel = e.cancel
-		e.state.Status = "cancelling"
+		e.state.Status = "canceling"
 	}
 	r.mu.Unlock()
 	if e == nil || e.state.Done {

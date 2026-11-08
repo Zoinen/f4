@@ -195,6 +195,13 @@ Item {
                           ? hostWindow.autocompleteSelectedIndex : -1
             boundsBehavior: Flickable.StopAtBounds
             interactive: contentHeight > height
+            DialogWheelScroll {
+                viewport: autocompleteList
+                hostWindow: autocompleteOverlay.hostWindow
+                enabled: canScroll && viewport.visible && autocompleteOverlay.inputAnchor !== null
+                    && autocompleteOverlay.inputAnchor !== autocompleteOverlay.commandInputAnchor
+                rowHeight: viewport.currentItem ? viewport.currentItem.height : hostWindow.ch
+            }
             ScrollBar.vertical: F4ScrollBar {
                 hostWindow: autocompleteOverlay.hostWindow
                 policy: ScrollBar.AsNeeded

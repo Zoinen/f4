@@ -54,7 +54,7 @@ func TestShowBackgroundJobs_RendersAndControlsJobs(t *testing.T) {
 
 	list.SelectPos = 0
 	buttons[1].OnClick()
-	if !cancelled || registry.List()[0].Status != "cancelling" {
+	if !cancelled || registry.List()[0].Status != "canceling" {
 		t.Fatalf("cancel result = cancelled %v, jobs %#v", cancelled, registry.List())
 	}
 

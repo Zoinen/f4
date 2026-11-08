@@ -26,6 +26,9 @@ func (r *settingsRadios) SemanticNode(ctx *vtui.SemanticContext) map[string]any 
 		}
 	}
 	node["kind"] = "radioGroup"
+	if r.buttonStyle {
+		node["choicePresentation"] = "buttons"
+	}
 	node["items"], node["selected"], node["focusIndex"] = items, selected, focused
 	node["disabled"], node["disabledItems"] = r.IsDisabled(), disabled
 	node["wrapText"] = true

@@ -5726,7 +5726,7 @@ func (pf *PanelsFrame) GetKeyLabels() *vtui.KeySet {
 
 	f2 := i18n.Msg("KeyBar.F2")
 	f7 := i18n.Msg("KeyBar.F7")
-	overrideF2 := false
+	var overrideF2Icon string
 	if pf.ShowPanels && pf.ActiveIdx >= 0 && pf.ActiveIdx < len(pf.AltPanels) {
 		if q, ok := pf.AltPanels[pf.ActiveIdx].(*QuickViewPanel); ok && q != nil && q.IsFocused() {
 			nextCP := vfs.DisplayCodepageName(vfs.GetNextFastSwitchCodepage(q.cacheCodepage))
@@ -5751,6 +5751,13 @@ func (pf *PanelsFrame) GetKeyLabels() *vtui.KeySet {
 			if _, ok := fsp.Vfs.(*TempPanelVFS); ok {
 				f7 = i18n.Msg("TempPanel.Remove")
 			}
+			if fsp.FastFindMode {
+				f2 = i18n.Msg("KeyBar.SearchAnywhere")
+				if strings.HasPrefix(fsp.FastFindStr, "*") {
+					f2 = i18n.Msg("KeyBar.SearchFromStart")
+				}
+				overrideF2Icon = "search"
+			}
 		}
 		if a := pf.AltPanels[pf.ActiveIdx]; a != nil && a.IsFocused() && a.Kind() == "quick_view" {
 			if q, ok := a.(*QuickViewPanel); ok {
@@ -5759,7 +5766,7 @@ func (pf *PanelsFrame) GetKeyLabels() *vtui.KeySet {
 				} else {
 					f2 = i18n.Msg("KeyBar.F2Wrap")
 				}
-				overrideF2 = true
+				overrideF2Icon = "text-wrap"
 			}
 		}
 	}
@@ -5812,9 +5819,10 @@ func (pf *PanelsFrame) GetKeyLabels() *vtui.KeySet {
 		return pf.pluginPanelKeyLabels(inst, fallbacks)
 	}
 	res := keymap.KeyBarLabelsForArea(area, fallbacks)
-	if overrideF2 {
+	if overrideF2Icon != "" {
 		res.Normal[1] = f2
-		res.NormalIcons[1] = "text-wrap"
+		res.NormalIcons[1] = overrideF2Icon
+		res.NormalDisabled[1] = false
 	}
 	return res
 }

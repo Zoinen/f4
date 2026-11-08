@@ -71,6 +71,7 @@ func ConfigOptionDoc(section, key string) dialog.ConfigOptionDoc {
 // after the text. The keys are settings.ini's; configOptionLayoutExtraDoc
 // covers the far2l [Layout] keys f4 only keeps.
 var configOptionExtraDocs = map[string]string{
+	"Panel.PanelSearchMode":      "The search mode saved by F2 for panel quick search and autofilter. Use prefix or substring. An empty value uses each feature's original default.",
 	"Appearance.GuiPresentation": "Graphical presentation backend used for the standalone window. This choice does not affect terminal mode.",
 	"Appearance.QmlIconSet":      "Icon collection used by the Qt graphical interface and file panels.",
 	"Interface.FallbackLanguage": "Language of the interface strings the interface language does not translate, tried before English.",
@@ -103,7 +104,7 @@ var configOptionExtraDocs = map[string]string{
 	"Appearance.GuiRows":           "Height of the graphical window in character rows, as last saved. A value below 1 means 30.",
 	"Appearance.GuiPosX":           "Horizontal position of the graphical window saved with Shift+F9, restored at start.",
 	"Appearance.GuiPosY":           "Vertical position of the graphical window saved with Shift+F9, restored at start.",
-	"Appearance.HighlightPriority": "Whose file highlighting rules come first: 0 the rules in highlight.ini, 1 the rules of the colour theme.",
+	"Appearance.HighlightPriority": "Whose file highlighting rules come first: 0 the rules in highlight.ini, 1 the rules of the color theme.",
 	"Update.LastCheck":             "When the updater last checked, as a Unix timestamp. The updater keeps it.",
 	"Update.LastVersion":           "The update key of the installed build, which the updater compares with the newest release. The updater keeps it.",
 	"Editor.ExternalEditorCommand": "Kept for older f4 versions: the console editor command, or the older single editor command when there is no console one.",
@@ -173,7 +174,7 @@ func configOptionValues(cfg config.F4Config) map[string]string {
 }
 
 // configFieldVariants returns base with the field set to each value that
-// differs from its current one: the other boolean, the neighbouring
+// differs from its current one: the other boolean, the neighboring
 // integers, every other choice, or a changed and an empty string.
 func configFieldVariants(base config.F4Config, field f4settings.Field) []config.F4Config {
 	current := coreSettingValue(base, field.ID)

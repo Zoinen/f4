@@ -44,7 +44,7 @@ func TestBackgroundJobRegistry(t *testing.T) {
 	if len(r.List()) != 2 {
 		t.Error("a cancelled job left the list before it had finished")
 	}
-	if s := r.List()[0].Status; s != "cancelling" {
+	if s := r.List()[0].Status; s != "canceling" {
 		t.Errorf("a cancelled job shows %q", s)
 	}
 

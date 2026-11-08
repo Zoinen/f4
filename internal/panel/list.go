@@ -5911,11 +5911,7 @@ func (fp *FileSystemPanel) processKey(e *vtinput.InputEvent, allowProviderPanelE
 			return true
 		}
 		if e.VirtualKeyCode == vtinput.VK_F2 && !shift && !ctrl && !alt {
-			if strings.HasPrefix(fp.FastFindStr, "*") {
-				fp.FastFindStr = strings.TrimPrefix(fp.FastFindStr, "*")
-			} else {
-				fp.FastFindStr = "*" + fp.FastFindStr
-			}
+			fp.togglePanelSearchMode()
 			if autoFilterQuery(fp.FastFindStr) == "" && !fp.autoFilterMode {
 				fp.ExitFastFind()
 			} else {
@@ -5979,6 +5975,9 @@ func (fp *FileSystemPanel) processKey(e *vtinput.InputEvent, allowProviderPanelE
 			fp.FastFindMode = true
 			fp.autoFilterMode = false
 			fp.FastFindStr = string(unicode.ToLower(e.Char))
+			if config.App.PanelSearchMode == config.PanelSearchAnywhere && e.Char != '*' {
+				fp.FastFindStr = "*" + fp.FastFindStr
+			}
 			fp.applyFastFind()
 			vtui.FrameManager.Redraw()
 			return true

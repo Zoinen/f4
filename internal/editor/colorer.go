@@ -841,7 +841,7 @@ func newColorerHighlighter(ev *EditorView, filename, firstLine string, fallback 
 		activeScheme, generation := activeColorerScheme()
 		if hErr := session.SetHRD("rgb", activeScheme); hErr != nil {
 			vtui.DebugLog("COLORER: Colour style %q failed for %q, using the fallback highlighter: %v", activeScheme, filename, hErr)
-			notifyColorerSchemeFailure(fmt.Sprintf("Colorer: colour style %q failed for %s: %v", activeScheme, filename, hErr))
+			notifyColorerSchemeFailure(fmt.Sprintf("Colorer: color style %q failed for %s: %v", activeScheme, filename, hErr))
 			session.Close()
 			if !ch.closed {
 				ch.useFallback(ev)

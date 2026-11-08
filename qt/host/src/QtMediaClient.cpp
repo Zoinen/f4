@@ -274,7 +274,7 @@ public:
         scheduleDeadlineTimer();
         QtMediaResult result;
         result.errorCode = QStringLiteral("cancelled");
-        result.error = QStringLiteral("media request cancelled");
+        result.error = QStringLiteral("media request canceled");
         finish(requestId, pending.operation, result,
                std::move(pending.completion));
     }
@@ -888,7 +888,7 @@ private:
                 QStringLiteral("leaseAckFailed")).toString();
             result.error = message.value(
                 QStringLiteral("error"),
-                QStringLiteral("media lease acknowledgement failed"))
+                QStringLiteral("media lease acknowledgment failed"))
                                .toString();
         }
         const qint64 acknowledgedNs =
@@ -1458,7 +1458,7 @@ QtMediaResult QtMediaClient::requestBlocking(
             ? QStringLiteral("timeout") : QStringLiteral("cancelled");
         immediateFailure.error = deadline.hasExpired()
             ? QStringLiteral("media request timed out")
-            : QStringLiteral("media request cancelled");
+            : QStringLiteral("media request canceled");
         blockingSpan.set(QStringLiteral("ok"), false);
         blockingSpan.set(QStringLiteral("errorCode"),
                          immediateFailure.errorCode);

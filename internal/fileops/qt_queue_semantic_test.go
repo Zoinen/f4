@@ -48,6 +48,9 @@ func TestQueueSemanticModelExportsNativeQueueState(t *testing.T) {
 		t.Fatalf("queue capabilities = %#v", node)
 	}
 	items := node["items"].([]map[string]any)
+	if canceled := items[4]; canceled["state"] != "Canceled" || canceled["stateClass"] != "cancelled" {
+		t.Fatalf("cancellation label or protocol class changed unexpectedly: %#v", canceled)
+	}
 	running := items[1]
 	if running["id"] != "queue-task-12" || running["stateClass"] != "running" ||
 		running["displayText"] != "video.mov" || running["currentProgress"] != 42 ||

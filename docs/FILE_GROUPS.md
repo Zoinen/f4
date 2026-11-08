@@ -59,15 +59,32 @@ within one scope only. Cancel rolls back group edits, never the application's
 current icon theme.
 
 Enter, F4, double-click or Edit opens a separate group editor with one scrolling
-page and no category sidebar. Conditions, Appearance, Sorting and Associations
-are grouped on that page. Feature enable checkboxes
-are the actual group-box headings; disabled bodies retain their values.
-Appearance contains a compact four-row colour matrix. Each row has an editable
-expression, its effective colour sample and a reset button. A separate pinned
+page and no category sidebar. Matching conditions, Highlighting, Icons, Sorting,
+Associations and Reset have separate headings with a rule to the right.
+Feature checkboxes sit in their section headings. Related controls appear in
+group boxes below, and disabled controls retain their values.
+Highlighting shows Normal and Marked in the left column and Cursor and Marked
+cursor in the right column when space allows. Each state has an editable color
+expression and its effective color sample. In Qt, Edit opens a color picker
+with independent text and background choices. Inherit leaves that component
+to the highlighting cascade. A separate pinned
 mini-panel shows all four states using the entire rule cascade and base palette,
 including the effective icon. It remains visible while properties scroll.
 Invalid edits report an error and retain the last valid sample;
 the preview does not execute associations or compile masks while painting.
+The Group name checkbox enables the group and sits above the name editor.
+The name editor comes before Matching conditions. Name,
+Attributes, Size, and Date and time have checkboxes in their group
+headings that enable editing. Name is editable by default, as are
+groups with existing restrictions. Unchecked groups remain visible and keep
+their saved values and matching behavior. Mask syntax and case matching use
+single-selection button groups in the console and Qt. File name masks use a
+multiline field. Qt shows comma-delimited chips while the field is unfocused
+and wraps the original text while it is being edited. At wide sizes, Name
+occupies the left column with the matching buttons beneath the masks.
+Attributes, Size, and Date and time stack in the right column. Narrow dialogs
+stack the groups vertically.
+
 The sections expose masks/dialect/case behaviour, required and
 excluded attributes, byte-size bounds, timestamp choice, absolute or relative
 dates, all four colour states, marker, continuation, `UseDefaults`, theme icon
@@ -93,8 +110,8 @@ discards remaining unapplied edits. Delete removes the group and its command
 sets, regardless of where it originated. It stays deleted after Apply and
 restart. Up/Down reorder only within the same scope.
 
-Use a field's reset button (or Ctrl+Backspace), Reset section, or More → Reset
-group to copy the corresponding standard values. **Restore standard set**
+Use Ctrl+Backspace on a field, the Reset section, or More → Reset group to
+copy the corresponding standard values. **Restore standard set**
 replaces the entire group list, order and command sets after confirmation.
 It changes the draft only: Apply saves it and Cancel restores the committed
 working set. An empty edited value is an explicit clear, not a reset.

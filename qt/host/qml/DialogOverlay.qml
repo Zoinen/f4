@@ -36,7 +36,7 @@ Item {
             x: 0
             y: dialogOverlay.tabTop
             width: parent.width
-            height: Math.max(0, dialogSurface.y - y)
+            height: Math.max(0, (dialogSurface.showLayout ? dialogSurface.y : dialogOverlay.tabBottom) - y)
         }
         OutsideBand {
             objectName: "dialogTabBackdropLeft"
@@ -64,6 +64,7 @@ Item {
     GenericDialog {
         id: dialogSurface
         z: 1
+        visible: showLayout
         hostWindow: dialogOverlay.hostWindow
         menuBar: dialogOverlay.menuBar
         frame: dialogOverlay.frame

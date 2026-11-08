@@ -126,7 +126,7 @@ ZoinGallery::ImageSourceReadResult F4ImageSourceProvider::readRange(
         return output;
     }
     if (canceled(cancellation)) {
-        output.errorString = QStringLiteral("cancelled");
+        output.errorString = QStringLiteral("canceled");
         span.set(QStringLiteral("outcome"), QStringLiteral("cancelled"));
         return output;
     }
@@ -140,7 +140,7 @@ ZoinGallery::ImageSourceReadResult F4ImageSourceProvider::readRange(
     while (consumed < length) {
         if (canceled(cancellation)) {
             output.data.clear();
-            output.errorString = QStringLiteral("cancelled");
+            output.errorString = QStringLiteral("canceled");
             span.set(QStringLiteral("outcome"), QStringLiteral("cancelled"));
             return output;
         }

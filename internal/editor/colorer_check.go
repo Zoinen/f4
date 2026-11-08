@@ -98,7 +98,7 @@ func CheckColorerSource(ctx context.Context, src ColorerSource, scheme string, a
 		}
 		if err := s.SetHRD("rgb", scheme); err != nil {
 			s.Close()
-			return nil, fmt.Errorf("colour style %q: %w", scheme, err)
+			return nil, fmt.Errorf("color style %q: %w", scheme, err)
 		}
 		check.sessions++
 		return s, nil

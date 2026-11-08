@@ -401,7 +401,7 @@ func (e *engine) applyOneModification(
 					Code: ErrNestingMismatch,
 					Message: fmt.Sprintf("'%s' would place a self-contained top-level block inside another block. "+
 						"Use a locator on the surrounding declaration with 'scope_end 1', or target the "+
-						"neighbouring top-level declaration instead.", action),
+						"neighboring top-level declaration instead.", action),
 					Context: map[string]any{"snippet": derefOr(snippetVal, "")},
 				})
 			}

@@ -20,6 +20,8 @@ func TestQueueRowGetCellText(t *testing.T) {
 	}{
 		{"id column", &QueueTask{ID: 42}, 0, "42"},
 		{"state column", &QueueTask{State: "Running"}, 1, "Running"},
+		{"canceled state label", &QueueTask{State: "Cancelled"}, 1, "Canceled"},
+		{"canceling state label", &QueueTask{State: "Cancelling"}, 1, "Canceling"},
 		{"type column", &QueueTask{Type: "Copy"}, 2, "Copy"},
 		{"desc shown while idle", &QueueTask{State: "Queued", Desc: "copy foo", CurrentFile: "foo.txt"}, 3, "copy foo"},
 		{"current file shown while running", &QueueTask{State: "Running", Desc: "copy foo", CurrentFile: "foo.txt"}, 3, "foo.txt"},

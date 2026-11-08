@@ -14,9 +14,6 @@ Item {
     // A frontend may compose local rows while retaining the shared list renderer.
     property var rowAction: (action, index) => hostWindow.action({target: widget.id, action: action, index: index})
     property bool keyboardNavigation: false
-    property bool semanticWheel: false
-    property bool nativeWheel: false
-    property bool traceWheel: false
     property real checkboxLeft: 0
     property real checkboxWidth: 0
 
@@ -54,55 +51,6 @@ Item {
     }
     enabled: widget.disabled !== true && widget.readOnly !== true
     property int lastPointerIndex: -1
-    property real wheelRowRemainder: 0
-
-    WheelHandler {
-        enabled: root.nativeWheel
-        acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
-        target: null
-        onWheel: event => {
-            const rows = Math.max(1, Number(Qt.styleHints.wheelScrollLines || 3))
-            const rowHeight = root.view.currentItem ? root.view.currentItem.height : root.hostWindow.ch
-            const delta = event.pixelDelta.y !== 0 ? event.pixelDelta.y : event.angleDelta.y / 120 * rows * rowHeight
-            const minimum = root.view.originY
-            const maximum = minimum + Math.max(0, root.view.contentHeight - root.view.height)
-            const previous = root.view.contentY
-            root.view.cancelFlick()
-            root.view.contentY = Math.max(minimum, Math.min(maximum, previous - delta))
-            if (root.traceWheel)
-                console.debug("[FIX:settings-scroll] wheel", root.widget.id, previous, root.view.contentY, event.phase)
-            event.accepted = true
-        }
-    }
-
-    MouseArea {
-        enabled: root.semanticWheel
-        anchors.fill: parent
-        acceptedButtons: Qt.NoButton
-        onWheel: wheel => {
-            const rowHeight = root.view.currentItem
-                            ? root.view.currentItem.height : Math.max(21, root.hostWindow.ch)
-            // Category navigation selects one page per notch; ordinary table
-            // scrolling continues to honor the system's line count.
-            const lines = root.keyboardNavigation ? 1
-                        : Math.max(1, Number(Qt.styleHints.wheelScrollLines || 3))
-            root.wheelRowRemainder += wheel.pixelDelta.y !== 0
-                    ? -wheel.pixelDelta.y / rowHeight
-                    : -wheel.angleDelta.y / 120 * lines
-            const rows = Math.trunc(root.wheelRowRemainder)
-            if (rows !== 0) {
-                root.wheelRowRemainder -= rows
-                if (root.keyboardNavigation)
-                    root.dispatch("control.select", Math.max(0, Math.min(
-                                      root.view.count - 1, root.view.currentIndex + rows)))
-                else
-                    root.hostWindow.action({target: root.widget.id,
-                                            action: "control.scroll", delta: rows}, true)
-            }
-            wheel.accepted = true
-        }
-    }
-
     function selectAt(y) {
         if (y < 0 || y >= height)
             return

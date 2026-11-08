@@ -27,7 +27,7 @@ var fileGroupContribution filegroups.Contribution
 var fileGroupActiveTheme = "generic"
 
 // SetFileGroupIconTheme is called on the UI thread (or before UI startup).
-// It changes context, never the draft document or the selected colour style.
+// It changes context, never the draft document or the selected color style.
 func SetFileGroupIconTheme(id string) {
 	if id == "" {
 		id = "generic"
@@ -118,7 +118,7 @@ func groupField(key, label, description string, kind f4settings.Kind) f4settings
 }
 
 func groupChoice(key, label string, choices ...string) f4settings.Field {
-	f := groupField(key, label, "Choose the matching behaviour for this group.", f4settings.ChoiceKind)
+	f := groupField(key, label, "Choose the matching behavior for this group.", f4settings.ChoiceKind)
 	for _, value := range choices {
 		f.Choices = append(f.Choices, f4settings.Choice{Value: value, Label: f4settings.Text{English: value, Literal: true}})
 	}
@@ -135,10 +135,10 @@ func (fileGroupsProvider) Catalog() f4settings.Catalog {
 		diagnostic = append(diagnostic, field)
 	}
 	fields := []f4settings.Field{
-		groupField("Name", "Group name", "Also selects theme artwork: Archives matches archives.svg. Filename matching uses the conditions below.", f4settings.String),
+		groupField("Name", "Group name", "Also selects theme artwork: Archives matches archives.svg. File name matching uses the conditions below.", f4settings.String),
 		groupChoice("IconTheme", "Group scope", "", fileGroupActiveTheme),
 		groupField("Enabled", "Enable group", "Disabled groups preserve their settings but contribute no features.", f4settings.Boolean),
-		groupField("Mask", "Filename masks", "Far masks support comma/semicolon lists, exclusions with |, and /regular expressions/.", f4settings.String),
+		groupField("Mask", "File name masks", "Far masks support comma/semicolon lists, exclusions with |, and /regular expressions/.", f4settings.String),
 		groupChoice("MaskSyntax", "Mask syntax", "far", "legacy-glob"),
 		groupChoice("Case", "Case matching", "insensitive", "sensitive", "platform"),
 		groupField("IncludeAttributes", "Required attributes", "Directory, Hidden, Executable, ReadOnly, System, Archive, Symlink, Junction.", f4settings.String),
@@ -149,15 +149,15 @@ func (fileGroupsProvider) Catalog() f4settings.Catalog {
 		groupField("DateRelative", "Relative dates", "Use durations such as 48h, 30m or 2d instead of absolute timestamps.", f4settings.Boolean),
 		groupField("DateAfter", "After", "YYYY-MM-DD HH:MM:SS or a duration for relative dates.", f4settings.String),
 		groupField("DateBefore", "Before", "YYYY-MM-DD HH:MM:SS or a duration for relative dates.", f4settings.String),
-		groupField("Highlight.Enabled", "Enable highlighting", "Only enabled highlighting participates in the colour cascade.", f4settings.Boolean),
-		groupField("NormalColor", "Normal file colour", "foreground:<palette name or #RRGGBB> | background:<palette name or #RRGGBB>.", f4settings.Color),
-		groupField("SelectedColor", "Selected file colour", "Independent colour expression for marked files.", f4settings.Color),
-		groupField("CursorColor", "Cursor colour", "Independent colour expression for the focused file.", f4settings.Color),
-		groupField("SelectedCursorColor", "Selected cursor colour", "Independent colour expression for a marked focused file.", f4settings.Color),
-		groupField("Mark", "Filename marker", "Optional text or glyph before the filename.", f4settings.String),
-		groupField("ContinueProcessing", "Continue highlighting", "Continue the existing colour cascade after this rule matches.", f4settings.Boolean),
+		groupField("Highlight.Enabled", "Enable highlighting", "Only enabled highlighting participates in the color cascade.", f4settings.Boolean),
+		groupField("NormalColor", "Normal file color", "foreground:<palette name or #RRGGBB> | background:<palette name or #RRGGBB>.", f4settings.Color),
+		groupField("SelectedColor", "Selected file color", "Independent color expression for marked files.", f4settings.Color),
+		groupField("CursorColor", "Cursor color", "Independent color expression for the focused file.", f4settings.Color),
+		groupField("SelectedCursorColor", "Selected cursor color", "Independent color expression for a marked focused file.", f4settings.Color),
+		groupField("Mark", "File name marker", "Optional text or glyph before the file name.", f4settings.String),
+		groupField("ContinueProcessing", "Continue highlighting", "Continue the existing color cascade after this rule matches.", f4settings.Boolean),
 		groupField("UseDefaults", "Override attribute defaults", "Preserve existing Directory/Hidden/Symlink/Junction override precedence.", f4settings.Boolean),
-		groupField("Icons.Enabled", "Enable icons", "Use the theme artwork named after this group. Optional overrides are independent of colours and commands.", f4settings.Boolean),
+		groupField("Icons.Enabled", "Enable icons", "Use the theme artwork named after this group. Optional overrides are independent of colors and commands.", f4settings.Boolean),
 		groupField("OverrideNativeIcon", "Override native/plugin icon", "Off by default. Native OS lookup is used only in the Native icon theme.", f4settings.Boolean),
 		groupField("Icon.*", "Any-theme icon", "asset:<name>, file:<path>, native:<name>, or none. A theme-specific choice takes precedence within this group.", f4settings.String),
 		groupField("Sort.Enabled", "Enable sort group", "Changes only panels with sort groups enabled.", f4settings.Boolean),
