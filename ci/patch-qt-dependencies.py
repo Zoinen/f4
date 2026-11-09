@@ -11,7 +11,7 @@ import runpy
 _ANCHOR = '            self.requires("freetype/[>=2.13 <3]")\n'
 _PATCH = '            self.requires("freetype/2.13.2")\n'
 _MARKER = 'self.requires("freetype/2.13.2")'
-_MD4C_REQUIREMENT_ANCHOR = '        self.requires("md4c/[>=0.4.8 <1]")\n'
+_MD4C_REQUIREMENT_ANCHOR = '            self.requires("md4c/[>=0.4.8 <1]")\n'
 _MD4C_REQUIREMENT_PATCH = (
     '        # md4c 0.6.0 changes flags that Qt 6.11.1 checks at compile time.\n'
     '        self.requires("md4c/[>=0.4.8 <0.6]")\n'
