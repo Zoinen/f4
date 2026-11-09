@@ -475,8 +475,8 @@ Press Backspace to return to the VisRen contents.
 @VisRenSafety
 $VisRen: file name safety and limitations
 
-Every changed destination must be one portable file name component. VisRen
-rejects:
+Every changed destination must be one portable file name component.
+VisRen rejects:
 
   - an empty name, "." or "..";
   - control characters (Unicode values below U+0020 or NUL);

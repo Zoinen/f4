@@ -524,7 +524,7 @@ func (v *OSVFS) readDirPhased(
 		}
 	}
 	if err != nil {
-		if os.IsPermission(err) && globalSudoClient.IsAvailable() {
+		if mayElevate(ctx, err) {
 			vtui.DebugLog("VFS: Permission denied for ReadDirPhased(%q), attempting sudo...", dirPath)
 			items, sudoErr := globalSudoClient.ReadDir(prepareOSPath(dirPath))
 			if sudoErr == nil {
