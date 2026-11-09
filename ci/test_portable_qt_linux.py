@@ -21,7 +21,7 @@ class PortableQtLinuxBuildTests(unittest.TestCase):
         recipe = QT_HOST_RECIPE.read_text(encoding="utf-8")
 
         self.assertIn('self.requires("freetype/2.13.2", override=True)', recipe)
-        self.assertIn('self.requires("brotli/1.1.1", override=True)', recipe)
+        self.assertIn('self.requires("brotli/1.1.1", override=True, force=True)', recipe)
 
     def test_portable_ctest_selection_keeps_multimedia_gates(self):
         script = BUILD_SCRIPT.read_text(encoding="utf-8")

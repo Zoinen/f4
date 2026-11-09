@@ -89,7 +89,7 @@ class F4QtHostConan(ConanFile):
         # freetype/2.13.2 accepts brotli >=1.1.1, while Qt 6.11.1 still
         # pins brotli/1.1.0. Resolve the compatible version at this graph
         # root so Conan does not reject the otherwise valid dependency set.
-        self.requires("brotli/1.1.1", override=True)
+        self.requires("brotli/1.1.1", override=True, force=True)
         self.requires("libtiff/4.7.0")
         self.requires("libraw/0.21.3")
         self.requires("libpng/1.6.45")
