@@ -198,6 +198,41 @@ func NewTerminalView(w, h int) *TerminalView {
 	return tv
 }
 
+// ScreenObject's visibility and focus flags are not synchronized themselves.
+// Terminal output is parsed on a PTY goroutine while the frame is painted on
+// the UI goroutine, so keep the promoted state behind the terminal mutex too.
+func (tv *TerminalView) SetVisible(visible bool) {
+	tv.mu.Lock()
+	defer tv.mu.Unlock()
+	tv.ScreenObject.SetVisible(visible)
+}
+
+func (tv *TerminalView) IsVisible() bool {
+	tv.mu.Lock()
+	defer tv.mu.Unlock()
+	return tv.ScreenObject.IsVisible()
+}
+
+func (tv *TerminalView) SetFocus(focused bool) {
+	tv.mu.Lock()
+	defer tv.mu.Unlock()
+	tv.ScreenObject.SetFocus(focused)
+}
+
+func (tv *TerminalView) IsFocused() bool {
+	tv.mu.Lock()
+	defer tv.mu.Unlock()
+	return tv.ScreenObject.IsFocused()
+}
+
+func (tv *TerminalView) isVisibleLocked() bool {
+	return tv.ScreenObject.IsVisible()
+}
+
+func (tv *TerminalView) isFocusedLocked() bool {
+	return tv.ScreenObject.IsFocused()
+}
+
 func (tv *TerminalView) ReadClipboard() string {
 	if tv.ClipboardReader != nil {
 		return tv.ClipboardReader()
@@ -1197,8 +1232,6 @@ func (tv *TerminalView) getAttrAt(offset int) uint64 {
 }
 
 func (tv *TerminalView) Show(scr *vtui.ScreenBuf) {
-	tv.ScreenObject.Show(scr)
-
 	scr.ActivePalette = &tv.Palette
 	// Terminal content must always be rendered without Early Binding
 	// to allow the host terminal to use its native indexed palette.
@@ -1208,6 +1241,7 @@ func (tv *TerminalView) Show(scr *vtui.ScreenBuf) {
 
 	tv.mu.Lock()
 	defer tv.mu.Unlock()
+	tv.ScreenObject.Show(scr)
 
 	// Очищаем всю область терминала черным цветом
 	// The placement layer needs the real size of a cell to turn the pixel
@@ -1311,7 +1345,7 @@ func (tv *TerminalView) Show(scr *vtui.ScreenBuf) {
 		tv.paintSelectionHighlight(scr)
 	}
 
-	if tv.IsVisible() && tv.IsFocused() && tv.CursorVisible {
+	if tv.isVisibleLocked() && tv.isFocusedLocked() && tv.CursorVisible {
 		cursorDrawY := tv.Y1 + tv.CursorY + offset
 		if tv.UseAltScreen {
 			cursorDrawY = tv.Y1 + tv.CursorY
@@ -1320,7 +1354,7 @@ func (tv *TerminalView) Show(scr *vtui.ScreenBuf) {
 			scr.SetCursorPos(tv.X1+tv.CursorX, cursorDrawY)
 			scr.SetCursorVisible(true)
 		}
-	} else if tv.IsVisible() && tv.IsFocused() {
+	} else if tv.isVisibleLocked() && tv.isFocusedLocked() {
 		scr.SetCursorVisible(false)
 	}
 }
