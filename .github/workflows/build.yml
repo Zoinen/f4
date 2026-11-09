@@ -1715,10 +1715,13 @@ jobs:
           if [ "$QEMU_READY" != "yes" ]; then
             sudo add-apt-repository --yes universe </dev/null
             sudo apt-get update -qq </dev/null
-            sudo apt-get install -y -qq qemu-user-static </dev/null
+            # Ubuntu 26 makes qemu-user-static a virtual package.  The
+            # concrete qemu-user package still provides static emulators, but
+            # exposes them without the historical -static suffix.
+            sudo apt-get install -y -qq qemu-user </dev/null
             QEMU_READY=yes
           fi
-          bash scripts/check_release_version.sh "qemu-$QEMU-static" "$BUILD_DIR/f4" --version </dev/null
+          bash scripts/check_release_version.sh "qemu-$QEMU" "$BUILD_DIR/f4" --version </dev/null
         done < <(jq -c '.[]' <<<"$CELLS")
 
     - name: Package
@@ -1906,7 +1909,7 @@ jobs:
         cp plugins/visren/LICENSE.upstream build/licenses/VisRen-BSD-3-Clause.txt
 
     - name: Smoke test the binary
-      # Same mechanism as build-batch above: qemu-user-static's binaries run a
+      # Same mechanism as build-batch above: qemu-user's binaries run a
       # foreign-architecture static executable directly, no container needed.
       # The Windows binary cannot run on this Linux runner.
       if: matrix.goos != 'windows'
@@ -1923,8 +1926,8 @@ jobs:
         esac
         sudo add-apt-repository --yes universe </dev/null
         sudo apt-get update -qq </dev/null
-        sudo apt-get install -y -qq qemu-user-static </dev/null
-        bash scripts/check_release_version.sh "qemu-$QEMU-static" ./build/f4 --version </dev/null
+        sudo apt-get install -y -qq qemu-user </dev/null
+        bash scripts/check_release_version.sh "qemu-$QEMU" ./build/f4 --version </dev/null
 
     # Every lite archive is a .tar.gz, the Windows one included (#1656). A
     # lite .zip ends with "-windows-amd64.zip", and f4 up to v0.1.3-alpha
