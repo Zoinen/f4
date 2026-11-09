@@ -2,6 +2,7 @@ package filegroups
 
 import (
 	"fmt"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -24,7 +25,7 @@ func TestCompiledPredicates(t *testing.T) {
 		{"Far glob Unicode lower, not fold", "*.s", "far", "file.ſ", false},
 		{"legacy literal exclusion", "*.png|thumb*", "legacy-glob", "a.png", false},
 		{"legacy lists", "*.png,*.jpg", "legacy-glob", "a.jpg", true},
-		{"directory separator", "*", "far", "dir/file", false},
+		{"directory separator", "*", "far", filepath.Join("dir", "file"), false},
 		{"dot star", "*.*", "far", "LICENSE", true},
 		{"class", "file[0-9].txt", "far", "file2.txt", true},
 	} {

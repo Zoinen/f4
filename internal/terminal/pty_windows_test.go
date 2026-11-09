@@ -18,8 +18,7 @@ import (
 )
 
 func init() {
-	// The Go test executable is placed in a temporary build directory, while
-	// CI installs the same ConPTY pair into this package directory. Production
+	// The Go test executable is placed in a temporary build directory. Production
 	// binaries do not use this hook: they resolve the pair next to f4.exe.
 	conPTYBundleDirectoryOverride = os.Getwd
 }
@@ -41,20 +40,46 @@ func TestBundledConPTYIsSelected(t *testing.T) {
 	if vtui.IsWine() {
 		t.Skip("Wine does not run the native ConPTY bundle")
 	}
-	api, err := bundledConPTY()
-	if err != nil {
-		t.Fatalf("bundled ConPTY: %v", err)
-	}
 	dir, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
+	}
+	expectedDir := dir
+	if _, err := os.Stat(filepath.Join(dir, "conpty.dll")); os.IsNotExist(err) {
+		if os.Getenv("F4_NATIVE_CONPTY_PACKAGE") != "1" {
+			t.Skip("set F4_NATIVE_CONPTY_PACKAGE=1 to install the pinned ConPTY bundle")
+		}
+		pkg, ok := conPTYPackageFor(runtime.GOARCH)
+		if !ok {
+			t.Skipf("no ConPTY package for %s", runtime.GOARCH)
+		}
+		root, err := os.MkdirTemp("", "f4-conpty-bundle-test-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := os.RemoveAll(root); err != nil {
+				t.Logf("left behind, still loaded: %v", err)
+			}
+		})
+		expectedDir, err = installConPTYPackage(context.Background(), http.DefaultClient, root, pkg)
+		if err != nil {
+			t.Fatalf("install ConPTY package: %v", err)
+		}
+		conPTYBundleDirectoryOverride = func() (string, error) { return expectedDir, nil }
+	} else if err != nil {
+		t.Fatal(err)
+	}
+	api, err := bundledConPTY()
+	if err != nil {
+		t.Fatalf("bundled ConPTY: %v", err)
 	}
 	if !strings.HasPrefix(api.path, "bundled:") {
 		t.Fatalf("expected bundled ConPTY, got path %q", api.path)
 	}
 	dllPath := strings.TrimPrefix(api.path, "bundled:")
-	if got := filepath.Clean(filepath.Dir(dllPath)); got != filepath.Clean(dir) {
-		t.Fatalf("ConPTY loaded from %q, want the test-installed pair in %q", got, dir)
+	if got := filepath.Clean(filepath.Dir(dllPath)); got != filepath.Clean(expectedDir) {
+		t.Fatalf("ConPTY loaded from %q, want the test-installed pair in %q", got, expectedDir)
 	}
 }
 

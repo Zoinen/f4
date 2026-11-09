@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -224,7 +225,7 @@ func TestDriveChooserWindowListsTheToolsOnItsToolsPage(t *testing.T) {
 		labels = labels[1:]
 	}
 	want := "[Other panel Temporary panel A Alpha tool Beta tool]"
-	if len(labels) == 6 {
+	if runtime.GOOS == "windows" {
 		want = "[Other panel Temporary panel Windows Registry A Alpha tool Beta tool]"
 	}
 	if fmt.Sprint(labels) != want {

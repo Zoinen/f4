@@ -283,8 +283,12 @@ func assertWarningDialogResolvesThemeAtRenderTime(t *testing.T, dialog *vtui.Win
 			dialog.Show(scr)
 		}
 		bx, by, _, _ = normal.GetPosition()
-		if got := scr.GetCell(bx, by).Attributes; got != normalButton {
-			t.Fatalf("normal button attr = %#x, want %#x", got, normalButton)
+		expectedNormalButton := normalButton
+		if normal.IsEnterDefault() {
+			expectedNormalButton = normalHighlight
+		}
+		if got := scr.GetCell(bx, by).Attributes; got != expectedNormalButton {
+			t.Fatalf("normal button attr = %#x, want %#x", got, expectedNormalButton)
 		}
 		if !containsAttr(scr, normal, normalHighlight) {
 			t.Fatalf("normal button does not use highlight attr %#x", normalHighlight)

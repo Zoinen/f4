@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"sort"
 	"testing"
+	"time"
 )
 
 // The real pasteboard through the real reader. Finder offers copied files as
@@ -63,9 +64,22 @@ var back = pb.readObjectsForClassesOptions($.NSArray.arrayWithObject($.NSURL), $
 			t.Fatalf("writing two files to the pasteboard: %v: %s", err, out)
 		}
 		t.Logf("pasteboard: %s", out)
-		got, cut, err := readFileClipboard(context.Background())
-		if err != nil {
-			t.Fatalf("reading copied files failed: %v", err)
+		var got []string
+		var cut bool
+		var readErr error
+		deadline := time.Now().Add(3 * time.Second)
+		for {
+			got, cut, readErr = readFileClipboard(context.Background())
+			if readErr == nil && len(got) == 2 {
+				break
+			}
+			if time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		if readErr != nil {
+			t.Fatalf("reading copied files failed: %v", readErr)
 		}
 		sort.Strings(got)
 		if want := []string{one, two}; !reflect.DeepEqual(got, want) || cut {

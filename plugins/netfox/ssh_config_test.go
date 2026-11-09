@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/unxed/f4/vfs"
@@ -53,7 +54,7 @@ func TestLoadSSHProfilesAppliesIncludesAndHostDefaults(t *testing.T) {
 
 func TestNetFoxVFSImportsAndDisablesSSHProfiles(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	sshDir := filepath.Join(home, ".ssh")
 	if err := os.MkdirAll(sshDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -99,7 +100,7 @@ func TestNetFoxVFSImportsAndDisablesSSHProfiles(t *testing.T) {
 
 func TestNetFoxSettingsImportSSHProfilesDefaultsOnAndCanBeDisabled(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	sshDir := filepath.Join(home, ".ssh")
 	if err := os.MkdirAll(sshDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -128,7 +129,7 @@ func TestNetFoxSettingsImportSSHProfilesDefaultsOnAndCanBeDisabled(t *testing.T)
 
 func TestNetFoxVFSOpenMergesSSHProfileIntoSavedConnection(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	sshDir := filepath.Join(home, ".ssh")
 	if err := os.MkdirAll(sshDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -164,3 +165,11 @@ func TestNetFoxVFSOpenMergesSSHProfileIntoSavedConnection(t *testing.T) {
 }
 
 func boolPtr(value bool) *bool { return &value }
+
+func setTestHome(t *testing.T, home string) {
+	t.Helper()
+	t.Setenv("HOME", home)
+	if runtime.GOOS == "windows" {
+		t.Setenv("USERPROFILE", home)
+	}
+}

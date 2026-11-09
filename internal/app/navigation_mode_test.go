@@ -101,6 +101,7 @@ func TestSearchFirstKeyboardRoutingAndFocusToggle(t *testing.T) {
 	oldCfg := config.App
 	defer func() { config.App = oldCfg }()
 	config.App.NavigationMode = config.NavigationSearchFirst
+	config.App.PanelSearchMode = config.PanelSearchFromStart
 	config.App.CommandLineAutoComplete = false
 
 	pf, left, _ := newSearchFirstTestFrame(t)
@@ -169,6 +170,7 @@ func TestSearchFirstFastFindCtrlEnterNavigation(t *testing.T) {
 	oldCfg := config.App
 	defer func() { config.App = oldCfg }()
 	config.App.NavigationMode = config.NavigationSearchFirst
+	config.App.PanelSearchMode = config.PanelSearchFromStart
 	config.App.CommandLineAutoComplete = false
 
 	pf, left, _ := newSearchFirstTestFrame(t)
