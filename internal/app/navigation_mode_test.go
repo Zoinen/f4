@@ -256,6 +256,7 @@ func TestClassicFastFindF2TogglesAnywhereMatching(t *testing.T) {
 	oldCfg := config.App
 	defer func() { config.App = oldCfg }()
 	config.App.NavigationMode = config.NavigationClassic
+	config.App.PanelSearchMode = config.PanelSearchFromStart
 
 	pf, left, _ := newSearchFirstTestFrame(t)
 	left.Entries = []*panel.FileEntry{
