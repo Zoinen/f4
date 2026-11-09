@@ -74,7 +74,7 @@ type HostAPI interface {
 // VFSItem represents a generic file or directory entry.
 type VFSItem struct {
 	KnownMetadata MetadataFields
-	Name string
+	Name          string
 	// DisplayName optionally replaces Name in visual surfaces only. Name stays
 	// the provider's stable path component, so duplicate search results can be
 	// disambiguated without changing transfer names or operations.

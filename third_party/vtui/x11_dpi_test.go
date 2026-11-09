@@ -53,7 +53,7 @@ func xsettingsBlob(order binary.AppendByteOrder, entries []xsettingsEntry) []byt
 	if order == binary.AppendByteOrder(binary.BigEndian) {
 		b[0] = 1
 	}
-	b = order.AppendUint32(b, 7) // serial
+	b = order.AppendUint32(b, 7)                    // serial
 	b = order.AppendUint32(b, uint32(len(entries))) // #nosec G115 -- test fixture: a handful of entries
 	for _, e := range entries {
 		b = append(b, e.typ, 0)

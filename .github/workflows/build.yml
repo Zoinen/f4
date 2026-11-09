@@ -453,7 +453,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-14
+          - runner: macos-15
             platform: darwin
           - runner: macos-15-intel
             platform: darwin
@@ -1702,6 +1702,7 @@ jobs:
           fi
 
           if [ "$QEMU_READY" != "yes" ]; then
+            sudo add-apt-repository --yes universe </dev/null
             sudo apt-get update -qq </dev/null
             sudo apt-get install -y -qq qemu-user-static </dev/null
             QEMU_READY=yes
@@ -1909,6 +1910,7 @@ jobs:
           mipsle) QEMU=mipsel ;;
           *)      QEMU="${{ matrix.goarch }}" ;;
         esac
+        sudo add-apt-repository --yes universe </dev/null
         sudo apt-get update -qq </dev/null
         sudo apt-get install -y -qq qemu-user-static </dev/null
         bash scripts/check_release_version.sh "qemu-$QEMU-static" ./build/f4 --version </dev/null

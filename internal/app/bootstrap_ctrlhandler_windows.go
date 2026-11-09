@@ -3,11 +3,11 @@
 package app
 
 import (
+	"github.com/unxed/f4/internal/panel"
+	"github.com/unxed/vtui"
 	"sync"
 	"syscall"
-	"github.com/unxed/f4/internal/panel"
 	"time"
-	"github.com/unxed/vtui"
 )
 
 // installConsoleCtrlHandler registers a console ctrl handler (FAR3's

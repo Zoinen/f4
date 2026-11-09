@@ -7,6 +7,7 @@ import unittest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BUILD_SCRIPT = REPO_ROOT / "ci" / "build-portable-qt-linux.sh"
+QT_HOST_RECIPE = REPO_ROOT / "qt" / "host" / "conanfile.py"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "build.yml"
 
 
@@ -15,6 +16,12 @@ class PortableQtLinuxBuildTests(unittest.TestCase):
         script = BUILD_SCRIPT.read_text(encoding="utf-8")
 
         self.assertIn("fontconfig fonts-dejavu-core", script)
+
+    def test_qt_host_resolves_brotli_for_pinned_freetype(self):
+        recipe = QT_HOST_RECIPE.read_text(encoding="utf-8")
+
+        self.assertIn('self.requires("freetype/2.13.2", override=True)', recipe)
+        self.assertIn('self.requires("brotli/1.1.1", override=True)', recipe)
 
     def test_portable_ctest_selection_keeps_multimedia_gates(self):
         script = BUILD_SCRIPT.read_text(encoding="utf-8")

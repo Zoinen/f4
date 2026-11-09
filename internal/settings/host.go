@@ -2,11 +2,11 @@ package settings
 
 import (
 	"context"
-	"github.com/unxed/f4/internal/keymap"
-	"github.com/unxed/vtui"
 	"github.com/unxed/f4/internal/config"
+	"github.com/unxed/f4/internal/keymap"
 	"github.com/unxed/f4/internal/panel"
 	"github.com/unxed/f4/internal/plughost"
+	"github.com/unxed/vtui"
 )
 
 // Host supplies application orchestration; the settings package owns drafts and UI.

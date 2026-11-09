@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import json
 import importlib.util
+import os
 import pathlib
 import runpy
 import shutil
@@ -55,7 +56,9 @@ class QuickUploadPolicyPatchTests(unittest.TestCase):
             self.assertIn("'ci/qt_quick_order_scratch.h'", key)
 
     def test_order_scratch_storage_semantics_and_allocation_bound(self):
-        compiler = shutil.which("cl") or shutil.which("g++") or shutil.which("clang++")
+        configured_compiler = os.environ.get("CXX", "")
+        compiler = (shutil.which("cl") or shutil.which(configured_compiler)
+                    or shutil.which("g++") or shutil.which("clang++"))
         if compiler is None:
             self.skipTest("A C++ compiler is required for the portable scratch-storage regression")
         source = SCRIPT.parent / "tests" / "qt_quick_order_scratch_test.cpp"
