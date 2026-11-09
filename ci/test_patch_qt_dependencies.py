@@ -46,6 +46,22 @@ class WindowsHdrCoordinatesPatchTests(unittest.TestCase):
                 patcher._patch_windows_hdr_coordinates(recipe)
 
 
+class Md4cRequirementPatchTests(unittest.TestCase):
+    def test_pins_md4c_before_incompatible_06(self):
+        recipe = patcher._MD4C_REQUIREMENT_ANCHOR
+        patched = patcher._patch_md4c(recipe)
+
+        self.assertIn(patcher._MD4C_REQUIREMENT_MARKER, patched)
+        self.assertEqual(patcher._patch_md4c(patched), patched)
+
+    def test_missing_or_ambiguous_requirement_is_rejected(self):
+        for recipe in ("", patcher._MD4C_REQUIREMENT_ANCHOR * 2):
+            with self.subTest(recipe=recipe), self.assertRaisesRegex(
+                SystemExit, "md4c requirement"
+            ):
+                patcher._patch_md4c(recipe)
+
+
 class QuickUploadPolicyPatchTests(unittest.TestCase):
     def test_portable_cache_keys_include_embedded_order_scratch_source(self):
         workflow = SCRIPT.parent.parent / ".github" / "workflows" / "build.yml"

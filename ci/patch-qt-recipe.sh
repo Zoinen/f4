@@ -86,6 +86,7 @@ if candidates:
             grep -Fq '# f4: balance Qt Quick batch root order reservations' "${reusable_qt_recipe}/conanfile.py" && \
             { [[ "${target_os}" != "Macos" ]] || \
               grep -Fq '# f4: retain macOS image color space through native conversion' "${reusable_qt_recipe}/conanfile.py"; } && \
+            grep -Fq 'self.requires("md4c/[>=0.4.8 <0.6]")' "${reusable_qt_recipe}/conanfile.py" && \
             grep -Fq '"ffmpeg::avcodec"' "${reusable_qt_recipe}/conanfile.py" && \
             grep -Fq 'if(NOT TARGET Qt::qsb)' "${reusable_qt_recipe}/conanfile.py" && \
             grep -Fq 'native_qsb_config = os.path.join' "${reusable_qt_recipe}/conanfile.py" && \
@@ -155,6 +156,8 @@ if [[ "${target_arch}" == "arm64" ]]; then
 fi
 
 grep -Fq 'self.requires("freetype/2.13.2")' \
+    "${qt_recipe_copy}/conanfile.py"
+grep -Fq 'self.requires("md4c/[>=0.4.8 <0.6]")' \
     "${qt_recipe_copy}/conanfile.py"
 grep -Fq '# f4: retain macOS image color space through native conversion' \
     "${qt_recipe_copy}/conanfile.py"

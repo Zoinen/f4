@@ -11,6 +11,12 @@ import runpy
 _ANCHOR = '            self.requires("freetype/[>=2.13 <3]")\n'
 _PATCH = '            self.requires("freetype/2.13.2")\n'
 _MARKER = 'self.requires("freetype/2.13.2")'
+_MD4C_REQUIREMENT_ANCHOR = '        self.requires("md4c/[>=0.4.8 <1]")\n'
+_MD4C_REQUIREMENT_PATCH = (
+    '        # md4c 0.6.0 changes flags that Qt 6.11.1 checks at compile time.\n'
+    '        self.requires("md4c/[>=0.4.8 <0.6]")\n'
+)
+_MD4C_REQUIREMENT_MARKER = 'self.requires("md4c/[>=0.4.8 <0.6]")'
 _FFMPEG_OPTION_ANCHOR = '        "with_gstreamer": [True, False],\n'
 _FFMPEG_OPTION_PATCH = _FFMPEG_OPTION_ANCHOR + (
     '        "with_ffmpeg": [True, False],\n'
@@ -349,6 +355,16 @@ def _patch_freetype(text: str) -> str:
             "unexpected Qt recipe: freetype requirement is absent or ambiguous"
         )
     return text.replace(_ANCHOR, _PATCH)
+
+
+def _patch_md4c(text: str) -> str:
+    if _MD4C_REQUIREMENT_MARKER in text:
+        return text
+    if text.count(_MD4C_REQUIREMENT_ANCHOR) != 1:
+        raise SystemExit(
+            "unexpected Qt recipe: md4c requirement is absent or ambiguous"
+        )
+    return text.replace(_MD4C_REQUIREMENT_ANCHOR, _MD4C_REQUIREMENT_PATCH)
 
 
 def _ffmpeg_source_patch(linux_audio: bool) -> str:
@@ -906,7 +922,10 @@ def main() -> None:
     text = args.recipe.read_text(encoding="utf-8")
     patched = _patch_quick_package_guard(
         _patch_host_path(
-            _patch_ffmpeg(_patch_freetype(text), linux_audio=args.linux_audio)
+            _patch_ffmpeg(
+                _patch_md4c(_patch_freetype(text)),
+                linux_audio=args.linux_audio,
+            )
         )
     )
     if args.linux_audio:
