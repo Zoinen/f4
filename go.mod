@@ -191,6 +191,8 @@ require (
 	github.com/unxed/xz v0.1.49
 	github.com/unxed/zipcharset v0.1.5 // indirect
 	github.com/unxed/zlib4go v0.1.16 // indirect
+	github.com/vishvananda/netlink v1.3.1 // indirect
+	github.com/vishvananda/netns v0.0.5 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	github.com/yalue/native_endian v1.0.2 // indirect
 	go4.org v0.0.0-20260112195520-a5071408f32f // indirect
