@@ -1143,7 +1143,18 @@ jobs:
         # when the native build-context Qt also has qtsvg enabled.
         $nativeQtOptions = @()
         if ("${{ matrix.arch }}" -eq "arm64") {
-          $nativeQtOptions = @("-o:b", "qt/*:qtsvg=True")
+          # Native Qt is used only for QML/shader tools. Its optional Brotli
+          # feature still pins 1.1.0, which conflicts with freetype's
+          # compatible 1.1.1 requirement in the target graph. Keep Brotli in
+          # the target Qt, but omit the font stack from this build-context-only
+          # package; native qsb/QML tools do not render text.
+          $nativeQtOptions = @(
+            "-o:b", "qt/*:qtsvg=True",
+            "-o:b", "qt/*:with_brotli=False",
+            "-o:b", "qt/*:with_freetype=False",
+            "-o:b", "qt/*:with_harfbuzz=False",
+            "-o:b", "qt/*:with_fontconfig=False"
+          )
         }
         $qtForceOnRetry = $false
         if ("${{ matrix.arch }}" -eq "arm64") {

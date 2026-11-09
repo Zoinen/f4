@@ -22,6 +22,11 @@ class PortableQtLinuxBuildTests(unittest.TestCase):
 
         self.assertIn('self.requires("freetype/2.13.2", override=True)', recipe)
         self.assertIn('self.requires("brotli/1.1.1", override=True, force=True)', recipe)
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn('"qt/*:with_brotli=False"', workflow)
+        self.assertIn('"qt/*:with_freetype=False"', workflow)
+        self.assertIn('"qt/*:with_harfbuzz=False"', workflow)
+        self.assertIn('"qt/*:with_fontconfig=False"', workflow)
 
     def test_portable_ctest_selection_keeps_multimedia_gates(self):
         script = BUILD_SCRIPT.read_text(encoding="utf-8")
