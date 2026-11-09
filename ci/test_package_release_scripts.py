@@ -175,19 +175,24 @@ class PackageReleaseScriptsTest(unittest.TestCase):
                                 cwd=CI_ROOT.parent, env=env, text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_stable_and_nightly_use_full_packaging_and_both_guards(self) -> None:
+    def test_stable_release_is_qt_only_and_nightly_keeps_full_packaging(self) -> None:
         workflow = (CI_ROOT.parent / ".github/workflows/build.yml").read_text()
-        for job in ("release", "nightly"):
-            block = workflow.split(f"\n  {job}:\n", 1)[1]
-            block = re.split(r"\n  [a-z][a-z-]+:\n", block, maxsplit=1)[0]
-            self.assertIn("python3 ci/package-release.py dist release", block)
-            self.assertIn("go run ./tools/releasecheck release", block)
-            self.assertIn("go run ./tools/releasecheck -listed published-assets.txt", block)
-            self.assertIn("--draft=true", block)
-            for prerequisite in ("build-batch", "build-lite", "build-win7", "build-reactos",
-                                 "build-termux", "build-cloudfox-plugin", "build-android-plugin",
-                                 "build-ios-plugin", "qt-host", "portable-qt", "portable-qt-arm64-version", "test", "race"):
-                self.assertIn(f"needs.{prerequisite}.result != 'success'", block)
+        release = workflow.split("\n  release:\n", 1)[1]
+        release = re.split(r"\n  [a-z][a-z-]+:\n", release, maxsplit=1)[0]
+        self.assertIn("python3 ci/package-qt-release.py dist release", release)
+        self.assertNotIn("python3 ci/package-release.py dist release", release)
+        self.assertIn("published release contains only Qt assets", release)
+        self.assertIn("--draft=true", release)
+        for prerequisite in ("build-batch", "build-lite", "build-win7", "build-reactos",
+                             "build-termux", "build-cloudfox-plugin", "build-android-plugin",
+                             "build-ios-plugin", "qt-host", "portable-qt", "portable-qt-arm64-version", "test", "race"):
+            self.assertIn(f"needs.{prerequisite}.result != 'success'", release)
+
+        nightly = workflow.split("\n  nightly:\n", 1)[1]
+        nightly = re.split(r"\n  [a-z][a-z-]+:\n", nightly, maxsplit=1)[0]
+        self.assertIn("python3 ci/package-release.py dist release", nightly)
+        self.assertIn("go run ./tools/releasecheck release", nightly)
+        self.assertIn("go run ./tools/releasecheck -listed published-assets.txt", nightly)
 
     def test_linux_only_feature_release_is_not_a_stable_channel_bypass(self):
         workflow = (CI_ROOT.parent / ".github/workflows/build.yml").read_text()

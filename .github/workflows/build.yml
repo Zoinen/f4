@@ -4030,16 +4030,8 @@ jobs:
       with:
         path: dist
         merge-multiple: false
-    - name: Assemble full matrix, Qt desktop, and standalone plugin assets
-      run: python3 ci/package-release.py dist release
-    - name: Set up Go
-      uses: actions/setup-go@v7
-      with:
-        go-version: '1.26.9'
-        cache-dependency-path: go.sum
-
-    - name: Check the release against installed updaters
-      run: go run ./tools/releasecheck release
+    - name: Assemble exactly six Qt desktop release assets
+      run: python3 ci/package-qt-release.py dist release
     - name: Publish Release
       uses: softprops/action-gh-release@v3
       with:
@@ -4050,23 +4042,20 @@ jobs:
 
           The release contains four Linux/Windows embedded-Qt single-file
           archives and two classic macOS `F4.app` bundles, one per
-          architecture, plus Windows 7z compatibility archives. The full
-          terminal-only platform matrix, lite and legacy editions, macOS
-          CLI archives, Termux packages, and standalone plugins are retained.
+          architecture. No terminal-only, lite, legacy, plugin, or other
+          Go-only targets are included in this Qt desktop release.
 
-    # The check before publishing replays installed builds over the names
-    # sorted the way the GitHub API lists assets today, which the API does
-    # not promise. Read the release back as the updaters will and replay it
-    # in that order; if they would misread it, turn it back into a draft,
-    # which no updater sees, and fail.
-    - name: Check the published release as the API lists it
+    - name: Check the published release contains only Qt assets
       env:
         GH_TOKEN: ${{ github.token }}
         TAG: ${{ github.ref_name }}
       run: |
         set -euo pipefail
-        gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq '.assets[].name' > published-assets.txt
-        if ! go run ./tools/releasecheck -listed published-assets.txt; then
+        expected=$'f4-darwin-amd64.app.zip\nf4-darwin-arm64.app.zip\nf4-linux-amd64.tar.gz\nf4-linux-arm64.tar.gz\nf4-windows-amd64.zip\nf4-windows-arm64.zip'
+        actual=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq '.assets[].name' | sort)
+        if [[ "$actual" != "$expected" ]]; then
+          echo "::error::published assets are not the six Qt assets"
+          printf 'Expected:\n%s\nActual:\n%s\n' "$expected" "$actual"
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=true
           exit 1
         fi
@@ -4086,7 +4075,7 @@ jobs:
         echo "VERSION=$VERSION" >> "$GITHUB_ENV"
         BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
         for arch in amd64 arm64; do
-          file="f4-darwin-${arch}.tar.gz"
+          file="f4-darwin-${arch}.app.zip"
           echo "Downloading $file ..."
           curl -fL --retry 5 --retry-delay 10 --retry-all-errors -o "$file" "$BASE/$file"
           sha=$(sha256sum "$file" | cut -d' ' -f1)
@@ -4118,8 +4107,8 @@ jobs:
           end
 
           def install
-            bin.install "f4"
-            prefix.install "plugins" if File.directory?("plugins")
+            libexec.install "F4.app"
+            (bin/"f4").write_exec_script libexec/"F4.app/Contents/MacOS/f4"
           end
 
           test do
