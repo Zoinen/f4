@@ -16,8 +16,8 @@ _MD4C_REQUIREMENT_ANCHOR = (
     '# stable API since 0.3x as per md4c wiki\n'
 )
 _MD4C_REQUIREMENT_PATCH = (
-    '        # md4c 0.6.0 changes flags that Qt 6.11.1 checks at compile time.\n'
-    '        self.requires("md4c/[>=0.4.8 <0.6]")\n'
+    '            # md4c 0.6.0 changes flags that Qt 6.11.1 checks at compile time.\n'
+    '            self.requires("md4c/[>=0.4.8 <0.6]")\n'
 )
 _MD4C_REQUIREMENT_MARKER = 'self.requires("md4c/[>=0.4.8 <0.6]")'
 _FFMPEG_OPTION_ANCHOR = '        "with_gstreamer": [True, False],\n'

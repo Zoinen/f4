@@ -48,10 +48,15 @@ class WindowsHdrCoordinatesPatchTests(unittest.TestCase):
 
 class Md4cRequirementPatchTests(unittest.TestCase):
     def test_pins_md4c_before_incompatible_06(self):
-        recipe = patcher._MD4C_REQUIREMENT_ANCHOR
+        recipe = (
+            "def requirements(self):\n"
+            "        if self.options.get_safe(\"with_md4c\", False):\n"
+            + patcher._MD4C_REQUIREMENT_ANCHOR
+        )
         patched = patcher._patch_md4c(recipe)
 
         self.assertIn(patcher._MD4C_REQUIREMENT_MARKER, patched)
+        ast.parse(patched)
         self.assertEqual(patcher._patch_md4c(patched), patched)
 
     def test_missing_or_ambiguous_requirement_is_rejected(self):
