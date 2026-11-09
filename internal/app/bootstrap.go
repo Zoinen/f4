@@ -1674,20 +1674,23 @@ func saveSessionWithOptions(savePanelSettings, saveCurrentPanel, saveGUIWindow b
 		return
 	}
 	path := GetSessionIniPath()
+	windowChanged := false
 	if saveGUIWindow {
-		windowChanged := CaptureCurrentWindowSize()
+		sizeChanged := CaptureCurrentWindowSize()
 		positionChanged := CaptureCurrentWindowPosition()
-		if windowChanged || positionChanged {
-			if config.App.AutoSaveDialogSettings {
-				config.SaveWithWindowSize(true)
-			} else {
-				config.SaveGuiWindowSize()
+		windowChanged = sizeChanged || positionChanged
+	}
+	if config.App.AutoSaveDialogSettings {
+		// General settings may have changed even if the window has not moved.
+		if saveGUIWindow {
+			if err := config.SaveAppliedConfiguration(); err != nil {
+				vtui.DebugLog("CONFIG: Failed to save application settings: %v", err)
 			}
+		} else {
+			config.SaveWithWindowSize(false)
 		}
-	} else if config.App.AutoSaveDialogSettings {
-		// Flush a pending settings-dialog change at shutdown without replacing
-		// the last GUI geometry when that group is disabled.
-		config.SaveWithWindowSize(false)
+	} else if windowChanged {
+		config.SaveGuiWindowSize()
 	}
 
 	if savePanelSettings || saveCurrentPanel {

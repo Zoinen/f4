@@ -1,6 +1,9 @@
 package app
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/unxed/f4/internal/config"
@@ -10,6 +13,30 @@ import (
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 )
+
+func TestNavigationTogglePersistsBeforeExit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.ini")
+	const initial = "[Panel]\nNavigationMode = classic\n\n[Custom]\nKeep = yes\n"
+	if err := os.WriteFile(path, []byte(initial), 0600); err != nil {
+		t.Fatal(err)
+	}
+	original, originalPath := config.App, config.GetUserConfigIniPath
+	t.Cleanup(func() { config.App, config.GetUserConfigIniPath = original, originalPath })
+	config.GetUserConfigIniPath = func() string { return path }
+	config.App.NavigationMode = config.NavigationClassic
+	config.App.AutoSaveSettings = true
+	config.App.AutoSaveDialogSettings = true
+	pf, _, _ := newSearchFirstTestFrame(t)
+	pf.ToggleNavigationMode()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "NavigationMode = search\n") ||
+		!strings.Contains(string(data), "[Custom]\nKeep = yes\n") {
+		t.Fatalf("toggle did not persist just the navigation setting: %s", data)
+	}
+}
 
 func TestNavigationToggleShortcut(t *testing.T) {
 	for _, mods := range []vtinput.ControlKeyState{

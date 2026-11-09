@@ -1,12 +1,45 @@
 package app
 
 import (
-	"github.com/unxed/f4/internal/config"
-	"github.com/unxed/f4/internal/panel"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/unxed/f4/internal/config"
+	"github.com/unxed/f4/internal/panel"
+	"github.com/unxed/vtui"
 )
+
+func TestSaveSessionPersistsSettingsWithoutGeometryChanges(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.ini")
+	if err := os.WriteFile(path, []byte("[Panel]\nNavigationMode = classic\n[Custom]\nKeep = yes\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	old, oldPath, loaded, frames := config.App, config.GetUserConfigIniPath, sessionLoaded, vtui.FrameManager
+	t.Cleanup(func() {
+		config.App, config.GetUserConfigIniPath, sessionLoaded, vtui.FrameManager = old, oldPath, loaded, frames
+	})
+	config.GetUserConfigIniPath = func() string { return path }
+	sessionLoaded, vtui.FrameManager = true, nil
+	config.App.AutoSaveSettings = true
+	config.App.AutoSaveDialogSettings = true
+	config.App.AutoSaveGUIWindow = true
+	config.App.AutoSavePanelSettings = false
+	config.App.AutoSaveCurrentPanel = false
+	config.App.NavigationMode = config.NavigationSearchFirst
+	SaveSession()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "NavigationMode = search\n") {
+		t.Fatal("shutdown skipped settings because the window geometry did not change")
+	}
+	if !strings.Contains(string(data), "[Custom]\nKeep = yes\n") {
+		t.Fatal("shutdown removed an unrelated profile setting")
+	}
+}
 
 func TestConfig_AutoSaveCategoriesRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.ini")

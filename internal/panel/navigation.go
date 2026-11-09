@@ -12,7 +12,8 @@ func (pf *PanelsFrame) ToggleNavigationMode() {
 	if pf.Closed || !pf.ShowPanels {
 		return
 	}
-	previous := config.App.NavigationMode
+	before := config.App
+	previous := before.NavigationMode
 	if previous == config.NavigationSearchFirst {
 		config.App.NavigationMode = config.NavigationClassic
 	} else {
@@ -29,7 +30,11 @@ func (pf *PanelsFrame) ToggleNavigationMode() {
 			}
 		}
 	}
-	config.RequestSaveConfig()
+	if config.App.AutoSaveSettings && config.App.AutoSaveDialogSettings {
+		if err := config.WriteSettingsCandidate(before, config.App); err != nil {
+			vtui.DebugLog("CONFIG: Failed to save panel navigation mode: %v", err)
+		}
+	}
 	vtui.DebugLog("[FIX:navigation-toggle] mode=%v -> %v", previous, config.App.NavigationMode)
 	vtui.FrameManager.HardRefresh()
 }
