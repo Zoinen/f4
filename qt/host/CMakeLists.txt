@@ -467,14 +467,25 @@ if(NOT TARGET ZoinGallery::Core OR NOT TARGET ZoinGallery::Qml)
 endif()
 # ZoinGalleryCore contains VideoPlaybackController when embedded video playback
 # is enabled.  Its implementation calls ViewerVideoFrameSource, whose
-# moc-generated implementation lives in ZoinGallery::Qml.  Most Gallery tests
-# already link both targets, but these two image-source tests were left with
-# only Core and therefore failed at link time on every platform with playback
-# enabled.
+# moc-generated implementation lives in ZoinGallery::Qml.  The Core-only
+# Gallery tests need that companion archive too, because the static archive can
+# pull VideoPlaybackController even when the test does not exercise video.
 if(ZOIN_ENABLE_VIDEO_PLAYBACK)
   foreach(F4_ZOIN_VIDEO_CORE_TEST_TARGET IN ITEMS
       ViewerDecodeSourceTests
-      ZoinGalleryEmbeddedImageProbeTests)
+      ZoinGalleryEmbeddedImageProbeTests
+      ZoinGallerySelectionTests
+      ZoinGalleryViewerCacheTests
+      ZoinGalleryThumbnailMemoryCacheTests
+      ZoinGalleryPersistentDerivedImageCacheTests
+      ZoinGalleryDecodeLifecycleTests
+      ZoinGalleryDecodeSizePolicyTests
+      ZoinGalleryLayoutEngineTests
+      ZoinGalleryGroupIndexTests
+      ZoinGalleryQuickSearchIndexTests
+      ZoinGalleryThumbnailPlannerTests
+      ZoinGalleryIconResolverTests
+      ZoinGalleryPanelControllerTests)
     if(TARGET ${F4_ZOIN_VIDEO_CORE_TEST_TARGET})
       target_link_libraries(${F4_ZOIN_VIDEO_CORE_TEST_TARGET} PRIVATE
         ZoinGallery::Qml)
