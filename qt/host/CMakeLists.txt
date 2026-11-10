@@ -465,6 +465,22 @@ if(NOT TARGET ZoinGallery::Core OR NOT TARGET ZoinGallery::Qml)
   message(FATAL_ERROR
     "The bundled ZoinGallery submodule must provide Core and Qml targets")
 endif()
+# ZoinGalleryCore contains VideoPlaybackController when embedded video playback
+# is enabled.  Its implementation calls ViewerVideoFrameSource, whose
+# moc-generated implementation lives in ZoinGallery::Qml.  Most Gallery tests
+# already link both targets, but these two image-source tests were left with
+# only Core and therefore failed at link time on every platform with playback
+# enabled.
+if(ZOIN_ENABLE_VIDEO_PLAYBACK)
+  foreach(F4_ZOIN_VIDEO_CORE_TEST_TARGET IN ITEMS
+      ViewerDecodeSourceTests
+      ZoinGalleryEmbeddedImageProbeTests)
+    if(TARGET ${F4_ZOIN_VIDEO_CORE_TEST_TARGET})
+      target_link_libraries(${F4_ZOIN_VIDEO_CORE_TEST_TARGET} PRIVATE
+        ZoinGallery::Qml)
+    endif()
+  endforeach()
+endif()
 if(F4_QT_STATIC AND F4_QT_USES_FFMPEG_BACKEND)
   # Qt's Conan package installs the QtMultimedia QML module beside the
   # package's QML tree, but does not expose its qmldir/Video.qml as a static
@@ -895,6 +911,31 @@ if(F4_QT_STATIC)
       "$<LINK_GROUP:RESCAN,CONAN_LIB::qt_Qt6_Svg_Qt6Svg_RELEASE,CONAN_LIB::qt_Qt6_QSvgPlugin_qsvg_RELEASE>")
   endif()
 
+  # Qt's VectorImage generator and Svg archives form a dependency cycle on
+  # GNU ld: Svg references the generator and the generator references the
+  # VectorImage backing module.  The generated Conan interfaces expose the
+  # archives in a one-pass order, so rescan the complete group explicitly for
+  # the production host and static QML tests.
+  set(F4_QT_STATIC_VECTOR_IMAGE_LINKS)
+  if(TARGET Qt6::Svg AND TARGET Qt6::QuickVectorImageGeneratorPrivate
+     AND TARGET Qt6::QuickVectorImage
+     AND TARGET Qt6::QuickVectorImageHelpers)
+    if(MSVC)
+      set(F4_QT_STATIC_VECTOR_IMAGE_LINKS
+        Qt6::Svg
+        Qt6::QuickVectorImageGeneratorPrivate
+        Qt6::QuickVectorImage
+        Qt6::QuickVectorImageHelpers)
+    else()
+      set(F4_QT_STATIC_VECTOR_IMAGE_LINKS
+        "$<LINK_GROUP:RESCAN,Qt6::Svg,Qt6::QuickVectorImageGeneratorPrivate,Qt6::QuickVectorImage,Qt6::QuickVectorImageHelpers>")
+    endif()
+  endif()
+  if(TARGET f4-qt-host AND F4_QT_STATIC_VECTOR_IMAGE_LINKS)
+    target_link_libraries(f4-qt-host PRIVATE
+      ${F4_QT_STATIC_VECTOR_IMAGE_LINKS})
+  endif()
+
   # Qt Multimedia's static archive has private dependencies that are missing
   # from some Conan-generated test-target interfaces.  Test executables use
   # the same video-enabled Qt graph as the host, so carry those dependencies
@@ -977,6 +1018,7 @@ if(F4_QT_STATIC)
         ${F4_REQUIRED_STATIC_QT_PLUGINS}
         ${F4_REQUIRED_STATIC_QML_TEST_PLUGINS}
         ${F4_QT_STATIC_SVG_LINKS}
+        ${F4_QT_STATIC_VECTOR_IMAGE_LINKS}
         ${F4_QT_STATIC_VIDEO_LINKS}
         ${F4_QT_QUICK_EFFECTS_LINK}
         ${F4_QT_QUICK_CONTROLS_BASIC_LINK})
@@ -1055,6 +1097,7 @@ if(F4_QT_STATIC)
         Qt6::QGifPlugin
         ${F4_QT_ICO_PLUGIN_TARGET}
         ${F4_QT_STATIC_SVG_LINKS}
+        ${F4_QT_STATIC_VECTOR_IMAGE_LINKS}
         ${F4_QT_STATIC_VIDEO_LINKS})
       if(TARGET Qt6::QJpegPlugin)
         target_link_libraries(${F4_ZOIN_STATIC_CORE_TEST_TARGET} PRIVATE
