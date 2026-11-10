@@ -1019,7 +1019,8 @@ if(F4_QT_STATIC)
       ZoinGalleryEntryHoverTests
       ZoinGalleryPanelGestureTests
       ZoinGalleryMasonryLayoutModesTests
-      ZoinGalleryStandaloneShellSmokeTests)
+      ZoinGalleryStandaloneShellSmokeTests
+      ZoinGalleryComponentHostStagingTests)
     if(TARGET ${F4_ZOIN_STATIC_QML_TEST_TARGET})
       target_sources(${F4_ZOIN_STATIC_QML_TEST_TARGET} PRIVATE
         $<TARGET_OBJECTS:${F4_STATIC_QT_TEST_IMPORT_TARGET}>
