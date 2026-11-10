@@ -1247,8 +1247,8 @@ jobs:
         if ("${{ matrix.arch }}" -eq "arm64") {
           # The x64 runner cannot execute ARM64 tests, and compiling those
           # targets only lengthens the cross-build without contributing to
-          # the portable artifact. Native test coverage remains enabled for
-          # the amd64 cell.
+          # the portable artifact. The amd64 cell runs the same focused
+          # portable-host gates as the glibc baseline builder below.
           $buildTesting = "OFF"
         }
         cmake -S qt/host -B $buildDir -G Ninja `
@@ -1272,13 +1272,27 @@ jobs:
           # runner or the local Windows ARM VM.
           Write-Host "Skipping Windows ARM64 target CTest on the x64 runner"
         } else {
+          # The aggregate QtTest executables also register desktop-only
+          # screenshot and timing cases. Those cases are covered by the
+          # native Qt-host job; the portable artifact gate must exercise the
+          # static host's focused dependency, multimedia, DPR, and geometry
+          # contracts under the configured offscreen environment.
+          $portableCtestRegex = "^(F4IconProviderTest|F4IconProviderFractionalDprFramebufferTest|QtMediaClientTest|F4GalleryVideoControlsPixelGridTest|F4GalleryVideoSettingsPixelGridTest|WindowGeometryPersistenceTest)$"
           $PSNativeCommandUseErrorActionPreference = $false
           ctest --test-dir $buildDir -C Release --output-on-failure `
-            -R "^(F4|QtMediaClient|QtShellController|WindowGeometryPersistence)"
+            -R $portableCtestRegex
           $qtTestStatus = $LASTEXITCODE
           $PSNativeCommandUseErrorActionPreference = $true
           if ($qtTestStatus -ne 0) {
             throw "Qt CTest gate failed: $qtTestStatus"
+          }
+          $qmlGate = Join-Path $buildDir "F4QuickViewSurfaceTests.exe"
+          $PSNativeCommandUseErrorActionPreference = $false
+          & $qmlGate qmlImportsWithoutInstalledQt
+          $qmlTestStatus = $LASTEXITCODE
+          $PSNativeCommandUseErrorActionPreference = $true
+          if ($qmlTestStatus -ne 0) {
+            throw "Static QML import gate failed: $qmlTestStatus"
           }
         }
 
