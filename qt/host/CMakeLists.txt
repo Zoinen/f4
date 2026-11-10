@@ -87,8 +87,17 @@ endif()
 # repair in f4-qt-host-target/CMakeLists.txt can run. Recreate the targets
 # here for both the classic shared host and the portable static host.
 set(F4_QT_PACKAGE_FOLDER "")
+# Prefer the Qt prefix selected by find_package(). Conan can leave several
+# configurations in its package variables after a cache restore; choosing an
+# unrelated configuration there can make the module library lookup silently
+# miss a platform's VectorImage archive.
+get_filename_component(F4_QT_SELECTED_PREFIX "${Qt6_DIR}/../../.." ABSOLUTE)
+if(EXISTS "${F4_QT_SELECTED_PREFIX}/lib/cmake/Qt6Qml/QmlPlugins")
+  set(F4_QT_PACKAGE_FOLDER "${F4_QT_SELECTED_PREFIX}")
+endif()
 foreach(F4_QT_PACKAGE_CONFIG RELEASE RELWITHDEBINFO MINSIZEREL DEBUG)
-  if(DEFINED qt_PACKAGE_FOLDER_${F4_QT_PACKAGE_CONFIG}
+  if(NOT F4_QT_PACKAGE_FOLDER
+     AND DEFINED qt_PACKAGE_FOLDER_${F4_QT_PACKAGE_CONFIG}
      AND EXISTS
        "${qt_PACKAGE_FOLDER_${F4_QT_PACKAGE_CONFIG}}/lib/cmake/Qt6Qml/QmlPlugins")
     set(F4_QT_PACKAGE_FOLDER
@@ -101,37 +110,84 @@ if(NOT F4_QT_PACKAGE_FOLDER)
     "Conan's Qt package folder could not be located for VectorImage targets")
 endif()
 get_target_property(F4_QT_CORE_TARGET_TYPE Qt6::Core TYPE)
-if(F4_QT_CORE_TARGET_TYPE STREQUAL "STATIC_LIBRARY")
+if(F4_PORTABLE_STATIC OR F4_QT_CORE_TARGET_TYPE STREQUAL "STATIC_LIBRARY")
   set(F4_QT_VECTOR_IMAGE_TARGET_TYPE STATIC)
 else()
   set(F4_QT_VECTOR_IMAGE_TARGET_TYPE SHARED)
 endif()
-function(f4_import_qt_vector_image_target module_name)
-  if(TARGET Qt6::${module_name})
-    return()
-  endif()
-  set(F4_QT_VECTOR_IMAGE_ARCHIVE "")
-  find_library(F4_QT_VECTOR_IMAGE_ARCHIVE
-    NAMES Qt6${module_name}
-    PATHS "${F4_QT_PACKAGE_FOLDER}/lib"
-    NO_DEFAULT_PATH REQUIRED)
-  add_library(Qt6::${module_name}
-    ${F4_QT_VECTOR_IMAGE_TARGET_TYPE} IMPORTED GLOBAL)
-  set_target_properties(Qt6::${module_name} PROPERTIES
-    IMPORTED_LOCATION "${F4_QT_VECTOR_IMAGE_ARCHIVE}")
-  if(F4_QT_VECTOR_IMAGE_TARGET_TYPE STREQUAL "STATIC")
-    if(module_name STREQUAL "QuickVectorImage")
-      set(F4_QT_VECTOR_IMAGE_LINKS Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick)
-    else()
-      set(F4_QT_VECTOR_IMAGE_LINKS Qt6::Core Qt6::Gui Qt6::Qml
-        Qt6::QuickVectorImage)
+function(f4_import_qt_library_target target_name library_name)
+  set(F4_QT_LIBRARY_TARGET "Qt6::${target_name}")
+  set(F4_QT_LIBRARY_EXISTS FALSE)
+  if(TARGET ${F4_QT_LIBRARY_TARGET})
+    get_target_property(F4_QT_LIBRARY_TYPE
+      ${F4_QT_LIBRARY_TARGET} TYPE)
+    if(F4_QT_LIBRARY_TYPE STREQUAL "INTERFACE_LIBRARY")
+      return()
     endif()
-    set_target_properties(Qt6::${module_name} PROPERTIES
-      INTERFACE_LINK_LIBRARIES "${F4_QT_VECTOR_IMAGE_LINKS}")
+    get_target_property(F4_QT_LIBRARY_LOCATION
+      ${F4_QT_LIBRARY_TARGET} IMPORTED_LOCATION)
+    get_target_property(F4_QT_LIBRARY_RELEASE_LOCATION
+      ${F4_QT_LIBRARY_TARGET} IMPORTED_LOCATION_RELEASE)
+    if(F4_QT_LIBRARY_LOCATION OR F4_QT_LIBRARY_RELEASE_LOCATION)
+      return()
+    endif()
+    set(F4_QT_LIBRARY_EXISTS TRUE)
+  endif()
+  # Use the package files directly rather than find_library(): the Conan Qt
+  # archive has versioned macOS symlinks and find_library's cache can retain a
+  # result from a different module during the same configure pass.
+  file(GLOB F4_QT_LIBRARY_CANDIDATES
+    "${F4_QT_PACKAGE_FOLDER}/lib/*Qt6${library_name}*.a"
+    "${F4_QT_PACKAGE_FOLDER}/lib/*Qt6${library_name}*.dylib"
+    "${F4_QT_PACKAGE_FOLDER}/lib/*Qt6${library_name}*.lib"
+    "${F4_QT_PACKAGE_FOLDER}/lib/*Qt6${library_name}*.so*")
+  list(SORT F4_QT_LIBRARY_CANDIDATES)
+  if(NOT F4_QT_LIBRARY_CANDIDATES)
+    message(FATAL_ERROR
+      "Qt6::${target_name} library was not found in the Conan package")
+  endif()
+  list(GET F4_QT_LIBRARY_CANDIDATES 0 F4_QT_LIBRARY_ARCHIVE)
+  if(NOT F4_QT_LIBRARY_EXISTS)
+    add_library(${F4_QT_LIBRARY_TARGET}
+      ${F4_QT_VECTOR_IMAGE_TARGET_TYPE} IMPORTED GLOBAL)
+  endif()
+  set_target_properties(${F4_QT_LIBRARY_TARGET} PROPERTIES
+    IMPORTED_LOCATION "${F4_QT_LIBRARY_ARCHIVE}"
+    IMPORTED_LOCATION_RELEASE "${F4_QT_LIBRARY_ARCHIVE}")
+  if(WIN32)
+    set_target_properties(${F4_QT_LIBRARY_TARGET} PROPERTIES
+      IMPORTED_IMPLIB "${F4_QT_LIBRARY_ARCHIVE}"
+      IMPORTED_IMPLIB_RELEASE "${F4_QT_LIBRARY_ARCHIVE}")
+  endif()
+  if(ARGN)
+    set_target_properties(${F4_QT_LIBRARY_TARGET} PROPERTIES
+      INTERFACE_LINK_LIBRARIES "${ARGN}")
   endif()
 endfunction()
-f4_import_qt_vector_image_target(QuickVectorImage)
-f4_import_qt_vector_image_target(QuickVectorImageHelpers)
+function(f4_import_qt_private_interface_target target_name module_name)
+  if(TARGET Qt6::${target_name})
+    return()
+  endif()
+  add_library(Qt6::${target_name} INTERFACE IMPORTED GLOBAL)
+  set_target_properties(Qt6::${target_name} PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES
+      "${F4_QT_PACKAGE_FOLDER}/include/Qt${module_name}/${Qt6_VERSION};${F4_QT_PACKAGE_FOLDER}/include/Qt${module_name}/${Qt6_VERSION}/Qt${module_name}"
+    INTERFACE_LINK_LIBRARIES "${ARGN}")
+endfunction()
+f4_import_qt_library_target(QuickShapes QuickShapes
+  Qt6::Core Qt6::Qml)
+f4_import_qt_library_target(QuickVectorImage QuickVectorImage
+  Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick)
+f4_import_qt_library_target(QuickVectorImageHelpers QuickVectorImageHelpers
+  Qt6::Core Qt6::Gui Qt6::Qml Qt6::QuickVectorImage)
+f4_import_qt_library_target(QuickVectorImageGeneratorPrivate
+  QuickVectorImageGenerator
+  Qt6::Core Qt6::Gui Qt6::Qml Qt6::QuickVectorImage)
+set_target_properties(Qt6::QuickVectorImageGeneratorPrivate PROPERTIES
+  INTERFACE_INCLUDE_DIRECTORIES
+    "${F4_QT_PACKAGE_FOLDER}/include/QtQuickVectorImageGenerator/${Qt6_VERSION};${F4_QT_PACKAGE_FOLDER}/include/QtQuickVectorImageGenerator/${Qt6_VERSION}/QtQuickVectorImageGenerator")
+f4_import_qt_private_interface_target(QuickShapesPrivate QuickShapes
+  Qt6::QuickPrivate Qt6::QuickShapes)
 find_package(msgpack-cxx REQUIRED)
 if(USE_QWK)
   find_package(QWindowKit REQUIRED)
