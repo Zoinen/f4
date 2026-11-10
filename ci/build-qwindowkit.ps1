@@ -82,13 +82,17 @@ if ($PatchAlreadyApplied) {
     }
 }
 
-# QWindowKit builds qmsetup from its submodule when no host package is
-# available. On the GitHub Windows ARM job the outer project is configured
-# with the ARM64 MSVC environment, so that fallback produces an ARM64
-# qmcorecmd.exe which cannot run on the x64 GitHub runner during configure.
-# Build this tiny helper package explicitly for the build machine and point
-# QWindowKit at it; the QWindowKit libraries themselves remain ARM64.
-if ($env:VSCMD_ARG_TGT_ARCH -eq "arm64") {
+# Older QWindowKit revisions carried qmsetup as a submodule. Current upstream
+# removed that directory and configures directly, so only apply the native
+# host-tool workaround when the checked-out revision still contains it.
+$QmsetupSource = Join-Path $QwkSource "qmsetup"
+if (($env:VSCMD_ARG_TGT_ARCH -eq "arm64") -and (Test-Path -LiteralPath $QmsetupSource -PathType Container)) {
+    # QWindowKit builds qmsetup from its submodule when no host package is
+    # available. On the GitHub Windows ARM job the outer project is configured
+    # with the ARM64 MSVC environment, so that fallback produces an ARM64
+    # qmcorecmd.exe which cannot run on the x64 GitHub runner during configure.
+    # Build this tiny helper package explicitly for the build machine and point
+    # QWindowKit at it; the QWindowKit libraries themselves remain ARM64.
     $hostArchitecture = $env:VSCMD_ARG_HOST_ARCH
     if ([string]::IsNullOrWhiteSpace($hostArchitecture)) {
         $hostArchitecture = "x64"
@@ -101,7 +105,6 @@ if ($env:VSCMD_ARG_TGT_ARCH -eq "arm64") {
             throw "Visual Studio developer command file is missing: $vsDevCmd"
         }
 
-        $qmsetupSource = Join-Path $QwkSource "qmsetup"
         $hostCommand = @(
             "call `"$vsDevCmd`" -arch=x64 -host_arch=$hostArchitecture",
             "cmake -S `"$qmsetupSource`" -B `"$QmsetupHostBuild`" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=`"$QmsetupHostInstall`" -DCMAKE_INSTALL_LIBDIR=lib -DQMSETUP_STATIC_RUNTIME=ON",
@@ -121,6 +124,8 @@ if ($env:VSCMD_ARG_TGT_ARCH -eq "arm64") {
         throw "Native qmsetup package config was not installed"
     }
     $QwkPlatformArgs += "-Dqmsetup_DIR=$($QmsetupHostInstall)\lib\cmake\qmsetup"
+} elseif ($env:VSCMD_ARG_TGT_ARCH -eq "arm64") {
+    Write-Host "QWindowKit has no qmsetup directory; using its in-tree CMake setup"
 }
 
 cmake -S $QwkSource -B $QwkBuild -G Ninja `
