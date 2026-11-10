@@ -24,14 +24,15 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 # Ubuntu 18.04 is end-of-life and its packages are no longer served reliably
 # by the rotating archive/security mirrors. Keep the glibc-2.27 contract, but
-# point x86 containers at Ubuntu's immutable EOL archive before the first apt
-# operation. Leave ports.ubuntu.com intact for ARM64, where the ports mirror
-# still serves bionic. HTTP avoids the EOL image's obsolete CA bundle; apt
-# continues to verify the signed Release files and package hashes.
+# point x86 containers at the HTTPS US archive before the first apt operation;
+# the archive still serves bionic, while the HTTP endpoint now times out on
+# GitHub-hosted runners. Leave ports.ubuntu.com intact for ARM64, where the
+# ports mirror still serves bionic. apt continues to verify the signed Release
+# files and package hashes.
 for apt_sources in /etc/apt/sources.list /etc/apt/sources.list.d/*.list; do
     if [[ -f "${apt_sources}" ]]; then
         sed -i -E \
-            's#https?://([^/]*\.)?(archive|security)\.ubuntu\.com/ubuntu#http://old-releases.ubuntu.com/ubuntu#g' \
+            's#https?://([^/]*\.)?(archive|security)\.ubuntu\.com/ubuntu#https://us.archive.ubuntu.com/ubuntu#g' \
             "${apt_sources}"
     fi
 done
