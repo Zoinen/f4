@@ -327,6 +327,16 @@ fi
 # the restored cache before Conan is allowed to select the corresponding
 # remote package. Keep the scanned archives and bootstrap set in one helper.
 arm64_glibc_rebuild_packages=()
+append_arm64_glibc_rebuild_package() {
+    local requested="$1"
+    local existing
+    for existing in "${arm64_glibc_rebuild_packages[@]}"; do
+        if [[ "${existing}" == "${requested}" ]]; then
+            return
+        fi
+    done
+    arm64_glibc_rebuild_packages+=("${requested}")
+}
 if [[ "${TARGET_ARCH}" == "arm64" ]]; then
     arm64_glibc_rebuild_output="$(
         python ci/arm64_glibc_archives.py \
@@ -344,15 +354,36 @@ if [[ "${TARGET_ARCH}" == "arm64" ]]; then
         # this small image-library archive in the glibc-2.27 container during
         # the explicit bootstrap; trusted release jobs then consume the
         # repaired package without rebuilding the rest of the graph.
-        arm64_glibc_rebuild_packages+=(libraw)
+        append_arm64_glibc_rebuild_package libraw
         echo "Forcing ARM64 libraw to rebuild in the glibc 2.27 / GCC 11 container"
+    fi
+    if [[ "${F4_CONAN_FORCE_ARM64_LIBRAW_REBUILD:-0}" == "1" ]]; then
+        # The remote package ID does not encode the glibc headers used to
+        # compile libraw. Keep Qt/FFmpeg binary-only, but repair this one
+        # small archive in the audited Ubuntu 18.04/GCC-11 container whenever
+        # the remote baseline has not yet been replaced with a compatible
+        # revision.
+        append_arm64_glibc_rebuild_package libraw
+        echo "Forcing ARM64 libraw to rebuild for the glibc 2.27 baseline"
     fi
 fi
 if [[ "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" &&
     -n "${F4_CONAN_REMOTE_URL:-}" ]]; then
-    conan_build_args=(--build=never)
-    echo "Using the audited glibc 2.27 / GCC 11 Conan graph from f4-conan"
-    echo "Trusted baseline mode forbids source fallback; missing packages fail fast"
+    if [[ "${#arm64_glibc_rebuild_packages[@]}" -gt 0 ]]; then
+        for package in "${arm64_glibc_rebuild_packages[@]}"; do
+            if [[ "${package}" != "libraw" ]]; then
+                echo "error: trusted baseline contains an ARM64 ${package} archive incompatible with glibc 2.27" >&2
+                exit 1
+            fi
+        done
+        conan_build_args=(--build='missing:~qt/*' --build='missing:~ffmpeg/*')
+        echo "Using the audited glibc 2.27 / GCC 11 Conan graph from f4-conan"
+        echo "Trusted baseline mode permits only the targeted ARM64 libraw repair"
+    else
+        conan_build_args=(--build=never)
+        echo "Using the audited glibc 2.27 / GCC 11 Conan graph from f4-conan"
+        echo "Trusted baseline mode forbids source fallback; missing packages fail fast"
+    fi
 elif [[ "${F4_CONAN_BOOTSTRAP_MULTIMEDIA:-0}" == "1" ]]; then
     # The multimedia graph is intentionally bootstrapped from the existing
     # Artifactory baseline. Reuse every matching remote package and compile

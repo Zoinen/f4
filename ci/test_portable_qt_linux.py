@@ -72,6 +72,8 @@ class PortableQtLinuxBuildTests(unittest.TestCase):
         self.assertIn("inputs.publish_qt_release", release_job)
         self.assertIn("F4_CONAN_FORBID_QT_FFMPEG_BUILD", build_step)
         self.assertIn("-e F4_CONAN_FORBID_QT_FFMPEG_BUILD", release_job)
+        self.assertIn("F4_CONAN_FORCE_ARM64_LIBRAW_REBUILD", build_step)
+        self.assertIn("-e F4_CONAN_FORCE_ARM64_LIBRAW_REBUILD", release_job)
         self.assertRegex(
             build_step,
             r"F4_CONAN_TRUST_REMOTE_BASELINE:.*inputs\.publish_qt_release",
@@ -81,6 +83,8 @@ class PortableQtLinuxBuildTests(unittest.TestCase):
             r"F4_CONAN_BOOTSTRAP_MULTIMEDIA:.*inputs\.publish_qt_release",
         )
         self.assertIn("F4_CONAN_FORBID_QT_FFMPEG_BUILD", script)
+        self.assertIn("F4_CONAN_FORCE_ARM64_LIBRAW_REBUILD", script)
+        self.assertIn("Trusted baseline mode permits only the targeted ARM64 libraw repair", script)
         self.assertRegex(
             script,
             r"conan_build_args=\(--build='missing:~qt/\*' "
