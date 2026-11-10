@@ -1236,6 +1236,14 @@ if(BUILD_TESTING)
         --fail-on-function-limit)
   endif()
 
+  # Shared Qt tests need the platform and image plugins from the selected
+  # Conan package. Portable static tests register those plugins in the test
+  # executable, so they retain the build-tree path used by the static graph.
+  set(F4_HOST_QT_PLUGIN_PATH "${CMAKE_BINARY_DIR}/plugins")
+  if(NOT F4_QT_STATIC)
+    set(F4_HOST_QT_PLUGIN_PATH "${F4_QT_PACKAGE_FOLDER}/plugins")
+  endif()
+
   add_executable(ExtUiProtocolTests
     tests/ExtUiProtocolTests.cpp
     src/ExtUiProtocol.h
@@ -1384,7 +1392,7 @@ if(BUILD_TESTING)
     add_dependencies(MacApplicationIconTests f4-qt-host)
     add_test(NAME MacApplicationIconTest COMMAND MacApplicationIconTests)
     set_tests_properties(MacApplicationIconTest PROPERTIES
-      ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+      ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_PLUGIN_PATH=${F4_HOST_QT_PLUGIN_PATH}"
     )
     add_test(NAME MacImageColorSpaceTest COMMAND MacApplicationIconTests
       nativeImageFormatKeepsColorSpaceAlive nativeImageKeepsColorSpaceAlive)
@@ -1485,7 +1493,7 @@ if(BUILD_TESTING)
       COMMAND ZoinGalleryMasonryLayoutModesTests
         columnsAndDetailsUseIdenticalCompactLucideIcons)
     set_tests_properties(ZoinGalleryLucideTintFractionalDprTest PROPERTIES
-      ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_SCALE_FACTOR=1.75;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+      ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_SCALE_FACTOR=1.75;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${F4_HOST_QT_PLUGIN_PATH}"
     )
   endif()
 
@@ -1625,7 +1633,7 @@ if(BUILD_TESTING)
     f4_link_static_test_platform(QWindowKitTitleBarTests)
     add_test(NAME QWindowKitTitleBarTest COMMAND QWindowKitTitleBarTests)
     set_tests_properties(QWindowKitTitleBarTest PROPERTIES
-      ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+      ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_PLUGIN_PATH=${F4_HOST_QT_PLUGIN_PATH}"
     )
   endif()
 
@@ -1648,12 +1656,12 @@ if(BUILD_TESTING)
   f4_link_static_test_qml_plugins(F4IconProviderTests)
   add_test(NAME F4IconProviderTest COMMAND F4IconProviderTests)
   set_tests_properties(F4IconProviderTest PROPERTIES
-    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_PLUGIN_PATH=${F4_HOST_QT_PLUGIN_PATH}"
   )
   add_test(NAME F4IconProviderFractionalDprFramebufferTest
     COMMAND F4IconProviderTests lucideFramebufferMatchesDirectSvgRender)
   set_tests_properties(F4IconProviderFractionalDprFramebufferTest PROPERTIES
-    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_SCALE_FACTOR=1.75;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_SCALE_FACTOR=1.75;QT_PLUGIN_PATH=${F4_HOST_QT_PLUGIN_PATH}"
   )
   # Windows CI runs in headless Session 0, where the Shell file-icon provider
   # can block indefinitely. The PE audit plus the offscreen production-host
@@ -1663,7 +1671,7 @@ if(BUILD_TESTING)
     add_test(NAME F4IconProviderNativeSmoke
       COMMAND F4IconProviderTests nativePlatformFileIconSmoke)
   set_tests_properties(F4IconProviderNativeSmoke PROPERTIES
-      ENVIRONMENT "QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+      ENVIRONMENT "QT_PLUGIN_PATH=${F4_HOST_QT_PLUGIN_PATH}"
     )
   endif()
 
@@ -1686,7 +1694,7 @@ if(BUILD_TESTING)
   f4_link_static_test_qml_plugins(F4TextRenderingPolicyTests)
   add_test(NAME F4TextRenderingPolicyTest COMMAND F4TextRenderingPolicyTests)
   set_tests_properties(F4TextRenderingPolicyTest PROPERTIES
-    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_PLUGIN_PATH=${F4_HOST_QT_PLUGIN_PATH}"
   )
 
   add_executable(F4WorktreeIdentityTests
@@ -1721,7 +1729,7 @@ if(BUILD_TESTING)
   f4_link_static_test_qml_plugins(F4PanelSplitterTests)
   add_test(NAME F4PanelSplitterTest COMMAND F4PanelSplitterTests)
   set_tests_properties(F4PanelSplitterTest PROPERTIES
-    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_PLUGIN_PATH=${F4_HOST_QT_PLUGIN_PATH}"
   )
 
   # Tests that instantiate the shell use the same component graph as the
@@ -1764,10 +1772,10 @@ if(BUILD_TESTING)
   f4_link_static_test_image_plugins(F4DocumentSurfaceTests)
   f4_link_static_test_qml_plugins(F4DocumentSurfaceTests)
   set(F4_HOST_QML_TEST_ENV
-    "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins;QML_IMPORT_PATH=${CMAKE_BINARY_DIR}/ZoinGallery"
+    "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${F4_HOST_QT_PLUGIN_PATH};QML_IMPORT_PATH=${CMAKE_BINARY_DIR}/ZoinGallery"
   )
   set(F4_HOST_QML_DPR_TEST_ENV
-    "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_SCALE_FACTOR=1.75;QT_SCALE_FACTOR_ROUNDING_POLICY=PassThrough;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins;QML_IMPORT_PATH=${CMAKE_BINARY_DIR}/ZoinGallery"
+    "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_SCALE_FACTOR=1.75;QT_SCALE_FACTOR_ROUNDING_POLICY=PassThrough;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${F4_HOST_QT_PLUGIN_PATH};QML_IMPORT_PATH=${CMAKE_BINARY_DIR}/ZoinGallery"
   )
   if(WIN32)
     list(APPEND F4_HOST_QML_TEST_ENV "QT_QPA_FONTDIR=$ENV{WINDIR}/Fonts")
@@ -2357,7 +2365,7 @@ if(BUILD_TESTING)
   add_test(NAME WindowGeometryPersistenceTest
     COMMAND WindowGeometryPersistenceTests)
   set_tests_properties(WindowGeometryPersistenceTest PROPERTIES
-    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins"
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_PLUGIN_PATH=${F4_HOST_QT_PLUGIN_PATH}"
   )
 
   add_executable(F4GalleryBridgeTests
@@ -2443,7 +2451,7 @@ if(BUILD_TESTING)
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen:configfile=tests/data/mixed-dpi-screens.json;QT_SCALE_FACTOR=1;QT_QUICK_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic"
   )
   set_tests_properties(F4GalleryBridgeTest PROPERTIES
-    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins;QML_IMPORT_PATH=${ZoinGallery_QML_IMPORT_PATH}"
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${F4_HOST_QT_PLUGIN_PATH};QML_IMPORT_PATH=${ZoinGallery_QML_IMPORT_PATH}"
   )
 
   add_executable(F4GalleryPointerTests
@@ -2543,14 +2551,14 @@ if(BUILD_TESTING)
   endif()
   add_test(NAME F4GalleryPointerTest COMMAND F4GalleryPointerTests)
   set_tests_properties(F4GalleryPointerTest PROPERTIES
-    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins;QML_IMPORT_PATH=${ZoinGallery_QML_IMPORT_PATH}"
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${F4_HOST_QT_PLUGIN_PATH};QML_IMPORT_PATH=${ZoinGallery_QML_IMPORT_PATH}"
   )
   add_test(NAME F4GalleryPreviewResizeDpr175Test COMMAND F4GalleryPointerTests
     iconsArtworkFillsSlotAfterLargeRasterArrives
     galleryEntryPreviewRetainsOnlySameEntryDuringAsyncResize
     compactThumbnailRetainsSameEntryDuringAsyncResize)
   set_tests_properties(F4GalleryPreviewResizeDpr175Test PROPERTIES
-    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_SCALE_FACTOR=1.75;QT_SCALE_FACTOR_ROUNDING_POLICY=PassThrough;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins;QML_IMPORT_PATH=${ZoinGallery_QML_IMPORT_PATH}"
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_SCALE_FACTOR=1.75;QT_SCALE_FACTOR_ROUNDING_POLICY=PassThrough;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${F4_HOST_QT_PLUGIN_PATH};QML_IMPORT_PATH=${ZoinGallery_QML_IMPORT_PATH}"
   )
 endif()
 
