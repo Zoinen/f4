@@ -1524,6 +1524,7 @@ if(BUILD_TESTING)
       endif()
       target_link_libraries(${target} PRIVATE
         ${F4_REQUIRED_STATIC_QML_TEST_PLUGINS}
+        ${F4_QT_STATIC_VECTOR_IMAGE_LINKS}
         ${F4_QT_QUICK_EFFECTS_LINK}
         ${F4_QT_QUICK_CONTROLS_BASIC_LINK})
       if(NOT TARGET Qt6::QuickEffects_resources_1)
