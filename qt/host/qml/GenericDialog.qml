@@ -690,7 +690,9 @@ Rectangle {
     SettingsDialogBody {
         id: settingsBody
         hostWindow: dialogRoot.hostWindow
-        rightGutter: dialogRoot.contentPadding
+        rightGutter: settingsBody.nativePage
+            ? dialogRoot.contentPadding
+            : dialogRoot.hostWindow.snapPx(12)
         sectionsOnly: dialogRoot.frame.settingsSectionsOnly === true
         visible: dialogRoot.settingsLayout
         widgets: visible ? dialogRoot.frame.children || [] : []
@@ -699,7 +701,10 @@ Rectangle {
         anchors.leftMargin: sectionsOnly ? dialogRoot.contentPadding : 0
         anchors.rightMargin: rightGutter
         anchors.topMargin: dialogHeader.height + (sectionsOnly ? dialogRoot.contentPadding : 0) + dialogRoot.paneHeaderHeight
-        anchors.bottomMargin: rightGutter + dialogKeyHints.height
+        // The sidebar/scrollbar may use the wider horizontal gutter, while
+        // the shared footer keeps the dialog's established 12px bottom
+        // margin. Do not let a right-gutter change move the footer vertically.
+        anchors.bottomMargin: dialogRoot.hostWindow.snapPx(12) + dialogKeyHints.height
         onCloseRequested: hostWindow.action({target: dialogRoot.frame.id, action: "dialog.close"})
     }
 
