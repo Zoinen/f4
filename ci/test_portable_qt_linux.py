@@ -72,6 +72,14 @@ class PortableQtLinuxBuildTests(unittest.TestCase):
             r"--build='missing:~ffmpeg/\*'\)",
         )
 
+    def test_bootstrap_repairs_glibc_sensitive_parser_tools(self):
+        script = BUILD_SCRIPT.read_text(encoding="utf-8")
+
+        for tool in ("bison", "flex"):
+            self.assertIn(f"path '*/p/bin/{tool}'", script)
+            self.assertIn(f"cached_{tool}_found", script)
+            self.assertIn(f"--build='{tool}/*'", script)
+
     def test_required_embedded_qml_gate_runs_without_installed_import_paths(self):
         script = BUILD_SCRIPT.read_text(encoding="utf-8")
         self.assertRegex(script, r'env -u QML_IMPORT_PATH -u QML2_IMPORT_PATH\s*\\\s*'

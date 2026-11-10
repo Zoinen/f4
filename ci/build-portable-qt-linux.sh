@@ -216,6 +216,30 @@ while IFS= read -r m4_binary; do
         break
     fi
 done < <(find "${CONAN_HOME}/p" -type f -path '*/p/bin/m4' -print 2>/dev/null)
+# Bison and flex are also executed by xkbcommon's Meson build.  Their Conan
+# package IDs do not record the glibc baseline, so a package built on a newer
+# Linux host can pass the cache/remote checks and fail only when the parser
+# sources are generated in Ubuntu 18.04.
+force_baseline_bison=0
+cached_bison_found=0
+while IFS= read -r bison_binary; do
+    cached_bison_found=1
+    if [[ ! -x "$bison_binary" ]] || ! "$bison_binary" --version >/dev/null 2>&1; then
+        force_baseline_bison=1
+        echo "Cached Conan bison is not executable on the glibc 2.27 baseline: ${bison_binary}"
+        break
+    fi
+done < <(find "${CONAN_HOME}/p" -type f -path '*/p/bin/bison' -print 2>/dev/null)
+force_baseline_flex=0
+cached_flex_found=0
+while IFS= read -r flex_binary; do
+    cached_flex_found=1
+    if [[ ! -x "$flex_binary" ]] || ! "$flex_binary" --version >/dev/null 2>&1; then
+        force_baseline_flex=1
+        echo "Cached Conan flex is not executable on the glibc 2.27 baseline: ${flex_binary}"
+        break
+    fi
+done < <(find "${CONAN_HOME}/p" -type f -path '*/p/bin/flex' -print 2>/dev/null)
 # pkgconf is executed by xkbcommon's Meson build. A package built for another
 # architecture can still look like a Conan cache hit, then fail as if xcb were
 # absent. Inspect the executable itself and rebuild only this tiny build
@@ -327,6 +351,16 @@ if [[ "${F4_CONAN_BOOTSTRAP_MULTIMEDIA:-0}" == "1" &&
     echo "No cached Conan m4 found; building it in the glibc 2.27 / GCC 11 container"
 fi
 if [[ "${F4_CONAN_BOOTSTRAP_MULTIMEDIA:-0}" == "1" &&
+    "${cached_bison_found}" == "0" ]]; then
+    force_baseline_bison=1
+    echo "No cached Conan bison found; building it in the glibc 2.27 / GCC 11 container"
+fi
+if [[ "${F4_CONAN_BOOTSTRAP_MULTIMEDIA:-0}" == "1" &&
+    "${cached_flex_found}" == "0" ]]; then
+    force_baseline_flex=1
+    echo "No cached Conan flex found; building it in the glibc 2.27 / GCC 11 container"
+fi
+if [[ "${F4_CONAN_BOOTSTRAP_MULTIMEDIA:-0}" == "1" &&
     "${TARGET_ARCH}" == "arm64" && "${cached_pkgconf_found}" == "0" ]]; then
     # Do not accept the first unqualified Artifactory pkgconf package on a
     # cold ARM64 cache; build the executable in the target container instead.
@@ -350,6 +384,22 @@ if [[ "${force_baseline_m4}" == "1" ]]; then
     fi
     conan_build_args+=(--build='m4/*')
     echo "Forcing only m4 to rebuild in the glibc 2.27 / GCC 11 container"
+fi
+if [[ "${force_baseline_bison}" == "1" ]]; then
+    if [[ "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" ]]; then
+        echo "error: trusted baseline contains a bison binary incompatible with glibc 2.27" >&2
+        exit 1
+    fi
+    conan_build_args+=(--build='bison/*')
+    echo "Forcing only bison to rebuild in the glibc 2.27 / GCC 11 container"
+fi
+if [[ "${force_baseline_flex}" == "1" ]]; then
+    if [[ "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" ]]; then
+        echo "error: trusted baseline contains a flex binary incompatible with glibc 2.27" >&2
+        exit 1
+    fi
+    conan_build_args+=(--build='flex/*')
+    echo "Forcing only flex to rebuild in the glibc 2.27 / GCC 11 container"
 fi
 if [[ "${force_baseline_pkgconf}" == "1" ]]; then
     if [[ "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" ]]; then
