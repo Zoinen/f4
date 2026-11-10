@@ -186,6 +186,11 @@ f4_import_qt_library_target(QuickVectorImageGeneratorPrivate
 set_target_properties(Qt6::QuickVectorImageGeneratorPrivate PROPERTIES
   INTERFACE_INCLUDE_DIRECTORIES
     "${F4_QT_PACKAGE_FOLDER}/include/QtQuickVectorImageGenerator/${Qt6_VERSION};${F4_QT_PACKAGE_FOLDER}/include/QtQuickVectorImageGenerator/${Qt6_VERSION}/QtQuickVectorImageGenerator")
+f4_import_qt_library_target(QmlMeta QmlMeta
+  Qt6::Core Qt6::Qml Qt6::QmlModels Qt6::QmlWorkerScript)
+set_target_properties(Qt6::QmlMeta PROPERTIES
+  INTERFACE_INCLUDE_DIRECTORIES
+    "${F4_QT_PACKAGE_FOLDER}/include/QtQmlMeta;${F4_QT_PACKAGE_FOLDER}/include/QtQmlMeta/${Qt6_VERSION};${F4_QT_PACKAGE_FOLDER}/include/QtQmlMeta/${Qt6_VERSION}/QtQmlMeta")
 f4_import_qt_library_target(QuickControls2Impl QuickControls2Impl
   Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickTemplates2)
 f4_import_qt_private_interface_target(QuickShapesPrivate QuickShapes
@@ -1864,6 +1869,7 @@ if(BUILD_TESTING)
   qt_import_plugins(F4QtQmlSignalMaskTests NO_DEFAULT)
   target_link_libraries(F4QtQmlSignalMaskTests PRIVATE
     Qt6::QuickPrivate
+    Qt6::QmlMeta
     Qt6::Test)
   add_test(NAME F4QtQmlSignalMaskTest COMMAND F4QtQmlSignalMaskTests)
 
