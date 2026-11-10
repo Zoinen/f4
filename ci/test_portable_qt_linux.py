@@ -121,6 +121,22 @@ class PortableQtLinuxBuildTests(unittest.TestCase):
         )
         self.assertIn("qmlImportsWithoutInstalledQt", workflow)
 
+    def test_macos_qt_host_uses_the_deterministic_release_gate(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn(
+            "portable_ctest_regex='^(F4IconProviderTest|"
+            "F4IconProviderFractionalDprFramebufferTest|QtMediaClientTest|"
+            "F4GalleryVideoControlsPixelGridTest|"
+            "F4GalleryVideoSettingsPixelGridTest|WindowGeometryPersistenceTest)$'",
+            workflow,
+        )
+        self.assertIn(
+            'ctest --test-dir qt/host/build-ci -C Release --output-on-failure \\\n'
+            '            -R "$portable_ctest_regex"',
+            workflow,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
