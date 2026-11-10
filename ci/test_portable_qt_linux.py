@@ -113,7 +113,13 @@ class PortableQtLinuxBuildTests(unittest.TestCase):
         self.assertNotIn("continuing to artifact smoke tests", workflow)
         self.assertIn('throw "Qt CTest gate failed: $qtTestStatus"', workflow)
         self.assertIn('exit "$qt_test_status"', workflow)
-        self.assertGreaterEqual(workflow.count("^(F4|QtMediaClient|QtShellController|WindowGeometryPersistence)"), 3)
+        self.assertIn(
+            "^(F4IconProviderTest|F4IconProviderFractionalDprFramebufferTest|"
+            "QtMediaClientTest|F4GalleryVideoControlsPixelGridTest|"
+            "F4GalleryVideoSettingsPixelGridTest|WindowGeometryPersistenceTest)$",
+            workflow,
+        )
+        self.assertIn("qmlImportsWithoutInstalledQt", workflow)
 
 
 if __name__ == "__main__":
