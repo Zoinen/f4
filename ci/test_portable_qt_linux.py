@@ -133,9 +133,10 @@ class PortableQtLinuxBuildTests(unittest.TestCase):
         )
         self.assertIn(
             'ctest --test-dir qt/host/build-ci -C Release --output-on-failure \\\n'
-            '            -R "$portable_ctest_regex"',
+            '              -R "$portable_ctest_regex"',
             workflow,
         )
+        self.assertIn("for qt_test_attempt in 1 2; do", workflow)
 
 
 if __name__ == "__main__":

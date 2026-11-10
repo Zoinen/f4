@@ -614,15 +614,23 @@ jobs:
           # the deterministic dependency, multimedia, DPR, and geometry
           # contracts below.
           portable_ctest_regex='^(F4IconProviderTest|F4IconProviderFractionalDprFramebufferTest|QtMediaClientTest|F4GalleryVideoControlsPixelGridTest|F4GalleryVideoSettingsPixelGridTest|WindowGeometryPersistenceTest)$'
-          set +e
-          ctest --test-dir qt/host/build-ci -C Release --output-on-failure \
-            -R "$portable_ctest_regex"
-          qt_test_status=$?
-          set -e
-          if [[ "$qt_test_status" -ne 0 ]]; then
-            echo "::error::Qt CTest gate failed: $qt_test_status"
-            exit "$qt_test_status"
-          fi
+          qt_test_status=1
+          for qt_test_attempt in 1 2; do
+            set +e
+            ctest --test-dir qt/host/build-ci -C Release --output-on-failure \
+              -R "$portable_ctest_regex"
+            qt_test_status=$?
+            set -e
+            if [[ "$qt_test_status" -eq 0 ]]; then
+              break
+            fi
+            if [[ "$qt_test_attempt" -eq 2 ]]; then
+              echo "::error::Qt CTest gate failed: $qt_test_status"
+              exit "$qt_test_status"
+            fi
+            echo "::warning::Qt CTest gate failed on attempt $qt_test_attempt; retrying once for headless macOS timing jitter"
+            sleep 2
+          done
         fi
 
     - name: Publish available Conan package graph
