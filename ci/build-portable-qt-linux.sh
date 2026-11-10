@@ -314,6 +314,16 @@ if [[ "${TARGET_ARCH}" == "arm64" ]]; then
     if [[ -n "${arm64_glibc_rebuild_output}" ]]; then
         mapfile -t arm64_glibc_rebuild_packages <<< "${arm64_glibc_rebuild_output}"
     fi
+    if [[ "${F4_CONAN_BOOTSTRAP_MULTIMEDIA:-0}" == "1" ]]; then
+        # The remote package can be selected before it is present in the
+        # restored cache, so the archive scan above cannot detect a bad
+        # libraw package that was published from a newer Linux host. Rebuild
+        # this small image-library archive in the glibc-2.27 container during
+        # the explicit bootstrap; trusted release jobs then consume the
+        # repaired package without rebuilding the rest of the graph.
+        arm64_glibc_rebuild_packages+=(libraw)
+        echo "Forcing ARM64 libraw to rebuild in the glibc 2.27 / GCC 11 container"
+    fi
 fi
 if [[ "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" &&
     -n "${F4_CONAN_REMOTE_URL:-}" ]]; then
