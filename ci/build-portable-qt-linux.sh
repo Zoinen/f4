@@ -30,7 +30,7 @@ export DEBIAN_FRONTEND=noninteractive
 for apt_sources in /etc/apt/sources.list /etc/apt/sources.list.d/*.list; do
     if [[ -f "${apt_sources}" ]]; then
         sed -i -E \
-            's#https?://(archive|security)\.ubuntu\.com/ubuntu#https://old-releases.ubuntu.com/ubuntu#g' \
+            's#https?://(archive|security)\.ubuntu\.com/ubuntu#http://old-releases.ubuntu.com/ubuntu#g' \
             "${apt_sources}"
     fi
 done
