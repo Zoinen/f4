@@ -1023,7 +1023,7 @@ jobs:
         F4_CONAN_FORCE_ARM64_LIBRAW_REBUILD: ${{ matrix.arch == 'arm64' && '1' || '0' }}
         # Consume the audited prebuilt graph, including Qt/FFmpeg/PulseAudio.
         # Release jobs consume the audited graph; ARM64 may rebuild only the
-        # glibc-sensitive libraw archive before publishing the repaired graph.
+        # glibc-sensitive libraw/libffi archives before publishing the repaired graph.
         F4_CONAN_TRUST_REMOTE_BASELINE: ${{ github.event_name != 'pull_request' && !(github.event_name == 'workflow_dispatch' && inputs.bootstrap_multimedia_dependencies && !inputs.publish_qt_release) && '1' || '0' }}
         F4_CONAN_BOOTSTRAP_MULTIMEDIA: ${{ github.event_name == 'workflow_dispatch' && inputs.bootstrap_multimedia_dependencies && !inputs.publish_qt_release && '1' || '0' }}
       run: |
@@ -1501,7 +1501,7 @@ jobs:
         F4_CONAN_EXPECTED_ARCH: ${{ matrix.conan_arch }}
         F4_CONAN_FORCE_ARM64_LIBRAW_REBUILD: ${{ matrix.arch == 'arm64' && '1' || '0' }}
         # Trusted mode forbids building the entire graph, except for the
-        # explicit ARM64 libraw repair below.
+        # explicit ARM64 libraw/libffi repair below.
         F4_CONAN_FORBID_QT_FFMPEG_BUILD: '0'
         F4_CONAN_TRUST_REMOTE_BASELINE: ${{ github.event_name != 'pull_request' && !(github.event_name == 'workflow_dispatch' && inputs.bootstrap_multimedia_dependencies && !inputs.publish_qt_release) && '1' || '0' }}
         F4_CONAN_BOOTSTRAP_MULTIMEDIA: ${{ github.event_name == 'workflow_dispatch' && inputs.bootstrap_multimedia_dependencies && !inputs.publish_qt_release && '1' || '0' }}

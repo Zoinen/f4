@@ -67,7 +67,7 @@ def packages_to_rebuild(
 
         if incompatible:
             selected.append(package)
-        elif not archives and bootstrap:
+        elif not archives and (bootstrap or package == "libffi"):
             print(
                 f"[FIX] No cached ARM64 {package} archive found; building it in the "
                 "glibc 2.27 / GCC 11 container",

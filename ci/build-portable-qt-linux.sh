@@ -381,14 +381,14 @@ if [[ "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" &&
     -n "${F4_CONAN_REMOTE_URL:-}" ]]; then
     if [[ "${targeted_baseline_repair}" == "1" ]]; then
         for package in "${arm64_glibc_rebuild_packages[@]}"; do
-            if [[ "${package}" != "libraw" ]]; then
+            if [[ "${package}" != "libraw" && "${package}" != "libffi" ]]; then
                 echo "error: trusted baseline contains an ARM64 ${package} archive incompatible with glibc 2.27" >&2
                 exit 1
             fi
         done
         conan_build_args=(--build='missing:~qt/*' --build='missing:~ffmpeg/*')
         echo "Using the audited glibc 2.27 / GCC 11 Conan graph from f4-conan"
-        echo "Trusted baseline mode permits only the targeted ARM64 libraw repair"
+        echo "Trusted baseline mode permits only targeted ARM64 libraw/libffi repair"
     else
         conan_build_args=(--build=never)
         echo "Using the audited glibc 2.27 / GCC 11 Conan graph from f4-conan"
