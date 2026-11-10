@@ -102,6 +102,12 @@ class F4QtHostConan(ConanFile):
         self.requires("libheif/1.20.1")
         self.requires("libjpeg-turbo/3.0.2", override=True)
         self.requires("jasper/4.2.0", override=True)
+        # The already-published portable Qt/FFmpeg graph was built against
+        # zlib/1.3.2. Conan Center's current Qt dependency range resolves to
+        # zlib/1.4 in a cold cache, changing the package IDs of Qt and most of
+        # its multimedia/font/image dependency graph. Keep release jobs on
+        # the audited graph until that complete graph is intentionally rebuilt.
+        self.requires("zlib/1.3.2", override=True, force=True)
 
     def build_requirements(self):
         # Windows ARM is cross-compiled by the x64 GitHub runner. Keep a
