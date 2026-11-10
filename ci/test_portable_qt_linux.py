@@ -23,6 +23,15 @@ class PortableQtLinuxBuildTests(unittest.TestCase):
         self.assertIn("https://us.archive.ubuntu.com/ubuntu", script)
         self.assertIn("archive|security", script)
 
+    def test_x86_bootstrap_installs_ca_before_verified_apt(self):
+        script = BUILD_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn("Acquire::https::Verify-Peer=false", script)
+        self.assertIn(
+            "apt_bootstrap_with_timeout install -y --no-install-recommends ca-certificates",
+            script,
+        )
+
     def test_qt_host_resolves_brotli_for_pinned_freetype(self):
         recipe = QT_HOST_RECIPE.read_text(encoding="utf-8")
 

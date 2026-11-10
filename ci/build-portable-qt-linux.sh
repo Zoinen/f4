@@ -49,14 +49,35 @@ apt_args=(
     -o DPkg::Lock::Timeout=60
     -o Dpkg::Use-Pty=0
 )
+# The bionic image predates the current Ubuntu archive certificate chain and
+# does not contain ca-certificates. Bootstrap that one package over HTTPS
+# without peer verification; apt still verifies the signed Release metadata
+# and package hashes. Every apt operation after ca-certificates is installed
+# uses the normal verified HTTPS path. ARM64 keeps using ports over HTTP and
+# does not need this bootstrap.
+apt_bootstrap_args=()
+if [[ "${TARGET_ARCH:-amd64}" != "arm64" ]]; then
+    apt_bootstrap_args=(
+        -o Acquire::https::Verify-Peer=false
+        -o Acquire::https::Verify-Host=false
+    )
+fi
 apt_with_timeout() {
     # apt may leave an unresponsive helper behind after SIGTERM (notably while
     # parsing old bionic package indexes).  --kill-after makes the timeout a
     # hard upper bound instead of letting the Actions job consume its budget.
     timeout --foreground --kill-after=30s 20m apt-get "${apt_args[@]}" "$@"
 }
+apt_bootstrap_with_timeout() {
+    timeout --foreground --kill-after=30s 20m apt-get \
+        "${apt_args[@]}" "${apt_bootstrap_args[@]}" "$@"
+}
 
 echo "Installing Ubuntu 18.04 bootstrap packages"
+if [[ "${#apt_bootstrap_args[@]}" -gt 0 ]]; then
+    apt_bootstrap_with_timeout update
+    apt_bootstrap_with_timeout install -y --no-install-recommends ca-certificates
+fi
 apt_with_timeout update
 apt_with_timeout install -y --no-install-recommends \
     autoconf automake bison build-essential ca-certificates curl flex \
