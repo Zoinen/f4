@@ -367,9 +367,19 @@ if [[ "${TARGET_ARCH}" == "arm64" ]]; then
         echo "Forcing ARM64 libraw to rebuild for the glibc 2.27 baseline"
     fi
 fi
+targeted_baseline_repair=0
+if [[ "${force_baseline_m4}" == "1" ||
+    "${force_baseline_bison}" == "1" ||
+    "${force_baseline_flex}" == "1" ||
+    "${force_baseline_pkgconf}" == "1" ||
+    "${force_baseline_ninja}" == "1" ||
+    "${force_baseline_gperf}" == "1" ||
+    "${#arm64_glibc_rebuild_packages[@]}" -gt 0 ]]; then
+    targeted_baseline_repair=1
+fi
 if [[ "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" &&
     -n "${F4_CONAN_REMOTE_URL:-}" ]]; then
-    if [[ "${#arm64_glibc_rebuild_packages[@]}" -gt 0 ]]; then
+    if [[ "${targeted_baseline_repair}" == "1" ]]; then
         for package in "${arm64_glibc_rebuild_packages[@]}"; do
             if [[ "${package}" != "libraw" ]]; then
                 echo "error: trusted baseline contains an ARM64 ${package} archive incompatible with glibc 2.27" >&2
@@ -454,58 +464,30 @@ if [[ "${F4_CONAN_BOOTSTRAP_MULTIMEDIA:-0}" == "1" &&
     echo "No cached Conan gperf found; building it for the ARM64 baseline"
 fi
 if [[ "${force_baseline_m4}" == "1" ]]; then
-    if [[ "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" ]]; then
-        echo "error: trusted baseline contains an m4 binary incompatible with glibc 2.27" >&2
-        exit 1
-    fi
     conan_build_args+=(--build='m4/*')
     echo "Forcing only m4 to rebuild in the glibc 2.27 / GCC 11 container"
 fi
 if [[ "${force_baseline_bison}" == "1" ]]; then
-    if [[ "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" ]]; then
-        echo "error: trusted baseline contains a bison binary incompatible with glibc 2.27" >&2
-        exit 1
-    fi
     conan_build_args+=(--build='bison/*')
     echo "Forcing only bison to rebuild in the glibc 2.27 / GCC 11 container"
 fi
 if [[ "${force_baseline_flex}" == "1" ]]; then
-    if [[ "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" ]]; then
-        echo "error: trusted baseline contains a flex binary incompatible with glibc 2.27" >&2
-        exit 1
-    fi
     conan_build_args+=(--build='flex/*')
     echo "Forcing only flex to rebuild in the glibc 2.27 / GCC 11 container"
 fi
 if [[ "${force_baseline_pkgconf}" == "1" ]]; then
-    if [[ "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" ]]; then
-        echo "error: trusted baseline contains a pkgconf binary incompatible with ARM64" >&2
-        exit 1
-    fi
     conan_build_args+=(--build='pkgconf/*')
     echo "Forcing only pkgconf to rebuild for the ARM64 baseline"
 fi
 if [[ "${force_baseline_ninja}" == "1" ]]; then
-    if [[ "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" ]]; then
-        echo "error: trusted baseline contains a Ninja binary incompatible with ARM64" >&2
-        exit 1
-    fi
     conan_build_args+=(--build='ninja/*')
     echo "Forcing only Ninja to rebuild for the ARM64 baseline"
 fi
 if [[ "${force_baseline_gperf}" == "1" ]]; then
-    if [[ "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" ]]; then
-        echo "error: trusted baseline contains a gperf binary incompatible with ARM64" >&2
-        exit 1
-    fi
     conan_build_args+=(--build='gperf/*')
     echo "Forcing only gperf to rebuild for the ARM64 baseline"
 fi
 for package in "${arm64_glibc_rebuild_packages[@]}"; do
-    if [[ "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" ]]; then
-        echo "error: trusted baseline contains an ARM64 ${package} archive incompatible with glibc 2.27" >&2
-        exit 1
-    fi
     conan_build_args+=("--build=${package}/*")
     echo "Forcing only ${package} to rebuild in the glibc 2.27 / GCC 11 container"
 done

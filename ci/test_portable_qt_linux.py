@@ -85,6 +85,8 @@ class PortableQtLinuxBuildTests(unittest.TestCase):
         self.assertIn("F4_CONAN_FORBID_QT_FFMPEG_BUILD", script)
         self.assertIn("F4_CONAN_FORCE_ARM64_LIBRAW_REBUILD", script)
         self.assertIn("Trusted baseline mode permits only the targeted ARM64 libraw repair", script)
+        self.assertIn("targeted_baseline_repair", script)
+        self.assertIn("Forcing only m4 to rebuild", script)
         self.assertRegex(
             script,
             r"conan_build_args=\(--build='missing:~qt/\*' "
