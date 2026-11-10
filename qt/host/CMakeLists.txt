@@ -917,18 +917,33 @@ if(F4_QT_STATIC)
   # archives in a one-pass order, so rescan the complete group explicitly for
   # the production host and static QML tests.
   set(F4_QT_STATIC_VECTOR_IMAGE_LINKS)
+  set(F4_QT_STATIC_VECTOR_IMAGE_SVG_TARGET Qt6::Svg)
+  if(TARGET CONAN_LIB::qt_Qt6_Svg_Qt6Svg_RELEASE)
+    # Qt6::Svg is an INTERFACE facade in the Conan package.  CMake drops an
+    # INTERFACE target from LINK_GROUP, so use the archive-level alias here to
+    # keep Svg inside the GNU ld rescan cycle.
+    set(F4_QT_STATIC_VECTOR_IMAGE_SVG_TARGET
+      CONAN_LIB::qt_Qt6_Svg_Qt6Svg_RELEASE)
+  endif()
   if(TARGET Qt6::Svg AND TARGET Qt6::QuickVectorImageGeneratorPrivate
      AND TARGET Qt6::QuickVectorImage
      AND TARGET Qt6::QuickVectorImageHelpers)
     if(MSVC)
       set(F4_QT_STATIC_VECTOR_IMAGE_LINKS
-        Qt6::Svg
+        ${F4_QT_STATIC_VECTOR_IMAGE_SVG_TARGET}
         Qt6::QuickVectorImageGeneratorPrivate
         Qt6::QuickVectorImage
         Qt6::QuickVectorImageHelpers)
     else()
+      set(F4_QT_STATIC_VECTOR_IMAGE_TARGETS
+        ${F4_QT_STATIC_VECTOR_IMAGE_SVG_TARGET}
+        Qt6::QuickVectorImageGeneratorPrivate
+        Qt6::QuickVectorImage
+        Qt6::QuickVectorImageHelpers)
+      string(REPLACE ";" "," F4_QT_STATIC_VECTOR_IMAGE_GROUP_ARGS
+        "${F4_QT_STATIC_VECTOR_IMAGE_TARGETS}")
       set(F4_QT_STATIC_VECTOR_IMAGE_LINKS
-        "$<LINK_GROUP:RESCAN,Qt6::Svg,Qt6::QuickVectorImageGeneratorPrivate,Qt6::QuickVectorImage,Qt6::QuickVectorImageHelpers>")
+        "$<LINK_GROUP:RESCAN,${F4_QT_STATIC_VECTOR_IMAGE_GROUP_ARGS}>")
     endif()
   endif()
   if(TARGET f4-qt-host AND F4_QT_STATIC_VECTOR_IMAGE_LINKS)
