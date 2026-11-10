@@ -17,6 +17,12 @@ class PortableQtLinuxBuildTests(unittest.TestCase):
 
         self.assertIn("fontconfig fonts-dejavu-core", script)
 
+    def test_bionic_container_uses_the_archived_ubuntu_mirror(self):
+        script = BUILD_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn("old-releases.ubuntu.com/ubuntu", script)
+        self.assertIn("archive|security", script)
+
     def test_qt_host_resolves_brotli_for_pinned_freetype(self):
         recipe = QT_HOST_RECIPE.read_text(encoding="utf-8")
 

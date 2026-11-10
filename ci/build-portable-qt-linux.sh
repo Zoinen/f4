@@ -22,6 +22,18 @@ if [[ "${F4_CONAN_UPLOAD_REQUIRED:-0}" == "1" ]]; then
 fi
 
 export DEBIAN_FRONTEND=noninteractive
+# Ubuntu 18.04 is end-of-life and its packages are no longer served by the
+# rotating archive/security mirrors. Keep the glibc-2.27 contract, but point
+# the container at the immutable old-releases archive before the first apt
+# operation; otherwise a retired mirror makes the whole bootstrap fail before
+# Conan can reuse or repair any package.
+for apt_sources in /etc/apt/sources.list /etc/apt/sources.list.d/*.list; do
+    if [[ -f "${apt_sources}" ]]; then
+        sed -i -E \
+            's#https?://(archive|security)\.ubuntu\.com/ubuntu#https://old-releases.ubuntu.com/ubuntu#g' \
+            "${apt_sources}"
+    fi
+done
 # GitHub-hosted runners occasionally leave the bionic mirror connection
 # half-open.  Without explicit network/lock limits apt can sit silently until
 # the Actions step is killed after a long idle period.  Keep bootstrap
