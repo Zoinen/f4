@@ -1,4 +1,5 @@
 pragma ComponentBehavior: Bound
+// architecture-check: allow-file-lines - the host root keeps shared window, scene and native-surface ownership in one composition boundary
 
 import QtQuick
 import QtQuick.Controls

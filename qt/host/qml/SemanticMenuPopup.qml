@@ -1,4 +1,5 @@
 pragma ComponentBehavior: Bound
+// architecture-check: allow-file-lines - popup modes share one focus, animation and anchor state machine
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Controls.impl

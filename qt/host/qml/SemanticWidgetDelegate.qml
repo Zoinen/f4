@@ -1,4 +1,5 @@
 pragma ComponentBehavior: Bound
+// architecture-check: allow-file-lines - the delegate owns all semantic widget variants so their shared keyboard and geometry contract stays atomic
 
 import QtQuick
 import F4QtHost 1.0

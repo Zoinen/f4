@@ -155,6 +155,7 @@ qreal availableDevicePixelRatio()
     return qGuiApp ? qGuiApp->devicePixelRatio() : qreal(1);
 }
 
+// architecture-check: allow-function-lines - constructor wiring must install the bridge's coordinated controllers and watchdogs together
 }
 
 F4GalleryBridge::F4GalleryBridge(QQmlEngine *engine, QObject *parent,

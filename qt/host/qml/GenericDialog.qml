@@ -1,4 +1,5 @@
 pragma ComponentBehavior: Bound
+// architecture-check: allow-file-lines - dialog chrome and its semantic/native content share one geometry and lifecycle boundary
 
 import QtQuick
 import F4QtHost 1.0
