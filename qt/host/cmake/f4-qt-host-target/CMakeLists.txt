@@ -356,6 +356,15 @@ if(F4_QT_STATIC)
       Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick)
     _f4_import_conan_qt_qml_backing_module(QuickLayouts
       Qt6::Core Qt6::Qml Qt6::Gui Qt6::Quick)
+    # Conan's generated Qt facade preserves the VectorImage plugin exports,
+    # but may omit the corresponding static module targets.  ZoinGallery and
+    # those plugin exports both link these archives, so recreate the two
+    # interface targets from the package's installed libraries just as for
+    # the other QML backing modules above.
+    _f4_import_conan_qt_qml_backing_module(QuickVectorImage
+      Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick)
+    _f4_import_conan_qt_qml_backing_module(QuickVectorImageHelpers
+      Qt6::Core Qt6::Gui Qt6::Qml Qt6::QuickVectorImage)
     if(F4_ENABLE_VIDEO_THUMBNAILS)
       # Qt Multimedia's static archive depends on this internal QtBase
       # allocator target, which Conan's generated facade omits.
