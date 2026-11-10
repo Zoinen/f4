@@ -1004,7 +1004,7 @@ jobs:
         F4_CONAN_TOKEN: ${{ secrets.F4_CONAN_REMOTE_TOKEN }}
         F4_CONAN_UPLOAD_TOKEN: ${{ secrets.F4_CONAN_UPLOAD_TOKEN }}
         F4_CONAN_UPLOAD_REQUIRED: ${{ (github.ref == 'refs/heads/zoin' || startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.bootstrap_multimedia_dependencies)) && '1' || '0' }}
-        F4_CONAN_REQUIRED_RECIPE_REFS: qt/6.11.1,pulseaudio/14.2,ffmpeg/7.1.5,libffi/3.4.8
+        F4_CONAN_REQUIRED_RECIPE_REFS: ${{ matrix.arch == 'arm64' && 'qt/6.11.1,pulseaudio/14.2,ffmpeg/7.1.5,libffi/3.4.8' || 'qt/6.11.1,pulseaudio/14.2,ffmpeg/7.1.5' }}
         F4_CONAN_EXPECTED_ARCH: ${{ matrix.conan_arch }}
         # Consume the audited prebuilt graph, including Qt/FFmpeg/PulseAudio.
         # Only an explicit bootstrap dispatch may repair native packages.
@@ -1467,7 +1467,7 @@ jobs:
         F4_CONAN_TOKEN: ${{ secrets.F4_CONAN_REMOTE_TOKEN }}
         F4_CONAN_UPLOAD_TOKEN: ${{ secrets.F4_CONAN_UPLOAD_TOKEN }}
         F4_CONAN_UPLOAD_REQUIRED: ${{ (github.ref == 'refs/heads/zoin' || startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.bootstrap_multimedia_dependencies)) && '1' || '0' }}
-        F4_CONAN_REQUIRED_RECIPE_REFS: qt/6.11.1,pulseaudio/14.2,ffmpeg/7.1.5,libffi/3.4.8
+        F4_CONAN_REQUIRED_RECIPE_REFS: ${{ matrix.arch == 'arm64' && 'qt/6.11.1,pulseaudio/14.2,ffmpeg/7.1.5,libffi/3.4.8' || 'qt/6.11.1,pulseaudio/14.2,ffmpeg/7.1.5' }}
         F4_CONAN_EXPECTED_ARCH: ${{ matrix.conan_arch }}
         # --build=never in trusted mode forbids building the entire graph.
         # The narrower repair-path flag cannot be combined with trusted mode.
