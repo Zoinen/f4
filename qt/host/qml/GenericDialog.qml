@@ -689,7 +689,7 @@ Rectangle {
     SettingsDialogBody {
         id: settingsBody
         hostWindow: dialogRoot.hostWindow
-        rightGutter: hostWindow.snapPx(12)
+        rightGutter: dialogRoot.contentPadding
         sectionsOnly: dialogRoot.frame.settingsSectionsOnly === true
         visible: dialogRoot.settingsLayout
         widgets: visible ? dialogRoot.frame.children || [] : []

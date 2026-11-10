@@ -6,7 +6,7 @@ import QtQuick.Layouts
 FocusScope {
     id: guiSettings
     objectName: "guiSettingsPage"
-    required property ApplicationWindow hostWindow
+    required property var hostWindow
     readonly property Item contentItem: guiSettings
     property string statusToast: ""
     readonly property string status: statusToast

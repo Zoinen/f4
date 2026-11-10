@@ -7,7 +7,7 @@ import QtQuick.Layouts
 
 Rectangle {
     id: commandLineRoot
-    required property ApplicationWindow hostWindow
+    required property var hostWindow
     required property var commandLine
     property var shell: hostWindow.shellFrame()
     property bool nativeLayout: hostWindow.isAppScene()
@@ -180,7 +180,10 @@ Rectangle {
                 && typeof qtGallery.registerDragCommandLine === "function")
             qtGallery.registerDragCommandLine(commandLineRoot)
     }
-    Component.onDestruction: hostWindow.unregisterDropdownAnchor("commandLine.input", inputViewport)
+    Component.onDestruction: {
+        if (hostWindow && typeof hostWindow.unregisterDropdownAnchor === "function")
+            hostWindow.unregisterDropdownAnchor("commandLine.input", inputViewport)
+    }
 
     // A command-line patch changes text and caret position together.  A
     // TextInput may apply its own cursor reset while accepting the new

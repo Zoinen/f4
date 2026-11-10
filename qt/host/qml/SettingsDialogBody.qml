@@ -239,7 +239,8 @@ Item {
             height: hostWindow.snapPx(placement.height)
             maximumWidth: width
             visible: widgetData.visible !== false && placement.width > 0 && !body.isFooterButton(widgetData)
-                     && !(body.hasNavigation && widgetData.layoutRole === "content-title")
+                     && !(body.hasNavigation && widgetData.layoutRole === "content-title"
+                          && !body.nativePage)
                      && !((body.fileGroupsOverview || body.sectionsOnly || body.fullPage) && widgetData.layoutRole === "description")
                      && !(body.sectionsOnly && widgetData.layoutRole === "apply")
                      && (!body.nativePage || !["content", "description"].includes(widgetData.layoutRole))

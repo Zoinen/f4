@@ -898,7 +898,7 @@ struct QuickViewFixture
             import "qrc:/F4QtHost/qml"
             ApplicationWindow {
                 id: guiTestWindow
-                required property ApplicationWindow hostWindow
+                required property var hostWindow
                 width: 720
                 height: 720
                 color: hostWindow.dialogBg
@@ -1335,9 +1335,11 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
     auto *sharedOK = visualItemWithObjectName(body,"dialogWidget-settings-okButton");
     auto *sharedCancel = visualItemWithObjectName(body,"dialogWidget-settings-cancelButton");
     QVERIFY(sharedTitle && sharedApply && sharedOK && sharedCancel);
-    QVERIFY(sharedTitle->isVisible());
+    QTRY_VERIFY_WITH_TIMEOUT(sharedTitle->isVisible(), 5000);
     QCOMPARE(sharedTitle->property("text").toString(), "Theme creator");
-    QVERIFY(sharedApply->isVisible() && sharedOK->isVisible() && sharedCancel->isVisible());
+    QTRY_VERIFY_WITH_TIMEOUT(sharedApply->isVisible(), 5000);
+    QTRY_VERIFY_WITH_TIMEOUT(sharedOK->isVisible(), 5000);
+    QTRY_VERIFY_WITH_TIMEOUT(sharedCancel->isVisible(), 5000);
     QVERIFY(content->findChild<QQuickItem *>("themeItemsList"));
     QVERIFY(!content->findChild<QQuickItem *>("themeSaveButton")->isVisible());
     QVERIFY(content->findChild<QQuickItem *>("themeRestoreSavedButton"));
@@ -1911,6 +1913,7 @@ void F4QuickViewSurfaceTests::galleryVideoControlsStayOnPhysicalPixelGridAt175Pe
     // Inject deterministic status/time into the actual viewer overlay, not a
     // standalone control tree that would miss inherited flight transforms.
     videoSurface->setProperty("controller", QVariant::fromValue<QObject *>(&controller));
+    QTest::qWait(100); // Let the video source controller settle its empty poster state.
     viewport->setProperty("originalSize", QSizeF(1200 / 1.75, 800 / 1.75));
     QVERIFY(QMetaObject::invokeMethod(viewport, "zoomToFit", Q_ARG(QVariant, true)));
     QTest::qWait(100);
