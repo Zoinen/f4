@@ -80,6 +80,58 @@ find_package(Qt6 COMPONENTS ${F4_QT_HOST_COMPONENTS} REQUIRED)
 if(TARGET Qt6::QICOPlugin AND NOT TARGET Qt6::QIcoPlugin)
   add_library(Qt6::QIcoPlugin ALIAS Qt6::QICOPlugin)
 endif()
+
+# Conan's Qt facade can expose the VectorImage QML plugin exports without
+# declaring the backing module targets. ZoinGallery links those modules while
+# its subdirectory is configured, before the portable-host static-target
+# repair in f4-qt-host-target/CMakeLists.txt can run. Recreate the targets
+# here for both the classic shared host and the portable static host.
+set(F4_QT_PACKAGE_FOLDER "")
+foreach(F4_QT_PACKAGE_CONFIG RELEASE RELWITHDEBINFO MINSIZEREL DEBUG)
+  if(DEFINED qt_PACKAGE_FOLDER_${F4_QT_PACKAGE_CONFIG}
+     AND EXISTS
+       "${qt_PACKAGE_FOLDER_${F4_QT_PACKAGE_CONFIG}}/lib/cmake/Qt6Qml/QmlPlugins")
+    set(F4_QT_PACKAGE_FOLDER
+      "${qt_PACKAGE_FOLDER_${F4_QT_PACKAGE_CONFIG}}")
+    break()
+  endif()
+endforeach()
+if(NOT F4_QT_PACKAGE_FOLDER)
+  message(FATAL_ERROR
+    "Conan's Qt package folder could not be located for VectorImage targets")
+endif()
+get_target_property(F4_QT_CORE_TARGET_TYPE Qt6::Core TYPE)
+if(F4_QT_CORE_TARGET_TYPE STREQUAL "STATIC_LIBRARY")
+  set(F4_QT_VECTOR_IMAGE_TARGET_TYPE STATIC)
+else()
+  set(F4_QT_VECTOR_IMAGE_TARGET_TYPE SHARED)
+endif()
+function(f4_import_qt_vector_image_target module_name)
+  if(TARGET Qt6::${module_name})
+    return()
+  endif()
+  set(F4_QT_VECTOR_IMAGE_ARCHIVE "")
+  find_library(F4_QT_VECTOR_IMAGE_ARCHIVE
+    NAMES Qt6${module_name}
+    PATHS "${F4_QT_PACKAGE_FOLDER}/lib"
+    NO_DEFAULT_PATH REQUIRED)
+  add_library(Qt6::${module_name}
+    ${F4_QT_VECTOR_IMAGE_TARGET_TYPE} IMPORTED GLOBAL)
+  set_target_properties(Qt6::${module_name} PROPERTIES
+    IMPORTED_LOCATION "${F4_QT_VECTOR_IMAGE_ARCHIVE}")
+  if(F4_QT_VECTOR_IMAGE_TARGET_TYPE STREQUAL "STATIC")
+    if(module_name STREQUAL "QuickVectorImage")
+      set(F4_QT_VECTOR_IMAGE_LINKS Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick)
+    else()
+      set(F4_QT_VECTOR_IMAGE_LINKS Qt6::Core Qt6::Gui Qt6::Qml
+        Qt6::QuickVectorImage)
+    endif()
+    set_target_properties(Qt6::${module_name} PROPERTIES
+      INTERFACE_LINK_LIBRARIES "${F4_QT_VECTOR_IMAGE_LINKS}")
+  endif()
+endfunction()
+f4_import_qt_vector_image_target(QuickVectorImage)
+f4_import_qt_vector_image_target(QuickVectorImageHelpers)
 find_package(msgpack-cxx REQUIRED)
 if(USE_QWK)
   find_package(QWindowKit REQUIRED)
