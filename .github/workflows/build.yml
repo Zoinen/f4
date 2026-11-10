@@ -4009,17 +4009,19 @@ jobs:
 
   release:
     name: Create Official Release
-    # Narrowing build-batch's condition would make release on a tag skipped, not failed.
-    needs: [build, qt-host, portable-qt, portable-qt-arm64-version, build-batch, build-lite, build-win7, build-reactos, build-termux, build-cloudfox-plugin, build-android-plugin, build-ios-plugin, test, race]
+    # This channel is deliberately Qt-only.  The Go-only matrix, plugins and
+    # legacy targets have separate release paths and must not block the six
+    # desktop Qt assets assembled below.
+    needs: [qt-host, portable-qt, portable-qt-arm64-version]
     runs-on: ubuntu-latest
     if: ${{ always() && startsWith(github.ref, 'refs/tags/v') }}
     permissions:
       contents: write
     steps:
     - name: Verify release build prerequisites
-      if: needs.build.result != 'success' || needs.qt-host.result != 'success' || needs.portable-qt.result != 'success' || needs.portable-qt-arm64-version.result != 'success' || needs.build-batch.result != 'success' || needs.build-win7.result != 'success' || needs.build-reactos.result != 'success' || needs.build-termux.result != 'success' || needs.test.result != 'success' || needs.race.result != 'success' || needs.build-lite.result != 'success' || needs.build-cloudfox-plugin.result != 'success' || needs.build-android-plugin.result != 'success' || needs.build-ios-plugin.result != 'success'
+      if: needs.qt-host.result != 'success' || needs.portable-qt.result != 'success' || needs.portable-qt-arm64-version.result != 'success'
       run: |
-        echo "::error::Official release prerequisites failed. build=${{ needs.build.result }}, qt-host=${{ needs.qt-host.result }}, portable-qt=${{ needs.portable-qt.result }}, build-batch=${{ needs.build-batch.result }}, build-win7=${{ needs.build-win7.result }}, build-reactos=${{ needs.build-reactos.result }}, build-termux=${{ needs.build-termux.result }}, test=${{ needs.test.result }}, race=${{ needs.race.result }}"
+        echo "::error::Official Qt release prerequisites failed. qt-host=${{ needs.qt-host.result }}, portable-qt=${{ needs.portable-qt.result }}, portable-qt-arm64-version=${{ needs.portable-qt-arm64-version.result }}"
         exit 1
     - name: Checkout release packaging script
       uses: actions/checkout@v7

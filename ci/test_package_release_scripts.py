@@ -183,10 +183,12 @@ class PackageReleaseScriptsTest(unittest.TestCase):
         self.assertNotIn("python3 ci/package-release.py dist release", release)
         self.assertIn("published release contains only Qt assets", release)
         self.assertIn("--draft=true", release)
-        for prerequisite in ("build-batch", "build-lite", "build-win7", "build-reactos",
-                             "build-termux", "build-cloudfox-plugin", "build-android-plugin",
-                             "build-ios-plugin", "qt-host", "portable-qt", "portable-qt-arm64-version", "test", "race"):
+        for prerequisite in ("qt-host", "portable-qt", "portable-qt-arm64-version"):
             self.assertIn(f"needs.{prerequisite}.result != 'success'", release)
+        for unrelated_job in ("build", "build-batch", "build-lite", "build-win7",
+                              "build-reactos", "build-termux", "build-cloudfox-plugin",
+                              "build-android-plugin", "build-ios-plugin", "test", "race"):
+            self.assertNotIn(f"needs.{unrelated_job}.result", release)
 
         nightly = workflow.split("\n  nightly:\n", 1)[1]
         nightly = re.split(r"\n  [a-z][a-z-]+:\n", nightly, maxsplit=1)[0]
