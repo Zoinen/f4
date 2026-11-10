@@ -524,6 +524,7 @@ jobs:
       shell: bash
       env:
         F4_CONAN_TOKEN: ${{ secrets.F4_CONAN_REMOTE_TOKEN }}
+        F4_CONAN_UPLOAD_TOKEN: ${{ secrets.F4_CONAN_UPLOAD_TOKEN }}
       run: bash ci/configure-conan-remote.sh
 
     - name: Patch legacy bzip2 Conan recipe
@@ -1066,6 +1067,7 @@ jobs:
       shell: bash
       env:
         F4_CONAN_TOKEN: ${{ secrets.F4_CONAN_REMOTE_TOKEN }}
+        F4_CONAN_UPLOAD_TOKEN: ${{ secrets.F4_CONAN_UPLOAD_TOKEN }}
       run: bash ci/configure-conan-remote.sh
 
     - name: Patch legacy bzip2 Conan recipe (Windows)

@@ -32,3 +32,18 @@ if [[ -n "${F4_CONAN_TOKEN:-}" ]]; then
 else
     echo "Conan binary remote configured without credentials (read-only mode)"
 fi
+
+# The upload repository is intentionally separate from the virtual read
+# repository.  Artifactory installations do not all include that local repo in
+# the virtual repo, so a package that a bootstrap job just published can still
+# be invisible to the next trusted build.  Add the authenticated upload repo as
+# a lower-priority read fallback whenever CI has its upload credentials.
+upload_url="${F4_CONAN_UPLOAD_URL:-}"
+upload_token="${F4_CONAN_UPLOAD_TOKEN:-}"
+if [[ -n "${upload_url}" && -n "${upload_token}" ]]; then
+    upload_remote_name="${F4_CONAN_UPLOAD_REMOTE_NAME:-f4-conan-upload}"
+    conan remote add "${upload_remote_name}" "${upload_url}" --index 2 --force
+    conan remote login "${upload_remote_name}" "${F4_CONAN_USERNAME:-admin}" \
+        --password "${upload_token}"
+    echo "Conan upload repository configured as a read fallback"
+fi
