@@ -166,7 +166,9 @@ Rectangle {
 
         Repeater {
             id: menuItemRepeater
-            model: menu.items || []
+            // The inactive bar is hidden. Its panel and terminal variants
+            // can alternate without constructing menu delegates.
+            model: menu.active === true ? (menu.items || []) : []
             delegate: Item {
                 id: menuItemHitTarget
                 required property var modelData

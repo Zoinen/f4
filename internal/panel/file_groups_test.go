@@ -33,6 +33,40 @@ func TestFileGroupAllCommandSlotsAndOrdering(t *testing.T) {
 	}
 }
 
+func TestFileGroupAssociationChoicesShowEverySource(t *testing.T) {
+	first := filegroups.CommandSet{ID: "first", Name: "Viewer"}
+	first.Commands[AssocView], first.Enabled[AssocView] = "view-one", true
+	second := filegroups.CommandSet{ID: "second", Name: "Viewer"}
+	second.Commands[AssocView], second.Enabled[AssocView] = "view-two", true
+	blank := filegroups.CommandSet{ID: "blank"}
+	blank.Commands[AssocView], blank.Enabled[AssocView] = "  ", true
+	snapshot, err := filegroups.Compile([]filegroups.Group{
+		{ID: "text", Fields: map[string]string{
+			"Name": "Text files", "Mask": "*.txt", "Associations.Enabled": "true",
+		}, Commands: []filegroups.CommandSet{first, blank}},
+		{ID: "all", Fields: map[string]string{
+			"Name": "All files", "Mask": "*", "Associations.Enabled": "true",
+		}, Commands: []filegroups.CommandSet{second}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	matches := matchingGroupAssociations(snapshot, &vfs.VFSItem{Name: "notes.txt"}, AssocView)
+	if len(matches) != 2 {
+		t.Fatalf("View matches = %+v", matches)
+	}
+	if got := assocPickerLabel(matches[0]); got != "Viewer [Text files]" {
+		t.Fatalf("first choice = %q", got)
+	}
+	if got := assocPickerLabel(matches[1]); got != "Viewer [All files]" {
+		t.Fatalf("second choice = %q", got)
+	}
+	single := matchingGroupAssociations(snapshot, &vfs.VFSItem{Name: "photo.png"}, AssocView)
+	if len(single) != 1 || single[0].Commands[AssocView] != "view-two" {
+		t.Fatalf("single View match = %+v", single)
+	}
+}
+
 func TestScopedAppearanceRefreshesLargePagedCatalogWithoutReload(t *testing.T) {
 	oldRows := semantic.SetPanelCatalogRowsEnabled(true)
 	oldMetadata := semantic.SetPanelCatalogMetadataEnabled(true)

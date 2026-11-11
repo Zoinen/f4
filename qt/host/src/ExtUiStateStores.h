@@ -20,7 +20,7 @@ public:
     QVariant data(const QModelIndex &index, int role) const override;
     QHash<int, QByteArray> roleNames() const override;
     Q_INVOKABLE QVariantMap get(int slot) const;
-    Q_INVOKABLE void ensureCapacity(int capacity);
+    Q_INVOKABLE void ensureCapacity(int capacity, bool sparse = false);
     Q_INVOKABLE void set(int slot, const QVariantMap &value);
     Q_INVOKABLE int replaceWindow(int start, const QVariantList &rows,
                                   int previousStart, int previousEnd,
@@ -36,7 +36,14 @@ private:
         QVariantMap row;
         int changedRoles = 0;
     };
+    const Slot &slotAt(int slot) const;
+    Slot &mutableSlot(int slot);
+    void markChanged(int slot, int roles, Slot &target);
+
     QList<Slot> m_slots;
+    QHash<int, Slot> m_sparseSlots;
+    QList<int> m_sparseChanges;
+    int m_sparseCapacity = 0;
     int m_changedFirst = -1;
     int m_changedLast = -1;
     qint64 m_updateStartedNs = 0;
@@ -213,20 +220,22 @@ public:
     QVariantMap shell() const { return m_shell; }
     QVariantMap document() const { return m_document; }
     QVariantMap documentMetadata() const;
+    Q_INVOKABLE QVariantMap terminalMetadata() const;
     Q_INVOKABLE QVariant documentWindowRows(const QString &documentKey,
-                                            qulonglong publication) const;
+                                            qulonglong publication, bool terminal = false) const;
     Q_INVOKABLE QVariant documentWindowCoordinates(const QString &documentKey,
-                                                    qulonglong publication) const;
+                                                    qulonglong publication, bool terminal = false) const;
     Q_INVOKABLE int replaceDocumentWindow(QObject *model, const QString &documentKey,
                                          qulonglong publication, int start,
                                          int previousStart, int previousEnd,
-                                         bool forceReplacement, bool clearOutside) const;
+                                         bool forceReplacement, bool clearOutside,
+                                         bool terminal = false) const;
     QVariantMap operationsQueue() const { return m_operationsQueue; }
     bool hasShell() const { return !m_shell.isEmpty(); }
     bool hasDocument() const { return !m_document.isEmpty(); }
     bool hasOperationsQueue() const { return !m_operationsQueue.isEmpty(); }
 
-    void applyShell(const QVariantMap &shell, qulonglong revision);
+    void applyShell(const QVariantMap &shell, qulonglong revision, bool terminalToggle = false);
     void applyCompactShell(const QVariantMap &shell, qulonglong revision);
     // Catalog frames have their own notification lane. Keep the row-free
     // descriptor in the retained shell current without invalidating the
@@ -248,6 +257,8 @@ signals:
     void documentRevisionChanged();
     void operationsRevisionChanged();
     void shellChanged();
+    void terminalPresentationChanged();
+    void terminalWindowChanged(const QVariantMap &frame);
     void documentChanged();
     void operationsQueueChanged();
 
@@ -255,6 +266,7 @@ private:
     qulonglong m_shellRevision = 0;
     qulonglong m_documentRevision = 0;
     qulonglong m_documentPublication = 0;
+    qulonglong m_terminalPublication = 0;
     qulonglong m_operationsRevision = 0;
     QVariantMap m_shell;
     QVariantMap m_document;

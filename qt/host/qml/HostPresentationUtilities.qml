@@ -61,18 +61,17 @@ QtObject {
                              hostWindow.width * hostWindow.panelSplitRatio)))
     }
 
-    function widePanelSide() {
-        const shell = hostWindow.shellFrame()
-        return shell.wide === true ? Number(shell.widePanel || 0) : -1
-    }
+    readonly property var shell: hostWindow.shellFrame()
+    readonly property int wideSide: shell.wide === true ? Number(shell.widePanel || 0) : -1
+    readonly property bool leftSideVisible: wideSide >= 0 ? wideSide === 0 : shell.showLeftPanel !== false
+    readonly property bool rightSideVisible: wideSide >= 0 ? wideSide === 1 : shell.showRightPanel !== false
+    readonly property int leftBottomInsetRows: Number((shell.panelLayout || {}).leftBottomInsetRows || 0)
+    readonly property int rightBottomInsetRows: Number((shell.panelLayout || {}).rightBottomInsetRows || 0)
+
+    function widePanelSide() { return wideSide }
 
     function panelSideVisible(side) {
-        const wideSide = widePanelSide()
-        if (wideSide >= 0)
-            return Number(side) === wideSide
-        const shell = hostWindow.shellFrame()
-        return Number(side) === 0 ? shell.showLeftPanel !== false
-                                  : shell.showRightPanel !== false
+        return Number(side) === 0 ? leftSideVisible : rightSideVisible
     }
 
     function nativePanelX(side) {
@@ -82,15 +81,13 @@ QtObject {
     }
 
     function panelBottomInset(side) {
-        const layout = hostWindow.shellFrame().panelLayout || ({})
-        const rows = Number((Number(side) === 0 ? layout.leftBottomInsetRows
-                                               : layout.rightBottomInsetRows) || 0)
+        const rows = Number(side) === 0 ? leftBottomInsetRows : rightBottomInsetRows
         return snapPx(Math.max(0, rows) * hostWindow.ch)
     }
 
     function nativePanelHeight(side, topInset) {
         return snapPx(Math.max(1, hostWindow.height - topInset
-                      - hostWindow.commandLineHeight(hostWindow.shellFrame())
+                      - hostWindow.commandLineHeightForReveal(hostWindow.panelCommandLineReveal)
                       - hostWindow.keyBarHeight() - panelBottomInset(side)))
     }
 

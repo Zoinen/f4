@@ -74,8 +74,7 @@ func (pf *PanelsFrame) SemanticIncrementalShell(ctx *vtui.SemanticContext) (extu
 	}
 	if pf.TermView != nil {
 		started = navtrace.SemanticIncrementalStageStart()
-		shell.Terminal = pf.TermView.SemanticModelWithBottomOverlay(
-			ctx, terminalCommandLineOverlayRows(shell.CommandLine, shell.TerminalBusy))
+		shell.Terminal = pf.terminalSemanticModel(shell.CommandLine, shell.TerminalBusy)
 		navtrace.SemanticIncrementalStageDone("shell.terminal", started)
 	}
 	if macro.MacroMgr != nil && macro.MacroMgr.Recording {

@@ -506,10 +506,17 @@ both full and incremental terminal projections.
 renumbering grid rows or selection coordinates. Leading empty grid padding is
 excluded from the scroll range. Qt compares this range with its actual viewport
 height; fitting output has neither a scrollbar nor wheel/drag scrolling.
-
+With both panels hidden in Qt, Ctrl+Alt+Up/Down scrolls output by one row,
+Ctrl+Alt+Page Up/Page Down by one viewport, and Ctrl+Alt+Home/End goes to the
+beginning or end of the output. End resumes following live output.
 Ctrl+F searches the terminal history for text, starting with the most recent
 match at or above the current view. Ctrl+G and Ctrl+Shift+G move to the next
 and previous match, wrapping at either end.
+
+The Qt GUI setting **Separate terminal command output** is enabled by default.
+A separator occupies an existing blank row before the next command, or its top
+edge when there is no blank row. The line is decorative and copying retains
+the terminal's original text and line breaks.
 
 An owned GUI terminal replaces an inherited `TERM=dumb` or `TERM=unknown` with
 `xterm-256color`, because the launcher's capabilities do not describe its PTY.

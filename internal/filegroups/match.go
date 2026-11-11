@@ -486,22 +486,10 @@ func Compile(groups []Group, themeSets ...[]ThemeSet) (*Snapshot, error) {
 				return nil, fmt.Errorf("group %s: invalid sort group", g.ID)
 			}
 		}
-		icons := map[string]IconReference{}
-		for key, raw := range g.Fields {
-			if strings.HasPrefix(key, "Icon.") {
-				ref, err := ParseIconReference(raw)
-				if err != nil {
-					return nil, fmt.Errorf("group %s: %w", g.ID, err)
-				}
-				icons[strings.TrimPrefix(key, "Icon.")] = ref
-			}
+		icons, err := groupIconReferences(g, s.themes)
+		if err != nil {
+			return nil, err
 		}
-		if raw := g.Fields["Icon"]; raw != "" {
-			if _, found := icons["*"]; !found {
-				icons["*"], _ = ParseIconReference(raw)
-			}
-		}
-		addGroupIcons(g, s.themes, icons)
 		commands := map[string]bool{}
 		for _, command := range g.Commands {
 			if err := validID(command.ID); err != nil {

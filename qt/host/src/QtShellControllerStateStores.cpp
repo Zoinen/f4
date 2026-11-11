@@ -275,6 +275,12 @@ void QtShellController::commitTypedScenePatch(
         const QVariantMap shell = applied.scene.value(
             QStringLiteral("shell")).toMap();
         m_shellState->applyShell(shell, revision);
+        if (rootShell
+            || applied.shellKeys.contains(QStringLiteral("commandLine"))) {
+            m_commandLineState->applyFrame(
+                shell.value(QStringLiteral("commandLine")).toMap(),
+                revision);
+        }
         // Go may attach shell fields to the first affected panel stream.
         // Layout/surface changes must reach QML regardless of their envelope's
         // stream. Title, activation and command-line changes already have
@@ -285,13 +291,8 @@ void QtShellController::commitTypedScenePatch(
         surfaceKeys.remove(QStringLiteral("commandLine"));
         if (rootShell || streamId == QStringLiteral("shell")
             || !surfaceKeys.isEmpty()) {
-            m_surfaceRegistry->applyShell(shell, revision);
-        }
-        if (rootShell
-            || applied.shellKeys.contains(QStringLiteral("commandLine"))) {
-            m_commandLineState->applyFrame(
-                shell.value(QStringLiteral("commandLine")).toMap(),
-                revision);
+            m_surfaceRegistry->applyShell(shell, revision,
+                !rootShell && surfaceKeys.contains(QStringLiteral("terminalActive")));
         }
     }
     applyDocumentPatch(m_surfaceRegistry, applied);

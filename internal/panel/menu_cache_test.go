@@ -99,6 +99,37 @@ func TestGetMenuBarCachesUnchangedState(t *testing.T) {
 	}
 }
 
+func TestBuildMenuItemsCachesPanelAndTerminalSeparately(t *testing.T) {
+	oldItems := BuildMenuBarItems
+	calls := 0
+	BuildMenuBarItems = func(area string) []vtui.MenuBarItem {
+		if area == "Shell" {
+			calls++
+		}
+		return nil
+	}
+	t.Cleanup(func() { BuildMenuBarItems = oldItems })
+
+	pf := &PanelsFrame{
+		Panels: [2]Panel{&FileSystemPanel{}, &FileSystemPanel{}},
+	}
+	for _, show := range []bool{true, false, true, false} {
+		pf.ShowPanels = show
+		pf.BuildMenuItems()
+	}
+	if calls != 2 {
+		t.Fatalf("alternating menu modes rebuilt %d menus, want 2", calls)
+	}
+	pf.ActiveIdx = 1
+	for _, show := range []bool{true, false} {
+		pf.ShowPanels = show
+		pf.BuildMenuItems()
+	}
+	if calls != 4 {
+		t.Fatalf("changed panel context rebuilt %d menus total, want 4", calls)
+	}
+}
+
 // TestBuildMenuItemsCacheInvalidatesOnVfsChange covers the other half of the
 // same risk: toggling to the AI panel or otherwise swapping a side's VFS
 // mutates the existing *FileSystemPanel in place (SwitchToVFS), it does not

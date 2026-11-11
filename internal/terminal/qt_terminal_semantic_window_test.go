@@ -470,6 +470,107 @@ func TestTerminalSemanticOverlayHidesPromptAboveStaleGridTail(t *testing.T) {
 	}
 }
 
+func TestTerminalSemanticOmitsReturningCmdPromptBeforeBusyClears(t *testing.T) {
+	t.Run("fresh terminal", func(t *testing.T) {
+		testTerminalSemanticReturningCmdPrompt(t, 0)
+	})
+	t.Run("with scrollback", func(t *testing.T) {
+		testTerminalSemanticReturningCmdPrompt(t, 2)
+	})
+}
+
+func testTerminalSemanticReturningCmdPrompt(t *testing.T, historyRows int) {
+	t.Helper()
+	vtui.SetDefaultPalette()
+	tv := seededTerminalSemanticHistory(t, 80, 24, historyRows)
+	defer tv.Close()
+	tv.SetVisible(true)
+	tv.SetFocus(true)
+	parser := NewAnsiParser(tv, nil)
+
+	tv.OwnsCmdPrompt = func() bool { return true }
+	// ConPTY capture from cmd.exe: command echo in its own read, then output,
+	// a cursor position leaving a blank line, and the next marked prompt.
+	const prompt = "C:\\Programs\\Far3>"
+	parser.Process([]byte("\x1b[4;1H\x1b]133;A;f4-cmd\x1b\\" + prompt + "\x1b]133;B;f4-cmd\x1b\\"))
+	tv.ExpectCommandEcho()
+	parser.Process([]byte("ls\r\n"))
+	parser.Process([]byte("\x1b[?25l'ls' is not recognized as an internal or external command,\r\noperable program or batch file."))
+
+	checkOutput := func(busy bool) int64 {
+		t.Helper()
+		model := tv.SemanticModelWithCommandLine(true, busy)
+		text := terminalModelText(semantic.AppMapSlice(model.ToMap()["windowRows"]))
+		if !strings.Contains(text, prompt+"ls\n") || !strings.HasSuffix(text, "operable program or batch file.\n") {
+			t.Fatalf("expected command and output without a trailing blank row: %q", text)
+		}
+		if strings.Count(text, prompt) != 1 || model.CursorVisible {
+			t.Fatalf("returning prompt leaked while busy=%v: %q, cursor=%v", busy, text, model.CursorVisible)
+		}
+		return model.ContentExtent - model.ContentStart
+	}
+	extent := checkOutput(true)
+	for _, chunk := range []string{
+		"\x1b[8;1H", "\x1b[?25h", "\x1b]133;A;f4-cmd\x1b\\",
+		"C:\\Programs\\", "Far3>\x1b]133;B;f4-cmd", "\x1b\\",
+	} {
+		parser.Process([]byte(chunk))
+		if got := checkOutput(true); got != extent {
+			t.Fatalf("prompt repaint changed content extent from %d to %d", extent, got)
+		}
+	}
+	if got := checkOutput(false); got != extent {
+		t.Fatalf("completion changed content extent from %d to %d", extent, got)
+	}
+
+	// A printable echo makes this row part of the log again.
+	tv.ExpectCommandEcho()
+	parser.Process([]byte("dir\r\n"))
+	model := tv.SemanticModelWithCommandLine(true, true)
+	text := terminalModelText(semantic.AppMapSlice(model.ToMap()["windowRows"]))
+	if !strings.Contains(text, "operable program or batch file.\n\n"+prompt+"dir\n") {
+		t.Fatalf("expected the separator row before the next command: %q", text)
+	}
+	for _, row := range model.WindowRows {
+		if row.CommandSeparator == "center" {
+			return
+		}
+	}
+	t.Fatal("the blank row was not reused as a command separator")
+}
+
+func TestTerminalSemanticCmdPromptMarkBeforeText(t *testing.T) {
+	vtui.SetDefaultPalette()
+	tv := seededTerminalSemanticHistory(t, 80, 8, 2)
+	defer tv.Close()
+	parser := NewAnsiParser(tv, nil)
+	tv.OwnsCmdPrompt = func() bool { return true }
+	parser.Process([]byte("\x1b[Hdone\r\n\x1b]133;A;f4-cmd\x1b\\\x1b]133;B;f4-cmd\x1b\\"))
+	before := tv.SemanticModelWithCommandLine(true, true)
+	parser.Process([]byte("C:\\work"))
+	parser.Process([]byte(">"))
+	after := tv.SemanticModelWithCommandLine(true, true)
+	text := terminalModelText(semantic.AppMapSlice(after.ToMap()["windowRows"]))
+	if before.ContentExtent != after.ContentExtent || strings.Contains(text, "C:\\work>") {
+		t.Fatalf("early end mark exposed prompt: extent %d -> %d, text %q", before.ContentExtent, after.ContentExtent, text)
+	}
+
+	parser.Process([]byte("dir\r\n"))
+	command := tv.SemanticModelWithCommandLine(true, true)
+	text = terminalModelText(semantic.AppMapSlice(command.ToMap()["windowRows"]))
+	if !strings.Contains(text, "C:\\work>dir") {
+		t.Fatalf("next command was lost after early prompt markers: %q", text)
+	}
+
+	tv.OwnsCmdPrompt = func() bool { return false }
+	parser.Process([]byte("\x1b]133;A;f4-cmd\x1b\\C:\\child>\x1b]133;B;f4-cmd\x1b\\"))
+	child := tv.SemanticModelWithCommandLine(true, true)
+	text = terminalModelText(semantic.AppMapSlice(child.ToMap()["windowRows"]))
+	if !strings.Contains(text, "C:\\child>") {
+		t.Fatalf("nested shell's prompt was lost: %q", text)
+	}
+}
+
 func BenchmarkTerminalSemanticWindow100K(b *testing.B) {
 	vtui.SetDefaultPalette()
 	tv := seededTerminalSemanticHistory(b, 120, 40, 100_000)
@@ -537,4 +638,50 @@ func BenchmarkTerminalLiveWireWith100KScrollback(b *testing.B) {
 			b.Fatalf("bounded terminal wire publication failed: %v", err)
 		}
 	}
+}
+
+func TestTerminalCommandSeparatorsFollowRowsIntoHistory(t *testing.T) {
+	tv := NewTerminalView(80, 7)
+	defer tv.Close()
+	tv.SetCursor(0, 0)
+	parser := NewAnsiParser(tv, nil)
+	for _, output := range []string{"first\r\none\r\n\r\n", "second\r\ntwo\r\n", "third\r\nthree"} {
+		tv.ExpectCommandEcho()
+		parser.Process([]byte(output))
+	}
+	const wantText = "first\none\n\nsecond\ntwo\nthird\nthree"
+	check := func(inPieceTable bool) {
+		t.Helper()
+		if got := tv.semanticSelectionTextWithEndpoints(0, 0, 6, 5, true, false); got != wantText {
+			t.Fatalf("selected text = %q, want %q", got, wantText)
+		}
+		tv.mu.Lock()
+		defer tv.mu.Unlock()
+		layout := tv.semanticLayoutUnsafe()
+		if inPieceTable && layout.pieceRows < 7 {
+			t.Fatalf("old output has not reached the PieceTable: %d rows", layout.pieceRows)
+		}
+		rows := tv.semanticWindowRowsUnsafe(layout, 0, 7)
+		if len(rows) != 7 {
+			t.Fatalf("expected seven rows, got %d", len(rows))
+		}
+		for index, row := range rows {
+			want := ""
+			switch index {
+			case 2:
+				want = "center"
+			case 5:
+				want = "top"
+			}
+			if row.CommandSeparator != want {
+				t.Fatalf("row %d separator = %q, want %q", index, row.CommandSeparator, want)
+			}
+		}
+		if len(rows[2].Runs) != 0 {
+			t.Fatal("the separator was serialized as terminal text")
+		}
+	}
+	check(false)
+	parser.Process([]byte(strings.Repeat("\r\nmore", 2020)))
+	check(true)
 }

@@ -66,6 +66,7 @@ Item {
     property bool commandLineGraphicalCursor: true
     property bool compactBreadcrumbs: true
     property bool showColumnSeparators: false
+    property bool showTerminalCommandSeparators: true
     property bool galleryDebugLayoutZones: false
     property bool headerVerticalSeparatorSpacing: true
     property bool headerHorizontalSeparatorSpacing: true
@@ -254,6 +255,7 @@ Item {
         }
         showColumnSeparators = saved.showColumnSeparators === true
                 || String(saved.showColumnSeparators).toLowerCase() === "true"
+        showTerminalCommandSeparators = String(saved.showTerminalCommandSeparators).toLowerCase() !== "false"
         galleryDebugLayoutZones = saved.galleryDebugLayoutZones === true
                 || String(saved.galleryDebugLayoutZones).toLowerCase() === "true"
         const padding = Number(saved.panelColumnPadding)
@@ -377,6 +379,7 @@ Item {
         values.commandLineGraphicalCursor = commandLineGraphicalCursor
         values.compactBreadcrumbs = compactBreadcrumbs
         values.showColumnSeparators = showColumnSeparators
+        values.showTerminalCommandSeparators = showTerminalCommandSeparators
         values.galleryDebugLayoutZones = galleryDebugLayoutZones
         values.headerVerticalSeparatorSpacing = headerVerticalSeparatorSpacing
         values.headerHorizontalSeparatorSpacing = headerHorizontalSeparatorSpacing
@@ -405,6 +408,7 @@ Item {
         commandLineGraphicalCursor = true
         compactBreadcrumbs = true
         showColumnSeparators = false
+        showTerminalCommandSeparators = true
         galleryDebugLayoutZones = false
         headerVerticalSeparatorSpacing = true
         headerHorizontalSeparatorSpacing = true

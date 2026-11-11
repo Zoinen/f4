@@ -637,8 +637,10 @@ qreal topVisualRow(QQuickItem *surface, QQuickItem *list)
         - surface->property("loadedSlotStart").toInt();
     const int index = qBound(0, static_cast<int>(std::floor(raw)),
                              rows.size() - 1);
-    return rows.at(index).toMap().value(QStringLiteral("visualRow")).toReal()
-        + raw - std::floor(raw);
+    const QVariant &row = rows.at(index);
+    const qreal visualRow = row.metaType().id() == QMetaType::QVariantMap
+        ? row.toMap().value(QStringLiteral("visualRow")).toReal() : row.toReal();
+    return visualRow + raw - std::floor(raw);
 }
 
 QQuickItem *visualItemWithText(QQuickItem *root, const QString &text)
@@ -1100,8 +1102,13 @@ private slots:
     void semanticTableDialog();
     void terminalScrollBarStaysInsideTheExposedPanelSide();
     void terminalDoubleClickDragExpandsWholeWords();
-    void terminalHistorySearchShortcutAndMatch();
     void shortTerminalHistoryStaysAtBottom();
+    void terminalCommandSeparatorAndSettingStayOnPhysicalPixelGrid();
+    void terminalTailAndLoadedScrollBarDrag();
+    void terminalWheelKeepsItsDestinationAcrossReplies();
+    void terminalHistoryKeyboardShortcuts();
+    void terminalHistorySearchShortcutAndMatch();
+    void terminalScrollBarKeepsLatestUnloadedDestination();
 };
 
 void F4QuickViewSurfaceTests::galleryShadersContainOpenGlVariants()
@@ -11345,7 +11352,12 @@ void F4QuickViewSurfaceTests::commandLinePanelToggleIsImmediate()
     QVERIFY(fixture.window);
     auto *box = fixture.item("commandLineView");
     QVERIFY(box);
+    auto *panel = fixture.item("filePanel-0");
+    QVERIFY(panel);
+    auto *terminal = fixture.item("terminalBackdrop");
+    QVERIFY(terminal);
     QTest::qWait(180);
+    const qreal panelHeight = panel->height();
     for (int cycle=0; cycle<3; ++cycle) {
         command["visible"] = true;
         command["autoHide"] = false;
@@ -11357,6 +11369,34 @@ void F4QuickViewSurfaceTests::commandLinePanelToggleIsImmediate()
         QCoreApplication::processEvents();
         QCOMPARE(fixture.window->property("commandLineReveal").toReal(), 1.0);
         QVERIFY(box->height() > 0);
+        QVERIFY(terminal->isVisible());
+        QCOMPARE(panel->height(), panelHeight);
+        if (cycle == 0) {
+            for (const auto name : {"commandLinePromptFallback", "commandLineInput"}) {
+                const auto *leaf = fixture.item(name);
+                QVERIFY2(leaf && leaf->isVisible(), name);
+                const auto *content = fixture.window->contentItem();
+                const auto physicalOrigin = [&] {
+                    return leaf->mapToItem(content, QPointF()) * fixture.window->devicePixelRatio();
+                };
+                const auto aligned = [&] {
+                    const QPointF point = physicalOrigin();
+                    return qAbs(point.x() - qRound(point.x())) < 0.01
+                        && qAbs(point.y() - qRound(point.y())) < 0.01;
+                };
+                QTRY_VERIFY2(aligned(), qPrintable(QStringLiteral("%1 at %2,%3")
+                    .arg(QLatin1String(name)).arg(physicalOrigin().x()).arg(physicalOrigin().y())));
+                const QPointF origin = leaf->mapToItem(content, QPointF());
+                QCOMPARE(leaf->mapToItem(content, QPointF(1, 0)) - origin, QPointF(1, 0));
+                QCOMPARE(leaf->mapToItem(content, QPointF(0, 1)) - origin, QPointF(0, 1));
+            }
+            const QString capture = qEnvironmentVariable("F4_ESC_TOGGLE_CAPTURE");
+            if (!capture.isEmpty())
+                QVERIFY(fixture.window->grabWindow().save(capture));
+        }
+        QCOMPARE(terminal->mapToItem(fixture.window->contentItem(),
+            QPointF(0, terminal->height())).y(),
+            box->mapToItem(fixture.window->contentItem(), QPointF()).y());
         command["visible"] = false;
         command["autoHide"] = true;
         shell["commandLine"] = command;
@@ -12012,6 +12052,82 @@ void F4QuickViewSurfaceTests::widePanelDoesNotRevealTerminalBackdrop()
     QTRY_VERIFY_WITH_TIMEOUT(widePanel->width() < fixture.window->width(), 3000);
 }
 
+void F4QuickViewSurfaceTests::terminalCommandSeparatorAndSettingStayOnPhysicalPixelGrid()
+{
+    auto scene = shellScene();
+    auto shell = scene["shell"].toMap();
+    shell["terminalActive"] = true;
+    shell["showPanels"] = false;
+    shell["terminal"] = QVariantMap{
+        {"id", "terminal-divider"}, {"kind", "terminal"}, {"scrollUnit", "rows"},
+        {"followTail", true}, {"windowStart", 0}, {"windowEnd", 3},
+        {"viewportStart", 0}, {"viewportSpan", 3}, {"contentExtent", 3},
+        {"windowGeneration", 1}, {"windowRows", QVariantList{
+            QVariantMap{{"visualRow", 0}, {"text", "first output"}},
+            QVariantMap{{"visualRow", 1}, {"commandSeparator", "center"}},
+            QVariantMap{{"visualRow", 2}, {"text", "second output"}},
+        }},
+    };
+    scene["shell"] = shell;
+    QuickViewFixture fixture(scene, true, true);
+    QVERIFY(fixture.window);
+    const qreal dpr = fixture.window->devicePixelRatio();
+    auto *root = fixture.window->contentItem();
+    auto *surface = fixture.item("terminalDocumentSurface");
+    QVERIFY(surface);
+    const auto findLine = [&] { return visualItemWithObjectName(surface, "terminalCommandSeparator"); };
+    QTRY_VERIFY(findLine() && findLine()->isVisible());
+    auto *line = findLine();
+    const auto aligned = [](QQuickItem *leaf, QQuickItem *reference, qreal scale) {
+        const auto origin = leaf->mapToItem(reference, QPointF());
+        const auto physical = origin * scale;
+        return qAbs(physical.x() - qRound64(physical.x())) < .001
+            && qAbs(physical.y() - qRound64(physical.y())) < .001
+            && leaf->mapToItem(reference, QPointF(1, 0)) - origin == QPointF(1, 0)
+            && leaf->mapToItem(reference, QPointF(0, 1)) - origin == QPointF(0, 1);
+    };
+    QVERIFY(aligned(line, root, dpr));
+    QCOMPARE(line->height() * dpr, 1.0);
+    const QImage rendered = fixture.window->grabWindow();
+    QVERIFY(!rendered.isNull());
+    const auto middle = line->mapToItem(root, QPointF(line->width()/2, 0)) * dpr;
+    const QPoint pixel = middle.toPoint();
+    QVERIFY(rendered.valid(pixel));
+    const auto ink = line->property("color").value<QColor>();
+    QVERIFY(rendered.pixelColor(pixel) == ink || rendered.pixelColor(pixel + QPoint(0, 1)) == ink);
+    const auto background = rendered.pixelColor(pixel - QPoint(0, 2));
+    QVERIFY(background != ink);
+    QCOMPARE(rendered.pixelColor(pixel + QPoint(0, 2)), background);
+    QTemporaryDir captures;
+    QVERIFY(captures.isValid());
+    QVERIFY(rendered.save(pixelCapturePath(&captures, "terminal-command-separator-175.png")));
+
+    auto *settings = fixture.guiSettingsWindow();
+    QVERIFY(settings);
+    settings->resize(760, 2000);
+    settings->show();
+    auto *settingsRoot = settings->contentItem();
+    const QString prefix = "themeTerminalCommandSeparators";
+    for (const QString &suffix : {"Title", "Description", "CheckBoxText", "CheckMark"}) {
+        auto *leaf = visualItemWithObjectName(settingsRoot, prefix + suffix);
+        QVERIFY2(leaf, qPrintable(suffix));
+        QTRY_VERIFY2(aligned(leaf, settingsRoot, settings->devicePixelRatio()), qPrintable(suffix));
+    }
+    QVERIFY(settings->grabWindow().save(pixelCapturePath(&captures, "terminal-separator-setting-175.png")));
+    auto *checkBox = visualItemWithObjectName(settingsRoot, prefix + "CheckBox");
+    QVERIFY(checkBox);
+    QVERIFY(checkBox->property("checked").toBool());
+    auto *option = visualItemWithObjectName(settingsRoot, prefix + "Panel");
+    QVERIFY(QMetaObject::invokeMethod(option, "toggled", Q_ARG(bool, false)));
+    QTRY_VERIFY(!findLine() || !findLine()->isVisible());
+    auto *page = visualItemWithObjectName(settingsRoot, "guiSettingsPage");
+    QVERIFY(QMetaObject::invokeMethod(page, "applyDraft"));
+    QCOMPARE(fixture.themePersistence.theme().value("showTerminalCommandSeparators").toBool(), false);
+    fixture.window->setProperty("showTerminalCommandSeparators", true);
+    QVERIFY(QMetaObject::invokeMethod(fixture.window, "loadThemeFromPersistence"));
+    QTRY_VERIFY(!fixture.window->property("showTerminalCommandSeparators").toBool());
+}
+
 void F4QuickViewSurfaceTests::shortTerminalHistoryStaysAtBottom()
 {
     auto scene = shellScene();
@@ -12174,6 +12290,332 @@ void F4QuickViewSurfaceTests::terminalHistorySearchShortcutAndMatch()
     QVERIFY(!sent("terminal.search", false));
 }
 
+void F4QuickViewSurfaceTests::terminalHistoryKeyboardShortcuts()
+{
+    auto scene = shellScene();
+    auto shell = scene["shell"].toMap();
+    shell["showPanels"] = false;
+    shell["showLeftPanel"] = false;
+    shell["showRightPanel"] = false;
+    shell["terminalActive"] = true;
+    shell["commandLine"] = QVariantMap{{"visible", true}, {"prompt", "> "}};
+    const int count = 120;
+    const int contentStart = 3;
+    shell["terminal"] = QVariantMap{
+        {"id", "terminal-keyboard-history"}, {"kind", "terminal"},
+        {"scrollUnit", "rows"}, {"scrollAction", "terminal.scroll"},
+        {"followTail", true}, {"windowStart", 0}, {"windowEnd", count},
+        {"viewportStart", 94}, {"viewportSpan", 26}, {"viewportRows", 26},
+        {"contentStart", contentStart}, {"contentExtent", count}, {"windowGeneration", 1},
+        {"windowRows", visualRows(0, count)},
+    };
+    scene["shell"] = shell;
+    QuickViewFixture fixture(scene, true, true);
+    QVERIFY(fixture.window);
+    auto *surface = fixture.item("terminalDocumentSurface");
+    QVERIFY(surface);
+    auto *list = surface->findChild<QQuickItem *>("documentList");
+    QVERIFY(list);
+    QTRY_VERIFY(surface->property("windowInitialized").toBool());
+    QTRY_VERIFY(fixture.window->isActive());
+    const auto extent = [&] {
+        QVariant state;
+        QMetaObject::invokeMethod(surface, "topState", Q_RETURN_ARG(QVariant, state));
+        return state.toMap().value("extent").toReal();
+    };
+    const auto followsTail = [&] { return surface->property("terminalFollowTailIntent").toBool(); };
+    const qreal rowHeight = surface->property("rowHeight").toReal();
+    QVERIFY(rowHeight > 0);
+    const qreal tail = extent();
+    const int page = qFloor(list->height() / rowHeight + .000001);
+#if defined(Q_OS_MACOS)
+    constexpr auto modifiers = Qt::MetaModifier | Qt::AltModifier;
+#else
+    constexpr auto modifiers = Qt::ControlModifier | Qt::AltModifier;
+#endif
+    const auto press = [&](Qt::Key key) { QTest::keyClick(fixture.window, key, modifiers); };
+    const auto near = [&](qreal expected) { return qAbs(extent() - expected) < .1; };
+
+    press(Qt::Key_Up);
+    QTRY_VERIFY(near(tail - 1));
+    QVERIFY(!followsTail());
+    press(Qt::Key_Up);
+    QTRY_VERIFY(near(tail - 2));
+    press(Qt::Key_Down);
+    QTRY_VERIFY(near(tail - 1));
+    press(Qt::Key_PageUp);
+    QTRY_VERIFY(near(tail - 1 - page));
+    press(Qt::Key_PageDown);
+    QTRY_VERIFY(near(tail - 1));
+    press(Qt::Key_Home);
+    QTRY_VERIFY(near(contentStart));
+    press(Qt::Key_Up);
+    QVERIFY(near(contentStart));
+    press(Qt::Key_End);
+    QTRY_VERIFY(near(tail));
+    QVERIFY(followsTail());
+
+    shell["showPanels"] = true;
+    shell["showLeftPanel"] = true;
+    shell["showRightPanel"] = true;
+    shell["terminalActive"] = false;
+    scene["shell"] = shell;
+    fixture.shell.setScene(scene);
+    QTRY_VERIFY(!surface->isVisible());
+    press(Qt::Key_Home);
+    QVERIFY(followsTail());
+}
+
+void F4QuickViewSurfaceTests::terminalTailAndLoadedScrollBarDrag()
+{
+    auto scene = shellScene();
+    auto shell = scene["shell"].toMap();
+    const int count = 100;
+    auto rows = visualRows(0, count);
+    for (int index = 1; index < rows.size(); index += 2) {
+        auto row = rows[index].toMap();
+        row["runs"] = QVariantList{QVariantMap{
+            {"text", row.take("text")}, {"foreground", "#cccccc"}}};
+        rows[index] = row;
+    }
+    const QVariantMap terminal{
+        {"id", "terminal-scroll"}, {"kind", "terminal"},
+        {"scrollUnit", "rows"}, {"scrollAction", "terminal.scroll"},
+        {"followTail", true}, {"windowStart", 0}, {"windowEnd", count},
+        {"viewportStart", 74}, {"viewportSpan", 26}, {"viewportRows", 26},
+        {"contentExtent", count}, {"windowGeneration", 1},
+        {"windowRows", rows},
+    };
+    shell["terminal"] = terminal;
+    const auto setPanels = [&](bool shown) {
+        shell["showPanels"] = shown;
+        shell["showLeftPanel"] = shown;
+        shell["showRightPanel"] = shown;
+        shell["terminalActive"] = !shown;
+        shell["commandLine"] = QVariantMap{
+            {"visible", !shown}, {"autoHide", shown}, {"prompt", "> "}};
+        scene["shell"] = shell;
+    };
+    setPanels(false);
+    QuickViewFixture fixture(scene, true, true);
+    auto *surface = fixture.item("terminalDocumentSurface");
+    QVERIFY(surface);
+    auto *list = surface->findChild<QQuickItem *>("documentList");
+    auto *bar = surface->findChild<QQuickItem *>("documentScrollBar");
+    QVERIFY(list && bar);
+    const auto contentY = [&] { return list->property("contentY").toReal(); };
+    const auto atBottom = [&] {
+        return qAbs(bar->property("position").toReal()
+                    + bar->property("size").toReal() - 1) < .0001;
+    };
+    QTRY_VERIFY(surface->property("windowInitialized").toBool());
+    QTRY_VERIFY(atBottom());
+    const qreal tailY = contentY();
+    setPanels(true);
+    fixture.shell.setScene(scene);
+    QTRY_VERIFY(!surface->isVisible());
+    setPanels(false);
+    fixture.shell.setScene(scene);
+    QTRY_VERIFY(surface->isVisible());
+    QTest::qWait(100);
+    QVERIFY2(atBottom(), qPrintable(QString("tail before %1, after %2")
+                                     .arg(tailY).arg(contentY())));
+    const qreal dpr = fixture.window->devicePixelRatio();
+    QVERIFY2(qAbs(contentY() - tailY) <= 1 / dpr,
+             qPrintable(QString("physical contentY before %1, after %2")
+                        .arg(tailY*dpr).arg(contentY()*dpr)));
+    qreal lastRowBottom = -1;
+    int visibleTextLeaves = 0;
+    const auto inspect = [&](auto &&self, QQuickItem *item) -> void {
+        if (item->objectName() == "documentRowDelegate"
+            && item->property("loaded").toBool()) {
+            lastRowBottom = std::max(lastRowBottom,
+                item->mapToItem(list, QPointF(0, item->height())).y());
+        }
+        const auto name = item->objectName();
+        if ((name == "documentRunText" || name == "documentPlainText")
+            && item->isVisible() && !item->property("text").toString().isEmpty()) {
+            const auto origin = item->mapToItem(fixture.window->contentItem(), QPointF());
+            const qreal localY = item->mapToItem(list, QPointF()).y();
+            if (localY >= 0 && localY + item->height() <= list->height()) {
+                ++visibleTextLeaves;
+                const QPointF physical = origin*dpr;
+                QVERIFY(qAbs(physical.x() - qRound64(physical.x())) < .001);
+                QVERIFY(qAbs(physical.y() - qRound64(physical.y())) < .001);
+                QCOMPARE(item->mapToItem(fixture.window->contentItem(), QPointF(1, 0))
+                         - origin, QPointF(1, 0));
+                QCOMPARE(item->mapToItem(fixture.window->contentItem(), QPointF(0, 1))
+                         - origin, QPointF(0, 1));
+            }
+        }
+        for (auto *child : item->childItems())
+            self(self, child);
+    };
+    inspect(inspect, list);
+    QVERIFY(visibleTextLeaves > 0);
+    QVERIFY(qAbs(lastRowBottom - list->height()) <= 1 / dpr);
+    QTemporaryDir captures;
+    QVERIFY(captures.isValid());
+    QVERIFY(fixture.window->grabWindow().save(pixelCapturePath(&captures, "terminal-tail-175.png")));
+
+    auto *handle = fixture.item("documentScrollBarHandle");
+    QVERIFY(handle && handle->isVisible());
+    const QPoint start = handle->mapToScene(QPointF(handle->width()/2,
+                                                   handle->height()/2)).toPoint();
+    const QPoint end = start - QPoint(0, qRound(bar->height() / 4));
+    fixture.shell.actions.clear();
+    QTest::mousePress(fixture.window, Qt::LeftButton, Qt::NoModifier, start);
+    QVERIFY(bar->property("pressed").toBool());
+    QTest::mouseMove(fixture.window, end);
+    QVERIFY2(contentY() < tailY - list->height() / 3,
+             "Rows already in Qt must move in the mouse event, without a Go reply");
+    const auto scrollRequests = [&] {
+        return std::count_if(fixture.shell.actions.cbegin(), fixture.shell.actions.cend(),
+                             [](const auto &action) {
+            return action.value("action").toString() == "terminal.scroll";
+        });
+    };
+    QTest::qWait(50);
+    QCOMPARE(scrollRequests(), 0);
+    QTest::mouseRelease(fixture.window, Qt::LeftButton, Qt::NoModifier, end);
+    QTRY_COMPARE(scrollRequests(), 1);
+    const qreal historyY = contentY();
+
+    setPanels(true);
+    fixture.shell.setScene(scene);
+    QTRY_VERIFY(!surface->isVisible());
+    setPanels(false);
+    fixture.shell.setScene(scene);
+    QTRY_VERIFY(surface->isVisible());
+    QTest::qWait(100);
+    QVERIFY(qAbs(contentY() - historyY) <= 1 / fixture.window->devicePixelRatio());
+}
+
+void F4QuickViewSurfaceTests::terminalWheelKeepsItsDestinationAcrossReplies()
+{
+    auto scene = shellScene();
+    auto shell = scene["shell"].toMap();
+    shell["showPanels"] = false;
+    shell["terminalActive"] = true;
+    QVariantMap terminal{
+        {"id", "terminal-wheel"}, {"kind", "terminal"},
+        {"scrollUnit", "rows"}, {"scrollAction", "terminal.scroll"},
+        {"followTail", true}, {"windowStart", 0}, {"windowEnd", 120},
+        {"viewportStart", 80}, {"viewportSpan", 40}, {"viewportRows", 40},
+        {"contentExtent", 120}, {"windowGeneration", 1},
+        {"windowRows", visualRows(0, 120)},
+    };
+    const auto publish = [&] {
+        shell["terminal"] = terminal;
+        scene["shell"] = shell;
+    };
+    publish();
+    QuickViewFixture fixture(scene, true, true);
+    auto *surface = fixture.item("terminalDocumentSurface");
+    QVERIFY(surface);
+    auto *list = surface->findChild<QQuickItem *>("documentList");
+    auto *bar = surface->findChild<QQuickItem *>("documentScrollBar");
+    QVERIFY(list && bar);
+    const QPoint point = list->mapToScene(QPointF(list->width() / 2, list->height() / 2)).toPoint();
+    const auto contentY = [&] { return list->property("contentY").toReal(); };
+    QTRY_VERIFY(surface->property("windowInitialized").toBool());
+    const auto atBottom = [&] {
+        return qAbs(bar->property("position").toReal() + bar->property("size").toReal() - 1) < .0001;
+    };
+    QTRY_VERIFY(atBottom());
+    fixture.shell.actions.clear();
+    sendAngleWheel(fixture.window, point, 240);
+    QTRY_VERIFY(!atBottom());
+    QTRY_VERIFY(std::any_of(fixture.shell.actions.cbegin(), fixture.shell.actions.cend(),
+        [](const auto &action) { return action.value("action").toString() == "terminal.scroll"; }));
+
+    // A reply for the previous destination arrives during the next gesture.
+    sendAngleWheel(fixture.window, point, 240);
+    const qreal beforeReply = topVisualRow(surface, list);
+    terminal["windowGeneration"] = 2;
+    terminal["followTail"] = true;
+    terminal["viewportStart"] = 80;
+    publish();
+    fixture.shell.setScene(scene);
+    QTRY_COMPARE(surface->property("appliedWindowGeneration").toInt(), 2);
+    QTRY_VERIFY(topVisualRow(surface, list) < beforeReply - 2);
+    QVERIFY(!atBottom());
+
+    sendAngleWheel(fixture.window, point, -2400);
+    QTRY_VERIFY(atBottom());
+    QTest::qWait(200);
+    const qreal tail = contentY();
+    sendAngleWheel(fixture.window, point, 40);
+    QTRY_VERIFY(contentY() < tail - 1);
+    sendAngleWheel(fixture.window, point, -2400);
+    QTRY_VERIFY(atBottom());
+    QTest::qWait(200);
+    const qreal epsilon = 1 / fixture.window->devicePixelRatio();
+    QVERIFY(qAbs(contentY() - tail) <= epsilon);
+    for (int i = 0; i < 8; ++i) {
+        sendAngleWheel(fixture.window, point, -480);
+        QTest::qWait(16);
+        QVERIFY(qAbs(contentY() - tail) <= epsilon);
+    }
+}
+
+void F4QuickViewSurfaceTests::terminalScrollBarKeepsLatestUnloadedDestination()
+{
+    auto scene = shellScene();
+    auto shell = scene["shell"].toMap();
+    shell["showPanels"] = false;
+    shell["terminalActive"] = true;
+    QVariantMap terminal{
+        {"id", "terminal-unloaded"}, {"kind", "terminal"},
+        {"scrollUnit", "rows"}, {"scrollAction", "terminal.scroll"},
+        {"followTail", false}, {"windowStart", 140}, {"windowEnd", 220},
+        {"viewportStart", 170}, {"viewportSpan", 26}, {"viewportRows", 26},
+        {"contentExtent", 400}, {"windowGeneration", 1},
+        {"windowRows", visualRows(140, 220)},
+    };
+    shell["terminal"] = terminal;
+    scene["shell"] = shell;
+    QuickViewFixture fixture(scene);
+    auto *surface = fixture.item("terminalDocumentSurface");
+    QVERIFY(surface);
+    auto *bar = surface->findChild<QQuickItem *>("documentScrollBar");
+    QVERIFY(bar);
+    QTRY_VERIFY(surface->property("windowInitialized").toBool());
+    fixture.shell.actions.clear();
+    const auto requestedRows = [&] {
+        QVector<int> rows;
+        for (const auto &action : fixture.shell.actions) {
+            if (action.value("action").toString() == "terminal.scroll")
+                rows.append(action.value("visualRow").toInt());
+        }
+        return rows;
+    };
+    QVERIFY(bar->setProperty("pressed", true));
+    QVERIFY(bar->setProperty("position", .10));
+    QCOMPARE(requestedRows(), QVector<int>{40});
+    QVERIFY(bar->setProperty("position", .15));
+    QVERIFY(bar->setProperty("position", .20));
+    QCOMPARE(requestedRows(), QVector<int>{40});
+
+    terminal["windowGeneration"] = 2;
+    terminal["viewportStart"] = 40;
+    terminal["windowStart"] = 15;
+    terminal["windowEnd"] = 130;
+    terminal["windowRows"] = visualRows(15, 130);
+    shell["terminal"] = terminal;
+    scene["shell"] = shell;
+    fixture.shell.setScene(scene);
+    QTRY_COMPARE(surface->property("appliedWindowGeneration").toInt(), 2);
+    QCOMPARE(surface->property("stableTopExtent").toInt(), 40);
+    QVariant topState;
+    QVERIFY(QMetaObject::invokeMethod(surface, "topState", Q_RETURN_ARG(QVariant, topState)));
+    QVERIFY(qAbs(topState.toMap().value("extent").toReal() - 80) < .1);
+    QCOMPARE(requestedRows(), QVector<int>{40});
+
+    QVERIFY(bar->setProperty("pressed", false));
+    QCOMPARE(requestedRows(), (QVector<int>{40, 80}));
+}
+
 void F4QuickViewSurfaceTests::terminalDoubleClickDragExpandsWholeWords()
 {
     QVariantMap scene = shellScene();
@@ -12309,8 +12751,8 @@ void F4QuickViewSurfaceTests::terminalScrollBarStaysInsideTheExposedPanelSide()
     shell.insert("terminalActive", false);
     scene.insert("shell", shell);
     fixture.shell.setScene(scene);
-    QTRY_VERIFY(!fixture.item("terminalDocumentSurface"));
-
+    QTRY_VERIFY(!surface->isVisible());
+    QTRY_VERIFY(!surface->property("middleAutoScrollActive").toBool());
 }
 
 void F4QuickViewSurfaceTests::dialogAutocompleteAnchorsToSearchInput()

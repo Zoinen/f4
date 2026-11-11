@@ -542,6 +542,31 @@ func TestFrameManager_PublishesBoundedSceneTransitionWhenFrameStackChanges(t *te
 		t.Fatalf("stable frame stack published an extra transition: %d",
 			renderer.transitions)
 	}
+	if fm.DeclareSemanticSceneTransition() {
+		t.Fatal("transition declaration accepted outside input dispatch")
+	}
+	top.onProcessKey = func(e *vtinput.InputEvent) bool {
+		if e.VirtualKeyCode != vtinput.VK_ESCAPE {
+			return true
+		}
+		if !fm.DeclareSemanticSceneTransition() {
+			t.Fatal("transition declaration rejected inside input dispatch")
+		}
+		return true
+	}
+	fm.dispatchEvent(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_ESCAPE,
+	}, false)
+	if renderer.transitions != 2 {
+		t.Fatalf("declared surface change published %d total transitions, want 2",
+			renderer.transitions)
+	}
+	fm.dispatchEvent(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RIGHT,
+	}, false)
+	if renderer.transitions != 2 {
+		t.Fatal("transition declaration leaked into the next input")
+	}
 }
 
 func TestFrameManager_DeclaredUnchangedInputDefersIntermediateRender(t *testing.T) {

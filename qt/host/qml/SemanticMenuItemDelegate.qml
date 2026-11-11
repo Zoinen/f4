@@ -17,6 +17,7 @@ Rectangle {
     readonly property real separatorTopPadding: modelData.separator && sectionHeading
         ? overlayController.menuHeaderTopPadding : 0
     readonly property bool historyRow: !!modelData.details && modelData.details.kind === "history"
+    readonly property bool catalogIconRow: !!modelData.details && modelData.details.iconTheme !== undefined
     readonly property var dropdownTextLayout: overlayController.dropdownMode
         && overlayController.dropdownAnchor
         ? overlayController.dropdownAnchor.contentItem : null
@@ -120,6 +121,26 @@ Rectangle {
         sourceComponent: Item {
             width: menuItem.width
             height: menuItem.height
+    Loader {
+        active: menuItem.catalogIconRow
+        x: hostWindow.snapPx(overlayController.menuLabelInset)
+        y: hostWindow.snapPx((menuItem.height - height) / 2)
+        width: hostWindow.snapPx(22)
+        height: width
+        sourceComponent: HostPixelAlignedImage {
+            hostWindow: menuItem.hostWindow
+            objectName: menuItem.objectName + "CatalogIcon"
+            visible: source.toString() !== ""
+            fillMode: Image.PreserveAspectFit
+            sourceSize: Qt.size(Math.round(width * hostWindow.dpr), Math.round(height * hostWindow.dpr))
+            source: hostWindow.iconProvider
+                    && typeof hostWindow.iconProvider.catalogIconSource === "function"
+                ? hostWindow.iconProvider.catalogIconSource(
+                    menuItem.modelData.details.iconTheme, menuItem.modelData.details.iconReference,
+                    22, hostWindow.dpr) : ""
+        }
+    }
+
     TextMetrics {
         id: menuLabelMetrics
         font: menuItemText.font
@@ -157,7 +178,8 @@ Rectangle {
         anchors.bottomMargin: menuItem.dropdownTextLayout
             ? parent.height - menuItem.dropdownTextLayout.y
               - menuItem.dropdownTextLayout.height : 0
-        leftPadding: menuItem.dropdownTextLayout ? menuItem.dropdownTextLayout.leftPadding : 0
+        leftPadding: menuItem.dropdownTextLayout ? menuItem.dropdownTextLayout.leftPadding
+                    : menuItem.catalogIconRow ? hostWindow.snapPx(28) : 0
         rightPadding: menuItem.dropdownTextLayout ? menuItem.dropdownTextLayout.rightPadding : 0
         anchors.leftMargin: menuItem.dropdownTextLayout ? menuItem.dropdownTextLayout.x
                             : overlayController.dropdownMode ? 0
@@ -187,7 +209,7 @@ Rectangle {
             defaultFont.bold = menuItem.sectionHeading
             return defaultFont
         }
-        visible: (!modelData.separator || menuItem.sectionHeading) && !modelData.details
+        visible: (!modelData.separator || menuItem.sectionHeading) && (!modelData.details || menuItem.catalogIconRow)
         elide: Text.ElideRight
         transform: Translate {
             x: hostWindow.dialogPixelOffsetX(

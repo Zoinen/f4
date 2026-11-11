@@ -804,6 +804,7 @@ private slots:
     void fileGroupConditionCheckboxesAreHeadingsAt175Percent();
     void fileGroupNameAndMaskUseCompactRows();
     void fileGroupEditorMatrixAndPinnedPreview();
+    void fileGroupEditorCombinesAppearanceInRightColumn();
     void nestedFileGroupEditorBlocksParentNavigation();
     void settingsListsAndDisabledInputs();
     void settingsCategoryListSelectsDuringMouseDrag();
@@ -853,6 +854,7 @@ private slots:
     void dialogOpenRestoresGlobalKeyboardSinkAndSemanticControlFocus();
     void semanticDialogKeyboardFocusFramesAreDistinctAndThemeLive();
     void semanticChoiceFocusTracksCursorAndHasEqualInsets();
+    void fileGroupIconChoicesShowPixelAlignedArtwork();
     void semanticDialogComboBoxFollowsGoOwnedMenuState();
     void dropdownWaitsForItsTimestampAnchor();
     void semanticOverlayMenuStreamClearsWhileFallbackSurfaceIsHidden();
@@ -1633,7 +1635,8 @@ void F4OperationsQueueTests::queueTabPreservesPanelDocumentAndQueueViewState()
 
 void F4OperationsQueueTests::terminalModeKeepsPersistentPanelsSurfaceVisible()
 {
-    QueueFixture fixture(terminalScene());
+    QVariantMap scene = terminalScene();
+    QueueFixture fixture(scene);
     QVERIFY(fixture.window);
     QQuickItem *panelsLayer = nullptr;
     QTRY_VERIFY_WITH_TIMEOUT(
@@ -1646,7 +1649,7 @@ void F4OperationsQueueTests::terminalModeKeepsPersistentPanelsSurfaceVisible()
     QVERIFY(!documentLayer->isVisible());
     QQuickItem *panelPair = fixture.item(QStringLiteral("persistentPanelPair"));
     QVERIFY(panelPair);
-    QVERIFY(!panelPair->isVisible());
+    QCOMPARE(panelPair->opacity(), 0.0);
 
     QQuickItem *terminal = fixture.item(QStringLiteral("terminalBackdrop"));
     QQuickItem *commandLine = fixture.item(QStringLiteral("commandLineView"));
@@ -1661,6 +1664,27 @@ void F4OperationsQueueTests::terminalModeKeepsPersistentPanelsSurfaceVisible()
     QVERIFY(keyBar->height() > 0.0);
     QVERIFY(terminal->y() + terminal->height() <= commandLine->y() + 0.5);
     QVERIFY(commandLine->y() + commandLine->height() <= keyBar->y() + 0.5);
+
+    QPointer<QQuickItem> terminalSurface =
+        fixture.item(QStringLiteral("terminalDocumentSurface"));
+    QVERIFY(terminalSurface && terminalSurface->isVisible());
+    const QSizeF exposedSize(terminalSurface->width(), terminalSurface->height());
+    QVariantMap shell = scene.value(QStringLiteral("shell")).toMap();
+    shell.insert(QStringLiteral("terminalActive"), false);
+    scene.insert(QStringLiteral("shell"), shell);
+    fixture.shell.setScene(scene);
+    QTRY_COMPARE(panelPair->opacity(), 1.0);
+    QTRY_VERIFY(!terminal->isVisible());
+    QVERIFY(terminalSurface);
+    QVERIFY(!terminalSurface->isVisible());
+    QVERIFY(terminalSurface->height() > 0.0);
+
+    shell.insert(QStringLiteral("terminalActive"), true);
+    scene.insert(QStringLiteral("shell"), shell);
+    fixture.shell.setScene(scene);
+    QTRY_VERIFY(terminalSurface && terminalSurface->isVisible());
+    QCOMPARE(fixture.item(QStringLiteral("terminalDocumentSurface")), terminalSurface.data());
+    QCOMPARE(QSizeF(terminalSurface->width(), terminalSurface->height()), exposedSize);
 }
 
 void F4OperationsQueueTests::panelLoadingPulseIsDelayedLocalAndDoesNotMoveRendererButton()
@@ -2407,6 +2431,75 @@ void F4OperationsQueueTests::dropdownWaitsForItsTimestampAnchor()
     if (qEnvironmentVariableIsSet("F4_QUEUE_CAPTURE_DIR"))
         QVERIFY(fixture.window->grabWindow().save(
             QDir(qEnvironmentVariable("F4_QUEUE_CAPTURE_DIR")).filePath("timestamp-dropdown-175.png")));
+}
+
+void F4OperationsQueueTests::fileGroupIconChoicesShowPixelAlignedArtwork()
+{
+    QVariantMap scene = dialogControlsScene(true);
+    QVariantList dialogs = scene.value("dialogs").toList();
+    QVariantMap dialog = dialogs.first().toMap();
+    QVariantList children = dialog.value("children").toList();
+    for (QVariant &value : children) {
+        QVariantMap control = value.toMap();
+        if (control.value("id") != "appearance-combo")
+            continue;
+        control.insert("dropdownOnly", false);
+        control.insert("text", "Automatic");
+        control.insert("iconTheme", "lucide");
+        control.insert("iconReference", "asset:images");
+        control.insert("items", QVariantList{
+            QVariantMap{{"text", "Automatic"}, {"details", QVariantMap{
+                {"iconTheme", "lucide"}, {"iconReference", "asset:images"}}}},
+            QVariantMap{{"text", "File"}, {"details", QVariantMap{
+                {"iconTheme", "lucide"}, {"iconReference", "asset:file"}}}},
+        });
+        value = control;
+    }
+    dialog.insert("children", children);
+    dialogs[0] = dialog;
+    scene.insert("dialogs", dialogs);
+    QueueFixture fixture(scene, false, true);
+    QVERIFY(fixture.window);
+    const qreal dpr = fixture.window->devicePixelRatio();
+    if (qAbs(dpr - 1.75) >= 0.001)
+        QSKIP("175% scale invocation required for the physical-pixel gate");
+    QQuickItem *const root = fixture.window->contentItem();
+    const QString prefix = QStringLiteral("dialogWidget-appearance-comboComboBox");
+    QQuickItem *combo = nullptr;
+    QQuickItem *closedIcon = nullptr;
+    QTRY_VERIFY(combo = visualItem(root, prefix));
+    QTRY_VERIFY(closedIcon = visualItem(root, prefix + "IconPreview"));
+    QTRY_COMPARE(closedIcon->property("status").toInt(), 1); // Image.Ready
+    QObject *const popup = combo->property("popup").value<QObject *>();
+    QVERIFY(popup);
+    QVERIFY(QMetaObject::invokeMethod(popup, "open"));
+    QTRY_VERIFY(popup->property("visible").toBool());
+
+    QList<QQuickItem *> leaves{closedIcon};
+    for (const QString &suffix : {QStringLiteral("Text"), QStringLiteral("Indicator"),
+                                  QStringLiteral("PopupItemText-0"), QStringLiteral("PopupItemText-1"),
+                                  QStringLiteral("PopupItemIcon-0"), QStringLiteral("PopupItemIcon-1")}) {
+        QQuickItem *leaf = nullptr;
+        QTRY_VERIFY(leaf = visualItem(root, prefix + suffix));
+        if (suffix.startsWith("PopupItemIcon"))
+            QTRY_COMPARE(leaf->property("status").toInt(), 1);
+        leaves.append(leaf);
+    }
+    for (QQuickItem *leaf : std::as_const(leaves)) {
+        const QPointF origin = leaf->mapToItem(root, QPointF{});
+        const QPointF physical = origin * dpr;
+        const QString detail = QStringLiteral("%1 physical origin (%2, %3)")
+            .arg(leaf->objectName()).arg(physical.x()).arg(physical.y());
+        QVERIFY2(qAbs(physical.x() - qRound(physical.x())) < 0.001
+                 && qAbs(physical.y() - qRound(physical.y())) < 0.001, qPrintable(detail));
+        QCOMPARE(leaf->mapToItem(root, QPointF(1, 0)) - origin, QPointF(1, 0));
+        QCOMPARE(leaf->mapToItem(root, QPointF(0, 1)) - origin, QPointF(0, 1));
+    }
+    QImage frame;
+    QTRY_VERIFY(!(frame = fixture.window->grabWindow()).isNull());
+    const QString capture = qEnvironmentVariable("F4_ICON_CHOICES_CAPTURE");
+    if (!capture.isEmpty())
+        QVERIFY(frame.save(capture));
 }
 
 void F4OperationsQueueTests::semanticDialogComboBoxFollowsGoOwnedMenuState()
@@ -4840,7 +4933,7 @@ void F4OperationsQueueTests::fileGroupsOverviewKeepsScrollAndRendersPreview()
     QVERIFY(list->height()>200);
     QQuickItem *cell=nullptr;
     QTRY_VERIFY((cell=visualItem(root,"dialogWidget-fg-tableTableCell-1-0")));
-    QCOMPARE(cell->property("color").value<QColor>(),QColor("#fedcba"));
+    QCOMPARE(cell->property("color"), fixture.window->property("galleryFileTextColor"));
     auto *icon=visualItem(root,"dialogWidget-fg-tableTableItemIcon-1");
     QVERIFY(icon);
     QCOMPARE(icon->property("color").value<QColor>(),QColor("#fedcba"));
@@ -4908,6 +5001,193 @@ void F4OperationsQueueTests::nestedFileGroupEditorBlocksParentNavigation()
     QTRY_VERIFY(std::any_of(fixture.shell.actions.cbegin(), fixture.shell.actions.cend(), [](const auto &action) {
         return action.value("target") == "parent-settings-categories";
     }));
+}
+
+void F4OperationsQueueTests::fileGroupEditorCombinesAppearanceInRightColumn()
+{
+    auto dialog = QJsonDocument::fromJson(R"({
+      "id":"id:filegroup-editor:appearance","kind":"dialog","layout":"settings","settingsSectionsOnly":true,
+      "title":"File group","x":2,"y":2,"w":125,"h":34,"children":[
+        {"id":"sample","kind":"group","layoutRole":"editor-preview","fileGroupSample":true,
+         "previewName":"example.txt","previewCatalog":"lucide","items":["Normal","Marked","Cursor","Marked cursor"],
+         "previewStyle":{"marker":"! ","iconSource":"plugin","icon":"qrc:/F4QtHost/icons/lucide/images.svg",
+           "tintIcon":true,"normal":{"foreground":"#ff0000"},
+           "cursor":{"foreground":"#00ff00","fileNameForeground":"#00ff00"}}},
+        {"id":"page","kind":"group","layoutRole":"content","scrollable":true,"contentHeight":50,"x":4,"y":5,"w":118,"h":24,
+         "children":[
+          {"id":"identity","kind":"group","title":"Group name","bordered":true,"x":4,"y":5,"w":118,"h":3,
+           "children":[{"id":"name","kind":"edit","text":"Images","x":6,"y":6,"w":70,"h":1}]},
+          {"id":"sort","kind":"group","title":"Sort priority","bordered":true,"x":4,"y":26,"w":118,"h":7,
+           "children":[
+             {"id":"sort-label","kind":"text","text":"Sort group number","x":6,"y":27,"w":40,"h":1},
+             {"id":"sort-number","kind":"edit","text":"30","x":6,"y":28,"w":10,"h":1},
+             {"id":"sort-toggle","kind":"button","text":"Hide existing groups","x":18,"y":28,"w":25,"h":1},
+             {"id":"sort-list","kind":"table","x":6,"y":29,"w":112,"h":4,"showHeader":true,"sortable":false,
+              "columns":[{"title":"Group","minWidth":24},{"title":"Sort number","width":12}],
+              "rows":[{"cells":["PDFs","20"]},{"cells":["Images","100"]}]}]},
+          {"id":"highlight","kind":"group","layoutRole":"section-header","sectionID":"filegroup-Highlighting","title":"Highlighting","x":4,"y":9,"w":118,"h":1},
+          {"id":"colors","kind":"group","layoutRole":"filegroup-colors","x":4,"y":10,"w":118,"h":8,"children":[
+            {"id":"color0","kind":"edit","colorMatrixCell":true},
+            {"id":"color1","kind":"edit","colorMatrixCell":true},
+            {"id":"color2","kind":"edit","colorMatrixCell":true},
+            {"id":"color3","kind":"edit","colorMatrixCell":true}]},
+          {"id":"rules","kind":"group","layoutRole":"filegroup-highlight","title":"Highlighting rules","bordered":true,
+           "x":4,"y":18,"w":118,"h":5,"children":[
+             {"id":"prefix-label","kind":"text","text":"Visual prefix","x":6,"y":19,"w":25,"h":1},
+             {"id":"prefix","kind":"edit","text":"! ","x":6,"y":20,"w":60,"h":1},
+             {"id":"continue","kind":"checkbox","layoutRole":"highlighting-option","text":"Continue highlighting",
+              "x":6,"y":21,"w":54,"h":1,"state":1},
+             {"id":"defaults","kind":"checkbox","layoutRole":"highlighting-option-last","text":"Override attribute defaults",
+              "x":64,"y":21,"w":54,"h":1,"state":1}]},
+          {"id":"icons","kind":"group","layoutRole":"section-header","sectionID":"filegroup-Icons","title":"Icons","x":4,"y":20,"w":118,"h":1},
+          {"id":"artwork","kind":"group","layoutRole":"filegroup-icons","title":"Artwork","bordered":true,"x":4,"y":22,"w":118,"h":3,
+           "children":[{"id":"catalog","kind":"comboBox","text":"Automatic","iconTheme":"lucide","iconReference":"asset:images",
+                        "x":6,"y":23,"w":24,"h":1}]}
+         ]},
+        {"id":"ok","kind":"button","layoutRole":"accept","text":"OK","x":100,"y":32,"w":10,"h":1}]
+    })").toVariant().toMap();
+    auto controls = dialog.value("children").toList();
+    auto page = controls[1].toMap();
+    auto groups = page.value("children").toList();
+    const QStringList icons{"plus", "trash-2", "arrow-up", "arrow-down"};
+    for (int side = 0; side < 2; ++side) {
+        const QString id = side == 0 ? "regular" : "alternative";
+        QVariantList buttons;
+        for (int i = 0; i < icons.size(); ++i) {
+            buttons.append(QVariantMap{{"id", id + QString::number(i)}, {"kind", "button"},
+                {"iconName", icons[i]}, {"disabled", i > 0}, {"text", icons[i]}, {"y", 9}});
+        }
+        const QVariantMap bar{{"id", id + "-actions"}, {"kind", "group"},
+            {"layoutRole", "association-buttons"}, {"children", buttons},
+            {"x", 6}, {"y", 9}, {"w", 60}, {"h", 1}};
+        groups.insert(1 + side, QVariantMap{{"id", id}, {"kind", "group"},
+            {"layoutRole", "association-" + id}, {"title", side == 0 ? "Open (Enter)" : "Alternate open"},
+            {"bordered", true}, {"x", 4}, {"y", 8}, {"w", 118}, {"h", 4},
+            {"children", QVariantList{bar}}});
+    }
+    page.insert("children", groups);
+    controls[1] = page;
+    dialog.insert("children", controls);
+    auto scene = panelScene();
+    scene.insert("dialogs", QVariantList{dialog});
+    QueueFixture fixture(scene, false, true);
+    QVERIFY(fixture.window);
+    auto *root = fixture.window->contentItem();
+    QQuickItem *list = nullptr;
+    QTRY_VERIFY(list = visualItem(root, "fileGroupPreviewList"));
+    QCOMPARE(list->property("count").toInt(), 4);
+    auto *name = visualItem(root, "dialogWidget-nameEditTextInput");
+    auto *changeIcon = visualItem(root, "fileGroupChangeIcon");
+    QVERIFY(name && changeIcon);
+    QVERIFY(name->mapToScene(QPointF{}).x() < list->mapToScene(QPointF{}).x());
+    auto *heading = visualItem(root, "dialogWidget-highlightGroupTitle");
+    QVERIFY(heading);
+    QVERIFY(heading->mapToScene(QPointF{}).y() < list->mapToScene(QPointF{}).y());
+    QVERIFY(!visualItem(root, "fileGroupPinnedSample-0"));
+    QVERIFY(!visualItem(root, "dialogWidget-catalogComboBox"));
+
+    QStringList leaves{"dialogWidget-nameEditTextInput", "dialogWidget-highlightGroupTitle",
+                       "fileGroupChangeIconText"};
+    for (int index = 0; index < 4; ++index) {
+        leaves << QString("fileGroupPreviewState-%1").arg(index)
+               << QString("fileGroupPreviewName-%1").arg(index)
+               << QString("fileGroupPreviewIcon-%1").arg(index)
+               << QString("dialogWidget-color%1ColorEditButtonText").arg(index);
+    }
+    for (const auto &id : {"continue", "defaults"}) {
+        const QString prefix = QString("dialogWidget-%1CheckBox").arg(id);
+        leaves << prefix + "Text" << prefix + "Indicator" << prefix + "CheckMark";
+    }
+    leaves << "dialogWidget-prefix-labelText" << "dialogWidget-prefixEditTextInput";
+    auto *firstOption = visualItem(root, "dialogWidget-continueCheckBox");
+    auto *secondOption = visualItem(root, "dialogWidget-defaultsCheckBox");
+    QVERIFY(firstOption && secondOption);
+    QCOMPARE(firstOption->mapToScene(QPointF{}).y(), secondOption->mapToScene(QPointF{}).y());
+    QVERIFY(firstOption->mapToScene(QPointF(firstOption->width(), 0)).x()
+            < secondOption->mapToScene(QPointF{}).x());
+    QTRY_VERIFY(!fixture.window->grabWindow().isNull());
+    for (int i = 0; i < 4; ++i) {
+        QQuickItem *icon = nullptr;
+        QQuickItem *name = nullptr;
+        QTRY_VERIFY(icon = visualItem(root, QString("fileGroupPreviewIcon-%1").arg(i)));
+        QTRY_VERIFY(name = visualItem(root, QString("fileGroupPreviewName-%1").arg(i)));
+        QCOMPARE(name->property("text").toString(), QString("! example.txt"));
+        if (i == 0) {
+            QCOMPARE(name->property("color"), fixture.window->property("galleryFileTextColor"));
+            QCOMPARE(icon->property("color").value<QColor>(), QColor("#ff0000"));
+        } else if (i == 2) {
+            QCOMPARE(name->property("color").value<QColor>(), QColor("#00ff00"));
+        }
+        QVERIFY2(icon->isVisible(), qPrintable(icon->property("source").toUrl().toString()));
+        QCOMPARE(icon->property("status").toInt(), 1); // Image.Ready
+        QVERIFY(icon->mapToScene(QPointF(icon->width(), 0)).x() + 4
+                <= name->mapToScene(QPointF{}).x());
+    }
+    auto *regular = visualItem(root, "dialogWidget-regularGroupTitle");
+    auto *alternative = visualItem(root, "dialogWidget-alternativeGroupTitle");
+    QVERIFY(regular && alternative);
+    QVERIFY(regular->mapToScene(QPointF{}).x() < alternative->mapToScene(QPointF{}).x());
+    QCOMPARE(regular->mapToScene(QPointF{}).y(), alternative->mapToScene(QPointF{}).y());
+    leaves << regular->objectName() << alternative->objectName();
+    for (const auto &id : {"regular", "alternative"}) {
+        for (int i = 0; i < icons.size(); ++i) {
+            const QString name = QString("dialogWidget-%1%2Button").arg(id).arg(i);
+            auto *button = visualItem(root, name);
+            auto *icon = visualItem(root, name + "Icon");
+            QVERIFY(button && icon);
+            QCOMPARE(button->isEnabled(), i == 0);
+            QVERIFY(!icon->property("source").toUrl().isEmpty());
+            QTRY_COMPARE(icon->property("status").toInt(), 1); // Image.Ready
+            QVERIFY(icon->width() > 0 && icon->height() > 0);
+            leaves << icon->objectName();
+        }
+    }
+    auto *sortNumber = visualItem(root, "dialogWidget-sort-numberEditTextInput");
+    auto *sortButton = visualItem(root, "dialogWidget-sort-toggleButton");
+    QVERIFY(sortNumber && sortButton);
+    QVERIFY(sortNumber->mapToScene(QPointF(sortNumber->width(), 0)).x()
+            < sortButton->mapToScene(QPointF{}).x());
+    auto *sortTable = visualItem(root, "dialogWidget-sort-listTableBackground");
+    QVERIFY(sortTable && sortButton->mapToScene(QPointF(0, sortButton->height())).y()
+            <= sortTable->mapToScene(QPointF{}).y());
+    leaves << "dialogWidget-sortGroupTitle" << "dialogWidget-sort-labelText"
+           << "dialogWidget-sort-numberEditTextInput" << "dialogWidget-sort-toggleButtonText"
+           << "dialogWidget-sort-listTableHeader-0" << "dialogWidget-sort-listTableHeader-1"
+           << "dialogWidget-sort-listTableCell-0-0" << "dialogWidget-sort-listTableCell-0-1"
+           << "dialogWidget-sort-listTableCell-1-0" << "dialogWidget-sort-listTableCell-1-1";
+    const qreal dpr = fixture.window->devicePixelRatio();
+    const auto verifyLeaves = [&](const QStringList &names) {
+        QTRY_VERIFY(!fixture.window->grabWindow().isNull());
+        for (const QString &name : names) {
+            auto *leaf = visualItem(root, name);
+            QVERIFY2(leaf && leaf->isVisible(), qPrintable(name));
+            if (qAbs(dpr - 1.75) >= 0.001)
+                continue;
+            const auto origin = leaf->mapToItem(root, QPointF{});
+            const auto physical = origin * dpr;
+            const auto detail = QString("%1 at (%2, %3)").arg(name).arg(physical.x()).arg(physical.y());
+            QVERIFY2(qAbs(physical.x() - qRound(physical.x())) < 0.001
+                     && qAbs(physical.y() - qRound(physical.y())) < 0.001, qPrintable(detail));
+            QCOMPARE(leaf->mapToItem(root, QPointF(1, 0)) - origin, QPointF(1, 0));
+            QCOMPARE(leaf->mapToItem(root, QPointF(0, 1)) - origin, QPointF(0, 1));
+        }
+    };
+    verifyLeaves(leaves);
+    const QString captureDir = qEnvironmentVariable("F4_QUEUE_CAPTURE_DIR");
+    if (!captureDir.isEmpty())
+        QVERIFY(fixture.window->grabWindow().save(QDir(captureDir).filePath("file-group-appearance-175.png")));
+
+    auto *colorEdit = visualItem(root, "dialogWidget-color0ColorEditButton");
+    QVERIFY(colorEdit);
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, itemCenter(colorEdit));
+    QTRY_VERIFY(visualItem(root, "dialogWidget-color0ColorPickerTitle"));
+    QTest::keyClick(fixture.window, Qt::Key_Escape);
+    QTRY_VERIFY(!visualItem(root, "dialogWidget-color0ColorPickerTitle"));
+
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, itemCenter(changeIcon));
+    QTRY_VERIFY(visualItem(root, "dialogWidget-catalogComboBox"));
+    verifyLeaves({"dialogWidget-catalogComboBoxText", "dialogWidget-catalogComboBoxIconPreview",
+                  "dialogWidget-catalogComboBoxIndicator"});
 }
 
 void F4OperationsQueueTests::fileGroupEditorMatrixAndPinnedPreview()

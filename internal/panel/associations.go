@@ -48,6 +48,7 @@ var AssocKeyName = [AssocKindCount]string{
 type FileAssoc struct {
 	Mask        string
 	Description string
+	SourceGroup string
 	Commands    [AssocKindCount]string
 	Enabled     [AssocKindCount]bool
 }

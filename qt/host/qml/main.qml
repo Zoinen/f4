@@ -158,8 +158,8 @@ F4HostWindow {
         inputMethodForwardingEnabled: root.galleryInputRoutingActive()
         terminalInputEnabled: !root.galleryViewerOwnsKeyboard()
         panelClipboardPasteEnabled: root.isAppScene()
-            && root.shellFrame().showPanels !== false
-            && root.shellFrame().terminalBusy !== true
+            && root.embeddedPanelsShown
+            && !root.embeddedTerminalBusy
             && !root.terminalActive() && !root.hasBlockingOverlay()
             && !root.hasDocumentSurface() && !root.hasOperationsQueueSurface()
             && !root.galleryViewerOwnsKeyboard()

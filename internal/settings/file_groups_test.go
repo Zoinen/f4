@@ -348,14 +348,15 @@ func TestFileGroupsSettingsCommandsNestedAndPreviewSafe(t *testing.T) {
 	defer draft.Close()
 	draft.Records["filegroups"] = append(draft.Records["filegroups"], f4settings.Record{ID: "user", Values: map[string]string{"group.Name": "Images", "group.Mask": "*.png", "group.Associations.Enabled": "true"}})
 	draft.Records["filegroups.commands"] = []f4settings.Record{{ID: "app", Values: map[string]string{"command.Group": "user", "command.Name": "Editor", "command.Edit.Enabled": "true", "command.Edit": "edit !.!"}}}
-	session := &settingsSession{catalog: (fileGroupsProvider{}).Catalog(), draft: draft}
-	center := newSettingsCenter([]*settingsSession{session})
-	center.offsets["record:filegroups"] = 0
-	if len(center.collectionRecordIndices(session, "filegroups.commands")) != 0 {
+	viewID := fileGroupActionPrefix + "Edit"
+	otherGroup := f4settings.NewDraft(draft.Values, draft.Records)
+	fileGroupActionCollections(otherGroup, draft.Records["filegroups"][0].ID)
+	if len(otherGroup.Records[viewID]) != 0 {
 		t.Fatal("commands leaked into another group")
 	}
-	center.offsets["record:filegroups"] = 1
-	if len(center.collectionRecordIndices(session, "filegroups.commands")) != 1 {
+	owner := f4settings.NewDraft(draft.Values, draft.Records)
+	fileGroupActionCollections(owner, "user")
+	if len(owner.Records[viewID]) != 1 {
 		t.Fatal("own commands missing")
 	}
 	groups, err := recordsToGroups(draft.Records)

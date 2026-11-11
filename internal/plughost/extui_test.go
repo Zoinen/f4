@@ -2175,6 +2175,26 @@ func TestExtUiScenePatchSplitsCanonicalStreamsBeforeSerialization(t *testing.T) 
 	}
 }
 
+func TestExtUiPanelTerminalToggleKeepsPromptInShellPatch(t *testing.T) {
+	patch := extui.ScenePatch{
+		BaseRevision: 4,
+		Revision:     5,
+		Shell: &extui.ShellPatch{MapPatch: extui.MapPatch{Set: extui.M{
+			"terminalActive": true,
+			"commandLine":    extui.M{"visible": true},
+		}}},
+	}.ToMap()
+	dispatches := extUiSemanticDispatches(patch)
+	if len(dispatches) != 1 || dispatches[0].streamID != "shell" {
+		t.Fatalf("terminal and prompt must publish together: %#v", dispatches)
+	}
+	shell := dispatches[0].payload["shell"].(map[string]any)
+	if !extUiMapPatchContainsKey(shell, "terminalActive") ||
+		!extUiMapPatchContainsKey(shell, "commandLine") {
+		t.Fatalf("incomplete shell transition: %#v", shell)
+	}
+}
+
 func TestExtUiScenePatchKeepsDialogsOnDialogStreamAlongsideMenus(t *testing.T) {
 	patch := extui.ScenePatch{
 		BaseRevision: 4,

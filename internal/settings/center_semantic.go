@@ -239,12 +239,20 @@ func (v *settingsViewport) SemanticNode(ctx *vtui.SemanticContext) map[string]an
 	var groups []map[string]any
 	for index, box := range v.boxes {
 		matched := false
+		associationRole := ""
+		highlightingOptionsY := 0
 		var children []map[string]any
 		for _, row := range box.rows {
 			if row.heading {
 				continue
 			}
 			matched = matched || row.match
+			if slot, ok := strings.CutPrefix(row.field.ID, fileGroupActionPrefix); ok {
+				associationRole = "association-regular"
+				if strings.HasPrefix(slot, "Alt") {
+					associationRole = "association-alternative"
+				}
+			}
 			_, adaptiveChoices := row.control.(*settingsRadios)
 			if len(row.label) > 0 && !adaptiveChoices {
 				width := row.labelWidth
@@ -261,9 +269,27 @@ func (v *settingsViewport) SemanticNode(ctx *vtui.SemanticContext) map[string]an
 				children = append(children, label)
 			}
 			if control := controls[vtui.SemanticID(row.control)]; control != nil {
+				if strings.HasPrefix(row.control.GetId(), "collection-actions:"+fileGroupActionPrefix) {
+					control["layoutRole"] = "association-buttons"
+					for index, button := range semantic.AppMapSlice(control["children"]) {
+						button["iconName"] = [...]string{"plus", "trash-2", "arrow-up", "arrow-down"}[index]
+					}
+				}
+				switch row.field.ID {
+				case "group.ContinueProcessing":
+					control["layoutRole"] = "highlighting-option"
+					highlightingOptionsY = semantic.Int(control["y"])
+				case "group.UseDefaults":
+					control["layoutRole"] = "highlighting-option-last"
+					control["y"] = highlightingOptionsY
+				}
 				if row.field.IconTheme != "" && row.read != nil {
 					control["iconTheme"] = row.field.IconTheme
-					control["iconReference"] = row.read()
+					reference := row.read()
+					if combo, ok := row.control.(*vtui.ComboBox); ok && reference == "" {
+						reference = combo.Menu.Items[0].Details["iconReference"]
+					}
+					control["iconReference"] = reference
 				}
 				if row.field.ID == "group.Mask" && box.rows[0].conditionToggle {
 					values := row.session.draft.Values
@@ -306,6 +332,18 @@ func (v *settingsViewport) SemanticNode(ctx *vtui.SemanticContext) map[string]an
 			"children": children}
 		if box.width < max(1, v.X2-v.X1-1) {
 			group["conditionColumn"] = true
+		}
+		if associationRole != "" {
+			group["layoutRole"] = associationRole
+		}
+		switch box.rows[0].field.Category {
+		case "filegroup-Highlighting":
+			group["layoutRole"] = "filegroup-highlight"
+			if box.rows[0].field.Group == "Colors" {
+				group["layoutRole"] = "filegroup-colors"
+			}
+		case "filegroup-Icons":
+			group["layoutRole"] = "filegroup-icons"
 		}
 		if box.section != "" {
 			group["id"] = v.sectionID(box.section)
@@ -353,8 +391,6 @@ func fileGroupSectionIcon(section string) string {
 		return "arrow-down-a-z"
 	case "filegroup-Associations":
 		return "plug"
-	case "filegroup-Reset":
-		return "rotate-ccw"
 	}
 	return ""
 }

@@ -70,8 +70,7 @@ func (pf *PanelsFrame) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 		shell.CommandLine = pf.commandLineSemanticModel(ctx)
 	}
 	if pf.TermView != nil {
-		shell.Terminal = pf.TermView.SemanticModelWithBottomOverlay(
-			ctx, terminalCommandLineOverlayRows(shell.CommandLine, shell.TerminalBusy))
+		shell.Terminal = pf.terminalSemanticModel(shell.CommandLine, shell.TerminalBusy)
 	}
 	if macro.MacroMgr != nil && macro.MacroMgr.Recording {
 		shell.MacroRecording = true
@@ -84,14 +83,42 @@ func (pf *PanelsFrame) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 	return shell.ToMap()
 }
 
-func terminalCommandLineOverlayRows(commandLine *extui.CommandLineModel, busy bool) int {
-	// During execution the last grid row belongs to the child, including
-	// progress output without a newline. Qt lays the command line below its
-	// terminal viewport; only an idle shell prompt needs to be suppressed.
-	if !busy && commandLine != nil && commandLine.Visible {
-		return 1
+func (pf *PanelsFrame) terminalSemanticModel(commandLine *extui.CommandLineModel, busy bool) *extui.TerminalModel {
+	pf.terminalOutputRedrawMu.Lock()
+	before := pf.terminalCommandOutputBefore
+	pf.terminalOutputRedrawMu.Unlock()
+	if before != nil {
+		// A frame requested by the Enter key or a different control can
+		// arrive before the PTY redraw timer. Publish the same history.
+		model := *before
+		model.Visible = pf.TermView.IsVisible()
+		model.Focused = pf.TermView.IsFocused()
+		return &model
 	}
-	return 0
+	return pf.TermView.SemanticModelWithCommandLine(pf.terminalOmitsNativePrompt(commandLine), busy)
+}
+
+func (pf *PanelsFrame) terminalOmitsNativePrompt(commandLine *extui.CommandLineModel) bool {
+	if commandLine == nil {
+		return false
+	}
+	if commandLine.Visible {
+		return true
+	}
+	// Preserve the already projected prompt boundary when the panels cover
+	// the whole terminal. Partial panel layouts can show the native prompt
+	// if the separate command line is hidden.
+	if !pf.ShowPanels || !GUIViewModesAvailable() {
+		return false
+	}
+	if pf.Wide {
+		if pf.WidePanel == 1 {
+			return pf.RightHeightDecrement <= 0
+		}
+		return pf.LeftHeightDecrement <= 0
+	}
+	return pf.ShowLeftPanel && pf.ShowRightPanel &&
+		pf.LeftHeightDecrement <= 0 && pf.RightHeightDecrement <= 0
 }
 
 func (pf *PanelsFrame) semanticPanelLayoutModel(ctx *vtui.SemanticContext) extui.PanelLayoutModel {

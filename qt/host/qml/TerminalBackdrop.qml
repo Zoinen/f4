@@ -10,6 +10,7 @@ Rectangle {
     required property Item menuBar
     property var terminal: ({})
     property var shell: ({})
+    property bool terminalActive: false
     property bool terminalSurfaceCreated: false
     readonly property real splitRatio: {
         var layout = shell && shell.panelLayout
@@ -23,7 +24,7 @@ Rectangle {
     // underneath the still-visible right panel. Keep the scrollbar on the
     // exposed side of the split instead of allowing that panel to cover it.
     readonly property real scrollBarRightInset:
-        shell && shell.terminalActive !== true
+        shell && !terminalActive
         && shell.showLeftPanel === false
         && shell.showRightPanel !== false
         ? width * (1 - splitRatio) : 0
@@ -48,7 +49,7 @@ Rectangle {
     readonly property real splitX: hostWindow.nativePanelSplitPosition()
 
     function coveredHeight(side) {
-        if (shell.terminalActive === true)
+        if (terminalActive)
             return 0
         const wide = hostWindow.widePanelSide()
         const panelSide = wide >= 0 ? wide : side
@@ -80,6 +81,22 @@ Rectangle {
         }
     }
 
+    Instantiator {
+        model: ["Up", "Down", "PgUp", "PgDown", "Home", "End"]
+        delegate: Shortcut {
+            required property string modelData
+            sequence: (Qt.platform.os === "osx" ? "Meta+Alt+" : "Ctrl+Alt+") + modelData
+            context: Qt.WindowShortcut
+            autoRepeat: true
+            enabled: terminalBackdrop.visible && terminalBackdrop.terminalActive
+                     && terminalBackdrop.terminal.altScreen !== true
+                     && !terminalBackdrop.hostWindow.hasBlockingOverlay()
+                     && !terminalBackdrop.hostWindow.hasStandaloneDocumentSurface()
+                     && !terminalBackdrop.hostWindow.queueDropdownOpen
+            onActivated: terminalSurfaceLoader.item?.scrollTerminalHistory(modelData)
+        }
+    }
+
     Item {
         id: leftRegion
         objectName: "terminalExposedLeft"
@@ -89,9 +106,13 @@ Rectangle {
         clip: true
 
         Loader {
+            id: terminalSurfaceLoader
             width: terminalBackdrop.width
-            height: parent.height
-            active: terminalBackdrop.terminalSurfaceCreated && leftRegion.height > 0
+            // A zero-height ListView would discard the visible row delegates.
+            // Keep its layout while the clipped region is covered by panels.
+            height: leftRegion.height > 0 ? leftRegion.height : terminalBackdrop.height
+            active: terminalBackdrop.terminalSurfaceCreated
+            visible: leftRegion.height > 0
             sourceComponent: DocumentSurface {
                 hostWindow: terminalBackdrop.hostWindow
                 menuBar: terminalBackdrop.menuBar
@@ -101,6 +122,8 @@ Rectangle {
                 scrollBarRightInset: terminalBackdrop.splitRegions
                     ? terminalBackdrop.width - leftRegion.width
                     : terminalBackdrop.scrollBarRightInset
+                // Keep the viewport size while both panels cover the terminal.
+                retainNativeViewportWhenInactive: true
                 // One reporter reserves enough rows for both exposed regions.
                 nativeViewportHeight: Math.max(leftRegion.height, rightRegion.height)
                 surfaceObjectName: "terminalDocumentSurface"
@@ -128,9 +151,8 @@ Rectangle {
                 menuBar: terminalBackdrop.menuBar
                 frame: terminalBackdrop.terminal
                 embedded: true
-                // The first view owns terminal viewport geometry; publishing
-                // it twice lets destruction of one view clear the other's size.
-                reportsNativeViewport: leftRegion.height <= 0
+                // The retained left view reports geometry for both regions.
+                reportsNativeViewport: false
                 interactionActive: terminalBackdrop.visible
                 scrollBarRightInset: terminalBackdrop.scrollBarRightInset
                 surfaceObjectName: "terminalDocumentSurfaceRight"

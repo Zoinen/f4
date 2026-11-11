@@ -164,6 +164,28 @@ T.ComboBox {
         width: control.snap(control.width - 8)
         height: control.snap(30)
         highlighted: control.highlightedIndex === index
+        readonly property var catalogIcon: model && model.details ? model.details : ({})
+        readonly property bool hasCatalogIcon: catalogIcon.iconTheme !== undefined
+
+        Loader {
+            active: itemDelegate.hasCatalogIcon && !!control.hostWindow
+            x: control.snap(6)
+            y: control.snap((itemDelegate.height - height) / 2)
+            width: control.snap(22)
+            height: width
+            sourceComponent: HostPixelAlignedImage {
+                objectName: control.popupObjectNamePrefix + "PopupItemIcon-" + itemDelegate.index
+                hostWindow: control.hostWindow
+                visible: source.toString() !== ""
+                fillMode: Image.PreserveAspectFit
+                sourceSize: Qt.size(Math.round(width * hostWindow.dpr), Math.round(height * hostWindow.dpr))
+                source: hostWindow.iconProvider
+                        && typeof hostWindow.iconProvider.catalogIconSource === "function"
+                    ? hostWindow.iconProvider.catalogIconSource(
+                        itemDelegate.catalogIcon.iconTheme, itemDelegate.catalogIcon.iconReference,
+                        22, hostWindow.dpr) : ""
+            }
+        }
 
         contentItem: Text {
             id: comboPopupText
@@ -171,7 +193,7 @@ T.ComboBox {
                         ? (control.popupObjectNamePrefix + "PopupItemText-"
                            + itemDelegate.index)
                         : "comboBoxPopupItemText-" + itemDelegate.index
-            leftPadding: control.snap(8)
+            leftPadding: control.snap(itemDelegate.hasCatalogIcon ? 34 : 8)
             text: {
                 if (control.textRole !== "")
                     return control.textAt(itemDelegate.index)

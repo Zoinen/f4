@@ -15,6 +15,7 @@
 #include <QPointF>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
+#include <QAbstractItemModel>
 #include <QQuickItem>
 #include <QQuickStyle>
 #include <QQuickWindow>
@@ -495,6 +496,7 @@ private slots:
     void repeatedEditorPlacementDoesNotMoveViewport();
     void editorPageNavigationWrapsPoolWithoutRebuildingRows();
     void nativeRowMovesPreservePersistentIndexes();
+    void sparseTerminalRowsUpdateOnlyLoadedRanges();
     void unselectedEditorRowsDoNotCreateSelectionSurfaces();
     void inlineEditorTextUsesNaturalPhysicalBounds();
     void scrollbarLatestIntentAndLayoutEpochCommitAtomically();
@@ -519,6 +521,9 @@ private slots:
     void middleButtonAutoScrollsStandaloneDocuments_data();
     void middleButtonAutoScrollsStandaloneDocuments();
     void middleButtonAutoScrollsEmbeddedTerminal();
+    void middleButtonTerminalScrollPreservesLivePosition();
+    void middleButtonTerminalScrollPrefetchesBeforeBoundary();
+    void middleButtonTerminalScrollKeepsAbsoluteSlots();
     void editorPointerEventsAreForwardedAsSemanticMouseActions_data();
     void editorPointerEventsAreForwardedAsSemanticMouseActions();
     void editorEdgeSelectionUsesCommittedSourceFragments();
@@ -1826,6 +1831,32 @@ void F4DocumentSurfaceTests::nativeRowMovesPreservePersistentIndexes()
     QCOMPARE(changes.size(), 0);
     QCOMPARE(model.rowCount(), 10);
     QVERIFY(!model.moveWindow(8, 3, 0));
+}
+
+void F4DocumentSurfaceTests::sparseTerminalRowsUpdateOnlyLoadedRanges()
+{
+    DocumentRowsModel model;
+    const QVariantMap row{{"text", "terminal output"}};
+    const int distant = 1000000;
+    model.ensureCapacity(10, true);
+    model.set(4, {{"loaded", true}, {"rowData", row}});
+    model.commit();
+    const QPersistentModelIndex first(model.index(4));
+
+    model.ensureCapacity(distant + 1, true);
+    QCOMPARE(first.row(), 4);
+    QCOMPARE(first.data(DocumentRowsModel::RowDataRole).toMap(), row);
+    QSignalSpy changes(&model, &QAbstractItemModel::dataChanged);
+    QCOMPARE(model.replaceWindow(distant, {row}, 4, 5, false, true), 2);
+    model.commit();
+    QCOMPARE(changes.size(), 2);
+    QCOMPARE(changes.at(0).at(0).value<QModelIndex>().row(), 4);
+    QCOMPARE(changes.at(0).at(1).value<QModelIndex>().row(), 4);
+    QCOMPARE(changes.at(1).at(0).value<QModelIndex>().row(), distant);
+    QCOMPARE(changes.at(1).at(1).value<QModelIndex>().row(), distant);
+    QVERIFY(!first.data(DocumentRowsModel::LoadedRole).toBool());
+    QVERIFY(first.data(DocumentRowsModel::RowDataRole).toMap().isEmpty());
+    QCOMPARE(model.index(distant).data(DocumentRowsModel::RowDataRole).toMap(), row);
 }
 
 void F4DocumentSurfaceTests::unselectedEditorRowsDoNotCreateSelectionSurfaces()
@@ -4965,21 +4996,262 @@ void F4DocumentSurfaceTests::middleButtonAutoScrollsEmbeddedTerminal()
     QVERIFY(fixture.gallery.scrollingCursorRequests.last().value("scrollingMode").toBool());
     QTest::mouseMove(fixture.window, upper, 20);
     QTRY_VERIFY_WITH_TIMEOUT(fixture.list->property("contentY").toReal() < before - 1, 1500);
-    bool requested = false;
-    QTRY_VERIFY_WITH_TIMEOUT(([&] {
-        for (const auto &action : std::as_const(fixture.shell.actions)) {
-            if (action.value("action").toString() == "terminal.scroll" && !action.value("followTail").toBool())
-                requested = true;
-        }
-        return requested;
-    })(), 1500);
+    const auto scrollRequests = [&] {
+        return std::count_if(fixture.shell.actions.cbegin(), fixture.shell.actions.cend(),
+            [](const auto &action) { return action.value("action").toString() == "terminal.scroll"; });
+    };
+    QTest::qWait(100);
+    QCOMPARE(scrollRequests(), 0);
     QTest::mouseClick(fixture.window, Qt::MiddleButton, Qt::NoModifier, upper);
     QTRY_VERIFY(!scroll->property("scrollingMode").toBool());
+    QTRY_COMPARE(scrollRequests(), 1);
     QTest::mouseClick(fixture.window, Qt::MiddleButton, Qt::NoModifier, center);
     QTRY_VERIFY(scroll->property("scrollingMode").toBool());
     fixture.surface->setProperty("interactionActive", false);
     QTRY_VERIFY(!scroll->property("scrollingMode").toBool());
     QVERIFY(!fixture.gallery.scrollingCursorRequests.last().value("scrollingMode").toBool());
+}
+
+void F4DocumentSurfaceTests::middleButtonTerminalScrollPreservesLivePosition()
+{
+    DocumentFixture fixture(documentScene(terminalFrame(320, 80, 380, 1, 400, true)));
+    QVERIFY(fixture.ready());
+    fixture.surface->setProperty("embedded", true);
+    QTRY_VERIFY(fixture.surface->property("windowInitialized").toBool());
+    auto *middle = fixture.surface->findChild<QQuickItem *>("documentMiddleButtonArea");
+    QVERIFY(middle);
+    const auto point = [&](qreal fraction) {
+        return middle->mapToScene(QPointF(middle->width() / 2, middle->height() * fraction)).toPoint();
+    };
+    const auto extent = [&] { return topExtent(fixture.surface, fixture.list); };
+    const auto scrollRequests = [&] {
+        QList<QVariantMap> result;
+        for (const auto &action : std::as_const(fixture.shell.actions)) {
+            if (action.value("action").toString() == "terminal.scroll")
+                result.append(action);
+        }
+        return result;
+    };
+    const qreal tail = extent();
+    fixture.shell.clearActions();
+    QTest::mouseClick(fixture.window, Qt::MiddleButton, Qt::NoModifier, point(.5));
+    QTest::mouseMove(fixture.window, point(.09));
+    QTRY_VERIFY_WITH_TIMEOUT(!scrollRequests().isEmpty(), 3500);
+    const auto request = scrollRequests().constFirst();
+    const qreal afterRequest = extent();
+    QTRY_VERIFY_WITH_TIMEOUT(extent() < afterRequest - 2, 2500);
+    QCOMPARE(scrollRequests().size(), 1);
+    const qreal beforeReply = extent();
+    fixture.shell.setScene(documentScene(terminalFrame(275, 105, 350,
+        request.value("generation").toInt(), 400, true)));
+    QTRY_COMPARE(fixture.surface->property("appliedWindowGeneration").toInt(),
+                 request.value("generation").toInt());
+    QVERIFY(extent() <= beforeReply + .1);
+    QTRY_VERIFY(extent() < beforeReply - 2);
+
+    QTest::mouseMove(fixture.window, point(.91));
+    QTRY_VERIFY_WITH_TIMEOUT(extent() >= tail - .1, 3500);
+    QTest::qWait(60);
+    QSignalSpy yChanges(fixture.list, SIGNAL(contentYChanged()));
+    QVERIFY(yChanges.isValid());
+    QTest::qWait(150);
+    QCOMPARE(yChanges.size(), 0);
+    QTest::mouseClick(fixture.window, Qt::MiddleButton, Qt::NoModifier, point(.91));
+    QVERIFY(!fixture.surface->property("middleAutoScrollActive").toBool());
+}
+
+void F4DocumentSurfaceTests::middleButtonTerminalScrollPrefetchesBeforeBoundary()
+{
+    DocumentFixture fixture(documentScene(terminalFrame(320, 80, 380, 1, 400, true)));
+    QVERIFY(fixture.ready());
+    fixture.surface->setProperty("embedded", true);
+    QTRY_VERIFY(fixture.surface->property("windowInitialized").toBool());
+    auto *middle = fixture.surface->findChild<QQuickItem *>("documentMiddleButtonArea");
+    QVERIFY(middle);
+    const auto point = [&](qreal fraction) {
+        return middle->mapToScene(QPointF(middle->width() / 2, middle->height() * fraction)).toPoint();
+    };
+    const auto extent = [&] { return topExtent(fixture.surface, fixture.list); };
+    QVariantMap request;
+    qreal atRequest = 0;
+    QElapsedTimer requestAge;
+    connect(&fixture.shell, &TestShell::uiActionSent, &fixture.shell,
+            [&](const QVariantMap &action) {
+        if (request.isEmpty() && action.value("action").toString() == "terminal.scroll") {
+            atRequest = extent();
+            request = action;
+            requestAge.start();
+        }
+    });
+    QTest::mouseClick(fixture.window, Qt::MiddleButton, Qt::NoModifier, point(.5));
+    QTest::mouseMove(fixture.window, point(.04));
+    QTRY_VERIFY_WITH_TIMEOUT(!request.isEmpty(), 3500);
+    const int target = request.value("visualRow").toInt();
+    QVERIFY2(atRequest - target >= 8,
+             qPrintable(QString("at request %1, requested %2").arg(atRequest).arg(target)));
+    QTest::qWait(qMax<qint64>(0, 180 - requestAge.elapsed()));
+    const qreal beforeReply = extent();
+    QVERIFY2(beforeReply > 320.5 && beforeReply < atRequest - 1,
+             qPrintable(QString("at request %1, before reply %2").arg(atRequest).arg(beforeReply)));
+    fixture.shell.setScene(documentScene(terminalFrame(target - 25, 75, target,
+        request.value("generation").toInt(), 400)));
+    QTRY_COMPARE(fixture.surface->property("appliedWindowGeneration").toInt(),
+                 request.value("generation").toInt());
+    QVERIFY(extent() <= beforeReply + .1);
+    QTRY_VERIFY_WITH_TIMEOUT(extent() < 319.5, 2500);
+    QTest::mouseClick(fixture.window, Qt::MiddleButton, Qt::NoModifier, point(.04));
+}
+
+void F4DocumentSurfaceTests::middleButtonTerminalScrollKeepsAbsoluteSlots()
+{
+    constexpr int total = 1000;
+    const auto makeFrame = [=](int first, int count, int top, int generation, bool followTail = false) {
+        auto frame = terminalFrame(first, count, top, generation, total, followTail);
+        auto rows = frame.value("windowRows").toList();
+        for (int i = 0; i < rows.size(); ++i) {
+            auto row = rows.at(i).toMap();
+            if ((first + i) % 2 == 0) {
+                row["runs"] = QVariantList{QVariantMap{{"text", row.take("text")},
+                                                       {"foreground", "#45cc88"}}};
+            }
+            if ((first + i) % 10 == 0)
+                row["commandSeparator"] = "top";
+            rows[i] = row;
+        }
+        frame["windowRows"] = rows;
+        return documentScene(frame);
+    };
+    DocumentFixture fixture(makeFrame(920, 80, 970, 1, true));
+    QVERIFY(fixture.ready());
+    fixture.surface->setProperty("embedded", true);
+    QTRY_VERIFY(fixture.surface->property("windowInitialized").toBool());
+    auto *middle = fixture.surface->findChild<QQuickItem *>("documentMiddleButtonArea");
+    QVERIFY(middle);
+    const auto point = [&](qreal fraction) {
+        return middle->mapToScene(QPointF(middle->width() / 2, middle->height() * fraction)).toPoint();
+    };
+    const auto extent = [&] { return topExtent(fixture.surface, fixture.list); };
+    const auto slot = [&] { return fixture.surface->property("loadedSlotStart").toInt(); };
+    QList<QVariantMap> requests;
+    connect(&fixture.shell, &TestShell::uiActionSent, &fixture.shell, [&](const QVariantMap &action) {
+        if (action.value("action").toString() == "terminal.scroll")
+            requests.append(action);
+    });
+
+    QTest::mouseClick(fixture.window, Qt::MiddleButton, Qt::NoModifier, point(.5));
+    QTest::mouseMove(fixture.window, point(.25));
+    qreal worstJump = 0;
+    qint64 longestCommit = 0;
+    qint64 longestApply = 0;
+    QElapsedTimer frameClock;
+    frameClock.start();
+    qint64 lastFrame = 0;
+    QList<qint64> frameTimes;
+    auto *contentItem = fixture.list->property("contentItem").value<QQuickItem *>();
+    QVERIFY(contentItem);
+    auto *model = qobject_cast<QAbstractItemModel *>(fixture.list->property("model").value<QObject *>());
+    QVERIFY(model);
+    int changedSlots = 0;
+    int largestWindowChange = 0;
+    QSignalSpy slotMoves(model, &QAbstractItemModel::rowsMoved);
+    const auto modelConnection = connect(model, &QAbstractItemModel::dataChanged, &fixture.shell,
+        [&](const QModelIndex &first, const QModelIndex &last) {
+            changedSlots += last.row() - first.row() + 1;
+        });
+    qreal minimumPhase = std::numeric_limits<qreal>::max();
+    qreal maximumPhase = std::numeric_limits<qreal>::lowest();
+    const auto frameConnection = connect(fixture.window, &QQuickWindow::afterAnimating,
+        &fixture.shell, [&] {
+            const auto now = frameClock.nsecsElapsed();
+            if (lastFrame > 0)
+                frameTimes.append(now - lastFrame);
+            lastFrame = now;
+            const qreal phase = contentItem->mapToItem(fixture.list, QPointF()).y()
+                + fixture.list->property("contentY").toReal();
+            minimumPhase = qMin(minimumPhase, phase);
+            maximumPhase = qMax(maximumPhase, phase);
+        });
+    for (int i = 0; i < 10; ++i) {
+        QTRY_VERIFY_WITH_TIMEOUT(!requests.isEmpty(), 3500);
+        const auto request = requests.takeFirst();
+        QTest::qWait(35);
+        const int generation = request.value("generation").toInt();
+        const int target = request.value("visualRow").toInt();
+        const int first = qMax(0, target - 30);
+        const int last = qMin(total, target + 60);
+        const qreal previousExtent = extent();
+        changedSlots = 0;
+        QElapsedTimer commitClock;
+        commitClock.start();
+        fixture.shell.setScene(makeFrame(first, last - first, target, generation));
+        const auto sceneTime = commitClock.nsecsElapsed();
+        QVERIFY(QMetaObject::invokeMethod(fixture.surface, "applyFrameWindow", Qt::DirectConnection));
+        const auto commitTime = commitClock.nsecsElapsed();
+        QCOMPARE(fixture.surface->property("appliedWindowGeneration").toInt(), generation);
+        const qreal jump = qAbs(extent() - previousExtent);
+        worstJump = qMax(worstJump, jump);
+        QCOMPARE(slot(), first);
+        largestWindowChange = qMax(largestWindowChange, changedSlots);
+        longestCommit = qMax(longestCommit, commitTime);
+        longestApply = qMax(longestApply, commitTime - sceneTime);
+    }
+    disconnect(frameConnection);
+    disconnect(modelConnection);
+    QVERIFY(slotMoves.isEmpty());
+    QVERIFY2(largestWindowChange <= 60,
+             qPrintable(QString("window update rewrote %1 slots").arg(largestWindowChange)));
+    qInfo() << "Largest instantaneous row displacement at a window commit:" << worstJump;
+    std::sort(frameTimes.begin(), frameTimes.end());
+    QVERIFY(!frameTimes.isEmpty());
+    qInfo() << "Frame p95/max (ms):" << frameTimes.at(frameTimes.size() * 95 / 100) / 1e6
+            << frameTimes.last() / 1e6 << "Longest window update (ms):"
+            << longestCommit / 1e6;
+    qInfo() << "Longest QML window apply (ms):"
+            << longestApply / 1e6;
+    QVERIFY(worstJump < .02);
+    const qreal phaseRange = (maximumPhase - minimumPhase) * fixture.window->devicePixelRatio();
+    QVERIFY2(phaseRange < .01, qPrintable(QString("content root moved by %1 physical px "
+                                                   "relative to contentY").arg(phaseRange)));
+    QTest::mouseClick(fixture.window, Qt::MiddleButton, Qt::NoModifier, point(.25));
+    QTRY_VERIFY(!fixture.surface->property("kineticActive").toBool());
+    QTest::qWait(60);
+    const qreal dpr = fixture.window->devicePixelRatio();
+    QSet<QString> visibleLeaves;
+    QList<QQuickItem *> pending{fixture.list};
+    while (!pending.isEmpty()) {
+        auto *item = pending.takeLast();
+        pending.append(item->childItems());
+        const auto name = item->objectName();
+        if (!item->isVisible()
+                || (name != "documentPlainText" && name != "documentRunText"
+                    && name != "terminalCommandSeparator"))
+            continue;
+        const qreal localY = item->mapToItem(fixture.list, QPointF()).y();
+        if (localY < 0 || localY + item->height() > fixture.list->height())
+            continue;
+        if (name != "terminalCommandSeparator" && item->property("text").toString().isEmpty())
+            continue;
+        visibleLeaves.insert(name);
+        const QPointF origin = item->mapToItem(fixture.window->contentItem(), QPointF());
+        const QPointF px = origin * dpr;
+        // Qt maps through float matrices. Canceling large absolute row and
+        // scroll coordinates at this depth can lose a few thousandths of a pixel.
+        constexpr qreal sceneMappingTolerance = .005;
+        QVERIFY2(qAbs(px.x() - qRound64(px.x())) < sceneMappingTolerance
+                     && qAbs(px.y() - qRound64(px.y())) < sceneMappingTolerance,
+                 qPrintable(QString("%1 at (%2, %3) physical px with contentY %4")
+                     .arg(name).arg(px.x(), 0, 'f', 6).arg(px.y(), 0, 'f', 6)
+                     .arg(fixture.list->property("contentY").toReal(), 0, 'f', 6)));
+        QCOMPARE(item->mapToItem(fixture.window->contentItem(), QPointF(1, 0)) - origin, QPointF(1, 0));
+        QCOMPARE(item->mapToItem(fixture.window->contentItem(), QPointF(0, 1)) - origin, QPointF(0, 1));
+    }
+    QVERIFY(visibleLeaves.contains("documentPlainText"));
+    QVERIFY(visibleLeaves.contains("documentRunText"));
+    const QImage capture = fixture.window->grabWindow();
+    QVERIFY(!capture.isNull());
+    const QString capturePath = qEnvironmentVariable("F4_DOCUMENT_PIXEL_CAPTURE");
+    if (!capturePath.isEmpty())
+        QVERIFY(capture.save(capturePath));
 }
 
 void F4DocumentSurfaceTests::shortEditorSelectionDoesNotScroll()

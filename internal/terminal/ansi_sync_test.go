@@ -233,3 +233,39 @@ func TestProcessFilteredCutsTheSyncEchoForTheHostConsole(t *testing.T) {
 		t.Errorf("empty input returned %q", got)
 	}
 }
+
+func TestConPTYCommandEchoRetainsMarkedPromptAfterResize(t *testing.T) {
+	for _, test := range []struct {
+		name, stream, want string
+	}{
+		{
+			name:   "incremental echo",
+			stream: "\x1b[28;9Hcd /d \"C:\\Test\" & dir /b\x1b[28;33H",
+			want:   "C:\\Test>dir /b",
+		},
+		{
+			name:   "host redraws prompt",
+			stream: "\x1b[28;1H\x1b]133;A;f4-cmd\x1b\\C:\\New!>\x1b]133;B;f4-cmd\x1b\\dir /b",
+			want:   "C:\\New!>dir /b",
+		},
+		{
+			name:   "different cursor column",
+			stream: "\x1b[28;4Hstatus",
+			want:   "   status",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tv := NewTerminalView(100, 28)
+			defer tv.Close()
+			tv.OwnsCmdPrompt = func() bool { return true }
+			parser := NewAnsiParser(tv, nil)
+			parser.Process([]byte("\x1b[28;1H\x1b]133;A;f4-cmd\x1b\\C:\\Test>\x1b]133;B;f4-cmd\x1b\\"))
+			tv.Resize(100, 29)
+			tv.EraseDisplayNoHistory(2, DefaultTermAttr)
+			parser.Process([]byte(test.stream))
+			if got := syncRow(tv, 27); got != test.want {
+				t.Fatalf("row 28 = %q, want %q", got, test.want)
+			}
+		})
+	}
+}

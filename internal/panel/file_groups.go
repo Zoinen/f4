@@ -2,6 +2,7 @@ package panel
 
 import (
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/unxed/f4/internal/filegroups"
@@ -73,14 +74,17 @@ func matchingGroupAssociations(snapshot *filegroups.Snapshot, item *vfs.VFSItem,
 	}
 	for _, group := range snapshot.Matching(item, true, "Associations", time.Now()) {
 		for _, command := range group.Commands {
-			if !command.Enabled[kind] || command.Commands[kind] == "" {
+			if !command.Enabled[kind] || strings.TrimSpace(command.Commands[kind]) == "" {
 				continue
 			}
 			name := command.Name
 			if name == "" {
 				name = group.Label()
 			}
-			result = append(result, FileAssoc{Mask: group.Fields["Mask"], Description: name, Commands: command.Commands, Enabled: command.Enabled})
+			result = append(result, FileAssoc{
+				Mask: group.Fields["Mask"], Description: name, SourceGroup: group.Label(),
+				Commands: command.Commands, Enabled: command.Enabled,
+			})
 		}
 	}
 	return result

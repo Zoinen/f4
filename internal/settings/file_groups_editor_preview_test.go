@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"context"
 	"testing"
 
 	"github.com/unxed/f4/internal/config"
@@ -94,5 +95,51 @@ func TestFileGroupEditorRetainsPinnedPreviewAndCompactColourRows(t *testing.T) {
 	}
 	if !found || d.Records["filegroups"][0].Values["group.NormalColor"] != "foreground:#112233" {
 		t.Fatal("preview missing or scratch edit escaped into parent")
+	}
+}
+
+func TestFileGroupQtFileNameColorIsOptIn(t *testing.T) {
+	parent, overview := setupFileGroupColorChild(t)
+	backend, details := vtui.ActiveBackend(), vtui.BackendDetails()
+	t.Cleanup(func() { vtui.SetActiveBackend(backend, details...) })
+	const id = "group.Highlight.ColorizeFileName"
+	vtui.SetActiveBackend("console")
+	console := overview.childEditor(0)
+	for _, row := range console.page.rows {
+		if row.field.ID == id {
+			t.Fatal("Qt option is visible in the console")
+		}
+	}
+	console.sessions[0].draft.Close()
+
+	vtui.SetActiveBackend("qt")
+	editor := overview.childEditor(0)
+	draft := editor.sessions[0].draft
+	defer draft.Close()
+	var toggle vtui.UIElement
+	for _, row := range editor.page.rows {
+		if row.field.ID == id {
+			toggle = row.control
+			break
+		}
+	}
+	if toggle == nil || toggle.IsDisabled() {
+		t.Fatal("Qt file name color control is unavailable")
+	}
+	preview := editor.fileGroupEditorSample
+	if patch := preview.preview.style.Normal; patch.Foreground == "" || patch.FileNameForeground != "" {
+		t.Fatalf("default should provide an icon color only: %+v", patch)
+	}
+	if !editor.HandleSemanticAction(map[string]any{"target": vtui.SemanticID(toggle), "action": "control.toggle"}) {
+		t.Fatal("could not enable file name color")
+	}
+	if patch := preview.preview.style.Normal; patch.FileNameForeground != "#112233" {
+		t.Fatalf("file name color did not reach preview: %+v", patch)
+	}
+	if result := draft.Commit(context.Background()); len(result.Errors) != 0 {
+		t.Fatal(result.Errors)
+	}
+	if parent.Records["filegroups"][0].Values[id] != "true" {
+		t.Fatal("file name color was not saved on the group")
 	}
 }

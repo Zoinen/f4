@@ -34,8 +34,8 @@ Rectangle {
     property real preferredColumn: -1
     property int lastVerticalCursor: -1
     readonly property bool visualNavigationEnabled: dropInputEnabled && multiline
-        && commandLine.focused === true && shell.terminalBusy !== true
-        && (commandInput.lineCount > 1 || commandLine.ownsNavigation === true || shell.terminalActive === true)
+        && commandLine.focused === true && !hostWindow.embeddedTerminalBusy
+        && (commandInput.lineCount > 1 || commandLine.ownsNavigation === true || hostWindow.embeddedTerminalShown)
         && !hostWindow.galleryViewerOwnsKeyboard()
 
     function sourcePosition(displayPosition) {

@@ -112,17 +112,17 @@ func (s *cmdShellSim) wait(d time.Duration) {
 	testutil.DrainUITasks()
 }
 
-// prompt sends what PROMPT=$E]133;A$E\$P$G$E]133;B$E\ produces, in the order
+// prompt sends the tagged cmd.exe marks and prompt in the order
 // this build delivers it. The text after a batch-echoed prompt (the command
 // line and its line break) goes with it, as it does in one ConPTY frame.
 func (s *cmdShellSim) prompt(after string) {
 	if s.build.markBeforeText {
-		s.feed("\x1b]133;A\x1b\\\x1b]133;B\x1b\\")
+		s.feed("\x1b]133;" + terminal.CmdPromptStartMark + "\x1b\\\x1b]133;" + terminal.CmdPromptEndMark + "\x1b\\")
 		s.wait(10 * time.Millisecond)
 		s.feed(promptText + after)
 		return
 	}
-	s.feed("\x1b]133;A\x1b\\" + promptText + "\x1b]133;B\x1b\\" + after)
+	s.feed("\x1b]133;" + terminal.CmdPromptStartMark + "\x1b\\" + promptText + "\x1b]133;" + terminal.CmdPromptEndMark + "\x1b\\" + after)
 }
 
 // start brings the shell up: banner, first prompt, settled.

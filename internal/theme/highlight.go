@@ -77,6 +77,7 @@ type HighlightRule struct {
 
 	// Каскадная обработка (Continue Processing)
 	ContinueProcessing bool
+	ColorizeFileName   bool
 
 	// UseDefaults makes the rule an override of the built-in colours of its
 	// attribute (f4#912): it does not take part in the first-match walk, so its
@@ -1072,9 +1073,12 @@ func semanticColorPatch(expr string) extui.HighlightColorPatchModel {
 	return patch
 }
 
-func mergeHighlightPatch(target *extui.HighlightColorPatchModel, patch extui.HighlightColorPatchModel) {
+func mergeHighlightPatch(target *extui.HighlightColorPatchModel, patch extui.HighlightColorPatchModel, colorizeFileName bool) {
 	if patch.Foreground != "" {
 		target.Foreground = patch.Foreground
+		if colorizeFileName {
+			target.FileNameForeground = patch.Foreground
+		}
 	}
 	if patch.Background != "" {
 		target.Background = patch.Background
@@ -1181,13 +1185,13 @@ func (fh *FileHighlighter) SemanticStyle(item *vfs.VFSItem, metadataKnown bool) 
 				style.Marker = rule.Mark
 			}
 			mergeHighlightPatch(&style.Normal,
-				semanticColorPatch(rule.colorFor(false, false)))
+				semanticColorPatch(rule.colorFor(false, false)), rule.ColorizeFileName)
 			mergeHighlightPatch(&style.Selected,
-				semanticColorPatch(rule.colorFor(true, false)))
+				semanticColorPatch(rule.colorFor(true, false)), rule.ColorizeFileName)
 			mergeHighlightPatch(&style.Cursor,
-				semanticColorPatch(rule.colorFor(false, true)))
+				semanticColorPatch(rule.colorFor(false, true)), rule.ColorizeFileName)
 			mergeHighlightPatch(&style.SelectedCursor,
-				semanticColorPatch(rule.colorFor(true, true)))
+				semanticColorPatch(rule.colorFor(true, true)), rule.ColorizeFileName)
 		}
 	}
 	if item.IconKey != "" && !parentEntry {

@@ -251,6 +251,7 @@ ApplicationWindow {
     property alias commandLineGraphicalCursor: themePalette.commandLineGraphicalCursor
     property alias compactBreadcrumbs: themePalette.compactBreadcrumbs
     property alias showColumnSeparators: themePalette.showColumnSeparators
+    property alias showTerminalCommandSeparators: themePalette.showTerminalCommandSeparators
     property alias galleryDebugLayoutZones: themePalette.galleryDebugLayoutZones
     property alias headerVerticalSeparatorSpacing: themePalette.headerVerticalSeparatorSpacing
     property alias headerHorizontalSeparatorSpacing: themePalette.headerHorizontalSeparatorSpacing
@@ -446,6 +447,10 @@ ApplicationWindow {
         return sceneStoreApi && sceneStoreApi.hasBlockingOverlay()
     }
     function shellFrame() { return sceneStoreApi ? sceneStoreApi.shellFrame() : ({}) }
+    readonly property var embeddedTerminalFrame: sceneStoreApi ? sceneStoreApi.terminalFrame : ({})
+    readonly property bool embeddedTerminalShown: sceneStoreApi && sceneStoreApi.terminalShown
+    readonly property bool embeddedPanelsShown: !sceneStoreApi || sceneStoreApi.panelsShown
+    readonly property bool embeddedTerminalBusy: sceneStoreApi && sceneStoreApi.terminalBusy
     function quickViewForSide(side) { return sceneStoreApi.quickViewForSide(side) }
     function infoPanelForSide(side) { return sceneStoreApi.infoPanelForSide(side) }
     function panelSideCovered(side) { return sceneStoreApi.panelSideCovered(side) }
@@ -580,11 +585,13 @@ ApplicationWindow {
                   + commandLineVerticalMargin * 2 + separatorWidth * 2 : 0
     }
     property real commandLineContentHeight: 0
-    property real commandLineReveal: commandLineFrame().visible !== false ? 1 : 0
+    property real panelCommandLineReveal: commandLineFrame().visible !== false ? 1 : 0
+    readonly property real commandLineReveal: embeddedTerminalShown
+        ? (commandLineFrame().visible !== false ? 1 : 0) : panelCommandLineReveal
     readonly property var commandLineRevealRequest: ({
         visible: commandLineFrame().visible !== false,
         autoHide: commandLineFrame().autoHide === true,
-        panels: shellFrame().showPanels !== false && shellFrame().terminalActive !== true
+        panels: embeddedPanelsShown && !embeddedTerminalShown
     })
     property var previousCommandLineRevealRequest: null
     // Shell and command-line bindings can settle separately in the same patch.
@@ -593,6 +600,8 @@ ApplicationWindow {
     function updateCommandLineReveal() {
         const next = commandLineRevealRequest
         const previous = previousCommandLineRevealRequest
+        if (!next.panels)
+            return
         if (previous && previous.visible === next.visible
                 && previous.autoHide === next.autoHide && previous.panels === next.panels)
             return
@@ -601,24 +610,26 @@ ApplicationWindow {
         const target = next.visible ? 1 : 0
         if (previous && previous.autoHide && next.autoHide
                 && previous.panels && next.panels) {
-            commandLineRevealAnimation.from = commandLineReveal
+            commandLineRevealAnimation.from = panelCommandLineReveal
             commandLineRevealAnimation.to = target
             commandLineRevealAnimation.start()
         } else {
-            commandLineReveal = target
+            panelCommandLineReveal = target
         }
     }
     NumberAnimation {
         id: commandLineRevealAnimation
         target: host
-        property: "commandLineReveal"
+        property: "panelCommandLineReveal"
         duration: 130
         easing.type: Easing.OutCubic
     }
     function commandLineHeight(shell) {
-        const commandLine = commandLineFrame()
-        return commandLine ? snapPx((snapPx(Math.max(ch, commandLineContentHeight))
-                  + commandLineVerticalMargin * 2 + separatorWidth * 2) * commandLineReveal) : 0
+        return commandLineHeightForReveal(commandLineReveal)
+    }
+    function commandLineHeightForReveal(reveal) {
+        return commandLineFrame() ? snapPx((snapPx(Math.max(ch, commandLineContentHeight))
+                  + commandLineVerticalMargin * 2 + separatorWidth * 2) * reveal) : 0
     }
 
     function pxX(value) { return presentationUtilities.pxX(value) }
@@ -636,6 +647,8 @@ ApplicationWindow {
     }
     function dialogWidgetVisualHeight(widget) {
         const semanticHeight = dialogWidgetSemanticHeight(widget)
+        if (widget && widget.layoutRole === "association-buttons")
+            return snapPx(28)
         if (widget && widget.colorMatrixCell === true)
             return Math.max(semanticHeight, snapPx(40))
         return dialogWidgetUsesControlHeight(widget)

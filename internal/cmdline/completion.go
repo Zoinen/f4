@@ -33,6 +33,10 @@ func (menu *CompletionMenu) ProcessKey(event *vtinput.InputEvent) bool {
 		accept.ControlKeyState = 0
 		return menu.AutoCompleteMenu.ProcessKey(&accept)
 	}
+	if event.Type == vtinput.KeyEventType && event.KeyDown && event.VirtualKeyCode == vtinput.VK_ESCAPE &&
+		menu.Edit.AutoCompletePreview && (menu.SelectPos() > 0 || menu.Edit.GetText() != menu.Query()) {
+		menu.Preview(0)
+	}
 	wasDone := menu.IsDone()
 	handled := menu.AutoCompleteMenu.ProcessKey(event)
 	modifiers := vtinput.ShiftPressed | vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed |

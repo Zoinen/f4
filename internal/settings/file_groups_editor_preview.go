@@ -79,12 +79,11 @@ func fileGroupColourPatches(style extui.HighlightStyleModel) []extui.HighlightCo
 
 func (s *fileGroupEditorSample) update(preview fileGroupPreview) {
 	// A mini panel needs the base palette too, not only the group's patches.
-	patches := make([]extui.HighlightColorPatchModel, 4)
+	patches := fileGroupColourPatches(preview.style)
 	for state, attr := range preview.attrs {
 		fg, bg := theme.GetColorRGBBoth(attr)
-		patches[state] = extui.HighlightColorPatchModel{
-			Foreground: fmt.Sprintf("#%06X", fg), Background: fmt.Sprintf("#%06X", bg),
-		}
+		patches[state].Foreground = fmt.Sprintf("#%06X", fg)
+		patches[state].Background = fmt.Sprintf("#%06X", bg)
 	}
 	preview.style.Normal, preview.style.Selected = patches[0], patches[1]
 	preview.style.Cursor, preview.style.SelectedCursor = patches[2], patches[3]

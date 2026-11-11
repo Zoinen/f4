@@ -39,11 +39,14 @@ func (v *fileGroupsOverview) childEditor(index int) *settingsCenter {
 	cat := (fileGroupsProvider{}).Catalog()
 	cat.ID = "filegroups.editor"
 	cat.Categories = []f4settings.Category{{ID: "filegroup-Identity", Label: f4settings.Text{English: "Group name"}}}
-	sections := []string{"Conditions", "Highlighting", "Icons", "Sorting", "Associations", "Reset"}
+	sections := []string{"Conditions", "Associations", "Highlighting", "Icons", "Sorting"}
 	for _, section := range sections {
 		label := f4settings.Text{English: section}
-		if section == "Conditions" {
+		switch section {
+		case "Conditions":
 			label = f4settings.Text{English: "Matching conditions", Key: "FileGroups.MatchingConditions"}
+		case "Highlighting":
+			label = f4settings.Text{English: "Visual appearance", Key: "FileGroups.VisualAppearance"}
 		}
 		cat.Categories = append(cat.Categories, f4settings.Category{ID: "filegroup-" + section, Label: label})
 	}
@@ -52,6 +55,7 @@ func (v *fileGroupsOverview) childEditor(index int) *settingsCenter {
 		f4settings.Group{ID: "File attributes", Category: "filegroup-Conditions", Label: f4settings.Text{English: "Attributes", Key: "FileGroups.MatchAttributes"}},
 		f4settings.Group{ID: "File size", Category: "filegroup-Conditions", Label: f4settings.Text{English: "Size", Key: "FileGroups.MatchSize"}},
 		f4settings.Group{ID: "Timestamps", Category: "filegroup-Conditions", Label: f4settings.Text{English: "Date and time", Key: "FileGroups.MatchDateTime"}},
+		f4settings.Group{ID: "Highlighting rules", Category: "filegroup-Highlighting", Label: f4settings.Text{English: "Appearance rules", Key: "FileGroups.AppearanceRules"}},
 	)
 	for _, collection := range cat.Collections {
 		if collection.ID != "filegroups" {
@@ -72,6 +76,9 @@ func (v *fileGroupsOverview) childEditor(index int) *settingsCenter {
 			}
 		}
 		for _, f := range fields {
+			if f.ID == "group.Highlight.ColorizeFileName" && vtui.ActiveBackend() != "qt" {
+				continue
+			}
 			if f.ID == "group.IconTheme" && record.Values[f.ID] == "" {
 				continue
 			}
@@ -110,15 +117,7 @@ func (v *fileGroupsOverview) childEditor(index int) *settingsCenter {
 			cat.Fields = append(cat.Fields, f)
 		}
 	}
-	collections := []f4settings.Collection{}
-	for _, col := range cat.Collections {
-		if col.ID == "filegroups.commands" {
-			col.Category = "filegroup-Associations"
-			col.Group = "Applications"
-			collections = append(collections, col)
-		}
-	}
-	cat.Collections = collections
+	cat.Collections = fileGroupActionCollections(scratch, record.ID)
 	accepted := false
 	sample := newFileGroupEditorSample()
 	scratch.PreviewFunc = func(d *f4settings.Draft) error {
@@ -133,7 +132,12 @@ func (v *fileGroupsOverview) childEditor(index int) *settingsCenter {
 			}
 		}
 		colors.sync(d)
-		d.Records["filegroups"][index].Values = fileGroupEditorRecordValues(d.Values, colors)
+		values := fileGroupEditorRecordValues(d.Values, colors)
+		if syncFileGroupActionCommands(d, record.ID) {
+			// An empty command order explicitly clears inherited commands.
+			values["group.CommandOrder"] = ""
+		}
+		d.Records["filegroups"][index].Values = values
 		themeID := d.Values["group.IconTheme"]
 		if themeID == "" {
 			themeID = v.themeID
@@ -167,7 +171,11 @@ func (v *fileGroupsOverview) childEditor(index int) *settingsCenter {
 		if err := scratch.PreviewFunc(d); err != nil {
 			return f4settings.Result{Errors: map[string]error{"group": err}}
 		}
-		parent.Records = f4settings.NewDraft(nil, d.Records).Records
+		records := maps.Clone(d.Records)
+		for _, collection := range cat.Collections {
+			delete(records, collection.ID)
+		}
+		parent.Records = f4settings.NewDraft(nil, records).Records
 		if originalScope != d.Values["group.IconTheme"] {
 			v.center.moveFileGroupScope(v.session, record.ID, d.Values["group.IconTheme"])
 		}
@@ -231,28 +239,31 @@ func (v *fileGroupsOverview) childEditor(index int) *settingsCenter {
 	child.ok.IsDefault = true
 	child.SetTitle(child.windowTitle())
 	child.ok.OnClick = func() { child.commit(true) }
-	for _, title := range sections[:len(sections)-1] {
-		section := "filegroup-" + title
-		child.sessions[0].catalog.Commands = append(child.sessions[0].catalog.Commands, f4settings.Command{
-			ID: "filegroup.reset." + section, Category: "filegroup-Reset", Group: "Restore standard values",
-			Label: f4settings.Text{English: "Reset " + title},
-			Run: func(context.Context) error {
-				for _, f := range cat.Fields {
-					if f.Category == section {
-						child.resetFileGroupEditorFieldValue(f.ID)
-					}
-				}
-				if scratch.PreviewFunc != nil {
-					_ = scratch.PreviewFunc(scratch)
-				}
-				child.rebuildCategory()
-				return nil
-			},
-		})
-	}
 	child.rebuildCategory()
 	child.SetFocusedItem(child.page)
 	return child
+}
+
+func (c *settingsCenter) fileGroupAutomaticIcon(draft *f4settings.Draft, catalog string) string {
+	fields := map[string]string{"Name": draft.Values["group.Name"]}
+	for _, key := range []string{"Icon.*", "Icon"} {
+		if value, exists := draft.Values["group."+key]; exists {
+			fields[key] = value
+		}
+	}
+	group := filegroups.Group{ID: c.fileGroupEditorID, Fields: fields}
+	references, err := group.IconReferences(fileGroupDraftThemes(draft))
+	if err != nil {
+		return ""
+	}
+	ref, ok := references[catalog]
+	if !ok {
+		ref = references["*"]
+	}
+	if ref.Value == "" {
+		return ""
+	}
+	return ref.Kind + ":" + ref.Value
 }
 
 func fileGroupEditorBox(field f4settings.Field) string {
@@ -280,7 +291,7 @@ func fileGroupEditorBox(field f4settings.Field) string {
 	}
 	switch fileGroupFieldSection(field.ID) {
 	case "Highlighting":
-		return "Highlighting behavior"
+		return "Highlighting rules"
 	case "Icons":
 		return "Artwork"
 	default:

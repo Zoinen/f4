@@ -37,7 +37,7 @@ func (pf *PanelsFrame) TogglePanelsVisibility() {
 	if pf.ShellMode == terminal.ShellModeSimpleInline {
 		pf.lastShowPanels = pf.ShowPanels
 	} else if pf.MenuBar != nil && pf.LastW > 0 && pf.LastH > 0 {
-		pf.ResizeConsole(pf.LastW, pf.LastH)
+		pf.resizeConsole(pf.LastW, pf.LastH, true)
 		pf.lastShowPanels = pf.ShowPanels
 	}
 	switch pf.ShellMode {
@@ -75,7 +75,9 @@ func (pf *PanelsFrame) TogglePanelsVisibility() {
 		pf.ShowPanels = true
 		toast.Show(i18n.Msg("Terminal.NotAvailableInEnv"), 3*time.Second)
 	default:
-		vtui.FrameManager.HardRefresh()
+		if !vtui.FrameManager.DeclareSemanticSceneTransition() {
+			vtui.FrameManager.HardRefresh()
+		}
 	}
 	// The console always owns command input. Preserve the explicit panel-mode
 	// target so returning to search-first panels can hide the input again.

@@ -106,7 +106,7 @@ func paletteStyles(g Group) ([]string, error) {
 
 func compileHighlight(g Group, style string) (*Predicate, error) {
 	fields := g.Highlighting(style).Fields
-	for _, key := range []string{"Enabled", "Highlight.Enabled", "ContinueProcessing", "UseDefaults", "DateRelative"} {
+	for _, key := range []string{"Enabled", "Highlight.Enabled", "Highlight.ColorizeFileName", "ContinueProcessing", "UseDefaults", "DateRelative"} {
 		switch fields[key] {
 		case "", "true", "false", "0", "1":
 		default:

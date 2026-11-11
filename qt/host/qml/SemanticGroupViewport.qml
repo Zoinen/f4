@@ -25,10 +25,68 @@ Item {
     readonly property int semanticScroll: Number(widget.scrollTop || 0)
     readonly property var focused: widget.focused === true ? metrics.focusedWidget(widget.children || []) : null
     readonly property string focusedID: focused ? String(focused.id) : ""
-    readonly property var groups: widget.children || []
+    readonly property var wireGroups: widget.children || []
+    readonly property bool groupAppearance: !!widget.appearancePreview
+    readonly property real columnGap: hostWindow.snapPx(16)
+    readonly property bool twoColumns: groupAppearance && contentAreaWidth >= 680
+    readonly property real leftWidth: twoColumns
+        ? hostWindow.snapPx((contentAreaWidth - columnGap) / 2) : contentAreaWidth
+    readonly property real rightX: twoColumns ? leftWidth + columnGap : 0
+    readonly property bool pairedAssociations: groupAppearance && leftWidth >= 328
+    readonly property real associationGap: hostWindow.snapPx(10)
+    readonly property real associationWidth: hostWindow.snapPx((leftWidth - associationGap) / 2)
+    function isAssociation(group) {
+        return group.layoutRole === "association-regular" || group.layoutRole === "association-alternative"
+    }
+    readonly property var groups: {
+        if (!groupAppearance)
+            return wireGroups
+        const left = [], right = [], icons = []
+        let colors = []
+        for (const group of wireGroups) {
+            if (group.layoutRole === "filegroup-colors")
+                colors = (group.children || []).filter(control => control.colorMatrixCell === true)
+            else if (group.sectionID === "filegroup-Icons" || group.layoutRole === "filegroup-icons")
+                icons.push(Object.assign({}, group, {collapsible: false}))
+            else if (group.sectionID === "filegroup-Highlighting" || group.layoutRole === "filegroup-highlight")
+                right.push(Object.assign({}, group, {appearanceColumn: true, conditionColumn: true}))
+            else
+                left.push(Object.assign({}, group, {conditionColumn: true}))
+        }
+        right.splice(1, 0, Object.assign({}, widget.appearancePreview, {
+            appearanceColumn: true, previewRows: colors, iconGroups: icons
+        }))
+        return left.concat(right)
+    }
+    readonly property var appearancePlacement: {
+        if (!groupAppearance)
+            return {tops: [], height: 0}
+        const tops = []
+        let left = 0, right = 0
+        for (let i = 0; i < groups.length; ++i) {
+            const inRight = groups[i].appearanceColumn === true
+            if (inRight && !twoColumns && right === 0)
+                right = left
+            tops.push(inRight ? right : left)
+            const height = naturalHeightAt(i)
+            if (pairedAssociations && groups[i].layoutRole === "association-regular"
+                    && groups[i + 1] && groups[i + 1].layoutRole === "association-alternative") {
+                tops.push(left)
+                left += Math.max(height, naturalHeightAt(++i)) + associationGap
+            } else if (inRight)
+                right += height + hostWindow.snapPx(10)
+            else
+                left += height + hostWindow.snapPx(10)
+        }
+        return {tops: tops, height: Math.max(left, right)}
+    }
+    function naturalHeightAt(index) {
+        const row = rows.revision > 0 ? rows.itemAt(index) : null
+        return row && row.item ? row.item.naturalGroupHeight : 0
+    }
     readonly property var conditionPlacement: {
         const left = groups.findIndex(group => group.conditionColumn === true && group.x === widget.x)
-        if (left < 0)
+        if (groupAppearance || left < 0)
             return {tops: [], growth: 0, end: -1, shift: 0}
         let end = left + 1
         const tops = []
@@ -48,7 +106,8 @@ Item {
         return {tops: tops, growth: Math.max(0, bottom - leftBottom), end: end,
                 shift: bottom + hostWindow.snapPx(12) - nextTop}
     }
-    readonly property real contentHeight: Math.max(0, metrics.contentHeight + conditionPlacement.shift)
+    readonly property real contentHeight: groupAppearance ? appearancePlacement.height
+        : Math.max(0, metrics.contentHeight + conditionPlacement.shift)
 
     SemanticDialogLayout {
         id: metrics
@@ -68,7 +127,7 @@ Item {
         synchronizing = false
     }
     function commitScroll() {
-        if (synchronizing || maximumScroll <= 0 || semanticMaximum <= 0)
+        if (widget.localScrollOnly === true || synchronizing || maximumScroll <= 0 || semanticMaximum <= 0)
             return
         const value = Math.round(viewport.contentY / maximumScroll * semanticMaximum)
         if (nativeScrollOwner) {
@@ -100,6 +159,8 @@ Item {
         // Use the displayed geometry when condition groups have independent
         // row metrics and the semantic coordinates still describe the terminal.
         const item = content.findDialogControl(focusedID)
+        if (groupAppearance && !item)
+            return
         const top = item ? item.mapToItem(content, 0, 0).y + padding : padding + metrics.widgetTop(focused)
         const bottom = top + (item ? item.height : metrics.widgetHeight(focused))
         if (top < viewport.contentY || bottom > viewport.contentY + viewport.height) {
@@ -214,21 +275,30 @@ Item {
                     required property var labelData
                     required property int index
                     readonly property var placement: root.conditionPlacement
-                    y: placement.tops[index] !== undefined ? placement.tops[index] - metrics.widgetTop(widgetData)
+                    readonly property bool pairedAssociation: root.pairedAssociations && root.isAssociation(widgetData)
+                    x: root.groupAppearance && widgetData.appearanceColumn === true ? root.rightX
+                        : pairedAssociation && widgetData.layoutRole === "association-alternative"
+                            ? root.associationWidth + root.associationGap : 0
+                    y: root.groupAppearance ? (root.appearancePlacement.tops[index] || 0)
+                        : placement.tops[index] !== undefined ? placement.tops[index] - metrics.widgetTop(widgetData)
                         : placement.end >= 0 && index >= placement.end ? placement.shift : 0
-                    readonly property real availableWidth: Math.max(1, content.width - root.hostWindow.pxX(Number(widgetData.x || 0) - Number(root.widget.x || 0)))
-                    width: root.description || (widgetData.kind === "group" && widgetData.conditionColumn !== true)
+                    readonly property real availableWidth: root.groupAppearance
+                        ? (widgetData.appearanceColumn === true ? content.width - root.rightX
+                            : pairedAssociation ? root.associationWidth : root.leftWidth)
+                        : Math.max(1, content.width - root.hostWindow.pxX(Number(widgetData.x || 0) - Number(root.widget.x || 0)))
+                    width: root.groupAppearance ? availableWidth : root.description || (widgetData.kind === "group" && widgetData.conditionColumn !== true)
                         ? availableWidth : Math.min(root.hostWindow.pxW(widgetData.w || 1), availableWidth)
                     Component.onCompleted: setSource(Qt.resolvedUrl("SemanticWidgetDelegate.qml"), {
-                        "hostWindow": root.hostWindow,
-                        "widget": Qt.binding(() => childLoader.widgetData),
-                        "labelData": Qt.binding(() => childLoader.labelData),
-                        "dialogLayout": metrics,
-                        "groupBodyGrowth": Qt.binding(() => childLoader.widgetData.conditionColumn === true
+                            "hostWindow": root.hostWindow,
+                            "widget": Qt.binding(() => childLoader.widgetData),
+                            "labelData": Qt.binding(() => childLoader.labelData),
+                            "dialogLayout": metrics,
+                            "groupBodyGrowth": Qt.binding(() => childLoader.widgetData.conditionColumn === true
                             && childLoader.widgetData.x === root.widget.x ? childLoader.placement.growth : 0),
-                        "originX": Qt.binding(() => Number(root.widget.x || 0)),
-                        "originY": Qt.binding(() => Number(root.widget.y || 0) - 1),
-                        "maximumWidth": Qt.binding(() => childLoader.availableWidth)
+                            "originX": Qt.binding(() => Number((root.groupAppearance ? childLoader.widgetData : root.widget).x || 0)),
+                            "originY": Qt.binding(() => Number(root.widget.y || 0) - 1),
+                            "maximumWidth": Qt.binding(() => childLoader.availableWidth),
+                            "positionedByParent": Qt.binding(() => root.groupAppearance)
                     })
                 }
             }

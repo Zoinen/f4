@@ -87,7 +87,7 @@ func showAssociationPicker(pf *PanelsFrame, matches []FileAssoc, kind AssocKind)
 	// aligns vertically. Command preview follows with runewidth clipping.
 	descW := 0
 	for _, a := range matches {
-		w := runewidth.StringWidth(assocDisplayLabel(a))
+		w := runewidth.StringWidth(assocPickerLabel(a))
 		if w > descW {
 			descW = w
 		}
@@ -97,7 +97,7 @@ func showAssociationPicker(pf *PanelsFrame, matches []FileAssoc, kind AssocKind)
 	}
 
 	for i, a := range matches {
-		label := assocDisplayLabel(a)
+		label := assocPickerLabel(a)
 		labelPad := label
 		pad := descW - runewidth.StringWidth(label)
 		if pad > 0 {
@@ -157,6 +157,14 @@ func showAssociationPicker(pf *PanelsFrame, matches []FileAssoc, kind AssocKind)
 		return false
 	}
 	vtui.FrameManager.PushMenu(menu)
+}
+
+func assocPickerLabel(association FileAssoc) string {
+	label := assocDisplayLabel(association)
+	if association.SourceGroup != "" {
+		return fmt.Sprintf("%s [%s]", label, association.SourceGroup)
+	}
+	return label
 }
 
 // assocDisplayLabel picks the best label for a picker / list row:

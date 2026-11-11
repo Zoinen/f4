@@ -148,7 +148,7 @@ var cmdPromptMaxAttempts = 20
 // windowsShellPrompt marks the prompt start and end. The prompt end mark is
 // printed after $P$G, so the cursor position at its arrival is the position
 // the shell reads input from.
-const windowsShellPrompt = `$E]133;A$E\$P$G$E]133;B$E\`
+const windowsShellPrompt = `$E]133;` + terminal.CmdPromptStartMark + `$E\$P$G$E]133;` + terminal.CmdPromptEndMark + `$E\`
 
 // childInspector is implemented by terminal.PTY backends that can list the shell's
 // direct children. Backends that cannot are treated as having none.
@@ -282,7 +282,7 @@ func (s *cmdShellSession) close() {
 	s.mu.Unlock()
 }
 
-// childOwnsCommandMarks reports whether an OSC 133 C or D that just crossed
+// childOwnsCommandMarks reports whether an OSC 133 mark that just crossed
 // the local shell's output belongs to a console program running inside the
 // shell rather than to the shell. cmd.exe under the PROMPT f4 gives it prints
 // A and B only, and completion of a typed line is this session's to decide
@@ -311,7 +311,7 @@ func (s *cmdShellSession) childOwnsCommandMarks() bool {
 	if !heldByChild(children, inBatch) {
 		return false
 	}
-	vtui.DebugLog("CMD_SESSION: OSC 133 C/D printed by child %v, not by the shell; ignored", children)
+	vtui.DebugLog("CMD_SESSION: OSC 133 mark printed by child %v, not by the shell; ignored", children)
 	return true
 }
 

@@ -11,6 +11,7 @@ Item {
     property real viewportHeight: 0
     property int slotWriteCount: 0
     property bool nativeRows: false
+    property bool sparseRows: false
     property string nativeDocumentKey: ""
     property real nativeDocumentRevision: 0
     // Exactly one model belongs to this physical pool, even if its surface
@@ -69,7 +70,7 @@ Item {
 
     function ensureCapacity(capacity) {
         if (nativeRows) {
-            rowsModel.ensureCapacity(capacity)
+            rowsModel.ensureCapacity(capacity, sparseRows)
             return
         }
         while (rowsModel.count < capacity)
@@ -92,7 +93,7 @@ Item {
         const writes = nativeDocumentKey !== ""
             ? qtShell.surfaceRegistry.replaceDocumentWindow(rowsModel, nativeDocumentKey,
                 nativeDocumentRevision, start, previousStart, previousEnd,
-                forceReplacement === true, clearOutside === true)
+                forceReplacement === true, clearOutside === true, sparseRows)
             : rowsModel.replaceWindow(start, rows,
             previousStart, previousEnd, forceReplacement === true,
             clearOutside === true)

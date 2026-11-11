@@ -14,6 +14,7 @@ Item {
     property var frame: ({})
     property bool embedded: false
     property bool reportsNativeViewport: true
+    property bool retainNativeViewportWhenInactive: false
     property real nativeViewportHeight: -1
     // Use the owned timer so deferred work expires with this controller.
     onNativeViewportHeightChanged: controller.scheduleNativeViewportSync()
@@ -73,6 +74,8 @@ Item {
     readonly property alias rowsModel: windowPresenter.rowsModel
     readonly property bool middleAutoScrollActive:
         middleAutoScrollController.scrollingMode
+    readonly property bool terminalLocalScrollActive: terminalSurface
+        && (wheelGestureActive || middleAutoScrollActive)
     readonly property bool kineticActive:
         documentList.flicking || documentList.dragging
         || wheelAnimation.running || wheelGestureActive
@@ -145,7 +148,8 @@ Item {
         }
         if (!interactionActive
                 || (!terminalSurface && (embedded || !showsConsoleTopBar))) {
-            controller.clearNativeViewport()
+            if (!retainNativeViewportWhenInactive)
+                controller.clearNativeViewport()
             return
         }
         const target = hostWindow.cleanText(frame.id)
@@ -243,6 +247,11 @@ Item {
         return Number(extent || 0) + span >= contentExtent - 0.000001
     }
 
+    function terminalPositionReachesTail(y) {
+        return windowPresenter.terminalTailLoaded()
+                && y >= maximumLoadedY() - 0.001
+    }
+
     function setTerminalFollowTailIntent(followTail, notifyCore) {
         if (!terminalSurface)
             return
@@ -264,7 +273,7 @@ Item {
     function syncScrollBar() { windowPresenter.syncScrollBar() }
 
     function sendWindowRequest(extent, fraction, velocity,
-                               preserveLiveAnchor, forceRequest) {
+                               preserveLiveAnchor, forceRequest, inferFollowTail) {
         if (!interactionActive || !hasWindowProtocol)
             return false
         if (terminalSurface && contentExtentKnown && !terminalOverflow)
@@ -292,7 +301,8 @@ Item {
                                           : Number(frame.viewportStart || 0)
         const requestedFollowTail = terminalSurface
                 && (terminalFollowTailIntent
-                    || requestReachesContentEnd(target))
+                    || (!terminalLocalScrollActive && inferFollowTail !== false
+                        && requestReachesContentEnd(target)))
         const followStateChanged = terminalSurface
                 && requestedFollowTail !== semanticFrameFollowsTail()
         if (forceRequest !== true && Math.abs(target - current) < 0.000001
@@ -347,9 +357,10 @@ Item {
                                  pending.velocity, pending.preserveLiveAnchor, true)
     }
 
-    function maybeRequestWindow() {
+    function maybeRequestWindow(direction) {
         if (!interactionActive || rebasingWindow || frameWindowSyncPending
                 || windowRequestPending
+                || (terminalSurface && documentScrollBar.pressed)
                 || !hasWindowProtocol || !displayedRows
                 || displayedRows.length === 0)
             return
@@ -357,7 +368,10 @@ Item {
         const visibleRows = Math.max(
                     1, Math.ceil(documentList.height / rowHeight))
         const extraRows = Math.max(0, displayedRows.length - visibleRows)
-        const threshold = Math.max(2, Math.floor(extraRows / 4))
+        const motion = Math.sign(Number(direction || 0))
+        const terminalAutoScroll = terminalSurface && middleAutoScrollActive && motion !== 0
+        const threshold = terminalAutoScroll ? Math.ceil(visibleRows * 1.5)
+                                            : Math.max(2, Math.floor(extraRows / 4))
         const rowsBefore = state.index
         const rowsAfter = displayedRows.length - state.index - visibleRows
         // Prefetch eligibility belongs to the loaded window, not the visible
@@ -365,14 +379,22 @@ Item {
         // while the loaded window already starts at row 0. Treating row 2 as
         // "more content before" repeatedly asks Go for row 2; follow-tail
         // clamps that impossible request back to the same authoritative tail.
-        const windowAtStart = rowExtent(0, displayedRows) <= 0.000001
+        const windowAtStart = rowExtent(0, displayedRows) <= contentStart + 0.000001
         const windowAtEnd = contentExtentKnown && contentExtent > 0
                 && rowEndExtent(displayedRows.length - 1, displayedRows)
                    >= contentExtent - 0.000001
-        if ((rowsBefore <= threshold && !windowAtStart)
-                || (rowsAfter <= threshold && !windowAtEnd)) {
-            sendWindowRequest(state.extent, state.fraction,
-                              documentList.verticalVelocity)
+        if ((motion <= 0 && rowsBefore <= threshold && !windowAtStart)
+                || (motion >= 0 && rowsAfter <= threshold && !windowAtEnd)) {
+            // Go supplies one viewport on either side of the requested top.
+            // Aim ahead while keeping the current viewport in that reply.
+            const lead = terminalAutoScroll ? motion * Math.max(0, visibleRows - 2) : 0
+            const target = terminalAutoScroll
+                ? clamp(state.extent + lead, contentStart,
+                        Math.max(contentStart, contentExtent - visibleRows))
+                : state.extent
+            sendWindowRequest(target, state.fraction,
+                              documentList.verticalVelocity, true, false,
+                              !terminalSurface)
         }
     }
 
@@ -428,8 +450,20 @@ Item {
         middleAutoScrollDocumentKey = ""
         middleAutoScrollLayoutRevision = 0
         if (state !== null)
-            sendWindowRequest(state.extent, state.fraction, 0, true)
+            sendWindowRequest(state.extent, state.fraction, 0, true, false, !terminalSurface)
         return true
+    }
+
+    function moveTerminalMiddleScroll(y) {
+        const current = documentList.contentY
+        const minimum = minimumLoadedY()
+        const maximum = maximumLoadedY()
+        const target = clamp(y, minimum, maximum)
+        if (target !== current)
+            documentList.contentY = target
+        setTerminalFollowTailIntent(windowPresenter.terminalTailLoaded()
+                                   && target >= maximum - 0.001, true)
+        maybeRequestWindow(y - current)
     }
 
     function cancelPendingIntent() {
@@ -472,17 +506,30 @@ Item {
             const steps = Number(wheel.angleDelta.y || 0) / 120
             const base = wheelAnimation.running
                     ? wheelAnimation.to : documentList.contentY
-            wheelTarget = clamp(base - steps * rowHeight * 3, minY, maxY)
-            wheelAnimation.stop()
-            wheelAnimation.from = documentList.contentY
-            wheelAnimation.to = wheelTarget
-            wheelAnimation.restart()
+            animateWheelTo(clamp(base - steps * rowHeight * 3, minY, maxY))
         }
         if (terminalSurface) {
-            setTerminalFollowTailIntent(requestReachesContentEnd(
-                extentAtContentY(wheelTarget)), true)
+            setTerminalFollowTailIntent(terminalPositionReachesTail(wheelTarget), true)
         }
         wheel.accepted = true
+    }
+
+    function animateWheelTo(y) {
+        wheelTarget = y
+        if (wheelAnimation.running && Math.abs(wheelAnimation.to - y) < 0.001)
+            return
+        wheelAnimation.stop()
+        if (Math.abs(documentList.contentY - y) < 0.001)
+            return
+        wheelAnimation.from = documentList.contentY
+        wheelAnimation.to = y
+        wheelAnimation.restart()
+    }
+
+    function pauseWheelForWindowRebase() {
+        const destination = wheelAnimation.running ? extentAtContentY(wheelTarget) : -1
+        wheelAnimation.stop()
+        return destination
     }
 
     function scheduleFrameWindowSync() {
@@ -494,7 +541,29 @@ Item {
 
     function stopRequestWindowTimer() { requestWindowTimer.stop() }
     function scheduleWindowRequest() { requestWindowTimer.restart() }
-    function scheduleScrollBarRequest() { scrollBarRequestTimer.restart() }
+    function scheduleScrollBarRequest() {
+        if (!terminalSurface) {
+            scrollBarRequestTimer.restart()
+            return
+        }
+        if (queuedScrollBarPosition < 0)
+            return
+        // Loaded rows move in the mouse handler. Keep the final destination
+        // for release; if it leaves the loaded range, ask Go immediately.
+        const extent = scrollBarExtent(queuedScrollBarPosition)
+        const movedLocally = windowPresenter.moveToLoadedTerminalExtent(extent)
+        if (windowRequestPending || (documentScrollBar.pressed && movedLocally))
+            return
+        queuedScrollBarPosition = -1
+        sendWindowRequest(extent, extent - Math.floor(extent), 0, false, false, false)
+        syncScrollBar()
+    }
+
+    function viewportHeightChanged() {
+        scheduleNativeViewportSync()
+        if (terminalSurface && interactionActive)
+            scheduleFrameWindowSync()
+    }
 
     function stopMotion() {
         endMiddleAutoScroll(false)
@@ -514,22 +583,21 @@ Item {
                 return
             }
         }
+        if (terminalSurface && documentScrollBar.pressed)
+            return
         captureTopState()
         syncScrollBar()
-        if (middleAutoScrollActive && !rebasingWindow
+        if (middleAutoScrollActive && !terminalSurface && !rebasingWindow
                 && !frameWindowSyncPending) {
             // Autoscroll can outlive an IPC round trip. Send the first
             // destination immediately; while it is in flight,
             // sendWindowRequest keeps exactly one replaceable latest intent.
             const middleState = topState()
-            if (terminalSurface)
-                setTerminalFollowTailIntent(requestReachesContentEnd(middleState.extent), true)
             sendWindowRequest(middleState.extent, middleState.fraction,
                               0, true)
         }
-        if (terminalSurface
-                && (wheelGestureActive
-                    || documentList.dragging || documentList.flicking)) {
+        if (terminalSurface && !wheelGestureActive
+                && (documentList.dragging || documentList.flicking)) {
             const state = topState()
             setTerminalFollowTailIntent(
                         requestReachesContentEnd(state.extent), true)
@@ -546,15 +614,46 @@ Item {
             requestWindowTimer.restart()
     }
 
+    function scrollTerminalHistory(key) {
+        if (!interactionActive || !windowInitialized || !terminalOverflow
+                || !contentExtentKnown || documentScrollBar.pressed)
+            return
+        stopMotion()
+        wheelGestureActive = false
+        const visibleRows = documentList.height / rowHeight
+        const end = contentExtent - visibleRows
+        const current = queuedScrollBarPosition >= 0
+            ? scrollBarExtent(queuedScrollBarPosition)
+            : terminalFollowTailIntent ? end
+            : windowRequestPending ? requestedExtent + requestedFraction
+            : topState().extent
+        let target = current
+        const page = Math.max(1, Math.floor(visibleRows + 0.000001))
+        switch (key) {
+        case "Up": target -= 1; break
+        case "Down": target += 1; break
+        case "PgUp": target -= page; break
+        case "PgDown": target += page; break
+        case "Home": target = contentStart; break
+        case "End": target = end; break
+        }
+        target = clamp(target, contentStart, end)
+        queuedScrollBarPosition = (target - contentStart) / (contentExtent - contentStart)
+        setTerminalFollowTailIntent(target >= end - 0.000001, true)
+        scheduleScrollBarRequest()
+    }
+
     function scrollBarPositionChanged() {
         if (!documentScrollBar.pressed)
             return
-        if (terminalSurface) {
-            setTerminalFollowTailIntent(requestReachesContentEnd(
-                scrollBarExtent(documentScrollBar.position)), true)
-        }
+        if (terminalSurface && !interactionActive)
+            return
         queuedScrollBarPosition = documentScrollBar.position
-        scrollBarRequestTimer.restart()
+        if (terminalSurface) {
+            setTerminalFollowTailIntent(
+                queuedScrollBarPosition >= 1 - documentScrollBar.size - 0.000001, true)
+        }
+        scheduleScrollBarRequest()
     }
 
     function scrollBarExtent(position) {
@@ -562,8 +661,10 @@ Item {
     }
 
     function scrollBarPressedChanged() {
-        if (!documentScrollBar.pressed && queuedScrollBarPosition >= 0)
-            scrollBarRequestTimer.restart()
+        if (!documentScrollBar.pressed && queuedScrollBarPosition >= 0) {
+            scheduleScrollBarRequest()
+            captureTopState()
+        }
     }
 
     onFrameChanged: {
@@ -586,10 +687,11 @@ Item {
     }
     onInteractionActiveChanged: {
         if (interactionActive) {
-            scheduleNativeViewportSync()
+            viewportHeightChanged()
             return
         }
-        clearNativeViewport()
+        if (!retainNativeViewportWhenInactive)
+            clearNativeViewport()
         if (standaloneViewport)
             scheduleNativeViewportSync()
         stopMotion()
@@ -659,10 +761,11 @@ Item {
             const state = controller.topState()
             if (controller.terminalSurface) {
                 controller.setTerminalFollowTailIntent(
-                    controller.requestReachesContentEnd(state.extent), true)
+                    controller.terminalPositionReachesTail(controller.documentList.contentY), true)
             }
             if (!controller.sendWindowRequest(state.extent,
-                                               state.fraction, 0))
+                                               state.fraction, 0, true, false,
+                                               !controller.terminalSurface))
                 requestWindowTimer.restart()
         }
     }

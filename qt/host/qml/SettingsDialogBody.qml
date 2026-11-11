@@ -59,6 +59,7 @@ Item {
         if (widget.layoutRole === "content")
             return Object.assign({}, widget, {
                 nativeScrollOwner: sectionsOnly,
+                appearancePreview: groupAppearance ? editorPreview : null,
                 scrollbarContentGap: hostWindow.snapPx(16),
                 unscrolledRightInset: hasNavigation ? (wideHelp ? 2 * gap - helpGap : gap) : 0
             })
@@ -83,7 +84,8 @@ Item {
         return widget
     }
     readonly property var displayedWidgets: {
-        const fields = widgets.filter(widget => !isFooterButton(widget))
+        const fields = widgets.filter(widget => !isFooterButton(widget)
+            && !(groupAppearance && widget.layoutRole === "editor-preview"))
         return !fields.some(w => w.layoutRole === "footer-status")
             ? fields.concat([{id: "native-settings-status", kind: "text", text: "", layoutRole: "footer-status"}]) : fields
     }
@@ -154,7 +156,10 @@ Item {
     readonly property real helpWidth: hostWindow.snapPx(Math.min(280, mainWidth * .3))
     readonly property real helpHeight: hostWindow.snapPx(Math.min(112, Math.max(90, paneBottom * .22)))
     readonly property real contentStartY: hasNavigation ? gap : 0
-    readonly property bool hasEditorPreview: widgets.some(w => w.layoutRole === "editor-preview")
+    readonly property var editorPreview: widgets.find(w => w.layoutRole === "editor-preview")
+    readonly property bool groupAppearance: !!editorPreview && widgets.some(w =>
+        w.layoutRole === "content" && (w.children || []).some(group => group.sectionID === "filegroup-Highlighting"))
+    readonly property bool hasEditorPreview: !!editorPreview && !groupAppearance
     readonly property real editorPreviewHeight: hasEditorPreview ? hostWindow.snapPx(mainWidth < 560 ? 112 : 64) : 0
     readonly property real pageY: contentStartY + (hasEditorPreview ? editorPreviewHeight + gap : 0)
     readonly property real helpGap: hostWindow.snapPx(4)

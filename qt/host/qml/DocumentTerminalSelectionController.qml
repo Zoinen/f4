@@ -95,13 +95,8 @@ Item {
     }
 
     function rowDataAt(absoluteRow) {
-        const rows = viewportController.displayedRows
-        for (let index = 0; index < rows.length; ++index) {
-            if (Number((rows[index] || {}).visualRow || 0)
-                    === Number(absoluteRow))
-                return rows[index]
-        }
-        return null
+        const index = viewportController.indexForExtent(Number(absoluteRow))
+        return viewportController.committedRowAt(index)
     }
 
     function characterAt(text, index) {

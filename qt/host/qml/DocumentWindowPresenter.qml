@@ -69,10 +69,10 @@ Item {
     height: 0
 
     function sourceRows() {
-        if (frame.nativeWindowRows === true && frame.kind === "editor"
-                && Number(frame.viewportColumns || 0) > 0)
+        if (frame.nativeWindowRows === true && (terminalSurface
+                || (frame.kind === "editor" && Number(frame.viewportColumns || 0) > 0)))
             return qtShell.surfaceRegistry.documentWindowCoordinates(
-                documentKey, frame.nativeWindowRevision)
+                documentKey, frame.nativeWindowRevision, terminalSurface)
         if (frame.nativeWindowRows === true)
             return qtShell.surfaceRegistry.documentWindowRows(
                 documentKey, frame.nativeWindowRevision)
@@ -304,9 +304,15 @@ Item {
     function recenterRows(rows, extent, fraction, forceReplacement) {
         rowTextSuspended = false
         const source = rows || []
-        ensurePoolCapacity(rowPoolController.capacityFor(source))
-        const start = Math.max(0, Math.floor(
-                     (rowPoolController.count - source.length) / 2))
+        let start = 0
+        if (terminalSurface) {
+            start = rowExtent(0, source)
+            ensureTerminalCapacity(start + source.length)
+        } else {
+            ensurePoolCapacity(rowPoolController.capacityFor(source))
+            start = Math.max(0, Math.floor(
+                       (rowPoolController.count - source.length) / 2))
+        }
         if (nativeRowStorage) {
             // Replace occupied slots directly in this transaction. Clearing
             // them first tears down their text runs only to recreate them
@@ -338,7 +344,16 @@ Item {
             placeAtExtent(extent, fraction)
     }
 
-    function mergeRowsWithoutRebase(nextRows, retainLiveUnion) {
+    function ensureTerminalCapacity(end) {
+        if (end <= rowPoolController.count)
+            return
+        // A terminal row keeps its absolute index across window replies.
+        // Reserve indices in batches without allocating row data for them.
+        const batch = rowPoolController.capacityFor([])
+        ensurePoolCapacity(Math.ceil(end / batch) * batch)
+    }
+
+    function mergeRowsWithoutRebase(nextRows, retainLiveUnion, liveExtent) {
         if (!nextRows || nextRows.length === 0)
             return false
         if (!displayedRows || displayedRows.length === 0) {
@@ -356,6 +371,8 @@ Item {
 
         let nextStart = loadedSlotStart + oldIndex - nextIndex
         let nextEnd = nextStart + nextRows.length
+        if (terminalSurface)
+            ensureTerminalCapacity(nextEnd)
         if ((nextStart < 0 || nextEnd > rowPoolController.count)
                 && standaloneViewport && frame.kind === "editor"
                 && !documentList.moving && !coordinator.wheelGestureActive) {
@@ -375,6 +392,14 @@ Item {
         if (frame.kind !== "editor" && retainLiveUnion !== true
                 && Math.abs(oldIndex - nextIndex) > 5)
             return false
+
+        // Once the new window covers the visible rows, keep its overscan
+        // instead of letting each reply grow the union until the next rebase.
+        if (terminalSurface && coordinator.middleAutoScrollActive && retainLiveUnion) {
+            const end = liveExtent + documentList.height / rowHeight
+            retainLiveUnion = liveExtent < nextFirst
+                || end > rowEndExtent(nextRows.length - 1, nextRows)
+        }
 
         const unionStart = Math.min(loadedSlotStart, nextStart)
         const unionEnd = Math.max(loadedSlotEnd, nextEnd)
@@ -457,6 +482,53 @@ Item {
         return Math.max(minimumLoadedY(), bottom - documentList.height)
     }
 
+    function terminalTailLoaded() {
+        return terminalSurface && contentExtentKnown && displayedRows.length > 0
+                && rowEndExtent(displayedRows.length - 1) >= contentExtent
+    }
+
+    function positionTerminalTail() {
+        if (!terminalTailLoaded() || presentationFrame.altScreen === true
+                || !coordinator.terminalFollowTailIntent || coordinator.terminalLocalScrollActive)
+            return false
+        documentList.contentY = hostWindow.snapPx(maximumLoadedY())
+        coordinator.wheelTarget = documentList.contentY
+        return true
+    }
+
+    function resumeTerminalWheel(destination) {
+        if (destination < 0 || displayedRows.length === 0)
+            return
+        const extent = clamp(destination, rowExtent(0), rowExtent(displayedRows.length - 1))
+        const index = indexForExtent(extent)
+        if (index < 0)
+            return
+        const slot = loadedSlotStart + index
+        const y = modelCoordinateForIndex(slot)
+        const stride = modelCoordinateForIndex(slot + 1) - y
+        const target = y + (extent - rowExtent(index)) * stride
+        coordinator.animateWheelTo(clamp(target, minimumLoadedY(), maximumLoadedY()))
+    }
+
+    function moveToLoadedTerminalExtent(extent) {
+        if (!windowInitialized || displayedRows.length === 0 || rowHeight <= 0)
+            return false
+        const first = rowExtent(0)
+        const last = rowEndExtent(displayedRows.length - 1)
+        const viewportRows = documentList.height / rowHeight
+        if (extent < first - 0.000001 || extent + viewportRows > last + 0.000001)
+            return false
+        if (positionTerminalTail())
+            return true
+        const index = indexForExtent(extent)
+        if (index < 0)
+            return false
+        const slot = loadedSlotStart + index
+        const offset = (extent - rowExtent(index)) * rowHeight
+        documentList.contentY = hostWindow.snapPx(modelCoordinateForIndex(slot) + offset)
+        return true
+    }
+
     function frameReachesContentEnd() {
         if (!contentExtentKnown || contentExtent <= 0)
             return false
@@ -485,6 +557,7 @@ Item {
         // scroll request starts from the wrong extent.
         const followTailToActualViewport = terminalSurface
                 && coordinator.terminalFollowTailIntent
+                && !coordinator.terminalLocalScrollActive
                 && contentExtentKnown && contentExtent > 0 && rowHeight > 0
         let targetExtent = extent
         if (followTailToActualViewport) {
@@ -502,7 +575,8 @@ Item {
             fraction = clamp(targetExtent - start, 0, 0.999999)
         }
         const modelIndex = loadedSlotStart + index
-        if (frameReachesContentEnd() && !followTailToActualViewport) {
+        if (frameReachesContentEnd() && !followTailToActualViewport
+                && !coordinator.terminalLocalScrollActive) {
             const maxY = maximumLoadedY()
             const anchorY = modelCoordinateForIndex(modelIndex)
             if (maxY > anchorY) {
@@ -547,8 +621,9 @@ Item {
         const span = terminalSurface ? documentList.height / rowHeight
                                     : Math.max(0, visibleExtentSpan())
         documentScrollBar.size = clamp(span / extent, 0, 1)
-        documentScrollBar.position = clamp(
-                    (state.extent - contentStart) / extent, 0, 1 - documentScrollBar.size)
+        const end = 1 - documentScrollBar.size
+        documentScrollBar.position = terminalTailLoaded() && coordinator.terminalFollowTailIntent
+            ? end : clamp((state.extent - contentStart) / extent, 0, end)
     }
 
     function resetDocumentTransientState() {
@@ -672,7 +747,14 @@ Item {
         const pendingEmbeddedIntent = !standaloneViewport
                 && coordinator.pendingWindowIntent !== null
                 ? coordinator.pendingWindowIntent : null
-        if (terminalSurface && acknowledged)
+        const terminalLocalScroll = coordinator.terminalLocalScrollActive
+                && frame.altScreen !== true && !documentChanged
+        const keepTerminalAnchor = terminalSurface && acknowledged
+                && coordinator.requestPreservesLiveAnchor
+                && coordinator.queuedScrollBarPosition < 0 && frame.altScreen !== true
+                && indexForExtent(oldState.extent, nextRows) >= 0
+        if (terminalSurface && acknowledged && !terminalLocalScroll && !keepTerminalAnchor
+                && coordinator.queuedScrollBarPosition < 0)
             coordinator.setTerminalFollowTailIntent(coordinator.semanticFrameFollowsTail(), false)
         const viewportChanged = windowInitialized
                 && Number(frame.viewportStart || 0) !== lastViewportStart
@@ -681,6 +763,7 @@ Item {
             appliedWindowGeneration = generation
             appliedScrollLeft = Number(frame.scrollLeft || 0)
             appliedFrame = frame
+            positionTerminalTail()
             syncScrollBar()
             return
         }
@@ -705,9 +788,10 @@ Item {
                     && frame.viewportStart !== null
                     ? frame.viewportStart : coordinator.requestedExtent)
             targetFraction = matchesRequestedExtent ? coordinator.requestedFraction : 0
-            if (!viewportChanged && (kineticActive || coordinator.wheelGestureActive)
+            if (keepTerminalAnchor
+                || (!viewportChanged && (kineticActive || coordinator.wheelGestureActive)
                     && coordinator.requestPreservesLiveAnchor
-                && indexForExtent(oldState.extent, nextRows) >= 0) {
+                    && indexForExtent(oldState.extent, nextRows) >= 0)) {
                 targetExtent = oldState.extent
                 targetFraction = oldState.fraction
             }
@@ -716,7 +800,7 @@ Item {
             // request is acknowledged; sending a second request here would
             // leave the view pending forever because the test/app may not
             // publish another semantic window immediately.
-            if (pendingEmbeddedIntent !== null) {
+            if (pendingEmbeddedIntent !== null && !terminalLocalScroll) {
                 targetExtent = Number(pendingEmbeddedIntent.extent || 0)
                 targetFraction = Number(pendingEmbeddedIntent.fraction || 0)
             }
@@ -727,14 +811,19 @@ Item {
         rebasingWindow = true
         rowTextSuspended = false
         const rowsStartedMs = traceWindow ? Date.now() : 0
-        const keepLiveCoordinates = wasInitialized && !layoutChanged && kineticActive
-                && acknowledged && coordinator.requestPreservesLiveAnchor
+        const keepLiveCoordinates = wasInitialized && !layoutChanged
+                && (terminalLocalScroll || (kineticActive && acknowledged
+                                      && coordinator.requestPreservesLiveAnchor))
         const mergedOverlap = wasInitialized && !layoutChanged
-                && mergeRowsWithoutRebase(nextRows, keepLiveCoordinates)
-        if (!mergedOverlap)
+                && mergeRowsWithoutRebase(nextRows, keepLiveCoordinates, oldState.extent)
+        if (!mergedOverlap) {
+            const terminalWheel = terminalLocalScroll && coordinator.wheelGestureActive
+            const wheelDestination = terminalWheel ? coordinator.pauseWheelForWindowRebase() : -1
             recenterRows(nextRows, targetExtent, targetFraction,
                          standaloneViewport && (!wasInitialized || layoutChanged))
-        else if (!keepLiveCoordinates) {
+            if (terminalWheel)
+                resumeTerminalWheel(wheelDestination)
+        } else if (!keepLiveCoordinates) {
             placeAtExtent(targetExtent, targetFraction)
             documentList.forceLayout()
             if (standaloneViewport)
@@ -753,6 +842,7 @@ Item {
         rowTextSuspended = false
         rebasingWindow = false
         windowInitialized = true
+        positionTerminalTail()
         if (acknowledged) {
             coordinator.windowRequestPending = false
             coordinator.resumeVelocity = 0
@@ -791,8 +881,10 @@ Item {
         id: rowPoolController
         hostWindow: presenter.hostWindow
         nativeRows: presenter.nativeRowStorage
+        sparseRows: presenter.terminalSurface
         nativeDocumentKey: presenter.frame.nativeWindowRows === true
-                           && presenter.frame.kind === "editor" ? presenter.documentKey : ""
+                           && (presenter.terminalSurface || presenter.frame.kind === "editor")
+                           ? presenter.documentKey : ""
         nativeDocumentRevision: Number(presenter.frame.nativeWindowRevision || 0)
         rowHeight: presenter.rowHeight
         viewportHeight: presenter.documentList.height

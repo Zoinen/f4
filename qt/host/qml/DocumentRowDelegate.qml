@@ -45,6 +45,27 @@ Rectangle {
         }
     }
 
+    Loader {
+        id: separator
+        active: documentRow.loaded && documentRow.documentRoot.terminalSurface
+                && documentRow.hostWindow.showTerminalCommandSeparators
+                && !!documentRow.rowData.commandSeparator
+        y: documentRow.rowData.commandSeparator === "center"
+           ? (documentRow.height - height) / 2 : 0
+        width: documentRow.hostWindow.snapPx(documentRow.width)
+        height: 1 / documentRow.hostWindow.dpr
+        sourceComponent: Rectangle {
+            id: separatorLine
+            objectName: "terminalCommandSeparator"
+            color: documentRow.hostWindow.separatorColor
+            transform: Translate {
+                x: documentRow.documentRoot.pixelOffsetX(separatorLine)
+                y: documentRow.documentRoot.pixelOffsetY(separatorLine)
+            }
+            Accessible.ignored: true
+        }
+    }
+
     Row {
         id: runRow
         anchors.left: parent.left

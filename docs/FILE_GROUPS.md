@@ -15,7 +15,7 @@ creates another matching rule or another row for the same group:
 | Highlighting | Existing four-state colour cascade, continuation and `UseDefaults` |
 | Icons | First matching group with named artwork in the catalog, or an explicit override |
 | Sorting | First enabled matching sort group; unclassified files use `10000` |
-| Associations | All matching enabled named command sets, in group/command order |
+| Associations | Enabled commands for the invoked action, in group and command order |
 
 An icon-only group cannot stop another group's highlighting or associations.
 Directories and the parent row keep their navigation behaviour; association
@@ -36,6 +36,10 @@ appear first; evaluation and saved priority order are unchanged. Up/Down moves
 the selected row in the displayed direction. Type to search the list.
 Space/Insert mark preview rows, independently of the real panels' selection;
 cursor and marked states use the same four-state colour cascade as panels.
+
+In the group editor, each icon catalog offers **Automatic** (use the group
+artwork or generic override), **No icon**, and named icon choices. The Qt
+editor previews the effective choice and shows artwork next to each choice.
 
 The **Icons** selector changes only the editing/preview icon context. It does **not**
 change the application's saved icon theme, real panel icons or association context.
@@ -59,17 +63,17 @@ within one scope only. Cancel rolls back group edits, never the application's
 current icon theme.
 
 Enter, F4, double-click or Edit opens a separate group editor with one scrolling
-page and no category sidebar. Matching conditions, Highlighting, Icons, Sorting,
-Associations and Reset have separate headings with a rule to the right.
+page and no category sidebar. Sections appear in this order: Matching conditions,
+Associations, Visual appearance, Icons, and Sorting.
 Feature checkboxes sit in their section headings. Related controls appear in
 group boxes below, and disabled controls retain their values.
-Highlighting shows Normal and Marked in the left column and Cursor and Marked
-cursor in the right column when space allows. Each state has an editable color
-expression and its effective color sample. In Qt, Edit opens a color picker
-with independent text and background choices. Inherit leaves that component
-to the highlighting cascade. A separate pinned
-mini-panel shows all four states using the entire rule cascade and base palette,
-including the effective icon. It remains visible while properties scroll.
+In Qt, the group name and matching controls are in the left column. The right
+column combines appearance controls with a four-row preview of Normal, Marked,
+Cursor, and Marked cursor. The sample uses the full rule cascade and base
+palette. Each row's Edit button opens a picker for independent text and
+background colors. Inherit leaves that component to the highlighting cascade.
+Change icon opens the controls for all icon catalogs. The console keeps its
+pinned preview and text-based color fields.
 Invalid edits report an error and retain the last valid sample;
 the preview does not execute associations or compile masks while painting.
 The Group name checkbox enables the group and sits above the name editor.
@@ -80,10 +84,8 @@ groups with existing restrictions. Unchecked groups remain visible and keep
 their saved values and matching behavior. Mask syntax and case matching use
 single-selection button groups in the console and Qt. File name masks use a
 multiline field. Qt shows comma-delimited chips while the field is unfocused
-and wraps the original text while it is being edited. At wide sizes, Name
-occupies the left column with the matching buttons beneath the masks.
-Attributes, Size, and Date and time stack in the right column. Narrow dialogs
-stack the groups vertically.
+and wraps the original text while it is being edited. The matching buttons are below the masks. In Qt, Attributes, Size, and Date
+and time follow Name in the left column. Narrow dialogs stack the columns.
 
 The sections expose masks/dialect/case behaviour, required and
 excluded attributes, byte-size bounds, timestamp choice, absolute or relative
@@ -99,9 +101,12 @@ attribute, including extensionless programs. Neither rule is silently widened.
 The overview mentions a differing highlighting condition in its Conditions cell.
 Group order determines the cascade independently of the selected colour theme.
 
-The Applications list belongs to the selected group. Each named application has
-six independent enable bits and multiline command fields. The existing command
-substitutions and application chooser remain in use.
+Associations has separate command lists for Open (Enter), View (F3), Edit (F4),
+and their alternate actions. Add, name, enable, and reorder commands within
+each action. Every command belongs to the file group being edited. One match
+runs directly. When several enabled commands match across file groups, the
+chooser shows each command and its source group. Commands support multiple
+lines and the existing Far substitutions.
 
 Child OK merges edits into the Settings draft, without saving a file. Child
 Cancel/Escape discards only that child's changes. Cancelling a newly added group
@@ -110,7 +115,7 @@ discards remaining unapplied edits. Delete removes the group and its command
 sets, regardless of where it originated. It stays deleted after Apply and
 restart. Up/Down reorder only within the same scope.
 
-Use Ctrl+Backspace on a field, the Reset section, or More → Reset group to
+Use Ctrl+Backspace on a field or More → Reset group to
 copy the corresponding standard values. **Restore standard set**
 replaces the entire group list, order and command sets after confirmation.
 It changes the draft only: Apply saves it and Cancel restores the committed

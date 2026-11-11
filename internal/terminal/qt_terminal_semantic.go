@@ -70,10 +70,21 @@ func (tv *TerminalView) semanticLayoutUnsafe() terminalSemanticLayout {
 		wraps = nil
 	}
 	sourceActiveRows := min(tv.Height, len(buffer))
-	bottomOverlayRows := max(0, min(tv.semanticBottomOverlayRows,
-		sourceActiveRows))
+	bottomOverlayRows := max(0, min(tv.semanticBottomOverlayRows, sourceActiveRows))
+	activeOffset := tv.semanticActiveOffsetUnsafe(buffer, tv.UseAltScreen)
+	markedPrompt := !tv.UseAltScreen && tv.semanticCommandLineOwnsPrompt &&
+		tv.cmdPrompt != cmdPromptNone
+	// ConPTY can position the cursor on an empty row in a different read
+	// from the prompt marker. Treat that tail as provisional until it gets text.
+	emptyCmdTail := !tv.UseAltScreen && tv.semanticCommandLineOwnsPrompt &&
+		tv.OwnsCmdPrompt != nil && tv.hasCommandEcho && tv.CursorX == 0 &&
+		tv.CursorY >= 0 && tv.CursorY == sourceActiveRows-1-activeOffset &&
+		(tv.CursorY == 0 || !wraps[tv.CursorY-1]) && !tv.rowHasText(tv.CursorY)
+	if markedPrompt || emptyCmdTail {
+		bottomOverlayRows = min(1, sourceActiveRows)
+	}
 	layout := terminalSemanticLayout{
-		activeOffset:     tv.semanticActiveOffsetUnsafe(buffer, tv.UseAltScreen),
+		activeOffset:     activeOffset,
 		activeRows:       sourceActiveRows - bottomOverlayRows,
 		sourceActiveRows: sourceActiveRows,
 		buffer:           buffer,
@@ -88,7 +99,18 @@ func (tv *TerminalView) semanticLayoutUnsafe() terminalSemanticLayout {
 			// The idle prompt belongs to the command input, wherever the shell
 			// places it. A stale grid tail must not keep it visible above the
 			// row covered by the command input.
-			includedRows = min(includedRows, max(0, tv.CursorY))
+			promptRow := max(0, min(tv.CursorY, sourceActiveRows))
+			if markedPrompt || emptyCmdTail {
+				for promptRow > 0 && wraps[promptRow-1] {
+					promptRow--
+				}
+				// Keep cmd's spacer in the grid so the next command echo can
+				// reuse it as a separator. Omit it at the end of the Qt log.
+				if tv.hasCommandEcho && promptRow > 0 && !tv.rowHasText(promptRow-1) {
+					promptRow--
+				}
+			}
+			includedRows = min(includedRows, promptRow)
 		}
 		if layout.pieceRows+layout.historyRows > 0 {
 			// Padding the live grid would separate it from saved output. Keep
@@ -235,18 +257,20 @@ func (tv *TerminalView) semanticRowUnsafe(layout terminalSemanticLayout,
 		fragment := fragments[fragmentIndex]
 		row.Runs = tv.semanticPieceRunsUnsafe(fragment.ByteOffsetStart,
 			fragment.ByteOffsetEnd)
+		row.CommandSeparator = tv.pieceCommandSeparators[fragment.ByteOffsetStart]
 	case absoluteRow < layout.pieceRows+layout.historyRows:
 		index := absoluteRow - layout.pieceRows
-		row.Runs = semantic.RunsFromCells(terminalTrimmedCells(
-			tv.GridHistory[index], tv.Width))
+		row.Runs, row.CommandSeparator = terminalCellPresentation(tv.GridHistory[index], tv.Width)
 	default:
 		screenRow := absoluteRow - layout.pieceRows - layout.historyRows
 		index := screenRow - layout.activeOffset
 		if index < 0 || index >= len(layout.buffer) {
 			break
 		}
-		row.Runs = semantic.RunsFromCells(terminalTrimmedCells(
-			layout.buffer[index], tv.Width))
+		row.Runs, row.CommandSeparator = terminalCellPresentation(layout.buffer[index], tv.Width)
+		if layout.altScreen {
+			row.CommandSeparator = ""
+		}
 	}
 	row.LogicalRowStart, row.LogicalRowEnd, row.LogicalLine =
 		tv.semanticLogicalRowSpanUnsafe(layout, absoluteRow)
@@ -282,6 +306,20 @@ func (tv *TerminalView) SemanticModel(ctx *vtui.SemanticContext) *extui.Terminal
 func (tv *TerminalView) SemanticModelWithBottomOverlay(
 	_ *vtui.SemanticContext, bottomOverlayRows int,
 ) *extui.TerminalModel {
+	return tv.semanticModel(bottomOverlayRows, false)
+}
+
+// SemanticModelWithCommandLine excludes the native prompt as soon as cmd.exe
+// marks it, including the interval while command completion is settling.
+func (tv *TerminalView) SemanticModelWithCommandLine(visible, busy bool) *extui.TerminalModel {
+	bottomOverlayRows := 0
+	if visible && !busy {
+		bottomOverlayRows = 1
+	}
+	return tv.semanticModel(bottomOverlayRows, visible)
+}
+
+func (tv *TerminalView) semanticModel(bottomOverlayRows int, commandLineOwnsPrompt bool) *extui.TerminalModel {
 	tv.mu.Lock()
 	defer tv.mu.Unlock()
 
@@ -289,6 +327,7 @@ func (tv *TerminalView) SemanticModelWithBottomOverlay(
 		bottomOverlayRows = 0
 	}
 	tv.semanticBottomOverlayRows = max(0, bottomOverlayRows)
+	tv.semanticCommandLineOwnsPrompt = commandLineOwnsPrompt
 	layout := tv.semanticLayoutUnsafe()
 	viewportRows := tv.semanticViewportRows
 	if viewportRows <= 0 {

@@ -26,19 +26,19 @@ func TestFileGroupChildSinglePageContainsEverySection(t *testing.T) {
 				headers++
 			}
 		}
-		for _, section := range []string{"Conditions", "Highlighting", "Icons", "Sorting", "Associations", "Reset"} {
+		for _, section := range []string{"Conditions", "Associations", "Highlighting", "Icons", "Sorting"} {
 			if !seen["filegroup-"+section] {
 				t.Errorf("single page omits %s", section)
 			}
 		}
-		for _, id := range []string{"group.Name", "group.NormalColor", "group.Sort.Number", "collection:filegroups.commands"} {
-			if id == "collection:filegroups.commands" {
+		for _, id := range []string{"group.Name", "group.NormalColor", "group.Sort.Number", "collection:filegroups.action.Execute"} {
+			if id == "collection:filegroups.action.Execute" {
 				found := false
 				for _, row := range child.page.rows {
 					found = found || row.control != nil && row.control.GetId() == id
 				}
 				if !found {
-					t.Error("applications list missing from single page")
+					t.Error("Open command list missing from single page")
 				}
 			} else if !fields[id] {
 				t.Errorf("single page omits %s", id)
@@ -52,7 +52,7 @@ func TestFileGroupChildSinglePageContainsEverySection(t *testing.T) {
 	if child.page.total <= child.page.Y2-child.page.Y1+1 {
 		t.Fatal("long property page does not scroll")
 	}
-	for _, section := range []string{"Highlighting", "Icons", "Sorting", "Associations", "Reset", "Conditions"} {
+	for _, section := range []string{"Associations", "Highlighting", "Icons", "Sorting", "Conditions"} {
 		child.selectCategory("filegroup-" + section)
 		assertSections()
 	}
@@ -89,8 +89,9 @@ func TestFileGroupChildSinglePageSemanticChromeAndPinnedPreview(t *testing.T) {
 	if len(page) == 0 || page["scrollable"] != true || len(sample) == 0 || sample["fileGroupSample"] != true {
 		t.Fatal("missing scrollable page or pinned preview")
 	}
+	roles := map[string]int{}
 	var sections []string
-	icons := []string{"list-checks", "palette", "images", "arrow-down-a-z", "plug", "rotate-ccw"}
+	icons := []string{"list-checks", "plug", "palette", "images", "arrow-down-a-z"}
 	boxes := map[string][]string{}
 	for i, entry := range semantic.AppMapSlice(page["children"]) {
 		if i == 0 {
@@ -99,6 +100,7 @@ func TestFileGroupChildSinglePageSemanticChromeAndPinnedPreview(t *testing.T) {
 			}
 			continue
 		}
+		roles[semantic.String(entry["layoutRole"])]++
 		title := semantic.String(entry["title"])
 		if entry["layoutRole"] == "section-header" {
 			if i := len(sections); i >= len(icons) || entry["iconName"] != icons[i] {
@@ -109,7 +111,7 @@ func TestFileGroupChildSinglePageSemanticChromeAndPinnedPreview(t *testing.T) {
 				t.Fatalf("%s section header is framed", title)
 			}
 			hasToggle := entry["headerControl"] != nil
-			if hasToggle != (title != "Matching conditions" && title != "Reset") {
+			if hasToggle != (title != "Matching conditions") {
 				t.Fatalf("unexpected checkbox state in %s: %v", title, hasToggle)
 			}
 			continue
@@ -120,15 +122,22 @@ func TestFileGroupChildSinglePageSemanticChromeAndPinnedPreview(t *testing.T) {
 		section := sections[len(sections)-1]
 		boxes[section] = append(boxes[section], title)
 	}
-	if !slices.Equal(sections, []string{"Matching conditions", "Highlighting", "Icons", "Sorting", "Associations", "Reset"}) {
+	if roles["filegroup-colors"] != 1 || roles["filegroup-highlight"] == 0 || roles["filegroup-icons"] == 0 {
+		t.Fatalf("missing appearance roles: %v", roles)
+	}
+	if !slices.Equal(sections, []string{"Matching conditions", "Associations", "Visual appearance", "Icons", "Sorting"}) {
 		t.Fatalf("section headings = %v", sections)
 	}
 	if got := boxes["Matching conditions"]; !slices.Equal(got, []string{"Name", "Attributes", "Size", "Date and time"}) {
 		t.Fatalf("matching condition group headings = %v", got)
 	}
+	if !slices.Contains(boxes["Visual appearance"], "Appearance rules") {
+		t.Fatalf("Visual appearance boxes = %v", boxes["Visual appearance"])
+	}
+
 	for section, expected := range map[string]string{
-		"Highlighting": "Colors", "Icons": "Artwork",
-		"Sorting": "Sort priority", "Associations": "Applications", "Reset": "Restore standard values",
+		"Visual appearance": "Colors", "Icons": "Artwork",
+		"Sorting": "Sort priority", "Associations": "Open (Enter)",
 	} {
 		if !slices.Contains(boxes[section], expected) {
 			t.Errorf("%s boxes %v omit %s", section, boxes[section], expected)
@@ -156,7 +165,7 @@ func TestFileGroupSectionCollapsePreservesDraftAndReflows(t *testing.T) {
 	child := view.childEditor(0)
 	defer child.sessions[0].draft.Close()
 	child.SetPosition(0, 0, 149, 39)
-	for _, section := range []string{"Conditions", "Highlighting", "Icons", "Sorting", "Associations", "Reset"} {
+	for _, section := range []string{"Conditions", "Associations", "Highlighting", "Icons", "Sorting"} {
 		category := "filegroup-" + section
 		target := child.page.sectionID(category)
 		toggle := map[string]any{"target": target, "action": "control.toggleSection"}

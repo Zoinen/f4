@@ -816,7 +816,7 @@ func (cb *ComboBox) SemanticNode(ctx *SemanticContext) map[string]any {
 	if cb.Menu != nil {
 		for i, item := range cb.Menu.Items {
 			clean, hotkey, _ := ParseAmpersandString(item.AccentPrefix + item.Text)
-			items = append(items, map[string]any{
+			row := map[string]any{
 				"index":     i,
 				"text":      clean,
 				"rawText":   item.AccentPrefix + item.Text,
@@ -824,7 +824,11 @@ func (cb *ComboBox) SemanticNode(ctx *SemanticContext) map[string]any {
 				"shortcut":  item.Shortcut,
 				"command":   item.Command,
 				"separator": item.Separator,
-			})
+			}
+			if len(item.Details) > 0 {
+				row["details"] = item.Details
+			}
+			items = append(items, row)
 		}
 	}
 

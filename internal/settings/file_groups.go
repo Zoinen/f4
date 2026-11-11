@@ -154,9 +154,10 @@ func (fileGroupsProvider) Catalog() f4settings.Catalog {
 		groupField("SelectedColor", "Selected file color", "Independent color expression for marked files.", f4settings.Color),
 		groupField("CursorColor", "Cursor color", "Independent color expression for the focused file.", f4settings.Color),
 		groupField("SelectedCursorColor", "Selected cursor color", "Independent color expression for a marked focused file.", f4settings.Color),
-		groupField("Mark", "File name marker", "Optional text or glyph before the file name.", f4settings.String),
+		groupField("Mark", "Visual prefix", "Text or a symbol shown before matching file names in the panel.", f4settings.String),
 		groupField("ContinueProcessing", "Continue highlighting", "Continue the existing color cascade after this rule matches.", f4settings.Boolean),
 		groupField("UseDefaults", "Override attribute defaults", "Preserve existing Directory/Hidden/Symlink/Junction override precedence.", f4settings.Boolean),
+		groupField("Highlight.ColorizeFileName", "Colorize file name", "Apply the group’s text color to matching file names in Qt panels.", f4settings.Boolean),
 		groupField("Icons.Enabled", "Enable icons", "Use the theme artwork named after this group. Optional overrides are independent of colors and commands.", f4settings.Boolean),
 		groupField("OverrideNativeIcon", "Override native/plugin icon", "Off by default. Native OS lookup is used only in the Native icon theme.", f4settings.Boolean),
 		groupField("Icon.*", "Any-theme icon", "asset:<name>, file:<path>, native:<name>, or none. A theme-specific choice takes precedence within this group.", f4settings.String),
@@ -207,7 +208,10 @@ func (fileGroupsProvider) Catalog() f4settings.Catalog {
 			field.Kind = f4settings.ChoiceKind
 			field.AllowCustom = true
 			field.ChoicePresentation = "dropdown"
-			field.Choices = []f4settings.Choice{{Value: "", Label: f4settings.Text{English: "No explicit icon"}}}
+			field.Choices = []f4settings.Choice{
+				{Value: "", Label: f4settings.Text{English: "Automatic"}},
+				{Value: "none", Label: f4settings.Text{English: "No icon"}},
+			}
 			for _, asset := range theme.Assets {
 				field.Choices = append(field.Choices, f4settings.Choice{Value: "asset:" + asset, Label: f4settings.Text{English: asset, Literal: true}})
 			}
@@ -215,13 +219,6 @@ func (fileGroupsProvider) Catalog() f4settings.Catalog {
 		fields = append(fields, field)
 	}
 	groups := recordCollection("filegroups", "filegroups", "File groups", "Independent highlighting, icons, sorting and application associations. Changes preview live; Apply saves.", "group.Name", fields)
-	commands := recordCollection("filegroups.commands", "filegroups", "Applications", "Ordered named command sets belonging to the selected file group.", "command.Name", nil)
-	commands.Fields = append(commands.Fields,
-		recordField("command.Group", "File group", "The stable identity of the owning file group.", f4settings.ChoiceKind),
-		recordField("command.Name", "Application name", "Shown when several applications match.", f4settings.String))
-	for _, slot := range filegroups.CommandNames {
-		commands.Fields = append(commands.Fields, recordField("command."+slot+".Enabled", "Enable "+slot, "Commands execute only after Apply.", f4settings.Boolean), recordField("command."+slot, slot+" command", "Existing Far user-menu substitutions are preserved. Multiline commands round-trip without changing Windows paths.", f4settings.Multiline))
-	}
 	groups.Actions = []f4settings.RecordCommand{{ID: "filegroups.reset", Label: f4settings.Text{English: "Reset group"}, Description: f4settings.Text{English: "Restore standard fields where available, otherwise clear the group's features."}, Run: func(_ context.Context, r f4settings.Record) (map[string]string, error) {
 		values := maps.Clone(r.Values)
 		for _, f := range fields {
@@ -247,7 +244,7 @@ func (fileGroupsProvider) Catalog() f4settings.Catalog {
 		}
 		return values, nil
 	}}}
-	return f4settings.Catalog{ID: "core.filegroups", Fields: diagnostic, Categories: []f4settings.Category{{ID: "filegroups", Label: f4settings.Text{English: "File groups"}}}, Collections: []f4settings.Collection{groups, commands}}
+	return f4settings.Catalog{ID: "core.filegroups", Fields: diagnostic, Categories: []f4settings.Category{{ID: "filegroups", Label: f4settings.Text{English: "File groups"}}}, Collections: []f4settings.Collection{groups}}
 }
 
 func currentFileGroupStore() filegroups.Store {

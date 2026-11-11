@@ -3,18 +3,19 @@
 package app
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
 	"github.com/unxed/f4/internal/config"
 	"github.com/unxed/f4/internal/panel"
-	"testing"
-
 	"github.com/unxed/f4/internal/terminal"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
-	"os"
-	"path/filepath"
-	"strings"
-	"time"
 )
 
 // startLocalConPTY brings up a panel.PanelsFrame on a real ConPTY and waits until
@@ -188,6 +189,69 @@ func TestActionExecuteBatchExitRestartsShell(t *testing.T) {
 		t.Fatal("the fresh shell reports busy at its prompt")
 	}
 	t.Logf("panels returned and the shell was replaced in %v", time.Since(start))
+}
+
+func TestLocalConPTYResizePreservesCompletedOutput(t *testing.T) {
+	pf := startLocalConPTY(t)
+	defer pf.Close()
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Keep cmd's directory prefix and each test command on one physical row.
+	width := 2*len(cwd) + 100
+	pf.ResizeConsole(width, 25)
+
+	run := func(command, finalLine string) {
+		t.Helper()
+		pf.CmdLine.Edit.SetText(command)
+		pf.ProcessKey(&vtinput.InputEvent{
+			Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN,
+		})
+		deadline := time.Now().Add(8 * time.Second)
+		for {
+			drainFrameTasks()
+			if !pf.Executing && strings.Contains(string(pf.TermView.GetAllLogBytes()), "\n"+finalLine+"\n") {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("command %q did not finish with %q", command, finalLine)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+
+	const lines = 120
+	run("for /L %i in (1,1,120) do @echo F4_RESIZE_%i_END", "F4_RESIZE_120_END")
+	before := string(pf.TermView.GetAllLogBytes())
+	wantLines := map[string]int{}
+	for i := 1; i <= lines; i++ {
+		line := fmt.Sprintf("\nF4_RESIZE_%d_END\n", i)
+		if count := strings.Count(before, line); count > 0 {
+			wantLines[line] = count
+		}
+	}
+	if len(wantLines) <= 24 {
+		t.Fatalf("fixture did not fill scrollback: got %d output lines", len(wantLines))
+	}
+	t.Logf("checking %d retained output lines", len(wantLines))
+	checkHistory := func(stage string) {
+		t.Helper()
+		log := string(pf.TermView.GetAllLogBytes())
+		for line, want := range wantLines {
+			if count := strings.Count(log, line); count != want {
+				t.Fatalf("%s: found %d copies of %q, want %d", stage, count, strings.TrimSpace(line), want)
+			}
+		}
+	}
+	for _, size := range [][2]int{{width + 12, 150}, {width + 12, 18}, {width, 38}, {width, 25}} {
+		pf.ResizeConsole(size[0], size[1])
+		checkHistory(fmt.Sprintf("immediately after resize to %dx%d", size[0], size[1]))
+		probe := fmt.Sprintf("F4_AFTER_%d_%d", size[0], size[1])
+		run("echo "+probe, probe)
+		checkHistory(fmt.Sprintf("after ConPTY output at %dx%d", size[0], size[1]))
+	}
 }
 
 func TestLocalConPTYHistoryKeepsStartupBeforeCommands(t *testing.T) {

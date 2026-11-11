@@ -265,9 +265,11 @@ type frameManager struct {
 	currentPostedTask *postedTaskExecution
 	inputUpdateActive bool
 	inputUnchanged    bool
-	benchmarkTaskSeq  atomic.Uint64
-	EventChan         chan *vtinput.InputEvent
-	EventFilter       func(*vtinput.InputEvent) bool
+
+	semanticTransitionDeclared bool
+	benchmarkTaskSeq           atomic.Uint64
+	EventChan                  chan *vtinput.InputEvent
+	EventFilter                func(*vtinput.InputEvent) bool
 	// needsRender is set from background goroutines as well as the UI one --
 	// Redraw is part of the public surface and the toast timer calls it while
 	// the render loop is reading this same flag -- so it cannot be a plain
@@ -2860,14 +2862,25 @@ func (fm *frameManager) publishSemanticMenuState() bool {
 	})
 }
 
+// DeclareSemanticSceneTransition requests immediate semantic publication for
+// an input that changes the active surface without replacing its frame.
+func (fm *frameManager) DeclareSemanticSceneTransition() bool {
+	if !fm.inputUpdateActive || fm.scr == nil {
+		return false
+	}
+	_, supported := fm.scr.Renderer.(SemanticSceneTransitionRenderer)
+	fm.semanticTransitionDeclared = supported
+	return supported
+}
+
 func (fm *frameManager) publishSemanticSceneTransition(
 	before semanticMenuInputState,
 ) bool {
 	if fm == nil || fm.scr == nil || fm.scr.Renderer == nil {
 		return false
 	}
-	after := fm.semanticMenuInputState()
-	if semanticMenuNonMenuStackEqual(before, after) {
+	if !fm.semanticTransitionDeclared &&
+		semanticMenuNonMenuStackEqual(before, fm.semanticMenuInputState()) {
 		return false
 	}
 	renderer, ok := fm.scr.Renderer.(SemanticSceneTransitionRenderer)
@@ -3780,13 +3793,18 @@ func (fm *frameManager) dispatchEventWithPaste(ev *vtinput.InputEvent, is_inject
 	fm.semanticMenuDeclared = false
 	previousInputUpdateActive := fm.inputUpdateActive
 	previousInputUnchanged := fm.inputUnchanged
+	previousTransitionDeclared := fm.semanticTransitionDeclared
+	fm.semanticTransitionDeclared = false
 	fm.inputUpdateActive = true
 	fm.inputUnchanged = false
 	semanticInputUnchanged := false
 	endSemanticUpdate := fm.beginSemanticSceneUpdate()
 	defer func() {
 		fm.finishSemanticMenuInput(menuStateBefore, ev)
-		fm.publishSemanticSceneTransition(menuStateBefore)
+		if !fm.publishSemanticSceneTransition(menuStateBefore) && fm.semanticTransitionDeclared {
+			fm.HardRefresh()
+		}
+		fm.semanticTransitionDeclared = previousTransitionDeclared
 		fm.publishDeclaredSemanticInputUnchanged(menuStateBefore)
 		fm.inputUpdateActive = previousInputUpdateActive
 		fm.inputUnchanged = previousInputUnchanged

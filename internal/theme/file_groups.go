@@ -69,6 +69,7 @@ func (fh *FileHighlighter) LoadFileGroups(snapshot *filegroups.Snapshot) error {
 		rule := parsed[0]
 		rule.SourceRevision = snapshot.Revision()
 		rule.RuleID = group.ID
+		rule.ColorizeFileName = group.Fields["Highlight.ColorizeFileName"] == "true" || group.Fields["Highlight.ColorizeFileName"] == "1"
 		rule.Condition = condition
 		// The compiled predicate owns mask/case semantics, including Far masks.
 		rule.Masks = nil

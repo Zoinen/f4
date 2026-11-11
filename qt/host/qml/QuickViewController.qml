@@ -13,7 +13,7 @@ Item {
     readonly property var view: {
         const candidate = views.length ? views[0] : ({})
         const sideVisible = Number(candidate.side) === 0 ? shell.showLeftPanel !== false : shell.showRightPanel !== false
-        return shell.showPanels !== false && sideVisible && !shell.terminalActive ? candidate : ({})
+        return hostWindow.embeddedPanelsShown && sideVisible && !hostWindow.embeddedTerminalShown ? candidate : ({})
     }
     readonly property var sourceHost: view.id ? hostWindow.galleryPanelHost(Number(view.sourceSide)) : null
     readonly property var sourceGallery: sourceHost ? sourceHost.galleryPanel : null

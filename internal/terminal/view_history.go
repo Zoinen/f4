@@ -4,6 +4,7 @@ import (
 	"github.com/unxed/f4/internal/piecetable"
 	"github.com/unxed/f4/internal/textlayout"
 	"github.com/unxed/vtui"
+	"maps"
 )
 
 // CloneHistoryFrom copies primary-screen output into a fresh terminal before
@@ -27,6 +28,8 @@ func (tv *TerminalView) CloneHistoryFrom(other *TerminalView, omitPrompt bool) {
 	tv.Engine = textlayout.NewWrapEngine(tv.Pt, tv.Li)
 	tv.Engine.SetWidth(tv.Width)
 	tv.styles = append([]StyleChange(nil), other.styles...)
+	tv.pieceCommandSeparators = maps.Clone(other.pieceCommandSeparators)
+	tv.hasCommandEcho = other.hasCommandEcho
 	tv.lastAttr = other.lastAttr
 	tv.Palette = other.Palette
 

@@ -3,9 +3,13 @@ package panel
 import (
 	"github.com/unxed/f4/internal/plughost"
 	"github.com/unxed/f4/internal/semantic"
+	"github.com/unxed/f4/internal/terminal"
 	"github.com/unxed/f4/internal/testutil"
+	"github.com/unxed/f4/sdk/extui"
 	"github.com/unxed/vtui"
+	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -160,6 +164,84 @@ drained:
 		t.Fatal("cancelled stream timer published a stale terminal frame")
 	case <-time.After(2 * terminalOutputRedrawInterval):
 	}
+}
+
+func TestPanelsFrame_TerminalCommandOutputBatchesEchoWithFastOutput(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+		defer vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+		select {
+		case <-vtui.FrameManager.RedrawChan:
+		default:
+		}
+		vtui.SetDefaultPalette()
+		view := terminal.NewTerminalView(80, 24)
+		defer view.Close()
+		view.OwnsCmdPrompt = func() bool { return true }
+		frame := &PanelsFrame{TermView: view, Parser: terminal.NewAnsiParser(view, nil)}
+		defer frame.closeTerminalOutputRedraw()
+		const prompt = "\x1b]133;A;f4-cmd\x1b\\C:\\Test>\x1b]133;B;f4-cmd\x1b\\"
+		frame.Parser.Process([]byte(prompt))
+		line := &extui.CommandLineModel{Visible: true}
+		history := func() string {
+			var out strings.Builder
+			for _, row := range frame.terminalSemanticModel(line, true).WindowRows {
+				for _, run := range row.Runs {
+					out.WriteString(run.Text)
+				}
+				out.WriteByte('\n')
+			}
+			return out.String()
+		}
+		baseline := frame.terminalSemanticModel(line, false).ContentExtent
+		frame.batchTerminalCommandOutput()
+		view.ExpectCommandEcho()
+		frame.displayLocalOutput(true, []byte("\x1b]0;cmd.exe - echo fast\x07echo fast\r\n"))
+		if text := history(); strings.Contains(text, "echo fast") {
+			t.Fatalf("another UI redraw exposed the standalone command echo: %q", text)
+		}
+		time.Sleep(5 * time.Millisecond)
+		frame.displayLocalOutput(true, []byte("fast\r\n\r\n"+prompt))
+		if got := frame.terminalSemanticModel(line, true).ContentExtent; got != baseline {
+			t.Fatalf("batch published early, extent %d, want %d", got, baseline)
+		}
+		select {
+		case <-vtui.FrameManager.RedrawChan:
+			t.Fatal("the echo or fast output requested a standalone redraw")
+		default:
+		}
+		time.Sleep(terminalOutputRedrawInterval)
+		synctest.Wait()
+		select {
+		case <-vtui.FrameManager.RedrawChan:
+		default:
+			t.Fatal("the batch never requested a redraw")
+		}
+		if text := history(); !strings.Contains(text, "C:\\Test>echo fast\nfast\n") {
+			t.Fatalf("the first published history missed echo or output: %q", text)
+		}
+
+		frame.batchTerminalCommandOutput()
+		view.ExpectCommandEcho()
+		frame.displayLocalOutput(true, []byte("slow-command\r\n"))
+		time.Sleep(terminalOutputRedrawInterval)
+		synctest.Wait()
+		if text := history(); !strings.Contains(text, "C:\\Test>slow-command\n") {
+			t.Fatalf("the slow command echo was held beyond the initial batch: %q", text)
+		}
+		frame.displayLocalOutput(true, []byte("first chunk\r\n"))
+		time.Sleep(terminalOutputRedrawInterval)
+		synctest.Wait()
+		if text := history(); !strings.Contains(text, "first chunk\n") {
+			t.Fatalf("streaming output was not published while the command was running: %q", text)
+		}
+
+		frame.batchTerminalCommandOutput()
+		frame.displayLocalOutput(true, []byte("\x1b[?1049hinteractive"))
+		if model := frame.terminalSemanticModel(line, true); !model.AltScreen {
+			t.Fatal("alternate-screen transition was held by the batch")
+		}
+	})
 }
 
 type terminalPresentationRecorder struct {

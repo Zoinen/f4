@@ -15,6 +15,8 @@ private slots:
     void unchangedStateDoesNotInvalidateBindings();
     void surfaceRegistryRejectsCatalogPayloads();
     void compactShellUpdatesPreserveProjection();
+    void terminalTogglePreservesPanelProjection();
+    void terminalScrollUpdatesOnlyTheWindow();
     void overlayUpdatesDoNotInvalidateSurfaces();
     void staleDialogRevisionDoesNotRestoreOlderGeometry();
     void overlayRevisionIsPublishedAfterDialogPayload();
@@ -166,6 +168,69 @@ void ShellStateStoreTests::compactShellUpdatesPreserveProjection()
     registry.applyCompactShell(shell, 3);
     QCOMPARE(changes.size(), 1);
     QCOMPARE(registry.shell(), shell);
+}
+
+void ShellStateStoreTests::terminalTogglePreservesPanelProjection()
+{
+    SurfaceRegistry registry;
+    QVariantMap shell{{"id", "workspace"}, {"terminalActive", false},
+                      {"showPanels", true}, {"mode", "panels"}};
+    registry.applyShell(shell, 1);
+    QSignalSpy shellChanges(&registry, &SurfaceRegistry::shellChanged);
+    QSignalSpy terminalChanges(&registry, &SurfaceRegistry::terminalPresentationChanged);
+    shell["terminalActive"] = true;
+    shell["showPanels"] = false;
+    shell["mode"] = "terminal";
+    shell["terminal"] = QVariantMap{{"id", "log"}};
+    registry.applyShell(shell, 2, true);
+    QCOMPARE(shellChanges.size(), 0);
+    QCOMPARE(terminalChanges.size(), 1);
+    QCOMPARE(registry.shell(), shell);
+
+    shell["wide"] = true;
+    registry.applyShell(shell, 3, true);
+    QCOMPARE(shellChanges.size(), 1);
+    QCOMPARE(terminalChanges.size(), 1);
+}
+
+void ShellStateStoreTests::terminalScrollUpdatesOnlyTheWindow()
+{
+    SurfaceRegistry registry;
+    const QVariantMap row{{"visualRow", 4}, {"text", "command output"}};
+    QVariantMap terminal{{"id", "log"}, {"altScreen", false}, {"windowGeneration", 1},
+                         {"scrollUnit", "rows"}, {"windowRows", QVariantList{row}}};
+    QVariantMap shell{{"id", "workspace"}, {"terminalActive", true}, {"terminal", terminal}};
+    registry.applyShell(shell, 1);
+    const auto previousPublication = registry.terminalMetadata().value("nativeWindowRevision").toULongLong();
+    QSignalSpy shellChanges(&registry, &SurfaceRegistry::shellChanged);
+    QSignalSpy presentationChanges(&registry, &SurfaceRegistry::terminalPresentationChanged);
+    QSignalSpy windowChanges(&registry, &SurfaceRegistry::terminalWindowChanged);
+
+    terminal["windowGeneration"] = 2;
+    shell["terminal"] = terminal;
+    registry.applyShell(shell, 2);
+    QCOMPARE(shellChanges.size(), 0);
+    QCOMPARE(presentationChanges.size(), 0);
+    QCOMPARE(windowChanges.size(), 1);
+    const auto metadata = windowChanges.constFirst().constFirst().toMap();
+    QCOMPARE(metadata.value("windowGeneration"), 2);
+    QVERIFY(!metadata.contains("windowRows"));
+    QVERIFY(metadata.value("nativeWindowRows").toBool());
+    const auto publication = metadata.value("nativeWindowRevision").toULongLong();
+    QVERIFY(!registry.documentWindowCoordinates("log", previousPublication, true).isValid());
+    QCOMPARE(registry.documentWindowCoordinates("log", publication, true).toList(), QVariantList{4});
+    DocumentRowsModel rows;
+    rows.ensureCapacity(8, true);
+    QCOMPARE(registry.replaceDocumentWindow(&rows, "log", publication, 4, 0, 0,
+                                            false, true, true), 1);
+    QCOMPARE(rows.get(4).value("rowData").toMap(), row);
+    QCOMPARE(registry.shell(), shell);
+
+    terminal["altScreen"] = true;
+    shell["terminal"] = terminal;
+    registry.applyShell(shell, 3);
+    QCOMPARE(shellChanges.size(), 1);
+    QCOMPARE(windowChanges.size(), 1);
 }
 
 void ShellStateStoreTests::overlayUpdatesDoNotInvalidateSurfaces()

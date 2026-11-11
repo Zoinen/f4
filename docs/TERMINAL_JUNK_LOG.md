@@ -175,6 +175,92 @@ unannounced line stays as it was. Tests: `TestAnsiParser_UnixSyncEchoInZshPieces
 (the recorded chunks, short and wrapped), `TestAnsiParser_UnixSyncEchoHoldsOnlyItsOwnLine`.
 Not yet confirmed by the reporter on macOS.
 
+## 4b. Returning cmd prompt flashed in Qt while the command was still busy
+
+*Symptom (2026-11-10, user recording).* After a command, the Qt log briefly
+showed a bare cmd prompt below the output and its blank separator. The prompt
+then disappeared and moved the output back down by a row.
+
+*Cause.* A local ConPTY capture on Windows 11 26200 showed the output, cursor
+position and OSC 133 A/B prompt in one read. The Qt projection exposed the
+whole grid until the command session's settle timer reported idle. At that
+point it dropped the prompt row.
+
+*Fix.* The cmd prompt installed by f4 tags its A/B marks. The Qt projection
+can omit that prompt as soon as it starts arriving while f4's input owns the
+prompt, retaining the command echo, output and blank separator. The existing
+console-child check keeps an inherited prompt from a nested cmd visible.
+Command completion and directory sync continue to consume the stream in order.
+The replay tests cover split reads and the earlier Windows ordering where
+ConPTY delivers B before the prompt text.
+
+The spacer before that marked prompt was still visible at the end of the Qt
+log after a command. The Qt projection now omits one blank row there once a
+submitted command has echoed. The row stays in the terminal grid so the next
+command can use it as the separator between outputs. The ConPTY replay test
+checks both states.
+
+When the cursor-position update and the prompt marker arrive in separate reads,
+publishing the empty tail in between makes the output jump. The Qt projection
+keeps an empty cursor row and one preceding spacer provisional at the end of
+command output. The split replay checks the visible row count after each read,
+including the cursor-show sequence before the prompt marker.
+
+ConPTY can also deliver the command echo and its output in separate reads.
+The first read previously requested an immediate redraw and the following
+read could wait for the 30 Hz redraw timer. For a local cmd.exe command sent
+from Qt's command input, Qt keeps the previous history for the first redraw
+interval. The parser still consumes each read immediately. After that
+interval the echo is visible even if the command is still running, and the
+usual streaming cadence resumes. An alternate-screen change redraws
+immediately.
+
+## 4c. Esc changed the PTY size when Qt hid the command line
+
+With search-first auto-hide enabled, a Windows trace on 2026-11-11 recorded
+the terminal alternating between 51 and 52 rows on each Esc. That resize
+cleared the active terminal grid ahead of the ConPTY repaint. The direct
+semantic update could also expose the terminal before publishing the input
+row. Qt now reserves the normal single input row in its PTY geometry and
+publishes the command line with the shell visibility change. A regression
+seeds output and verifies that the PTY receives no resize on either transition.
+
+The same resize path also cleared recent output when a multiline Qt command
+grew from one row to two. A Windows ConPTY reproduction in `C:\Test` ran
+`dir /b`, then typed `ls -`. The resize from 29 to 28 rows removed 27 rows
+from the Qt history extent. The reverse resize did not restore them. The Qt
+input now changes only the visible history viewport when it wraps or unwraps.
+The PTY keeps its single-input-row geometry until the actual window changes.
+
+## 4d. First command echo lost its prompt after a resize
+
+Reproduced in Qt on Windows in `C:\Test` on 2026-11-11. ConPTY wrote the
+marked `C:\Test>` prompt at row 28. After the window grew, the first echo
+started at row 28, column 9 with no prompt repaint. The resize had cleared
+f4's copy of the prompt, so only the second command showed its directory.
+
+The resize now saves the cells of the complete marked prompt. A delta that
+starts immediately after that prefix on a blank row can reuse those cells.
+A fresh prompt mark or unrelated text discards the saved prefix. The replay
+test includes the captured directory-sync prefix and checks that a freshly
+drawn prompt replaces the saved one.
+
+## 4e. Growing the terminal swallowed completed output
+
+A live Windows ConPTY regression printed 120 numbered lines and grew the
+terminal from 24 to 149 rows. F4 pulled all 103 saved rows back into the
+live grid, then cleared it. The host repaint started at line 99 and could
+not restore the older rows. Keeping the grid alone still lost those rows
+when the repaint overwrote it.
+
+The ConPTY resize keeps saved rows in scrollback and grows the live grid
+below its existing origin. On shrink it makes room below the cursor first.
+The regression checks the numbered lines before and after the resize
+repaint and after further command output. In a separate narrow-width trace,
+ConPTY reflowed the full command echo, including the directory prefix that
+F4 filters from the live stream. That can still shift the host's top row by
+more than the mirror predicts.
+
 ## 5. Tickets with the same family of problem (for the trail)
 
 | Ticket | State | What it was |

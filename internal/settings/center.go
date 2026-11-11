@@ -225,6 +225,14 @@ func (v *settingsViewport) SetPosition(x1, y1, x2, y2 int) {
 				pairColumn = 1
 			}
 		}
+		if r.field.Group == "Highlighting rules" && width >= 56 {
+			switch r.field.ID {
+			case "group.ContinueProcessing":
+				pairColumn = 0
+			case "group.UseDefaults":
+				pairColumn = 1
+			}
+		}
 		if colorPair {
 			pairColumn = colorState / 2
 		}
@@ -285,6 +293,10 @@ func (v *settingsViewport) SetPosition(x1, y1, x2, y2 int) {
 				r.gap = 0
 			}
 		case *settingsEdit:
+			if r.field.ID == "group.Sort.Number" && r.field.Category == "filegroup-Sorting" {
+				r.controlWidth = min(10, width)
+				break
+			}
 			if r.field.ID == "group.Name" && box.rows[0].field.ID == "group.Enabled" {
 				r.label = nil
 				r.gap = 0
@@ -334,6 +346,17 @@ func (v *settingsViewport) SetPosition(x1, y1, x2, y2 int) {
 			r.controlWidth = min(width, vtui.StringWidth(box.title)+4)
 			r.labelX, r.controlX = box.left, box.left
 			continue
+		}
+		if r.field.ID == fileGroupSortListToggle {
+			button := r.control.(*vtui.Button)
+			r.controlWidth = min(width, vtui.StringWidth(button.GetCaption())+5)
+			number := box.rows[len(box.rows)-2]
+			if number.controlWidth+2+r.controlWidth <= width {
+				r.controlX = number.controlWidth + 2
+				r.y = number.y + number.controlY
+				r.controlY, r.height = 0, 1
+				continue
+			}
 		}
 		if singleDateRow {
 			if len(box.rows) > 2 {
@@ -851,6 +874,7 @@ type settingsCenter struct {
 	fileGroupOverview                          *fileGroupsOverview
 	fileGroupEditor                            bool
 	fileGroupEditorID                          string
+	fileGroupSortListExpanded                  bool
 	fileGroupConditionsEditable                map[string]bool
 	fileGroupCollapsed                         map[string]bool
 	fileGroupEditorSample                      *fileGroupEditorSample
@@ -1798,12 +1822,24 @@ func (c *settingsCenter) selectCategory(id string) {
 				}
 				if sectionToggle {
 					f.Group = ""
-					f.Label = f4settings.Text{English: sectionTitle}
+					f.Label = f4settings.Text{English: c.categoryLabel(pageID), Literal: true}
 				}
 				r := &settingsRow{field: f, session: s, match: true, checkableHeader: sectionToggle || nameHeader, sectionHeading: sectionToggle}
 				if c.fileGroupEditor {
-					r.read = func() string { return s.draft.Values[f.ID] }
-					r.write = func(value string) { s.draft.Values[f.ID] = value }
+					r.read = func() string {
+						value, stored := s.draft.Values[f.ID]
+						if stored && value == "" && f.IconTheme != "" && f.Kind == f4settings.ChoiceKind {
+							return "none"
+						}
+						return value
+					}
+					r.write = func(value string) {
+						if value == "" && f.IconTheme != "" && f.Kind == f4settings.ChoiceKind {
+							delete(s.draft.Values, f.ID)
+							return
+						}
+						s.draft.Values[f.ID] = value
+					}
 				}
 				r.control = c.makeControl(r)
 				r.control.SetId("setting:" + f.ID)
@@ -1812,6 +1848,9 @@ func (c *settingsCenter) selectCategory(id string) {
 				}
 				c.page.AddItem(r.control)
 				c.page.rows = append(c.page.rows, r)
+				if c.fileGroupEditor && f.ID == "group.Sort.Number" {
+					c.addFileGroupSortList(s, f)
+				}
 			}
 		}
 		if c.fieldPrefix == "" && !collapsed {
@@ -1862,6 +1901,14 @@ func (c *settingsCenter) makeControl(r *settingsRow) vtui.UIElement {
 				c.status = settingsErrorText(err)
 			} else if c.fileGroupEditor {
 				c.status = ""
+			}
+		}
+		if c.fileGroupEditor && (f.ID == "group.Name" || f.ID == "group.Icon.*") {
+			for _, iconRow := range c.page.rows {
+				combo, ok := iconRow.control.(*vtui.ComboBox)
+				if ok && iconRow.field.IconTheme != "" {
+					combo.Menu.Items[0].Details["iconReference"] = c.fileGroupAutomaticIcon(d, iconRow.field.IconTheme)
+				}
 			}
 		}
 		c.describe(r)
@@ -1930,6 +1977,17 @@ func (c *settingsCenter) makeControl(r *settingsRow) vtui.UIElement {
 		}
 		b := vtui.NewComboBox(0, 0, 20, labels)
 		b.DropdownOnly = !f.AllowCustom
+		if c.fileGroupEditor && f.IconTheme != "" {
+			for i, choice := range choices {
+				reference := choice.Value
+				if reference == "" {
+					reference = c.fileGroupAutomaticIcon(d, f.IconTheme)
+				}
+				b.Menu.Items[i].Details = map[string]string{
+					"iconTheme": f.IconTheme, "iconReference": reference,
+				}
+			}
+		}
 		b.Menu.SetSelectPos(selected)
 		b.Edit.SetText(labels[selected])
 		if f.AllowCustom {

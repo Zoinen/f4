@@ -14,7 +14,7 @@ FocusScope {
     readonly property var preferenceKeys: [
         "fontRenderType", "mouseWheelMode", "galleryNeutralFileTextColors",
         "galleryShowSelectionBorders", "commandLineGraphicalCursor", "compactBreadcrumbs",
-        "showColumnSeparators", "galleryDebugLayoutZones", "panelColumnPadding", "galleryCellHorizontalPadding",
+        "showTerminalCommandSeparators", "showColumnSeparators", "galleryDebugLayoutZones", "panelColumnPadding", "galleryCellHorizontalPadding",
         "galleryCellVerticalPadding", "galleryCellCaptionSpacing", "iconSetName",
         "headerVerticalSeparatorSpacing", "headerHorizontalSeparatorSpacing", "columnSeparatorSpacing"
     ]
@@ -379,6 +379,16 @@ FocusScope {
                 description: qsTr("Use a thin vertical caret; disable for the console underline")
                 checked: hostWindow.commandLineGraphicalCursor
                 onToggled: checked => hostWindow.commandLineGraphicalCursor = checked
+            }
+
+            ThemeBooleanOption {
+                hostWindow: guiSettings.hostWindow
+                pixelGridRoot: guiSettings.contentItem
+                namePrefix: "themeTerminalCommandSeparators"
+                title: qsTr("Separate terminal command output")
+                description: qsTr("Draw a thin line between commands in the terminal history")
+                checked: hostWindow.showTerminalCommandSeparators
+                onToggled: checked => hostWindow.showTerminalCommandSeparators = checked
             }
 
             ThemeBooleanOption {

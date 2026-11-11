@@ -375,8 +375,9 @@ type HighlightGroupModel struct {
 }
 
 type HighlightColorPatchModel struct {
-	Foreground string
-	Background string
+	Foreground         string
+	Background         string
+	FileNameForeground string `json:",omitempty"`
 }
 
 type HighlightStyleModel struct {
@@ -664,6 +665,7 @@ type TextRowModel struct {
 	HasLogicalRowSpan bool
 	LogicalRowStart   int
 	LogicalRowEnd     int
+	CommandSeparator  string
 	// ContentKey identifies the rendered contents of one absolute document
 	// row. It deliberately excludes Index, which is local to a moving bounded
 	// window, so native views can retain an overlapping delegate while that
@@ -1345,6 +1347,9 @@ func (p HighlightColorPatchModel) ToMap() M {
 	if p.Background != "" {
 		out["background"] = p.Background
 	}
+	if p.FileNameForeground != "" {
+		out["fileNameForeground"] = p.FileNameForeground
+	}
 	return out
 }
 
@@ -1692,6 +1697,9 @@ func TextRowContentKey(row TextRowModel) string {
 		writeUint64(uint64(int64(row.LogicalRowEnd)))
 	}
 	writeString(row.Text)
+	if row.CommandSeparator != "" {
+		writeString(row.CommandSeparator)
+	}
 	writeUint64(uint64(len(row.Runs)))
 	for _, run := range row.Runs {
 		writeString(run.Text)
@@ -1718,6 +1726,9 @@ func (r TextRowModel) ToMap() M {
 	}
 	if r.ContentKey != "" {
 		out["contentKey"] = r.ContentKey
+	}
+	if r.CommandSeparator != "" {
+		out["commandSeparator"] = r.CommandSeparator
 	}
 	if r.HasLogicalRowSpan {
 		out["logicalRowStart"] = r.LogicalRowStart

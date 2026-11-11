@@ -535,8 +535,10 @@ func extUiSplitScenePatch(msg map[string]any) []extUiSemanticDispatch {
 			})
 		}
 		if len(panelValues) == 0 {
+			// Visibility and the prompt are one presentation change on Esc.
+			terminalToggle := extUiMapPatchContainsKey(shell, "terminalActive")
 			appendGroupedMapPatch("shell", shell, func(key string) string {
-				if key == "commandLine" {
+				if key == "commandLine" && !terminalToggle {
 					return "command-line"
 				}
 				return "shell"
@@ -2204,9 +2206,8 @@ func (r *ExtUiRenderer) SetSemanticSceneIncremental(ctx *vtui.SemanticContext) b
 }
 
 // SetSemanticSceneTransition is called inside the input transaction after
-// FrameManager has proved that the non-menu frame stack changed. Publishing
-// the bounded projection here avoids both Frame.Show and the complete semantic
-// exporter for document open/close transitions.
+// FrameManager has detected a new frame stack or a declared change of active
+// surface. The bounded projection avoids Frame.Show and the full exporter.
 func (r *ExtUiRenderer) SetSemanticSceneTransition(ctx *vtui.SemanticContext) bool {
 	return r.setSemanticSceneIncremental(ctx, true)
 }

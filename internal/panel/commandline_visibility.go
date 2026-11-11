@@ -11,7 +11,12 @@ func (pf *PanelsFrame) commandLineAutoHide() bool {
 }
 
 func (pf *PanelsFrame) commandLineHiddenByFocus() bool {
-	return pf.commandLineAutoHide() && !pf.CommandLineFocused && pf.CmdLine.IsEmpty()
+	return pf.ShowPanels && pf.commandLineHiddenInPanels()
+}
+
+func (pf *PanelsFrame) commandLineHiddenInPanels() bool {
+	return pf.SearchFirstMode() && config.App.SearchCommandHideUnfocused &&
+		!pf.CommandLineFocused && pf.CmdLine.IsEmpty()
 }
 
 func (pf *PanelsFrame) commandLineRows(width, maxRows int) int {

@@ -98,6 +98,7 @@ Item {
 
     // The terminal is the one persistent surface underneath Commander panels.
     TerminalBackdrop {
+        z: panels.hostWindow.embeddedTerminalShown ? 2 : 0
         hostWindow: panels.hostWindow
         menuBar: panels.menuBar
         anchors.left: parent.left
@@ -107,7 +108,7 @@ Item {
         anchors.bottom: parent.bottom
         anchors.bottomMargin: panels.hostWindow.keyBarHeight()
                               + panels.hostWindow.commandLineHeight(panels.frame)
-        visible: panels.frame.terminalActive === true
+        visible: panels.hostWindow.embeddedTerminalShown
                  || (panels.hostWindow.panelSideVisible(0)
                      && panels.hostWindow.panelBottomInset(0) > 0)
                  || (panels.hostWindow.panelSideVisible(1)
@@ -116,7 +117,8 @@ Item {
                      && (panels.frame.showLeftPanel === false
                          || panels.frame.showRightPanel === false))
         shell: panels.frame
-        terminal: panels.frame.terminal || ({})
+        terminal: panels.hostWindow.embeddedTerminalFrame
+        terminalActive: panels.hostWindow.embeddedTerminalShown
     }
 
     Loader {
@@ -124,7 +126,9 @@ Item {
         objectName: "persistentPanelPair"
         anchors.fill: parent
         active: true
-        visible: panels.frame.terminalActive !== true
+        // Keep descendant visibility stable across Esc. Propagating
+        // visible through the gallery invalidates every prepared visual.
+        opacity: panels.hostWindow.embeddedTerminalShown ? 0 : 1
         sourceComponent: PanelPairSurface {
             hostWindow: panels.hostWindow
             panelsSurface: panels
@@ -136,7 +140,19 @@ Item {
         }
     }
 
+    // The terminal handles input first. Consume anything it leaves
+    // unhandled before it can reach the transparent panel pair.
+    MouseArea {
+        anchors.fill: parent
+        z: 1
+        visible: panels.hostWindow.embeddedTerminalShown
+        hoverEnabled: true
+        acceptedButtons: Qt.AllButtons
+        onWheel: wheel => { wheel.accepted = true }
+    }
+
     CommandLineView {
+        z: 3
         hostWindow: panels.hostWindow
         commandLine: panels.hostWindow.commandLineFrame()
     }

@@ -360,18 +360,10 @@ type PanelsFrame struct {
 	CmdLine *cmdline.CommandLine
 	KeyBar  *vtui.KeyBar
 
-	// menuItemsCache* remember the last BuildMenuItems result and the state it
-	// was built from. vtui's render loop asks the top frame for its menu bar
-	// every frame (stepWithSize -> GetActiveMenuBar -> GetMenuBar), so without
-	// this a held key repeating fast over SSH reran the whole action-table
-	// walk and menuhotkeys' hotkey-letter assignment on every single frame,
-	// falling further behind the longer the key stayed down (#884). The cache
-	// key (see menuItemsCacheKeyNow) is cheap on purpose: field reads and
-	// pointer/enum comparisons only, never anything that walks the menus
-	// themselves.
-	menuItemsCacheValid bool
-	menuItemsCacheKey   menuItemsCacheKey
-	menuItemsCache      []vtui.MenuBarItem
+	// Retain each menu variant across Esc/Ctrl+O. Both still invalidate
+	// on changes to bindings, language, plugins, or panel context.
+	panelMenuCache    menuItemsCache
+	terminalMenuCache menuItemsCache
 
 	// consoleOverlay* mirror the modifier state that vtui's KeyBar normally
 	// keeps while the Far-style console overlay owns the physical keybar row.
@@ -433,6 +425,8 @@ type PanelsFrame struct {
 	terminalOutputRedrawClosed     bool
 	terminalOutputRedrawGeneration uint64
 	terminalOutputRedrawCallbacks  sync.WaitGroup
+	terminalCommandOutputBefore    *extui.TerminalModel
+	terminalCommandOutputUntil     time.Time
 	// remotePtyRetryAt holds back a new attempt to open a shell on a host
 	// whose last one failed or ended at once (see remotePtyBackoff).
 	// Guarded by PtyMutex.
@@ -613,6 +607,9 @@ func newPanelsFrame(startShell bool) *PanelsFrame {
 	}
 	if terminal.WindowsShellSyntax() {
 		pf.CmdSession = newCmdShellSession(pf)
+		pf.TermView.OwnsCmdPrompt = func() bool {
+			return pf.localShellIsActive() && !pf.CmdSession.childOwnsCommandMarks()
+		}
 		pf.TermView.OnShellMark = func(mark string, snap terminal.PromptSnapshot) {
 			if pf.localShellIsActive() {
 				pf.CmdSession.handleMark(mark, snap)
@@ -1170,6 +1167,12 @@ func appendTerminalMenuItems(items []vtui.MenuBarItem) []vtui.MenuBarItem {
 	return items
 }
 
+type menuItemsCache struct {
+	valid bool
+	key   menuItemsCacheKey
+	items []vtui.MenuBarItem
+}
+
 // menuItemsCacheKey captures everything BuildMenuItems' output depends on,
 // besides i18n.Msg's own table (i18nGen already covers that). It exists so
 // BuildMenuItems can tell "nothing that could change the menu changed" apart
@@ -1179,7 +1182,6 @@ func appendTerminalMenuItems(items []vtui.MenuBarItem) []vtui.MenuBarItem {
 // comparison) — nothing here allocates or walks a slice or map, so computing
 // the key is cheap enough to do on every render frame.
 type menuItemsCacheKey struct {
-	showPanels      bool
 	nativeViewModes bool
 	activeIdx       int // which side File.Share/AI.NewSession/etc. ask about
 	// leftVfsType/rightVfsType are the dynamic type of each side's VFS (or of
@@ -1206,7 +1208,6 @@ type menuItemsCacheKey struct {
 // menuItemsCacheKeyNow computes pf's current menuItemsCacheKey.
 func (pf *PanelsFrame) menuItemsCacheKeyNow() menuItemsCacheKey {
 	key := menuItemsCacheKey{
-		showPanels:      pf.ShowPanels,
 		nativeViewModes: GUIViewModesAvailable(),
 		activeIdx:       pf.ActiveIdx,
 		leftVfsType:     panelVfsType(pf.Panels[0]),
@@ -1250,9 +1251,14 @@ func panelVfsType(p Panel) reflect.Type {
 // cache's way.
 func (pf *PanelsFrame) BuildMenuItems() []vtui.MenuBarItem {
 	key := pf.menuItemsCacheKeyNow()
-	if pf.menuItemsCacheValid && key == pf.menuItemsCacheKey {
-		return pf.menuItemsCache
+	cache := &pf.panelMenuCache
+	if !pf.ShowPanels {
+		cache = &pf.terminalMenuCache
 	}
+	if cache.valid && key == cache.key {
+		return cache.items
+	}
+	started := navtrace.SemanticIncrementalStageStart()
 	var items []vtui.MenuBarItem
 	if !pf.ShowPanels {
 		items = appendSessionMenuItems(appendTerminalMenuItems(BuildMenuBarItems("Shell")))
@@ -1264,9 +1270,9 @@ func (pf *PanelsFrame) BuildMenuItems() []vtui.MenuBarItem {
 		// Also here, so that no menu ever holds the default-hotkey marker.
 		menuhotkeys.UniqueBar(items)
 	}
-	pf.menuItemsCache = items
-	pf.menuItemsCacheKey = key
-	pf.menuItemsCacheValid = true
+	*cache = menuItemsCache{valid: true, key: key, items: items}
+	navtrace.SemanticIncrementalStageDone("shell.menu_cache_miss", started,
+		"showPanels", pf.ShowPanels)
 	return items
 }
 
@@ -2028,6 +2034,11 @@ func (pf *PanelsFrame) displayLocalOutput(shouldProcess bool, data []byte) {
 	}
 	pf.Parser.Process(data)
 	after := captureTerminalOutputSemanticState(pf.TermView)
+	if before.title != after.title && pf.terminalCommandOutputBatched() {
+		// cmd.exe can change its title in the read that contains the echo.
+		// Other control changes still leave the batch immediately.
+		before.title = after.title
+	}
 	pf.redrawAfterTerminalOutput(len(data), before != after)
 }
 
@@ -2093,6 +2104,31 @@ func (pf *PanelsFrame) redrawAfterTerminalOutput(byteCount int, semanticStateCha
 // publishes the newest state after a burst ends.
 const terminalOutputRedrawInterval = time.Second / 30
 
+func (pf *PanelsFrame) batchTerminalCommandOutput() {
+	before := pf.TermView.SemanticModelWithCommandLine(true, false)
+	pf.terminalOutputRedrawMu.Lock()
+	defer pf.terminalOutputRedrawMu.Unlock()
+	if pf.terminalOutputRedrawClosed {
+		return
+	}
+	pf.terminalCommandOutputBefore = before
+	pf.terminalCommandOutputUntil = time.Now().Add(terminalOutputRedrawInterval)
+	if !pf.terminalOutputRedrawPending {
+		pf.scheduleTerminalOutputRedrawLocked(terminalOutputRedrawInterval)
+	}
+}
+
+func (pf *PanelsFrame) terminalCommandOutputBatched() bool {
+	pf.terminalOutputRedrawMu.Lock()
+	defer pf.terminalOutputRedrawMu.Unlock()
+	return time.Now().Before(pf.terminalCommandOutputUntil)
+}
+
+func (pf *PanelsFrame) clearTerminalCommandOutputLocked() {
+	pf.terminalCommandOutputBefore = nil
+	pf.terminalCommandOutputUntil = time.Time{}
+}
+
 func (pf *PanelsFrame) requestTerminalOutputRedraw(immediate bool) string {
 	if pf == nil || vtui.FrameManager == nil {
 		return "unavailable"
@@ -2109,6 +2145,7 @@ func (pf *PanelsFrame) requestTerminalOutputRedraw(immediate bool) string {
 	// control state rather than ordinary stream progress. Publish them without
 	// waiting for the cadence timer and invalidate any older trailing callback.
 	if immediate {
+		pf.clearTerminalCommandOutputLocked()
 		pf.terminalOutputRedrawGeneration++
 		waitForCallback := false
 		if pf.terminalOutputRedrawTimer != nil {
@@ -2141,7 +2178,12 @@ func (pf *PanelsFrame) requestTerminalOutputRedraw(immediate bool) string {
 		return "requested"
 	}
 
-	delay := terminalOutputRedrawInterval - elapsed
+	pf.scheduleTerminalOutputRedrawLocked(terminalOutputRedrawInterval - elapsed)
+	pf.terminalOutputRedrawMu.Unlock()
+	return "scheduled"
+}
+
+func (pf *PanelsFrame) scheduleTerminalOutputRedrawLocked(delay time.Duration) {
 	pf.terminalOutputRedrawPending = true
 	pf.terminalOutputRedrawGeneration++
 	generation := pf.terminalOutputRedrawGeneration
@@ -2151,8 +2193,6 @@ func (pf *PanelsFrame) requestTerminalOutputRedraw(immediate bool) string {
 		defer pf.terminalOutputRedrawCallbacks.Done()
 		pf.publishScheduledTerminalOutputRedraw(generation, lifecycle)
 	})
-	pf.terminalOutputRedrawMu.Unlock()
-	return "scheduled"
 }
 
 func (pf *PanelsFrame) publishScheduledTerminalOutputRedraw(
@@ -2161,10 +2201,16 @@ func (pf *PanelsFrame) publishScheduledTerminalOutputRedraw(
 	pf.terminalOutputRedrawMu.Lock()
 	if pf.terminalOutputRedrawClosed || !pf.terminalOutputRedrawPending ||
 		generation != pf.terminalOutputRedrawGeneration ||
-		lifecycle != vtui.FrameManager.LifecycleGeneration() {
+		vtui.FrameManager == nil || lifecycle != vtui.FrameManager.LifecycleGeneration() {
 		pf.terminalOutputRedrawMu.Unlock()
 		return
 	}
+	if remaining := time.Until(pf.terminalCommandOutputUntil); remaining > 0 {
+		pf.scheduleTerminalOutputRedrawLocked(remaining)
+		pf.terminalOutputRedrawMu.Unlock()
+		return
+	}
+	pf.clearTerminalCommandOutputLocked()
 	pf.terminalOutputRedrawPending = false
 	pf.terminalOutputRedrawTimer = nil
 	pf.terminalOutputRedrawLast = time.Now()
@@ -2181,6 +2227,7 @@ func (pf *PanelsFrame) closeTerminalOutputRedraw() {
 	}
 	pf.terminalOutputRedrawMu.Lock()
 	pf.terminalOutputRedrawClosed = true
+	pf.clearTerminalCommandOutputLocked()
 	pf.terminalOutputRedrawPending = false
 	pf.terminalOutputRedrawGeneration++
 	waitForCallback := false
@@ -2513,6 +2560,10 @@ func (pf *PanelsFrame) ownTermGeometry(screenW, screenH, topInset int) (termW, t
 }
 
 func (pf *PanelsFrame) ResizeConsole(w, h int) {
+	pf.resizeConsole(w, h, false)
+}
+
+func (pf *PanelsFrame) resizeConsole(w, h int, reusePanelLayout bool) {
 	pf.nativeSplitLayoutPending = false
 	oldW, oldH := pf.LastW, pf.LastH
 	pf.LastW, pf.LastH = w, h
@@ -2528,9 +2579,9 @@ func (pf *PanelsFrame) ResizeConsole(w, h int) {
 	// 1. Terminal Area: Fills everything except KeyBar
 	pf.CmdLine.SetRichPrompt(pf.BuildPrompt())
 	commandRows := pf.commandLineRows(w, max(1, h/2))
-	if pf.ShowPanels {
-		pf.CmdLine.SetVisible(!pf.commandLineHiddenByFocus())
-	}
+	pf.CmdLine.SetVisible(!pf.commandLineHiddenByFocus() &&
+		(pf.ShowPanels || !pf.TermView.OnAltScreen()))
+	nativeLayout := GUIViewModesAvailable()
 	termY2 := h - 1
 	if pf.ShellMode == terminal.ShellModeHost {
 		// The host console keeps its overlay rows below the mirrored grid, so
@@ -2581,7 +2632,9 @@ func (pf *PanelsFrame) ResizeConsole(w, h int) {
 		if pf.ShowKeyBar && !pf.TermView.UseAltScreen {
 			termY2 = h - 2
 		}
-		if !pf.TermView.UseAltScreen {
+		// Qt sizes its history viewport independently. Keep the underlying
+		// PTY at the single-input-row geometry when the input wraps or hides.
+		if !pf.TermView.UseAltScreen && !nativeLayout {
 			termY2 -= commandRows - 1
 		}
 		termH := termY2 - contentY1 + 1
@@ -2592,14 +2645,14 @@ func (pf *PanelsFrame) ResizeConsole(w, h int) {
 		// Bootstrap must size the grid before the shell starts. Hidden
 		// document workspaces defer both grid and PTY changes until activation.
 		if pf.terminalWorkspaceActive() {
-			sizeChanged := pf.TermView.Width != w || pf.TermView.Height != termH
 			pf.TermView.SetPosition(0, contentY1, w-1, termY2)
-			pf.TermView.Resize(w, termH)
-			if pty := pf.localPTY(); pty != nil {
-				// ConPTY repaints after an actual resize; Unix shells do not.
-				if sizeChanged && !pf.TermView.OnAltScreen() && terminal.WindowsShellSyntax() {
-					pf.TermView.EraseDisplayNoHistory(2, terminal.DefaultTermAttr)
-				}
+			pty := pf.localPTY()
+			if pty != nil && terminal.WindowsShellSyntax() && pf.localShellIsActive() {
+				pf.TermView.ResizeConPTY(w, termH)
+			} else {
+				pf.TermView.Resize(w, termH)
+			}
+			if pty != nil {
 				pf.PtyMutex.Lock()
 				cw, ch := pf.TermView.CellSize()
 				pf.negotiatePTYGeometry(pty, w, termH, cw, ch)
@@ -2622,7 +2675,11 @@ func (pf *PanelsFrame) ResizeConsole(w, h int) {
 	if pf.ShowKeyBar {
 		basePanelY2 = h - 3
 	}
-	basePanelY2 -= commandRows - 1
+	panelCommandRows := commandRows
+	if nativeLayout && pf.commandLineHiddenInPanels() {
+		panelCommandRows = 0
+	}
+	basePanelY2 -= panelCommandRows - 1
 	maxHD := h - 7
 	clampHD := func(hd int) int {
 		if hd < 0 {
@@ -2677,26 +2734,35 @@ func (pf *PanelsFrame) ResizeConsole(w, h int) {
 		}
 	}
 
+	positionPanel := func(p Panel, x1, y1, x2, y2 int) {
+		fsp, isFilePanel := p.(*FileSystemPanel)
+		if reusePanelLayout && isFilePanel {
+			oldX1, oldY1, oldX2, oldY2 := fsp.GetPosition()
+			if oldX1 == x1 && oldY1 == y1 && oldX2 == x2 && oldY2 == y2 &&
+				fsp.layout.mode == fsp.EffectiveViewMode() &&
+				fsp.layout.generation == panelViewModes.generation {
+				return
+			}
+		}
+		p.SetPosition(x1, y1, x2, y2)
+		if isFilePanel {
+			fsp.Resize(x2-x1+1, y2-y1+1)
+		}
+	}
 	if pf.Wide {
 		idx := pf.WidePanel
 		panelY2 := leftPanelY2
 		if idx == 1 {
 			panelY2 = rightPanelY2
 		}
-		pf.Panels[idx].SetPosition(0, contentY1, w-1, panelY2)
-		if fsp, ok := pf.Panels[idx].(*FileSystemPanel); ok {
-			fsp.Resize(w, panelY2-contentY1+1)
-		}
+		positionPanel(pf.Panels[idx], 0, contentY1, w-1, panelY2)
 	} else {
 		for i, p := range pf.Panels {
 			panelY2Cur := leftPanelY2
 			if i == 1 {
 				panelY2Cur = rightPanelY2
 			}
-			p.SetPosition(panelX1[i], contentY1, panelX2[i], panelY2Cur)
-			if fsp, ok := p.(*FileSystemPanel); ok {
-				fsp.Resize(panelX2[i]-panelX1[i]+1, panelY2Cur-contentY1+1)
-			}
+			positionPanel(p, panelX1[i], contentY1, panelX2[i], panelY2Cur)
 		}
 	}
 	// Keep any active alt panels aligned with their host slot.
@@ -3253,7 +3319,20 @@ func (pf *PanelsFrame) InterceptPluginKey(e *vtinput.InputEvent) bool {
 // escClearsCommandLine reports whether Esc belongs to the command line,
 // which clears its text, rather than to the panel under it.
 func (pf *PanelsFrame) escClearsCommandLine() bool {
-	return pf.CmdLine != nil && !pf.CmdLine.IsEmpty() && (!pf.SearchFirstMode() || pf.CommandLineFocused)
+	if pf.CmdLine == nil || pf.CmdLine.IsEmpty() || !pf.CmdLine.IsVisible() {
+		return false
+	}
+	if !pf.ShowPanels {
+		return pf.hiddenConsoleCommandLineOwnsInput()
+	}
+	return !pf.SearchFirstMode() || pf.CommandLineFocused
+}
+
+func (pf *PanelsFrame) commandLineOwnsEscape(e *vtinput.InputEvent) bool {
+	const modifiers = vtinput.LeftCtrlPressed | vtinput.RightCtrlPressed |
+		vtinput.LeftAltPressed | vtinput.RightAltPressed | vtinput.ShiftPressed
+	isPlainEscape := e.VirtualKeyCode == vtinput.VK_ESCAPE && e.ControlKeyState&modifiers == 0
+	return e.Type == vtinput.KeyEventType && e.KeyDown && isPlainEscape && pf.escClearsCommandLine()
 }
 
 // commandLineOwnsDeletion reports whether plain Backspace/Delete must edit
@@ -3387,6 +3466,9 @@ func (pf *PanelsFrame) VetoActionKey(e *vtinput.InputEvent) bool {
 	// its selection keys in terminal mode too, where the drive menus are
 	// bound in the Terminal area.
 	if pf.commandLineOwnsInputKey(e) {
+		return true
+	}
+	if pf.commandLineOwnsEscape(e) {
 		return true
 	}
 	// Plain deletion is another command-line edit primitive. Keep it ahead of
@@ -3686,6 +3768,17 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 			}
 		}
 	}
+	if pf.commandLineOwnsEscape(e) {
+		// Holding the Escape that dismissed completion must leave the draft intact.
+		if e.RepeatCount < 2 {
+			pf.CmdLine.Clear()
+			pf.CmdLine.Edit.HistoryPos = -1
+			if pf.ConsoleViewActive() {
+				pf.DrawConsoleOverlay()
+			}
+		}
+		return true
+	}
 	// A non-empty command line gets first refusal for plain deletion. This is
 	// intentionally after Fast Find, whose own query has a higher-priority
 	// panel-local meaning, and before the active file panel and its actions.
@@ -3914,11 +4007,6 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 		}
 		pf.MenuBar.Active = true
 		pf.MenuBar.SelectPos = pos
-		return true
-	}
-	if e.VirtualKeyCode == vtinput.VK_ESCAPE && pf.escClearsCommandLine() {
-		pf.CmdLine.Clear()
-		pf.CmdLine.Edit.HistoryPos = -1
 		return true
 	}
 	// In classic navigation, a non-empty command line owns plain horizontal
@@ -4235,6 +4323,11 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 
 			managedForeground := integration == nil && !isWindowsShell && !isBackground
 			trackedCommand := integration != nil || isWindowsShell || !isBackground
+			batchOutput := isWindowsShell && integration == nil && pf.isLocalPTY(activePty) &&
+				pf.ShellMode != terminal.ShellModeHost && GUIViewModesAvailable()
+			if batchOutput {
+				pf.batchTerminalCommandOutput()
+			}
 			previousExecuting := pf.Executing
 			previousReturnToPanels := pf.ReturnToPanels
 			previousIgnoreNextPrompt := pf.ignoreNextPrompt
@@ -4257,12 +4350,19 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 			}
 			pf.workspaceCommandTitle = workspaceCommandName(trimmedCmd)
 
+			pf.TermView.ExpectCommandEcho()
 			wire := []byte(fullWireCmd)
 			written, err := pf.WritePTY(activePty, wire)
 			if err == nil && written != len(wire) {
 				err = io.ErrShortWrite
 			}
 			if err != nil {
+				pf.TermView.CancelCommandEcho()
+				if batchOutput {
+					pf.terminalOutputRedrawMu.Lock()
+					pf.clearTerminalCommandOutputLocked()
+					pf.terminalOutputRedrawMu.Unlock()
+				}
 				if managedForeground {
 					pf.TermView.CancelPreparedCleanCommand()
 					pf.clearCommandPayload()

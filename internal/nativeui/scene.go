@@ -1058,8 +1058,9 @@ func appHighlightStyleFromLegacy(node map[string]any) extui.HighlightStyleModel 
 	patch := func(value any) extui.HighlightColorPatchModel {
 		m := semantic.AppMap(value)
 		return extui.HighlightColorPatchModel{
-			Foreground: semantic.String(m["foreground"]),
-			Background: semantic.String(m["background"]),
+			Foreground:         semantic.String(m["foreground"]),
+			Background:         semantic.String(m["background"]),
+			FileNameForeground: semantic.String(m["fileNameForeground"]),
 		}
 	}
 	style := extui.HighlightStyleModel{

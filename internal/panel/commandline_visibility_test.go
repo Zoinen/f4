@@ -1,15 +1,42 @@
 package panel
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/unxed/f4/internal/cmdline"
 	"github.com/unxed/f4/internal/config"
+	"github.com/unxed/f4/internal/terminal"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 )
+
+func TestTogglePanelsKeepsUnchangedPanelRows(t *testing.T) {
+	original := config.App
+	t.Cleanup(func() { config.App = original })
+	config.App.NavigationMode = config.NavigationClassic
+	pf, _ := panelsFrameWithMouseSelect(t)
+	t.Cleanup(pf.Close)
+	pf.ShellMode = terminal.ShellModeOwn
+	pf.ShowPanels = true
+	pf.ResizeConsole(80, 25)
+
+	left := pf.Panels[0].(*FileSystemPanel)
+	right := pf.Panels[1].(*FileSystemPanel)
+	revisions := [2]uint64{left.entriesRevision, right.entriesRevision}
+	for _, show := range []bool{false, true} {
+		pf.TogglePanelsVisibility()
+		if pf.ShowPanels != show {
+			t.Fatalf("panel visibility = %v, want %v", pf.ShowPanels, show)
+		}
+		if got := [2]uint64{left.entriesRevision, right.entriesRevision}; got != revisions {
+			t.Fatalf("visibility toggle rebuilt panel rows: %v -> %v", revisions, got)
+		}
+	}
+}
 
 func TestSearchFirstUnfocusedCommandHidesOnlyWhenEmpty(t *testing.T) {
 	original := config.App
@@ -224,5 +251,55 @@ func TestPathBarVisibilityInIncrementalShell(t *testing.T) {
 		if !valid || shell.ToMap()["hidePanelPathBar"] != hidden {
 			t.Fatalf("incremental path bar state lost: valid=%v hidden=%v", valid, hidden)
 		}
+	}
+}
+
+func TestHiddenCommandLineEscapeDismissesCompletionBeforeClearing(t *testing.T) {
+	original := config.App
+	t.Cleanup(func() { config.App = original })
+	config.App.NavigationMode = config.NavigationSearchFirst
+
+	pf, pty := panelsFrameWithMouseSelect(t)
+	t.Cleanup(pf.Close)
+	pf.ShellMode = terminal.ShellModeOwn
+	vtui.FrameManager.Push(pf)
+	pf.CmdLine.SetVisible(true)
+	pf.CmdLine.Edit.AutoCompletePreview = true
+	pf.CmdLine.Edit.History = []string{"echo previous"}
+	pf.CmdLine.Edit.SetText("echo")
+	menu := cmdline.NewCompletionMenu(pf.CmdLine.Edit)
+	if !menu.HasMatches() {
+		t.Fatal("no command completion")
+	}
+	vtui.FrameManager.Push(menu)
+	menu.ProcessKey(&vtinput.InputEvent{
+		Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_DOWN,
+	})
+
+	pressEscape := func(repeat uint16) {
+		vtui.FrameManager.PostEvent(vtinput.InputEvent{
+			Type: vtinput.KeyEventType, KeyDown: true, VirtualKeyCode: vtinput.VK_ESCAPE,
+			Char: 27, RepeatCount: repeat, InputSource: "extui",
+		})
+		for range 4 {
+			vtui.FrameManager.Step(time.Millisecond)
+		}
+	}
+	pressEscape(1)
+	if !menu.IsDone() || pf.CmdLine.Edit.GetText() != "echo" || pf.ShowPanels {
+		t.Fatalf("first Escape changed more than the popup: text=%q, panels=%v",
+			pf.CmdLine.Edit.GetText(), pf.ShowPanels)
+	}
+	pressEscape(2)
+	if pf.CmdLine.Edit.GetText() != "echo" {
+		t.Fatal("holding the popup's Escape cleared the command")
+	}
+	pressEscape(1)
+	if !pf.CmdLine.IsEmpty() || pf.ShowPanels {
+		t.Fatalf("next Escape did not clear the command in place: text=%q, panels=%v",
+			pf.CmdLine.Edit.GetText(), pf.ShowPanels)
+	}
+	if bytes.IndexByte(pty.writes, 27) >= 0 {
+		t.Fatalf("Escape reached the PTY: %q", pty.writes)
 	}
 }

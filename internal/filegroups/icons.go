@@ -18,6 +18,36 @@ func IconName(name string) string {
 	return strings.Join(parts, "-")
 }
 
+// IconReferences resolves the artwork declared by one group without
+// requiring a sample file or evaluating its matching conditions.
+func (g Group) IconReferences(themes []ThemeSet) (map[string]IconReference, error) {
+	byID := make(map[string]ThemeSet, len(themes))
+	for _, set := range themes {
+		byID[set.ID] = set
+	}
+	return groupIconReferences(g, byID)
+}
+
+func groupIconReferences(g Group, themes map[string]ThemeSet) (map[string]IconReference, error) {
+	icons := make(map[string]IconReference)
+	for key, raw := range g.Fields {
+		if catalog, ok := strings.CutPrefix(key, "Icon."); ok {
+			ref, err := ParseIconReference(raw)
+			if err != nil {
+				return nil, fmt.Errorf("group %s: %w", g.ID, err)
+			}
+			icons[catalog] = ref
+		}
+	}
+	if raw := g.Fields["Icon"]; raw != "" {
+		if _, found := icons["*"]; !found {
+			icons["*"], _ = ParseIconReference(raw)
+		}
+	}
+	addGroupIcons(g, themes, icons)
+	return icons, nil
+}
+
 func addGroupIcons(g Group, themes map[string]ThemeSet, icons map[string]IconReference) {
 	if g.Fields["Icons.Enabled"] == "false" || g.Fields["Icons.Enabled"] == "0" {
 		return

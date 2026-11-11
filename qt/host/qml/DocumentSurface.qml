@@ -4,6 +4,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Controls.Basic as T
 import ZoinGallery 1.0 as ZG
+import ZoinGallery.PixelGrid 1.0
 
 Rectangle {
     id: documentRoot
@@ -20,6 +21,7 @@ Rectangle {
     // Quick View is already laid out between its own header and footer,
     // so applying the global menu/keybar insets there would double-pad it.
     property bool reportsNativeViewport: true
+    property bool retainNativeViewportWhenInactive: false
     property real nativeViewportHeight: -1
     property bool embedded: false
     property bool interactionActive: true
@@ -185,6 +187,13 @@ Rectangle {
     readonly property real prospectiveViewportHeight: Math.max(0,
         height - surfaceMenuInset - prospectiveHeaderHeight - bottomInset)
     readonly property bool kineticActive: viewportController.kineticActive
+    readonly property bool terminalMiddlePixelMotion: terminalSurface
+        && middleAutoScrollController.animationRunning
+
+    onTerminalMiddlePixelMotionChanged: {
+        if (documentList)
+            documentList.contentItem.PixelGridScope.motionActive = terminalMiddlePixelMotion || documentList.moving
+    }
     readonly property bool hasWindowProtocol:
         viewportController.hasWindowProtocol
     readonly property string documentKey: viewportController.documentKey
@@ -312,6 +321,10 @@ Rectangle {
     function applyFrameWindow() {
         viewportController.applyFrameWindow()
     }
+    function scrollTerminalHistory(key) {
+        viewportController.scrollTerminalHistory(key)
+    }
+
     function handleWheel(wheel) {
         viewportController.handleWheel(wheel)
     }
@@ -387,7 +400,7 @@ Rectangle {
         }
 
         onContentYChanged: viewportController.contentYChanged()
-        onHeightChanged: viewportController.scheduleNativeViewportSync()
+        onHeightChanged: viewportController.viewportHeightChanged()
         onMovementEnded: viewportController.movementEnded()
     }
 
@@ -639,7 +652,7 @@ Rectangle {
 
         onPressed: mouse => {
             if (middleAutoScrollController.scrollingMode)
-                documentRoot.endMiddleAutoScroll(false)
+                documentRoot.endMiddleAutoScroll(true)
             else
                 documentRoot.beginMiddleAutoScroll()
             mouse.accepted = true
@@ -664,6 +677,13 @@ Rectangle {
         property alias contentY: documentList.contentY
         property bool scrollingMode: false
         property int scrollingDirection: 0
+        readonly property var boundedLayout: ({
+            get contentY() { return documentList.contentY },
+            set contentY(y) { viewportController.moveTerminalMiddleScroll(y) },
+            setScrollingMode(active, direction) {
+                documentAutoScrollLayout.setScrollingMode(active, direction)
+            }
+        })
 
         // Keep the panel's cursor transition on the shared native path. The
         // adapter deliberately coalesces repeated frame callbacks: changing
@@ -696,7 +716,8 @@ Rectangle {
     ZG.AutoScrollController {
         id: middleAutoScrollController
         objectName: "documentMouseAutoScrollController"
-        layout: documentAutoScrollLayout
+        layout: documentRoot.terminalSurface ? documentAutoScrollLayout.boundedLayout
+                                             : documentAutoScrollLayout
         pointerSource: documentMiddleButtonArea
         horizontal: false
         scrollExtent: documentRoot.hostWindow.height
@@ -784,6 +805,7 @@ Rectangle {
         showsConsoleTopBar: documentRoot.showsConsoleTopBar
         terminalSurface: documentRoot.terminalSurface
         reportsNativeViewport: documentRoot.reportsNativeViewport
+        retainNativeViewportWhenInactive: documentRoot.retainNativeViewportWhenInactive
         nativeViewportHeight: documentRoot.nativeViewportHeight
         rowHeight: documentRoot.rowHeight
         standaloneViewport: documentRoot.standaloneViewport

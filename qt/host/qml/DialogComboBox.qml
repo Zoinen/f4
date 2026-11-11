@@ -11,6 +11,7 @@ F4ComboBox {
     leadingPreviewWidth: widget.iconTheme !== undefined ? hostWindow.snapPx(28) : 0
     HostPixelAlignedImage {
         hostWindow: dialogCombo.hostWindow
+        objectName: dialogCombo.objectName + "IconPreview"
         visible: dialogCombo.leadingPreviewWidth > 0
         x: dialogCombo.hostWindow.snapPx(6)
         y: dialogCombo.hostWindow.snapPx((dialogCombo.height-height)/2)

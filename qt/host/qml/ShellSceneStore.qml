@@ -38,6 +38,20 @@ Item {
     property var rightPanelLayoutStateOverride: null
 
     property var retainedShellFrame: ({})
+    property var terminalFrame: ({})
+    property bool terminalShown: false
+    property bool panelsShown: true
+    property bool terminalBusy: false
+
+    function captureTerminalPresentation(shell) {
+        const frame = shellPresentationOverrideSet && shell === shellPresentationOverride
+            ? shell.terminal || ({}) : surfaceRegistry.terminalMetadata()
+        if (JSON.stringify(terminalFrame) !== JSON.stringify(frame))
+            terminalFrame = frame
+        terminalShown = shell.terminalActive === true
+        panelsShown = shell.showPanels !== false
+        terminalBusy = shell.terminalBusy === true
+    }
     property var retainedCommandLineFrame: ({ "visible": false })
     readonly property var currentCommandLineFrame: commandLineState.frame || ({})
     onCurrentCommandLineFrameChanged: {
@@ -181,6 +195,7 @@ Item {
     function captureShellSurface() {
         const shell = currentShellFrame()
         if (shell !== null) {
+            captureTerminalPresentation(shell)
             retainedShellFrame = shell
             retainedShellSurfaceCreated = true
         }
@@ -403,9 +418,23 @@ Item {
     }
 
     function resetShellProjection() {
+        const previous = retainedShellFrame
+        const next = surfaceRegistry.hasShell ? surfaceRegistry.shell : null
+        const terminalToggled = next !== null && previous.id
+                && previous.id === next.id
+                && terminalShown !== (next.terminalActive === true)
+                && previous.fallback === next.fallback
+                && previous.activePanel === next.activePanel
+                && JSON.stringify(previous.panels) === JSON.stringify(next.panels)
         shellPresentationOverrideSet = false
         shellPresentationOverride = null
         captureShellSurface()
+        if (terminalToggled) {
+            // The same panel pair is still loaded. Its compact catalog and
+            // placement overrides remain valid across the visibility switch.
+            structuralSurfaceUpdated()
+            return
+        }
         leftPanelPresentationOverride = null
         rightPanelPresentationOverride = null
         leftPanelLayoutStateOverride = null
@@ -539,6 +568,11 @@ Item {
         target: store.surfaceRegistry
 
         function onShellChanged() { store.resetShellProjection() }
+        function onTerminalPresentationChanged() {
+            store.captureTerminalPresentation(store.surfaceRegistry.shell)
+            store.structuralSurfaceUpdated()
+        }
+        function onTerminalWindowChanged(frame) { store.terminalFrame = frame }
         function onDocumentChanged() { store.resetDocumentProjection() }
         function onOperationsQueueChanged() { store.resetOperationsQueueProjection() }
     }

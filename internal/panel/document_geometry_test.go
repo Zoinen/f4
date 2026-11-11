@@ -2,6 +2,10 @@ package panel
 
 import (
 	errors "errors"
+	"strings"
+
+	"github.com/unxed/f4/internal/config"
+	"github.com/unxed/f4/internal/terminal"
 	vtui "github.com/unxed/vtui"
 	testing "testing"
 )
@@ -67,6 +71,87 @@ func TestDocumentTransitionsKeepHiddenPTYGeometry(t *testing.T) {
 	last := pty.sizes[len(pty.sizes)-1]
 	if last[0] != panels.TermView.Width || last[1] != panels.TermView.Height {
 		t.Fatalf("child/grid mismatch: %+v grid=%dx%d", last, panels.TermView.Width, panels.TermView.Height)
+	}
+}
+
+func TestNativePanelTogglePreservesTerminalAndPublishesPrompt(t *testing.T) {
+	original := config.App
+	t.Cleanup(func() { config.App = original })
+	config.App.NavigationMode = config.NavigationSearchFirst
+	config.App.SearchCommandHideUnfocused = true
+	config.App.GuiPresentation = config.GuiPresentationGUI
+	panels := setupMockPanelsFrame(t)
+	defer panels.Close()
+	screen := vtui.FrameManager.Screen()
+	originalRenderer := screen.Renderer
+	t.Cleanup(func() { screen.Renderer = originalRenderer })
+	screen.Renderer = galleryMenuRenderer{SurfaceRenderer: originalRenderer, native: true}
+	panels.ShellMode = terminal.ShellModeOwn
+	panels.ShowPanels = true
+	pty := &lifecyclePTY{}
+	panels.Pty = pty
+	panels.ResizeConsole(80, 25)
+	parser := terminal.NewAnsiParser(panels.TermView, nil)
+	parser.Process([]byte("\x1b[Hfinal output\r\nshell>"))
+	before := len(pty.sizes)
+	for _, visible := range []bool{true, false, true, false} {
+		panels.TogglePanelsVisibility()
+		if cmd := panels.commandLineSemanticModel(nil); cmd.Visible != visible {
+			t.Fatalf("published prompt visibility = %v, want %v", cmd.Visible, visible)
+		}
+		if len(pty.sizes) != before {
+			t.Fatalf("panel toggle changed PTY geometry: %v", pty.sizes)
+		}
+		if !strings.Contains(string(panels.TermView.GetAllLogBytes()), "final output") {
+			t.Fatal("panel toggle lost the terminal output")
+		}
+	}
+}
+
+func TestNativeCommandLineWrapPreservesTerminalOutput(t *testing.T) {
+	original := config.App
+	t.Cleanup(func() { config.App = original })
+	config.App.GuiPresentation = config.GuiPresentationGUI
+	config.App.CommandLineMultiline = true
+	config.App.CommandLineWordWrap = true
+
+	panels := setupMockPanelsFrame(t)
+	defer panels.Close()
+	screen := vtui.FrameManager.Screen()
+	originalRenderer := screen.Renderer
+	t.Cleanup(func() { screen.Renderer = originalRenderer })
+	screen.Renderer = galleryMenuRenderer{SurfaceRenderer: originalRenderer, native: true}
+	panels.ShellMode = terminal.ShellModeOwn
+	panels.ShowPanels = false
+	pty := &lifecyclePTY{}
+	panels.Pty = pty
+	panels.ResizeConsole(80, 25)
+	parser := terminal.NewAnsiParser(panels.TermView, nil)
+	parser.Process([]byte("\x1b[Hfirst file\r\nlast file\r\nshell>"))
+	initialHeight := panels.TermView.Height
+	initialResizeCount := len(pty.sizes)
+
+	for _, step := range []struct {
+		input string
+		rows  int
+	}{
+		{input: "ls ", rows: 1},
+		{input: "ls -", rows: 2},
+		{input: "ls ", rows: 1},
+	} {
+		panels.CmdLine.Edit.SetText(step.input)
+		if got := panels.commandLineRows(80, 12); got != step.rows {
+			t.Fatalf("command line %q: got %d rows, want %d", step.input, got, step.rows)
+		}
+		panels.ResizeConsole(80, 25)
+		if panels.TermView.Height != initialHeight || len(pty.sizes) != initialResizeCount {
+			t.Fatalf("command line %q resized terminal: height=%d, requests=%v",
+				step.input, panels.TermView.Height, pty.sizes)
+		}
+		output := string(panels.TermView.GetAllLogBytes())
+		if !strings.Contains(output, "first file\nlast file") {
+			t.Fatalf("command line %q changed terminal output: %q", step.input, output)
+		}
 	}
 }
 

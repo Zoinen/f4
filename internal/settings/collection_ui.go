@@ -28,6 +28,12 @@ func (r settingsRecordRow) GetCellText(int) string {
 	if name := r.record.Values[r.collection.NameField]; name != "" {
 		return name
 	}
+	if slot, ok := strings.CutPrefix(r.collection.ID, fileGroupActionPrefix); ok {
+		if command := strings.TrimSpace(r.record.Values["command."+slot]); command != "" {
+			firstLine, _, _ := strings.Cut(command, "\n")
+			return strings.TrimSpace(firstLine)
+		}
+	}
 	return Phrase("(unnamed)")
 }
 
@@ -116,7 +122,12 @@ func (c *settingsCenter) addCollections(category string) {
 				c.addFileGroupContext(s)
 			}
 			meta := f4settings.Field{ID: col.ID, Category: category, Group: col.Group, Label: col.Label, Description: col.Description}
+			actionCollection := isFileGroupActionCollection(col.ID)
+			visible := c.collectionRecordIndices(s, col.ID)
 			listHeight := 5
+			if actionCollection {
+				listHeight = max(1, min(listHeight, len(visible)))
+			}
 			if c.fullLists {
 				listHeight = max(listHeight, len(s.draft.Records[col.ID]))
 			}
@@ -124,7 +135,7 @@ func (c *settingsCenter) addCollections(category string) {
 			table.ShowHeader = false
 			table.ShowSeparators = false
 			settingsDialogTable(table)
-			featureDisabled := c.fileGroupEditor && col.ID == "filegroups.commands" && !fileGroupFeatureEnabled(s.draft.Values, "Associations")
+			featureDisabled := actionCollection && !fileGroupFeatureEnabled(s.draft.Values, "Associations")
 			table.SetDisabled(featureDisabled)
 			// Record lists are editable settings surfaces, like the adjacent inputs.
 			table.ColorTextIdx = vtui.ColDialogEdit
@@ -138,7 +149,6 @@ func (c *settingsCenter) addCollections(category string) {
 			table.AlwaysShowCursor = true
 			table.SetId("collection:" + col.ID)
 			var rows []vtui.TableRow
-			visible := c.collectionRecordIndices(s, col.ID)
 			for _, index := range visible {
 				record := s.draft.Records[col.ID][index]
 				rows = append(rows, settingsRecordRow{c, col, record})
@@ -205,13 +215,14 @@ func (c *settingsCenter) addCollections(category string) {
 			}
 			bar := &settingsButtonRow{Group: vtui.NewGroup(0, 0, 20, 1)}
 			bar.SetId("collection-actions:" + col.ID)
-			button := func(label string, run func()) {
+			button := func(label string, run func()) *vtui.Button {
 				b := vtui.NewButton(0, 0, Phrase(label))
 				b.SetDisabled(featureDisabled)
 				b.SetId(fmt.Sprintf("collection-action:%s:%d", col.ID, len(bar.buttons)))
 				b.OnClick = run
 				bar.buttons = append(bar.buttons, b)
 				bar.AddItem(b)
+				return b
 			}
 			if !col.Fixed && !c.recordOnly {
 				button("Add", func() {
@@ -236,7 +247,7 @@ func (c *settingsCenter) addCollections(category string) {
 						values[f.ID] = value
 					}
 					record := f4settings.Record{ID: fmt.Sprintf("new:%s:%d", col.ID, settingsRecordCounter.Add(1)), Values: values}
-					if col.ID == "filegroups" || col.ID == "filegroups.commands" {
+					if col.ID == "filegroups" || actionCollection {
 						record.ID = filegroups.NewID()
 					}
 					if col.ID == "filegroups" {
@@ -244,14 +255,6 @@ func (c *settingsCenter) addCollections(category string) {
 						if c.fileGroupScopeFilter == "theme" {
 							record.Values["group.IconTheme"] = fileGroupActiveTheme
 						}
-					}
-					if col.ID == "filegroups.commands" {
-						parents := s.draft.Records["filegroups"]
-						if len(parents) == 0 {
-							c.status = "Add a file group first."
-							return
-						}
-						record.Values["command.Group"] = parents[min(c.offsets["record:filegroups"], len(parents)-1)].ID
 					}
 					if col.ID == "filegroups" {
 						c.appendFileGroup(s, record)
@@ -262,7 +265,7 @@ func (c *settingsCenter) addCollections(category string) {
 					settingsTraceRecords(s, col.ID, "add", record.ID)
 					c.rebuildCategory()
 				})
-				button("Delete", func() {
+				remove := button("Delete", func() {
 					if len(visible) == 0 {
 						return
 					}
@@ -296,6 +299,9 @@ func (c *settingsCenter) addCollections(category string) {
 						}
 					}
 				})
+				if actionCollection && len(visible) == 0 {
+					remove.SetDisabled(true)
+				}
 			}
 			if col.Ordered && !c.recordOnly {
 				for _, direction := range []int{-1, 1} {
@@ -303,12 +309,12 @@ func (c *settingsCenter) addCollections(category string) {
 					if direction < 0 {
 						label = "Up"
 					}
-					button(label, func() {
+					next := -1
+					if position := visualSelected + direction; position >= 0 && position < len(visible) {
+						next = visible[position]
+					}
+					move := button(label, func() {
 						records := s.draft.Records[col.ID]
-						next := -1
-						if position := visualSelected + direction; position >= 0 && position < len(visible) {
-							next = visible[position]
-						}
 						if col.ID == "filegroups" && selected >= 0 && selected < len(records) && next >= 0 &&
 							records[selected].Values["group.IconTheme"] != records[next].Values["group.IconTheme"] {
 							return
@@ -325,6 +331,9 @@ func (c *settingsCenter) addCollections(category string) {
 							c.rebuildCategory()
 						}
 					})
+					if actionCollection && next < 0 {
+						move.SetDisabled(true)
+					}
 				}
 			}
 
@@ -386,13 +395,6 @@ func (c *settingsCenter) addCollections(category string) {
 						f.Choices = []f4settings.Choice{
 							{Value: "", Label: f4settings.Text{English: "Universal"}},
 							{Value: fileGroupActiveTheme, Label: f4settings.Text{English: "Current theme: " + fileGroupThemeName(fileGroupActiveTheme), Literal: true}},
-						}
-					}
-					if f.ID == "command.Group" {
-						f.Choices = nil
-						for _, parentIndex := range c.collectionRecordIndices(s, "filegroups") {
-							parent := s.draft.Records["filegroups"][parentIndex]
-							f.Choices = append(f.Choices, f4settings.Choice{Value: parent.ID, Label: f4settings.Text{English: parent.Values["group.Name"], Literal: true}})
 						}
 					}
 					if strings.HasPrefix(col.ID, "usermenu.") && strings.HasSuffix(f.ID, ".Parent") {

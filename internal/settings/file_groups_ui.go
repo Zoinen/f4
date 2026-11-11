@@ -251,18 +251,6 @@ func (c *settingsCenter) resetFileGroupFields(s *settingsSession, fieldOnly bool
 }
 
 func (c *settingsCenter) collectionRecordIndices(s *settingsSession, collection string) []int {
-	parentID := ""
-	if collection == "filegroups.commands" {
-		parents := s.draft.Records["filegroups"]
-		if len(parents) == 0 {
-			return nil
-		}
-		selected := min(c.offsets["record:filegroups"], len(parents)-1)
-		if selected < 0 || (!c.fileGroupEditor && !slices.Contains(c.collectionRecordIndices(s, "filegroups"), selected)) {
-			return nil
-		}
-		parentID = parents[selected].ID
-	}
 	indices := []int{}
 	if collection == "filegroups" {
 		for _, scope := range []string{"", fileGroupActiveTheme} {
@@ -277,10 +265,8 @@ func (c *settingsCenter) collectionRecordIndices(s *settingsSession, collection 
 		}
 		return indices
 	}
-	for i, record := range s.draft.Records[collection] {
-		if parentID == "" || record.Values["command.Group"] == parentID {
-			indices = append(indices, i)
-		}
+	for i := range s.draft.Records[collection] {
+		indices = append(indices, i)
 	}
 	return indices
 }

@@ -172,7 +172,7 @@ func layoutLine(cells []vtui.CharInfo, cursor, width int) laidOutLine {
 // reflowResizeLocked re-wraps the primary screen and GridHistory to w x h.
 // The caller holds the mutex, has checked that the primary screen is active
 // and that both dimensions are positive.
-func (tv *TerminalView) reflowResizeLocked(w, h int) {
+func (tv *TerminalView) reflowResizeLocked(w, h int, conPTY bool) {
 	oldW, oldH := tv.Width, tv.Height
 	cursorY := tv.CursorY
 	if cursorY < 0 {
@@ -284,6 +284,11 @@ func (tv *TerminalView) reflowResizeLocked(w, h int) {
 		target = 0
 	}
 	top := cursorAbs - target // row shown at the top; negative means blank rows
+	if conPTY {
+		// The host repaints from its live screen's origin. Keep already
+		// scrolled-out rows behind that boundary when the window grows.
+		top = max(historyRows, cursorAbs-h+1)
+	}
 	if len(rows)-top > h {
 		// Rows below the cursor do not fit: move the window down, as far as
 		// keeping the cursor on screen allows, and let the rest go.

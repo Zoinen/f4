@@ -2,6 +2,7 @@ package terminal
 
 import (
 	"encoding/base64"
+	"maps"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -75,6 +76,12 @@ type TerminalView struct {
 	semanticScrollTop               int
 	semanticFollowTail              bool
 	semanticBottomOverlayRows       int
+	semanticCommandLineOwnsPrompt   bool
+	cmdPrompt                       cmdPromptPhase
+	resizePrompt                    []vtui.CharInfo
+	commandEchoPending              bool
+	hasCommandEcho                  bool
+	pieceCommandSeparators          map[int]string
 	semanticWindowGeneration        uint64
 	semanticWindowRequestGeneration uint64
 	semanticScratch                 []byte
@@ -164,6 +171,9 @@ type TerminalView struct {
 	// OnShellMark receives every OSC 133 mark (A, B, C, D, E...) together
 	// with the cursor state at that moment. It runs on the PTY goroutine.
 	OnShellMark func(mark string, snap PromptSnapshot)
+	// OwnsCmdPrompt distinguishes the local commander prompt from a nested
+	// cmd.exe that inherited the same PROMPT.
+	OwnsCmdPrompt func() bool
 	// OnShellSequence receives the complete OSC 133 payload in parser order,
 	// before subsequent bytes can mutate the display.
 	OnShellSequence func(payload string)
@@ -186,6 +196,22 @@ type TerminalView struct {
 	gravityLow int
 	hoverURL   string
 }
+
+// These marks are emitted by f4's cmd.exe PROMPT. Ordinary OSC 133
+// marks can also come from a program running inside the terminal.
+const (
+	CmdPromptStartMark = "A;f4-cmd"
+	CmdPromptEndMark   = "B;f4-cmd"
+)
+
+type cmdPromptPhase uint8
+
+const (
+	cmdPromptNone cmdPromptPhase = iota
+	cmdPromptDrawing
+	cmdPromptEndSeen
+	cmdPromptComplete
+)
 
 func NewTerminalView(w, h int) *TerminalView {
 	tv := &TerminalView{
@@ -305,6 +331,8 @@ func (tv *TerminalView) CloneStateFrom(other *TerminalView) {
 
 	// 4. Copy terminal state metadata
 	tv.styles = append([]StyleChange(nil), other.styles...)
+	tv.pieceCommandSeparators = maps.Clone(other.pieceCommandSeparators)
+	tv.hasCommandEcho = other.hasCommandEcho
 	tv.authCache = make(map[string]int)
 	for k, v := range other.authCache {
 		tv.authCache[k] = v
@@ -346,6 +374,9 @@ func (tv *TerminalView) ResetBuffer(w, h int) {
 	// from before the reset is no longer meaningful.
 	tv.SelActive = false
 	tv.gravityLow = 0
+	tv.cmdPrompt = cmdPromptNone
+	tv.resizePrompt = nil
+	tv.commandEchoPending = false
 
 	// Инициализация PieceTable (только один раз)
 	if tv.Pt == nil {
@@ -494,9 +525,15 @@ func (tv *TerminalView) pushRowToGridHistory(y int) {
 func (tv *TerminalView) extrudeGridHistoryRow(idx int) {
 	line := tv.GridHistory[idx]
 	isWrapped := tv.GridHistoryWrap[idx]
+	if separator := commandSeparatorInCells(line); separator != "" {
+		if tv.pieceCommandSeparators == nil {
+			tv.pieceCommandSeparators = make(map[int]string)
+		}
+		tv.pieceCommandSeparators[tv.Pt.Size()] = separator
+	}
 
 	lastChar := len(line) - 1
-	for lastChar >= 0 && isTrailingBlank(line[lastChar]) {
+	for lastChar >= 0 && isLogTrailingBlank(line[lastChar]) {
 		lastChar--
 	}
 
@@ -505,10 +542,10 @@ func (tv *TerminalView) extrudeGridHistoryRow(idx int) {
 		if isWrapPad(line[i]) {
 			continue
 		}
-		// Saving attributes for the log
-		if line[i].Attributes != tv.lastAttr {
-			tv.styles = append(tv.styles, StyleChange{Offset: int(tv.Pt.Size()) + sb.Len(), Attr: line[i].Attributes})
-			tv.lastAttr = line[i].Attributes
+		attr := line[i].Attributes &^ commandSeparatorAttr
+		if attr != tv.lastAttr {
+			tv.styles = append(tv.styles, StyleChange{Offset: int(tv.Pt.Size()) + sb.Len(), Attr: attr})
+			tv.lastAttr = attr
 		}
 		sb.WriteString(vtui.CellString(line[i].Char))
 	}
@@ -575,7 +612,7 @@ func (tv *TerminalView) terminalLogSnapshotLocked() terminalLogSnapshot {
 		line := tv.GridHistory[i]
 		isWrapped := tv.GridHistoryWrap[i]
 		lastChar := len(line) - 1
-		for lastChar >= 0 && isTrailingBlank(line[lastChar]) {
+		for lastChar >= 0 && isLogTrailingBlank(line[lastChar]) {
 			lastChar--
 		}
 		for j := 0; j <= lastChar; j++ {
@@ -629,7 +666,7 @@ func (tv *TerminalView) terminalLogSnapshotLocked() terminalLogSnapshot {
 			isWrapped := tv.WrapFlags[y]
 
 			lastChar := len(line) - 1
-			for lastChar >= 0 && isTrailingBlank(line[lastChar]) {
+			for lastChar >= 0 && isLogTrailingBlank(line[lastChar]) {
 				lastChar--
 			}
 
@@ -667,6 +704,19 @@ func (tv *TerminalView) PutChar(r rune, attr uint64) {
 		return
 	}
 
+	if len(tv.resizePrompt) > 0 && (r >= ' ' || r == '\n') {
+		if r >= ' ' && !tv.UseAltScreen && tv.CursorX == len(tv.resizePrompt) &&
+			tv.CursorX < tv.Width && tv.CursorY >= 0 && tv.CursorY < tv.Height &&
+			!tv.rowHasText(tv.CursorY) {
+			copy(tv.Lines[tv.CursorY], tv.resizePrompt)
+		}
+		tv.resizePrompt = nil
+	}
+	// The first echo after the end mark turns the prompt into a command
+	// history row. A subsequent hard line feed also ends the prompt.
+	if tv.cmdPrompt == cmdPromptComplete && (r >= ' ' || r == '\n') {
+		tv.cmdPrompt = cmdPromptNone
+	}
 	if r != '\r' && r != '\n' {
 		tv.syncScrollBudget = 0
 	}
@@ -755,6 +805,12 @@ func (tv *TerminalView) PutChar(r rune, attr uint64) {
 			tv.placeholderStarted(tv.CursorY, tv.CursorX)
 		}
 		tv.CursorX += w
+		if tv.commandEchoPending && !tv.UseAltScreen {
+			tv.markCommandEchoLocked()
+		}
+		if tv.cmdPrompt == cmdPromptEndSeen && r == '>' {
+			tv.cmdPrompt = cmdPromptComplete
+		}
 		tv.suppressEraseHistory = false
 	}
 	tv.lastCharWasCR = false
@@ -990,6 +1046,9 @@ func (tv *TerminalView) SetCursor(x, y int) {
 	if y >= tv.Height {
 		y = tv.Height - 1
 	}
+	if tv.cmdPrompt == cmdPromptComplete && y != tv.CursorY {
+		tv.cmdPrompt = cmdPromptNone
+	}
 	tv.CursorX, tv.CursorY = x, y
 	if x == 0 {
 		tv.lastCharWasCR = true
@@ -1055,15 +1114,26 @@ func (tv *TerminalView) EraseDisplay(mode int, attr uint64) {
 // EraseDisplayNoHistory clears the viewport like EraseDisplay but never
 // pushes the erased rows to scrollback. The resize path uses it right before
 // ResizePseudoConsole: the host repaints its whole buffer after the PTY
-// resize, so keeping the old rows would only duplicate what the repaint
-// re-creates (#1673).
+// resize, so keeping the old rows can duplicate what a repaint re-creates
+// (#1673). ConPTY can also keep its prompt and send only the command echo.
 func (tv *TerminalView) EraseDisplayNoHistory(mode int, attr uint64) {
 	tv.mu.Lock()
 	defer tv.mu.Unlock()
+	prompt := tv.resizePrompt
+	if mode == 2 && tv.cmdPrompt == cmdPromptComplete && tv.CursorY >= 0 &&
+		tv.CursorY < len(tv.Lines) && tv.CursorX > 0 {
+		line := tv.Lines[tv.CursorY]
+		if tv.CursorX <= len(line) && line[tv.CursorX-1].Char == '>' {
+			prompt = append([]vtui.CharInfo{}, line[:tv.CursorX]...)
+		}
+	}
 	saved := tv.suppressEraseHistory
 	tv.suppressEraseHistory = true
-	defer func() { tv.suppressEraseHistory = saved }()
 	tv.eraseDisplayLocked(mode, attr)
+	tv.suppressEraseHistory = saved
+	// The first printable byte tells us whether ConPTY kept the old prompt.
+	// Restore it only when that byte lands directly after its old prefix.
+	tv.resizePrompt = prompt
 }
 
 func (tv *TerminalView) eraseDisplayLocked(mode int, attr uint64) {
@@ -1078,6 +1148,8 @@ func (tv *TerminalView) eraseDisplayLocked(mode int, attr uint64) {
 	if (mode == 2 || mode == 3) && !tv.UseAltScreen {
 		// A cleared screen starts over: what comes next sinks to the bottom.
 		tv.gravityLow = 0
+		tv.cmdPrompt = cmdPromptNone
+		tv.resizePrompt = nil
 	}
 
 	if (mode == 2 || mode == 3) && !tv.UseAltScreen && !tv.suppressEraseHistory {
@@ -1208,6 +1280,8 @@ func (tv *TerminalView) SetAltScreen(enable bool) {
 	// The alternate and primary screens have independent contents and can
 	// have different geometry, so a selection cannot safely cross the switch.
 	tv.SelActive = false
+	tv.cmdPrompt = cmdPromptNone
+	tv.resizePrompt = nil
 	if enable {
 		tv.savedX, tv.savedY = tv.CursorX, tv.CursorY
 		tv.CursorX, tv.CursorY = 0, 0
@@ -1740,6 +1814,16 @@ func (tv *TerminalView) Size() (int, int) {
 }
 
 func (tv *TerminalView) Resize(w, h int) {
+	tv.resize(w, h, false)
+}
+
+// ResizeConPTY keeps the primary screen separate from F4's scrollback.
+// ConPTY repaints its live rows without access to the rows already scrolled out.
+func (tv *TerminalView) ResizeConPTY(w, h int) {
+	tv.resize(w, h, true)
+}
+
+func (tv *TerminalView) resize(w, h int, conPTY bool) {
 	if tv.Width == w && tv.Height == h {
 		return
 	}
@@ -1760,7 +1844,7 @@ func (tv *TerminalView) Resize(w, h int) {
 	// viewport and GridHistory, which keeps the vertical "accordion"
 	// behaviour lossless.
 	if tv.reflow && !tv.UseAltScreen && w != tv.Width && w > 0 && h > 0 && tv.Width > 0 && tv.Height > 0 {
-		tv.reflowResizeLocked(w, h)
+		tv.reflowResizeLocked(w, h, conPTY)
 		return
 	}
 
@@ -1797,13 +1881,18 @@ func (tv *TerminalView) Resize(w, h int) {
 	if !tv.UseAltScreen {
 		if h < tv.Height {
 			lostRows := tv.Height - h
+			if conPTY {
+				// A shorter ConPTY viewport removes empty rows below its
+				// cursor before shifting the top into scrollback.
+				lostRows = max(0, tv.CursorY-h+1)
+			}
 			for y := 0; y < lostRows; y++ {
 				if tv.rowHasText(y) {
 					tv.pushRowToGridHistory(y)
 				}
 			}
 			yOffset = lostRows
-		} else if h > tv.Height {
+		} else if h > tv.Height && !conPTY {
 			yShift = h - tv.Height
 			pullCount := yShift
 			if pullCount > len(tv.GridHistory) {
@@ -2213,6 +2302,30 @@ func (tv *TerminalView) PromptSnapshot() PromptSnapshot {
 
 func (tv *TerminalView) HandleOSC133(payload string) {
 	vtui.DebugLog("TERM_OSC133: %s", payload)
+	if payload == CmdPromptStartMark {
+		owned := tv.OwnsCmdPrompt != nil && tv.OwnsCmdPrompt()
+		tv.mu.Lock()
+		tv.cmdPrompt = cmdPromptNone
+		tv.resizePrompt = nil
+		if owned && !tv.UseAltScreen && !tv.Muted && tv.CursorX == 0 {
+			tv.cmdPrompt = cmdPromptDrawing
+		}
+		tv.mu.Unlock()
+	} else if payload == CmdPromptEndMark {
+		tv.mu.Lock()
+		if tv.cmdPrompt == cmdPromptDrawing {
+			// Some ConPTY versions deliver B ahead of its screen cells.
+			// $G ends f4's prompt with a literal >, illegal in a path.
+			if tv.CursorY >= 0 && tv.CursorY < len(tv.Lines) &&
+				tv.CursorX > 0 && tv.CursorX <= len(tv.Lines[tv.CursorY]) &&
+				tv.Lines[tv.CursorY][tv.CursorX-1].Char == '>' {
+				tv.cmdPrompt = cmdPromptComplete
+			} else {
+				tv.cmdPrompt = cmdPromptEndSeen
+			}
+		}
+		tv.mu.Unlock()
+	}
 	if tv.OnShellSequence != nil {
 		tv.OnShellSequence(payload)
 	}
