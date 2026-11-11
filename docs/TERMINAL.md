@@ -507,6 +507,10 @@ renumbering grid rows or selection coordinates. Leading empty grid padding is
 excluded from the scroll range. Qt compares this range with its actual viewport
 height; fitting output has neither a scrollbar nor wheel/drag scrolling.
 
+Ctrl+F searches the terminal history for text, starting with the most recent
+match at or above the current view. Ctrl+G and Ctrl+Shift+G move to the next
+and previous match, wrapping at either end.
+
 An owned GUI terminal replaces an inherited `TERM=dumb` or `TERM=unknown` with
 `xterm-256color`, because the launcher's capabilities do not describe its PTY.
 Custom terminal declarations and explicit `NO_COLOR` preferences are preserved.

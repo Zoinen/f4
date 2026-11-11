@@ -242,6 +242,32 @@ Rectangle {
         }
     }
 
+    Loader {
+        id: terminalSearchHighlight
+        readonly property var match: documentRow.documentRoot.terminalSurface
+            ? documentRow.documentRoot.presentationFrame.searchMatch : null
+        readonly property int row: documentRow.loaded ? Number(documentRow.rowData.visualRow) : -1
+        active: !!match && row >= match.startRow && row <= match.endRow
+        readonly property real cellWidth: documentRow.documentRoot.terminalCellWidth
+        readonly property real leftEdge: active && row === match.startRow
+            ? documentRow.hostWindow.snapPx(match.startColumn * cellWidth) : 0
+        readonly property real rightEdge: active && row === match.endRow
+            ? documentRow.hostWindow.snapPx(match.endColumn * cellWidth)
+            : documentRow.hostWindow.snapPx(documentRow.width)
+        x: leftEdge
+        width: Math.max(0, rightEdge - leftEdge)
+        height: documentRow.height
+        sourceComponent: Rectangle {
+            id: highlight
+            objectName: "terminalSearchMatch"
+            color: documentRow.hostWindow.selectedBg
+            transform: Translate {
+                x: documentRow.documentRoot.pixelOffsetX(highlight)
+                y: documentRow.documentRoot.pixelOffsetY(highlight)
+            }
+        }
+    }
+
     Rectangle {
         x: documentRow.documentRoot.textHorizontalInset
            + documentRow.terminalSelectionRange.start

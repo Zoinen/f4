@@ -78,6 +78,7 @@ type TerminalView struct {
 	semanticWindowGeneration        uint64
 	semanticWindowRequestGeneration uint64
 	semanticScratch                 []byte
+	semanticSearch                  terminalHistorySearch
 
 	Title                 string
 	Win32InputMode        bool

@@ -2,6 +2,7 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick.Controls
+import QtQml.Models
 
 Rectangle {
     id: terminalBackdrop
@@ -54,6 +55,29 @@ Rectangle {
         if (!hostWindow.panelSideVisible(panelSide))
             return 0
         return Math.min(height, hostWindow.nativePanelHeight(panelSide, hostWindow.menuBarHeight))
+    }
+
+    Instantiator {
+        model: ["Ctrl+F", "Ctrl+G", "Ctrl+Shift+G"]
+        delegate: Shortcut {
+            required property int index
+            required property string modelData
+            sequence: Qt.platform.os === "osx" ? modelData.replace("Ctrl", "Meta") : modelData
+            context: Qt.WindowShortcut
+            autoRepeat: false
+            enabled: terminalBackdrop.visible && terminalBackdrop.hostWindow.terminalActive()
+                     && terminalBackdrop.terminal.altScreen !== true
+                     && !terminalBackdrop.hostWindow.hasBlockingOverlay()
+                     && !terminalBackdrop.hostWindow.hasStandaloneDocumentSurface()
+                     && !terminalBackdrop.hostWindow.queueDropdownOpen
+                     && terminalBackdrop.hostWindow.cleanText(terminalBackdrop.terminal.id) !== ""
+                     && (index === 0 || !!terminalBackdrop.terminal.searchMatch)
+            onActivated: terminalBackdrop.hostWindow.action({
+                "target": terminalBackdrop.terminal.id,
+                "action": index === 0 ? "terminal.search" : "terminal.searchAgain",
+                "reverse": index === 2
+            }, true)
+        }
     }
 
     Item {

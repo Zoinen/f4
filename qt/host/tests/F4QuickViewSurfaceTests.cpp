@@ -1099,6 +1099,7 @@ private slots:
     void semanticTableDialog();
     void terminalScrollBarStaysInsideTheExposedPanelSide();
     void terminalDoubleClickDragExpandsWholeWords();
+    void terminalHistorySearchShortcutAndMatch();
     void shortTerminalHistoryStaysAtBottom();
 };
 
@@ -11977,6 +11978,88 @@ void F4QuickViewSurfaceTests::shortTerminalHistoryStaysAtBottom()
     QTemporaryDir captures;
     QVERIFY(captures.isValid());
     QVERIFY(fixture.window->grabWindow().save(pixelCapturePath(&captures, "terminal-short-history.png")));
+}
+
+void F4QuickViewSurfaceTests::terminalHistorySearchShortcutAndMatch()
+{
+    auto scene = shellScene();
+    auto shell = scene["shell"].toMap();
+    shell["showPanels"] = false;
+    shell["terminalActive"] = true;
+    QVariantMap terminal{
+        {"id", "terminal-search"}, {"kind", "terminal"}, {"scrollUnit", "rows"},
+        {"scrollAction", "terminal.scroll"}, {"followTail", true},
+        {"windowStart", 150}, {"windowEnd", 250}, {"viewportStart", 220},
+        {"viewportSpan", 30}, {"viewportRows", 30}, {"contentExtent", 250},
+        {"windowRows", visualRows(150, 100)}, {"windowGeneration", 1},
+    };
+    shell["terminal"] = terminal;
+    scene["shell"] = shell;
+    QuickViewFixture fixture(scene, true, true);
+    auto *surface = fixture.item("terminalDocumentSurface");
+    QVERIFY(surface);
+    QTRY_VERIFY(surface->property("windowInitialized").toBool());
+    QTRY_VERIFY(fixture.window->isActive());
+#if defined(Q_OS_MACOS)
+    constexpr auto modifiers = Qt::MetaModifier;
+#else
+    constexpr auto modifiers = Qt::ControlModifier;
+#endif
+    const auto sent = [&](const QString &name, bool reverse) {
+        return std::any_of(fixture.shell.actions.cbegin(), fixture.shell.actions.cend(),
+            [&](const QVariantMap &action) {
+                return action.value("action").toString() == name
+                    && action.value("target").toString() == "terminal-search"
+                    && action.value("reverse").toBool() == reverse;
+            });
+    };
+    QTest::keyClick(fixture.window, Qt::Key_F, modifiers);
+    QTRY_VERIFY(sent("terminal.search", false));
+
+    terminal["followTail"] = false;
+    terminal["windowStart"] = 0;
+    terminal["windowEnd"] = 90;
+    terminal["viewportStart"] = 10;
+    terminal["windowRows"] = visualRows(0, 90);
+    terminal["searchMatch"] = QVariantMap{{"sequence", 1}, {"startRow", 20},
+        {"endRow", 20}, {"startColumn", 1}, {"endColumn", 5}};
+    shell["terminal"] = terminal;
+    scene["shell"] = shell;
+    fixture.shell.setScene(scene);
+    auto *list = surface->findChild<QQuickItem *>("documentList");
+    QVERIFY(list);
+    QTRY_VERIFY(qAbs(topVisualRow(surface, list) - 10) < .1);
+    QVERIFY(!surface->property("terminalFollowTailIntent").toBool());
+
+    QQuickItem *highlight = nullptr;
+    QTRY_VERIFY((highlight = visualItemWithObjectName(surface, "terminalSearchMatch")) != nullptr);
+    const auto origin = [&] { return highlight->mapToItem(fixture.window->contentItem(), QPointF()); };
+    const qreal dpr = fixture.window->devicePixelRatio();
+    const auto aligned = [dpr](qreal value) {
+        return qAbs(value * dpr - qRound64(value * dpr)) < .005;
+    };
+    QTRY_VERIFY(aligned(origin().x()) && aligned(origin().y()) && aligned(highlight->width()));
+    QCOMPARE(highlight->mapToItem(fixture.window->contentItem(), QPointF(1, 0)) - origin(), QPointF(1, 0));
+    QCOMPARE(highlight->mapToItem(fixture.window->contentItem(), QPointF(0, 1)) - origin(), QPointF(0, 1));
+    const QImage capture = fixture.window->grabWindow();
+    QVERIFY(!capture.isNull());
+    const QPoint sample = ((origin() + QPointF(highlight->width() / 2, 2)) * dpr).toPoint();
+    QVERIFY(capture.rect().contains(sample));
+    QVERIFY(capture.pixelColor(sample) != capture.pixelColor(QPoint(sample.x() + qCeil(highlight->width() * dpr), sample.y())));
+
+    QTest::keyClick(fixture.window, Qt::Key_G, modifiers);
+    QTRY_VERIFY(sent("terminal.searchAgain", false));
+    QTest::keyClick(fixture.window, Qt::Key_G, modifiers | Qt::ShiftModifier);
+    QTRY_VERIFY(sent("terminal.searchAgain", true));
+
+    fixture.shell.actions.clear();
+    terminal["altScreen"] = true;
+    shell["terminal"] = terminal;
+    scene["shell"] = shell;
+    fixture.shell.setScene(scene);
+    QTRY_VERIFY(surface->property("frame").toMap().value("altScreen").toBool());
+    QTest::keyClick(fixture.window, Qt::Key_F, modifiers);
+    QVERIFY(!sent("terminal.search", false));
 }
 
 void F4QuickViewSurfaceTests::terminalDoubleClickDragExpandsWholeWords()

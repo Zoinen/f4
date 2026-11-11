@@ -358,6 +358,7 @@ func (tv *TerminalView) SemanticModelWithBottomOverlay(
 		ViewportRow:           viewportRow,
 		ViewportRows:          viewportRows,
 		WindowGeneration:      tv.semanticWindowGeneration,
+		SearchMatch:           tv.semanticSearch.visibleMatch(layout, tv.Width),
 		Rows:                  visibleRows,
 		WindowRows:            windowRows,
 	}
@@ -437,9 +438,7 @@ func terminalSelectionOrder(startRow, startColumn, endRow, endColumn int) (int, 
 	return startRow, startColumn, endRow, endColumn
 }
 
-func terminalCellsSelectionRange(cells []vtui.CharInfo, width, left,
-	rightExclusive int,
-) string {
+func terminalCellsTextRange(cells []vtui.CharInfo, width, left, rightExclusive int) string {
 	left = max(0, left)
 	rightExclusive = min(max(0, width), rightExclusive)
 	if rightExclusive <= left {
@@ -453,7 +452,11 @@ func terminalCellsSelectionRange(cells []vtui.CharInfo, width, left,
 		}
 		out.WriteRune(semantic.CellRune(cell.Char))
 	}
-	return strings.TrimRight(out.String(), " ")
+	return out.String()
+}
+
+func terminalCellsSelectionRange(cells []vtui.CharInfo, width, left, rightExclusive int) string {
+	return strings.TrimRight(terminalCellsTextRange(cells, width, left, rightExclusive), " ")
 }
 
 func terminalCellsSelection(cells []vtui.CharInfo, width, left, right int) string {
@@ -508,6 +511,14 @@ func (tv *TerminalView) semanticPieceLineBreakUnsafe(logicalLine int) bool {
 func (tv *TerminalView) semanticSelectionRowRangeUnsafe(layout terminalSemanticLayout,
 	absoluteRow, left, rightExclusive int,
 ) (string, bool) {
+	text, hardBreak := tv.semanticRowTextRangeUnsafe(layout, absoluteRow, left, max(0, rightExclusive))
+	return strings.TrimRight(text, " "), hardBreak
+}
+
+// A negative right boundary reads the complete row, including spaces at soft wraps.
+func (tv *TerminalView) semanticRowTextRangeUnsafe(layout terminalSemanticLayout,
+	absoluteRow, left, rightExclusive int,
+) (string, bool) {
 	switch {
 	case absoluteRow < 0 || absoluteRow >= layout.totalRows:
 		return "", true
@@ -528,10 +539,16 @@ func (tv *TerminalView) semanticSelectionRowRangeUnsafe(layout terminalSemanticL
 		text := string(data)
 		hardBreak := fragmentIndex == len(fragments)-1 &&
 			tv.semanticPieceLineBreakUnsafe(logicalLine)
+		if rightExclusive < 0 {
+			return text, hardBreak
+		}
 		return terminalTextSelectionRange(text, left, rightExclusive), hardBreak
 	case absoluteRow < layout.pieceRows+layout.historyRows:
 		index := absoluteRow - layout.pieceRows
-		return terminalCellsSelectionRange(tv.GridHistory[index], tv.Width,
+		if rightExclusive < 0 {
+			rightExclusive = tv.Width
+		}
+		return terminalCellsTextRange(tv.GridHistory[index], tv.Width,
 				left, rightExclusive),
 			!tv.GridHistoryWrap[index]
 	default:
@@ -544,7 +561,10 @@ func (tv *TerminalView) semanticSelectionRowRangeUnsafe(layout terminalSemanticL
 		if !layout.altScreen && index < len(layout.wraps) {
 			hardBreak = !layout.wraps[index]
 		}
-		return terminalCellsSelectionRange(layout.buffer[index], tv.Width,
+		if rightExclusive < 0 {
+			rightExclusive = tv.Width
+		}
+		return terminalCellsTextRange(layout.buffer[index], tv.Width,
 				left, rightExclusive),
 			hardBreak
 	}

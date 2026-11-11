@@ -33,6 +33,7 @@ Item {
     property string appliedDocumentKey: ""
     property real appliedLayoutRevision: 0
     property real appliedWindowGeneration: 0
+    property real appliedTerminalSearchSequence: 0
     property real appliedScrollLeft: 0
     property real appliedViewportStart: 0
     property var appliedFrame: ({})
@@ -647,6 +648,16 @@ Item {
         if (documentChanged)
             resetDocumentTransientState()
 
+        const searchSequence = terminalSurface ? Number(frame.searchMatch?.sequence || 0) : 0
+        const searchJump = searchSequence > 0
+                && (documentChanged || searchSequence !== appliedTerminalSearchSequence)
+        if (searchJump) {
+            coordinator.cancelPendingIntent()
+            coordinator.setTerminalFollowTailIntent(false, false)
+        }
+        if (documentChanged || searchJump)
+            appliedTerminalSearchSequence = searchSequence
+
         const layoutChanged = windowInitialized
                 && nextLayoutRevision !== appliedLayoutRevision
 
@@ -665,7 +676,7 @@ Item {
             coordinator.setTerminalFollowTailIntent(coordinator.semanticFrameFollowsTail(), false)
         const viewportChanged = windowInitialized
                 && Number(frame.viewportStart || 0) !== lastViewportStart
-        if (windowInitialized && !layoutChanged && !acknowledged && !viewportChanged
+        if (windowInitialized && !layoutChanged && !acknowledged && !viewportChanged && !searchJump
                 && nextSignature === appliedWindowSignature) {
             appliedWindowGeneration = generation
             appliedScrollLeft = Number(frame.scrollLeft || 0)
@@ -677,9 +688,15 @@ Item {
         let targetFraction = oldState.fraction
         const acceptsViewportChange = !terminalSurface
                 || coordinator.terminalFollowTailIntent || acknowledged
-        if (!windowInitialized || (viewportChanged && acceptsViewportChange)) {
+        if (!windowInitialized || searchJump || (viewportChanged && acceptsViewportChange)) {
             targetExtent = Number(frame.viewportStart || 0)
             targetFraction = acknowledged ? coordinator.requestedFraction : 0
+            if (searchJump && !viewportChanged && windowInitialized
+                    && frame.searchMatch.startRow >= oldState.extent
+                    && frame.searchMatch.endRow + 1 <= oldState.extent + documentList.height / rowHeight) {
+                targetExtent = oldState.extent
+                targetFraction = oldState.fraction
+            }
         }
         if (acknowledged) {
             const matchesRequestedExtent = Math.abs(Number(frame.viewportStart || 0)

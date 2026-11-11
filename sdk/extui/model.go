@@ -435,6 +435,15 @@ type CommandLineModel struct {
 	CursorShape       string
 }
 
+// TerminalSearchMatch locates a match in visual rows and terminal cell columns.
+type TerminalSearchMatch struct {
+	Sequence    uint64
+	StartRow    int
+	StartColumn int
+	EndRow      int
+	EndColumn   int
+}
+
 type TerminalModel struct {
 	ID                    string
 	Title                 string
@@ -467,6 +476,7 @@ type TerminalModel struct {
 	ViewportRows          int
 	WindowGeneration      uint64
 	WindowContentKey      string
+	SearchMatch           *TerminalSearchMatch
 	Rows                  []TextRowModel
 	WindowRows            []TextRowModel
 }
@@ -1438,6 +1448,15 @@ func (t TerminalModel) ToMap() M {
 		"viewportRow":           t.ViewportRow,
 		"viewportRows":          t.ViewportRows,
 		"windowGeneration":      t.WindowGeneration,
+	}
+	if match := t.SearchMatch; match != nil {
+		out["searchMatch"] = M{
+			"sequence":    match.Sequence,
+			"startRow":    match.StartRow,
+			"startColumn": match.StartColumn,
+			"endRow":      match.EndRow,
+			"endColumn":   match.EndColumn,
+		}
 	}
 	if len(t.WindowRows) > 0 || t.ScrollUnit != "" {
 		key := t.WindowContentKey

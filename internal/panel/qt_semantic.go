@@ -254,6 +254,9 @@ func (pf *PanelsFrame) HandleSemanticAction(action map[string]any) bool {
 	if name := semantic.String(action["action"]); name == "quickView.configure" || name == "quickView.preview" {
 		return pf.handleQuickViewPresentation(action)
 	}
+	if !pf.ShowPanels && pf.TermView != nil && pf.TermView.HandleHistorySearchAction(pf, action) {
+		return true
+	}
 	if pf.TermView != nil && pf.TermView.HandleSemanticAction(action) {
 		return true
 	}

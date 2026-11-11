@@ -1159,6 +1159,15 @@ func appTerminalFromLegacy(node map[string]any) extui.TerminalModel {
 		WindowGeneration:      uint64(semantic.AppInt64(node["windowGeneration"])),
 		WindowContentKey:      semantic.String(node["windowContentKey"]),
 	}
+	if match, ok := node["searchMatch"].(map[string]any); ok {
+		term.SearchMatch = &extui.TerminalSearchMatch{
+			Sequence:    uint64(semantic.AppInt64(match["sequence"])),
+			StartRow:    semantic.Int(match["startRow"]),
+			StartColumn: semantic.Int(match["startColumn"]),
+			EndRow:      semantic.Int(match["endRow"]),
+			EndColumn:   semantic.Int(match["endColumn"]),
+		}
+	}
 	for _, row := range semantic.AppMapSlice(node["rows"]) {
 		term.Rows = append(term.Rows, appTextRowFromLegacy(row))
 	}
