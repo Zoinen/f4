@@ -60,6 +60,12 @@ single-file runtime contract.
   `--build=never` so it consumes the audited binaries directly and fails fast
   if one is absent instead of silently compiling a replacement. This flag must
   not be used for an arbitrary Conan remote.
+- The only release exception is the explicitly enabled
+  `F4_CONAN_ALLOW_MISSING_MPG123_REPAIR` path. It uses
+  `--build=missing:mpg123/*`, so an existing audited `mpg123` binary is reused
+  and only a missing `mpg123` leaf is compiled in the glibc-2.27 container and
+  published back to Artifactory. Qt, FFmpeg, and every other dependency remain
+  binary-only.
 - Persist only completed Conan package folders. Remove recipe sources, build
   trees, temporary files, and backup sources before saving a checkpoint. This
   keeps the cache small and prevents stale source trees from masking recipe or

@@ -1021,6 +1021,7 @@ jobs:
         F4_CONAN_REQUIRED_RECIPE_REFS: ${{ matrix.arch == 'arm64' && 'qt/6.11.1,pulseaudio/14.2,ffmpeg/7.1.5,libffi/3.4.8' || 'qt/6.11.1,pulseaudio/14.2,ffmpeg/7.1.5' }}
         F4_CONAN_EXPECTED_ARCH: ${{ matrix.conan_arch }}
         F4_CONAN_FORCE_ARM64_LIBRAW_REBUILD: ${{ matrix.arch == 'arm64' && '1' || '0' }}
+        F4_CONAN_ALLOW_MISSING_MPG123_REPAIR: '1'
         # Consume the audited prebuilt graph, including Qt/FFmpeg/PulseAudio.
         # Release jobs consume the audited graph; ARM64 may rebuild only the
         # glibc-sensitive libraw/libffi archives before publishing the repaired graph.
@@ -1043,6 +1044,7 @@ jobs:
           -e F4_CONAN_REQUIRED_RECIPE_REFS \
           -e F4_CONAN_EXPECTED_ARCH \
           -e F4_CONAN_FORCE_ARM64_LIBRAW_REBUILD \
+          -e F4_CONAN_ALLOW_MISSING_MPG123_REPAIR \
           -e F4_CONAN_TRUST_REMOTE_BASELINE \
           -e F4_CONAN_BOOTSTRAP_MULTIMEDIA \
           -v "$PWD:/workspace" \
@@ -1500,6 +1502,7 @@ jobs:
         F4_CONAN_REQUIRED_RECIPE_REFS: ${{ matrix.arch == 'arm64' && 'qt/6.11.1,pulseaudio/14.2,ffmpeg/7.1.5,libffi/3.4.8' || 'qt/6.11.1,pulseaudio/14.2,ffmpeg/7.1.5' }}
         F4_CONAN_EXPECTED_ARCH: ${{ matrix.conan_arch }}
         F4_CONAN_FORCE_ARM64_LIBRAW_REBUILD: ${{ matrix.arch == 'arm64' && '1' || '0' }}
+        F4_CONAN_ALLOW_MISSING_MPG123_REPAIR: '1'
         # Trusted mode forbids building the entire graph, except for the
         # explicit ARM64 libraw/libffi repair below.
         F4_CONAN_FORBID_QT_FFMPEG_BUILD: '0'
@@ -1522,6 +1525,7 @@ jobs:
           -e F4_CONAN_REQUIRED_RECIPE_REFS \
           -e F4_CONAN_EXPECTED_ARCH \
           -e F4_CONAN_FORCE_ARM64_LIBRAW_REBUILD \
+          -e F4_CONAN_ALLOW_MISSING_MPG123_REPAIR \
           -e F4_CONAN_FORBID_QT_FFMPEG_BUILD \
           -e F4_CONAN_TRUST_REMOTE_BASELINE \
           -e F4_CONAN_BOOTSTRAP_MULTIMEDIA \

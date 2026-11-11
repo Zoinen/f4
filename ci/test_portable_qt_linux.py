@@ -74,6 +74,8 @@ class PortableQtLinuxBuildTests(unittest.TestCase):
         self.assertIn("-e F4_CONAN_FORBID_QT_FFMPEG_BUILD", release_job)
         self.assertIn("F4_CONAN_FORCE_ARM64_LIBRAW_REBUILD", build_step)
         self.assertIn("-e F4_CONAN_FORCE_ARM64_LIBRAW_REBUILD", release_job)
+        self.assertIn("F4_CONAN_ALLOW_MISSING_MPG123_REPAIR", build_step)
+        self.assertIn("-e F4_CONAN_ALLOW_MISSING_MPG123_REPAIR", release_job)
         self.assertRegex(
             build_step,
             r"F4_CONAN_TRUST_REMOTE_BASELINE:.*inputs\.publish_qt_release",
@@ -85,6 +87,9 @@ class PortableQtLinuxBuildTests(unittest.TestCase):
         self.assertIn("F4_CONAN_FORBID_QT_FFMPEG_BUILD", script)
         self.assertIn("F4_CONAN_FORCE_ARM64_LIBRAW_REBUILD", script)
         self.assertIn("Trusted baseline mode permits only targeted ARM64 libraw/libffi repair", script)
+        self.assertIn("F4_CONAN_ALLOW_MISSING_MPG123_REPAIR", script)
+        self.assertIn("Trusted baseline mode permits only missing mpg123 repair", script)
+        self.assertIn("conan_build_args=(--build='missing:mpg123/*')", script)
         self.assertIn("targeted_baseline_repair", script)
         self.assertIn("Forcing only m4 to rebuild", script)
         self.assertRegex(

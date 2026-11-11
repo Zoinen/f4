@@ -337,6 +337,7 @@ append_arm64_glibc_rebuild_package() {
     done
     arm64_glibc_rebuild_packages+=("${requested}")
 }
+allow_missing_mpg123_repair="${F4_CONAN_ALLOW_MISSING_MPG123_REPAIR:-0}"
 if [[ "${TARGET_ARCH}" == "arm64" ]]; then
     arm64_glibc_rebuild_output="$(
         python ci/arm64_glibc_archives.py \
@@ -389,6 +390,14 @@ if [[ "${F4_CONAN_TRUST_REMOTE_BASELINE:-0}" == "1" &&
         conan_build_args=(--build='missing:~qt/*' --build='missing:~ffmpeg/*')
         echo "Using the audited glibc 2.27 / GCC 11 Conan graph from f4-conan"
         echo "Trusted baseline mode permits only targeted ARM64 libraw/libffi repair"
+    elif [[ "${allow_missing_mpg123_repair}" == "1" ]]; then
+        # Keep the audited graph binary-only while repairing the one small
+        # multimedia leaf that may be absent from Artifactory. Conan's
+        # missing: pattern reuses an existing mpg123 binary and builds it
+        # only when this exact package ID is unavailable.
+        conan_build_args=(--build='missing:mpg123/*')
+        echo "Using the audited glibc 2.27 / GCC 11 Conan graph from f4-conan"
+        echo "Trusted baseline mode permits only missing mpg123 repair"
     else
         conan_build_args=(--build=never)
         echo "Using the audited glibc 2.27 / GCC 11 Conan graph from f4-conan"
