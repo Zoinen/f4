@@ -321,7 +321,7 @@ func (tv *TerminalView) SemanticModelWithBottomOverlay(
 		visibleRows = windowRows[viewportRow:visibleEnd]
 	}
 	cursorAbsoluteRow := tv.semanticCursorAbsoluteRowUnsafe(layout)
-	cursorVisible := tv.IsVisible() && tv.IsFocused() && tv.CursorVisible &&
+	cursorVisible := tv.isVisibleLocked() && tv.isFocusedLocked() && tv.CursorVisible &&
 		cursorAbsoluteRow < layout.totalRows &&
 		cursorAbsoluteRow >= tv.semanticScrollTop &&
 		cursorAbsoluteRow < tv.semanticScrollTop+viewportRows
@@ -332,8 +332,8 @@ func (tv *TerminalView) SemanticModelWithBottomOverlay(
 		Title:                 tv.Title,
 		Columns:               tv.Width,
 		DefaultBackground:     semantic.SemanticAttrColor(DefaultTermAttr, false),
-		Visible:               tv.IsVisible(),
-		Focused:               tv.IsFocused(),
+		Visible:               tv.isVisibleLocked(),
+		Focused:               tv.isFocusedLocked(),
 		AltScreen:             tv.UseAltScreen,
 		Busy:                  tv.Muted,
 		FollowTail:            tv.semanticFollowTail,
