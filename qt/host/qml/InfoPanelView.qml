@@ -11,6 +11,31 @@ Rectangle {
     required property Item menuBar
     required property var panel
     readonly property int side: Number(panel.side || 0)
+    readonly property var rows: panel.rows || []
+
+    // Scene refreshes replace the row payload. Keep the view's model and
+    // update its length in place so refreshing a value cannot reset scrolling.
+    function syncRowCount() {
+        if (!rowSlots)
+            return
+        if (rowSlots.count > rows.length)
+            rowSlots.remove(rows.length, rowSlots.count - rows.length)
+        while (rowSlots.count < rows.length)
+            rowSlots.append({ "slot": rowSlots.count })
+    }
+
+    onRowsChanged: syncRowCount()
+    Component.onCompleted: syncRowCount()
+
+    ListModel { id: rowSlots }
+
+    component InfoRowText: Text {
+        id: leaf
+        transform: Translate {
+            x: infoRoot.hostWindow.dialogPixelOffsetX(leaf, infoRoot.hostWindow.contentItem)
+            y: infoRoot.hostWindow.dialogPixelOffsetY(leaf, infoRoot.hostWindow.contentItem)
+        }
+    }
 
     x: hostWindow.nativePanelX(side)
     y: hostWindow.menuBarHeight
@@ -44,20 +69,40 @@ Rectangle {
 
     ListView {
         id: infoRows
+        objectName: "infoPanelRows-" + infoRoot.side
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: infoHeader.bottom
         anchors.bottom: infoFooter.top
         anchors.margins: 8
-        model: panel.rows || []
+        anchors.rightMargin: infoScrollBar.width
+        model: rowSlots
         clip: true
         spacing: 2
         boundsBehavior: Flickable.StopAtBounds
 
+        ScrollBar.vertical: F4ScrollBar {
+            id: infoScrollBar
+            objectName: "infoPanelScrollBar-" + infoRoot.side
+            parent: infoRoot
+            hostWindow: infoRoot.hostWindow
+            x: infoRows.x + infoRows.width
+            y: infoRows.y
+            width: implicitWidth
+            height: hostWindow.snapPx(infoRows.height)
+            z: 1
+            policy: T.ScrollBar.AlwaysOn
+            visible: infoRows.contentHeight > infoRows.height + 0.5 / hostWindow.dpr
+            transform: Translate {
+                x: infoScrollBar.hostWindow.dialogPixelOffsetX(infoScrollBar, infoScrollBar.hostWindow.contentItem)
+                y: infoScrollBar.hostWindow.dialogPixelOffsetY(infoScrollBar, infoScrollBar.hostWindow.contentItem)
+            }
+        }
+
         delegate: Item {
             id: infoRow
-            required property var modelData
             required property int index
+            readonly property var modelData: infoRoot.rows[index] || ({})
             width: ListView.view.width
             height: modelData.kind === "blank" ? 10
                     : modelData.kind === "section" ? 30
@@ -69,7 +114,8 @@ Rectangle {
                 spacing: 10
                 visible: modelData.kind === "row"
 
-                Text {
+                InfoRowText {
+                    objectName: "infoPanelLabel-" + infoRoot.side + "-" + infoRow.index
                     text: hostWindow.cleanText(modelData.label)
                     color: hostWindow.mutedText
                     font.pixelSize: (hostWindow ? hostWindow.uiTextSize(12) : 12)
@@ -79,7 +125,8 @@ Rectangle {
                     elide: Text.ElideRight
                 }
 
-                Text {
+                InfoRowText {
+                    objectName: "infoPanelValue-" + infoRoot.side + "-" + infoRow.index
                     id: infoValue
                     text: hostWindow.cleanText(modelData.value)
                     color: hostWindow.textColor
@@ -98,7 +145,8 @@ Rectangle {
                 visible: modelData.kind === "section"
 
                 Rectangle { height: 1; color: hostWindow.dialogAccent; Layout.fillWidth: true }
-                Text {
+                InfoRowText {
+                    objectName: "infoPanelSection-" + infoRoot.side + "-" + infoRow.index
                     text: hostWindow.cleanText(modelData.label)
                     color: hostWindow.activeBorder
                     font.pixelSize: (hostWindow ? hostWindow.uiTextSize(12) : 12)
@@ -112,7 +160,8 @@ Rectangle {
                 spacing: 10
                 visible: modelData.kind === "usage"
 
-                Text {
+                InfoRowText {
+                    objectName: "infoPanelUsageLabel-" + infoRoot.side + "-" + infoRow.index
                     text: hostWindow.cleanText(infoRow.modelData.label)
                     color: hostWindow.mutedText
                     font.pixelSize: hostWindow.uiTextSize(12)
@@ -125,7 +174,8 @@ Rectangle {
                     Layout.fillWidth: true
                     spacing: 4
 
-                    Text {
+                    InfoRowText {
+                        objectName: "infoPanelTotal-" + infoRoot.side + "-" + infoRow.index
                         text: hostWindow.cleanText(infoRow.modelData.totalText)
                         color: hostWindow.textColor
                         font.pixelSize: hostWindow.uiTextSize(12)
@@ -155,7 +205,8 @@ Rectangle {
                                 radius: 3
                                 color: hostWindow.themePaletteObject.panelProgressFillColor
                             }
-                            Text {
+                            InfoRowText {
+                                objectName: "infoPanelPercent-" + infoRoot.side + "-" + infoRow.index
                                 id: usagePercent
                                 anchors.centerIn: parent
                                 text: Math.round(usageBar.value) + "%"
@@ -171,14 +222,16 @@ Rectangle {
                     RowLayout {
                         Layout.fillWidth: true
                         spacing: 8
-                        Text {
+                        InfoRowText {
+                            objectName: "infoPanelUsed-" + infoRoot.side + "-" + infoRow.index
                             text: hostWindow.cleanText(infoRow.modelData.usedText)
                             color: hostWindow.textColor
                             font.pixelSize: hostWindow.uiTextSize(12)
                             Layout.fillWidth: true
                             elide: Text.ElideMiddle
                         }
-                        Text {
+                        InfoRowText {
+                            objectName: "infoPanelFree-" + infoRoot.side + "-" + infoRow.index
                             text: hostWindow.cleanText(infoRow.modelData.freeText)
                             color: hostWindow.textColor
                             font.pixelSize: hostWindow.uiTextSize(12)

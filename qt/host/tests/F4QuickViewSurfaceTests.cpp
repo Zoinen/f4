@@ -1095,6 +1095,7 @@ private slots:
     void widePanelDoesNotRevealTerminalBackdrop();
     void shortenedPanelsRevealTerminalRows();
     void infoPanelUsageMeters();
+    void infoPanelKeepsScrollOnRefresh();
     void mediaInfoReportShowsAndScrollsAt175Percent();
     void semanticTableDialog();
     void terminalScrollBarStaysInsideTheExposedPanelSide();
@@ -11850,6 +11851,8 @@ void F4QuickViewSurfaceTests::infoPanelUsageMeters()
             {"percent", percent}, {"totalText", "Total: 100 GiB"},
             {"usedText", "Used: 50 GiB"}, {"freeText", "Free: 50 GiB"}});
     }
+    rows.append(QVariantMap{{"kind", "section"}, {"label", "Filesystem"}});
+    rows.append(QVariantMap{{"kind", "row"}, {"label", "Mount"}, {"value", "/Volumes/Example"}});
     shell.insert("infoPanels", QVariantList{QVariantMap{{"side", 0},
         {"title", "Information"}, {"rows", rows}}});
     scene.insert("shell", shell);
@@ -11862,6 +11865,115 @@ void F4QuickViewSurfaceTests::infoPanelUsageMeters()
         QTRY_VERIFY(bar->isVisible() && bar->width() > 0 && bar->height() > 0);
         QCOMPARE(bar->property("value").toInt(), i * 50);
     }
+    const qreal dpr = fixture.window->devicePixelRatio();
+    QCOMPARE(dpr, 1.75);
+    const auto capture = fixture.window->grabWindow();
+    QVERIFY(!capture.isNull());
+    const auto capturePath = qEnvironmentVariable("F4_INFO_PANEL_CAPTURE");
+    if (!capturePath.isEmpty())
+        QVERIFY(capture.save(capturePath));
+    for (const auto &name : {"infoPanelUsageLabel-0-1", "infoPanelTotal-0-1",
+                             "infoPanelPercent-0-1", "infoPanelUsed-0-1", "infoPanelFree-0-1",
+                             "infoPanelSection-0-3", "infoPanelLabel-0-4", "infoPanelValue-0-4"}) {
+        auto *leaf = visualItemWithObjectName(fixture.window->contentItem(), QString::fromLatin1(name));
+        QVERIFY(leaf && leaf->isVisible());
+        const auto origin = leaf->mapToScene(QPointF());
+        for (qreal physical : {origin.x() * dpr, origin.y() * dpr}) {
+            QVERIFY2(qAbs(physical - qRound64(physical)) < 0.001,
+                     qPrintable(QString("%1: %2 physical pixels").arg(name).arg(physical)));
+        }
+        QCOMPARE(leaf->mapToScene(QPointF(1, 0)) - origin, QPointF(1, 0));
+        QCOMPARE(leaf->mapToScene(QPointF(0, 1)) - origin, QPointF(0, 1));
+    }
+}
+
+void F4QuickViewSurfaceTests::infoPanelKeepsScrollOnRefresh()
+{
+    auto scene = shellScene();
+    auto shell = scene.value("shell").toMap();
+    QVariantList rows;
+    for (int index = 0; index < 60; ++index) {
+        rows.append(QVariantMap{{"kind", "row"}, {"label", QString::number(index)},
+                               {"value", "Initial value"}});
+    }
+    const auto setRows = [&] {
+        shell.insert("infoPanels", QVariantList{QVariantMap{{"side", 0},
+            {"title", "Information"}, {"rows", rows}}});
+        scene.insert("shell", shell);
+    };
+    setRows();
+    QuickViewFixture fixture(scene);
+    QVERIFY(fixture.window);
+    QVERIFY(QTest::qWaitForWindowExposed(fixture.window));
+    const qreal dpr = fixture.window->devicePixelRatio();
+    QCOMPARE(dpr, 1.75);
+    auto *list = fixture.item("infoPanelRows-0");
+    QVERIFY(list);
+    QTRY_VERIFY(list->property("contentHeight").toReal() > list->height());
+    const auto point = list->mapToScene(QPointF(list->width() / 2, list->height() / 2));
+    QTest::wheelEvent(fixture.window, point, QPoint(0, -480), QPoint());
+    QTRY_VERIFY(list->property("contentY").toReal() > 0);
+    QTRY_VERIFY(!list->property("moving").toBool());
+    const qreal offset = list->property("contentY").toReal();
+
+    auto updated = rows.at(15).toMap();
+    updated.insert("value", "Updated value");
+    rows[15] = updated;
+    setRows();
+    fixture.shell.setScene(scene);
+    QTRY_COMPARE(list->property("contentY").toReal(), offset);
+    auto *value = visualItemWithObjectName(fixture.window->contentItem(),
+                                          "infoPanelValue-0-15");
+    QVERIFY(value);
+    QCOMPARE(value->property("text").toString(), QStringLiteral("Updated value"));
+
+    rows.append(rows.last());
+    setRows();
+    fixture.shell.setScene(scene);
+    QTRY_COMPARE(list->property("count").toInt(), 61);
+    QCOMPARE(list->property("contentY").toReal(), offset);
+
+    auto *bar = fixture.item("infoPanelScrollBar-0");
+    auto *handle = fixture.item("infoPanelScrollBar-0Handle");
+    QVERIFY(bar && handle);
+    QTRY_VERIFY(bar->isVisible() && bar->property("position").toReal() > 0);
+    QCOMPARE(bar->width() * dpr, 28.0);
+    for (auto *item : {bar, handle}) {
+        const auto aligned = [item, dpr] {
+            const QPointF origin = item->mapToScene(QPointF()) * dpr;
+            const QPointF end = item->mapToScene(QPointF(item->width(), item->height())) * dpr;
+            for (qreal coordinate : {origin.x(), origin.y(), end.x(), end.y()}) {
+                if (qAbs(coordinate - qRound64(coordinate)) >= 0.001)
+                    return false;
+            }
+            return true;
+        };
+        QTRY_VERIFY(aligned());
+    }
+    QVERIFY(bar->mapToScene(QPointF()).x() >= list->mapToScene(QPointF(list->width(), 0)).x() - 0.5 / dpr);
+    const QPointF handleCenter = handle->mapToScene(QPointF(handle->width() / 2, handle->height() / 2));
+    const QImage capture = fixture.window->grabWindow();
+    QVERIFY(!capture.isNull());
+    const QSizeF captureScale(qreal(capture.width()) / fixture.window->width(),
+                              qreal(capture.height()) / fixture.window->height());
+    const QPoint handlePixel(qRound(handleCenter.x() * captureScale.width()),
+                             qRound(handleCenter.y() * captureScale.height()));
+    QCOMPARE(capture.pixelColor(handlePixel),
+             handle->property("color").value<QColor>());
+
+    const QPoint dragStart = handleCenter.toPoint();
+    const QPoint dragEnd = dragStart + QPoint(0, 50);
+    QTest::mousePress(fixture.window, Qt::LeftButton, Qt::NoModifier, dragStart);
+    QVERIFY(bar->property("pressed").toBool());
+    QTest::mouseMove(fixture.window, dragEnd);
+    QTest::mouseRelease(fixture.window, Qt::LeftButton, Qt::NoModifier, dragEnd);
+    QTRY_VERIFY(list->property("contentY").toReal() > offset);
+
+    rows = rows.mid(0, 2);
+    setRows();
+    fixture.shell.setScene(scene);
+    QTRY_VERIFY(!bar->isVisible());
+    QTRY_COMPARE(list->property("contentY").toReal(), list->property("originY").toReal());
 }
 
 void F4QuickViewSurfaceTests::widePanelDoesNotRevealTerminalBackdrop()
