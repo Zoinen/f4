@@ -514,9 +514,11 @@ match at or above the current view. Ctrl+G and Ctrl+Shift+G move to the next
 and previous match, wrapping at either end.
 
 The Qt GUI setting **Separate terminal command output** is enabled by default.
-A separator occupies an existing blank row before the next command, or its top
-edge when there is no blank row. The line is decorative and copying retains
-the terminal's original text and line breaks.
+A separator occupies an existing blank row before the next command. For local
+managed Unix commands, F4 reserves a display row if the shell left no blank
+line. Other command paths draw the line at the top edge of the next command
+when there is no blank row. Copying skips display-only rows and retains the
+shell's original text and line breaks.
 
 An owned GUI terminal replaces an inherited `TERM=dumb` or `TERM=unknown` with
 `xterm-256color`, because the launcher's capabilities do not describe its PTY.

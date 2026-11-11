@@ -640,6 +640,42 @@ func BenchmarkTerminalLiveWireWith100KScrollback(b *testing.B) {
 	}
 }
 
+func TestManagedCommandSeparatorOccupiesOneRow(t *testing.T) {
+	tv := NewTerminalView(80, 8)
+	defer tv.Close()
+	tv.SetCursor(0, 0)
+	parser := NewAnsiParser(tv, nil)
+	for _, command := range []string{"first", "second", "third"} {
+		parser.Process([]byte("$ "))
+		tv.PrepareCleanCommand(command, true)
+		tv.ExpectCommandEcho()
+		parser.Process([]byte("\x1b]133;C\x07output\r\n\x1b]133;D\x07"))
+		if command == "second" {
+			parser.Process([]byte("\r\n"))
+		}
+	}
+	check := func() {
+		t.Helper()
+		model := tv.SemanticModel(nil)
+		rows := model.WindowRows
+		for _, index := range []int{2, 5} {
+			row := rows[model.ContentStart+int64(index)]
+			if row.CommandSeparator != "center" || len(row.Runs) != 0 {
+				t.Fatalf("row %d must be a standalone separator: %+v", index, row)
+			}
+		}
+		const want = "$ first\noutput\n$ second\noutput\n\n$ third\noutput"
+		start := int(model.ContentStart)
+		if got := tv.semanticBoundarySelectionText(start, 0, start+7, 6); got != want {
+			t.Fatalf("selected text = %q, want %q", got, want)
+		}
+	}
+	check()
+	parser.Process([]byte(strings.Repeat("\r\nmore", 2020)))
+	tv.HandleSemanticAction(map[string]any{"target": vtui.SemanticID(tv), "action": "terminal.scroll", "visualRow": 0})
+	check()
+}
+
 func TestTerminalCommandSeparatorsFollowRowsIntoHistory(t *testing.T) {
 	tv := NewTerminalView(80, 7)
 	defer tv.Close()

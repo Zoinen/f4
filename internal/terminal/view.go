@@ -80,6 +80,7 @@ type TerminalView struct {
 	cmdPrompt                       cmdPromptPhase
 	resizePrompt                    []vtui.CharInfo
 	commandEchoPending              bool
+	spacePendingCleanCommand        bool
 	hasCommandEcho                  bool
 	pieceCommandSeparators          map[int]string
 	semanticWindowGeneration        uint64
@@ -453,9 +454,10 @@ func (tv *TerminalView) SetMuted(muted bool) {
 // that the shell accepted the wire command and is starting its output. This
 // ordering prevents the shell from racing the caller and leaking the technical
 // wrapper before SetMuted takes effect.
-func (tv *TerminalView) PrepareCleanCommand(cleanCmd string) {
+func (tv *TerminalView) PrepareCleanCommand(cleanCmd string, spaceEcho bool) {
 	tv.mu.Lock()
 	tv.pendingCleanCommand = cleanCmd
+	tv.spacePendingCleanCommand = spaceEcho
 	tv.Muted = true
 	tv.mu.Unlock()
 }
@@ -465,6 +467,7 @@ func (tv *TerminalView) PrepareCleanCommand(cleanCmd string) {
 func (tv *TerminalView) CancelPreparedCleanCommand() {
 	tv.mu.Lock()
 	tv.pendingCleanCommand = ""
+	tv.spacePendingCleanCommand = false
 	tv.Muted = false
 	tv.mu.Unlock()
 }
@@ -473,6 +476,10 @@ func (tv *TerminalView) beginPreparedCleanCommand() string {
 	tv.mu.Lock()
 	cleanCmd := tv.pendingCleanCommand
 	tv.pendingCleanCommand = ""
+	if cleanCmd != "" && tv.spacePendingCleanCommand {
+		tv.spaceCleanCommandEchoLocked()
+	}
+	tv.spacePendingCleanCommand = false
 	tv.Muted = false
 	tv.mu.Unlock()
 	return cleanCmd
@@ -500,6 +507,10 @@ func (tv *TerminalView) rowHasText(y int) bool {
 	return false
 }
 func (tv *TerminalView) pushRowToGridHistory(y int) {
+	tv.pushCellsToGridHistory(tv.Lines[y], tv.WrapFlags[y])
+}
+
+func (tv *TerminalView) pushCellsToGridHistory(cells []vtui.CharInfo, wrapped bool) {
 	const retainedGridRows = 2000
 	if len(tv.GridHistory) >= retainedGridRows && len(tv.GridHistoryWrap) > 0 {
 		// The oldest row is about to become compact PieceTable text, so its
@@ -507,19 +518,18 @@ func (tv *TerminalView) pushRowToGridHistory(y int) {
 		// allocating Width CharInfo values for every line of sustained output.
 		tv.extrudeGridHistoryRow(0)
 		lineCopy := tv.GridHistory[0]
-		if len(lineCopy) != len(tv.Lines[y]) {
-			lineCopy = make([]vtui.CharInfo, len(tv.Lines[y]))
+		if len(lineCopy) != len(cells) {
+			lineCopy = make([]vtui.CharInfo, len(cells))
 		}
-		copy(lineCopy, tv.Lines[y])
+		copy(lineCopy, cells)
 		tv.GridHistory = append(tv.GridHistory[1:], lineCopy)
-		tv.GridHistoryWrap = append(tv.GridHistoryWrap[1:], tv.WrapFlags[y])
+		tv.GridHistoryWrap = append(tv.GridHistoryWrap[1:], wrapped)
 		return
 	}
 
-	lineCopy := make([]vtui.CharInfo, len(tv.Lines[y]))
-	copy(lineCopy, tv.Lines[y])
+	lineCopy := append([]vtui.CharInfo(nil), cells...)
 	tv.GridHistory = append(tv.GridHistory, lineCopy)
-	tv.GridHistoryWrap = append(tv.GridHistoryWrap, tv.WrapFlags[y])
+	tv.GridHistoryWrap = append(tv.GridHistoryWrap, wrapped)
 }
 
 func (tv *TerminalView) extrudeGridHistoryRow(idx int) {

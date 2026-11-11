@@ -4336,7 +4336,8 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 				// Prepare atomically before Write. A real PTY can synchronously
 				// deliver the technical wrapper and OSC C from its read goroutine
 				// before Write itself returns.
-				pf.TermView.PrepareCleanCommand(cmd)
+				spaceEcho := pf.isLocalPTY(activePty) && pf.ShellMode != terminal.ShellModeHost && GUIViewModesAvailable()
+				pf.TermView.PrepareCleanCommand(cmd, spaceEcho)
 				pf.clearCommandPayload()
 				pf.commandPayloadCleanup = commandCleanup
 			}

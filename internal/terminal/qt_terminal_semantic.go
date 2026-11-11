@@ -258,6 +258,9 @@ func (tv *TerminalView) semanticRowUnsafe(layout terminalSemanticLayout,
 		row.Runs = tv.semanticPieceRunsUnsafe(fragment.ByteOffsetStart,
 			fragment.ByteOffsetEnd)
 		row.CommandSeparator = tv.pieceCommandSeparators[fragment.ByteOffsetStart]
+		if row.CommandSeparator == commandSeparatorSpacer {
+			row.CommandSeparator = "center"
+		}
 	case absoluteRow < layout.pieceRows+layout.historyRows:
 		index := absoluteRow - layout.pieceRows
 		row.Runs, row.CommandSeparator = terminalCellPresentation(tv.GridHistory[index], tv.Width)
@@ -568,6 +571,9 @@ func (tv *TerminalView) semanticRowTextRangeUnsafe(layout terminalSemanticLayout
 			return "", true
 		}
 		fragment := fragments[fragmentIndex]
+		if tv.pieceCommandSeparators[fragment.ByteOffsetStart] == commandSeparatorSpacer {
+			return "", false
+		}
 		tv.semanticScratch = tv.semanticScratch[:0]
 		data, err := tv.Pt.AppendRange(tv.semanticScratch,
 			fragment.ByteOffsetStart,
@@ -584,6 +590,9 @@ func (tv *TerminalView) semanticRowTextRangeUnsafe(layout terminalSemanticLayout
 		return terminalTextSelectionRange(text, left, rightExclusive), hardBreak
 	case absoluteRow < layout.pieceRows+layout.historyRows:
 		index := absoluteRow - layout.pieceRows
+		if commandSeparatorInCells(tv.GridHistory[index]) == commandSeparatorSpacer {
+			return "", false
+		}
 		if rightExclusive < 0 {
 			rightExclusive = tv.Width
 		}
@@ -595,6 +604,9 @@ func (tv *TerminalView) semanticRowTextRangeUnsafe(layout terminalSemanticLayout
 		index := screenRow - layout.activeOffset
 		if index < 0 || index >= len(layout.buffer) {
 			return "", true
+		}
+		if !layout.altScreen && commandSeparatorInCells(layout.buffer[index]) == commandSeparatorSpacer {
+			return "", false
 		}
 		hardBreak := true
 		if !layout.altScreen && index < len(layout.wraps) {

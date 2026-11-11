@@ -1188,7 +1188,7 @@ func TestAnsiParser_PrivateSyncFailsOpenForEveryForegroundOSCSplit(t *testing.T)
 			tv.OnBusyChange = func(value bool) {
 				busyChanges = append(busyChanges, value)
 			}
-			tv.PrepareCleanCommand("printf user-output")
+			tv.PrepareCleanCommand("printf user-output", false)
 
 			parser := NewAnsiParser(tv, nil)
 			parser.ExpectPrivateSyncCompletion()
