@@ -482,6 +482,7 @@ private slots:
     void sameDocumentWindowsDoNotResetShellInteraction();
     void openingDocumentKeepsHiddenPanelPresentationStable();
     void sameCountStyledRunsRetainVisualObjects();
+    void editorSelectionAndOccurrenceStylesCommitTogether();
     void streamSelectionStateKeepsBaseRowsAndSuffixPixelsStable();
     void nativeStyledRunMutationIgnoresStaleContentKey();
     void recenteredWindowReplacesEachSlotOnlyOnce();
@@ -891,6 +892,156 @@ void F4DocumentSurfaceTests::sameCountStyledRunsRetainVisualObjects()
     QVERIFY(findRun("changed literal"));
     QVERIFY(!findRun(" secondary"));
     QVERIFY(!findRun(" new third run"));
+}
+
+void F4DocumentSurfaceTests::editorSelectionAndOccurrenceStylesCommitTogether()
+{
+    auto frame = editorFrame(0, 12, 0, 1, 12);
+    frame.insert("documentKey", "editor-occurrence-transition");
+    frame.insert("viewportColumns", 40);
+    frame.insert("defaultBackground", "#202020");
+    frame.insert("cursorAbsoluteRow", 0);
+    frame.insert("cursorAbsoluteColumn", 0);
+    frame.insert("selection", false);
+    frame.insert("selectionBackground", "#3050a0");
+    auto rows = frame.value("windowRows").toList();
+    auto row = rows.first().toMap();
+    row.remove("text");
+    row.insert("visualWidth", 16);
+    const auto run = [](const QString &text, const QString &background) {
+        return QVariantMap{{"text", text}, {"foreground", "#ffffff"},
+                           {"background", background}};
+    };
+    const QVariantList plainRuns{run("Host alpha alpha", "#202020")};
+    const auto setRuns = [&](const QVariantList &runs, const QString &key) {
+        row.insert("runs", runs);
+        row.insert("contentKey", key);
+        rows[0] = row;
+        frame.insert("windowRows", rows);
+        frame.insert("windowContentKey", key);
+    };
+    setRuns(plainRuns, "plain");
+    DocumentFixture fixture(documentScene(frame));
+    QVERIFY(fixture.ready());
+    QTRY_VERIFY(fixture.surface->property("windowInitialized").toBool());
+    auto *registry = fixture.shell.surfaceRegistry();
+    auto moved = frame;
+    moved.insert("cursorAbsoluteColumn", 5);
+    moved.insert("cursorVisualColumn", 5);
+    auto state = moved;
+    state.remove("windowRows");
+    state.remove("rows");
+    registry->applyDocumentState(moved, 2);
+    emit fixture.shell.compactPresentationChanged({{"surfaceState", state}});
+    const auto cursor = [&] { return fixture.surface->property("cursorFrame").toMap(); };
+    QCOMPARE(cursor().value("cursorAbsoluteColumn").toInt(), 5);
+
+    const QColor occurrence("#d63391");
+    const auto visualRuns = [&] {
+        QList<QQuickItem *> matches;
+        QList<QQuickItem *> pending{fixture.list};
+        while (!pending.isEmpty()) {
+            auto *item = pending.takeLast();
+            pending.append(item->childItems());
+            if (item->isVisible() && item->objectName() == "documentRunBackground"
+                    && item->property("color").value<QColor>() == occurrence)
+                matches.append(item);
+        }
+        return matches;
+    };
+    const qreal dpr = fixture.window->devicePixelRatio();
+    const qreal cell = fixture.surface->property("terminalCellWidth").toReal();
+    const qreal inset = fixture.surface->property("textHorizontalInset").toReal();
+    QList<qreal> firstSelectionFrame;
+    bool selectedFrameObserved = false;
+    QObject::connect(fixture.window, &QQuickWindow::afterAnimating,
+        fixture.surface, [&] {
+            if (selectedFrameObserved || !cursor().value("selection").toBool())
+                return;
+            selectedFrameObserved = true;
+            for (auto *item : visualRuns())
+                firstSelectionFrame.append((item->x() - inset) * dpr);
+            std::sort(firstSelectionFrame.begin(), firstSelectionFrame.end());
+        });
+    frame.insert("selection", true);
+    frame.insert("selectionAnchorRow", 0);
+    frame.insert("selectionAnchorColumn", 5);
+    frame.insert("cursorAbsoluteColumn", 11);
+    frame.insert("cursorVisualColumn", 11);
+    setRuns({run("Host ", "#202020"), run("alpha", occurrence.name()),
+             run(" ", "#202020"), run("alpha", occurrence.name())}, "selected");
+    registry->applyDocument(frame, 3);
+    const int columnBeforeRowsCommit = cursor().value("cursorAbsoluteColumn").toInt();
+    QTRY_VERIFY(selectedFrameObserved);
+    QCOMPARE(firstSelectionFrame.size(), 2);
+    QVERIFY2(qAbs(firstSelectionFrame[0] - 5 * cell * dpr) < 1,
+        qPrintable(QStringLiteral("First occurrence begins at physical x=%1, expected %2")
+                   .arg(firstSelectionFrame[0]).arg(5 * cell * dpr)));
+    QVERIFY(qAbs(firstSelectionFrame[1] - 11 * cell * dpr) < 1);
+    QCOMPARE(columnBeforeRowsCommit, 5);
+
+    const auto matches = visualRuns();
+    QCOMPARE(matches.size(), 2);
+    auto *selectedRow = matches.first()->parentItem();
+    QVERIFY(selectedRow);
+    int visibleLeaves = 0;
+    QList<QQuickItem *> pending{selectedRow};
+    while (!pending.isEmpty()) {
+        auto *leaf = pending.takeLast();
+        pending.append(leaf->childItems());
+        if (!leaf->isVisible() || (leaf->objectName() != "documentRunText"
+                && leaf->objectName() != "documentEditorSelectedText"))
+            continue;
+        const auto origin = leaf->mapToItem(fixture.window->contentItem(), QPointF());
+        const QPointF physical = origin * dpr;
+        QVERIFY2(QLineF(physical, physical.toPoint()).length() < 0.001,
+            qPrintable(QStringLiteral("%1 at physical (%2, %3)")
+                       .arg(leaf->objectName()).arg(physical.x()).arg(physical.y())));
+        const auto dx = leaf->mapToItem(fixture.window->contentItem(), QPointF(1, 0)) - origin;
+        const auto dy = leaf->mapToItem(fixture.window->contentItem(), QPointF(0, 1)) - origin;
+        QVERIFY(QLineF(dx, QPointF(1, 0)).length() < 0.001);
+        QVERIFY(QLineF(dy, QPointF(0, 1)).length() < 0.001);
+        ++visibleLeaves;
+    }
+    QCOMPARE(visibleLeaves, 5);
+    const auto sampleAt = [&](qreal column) {
+        return (selectedRow->mapToItem(fixture.window->contentItem(),
+            QPointF(inset + column * cell, 2 / dpr)) * dpr).toPoint();
+    };
+    const QPoint prefixPixel = sampleAt(2);
+    const QPoint selectedPixel = sampleAt(7);
+    const QPoint matchPixel = sampleAt(13);
+    const QImage selectedImage = fixture.window->grabWindow();
+    QVERIFY(selectedImage.rect().contains(prefixPixel));
+    QVERIFY(selectedImage.rect().contains(selectedPixel));
+    QVERIFY(selectedImage.rect().contains(matchPixel));
+    QVERIFY(selectedImage.pixelColor(prefixPixel) != occurrence);
+    QCOMPARE(selectedImage.pixelColor(selectedPixel), QColor("#3050a0"));
+    QCOMPARE(selectedImage.pixelColor(matchPixel), occurrence);
+
+    frame.insert("selection", false);
+    frame.insert("cursorAbsoluteColumn", 5);
+    frame.insert("cursorVisualColumn", 5);
+    setRuns(plainRuns, "cleared");
+    registry->applyDocument(frame, 4);
+    auto movedAfterClear = frame;
+    movedAfterClear.insert("cursorAbsoluteColumn", 6);
+    movedAfterClear.insert("cursorVisualColumn", 6);
+    state = movedAfterClear;
+    state.remove("windowRows");
+    state.remove("rows");
+    registry->applyDocumentState(movedAfterClear, 5);
+    emit fixture.shell.compactPresentationChanged({{"surfaceState", state}});
+    QVERIFY(cursor().value("selection").toBool());
+    QCOMPARE(cursor().value("cursorAbsoluteColumn").toInt(), 11);
+    QTRY_VERIFY(!cursor().value("selection").toBool());
+    QCOMPARE(cursor().value("cursorAbsoluteColumn").toInt(), 6);
+    QVERIFY(visualRuns().isEmpty());
+    const QImage clearedImage = fixture.window->grabWindow();
+    QVERIFY(clearedImage.rect().contains(matchPixel));
+    QCOMPARE(clearedImage.pixelColor(prefixPixel), selectedImage.pixelColor(prefixPixel));
+    QCOMPARE(clearedImage.pixelColor(selectedPixel), clearedImage.pixelColor(prefixPixel));
+    QCOMPARE(clearedImage.pixelColor(matchPixel), clearedImage.pixelColor(prefixPixel));
 }
 
 void F4DocumentSurfaceTests::streamSelectionStateKeepsBaseRowsAndSuffixPixelsStable()
