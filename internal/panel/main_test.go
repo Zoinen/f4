@@ -3,8 +3,10 @@ package panel
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/unxed/f4/internal/config"
 	"github.com/unxed/f4/internal/fileops"
 	"github.com/unxed/f4/internal/fusefs"
 	"github.com/unxed/f4/internal/semantic"
@@ -18,7 +20,19 @@ func TestMain(m *testing.M) {
 	os.Exit(testutil.Main(m, installTestSeams, unmountTestFilesystems))
 }
 
+func TestPanelTestsUseIsolatedProfile(t *testing.T) {
+	want := filepath.Join(testutil.ConfigDir(), "f4", "settings.ini")
+	if got := config.GetUserConfigIniPath(); got != want {
+		t.Fatalf("settings path = %q, want isolated path %q", got, want)
+	}
+}
+
 func installTestSeams() {
+	// macOS ignores XDG_CONFIG_HOME when resolving the application profile.
+	// Some panel tests save settings, so redirect the resolver before any run.
+	config.UserConfigDir = func() (string, error) { return testutil.ConfigDir(), nil }
+	config.ResetConfigDirForTest()
+
 	// f4 extends vtui's palette past its last index, and any widget drawn with
 	// one of the extra colours indexes past the end of the default one. Which
 	// test draws first depends on the shuffle seed, so the palette is sized
