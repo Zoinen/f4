@@ -29,6 +29,15 @@ Popup {
     property int keyboardIndex: -1
     readonly property real menuItemHeight: hostWindow.snapPx(31)
 
+    function resetZoom() {
+        // Publish the reset after the slider finishes committing its release.
+        Qt.callLater(hostWindow.action, {
+            "action": "panel.resetGalleryDensity",
+            "side": panel.side,
+            "layoutMode": panelView.effectiveGalleryLayoutMode
+        }, true)
+    }
+
     function pixelOffset(item, horizontal) {
         return horizontal ? hostWindow.dialogPixelOffsetX(item, hostWindow.contentItem)
                           : hostWindow.dialogPixelOffsetY(item, hostWindow.contentItem)
@@ -625,13 +634,7 @@ Popup {
                         anchors.margins: -3
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            hostWindow.action({
-                                "action": "panel.resetGalleryDensity",
-                                "side": panel.side,
-                                "layoutMode": panelView.effectiveGalleryLayoutMode
-                            }, true)
-                        }
+                        onClicked: rendererMenu.resetZoom()
                     }
                 }
 
@@ -676,6 +679,12 @@ Popup {
                     value: panelView.galleryHost()
                            ? panelView.galleryHost().currentDensity : 0
                     snapMode: T.Slider.SnapAlways
+
+                    TapHandler {
+                        acceptedButtons: Qt.LeftButton
+                        gesturePolicy: TapHandler.DragThreshold
+                        onDoubleTapped: rendererMenu.resetZoom()
+                    }
 
                     onMoved: {
                         const host = panelView.galleryHost()

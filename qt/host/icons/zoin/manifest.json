@@ -2,7 +2,7 @@
   "title": "Zoin file icons",
   "licenseNotices": "ICON_LICENSES.txt",
   "icons": [
-    {"file":"folder.svg", "kind":"folder", "examples":[]},
+    {"file":"folder.svg", "kind":"folder", "color":"#f79f57", "examples":[]},
     {"file":"folder-up.svg", "kind":"parent folder", "examples":[]},
     {"file":"default.svg", "kind":"fallback", "examples":[]},
     {"file":"bash.svg", "kind":"file type", "examples":[".bash_profile",".bashrc",".zprofile",".zshenv",".zshrc","*.sh","*.bash","*.zsh","*.fish"]},

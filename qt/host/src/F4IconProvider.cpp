@@ -1038,7 +1038,13 @@ F4IconSet::F4IconSet(QString providerId, QObject *parent)
             .object().value("icons").toArray();
         for (const auto &entry : entries) {
             const auto record = entry.toObject();
-            if (record.value("kind").toString() != QStringLiteral("file type"))
+            const QString kind = record.value("kind").toString();
+            if (kind == QStringLiteral("folder")) {
+                const QColor color(record.value("color").toString());
+                if (color.isValid())
+                    m_zoinFolderColor = color.name();
+            }
+            if (kind != QStringLiteral("file type"))
                 continue;
             const QString path = QStringLiteral(":/F4QtHost/icons/zoin/")
                 + QFileInfo(record.value("file").toString()).fileName();
@@ -1069,6 +1075,11 @@ F4IconSet::F4IconSet(QString providerId, QObject *parent)
     if (qGuiApp) {
         qGuiApp->installEventFilter(this);
     }
+}
+
+QString F4IconSet::folderArtworkColor() const
+{
+    return zoin() ? m_zoinFolderColor : QString{};
 }
 
 QString F4IconSet::name() const

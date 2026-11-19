@@ -666,6 +666,8 @@ Rectangle {
         }
     }
 
+    readonly property bool panelMenuVisible: rendererMenu.visible || sortMenu.visible
+
     PanelRendererMenu {
         id: rendererMenu
         siblingMenuVisible: sortMenu.visible

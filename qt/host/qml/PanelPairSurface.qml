@@ -14,6 +14,8 @@ Item {
     required property var galleryController
     required property ZG.GalleryThemePalette galleryTheme
     required property ZG.GalleryPresentationMetrics galleryMetrics
+    readonly property bool panelMenusVisible: leftPanel.panelMenuVisible
+                                              || rightPanel.panelMenuVisible
 
     property var pendingSplitUpdate: null
     function flushSplitUpdate() {
@@ -67,6 +69,7 @@ Item {
     }
 
     FilePanelView {
+        id: leftPanel
         hostWindow: pair.hostWindow
         galleryController: pair.galleryController
         focusTarget: pair.focusTarget
@@ -74,12 +77,14 @@ Item {
         galleryTheme: pair.galleryTheme
         galleryMetrics: pair.galleryMetrics
         panel: pair.panelsSurface.panelForSide(0)
+        panelMenusVisible: pair.panelMenusVisible
         layoutState: pair.hostWindow.leftPanelLayoutStateOverride
         visible: pair.hostWindow.panelSideVisible(0)
                  && !pair.panelsSurface.altPanelForSide(0)
     }
 
     FilePanelView {
+        id: rightPanel
         hostWindow: pair.hostWindow
         galleryController: pair.galleryController
         focusTarget: pair.focusTarget
@@ -87,6 +92,7 @@ Item {
         galleryTheme: pair.galleryTheme
         galleryMetrics: pair.galleryMetrics
         panel: pair.panelsSurface.panelForSide(1)
+        panelMenusVisible: pair.panelMenusVisible
         layoutState: pair.hostWindow.rightPanelLayoutStateOverride
         visible: pair.hostWindow.panelSideVisible(1)
                  && !pair.panelsSurface.altPanelForSide(1)

@@ -2,6 +2,8 @@ import QtQuick
 import ZoinGallery 1.0 as ZG
 
 FocusScope {
+    objectName: "testGalleryPanel-" + side
+    property bool dropInputEnabled: true
     property int side: 0
     property var panel: ({})
     property var layoutState: null
@@ -43,6 +45,9 @@ FocusScope {
     readonly property real densityStep: 2
     readonly property real currentDensity: 30
     readonly property bool densityAdjustable: true
+
+    function previewDensity(value) {}
+    function commitDensity(value) {}
 
     function beginPointerActivationPreview() {
         pointerActivationPreviewRequested(side)

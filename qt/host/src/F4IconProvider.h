@@ -91,6 +91,7 @@ class F4IconSet final : public QObject
     Q_PROPERTY(bool system READ system NOTIFY iconSetChanged)
     Q_PROPERTY(bool fileIconsAreFullColor READ fileIconsAreFullColor
                NOTIFY iconSetChanged)
+    Q_PROPERTY(QString folderArtworkColor READ folderArtworkColor NOTIFY iconSetChanged)
     Q_PROPERTY(qulonglong revision READ revision NOTIFY revisionChanged)
 
 public:
@@ -112,6 +113,7 @@ public:
     // without IconLabel.icon.color/SourceIn recoloring.
     bool fileIconsAreFullColor() const { return m_iconSet != Lucide; }
     bool zoin() const { return m_iconSet == Zoin; }
+    QString folderArtworkColor() const;
     qulonglong revision() const { return m_revision; }
     QString providerId() const { return m_providerId; }
 
@@ -162,6 +164,7 @@ private:
     void advanceRevision();
 
     QString m_providerId;
+    QString m_zoinFolderColor;
     struct FileIconPattern {
         struct Filter {
             QRegularExpression expression;

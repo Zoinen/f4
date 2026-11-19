@@ -973,6 +973,8 @@ private slots:
     void historyHeldUpKeepsRowsOnPhysicalPixels();
     void rendererChoicesUseProductOrderAndShortcuts();
     void rendererZoomControlsFollowLayoutCapability();
+    void rendererZoomDragOwnsPressWhileMenuIsOpen();
+    void rendererZoomDoubleClickResetsDensity();
     void rendererGroupingSubmenuMatchesParent();
     void rendererThumbnailsToggleMatchesMenuAndPersistsPerSide();
     void rendererZoomHoverClosesGroupingSubmenu();
@@ -3046,6 +3048,93 @@ void F4QuickViewSurfaceTests::rendererGroupingSubmenuMatchesParent()
         {"type", "scene_patch"}, {"side", 0}, {"panel", changedPanel}});
     QTRY_VERIFY(!menu->property("opened").toBool());
     QTRY_VERIFY(!submenu->property("opened").toBool());
+}
+
+void F4QuickViewSurfaceTests::rendererZoomDragOwnsPressWhileMenuIsOpen()
+{
+    QuickViewFixture fixture(shellScene({}, 0), true);
+    QVERIFY(fixture.window);
+    QVERIFY(QTest::qWaitForWindowExposed(fixture.window));
+    auto *left = visualItemWithObjectNamePrefix(fixture.window->contentItem(),
+        QStringLiteral("testGalleryPanel-0"));
+    auto *right = visualItemWithObjectNamePrefix(fixture.window->contentItem(),
+        QStringLiteral("testGalleryPanel-1"));
+    auto *menu = fixture.window->findChild<QObject *>("panelRendererMenu-0");
+    auto *slider = fixture.item(QStringLiteral("panelRendererZoomSlider-0"));
+    auto *button = fixture.item(QStringLiteral("panelRendererButton-0"));
+    QVERIFY(left);
+    QVERIFY(right);
+    QVERIFY(menu);
+    QVERIFY(slider);
+    QVERIFY(button);
+    QTRY_VERIFY(left->property("dropInputEnabled").toBool());
+    QTRY_VERIFY(right->property("dropInputEnabled").toBool());
+
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+        button->mapToScene(QPointF(button->width() / 2, button->height() / 2)).toPoint());
+    QTRY_VERIFY(menu->property("opened").toBool());
+    QTest::qWait(100);
+    // Native file drag checks these flags before Qt Quick delivers the press.
+    QVERIFY(!left->property("dropInputEnabled").toBool());
+    QVERIFY(!right->property("dropInputEnabled").toBool());
+    const QPoint start = slider->mapToScene(
+        QPointF(slider->width() / 4, slider->height() / 2)).toPoint();
+    const QPoint end = slider->mapToScene(
+        QPointF(slider->width() * 3 / 4, slider->height() / 2)).toPoint();
+    QVERIFY2(QRect(QPoint(), fixture.window->size()).contains(start),
+        qPrintable(QStringLiteral("Slider starts at (%1, %2)").arg(start.x()).arg(start.y())));
+    QVERIFY(QRect(QPoint(), fixture.window->size()).contains(end));
+    QTest::mousePress(fixture.window, Qt::LeftButton, Qt::NoModifier, start);
+    QVERIFY(slider->property("pressed").toBool());
+    QTest::mouseMove(fixture.window, start + (end - start) / 2);
+    const qreal midpoint = slider->property("value").toReal();
+    QTest::mouseMove(fixture.window, end);
+    QVERIFY(slider->property("value").toReal() > midpoint);
+    QTest::mouseRelease(fixture.window, Qt::LeftButton, Qt::NoModifier, end);
+    QVERIFY(!slider->property("pressed").toBool());
+
+    QVERIFY(QMetaObject::invokeMethod(menu, "close"));
+    QTRY_VERIFY(left->property("dropInputEnabled").toBool());
+    QTRY_VERIFY(right->property("dropInputEnabled").toBool());
+}
+
+void F4QuickViewSurfaceTests::rendererZoomDoubleClickResetsDensity()
+{
+    QuickViewFixture fixture(shellScene({}, 1), true);
+    QVERIFY(fixture.window);
+    QVERIFY(QTest::qWaitForWindowExposed(fixture.window));
+    auto descriptor = panel(1, true);
+    descriptor.remove("entries");
+    descriptor.insert("galleryLayoutMode", "masonry");
+    fixture.shell.deliverCompactPresentation({
+        {"type", "scene_patch"}, {"side", 1}, {"panel", descriptor}});
+    auto *menu = fixture.window->findChild<QObject *>("panelRendererMenu-1");
+    auto *slider = fixture.item(QStringLiteral("panelRendererZoomSlider-1"));
+    QVERIFY(menu && slider);
+    QVERIFY(QMetaObject::invokeMethod(menu, "open"));
+    QTRY_VERIFY(menu->property("opened").toBool());
+    QTest::qWait(100);
+    fixture.shell.clearActions();
+    const auto initial = slider->property("value").toReal();
+    const QPoint position = slider->mapToScene(
+        QPointF(slider->width() * 0.75, slider->height() / 2)).toPoint();
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, position);
+    QVERIFY(slider->property("value").toReal() > initial);
+    const auto resets = [&] {
+        QList<QVariantMap> result;
+        for (const auto &action : fixture.shell.actions) {
+            if (action.value("action").toString() == "panel.resetGalleryDensity")
+                result.append(action);
+        }
+        return result;
+    };
+    QVERIFY(resets().isEmpty());
+
+    QTest::mouseDClick(fixture.window, Qt::LeftButton, Qt::NoModifier, position);
+    QTRY_COMPARE(resets().size(), 1);
+    QCOMPARE(resets().first().value("side").toInt(), 1);
+    QCOMPARE(resets().first().value("layoutMode").toString(), QStringLiteral("masonry"));
+    QVERIFY(menu->property("opened").toBool());
 }
 
 void F4QuickViewSurfaceTests::rendererZoomControlsFollowLayoutCapability()

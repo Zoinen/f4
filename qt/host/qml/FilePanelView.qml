@@ -17,6 +17,8 @@ Rectangle {
     required property ZG.GalleryThemePalette galleryTheme
     required property ZG.GalleryPresentationMetrics galleryMetrics
     required property var panel
+    property bool panelMenusVisible: false
+    readonly property bool panelMenuVisible: panelHeader.panelMenuVisible
     property var layoutState: null
     readonly property bool layoutStateMatchesPanel:
         layoutState !== null

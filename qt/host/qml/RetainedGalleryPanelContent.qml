@@ -82,8 +82,11 @@ Item {
                 if (typeof item.iconProvider !== "undefined")
                     item.iconProvider = Qt.binding(() => hostWindow.iconProvider)
                 if (typeof item.dropInputEnabled !== "undefined")
+                    // The window's native drag filter runs before the menu's
+                    // controls and its outside-click dismissal plane.
                     item.dropInputEnabled = Qt.binding(() => retainedLoader.visible && panelSurface.visible
-                        && !galleryController.viewerVisible && !hostWindow.needsFallbackGrid()
+                        && !panelSurface.panelMenusVisible && !galleryController.viewerVisible
+                        && !hostWindow.needsFallbackGrid()
                         && !hostWindow.hasDocumentSurface() && !hostWindow.hasOperationsQueueSurface()
                         && !hostWindow.hasBlockingOverlay())
                 item.keySink = panelSurface.focusTarget

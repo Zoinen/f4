@@ -316,6 +316,7 @@ private slots:
     void sparseRefreshReachesGalleryAndCrossesPagingThreshold();
     void sameRevisionCompletionPatchExpandsSparseCatalog();
     void nativeDropUsesIdentityAndSnappedOutline();
+    void masonryCtrlWheelReversesFromMaximum();
     void columnsLabelsStaySnappedDuringPanelResize();
     void nativeWorkspaceHoverAndDrop();
     void commandLineAcceptsPathDrops();
@@ -4038,6 +4039,47 @@ void F4GalleryPointerTests::columnsLabelsStaySnappedDuringPanelResize()
     QVERIFY(view.grabWindow().save(QDir::current().filePath(".diagnostics/columns-resize-175.png")));
     // Destroy bindings while their bridge is still alive.
     delete host;
+}
+
+void F4GalleryPointerTests::masonryCtrlWheelReversesFromMaximum()
+{
+    QQuickView view;
+    view.engine()->addImportPath(QStringLiteral(":/"));
+    view.resize(360, 320);
+    F4GalleryBridge bridge(view.engine());
+    bridge.synchronizeScene(galleryScene(8));
+    QQmlComponent component(view.engine(), bridge.panelComponentUrl());
+    QTRY_VERIFY(component.status() != QQmlComponent::Loading);
+    QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+    auto *host = qobject_cast<QQuickItem *>(component.create());
+    QVERIFY(host);
+    const auto cleanup = qScopeGuard([host] { delete host; });
+    host->setSize(QSizeF(360, 320));
+    host->setProperty("bridge", QVariant::fromValue(&bridge));
+    host->setProperty("panel", QVariantMap{{"id", "pointer-left"}, {"catalogRevision", 5},
+        {"galleryLayoutMode", "masonry"}, {"galleryDensity", 500}});
+    host->setProperty("devicePixelRatio", view.devicePixelRatio());
+    view.setContent(bridge.panelComponentUrl(), &component, host);
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+    auto *layout = host->findChild<QQuickItem *>("galleryViewportItem");
+    QVERIFY(layout);
+    QTRY_COMPARE(layout->property("count").toInt(), 8);
+    QTRY_COMPARE(layout->property("density").toReal(), qreal(500));
+
+    const QPoint point = itemCenter(layout);
+    sendWheel(view, point, {}, QPoint(0, 120), Qt::ControlModifier);
+    QCOMPARE(layout->property("density").toReal(), qreal(500));
+    sendWheel(view, point, {}, QPoint(0, -120), Qt::ControlModifier);
+    QTRY_VERIFY(layout->property("density").toReal() < 500);
+
+    QRectF first, second, third;
+    QVERIFY(QMetaObject::invokeMethod(layout, "indexGeometry", Q_RETURN_ARG(QRectF, first), Q_ARG(int, 0)));
+    QVERIFY(QMetaObject::invokeMethod(layout, "indexGeometry", Q_RETURN_ARG(QRectF, second), Q_ARG(int, 1)));
+    QVERIFY(QMetaObject::invokeMethod(layout, "indexGeometry", Q_RETURN_ARG(QRectF, third), Q_ARG(int, 2)));
+    QVERIFY(first.isValid() && second.isValid() && third.isValid());
+    QCOMPARE(first.top(), second.top());
+    QVERIFY(third.top() > second.top());
 }
 
 void F4GalleryPointerTests::nativeDropUsesIdentityAndSnappedOutline()

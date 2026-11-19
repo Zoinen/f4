@@ -1146,6 +1146,18 @@ void F4IconProviderTests::zoinIconsAreBundledAndIndependent()
     QCOMPARE(source("unknown.xyz"), QUrl("qrc:/F4QtHost/icons/zoin/default.svg"));
     QCOMPARE(source("test", true), QUrl("qrc:/F4QtHost/icons/zoin/folder.svg"));
     QCOMPARE(source("..", true), QUrl("qrc:/F4QtHost/icons/zoin/folder-up.svg"));
+    QSvgRenderer folderSvg(QStringLiteral(":") + source("test", true).path());
+    QVERIFY(folderSvg.isValid());
+    QImage folderArtwork(100, 80, QImage::Format_ARGB32_Premultiplied);
+    folderArtwork.fill(Qt::transparent);
+    {
+        QPainter painter(&folderArtwork);
+        folderSvg.render(&painter);
+    }
+    const QColor body = folderArtwork.pixelColor(50, 45);
+    QCOMPARE(body.alpha(), 255);
+    QCOMPARE(QColor(icons.folderArtworkColor()), body);
+    QVERIFY(qAbs(folderArtwork.pixelColor(20, 10).alphaF() - 0.5) <= 1.0 / 255.0);
     QCOMPARE(icons.iconSource("folder", 16, 1), menuFolder);
     for (const QString &name : {"test.json", ".babelrc.json", "unknown.xyz"}) {
         const QUrl url = source(name);
@@ -1155,10 +1167,12 @@ void F4IconProviderTests::zoinIconsAreBundledAndIndependent()
         QVERIFY(svg.isValid());
     }
     icons.setName("lucide");
+    QVERIFY(icons.folderArtworkColor().isEmpty());
     QCOMPARE(F4IconProvider::routeId(source("test", true)).section('?', 0, 0),
              F4IconProvider::routeId(lucideFolder).section('?', 0, 0));
     QVERIFY(!icons.fileIconsAreFullColor());
     icons.setName("system");
+    QVERIFY(icons.folderArtworkColor().isEmpty());
     QVERIFY(icons.system());
     QVERIFY(source("test", true).toString().startsWith("image://"));
 }
