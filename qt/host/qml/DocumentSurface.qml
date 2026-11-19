@@ -96,20 +96,40 @@ Rectangle {
         }
         return 0
     }
-    readonly property var cursorFrame:
-        hostWindow.documentSurfaceStateOverride !== null
-        && hostWindow.cleanText(hostWindow.documentSurfaceStateOverride.id)
-           === hostWindow.cleanText(frame.id)
-        && hostWindow.cleanText(hostWindow.documentSurfaceStateOverride.documentKey)
-           === hostWindow.cleanText(documentKey)
-        && (!standaloneViewport || (frame.layoutPending !== true
-            && (hostWindow.documentSurfaceStateOverride.layoutRevision === undefined
-                || Number(hostWindow.documentSurfaceStateOverride.layoutRevision)
-                    === appliedLayoutRevision)
-            && (hostWindow.documentSurfaceStateOverride.windowGeneration === undefined
-                || Number(hostWindow.documentSurfaceStateOverride.windowGeneration)
-                    === appliedWindowGeneration)))
-        ? hostWindow.documentSurfaceStateOverride : presentationFrame
+    property var presentedCursorUpdate: null
+    readonly property var cursorUpdateForPresentedFrame: {
+        const update = hostWindow.documentSurfaceStateOverride
+        return update !== null
+                && update.windowRevision === presentationFrame.nativeWindowRevision
+            ? update : null
+    }
+    onCursorUpdateForPresentedFrameChanged: {
+        if (cursorUpdateForPresentedFrame !== null
+                && cursorUpdateForPresentedFrame.windowRevision !== undefined)
+            presentedCursorUpdate = cursorUpdateForPresentedFrame
+    }
+    onPresentationFrameChanged: {
+        if (presentedCursorUpdate !== null
+                && presentedCursorUpdate.windowRevision !== presentationFrame.nativeWindowRevision)
+            presentedCursorUpdate = cursorUpdateForPresentedFrame
+    }
+    readonly property var cursorFrame: {
+        // A new row publication can arrive before its render-boundary commit.
+        // Keep the latest caret for the rows that are still on screen.
+        const update = cursorUpdateForPresentedFrame || presentedCursorUpdate
+        if (update === null || update.windowRevision !== presentationFrame.nativeWindowRevision)
+            return presentationFrame
+        const state = update.state
+        if (hostWindow.cleanText(state.id) !== hostWindow.cleanText(frame.id)
+                || hostWindow.cleanText(state.documentKey) !== hostWindow.cleanText(documentKey)
+                || (standaloneViewport && (presentationFrame.layoutPending === true
+                    || (state.layoutRevision !== undefined
+                        && Number(state.layoutRevision) !== appliedLayoutRevision)
+                    || (state.windowGeneration !== undefined
+                        && Number(state.windowGeneration) !== appliedWindowGeneration))))
+            return presentationFrame
+        return state
+    }
     readonly property bool showsConsoleTopBar:
         !embedded && (frame.kind === "viewer" || frame.kind === "editor")
     readonly property bool terminalSurface: frame.kind === "terminal"

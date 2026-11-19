@@ -59,6 +59,8 @@ Item {
     property alias loadErrorDocumentKey: windowPresenter.loadErrorDocumentKey
     property bool componentReady: false
     property bool frameWindowSyncPending: false
+    property bool applyingFrameWindow: false
+    property var styledRowsNeedingPlacement: new Set()
     property alias loadedSlotStart: windowPresenter.loadedSlotStart
     property alias loadedSlotEnd: windowPresenter.loadedSlotEnd
     property alias poolSlotWriteCount: windowPresenter.poolSlotWriteCount
@@ -480,7 +482,28 @@ Item {
         stopMotion()
     }
 
-    function applyFrameWindow() { windowPresenter.applyFrameWindow() }
+    function placeStyledRow(row) {
+        if (applyingFrameWindow)
+            styledRowsNeedingPlacement.add(row)
+        else
+            row.forceLayout()
+    }
+
+    function applyFrameWindow() {
+        applyingFrameWindow = true
+        try {
+            windowPresenter.applyFrameWindow()
+        } finally {
+            applyingFrameWindow = false
+            // Row data arrives after the frame's usual polish. Place each
+            // affected Row once, after its repeater and run widths are ready.
+            for (const row of styledRowsNeedingPlacement) {
+                if (row && row.visible)
+                    row.forceLayout()
+            }
+            styledRowsNeedingPlacement.clear()
+        }
+    }
 
     function handleWheel(wheel) {
         if (!interactionActive) {

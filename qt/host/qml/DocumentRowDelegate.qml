@@ -22,12 +22,16 @@ Rectangle {
     readonly property string editorMarkup:
         documentRoot.documentKind === "editor" && documentRoot.rendererColumns > 0
         ? rowData._inlineMarkup || "" : ""
-    onRowDataChanged: runRow.forceLayout()
-    onLoadedChanged: runRow.forceLayout()
+    onRowDataChanged: if (runRow.visible) viewportController.placeStyledRow(runRow)
+    onLoadedChanged: if (runRow.visible) viewportController.placeStyledRow(runRow)
     width: ListView.view.width
     height: documentRoot.rowHeight
     color: "transparent"
-    Component.onCompleted: ++documentRoot.liveRowDelegateCount
+    Component.onCompleted: {
+        ++documentRoot.liveRowDelegateCount
+        if (runRow.visible && viewportController.applyingFrameWindow)
+            viewportController.placeStyledRow(runRow)
+    }
     Component.onDestruction: {
         if (countedAsLive)
             --documentRoot.liveRowDelegateCount
@@ -76,6 +80,10 @@ Rectangle {
                  && documentRow.editorMarkup === ""
                  && documentRow.rowData.runs !== undefined
                  && documentRow.rowData.runs.length > 0
+        onVisibleChanged: {
+            if (visible && documentRow.viewportController.applyingFrameWindow)
+                documentRow.viewportController.placeStyledRow(runRow)
+        }
 
         Repeater {
             id: runRepeater

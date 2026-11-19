@@ -2,7 +2,7 @@
   "title": "Zoin file icons",
   "licenseNotices": "ICON_LICENSES.txt",
   "icons": [
-    {"file":"folders.svg", "kind":"folder"},
+    {"file":"folders.svg", "kind":"folder", "color":"#f79f57"},
     {"file":"parent-folder.svg", "kind":"parent folder"},
     {"file":"files.svg", "kind":"fallback"},
     {"file":"shell-scripts.svg", "kind":"file type"},

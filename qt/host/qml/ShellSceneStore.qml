@@ -505,7 +505,10 @@ Item {
             structuralSurfaceChanged = true
         }
         if (patch.surfaceState !== undefined && patch.surfaceState !== null)
-            documentSurfaceStateOverride = patch.surfaceState
+            documentSurfaceStateOverride = {
+                "windowRevision": retainedDocumentFrame.nativeWindowRevision,
+                "state": patch.surfaceState
+            }
         const activePanel = Number(patch.activePanel)
         if (activePanel === 0 || activePanel === 1) {
             panelActivationOverride = activePanel

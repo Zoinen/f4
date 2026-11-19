@@ -444,6 +444,8 @@ FocusScope {
         iconProvider: host.iconProvider
         presentationDensities: ({})
         theme: host.theme
+        folderPreviewColor: host.iconProvider && host.iconProvider.folderArtworkColor
+            ? host.iconProvider.folderArtworkColor : host.theme.folderIcon
         groupHeaderBackdropColor: host.groupHeaderBackdropColor
         metrics: host.metrics
         animateLayoutChanges: host.bridge && host.bridge.settings

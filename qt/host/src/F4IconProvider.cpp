@@ -1030,6 +1030,28 @@ F4IconSet::F4IconSet(QString providerId, QObject *parent)
     }
 }
 
+QString F4IconSet::folderArtworkColor() const
+{
+    if (!zoin())
+        return {};
+    static const QString folderColor = []() -> QString {
+        QFile manifest(QStringLiteral(":/F4QtHost/icons/zoin/manifest.json"));
+        if (!manifest.open(QIODevice::ReadOnly))
+            return {};
+        const auto entries = QJsonDocument::fromJson(manifest.readAll())
+            .object().value("icons").toArray();
+        for (const auto &entry : entries) {
+            const auto record = entry.toObject();
+            if (record.value("kind").toString() == QStringLiteral("folder")) {
+                const QColor color(record.value("color").toString());
+                return color.isValid() ? color.name() : QString{};
+            }
+        }
+        return {};
+    }();
+    return folderColor;
+}
+
 QString F4IconSet::name() const
 {
     if (zoin()) return QStringLiteral("zoin");
