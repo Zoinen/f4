@@ -19,6 +19,7 @@
 #include <QCommandLineOption>
 #include <QCommandLineParser>
 #include <QCoreApplication>
+#include <QDebug>
 #include <QDir>
 #include <QFileInfo>
 #include <QFont>
@@ -228,6 +229,9 @@ int main(int argc, char *argv[])
     // bounded startup interval; otherwise Qt can quit before the first store
     // update gets a chance to reveal the only top-level window.
     QGuiApplication::setQuitOnLastWindowClosed(false);
+    QObject::connect(&app, &QGuiApplication::lastWindowClosed, &app, []() {
+        qInfo("[FIX:gui-exit] Qt: last window closed");
+    });
     F4NavigationBenchmarkTrace::event(
         QStringLiteral("qt.startup.process.ready"), {}, {
             {QStringLiteral("benchmarkTarget"),
@@ -793,6 +797,7 @@ int main(int argc, char *argv[])
     F4NavigationBenchmarkTrace::event(
         QStringLiteral("qt.startup.event-loop.enter"));
     const int exitCode = app.exec();
+    qInfo("[FIX:gui-exit] Qt: event loop returned with exit code %d", exitCode);
     F4NavigationBenchmarkTrace::event(
         QStringLiteral("qt.startup.event-loop.exit"), {}, {
             {QStringLiteral("exitCode"), exitCode},

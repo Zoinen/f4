@@ -4349,9 +4349,10 @@ func RunExternalUI(cols, rows int, execPath string, args []string) error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start external UI %q: %w", execPath, err)
 	}
+	logExtUIExit("host started: core_pid=%d host_pid=%d", os.Getpid(), cmd.Process.Pid)
+	loopReturned := false
 	defer func() {
-		cancel()
-		_ = cmd.Wait()
+		waitForExtUIExit(cmd, cancel, loopReturned)
 	}()
 
 	connCh := make(chan net.Conn, 1)
@@ -4498,8 +4499,42 @@ func RunExternalUI(cols, rows int, execPath string, args []string) error {
 	go host.readLoop()
 	App.SetupUI()
 	vtui.FrameManager.Run(reader)
-	_ = sender.Send(map[string]any{"type": "quit"})
+	loopReturned = true
+	logExtUIExit("core event loop returned; sending quit to host")
+	if err := sender.Send(map[string]any{"type": "quit"}); err != nil {
+		logExtUIExit("could not send quit to host: %v", err)
+	}
 	return nil
+}
+
+func logExtUIExit(format string, args ...any) {
+	_, _ = fmt.Fprintf(os.Stderr, "%s [FIX:gui-exit] core: %s\n",
+		time.Now().Format(time.RFC3339Nano), fmt.Sprintf(format, args...))
+}
+
+func waitForExtUIExit(cmd *exec.Cmd, cancel context.CancelFunc, loopReturned bool) {
+	waited := make(chan error, 1)
+	go func() { waited <- cmd.Wait() }()
+	var err error
+	if loopReturned {
+		// Give the host time to exit after quit (or finish disconnecting)
+		// before cancellation can replace its own exit status with a kill.
+		timer := time.NewTimer(time.Second)
+		defer timer.Stop()
+		select {
+		case err = <-waited:
+		case <-timer.C:
+			logExtUIExit("host did not exit within 1s; cancelling host process")
+			cancel()
+			err = <-waited
+		}
+	} else {
+		logExtUIExit("core left the external UI before its event loop returned; cancelling host process")
+		cancel()
+		err = <-waited
+	}
+	logExtUIExit("host exited: host_pid=%d status=%v wait_error=%v",
+		cmd.Process.Pid, cmd.ProcessState, err)
 }
 
 func (h *ExtUiHost) readLoop() {
@@ -4510,7 +4545,7 @@ func (h *ExtUiHost) readLoop() {
 		}
 		msg, err := extUiReadMessageWithBenchmark(h.conn, timing)
 		if err != nil {
-			vtui.DebugLog("EXTUI_HOST: read loop stopped: %v", err)
+			logExtUIExit("host connection read stopped: %v", err)
 			if h.platform != nil {
 				h.platform.Close(err)
 			}
@@ -4684,6 +4719,7 @@ func (h *ExtUiHost) handleMessageWithBenchmark(msg map[string]any, timing *navtr
 			vtui.FrameManager.PostTask(func() { ConfigureFileGroupIconTheme(id) })
 		}
 	case "quit":
+		logExtUIExit("received quit from host")
 		if vtui.FrameManager != nil {
 			vtui.FrameManager.PostTask(func() {
 				vtui.FrameManager.EmitCommand(vtui.CmQuit, nil)

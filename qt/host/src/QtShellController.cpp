@@ -521,6 +521,7 @@ void QtShellController::sendPanelGroupPageRequest(
 
 void QtShellController::sendQuit()
 {
+    qInfo("[FIX:gui-exit] Qt: sending quit to core");
     sendMessage({{QStringLiteral("type"), QStringLiteral("quit")}});
 }
 
@@ -626,6 +627,7 @@ void QtShellController::onDisconnected()
     if (!wasConnected) {
         return;
     }
+    qInfo("[FIX:gui-exit] Qt: core connection closed; requesting Qt quit");
     // A loopback peer can disconnect while waitForConnected() is running,
     // before app.exec(). A queued quit works both before and during the loop.
     if (QCoreApplication *application = QCoreApplication::instance()) {
