@@ -255,6 +255,12 @@ func mediaCanonicalPath(filesystem vfs.VFS, path string) string {
 	if filesystem == nil {
 		return path
 	}
+	// Standalone RPC catalogs already use the provider's public paths. Asking
+	// the plugin to normalize one could block the UI during registration.
+	switch filesystem.(type) {
+	case *rpcURIVFS, *rpcURIMediaVFS:
+		return path
+	}
 	if absolute, err := filesystem.Abs(path); err == nil && absolute != "" {
 		return absolute
 	}
@@ -333,7 +339,12 @@ func (b *ExtUiMediaBroker) vfsLeaseLocked(filesystem vfs.VFS) (string, *extUiMed
 		lease.refs++
 		return key, lease, nil
 	}
-	clone := filesystem.Clone()
+	var clone vfs.VFS
+	if remote, ok := filesystem.(*rpcURIVFS); ok {
+		clone = &rpcURIMediaVFS{rpcURIVFS: remote}
+	} else {
+		clone = filesystem.Clone()
+	}
 	if clone == nil {
 		return "", nil, errors.New("VFS clone returned nil")
 	}

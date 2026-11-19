@@ -4412,9 +4412,11 @@ func (pf *PanelsFrame) ProcessKey(e *vtinput.InputEvent) bool {
 			if pf.focusedPluginPanel() != nil {
 				return true
 			}
-			if fsp := pf.GetActivePanel(); fsp != nil && !ctrl && !alt && !shift &&
-				DispatchPanelAction(pf, vfs.PanelActionActivate, SelectedPanelActionPaths(fsp)) {
-				return true
+			if fsp := pf.GetActivePanel(); fsp != nil && !ctrl && !alt && !shift {
+				if _, ok := fsp.Vfs.(vfs.PanelActionHandler); ok &&
+					DispatchPanelAction(pf, vfs.PanelActionActivate, SelectedPanelActionPaths(fsp)) {
+					return true
+				}
 			}
 
 			// 1. Try passing to panel to handle directory entry.
@@ -8107,7 +8109,7 @@ func (pf *PanelsFrame) SwitchToVFS(fsp *FileSystemPanel, newVFS vfs.VFS) {
 			keepOldVFS = temp.parent != nil && fileops.SameVFSInstance(temp.parent, oldVFS)
 		}
 		if oldVFS != nil && !keepOldVFS {
-			oldVFS.Close()
+			closePanelMount(oldVFS)
 			pf.PtyMutex.Lock()
 			if pty, ok := pf.RemotePtys[oldVFS]; ok {
 				pty.Close()
@@ -8190,6 +8192,10 @@ func (pf *PanelsFrame) navigateToPath(fsp *FileSystemPanel, targetPath string, r
 		return false
 	}
 	targetPath = smbTargetFor(fsp.Vfs, targetPath)
+	_, standaloneRPC := fsp.Vfs.(pluginDirectoryMount)
+	if standaloneRPC && targetPath == ".." {
+		return fsp.navigatePluginDirectory(targetPath, true)
+	}
 	// An absolute provider path is tried before host/provider probing. Do not
 	// repeat that same verified change at the final current-VFS fallback.
 	pathAttempted := false
@@ -8253,7 +8259,7 @@ func (pf *PanelsFrame) navigateToPath(fsp *FileSystemPanel, targetPath string, r
 	// restored before OS path probing. This keeps bookmarks and folder history
 	// entirely user-facing while allowing the provider to translate the path to
 	// its internal object identity in the asynchronous Open call.
-	if fsp.Vfs.IsAbs(targetPath) {
+	if !standaloneRPC && fsp.Vfs.IsAbs(targetPath) {
 		if err := setPath(targetPath); err == nil {
 			fsp.PendingSelection = ".."
 			fsp.ReadDirectory()
@@ -8400,7 +8406,7 @@ func (pf *PanelsFrame) navigateToPath(fsp *FileSystemPanel, targetPath string, r
 			},
 		)
 	}
-	if vfs.IsURIPath(targetPath) && !fsp.Vfs.IsAbs(targetPath) {
+	if vfs.IsURIPath(targetPath) && (standaloneRPC || !fsp.Vfs.IsAbs(targetPath)) {
 		// The URI is syntactically valid but its plugin is unavailable. Do not
 		// let SetPath reinterpret it as a relative path in the current VFS.
 		return false
@@ -8409,6 +8415,9 @@ func (pf *PanelsFrame) navigateToPath(fsp *FileSystemPanel, targetPath string, r
 	// 4. Change path on the current VFS. Arbitrary callers use normal SetPath
 	// validation; an explicitly trusted cache/history transition may take the
 	// optimistic no-I/O route and let ReadDirectory revalidate in the background.
+	if standaloneRPC {
+		return fsp.navigatePluginDirectory(targetPath, false)
+	}
 	if err := setPath(targetPath); err == nil {
 		fsp.PendingSelection = ".."
 		fsp.ReadDirectory()

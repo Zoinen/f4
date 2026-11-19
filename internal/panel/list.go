@@ -3242,7 +3242,7 @@ func (fp *FileSystemPanel) ReadDirectory() {
 		// Returning to the old path in that interval cannot reuse those rows.
 		fp.committedListingVFS = nil
 		fp.committedListingPath = ""
-		showUpEntry := !fp.Vfs.IsAtRoot() || fp.Vfs.ParentVFS() != nil
+		showUpEntry := !fp.Vfs.IsAtRoot() || hasPanelVFSParent(fp.Vfs)
 		keepEntries = fp.restoreCachedDirectory(fp.Vfs, path, showUpEntry)
 	}
 	fp.readDirectoryEx(keepEntries)
@@ -3490,7 +3490,7 @@ func (fp *FileSystemPanel) openVFSAsync(
 			}
 			if fp.ProviderOpenTask != task {
 				if !isNilVFS(newVFS) {
-					_ = newVFS.Close()
+					closePanelMount(newVFS)
 				}
 				return
 			}
@@ -3502,13 +3502,13 @@ func (fp *FileSystemPanel) openVFSAsync(
 			fp.ProviderOpenSourceSelect = ""
 			if !fileops.SameVFSInstance(fp.Vfs, sourceVFS) || fp.Vfs.GetPath() != sourcePath {
 				if !isNilVFS(newVFS) {
-					_ = newVFS.Close()
+					closePanelMount(newVFS)
 				}
 				return
 			}
 			if err != nil {
 				if !isNilVFS(newVFS) {
-					_ = newVFS.Close()
+					closePanelMount(newVFS)
 				}
 				fp.IsLoading = false
 				fp.updateTitle(err)
@@ -3539,7 +3539,7 @@ func (fp *FileSystemPanel) openVFSAsync(
 // interactive while the new listing is in flight.
 func (fp *FileSystemPanel) showCurrentVFSLoadingRows() {
 	fp.Entries = nil
-	if fp.Vfs != nil && (!fp.Vfs.IsAtRoot() || fp.Vfs.ParentVFS() != nil) {
+	if fp.Vfs != nil && (!fp.Vfs.IsAtRoot() || hasPanelVFSParent(fp.Vfs)) {
 		fp.Entries = []*FileEntry{{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}}}
 	}
 	fp.SetCursorIndex(0)
@@ -3691,10 +3691,10 @@ func shouldPersistPanelPath(fp *FileSystemPanel, path string) bool {
 	if fp == nil || fp.Vfs == nil || path == "" {
 		return false
 	}
-	if fp.Vfs.ParentVFS() == nil {
+	if fileops.IsPersistentURIPath(path) || !hasPanelVFSParent(fp.Vfs) {
 		return true
 	}
-	return fileops.IsPersistentURIPath(path) || vfs.FindStandaloneProvider(context.Background(), nil, path) != nil
+	return vfs.FindStandaloneProvider(context.Background(), nil, path) != nil
 }
 
 // shouldRecordFolderHistory prevents an internal path of a nested VFS from
@@ -3707,10 +3707,7 @@ func ShouldRecordFolderHistory(fp *FileSystemPanel, path string) bool {
 	if fp == nil || fp.Vfs == nil || path == "" {
 		return false
 	}
-	if fp.Vfs.ParentVFS() == nil {
-		return true
-	}
-	if fileops.IsPersistentURIPath(path) || vfs.FindStandaloneProvider(context.Background(), nil, path) != nil {
+	if fileops.IsPersistentURIPath(path) || !hasPanelVFSParent(fp.Vfs) || vfs.FindStandaloneProvider(context.Background(), nil, path) != nil {
 		return true
 	}
 	// filepath.IsAbs does not treat a slash-rooted POSIX path as absolute on
@@ -3816,7 +3813,7 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 	}
 	suppressionToken, hasFolderHistorySuppression := fp.FolderHistorySuppression(path)
 	loadAtRoot := loadVFS.IsAtRoot()
-	showUpEntry := !loadAtRoot || loadVFS.ParentVFS() != nil
+	showUpEntry := !loadAtRoot || hasPanelVFSParent(loadVFS)
 	if fp.previousSelectionVFS != nil && !fp.previousSelectionMatches(loadVFS, path) {
 		fp.clearPreviousSelection()
 	}
@@ -4741,6 +4738,13 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 				// panel can often be had back, and going up a level or showing
 				// an error would throw away the answer before it was asked.
 				if fp.offerPanelReconnect(err, keepEntries) {
+					return
+				}
+				if _, remote := loadVFS.(pluginDirectoryMount); remote {
+					// Report the failed listing without a synchronous fallback
+					// against a provider that may no longer be responsive.
+					fp.updateTitle(err)
+					fp.showDirectoryError(" Error ", fmt.Sprintf("Failed to read directory:\n%v", err))
 					return
 				}
 				if os.IsNotExist(err) && !loadAtRoot && !keepEntries {
@@ -6121,6 +6125,9 @@ func (fp *FileSystemPanel) processKey(e *vtinput.InputEvent, allowProviderPanelE
 		idx := fp.GetCursorIndex()
 		if idx >= 0 && idx < len(fp.Entries) {
 			selected := fp.Entries[idx]
+			if selected.IsDir && fp.navigatePluginDirectory(selected.Name, true) {
+				return true
+			}
 
 			// Logic for leaving a virtual VFS (like an archive)
 			if selected.Name == ".." {
@@ -6436,6 +6443,9 @@ func (fp *FileSystemPanel) GetSelectedName() string {
 	}
 	entry := fp.Entries[idx]
 	if entry.Name == ".." {
+		if remote, ok := fp.Vfs.(pluginDirectoryMount); ok {
+			return remote.PanelParentPath(fp.Vfs.GetPath())
+		}
 		return fp.Vfs.Dir(fp.Vfs.GetPath())
 	}
 	return entry.Name

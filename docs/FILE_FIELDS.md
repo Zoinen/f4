@@ -207,6 +207,11 @@ stay bounded to eight rows and pause during input. Offscreen rows stay dormant
 until scrolling brings them into view; filesystem enumeration and navigation
 never wait for a viewport metadata response.
 
+Standalone VFS panels build catalog row paths from their published directory
+and listing names. Registering a preview does not contact the plugin. A media
+worker opens its own mount on demand, and the plugin serializes reads per
+file handle so a stalled transfer does not hold up directory operations.
+
 ## Pixel geometry and scrolling
 
 The semantic column schema marks default widths with `autoWidth`. Qt measures

@@ -2,6 +2,7 @@ package f4plugin
 
 import (
 	"context"
+	"time"
 
 	"github.com/unxed/f4/sdk/f4rpc"
 	"github.com/vmihailenco/msgpack/v5"
@@ -23,11 +24,13 @@ type URIRequest struct {
 	Length      int
 	Data        []byte
 	Item        any
+	Deadline    time.Time `msgpack:",omitempty"`
 }
 type URIMount struct {
 	ID           uint64
 	Path         string
 	Root         bool
+	HasParent    *bool `msgpack:",omitempty"`
 	Capabilities any
 }
 type URIFile struct {
@@ -45,7 +48,13 @@ func registerVFSURIs(sess *f4rpc.Session, plugin Plugin) func() {
 		if err := msgpack.Unmarshal(raw, &req); err != nil {
 			return nil, err
 		}
-		return provider.CallVFSURI(context.Background(), req)
+		ctx := context.Background()
+		if !req.Deadline.IsZero() {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithDeadline(ctx, req.Deadline)
+			defer cancel()
+		}
+		return provider.CallVFSURI(ctx, req)
 	})
 	return func() { _ = provider.CloseVFSURIs() }
 }

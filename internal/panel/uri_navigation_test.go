@@ -39,6 +39,58 @@ type navigationURIVFS struct {
 	uri string
 }
 
+type waitingPluginDirectory struct {
+	*navigationURIVFS
+	started chan struct{}
+	release chan struct{}
+	dest    vfs.VFS
+}
+
+func (v *waitingPluginDirectory) ClosePanelMount()                {}
+func (v *waitingPluginDirectory) HasParentVFS() bool              { return false }
+func (v *waitingPluginDirectory) PanelParentPath(p string) string { return p }
+func (v *waitingPluginDirectory) OpenPanelDirectory(ctx context.Context, target string, entry bool) (vfs.VFS, string, error) {
+	close(v.started)
+	select {
+	case <-ctx.Done():
+		return nil, "", ctx.Err()
+	case <-v.release:
+		return v.dest, "..", nil
+	}
+}
+
+func TestPanelEnterDoesNotWaitForPluginDirectory(t *testing.T) {
+	t.Cleanup(swapFrameManager(t))
+	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
+	root := &navigationURIVFS{NullVFS: vfs.NewNullVFS(0), uri: "test://phone/"}
+	child := &navigationURIVFS{NullVFS: vfs.NewNullVFS(0), uri: "test://phone/dir"}
+	source := &waitingPluginDirectory{
+		navigationURIVFS: root, started: make(chan struct{}),
+		release: make(chan struct{}), dest: child,
+	}
+	fp := NewFileSystemPanel(0, 0, 40, 20, source)
+	waitForLoad(t, fp)
+	t.Cleanup(fp.cancelProviderOpen)
+	fp.Entries = []*FileEntry{{VFSItem: vfs.VFSItem{Name: "dir", IsDir: true}}}
+	fp.SetCursorIndex(0)
+	if !fp.processKey(&vtinput.InputEvent{KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN}, false) {
+		t.Fatal("Enter did not start navigation")
+	}
+	select {
+	case <-source.started:
+	case <-time.After(time.Second):
+		t.Fatal("plugin directory request did not start")
+	}
+	if fp.Vfs != source || fp.ProviderOpenTask == nil {
+		t.Fatal("panel changed before the worker returned its mount")
+	}
+	close(source.release)
+	waitForLoad(t, fp)
+	if fp.Vfs != child {
+		t.Fatalf("panel did not apply the worker's mount: %T", fp.Vfs)
+	}
+}
+
 type blockingNavigationURIProvider struct {
 	scheme  string
 	started chan struct{}

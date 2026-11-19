@@ -399,6 +399,11 @@ func (pf *PanelsFrame) HandleSemanticAction(action map[string]any) bool {
 			fsp.clearFastFindForSemanticPointerIntent()
 			return true
 		}
+		if _, remote := fsp.Vfs.(pluginDirectoryMount); remote {
+			pf.setActivePanelForAction(action)
+			fsp.clearFastFindForSemanticPointerIntent()
+			return pf.NavigateToPath(fsp, target)
+		}
 		if err := fsp.SetKnownDirectoryPath(target); err != nil {
 			fsp.showDirectoryError(" Error ", fmt.Sprintf("Cannot access folder:\n%v", err))
 			return true
@@ -1183,7 +1188,12 @@ func (fp *FileSystemPanel) semanticSourceInfo() (sourceKind string, previewCapab
 }
 
 func (fp *FileSystemPanel) semanticEntryMetadata(entry *FileEntry, sourceKind string) (entryID, logicalPath string) {
-	logicalPath = fp.Vfs.Join(fp.Vfs.GetPath(), entry.Name)
+	directory := fp.Vfs.GetPath()
+	if snapshots, ok := fp.Vfs.(interface{ PanelEntryPath(string, string) string }); ok {
+		logicalPath = snapshots.PanelEntryPath(directory, entry.Name)
+	} else {
+		logicalPath = fp.Vfs.Join(directory, entry.Name)
+	}
 	// Stable semantic identity must not perform LocalPath resolution.  Besides
 	// being potentially expensive for remote providers, local materialization
 	// is deferred metadata and must not advance the base catalog revision.

@@ -7,6 +7,7 @@ import (
 	"testing/synctest"
 
 	"github.com/unxed/f4/sdk/f4plugin"
+	"github.com/unxed/f4/vfs"
 )
 
 type uriRecordingTransport struct{ requests []f4plugin.URIRequest }
@@ -23,8 +24,43 @@ func (s *uriRecordingTransport) Call(_ string, params any, result any) error {
 		*result.(*f4plugin.URIFile) = f4plugin.URIFile{ID: 9, Size: 3}
 	case "readAt":
 		*result.(*[]byte) = []byte("end")
+	case "clone":
+		*result.(*f4plugin.URIMount) = f4plugin.URIMount{ID: 8, Path: "ios://Phone/DCIM/"}
 	}
 	return nil
+}
+
+func TestURIPreviewRegistrationDoesNotCallPlugin(t *testing.T) {
+	transport := &uriRecordingTransport{}
+	mount := &rpcURIVFS{transport: transport, scheme: "ios",
+		mount: f4plugin.URIMount{ID: 7, Path: "ios://Phone/DCIM"}}
+	broker, err := NewExtUiMediaBroker()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = broker.Close() })
+	path := mount.PanelEntryPath(mount.GetPath(), "photo #1%.jpg")
+	if path != "ios://Phone/DCIM/photo %231%25.jpg" {
+		t.Fatalf("public path = %q", path)
+	}
+	source := broker.Register(MediaSourceRegistration{
+		FS: mount, Path: path, Item: vfs.VFSItem{Name: "photo #1%.jpg"},
+	})
+	if source.ResourceID == "" || len(transport.requests) != 0 {
+		t.Fatalf("registering preview made RPC calls: %#v", transport.requests)
+	}
+	resource := broker.resources[source.ResourceID]
+	file, err := resource.fs.Open(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.requests) != 2 || transport.requests[0].Operation != "clone" ||
+		transport.requests[1].Operation != "open" || transport.requests[1].Mount != 8 {
+		t.Fatalf("worker must open on its own mount: %#v", transport.requests)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestDeferredURIWaitsForRegistrationAndPreservesPaths(t *testing.T) {

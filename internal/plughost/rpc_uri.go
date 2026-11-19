@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/unxed/f4/sdk/f4plugin"
 	"github.com/unxed/f4/vfs"
@@ -54,13 +55,14 @@ func (p *deferredURIProvider) OpenURI(ctx context.Context, _ vfs.VFS, raw string
 	if err := callURI(ctx, transport, f4plugin.URIRequest{Operation: "openURI", Path: raw}, &mounted); err != nil {
 		return nil, err
 	}
-	return &rpcURIVFS{transport: transport, mount: mounted}, nil
+	return &rpcURIVFS{transport: transport, mount: mounted, scheme: p.scheme}, nil
 }
 
 func callURI(ctx context.Context, transport PluginTransport, request f4plugin.URIRequest, result any) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	request.Deadline, _ = ctx.Deadline()
 	if caller, ok := transport.(interface {
 		CallContext(context.Context, string, any, any) error
 	}); ok {
@@ -71,6 +73,7 @@ func callURI(ctx context.Context, transport PluginTransport, request f4plugin.UR
 
 type rpcURIVFS struct {
 	transport PluginTransport
+	scheme    string
 	mu        sync.RWMutex
 	mount     f4plugin.URIMount
 }
@@ -84,8 +87,11 @@ func (v *rpcURIVFS) call(ctx context.Context, request f4plugin.URIRequest, resul
 func (v *rpcURIVFS) SetPath(p string) error           { return v.setPath(p, "set") }
 func (v *rpcURIVFS) SetPathOptimistic(p string) error { return v.setPath(p, "setOptimistic") }
 func (v *rpcURIVFS) setPath(p, operation string) error {
+	return v.setPathContext(context.Background(), p, operation)
+}
+func (v *rpcURIVFS) setPathContext(ctx context.Context, p, operation string) error {
 	var mounted f4plugin.URIMount
-	if err := v.call(context.Background(), f4plugin.URIRequest{Operation: operation, Path: p}, &mounted); err != nil {
+	if err := v.call(ctx, f4plugin.URIRequest{Operation: operation, Path: p}, &mounted); err != nil {
 		return err
 	}
 	v.mu.Lock()
@@ -168,14 +174,23 @@ func (v *rpcURIVFS) Create(ctx context.Context, p string) (io.WriteCloser, error
 }
 func (v *rpcURIVFS) Search(context.Context, string, string) (chan int64, error) { return nil, nil }
 func (v *rpcURIVFS) Close() error {
-	return v.call(context.Background(), f4plugin.URIRequest{Operation: "close"}, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return v.call(ctx, f4plugin.URIRequest{Operation: "close"}, nil)
 }
 func (v *rpcURIVFS) related(operation string) vfs.VFS {
-	var mounted f4plugin.URIMount
-	if err := v.call(context.Background(), f4plugin.URIRequest{Operation: operation}, &mounted); err != nil || mounted.ID == 0 {
+	mounted, err := v.relatedContext(context.Background(), operation)
+	if err != nil || mounted == nil {
 		return nil
 	}
-	return &rpcURIVFS{transport: v.transport, mount: mounted}
+	return mounted
+}
+func (v *rpcURIVFS) relatedContext(ctx context.Context, operation string) (*rpcURIVFS, error) {
+	var mounted f4plugin.URIMount
+	if err := v.call(ctx, f4plugin.URIRequest{Operation: operation}, &mounted); err != nil || mounted.ID == 0 {
+		return nil, err
+	}
+	return &rpcURIVFS{transport: v.transport, mount: mounted, scheme: v.scheme}, nil
 }
 func (v *rpcURIVFS) Clone() vfs.VFS     { return v.related("clone") }
 func (v *rpcURIVFS) ParentVFS() vfs.VFS { return v.related("parent") }
@@ -186,6 +201,15 @@ type uriFileTransport struct {
 }
 
 func (t *uriFileTransport) Call(method string, params any, result any) error {
+	if method != "VFS.CloseFile" {
+		return t.CallContext(context.Background(), method, params, result)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return t.CallContext(ctx, method, params, result)
+}
+
+func (t *uriFileTransport) CallContext(ctx context.Context, method string, params any, result any) error {
 	request := f4plugin.URIRequest{File: t.file}
 	switch method {
 	case "VFS.ReadAt":
@@ -197,7 +221,7 @@ func (t *uriFileTransport) Call(method string, params any, result any) error {
 		req := params.(WriteReq)
 		request.Operation, request.Data = "write", req.Data
 		var written int
-		if err := t.mount.call(context.Background(), request, &written); err != nil {
+		if err := t.mount.call(ctx, request, &written); err != nil {
 			return err
 		}
 		if written != len(req.Data) {
@@ -207,5 +231,5 @@ func (t *uriFileTransport) Call(method string, params any, result any) error {
 	default:
 		return fmt.Errorf("unsupported URI file operation %q", method)
 	}
-	return t.mount.call(context.Background(), request, result)
+	return t.mount.call(ctx, request, result)
 }

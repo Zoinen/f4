@@ -47,7 +47,12 @@ func (w *rpcFileWrapper) ReadAt(ctx context.Context, p []byte, off int64) (int, 
 	}
 	req := ReadAtReq{ID: w.id, Len: len(p), Off: off}
 	var data []byte
-	err := w.sess.Call("VFS.ReadAt", req, &data)
+	var err error
+	if transport, ok := w.sess.(*uriFileTransport); ok {
+		err = transport.CallContext(ctx, "VFS.ReadAt", req, &data)
+	} else {
+		err = w.sess.Call("VFS.ReadAt", req, &data)
+	}
 	if len(data) > len(p) {
 		data = data[:len(p)]
 	}
