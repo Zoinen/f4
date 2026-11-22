@@ -159,6 +159,7 @@ func installTestSeams() {
 	// Unit tests must never hand control to the user's desktop. Individual
 	// tests that exercise these routes install per-dialog/per-frame recorders.
 	panel.DefaultExternalUICommandRunner = func(string, []string, string) error { return nil }
+	panel.OpenAssociatedPath = func(string, string) error { return nil }
 	dialog.DefaultNativePropertiesOpener = func(string) error { return nil }
 
 	// Frames must not fork the user's shell during unit tests; the few

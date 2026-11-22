@@ -12,6 +12,10 @@ type externalUICommandRunner func(command string, args []string, dir string) err
 
 var DefaultExternalUICommandRunner externalUICommandRunner = runExternalUICommandOS
 
+// OpenAssociatedPath asks the desktop to open a local file or directory with
+// its default association. Tests can replace the desktop entry point.
+var OpenAssociatedPath = openAssociatedPathOS
+
 func runExternalUICommandOS(command string, args []string, dir string) error {
 	cmd := exec.Command(command, args...)
 	if dir != "" {
@@ -40,19 +44,6 @@ func SystemFileManagerCommand(path string, isDir bool) (string, []string, bool) 
 			return "explorer.exe", []string{path}, true
 		}
 		return "explorer.exe", []string{"/select,", path}, true
-	case "darwin":
-		return "open", []string{path}, true
-	default:
-		return "", nil, false
-	}
-}
-
-func AssociatedFileCommand(path string) (string, []string, bool) {
-	switch runtime.GOOS {
-	case "linux":
-		return "xdg-open", []string{path}, true
-	case "windows":
-		return "rundll32", []string{"url.dll,FileProtocolHandler", path}, true
 	case "darwin":
 		return "open", []string{path}, true
 	default:

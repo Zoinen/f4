@@ -2441,9 +2441,6 @@ func TestPanelsFrame_AltShiftEnter_ExplorerLaunch(t *testing.T) {
 }
 
 func TestPanelsFrame_ShiftEnter_OpensAssociatedApplication(t *testing.T) {
-	if _, _, supported := panel.AssociatedFileCommand("test.txt"); !supported {
-		t.Skipf("associated-file launch is unsupported on %s", runtime.GOOS)
-	}
 	t.Cleanup(paneltest.SwapFrameManager(t))
 	vtui.FrameManager.Init(vtui.NewSilentScreenBuf())
 	oldHotkeys := keymap.GlobalHotkeysMgr
@@ -2458,19 +2455,23 @@ func TestPanelsFrame_ShiftEnter_OpensAssociatedApplication(t *testing.T) {
 	pf.ResizeConsole(80, 25)
 	pf.ActiveIdx = 0
 	vtui.FrameManager.Push(pf)
-	launches := make(chan recordedExternalUICall, 1)
-	pf.ExternalUIRunner = func(command string, args []string, dir string) error {
-		launches <- recordedExternalUICall{
-			command: command,
-			args:    append([]string(nil), args...),
-			dir:     dir,
-		}
+	type launch struct{ path, dir string }
+	launches := make(chan launch, 1)
+	oldOpen := panel.OpenAssociatedPath
+	t.Cleanup(func() { panel.OpenAssociatedPath = oldOpen })
+	panel.OpenAssociatedPath = func(path, dir string) error {
+		launches <- launch{path: path, dir: dir}
 		return nil
 	}
 
 	tmp := t.TempDir()
-	docPath := filepath.Join(tmp, "readme.txt")
+	const fileName = "read me.txt"
+	const folderName = "test folder"
+	docPath := filepath.Join(tmp, fileName)
 	if err := os.WriteFile(docPath, []byte("some text"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(tmp, folderName), 0700); err != nil {
 		t.Fatal(err)
 	}
 	fsp := pf.Panels[0].(*panel.FileSystemPanel)
@@ -2479,29 +2480,31 @@ func TestPanelsFrame_ShiftEnter_OpensAssociatedApplication(t *testing.T) {
 	}
 	fsp.Entries = []*panel.FileEntry{
 		{VFSItem: vfs.VFSItem{Name: "..", IsDir: true}},
-		{VFSItem: vfs.VFSItem{Name: "readme.txt", IsDir: false}},
+		{VFSItem: vfs.VFSItem{Name: folderName, IsDir: true}},
+		{VFSItem: vfs.VFSItem{Name: fileName}},
 	}
 	fsp.Refresh()
-	fsp.SelectName("readme.txt")
-
-	if !pressKey(pf, &vtinput.InputEvent{
-		Type:            vtinput.KeyEventType,
-		KeyDown:         true,
-		VirtualKeyCode:  vtinput.VK_RETURN,
-		ControlKeyState: vtinput.ShiftPressed,
-	}) {
-		t.Fatal("Shift+Enter was not handled by PanelsFrame")
-	}
-
-	command, args, _ := panel.AssociatedFileCommand(docPath)
-	want := recordedExternalUICall{command: command, args: args, dir: tmp}
-	select {
-	case got := <-launches:
-		if gotKey, wantKey := externalUICallKey(got), externalUICallKey(want); gotKey != wantKey {
-			t.Fatalf("associated-application launch = %#v, want %#v", got, want)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Shift+Enter did not launch the associated application")
+	for _, name := range []string{fileName, folderName} {
+		t.Run(name, func(t *testing.T) {
+			fsp.SelectName(name)
+			if !pressKey(pf, &vtinput.InputEvent{
+				Type:            vtinput.KeyEventType,
+				KeyDown:         true,
+				VirtualKeyCode:  vtinput.VK_RETURN,
+				ControlKeyState: vtinput.ShiftPressed,
+			}) {
+				t.Fatal("Shift+Enter was not handled by PanelsFrame")
+			}
+			want := launch{path: filepath.Join(tmp, name), dir: tmp}
+			select {
+			case got := <-launches:
+				if got != want {
+					t.Fatalf("associated-application launch = %#v, want %#v", got, want)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("Shift+Enter did not launch the associated application")
+			}
+		})
 	}
 }
 

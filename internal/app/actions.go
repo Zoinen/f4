@@ -2419,8 +2419,6 @@ func ActionOpenAssociated(pf *panel.PanelsFrame) {
 	if entry.Name != ".." {
 		path = v.Join(dir, entry.Name)
 	}
-	isDirectory := entry.IsDir || entry.Name == ".."
-
 	vtui.RunAsync(func(ctx *vtui.TaskContext) {
 		if _, isLocal := v.(*vfs.OSVFS); !isLocal {
 			ctx.RunOnUI(func() {
@@ -2431,20 +2429,7 @@ func ActionOpenAssociated(pf *panel.PanelsFrame) {
 			return
 		}
 
-		command, args, supported := panel.AssociatedFileCommand(path)
-		if isDirectory {
-			command, args, supported = panel.SystemFileManagerCommand(path, true)
-		}
-		if !supported {
-			ctx.RunOnUI(func() {
-				vtui.ShowMessage(" Error ",
-					"Opening items with a system application is unsupported on this platform.",
-					[]string{"&Ok"})
-			})
-			return
-		}
-
-		if err := pf.RunExternalUICommand(command, args, dir); err != nil {
+		if err := panel.OpenAssociatedPath(path, dir); err != nil {
 			vtui.DebugLog("ACTIONS: Associated application failed: %v", err)
 			ctx.RunOnUI(func() {
 				message := fmt.Sprintf("Failed to open item:\n%v", err)
