@@ -57,6 +57,8 @@ type ShellModel struct {
 	QuickViews       []QuickViewModel
 	CommandLine      *CommandLineModel
 	Terminal         *TerminalModel
+
+	GalleryPageLabels M
 }
 
 // PanelLayoutModel is the small, presentation-independent part of commander
@@ -171,6 +173,7 @@ type PanelModel struct {
 	HighlightRevision      int64
 	HighlightStyles        map[string]HighlightStyleModel
 	CursorEntryID          string
+	CursorRevealRevision   int64
 	GroupBy                string
 	GroupReverse           bool
 	GroupFoldersSeparately bool
@@ -896,6 +899,9 @@ func (s ShellModel) ToMap() M {
 	if len(s.QuickViews) > 0 {
 		out["quickViews"] = quickViewsToMaps(s.QuickViews)
 	}
+	if len(s.GalleryPageLabels) > 0 {
+		out["galleryPageLabels"] = s.GalleryPageLabels
+	}
 	if s.CommandLine != nil {
 		out["commandLine"] = s.CommandLine.ToMap()
 	}
@@ -1083,6 +1089,9 @@ func (p PanelModel) ToMap() M {
 	}
 	if p.CatalogDelta != nil {
 		out["catalogDelta"] = p.CatalogDelta
+	}
+	if p.CursorRevealRevision > 0 {
+		out["cursorRevealRevision"] = p.CursorRevealRevision
 	}
 	if p.CatalogRowsDeferred {
 		out["catalogRowsDeferred"] = true

@@ -4250,6 +4250,12 @@ DotNet.More=... и ещё %d
 
 PDF.NotPDF=%s не является PDF-файлом
 PDF.Encrypted=%s зашифрован, текст прочитать нельзя
+PDF.PasswordRequired=Требуется пароль
+Gallery.PageRenderFailed=Не удалось отобразить страницу
+Gallery.PreviousPage=Предыдущая страница или кадр
+Gallery.NextPage=Следующая страница или кадр
+Gallery.PausePages=Пауза
+Gallery.PlayPages=Воспроизвести
 PDF.ReadFailed=Не удалось прочитать %s: %v
 PDF.Pages=Страниц: %d
 PDF.Page=Страница %d

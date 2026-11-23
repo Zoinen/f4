@@ -287,6 +287,17 @@ Item {
     function handlePressed(event) {
         const session = galleryPanel.session
         const index = galleryPanel.controller.currentIndex
+        if (event.modifiers === Qt.AltModifier && bridge && bridge.quickViewSide >= 0
+                && !bridge.viewerVisible && !commanderInputActive && bridge.viewerSession) {
+            const pages = bridge.viewerSession.pageController
+            const direction = event.key === Qt.Key_Space || event.key === Qt.Key_PageDown ? 1
+                            : event.key === Qt.Key_Backspace || event.key === Qt.Key_PageUp ? -1 : 0
+            if (direction && pages && pages.step(direction)) {
+                bridge.suppressKeyRelease(event.key)
+                event.accepted = true
+                return
+            }
+        }
         if (event.key === Qt.Key_F3 && event.modifiers === Qt.NoModifier
                 && bridge && hostCapabilities.viewer && session
                 && panel.previewCapable !== false

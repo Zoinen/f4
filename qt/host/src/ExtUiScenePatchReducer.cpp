@@ -108,6 +108,7 @@ bool validShellPatchValue(const QString &key, const QVariant &value)
     }
     if (key == QStringLiteral("commandLine")
         || key == QStringLiteral("terminal")
+        || key == QStringLiteral("galleryPageLabels")
         || key == QStringLiteral("panelLayout")) {
         return valueHasType(value, QMetaType::QVariantMap);
     }
@@ -351,6 +352,7 @@ bool validPanelState(const QVariantMap &state, const QVariantMap &current,
         QStringLiteral("side"),
         QStringLiteral("galleryColumnCount"),
         QStringLiteral("galleryLayoutRevision"),
+        QStringLiteral("cursorRevealRevision"),
         QStringLiteral("catalogRevision"),
         QStringLiteral("metadataRevision"),
         QStringLiteral("selectedCount"),
@@ -469,7 +471,7 @@ bool applyScenePatch(const QVariantMap &message,
         QStringLiteral("fallback"), QStringLiteral("reason"),
         QStringLiteral("infoPanels"), QStringLiteral("quickViews"),
         QStringLiteral("commandLine"), QStringLiteral("terminal"),
-        QStringLiteral("panelLayout"),
+        QStringLiteral("panelLayout"), QStringLiteral("galleryPageLabels"),
     };
     for (auto it = message.cbegin(); it != message.cend(); ++it) {
         if (!envelopeKeys.contains(it.key())

@@ -222,7 +222,7 @@ var incrementalShellPatchKeys = []string{
 	"id", "kind", "title", "mode", "activePanel", "showPanels",
 	"showLeftPanel", "showRightPanel", "wide", "widePanel", "showKeyBar", "hidePanelPathBar",
 	"terminalBusy", "terminalActive", "macroRecording", "fallback", "reason",
-	"infoPanels", "quickViews", "commandLine", "terminal", "panelLayout",
+	"infoPanels", "quickViews", "commandLine", "terminal", "panelLayout", "galleryPageLabels",
 }
 
 type semanticSelectionAcknowledgement struct {
@@ -253,7 +253,8 @@ var semanticPanelStatePatchKeys = map[string]struct{}{
 	"totalFiles": {}, "totalDirectories": {}, "selectedSize": {}, "totalSize": {},
 	"freeSpace": {}, "totalCount": {},
 	"cursor": {}, "galleryDensity": {}, "galleryDensities": {},
-	"galleryColumns": {}, "fileFieldDescriptors": {},
+	"cursorRevealRevision": {},
+	"galleryColumns":       {}, "fileFieldDescriptors": {},
 	"fileFieldFilters": {}, "fileFieldPendingCount": {},
 	"fastFindMatches": {},
 }
@@ -316,6 +317,11 @@ func semanticPanelStateDeltaForPatch(previous, current map[string]any) map[strin
 			continue
 		}
 		delta[key] = currentValue
+	}
+	if _, wasRevealing := previous["cursorRevealRevision"]; wasRevealing {
+		if _, isRevealing := current["cursorRevealRevision"]; !isRevealing {
+			delta["cursorRevealRevision"] = int64(0)
+		}
 	}
 	for _, key := range semanticPanelStateIdentityKeys {
 		delta[key] = current[key]

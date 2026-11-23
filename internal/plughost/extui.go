@@ -4401,6 +4401,9 @@ func RunExternalUI(cols, rows int, execPath string, args []string) error {
 	defer semantic.DirectoryPreviewsEnabled.Store(previousDirectoryPreviews)
 	previousDelta := semantic.PanelCatalogDeltaEnabled.Swap(extUiHelloCapability(hello, "panelCatalogDeltaV1"))
 	defer semantic.PanelCatalogDeltaEnabled.Store(previousDelta)
+	endNativeImageExtensions := semantic.BeginNativeImageExtensions(
+		semantic.StringSlice(hello["nativeImageExtensions"]))
+	defer endNativeImageExtensions()
 	endDocumentViewport := semantic.BeginNativeDocumentViewport(extUiHelloCapability(hello, "documentViewportV1"))
 	defer endDocumentViewport()
 

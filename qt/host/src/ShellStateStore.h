@@ -22,6 +22,7 @@ class ShellStateStore final : public QObject
     Q_PROPERTY(bool fallback READ fallback NOTIFY fallbackChanged)
     Q_PROPERTY(QString fallbackReason READ fallbackReason NOTIFY fallbackChanged)
     Q_PROPERTY(QVariantMap commandLine READ commandLine NOTIFY commandLineChanged)
+    Q_PROPERTY(QVariantMap galleryPageLabels READ galleryPageLabels NOTIFY galleryPageLabelsChanged)
 
 public:
     explicit ShellStateStore(QObject *parent = nullptr);
@@ -41,6 +42,7 @@ public:
     bool fallback() const { return m_fallback; }
     QString fallbackReason() const { return m_fallbackReason; }
     QVariantMap commandLine() const { return m_commandLine; }
+    QVariantMap galleryPageLabels() const { return m_galleryPageLabels; }
 
     // Extracts only fixed shell roles. The panels list and its catalog rows are
     // deliberately never traversed or retained by this store.
@@ -57,6 +59,7 @@ signals:
     void terminalChanged();
     void fallbackChanged();
     void commandLineChanged();
+    void galleryPageLabelsChanged();
 
 private:
     qulonglong m_revision = 0;
@@ -74,4 +77,5 @@ private:
     bool m_fallback = false;
     QString m_fallbackReason;
     QVariantMap m_commandLine;
+    QVariantMap m_galleryPageLabels;
 };

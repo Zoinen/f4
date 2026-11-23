@@ -34,6 +34,7 @@
 #include <QLineF>
 #include <QMetaProperty>
 #include <QPainter>
+#include <QPdfWriter>
 #include <QPointF>
 #include <QPointer>
 #include <QQmlApplicationEngine>
@@ -46,6 +47,7 @@
 #include <QQuickStyle>
 #include <QQuickWindow>
 #include <QScopeGuard>
+#include <QScreen>
 #include <QSet>
 #include <QSettings>
 #include <QStyleHints>
@@ -930,6 +932,7 @@ private slots:
 #endif
     void initTestCase();
     void qmlImportsWithoutInstalledQt();
+    void pagedGalleryNavigationAndPhysicalPixelGrid();
     void galleryShadersContainOpenGlVariants();
     void unchangedPanelDescriptorsDoNotRepublishNativePanels();
     void compiledHostLoadsItsQmlModule();
@@ -1052,6 +1055,7 @@ private slots:
     void quickSearchPaletteDefaultAndResetArePink();
     void deviceBreadcrumbLabelsPreserveCanonicalNavigationAt175Percent_data();
     void deviceBreadcrumbLabelsPreserveCanonicalNavigationAt175Percent();
+    void typedPathRevealsFileAt175Percent();
     void pluginPathIconFollowsPanelOnPhysicalGrid();
     void embeddedWheelCoalescesAndUsesQuickViewContract();
     void contentKeyChangeDropsOldGestureAndAnchor();
@@ -1820,6 +1824,412 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
     fixture.window->setProperty("textColor", QColor("#abcdef"));
     fixture.shell.setScene(shellScene());
     QTRY_COMPARE(fixture.window->property("textColor"), baselineColor);
+}
+
+void F4QuickViewSurfaceTests::pagedGalleryNavigationAndPhysicalPixelGrid()
+{
+    QTemporaryDir files;
+    QVERIFY(files.isValid());
+    const QString gifPath = files.filePath(QStringLiteral("animation.gif"));
+    QFile gif(gifPath);
+    QVERIFY(gif.open(QIODevice::WriteOnly));
+    const auto frames = QByteArray::fromHex(
+        "47494638396108000700810000db332500000000000000000021ff0b4e45545343415045322e300301010000"
+        "21f90400640000002c000000000800070000080f0001081c48b0a0c18308132a04101000"
+        "21f90401b40001002c00000000080007008114b932000000000000000000080f0001081c48b0a0c18308132a04101000"
+        "21f904018c0001002c000000000800070081333ec7000000000000000000080f0001081c48b0a0c18308132a041010003b");
+    QCOMPARE(gif.write(frames), frames.size());
+    gif.close();
+
+    const QString pdfPath = files.filePath(QStringLiteral("manual.pdf"));
+    {
+        QPdfWriter writer(pdfPath);
+        writer.setResolution(72);
+        QPainter painter(&writer);
+        QVERIFY(painter.isActive());
+        painter.fillRect(QRect(35, 35, 145, 85), QColor(Qt::red));
+        painter.setFont(QFont(QStringLiteral("Sans Serif"), 8));
+        painter.drawText(35, 136, QStringLiteral("Small text on the first page"));
+        QImage scannedText(QSize(140, 38), QImage::Format_RGB32);
+        scannedText.fill(Qt::white);
+        {
+            QPainter rasterPainter(&scannedText);
+            rasterPainter.setFont(QFont(QStringLiteral("Sans Serif"), 8));
+            rasterPainter.drawText(scannedText.rect(), Qt::AlignCenter,
+                                   QStringLiteral("Scanned text at 200%"));
+        }
+        painter.drawImage(QPoint(writer.width() / 2 - scannedText.width() / 2,
+                                 writer.height() / 2 - scannedText.height() / 2),
+                          scannedText);
+        QVERIFY(writer.setPageOrientation(QPageLayout::Landscape));
+        QVERIFY(writer.newPage());
+        painter.fillRect(QRect(35, 35, 145, 85), QColor(Qt::blue));
+        painter.drawText(35, 136, QStringLiteral("Small text on the second page"));
+    }
+    const QString warmPdfPath = files.filePath(QStringLiteral("warm.pdf"));
+    const QString coldPdfPath = files.filePath(QStringLiteral("cold.pdf"));
+    const QString neighborPdfPath = files.filePath(QStringLiteral("neighbor.pdf"));
+    QVERIFY(QFile::copy(pdfPath, warmPdfPath));
+    QVERIFY(QFile::copy(pdfPath, neighborPdfPath));
+    {
+        QPdfWriter writer(coldPdfPath);
+        writer.setResolution(72);
+        QPainter painter(&writer);
+        QVERIFY(painter.isActive());
+        painter.fillRect(QRect(0, 0, writer.width(), writer.height()), Qt::green);
+    }
+
+    const QString lockedPath = files.filePath(QStringLiteral("locked.pdf"));
+    QFile locked(lockedPath);
+    QVERIFY(locked.open(QIODevice::WriteOnly));
+    // A blank 72-by-96-point page encrypted with password "gallery-test".
+    const auto lockedPdf = QByteArray::fromBase64(
+        "JVBERi0xLjMKJeLjz9MKMSAwIG9iago8PAovUHJvZHVjZXIgPGE1NTBlODgxMmQ+Cj4+CmVuZG9"
+        "iagoyIDAgb2JqCjw8Ci9UeXBlIC9QYWdlcwovQ291bnQgMQovS2lkcyBbIDQgMCBSIF0KPj4KZW"
+        "5kb2JqCjMgMCBvYmoKPDwKL1R5cGUgL0NhdGFsb2cKL1BhZ2VzIDIgMCBSCj4+CmVuZG9iago0I"
+        "DAgb2JqCjw8Ci9UeXBlIC9QYWdlCi9SZXNvdXJjZXMgPDwKPj4KL01lZGlhQm94IFsgMC4wIDAu"
+        "MCA3MiA5NiBdCi9QYXJlbnQgMiAwIFIKPj4KZW5kb2JqCjUgMCBvYmoKPDwKL1YgMQovUiAyCi9"
+        "MZW5ndGggNDAKL1AgNDI5NDk2NzI5MgovRmlsdGVyIC9TdGFuZGFyZAovTyA8YWQ4ZWExMDE2ZT"
+        "MzYzAzYTY1MjQ1ZTJjNDM5MjNlYjcxZGZhZWE3OGRlMDI4M2NkNThjNjUyY2Q3NTQwM2Q5MD4KL"
+        "1UgPDQ0ZTVhODhiZGY2ZDFkZGE4ZDdiNzU0ODc3ZGNkMTJiYWM4OWIwOTEwMzM4M2JiM2I4NTQ5"
+        "MzE0ODg4MjQwZDM+Cj4+CmVuZG9iagp4cmVmCjAgNgowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDA"
+        "wMDAwMTUgMDAwMDAgbiAKMDAwMDAwMDA1OSAwMDAwMCBuIAowMDAwMDAwMTE4IDAwMDAwIG4gCj"
+        "AwMDAwMDAxNjcgMDAwMDAgbiAKMDAwMDAwMDI1OSAwMDAwMCBuIAp0cmFpbGVyCjw8Ci9TaXplI"
+        "DYKL1Jvb3QgMyAwIFIKL0luZm8gMSAwIFIKL0lEIFsgPGU0OThmZjExNjQ4MGE3YWMyZThmOWRk"
+        "Y2NkMTY5Njc0PiA8ZTQ5OGZmMTE2NDgwYTdhYzJlOGY5ZGRjY2QxNjk2NzQ+IF0KL0VuY3J5cHQ"
+        "gNSAwIFIKPj4Kc3RhcnR4cmVmCjQ3MwolJUVPRgo=");
+    QCOMPARE(locked.write(lockedPdf), lockedPdf.size());
+    locked.close();
+
+    QQmlEngine engine;
+    engine.addImportPath(QStringLiteral(":"));
+    auto *runtime = ZoinGallery::GalleryRuntime::install(&engine);
+    QVERIFY(runtime);
+    const auto shutdown = qScopeGuard([&] { runtime->shutdown(); });
+    auto *session = runtime->createExternalSession("paged-gallery-test");
+    QVERIFY(session);
+    const auto addRow = [](QString entryId, int index, const QString &path) {
+        return QVariantMap{{"entryId", entryId}, {"index", index}, {"name", QFileInfo(path).fileName()},
+                           {"localPath", path}, {"isDir", false}, {"isImage", true}};
+    };
+    const bool hasPdf = ZoinGallery::GallerySession::supportedImageExtensions().contains("pdf");
+    QVERIFY(session->applyExternalCatalog(
+        {addRow("gif", 0, gifPath), addRow("pdf", 1, pdfPath), addRow("spacer1", 2, gifPath),
+         addRow("warm", 3, warmPdfPath), addRow("spacer2", 4, gifPath), addRow("cold", 5, coldPdfPath),
+         addRow("neighbor", 6, neighborPdfPath), addRow("locked", 7, lockedPath)}, 1));
+    QVERIFY(session->applyExternalState("gif", 0, {}, 1));
+    session->setViewerOpen(true);
+    engine.rootContext()->setContextProperty("pagedTestSession", session);
+    QQmlComponent component(&engine);
+    component.setData(R"(
+        import QtQuick
+        import ZoinGallery 1.0
+        GalleryViewer {
+            id: testViewer
+            objectName: "pagedGalleryTestViewer"
+            anchors.fill: parent
+            focus: true
+            managedPresentation: true
+            devicePixelRatio: Window.window ? Window.window.devicePixelRatio : 1
+            session: pagedTestSession
+            pageLabels: ({ password: "Требуется пароль" })
+            theme: GalleryThemePalette { panelBackground: "transparent" }
+            property bool observePdfFrame: false
+            property url firstDetailSource
+            property bool observedPdfFrame: false
+            Connections {
+                target: pagedTestSession.pageController
+                function onChanged() {
+                    if (testViewer.observePdfFrame && !testViewer.observedPdfFrame
+                            && target.source.toString() !== "") {
+                        testViewer.firstDetailSource = target.detailSource
+                        testViewer.observedPdfFrame = true
+                    }
+                }
+            }
+        }
+    )", QUrl(QStringLiteral("qrc:/gallery-paged-test.qml")));
+    QScopedPointer<QObject> object(component.create());
+    QVERIFY2(object, qPrintable(component.errorString()));
+    auto *viewer = qobject_cast<QQuickItem *>(object.data());
+    QVERIFY(viewer);
+    QQuickWindow window;
+    window.resize(779, 421);
+    viewer->setParentItem(window.contentItem());
+    window.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&window));
+    QCOMPARE(window.devicePixelRatio(), qreal(1.75));
+    viewer->forceActiveFocus();
+
+    const auto iconReady = [&window](const char *name, const QString &source) {
+        auto *icon = visualItemWithObjectName(window.contentItem(), QString::fromLatin1(name));
+        return icon && icon->isVisible() && icon->property("status").toInt() == 1
+            && icon->property("source").toUrl() == QUrl(source);
+    };
+    const auto iconBrightness = [&window](const QImage &capture, const char *name) {
+        auto *icon = visualItemWithObjectName(window.contentItem(), QString::fromLatin1(name));
+        if (!icon)
+            return 0;
+        const qreal dpr = window.devicePixelRatio();
+        const QPointF origin = icon->mapToItem(window.contentItem(), QPointF{});
+        const QRect bounds((origin * dpr).toPoint(), QSize(qRound(icon->width() * dpr),
+                                                          qRound(icon->height() * dpr)));
+        if (!capture.rect().contains(bounds))
+            return 0;
+        int brightest = 0;
+        for (int y = bounds.top(); y <= bounds.bottom(); ++y) {
+            for (int x = bounds.left(); x <= bounds.right(); ++x)
+                brightest = qMax(brightest, qGray(capture.pixel(x, y)));
+        }
+        return brightest;
+    };
+    const QString galleryIcons = QStringLiteral("qrc:/ZoinGallery/resources/lucide/");
+    const QString hostIcons = QStringLiteral("qrc:/F4QtHost/icons/lucide/");
+    const auto checkLeaves = [&window](std::initializer_list<const char *> names) {
+        const qreal dpr = window.devicePixelRatio();
+        QTest::qWait(80);
+        for (const char *name : names) {
+            auto *leaf = visualItemWithObjectName(window.contentItem(), QString::fromLatin1(name));
+            QVERIFY2(leaf && leaf->isVisible(), name);
+            const QPointF origin = leaf->mapToItem(window.contentItem(), QPointF{});
+            const QPointF pixels = origin * dpr;
+            const auto detail = QStringLiteral("%1 origin in device pixels: %2,%3")
+                .arg(QString::fromLatin1(name)).arg(pixels.x(), 0, 'f', 6).arg(pixels.y(), 0, 'f', 6);
+            QVERIFY2(qAbs(pixels.x() - qRound(pixels.x())) < 0.001, qPrintable(detail));
+            QVERIFY2(qAbs(pixels.y() - qRound(pixels.y())) < 0.001, qPrintable(detail));
+            QCOMPARE(leaf->mapToItem(window.contentItem(), QPointF(1, 0)) - origin, QPointF(1, 0));
+            QCOMPARE(leaf->mapToItem(window.contentItem(), QPointF(0, 1)) - origin, QPointF(0, 1));
+            if (QString::fromLatin1(name).endsWith(QStringLiteral("Icon"))) {
+                QCOMPARE(leaf->width() * dpr, qreal(28));
+                QCOMPARE(leaf->height() * dpr, qreal(28));
+            }
+        }
+    };
+
+    QObject *pages = session->pageController();
+    QTRY_COMPARE(pages->property("count").toInt(), 3);
+    QTRY_VERIFY(pages->property("playing").toBool());
+    QTRY_VERIFY_WITH_TIMEOUT(iconReady("galleryPagePlaybackIcon", galleryIcons + "pause.svg"), 1000);
+    checkLeaves({"galleryPagePlaybackIcon"});
+    QTRY_VERIFY_WITH_TIMEOUT(iconBrightness(window.grabWindow(), "galleryPagePlaybackIcon") > 185, 1000);
+    QTest::keyClick(&window, Qt::Key_Space, Qt::AltModifier);
+    QTRY_COMPARE(pages->property("index").toInt(), 1);
+    QVERIFY(!pages->property("playing").toBool());
+    QTest::keyClick(&window, Qt::Key_PageDown, Qt::AltModifier);
+    QTRY_COMPARE(pages->property("index").toInt(), 2);
+    QTest::keyClick(&window, Qt::Key_PageUp, Qt::AltModifier);
+    QTRY_COMPARE(pages->property("index").toInt(), 1);
+    QTest::keyClick(&window, Qt::Key_Backspace, Qt::AltModifier);
+    QTRY_COMPARE(pages->property("index").toInt(), 0);
+    QCOMPARE(session->currentIndex(), 0);
+
+    QTRY_VERIFY(iconReady("galleryPreviousPageIcon", galleryIcons + "chevron-left.svg"));
+    QTRY_VERIFY(iconReady("galleryNextPageIcon", galleryIcons + "chevron-right.svg"));
+    QTRY_VERIFY(iconReady("galleryPagePlaybackIcon", galleryIcons + "play.svg"));
+    QVERIFY(viewer->setProperty("pageIconPrefix", hostIcons.chopped(1)));
+    QTRY_VERIFY(iconReady("galleryPreviousPageIcon", hostIcons + "chevron-left.svg"));
+    QTRY_VERIFY(iconReady("galleryNextPageIcon", hostIcons + "chevron-right.svg"));
+    QTRY_VERIFY(iconReady("galleryPagePlaybackIcon", hostIcons + "play.svg"));
+    checkLeaves({"galleryPreviousPageIcon", "galleryPageCount", "galleryNextPageIcon",
+                 "galleryPagePlaybackIcon"});
+    const QImage animationCapture = window.grabWindow();
+    const int previousBrightness = iconBrightness(animationCapture, "galleryPreviousPageIcon");
+    QVERIFY(previousBrightness > 60 && previousBrightness < 185);
+    QVERIFY(iconBrightness(animationCapture, "galleryNextPageIcon") > 185);
+    QVERIFY(iconBrightness(animationCapture, "galleryPagePlaybackIcon") > 185);
+    QDir().mkpath(QStringLiteral(".diagnostics"));
+    QVERIFY(animationCapture.save(QStringLiteral(".diagnostics/gallery-paged-animation.png")));
+
+    auto *viewport = viewer->property("flickableArea").value<QObject *>();
+    QVERIFY(viewport);
+    const qreal dpr = window.devicePixelRatio();
+    QCOMPARE((viewport->property("originalSize").toSizeF() * dpr).toSize(), QSize(8, 7));
+
+    if (hasPdf) {
+        QVERIFY(session->applyExternalState("pdf", 1, {}, 2));
+        QTRY_COMPARE(pages->property("count").toInt(), 2);
+        const auto first = pages->property("size").toSizeF();
+        QVERIFY(first.height() > first.width());
+        QTest::keyClick(&window, Qt::Key_PageDown, Qt::AltModifier);
+        QTRY_COMPARE(pages->property("index").toInt(), 1);
+        QVERIFY(pages->property("size").toSizeF().width() > pages->property("size").toSizeF().height());
+        QTRY_COMPARE(viewer->property("currentSourceValue").toUrl(), pages->property("source").toUrl());
+        auto *pageImage = visualItemWithObjectName(window.contentItem(), "galleryViewerBaseImage");
+        QVERIFY(pageImage);
+        QTRY_COMPARE(pageImage->property("source").toUrl(), pages->property("source").toUrl());
+        QTRY_VERIFY(pageImage->isVisible() && pageImage->width() > 0 && pageImage->height() > 0);
+        QTRY_COMPARE(pageImage->property("status").toInt(), 1);
+        QImage capture;
+        const auto hasPageColor = [&](QColor expected) {
+            capture = window.grabWindow().convertToFormat(QImage::Format_RGB32);
+            for (int y = 0; y < capture.height(); y += 5) {
+                for (int x = 0; x < capture.width(); x += 5) {
+                    const QRgb pixel = capture.pixel(x, y);
+                    if (qAbs(qRed(pixel) - expected.red()) < 55
+                            && qAbs(qGreen(pixel) - expected.green()) < 55
+                            && qAbs(qBlue(pixel) - expected.blue()) < 55)
+                        return true;
+                }
+            }
+            return false;
+        };
+        QTRY_VERIFY_WITH_TIMEOUT(hasPageColor(Qt::blue), 2000);
+        QVERIFY(!capture.isNull());
+        auto *bar = visualItemWithObjectName(window.contentItem(), "galleryPageBar");
+        QVERIFY(bar);
+        const QPointF swatch = bar->mapToItem(window.contentItem(), QPointF(4, bar->height() / 2))
+                               * window.devicePixelRatio();
+        QVERIFY(qGray(capture.pixel(swatch.toPoint())) < 70);
+        QVERIFY(capture.save(QStringLiteral(".diagnostics/gallery-paged-PDF.png")));
+        checkLeaves({"galleryPreviousPageIcon", "galleryPageCount", "galleryNextPageIcon",
+                     "galleryViewerBaseImage"});
+
+        auto *detail = visualItemWithObjectName(window.contentItem(), "galleryPageDetailImage");
+        QVERIFY(detail);
+        QVERIFY(window.screen());
+        const QSizeF sheetPoints = pages->property("size").toSizeF();
+        const qreal logicalDpi = window.screen()->logicalDotsPerInch();
+        const qreal pixelsPerPoint = logicalDpi * dpr / 72.0;
+        qInfo() << "Checking PDF canvas at logical DPI" << logicalDpi << "and DPR" << dpr;
+        for (const qreal zoom : {1.0, 2.0}) {
+            const QUrl previousDetail = pages->property("detailSource").toUrl();
+            QVERIFY(QMetaObject::invokeMethod(viewport, "zoomToScale",
+                                              Q_ARG(QVariant, QVariant(zoom)),
+                                              Q_ARG(QVariant, QVariant(false))));
+            QTRY_COMPARE(viewport->property("zoomScale").toReal(), zoom);
+            QTRY_VERIFY(!viewport->property("viewportAnimationRunning").toBool());
+
+            const QSize expectedPixels = (sheetPoints * (pixelsPerPoint * zoom)).toSize();
+            const QRectF pageRect = pageImage->mapRectToItem(window.contentItem(),
+                QRectF(0, 0, pageImage->width(), pageImage->height()));
+            QCOMPARE(pageRect.size() * dpr, QSizeF(expectedPixels));
+            checkLeaves({"galleryViewerBaseImage"});
+
+            QTRY_VERIFY(!pages->property("detailSource").toUrl().isEmpty()
+                        && pages->property("detailSource").toUrl() != previousDetail);
+            QTRY_VERIFY(detail->isVisible());
+            QTRY_COMPARE(detail->property("source").toUrl(), pages->property("detailSource").toUrl());
+            const QRectF detailRect = pages->property("detailRect").toRectF();
+            QVERIFY(detailRect.width() < 1 && detailRect.height() < 1);
+            const QSize detailPixels(qRound(expectedPixels.width() * detailRect.width()),
+                                     qRound(expectedPixels.height() * detailRect.height()));
+            QCOMPARE(detail->property("sourceSize").toSize(), detailPixels);
+            checkLeaves({"galleryPageDetailImage"});
+            if (zoom == 1.0)
+                QVERIFY(window.grabWindow().save(QStringLiteral(".diagnostics/gallery-paged-PDF-100.png")));
+        }
+
+        QVERIFY(QMetaObject::invokeMethod(viewport, "zoomToFit", Q_ARG(QVariant, QVariant(true))));
+        QTRY_VERIFY(pages->property("detailSource").toUrl().isEmpty());
+        session->requestOsdThumbnailAt(3, 128, 128);
+        QTRY_VERIFY(!session->viewerSourceAt(3).isEmpty());
+        const QUrl thumbnail = session->viewerSourceAt(3);
+        const QUrl outgoingPage = pageImage->property("source").toUrl();
+
+        // A cached grid thumbnail must never become the viewer's PDF frame.
+        QVERIFY(viewer->setProperty("playbackPresentationVisible", false));
+        QVERIFY(session->applyExternalState("warm", 3, {}, 3));
+        QTRY_COMPARE(viewer->property("presentedIndex").toInt(), 3);
+        QTRY_VERIFY(pages->property("source").toUrl().isEmpty());
+        QTest::qWait(100);
+        QCOMPARE(pageImage->property("source").toUrl(), outgoingPage);
+        QTRY_VERIFY_WITH_TIMEOUT(hasPageColor(Qt::blue), 2000);
+        checkLeaves({"galleryViewerBaseImage"});
+
+        QVERIFY(viewer->setProperty("playbackPresentationVisible", true));
+        QTRY_VERIFY(!pages->property("source").toUrl().isEmpty());
+        QTRY_COMPARE(pageImage->property("source").toUrl(), pages->property("source").toUrl());
+        const QUrl warmPage = pages->property("source").toUrl();
+        QVERIFY(warmPage != thumbnail);
+        QTRY_VERIFY_WITH_TIMEOUT(hasPageColor(Qt::red), 2000);
+        const QRectF previewRect = pageImage->mapRectToItem(window.contentItem(),
+            QRectF(0, 0, pageImage->width(), pageImage->height()));
+        const QSize displayPixels = (previewRect.size() * dpr).toSize();
+        const QSize rasterPixels = pageImage->property("sourceSize").toSize();
+        QVERIFY(rasterPixels.width() >= displayPixels.width() - 1);
+        QVERIFY(rasterPixels.height() >= displayPixels.height() - 1);
+        checkLeaves({"galleryViewerBaseImage"});
+        QVERIFY(capture.save(QStringLiteral(".diagnostics/gallery-paged-PDF-full-frame.png")));
+        QCOMPARE(viewport->property("originalSize").toSizeF(),
+                 pages->property("size").toSizeF() * (logicalDpi / 72.0));
+
+        QVERIFY(viewer->setProperty("playbackPresentationVisible", false));
+        QVERIFY(session->viewerSourceAt(5).isEmpty());
+        QVERIFY(session->applyExternalState("cold", 5, {}, 4));
+        QTRY_COMPARE(viewer->property("presentedIndex").toInt(), 5);
+        QTRY_VERIFY(pages->property("source").toUrl().isEmpty());
+        QCOMPARE(pageImage->property("source").toUrl(), warmPage);
+        QTRY_VERIFY_WITH_TIMEOUT(hasPageColor(Qt::red), 2000);
+
+        QVERIFY(viewer->setProperty("playbackPresentationVisible", true));
+        QTRY_VERIFY(!pages->property("source").toUrl().isEmpty());
+        QVERIFY(pages->property("source").toUrl() != warmPage);
+        QTRY_COMPARE(pageImage->property("source").toUrl(), pages->property("source").toUrl());
+
+        QTRY_VERIFY_WITH_TIMEOUT(hasPageColor(Qt::green), 2000);
+
+        // The one-page PDF's next job warms the adjacent file. Suspend
+        // foreground rendering to prove the neighbor and both revisits are ready.
+        QVERIFY(viewer->setProperty("playbackPresentationVisible", false));
+        QVERIFY(session->applyExternalState("neighbor", 6, {}, 5));
+        QTRY_VERIFY(!pages->property("source").toUrl().isEmpty());
+        QTRY_COMPARE(pageImage->property("source").toUrl(), pages->property("source").toUrl());
+        QTRY_VERIFY_WITH_TIMEOUT(hasPageColor(Qt::red), 2000);
+        QVERIFY(session->applyExternalState("cold", 5, {}, 6));
+        QTRY_VERIFY(!pages->property("source").toUrl().isEmpty());
+        QTRY_COMPARE(pageImage->property("source").toUrl(), pages->property("source").toUrl());
+        QTRY_VERIFY_WITH_TIMEOUT(hasPageColor(Qt::green), 2000);
+        QVERIFY(session->applyExternalState("neighbor", 6, {}, 7));
+        QTRY_VERIFY(!pages->property("source").toUrl().isEmpty());
+        QTRY_VERIFY_WITH_TIMEOUT(hasPageColor(Qt::red), 2000);
+
+        QVERIFY(viewer->setProperty("playbackPresentationVisible", true));
+        QVERIFY(QMetaObject::invokeMethod(viewport, "zoomToScale",
+                                          Q_ARG(QVariant, QVariant(2.0)),
+                                          Q_ARG(QVariant, QVariant(false))));
+        QTRY_COMPARE(viewport->property("zoomScale").toReal(), 2.0);
+        QTRY_VERIFY(!viewport->property("viewportAnimationRunning").toBool());
+        QTRY_VERIFY(detail->isVisible());
+        const QUrl outgoingDetail = detail->property("source").toUrl();
+        const QUrl outgoingBase = pageImage->property("source").toUrl();
+        QVERIFY(viewer->setProperty("playbackPresentationVisible", false));
+        QVERIFY(session->applyExternalState("warm", 3, {}, 8));
+        QTRY_VERIFY(pages->property("source").toUrl().isEmpty());
+        QCOMPARE(pageImage->property("source").toUrl(), outgoingBase);
+        QCOMPARE(detail->property("source").toUrl(), outgoingDetail);
+        QVERIFY(viewer->setProperty("observePdfFrame", true));
+        QVERIFY(viewer->setProperty("playbackPresentationVisible", true));
+        QTRY_VERIFY(viewer->property("observedPdfFrame").toBool());
+        const QUrl firstDetail = viewer->property("firstDetailSource").toUrl();
+        QVERIFY(!firstDetail.isEmpty() && firstDetail != outgoingDetail);
+        QTRY_COMPARE(pageImage->property("source").toUrl(), pages->property("source").toUrl());
+        QTRY_VERIFY(detail->isVisible());
+        const QSize zoomedPixels = (pages->property("size").toSizeF() * (pixelsPerPoint * 2)).toSize();
+        const QRectF zoomedClip = pages->property("detailRect").toRectF();
+        QCOMPARE(detail->property("sourceSize").toSize(),
+                 QSize(qRound(zoomedPixels.width() * zoomedClip.width()),
+                       qRound(zoomedPixels.height() * zoomedClip.height())));
+        checkLeaves({"galleryViewerBaseImage", "galleryPageDetailImage"});
+        const QImage zoomedCapture = window.grabWindow().convertToFormat(QImage::Format_RGB32);
+        const QRect textRegion(zoomedCapture.width() / 4, zoomedCapture.height() / 4,
+                               zoomedCapture.width() / 2, zoomedCapture.height() / 2);
+        int darkPixels = 0;
+        for (int y = textRegion.top(); y <= textRegion.bottom(); ++y)
+            for (int x = textRegion.left(); x <= textRegion.right(); ++x)
+                darkPixels += qGray(zoomedCapture.pixel(x, y)) < 64;
+        QVERIFY(darkPixels > 100);
+        QVERIFY(zoomedCapture.save(QStringLiteral(".diagnostics/gallery-paged-PDF-switch-zoomed.png")));
+
+        QVERIFY(QMetaObject::invokeMethod(viewport, "zoomToFit", Q_ARG(QVariant, QVariant(true))));
+        QTRY_VERIFY(pages->property("detailSource").toUrl().isEmpty());
+        QVERIFY(session->applyExternalState("locked", 7, {}, 9));
+        auto *error = visualItemWithObjectName(window.contentItem(), "galleryPageError");
+        QVERIFY(error);
+        QTRY_COMPARE(pages->property("error").toString(), QStringLiteral("password"));
+        QTRY_COMPARE(error->property("text").toString(), QStringLiteral("Требуется пароль"));
+        QTRY_VERIFY(pageImage->property("source").toUrl().isEmpty());
+        checkLeaves({"galleryPageError"});
+    }
 }
 
 #if defined(F4_QT_HAS_MULTIMEDIA_QML)
@@ -13623,16 +14033,94 @@ void F4QuickViewSurfaceTests::deviceBreadcrumbLabelsPreserveCanonicalNavigationA
     auto *field = visualItemWithObjectNamePrefix(control, "pathField");
     QVERIFY(field);
     QTRY_COMPARE(field->property("text").toString(), path);
-    verifyLeaf(field);
     QTest::qWait(50);
     const auto editCapture = fixture.window->grabWindow();
     QVERIFY(!editCapture.isNull());
+    verifyLeaf(field);
     QVERIFY(editCapture.save("/tmp/f4-device-path-editor-175.png"));
     QCOMPARE(control->property("navigationPath").toString(), path);
     if (!QTest::currentTestFailed()) {
         qInfo().noquote() << "[FIX:device-breadcrumb] scheme=" + scheme
                          << "rootLabel=" + rootLabel << "dpr=" << dpr;
     }
+}
+
+void F4QuickViewSurfaceTests::typedPathRevealsFileAt175Percent()
+{
+    auto scene = shellScene({}, 0);
+    auto shell = scene.value("shell").toMap();
+    auto panels = shell.value("panels").toList();
+    auto left = panels[0].toMap();
+    constexpr int fileIndex = 110;
+    const QString entryId = QStringLiteral("entry-110");
+    left["cursor"] = fileIndex;
+    left["cursorEntryId"] = entryId;
+    left["galleryLayoutMode"] = QStringLiteral("details");
+    left["path"] = QStringLiteral("D:/Media");
+    panels[0] = left;
+    shell["panels"] = panels;
+    scene["shell"] = shell;
+    QuickViewFixture fixture(scene, true);
+    QVERIFY(fixture.window);
+    QCOMPARE(fixture.window->devicePixelRatio(), qreal(1.75));
+
+    ZoinGallery::RuntimeOptions options;
+    options.persistentCache = false;
+    auto *runtime = ZoinGallery::GalleryRuntime::install(&fixture.engine, options);
+    QVERIFY(runtime);
+    const auto shutdown = qScopeGuard([&] { runtime->shutdown(); });
+    auto *session = runtime->createExternalSession("path-input");
+    QVERIFY(session->applyExternalCatalog(fileEntries(120), 1));
+    QVERIFY(session->applyExternalState(entryId, fileIndex, {}, 1));
+    fixture.gallery.showPanel(QUrl("qrc:/F4QtHost/qml/GalleryPanelHost.qml"), session);
+    auto *panelContent = fixture.item("galleryPanelContent-0");
+    QVERIFY(panelContent);
+    QQuickItem *gallery = nullptr;
+    QTRY_VERIFY((gallery = visualItemWithObjectName(panelContent, "embeddedGalleryPanel")));
+    auto *layout = gallery->property("galleryLayout").value<QQuickItem *>();
+    QVERIFY(layout);
+    QTRY_COMPARE(layout->property("count").toInt(), 120);
+    auto *viewport = gallery->property("viewportController").value<QObject *>();
+    QVERIFY(viewport);
+    QRectF cursor;
+    QVERIFY(QMetaObject::invokeMethod(layout, "indexGeometry",
+                                     Q_RETURN_ARG(QRectF, cursor), Q_ARG(int, fileIndex)));
+    QVERIFY(cursor.isValid() && cursor.top() > layout->height());
+
+    // Simulate scrolling away from the cursor before re-entering its file path.
+    QVERIFY(QMetaObject::invokeMethod(viewport, "setPanelContentY",
+                                     Q_ARG(QVariant, QVariant(0)), Q_ARG(QVariant, QVariant(true))));
+    QTRY_COMPARE(layout->property("contentY").toReal(), qreal(0));
+    auto *control = fixture.item("panelPathTitle-0");
+    QVERIFY(control);
+    QVERIFY(control->setProperty("editMode", true));
+    auto *field = visualItemWithObjectNamePrefix(control, "pathField");
+    QVERIFY(field);
+    QTRY_VERIFY(field->hasActiveFocus());
+    const QString input = QStringLiteral(" \"/D:/Media\\file-110.txt\" ");
+    QVERIFY(field->setProperty("text", input));
+    fixture.shell.clearActions();
+    QTest::keyClick(fixture.window, Qt::Key_Return);
+    QTRY_VERIFY(!control->property("editMode").toBool());
+
+    left["cursorRevealRevision"] = 1;
+    panels[0] = left;
+    shell["panels"] = panels;
+    scene["shell"] = shell;
+    fixture.shell.setScene(scene);
+    const auto cursorVisible = [&] {
+        const qreal top = layout->property("contentY").toReal();
+        return cursor.top() >= top && cursor.bottom() <= top + layout->height();
+    };
+    QTRY_VERIFY_WITH_TIMEOUT(cursorVisible(), 2000);
+    QCOMPARE(session->cursorEntryId(), entryId);
+    const auto sent = std::find_if(fixture.shell.actions.cbegin(), fixture.shell.actions.cend(),
+        [](const QVariantMap &action) { return action.value("action") == "panel.navigatePath"; });
+    QVERIFY(sent != fixture.shell.actions.cend());
+    QCOMPARE(sent->value("path").toString(), input);
+    QCOMPARE(sent->value("typed").toBool(), true);
+    QDir().mkpath(QStringLiteral(".diagnostics"));
+    QVERIFY(fixture.window->grabWindow().save(QStringLiteral(".diagnostics/panel-typed-path-175.png")));
 }
 
 void F4QuickViewSurfaceTests::pluginPathIconFollowsPanelOnPhysicalGrid()

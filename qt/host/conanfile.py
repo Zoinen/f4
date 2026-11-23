@@ -10,13 +10,16 @@ import textwrap
 class F4QtHostConan(ConanFile):
     settings = "os", "compiler", "build_type", "arch"
     options = {
+        "with_pdf": [True, False],
         "with_video_thumbnails": [True, False],
         "with_ffmpeg_backend": [True, False],
     }
     default_options = {
+        "with_pdf": True,
         "with_video_thumbnails": False,
         "with_ffmpeg_backend": False,
         "qt/*:shared": True,
+        "libyuv/*:with_jpeg": False,
         "qt/*:qtdeclarative": True,
         "qt/*:qtsvg": True,
         "qt/*:qtmultimedia": True,
@@ -56,6 +59,8 @@ class F4QtHostConan(ConanFile):
     }
 
     def configure(self):
+        if self.options.with_pdf:
+            self.options["qt/*"].with_pdf = True
         video_thumbnails = bool(self.options.with_video_thumbnails)
         if not video_thumbnails:
             self.options.with_ffmpeg_backend = False
@@ -96,6 +101,7 @@ class F4QtHostConan(ConanFile):
         # direct requirement selects the intended ABI for both link modes.
         self.requires("libwebp/1.6.0")
         self.requires("libheif/1.20.1")
+        self.requires("libavif/1.4.1")
         self.requires("libjpeg-turbo/3.0.2", override=True)
         self.requires("jasper/4.2.0", override=True)
 
@@ -107,7 +113,8 @@ class F4QtHostConan(ConanFile):
         # builds the target Qt libraries; making it explicit here exposes its
         # package folder to the f4-qt and QWindowKit generators too.
         if str(self.settings.os) == "Windows" and str(self.settings.arch) == "armv8":
-            self.tool_requires("qt/6.11.1")
+            self.tool_requires("qt/6.11.1", options={"with_pdf": True}
+                               if self.options.with_pdf else None)
 
     def validate(self):
         if str(self.settings.os) != "Macos":
@@ -132,6 +139,7 @@ class F4QtHostConan(ConanFile):
         dependencies = CMakeDeps(self)
         dependencies.generate()
         toolchain = CMakeToolchain(self)
+        toolchain.cache_variables["F4_ENABLE_PDF"] = bool(self.options.with_pdf)
         if operating_system == "Macos":
             toolchain.variables["CMAKE_OSX_DEPLOYMENT_TARGET"] = str(
                 self.settings.os.version)

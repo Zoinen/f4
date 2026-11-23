@@ -5,6 +5,7 @@
 #include "NavigationBenchmarkTrace.h"
 #include "QtMediaClient.h"
 #include "QtShellController.h"
+#include <ZoinGallery/GallerySession.h>
 #include "F4ThemePersistence.h"
 #include "F4TextRenderingPolicy.h"
 #include "F4WorktreeIdentity.h"
@@ -355,6 +356,7 @@ int main(int argc, char *argv[])
     QQuickWindow::setDefaultAlphaBuffer(false);
 
     QtShellController controller(connectAddress, nonce, cols, rows, &app);
+    controller.setNativeImageExtensions(ZoinGallery::GallerySession::supportedImageExtensions());
 #if defined(Q_OS_MACOS)
     MacPlatformServices macPlatformServices(
         [&controller](const QVariantMap &message) {

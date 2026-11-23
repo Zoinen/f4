@@ -138,10 +138,14 @@ func (fp *FileSystemPanel) refilterEntries() {
 		return
 	}
 	fp.reconcileStaleFileFields(fp.unfilteredEntries)
+	revealName := ""
+	if fp.Vfs != nil && fp.pathInputReveal.matches(fp.Vfs, fp.Vfs.GetPath()) {
+		revealName = fp.pathInputReveal.name
+	}
 	visible := make([]*FileEntry, 0, len(fp.unfilteredEntries))
 	for _, entry := range fp.unfilteredEntries {
-		// ".." survives every query so users can always leave the directory.
-		if entry.Name == ".." {
+		// Keep the parent and an explicitly addressed file available.
+		if entry.Name == ".." || entry.Name == revealName {
 			visible = append(visible, entry)
 			continue
 		}

@@ -8339,7 +8339,10 @@ func parsePlainEditCommand(trimmedCmd string) (path string, ok bool) {
 }
 
 func ExpandPathEnv(s string) string {
-	s = expandEnvironmentVariables(s)
+	return expandPathHome(expandEnvironmentVariables(s))
+}
+
+func expandPathHome(s string) string {
 	if s != "~" && (len(s) <= 1 || s[0] != '~' || (s[1] != '/' && s[1] != '\\')) {
 		return s
 	}

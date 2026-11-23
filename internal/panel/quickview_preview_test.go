@@ -2,11 +2,12 @@ package panel
 
 import (
 	"context"
-	"github.com/unxed/f4/vfs"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/unxed/f4/internal/semantic"
+	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtui"
 )
 
@@ -82,6 +83,27 @@ func TestQuickViewNativeVideoDoesNotReadOrSerialize(t *testing.T) {
 	}
 	if !q.cacheVideo {
 		t.Fatal("native video preview was not kept as an opaque source identity")
+	}
+}
+
+func TestPDFQuickViewUsesNegotiatedGalleryDecoder(t *testing.T) {
+	restore := semantic.BeginNativeImageExtensions([]string{"pdf", "webp"})
+	t.Cleanup(restore)
+	q, source, _ := newQuickViewProviderFixture(t, map[string][]byte{
+		"manual.PDF": []byte("PDF bytes must stay in the source broker"),
+	})
+	q.setNativeImages(true)
+	model := q.semanticModel(1, 0, false)
+	if model.PreviewKind != "image" || model.ImageRenderer != "gallery" ||
+		model.Loading || model.ImageSource != "" || len(q.cacheRaw) != 0 {
+		t.Fatalf("native PDF entered the Go preview path: %+v", model)
+	}
+	if !semanticEntryIsImage(source.Entries[0], semanticImageExtensions()) {
+		t.Fatal("catalog did not mark a PDF with a negotiated Qt decoder as viewable")
+	}
+	restore()
+	if semanticEntryIsImage(source.Entries[0], semanticImageExtensions()) {
+		t.Fatal("PDF was advertised without a native decoder")
 	}
 }
 

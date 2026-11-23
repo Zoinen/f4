@@ -546,6 +546,7 @@ void QtShellController::onConnected()
         {QStringLiteral("pixelHeight"), m_initialRows * cellHeight},
         {QStringLiteral("cellWidth"), cellWidth},
         {QStringLiteral("cellHeight"), cellHeight},
+        {QStringLiteral("nativeImageExtensions"), QVariant::fromValue(m_nativeImageExtensions)},
         {QStringLiteral("capabilities"), QVariantMap{
              {QStringLiteral("panelCatalogMetadataV1"), true},
              {QStringLiteral("panelCatalogRowsV1"), true},

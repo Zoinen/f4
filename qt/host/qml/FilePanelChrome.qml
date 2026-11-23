@@ -180,13 +180,18 @@ Rectangle {
                     return "Network"
                 return ""
             }
-            navigationHandler: function(path) {
-                hostWindow.action({
+            function requestPathNavigation(path, typed) {
+                const action = {
                     "action": "panel.navigatePath",
                     "side": Number(panel.side || 0),
                     "path": String(path)
-                })
+                }
+                if (typed)
+                    action.typed = true
+                hostWindow.action(action)
             }
+            navigationHandler: path => panelPathControl.requestPathNavigation(path, false)
+            pathInputHandler: path => panelPathControl.requestPathNavigation(path, true)
             onEditModeChanged: {
                 if (!editMode)
                     focusTarget.forceActiveFocus()

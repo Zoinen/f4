@@ -232,6 +232,8 @@ FocusScope {
         previewEntryId: host.docked ? String(host.bridge.quickView.entryId || "") : ""
         videoPlaybackMode: host.videoPlaybackMode
         videoIconSources: host.videoIconSources
+        pageIconPrefix: "qrc:/F4QtHost/icons/lucide"
+        pageLabels: host.hostWindow?.shellControllerApi?.shellState?.galleryPageLabels ?? ({})
         playbackPresentationVisible: host.playbackPresentationVisible
         checkerboardEnabled: host.bridge && host.bridge.settings ? host.bridge.settings.showCheckerboard !== false : true
         hostKeyHandler: host.handleKey

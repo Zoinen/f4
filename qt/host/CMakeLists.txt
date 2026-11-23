@@ -11,6 +11,7 @@ option(F4_ENABLE_VIDEO_THUMBNAILS
 option(F4_ENABLE_FFMPEG_BACKEND
   "Use the Qt Multimedia FFmpeg backend for video thumbnails"
   ON)
+option(F4_ENABLE_PDF "Render PDF pages with Qt PDF" ON)
 
 project(F4QtHost LANGUAGES CXX)
 
@@ -74,6 +75,9 @@ if(F4_ENABLE_VIDEO_THUMBNAILS)
   list(APPEND F4_QT_HOST_COMPONENTS Multimedia)
 endif()
 find_package(Qt6 COMPONENTS ${F4_QT_HOST_COMPONENTS} REQUIRED)
+if(F4_ENABLE_PDF AND NOT TARGET Qt6::Pdf)
+  find_package(Qt6Pdf ${Qt6_VERSION} EXACT CONFIG REQUIRED)
+endif()
 # Qt 6.11 exports the ICO image plugin as QICOPlugin (matching its class
 # name), while the older Conan facade used QIcoPlugin. Keep one compatibility
 # alias for the test and host link helpers below.
@@ -178,6 +182,7 @@ set(ZOIN_BUILD_BENCHMARKS OFF CACHE BOOL
   "Build ZoinGallery performance audit tools" FORCE)
 set(ZOIN_ENABLE_INSTALL OFF CACHE BOOL
   "Generate ZoinGallery package installation rules" FORCE)
+set(ZOIN_ENABLE_PDF ${F4_ENABLE_PDF} CACHE BOOL "Render PDF pages with Qt PDF" FORCE)
 set(ZOIN_ENABLE_VIDEO_THUMBNAILS ${F4_ENABLE_VIDEO_THUMBNAILS} CACHE BOOL
   "Enable video thumbnails through Qt Multimedia" FORCE)
 set(ZOIN_ENABLE_FFMPEG_BACKEND ${F4_ENABLE_FFMPEG_BACKEND} CACHE BOOL
@@ -541,6 +546,7 @@ set(F4_LUCIDE_ICON_NAMES
   circle-question-mark.svg
   circle-x.svg
   chevron-down.svg
+  chevron-left.svg
   chevron-up.svg
   chevron-right.svg
   slash.svg

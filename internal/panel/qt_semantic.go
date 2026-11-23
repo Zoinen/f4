@@ -42,6 +42,8 @@ func (pf *PanelsFrame) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 		ShowKeyBar:       pf.ShowKeyBar,
 		TerminalBusy:     pf.IsPtyBusy(),
 		TerminalActive:   !pf.ShowPanels,
+
+		GalleryPageLabels: galleryPageLabels(),
 	}
 	if !pf.ShowPanels {
 		shell.Mode = "terminal"
@@ -83,6 +85,20 @@ func (pf *PanelsFrame) SemanticNode(ctx *vtui.SemanticContext) map[string]any {
 	}
 
 	return shell.ToMap()
+}
+
+func galleryPageLabels() extui.M {
+	if _, negotiated := semantic.NativeImageExtensions(); !negotiated {
+		return nil
+	}
+	return extui.M{
+		"password": i18n.Msg("PDF.PasswordRequired"),
+		"render":   i18n.Msg("Gallery.PageRenderFailed"),
+		"previous": i18n.Msg("Gallery.PreviousPage"),
+		"next":     i18n.Msg("Gallery.NextPage"),
+		"pause":    i18n.Msg("Gallery.PausePages"),
+		"play":     i18n.Msg("Gallery.PlayPages"),
+	}
 }
 
 func terminalCommandLineOverlayRows(commandLine *extui.CommandLineModel, busy bool) int {
@@ -331,11 +347,19 @@ func (pf *PanelsFrame) HandleSemanticAction(action map[string]any) bool {
 			benchmark.SetSide(pf.panelIndexForSemanticAction(action))
 		}
 		target := strings.TrimSpace(semantic.String(action["path"]))
+		typed := semantic.Bool(action["typed"])
+		local, isLocal := fsp.Vfs.(*vfs.OSVFS)
+		if typed {
+			target = normalizePathInput(target, fsp.Vfs.GetPath(), isLocal)
+		}
 		if target == "" {
 			return false
 		}
 		oldPath := fsp.Vfs.GetPath()
 		if target == oldPath {
+			if typed {
+				fsp.cancelProviderOpenAndRestore()
+			}
 			return true
 		}
 		if vfs.IsURIPath(target) {
@@ -348,6 +372,11 @@ func (pf *PanelsFrame) HandleSemanticAction(action map[string]any) bool {
 			pf.setActivePanelForAction(action)
 			fsp.clearFastFindForSemanticPointerIntent()
 			return true
+		}
+		if typed && isLocal {
+			pf.setActivePanelForAction(action)
+			fsp.clearFastFindForSemanticPointerIntent()
+			return fsp.navigateTypedLocalPath(local, target)
 		}
 		if err := fsp.SetKnownDirectoryPath(target); err != nil {
 			fsp.showDirectoryError(" Error ", fmt.Sprintf("Cannot access folder:\n%v", err))
@@ -1143,6 +1172,9 @@ func (fp *FileSystemPanel) semanticEntryMetadata(entry *FileEntry, sourceKind st
 }
 
 func semanticImageExtensions() map[string]struct{} {
+	if extensions, ok := semantic.NativeImageExtensions(); ok {
+		return extensions
+	}
 	// Snapshotting the decoder registry is extension-only: it
 	// never opens a file, invokes a decoder, or probes a plugin.  This gives Qt
 	// an explicit answer in the first catalog and prevents synchronous format
@@ -2418,17 +2450,18 @@ func (fp *FileSystemPanel) semanticPagedPanelModel(
 		GalleryLayoutRevision:  galleryLayoutRevision,
 		DropAllowed:            VfsAcceptsDrop(fp.Vfs),
 		SourceKind:             sourceKind, PreviewCapable: previewCapable,
-		GroupFileField:      fp.FileFieldGroup,
-		CatalogRevision:     fp.catalogRevision,
-		SelectionRevision:   fp.selectionRevision,
-		MetadataDeferred:    true,
-		MetadataRevision:    fp.metadataRevision,
-		CatalogRowsDeferred: !denseCatalog,
-		CatalogDelta:        fp.semanticCatalogDelta(),
-		HighlightRevision:   semanticHighlighterRevision(),
-		HighlightStyles:     highlightStyles,
-		CursorEntryID:       cursorEntryID,
-		SortMode:            semanticSortModeName(fp), SortReverse: fp.SortReverse,
+		GroupFileField:       fp.FileFieldGroup,
+		CatalogRevision:      fp.catalogRevision,
+		SelectionRevision:    fp.selectionRevision,
+		MetadataDeferred:     true,
+		MetadataRevision:     fp.metadataRevision,
+		CatalogRowsDeferred:  !denseCatalog,
+		CatalogDelta:         fp.semanticCatalogDelta(),
+		HighlightRevision:    semanticHighlighterRevision(),
+		HighlightStyles:      highlightStyles,
+		CursorEntryID:        cursorEntryID,
+		CursorRevealRevision: fp.cursorRevealRevision(),
+		SortMode:             semanticSortModeName(fp), SortReverse: fp.SortReverse,
 		SortAscending:          fp.semanticSortAscending(),
 		FileFieldDescriptors:   extui.FileFieldDescriptors(),
 		FileFieldSort:          fp.FileFieldSort,
@@ -2605,6 +2638,7 @@ func (fp *FileSystemPanel) SemanticPanelModel(ctx *vtui.SemanticContext, side in
 		HighlightRevision:      highlightRevision,
 		HighlightStyles:        highlightStyles,
 		CursorEntryID:          cursorEntryID,
+		CursorRevealRevision:   fp.cursorRevealRevision(),
 		SortMode:               semanticSortModeName(fp),
 		SortReverse:            fp.SortReverse,
 		SortAscending:          fp.semanticSortAscending(),
@@ -2689,15 +2723,16 @@ func (fp *FileSystemPanel) semanticPagedPanelHeaderModel(
 		GalleryLayoutRevision:  galleryLayoutRevision,
 		DropAllowed:            VfsAcceptsDrop(fp.Vfs),
 		SourceKind:             sourceKind, PreviewCapable: previewCapable,
-		GroupFileField:      fp.FileFieldGroup,
-		CatalogRevision:     fp.catalogRevision,
-		SelectionRevision:   fp.selectionRevision,
-		MetadataDeferred:    true,
-		MetadataRevision:    fp.metadataRevision,
-		CatalogRowsDeferred: !denseCatalog,
-		HighlightRevision:   semanticHighlighterRevision(),
-		CursorEntryID:       cursorEntryID,
-		SortMode:            semanticSortModeName(fp), SortReverse: fp.SortReverse,
+		GroupFileField:       fp.FileFieldGroup,
+		CatalogRevision:      fp.catalogRevision,
+		SelectionRevision:    fp.selectionRevision,
+		MetadataDeferred:     true,
+		MetadataRevision:     fp.metadataRevision,
+		CatalogRowsDeferred:  !denseCatalog,
+		HighlightRevision:    semanticHighlighterRevision(),
+		CursorEntryID:        cursorEntryID,
+		CursorRevealRevision: fp.cursorRevealRevision(),
+		SortMode:             semanticSortModeName(fp), SortReverse: fp.SortReverse,
 		SortAscending:          fp.semanticSortAscending(),
 		FileFieldDescriptors:   extui.FileFieldDescriptors(),
 		FileFieldSort:          fp.FileFieldSort,
@@ -2799,6 +2834,7 @@ func (fp *FileSystemPanel) semanticPanelHeaderModel(ctx *vtui.SemanticContext, s
 		MetadataRevision:       fp.metadataRevision,
 		HighlightRevision:      static.highlighterRevision,
 		CursorEntryID:          cursorEntryID,
+		CursorRevealRevision:   fp.cursorRevealRevision(),
 		SortMode:               semanticSortModeName(fp),
 		SortReverse:            fp.SortReverse,
 		SortAscending:          fp.semanticSortAscending(),

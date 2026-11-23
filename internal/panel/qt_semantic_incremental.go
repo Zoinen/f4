@@ -35,6 +35,8 @@ func (pf *PanelsFrame) SemanticIncrementalShell(ctx *vtui.SemanticContext) (extu
 		ShowKeyBar:       pf.ShowKeyBar,
 		TerminalBusy:     terminalBusy,
 		TerminalActive:   !pf.ShowPanels,
+
+		GalleryPageLabels: galleryPageLabels(),
 	}
 	if !pf.ShowPanels {
 		shell.Mode = "terminal"
