@@ -790,6 +790,7 @@ type FileSystemPanel struct {
 	clipboardImageRevealName          string
 	clipboardImageRevealPath          string
 	clipboardImageRevealVFS           vfs.VFS
+	pathInputReveal                   panelPathReveal
 	exactBoxX1, exactBoxX2, exactBoxY int
 	fastFindMatcherStrict             bool
 	autoFilterMode                    bool
@@ -3794,6 +3795,9 @@ func (fp *FileSystemPanel) readDirectoryEx(keepEntries bool) {
 	loadVFS := fp.Vfs
 	path := loadVFS.GetPath()
 	loadRevealName := fp.clipboardImageRevealFor(loadVFS, path)
+	if fp.pathInputReveal.hidden && fp.pathInputReveal.matches(loadVFS, path) {
+		loadRevealName = fp.pathInputReveal.name
+	}
 	// Background directory work must use one immutable settings/renderer
 	// snapshot; tests and runtime settings can replace the globals meanwhile.
 	loadSyncPanel := config.App.SyncPanelLoad || keepEntries

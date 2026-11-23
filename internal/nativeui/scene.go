@@ -747,6 +747,8 @@ func appShellFromLegacy(node map[string]any) extui.ShellModel {
 		MacroRecording:   semantic.AppBool(node["macroRecording"]),
 		Fallback:         semantic.AppBool(node["fallback"]),
 		FallbackReason:   semantic.String(node["reason"]),
+
+		GalleryPageLabels: semantic.AppMap(node["galleryPageLabels"]),
 	}
 	if shell.TerminalActive {
 		shell.Mode = "terminal"
@@ -915,6 +917,7 @@ func appPanelFromLegacy(node map[string]any) extui.PanelModel {
 		MetadataRevision:       semantic.AppInt64(node["metadataRevision"]),
 		HighlightRevision:      semantic.AppInt64(node["highlightRevision"]),
 		CursorEntryID:          semantic.String(node["cursorEntryId"]),
+		CursorRevealRevision:   semantic.AppInt64(node["cursorRevealRevision"]),
 		SortMode:               semantic.String(node["sortModeName"]),
 		SortReverse:            semantic.AppBool(node["sortReverse"]),
 		SortAscending:          sortAscending,

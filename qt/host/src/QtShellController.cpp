@@ -567,6 +567,7 @@ void QtShellController::onConnected()
         {QStringLiteral("pixelHeight"), m_initialRows * cellHeight},
         {QStringLiteral("cellWidth"), cellWidth},
         {QStringLiteral("cellHeight"), cellHeight},
+        {QStringLiteral("nativeImageExtensions"), QVariant::fromValue(m_nativeImageExtensions)},
         {QStringLiteral("capabilities"), QVariantMap{
              {QStringLiteral("fileGroupIconThemeV1"), true},
              {QStringLiteral("panelCatalogMetadataV1"), true},

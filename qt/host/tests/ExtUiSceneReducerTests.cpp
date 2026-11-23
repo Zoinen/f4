@@ -10,6 +10,7 @@ private slots:
     void catalogAcceptsKnownSizes_data();
     void catalogAcceptsKnownSizes();
     void pathBarVisibilitySurvivesStatePatch();
+    void galleryPageLabelsCanBeSetAndCleared();
     void dropCapabilitySurvivesStatePatch();
     void panelStatusSurvivesStatePatch();
     void fileFieldStateSurvivesStatePatch();
@@ -75,6 +76,30 @@ void ExtUiSceneReducerTests::pathBarVisibilitySurvivesStatePatch()
             ExtUiSceneReducer::makePresentationScene(scene),1,&result,&error),qPrintable(error));
         QCOMPARE(result.scene.value("shell").toMap().value("hidePanelPathBar"), QVariant(hidden));
     }
+}
+
+void ExtUiSceneReducerTests::galleryPageLabelsCanBeSetAndCleared()
+{
+    const QString key = QStringLiteral("galleryPageLabels");
+    const QVariantMap labels{{QStringLiteral("password"), QStringLiteral("Требуется пароль")}};
+    const QVariantMap scene{{"schema", "app"}, {"version", 4},
+        {"shell", QVariantMap{{"panels", QVariantList{}}, {key, labels}}}};
+    const QVariantMap clear{{"type", "scene_patch"}, {"schema", "app"}, {"version", 4},
+        {"baseRevision", 1}, {"revision", 2},
+        {"shell", QVariantMap{{"clear", QVariantList{key}}}}};
+    ExtUiSceneReducer::AppliedScenePatch result;
+    QString error;
+    QVERIFY2(ExtUiSceneReducer::applyScenePatch(clear, scene,
+        ExtUiSceneReducer::makePresentationScene(scene), 1, &result, &error), qPrintable(error));
+    QVERIFY(!result.scene.value("shell").toMap().contains(key));
+
+    const QVariantMap clearedScene = result.scene;
+    const QVariantMap set{{"type", "scene_patch"}, {"schema", "app"}, {"version", 4},
+        {"baseRevision", 2}, {"revision", 3},
+        {"shell", QVariantMap{{"set", QVariantMap{{key, labels}}}}}};
+    QVERIFY2(ExtUiSceneReducer::applyScenePatch(set, clearedScene,
+        ExtUiSceneReducer::makePresentationScene(clearedScene), 2, &result, &error), qPrintable(error));
+    QCOMPARE(result.scene.value("shell").toMap().value(key).toMap(), labels);
 }
 
 void ExtUiSceneReducerTests::dropCapabilitySurvivesStatePatch()

@@ -1796,7 +1796,13 @@ func (q *QuickViewPanel) refreshCache(key quickViewSelectionKey, path string, it
 		return
 	}
 
-	if media.IsImageFile(path) {
+	isImage := false
+	if extensions, negotiated := semantic.NativeImageExtensions(); q.nativeImages && negotiated {
+		_, isImage = extensions[media.ImageExtension(item.Name)]
+	} else {
+		isImage = media.IsImageFile(path)
+	}
+	if isImage {
 		q.cacheImage = true
 		if q.nativeImages {
 			return

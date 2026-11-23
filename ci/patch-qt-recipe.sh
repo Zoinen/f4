@@ -75,6 +75,8 @@ if candidates:
         # Only reuse a recipe carrying the current cross-build guard; stale
         # binaries must be rebuilt under the fixed recipe revision.
         if [[ -f "${reusable_qt_recipe}/conanfile.py" ]] && \
+            grep -Fq '"with_pdf": [True, False]' "${reusable_qt_recipe}/conanfile.py" && \
+            grep -Fq 'pdfium_use_qt_libpng' "${reusable_qt_recipe}/conanfile.py" && \
             grep -Fq '"with_ffmpeg": [True, False]' "${reusable_qt_recipe}/conanfile.py" && \
             grep -Fq 'tc.cache_variables["FFMPEG_DIR"]' "${reusable_qt_recipe}/conanfile.py" && \
             grep -Fq 'qtmultimedia_configure = os.path.join' "${reusable_qt_recipe}/conanfile.py" && \
@@ -165,6 +167,7 @@ grep -Fq '# f4: balance Qt Quick batch root order reservations' \
     "${qt_recipe_copy}/conanfile.py"
 grep -Fq '"with_ffmpeg": [True, False]' \
     "${qt_recipe_copy}/conanfile.py"
+grep -Fq '"with_pdf": [True, False]' "${qt_recipe_copy}/conanfile.py"
 grep -Fq 'tc.cache_variables["FFMPEG_DIR"]' \
     "${qt_recipe_copy}/conanfile.py"
 grep -Fq 'qtmultimedia_configure = os.path.join' \

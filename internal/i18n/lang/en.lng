@@ -4385,6 +4385,12 @@ DotNet.More=... and %d more
 
 PDF.NotPDF=%s is not a PDF file
 PDF.Encrypted=%s is encrypted; its text cannot be read
+PDF.PasswordRequired=Password required
+Gallery.PageRenderFailed=Cannot render this page
+Gallery.PreviousPage=Previous page or frame
+Gallery.NextPage=Next page or frame
+Gallery.PausePages=Pause
+Gallery.PlayPages=Play
 PDF.ReadFailed=Cannot read %s: %v
 PDF.Pages=Pages: %d
 PDF.Page=Page %d

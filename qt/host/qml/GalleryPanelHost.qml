@@ -377,9 +377,39 @@ FocusScope {
         embeddedGalleryPanel.publishMetadataVisibleRange()
     }
 
+    property string appliedCursorReveal: ""
+
+    function scheduleCursorReveal() {
+        if (Number(panel.cursorRevealRevision || 0) > 0)
+            Qt.callLater(host.revealRequestedCursor)
+    }
+
+    function revealRequestedCursor() {
+        const revision = Number(panel.cursorRevealRevision || 0)
+        const key = String(panel.id || "") + ":" + revision
+        const gallery = embeddedGalleryPanel
+        if (!revision || key === appliedCursorReveal || !gallery
+                || !gallery.visible || gallery.galleryLayout.height <= 0
+                || !gallery.controllerReady || !gallery.controller.catalogReady
+                || panel.catalogProvisional === true
+                || gallery.controller.cursorEntryId !== String(panel.cursorEntryId || ""))
+            return
+
+        // A remembered directory scroll position may have left the file offscreen.
+        if (gallery.pathViewportPlacementPending && !gallery.placeViewportForPathChange())
+            return
+        const index = gallery.controller.currentIndex
+        gallery.expandGroupForIndex(index)
+        gallery.ensureCurrentVisible(false)
+        const geometry = gallery.galleryLayout.indexGeometry(index)
+        if (geometry.width > 0 && geometry.height > 0)
+            appliedCursorReveal = key
+    }
+
     onPanelChanged: {
         inputRouter.reconcilePanelIdentity(host.panel)
         panelAdapter.synchronizePanel(host.panel, host.layoutState)
+        scheduleCursorReveal()
         Qt.callLater(host.reportSettledMetadataViewport)
     }
     onLayoutStateChanged: {
@@ -406,6 +436,7 @@ FocusScope {
         registerDragPanel()
         panelAdapter.refreshPanelSession(host.panel)
         panelAdapter.synchronizeLayout(host.panel, host.layoutState)
+        scheduleCursorReveal()
     }
 
     // Read the complete name from the native catalog, independent of the
@@ -436,6 +467,12 @@ FocusScope {
         liveSelectionUpdates: true
         id: embeddedGalleryPanel
         objectName: "embeddedGalleryPanel"
+        onPathViewportPlacementPendingChanged: {
+            if (!pathViewportPlacementPending)
+                host.scheduleCursorReveal()
+        }
+        onGroupDescriptorsChanged: host.scheduleCursorReveal()
+        onVisibleChanged: host.scheduleCursorReveal()
         debugLayoutZones: host.debugLayoutZones
         anchors.fill: parent
         session: host.session

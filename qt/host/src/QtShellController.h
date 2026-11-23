@@ -105,6 +105,7 @@ public:
     // full startup deadline. Failure is latched synchronously so callers can
     // return before constructing heavyweight UI/runtime objects.
     bool completeInitialHandshake();
+    void setNativeImageExtensions(const QStringList &extensions) { m_nativeImageExtensions = extensions; }
 
     Q_INVOKABLE void sendResize(int cols, int rows);
     Q_INVOKABLE void sendKey(int vk, int ch, bool down, int mods);
@@ -324,6 +325,7 @@ private:
     QString m_fileGroupIconTheme;
     int m_initialCols = 100;
     int m_initialRows = 30;
+    QStringList m_nativeImageExtensions;
     bool m_connected = false;
     bool m_helloSent = false;
     bool m_haveReportedApplicationFocus = false;

@@ -912,6 +912,99 @@ def _patch_qml_signal_mask(text: str) -> str:
     return text.replace(_FFMPEG_SOURCE_ANCHOR, _FFMPEG_SOURCE_ANCHOR + block)
 
 
+_PDF_STATIC_PNG_ANCHOR = "get_install_config(config)\n"
+_PDF_STATIC_PNG = '''# Keep PDFium and Qt Gui on the same libpng in static builds.
+if(QT_FEATURE_static AND QT_FEATURE_system_png)
+    find_package(PNG REQUIRED)
+    target_link_libraries(Pdf PRIVATE PNG::PNG)
+    set(QT_FEATURE_webengine_qt_libpng ON)
+    set(QT_FEATURE_webengine_system_libpng OFF)
+    foreach(include_dir IN LISTS PNG_INCLUDE_DIRS)
+        list(APPEND pdfPngIncludes "\\"${include_dir}\\"")
+    endforeach()
+endif()
+'''
+_PDF_PNG_INCLUDES_ANCHOR = "                ${gnIncludes}\n"
+_PDF_PNG_INCLUDES = _PDF_PNG_INCLUDES_ANCHOR + "            PNG_INCLUDES ${pdfPngIncludes}\n"
+_PDF_CHROMIUM_PNG_IMPORT_ANCHOR = 'import("//third_party/libpng/visibility.gni")\n'
+_PDF_CHROMIUM_PNG_IMPORT = _PDF_CHROMIUM_PNG_IMPORT_ANCHOR + 'import("//third_party/pdfium/pdfium.gni")\n'
+_PDF_CHROMIUM_PNG_TARGET_ANCHOR = "if (!use_system_libpng) {\n"
+_PDF_CHROMIUM_PNG_TARGET = '''if (pdfium_use_qt_libpng) {
+  group("libpng") {
+    public_configs = [ qt_libpng_config ]
+  }
+} else if (!use_system_libpng) {
+'''
+
+
+def _patch_pdf(text: str) -> str:
+    # Qt PDF shares the source tree and GN with WebEngine. Keep Conan's
+    # WebEngine option false so it does not enable browser dependencies
+    # or reject static/cross builds that are supported by PDF itself.
+    if '        "with_pdf": [True, False],\n' in text:
+        return text
+    replacements = {
+        '        "with_gstreamer": [True, False],\n':
+            '        "with_gstreamer": [True, False],\n'
+            '        "with_pdf": [True, False],\n',
+        '        "with_gstreamer": False,\n':
+            '        "with_gstreamer": False,\n'
+            '        "with_pdf": False,\n',
+        '        self.no_copy_source = not (self.settings_build.os == "Windows" and self.options.get_safe("qtwebengine"))\n':
+            '        self.no_copy_source = not (self.settings_build.os == "Windows" and\n'
+            '                                   (self.options.qtwebengine or self.options.with_pdf))\n',
+        '            self.tool_requires(f"qt/{self.version}")\n':
+            '            self.tool_requires(f"qt/{self.version}", options={"with_pdf": True}\n'
+            '                               if self.options.with_pdf else None)\n',
+        '        apply_conandata_patches(self)\n':
+            '        apply_conandata_patches(self)\n'
+            '        # Use the packaged libpng in the PDFium static archive.\n'
+            '        pdf_cmake = os.path.join(self.source_folder, "qtwebengine", "src", "pdf", "CMakeLists.txt")\n'
+            f'        replace_in_file(self, pdf_cmake, {_PDF_STATIC_PNG_ANCHOR!r},\n'
+            f'                        {(_PDF_STATIC_PNG + _PDF_STATIC_PNG_ANCHOR)!r}, strict=True)\n'
+            f'        replace_in_file(self, pdf_cmake, {_PDF_PNG_INCLUDES_ANCHOR!r},\n'
+            f'                        {_PDF_PNG_INCLUDES!r}, strict=True)\n'
+            '        # FreeType also reaches PNG through the Chromium target.\n'
+            '        pdf_png_gn = os.path.join(self.source_folder, "qtwebengine", "src", "3rdparty",\n'
+            '                                  "chromium", "third_party", "libpng", "BUILD.gn")\n'
+            f'        replace_in_file(self, pdf_png_gn, {_PDF_CHROMIUM_PNG_IMPORT_ANCHOR!r},\n'
+            f'                        {_PDF_CHROMIUM_PNG_IMPORT!r}, strict=True)\n'
+            f'        replace_in_file(self, pdf_png_gn, {_PDF_CHROMIUM_PNG_TARGET_ANCHOR!r},\n'
+            f'                        {_PDF_CHROMIUM_PNG_TARGET!r}, strict=True)\n',
+        '        tc.variables["BUILD_qtrepotools"] = "OFF"\n':
+            '        tc.variables["BUILD_qtrepotools"] = "OFF"\n'
+            '        if self.options.with_pdf:\n'
+            '            tc.variables["BUILD_qtwebengine"] = "ON"\n'
+            '            tc.variables["FEATURE_qtpdf_build"] = "ON"\n'
+            '            if not self.options.qtwebengine:\n'
+            '                tc.variables["FEATURE_qtpdf_quick_build"] = "OFF"\n'
+            '                tc.variables["FEATURE_qtpdf_widgets_build"] = "OFF"\n'
+            '                tc.variables["FEATURE_pdf_v8"] = "OFF"\n'
+            '                tc.variables["FEATURE_pdf_xfa"] = "OFF"\n'
+            '                tc.variables["FEATURE_qtwebengine_build"] = "OFF"\n'
+            '            if cross_building(self):\n'
+            '                gn_name = "gn.exe" if self.settings_build.os == "Windows" else "gn"\n'
+            '                native_qt = self.dependencies.direct_build["qt"].package_folder\n'
+            '                tc.cache_variables["Gn_EXECUTABLE"] = os.path.join(native_qt, "bin", gn_name)\n',
+        '        for module in self._get_module_tree:\n            if not getattr(self.options, module):\n':
+            '        for module in self._get_module_tree:\n'
+            '            if module == "qtwebengine" and self.options.with_pdf:\n'
+            '                continue\n'
+            '            if not getattr(self.options, module):\n',
+        '        if self.options.get_safe("qtwebengine") and qt_quick_enabled:\n':
+            '        if self.options.with_pdf:\n'
+            '            _create_module("Pdf", ["Gui", "Network"])\n'
+            '            if not self.options.shared and self.settings.os == "Windows":\n'
+            '                self.cpp_info.components["qtPdf"].system_libs.extend(["gdi32", "user32", "usp10"])\n'
+            '        if self.options.get_safe("qtwebengine") and qt_quick_enabled:\n',
+    }
+    for anchor, replacement in replacements.items():
+        if text.count(anchor) != 1:
+            raise SystemExit("unexpected Qt recipe: Qt PDF anchor is absent or ambiguous: " + anchor.strip())
+        text = text.replace(anchor, replacement)
+    return text
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("recipe", type=Path)
@@ -955,6 +1048,8 @@ def main() -> None:
     print("[FIX:quick-child-window-stacking] Qt Quick skips scene walks without native child windows")
     patched = _patch_qml_signal_mask(patched)
     print("[FIX:qml-signal-mask] Qt QML reduces unobserved cross-thread signal forwarding")
+    patched = _patch_pdf(patched)
+    print("[FIX:qt-pdf] Qt PDF builds without the WebEngine browser modules")
     if patched != text:
         args.recipe.write_text(patched, encoding="utf-8")
 

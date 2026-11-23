@@ -205,6 +205,21 @@ func TestShellCommandLineNavigationOwnership(t *testing.T) {
 	}
 }
 
+func TestGalleryPageLabelsInBothShellProjections(t *testing.T) {
+	t.Cleanup(semantic.BeginNativeImageExtensions([]string{"pdf"}))
+	frame := &PanelsFrame{CmdLine: cmdline.NewCommandLine(">"), ShowPanels: true}
+	incremental, _, ok := frame.SemanticIncrementalShell(nil)
+	if !ok {
+		t.Fatal("incremental shell unavailable")
+	}
+	for _, model := range []map[string]any{frame.SemanticNode(nil), incremental.ToMap()} {
+		labels := semantic.AppMap(model["galleryPageLabels"])
+		if got := labels["password"]; got != i18n.Msg("PDF.PasswordRequired") {
+			t.Fatalf("translated PDF password message missing: %#v", labels)
+		}
+	}
+}
+
 func TestShellSemanticBusyTerminalRetainsLastOutputRow(t *testing.T) {
 	for _, incremental := range []bool{false, true} {
 		name := "full"

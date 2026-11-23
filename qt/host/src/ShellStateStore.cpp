@@ -97,6 +97,13 @@ void ShellStateStore::applyShell(const QVariantMap &shell,
         m_commandLine = nextCommandLine;
         emit commandLineChanged();
     }
+
+    const QVariantMap nextGalleryPageLabels = shell.value(
+        QStringLiteral("galleryPageLabels")).toMap();
+    if (nextGalleryPageLabels != m_galleryPageLabels) {
+        m_galleryPageLabels = nextGalleryPageLabels;
+        emit galleryPageLabelsChanged();
+    }
 }
 
 void ShellStateStore::reset()
@@ -116,6 +123,7 @@ void ShellStateStore::reset()
     m_fallback = false;
     m_fallbackReason.clear();
     m_commandLine.clear();
+    m_galleryPageLabels.clear();
     emit revisionChanged();
     emit identityChanged();
     emit titleChanged();
@@ -125,4 +133,5 @@ void ShellStateStore::reset()
     emit terminalChanged();
     emit fallbackChanged();
     emit commandLineChanged();
+    emit galleryPageLabelsChanged();
 }
