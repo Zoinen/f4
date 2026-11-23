@@ -41,11 +41,13 @@ In the group editor, each icon catalog offers **Automatic** (use the group
 artwork or generic override), **No icon**, and named icon choices. The Qt
 editor previews the effective choice and shows artwork next to each choice.
 
-The **Icons** selector changes only the editing/preview icon context. It does **not**
-change the application's saved icon theme, real panel icons or association context.
-The independent **Colours** selector previews file colours in the table and open
-panels. Apply saves that selection; Cancel restores the last applied selection.
-Neither selector changes the application's window/menu colour style.
+In Qt, the **Icons** selector previews supported artwork catalogs in the table
+and open file panels. The independent **Colours** selector previews file colours
+in both places. OK and Apply save the selections, and Cancel restores the last
+applied appearance. The saved icon selection also selects the committed group scope
+for associations. The console retains Generic as its fallback scope. Sets without
+an available catalog can still be edited in their own context.
+The window and menu artwork follows the GUI settings.
 Drafts for hidden sets remain in memory. Apply validates and saves the entire
 document, including those sets.
 
@@ -59,8 +61,7 @@ Add always creates a universal group, independently of the preview icon theme.
 The scope control is retained only for existing scoped user records.
 Duplicate retains scope. Changing scope moves the group to the destination's
 tail; new thematic overrides precede the shipped fallback rules. Up/Down moves
-within one scope only. Cancel rolls back group edits, never the application's
-current icon theme.
+within one scope only. Cancel rolls back unapplied group edits and icon previews.
 
 Enter, F4, double-click or Edit opens a separate group editor with one scrolling
 page and no category sidebar. Sections appear in this order: Matching conditions,
@@ -69,9 +70,12 @@ Feature checkboxes sit in their section headings. Related controls appear in
 group boxes below, and disabled controls retain their values.
 In Qt, the group name and matching controls are in the left column. The right
 column combines appearance controls with a four-row preview of Normal, Marked,
-Cursor, and Marked cursor. The sample uses the full rule cascade and base
-palette. Each row's Edit button opens a picker for independent text and
-background colors. Inherit leaves that component to the highlighting cascade.
+Cursor, and Marked cursor. Each row shows which colors this group overrides
+alongside the sample resolved from the highlighting cascade and base palette.
+Edit opens independent text and background controls. Inherit clears the active
+channel, and Inherit both clears both overrides for that state. Later matching
+rules can supply inherited components when Continue highlighting is enabled.
+A group with no color overrides or visual prefix leaves the cascade open.
 Change icon opens the controls for all icon catalogs. The console keeps its
 pinned preview and text-based color fields.
 Invalid edits report an error and retain the last valid sample;
@@ -309,6 +313,7 @@ files without descriptors materialize referenced theme IDs in memory.
 Version = 3
 Mode = snapshot
 ColorTheme = current
+IconTheme = zoin
 Order = user-images
 
 [Group.user-images]
@@ -456,7 +461,10 @@ GUI theme before SetupUI/first scene. `fileGroupIconThemeV1` advertises the
 extension. Later changes send only `{type: "file_group_icon_theme", iconTheme:
 "zoin"}`. They are applied on the Go UI thread; omitting a theme selects
 `generic`. Shift+F12 changes presentation, not this application context. Catalogs
-and factory contributions are not re-sent. Resource fallback may cross artwork
+and factory contributions are not re-sent. A saved File Groups icon theme takes
+precedence for the panels. The semantic chrome state carries the effective
+`fileGroupIconCatalog` so Qt can refresh mounted file panels during preview and
+rollback. Resource fallback may cross artwork
 catalogs, but never activates rules belonging to another theme.
 
 Semantic styles add optional `iconChoices` entries containing `kind`, `value`,

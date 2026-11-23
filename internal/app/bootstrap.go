@@ -1320,7 +1320,7 @@ func setupUI(firstRunStyle func() (string, bool)) {
 				vtui.DebugLog("file groups: invalid colour themes: %v", err)
 				fmt.Fprintf(os.Stderr, "f4: invalid file color themes: %v\n", err)
 			}
-			settings.ConfigureFileGroups(groupStore, runtime)
+			settings.ConfigureFileGroups(groupStore, runtime, tx.IconThemeID())
 			panel.AssociationGroups = settings.CommittedFileGroups
 			changed(runtime.Committed())
 		}

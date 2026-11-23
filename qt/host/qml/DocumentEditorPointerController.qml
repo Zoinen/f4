@@ -20,6 +20,7 @@ Item {
     property int lastMouseRow: 0
     property var pendingMouseMove: null
     property var lastMouseAction: null
+    property var lastDoublePress: null
     property var activePointer: null
     property string pointerDocumentKey: ""
     property real pointerLayoutRevision: 0
@@ -33,7 +34,7 @@ Item {
     function updateBlockPreview(action) {
         if (action.phase === "press") {
             blockPreview = null
-            blockAnchor = action.button === "left" && !action.ctrl && !action.doubleClick
+            blockAnchor = action.button === "left" && !action.ctrl && !action.doubleClick && !action.tripleClick
                 ? { row: lastAbsoluteRow,
                     column: action.alt ? action.column + (action.scrollLeft || 0) : lastAbsoluteColumn,
                     rectangular: action.alt } : null
@@ -160,12 +161,40 @@ Item {
         hostWindow.action(actionMap, true)
     }
 
-    function sendMouse(mouse, phase, moved, doubleClick) {
+    function nearDoublePress(mouse) {
+        const distance = Qt.styleHints.mouseDoubleClickDistance
+        return Math.abs(mouse.x - lastDoublePress.x) <= distance
+            && Math.abs(mouse.y - lastDoublePress.y) <= distance
+    }
+
+    function pressMouse(mouse, doubleClick) {
+        const plainLeft = mouse.button === Qt.LeftButton && mouse.modifiers === Qt.NoModifier
+        // Qt follows this press with its own double-click event.
+        if (plainLeft && !doubleClick && (mouse.flags & Qt.MouseEventCreatedDoubleClick) !== 0)
+            return
+        const now = Date.now()
+        const tripleClick = plainLeft && !doubleClick && lastDoublePress !== null
+            && lastDoublePress.documentKey === (frame.documentKey || frame.id)
+            && lastDoublePress.layoutRevision === frame.layoutRevision
+            && now >= lastDoublePress.time && now - lastDoublePress.time <= Qt.styleHints.mouseDoubleClickInterval
+            && nearDoublePress(mouse)
+        lastDoublePress = plainLeft && doubleClick
+            ? { x: mouse.x, y: mouse.y, time: now,
+                documentKey: frame.documentKey || frame.id, layoutRevision: frame.layoutRevision }
+            : null
+        sendMouse(mouse, "press", false, doubleClick, tripleClick)
+    }
+
+    function sendMouse(mouse, phase, moved, doubleClick, tripleClick) {
         if (phase === "release")
             activePointer = null
+        if (lastDoublePress !== null && phase !== "press" && !nearDoublePress(mouse))
+            lastDoublePress = null
         const actionMap = mouseAction(mouse, phase, moved, doubleClick)
         if (actionMap === null)
             return
+        if (tripleClick === true)
+            actionMap.tripleClick = true
         updateBlockPreview(phase === "release"
             ? Object.assign({}, actionMap, { moved: blockAnchor !== null }) : actionMap)
         if (phase === "press")
@@ -203,6 +232,7 @@ Item {
 
     function releaseMouse() {
         activePointer = null
+        lastDoublePress = null
         if (frame.kind !== "editor")
             return
         mouseMoveTimer.stop()
@@ -224,6 +254,7 @@ Item {
         mouseMoveTimer.stop()
         pendingMouseMove = null
         lastMouseAction = null
+        lastDoublePress = null
         activePointer = null
         lastEdgeEndpoint = ""
         blockPreview = null

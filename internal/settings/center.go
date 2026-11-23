@@ -1393,6 +1393,9 @@ func (c *settingsCenter) ProcessKey(e *vtinput.InputEvent) bool {
 		if !c.fileGroupEditor {
 			panes = append(panes, c.sidebar)
 		}
+		if c.fileGroupEditorSample != nil && c.fileGroupEditorSample.CanFocus() {
+			panes = append(panes, c.fileGroupEditorSample)
+		}
 		panes = append(panes, c.page)
 		if c.help.CanFocus() {
 			panes = append(panes, c.help)
@@ -1421,6 +1424,9 @@ func (c *settingsCenter) ProcessKey(e *vtinput.InputEvent) bool {
 		}
 		arrow := e.VirtualKeyCode == vtinput.VK_UP || e.VirtualKeyCode == vtinput.VK_DOWN || e.VirtualKeyCode == vtinput.VK_LEFT || e.VirtualKeyCode == vtinput.VK_RIGHT
 		if arrow {
+			if c.fileGroupEditorSample != nil && focused == c.fileGroupEditorSample {
+				return c.fileGroupEditorSample.ProcessKey(e)
+			}
 			switch focused {
 			case c.sidebar:
 				if e.VirtualKeyCode == vtinput.VK_RIGHT {

@@ -439,7 +439,17 @@ int main(int argc, char *argv[])
 #endif
 
     QtMediaClient mediaClient(&engine);
-    F4GalleryBridge galleryBridge(&engine, &engine, &iconSet, &mediaClient);
+    F4IconSet panelIconSet;
+    auto updatePanelIconSet = [&controller, &iconSet, &panelIconSet] {
+        const QString catalog = controller.chromeState()->fileGroupIconCatalog();
+        panelIconSet.setName(catalog.isEmpty() ? iconSet.name() : catalog);
+    };
+    updatePanelIconSet();
+    QObject::connect(controller.chromeState(), &ChromeStateStore::fileGroupIconCatalogChanged,
+                     &panelIconSet, updatePanelIconSet);
+    QObject::connect(&iconSet, &F4IconSet::iconSetChanged,
+                     &panelIconSet, updatePanelIconSet);
+    F4GalleryBridge galleryBridge(&engine, &engine, &panelIconSet, &mediaClient);
     const QPointer<QtMediaClient> mediaClientGuard(&mediaClient);
     controller.setMediaAdvertisementHandler(
         [mediaClientGuard](const QVariantMap &advertisement) {

@@ -261,8 +261,8 @@ func TestEditorDocumentDoubleClickDragSelectsWholeWords(t *testing.T) {
 	down := &vtinput.InputEvent{Type: vtinput.MouseEventType, ButtonState: vtinput.FromLeft1stButtonPressed, MouseEventFlags: vtinput.DoubleClick}
 	move := &vtinput.InputEvent{Type: vtinput.MouseEventType, ButtonState: vtinput.FromLeft1stButtonPressed, MouseEventFlags: vtinput.MouseMoved}
 	ev.processDocumentPointer(down, 0, 5, 0, revision)
-	if !ev.mouseWordSelecting || ev.SelAnchorOffset != 4 {
-		t.Fatalf("double click word selection: active=%v anchor=%d", ev.mouseWordSelecting, ev.SelAnchorOffset)
+	if ev.mouseSelectionUnit != mouseUnitWord || ev.SelAnchorOffset != 4 {
+		t.Fatalf("double click word selection: unit=%v anchor=%d", ev.mouseSelectionUnit, ev.SelAnchorOffset)
 	}
 	ev.processDocumentPointer(move, 0, 10, 0, revision)
 	if got := ev.Li.GetLineOffset(ev.CursorLine) + ev.CursorPos; ev.SelAnchorOffset != 4 || got != 13 {
@@ -271,6 +271,45 @@ func TestEditorDocumentDoubleClickDragSelectsWholeWords(t *testing.T) {
 	ev.processDocumentPointer(move, 0, 1, 0, revision)
 	if got := ev.Li.GetLineOffset(ev.CursorLine) + ev.CursorPos; ev.SelAnchorOffset != 7 || got != 0 {
 		t.Fatalf("backward word drag [%d,%d], want [7,0]", ev.SelAnchorOffset, got)
+	}
+}
+
+func TestEditorDocumentTripleClickSelectsLogicalLine(t *testing.T) {
+	ev := projectionTestEditor(t, "above\r\none two three four\r\nlast")
+	ev.WordWrap = true
+	ev.NativeViewportColumns = 8
+	ev.EnsureEngineWidth()
+	fragments := ev.Engine.GetFragments(1)
+	if len(fragments) < 2 {
+		t.Fatal("test line must wrap")
+	}
+	action := map[string]any{
+		"action": "editor.mouse", "target": vtui.SemanticID(ev),
+		"documentKey": vtui.SemanticID(ev), "layoutRevision": ev.semanticLayoutRevision,
+		"rowOffset": int64(fragments[1].ByteOffsetStart), "column": 2,
+		"button": "left", "phase": "press", "tripleClick": true,
+	}
+	ev.HandleSemanticAction(action)
+	action["phase"] = "release"
+	ev.HandleSemanticAction(action)
+	if cursor := ev.Li.GetLineOffset(ev.CursorLine) + ev.CursorPos; !ev.SelActive || ev.SelAnchorOffset != 7 || cursor != 27 {
+		t.Fatalf("selection active=%v range=[%d,%d), want the full CRLF-terminated line [7,27)",
+			ev.SelActive, ev.SelAnchorOffset, cursor)
+	}
+
+	action["phase"] = "press"
+	ev.HandleSemanticAction(action)
+	action["phase"] = "move"
+	action["moved"] = true
+	action["rowOffset"] = int64(27)
+	delete(action, "tripleClick")
+	ev.HandleSemanticAction(action)
+	action["phase"] = "release"
+	delete(action, "moved")
+	ev.HandleSemanticAction(action)
+	if cursor := ev.Li.GetLineOffset(ev.CursorLine) + ev.CursorPos; !ev.SelActive || ev.SelAnchorOffset != 7 || cursor != 31 {
+		t.Fatalf("line drag active=%v range=[%d,%d), want the selection extended to EOF [7,31)",
+			ev.SelActive, ev.SelAnchorOffset, cursor)
 	}
 }
 

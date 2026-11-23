@@ -802,6 +802,7 @@ private slots:
     void fileGroupSectionHeadersStayPixelAligned();
     void dialogWheelAnimatesAndPassesThroughShortLists();
     void fileGroupConditionCheckboxesAreHeadingsAt175Percent();
+    void fileGroupNameAndMaskUseCompactRows_data();
     void fileGroupNameAndMaskUseCompactRows();
     void fileGroupEditorMatrixAndPinnedPreview();
     void fileGroupEditorCombinesAppearanceInRightColumn();
@@ -5009,10 +5010,11 @@ void F4OperationsQueueTests::fileGroupEditorCombinesAppearanceInRightColumn()
       "id":"id:filegroup-editor:appearance","kind":"dialog","layout":"settings","settingsSectionsOnly":true,
       "title":"File group","x":2,"y":2,"w":125,"h":34,"children":[
         {"id":"sample","kind":"group","layoutRole":"editor-preview","fileGroupSample":true,
-         "previewName":"example.txt","previewCatalog":"lucide","items":["Normal","Marked","Cursor","Marked cursor"],
+         "previewName":"example.txt","previewCatalog":"lucide","previewHidden":true,
+         "items":["Normal","Marked","Cursor","Marked cursor"],
          "previewStyle":{"marker":"! ","iconSource":"plugin","icon":"qrc:/F4QtHost/icons/lucide/images.svg",
            "tintIcon":true,"normal":{"foreground":"#ff0000"},
-           "cursor":{"foreground":"#00ff00","fileNameForeground":"#00ff00"}}},
+           "cursor":{"foreground":"#00ff00","background":"#a08030","fileNameForeground":"#00ff00"}}},
         {"id":"page","kind":"group","layoutRole":"content","scrollable":true,"contentHeight":50,"x":4,"y":5,"w":118,"h":24,
          "children":[
           {"id":"identity","kind":"group","title":"Group name","bordered":true,"x":4,"y":5,"w":118,"h":3,
@@ -5027,10 +5029,13 @@ void F4OperationsQueueTests::fileGroupEditorCombinesAppearanceInRightColumn()
               "rows":[{"cells":["PDFs","20"]},{"cells":["Images","100"]}]}]},
           {"id":"highlight","kind":"group","layoutRole":"section-header","sectionID":"filegroup-Highlighting","title":"Highlighting","x":4,"y":9,"w":118,"h":1},
           {"id":"colors","kind":"group","layoutRole":"filegroup-colors","x":4,"y":10,"w":118,"h":8,"children":[
-            {"id":"color0","kind":"edit","colorMatrixCell":true},
+            {"id":"color0","kind":"edit","colorMatrixCell":true,"text":"foreground:#ff0000",
+             "colorComponents":{"foreground":"foreground:#ff0000","background":""}},
             {"id":"color1","kind":"edit","colorMatrixCell":true},
-            {"id":"color2","kind":"edit","colorMatrixCell":true},
-            {"id":"color3","kind":"edit","colorMatrixCell":true}]},
+            {"id":"color2","kind":"edit","colorMatrixCell":true,"text":"F_GREEN | B_BROWN",
+             "colorComponents":{"foreground":"F_GREEN","background":"B_BROWN"}},
+            {"id":"color3","kind":"edit","colorMatrixCell":true,"text":"B_BLUE",
+             "colorComponents":{"foreground":"","background":"B_BLUE"}}]},
           {"id":"rules","kind":"group","layoutRole":"filegroup-highlight","title":"Highlighting rules","bordered":true,
            "x":4,"y":18,"w":118,"h":5,"children":[
              {"id":"prefix-label","kind":"text","text":"Visual prefix","x":6,"y":19,"w":25,"h":1},
@@ -5088,8 +5093,15 @@ void F4OperationsQueueTests::fileGroupEditorCombinesAppearanceInRightColumn()
 
     QStringList leaves{"dialogWidget-nameEditTextInput", "dialogWidget-highlightGroupTitle",
                        "fileGroupChangeIconText"};
+    const QStringList overrides{"Text override", "Inherited", "Both overridden", "Background override"};
     for (int index = 0; index < 4; ++index) {
+        const auto statusName = QString("fileGroupPreviewOverride-%1").arg(index);
+        auto *status = visualItem(root, statusName);
+        QVERIFY2(status, qPrintable(statusName));
+        QCOMPARE(status->property("text").toString(), overrides.at(index));
+        QVERIFY(status->width() >= status->implicitWidth());
         leaves << QString("fileGroupPreviewState-%1").arg(index)
+               << statusName
                << QString("fileGroupPreviewName-%1").arg(index)
                << QString("fileGroupPreviewIcon-%1").arg(index)
                << QString("dialogWidget-color%1ColorEditButtonText").arg(index);
@@ -5111,15 +5123,42 @@ void F4OperationsQueueTests::fileGroupEditorCombinesAppearanceInRightColumn()
         QQuickItem *name = nullptr;
         QTRY_VERIFY(icon = visualItem(root, QString("fileGroupPreviewIcon-%1").arg(i)));
         QTRY_VERIFY(name = visualItem(root, QString("fileGroupPreviewName-%1").arg(i)));
-        QCOMPARE(name->property("text").toString(), QString("! example.txt"));
-        if (i == 0) {
-            QCOMPARE(name->property("color"), fixture.window->property("galleryFileTextColor"));
+        auto *surface = visualItem(root, QString("fileGroupPreviewSurface-%1").arg(i));
+        QVERIFY(surface);
+        QCOMPARE(name->property("text").toString(), QString("example.txt"));
+        QCOMPARE(name->opacity(), 0.5);
+        QCOMPARE(icon->opacity(), 0.5);
+        if (i % 2 == 1) {
+            QCOMPARE(icon->property("color"), fixture.window->property("galleryMarkedTextColor"));
+            QCOMPARE(surface->property("color"), fixture.window->property("galleryMarkedBackgroundColor"));
+        } else {
             QCOMPARE(icon->property("color").value<QColor>(), QColor("#ff0000"));
-        } else if (i == 2) {
+        }
+        if (i == 0)
+            QCOMPARE(name->property("color"), fixture.window->property("galleryFileTextColor"));
+        else if (i == 2) {
             QCOMPARE(name->property("color").value<QColor>(), QColor("#00ff00"));
+            QCOMPARE(surface->property("color").value<QColor>(), QColor("#a08030"));
         }
         QVERIFY2(icon->isVisible(), qPrintable(icon->property("source").toUrl().toString()));
-        QCOMPARE(icon->property("status").toInt(), 1); // Image.Ready
+        QTRY_COMPARE(icon->property("status").toInt(), 1); // Image.Ready
+        const auto iconPainted = [&] {
+            const auto image = fixture.window->grabWindow();
+            if (image.isNull())
+                return false;
+            const qreal dpr = fixture.window->devicePixelRatio();
+            const auto topLeft = (icon->mapToItem(root, QPointF{}) * dpr).toPoint();
+            const auto bounds = QRect(topLeft, QSize(qRound(icon->width() * dpr), qRound(icon->height() * dpr)));
+            if (!image.rect().contains(bounds))
+                return false;
+            const auto background = image.pixel(bounds.topLeft());
+            for (int y = bounds.top(); y <= bounds.bottom(); ++y)
+                for (int x = bounds.left(); x <= bounds.right(); ++x)
+                    if (image.pixel(x, y) != background)
+                        return true;
+            return false;
+        };
+        QTRY_VERIFY2(iconPainted(), qPrintable(icon->property("source").toUrl().toString()));
         QVERIFY(icon->mapToScene(QPointF(icon->width(), 0)).x() + 4
                 <= name->mapToScene(QPointF{}).x());
     }
@@ -5177,12 +5216,25 @@ void F4OperationsQueueTests::fileGroupEditorCombinesAppearanceInRightColumn()
     if (!captureDir.isEmpty())
         QVERIFY(fixture.window->grabWindow().save(QDir(captureDir).filePath("file-group-appearance-175.png")));
 
-    auto *colorEdit = visualItem(root, "dialogWidget-color0ColorEditButton");
+    auto *colorEdit = visualItem(root, "dialogWidget-color2ColorEditButton");
     QVERIFY(colorEdit);
     QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, itemCenter(colorEdit));
-    QTRY_VERIFY(visualItem(root, "dialogWidget-color0ColorPickerTitle"));
-    QTest::keyClick(fixture.window, Qt::Key_Escape);
-    QTRY_VERIFY(!visualItem(root, "dialogWidget-color0ColorPickerTitle"));
+    QTRY_VERIFY(visualItem(root, "dialogWidget-color2ColorPickerTitle"));
+    auto *reset = visualItem(root, "dialogWidget-color2ColorReset");
+    auto *apply = visualItem(root, "dialogWidget-color2ColorApply");
+    QVERIFY(reset && apply);
+    verifyLeaves({"dialogWidget-color2ColorResetText"});
+    fixture.shell.clearActions();
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, itemCenter(reset));
+    QVERIFY(std::none_of(fixture.shell.actions.cbegin(), fixture.shell.actions.cend(), [](const auto &action) {
+        return action.value("action") == "control.setText";
+    }));
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, itemCenter(apply));
+    QTRY_VERIFY(std::any_of(fixture.shell.actions.cbegin(), fixture.shell.actions.cend(), [](const auto &action) {
+        return action.value("target") == "color2" && action.value("action") == "control.setText"
+            && action.contains("text") && action.value("text").toString().isEmpty();
+    }));
+    QTRY_VERIFY(!visualItem(root, "dialogWidget-color2ColorPickerTitle"));
 
     QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, itemCenter(changeIcon));
     QTRY_VERIFY(visualItem(root, "dialogWidget-catalogComboBox"));
@@ -5245,8 +5297,9 @@ void F4OperationsQueueTests::fileGroupEditorMatrixAndPinnedPreview()
         QVERIFY(tile && tile->isVisible() && tile->width()>20 && tile->height()>10);
         auto *icon=visualItem(root,QString("fileGroupPinnedIcon-%1").arg(i));
         QVERIFY(icon);
-        const QStringList colours{"#112233","#223344","#334455","#445566"};
-        QCOMPARE(icon->property("color").value<QColor>(),QColor(colours[i]));
+        const QColor color = i % 2 == 0 ? QColor("#112233")
+            : fixture.window->property("galleryMarkedTextColor").value<QColor>();
+        QCOMPARE(icon->property("color").value<QColor>(), color);
     }
     auto *viewport=visualItem(root,"dialogWidget-matrix-pageViewport");
     QVERIFY(viewport);
@@ -5299,9 +5352,14 @@ void F4OperationsQueueTests::fileGroupEditorMatrixAndPinnedPreview()
     QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, itemCenter(edit));
     QQuickItem *apply = nullptr;
     QTRY_VERIFY((apply = visualItem(root, "dialogWidget-nColorApply")) && apply->isVisible());
+    auto *wheel = visualItem(root, "dialogWidget-nColorWheel");
+    auto *lightness = visualItem(root, "dialogWidget-nColorLightness");
+    QVERIFY(wheel && wheel->isVisible());
+    QVERIFY(lightness && lightness->isVisible());
     if (qAbs(dpr - 1.75) < 0.001) {
         for (const auto &suffix : {"ColorPickerTitle", "ColorTextChannelText", "ColorBackgroundChannelText",
-                                   "ColorHexTextInput", "ColorInheritText", "ColorApplyText", "ColorCancelText"}) {
+                                   "ColorLightnessLabel", "ColorHexTextInput", "ColorInheritText",
+                                   "ColorApplyText", "ColorCancelText"}) {
             const auto name = QString("dialogWidget-n%1").arg(suffix);
             auto *leaf = visualItem(root, name);
             QVERIFY2(leaf && leaf->isVisible(), qPrintable(name));
@@ -5312,8 +5370,17 @@ void F4OperationsQueueTests::fileGroupEditorMatrixAndPinnedPreview()
             QVERIFY(QLineF(leaf->mapToItem(root, QPointF(1, 0)) - origin, QPointF(1, 0)).length() < 0.001);
             QVERIFY(QLineF(leaf->mapToItem(root, QPointF(0, 1)) - origin, QPointF(0, 1)).length() < 0.001);
         }
+        const auto wheelPixel = [&](qreal fraction) {
+            return (wheel->mapToItem(root, QPointF(wheel->width() * fraction, wheel->height() * .5)) * dpr).toPoint();
+        };
+        QImage capture;
+        const auto wheelPainted = [&] {
+            capture = fixture.window->grabWindow();
+            return !capture.isNull() && capture.pixelColor(wheelPixel(.2)) != capture.pixelColor(wheelPixel(.8));
+        };
+        QTRY_VERIFY(wheelPainted());
         if (qEnvironmentVariableIsSet("F4_QUEUE_CAPTURE_DIR"))
-            QVERIFY(fixture.window->grabWindow().save(
+            QVERIFY(capture.save(
                 QDir(qEnvironmentVariable("F4_QUEUE_CAPTURE_DIR")).filePath("file-group-color-picker-175.png")));
     }
     auto *preset = visualItem(root, "dialogWidget-nColorPreset-12");
@@ -5358,6 +5425,32 @@ void F4OperationsQueueTests::fileGroupEditorMatrixAndPinnedPreview()
     QVERIFY(std::none_of(fixture.shell.actions.cbegin(), fixture.shell.actions.cend(), [](const auto &action) {
         return action.value("action") == "control.setText";
     }));
+    fixture.shell.clearActions();
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, itemCenter(edit));
+    QTRY_VERIFY((apply = visualItem(root, "dialogWidget-nColorApply")) && apply->isVisible());
+    backgroundChannel = visualItem(root, "dialogWidget-nColorBackgroundChannel");
+    auto *hex = visualItem(root, "dialogWidget-nColorHexTextInput");
+    wheel = visualItem(root, "dialogWidget-nColorWheel");
+    lightness = visualItem(root, "dialogWidget-nColorLightness");
+    QVERIFY(backgroundChannel && hex && wheel && lightness);
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, itemCenter(backgroundChannel));
+    const auto wheelPoint = wheel->mapToScene(QPointF(wheel->width() * .8, wheel->height() * .5)).toPoint();
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, wheelPoint);
+    const QString wheelHex = hex->property("text").toString();
+    QVERIFY(QColor::isValidColorName(wheelHex));
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, itemCenter(lightness));
+    const QString adjustedHex = hex->property("text").toString();
+    QVERIFY(QColor::isValidColorName(adjustedHex));
+    QVERIFY(adjustedHex != wheelHex);
+    QVERIFY(std::none_of(fixture.shell.actions.cbegin(), fixture.shell.actions.cend(), [](const auto &action) {
+        return action.value("action") == "control.setText";
+    }));
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, itemCenter(apply));
+    QTRY_VERIFY(std::any_of(fixture.shell.actions.cbegin(), fixture.shell.actions.cend(), [&](const auto &action) {
+        return action.value("target") == "n" && action.value("action") == "control.setText"
+            && action.value("text") == "foreground:#112233 | background:" + adjustedHex;
+    }));
+    QTRY_VERIFY(!visualItem(root, "dialogWidget-nColorApply"));
     const auto samplePosition=sample->mapToScene(QPointF());
     QVERIFY(viewport->property("contentHeight").toReal()>viewport->height());
     QVERIFY(viewport->setProperty("contentY",150.0));
@@ -5692,8 +5785,16 @@ void F4OperationsQueueTests::fileGroupConditionCheckboxesAreHeadingsAt175Percent
     }
 }
 
+void F4OperationsQueueTests::fileGroupNameAndMaskUseCompactRows_data()
+{
+    QTest::addColumn<bool>("appearanceColumn");
+    QTest::newRow("condition-columns") << false;
+    QTest::newRow("appearance-column") << true;
+}
+
 void F4OperationsQueueTests::fileGroupNameAndMaskUseCompactRows()
 {
+    QFETCH(bool, appearanceColumn);
     auto dialog = QJsonDocument::fromJson(R"({
       "id":"id:filegroup-editor:compact","kind":"dialog","layout":"settings","settingsSectionsOnly":true,
       "title":"File group","x":2,"y":2,"w":126,"h":32,"children":[
@@ -5759,13 +5860,47 @@ void F4OperationsQueueTests::fileGroupNameAndMaskUseCompactRows()
              {"id":"before","kind":"edit","text":"","x":108,"y":17,"w":10,"h":1}]}
          ]}
       ]})").toVariant().toMap();
+    if (appearanceColumn) {
+        auto page = dialog.value("children").toList().first().toMap();
+        auto groups = page.value("children").toList();
+        // The core sends full-width condition groups at this dialog size.
+        // Qt puts those groups next to the appearance preview.
+        for (int i = 2; i < groups.size(); ++i) {
+            auto group = groups[i].toMap();
+            const int origin = group.value("x").toInt();
+            group["x"] = 4;
+            group["w"] = 118;
+            group.remove("conditionColumn");
+            auto header = group.value("headerControl").toMap();
+            header["x"] = 6;
+            group["headerControl"] = header;
+            auto children = group.value("children").toList();
+            for (auto &entry : children) {
+                auto child = entry.toMap();
+                const int offset = child.value("x").toInt() - origin - 2;
+                child["x"] = 6 + 2 * offset;
+                child["w"] = 2 * child.value("w").toInt();
+                entry = child;
+            }
+            group["children"] = children;
+            groups[i] = group;
+        }
+        groups.append(QVariantMap{{"id", "visual"}, {"kind", "group"}, {"layoutRole", "section-header"},
+                                  {"sectionID", "filegroup-Highlighting"}, {"title", "Visual appearance"},
+                                  {"x", 4}, {"y", 31}, {"w", 118}, {"h", 1}});
+        page["children"] = groups;
+        const QVariantMap preview{{"id", "sample"}, {"kind", "group"}, {"layoutRole", "editor-preview"},
+                                  {"fileGroupSample", true}, {"previewName", "sample"},
+                                  {"items", QVariantList{"Normal", "Marked", "Cursor", "Marked cursor"}}};
+        dialog["children"] = QVariantList{page, preview};
+    }
     auto scene = panelScene();
     auto initial = dialog;
     initial["w"] = 60;
     scene.insert("dialogs", QVariantList{initial});
     QueueFixture fixture(scene);
     QVERIFY(fixture.window);
-    fixture.window->resize(1500, 920);
+    fixture.window->resize(appearanceColumn ? 1010 : 1500, appearanceColumn ? 1100 : 920);
     auto *root = fixture.window->contentItem();
     auto *surface = visualItem(root, "semanticDialog-id:filegroup-editor:compact");
     QVERIFY(surface);
@@ -5777,7 +5912,7 @@ void F4OperationsQueueTests::fileGroupNameAndMaskUseCompactRows()
         return {};
     };
     QTRY_VERIFY(!initialGeometry().isEmpty());
-    QVERIFY(!surface->isVisible());
+    QVERIFY2(surface->isVisible(), "The editor must paint before Go acknowledges dialog.geometry");
     dialog["w"] = initialGeometry().value("w");
     scene.insert("dialogs", QVariantList{dialog});
     fixture.shell.setScene(scene);
@@ -5786,6 +5921,23 @@ void F4OperationsQueueTests::fileGroupNameAndMaskUseCompactRows()
     if (qAbs(dpr - 1.75) >= 0.001)
         QSKIP("175% scale required for the file group pixel check");
 
+    if (appearanceColumn) {
+        auto *matching = visualItem(root, "dialogWidget-matchingGroupBorder");
+        auto *appearance = visualItem(root, "dialogWidget-visualGroupTitle");
+        QVERIFY(matching && appearance);
+        QVERIFY(appearance->mapToItem(root, QPointF{}).x()
+                > matching->mapToItem(root, QPointF(matching->width(), 0)).x());
+        auto *caption = visualItem(root, "dialogWidget-caseChoiceCaption");
+        QVERIFY(caption);
+        const auto capture = fixture.window->grabWindow();
+        QVERIFY(!capture.isNull());
+        if (qEnvironmentVariableIsSet("F4_QUEUE_CAPTURE_DIR"))
+            QVERIFY(capture.save(QDir(qEnvironmentVariable("F4_QUEUE_CAPTURE_DIR")).filePath("file-group-appearance-conditions-175.png")));
+        const qreal captionWidth = caption->width() * dpr;
+        const qreal naturalWidth = caption->implicitWidth() * dpr;
+        QVERIFY2(captionWidth >= naturalWidth, qPrintable(QString("Case matching: %1 physical pixels wide at x=%2, needs %3")
+                     .arg(captionWidth).arg(caption->mapToItem(root, QPointF{}).x() * dpr).arg(naturalWidth)));
+    }
     QStringList leaves{
         "enabledCheckBoxText", "enabledCheckBoxIndicator", "enabledCheckBoxCheckMark",
         "nameEditTextInput", "conditionsGroupTitle",
@@ -5817,6 +5969,40 @@ void F4OperationsQueueTests::fileGroupNameAndMaskUseCompactRows()
         const auto origin = leaf->mapToItem(root, QPointF{});
         QVERIFY(QLineF(leaf->mapToItem(root, QPointF(1, 0)) - origin, QPointF(1, 0)).length() < 0.001);
         QVERIFY(QLineF(leaf->mapToItem(root, QPointF(0, 1)) - origin, QPointF(0, 1)).length() < 0.001);
+    }
+    if (appearanceColumn) {
+        const QList<QPair<QString, QStringList>> cards{
+            {"matching", {"mask-labelText", "maskMultiLine", "syntaxChoiceCaption", "syntaxChoiceOutline",
+                          "caseChoiceCaption", "caseChoiceOutline"}},
+            {"attributes", {"required-labelText", "requiredComboBox", "excluded-labelText", "excludedComboBox"}},
+            {"size", {"min-labelText", "minEdit", "max-labelText", "maxEdit"}},
+            {"timestamps", {"date-kind-labelText", "date-kindComboBox", "relativeCheckBox",
+                            "after-labelText", "afterEdit", "before-labelText", "beforeEdit"}}
+        };
+        for (const auto &[id, controls] : cards) {
+            auto *card = visualItem(root, "dialogWidget-" + id + "GroupBorder");
+            QVERIFY(card);
+            const auto bounds = card->mapRectToItem(root, card->boundingRect());
+            qreal previousBottom = bounds.top();
+            for (const auto &control : controls) {
+                auto *item = visualItem(root, "dialogWidget-" + control);
+                QVERIFY2(item, qPrintable(control));
+                const auto rect = item->mapRectToItem(root, item->boundingRect());
+                const auto detail = QString("%1: physical rect (%2, %3, %4, %5), card right %6")
+                    .arg(control).arg(rect.x() * dpr).arg(rect.y() * dpr)
+                    .arg(rect.width() * dpr).arg(rect.height() * dpr).arg(bounds.right() * dpr);
+                QVERIFY2(bounds.adjusted(-0.02, -0.02, 0.02, 0.02).contains(rect), qPrintable(detail));
+                QVERIFY2(rect.top() >= previousBottom - 0.02, qPrintable(detail));
+                previousBottom = rect.bottom();
+            }
+        }
+        const QStringList caseOptions{"insensitive", "sensitive", "platform"};
+        for (int i = 0; i < caseOptions.size(); ++i) {
+            auto *option = visualItem(root, "dialogWidget-caseOption-" + QString::number(i));
+            QVERIFY(option);
+            QCOMPARE(option->property("text").toString(), caseOptions[i]);
+        }
+        return;
     }
     auto *enabled = visualItem(root, "dialogWidget-enabledCheckBox");
     auto *name = visualItem(root, "dialogWidget-nameEdit");

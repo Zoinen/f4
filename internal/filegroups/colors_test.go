@@ -77,6 +77,7 @@ func TestColorThemesComposeWithoutCompilingOrChangingIcons(t *testing.T) {
 func TestColorThemeMissingEntriesFallThroughAndExplicitDisable(t *testing.T) {
 	groups := []Group{
 		{ID: "special", Fields: map[string]string{"Name": "Special", "Mask": "*.go", "Highlight.Enabled": "true"}},
+		{ID: "cleared", Fields: map[string]string{"Name": "Cleared", "Mask": "*.go", "Highlight.Enabled": "true"}},
 		{ID: "marked", Fields: map[string]string{"Name": "Marked", "Mask": "*.go", "Highlight.Enabled": "true", "Mark": "!"}},
 		{ID: "off", Fields: map[string]string{"Name": "Off", "Mask": "*", "Highlight.Enabled": "false", "Mark": "?"}},
 		{ID: "files", Fields: map[string]string{"Name": "Files", "Mask": "*"}},
@@ -85,12 +86,12 @@ func TestColorThemeMissingEntriesFallThroughAndExplicitDisable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := base.WithColorThemes([]ColorTheme{{ID: "colors", Fields: map[string]string{"Color.files.NormalColor": "foreground:#abcdef", "Color.off.NormalColor": "foreground:#123456"}}}, "colors")
+	snapshot, err := base.WithColorThemes([]ColorTheme{{ID: "colors", Fields: map[string]string{"Color.files.NormalColor": "foreground:#abcdef", "Color.off.NormalColor": "foreground:#123456", "Color.cleared.NormalColor": ""}}}, "colors")
 	if err != nil {
 		t.Fatal(err)
 	}
 	projected := snapshot.HighlightGroups("Modern")
-	if projected[0].Enabled("Highlight") || !projected[1].Enabled("Highlight") || projected[1].Fields["ContinueProcessing"] != "true" || projected[1].Fields["Mark"] != "!" || projected[2].Enabled("Highlight") || !projected[3].Enabled("Highlight") {
+	if projected[0].Enabled("Highlight") || projected[1].Enabled("Highlight") || !projected[2].Enabled("Highlight") || projected[2].Fields["ContinueProcessing"] != "true" || projected[2].Fields["Mark"] != "!" || projected[3].Enabled("Highlight") || !projected[4].Enabled("Highlight") {
 		t.Fatalf("missing artwork blocked fallback or explicit disable lost: %+v", projected)
 	}
 	var color, mark string

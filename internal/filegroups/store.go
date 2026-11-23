@@ -197,6 +197,7 @@ func (t *Transaction) Migrated() bool { return t.migrated }
 
 func (t *Transaction) ColorThemes() []ColorTheme { return cloneColorThemes(t.colors) }
 func (t *Transaction) ColorThemeID() string      { return t.colorTheme }
+func (t *Transaction) IconThemeID() string       { return t.document.Section("FileGroups")["IconTheme"] }
 
 func (t *Transaction) Themes() []ThemeSet {
 	overrides, _ := t.document.Themes()
@@ -206,15 +207,23 @@ func (t *Transaction) Themes() []ThemeSet {
 // Commit validates before touching disk and updates its baseline only after
 // publication succeeds. A failed Apply remains retryable and keeps the draft.
 func (t *Transaction) Commit(groups []Group, themeSets ...[]ThemeSet) error {
-	return t.commit(groups, t.colors, t.colorTheme, t.hasColors, themeSets...)
+	return t.commit(groups, t.colors, t.colorTheme, t.hasColors, t.IconThemeID(), themeSets...)
 }
 
 func (t *Transaction) CommitColors(groups []Group, iconThemes []ThemeSet, colorThemes []ColorTheme, selected string) error {
 	groups = NormalizeColorGroups(groups, t.store.ColorStyle)
-	return t.commit(groups, colorThemes, selected, true, iconThemes)
+	return t.commit(groups, colorThemes, selected, true, t.IconThemeID(), iconThemes)
 }
 
-func (t *Transaction) commit(groups []Group, colors []ColorTheme, selected string, hasColors bool, themeSets ...[]ThemeSet) error {
+func (t *Transaction) CommitAppearance(groups []Group, iconThemes []ThemeSet, colorThemes []ColorTheme, colorTheme, iconTheme string) error {
+	hasColors := len(colorThemes) != 0 || colorTheme != "" || t.hasColors
+	if hasColors {
+		groups = NormalizeColorGroups(groups, t.store.ColorStyle)
+	}
+	return t.commit(groups, colorThemes, colorTheme, hasColors, iconTheme, iconThemes)
+}
+
+func (t *Transaction) commit(groups []Group, colors []ColorTheme, selected string, hasColors bool, iconTheme string, themeSets ...[]ThemeSet) error {
 	if _, err := Compile(groups); err != nil {
 		return err
 	}
@@ -225,9 +234,24 @@ func (t *Transaction) commit(groups []Group, colors []ColorTheme, selected strin
 		}
 		themes = themeDifferences(append(FactoryThemes(), t.store.ThemeDefaults...), themeSets[0])
 	}
-	data, err := t.document.encodeSnapshot(groups, themes)
+	document := *t.document
+	if iconTheme != t.IconThemeID() {
+		if iconTheme != "" {
+			if err := validID(iconTheme); err != nil {
+				return err
+			}
+		}
+		document.sections = maps.Clone(document.sections)
+		meta := document.Section("FileGroups")
+		if meta == nil {
+			meta = map[string]string{}
+		}
+		meta["IconTheme"] = iconTheme
+		document.sections["FileGroups"] = meta
+	}
+	data, err := document.encodeSnapshot(groups, themes)
 	if hasColors {
-		data, err = t.document.encodeSnapshotColors(groups, themes, colors, selected)
+		data, err = document.encodeSnapshotColors(groups, themes, colors, selected)
 	}
 	if err != nil {
 		return err

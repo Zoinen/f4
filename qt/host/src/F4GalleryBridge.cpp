@@ -310,6 +310,11 @@ bool F4GalleryBridge::videoPlaybackAvailable() const
     return session && session->videoPlaybackAvailable();
 }
 
+QObject *F4GalleryBridge::panelIconProvider() const
+{
+    return m_iconSet;
+}
+
 QObject *F4GalleryBridge::settings() const {
     auto *runtime = qobject_cast<ZoinGallery::GalleryRuntime *>(m_runtime.data());
     return runtime ? runtime->preferences() : nullptr;

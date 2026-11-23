@@ -320,6 +320,11 @@ Item {
             }
             event.accepted = true
         } else if (commanderOwnsKey(event)) {
+            // Commands such as F4 read the Go panel cursor. Flush a local
+            // navigation move before queuing the key, even during animation.
+            if (!galleryPanel.keyboardShiftSelectionActive
+                    && !galleryPanel.keyboardToggleSelectionActive)
+                galleryPanel.commitPendingCursor()
             forwardQtKey(event, true)
             rememberForwardedKey(event.key)
             noteForwardedKey(event.key, event.text, event.modifiers)

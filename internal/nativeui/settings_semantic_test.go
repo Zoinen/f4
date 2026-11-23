@@ -95,10 +95,11 @@ func TestControlProjectionPreservesPinnedAppearanceAndMatrix(t *testing.T) {
 			"kind": "asset", "value": "file", "groupId": "example", "overrideNative": true,
 		}}}
 	c := appControlFromLegacy(map[string]any{"kind": "group", "fileGroupSample": true,
-		"previewStyle": style, "previewName": "example.txt", "previewCatalog": "zoin", "previewDirectory": true})
+		"previewStyle": style, "previewName": "example.txt", "previewCatalog": "zoin",
+		"previewDirectory": true, "previewHidden": true})
 	c.Legacy = nil
 	p := appControlFromLegacy(c.ToMap())
-	if !p.FileGroupSample || p.PreviewName != "example.txt" || p.PreviewCatalog != "zoin" || !p.PreviewDirectory {
+	if !p.FileGroupSample || p.PreviewName != "example.txt" || p.PreviewCatalog != "zoin" || !p.PreviewDirectory || !p.PreviewHidden {
 		t.Fatal("pinned preview fields lost")
 	}
 	if p.PreviewStyle.Normal.Foreground != "#112233" || !p.PreviewStyle.IconChoices["zoin"].OverrideNative {

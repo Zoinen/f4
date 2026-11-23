@@ -39,6 +39,7 @@ constexpr quint64 CommonLvbUnderscore = 0x8000;
 constexpr quint64 WideCharFiller = ~quint64(0);
 
 constexpr int LeftAltPressed = 0x0002;
+constexpr int RightCtrlPressed = 0x0004;
 constexpr int LeftCtrlPressed = 0x0008;
 constexpr int ShiftPressed = 0x0010;
 constexpr int EnhancedKey = 0x0100;
@@ -406,7 +407,7 @@ void VtuiGridItem::sendQtKeyEvent(int key, const QString &text, bool down,
     QKeyEvent event(down ? QEvent::KeyPress : QEvent::KeyRelease,
                     key, qtModifiers, nativeScanCode, nativeScanCode, 0,
                     down ? text : QString(), autoRepeat);
-    int nativeModifiers = modifiersFromEvent(qtModifiers);
+    int nativeModifiers = keyboardModifiersFromEvent(qtModifiers);
     if (key == Qt::Key_Backtab) nativeModifiers |= ShiftPressed;
     if (isEnhancedQtKey(key)) {
         nativeModifiers |= EnhancedKey;
@@ -502,6 +503,15 @@ void VtuiGridItem::sendQtWheelAt(qreal x, qreal y, int angleDeltaY,
 
 bool VtuiGridItem::eventFilter(QObject *watched, QEvent *event)
 {
+    // QML forwards the aggregate Qt modifiers synchronously but has no
+    // native modifier bits. Capture them from the original key event.
+    if (event && (event->type() == QEvent::KeyPress
+                  || event->type() == QEvent::KeyRelease)) {
+        captureNativeControl(*static_cast<QKeyEvent *>(event));
+    } else if (event && event->type() == QEvent::ApplicationStateChange
+               && QGuiApplication::applicationState() != Qt::ApplicationActive) {
+        m_nativeControl = 0;
+    }
 #if defined(Q_OS_MACOS)
     // Qt Quick exposes the layout-produced key/text to QML, but not a usable
     // physical key code on every Qt/macOS combination. Capture it from the
@@ -583,7 +593,7 @@ void VtuiGridItem::keyPressEvent(QKeyEvent *event)
     }
 
     if (m_controller) {
-        int mods = modifiersFromEvent(event->modifiers());
+        int mods = keyboardModifiersFromEvent(event->modifiers());
         if (event->key() == Qt::Key_Backtab) mods |= ShiftPressed;
         if (isEnhancedQtKey(event->key())) {
             mods |= EnhancedKey;
@@ -609,7 +619,7 @@ void VtuiGridItem::keyPressEvent(QKeyEvent *event)
 void VtuiGridItem::keyReleaseEvent(QKeyEvent *event)
 {
     if (m_controller) {
-        int mods = modifiersFromEvent(event->modifiers());
+        int mods = keyboardModifiersFromEvent(event->modifiers());
         if (event->key() == Qt::Key_Backtab) mods |= ShiftPressed;
         if (isEnhancedQtKey(event->key())) {
             mods |= EnhancedKey;
@@ -936,6 +946,44 @@ int VtuiGridItem::modifiersFromEvent(Qt::KeyboardModifiers modifiers) const
 #endif
 }
 
+void VtuiGridItem::captureNativeControl(const QKeyEvent &event)
+{
+#if defined(Q_OS_WIN)
+    // WindowsNativeModifiers from Qt's Windows platform plugin.
+    constexpr quint32 WindowsControlLeft = 0x02;
+    constexpr quint32 WindowsControlRight = 0x20;
+    const quint32 native = event.nativeModifiers();
+    m_nativeControl = (native & WindowsControlLeft ? LeftCtrlPressed : 0)
+        | (native & WindowsControlRight ? RightCtrlPressed : 0);
+#elif defined(Q_OS_UNIX) && !defined(Q_OS_MACOS)
+    // XCB and Wayland supply an XKB keysym for the Ctrl key itself.
+    if (event.key() != Qt::Key_Control) {
+        if (!event.modifiers().testFlag(Qt::ControlModifier))
+            m_nativeControl = 0;
+        return;
+    }
+    constexpr quint32 XkbControlLeft = 0xffe3;
+    constexpr quint32 XkbControlRight = 0xffe4;
+    const quint32 keysym = event.nativeVirtualKey();
+    const int side = keysym == XkbControlLeft ? LeftCtrlPressed
+        : keysym == XkbControlRight ? RightCtrlPressed : 0;
+    if (event.type() == QEvent::KeyPress)
+        m_nativeControl |= side;
+    else if (!event.isAutoRepeat())
+        m_nativeControl &= ~side;
+#else
+    Q_UNUSED(event);
+#endif
+}
+
+int VtuiGridItem::keyboardModifiersFromEvent(Qt::KeyboardModifiers modifiers) const
+{
+    const int result = modifiersFromEvent(modifiers);
+    if (m_nativeControl != 0 && modifiers.testFlag(Qt::ControlModifier))
+        return (result & ~LeftCtrlPressed) | m_nativeControl;
+    return result;
+}
+
 int VtuiGridItem::protocolModifiers(Qt::KeyboardModifiers modifiers, bool macOS)
 {
     int result = 0;
@@ -948,7 +996,7 @@ int VtuiGridItem::protocolModifiers(Qt::KeyboardModifiers modifiers, bool macOS)
     // Qt names Command ControlModifier on macOS; MetaModifier is the
     // physical Control key. Preserve both channels for the core Mac key map.
     if (macOS && modifiers.testFlag(Qt::MetaModifier)) {
-        result |= 0x0004; // RIGHT_CTRL_PRESSED
+        result |= RightCtrlPressed;
     }
     if (modifiers.testFlag(Qt::AltModifier)) {
         result |= LeftAltPressed;

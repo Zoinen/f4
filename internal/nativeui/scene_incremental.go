@@ -8,6 +8,7 @@ import (
 	"github.com/unxed/f4/internal/navtrace"
 	"github.com/unxed/f4/internal/panel"
 	"github.com/unxed/f4/internal/semantic"
+	"github.com/unxed/f4/internal/theme"
 	"github.com/unxed/f4/sdk/extui"
 	"github.com/unxed/vtui"
 	"reflect"
@@ -27,13 +28,14 @@ type appIncrementalScene struct {
 
 func appSemanticRootFromHeader(header map[string]any) extui.Scene {
 	scene := extui.Scene{
-		Width:          semantic.Int(header["width"]),
-		Height:         semantic.Int(header["height"]),
-		ActiveScreen:   semantic.Int(header["activeScreen"]),
-		WorkspaceCount: semantic.Int(header["workspaceCount"]),
-		WorkspaceTabs:  appQueueAwareWorkspaceTabs(header),
-		Presentation:   string(config.ParseGuiPresentationMode(string(config.App.GuiPresentation))),
-		QmlIconSet:     string(config.ParseQmlIconSetMode(string(config.App.QmlIconSet))),
+		Width:                semantic.Int(header["width"]),
+		Height:               semantic.Int(header["height"]),
+		ActiveScreen:         semantic.Int(header["activeScreen"]),
+		WorkspaceCount:       semantic.Int(header["workspaceCount"]),
+		WorkspaceTabs:        appQueueAwareWorkspaceTabs(header),
+		Presentation:         string(config.ParseGuiPresentationMode(string(config.App.GuiPresentation))),
+		QmlIconSet:           string(config.ParseQmlIconSetMode(string(config.App.QmlIconSet))),
+		FileGroupIconCatalog: theme.FileGroupIconCatalog(),
 	}
 	if menu := semantic.AppMap(header["menuBar"]); menu != nil {
 		model := appMenuFromLegacy(menu, "menuBar")
@@ -169,7 +171,7 @@ func BuildAppIncrementalScene(ctx *vtui.SemanticContext) (*appIncrementalScene, 
 
 var incrementalRootPatchKeys = []string{
 	"width", "height", "activeScreen", "workspaceCount", "workspaceTabs",
-	"presentation", "qmlIconSet", "menuBar", "keyBar", "toast", "dialogs",
+	"presentation", "qmlIconSet", "fileGroupIconCatalog", "menuBar", "keyBar", "toast", "dialogs",
 	"menus", "surface", "operationsQueue",
 }
 

@@ -341,6 +341,15 @@ void F4GalleryBridge::commitPanelStatePatch(
     state.loading = context->panel.value(
         QStringLiteral("loading"), state.loading).toBool();
     state.catalogProvisional = context->nextCatalogProvisional;
+    if (context->nextCatalogRowsDeferred && !state.catalogRowsDeferred) {
+        // A header-only update can enable paging while keeping the rows
+        // already delivered as a dense prefix of this catalog.
+        state.entryOffsetByRow.clear();
+        state.entryOffsetByRow.reserve(state.entries.size());
+        for (int row = 0; row < state.entries.size(); ++row) {
+            state.entryOffsetByRow.insert(row, row);
+        }
+    }
     state.catalogRowsDeferred = context->nextCatalogRowsDeferred;
     state.totalCount = context->nextTotalCount;
     state.metadataDeferred = context->nextMetadataDeferred;

@@ -25,7 +25,7 @@ QVariantMap rootState(const QVariantMap &scene,
 QVariantMap projectChromeState(const QVariantMap &scene)
 {
     return rootState(scene, {"schema", "version", "width", "height",
-                             "presentation", "qmlIconSet", "keyBar",
+                             "presentation", "qmlIconSet", "fileGroupIconCatalog", "keyBar",
                              "toast"});
 }
 
@@ -83,6 +83,7 @@ QVariantMap chromeStoreState(const ChromeStateStore *store)
         {QStringLiteral("height"), store->height()},
         {QStringLiteral("presentation"), store->presentation()},
         {QStringLiteral("qmlIconSet"), store->qmlIconSet()},
+        {QStringLiteral("fileGroupIconCatalog"), store->fileGroupIconCatalog()},
         {QStringLiteral("keyBar"), store->keyBar()},
         {QStringLiteral("toast"), store->toast()},
     };
@@ -233,7 +234,7 @@ void QtShellController::commitTypedScenePatch(
     const qulonglong revision = applied.revision;
     if (intersects(applied.rootKeys,
                    {"schema", "version", "width", "height",
-                    "presentation", "qmlIconSet", "keyBar", "toast"})) {
+                    "presentation", "qmlIconSet", "fileGroupIconCatalog", "keyBar", "toast"})) {
         m_chromeState->applyState(projectChromeState(applied.scene), revision);
     }
     if (intersects(applied.rootKeys,
@@ -535,7 +536,7 @@ void QtShellController::synchronizeTypedCrossStreamPatch(
     const QSet<QString> rootKeys = mapPatchKeys(message.value(
         QStringLiteral("root")));
     if (intersects(rootKeys, {"schema", "version", "width", "height",
-                              "presentation", "qmlIconSet", "keyBar",
+                              "presentation", "qmlIconSet", "fileGroupIconCatalog", "keyBar",
                               "toast"})
         && stream != QStringLiteral("chrome")) {
         m_chromeState->applyState(projectChromeState(m_scene), revision);

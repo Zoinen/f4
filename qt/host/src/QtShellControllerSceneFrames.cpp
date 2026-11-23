@@ -123,6 +123,7 @@ bool needsPresentationSignal(const QVariantMap &scene,
                                QStringLiteral("activeScreen"),
                                QStringLiteral("workspaceCount"),
                                QStringLiteral("qmlIconSet"),
+                               QStringLiteral("fileGroupIconCatalog"),
                                QStringLiteral("shell"),
                                QStringLiteral("surface")}) {
         rootKeys.remove(key);

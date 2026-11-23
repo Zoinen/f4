@@ -548,7 +548,7 @@ Rectangle {
             hostWindow.focusTarget.forceActiveFocus()
             editorCursor.restartBlink()
             if (frame.kind === "editor") {
-                documentRoot.sendEditorMouse(mouse, "press", false, false)
+                editorPointerController.pressMouse(mouse, false)
             } else if (documentRoot.terminalSelectionEnabled) {
                 documentList.cancelFlick()
                 viewportController.stopMotion()
@@ -619,7 +619,7 @@ Rectangle {
         onDoubleClicked: mouse => {
             editorCursor.restartBlink()
             if (frame.kind === "editor")
-                documentRoot.sendEditorMouse(mouse, "press", false, true)
+                editorPointerController.pressMouse(mouse, true)
             else if (documentRoot.terminalSelectionEnabled
                      && documentRoot.terminalClickCount === 1) {
                 // Most Qt platforms emit onPressed for the second press;

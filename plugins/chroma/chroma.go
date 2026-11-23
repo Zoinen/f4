@@ -2,12 +2,15 @@ package chroma
 
 import (
 	"container/list"
+	"path/filepath"
+	"strings"
+	"sync"
+
 	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/unxed/f4/internal/theme"
 	"github.com/unxed/f4/vfs"
 	"github.com/unxed/vtui"
-	"sync"
 )
 
 // Plugin is the internal plugin wrapper for the Chroma syntax highlighter.
@@ -73,11 +76,11 @@ type ChromaProvider struct{}
 func (p *ChromaProvider) Name() string { return "Chroma" }
 
 func (p *ChromaProvider) Match(filename string, content string) bool {
-	return lexers.Match(filename) != nil || lexers.Analyse(content) != nil
+	return matchFilename(filename) != nil || lexers.Analyse(content) != nil
 }
 
 func (p *ChromaProvider) Create(filename string, content string) vtui.Highlighter {
-	lexer := lexers.Match(filename)
+	lexer := matchFilename(filename)
 	if lexer == nil {
 		lexer = lexers.Analyse(content)
 	}
@@ -86,6 +89,15 @@ func (p *ChromaProvider) Create(filename string, content string) vtui.Highlighte
 	}
 	lexer = chroma.Coalesce(lexer)
 	return &ChromaHighlighter{lexer: lexer}
+}
+
+func matchFilename(filename string) chroma.Lexer {
+	switch strings.ToLower(filepath.Ext(filename)) {
+	case ".m3u", ".m3u8":
+		return playlistLexer
+	default:
+		return lexers.Match(filename)
+	}
 }
 
 // ChromaHighlighter implements vtui.Highlighter.

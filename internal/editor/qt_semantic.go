@@ -340,7 +340,9 @@ func (ev *EditorView) HandleSemanticAction(action map[string]any) bool {
 		if semantic.Bool(action["moved"]) {
 			flags |= vtinput.MouseMoved
 		}
-		if semantic.Bool(action["doubleClick"]) {
+		if semantic.Bool(action["tripleClick"]) {
+			flags |= vtui.TripleClick
+		} else if semantic.Bool(action["doubleClick"]) {
 			flags |= vtinput.DoubleClick
 		}
 		controlState := vtinput.ControlKeyState(0)

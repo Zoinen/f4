@@ -36,7 +36,7 @@ func (v *fileGroupsOverview) childEditor(index int) *settingsCenter {
 	record.Values = fileGroupEditorRecordValues(scratch.Values, colors)
 	scratch.BaselineRecords["filegroups"][index].Values = maps.Clone(record.Values)
 	scratch.Baseline = maps.Clone(scratch.Values)
-	cat := (fileGroupsProvider{}).Catalog()
+	cat := fileGroupCatalog(nil)
 	cat.ID = "filegroups.editor"
 	cat.Categories = []f4settings.Category{{ID: "filegroup-Identity", Label: f4settings.Text{English: "Group name"}}}
 	sections := []string{"Conditions", "Associations", "Highlighting", "Icons", "Sorting"}
@@ -142,13 +142,13 @@ func (v *fileGroupsOverview) childEditor(index int) *settingsCenter {
 		if themeID == "" {
 			themeID = v.themeID
 		}
-		_, previews, err := buildFileGroupPreviews(d, themeID, v.samples)
+		highlighter, _, err := fileGroupPreviewHighlighter(d, themeID)
 		if err != nil {
 			sample.problem = err.Error()
 			vtui.DebugLog("FILEGROUPS: editor preview validation failed")
 			return err
 		}
-		sample.update(previews[record.ID])
+		sample.preview = fileGroupPreviewAppearance(highlighter, fileGroupRecordGroup(*record), v.samples)
 		sample.problem = ""
 		sample.catalog = ""
 		for _, set := range fileGroupDraftThemes(d) {
@@ -215,6 +215,9 @@ func (v *fileGroupsOverview) childEditor(index int) *settingsCenter {
 	child.fileGroupEditor = true
 	child.fileGroupEditorID = record.ID
 	child.fileGroupEditorSample = sample
+	if vtui.ActiveBackend() != "qt" {
+		sample.edit = child.focusFileGroupColor
+	}
 	child.AddItem(sample)
 	for _, control := range []vtui.UIElement{child.search, child.sidebar, child.clearSearch, child.previous, child.next} {
 		control.SetVisible(false)
@@ -242,6 +245,18 @@ func (v *fileGroupsOverview) childEditor(index int) *settingsCenter {
 	child.rebuildCategory()
 	child.SetFocusedItem(child.page)
 	return child
+}
+
+func (c *settingsCenter) focusFileGroupColor(state int) {
+	for _, row := range c.page.rows {
+		if row.field.ID == fileGroupColourFields[state] && row.control != nil &&
+			row.field.Unavailable == "" && row.control.CanFocus() {
+			c.SetFocusedItem(c.page)
+			c.page.SetFocusedItem(row.control)
+			c.page.notifyFocus()
+			return
+		}
+	}
 }
 
 func (c *settingsCenter) fileGroupAutomaticIcon(draft *f4settings.Draft, catalog string) string {
@@ -459,7 +474,8 @@ func (v *fileGroupsOverview) themeActions() {
 		case 2:
 			v.openForm("Theme properties", maps.Clone(sets[index].Values), []string{"Name", "IconCatalog", "TintIcons"}, func(values map[string]string) { sets[index].Values = maps.Clone(values); v.changed() })
 		case 3:
-			if v.themeID == fileGroupActiveTheme {
+			if v.themeID == effectiveFileGroupIconTheme(fileGroupIconThemeOverride) ||
+				v.themeID == v.session.draft.Values[fileGroupIconThemeKey] {
 				v.center.status = "The application's active theme cannot be removed here."
 				return
 			}
@@ -474,7 +490,7 @@ func (v *fileGroupsOverview) themeActions() {
 						r.Values["group.Enabled"] = "false"
 					}
 				}
-				v.themeID = fileGroupActiveTheme
+				v.themeID = effectiveFileGroupIconTheme(v.session.draft.Values[fileGroupIconThemeKey])
 				v.changed()
 			}
 		}

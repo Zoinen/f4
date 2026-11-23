@@ -80,7 +80,8 @@ Item {
                     item.dropPanelSurface = panelSurface
                 item.bridge = panelSurface.galleryController
                 if (typeof item.iconProvider !== "undefined")
-                    item.iconProvider = Qt.binding(() => hostWindow.iconProvider)
+                    item.iconProvider = Qt.binding(() => galleryController.panelIconProvider
+                                                           || hostWindow.iconProvider)
                 if (typeof item.dropInputEnabled !== "undefined")
                     // The window's native drag filter runs before the menu's
                     // controls and its outside-click dismissal plane.

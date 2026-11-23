@@ -65,6 +65,7 @@ public:
                    bool autoRepeat)
     {
         events.push_back({key, text, down, modifiers, autoRepeat});
+        emit keyForwarded(key, down);
         if (down) {
             for (const QChar character : text) {
                 if (character.isPrint()) {
@@ -108,6 +109,7 @@ public:
     int pasteCount = 0;
 
 signals:
+    void keyForwarded(int key, bool down);
     void commanderTextInputForwarded(const QString &text, int modifiers);
 };
 
@@ -156,6 +158,7 @@ private slots:
     void enteringDetailsReprioritizesDeferredVisibleMetadata();
     void metadataRefreshRetainsVisibleRowsBeyondCursorWindow_data();
     void metadataRefreshRetainsVisibleRowsBeyondCursorWindow();
+    void rowPagingStatePatchKeepsLoadedRowsAndRefreshesAppearance();
     void malformedMetadataRetriesThenReleasesGlobalSlot();
     void metadataBackgroundWaitsForInputIdle();
     void firstRealViewportOverridesMatchingCursorEstimate();
@@ -1617,6 +1620,29 @@ void F4GalleryBridgeTests::galleryRoutesOwnedAndCommanderKeys()
     QCOMPARE(actions.at(0).at(0).toMap().value(QStringLiteral("action")).toString(),
              QStringLiteral("panel.cursor"));
     QVERIFY(panel->property("activeFocus").toBool());
+
+    // A command can follow a visual move before the cursor commit has run.
+    actions.clear();
+    keyRecorder.clear();
+    QTest::keyPress(&view, Qt::Key_Right);
+    QCOMPARE(session->currentIndex(), 2);
+    QVERIFY(panel->property("cursorCommitPending").toBool());
+    QVERIFY(actions.isEmpty());
+    int actionsAtF4Press = -1;
+    connect(&keyRecorder, &GalleryKeyRecorder::keyForwarded, &view, [&](int key, bool down) {
+        if (down && key == Qt::Key_F4)
+            actionsAtF4Press = actions.size();
+    });
+    QTest::keyClick(&view, Qt::Key_F4);
+    QCOMPARE(keyRecorder.count(Qt::Key_F4, true), 1);
+    QCOMPARE(actionsAtF4Press, 1);
+    QCOMPARE(actions.size(), 1);
+    const auto cursorBeforeEdit = actions.constFirst().constFirst().toMap();
+    QCOMPARE(cursorBeforeEdit.value("action").toString(), QStringLiteral("panel.cursor"));
+    QCOMPARE(cursorBeforeEdit.value("entryId").toString(), QStringLiteral("entry:2"));
+    QTest::keyRelease(&view, Qt::Key_Right);
+    QCOMPARE(actions.size(), 1);
+    session->activateIndex(1);
 
     // Idle PageUp/PageDown (including Shift selection) belong to Gallery just
     // like the spatial arrows. Before this routing contract was explicit the
@@ -4414,6 +4440,47 @@ void F4GalleryBridgeTests::deferredMetadataWaitsForLoadingFalseFullScene()
     QCOMPARE(requests.constFirst().constFirst().toMap()
                  .value(QStringLiteral("panelId")).toString(),
              QStringLiteral("panel-loading-metadata"));
+}
+
+void F4GalleryBridgeTests::rowPagingStatePatchKeepsLoadedRowsAndRefreshesAppearance()
+{
+    constexpr int count = 8;
+    const QString panelId = QStringLiteral("panel-paged-appearance");
+    const QVariantMap panel = deferredPanel(panelId, 0, true, count, 61, 81);
+    QQmlEngine engine;
+    F4GalleryBridge bridge(&engine);
+    QSignalSpy rows(&bridge, &F4GalleryBridge::panelCatalogRowsRequested);
+    QSignalSpy metadata(&bridge, &F4GalleryBridge::panelCatalogMetadataRequested);
+    bridge.synchronizeScene({{"schema", "app"},
+        {"shell", QVariantMap{{"panels", QVariantList{panel}}}}});
+    auto *session = qobject_cast<ZoinGallery::GallerySession *>(bridge.sessionForSide(0));
+    QVERIFY(session);
+    QSignalSpy resets(session->model(), &QAbstractItemModel::modelReset);
+    auto update = [&](qulonglong revision) {
+        bridge.synchronizePanelState({{"op", "state_update"}, {"side", 0},
+            {"panelId", panelId}, {"catalogRevision", qulonglong(61)},
+            {"panel", QVariantMap{{"catalogRowsDeferred", true},
+                {"totalCount", count}, {"metadataRevision", revision}}}});
+    };
+    update(81);
+    const auto &state = bridge.m_panelSessions.catalog(0);
+    QVERIFY(state.catalogRowsDeferred);
+    bridge.requestPanelCatalogRows(0);
+    QCOMPARE(rows.size(), 0);
+    QCOMPARE(F4GalleryBridge::catalogEntryAt(state, 7).value("entryId").toString(),
+             panelId + QStringLiteral(":entry:7"));
+
+    update(82);
+    bridge.notifyRenderSynchronized();
+    bridge.notifyFrameSwapped(1);
+    QTRY_COMPARE(metadata.size(), 1);
+    const QVariantMap request = metadata.constFirst().constFirst().toMap();
+    QCOMPARE(request.value("metadataRevision").toULongLong(), qulonglong(82));
+    bridge.handlePanelCatalogMetadataMessage(deferredMetadataResponse(request, count, 111));
+    QCOMPARE(session->highlightStyleAt(7).value("normal").toMap()
+                 .value("foreground").toString(), QStringLiteral("#123456"));
+    QCOMPARE(session->catalogRevision(), qulonglong(61));
+    QCOMPARE(resets.size(), 0);
 }
 
 void F4GalleryBridgeTests::panelCatalogPatchLeavesOtherSessionUntouched()

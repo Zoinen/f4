@@ -126,3 +126,67 @@ func TestFileGroupsInvalidColorKeepsLastPreview(t *testing.T) {
 		t.Fatal("invalid colour replaced the last valid preview")
 	}
 }
+
+func TestFileGroupsGraphicalIconsPreviewApplyAndCancel(t *testing.T) {
+	store := setupFileGroupColors(t)
+	previous := fileGroupContribution
+	t.Cleanup(func() { fileGroupContribution = previous })
+	fileGroupContribution = filegroups.Contribution{Themes: []filegroups.IconTheme{
+		{ID: "zoin"}, {ID: "lucide"},
+	}}
+	store.ThemeDefaults = []filegroups.ThemeSet{
+		{ID: "zoin", Fields: map[string]string{"IconCatalog": "zoin"}},
+		{ID: "lucide", Fields: map[string]string{"IconCatalog": "lucide"}},
+	}
+	ConfigureFileGroups(store, fileGroupRuntime)
+	SetFileGroupIconTheme("zoin")
+	d, err := (fileGroupsProvider{}).Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	c := newSettingsCenter([]*settingsSession{{catalog: (fileGroupsProvider{}).Catalog(), draft: d}})
+	c.selectCategory("filegroups")
+	v := c.fileGroupOverview
+	selectIcon := func(id string) {
+		t.Helper()
+		for i, option := range v.themeIDs {
+			if option == id {
+				v.themes.Menu.OnAction(i)
+				return
+			}
+		}
+		t.Fatalf("missing icon option %q", id)
+	}
+	selectIcon("lucide")
+	if fileGroupRuntime.Appearance().Revision() == CommittedFileGroups().Revision() ||
+		fileGroupRuntime.IconTheme() != "zoin" {
+		t.Fatal("changing Icons must preview the new panel appearance without committing it")
+	}
+	for _, id := range v.themeIDs {
+		if id == "generic" {
+			t.Fatal("the graphical picker offers the console fallback")
+		}
+	}
+	result := d.Commit(context.Background())
+	if len(result.Errors) != 0 {
+		t.Fatal(result.Errors)
+	}
+	d.Accept(result)
+	selectIcon("zoin")
+	d.Close()
+	if fileGroupRuntime.IconTheme() != "lucide" ||
+		fileGroupRuntime.Appearance().Revision() != CommittedFileGroups().Revision() {
+		t.Fatal("Cancel did not restore the applied icon theme")
+	}
+	reopened, err := (fileGroupsProvider{}).Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	c = newSettingsCenter([]*settingsSession{{catalog: (fileGroupsProvider{}).Catalog(), draft: reopened}})
+	c.selectCategory("filegroups")
+	if got := c.fileGroupOverview.themeID; got != "lucide" {
+		t.Fatalf("reopened Icons choice = %q, want lucide", got)
+	}
+}

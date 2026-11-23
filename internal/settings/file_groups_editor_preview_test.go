@@ -8,8 +8,77 @@ import (
 	"github.com/unxed/f4/internal/filegroups"
 	"github.com/unxed/f4/internal/semantic"
 	"github.com/unxed/f4/sdk/f4settings"
+	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 )
+
+func TestHiddenDirectoryEditorSampleUsesPanelAppearance(t *testing.T) {
+	setupFileGroupSettings(t)
+	groups := []filegroups.Group{
+		{ID: "hidden", Fields: map[string]string{"Name": "Hidden folders", "Mask": "*",
+			"IncludeAttributes": "Directory, Hidden", "Highlight.Enabled": "true", "NormalColor": "foreground:#123456"}},
+		{ID: "folders", Fields: map[string]string{"Name": "Folders", "Mask": "*",
+			"IncludeAttributes": "Directory", "Highlight.Enabled": "true", "NormalColor": "foreground:#654321"}},
+	}
+	draft := f4settings.NewDraft(nil, groupsToRecords(groups))
+	t.Cleanup(draft.Close)
+	center := newSettingsCenter([]*settingsSession{{catalog: (fileGroupsProvider{}).Catalog(), draft: draft}})
+	center.selectCategory("filegroups")
+	editor := center.fileGroupOverview.childEditor(0)
+	t.Cleanup(editor.sessions[0].draft.Close)
+	sample := editor.fileGroupEditorSample
+	if !sample.preview.item.IsDir || !sample.preview.item.IsHidden {
+		t.Fatalf("sample does not satisfy the directory and hidden predicates: %+v", sample.preview.item)
+	}
+	patch := sample.preview.style.Normal
+	// The Qt panel fades hidden entries, using the underlying directory color.
+	if patch.Foreground != "#654321" || patch.Background != "" {
+		t.Fatalf("expected the panel's raw highlight patch, got %+v", patch)
+	}
+}
+
+func TestFileGroupConsolePreviewReachesColorEdits(t *testing.T) {
+	_, overview := setupFileGroupColorChild(t)
+	backend, details := vtui.ActiveBackend(), vtui.BackendDetails()
+	t.Cleanup(func() { vtui.SetActiveBackend(backend, details...) })
+	vtui.SetActiveBackend("console")
+	editor := overview.childEditor(0)
+	t.Cleanup(editor.sessions[0].draft.Close)
+	editor.SetPosition(0, 0, 119, 39)
+	sample := editor.fileGroupEditorSample
+
+	editor.ProcessKey(&vtinput.InputEvent{KeyDown: true, VirtualKeyCode: vtinput.VK_TAB, ControlKeyState: vtinput.ShiftPressed})
+	if editor.GetFocusedItem() != sample {
+		t.Fatal("Shift+Tab from the first setting did not focus the preview")
+	}
+	editor.ProcessKey(&vtinput.InputEvent{KeyDown: true, VirtualKeyCode: vtinput.VK_RIGHT})
+	editor.ProcessKey(&vtinput.InputEvent{KeyDown: true, VirtualKeyCode: vtinput.VK_RETURN})
+	assertColorFocus := func(state int) {
+		t.Helper()
+		focused := editor.page.GetFocusedItem()
+		if editor.GetFocusedItem() != editor.page || focused == nil ||
+			focused.GetId() != "setting:"+fileGroupColourFields[state] {
+			t.Fatalf("state %d did not focus its color field; focused %v", state, focused)
+		}
+		_, y, _, _ := focused.GetPosition()
+		if y < editor.page.Y1 || y > editor.page.Y2 {
+			t.Fatalf("color field is outside the visible page: y=%d", y)
+		}
+	}
+	assertColorFocus(1)
+
+	editor.ProcessMouse(&vtinput.InputEvent{Type: vtinput.MouseEventType, KeyDown: true,
+		ButtonState: vtinput.FromLeft1stButtonPressed, MouseX: int16(sample.X2), MouseY: int16(sample.Y1 + 1)})
+	assertColorFocus(3)
+	editor.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true,
+		VirtualKeyCode: vtinput.VK_A, ControlKeyState: vtinput.LeftCtrlPressed})
+	for _, ch := range "foreground:#778899" {
+		editor.ProcessKey(&vtinput.InputEvent{Type: vtinput.KeyEventType, KeyDown: true, Char: ch})
+	}
+	if got := sample.preview.style.SelectedCursor.Foreground; got != "#778899" {
+		t.Fatalf("editing the focused color updated the preview to %q", got)
+	}
+}
 
 func TestFileGroupEditorRetainsPinnedPreviewAndCompactColourRows(t *testing.T) {
 	setupFileGroupSettings(t)
@@ -32,8 +101,8 @@ func TestFileGroupEditorRetainsPinnedPreviewAndCompactColourRows(t *testing.T) {
 	before := sample.Y1
 	patches := fileGroupColourPatches(sample.preview.style)
 	for i, want := range []string{"#112233", "#223344", "#334455", "#445566"} {
-		if patches[i].Foreground != want || patches[i].Background == "" {
-			t.Fatalf("state %d lost resolved palette: %+v", i, patches[i])
+		if patches[i].Foreground != want || patches[i].Background != "" {
+			t.Fatalf("state %d lost the raw highlight patch: %+v", i, patches[i])
 		}
 	}
 	child.selectCategory("filegroup-Highlighting")

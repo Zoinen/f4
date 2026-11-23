@@ -597,6 +597,14 @@ func (s *Snapshot) ForIconTheme(theme string) *Snapshot {
 	return view
 }
 
+// IconCatalog returns the artwork catalog for the active rule set.
+func (s *Snapshot) IconCatalog() string {
+	if s == nil {
+		return ""
+	}
+	return s.themes[s.iconTheme].Catalog()
+}
+
 // IconTint reports an explicit theme policy; absent metadata keeps old clients'
 // existing artwork defaults. The immutable view owns the returned value.
 func (s *Snapshot) IconTint() (bool, bool) {

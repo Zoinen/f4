@@ -42,6 +42,13 @@ func SemanticFileStyle(name string) *extui.HighlightStyleModel {
 	return &style
 }
 
+func FileGroupIconCatalog() string {
+	if GlobalFileHighlighter == nil {
+		return ""
+	}
+	return GlobalFileHighlighter.fileGroups.IconCatalog()
+}
+
 // LoadFileGroups projects only the highlighting facet. Icon-only groups cannot
 // terminate the colour cascade. Colour-style rules retain their normal layer.
 func (fh *FileHighlighter) LoadFileGroups(snapshot *filegroups.Snapshot) error {

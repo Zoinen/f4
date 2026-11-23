@@ -8,14 +8,14 @@ import (
 
 var CompactAppRootKeys = []string{
 	"type", "schema", "version", "width", "height", "activeScreen",
-	"workspaceCount", "workspaceTabs", "presentation", "qmlIconSet",
+	"workspaceCount", "workspaceTabs", "presentation", "qmlIconSet", "fileGroupIconCatalog",
 	"menuBar", "keyBar", "toast", "dialogs", "menus", "surface",
 	"operationsQueue",
 }
 
 var SemanticMenuStateRootPatchKeys = []string{
 	"width", "height", "activeScreen", "workspaceCount", "workspaceTabs",
-	"presentation", "qmlIconSet", "menuBar", "keyBar", "toast", "menus",
+	"presentation", "qmlIconSet", "fileGroupIconCatalog", "menuBar", "keyBar", "toast", "menus",
 }
 
 func CompactAppSemanticScene(scene map[string]any) map[string]any {

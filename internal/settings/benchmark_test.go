@@ -2,12 +2,49 @@ package settings
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 
+	"github.com/unxed/f4/internal/config"
+	"github.com/unxed/f4/internal/filegroups"
 	"github.com/unxed/f4/internal/testutil"
+	"github.com/unxed/f4/internal/theme"
 	"github.com/unxed/vtinput"
 	"github.com/unxed/vtui"
 )
+
+func BenchmarkFileGroupEditorOpen(b *testing.B) {
+	settingsProfileSetup(b)
+	store, runtime := fileGroupStore, fileGroupRuntime
+	b.Cleanup(func() { ConfigureFileGroups(store, runtime) })
+	ConfigureFileGroups(filegroups.Store{
+		Path:     filepath.Join(config.GetF4ConfigDir(), "highlight.ini"),
+		Defaults: theme.FileGroupDefaults(), ColorDefaults: filegroups.FactoryColorThemes(),
+		ColorStyle: "Modern",
+	}, nil)
+	provider := fileGroupsProvider{}
+	draft, err := provider.Begin(context.Background())
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(draft.Close)
+	center := newSettingsCenter([]*settingsSession{{catalog: provider.Catalog(), draft: draft}})
+	center.selectCategory("filegroups")
+	overview := center.fileGroupOverview
+	if len(overview.rows) < 2 {
+		b.Fatalf("expected factory groups, got %d", len(overview.rows))
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		editor := overview.childEditor(0)
+		editor.SetPosition(0, 0, 145, 49)
+		_ = editor.SemanticNode(&vtui.SemanticContext{Width: 160, Height: 60})
+		b.StopTimer()
+		editor.sessions[0].draft.Close()
+		b.StartTimer()
+	}
+}
 
 // Include provider snapshots, catalog discovery, layout and the first paint.
 // No PanelsFrame is needed: opening settings must also work in standalone editors.

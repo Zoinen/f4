@@ -3398,7 +3398,7 @@ func semanticStreamSnapshot(scene map[string]any,
 	case "chrome":
 		for _, key := range []string{
 			"schema", "version", "width", "height", "presentation",
-			"qmlIconSet", "keyBar", "toast",
+			"qmlIconSet", "fileGroupIconCatalog", "keyBar", "toast",
 		} {
 			if value, present := scene[key]; present {
 				state[key] = value

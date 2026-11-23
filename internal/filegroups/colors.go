@@ -160,13 +160,20 @@ func (s *Snapshot) colorHighlightGroups() []Group {
 		}
 		colors := selected.Colors(compiled.group.Label())
 		maps.Copy(group.Fields, colors)
-		if len(colors) == 0 && group.Fields["Mark"] == "" {
+		hasColor := false
+		for _, expression := range colors {
+			if strings.TrimSpace(expression) != "" {
+				hasColor = true
+				break
+			}
+		}
+		if !hasColor && group.Fields["Mark"] == "" {
 			group.Fields["Highlight.Enabled"] = "false"
 		} else {
 			if _, explicit := compiled.group.Fields["Highlight.Enabled"]; !explicit {
 				group.Fields["Highlight.Enabled"] = "true"
 			}
-			if len(colors) == 0 {
+			if !hasColor {
 				group.Fields["ContinueProcessing"] = "true"
 			}
 		}

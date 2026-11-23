@@ -13,6 +13,7 @@ type Runtime struct {
 	committed, preview         *Snapshot
 	committedView, previewView *Snapshot
 	iconTheme                  string
+	previewIconTheme           string
 	changed                    func(*Snapshot)
 	nextOwner, previewOwner    uint64
 }
@@ -46,7 +47,7 @@ func (r *Runtime) SetIconTheme(theme string) {
 	r.committedView = r.committed.ForIconTheme(theme)
 	snapshot := r.committedView
 	if r.preview != nil {
-		r.previewView = r.preview.ForIconTheme(theme)
+		r.previewView = r.preview.ForIconTheme(r.previewIconThemeFor(theme))
 		snapshot = r.previewView
 	}
 	r.mu.Unlock()
@@ -80,17 +81,24 @@ func (r *Runtime) Preview(groups []Group) error {
 	if err != nil {
 		return err
 	}
-	r.publishPreview(snapshot, 0)
+	r.publishPreview(snapshot, 0, "")
 	return nil
 }
 
-func (r *Runtime) publishPreview(snapshot *Snapshot, owner uint64) {
+func (r *Runtime) previewIconThemeFor(fallback string) string {
+	if r.previewIconTheme != "" {
+		return r.previewIconTheme
+	}
+	return fallback
+}
+
+func (r *Runtime) publishPreview(snapshot *Snapshot, owner uint64, iconTheme string) {
 	r.mu.Lock()
 	current := r.preview
 	if current == nil {
 		current = r.committed
 	}
-	if current.Revision() == snapshot.Revision() {
+	if current.Revision() == snapshot.Revision() && r.previewIconTheme == iconTheme {
 		if r.preview != nil {
 			r.previewOwner = owner
 		}
@@ -98,7 +106,8 @@ func (r *Runtime) publishPreview(snapshot *Snapshot, owner uint64) {
 		return
 	}
 	r.preview = snapshot
-	r.previewView = snapshot.ForIconTheme(r.iconTheme)
+	r.previewIconTheme = iconTheme
+	r.previewView = snapshot.ForIconTheme(r.previewIconThemeFor(r.iconTheme))
 	view := r.previewView
 	r.previewOwner = owner
 	r.mu.Unlock()
@@ -119,11 +128,15 @@ func (r *Runtime) Apply(groups []Group, themes ...[]ThemeSet) error {
 	if err != nil {
 		return err
 	}
-	r.applySnapshot(snapshot)
+	r.applySnapshot(snapshot, "")
 	return nil
 }
 
 func (r *Runtime) ApplyColors(groups []Group, iconThemes []ThemeSet, colorThemes []ColorTheme, selected string) error {
+	return r.ApplyAppearance(groups, iconThemes, colorThemes, selected, "")
+}
+
+func (r *Runtime) ApplyAppearance(groups []Group, iconThemes []ThemeSet, colorThemes []ColorTheme, selected, iconTheme string) error {
 	snapshot, err := Compile(groups, iconThemes)
 	if err != nil {
 		return err
@@ -132,7 +145,7 @@ func (r *Runtime) ApplyColors(groups []Group, iconThemes []ThemeSet, colorThemes
 	if err != nil {
 		return err
 	}
-	r.applySnapshot(snapshot)
+	r.applySnapshot(snapshot, iconTheme)
 	return nil
 }
 
@@ -146,13 +159,17 @@ func (r *Runtime) withCommittedColors(snapshot *Snapshot) (*Snapshot, error) {
 	return snapshot.WithColorThemes(colors, selected)
 }
 
-func (r *Runtime) applySnapshot(snapshot *Snapshot) {
+func (r *Runtime) applySnapshot(snapshot *Snapshot, iconTheme string) {
 	r.mu.Lock()
+	if iconTheme != "" {
+		r.iconTheme = iconTheme
+	}
 	r.committed = snapshot
 	r.committedView = snapshot.ForIconTheme(r.iconTheme)
 	view := r.committedView
 	r.preview = nil
 	r.previewView = nil
+	r.previewIconTheme = ""
 	r.mu.Unlock()
 	if r.changed != nil {
 		r.changed(view)
@@ -181,7 +198,7 @@ func (r *Runtime) SetColorTheme(selected string) error {
 	view := r.committedView
 	if preview != nil {
 		r.preview = preview
-		r.previewView = preview.ForIconTheme(r.iconTheme)
+		r.previewView = preview.ForIconTheme(r.previewIconThemeFor(r.iconTheme))
 		view = r.previewView
 	}
 	r.mu.Unlock()
@@ -214,6 +231,7 @@ func (r *Runtime) cancelPreview(owner uint64, force bool) {
 	hadPreview := r.preview != nil
 	r.preview = nil
 	r.previewView = nil
+	r.previewIconTheme = ""
 	snapshot := r.committedView
 	r.mu.Unlock()
 	if hadPreview && r.changed != nil {
@@ -235,5 +253,8 @@ func (r *Runtime) BeginPreview() *PreviewSession {
 	return &PreviewSession{runtime: r, owner: r.nextOwner}
 }
 
-func (s *PreviewSession) Publish(snapshot *Snapshot) { s.runtime.publishPreview(snapshot, s.owner) }
-func (s *PreviewSession) Cancel()                    { s.runtime.cancelPreview(s.owner, false) }
+func (s *PreviewSession) Publish(snapshot *Snapshot) { s.PublishAppearance(snapshot, "") }
+func (s *PreviewSession) PublishAppearance(snapshot *Snapshot, iconTheme string) {
+	s.runtime.publishPreview(snapshot, s.owner, iconTheme)
+}
+func (s *PreviewSession) Cancel() { s.runtime.cancelPreview(s.owner, false) }

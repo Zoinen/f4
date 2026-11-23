@@ -15,23 +15,24 @@ type M = map[string]any
 
 // Scene является корневым объектом для экспорта состояния f4
 type Scene struct {
-	Revision        uint64
-	Width           int
-	Height          int
-	ActiveScreen    int
-	WorkspaceCount  int
-	WorkspaceTabs   M
-	Presentation    string
-	QmlIconSet      string
-	Shell           *ShellModel
-	MenuBar         *MenuModel
-	KeyBar          *KeyBarModel
-	Toast           *ToastModel
-	Dialogs         []DialogModel
-	Menus           []MenuModel
-	Surface         *SurfaceModel
-	OperationsQueue *OperationsQueueModel
-	Legacy          M
+	Revision             uint64
+	Width                int
+	Height               int
+	ActiveScreen         int
+	WorkspaceCount       int
+	WorkspaceTabs        M
+	Presentation         string
+	QmlIconSet           string
+	FileGroupIconCatalog string
+	Shell                *ShellModel
+	MenuBar              *MenuModel
+	KeyBar               *KeyBarModel
+	Toast                *ToastModel
+	Dialogs              []DialogModel
+	Menus                []MenuModel
+	Surface              *SurfaceModel
+	OperationsQueue      *OperationsQueueModel
+	Legacy               M
 }
 
 type ShellModel struct {
@@ -792,6 +793,7 @@ type ControlModel struct {
 	PreviewName         string
 	PreviewCatalog      string
 	PreviewDirectory    bool
+	PreviewHidden       bool
 	ColorMatrixCell     bool
 	ColorPreview        *HighlightColorPatchModel
 	FileGroupsOverview  bool
@@ -866,6 +868,9 @@ func (s Scene) ToMap() M {
 	}
 	if s.QmlIconSet != "" {
 		out["qmlIconSet"] = s.QmlIconSet
+	}
+	if s.FileGroupIconCatalog != "" {
+		out["fileGroupIconCatalog"] = s.FileGroupIconCatalog
 	}
 	if s.WorkspaceCount > 0 {
 		out["workspaceCount"] = s.WorkspaceCount
@@ -1980,6 +1985,9 @@ func (c ControlModel) ToMap() M {
 		out["fileGroupSample"] = true
 		out["previewName"] = c.PreviewName
 		out["previewDirectory"] = c.PreviewDirectory
+		if c.PreviewHidden {
+			out["previewHidden"] = true
+		}
 	}
 	if c.FileGroupSample || c.LayoutRole == "overview-table" {
 		out["previewCatalog"] = c.PreviewCatalog

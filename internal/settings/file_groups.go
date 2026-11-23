@@ -25,6 +25,9 @@ var fileGroupStore filegroups.Store
 var fileGroupRuntime *filegroups.Runtime
 var fileGroupContribution filegroups.Contribution
 var fileGroupActiveTheme = "generic"
+var fileGroupIconThemeOverride string
+
+const fileGroupIconThemeKey = "filegroups.iconTheme"
 
 // SetFileGroupIconTheme is called on the UI thread (or before UI startup).
 // It changes context, never the draft document or the selected color style.
@@ -36,7 +39,7 @@ func SetFileGroupIconTheme(id string) {
 		return
 	}
 	fileGroupActiveTheme = id
-	if fileGroupRuntime != nil {
+	if fileGroupRuntime != nil && fileGroupIconThemeOverride == "" {
 		fileGroupRuntime.SetIconTheme(id)
 	}
 	if vtui.FrameManager == nil {
@@ -94,12 +97,29 @@ func FileGroupFactoryContributions() []filegroups.Group {
 
 // ConfigureFileGroups receives the application's domain runtime, never a Qt
 // object. The Go Settings provider owns drafts and persistence for every UI.
-func ConfigureFileGroups(store filegroups.Store, runtime *filegroups.Runtime) {
+func ConfigureFileGroups(store filegroups.Store, runtime *filegroups.Runtime, iconTheme ...string) {
 	fileGroupStore = store
 	fileGroupRuntime = runtime
-	if runtime != nil {
-		runtime.SetIconTheme(fileGroupActiveTheme)
+	fileGroupIconThemeOverride = ""
+	if len(iconTheme) > 0 && len(fileGroupContribution.Themes) > 0 {
+		fileGroupIconThemeOverride = iconTheme[0]
 	}
+	if runtime != nil {
+		runtime.SetIconTheme(effectiveFileGroupIconTheme(fileGroupIconThemeOverride))
+	}
+}
+
+func effectiveFileGroupIconTheme(selected string) string {
+	if selected != "" && len(fileGroupContribution.Themes) > 0 {
+		return selected
+	}
+	return fileGroupActiveTheme
+}
+
+func fileGroupCatalogAvailable(catalog string) bool {
+	return catalog != "" && slices.ContainsFunc(fileGroupContribution.Themes, func(theme filegroups.IconTheme) bool {
+		return theme.ID == catalog
+	})
 }
 
 func CommittedFileGroups() *filegroups.Snapshot {
@@ -134,6 +154,10 @@ func (fileGroupsProvider) Catalog() f4settings.Catalog {
 		field.Unavailable = err.Error()
 		diagnostic = append(diagnostic, field)
 	}
+	return fileGroupCatalog(diagnostic)
+}
+
+func fileGroupCatalog(diagnostic []f4settings.Field) f4settings.Catalog {
 	fields := []f4settings.Field{
 		groupField("Name", "Group name", "Also selects theme artwork: Archives matches archives.svg. File name matching uses the conditions below.", f4settings.String),
 		groupChoice("IconTheme", "Group scope", "", fileGroupActiveTheme),
@@ -355,6 +379,7 @@ func (fileGroupsProvider) Begin(context.Context) (*f4settings.Draft, error) {
 	}
 	draft := f4settings.NewDraft(nil, groupsToRecords(tx.Groups()))
 	draft.Values[fileGroupColorThemeKey] = tx.ColorThemeID()
+	draft.Values[fileGroupIconThemeKey] = tx.IconThemeID()
 	colorRecords := []f4settings.Record{}
 	for _, set := range tx.ColorThemes() {
 		colorRecords = append(colorRecords, f4settings.Record{ID: set.ID, Values: maps.Clone(set.Fields)})
@@ -366,7 +391,7 @@ func (fileGroupsProvider) Begin(context.Context) (*f4settings.Draft, error) {
 	}
 	draft.Records["filegroups.themes"] = themeRecords
 	// Initialize the dirty baseline after adding declarative theme records.
-	draft.Accept(f4settings.Result{Applied: []string{"filegroups.themes", "filegroups.colorthemes", fileGroupColorThemeKey}})
+	draft.Accept(f4settings.Result{Applied: []string{"filegroups.themes", "filegroups.colorthemes", fileGroupColorThemeKey, fileGroupIconThemeKey}})
 	var scope *filegroups.PreviewSession
 	runtime := fileGroupRuntime
 	if CommittedFileGroups() != nil {
@@ -402,7 +427,8 @@ func (fileGroupsProvider) Begin(context.Context) (*f4settings.Draft, error) {
 			return nil
 		}
 		groupsClean := !d.Dirty("filegroups") && !d.Dirty("filegroups.commands")
-		themesClean := !d.Dirty("filegroups.themes") && !d.Dirty("filegroups.colorthemes") && !d.Dirty(fileGroupColorThemeKey)
+		themesClean := !d.Dirty("filegroups.themes") && !d.Dirty("filegroups.colorthemes") &&
+			!d.Dirty(fileGroupColorThemeKey) && !d.Dirty(fileGroupIconThemeKey)
 		if groupsClean && themesClean {
 			stopPreview()
 			scope.Cancel()
@@ -412,7 +438,8 @@ func (fileGroupsProvider) Begin(context.Context) (*f4settings.Draft, error) {
 		encoded, err := json.Marshal(struct {
 			Records    map[string][]f4settings.Record
 			ColorTheme string
-		}{Records: d.Records, ColorTheme: fileGroupDraftColorThemeID(d)})
+			IconTheme  string
+		}{Records: d.Records, ColorTheme: fileGroupDraftColorThemeID(d), IconTheme: d.Values[fileGroupIconThemeKey]})
 		if err != nil {
 			return err
 		}
@@ -426,8 +453,12 @@ func (fileGroupsProvider) Begin(context.Context) (*f4settings.Draft, error) {
 		if err != nil {
 			return err
 		}
+		iconTheme := ""
+		if len(fileGroupContribution.Themes) > 0 {
+			iconTheme = d.Values[fileGroupIconThemeKey]
+		}
 		if vtui.FrameManager == nil {
-			scope.Publish(snapshot)
+			scope.PublishAppearance(snapshot, iconTheme)
 			return nil
 		}
 		frameManager := vtui.FrameManager
@@ -435,7 +466,7 @@ func (fileGroupsProvider) Begin(context.Context) (*f4settings.Draft, error) {
 		timer = time.AfterFunc(60*time.Millisecond, func() {
 			frameManager.PostTask(func() {
 				if !closed.Load() && generation.Load() == current {
-					scope.Publish(snapshot)
+					scope.PublishAppearance(snapshot, iconTheme)
 				}
 			})
 		})
@@ -453,19 +484,20 @@ func (fileGroupsProvider) Begin(context.Context) (*f4settings.Draft, error) {
 		lastPreview, lastPreviewError = "", nil
 		groups, err := recordsToGroups(d.Records)
 		if err == nil {
-			if len(fileGroupDraftColorThemes(d)) == 0 && fileGroupDraftColorThemeID(d) == "" {
-				err = tx.Commit(groups, fileGroupDraftThemes(d))
-			} else {
-				err = tx.CommitColors(groups, fileGroupDraftThemes(d), fileGroupDraftColorThemes(d), fileGroupDraftColorThemeID(d))
-			}
+			err = tx.CommitAppearance(groups, fileGroupDraftThemes(d), fileGroupDraftColorThemes(d), fileGroupDraftColorThemeID(d), d.Values[fileGroupIconThemeKey])
 		}
 		if err != nil {
 			return f4settings.Result{Errors: map[string]error{"filegroups": err}}
 		}
 		if scope != nil {
-			_ = runtime.ApplyColors(tx.Groups(), tx.Themes(), tx.ColorThemes(), tx.ColorThemeID())
+			if len(fileGroupContribution.Themes) > 0 {
+				fileGroupIconThemeOverride = tx.IconThemeID()
+			}
+			iconTheme := effectiveFileGroupIconTheme(fileGroupIconThemeOverride)
+			_ = runtime.ApplyAppearance(tx.Groups(), tx.Themes(), tx.ColorThemes(), tx.ColorThemeID(), iconTheme)
+			vtui.DebugLog("[FIX:file-group-icons] applied icon theme=%s", iconTheme)
 		}
-		return f4settings.Result{Applied: []string{"filegroups", "filegroups.commands", "filegroups.themes", "filegroups.colorthemes", fileGroupColorThemeKey}}
+		return f4settings.Result{Applied: []string{"filegroups", "filegroups.commands", "filegroups.themes", "filegroups.colorthemes", fileGroupColorThemeKey, fileGroupIconThemeKey}}
 	}
 	return draft, nil
 }

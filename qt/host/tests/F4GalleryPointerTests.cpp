@@ -332,6 +332,7 @@ private slots:
     void semanticImeCommitUsesTextProtocol();
     void imageClipboardPasteUsesShortcutProtocol();
     void semanticKeyRepeatSuppressesSyntheticRelease();
+    void semanticKeyForwardingPreservesControlSide();
     void semanticGridForwardsConsolePointerEvents();
     void consoleGridForwardsButtonlessHover();
     void viewerCaptureSurvivesHiddenGridFocusSlip();
@@ -997,6 +998,60 @@ void F4GalleryPointerTests::semanticKeyRepeatSuppressesSyntheticRelease()
         handle.get().convert(message);
         QVERIFY((message.at("mods").as<qint64>() & 0x10) != 0);
     }
+}
+
+void F4GalleryPointerTests::semanticKeyForwardingPreservesControlSide()
+{
+#if defined(Q_OS_MACOS) || !defined(Q_OS_WIN) && !defined(Q_OS_UNIX)
+    QSKIP("The desktop platform does not use the Windows or XKB Ctrl identity");
+#else
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost, 0));
+    QtShellController controller(
+        QStringLiteral("127.0.0.1:%1").arg(server.serverPort()),
+        QStringLiteral("control-side-test"), 80, 24);
+    QTRY_VERIFY(controller.connected());
+    QTRY_VERIFY(server.hasPendingConnections());
+    auto *peer = server.nextPendingConnection();
+    QVERIFY(peer);
+    QByteArray buffer, payload;
+    QVERIFY(takeProtocolPayload(peer, buffer, payload)); // Hello.
+    VtuiGridItem grid;
+    grid.setController(&controller);
+    QObject semanticFocusTarget;
+
+    const auto verifyDigits = [&](quint32 nativeMods, int expectedMods) {
+        for (bool down : {true, false}) {
+            QKeyEvent event(down ? QEvent::KeyPress : QEvent::KeyRelease,
+                            Qt::Key_3, Qt::ControlModifier, 0, 0, nativeMods);
+            QCoreApplication::sendEvent(&semanticFocusTarget, &event);
+            grid.sendQtKeyEvent(Qt::Key_3, {}, down, Qt::ControlModifier);
+            QVERIFY(takeProtocolPayload(peer, buffer, payload));
+            const auto handle = msgpack::unpack(payload.constData(), payload.size());
+            std::map<std::string, msgpack::object> message;
+            handle.get().convert(message);
+            QCOMPARE(message.at("vk").as<int>(), int('3'));
+            QCOMPARE(message.at("mods").as<int>(), expectedMods);
+            QCOMPARE(message.at("down").as<bool>(), down);
+        }
+    };
+
+#if defined(Q_OS_WIN)
+    verifyDigits(0x20, 0x04); // Windows Qt right Ctrl -> protocol right Ctrl.
+    verifyDigits(0x02, 0x08);
+    verifyDigits(0x22, 0x0c);
+    verifyDigits(0, 0x08); // Synthetic Qt events without native data.
+#else
+    QKeyEvent rightPress(QEvent::KeyPress, Qt::Key_Control, Qt::ControlModifier,
+                         0, 0xffe4, 0);
+    QCoreApplication::sendEvent(&semanticFocusTarget, &rightPress);
+    verifyDigits(0, 0x04);
+    QKeyEvent rightRelease(QEvent::KeyRelease, Qt::Key_Control, Qt::NoModifier,
+                           0, 0xffe4, 0);
+    QCoreApplication::sendEvent(&semanticFocusTarget, &rightRelease);
+    verifyDigits(0, 0x08);
+#endif
+#endif
 }
 
 void F4GalleryPointerTests::imageClipboardPasteUsesShortcutProtocol()

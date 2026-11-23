@@ -37,6 +37,7 @@ class F4GalleryBridge final : public QObject
     Q_OBJECT
     Q_PROPERTY(bool available READ available CONSTANT)
     Q_PROPERTY(QObject *settings READ settings CONSTANT)
+    Q_PROPERTY(QObject *panelIconProvider READ panelIconProvider CONSTANT)
     Q_PROPERTY(QObject *quickViewPreferences READ quickViewPreferences CONSTANT)
     Q_PROPERTY(QObject *panelPreferences READ panelPreferences CONSTANT)
     Q_PROPERTY(bool viewerMounted READ viewerMounted NOTIFY viewerChanged)
@@ -67,6 +68,7 @@ public:
 
     bool available() const;
     QObject *settings() const;
+    QObject *panelIconProvider() const;
     QObject *quickViewPreferences() const { return m_quickViewPreferences; }
     QObject *panelPreferences() const { return m_panelPreferences; }
     Q_INVOKABLE bool setPanelThumbnailsEnabled(int side, bool enabled);

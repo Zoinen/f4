@@ -3,6 +3,7 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import F4QtHost 1.0
+import ZoinGallery.Native 1.0 as ZGN
 import QtQuick.Controls
 import QtQuick.Controls.Basic as T
 import QtQuick.Controls.impl as Impl
@@ -221,10 +222,16 @@ Item {
                     readonly property string currentToken: channel === "foreground" ? foreground : backgroundToken
                     readonly property var colors: ["#000000", "#0028a0", "#00a000", "#00a0a0", "#a00000", "#a000a0", "#a0a000", "#c0c0c0",
                                                     "#808080", "#0055ff", "#00ff00", "#00ffff", "#ff0000", "#ff00ff", "#ffff00", "#ffffff"]
+                    function syncWheel() {
+                        wheelDraft.setFromColor(Qt.color(hexColor.acceptableInput ? hexColor.text
+                            : (matrixCell.preview[channel] || (channel === "foreground"
+                                ? hostWindow.textColor : widgetRoot.dialogColors.controlBg))))
+                    }
                     function selectChannel(value) {
                         channel = value
                         hexColor.text = /^\w+:#([0-9a-f]{6})$/i.test(currentToken)
                             ? currentToken.slice(currentToken.indexOf(":") + 1) : ""
+                        syncWheel()
                     }
                     function choose(value) {
                         const token = value ? channel + ":" + value : ""
@@ -232,6 +239,11 @@ Item {
                             foreground = token
                         else
                             backgroundToken = token
+                    }
+                    function inheritBoth() {
+                        foreground = ""
+                        backgroundToken = ""
+                        selectChannel(channel)
                     }
                     function accept() {
                         const initial = widget.colorComponents || ({})
@@ -245,6 +257,14 @@ Item {
                         textChannel.forceActiveFocus()
                     }
                     onClosed: picker.active = false
+                    ThemeDraftModel {
+                        id: wheelDraft
+                        hostWindow: widgetRoot.hostWindow
+                        colorSink: color => {
+                            hexColor.text = color.toString()
+                            colorDialog.choose(hexColor.text)
+                        }
+                    }
                     background: Rectangle {
                         color: widgetRoot.dialogColors.dialogBg
                         border.width: hostWindow.separatorWidth
@@ -272,7 +292,7 @@ Item {
                                 objectName: matrixCell.namePrefix + "ColorTextChannel"
                                 hostWindow: widgetRoot.hostWindow
                                 focusPolicy: Qt.StrongFocus
-                                text: qsTr("Text")
+                                text: colorDialog.foreground === "" ? qsTr("Text (inherited)") : qsTr("Text (override)")
                                 highlighted: colorDialog.channel === "foreground"
                                 onClicked: colorDialog.selectChannel("foreground")
                             }
@@ -280,9 +300,43 @@ Item {
                                 objectName: matrixCell.namePrefix + "ColorBackgroundChannel"
                                 hostWindow: widgetRoot.hostWindow
                                 focusPolicy: Qt.StrongFocus
-                                text: qsTr("Background")
+                                text: colorDialog.backgroundToken === "" ? qsTr("Background (inherited)") : qsTr("Background (override)")
                                 highlighted: colorDialog.channel === "background"
                                 onClicked: colorDialog.selectChannel("background")
+                            }
+                        }
+                        ThemeColorWheel {
+                            objectName: matrixCell.namePrefix + "ColorWheel"
+                            hostWindow: widgetRoot.hostWindow
+                            editorWindow: widgetRoot.hostWindow
+                            draft: wheelDraft
+                            x: hostWindow.centerPx(parent.width, width)
+                            width: hostWindow.snapPx(170)
+                            height: width
+                        }
+                        Text {
+                            id: lightnessLabel
+                            objectName: matrixCell.namePrefix + "ColorLightnessLabel"
+                            text: qsTr("Lightness")
+                            font: hostWindow.font
+                            color: hostWindow.mutedText
+                            transform: Translate {
+                                x: hostWindow.dialogPixelOffsetX(lightnessLabel, hostWindow.contentItem)
+                                y: hostWindow.dialogPixelOffsetY(lightnessLabel, hostWindow.contentItem)
+                            }
+                        }
+                        F4Slider {
+                            objectName: matrixCell.namePrefix + "ColorLightness"
+                            hostWindow: widgetRoot.hostWindow
+                            Accessible.name: lightnessLabel.text
+                            width: parent.width
+                            height: hostWindow.snapPx(28)
+                            from: 0
+                            to: 1
+                            value: wheelDraft.selectedLightness
+                            onMoved: {
+                                wheelDraft.selectedLightness = value
+                                wheelDraft.applyCurrentColor()
                             }
                         }
                         Grid {
@@ -311,6 +365,7 @@ Item {
                                     onClicked: {
                                         hexColor.text = modelData
                                         colorDialog.choose(modelData)
+                                        colorDialog.syncWheel()
                                     }
                                 }
                             }
@@ -326,7 +381,12 @@ Item {
                                 placeholderText: "#RRGGBB"
                                 Accessible.name: qsTr("Custom hex color")
                                 validator: RegularExpressionValidator { regularExpression: /^#[0-9a-f]{6}$/i }
-                                onTextEdited: if (acceptableInput || text === "") colorDialog.choose(text)
+                                onTextEdited: {
+                                    if (acceptableInput || text === "") {
+                                        colorDialog.choose(text)
+                                        colorDialog.syncWheel()
+                                    }
+                                }
                             }
                             Rectangle {
                                 width: hostWindow.snapPx(32)
@@ -343,10 +403,12 @@ Item {
                                 hostWindow: widgetRoot.hostWindow
                                 focusPolicy: Qt.StrongFocus
                                 text: qsTr("Inherit")
+                                Accessible.description: qsTr("Clear the selected channel’s override and use the highlighting rules.")
                                 highlighted: colorDialog.currentToken === ""
                                 onClicked: {
                                     hexColor.text = ""
                                     colorDialog.choose("")
+                                    colorDialog.syncWheel()
                                 }
                             }
                         }
@@ -367,6 +429,14 @@ Item {
                                 text: qsTr("Cancel")
                                 onClicked: colorDialog.close()
                             }
+                            DialogButton {
+                                objectName: matrixCell.namePrefix + "ColorReset"
+                                hostWindow: widgetRoot.hostWindow
+                                focusPolicy: Qt.StrongFocus
+                                text: qsTr("Inherit both")
+                                Accessible.description: qsTr("Clear both color overrides for this state.")
+                                onClicked: colorDialog.inheritBoth()
+                            }
                         }
                     }
                 }
@@ -375,14 +445,118 @@ Item {
     }
 
     function fileGroupPreviewTextColor(patch, selected, directory) {
-        const palette = hostWindow.galleryThemePalette
-        if (patch.fileNameForeground)
-            return patch.fileNameForeground
-        if (selected)
-            return palette.markedText
-        if (palette.neutralFileTextColors)
-            return directory ? palette.folderText : palette.fileText
-        return patch.foreground || palette.text
+        return hostWindow.galleryThemePalette.entryNameColor(directory, selected,
+            patch.foreground, patch.fileNameForeground)
+    }
+
+    component FileGroupPreviewSample: Rectangle {
+        id: sample
+        required property ApplicationWindow hostWindow
+        required property var sampleData
+        required property var style
+        required property string iconUrl
+        required property string iconKey
+        required property var iconResolver
+        readonly property bool tinted: palette.entryIconTinted(style.tintIcon,
+            sampleData.previewCatalog === "system" || iconResolver.isSystemFileSource(iconUrl),
+            iconResolver.isMonochrome(iconKey, iconUrl))
+        required property int state
+        property bool pinned: false
+        readonly property var gallery: {
+            const panelHost = hostWindow.galleryPanelHost(hostWindow.effectiveActivePanelSide())
+            return panelHost ? panelHost.galleryPanel : null
+        }
+        readonly property var palette: gallery ? gallery.theme : hostWindow.galleryThemePalette
+        readonly property string mode: gallery ? gallery.presentationMode : "details"
+        readonly property bool selected: state % 2 === 1
+        readonly property bool current: state >= 2
+        readonly property bool directory: sampleData.previewDirectory === true
+        readonly property real contentOpacity: sampleData.previewHidden === true ? 0.5 : 1
+        readonly property var normal: style.normal || ({})
+        readonly property var cursor: style.cursor || ({})
+        readonly property var patch: ([style.normal, style.selected, style.cursor, style.selectedCursor][state]) || ({})
+        readonly property color iconColor: palette.entryIconColor(directory, selected, normal.foreground)
+        readonly property real inset: hostWindow.snapPx(6)
+        readonly property real iconExtent: hostWindow.snapPx(16)
+        radius: hostWindow.snapPx(mode === "details" || mode === "columns" ? 4 : 6)
+        color: palette.panelBackground
+
+        Rectangle {
+            anchors.fill: parent
+            objectName: (sample.pinned ? "fileGroupPinnedSample-" : "fileGroupPreviewSurface-") + sample.state
+            radius: sample.radius
+            color: sample.palette.entrySurfaceColor(sample.mode === "details", sample.mode === "masonry",
+                sample.directory, false, sample.selected, sample.current, sample.normal.background, sample.cursor.background)
+            border.width: sample.current ? sample.hostWindow.separatorWidth : 0
+            border.color: sample.palette.entryCursorBorder(sample.mode === "details", sample.selected)
+        }
+        ZGN.GalleryIconImage {
+            id: previewIcon
+            objectName: (sample.pinned ? "fileGroupPinnedIcon-" : "fileGroupPreviewIcon-") + sample.state
+            x: sample.inset
+            y: sample.hostWindow.centerPx(sample.height, height)
+            width: sample.iconExtent
+            height: width
+            source: sample.palette.entryIconSource(sample.hostWindow.iconProvider, sample.iconResolver,
+                sample.iconKey, sample.iconUrl, 16, sample.hostWindow.dpr,
+                sample.tinted ? sample.iconColor : "", sample.mode === "details" || sample.mode === "columns", false)
+            visible: sample.iconUrl !== ""
+            sourceSize: Qt.size(16, source.toString().startsWith("image://") ? 16 : 0)
+            color: sample.tinted ? sample.iconColor : "transparent"
+            opacity: sample.contentOpacity
+            fillMode: Image.PreserveAspectFit
+            transform: Translate {
+                x: sample.hostWindow.dialogPixelOffsetX(previewIcon, sample.hostWindow.contentItem)
+                y: sample.hostWindow.dialogPixelOffsetY(previewIcon, sample.hostWindow.contentItem)
+            }
+        }
+        Text {
+            id: marker
+            objectName: (sample.pinned ? "fileGroupPinnedMarker-" : "fileGroupPreviewMarker-") + sample.state
+            visible: !previewIcon.visible
+            x: previewIcon.x
+            y: sample.hostWindow.centerPx(sample.height, height)
+            width: previewIcon.width
+            text: sample.palette.entryFallbackMarker(sample.directory, sample.sampleData.previewName === "..", sample.style.marker)
+            color: sample.iconColor
+            opacity: sample.contentOpacity
+            font: sample.hostWindow.font
+            horizontalAlignment: Text.AlignHCenter
+            transform: Translate {
+                x: sample.hostWindow.dialogPixelOffsetX(marker, sample.hostWindow.contentItem)
+                y: sample.hostWindow.dialogPixelOffsetY(marker, sample.hostWindow.contentItem)
+            }
+        }
+        Rectangle {
+            objectName: (sample.pinned ? "fileGroupPinnedLabel-" : "fileGroupPreviewLabel-") + sample.state
+            visible: sample.mode === "masonry"
+            x: previewIcon.x + previewIcon.width + sample.inset
+            y: sample.hostWindow.centerPx(sample.height, height)
+            width: Math.max(0, sample.width - x - sample.inset)
+            height: sample.hostWindow.snapPx(fileName.height)
+            radius: sample.hostWindow.snapPx(3)
+            color: sample.palette.entryMasonryLabelColor(sample.selected, sample.current, sample.normal.background)
+        }
+        Text {
+            id: fileName
+            objectName: (sample.pinned ? "fileGroupPinnedName-" : "fileGroupPreviewName-") + sample.state
+            x: previewIcon.x + previewIcon.width + sample.inset
+            y: sample.hostWindow.centerPx(sample.height, height)
+            width: Math.max(0, sample.width - x - sample.inset)
+            text: String(sample.sampleData.previewName || "")
+            font: !sample.gallery ? sample.hostWindow.font
+                : sample.mode === "details" || sample.mode === "columns"
+                    ? Qt.font({family: sample.gallery.metrics.panelFontFamily, pixelSize: sample.gallery.detailsNameFontPixelSize})
+                    : sample.gallery.iconLabelFont
+            color: sample.palette.entryNameColor(sample.directory, sample.selected,
+                sample.patch.foreground, sample.patch.fileNameForeground)
+            opacity: sample.contentOpacity
+            elide: Text.ElideMiddle
+            transform: Translate {
+                x: sample.hostWindow.dialogPixelOffsetX(fileName, sample.hostWindow.contentItem)
+                y: sample.hostWindow.dialogPixelOffsetY(fileName, sample.hostWindow.contentItem)
+            }
+        }
     }
 
     Component {
@@ -390,18 +564,27 @@ Item {
         Item {
             id: appearance
             readonly property var style: widget.previewStyle || ({})
-            readonly property var patches: [style.normal, style.selected, style.cursor, style.selectedCursor]
-            readonly property real rowHeight: hostWindow.snapPx(Math.max(34, hostWindow.font.pixelSize + 16))
+            readonly property real rowHeight: hostWindow.capacityPx(Math.max(36,
+                stateMetrics.height + overrideMetrics.height + 6))
             readonly property real gap: hostWindow.snapPx(8)
             readonly property real editWidth: hostWindow.capacityPx(Math.max(64, matrixLabelMetrics.advanceWidth(qsTr("Edit…")) + 18))
+            readonly property font overrideFont: Qt.font({
+                family: hostWindow.font.family, pixelSize: hostWindow.uiTextSize(11)
+            })
+            readonly property var overrideLabels: [qsTr("Inherited"), qsTr("Text override"),
+                qsTr("Background override"), qsTr("Both overridden")]
             readonly property real stateWidth: hostWindow.capacityPx(Math.min(width * .38,
-                Math.max(0, ...(widget.items || []).map(text => matrixLabelMetrics.advanceWidth(String(text)))) + gap))
+                Math.max(0, ...(widget.items || []).map(text => matrixLabelMetrics.advanceWidth(String(text))),
+                    ...overrideLabels.map(text => overrideMetrics.advanceWidth(text))) + gap))
+            FontMetrics { id: stateMetrics; font: hostWindow.font }
+            FontMetrics { id: overrideMetrics; font: appearance.overrideFont }
             readonly property real naturalGroupHeight: iconButton.y + iconButton.height
             readonly property var resolved: hostWindow.iconProvider
                 && typeof hostWindow.iconProvider.previewFileStyle === "function"
                 ? hostWindow.iconProvider.previewFileStyle(String(widget.previewCatalog || ""), style,
-                    {name: widget.previewName || "", isDir: widget.previewDirectory === true}, 16, hostWindow.dpr) : ({})
+                    {name: widget.previewName || "", isDir: widget.previewDirectory === true, isUp: widget.previewName === ".."}, 16, hostWindow.dpr) : ({})
             readonly property string previewIconUrl: String(resolved.icon || "")
+            ZGN.GalleryIconResolver { id: appearanceIconResolver }
             readonly property var iconGroups: widget.iconGroups || []
             readonly property var colorRows: widget.previewRows || []
             readonly property string focusedIconID: {
@@ -426,14 +609,17 @@ Item {
                     id: previewRow
                     required property int index
                     required property string modelData
-                    readonly property var patch: appearance.patches[index] || ({})
+                    readonly property var components: (colorEdit.colorField || {}).colorComponents || ({})
+                    readonly property int overrideIndex: (components.foreground ? 1 : 0) + (components.background ? 2 : 0)
+                    readonly property real captionHeight: hostWindow.capacityPx(stateLabel.implicitHeight)
+                        + hostWindow.capacityPx(overrideLabel.implicitHeight)
                     width: previewList.width
                     height: appearance.rowHeight
                     Text {
                         id: stateLabel
                         objectName: "fileGroupPreviewState-" + previewRow.index
                         width: appearance.stateWidth - appearance.gap
-                        y: hostWindow.centerPx(parent.height, height)
+                        y: hostWindow.centerPx(parent.height, previewRow.captionHeight)
                         text: previewRow.modelData
                         font: hostWindow.font
                         color: hostWindow.mutedText
@@ -443,50 +629,33 @@ Item {
                             y: hostWindow.dialogPixelOffsetY(stateLabel, hostWindow.contentItem)
                         }
                     }
-                    Rectangle {
+                    Text {
+                        id: overrideLabel
+                        objectName: "fileGroupPreviewOverride-" + previewRow.index
+                        x: stateLabel.x
+                        y: stateLabel.y + hostWindow.capacityPx(stateLabel.implicitHeight)
+                        width: stateLabel.width
+                        text: appearance.overrideLabels[previewRow.overrideIndex]
+                        font: appearance.overrideFont
+                        color: hostWindow.mutedText
+                        elide: Text.ElideRight
+                        transform: Translate {
+                            x: hostWindow.dialogPixelOffsetX(overrideLabel, hostWindow.contentItem)
+                            y: hostWindow.dialogPixelOffsetY(overrideLabel, hostWindow.contentItem)
+                        }
+                    }
+                    FileGroupPreviewSample {
+                        hostWindow: widgetRoot.hostWindow
+                        sampleData: widgetRoot.widget
+                        style: appearance.style
+                        iconUrl: appearance.previewIconUrl
+                        iconResolver: appearanceIconResolver
+                        iconKey: String(appearance.resolved.iconKey || "")
+                        state: previewRow.index
                         x: appearance.stateWidth
                         y: hostWindow.centerPx(parent.height, height)
                         width: hostWindow.snapPx(Math.max(1, parent.width - x - appearance.editWidth - appearance.gap))
                         height: hostWindow.snapPx(parent.height - 6)
-                        radius: hostWindow.snapPx(4)
-                        color: previewRow.patch.background || widgetRoot.dialogColors.controlBg
-                        clip: true
-                        readonly property real inset: hostWindow.snapPx(6)
-                        Impl.IconImage {
-                            id: previewIcon
-                            objectName: "fileGroupPreviewIcon-" + previewRow.index
-                            x: parent.inset
-                            y: hostWindow.centerPx(parent.height, height)
-                            width: hostWindow.snapPx(16)
-                            height: width
-                            source: appearance.previewIconUrl
-                            visible: appearance.previewIconUrl !== ""
-                            sourceSize: Qt.size(16, 16)
-                            color: appearance.style.tintIcon === true && widget.previewCatalog !== "system"
-                                ? (previewRow.patch.foreground || hostWindow.textColor) : "transparent"
-                            fillMode: Image.PreserveAspectFit
-                            transform: Translate {
-                                x: hostWindow.dialogPixelOffsetX(previewIcon, hostWindow.contentItem)
-                                y: hostWindow.dialogPixelOffsetY(previewIcon, hostWindow.contentItem)
-                            }
-                        }
-                        Text {
-                            id: fileName
-                            objectName: "fileGroupPreviewName-" + previewRow.index
-                            x: appearance.previewIconUrl !== "" ? previewIcon.x + previewIcon.width + parent.inset : parent.inset
-                            clip: true
-                            y: hostWindow.centerPx(parent.height, height)
-                            width: hostWindow.snapPx(Math.max(1, parent.width - x - 6))
-                            text: String(appearance.style.marker || "") + String(widget.previewName || "")
-                            font: hostWindow.font
-                            color: widgetRoot.fileGroupPreviewTextColor(
-                                previewRow.patch, previewRow.index % 2 === 1, widget.previewDirectory === true)
-                            elide: Text.ElideMiddle
-                            transform: Translate {
-                                x: hostWindow.dialogPixelOffsetX(fileName, hostWindow.contentItem)
-                                y: hostWindow.dialogPixelOffsetY(fileName, hostWindow.contentItem)
-                            }
-                        }
                     }
                     Loader {
                         id: colorEdit
@@ -567,21 +736,22 @@ Item {
         Item {
             id: samplesRoot
             readonly property var style: widgetRoot.widget.previewStyle || ({})
-            readonly property var patches: [style.normal || ({}), style.selected || ({}), style.cursor || ({}), style.selectedCursor || ({})]
             readonly property int columns: width < 560 ? 2 : 4
             readonly property real tileWidth: widgetRoot.hostWindow.snapPx((width - (columns - 1)*8) / columns)
             readonly property var resolved: widgetRoot.hostWindow.iconProvider
                 && typeof widgetRoot.hostWindow.iconProvider.previewFileStyle === "function"
                 ? widgetRoot.hostWindow.iconProvider.previewFileStyle(String(widgetRoot.widget.previewCatalog || ""), style,
-                    {name: widgetRoot.widget.previewName || "", isDir: widgetRoot.widget.previewDirectory === true},
+                    {name: widgetRoot.widget.previewName || "", isDir: widgetRoot.widget.previewDirectory === true,
+                     isUp: widgetRoot.widget.previewName === ".."},
                     16, widgetRoot.hostWindow.dpr) : ({})
+            ZGN.GalleryIconResolver { id: pinnedIconResolver }
+            readonly property string iconUrl: String(resolved.icon || "")
             Repeater {
                 model: widgetRoot.widget.items || []
                 delegate: Item {
                     id: sampleTile
                     required property int index
                     required property string modelData
-                    readonly property var preview: samplesRoot.patches[index] || ({})
                     x: (index % samplesRoot.columns) * (samplesRoot.tileWidth + 8)
                     y: Math.floor(index / samplesRoot.columns) * 48
                     width: samplesRoot.tileWidth; height: 44
@@ -590,31 +760,18 @@ Item {
                         text: sampleTile.modelData; font: widgetRoot.hostWindow.font
                         color: widgetRoot.hostWindow.mutedText; elide: Text.ElideRight
                     }
-                    Rectangle {
-                        objectName: "fileGroupPinnedSample-" + sampleTile.index
-                        y: widgetRoot.hostWindow.snapPx(19); width: parent.width; height: widgetRoot.hostWindow.snapPx(25)
-                        radius: 3; color: sampleTile.preview.background || widgetRoot.dialogColors.controlBg
-                        Impl.IconImage {
-                            objectName: "fileGroupPinnedIcon-" + sampleTile.index
-                            x: 4; y: 4; width: 16; height: 16
-                            source: samplesRoot.resolved.icon || ""
-                            sourceSize: Qt.size(16 * widgetRoot.hostWindow.dpr, 16 * widgetRoot.hostWindow.dpr)
-                            color: samplesRoot.style.tintIcon === true && widgetRoot.widget.previewCatalog !== "system"
-                                ? (sampleTile.preview.foreground || widgetRoot.hostWindow.textColor) : "transparent"
-                            fillMode: Image.PreserveAspectFit
-                        }
-                        Text {
-                            id: sampleText
-                            x: widgetRoot.hostWindow.snapPx(25); width: parent.width - x - 4; anchors.verticalCenter: parent.verticalCenter
-                            text: String(samplesRoot.style.marker || "") + String(widgetRoot.widget.previewName || "")
-                            font: widgetRoot.hostWindow.font; elide: Text.ElideMiddle
-                            color: widgetRoot.fileGroupPreviewTextColor(sampleTile.preview,
-                                sampleTile.index % 2 === 1, widgetRoot.widget.previewDirectory === true)
-                            transform: Translate {
-                                x: widgetRoot.hostWindow.dialogPixelOffsetX(sampleText, widgetRoot.hostWindow.contentItem)
-                                y: widgetRoot.hostWindow.dialogPixelOffsetY(sampleText, widgetRoot.hostWindow.contentItem)
-                            }
-                        }
+                    FileGroupPreviewSample {
+                        hostWindow: widgetRoot.hostWindow
+                        sampleData: widgetRoot.widget
+                        style: samplesRoot.style
+                        iconUrl: samplesRoot.iconUrl
+                        iconResolver: pinnedIconResolver
+                        iconKey: String(samplesRoot.resolved.iconKey || "")
+                        state: sampleTile.index
+                        pinned: true
+                        y: hostWindow.snapPx(19)
+                        width: parent.width
+                        height: hostWindow.snapPx(25)
                     }
                 }
             }
@@ -1446,8 +1603,33 @@ Item {
                 text: groupContainer.sectionHeading || !!widgetRoot.widget.headerControl
                     ? String(widgetRoot.widget.title || "") : ""
             }
-            readonly property var fields: (widgetRoot.widget.children || []).filter(child =>
-                !widgetRoot.widget.headerControl || child.id !== widgetRoot.widget.headerControl.id)
+            readonly property bool stackConditions: conditionGroup && widgetRoot.positionedByParent
+                && widgetRoot.width < hostWindow.pxW(widgetRoot.widget.w || 1)
+            readonly property var fields: {
+                const group = widgetRoot.widget
+                const children = (group.children || []).filter(child =>
+                    !group.headerControl || child.id !== group.headerControl.id)
+                if (!stackConditions)
+                    return children
+
+                // The file group viewport can dock a full-width wire group in
+                // a narrower column. Keep field order and IDs, but give each
+                // field a row inside the native card.
+                let row = Number(group.y || 0) + 1
+                return children.map(child => {
+                    const label = child.kind === "text"
+                    const choice = child.compactChoices === true
+                    const span = label ? 1 : Math.max(1, Number(child.h || 1))
+                    const field = Object.assign({}, child, {
+                        x: Number(group.x || 0) + 2, y: row, h: span,
+                        fillWidth: label || choice || child.fillWidth === true
+                    })
+                    if (label)
+                        field.wrapText = true
+                    row += span
+                    return field
+                })
+            }
             readonly property real highlightingOptionGap: hostWindow.snapPx(8)
             readonly property real highlightingOptionInset: hostWindow.pxW(2)
             readonly property real highlightingOptionsWidth: Math.max(0, widgetRoot.width
@@ -1476,6 +1658,7 @@ Item {
                     originX: Number(widgetRoot.widget.x || 0)
                     originY: Number(widgetRoot.widget.y || 0)
                     maximumWidth: widgetRoot.width
+                    naturalText: groupContainer.stackConditions
                 }
             }
             // Measure native control extents, not the terminal's spare rows:

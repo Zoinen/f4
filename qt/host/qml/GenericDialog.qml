@@ -52,20 +52,6 @@ Rectangle {
     property string restoredFrameId: ""
     property bool sizeEdited: false
 
-    readonly property bool synchronizeInitialSize: frame.settingsSectionsOnly === true
-        && hostWindow.cleanText(frame.id).startsWith("id:filegroup-editor:")
-    property int pendingInitialWidth: 0
-    property bool initialLayoutReady: false
-    readonly property bool showLayout: !synchronizeInitialSize || initialLayoutReady
-
-    function acceptInitialLayout() {
-        if (pendingInitialWidth > 0 && Number(frame.w) === pendingInitialWidth) {
-            initialLayoutReady = true
-            pendingInitialWidth = 0
-            initialLayoutTimeout.stop()
-        }
-    }
-
     function restoreSize() {
         const identity = hostWindow.cleanText(frame.id)
         if (!identity || identity === restoredFrameId)
@@ -84,30 +70,9 @@ Rectangle {
             userWidth = Number(size.w)
             userHeight = Number(size.h)
         }
-        if (synchronizeInitialSize) {
-            // File group rows are responsive to the Go viewport width. Let
-            // the initial geometry reach the owner before painting its rows.
-            initialLayoutReady = false
-            pendingInitialWidth = Math.max(1, Math.round(width / hostWindow.cw))
-            acceptInitialLayout()
-            if (!initialLayoutReady) {
-                initialLayoutTimeout.start()
-                commitGeometry()
-            } else if (hasSavedSize) {
-                commitGeometry()
-            }
-        } else if (hasSavedSize) {
+        const fileGroupEditor = frame.settingsSectionsOnly === true && identity.startsWith("id:filegroup-editor:")
+        if (hasSavedSize || (fileGroupEditor && Number(frame.w) !== Math.round(width / hostWindow.cw)))
             Qt.callLater(commitGeometry)
-        }
-    }
-
-    Timer {
-        id: initialLayoutTimeout
-        interval: 750
-        onTriggered: {
-            dialogRoot.pendingInitialWidth = 0
-            dialogRoot.initialLayoutReady = true
-        }
     }
     Component.onCompleted: Qt.callLater(restoreSize)
     readonly property real contentLeft: {
@@ -339,7 +304,6 @@ Rectangle {
     }
 
     onFrameChanged: {
-        acceptInitialLayout()
         Qt.callLater(restoreSize)
         Qt.callLater(ensureFocusedWidgetVisible)
     }

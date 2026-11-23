@@ -8,6 +8,7 @@ import (
 	"github.com/unxed/f4/internal/panel"
 	"github.com/unxed/f4/internal/plughost"
 	"github.com/unxed/f4/internal/semantic"
+	"github.com/unxed/f4/internal/theme"
 	"github.com/unxed/f4/sdk/extui"
 	"github.com/unxed/vtui"
 	"maps"
@@ -31,14 +32,15 @@ func BuildAppSceneFromLegacy(ctx *vtui.SemanticContext, legacy map[string]any) m
 	vmenus := appActiveVMenus()
 	semanticElements := appActiveSemanticElements()
 	scene := extui.Scene{
-		Width:          semantic.Int(legacy["width"]),
-		Height:         semantic.Int(legacy["height"]),
-		ActiveScreen:   semantic.Int(legacy["activeScreen"]),
-		WorkspaceCount: semantic.Int(legacy["workspaceCount"]),
-		WorkspaceTabs:  appQueueAwareWorkspaceTabs(legacy),
-		Presentation:   string(config.ParseGuiPresentationMode(string(config.App.GuiPresentation))),
-		QmlIconSet:     string(config.ParseQmlIconSetMode(string(config.App.QmlIconSet))),
-		Legacy:         appLegacyForNativeScene(legacy, vmenus, autocompletes),
+		Width:                semantic.Int(legacy["width"]),
+		Height:               semantic.Int(legacy["height"]),
+		ActiveScreen:         semantic.Int(legacy["activeScreen"]),
+		WorkspaceCount:       semantic.Int(legacy["workspaceCount"]),
+		WorkspaceTabs:        appQueueAwareWorkspaceTabs(legacy),
+		Presentation:         string(config.ParseGuiPresentationMode(string(config.App.GuiPresentation))),
+		QmlIconSet:           string(config.ParseQmlIconSetMode(string(config.App.QmlIconSet))),
+		FileGroupIconCatalog: theme.FileGroupIconCatalog(),
+		Legacy:               appLegacyForNativeScene(legacy, vmenus, autocompletes),
 	}
 	if scene.Width == 0 && ctx != nil {
 		scene.Width = ctx.Width
@@ -1489,6 +1491,7 @@ func appControlFromLegacy(node map[string]any) extui.ControlModel {
 	ctrl.PreviewName = semantic.String(node["previewName"])
 	ctrl.PreviewCatalog = semantic.String(node["previewCatalog"])
 	ctrl.PreviewDirectory = semantic.AppBool(node["previewDirectory"])
+	ctrl.PreviewHidden = semantic.AppBool(node["previewHidden"])
 	ctrl.ColorMatrixCell = semantic.AppBool(node["colorMatrixCell"])
 	if raw := semantic.AppMap(node["previewStyle"]); len(raw) > 0 {
 		style := appHighlightStyleFromLegacy(raw)

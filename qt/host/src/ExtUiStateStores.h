@@ -72,6 +72,7 @@ public:
     int height() const { return m_height; }
     QString presentation() const { return m_presentation; }
     QString qmlIconSet() const { return m_qmlIconSet; }
+    QString fileGroupIconCatalog() const { return m_fileGroupIconCatalog; }
     QVariantMap keyBar() const { return m_keyBar; }
     QVariantMap toast() const { return m_toast; }
 
@@ -84,6 +85,7 @@ signals:
     void geometryChanged();
     void presentationChanged();
     void qmlIconSetChanged(const QString &name);
+    void fileGroupIconCatalogChanged();
     void keyBarChanged();
     void toastChanged();
 
@@ -95,6 +97,7 @@ private:
     int m_height = 0;
     QString m_presentation;
     QString m_qmlIconSet;
+    QString m_fileGroupIconCatalog;
     QVariantMap m_keyBar;
     QVariantMap m_toast;
 };

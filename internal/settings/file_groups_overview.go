@@ -123,7 +123,7 @@ type fileGroupsTable struct {
 
 func newFileGroupsOverview(c *settingsCenter, s *settingsSession) *fileGroupsOverview {
 	v := &fileGroupsOverview{Group: vtui.NewGroup(0, 0, 1, 1), center: c, session: s,
-		themeID: fileGroupActiveTheme, marked: map[string]bool{}, previews: map[string]fileGroupPreview{}, samples: map[string]fileGroupSampleData{}}
+		themeID: effectiveFileGroupIconTheme(s.draft.Values[fileGroupIconThemeKey]), marked: map[string]bool{}, previews: map[string]fileGroupPreview{}, samples: map[string]fileGroupSampleData{}}
 	v.SetId("settings-page")
 	v.themes = vtui.NewComboBox(0, 0, 24, nil)
 	v.themes.SetId("filegroups:theme")
@@ -131,6 +131,11 @@ func newFileGroupsOverview(c *settingsCenter, s *settingsSession) *fileGroupsOve
 	v.themes.Menu.OnAction = func(i int) {
 		if i >= 0 && i < len(v.themeIDs) {
 			v.themeID = v.themeIDs[i]
+			if fileGroupCatalogAvailable(v.catalog()) {
+				v.session.draft.Values[fileGroupIconThemeKey] = v.themeID
+				v.changed()
+				return
+			}
 			v.refresh()
 			vtui.DebugLog("FILEGROUPS: editor theme=%s", v.themeID)
 		}
@@ -253,6 +258,9 @@ func (v *fileGroupsOverview) refresh() {
 	v.themeIDs = []string{}
 	names := []string{}
 	for _, set := range fileGroupDraftThemes(v.session.draft) {
+		if set.ID == "generic" && len(fileGroupContribution.Themes) > 0 {
+			continue
+		}
 		if !set.Enabled() && set.ID != v.themeID {
 			continue
 		}
@@ -262,6 +270,9 @@ func (v *fileGroupsOverview) refresh() {
 	if len(v.themeIDs) == 0 {
 		v.themeIDs = []string{v.themeID}
 		names = []string{"Theme: " + fileGroupThemeName(v.themeID)}
+	}
+	if v.themeID == "generic" && !slices.Contains(v.themeIDs, v.themeID) {
+		v.themeID = v.themeIDs[0]
 	}
 	v.themes.Menu.Items = nil
 	for _, name := range names {

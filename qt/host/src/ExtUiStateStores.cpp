@@ -106,6 +106,11 @@ void ChromeStateStore::applyState(const QVariantMap &state,
         m_qmlIconSet = iconSet;
         emit qmlIconSetChanged(m_qmlIconSet);
     }
+    const QString catalog = state.value(QStringLiteral("fileGroupIconCatalog")).toString();
+    if (catalog != m_fileGroupIconCatalog) {
+        m_fileGroupIconCatalog = catalog;
+        emit fileGroupIconCatalogChanged();
+    }
     const QVariantMap keyBar = state.value(
         QStringLiteral("keyBar")).toMap();
     if (keyBar != m_keyBar) {

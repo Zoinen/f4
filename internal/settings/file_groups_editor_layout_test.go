@@ -209,7 +209,8 @@ func TestFileGroupChildSinglePageKeyboardNeverFocusesHiddenNavigation(t *testing
 	} {
 		for range 30 {
 			child.ProcessKey(&event)
-			if focused := child.GetFocusedItem(); focused != child.page && focused != child.ok && focused != child.cancel {
+			if focused := child.GetFocusedItem(); focused != child.page && focused != child.ok &&
+				focused != child.cancel && focused != child.fileGroupEditorSample {
 				t.Fatalf("Tab focused hidden chrome: %T", focused)
 			}
 		}

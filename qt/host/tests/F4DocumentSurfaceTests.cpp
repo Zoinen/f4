@@ -527,6 +527,7 @@ private slots:
     void middleButtonTerminalScrollKeepsAbsoluteSlots();
     void editorPointerEventsAreForwardedAsSemanticMouseActions_data();
     void editorPointerEventsAreForwardedAsSemanticMouseActions();
+    void editorTripleClickSendsLineSelectionPress();
     void editorEdgeSelectionUsesCommittedSourceFragments();
     void fractionalPixelWheelCoalescesUntilAckAndPreservesAnchor();
     void activeFlickRebasesAtomicallyAcrossWindowAck();
@@ -3061,6 +3062,37 @@ void F4DocumentSurfaceTests::finalViewportAlignsLastRowBelowFractionalBottom()
     QVERIFY(loadedBottom
             <= fixture.list->property("contentY").toReal()
                    + fixture.list->height() + 0.01);
+}
+
+void F4DocumentSurfaceTests::editorTripleClickSendsLineSelectionPress()
+{
+    QVariantMap frame = editorFrame(0, 40, 0, 1);
+    frame.insert("viewportColumns", 80);
+    frame.insert("documentKey", "triple-click-editor");
+    frame.insert("layoutRevision", 9);
+    DocumentFixture fixture(documentScene(frame));
+    QVERIFY(fixture.ready());
+    QTRY_VERIFY(fixture.surface->property("windowInitialized").toBool());
+    const qreal rowHeight = fixture.surface->property("rowHeight").toReal();
+    const QPoint point = fixture.list->mapToScene(QPointF(38, rowHeight * 1.5)).toPoint();
+    fixture.shell.clearActions();
+
+    // An explicit delay lets Qt classify the second of the real presses as a double-click.
+    for (int click = 0; click < 4; ++click)
+        QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier, point, 1);
+
+    QList<QVariantMap> presses;
+    for (const auto &action : std::as_const(fixture.shell.actions)) {
+        if (action.value("action") == "editor.mouse" && action.value("phase") == "press")
+            presses.append(action);
+    }
+    QCOMPARE(presses.size(), 4);
+    QVERIFY(!presses[0].value("doubleClick").toBool() && !presses[0].value("tripleClick").toBool());
+    QVERIFY(presses[1].value("doubleClick").toBool());
+    QVERIFY(presses[2].value("tripleClick").toBool());
+    QVERIFY(!presses[2].value("doubleClick").toBool());
+    QCOMPARE(presses[2].value("rowOffset").toInt(), 537);
+    QVERIFY(!presses[3].value("tripleClick").toBool());
 }
 
 void F4DocumentSurfaceTests::editorPointerEventsAreForwardedAsSemanticMouseActions_data()

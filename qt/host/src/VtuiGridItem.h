@@ -154,6 +154,8 @@ private:
     QColor indexedColor(int index) const;
     QPoint cellForPosition(const QPointF &position) const;
     int modifiersFromEvent(Qt::KeyboardModifiers modifiers) const;
+    int keyboardModifiersFromEvent(Qt::KeyboardModifiers modifiers) const;
+    void captureNativeControl(const QKeyEvent &event);
     int buttonState(Qt::MouseButton button) const;
     int keyToVk(const QKeyEvent *event) const;
     int keyChar(const QKeyEvent *event) const;
@@ -191,5 +193,6 @@ private:
     bool m_panelClipboardPasteEnabled = false;
     bool m_renderingEnabled = true;
     quint32 m_lastNativeAltScanCode = 0;
+    int m_nativeControl = 0;
     QHash<int, int> m_forwardedKeyModifiers;
 };

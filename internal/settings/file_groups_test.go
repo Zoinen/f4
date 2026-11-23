@@ -54,6 +54,7 @@ func setupFileGroupSettings(t *testing.T) filegroups.Store {
 	t.Helper()
 	oldStore, oldRuntime, oldDir := fileGroupStore, fileGroupRuntime, config.GetF4ConfigDir()
 	oldTheme := fileGroupActiveTheme
+	oldOverride := fileGroupIconThemeOverride
 	fileGroupActiveTheme = "generic"
 	config.CachedF4ConfigDir = t.TempDir()
 	store := filegroups.Store{Path: filepath.Join(config.GetF4ConfigDir(), "highlight.ini"), Defaults: []filegroups.Group{{ID: "factory", Fields: map[string]string{"Name": "Factory", "Mask": "*.go", "Highlight.Enabled": "true", "NormalColor": "foreground:#123456"}}}}
@@ -65,6 +66,7 @@ func setupFileGroupSettings(t *testing.T) filegroups.Store {
 	t.Cleanup(func() {
 		fileGroupStore, fileGroupRuntime, config.CachedF4ConfigDir = oldStore, oldRuntime, oldDir
 		fileGroupActiveTheme = oldTheme
+		fileGroupIconThemeOverride = oldOverride
 	})
 	return store
 }

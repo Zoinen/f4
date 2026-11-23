@@ -47,10 +47,21 @@ func fileGroupSample(g filegroups.Group) vfs.VFSItem {
 		}
 		name = strings.ReplaceAll(strings.ReplaceAll(name, "*", "sample"), "?", "x")
 	}
-	return vfs.VFSItem{Name: name, IsDir: strings.Contains(g.Fields["IncludeAttributes"], "Directory")}
+	item := vfs.VFSItem{Name: name}
+	for _, attr := range strings.Split(g.Fields["IncludeAttributes"], ",") {
+		switch filegroups.CanonicalAttributeName(strings.TrimSpace(attr)) {
+		case "Directory":
+			item.IsDir = true
+		case "Hidden":
+			item.IsHidden = true
+		case "Symlink":
+			item.IsSymlink = true
+		}
+	}
+	return item
 }
 
-func buildFileGroupPreviews(d *f4settings.Draft, themeID string, samples ...map[string]fileGroupSampleData) (*theme.FileHighlighter, map[string]fileGroupPreview, error) {
+func fileGroupPreviewHighlighter(d *f4settings.Draft, themeID string) (*theme.FileHighlighter, *filegroups.Snapshot, error) {
 	snapshot, err := compileFileGroupDraft(d)
 	if err != nil {
 		return nil, nil, err
@@ -60,56 +71,76 @@ func buildFileGroupPreviews(d *f4settings.Draft, themeID string, samples ...map[
 	if err := highlighter.LoadFileGroups(view); err != nil {
 		return nil, nil, err
 	}
+	return highlighter, view, nil
+}
+
+func fileGroupPreviewAppearance(highlighter *theme.FileHighlighter, group filegroups.Group, samples map[string]fileGroupSampleData) fileGroupPreview {
+	item := fileGroupSample(group)
+	known := false
+	if sample, ok := samples[group.ID]; ok {
+		item, known = sample.item, sample.known
+	}
+	_, style := highlighter.SemanticStyle(&item, known)
+	preview := fileGroupPreview{item: item, style: style}
+	patches := fileGroupColourPatches(style)
+	for state, index := range []int{theme.ColPanelText, theme.ColPanelSelectedText, theme.ColPanelCursor, theme.ColPanelSelectedCursor} {
+		base := uint64(7)
+		if index < len(vtui.Palette) {
+			base = vtui.Palette[index]
+		}
+		patch := patches[state]
+		expression := []string{}
+		if patch.Foreground != "" {
+			expression = append(expression, "foreground:"+patch.Foreground)
+		}
+		if patch.Background != "" {
+			expression = append(expression, "background:"+patch.Background)
+		}
+		attr := theme.ParseFarColor(strings.Join(expression, " | "), base)
+		if config.App.EnforceColorCorrection && len(expression) > 0 {
+			fg, bg := theme.GetColorRGBBoth(attr)
+			attr = vtui.SetRGBFore(attr, theme.CorrectContrast(fg, bg))
+		}
+		preview.attrs[state] = attr
+	}
+	return preview
+}
+
+func buildFileGroupPreviews(d *f4settings.Draft, themeID string, samples ...map[string]fileGroupSampleData) (*theme.FileHighlighter, map[string]fileGroupPreview, error) {
+	highlighter, view, err := fileGroupPreviewHighlighter(d, themeID)
+	if err != nil {
+		return nil, nil, err
+	}
+	var items map[string]fileGroupSampleData
+	if len(samples) > 0 {
+		items = samples[0]
+	}
+	highlightGroups := view.HighlightGroups(config.App.ColorStyle)
+	now := time.Now()
 	result := map[string]fileGroupPreview{}
 	for _, g := range view.Groups() {
-		item := fileGroupSample(g)
-		known := false
-		if len(samples) > 0 {
-			if sample, ok := samples[0][g.ID]; ok {
-				item = sample.item
-				known = sample.known
-			}
-		}
-		_, style := highlighter.SemanticStyle(&item, known)
+		preview := fileGroupPreviewAppearance(highlighter, g, items)
+		item, known := preview.item, items[g.ID].known
 		contributors := []string{}
 		matched := false
 		for _, feature := range []string{"Highlight", "Icons", "Sort", "Associations"} {
 			if feature == "Highlight" {
-				for _, match := range view.HighlightGroups(config.App.ColorStyle) {
+				for _, match := range highlightGroups {
 					predicate := view.HighlightPredicate(match.ID, config.App.ColorStyle)
-					if match.Enabled("Highlight") && predicate != nil && predicate.Match(&item, known, time.Now()) {
+					if match.Enabled("Highlight") && predicate != nil && predicate.Match(&item, known, now) {
 						contributors = append(contributors, feature+": "+match.Label())
 						matched = matched || match.ID == g.ID
 					}
 				}
 				continue
 			}
-			for _, match := range view.Matching(&item, known, feature, time.Now()) {
+			for _, match := range view.Matching(&item, known, feature, now) {
 				contributors = append(contributors, feature+": "+match.Label())
 				matched = matched || match.ID == g.ID
 			}
 		}
-		preview := fileGroupPreview{item: item, style: style, matched: matched, contributors: strings.Join(contributors, "\n")}
-		for state, index := range []int{theme.ColPanelText, theme.ColPanelSelectedText, theme.ColPanelCursor, theme.ColPanelSelectedCursor} {
-			base := uint64(7)
-			if index < len(vtui.Palette) {
-				base = vtui.Palette[index]
-			}
-			patch := []extui.HighlightColorPatchModel{style.Normal, style.Selected, style.Cursor, style.SelectedCursor}[state]
-			expression := []string{}
-			if patch.Foreground != "" {
-				expression = append(expression, "foreground:"+patch.Foreground)
-			}
-			if patch.Background != "" {
-				expression = append(expression, "background:"+patch.Background)
-			}
-			attr := theme.ParseFarColor(strings.Join(expression, " | "), base)
-			if config.App.EnforceColorCorrection && len(expression) > 0 {
-				fg, bg := theme.GetColorRGBBoth(attr)
-				attr = vtui.SetRGBFore(attr, theme.CorrectContrast(fg, bg))
-			}
-			preview.attrs[state] = attr
-		}
+		preview.matched = matched
+		preview.contributors = strings.Join(contributors, "\n")
 		result[g.ID] = preview
 	}
 	return highlighter, result, nil

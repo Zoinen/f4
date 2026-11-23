@@ -233,6 +233,7 @@ bool applyStreamSnapshotPayload(const QString &streamId,
                      QStringLiteral("width"), QStringLiteral("height"),
                      QStringLiteral("presentation"),
                      QStringLiteral("qmlIconSet"),
+                     QStringLiteral("fileGroupIconCatalog"),
                      QStringLiteral("keyBar"), QStringLiteral("toast")};
     } else if (streamId == QStringLiteral("workspaces")) {
         ownedKeys = {QStringLiteral("activeScreen"),

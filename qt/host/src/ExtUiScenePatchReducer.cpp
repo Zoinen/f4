@@ -79,7 +79,8 @@ bool validRootPatchValue(const QString &key, const QVariant &value)
                  && key != QStringLiteral("height")) || number > 0);
     }
     if (key == QStringLiteral("presentation")
-        || key == QStringLiteral("qmlIconSet")) {
+        || key == QStringLiteral("qmlIconSet")
+        || key == QStringLiteral("fileGroupIconCatalog")) {
         return valueHasType(value, QMetaType::QString);
     }
     if (key == QStringLiteral("dialogs") || key == QStringLiteral("menus")) {
@@ -451,7 +452,8 @@ bool applyScenePatch(const QVariantMap &message,
         QStringLiteral("width"), QStringLiteral("height"),
         QStringLiteral("activeScreen"), QStringLiteral("workspaceCount"),
         QStringLiteral("workspaceTabs"), QStringLiteral("presentation"),
-        QStringLiteral("qmlIconSet"), QStringLiteral("menuBar"),
+        QStringLiteral("qmlIconSet"), QStringLiteral("fileGroupIconCatalog"),
+        QStringLiteral("menuBar"),
         QStringLiteral("keyBar"), QStringLiteral("toast"),
         QStringLiteral("dialogs"), QStringLiteral("menus"),
         QStringLiteral("surface"), QStringLiteral("shell"),
