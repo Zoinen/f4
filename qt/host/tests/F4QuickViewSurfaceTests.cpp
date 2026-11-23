@@ -15087,7 +15087,8 @@ void F4QuickViewSurfaceTests::typedPathRevealsFileAt175Percent()
 
     // Simulate scrolling away from the cursor before re-entering its file path.
     QVERIFY(QMetaObject::invokeMethod(viewport, "setPanelContentY",
-                                     Q_ARG(QVariant, QVariant(0)), Q_ARG(QVariant, QVariant(true))));
+                                     Q_ARG(QVariant, QVariant(0)), Q_ARG(QVariant, QVariant(true)),
+                                     Q_ARG(QVariant, QVariant(false))));
     QTRY_COMPARE(layout->property("contentY").toReal(), qreal(0));
     auto *control = fixture.item("panelPathTitle-0");
     QVERIFY(control);
