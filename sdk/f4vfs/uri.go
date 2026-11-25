@@ -192,6 +192,11 @@ func (b *Bridge) callMount(ctx context.Context, mount *uriMount, req f4plugin.UR
 			if next, openErr := b.opener(ctx, req.Path); openErr == nil {
 				mount.retired = append(mount.retired, mounted)
 				mount.fs, mounted, err = next, next, nil
+			} else {
+				// A device/virtual child is opened by the URI provider. Its
+				// error explains the connection failure; SetPath only reports
+				// that the manager itself has no such directory.
+				err = fmt.Errorf("open URI %q: %w", req.Path, openErr)
 			}
 		}
 		return snapshot(req.Mount, mounted), err

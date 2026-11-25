@@ -42,6 +42,9 @@ func TestRPCVFSErrorKinds(t *testing.T) {
 		{"rpc error: mkdir /x: file exists", fs.ErrExist},
 		{"rpc error: file already exists", fs.ErrExist},
 		{"rpc error: open /x: permission denied", fs.ErrPermission},
+		{"rpc error: stat /DCIM/100APPLE/new.jpg: afc status 8 (object not found)", fs.ErrNotExist},
+		{"rpc error: create /DCIM/new.jpg: afc status 10 (permission denied)", fs.ErrPermission},
+		{"rpc error: mkdir /DCIM/new: afc status 16 (object exists)", fs.ErrExist},
 	} {
 		if err := rpcVFSError(errors.New(tc.msg)); !errors.Is(err, tc.kind) || err.Error() != tc.msg {
 			t.Errorf("%q -> %v, want %v with the same text", tc.msg, err, tc.kind)

@@ -20,6 +20,37 @@ type nativeURIPlugin struct {
 	*Bridge
 }
 
+type deviceListMount struct{ vfs.VFS }
+
+func (deviceListMount) SetPath(string) error           { return os.ErrNotExist }
+func (deviceListMount) SetPathOptimistic(string) error { return os.ErrNotExist }
+
+func TestURIBridgeReportsDeviceOpenFailure(t *testing.T) {
+	for _, operation := range []string{"set", "setOptimistic"} {
+		t.Run(operation, func(t *testing.T) {
+			unavailable := errors.New("device connection refused")
+			bridge := NewBridge(func(_ context.Context, target string) (vfs.VFS, error) {
+				if target == "ios://" {
+					return deviceListMount{VFS: vfs.NewOSVFS(t.TempDir())}, nil
+				}
+				return nil, unavailable
+			})
+			defer bridge.CloseVFSURIs()
+			opened, err := bridge.CallVFSURI(t.Context(), f4plugin.URIRequest{Operation: "openURI", Path: "ios://"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = bridge.CallVFSURI(t.Context(), f4plugin.URIRequest{
+				Mount: opened.(f4plugin.URIMount).ID, Operation: operation,
+				Path: "ios://Phone",
+			})
+			if !errors.Is(err, unavailable) {
+				t.Fatalf("device-open error was hidden: %v", err)
+			}
+		})
+	}
+}
+
 type blockingPreviewVFS struct {
 	vfs.VFS
 	reader *blockingPreviewReader
