@@ -25,9 +25,9 @@ func rpcVFSError(err error) error {
 		kind     error
 		suffixes []string
 	}{
-		{fs.ErrNotExist, []string{fs.ErrNotExist.Error(), "no such file or directory"}},
-		{fs.ErrExist, []string{fs.ErrExist.Error(), "file exists"}},
-		{fs.ErrPermission, []string{fs.ErrPermission.Error()}},
+		{fs.ErrNotExist, []string{fs.ErrNotExist.Error(), "no such file or directory", "afc status 8 (object not found)"}},
+		{fs.ErrExist, []string{fs.ErrExist.Error(), "file exists", "afc status 16 (object exists)"}},
+		{fs.ErrPermission, []string{fs.ErrPermission.Error(), "afc status 10 (permission denied)"}},
 	} {
 		if errors.Is(err, known.kind) {
 			return err
