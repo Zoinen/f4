@@ -21,6 +21,7 @@
 #include <QQmlContext>
 #include <QQmlEngine>
 #include <QQmlExpression>
+#include <QQmlProperty>
 #include <QQuickItem>
 #include <QQuickView>
 #include <QSignalSpy>
@@ -319,6 +320,7 @@ private slots:
     void sparseRefreshReachesGalleryAndCrossesPagingThreshold();
     void sameRevisionCompletionPatchExpandsSparseCatalog();
     void nativeDropUsesIdentityAndSnappedOutline();
+    void nativeDropFollowsMovedPanelAncestor();
     void masonryCtrlWheelReversesFromMaximum();
     void columnsLabelsStaySnappedDuringPanelResize();
     void nativeWorkspaceHoverAndDrop();
@@ -4354,6 +4356,108 @@ void F4GalleryPointerTests::masonryCtrlWheelReversesFromMaximum()
     QVERIFY(first.isValid() && second.isValid() && third.isValid());
     QCOMPARE(first.top(), second.top());
     QVERIFY(third.top() > second.top());
+}
+
+void F4GalleryPointerTests::nativeDropFollowsMovedPanelAncestor()
+{
+    QQuickView view;
+    view.engine()->addImportPath(QStringLiteral(":/"));
+    view.resize(960, 360);
+    F4GalleryBridge bridge(view.engine());
+    auto scene = galleryScene(4);
+    auto shell = scene.value("shell").toMap();
+    auto rightPanel = shell.value("panels").toList().first().toMap();
+    rightPanel.insert("id", "pointer-right");
+    rightPanel.insert("side", 1);
+    shell.insert("panels", QVariantList{rightPanel});
+    scene.insert("shell", shell);
+    bridge.synchronizeScene(scene);
+    QQmlComponent component(view.engine(), bridge.panelComponentUrl());
+    QTRY_VERIFY(component.status() != QQmlComponent::Loading);
+    QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+    const QScopedPointer<QObject> object(component.create());
+    auto *host = qobject_cast<QQuickItem *>(object.data());
+    QVERIFY(host);
+
+    auto *ancestor = new QQuickItem(view.contentItem());
+    ancestor->setPosition(QPointF(542.25, 6.25));
+    auto *surface = new QQuickItem(ancestor);
+    surface->setSize(QSizeF(380, 320));
+    host->setParentItem(surface);
+    host->setPosition(QPointF(14, 0));
+    host->setSize(QSizeF(352, 320));
+    host->setProperty("dropPanelSurface", QVariant::fromValue(surface));
+    host->setProperty("devicePixelRatio", view.devicePixelRatio());
+    host->setProperty("side", 1);
+    host->setProperty("bridge", QVariant::fromValue(&bridge));
+    host->setProperty("panel", QVariantMap{{"id", "pointer-right"}, {"catalogRevision", 5}});
+    view.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&view));
+
+    auto *layout = host->findChild<QQuickItem *>("galleryViewportItem");
+    auto *outline = host->findChild<QQuickItem *>("panelDropOutline-1");
+    QVERIFY(layout && outline);
+    QTRY_COMPARE(layout->property("count").toInt(), 4);
+    host->setProperty("dropHoverIndex", -1);
+    QTRY_VERIFY(outline->isVisible());
+    const qreal dpr = view.devicePixelRatio();
+    const QPointF initialOrigin = outline->mapToScene(QPointF()) * dpr;
+    QCOMPARE(qRound(initialOrigin.x()), qRound(surface->mapToScene(QPointF()).x() * dpr));
+    const QPointF localGutter(5, layout->height() / 2);
+    int hitSide = -1;
+    QVERIFY(!bridge.dragHit(&view, surface->mapToScene(localGutter), &hitSide).isEmpty());
+    QCOMPARE(hitSide, 1);
+
+    // A splitter ancestor can move without resizing or locally moving the panel.
+    ancestor->setX(302.25);
+    const auto snappedPixels = [dpr](const QPointF &position) {
+        return QPointF(qRound(position.x() * dpr), qRound(position.y() * dpr));
+    };
+    const QPointF expected = snappedPixels(
+        QPointF(surface->mapToScene(QPointF()).x(), layout->mapToScene(QPointF()).y()));
+    QCoreApplication::processEvents();
+    const qreal hitLeft = host->property("wholeDropSceneRect").toRectF().left() * dpr;
+    QVERIFY2(qAbs(hitLeft - expected.x()) < 0.001,
+             qPrintable(QStringLiteral("Drop hit area starts at physical x=%1, expected %2")
+                        .arg(hitLeft).arg(expected.x())));
+    const QPointF actual = outline->mapToScene(QPointF()) * dpr;
+    QVERIFY2(QLineF(actual, expected).length() < 0.001,
+             qPrintable(QStringLiteral("Outline origin in physical pixels: (%1,%2), expected (%3,%4)")
+                        .arg(actual.x()).arg(actual.y()).arg(expected.x()).arg(expected.y())));
+    const QPointF expectedEnd = snappedPixels(QPointF(
+        surface->mapToScene(QPointF(surface->width(), 0)).x(),
+        layout->mapToScene(QPointF(0, layout->height())).y()));
+    QVERIFY(QLineF(outline->mapToScene(QPointF(outline->width(), outline->height())) * dpr,
+                   expectedEnd).length() < 0.001);
+
+    const QImage capture = view.grabWindow();
+    QVERIFY(!capture.isNull());
+    const QColor outlineColor = QQmlProperty::read(outline, "border.color").value<QColor>();
+    const int midY = qRound((expected.y() + expectedEnd.y()) / 2);
+    QCOMPARE(capture.pixelColor(qRound(expected.x()), midY), outlineColor);
+
+    QMimeData mime;
+    mime.setUrls({QUrl::fromLocalFile(QDir::temp().filePath("shifted-panel-drop.txt"))});
+    const QPoint gutter = surface->mapToScene(localGutter).toPoint();
+    QDragEnterEvent enter(gutter, Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(&view, &enter);
+    QVERIFY(enter.isAccepted());
+    QSignalSpy actions(&bridge, &F4GalleryBridge::uiActionRequested);
+    QDropEvent drop(gutter, Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(&view, &drop);
+    QVERIFY(drop.isAccepted());
+    QCOMPARE(actions.size(), 1);
+    QCOMPARE(actions.last().at(0).toMap().value("panelId").toString(), QString("pointer-right"));
+
+    QRectF geometry;
+    QVERIFY(QMetaObject::invokeMethod(layout, "indexGeometry",
+                                      Q_RETURN_ARG(QRectF, geometry), Q_ARG(int, 1)));
+    const QPoint source = layout->mapToScene(geometry.center()
+        + QPointF(layout->property("paddingLeft").toReal(), 0)).toPoint();
+    QTest::mousePress(&view, Qt::LeftButton, Qt::NoModifier, source);
+    QCOMPARE(bridge.m_dragArmedSide, 1);
+    QVERIFY(bridge.m_dragPrepared);
+    QTest::mouseRelease(&view, Qt::LeftButton, Qt::NoModifier, source);
 }
 
 void F4GalleryPointerTests::nativeDropUsesIdentityAndSnappedOutline()

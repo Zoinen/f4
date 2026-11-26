@@ -14,19 +14,33 @@ FocusScope {
     property point dropPointer: Qt.point(0, 0)
     // Used by sticky group headers when Gallery panel colors are transparent.
     property color groupHeaderBackdropColor: "#191d23"
+
+    function dropGeometryDependency(item) {
+        // Item mapping does not subscribe to geometry changes. Include every
+        // ancestor so a retained panel can move without resizing its viewport.
+        let geometry = 0
+        for (let ancestor = item; ancestor; ancestor = ancestor.parent) {
+            geometry += ancestor.x + ancestor.y + ancestor.width + ancestor.height
+                      + ancestor.scale + ancestor.rotation
+        }
+        return geometry
+    }
+
     // Shared scene-space bounds for painting and hit testing, including gutters.
     readonly property rect wholeDropSceneRect: {
         const layout = embeddedGalleryPanel.galleryLayout
-        const surface = host.dropPanelSurface || host
+        const surface = host.dropPanelSurface || layout
+        if (!Number.isFinite(dropGeometryDependency(layout) + dropGeometryDependency(surface)))
+            return Qt.rect(0, 0, 0, 0)
         const top = layout.mapToItem(null, 0, 0)
-        const left = host.dropPanelSurface ? surface.mapToItem(null, 0, 0).x : top.x
-        const right = host.dropPanelSurface
-            ? surface.mapToItem(null, surface.width, 0).x : top.x + layout.width
+        const left = surface.mapToItem(null, 0, 0).x
+        const right = surface.mapToItem(null, surface.width, 0).x
+        const bottom = layout.mapToItem(null, 0, layout.height).y
         const dpr = host.devicePixelRatio
         const x = Math.round(left * dpr) / dpr
         const y = Math.round(top.y * dpr) / dpr
         return Qt.rect(x, y, Math.round(right * dpr) / dpr - x,
-                       Math.round((top.y + layout.height) * dpr) / dpr - y)
+                       Math.round(bottom * dpr) / dpr - y)
     }
     function dragHit(x, y) {
         // The native window filter runs before QML accepts the press. Never
@@ -86,13 +100,17 @@ FocusScope {
         border.color: host.theme.selection
         border.width: 2 / host.devicePixelRatio
         readonly property rect targetRect: {
+            const layout = embeddedGalleryPanel.galleryLayout
+            const surface = dropOutline.parent
+            if (!Number.isFinite(host.dropGeometryDependency(surface)
+                                 + host.dropGeometryDependency(layout)))
+                return Qt.rect(0, 0, 0, 0)
             if (host.dropHoverIndex < 0) {
                 const bounds = host.wholeDropSceneRect
-                const a = dropOutline.parent.mapFromItem(null, bounds.x, bounds.y)
-                const b = dropOutline.parent.mapFromItem(null, bounds.x + bounds.width, bounds.y + bounds.height)
+                const a = surface.mapFromItem(null, bounds.x, bounds.y)
+                const b = surface.mapFromItem(null, bounds.x + bounds.width, bounds.y + bounds.height)
                 return Qt.rect(a.x, a.y, b.x - a.x, b.y - a.y)
             }
-            const layout = embeddedGalleryPanel.galleryLayout
             const revision = layout.layoutRevision
             const contentY = layout.contentY
             const horizontal = embeddedGalleryPanel.presentationMode === "columns"
@@ -118,14 +136,13 @@ FocusScope {
             r = Qt.rect(Math.max(left, r.x), Math.max(0, r.y),
                         Math.max(0, right - Math.max(left, r.x)),
                         Math.max(0, bottom - Math.max(0, r.y)))
-            let p = layout.mapToItem(dropOutline.parent, r.x, r.y)
-            const scene = dropOutline.parent.mapToItem(null, p.x, p.y)
+            const scene = layout.mapToItem(null, r.x, r.y)
+            const sceneEnd = layout.mapToItem(null, r.x + r.width, r.y + r.height)
             const dpr = host.devicePixelRatio
-            const a = dropOutline.parent.mapFromItem(null, Math.round(scene.x * dpr) / dpr,
-                                       Math.round(scene.y * dpr) / dpr)
-            const end = dropOutline.parent.mapFromItem(null,
-                Math.round((scene.x + r.width) * dpr) / dpr,
-                Math.round((scene.y + r.height) * dpr) / dpr)
+            const a = surface.mapFromItem(null, Math.round(scene.x * dpr) / dpr,
+                                              Math.round(scene.y * dpr) / dpr)
+            const end = surface.mapFromItem(null, Math.round(sceneEnd.x * dpr) / dpr,
+                                                Math.round(sceneEnd.y * dpr) / dpr)
             return Qt.rect(a.x, a.y, end.x - a.x, end.y - a.y)
         }
         x: targetRect.x
