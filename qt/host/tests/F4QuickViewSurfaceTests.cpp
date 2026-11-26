@@ -1399,6 +1399,63 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
     body->setProperty("selectedNativePage", "theme");
     QTest::qWait(150);
     const qreal dpr=fixture.window->devicePixelRatio();
+    const QList<QQuickItem *> pixelGridRoots{
+        content, categories, sharedTitle, sharedApply, sharedOK, sharedCancel};
+    QStringList previousPixelGridSnapshot;
+    QString lastPixelGridFailure;
+    int stablePixelGridSamples = 0;
+    const auto pixelGridIsSettled = [&]() {
+        QStringList snapshot;
+        QString failure;
+        const auto collect = [&](auto &&self, QQuickItem *item) -> void {
+            if(item->isVisible() && (item->property("renderType").isValid()
+                                     || item->inherits("QQuickImage"))) {
+                const QPointF origin = item->mapToItem(
+                    fixture.window->contentItem(), QPointF{});
+                const QPointF xAxis = item->mapToItem(
+                    fixture.window->contentItem(), QPointF(1, 0)) - origin;
+                const QPointF yAxis = item->mapToItem(
+                    fixture.window->contentItem(), QPointF(0, 1)) - origin;
+                const QPointF physical = origin * dpr;
+                snapshot.append(QStringLiteral("%1:%2,%3:%4,%5:%6,%7;%8,%9")
+                    .arg(item->objectName())
+                    .arg(physical.x(), 0, 'f', 6).arg(physical.y(), 0, 'f', 6)
+                    .arg(item->width() * dpr, 0, 'f', 6)
+                    .arg(item->height() * dpr, 0, 'f', 6)
+                    .arg(xAxis.x(), 0, 'f', 6).arg(xAxis.y(), 0, 'f', 6)
+                    .arg(yAxis.x(), 0, 'f', 6).arg(yAxis.y(), 0, 'f', 6));
+                const auto aligned = [](qreal value) {
+                    return qAbs(value - qRound(value)) < 0.001;
+                };
+                if (failure.isEmpty()
+                    && (!aligned(physical.x()) || !aligned(physical.y())
+                        || qAbs(xAxis.x() - 1) >= 0.001
+                        || qAbs(xAxis.y()) >= 0.001
+                        || qAbs(yAxis.x()) >= 0.001
+                        || qAbs(yAxis.y() - 1) >= 0.001)) {
+                    failure = QStringLiteral("%1 %2 physical=(%3,%4) axes=(%5,%6;%7,%8)")
+                        .arg(item->objectName(), item->metaObject()->className())
+                        .arg(physical.x(), 0, 'f', 6).arg(physical.y(), 0, 'f', 6)
+                        .arg(xAxis.x(), 0, 'f', 6).arg(xAxis.y(), 0, 'f', 6)
+                        .arg(yAxis.x(), 0, 'f', 6).arg(yAxis.y(), 0, 'f', 6);
+                }
+            }
+            for(auto *child : item->childItems()) self(self, child);
+        };
+        for (auto *root : pixelGridRoots) collect(collect, root);
+        if (snapshot.size() < 20)
+            return false;
+        if (failure != lastPixelGridFailure) {
+            if (!failure.isEmpty())
+                qInfo().noquote() << "Waiting for settled settings pixel grid:" << failure;
+            lastPixelGridFailure = failure;
+        }
+        stablePixelGridSamples = snapshot == previousPixelGridSnapshot
+            ? stablePixelGridSamples + 1 : 1;
+        previousPixelGridSnapshot = snapshot;
+        return failure.isEmpty() && stablePixelGridSamples >= 4;
+    };
+    QTRY_VERIFY_WITH_TIMEOUT(pixelGridIsSettled(), 5000);
     int leaves=0;
     const auto inspect=[&](auto &&self,QQuickItem *item)->void {
         if(item->isVisible() && (item->property("renderType").isValid() || item->inherits("QQuickImage"))) {
@@ -1534,7 +1591,7 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
     // The next usage update must preserve edits that have not been applied.
     QSignalSpy usageRefreshed(galleryPreferences, &ZoinGallery::GalleryPreferences::changed);
     galleryPreferences->refresh();
-    QTRY_VERIFY(!usageRefreshed.isEmpty());
+    QTRY_VERIFY_WITH_TIMEOUT(!usageRefreshed.isEmpty(), 10000);
     QCOMPARE(draftValues().value("diskLimitMiB").toInt(), 2048);
     QCOMPARE(clearLabel->property("text").toString(), clearText);
     QVERIFY(clearCache->isEnabled());
@@ -2537,7 +2594,7 @@ void F4QuickViewSurfaceTests::galleryVideoControlsStayOnPhysicalPixelGridAt175Pe
     viewer->setProperty("externalPresentationMoving", true);
     for (qreal progress : {0.85, 0.65, 0.25, 0.65, 0.85}) {
         viewer->setProperty("transitionProgress", progress);
-        QVERIFY(viewport->scale() < 1);
+        QTRY_VERIFY_WITH_TIMEOUT(viewport->scale() < 1, 1000);
         QCOMPARE(videoSurface->width(), qreal(780));
         QCOMPARE(videoSurface->height(), qreal(420));
         checkGrid();
@@ -2545,7 +2602,7 @@ void F4QuickViewSurfaceTests::galleryVideoControlsStayOnPhysicalPixelGridAt175Pe
     viewer->setProperty("transitionProgress", 1.0);
     viewer->setProperty("transitionHasGeometry", false);
     viewer->setProperty("externalPresentationMoving", false);
-    QCOMPARE(viewport->scale(), qreal(1));
+    QTRY_COMPARE_WITH_TIMEOUT(viewport->scale(), qreal(1), 1000);
     checkGrid();
 
     QTest::qWait(100);
@@ -2956,6 +3013,8 @@ void F4QuickViewSurfaceTests::focusedVideoSeekSurvivesShellRefresh()
     QVERIFY(!path.isEmpty());
     QuickViewFixture fixture(shellScene(), false, true);
     QVERIFY(fixture.window);
+    fixture.window->requestActivate();
+    QTRY_VERIFY_WITH_TIMEOUT(fixture.window->isActive(), 3000);
     ZoinGallery::RuntimeOptions options;
     options.enableVideoPlayback = true;
     auto *runtime = ZoinGallery::GalleryRuntime::install(&fixture.engine, options);

@@ -81,7 +81,7 @@ fi
 apt_with_timeout update
 apt_with_timeout install -y --no-install-recommends \
     autoconf automake bison build-essential ca-certificates curl flex \
-    fontconfig fonts-dejavu-core git libssl-dev patchelf \
+    fontconfig fonts-dejavu-core git libdbus-1-dev libssl-dev patchelf \
     gnupg gperf libtool m4 patch pkg-config software-properties-common xz-utils
 ppa_added=0
 for attempt in 1 2 3; do

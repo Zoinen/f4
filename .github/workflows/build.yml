@@ -994,6 +994,12 @@ jobs:
       with:
         arch: ${{ matrix.msvc_arch }}
 
+    - name: Pin Python for Qt WebEngine (Windows)
+      if: runner.os == 'Windows'
+      uses: actions/setup-python@v7
+      with:
+        python-version: '3.12'
+
     - name: Restore packaged portable native dependencies
       id: portable-conan-cache
       uses: actions/cache/restore@v4
@@ -1132,6 +1138,24 @@ jobs:
       shell: pwsh
       run: |
         $ErrorActionPreference = "Stop"
+
+        # Qt WebEngine's GN setup invokes vcvarsall.bat for its x86 toolchain.
+        # The matrix has already initialized MSVC for x64 or ARM64; drop only
+        # the developer-command architecture markers so GN can initialize its
+        # separate target environment while retaining PATH/INCLUDE/LIB.
+        Get-ChildItem Env: |
+          Where-Object { $_.Name -like "VSCMD_*" } |
+          ForEach-Object { Remove-Item -LiteralPath "Env:$($_.Name)" }
+        $vcvarsall = Join-Path $env:VSINSTALLDIR "VC\Auxiliary\Build\vcvarsall.bat"
+        if (!(Test-Path -LiteralPath $vcvarsall -PathType Leaf)) {
+          throw "Visual Studio vcvarsall.bat was not found at $vcvarsall"
+        }
+        $vcvarsOutput = & cmd.exe /d /s /c ('call "' + $vcvarsall + '" amd64_x86') 2>&1
+        $vcvarsStatus = $LASTEXITCODE
+        $vcvarsOutput | ForEach-Object { Write-Host $_ }
+        if ($vcvarsStatus -ne 0) {
+          throw "Qt WebEngine's amd64_x86 GN toolchain failed to initialize (exit $vcvarsStatus)"
+        }
 
         # tukaani.org intermittently times out from GitHub's Windows runners.
         # Export the unchanged Conan Center recipe with the byte-identical
