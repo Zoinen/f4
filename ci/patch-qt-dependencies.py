@@ -39,6 +39,11 @@ _FFMPEG_REQUIREMENT_PATCH = (
         + _FFMPEG_REQUIREMENT_ANCHOR
 )
 _FFMPEG_REQUIREMENT_MARKER = 'self.requires("ffmpeg/7.1.5")'
+_MACOS_FFMPEG_REQUIREMENT = '''            if self.settings.os == "Macos":
+                self.requires("ffmpeg/7.1.5@f4/macos")
+            else:
+                self.requires("ffmpeg/7.1.5")
+'''
 _FFMPEG_GENERATE_ANCHOR = '        tc.variables["FEATURE_pkg_config"] = "ON"\n'
 _FFMPEG_GENERATE_PATCH = _FFMPEG_GENERATE_ANCHOR + (
     '        if self.options.get_safe("with_ffmpeg", False):\n'
@@ -609,6 +614,79 @@ def _patch_macos_colorspace(text: str) -> str:
                         _FFMPEG_SOURCE_ANCHOR + _MACOS_COLORSPACE_SOURCE_PATCH)
 
 
+_MACOS_VIDEO_EDR_MARKER = "# f4: expose decoded macOS video frames to AVFoundation"
+_MACOS_VIDEO_EDR_REPLACEMENTS = (
+    ("qtmultimedia/src/plugins/multimedia/ffmpeg/qffmpegvideobuffer_p.h",
+     "    AVFrame *getHWFrame() const",
+     """#ifdef Q_OS_MACOS
+    const AVFrame *f4DecodedFrame() const { return m_frame; }
+#endif
+    AVFrame *getHWFrame() const"""),
+    ("qtmultimedia/src/plugins/multimedia/ffmpeg/qffmpegplugin.cpp",
+     "QT_BEGIN_NAMESPACE",
+     """#ifdef Q_OS_MACOS
+#include "qffmpegvideobuffer_p.h"
+#include <QtMultimedia/private/qvideoframe_p.h>
+#endif
+
+QT_BEGIN_NAMESPACE
+
+#ifdef Q_OS_MACOS
+// The QVideoFrame owns the returned AVFrame. Keep the private FFmpeg
+// buffer cast inside the plugin that constructed it.
+extern "C" Q_DECL_EXPORT const AVFrame *f4DecodedVideoFrameV1(const QVideoFrame *frame)
+{
+    auto *buffer = dynamic_cast<QFFmpegVideoBuffer *>(QVideoFramePrivate::buffer(*frame));
+    return buffer ? buffer->f4DecodedFrame() : nullptr;
+}
+#endif"""),
+    ("qtmultimedia/src/plugins/multimedia/ffmpeg/qffmpegvideobuffer.cpp",
+     "        av_frame_get_buffer(newFrame.get(), 0);",
+     """        av_frame_get_buffer(newFrame.get(), 0);
+#ifdef Q_OS_MACOS
+        av_frame_copy_props(newFrame.get(), m_swFrame.get());
+#endif"""),
+    ("qtmultimedia/src/plugins/multimedia/ffmpeg/qffmpegvideobuffer.cpp",
+     "            auto maybeLum = QFFmpeg::mul(qreal(10'000.), data->max_luminance);",
+     """#ifdef Q_OS_MACOS
+            // FFmpeg already expresses this rational in cd/m².
+            if (!data->has_luminance || data->max_luminance.num <= 0
+                    || data->max_luminance.den <= 0)
+                continue;
+            auto maybeLum = QFFmpeg::mul(qreal(1), data->max_luminance);
+#else
+            auto maybeLum = QFFmpeg::mul(qreal(10'000.), data->max_luminance);
+#endif"""),
+)
+
+
+def _patch_macos_video_edr(text: str) -> str:
+    if _MACOS_VIDEO_EDR_MARKER in text:
+        return text
+    if text.count(_FFMPEG_SOURCE_ANCHOR) != 1:
+        raise RuntimeError("Qt recipe source patch anchor changed")
+    patch = "        " + _MACOS_VIDEO_EDR_MARKER + "\n" + "".join(
+        "        replace_in_file(self, os.path.join(self.source_folder, "
+        + repr(path) + "), " + repr(before) + ", " + repr(after) + ", strict=True)\n"
+        for path, before, after in _MACOS_VIDEO_EDR_REPLACEMENTS
+    )
+    return text.replace(_FFMPEG_SOURCE_ANCHOR, _FFMPEG_SOURCE_ANCHOR + patch)
+
+
+def _patch_macos_video_presentation(text: str) -> str:
+    marker = "        # f4: schedule native HDR on the media clock\n"
+    payload = (Path(__file__).parent / "patches" /
+               "qt-6.11.1-macos-video-presentation.patch").read_text(encoding="utf-8")
+    body = (marker + "        from conan.tools.files import patch as apply_video_patch\n"
+            "        apply_video_patch(self, base_path=os.path.join(self.source_folder, 'qtmultimedia'), "
+            f"strip=1, patch_string={payload!r})\n")
+    if body in text:
+        return text
+    if marker in text or text.count(_FFMPEG_SOURCE_ANCHOR) != 1:
+        raise RuntimeError("Qt native video presentation patch anchor changed")
+    return text.replace(_FFMPEG_SOURCE_ANCHOR, _FFMPEG_SOURCE_ANCHOR + body)
+
+
 _QUICK_BATCH_ORDERS_MARKER = "# f4: balance Qt Quick batch root order reservations"
 _QUICK_BATCH_ORDERS_BEFORE = (
     "                BatchRootInfo *info = batchRootInfo(e->root);\n"
@@ -1005,9 +1083,20 @@ def _patch_pdf(text: str) -> str:
     return text
 
 
+def _patch_macos_ffmpeg_requirement(text: str) -> str:
+    if _MACOS_FFMPEG_REQUIREMENT in text:
+        return text
+    anchor = f"            {_FFMPEG_REQUIREMENT_MARKER}\n"
+    if text.count(anchor) != 1:
+        raise SystemExit("unexpected Qt recipe: FFmpeg requirement is absent or ambiguous")
+    return text.replace(anchor, _MACOS_FFMPEG_REQUIREMENT)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("recipe", type=Path)
+    parser.add_argument("--macos-dynamic-hdr", action="store_true",
+                        help="use the macOS VideoToolbox FFmpeg recipe")
     parser.add_argument(
         "--linux-audio",
         action="store_true",
@@ -1024,6 +1113,9 @@ def main() -> None:
             )
         )
     )
+    if args.macos_dynamic_hdr:
+        patched = _patch_macos_ffmpeg_requirement(patched)
+        patched = _patch_macos_video_presentation(patched)
     if args.linux_audio:
         patched = _patch_linux_audio(patched)
         print(
@@ -1031,6 +1123,7 @@ def main() -> None:
             "Conan's pulseaudio::pulse target"
         )
     patched = _patch_macos_colorspace(patched)
+    patched = _patch_macos_video_edr(patched)
     patched = _patch_windows_hdr_coordinates(patched)
     print("[FIX:mac-color-space] Qt recipe retains native image color spaces")
     patched = _patch_quick_batch_orders(patched)

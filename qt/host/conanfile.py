@@ -82,7 +82,7 @@ class F4QtHostConan(ConanFile):
             # H.264 and AV1 decoders used by video thumbnails; the optional
             # dav1d/openh264 accelerators remain disabled to avoid a second
             # codec toolchain.
-            self.requires("ffmpeg/7.1.5")
+            self.requires("ffmpeg/7.1.5@f4/macos" if self.settings.os == "Macos" else "ffmpeg/7.1.5")
         self.requires("msgpack-cxx/7.0.0")
         # ZoinGallery is built from the pinned Git submodule. Keep its native
         # dependencies in this single Conan graph so the host and module share

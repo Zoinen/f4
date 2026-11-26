@@ -23,6 +23,9 @@ if [[ "${qt_recipe_mode}" == "linux-audio" && "${target_os}" != "Linux" ]]; then
     echo "error: linux-audio Qt recipe mode is valid only for Linux targets" >&2
     exit 2
 fi
+if [[ "${target_os}" == "Macos" ]]; then
+    "${python_command}" ci/patch-ffmpeg-macos-recipe.py
+fi
 
 # A portable ARM job needs both the ARM target Qt package and the native x64
 # build-context Qt package.  If a previous run published a complete pair,
@@ -87,7 +90,10 @@ if candidates:
             grep -Fq '#ifndef V4L2_PIX_FMT_BGRA32' "${reusable_qt_recipe}/conanfile.py" && \
             grep -Fq '# f4: balance Qt Quick batch root order reservations' "${reusable_qt_recipe}/conanfile.py" && \
             { [[ "${target_os}" != "Macos" ]] || \
-              grep -Fq '# f4: retain macOS image color space through native conversion' "${reusable_qt_recipe}/conanfile.py"; } && \
+              { grep -Fq '# f4: retain macOS image color space through native conversion' "${reusable_qt_recipe}/conanfile.py" &&
+                grep -Fq '# f4: schedule native HDR on the media clock' "${reusable_qt_recipe}/conanfile.py" &&
+                grep -Fq '# f4: expose decoded macOS video frames to AVFoundation' "${reusable_qt_recipe}/conanfile.py" &&
+                grep -Fq 'self.requires("ffmpeg/7.1.5@f4/macos")' "${reusable_qt_recipe}/conanfile.py"; }; } && \
             grep -Fq 'self.requires("md4c/[>=0.4.8 <0.6]")' "${reusable_qt_recipe}/conanfile.py" && \
             grep -Fq '"ffmpeg::avcodec"' "${reusable_qt_recipe}/conanfile.py" && \
             grep -Fq 'if(NOT TARGET Qt::qsb)' "${reusable_qt_recipe}/conanfile.py" && \
@@ -131,6 +137,9 @@ cp "${qt_recipe}/conanfile.py" \
 if [[ "${qt_recipe_mode}" == "linux-audio" ]]; then
     "${python_command}" ci/patch-qt-dependencies.py \
         --linux-audio "${qt_recipe_copy}/conanfile.py"
+elif [[ "${target_os}" == "Macos" ]]; then
+    "${python_command}" ci/patch-qt-dependencies.py \
+        --macos-dynamic-hdr "${qt_recipe_copy}/conanfile.py"
 else
     "${python_command}" ci/patch-qt-dependencies.py \
         "${qt_recipe_copy}/conanfile.py"

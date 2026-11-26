@@ -353,12 +353,37 @@ provider previews continue to use the existing F4 surfaces.
 The embedded viewer keeps one playback controller as Quick View expands or
 collapses, preserving its frame, play state, position, mute, and volume. Space
 toggles playback, M toggles mute, Ctrl+Left/Right seeks by five seconds, and
-Plus/Minus adjusts volume. The controls overlay also provides seeking, elapsed
+Plus/Minus adjusts volume. With the video viewer focused, Command+Shift+Up/Down
+on macOS or Ctrl+Shift+Up/Down elsewhere raises or lowers subtitles by 1% of
+the viewer height. F4 remembers the offset for each file.
+The controls overlay also provides seeking, elapsed
 time, duration, and volume. Hiding or minimizing pauses active playback and
 resumes it when the presentation returns; a docked Quick View keeps playing
 while focus returns to its source panel. Playback is restricted to builds
 using Qt Multimedia with Qt's FFmpeg backend; a native-only backend keeps video
 thumbnails without enabling viewer playback.
+
+On macOS the Metal viewer presents 10-bit HDR video with
+`AVSampleBufferDisplayLayer` in the same window, including docked Quick View.
+The bundled FFmpeg backend passes the stream color information, HDR10+ messages
+and single-layer Dolby Vision Profile 8.1 or 8.4 configuration and picture data
+to VideoToolbox. The viewer preserves the display metadata that VideoToolbox
+attaches to each decoded frame. AVFoundation uses it to map that frame to the
+current display. Qt draws panels, subtitles and controls in the window’s ordinary
+color space. [Apple’s AVFoundation playback guidance](https://developer.apple.com/av-foundation/Incorporating-HDR-video-with-Dolby-Vision-into-your-apps.pdf)
+
+During hardware HDR playback the bundled Qt media plugin can supply the next
+decoded frame and its deadline on the playback clock. The viewer queues that
+surface on AVFoundation’s host clock, independently of Qt Quick repaints.
+Pause, seek and visibility changes cancel queued presentation. A missing
+preview falls back to the current frame delivered by Qt.
+
+macOS 27 adds system playback of Dolby Vision Profile 8.1. On earlier macOS
+releases a compatible PQ file can still carry HDR10+. Software decoding and
+systems that only support the base layer play HDR10 for PQ or HLG for Profile
+8.4. The viewer forwards available mastering, content light and ambient viewing
+metadata with those frames. [Apple’s HDR support update](https://developer.apple.com/streaming/Whats-new-HLS.pdf#page=4)
+[Apple’s HDR metadata guidance](https://developer.apple.com/documentation/technotes/tn3145-hdr-video-metadata)
 
 `QuickViewController` configures each shell with `quickView.configure` before
 new alternate panels load. `quickView.preview` carries Quick View and source

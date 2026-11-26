@@ -11,7 +11,10 @@ import runpy
 import shutil
 import subprocess
 import tempfile
+import textwrap
+import types
 import unittest
+from unittest.mock import patch
 
 
 SCRIPT = pathlib.Path(__file__).with_name("patch-qt-dependencies.py")
@@ -19,6 +22,67 @@ SPEC = importlib.util.spec_from_file_location("patch_qt_dependencies", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 patcher = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(patcher)
+
+
+class MacOSDynamicHdrDependencyTests(unittest.TestCase):
+    def test_video_deadline_patch_is_self_contained_and_applied_once(self):
+        old = "class Recipe:\n    def source(self):\n" + patcher._FFMPEG_SOURCE_ANCHOR
+        recipe = patcher._patch_macos_video_presentation(old)
+        self.assertEqual(patcher._patch_macos_video_presentation(recipe), recipe)
+        payload = (SCRIPT.parent / "patches" / "qt-6.11.1-macos-video-presentation.patch").read_text()
+        instance = types.SimpleNamespace(source_folder="/qt")
+        calls = []
+        # Run the injected fragment as Conan would from its own recipe cache.
+        namespace = {"self": instance, "os": os}
+        body = recipe.split(patcher._FFMPEG_SOURCE_ANCHOR, 1)[1]
+        with patch.dict("sys.modules", {"conan.tools.files": types.SimpleNamespace(
+                patch=lambda _, **kwargs: calls.append(kwargs))}):
+            exec(textwrap.dedent(body), namespace)
+        self.assertEqual(calls, [dict(base_path=os.path.join("/qt", "qtmultimedia"),
+                                      strip=1, patch_string=payload)])
+
+    def test_qt_uses_the_matching_ffmpeg_reference_only_on_macos(self):
+        recipe = "def requirements(self):\n" + patcher._FFMPEG_REQUIREMENT_PATCH + "            pass\n"
+        patched = patcher._patch_macos_ffmpeg_requirement(recipe)
+        self.assertEqual(patcher._patch_macos_ffmpeg_requirement(patched), patched)
+        namespace = {}
+        exec(patched, namespace)
+        for os_name, expected in (("Macos", "ffmpeg/7.1.5@f4/macos"),
+                                  ("Linux", "ffmpeg/7.1.5"), ("Windows", "ffmpeg/7.1.5")):
+            calls = []
+            options = types.SimpleNamespace(get_safe={"with_ffmpeg": True}.get)
+            instance = types.SimpleNamespace(settings=types.SimpleNamespace(os=os_name),
+                                             requires=calls.append, options=options)
+            namespace["requirements"](instance)
+            self.assertEqual(calls, [expected])
+
+    def test_ffmpeg_applies_the_exported_patch_from_outside_its_source_folder(self):
+        exporter = runpy.run_path(str(SCRIPT.with_name("patch-ffmpeg-macos-recipe.py")))
+        recipe = ('class Recipe:\n'
+                  '    package_type = "library"\n'
+                  '    def source(self):\n'
+                  '        get(self, **self.conan_data["sources"][self.version], strip_root=True)\n')
+        patched = exporter["patch_recipe"](recipe)
+        self.assertEqual(exporter["patch_recipe"](patched), patched)
+        namespace = {"os": os, "get": lambda *args, **kwargs: None}
+        exec(patched, namespace)
+        instance = namespace["Recipe"]()
+        self.assertEqual(instance.exports_sources, exporter["PATCH"])
+        instance.version = "7.1.5"
+        instance.conan_data = {"sources": {instance.version: {}}}
+        with tempfile.TemporaryDirectory() as directory:
+            instance.export_sources_folder = directory
+            source = pathlib.Path(directory, "src")
+            source.mkdir()
+            instance.source_folder = str(source)
+            patch_path = pathlib.Path(directory, instance.exports_sources)
+            patch_path.write_text("exported patch", encoding="utf-8")
+            applied = []
+            def apply(_recipe, patch_file):
+                applied.append(pathlib.Path(patch_file).read_text(encoding="utf-8"))
+            with patch.dict("sys.modules", {"conan.tools.files": types.SimpleNamespace(patch=apply)}):
+                instance.source()
+            self.assertEqual(applied, ["exported patch"])
 
 
 class WindowsHdrCoordinatesPatchTests(unittest.TestCase):

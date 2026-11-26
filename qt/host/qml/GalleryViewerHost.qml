@@ -33,6 +33,9 @@ FocusScope {
             return ({})
         const tint = theme.text
         return ({
+            audio: hostWindow.lucideIconSource("audio-lines", 18, tint),
+            captions: hostWindow.lucideIconSource("captions", 18, tint),
+            keyboard: hostWindow.lucideIconSource("keyboard", 18, tint),
             play: hostWindow.lucideIconSource("play", 18, tint),
             pause: hostWindow.lucideIconSource("pause", 18, tint),
             loop: hostWindow.lucideIconSource("repeat", 18, tint),

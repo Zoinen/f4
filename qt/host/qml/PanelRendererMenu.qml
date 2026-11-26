@@ -6,7 +6,7 @@ import QtQuick.Controls.Basic as T
 import QtQuick.Layouts
 import ZoinGallery 1.0 as ZG
 
-Popup {
+ZG.GalleryDropdownPopup {
     id: rendererMenu
     height: Math.min(hostWindow.height - hostWindow.snapPx(12),
                      rendererMenuColumn.implicitHeight + topPadding + bottomPadding)
@@ -159,12 +159,9 @@ Popup {
         })
     }
 
-    background: Rectangle {
-        color: hostWindow.controlBg
-        radius: 8
-        border.width: 1
-        border.color: hostWindow.controlBorder
-    }
+    menuBackground: hostWindow.controlBg
+    menuBorder: hostWindow.controlBorder
+    menuHover: hostWindow.controlHoverBg
 
     contentItem: DropdownScrollView {
         id: rendererScroll
@@ -188,6 +185,7 @@ Popup {
 
             delegate: Rectangle {
                 id: rendererChoice
+                objectName: "panelRendererChoice-" + modelData.mode + "-" + Number(panel.side || 0)
                 required property int index
                 required property var modelData
                 readonly property bool isHeading:
@@ -204,9 +202,10 @@ Popup {
                     panelView.rendererChoiceEnabled(modelData)
                 readonly property bool choiceActive:
                     panelView.rendererChoiceActive(modelData)
+                HoverHandler { id: choiceHover; blocking: false }
                 color: isHeading ? "transparent"
-                       : (rendererMenu.keyboardIndex === index && choiceEnabled)
-                         ? hostWindow.controlHoverBg : "transparent"
+                       : ((choiceHover.hovered || rendererMenu.keyboardIndex === index) && choiceEnabled)
+                         ? rendererMenu.menuHover : "transparent"
 
                 Rectangle {
                     visible: rendererChoice.isHeading && index > 0
@@ -342,8 +341,7 @@ Popup {
                         id: rendererChoicePointer
                         anchors.fill: parent
                         hoverEnabled: true
-                        cursorShape: rendererChoice.choiceEnabled ? Qt.PointingHandCursor
-                                             : Qt.ArrowCursor
+                        cursorShape: Qt.ArrowCursor
                         onEntered: {
                             groupByPopup.close()
                             rendererMenu.keyboardIndex = rendererChoice.choiceEnabled
@@ -376,7 +374,7 @@ Popup {
                     radius: 5
                     color: rendererMenu.keyboardIndex
                               === panelView.rendererChoices.length
-                           ? hostWindow.controlHoverBg : "transparent"
+                           ? rendererMenu.menuHover : "transparent"
                 }
 
                 Image {
@@ -459,7 +457,7 @@ Popup {
                     id: groupByPointer
                     anchors.fill: parent
                     hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
+                    cursorShape: Qt.ArrowCursor
                     onEntered: rendererMenu.openGroupByPopup()
                     onPressed: rendererMenu.keyboardIndex
                               = panelView.rendererChoices.length
@@ -491,7 +489,7 @@ Popup {
                     radius: 5
                     color: rendererMenu.keyboardIndex
                               === panelView.rendererChoices.length + 1
-                           ? hostWindow.controlHoverBg : "transparent"
+                           ? rendererMenu.menuHover : "transparent"
                 }
 
                 Row {
@@ -557,7 +555,7 @@ Popup {
                 MouseArea {
                     anchors.fill: parent
                     hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
+                    cursorShape: Qt.ArrowCursor
                     onEntered: {
                         rendererMenu.keyboardIndex =
                                 panelView.rendererChoices.length + 1
@@ -656,7 +654,7 @@ Popup {
                         anchors.fill: parent
                         anchors.margins: -3
                         hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
+                        cursorShape: Qt.ArrowCursor
                         onClicked: rendererMenu.resetZoom()
                     }
                 }

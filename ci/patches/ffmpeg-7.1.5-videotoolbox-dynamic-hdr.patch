@@ -1,0 +1,217 @@
+--- a/libavcodec/videotoolbox.c
++++ b/libavcodec/videotoolbox.c
+@@ -23,6 +23,7 @@
+ #include "config.h"
+ #include "config_components.h"
+ #include "videotoolbox.h"
++#include "libavutil/ambient_viewing_environment.h"
+ #include "libavutil/hwcontext_videotoolbox.h"
+ #include "libavutil/mem.h"
+ #include "vt_internal.h"
+@@ -801,8 +802,116 @@
+     return buffer_attributes;
+ }
+ 
++/* VideoToolbox parses the compressed NAL units for per-picture HDR metadata
++ * only when the format description identifies the transfer function at session
++ * creation. Preserve the container's Dolby configuration for compatible base
++ * layers; the source transfer remains authoritative for the actual pixels. */
++static enum AVColorTransferCharacteristic videotoolbox_hevc_transfer(const AVCodecContext *avctx)
++{
++    const HEVCContext *h = avctx->priv_data;
++    if (h->sei.common.alternative_transfer.present)
++        return h->sei.common.alternative_transfer.preferred_transfer_characteristics;
++    return avctx->color_trc;
++}
++
++static bool videotoolbox_hevc_hdr(const AVCodecContext *avctx)
++{
++    const HEVCContext *h = avctx->priv_data;
++    enum AVColorTransferCharacteristic transfer;
++    if (avctx->codec_id != AV_CODEC_ID_HEVC || !h->pps || h->pps->sps->vps->vps_max_layers != 1)
++        return false;
++    transfer = videotoolbox_hevc_transfer(avctx);
++    return transfer == AVCOL_TRC_SMPTE2084 || transfer == AVCOL_TRC_ARIB_STD_B67;
++}
++
++static const AVDOVIDecoderConfigurationRecord *videotoolbox_dovi_config(const AVCodecContext *avctx)
++{
++    const HEVCContext *h = avctx->priv_data;
++    const AVDOVIDecoderConfigurationRecord *cfg;
++    enum AVColorTransferCharacteristic transfer;
++    if (!videotoolbox_hevc_hdr(avctx))
++        return NULL;
++    cfg = &h->dovi_ctx.cfg;
++    if (cfg->dv_profile != 8 || !cfg->rpu_present_flag || !cfg->bl_present_flag || cfg->el_present_flag)
++        return NULL;
++    transfer = videotoolbox_hevc_transfer(avctx);
++    if (cfg->dv_bl_signal_compatibility_id == 4 && transfer == AVCOL_TRC_ARIB_STD_B67)
++        return cfg;
++    if (cfg->dv_bl_signal_compatibility_id == 1 && transfer == AVCOL_TRC_SMPTE2084) {
++        if (__builtin_available(macOS 27.0, *))
++            return cfg;
++    }
++    return NULL;
++}
++
++static void videotoolbox_set_dvvc(CFMutableDictionaryRef atoms, const AVDOVIDecoderConfigurationRecord *cfg)
++{
++    /* Dolby Vision ISO Base Media File Format v2.3: DOVIDecoderConfigurationRecord. */
++    uint8_t bytes[24] = { cfg->dv_version_major, cfg->dv_version_minor };
++    CFDataRef data;
++    AV_WB16(bytes + 2, (cfg->dv_profile << 9) | (cfg->dv_level << 3) |
++                       (cfg->rpu_present_flag << 2) | (cfg->el_present_flag << 1) | cfg->bl_present_flag);
++    bytes[4] = (cfg->dv_bl_signal_compatibility_id << 4) | (cfg->dv_md_compression << 2);
++    data = CFDataCreate(NULL, bytes, sizeof(bytes));
++    if (data) {
++        CFDictionarySetValue(atoms, CFSTR("dvvC"), data);
++        CFRelease(data);
++    }
++}
++
++static void videotoolbox_set_ambient(CFMutableDictionaryRef extensions, const AVCodecContext *avctx)
++{
++    const HEVCContext *h = avctx->priv_data;
++    const H2645SEIAmbientViewingEnvironment *sei = &h->sei.common.ambient_viewing_environment;
++    const AVPacketSideData *sd = ff_get_coded_side_data(avctx, AV_PKT_DATA_AMBIENT_VIEWING_ENVIRONMENT);
++    uint8_t bytes[8];
++    CFDataRef data;
++    if (sei->present) {
++        AV_WB32(bytes, sei->ambient_illuminance);
++        AV_WB16(bytes + 4, sei->ambient_light_x);
++        AV_WB16(bytes + 6, sei->ambient_light_y);
++    } else if (sd && sd->size >= sizeof(AVAmbientViewingEnvironment)) {
++        const AVAmbientViewingEnvironment *env = (const AVAmbientViewingEnvironment *)sd->data;
++        int64_t lux, x, y;
++        if (env->ambient_illuminance.den <= 0 || env->ambient_light_x.den <= 0 || env->ambient_light_y.den <= 0)
++            return;
++        lux = av_rescale(env->ambient_illuminance.num, 10000, env->ambient_illuminance.den);
++        x = av_rescale(env->ambient_light_x.num, 50000, env->ambient_light_x.den);
++        y = av_rescale(env->ambient_light_y.num, 50000, env->ambient_light_y.den);
++        if (lux <= 0 || lux > UINT32_MAX || x < 0 || x > 50000 || y < 0 || y > 50000)
++            return;
++        AV_WB32(bytes, lux);
++        AV_WB16(bytes + 4, x);
++        AV_WB16(bytes + 6, y);
++    } else {
++        return;
++    }
++    data = CFDataCreate(NULL, bytes, sizeof(bytes));
++    if (data) {
++        CFDictionarySetValue(extensions, kCMFormatDescriptionExtension_AmbientViewingEnvironment, data);
++        CFRelease(data);
++    }
++}
++
++static void videotoolbox_set_hdr_colors(CFMutableDictionaryRef extensions, const AVCodecContext *avctx)
++{
++    CFStringRef transfer = av_map_videotoolbox_color_trc_from_av(videotoolbox_hevc_transfer(avctx));
++    CFStringRef primaries = av_map_videotoolbox_color_primaries_from_av(avctx->color_primaries);
++    CFStringRef matrix = av_map_videotoolbox_color_matrix_from_av(avctx->colorspace);
++    if (transfer)
++        CFDictionarySetValue(extensions, kCMFormatDescriptionExtension_TransferFunction, transfer);
++    if (primaries)
++        CFDictionarySetValue(extensions, kCMFormatDescriptionExtension_ColorPrimaries, primaries);
++    if (matrix)
++        CFDictionarySetValue(extensions, kCMFormatDescriptionExtension_YCbCrMatrix, matrix);
++    if (avctx->color_range == AVCOL_RANGE_JPEG)
++        CFDictionarySetValue(extensions, kCMFormatDescriptionExtension_FullRangeVideo, kCFBooleanTrue);
++    videotoolbox_set_ambient(extensions, avctx);
++}
++
+ static CFDictionaryRef videotoolbox_decoder_config_create(CMVideoCodecType codec_type,
+-                                                          AVCodecContext *avctx)
++                                                          AVCodecContext *avctx,
++                                                          const AVDOVIDecoderConfigurationRecord *dovi)
+ {
+     CFMutableDictionaryRef avc_info;
+     CFDataRef data = NULL;
+@@ -839,6 +948,10 @@
+         data = ff_videotoolbox_hvcc_extradata_create(avctx);
+         if (data)
+             CFDictionarySetValue(avc_info, CFSTR("hvcC"), data);
++        if (videotoolbox_hevc_hdr(avctx))
++            videotoolbox_set_hdr_colors(config_info, avctx);
++        if (dovi)
++            videotoolbox_set_dvvc(avc_info, dovi);
+         break;
+ #if CONFIG_VP9_VIDEOTOOLBOX_HWACCEL
+     case kCMVideoCodecType_VP9 :
+@@ -862,7 +975,7 @@
+     return config_info;
+ }
+ 
+-static int videotoolbox_start(AVCodecContext *avctx)
++static int videotoolbox_start_session(AVCodecContext *avctx, const AVDOVIDecoderConfigurationRecord *dovi)
+ {
+     AVVideotoolboxContext *videotoolbox = videotoolbox_get_context(avctx);
+     OSStatus status;
+@@ -930,7 +1043,7 @@
+     }
+ #endif
+ 
+-    decoder_spec = videotoolbox_decoder_config_create(videotoolbox->cm_codec_type, avctx);
++    decoder_spec = videotoolbox_decoder_config_create(videotoolbox->cm_codec_type, avctx, dovi);
+ 
+     if (!decoder_spec) {
+         av_log(avctx, AV_LOG_ERROR, "decoder specification creation failed\n");
+@@ -992,6 +1105,18 @@
+     }
+ }
+ 
++static int videotoolbox_start(AVCodecContext *avctx)
++{
++    const AVDOVIDecoderConfigurationRecord *cfg = videotoolbox_dovi_config(avctx);
++    int ret = videotoolbox_start_session(avctx, cfg);
++    if (ret < 0 && cfg) {
++        videotoolbox_stop(avctx);
++        av_log(avctx, AV_LOG_VERBOSE, "Retrying VideoToolbox with the compatible HEVC base layer.\n");
++        ret = videotoolbox_start_session(avctx, NULL);
++    }
++    return ret;
++}
++
+ static const char *videotoolbox_error_string(OSStatus status)
+ {
+     switch (status) {
+@@ -1061,6 +1186,22 @@
+     frame->crop_top    = 0;
+     frame->crop_bottom = 0;
+ 
++    if (videotoolbox_hevc_hdr(avctx)) {
++        VTContext *vtctx = avctx->internal->hwaccel_priv_data;
++        vtctx->bitstream_size = 0;
++        /* Send every NAL of this single-layer access unit in source order.
++         * The first prefix SEI can precede accelerator initialization, and
++         * the generic HEVC callbacks never forward the trailing type-62 RPU. */
++        for (int i = 0; i < h->pkt.nb_nals; i++) {
++            const H2645NAL *nal = &h->pkt.nals[i];
++            int ret;
++            if (nal->raw_size > INT_MAX - 4 - vtctx->bitstream_size)
++                return AVERROR_INVALIDDATA;
++            ret = videotoolbox_common_decode_slice(avctx, nal->raw_data, nal->raw_size);
++            if (ret < 0)
++                return ret;
++        }
++    }
+     return 0;
+ }
+ 
+@@ -1068,6 +1209,8 @@
+                                           const uint8_t *buffer,
+                                           uint32_t size)
+ {
++    if (videotoolbox_hevc_hdr(avctx))
++        return 0;
+     return videotoolbox_common_decode_slice(avctx, buffer, size);
+ }
+ 
+@@ -1077,6 +1220,8 @@
+                                            const uint8_t *buffer,
+                                            uint32_t size)
+ {
++    if (videotoolbox_hevc_hdr(avctx))
++        return 0;
+     return videotoolbox_common_decode_slice(avctx, buffer, size);
+ }
+ 

@@ -219,6 +219,7 @@ Rectangle {
 
     ToolButton {
         id: sortButton
+        HoverHandler { id: sortButtonHover; cursorShape: Qt.ArrowCursor; blocking: false }
         objectName: "panelSortButton-" + Number(panel.side || 0)
         readonly property real snappedContentWidth:
             hostWindow.snapPx(sortButtonContent.implicitWidth)
@@ -325,8 +326,8 @@ Rectangle {
             radius: 5
             color: sortButton.down
                    ? hostWindow.controlPressedBg
-                   : sortButton.hovered || sortMenu.opened
-                     ? hostWindow.controlHoverBg : "transparent"
+                   : sortButtonHover.hovered || sortMenu.opened
+                     ? sortMenu.menuHover : "transparent"
             border.width: sortMenu.opened ? 1 : 0
             border.color: hostWindow.panelSelectionBorder
         }
@@ -341,7 +342,7 @@ Rectangle {
         }
     }
 
-    Popup {
+    ZG.GalleryDropdownPopup {
         id: sortMenu
         height: Math.min(hostWindow.height - hostWindow.snapPx(12),
                          sortMenuColumn.implicitHeight + topPadding + bottomPadding)
@@ -383,12 +384,9 @@ Rectangle {
                 focusTarget.forceActiveFocus()
         })
 
-        background: Rectangle {
-            color: hostWindow.controlBg
-            radius: 8
-            border.width: 1
-            border.color: hostWindow.controlBorder
-        }
+        menuBackground: hostWindow.controlBg
+        menuBorder: hostWindow.controlBorder
+        menuHover: hostWindow.controlHoverBg
 
         contentItem: DropdownScrollView {
             id: sortScroll
@@ -444,7 +442,8 @@ Rectangle {
                         return panelView.sortModeName()
                                 === hostWindow.cleanText(choiceMode)
                     }
-                    color: !isHeading && sortChoicePointer.containsMouse
+                    HoverHandler { id: sortHover; blocking: false }
+                    color: !isHeading && sortHover.hovered
                            ? hostWindow.controlHoverBg : "transparent"
 
                     Rectangle {
@@ -577,7 +576,7 @@ Rectangle {
                         anchors.fill: parent
                         enabled: !sortChoice.isHeading
                         hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
+                        cursorShape: Qt.ArrowCursor
                         onClicked: {
                             panelView.chooseSort(sortChoice.modelData)
                             sortMenu.close()
@@ -592,6 +591,7 @@ Rectangle {
 
     ToolButton {
         id: presentationButton
+        HoverHandler { id: rendererButtonHover; cursorShape: Qt.ArrowCursor; blocking: false }
         objectName: "panelRendererButton-" + Number(panel.side || 0)
         anchors.right: parent.right
         anchors.rightMargin: hostWindow.panelTextInset
@@ -671,7 +671,7 @@ Rectangle {
             radius: 5
             color: presentationButton.down
                    ? hostWindow.controlPressedBg
-                   : presentationButton.hovered || rendererMenu.opened
+                   : rendererButtonHover.hovered || rendererMenu.opened
                      ? hostWindow.controlHoverBg : "transparent"
             border.width: rendererMenu.opened ? 1 : 0
             border.color: hostWindow.panelSelectionBorder

@@ -510,14 +510,15 @@ jobs:
         conan profile detect --force
 
     - name: Cache the macOS native dependency graph
-      uses: actions/cache@v4
+      id: macos-native-cache
+      uses: actions/cache/restore@v4
       with:
         path: |
           .conan2
           build/qwindowkit-install
-        key: qt-host-6.11.1-darwin-${{ runner.arch }}-video-v4
+        key: qt-host-6.11.1-darwin-${{ runner.arch }}-video-${{ hashFiles('qt/host/conanfile.py', 'ci/patch-qt-recipe.sh', 'ci/patch-qt-dependencies.py', 'ci/patch-ffmpeg-macos-recipe.py', 'ci/patches/ffmpeg-7.1.5-videotoolbox-dynamic-hdr.patch', 'ci/patches/qt-6.11.1-macos-video-presentation.patch') }}
         restore-keys: |
-          qt-host-6.11.1-darwin-${{ runner.arch }}-video-v4
+          qt-host-6.11.1-darwin-${{ runner.arch }}-video-
           qt-host-6.11.1-darwin-${{ runner.arch }}-v3
 
     - name: Configure Conan binary remote
@@ -721,22 +722,30 @@ jobs:
         codesign --force --deep --sign - "$app"
         codesign --verify --deep --strict --verbose=2 "$app"
 
+        # The viewer resolves the decoder surface and timing entry points here.
+        # Check the final copy so a stock Qt plugin cannot pass packaging.
+        hdr_plugin="$app/Contents/Resources/plugins/multimedia/libffmpegmediaplugin.dylib"
+        nm -gUj "$hdr_plugin" | grep -Fx '_f4DecodedVideoFrameV1'
+        nm -gUj "$hdr_plugin" | grep -Fx '_f4UpcomingVideoFrameV1'
+
     - name: Prune macOS Conan build trees before cache save
-      if: success()
+      id: macos-cache-prune
+      if: ${{ !cancelled() && steps.macos-native-cache.outputs.cache-hit != 'true' }}
       shell: bash
       run: |
         if [[ -d "$CONAN_HOME/p" ]]; then
-          find "$CONAN_HOME/p" -type d -name s -prune -exec rm -rf {} +
+          conan cache clean '*' --source --build --temp --backup-sources
+          echo "ready=true" >> "$GITHUB_OUTPUT"
         fi
 
-    - name: Preserve the completed macOS native dependency graph
-      if: success()
+    - name: Preserve completed macOS dependency packages
+      if: ${{ !cancelled() && steps.macos-cache-prune.outputs.ready == 'true' }}
       uses: actions/cache/save@v4
       with:
         path: |
           .conan2
           build/qwindowkit-install
-        key: qt-host-6.11.1-darwin-${{ runner.arch }}-v3
+        key: ${{ steps.macos-native-cache.outputs.cache-primary-key }}${{ job.status == 'failure' && format('-checkpoint-{0}-{1}', github.run_id, github.run_attempt) || '' }}
 
     - name: Validate and smoke-test the installed tree
       shell: bash

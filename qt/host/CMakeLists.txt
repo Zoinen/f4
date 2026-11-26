@@ -792,6 +792,8 @@ set(F4_LUCIDE_ICON_NAMES
   user-round.svg
   users-round.svg
   video.svg
+  audio-lines.svg
+  captions.svg
   volume-2.svg
   volume-x.svg
   x.svg
@@ -1777,11 +1779,15 @@ if(BUILD_TESTING)
   f4_link_static_test_platform(F4DocumentSurfaceTests)
   f4_link_static_test_image_plugins(F4DocumentSurfaceTests)
   f4_link_static_test_qml_plugins(F4DocumentSurfaceTests)
+  set(F4_HOST_TEST_QML_PATH "${CMAKE_BINARY_DIR}/ZoinGallery")
+  if(CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND NOT F4_QT_STATIC)
+    string(APPEND F4_HOST_TEST_QML_PATH ":${F4_QT_PACKAGE_FOLDER}/qml")
+  endif()
   set(F4_HOST_QML_TEST_ENV
-    "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${F4_HOST_QT_PLUGIN_PATH};QML_IMPORT_PATH=${CMAKE_BINARY_DIR}/ZoinGallery"
+    "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${F4_HOST_QT_PLUGIN_PATH};QML_IMPORT_PATH=${F4_HOST_TEST_QML_PATH}"
   )
   set(F4_HOST_QML_DPR_TEST_ENV
-    "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_SCALE_FACTOR=1.75;QT_SCALE_FACTOR_ROUNDING_POLICY=PassThrough;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${F4_HOST_QT_PLUGIN_PATH};QML_IMPORT_PATH=${CMAKE_BINARY_DIR}/ZoinGallery"
+    "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;QT_SCALE_FACTOR=1.75;QT_SCALE_FACTOR_ROUNDING_POLICY=PassThrough;QT_QUICK_CONTROLS_STYLE=Basic;QT_PLUGIN_PATH=${F4_HOST_QT_PLUGIN_PATH};QML_IMPORT_PATH=${F4_HOST_TEST_QML_PATH}"
   )
   if(WIN32)
     list(APPEND F4_HOST_QML_TEST_ENV "QT_QPA_FONTDIR=$ENV{WINDIR}/Fonts")
@@ -2033,7 +2039,7 @@ if(BUILD_TESTING)
       F4_QT_HAS_MULTIMEDIA_QML=1)
     add_test(NAME F4GalleryVideoControlsPixelGridTest
       COMMAND F4QuickViewSurfaceTests
-        galleryVideoControlsStayOnPhysicalPixelGridAt175Percent)
+        galleryVideoControlsStayOnPhysicalPixelGridAt175Percent focusedVideoSeekSurvivesShellRefresh)
     set_tests_properties(F4GalleryVideoControlsPixelGridTest PROPERTIES
       ENVIRONMENT "${F4_HOST_QML_DPR_TEST_ENV};F4_GALLERY_VIDEO_CONTROLS_CAPTURE=${CMAKE_BINARY_DIR}/.diagnostics/gallery-video-controls-175.png")
   endif()

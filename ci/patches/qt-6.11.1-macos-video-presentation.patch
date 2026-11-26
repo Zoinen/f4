@@ -1,0 +1,131 @@
+--- a/src/plugins/multimedia/ffmpeg/playbackengine/qffmpegrenderer_p.h
++++ b/src/plugins/multimedia/ffmpeg/playbackengine/qffmpegrenderer_p.h
+@@ -65,6 +65,13 @@
+     void loopChanged(PlaybackEngineObjectID id, TrackPosition offset, int index);
+ 
+ protected:
++    const Frame *followingFrame() const
++    {
++        if (!m_sessionCtx.timeController.isActive() || m_sessionCtx.frames.size() < 2)
++            return nullptr;
++        return &m_sessionCtx.frames.at(1);
++    }
++
+     bool setForceStepDone();
+ 
+     void onPauseChanged() override;
+--- a/src/plugins/multimedia/ffmpeg/playbackengine/qffmpegvideorenderer.cpp
++++ b/src/plugins/multimedia/ffmpeg/playbackengine/qffmpegvideorenderer.cpp
+@@ -4,11 +4,63 @@
+ #include "playbackengine/qffmpegvideorenderer_p.h"
+ #include "qffmpegvideobuffer_p.h"
+ #include "qvideosink.h"
++#ifdef Q_OS_MACOS
++#include <CoreMedia/CMSync.h>
++#endif
+ #include "private/qvideoframe_p.h"
+ 
+ QT_BEGIN_NAMESPACE
+ 
+ namespace QFFmpeg {
++
++namespace {
++#ifdef Q_OS_MACOS
++// Only the F4 video sink requests a preview. Keep its decoder surface alive
++// without advancing Qt's ordinary video, position, or audio notifications.
++class ScheduledVideoBuffer final : public QFFmpegVideoBuffer
++{
++public:
++    using QFFmpegVideoBuffer::QFFmpegVideoBuffer;
++    QVideoFrame upcoming;
++    qint64 hostTimeUs = 0;
++};
++
++bool isNativeHdr(const AVFrame *frame)
++{
++    return frame && frame->format == AV_PIX_FMT_VIDEOTOOLBOX && frame->data[3]
++            && (frame->color_trc == AVCOL_TRC_SMPTE2084 || frame->color_trc == AVCOL_TRC_ARIB_STD_B67);
++}
++#endif
++
++QVideoFrame makeVideoFrame(const Frame &frame, std::unique_ptr<QFFmpegVideoBuffer> buffer,
++                           const VideoTransformation &transform)
++{
++    QVideoFrameFormat format(buffer->size(), buffer->pixelFormat());
++    format.setColorSpace(buffer->colorSpace());
++    format.setColorTransfer(buffer->colorTransfer());
++    format.setColorRange(buffer->colorRange());
++    format.setMaxLuminance(buffer->maxNits());
++    format.setRotation(transform.rotation);
++    format.setMirrored(transform.mirroredHorizontallyAfterRotation);
++    QVideoFrame videoFrame = QVideoFramePrivate::createFrame(std::move(buffer), format);
++    videoFrame.setStartTime(frame.startTime().get());
++    videoFrame.setEndTime(frame.endTime().get());
++    return videoFrame;
++}
++} // namespace
++
++#ifdef Q_OS_MACOS
++extern "C" Q_DECL_EXPORT bool f4UpcomingVideoFrameV1(const QVideoFrame *current,
++                                                    QVideoFrame *upcoming, qint64 *hostTimeUs)
++{
++    auto *buffer = dynamic_cast<ScheduledVideoBuffer *>(QVideoFramePrivate::buffer(*current));
++    if (!buffer)
++        return false;
++    *upcoming = buffer->upcoming;
++    *hostTimeUs = buffer->hostTimeUs;
++    return true;
++}
++#endif
+ 
+ VideoRenderer::VideoRenderer(const PlaybackEngineObjectID &id, const TimeController &tc,
+                              QVideoSink *sink, const VideoTransformation &transform)
+@@ -64,18 +116,36 @@
+ #endif
+ 
+     const auto pixelAspectRatio = codecContext->pixelAspectRatio(frame.avFrame());
+-    auto buffer = std::make_unique<QFFmpegVideoBuffer>(frame.takeAVFrame(), pixelAspectRatio);
+-    QVideoFrameFormat format(buffer->size(), buffer->pixelFormat());
+-    format.setColorSpace(buffer->colorSpace());
+-    format.setColorTransfer(buffer->colorTransfer());
+-    format.setColorRange(buffer->colorRange());
+-    format.setMaxLuminance(buffer->maxNits());
+-    format.setRotation(m_transform.rotation);
+-    format.setMirrored(m_transform.mirroredHorizontallyAfterRotation);
+-    QVideoFrame videoFrame = QVideoFramePrivate::createFrame(std::move(buffer), format);
+-    videoFrame.setStartTime(frame.startTime().get());
+-    videoFrame.setEndTime(frame.endTime().get());
+-    m_sink->setVideoFrame(videoFrame);
++    std::unique_ptr<QFFmpegVideoBuffer> buffer;
++#ifdef Q_OS_MACOS
++    const Frame *next = followingFrame();
++    if (!isPaused() && isNativeHdr(frame.avFrame()) && next && next->isValid()
++            && next->sourceID().sessionID == frame.sourceID().sessionID
++            && next->sourceID().objectID == frame.sourceID().objectID
++            && next->loopOffset().loopIndex == frame.loopOffset().loopIndex
++            && next->startTime() > frame.startTime() && isNativeHdr(next->avFrame())
++            && m_sink->metaObject()->indexOfClassInfo("F4TimedVideoPresentation") >= 0) {
++        // Transfer the deadline from the current audio-synchronized clock to
++        // Core Media's host clock. Never take the queued frame from Qt.
++        const CMTime now = CMClockGetTime(CMClockGetHostTimeClock());
++        const auto lead = -frameDelay(*next);
++        if (lead.count() > 0) {
++            AVFrameUPtr pixels(av_frame_clone(next->avFrame()));
++            if (pixels) {
++                auto aspect = next->codecContext()->pixelAspectRatio(next->avFrame());
++                auto preview = std::make_unique<QFFmpegVideoBuffer>(std::move(pixels), aspect);
++                auto timed = std::make_unique<ScheduledVideoBuffer>(frame.takeAVFrame(), pixelAspectRatio);
++                timed->upcoming = makeVideoFrame(*next, std::move(preview), m_transform);
++                timed->hostTimeUs = CMTimeConvertScale(now, 1000000, kCMTimeRoundingMethod_Default).value
++                        + lead.count();
++                buffer = std::move(timed);
++            }
++        }
++    }
++#endif
++    if (!buffer)
++        buffer = std::make_unique<QFFmpegVideoBuffer>(frame.takeAVFrame(), pixelAspectRatio);
++    m_sink->setVideoFrame(makeVideoFrame(frame, std::move(buffer), m_transform));
+ 
+     return {};
+ }

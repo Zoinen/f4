@@ -356,9 +356,13 @@ int main(int argc, char *argv[])
     }
 
     QQuickStyle::setStyle(QStringLiteral("Basic"));
-    // QWK currently uses an opaque native surface on Windows and macOS while
-    // the system transparency paths are disabled in the QML host.
+    // Cocoa composites the AVFoundation video plane through an aperture in
+    // the Qt surface. The ordinary window background still clears to opaque.
+#if defined(Q_OS_MACOS) && defined(ZOIN_ENABLE_VIDEO_PLAYBACK)
+    QQuickWindow::setDefaultAlphaBuffer(true);
+#else
     QQuickWindow::setDefaultAlphaBuffer(false);
+#endif
 
     // Resolve GUI-owned preferences before the handshake: the first Go scene
     // must already evaluate the saved icon theme's complete group set.

@@ -262,6 +262,8 @@ const QSet<QString> &lucideIconNames()
         QStringLiteral("trash-2"),
         QStringLiteral("triangle-alert"),
         QStringLiteral("video"),
+        QStringLiteral("audio-lines"),
+        QStringLiteral("captions"),
         QStringLiteral("volume-2"),
         QStringLiteral("volume-x"),
         QStringLiteral("x"),

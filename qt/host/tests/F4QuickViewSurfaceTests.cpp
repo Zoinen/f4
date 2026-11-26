@@ -60,6 +60,7 @@
 #include <QVariantMap>
 #include <QWheelEvent>
 #if defined(F4_QT_HAS_MULTIMEDIA_QML)
+#include <QVideoFrame>
 #include <QVideoSink>
 #endif
 #include <QtQml>
@@ -327,12 +328,22 @@ class TestVideoPlaybackController final : public QObject
     Q_PROPERTY(QVideoSink *videoSink READ videoSink CONSTANT)
     Q_PROPERTY(QString state MEMBER state NOTIFY changed)
     Q_PROPERTY(QString error MEMBER error NOTIFY changed)
+    Q_PROPERTY(qint64 resumePosition MEMBER resumePosition NOTIFY changed)
     Q_PROPERTY(qint64 position MEMBER position NOTIFY changed)
     Q_PROPERTY(qint64 duration MEMBER duration NOTIFY changed)
     Q_PROPERTY(bool playing MEMBER playing NOTIFY changed)
     Q_PROPERTY(bool looping MEMBER looping NOTIFY changed)
     Q_PROPERTY(bool muted MEMBER muted NOTIFY changed)
     Q_PROPERTY(qreal volume MEMBER volume NOTIFY changed)
+    Q_PROPERTY(QVariantList audioTracks MEMBER audioTracks NOTIFY changed)
+    Q_PROPERTY(QVariantList subtitleTracks MEMBER subtitleTracks NOTIFY changed)
+    Q_PROPERTY(int activeAudioTrack MEMBER activeAudioTrack NOTIFY changed)
+    Q_PROPERTY(int activeSubtitleTrack MEMBER activeSubtitleTrack NOTIFY changed)
+    Q_PROPERTY(QString audioLanguage MEMBER audioLanguage NOTIFY changed)
+    Q_PROPERTY(QString subtitleLanguage MEMBER subtitleLanguage NOTIFY changed)
+    Q_PROPERTY(QString subtitleText MEMBER subtitleText NOTIFY changed)
+    Q_PROPERTY(bool arrowKeysSeek MEMBER arrowKeysSeek NOTIFY changed)
+    Q_PROPERTY(int subtitleOffsetPercent MEMBER subtitleOffsetPercent NOTIFY subtitleOffsetPercentChanged)
 
 public:
     explicit TestVideoPlaybackController(QObject *parent = nullptr)
@@ -340,9 +351,18 @@ public:
 
     QVideoSink *videoSink() const { return m_videoSink; }
     Q_INVOKABLE void playPause() { ++playPauseCalls; emit changed(); }
+    Q_INVOKABLE void resume() { position = resumePosition; resumePosition = 0; playing = true; emit changed(); }
     Q_INVOKABLE void seekTo(qint64 value) { position = value; emit changed(); }
+    Q_INVOKABLE void seekBy(qint64 delta) { seekTo(qBound(qint64(0), position + delta, duration)); }
     Q_INVOKABLE void toggleLoop() { looping = !looping; emit changed(); }
     Q_INVOKABLE void toggleMute() { muted = !muted; emit changed(); }
+    Q_INVOKABLE void selectAudioTrack(int index) { activeAudioTrack = index; emit changed(); }
+    Q_INVOKABLE void selectSubtitleTrack(int index) {
+        activeSubtitleTrack = index;
+        if (index < 0)
+            subtitleText.clear();
+        emit changed();
+    }
     Q_INVOKABLE void adjustVolume(qreal delta)
     {
         volume = qBound(qreal(0), volume + delta, qreal(1));
@@ -351,16 +371,27 @@ public:
 
     QString state = QStringLiteral("failed");
     QString error = QStringLiteral("Unsupported video codec");
+    qint64 resumePosition = 0;
     qint64 position = 6500;
     qint64 duration = 18000;
     bool playing = false;
     bool looping = false;
     bool muted = true;
+    bool arrowKeysSeek = false;
     qreal volume = 0.5;
     int playPauseCalls = 0;
+    QVariantList audioTracks;
+    QVariantList subtitleTracks;
+    int activeAudioTrack = 0;
+    int activeSubtitleTrack = -1;
+    QString audioLanguage;
+    QString subtitleLanguage;
+    QString subtitleText;
+    int subtitleOffsetPercent = 0;
 
 signals:
     void changed();
+    void subtitleOffsetPercentChanged();
 
 private:
     QVideoSink *m_videoSink = nullptr;
@@ -937,6 +968,7 @@ private slots:
     void galleryVideoSurfaceCapturesClicksAndDoubleClickCloses();
     void galleryVideoControlsReceiveMouseClicks();
     void galleryVideoPointerEventsReachEmbeddedViewer();
+    void focusedVideoSeekSurvivesShellRefresh();
 #endif
     void initTestCase();
     void qmlImportsWithoutInstalledQt();
@@ -2287,9 +2319,24 @@ void F4QuickViewSurfaceTests::galleryVideoControlsStayOnPhysicalPixelGridAt175Pe
         import QtQuick
         import ZoinGallery 1.0
         Item {
+            id: fixture
             objectName: "videoPixelGridTestRoot"
             width: 780
             height: 420
+            property Item subtitleLeaf
+            property bool showReference: false
+            Binding {
+                target: fixture.subtitleLeaf
+                when: fixture.showReference
+                property: "text"
+                value: "- It's nine o'clock.<br>- <i>And?</i>"
+            }
+            Binding {
+                target: fixture.subtitleLeaf
+                when: fixture.showReference
+                property: "textFormat"
+                value: Text.StyledText
+            }
             GalleryViewer {
                 objectName: "videoPixelGridViewer"
                 anchors.fill: parent
@@ -2298,6 +2345,9 @@ void F4QuickViewSurfaceTests::galleryVideoControlsStayOnPhysicalPixelGridAt175Pe
                 managedPresentation: true
                 videoPlaybackMode: "manual"
                 videoIconSources: ({
+                    keyboard: testIcons.rasterizedLucideSource("keyboard", 18, 1.75, "white"),
+                    audio: testIcons.rasterizedLucideSource("audio-lines", 18, 1.75, "white"),
+                    captions: testIcons.rasterizedLucideSource("captions", 18, 1.75, "white"),
                     play: testIcons.rasterizedLucideSource(
                         "play", 18, 1.75, Qt.rgba(0.95, 0.96, 0.97, 1)),
                     pause: testIcons.rasterizedLucideSource(
@@ -2321,6 +2371,7 @@ void F4QuickViewSurfaceTests::galleryVideoControlsStayOnPhysicalPixelGridAt175Pe
     window.setColor(Qt::black);
     window.resize(780, 420);
     root->setParentItem(window.contentItem());
+    const auto destroyViewer = qScopeGuard([&] { object.reset(); });
     window.show();
     QTRY_VERIFY(window.isExposed());
     if (qAbs(window.devicePixelRatio() - qreal(1.75)) >= 0.001)
@@ -2501,6 +2552,18 @@ void F4QuickViewSurfaceTests::galleryVideoControlsStayOnPhysicalPixelGridAt175Pe
     const QImage capture = window.grabWindow();
     QVERIFY(!capture.isNull());
     QCOMPARE(volumePixel(capture), QColor("#75b9ff"));
+    auto *videoShader = videoItem(QStringLiteral("galleryViewerImageShader"));
+    QVERIFY(videoShader);
+    // The offscreen platform cannot request native EDR. Exercise both
+    // presentation states in the actual control tree at its fractional DPR.
+    QVERIFY(videoShader->setProperty("nativeVideoActive", true));
+    QTest::qWait(40);
+    checkGrid();
+    const QImage edr = window.grabWindow();
+    QVERIFY(!edr.isNull());
+    QVERIFY(videoShader->setProperty("nativeVideoActive", false));
+    QTest::qWait(40);
+    checkGrid();
     const QString capturePath = qEnvironmentVariable(
         "F4_GALLERY_VIDEO_CONTROLS_CAPTURE");
     if (!capturePath.isEmpty()) {
@@ -2523,6 +2586,8 @@ void F4QuickViewSurfaceTests::galleryVideoControlsStayOnPhysicalPixelGridAt175Pe
         const QImage leaf = capture.copy(rect);
         QVERIFY2(exactImageDifference(leaf, beforeFlight.copy(rect)).isEmpty(),
                  qPrintable(name + QStringLiteral(" changed after flight reversal")));
+        QVERIFY2(exactImageDifference(leaf, edr.copy(rect)).isEmpty(),
+                 qPrintable(name + QStringLiteral(" changed with the video output format")));
         QSet<QRgb> colors;
         for (int y = 0; y < leaf.height(); ++y) {
             for (int x = 0; x < leaf.width(); ++x)
@@ -2531,6 +2596,247 @@ void F4QuickViewSurfaceTests::galleryVideoControlsStayOnPhysicalPixelGridAt175Pe
         QVERIFY2(colors.size() > 1,
                  qPrintable(name + QStringLiteral(" rendered no visible content")));
     }
+
+    auto *audioButton = videoItem(QStringLiteral("galleryVideoAudioTrackButton"));
+    auto *subtitleButton = videoItem(QStringLiteral("galleryVideoSubtitleTrackButton"));
+    QVERIFY(audioButton && subtitleButton);
+    QVERIFY(!audioButton->isVisible());
+    QVERIFY(!subtitleButton->isVisible());
+    controller.audioTracks = {QStringLiteral("Original")};
+    controller.subtitleTracks = {QStringLiteral("English")};
+    emit controller.changed();
+    QVERIFY(!audioButton->isVisible());
+    QTRY_VERIFY(subtitleButton->isVisible());
+    controller.audioTracks.append(QStringLiteral("Dub"));
+    controller.subtitleTracks.append(QStringLiteral("English (SDH)"));
+    controller.state = QStringLiteral("ready");
+    controller.subtitleText = QStringLiteral("- It's nine o'clock.\n- {\\i1}And?{\\i0}");
+    controller.activeSubtitleTrack = 0;
+    emit controller.changed();
+    auto *frames = videoSurface->findChild<QObject *>("galleryVideoFrameSource");
+    QVERIFY(frames);
+    auto *sink = frames->property("sink").value<QVideoSink *>();
+    QVERIFY(sink);
+    QImage video(64, 48, QImage::Format_RGBA8888);
+    video.fill(QColor("#374e61"));
+    sink->setVideoFrame(QVideoFrame(video));
+    QTRY_VERIFY(audioButton->isVisible());
+    const auto checkRenderedLeaves = [&](const QStringList &names, const QString &suffix) {
+        const QImage frame = window.grabWindow();
+        QVERIFY(!frame.isNull());
+        if (!capturePath.isEmpty())
+            QVERIFY(frame.save(capturePath + suffix));
+        for (const auto &name : names) {
+            auto *item = videoItem(name);
+            QVERIFY2(item && item->isVisible(), qPrintable(name));
+            const QPointF origin = item->mapToItem(window.contentItem(), QPointF{});
+            const QPointF physical = origin * dpr;
+            const QString detail = QStringLiteral("%1 is at (%2, %3) physical pixels")
+                .arg(name).arg(physical.x()).arg(physical.y());
+            QVERIFY2(qAbs(physical.x() - qRound(physical.x())) < 0.001
+                        && qAbs(physical.y() - qRound(physical.y())) < 0.001,
+                     qPrintable(detail));
+            QCOMPARE(item->mapToItem(window.contentItem(), {1, 0}) - origin, QPointF(1, 0));
+            QCOMPARE(item->mapToItem(window.contentItem(), {0, 1}) - origin, QPointF(0, 1));
+            const QRect area(qRound(physical.x()), qRound(physical.y()),
+                             qRound(item->width() * dpr), qRound(item->height() * dpr));
+            QVERIFY(frame.rect().contains(area));
+            int bright = 0;
+            for (int y = area.top(); y <= area.bottom(); ++y)
+                for (int x = area.left(); x <= area.right(); ++x)
+                    bright += qGray(frame.pixel(x, y)) > 130;
+            QVERIFY2(bright > 4, qPrintable(name + QStringLiteral(" rendered no text")));
+        }
+    };
+    auto *subtitle = videoItem(QStringLiteral("galleryVideoSubtitleText"));
+    QVERIFY(subtitle);
+    QTRY_VERIFY(subtitle->isVisible());
+    QCOMPARE(subtitle->property("lineCount").toInt(), 2);
+    checkRenderedLeaves({QStringLiteral("galleryVideoAudioTrackButtonIcon"),
+                         QStringLiteral("galleryVideoSubtitleTrackButtonIcon"),
+                         QStringLiteral("galleryVideoSubtitleText"),
+                         QStringLiteral("galleryVideoMuteButtonIcon"),
+                         QStringLiteral("galleryVideoTimeText")}, QStringLiteral(".tracks.png"));
+    const auto grabSubtitle = [&] {
+        const QPointF origin = subtitle->mapToScene({}) * dpr;
+        return window.grabWindow().copy(QRect(origin.toPoint(), (subtitle->size() * dpr).toSize()));
+    };
+    const QImage decodedCue = grabSubtitle();
+    root->setProperty("subtitleLeaf", QVariant::fromValue(subtitle));
+    root->setProperty("showReference", true);
+    QCOMPARE(subtitle->property("lineCount").toInt(), 2);
+    const QString subtitleDifference = exactImageDifference(decodedCue, grabSubtitle());
+    QVERIFY2(subtitleDifference.isEmpty(), qPrintable(subtitleDifference));
+    root->setProperty("showReference", false);
+    viewer->forceActiveFocus();
+    QTRY_VERIFY(viewer->hasActiveFocus());
+    const auto shiftCaption = [&](Qt::Key arrow, Qt::KeyboardModifiers extra = Qt::NoModifier) {
+        QTest::keyClick(&window, arrow, Qt::ControlModifier | Qt::ShiftModifier | extra);
+    };
+    const qreal originalY = subtitle->mapToScene({}).y() * dpr;
+    shiftCaption(Qt::Key_Up);
+    const qreal raisedY = subtitle->mapToScene({}).y() * dpr;
+    QCOMPARE(qRound(raisedY), qRound(originalY - videoSurface->height() * dpr / 100));
+    QCOMPARE(controller.subtitleOffsetPercent, -1);
+    checkRenderedLeaves({"galleryVideoSubtitleText"}, ".subtitle-raised.png");
+    const QString shiftedDifference = exactImageDifference(decodedCue, grabSubtitle());
+    QVERIFY2(shiftedDifference.isEmpty(), qPrintable(shiftedDifference));
+    shiftCaption(Qt::Key_Down, Qt::KeypadModifier);
+    QCOMPARE(subtitle->mapToScene({}).y() * dpr, originalY);
+    QCOMPARE(controller.subtitleOffsetPercent, 0);
+    controller.subtitleText = QStringLiteral(R"({\an8}Top caption)");
+    emit controller.changed();
+    QCOMPARE(subtitle->property("horizontalAlignment").toInt(), int(Qt::AlignHCenter));
+    QCOMPARE(subtitle->y() * dpr, qreal(qRound(12 * dpr)));
+    checkRenderedLeaves({"galleryVideoSubtitleText"}, ".subtitle-top.png");
+    for (int i = 0; i < 8; ++i)
+        shiftCaption(Qt::Key_Up);
+    QCOMPARE(subtitle->y(), 0);
+    shiftCaption(Qt::Key_Down);
+    QVERIFY(subtitle->y() > 0);
+    const int remaining = -controller.subtitleOffsetPercent;
+    for (int i = 0; i < remaining; ++i)
+        shiftCaption(Qt::Key_Down);
+    QCOMPARE(controller.subtitleOffsetPercent, 0);
+    root->forceActiveFocus();
+    QVERIFY(!viewer->hasActiveFocus());
+    shiftCaption(Qt::Key_Down);
+    QCOMPARE(controller.subtitleOffsetPercent, 0);
+    viewer->forceActiveFocus();
+    controller.subtitleText = QStringLiteral(R"({\an6}Right caption)");
+    emit controller.changed();
+    QCOMPARE(subtitle->property("horizontalAlignment").toInt(), int(Qt::AlignRight));
+    QVERIFY(qAbs((subtitle->y() + subtitle->height() / 2 - videoSurface->height() / 2) * dpr) <= 0.501);
+    checkRenderedLeaves({"galleryVideoSubtitleText"}, ".subtitle-middle.png");
+    controller.setProperty("subtitleOffsetPercent", 100);
+    const qreal bottom = subtitle->y();
+    QCOMPARE(qRound((bottom + subtitle->height()) * dpr), qRound(videoSurface->height() * dpr));
+    shiftCaption(Qt::Key_Up);
+    QVERIFY(subtitle->y() < bottom);
+    controller.setProperty("subtitleOffsetPercent", 0);
+    const auto click = [&](QQuickItem *item) {
+        QTest::mouseClick(&window, Qt::LeftButton, Qt::NoModifier,
+            item->mapToItem(window.contentItem(), {item->width() / 2, item->height() / 2}).toPoint());
+    };
+    auto *keyboardButton = videoItem("galleryVideoKeyboardButton");
+    QVERIFY(keyboardButton && keyboardButton->isVisible());
+    QVERIFY(!keyboardButton->property("checked").toBool());
+    click(keyboardButton);
+    QTRY_VERIFY(keyboardButton->property("checked").toBool());
+    checkRenderedLeaves({"galleryVideoKeyboardButtonIcon"}, ".arrow-keys-seek.png");
+    auto *keyboardBackground = keyboardButton->property("background").value<QQuickItem *>();
+    QVERIFY(keyboardBackground);
+    QCOMPARE(keyboardBackground->property("color").value<QColor>(), QColor("#285e87"));
+    viewer->forceActiveFocus();
+    const auto beforeArrowSeek = controller.position;
+    QTest::keyClick(&window, Qt::Key_Right);
+    QCOMPARE(controller.position, beforeArrowSeek + 5000);
+    QTest::keyClick(&window, Qt::Key_Left, Qt::KeypadModifier);
+    QCOMPARE(controller.position, beforeArrowSeek);
+    QTest::keyClick(&window, Qt::Key_Slash);
+    QTRY_VERIFY(!keyboardButton->property("checked").toBool());
+    QTest::keyClick(&window, Qt::Key_Slash);
+    QTRY_VERIFY(keyboardButton->property("checked").toBool());
+    click(keyboardButton);
+    QTRY_VERIFY(!keyboardButton->property("checked").toBool());
+    viewer->forceActiveFocus();
+    auto *seek = videoItem(QStringLiteral("galleryVideoSeekControl"));
+    auto *handle = videoItem(QStringLiteral("galleryVideoSeekHandle"));
+    auto *track = videoItem(QStringLiteral("galleryVideoSeekTrack"));
+    QVERIFY(handle && track && !seek->hasActiveFocus());
+    const qreal idleDiameter = handle->width();
+    const auto trackSample = (track->mapToScene({track->width() - 8, track->height() / 2}) * dpr).toPoint();
+    const auto idleTrackColor = window.grabWindow().pixelColor(trackSample);
+    click(seek);
+    QTRY_VERIFY(seek->hasActiveFocus());
+    QVERIFY(handle->width() > idleDiameter);
+    QCOMPARE(handle->height(), handle->width());
+    const QPointF handleOrigin = handle->mapToScene({}) * dpr;
+    QCOMPARE(handleOrigin, QPointF(handleOrigin.toPoint()));
+    const auto focusedFrame = window.grabWindow();
+    QCOMPARE(focusedFrame.pixelColor(trackSample), idleTrackColor);
+    if (!capturePath.isEmpty())
+        QVERIFY(focusedFrame.save(capturePath + ".seek-focus.png"));
+    QVERIFY(seek->property("retainsFocusOnShellRefresh").toBool());
+    const auto initialTime = controller.position;
+    QTest::keyClick(&window, Qt::Key_Right);
+    QCOMPARE(controller.position, initialTime + 5000);
+    QTest::keyClick(&window, Qt::Key_Left);
+    QCOMPARE(controller.position, initialTime);
+    QTest::keyClick(&window, Qt::Key_Right, Qt::KeypadModifier);
+    QCOMPARE(controller.position, initialTime + 5000);
+    QCOMPARE(audioButton->width(), subtitleButton->width());
+    const auto compactWidth = audioButton->width();
+    controller.audioLanguage = "RU";
+    controller.subtitleLanguage = "EN";
+    emit controller.changed();
+    QTRY_VERIFY(audioButton->width() > compactWidth);
+    QCOMPARE(audioButton->width(), subtitleButton->width());
+    checkRenderedLeaves({"galleryVideoAudioTrackButtonLanguage", "galleryVideoSubtitleTrackButtonLanguage",
+                         "galleryVideoAudioTrackButtonIcon", "galleryVideoSubtitleTrackButtonIcon"}, ".languages.png");
+    click(audioButton);
+    QQuickItem *dub = nullptr;
+    QTRY_VERIFY((dub = videoItem(QStringLiteral("galleryVideoTrackOption1"))) && dub->isVisible());
+    checkRenderedLeaves({QStringLiteral("galleryVideoTrackCheck0"),
+                         QStringLiteral("galleryVideoTrackOptionText0"),
+                         QStringLiteral("galleryVideoTrackOptionText1")}, QStringLiteral(".audio-menu.png"));
+    click(dub);
+    QTRY_COMPARE(controller.activeAudioTrack, 1);
+    click(subtitleButton);
+    QQuickItem *off = nullptr;
+    QTRY_VERIFY((off = videoItem(QStringLiteral("galleryVideoTrackOption0"))) && off->isVisible());
+    checkRenderedLeaves({QStringLiteral("galleryVideoTrackCheck1"),
+                         QStringLiteral("galleryVideoTrackOptionText0"),
+                         QStringLiteral("galleryVideoTrackOptionText1"),
+                         QStringLiteral("galleryVideoTrackOptionText2")}, QStringLiteral(".subtitle-menu.png"));
+    click(off);
+    QTRY_COMPARE(controller.activeSubtitleTrack, -1);
+    QTRY_COMPARE(subtitleButton->width(), compactWidth);
+    QTRY_VERIFY(!videoItem(QStringLiteral("galleryVideoSubtitleText"))->isVisible());
+
+    auto *resume = videoItem("galleryVideoResumeButton");
+    QVERIFY(resume && !resume->isVisible());
+    controller.resumePosition = 7500;
+    emit controller.changed();
+    QTRY_VERIFY(resume->isVisible());
+    QVERIFY(resume->x() >= loopButton->x() + loopButton->width());
+    checkRenderedLeaves({"galleryVideoResumeButtonIcon", "galleryVideoResumeButtonLabel"}, ".resume.png");
+    window.resize(180, 420);
+    root->setWidth(180);
+    QTRY_COMPARE(videoSurface->width(), qreal(180));
+    const auto sceneRect = [&](QQuickItem *item) {
+        return item->mapRectToItem(window.contentItem(), item->boundingRect());
+    };
+    const QList controls{resume, audioButton, subtitleButton, keyboardButton, loopButton,
+        videoItem(QStringLiteral("galleryVideoPlayButton")),
+        videoItem(QStringLiteral("galleryVideoMuteButton"))};
+    for (qsizetype i = 0; i < controls.size(); ++i) {
+        const QRectF area = sceneRect(controls[i]);
+        QVERIFY2(window.contentItem()->boundingRect().contains(area),
+                 qPrintable(QStringLiteral("%1 is outside the 180-point viewer at (%2, %3)")
+                     .arg(controls[i]->objectName()).arg(area.x() * dpr).arg(area.y() * dpr)));
+        for (qsizetype j = 0; j < i; ++j)
+            QVERIFY2(!area.intersects(sceneRect(controls[j])),
+                     qPrintable(controls[i]->objectName() + QStringLiteral(" overlaps ")
+                         + controls[j]->objectName()));
+    }
+    checkRenderedLeaves({QStringLiteral("galleryVideoAudioTrackButtonIcon"),
+                         QStringLiteral("galleryVideoSubtitleTrackButtonIcon"),
+                         QStringLiteral("galleryVideoTimeText"),
+                         QStringLiteral("galleryVideoKeyboardButtonIcon"),
+                         QStringLiteral("galleryVideoPlayButtonIcon"),
+                         QStringLiteral("galleryVideoLoopButtonIcon"),
+                         QStringLiteral("galleryVideoMuteButtonIcon")}, QStringLiteral(".narrow.png"));
+    checkRenderedLeaves({"galleryVideoResumeButtonIcon", "galleryVideoResumeButtonLabel"}, ".resume-narrow.png");
+    click(resume);
+    QTRY_VERIFY(!resume->isVisible());
+    QCOMPARE(controller.position, 7500);
+    QVERIFY(!videoItem(QStringLiteral("galleryVideoTimeText"))->property("truncated").toBool());
+    click(audioButton);
+    QTRY_VERIFY((dub = videoItem(QStringLiteral("galleryVideoTrackOption1"))) && dub->isVisible());
+    QTest::keyClick(&window, Qt::Key_Up);
+    QTest::keyClick(&window, Qt::Key_Return);
+    QTRY_COMPARE(controller.activeAudioTrack, 0);
     QDir().mkpath(QStringLiteral(".diagnostics"));
 }
 
@@ -2538,6 +2844,7 @@ void F4QuickViewSurfaceTests::galleryVideoSurfaceCapturesClicksAndDoubleClickClo
 {
     QQmlEngine engine;
     engine.addImportPath(QStringLiteral(":"));
+    ZoinGallery::GalleryRuntime::registerTypes();
     TestVideoPlaybackController controller;
     engine.rootContext()->setContextProperty(QStringLiteral("testPlayback"),
                                               &controller);
@@ -2627,17 +2934,91 @@ void F4QuickViewSurfaceTests::galleryVideoControlsReceiveMouseClicks()
                       QPoint(28, 211));
     QTRY_COMPARE(controller.playPauseCalls, 1);
 
+    auto *seekTrack = visualItemWithObjectName(root, "galleryVideoSeekTrack");
+    auto *mute = visualItemWithObjectName(root, "galleryVideoMuteButton");
+    QVERIFY(seekTrack && mute);
     QTest::mouseClick(&window, Qt::LeftButton, Qt::NoModifier,
-                      QPoint(120, 197));
+                      seekTrack->mapToScene({seekTrack->width() * 0.72, 2}).toPoint());
     QVERIFY(controller.position > 12000 && controller.position < 14000);
 
     QTest::mouseClick(&window, Qt::LeftButton, Qt::NoModifier,
-                      QPoint(166, 211));
+                      mute->mapToScene({18, 18}).toPoint());
     QTRY_VERIFY(!controller.muted);
     QTest::mouseClick(&window, Qt::LeftButton, Qt::NoModifier, QPoint(292, 211));
     QTRY_VERIFY(controller.looping);
     QTest::mouseClick(&window, Qt::LeftButton, Qt::NoModifier, QPoint(292, 211));
     QTRY_VERIFY(!controller.looping);
+}
+
+void F4QuickViewSurfaceTests::focusedVideoSeekSurvivesShellRefresh()
+{
+    const QString path = QFINDTESTDATA("../../../third_party/ZoinGallery/tests/data/gallery-video-tracks.mkv");
+    QVERIFY(!path.isEmpty());
+    QuickViewFixture fixture(shellScene(), false, true);
+    QVERIFY(fixture.window);
+    ZoinGallery::RuntimeOptions options;
+    options.enableVideoPlayback = true;
+    auto *runtime = ZoinGallery::GalleryRuntime::install(&fixture.engine, options);
+    const auto shutdown = qScopeGuard([&] { runtime->shutdown(); });
+    auto *session = runtime->createExternalSession("video-seek-focus");
+    QList<QVariant> catalog;
+    for (int index = 0; index < 2; ++index)
+        catalog.append(QVariantMap{{"entryId", QString::number(index)}, {"index", index},
+            {"name", "video.mkv"}, {"localPath", path}, {"isImage", true}, {"thumbnailKind", "video"}});
+    QVERIFY(session->applyExternalCatalog(catalog, 1));
+    QVERIFY(session->applyExternalState("0", 0, {}, 1));
+    session->setViewerOpen(true);
+    fixture.gallery.showViewer(QUrl("qrc:/F4QtHost/qml/GalleryViewerHost.qml"), session);
+    QQuickItem *surface = nullptr;
+    QTRY_VERIFY((surface = fixture.item("galleryVideoPlaybackSurface")));
+    TestVideoPlaybackController controller;
+    surface->setProperty("controller", QVariant::fromValue<QObject *>(&controller));
+    auto *seek = fixture.item("galleryVideoSeekControl");
+    QVERIFY(seek);
+    QTRY_VERIFY(seek->isVisible() && seek->width() > 1);
+    QTest::mouseClick(fixture.window, Qt::LeftButton, Qt::NoModifier,
+        seek->mapToScene({seek->width()/2, seek->height()/2}).toPoint());
+    QTRY_VERIFY(seek->hasActiveFocus());
+    QVERIFY(QMetaObject::invokeMethod(fixture.window, "restoreSurfaceFocus"));
+    QCOMPARE(fixture.window->activeFocusItem(), seek);
+    const auto position = controller.position;
+    QTest::keyClick(fixture.window, Qt::Key_Right, Qt::KeypadModifier);
+    QCOMPARE(controller.position, position + 5000);
+    QTest::keyClick(fixture.window, Qt::Key_Left);
+    QCOMPARE(controller.position, position);
+    controller.subtitleTracks = {QStringLiteral("English")};
+    controller.selectSubtitleTrack(0);
+    QVERIFY(controller.subtitleText.isEmpty());
+    QTest::keyClick(fixture.window, Qt::Key_Down, Qt::ControlModifier | Qt::ShiftModifier);
+    QCOMPARE(controller.subtitleOffsetPercent, 1);
+    QCOMPARE(fixture.window->activeFocusItem(), seek);
+    QCOMPARE(controller.position, position);
+    controller.selectSubtitleTrack(-1);
+    QTest::keyClick(fixture.window, Qt::Key_Down, Qt::ControlModifier | Qt::ShiftModifier);
+    QCOMPARE(controller.subtitleOffsetPercent, 1);
+    QCOMPARE(fixture.item("embeddedGalleryViewer")->property("presentedIndex").toInt(), 0);
+    auto *viewer = fixture.item("embeddedGalleryViewer");
+    seek->setFocus(false);
+    viewer->forceActiveFocus();
+    QVERIFY(viewer->hasActiveFocus());
+    QVERIFY(!seek->hasActiveFocus());
+    auto *viewport = viewer->property("flickableArea").value<QQuickItem *>();
+    QVERIFY(viewport);
+    QVERIFY(QMetaObject::invokeMethod(viewport, "zoomToFit", Q_ARG(QVariant, true)));
+    QTRY_VERIFY(viewport->property("zoomFitView").toBool());
+    QTest::keyClick(fixture.window, Qt::Key_Slash);
+    QTRY_VERIFY(controller.arrowKeysSeek);
+    QTest::keyClick(fixture.window, Qt::Key_Right);
+    QCOMPARE(controller.position, position + 5000);
+    QCOMPARE(viewer->property("presentedIndex").toInt(), 0);
+    QTest::keyClick(fixture.window, Qt::Key_Slash);
+    QTRY_VERIFY(!controller.arrowKeysSeek);
+    QSignalSpy navigation(viewer, SIGNAL(navigationRequested(QString,int)));
+    QVERIFY(navigation.isValid());
+    QTest::keyClick(fixture.window, Qt::Key_Right);
+    QCOMPARE(navigation.count(), 1);
+    QCOMPARE(navigation.first().first().toString(), QStringLiteral("1"));
+    QCOMPARE(controller.position, position + 5000);
 }
 
 void F4QuickViewSurfaceTests::galleryVideoPointerEventsReachEmbeddedViewer()
@@ -8785,6 +9166,19 @@ void F4QuickViewSurfaceTests::chromeIconsUseMatchingPhysicalTargetSizes()
         (sortChoiceIcon = visualItemWithObjectNamePrefix(
              rootItem, QStringLiteral("panelSortChoiceIcon-"))), 3000);
     verifyIcon(sortChoiceIcon, QStringLiteral("sort dropdown icon"));
+    const auto checkMenuHover = [&](QQuickItem *icon, QStringView prefix) {
+        auto *row = icon;
+        while (row && !row->objectName().startsWith(prefix))
+            row = row->parentItem();
+        QVERIFY(row);
+        const auto point = row->mapToScene(QPointF(4, row->height() / 2));
+        QTest::mouseMove(fixture.window, point.toPoint());
+        const QColor hover = fixture.window->property("controlHoverBg").value<QColor>();
+        QTRY_COMPARE(row->property("color").value<QColor>(), hover);
+        const QImage rendered = fixture.window->grabWindow();
+        QCOMPARE(rendered.pixelColor((point * dpr).toPoint()), hover);
+    };
+    checkMenuHover(sortChoiceIcon, u"panelSortChoice-");
     QVERIFY(QMetaObject::invokeMethod(sortMenu, "close"));
 
     QObject *const rendererMenu = fixture.window->findChild<QObject *>(
@@ -8802,6 +9196,7 @@ void F4QuickViewSurfaceTests::chromeIconsUseMatchingPhysicalTargetSizes()
         (rendererChoiceIcon = visualItemWithObjectNamePrefix(
              rootItem, QStringLiteral("panelRendererChoiceIcon-"))), 3000);
     verifyIcon(rendererChoiceIcon, QStringLiteral("renderer dropdown icon"));
+    checkMenuHover(rendererChoiceIcon, u"panelRendererChoice-");
     QVERIFY(QMetaObject::invokeMethod(rendererMenu, "close"));
 }
 

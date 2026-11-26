@@ -265,7 +265,7 @@ Popup {
                         id: groupChoicePointer
                         anchors.fill: parent
                         hoverEnabled: true
-                        cursorShape: groupChoice.separator ? Qt.ArrowCursor : Qt.PointingHandCursor
+                        cursorShape: Qt.ArrowCursor
                         onEntered: groupByPopup.currentIndex = groupChoice.separator ? -1 : index
                         onClicked: {
                             if (groupChoice.separator) return
