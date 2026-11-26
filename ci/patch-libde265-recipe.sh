@@ -14,13 +14,19 @@ libde265_recipe_revision="$({
 } | "${python_command}" -c 'import json, sys; data = json.load(sys.stdin); revisions = data["conancenter"]["libde265/1.1.3"]["revisions"]; print(max(revisions, key=lambda revision: revisions[revision].get("timestamp", 0)))')"
 conan download "libde265/1.1.3#${libde265_recipe_revision}" --only-recipe --remote=conancenter
 libde265_recipe="$(conan cache path "libde265/1.1.3#${libde265_recipe_revision}")"
+libde265_export_sources="$(
+    conan cache path "libde265/1.1.3#${libde265_recipe_revision}" \
+        --folder=export_source | tail -n 1
+)"
 libde265_recipe_copy="$(mktemp -d "${TMPDIR:-/tmp}/f4-libde265-recipe.XXXXXX")"
 cp "${libde265_recipe}/conanfile.py" \
     "${libde265_recipe}/conandata.yml" \
     "${libde265_recipe_copy}/"
-if [[ -d "${libde265_recipe}/patches" ]]; then
-    cp -R "${libde265_recipe}/patches" "${libde265_recipe_copy}/"
+if [[ ! -d "${libde265_export_sources}/patches" ]]; then
+    echo "error: Conan cache is missing libde265 exported patches" >&2
+    exit 1
 fi
+cp -R "${libde265_export_sources}/patches" "${libde265_recipe_copy}/"
 
 "${python_command}" ci/patch-libde265-recipe.py "${libde265_recipe_copy}/conanfile.py"
 grep -Fq 'tc.variables["ENABLE_DECODER"] = False' \
