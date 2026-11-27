@@ -26,6 +26,11 @@ on:
         required: false
         default: false
         type: boolean
+      force_rebuild_media:
+        description: "Force FFmpeg to rebuild even when a matching package exists (bootstrap only)"
+        required: false
+        default: false
+        type: boolean
       publish_qt_release:
         description: "Publish Linux amd64/arm64 Qt binaries as an explicit feature-lane release"
         required: false
@@ -458,7 +463,7 @@ jobs:
           - runner: macos-15-intel
             platform: darwin
     env:
-      F4_FORCE_REBUILD_MEDIA: ${{ github.event_name == 'workflow_dispatch' && inputs.bootstrap_multimedia_dependencies && !inputs.publish_qt_release }}
+      F4_FORCE_REBUILD_MEDIA: ${{ github.event_name == 'workflow_dispatch' && inputs.bootstrap_multimedia_dependencies && inputs.force_rebuild_media && !inputs.publish_qt_release }}
       CONAN_HOME: ${{ github.workspace }}/.conan2
       F4_CONAN_REMOTE_URL: ${{ vars.F4_CONAN_REMOTE_URL }}
       F4_CONAN_UPLOAD_URL: ${{ vars.F4_CONAN_UPLOAD_URL }}
@@ -976,7 +981,7 @@ jobs:
             cache_contract: msvc-v143-static-qt-tools-v2
     env:
       F4_RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_qt_release && inputs.release_tag || '' }}
-      F4_FORCE_REBUILD_MEDIA: ${{ github.event_name == 'workflow_dispatch' && inputs.bootstrap_multimedia_dependencies && !inputs.publish_qt_release }}
+      F4_FORCE_REBUILD_MEDIA: ${{ github.event_name == 'workflow_dispatch' && inputs.bootstrap_multimedia_dependencies && inputs.force_rebuild_media && !inputs.publish_qt_release }}
       CONAN_HOME: ${{ github.workspace }}/.conan2-portable-${{ matrix.platform }}-${{ matrix.arch }}
       F4_CONAN_REMOTE_URL: ${{ vars.F4_CONAN_REMOTE_URL }}
       F4_CONAN_UPLOAD_URL: ${{ vars.F4_CONAN_UPLOAD_URL }}
@@ -1250,6 +1255,9 @@ jobs:
           if ($qtForceOnRetry -and $attempt -gt 1) {
             $conanBuildArgs += "--build=qt/*"
           }
+          # Qt retains its FreeType dependency. F4 does not use FFmpeg's
+          # optional drawtext filter, and the Windows package has no usable
+          # freetype2 pkg-config metadata.
           conan install qt/host @conanBuildArgs `
             -s:h arch=${{ matrix.conan_arch }} -s:h build_type=Release -s:h compiler.cppstd=20 `
             -s:h compiler.runtime=static `
@@ -1259,6 +1267,7 @@ jobs:
             -o:h "*:with_video_thumbnails=True" `
             -o:h "*:with_ffmpeg_backend=True" `
             -o:h "qt/*:with_ffmpeg=True" `
+            -o:h "ffmpeg/*:with_freetype=False" `
             -o:b "qt/*:shared=False" `
             -o:b "qt/*:qtdeclarative=True" `
             -o:b "qt/*:qtshadertools=True" `
