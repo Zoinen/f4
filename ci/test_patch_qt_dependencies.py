@@ -799,12 +799,20 @@ class LinuxAudioRecipePatchTests(unittest.TestCase):
     def test_pulseaudio_source_recipe_patch_is_valid_python(self) -> None:
         ast.parse("def source(self):\n" + patcher._PULSEAUDIO_SOURCE_PATCH)
 
-    def test_linux_arm64_cfi_source_patch_is_idempotent_and_targets_gcc11(self) -> None:
-        recipe = "class Recipe:\n    def source(self):\n" + patcher._FFMPEG_SOURCE_ANCHOR
+    def test_linux_arm64_cfi_generate_patch_is_idempotent_and_targets_gcc11(self) -> None:
+        recipe = (
+            "class Recipe:\n"
+            "    def source(self):\n"
+            "        apply_conandata_patches(self)\n"
+            "    def generate(self):\n"
+            "        pass\n"
+        )
         patched = patcher._patch_linux_arm64_cfi(recipe)
         ast.parse(patched)
         self.assertEqual(patcher._patch_linux_arm64_cfi(patched), patched)
         self.assertIn(patcher._LINUX_ARM64_CFI_MARKER, patched)
+        source_method = patched.split("    def generate(self):", 1)[0]
+        self.assertNotIn("self.settings", source_method)
 
         calls = []
         namespace = {
@@ -812,14 +820,14 @@ class LinuxAudioRecipePatchTests(unittest.TestCase):
             "replace_in_file": lambda *args, **kwargs: calls.append((args, kwargs)),
         }
         exec(
-            "class Recipe:\n    def source(self):\n"
-            + patcher._LINUX_ARM64_CFI_SOURCE_PATCH,
+            "class Recipe:\n    def generate(self):\n"
+            + patcher._LINUX_ARM64_CFI_GENERATE_PATCH,
             namespace,
         )
         instance = namespace["Recipe"]()
         instance.settings = types.SimpleNamespace(os="Linux", arch="armv8")
         instance.source_folder = "/qt"
-        instance.source()
+        instance.generate()
 
         [(arguments, options)] = calls
         self.assertEqual(
@@ -832,12 +840,12 @@ class LinuxAudioRecipePatchTests(unittest.TestCase):
         self.assertNotIn('arm_control_flow_integrity="standard"', arguments[3])
         self.assertEqual(options, {"strict": True})
 
-    def test_linux_arm64_cfi_patch_rejects_an_unknown_source_anchor(self) -> None:
+    def test_linux_arm64_cfi_patch_rejects_an_unknown_generate_anchor(self) -> None:
         for recipe in ("class Recipe:\n    def source(self):\n        pass\n",
-                       "class Recipe:\n    def source(self):\n"
-                       + patcher._FFMPEG_SOURCE_ANCHOR * 2):
+                       "class Recipe:\n    def generate(self):\n        pass\n"
+                       "    def generate(self):\n        pass\n"):
             with self.subTest(recipe=recipe), self.assertRaisesRegex(
-                SystemExit, "Linux ARM64 source patch anchor"
+                SystemExit, "Linux ARM64 generate patch anchor"
             ):
                 patcher._patch_linux_arm64_cfi(recipe)
 

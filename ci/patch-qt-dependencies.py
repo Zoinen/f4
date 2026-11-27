@@ -332,7 +332,7 @@ _PULSEAUDIO_SOURCE_PATCH = (
     '        )\n'
 )
 _LINUX_ARM64_CFI_MARKER = (
-    "# f4: disable Chromium branch protection for the baseline Linux ARM64 build"
+    "# f4: disable Chromium branch protection in Qt generate for baseline Linux ARM64"
 )
 _LINUX_ARM64_CFI_CMAKE_BEFORE = (
     '            if(CMAKE_CROSSCOMPILING AND cpu STREQUAL "arm64")\n'
@@ -360,7 +360,7 @@ _LINUX_ARM64_CFI_CMAKE_AFTER = (
     '                list(APPEND gnArgArg arm_control_flow_integrity="none")\n'
     '            endif()\n'
 )
-_LINUX_ARM64_CFI_SOURCE_PATCH = (
+_LINUX_ARM64_CFI_GENERATE_PATCH = (
     f"        {_LINUX_ARM64_CFI_MARKER}\n"
     '        if str(self.settings.os) == "Linux" and str(self.settings.arch) == "armv8":\n'
     '            qtwebengine_core_cmake = os.path.join(\n'
@@ -560,14 +560,14 @@ def _patch_linux_audio(text: str) -> str:
 def _patch_linux_arm64_cfi(text: str) -> str:
     if _LINUX_ARM64_CFI_MARKER in text:
         return text
-    source_anchor = '        apply_conandata_patches(self)\n'
-    if text.count(source_anchor) != 1:
+    generate_anchor = "    def generate(self):\n"
+    if text.count(generate_anchor) != 1:
         raise SystemExit(
-            "unexpected Qt recipe: Linux ARM64 source patch anchor is absent or ambiguous"
+            "unexpected Qt recipe: Linux ARM64 generate patch anchor is absent or ambiguous"
         )
     return text.replace(
-        source_anchor,
-        source_anchor + _LINUX_ARM64_CFI_SOURCE_PATCH,
+        generate_anchor,
+        generate_anchor + _LINUX_ARM64_CFI_GENERATE_PATCH,
     )
 
 
