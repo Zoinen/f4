@@ -28,6 +28,6 @@ cp -R "${libyuv_export_sources}/patches" "${libyuv_recipe_copy}/"
 
 "${python_command}" ci/patch-libyuv-recipe.py \
     "${libyuv_recipe_copy}/conanfile.py"
-grep -Fq 'f4: the glibc-2.27 ARM64 toolchain supports dot-product' \
+grep -Fq 'f4: Linux ARM64 baseline binutils cannot assemble' \
     "${libyuv_recipe_copy}/conanfile.py"
 conan export "${libyuv_recipe_copy}" --name=libyuv --version=1892

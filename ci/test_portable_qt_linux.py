@@ -2,16 +2,75 @@
 
 from pathlib import Path
 import re
+import subprocess
+import sys
+import tempfile
 import unittest
+from types import SimpleNamespace
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BUILD_SCRIPT = REPO_ROOT / "ci" / "build-portable-qt-linux.sh"
 QT_HOST_RECIPE = REPO_ROOT / "qt" / "host" / "conanfile.py"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "build.yml"
+LIBYUV_PATCHER = REPO_ROOT / "ci" / "patch-libyuv-recipe.py"
 
 
 class PortableQtLinuxBuildTests(unittest.TestCase):
+    def test_arm64_libyuv_patch_avoids_unsupported_dotprod_and_i8mm_assembly(self):
+        recipe_source = """import os
+
+class CMake:
+    def __init__(self, recipe):
+        pass
+
+    def configure(self):
+        pass
+
+    def build(self):
+        pass
+
+class Libyuv:
+    def build(self):
+        cmake = CMake(self)
+        cmake.configure()
+        cmake.build()
+"""
+        cmake_source = """ADD_LIBRARY( ${ly_lib_name}_common_objects OBJECT ${ly_common_source_files} )
+TARGET_COMPILE_OPTIONS(${ly_lib_name}_neon64 PRIVATE -march=armv8-a+dotprod+i8mm)
+"""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            recipe = root / "conanfile.py"
+            recipe.write_text(recipe_source, encoding="utf-8")
+            (root / "CMakeLists.txt").write_text(cmake_source, encoding="utf-8")
+
+            subprocess.run(
+                [sys.executable, str(LIBYUV_PATCHER), str(recipe)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            namespace = {}
+            exec(compile(recipe.read_text(encoding="utf-8"), str(recipe), "exec"), namespace)
+            libyuv = namespace["Libyuv"]()
+            libyuv.settings = SimpleNamespace(os="Linux", arch="armv8")
+            libyuv.source_folder = directory
+            libyuv.build()
+
+            patched_cmake = (root / "CMakeLists.txt").read_text(encoding="utf-8")
+            self.assertIn("LIBYUV_DISABLE_NEON=1", patched_cmake)
+            self.assertIn("-march=armv8-a)", patched_cmake)
+            self.assertNotIn("dotprod", patched_cmake)
+            self.assertNotIn("i8mm", patched_cmake)
+            self.assertEqual(
+                1,
+                patched_cmake.count(
+                    "# f4: Linux ARM64 baseline disables DotProd/I8MM inline assembly"
+                ),
+            )
+
     def test_baseline_container_installs_font_config_and_a_font(self):
         script = BUILD_SCRIPT.read_text(encoding="utf-8")
 
