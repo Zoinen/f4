@@ -161,7 +161,7 @@ class WindowsQtWebEngineToolchainTests(unittest.TestCase):
         self.assertIn("qwe_setup_toolchain.py", patched)
         self.assertEqual(patcher._patch_pdf(patched), patched)
 
-    def test_pdf_recipe_adds_the_nested_msvc_environment_reset_once(self):
+    def test_pdf_recipe_adds_the_nested_toolchain_patch_once(self):
         recipe = (
             '        "with_pdf": [True, False],\n'
             "    def source(self):\n"
@@ -171,7 +171,15 @@ class WindowsQtWebEngineToolchainTests(unittest.TestCase):
         self.assertIn(patcher._WINDOWS_QWE_SOURCE_MARKER, patched)
         self.assertEqual(patcher._patch_pdf(patched), patched)
 
-    def test_source_patch_clears_only_inherited_msvc_toolchain_variables(self):
+    def test_reusable_qt_recipe_gate_requires_the_validated_windows_patch(self):
+        bootstrap = (SCRIPT.parent / "patch-qt-recipe.sh").read_text(encoding="utf-8")
+        self.assertIn(patcher._WINDOWS_QWE_SOURCE_MARKER, bootstrap)
+        self.assertNotIn(
+            "# f4: clear inherited MSVC environment before QtWebEngine GN target switch",
+            bootstrap,
+        )
+
+    def test_source_patch_matches_runner_environment_and_reports_vcvars_errors(self):
         qwe_source = (
             "import os\n"
             "import re\n"
@@ -184,7 +192,7 @@ class WindowsQtWebEngineToolchainTests(unittest.TestCase):
             + patcher._WINDOWS_QWE_POPEN_ANCHOR
             + "  variables, _ = popen.communicate()\n"
             + "  if popen.returncode != 0:\n"
-            + "    raise Exception('vcvars failed')\n"
+            + "    raise Exception('\"%s\" failed with error %d' % (args, popen.returncode))\n"
             + "  output = variables.decode(errors='ignore')\n"
             + "  for line in output.splitlines():\n"
             + "    if re.match(\"^(.*)=(.*)$\", line):\n"
@@ -234,7 +242,10 @@ class WindowsQtWebEngineToolchainTests(unittest.TestCase):
             )
             namespace["source"](instance)
             namespace["source"](instance)
-            self.assertEqual(writes, [patcher._WINDOWS_QWE_POPEN_PATCH])
+            self.assertEqual(
+                writes,
+                [patcher._WINDOWS_QWE_POPEN_PATCH, patcher._WINDOWS_QWE_ERROR_PATCH],
+            )
 
             qwe_namespace = {}
             exec(qwe_path.read_text(), qwe_namespace)
@@ -269,7 +280,27 @@ class WindowsQtWebEngineToolchainTests(unittest.TestCase):
             self.assertEqual(result, {"PATH": "C:/VS/bin", "INCLUDE": "C:/VS/include"})
             self.assertEqual(captured["args"], ["vcvarsall.bat", "amd64_x86", "&&", "set"])
             self.assertTrue(captured["shell"])
-            self.assertEqual(captured["env"], {"PATH": "C:/tools", "SYSTEMROOT": "C:/Windows"})
+            self.assertEqual(captured["env"], {
+                "PATH": "C:/tools",
+                "SYSTEMROOT": "C:/Windows",
+                "VSINSTALLDIR": "C:/VS",
+                "INCLUDE": "C:/old/include",
+                "LIB": "C:/old/lib",
+                "LIBPATH": "C:/old/libpath",
+            })
+
+            class FailedProcess:
+                returncode = 255
+
+                @staticmethod
+                def communicate():
+                    return b"vcvarsall: x86 tools unavailable", None
+
+            with patch.object(subprocess, "Popen", lambda *_args, **_kwargs: FailedProcess()):
+                with self.assertRaisesRegex(
+                    Exception, "vcvarsall: x86 tools unavailable"
+                ):
+                    qwe_namespace["_LoadEnvFromBat"](["vcvarsall.bat", "amd64_x86"])
 
     def test_source_patch_is_skipped_outside_windows(self):
         recipe = "def source(self):\n" + patcher._windows_qwe_toolchain_source_patch()
@@ -864,7 +895,8 @@ class LinuxAudioRecipePatchTests(unittest.TestCase):
             self.assertNotIn('arm_control_flow_integrity="standard"', core_source)
             pdf_source = pdf_path.read_text()
             self.assertIn(patcher._LINUX_ARM64_PDF_CFI_MARKER, pdf_source)
-            self.assertIn("if(LINUX AND cpu STREQUAL \"arm64\" AND", pdf_source)
+            self.assertIn('if(LINUX AND arch STREQUAL "aarch64" AND', pdf_source)
+            self.assertNotIn("cpu STREQUAL", pdf_source)
             self.assertIn('list(APPEND gnArgArg arm_control_flow_integrity="none")',
                           pdf_source)
 

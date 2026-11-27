@@ -81,11 +81,19 @@ TARGET_COMPILE_OPTIONS(${ly_lib_name}_neon64 PRIVATE -march=armv8-a+dotprod+i8mm
         recipe_patcher = (REPO_ROOT / "ci" / "patch-qt-dependencies.py").read_text(
             encoding="utf-8"
         )
+        recipe_bootstrap = (REPO_ROOT / "ci" / "patch-qt-recipe.sh").read_text(
+            encoding="utf-8"
+        )
 
         self.assertNotIn("conan_conf_args", script)
         self.assertNotIn("tools.build:cxxflags", script)
         self.assertIn("patched = _patch_linux_arm64_cfi(patched)", recipe_patcher)
         self.assertIn('arm_control_flow_integrity="none"', recipe_patcher)
+        self.assertIn('if(LINUX AND arch STREQUAL "aarch64" AND', recipe_patcher)
+        self.assertIn(
+            "# f4: disable unsupported PAC/BTI in the QtPdf ARM64 baseline build",
+            recipe_bootstrap,
+        )
 
     def test_bionic_pkg_config_finds_system_multiarch_packages(self):
         script = BUILD_SCRIPT.read_text(encoding="utf-8")

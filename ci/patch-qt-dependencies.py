@@ -382,7 +382,9 @@ _LINUX_ARM64_CFI_CMAKE_AFTER = (
 _LINUX_ARM64_PDF_CFI_ANCHOR = '        if(MACOS)\n'
 _LINUX_ARM64_PDF_CFI_PATCH = (
     f'        {_LINUX_ARM64_PDF_CFI_MARKER}\n'
-    '        if(LINUX AND cpu STREQUAL "arm64" AND\n'
+    # QtPdf's CMakeLists.txt has an `arch` loop but never initializes the
+    # `cpu` variable used by QtWebEngine's separate core CMakeLists.txt.
+    '        if(LINUX AND arch STREQUAL "aarch64" AND\n'
     '           CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND\n'
     '           CMAKE_CXX_COMPILER_VERSION VERSION_LESS "12.0.0")\n'
     '            list(APPEND gnArgArg arm_control_flow_integrity="none")\n'
@@ -1140,17 +1142,25 @@ _WINDOWS_QWE_POPEN_ANCHOR = (
     "      args, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)\n"
 )
 _WINDOWS_QWE_SOURCE_MARKER = (
-    "# f4: clear inherited MSVC environment before QtWebEngine GN target switch"
+    "# f4: retain the validated MSVC environment for QtWebEngine GN target switch"
+)
+_WINDOWS_QWE_ERROR_ANCHOR = (
+    "  if popen.returncode != 0:\n"
+    "    raise Exception('\"%s\" failed with error %d' % (args, popen.returncode))\n"
+)
+_WINDOWS_QWE_ERROR_PATCH = (
+    "  if popen.returncode != 0:\n"
+    "    output = variables.decode(errors='replace') if isinstance(variables, bytes) else variables\n"
+    "    raise Exception('\"%s\" failed with error %d:\\n%s' %\n"
+    "                   (args, popen.returncode, output))\n"
 )
 _WINDOWS_QWE_POPEN_PATCH = (
     f"  {_WINDOWS_QWE_SOURCE_MARKER}\n"
-    "  # Do not let Conan's outer MSVC target contaminate the nested x86 setup.\n"
+    "  # Match the successful runner preflight: clear only VSCMD architecture markers.\n"
     "  popen_env = os.environ.copy()\n"
     "  for name in tuple(popen_env):\n"
     "    if name.upper().startswith('VSCMD_'):\n"
     "      popen_env.pop(name)\n"
-    "  for name in ('VSINSTALLDIR', 'INCLUDE', 'LIB', 'LIBPATH'):\n"
-    "    popen_env.pop(name, None)\n"
     "  popen = subprocess.Popen(\n"
     "      args, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,\n"
     "      env=popen_env)\n"
@@ -1170,6 +1180,8 @@ def _windows_qwe_toolchain_source_patch() -> str:
         f"            if {_WINDOWS_QWE_SOURCE_MARKER!r} not in qwe_source:\n"
         f"                replace_in_file(self, qwe_toolchain, {_WINDOWS_QWE_POPEN_ANCHOR!r},\n"
         f"                                {_WINDOWS_QWE_POPEN_PATCH!r}, strict=True)\n"
+        f"                replace_in_file(self, qwe_toolchain, {_WINDOWS_QWE_ERROR_ANCHOR!r},\n"
+        f"                                {_WINDOWS_QWE_ERROR_PATCH!r}, strict=True)\n"
     )
 
 

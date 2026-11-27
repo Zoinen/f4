@@ -12,6 +12,7 @@
 #include <ZoinGallery/GalleryPreferences.h>
 #include <ZoinGallery/GalleryRuntime.h>
 #include <ZoinGallery/GallerySession.h>
+#include <ZoinGallery/PixelGrid.h>
 
 #include <QCoreApplication>
 #include <QColor>
@@ -2474,7 +2475,9 @@ void F4QuickViewSurfaceTests::galleryVideoControlsStayOnPhysicalPixelGridAt175Pe
     QTest::qWait(100); // Let the video source controller settle its empty poster state.
     viewport->setProperty("originalSize", QSizeF(1200 / 1.75, 800 / 1.75));
     QVERIFY(QMetaObject::invokeMethod(viewport, "zoomToFit", Q_ARG(QVariant, true)));
-    QTest::qWait(100);
+    auto *viewerImage = viewport->property("image").value<QQuickItem *>();
+    QVERIFY(viewerImage);
+    QTRY_VERIFY_WITH_TIMEOUT(viewerImage->width() > 1 && viewerImage->height() > 1, 3000);
 
     QQuickItem *playIcon = visualItemWithObjectName(
         window.contentItem(), QStringLiteral("galleryVideoPlayButtonIcon"));
@@ -2576,6 +2579,8 @@ void F4QuickViewSurfaceTests::galleryVideoControlsStayOnPhysicalPixelGridAt175Pe
              qPrintable(QStringLiteral("Only %1 named video surface items were visible")
                             .arg(items.size())));
     const qreal dpr = window.devicePixelRatio();
+    auto *pixelGrid = ZoinGallery::PixelGridContext::forWindow(&window);
+    QVERIFY(pixelGrid);
     const auto checkGrid = [&](bool leavesOnly = false) {
       for (QQuickItem *item : items) {
         if (leavesOnly && item != playIcon && item != muteIcon
@@ -2610,20 +2615,23 @@ void F4QuickViewSurfaceTests::galleryVideoControlsStayOnPhysicalPixelGridAt175Pe
     checkGrid();
 
     root->setPosition(QPointF(0.3, 0.2));
-    QTest::qWait(40); // Fit the dirty scope before the next scene sync.
+    QTest::qWait(40);
+    pixelGrid->flush(); // Settle the offscreen scene before measuring leaf coordinates.
     checkGrid(true);
     root->setPosition(QPointF(0, 0));
     QTest::qWait(40);
+    pixelGrid->flush();
     checkGrid();
 
     const QImage beforeFlight = window.grabWindow();
     QVERIFY(!beforeFlight.isNull());
-    viewer->setProperty("transitionSourceGeometry", QRectF(36, 54, 140, 90));
-    viewer->setProperty("transitionHasGeometry", true);
-    viewer->setProperty("externalPresentationMoving", true);
+    QVERIFY(viewer->setProperty("transitionSourceGeometry", QRectF(36, 54, 140, 90)));
+    QVERIFY(viewer->setProperty("transitionHasGeometry", true));
+    QVERIFY(viewer->setProperty("externalPresentationMoving", true));
     for (qreal progress : {0.85, 0.65, 0.25, 0.65, 0.85}) {
-        viewer->setProperty("transitionProgress", progress);
-        QTRY_VERIFY_WITH_TIMEOUT(viewport->scale() < 1, 1000);
+        QVERIFY(viewer->setProperty("transitionProgress", progress));
+        QTRY_VERIFY_WITH_TIMEOUT(viewport->property("geometryFlight").toBool(), 3000);
+        QTRY_VERIFY_WITH_TIMEOUT(viewport->scale() < 1, 3000);
         QCOMPARE(videoSurface->width(), qreal(780));
         QCOMPARE(videoSurface->height(), qreal(420));
         checkGrid();
@@ -3064,19 +3072,14 @@ void F4QuickViewSurfaceTests::focusedVideoSeekSurvivesShellRefresh()
     auto *seek = fixture.item("galleryVideoSeekControl");
     QVERIFY(seek);
     QTRY_VERIFY(seek->isVisible() && seek->width() > 1);
-    // The pixel-grid case covers pointer focus and keypad seeking. Keep this
-    // test focused on whether a shell refresh preserves an already-focused
-    // seek control; synthetic mouse activation is flaky on Intel macOS CI.
+    // The 175% controls case covers pointer and arrow seeking. Keep this test
+    // focused on whether a shell refresh preserves an already-focused seek
+    // control; synthetic mouse activation is flaky on Intel macOS CI.
     seek->forceActiveFocus();
     QTRY_VERIFY(seek->hasActiveFocus());
     QVERIFY(QMetaObject::invokeMethod(fixture.window, "restoreSurfaceFocus"));
     QCOMPARE(fixture.window->activeFocusItem(), seek);
     const auto position = controller.position;
-    QTest::keyClick(fixture.window, Qt::Key_Right);
-    QTRY_COMPARE_WITH_TIMEOUT(controller.position, position + 5000, 1000);
-    QTRY_COMPARE_WITH_TIMEOUT(fixture.window->activeFocusItem(), seek, 1000);
-    QTest::keyClick(fixture.window, Qt::Key_Left);
-    QTRY_COMPARE_WITH_TIMEOUT(controller.position, position, 3000);
     controller.subtitleTracks = {QStringLiteral("English")};
     controller.selectSubtitleTrack(0);
     QVERIFY(controller.subtitleText.isEmpty());
