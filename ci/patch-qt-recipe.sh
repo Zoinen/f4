@@ -104,6 +104,8 @@ if candidates:
                     "${reusable_qt_recipe}/conanfile.py" && \
                 grep -Fq '# f4: disable unsupported PAC/BTI in the QtPdf ARM64 baseline build' \
                     "${reusable_qt_recipe}/conanfile.py" && \
+                grep -Fq '# f4: use GNU-as-compatible HINT encoding for Chromium XPACLRI' \
+                    "${reusable_qt_recipe}/conanfile.py" && \
                 grep -Fq 'if(LINUX AND arch STREQUAL "aarch64" AND' \
                     "${reusable_qt_recipe}/conanfile.py" && \
                 ! grep -Fq 'if(LINUX AND cpu STREQUAL "arm64" AND' \
@@ -155,8 +157,13 @@ cp "${qt_recipe}/conanfile.py" \
     "${qt_recipe_copy}/"
 
 if [[ "${qt_recipe_mode}" == "linux-audio" ]]; then
-    "${python_command}" ci/patch-qt-dependencies.py \
-        --linux-audio "${qt_recipe_copy}/conanfile.py"
+    if [[ "${target_arch}" == "arm64" ]]; then
+        "${python_command}" ci/patch-qt-dependencies.py \
+            --linux-audio --linux-arm64 "${qt_recipe_copy}/conanfile.py"
+    else
+        "${python_command}" ci/patch-qt-dependencies.py \
+            --linux-audio "${qt_recipe_copy}/conanfile.py"
+    fi
 elif [[ "${target_os}" == "Macos" ]]; then
     "${python_command}" ci/patch-qt-dependencies.py \
         --macos-dynamic-hdr "${qt_recipe_copy}/conanfile.py"
@@ -225,6 +232,8 @@ else
         "${qt_recipe_copy}/conanfile.py"
 fi
 if [[ "${target_arch}" == "arm64" && "${target_os}" == "Linux" ]]; then
+    grep -Fq '# f4: use GNU-as-compatible HINT encoding for Chromium XPACLRI' \
+        "${qt_recipe_copy}/conanfile.py"
     grep -Fq 'if(LINUX AND arch STREQUAL "aarch64" AND' \
         "${qt_recipe_copy}/conanfile.py"
     if grep -Fq 'if(LINUX AND cpu STREQUAL "arm64" AND' \

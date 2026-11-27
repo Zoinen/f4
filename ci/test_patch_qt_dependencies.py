@@ -187,6 +187,8 @@ class WindowsQtWebEngineToolchainTests(unittest.TestCase):
         bootstrap = (SCRIPT.parent / "patch-qt-recipe.sh").read_text(encoding="utf-8")
         self.assertIn(patcher._WINDOWS_QWE_SOURCE_MARKER, bootstrap)
         self.assertIn(patcher._WINDOWS_QWE_LEGACY_SOURCE_MARKER, bootstrap)
+        self.assertIn(patcher._LINUX_ARM64_PAC_HINT_MARKER, bootstrap)
+        self.assertIn("--linux-audio --linux-arm64", bootstrap)
         self.assertIn('[[ "${target_os}" == "Windows" ]] ||', bootstrap)
         self.assertIn('[[ "${target_os}" != "Windows" ]] ||', bootstrap)
 
@@ -874,8 +876,27 @@ class LinuxAudioRecipePatchTests(unittest.TestCase):
         ast.parse(patched)
         self.assertEqual(patcher._patch_linux_arm64_cfi(patched), patched)
         self.assertIn(patcher._LINUX_ARM64_CFI_MARKER, patched)
+        self.assertNotIn(patcher._LINUX_ARM64_PAC_HINT_MARKER, patched)
+        patched_with_pac_hint = patcher._patch_linux_arm64_pac_hint(patched)
+        ast.parse(patched_with_pac_hint)
+        self.assertEqual(
+            patcher._patch_linux_arm64_pac_hint(patched_with_pac_hint),
+            patched_with_pac_hint,
+        )
+        self.assertIn(patcher._LINUX_ARM64_PAC_HINT_MARKER, patched_with_pac_hint)
         source_method = patched.split("    def generate(self):", 1)[0]
         self.assertNotIn("self.settings", source_method)
+        legacy_recipe = recipe.replace(
+            "    def generate(self):\n",
+            "    def generate(self):\n" + patcher._LINUX_ARM64_CFI_GENERATE_PATCH,
+            1,
+        )
+        upgraded_recipe = patcher._patch_linux_arm64_pac_hint(legacy_recipe)
+        self.assertIn(patcher._LINUX_ARM64_CFI_MARKER, upgraded_recipe)
+        self.assertIn(patcher._LINUX_ARM64_PAC_HINT_MARKER, upgraded_recipe)
+        self.assertEqual(
+            patcher._patch_linux_arm64_pac_hint(upgraded_recipe), upgraded_recipe
+        )
 
         def replace_in_file(_recipe, path, before, after, *, strict):
             self.assertTrue(strict)
@@ -885,17 +906,34 @@ class LinuxAudioRecipePatchTests(unittest.TestCase):
 
         namespace = {"os": os, "replace_in_file": replace_in_file}
         exec("class Recipe:\n    def generate(self):\n" +
-             patcher._LINUX_ARM64_CFI_GENERATE_PATCH, namespace)
+             patcher._LINUX_ARM64_CFI_GENERATE_PATCH +
+             patcher._LINUX_ARM64_PAC_HINT_GENERATE_PATCH, namespace)
 
         with tempfile.TemporaryDirectory() as tmp:
             source_root = pathlib.Path(tmp) / "qtwebengine" / "src"
             core_path = source_root / "core" / "CMakeLists.txt"
             pdf_path = source_root / "pdf" / "CMakeLists.txt"
+            chromium_root = source_root / "3rdparty" / "chromium"
+            partition_trace = (
+                chromium_root / "base" / "allocator" / "partition_allocator" /
+                "src" / "partition_alloc" / "partition_alloc_base" / "debug" /
+                "stack_trace.cc"
+            )
+            absl_trace = (
+                chromium_root / "third_party" / "abseil-cpp" / "absl" /
+                "debugging" / "internal" / "stacktrace_aarch64-inl.inc"
+            )
             core_path.parent.mkdir(parents=True)
             pdf_path.parent.mkdir(parents=True)
+            partition_trace.parent.mkdir(parents=True)
+            absl_trace.parent.mkdir(parents=True)
             core_path.write_text(patcher._LINUX_ARM64_CFI_CMAKE_BEFORE)
             pdf_path.write_text("        set(gnArgArg ${gnArgArg})\n" +
                                 patcher._LINUX_ARM64_PDF_CFI_ANCHOR)
+            partition_trace.write_text(
+                "asm(\"xpaclri\" : \"+r\"(x30));\n"
+            )
+            absl_trace.write_text('" xpaclri\\n"\n')
 
             instance = namespace["Recipe"]()
             instance.settings = types.SimpleNamespace(os="Linux", arch="armv8")
@@ -912,12 +950,25 @@ class LinuxAudioRecipePatchTests(unittest.TestCase):
             self.assertNotIn("cpu STREQUAL", pdf_source)
             self.assertIn('list(APPEND gnArgArg arm_control_flow_integrity="none")',
                           pdf_source)
+            self.assertIn(patcher._LINUX_ARM64_PAC_ASM_AFTER,
+                          partition_trace.read_text())
+            self.assertNotIn(patcher._LINUX_ARM64_PAC_ASM_BEFORE,
+                             partition_trace.read_text())
+            self.assertIn(patcher._LINUX_ARM64_PAC_STRING_AFTER,
+                          absl_trace.read_text())
+            self.assertNotIn(patcher._LINUX_ARM64_PAC_STRING_BEFORE,
+                             absl_trace.read_text())
 
             # A resumed Conan build may run generate() over a source tree already
             # patched by an earlier recipe revision. Both patches must be stable.
             instance.generate()
             self.assertEqual(core_path.read_text(), core_source)
             self.assertEqual(pdf_path.read_text(), pdf_source)
+            self.assertEqual(
+                partition_trace.read_text(),
+                "asm(\"hint #0x7\" : \"+r\"(x30));\n",
+            )
+            self.assertEqual(absl_trace.read_text(), '" hint #0x7\\n"\n')
 
             # Upgrade the output of the pre-marker patch used by the interrupted
             # CI run, then confirm subsequent retries remain idempotent.

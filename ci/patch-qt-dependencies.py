@@ -337,6 +337,54 @@ _LINUX_ARM64_CFI_MARKER = (
 _LINUX_ARM64_PDF_CFI_MARKER = (
     "# f4: disable unsupported PAC/BTI in the QtPdf ARM64 baseline build"
 )
+_LINUX_ARM64_PAC_HINT_MARKER = (
+    "# f4: use GNU-as-compatible HINT encoding for Chromium XPACLRI"
+)
+_LINUX_ARM64_PAC_ASM_BEFORE = 'asm("xpaclri" : "+r"(x30));'
+_LINUX_ARM64_PAC_ASM_AFTER = 'asm("hint #0x7" : "+r"(x30));'
+_LINUX_ARM64_PAC_STRING_BEFORE = '" xpaclri\\n"'
+_LINUX_ARM64_PAC_STRING_AFTER = '" hint #0x7\\n"'
+_LINUX_ARM64_PAC_HINT_GENERATE_PATCH = (
+    f'        {_LINUX_ARM64_PAC_HINT_MARKER}\n'
+    '        if str(self.settings.os) == "Linux" and str(self.settings.arch) == "armv8":\n'
+    '            qtwebengine_source = os.path.join(\n'
+    '                self.source_folder, "qtwebengine", "src", "3rdparty", "chromium"\n'
+    '            )\n'
+    '            pac_sources = (\n'
+    '                os.path.join(qtwebengine_source, "base", "allocator",\n'
+    '                    "partition_allocator", "src", "partition_alloc",\n'
+    '                    "partition_alloc_base", "debug", "stack_trace.cc"),\n'
+    '                os.path.join(qtwebengine_source, "base", "debug", "stack_trace.cc"),\n'
+    '                os.path.join(qtwebengine_source, "third_party", "abseil-cpp",\n'
+    '                    "absl", "debugging", "internal", "stacktrace_aarch64-inl.inc"),\n'
+    '                os.path.join(qtwebengine_source, "third_party", "crashpad",\n'
+    '                    "crashpad", "util", "linux", "pac_helper.cc"),\n'
+    '                os.path.join(qtwebengine_source, "v8", "src", "execution",\n'
+    '                    "arm64", "pointer-authentication-arm64.h"),\n'
+    '            )\n'
+    '            pac_replacements = (\n'
+    f'                ({_LINUX_ARM64_PAC_ASM_BEFORE!r}, {_LINUX_ARM64_PAC_ASM_AFTER!r}),\n'
+    f'                ({_LINUX_ARM64_PAC_STRING_BEFORE!r}, {_LINUX_ARM64_PAC_STRING_AFTER!r}),\n'
+    '            )\n'
+    '            for pac_source in pac_sources:\n'
+    '                if not os.path.isfile(pac_source):\n'
+    '                    continue\n'
+    '                with open(pac_source, encoding="utf-8") as pac_file:\n'
+    '                    pac_text = pac_file.read()\n'
+    '                patched_pac_text = pac_text\n'
+    '                for before, after in pac_replacements:\n'
+    '                    patched_pac_text = patched_pac_text.replace(before, after)\n'
+    '                if patched_pac_text != pac_text:\n'
+    '                    with open(pac_source, "w", encoding="utf-8") as pac_file:\n'
+    '                        pac_file.write(patched_pac_text)\n'
+    '            primary_pac_source = pac_sources[0]\n'
+    '            if not os.path.isfile(primary_pac_source):\n'
+    '                raise RuntimeError("QtWebEngine ARM64 partition stack trace source is missing")\n'
+    '            with open(primary_pac_source, encoding="utf-8") as pac_file:\n'
+    '                primary_pac_text = pac_file.read()\n'
+    f'            if {_LINUX_ARM64_PAC_ASM_AFTER!r} not in primary_pac_text:\n'
+    '                raise RuntimeError("QtWebEngine ARM64 XPACLRI assembler workaround was not applied")\n'
+)
 _LINUX_ARM64_CFI_CMAKE_BEFORE = (
     '            if(CMAKE_CROSSCOMPILING AND cpu STREQUAL "arm64")\n'
     '                # This is a workaround to avoid auto test timeouts on the QEMU arm64 CI.\n'
@@ -617,7 +665,23 @@ def _patch_linux_arm64_cfi(text: str) -> str:
     return text.replace(
         generate_anchor,
         generate_anchor + _LINUX_ARM64_CFI_GENERATE_PATCH,
+        1,
     )
+
+
+def _patch_linux_arm64_pac_hint(text: str) -> str:
+    if _LINUX_ARM64_PAC_HINT_MARKER not in text:
+        generate_anchor = "    def generate(self):\n"
+        if text.count(generate_anchor) != 1:
+            raise SystemExit(
+                "unexpected Qt recipe: Linux ARM64 generate patch anchor is absent or ambiguous"
+            )
+        text = text.replace(
+            generate_anchor,
+            generate_anchor + _LINUX_ARM64_PAC_HINT_GENERATE_PATCH,
+            1,
+        )
+    return text
 
 
 def _patch_pulseaudio_finder(text: str) -> str:
@@ -1335,7 +1399,14 @@ def main() -> None:
         action="store_true",
         help="require the Linux PulseAudio backend for Qt Multimedia",
     )
+    parser.add_argument(
+        "--linux-arm64",
+        action="store_true",
+        help="patch QtWebEngine PAC assembly for the baseline Linux ARM64 assembler",
+    )
     args = parser.parse_args()
+    if args.linux_arm64 and not args.linux_audio:
+        parser.error("--linux-arm64 requires --linux-audio")
 
     text = args.recipe.read_text(encoding="utf-8")
     patched = _patch_quick_package_guard(
@@ -1358,6 +1429,8 @@ def main() -> None:
             "[FIX] Qt Linux audio recipe bridges WrapPulseAudio to "
             "Conan's pulseaudio::pulse target"
         )
+    if args.linux_arm64:
+        patched = _patch_linux_arm64_pac_hint(patched)
     patched = _patch_macos_colorspace(patched)
     patched = _patch_macos_video_edr(patched)
     patched = _patch_windows_hdr_coordinates(patched)
