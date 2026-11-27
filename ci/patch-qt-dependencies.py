@@ -334,6 +334,9 @@ _PULSEAUDIO_SOURCE_PATCH = (
 _LINUX_ARM64_CFI_MARKER = (
     "# f4: disable Chromium branch protection in Qt generate for baseline Linux ARM64"
 )
+_LINUX_ARM64_PDF_CFI_MARKER = (
+    "# f4: disable unsupported PAC/BTI in the QtPdf ARM64 baseline build"
+)
 _LINUX_ARM64_CFI_CMAKE_BEFORE = (
     '            if(CMAKE_CROSSCOMPILING AND cpu STREQUAL "arm64")\n'
     '                # This is a workaround to avoid auto test timeouts on the QEMU arm64 CI.\n'
@@ -345,7 +348,7 @@ _LINUX_ARM64_CFI_CMAKE_BEFORE = (
     '                endif()\n'
     '            endif()\n'
 )
-_LINUX_ARM64_CFI_CMAKE_AFTER = (
+_LINUX_ARM64_CFI_CMAKE_LEGACY_AFTER = (
     '            if(CMAKE_CROSSCOMPILING AND cpu STREQUAL "arm64")\n'
     '                # This is a workaround to avoid auto test timeouts on the QEMU arm64 CI.\n'
     '                if ("$ENV{TARGET_OSVERSION_COIN}" STREQUAL "qemu")\n'
@@ -360,19 +363,63 @@ _LINUX_ARM64_CFI_CMAKE_AFTER = (
     '                list(APPEND gnArgArg arm_control_flow_integrity="none")\n'
     '            endif()\n'
 )
+_LINUX_ARM64_CFI_CMAKE_AFTER = (
+    '            if(CMAKE_CROSSCOMPILING AND cpu STREQUAL "arm64")\n'
+    '                # This is a workaround to avoid auto test timeouts on the QEMU arm64 CI.\n'
+    '                if ("$ENV{TARGET_OSVERSION_COIN}" STREQUAL "qemu")\n'
+    '                    list(APPEND gnArgArg v8_enable_sandbox=false)\n'
+    '                endif()\n'
+    '            endif()\n'
+    f'            {_LINUX_ARM64_CFI_MARKER}\n'
+    '            if(cpu STREQUAL "arm64" AND\n'
+    '               CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND\n'
+    '               CMAKE_CXX_COMPILER_VERSION VERSION_LESS "12.0.0")\n'
+    '                # Ubuntu 18.04 binutils cannot assemble XPACLRI from Chromium\'s\n'
+    '                # standard PAC/BTI flags. Keep GN on its portable baseline.\n'
+    '                list(APPEND gnArgArg arm_control_flow_integrity="none")\n'
+    '            endif()\n'
+)
+_LINUX_ARM64_PDF_CFI_ANCHOR = '        if(MACOS)\n'
+_LINUX_ARM64_PDF_CFI_PATCH = (
+    f'        {_LINUX_ARM64_PDF_CFI_MARKER}\n'
+    '        if(LINUX AND cpu STREQUAL "arm64" AND\n'
+    '           CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND\n'
+    '           CMAKE_CXX_COMPILER_VERSION VERSION_LESS "12.0.0")\n'
+    '            list(APPEND gnArgArg arm_control_flow_integrity="none")\n'
+    '        endif()\n'
+)
 _LINUX_ARM64_CFI_GENERATE_PATCH = (
     f"        {_LINUX_ARM64_CFI_MARKER}\n"
     '        if str(self.settings.os) == "Linux" and str(self.settings.arch) == "armv8":\n'
     '            qtwebengine_core_cmake = os.path.join(\n'
     '                self.source_folder, "qtwebengine", "src", "core", "CMakeLists.txt"\n'
     '            )\n'
-    '            replace_in_file(\n'
-    '                self,\n'
-    '                qtwebengine_core_cmake,\n'
-    f"                {_LINUX_ARM64_CFI_CMAKE_BEFORE!r},\n"
-    f"                {_LINUX_ARM64_CFI_CMAKE_AFTER!r},\n"
-    '                strict=True,\n'
+    '            with open(qtwebengine_core_cmake, encoding="utf-8") as core_file:\n'
+    '                core_source = core_file.read()\n'
+    f"            if {_LINUX_ARM64_CFI_MARKER!r} not in core_source:\n"
+    f"                if {_LINUX_ARM64_CFI_CMAKE_BEFORE!r} in core_source:\n"
+    '                    replace_in_file(\n'
+    '                        self, qtwebengine_core_cmake,\n'
+    f"                        {_LINUX_ARM64_CFI_CMAKE_BEFORE!r},\n"
+    f"                        {_LINUX_ARM64_CFI_CMAKE_AFTER!r}, strict=True)\n"
+    f"                elif {_LINUX_ARM64_CFI_CMAKE_LEGACY_AFTER!r} in core_source:\n"
+    '                    replace_in_file(\n'
+    '                        self, qtwebengine_core_cmake,\n'
+    f"                        {_LINUX_ARM64_CFI_CMAKE_LEGACY_AFTER!r},\n"
+    f"                        {_LINUX_ARM64_CFI_CMAKE_AFTER!r}, strict=True)\n"
+    '                else:\n'
+    '                    raise RuntimeError("unexpected QtWebEngine ARM64 CFI block")\n'
+    '            qtwebengine_pdf_cmake = os.path.join(\n'
+    '                self.source_folder, "qtwebengine", "src", "pdf", "CMakeLists.txt"\n'
     '            )\n'
+    '            with open(qtwebengine_pdf_cmake, encoding="utf-8") as pdf_file:\n'
+    '                pdf_source = pdf_file.read()\n'
+    f"            if {_LINUX_ARM64_PDF_CFI_MARKER!r} not in pdf_source:\n"
+    '                replace_in_file(\n'
+    '                    self, qtwebengine_pdf_cmake,\n'
+    f"                    {_LINUX_ARM64_PDF_CFI_ANCHOR!r},\n"
+    f"                    {_LINUX_ARM64_PDF_CFI_PATCH!r} + {_LINUX_ARM64_PDF_CFI_ANCHOR!r},\n"
+    '                    strict=True)\n'
 )
 _QUICK_PACKAGE_GUARD_ANCHOR = "        cmake.install()\n"
 _QUICK_PACKAGE_GUARD_MARKER = "missing_quick_libraries = []"

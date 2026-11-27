@@ -833,31 +833,56 @@ class LinuxAudioRecipePatchTests(unittest.TestCase):
         source_method = patched.split("    def generate(self):", 1)[0]
         self.assertNotIn("self.settings", source_method)
 
-        calls = []
-        namespace = {
-            "os": os,
-            "replace_in_file": lambda *args, **kwargs: calls.append((args, kwargs)),
-        }
-        exec(
-            "class Recipe:\n    def generate(self):\n"
-            + patcher._LINUX_ARM64_CFI_GENERATE_PATCH,
-            namespace,
-        )
-        instance = namespace["Recipe"]()
-        instance.settings = types.SimpleNamespace(os="Linux", arch="armv8")
-        instance.source_folder = "/qt"
-        instance.generate()
+        def replace_in_file(_recipe, path, before, after, *, strict):
+            self.assertTrue(strict)
+            source = pathlib.Path(path).read_text()
+            self.assertIn(before, source)
+            pathlib.Path(path).write_text(source.replace(before, after, 1))
 
-        [(arguments, options)] = calls
-        self.assertEqual(
-            arguments[1],
-            os.path.join("/qt", "qtwebengine", "src", "core", "CMakeLists.txt"),
-        )
-        self.assertEqual(arguments[2], patcher._LINUX_ARM64_CFI_CMAKE_BEFORE)
-        self.assertEqual(arguments[3], patcher._LINUX_ARM64_CFI_CMAKE_AFTER)
-        self.assertIn('arm_control_flow_integrity="none"', arguments[3])
-        self.assertNotIn('arm_control_flow_integrity="standard"', arguments[3])
-        self.assertEqual(options, {"strict": True})
+        namespace = {"os": os, "replace_in_file": replace_in_file}
+        exec("class Recipe:\n    def generate(self):\n" +
+             patcher._LINUX_ARM64_CFI_GENERATE_PATCH, namespace)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source_root = pathlib.Path(tmp) / "qtwebengine" / "src"
+            core_path = source_root / "core" / "CMakeLists.txt"
+            pdf_path = source_root / "pdf" / "CMakeLists.txt"
+            core_path.parent.mkdir(parents=True)
+            pdf_path.parent.mkdir(parents=True)
+            core_path.write_text(patcher._LINUX_ARM64_CFI_CMAKE_BEFORE)
+            pdf_path.write_text("        set(gnArgArg ${gnArgArg})\n" +
+                                patcher._LINUX_ARM64_PDF_CFI_ANCHOR)
+
+            instance = namespace["Recipe"]()
+            instance.settings = types.SimpleNamespace(os="Linux", arch="armv8")
+            instance.source_folder = tmp
+            instance.generate()
+
+            core_source = core_path.read_text()
+            self.assertIn(patcher._LINUX_ARM64_CFI_MARKER, core_source)
+            self.assertIn('arm_control_flow_integrity="none"', core_source)
+            self.assertNotIn('arm_control_flow_integrity="standard"', core_source)
+            pdf_source = pdf_path.read_text()
+            self.assertIn(patcher._LINUX_ARM64_PDF_CFI_MARKER, pdf_source)
+            self.assertIn("if(LINUX AND cpu STREQUAL \"arm64\" AND", pdf_source)
+            self.assertIn('list(APPEND gnArgArg arm_control_flow_integrity="none")',
+                          pdf_source)
+
+            # A resumed Conan build may run generate() over a source tree already
+            # patched by an earlier recipe revision. Both patches must be stable.
+            instance.generate()
+            self.assertEqual(core_path.read_text(), core_source)
+            self.assertEqual(pdf_path.read_text(), pdf_source)
+
+            # Upgrade the output of the pre-marker patch used by the interrupted
+            # CI run, then confirm subsequent retries remain idempotent.
+            core_path.write_text(patcher._LINUX_ARM64_CFI_CMAKE_LEGACY_AFTER)
+            instance.generate()
+            upgraded_core = core_path.read_text()
+            self.assertIn(patcher._LINUX_ARM64_CFI_MARKER, upgraded_core)
+            self.assertIn('arm_control_flow_integrity="none"', upgraded_core)
+            instance.generate()
+            self.assertEqual(core_path.read_text(), upgraded_core)
 
     def test_linux_arm64_cfi_patch_rejects_an_unknown_generate_anchor(self) -> None:
         for recipe in ("class Recipe:\n    def source(self):\n        pass\n",
