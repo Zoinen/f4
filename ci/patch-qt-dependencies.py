@@ -1222,7 +1222,7 @@ _WINDOWS_QWE_LEGACY_POPEN_PATCH = (
     "      env=popen_env)\n"
 )
 _WINDOWS_QWE_SOURCE_MARKER = (
-    "# f4: retain the validated MSVC environment for QtWebEngine GN target switch"
+    "# f4: start nested QtWebEngine MSVC setup with a minimal environment"
 )
 _WINDOWS_QWE_ERROR_ANCHOR = (
     "  if popen.returncode != 0:\n"
@@ -1236,11 +1236,21 @@ _WINDOWS_QWE_ERROR_PATCH = (
 )
 _WINDOWS_QWE_POPEN_PATCH = (
     f"  {_WINDOWS_QWE_SOURCE_MARKER}\n"
-    "  # Match the successful runner preflight: clear only VSCMD architecture markers.\n"
-    "  popen_env = os.environ.copy()\n"
-    "  for name in tuple(popen_env):\n"
-    "    if name.upper().startswith('VSCMD_'):\n"
-    "      popen_env.pop(name)\n"
+    "  # Avoid expanding the outer build's long PATH through another vcvarsall call.\n"
+    "  windows_root = os.environ.get('SystemRoot') or os.environ.get('SYSTEMROOT')\n"
+    "  if not windows_root:\n"
+    "    raise RuntimeError('SystemRoot is missing in QtWebEngine MSVC toolchain setup')\n"
+    "  popen_env = {\n"
+    "      'SystemRoot': windows_root,\n"
+    "      'WINDIR': os.environ.get('WINDIR', windows_root),\n"
+    "      'PATH': os.path.join(windows_root, 'System32'),\n"
+    "  }\n"
+    "  for name in ('COMSPEC', 'TEMP', 'TMP', 'ProgramFiles',\n"
+    "               'ProgramFiles(x86)', 'ProgramW6432'):\n"
+    "    if name in os.environ:\n"
+    "      popen_env[name] = os.environ[name]\n"
+    "  if 'COMSPEC' not in popen_env:\n"
+    "    popen_env['COMSPEC'] = os.path.join(windows_root, 'System32', 'cmd.exe')\n"
     "  popen = subprocess.Popen(\n"
     "      args, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,\n"
     "      env=popen_env)\n"

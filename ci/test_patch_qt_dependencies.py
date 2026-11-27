@@ -277,8 +277,15 @@ class WindowsQtWebEngineToolchainTests(unittest.TestCase):
                 return Process()
 
             initial_environment = {
-                "PATH": "C:/tools",
-                "SYSTEMROOT": "C:/Windows",
+                "PATH": "C:/tools;C:/expanded/outer/msvc/environment",
+                "SystemRoot": "C:/Windows",
+                "WINDIR": "C:/Windows",
+                "TEMP": "C:/Temp",
+                "TMP": "C:/Temp",
+                "COMSPEC": "C:/Windows/System32/cmd.exe",
+                "ProgramFiles": "C:/Program Files",
+                "ProgramFiles(x86)": "C:/Program Files (x86)",
+                "ProgramW6432": "C:/Program Files",
                 "VSCMD_ARG_TGT_ARCH": "x64",
                 "VSINSTALLDIR": "C:/VS",
                 "INCLUDE": "C:/old/include",
@@ -294,12 +301,15 @@ class WindowsQtWebEngineToolchainTests(unittest.TestCase):
             self.assertEqual(captured["args"], ["vcvarsall.bat", "amd64_x86", "&&", "set"])
             self.assertTrue(captured["shell"])
             self.assertEqual(captured["env"], {
-                "PATH": "C:/tools",
-                "SYSTEMROOT": "C:/Windows",
-                "VSINSTALLDIR": "C:/VS",
-                "INCLUDE": "C:/old/include",
-                "LIB": "C:/old/lib",
-                "LIBPATH": "C:/old/libpath",
+                "SystemRoot": "C:/Windows",
+                "WINDIR": "C:/Windows",
+                "PATH": os.path.join("C:/Windows", "System32"),
+                "COMSPEC": "C:/Windows/System32/cmd.exe",
+                "TEMP": "C:/Temp",
+                "TMP": "C:/Temp",
+                "ProgramFiles": "C:/Program Files",
+                "ProgramFiles(x86)": "C:/Program Files (x86)",
+                "ProgramW6432": "C:/Program Files",
             })
 
             class FailedProcess:
@@ -309,7 +319,9 @@ class WindowsQtWebEngineToolchainTests(unittest.TestCase):
                 def communicate():
                     return b"vcvarsall: x86 tools unavailable", None
 
-            with patch.object(subprocess, "Popen", lambda *_args, **_kwargs: FailedProcess()):
+            with patch.dict(os.environ, initial_environment, clear=True), patch.object(
+                subprocess, "Popen", lambda *_args, **_kwargs: FailedProcess()
+            ):
                 with self.assertRaisesRegex(
                     Exception, "vcvarsall: x86 tools unavailable"
                 ):

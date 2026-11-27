@@ -122,7 +122,7 @@ if candidates:
               grep -Fq '# f4: clear inherited MSVC environment before QtWebEngine GN target switch' \
                   "${reusable_qt_recipe}/conanfile.py"; } && \
             { [[ "${target_os}" != "Windows" ]] || \
-              grep -Fq '# f4: retain the validated MSVC environment for QtWebEngine GN target switch' \
+              grep -Fq '# f4: start nested QtWebEngine MSVC setup with a minimal environment' \
                   "${reusable_qt_recipe}/conanfile.py"; }; then
             if [[ "${qt_recipe_mode}" == "linux-audio" ]] && \
                 { ! grep -Fq 'tc.variables["FEATURE_pulseaudio"] = "ON"' "${reusable_qt_recipe}/conanfile.py" || \
@@ -225,7 +225,7 @@ grep -Fq '#ifndef V4L2_PIX_FMT_BGRA32' \
 grep -Fq '"ffmpeg::avcodec"' \
     "${qt_recipe_copy}/conanfile.py"
 if [[ "${target_os}" == "Windows" ]]; then
-    grep -Fq '# f4: retain the validated MSVC environment for QtWebEngine GN target switch' \
+    grep -Fq '# f4: start nested QtWebEngine MSVC setup with a minimal environment' \
         "${qt_recipe_copy}/conanfile.py"
 else
     grep -Fq '# f4: clear inherited MSVC environment before QtWebEngine GN target switch' \
