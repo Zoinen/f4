@@ -1089,23 +1089,24 @@ _PDF_CHROMIUM_PNG_TARGET = '''if (pdfium_use_qt_libpng) {
 } else if (!use_system_libpng) {
 '''
 _WINDOWS_QWE_POPEN_ANCHOR = (
-    "    popen = subprocess.Popen(\n"
-    "        args, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)\n"
-)
-_WINDOWS_QWE_POPEN_PATCH = (
-    "    # Start the nested x86 toolchain from a clean Conan/MSVC environment.\n"
-    "    env = os.environ.copy()\n"
-    "    for name in tuple(env):\n"
-    "        if name.upper().startswith('VSCMD_'):\n"
-    "            env.pop(name)\n"
-    "    for name in ('VSINSTALLDIR', 'INCLUDE', 'LIB', 'LIBPATH'):\n"
-    "        env.pop(name, None)\n"
-    "    popen = subprocess.Popen(\n"
-    "        args, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,\n"
-    "        env=env)\n"
+    "  popen = subprocess.Popen(\n"
+    "      args, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)\n"
 )
 _WINDOWS_QWE_SOURCE_MARKER = (
     "# f4: clear inherited MSVC environment before QtWebEngine GN target switch"
+)
+_WINDOWS_QWE_POPEN_PATCH = (
+    f"  {_WINDOWS_QWE_SOURCE_MARKER}\n"
+    "  # Do not let Conan's outer MSVC target contaminate the nested x86 setup.\n"
+    "  popen_env = os.environ.copy()\n"
+    "  for name in tuple(popen_env):\n"
+    "    if name.upper().startswith('VSCMD_'):\n"
+    "      popen_env.pop(name)\n"
+    "  for name in ('VSINSTALLDIR', 'INCLUDE', 'LIB', 'LIBPATH'):\n"
+    "    popen_env.pop(name, None)\n"
+    "  popen = subprocess.Popen(\n"
+    "      args, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,\n"
+    "      env=popen_env)\n"
 )
 
 
@@ -1117,8 +1118,11 @@ def _windows_qwe_toolchain_source_patch() -> str:
         "                self.source_folder, \"qtwebengine\", \"src\", \"3rdparty\",\n"
         "                \"chromium\", \"build\", \"toolchain\", \"win\",\n"
         "                \"qwe_setup_toolchain.py\")\n"
-        f"            replace_in_file(self, qwe_toolchain, {_WINDOWS_QWE_POPEN_ANCHOR!r},\n"
-        f"                            {_WINDOWS_QWE_POPEN_PATCH!r}, strict=True)\n"
+        "            with open(qwe_toolchain, encoding=\"utf-8\") as qwe_file:\n"
+        "                qwe_source = qwe_file.read()\n"
+        f"            if {_WINDOWS_QWE_SOURCE_MARKER!r} not in qwe_source:\n"
+        f"                replace_in_file(self, qwe_toolchain, {_WINDOWS_QWE_POPEN_ANCHOR!r},\n"
+        f"                                {_WINDOWS_QWE_POPEN_PATCH!r}, strict=True)\n"
     )
 
 

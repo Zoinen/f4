@@ -173,14 +173,25 @@ class WindowsQtWebEngineToolchainTests(unittest.TestCase):
 
     def test_source_patch_clears_only_inherited_msvc_toolchain_variables(self):
         qwe_source = (
+            "import os\n"
+            "import re\n"
+            "import subprocess\n"
             "def _LoadEnvFromBat(args):\n"
-            "    args = args[:]\n"
-            "    args.extend(('&&', 'set'))\n"
+            "  \"\"\"Given a bat command, runs it and returns env vars set by it.\"\"\"\n"
+            "  env = {}\n"
+            "  args = args[:]\n"
+            "  args.extend(('&&', 'set'))\n"
             + patcher._WINDOWS_QWE_POPEN_ANCHOR
-            + "    variables, _ = popen.communicate()\n"
-            + "    return variables\n"
+            + "  variables, _ = popen.communicate()\n"
+            + "  if popen.returncode != 0:\n"
+            + "    raise Exception('vcvars failed')\n"
+            + "  output = variables.decode(errors='ignore')\n"
+            + "  for line in output.splitlines():\n"
+            + "    if re.match(\"^(.*)=(.*)$\", line):\n"
+            + "      var, setting = line.split('=', 1)\n"
+            + "      env[var] = setting\n"
+            + "  return env\n"
         )
-        qwe_source_holder = [qwe_source]
         recipe = (
             "def source(self):\n"
             "        apply_conandata_patches(self)\n"
@@ -188,69 +199,77 @@ class WindowsQtWebEngineToolchainTests(unittest.TestCase):
         )
         writes = []
 
-        def replace_in_file(_recipe, path, before, after, *, strict):
-            self.assertTrue(strict)
-            self.assertEqual(
-                path,
-                os.path.join(
-                    "C:/conan/src", "qtwebengine", "src", "3rdparty", "chromium",
-                    "build", "toolchain", "win", "qwe_setup_toolchain.py",
-                ),
+        with tempfile.TemporaryDirectory() as source_folder:
+            qwe_path = (
+                pathlib.Path(source_folder)
+                / "qtwebengine"
+                / "src"
+                / "3rdparty"
+                / "chromium"
+                / "build"
+                / "toolchain"
+                / "win"
+                / "qwe_setup_toolchain.py"
             )
-            self.assertEqual(qwe_source_holder[0].count(before), 1)
-            writes.append(after)
-            qwe_source_holder[0] = qwe_source_holder[0].replace(before, after)
+            qwe_path.parent.mkdir(parents=True)
+            qwe_path.write_text(qwe_source)
 
-        namespace = {
-            "os": os,
-            "apply_conandata_patches": lambda _recipe: None,
-            "replace_in_file": replace_in_file,
-        }
-        exec(recipe, namespace)
-        instance = types.SimpleNamespace(
-            settings_build=types.SimpleNamespace(os="Windows"),
-            source_folder="C:/conan/src",
-        )
-        namespace["source"](instance)
-        self.assertEqual(writes, [patcher._WINDOWS_QWE_POPEN_PATCH])
+            def replace_in_file(_recipe, path, before, after, *, strict):
+                self.assertTrue(strict)
+                self.assertEqual(path, str(qwe_path))
+                source = qwe_path.read_text()
+                self.assertEqual(source.count(before), 1)
+                writes.append(after)
+                qwe_path.write_text(source.replace(before, after))
 
-        patched_source = qwe_source_holder[0]
-        qwe_namespace = {"os": os, "subprocess": subprocess}
-        captured = {}
-
-        class Process:
-            returncode = 0
-
-            @staticmethod
-            def communicate():
-                return b"captured environment", None
-
-        def fake_popen(args, **kwargs):
-            captured["args"] = args
-            captured.update(kwargs)
-            return Process()
-
-        exec(patched_source, qwe_namespace)
-        initial_environment = {
-            "PATH": "C:/tools",
-            "SYSTEMROOT": "C:/Windows",
-            "VSCMD_ARG_TGT_ARCH": "x64",
-            "VSINSTALLDIR": "C:/VS",
-            "INCLUDE": "C:/VS/include",
-            "LIB": "C:/VS/lib",
-            "LIBPATH": "C:/VS/libpath",
-        }
-        with patch.dict(os.environ, initial_environment, clear=True), patch.object(
-            subprocess, "Popen", fake_popen
-        ):
-            self.assertEqual(
-                qwe_namespace["_LoadEnvFromBat"](["vcvarsall.bat", "amd64_x86"]),
-                b"captured environment",
+            namespace = {
+                "os": os,
+                "apply_conandata_patches": lambda _recipe: None,
+                "replace_in_file": replace_in_file,
+            }
+            exec(recipe, namespace)
+            instance = types.SimpleNamespace(
+                settings_build=types.SimpleNamespace(os="Windows"),
+                source_folder=source_folder,
             )
+            namespace["source"](instance)
+            namespace["source"](instance)
+            self.assertEqual(writes, [patcher._WINDOWS_QWE_POPEN_PATCH])
 
-        self.assertEqual(captured["args"], ["vcvarsall.bat", "amd64_x86", "&&", "set"])
-        self.assertTrue(captured["shell"])
-        self.assertEqual(captured["env"], {"PATH": "C:/tools", "SYSTEMROOT": "C:/Windows"})
+            qwe_namespace = {}
+            exec(qwe_path.read_text(), qwe_namespace)
+            captured = {}
+
+            class Process:
+                returncode = 0
+
+                @staticmethod
+                def communicate():
+                    return b"PATH=C:/VS/bin\r\nINCLUDE=C:/VS/include\r\n", None
+
+            def fake_popen(args, **kwargs):
+                captured["args"] = args
+                captured.update(kwargs)
+                return Process()
+
+            initial_environment = {
+                "PATH": "C:/tools",
+                "SYSTEMROOT": "C:/Windows",
+                "VSCMD_ARG_TGT_ARCH": "x64",
+                "VSINSTALLDIR": "C:/VS",
+                "INCLUDE": "C:/old/include",
+                "LIB": "C:/old/lib",
+                "LIBPATH": "C:/old/libpath",
+            }
+            with patch.dict(os.environ, initial_environment, clear=True), patch.object(
+                subprocess, "Popen", fake_popen
+            ):
+                result = qwe_namespace["_LoadEnvFromBat"](["vcvarsall.bat", "amd64_x86"])
+
+            self.assertEqual(result, {"PATH": "C:/VS/bin", "INCLUDE": "C:/VS/include"})
+            self.assertEqual(captured["args"], ["vcvarsall.bat", "amd64_x86", "&&", "set"])
+            self.assertTrue(captured["shell"])
+            self.assertEqual(captured["env"], {"PATH": "C:/tools", "SYSTEMROOT": "C:/Windows"})
 
     def test_source_patch_is_skipped_outside_windows(self):
         recipe = "def source(self):\n" + patcher._windows_qwe_toolchain_source_patch()
