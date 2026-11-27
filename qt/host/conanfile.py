@@ -77,12 +77,16 @@ class F4QtHostConan(ConanFile):
         self.requires("qt/6.11.1")
         if (self.options.with_video_thumbnails and
                 self.options.with_ffmpeg_backend):
-            # Keep FFmpeg in the same static graph as Qt Multimedia when the
-            # FFmpeg backend is selected. Qt's backend supplies the built-in
-            # H.264 and AV1 decoders used by video thumbnails; the optional
-            # dav1d/openh264 accelerators remain disabled to avoid a second
-            # codec toolchain.
-            self.requires("ffmpeg/7.1.5@f4/macos" if self.settings.os == "Macos" else "ffmpeg/7.1.5")
+            # Match the platform-specific recipe selected by Qt's own
+            # Multimedia requirement so Conan resolves one FFmpeg reference
+            # throughout the dependency graph.
+            if self.settings.os == "Macos":
+                ffmpeg_reference = "ffmpeg/7.1.5@f4/macos"
+            elif self.settings.os == "Windows":
+                ffmpeg_reference = "ffmpeg/7.1.5@f4/windows"
+            else:
+                ffmpeg_reference = "ffmpeg/7.1.5"
+            self.requires(ffmpeg_reference)
         self.requires("msgpack-cxx/7.0.0")
         # ZoinGallery is built from the pinned Git submodule. Keep its native
         # dependencies in this single Conan graph so the host and module share
