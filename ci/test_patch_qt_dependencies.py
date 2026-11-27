@@ -56,6 +56,34 @@ class MacOSDynamicHdrDependencyTests(unittest.TestCase):
             namespace["requirements"](instance)
             self.assertEqual(calls, [expected])
 
+    def test_qt_uses_the_windows_msvc_ffmpeg_recipe(self):
+        recipe = "def requirements(self):\n" + patcher._FFMPEG_REQUIREMENT_PATCH + "            pass\n"
+        patched = patcher._patch_windows_ffmpeg_requirement(recipe)
+        self.assertEqual(patcher._patch_windows_ffmpeg_requirement(patched), patched)
+        namespace = {}
+        exec(patched, namespace)
+        for os_name, expected in (("Windows", "ffmpeg/7.1.5@f4/windows"),
+                                  ("Linux", "ffmpeg/7.1.5"), ("Macos", "ffmpeg/7.1.5")):
+            calls = []
+            options = types.SimpleNamespace(get_safe={"with_ffmpeg": True}.get)
+            instance = types.SimpleNamespace(settings=types.SimpleNamespace(os=os_name),
+                                             requires=calls.append, options=options)
+            namespace["requirements"](instance)
+            self.assertEqual(calls, [expected])
+
+    def test_windows_ffmpeg_exporter_adds_pkg_config_generator_to_msvc_recipe(self):
+        exporter = runpy.run_path(str(SCRIPT.with_name("patch-ffmpeg-windows-recipe.py")))
+        recipe = (
+            "from conan.tools.gnu import PkgConfigDeps\n"
+            "    def generate(self):\n"
+            '            env.vars(self).save_script("conanautotoolsdeps_cl_workaround")\n'
+        )
+        patched = exporter["patch_recipe"](recipe)
+        self.assertEqual(exporter["patch_recipe"](patched), patched)
+        self.assertIn("deps = PkgConfigDeps(self)", patched)
+        self.assertIn("deps.generate()", patched)
+        self.assertEqual(patched.count(exporter["MARKER"]), 1)
+
     def test_ffmpeg_applies_the_exported_patch_from_outside_its_source_folder(self):
         exporter = runpy.run_path(str(SCRIPT.with_name("patch-ffmpeg-macos-recipe.py")))
         recipe = ('class Recipe:\n'

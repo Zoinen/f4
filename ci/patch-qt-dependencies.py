@@ -44,6 +44,12 @@ _MACOS_FFMPEG_REQUIREMENT = '''            if self.settings.os == "Macos":
             else:
                 self.requires("ffmpeg/7.1.5")
 '''
+_WINDOWS_FFMPEG_REQUIREMENT = '''            if self.settings.os == "Windows":
+                self.requires("ffmpeg/7.1.5@f4/windows")
+            else:
+                self.requires("ffmpeg/7.1.5")
+'''
+_WINDOWS_FFMPEG_REQUIREMENT_MARKER = 'self.requires("ffmpeg/7.1.5@f4/windows")'
 _FFMPEG_GENERATE_ANCHOR = '        tc.variables["FEATURE_pkg_config"] = "ON"\n'
 _FFMPEG_GENERATE_PATCH = _FFMPEG_GENERATE_ANCHOR + (
     '        if self.options.get_safe("with_ffmpeg", False):\n'
@@ -1149,11 +1155,25 @@ def _patch_macos_ffmpeg_requirement(text: str) -> str:
     return text.replace(anchor, _MACOS_FFMPEG_REQUIREMENT)
 
 
+def _patch_windows_ffmpeg_requirement(text: str) -> str:
+    if _WINDOWS_FFMPEG_REQUIREMENT_MARKER in text:
+        return text
+    anchor = f"            {_FFMPEG_REQUIREMENT_MARKER}\n"
+    if text.count(anchor) != 1:
+        raise SystemExit("unexpected Qt recipe: FFmpeg requirement is absent or ambiguous")
+    return text.replace(anchor, _WINDOWS_FFMPEG_REQUIREMENT)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("recipe", type=Path)
     parser.add_argument("--macos-dynamic-hdr", action="store_true",
                         help="use the macOS VideoToolbox FFmpeg recipe")
+    parser.add_argument(
+        "--windows-msvc",
+        action="store_true",
+        help="use the Windows MSVC FFmpeg recipe with generated pkg-config metadata",
+    )
     parser.add_argument(
         "--linux-audio",
         action="store_true",
@@ -1173,6 +1193,8 @@ def main() -> None:
     if args.macos_dynamic_hdr:
         patched = _patch_macos_ffmpeg_requirement(patched)
         patched = _patch_macos_video_presentation(patched)
+    if args.windows_msvc:
+        patched = _patch_windows_ffmpeg_requirement(patched)
     if args.linux_audio:
         patched = _patch_linux_audio(patched)
         print(

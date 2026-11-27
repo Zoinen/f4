@@ -25,6 +25,8 @@ if [[ "${qt_recipe_mode}" == "linux-audio" && "${target_os}" != "Linux" ]]; then
 fi
 if [[ "${target_os}" == "Macos" ]]; then
     "${python_command}" ci/patch-ffmpeg-macos-recipe.py
+elif [[ "${target_os}" == "Windows" ]]; then
+    "${python_command}" ci/patch-ffmpeg-windows-recipe.py
 fi
 
 # A portable ARM job needs both the ARM target Qt package and the native x64
@@ -95,6 +97,8 @@ if candidates:
                 grep -Fq '# f4: schedule native HDR on the media clock' "${reusable_qt_recipe}/conanfile.py" &&
                 grep -Fq '# f4: expose decoded macOS video frames to AVFoundation' "${reusable_qt_recipe}/conanfile.py" &&
                 grep -Fq 'self.requires("ffmpeg/7.1.5@f4/macos")' "${reusable_qt_recipe}/conanfile.py"; }; } && \
+            { [[ "${target_os}" != "Windows" ]] || \
+              grep -Fq 'self.requires("ffmpeg/7.1.5@f4/windows")' "${reusable_qt_recipe}/conanfile.py"; } && \
             grep -Fq 'self.requires("md4c/[>=0.4.8 <0.6]")' "${reusable_qt_recipe}/conanfile.py" && \
             grep -Fq '"ffmpeg::avcodec"' "${reusable_qt_recipe}/conanfile.py" && \
             grep -Fq 'if(NOT TARGET Qt::qsb)' "${reusable_qt_recipe}/conanfile.py" && \
@@ -143,6 +147,9 @@ if [[ "${qt_recipe_mode}" == "linux-audio" ]]; then
 elif [[ "${target_os}" == "Macos" ]]; then
     "${python_command}" ci/patch-qt-dependencies.py \
         --macos-dynamic-hdr "${qt_recipe_copy}/conanfile.py"
+elif [[ "${target_os}" == "Windows" ]]; then
+    "${python_command}" ci/patch-qt-dependencies.py \
+        --windows-msvc "${qt_recipe_copy}/conanfile.py"
 else
     "${python_command}" ci/patch-qt-dependencies.py \
         "${qt_recipe_copy}/conanfile.py"
