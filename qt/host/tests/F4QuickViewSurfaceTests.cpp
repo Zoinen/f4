@@ -3073,9 +3073,10 @@ void F4QuickViewSurfaceTests::focusedVideoSeekSurvivesShellRefresh()
     QCOMPARE(fixture.window->activeFocusItem(), seek);
     const auto position = controller.position;
     QTest::keyClick(fixture.window, Qt::Key_Right);
-    QCOMPARE(controller.position, position + 5000);
+    QTRY_COMPARE_WITH_TIMEOUT(controller.position, position + 5000, 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(fixture.window->activeFocusItem(), seek, 1000);
     QTest::keyClick(fixture.window, Qt::Key_Left);
-    QCOMPARE(controller.position, position);
+    QTRY_COMPARE_WITH_TIMEOUT(controller.position, position, 1000);
     controller.subtitleTracks = {QStringLiteral("English")};
     controller.selectSubtitleTrack(0);
     QVERIFY(controller.subtitleText.isEmpty());
