@@ -71,17 +71,22 @@ class MacOSDynamicHdrDependencyTests(unittest.TestCase):
             namespace["requirements"](instance)
             self.assertEqual(calls, [expected])
 
-    def test_windows_ffmpeg_exporter_adds_pkg_config_generator_to_msvc_recipe(self):
+    def test_windows_ffmpeg_exporter_exposes_generated_pkg_config_files(self):
         exporter = runpy.run_path(str(SCRIPT.with_name("patch-ffmpeg-windows-recipe.py")))
         recipe = (
             "from conan.tools.gnu import PkgConfigDeps\n"
+            "class Recipe:\n"
             "    def generate(self):\n"
-            '            env.vars(self).save_script("conanautotoolsdeps_cl_workaround")\n'
+            "        deps = PkgConfigDeps(self)\n"
+            "        deps.generate()\n"
+            "    def build(self):\n"
+            "        autotools = Autotools(self)\n"
+            "        autotools.configure()\n"
         )
         patched = exporter["patch_recipe"](recipe)
         self.assertEqual(exporter["patch_recipe"](patched), patched)
-        self.assertIn("deps = PkgConfigDeps(self)", patched)
-        self.assertIn("deps.generate()", patched)
+        self.assertIn('"libopenjp2.pc"', patched)
+        self.assertIn('os.environ["PKG_CONFIG_PATH"] = os.pathsep.join(pkg_config_paths)', patched)
         self.assertEqual(patched.count(exporter["MARKER"]), 1)
 
     def test_ffmpeg_applies_the_exported_patch_from_outside_its_source_folder(self):
