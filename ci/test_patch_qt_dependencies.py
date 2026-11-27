@@ -110,6 +110,125 @@ class WindowsHdrCoordinatesPatchTests(unittest.TestCase):
                 patcher._patch_windows_hdr_coordinates(recipe)
 
 
+class WindowsQtWebEngineToolchainTests(unittest.TestCase):
+    def test_pristine_pdf_recipe_includes_the_toolchain_patch(self):
+        recipe = (
+            '        "with_gstreamer": [True, False],\n'
+            '        "with_gstreamer": False,\n'
+            '        self.no_copy_source = not (self.settings_build.os == "Windows" and self.options.get_safe("qtwebengine"))\n'
+            '            self.tool_requires(f"qt/{self.version}")\n'
+            "        apply_conandata_patches(self)\n"
+            '        tc.variables["BUILD_qtrepotools"] = "OFF"\n'
+            "        for module in self._get_module_tree:\n"
+            "            if not getattr(self.options, module):\n"
+            '        if self.options.get_safe("qtwebengine") and qt_quick_enabled:\n'
+        )
+        patched = patcher._patch_pdf(recipe)
+        self.assertIn(patcher._WINDOWS_QWE_SOURCE_MARKER, patched)
+        self.assertIn("qwe_setup_toolchain.py", patched)
+        self.assertEqual(patcher._patch_pdf(patched), patched)
+
+    def test_pdf_recipe_adds_the_nested_msvc_environment_reset_once(self):
+        recipe = (
+            '        "with_pdf": [True, False],\n'
+            "    def source(self):\n"
+            "        apply_conandata_patches(self)\n"
+        )
+        patched = patcher._patch_pdf(recipe)
+        self.assertIn(patcher._WINDOWS_QWE_SOURCE_MARKER, patched)
+        self.assertEqual(patcher._patch_pdf(patched), patched)
+
+    def test_source_patch_clears_only_inherited_msvc_toolchain_variables(self):
+        qwe_source = (
+            "def _LoadEnvFromBat(args):\n"
+            "    args = args[:]\n"
+            "    args.extend(('&&', 'set'))\n"
+            + patcher._WINDOWS_QWE_POPEN_ANCHOR
+            + "    variables, _ = popen.communicate()\n"
+            + "    return variables\n"
+        )
+        qwe_source_holder = [qwe_source]
+        recipe = (
+            "def source(self):\n"
+            "        apply_conandata_patches(self)\n"
+            + patcher._windows_qwe_toolchain_source_patch()
+        )
+        writes = []
+
+        def replace_in_file(_recipe, path, before, after, *, strict):
+            self.assertTrue(strict)
+            self.assertEqual(
+                path,
+                os.path.join(
+                    "C:/conan/src", "qtwebengine", "src", "3rdparty", "chromium",
+                    "build", "toolchain", "win", "qwe_setup_toolchain.py",
+                ),
+            )
+            self.assertEqual(qwe_source_holder[0].count(before), 1)
+            writes.append(after)
+            qwe_source_holder[0] = qwe_source_holder[0].replace(before, after)
+
+        namespace = {
+            "os": os,
+            "apply_conandata_patches": lambda _recipe: None,
+            "replace_in_file": replace_in_file,
+        }
+        exec(recipe, namespace)
+        instance = types.SimpleNamespace(
+            settings_build=types.SimpleNamespace(os="Windows"),
+            source_folder="C:/conan/src",
+        )
+        namespace["source"](instance)
+        self.assertEqual(writes, [patcher._WINDOWS_QWE_POPEN_PATCH])
+
+        patched_source = qwe_source_holder[0]
+        qwe_namespace = {"os": os, "subprocess": subprocess}
+        captured = {}
+
+        class Process:
+            returncode = 0
+
+            @staticmethod
+            def communicate():
+                return b"captured environment", None
+
+        def fake_popen(args, **kwargs):
+            captured["args"] = args
+            captured.update(kwargs)
+            return Process()
+
+        exec(patched_source, qwe_namespace)
+        initial_environment = {
+            "PATH": "C:/tools",
+            "SYSTEMROOT": "C:/Windows",
+            "VSCMD_ARG_TGT_ARCH": "x64",
+            "VSINSTALLDIR": "C:/VS",
+            "INCLUDE": "C:/VS/include",
+            "LIB": "C:/VS/lib",
+            "LIBPATH": "C:/VS/libpath",
+        }
+        with patch.dict(os.environ, initial_environment, clear=True), patch.object(
+            subprocess, "Popen", fake_popen
+        ):
+            self.assertEqual(
+                qwe_namespace["_LoadEnvFromBat"](["vcvarsall.bat", "amd64_x86"]),
+                b"captured environment",
+            )
+
+        self.assertEqual(captured["args"], ["vcvarsall.bat", "amd64_x86", "&&", "set"])
+        self.assertTrue(captured["shell"])
+        self.assertEqual(captured["env"], {"PATH": "C:/tools", "SYSTEMROOT": "C:/Windows"})
+
+    def test_source_patch_is_skipped_outside_windows(self):
+        recipe = "def source(self):\n" + patcher._windows_qwe_toolchain_source_patch()
+        namespace = {"os": os}
+        exec(recipe, namespace)
+        instance = types.SimpleNamespace(
+            settings_build=types.SimpleNamespace(os="Linux"), source_folder="/conan/src"
+        )
+        namespace["source"](instance)
+
+
 class Md4cRequirementPatchTests(unittest.TestCase):
     def test_pins_md4c_before_incompatible_06(self):
         recipe = (

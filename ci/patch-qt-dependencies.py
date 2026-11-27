@@ -1013,6 +1013,38 @@ _PDF_CHROMIUM_PNG_TARGET = '''if (pdfium_use_qt_libpng) {
   }
 } else if (!use_system_libpng) {
 '''
+_WINDOWS_QWE_POPEN_ANCHOR = (
+    "    popen = subprocess.Popen(\n"
+    "        args, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)\n"
+)
+_WINDOWS_QWE_POPEN_PATCH = (
+    "    # Start the nested x86 toolchain from a clean Conan/MSVC environment.\n"
+    "    env = os.environ.copy()\n"
+    "    for name in tuple(env):\n"
+    "        if name.upper().startswith('VSCMD_'):\n"
+    "            env.pop(name)\n"
+    "    for name in ('VSINSTALLDIR', 'INCLUDE', 'LIB', 'LIBPATH'):\n"
+    "        env.pop(name, None)\n"
+    "    popen = subprocess.Popen(\n"
+    "        args, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,\n"
+    "        env=env)\n"
+)
+_WINDOWS_QWE_SOURCE_MARKER = (
+    "# f4: clear inherited MSVC environment before QtWebEngine GN target switch"
+)
+
+
+def _windows_qwe_toolchain_source_patch() -> str:
+    return (
+        f"        {_WINDOWS_QWE_SOURCE_MARKER}\n"
+        "        if self.settings_build.os == \"Windows\":\n"
+        "            qwe_toolchain = os.path.join(\n"
+        "                self.source_folder, \"qtwebengine\", \"src\", \"3rdparty\",\n"
+        "                \"chromium\", \"build\", \"toolchain\", \"win\",\n"
+        "                \"qwe_setup_toolchain.py\")\n"
+        f"            replace_in_file(self, qwe_toolchain, {_WINDOWS_QWE_POPEN_ANCHOR!r},\n"
+        f"                            {_WINDOWS_QWE_POPEN_PATCH!r}, strict=True)\n"
+    )
 
 
 def _patch_pdf(text: str) -> str:
@@ -1020,7 +1052,14 @@ def _patch_pdf(text: str) -> str:
     # WebEngine option false so it does not enable browser dependencies
     # or reject static/cross builds that are supported by PDF itself.
     if '        "with_pdf": [True, False],\n' in text:
-        return text
+        if _WINDOWS_QWE_SOURCE_MARKER in text:
+            return text
+        anchor = "        apply_conandata_patches(self)\n"
+        if text.count(anchor) != 1:
+            raise SystemExit(
+                "unexpected Qt recipe: cannot add the Windows QtWebEngine toolchain patch"
+            )
+        return text.replace(anchor, anchor + _windows_qwe_toolchain_source_patch())
     replacements = {
         '        "with_gstreamer": [True, False],\n':
             '        "with_gstreamer": [True, False],\n'
@@ -1048,7 +1087,8 @@ def _patch_pdf(text: str) -> str:
             f'        replace_in_file(self, pdf_png_gn, {_PDF_CHROMIUM_PNG_IMPORT_ANCHOR!r},\n'
             f'                        {_PDF_CHROMIUM_PNG_IMPORT!r}, strict=True)\n'
             f'        replace_in_file(self, pdf_png_gn, {_PDF_CHROMIUM_PNG_TARGET_ANCHOR!r},\n'
-            f'                        {_PDF_CHROMIUM_PNG_TARGET!r}, strict=True)\n',
+            f'                        {_PDF_CHROMIUM_PNG_TARGET!r}, strict=True)\n'
+            + _windows_qwe_toolchain_source_patch(),
         '        tc.variables["BUILD_qtrepotools"] = "OFF"\n':
             '        tc.variables["BUILD_qtrepotools"] = "OFF"\n'
             '        if self.options.with_pdf:\n'

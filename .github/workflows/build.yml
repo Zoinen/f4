@@ -458,6 +458,7 @@ jobs:
           - runner: macos-15-intel
             platform: darwin
     env:
+      F4_FORCE_REBUILD_MEDIA: ${{ github.event_name == 'workflow_dispatch' && inputs.bootstrap_multimedia_dependencies && !inputs.publish_qt_release }}
       CONAN_HOME: ${{ github.workspace }}/.conan2
       F4_CONAN_REMOTE_URL: ${{ vars.F4_CONAN_REMOTE_URL }}
       F4_CONAN_UPLOAD_URL: ${{ vars.F4_CONAN_UPLOAD_URL }}
@@ -550,7 +551,12 @@ jobs:
             conan_platform_settings+=("-o:h" "openssl/*:no_asm=True")
           fi
         fi
-        conan install qt/host --build=missing \
+        conan_build_args=(--build=missing)
+        if [[ "${F4_FORCE_REBUILD_MEDIA}" == "true" ]]; then
+          conan_build_args+=(--build='ffmpeg/*')
+          echo "Forcing FFmpeg to rebuild for this release"
+        fi
+        conan install qt/host "${conan_build_args[@]}" \
           -s:h build_type=Release -s:h compiler.cppstd=20 \
           -o:h '*:with_video_thumbnails=True' \
           -o:h '*:with_ffmpeg_backend=True' \
@@ -970,6 +976,7 @@ jobs:
             cache_contract: msvc-v143-static-qt-tools-v2
     env:
       F4_RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_qt_release && inputs.release_tag || '' }}
+      F4_FORCE_REBUILD_MEDIA: ${{ github.event_name == 'workflow_dispatch' && inputs.bootstrap_multimedia_dependencies && !inputs.publish_qt_release }}
       CONAN_HOME: ${{ github.workspace }}/.conan2-portable-${{ matrix.platform }}-${{ matrix.arch }}
       F4_CONAN_REMOTE_URL: ${{ vars.F4_CONAN_REMOTE_URL }}
       F4_CONAN_UPLOAD_URL: ${{ vars.F4_CONAN_UPLOAD_URL }}
@@ -1050,6 +1057,7 @@ jobs:
           -e TARGET_ARCH=${{ matrix.goarch }} \
           -e GITHUB_REF -e GITHUB_REF_NAME -e GITHUB_SHA -e VERSION_SYMBOL \
           -e F4_RELEASE_TAG \
+          -e F4_FORCE_REBUILD_MEDIA \
           -e F4_CONAN_REMOTE_URL \
           -e F4_CONAN_UPLOAD_URL \
           -e F4_CONAN_USERNAME \
@@ -1235,6 +1243,10 @@ jobs:
         }
         for ($attempt = 1; $attempt -le 3; $attempt++) {
           $conanBuildArgs = @("--build=missing")
+          if ($env:F4_FORCE_REBUILD_MEDIA -eq "true") {
+            $conanBuildArgs += "--build=ffmpeg/*"
+            Write-Host "Forcing FFmpeg to rebuild for this release"
+          }
           if ($qtForceOnRetry -and $attempt -gt 1) {
             $conanBuildArgs += "--build=qt/*"
           }
@@ -4052,7 +4064,7 @@ jobs:
         ref: ${{ github.sha }}
 
     - name: Test release packaging scripts
-      run: python3 -m unittest ci/test_package_release_scripts.py ci/test_go_build_metadata.py ci/test_portable_qt_linux.py
+      run: python3 -m unittest ci/test_package_release_scripts.py ci/test_go_build_metadata.py ci/test_patch_qt_dependencies.py ci/test_portable_qt_linux.py
 
     - name: Download Linux Qt artifacts
       uses: actions/download-artifact@v8

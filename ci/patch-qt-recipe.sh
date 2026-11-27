@@ -101,7 +101,9 @@ if candidates:
             grep -Fq 'tc.cache_variables["Qt6QuickTools_DIR"]' "${reusable_qt_recipe}/conanfile.py" && \
             grep -Fq 'native_quick_tools_config = os.path.join' "${reusable_qt_recipe}/conanfile.py" && \
             grep -Fq 'add_executable(Qt6::svgtoqml IMPORTED GLOBAL)' "${reusable_qt_recipe}/conanfile.py" && \
-            grep -Fq 'native_svgtoqml_name = "svgtoqml.exe"' "${reusable_qt_recipe}/conanfile.py"; then
+            grep -Fq 'native_svgtoqml_name = "svgtoqml.exe"' "${reusable_qt_recipe}/conanfile.py" && \
+            grep -Fq '# f4: clear inherited MSVC environment before QtWebEngine GN target switch' \
+                "${reusable_qt_recipe}/conanfile.py"; then
             if [[ "${qt_recipe_mode}" == "linux-audio" ]] && \
                 { ! grep -Fq 'tc.variables["FEATURE_pulseaudio"] = "ON"' "${reusable_qt_recipe}/conanfile.py" || \
                   ! grep -Fq 'tc.variables["FEATURE_alsa"] = "OFF"' "${reusable_qt_recipe}/conanfile.py" || \
@@ -191,6 +193,8 @@ grep -Fq 'TARGET ffmpeg::${_lowerComponent}' \
 grep -Fq '#ifndef V4L2_PIX_FMT_BGRA32' \
     "${qt_recipe_copy}/conanfile.py"
 grep -Fq '"ffmpeg::avcodec"' \
+    "${qt_recipe_copy}/conanfile.py"
+grep -Fq '# f4: clear inherited MSVC environment before QtWebEngine GN target switch' \
     "${qt_recipe_copy}/conanfile.py"
 if [[ "${qt_recipe_mode}" == "linux-audio" ]]; then
     grep -Fq 'tc.variables["FEATURE_pulseaudio"] = "ON"' \

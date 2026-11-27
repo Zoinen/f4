@@ -509,6 +509,14 @@ for package in "${arm64_glibc_rebuild_packages[@]}"; do
     conan_build_args+=("--build=${package}/*")
     echo "Forcing only ${package} to rebuild in the glibc 2.27 / GCC 11 container"
 done
+if [[ "${F4_FORCE_REBUILD_MEDIA:-false}" == "true" ]]; then
+    if [[ "${F4_CONAN_FORBID_QT_FFMPEG_BUILD:-0}" == "1" ]]; then
+        echo "error: media rebuild mode conflicts with the binary-only Qt/FFmpeg policy" >&2
+        exit 2
+    fi
+    conan_build_args+=(--build='ffmpeg/*')
+    echo "Forcing FFmpeg to rebuild during multimedia bootstrap"
+fi
 
 # GLib's recipe adds elfutils solely for the GNOME `gresource` CLI. This Qt
 # host neither builds nor uses that tool, so omit the entire expensive elfutils
