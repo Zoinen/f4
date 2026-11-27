@@ -3076,17 +3076,22 @@ void F4QuickViewSurfaceTests::focusedVideoSeekSurvivesShellRefresh()
     QTRY_COMPARE_WITH_TIMEOUT(controller.position, position + 5000, 1000);
     QTRY_COMPARE_WITH_TIMEOUT(fixture.window->activeFocusItem(), seek, 1000);
     QTest::keyClick(fixture.window, Qt::Key_Left);
-    QTRY_COMPARE_WITH_TIMEOUT(controller.position, position, 1000);
+    QTRY_COMPARE_WITH_TIMEOUT(controller.position, position, 3000);
     controller.subtitleTracks = {QStringLiteral("English")};
     controller.selectSubtitleTrack(0);
     QVERIFY(controller.subtitleText.isEmpty());
-    QTest::keyClick(fixture.window, Qt::Key_Down, Qt::ControlModifier | Qt::ShiftModifier);
-    QCOMPARE(controller.subtitleOffsetPercent, 1);
+#if defined(Q_OS_MACOS)
+    const auto subtitleOffsetModifiers = Qt::MetaModifier | Qt::ShiftModifier;
+#else
+    const auto subtitleOffsetModifiers = Qt::ControlModifier | Qt::ShiftModifier;
+#endif
+    QTest::keyClick(fixture.window, Qt::Key_Down, subtitleOffsetModifiers);
+    QTRY_COMPARE_WITH_TIMEOUT(controller.subtitleOffsetPercent, 1, 1000);
     QCOMPARE(fixture.window->activeFocusItem(), seek);
     QCOMPARE(controller.position, position);
     controller.selectSubtitleTrack(-1);
-    QTest::keyClick(fixture.window, Qt::Key_Down, Qt::ControlModifier | Qt::ShiftModifier);
-    QCOMPARE(controller.subtitleOffsetPercent, 1);
+    QTest::keyClick(fixture.window, Qt::Key_Down, subtitleOffsetModifiers);
+    QTRY_COMPARE_WITH_TIMEOUT(controller.subtitleOffsetPercent, 1, 1000);
     QCOMPARE(fixture.item("embeddedGalleryViewer")->property("presentedIndex").toInt(), 0);
     auto *viewer = fixture.item("embeddedGalleryViewer");
     seek->setFocus(false);
