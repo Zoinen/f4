@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+from datetime import datetime, timezone
 
 
 def package_revisions(
@@ -15,13 +16,21 @@ def package_revisions(
     recipe_ref: str,
     expected_arch: str | None = None,
     remote_name: str = "",
+    latest_only: bool = False,
 ) -> set:
-    """Return exact recipe/package revisions, optionally filtered by architecture."""
+    """Return exact recipe/package revisions, optionally selecting latest revisions."""
     catalog_name = remote_name or "Local Cache"
     catalog = data.get(catalog_name, {})
     recipe = catalog.get(recipe_ref, {})
     package_revisions = set()
-    for recipe_revision, revision in recipe.get("revisions", {}).items():
+    recipe_revisions = recipe.get("revisions", {})
+    if latest_only and recipe_revisions:
+        recipe_revision = max(
+            recipe_revisions,
+            key=lambda key: _revision_timestamp(recipe_revisions[key]),
+        )
+        recipe_revisions = {recipe_revision: recipe_revisions[recipe_revision]}
+    for recipe_revision, revision in recipe_revisions.items():
         for package_id, package in revision.get("packages", {}).items():
             settings = package.get("info", {}).get("settings", {})
             if (
@@ -29,18 +38,55 @@ def package_revisions(
                 and str(settings.get("arch", "")) != expected_arch
             ):
                 continue
-            for package_revision in package.get("revisions", {}):
+            package_revision_data = package.get("revisions", {})
+            if latest_only and package_revision_data:
+                package_revision = max(
+                    package_revision_data,
+                    key=lambda key: _revision_timestamp(
+                        package_revision_data[key]
+                    ),
+                )
+                package_revision_data = {
+                    package_revision: package_revision_data[package_revision]
+                }
+            for package_revision in package_revision_data:
                 package_revisions.add(
                     (recipe_revision, package_id, package_revision)
                 )
     return package_revisions
 
 
+def _revision_timestamp(revision: dict) -> float:
+    """Convert Conan's list-JSON revision timestamp to a sortable number."""
+    timestamp = revision.get("timestamp", "")
+    if isinstance(timestamp, (int, float)):
+        return float(timestamp)
+    if not isinstance(timestamp, str):
+        return 0.0
+    for time_format in ("%Y-%m-%d %H:%M:%S UTC", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(timestamp, time_format).replace(
+                tzinfo=timezone.utc
+            ).timestamp()
+        except ValueError:
+            pass
+    try:
+        return datetime.fromisoformat(timestamp.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
 def package_revisions_for_arch(
-    data: dict, recipe_ref: str, expected_arch: str, remote_name: str = ""
+    data: dict,
+    recipe_ref: str,
+    expected_arch: str,
+    remote_name: str = "",
+    latest_only: bool = False,
 ) -> set:
     """Return exact recipe/package revisions for binaries of one architecture."""
-    return package_revisions(data, recipe_ref, expected_arch, remote_name)
+    return package_revisions(
+        data, recipe_ref, expected_arch, remote_name, latest_only=latest_only
+    )
 
 
 def verify_required_packages(
@@ -54,7 +100,7 @@ def verify_required_packages(
     missing = []
     for recipe_ref in recipe_refs:
         package_revisions = package_revisions_for_arch(
-            data, recipe_ref, expected_arch, remote_name
+            data, recipe_ref, expected_arch, remote_name, latest_only=True
         )
         if not package_revisions:
             missing.append(recipe_ref)

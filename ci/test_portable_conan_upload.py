@@ -24,15 +24,24 @@ def package_index(
             "qt/6.11.1": {
                 "revisions": {
                     recipe_revision: {
+                        "timestamp": "2026-11-27 12:00:00 UTC",
                         "packages": {
                             "x86-package": {
-                                "revisions": {package_revision: {}},
+                                "revisions": {
+                                    package_revision: {
+                                        "timestamp": "2026-11-27 12:00:00 UTC"
+                                    }
+                                },
                                 "info": {
                                     "settings": {"os": "Linux", "arch": "x86_64"}
                                 }
                             },
                             "arm-package": {
-                                "revisions": {package_revision: {}},
+                                "revisions": {
+                                    package_revision: {
+                                        "timestamp": "2026-11-27 12:00:00 UTC"
+                                    }
+                                },
                                 "info": {
                                     "settings": {"os": "Linux", "arch": "armv8"}
                                 }
@@ -124,6 +133,44 @@ class ConanPublicationGateTests(unittest.TestCase):
             "test local cache",
         )
 
+        uploader.verify_uploaded_packages(
+            local_packages,
+            remote,
+            "armv8",
+            "test remote",
+            "f4-conan-upload",
+        )
+
+    def test_stale_local_revisions_do_not_block_uploaded_latest_packages(self) -> None:
+        local = package_index(
+            "Local Cache", "current-recipe", "current-package-revision"
+        )
+        recipe = local["Local Cache"]["qt/6.11.1"]["revisions"]
+        current = recipe["current-recipe"]
+        current["timestamp"] = "2026-11-27 12:00:00 UTC"
+        for package in current["packages"].values():
+            package["revisions"]["stale-package-revision"] = {
+                "timestamp": "2026-11-26 12:00:00 UTC"
+            }
+
+        # An older recipe revision can also remain in an interrupted Conan cache.
+        stale_recipe = package_index(
+            "Local Cache", "stale-recipe", "stale-package-revision"
+        )["Local Cache"]["qt/6.11.1"]["revisions"]["stale-recipe"]
+        stale_recipe["timestamp"] = "2026-11-26 11:00:00 UTC"
+        recipe["stale-recipe"] = stale_recipe
+
+        remote = package_index(
+            "f4-conan-upload", "current-recipe", "current-package-revision"
+        )
+        local_packages = uploader.verify_required_packages(
+            local, ["qt/6.11.1"], "armv8", "test local cache"
+        )
+
+        self.assertEqual(
+            local_packages["qt/6.11.1"],
+            {("current-recipe", "arm-package", "current-package-revision")},
+        )
         uploader.verify_uploaded_packages(
             local_packages,
             remote,
