@@ -3079,6 +3079,10 @@ void F4QuickViewSurfaceTests::focusedVideoSeekSurvivesShellRefresh()
     QTRY_VERIFY(seek->hasActiveFocus());
     QVERIFY(QMetaObject::invokeMethod(fixture.window, "restoreSurfaceFocus"));
     QCOMPARE(fixture.window->activeFocusItem(), seek);
+    // The video surface is loaded asynchronously; settle its geometry and
+    // FocusScope binding before synthesizing the shortcut that exercises it.
+    QTRY_VERIFY_WITH_TIMEOUT(surface->height() > 1, 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(surface->property("viewerHasFocus").toBool(), 3000);
     const auto position = controller.position;
     controller.subtitleTracks = {QStringLiteral("English")};
     controller.selectSubtitleTrack(0);
