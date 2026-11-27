@@ -83,6 +83,12 @@ apt_with_timeout install -y --no-install-recommends \
     autoconf automake bison build-essential ca-certificates curl flex \
     fontconfig fonts-dejavu-core git libdbus-1-dev libssl-dev patchelf \
     gnupg gperf libtool m4 patch pkg-config software-properties-common xz-utils
+# Qt WebEngine invokes Conan's bundled pkgconf, whose default search path does
+# not include Debian's architecture-specific system pkg-config directory.
+# Expose the DBus development package installed above so GN can resolve
+# dbus-1.pc on both x86_64 and ARM64 Ubuntu 18.04 containers.
+multiarch_triplet="$(dpkg-architecture -qDEB_HOST_MULTIARCH)"
+export PKG_CONFIG_PATH="/usr/lib/${multiarch_triplet}/pkgconfig:/usr/share/pkgconfig${PKG_CONFIG_PATH:+:${PKG_CONFIG_PATH}}"
 ppa_added=0
 for attempt in 1 2 3; do
   if add-apt-repository -y ppa:ubuntu-toolchain-r/test; then

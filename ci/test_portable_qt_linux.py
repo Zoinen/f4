@@ -76,6 +76,19 @@ TARGET_COMPILE_OPTIONS(${ly_lib_name}_neon64 PRIVATE -march=armv8-a+dotprod+i8mm
 
         self.assertIn("fontconfig fonts-dejavu-core", script)
 
+    def test_bionic_pkg_config_finds_system_multiarch_packages(self):
+        script = BUILD_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn("libdbus-1-dev", script)
+        self.assertIn(
+            'multiarch_triplet="$(dpkg-architecture -qDEB_HOST_MULTIARCH)"',
+            script,
+        )
+        self.assertIn(
+            'export PKG_CONFIG_PATH="/usr/lib/${multiarch_triplet}/pkgconfig:',
+            script,
+        )
+
     def test_bionic_container_uses_https_for_the_x86_mirror(self):
         script = BUILD_SCRIPT.read_text(encoding="utf-8")
 
