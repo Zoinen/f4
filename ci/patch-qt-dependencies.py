@@ -331,6 +331,49 @@ _PULSEAUDIO_SOURCE_PATCH = (
     '            strict=True,\n'
     '        )\n'
 )
+_LINUX_ARM64_CFI_MARKER = (
+    "# f4: disable Chromium branch protection for the baseline Linux ARM64 build"
+)
+_LINUX_ARM64_CFI_CMAKE_BEFORE = (
+    '            if(CMAKE_CROSSCOMPILING AND cpu STREQUAL "arm64")\n'
+    '                # This is a workaround to avoid auto test timeouts on the QEMU arm64 CI.\n'
+    '                if ("$ENV{TARGET_OSVERSION_COIN}" STREQUAL "qemu")\n'
+    '                    list(APPEND gnArgArg\n'
+    '                        v8_enable_sandbox=false\n'
+    '                        arm_control_flow_integrity="none"\n'
+    '                    )\n'
+    '                endif()\n'
+    '            endif()\n'
+)
+_LINUX_ARM64_CFI_CMAKE_AFTER = (
+    '            if(CMAKE_CROSSCOMPILING AND cpu STREQUAL "arm64")\n'
+    '                # This is a workaround to avoid auto test timeouts on the QEMU arm64 CI.\n'
+    '                if ("$ENV{TARGET_OSVERSION_COIN}" STREQUAL "qemu")\n'
+    '                    list(APPEND gnArgArg v8_enable_sandbox=false)\n'
+    '                endif()\n'
+    '            endif()\n'
+    '            if(cpu STREQUAL "arm64" AND\n'
+    '               CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND\n'
+    '               CMAKE_CXX_COMPILER_VERSION VERSION_LESS "12.0.0")\n'
+    '                # Ubuntu 18.04 binutils cannot assemble XPACLRI from Chromium\'s\n'
+    '                # standard PAC/BTI flags. Keep GN on its portable baseline.\n'
+    '                list(APPEND gnArgArg arm_control_flow_integrity="none")\n'
+    '            endif()\n'
+)
+_LINUX_ARM64_CFI_SOURCE_PATCH = (
+    f"        {_LINUX_ARM64_CFI_MARKER}\n"
+    '        if str(self.settings.os) == "Linux" and str(self.settings.arch) == "armv8":\n'
+    '            qtwebengine_core_cmake = os.path.join(\n'
+    '                self.source_folder, "qtwebengine", "src", "core", "CMakeLists.txt"\n'
+    '            )\n'
+    '            replace_in_file(\n'
+    '                self,\n'
+    '                qtwebengine_core_cmake,\n'
+    f"                {_LINUX_ARM64_CFI_CMAKE_BEFORE!r},\n"
+    f"                {_LINUX_ARM64_CFI_CMAKE_AFTER!r},\n"
+    '                strict=True,\n'
+    '            )\n'
+)
 _QUICK_PACKAGE_GUARD_ANCHOR = "        cmake.install()\n"
 _QUICK_PACKAGE_GUARD_MARKER = "missing_quick_libraries = []"
 _QUICK_PACKAGE_GUARD = '''        if cross_building(self) and self.options.qtdeclarative and self.options.qtshadertools and self.options.gui:
@@ -512,6 +555,20 @@ def _patch_linux_audio(text: str) -> str:
             source_anchor + _PULSEAUDIO_SOURCE_PATCH,
         )
     return text
+
+
+def _patch_linux_arm64_cfi(text: str) -> str:
+    if _LINUX_ARM64_CFI_MARKER in text:
+        return text
+    source_anchor = '        apply_conandata_patches(self)\n'
+    if text.count(source_anchor) != 1:
+        raise SystemExit(
+            "unexpected Qt recipe: Linux ARM64 source patch anchor is absent or ambiguous"
+        )
+    return text.replace(
+        source_anchor,
+        source_anchor + _LINUX_ARM64_CFI_SOURCE_PATCH,
+    )
 
 
 def _patch_pulseaudio_finder(text: str) -> str:
@@ -1197,6 +1254,7 @@ def main() -> None:
         patched = _patch_windows_ffmpeg_requirement(patched)
     if args.linux_audio:
         patched = _patch_linux_audio(patched)
+        patched = _patch_linux_arm64_cfi(patched)
         print(
             "[FIX] Qt Linux audio recipe bridges WrapPulseAudio to "
             "Conan's pulseaudio::pulse target"

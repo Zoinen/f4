@@ -244,16 +244,6 @@ target_packages=(
 baseline_marker="$CONAN_HOME/p/.f4-glibc-2.27-gcc11-ready"
 arm64_video_baseline_marker="$CONAN_HOME/p/.f4-arm64-glibc-2.27-video-libraries-ready"
 conan_build_args=(--build=missing)
-conan_conf_args=()
-if [[ "${TARGET_ARCH}" == "arm64" ]]; then
-    # Chromium's Linux/ARM64 stack-trace source uses XPACLRI, whose encoding
-    # is the Armv8.3 HINT #7 instruction. Ubuntu 18's assembler rejects that
-    # mnemonic when parsing for its default Armv8 target. Select Armv8.3 only
-    # for GNU as; GCC still generates code for the portable baseline, and the
-    # instruction remains a HINT no-op on older ARM cores.
-    conan_conf_args+=(-c:h 'qt/*:tools.build:cxxflags=["-Wa,-march=armv8.3-a"]')
-    echo "Allowing the ARM64 QtWebEngine assembler to parse the XPACLRI hint"
-fi
 # A Conan package ID does not describe the glibc version of a prebuilt build
 # requirement.  In particular, an m4 binary uploaded from a newer Linux host
 # can look like a valid cache hit and then fail only when xkbcommon invokes it
@@ -532,7 +522,7 @@ fi
 # host neither builds nor uses that tool, so omit the entire expensive elfutils
 # subtree from the portable graph.
 for attempt in 1 2 3; do
-    if conan install qt/host "${conan_build_args[@]}" "${conan_conf_args[@]}" \
+    if conan install qt/host "${conan_build_args[@]}" \
         -s:h build_type=Release -s:h compiler.cppstd=gnu20 \
         -s:b build_type=Release -s:b compiler.cppstd=gnu20 \
         -o:h 'qt/*:shared=False' \

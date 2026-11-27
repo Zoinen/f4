@@ -99,6 +99,9 @@ if candidates:
                 grep -Fq 'self.requires("ffmpeg/7.1.5@f4/macos")' "${reusable_qt_recipe}/conanfile.py"; }; } && \
             { [[ "${target_os}" != "Windows" ]] || \
               grep -Fq 'self.requires("ffmpeg/7.1.5@f4/windows")' "${reusable_qt_recipe}/conanfile.py"; } && \
+            { [[ "${target_arch}" != "arm64" || "${target_os}" != "Linux" ]] || \
+              grep -Fq '# f4: disable Chromium branch protection for the baseline Linux ARM64 build' \
+                  "${reusable_qt_recipe}/conanfile.py"; } && \
             grep -Fq 'self.requires("md4c/[>=0.4.8 <0.6]")' "${reusable_qt_recipe}/conanfile.py" && \
             grep -Fq '"ffmpeg::avcodec"' "${reusable_qt_recipe}/conanfile.py" && \
             grep -Fq 'if(NOT TARGET Qt::qsb)' "${reusable_qt_recipe}/conanfile.py" && \

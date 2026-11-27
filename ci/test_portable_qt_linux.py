@@ -76,18 +76,16 @@ TARGET_COMPILE_OPTIONS(${ly_lib_name}_neon64 PRIVATE -march=armv8-a+dotprod+i8mm
 
         self.assertIn("fontconfig fonts-dejavu-core", script)
 
-    def test_arm64_qtwebengine_uses_assembler_only_armv83_flag(self):
+    def test_arm64_qtwebengine_uses_the_gn_branch_protection_setting(self):
         script = BUILD_SCRIPT.read_text(encoding="utf-8")
+        recipe_patcher = (REPO_ROOT / "ci" / "patch-qt-dependencies.py").read_text(
+            encoding="utf-8"
+        )
 
-        self.assertIn('if [[ "${TARGET_ARCH}" == "arm64" ]]; then', script)
-        self.assertIn(
-            "conan_conf_args+=(-c:h 'qt/*:tools.build:cxxflags=[\"-Wa,-march=armv8.3-a\"]')",
-            script,
-        )
-        self.assertIn(
-            'conan install qt/host "${conan_build_args[@]}" "${conan_conf_args[@]}"',
-            script,
-        )
+        self.assertNotIn("conan_conf_args", script)
+        self.assertNotIn("tools.build:cxxflags", script)
+        self.assertIn("patched = _patch_linux_arm64_cfi(patched)", recipe_patcher)
+        self.assertIn('arm_control_flow_integrity="none"', recipe_patcher)
 
     def test_bionic_pkg_config_finds_system_multiarch_packages(self):
         script = BUILD_SCRIPT.read_text(encoding="utf-8")

@@ -794,6 +794,48 @@ class LinuxAudioRecipePatchTests(unittest.TestCase):
     def test_pulseaudio_source_recipe_patch_is_valid_python(self) -> None:
         ast.parse("def source(self):\n" + patcher._PULSEAUDIO_SOURCE_PATCH)
 
+    def test_linux_arm64_cfi_source_patch_is_idempotent_and_targets_gcc11(self) -> None:
+        recipe = "class Recipe:\n    def source(self):\n" + patcher._FFMPEG_SOURCE_ANCHOR
+        patched = patcher._patch_linux_arm64_cfi(recipe)
+        ast.parse(patched)
+        self.assertEqual(patcher._patch_linux_arm64_cfi(patched), patched)
+        self.assertIn(patcher._LINUX_ARM64_CFI_MARKER, patched)
+
+        calls = []
+        namespace = {
+            "os": os,
+            "replace_in_file": lambda *args, **kwargs: calls.append((args, kwargs)),
+        }
+        exec(
+            "class Recipe:\n    def source(self):\n"
+            + patcher._LINUX_ARM64_CFI_SOURCE_PATCH,
+            namespace,
+        )
+        instance = namespace["Recipe"]()
+        instance.settings = types.SimpleNamespace(os="Linux", arch="armv8")
+        instance.source_folder = "/qt"
+        instance.source()
+
+        [(arguments, options)] = calls
+        self.assertEqual(
+            arguments[1],
+            os.path.join("/qt", "qtwebengine", "src", "core", "CMakeLists.txt"),
+        )
+        self.assertEqual(arguments[2], patcher._LINUX_ARM64_CFI_CMAKE_BEFORE)
+        self.assertEqual(arguments[3], patcher._LINUX_ARM64_CFI_CMAKE_AFTER)
+        self.assertIn('arm_control_flow_integrity="none"', arguments[3])
+        self.assertNotIn('arm_control_flow_integrity="standard"', arguments[3])
+        self.assertEqual(options, {"strict": True})
+
+    def test_linux_arm64_cfi_patch_rejects_an_unknown_source_anchor(self) -> None:
+        for recipe in ("class Recipe:\n    def source(self):\n        pass\n",
+                       "class Recipe:\n    def source(self):\n"
+                       + patcher._FFMPEG_SOURCE_ANCHOR * 2):
+            with self.subTest(recipe=recipe), self.assertRaisesRegex(
+                SystemExit, "Linux ARM64 source patch anchor"
+            ):
+                patcher._patch_linux_arm64_cfi(recipe)
+
     def test_linux_audio_ignores_unrelated_package_info_alsa_guard(self) -> None:
         recipe = self.recipe_skeleton() + (
             '            if self.options.get_safe("with_libalsa", False):\n'
