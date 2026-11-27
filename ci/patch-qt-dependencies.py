@@ -1004,6 +1004,18 @@ endif()
 '''
 _PDF_PNG_INCLUDES_ANCHOR = "                ${gnIncludes}\n"
 _PDF_PNG_INCLUDES = _PDF_PNG_INCLUDES_ANCHOR + "            PNG_INCLUDES ${pdfPngIncludes}\n"
+_PDF_STATIC_JPEG = '''# Keep PDFium and Qt Gui on the same libjpeg in static builds.
+if(QT_FEATURE_static AND QT_FEATURE_system_jpeg)
+    find_package(JPEG REQUIRED)
+    target_link_libraries(Pdf PRIVATE JPEG::JPEG)
+    set(QT_FEATURE_webengine_qt_libjpeg ON)
+    foreach(include_dir IN LISTS JPEG_INCLUDE_DIRS)
+        list(APPEND pdfJpegIncludes "\\"${include_dir}\\"")
+    endforeach()
+endif()
+'''
+_PDF_JPEG_INCLUDES_ANCHOR = "            PNG_INCLUDES ${pdfPngIncludes}\n"
+_PDF_JPEG_INCLUDES = _PDF_JPEG_INCLUDES_ANCHOR + "            JPEG_INCLUDES ${pdfJpegIncludes}\n"
 _PDF_CHROMIUM_PNG_IMPORT_ANCHOR = 'import("//third_party/libpng/visibility.gni")\n'
 _PDF_CHROMIUM_PNG_IMPORT = _PDF_CHROMIUM_PNG_IMPORT_ANCHOR + 'import("//third_party/pdfium/pdfium.gni")\n'
 _PDF_CHROMIUM_PNG_TARGET_ANCHOR = "if (!use_system_libpng) {\n"
@@ -1079,8 +1091,13 @@ def _patch_pdf(text: str) -> str:
             '        pdf_cmake = os.path.join(self.source_folder, "qtwebengine", "src", "pdf", "CMakeLists.txt")\n'
             f'        replace_in_file(self, pdf_cmake, {_PDF_STATIC_PNG_ANCHOR!r},\n'
             f'                        {(_PDF_STATIC_PNG + _PDF_STATIC_PNG_ANCHOR)!r}, strict=True)\n'
+            '        # Use Qt\'s packaged libjpeg in PDFium instead of its bundled copy.\n'
+            f'        replace_in_file(self, pdf_cmake, {_PDF_STATIC_PNG_ANCHOR!r},\n'
+            f'                        {(_PDF_STATIC_JPEG + _PDF_STATIC_PNG_ANCHOR)!r}, strict=True)\n'
             f'        replace_in_file(self, pdf_cmake, {_PDF_PNG_INCLUDES_ANCHOR!r},\n'
             f'                        {_PDF_PNG_INCLUDES!r}, strict=True)\n'
+            f'        replace_in_file(self, pdf_cmake, {_PDF_JPEG_INCLUDES_ANCHOR!r},\n'
+            f'                        {_PDF_JPEG_INCLUDES!r}, strict=True)\n'
             '        # FreeType also reaches PNG through the Chromium target.\n'
             '        pdf_png_gn = os.path.join(self.source_folder, "qtwebengine", "src", "3rdparty",\n'
             '                                  "chromium", "third_party", "libpng", "BUILD.gn")\n'

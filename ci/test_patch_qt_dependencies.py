@@ -229,6 +229,28 @@ class WindowsQtWebEngineToolchainTests(unittest.TestCase):
         namespace["source"](instance)
 
 
+class QtPdfStaticJpegTests(unittest.TestCase):
+    def test_pdfium_reuses_the_static_qt_jpeg_package(self):
+        recipe = "\n".join((
+            '        "with_gstreamer": [True, False],',
+            '        "with_gstreamer": False,',
+            '        self.no_copy_source = not (self.settings_build.os == "Windows" and self.options.get_safe("qtwebengine"))',
+            '            self.tool_requires(f"qt/{self.version}")',
+            '        apply_conandata_patches(self)',
+            '        tc.variables["BUILD_qtrepotools"] = "OFF"',
+            '        for module in self._get_module_tree:',
+            '            if not getattr(self.options, module):',
+            '        if self.options.get_safe("qtwebengine") and qt_quick_enabled:',
+        )) + "\n"
+
+        patched = patcher._patch_pdf(recipe)
+
+        self.assertIn("QT_FEATURE_webengine_qt_libjpeg ON", patched)
+        self.assertIn("target_link_libraries(Pdf PRIVATE JPEG::JPEG)", patched)
+        self.assertIn("JPEG_INCLUDES ${pdfJpegIncludes}", patched)
+        self.assertEqual(patcher._patch_pdf(patched), patched)
+
+
 class Md4cRequirementPatchTests(unittest.TestCase):
     def test_pins_md4c_before_incompatible_06(self):
         recipe = (
