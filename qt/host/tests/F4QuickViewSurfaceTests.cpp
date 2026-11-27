@@ -1399,7 +1399,7 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
     body->setProperty("selectedNativePage", "theme");
     QTest::qWait(150);
     const qreal dpr=fixture.window->devicePixelRatio();
-    const QList<QQuickItem *> pixelGridRoots{
+    QList<QQuickItem *> pixelGridRoots{
         content, categories, sharedTitle, sharedApply, sharedOK, sharedCancel};
     QStringList previousPixelGridSnapshot;
     QString lastPixelGridFailure;
@@ -1454,6 +1454,11 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
             ? stablePixelGridSamples + 1 : 1;
         previousPixelGridSnapshot = snapshot;
         return failure.isEmpty() && stablePixelGridSamples >= 4;
+    };
+    const auto resetPixelGridSettlement = [&]() {
+        previousPixelGridSnapshot.clear();
+        lastPixelGridFailure.clear();
+        stablePixelGridSamples = 0;
     };
     QTRY_VERIFY_WITH_TIMEOUT(pixelGridIsSettled(), 5000);
     int leaves=0;
@@ -1819,8 +1824,25 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
     QTRY_COMPARE(body->property("selectedNativePage").toString(), "terminal-colors");
     QQuickItem *terminalPage = nullptr;
     QTRY_VERIFY((terminalPage = visualItemWithObjectName(body,"terminalColorsPage")));
+    pixelGridRoots.append(terminalPage);
     QTest::qWait(150);
+    resetPixelGridSettlement();
+    QTRY_VERIFY_WITH_TIMEOUT(pixelGridIsSettled(), 5000);
     QCOMPARE(QSizeF(settingsDialog->width(), settingsDialog->height()), settingsSize);
+    auto *terminalDescription = visualItemWithObjectName(
+        terminalPage, "terminalColorsDescription");
+    QVERIFY(terminalDescription && sharedTitle);
+    const qreal titleBottom = sharedTitle->mapToItem(
+        body, QPointF(0, sharedTitle->height())).y();
+    const qreal descriptionTop = terminalDescription->mapToItem(body, QPointF{}).y();
+    const qreal titleGap = body->property("gap").toReal();
+    const QString titleOverlapDetail = QStringLiteral(
+        "settings title bottom=%1 description top=%2 required gap=%3 logical")
+        .arg(titleBottom, 0, 'f', 6)
+        .arg(descriptionTop, 0, 'f', 6)
+        .arg(titleGap, 0, 'f', 6);
+    QVERIFY2(descriptionTop + 0.5 / dpr >= titleBottom + titleGap,
+             qPrintable(titleOverlapDetail));
     inspect(inspect,terminalPage);
     auto *presetCombo = visualItemWithObjectName(terminalPage,"terminalColorsPreset");
     auto *wheel = visualItemWithObjectName(terminalPage,"terminalColorWheel");
@@ -1834,6 +1856,8 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
     for (const QSize size : {QSize(700,850), QSize(1400,1050)}) {
         fixture.window->resize(size);
         QTest::qWait(150);
+        resetPixelGridSettlement();
+        QTRY_VERIFY_WITH_TIMEOUT(pixelGridIsSettled(), 5000);
         inspect(inspect,terminalPage);
         auto *loader = visualItemWithObjectName(body,"nativeSettingsContent");
         QCOMPARE(terminalPage->width(), loader->width());
@@ -1865,8 +1889,13 @@ void F4QuickViewSurfaceTests::nativeSettingsPagePreservesConfigurator()
         for (auto *shared : {sharedTitle, sharedApply, sharedOK, sharedCancel}) inspect(inspect, shared);
         viewport->setProperty("contentY", viewport->property("contentHeight").toReal() - viewport->height());
         QTest::qWait(50);
+        resetPixelGridSettlement();
+        QTRY_VERIFY_WITH_TIMEOUT(pixelGridIsSettled(), 5000);
         inspect(inspect, terminalPage);
         viewport->setProperty("contentY", 0);
+        resetPixelGridSettlement();
+        QTRY_VERIFY_WITH_TIMEOUT(pixelGridIsSettled(), 5000);
+        inspect(inspect, terminalPage);
         QVERIFY2(wheel->mapToItem(terminalPage,QPointF(wheel->width(),0)).x() <= terminalPage->width() + 0.001,
             qPrintable(QString("Wheel right=%1 page width=%2").arg(wheel->mapToItem(terminalPage,QPointF(wheel->width(),0)).x(), 0, 'f', 6).arg(terminalPage->width(), 0, 'f', 6)));
         if (size.width() == 700) QVERIFY(fixture.window->grabWindow().save(".diagnostics/terminal-colors-narrow-175.png"));

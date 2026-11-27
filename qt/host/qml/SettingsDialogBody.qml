@@ -156,12 +156,17 @@ Item {
     readonly property real helpWidth: hostWindow.snapPx(Math.min(280, mainWidth * .3))
     readonly property real helpHeight: hostWindow.snapPx(Math.min(112, Math.max(90, paneBottom * .22)))
     readonly property real contentStartY: hasNavigation ? gap : 0
+    readonly property bool contentTitleVisible: widgets.some(widget =>
+        widget.layoutRole === "content-title" && widget.visible !== false)
+        && (!hasNavigation || !!nativePage)
+    readonly property real pageStartY: contentTitleVisible
+        ? Math.max(contentStartY, gap + lineHeight + gap) : contentStartY
     readonly property var editorPreview: widgets.find(w => w.layoutRole === "editor-preview")
     readonly property bool groupAppearance: !!editorPreview && widgets.some(w =>
         w.layoutRole === "content" && (w.children || []).some(group => group.sectionID === "filegroup-Highlighting"))
     readonly property bool hasEditorPreview: !!editorPreview && !groupAppearance
     readonly property real editorPreviewHeight: hasEditorPreview ? hostWindow.snapPx(mainWidth < 560 ? 112 : 64) : 0
-    readonly property real pageY: contentStartY + (hasEditorPreview ? editorPreviewHeight + gap : 0)
+    readonly property real pageY: pageStartY + (hasEditorPreview ? editorPreviewHeight + gap : 0)
     readonly property real helpGap: hostWindow.snapPx(4)
     readonly property real pageWidth: Math.max(1, mainWidth - (wideHelp ? helpWidth + helpGap : 0))
     readonly property bool fileGroupsOverview: widgets.some(w => w.layoutRole === "content" && w.fileGroupsOverview === true)
@@ -213,7 +218,7 @@ Item {
         case "navigation": return Qt.rect(sidebarInset, navigationY, navigationWidth - sidebarInset,
             Math.max(1, height + rightGutter - hostWindow.snapPx(1) - sidebarInset - navigationY))
         case "content-title": return Qt.rect(mainX, gap, nativePage ? mainWidth : pageWidth, lineHeight)
-        case "editor-preview": return Qt.rect(mainX, contentStartY, mainWidth, editorPreviewHeight)
+        case "editor-preview": return Qt.rect(mainX, pageStartY, mainWidth, editorPreviewHeight)
         case "content": return Qt.rect(mainX, pageY, (fileGroupsOverview || sectionsOnly || fullPage) ? mainWidth : pageWidth, (fileGroupsOverview || sectionsOnly || fullPage) ? paneBottom - pageY : pageHeight)
         case "description": return wideHelp
             ? Qt.rect(mainX + pageWidth + helpGap, gap, helpWidth, paneBottom - gap)
