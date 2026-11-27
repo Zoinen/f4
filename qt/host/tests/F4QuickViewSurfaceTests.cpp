@@ -3083,11 +3083,8 @@ void F4QuickViewSurfaceTests::focusedVideoSeekSurvivesShellRefresh()
     controller.subtitleTracks = {QStringLiteral("English")};
     controller.selectSubtitleTrack(0);
     QVERIFY(controller.subtitleText.isEmpty());
-#if defined(Q_OS_MACOS)
-    const auto subtitleOffsetModifiers = Qt::MetaModifier | Qt::ShiftModifier;
-#else
+    // Qt maps ControlModifier to Command on macOS; this matches QML's Ctrl shortcut.
     const auto subtitleOffsetModifiers = Qt::ControlModifier | Qt::ShiftModifier;
-#endif
     QTest::keyClick(fixture.window, Qt::Key_Down, subtitleOffsetModifiers);
     QTRY_COMPARE_WITH_TIMEOUT(controller.subtitleOffsetPercent, 1, 1000);
     QCOMPARE(fixture.window->activeFocusItem(), seek);
