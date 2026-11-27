@@ -103,6 +103,10 @@ if candidates:
               { grep -Fq '# f4: disable Chromium branch protection in Qt generate for baseline Linux ARM64' \
                     "${reusable_qt_recipe}/conanfile.py" && \
                 grep -Fq '# f4: disable unsupported PAC/BTI in the QtPdf ARM64 baseline build' \
+                    "${reusable_qt_recipe}/conanfile.py" && \
+                grep -Fq 'if(LINUX AND arch STREQUAL "aarch64" AND' \
+                    "${reusable_qt_recipe}/conanfile.py" && \
+                ! grep -Fq 'if(LINUX AND cpu STREQUAL "arm64" AND' \
                     "${reusable_qt_recipe}/conanfile.py"; }; } && \
             grep -Fq 'self.requires("md4c/[>=0.4.8 <0.6]")' "${reusable_qt_recipe}/conanfile.py" && \
             grep -Fq '"ffmpeg::avcodec"' "${reusable_qt_recipe}/conanfile.py" && \
@@ -112,8 +116,12 @@ if candidates:
             grep -Fq 'native_quick_tools_config = os.path.join' "${reusable_qt_recipe}/conanfile.py" && \
             grep -Fq 'add_executable(Qt6::svgtoqml IMPORTED GLOBAL)' "${reusable_qt_recipe}/conanfile.py" && \
             grep -Fq 'native_svgtoqml_name = "svgtoqml.exe"' "${reusable_qt_recipe}/conanfile.py" && \
-            grep -Fq '# f4: retain the validated MSVC environment for QtWebEngine GN target switch' \
-                "${reusable_qt_recipe}/conanfile.py"; then
+            { [[ "${target_os}" == "Windows" ]] || \
+              grep -Fq '# f4: clear inherited MSVC environment before QtWebEngine GN target switch' \
+                  "${reusable_qt_recipe}/conanfile.py"; } && \
+            { [[ "${target_os}" != "Windows" ]] || \
+              grep -Fq '# f4: retain the validated MSVC environment for QtWebEngine GN target switch' \
+                  "${reusable_qt_recipe}/conanfile.py"; }; then
             if [[ "${qt_recipe_mode}" == "linux-audio" ]] && \
                 { ! grep -Fq 'tc.variables["FEATURE_pulseaudio"] = "ON"' "${reusable_qt_recipe}/conanfile.py" || \
                   ! grep -Fq 'tc.variables["FEATURE_alsa"] = "OFF"' "${reusable_qt_recipe}/conanfile.py" || \
@@ -209,8 +217,22 @@ grep -Fq '#ifndef V4L2_PIX_FMT_BGRA32' \
     "${qt_recipe_copy}/conanfile.py"
 grep -Fq '"ffmpeg::avcodec"' \
     "${qt_recipe_copy}/conanfile.py"
-grep -Fq '# f4: retain the validated MSVC environment for QtWebEngine GN target switch' \
-    "${qt_recipe_copy}/conanfile.py"
+if [[ "${target_os}" == "Windows" ]]; then
+    grep -Fq '# f4: retain the validated MSVC environment for QtWebEngine GN target switch' \
+        "${qt_recipe_copy}/conanfile.py"
+else
+    grep -Fq '# f4: clear inherited MSVC environment before QtWebEngine GN target switch' \
+        "${qt_recipe_copy}/conanfile.py"
+fi
+if [[ "${target_arch}" == "arm64" && "${target_os}" == "Linux" ]]; then
+    grep -Fq 'if(LINUX AND arch STREQUAL "aarch64" AND' \
+        "${qt_recipe_copy}/conanfile.py"
+    if grep -Fq 'if(LINUX AND cpu STREQUAL "arm64" AND' \
+        "${qt_recipe_copy}/conanfile.py"; then
+        echo "error: QtPdf ARM64 branch protection patch uses the wrong CMake variable" >&2
+        exit 1
+    fi
+fi
 if [[ "${qt_recipe_mode}" == "linux-audio" ]]; then
     grep -Fq 'tc.variables["FEATURE_pulseaudio"] = "ON"' \
         "${qt_recipe_copy}/conanfile.py"

@@ -156,10 +156,10 @@ class WindowsQtWebEngineToolchainTests(unittest.TestCase):
             "            if not getattr(self.options, module):\n"
             '        if self.options.get_safe("qtwebengine") and qt_quick_enabled:\n'
         )
-        patched = patcher._patch_pdf(recipe)
+        patched = patcher._patch_pdf(recipe, windows_msvc=True)
         self.assertIn(patcher._WINDOWS_QWE_SOURCE_MARKER, patched)
         self.assertIn("qwe_setup_toolchain.py", patched)
-        self.assertEqual(patcher._patch_pdf(patched), patched)
+        self.assertEqual(patcher._patch_pdf(patched, windows_msvc=True), patched)
 
     def test_pdf_recipe_adds_the_nested_toolchain_patch_once(self):
         recipe = (
@@ -167,17 +167,28 @@ class WindowsQtWebEngineToolchainTests(unittest.TestCase):
             "    def source(self):\n"
             "        apply_conandata_patches(self)\n"
         )
-        patched = patcher._patch_pdf(recipe)
+        patched = patcher._patch_pdf(recipe, windows_msvc=True)
         self.assertIn(patcher._WINDOWS_QWE_SOURCE_MARKER, patched)
+        self.assertEqual(patcher._patch_pdf(patched, windows_msvc=True), patched)
+
+    def test_non_windows_qt_recipe_keeps_its_existing_toolchain_patch(self):
+        recipe = (
+            '        "with_pdf": [True, False],\n'
+            "    def source(self):\n"
+            "        apply_conandata_patches(self)\n"
+        )
+        patched = patcher._patch_pdf(recipe)
+        self.assertIn(patcher._WINDOWS_QWE_LEGACY_SOURCE_MARKER, patched)
+        self.assertNotIn(patcher._WINDOWS_QWE_SOURCE_MARKER, patched)
+        self.assertIn("('VSINSTALLDIR', 'INCLUDE', 'LIB', 'LIBPATH')", patched)
         self.assertEqual(patcher._patch_pdf(patched), patched)
 
     def test_reusable_qt_recipe_gate_requires_the_validated_windows_patch(self):
         bootstrap = (SCRIPT.parent / "patch-qt-recipe.sh").read_text(encoding="utf-8")
         self.assertIn(patcher._WINDOWS_QWE_SOURCE_MARKER, bootstrap)
-        self.assertNotIn(
-            "# f4: clear inherited MSVC environment before QtWebEngine GN target switch",
-            bootstrap,
-        )
+        self.assertIn(patcher._WINDOWS_QWE_LEGACY_SOURCE_MARKER, bootstrap)
+        self.assertIn('[[ "${target_os}" == "Windows" ]] ||', bootstrap)
+        self.assertIn('[[ "${target_os}" != "Windows" ]] ||', bootstrap)
 
     def test_source_patch_matches_runner_environment_and_reports_vcvars_errors(self):
         qwe_source = (
@@ -203,7 +214,7 @@ class WindowsQtWebEngineToolchainTests(unittest.TestCase):
         recipe = (
             "def source(self):\n"
             "        apply_conandata_patches(self)\n"
-            + patcher._windows_qwe_toolchain_source_patch()
+            + patcher._windows_qwe_toolchain_source_patch(windows_msvc=True)
         )
         writes = []
 
@@ -303,7 +314,9 @@ class WindowsQtWebEngineToolchainTests(unittest.TestCase):
                     qwe_namespace["_LoadEnvFromBat"](["vcvarsall.bat", "amd64_x86"])
 
     def test_source_patch_is_skipped_outside_windows(self):
-        recipe = "def source(self):\n" + patcher._windows_qwe_toolchain_source_patch()
+        recipe = "def source(self):\n" + patcher._windows_qwe_toolchain_source_patch(
+            windows_msvc=True
+        )
         namespace = {"os": os}
         exec(recipe, namespace)
         instance = types.SimpleNamespace(

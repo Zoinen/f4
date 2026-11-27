@@ -91,6 +91,18 @@ TARGET_COMPILE_OPTIONS(${ly_lib_name}_neon64 PRIVATE -march=armv8-a+dotprod+i8mm
         self.assertIn('arm_control_flow_integrity="none"', recipe_patcher)
         self.assertIn('if(LINUX AND arch STREQUAL "aarch64" AND', recipe_patcher)
         self.assertIn(
+            'grep -Fq \'if(LINUX AND arch STREQUAL "aarch64" AND\'',
+            recipe_bootstrap,
+        )
+        self.assertIn(
+            "! grep -Fq 'if(LINUX AND cpu STREQUAL \"arm64\" AND'",
+            recipe_bootstrap,
+        )
+        self.assertIn(
+            "error: QtPdf ARM64 branch protection patch uses the wrong CMake variable",
+            recipe_bootstrap,
+        )
+        self.assertIn(
             "# f4: disable unsupported PAC/BTI in the QtPdf ARM64 baseline build",
             recipe_bootstrap,
         )

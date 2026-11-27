@@ -1141,6 +1141,22 @@ _WINDOWS_QWE_POPEN_ANCHOR = (
     "  popen = subprocess.Popen(\n"
     "      args, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)\n"
 )
+_WINDOWS_QWE_LEGACY_SOURCE_MARKER = (
+    "# f4: clear inherited MSVC environment before QtWebEngine GN target switch"
+)
+_WINDOWS_QWE_LEGACY_POPEN_PATCH = (
+    f"  {_WINDOWS_QWE_LEGACY_SOURCE_MARKER}\n"
+    "  # Do not let Conan's outer MSVC target contaminate the nested x86 setup.\n"
+    "  popen_env = os.environ.copy()\n"
+    "  for name in tuple(popen_env):\n"
+    "    if name.upper().startswith('VSCMD_'):\n"
+    "      popen_env.pop(name)\n"
+    "  for name in ('VSINSTALLDIR', 'INCLUDE', 'LIB', 'LIBPATH'):\n"
+    "    popen_env.pop(name, None)\n"
+    "  popen = subprocess.Popen(\n"
+    "      args, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,\n"
+    "      env=popen_env)\n"
+)
 _WINDOWS_QWE_SOURCE_MARKER = (
     "# f4: retain the validated MSVC environment for QtWebEngine GN target switch"
 )
@@ -1167,9 +1183,17 @@ _WINDOWS_QWE_POPEN_PATCH = (
 )
 
 
-def _windows_qwe_toolchain_source_patch() -> str:
+def _windows_qwe_toolchain_source_patch(*, windows_msvc: bool = False) -> str:
+    source_marker = (
+        _WINDOWS_QWE_SOURCE_MARKER
+        if windows_msvc
+        else _WINDOWS_QWE_LEGACY_SOURCE_MARKER
+    )
+    popen_patch = (
+        _WINDOWS_QWE_POPEN_PATCH if windows_msvc else _WINDOWS_QWE_LEGACY_POPEN_PATCH
+    )
     return (
-        f"        {_WINDOWS_QWE_SOURCE_MARKER}\n"
+        f"        {source_marker}\n"
         "        if self.settings_build.os == \"Windows\":\n"
         "            qwe_toolchain = os.path.join(\n"
         "                self.source_folder, \"qtwebengine\", \"src\", \"3rdparty\",\n"
@@ -1177,27 +1201,39 @@ def _windows_qwe_toolchain_source_patch() -> str:
         "                \"qwe_setup_toolchain.py\")\n"
         "            with open(qwe_toolchain, encoding=\"utf-8\") as qwe_file:\n"
         "                qwe_source = qwe_file.read()\n"
-        f"            if {_WINDOWS_QWE_SOURCE_MARKER!r} not in qwe_source:\n"
+        f"            if {source_marker!r} not in qwe_source:\n"
         f"                replace_in_file(self, qwe_toolchain, {_WINDOWS_QWE_POPEN_ANCHOR!r},\n"
-        f"                                {_WINDOWS_QWE_POPEN_PATCH!r}, strict=True)\n"
-        f"                replace_in_file(self, qwe_toolchain, {_WINDOWS_QWE_ERROR_ANCHOR!r},\n"
-        f"                                {_WINDOWS_QWE_ERROR_PATCH!r}, strict=True)\n"
+        f"                                {popen_patch!r}, strict=True)\n"
+        + (
+            f"                replace_in_file(self, qwe_toolchain, {_WINDOWS_QWE_ERROR_ANCHOR!r},\n"
+            f"                                {_WINDOWS_QWE_ERROR_PATCH!r}, strict=True)\n"
+            if windows_msvc
+            else ""
+        )
     )
 
 
-def _patch_pdf(text: str) -> str:
+def _patch_pdf(text: str, *, windows_msvc: bool = False) -> str:
     # Qt PDF shares the source tree and GN with WebEngine. Keep Conan's
     # WebEngine option false so it does not enable browser dependencies
     # or reject static/cross builds that are supported by PDF itself.
+    source_marker = (
+        _WINDOWS_QWE_SOURCE_MARKER
+        if windows_msvc
+        else _WINDOWS_QWE_LEGACY_SOURCE_MARKER
+    )
     if '        "with_pdf": [True, False],\n' in text:
-        if _WINDOWS_QWE_SOURCE_MARKER in text:
+        if source_marker in text:
             return text
         anchor = "        apply_conandata_patches(self)\n"
         if text.count(anchor) != 1:
             raise SystemExit(
                 "unexpected Qt recipe: cannot add the Windows QtWebEngine toolchain patch"
             )
-        return text.replace(anchor, anchor + _windows_qwe_toolchain_source_patch())
+        return text.replace(
+            anchor,
+            anchor + _windows_qwe_toolchain_source_patch(windows_msvc=windows_msvc),
+        )
     replacements = {
         '        "with_gstreamer": [True, False],\n':
             '        "with_gstreamer": [True, False],\n'
@@ -1231,7 +1267,7 @@ def _patch_pdf(text: str) -> str:
             f'                        {_PDF_CHROMIUM_PNG_IMPORT!r}, strict=True)\n'
             f'        replace_in_file(self, pdf_png_gn, {_PDF_CHROMIUM_PNG_TARGET_ANCHOR!r},\n'
             f'                        {_PDF_CHROMIUM_PNG_TARGET!r}, strict=True)\n'
-            + _windows_qwe_toolchain_source_patch(),
+            + _windows_qwe_toolchain_source_patch(windows_msvc=windows_msvc),
         '        tc.variables["BUILD_qtrepotools"] = "OFF"\n':
             '        tc.variables["BUILD_qtrepotools"] = "OFF"\n'
             '        if self.options.with_pdf:\n'
@@ -1341,7 +1377,7 @@ def main() -> None:
     print("[FIX:quick-child-window-stacking] Qt Quick skips scene walks without native child windows")
     patched = _patch_qml_signal_mask(patched)
     print("[FIX:qml-signal-mask] Qt QML reduces unobserved cross-thread signal forwarding")
-    patched = _patch_pdf(patched)
+    patched = _patch_pdf(patched, windows_msvc=args.windows_msvc)
     print("[FIX:qt-pdf] Qt PDF builds without the WebEngine browser modules")
     if patched != text:
         args.recipe.write_text(patched, encoding="utf-8")
