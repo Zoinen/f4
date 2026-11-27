@@ -188,6 +188,7 @@ class WindowsQtWebEngineToolchainTests(unittest.TestCase):
         self.assertIn(patcher._WINDOWS_QWE_SOURCE_MARKER, bootstrap)
         self.assertIn(patcher._WINDOWS_QWE_LEGACY_SOURCE_MARKER, bootstrap)
         self.assertIn(patcher._LINUX_ARM64_PAC_HINT_MARKER, bootstrap)
+        self.assertIn(patcher._LINUX_ARM64_MTE_GN_MARKER, bootstrap)
         self.assertIn("--linux-audio --linux-arm64", bootstrap)
         self.assertIn('[[ "${target_os}" == "Windows" ]] ||', bootstrap)
         self.assertIn('[[ "${target_os}" != "Windows" ]] ||', bootstrap)
@@ -935,13 +936,24 @@ class LinuxAudioRecipePatchTests(unittest.TestCase):
                 chromium_root / "third_party" / "abseil-cpp" / "absl" /
                 "debugging" / "internal" / "stacktrace_aarch64-inl.inc"
             )
+            partition_alloc_gni = (
+                chromium_root / "base" / "allocator" / "partition_allocator" /
+                "partition_alloc.gni"
+            )
             core_path.parent.mkdir(parents=True)
             pdf_path.parent.mkdir(parents=True)
             partition_trace.parent.mkdir(parents=True)
             absl_trace.parent.mkdir(parents=True)
+            partition_alloc_gni.parent.mkdir(parents=True, exist_ok=True)
             core_path.write_text(patcher._LINUX_ARM64_CFI_CMAKE_BEFORE)
             pdf_path.write_text("        set(gnArgArg ${gnArgArg})\n" +
                                 patcher._LINUX_ARM64_PDF_CFI_ANCHOR)
+            partition_alloc_gni.write_text(
+                "has_memory_tagging =\n"
+                '    current_cpu == "arm64" && is_clang && !is_asan && '
+                "(is_linux || is_android)\n\n"
+                "declare_args() {\n    use_partition_alloc = true\n}\n"
+            )
             partition_trace.write_text(
                 "asm(\"xpaclri\" : \"+r\"(x30));\n"
             )
@@ -962,6 +974,12 @@ class LinuxAudioRecipePatchTests(unittest.TestCase):
             self.assertNotIn("cpu STREQUAL", pdf_source)
             self.assertIn('list(APPEND gnArgArg arm_control_flow_integrity="none")',
                           pdf_source)
+            memory_tagging_source = partition_alloc_gni.read_text()
+            self.assertIn(patcher._LINUX_ARM64_MTE_GN_MARKER,
+                          memory_tagging_source)
+            self.assertIn('if (current_cpu == "arm64" && is_linux)',
+                          memory_tagging_source)
+            self.assertIn("has_memory_tagging = false", memory_tagging_source)
             self.assertIn(patcher._LINUX_ARM64_PAC_ASM_AFTER,
                           partition_trace.read_text())
             self.assertNotIn(patcher._LINUX_ARM64_PAC_ASM_BEFORE,
@@ -976,6 +994,7 @@ class LinuxAudioRecipePatchTests(unittest.TestCase):
             instance.generate()
             self.assertEqual(core_path.read_text(), core_source)
             self.assertEqual(pdf_path.read_text(), pdf_source)
+            self.assertEqual(partition_alloc_gni.read_text(), memory_tagging_source)
             self.assertEqual(
                 partition_trace.read_text(),
                 "asm(\"hint #0x7\" : \"+r\"(x30));\n",
