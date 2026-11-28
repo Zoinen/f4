@@ -343,6 +343,17 @@ _LINUX_ARM64_PAC_HINT_MARKER = (
 _LINUX_ARM64_MTE_GN_MARKER = (
     "# f4: disable Chromium MTE ifuncs for the baseline Linux ARM64 glibc build"
 )
+_LINUX_ARM64_IFUNC_HEADER_MARKER = (
+    "f4: guard Chromium ARM64 HW-capability includes on sys/ifunc.h availability"
+)
+_LINUX_ARM64_IFUNC_HEADER_ANCHOR = (
+    "#if PA_BUILDFLAG(IS_ANDROID) || PA_BUILDFLAG(IS_LINUX)\n"
+)
+_LINUX_ARM64_IFUNC_HEADER_PATCH = (
+    "// f4: guard Chromium ARM64 HW-capability includes on sys/ifunc.h availability\n"
+    "#if PA_BUILDFLAG(IS_ANDROID) || \\\n"
+    "    (PA_BUILDFLAG(IS_LINUX) && __has_include(<sys/ifunc.h>))\n"
+)
 _LINUX_ARM64_PAC_ASM_BEFORE = 'asm("xpaclri" : "+r"(x30));'
 _LINUX_ARM64_PAC_ASM_AFTER = 'asm("hint #0x7" : "+r"(x30));'
 _LINUX_ARM64_PAC_STRING_BEFORE = '" xpaclri\\n"'
@@ -388,6 +399,27 @@ _LINUX_ARM64_PAC_HINT_GENERATE_PATCH = (
     '                            + gni_text[assignment_end:])\n'
     '                with open(memory_tagging_gni, "w", encoding="utf-8") as gni_file:\n'
     '                    gni_file.write(gni_text)\n'
+    '            ifunc_header = os.path.join(\n'
+    '                qtwebengine_source, "base", "allocator", "partition_allocator",\n'
+    '                "src", "partition_alloc", "aarch64_support.h"\n'
+    '            )\n'
+    '            with open(ifunc_header, encoding="utf-8") as ifunc_file:\n'
+    '                ifunc_text = ifunc_file.read()\n'
+    f'            if {_LINUX_ARM64_IFUNC_HEADER_MARKER!r} not in ifunc_text:\n'
+    f'                if ifunc_text.count({_LINUX_ARM64_IFUNC_HEADER_ANCHOR!r}) != 1:\n'
+    '                    raise RuntimeError(\n'
+    '                        "unexpected Chromium aarch64_support.h: "\n'
+    '                        "ifunc capability guard is absent or ambiguous"\n'
+    '                    )\n'
+    f'                ifunc_text = ifunc_text.replace({_LINUX_ARM64_IFUNC_HEADER_ANCHOR!r}, '
+    f'{_LINUX_ARM64_IFUNC_HEADER_PATCH!r}, 1)\n'
+    '                with open(ifunc_header, "w", encoding="utf-8") as ifunc_file:\n'
+    '                    ifunc_file.write(ifunc_text)\n'
+    f'            if {_LINUX_ARM64_IFUNC_HEADER_MARKER!r} in ifunc_text and '
+    '"__has_include(<sys/ifunc.h>)" not in ifunc_text:\n'
+    '                raise RuntimeError(\n'
+    '                    "Chromium ARM64 sys/ifunc.h availability guard was not applied"\n'
+    '                )\n'
     '            pac_sources = (\n'
     '                os.path.join(qtwebengine_source, "base", "allocator",\n'
     '                    "partition_allocator", "src", "partition_alloc",\n'

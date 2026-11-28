@@ -108,6 +108,8 @@ if candidates:
                     "${reusable_qt_recipe}/conanfile.py" && \
                 grep -Fq '# f4: disable Chromium MTE ifuncs for the baseline Linux ARM64 glibc build' \
                     "${reusable_qt_recipe}/conanfile.py" && \
+                grep -Fq 'f4: guard Chromium ARM64 HW-capability includes on sys/ifunc.h availability' \
+                    "${reusable_qt_recipe}/conanfile.py" && \
                 grep -Fq 'if(LINUX AND arch STREQUAL "aarch64" AND' \
                     "${reusable_qt_recipe}/conanfile.py" && \
                 ! grep -Fq 'if(LINUX AND cpu STREQUAL "arm64" AND' \
@@ -237,6 +239,8 @@ if [[ "${target_arch}" == "arm64" && "${target_os}" == "Linux" ]]; then
     grep -Fq '# f4: use GNU-as-compatible HINT encoding for Chromium XPACLRI' \
         "${qt_recipe_copy}/conanfile.py"
     grep -Fq '# f4: disable Chromium MTE ifuncs for the baseline Linux ARM64 glibc build' \
+        "${qt_recipe_copy}/conanfile.py"
+    grep -Fq 'f4: guard Chromium ARM64 HW-capability includes on sys/ifunc.h availability' \
         "${qt_recipe_copy}/conanfile.py"
     grep -Fq 'if(LINUX AND arch STREQUAL "aarch64" AND' \
         "${qt_recipe_copy}/conanfile.py"

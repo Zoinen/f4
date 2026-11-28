@@ -189,6 +189,9 @@ class WindowsQtWebEngineToolchainTests(unittest.TestCase):
         self.assertIn(patcher._WINDOWS_QWE_LEGACY_SOURCE_MARKER, bootstrap)
         self.assertIn(patcher._LINUX_ARM64_PAC_HINT_MARKER, bootstrap)
         self.assertIn(patcher._LINUX_ARM64_MTE_GN_MARKER, bootstrap)
+        self.assertEqual(
+            2, bootstrap.count(patcher._LINUX_ARM64_IFUNC_HEADER_MARKER)
+        )
         self.assertIn("--linux-audio --linux-arm64", bootstrap)
         self.assertIn('[[ "${target_os}" == "Windows" ]] ||', bootstrap)
         self.assertIn('[[ "${target_os}" != "Windows" ]] ||', bootstrap)
@@ -940,11 +943,16 @@ class LinuxAudioRecipePatchTests(unittest.TestCase):
                 chromium_root / "base" / "allocator" / "partition_allocator" /
                 "partition_alloc.gni"
             )
+            ifunc_header = (
+                chromium_root / "base" / "allocator" / "partition_allocator" /
+                "src" / "partition_alloc" / "aarch64_support.h"
+            )
             core_path.parent.mkdir(parents=True)
             pdf_path.parent.mkdir(parents=True)
             partition_trace.parent.mkdir(parents=True)
             absl_trace.parent.mkdir(parents=True)
             partition_alloc_gni.parent.mkdir(parents=True, exist_ok=True)
+            ifunc_header.parent.mkdir(parents=True, exist_ok=True)
             core_path.write_text(patcher._LINUX_ARM64_CFI_CMAKE_BEFORE)
             pdf_path.write_text("        set(gnArgArg ${gnArgArg})\n" +
                                 patcher._LINUX_ARM64_PDF_CFI_ANCHOR)
@@ -953,6 +961,17 @@ class LinuxAudioRecipePatchTests(unittest.TestCase):
                 '    current_cpu == "arm64" && is_clang && !is_asan && '
                 "(is_linux || is_android)\n\n"
                 "declare_args() {\n    use_partition_alloc = true\n}\n"
+            )
+            ifunc_header.write_text(
+                "#if PA_BUILDFLAG(IS_ANDROID) || PA_BUILDFLAG(IS_LINUX)\n"
+                "#define HAS_HW_CAPS\n"
+                "#endif\n\n"
+                "#if PA_BUILDFLAG(PA_ARCH_CPU_ARM64) && defined(HAS_HW_CAPS)\n"
+                "#include <asm/hwcap.h>\n"
+                "#include <sys/ifunc.h>\n"
+                "#else\n"
+                "struct __ifunc_arg_t;\n"
+                "#endif\n"
             )
             partition_trace.write_text(
                 "asm(\"xpaclri\" : \"+r\"(x30));\n"
@@ -980,6 +999,13 @@ class LinuxAudioRecipePatchTests(unittest.TestCase):
             self.assertIn('if (current_cpu == "arm64" && is_linux)',
                           memory_tagging_source)
             self.assertIn("has_memory_tagging = false", memory_tagging_source)
+            ifunc_source = ifunc_header.read_text()
+            self.assertIn(patcher._LINUX_ARM64_IFUNC_HEADER_MARKER, ifunc_source)
+            self.assertIn(
+                "PA_BUILDFLAG(IS_LINUX) && __has_include(<sys/ifunc.h>)",
+                ifunc_source,
+            )
+            self.assertEqual(ifunc_source.count("#include <sys/ifunc.h>"), 1)
             self.assertIn(patcher._LINUX_ARM64_PAC_ASM_AFTER,
                           partition_trace.read_text())
             self.assertNotIn(patcher._LINUX_ARM64_PAC_ASM_BEFORE,
@@ -995,6 +1021,7 @@ class LinuxAudioRecipePatchTests(unittest.TestCase):
             self.assertEqual(core_path.read_text(), core_source)
             self.assertEqual(pdf_path.read_text(), pdf_source)
             self.assertEqual(partition_alloc_gni.read_text(), memory_tagging_source)
+            self.assertEqual(ifunc_header.read_text(), ifunc_source)
             self.assertEqual(
                 partition_trace.read_text(),
                 "asm(\"hint #0x7\" : \"+r\"(x30));\n",
