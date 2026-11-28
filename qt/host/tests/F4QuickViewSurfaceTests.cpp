@@ -3094,9 +3094,33 @@ void F4QuickViewSurfaceTests::focusedVideoSeekSurvivesShellRefresh()
     QTRY_VERIFY_WITH_TIMEOUT(fixture.window->isActive(), 3000);
     QTRY_VERIFY_WITH_TIMEOUT(surface->property("keyboardShortcutsEnabled").toBool(), 3000);
     QTRY_VERIFY_WITH_TIMEOUT(fixture.window->activeFocusItem() == seek, 3000);
+    QObject *subtitleOffsetShortcut = nullptr;
+    for (QObject *candidate : surface->findChildren<QObject *>()) {
+        if (candidate->property("portableText").toString()
+            == QStringLiteral("Ctrl+Shift+Down")) {
+            subtitleOffsetShortcut = candidate;
+            break;
+        }
+    }
+    QVERIFY(subtitleOffsetShortcut);
+    QVERIFY(subtitleOffsetShortcut->property("enabled").toBool());
+    QSignalSpy shortcutActivated(subtitleOffsetShortcut, SIGNAL(activated()));
+    QSignalSpy shortcutActivatedAmbiguously(
+        subtitleOffsetShortcut, SIGNAL(activatedAmbiguously()));
+    QVERIFY(shortcutActivated.isValid());
+    QVERIFY(shortcutActivatedAmbiguously.isValid());
+    // The viewer's Binding can reapply its session controller while the
+    // asynchronous video surface settles. Restore the fake controller after
+    // those event-loop waits so the shortcut's effect is observed here.
+    surface->setProperty("controller", QVariant::fromValue<QObject *>(&controller));
+    QCOMPARE(surface->property("controller").value<QObject *>(), &controller);
     // Qt maps ControlModifier to Command on macOS; this matches QML's Ctrl shortcut.
     const auto subtitleOffsetModifiers = Qt::ControlModifier | Qt::ShiftModifier;
     QTest::keyClick(fixture.window, Qt::Key_Down, subtitleOffsetModifiers);
+    QTRY_VERIFY_WITH_TIMEOUT(shortcutActivated.count()
+                                 + shortcutActivatedAmbiguously.count() > 0,
+                             1000);
+    QCOMPARE(shortcutActivatedAmbiguously.count(), 0);
     QTRY_COMPARE_WITH_TIMEOUT(controller.subtitleOffsetPercent, 1, 1000);
     QCOMPARE(fixture.window->activeFocusItem(), seek);
     QCOMPARE(controller.position, position);
