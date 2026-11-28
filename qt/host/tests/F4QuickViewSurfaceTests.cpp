@@ -3087,6 +3087,13 @@ void F4QuickViewSurfaceTests::focusedVideoSeekSurvivesShellRefresh()
     controller.subtitleTracks = {QStringLiteral("English")};
     controller.selectSubtitleTrack(0);
     QVERIFY(controller.subtitleText.isEmpty());
+    // WindowShortcut activation also depends on the window being active and
+    // the surface's complete QML enablement binding (including the track
+    // popup state), not only viewer focus.
+    fixture.window->requestActivate();
+    QTRY_VERIFY_WITH_TIMEOUT(fixture.window->isActive(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(surface->property("keyboardShortcutsEnabled").toBool(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(fixture.window->activeFocusItem() == seek, 3000);
     // Qt maps ControlModifier to Command on macOS; this matches QML's Ctrl shortcut.
     const auto subtitleOffsetModifiers = Qt::ControlModifier | Qt::ShiftModifier;
     QTest::keyClick(fixture.window, Qt::Key_Down, subtitleOffsetModifiers);
